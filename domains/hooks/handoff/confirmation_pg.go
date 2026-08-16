@@ -11,12 +11,20 @@ func (s *PGStore) SavePending(ctx context.Context, p *ConfirmationProposal) erro
 	if s == nil || s.db == nil || p == nil {
 		return fmt.Errorf("handoff confirmation store is unavailable")
 	}
-	_, err := s.db.ExecContext(ctx, `
-INSERT INTO handoff_pending_confirmations (id,tenant_id,api_key_id,previous_session_id,token_hash,status,expires_at,trigger_mode,trigger_reason,tokens_at_trigger,context_window,messages_at_trigger,tokens_in_session,summary_engine,summary_text,handoff_prompt,skill_name,duration_ms,proposal_created_at)
-VALUES ($1,$2,$3,$4,$5,'pending',$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
-ON CONFLICT (tenant_id,previous_session_id) WHERE status='pending' DO UPDATE SET
-id=EXCLUDED.id,api_key_id=EXCLUDED.api_key_id,token_hash=EXCLUDED.token_hash,expires_at=EXCLUDED.expires_at,trigger_mode=EXCLUDED.trigger_mode,trigger_reason=EXCLUDED.trigger_reason,tokens_at_trigger=EXCLUDED.tokens_at_trigger,context_window=EXCLUDED.context_window,messages_at_trigger=EXCLUDED.messages_at_trigger,tokens_in_session=EXCLUDED.tokens_in_session,summary_engine=EXCLUDED.summary_engine,summary_text=EXCLUDED.summary_text,handoff_prompt=EXCLUDED.handoff_prompt,skill_name=EXCLUDED.skill_name,duration_ms=EXCLUDED.duration_ms,proposal_created_at=EXCLUDED.proposal_created_at,updated_at=NOW()`,
-		p.ID, p.TenantID, p.APIKeyID, p.PreviousSessionID, p.TokenHash, p.ExpiresAt, p.Record.TriggerMode, p.Record.TriggerReason, p.Record.TokensAtTrigger, p.Record.ContextWindow, p.Record.MessagesAtTrigger, p.Record.TokensInSession, p.Record.SummaryEngine, p.Record.SummaryText, p.Record.HandoffPrompt, p.Record.SkillName, p.Record.DurationMs, p.Record.CreatedAt)
+	goalState, goalVersion, err := marshalPersistedGoalState(p.GoalState)
+	if err != nil {
+		return err
+	}
+	restoreStatus := any(nil)
+	if p.GoalState != nil {
+		restoreStatus = confirmationStatusPending
+	}
+	_, err = s.db.ExecContext(ctx, `
+	INSERT INTO handoff_pending_confirmations (id,tenant_id,api_key_id,previous_session_id,token_hash,status,expires_at,trigger_mode,trigger_reason,tokens_at_trigger,context_window,messages_at_trigger,tokens_in_session,summary_engine,summary_text,handoff_prompt,skill_name,duration_ms,proposal_created_at,goal_state,goal_state_version,restore_status)
+	VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20::jsonb,$21,$22)
+	ON CONFLICT (tenant_id,previous_session_id) WHERE status='pending' DO UPDATE SET
+	id=EXCLUDED.id,api_key_id=EXCLUDED.api_key_id,token_hash=EXCLUDED.token_hash,expires_at=EXCLUDED.expires_at,trigger_mode=EXCLUDED.trigger_mode,trigger_reason=EXCLUDED.trigger_reason,tokens_at_trigger=EXCLUDED.tokens_at_trigger,context_window=EXCLUDED.context_window,messages_at_trigger=EXCLUDED.messages_at_trigger,tokens_in_session=EXCLUDED.tokens_in_session,summary_engine=EXCLUDED.summary_engine,summary_text=EXCLUDED.summary_text,handoff_prompt=EXCLUDED.handoff_prompt,skill_name=EXCLUDED.skill_name,duration_ms=EXCLUDED.duration_ms,proposal_created_at=EXCLUDED.proposal_created_at,goal_state=EXCLUDED.goal_state,goal_state_version=EXCLUDED.goal_state_version,restore_status=EXCLUDED.restore_status,restore_error=NULL,restore_attempted_at=NULL,restored_at=NULL,updated_at=NOW()`,
+		p.ID, p.TenantID, p.APIKeyID, p.PreviousSessionID, p.TokenHash, confirmationStatusPending, p.ExpiresAt, p.Record.TriggerMode, p.Record.TriggerReason, p.Record.TokensAtTrigger, p.Record.ContextWindow, p.Record.MessagesAtTrigger, p.Record.TokensInSession, p.Record.SummaryEngine, p.Record.SummaryText, p.Record.HandoffPrompt, p.Record.SkillName, p.Record.DurationMs, p.Record.CreatedAt, goalState, goalVersion, restoreStatus)
 	return err
 }
 
@@ -35,7 +43,11 @@ func (s *PGStore) Confirm(ctx context.Context, in ConfirmationInput) (*Confirmat
 	var p ConfirmationProposal
 	var confirmed sql.NullTime
 	var target, idem sql.NullString
-	err = tx.QueryRowContext(ctx, `SELECT id,tenant_id,api_key_id,previous_session_id,token_hash,status,expires_at,confirmed_at,new_session_id,idempotency_hash,trigger_mode,trigger_reason,tokens_at_trigger,context_window,messages_at_trigger,tokens_in_session,summary_engine,summary_text,handoff_prompt,skill_name,duration_ms,proposal_created_at FROM handoff_pending_confirmations WHERE id=$1 AND tenant_id=$2 FOR UPDATE`, in.ProposalID, in.TenantID).Scan(&p.ID, &p.TenantID, &p.APIKeyID, &p.PreviousSessionID, &p.TokenHash, &p.Status, &p.ExpiresAt, &confirmed, &target, &idem, &p.Record.TriggerMode, &p.Record.TriggerReason, &p.Record.TokensAtTrigger, &p.Record.ContextWindow, &p.Record.MessagesAtTrigger, &p.Record.TokensInSession, &p.Record.SummaryEngine, &p.Record.SummaryText, &p.Record.HandoffPrompt, &p.Record.SkillName, &p.Record.DurationMs, &p.Record.CreatedAt)
+	var goalPayload []byte
+	var goalVersion sql.NullInt64
+	var restoreStatus, restoreError sql.NullString
+	var restoreAttemptedAt, restoredAt sql.NullTime
+	err = tx.QueryRowContext(ctx, `SELECT id,tenant_id,api_key_id,previous_session_id,token_hash,status,expires_at,confirmed_at,new_session_id,idempotency_hash,trigger_mode,trigger_reason,tokens_at_trigger,context_window,messages_at_trigger,tokens_in_session,summary_engine,summary_text,handoff_prompt,skill_name,duration_ms,proposal_created_at,goal_state,goal_state_version,restore_status,restore_error,restore_attempted_at,restored_at FROM handoff_pending_confirmations WHERE id=$1 AND tenant_id=$2 FOR UPDATE`, in.ProposalID, in.TenantID).Scan(&p.ID, &p.TenantID, &p.APIKeyID, &p.PreviousSessionID, &p.TokenHash, &p.Status, &p.ExpiresAt, &confirmed, &target, &idem, &p.Record.TriggerMode, &p.Record.TriggerReason, &p.Record.TokensAtTrigger, &p.Record.ContextWindow, &p.Record.MessagesAtTrigger, &p.Record.TokensInSession, &p.Record.SummaryEngine, &p.Record.SummaryText, &p.Record.HandoffPrompt, &p.Record.SkillName, &p.Record.DurationMs, &p.Record.CreatedAt, &goalPayload, &goalVersion, &restoreStatus, &restoreError, &restoreAttemptedAt, &restoredAt)
 	if err == sql.ErrNoRows {
 		return nil, ErrConfirmationInvalid
 	}
@@ -46,18 +58,27 @@ func (s *PGStore) Confirm(ctx context.Context, in ConfirmationInput) (*Confirmat
 	p.ConfirmedAt = confirmed.Time
 	p.NewSessionID = target.String
 	p.IdempotencyHash = idem.String
+	p.GoalStateVersion = int(goalVersion.Int64)
+	p.RestoreStatus = restoreStatus.String
+	p.RestoreError = restoreError.String
+	p.RestoreAttemptedAt = restoreAttemptedAt.Time
+	p.RestoredAt = restoredAt.Time
+	if p.GoalState, err = unmarshalPersistedGoalState(goalPayload, p.GoalStateVersion); err != nil {
+		return nil, err
+	}
 	if p.APIKeyID != in.APIKeyID || !p.MatchesToken(in.Token) {
 		return nil, ErrConfirmationInvalid
 	}
 	inputHash := hashConfirmationValue(in.IdempotencyKey)
-	if p.Status == "confirmed" {
+	if p.Status == legacyConfirmationStatusConfirmed || p.Status == confirmationStatusAccountingConfirmed || p.Status == confirmationStatusRestored || p.Status == confirmationStatusManualRequired {
 		if p.IdempotencyHash == inputHash && p.NewSessionID == in.NewSessionID {
-			return &ConfirmationResult{ProposalID: p.ID, PreviousSessionID: p.PreviousSessionID, NewSessionID: p.NewSessionID, ConfirmedAt: p.ConfirmedAt, Record: p.Record}, tx.Commit()
+			result := confirmationResult(&p, false)
+			return result, tx.Commit()
 		}
 		return nil, ErrConfirmationReplay
 	}
 	if !time.Now().Before(p.ExpiresAt) {
-		_, err = tx.ExecContext(ctx, `UPDATE handoff_pending_confirmations SET status='expired',updated_at=NOW() WHERE id=$1`, p.ID)
+		_, err = tx.ExecContext(ctx, `UPDATE handoff_pending_confirmations SET status='expired',updated_at=NOW() WHERE id=$1 AND tenant_id=$2`, p.ID, p.TenantID)
 		if err != nil {
 			return nil, err
 		}
@@ -66,7 +87,7 @@ func (s *PGStore) Confirm(ctx context.Context, in ConfirmationInput) (*Confirmat
 		}
 		return nil, ErrConfirmationExpired
 	}
-	if p.Status != "pending" || p.PreviousSessionID == in.NewSessionID || (!in.TargetCreatedAt.IsZero() && in.TargetCreatedAt.Before(p.Record.CreatedAt)) {
+	if p.Status != confirmationStatusPending || p.PreviousSessionID == in.NewSessionID || (!in.TargetCreatedAt.IsZero() && in.TargetCreatedAt.Before(p.Record.CreatedAt)) {
 		return nil, ErrConfirmationInvalid
 	}
 	var count int
@@ -95,12 +116,77 @@ func (s *PGStore) Confirm(ctx context.Context, in ConfirmationInput) (*Confirmat
 	if err != nil {
 		return nil, err
 	}
-	_, err = tx.ExecContext(ctx, `UPDATE handoff_pending_confirmations SET status='confirmed',confirmed_at=$2,new_session_id=$3,idempotency_hash=$4,handoff_log_id=$5,updated_at=NOW() WHERE id=$1 AND status='pending'`, p.ID, now, in.NewSessionID, inputHash, logID)
+	newRestoreStatus := any(nil)
+	if p.GoalState != nil {
+		newRestoreStatus = confirmationStatusAccountingConfirmed
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE handoff_pending_confirmations SET status=$2,confirmed_at=$3,new_session_id=$4,idempotency_hash=$5,handoff_log_id=$6,restore_status=$7,updated_at=NOW() WHERE id=$1 AND tenant_id=$8 AND status='pending'`, p.ID, confirmationStatusAccountingConfirmed, now, in.NewSessionID, inputHash, logID, newRestoreStatus, p.TenantID)
 	if err != nil {
 		return nil, err
 	}
 	if err = tx.Commit(); err != nil {
 		return nil, err
 	}
-	return &ConfirmationResult{ProposalID: p.ID, PreviousSessionID: p.PreviousSessionID, NewSessionID: in.NewSessionID, ConfirmedAt: now, FirstConfirmation: true, Record: p.Record}, nil
+	p.Status = confirmationStatusAccountingConfirmed
+	p.RestoreStatus = stringValue(newRestoreStatus)
+	p.ConfirmedAt = now
+	return confirmationResult(&p, true), nil
+}
+
+func stringValue(value any) string {
+	if value == nil {
+		return ""
+	}
+	return value.(string)
+}
+
+func (s *PGStore) GetGoalRestoreState(ctx context.Context, proposalID, tenantID string) (*GoalRestoreState, error) {
+	if s == nil || s.db == nil || proposalID == "" || tenantID == "" {
+		return nil, ErrConfirmationInvalid
+	}
+	var state GoalRestoreState
+	var payload []byte
+	var version sql.NullInt64
+	var rowStatus, rowRestoreStatus sql.NullString
+	var restoreError sql.NullString
+	var attempted, restored sql.NullTime
+	if err := s.db.QueryRowContext(ctx, `SELECT id,tenant_id,new_session_id,status,goal_state,goal_state_version,restore_status,restore_error,restore_attempted_at,restored_at FROM handoff_pending_confirmations WHERE id=$1 AND tenant_id=$2`, proposalID, tenantID).Scan(&state.ProposalID, &state.TenantID, &state.NewSessionID, &rowStatus, &payload, &version, &rowRestoreStatus, &restoreError, &attempted, &restored); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, ErrConfirmationInvalid
+		}
+		return nil, err
+	}
+	state.Status = rowRestoreStatus.String
+	if state.Status == "" {
+		state.Status = rowStatus.String
+	}
+	state.RestoreError = restoreError.String
+	state.RestoreAttemptedAt = attempted.Time
+	state.RestoredAt = restored.Time
+	state.GoalState, _ = unmarshalPersistedGoalState(payload, int(version.Int64))
+	return &state, nil
+}
+
+func (s *PGStore) MarkGoalRestoreAttempt(ctx context.Context, proposalID, tenantID, restoreErr string) error {
+	if s == nil || s.db == nil || proposalID == "" || tenantID == "" {
+		return ErrConfirmationInvalid
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE handoff_pending_confirmations SET restore_status=$3,restore_error=$4,restore_attempted_at=NOW(),updated_at=NOW() WHERE id=$1 AND tenant_id=$2 AND status IN ('accounting_confirmed','confirmed')`, proposalID, tenantID, confirmationStatusAccountingConfirmed, truncateRunes(restoreErr, 512))
+	return err
+}
+
+func (s *PGStore) MarkGoalRestored(ctx context.Context, proposalID, tenantID string) error {
+	if s == nil || s.db == nil || proposalID == "" || tenantID == "" {
+		return ErrConfirmationInvalid
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE handoff_pending_confirmations SET status=$3,restore_status=$3,restore_error=NULL,restored_at=NOW(),updated_at=NOW() WHERE id=$1 AND tenant_id=$2 AND status IN ('accounting_confirmed','confirmed')`, proposalID, tenantID, confirmationStatusRestored)
+	return err
+}
+
+func (s *PGStore) MarkGoalRestoreManualRequired(ctx context.Context, proposalID, tenantID, restoreErr string) error {
+	if s == nil || s.db == nil || proposalID == "" || tenantID == "" {
+		return ErrConfirmationInvalid
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE handoff_pending_confirmations SET status=$3,restore_status=$3,restore_error=$4,restore_attempted_at=NOW(),updated_at=NOW() WHERE id=$1 AND tenant_id=$2 AND status IN ('accounting_confirmed','confirmed')`, proposalID, tenantID, confirmationStatusManualRequired, truncateRunes(restoreErr, 512))
+	return err
 }

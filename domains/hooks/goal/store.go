@@ -16,8 +16,8 @@ func NewPGStore(db *sql.DB) *PGStore {
 	return &PGStore{db: db}
 }
 
-// GetSession retrieves a goal session by session ID.
-func (s *PGStore) GetSession(ctx context.Context, sessionID string) (*Session, error) {
+// GetSession retrieves a tenant-owned goal session by session ID.
+func (s *PGStore) GetSession(ctx context.Context, tenantID, sessionID string) (*Session, error) {
 	query := `SELECT session_id, tenant_id, state, original_goal, retry_count,
 	                 decision_count, auto_continue_count, last_activity_at,
 	                 completed_at, audit_result, created_at,
@@ -25,13 +25,13 @@ func (s *PGStore) GetSession(ctx context.Context, sessionID string) (*Session, e
 	                 COALESCE(repeat_count, 0),
 	                 COALESCE(last_response_hash, ''),
 	                 COALESCE(current_model, '')
-	          FROM goal_sessions WHERE session_id = $1`
+	          FROM goal_sessions WHERE tenant_id = $1 AND session_id = $2`
 
 	var session Session
 	var completedAt sql.NullTime
 	var auditResult sql.NullString
 
-	err := s.db.QueryRowContext(ctx, query, sessionID).Scan(
+	err := s.db.QueryRowContext(ctx, query, tenantID, sessionID).Scan(
 		&session.SessionID, &session.TenantID, &session.State, &session.OriginalGoal,
 		&session.RetryCount, &session.DecisionCount, &session.AutoContinueCount,
 		&session.LastActivityAt, &completedAt, &auditResult, &session.CreatedAt,
@@ -44,14 +44,12 @@ func (s *PGStore) GetSession(ctx context.Context, sessionID string) (*Session, e
 	if err != nil {
 		return nil, err
 	}
-
 	if completedAt.Valid {
 		session.CompletedAt = &completedAt.Time
 	}
 	if auditResult.Valid {
 		session.AuditResult = json.RawMessage(auditResult.String)
 	}
-
 	return &session, nil
 }
 
@@ -63,7 +61,6 @@ func (s *PGStore) CreateSession(ctx context.Context, session *Session) error {
 	                                      model_switch_count, repeat_count,
 	                                      last_response_hash, current_model)
 	          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 0, 0, '', $10)`
-
 	_, err := s.db.ExecContext(ctx, query,
 		session.SessionID, session.TenantID, session.State, session.OriginalGoal,
 		session.RetryCount, session.DecisionCount, session.AutoContinueCount,
@@ -72,48 +69,32 @@ func (s *PGStore) CreateSession(ctx context.Context, session *Session) error {
 	return err
 }
 
-// UpdateSessionState updates the state of a goal session.
-func (s *PGStore) UpdateSessionState(ctx context.Context, sessionID string, state State) error {
-	query := `UPDATE goal_sessions 
-	          SET state = $2, last_activity_at = NOW(), 
-	              completed_at = CASE WHEN $2 = 'completed' THEN NOW() ELSE completed_at END
-	          WHERE session_id = $1`
-
-	_, err := s.db.ExecContext(ctx, query, sessionID, state)
+func (s *PGStore) UpdateSessionState(ctx context.Context, tenantID, sessionID string, state State) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE goal_sessions
+		SET state = $3, last_activity_at = NOW(),
+		    completed_at = CASE WHEN $3 = 'completed' THEN NOW() ELSE completed_at END
+		WHERE tenant_id = $1 AND session_id = $2`, tenantID, sessionID, state)
 	return err
 }
 
-// IncrementAutoContinueCount increments the auto-continue counter.
-func (s *PGStore) IncrementAutoContinueCount(ctx context.Context, sessionID string) error {
-	query := `UPDATE goal_sessions 
-	          SET auto_continue_count = auto_continue_count + 1, last_activity_at = NOW()
-	          WHERE session_id = $1`
-
-	_, err := s.db.ExecContext(ctx, query, sessionID)
+func (s *PGStore) IncrementAutoContinueCount(ctx context.Context, tenantID, sessionID string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE goal_sessions
+		SET auto_continue_count = auto_continue_count + 1, last_activity_at = NOW()
+		WHERE tenant_id = $1 AND session_id = $2`, tenantID, sessionID)
 	return err
 }
 
-// IncrementDecisionCount increments the decision counter.
-func (s *PGStore) IncrementDecisionCount(ctx context.Context, sessionID string) error {
-	query := `UPDATE goal_sessions
-	          SET decision_count = decision_count + 1, last_activity_at = NOW()
-	          WHERE session_id = $1`
-
-	_, err := s.db.ExecContext(ctx, query, sessionID)
+func (s *PGStore) IncrementDecisionCount(ctx context.Context, tenantID, sessionID string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE goal_sessions
+		SET decision_count = decision_count + 1, last_activity_at = NOW()
+		WHERE tenant_id = $1 AND session_id = $2`, tenantID, sessionID)
 	return err
 }
 
-// UpdateSessionAudit persists the audit result for a session.
-// Uses atomic CAS pattern: only updates if audit_result is NULL, preventing
-// concurrent audits from overwriting each other. Returns true if the update
-// was applied (this caller won the race), false if another audit already
-// wrote a result (caller should skip its own audit).
-func (s *PGStore) UpdateSessionAudit(ctx context.Context, sessionID string, auditResult []byte) (bool, error) {
-	query := `UPDATE goal_sessions
-	          SET audit_result = $2, last_activity_at = NOW()
-	          WHERE session_id = $1 AND audit_result IS NULL`
-
-	res, err := s.db.ExecContext(ctx, query, sessionID, auditResult)
+func (s *PGStore) UpdateSessionAudit(ctx context.Context, tenantID, sessionID string, auditResult []byte) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE goal_sessions
+		SET audit_result = $3, last_activity_at = NOW()
+		WHERE tenant_id = $1 AND session_id = $2 AND audit_result IS NULL`, tenantID, sessionID, auditResult)
 	if err != nil {
 		return false, err
 	}
@@ -121,16 +102,10 @@ func (s *PGStore) UpdateSessionAudit(ctx context.Context, sessionID string, audi
 	return rows == 1, nil
 }
 
-// AtomicAutoContinue atomically increments auto_continue_count only if
-// the new value would still be <= maxAllowed. Returns true if the
-// caller "won" the increment (and should proceed with auto-continue),
-// false if the count is already at the limit.
-func (s *PGStore) AtomicAutoContinue(ctx context.Context, sessionID string, maxAllowed int) (bool, error) {
-	query := `UPDATE goal_sessions
-	          SET auto_continue_count = auto_continue_count + 1, last_activity_at = NOW()
-	          WHERE session_id = $1 AND auto_continue_count < $2`
-
-	res, err := s.db.ExecContext(ctx, query, sessionID, maxAllowed)
+func (s *PGStore) AtomicAutoContinue(ctx context.Context, tenantID, sessionID string, maxAllowed int) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE goal_sessions
+		SET auto_continue_count = auto_continue_count + 1, last_activity_at = NOW()
+		WHERE tenant_id = $1 AND session_id = $2 AND auto_continue_count < $3`, tenantID, sessionID, maxAllowed)
 	if err != nil {
 		return false, err
 	}
@@ -138,51 +113,34 @@ func (s *PGStore) AtomicAutoContinue(ctx context.Context, sessionID string, maxA
 	return rows == 1, nil
 }
 
-// RecordResponse hashes-compares the latest assistant reply against the stored
-// hash and updates the repeat counter atomically. When the new hash matches the
-// stored one, repeat_count is incremented; otherwise it is reset to 1 (a fresh
-// response counts as the first of a potential new run). Returns the resulting
-// repeat_count for the caller to use in loop detection.
-//
-// resetOnProgress controls behaviour on a hash change: true (default) resets
-// repeat_count to 1 (detect *consecutive* repeats); false increments instead
-// (cumulative mode, counting any response).
-func (s *PGStore) RecordResponse(ctx context.Context, sessionID, responseHash string, resetOnProgress bool) (int, error) {
-	query := `UPDATE goal_sessions
-	          SET repeat_count = CASE
-	                WHEN last_response_hash = $2 THEN repeat_count + 1
-	                WHEN $3 THEN 1
-	                ELSE repeat_count + 1
-	              END,
-	              last_response_hash = $2,
-	              last_activity_at = NOW()
-	          WHERE session_id = $1
-	          RETURNING repeat_count`
-
+func (s *PGStore) RecordResponse(ctx context.Context, tenantID, sessionID, responseHash string, resetOnProgress bool) (int, error) {
 	var newCount int
-	err := s.db.QueryRowContext(ctx, query, sessionID, responseHash, resetOnProgress).Scan(&newCount)
+	err := s.db.QueryRowContext(ctx, `UPDATE goal_sessions
+		SET repeat_count = CASE
+		      WHEN last_response_hash = $3 THEN repeat_count + 1
+		      WHEN $4 THEN 1
+		      ELSE repeat_count + 1
+		    END,
+		    last_response_hash = $3,
+		    last_activity_at = NOW()
+		WHERE tenant_id = $1 AND session_id = $2
+		RETURNING repeat_count`, tenantID, sessionID, responseHash, resetOnProgress).Scan(&newCount)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
 	if err != nil {
 		return 0, err
 	}
 	return newCount, nil
 }
 
-// AtomicModelSwitch rotates the session to newModel under a CAS guard:
-// it bumps model_switch_count only when below maxAllowed, resets
-// auto_continue_count to 0 (fresh budget for the new model), and records
-// current_model. Returns true if this caller won the rotation.
-//
-// This prevents two concurrent follow-ups from both rotating; only the one
-// whose UPDATE affects a row proceeds.
-func (s *PGStore) AtomicModelSwitch(ctx context.Context, sessionID, newModel string, maxAllowed int) (bool, error) {
-	query := `UPDATE goal_sessions
-	          SET model_switch_count = model_switch_count + 1,
-	              auto_continue_count = 0,
-	              current_model = $2,
-	              last_activity_at = NOW()
-	          WHERE session_id = $1 AND model_switch_count < $3`
-
-	res, err := s.db.ExecContext(ctx, query, sessionID, newModel, maxAllowed)
+func (s *PGStore) AtomicModelSwitch(ctx context.Context, tenantID, sessionID, newModel string, maxAllowed int) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE goal_sessions
+		SET model_switch_count = model_switch_count + 1,
+		    auto_continue_count = 0,
+		    current_model = $3,
+		    last_activity_at = NOW()
+		WHERE tenant_id = $1 AND session_id = $2 AND model_switch_count < $4`, tenantID, sessionID, newModel, maxAllowed)
 	if err != nil {
 		return false, err
 	}
@@ -190,21 +148,14 @@ func (s *PGStore) AtomicModelSwitch(ctx context.Context, sessionID, newModel str
 	return rows == 1, nil
 }
 
-// AddRetryCount atomically increments retry_count by delta.
-// This method is fail-open: it returns nil when sessionID is empty,
-// delta is non-positive, or the row does not exist (Goal mode not active).
-// Callers should log but not fail the request on errors.
-func (s *PGStore) AddRetryCount(ctx context.Context, sessionID string, delta int) error {
-	if sessionID == "" || delta <= 0 {
+// AddRetryCount atomically increments retry_count by delta. It remains
+// fail-open when Goal mode is not active or tenant/session identity is absent.
+func (s *PGStore) AddRetryCount(ctx context.Context, tenantID, sessionID string, delta int) error {
+	if tenantID == "" || sessionID == "" || delta <= 0 {
 		return nil
 	}
-
-	query := `UPDATE goal_sessions
-	          SET retry_count = retry_count + $2,
-	              last_activity_at = NOW()
-	          WHERE session_id = $1`
-
-	_, err := s.db.ExecContext(ctx, query, sessionID, delta)
-	// Ignore "no rows affected" - session may not exist if Goal mode wasn't active
+	_, err := s.db.ExecContext(ctx, `UPDATE goal_sessions
+		SET retry_count = retry_count + $3, last_activity_at = NOW()
+		WHERE tenant_id = $1 AND session_id = $2`, tenantID, sessionID, delta)
 	return err
 }

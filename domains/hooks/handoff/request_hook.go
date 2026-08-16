@@ -164,7 +164,7 @@ func (h *TriggerHook) PrepareRequest(ctx context.Context, req *Request) (*Reques
 		}
 		var err error
 		goalState, err = h.config.GoalStateSerializer.Serialize(ctx, GoalStateInput{
-			SessionID: req.SessionID, CostMode: costMode, TokensUsed: sessionTokens, MessageCount: sessionMessages,
+			TenantID: req.TenantID, SessionID: req.SessionID, CostMode: costMode, TokensUsed: sessionTokens, MessageCount: sessionMessages,
 		})
 		if err != nil {
 			slog.Warn("handoff_goal_state_serialize_failed", "session_id", req.SessionID, "error", err)

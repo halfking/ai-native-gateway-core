@@ -447,28 +447,50 @@ func (sm *Manager) Touch(ctx context.Context, sessionID string) error {
 	return sm.redis.client.Expire(ctx, "session:"+sessionID, sm.ttl).Err()
 }
 
-// BindAPIKey claims an orphan session (api_key_id=0) created before auth was wired.
+const bindAPIKeyScript = `
+local current = redis.call('HGET', KEYS[1], 'api_key_id')
+if current == false then
+  return {'missing'}
+end
+if current ~= '' and current ~= '0' then
+  return {'bound', current}
+end
+redis.call('HSET', KEYS[1], 'api_key_id', ARGV[1], 'tenant_id', ARGV[2])
+redis.call('EXPIRE', KEYS[1], ARGV[3])
+redis.call('SADD', KEYS[2], ARGV[4])
+redis.call('EXPIRE', KEYS[2], ARGV[3])
+return {'claimed'}
+`
+
+// BindAPIKey atomically claims an orphan session (api_key_id=0) created before
+// auth was wired. Only the winning claimant is added to its active-key set.
 func (sm *Manager) BindAPIKey(ctx context.Context, sessionID string, apiKeyID int, tenantID string) error {
-	data, err := sm.redis.HGetAll(ctx, "session:"+sessionID)
-	if err != nil || len(data) == 0 {
+	if sm == nil || sm.redis == nil || sm.redis.client == nil || sessionID == "" || apiKeyID <= 0 || tenantID == "" {
+		return ErrInvalidSession
+	}
+	activeKeyRedis := fmt.Sprintf("session:apiKey:%d:active", apiKeyID)
+	result, err := sm.redis.client.Eval(ctx, bindAPIKeyScript,
+		[]string{"session:" + sessionID, activeKeyRedis},
+		strconv.Itoa(apiKeyID), tenantID, int(sm.ttl.Seconds()), sessionID).StringSlice()
+	if err != nil {
+		return err
+	}
+	if len(result) == 0 {
 		return ErrSessionNotFound
 	}
-	oldAPIKeyID, _ := strconv.Atoi(data["api_key_id"])
-	if oldAPIKeyID != 0 {
-		return fmt.Errorf("session already bound to api key %d", oldAPIKeyID)
+	switch result[0] {
+	case "claimed":
+		return nil
+	case "missing":
+		return ErrSessionNotFound
+	case "bound":
+		if len(result) > 1 {
+			return fmt.Errorf("session already bound to api key %s", result[1])
+		}
+		return fmt.Errorf("session already bound to an api key")
+	default:
+		return fmt.Errorf("unexpected session claim result %q", result[0])
 	}
-
-	activeKeyRedis := fmt.Sprintf("session:apiKey:%d:active", apiKeyID)
-	pipe := sm.redis.client.Pipeline()
-	pipe.HSet(ctx, "session:"+sessionID, map[string]any{
-		"api_key_id": strconv.Itoa(apiKeyID),
-		"tenant_id":  tenantID,
-	})
-	pipe.Expire(ctx, "session:"+sessionID, sm.ttl)
-	pipe.SAdd(ctx, activeKeyRedis, sessionID)
-	pipe.Expire(ctx, activeKeyRedis, sm.ttl)
-	_, err = pipe.Exec(ctx)
-	return err
 }
 
 func (sm *Manager) UpdateCacheInfo(ctx context.Context, sessionID string, cacheInfo CacheInfo) error {

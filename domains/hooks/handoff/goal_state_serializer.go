@@ -34,6 +34,7 @@ type GoalState struct {
 
 // GoalStateInput supplies request-local fields not held by GoalStore.
 type GoalStateInput struct {
+	TenantID       string
 	SessionID      string
 	CostMode       string
 	TokensUsed     int
@@ -68,7 +69,7 @@ func (s *MemoryGoalStateSerializer) Serialize(ctx context.Context, input GoalSta
 	if input.SessionID == "" {
 		return nil, fmt.Errorf("goal source session is required")
 	}
-	session, err := s.store.GetSession(ctx, input.SessionID)
+	session, err := s.store.GetSession(ctx, input.TenantID, input.SessionID)
 	if err != nil {
 		return nil, fmt.Errorf("get goal session %q: %w", input.SessionID, err)
 	}
@@ -107,7 +108,7 @@ func (s *MemoryGoalStateSerializer) Restore(ctx context.Context, newSessionID st
 	if state.Version != GoalStateVersion {
 		return fmt.Errorf("unsupported goal state version %d", state.Version)
 	}
-	if existing, err := s.store.GetSession(ctx, newSessionID); err != nil {
+	if existing, err := s.store.GetSession(ctx, state.TenantID, newSessionID); err != nil {
 		return fmt.Errorf("get target goal session %q: %w", newSessionID, err)
 	} else if existing != nil {
 		if existing.TenantID == state.TenantID && existing.OriginalGoal == state.TaskDescription && existing.State == goal.StateActive &&
