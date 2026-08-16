@@ -899,56 +899,41 @@ func TestClassifyErrorWithBody_ContentFilter_Negative(t *testing.T) {
 	}
 }
 
-// TestClassifyErrorWithBody_ContentFilter_Negative5xx covers the 5xx branch
-// added to contentFilterRe's status gate at classify.go:747
-// (`status >= 500`). The risk is that an unrelated 500/502/503 whose body
-// happens to contain a benign "sensitive" / "policy" token (e.g. a
-// gateway-side error mentioning "case-sensitive parsing", "sensitive
-// headers", or "policy file") would be mis-classified as KindContentFilter,
-// short-circuiting credential failover and surfacing a misleading
-// "content rejected" error to the caller.
+// TestClassifyErrorWithBody_ContentFilter_Negative5xx guards the 5xx
+// branch of contentFilterRe's status gate (classify.go:747). Benign 5xx
+// bodies that happen to contain "case-sensitive", "policy file",
+// "sensitive", or "forbidden" must NOT be misclassified as
+// KindContentFilter — and must land on a transient-family kind so the
+// executor's normal retry path still fires.
 //
-// Each case asserts two things:
-//  1. Body must NOT be classified as KindContentFilter (the actual regression
-//     we're guarding against).
-//  2. Body MUST land on a transient/upstream kind so the executor's normal
-//     retry path still fires — never on a non-retryable kind like
-//     KindUnsupportedFeature or KindClientBug, which would silently kill
-//     the credential.
+// Note: "content_filter" mentioned as a config key (e.g. admin disabled
+// the filter module) is intentionally NOT in this list — the regex's
+// literal token matches both genuine rejections and admin-config
+// messages, and the body-only classifier cannot tell them apart.
+//
+// The transient-family whitelist is exhaustive: UpstreamDown, Transient,
+// Network, Concurrent, UpstreamOverloaded, StreamTimeout. Anything else
+// (KindUnsupportedFeature, KindClientBug, KindModelNotFound, etc.)
+// means the 5xx is being mis-routed to a non-retryable handler.
 func TestClassifyErrorWithBody_ContentFilter_Negative5xx(t *testing.T) {
 	tests := []struct {
 		name   string
 		status int
 		body   string
 	}{
-		// "case-sensitive" is the canonical false positive: a generic 5xx
-		// mentioning parser config must not trip content moderation.
+		// "case-sensitive" — generic 5xx mentioning parser config.
 		{"500-case-sensitive", 500, `{"error":"config file is case-sensitive, expected lowercase key"}`},
 		{"502-case-sensitive", 502, `{"error":"header parsing is case sensitive"}`},
-		// "policy" alone (no "violation" / "content_policy" qualifier) on a 5xx
-		// is a config / auth / ACL failure, not a content moderation event.
+		// "policy" alone — config / auth / ACL failure, not moderation.
 		{"503-policy-file", 503, `{"error":"failed to load policy file /etc/gateway/policy.yaml"}`},
-		// "sensitive" alone in a 5xx body — common in upstream/infra error
-		// messages about secrets, PII handling, or session state.
+		// "sensitive" alone — infra error messages about secrets / PII.
 		{"500-sensitive-data", 500, `{"error":"log redaction failed for sensitive data field"}`},
 		{"502-sensitive-headers", 502, `{"error":"proxy refused to forward sensitive headers"}`},
-		// "content_filter" mentioned as a CONFIG key (e.g. admin disabled the
-		// filter module) is intentionally NOT in this list: contentFilterRe's
-		// literal `content_filter` token matches both genuine OpenAI-style
-		// rejections (`{"error":{"type":"content_filter"}}`) and admin-config
-		// messages ("content_filter module is disabled"). The regex cannot
-		// tell those apart from a body-only classifier — distinguishing them
-		// would require knowing whether the upstream's content_filter module
-		// is currently enabled, which lives outside the classifier's scope.
-		// Operators looking at the request log for a "content_filter" 5xx can
-		// disambiguate by inspecting the surrounding `error.message` text.
-		// "forbidden" alone on a 5xx is usually a relay/proxy auth gate, not
-		// "forbidden content". This distinguishes from the matched positive
-		// case "(prohibited|forbidden).{0,30}(content|input|material)" which
-		// requires a content noun within 30 chars.
+		// "forbidden" alone — relay/proxy auth gate, not "forbidden content".
+		// The matched positive case requires a content noun within 30 chars.
 		{"500-forbidden-alone", 500, `{"error":"forbidden: missing API key"}`},
-		// Mixed CJK + 5xx: error message about log rotation must not trip the
-		// CJK branch of contentFilterRe.
+		// Mixed CJK + 5xx — error message about log rotation must not trip
+		// the CJK branch of contentFilterRe.
 		{"500-cjk-content-sensitive-false-positive", 500, `{"error":"日志轮转失败: 检测到敏感词表读取超时"}`},
 	}
 	for _, tc := range tests {
@@ -958,12 +943,6 @@ func TestClassifyErrorWithBody_ContentFilter_Negative5xx(t *testing.T) {
 				t.Errorf("ClassifyErrorWithBody(%d, %q) = KindContentFilter, want something else — false positive on 5xx",
 					tc.status, tc.body)
 			}
-			// Sanity check: the fallback for an unrelated 5xx body must keep
-			// retry behaviour intact. We expect the transient-family kinds
-			// (UpstreamDown, Transient, Network, Concurrent, UpstreamOverloaded,
-			// StreamTimeout). Anything outside that family means the 5xx is
-			// being mis-routed to a non-retryable handler, which is just as
-			// bad as a content-filter false positive.
 			switch kind {
 			case KindUpstreamDown, KindTransient, KindNetwork, KindConcurrent, KindUpstreamOverloaded, KindStreamTimeout:
 				// expected
