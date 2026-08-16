@@ -513,7 +513,7 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 		}
 		outcome.Interrupted = true
 		outcome.Reason = "client_write_failed"
-		outcome.Kind = errorsx.KindUpstreamDown
+		outcome.Kind = errorsx.KindCanceled
 		outcome.Resumable = chunkCount < 5
 		outcome.ChunkCount = chunkCount
 		if capture != nil {
@@ -841,15 +841,12 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 				outcome.Resumable = true // Timeout is resumable
 				outcome.ChunkCount = chunkCount
 			default:
-				slog.Warn("stream read error", "error", readResult.err)
+				failure := streamReadFailureOutcome(readResult.err, chunkCount)
+				slog.Warn("stream read error", "error", readResult.err, "kind", failure.Kind, "reason", failure.Reason)
 				if capture != nil {
-					capture.MarkInterruptedWithReason("read_error")
+					capture.MarkInterruptedWithReason(failure.Reason)
 				}
-				outcome.Interrupted = true
-				outcome.Reason = "read_error"
-				outcome.Kind = errorsx.KindUpstreamDown
-				outcome.Resumable = true // Read error is resumable
-				outcome.ChunkCount = chunkCount
+				outcome = failure
 			}
 			return outcome
 		}

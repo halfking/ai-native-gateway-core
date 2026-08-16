@@ -312,7 +312,7 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 		if pc != nil {
 			pc.markInterrupted("client_write_failed")
 		}
-		return StreamOutcome{Interrupted: true, Reason: "client_write_failed", Kind: errorsx.KindUpstreamDown, Resumable: true}
+		return StreamOutcome{Interrupted: true, Reason: "client_write_failed", Kind: errorsx.KindCanceled, Resumable: true}
 	}
 
 	if clientModel == "" {
@@ -320,6 +320,9 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 	}
 
 	clientWriter := newClientStreamWriter(w, flusher)
+	defer func() {
+		applyClientDisconnectOutcome(&outcome, clientWriter, !outcome.Interrupted)
+	}()
 	scaffold := newResponsesScaffold(w, flusher, requestID, clientModel)
 	scaffold.attachCapturer(pc, clientWriter)
 	scaffold.writeInitialEvents()
@@ -417,19 +420,17 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 		}
 
 		if err != nil {
-			if err == io.EOF {
+			if errors.Is(err, io.EOF) {
 				totalTokens := inputTokens + outputTokens
 				scaffold.finishAttempt(gate, fullText.String(), finishReason, inputTokens, outputTokens, totalTokens)
 				return StreamOutcome{ChunkCount: chunkCount}
 			}
-			outcome.Interrupted = true
-			outcome.Reason = "read_error"
-			outcome.Kind = errorsx.KindUpstreamDown
+			failure := streamReadFailureOutcome(err, chunkCount)
+			outcome = failure
 			if capture != nil {
-				capture.MarkInterruptedWithReason("anthropic_to_responses_read_error")
+				capture.MarkInterruptedWithReason(failure.Reason)
 			}
 			scaffold.finishAttempt(gate, fullText.String(), finishReason, inputTokens, outputTokens, inputTokens+outputTokens)
-			outcome.ChunkCount = chunkCount
 			return outcome
 		}
 
@@ -580,7 +581,7 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 		if pc != nil {
 			pc.markInterrupted("client_write_failed")
 		}
-		return StreamOutcome{Interrupted: true, Reason: "client_write_failed", Kind: errorsx.KindUpstreamDown, Resumable: true}
+		return StreamOutcome{Interrupted: true, Reason: "client_write_failed", Kind: errorsx.KindCanceled, Resumable: true}
 	}
 
 	if clientModel == "" {
@@ -588,6 +589,9 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 	}
 
 	clientWriter := newClientStreamWriter(w, flusher)
+	defer func() {
+		applyClientDisconnectOutcome(&outcome, clientWriter, !outcome.Interrupted)
+	}()
 	scaffold := newResponsesScaffold(w, flusher, requestID, clientModel)
 	scaffold.attachCapturer(pc, clientWriter)
 	scaffold.writeInitialEvents()
@@ -681,14 +685,13 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 				outcome.Kind = errorsx.KindStreamTimeout
 				return outcome
 			default:
-				slog.Warn("openai_to_responses: stream read error", "error", readResult.err)
+				failure := streamReadFailureOutcome(readResult.err, chunkCount)
+				slog.Warn("openai_to_responses: stream read error", "error", readResult.err, "kind", failure.Kind, "reason", failure.Reason)
 				if capture != nil {
-					capture.MarkInterruptedWithReason("stream_error")
+					capture.MarkInterruptedWithReason(failure.Reason)
 				}
 				scaffold.finishAttempt(gate, fullText.String(), finishReason, inputTokens, outputTokens, inputTokens+outputTokens)
-				outcome.Interrupted = true
-				outcome.Reason = "read_error"
-				outcome.Kind = errorsx.KindUpstreamDown
+				outcome = failure
 				return outcome
 			}
 		}

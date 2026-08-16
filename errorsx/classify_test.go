@@ -50,6 +50,17 @@ func TestClassifyError_ConnectionReset(t *testing.T) {
 	}
 }
 
+func TestClassifyError_OtherSideClosed(t *testing.T) {
+	for _, message := range []string{
+		"other side closed",
+		"provider request failed: Other Side Closed",
+	} {
+		if kind := ClassifyError(errors.New(message), nil); kind != KindNetwork {
+			t.Errorf("expected KindNetwork for %q, got %q", message, kind)
+		}
+	}
+}
+
 func TestClassifyError_DNSFailure(t *testing.T) {
 	err := errors.New("lookup nonexistent.example.com: no such host")
 	kind := ClassifyError(err, nil)

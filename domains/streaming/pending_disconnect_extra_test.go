@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
+	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -123,7 +124,9 @@ func TestStreamAnthropicSSEToOpenAI_DisconnectsKeepsCapturer(t *testing.T) {
 		pc,
 	)
 
-	assert.False(t, outcome.Interrupted)
+	assert.True(t, outcome.Interrupted)
+	assert.Equal(t, "client_disconnected", outcome.Reason)
+	assert.Equal(t, errorsx.KindCanceled, outcome.Kind)
 	bodyCaptured, state, ok := pc.Snapshot()
 	require.True(t, ok)
 	assert.Equal(t, "completed", state.Status)
@@ -157,7 +160,9 @@ func TestStreamOpenAIToResponsesSSE_DisconnectsKeepsCapturer(t *testing.T) {
 		pc,
 	)
 
-	assert.False(t, outcome.Interrupted)
+	assert.True(t, outcome.Interrupted)
+	assert.Equal(t, "client_disconnected", outcome.Reason)
+	assert.Equal(t, errorsx.KindCanceled, outcome.Kind)
 	bodyCaptured, state, ok := pc.Snapshot()
 	require.True(t, ok)
 	assert.Equal(t, "completed", state.Status)

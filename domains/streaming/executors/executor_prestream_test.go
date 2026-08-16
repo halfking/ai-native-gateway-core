@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -239,6 +240,116 @@ func TestExecuteOpenAI_StreamPreStreamStopOrdering(t *testing.T) {
 	body := rec.Body.String()
 	if !strings.Contains(body, `"content":"hi"`) {
 		t.Fatalf("stream body = %q, want final stream chunk", body)
+	}
+}
+
+type executionRecorderSpy struct {
+	mu       sync.Mutex
+	outcomes []ExecutionOutcome
+}
+
+func (s *executionRecorderSpy) RecordOutcome(_ context.Context, outcome ExecutionOutcome) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.outcomes = append(s.outcomes, outcome)
+	return nil
+}
+
+func (s *executionRecorderSpy) snapshot() []ExecutionOutcome {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]ExecutionOutcome(nil), s.outcomes...)
+}
+
+func TestExecuteOpenAI_StreamSuccessRecordedOnlyAfterBodyCompletes(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+
+	for _, tc := range []struct {
+		name       string
+		outcome    StreamOutcome
+		streamWait time.Duration
+		wantErr    bool
+		wantRecord int
+		wantChunks int
+	}{
+		{
+			name: "network interruption",
+			outcome: StreamOutcome{
+				Interrupted: true,
+				Reason:      "network_error",
+				Kind:        errorsx.KindNetwork,
+				Resumable:   true,
+			},
+			wantErr: true,
+		},
+		{
+			name: "client disconnected after capture",
+			outcome: StreamOutcome{
+				Interrupted: true,
+				Reason:      "client_disconnected",
+				Kind:        errorsx.KindCanceled,
+				ChunkCount:  3,
+			},
+			wantErr: true,
+		},
+		{
+			name:       "completed stream",
+			outcome:    StreamOutcome{ChunkCount: 3},
+			streamWait: 30 * time.Millisecond,
+			wantRecord: 1,
+			wantChunks: 3,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			spy := &executionRecorderSpy{}
+			exec := NewExecutor(
+				NewRouter(NewStickyCache(), credential.NewLimiter()), credential.NewManager(), credential.NewLimiter(),
+				pool.NewPoolManager(nil), nil, func(chunk []byte, _ bool) []byte { return chunk }, nil, nil,
+			)
+			exec.PostExecutionHook = spy
+			exec.StreamRetryThreshold = 50
+			exec.StreamChat = func(http.ResponseWriter, *http.Response, string, string, string, NormalizerFunc, *audit.StreamCapture, bool) StreamOutcome {
+				time.Sleep(tc.streamWait)
+				return tc.outcome
+			}
+
+			cand := provider.Candidate{
+				ProviderID: 1, CredentialID: 1, BaseURL: upstream.URL,
+				Protocol: "openai-completions", RawModel: "gpt-test", APIKey: "key",
+			}
+			_, err := exec.executeOpenAI(&ExecParams{
+				W: httptest.NewRecorder(), R: httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
+				BodyBytes: []byte(`{"model":"gpt-test","messages":[],"stream":true}`),
+				IsStream:  true, ClientProtocol: "openai-completions", ClientModel: "gpt-test",
+				ClientID: identity.ClientIdentity{IdentityHash: "test"},
+			}, cand, 0, time.Now(), nil)
+
+			if tc.wantErr && err == nil {
+				t.Fatal("expected interrupted stream error")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("executeOpenAI() error = %v", err)
+			}
+			outcomes := spy.snapshot()
+			if len(outcomes) != tc.wantRecord {
+				t.Fatalf("recorded outcomes = %d, want %d: %+v", len(outcomes), tc.wantRecord, outcomes)
+			}
+			if tc.wantRecord > 0 {
+				if !outcomes[0].Success {
+					t.Fatal("completed stream must record success")
+				}
+				if outcomes[0].ChunkCount != tc.wantChunks {
+					t.Fatalf("recorded chunk count = %d, want %d", outcomes[0].ChunkCount, tc.wantChunks)
+				}
+				if tc.streamWait > 0 && outcomes[0].LatencyMs < tc.streamWait.Milliseconds() {
+					t.Fatalf("recorded latency = %dms, want at least %dms body duration", outcomes[0].LatencyMs, tc.streamWait.Milliseconds())
+				}
+			}
+		})
 	}
 }
 

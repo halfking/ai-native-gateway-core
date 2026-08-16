@@ -69,6 +69,20 @@ func (c *clientStreamWriter) flush() {
 	safeFlush(c.flusher)
 }
 
+func applyClientDisconnectOutcome(outcome *StreamOutcome, clientWriter *clientStreamWriter, upstreamCompleted bool) {
+	if outcome == nil || clientWriter == nil || !clientWriter.clientDisconnected {
+		return
+	}
+	outcome.Interrupted = true
+	outcome.Kind = errorsx.KindCanceled
+	outcome.Resumable = false
+	if upstreamCompleted {
+		outcome.Reason = "client_disconnected"
+	} else {
+		outcome.Reason = "client_write_failed"
+	}
+}
+
 // StreamAnthropicPassthrough is the live Q4 Anthropic SSE forwarder. It
 // reads Anthropic-format SSE events from upstream and writes them to
 // the client unchanged (byte-for-byte), while scanning for
@@ -150,30 +164,40 @@ func StreamAnthropicPassthroughWithDiagnostics(
 		if pc != nil {
 			pc.markInterrupted("client_write_failed")
 		}
-		return StreamOutcome{Interrupted: true, Reason: "client_write_failed", Kind: errorsx.KindUpstreamDown, Resumable: true}
+		return StreamOutcome{Interrupted: true, Reason: "client_write_failed", Kind: errorsx.KindCanceled, Resumable: true}
 	}
 
 	reader := bufio.NewReaderSize(resp.Body, anthropicSSEBufSize)
 	clientDisconnected := false
+	chunkCount := 0
 
 	for {
 		line, err := reader.ReadString('\n')
-		if err != nil && err != io.EOF {
-			outcome.Interrupted = true
-			outcome.Reason = "read_error"
-			outcome.Kind = errorsx.KindUpstreamDown
+		if err != nil && !errors.Is(err, io.EOF) {
+			if clientDisconnected {
+				outcome = StreamOutcome{
+					Interrupted: true,
+					Reason:      "client_write_failed",
+					Kind:        errorsx.KindCanceled,
+					ChunkCount:  chunkCount,
+				}
+				return outcome
+			}
+			outcome = streamReadFailureOutcome(err, chunkCount)
 			if capture != nil {
-				capture.MarkInterruptedWithReason("read_error")
+				capture.MarkInterruptedWithReason(outcome.Reason)
 			}
 			return outcome
 		}
-		if line == "" && err == io.EOF {
+		if line == "" && errors.Is(err, io.EOF) {
 			break
 		}
 		if !clientDisconnected {
 			if !safeWriteSSE(w, line) || !safeFlush(flusher) {
 				clientDisconnected = true
-				slog.Info("anthropic passthrough client disconnected; continuing upstream capture", "request_id", requestID)
+				slog.Info("anthropic passthrough: client disconnected; continuing capture")
+			} else if strings.HasPrefix(strings.TrimSpace(line), "data:") {
+				chunkCount++
 			}
 		}
 		if pc != nil {
@@ -197,6 +221,7 @@ func StreamAnthropicPassthroughWithDiagnostics(
 	if !clientDisconnected {
 		safeFlush(flusher)
 	}
+	outcome.ChunkCount = chunkCount
 	return outcome
 }
 
@@ -348,7 +373,7 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 		if pc != nil {
 			pc.markInterrupted("client_write_failed")
 		}
-		return StreamOutcome{Interrupted: true, Reason: "client_write_failed", Kind: errorsx.KindUpstreamDown, Resumable: true}
+		return StreamOutcome{Interrupted: true, Reason: "client_write_failed", Kind: errorsx.KindCanceled, Resumable: true}
 	}
 
 	chatID := "chatcmpl-" + requestID
@@ -377,6 +402,9 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 	)
 
 	clientWriter := newClientStreamWriter(w, flusher)
+	defer func() {
+		applyClientDisconnectOutcome(&outcome, clientWriter, !outcome.Interrupted)
+	}()
 
 	writeChunk := func(chunk *ir.StreamChunk) {
 		if chunk == nil {
@@ -487,7 +515,7 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 		}
 
 		if err != nil {
-			if err == io.EOF {
+			if errors.Is(err, io.EOF) {
 				// SR-W1: pending REAL text must still be delivered even while
 				// the gate holds an uncommitted attempt — delivering it
 				// commits the attempt and the closing usage/done chunks
@@ -519,16 +547,14 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 				}
 				return StreamOutcome{ChunkCount: chunkCount}
 			}
-			outcome.Interrupted = true
-			outcome.Reason = "read_error"
-			outcome.Kind = errorsx.KindUpstreamDown
+			failure := streamReadFailureOutcome(err, chunkCount)
+			outcome = failure
 			if capture != nil {
-				capture.MarkInterruptedWithReason("anthropic_to_openai_read_error")
+				capture.MarkInterruptedWithReason(failure.Reason)
 			}
 			if gate.MayWriteTerminal() {
 				emitAnthropicBridgeErrorChunk(w, "stream_read_error", err.Error(), flusher)
 			}
-			outcome.ChunkCount = chunkCount
 			return outcome
 		}
 

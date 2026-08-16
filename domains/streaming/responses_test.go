@@ -2,6 +2,7 @@ package streaming
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/domains/credential"  //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -140,6 +142,26 @@ func TestConvertChatResponseToResponses(t *testing.T) {
 	assert.Equal(t, "assistant", item["role"])
 	usage := resp["usage"].(map[string]any)
 	assert.Equal(t, float64(10), usage["input_tokens"])
+}
+
+func TestResponsesStreamSSE_OtherSideClosedIsNetworkError(t *testing.T) {
+	resp := &http.Response{
+		Body: &errorAfterDataReadCloser{
+			data: []byte("data: {\"id\":\"chunk-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"delta\":{\"content\":\"hello\"},\"finish_reason\":null}]}\n\n"),
+			err:  errors.New("other side closed"),
+		},
+		Request: httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
+	}
+	rec := httptest.NewRecorder()
+
+	out := StreamResponsesSSE(rec, resp, "gpt-test", "gpt-test", "req-responses-close", nil)
+
+	assert.True(t, out.Interrupted)
+	assert.Equal(t, "network_error", out.Reason)
+	assert.Equal(t, errorsx.KindNetwork, out.Kind)
+	assert.True(t, out.Resumable)
+	assert.Equal(t, 1, out.ChunkCount)
+	assert.Contains(t, rec.Body.String(), "hello")
 }
 
 func TestResponsesStreamSSE_Events(t *testing.T) {

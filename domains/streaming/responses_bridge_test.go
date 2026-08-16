@@ -2,12 +2,14 @@ package streaming
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -496,6 +498,48 @@ func TestStreamOpenAIToResponsesSSE_NoUsageStillFinishes(t *testing.T) {
 	assert.Contains(t, body, `"text":"ok"`)
 	assert.Contains(t, body, `"total_tokens":0`,
 		"usage defaults to zero when upstream omits it")
+}
+
+func TestResponsesBridges_OtherSideClosedIsNetworkError(t *testing.T) {
+	tests := []struct {
+		name string
+		data string
+		run  func(http.ResponseWriter, *http.Response) StreamOutcome
+	}{
+		{
+			name: "anthropic to responses",
+			data: "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n\n",
+			run: func(w http.ResponseWriter, resp *http.Response) StreamOutcome {
+				return StreamAnthropicSSEToResponses(w, resp, "claude-test", "claude-test", "req-anthropic-close", nil, nil)
+			},
+		},
+		{
+			name: "openai to responses",
+			data: "data: {\"id\":\"chunk-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"delta\":{\"content\":\"hello\"},\"finish_reason\":null}]}\n\n",
+			run: func(w http.ResponseWriter, resp *http.Response) StreamOutcome {
+				return StreamOpenAIToResponsesSSE(w, resp, "gpt-test", "gpt-test", "req-openai-close", nil, nil)
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := &http.Response{
+				Body:    &errorAfterDataReadCloser{data: []byte(tc.data), err: errors.New("other side closed")},
+				Request: httptest.NewRequest(http.MethodPost, "/v1/stream", nil),
+			}
+			rec := httptest.NewRecorder()
+
+			out := tc.run(rec, resp)
+
+			assert.True(t, out.Interrupted)
+			assert.Equal(t, "network_error", out.Reason)
+			assert.Equal(t, errorsx.KindNetwork, out.Kind)
+			assert.True(t, out.Resumable)
+			assert.Greater(t, out.ChunkCount, 0)
+			assert.Contains(t, rec.Body.String(), "hello")
+		})
+	}
 }
 
 func TestStreamOpenAIToResponsesSSE_SplitsDoneJoinedToJSON(t *testing.T) {

@@ -906,32 +906,35 @@ func (e *Executor) executeOpenAI(
 				}}
 			}
 
-			e.Circuit.RecordSuccess(cand.ProviderID, cand.CredentialID)
 			latencyMs := int(time.Since(tTotal).Milliseconds())
 
-			// 2026-07-16: Record TTFB and execution outcome
+			// TTFB is known once headers arrive, but provider success is not:
+			// streaming bodies can still fail before completion.
 			ttfbMs := upstreamLatency.Milliseconds()
 			if e.TTFBTracker != nil {
 				e.TTFBTracker.Record(cand.CredentialID, upstreamLatency)
 			}
-			if e.PostExecutionHook != nil {
-				_ = e.PostExecutionHook.RecordOutcome(params.R.Context(), ExecutionOutcome{
-					CredentialID:   cand.CredentialID,
-					ProviderID:     cand.ProviderID,
-					RawModel:       cand.RawModel,
-					CanonicalModel: params.Model,
-					RequestID:      params.RequestID,
-					TenantID:       params.TenantID,
-					Success:        true,
-					LatencyMs:      int64(latencyMs),
-					TTFBMs:         ttfbMs,
-					IsStream:       params.IsStream,
-					ChunkCount:     0, // Will be updated for stream
-					IsRetry:        attempt > 0,
-					AttemptNum:     attempt,
-					StartedAt:      tTotal,
-					CompletedAt:    time.Now(),
-				})
+			recordAttemptSuccess := func(chunkCount int) {
+				e.Circuit.RecordSuccess(cand.ProviderID, cand.CredentialID)
+				if e.PostExecutionHook != nil {
+					_ = e.PostExecutionHook.RecordOutcome(params.R.Context(), ExecutionOutcome{
+						CredentialID:   cand.CredentialID,
+						ProviderID:     cand.ProviderID,
+						RawModel:       cand.RawModel,
+						CanonicalModel: params.Model,
+						RequestID:      params.RequestID,
+						TenantID:       params.TenantID,
+						Success:        true,
+						LatencyMs:      time.Since(tTotal).Milliseconds(),
+						TTFBMs:         ttfbMs,
+						IsStream:       params.IsStream,
+						ChunkCount:     chunkCount,
+						IsRetry:        attempt > 0,
+						AttemptNum:     attempt,
+						StartedAt:      tTotal,
+						CompletedAt:    time.Now(),
+					})
+				}
 			}
 
 			if params.IsStream {
@@ -988,33 +991,36 @@ func (e *Executor) executeOpenAI(
 					streamQualityFlags = params.Capture.QualityFlags
 					streamQualityScore = params.Capture.QualityScore
 				}
-				if streamOutcome.Interrupted && streamOutcome.Reason != "client_cancel" {
-					if streamOutcome.Reason == "client_write_failed" {
-						// The client closed the response. Preserve the interruption
-						// for request telemetry, but do not treat it as upstream
-						// failure or trigger a probe.
-						slog.Info("executor: client disconnected during stream",
-							"credential_id", cand.CredentialID,
-							"provider_id", cand.ProviderID,
-							"chunk_count", streamOutcome.ChunkCount,
-						)
-						return &ExecuteResult{
-								Response:       resp,
-								Candidate:      cand,
-								LatencyMs:      latencyMs,
-								RequestBody:    append([]byte(nil), bodyBytes...),
-								InboundBody:    sourceBody,
-								RoutingTracker: params.RoutingTracker,
-							}, &streamInterruptedError{
-								reason:       streamOutcome.Reason,
-								credentialID: cand.CredentialID,
-								resumable:    false,
-								kind:         errorsx.KindCanceled,
-							}
-					}
+				if streamOutcome.Interrupted && isClientStreamInterruption(streamOutcome.Kind, streamOutcome.Reason) {
+					// The client closed the response. Preserve the interruption
+					// for request telemetry, but do not treat it as upstream
+					// failure or trigger a probe.
+					slog.Info("executor: client disconnected during stream",
+						"credential_id", cand.CredentialID,
+						"provider_id", cand.ProviderID,
+						"chunk_count", streamOutcome.ChunkCount,
+					)
+					return &ExecuteResult{
+							Response:       resp,
+							Candidate:      cand,
+							LatencyMs:      latencyMs,
+							RequestBody:    append([]byte(nil), bodyBytes...),
+							InboundBody:    sourceBody,
+							RoutingTracker: params.RoutingTracker,
+						}, &streamInterruptedError{
+							reason:       streamOutcome.Reason,
+							credentialID: cand.CredentialID,
+							resumable:    false,
+							kind:         errorsx.KindCanceled,
+						}
+				}
+				if streamOutcome.Interrupted {
 					isResumable := streamOutcome.Resumable && streamOutcome.ChunkCount < e.StreamRetryThreshold
 
-					streamKind := errorsx.KindStreamTimeout
+					streamKind := streamOutcome.Kind
+					if streamKind == "" {
+						streamKind = errorsx.KindStreamTimeout
+					}
 					if errorsx.IsConcurrentOverload(streamOutcome.Reason) {
 						streamKind = errorsx.KindConcurrent
 					}
@@ -1050,7 +1056,7 @@ func (e *Executor) executeOpenAI(
 					)
 
 					if isBenignEOF {
-						e.Circuit.RecordSuccess(cand.ProviderID, cand.CredentialID)
+						recordAttemptSuccess(streamOutcome.ChunkCount)
 						return &ExecuteResult{
 							Response:    resp,
 							Candidate:   cand,
@@ -1117,6 +1123,7 @@ func (e *Executor) executeOpenAI(
 						RoutingTracker: params.RoutingTracker,
 					}, &streamInterruptedError{reason: streamOutcome.Reason, credentialID: cand.CredentialID, resumable: isResumable, kind: streamKind}
 				}
+				recordAttemptSuccess(streamOutcome.ChunkCount)
 				return &ExecuteResult{
 					Response:    resp,
 					Candidate:   cand,
@@ -1286,6 +1293,7 @@ func (e *Executor) executeOpenAI(
 				//nolint:errcheck // HTTP write error non-recoverable
 				params.W.Write(respBody)
 			}
+			recordAttemptSuccess(0)
 			return &ExecuteResult{
 				Response:    resp,
 				Candidate:   cand,

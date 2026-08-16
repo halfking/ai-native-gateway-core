@@ -1,6 +1,8 @@
 package streaming
 
 import (
+	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -10,8 +12,19 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
+	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/metrics"
 )
+
+func TestClassifyStreamReadError_UnexpectedEOFIsFailure(t *testing.T) {
+	assert.Equal(t, streamReadFailed, classifyStreamReadError(context.Background(), io.ErrUnexpectedEOF))
+
+	outcome := streamReadFailureOutcome(io.ErrUnexpectedEOF, 0)
+	assert.True(t, outcome.Interrupted)
+	assert.Equal(t, "network_error", outcome.Reason)
+	assert.Equal(t, errorsx.KindNetwork, outcome.Kind)
+	assert.True(t, outcome.Resumable)
+}
 
 func TestStreamChatWithPendingCapture_EOFWithoutDoneAppendsDone(t *testing.T) {
 	resp := &http.Response{
@@ -83,6 +96,52 @@ func TestStreamChatWithPendingCapture_EOFWithoutDoneZeroChunks(t *testing.T) {
 	assert.Equal(t, "eof_without_done", streamErrorKindForDetailCode(nil, outcome.Reason))
 	// Synthesised [DONE] must still be appended so clients don't hang.
 	assert.True(t, strings.HasSuffix(writer.Body.String(), "data: [DONE]\n\n"))
+}
+
+type errorAfterDataReadCloser struct {
+	data []byte
+	err  error
+	read bool
+}
+
+func (r *errorAfterDataReadCloser) Read(p []byte) (int, error) {
+	if r.read {
+		return 0, r.err
+	}
+	r.read = true
+	return copy(p, r.data), nil
+}
+
+func (r *errorAfterDataReadCloser) Close() error { return nil }
+
+func TestStreamChatWithPendingCapture_OtherSideClosedIsNetworkError(t *testing.T) {
+	resp := &http.Response{
+		Body: &errorAfterDataReadCloser{
+			data: []byte("data: {\"id\":\"chunk-1\",\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n"),
+			err:  errors.New("other side closed"),
+		},
+		Request: httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
+	}
+	writer := httptest.NewRecorder()
+
+	outcome := StreamChatWithPendingCapture(
+		writer,
+		resp,
+		"glm-5.2",
+		"glm-5.2",
+		NewNormalizer(),
+		nil,
+		false,
+		nil,
+		nil,
+	)
+
+	assert.True(t, outcome.Interrupted)
+	assert.Equal(t, "network_error", outcome.Reason)
+	assert.Equal(t, errorsx.KindNetwork, outcome.Kind)
+	assert.True(t, outcome.Resumable)
+	assert.Equal(t, 2, outcome.ChunkCount)
+	assert.Contains(t, writer.Body.String(), `"content":"hello"`)
 }
 
 // countingRecorder wraps a delegate Recorder and counts how many times

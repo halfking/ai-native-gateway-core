@@ -3,6 +3,8 @@ package streaming
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +13,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/kaixuan/llm-gateway-go/errorsx"
 )
 
 // TestConvertChatRequestToAnthropic_OpenAIToAnthropic verifies the
@@ -108,6 +112,63 @@ func TestConvertAnthropicResponseToChat_ToolCalls(t *testing.T) {
 	assert.Equal(t, `{"city":"SF"}`, fn["arguments"])
 }
 
+func TestStreamAnthropicSSEToOpenAI_WrappedEOFIsCleanCompletion(t *testing.T) {
+	resp := &http.Response{
+		Body: &errorAfterDataReadCloser{
+			data: []byte("event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n\n"),
+			err:  fmt.Errorf("wrapped: %w", io.EOF),
+		},
+		Request: httptest.NewRequest(http.MethodPost, "/v1/messages", nil),
+	}
+	rec := httptest.NewRecorder()
+
+	out := StreamAnthropicSSEToOpenAI(rec, resp, "claude-test", "claude-test", "req-wrapped-eof", nil, nil)
+
+	assert.False(t, out.Interrupted)
+	assert.Contains(t, rec.Body.String(), `"content":"hello"`)
+	assert.Contains(t, rec.Body.String(), "data: [DONE]")
+}
+
+func TestStreamAnthropicPassthrough_ClientDisconnectWinsOverLaterUpstreamError(t *testing.T) {
+	resp := &http.Response{
+		Body: &errorAfterDataReadCloser{
+			data: []byte("event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n\n"),
+			err:  errors.New("other side closed"),
+		},
+		Request: httptest.NewRequest(http.MethodPost, "/v1/messages", nil),
+	}
+
+	out := StreamAnthropicPassthrough(
+		newDisconnectingStreamWriter(), resp,
+		"claude-test", "claude-test", "req-client-close", nil, NewPendingCapturer(4096),
+	)
+
+	assert.True(t, out.Interrupted)
+	assert.Equal(t, "client_write_failed", out.Reason)
+	assert.Equal(t, errorsx.KindCanceled, out.Kind)
+	assert.False(t, out.Resumable)
+}
+
+func TestStreamAnthropicPassthrough_OtherSideClosedIsNetworkError(t *testing.T) {
+	resp := &http.Response{
+		Body: &errorAfterDataReadCloser{
+			data: []byte("event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n\n"),
+			err:  errors.New("other side closed"),
+		},
+		Request: httptest.NewRequest(http.MethodPost, "/v1/messages", nil),
+	}
+	rec := httptest.NewRecorder()
+
+	out := StreamAnthropicPassthrough(rec, resp, "claude-test", "claude-test", "req-passthrough-close", nil, nil)
+
+	assert.True(t, out.Interrupted)
+	assert.Equal(t, "network_error", out.Reason)
+	assert.Equal(t, errorsx.KindNetwork, out.Kind)
+	assert.True(t, out.Resumable)
+	assert.Equal(t, 1, out.ChunkCount)
+	assert.Contains(t, rec.Body.String(), `"text":"hello"`)
+}
+
 // TestStreamAnthropicPassthrough_BytesForPassThrough ensures the
 // passthrough writes every byte of the upstream SSE event stream to
 // the client and records a capturer buffer when pc is supplied.
@@ -165,6 +226,24 @@ func TestStreamOpenAIToAnthropicSSE_SplitsDoneJoinedToJSON(t *testing.T) {
 	require.False(t, out.Interrupted)
 	assert.Contains(t, rec.Body.String(), `"text":"planning"`)
 	assert.Contains(t, rec.Body.String(), `event: message_stop`)
+}
+
+func TestStreamOpenAIToAnthropicSSE_OtherSideClosedIsNetworkError(t *testing.T) {
+	resp := &http.Response{
+		Body: &errorAfterDataReadCloser{
+			data: []byte("data: {\"id\":\"chunk-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"delta\":{\"content\":\"hello\"},\"finish_reason\":null}]}\n\n"),
+			err:  errors.New("other side closed"),
+		},
+		Request: httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
+	}
+	rec := httptest.NewRecorder()
+
+	out := StreamOpenAIToAnthropicSSE(rec, resp, "glm-5.2", "glm-5.2", "req-network-close", nil, nil)
+
+	assert.True(t, out.Interrupted)
+	assert.Equal(t, "network_error", out.Reason)
+	assert.Equal(t, errorsx.KindNetwork, out.Kind)
+	assert.Contains(t, rec.Body.String(), `"text":"hello"`)
 }
 
 func TestStreamAnthropicSSEToOpenAI_ConvertsMessageStartToOpenAIChunk(t *testing.T) {

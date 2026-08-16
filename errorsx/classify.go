@@ -533,7 +533,7 @@ func ClassifyError(err error, resp *http.Response) ErrorKind {
 		if errors.Is(err, context.Canceled) {
 			return KindCanceled
 		}
-		msg := err.Error()
+		msg := strings.ToLower(err.Error())
 		// Order matters: overload and EOF-without-done are checked
 		// before generic timeouts because upstream-reported overload
 		// messages often include words like "timeout" or "connection"
@@ -555,7 +555,8 @@ func ClassifyError(err error, resp *http.Response) ErrorKind {
 		}
 		if strings.Contains(msg, "connection") || strings.Contains(msg, "connect") ||
 			strings.Contains(msg, "refused") || strings.Contains(msg, "no such host") ||
-			strings.Contains(msg, "reset") || strings.Contains(msg, "eaddrnotavail") ||
+			strings.Contains(msg, "reset") || strings.Contains(msg, "other side closed") ||
+			strings.Contains(msg, "eaddrnotavail") ||
 			strings.Contains(msg, "cannot assign requested address") {
 			return KindNetwork
 		}
