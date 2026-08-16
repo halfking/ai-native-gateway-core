@@ -29,12 +29,14 @@ func TestDurableMetricNamesRegistered(t *testing.T) {
 	DurableRecoveryRunsTotal.WithLabelValues("__probe__").Inc()
 	DurablePendingProjectionsTotal.WithLabelValues("__probe__").Inc()
 	DurablePendingProjectionErrorsTotal.WithLabelValues("__probe__").Inc()
+	DurableSettlementStageFailuresTotal.WithLabelValues("__probe__").Inc()
 	DurableLeaseLostTotal.Inc()
 	metricNamesAreRegistered(t,
 		"durable_tasks_active",
 		"durable_recovery_runs_total",
 		"durable_pending_projections_total",
 		"durable_pending_projection_errors_total",
+		"durable_settlement_stage_failures_total",
 		"durable_lease_lost_total",
 	)
 }
