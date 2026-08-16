@@ -329,6 +329,16 @@ func TestStreamCapture_ObserveUsage(t *testing.T) {
 	}
 }
 
+func TestStreamCapture_NetworkErrorPublishesFailureDetailCode(t *testing.T) {
+	sc := NewStreamCapture()
+	sc.MarkInterruptedWithReason("network_error")
+
+	m := sc.SummaryAsMap()
+	if got := m["failure_detail_code"]; got != "network_error" {
+		t.Fatalf("failure_detail_code = %v, want network_error", got)
+	}
+}
+
 func TestStreamCapture_MarkInterruptedWithReason(t *testing.T) {
 	sc := NewStreamCapture()
 	sc.ObservePayload("data", "", false)

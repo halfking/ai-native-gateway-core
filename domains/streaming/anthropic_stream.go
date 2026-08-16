@@ -102,10 +102,11 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 		if pc != nil {
 			pc.markInterrupted("client_write_failed")
 		}
-		return StreamOutcome{Interrupted: true, Reason: "client_write_failed", Kind: errorsx.KindUpstreamDown, Resumable: true}
+		return StreamOutcome{Interrupted: true, Reason: "client_write_failed", Kind: errorsx.KindCanceled, Resumable: true}
 	}
 
 	clientWriter := newClientStreamWriter(w, flusher)
+	chunkCount := 0
 
 	msgID := "msg_"
 	if len(requestID) > 24 {
@@ -327,6 +328,7 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 
 		textDelta, _ := delta["content"].(string)
 		if textDelta != "" {
+			chunkCount++
 			// Phase 4 of 4: route the text delta through the accumulator
 			// state machine. See the comment near the variable declarations
 			// above for the semantics of each mode.
@@ -389,6 +391,7 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 				if tcMap == nil {
 					continue
 				}
+				chunkCount++
 				idx := i + 1
 				fn, _ := tcMap["function"].(map[string]any)
 				fnName := ""
@@ -485,9 +488,10 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 				outcome.Reason = "stream_timeout"
 				outcome.Kind = errorsx.KindStreamTimeout
 			default:
-				slog.Warn("anthropic stream read error", "error", readResult.err)
+				failure := streamReadFailureOutcome(readResult.err, chunkCount)
+				slog.Warn("anthropic stream read error", "error", readResult.err, "kind", failure.Kind, "reason", failure.Reason)
 				if capture != nil {
-					capture.MarkInterruptedWithReason("stream_error")
+					capture.MarkInterruptedWithReason(failure.Reason)
 				}
 				if gate.MayWriteTerminal() {
 					errPayload := map[string]any{
@@ -497,9 +501,7 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 					writeSSEWithCapturer(w, pc, "error", errPayload)
 					flusher.Flush()
 				}
-				outcome.Interrupted = true
-				outcome.Reason = "read_error"
-				outcome.Kind = errorsx.KindUpstreamDown
+				outcome = failure
 			}
 			break
 		}

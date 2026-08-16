@@ -1113,7 +1113,6 @@ func (e *Executor) executeAnthropicOnce(
 		}}
 	}
 
-	e.Circuit.RecordSuccess(cand.ProviderID, cand.CredentialID)
 	latencyMs := int(time.Since(tTotal).Milliseconds())
 
 	if params.IsStream {
@@ -1124,8 +1123,25 @@ func (e *Executor) executeAnthropicOnce(
 		// 并发修复 2026-07-27：见 responseSink 注释 —— 异步重试路径 W 为
 		// nil，改写到丢弃 writer，upstream stream 仍被完整消费。
 		outcome := ae.StreamResponse(responseSink(params), resp)
-		if outcome.Interrupted && outcome.Reason != "client_cancel" {
-			streamKind := errorsx.KindStreamTimeout
+		if outcome.Interrupted && (outcome.Reason == "client_cancel" || outcome.Kind == errorsx.KindCanceled) {
+			return &ExecuteResult{
+					Response:    resp,
+					Candidate:   cand,
+					LatencyMs:   latencyMs,
+					RequestBody: append([]byte(nil), bodyBytes...),
+					InboundBody: sourceBody,
+				}, &streamInterruptedError{
+					reason:       outcome.Reason,
+					credentialID: cand.CredentialID,
+					resumable:    false,
+					kind:         errorsx.KindCanceled,
+				}
+		}
+		if outcome.Interrupted {
+			streamKind := outcome.Kind
+			if streamKind == "" {
+				streamKind = errorsx.KindStreamTimeout
+			}
 			if errorsx.IsConcurrentOverload(outcome.Reason) {
 				streamKind = errorsx.KindConcurrent
 			}
@@ -1136,6 +1152,9 @@ func (e *Executor) executeAnthropicOnce(
 			} else if !isBenignEOF {
 				e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, streamKind)
 			}
+			if isBenignEOF {
+				e.Circuit.RecordSuccess(cand.ProviderID, cand.CredentialID)
+			}
 			return &ExecuteResult{
 				Response:    resp,
 				Candidate:   cand,
@@ -1145,6 +1164,7 @@ func (e *Executor) executeAnthropicOnce(
 				InboundBody: sourceBody,
 			}, &streamInterruptedError{reason: outcome.Reason, credentialID: cand.CredentialID, resumable: isResumable, kind: streamKind}
 		}
+		e.Circuit.RecordSuccess(cand.ProviderID, cand.CredentialID)
 		return &ExecuteResult{
 			Response:    resp,
 			Candidate:   cand,
@@ -1174,6 +1194,7 @@ func (e *Executor) executeAnthropicOnce(
 		return nil, err
 	}
 	e.logClientResponse(params, diagnosticProtocol(params.ClientProtocol, "anthropic-messages"), responseBody)
+	e.Circuit.RecordSuccess(cand.ProviderID, cand.CredentialID)
 	return &ExecuteResult{
 		Response:    resp,
 		Candidate:   cand,

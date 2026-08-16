@@ -58,10 +58,49 @@ func TestDispatchExecutionContextKeepsNonStreamingCancel(t *testing.T) {
 	}
 }
 
+func TestIsClientStreamInterruption(t *testing.T) {
+	tests := []struct {
+		name   string
+		kind   errorsx.ErrorKind
+		reason string
+		want   bool
+	}{
+		{name: "structured canceled", kind: errorsx.KindCanceled, reason: "future_client_reason", want: true},
+		{name: "legacy cancel", reason: "client_cancel", want: true},
+		{name: "write failed", reason: "client_write_failed", want: true},
+		{name: "fully captured disconnect", reason: "client_disconnected", want: true},
+		{name: "network error", kind: errorsx.KindNetwork, reason: "network_error"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isClientStreamInterruption(tc.kind, tc.reason); got != tc.want {
+				t.Fatalf("isClientStreamInterruption(%q, %q) = %v, want %v", tc.kind, tc.reason, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestMayRetryInterruptedStreamRejectsSurvivalOwner(t *testing.T) {
 	sie := &streamInterruptedError{resumable: true, reason: "stream_timeout"}
 	if mayRetryInterruptedStream(&ExecParams{SurvivalAttempt: true}, sie) {
 		t.Fatal("survival attempt must return interruption to coordinator instead of switching candidates internally")
+	}
+}
+
+func TestMayRetryInterruptedStreamRejectsCommittedNetworkOutput(t *testing.T) {
+	capture := audit.NewStreamCapture()
+	capture.RecordChunkSent()
+	sie := &streamInterruptedError{resumable: true, reason: "network_error", kind: errorsx.KindNetwork}
+	if mayRetryInterruptedStream(&ExecParams{Capture: capture}, sie) {
+		t.Fatal("committed network interruption must not switch candidates")
+	}
+}
+
+func TestMayRetryInterruptedStreamAllowsPreCommitNetworkFailure(t *testing.T) {
+	sie := &streamInterruptedError{resumable: true, reason: "network_error", kind: errorsx.KindNetwork}
+	if !mayRetryInterruptedStream(&ExecParams{}, sie) {
+		t.Fatal("pre-commit network interruption should allow candidate failover")
 	}
 }
 

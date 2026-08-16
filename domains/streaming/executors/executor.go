@@ -3130,7 +3130,7 @@ func (e *Executor) Execute(params *ExecParams) (result *ExecuteResult, err error
 		}
 
 		if sie, ok := execErr.(*streamInterruptedError); ok {
-			if sie.reason == "client_write_failed" {
+			if isClientStreamInterruption(sie.kind, sie.reason) {
 				// The caller disconnected. Preserve the error for the handler, but
 				// do not classify a broken pipe as an upstream failure or penalize
 				// the credential that was serving it.
@@ -5175,6 +5175,18 @@ type streamInterruptedError struct {
 
 func (e *streamInterruptedError) Error() string {
 	return "stream_interrupted: " + e.reason
+}
+
+func isClientStreamInterruption(kind errorsx.ErrorKind, reason string) bool {
+	if kind == errorsx.KindCanceled {
+		return true
+	}
+	switch reason {
+	case "client_cancel", "client_write_failed", "client_disconnected":
+		return true
+	default:
+		return false
+	}
 }
 
 func mayRetryInterruptedStream(params *ExecParams, interrupted *streamInterruptedError) bool {

@@ -51,7 +51,7 @@ func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 		if capture != nil {
 			capture.MarkInterruptedWithReason("client_write_failed")
 		}
-		return StreamOutcome{Interrupted: true, Reason: "client_write_failed", Kind: errorsx.KindUpstreamDown, Resumable: true}
+		return StreamOutcome{Interrupted: true, Reason: "client_write_failed", Kind: errorsx.KindCanceled, Resumable: true}
 	}
 
 	respID := "resp_"
@@ -64,6 +64,7 @@ func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 		msgID += requestID
 	}
 	createdAt := int(time.Now().Unix())
+	chunkCount := 0
 
 	initialResp := map[string]any{
 		"type": "response.created",
@@ -197,6 +198,7 @@ func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 
 		textDelta, _ := delta["content"].(string)
 		if textDelta != "" {
+			chunkCount++
 			fullText += textDelta
 			deltaEvent := map[string]any{
 				"type":          "response.output_text.delta",
@@ -254,16 +256,15 @@ func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 				outcome.Kind = errorsx.KindStreamTimeout
 				return outcome
 			default:
-				slog.Warn("responses stream read error", "error", readResult.err)
+				failure := streamReadFailureOutcome(readResult.err, chunkCount)
+				slog.Warn("responses stream read error", "error", readResult.err, "kind", failure.Kind, "reason", failure.Reason)
 				if capture != nil {
-					capture.MarkInterruptedWithReason("stream_error")
+					capture.MarkInterruptedWithReason(failure.Reason)
 				}
 				if gate.MayWriteTerminal() {
-					writeResponsesIncomplete(w, flusher, respID, msgID, createdAt, clientModel, fullText, "upstream_error")
+					writeResponsesIncomplete(w, flusher, respID, msgID, createdAt, clientModel, fullText, failure.Reason)
 				}
-				outcome.Interrupted = true
-				outcome.Reason = "read_error"
-				outcome.Kind = errorsx.KindUpstreamDown
+				outcome = failure
 				return outcome
 			}
 		}

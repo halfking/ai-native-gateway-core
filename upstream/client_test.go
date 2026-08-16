@@ -240,6 +240,46 @@ func TestDo_ConnectionError(t *testing.T) {
 	}
 }
 
+type otherSideClosedRoundTripper struct {
+	attempts atomic.Int32
+}
+
+func (rt *otherSideClosedRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
+	rt.attempts.Add(1)
+	return nil, fmt.Errorf("provider transport: other side closed")
+}
+
+func TestDo_OtherSideClosedIsNetworkRetryable(t *testing.T) {
+	rt := &otherSideClosedRoundTripper{}
+	client := &Client{
+		hc:         &http.Client{Transport: rt},
+		maxRetries: 1,
+		baseDelay:  time.Millisecond,
+	}
+	body := []byte(`{}`)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "http://provider.test/v1/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.GetBody = func() (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(body)), nil
+	}
+
+	_, uErr := client.Do(req)
+	if uErr == nil {
+		t.Fatal("expected other-side-closed error")
+	}
+	if uErr.Kind != KindNetwork {
+		t.Fatalf("error kind = %q, want %q", uErr.Kind, KindNetwork)
+	}
+	if !errorsx.IsRetryable(uErr.Kind) {
+		t.Fatalf("error kind %q must be retryable", uErr.Kind)
+	}
+	if got := rt.attempts.Load(); got != 2 {
+		t.Fatalf("round trips = %d, want 2", got)
+	}
+}
+
 func TestDo_NonRetryable429(t *testing.T) {
 	var attempts atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

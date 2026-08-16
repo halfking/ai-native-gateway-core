@@ -88,6 +88,8 @@ func isInterruptionCode(s string) bool {
 	// Stream-level interruption codes (relay/handler.go::classifyStreamInterruption
 	// + relay/stream.go).
 	case "eof_without_done",
+		"network_error",
+		"read_error",
 		"first_byte_timeout",
 		"stream_chunk_timeout",
 		"chunk_timeout",
