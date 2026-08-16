@@ -96,6 +96,9 @@ func (s *Semaphore) TryAcquire() bool {
 // Acquire blocks until a token is available or the context is cancelled.
 func (s *Semaphore) Acquire(ctx context.Context) error {
 	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if s.TryAcquire() {
 			return nil
 		}
@@ -447,16 +450,19 @@ func (l *Limiter) AcquireAll(ctx context.Context, providerID, credentialID int, 
 		}
 	}
 
+	var releaseOnce sync.Once
 	return func() {
-		if keyAcquired && keySem != nil {
-			keySem.Release()
-		}
-		if identAcquired {
-			ident.Release()
-		}
-		cred.Release()
-		pool.Release()
-		l.global.Release()
+		releaseOnce.Do(func() {
+			if keyAcquired && keySem != nil {
+				keySem.Release()
+			}
+			if identAcquired {
+				ident.Release()
+			}
+			cred.Release()
+			pool.Release()
+			l.global.Release()
+		})
 	}, nil
 }
 
@@ -506,15 +512,18 @@ func (l *Limiter) AcquireAllNoCredLayer(ctx context.Context, providerID, credent
 		}
 	}
 
+	var releaseOnce sync.Once
 	return func() {
-		if keyAcquired && keySem != nil {
-			keySem.Release()
-		}
-		if identAcquired {
-			ident.Release()
-		}
-		pool.Release()
-		l.global.Release()
+		releaseOnce.Do(func() {
+			if keyAcquired && keySem != nil {
+				keySem.Release()
+			}
+			if identAcquired {
+				ident.Release()
+			}
+			pool.Release()
+			l.global.Release()
+		})
 	}, nil
 }
 

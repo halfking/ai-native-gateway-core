@@ -13,8 +13,11 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // RequestTransition 是一条状态变更记录的 API 投影。
@@ -48,47 +51,47 @@ func (h *Handler) handleRequestTransitions(w http.ResponseWriter, r *http.Reques
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	// RLS 支持：从请求头提取租户 ID，设置 app.current_tenant
-	tenantID := r.Header.Get("X-Tenant-ID")
-	if tenantID == "" {
-		tenantID = "admin" // 默认管理员租户
+	out := make([]RequestTransition, 0, 16)
+	query := func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `
+			SELECT id, request_id, transition_type,
+			       COALESCE(from_state,''), COALESCE(to_state,''),
+			       metadata, created_at
+			FROM request_state_transitions
+			WHERE request_id = $1
+			ORDER BY created_at ASC, id ASC
+			LIMIT 200`, requestID)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var t RequestTransition
+			var meta []byte
+			if err := rows.Scan(&t.ID, &t.RequestID, &t.TransitionType,
+				&t.FromState, &t.ToState, &meta, &t.CreatedAt); err != nil {
+				return fmt.Errorf("scan transition: %w", err)
+			}
+			if len(meta) > 0 {
+				var m map[string]any
+				if json.Unmarshal(meta, &m) == nil {
+					t.Metadata = m
+				}
+			}
+			out = append(out, t)
+		}
+		return rows.Err()
 	}
 
-	// 设置 RLS 会话变量
-	if _, err := h.db.Exec(ctx, `SET LOCAL app.current_tenant = $1`, tenantID); err != nil {
-		writeError(w, http.StatusInternalServerError, "set tenant failed: "+err.Error())
-		return
+	var err error
+	if IsSuperAdminOrLegacy(r) {
+		err = withAllTenantReadOnlyTx(ctx, h.db, query)
+	} else {
+		err = withTenantTx(ctx, h.db, GetTenantID(r), query)
 	}
-
-	rows, err := h.db.Query(ctx, `
-		SELECT id, request_id, transition_type,
-		       COALESCE(from_state,''), COALESCE(to_state,''),
-		       metadata, created_at
-		FROM request_state_transitions
-		WHERE request_id = $1
-		ORDER BY created_at ASC, id ASC
-		LIMIT 200`, requestID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
 		return
-	}
-	defer rows.Close()
-
-	out := make([]RequestTransition, 0, 16)
-	for rows.Next() {
-		var t RequestTransition
-		var meta []byte
-		if err := rows.Scan(&t.ID, &t.RequestID, &t.TransitionType,
-			&t.FromState, &t.ToState, &meta, &t.CreatedAt); err != nil {
-			continue
-		}
-		if len(meta) > 0 {
-			var m map[string]any
-			if json.Unmarshal(meta, &m) == nil {
-				t.Metadata = m
-			}
-		}
-		out = append(out, t)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{

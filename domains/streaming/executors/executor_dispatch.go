@@ -3,6 +3,7 @@ package executors
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strconv"
 	"time"
@@ -421,18 +422,18 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 
 	var result *ExecuteResult
 	var execErr error
+	defer release()
+	defer releaseFpLease(e.FpSlots, fpLease)
 	func() {
-		releasePeak := e.PeakCollector != nil
-		if releasePeak {
-			e.PeakCollector.Acquire(int64(cand.CredentialID), cand.RawModel)
-		}
 		defer func() {
-			if releasePeak {
-				e.PeakCollector.Release(int64(cand.CredentialID), cand.RawModel)
+			if recovered := recover(); recovered != nil {
+				execErr = fmt.Errorf("dispatch executor panic: %v", recovered)
 			}
-			release()
-			releaseFpLease(e.FpSlots, fpLease)
 		}()
+		if e.PeakCollector != nil {
+			e.PeakCollector.Acquire(int64(cand.CredentialID), cand.RawModel)
+			defer e.PeakCollector.Release(int64(cand.CredentialID), cand.RawModel)
+		}
 
 		// multi-key rotation (same as legacy loop).
 		if cand.KeyRotator != nil {

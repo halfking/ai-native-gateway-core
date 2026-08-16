@@ -195,8 +195,10 @@ func TestLimiterAcquireAllAndRelease(t *testing.T) {
 		t.Fatalf("expected 2 global used, got %d", l.Global().Used())
 	}
 
-	// Release both
+	// Release is idempotent; a duplicate callback must not release another request.
 	release1()
+	release1()
+	release2()
 	release2()
 
 	if l.Global().Used() != 0 {

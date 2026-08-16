@@ -26,6 +26,21 @@ func (w *flushErrorResponseWriter) FlushError() error {
 	return w.flushErr
 }
 
+func TestAuthenticatedTenantCarrier(t *testing.T) {
+	ctx := withTenantCarrier(context.Background())
+	if got := authenticatedTenantFromCtx(ctx); got != "" {
+		t.Fatalf("initial tenant = %q, want empty", got)
+	}
+	SetAuthenticatedTenant(ctx, "tenant-a")
+	if got := authenticatedTenantFromCtx(ctx); got != "tenant-a" {
+		t.Fatalf("tenant = %q, want tenant-a", got)
+	}
+	SetAuthenticatedTenant(context.Background(), "ignored")
+	if got := authenticatedTenantFromCtx(context.Background()); got != "" {
+		t.Fatalf("context without carrier returned tenant %q", got)
+	}
+}
+
 func TestErrorRecorderTreatsAnyWrittenStatusAsCommitted(t *testing.T) {
 	for _, status := range []int{http.StatusOK, http.StatusBadRequest, http.StatusServiceUnavailable} {
 		t.Run(http.StatusText(status), func(t *testing.T) {

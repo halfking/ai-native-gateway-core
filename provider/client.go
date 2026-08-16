@@ -141,13 +141,13 @@ type Candidate struct {
 	Currency             string   `json:"currency"`
 	BillingMode          string   `json:"billing_mode"`
 	// ContextWindow is the upstream model's context window in tokens. Precedence
-	// (migration 522): credential×model override (credential_model_bindings
+	// (migration 523): credential×model override (credential_model_bindings
 	// .context_window_override) > canonical override (models_canonical
 	// .context_window_override) > canonical base (models_canonical.context_window).
 	// Used by the Q1/Q2/Q3 client-side context trim path
 	// (transformation.CompressMessagesIfNeeded). nil means "unknown" — in which
 	// case the trim path is a no-op.
-	ContextWindow *int `json:"context_window,omitempty"`
+	ContextWindow *int   `json:"context_window,omitempty"`
 	APIKey        string `json:"-"`
 	// APIKeys holds additional decrypted keys for multi-key rotation (beyond the
 	// primary APIKey). nil/empty for single-key credentials. Index 0 in the

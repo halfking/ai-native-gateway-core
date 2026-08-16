@@ -2,6 +2,7 @@ package credential
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -239,9 +240,17 @@ func TestSemaphore_AcquireWithContext(t *testing.T) {
 
 	s.Release()
 
+	// The deadline has elapsed, so a canceled context must not acquire a newly
+	// available token.
 	err = s.Acquire(ctx)
-	if err != nil {
-		t.Errorf("expected success, got %v", err)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("expected deadline after cancellation, got %v", err)
+	}
+
+	freshCtx, freshCancel := context.WithTimeout(context.Background(), time.Second)
+	defer freshCancel()
+	if err := s.Acquire(freshCtx); err != nil {
+		t.Errorf("fresh context should acquire available token, got %v", err)
 	}
 	s.Release()
 }
