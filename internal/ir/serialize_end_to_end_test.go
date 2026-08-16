@@ -142,3 +142,50 @@ func TestEndToEndAnthropicToOpenAIToolMessage(t *testing.T) {
 	assert.Equal(t, "toolu_abc", toolMsg["tool_call_id"])
 	assert.Equal(t, "Sunny, 72°F", toolMsg["content"])
 }
+
+func TestGeminiStructuredToolResultUsesLegacyTextCrossProtocol(t *testing.T) {
+	ir := &InternalRequest{Messages: []Message{{
+		Role:       "tool",
+		ToolCallID: "gemini_call_lookup",
+		Content: []ContentBlock{{Type: "tool_result", ToolResult: &ToolResult{
+			ToolUseID:      "gemini_call_lookup",
+			Content:        []ContentBlock{{Type: "text", Text: `{"status":"ok"}`}},
+			GeminiResponse: json.RawMessage(`{"status":"native"}`),
+		}}},
+	}}}
+
+	openAI, err := SerializeOpenAI(ir)
+	require.NoError(t, err)
+	var openAIResult struct {
+		Messages []struct {
+			Role       string `json:"role"`
+			ToolCallID string `json:"tool_call_id"`
+			Content    string `json:"content"`
+		} `json:"messages"`
+	}
+	require.NoError(t, json.Unmarshal(openAI, &openAIResult))
+	require.Len(t, openAIResult.Messages, 1)
+	assert.Equal(t, "tool", openAIResult.Messages[0].Role)
+	assert.Equal(t, "gemini_call_lookup", openAIResult.Messages[0].ToolCallID)
+	assert.Equal(t, `{"status":"ok"}`, openAIResult.Messages[0].Content)
+
+	anthropic, err := SerializeAnthropic(ir)
+	require.NoError(t, err)
+	var anthropicResult struct {
+		Messages []struct {
+			Role    string `json:"role"`
+			Content []struct {
+				Type      string `json:"type"`
+				ToolUseID string `json:"tool_use_id"`
+				Content   string `json:"content"`
+			} `json:"content"`
+		} `json:"messages"`
+	}
+	require.NoError(t, json.Unmarshal(anthropic, &anthropicResult))
+	require.Len(t, anthropicResult.Messages, 1)
+	assert.Equal(t, "user", anthropicResult.Messages[0].Role)
+	require.Len(t, anthropicResult.Messages[0].Content, 1)
+	assert.Equal(t, "tool_result", anthropicResult.Messages[0].Content[0].Type)
+	assert.Equal(t, "gemini_call_lookup", anthropicResult.Messages[0].Content[0].ToolUseID)
+	assert.Equal(t, `{"status":"ok"}`, anthropicResult.Messages[0].Content[0].Content)
+}

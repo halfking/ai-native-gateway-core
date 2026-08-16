@@ -343,12 +343,16 @@ func buildGeminiContents(messages []Message) []map[string]any {
 				}
 			case "tool_result":
 				if block.ToolResult != nil {
+					response := any(map[string]any{
+						"result": extractTextFromContent(block.ToolResult.Content),
+					})
+					if block.ToolResult.GeminiResponse != nil {
+						response = block.ToolResult.GeminiResponse
+					}
 					parts = append(parts, map[string]any{
 						"functionResponse": map[string]any{
-							"name": toolUseNameFromID(block.ToolResult.ToolUseID),
-							"response": map[string]any{
-								"result": extractTextFromContent(block.ToolResult.Content),
-							},
+							"name":     toolUseNameFromID(block.ToolResult.ToolUseID),
+							"response": response,
 						},
 					})
 				}
