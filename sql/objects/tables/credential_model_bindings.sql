@@ -33,7 +33,12 @@ CREATE TABLE public.credential_model_bindings (
     transient_failure_count integer DEFAULT 0,
     pending_verification boolean DEFAULT false,
     plan_type_origin text,
-    plan_type_updated_at timestamp with time zone
+    plan_type_updated_at timestamp with time zone,
+    -- 凭据×模型级上下文窗口覆盖（迁移 522）。非空时优先于
+    -- models_canonical.context_window_override / context_window。
+    context_window_override integer,
+    context_window_source text DEFAULT 'catalog',
+    context_window_updated_at timestamp with time zone
 );
 
 

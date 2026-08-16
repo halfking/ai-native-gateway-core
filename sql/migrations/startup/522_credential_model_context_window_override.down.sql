@@ -1,8 +1,50 @@
+-- Migration 522 down: revert credential_model_bindings context-window override
 --
--- Name: model_offers_update_trigger(); Type: FUNCTION; Schema: public; Owner: -
---
+-- 先把视图恢复到无 context_window_override 列的定义，再删除三列（视图不再引用）。
 
-CREATE FUNCTION public.model_offers_update_trigger() RETURNS trigger
+BEGIN;
+
+CREATE OR REPLACE VIEW public.model_offers AS
+ SELECT cmb.id,
+    cmb.credential_id,
+    pm.canonical_id,
+    pm.canonical_raw_name,
+    pm.raw_model_name,
+    cmb.success_rate,
+    cmb.p95_latency_ms,
+    cmb.available,
+    pm.last_seen_at,
+    cmb.routing_tier,
+    cmb.weight,
+    cmb.unit_price_in_per_1m,
+    cmb.unit_price_out_per_1m,
+    cmb.currency,
+    pm.outbound_model_name,
+    cmb.cache_read_price_per_1m,
+    cmb.cache_write_price_per_1m,
+    pm.standardized_name,
+    cmb.unavailable_reason,
+    cmb.unavailable_at,
+    cmb.unavailable_recover_at,
+    cmb.billing_mode,
+    cmb.pricing_source,
+    cmb.pricing_updated_at,
+    cmb.manual_priority,
+    cmb.active_sessions,
+    cmb.consecutive_failures,
+    cmb.admin_protected,
+    cmb.created_at,
+    cmb.updated_at,
+    pm.modality AS provider_modality
+   FROM (public.credential_model_bindings cmb
+     JOIN public.provider_models pm ON ((pm.id = cmb.provider_model_id)));
+
+ALTER TABLE public.credential_model_bindings DROP COLUMN IF EXISTS context_window_override;
+ALTER TABLE public.credential_model_bindings DROP COLUMN IF EXISTS context_window_source;
+ALTER TABLE public.credential_model_bindings DROP COLUMN IF EXISTS context_window_updated_at;
+
+-- 恢复触发器为不含 context_window_override 的原始版本。
+CREATE OR REPLACE FUNCTION public.model_offers_update_trigger() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 DECLARE
@@ -52,9 +94,6 @@ BEGIN
         billing_mode = COALESCE(NEW.billing_mode, credential_model_bindings.billing_mode),
         pricing_source = COALESCE(NEW.pricing_source, credential_model_bindings.pricing_source),
         pricing_updated_at = COALESCE(NEW.pricing_updated_at, credential_model_bindings.pricing_updated_at),
-        -- 522: 凭据×模型级上下文窗口覆盖。COALESCE 透传保证视图级部分更新
-        -- 不会静默丢弃该列；清空（置 NULL）由 admin 直接写 cmb 处理。
-        context_window_override = COALESCE(NEW.context_window_override, credential_model_bindings.context_window_override),
         updated_at = now()
     WHERE id = OLD.id;
 
@@ -62,3 +101,4 @@ BEGIN
 END;
 $$;
 
+COMMIT;

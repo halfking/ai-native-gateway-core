@@ -78,6 +78,13 @@ func (h *Handler) updateModelOffer(w http.ResponseWriter, r *http.Request, provi
 		// provider's chat completions / messages endpoint.  Pass an empty
 		// string to clear it (revert to raw_model_name).
 		OutboundModelName *string `json:"outbound_model_name"`
+		// ContextWindow (522) calibrates this credential×model's context
+		// window. nil/omitted = leave unchanged. A non-nil pointer sets the
+		// override: a positive value replaces it, a zero/negative value
+		// clears it (falls back to models_canonical). This is the per-credential
+		// lever the operator needs when a provider's real context window
+		// diverges from the standardized catalog value.
+		ContextWindow *int `json:"context_window"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
@@ -173,29 +180,78 @@ func (h *Handler) updateModelOffer(w http.ResponseWriter, r *http.Request, provi
 		)
 	}
 
+	// 522: per-credential×model context window calibration. We write the
+	// credential_model_bindings row directly (not via the model_offers view)
+	// because the INSTEAD OF UPDATE trigger uses COALESCE() and cannot express
+	// "clear the override to NULL" — the only way to fall back to the canonical
+	// value is to set the column to NULL, which COALESCE would mask. A
+	// zero/negative context_window clears the override; a positive value sets
+	// it. source is tagged 'manual' so discovery probes won't silently clobber
+	// an operator decision.
+	if req.ContextWindow != nil {
+		if *req.ContextWindow > 0 {
+			if _, err := h.db.Exec(ctx, `
+				UPDATE credential_model_bindings
+				SET context_window_override = $1,
+				    context_window_source = 'manual',
+				    context_window_updated_at = now(),
+				    updated_at = now()
+				WHERE id = $2
+			`, *req.ContextWindow, offerID); err != nil {
+				writeError(w, http.StatusInternalServerError, "update context_window failed: "+err.Error())
+				return
+			}
+		} else {
+			if _, err := h.db.Exec(ctx, `
+				UPDATE credential_model_bindings
+				SET context_window_override = NULL,
+				    context_window_source = 'catalog',
+				    context_window_updated_at = now(),
+				    updated_at = now()
+				WHERE id = $2
+			`, offerID); err != nil {
+				writeError(w, http.StatusInternalServerError, "clear context_window failed: "+err.Error())
+				return
+			}
+		}
+		slog.Info("credential_model_bindings.context_window_override updated",
+			"offer_id", offerID,
+			"raw_model_name", rawName,
+			"provider_id", providerID,
+			"context_window", *req.ContextWindow,
+		)
+	}
+
 	var result struct {
-		ID                int     `json:"id"`
-		RawModelName      string  `json:"raw_model_name"`
-		StandardizedName  *string `json:"standardized_name"`
-		CanonicalID       *int    `json:"canonical_id"`
-		CanonicalName     *string `json:"canonical_name"`
-		OutboundModelName *string `json:"outbound_model_name"`
+		ID                  int     `json:"id"`
+		RawModelName        string  `json:"raw_model_name"`
+		StandardizedName    *string `json:"standardized_name"`
+		CanonicalID         *int    `json:"canonical_id"`
+		CanonicalName       *string `json:"canonical_name"`
+		OutboundModelName   *string `json:"outbound_model_name"`
+		ContextWindow       *int    `json:"context_window"`
+		ContextWindowOverride *int  `json:"context_window_override"`
 	}
 	//nolint:errcheck // scan error non-critical
 	h.db.QueryRow(ctx, `
 		SELECT mo.id, mo.raw_model_name, mo.standardized_name, mo.canonical_id,
-		       mc.canonical_name, mo.outbound_model_name
+		       mc.canonical_name, mo.outbound_model_name,
+		       COALESCE(mo.context_window_override, mc.context_window_override, mc.context_window) AS context_window,
+		       mo.context_window_override
 		FROM model_offers mo
 		LEFT JOIN models_canonical mc ON mc.id = mo.canonical_id
 		WHERE mo.id = $1
 	`, offerID).Scan(&result.ID, &result.RawModelName, &result.StandardizedName,
-		&result.CanonicalID, &result.CanonicalName, &result.OutboundModelName)
+		&result.CanonicalID, &result.CanonicalName, &result.OutboundModelName,
+		&result.ContextWindow, &result.ContextWindowOverride)
 
 	// 2026-06-19 audit: any PATCH that touches standardized_name /
 	// canonical_id / outbound_model_name can change the data
 	// /api/routing/available-models aggregates.  Invalidate the
 	// process-wide cache so the next page render re-reads the DB.
-	if req.CanonicalID != nil || req.StandardizedName != nil || req.OutboundModelName != nil {
+	// 522: context_window also feeds the candidate trim threshold, so a
+	// calibration change must flush the cache too.
+	if req.CanonicalID != nil || req.StandardizedName != nil || req.OutboundModelName != nil || req.ContextWindow != nil {
 		InvalidateAvailableModelsCache()
 	}
 
