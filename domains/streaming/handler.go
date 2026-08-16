@@ -1731,7 +1731,13 @@ func (h *ChatHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request) {
 		// as stage=13 (response_fail) so audit completeness stays at 100%.
 		// Only runs if the request context is canceled (client disconnect)
 		// AND we never successfully completed via the success path.
-		if h.requestLogger != nil && r.Context().Err() != nil {
+		// 2026-08-16 fix: the guard used to be only "context canceled" — a
+		// request that had ALREADY completed successfully (stream flushed,
+		// emitTelemetry wrote the row, IsLogged()=true) still tripped this
+		// block when the client tore down its connection at the very end,
+		// producing a spurious "client_cancel" probe in the live stream.
+		// Add !IsLogged() so an already-recorded request never emits one.
+		if h.requestLogger != nil && shouldEmitDisconnectProbe(r.Context(), logCtx) {
 			// 2026-06-30: 标记客户端超时/断开连接 (migration 320)
 			if errors.Is(r.Context().Err(), context.DeadlineExceeded) ||
 				errors.Is(r.Context().Err(), context.Canceled) {
@@ -4088,12 +4094,20 @@ goalRetryLoopDone:
 				logCtx.ApplyQueueTimestampsFromError(ee)
 			}
 		}
+		providerID, credentialID := failureAttribution(execErr, candidates)
+		if providerID != nil && credentialID != nil {
+			auditBuilder.Provider(*providerID).Credential(*credentialID)
+			if logCtx != nil {
+				logCtx.SetRoute(providerID, credentialID)
+			}
+		}
+
 		// ── Request WAL: synchronous update on execution failure ─────────────
 		if h.requestLogger != nil {
 			var pid, cid *int64
-			if len(candidates) > 0 {
-				p := int64(candidates[0].ProviderID)
-				c := int64(candidates[0].CredentialID)
+			if providerID != nil && credentialID != nil {
+				p := int64(*providerID)
+				c := int64(*credentialID)
 				pid, cid = &p, &c
 			}
 			update := &telemetry.LogUpdate{
@@ -4114,18 +4128,12 @@ goalRetryLoopDone:
 			"error", execErr,
 			"model", clientModel,
 		)
-		var providerID, credentialID *int
 		var tried int
 		var failTrace *executors.Trace
 		if execErrTyped, ok := execErr.(*executors.ExecuteError); ok {
 			tried = execErrTyped.Tried
 			failTrace = execErrTyped.Trace
 		}
-		if len(candidates) > 0 {
-			providerID = intPtr(candidates[0].ProviderID)
-			credentialID = intPtr(candidates[0].CredentialID)
-		}
-
 		// Track C C4 (2026-06-18): the executor demoted a slow
 		// request to async mode. Surface 202 + X-Gw-Pending so the
 		// client knows to poll GET /v1/sessions/{id}/pending-response
@@ -4467,7 +4475,15 @@ goalRetryLoopDone:
 		preStream = nil
 	}
 
-	auditBuilder.Success(true).Latency(time.Duration(result.LatencyMs) * time.Millisecond)
+	auditBuilder.Success(true).
+		Latency(time.Duration(result.LatencyMs) * time.Millisecond).
+		Provider(result.Candidate.ProviderID).
+		Credential(result.Candidate.CredentialID)
+	if logCtx != nil {
+		providerID := result.Candidate.ProviderID
+		credentialID := result.Candidate.CredentialID
+		logCtx.SetRoute(&providerID, &credentialID)
+	}
 	// Phase D (2026-06-22): use InboundBody (original client body) for audit
 	// logging, not RequestBody (which may be protocol-converted for upstream).
 	//
@@ -4630,6 +4646,22 @@ func successUpstreamStatusCode(result *executors.ExecuteResult) int {
 		return result.Response.StatusCode
 	}
 	return http.StatusOK
+}
+
+func failureAttribution(execErr error, candidates []provider.Candidate) (*int, *int) {
+	var typed *executors.ExecuteError
+	if errors.As(execErr, &typed) {
+		for i := len(typed.Attempts) - 1; i >= 0; i-- {
+			attempt := typed.Attempts[i]
+			if attempt.ProviderID > 0 && attempt.CredentialID > 0 {
+				return intPtr(attempt.ProviderID), intPtr(attempt.CredentialID)
+			}
+		}
+	}
+	if len(candidates) > 0 && candidates[0].ProviderID > 0 && candidates[0].CredentialID > 0 {
+		return intPtr(candidates[0].ProviderID), intPtr(candidates[0].CredentialID)
+	}
+	return nil, nil
 }
 
 func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteResult, endUser string, keyInfo *authentication.KeyInfo, capture *audit.StreamCapture, requestMode string, txResult *transformation.TransformResult, requestBody []byte, responseBody []byte, logCtx *RequestLogContext) {
@@ -5637,6 +5669,25 @@ func intValueOrZero(p *int) int {
 //
 // error_kind: "client_cancel" for context.Canceled, "probe_timeout" for
 // context.DeadlineExceeded. failure_stage is always "probe".
+//
+// shouldEmitDisconnectProbe reports whether the client-disconnect safety net
+// should synthesize a probe row: the request context must actually be canceled
+// (client disconnect / deadline) AND the request must NOT have already been
+// recorded via the success or failure path (IsLogged()==false). 2026-08-16:
+// extracted from the ServeHTTP defer guard so this predicate is unit-testable —
+// a request that already completed successfully (emitTelemetry wrote the row,
+// IsLogged()==true) must never emit a probe when the client tears down at the
+// very end.
+func shouldEmitDisconnectProbe(rctx context.Context, logCtx *RequestLogContext) bool {
+	if rctx == nil || rctx.Err() == nil {
+		return false
+	}
+	if logCtx == nil || logCtx.IsLogged() {
+		return false
+	}
+	return true
+}
+
 func (h *ChatHandler) emitClientDisconnectProbe(originalRequestID string, r *http.Request, logCtx *RequestLogContext) {
 	if h == nil || h.telemetryClient == nil || !h.telemetryClient.Enabled() {
 		return
