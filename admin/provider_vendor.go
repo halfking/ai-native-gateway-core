@@ -44,6 +44,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/discovery"
+	"github.com/kaixuan/llm-gateway-go/internal/modelresponse"
 	"github.com/kaixuan/llm-gateway-go/internal/providercap"
 	"github.com/kaixuan/llm-gateway-go/modelcatalog"
 	"github.com/kaixuan/llm-gateway-go/modelname"
@@ -611,67 +612,7 @@ func (h *Handler) fetchVendorModelsFromURLs(ctx context.Context, urls []string, 
 }
 
 func parseVendorModelsBody(data []byte) ([]string, error) {
-	// Standard OpenAI format: {"data": [{"id": "..."}]}
-	var openai struct {
-		Data []struct {
-			ID string `json:"id"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(data, &openai); err == nil && len(openai.Data) > 0 {
-		var ids []string
-		for _, m := range openai.Data {
-			if m.ID != "" {
-				ids = append(ids, m.ID)
-			}
-		}
-		if len(ids) > 0 {
-			return ids, nil
-		}
-	}
-
-	// Alt format: {"models": [{"id": "..."}]}
-	var alt struct {
-		Models []struct {
-			ID string `json:"id"`
-		} `json:"models"`
-	}
-	if err := json.Unmarshal(data, &alt); err == nil && len(alt.Models) > 0 {
-		var ids []string
-		for _, m := range alt.Models {
-			if m.ID != "" {
-				ids = append(ids, m.ID)
-			}
-		}
-		if len(ids) > 0 {
-			return ids, nil
-		}
-	}
-
-	// Bare array
-	var bare []string
-	if err := json.Unmarshal(data, &bare); err == nil && len(bare) > 0 {
-		return bare, nil
-	}
-
-	// Array of objects
-	var objArray []map[string]any
-	if err := json.Unmarshal(data, &objArray); err == nil && len(objArray) > 0 {
-		var ids []string
-		for _, m := range objArray {
-			if id, ok := m["id"].(string); ok && id != "" {
-				ids = append(ids, id)
-			} else if name, ok := m["name"].(string); ok && name != "" {
-				ids = append(ids, name)
-			} else if model, ok := m["model"].(string); ok && model != "" {
-				ids = append(ids, model)
-			}
-		}
-		if len(ids) > 0 {
-			return ids, nil
-		}
-	}
-
-	return nil, fmt.Errorf("unrecognized models response format")
+	return modelresponse.ParseModelIDs(data)
 }
 
 func extractManifestModels(manifest *string) ([]string, error) {
