@@ -162,6 +162,7 @@ health_check() {
 rollback() {
     local target
     target=$(target_resolve_alias "${1:-245}")
+    target_check_actionable "$target" rollback
     local rollback_policy
     rollback_policy=$(target_field "$target" rollback_policy)
     if [[ "$rollback_policy" == "runbook" ]]; then
