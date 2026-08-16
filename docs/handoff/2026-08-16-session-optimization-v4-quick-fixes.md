@@ -49,11 +49,19 @@ P0-E 完成后，再次在目标仓库执行：
 - `go build ./...`：通过。
 - `go test ./domains/hooks/goal/... ./domains/streaming/...`：通过（缓存命中）。
 
-`git diff --check`：通过。
+提交前在基于最新 `origin/main` 的隔离 worktree 补跑：
+
+- `go test ./...`：通过（仅 vendor clang warning，无测试失败）。
+- `go vet ./...`：通过。
+- `go build ./...`：通过。
+- `go test ./domains/hooks/goal/... ./domains/streaming/...`：通过。
+- `./scripts/scan-secrets.sh --mode=strict --paths=.`：被仓库既有基线阻断（57 BLOCK / 1052 WARN，包含已跟踪 `.env.example`、`deploy/phase0/optimization.env` 和历史内部域名文档），不是本次新增。
+- 对本任务 8 个文件按脚本真实多路径语法执行 strict 扫描：8 files、0 findings，`CLEAN`。
+- `git diff --check`：通过。
 
 ## 4. 审计收口
 
-- Standards 审计发现验证记录缺少仓库级 `go test ./...`、`go vet ./...` 和严格密钥扫描；提交前已补跑并记录结果。
+- Standards 审计发现验证记录缺少仓库级 `go test ./...`、`go vet ./...` 和严格密钥扫描；隔离 worktree 已补齐并记录结果。
 - Standards 审计发现 P0-E 对 pending 202 的描述范围过宽；已区分初始 accepted 响应与后续 `in_progress` 轮询响应。
 - Spec 审计发现 T6 触碰面漏列 v2 文档与 handoff；已补齐。
 - 修正后未发现剩余的规范或需求符合性问题。
@@ -62,4 +70,4 @@ P0-E 完成后，再次在目标仓库执行：
 
 - 本次没有修改 `domains/streaming/handler.go`，也没有新增兼容 header。
 - 若未来决定实现 Goal retry 的异步协议，应在完成前端/OpenAI SDK 兼容性验证后重新冻结状态、body、header 和轮询语义，不应默认复用 17 号示例。
-- 工作树中 `cmd/gateway/capabilities.go` 出现了本会话未产生的并发改动；本次未修改、未回退，也不将其计入上述改动。
+- 该 quick-fix 最初在独立 worktree 完成；后续综合审计将 `cmd/gateway/capabilities.go`、URSM v2、Goal↔Handoff 与本任务一并审计合入，未回退任何并行改动。

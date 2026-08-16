@@ -65,7 +65,10 @@ try:
         method='POST',
     )
     with urllib.request.urlopen(login, timeout=5) as response:
-        token = json.load(response)['access_token']
+        login_response = json.load(response)
+        token = login_response.get('access_token') or login_response.get('api_key') or ''
+    if not token:
+        raise RuntimeError('login response did not contain a bearer token')
     request = urllib.request.Request(
         os.environ['BASE'] + '/api/system/background-tasks',
         headers={'Authorization': 'Bearer ' + token},

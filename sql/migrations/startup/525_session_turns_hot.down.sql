@@ -23,6 +23,29 @@ DROP FUNCTION IF EXISTS public.promote_session_turns_hot_to_partition(INTERVAL, 
 DROP FUNCTION IF EXISTS public.session_turns_advisory_lock_key(TEXT, TEXT);
 DROP TABLE IF EXISTS public.session_turns_hot;
 
+DROP POLICY IF EXISTS session_turns_owner_filter ON public.session_turns;
+CREATE POLICY session_turns_owner_filter ON public.session_turns
+    AS RESTRICTIVE
+    FOR ALL
+    TO PUBLIC
+    USING (
+        EXISTS (
+            SELECT 1
+            FROM (
+                SELECT DISTINCT ON (gw_session_id) gw_session_id, owner_user
+                FROM public.request_logs
+                WHERE gw_session_id IS NOT NULL
+                ORDER BY gw_session_id, ts ASC
+            ) first_rl
+            WHERE first_rl.gw_session_id = public.session_turns.session_id
+              AND (
+                  first_rl.owner_user = current_setting('app.current_user', true)
+                  OR current_setting('app.current_role', true) = 'super_admin'
+                  OR current_setting('app.bypass_rls', true) = 'true'
+              )
+        )
+    );
+
 ALTER TABLE public.session_turns
     DROP CONSTRAINT IF EXISTS session_turns_submit_mode_check;
 ALTER TABLE public.session_turns

@@ -220,6 +220,16 @@ func (h *Handler) updateModelOffer(w http.ResponseWriter, r *http.Request, provi
 			"provider_id", providerID,
 			"context_window", *req.ContextWindow,
 		)
+		// 522/523 audit: a context-window override feeds the runtime candidate
+		// SQL and therefore the compression trigger thresholds (mechanical
+		// trim ThresholdBytes, session-compressor TOKEN trigger, 4xx
+		// smart-window recovery cut point). Without this wakeup other gateway
+		// instances keep a stale candCache and trim off the old window —
+		// exactly the multi-layer-cache hazard the review flagged.
+		// Migration 523 widens the DB trigger to NOTIFY on the column, but we
+		// also fire an explicit NOTIFY here (matching the other manual-override
+		// endpoints) so a missed DB-event path can't strand sibling processes.
+		invalidateRoutingCaches(r.Context(), h.db, "credential_model_bindings", offerID)
 	}
 
 	var result struct {
