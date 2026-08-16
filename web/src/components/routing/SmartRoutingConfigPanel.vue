@@ -53,6 +53,7 @@ async function loadDetail() {
   if (!key) {
     detail.value = null
     setDraft([])
+    loading.value = false
     return
   }
   loading.value = true
@@ -99,7 +100,8 @@ function remove(tier: ModelRouteTier, index: number) {
 }
 
 async function save() {
-  if (!selectedKey.value) return
+  const key = selectedKey.value
+  if (!key) return
   saving.value = true
   saved.value = false
   error.value = ''
@@ -113,11 +115,13 @@ async function save() {
     })
   }
   try {
-    const result = await putWorkTypeRoutes(selectedKey.value, payload)
-    detail.value = { ...(detail.value as WorkTypeConfig), model_routes: result.model_routes }
-    setDraft(result.model_routes)
+    const result = await putWorkTypeRoutes(key, payload)
+    if (key === selectedKey.value) {
+      detail.value = { ...(detail.value as WorkTypeConfig), model_routes: result.model_routes }
+      setDraft(result.model_routes)
+    }
     await refreshWorkTypes()
-    saved.value = true
+    if (key === selectedKey.value) saved.value = true
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : String(e)
   } finally {
@@ -126,9 +130,11 @@ async function save() {
 }
 
 watch(() => props.initialTaskType, (value) => {
-  if (value) selectedKey.value = value
+  if (value && value !== selectedKey.value) {
+    selectedKey.value = value
+    void loadDetail()
+  }
 })
-watch(selectedKey, () => { void loadDetail() })
 onMounted(load)
 
 defineExpose({ reload: load })
@@ -142,7 +148,7 @@ defineExpose({ reload: load })
         <p class="subtitle">{{ t('routingDefault.subtitle') }}</p>
       </div>
       <div class="head-actions">
-        <select v-model="selectedKey" :disabled="loading" aria-label="work type">
+        <select v-model="selectedKey" :disabled="loading || saving" aria-label="work type" @change="loadDetail">
           <option value="">{{ t('routingDefault.rail.all') }}</option>
           <option v-for="wt in workTypes" :key="wt.key" :value="wt.key">{{ wt.label }}</option>
         </select>
