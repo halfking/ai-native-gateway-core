@@ -157,10 +157,16 @@ expected = os.path.realpath(os.path.join(root, 'releases', os.environ['EXPECTED_
 current = os.path.realpath(os.path.join(root, 'current'))
 if current != expected:
     raise SystemExit(f'current mismatch: {current} != {expected}')
-pid = subprocess.check_output(
-    ['systemctl', 'show', service, '--property=MainPID', '--value'],
+show = subprocess.check_output(
+    ['systemctl', 'show', service, '--property=MainPID'],
     universal_newlines=True,
-).strip()
+)
+pid = ''
+for line in show.splitlines():
+    stripped = line.strip()
+    if stripped.startswith('MainPID='):
+        pid = stripped.split('=', 1)[1].strip()
+        break
 if not pid or pid == '0':
     raise SystemExit('systemd MainPID is not running')
 running = os.path.realpath('/proc/%s/exe' % pid)
@@ -478,8 +484,13 @@ do_deploy() {
   #   - 其它 → warn skip (无标准轮转路径)
   log "[9.6/9] 配置 stderr/stdout 日志轮转 (按 unit 模式自动分支)"
   local _std_out _std_err _target_rotate
-  _std_out="$(remote_ssh "systemctl show $SERVICE_NAME --property=StandardOutput --value" 2>/dev/null | tail -1 || echo '')"
-  _std_err="$(remote_ssh "systemctl show $SERVICE_NAME --property=StandardError --value" 2>/dev/null | tail -1 || echo '')"
+  # 2026-08-17: drop `systemctl show ... --value` and parse the KEY=VALUE line ourselves.
+  # Older systemd builds (<230) or vendor-stripped systemctl refuse `--value` with
+  # "unrecognized option", which would silently mis-detect the unit mode and skip logrotate.
+  _std_out="$(remote_ssh "systemctl show $SERVICE_NAME --property=StandardOutput" 2>/dev/null | sed -n 's/^StandardOutput=//p' | tail -1)"
+  _std_err="$(remote_ssh "systemctl show $SERVICE_NAME --property=StandardError" 2>/dev/null | sed -n 's/^StandardError=//p' | tail -1)"
+  : "${_std_out:=}"
+  : "${_std_err:=}"
   log "  unit mode: StandardOutput=${_std_out:-<unset>} StandardError=${_std_err:-<unset>}"
   # decide: append: → logrotate; journal/inherit → journald drop-in; else skip
   case "${_std_out}:${_std_err}" in
