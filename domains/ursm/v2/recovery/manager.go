@@ -188,6 +188,11 @@ func (m *Manager) ValidateCoverage(ctx context.Context) (int, error) {
 	if m == nil || m.rdb == nil {
 		return 0, fmt.Errorf("ursm.v2: nil manager / redis client")
 	}
+	if pending, err := m.rdb.Exists(ctx, store.CoveragePendingKey(m.prefix)).Result(); err != nil {
+		return 0, fmt.Errorf("ursm.v2: read coverage pending marker: %w", err)
+	} else if pending != 0 {
+		return 0, fmt.Errorf("ursm.v2: coverage migration is still pending")
+	}
 	keys, err := m.rdb.SMembers(ctx, store.CoverageKey(m.prefix)).Result()
 	if err != nil {
 		return 0, fmt.Errorf("ursm.v2: read coverage manifest: %w", err)

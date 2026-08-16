@@ -14,6 +14,7 @@ import (
 // took out of rotation.
 func TestMapRow_PausedBecomesManualHold(t *testing.T) {
 	r := probeRow{
+		TenantID:             "tenant-42",
 		CredentialID:         42,
 		RawModel:             "gpt-4",
 		ConsecutiveFailures:  99,
@@ -30,8 +31,8 @@ func TestMapRow_PausedBecomesManualHold(t *testing.T) {
 	if got.Fields["disabled"] != "1" {
 		t.Fatalf("disabled=%q, want 1", got.Fields["disabled"])
 	}
-	if !strings.HasPrefix(got.NodeKey, "ursm:v2:node:42:gpt-4") {
-		t.Fatalf("node key=%q, want prefix ursm:v2:node:42:gpt-4", got.NodeKey)
+	if !strings.HasPrefix(got.NodeKey, "ursm:v2:node:tenant-42:42:gpt-4") {
+		t.Fatalf("node key=%q, want prefix ursm:v2:node:tenant-42:42:gpt-4", got.NodeKey)
 	}
 }
 

@@ -126,7 +126,12 @@ func CoverageKey(prefix string) string {
 	return fmt.Sprintf("%smeta:coverage", prefix)
 }
 
-// RecoveryDebounceKey is the cluster-wide coordination key used by
+// CoveragePendingKey marks a migration transaction that has not yet published
+// its verified coverage manifest. Authoritative startup refuses while it exists.
+func CoveragePendingKey(prefix string) string {
+	return fmt.Sprintf("%smeta:coverage:pending", prefix)
+}
+
 // Manager.MarkClosedDebounced. When set (with TTL), all subsequent
 // callers see "already debounced" and skip the EnterRecovery write
 // — this caps the cluster's epoch counter inflation to one bump per
