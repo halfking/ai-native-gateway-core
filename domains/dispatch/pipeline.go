@@ -403,10 +403,12 @@ func observeStageMetrics(qr *QueuedRequest, out ForwardOutcome) {
 	}
 }
 
-// routeFailover hands a pre-firstbyte failure to the ③ mover.
-func (p *Pipeline) routeFailover(qr *QueuedRequest, err error) {
+// routeFailover hands a pre-firstbyte failure to the ③ mover. fatalCredential
+// mirrors ForwardOutcome.FatalCredential so the mover can skip the
+// same-credential retry ladder for credential-fatal errors.
+func (p *Pipeline) routeFailover(qr *QueuedRequest, err error, fatalCredential bool) {
 	select {
-	case p.failoverCh <- failoverItem{qr: qr, err: err}:
+	case p.failoverCh <- failoverItem{qr: qr, err: err, fatalCredential: fatalCredential}:
 	case <-p.stopCh:
 		// Pipeline is shutting down and the failover channel may never be
 		// drained. Complete the request so its Submit caller is not left

@@ -39,7 +39,16 @@ type ForwardOutcome struct {
 	// cross-credential switch — the request is completed with the error
 	// (ADR-Disp-003).
 	BytesSent bool
-	Err       error
+	// FatalCredential is true when Err is a credential-fatal upstream
+	// failure (quota exhausted / auth revoked). The mover skips the
+	// same-credential retry ladder for such errors: retrying a dead
+	// credential only re-yields the same upstream rejection, wastes a
+	// concurrency slot, and delays the switch to a healthy sibling
+	// (incident afd75c81…). The executor pre-computes this flag from
+	// errorsx.IsCredentialFatal so the dispatch package stays decoupled
+	// from errorsx (see the import-cycle guard on CredentialRef).
+	FatalCredential bool
+	Err             error
 }
 
 // QueuedRequest is the unit of work flowing through the pipeline.
