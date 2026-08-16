@@ -9,12 +9,13 @@ import (
 // failure-time recommendation. Dispatch must not reclassify or use a hardcoded
 // model sequence after the original model is exhausted.
 type ModelAlternativeRequest struct {
-	Task        TaskType
-	Signals     ClassificationSignals
-	Profile     Profile
-	SessionID   string
-	WorkType    string
-	TriedModels []string
+	Task         TaskType
+	Signals      ClassificationSignals
+	Profile      Profile
+	SessionID    string
+	WorkType     string
+	InitialModel string
+	TriedModels  []string
 }
 
 // RecommendModelAlternatives returns currently recommended canonical models,
@@ -56,6 +57,10 @@ func (d *Decider) RecommendModelAlternatives(ctx context.Context, req ModelAlter
 	if len(recommended) == 0 {
 		return nil, ErrNoCandidates
 	}
+	_, initialIQ, initialFound := StandardIQMatch(req.InitialModel, 0)
+	if !initialFound {
+		return nil, ErrNoCandidates
+	}
 
 	excluded := make(map[string]struct{}, len(req.TriedModels))
 	for _, model := range req.TriedModels {
@@ -74,6 +79,13 @@ func (d *Decider) RecommendModelAlternatives(ctx context.Context, req ModelAlter
 			continue
 		}
 		if _, duplicate := seen[model]; duplicate {
+			continue
+		}
+		_, candidateIQ, candidateFound := StandardIQMatch(model, 0)
+		if !candidateFound || candidateIQ < initialIQ {
+			continue
+		}
+		if req.Task != TaskChat && TaskMatchScore(req.Task, candidate.Candidate.Tags) <= 0 {
 			continue
 		}
 		seen[model] = struct{}{}

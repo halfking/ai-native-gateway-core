@@ -354,10 +354,7 @@ func (e *Executor) executeOpenAI(
 	// Ensure at least 1 retry is available for internal model_not_found retry.
 	// When maxRetries is 0 (from policy.RetryPerCredential), we still need
 	// one retry attempt to verify if model_not_found is transient.
-	effectiveMaxRetries := maxRetries
-	if effectiveMaxRetries < 1 {
-		effectiveMaxRetries = 1
-	}
+	effectiveMaxRetries := effectiveOpenAIRetryBudget(maxRetries, params.DispatchAttempt)
 
 	// P3-9: mnfBonus grants exactly one extra loop iteration when an mnf
 	// retry is outstanding. It flips to 1 the moment mnfRetried is set
@@ -531,6 +528,9 @@ func (e *Executor) executeOpenAI(
 				}
 			}
 			e.logUpstreamRequest(params, diagnosticProtocol(cand.Protocol, "openai-completions"), bodyBytes)
+			if err := consumeUpstreamAttempt(params); err != nil {
+				return nil, err
+			}
 
 			reqStart := time.Now()
 			var resp *http.Response
@@ -1352,6 +1352,13 @@ func (e *Executor) executeOpenAI(
 		return nil, lastErr
 	}
 	return nil, fmt.Errorf("exhausted %d retries for credential %d", effectiveMaxRetries, cand.CredentialID)
+}
+
+func effectiveOpenAIRetryBudget(maxRetries int, dispatchAttempt bool) int {
+	if maxRetries < 1 && !dispatchAttempt {
+		return 1
+	}
+	return maxRetries
 }
 
 // finalizeOpenAIUpstreamBody applies prepareRequestBody plus OpenAI-path-only

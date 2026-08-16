@@ -31,12 +31,12 @@ type Config struct {
 // DefaultConfig returns conservative defaults used when hotconfig is absent.
 func DefaultConfig() Config {
 	return Config{
-		MaxQueueDepth:     1024,
-		MaxQueueWaitMS:    5000,
-		StatsBuffer:       256,
-		DispatcherWorkers: 8,
-		FailoverWorkers:   8,
-		RetryPerCredential: 1,
+		MaxQueueDepth:      1024,
+		MaxQueueWaitMS:     5000,
+		StatsBuffer:        256,
+		DispatcherWorkers:  8,
+		FailoverWorkers:    8,
+		RetryPerCredential: MaxNodeFailures - 1,
 	}
 }
 
@@ -52,7 +52,7 @@ func LoadConfig(hotCfg *hotconfig.Config) Config {
 		StatsBuffer:        clampInt(hotCfg.GetInt("llmgw_dispatch_stats_buffer", 256), 0, 4096),
 		DispatcherWorkers:  clampInt(hotCfg.GetInt("llmgw_dispatch_dispatcher_workers", 8), 1, 256),
 		FailoverWorkers:    clampInt(hotCfg.GetInt("llmgw_dispatch_failover_workers", 8), 1, 256),
-		RetryPerCredential: clampInt(hotCfg.GetInt("llmgw_dispatch_retry_per_credential", 1), 0, 5),
+		RetryPerCredential: clampInt(hotCfg.GetInt("llmgw_dispatch_retry_per_credential", MaxNodeFailures-1), 0, MaxNodeFailures-1),
 	}
 }
 

@@ -3,6 +3,7 @@ package streaming
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -60,7 +61,7 @@ func (h *coordHarness) coordinator() *SurvivalCoordinator {
 	return &SurvivalCoordinator{
 		Exec:     h.exec,
 		Protocol: ProtocolAnthropic,
-		Options:  SurvivalOptions{Deadline: 30 * time.Minute, RetryBase: 2 * time.Second, RetryMax: 300 * time.Second},
+		Options:  SurvivalOptions{Deadline: 30 * time.Minute, RetryBase: 2 * time.Second, RetryMax: 2 * time.Minute},
 		Now: func() time.Time {
 			return h.clock
 		},
@@ -287,5 +288,84 @@ func TestSurvivalCoordinatorBackoffDoublesAndCaps(t *testing.T) {
 		if h.sleeps[i] != w {
 			t.Fatalf("sleep[%d] = %v, want %v (full: %v)", i, h.sleeps[i], w, h.sleeps)
 		}
+	}
+}
+
+func TestSurvivalOptionsClampRetryMaxToTwoMinutes(t *testing.T) {
+	opts := (SurvivalOptions{RetryMax: 10 * time.Minute}).withDefaults()
+	if opts.RetryMax != 2*time.Minute {
+		t.Fatalf("retry max = %v, want 2m", opts.RetryMax)
+	}
+}
+
+func TestSurvivalCoordinatorEmitsKeepaliveThroughoutWait(t *testing.T) {
+	h := newCoordHarness(&scriptedExecutor{
+		errs:    []error{transientFailure(), nil},
+		results: []*executors.ExecuteResult{nil, {}},
+	})
+	c := h.coordinator()
+	c.Sleep = nil
+	c.Options.RetryBase = 35 * time.Millisecond
+	c.Options.KeepaliveInterval = 10 * time.Millisecond
+
+	res := c.Run(context.Background(), h.sw, &executors.ExecParams{})
+	if !res.Succeed {
+		t.Fatalf("expected recovery, decision=%v", res.Decision.Action)
+	}
+	if got := strings.Count(h.flusher.buf.String(), "event: ping\ndata: {\"type\":\"ping\"}\n\n"); got < 3 {
+		t.Fatalf("keepalive count = %d, want at least 3 during 35ms wait", got)
+	}
+}
+
+func TestSurvivalKeepaliveUsesClientProtocol(t *testing.T) {
+	tests := []struct {
+		name     string
+		protocol ClientProtocol
+		want     string
+	}{
+		{name: "anthropic ping", protocol: ProtocolAnthropic, want: "event: ping\ndata: {\"type\":\"ping\"}\n\n"},
+		{name: "openai chat comment", protocol: ProtocolOpenAIChat, want: ": gw-survival-keepalive\n\n"},
+		{name: "openai responses comment", protocol: ProtocolOpenAIResponses, want: ": gw-survival-keepalive\n\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := &trackingFlusher{}
+			c := &SurvivalCoordinator{Protocol: tt.protocol}
+			c.keepalive(NewSerializedStreamWriter(f))
+			if got := f.buf.String(); got != tt.want {
+				t.Fatalf("keepalive = %q, want %q", got, tt.want)
+			}
+			if class := ClassifyClientFrame(tt.protocol, tt.want); class != FrameClassKeepalive {
+				t.Fatalf("keepalive class = %v, want FrameClassKeepalive", class)
+			}
+		})
+	}
+}
+
+type alwaysTransientExecutor struct{ calls int }
+
+func (e *alwaysTransientExecutor) Execute(params *executors.ExecParams) (*executors.ExecuteResult, error) {
+	if !params.UpstreamAttempts.TryConsume() {
+		return nil, executors.ErrUpstreamAttemptLimit
+	}
+	e.calls++
+	return nil, transientFailure()
+}
+
+func TestSurvivalCoordinatorStopsWhenSharedUpstreamBudgetIsExhausted(t *testing.T) {
+	exec := &alwaysTransientExecutor{}
+	h := newCoordHarness(nil)
+	c := h.coordinator()
+	c.Exec = exec
+	c.Options.MaxRetries = 100
+	params := &executors.ExecParams{UpstreamAttempts: executors.NewUpstreamAttemptBudget(2)}
+
+	res := c.Run(context.Background(), h.sw, params)
+
+	if res.Decision.Reason != "attempt_limit_exceeded" {
+		t.Fatalf("decision reason = %q, want attempt_limit_exceeded", res.Decision.Reason)
+	}
+	if exec.calls != 2 {
+		t.Fatalf("executor calls = %d, want 2", exec.calls)
 	}
 }
