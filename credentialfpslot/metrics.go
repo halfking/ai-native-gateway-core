@@ -1,9 +1,11 @@
 package credentialfpslot
 
 import (
+	"container/list"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/kaixuan/llm-gateway-go/internal/clienttype"
 	"github.com/prometheus/client_golang/prometheus"
@@ -21,16 +23,56 @@ var (
 	clientTokenRequests  *prometheus.CounterVec
 	holderChanges        *prometheus.CounterVec
 	activeSlots          *prometheus.GaugeVec
+	inFlightLeases       *prometheus.GaugeVec
 	unknownRatio         prometheus.Gauge
 	pinAge               *prometheus.HistogramVec
 
-	registerMetricsOnce sync.Once
-	clientTokenStateMu  sync.Mutex
-	clientTokenTotals   uint64
-	clientTokenUnknown  uint64
-	clientTokenHolders  = make(map[string]string)
-	knownClientTypes    = make(map[string]map[string]struct{})
+	registerMetricsOnce    sync.Once
+	clientTokenStateMu     sync.Mutex
+	clientTokenTotals      uint64
+	clientTokenUnknown     uint64
+	clientTokenHolders     = make(map[string]*clientTokenHolder)
+	clientTokenLRU         = list.New()
+	knownClientTypes       = make(map[string]map[string]time.Time)
+	clientTokenLastCleanup time.Time
 )
+
+const (
+	clientTokenHolderMaxEntries = 10000
+	clientTokenHolderIdleTTL    = 30 * time.Minute
+	clientTokenCleanupInterval  = 5 * time.Minute
+)
+
+type clientTokenHolder struct {
+	key        string
+	clientType string
+	lastSeen   time.Time
+	lru        *list.Element
+}
+
+func cleanupClientTokenStateLocked(now time.Time) {
+	cutoff := now.Add(-clientTokenHolderIdleTTL)
+	for elem := clientTokenLRU.Back(); elem != nil; {
+		previous := elem.Prev()
+		entry := elem.Value.(*clientTokenHolder)
+		if entry.lastSeen.After(cutoff) && len(clientTokenHolders) <= clientTokenHolderMaxEntries {
+			break
+		}
+		delete(clientTokenHolders, entry.key)
+		clientTokenLRU.Remove(elem)
+		elem = previous
+	}
+	for key, types := range knownClientTypes {
+		for clientType, lastSeen := range types {
+			if lastSeen.Before(cutoff) {
+				delete(types, clientType)
+			}
+		}
+		if len(types) == 0 {
+			delete(knownClientTypes, key)
+		}
+	}
+}
 
 func registerMetrics() {
 	registerMetricsOnce.Do(func() {
@@ -114,6 +156,13 @@ func registerMetrics() {
 			},
 			[]string{"tenant_id", "credential_id", "client_type"},
 		)
+		inFlightLeases = prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Name: "llmgw_fpslot_in_flight_leases",
+				Help: "Finite fingerprint slot leases currently held by gateway requests",
+			},
+			[]string{"tenant_id", "credential_id"},
+		)
 		unknownRatio = prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "gateway_client_token_unknown_ratio",
 			Help: "Ratio of client-token requests classified as unknown",
@@ -139,6 +188,7 @@ func registerMetrics() {
 			clientTokenRequests,
 			holderChanges,
 			activeSlots,
+			inFlightLeases,
 			unknownRatio,
 			pinAge,
 		)
@@ -221,20 +271,39 @@ func updateUtilization(credentialID int, used, limit int) {
 func RecordClientTokenRequest(tenantID, holder, outcome string) {
 	clientType, userKey := splitClientToken(holder)
 	key := tenantID + "\x00" + userKey
+	now := time.Now()
 	clientTokenStateMu.Lock()
 	clientTokenTotals++
 	if clientType == "unknown" {
 		clientTokenUnknown++
 	}
-	if previous, ok := clientTokenHolders[key]; ok && previous != clientType {
-		holderChanges.WithLabelValues(tenantID, clientType).Inc()
+	if previous, ok := clientTokenHolders[key]; ok {
+		if previous.clientType != clientType {
+			holderChanges.WithLabelValues(tenantID, clientType).Inc()
+		}
+		previous.clientType = clientType
+		previous.lastSeen = now
+		clientTokenLRU.MoveToFront(previous.lru)
+	} else {
+		entry := &clientTokenHolder{key: key, clientType: clientType, lastSeen: now}
+		entry.lru = clientTokenLRU.PushFront(entry)
+		clientTokenHolders[key] = entry
 	}
-	clientTokenHolders[key] = clientType
+	if clientTokenLastCleanup.IsZero() || now.Sub(clientTokenLastCleanup) >= clientTokenCleanupInterval || len(clientTokenHolders) > clientTokenHolderMaxEntries {
+		cleanupClientTokenStateLocked(now)
+		clientTokenLastCleanup = now
+	}
 	ratio := float64(clientTokenUnknown) / float64(clientTokenTotals)
 	unknownRatio.Set(ratio)
 	clientTokenStateMu.Unlock()
 
 	clientTokenRequests.WithLabelValues(tenantID, clientType, outcome).Inc()
+}
+
+func recordClientTokenInFlight(tenantID string, credentialID int, delta float64) {
+	if inFlightLeases != nil {
+		inFlightLeases.WithLabelValues(tenantID, strconv.Itoa(credentialID)).Add(delta)
+	}
 }
 
 func recordClientTokenRequest(tenantID, holder, outcome string) {
@@ -248,14 +317,19 @@ func recordClientTokenPinAge(tenantID, holder string, ageSeconds float64) {
 
 func setClientTokenActiveSlots(tenantID string, credentialID int, counts map[string]int) {
 	key := tenantID + "\x00" + strconv.Itoa(credentialID)
+	now := time.Now()
 	clientTokenStateMu.Lock()
 	known, ok := knownClientTypes[key]
 	if !ok {
-		known = make(map[string]struct{})
+		known = make(map[string]time.Time)
 		knownClientTypes[key] = known
 	}
 	for clientType := range counts {
-		known[clientType] = struct{}{}
+		known[clientType] = now
+	}
+	if clientTokenLastCleanup.IsZero() || now.Sub(clientTokenLastCleanup) >= clientTokenCleanupInterval {
+		cleanupClientTokenStateLocked(now)
+		clientTokenLastCleanup = now
 	}
 	clientTypes := make([]string, 0, len(known))
 	for clientType := range known {
