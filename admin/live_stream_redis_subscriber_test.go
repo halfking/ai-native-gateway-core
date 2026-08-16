@@ -123,6 +123,83 @@ func TestLiveStreamRedisNotifySelfEchoSkipped(t *testing.T) {
 	}
 }
 
+// TestLiveStreamSelfEcho_NoDuplicateAcrossPhases (OBS-DV2 #4 end-to-end) —
+// simulates the real persistence path: a request is written twice (in_progress
+// then terminal), each write emits a Redis notify stamped with THIS hub's
+// instanceID. Because the notify is the hub's own echo, handleRedisNotify must
+// drop it so the two persistence phases produce exactly two local broadcasts
+// (the in_progress frame and the terminal frame), NOT four (two self-echoes on
+// top). This is the exact scenario that produced duplicated child_request frames
+// before instanceID was introduced.
+func TestLiveStreamSelfEcho_NoDuplicateAcrossPhases(t *testing.T) {
+	mr := miniredis.RunT(t)
+	defer mr.Close()
+
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer rdb.Close()
+
+	hub := NewLiveStreamSSEHub(nil, LiveStreamConfig{
+		BroadcastQueueSize: 16,
+		RedisClient:        rdb,
+	})
+
+	mkReq := func(status string) LiveRequest {
+		return LiveRequest{
+			RequestID:     "req-phases",
+			Ts:            time.Now().UTC().Format(time.RFC3339),
+			TenantID:      "default",
+			Model:         "gpt-test",
+			ModelCategory: "openai",
+			ProviderCode:  "openai",
+			Status:        status,
+		}
+	}
+
+	// Phase 1: in_progress. Publish() enqueues locally AND records to Redis
+	// (stamped with this hub's instanceID). The Redis notify is our own echo,
+	// so handleRedisNotify must drop it.
+	hub.Publish(mkReq("in_progress"))
+	hub.handleRedisNotify(mustNotify(t, "req-phases", "default", hub.instanceID))
+
+	// Phase 2: terminal — same flow.
+	hub.Publish(mkReq("success"))
+	hub.handleRedisNotify(mustNotify(t, "req-phases", "default", hub.instanceID))
+
+	// Drain the broadcast channel; collect distinct (status) frames.
+	seen := map[string]bool{}
+	timeout := time.After(1 * time.Second)
+	for len(seen) < 2 {
+		select {
+		case got := <-hub.broadcast:
+			seen[got.Status] = true
+		case <-timeout:
+			t.Fatalf("expected exactly 2 distinct lifecycle frames (in_progress, success), got %v", seen)
+		}
+	}
+	// After the 2 expected frames, no further self-echo frame should arrive.
+	select {
+	case got := <-hub.broadcast:
+		t.Fatalf("unexpected extra broadcast (self-echo duplicate): status=%q", got.Status)
+	case <-time.After(150 * time.Millisecond):
+	}
+	if !seen["in_progress"] || !seen["success"] {
+		t.Fatalf("missing lifecycle phase frames: %v", seen)
+	}
+}
+
+func mustNotify(t *testing.T, requestID, tenantID, instanceID string) string {
+	t.Helper()
+	b, err := json.Marshal(liveStreamNotifyPayload{
+		RequestID:  requestID,
+		TenantID:   tenantID,
+		InstanceID: instanceID,
+	})
+	if err != nil {
+		t.Fatalf("marshal notify: %v", err)
+	}
+	return string(b)
+}
+
 func TestLiveStreamRedisStore_LoadRequest(t *testing.T) {
 	mr := miniredis.RunT(t)
 	defer mr.Close()
