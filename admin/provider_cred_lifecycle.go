@@ -27,8 +27,10 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/provider"
 )
 
@@ -139,23 +141,24 @@ func (h *Handler) resetCredentialQuota(w http.ResponseWriter, r *http.Request, p
 func (h *Handler) startCheckCredentialHealth(w http.ResponseWriter, r *http.Request, providerID, credID int) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
+	model := strings.TrimSpace(r.URL.Query().Get("model"))
 
-	taskID, err := insertBackgroundTask(ctx, h.db, "health_check", &providerID, &credID, map[string]any{"provider_id": providerID, "credential_id": credID})
+	taskID, err := insertBackgroundTask(ctx, h.db, "health_check", &providerID, &credID, map[string]any{"provider_id": providerID, "credential_id": credID, "model": model})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create task: "+err.Error())
 		return
 	}
 
-	go h.runHealthCheck(providerID, credID, taskID)
+	go h.runHealthCheck(providerID, credID, model, taskID)
 
 	writeJSON(w, http.StatusAccepted, map[string]any{"task_id": taskID, "status": "running"})
 }
 
-func (h *Handler) runHealthCheck(providerID, credID int, taskID int64) {
+func (h *Handler) runHealthCheck(providerID, credID int, model string, taskID int64) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	result, err := h.doHealthCheck(ctx, providerID, credID)
+	result, err := h.doHealthCheck(ctx, providerID, credID, model)
 	if err != nil {
 		slog.Error("health check failed", "provider_id", providerID, "credential_id", credID, "error", err)
 		failBackgroundTask(ctx, h.db, taskID, "health check failed: "+err.Error())
@@ -164,7 +167,7 @@ func (h *Handler) runHealthCheck(providerID, credID int, taskID int64) {
 	completeBackgroundTask(ctx, h.db, taskID, result)
 }
 
-func (h *Handler) doHealthCheck(ctx context.Context, providerID, credID int) (map[string]any, error) {
+func (h *Handler) doHealthCheck(ctx context.Context, providerID, credID int, model string) (map[string]any, error) {
 	cred, err := h.loadCredentialRowLite(ctx, providerID, credID)
 	if err != nil {
 		return nil, fmt.Errorf("query credential: %w", err)
@@ -181,6 +184,9 @@ func (h *Handler) doHealthCheck(ctx context.Context, providerID, credID int) (ma
 	var apiModelsErr *string
 	var effectiveSource string
 	var modelsStatus int
+	var probeError string
+	var probeHTTPStatus int
+	var probeLatencyMs int
 
 	if decErr != nil {
 		healthStatus = "error"
@@ -207,7 +213,6 @@ func (h *Handler) doHealthCheck(ctx context.Context, providerID, credID int) (ma
 			modelsStatus = -1
 		} else {
 			healthStatus = "healthy"
-			probeOk = source == "api" || source == "api+manifest"
 			modelsOk = source == "api" || source == "api+manifest"
 			modelsCount = len(models)
 			limit := 3
@@ -230,6 +235,26 @@ func (h *Handler) doHealthCheck(ctx context.Context, providerID, credID int) (ma
 						"credential_id", cred.id,
 						"upserted", upserted,
 						"failed", failed)
+				}
+			}
+		}
+
+		if model != "" {
+			start = time.Now()
+			chatResult, chatErr := doChatProbe(ctx, upstreamurl.ChatCompletionsURL(cred.baseURL), apiKey, model)
+			probeLatencyMs = int(time.Since(start).Milliseconds())
+			if chatErr != nil {
+				probeError = chatErr.Error()
+			} else {
+				probeHTTPStatus = chatResult.statusCode
+				probeOk = chatResult.statusCode == http.StatusOK
+				if probeOk {
+					healthStatus = "healthy"
+					if !modelsOk {
+						healthError = "chat succeeded; models endpoint format was not recognized"
+					}
+				} else {
+					probeError = fmt.Sprintf("chat endpoint returned %d: %s", chatResult.statusCode, chatResult.errorMessage)
 				}
 			}
 		}
@@ -258,6 +283,10 @@ func (h *Handler) doHealthCheck(ctx context.Context, providerID, credID int) (ma
 		"models_failure_reason":    apiModelsErr,
 		"models_error":             apiModelsErr,
 		"models_status":            modelsStatus,
+		"probe_http_status":        probeHTTPStatus,
+		"probe_latency_ms":         probeLatencyMs,
+		"probe_error":              probeError,
+		"health_probe_model":       model,
 		"sample_models":            sampleModels,
 		"effective_source":         effectiveSource,
 		"routing_models_upserted":  routingModelsUpserted,
@@ -270,7 +299,7 @@ func (h *Handler) checkCredentialHealth(w http.ResponseWriter, r *http.Request, 
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
-	result, err := h.doHealthCheck(ctx, providerID, credID)
+	result, err := h.doHealthCheck(ctx, providerID, credID, strings.TrimSpace(r.URL.Query().Get("model")))
 	if err != nil {
 		writeError(w, http.StatusNotFound, "credential not found")
 		return
