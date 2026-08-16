@@ -659,6 +659,60 @@ func TestReplayLifecycleActions_ExcludesNodeDimensionEvents(t *testing.T) {
 	}
 }
 
+func TestReplayLifecycleActionsFor_OnlyReplaysVisibleSnapshotRequests(t *testing.T) {
+	hub, _, rdb := newLifecycleTestHub(t)
+	ctx := context.Background()
+	ts := time.Date(2026, 8, 16, 12, 0, 0, 0, time.UTC)
+	for _, ev := range []liveactions.ActionEvent{
+		{RequestID: "visible", Seq: 1, Action: liveactions.ActionArrive, Ts: ts},
+		{RequestID: "unrelated", Seq: 1, Action: liveactions.ActionArrive, Ts: ts.Add(time.Second)},
+	} {
+		if err := rdb.LPush(ctx, liveactions.RedisKey, mustMarshalAction(t, ev)).Err(); err != nil {
+			t.Fatalf("push action: %v", err)
+		}
+	}
+
+	client, rec := newLifecycleClient("", true)
+	hub.replayLifecycleActionsFor(ctx, client, map[string]struct{}{"visible": {}})
+	frames := parseSSEDataFrames(t, rec.Body.String())
+	if len(frames) != 1 {
+		t.Fatalf("expected one replay frame, got %d", len(frames))
+	}
+	actions := asActionArray(t, frames[0]["action"])
+	if len(actions) != 1 || actions[0]["request_id"] != "visible" {
+		t.Fatalf("replay must contain only visible snapshot actions, got %#v", actions)
+	}
+}
+
+func TestSnapshotRequestIDs_PrefersDetailDimensionsAndFallsBack(t *testing.T) {
+	detail := &LiveStreamSnapshot{
+		DetailDimensions: map[string][]LiveStreamLane{
+			"vendor": {{Requests: []LiveStreamTile{{RequestID: "detail-1"}, {RequestID: "detail-1"}}}},
+		},
+		Dimensions: map[string][]LiveStreamLane{
+			"vendor": {{Requests: []LiveStreamTile{{RequestID: "fallback-ignored"}}}},
+		},
+	}
+	ids := snapshotRequestIDs(detail)
+	if len(ids) != 1 {
+		t.Fatalf("detail IDs = %#v, want only deduplicated detail request", ids)
+	}
+	if _, ok := ids["detail-1"]; !ok {
+		t.Fatalf("detail request missing: %#v", ids)
+	}
+
+	fallback := &LiveStreamSnapshot{Dimensions: map[string][]LiveStreamLane{
+		"vendor": {{Requests: []LiveStreamTile{{RequestID: "fallback-1"}}}},
+	}}
+	ids = snapshotRequestIDs(fallback)
+	if len(ids) != 1 {
+		t.Fatalf("fallback IDs = %#v, want one request", ids)
+	}
+	if _, ok := ids["fallback-1"]; !ok {
+		t.Fatalf("fallback request missing: %#v", ids)
+	}
+}
+
 // TestLiveStreamEnvelope_LifecycleFieldSnapshot freezes the OBS-BE2 frame
 // key sets: the exact top-level keys each new envelope type may carry.
 // Adding a key requires a deliberate contract update (DV1).

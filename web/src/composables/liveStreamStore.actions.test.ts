@@ -228,4 +228,17 @@ describe('unknown event types', () => {
     } as LiveStreamEnvelope)
     expect(__testing.state.children.size).toBe(0)
   })
+
+  it('rebuilds the child index from initial_data after a reconnect', () => {
+    const parent = makeRequest('parent')
+    const childRequest = makeRequest('child', { parentRequestId: 'parent', requestType: 'title' })
+    __testing.applyInitialData([parent, childRequest])
+
+    expect(getRequestChildren('parent').map((r) => r.request_id)).toEqual(['child'])
+    expect(__testing.childrenTotal()).toBe(1)
+
+    // A later duplicate child_request frame must keep the same one-child index.
+    child('parent', childRequest)
+    expect(getRequestChildren('parent')).toHaveLength(1)
+  })
 })

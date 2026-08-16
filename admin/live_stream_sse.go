@@ -1866,13 +1866,12 @@ func (h *LiveStreamSSEHub) HandleLiveStream(w http.ResponseWriter, r *http.Reque
 		})
 		if mErr == nil {
 			h.writeEvent(client, data)
+			// OBS-BE2 (24号 §4): replay lifecycle actions only for request
+			// cards included in the authoritative initial snapshot. This keeps
+			// unrelated global-list activity out of the frontend timeline index.
+			h.replayLifecycleActionsFor(r.Context(), client, snapshotRequestIDs(snapshot))
 		}
 	}
-
-	// OBS-BE2 (24号 §4): replay the most recent actions after the request
-	// snapshot so a page refresh rebuilds the per-request action timelines.
-	// Filtered to the client's scope exactly like the live frames.
-	h.replayLifecycleActions(r.Context(), client)
 
 	// Block until the client disconnects.
 	<-r.Context().Done()
