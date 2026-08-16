@@ -852,3 +852,14 @@
 | Migration | File | Status |
 |-----------|------|--------|
 | 517 | `517_handoff_pending_confirmations.sql` | pending deployment verification |
+## 2026-08-16 — build_seq 1560 candidate (8dc1597d); deployment evidence pending
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 518 | `518_handoff_pending_proposal_created_at_index.sql` | `a6a6987b48079549d35b641fbf85ba85da145c3d2e41ed75f59f4e4440248e29` | source checksum verified; deployment evidence pending |
+
+## 2026-08-16 — build_seq 1561 candidate (5b6ec115); deployment evidence pending
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 520 | `520_durable_task_settlement_intents.sql` | `cb9f7bc736b189c7f14a780903a76b310c494b249f21f2902c4981b189c328f4` | source checksum verified; deployment evidence pending |
