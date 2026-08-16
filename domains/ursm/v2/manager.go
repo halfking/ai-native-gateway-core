@@ -226,12 +226,18 @@ func (m *Manager) ValidateCoverage(ctx context.Context) (int, error) {
 	return m.recovery.ValidateCoverage(ctx)
 }
 
-// currently closed, returning the observed key count for audit.
-//
-// See recovery.Manager.RestoreIfClosed for the full contract.
+// RestoreIfClosed reopens a closed gate after Redis recovery. Authoritative
+// mode validates the full cutover manifest again; other modes retain the
+// legacy existing-key recovery contract.
 func (m *Manager) RestoreIfClosed(ctx context.Context) (int, error) {
 	if m == nil {
 		return 0, nil
+	}
+	if m.Ready(ctx) {
+		return 0, nil
+	}
+	if m.Mode() == api.ModeAuthoritative {
+		return m.recovery.WarmupFromCoverage(ctx)
 	}
 	return m.recovery.RestoreIfClosed(ctx)
 }

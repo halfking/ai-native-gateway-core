@@ -1,106 +1,123 @@
-# 会话优化 v4 P0-Z2 + P0-Z4 Handoff
+# 2026-08-16 — 会话优化 v4：Session Turns 与审计裁决交接（单一来源）
 
-日期：2026-08-16
+> 状态：本文件是本主题唯一的交接与裁决来源，取代原 `2026-08-16-session-optimization-v4-quick-fixes.md`。
+> 项目：`llm-gateway-go`
+> 最后同步：2026-08-17；migration 525/526 的 PostgreSQL 17 隔离库复验待本会话记录。
 
-## 结论
+## 1. 范围与结论
 
-本会话完成 `session_turns` 六维存储与 hot + 月分区模式：
+本主题完成两部分工作：
 
-- Migration 526：`525_session_turns_six_dim.sql`
-- Migration 526：`526_session_turns_hot.sql`
-- SQL 验收：`sql/migrations/test/test_525_526.test.sql`
+1. `session_turns` 的四个附加查询维度和独立 hot 写表/按月分区搬迁路径；
+2. Goal 审计预设与异步 pending 响应契约的冲突裁决。
 
-原计划使用 522/523，但仓库已有两个 522，且 `origin/main` 已正式占用 523/524（context window override NOTIFY 的连续修复）。为避免 production ledger/checksum 冲突，本任务最终使用 525/526。
+生产 migration ledger 已占用 523/524。因此原计划的两个 session turns migration 已重命名为 **525/526**，不得再使用 524/525、522/523 的旧编号。
 
-## 已实现
+| Migration | 文件 | 作用 |
+| --- | --- | --- |
+| 525 | `sql/migrations/startup/525_session_turns_six_dim.sql` | 在 `session_turns` 分区父表及叶分区增加四个 nullable `TEXT` 查询维度，并建立 tenant-scoped partial index。 |
+| 526 | `sql/migrations/startup/526_session_turns_hot.sql` | 创建 `session_turns_hot`、统一读取 view、共享 advisory lock 和原子 promote 函数。 |
 
-### P0-Z4 六维
+验收脚本：`sql/migrations/test/test_525_526.test.sql`。
 
-现有维度：`session_id`、`turn_no`。
+## 2. 已实现：Session Turns 六维与 Hot/分区
 
-新增 nullable TEXT 列：
+### 2.1 四个新增维度
+
+在已有 `session_id`、`turn_no` 基础上，525 添加以下 nullable `TEXT` 列：
 
 - `project_id`
 - `namespace`
 - `parent_request_id`
 - `task_type`
 
-Migration 526 在父分区表执行 `ALTER TABLE`，并验证所有 leaf partition 均自动传播列；新增 tenant-scoped partial indexes。主 schema、deploy baseline 与 table object 镜像已同步为完整 50 列合同；baseline 的 2026_07/08 子表也已同步并通过 PostgreSQL 15 `ATTACH PARTITION` 验证。
+写入链路已覆盖：
 
-写链路已贯通：
+- `X-Gw-Project-Id` → request meta → telemetry entry → V2 request → turn；
+- 已加载的 `Session.Namespace` → request log context → telemetry entry → turn；
+- `RequestLogEntry.ParentRequestID` / `TaskType` → turn；
+- `sessions.task_type` 异步生成后，由 `SetSessionMetadata` 单调回填 hot 与历史 turn。
 
-- `X-Gw-Project-Id` -> request meta -> telemetry entry -> V2 request -> turn
-- 已加载 `Session.Namespace` -> request log context -> telemetry entry -> turn
-- `RequestLogEntry.ParentRequestID` -> turn
-- `RequestLogEntry.TaskType` -> turn
-- `sessions.task_type` 异步生成后，`SetSessionMetadata` 单调回填 hot 与历史 turns
+`/api/admin/turns` 可以直接按四个维度过滤，不需要 join `sessions`。`TurnWriter` 也补齐了已由 migration 513 建立、但先前实时 INSERT 漏写的 T0–T9 时序字段。
 
-业务 auto-route 不再被 `IsAutoRequest` 粗粒度跳过；内部 title/summary loopback 仍跳过。
+### 2.2 Hot 表与统一读取
 
-`TurnWriter` 同时补齐 migration 513 已建但此前实时 INSERT 漏写的 T0-T9。
+526 建立：
 
-### P0-Z2 hot + 分区
+- `public.session_turns_hot`：新 turn 的独立 heap 写表；
+- `public.session_turns_with_current_month`：显式列 union，隐藏已进入分区的 hot 重复 request；
+- `public.promote_session_turns_hot_to_partition(interval, integer)`：以 `DELETE … RETURNING` → `INSERT` CTE 原子搬迁。
 
-Migration 526 新增：
+关键合同：
 
-- `public.session_turns_hot`
-- `public.session_turns_with_current_month`
-- `public.promote_session_turns_hot_to_partition(interval, integer)`
+- 526 需要 PostgreSQL 15+；`security_invoker=true` 保留底表 RLS 语义。生产目标是 PG17，部署前仍须显式检查 `server_version_num`。
+- hot owner policy 与历史 parent policy 都查询 `request_logs_hot` 和 `request_logs`，并按 tenant 限定 session owner。
+- writer、aggregator、metadata、repair 与 promote 共用 canonical session advisory lock；writer/promote 也按 tenant/request 共享锁。
+- 新 turn 仅写 hot；MAX turn、幂等回读和只读查询经统一 view。tenant 内 `request_id` 跨日期保持唯一，不产生迟到重放的第二个 turn。
+- parent 已存在的异常 hot 重复行保留以便人工对账，view 隐藏该 hot 行，promote 发 warning 但不会阻断同批正常行。
+- repair 的 turn/body/session snapshot 使用一致的历史 `partition_date`，避免详情 join 依据执行日默认值丢正文。
+- partition manager 已注册 526 promote；`ensure_sessions_v2_partitions(date)` 每 24 小时预建当前月和下月。
 
-约束：
+## 3. 已裁决：Goal 审计与 Pending HTTP 契约
 
-- 526 要求 PostgreSQL 15+，因为统一 view 使用 `security_invoker=true` 保持底表 RLS。
-- hot owner policy 同时读取 `request_logs_hot` 与历史 `request_logs`。
-- promote 使用单条 `DELETE ... RETURNING -> INSERT` data-modifying CTE；正常批次保持 statement 原子性。
-- writer、aggregator、metadata、repair 与 promote 共享数据库 canonical session lock；writer/promote 另共享 tenant/request lock。
-- 新 turn 只写 hot；MAX turn_no、幂等回读和所有只读查询走统一 view。request_id 在 tenant 内跨日期只允许一条，迟到重放不会生成第二轮。
-- 已在 parent 出现的异常 hot 重复行从统一 view 和 promote batch 隔离：保留原数据供人工对账、发 warning，但不再阻塞后续正常冷行搬迁。
-- conflict enrichment 同时兼容 hot/历史 parent；aggregate claim 以 parent 为权威，parent 已存在时不会 claim 被 view 隐藏的 hot duplicate。
-- repair 的 turn/body/session snapshot 使用一致的历史 `partition_date`，详情 JOIN 不会因执行日默认值丢正文。
-- partition manager 注册 Migration 526 promote；现有 `ensure_sessions_v2_partitions(date)` 每 24 小时预建当前月和下月。
-- `/api/admin/turns` 支持 `project_id`、`namespace`、`parent_request_id`、`task_type` 直接过滤，不 JOIN `sessions`。
+### 3.1 P1-F：`Balanced.UseAudit`
 
-## 验收结果
+最终值是 **`false`**。
 
-在一次性 `postgres:15` Docker 数据库中真实执行，不是伪 `psql --dry-run`：
+三档模式的冻结语义为：minimal=false、balanced=false、aggressive=true。`balanced` 不自动驱动审计/修正，自动审计仅属于 aggressive。设计文档内“需改为 true”的相反行动项是遗留错误，已以此裁决为准；不应再改 `ModePresets[CostModeBalanced].UseAudit`。
 
-1. 顺序 apply 525 -> 526：通过。
-2. `test_525_526.test.sql`：通过。
-3. promote 正常搬迁：通过。
-4. 人工制造 hot/parent 重复键：重复 hot 行保留且统一 view 只返回一行，后续正常冷行继续 promote，通过。
-5. 使用 `NOBYPASSRLS` 非 owner 角色验证 security-invoker view：owner 可见 hot+parent、stranger 不可见、super_admin 可见，通过。
-6. hot 非空执行 526 down：按预期拒绝。
-7. 清空 hot 后按 526 down -> 525 down：通过；526 down 恢复旧 parent owner policy，并保持 Migration 474 的五值 submit_mode（parent 已有 attachment_only 行时回滚成功）。
-8. 重新 apply 两次并重跑 SQL 测试：通过。
-9. fresh schema mirror 的 50 列 parent/children create + attach、attachment_only 与非负约束：通过。
+### 3.2 P0-E：HTTP 202 异步 retry header
 
-Go 验收：
+保留现有：`202 Accepted`、`X-Gw-Pending`、`X-Gw-Pending-Request` 和 `Retry-After`。
 
-- `go test ./domains/session/v2/...`：通过。
-- session mirror、session、streaming、telemetry、admin、bg、sessionsummary、gateway、validator 受影响包：全部通过。
-- `git diff --check`：通过。
-- 静态检查：统一 view 无 INSERT/UPDATE/DELETE；跨轮次维度查询无 `JOIN public.sessions`。
-- `go test ./...`：当前工作树全仓通过。
+不新增 `X-LLM-Gateway-Retry-Scheduled`：它仅是历史建议示例，未成为冻结契约；幂等 replay 的 pending 响应也不表示本请求新调度了一次 retry。`domains/streaming/handler.go` 因此没有为该提案修改。
 
-## 严格回滚清单
+若将来实施 Goal retry 的异步协议，必须先完成前端/OpenAI SDK 兼容性验证，并重新冻结状态、body、header 与轮询语义，不能默认复用历史示例。
 
-1. 先回滚/停止写 `session_turns_hot` 的应用版本。
-2. 暂停 partition manager 的 session turns promote 调度。
-3. 获取同一 promote advisory lock，确认无搬迁事务在途。
-4. 反复调用 promote；对 warning 标记的 hot/parent 重复键逐条比较并人工合并/导出，直至 `public.session_turns_hot` 为 0 行。
-5. 执行 `526_session_turns_hot.down.sql`。hot 非空时脚本会 fail closed。
-6. 部署回只读/写 `public.session_turns` 的旧应用版本。
-7. 备份四维列；确认允许丢失维度值后，执行 `525_session_turns_six_dim.down.sql`。
-8. 验证 view/function/hot 表已删除，四维列与相关索引已删除。
+## 4. 验证记录
 
-不要先回滚 525；526 view、hot 表和函数依赖四维列。
+已完成：
 
-## 待对账项
+- 隔离 PostgreSQL 15 数据库顺序 apply 525 → 526、运行 SQL 验收、正常 promote、重复 hot/parent 隔离、RLS security-invoker、hot 非空 down fail-closed、清空后的 526 down → 525 down、两次 reapply 均通过。
+- fresh schema mirror 的 50 列 parent/children create + attach、`attachment_only` 和非负约束通过。
+- `go test ./domains/session/v2/...`、受影响 session/streaming/telemetry/admin/bg/sessionsummary/gateway/validator 包、`go test ./...`、`go vet ./...`、`go build ./...` 与 `git diff --check` 均在合并前通过。
+- strict secrets 全仓扫描命中仓库既有基线（57 BLOCK / 1052 WARN），与本改动无关；针对本主题 8 个文件运行的 strict 扫描为 0 findings。
 
-- Migration ledger：历史两个 522 仍是部署阻断风险；生产 checksum ledger 必须在下一次 deploy 前单独修复/核对。
-- 历史 backfill：按 request ID 从 `request_context_attrs`/`request_logs_hot`/`request_logs` 回填 project、parent、task，并统计 NULL 比例。
-- namespace 历史数据：早期失败和仅有 provisional session ID 的请求无法可靠恢复，保持 NULL，不从 ID 猜测。
-- installer schema：installer embed 的 `01-schema.sql` 仍整体缺 Sessions V2；本任务已同步主 schema/deploy baseline/table object 的完整 50 列合同，但未伪造 installer 的不完整结构。
-- 索引部署窗口：525 在 partition parent 建 4 个索引，生产大分区需低峰执行并监控 lock wait；必要时另行采用逐子分区 concurrent build + attach。
-- promote 对账：上线后监控 hot 行龄、每批 moved rows、hot/parent 重复 request key、失败计数及下月 partition 是否存在。
-- PostgreSQL 版本：525 可在 PG14+；526 因 RLS-safe security-invoker view 要求 PG15+。生产已核实为 PG17，部署前仍应显式检查 `server_version_num`。
+待补充：
+
+- PostgreSQL 17 隔离临时库执行 `test_525_526.test.sql` 的真实 apply、重复 apply 与清理结果。本次结果必须写入本节及相应 `FIXME`，不可只在聊天记录中声明。
+
+## 5. 回滚与运维约束
+
+严格回滚顺序：
+
+1. 回滚或停止写 `session_turns_hot` 的应用版本。
+2. 暂停 session turns promote 调度，并取得同一 promote advisory lock，确认无搬迁事务在途。
+3. 反复调用 promote；对 warning 的 hot/parent 重复 request key 逐条对账并人工合并或导出，直至 `session_turns_hot` 为空。
+4. 执行 `526_session_turns_hot.down.sql`；hot 非空时必须 fail closed。
+5. 部署回仅读写 `session_turns` 的旧应用版本。
+6. 备份四个附加维度，确认允许丢失其值后才执行 `525_session_turns_six_dim.down.sql`。
+
+不得先回滚 525，因为 526 的 view、hot 表和函数依赖这四个维度。
+
+上线后监控 hot 行龄、每批 moved rows、hot/parent 重复 request key、promote 失败计数以及下月 partition 是否存在。525 会在分区 parent 创建四个索引；大生产分区应选择低峰并监控 lock wait，必要时另行采用逐子分区 concurrent build + attach。
+
+## 6. 尚待对账与后续
+
+- 历史 migration ledger 中仍有两个 522；生产 checksum ledger 必须在下次部署前独立修复或核对。
+- 历史 backfill 可从 `request_context_attrs`、`request_logs_hot`、`request_logs` 按 request ID 回填 project/parent/task，并统计 NULL 比例。
+- 早期失败或仅有 provisional session ID 的请求无法可靠恢复 namespace；保持 NULL，不根据 ID 猜测。
+- installer embed 的 `01-schema.sql` 整体仍缺 Sessions V2。主 schema、deploy baseline 与 table object 已具备完整 50 列合同，但不得伪造 installer 的不完整结构。
+- `docs/会话优化v4/05-rollout-runbook.md` 仍有旧 524/525 编号，需要改为 525/526。
+- Gateway→SM durable outbox 仍为 partial：部署态 HMAC、consumer 幂等和 ownership 对账尚未闭环，完成前不得将 capability 标记为 current。
+
+## 7. 相关文件
+
+- `sql/migrations/startup/525_session_turns_six_dim.sql`
+- `sql/migrations/startup/526_session_turns_hot.sql`
+- `sql/migrations/test/test_525_526.test.sql`
+- `sql/migrations/startup/526_session_turns_hot.down.sql`
+- `sql/migrations/startup/525_session_turns_six_dim.down.sql`
+- `docs/会话优化v4/05-会话分析与模型选择设计.md`
+- `docs/会话优化v4/10-实施计划.md`
+- `docs/会话优化v4/11-完成情况核实与并发执行方案.md`
