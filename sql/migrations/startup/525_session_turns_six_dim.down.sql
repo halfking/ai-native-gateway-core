@@ -1,4 +1,4 @@
--- Migration 524 down: remove scoped dimensions from session_turns.
+-- Migration 525 down: remove scoped dimensions from session_turns.
 -- DATA LOSS ORDER: stop writers/readers, back up all four columns, drop the
 -- dependent indexes, then drop the columns. Column drops are irreversible.
 

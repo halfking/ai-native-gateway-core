@@ -1,4 +1,4 @@
--- Migration 524: add the remaining scoped dimensions to session_turns.
+-- Migration 525: add the remaining scoped dimensions to session_turns.
 -- PostgreSQL 14+ propagates ALTER TABLE ... ADD COLUMN from a partitioned
 -- parent to every attached partition. The postcondition below verifies that
 -- propagation instead of assuming it succeeded.
@@ -8,7 +8,7 @@ BEGIN;
 DO $$
 BEGIN
     IF current_setting('server_version_num')::integer < 140000 THEN
-        RAISE EXCEPTION 'Migration 524 requires PostgreSQL 14 or newer';
+        RAISE EXCEPTION 'Migration 525 requires PostgreSQL 14 or newer';
     END IF;
 
     IF NOT EXISTS (

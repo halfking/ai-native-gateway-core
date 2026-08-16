@@ -1,4 +1,4 @@
--- Migration 525 down: remove the independent session_turns hot path.
+-- Migration 526 down: remove the independent session_turns hot path.
 -- Fail closed: the hot table is locked and must be empty. Promote or otherwise
 -- preserve every row before retrying this rollback.
 
@@ -12,7 +12,7 @@ BEGIN
         LOCK TABLE public.session_turns_hot IN ACCESS EXCLUSIVE MODE;
         SELECT count(*) INTO v_hot_rows FROM public.session_turns_hot;
         IF v_hot_rows <> 0 THEN
-            RAISE EXCEPTION 'Migration 525 down refused: public.session_turns_hot contains % rows',
+            RAISE EXCEPTION 'Migration 526 down refused: public.session_turns_hot contains % rows',
                 v_hot_rows;
         END IF;
     END IF;
@@ -50,6 +50,6 @@ ALTER TABLE public.session_turns
     DROP CONSTRAINT IF EXISTS session_turns_submit_mode_check;
 ALTER TABLE public.session_turns
     ADD CONSTRAINT session_turns_submit_mode_check
-        CHECK (submit_mode IN ('full', 'delta', 'snapshot', 'inferred_compressed'));
+        CHECK (submit_mode IN ('full', 'delta', 'snapshot', 'inferred_compressed', 'attachment_only'));
 
 COMMIT;

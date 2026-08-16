@@ -35,6 +35,15 @@ func expectAggregateSessionLock(mock pgxmock.PgxPoolIface, update SessionUpdate)
 		WillReturnResult(pgxmock.NewResult("SELECT", 1))
 }
 
+func expectNoParentTurn(mock pgxmock.PgxPoolIface, update SessionUpdate, partitionDate time.Time) {
+	mock.ExpectQuery(regexp.QuoteMeta("UPDATE public.session_turns")).
+		WithArgs(update.SessionID, update.TenantID, update.RequestID, partitionDate).
+		WillReturnError(pgx.ErrNoRows)
+	mock.ExpectQuery("SELECT EXISTS").
+		WithArgs(update.TenantID, update.RequestID, partitionDate).
+		WillReturnRows(pgxmock.NewRows([]string{"exists"}).AddRow(false))
+}
+
 func expectAggregateUpsert(mock pgxmock.PgxPoolIface, update SessionUpdate, partitionDate time.Time) {
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO public.sessions")).
 		WithArgs(
@@ -62,10 +71,10 @@ func TestSessionAggregator_UpdateSessionIdempotent(t *testing.T) {
 	update := aggregateTestUpdate()
 	partitionDate := update.UpdatedAt.Truncate(24 * time.Hour)
 	hotClaim := regexp.QuoteMeta("UPDATE public.session_turns_hot")
-	partitionClaim := regexp.QuoteMeta("UPDATE public.session_turns")
 
 	mock.ExpectBegin()
 	expectAggregateSessionLock(mock, update)
+	expectNoParentTurn(mock, update, partitionDate)
 	mock.ExpectQuery(hotClaim).
 		WithArgs(update.SessionID, update.TenantID, update.RequestID, partitionDate).
 		WillReturnRows(pgxmock.NewRows([]string{"claimed"}).AddRow(1))
@@ -75,13 +84,35 @@ func TestSessionAggregator_UpdateSessionIdempotent(t *testing.T) {
 
 	mock.ExpectBegin()
 	expectAggregateSessionLock(mock, update)
+	expectNoParentTurn(mock, update, partitionDate)
 	mock.ExpectQuery(hotClaim).
 		WithArgs(update.SessionID, update.TenantID, update.RequestID, partitionDate).
 		WillReturnError(pgx.ErrNoRows)
-	mock.ExpectQuery(partitionClaim).
+	mock.ExpectCommit()
+	require.NoError(t, agg.UpdateSession(context.Background(), update))
+}
+
+func TestSessionAggregator_ParentDuplicatePreventsHiddenHotClaim(t *testing.T) {
+	mock, err := pgxmock.NewPool(pgxmock.QueryMatcherOption(pgxmock.QueryMatcherRegexp))
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, mock.ExpectationsWereMet())
+		mock.Close()
+	})
+
+	agg := newSessionAggregator(mock)
+	update := aggregateTestUpdate()
+	partitionDate := update.UpdatedAt.Truncate(24 * time.Hour)
+	mock.ExpectBegin()
+	expectAggregateSessionLock(mock, update)
+	mock.ExpectQuery(regexp.QuoteMeta("UPDATE public.session_turns")).
 		WithArgs(update.SessionID, update.TenantID, update.RequestID, partitionDate).
 		WillReturnError(pgx.ErrNoRows)
+	mock.ExpectQuery("SELECT EXISTS").
+		WithArgs(update.TenantID, update.RequestID, partitionDate).
+		WillReturnRows(pgxmock.NewRows([]string{"exists"}).AddRow(true))
 	mock.ExpectCommit()
+
 	require.NoError(t, agg.UpdateSession(context.Background(), update))
 }
 
@@ -103,6 +134,7 @@ func TestSessionAggregator_UpdateSessionClaimRollsBackOnFailure(t *testing.T) {
 
 	mock.ExpectBegin()
 	expectAggregateSessionLock(mock, update)
+	expectNoParentTurn(mock, update, partitionDate)
 	mock.ExpectQuery(claim).
 		WithArgs(update.SessionID, update.TenantID, update.RequestID, partitionDate).
 		WillReturnRows(pgxmock.NewRows([]string{"claimed"}).AddRow(1))
@@ -121,6 +153,7 @@ func TestSessionAggregator_UpdateSessionClaimRollsBackOnFailure(t *testing.T) {
 
 	mock.ExpectBegin()
 	expectAggregateSessionLock(mock, update)
+	expectNoParentTurn(mock, update, partitionDate)
 	mock.ExpectQuery(claim).
 		WithArgs(update.SessionID, update.TenantID, update.RequestID, partitionDate).
 		WillReturnRows(pgxmock.NewRows([]string{"claimed"}).AddRow(1))
