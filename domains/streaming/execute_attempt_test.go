@@ -9,6 +9,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
+	"github.com/kaixuan/llm-gateway-go/provider"
 )
 
 // SR-05 (doc 18 §5.1 ExecuteAttempt): one bounded attempt through the
@@ -91,6 +92,37 @@ func TestExecuteAttemptFoldsCandidateOutcomesAndSafeRetry(t *testing.T) {
 	}
 	if res.LastKind() != errorsx.KindTransient {
 		t.Fatalf("last kind = %v", res.LastKind())
+	}
+}
+
+func TestFailureAttributionUsesLastExecutedAttempt(t *testing.T) {
+	execErr := &executors.ExecuteError{
+		Attempts: []executors.AttemptRecord{
+			{ProviderID: 5917, CredentialID: 32},
+			{ProviderID: 12763, CredentialID: 36},
+		},
+	}
+
+	providerID, credentialID := failureAttribution(execErr, nil)
+
+	if providerID == nil || *providerID != 12763 {
+		t.Fatalf("provider attribution = %v, want 12763", providerID)
+	}
+	if credentialID == nil || *credentialID != 36 {
+		t.Fatalf("credential attribution = %v, want 36", credentialID)
+	}
+}
+
+func TestFailureAttributionFallsBackToTopCandidate(t *testing.T) {
+	candidates := []provider.Candidate{{ProviderID: 5917, CredentialID: 32}}
+
+	providerID, credentialID := failureAttribution(errors.New("context canceled"), candidates)
+
+	if providerID == nil || *providerID != 5917 {
+		t.Fatalf("provider attribution = %v, want 5917", providerID)
+	}
+	if credentialID == nil || *credentialID != 32 {
+		t.Fatalf("credential attribution = %v, want 32", credentialID)
 	}
 }
 
