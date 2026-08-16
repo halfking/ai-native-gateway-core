@@ -9,7 +9,7 @@
 | 文件 | 类型 | 说明 |
 |---|---|---|
 | `domains/streaming/durable_recovery_worker.go` | modify | 执行账本、重试上限和退避计算 |
-| `domains/streaming/durable_recovery_worker_test.go` | modify | 覆盖首次、指数、上游封顶和终态边界 |
+| `domains/streaming/durable_recovery_worker_test.go` | modify | 覆盖首次、指数、上游调度权威和终态边界 |
 | `domains/streaming/durable_scenario_test.go` | modify | 使用新的 retry base 选项 |
 | `durable/store_claim.go` | modify | 仅领取已到达 `next_retry_at` 的任务 |
 | `durable/store_claim_test.go` | modify | 固定严格到期领取契约 |

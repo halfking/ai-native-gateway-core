@@ -56,8 +56,8 @@ type DurableWorkerOptions struct {
 	MaxRetries int
 	// RetryBase is the initial retry delay. 0 → 2s.
 	RetryBase time.Duration
-	// RetryMax bounds both exponential and upstream-suggested retry delays.
-	// 0 → 120s.
+	// RetryMax bounds locally calculated exponential retry delays. An upstream
+	// RetryAfter remains the authoritative schedule when present. 0 → 120s.
 	RetryMax time.Duration
 }
 
