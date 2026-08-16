@@ -130,26 +130,32 @@ func (c *SurvivalCoordinator) sleep(ctx context.Context, d time.Duration) error 
 // keepalive emits a transport-level SSE comment through the shared writer
 // (doc 18 §9.1 — strict clients only ever receive comments from the
 // survival loop). The Keepalive seam overrides the default rendering.
-func (c *SurvivalCoordinator) keepalive(sw *SerializedStreamWriter) {
+func (c *SurvivalCoordinator) keepalive(sw *SerializedStreamWriter) error {
 	if c.Keepalive != nil {
 		c.Keepalive()
-		return
+		return nil
 	}
 	if sw != nil {
 		frame := ": gw-survival-keepalive\n\n"
 		if c.Protocol == ProtocolAnthropic {
 			frame = "event: ping\ndata: {\"type\":\"ping\"}\n\n"
 		}
-		if _, err := sw.Write([]byte(frame)); err == nil {
-			sw.Flush()
-		} else {
+		if _, err := sw.Write([]byte(frame)); err != nil {
 			recordSurvivalKeepaliveWriteError(c.Protocol)
+			return err
+		}
+		if err := sw.FlushError(); err != nil {
+			recordSurvivalKeepaliveWriteError(c.Protocol)
+			return err
 		}
 	}
+	return nil
 }
 
 func (c *SurvivalCoordinator) waitWithKeepalive(ctx context.Context, sw *SerializedStreamWriter, wait, interval time.Duration) error {
-	c.keepalive(sw)
+	if err := c.keepalive(sw); err != nil {
+		return err
+	}
 	if c.Sleep != nil || wait <= interval {
 		return c.sleep(ctx, wait)
 	}
@@ -164,7 +170,9 @@ func (c *SurvivalCoordinator) waitWithKeepalive(ctx context.Context, sw *Seriali
 		case <-timer.C:
 			return nil
 		case <-ticker.C:
-			c.keepalive(sw)
+			if err := c.keepalive(sw); err != nil {
+				return err
+			}
 		}
 	}
 }

@@ -331,7 +331,9 @@ func TestSurvivalKeepaliveUsesClientProtocol(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			f := &trackingFlusher{}
 			c := &SurvivalCoordinator{Protocol: tt.protocol}
-			c.keepalive(NewSerializedStreamWriter(f))
+			if err := c.keepalive(NewSerializedStreamWriter(f)); err != nil {
+				t.Fatalf("keepalive: %v", err)
+			}
 			if got := f.buf.String(); got != tt.want {
 				t.Fatalf("keepalive = %q, want %q", got, tt.want)
 			}
@@ -339,6 +341,22 @@ func TestSurvivalKeepaliveUsesClientProtocol(t *testing.T) {
 				t.Fatalf("keepalive class = %v, want FrameClassKeepalive", class)
 			}
 		})
+	}
+}
+
+func TestSurvivalCoordinatorStopsAfterKeepaliveFlushFailure(t *testing.T) {
+	h := newCoordHarness(&scriptedExecutor{errs: []error{transientFailure()}})
+	failing := &failingErrorFlusher{flushErr: errors.New("client disconnected")}
+	h.sw = NewSerializedStreamWriter(failing)
+	c := h.coordinator()
+
+	res := c.Run(context.Background(), h.sw, &executors.ExecParams{})
+
+	if res.Decision.Reason != "client_disconnected" {
+		t.Fatalf("decision reason = %q, want client_disconnected", res.Decision.Reason)
+	}
+	if res.Attempts != 1 {
+		t.Fatalf("attempts = %d, want 1", res.Attempts)
 	}
 }
 
