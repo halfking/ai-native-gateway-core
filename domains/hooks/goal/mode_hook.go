@@ -40,6 +40,7 @@ type ModeConfig struct {
 	AutoContinueOnPause   bool
 	MaxRetryCount         int
 	MaxAutoContinueCount  int
+	UseAudit              bool
 	UseAutorouteForAudit  bool
 	UseAutorouteForIntent bool
 	FallbackAuditModel    string
@@ -122,11 +123,12 @@ type Session struct {
 
 // ModeHook implements response.ResponseInterceptor for goal mode management.
 type ModeHook struct {
-	config    ModeConfig
-	db        GoalStore
-	llmCaller LLMCaller
-	detector  *CompletionDetector
-	history   HistoryStore
+	config          ModeConfig
+	db              GoalStore
+	llmCaller       LLMCaller
+	detector        *CompletionDetector
+	history         HistoryStore
+	outcomeObserver OutcomeObserver
 }
 
 // GoalStore defines the interface for persisting goal sessions.
@@ -186,6 +188,9 @@ func (h *ModeHook) History() HistoryStore { return h.history }
 
 // InterceptNonStream handles goal mode logic for non-streaming responses.
 func (h *ModeHook) InterceptNonStream(ctx context.Context, req *response.InterceptRequest) (*response.InterceptResult, error) {
+	if strings.HasPrefix(req.FollowUpAction, "audit") {
+		return nil, nil
+	}
 	enabled := h.loadBool(req.TenantID, "goal.enabled", h.config.Enabled)
 	if !enabled {
 		return nil, nil
@@ -226,9 +231,13 @@ func (h *ModeHook) InterceptNonStream(ctx context.Context, req *response.Interce
 	if completed {
 		slog.Info("task_completed", "session_id", req.SessionID, "confidence", confidence, "reason", reason)
 		_ = h.db.UpdateSessionState(ctx, req.SessionID, StateCompleted)
+		h.observeOutcome(ctx, Outcome{
+			Kind: OutcomeCompleted, SessionID: req.SessionID, TenantID: req.TenantID,
+			Reason: reason, Source: "completion_detector", RetryCount: goalSession.RetryCount,
+			RepeatCount: goalSession.RepeatCount, ModelSwitchCount: goalSession.ModelSwitchCount,
+		})
 
-		useAutoroute := h.loadBool(req.TenantID, "goal.use_autoroute_for_audit", h.config.UseAutorouteForAudit)
-		if useAutoroute {
+		if h.loadBool(req.TenantID, "goal.audit_enabled", h.config.UseAudit) {
 			return h.triggerAudit(ctx, req, goalSession)
 		}
 		return nil, nil
@@ -280,6 +289,12 @@ func (h *ModeHook) decideAndContinue(ctx context.Context, req *response.Intercep
 				"new_model", decision.switchModel,
 				"switch_count", sess.ModelSwitchCount,
 				"reason", decision.reason)
+			h.observeOutcome(ctx, Outcome{
+				Kind: OutcomeDegraded, SessionID: req.SessionID, TenantID: req.TenantID,
+				Reason: "model_switched", Source: "loop_detector", RetryCount: sess.RetryCount,
+				RepeatCount: sess.RepeatCount, ModelSwitchCount: sess.ModelSwitchCount,
+				MaxModelSwitchCount: h.loadInt(req.TenantID, "goal.max_model_switch_count", h.config.MaxModelSwitchCount),
+			})
 			// Build the follow-up targeting the new model WITHOUT consuming a
 			// continue-budget slot: applyModelSwitch already reset the count to
 			// 0, so this rotation IS the new model's first attempt. tryAtomicContinue
@@ -298,6 +313,15 @@ func (h *ModeHook) decideAndContinue(ctx context.Context, req *response.Intercep
 			"reason", decision.reason,
 			"auto_continue_count", sess.AutoContinueCount,
 			"model_switch_count", sess.ModelSwitchCount)
+		if err := h.db.UpdateSessionState(ctx, req.SessionID, StateFailed); err != nil {
+			slog.Warn("goal_failed_state_persist_failed", "session_id", req.SessionID, "error", err)
+		}
+		h.observeOutcome(ctx, Outcome{
+			Kind: OutcomeFailed, SessionID: req.SessionID, TenantID: req.TenantID,
+			Reason: decision.reason, Source: "loop_detector", RetryCount: sess.RetryCount,
+			RepeatCount: sess.RepeatCount, ModelSwitchCount: sess.ModelSwitchCount,
+			MaxModelSwitchCount: h.loadInt(req.TenantID, "goal.max_model_switch_count", h.config.MaxModelSwitchCount),
+		})
 	}
 	return nil, nil
 }
@@ -385,6 +409,9 @@ func (h *ModeHook) InterceptStreamChunk(ctx context.Context, chunk []byte, meta 
 // is NOT available (older callers), it falls back to the legacy length-based
 // continue behaviour so we don't regress.
 func (h *ModeHook) InterceptStreamEnd(ctx context.Context, meta *response.StreamMeta) (*response.EndResult, error) {
+	if strings.HasPrefix(meta.FollowUpAction, "audit") {
+		return nil, nil
+	}
 	enabled := h.loadBool(meta.TenantID, "goal.enabled", h.config.Enabled)
 	if !enabled {
 		return nil, nil
@@ -414,10 +441,14 @@ func (h *ModeHook) InterceptStreamEnd(ctx context.Context, meta *response.Stream
 		if completed {
 			slog.Info("task_completed_stream", "session_id", meta.SessionID, "confidence", confidence, "reason", reason)
 			_ = h.db.UpdateSessionState(ctx, meta.SessionID, StateCompleted)
+			h.observeOutcome(ctx, Outcome{
+				Kind: OutcomeCompleted, SessionID: meta.SessionID, TenantID: meta.TenantID,
+				Reason: reason, Source: "completion_detector", RetryCount: goalSession.RetryCount,
+				RepeatCount: goalSession.RepeatCount, ModelSwitchCount: goalSession.ModelSwitchCount,
+			})
 			// Audit is triggered on the non-stream follow-up path; for the
 			// stream path we also return an audit follow-up so the audit runs.
-			useAutoroute := h.loadBool(meta.TenantID, "goal.use_autoroute_for_audit", h.config.UseAutorouteForAudit)
-			if useAutoroute {
+			if h.loadBool(meta.TenantID, "goal.audit_enabled", h.config.UseAudit) {
 				auditResult := h.triggerAuditEndResult(ctx, meta, goalSession)
 				return auditResult, nil
 			}
@@ -538,7 +569,7 @@ func (h *ModeHook) buildContinueMessage(ctx context.Context, req *response.Inter
 // triggerAudit initiates audit using autoroute.
 func (h *ModeHook) triggerAudit(ctx context.Context, req *response.InterceptRequest, session *Session) (*response.InterceptResult, error) {
 	model := h.loadString(req.TenantID, "goal.fallback_audit_model", h.config.FallbackAuditModel)
-	if h.config.UseAutorouteForAudit {
+	if h.loadBool(req.TenantID, "goal.use_autoroute_for_audit", h.config.UseAutorouteForAudit) {
 		model = "auto"
 	}
 

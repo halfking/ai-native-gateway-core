@@ -205,8 +205,10 @@ func initGoalControl(db *sql.DB, chatHandler *streaming.ChatHandler) {
 		CompletionConfidence: getEnvFloat("LLM_GATEWAY_GOAL_COMPLETION_CONFIDENCE", preset.CompletionConfidence),
 
 		// Audit/Fix settings from preset
+		UseAudit:             getEnvBool("LLM_GATEWAY_GOAL_AUDIT_ENABLED", preset.UseAudit),
 		UseAutorouteForAudit: getEnvBool("LLM_GATEWAY_GOAL_USE_AUTOROUTE_AUDIT", preset.UseAutorouteAudit),
-		AutoFixEnabled:       getEnvBool("LLM_GATEWAY_GOAL_AUTO_FIX", preset.AutoFixEnabled),
+
+		AutoFixEnabled: getEnvBool("LLM_GATEWAY_GOAL_AUTO_FIX", preset.AutoFixEnabled),
 
 		// Loop detection from preset
 		ModelSwitchOnLoop:      getEnvBool("LLM_GATEWAY_GOAL_MODEL_SWITCH_ON_LOOP", preset.LoopDetectionEnabled),
@@ -251,10 +253,10 @@ func initGoalControl(db *sql.DB, chatHandler *streaming.ChatHandler) {
 	// 6. Audit hook: runs after completion, uses the full conversation
 	//    transcript (historyStore) and a separate audit model.
 	auditCfg := goal.AuditConfig{
-		Enabled:        getEnvBool("LLM_GATEWAY_GOAL_AUDIT_ENABLED", false),
-		UseAutoroute:   getEnvBool("LLM_GATEWAY_GOAL_USE_AUTOROUTE_AUDIT", true),
-		FallbackModel:  getEnv("LLM_GATEWAY_GOAL_AUDIT_MODEL", "auto"),
-		AutoFixEnabled: getEnvBool("LLM_GATEWAY_GOAL_AUTO_FIX", false),
+		Enabled:        goalCfg.UseAudit,
+		UseAutoroute:   goalCfg.UseAutorouteForAudit,
+		FallbackModel:  goalCfg.FallbackAuditModel,
+		AutoFixEnabled: goalCfg.AutoFixEnabled,
 		MinConfidence:  0.7,
 		SettingsGetter: adapter,
 	}
@@ -274,6 +276,9 @@ func initGoalControl(db *sql.DB, chatHandler *streaming.ChatHandler) {
 	// table. The replacement uses session_summaries + adds 8 new tunable
 	// settings (summary engine, model, cooldown, max_per_session, etc.).
 	handoffStore := handoff.NewPGStore(db)
+	goalHandoffTrigger := handoff.NewMemoryHandoffTrigger(5*time.Minute, goalStore)
+	goalStateSerializer := handoff.NewMemoryGoalStateSerializer(goalStore)
+	goalHook.SetOutcomeObserver(goalHandoffTrigger)
 	handoffCfg := handoff.TriggerConfig{
 		Enabled:             getEnvBool("LLM_GATEWAY_HANDOFF_ENABLED", false),
 		TriggerMode:         handoff.TriggerMode(getEnv("LLM_GATEWAY_HANDOFF_TRIGGER_MODE", "auto")),
@@ -295,7 +300,14 @@ func initGoalControl(db *sql.DB, chatHandler *streaming.ChatHandler) {
 		NotifyLevel:         handoff.NotifyLevel(getEnv("LLM_GATEWAY_HANDOFF_NOTIFY_LEVEL", "warn")),
 		NotifyWebhook:       getEnv("LLM_GATEWAY_HANDOFF_NOTIFY_WEBHOOK", ""),
 		ContinueHintTpl:     getEnv("LLM_GATEWAY_HANDOFF_CONTINUE_HINT_TPL", ""),
-		SettingsGetter:      adapter,
+		ContextMonitor:      handoff.NewMemoryContextMonitor(0, 0),
+		GoalStateSerializer: goalStateSerializer,
+		GoalTrigger:         goalHandoffTrigger,
+		MessageBuilder:      handoff.NewMemoryHandoffMessageBuilder(0),
+		GoalCostMode: func(tenantID string) string {
+			return adapter.GetString(tenantID, "goal.cost_mode", string(inferredCostMode))
+		},
+		SettingsGetter: adapter,
 		// LLMCaller shared with goal mode — reuses LLMGatewayAutoLLM* env vars
 		// via the same HTTPLlmCallerConfig. When no endpoint is configured,
 		// the hook auto-degrades to rule-based extraction.
@@ -332,6 +344,7 @@ func initGoalControl(db *sql.DB, chatHandler *streaming.ChatHandler) {
 	// 7b. Wire Goal retry policy resolver and recorder (2026-07-23)
 	chatHandler.SetGoalRetryPolicyResolver(retryResolver)
 	chatHandler.SetGoalRetryRecorder(goalStore)
+	chatHandler.SetGoalOutcomeObserver(goalHandoffTrigger)
 
 	handoffEnabled := handoffCfg.Enabled
 	ocEnabled := len(interceptors) > 3

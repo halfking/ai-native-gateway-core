@@ -30,6 +30,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/freeresource"                        //nolint:depguard // OmniFree quota tracker
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"                         //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"                   //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/goal"                          //nolint:depguard // Goal retry outcome observer
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/handoff"                       //nolint:depguard // request-side session handoff hook
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/response"                      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -933,7 +934,8 @@ type ChatHandler struct {
 	// goalRetryRecorder (2026-07-23) persists actual retry count to goal_sessions.
 	// When non-nil, handler writes retry_count after each request. nil disables
 	// persistence (fail-open: retry behavior unchanged, only stats missing).
-	goalRetryRecorder GoalRetryRecorder
+	goalRetryRecorder   GoalRetryRecorder
+	goalOutcomeObserver goal.OutcomeObserver
 
 	// formatDetector (2026-07-26) automatically detects client request format patterns.
 	// When non-nil, handler identifies format (OpenAI, OpenCode, etc.) and applies
@@ -1395,6 +1397,11 @@ func (h *ChatHandler) SetGoalRetryPolicyResolver(resolver GoalRetryPolicyResolve
 // requests (fail-open). nil disables persistence.
 func (h *ChatHandler) SetGoalRetryRecorder(recorder GoalRetryRecorder) {
 	h.goalRetryRecorder = recorder
+}
+
+// SetGoalOutcomeObserver wires fail-open Goal lifecycle observations.
+func (h *ChatHandler) SetGoalOutcomeObserver(observer goal.OutcomeObserver) {
+	h.goalOutcomeObserver = observer
 }
 
 func (h *ChatHandler) SetSessionGetter(sg interface {
@@ -3562,6 +3569,7 @@ func (h *ChatHandler) serveWithExecutor(
 	dispatchModelAlternativesConsumed := dispatchAllowModelChange
 	retryStartTime := time.Now()
 	retriesPerformed := 0
+	retryBudgetExhausted := false
 
 	// Track active retry (2026-07-23: metrics)
 	if keyInfo != nil && keyInfo.TenantID != "" {
@@ -3821,6 +3829,7 @@ func (h *ChatHandler) serveWithExecutor(
 
 		// Last attempt - no more retries, exit loop
 		if attempt >= maxRetries {
+			retryBudgetExhausted = true
 			slog.Warn("goal_retry_exhausted",
 				"request_id", requestID,
 				"attempts", attempt+1,
@@ -3881,7 +3890,7 @@ goalRetryLoopDone:
 		outcome = "cancelled"
 	} else if errors.Is(retryCtx.Err(), context.DeadlineExceeded) {
 		outcome = "timeout"
-	} else if retriesPerformed >= maxRetries {
+	} else if retryBudgetExhausted {
 		outcome = "exhausted"
 	} else {
 		outcome = "error"
@@ -3889,6 +3898,18 @@ goalRetryLoopDone:
 
 	if keyInfo != nil && keyInfo.TenantID != "" {
 		recordGoalRetryOutcome(keyInfo.TenantID, retryPolicy.CostMode, outcome, retriesPerformed, retryDuration)
+	}
+	if outcome == "exhausted" && retryPolicy.Enabled && h.goalOutcomeObserver != nil && gwSessionID != "" {
+		tenantID := ""
+		if keyInfo != nil {
+			tenantID = keyInfo.TenantID
+		}
+		if err := h.goalOutcomeObserver.ObserveGoalOutcome(r.Context(), goal.Outcome{
+			Kind: goal.OutcomeFailed, SessionID: gwSessionID, TenantID: tenantID,
+			Reason: "provider_retry_exhausted", Source: "provider_retry", RetryCount: retriesPerformed,
+		}); err != nil {
+			slog.Warn("goal_retry_outcome_observer_failed", "session_id", gwSessionID, "error", err)
+		}
 	}
 
 	// Persist retry count if recorder is available (fail-open)
@@ -4526,9 +4547,10 @@ goalRetryLoopDone:
 				}
 				return 0
 			}(),
-			MessageCount: msgCount,
-			FinishReason: extractFinishReason(result.ResponseBody),
-			IsStreaming:  isStream,
+			MessageCount:   msgCount,
+			FinishReason:   extractFinishReason(result.ResponseBody),
+			IsStreaming:    isStream,
+			FollowUpAction: strings.TrimSpace(r.Header.Get("X-Gw-Follow-Up-Action")),
 		}
 
 		if isStream {
@@ -4540,15 +4562,16 @@ goalRetryLoopDone:
 			// gets. When no capture is available the fields stay empty and
 			// the goal hook falls back to its legacy length-based behaviour.
 			interceptMeta := &ResponseStreamMeta{
-				SessionID:     gwSessionID,
-				RequestID:     requestID,
-				TenantID:      interceptReq.TenantID,
-				ClientModel:   clientModel,
-				ContextWindow: interceptReq.ContextWindow,
-				MessageCount:  msgCount,
-				TokensUsed:    interceptReq.TokensUsed,
-				ResponseBody:  reassembleStreamBody(streamCapture),
-				FinishReason:  reassembleFinishReason(streamCapture),
+				SessionID:      gwSessionID,
+				RequestID:      requestID,
+				TenantID:       interceptReq.TenantID,
+				ClientModel:    clientModel,
+				ContextWindow:  interceptReq.ContextWindow,
+				MessageCount:   msgCount,
+				TokensUsed:     interceptReq.TokensUsed,
+				ResponseBody:   reassembleStreamBody(streamCapture),
+				FinishReason:   reassembleFinishReason(streamCapture),
+				FollowUpAction: interceptReq.FollowUpAction,
 			}
 
 			if endResult, err := h.responseInterceptor.InterceptStreamEnd(r.Context(), interceptMeta); err != nil {
@@ -5888,7 +5911,7 @@ func (h *ChatHandler) recordFailedRequestWithKey(requestID, clientModel, outboun
 	}
 	if r != nil {
 		if session := session.SessionFromContext(r.Context()); session != nil {
-			ctx.Session = session
+			ctx.SetSession(session)
 		}
 		// 2026-06-26: forward the client-supplied X-Request-Id (set by
 		// the RequestIDMiddleware into X-Gw-Client-Request-Id) so the

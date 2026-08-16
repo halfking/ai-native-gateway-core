@@ -113,8 +113,14 @@ func expectListAllBodiesEmpty(mock pgxmock.PgxPoolIface) {
 }
 
 func expectSessionLock(mock pgxmock.PgxPoolIface) {
-	mock.ExpectExec("pg_advisory_xact_lock").
-		WithArgs(pgxmock.AnyArg()).
+	mock.ExpectExec("session_turns_advisory_lock_key").
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("SELECT", 1))
+}
+
+func expectRequestLock(mock pgxmock.PgxPoolIface) {
+	mock.ExpectExec("session_turns_advisory_lock_key").
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("SELECT", 1))
 }
 
@@ -160,11 +166,12 @@ func TestWrite_LoadsPreviousOutboundForRequestDelta(t *testing.T) {
 			[]byte(`[{"role":"user","content":"old"},{"role":"assistant","content":"old response"}]`),
 			[]byte(`[]`), []byte(`[]`),
 		))
+	expectRequestLock(mock)
 	mock.ExpectQuery("COALESCE\\(MAX\\(turn_no\\), 0\\) \\+ 1").
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(2))
-	mock.ExpectExec("INSERT INTO public.session_turns").
-		WithArgs(anyArgs(32)...).
+	mock.ExpectExec("INSERT INTO public.session_turns_hot").
+		WithArgs(anyArgs(46)...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 
 	bodyArgs := anyArgs(11)
@@ -195,11 +202,12 @@ func TestWrite_TurnAndBodiesAreAtomic_RollbackOnBodiesFailure(t *testing.T) {
 	expectListAllBodiesEmpty(mock)
 
 	// 2. AppendTurnInTx.
+	expectRequestLock(mock)
 	mock.ExpectQuery("COALESCE\\(MAX\\(turn_no\\), 0\\) \\+ 1").
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(1))
-	mock.ExpectExec("INSERT INTO public.session_turns").
-		WithArgs(anyArgs(32)...).
+	mock.ExpectExec("INSERT INTO public.session_turns_hot").
+		WithArgs(anyArgs(46)...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 
 	// 4. WriteBodiesInTx FAILS — simulate a DB error on the bodies INSERT.
@@ -233,11 +241,12 @@ func TestWrite_TurnAndBodiesAreAtomic_CommitOnSuccess(t *testing.T) {
 
 	// 2. AppendTurnInTx.
 
+	expectRequestLock(mock)
 	mock.ExpectQuery("COALESCE\\(MAX\\(turn_no\\), 0\\) \\+ 1").
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(1))
-	mock.ExpectExec("INSERT INTO public.session_turns").
-		WithArgs(anyArgs(32)...).
+	mock.ExpectExec("INSERT INTO public.session_turns_hot").
+		WithArgs(anyArgs(46)...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 
 	// 4. WriteBodiesInTx succeeds.
@@ -332,11 +341,12 @@ func TestWrite_AggregateGoroutineManagedByLifecycle(t *testing.T) {
 	mock.ExpectBegin()
 	expectSessionLock(mock)
 	expectListAllBodiesEmpty(mock)
+	expectRequestLock(mock)
 	mock.ExpectQuery("COALESCE\\(MAX\\(turn_no\\), 0\\) \\+ 1").
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(1))
-	mock.ExpectExec("INSERT INTO public.session_turns").
-		WithArgs(anyArgs(32)...).
+	mock.ExpectExec("INSERT INTO public.session_turns_hot").
+		WithArgs(anyArgs(46)...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mock.ExpectExec("INSERT INTO public.session_bodies").
 		WithArgs(anyArgs(11)...).

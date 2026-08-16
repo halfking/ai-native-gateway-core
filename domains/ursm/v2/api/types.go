@@ -85,7 +85,14 @@ type RequestOutcome struct {
 	LatencyMs    int
 	ErrorKind    string
 	RequestID    string
-	BillingMode  string
+	// DedupKey identifies one outcome event. Empty preserves the legacy
+	// request-level dedup contract; dispatch supplies an attempt-qualified key so
+	// intermediate failures cannot suppress a later terminal success.
+	DedupKey string
+	// Terminal marks the request's final recordable dispatch outcome. The manager
+	// assigns it a distinct dedup namespace from intermediate attempt outcomes.
+	Terminal    bool
+	BillingMode string
 	// AdminHold indicates whether a manual admin hold is currently set on
 	// the (credential, raw_model) target. When true, the request outcome
 	// MUST NOT mutate availability — admin priority dominates.

@@ -7,7 +7,7 @@
 #
 # 用法（在 deploy-154.sh / deploy-245.sh / deploy-seamless.sh 中 source）:
 #   source "$SCRIPT_DIR/deploy-lib/post-deploy-verify.sh"
-#   deploy_verify_gateway_ready "$SSH" "$SERVICE_NAME" 8781 120
+#   deploy_verify_gateway_ready "$SSH" "$SERVICE_NAME" 8781 120 /path/to/env
 #
 set -euo pipefail
 
@@ -33,11 +33,58 @@ _deploy_verify_curl_code() {
   _deploy_verify_ssh "$ssh_cmd" "curl -sS -o /dev/null -w '%{http_code}' --max-time 5 '$url'" 2>/dev/null || echo "000"
 }
 
+# 使用远端 env 登录，并访问真正触及 admin DB handler 的受保护端点。
+# 匿名 401 只能证明 auth middleware 存活，不能证明数据库可用。
+_deploy_verify_authenticated_db_code() {
+  local ssh_cmd=$1 base=$2 env_file=$3
+  _deploy_verify_ssh "$ssh_cmd" "ENV_FILE='$env_file' BASE='$base' python3 - <<'PY'
+import json
+import os
+import urllib.error
+import urllib.request
+
+env = {}
+with open(os.environ['ENV_FILE'], encoding='utf-8') as handle:
+    for raw in handle:
+        line = raw.strip()
+        if not line or line.startswith('#') or '=' not in line:
+            continue
+        key, value = line.split('=', 1)
+        env[key] = value
+
+payload = json.dumps({
+    'username': env.get('LLM_GATEWAY_ADMIN_USER', ''),
+    'password': env.get('LLM_GATEWAY_ADMIN_PASSWORD', ''),
+}).encode()
+
+try:
+    login = urllib.request.Request(
+        os.environ['BASE'] + '/api/auth/token',
+        data=payload,
+        headers={'Content-Type': 'application/json'},
+        method='POST',
+    )
+    with urllib.request.urlopen(login, timeout=5) as response:
+        token = json.load(response)['access_token']
+    request = urllib.request.Request(
+        os.environ['BASE'] + '/api/system/background-tasks',
+        headers={'Authorization': 'Bearer ' + token},
+    )
+    with urllib.request.urlopen(request, timeout=5) as response:
+        print(response.status)
+except urllib.error.HTTPError as error:
+    print(error.code)
+except Exception:
+    print('000')
+PY" 2>/dev/null | tail -n1 | tr -d '[:space:]'
+}
+
 # 等待 gateway 完成启动且 DB 可用。
-# 成功：background-tasks 返回 401/200（非 503），且无 postgres disabled 日志。
+# 成功：登录后 background-tasks 返回 200，且无 postgres disabled 日志。
 # 失败：返回 1 并打印诊断提示。
 deploy_verify_gateway_ready() {
   local ssh_cmd=$1 service_name=$2 port=${3:-8781} timeout_s=${4:-90}
+  local env_file=${5:-/etc/llm-gateway-go/env}
   local base="http://127.0.0.1:${port}"
   local deadline=$(( $(date +%s) + timeout_s ))
   local last_bg="000"
@@ -58,39 +105,28 @@ deploy_verify_gateway_ready() {
       return 1
     fi
 
-    # admin handler db_enabled:true 比 background-tasks 更早出现
-    if _deploy_verify_ssh "$ssh_cmd" "journalctl -u '$service_name' --since '2 minutes ago' --no-pager -o cat 2>/dev/null | grep -q 'admin handler created.*db_enabled:true'" 2>/dev/null; then
-      local health
-      health=$(_deploy_verify_curl_code "$ssh_cmd" "${base}/healthz")
-      last_bg=$(_deploy_verify_curl_code "$ssh_cmd" "${base}/api/system/background-tasks")
-      if [[ "$health" == "200" && ( "$last_bg" == "401" || "$last_bg" == "200" ) ]]; then
-        local elapsed=$(( $(date +%s) - start_ts ))
-        _deploy_verify_log "✓ DB 就绪 (${elapsed}s, background-tasks=${last_bg})"
-        return 0
-      fi
-    fi
-
-    last_bg=$(_deploy_verify_curl_code "$ssh_cmd" "${base}/api/system/background-tasks")
-    if [[ "$last_bg" == "401" || "$last_bg" == "200" ]]; then
+    last_bg=$(_deploy_verify_authenticated_db_code "$ssh_cmd" "$base" "$env_file" || echo "000")
+    last_bg=${last_bg:-000}
+    if [[ "$last_bg" == "200" ]]; then
       local health
       health=$(_deploy_verify_curl_code "$ssh_cmd" "${base}/healthz")
       if [[ "$health" == "200" ]]; then
         local elapsed=$(( $(date +%s) - start_ts ))
-        _deploy_verify_log "✓ DB 就绪 (${elapsed}s, background-tasks=${last_bg})"
+        _deploy_verify_log "✓ DB 就绪 (${elapsed}s, authenticated background-tasks=${last_bg})"
         return 0
       fi
     fi
 
-    if [[ "$last_bg" == "503" ]]; then
-      _deploy_verify_log "… 仍在启动 (background-tasks=503)"
+    if [[ "$last_bg" == "503" || "$last_bg" == "000" ]]; then
+      _deploy_verify_log "… 仍在启动 (authenticated background-tasks=${last_bg})"
     fi
     # 前 45s 密集轮询，之后略放宽
     if (( $(date +%s) - start_ts > 45 )); then poll=2; fi
     sleep "$poll"
   done
 
-  _deploy_verify_err "超时: background-tasks 最后=${last_bg}（期望 401/200，非 503）"
-  _deploy_verify_err "首页会显示 database not configured"
+  _deploy_verify_err "超时: authenticated background-tasks 最后=${last_bg}（期望 200）"
+  _deploy_verify_err "首页会显示 database not configured，或部署凭据无法登录"
   return 1
 }
 

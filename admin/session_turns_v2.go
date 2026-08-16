@@ -86,7 +86,7 @@ func (h *Handler) serveSessionTurnsList(w http.ResponseWriter, r *http.Request, 
 		       COALESCE(model,''), COALESCE(provider,''), COALESCE(status_code,0),
 		       COALESCE(submit_mode,''), COALESCE(injection_verdict,''), COALESCE(output_verdict,''),
 		       COALESCE(attachment_count,0)
-		FROM public.session_turns
+		FROM public.session_turns_with_current_month
 		WHERE tenant_id=$1 AND session_id=$2 AND turn_no < $3
 		ORDER BY turn_no DESC LIMIT $4`, tenantID, sessionID, beforeTurnNo, limit+1)
 	if err != nil {
@@ -208,7 +208,7 @@ func (h *Handler) serveSessionTurnDetail(w http.ResponseWriter, r *http.Request,
 			t.source_kind, t.quality,
 			b.request_delta, b.response_delta, b.outbound_body,
 			b.request_attachments, b.response_attachments
-		FROM public.session_turns t
+		FROM public.session_turns_with_current_month t
 		LEFT JOIN public.session_bodies b
 			ON t.session_id = b.session_id AND t.turn_no = b.turn_no AND t.partition_date = b.partition_date
 		WHERE t.session_id = $1 AND t.tenant_id = $2 AND t.turn_no = $3

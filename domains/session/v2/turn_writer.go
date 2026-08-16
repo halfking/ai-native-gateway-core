@@ -12,8 +12,6 @@ package v2
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -36,6 +34,12 @@ type TurnWriter struct {
 	db turnDB
 }
 
+const sessionAdvisoryLockSQL = `
+	SELECT pg_advisory_xact_lock(
+		public.session_turns_advisory_lock_key($1, $2)
+	)
+`
+
 // NewTurnWriter creates a new TurnWriter instance
 func NewTurnWriter(db *pgxpool.Pool) *TurnWriter {
 	return newTurnWriter(db)
@@ -47,11 +51,15 @@ func newTurnWriter(db turnDB) *TurnWriter {
 
 // TurnRecord represents a single turn's metadata
 type TurnRecord struct {
-	SessionID string
-	TurnNo    int // Turn number within session (populated on read)
-	TenantID  string
-	RequestID string
-	Ts        time.Time
+	SessionID       string
+	TurnNo          int // Turn number within session (populated on read)
+	TenantID        string
+	RequestID       string
+	Ts              time.Time
+	ProjectID       string
+	Namespace       string
+	ParentRequestID string
+	TaskType        string
 
 	// Submit mode detection
 	SubmitMode string // full | delta | snapshot | inferred_compressed | attachment_only
@@ -148,8 +156,7 @@ func (w *TurnWriter) AppendTurn(ctx context.Context, rec TurnRecord) (turnNo int
 // Callers that derive a delta from the latest persisted body must acquire this
 // lock before the read so the derivation and appended turn share one snapshot.
 func (w *TurnWriter) LockSessionInTx(ctx context.Context, tx pgx.Tx, tenantID, sessionID string) error {
-	lockKey := hashSessionKey(tenantID, sessionID)
-	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", lockKey); err != nil {
+	if _, err := tx.Exec(ctx, sessionAdvisoryLockSQL, tenantID, sessionID); err != nil {
 		return fmt.Errorf("acquire advisory lock: %w", err)
 	}
 	return nil
@@ -185,6 +192,10 @@ func (w *TurnWriter) AppendTurnInTx(ctx context.Context, tx pgx.Tx, rec TurnReco
 // appendTurnInLockedTx appends a turn after the caller has acquired the
 // tenant/session advisory lock in the same transaction.
 func (w *TurnWriter) appendTurnInLockedTx(ctx context.Context, tx pgx.Tx, rec TurnRecord) (turnNo int, err error) {
+	if _, err := tx.Exec(ctx, sessionAdvisoryLockSQL, rec.TenantID, "request:"+rec.RequestID); err != nil {
+		return 0, fmt.Errorf("acquire request advisory lock: %w", err)
+	}
+
 	if rec.SubmitMode == "" {
 		rec.SubmitMode = "full"
 	}
@@ -204,7 +215,7 @@ func (w *TurnWriter) appendTurnInLockedTx(ctx context.Context, tx pgx.Tx, rec Tu
 	// 2. Get next turn_no
 	err = tx.QueryRow(ctx, `
 		SELECT COALESCE(MAX(turn_no), 0) + 1
-		FROM public.session_turns
+		FROM public.session_turns_with_current_month
 		WHERE tenant_id = $1 AND session_id = $2
 	`, rec.TenantID, rec.SessionID).Scan(&turnNo)
 	if err != nil {
@@ -222,36 +233,49 @@ func (w *TurnWriter) appendTurnInLockedTx(ctx context.Context, tx pgx.Tx, rec Tu
 	// 与 analysis/bus/publisher.go 和 telemetry/client.go 保持一致
 	compressionMetaStr := string(compressionMetaJSON)
 
-	// 4. Insert turn record
+	// 4. Insert new live turns into the independent hot table. The anti-join
+	// keeps retries idempotent when an earlier copy has already been promoted.
 	result, err := tx.Exec(ctx, `
-		INSERT INTO public.session_turns (
-			session_id, turn_no, tenant_id, request_id, ts,
-			submit_mode,
-			compression_applied, compression_strategy, compression_meta, compression_tokens_saved,
-			injection_verdict, output_verdict,
-			model, provider, credential_id,
-			prompt_tokens, completion_tokens, cache_read_tokens, cache_write_tokens, cost_usd,
-			latency_ms, status_code, success, error_kind,
-			source_kind, quality,
-			attachment_count, attachment_total_bytes, multimodal_types,
-			title, summary,
-			partition_date
-		) VALUES (
-			$1, $2, $3, $4, $5,
-			$6,
-			$7, $8, $9::text::jsonb, $10,
-			$11, $12,
-			$13, $14, $15,
-			$16, $17, $18, $19, $20,
-			$21, $22, $23, $24,
-			$25, $26,
-			$27, $28, $29,
-			$30, $31,
-			$32
-		)
-		ON CONFLICT (tenant_id, request_id, partition_date) DO NOTHING
-	`,
+			INSERT INTO public.session_turns_hot (
+				session_id, turn_no, tenant_id, request_id, ts,
+				project_id, namespace, parent_request_id, task_type,
+				submit_mode,
+				compression_applied, compression_strategy, compression_meta, compression_tokens_saved,
+				injection_verdict, output_verdict,
+				model, provider, credential_id,
+				prompt_tokens, completion_tokens, cache_read_tokens, cache_write_tokens, cost_usd,
+				latency_ms, status_code, success, error_kind,
+				source_kind, quality,
+				attachment_count, attachment_total_bytes, multimodal_types,
+				title, summary,
+				t0_arrived_at, t1_total_enqueued_at, t2_total_dequeued_at,
+				t3_model_enqueued_at, t4_model_dequeued_at, t5_cred_enqueued_at,
+				t6_cred_dequeued_at, t7_forward_start_at, t8_response_start_at,
+				t9_response_end_at,
+				partition_date
+			) SELECT
+				$1, $2, $3, $4, $5,
+				$6, $7, $8, $9,
+				$10,
+				$11, $12, $13::text::jsonb, $14,
+				$15, $16,
+				$17, $18, $19,
+				$20, $21, $22, $23, $24,
+				$25, $26, $27, $28,
+				$29, $30,
+				$31, $32, $33,
+				$34, $35,
+				$36, $37, $38, $39, $40, $41, $42, $43, $44, $45,
+				$46
+			WHERE NOT EXISTS (
+				SELECT 1
+				FROM public.session_turns_with_current_month
+				WHERE tenant_id = $3 AND request_id = $4
+			)
+			ON CONFLICT (tenant_id, request_id, partition_date) DO NOTHING
+		`,
 		rec.SessionID, turnNo, rec.TenantID, rec.RequestID, rec.Ts,
+		rec.ProjectID, rec.Namespace, rec.ParentRequestID, rec.TaskType,
 		rec.SubmitMode,
 		rec.CompressionApplied, rec.CompressionStrategy, compressionMetaStr, rec.TokensSaved,
 		rec.InjectionVerdict, rec.OutputVerdict,
@@ -261,6 +285,10 @@ func (w *TurnWriter) appendTurnInLockedTx(ctx context.Context, tx pgx.Tx, rec Tu
 		rec.SourceKind, rec.Quality,
 		rec.AttachmentCount, rec.AttachmentTotalBytes, rec.MultimodalTypes,
 		rec.Title, rec.Summary,
+		rec.T0ArrivedAt, rec.T1TotalEnqueuedAt, rec.T2TotalDequeuedAt,
+		rec.T3ModelEnqueuedAt, rec.T4ModelDequeuedAt, rec.T5CredEnqueuedAt,
+		rec.T6CredDequeuedAt, rec.T7ForwardStartAt, rec.T8ResponseStartAt,
+		rec.T9ResponseEndAt,
 		partitionDate,
 	)
 
@@ -271,14 +299,24 @@ func (w *TurnWriter) appendTurnInLockedTx(ctx context.Context, tx pgx.Tx, rec Tu
 	// Concurrent insert may have raced past us; resolve to the real turn_no
 	// for the idempotency key so retries see the existing row's number.
 	if result.RowsAffected() == 0 {
+		var existingSessionID string
+		var existingPartitionDate time.Time
 		err = tx.QueryRow(ctx, `
-			SELECT turn_no
-			FROM public.session_turns
-			WHERE session_id = $1 AND tenant_id = $2
-			  AND request_id = $3 AND partition_date = $4
-		`, rec.SessionID, rec.TenantID, rec.RequestID, partitionDate).Scan(&turnNo)
+				SELECT session_id, turn_no, partition_date
+				FROM public.session_turns_with_current_month
+				WHERE tenant_id = $1 AND request_id = $2
+				ORDER BY partition_date ASC
+				LIMIT 1
+			`, rec.TenantID, rec.RequestID).Scan(&existingSessionID, &turnNo, &existingPartitionDate)
+
 		if err != nil {
 			return 0, fmt.Errorf("read existing turn_no: %w", err)
+		}
+		if existingSessionID != rec.SessionID {
+			return 0, fmt.Errorf("request %s already belongs to session %s", rec.RequestID, existingSessionID)
+		}
+		if !existingPartitionDate.Equal(partitionDate) {
+			return 0, fmt.Errorf("request %s already belongs to partition date %s", rec.RequestID, existingPartitionDate.Format("2006-01-02"))
 		}
 
 		// 2026-08-05 (v2 mirror bug): the mirror fires this write TWICE per
@@ -294,46 +332,58 @@ func (w *TurnWriter) appendTurnInLockedTx(ctx context.Context, tx pgx.Tx, rec Tu
 		// on the conflict path. COALESCE(NULLIF(...)) guarantees a later empty
 		// fire can never blank a value an earlier fire populated (monotonic
 		// enrichment), so this stays idempotent under retries.
-		_, err = tx.Exec(ctx, `
-				UPDATE public.session_turns
-				   SET compression_applied      = $5 OR compression_applied,
-				       compression_strategy     = COALESCE(NULLIF($6, ''), compression_strategy),
-				       compression_meta         = CASE
-					                              WHEN $7 <> '' AND $7 <> 'null'
-					                              THEN $7::text::jsonb
-					                              ELSE compression_meta
-					                          END,
-				       compression_tokens_saved = CASE
-					                              WHEN $8 <> 0 THEN $8
-					                              ELSE compression_tokens_saved
-					                          END,
-				       -- submit_mode: only an informative (non-default) verdict may
-				       -- overwrite. rec.SubmitMode defaults to 'full', so a later
-				       -- fire that lacks the header/previous-body context (e.g. a
-				       -- failure-path UPDATE) can never regress a 'delta' /
-				       -- 'inferred_compressed' verdict an earlier fire established.
-				       submit_mode              = CASE
-					                              WHEN $9 <> '' AND $9 <> 'full'
-					                              THEN $9
-					                              ELSE submit_mode
-					                          END,
-				       -- title / summary (migration 456): same monotonic-enrichment
-				       -- rule as the fields above — a later fire that has the
-				       -- preview text must populate the row, but an empty preview
-				       -- (e.g. attachment-only turn) can never blank one already set.
-				       title                    = COALESCE(NULLIF($10, ''), title),
-				       summary                  = COALESCE(NULLIF($11, ''), summary)
-				 WHERE session_id = $1 AND tenant_id = $2
-				   AND request_id = $3 AND partition_date = $4
-			`,
-			rec.SessionID, rec.TenantID, rec.RequestID, partitionDate,
-			rec.CompressionApplied, rec.CompressionStrategy, compressionMetaStr,
-			rec.TokensSaved, rec.SubmitMode,
-			rec.Title, rec.Summary,
-		)
-		if err != nil {
-			return 0, fmt.Errorf("backfill turn compression/submit_mode: %w", err)
+		for _, table := range []string{"public.session_turns_hot", "public.session_turns"} {
+			_, err = tx.Exec(ctx, `
+					UPDATE `+table+`
+					   SET compression_applied      = $5 OR compression_applied,
+					       compression_strategy     = COALESCE(NULLIF($6, ''), compression_strategy),
+					       compression_meta         = CASE
+						                              WHEN $7 <> '' AND $7 <> 'null'
+						                              THEN $7::text::jsonb
+						                              ELSE compression_meta
+						                          END,
+					       compression_tokens_saved = CASE
+						                              WHEN $8 <> 0 THEN $8
+						                              ELSE compression_tokens_saved
+						                          END,
+					       submit_mode              = CASE
+						                              WHEN $9 <> '' AND $9 <> 'full'
+						                              THEN $9
+						                              ELSE submit_mode
+						                          END,
+					       title                    = COALESCE(NULLIF($10, ''), title),
+					       summary                  = COALESCE(NULLIF($11, ''), summary),
+					       project_id               = COALESCE(NULLIF($12, ''), project_id),
+					       namespace                = COALESCE(NULLIF($13, ''), namespace),
+					       parent_request_id        = COALESCE(NULLIF($14, ''), parent_request_id),
+					       task_type                = COALESCE(NULLIF($15, ''), task_type),
+					       t0_arrived_at            = COALESCE($16, t0_arrived_at),
+					       t1_total_enqueued_at     = COALESCE($17, t1_total_enqueued_at),
+					       t2_total_dequeued_at     = COALESCE($18, t2_total_dequeued_at),
+					       t3_model_enqueued_at     = COALESCE($19, t3_model_enqueued_at),
+					       t4_model_dequeued_at     = COALESCE($20, t4_model_dequeued_at),
+					       t5_cred_enqueued_at      = COALESCE($21, t5_cred_enqueued_at),
+					       t6_cred_dequeued_at      = COALESCE($22, t6_cred_dequeued_at),
+					       t7_forward_start_at      = COALESCE($23, t7_forward_start_at),
+					       t8_response_start_at     = COALESCE($24, t8_response_start_at),
+					       t9_response_end_at       = COALESCE($25, t9_response_end_at)
+					 WHERE session_id = $1 AND tenant_id = $2
+					   AND request_id = $3 AND partition_date = $4
+				`,
+				rec.SessionID, rec.TenantID, rec.RequestID, partitionDate,
+				rec.CompressionApplied, rec.CompressionStrategy, compressionMetaStr,
+				rec.TokensSaved, rec.SubmitMode, rec.Title, rec.Summary,
+				rec.ProjectID, rec.Namespace, rec.ParentRequestID, rec.TaskType,
+				rec.T0ArrivedAt, rec.T1TotalEnqueuedAt, rec.T2TotalDequeuedAt,
+				rec.T3ModelEnqueuedAt, rec.T4ModelDequeuedAt, rec.T5CredEnqueuedAt,
+				rec.T6CredDequeuedAt, rec.T7ForwardStartAt, rec.T8ResponseStartAt,
+				rec.T9ResponseEndAt,
+			)
+			if err != nil {
+				return 0, fmt.Errorf("enrich turn in %s: %w", table, err)
+			}
 		}
+
 	}
 
 	return turnNo, nil
@@ -347,14 +397,16 @@ func (w *TurnWriter) BeginTx(ctx context.Context) (pgx.Tx, error) {
 	return w.db.Begin(ctx)
 }
 
-// GetTurn retrieves a single turn by request_id
-func (w *TurnWriter) GetTurn(ctx context.Context, requestID string) (*TurnRecord, error) {
+// GetTurn retrieves a tenant-scoped turn by request_id.
+func (w *TurnWriter) GetTurn(ctx context.Context, tenantID, requestID string) (*TurnRecord, error) {
 	var rec TurnRecord
 	var compressionMetaJSON []byte
 
 	query := `
 		SELECT
 			session_id, turn_no, tenant_id, request_id, ts,
+			COALESCE(project_id, ''), COALESCE(namespace, ''),
+			COALESCE(parent_request_id, ''), COALESCE(task_type, ''),
 			submit_mode,
 			compression_applied, compression_strategy, compression_meta,
 			COALESCE(compression_tokens_saved, 0),
@@ -374,13 +426,14 @@ func (w *TurnWriter) GetTurn(ctx context.Context, requestID string) (*TurnRecord
 			t3_model_enqueued_at, t4_model_dequeued_at, t5_cred_enqueued_at,
 			t6_cred_dequeued_at, t7_forward_start_at, t8_response_start_at,
 			t9_response_end_at
-		FROM public.session_turns
-		WHERE request_id = $1
-		LIMIT 1
-	`
+			FROM public.session_turns_with_current_month
+			WHERE tenant_id = $1 AND request_id = $2
+			LIMIT 1
+		`
 
-	err := w.db.QueryRow(ctx, query, requestID).Scan(
+	err := w.db.QueryRow(ctx, query, tenantID, requestID).Scan(
 		&rec.SessionID, &rec.TurnNo, &rec.TenantID, &rec.RequestID, &rec.Ts,
+		&rec.ProjectID, &rec.Namespace, &rec.ParentRequestID, &rec.TaskType,
 		&rec.SubmitMode,
 		&rec.CompressionApplied, &rec.CompressionStrategy, &compressionMetaJSON, &rec.TokensSaved,
 		&rec.InjectionVerdict, &rec.OutputVerdict,
@@ -399,7 +452,7 @@ func (w *TurnWriter) GetTurn(ctx context.Context, requestID string) (*TurnRecord
 	)
 
 	if err == pgx.ErrNoRows {
-		return nil, fmt.Errorf("turn not found: %s", requestID)
+		return nil, fmt.Errorf("turn not found for tenant %s: %s", tenantID, requestID)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("query turn: %w", err)
@@ -425,6 +478,8 @@ func (w *TurnWriter) ListTurns(ctx context.Context, tenantID, sessionID string, 
 	query := `
 		SELECT
 			session_id, turn_no, tenant_id, request_id, ts,
+			COALESCE(project_id, ''), COALESCE(namespace, ''),
+			COALESCE(parent_request_id, ''), COALESCE(task_type, ''),
 			submit_mode,
 			compression_applied, compression_strategy, compression_meta,
 			COALESCE(compression_tokens_saved, 0),
@@ -444,7 +499,7 @@ func (w *TurnWriter) ListTurns(ctx context.Context, tenantID, sessionID string, 
 			t3_model_enqueued_at, t4_model_dequeued_at, t5_cred_enqueued_at,
 			t6_cred_dequeued_at, t7_forward_start_at, t8_response_start_at,
 			t9_response_end_at
-		FROM public.session_turns
+		FROM public.session_turns_with_current_month
 		WHERE tenant_id = $1 AND session_id = $2
 		ORDER BY turn_no ASC
 		LIMIT $3
@@ -463,6 +518,7 @@ func (w *TurnWriter) ListTurns(ctx context.Context, tenantID, sessionID string, 
 
 		err := rows.Scan(
 			&rec.SessionID, &rec.TurnNo, &rec.TenantID, &rec.RequestID, &rec.Ts,
+			&rec.ProjectID, &rec.Namespace, &rec.ParentRequestID, &rec.TaskType,
 			&rec.SubmitMode,
 			&rec.CompressionApplied, &rec.CompressionStrategy, &compressionMetaJSON, &rec.TokensSaved,
 			&rec.InjectionVerdict, &rec.OutputVerdict,
@@ -499,17 +555,4 @@ func (w *TurnWriter) ListTurns(ctx context.Context, tenantID, sessionID string, 
 	}
 
 	return turns, nil
-}
-
-// hashSessionKey generates a deterministic int64 hash for advisory lock
-//
-// Uses SHA256 to hash "tenant_id:session_id", then takes first 8 bytes
-// as int64. This ensures the same session always gets the same lock key.
-func hashSessionKey(tenantID, sessionID string) int64 {
-	h := sha256.New()
-	h.Write([]byte(tenantID + ":" + sessionID))
-	sum := h.Sum(nil)
-
-	// Take first 8 bytes as int64
-	return int64(binary.BigEndian.Uint64(sum[:8]))
 }

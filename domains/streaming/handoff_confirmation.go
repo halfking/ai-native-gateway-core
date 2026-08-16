@@ -98,6 +98,8 @@ func handoffConfirmationError(err error) (int, string) {
 		return http.StatusConflict, "handoff_budget_exhausted"
 	case errors.Is(err, handoff.ErrConfirmationCooldownActive):
 		return http.StatusConflict, "handoff_cooldown_active"
+	case errors.Is(err, handoff.ErrGoalRestoreRetryable):
+		return http.StatusServiceUnavailable, "handoff_goal_restore_retryable"
 	case errors.Is(err, handoff.ErrConfirmationReplay):
 		return http.StatusConflict, "handoff_confirmation_replayed"
 	default:

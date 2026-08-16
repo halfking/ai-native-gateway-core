@@ -260,10 +260,10 @@ func TestDualWriter_V1Success_V2Fails_RequestSucceeds(t *testing.T) {
 // TestDualWriter_RolloutPercentage tests rollout percentage logic
 func TestDualWriter_RolloutPercentage(t *testing.T) {
 	testCases := []struct {
-		name            string
-		rolloutPercent  int
-		sessionID       string
-		expectV2Called  bool
+		name           string
+		rolloutPercent int
+		sessionID      string
+		expectV2Called bool
 	}{
 		{
 			name:           "0% rollout - V2 not called",
@@ -432,7 +432,7 @@ func TestShouldWriteV2_EdgeCases(t *testing.T) {
 		expected       bool
 	}{
 		{"0% rollout", 0, false},
-		{"1% rollout", 1, false}, // Depends on hash
+		{"1% rollout", 1, false},  // Depends on hash
 		{"99% rollout", 99, true}, // Depends on hash
 		{"100% rollout", 100, true},
 		{"-1% rollout (invalid)", -1, false},
@@ -451,10 +451,14 @@ func TestShouldWriteV2_EdgeCases(t *testing.T) {
 // TestDualWriter_ConvertToV2Request tests request conversion
 func TestDualWriter_ConvertToV2Request(t *testing.T) {
 	req := &ProcessedRequest{
-		SessionID: "session_001",
-		TenantID:  "tenant_001",
-		RequestID: "req_001",
-		Timestamp: time.Now(),
+		SessionID:       "session_001",
+		TenantID:        "tenant_001",
+		RequestID:       "req_001",
+		Timestamp:       time.Now(),
+		ProjectID:       "project_001",
+		Namespace:       "workspace",
+		ParentRequestID: "req_parent",
+		TaskType:        "code",
 		RequestBody: []v2.Message{
 			{Role: "user", Content: "Hello"},
 		},
@@ -478,6 +482,10 @@ func TestDualWriter_ConvertToV2Request(t *testing.T) {
 	assert.Equal(t, req.TenantID, v2Req.TenantID)
 	assert.Equal(t, req.RequestID, v2Req.RequestID)
 	assert.Equal(t, req.Timestamp, v2Req.Timestamp)
+	assert.Equal(t, req.ProjectID, v2Req.ProjectID)
+	assert.Equal(t, req.Namespace, v2Req.Namespace)
+	assert.Equal(t, req.ParentRequestID, v2Req.ParentRequestID)
+	assert.Equal(t, req.TaskType, v2Req.TaskType)
 	assert.Equal(t, req.CompressionApplied, v2Req.CompressionApplied)
 	assert.Equal(t, req.CompressionStrategy, v2Req.CompressionStrategy)
 	assert.Equal(t, req.PromptTokens, v2Req.PromptTokens)

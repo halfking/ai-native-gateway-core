@@ -64,6 +64,7 @@ func TestPromoteSpecsCoversAllDefaultPartitions(t *testing.T) {
 		"promote_credit_ledger_hot_to_partition":          false,
 		"promote_tool_usage_stats_hot_to_partition":       false,
 		"promote_candidate_failure_logs_hot_to_partition": false, // Migration 392
+		"promote_session_turns_hot_to_partition":          false, // Migration 525
 	}
 	for _, s := range specs {
 		if _, ok := expected[s.fnName]; !ok {

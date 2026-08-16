@@ -129,10 +129,14 @@ func (w *SessionWriterV2) Stop(ctx context.Context) error {
 // to avoid circular dependencies. In production, we'd use a shared interface.
 type ProcessedRequest struct {
 	// Session context
-	SessionID string
-	TenantID  string
-	RequestID string
-	Timestamp time.Time
+	SessionID       string
+	TenantID        string
+	RequestID       string
+	Timestamp       time.Time
+	ProjectID       string
+	Namespace       string
+	ParentRequestID string
+	TaskType        string
 
 	// Request content
 	RequestBody  []Message // Full request body from client
@@ -297,11 +301,15 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 	}
 
 	turnRec := TurnRecord{
-		SessionID:  req.SessionID,
-		TenantID:   req.TenantID,
-		RequestID:  req.RequestID,
-		Ts:         req.Timestamp,
-		SubmitMode: submitMode,
+		SessionID:       req.SessionID,
+		TenantID:        req.TenantID,
+		RequestID:       req.RequestID,
+		Ts:              req.Timestamp,
+		ProjectID:       req.ProjectID,
+		Namespace:       req.Namespace,
+		ParentRequestID: req.ParentRequestID,
+		TaskType:        req.TaskType,
+		SubmitMode:      submitMode,
 
 		CompressionApplied:  req.CompressionApplied,
 		CompressionStrategy: req.CompressionStrategy,

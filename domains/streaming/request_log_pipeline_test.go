@@ -13,6 +13,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/domains/authentication" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
+	"github.com/kaixuan/llm-gateway-go/domains/session" //nolint:depguard // request context carries the loaded session
 )
 
 func TestRequestLogContext_SetAutoDecisionCanonicalizesTierFailoverModels(t *testing.T) {
@@ -74,6 +75,24 @@ func TestRequestLogContext_BuildFailureEntry_ClientRequestID(t *testing.T) {
 	}
 	if entry.ClientRequestID == nil || *entry.ClientRequestID != "client-retry-XYZ" {
 		t.Fatalf("ClientRequestID=%v, want client-retry-XYZ", entry.ClientRequestID)
+	}
+}
+
+func TestRequestLogContext_BuildFailureEntry_ProjectAndNamespace(t *testing.T) {
+	ch := NewChatHandler(nil, nil, nil, nil, nil, nil)
+	r := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"glm-5.1"}`))
+	r.Header.Set("X-Gw-Project-Id", " project-transport ")
+
+	ctx := ch.NewRequestLogContext(r, "server-uuid-dimensions", time.Now())
+	ctx.Body = []byte(`{"model":"glm-5.1"}`)
+	ctx.SetSession(&session.Session{SessionID: "session-dimensions", Namespace: " workspace "})
+
+	entry := ctx.BuildFailureEntry("transient", "upstream transient", nil, nil)
+	if entry.ProjectID == nil || *entry.ProjectID != "project-transport" {
+		t.Fatalf("ProjectID = %v, want project-transport", entry.ProjectID)
+	}
+	if entry.Namespace == nil || *entry.Namespace != "workspace" {
+		t.Fatalf("Namespace = %v, want workspace", entry.Namespace)
 	}
 }
 

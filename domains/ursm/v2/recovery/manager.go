@@ -3,6 +3,7 @@ package recovery
 import (
 	"context"
 	_ "embed"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -42,14 +43,22 @@ func New(rdb *redis.Client, prefix string) *Manager {
 }
 
 func (m *Manager) Ready(ctx context.Context) bool {
+	ready, _ := m.ReadyWithError(ctx)
+	return ready
+}
+
+func (m *Manager) ReadyWithError(ctx context.Context) (bool, error) {
 	if m == nil || m.rdb == nil {
-		return false
+		return false, fmt.Errorf("ursm.v2: nil recovery manager / redis client")
 	}
 	v, err := m.rdb.Get(ctx, store.ReadyKey(m.prefix)).Result()
-	if err != nil {
-		return false
+	if errors.Is(err, redis.Nil) {
+		return false, nil
 	}
-	return v == "1"
+	if err != nil {
+		return false, err
+	}
+	return v == "1", nil
 }
 
 func (m *Manager) SetReady(ctx context.Context, ready bool) error {

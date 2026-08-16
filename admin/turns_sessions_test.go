@@ -201,14 +201,27 @@ func TestBuildTurnsSessionWhere_TurnLevelFiltersSession(t *testing.T) {
 			t.Errorf("where missing %q\nwhere=%s", c, where)
 		}
 	}
-	if !strings.Contains(where, "EXISTS (SELECT 1 FROM public.session_turns ft") {
-		t.Errorf("expected EXISTS subquery on session_turns: %s", where)
+	if !strings.Contains(where, "EXISTS (SELECT 1 FROM public.session_turns_with_current_month ft") {
+		t.Errorf("expected EXISTS subquery on session_turns_with_current_month: %s", where)
+	}
+	if strings.Contains(where, "JOIN public.sessions") {
+		t.Errorf("turn-level EXISTS must not join public.sessions: %s", where)
 	}
 	if len(args) != 4 || nextArg != 5 {
 		t.Fatalf("expected 4 args / nextArg=5, got %d args / nextArg=%d", len(args), nextArg)
 	}
 	if args[3] != 500 {
 		t.Fatalf("status_code arg should be int 500, got %v (%T)", args[3], args[3])
+	}
+}
+
+func TestLastActiveTurnQuery_UsesCurrentMonthView(t *testing.T) {
+	query := (&Handler{}).lastActiveTurnQuery("t.model", "t.model IS NOT NULL", "")
+	if !strings.Contains(query, "FROM public.session_turns_with_current_month t") {
+		t.Fatalf("turn filter query must use current-month view: %s", query)
+	}
+	if strings.Contains(query, "FROM public.session_turns t") {
+		t.Fatalf("turn filter query must not read the base table directly: %s", query)
 	}
 }
 

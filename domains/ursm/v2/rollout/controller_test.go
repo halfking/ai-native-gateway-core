@@ -86,3 +86,26 @@ func TestShadowDoubleWriteAccessor(t *testing.T) {
 		t.Fatal("nil controller must report ShadowDoubleWrite()==false")
 	}
 }
+
+func TestShouldSampleShadow(t *testing.T) {
+	if New(Config{Mode: api.ModeShadow, ShadowSampleRate: 0}).ShouldSampleShadow("t", "m", "r") {
+		t.Fatal("zero sample rate must reject every request")
+	}
+	if !New(Config{Mode: api.ModeShadow, ShadowSampleRate: 1}).ShouldSampleShadow("t", "m", "r") {
+		t.Fatal("sample rate one must accept every request")
+	}
+	if !New(Config{Mode: api.ModeCanary, ShadowSampleRate: 1}).ShouldSampleShadow("t", "m", "r") {
+		t.Fatal("canary mode must keep shadow sampling active")
+	}
+	if New(Config{Mode: api.ModeOff, ShadowSampleRate: 1}).ShouldSampleShadow("t", "m", "r") {
+		t.Fatal("off mode must not enter shadow sampling")
+	}
+
+	c := New(Config{Mode: api.ModeShadow, ShadowSampleRate: 0.5})
+	first := c.ShouldSampleShadow("tenant", "model", "request")
+	for i := 0; i < 10; i++ {
+		if got := c.ShouldSampleShadow("tenant", "model", "request"); got != first {
+			t.Fatal("shadow sample decision must be deterministic")
+		}
+	}
+}

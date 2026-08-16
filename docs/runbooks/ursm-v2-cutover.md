@@ -1,256 +1,218 @@
-# URSM v2 切流操作手册（Runbook）
+# URSM v2 切换操作手册
 
-> **配套审计**：`docs/audit/2026-07-28-llm-gateway-flow-comprehensive-audit.md` §7.1 R-7.1  
-> **配套方案**：`docs/design/2026-07-28-llm-gateway-flow-improvements.md` §2 P0-3  
-> **适用范围**：URSM v2 切换（off → shadow → canary → authoritative）的完整操作流程  
-> **最后更新**：2026-07-29
+> 状态：P0-Z1 可执行基线。当前只批准 `off -> shadow`，不得在本次变更中切 `authoritative`。
+> 最后更新：2026-08-16
 
----
+## 1. 模式语义
 
-## 0. 何时使用本手册
+| 模式 | 生产路由权威 | v2 outcome 写入 | v2 路由计算 |
+|---|---|---|---|
+| `off` | legacy `credentialstate.Manager` | 否 | 否 |
+| `shadow` | legacy `credentialstate.Manager` | `URSM_V2_SHADOW_DOUBLE_WRITE=1` 时 100% 双写 | 按 `URSM_V2_SHADOW_SAMPLE_RATE` 采样，只比较不采用 |
+| `canary` | 未命中走 legacy，命中请求采用 v2 | 命中请求写 v2 | `URSM_V2_CANARY_PERCENT` 控制 |
+| `authoritative` | URSM v2 | 是 | 全量；legacy manager 不装配 |
 
-当以下任一情况成立时，按本手册执行 URSM v2 切流：
+`off` 仍会在 Redis 可用时构造一个 no-op v2 Manager。`shadow` 必须保留 legacy manager 的读写路径，不能删除旧装配。
 
-- P0-3 改进项已经完成（`shadow double-write` 框架就绪 + migration script + rollback script + 上述 4 项依赖决策已经拍板）
-- 当前生产模式 `URSM_V2_MODE=off`，运营方准备进入 7 天 shadow 对比窗口
-- 245 staging 已经走完一轮切流验证，准备推 154 生产
+## 2. 有效配置
 
-## 1. 前置决策（不可跳过）
-
-老板必须先拍板以下 4 项（per audit §10 + design §10）：
-
-| 决策点 | 选项 |
-|---|---|
-| 切换时机 | A 245 验证后立即切 / B 再观察 1 月 / C 季度内分阶段 |
-| 双层 sticky 保留层 | A 保留 executor / B 保留 handler |
-| OTel 后端投入 | A 立即接入 / B 先 stdout 后接 |
-| URSM v2 数据迁移 | A 一次性脚本 / B 接受历史断档 / C 双轨 30 天 |
-
-**未拍板不要切流**。本文档假设决策已完成。
-
-## 2. 切流四阶段
-
-```
-[Stage 0: off]                       (生产现状)
-    ↓ 一次性 migration
-[Stage 1: shadow 7d]                 (路由走 legacy, sidecar 写 URSM v2)
-    ↓ drift < 1%
-[Stage 2: canary 灰度]               (按 tenant 灰度)
-    ↓ 100% 通过
-[Stage 3: authoritative]             (URSM v2 接管路由)
+```text
+URSM_V2_MODE=off|shadow|canary|authoritative
+URSM_V2_SHADOW_DOUBLE_WRITE=0|1
+URSM_V2_SHADOW_SAMPLE_RATE=0..1        # 默认 0.01，只影响 diff 双算
+URSM_V2_CANARY_PERCENT=0..100          # 按 tenant|model|requestID 稳定散列
+LLM_GATEWAY_REDIS_ADDR=<host:port>
 ```
 
-每个 stage 之间都是 1 行 env var + 1 次 restart + 1 轮 L1-L4 验证。
+当前没有 `URSM_V2_CANARY_TENANTS` 或 `URSM_V2_CANARY_MODELS` 的环境变量接线。灰度必须使用 percent。
 
----
+## 3. Shadow 前置门禁
 
-## 3. Stage 0 → Stage 1：进入 Shadow 7 天对比
+进入 shadow 前必须同时满足：
 
-### 3.1 一次性数据迁移（仅一次）
+1. 已验证 gateway Redis 连通，且不是与生产不一致的临时 Redis。
+2. Prometheus 已抓取需要 admin Bearer token 的 `/metrics`，retention 至少 8 天。
+3. `go build ./...` 与 `go test -race ./domains/ursm/...` 通过。
+4. staging 已用真实候选验证 v2 tenant-aware key：`ursm:v2:node:<tenant>:<cid>:<raw>`。
+5. 已记录切换前 24 小时请求错误率、无候选率和 P99 延迟基线。
 
-把 `public.node_probe_state` 的当前状态写到 URSM v2 Redis 命名空间。否则 URSM v2 在 shadow 模式会因 T4 保护性拒绝（"no observed telemetry = not available"）把所有候选视为不可用，shadow 对比窗口毫无意义。
+指标查询示例：
 
 ```bash
-# 154 生产：默认读取 LLM_GATEWAY_REDIS_ADDR/PASSWORD/DB，默认 db=2。
-# 若设置 REDIS_URL，则 REDIS_URL 优先；也可通过 --redis 显式指定完整 URL。
-./bin/migrate-ursm-v2 --pg="$LLM_GATEWAY_DATABASE_URL" --apply
-
-# 默认 --dry-run，先看清楚要写多少
-./bin/migrate-ursm-v2 --pg="$LLM_GATEWAY_DATABASE_URL"
-# → 输出：
-#   ✅ Connected to PG (postgres://***@host:5432/db)
-#   ✅ Connected to Redis (redis://***@host:6379/2)
-#   ✅ Read N legacy node_probe_state rows
-#   [DRY-RUN] would write N URSM v2 nodes:
-#     - available (healthy)         : X
-#     - in cool (>= 3 fails)        : Y
-#     - manual_hold (legacy paused) : Z
-#   (no Redis writes; pass --apply to commit)
-
-# 实际跑（245 staging 先验证，再 154 生产）
-./bin/migrate-ursm-v2 --pg=... --redis=redis://host:6379/2 --apply
-# → 输出：
-#   ✓ wrote 100 / 287
-#   ✓ wrote 200 / 287
-#   ✓ wrote 287 / 287
-#   ✅ Wrote 287 URSM v2 nodes to Redis
+curl -fsS -H "Authorization: Bearer $LLM_GATEWAY_ADMIN_API_KEY" \
+  http://127.0.0.1:8781/metrics \
+  | grep -E 'ursm_shadow_diff_total|llm_gateway_ursm_v2_shadow_records_total'
 ```
 
-### 3.2 进入 shadow 模式
+`ursm_shadow_diff_total` 是进程 counter，进程重启会归零。7 天验收必须使用 Prometheus 的 `increase(...[7d])`，不能读取单实例当前值代替。
 
-**关键**：`URSM_V2_MODE=shadow` + `URSM_V2_SHADOW_DOUBLE_WRITE=1`。两个开关缺一不可：
+## 4. Stage 0：保持 Off
+
+配置：
 
 ```bash
-# 154 生产部署
-export URSM_V2_MODE=shadow
-export URSM_V2_SHADOW_DOUBLE_WRITE=1
-
-# 重启 gateway（按部署系统调整）
-sudo systemctl restart llm-gateway-go
-# 或
-docker run -e URSM_V2_MODE=shadow -e URSM_V2_SHADOW_DOUBLE_WRITE=1 ...
+URSM_V2_MODE=off
+# 删除 URSM_V2_SHADOW_DOUBLE_WRITE、URSM_V2_SHADOW_SAMPLE_RATE、URSM_V2_CANARY_PERCENT
 ```
 
-启动后日志应包含：
-```
-v2 pipeline: LLM_GATEWAY_USE_V2_PIPELINE=...        # 无关
-ursm_v2: rollout mode=shadow shadow_double_write=true   # 看到这一行说明启用成功
-```
+验收：
 
-### 3.3 L1-L4 验证（rule 03 §6.0）
+- 启动日志包含 `ursm.v2 manager constructed mode=off`。
+- legacy credential state manager 正常创建。
+- `routing_state_source_total{source="off"}` 随请求增长。
+- v2 `recorded` 不增长。
 
-| 层 | 命令 | 通过条件 |
-|---|---|---|
-| L1 | `curl /healthz` | 200 + `{"status":"ok"}` |
-| L2 | `curl /internal/ready/db` | OK |
-| L3 | `curl /internal/smoke/echo` | 返回 trace_id |
-| L4 | `curl /api/providers` | 无 `credential_decrypt_error` |
+## 5. Stage 1：Off -> Shadow
 
-**额外**：路由行为应**完全不变**。验证方法：
+### 5.1 Systemd 切换
+
+持久修改 `/etc/llm-gateway-go/env`：
 
 ```bash
-# 取一次成功请求的 trace，credential_id 应来自 legacy credentialstate
-curl /internal/smoke/decision -X POST -d '{"model": "minimax-m3"}' | jq .credential_id
-# 再查 credential_state_log 表确认本次走的是 legacy 路径（不是 URSM v2）
-psql -c "SELECT * FROM credential_state_log WHERE credential_id = X ORDER BY ts DESC LIMIT 5"
+URSM_V2_MODE=shadow
+URSM_V2_SHADOW_DOUBLE_WRITE=1
+URSM_V2_SHADOW_SAMPLE_RATE=0.01
 ```
 
-### 3.4 7 天观察 + 关键 metric
+然后执行：
 
 ```bash
-# 每小时采样（建议加进 Grafana dashboard）
-curl /metrics | grep -E 'ursm_v2_shadow_records_total|credential_state_log_writes' | head
+sudo systemctl restart llm-gateway-go.service
+sudo systemctl is-active llm-gateway-go.service
+sudo journalctl -u llm-gateway-go.service -n 200 --no-pager \
+  | grep -E 'ursm.v2 manager constructed|credential state manager created'
 ```
 
-期望：
+启动日志必须显示：
 
-```yaml
-llm_gateway_ursm_v2_shadow_records_total{result="recorded"}:
-  7d 累计 ≈ legacy credentialstate.UpdateOnSuccess/UpdateOnFailure 7d 累计
-  (允许 ±5% 偏差 — URSM v2 的 rollout controller 会对 canary subset 抽样，
-  shadow 模式下应为 100%，因为 ShadowDoubleWrite=true)
-
-llm_gateway_ursm_v2_shadow_records_total{result="skipped"}:
-  应为 0（因为 ShadowDoubleWrite=true 让 shadow 模式变为 recorded）
-
-llm_gateway_ursm_v2_shadow_records_total{result="failed"}:
-  偶发（Redis 抖动）允许；>5/m 触发告警
+```text
+mode=shadow ready=true shadow_double_write=true shadow_sample_rate=0.01
+credential state manager created
 ```
 
-**Drift 计算**（关键判断点）：
-
-```
-URSM_v2_records - legacy_state_writes
-delta = -------------------------  < 1%  ← 通过
-              legacy_state_writes
-```
-
-如果 `|delta| >= 1%`：
-- 看 URSM v2 端 `result="failed"` 是否激增（Redis 抖动）
-- 看 legacy 端是否有 batch_writer 丢事件（已有 audit R-3.3 修复 metric `shadow_write_failed_total`）
-- 不修复就**不能进 Stage 2**
-
-## 4. Stage 1 → Stage 2：Canary 灰度
-
-**进入条件**：7 天 drift < 1% + 老板拍板"按 tenant 灰度"。
-
-### 4.1 启用 canary 配置
+### 5.2 Kubernetes 切换
 
 ```bash
-export URSM_V2_MODE=canary
-# 白名单 tenant 立即走 URSM v2
-export URSM_V2_CANARY_TENANTS="tenant-vip,tenant-canary-1,tenant-canary-2"
-# 或按百分比（10% 起步）
-export URSM_V2_CANARY_PERCENT=10
-unset URSM_V2_SHADOW_DOUBLE_WRITE   # canary 模式下不再需要双写
+kubectl -n <namespace> set env deployment/<deployment> \
+  URSM_V2_MODE=shadow \
+  URSM_V2_SHADOW_DOUBLE_WRITE=1 \
+  URSM_V2_SHADOW_SAMPLE_RATE=0.01 \
+  URSM_V2_CANARY_PERCENT-
+kubectl -n <namespace> rollout status deployment/<deployment> --timeout=5m
 ```
 
-### 4.2 灰度阶梯
+### 5.3 Shadow 即时验收
 
-```
-10% 流量 1h  → 错误率基线比对
-   ↓
-50% 流量 30min → 错误率 / P99 latency 比对
-   ↓
-100% 流量 24h  → 全量稳定性
-```
+切换后 15 分钟内：
 
-任何阶梯错误率 > baseline × 1.5 立即回退到上一阶段（rule 03 §7.2）。
-
-### 4.3 回退阶梯
+- `/healthz` 返回 200，业务错误率和 P99 不劣于基线。
+- legacy manager 创建日志存在，证明生产路由仍由旧路径决定。
+- `increase(llm_gateway_ursm_v2_shadow_records_total{result="recorded"}[15m]) > 0`。
+- `increase(llm_gateway_ursm_v2_shadow_records_total{result="failed"}[15m]) = 0`。
+- `increase(ursm_shadow_diff_total{type=~"identical|availability_mismatch|order_mismatch"}[15m]) > 0`。
+- `increase(ursm_shadow_diff_total{type=~"error|not_ready"}[15m]) = 0`。
+- Redis tenant-aware node key 数量随真实流量增长；不要使用 `KEYS`，用 `SCAN`。
 
 ```bash
-# 从 canary 回到 shadow（保留数据，再观察）
-export URSM_V2_MODE=shadow
-export URSM_V2_SHADOW_DOUBLE_WRITE=1
-
-# 从 canary 直接回 off（一键，紧急情况）
-bash scripts/rollback/ursm_v2_to_legacy.sh --env=prod
+redis-cli --scan --pattern 'ursm:v2:node:*' | head
 ```
 
-## 5. Stage 2 → Stage 3：Authoritative 全量接管
+### 5.4 Shadow 七天验收门槛
 
-**进入条件**：canary 100% 流量 24h 无回归 + 老板拍板。
+连续运行满 7 个自然日，并以 Prometheus 全实例聚合：
 
-### 5.1 全量接管
+```promql
+sum(increase(ursm_shadow_diff_total{type="availability_mismatch"}[7d])) == 0
+sum(increase(ursm_shadow_diff_total{type="order_mismatch"}[7d])) == 0
+sum(increase(ursm_shadow_diff_total{type=~"error|not_ready"}[7d])) == 0
+sum(increase(ursm_shadow_diff_total{type="identical"}[7d])) >= 10000
+sum(increase(llm_gateway_ursm_v2_shadow_records_total{result="failed"}[7d])) == 0
+sum(increase(llm_gateway_ursm_v2_shadow_records_total{result="recorded"}[7d])) > 0
+```
+
+同时要求请求错误率、无候选率、P99 延迟没有超过基线告警阈值。任何一项不满足都保持 shadow，不进入 canary。
+
+### 5.5 Shadow 回滚
+
+Systemd：
 
 ```bash
-export URSM_V2_MODE=authoritative
-unset URSM_V2_CANARY_TENANTS URSM_V2_CANARY_PERCENT URSM_V2_SHADOW_DOUBLE_WRITE
-sudo systemctl restart llm-gateway-go
+# 修改 /etc/llm-gateway-go/env
+URSM_V2_MODE=off
+# 删除 URSM_V2_SHADOW_DOUBLE_WRITE、URSM_V2_SHADOW_SAMPLE_RATE、URSM_V2_CANARY_PERCENT
+sudo systemctl restart llm-gateway-go.service
 ```
 
-### 5.2 切流后必看
+Kubernetes：
 
 ```bash
-# URSM v2 端应该承担全部路由
-curl /metrics | grep ursm_v2_filter_and_score_call_total
-# legacy credentialstate.FilterAvailable 调用应该清零（或极少量——故障回退路径）
-curl /metrics | grep credential_state_filter_total
+kubectl -n <namespace> set env deployment/<deployment> \
+  URSM_V2_MODE=off \
+  URSM_V2_SHADOW_DOUBLE_WRITE- \
+  URSM_V2_SHADOW_SAMPLE_RATE- \
+  URSM_V2_CANARY_PERCENT-
+kubectl -n <namespace> rollout status deployment/<deployment> --timeout=5m
 ```
 
-### 5.3 双轨运行期（可选）
+回滚不删除 `ursm:v2:*`，保留现场供分析。不要依赖 `scripts/rollback/ursm_v2_to_legacy.sh`：它不能持久更新所有部署系统的环境配置。
 
-如果决策是 "双轨 30 天后切换"（决策 4 选项 C），保留 legacy credentialstate 包但停止其 FilterAvailable 调用：
+## 6. Stage 2：Shadow -> Canary
 
-```bash
-export LLM_GATEWAY_LEGACY_STATE_DISABLED=1   # 暂时不支持，需要加 config 字段
+此阶段只能在第 5.4 节全部通过并由变更审批确认后执行。
+
+配置：
+
+```text
+URSM_V2_MODE=canary
+URSM_V2_CANARY_PERCENT=<1|5|10|25|50|100>
+# 删除 URSM_V2_SHADOW_DOUBLE_WRITE、URSM_V2_SHADOW_SAMPLE_RATE
 ```
 
-## 6. 紧急回退（任何阶段）
+按 `1% -> 5% -> 10% -> 25% -> 50% -> 100%` 逐级推进。1/5/10/25/50 每级至少观察 1 小时，100% 至少观察 24 小时。每级要求：
 
-任意阶段发现以下任一情况立即回退：
+- 错误率不高于基线 `1.2x`，无候选率不增加。
+- P99 不高于基线 `1.2x`。
+- `routing_state_source_total{source="canary"}` 与配置比例同量级。
+- NodeMirror fallback、Redis error 和 not-ready 均为 0。
+- v2 node key 覆盖所有该级实际命中的 tenant/model/candidate。
 
-- 错误率 > baseline × 1.5
-- P99 latency > baseline × 5
-- URSM v2 Redis 频繁 Ready=false（Redis 抖动）
-- 人工判断节点可用性数据异常
+Canary 回 shadow：
 
-```bash
-# 一键回退
-bash scripts/rollback/ursm_v2_to_legacy.sh --env=prod
+```text
+URSM_V2_MODE=shadow
+URSM_V2_SHADOW_DOUBLE_WRITE=1
+URSM_V2_SHADOW_SAMPLE_RATE=0.01
+# 删除 URSM_V2_CANARY_PERCENT
 ```
 
-回退后**保留 URSM v2 Redis 数据**（不 DEL），便于事后定位。再次切回时直接重跑 stage 1+。
+紧急回 off 使用第 5.5 节命令。
 
-## 7. 关键 file:line 参考
+## 7. Stage 3：Canary -> Authoritative（本次禁止执行）
 
-- Rollout controller：`domains/ursm/v2/rollout/controller.go` (4 个 Mode + ShadowDoubleWrite)
-- Config / LoadFromEnv：`domains/ursm/v2/config.go`（`URSM_V2_SHADOW_DOUBLE_WRITE` env 读取）
-- Manager RecordRequest：`domains/ursm/v2/manager.go:514`（sidecar 写入 + metric）
-- StateBackend 选择：`domains/streaming/executors/state_backend.go:146`（`selectStateBackendWithReady`）
-- URSM v2 node Redis hash schema：`domains/ursm/v2/store/record_request.lua`
-- Migration 工具：`cmd/migrate-ursm-v2/main.go`
-- Rollback 脚本：`scripts/rollback/ursm_v2_to_legacy.sh`
+以下仅记录未来门禁，不构成本次切换授权。除了 shadow 7 天 diff 全为 0 和 canary 100% 稳定 24 小时，还必须关闭这些 NO-GO 项：
 
-## 8. 关联文档
+1. tenant-aware 迁移覆盖率经独立审计为 100%，不能只验证“至少一个 node key”。
+2. Redis 重启、ready 关闭、warmup、ready 重开演练通过。
+3. authoritative 未 ready 和 Redis 读失败时的实际 fallback 语义已完成演练。
+4. v2 snapshot writer 在目标模式连续成功，恢复数据可用。
+5. `LLM_GATEWAY_SYSTEM_MONITOR_ENABLED=true`，故障关闸与恢复已验证。
+6. 单独变更审批明确允许禁用 legacy manager。
 
-- **审计**：`docs/audit/2026-07-28-llm-gateway-flow-comprehensive-audit.md` §7.1 R-7.1
-- **方案**：`docs/design/2026-07-28-llm-gateway-flow-improvements.md` §2 P0-3
-- **历史审计**：`AUDIT_URSMV2_CONCURRENCY_20260728.md`（URSM v2 收尾 / 已闭环）
-- **历史审计**：`AUDIT_CONCURRENCY_HARDENING_20260727.md`（77 文件大修 / 已闭环）
-- **告警规则**：`deploy/monitoring/grafana-alerts/shadow-write-failures.yaml`（P0-2 的 4 条规则继续生效）
+未来配置形式：
 
----
+```text
+URSM_V2_MODE=authoritative
+# 删除 URSM_V2_CANARY_PERCENT、URSM_V2_SHADOW_DOUBLE_WRITE、URSM_V2_SHADOW_SAMPLE_RATE
+```
 
-**下次审视**：URSM v2 切流完成后 1 周（验证 Stage 3 流量稳定性 + drift 趋势）。
+本 P0-Z1 会话不得应用该配置。
+
+## 8. 立即停止条件
+
+任一阶段出现以下情况立即回到 shadow 或 off：
+
+- 错误率或无候选率超过门槛。
+- `ursm_shadow_diff_total{type=~"availability_mismatch|order_mismatch|error|not_ready"}` 增长。
+- `llm_gateway_ursm_v2_shadow_records_total{result="failed"}` 增长。
+- Redis 延迟/错误异常或 tenant 数据串读迹象。
+- legacy manager 在 shadow 模式未装配。

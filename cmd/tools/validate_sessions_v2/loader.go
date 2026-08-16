@@ -198,7 +198,7 @@ func (l *SessionLoader) LoadV2Turns(ctx context.Context, tenantID, sessionID str
 			COALESCE(error_kind, '') as error_kind,
 			source_kind,
 			quality
-		FROM public.session_turns
+		FROM public.session_turns_with_current_month
 		WHERE tenant_id = $1 AND session_id = $2
 		ORDER BY turn_no ASC
 	`

@@ -8,7 +8,7 @@
 
 > ⚠️ **当前实施状态勘误（2026-07-23）**
 > 
-> 本文档 §2.3 缺陷3 中提出的 HTTP 202 + `X-LLM-Gateway-Retry-Scheduled` 协议为**未实施提案**。
+> 本文档 §2.3 缺陷3 中提出的 HTTP 202 + `X-LLM-Gateway-Retry-Scheduled` 协议为**未实施提案**；其中 header 字面量是非规范性候选命名，不构成兼容性承诺。当前 pending/durable 202 契约使用 `X-Gw-Pending`、`X-Gw-Pending-Request` 与 `Retry-After`，语义不同。
 > 
 > **当前实际行为**：Goal retry 采用同步内部重试，客户端阻塞等待最终结果。
 > 

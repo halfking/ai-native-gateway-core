@@ -50,6 +50,7 @@ type requestAttemptMeta struct {
 	APIKeyFingerprint string         // SHA-256(rawKey)[:16]，在认证阶段设置
 	ClientProtocol    string         // openai-chat/anthropic-messages/gemini-generate
 	ProjectID         string         // X-Gw-Project-Id
+	Namespace         string         // loaded Session.Namespace
 	SourceChannel     string         // web/api/mcp/agent
 	FingerprintRaw    map[string]any // 原始指纹字段（取证原材）
 
@@ -382,6 +383,12 @@ func enrichRequestLogFromMeta(reqLog *telemetryv1.RequestLogEntry, keyInfo *auth
 	}
 	if meta.VirtualClientID != "" && reqLog.VirtualClientID == nil {
 		reqLog.VirtualClientID = strPtr(meta.VirtualClientID)
+	}
+	if meta.ProjectID != "" && reqLog.ProjectID == nil {
+		reqLog.ProjectID = strPtr(meta.ProjectID)
+	}
+	if meta.Namespace != "" && reqLog.Namespace == nil {
+		reqLog.Namespace = strPtr(meta.Namespace)
 	}
 	if meta.APIKeyPrefix != "" {
 		reqLog.APIKeyPrefix = strPtr(meta.APIKeyPrefix)

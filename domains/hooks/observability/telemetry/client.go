@@ -196,9 +196,13 @@ type RequestLogEntry struct {
 	ResponseBody       *string `json:"response_body,omitempty"`
 	GwSessionID        *string `json:"gw_session_id,omitempty"`
 	GwTaskID           *string `json:"gw_task_id,omitempty"`
-	APIKeyPrefix       *string `json:"api_key_prefix,omitempty"`
-	APIKeyOwnerUser    *string `json:"api_key_owner_user,omitempty"`
-	ApplicationCode    *string `json:"application_code,omitempty"`
+	// Mirror-only transport dimensions. The request_logs persistence SQL ignores
+	// these fields; onPersisted consumers use them to build the V2 request DTO.
+	ProjectID       *string `json:"project_id,omitempty"`
+	Namespace       *string `json:"namespace,omitempty"`
+	APIKeyPrefix    *string `json:"api_key_prefix,omitempty"`
+	APIKeyOwnerUser *string `json:"api_key_owner_user,omitempty"`
+	ApplicationCode *string `json:"application_code,omitempty"`
 	// v2.0 auto-route observability (requires 2026-06-15-auto-route-mode.sql)
 	IsAutoRequest  *bool    `json:"is_auto_request,omitempty"`
 	TaskType       *string  `json:"task_type,omitempty"`
@@ -2258,6 +2262,8 @@ func sanitizeRequestLogEntry(e *RequestLogEntry) {
 	sanitizeStringPtr(&e.ResponsePreview)
 	sanitizeStringPtr(&e.GwSessionID)
 	sanitizeStringPtr(&e.GwTaskID)
+	sanitizeStringPtr(&e.ProjectID)
+	sanitizeStringPtr(&e.Namespace)
 	sanitizeStringPtr(&e.APIKeyPrefix)
 	sanitizeStringPtr(&e.APIKeyOwnerUser)
 	sanitizeStringPtr(&e.ApplicationCode)
@@ -2465,6 +2471,8 @@ func mergeRequestLogEntry(dst, src *RequestLogEntry) {
 	mergeStringPtr(&dst.IdentityHash, src.IdentityHash)
 	mergeStringPtr(&dst.GwSessionID, src.GwSessionID)
 	mergeStringPtr(&dst.GwTaskID, src.GwTaskID)
+	mergeStringPtr(&dst.ProjectID, src.ProjectID)
+	mergeStringPtr(&dst.Namespace, src.Namespace)
 	mergeStringPtr(&dst.APIKeyPrefix, src.APIKeyPrefix)
 	mergeStringPtr(&dst.APIKeyOwnerUser, src.APIKeyOwnerUser)
 	mergeStringPtr(&dst.ApplicationCode, src.ApplicationCode)

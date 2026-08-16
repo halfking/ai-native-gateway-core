@@ -63,16 +63,17 @@ func (c *InterceptorChain) InterceptNonStream(ctx context.Context, req *Intercep
 			if len(result.ModifiedBody) > 0 {
 				finalResult.ModifiedBody = result.ModifiedBody
 				currentReq = &InterceptRequest{
-					SessionID:     currentReq.SessionID,
-					RequestID:     currentReq.RequestID,
-					TenantID:      currentReq.TenantID,
-					ClientModel:   currentReq.ClientModel,
-					ResponseBody:  result.ModifiedBody,
-					TokensUsed:    currentReq.TokensUsed,
-					ContextWindow: currentReq.ContextWindow,
-					MessageCount:  currentReq.MessageCount,
-					FinishReason:  currentReq.FinishReason,
-					IsStreaming:   currentReq.IsStreaming,
+					SessionID:      currentReq.SessionID,
+					RequestID:      currentReq.RequestID,
+					TenantID:       currentReq.TenantID,
+					ClientModel:    currentReq.ClientModel,
+					ResponseBody:   result.ModifiedBody,
+					TokensUsed:     currentReq.TokensUsed,
+					ContextWindow:  currentReq.ContextWindow,
+					MessageCount:   currentReq.MessageCount,
+					FinishReason:   currentReq.FinishReason,
+					IsStreaming:    currentReq.IsStreaming,
+					FollowUpAction: currentReq.FollowUpAction,
 				}
 			}
 			if len(result.InjectFollowUp) > 0 {

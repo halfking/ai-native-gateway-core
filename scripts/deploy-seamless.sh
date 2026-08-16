@@ -154,7 +154,7 @@ _seamless_auto_rollback() {
     host_atomic_switch "$SSH_CMD" "$TARGET" "$prev" 2>&1 | sed 's/^/    /' || true
     # 2026-07-27: 30s → 90s,与主 deploy 流程一致(回滚后 ApplyMigrations 仍需 ~30s+)
     if host_wait_healthy "$SSH_CMD" "$TARGET" 90 2>&1 \
-      && deploy_verify_gateway_ready "$SSH_CMD" "$SERVICE_NAME" 8781 90; then
+      && deploy_verify_gateway_ready "$SSH_CMD" "$SERVICE_NAME" 8781 90 "$(_env_file_for_target)"; then
       ok "已回滚到 $prev (healthz + DB OK)"
       return 0
     fi
@@ -356,8 +356,11 @@ do_deploy() {
   log "[4/9] stage release bundle"
   bundle_dir="/tmp/seamless-release-${TARGET}-${seq_val}"
   rm -rf "$bundle_dir"; mkdir -p "$bundle_dir/web"
-  HOST_STAGE_TARGET="$TARGET" HOST_STAGE_VERSION="$version" \
-    host_stage_release "$bundle_dir" "$tmpbin" "web/dist" 2>&1 | sed 's/^/    /' || true
+  if ! HOST_STAGE_TARGET="$TARGET" HOST_STAGE_VERSION="$version" \
+    host_stage_release "$bundle_dir" "$tmpbin" "web/dist" 2>&1 | sed 's/^/    /'; then
+    err "stage release bundle 失败"
+    exit 1
+  fi
   ok "bundle: $bundle_dir"
 
   # 5. upload
@@ -387,7 +390,10 @@ do_deploy() {
   log "[8/9] 原子符号链接切换 + restart"
   local switch_start switch_end switch_elapsed
   switch_start=$(date +%s)
-  host_atomic_switch "$SSH_CMD" "$TARGET" "$version" 2>&1 | sed 's/^/    /' || true
+  if ! host_atomic_switch "$SSH_CMD" "$TARGET" "$version" 2>&1 | sed 's/^/    /'; then
+    _seamless_auto_rollback "原子切换或 restart 失败" "$version" || true
+    exit 1
+  fi
   switch_end=$(date +%s)
   switch_elapsed=$((switch_end - switch_start))
   ok "符号链接已切换 (${switch_elapsed}s 含 restart)"
@@ -399,9 +405,35 @@ do_deploy() {
   # 90s 与 deploy_verify_gateway_ready 90s、rollback 60s 顶部对齐。
   log "[9/9] 验证 /healthz + DB (healthz 90s, DB 90s)"
   if host_wait_healthy "$SSH_CMD" "$TARGET" 90 2>&1; then
-    if deploy_verify_gateway_ready "$SSH_CMD" "$SERVICE_NAME" 8781 90; then
-      host_mark_verified "$SSH_CMD" "$TARGET" "$version" 2>&1 | sed 's/^/    /' || true
-      ok "healthz + DB 通过，标记 verified"
+    if deploy_verify_gateway_ready "$SSH_CMD" "$SERVICE_NAME" 8781 90 "$(_env_file_for_target)"; then
+      local expected_sha
+      expected_sha=$(python3 -c "import json;print(json.load(open('version.json'))['git_sha'])")
+      if ! remote_ssh "EXPECTED_VERSION='$version' EXPECTED_SEQ='$seq_val' EXPECTED_SHA='$expected_sha' ROOT='$REMOTE_ROOT' python3 - <<'PYVERIFY'
+import json
+import os
+import urllib.request
+
+current = os.path.realpath(os.path.join(os.environ['ROOT'], 'current'))
+expected = os.path.realpath(os.path.join(os.environ['ROOT'], 'releases', os.environ['EXPECTED_VERSION']))
+if current != expected:
+    raise SystemExit(f'current mismatch: {current} != {expected}')
+with urllib.request.urlopen('http://127.0.0.1:8781/api/system/version', timeout=5) as response:
+    version = json.load(response)
+if str(version.get('build_seq')) != os.environ['EXPECTED_SEQ']:
+    raise SystemExit('build_seq mismatch: %s' % version.get('build_seq'))
+actual_sha = str(version.get('git_sha') or '')
+expected_sha = os.environ['EXPECTED_SHA']
+if not actual_sha.startswith(expected_sha[:8]):
+    raise SystemExit(f'git_sha mismatch: {actual_sha} != {expected_sha}')
+PYVERIFY"; then
+        _seamless_auto_rollback "运行版本与 release bundle 不一致" "$version" || true
+        exit 1
+      fi
+      if ! host_mark_verified "$SSH_CMD" "$TARGET" "$version" 2>&1 | sed 's/^/    /'; then
+        _seamless_auto_rollback "标记 release verified 失败" "$version" || true
+        exit 1
+      fi
+      ok "healthz + DB + release identity 通过，标记 verified"
     else
       _seamless_auto_rollback "DB 未就绪 (database not configured 风险)" "$version" || true
       exit 1
@@ -528,9 +560,12 @@ do_rollback() {
   ok "回滚目标: $target_version"
 
   log "原子切换 + restart..."
-  host_atomic_switch "$SSH_CMD" "$TARGET" "$target_version" 2>&1 | sed 's/^/    /' || true
+  if ! host_atomic_switch "$SSH_CMD" "$TARGET" "$target_version" 2>&1 | sed 's/^/    /'; then
+    err "回滚切换或 restart 失败"
+    exit 1
+  fi
   if host_wait_healthy "$SSH_CMD" "$TARGET" 60 2>&1 \
-    && deploy_verify_gateway_ready "$SSH_CMD" "$SERVICE_NAME" 8781 90; then
+    && deploy_verify_gateway_ready "$SSH_CMD" "$SERVICE_NAME" 8781 90 "$(_env_file_for_target)"; then
     ok "回滚完成 → $target_version (healthz + DB OK)"
     $SSH_CMD "curl -fsS '$HEALTH_URL' >/dev/null && echo '  healthz OK'" 2>/dev/null || true
   else

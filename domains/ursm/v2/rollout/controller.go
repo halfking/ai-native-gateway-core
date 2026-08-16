@@ -8,10 +8,11 @@ import (
 )
 
 type Config struct {
-	Mode          api.RolloutMode
-	CanaryPercent int
-	CanaryTenants []string
-	CanaryModels  []string
+	Mode             api.RolloutMode
+	CanaryPercent    int
+	CanaryTenants    []string
+	CanaryModels     []string
+	ShadowSampleRate float64
 	// ShadowDoubleWrite opts shadow mode into writing sidecar records to
 	// the v2 store. Default off — by design shadow mode is silent so the
 	// v2 Redis namespace stays clean until cutover. P0-3 (audit §7.1)
@@ -42,6 +43,27 @@ func (c *Controller) ShadowDoubleWrite() bool {
 		return false
 	}
 	return c.cfg.ShadowDoubleWrite
+}
+
+func (c *Controller) ShadowSampleRate() float64 {
+	if c == nil {
+		return 0
+	}
+	return c.cfg.ShadowSampleRate
+}
+
+// ShouldSampleShadow deterministically selects requests for observe-only v2
+// planning. Outcome double-writes are controlled separately and remain 100%.
+func (c *Controller) ShouldSampleShadow(tenant, model, requestID string) bool {
+	if c == nil || (c.cfg.Mode != api.ModeShadow && c.cfg.Mode != api.ModeCanary) || c.cfg.ShadowSampleRate <= 0 {
+		return false
+	}
+	if c.cfg.ShadowSampleRate >= 1 {
+		return true
+	}
+	h := sha256.Sum256([]byte(tenant + "|" + model + "|" + requestID))
+	v := binary.BigEndian.Uint32(h[:4]) % 1_000_000
+	return float64(v)/1_000_000 < c.cfg.ShadowSampleRate
 }
 
 func (c *Controller) ShouldUseV2(tenant, model, requestID string) bool {

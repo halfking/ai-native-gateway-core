@@ -29,6 +29,12 @@ func aggregateTestUpdate() SessionUpdate {
 	}
 }
 
+func expectAggregateSessionLock(mock pgxmock.PgxPoolIface, update SessionUpdate) {
+	mock.ExpectExec("session_turns_advisory_lock_key").
+		WithArgs(update.TenantID, update.SessionID).
+		WillReturnResult(pgxmock.NewResult("SELECT", 1))
+}
+
 func expectAggregateUpsert(mock pgxmock.PgxPoolIface, update SessionUpdate, partitionDate time.Time) {
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO public.sessions")).
 		WithArgs(
@@ -55,10 +61,12 @@ func TestSessionAggregator_UpdateSessionIdempotent(t *testing.T) {
 	agg := newSessionAggregator(mock)
 	update := aggregateTestUpdate()
 	partitionDate := update.UpdatedAt.Truncate(24 * time.Hour)
-	claim := regexp.QuoteMeta("UPDATE public.session_turns")
+	hotClaim := regexp.QuoteMeta("UPDATE public.session_turns_hot")
+	partitionClaim := regexp.QuoteMeta("UPDATE public.session_turns")
 
 	mock.ExpectBegin()
-	mock.ExpectQuery(claim).
+	expectAggregateSessionLock(mock, update)
+	mock.ExpectQuery(hotClaim).
 		WithArgs(update.SessionID, update.TenantID, update.RequestID, partitionDate).
 		WillReturnRows(pgxmock.NewRows([]string{"claimed"}).AddRow(1))
 	expectAggregateUpsert(mock, update, partitionDate)
@@ -66,7 +74,11 @@ func TestSessionAggregator_UpdateSessionIdempotent(t *testing.T) {
 	require.NoError(t, agg.UpdateSession(context.Background(), update))
 
 	mock.ExpectBegin()
-	mock.ExpectQuery(claim).
+	expectAggregateSessionLock(mock, update)
+	mock.ExpectQuery(hotClaim).
+		WithArgs(update.SessionID, update.TenantID, update.RequestID, partitionDate).
+		WillReturnError(pgx.ErrNoRows)
+	mock.ExpectQuery(partitionClaim).
 		WithArgs(update.SessionID, update.TenantID, update.RequestID, partitionDate).
 		WillReturnError(pgx.ErrNoRows)
 	mock.ExpectCommit()
@@ -86,10 +98,11 @@ func TestSessionAggregator_UpdateSessionClaimRollsBackOnFailure(t *testing.T) {
 	agg := newSessionAggregator(mock)
 	update := aggregateTestUpdate()
 	partitionDate := update.UpdatedAt.Truncate(24 * time.Hour)
-	claim := regexp.QuoteMeta("UPDATE public.session_turns")
+	claim := regexp.QuoteMeta("UPDATE public.session_turns_hot")
 	insert := regexp.QuoteMeta("INSERT INTO public.sessions")
 
 	mock.ExpectBegin()
+	expectAggregateSessionLock(mock, update)
 	mock.ExpectQuery(claim).
 		WithArgs(update.SessionID, update.TenantID, update.RequestID, partitionDate).
 		WillReturnRows(pgxmock.NewRows([]string{"claimed"}).AddRow(1))
@@ -107,6 +120,7 @@ func TestSessionAggregator_UpdateSessionClaimRollsBackOnFailure(t *testing.T) {
 	require.Error(t, agg.UpdateSession(context.Background(), update))
 
 	mock.ExpectBegin()
+	expectAggregateSessionLock(mock, update)
 	mock.ExpectQuery(claim).
 		WithArgs(update.SessionID, update.TenantID, update.RequestID, partitionDate).
 		WillReturnRows(pgxmock.NewRows([]string{"claimed"}).AddRow(1))
@@ -115,7 +129,34 @@ func TestSessionAggregator_UpdateSessionClaimRollsBackOnFailure(t *testing.T) {
 	require.NoError(t, agg.UpdateSession(context.Background(), update))
 }
 
-// Empty RequestID preserves the legacy/backfill path and performs a direct
+func TestSessionAggregator_SetSessionMetadataBackfillsTaskTypeAcrossStores(t *testing.T) {
+	mock, err := pgxmock.NewPool(pgxmock.QueryMatcherOption(pgxmock.QueryMatcherRegexp))
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, mock.ExpectationsWereMet())
+		mock.Close()
+	})
+
+	agg := newSessionAggregator(mock)
+	meta := SessionMetadata{TaskType: "code"}
+	mock.ExpectBegin()
+	mock.ExpectExec("session_turns_advisory_lock_key").
+		WithArgs("tenant-1", "session-1").
+		WillReturnResult(pgxmock.NewResult("SELECT", 1))
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE public.sessions")).
+		WithArgs("tenant-1", "session-1", meta.TaskType, "", "", "", "", []string(nil)).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE public.session_turns_hot")).
+		WithArgs("tenant-1", "session-1", meta.TaskType).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 2))
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE public.session_turns")).
+		WithArgs("tenant-1", "session-1", meta.TaskType).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 3))
+	mock.ExpectCommit()
+
+	require.NoError(t, agg.SetSessionMetadata(context.Background(), "tenant-1", "session-1", meta))
+}
+
 // aggregate upsert without requiring a session_turns claim.
 func TestSessionAggregator_UpdateSessionIdempotentEmptyRequestIDAllowed(t *testing.T) {
 	mock, err := pgxmock.NewPool(pgxmock.QueryMatcherOption(pgxmock.QueryMatcherRegexp))

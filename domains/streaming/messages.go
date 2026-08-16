@@ -413,6 +413,7 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		sessionID = provisionalSessionID
 	}
 	r = applyResolvedGatewaySession(r, sessionID, sessionInfo)
+	logCtx.SetSession(sessionInfo)
 	if h.chatHandler.requestLogger != nil {
 		tenantID := "default"
 		if keyInfo != nil {

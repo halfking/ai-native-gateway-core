@@ -38,72 +38,72 @@ func NewSessionDetailV2API(pool *pgxpool.Pool) *SessionDetailV2API {
 
 // SessionV2 表示 public.sessions 表的记录
 type SessionV2 struct {
-	ID                   int64      `json:"id"`
-	SessionID            string     `json:"session_id"`
-	TenantID             string     `json:"tenant_id"`
-	CreatedAt            time.Time  `json:"created_at"`
-	UpdatedAt            time.Time  `json:"updated_at"`
-	ClosedAt             *time.Time `json:"closed_at,omitempty"`
-	Status               string     `json:"status"`
-	TotalTurns           int        `json:"total_turns"`
-	TotalTokens          int        `json:"total_tokens"`
-	TotalCostUSD         float64    `json:"total_cost_usd"`
-	LastTurnNo           *int       `json:"last_turn_no,omitempty"`
-	LastRequestSummary   *string    `json:"last_request_summary,omitempty"`
-	LastResponseSummary  *string    `json:"last_response_summary,omitempty"`
-	LastModel            *string    `json:"last_model,omitempty"`
-	LastProvider         *string    `json:"last_provider,omitempty"`
-	TaskType             *string    `json:"task_type,omitempty"`
-	ClientType           *string    `json:"client_type,omitempty"`
-	Topic                *string    `json:"topic,omitempty"`
-	Intent               *string    `json:"intent,omitempty"`
-	PrimaryRequestID     *string    `json:"primary_request_id,omitempty"`
-	TurnLogsSummary      any        `json:"turn_logs_summary,omitempty"`
+	ID                  int64      `json:"id"`
+	SessionID           string     `json:"session_id"`
+	TenantID            string     `json:"tenant_id"`
+	CreatedAt           time.Time  `json:"created_at"`
+	UpdatedAt           time.Time  `json:"updated_at"`
+	ClosedAt            *time.Time `json:"closed_at,omitempty"`
+	Status              string     `json:"status"`
+	TotalTurns          int        `json:"total_turns"`
+	TotalTokens         int        `json:"total_tokens"`
+	TotalCostUSD        float64    `json:"total_cost_usd"`
+	LastTurnNo          *int       `json:"last_turn_no,omitempty"`
+	LastRequestSummary  *string    `json:"last_request_summary,omitempty"`
+	LastResponseSummary *string    `json:"last_response_summary,omitempty"`
+	LastModel           *string    `json:"last_model,omitempty"`
+	LastProvider        *string    `json:"last_provider,omitempty"`
+	TaskType            *string    `json:"task_type,omitempty"`
+	ClientType          *string    `json:"client_type,omitempty"`
+	Topic               *string    `json:"topic,omitempty"`
+	Intent              *string    `json:"intent,omitempty"`
+	PrimaryRequestID    *string    `json:"primary_request_id,omitempty"`
+	TurnLogsSummary     any        `json:"turn_logs_summary,omitempty"`
 }
 
 // SessionTurnV2 表示 session_turns + session_bodies 的 JOIN 结果
 type SessionTurnV2 struct {
-	ID                    int64   `json:"id"`
-	SessionID             string  `json:"session_id"`
-	TurnNo                int     `json:"turn_no"`
-	TenantID              string  `json:"tenant_id"`
-	RequestID             string  `json:"request_id"`
-	Ts                    time.Time `json:"ts"`
-	SubmitMode            string  `json:"submit_mode"`
-	CompressionApplied    bool    `json:"compression_applied"`
-	CompressionStrategy   *string `json:"compression_strategy,omitempty"`
-	CompressionMeta       any     `json:"compression_meta,omitempty"`
-	CompressionTokensSaved *int   `json:"compression_tokens_saved,omitempty"`
-	InjectionVerdict      string  `json:"injection_verdict"`
-	OutputVerdict         string  `json:"output_verdict"`
-	Model                 *string `json:"model,omitempty"`
-	Provider              *string `json:"provider,omitempty"`
-	CredentialID          *string `json:"credential_id,omitempty"`
-	PromptTokens          *int    `json:"prompt_tokens,omitempty"`
-	CompletionTokens      *int    `json:"completion_tokens,omitempty"`
-	CacheReadTokens       *int    `json:"cache_read_tokens,omitempty"`
-	CacheWriteTokens      *int    `json:"cache_write_tokens,omitempty"`
-	CostUSD               *float64 `json:"cost_usd,omitempty"`
-	LatencyMs             *int    `json:"latency_ms,omitempty"`
-	StatusCode            *int    `json:"status_code,omitempty"`
-	Success               *bool   `json:"success,omitempty"`
-	ErrorKind             *string `json:"error_kind,omitempty"`
-	SourceKind            string  `json:"source_kind"`
-	Quality               string  `json:"quality"`
-	
+	ID                     int64     `json:"id"`
+	SessionID              string    `json:"session_id"`
+	TurnNo                 int       `json:"turn_no"`
+	TenantID               string    `json:"tenant_id"`
+	RequestID              string    `json:"request_id"`
+	Ts                     time.Time `json:"ts"`
+	SubmitMode             string    `json:"submit_mode"`
+	CompressionApplied     bool      `json:"compression_applied"`
+	CompressionStrategy    *string   `json:"compression_strategy,omitempty"`
+	CompressionMeta        any       `json:"compression_meta,omitempty"`
+	CompressionTokensSaved *int      `json:"compression_tokens_saved,omitempty"`
+	InjectionVerdict       string    `json:"injection_verdict"`
+	OutputVerdict          string    `json:"output_verdict"`
+	Model                  *string   `json:"model,omitempty"`
+	Provider               *string   `json:"provider,omitempty"`
+	CredentialID           *string   `json:"credential_id,omitempty"`
+	PromptTokens           *int      `json:"prompt_tokens,omitempty"`
+	CompletionTokens       *int      `json:"completion_tokens,omitempty"`
+	CacheReadTokens        *int      `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens       *int      `json:"cache_write_tokens,omitempty"`
+	CostUSD                *float64  `json:"cost_usd,omitempty"`
+	LatencyMs              *int      `json:"latency_ms,omitempty"`
+	StatusCode             *int      `json:"status_code,omitempty"`
+	Success                *bool     `json:"success,omitempty"`
+	ErrorKind              *string   `json:"error_kind,omitempty"`
+	SourceKind             string    `json:"source_kind"`
+	Quality                string    `json:"quality"`
+
 	// From session_bodies table
-	RequestDelta          any     `json:"request_delta,omitempty"`
-	ResponseDelta         any     `json:"response_delta,omitempty"`
-	OutboundBody          any     `json:"outbound_body,omitempty"`
-	RequestAttachments    any     `json:"request_attachments,omitempty"`
-	ResponseAttachments   any     `json:"response_attachments,omitempty"`
+	RequestDelta        any `json:"request_delta,omitempty"`
+	ResponseDelta       any `json:"response_delta,omitempty"`
+	OutboundBody        any `json:"outbound_body,omitempty"`
+	RequestAttachments  any `json:"request_attachments,omitempty"`
+	ResponseAttachments any `json:"response_attachments,omitempty"`
 }
 
 // SessionDetailV2Response 是 API 返回的完整响应
 type SessionDetailV2Response struct {
-	Session    *SessionV2       `json:"session"`
-	Turns      []SessionTurnV2  `json:"turns"`
-	TotalTurns int              `json:"total_turns"`
+	Session    *SessionV2      `json:"session"`
+	Turns      []SessionTurnV2 `json:"turns"`
+	TotalTurns int             `json:"total_turns"`
 }
 
 func (api *SessionDetailV2API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -168,12 +168,12 @@ func (api *SessionDetailV2API) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	}
 
 	response := map[string]any{
-		"session":      detail.Session,
-		"turns":        detail.Turns,
-		"total_turns":  detail.TotalTurns,
+		"session":       detail.Session,
+		"turns":         detail.Turns,
+		"total_turns":   detail.TotalTurns,
 		"focus_turn_no": focusTurnNo,
-		"limit":        limit,
-		"offset":       offset,
+		"limit":         limit,
+		"offset":        offset,
 	}
 
 	writeExportJSON(w, http.StatusOK, response)
@@ -271,9 +271,10 @@ func (api *SessionDetailV2API) queryTurns(
 			t.source_kind, t.quality,
 			b.request_delta, b.response_delta, b.outbound_body,
 			b.request_attachments, b.response_attachments
-		FROM public.session_turns t
+		FROM public.session_turns_with_current_month t
 		LEFT JOIN public.session_bodies b 
-			ON t.session_id = b.session_id 
+			ON t.tenant_id = b.tenant_id
+			AND t.session_id = b.session_id
 			AND t.turn_no = b.turn_no
 			AND t.partition_date = b.partition_date
 		WHERE t.session_id = $1 AND t.tenant_id = $2

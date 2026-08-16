@@ -107,6 +107,9 @@ func (a *SessionAggregator) UpdateSession(ctx context.Context, update SessionUpd
 			_ = tx.Rollback(ctx)
 		}
 	}()
+	if _, err := tx.Exec(ctx, sessionAdvisoryLockSQL, update.TenantID, update.SessionID); err != nil {
+		return fmt.Errorf("lock aggregate session: %w", err)
+	}
 
 	claimed, err := claimAggregateTurn(ctx, tx, update, partitionDate)
 	if err != nil {
@@ -137,14 +140,34 @@ func (a *SessionAggregator) UpdateSession(ctx context.Context, update SessionUpd
 func claimAggregateTurn(ctx context.Context, tx pgx.Tx, update SessionUpdate, partitionDate time.Time) (bool, error) {
 	var claimed int
 	err := tx.QueryRow(ctx, `
-		UPDATE public.session_turns
-		SET aggregate_applied_at = NOW()
-		WHERE session_id = $1
-		  AND tenant_id = $2
-		  AND request_id = $3
-		  AND partition_date = $4
-		  AND aggregate_applied_at IS NULL
-		RETURNING 1
+			UPDATE public.session_turns_hot
+			SET aggregate_applied_at = NOW()
+			WHERE session_id = $1
+			  AND tenant_id = $2
+			  AND request_id = $3
+			  AND partition_date = $4
+			  AND aggregate_applied_at IS NULL
+			RETURNING 1
+	`, update.SessionID, update.TenantID, update.RequestID, partitionDate).Scan(&claimed)
+	if err == nil {
+		return claimed == 1, nil
+	}
+	if err != pgx.ErrNoRows {
+		return false, err
+	}
+
+	// Promotion may move the row after the hot-table statement snapshot. The
+	// second statement gets a fresh READ COMMITTED snapshot and claims the
+	// partitioned copy without opening a double-aggregate window.
+	err = tx.QueryRow(ctx, `
+			UPDATE public.session_turns
+			SET aggregate_applied_at = NOW()
+			WHERE session_id = $1
+			  AND tenant_id = $2
+			  AND request_id = $3
+			  AND partition_date = $4
+			  AND aggregate_applied_at IS NULL
+			RETURNING 1
 	`, update.SessionID, update.TenantID, update.RequestID, partitionDate).Scan(&claimed)
 	if err == pgx.ErrNoRows {
 		return false, nil
@@ -297,7 +320,22 @@ func (a *SessionAggregator) CloseSession(ctx context.Context, tenantID, sessionI
 // This is typically called by async analysis workers after session closes, or by
 // the auto-title generator / user tag updates (M2/M3).
 func (a *SessionAggregator) SetSessionMetadata(ctx context.Context, tenantID, sessionID string, meta SessionMetadata) error {
-	_, err := a.db.Exec(ctx, `
+	tx, err := a.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin session metadata transaction: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback(ctx)
+		}
+	}()
+
+	if _, err := tx.Exec(ctx, sessionAdvisoryLockSQL, tenantID, sessionID); err != nil {
+		return fmt.Errorf("lock session metadata: %w", err)
+	}
+
+	_, err = tx.Exec(ctx, `
 		UPDATE public.sessions
 		SET 
 			task_type = COALESCE(NULLIF($3, ''), task_type),
@@ -308,8 +346,25 @@ func (a *SessionAggregator) SetSessionMetadata(ctx context.Context, tenantID, se
 			user_tags = CASE WHEN $8::text[] IS NOT NULL THEN $8 ELSE user_tags END
 		WHERE tenant_id = $1 AND session_id = $2
 	`, tenantID, sessionID, meta.TaskType, meta.ClientType, meta.Topic, meta.Intent, meta.Title, meta.UserTags)
+	if err != nil {
+		return err
+	}
 
-	return err
+	if meta.TaskType != "" {
+		for _, table := range []string{"public.session_turns_hot", "public.session_turns"} {
+			if _, err := tx.Exec(ctx, `UPDATE `+table+`
+				SET task_type = COALESCE(NULLIF(task_type, ''), $3)
+				WHERE tenant_id = $1 AND session_id = $2`, tenantID, sessionID, meta.TaskType); err != nil {
+				return fmt.Errorf("backfill session turn task type in %s: %w", table, err)
+			}
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit session metadata transaction: %w", err)
+	}
+	committed = true
+	return nil
 }
 
 // SessionMetadata represents session-level metadata

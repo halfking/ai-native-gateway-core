@@ -343,7 +343,14 @@ func (h *ChatHandler) NewRequestLogContext(r *http.Request, requestID string, st
 }
 
 func (c *RequestLogContext) SetSession(session *session.Session) {
+	if c == nil {
+		return
+	}
 	c.Session = session
+	c.meta.Namespace = ""
+	if session != nil {
+		c.meta.Namespace = strings.TrimSpace(session.Namespace)
+	}
 }
 
 func (c *RequestLogContext) SetKey(keyInfo *authentication.KeyInfo) {
