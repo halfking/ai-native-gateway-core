@@ -5,7 +5,6 @@ package discovery
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -17,6 +16,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/internal/modelresponse"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/modelcatalog"
 	"github.com/kaixuan/llm-gateway-go/modelname"
@@ -517,65 +517,7 @@ func (s *Service) fetchModelsFromURLs(ctx context.Context, urls []string, apiKey
 // extractModelIDs parses various /v1/models response formats.
 // Returns a slice of discovered models with ID and inferred modality.
 func extractModelIDs(data []byte) ([]string, error) {
-	// Try standard OpenAI format: {"data": [{"id": "...", "capabilities": {...}}]}
-	var openai struct {
-		Data []struct {
-			ID           string `json:"id"`
-			Capabilities *struct {
-				Vision bool `json:"vision"`
-				Audio  bool `json:"audio"`
-			} `json:"capabilities"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(data, &openai); err == nil && len(openai.Data) > 0 {
-		var ids []string
-		for _, m := range openai.Data {
-			if m.ID != "" {
-				ids = append(ids, m.ID)
-			}
-		}
-		return ids, nil
-	}
-
-	// Try alternative format: {"models": [{"id": "..."}]}
-	var alt struct {
-		Models []struct {
-			ID string `json:"id"`
-		} `json:"models"`
-	}
-	if err := json.Unmarshal(data, &alt); err == nil && len(alt.Models) > 0 {
-		var ids []string
-		for _, m := range alt.Models {
-			if m.ID != "" {
-				ids = append(ids, m.ID)
-			}
-		}
-		return ids, nil
-	}
-
-	// Try bare array: ["model1", "model2"]
-	var bare []string
-	if err := json.Unmarshal(data, &bare); err == nil && len(bare) > 0 {
-		return bare, nil
-	}
-
-	// Try array of objects: [{"id": "model1"}, {"name": "model2"}]
-	var objArray []map[string]any
-	if err := json.Unmarshal(data, &objArray); err == nil && len(objArray) > 0 {
-		var ids []string
-		for _, m := range objArray {
-			if id, ok := m["id"].(string); ok && id != "" {
-				ids = append(ids, id)
-			} else if name, ok := m["name"].(string); ok && name != "" {
-				ids = append(ids, name)
-			} else if model, ok := m["model"].(string); ok && model != "" {
-				ids = append(ids, model)
-			}
-		}
-		return ids, nil
-	}
-
-	return nil, fmt.Errorf("unrecognized models response format")
+	return modelresponse.ParseModelIDs(data)
 }
 
 // mergeManifestModels appends manifest-registered model ids that the live

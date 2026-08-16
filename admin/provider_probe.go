@@ -26,6 +26,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/internal/modelresponse"
 	"github.com/kaixuan/llm-gateway-go/internal/probeutil"
 )
 
@@ -100,28 +101,10 @@ func doProbeRequest(ctx context.Context, urls []string, apiKey string) (*probeRe
 			probeURL:   u,
 		}
 		if resp.StatusCode == http.StatusOK {
-			// Parse models list (tolerate alternative shapes like {models:[...]})
-			var modelsResp struct {
-				Data   []map[string]any `json:"data"`
-				Models []map[string]any `json:"models"`
-			}
-			if json.Unmarshal(body, &modelsResp) == nil {
-				rows := modelsResp.Data
-				if len(rows) == 0 {
-					rows = modelsResp.Models
-				}
-				result.modelCount = len(rows)
-				limit := 3
-				if len(rows) < limit {
-					limit = len(rows)
-				}
-				for i := 0; i < limit; i++ {
-					if id, ok := rows[i]["id"].(string); ok {
-						result.sampleModels = append(result.sampleModels, id)
-					} else if name, ok := rows[i]["name"].(string); ok {
-						result.sampleModels = append(result.sampleModels, name)
-					}
-				}
+			if models, parseErr := modelresponse.ParseModelIDs(body); parseErr == nil {
+				result.modelCount = len(models)
+				limit := min(3, len(models))
+				result.sampleModels = append(result.sampleModels, models[:limit]...)
 			}
 		}
 
@@ -143,6 +126,7 @@ func doProbeRequest(ctx context.Context, urls []string, apiKey string) (*probeRe
 type chatResult struct {
 	statusCode      int
 	modelInResponse string
+	errorMessage    string
 	// errorCode is set when the 404 body indicates the provider requires
 	// an endpoint ID (outbound_model_name) rather than a raw model name.
 	// The diagnose UI uses this to render a friendly hint.
@@ -188,6 +172,12 @@ func doChatProbe(ctx context.Context, url, apiKey, model string) (*chatResult, e
 		// probe model needs an endpoint ID.  Surface this so the diagnose UI
 		// can render a hint instead of a misleading "404 model not found".
 		result.errorCode = probeutil.EndpointIDRequiredErrCode
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		result.errorMessage = strings.TrimSpace(string(respBody))
+		if len(result.errorMessage) > 500 {
+			result.errorMessage = result.errorMessage[:500]
+		}
 	}
 
 	return result, nil
