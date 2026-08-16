@@ -21,13 +21,16 @@
 - `pnpm build`
 - staged `scripts/pre-commit-check.sh`
 - 2026-08-16：245 认证 Chromium 在 build `#1559` 中实测 Credential Monitor 模型详情。
-  desktop daylight/night 均显示 `available` 和 `offer_missing`，状态文案、tooltip、
-  token 计算色和页面横向溢出检查正常；相关 API 请求完成且无浏览器错误。
+  desktop daylight/night 均显示 `available`、`offer_missing` 和 `manual_disabled`，状态文案、
+  tooltip、token 计算色和页面横向溢出检查正常；相关 API 请求完成且无浏览器错误。
 - 证据：`ui-verify-status-badge-daylight-desktop-detail-20260816-015200.png` 与
-  `ui-verify-status-badge-night-desktop-detail-20260816-015500.png`，保存在系统临时目录。
-- 未将五态标为全部通过：245 当前数据未暴露 `manual_disabled`、`probe_broken` 或
-  `binding_missing`；认证浏览器的 CDP 端点不支持移动 viewport 覆盖，故 mobile 验证待
-  可用测试会话补充。
+  `ui-verify-status-badge-night-desktop-detail-20260816-015500.png`、
+  `ui-verify-status-badge-night-desktop-manual-disabled-20260816-111500.png` 与
+  `ui-verify-status-badge-daylight-desktop-manual-disabled-20260816-111600.png`，保存在系统
+  临时目录。
+- 只读扫描 34 个凭据的 246 个模型：`available` 227、`offer_missing` 4、
+  `manual_disabled` 15；当前 245 数据未暴露 `probe_broken` 或 `binding_missing`。
+  认证浏览器的 CDP 端点不支持移动 viewport 覆盖，故 mobile 验证仍待可用测试会话补充。
 
 ## Audit Follow-up
 
