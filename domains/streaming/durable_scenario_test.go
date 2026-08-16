@@ -2,6 +2,7 @@ package streaming
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 	"sync"
@@ -34,6 +35,9 @@ type memDurableStore struct {
 	snapshot    []byte
 	terminals   []durable.TerminalCommit
 	projections int
+	settlement  *durable.TerminalCommit
+	claimed     bool
+	finalizeErr error
 	createErr   error
 }
 
@@ -96,7 +100,7 @@ func (s *memDurableStore) ClaimRunnable(_ context.Context, opts durable.ClaimOpt
 		!(t.Status == durable.StatusRunning && !t.LeaseUntil.Before(now)) &&
 		!t.NextRetryAt.After(now) && t.DeadlineAt.After(now) &&
 		(t.LeaseUntil.IsZero() || t.LeaseUntil.Before(now))
-	if !runnable {
+	if s.settlement != nil || !runnable {
 		return nil, nil
 	}
 	t.Status = durable.StatusRunning
@@ -179,12 +183,96 @@ func (s *memDurableStore) CommitTerminal(_ context.Context, c durable.TerminalCo
 	}, nil
 }
 
+func (s *memDurableStore) PersistSettlementIntent(_ context.Context, c durable.TerminalCommit) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t := &s.task
+	if c.Task == nil || t.ID != c.Task.ID || t.LeaseOwner != c.Task.LeaseOwner || t.FencingToken != c.Task.FencingToken || durable.IsTerminalStatus(t.Status) {
+		return durable.ErrLeaseLost
+	}
+	if s.settlement != nil {
+		return nil
+	}
+	copy := c
+	s.settlement = &copy
+	return nil
+}
+
+func (s *memDurableStore) ClaimSettlementIntent(_ context.Context, taskID, owner string, lease time.Duration, now time.Time) (*durable.ClaimedSettlement, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.settlement == nil || s.claimed || s.settlement.Task == nil || s.settlement.Task.ID != taskID {
+		return nil, nil
+	}
+	c := s.settlement
+	s.claimed = true
+	return &durable.ClaimedSettlement{
+		SettlementIntent: durable.SettlementIntent{
+			TaskID: c.Task.ID, TenantID: c.Task.TenantID, RequestID: c.Task.RequestID, SessionID: c.Task.SessionID,
+			RequestHash: c.Task.RequestHash, SourceOwner: c.Task.LeaseOwner, SourceFencingToken: c.Task.FencingToken,
+			Outcome: c.Outcome, Body: c.Body, ContentType: c.ContentType, ReasonCode: c.ReasonCode, ErrorKind: c.ErrorKind, Attempt: c.Attempt,
+		},
+		ClaimOwner: owner, ClaimUntil: now.Add(lease), ClaimFencingToken: 1,
+	}, nil
+}
+
+func (s *memDurableStore) ClaimSettlementIntents(_ context.Context, owner string, lease time.Duration, _ int, now time.Time) ([]*durable.ClaimedSettlement, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.settlement == nil || s.claimed {
+		return nil, nil
+	}
+	c := s.settlement
+	s.claimed = true
+	return []*durable.ClaimedSettlement{{
+		SettlementIntent: durable.SettlementIntent{
+			TaskID: c.Task.ID, TenantID: c.Task.TenantID, RequestID: c.Task.RequestID, SessionID: c.Task.SessionID,
+			RequestHash: c.Task.RequestHash, SourceOwner: c.Task.LeaseOwner, SourceFencingToken: c.Task.FencingToken,
+			Outcome: c.Outcome, Body: c.Body, ContentType: c.ContentType, ReasonCode: c.ReasonCode, ErrorKind: c.ErrorKind, Attempt: c.Attempt,
+		},
+		ClaimOwner: owner, ClaimUntil: now.Add(lease), ClaimFencingToken: 1,
+	}}, nil
+}
+
+func (s *memDurableStore) FinalizeSettlement(_ context.Context, c durable.ClaimedSettlement) (*durable.TerminalProjection, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.settlement == nil || !s.claimed {
+		return nil, durable.ErrLeaseLost
+	}
+	if s.finalizeErr != nil {
+		return nil, s.finalizeErr
+	}
+	t := &s.task
+	if t.ID != c.TaskID || t.LeaseOwner != c.SourceOwner || t.FencingToken != c.SourceFencingToken || t.Status != durable.StatusRunning {
+		return nil, durable.ErrLeaseLost
+	}
+	t.Status, t.ReasonCode, t.CompletedAt = c.Outcome, c.ReasonCode, time.Now()
+	t.CommitState, t.SemanticContentCommitted = durable.CommitStateTerminal, true
+	s.terminals = append(s.terminals, *s.settlement)
+	s.settlement, s.claimed = nil, false
+	return &durable.TerminalProjection{Committed: true, TaskID: t.ID, TenantID: t.TenantID, RequestID: t.RequestID, SessionID: t.SessionID, Status: c.Outcome, Body: string(c.Body), ContentType: c.ContentType, FencingToken: t.FencingToken, CompletedAt: t.CompletedAt, ExpiresAt: t.ExpiresAt}, nil
+}
+
+func (s *memDurableStore) RetrySettlementIntent(_ context.Context, _ durable.ClaimedSettlement, _ time.Time, _ error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.settlement == nil || !s.claimed {
+		return durable.ErrLeaseLost
+	}
+	s.claimed = false
+	return nil
+}
+
 // ReapDeadlines mirrors the deadline reaper: non-terminal past deadline →
 // expired.
 func (s *memDurableStore) ReapDeadlines(_ context.Context, _ int, now time.Time) ([]*durable.ReapedTaskInfo, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	t := &s.task
+	if s.settlement != nil {
+		return nil, nil
+	}
 	if !durable.IsTerminalStatus(t.Status) && t.Status != durable.StatusResumeSafetyBlocked && !t.DeadlineAt.After(now) {
 		t.Status = durable.StatusExpired
 		t.FencingToken++
@@ -525,6 +613,38 @@ func TestS30_QuotaWaitRecoversInSameConnection(t *testing.T) {
 	}
 	if n := strings.Count(wire, "gateway_survival_"); n != 0 {
 		t.Fatalf("no error frames may reach a recovered connection, found %d", n)
+	}
+}
+
+func TestS36_TerminalSettlementRetriesWithoutReplay(t *testing.T) {
+	h := newScenarioHarness(t)
+	task := h.createTask(t, "front")
+	binding := newDurableStreamBinding(h.store, task, 40*time.Millisecond)
+	binding.Start()
+	defer binding.Stop()
+
+	h.store.finalizeErr = errors.New("temporary terminal store outage")
+	settleDurableStream(context.Background(), binding, SurvivalResult{Succeed: true}, []byte("data: {\"ok\":true}\n\n"), "text/event-stream", false)
+	if got := h.store.terminalCount(); got != 0 {
+		t.Fatalf("terminal count after transient finalize failure = %d, want 0", got)
+	}
+	if h.store.settlement == nil {
+		t.Fatal("terminal settlement intent was lost after transient finalize failure")
+	}
+	if h.store.status() != durable.StatusRunning {
+		t.Fatalf("task status = %s, want running while settlement is recoverable", h.store.status())
+	}
+
+	h.store.finalizeErr = nil
+	h.worker.runOnce(context.Background())
+	if got := h.store.terminalCount(); got != 1 {
+		t.Fatalf("terminal count after repair = %d, want 1", got)
+	}
+	if got := h.store.status(); got != durable.StatusCompleted {
+		t.Fatalf("task status after repair = %s, want completed", got)
+	}
+	if got := h.exec.calls; got != 0 {
+		t.Fatalf("settlement repair must not replay upstream execution, calls = %d", got)
 	}
 }
 

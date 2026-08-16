@@ -26,6 +26,11 @@ type fakeForegroundStore struct {
 	renewErr    error
 	checkErr    error
 	terminalErr error
+	intents     []durable.TerminalCommit
+	intentErr   error
+	claims      []*durable.ClaimedSettlement
+	finalizeErr error
+	retried     []durable.ClaimedSettlement
 }
 
 type durableRenewCall struct {
@@ -56,6 +61,53 @@ func (f *fakeForegroundStore) CommitTerminal(_ context.Context, c durable.Termin
 	}
 	f.terminals = append(f.terminals, c)
 	return &durable.TerminalProjection{Committed: true}, nil
+}
+
+func (f *fakeForegroundStore) PersistSettlementIntent(_ context.Context, c durable.TerminalCommit) error {
+	if f.intentErr != nil {
+		return f.intentErr
+	}
+	f.intents = append(f.intents, c)
+	return nil
+}
+
+func (f *fakeForegroundStore) ClaimSettlementIntent(_ context.Context, taskID, owner string, lease time.Duration, now time.Time) (*durable.ClaimedSettlement, error) {
+	for _, claim := range f.claims {
+		if claim.TaskID == taskID {
+			claim.ClaimOwner, claim.ClaimUntil = owner, now.Add(lease)
+			return claim, nil
+		}
+	}
+	return &durable.ClaimedSettlement{SettlementIntent: durable.SettlementIntent{TaskID: taskID, Attempts: 1}, ClaimOwner: owner, ClaimUntil: now.Add(lease), ClaimFencingToken: 1}, nil
+}
+
+func (f *fakeForegroundStore) ClaimSettlementIntents(_ context.Context, _ string, _ time.Duration, _ int, _ time.Time) ([]*durable.ClaimedSettlement, error) {
+	if f.claims != nil {
+		return f.claims, nil
+	}
+	if len(f.intents) == 0 {
+		return nil, nil
+	}
+	c := f.intents[len(f.intents)-1]
+	return []*durable.ClaimedSettlement{{SettlementIntent: durable.SettlementIntent{TaskID: c.Task.ID}}}, nil
+}
+
+func (f *fakeForegroundStore) FinalizeSettlement(_ context.Context, c durable.ClaimedSettlement) (*durable.TerminalProjection, error) {
+	if f.finalizeErr != nil {
+		return nil, f.finalizeErr
+	}
+	for i := len(f.intents) - 1; i >= 0; i-- {
+		if f.intents[i].Task != nil && f.intents[i].Task.ID == c.TaskID {
+			f.terminals = append(f.terminals, f.intents[i])
+			break
+		}
+	}
+	return &durable.TerminalProjection{Committed: true}, nil
+}
+
+func (f *fakeForegroundStore) RetrySettlementIntent(_ context.Context, c durable.ClaimedSettlement, _ time.Time, _ error) error {
+	f.retried = append(f.retried, c)
+	return nil
 }
 
 func newStreamBinding(store *fakeForegroundStore) *DurableStreamBinding {
@@ -201,7 +253,7 @@ func TestReleaseDurableBeforeSurvivalHandsTaskToWorker(t *testing.T) {
 func TestSettleDurableStreamLeaseLossCountsBothMetricFamilies(t *testing.T) {
 	beforeSurvival := gatherMetricValue(t, "gateway_survival_lease_conflicts_total")
 	beforeDurable := gatherMetricValue(t, "durable_lease_lost_total")
-	store := &fakeForegroundStore{terminalErr: durable.ErrLeaseLost}
+	store := &fakeForegroundStore{finalizeErr: durable.ErrLeaseLost}
 	b := newStreamBinding(store)
 	settleDurableStream(context.Background(), b,
 		SurvivalResult{Succeed: true, Decision: TaskDecision{Action: TaskActionSucceed, Reason: "success"}},

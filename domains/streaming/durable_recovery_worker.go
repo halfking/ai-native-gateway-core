@@ -22,6 +22,11 @@ type DurableWorkerStore interface {
 	RenewLease(context.Context, string, string, int64, time.Time) error
 	Reschedule(context.Context, durable.RescheduleParams) error
 	CommitTerminal(context.Context, durable.TerminalCommit) (*durable.TerminalProjection, error)
+	PersistSettlementIntent(context.Context, durable.TerminalCommit) error
+	ClaimSettlementIntent(context.Context, string, string, time.Duration, time.Time) (*durable.ClaimedSettlement, error)
+	ClaimSettlementIntents(context.Context, string, time.Duration, int, time.Time) ([]*durable.ClaimedSettlement, error)
+	FinalizeSettlement(context.Context, durable.ClaimedSettlement) (*durable.TerminalProjection, error)
+	RetrySettlementIntent(context.Context, durable.ClaimedSettlement, time.Time, error) error
 	ReapDeadlines(context.Context, int, time.Time) ([]*durable.ReapedTaskInfo, error)
 	ReapUnsafeCheckpointed(context.Context, int, time.Time) ([]*durable.Task, error)
 	ProjectPendingOutbox(context.Context, *pending.Store, int, time.Time) (int, error)
@@ -170,6 +175,7 @@ func (w *DurableRecoveryWorker) Stop() {
 
 func (w *DurableRecoveryWorker) runOnce(ctx context.Context) {
 	now := w.clock()
+	w.drainSettlementIntents(ctx, now)
 	if _, err := w.store.ReapDeadlines(ctx, w.opts.ReapLimit, now); err != nil {
 		slog.Warn("durable deadline reaper failed", "error", err)
 	}
@@ -199,6 +205,30 @@ func (w *DurableRecoveryWorker) runOnce(ctx context.Context) {
 	}
 	for _, task := range tasks {
 		w.runTask(ctx, task)
+	}
+}
+
+func (w *DurableRecoveryWorker) drainSettlementIntents(ctx context.Context, now time.Time) {
+	intents, err := w.store.ClaimSettlementIntents(ctx, w.opts.Owner, w.opts.Lease, w.opts.Batch, now)
+	if err != nil {
+		slog.Warn("durable settlement claim failed", "error", err)
+		return
+	}
+	for _, intent := range intents {
+		if _, err := w.store.FinalizeSettlement(ctx, *intent); err != nil {
+			if errors.Is(err, durable.ErrLeaseLost) {
+				w.noteLeaseLost()
+				continue
+			}
+			next := w.clock().Add(w.retryDelay(intent.Attempts, 0))
+			if retryErr := w.store.RetrySettlementIntent(ctx, *intent, next, err); retryErr != nil {
+				if errors.Is(retryErr, durable.ErrLeaseLost) {
+					w.noteLeaseLost()
+				} else {
+					slog.Warn("durable settlement retry scheduling failed", "task_id", intent.TaskID, "error", retryErr)
+				}
+			}
+		}
 	}
 }
 
@@ -267,7 +297,10 @@ func (w *DurableRecoveryWorker) runTask(ctx context.Context, task *durable.Task)
 			}
 		case <-ctx.Done():
 			cancelAttempt()
-			waitAttemptDone(attemptDone, w.opts.StopGrace)
+			if !waitAttemptDone(attemptDone, w.opts.StopGrace) {
+				metrics.DurableRecoveryStopGraceExceededTotal.Inc()
+				slog.Warn("durable recovery attempt ignored cancellation past stop grace", "task_id", task.ID)
+			}
 			return
 		}
 	}
@@ -282,16 +315,7 @@ attemptFinished:
 	}
 	decision := AggregateTaskOutcome(attempt.Result)
 	if decision.Action == TaskActionSucceed {
-		projection, commitErr := w.store.CommitTerminal(ctx, durable.TerminalCommit{Task: task, Outcome: durable.StatusCompleted, Body: attempt.Body, ContentType: attempt.ContentType, Attempt: attempt.Attempt, ErrorKind: attempt.ErrorKind})
-		if commitErr != nil {
-			if errors.Is(commitErr, durable.ErrLeaseLost) {
-				w.noteLeaseLost()
-			}
-			return
-		}
-		if projection != nil && !projection.Committed {
-			w.noteLeaseLost()
-		}
+		w.settleTerminal(ctx, durable.TerminalCommit{Task: task, Outcome: durable.StatusCompleted, Body: attempt.Body, ContentType: attempt.ContentType, Attempt: attempt.Attempt, ErrorKind: attempt.ErrorKind})
 		return
 	}
 	if decision.Action == TaskActionRetryNow || decision.Action == TaskActionWaitRecovery {
@@ -354,14 +378,43 @@ func (w *DurableRecoveryWorker) retryDelay(attempt int, suggested time.Duration)
 	return delay
 }
 
-// waitAttemptDone waits at most grace for a cancelled attempt to finish. A
-// runner that ignores cancellation (streaming upstreams use WithoutCancel)
-// must not block the worker loop or Stop forever; the goroutine still exits
-// on its own and its post-exit writes are to variables nobody reads again.
-func waitAttemptDone(done <-chan struct{}, grace time.Duration) {
+// waitAttemptDone waits at most grace for a cancelled attempt and reports
+// whether it exited before the bound. A runner that ignores cancellation
+// (streaming upstreams use WithoutCancel) must not block the worker loop or
+// Stop forever; the goroutine still exits on its own afterward.
+func waitAttemptDone(done <-chan struct{}, grace time.Duration) bool {
 	select {
 	case <-done:
+		return true
 	case <-time.After(grace):
+		return false
+	}
+}
+
+func (w *DurableRecoveryWorker) settleTerminal(ctx context.Context, c durable.TerminalCommit) {
+	if err := w.store.PersistSettlementIntent(ctx, c); err != nil {
+		if errors.Is(err, durable.ErrLeaseLost) {
+			w.noteLeaseLost()
+		}
+		return
+	}
+	claim, err := w.store.ClaimSettlementIntent(ctx, c.Task.ID, w.opts.Owner, w.opts.Lease, w.clock())
+	if err != nil || claim == nil {
+		return
+	}
+	if _, err := w.store.FinalizeSettlement(ctx, *claim); err != nil {
+		if errors.Is(err, durable.ErrLeaseLost) {
+			w.noteLeaseLost()
+			return
+		}
+		next := w.clock().Add(w.retryDelay(claim.Attempts, 0))
+		if retryErr := w.store.RetrySettlementIntent(ctx, *claim, next, err); retryErr != nil {
+			if errors.Is(retryErr, durable.ErrLeaseLost) {
+				w.noteLeaseLost()
+			} else {
+				slog.Warn("durable settlement retry scheduling failed", "task_id", claim.TaskID, "error", retryErr)
+			}
+		}
 	}
 }
 
@@ -370,11 +423,5 @@ func (w *DurableRecoveryWorker) failTask(ctx context.Context, task *durable.Task
 	if cause != nil {
 		reason = cause.Error()
 	}
-	projection, err := w.store.CommitTerminal(ctx, durable.TerminalCommit{Task: task, Outcome: durable.StatusFailed, ReasonCode: reason, ErrorKind: "durable_recovery"})
-	if err != nil && errors.Is(err, durable.ErrLeaseLost) {
-		w.noteLeaseLost()
-	}
-	if projection != nil && !projection.Committed {
-		w.noteLeaseLost()
-	}
+	w.settleTerminal(ctx, durable.TerminalCommit{Task: task, Outcome: durable.StatusFailed, ReasonCode: reason, ErrorKind: "durable_recovery", Attempt: task.AttemptCount})
 }
