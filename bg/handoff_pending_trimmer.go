@@ -10,11 +10,13 @@ import (
 	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
-// defaultHandoffPendingRetention mirrors HandoffTrimmer's forensic TTL for
-// handoff_logs: 14 days. Once a confirmation proposal (pending or already
-// confirmed) is older than this, its audit trail is no longer needed and the
-// large handoff_prompt TEXT column can be reclaimed.
-const defaultHandoffPendingRetention = 14 * 24 * time.Hour
+// minHandoffPendingRetentionDays is the safety floor for pendingConfirmation
+// Retention. Below this the floor clamps to 1 day to prevent a misconfigured
+// TTL from wiping handoff_pending_confirmations in a single batch. Note: the
+// spec default for lifecycle.handoff_logs_ttl_days is 30 days; the floor here
+// is intentionally much smaller so operators cannot accidentally set a TTL of
+// "0" or a negative number.
+const minHandoffPendingRetentionDays = 1
 
 // HandoffPendingTrimmer marks expired capabilities terminal and physically
 // removes proposals past the forensic TTL. Confirmation still enforces expiry
@@ -93,11 +95,11 @@ WHERE id IN (
 // pendingConfirmationRetention resolves the forensic TTL for confirmation
 // proposals. Hot-reloadable via lifecycle.handoff_logs_ttl_days so the two
 // handoff tables share one retention policy. A TTL below 1 day is floored to
-// the default to prevent a misconfiguration from wiping the table.
+// 1 day to prevent a misconfiguration from wiping the table.
 func pendingConfirmationRetention() time.Duration {
-	ttlDays := settings.GetPlatformInt("lifecycle.handoff_logs_ttl_days", 14)
-	if ttlDays < 1 {
-		ttlDays = 14
+	ttlDays := settings.GetPlatformInt("lifecycle.handoff_logs_ttl_days", 30)
+	if ttlDays < minHandoffPendingRetentionDays {
+		ttlDays = minHandoffPendingRetentionDays
 	}
 	return time.Duration(ttlDays) * 24 * time.Hour
 }
@@ -126,6 +128,8 @@ func (t *HandoffPendingTrimmer) trim(ctx context.Context) {
 		return
 	}
 	if count > 0 {
-		slog.Info("handoff pending confirmations expired", "count", count)
+		slog.Info("handoff pending confirmations processed",
+			"count", count,
+			"includes_expired_and_deleted", true)
 	}
 }

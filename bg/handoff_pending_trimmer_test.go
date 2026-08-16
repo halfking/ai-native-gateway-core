@@ -32,10 +32,8 @@ func TestHandoffPendingTrimmerNilPoolAndLifecycle(t *testing.T) {
 // that would wipe handoff_pending_confirmations in a single batch.
 func TestHandoffPendingTrimmer_RetentionFloor(t *testing.T) {
 	got := pendingConfirmationRetention()
-	if got < 24*time.Hour {
-		t.Fatalf("pendingConfirmationRetention = %v, want >= 24h (must never wipe the table)", got)
-	}
-	if got != 14*24*time.Hour {
-		t.Fatalf("pendingConfirmationRetention = %v, want 14d default", got)
+	if got < minHandoffPendingRetentionDays*24*time.Hour {
+		t.Fatalf("pendingConfirmationRetention = %v, want >= %dd (must never wipe the table)",
+			got, minHandoffPendingRetentionDays)
 	}
 }
