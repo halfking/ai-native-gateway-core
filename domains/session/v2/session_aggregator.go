@@ -139,15 +139,17 @@ func (a *SessionAggregator) UpdateSession(ctx context.Context, update SessionUpd
 // concurrent-safe claim; pgx.ErrNoRows means another caller already won.
 func claimAggregateTurn(ctx context.Context, tx pgx.Tx, update SessionUpdate, partitionDate time.Time) (bool, error) {
 	var claimed int
+	// The unified view treats the partitioned copy as authoritative when a
+	// duplicate exists in both stores, so aggregation must claim parent first.
 	err := tx.QueryRow(ctx, `
-			UPDATE public.session_turns_hot
-			SET aggregate_applied_at = NOW()
-			WHERE session_id = $1
-			  AND tenant_id = $2
-			  AND request_id = $3
-			  AND partition_date = $4
-			  AND aggregate_applied_at IS NULL
-			RETURNING 1
+		UPDATE public.session_turns
+		SET aggregate_applied_at = NOW()
+		WHERE session_id = $1
+		  AND tenant_id = $2
+		  AND request_id = $3
+		  AND partition_date = $4
+		  AND aggregate_applied_at IS NULL
+		RETURNING 1
 	`, update.SessionID, update.TenantID, update.RequestID, partitionDate).Scan(&claimed)
 	if err == nil {
 		return claimed == 1, nil
@@ -156,18 +158,31 @@ func claimAggregateTurn(ctx context.Context, tx pgx.Tx, update SessionUpdate, pa
 		return false, err
 	}
 
-	// Promotion may move the row after the hot-table statement snapshot. The
-	// second statement gets a fresh READ COMMITTED snapshot and claims the
-	// partitioned copy without opening a double-aggregate window.
+	var parentExists bool
+	if err := tx.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM public.session_turns
+			WHERE tenant_id = $1
+			  AND request_id = $2
+			  AND partition_date = $3
+		)
+	`, update.TenantID, update.RequestID, partitionDate).Scan(&parentExists); err != nil {
+		return false, err
+	}
+	if parentExists {
+		return false, nil
+	}
+
 	err = tx.QueryRow(ctx, `
-			UPDATE public.session_turns
-			SET aggregate_applied_at = NOW()
-			WHERE session_id = $1
-			  AND tenant_id = $2
-			  AND request_id = $3
-			  AND partition_date = $4
-			  AND aggregate_applied_at IS NULL
-			RETURNING 1
+		UPDATE public.session_turns_hot
+		SET aggregate_applied_at = NOW()
+		WHERE session_id = $1
+		  AND tenant_id = $2
+		  AND request_id = $3
+		  AND partition_date = $4
+		  AND aggregate_applied_at IS NULL
+		RETURNING 1
 	`, update.SessionID, update.TenantID, update.RequestID, partitionDate).Scan(&claimed)
 	if err == pgx.ErrNoRows {
 		return false, nil
@@ -347,7 +362,7 @@ func (a *SessionAggregator) SetSessionMetadata(ctx context.Context, tenantID, se
 		WHERE tenant_id = $1 AND session_id = $2
 	`, tenantID, sessionID, meta.TaskType, meta.ClientType, meta.Topic, meta.Intent, meta.Title, meta.UserTags)
 	if err != nil {
-		return err
+		return fmt.Errorf("update session metadata: %w", err)
 	}
 
 	if meta.TaskType != "" {

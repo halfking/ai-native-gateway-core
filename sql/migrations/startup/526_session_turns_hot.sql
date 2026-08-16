@@ -1,6 +1,6 @@
--- Migration 525: independent session_turns hot table and atomic promotion.
+-- Migration 526: independent session_turns hot table and atomic promotion.
 -- The hot table contains the complete physical column set introduced by
--- migrations 430, 431, 456, 464, 513, and 524.
+-- migrations 430, 431, 456, 464, 513, and 525.
 
 BEGIN;
 
@@ -133,7 +133,9 @@ ALTER TABLE public.session_turns_hot ENABLE ROW LEVEL SECURITY;
 
 -- Keep the parent and hot owner contracts identical. The historical Migration
 -- 457 policy only inspected request_logs, so a turn promoted before its request
--- log became invisible while the request log was still hot.
+-- log became invisible while the request log was still hot. Tenant scoping
+-- further prevents an unrelated tenant's session ID (if ever reused) from
+-- satisfying the owner predicate on rows belonging to a different tenant.
 DROP POLICY IF EXISTS session_turns_owner_filter ON public.session_turns;
 CREATE POLICY session_turns_owner_filter ON public.session_turns
     AS RESTRICTIVE
@@ -145,30 +147,59 @@ CREATE POLICY session_turns_owner_filter ON public.session_turns
         OR EXISTS (
             SELECT 1
             FROM (
-                SELECT DISTINCT ON (gw_session_id) gw_session_id, owner_user
+                SELECT DISTINCT ON (gw_session_id, tenant_id)
+                       gw_session_id, tenant_id, owner_user
                 FROM (
-                    SELECT gw_session_id, owner_user, ts
+                    SELECT gw_session_id, tenant_id, owner_user, ts
                     FROM public.request_logs_hot
                     WHERE gw_session_id IS NOT NULL
                     UNION ALL
-                    SELECT gw_session_id, owner_user, ts
+                    SELECT gw_session_id, tenant_id, owner_user, ts
                     FROM public.request_logs
                     WHERE gw_session_id IS NOT NULL
                 ) request_sources
-                ORDER BY gw_session_id, ts ASC
+                ORDER BY gw_session_id, tenant_id, ts ASC
             ) first_rl
             WHERE first_rl.gw_session_id = public.session_turns.session_id
+              AND first_rl.tenant_id = public.session_turns.tenant_id
+              AND first_rl.owner_user = current_setting('app.current_user', true)
+        )
+    )
+    WITH CHECK (
+        current_setting('app.current_role', true) = 'super_admin'
+        OR current_setting('app.bypass_rls', true) = 'true'
+        OR EXISTS (
+            SELECT 1
+            FROM (
+                SELECT DISTINCT ON (gw_session_id, tenant_id)
+                       gw_session_id, tenant_id, owner_user
+                FROM (
+                    SELECT gw_session_id, tenant_id, owner_user, ts
+                    FROM public.request_logs_hot
+                    WHERE gw_session_id IS NOT NULL
+                    UNION ALL
+                    SELECT gw_session_id, tenant_id, owner_user, ts
+                    FROM public.request_logs
+                    WHERE gw_session_id IS NOT NULL
+                ) request_sources
+                ORDER BY gw_session_id, tenant_id, ts ASC
+            ) first_rl
+            WHERE first_rl.gw_session_id = public.session_turns.session_id
+              AND first_rl.tenant_id = public.session_turns.tenant_id
               AND first_rl.owner_user = current_setting('app.current_user', true)
         )
     );
 
 DROP POLICY IF EXISTS session_turns_hot_tenant_isolation ON public.session_turns_hot;
 CREATE POLICY session_turns_hot_tenant_isolation ON public.session_turns_hot
-    USING (tenant_id = current_setting('app.current_tenant', true)::TEXT);
+    USING (tenant_id = current_setting('app.current_tenant', true)::TEXT)
+    WITH CHECK (tenant_id = current_setting('app.current_tenant', true)::TEXT);
 
 DROP POLICY IF EXISTS session_turns_hot_super_admin_bypass ON public.session_turns_hot;
 CREATE POLICY session_turns_hot_super_admin_bypass ON public.session_turns_hot
     USING (current_setting('app.current_role', true) = 'super_admin'
+        OR current_setting('app.bypass_rls', true) = 'true')
+    WITH CHECK (current_setting('app.current_role', true) = 'super_admin'
         OR current_setting('app.bypass_rls', true) = 'true');
 
 DROP POLICY IF EXISTS session_turns_hot_owner_filter ON public.session_turns_hot;
@@ -182,19 +213,45 @@ CREATE POLICY session_turns_hot_owner_filter ON public.session_turns_hot
         OR EXISTS (
             SELECT 1
             FROM (
-                SELECT DISTINCT ON (gw_session_id) gw_session_id, owner_user
+                SELECT DISTINCT ON (gw_session_id, tenant_id)
+                       gw_session_id, tenant_id, owner_user
                 FROM (
-                    SELECT gw_session_id, owner_user, ts
+                    SELECT gw_session_id, tenant_id, owner_user, ts
                     FROM public.request_logs_hot
                     WHERE gw_session_id IS NOT NULL
                     UNION ALL
-                    SELECT gw_session_id, owner_user, ts
+                    SELECT gw_session_id, tenant_id, owner_user, ts
                     FROM public.request_logs
                     WHERE gw_session_id IS NOT NULL
                 ) request_sources
-                ORDER BY gw_session_id, ts ASC
+                ORDER BY gw_session_id, tenant_id, ts ASC
             ) first_rl
             WHERE first_rl.gw_session_id = public.session_turns_hot.session_id
+              AND first_rl.tenant_id = public.session_turns_hot.tenant_id
+              AND first_rl.owner_user = current_setting('app.current_user', true)
+        )
+    )
+    WITH CHECK (
+        current_setting('app.current_role', true) = 'super_admin'
+        OR current_setting('app.bypass_rls', true) = 'true'
+        OR EXISTS (
+            SELECT 1
+            FROM (
+                SELECT DISTINCT ON (gw_session_id, tenant_id)
+                       gw_session_id, tenant_id, owner_user
+                FROM (
+                    SELECT gw_session_id, tenant_id, owner_user, ts
+                    FROM public.request_logs_hot
+                    WHERE gw_session_id IS NOT NULL
+                    UNION ALL
+                    SELECT gw_session_id, tenant_id, owner_user, ts
+                    FROM public.request_logs
+                    WHERE gw_session_id IS NOT NULL
+                ) request_sources
+                ORDER BY gw_session_id, tenant_id, ts ASC
+            ) first_rl
+            WHERE first_rl.gw_session_id = public.session_turns_hot.session_id
+              AND first_rl.tenant_id = public.session_turns_hot.tenant_id
               AND first_rl.owner_user = current_setting('app.current_user', true)
         )
     );
@@ -202,7 +259,7 @@ CREATE POLICY session_turns_hot_owner_filter ON public.session_turns_hot
 DO $$
 BEGIN
     IF current_setting('server_version_num')::integer < 150000 THEN
-        RAISE EXCEPTION 'Migration 525 requires PostgreSQL 15 or newer';
+        RAISE EXCEPTION 'Migration 526 requires PostgreSQL 15 or newer';
     END IF;
 
     IF NOT EXISTS (

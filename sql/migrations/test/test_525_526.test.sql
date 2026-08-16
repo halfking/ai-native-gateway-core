@@ -1,5 +1,5 @@
--- Migrations 524/525 verification: scoped dimensions and session_turns hot path.
--- Usage: psql <dsn> -v ON_ERROR_STOP=1 -f sql/migrations/test/test_524_525.test.sql
+-- Migrations 525/526 verification: scoped dimensions and session_turns hot path.
+-- Usage: psql <dsn> -v ON_ERROR_STOP=1 -f sql/migrations/test/test_525_526.test.sql
 
 \set ON_ERROR_STOP on
 
@@ -17,7 +17,7 @@ DECLARE
     v_rejected BOOLEAN;
 BEGIN
     IF current_setting('server_version_num')::integer < 150000 THEN
-        RAISE EXCEPTION '524/525 tests require PostgreSQL 15 or newer';
+        RAISE EXCEPTION '525/526 tests require PostgreSQL 15 or newer';
     END IF;
 
     FOREACH v_column IN ARRAY ARRAY[
@@ -33,7 +33,7 @@ BEGIN
               AND NOT attisdropped
               AND NOT attnotnull
         ) THEN
-            RAISE EXCEPTION '524: parent column % is not nullable TEXT', v_column;
+            RAISE EXCEPTION '526: parent column % is not nullable TEXT', v_column;
         END IF;
 
         FOR v_partition IN
@@ -51,7 +51,7 @@ BEGIN
                   AND NOT attisdropped
                   AND NOT attnotnull
             ) THEN
-                RAISE EXCEPTION '524: %.% was not propagated', v_partition, v_column;
+                RAISE EXCEPTION '526: %.% was not propagated', v_partition, v_column;
             END IF;
         END LOOP;
     END LOOP;
@@ -80,13 +80,13 @@ BEGIN
               AND pg_get_expr(x.indpred, x.indrelid) =
                   format('(%I IS NOT NULL)', v_index.scoped_column)
         ) THEN
-            RAISE EXCEPTION '524: parent partial index % is missing or malformed',
+            RAISE EXCEPTION '526: parent partial index % is missing or malformed',
                 v_index.index_name;
         END IF;
     END LOOP;
 
     IF to_regclass('public.session_turns_hot') IS NULL THEN
-        RAISE EXCEPTION '525: public.session_turns_hot is missing';
+        RAISE EXCEPTION '526: public.session_turns_hot is missing';
     END IF;
 
     SELECT array_agg(attname ORDER BY attnum)
@@ -108,7 +108,7 @@ BEGIN
       AND table_name = 'session_turns_with_current_month';
 
     IF cardinality(v_parent_columns) <> 50 OR cardinality(v_hot_columns) <> 50 THEN
-        RAISE EXCEPTION '525: expected 50 parent/hot columns, found parent=% hot=%',
+        RAISE EXCEPTION '526: expected 50 parent/hot columns, found parent=% hot=%',
             cardinality(v_parent_columns), cardinality(v_hot_columns);
     END IF;
 
@@ -132,11 +132,11 @@ BEGIN
            OR p.atttypmod <> h.atttypmod
            OR p.attnotnull <> h.attnotnull
     ) THEN
-        RAISE EXCEPTION '525: hot column contract differs from parent';
+        RAISE EXCEPTION '526: hot column contract differs from parent';
     END IF;
 
     IF v_view_columns IS DISTINCT FROM v_hot_columns THEN
-        RAISE EXCEPTION '525: view column order differs from explicit hot order';
+        RAISE EXCEPTION '526: view column order differs from explicit hot order';
     END IF;
 
     IF NOT EXISTS (
@@ -147,7 +147,7 @@ BEGIN
           AND convalidated
           AND pg_get_constraintdef(oid) ~ 'attachment_only'
     ) THEN
-        RAISE EXCEPTION '525: parent submit_mode constraint does not allow attachment_only';
+        RAISE EXCEPTION '526: parent submit_mode constraint does not allow attachment_only';
     END IF;
 
     IF NOT EXISTS (
@@ -160,7 +160,7 @@ BEGIN
           AND pg_get_expr(d.adbin, d.adrelid)
               LIKE 'nextval(%session_turns_id_seq%'
     ) THEN
-        RAISE EXCEPTION '525: hot id must reuse public.session_turns_id_seq';
+        RAISE EXCEPTION '526: hot id must reuse public.session_turns_id_seq';
     END IF;
 
     IF NOT EXISTS (
@@ -168,22 +168,22 @@ BEGIN
         WHERE oid = 'public.session_turns_hot'::regclass
           AND relrowsecurity
     ) THEN
-        RAISE EXCEPTION '525: hot RLS is not enabled';
+        RAISE EXCEPTION '526: hot RLS is not enabled';
     END IF;
 
     IF (SELECT count(*) FROM pg_policies
         WHERE schemaname = 'public' AND tablename = 'session_turns_hot') <> 3 THEN
-        RAISE EXCEPTION '525: expected three hot RLS policies';
+        RAISE EXCEPTION '526: expected three hot RLS policies';
     END IF;
 
     IF to_regprocedure('public.session_turns_advisory_lock_key(text,text)') IS NULL THEN
-        RAISE EXCEPTION '525: shared session advisory lock key function is missing';
+        RAISE EXCEPTION '526: shared session advisory lock key function is missing';
     END IF;
 
     IF pg_get_functiondef(
         'public.promote_session_turns_hot_to_partition(interval,integer)'::regprocedure
     ) !~ 'session_turns_advisory_lock_key' THEN
-        RAISE EXCEPTION '525: promotion does not use the shared session advisory lock';
+        RAISE EXCEPTION '526: promotion does not use the shared session advisory lock';
     END IF;
 
     IF NOT EXISTS (
@@ -192,7 +192,7 @@ BEGIN
         WHERE oid = 'public.session_turns_with_current_month'::regclass
           AND 'security_invoker=true' = ANY (reloptions)
     ) THEN
-        RAISE EXCEPTION '525: view must use security_invoker=true';
+        RAISE EXCEPTION '526: view must use security_invoker=true';
     END IF;
 
     IF NOT EXISTS (
@@ -205,7 +205,7 @@ BEGIN
           AND qual::TEXT ~ 'request_logs_hot'
           AND qual::TEXT ~ 'request_logs([^_[:alnum:]]|$)'
     ) THEN
-        RAISE EXCEPTION '525: owner filter must use hot and historical request sources';
+        RAISE EXCEPTION '526: owner filter must use hot and historical request sources';
     END IF;
 
     v_rejected := FALSE;
@@ -215,7 +215,7 @@ BEGIN
         v_rejected := TRUE;
     END;
     IF NOT v_rejected THEN
-        RAISE EXCEPTION '525: zero retention was accepted';
+        RAISE EXCEPTION '526: zero retention was accepted';
     END IF;
 
     v_rejected := FALSE;
@@ -225,15 +225,15 @@ BEGIN
         v_rejected := TRUE;
     END;
     IF NOT v_rejected THEN
-        RAISE EXCEPTION '525: zero batch size was accepted';
+        RAISE EXCEPTION '526: zero batch size was accepted';
     END IF;
 
     DELETE FROM public.session_turns_hot
-    WHERE tenant_id = 'test-525-tenant'
-      AND request_id LIKE 'test-525-%';
+    WHERE tenant_id = 'test-526-tenant'
+      AND request_id LIKE 'test-526-%';
     DELETE FROM public.session_turns
-    WHERE tenant_id = 'test-525-tenant'
-      AND request_id LIKE 'test-525-%';
+    WHERE tenant_id = 'test-526-tenant'
+      AND request_id LIKE 'test-526-%';
 
     INSERT INTO public.session_turns_hot (
         id, session_id, turn_no, tenant_id, request_id,
@@ -241,8 +241,8 @@ BEGIN
         ts, partition_date, submit_mode, source_kind, quality
     ) VALUES (
         -9223372036854770523,
-        'test-525-session-ok', 1, 'test-525-tenant', 'test-525-promote-ok',
-        'project-525', 'namespace-525', 'parent-525', 'analysis',
+        'test-526-session-ok', 1, 'test-526-tenant', 'test-526-promote-ok',
+        'project-526', 'namespace-526', 'parent-526', 'analysis',
         '-infinity'::TIMESTAMPTZ, CURRENT_DATE,
         'attachment_only', 'live', 'verified'
     ) RETURNING id INTO v_hot_id;
@@ -251,35 +251,35 @@ BEGIN
     INTO v_moved;
 
     IF v_moved <> 1 THEN
-        RAISE EXCEPTION '525: expected one promoted row, got %', v_moved;
+        RAISE EXCEPTION '526: expected one promoted row, got %', v_moved;
     END IF;
 
     IF EXISTS (
         SELECT 1 FROM public.session_turns_hot
         WHERE id = v_hot_id AND partition_date = CURRENT_DATE
     ) THEN
-        RAISE EXCEPTION '525: promoted row remains in hot table';
+        RAISE EXCEPTION '526: promoted row remains in hot table';
     END IF;
 
     IF NOT EXISTS (
         SELECT 1 FROM public.session_turns
         WHERE id = v_hot_id
           AND partition_date = CURRENT_DATE
-          AND project_id = 'project-525'
-          AND namespace = 'namespace-525'
-          AND parent_request_id = 'parent-525'
+          AND project_id = 'project-526'
+          AND namespace = 'namespace-526'
+          AND parent_request_id = 'parent-526'
           AND task_type = 'analysis'
           AND submit_mode = 'attachment_only'
     ) THEN
-        RAISE EXCEPTION '525: promoted row or scoped values are missing';
+        RAISE EXCEPTION '526: promoted row or scoped values are missing';
     END IF;
 
     INSERT INTO public.session_turns (
         session_id, turn_no, tenant_id, request_id,
         ts, partition_date, submit_mode, source_kind, quality
     ) VALUES (
-        'test-525-session-conflict-parent', 2,
-        'test-525-tenant', 'test-525-promote-conflict',
+        'test-526-session-conflict-parent', 2,
+        'test-526-tenant', 'test-526-promote-conflict',
         '-infinity'::TIMESTAMPTZ, CURRENT_DATE,
         'full', 'live', 'verified'
     );
@@ -288,9 +288,9 @@ BEGIN
         id, session_id, turn_no, tenant_id, request_id,
         ts, partition_date, submit_mode, source_kind, quality
     ) VALUES (
-        -9223372036854770524,
-        'test-525-session-conflict-hot', 3,
-        'test-525-tenant', 'test-525-promote-conflict',
+        -9223372036854770526,
+        'test-526-session-conflict-hot', 3,
+        'test-526-tenant', 'test-526-promote-conflict',
         '-infinity'::TIMESTAMPTZ, CURRENT_DATE,
         'full', 'live', 'verified'
     ) RETURNING id INTO v_hot_id;
@@ -300,8 +300,8 @@ BEGIN
         ts, partition_date, submit_mode, source_kind, quality
     ) VALUES (
         -9223372036854770525,
-        'test-525-session-followup', 4,
-        'test-525-tenant', 'test-525-promote-followup',
+        'test-526-session-followup', 4,
+        'test-526-tenant', 'test-526-promote-followup',
         '-infinity'::TIMESTAMPTZ, CURRENT_DATE,
         'full', 'live', 'verified'
     ) RETURNING id INTO v_followup_hot_id;
@@ -310,13 +310,13 @@ BEGIN
     INTO v_moved;
 
     IF v_moved <> 1 THEN
-        RAISE EXCEPTION '525: duplicate poison row blocked follow-up promote';
+        RAISE EXCEPTION '526: duplicate poison row blocked follow-up promote';
     END IF;
     IF NOT EXISTS (
         SELECT 1 FROM public.session_turns_hot
         WHERE id = v_hot_id AND partition_date = CURRENT_DATE
     ) THEN
-        RAISE EXCEPTION '525: duplicate hot row must remain for explicit reconciliation';
+        RAISE EXCEPTION '526: duplicate hot row must remain for explicit reconciliation';
     END IF;
     IF EXISTS (
         SELECT 1 FROM public.session_turns_hot
@@ -325,23 +325,23 @@ BEGIN
         SELECT 1 FROM public.session_turns
         WHERE id = v_followup_hot_id AND partition_date = CURRENT_DATE
     ) THEN
-        RAISE EXCEPTION '525: normal follow-up row was not promoted past duplicate';
+        RAISE EXCEPTION '526: normal follow-up row was not promoted past duplicate';
     END IF;
     IF (
         SELECT count(*)
         FROM public.session_turns_with_current_month
-        WHERE tenant_id = 'test-525-tenant'
-          AND request_id = 'test-525-promote-conflict'
+        WHERE tenant_id = 'test-526-tenant'
+          AND request_id = 'test-526-promote-conflict'
     ) <> 1 THEN
-        RAISE EXCEPTION '525: unified view exposed both hot and archived duplicates';
+        RAISE EXCEPTION '526: unified view exposed both hot and archived duplicates';
     END IF;
 
     DELETE FROM public.session_turns_hot
-    WHERE tenant_id = 'test-525-tenant'
-      AND request_id LIKE 'test-525-%';
+    WHERE tenant_id = 'test-526-tenant'
+      AND request_id LIKE 'test-526-%';
     DELETE FROM public.session_turns
-    WHERE tenant_id = 'test-525-tenant'
-      AND request_id LIKE 'test-525-%';
+    WHERE tenant_id = 'test-526-tenant'
+      AND request_id LIKE 'test-526-%';
 END $$;
 
 -- Exercise the security-invoker view as a real NOBYPASSRLS non-owner role.
@@ -358,63 +358,87 @@ GRANT SELECT ON public.session_turns, public.session_turns_hot,
     public.request_logs, public.request_logs_hot
 TO session_turns_rls_test;
 
-INSERT INTO public.request_logs_hot (gw_session_id, owner_user, ts)
-VALUES ('test-525-rls-parent', 'owner-525', NOW() - INTERVAL '2 hours');
-INSERT INTO public.request_logs (gw_session_id, owner_user, ts)
-VALUES ('test-525-rls-hot', 'owner-525', NOW() - INTERVAL '1 hour');
+INSERT INTO public.request_logs_hot (gw_session_id, tenant_id, owner_user, ts)
+VALUES ('test-526-rls-parent', 'test-526-rls-tenant', 'owner-526', NOW() - INTERVAL '2 hours');
+INSERT INTO public.request_logs (gw_session_id, tenant_id, owner_user, ts)
+VALUES ('test-526-rls-hot', 'test-526-rls-tenant', 'owner-526', NOW() - INTERVAL '1 hour');
 INSERT INTO public.session_turns (
     session_id, turn_no, tenant_id, request_id, ts, partition_date
 ) VALUES (
-    'test-525-rls-parent', 1, 'test-525-rls-tenant',
-    'test-525-rls-parent-request', NOW(), CURRENT_DATE
+    'test-526-rls-parent', 1, 'test-526-rls-tenant',
+    'test-526-rls-parent-request', NOW(), CURRENT_DATE
 );
 INSERT INTO public.session_turns_hot (
     session_id, turn_no, tenant_id, request_id, ts, partition_date
 ) VALUES (
-    'test-525-rls-hot', 1, 'test-525-rls-tenant',
-    'test-525-rls-hot-request', NOW(), CURRENT_DATE
+    'test-526-rls-hot', 1, 'test-526-rls-tenant',
+    'test-526-rls-hot-request', NOW(), CURRENT_DATE
 );
 
+-- Cross-tenant decoy: same session ID + same owner_user in another tenant must
+-- not satisfy the owner predicate on the rls-tenant rows.
+INSERT INTO public.request_logs (gw_session_id, tenant_id, owner_user, ts)
+VALUES ('test-526-rls-parent', 'tenant-other', 'owner-526', NOW() - INTERVAL '5 minutes');
+INSERT INTO public.request_logs (gw_session_id, tenant_id, owner_user, ts)
+VALUES ('test-526-rls-hot', 'tenant-other', 'owner-526', NOW() - INTERVAL '5 minutes');
+
 SET ROLE session_turns_rls_test;
-SELECT set_config('app.current_tenant', 'test-525-rls-tenant', false);
+SELECT set_config('app.current_tenant', 'test-526-rls-tenant', false);
 SELECT set_config('app.current_role', 'tenant_admin', false);
 SELECT set_config('app.bypass_rls', 'false', false);
-SELECT set_config('app.current_user', 'owner-525', false);
+SELECT set_config('app.current_user', 'owner-526', false);
 DO $$
 BEGIN
     IF (SELECT count(*) FROM public.session_turns_with_current_month
-        WHERE tenant_id = 'test-525-rls-tenant') <> 2 THEN
-        RAISE EXCEPTION '525: owner cannot see both hot and parent rows through security-invoker view';
+        WHERE tenant_id = 'test-526-rls-tenant') <> 2 THEN
+        RAISE EXCEPTION '526: owner cannot see both hot and parent rows through security-invoker view';
     END IF;
 END $$;
 
-SELECT set_config('app.current_user', 'stranger-525', false);
+SELECT set_config('app.current_user', 'stranger-526', false);
 DO $$
 BEGIN
     IF (SELECT count(*) FROM public.session_turns_with_current_month
-        WHERE tenant_id = 'test-525-rls-tenant') <> 0 THEN
-        RAISE EXCEPTION '525: non-owner can see rows through security-invoker view';
+        WHERE tenant_id = 'test-526-rls-tenant') <> 0 THEN
+        RAISE EXCEPTION '526: non-owner can see rows through security-invoker view';
     END IF;
 END $$;
 
+-- Switch the session's tenant context to tenant-other. The owner's rows live
+-- under tenant_id=test-526-rls-tenant; cross-tenant owner leaks must be 0 even
+-- though another tenant shares the session ID and owner_user.
+SELECT set_config('app.current_tenant', 'tenant-other', false);
+SELECT set_config('app.current_user', 'owner-526', false);
+DO $$
+BEGIN
+    IF (SELECT count(*) FROM public.session_turns_with_current_month
+        WHERE tenant_id = 'test-526-rls-tenant') <> 0 THEN
+        RAISE EXCEPTION '526: cross-tenant context exposes rows that belong to another tenant';
+    END IF;
+END $$;
+
+SELECT set_config('app.current_tenant', 'test-526-rls-tenant', false);
 SELECT set_config('app.current_role', 'super_admin', false);
 DO $$
 BEGIN
     IF (SELECT count(*) FROM public.session_turns_with_current_month
-        WHERE tenant_id = 'test-525-rls-tenant') <> 2 THEN
-        RAISE EXCEPTION '525: super_admin cannot see both hot and parent rows';
+        WHERE tenant_id = 'test-526-rls-tenant') <> 2 THEN
+        RAISE EXCEPTION '526: super_admin cannot see both hot and parent rows';
     END IF;
 END $$;
 RESET ROLE;
 
 DELETE FROM public.session_turns_hot
-WHERE tenant_id = 'test-525-rls-tenant';
+WHERE tenant_id = 'test-526-rls-tenant';
 DELETE FROM public.session_turns
-WHERE tenant_id = 'test-525-rls-tenant';
+WHERE tenant_id = 'test-526-rls-tenant';
 DELETE FROM public.request_logs_hot
-WHERE gw_session_id IN ('test-525-rls-parent', 'test-525-rls-hot');
+WHERE gw_session_id IN ('test-526-rls-parent', 'test-526-rls-hot');
 DELETE FROM public.request_logs
-WHERE gw_session_id IN ('test-525-rls-parent', 'test-525-rls-hot');
+WHERE gw_session_id IN ('test-526-rls-parent', 'test-526-rls-hot');
+DELETE FROM public.request_logs
+WHERE tenant_id = 'tenant-other'
+  AND gw_session_id IN ('test-526-rls-parent', 'test-526-rls-hot');
 REVOKE ALL ON public.session_turns, public.session_turns_hot,
     public.session_turns_with_current_month,
     public.request_logs, public.request_logs_hot
@@ -422,4 +446,4 @@ FROM session_turns_rls_test;
 REVOKE USAGE ON SCHEMA public FROM session_turns_rls_test;
 DROP ROLE session_turns_rls_test;
 
-SELECT '524/525: all checks passed' AS result;
+SELECT '525/526: all checks passed' AS result;

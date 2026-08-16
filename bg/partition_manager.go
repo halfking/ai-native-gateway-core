@@ -755,7 +755,7 @@ func promoteSpecs() []archiveSpec {
 		// 按 lifecycle.model_probe_runs_ttl_days 直接 DELETE 清理。
 		// {fnName: "promote_model_probe_runs_hot_to_partition", label: "model_probe_runs_hot"},
 		{fnName: "promote_candidate_failure_logs_hot_to_partition", label: "candidate_failure_logs_hot"}, // Migration 392
-		{fnName: "promote_session_turns_hot_to_partition", label: "session_turns_hot"},                   // Migration 525
+		{fnName: "promote_session_turns_hot_to_partition", label: "session_turns_hot"},                   // Migration 526
 	}
 }
 
