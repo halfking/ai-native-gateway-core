@@ -109,8 +109,8 @@ var ModePresets = map[CostMode]ModePreset{
 		LoopThreshold:        2,
 		MaxModelSwitch:       3,
 
-		// --- Manual audit only (no auto-fix) ---
-		UseAudit:          false, // user must explicitly trigger
+		// --- No preset-driven audit/fix; automatic audit is aggressive-only ---
+		UseAudit:          false,
 		AutoFixEnabled:    false,
 		UseAutorouteAudit: true,
 
