@@ -329,7 +329,7 @@ func TestReplayLifecycleActions_ResolvesOwnershipFromRedisDetail(t *testing.T) {
 
 	// 先写请求 detail（全局键），再写动作：回放时应能解析归属 tenant-b。
 	req := LiveRequest{RequestID: "late-1", Ts: ts.Format(time.RFC3339), TenantID: "tenant-b", Model: "m", ModelCategory: "v", ProviderCode: "p", Status: "success"}
-	if err := hub.store.Record(ctx, req); err != nil {
+	if err := hub.store.Record(ctx, req, ""); err != nil {
 		t.Fatalf("record: %v", err)
 	}
 	rdb.LPush(ctx, liveactions.RedisKey, mustMarshalAction(t, liveactions.ActionEvent{RequestID: "late-1", Seq: 1, Action: liveactions.ActionReply, Ts: ts}))
@@ -612,7 +612,7 @@ func TestRedisNotify_ReconstructsChildMetadata(t *testing.T) {
 		ParentRequestID: "parent-sub",
 		RequestType:     "title",
 	}
-	if err := hub.store.Record(ctx, child); err != nil {
+	if err := hub.store.Record(ctx, child, ""); err != nil {
 		t.Fatalf("record: %v", err)
 	}
 	payload, err := json.Marshal(liveStreamNotifyPayload{RequestID: child.RequestID, TenantID: child.TenantID})

@@ -398,6 +398,23 @@ func sanitizeGwSessionHeader(v string) string {
 	return s
 }
 
+// isBranchSessionID reports whether the already-sanitized session id belongs to
+// an auto-generated background branch rather than a user-facing main session.
+// The two namespaces are written by the auto-title / auto-summary loopback
+// (admin/auto_title_generator.go, admin/auto_summary_generator.go) and MUST be
+// preserved verbatim on the request log row so operators can SQL:
+//
+//	WHERE gw_session_id LIKE 'gt\_%' ESCAPE '\'   -- every auto-title row
+//	WHERE gw_session_id LIKE 'gs\_%' ESCAPE '\'   -- every auto-summary row
+//
+// They must NOT be auto-created/migrated into a fresh gw_<uuid> by the chat
+// handler's ErrSessionNotFound fallback, nor written into the no-session
+// "last system session" resume pointer. The prefixes MUST stay in sync with
+// sanitizeGwSessionHeader above.
+func isBranchSessionID(sessionID string) bool {
+	return strings.HasPrefix(sessionID, "gt_") || strings.HasPrefix(sessionID, "gs_")
+}
+
 // InitializeRequestIdentity is the exported helper that establishes one
 // stable request identity (server-issued request_id, optional client
 // request_id, and a provisional gateway session id) at the HTTP
@@ -2281,46 +2298,60 @@ func (h *ChatHandler) serveWithExecutor(
 			}()
 			ctx = session.SessionFromContextWith(ctx, sessionInfo)
 		} else if err == session.ErrSessionNotFound && keyInfo != nil {
-			deviceSeed := r.Header.Get("X-Device-Seed")
-			if deviceSeed == "" {
-				deviceSeed = r.Header.Get("X-Machine-Id")
-			}
-			if deviceSeed == "" {
-				deviceSeed = "default"
-			}
-			taskID := r.Header.Get("X-Gw-Task-Id")
-			newSession, createErr := h.sessionGetter.CreateV2(ctx, keyInfo.ID, keyInfo.TenantID, deviceSeed, taskID)
-			if createErr != nil {
-				slog.Error("session fallback create failed", "error", createErr, "session_id", sessionID)
+			// 2026-08-15 (OBS-DV2 #4): auto-title/auto-summary loopback sessions
+			// carry an internal branch id (gt_/gs_) that is intentionally NOT a
+			// real user session. Do NOT auto-create a fresh gw_<uuid> for them —
+			// that would silently reassign the row's gw_session_id away from the
+			// branch namespace operators query by. Leave sessionInfo nil so the
+			// branch id is preserved verbatim on the request log, and skip the
+			// lastSystemSession write so the loopback cannot poison the no-session
+			// resume pointer. Ordinary unknown gw_ ids still fall through to
+			// CreateV2 below and get a real session.
+			if isBranchSessionID(sessionID) {
+				slog.Debug("branch session id preserved (no auto-create)",
+					"session_id", sessionID)
 			} else {
-				sessionInfo = newSession
-				sessionID = newSession.SessionID
-				logCtx.SetSession(newSession)
-				h.emitTrace(r.Context(), requestID,
-					gwtrace.SessionLookup(newSession.SessionID, true, nil))
-				ctx = session.SessionFromContextWith(ctx, newSession)
-				w.Header().Set("X-Gw-Session-Id-Resume", newSession.SessionID)
-				w.Header().Set("X-Gw-Session-Auto", "true")
-				if r.Header.Get("X-Session-Id") != "" {
-					slog.Warn("legacy X-Session-Id used, fallback created; migrate to X-Gw-Session-Id",
-						"original_session_id", r.Header.Get("X-Session-Id"),
-						"new_session_id", newSession.SessionID,
-					)
-					w.Header().Set("Deprecation", "true")
+				deviceSeed := r.Header.Get("X-Device-Seed")
+				if deviceSeed == "" {
+					deviceSeed = r.Header.Get("X-Machine-Id")
 				}
-				slog.Info("session fallback created",
-					"original_session_id", r.Header.Get("X-Gw-Session-Id"),
-					"new_session_id", newSession.SessionID,
-					"task_id", taskID,
-				)
-				if h.lastSystemSession != nil {
-					lsEntry := &session.LastSystemSessionEntry{
-						SessionID:  newSession.SessionID,
-						DeviceSeed: deviceSeed,
-						TaskID:     taskID,
+				if deviceSeed == "" {
+					deviceSeed = "default"
+				}
+				taskID := r.Header.Get("X-Gw-Task-Id")
+				newSession, createErr := h.sessionGetter.CreateV2(ctx, keyInfo.ID, keyInfo.TenantID, deviceSeed, taskID)
+				if createErr != nil {
+					slog.Error("session fallback create failed", "error", createErr, "session_id", sessionID)
+				} else {
+					sessionInfo = newSession
+					sessionID = newSession.SessionID
+					logCtx.SetSession(newSession)
+					h.emitTrace(r.Context(), requestID,
+						gwtrace.SessionLookup(newSession.SessionID, true, nil))
+					ctx = session.SessionFromContextWith(ctx, newSession)
+					w.Header().Set("X-Gw-Session-Id-Resume", newSession.SessionID)
+					w.Header().Set("X-Gw-Session-Auto", "true")
+					if r.Header.Get("X-Session-Id") != "" {
+						slog.Warn("legacy X-Session-Id used, fallback created; migrate to X-Gw-Session-Id",
+							"original_session_id", r.Header.Get("X-Session-Id"),
+							"new_session_id", newSession.SessionID,
+						)
+						w.Header().Set("Deprecation", "true")
 					}
-					if setErr := h.lastSystemSession.Set(ctx, keyInfo.ID, lsEntry); setErr != nil {
-						slog.Warn("LastSystemSessionIndex update failed", "error", setErr, "api_key_id", keyInfo.ID)
+					slog.Info("session fallback created",
+						"original_session_id", r.Header.Get("X-Gw-Session-Id"),
+						"new_session_id", newSession.SessionID,
+						"task_id", taskID,
+					)
+					if h.lastSystemSession != nil {
+						lsEntry := &session.LastSystemSessionEntry{
+							SessionID:  newSession.SessionID,
+							DeviceSeed: deviceSeed,
+							TaskID:     taskID,
+						}
+						if setErr := h.lastSystemSession.Set(ctx, keyInfo.ID, lsEntry); setErr != nil {
+							slog.Warn("LastSystemSessionIndex update failed", "error", setErr, "api_key_id", keyInfo.ID)
+						}
 					}
 				}
 			}
@@ -2375,7 +2406,9 @@ func (h *ChatHandler) serveWithExecutor(
 		// 2026-07-27: We already resolved a session from the body or header
 		// above. Rebuild the lastSystemSession pointer for consistency with
 		// the assignment branch so follow-up turn reuse still works.
-		if h.lastSystemSession != nil && keyInfo != nil {
+		// OBS-DV2 #4: auto-title/auto-summary branch ids (gt_/gs_) must not
+		// overwrite the no-session resume pointer — skip them.
+		if h.lastSystemSession != nil && keyInfo != nil && !isBranchSessionID(sessionID) {
 			deviceSeed := r.Header.Get("X-Device-Seed")
 			if deviceSeed == "" {
 				deviceSeed = r.Header.Get("X-Machine-Id")

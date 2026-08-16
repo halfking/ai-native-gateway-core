@@ -43,10 +43,10 @@ func TestLiveStreamRedisStore_RecordAndReplay(t *testing.T) {
 		Status:        "failure",
 	}
 
-	if err := store.Record(ctx, req1); err != nil {
+	if err := store.Record(ctx, req1, ""); err != nil {
 		t.Fatalf("Record req1: %v", err)
 	}
-	if err := store.Record(ctx, req2); err != nil {
+	if err := store.Record(ctx, req2, ""); err != nil {
 		t.Fatalf("Record req2: %v", err)
 	}
 
@@ -105,7 +105,7 @@ func TestLiveStreamRedisStore_IdleMarker(t *testing.T) {
 		ModelCategory: "openai",
 		ProviderCode:  "openai",
 		Status:        "success",
-	}); err != nil {
+	}, ""); err != nil {
 		t.Fatalf("Record seed: %v", err)
 	}
 
@@ -258,7 +258,7 @@ func TestLiveStreamRedisStore_TrimDimensionQueueToTwenty(t *testing.T) {
 			ProviderCode:  "openai",
 			Status:        "success",
 		}
-		if err := store.Record(ctx, req); err != nil {
+		if err := store.Record(ctx, req, ""); err != nil {
 			t.Fatalf("Record %d: %v", i, err)
 		}
 	}
@@ -309,7 +309,7 @@ func TestLiveStreamRedisStore_NilClient(t *testing.T) {
 	ctx := context.Background()
 
 	// Should not panic, all operations are no-ops
-	if err := store.Record(ctx, LiveRequest{RequestID: "test"}); err != nil {
+	if err := store.Record(ctx, LiveRequest{RequestID: "test"}, ""); err != nil {
 		t.Errorf("Record with nil client should return nil, got %v", err)
 	}
 	if err := store.ScanAndRecordIdleMarkers(ctx, time.Now(), LiveStreamLaneRetention); err != nil {
@@ -387,7 +387,7 @@ func TestLiveStreamRedisStore_DimensionQueues(t *testing.T) {
 		Status:        "success",
 	}
 
-	if err := store.Record(ctx, req); err != nil {
+	if err := store.Record(ctx, req, ""); err != nil {
 		t.Fatalf("Record: %v", err)
 	}
 
@@ -440,7 +440,7 @@ func TestLiveStreamRedisStore_DimensionQueuesKeepSmallRawDimensions(t *testing.T
 			ProviderCode:  "provider-" + string(rune('a'+i)),
 			Status:        "success",
 		}
-		if err := store.Record(ctx, req); err != nil {
+		if err := store.Record(ctx, req, ""); err != nil {
 			t.Fatalf("Record: %v", err)
 		}
 	}
@@ -488,10 +488,10 @@ func TestLiveStreamRedisStore_StatusTransitionReplacesRequestID(t *testing.T) {
 	done.Ts = time.Now().UTC().Format(time.RFC3339)
 	done.Status = "success"
 
-	if err := store.Record(ctx, start); err != nil {
+	if err := store.Record(ctx, start, ""); err != nil {
 		t.Fatalf("Record start: %v", err)
 	}
-	if err := store.Record(ctx, done); err != nil {
+	if err := store.Record(ctx, done, ""); err != nil {
 		t.Fatalf("Record done: %v", err)
 	}
 
@@ -550,10 +550,10 @@ func TestLiveStreamRedisStore_StatusTransitionDoesNotMoveTimestampBackward(t *te
 	staleDone.Ts = base.Add(-12 * time.Minute).Format(time.RFC3339)
 	staleDone.Status = "success"
 
-	if err := store.Record(ctx, start); err != nil {
+	if err := store.Record(ctx, start, ""); err != nil {
 		t.Fatalf("Record start: %v", err)
 	}
-	if err := store.Record(ctx, staleDone); err != nil {
+	if err := store.Record(ctx, staleDone, ""); err != nil {
 		t.Fatalf("Record staleDone: %v", err)
 	}
 
@@ -599,7 +599,7 @@ func TestLiveStreamRedisStore_IdleMarkerWritesMainQueue(t *testing.T) {
 		ModelCategory: "openai",
 		ProviderCode:  "openai",
 		Status:        "success",
-	}); err != nil {
+	}, ""); err != nil {
 		t.Fatalf("Record: %v", err)
 	}
 
@@ -696,7 +696,7 @@ func TestComputeScopeDelta_FallsBackToReplayWhenDimensionSnapshotEmpty(t *testin
 		ProviderCode:  "openai",
 		Status:        "success",
 	}
-	if err := hub.store.Record(ctx, req); err != nil {
+	if err := hub.store.Record(ctx, req, ""); err != nil {
 		t.Fatalf("Record: %v", err)
 	}
 
@@ -1004,7 +1004,7 @@ func TestLiveStreamRedisStore_TenantScopedReplay(t *testing.T) {
 		{RequestID: "a", Ts: time.Now().UTC().Format(time.RFC3339), TenantID: "tenant-a", Model: "gpt", ModelCategory: "openai", ProviderCode: "openai", Status: "success"},
 		{RequestID: "b", Ts: time.Now().UTC().Format(time.RFC3339), TenantID: "tenant-b", Model: "claude", ModelCategory: "anthropic", ProviderCode: "anthropic", Status: "success"},
 	} {
-		if err := store.Record(ctx, req); err != nil {
+		if err := store.Record(ctx, req, ""); err != nil {
 			t.Fatalf("Record: %v", err)
 		}
 	}
@@ -1474,7 +1474,7 @@ func TestSnapshotFromDimensionQueues_RequestsAreDESC(t *testing.T) {
 			ProviderCode:  "openai",
 			Status:        "success",
 		}
-		if err := store.Record(ctx, req); err != nil {
+		if err := store.Record(ctx, req, ""); err != nil {
 			t.Fatalf("Record %d: %v", i, err)
 		}
 	}
@@ -1487,7 +1487,7 @@ func TestSnapshotFromDimensionQueues_RequestsAreDESC(t *testing.T) {
 			ModelCategory: "openai",
 			ProviderCode:  "openai",
 			Status:        "success",
-		}); err != nil {
+		}, ""); err != nil {
 			t.Fatalf("Record %s: %v", id, err)
 		}
 	}
@@ -1536,7 +1536,7 @@ func TestSnapshotFromDimensionQueues_ReadsSlimTileMembers(t *testing.T) {
 		ProviderCode:  "apiclaude",
 		Status:        "success",
 	}
-	if err := store.Record(ctx, req); err != nil {
+	if err := store.Record(ctx, req, ""); err != nil {
 		t.Fatalf("Record: %v", err)
 	}
 
@@ -1844,7 +1844,7 @@ func TestIdleMarker_VisibleInDimensionQueueSnapshot(t *testing.T) {
 		ModelCategory: "openai",
 		ProviderCode:  "openai",
 		Status:        "success",
-	}); err != nil {
+	}, ""); err != nil {
 		t.Fatalf("Record seed: %v", err)
 	}
 
@@ -1974,7 +1974,7 @@ func TestIdleMarker_StableRequestIdAcrossTicks(t *testing.T) {
 		ModelCategory: "openai",
 		ProviderCode:  "openai",
 		Status:        "success",
-	}); err != nil {
+	}, ""); err != nil {
 		t.Fatalf("Record: %v", err)
 	}
 
@@ -2053,7 +2053,7 @@ func TestIdleMarker_PushedRightByNewRequest(t *testing.T) {
 		ModelCategory: "openai",
 		ProviderCode:  "openai",
 		Status:        "success",
-	}); err != nil {
+	}, ""); err != nil {
 		t.Fatalf("Record: %v", err)
 	}
 	// Force EVERY activity key into the past. The scanner compares
@@ -2085,7 +2085,7 @@ func TestIdleMarker_PushedRightByNewRequest(t *testing.T) {
 		ModelCategory: "openai",
 		ProviderCode:  "openai",
 		Status:        "success",
-	}); err != nil {
+	}, ""); err != nil {
 		t.Fatalf("Record req-2: %v", err)
 	}
 
@@ -2144,7 +2144,7 @@ func TestIdleMarker_RefreshesTsOnEachTick(t *testing.T) {
 		ModelCategory: "openai",
 		ProviderCode:  "openai",
 		Status:        "success",
-	}); err != nil {
+	}, ""); err != nil {
 		t.Fatalf("Record: %v", err)
 	}
 	// Force EVERY activity key into the past. The scanner compares
@@ -2219,7 +2219,7 @@ func TestIdleMarker_BothMainAndDimQueueUpdated(t *testing.T) {
 		ModelCategory: "openai",
 		ProviderCode:  "openai",
 		Status:        "success",
-	}); err != nil {
+	}, ""); err != nil {
 		t.Fatalf("Record: %v", err)
 	}
 	// Force EVERY activity key into the past. The scanner compares
@@ -2328,7 +2328,7 @@ func TestComputeScopeDelta_DropsDegradedSnapshot(t *testing.T) {
 			ProviderCode:  "openai",
 			Status:        "success",
 		}
-		if err := hub.store.Record(ctx, req); err != nil {
+		if err := hub.store.Record(ctx, req, ""); err != nil {
 			t.Fatalf("Record baseline %d: %v", i, err)
 		}
 	}
@@ -2362,7 +2362,7 @@ func TestComputeScopeDelta_DropsDegradedSnapshot(t *testing.T) {
 			ProviderCode:  "openai",
 			Status:        "success",
 		}
-		if err := hub.store.Record(ctx, req); err != nil {
+		if err := hub.store.Record(ctx, req, ""); err != nil {
 			t.Fatalf("Record degraded %d: %v", i, err)
 		}
 	}
@@ -2411,7 +2411,7 @@ func TestComputeScopeDelta_AcceptsNonDegradedSnapshot(t *testing.T) {
 			ProviderCode:  "openai",
 			Status:        "success",
 		}
-		if err := hub.store.Record(ctx, req); err != nil {
+		if err := hub.store.Record(ctx, req, ""); err != nil {
 			t.Fatalf("Record cold %d: %v", i, err)
 		}
 	}
@@ -2430,7 +2430,7 @@ func TestComputeScopeDelta_AcceptsNonDegradedSnapshot(t *testing.T) {
 			ProviderCode:  "openai",
 			Status:        "success",
 		}
-		if err := hub.store.Record(ctx, req); err != nil {
+		if err := hub.store.Record(ctx, req, ""); err != nil {
 			t.Fatalf("Record mod %d: %v", i, err)
 		}
 	}
@@ -2462,7 +2462,7 @@ func TestLiveStreamDimIndex_PopulatedAndRead(t *testing.T) {
 		ProviderCode:  "openai",
 		Status:        "success",
 	}
-	if err := store.Record(ctx, req); err != nil {
+	if err := store.Record(ctx, req, ""); err != nil {
 		t.Fatalf("Record: %v", err)
 	}
 
@@ -2557,7 +2557,7 @@ func TestLiveStreamDimIndex_FallbackToScan(t *testing.T) {
 		ProviderCode:  "anthropic",
 		Status:        "success",
 	}
-	if err := store.Record(ctx, req); err != nil {
+	if err := store.Record(ctx, req, ""); err != nil {
 		t.Fatalf("Record: %v", err)
 	}
 	rdb.Del(ctx, liveStreamDimIndexKey("tenant-fb", false))

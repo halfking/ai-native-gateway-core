@@ -89,7 +89,7 @@ func TestRecord_ConcurrentSameRequestID_NoDuplicateMembers(t *testing.T) {
 				Status:        status,
 			}
 			<-start // release all goroutines together to maximize contention
-			if err := store.Record(ctx, req); err != nil {
+			if err := store.Record(ctx, req, ""); err != nil {
 				errs.Add(1)
 			}
 		}(status)
@@ -130,7 +130,7 @@ func TestRecord_InProgressToSuccess_NoStaleDimMember(t *testing.T) {
 		Ts:        time.Now().UTC().Add(-2 * time.Second).Format(time.RFC3339Nano),
 		TenantID:  "tenant-a", Model: "gpt-4o", ModelCategory: "openai",
 		ProviderCode: "openai", Status: "in_progress",
-	}))
+	}, ""))
 
 	// Capture the in_progress slim tile that was written.
 	vendorKey := liveStreamDimPrefix + "vendor:openai"
@@ -143,7 +143,7 @@ func TestRecord_InProgressToSuccess_NoStaleDimMember(t *testing.T) {
 		Ts:        time.Now().UTC().Format(time.RFC3339Nano),
 		TenantID:  "tenant-a", Model: "gpt-4o", ModelCategory: "openai",
 		ProviderCode: "openai", Status: "success",
-	}))
+	}, ""))
 
 	// Exactly one member, and it must be the success tile (not in_progress).
 	assert.Equal(t, 1, countMembersForRequest(t, rdb, vendorKey, requestID),
@@ -173,13 +173,13 @@ func TestRecord_LateUpdateDoesNotMoveBackwards(t *testing.T) {
 		RequestID: requestID, Ts: newer.Format(time.RFC3339Nano),
 		TenantID: "tenant-a", Model: "gpt-4o", ModelCategory: "openai",
 		ProviderCode: "openai", Status: "success",
-	}))
+	}, ""))
 	// Late-arriving update with an OLDER timestamp.
 	require.NoError(t, store.Record(ctx, LiveRequest{
 		RequestID: requestID, Ts: older.Format(time.RFC3339Nano),
 		TenantID: "tenant-a", Model: "gpt-4o", ModelCategory: "openai",
 		ProviderCode: "openai", Status: "success",
-	}))
+	}, ""))
 
 	// The score in the main queue must equal the newer timestamp (ms).
 	score, err := rdb.ZScore(ctx, liveStreamMainKey, requestID).Result()
@@ -205,7 +205,7 @@ func TestRecord_TrimsToLaneLimitKeepingNewest(t *testing.T) {
 			Ts:        base.Add(time.Duration(i) * time.Second).Format(time.RFC3339Nano),
 			TenantID:  "tenant-a", Model: "gpt-4o", ModelCategory: "openai",
 			ProviderCode: "openai", Status: "success",
-		}))
+		}, ""))
 	}
 
 	vendorKey := liveStreamDimPrefix + "vendor:openai"
@@ -234,7 +234,7 @@ func TestRecord_DimensionFiltering(t *testing.T) {
 		RequestID: "req-bare-1", Ts: time.Now().UTC().Format(time.RFC3339Nano),
 		TenantID: "tenant-a", Status: "success",
 		// Model, ModelCategory, ProviderCode all empty
-	}))
+	}, ""))
 
 	keys := mr.Keys()
 	hasProviderQueue := false
@@ -274,7 +274,7 @@ func TestRecord_TenantIsolation(t *testing.T) {
 		RequestID: "req-iso-1", Ts: time.Now().UTC().Format(time.RFC3339Nano),
 		TenantID: "tenant-a", Model: "gpt-4o", ModelCategory: "openai",
 		ProviderCode: "openai", Status: "success",
-	}))
+	}, ""))
 
 	bVendorKey := tenantLiveStreamKey("tenant-b", "dim:vendor:openai")
 	assert.Equal(t, 0, countMembersForRequest(t, rdb, bVendorKey, "req-iso-1"),

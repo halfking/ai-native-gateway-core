@@ -53,7 +53,7 @@ func TestLiveStreamSSEHub_ComputeScopeDeltaPreservesBaselineAcrossEmptyRead(t *t
 		ProviderCode:  "provider-a",
 		Status:        "success",
 	}
-	if err := hub.store.Record(ctx, first); err != nil {
+	if err := hub.store.Record(ctx, first, ""); err != nil {
 		t.Fatalf("record first request: %v", err)
 	}
 
@@ -103,7 +103,7 @@ func TestLiveStreamSSEHub_ComputeScopeDeltaPreservesBaselineAcrossEmptyRead(t *t
 		ProviderCode:  "provider-b",
 		Status:        "success",
 	}
-	if err := hub.store.Record(ctx, second); err != nil {
+	if err := hub.store.Record(ctx, second, ""); err != nil {
 		t.Fatalf("record second request: %v", err)
 	}
 	if delta := hub.computeScopeDelta(ctx, "", false); delta == nil || delta.Summary.Total != 1 {

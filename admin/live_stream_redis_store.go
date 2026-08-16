@@ -296,7 +296,11 @@ func NewLiveStreamRedisStore(rdb *redis.Client) *LiveStreamRedisStore {
 
 // Record persists one LiveRequest to Redis queues. Returns nil on
 // success or when Redis is unavailable (graceful degradation).
-func (s *LiveStreamRedisStore) Record(ctx context.Context, req LiveRequest) error {
+// Record persists a request to Redis and publishes a notify. instanceID, when
+// non-empty, is stamped onto the notify so the originating hub can skip its own
+// echo (the local fan-out in Publish already delivered the request). Callers
+// that are not a live-stream hub pass "".
+func (s *LiveStreamRedisStore) Record(ctx context.Context, req LiveRequest, instanceID string) error {
 	if s == nil || s.rdb == nil {
 		return nil
 	}
@@ -341,13 +345,13 @@ func (s *LiveStreamRedisStore) Record(ctx context.Context, req LiveRequest) erro
 	}
 	defer release()
 
-	return s.recordLocked(ctx, req, tenantID)
+	return s.recordLocked(ctx, req, tenantID, instanceID)
 }
 
 // recordLocked is the body of Record(), executed while holding the
 // per-request_id lock when locking succeeded. It performs the read-modify-write
 // against Redis.
-func (s *LiveStreamRedisStore) recordLocked(ctx context.Context, req LiveRequest, tenantID string) error {
+func (s *LiveStreamRedisStore) recordLocked(ctx context.Context, req LiveRequest, tenantID, instanceID string) error {
 	var oldData string
 	var oldReq LiveRequest
 	hasOldReq := false
@@ -491,7 +495,7 @@ func (s *LiveStreamRedisStore) recordLocked(ctx context.Context, req LiveRequest
 	if err != nil {
 		return fmt.Errorf("redis pipeline exec failed: request_id=%s tenant_id=%s model=%s provider=%s category=%s queue_count=%d: %w", req.RequestID, tenantID, req.Model, req.ProviderCode, req.ModelCategory, len(queueKeys), err)
 	}
-	if err := s.NotifyChange(ctx, tenantID, req.RequestID); err != nil {
+	if err := s.NotifyChange(ctx, tenantID, req.RequestID, instanceID); err != nil {
 		slog.Debug("live stream redis notify failed", "request_id", req.RequestID, "tenant_id", tenantID, "err", err.Error())
 	}
 	return nil
@@ -588,20 +592,24 @@ func requestIDHash(s string) int64 {
 }
 
 type liveStreamNotifyPayload struct {
-	RequestID string `json:"request_id"`
-	TenantID  string `json:"tenant_id"`
+	RequestID  string `json:"request_id"`
+	TenantID   string `json:"tenant_id"`
+	InstanceID string `json:"instance_id,omitempty"`
 }
 
 // NotifyChange publishes a lightweight event so SSE hubs (local or
 // remote) can react to Redis writes without coupling to the request
-// handler goroutine.
-func (s *LiveStreamRedisStore) NotifyChange(ctx context.Context, tenantID, requestID string) error {
+// handler goroutine. instanceID, when non-empty, lets the originating hub
+// skip its own notify (it already fanned the request out locally) and thus
+// avoid duplicating child_request frames.
+func (s *LiveStreamRedisStore) NotifyChange(ctx context.Context, tenantID, requestID, instanceID string) error {
 	if s == nil || s.rdb == nil || requestID == "" {
 		return nil
 	}
 	payload, err := json.Marshal(liveStreamNotifyPayload{
-		RequestID: requestID,
-		TenantID:  normalizeLiveStreamTenant(tenantID),
+		RequestID:  requestID,
+		TenantID:   normalizeLiveStreamTenant(tenantID),
+		InstanceID: instanceID,
 	})
 	if err != nil {
 		return err
