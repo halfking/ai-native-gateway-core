@@ -129,7 +129,7 @@ func main() {
 		redisURL       = flag.String("redis", redisURLFromEnv(), "Redis URL")
 		pgDSN          = flag.String("pg", envOr("LLM_GATEWAY_DATABASE_URL", envOr("DATABASE_URL", "")), "Postgres DSN")
 		keyPrefix      = flag.String("key-prefix", defaultRedisKeyPrefix, "URSM v2 Redis key prefix (must match gateway config)")
-		tenantID       = flag.Int64("tenant-id", 0, "Optional: restrict migration to one tenant_id (0 = all)")
+			tenantID       = flag.String("tenant-id", "", "Optional: restrict migration to one tenant_id (empty = all)")
 		batchSize      = flag.Int("batch-size", 500, "Rows per batch (HSET pipelining)")
 	)
 	flag.Parse()
@@ -187,6 +187,7 @@ func main() {
 	fmt.Printf("  - in cool (>= %d fails)          : %d\n", failStreakLimit, cooled)
 	fmt.Printf("  - manual_hold (legacy paused)    : %d\n", manualHold)
 	fmt.Printf("  - key prefix                     : %s\n", *keyPrefix)
+	fmt.Printf("  - expected coverage keys         : %d\n", len(nodes))
 	if !*apply {
 		fmt.Println("\n(no Redis writes; pass --apply to commit)")
 		return
@@ -274,8 +275,7 @@ func main() {
 		return
 	}
 	if writeCount == 0 {
-		fmt.Println("\n⏹  Nothing to write (all keys skipped by CAS guard)")
-		return
+		fmt.Println("\nℹ️  No node hashes required writing; publishing verified coverage manifest")
 	}
 
 	// 8) Apply in batches.
@@ -319,18 +319,22 @@ func main() {
 // Note: The legacy schema does NOT store tenant_id on node_probe_state —
 // we join through credentials. If the credential has been hard-deleted,
 // it silently disappears from the migration.
-func readProbeRows(ctx context.Context, db *sql.DB, tenantID int64) ([]probeRow, error) {
-	const baseQ = `SELECT credential_id, raw_model_name,
-	                      consecutive_failures, consecutive_successes,
-	                      last_attempt_at, paused, last_direct_ok, last_err_code
-	                 FROM public.node_probe_state`
+func readProbeRows(ctx context.Context, db *sql.DB, tenantID string) ([]probeRow, error) {
+	// node_probe_state carries no tenant_id, so we left-join credentials
+	// to recover it. Rows whose credential was hard-deleted keep an empty
+	// TenantID and fall through to the "default" namespace in mapRow —
+	// match the legacy behaviour where they silently disappeared when
+	// filtered against the tenant flag.
+	const baseQ = `SELECT COALESCE(c.tenant_id, ''), nps.credential_id, nps.raw_model_name,
+		                      nps.consecutive_failures, nps.consecutive_successes,
+		                      nps.last_attempt_at, nps.paused, nps.last_direct_ok, nps.last_err_code
+		                 FROM public.node_probe_state nps
+		                 LEFT JOIN public.credentials c ON c.id = nps.credential_id`
 	var q string
 	var args []any
-	if tenantID > 0 {
+	if tenantID != "" {
 		q = baseQ + `
-	         WHERE credential_id IN (
-	             SELECT credential_id FROM public.credentials WHERE tenant_id = $1
-	         )`
+	         WHERE c.tenant_id = $1`
 		args = append(args, tenantID)
 	} else {
 		q = baseQ
@@ -344,7 +348,7 @@ func readProbeRows(ctx context.Context, db *sql.DB, tenantID int64) ([]probeRow,
 	var out []probeRow
 	for rows.Next() {
 		var r probeRow
-		if err := rows.Scan(&r.CredentialID, &r.RawModel,
+		if err := rows.Scan(&r.TenantID, &r.CredentialID, &r.RawModel,
 			&r.ConsecutiveFailures, &r.ConsecutiveSuccesses,
 			&r.LastAttemptAt, &r.Paused, &r.LastDirectOK, &r.LastErrCode); err != nil {
 			return nil, err
