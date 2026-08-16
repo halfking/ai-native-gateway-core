@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+
+	"github.com/lib/pq"
 )
 
 // PGStore implements GoalStore using PostgreSQL.
@@ -75,6 +77,38 @@ func (s *PGStore) UpdateSessionState(ctx context.Context, tenantID, sessionID st
 		    completed_at = CASE WHEN $3 = 'completed' THEN NOW() ELSE completed_at END
 		WHERE tenant_id = $1 AND session_id = $2`, tenantID, sessionID, state)
 	return err
+}
+
+// CompareAndSetState atomically transitions state to target only when the
+// current state is in allowedFrom. The terminal states (completed/failed) are
+// sticky: once a concurrent writer wins either, racing writers (retry-exhaustion
+// giving up, provider retry exhaustion) observe rows-affected == 0 and return
+// (false, nil) without overwriting.
+//
+// The allowedFrom parameter is rendered into a PostgreSQL text[] literal so
+// callers don't have to know the parameter count at the SQL boundary. An empty
+// allowedFrom behaves like a never-transition CAS: always returns false.
+func (s *PGStore) CompareAndSetState(ctx context.Context, tenantID, sessionID string, allowedFrom []State, target State) (bool, error) {
+	if len(allowedFrom) == 0 {
+		return false, nil
+	}
+	states := make([]string, len(allowedFrom))
+	for i, st := range allowedFrom {
+		states[i] = string(st)
+	}
+	res, err := s.db.ExecContext(ctx, `UPDATE goal_sessions
+		SET state = $3, last_activity_at = NOW(),
+		    completed_at = CASE WHEN $3 = 'completed' THEN NOW() ELSE completed_at END
+		WHERE tenant_id = $1 AND session_id = $2 AND state = ANY($4)`,
+		tenantID, sessionID, string(target), pq.Array(states))
+	if err != nil {
+		return false, err
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return rows == 1, nil
 }
 
 func (s *PGStore) IncrementAutoContinueCount(ctx context.Context, tenantID, sessionID string) error {

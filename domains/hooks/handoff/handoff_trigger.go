@@ -114,7 +114,14 @@ func (t *MemoryHandoffTrigger) ObserveGoalOutcome(ctx context.Context, outcome g
 			return fmt.Errorf("goal outcome tenant mismatch")
 		}
 		if outcome.Kind == goal.OutcomeFailed {
-			if err := t.goalStore.UpdateSessionState(ctx, outcome.TenantID, outcome.SessionID, goal.StateFailed); err != nil {
+			// CAS, not unconditional update: a concurrent completion verdict
+			// (mode_hook.IsCompleted) may have already marked the session
+			// completed. We must NOT downgrade completed to failed — that would
+			// drop audit context and silently violate the durable proposal
+			// lifecycle. The CAS no-ops when the row is in any non-allowed
+			// state (including completed).
+			allowed := []goal.State{goal.StateActive, goal.StateRetrying, goal.StatePaused, ""}
+			if _, err := t.goalStore.CompareAndSetState(ctx, outcome.TenantID, outcome.SessionID, allowed, goal.StateFailed); err != nil {
 				return fmt.Errorf("persist failed goal outcome: %w", err)
 			}
 		}
