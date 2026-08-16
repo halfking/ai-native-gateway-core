@@ -563,7 +563,7 @@ func (c *TransportIRConverter) restoreExtensionsWithParamreg(
 			}
 			target[outKey] = outVal
 			merged = true
-		// ActionDrop / ActionSkip：不写入
+			// ActionDrop / ActionSkip：不写入
 		}
 	}
 
