@@ -243,11 +243,10 @@ function addRouteRow(tier: ModelRouteTier) {
 
 function removeRouteRow(tier: ModelRouteTier, index: number) {
   const list = [...routesDraft.value[tier]]
-  list.splice(index, 1)
+  const [removed] = list.splice(index, 1)
   routesDraft.value = { ...routesDraft.value, [tier]: list }
   // Clear any stale test result for the removed model so a future row
   // picking the same canonical_name does not show a misleading ✔.
-  const removed = routesDraft.value[tier][index]
   if (removed?.canonical_name) {
     delete testResults.value[removed.canonical_name]
     delete testErrors.value[removed.canonical_name]

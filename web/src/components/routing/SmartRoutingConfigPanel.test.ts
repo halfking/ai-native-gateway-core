@@ -1,6 +1,6 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { createI18n } from 'vue-i18n'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import SmartRoutingConfigPanel from './SmartRoutingConfigPanel.vue'
 
 const mocks = vi.hoisted(() => ({
@@ -59,6 +59,13 @@ function route(tier: 'primary' | 'secondary' | 'fallback', canonical_name: strin
 }
 
 describe('SmartRoutingConfigPanel', () => {
+  beforeEach(() => {
+    getWorkType.mockReset()
+    listWorkTypes.mockReset()
+    putWorkTypeRoutes.mockReset()
+    refreshWorkTypes.mockClear()
+  })
+
   it('persists multiple fallback models through the work-type route API', async () => {
     listWorkTypes.mockResolvedValue([{ key: 'code_review', label: 'Code review', enabled: true }])
     getWorkType.mockResolvedValue({
@@ -82,5 +89,16 @@ describe('SmartRoutingConfigPanel', () => {
       expect.objectContaining({ canonical_name: 'fallback-b', tier: 'fallback', weight: 1 }),
     ]))
     expect(refreshWorkTypes).toHaveBeenCalledOnce()
+  })
+
+  it('does not request a detail when there are no enabled work types', async () => {
+    listWorkTypes.mockResolvedValue([])
+
+    mount(SmartRoutingConfigPanel, {
+      global: { plugins: [i18n], stubs: { ModelPicker: ModelPickerStub } },
+    })
+    await flushPromises()
+
+    expect(getWorkType).not.toHaveBeenCalled()
   })
 })
