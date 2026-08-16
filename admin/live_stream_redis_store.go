@@ -874,6 +874,11 @@ func BuildLiveStreamSnapshot(items []LiveRequest) *LiveStreamSnapshot {
 		if item.Type == "idle_marker" {
 			continue
 		}
+		// Diagnostic client-cancel probes remain visible as tiles, but they do
+		// not represent an upstream outcome and must not affect failure rates.
+		if isClientCancelProbe(item) {
+			continue
+		}
 		if _, ok := seenForSummary[item.RequestID]; ok {
 			continue
 		}
@@ -938,7 +943,9 @@ func buildLiveStreamLanes(dimension string, items []LiveRequest) ([]LiveStreamLa
 		}
 		laneSeen[req.RequestID] = struct{}{}
 		st := stats[key]
-		countStatus(&st, req.Status)
+		if !isClientCancelProbe(req) {
+			countStatus(&st, req.Status)
+		}
 		stats[key] = st
 		grouped[key] = append(grouped[key], liveRequestTile(req))
 	}
@@ -1189,6 +1196,11 @@ func liveRequestTile(req LiveRequest) LiveStreamTile {
 		}
 	}
 	return tile
+}
+
+func isClientCancelProbe(req LiveRequest) bool {
+	return req.FailureStage != nil && *req.FailureStage == "probe" &&
+		req.ErrorKind != nil && *req.ErrorKind == "client_cancel"
 }
 
 func countStatus(stats *LiveStreamStats, status string) {

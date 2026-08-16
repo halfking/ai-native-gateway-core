@@ -863,3 +863,8 @@
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
 | 520 | `520_durable_task_settlement_intents.sql` | `cb9f7bc736b189c7f14a780903a76b310c494b249f21f2902c4981b189c328f4` | source checksum verified; deployment evidence pending |
+## 2026-08-16T10:01:38Z — deploy 245 build_seq 1564 (4f23b19a)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 521 | `521_repair_state_transitions_tenant.sql` | `40d83e463de0c690b90f99e95a882d3c3ee39c5bc9a190ada622d4150bd6555c` | applied+verified |

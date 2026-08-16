@@ -926,6 +926,28 @@ func TestBuildLiveStreamSnapshot_ServerSideAggregation(t *testing.T) {
 	}
 }
 
+func TestBuildLiveStreamSnapshot_ClientCancelProbeDoesNotCountAsProviderFailure(t *testing.T) {
+	stage := "probe"
+	errorKind := "client_cancel"
+	items := []LiveRequest{
+		{RequestID: "real", Ts: "2026-08-16T00:00:01Z", Model: "claude", ModelCategory: "anthropic", ProviderCode: "zhima", Status: "success"},
+		{RequestID: "probe-client_cancel-1", Ts: "2026-08-16T00:00:02Z", Model: "claude", ModelCategory: "anthropic", ProviderCode: "zhima", Status: "failure", FailureStage: &stage, ErrorKind: &errorKind},
+	}
+
+	snapshot := BuildLiveStreamSnapshot(items)
+
+	if snapshot.Summary.Total != 1 || snapshot.Summary.Success != 1 || snapshot.Summary.Failure != 0 {
+		t.Fatalf("client cancel probe affected summary stats: %#v", snapshot.Summary)
+	}
+	lane := snapshot.Dimensions["provider"][0]
+	if lane.Stats.Total != 1 || lane.Stats.Failure != 0 {
+		t.Fatalf("client cancel probe affected provider stats: %#v", lane.Stats)
+	}
+	if len(lane.Requests) != 2 {
+		t.Fatalf("diagnostic probe must remain visible, requests=%d", len(lane.Requests))
+	}
+}
+
 func TestBuildLiveStreamSnapshot_TopNOthers(t *testing.T) {
 	items := make([]LiveRequest, 0, 7)
 	for i := 0; i < 7; i++ {
