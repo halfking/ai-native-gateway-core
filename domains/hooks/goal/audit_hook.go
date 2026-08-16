@@ -96,7 +96,7 @@ func (a *AuditHook) InterceptNonStream(ctx context.Context, req *response.Interc
 	}
 
 	// Get goal session
-	session, err := a.db.GetSession(ctx, req.SessionID)
+	session, err := a.db.GetSession(ctx, req.TenantID, req.SessionID)
 	if err != nil || session == nil {
 		return nil, nil
 	}
@@ -122,7 +122,7 @@ func (a *AuditHook) InterceptNonStream(ctx context.Context, req *response.Interc
 	// Atomically persist audit result (UPDATE ... WHERE audit_result IS NULL).
 	// Only one caller wins the race; others see "already audited" and skip.
 	resultJSON, _ := json.Marshal(auditResult)
-	won, persistErr := a.db.UpdateSessionAudit(ctx, req.SessionID, resultJSON)
+	won, persistErr := a.db.UpdateSessionAudit(ctx, req.TenantID, req.SessionID, resultJSON)
 	if persistErr != nil {
 		slog.Warn("audit_persist_failed", "session_id", req.SessionID, "error", persistErr)
 		// Fall through: still log the result so operators can see it.

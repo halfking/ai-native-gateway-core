@@ -73,7 +73,7 @@ func TestModeHook_OutcomeObserverReportsGiveUp(t *testing.T) {
 	if outcome.Kind != OutcomeFailed || outcome.Reason != "switch_budget_exhausted" || outcome.ModelSwitchCount != 2 {
 		t.Fatalf("unexpected failed outcome: %+v", outcome)
 	}
-	stored, err := store.GetSession(context.Background(), "observer-failed")
+	stored, err := store.GetSession(context.Background(), "tenant-a", "observer-failed")
 	if err != nil || stored == nil || stored.State != StateFailed {
 		t.Fatalf("final Goal failure was not persisted: session=%+v err=%v", stored, err)
 	}
@@ -90,7 +90,7 @@ func TestModeHook_AuditFollowUpDoesNotReenterGoal(t *testing.T) {
 	if err != nil || result != nil {
 		t.Fatalf("audit follow-up reentered Goal: result=%+v err=%v", result, err)
 	}
-	stored, _ := store.GetSession(context.Background(), "observer-audit")
+	stored, _ := store.GetSession(context.Background(), "tenant-a", "observer-audit")
 	if stored == nil || stored.State != StateCompleted || stored.AutoContinueCount != 0 {
 		t.Fatalf("audit follow-up mutated Goal session: %+v", stored)
 	}

@@ -277,7 +277,7 @@ func TestGoalRetryRecorder_FailOpen(t *testing.T) {
 		failingRecorder := &mockFailingRecorder{}
 
 		// This should not panic or fail
-		err := failingRecorder.AddRetryCount(context.Background(), "session-123", 3)
+		err := failingRecorder.AddRetryCount(context.Background(), "tenant-a", "session-123", 3)
 
 		// Verify it returns error but doesn't panic
 		require.Error(t, err)
@@ -291,7 +291,7 @@ func TestGoalRetryRecorder_FailOpen(t *testing.T) {
 		// (this is how production behaves when recorder not wired)
 		require.NotPanics(t, func() {
 			if recorder != nil {
-				_ = recorder.AddRetryCount(context.Background(), "session-123", 1)
+				_ = recorder.AddRetryCount(context.Background(), "tenant-a", "session-123", 1)
 			}
 		})
 	})
@@ -300,7 +300,7 @@ func TestGoalRetryRecorder_FailOpen(t *testing.T) {
 // Mock recorder for testing
 type mockFailingRecorder struct{}
 
-func (m *mockFailingRecorder) AddRetryCount(ctx context.Context, sessionID string, delta int) error {
+func (m *mockFailingRecorder) AddRetryCount(ctx context.Context, tenantID, sessionID string, delta int) error {
 	return errors.New("mock persistence failure")
 }
 

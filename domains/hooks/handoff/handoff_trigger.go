@@ -106,7 +106,7 @@ func (t *MemoryHandoffTrigger) ObserveGoalOutcome(ctx context.Context, outcome g
 		return nil
 	}
 	if t.goalStore != nil {
-		session, err := t.goalStore.GetSession(ctx, outcome.SessionID)
+		session, err := t.goalStore.GetSession(ctx, outcome.TenantID, outcome.SessionID)
 		if err != nil || session == nil {
 			return err
 		}
@@ -114,7 +114,7 @@ func (t *MemoryHandoffTrigger) ObserveGoalOutcome(ctx context.Context, outcome g
 			return fmt.Errorf("goal outcome tenant mismatch")
 		}
 		if outcome.Kind == goal.OutcomeFailed {
-			if err := t.goalStore.UpdateSessionState(ctx, outcome.SessionID, goal.StateFailed); err != nil {
+			if err := t.goalStore.UpdateSessionState(ctx, outcome.TenantID, outcome.SessionID, goal.StateFailed); err != nil {
 				return fmt.Errorf("persist failed goal outcome: %w", err)
 			}
 		}

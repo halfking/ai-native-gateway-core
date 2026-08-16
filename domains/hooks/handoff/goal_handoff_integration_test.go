@@ -112,7 +112,7 @@ func TestGoalHandoff_RestoreFailureIsFailOpenAndTenantScoped(t *testing.T) {
 	if serializer.calls != 2 || !trigger.IsAcknowledged(proposal.ID, "tenant-a") {
 		t.Fatalf("restore was not acknowledged after retry: calls=%d", serializer.calls)
 	}
-	restored, _ := goalStore.GetSession(context.Background(), "gw_new")
+	restored, _ := goalStore.GetSession(context.Background(), "tenant-a", "gw_new")
 	if restored == nil || restored.TenantID != "tenant-a" {
 		t.Fatalf("Goal state not restored on retry: %+v", restored)
 	}
@@ -170,7 +170,7 @@ func TestGoalHandoff_RequestConfirmRestoresNewSession(t *testing.T) {
 	if err != nil || confirmed == nil || !confirmed.FirstConfirmation {
 		t.Fatalf("confirmation failed: result=%+v err=%v", confirmed, err)
 	}
-	restored, _ := goalStore.GetSession(context.Background(), "gw_new")
+	restored, _ := goalStore.GetSession(context.Background(), "tenant-a", "gw_new")
 	if restored == nil || restored.State != goal.StateActive || restored.OriginalGoal != "complete P0-D" {
 		t.Fatalf("Goal state was not restored: %+v", restored)
 	}

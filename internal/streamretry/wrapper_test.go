@@ -153,6 +153,36 @@ func TestDefaultStreamExecutor_RetryOnTransientFailure(t *testing.T) {
 	}
 }
 
+func TestDefaultStreamExecutor_DoesNotRetryAfterFirstStreamFrame(t *testing.T) {
+	var attempts int32
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&attempts, 1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data: first-frame\\n\\n"))
+		w.(*errorRecorder).err = &HTTPError{StatusCode: http.StatusServiceUnavailable, Err: errors.New("upstream disconnected")}
+	})
+
+	cfg := DefaultConfig()
+	cfg.BaseDelayMs = 1
+	cfg.MaxRetries = 3
+	exec := NewDefaultStreamExecutor(inner, cfg)
+	rec := httptest.NewRecorder()
+	metrics, err := exec.ExecuteStreamWithMetrics(context.Background(), rec, newStreamingRequest())
+	if err == nil {
+		t.Fatal("ExecuteStreamWithMetrics() error = nil, want committed stream error")
+	}
+	if got := atomic.LoadInt32(&attempts); got != 1 {
+		t.Fatalf("attempts = %d, want 1 after first frame", got)
+	}
+	if metrics.TotalAttempts != 1 || metrics.TotalRetries != 0 {
+		t.Fatalf("metrics = %+v, want one committed attempt", metrics)
+	}
+	if got := rec.Body.String(); got != "data: first-frame\\n\\n" {
+		t.Fatalf("response body = %q, want one first frame", got)
+	}
+}
+
 func TestDefaultStreamExecutor_DoesNotRetryCommittedResponse(t *testing.T) {
 	var attempts int32
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

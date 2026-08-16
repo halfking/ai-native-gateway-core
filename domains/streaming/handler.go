@@ -3965,7 +3965,7 @@ goalRetryLoopDone:
 
 	// Persist retry count if recorder is available (fail-open)
 	if retriesPerformed > 0 && gwSessionID != "" && h.goalRetryRecorder != nil {
-		if err := h.goalRetryRecorder.AddRetryCount(r.Context(), gwSessionID, retriesPerformed); err != nil {
+		if err := h.goalRetryRecorder.AddRetryCount(r.Context(), tenantID, gwSessionID, retriesPerformed); err != nil {
 			slog.Warn("goal_retry_count_persist_failed",
 				"request_id", requestID,
 				"session_id", gwSessionID,

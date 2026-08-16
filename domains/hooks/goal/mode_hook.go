@@ -133,24 +133,24 @@ type ModeHook struct {
 
 // GoalStore defines the interface for persisting goal sessions.
 type GoalStore interface {
-	GetSession(ctx context.Context, sessionID string) (*Session, error)
+	GetSession(ctx context.Context, tenantID, sessionID string) (*Session, error)
 	CreateSession(ctx context.Context, session *Session) error
-	UpdateSessionState(ctx context.Context, sessionID string, state State) error
-	IncrementAutoContinueCount(ctx context.Context, sessionID string) error
-	IncrementDecisionCount(ctx context.Context, sessionID string) error
-	UpdateSessionAudit(ctx context.Context, sessionID string, auditResult []byte) (bool, error)
-	AtomicAutoContinue(ctx context.Context, sessionID string, maxAllowed int) (bool, error)
+	UpdateSessionState(ctx context.Context, tenantID, sessionID string, state State) error
+	IncrementAutoContinueCount(ctx context.Context, tenantID, sessionID string) error
+	IncrementDecisionCount(ctx context.Context, tenantID, sessionID string) error
+	UpdateSessionAudit(ctx context.Context, tenantID, sessionID string, auditResult []byte) (bool, error)
+	AtomicAutoContinue(ctx context.Context, tenantID, sessionID string, maxAllowed int) (bool, error)
 
 	// ── Loop-detection & model switching ────────────────────────────────
 	// RecordResponse hashes the assistant reply, updates RepeatCount
 	// (increment on identical hash, reset on a new hash when configured),
 	// and persists LastResponseHash. Returns the new RepeatCount.
-	RecordResponse(ctx context.Context, sessionID string, responseHash string, resetOnProgress bool) (int, error)
+	RecordResponse(ctx context.Context, tenantID, sessionID string, responseHash string, resetOnProgress bool) (int, error)
 	// AtomicModelSwitch atomically bumps model_switch_count if under maxAllowed,
 	// sets current_model to newModel, and resets auto_continue_count to 0 so the
 	// rotated model gets a fresh continue budget. Returns true if this caller
 	// won the rotation (false = already at the switch cap).
-	AtomicModelSwitch(ctx context.Context, sessionID, newModel string, maxAllowed int) (bool, error)
+	AtomicModelSwitch(ctx context.Context, tenantID, sessionID, newModel string, maxAllowed int) (bool, error)
 }
 
 // LLMCaller abstracts LLM invocation.
@@ -196,7 +196,7 @@ func (h *ModeHook) InterceptNonStream(ctx context.Context, req *response.Interce
 		return nil, nil
 	}
 
-	goalSession, err := h.db.GetSession(ctx, req.SessionID)
+	goalSession, err := h.db.GetSession(ctx, req.TenantID, req.SessionID)
 	if err != nil || goalSession == nil {
 		shouldActivate, reason := h.shouldActivateGoalMode(ctx, req)
 		if !shouldActivate {
@@ -230,7 +230,7 @@ func (h *ModeHook) InterceptNonStream(ctx context.Context, req *response.Interce
 	completed, confidence, reason := h.detector.IsCompleted(ctx, req)
 	if completed {
 		slog.Info("task_completed", "session_id", req.SessionID, "confidence", confidence, "reason", reason)
-		_ = h.db.UpdateSessionState(ctx, req.SessionID, StateCompleted)
+		_ = h.db.UpdateSessionState(ctx, req.TenantID, req.SessionID, StateCompleted)
 		h.observeOutcome(ctx, Outcome{
 			Kind: OutcomeCompleted, SessionID: req.SessionID, TenantID: req.TenantID,
 			Reason: reason, Source: "completion_detector", RetryCount: goalSession.RetryCount,
@@ -313,7 +313,7 @@ func (h *ModeHook) decideAndContinue(ctx context.Context, req *response.Intercep
 			"reason", decision.reason,
 			"auto_continue_count", sess.AutoContinueCount,
 			"model_switch_count", sess.ModelSwitchCount)
-		if err := h.db.UpdateSessionState(ctx, req.SessionID, StateFailed); err != nil {
+		if err := h.db.UpdateSessionState(ctx, req.TenantID, req.SessionID, StateFailed); err != nil {
 			slog.Warn("goal_failed_state_persist_failed", "session_id", req.SessionID, "error", err)
 		}
 		h.observeOutcome(ctx, Outcome{
@@ -379,11 +379,11 @@ func (h *ModeHook) shouldAutoContinue(ctx context.Context, req *response.Interce
 // rotation); empty means use the original client model.
 func (h *ModeHook) tryAtomicContinue(ctx context.Context, req *response.InterceptRequest, modelOverride string) *response.InterceptResult {
 	maxContinue := h.loadInt(req.TenantID, "goal.max_auto_continue_count", h.config.MaxAutoContinueCount)
-	won, err := h.db.AtomicAutoContinue(ctx, req.SessionID, maxContinue)
+	won, err := h.db.AtomicAutoContinue(ctx, req.TenantID, req.SessionID, maxContinue)
 	if err != nil {
 		slog.Warn("atomic_auto_continue_failed", "error", err, "session_id", req.SessionID)
 		// Fall back to non-atomic increment to avoid losing the continue.
-		_ = h.db.IncrementAutoContinueCount(ctx, req.SessionID)
+		_ = h.db.IncrementAutoContinueCount(ctx, req.TenantID, req.SessionID)
 		won = true
 	}
 	if !won {
@@ -417,7 +417,7 @@ func (h *ModeHook) InterceptStreamEnd(ctx context.Context, meta *response.Stream
 		return nil, nil
 	}
 
-	goalSession, err := h.db.GetSession(ctx, meta.SessionID)
+	goalSession, err := h.db.GetSession(ctx, meta.TenantID, meta.SessionID)
 	if err != nil || goalSession == nil {
 		return nil, nil
 	}
@@ -440,7 +440,7 @@ func (h *ModeHook) InterceptStreamEnd(ctx context.Context, meta *response.Stream
 		completed, confidence, reason := h.detector.IsCompleted(ctx, req)
 		if completed {
 			slog.Info("task_completed_stream", "session_id", meta.SessionID, "confidence", confidence, "reason", reason)
-			_ = h.db.UpdateSessionState(ctx, meta.SessionID, StateCompleted)
+			_ = h.db.UpdateSessionState(ctx, meta.TenantID, meta.SessionID, StateCompleted)
 			h.observeOutcome(ctx, Outcome{
 				Kind: OutcomeCompleted, SessionID: meta.SessionID, TenantID: meta.TenantID,
 				Reason: reason, Source: "completion_detector", RetryCount: goalSession.RetryCount,

@@ -38,10 +38,10 @@ func (s *fakeStore) seed(sess *Session) {
 	s.sessions[sess.SessionID] = sess
 }
 
-func (s *fakeStore) GetSession(_ context.Context, sessionID string) (*Session, error) {
+func (s *fakeStore) GetSession(_ context.Context, tenantID, sessionID string) (*Session, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if sess, ok := s.sessions[sessionID]; ok {
+	if sess, ok := s.sessions[sessionID]; ok && sess.TenantID == tenantID {
 		cp := *sess
 		return &cp, nil
 	}
@@ -55,34 +55,34 @@ func (s *fakeStore) CreateSession(_ context.Context, sess *Session) error {
 	return nil
 }
 
-func (s *fakeStore) UpdateSessionState(_ context.Context, sessionID string, state State) error {
+func (s *fakeStore) UpdateSessionState(_ context.Context, tenantID, sessionID string, state State) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if sess, ok := s.sessions[sessionID]; ok {
+	if sess, ok := s.sessions[sessionID]; ok && sess.TenantID == tenantID {
 		sess.State = state
 	}
 	return nil
 }
 
-func (s *fakeStore) IncrementAutoContinueCount(_ context.Context, sessionID string) error {
+func (s *fakeStore) IncrementAutoContinueCount(_ context.Context, tenantID, sessionID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.autoContinueCount[sessionID]++
-	if sess, ok := s.sessions[sessionID]; ok {
+	if sess, ok := s.sessions[sessionID]; ok && sess.TenantID == tenantID {
+		s.autoContinueCount[sessionID]++
 		sess.AutoContinueCount++
 	}
 	return nil
 }
 
-func (s *fakeStore) IncrementDecisionCount(_ context.Context, sessionID string) error { return nil }
+func (s *fakeStore) IncrementDecisionCount(context.Context, string, string) error { return nil }
 
 // RecordResponse mirrors PGStore: bump repeat_count when the hash matches the
 // stored one, else reset to 1. Tracks the last hash in-memory.
-func (s *fakeStore) RecordResponse(_ context.Context, sessionID, responseHash string, resetOnProgress bool) (int, error) {
+func (s *fakeStore) RecordResponse(_ context.Context, tenantID, sessionID, responseHash string, resetOnProgress bool) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	sess, ok := s.sessions[sessionID]
-	if !ok {
+	if !ok || sess.TenantID != tenantID {
 		return 0, errors.New("session not found")
 	}
 	if sess.LastResponseHash == responseHash {
@@ -98,11 +98,11 @@ func (s *fakeStore) RecordResponse(_ context.Context, sessionID, responseHash st
 
 // AtomicModelSwitch mirrors PGStore: bump model_switch_count under maxAllowed,
 // reset auto_continue_count, record the new model.
-func (s *fakeStore) AtomicModelSwitch(_ context.Context, sessionID, newModel string, maxAllowed int) (bool, error) {
+func (s *fakeStore) AtomicModelSwitch(_ context.Context, tenantID, sessionID, newModel string, maxAllowed int) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	sess, ok := s.sessions[sessionID]
-	if !ok {
+	if !ok || sess.TenantID != tenantID {
 		return false, errors.New("session not found")
 	}
 	if maxAllowed > 0 && sess.ModelSwitchCount >= maxAllowed {
@@ -114,10 +114,10 @@ func (s *fakeStore) AtomicModelSwitch(_ context.Context, sessionID, newModel str
 	return true, nil
 }
 
-func (s *fakeStore) UpdateSessionAudit(_ context.Context, sessionID string, auditResult []byte) (bool, error) {
+func (s *fakeStore) UpdateSessionAudit(_ context.Context, tenantID, sessionID string, auditResult []byte) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if sess, ok := s.sessions[sessionID]; ok && len(sess.AuditResult) == 0 {
+	if sess, ok := s.sessions[sessionID]; ok && sess.TenantID == tenantID && len(sess.AuditResult) == 0 {
 		sess.AuditResult = auditResult
 		s.auditUpdated = true
 		return true, nil
@@ -126,9 +126,12 @@ func (s *fakeStore) UpdateSessionAudit(_ context.Context, sessionID string, audi
 }
 
 // AtomicAutoContinue mirrors PGStore's WHERE auto_continue_count < $2 guard.
-func (s *fakeStore) AtomicAutoContinue(_ context.Context, sessionID string, maxAllowed int) (bool, error) {
+func (s *fakeStore) AtomicAutoContinue(_ context.Context, tenantID, sessionID string, maxAllowed int) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if sess, ok := s.sessions[sessionID]; !ok || sess.TenantID != tenantID {
+		return false, errors.New("session not found")
+	}
 	cur := s.autoContinueCount[sessionID]
 	if cur >= maxAllowed {
 		s.atomicLostCalls++
@@ -259,7 +262,7 @@ func TestInterceptNonStream_Completed_NoContinue(t *testing.T) {
 		t.Fatalf("did not expect a continue for a completed task, got action=%q", res.Action)
 	}
 	// Session should be marked completed.
-	sess, _ := store.GetSession(context.Background(), "s2")
+	sess, _ := store.GetSession(context.Background(), "t1", "s2")
 	if sess.State != StateCompleted {
 		t.Fatalf("session state = %q, want completed", sess.State)
 	}
@@ -377,7 +380,7 @@ func TestAtomicAutoContinue_OnlyOneWins(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			won, _ := store.AtomicAutoContinue(context.Background(), "s5", max)
+			won, _ := store.AtomicAutoContinue(context.Background(), "t1", "s5", max)
 			if won {
 				mu.Lock()
 				wins++
@@ -529,7 +532,7 @@ func TestInterceptNonStream_BudgetExhausted_SwitchesModel(t *testing.T) {
 		t.Fatalf("model not switched, still %q", parsed.Model)
 	}
 
-	sess, _ := store.GetSession(context.Background(), "ms1")
+	sess, _ := store.GetSession(context.Background(), "t1", "ms1")
 	if sess.ModelSwitchCount != 1 {
 		t.Fatalf("ModelSwitchCount = %d, want 1", sess.ModelSwitchCount)
 	}
@@ -572,7 +575,7 @@ func TestInterceptNonStream_RepeatedResponse_SwitchesModel(t *testing.T) {
 	if res == nil {
 		t.Fatal("expected a model-switch follow-up on repeated response")
 	}
-	sess, _ := store.GetSession(context.Background(), "ms2")
+	sess, _ := store.GetSession(context.Background(), "t1", "ms2")
 	if sess.ModelSwitchCount != 1 {
 		t.Fatalf("ModelSwitchCount = %d, want 1", sess.ModelSwitchCount)
 	}
@@ -677,18 +680,18 @@ func TestHashResponse_StableAndDistinct(t *testing.T) {
 // RecordResponse increments repeat_count on identical hash, resets on new.
 func TestRecordResponse_RepeatTracking(t *testing.T) {
 	store := newFakeStore()
-	store.seed(&Session{SessionID: "rr1", State: StateActive})
+	store.seed(&Session{SessionID: "rr1", TenantID: "t1", State: StateActive})
 
 	ctx := context.Background()
-	n, _ := store.RecordResponse(ctx, "rr1", "hashA", true)
+	n, _ := store.RecordResponse(ctx, "t1", "rr1", "hashA", true)
 	if n != 1 {
 		t.Fatalf("first response repeat_count = %d, want 1", n)
 	}
-	n, _ = store.RecordResponse(ctx, "rr1", "hashA", true)
+	n, _ = store.RecordResponse(ctx, "t1", "rr1", "hashA", true)
 	if n != 2 {
 		t.Fatalf("identical response repeat_count = %d, want 2", n)
 	}
-	n, _ = store.RecordResponse(ctx, "rr1", "hashB", true)
+	n, _ = store.RecordResponse(ctx, "t1", "rr1", "hashB", true)
 	if n != 1 {
 		t.Fatalf("new response should reset repeat_count to 1, got %d", n)
 	}

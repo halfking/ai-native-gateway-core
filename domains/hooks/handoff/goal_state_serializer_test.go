@@ -19,7 +19,7 @@ func newMemoryGoalStore() *memoryGoalStore {
 	return &memoryGoalStore{sessions: make(map[string]*goal.Session)}
 }
 
-func (s *memoryGoalStore) GetSession(_ context.Context, id string) (*goal.Session, error) {
+func (s *memoryGoalStore) GetSession(_ context.Context, tenantID, id string) (*goal.Session, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if session := s.sessions[id]; session != nil {
@@ -37,7 +37,7 @@ func (s *memoryGoalStore) CreateSession(_ context.Context, session *goal.Session
 	s.sessions[session.SessionID] = &clone
 	return nil
 }
-func (s *memoryGoalStore) UpdateSessionState(_ context.Context, id string, state goal.State) error {
+func (s *memoryGoalStore) UpdateSessionState(_ context.Context, tenantID, id string, state goal.State) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if session := s.sessions[id]; session != nil {
@@ -45,18 +45,22 @@ func (s *memoryGoalStore) UpdateSessionState(_ context.Context, id string, state
 	}
 	return nil
 }
-func (s *memoryGoalStore) IncrementAutoContinueCount(context.Context, string) error { return nil }
-func (s *memoryGoalStore) IncrementDecisionCount(context.Context, string) error     { return nil }
-func (s *memoryGoalStore) UpdateSessionAudit(context.Context, string, []byte) (bool, error) {
+func (s *memoryGoalStore) IncrementAutoContinueCount(context.Context, string, string) error {
+	return nil
+}
+func (s *memoryGoalStore) IncrementDecisionCount(context.Context, string, string) error {
+	return nil
+}
+func (s *memoryGoalStore) UpdateSessionAudit(context.Context, string, string, []byte) (bool, error) {
 	return true, nil
 }
-func (s *memoryGoalStore) AtomicAutoContinue(context.Context, string, int) (bool, error) {
+func (s *memoryGoalStore) AtomicAutoContinue(context.Context, string, string, int) (bool, error) {
 	return true, nil
 }
-func (s *memoryGoalStore) RecordResponse(context.Context, string, string, bool) (int, error) {
+func (s *memoryGoalStore) RecordResponse(context.Context, string, string, string, bool) (int, error) {
 	return 0, nil
 }
-func (s *memoryGoalStore) AtomicModelSwitch(context.Context, string, string, int) (bool, error) {
+func (s *memoryGoalStore) AtomicModelSwitch(context.Context, string, string, string, int) (bool, error) {
 	return true, nil
 }
 
@@ -73,7 +77,7 @@ func TestMemoryGoalStateSerializer_SerializeAndRestore(t *testing.T) {
 	serializer.now = func() time.Time { return capturedAt }
 
 	state, err := serializer.Serialize(context.Background(), GoalStateInput{
-		SessionID: "gw_old", CostMode: "balanced", TokensUsed: 85_000,
+		TenantID: "tenant-a", SessionID: "gw_old", CostMode: "balanced", TokensUsed: 85_000,
 		MessageCount: 18, CompletedSteps: []string{"schema"}, RemainingWork: "tests",
 	})
 	if err != nil {
@@ -90,14 +94,14 @@ func TestMemoryGoalStateSerializer_SerializeAndRestore(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	restored, _ := store.GetSession(context.Background(), "gw_new")
+	restored, _ := store.GetSession(context.Background(), "tenant-a", "gw_new")
 	if restored == nil || restored.State != goal.StateActive || restored.OriginalGoal != "finish migration" {
 		t.Fatalf("unexpected restored session: %+v", restored)
 	}
 	if restored.RetryCount != 0 || restored.AutoContinueCount != 0 || restored.RepeatCount != 0 || restored.ModelSwitchCount != 0 {
 		t.Fatalf("runtime budgets must reset in new session: %+v", restored)
 	}
-	old, _ := store.GetSession(context.Background(), "gw_old")
+	old, _ := store.GetSession(context.Background(), "tenant-a", "gw_old")
 	if old.RetryCount != 2 || old.ModelSwitchCount != 1 || old.LastResponseHash != "must-not-transfer" {
 		t.Fatalf("source session was modified: %+v", old)
 	}

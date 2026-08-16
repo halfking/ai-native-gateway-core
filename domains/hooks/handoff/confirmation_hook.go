@@ -37,6 +37,11 @@ func (h *TriggerHook) PrepareConfirmation(ctx context.Context, result *RequestRe
 		abortReservation()
 		return nil, "", err
 	}
+	proposal.GoalState = cloneGoalState(result.GoalState)
+	if _, _, err := marshalPersistedGoalState(proposal.GoalState); err != nil {
+		abortReservation()
+		return nil, "", err
+	}
 	if err := store.SavePending(ctx, proposal); err != nil {
 		abortReservation()
 		return nil, "", err
@@ -51,8 +56,8 @@ func (h *TriggerHook) PrepareConfirmation(ctx context.Context, result *RequestRe
 }
 
 // ConfirmRequest commits an already authenticated and ownership-checked
-// proposal. Goal restore is fail-open after durable confirmation; notification
-// is sent only for the initial durable confirmation.
+// proposal. Accounting is always fail-closed and exactly once; Goal restore is
+// fail-open after accounting and remains durably retryable.
 func (h *TriggerHook) ConfirmRequest(ctx context.Context, input ConfirmationInput) (*ConfirmationResult, error) {
 	if h == nil {
 		return nil, fmt.Errorf("handoff hook is unavailable")
@@ -84,24 +89,87 @@ func (h *TriggerHook) restoreGoalState(ctx context.Context, input ConfirmationIn
 	if h.config.GoalStateSerializer == nil {
 		return nil
 	}
-	if h.config.GoalTrigger != nil && h.config.GoalTrigger.IsAcknowledged(input.ProposalID, input.TenantID) {
-		return nil
+	var durable GoalRestoreStore
+	if store, ok := h.db.(GoalRestoreStore); ok {
+		durable = store
 	}
 	var state *GoalState
-	if h.config.GoalTrigger != nil {
-		state = h.config.GoalTrigger.Peek(input.ProposalID, input.TenantID)
+	var restoreStatus string
+	if durable != nil {
+		durableState, err := durable.GetGoalRestoreState(ctx, input.ProposalID, input.TenantID)
+		if err != nil {
+			return fmt.Errorf("load durable goal restore state: %w", err)
+		}
+		if durableState == nil {
+			return nil
+		}
+		state = durableState.GoalState
+		restoreStatus = durableState.Status
+		if restoreStatus == confirmationStatusRestored || restoreStatus == confirmationStatusManualRequired {
+			return nil
+		}
+	} else {
+		if h.config.GoalTrigger != nil && h.config.GoalTrigger.IsAcknowledged(input.ProposalID, input.TenantID) {
+			return nil
+		}
+		if h.config.GoalTrigger != nil {
+			state = h.config.GoalTrigger.Peek(input.ProposalID, input.TenantID)
+		}
 	}
 	if state == nil {
 		return nil
 	}
 	if state.TenantID == "" || state.TenantID != input.TenantID {
-		return fmt.Errorf("handoff goal restore tenant mismatch")
+		if durable != nil {
+			_ = durable.MarkGoalRestoreManualRequired(ctx, input.ProposalID, input.TenantID, "goal state tenant mismatch")
+		}
+		return fmt.Errorf("%w: goal restore tenant mismatch", ErrGoalRestoreManualRequired)
+	}
+	if durable != nil {
+		_ = durable.MarkGoalRestoreAttempt(ctx, input.ProposalID, input.TenantID, "")
 	}
 	if err := h.config.GoalStateSerializer.Restore(ctx, result.NewSessionID, state); err != nil {
+		if durable != nil {
+			if isManualGoalRestoreError(err) {
+				_ = durable.MarkGoalRestoreManualRequired(ctx, input.ProposalID, input.TenantID, err.Error())
+			} else {
+				_ = durable.MarkGoalRestoreAttempt(ctx, input.ProposalID, input.TenantID, err.Error())
+			}
+		}
 		return fmt.Errorf("%w: %v", ErrGoalRestoreRetryable, err)
+	}
+	if durable != nil {
+		if err := durable.MarkGoalRestored(ctx, input.ProposalID, input.TenantID); err != nil {
+			return fmt.Errorf("mark goal restore complete: %w", err)
+		}
 	}
 	if h.config.GoalTrigger != nil {
 		h.config.GoalTrigger.Ack(input.ProposalID, input.TenantID)
 	}
 	return nil
+}
+
+func isManualGoalRestoreError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := err.Error()
+	return len(message) > 0 && (containsRestoreConflict(message) || containsRestoreVersionError(message))
+}
+
+func containsRestoreConflict(message string) bool {
+	return stringContains(message, "conflicts with handoff state") || stringContains(message, "tenant mismatch")
+}
+
+func containsRestoreVersionError(message string) bool {
+	return stringContains(message, "unsupported goal state version") || stringContains(message, "invalid goal state snapshot")
+}
+
+func stringContains(value, part string) bool {
+	for i := 0; i+len(part) <= len(value); i++ {
+		if value[i:i+len(part)] == part {
+			return true
+		}
+	}
+	return false
 }
