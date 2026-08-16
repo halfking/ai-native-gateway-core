@@ -30,6 +30,8 @@ package admin
 
 import (
 	"context"
+	cryptoRand "crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -492,6 +494,14 @@ type LiveStreamSSEHub struct {
 	actionTenantMiss  map[string]time.Time // negative cache for unresolved lookups
 	actionsDelivered  int64
 	actionScanErrors  int64
+
+	// instanceID is a per-hub random tag stamped onto every Redis pub/sub
+	// notify we emit. The same hub subscribes to the channel, so without
+	// this tag it would re-enqueue its OWN publishes as if they came from a
+	// remote instance, doubling every child_request frame. A notify carrying
+	// our own instanceID is ignored; payloads with no tag (older payloads /
+	// other writers) and tags from other instances are still processed.
+	instanceID string
 }
 
 // cachedSnapshotEntry is one tenant's cached snapshot plus its last-access
@@ -587,7 +597,19 @@ func NewLiveStreamSSEHub(db *pgxpool.Pool, cfg LiveStreamConfig) *LiveStreamSSEH
 		cachedSnapshot:    make(map[string]*cachedSnapshotEntry),
 		actionTenantIndex: make(map[string]string),
 		actionTenantMiss:  make(map[string]time.Time),
+		instanceID:        generateLiveStreamInstanceID(),
 	}
+}
+
+// generateLiveStreamInstanceID returns a short random per-hub tag used to
+// de-duplicate our own Redis pub/sub notifies. Encoded as 8 hex chars from
+// crypto rand to avoid collisions across restarts. Mirrors newFreePoolInstanceID.
+func generateLiveStreamInstanceID() string {
+	var b [4]byte
+	if _, err := cryptoRand.Read(b[:]); err != nil {
+		return fmt.Sprintf("h-%d", time.Now().UnixNano())
+	}
+	return fmt.Sprintf("h-%s", hex.EncodeToString(b[:]))
 }
 
 // Run drives the hub event loop. Blocks until Stop() is called.
@@ -1622,6 +1644,13 @@ func (h *LiveStreamSSEHub) handleRedisNotify(payload string) {
 		slog.Debug("live stream redis notify: invalid payload", "err", err.Error())
 		return
 	}
+	// Skip our own publishes: Publish() already enqueued the request locally
+	// before writing to Redis, so re-importing our own notify would double the
+	// child_request frames. Older payloads with no InstanceID and notifies from
+	// other instances are still processed.
+	if notify.InstanceID != "" && notify.InstanceID == h.instanceID {
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	req, err := h.store.LoadRequest(ctx, notify.TenantID, notify.RequestID)
 	cancel()
@@ -1649,7 +1678,7 @@ func (h *LiveStreamSSEHub) enqueueBroadcast(req LiveRequest) {
 func (h *LiveStreamSSEHub) Publish(req LiveRequest) {
 	if h.store != nil && h.cfg.RedisClient != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-		if err := h.store.Record(ctx, req); err != nil {
+		if err := h.store.Record(ctx, req, h.instanceID); err != nil {
 			slog.Debug("live stream redis record failed", "request_id", req.RequestID, "tenant_id", req.TenantID, "model", req.Model, "provider", req.ProviderCode, "err", err.Error())
 		}
 		cancel()
@@ -1658,7 +1687,7 @@ func (h *LiveStreamSSEHub) Publish(req LiveRequest) {
 	}
 	if h.store != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-		if err := h.store.Record(ctx, req); err != nil {
+		if err := h.store.Record(ctx, req, h.instanceID); err != nil {
 			slog.Debug("live stream redis record failed", "request_id", req.RequestID, "tenant_id", req.TenantID, "model", req.Model, "provider", req.ProviderCode, "err", err.Error())
 		}
 		cancel()

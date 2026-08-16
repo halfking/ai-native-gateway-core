@@ -77,10 +77,10 @@ func TestAdminLiveRequestFromEntry_StaleEventAtDoesNotMoveLaneBackward(t *testin
 	staleDone.ProviderCode = "openai"
 	ctx := context.Background()
 
-	if err := store.Record(ctx, start); err != nil {
+	if err := store.Record(ctx, start, ""); err != nil {
 		t.Fatalf("Record start: %v", err)
 	}
-	if err := store.Record(ctx, staleDone); err != nil {
+	if err := store.Record(ctx, staleDone, ""); err != nil {
 		t.Fatalf("Record staleDone: %v", err)
 	}
 
