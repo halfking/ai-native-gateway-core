@@ -67,7 +67,7 @@ func TestGoalHandoff_SavePendingFailureAbortsReservation(t *testing.T) {
 	}
 }
 
-func TestGoalHandoff_RestoreFailureIsRetryableAndTenantScoped(t *testing.T) {
+func TestGoalHandoff_RestoreFailureIsFailOpenAndTenantScoped(t *testing.T) {
 	goalStore := newMemoryGoalStore()
 	goalStore.sessions["gw_old"] = &goal.Session{
 		SessionID: "gw_old", TenantID: "tenant-a", State: goal.StateActive, OriginalGoal: "complete P0-D",
@@ -95,12 +95,16 @@ func TestGoalHandoff_RestoreFailureIsRetryableAndTenantScoped(t *testing.T) {
 		NewSessionID: "gw_new", TargetCreatedAt: time.Now().UTC(), IdempotencyKey: "0123456789abcdef",
 	}
 	first, err := hook.ConfirmRequest(context.Background(), input)
-	if !errors.Is(err, ErrGoalRestoreRetryable) || first == nil || !first.FirstConfirmation {
-		t.Fatalf("first restore must fail retryably after durable confirmation: result=%+v err=%v", first, err)
+	if err != nil || first == nil || !first.FirstConfirmation {
+		t.Fatalf("confirmation must remain successful after fail-open restore: result=%+v err=%v", first, err)
 	}
 	if trigger.Peek(proposal.ID, "tenant-a") == nil || trigger.Peek(proposal.ID, "tenant-b") != nil {
 		t.Fatal("failed restore must retain tenant-scoped state")
 	}
+	if serializer.calls != 1 || trigger.IsAcknowledged(proposal.ID, "tenant-a") {
+		t.Fatalf("failed restore must remain retryable in memory: calls=%d", serializer.calls)
+	}
+
 	second, err := hook.ConfirmRequest(context.Background(), input)
 	if err != nil || second == nil || second.FirstConfirmation {
 		t.Fatalf("idempotent retry did not restore: result=%+v err=%v", second, err)

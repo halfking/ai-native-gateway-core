@@ -36,6 +36,41 @@ func TestMemoryHandoffMessageBuilder_RedactsAndBounds(t *testing.T) {
 	}
 }
 
+func TestMemoryHandoffMessageBuilder_TruncatesWithoutMutatingInput(t *testing.T) {
+	builder := NewMemoryHandoffMessageBuilder(1024)
+	state := &GoalState{
+		Version:         GoalStateVersion,
+		SourceSessionID: "gw_old",
+		TaskDescription: strings.Repeat("task ", 400),
+		RemainingWork:   strings.Repeat("work ", 400),
+		CompletedSteps:  []string{"keep this in the source"},
+	}
+	originalTask := state.TaskDescription
+	originalRemaining := state.RemainingWork
+	message, err := builder.Build("gw_old", TriggerSignal{Kind: SignalGoalFailed, Severity: 4}, state, strings.Repeat("summary ", 400))
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(message)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(encoded) > 1024 || message.Summary != "" || len(message.GoalState.TaskDescription) > 512 || len(message.GoalState.RemainingWork) > 512 {
+		t.Fatalf("message was not reduced to the configured bound: bytes=%d message=%+v", len(encoded), message)
+	}
+	if state.TaskDescription != originalTask || state.RemainingWork != originalRemaining || len(state.CompletedSteps) != 1 {
+		t.Fatal("Build mutated the caller's GoalState")
+	}
+}
+
+func TestMemoryHandoffMessageBuilder_ReturnsErrorWhenBasePayloadExceedsLimit(t *testing.T) {
+	builder := NewMemoryHandoffMessageBuilder(64)
+	_, err := builder.Build("gw_old", TriggerSignal{Kind: SignalGoalFailed, Severity: 4}, nil, "")
+	if err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("expected bounded payload error, got %v", err)
+	}
+}
+
 func TestResumePacket_OmitsGoalHandoffForLegacyPayload(t *testing.T) {
 	encoded, err := json.Marshal(ResumePacket{
 		Version: 1, PreviousSession: "gw_old", TriggerReason: "manual", Summary: "summary", SkillName: "handoff",

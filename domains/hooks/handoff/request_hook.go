@@ -65,7 +65,10 @@ var skillNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
 var resumeSensitivePatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)(bearer\s+)[A-Za-z0-9._-]{12,}`),
 	regexp.MustCompile(`(?i)(sk-[A-Za-z0-9_-]{12,})`),
-	regexp.MustCompile(`(?i)((?:api[_-]?key|secret|token|password)\s*[:=]\s*)[^\s,;\"']{8,}`),
+	regexp.MustCompile(`\bgh[pousr]_[A-Za-z0-9]{20,}\b`),
+	regexp.MustCompile(`\bAKIA[0-9A-Z]{16}\b`),
+	regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b`),
+	regexp.MustCompile(`(?i)(["']?(?:api[_-]?key|secret|token|password|cookie)["']?\s*[:=]\s*["']?)[^\s,;"']{8,}`),
 	regexp.MustCompile(`(?s)(-----BEGIN [A-Z ]*PRIVATE KEY-----).*?(-----END [A-Z ]*PRIVATE KEY-----)`),
 }
 

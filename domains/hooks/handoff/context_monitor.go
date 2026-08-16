@@ -55,6 +55,8 @@ type MemoryContextMonitor struct {
 	now                 func() time.Time
 }
 
+// NewMemoryContextMonitor creates a stateless monitor with optional default
+// absolute and percentage thresholds. A per-snapshot non-zero threshold wins.
 func NewMemoryContextMonitor(absoluteThreshold int, percentageThreshold float64) *MemoryContextMonitor {
 	return &MemoryContextMonitor{
 		absoluteThreshold:   absoluteThreshold,
