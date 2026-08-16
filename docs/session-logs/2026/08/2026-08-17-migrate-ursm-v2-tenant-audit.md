@@ -101,3 +101,35 @@ HEAD            = origin/main = 4ce1eaebe
 | `domains/ursm/v2/recovery/manager.go` | `ValidateCoverage` 新 pending 阻挡逻辑 |
 | `docs/runbooks/ursm-v2-cutover.md` | 切换 runbook(221 行大改) |
 | `sql/schema/01-schema.sql:5793/9444` | `credentials` + `node_probe_state` 表结构 |
+
+## 续做阶段 (2026-08-17 continuation by handoff receiver)
+
+### 任务 1: TestMapRow_EmptyTenantFallsBackToDefault
+复查发现上一会话后又有调整, `domains/ursm/v2/store/keys.go:NodeKeyForTenant` 当 `tenant==""` 直接走 `NodeKey(prefix, cid, raw)` 走 legacy shape (`node:{cid}:{raw}`),已被 `TestMapRow_EmptyTenantFallsBackToLegacy` 覆盖。SQL 当前是 INNER JOIN,所以"空 TenantID"实际不会出现在 mapRow 输入中。无需新增测试。
+
+### 任务 2: Production-pre smoke (local Postgres + Redis)
+- 种子 4 行到 `public.node_probe_state` (含 healthy/in-cool/paused), `dry-run` 全量过滤返回 4 行 1+2+1,与种子一致。
+- 加 `-tenant-id=tenant-a` 过滤返回 2 行 1+1+0, 验证 `WHERE c.tenant_id = $1` 子句生效。
+- 已清理 4 行种子数据,Redis 未写入(`--apply` 未传)。
+
+### 任务 3: providers_refresh_test.go coverage
+覆盖率 (`go test -coverprofile`,admin 包):
+- `parseVendorModelsBody` ✅ **100.0%**
+- `mergeModelIDs` ✅ **100.0%**
+- `familyForProviderRefresh` ✅ **100.0%**
+- `resolveModelsEndpointURL` 🟡 77.8%
+- `resolveModelsForCredential` 🟡 55.2%
+- `discoverAndUpsertForCredential` / `VerifyAllCredentialModelFetches` ❌ 0% (e2e, 无测试夹具)
+
+新增 72 行测试目标函数全数 100% 覆盖 ✅。
+
+### 任务 4: Pending coverage marker 用真 Redis 验证
+无 staging 集群,本地 Redis db=2 注入 `ursm:v2:meta:coverage:pending`:
+
+| 场景 | 期望 | 实测 |
+|-----|------|------|
+| pending marker 已设置 | `coverage migration is still pending` | ✅ exit 1 |
+| 清除 pending 但 manifest 空 | `coverage manifest is empty` | ✅ exit 1 |
+| 清除 pending + manifest 一个 key | success count=1 | ✅ exit 0 |
+
+验证后清理所有 test keys,smoke 容器已删除。
