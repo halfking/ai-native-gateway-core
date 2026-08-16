@@ -2,6 +2,21 @@
 # Full verification on 245 after ops/blocklist deploy.
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VERSION_FILE="$SCRIPT_DIR/../../version.json"
+IFS=$'\t' read -r EXPECTED_BUILD_SEQ EXPECTED_GIT_SHA < <(
+  python3 - "$VERSION_FILE" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as version_file:
+    version = json.load(version_file)
+print(f"{version['build_seq']}\t{version['git_sha']}")
+PY
+)
+[[ "$EXPECTED_BUILD_SEQ" =~ ^[0-9]+$ ]] || { echo "invalid build_seq in $VERSION_FILE" >&2; exit 1; }
+[[ "$EXPECTED_GIT_SHA" =~ ^[0-9a-fA-F]+$ ]] || { echo "invalid git_sha in $VERSION_FILE" >&2; exit 1; }
+
 SSH_PORT="${LLM_GATEWAY_SSH_PORT:-25022}"
 SSH_KEY_FILE="${SSH_KEY_FILE:-}"
 for k in ~/.ssh/id_ed25519 ~/.ssh/56_id_rsa ~/.ssh/71_id_rsa; do
@@ -20,11 +35,14 @@ warn() { echo "  ⚠ $*"; WARN=$((WARN+1)); }
 
 echo "=== 245 完整验证 (ops + blocklist + board) ==="
 
-ssh "${SSH_OPTS[@]}" "$SSH_HOST" 'python3 -' <<'PY'
+ssh "${SSH_OPTS[@]}" "$SSH_HOST" \
+  "EXPECTED_BUILD_SEQ=$EXPECTED_BUILD_SEQ EXPECTED_GIT_SHA=$EXPECTED_GIT_SHA python3 -" <<'PY'
 import json, os, sys, time, urllib.request, urllib.error
 from pathlib import Path
 
 PASS=FAIL=WARN=0
+expected_build_seq = int(os.environ["EXPECTED_BUILD_SEQ"])
+expected_git_sha = os.environ["EXPECTED_GIT_SHA"]
 
 def ok(m):
     global PASS; PASS+=1; print("  ✓", m)
@@ -32,6 +50,12 @@ def fail(m):
     global FAIL; FAIL+=1; print("  ✗", m)
 def warn(m):
     global WARN; WARN+=1; print("  ⚠", m)
+
+def version_matches(version):
+    return (
+        version.get("build_seq") == expected_build_seq
+        and version.get("git_sha") == expected_git_sha
+    )
 
 def req(method, url, data=None, headers=None, timeout=20):
     h = headers or {}
@@ -64,7 +88,13 @@ else:
 st, raw = req("GET", base+"/api/system/version")
 if st == 200:
     ver = json.loads(raw)
-    ok(f"version build_seq={ver.get('build_seq')} sha={ver.get('git_sha')}")
+    if version_matches(ver):
+        ok(f"version build_seq={ver.get('build_seq')} sha={ver.get('git_sha')}")
+    else:
+        fail(
+            f"version mismatch: expected build_seq={expected_build_seq} sha={expected_git_sha}, "
+            f"got build_seq={ver.get('build_seq')} sha={ver.get('git_sha')}"
+        )
 else:
     fail(f"version HTTP {st}")
 

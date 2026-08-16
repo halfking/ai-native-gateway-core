@@ -7,28 +7,39 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestCandidateDiagnosticMetricUsesOnlyWhitelistedEvents(t *testing.T) {
-	allowedEvents := []string{
-		"db_empty",
-		"db_empty_fallback",
-		"cache_empty",
-		"db_unavailable",
-		"stale_cache_empty",
-		"enrich_empty",
-		"db_query_retry",
-		"other",
-	}
-	allowedEventSet := make(map[string]struct{}, len(allowedEvents))
-	for _, event := range allowedEvents {
+func TestCandidateDiagnosticMetricInitializesAndUsesOnlyWhitelistedEvents(t *testing.T) {
+	allowedEventSet := make(map[string]struct{}, len(candidateDiagnosticEvents))
+	for _, event := range candidateDiagnosticEvents {
 		allowedEventSet[event] = struct{}{}
 	}
 
 	candidateDiagnosticMetrics.Reset()
-	for _, event := range allowedEvents {
+	initializeCandidateDiagnosticMetrics()
+
+	observed := gatherCandidateDiagnosticMetrics(t, allowedEventSet)
+	require.Len(t, observed, len(candidateDiagnosticEvents))
+	for _, event := range candidateDiagnosticEvents {
+		require.Contains(t, observed, event, "whitelisted event %q should be observable", event)
+		require.Zero(t, observed[event], "whitelisted event %q should start at zero", event)
+	}
+
+	for _, event := range candidateDiagnosticEvents {
 		recordCandidateDiagnostic(event)
 	}
 	recordCandidateDiagnostic("unbounded-event-value")
 
+	observed = gatherCandidateDiagnosticMetrics(t, allowedEventSet)
+	for _, event := range candidateDiagnosticEvents {
+		expected := 1.0
+		if event == "other" {
+			expected = 2.0
+		}
+		require.Equal(t, expected, observed[event], "unexpected count for event %q", event)
+	}
+}
+
+func gatherCandidateDiagnosticMetrics(t *testing.T, allowedEventSet map[string]struct{}) map[string]float64 {
+	t.Helper()
 	mfs, err := prometheus.DefaultGatherer.Gather()
 	require.NoError(t, err)
 
@@ -50,8 +61,5 @@ func TestCandidateDiagnosticMetricUsesOnlyWhitelistedEvents(t *testing.T) {
 	}
 
 	require.True(t, found, "candidate diagnostic metric should be registered")
-	for _, event := range allowedEvents {
-		require.Contains(t, observed, event, "whitelisted event %q should be observable", event)
-	}
-	require.Equal(t, 2.0, observed["other"], "unknown events should be collapsed into other")
+	return observed
 }
