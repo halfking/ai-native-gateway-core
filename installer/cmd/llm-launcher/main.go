@@ -22,6 +22,8 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -32,6 +34,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/installer/internal/launcher/orchestrator"
 	"github.com/kaixuan/llm-gateway-go/installer/internal/launcher/proxy"
 	"github.com/kaixuan/llm-gateway-go/installer/internal/launcher/store"
+	"github.com/kaixuan/llm-gateway-go/installer/internal/upgrader"
 )
 
 // gatewayMigrator implements orchestrator.Migrator by shelling out to
@@ -218,6 +221,14 @@ func (d *daemon) restoreInProgressPlan() {
 	}
 }
 
+func deviceProofFromEnvironment() upgrader.DeviceProof {
+	return upgrader.DeviceProof{
+		InstanceID:   strings.TrimSpace(os.Getenv("INSTANCE_ID")),
+		LicenseKey:   strings.TrimSpace(os.Getenv("LICENSE_KEY")),
+		HardwareHash: strings.TrimSpace(os.Getenv("HARDWARE_HASH")),
+	}
+}
+
 func main() {
 	var (
 		listen        = flag.String("listen", ":8781", "listen address (client-facing)")
@@ -272,7 +283,7 @@ func main() {
 
 	// Backend (compose only for MVP).
 	bk := backend.NewComposeBackend(backend.ComposeConfig{
-		ProjectDir: filepath.Join(*dataDir, "compose"),
+		ProjectDir:    filepath.Join(*dataDir, "compose"),
 		GreenPortBase: 8783,
 		// EnvFile lets the green container inherit DATABASE_URL/REDIS/secrets
 		// from the same env file blue uses. Without it, green starts with no
@@ -363,6 +374,7 @@ func main() {
 	// Checker: poll master, on new version build NOTIFIED plan (never auto-apply).
 	// CurrentVersion is a provider so the checker compares against the live
 	// post-Apply version, not the startup value (audit C9).
+	proof := deviceProofFromEnvironment()
 	d.checker = checker.New(checker.Config{
 		CurrentVersion: d.getCurrentVersion,
 		MasterURL:      *masterURL,
@@ -372,7 +384,11 @@ func main() {
 			MasterURL:      *masterURL,
 			CurrentVersion: d.getCurrentVersion,
 			Channel:        *channel,
+			Platform:       runtime.GOOS,
+			Arch:           runtime.GOARCH,
+			Proof:          proof,
 		},
+
 		OnUpdate: func(r *checker.FoundRelease) {
 			// I1 dedup: if there's already a non-terminal plan targeting the
 			// same version, don't create a duplicate. Otherwise over a weekend
