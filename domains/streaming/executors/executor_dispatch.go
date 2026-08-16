@@ -498,7 +498,11 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 	}
 	kind := e.recordDispatchError(params, cand, execErr, probeConsumed, len(dctx.candidates))
 	dctx.appendOutcome(dispatchRequestOutcome{candidate: cand, errorKind: kind})
-	return dispatch.ForwardOutcome{Err: execErr, BytesSent: bytesSent}
+	return dispatch.ForwardOutcome{
+		Err:             execErr,
+		BytesSent:       bytesSent,
+		FatalCredential: errorsx.IsCredentialFatal(kind),
+	}
 }
 
 // recordDispatchSuccess applies the routing-critical success side-effects

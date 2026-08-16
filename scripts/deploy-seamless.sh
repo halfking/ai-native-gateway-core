@@ -143,6 +143,44 @@ _env_file_for_target() {
   esac
 }
 
+# 确认 current、systemd MainPID 和运行二进制都属于目标 release。
+_verify_running_release() {
+  local expected_version=$1
+  remote_ssh "ROOT='$REMOTE_ROOT' SERVICE='$SERVICE_NAME' EXPECTED_VERSION='$expected_version' python3 - <<'PYVERIFY'
+import hashlib
+import os
+import subprocess
+
+root = os.environ['ROOT']
+service = os.environ['SERVICE']
+expected = os.path.realpath(os.path.join(root, 'releases', os.environ['EXPECTED_VERSION']))
+current = os.path.realpath(os.path.join(root, 'current'))
+if current != expected:
+    raise SystemExit(f'current mismatch: {current} != {expected}')
+pid = subprocess.check_output(
+    ['systemctl', 'show', service, '--property=MainPID', '--value'],
+    text=True,
+).strip()
+if not pid or pid == '0':
+    raise SystemExit('systemd MainPID is not running')
+running = os.path.realpath('/proc/%s/exe' % pid)
+binary_name = os.path.basename(running)
+expected_binary = os.path.join(expected, binary_name)
+if not os.path.isfile(expected_binary):
+    raise SystemExit(f'expected release binary missing: {expected_binary}')
+if running != os.path.realpath(expected_binary):
+    raise SystemExit(f'running executable mismatch: {running} != {expected_binary}')
+def digest(path):
+    value = hashlib.sha256()
+    with open(path, 'rb') as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b''):
+            value.update(block)
+    return value.hexdigest()
+if digest('/proc/%s/exe' % pid) != digest(expected_binary):
+    raise SystemExit('running executable checksum mismatch')
+PYVERIFY"
+}
+
 # healthz 或 DB 校验失败时回滚到上一个 verified 版本
 _seamless_auto_rollback() {
   local reason=$1 failed_version=$2
@@ -151,11 +189,15 @@ _seamless_auto_rollback() {
   prev=$(host_select_rollback_target "$SSH_CMD" "$TARGET" "$failed_version" 2>/dev/null || true)
   if [[ -n "$prev" ]]; then
     warn "回滚到 releases/$prev"
-    host_atomic_switch "$SSH_CMD" "$TARGET" "$prev" 2>&1 | sed 's/^/    /' || true
+    if ! host_atomic_switch "$SSH_CMD" "$TARGET" "$prev" 2>&1 | sed 's/^/    /'; then
+      err "回滚切换或 restart 失败"
+      return 1
+    fi
     # 2026-07-27: 30s → 90s,与主 deploy 流程一致(回滚后 ApplyMigrations 仍需 ~30s+)
     if host_wait_healthy "$SSH_CMD" "$TARGET" 90 2>&1 \
-      && deploy_verify_gateway_ready "$SSH_CMD" "$SERVICE_NAME" 8781 90 "$(_env_file_for_target)"; then
-      ok "已回滚到 $prev (healthz + DB OK)"
+      && _verify_running_release "$prev" \
+      && deploy_preflight_pg_from_remote_env "$SSH_CMD" "$(_env_file_for_target)"; then
+      ok "已回滚到 $prev (healthz + running release + PG OK)"
       return 0
     fi
     err "回滚后 healthz/DB 仍失败!"
@@ -399,59 +441,35 @@ do_deploy() {
   ok "符号链接已切换 (${switch_elapsed}s 含 restart)"
 
   # 9. wait healthy + DB ready (失败自动回滚)
-  # 2026-07-27: healthz 超时 30s → 90s。ApplyMigrations 在 252 PG 锁竞争 / 慢盘
-  # 下可达 60-90s (cmd/gateway/main.go:db.Open → db.ApplyMigrations),30s 必超时
-  # 误判失败,导致自动回滚到 verified 版本时再次超时(同 PG 状态)。
-  # 90s 与 deploy_verify_gateway_ready 90s、rollback 60s 顶部对齐。
-  log "[9/9] 验证 /healthz + DB (healthz 90s, DB 90s)"
-  if host_wait_healthy "$SSH_CMD" "$TARGET" 90 2>&1; then
-    if deploy_verify_gateway_ready "$SSH_CMD" "$SERVICE_NAME" 8781 90 "$(_env_file_for_target)"; then
-      local expected_sha
-      expected_sha=$(python3 -c "import json;print(json.load(open('version.json'))['git_sha'])")
-      if ! remote_ssh "EXPECTED_VERSION='$version' EXPECTED_SEQ='$seq_val' EXPECTED_SHA='$expected_sha' ROOT='$REMOTE_ROOT' python3 - <<'PYVERIFY'
-import json
-import os
-import urllib.request
-
-current = os.path.realpath(os.path.join(os.environ['ROOT'], 'current'))
-expected = os.path.realpath(os.path.join(os.environ['ROOT'], 'releases', os.environ['EXPECTED_VERSION']))
-if current != expected:
-    raise SystemExit(f'current mismatch: {current} != {expected}')
-with urllib.request.urlopen('http://127.0.0.1:8781/api/system/version', timeout=5) as response:
-    version = json.load(response)
-if str(version.get('build_seq')) != os.environ['EXPECTED_SEQ']:
-    raise SystemExit('build_seq mismatch: %s' % version.get('build_seq'))
-actual_sha = str(version.get('git_sha') or '')
-expected_sha = os.environ['EXPECTED_SHA']
-if not actual_sha.startswith(expected_sha[:8]):
-    raise SystemExit(f'git_sha mismatch: {actual_sha} != {expected_sha}')
-PYVERIFY"; then
-        _seamless_auto_rollback "运行版本与 release bundle 不一致" "$version" || true
-        exit 1
-      fi
-      if ! host_mark_verified "$SSH_CMD" "$TARGET" "$version" 2>&1 | sed 's/^/    /'; then
-        _seamless_auto_rollback "标记 release verified 失败" "$version" || true
-        exit 1
-      fi
-      ok "healthz + DB + release identity 通过，标记 verified"
-    else
-      _seamless_auto_rollback "DB 未就绪 (database not configured 风险)" "$version" || true
-      exit 1
-    fi
-  else
+  # 先等进程健康，再同步 admin 密码，随后使用 JWT 访问真正触及 DB 的端点。
+  log "[9/9] 验证 /healthz + DB + release identity"
+  if ! host_wait_healthy "$SSH_CMD" "$TARGET" 90 2>&1; then
     _seamless_auto_rollback "healthz 超时" "$version" || true
     exit 1
   fi
 
-  # 9.5 可选：同步 env admin 密码到 users 表（避免 JWT 与 env 漂移）
   if [[ "${DEPLOY_SYNC_ADMIN_PASSWORD:-true}" == "true" ]]; then
-    log "[9.5/9] 同步 admin 密码 (env → users)"
-    if bash "$SCRIPT_DIR/ops/sync-admin-password-from-env.sh" "$TARGET"; then
-      ok "admin 密码已同步"
-    else
-      warn "admin 密码同步失败（不影响部署，可手动: bash scripts/ops/sync-admin-password-from-env.sh ${TARGET}）"
+    log "[9.1/9] 同步 admin 密码 (env → users)"
+    if ! bash "$SCRIPT_DIR/ops/sync-admin-password-from-env.sh" "$TARGET"; then
+      _seamless_auto_rollback "admin 密码同步或登录验证失败" "$version" || true
+      exit 1
     fi
+    ok "admin 密码已同步"
   fi
+
+  if ! deploy_verify_gateway_ready "$SSH_CMD" "$SERVICE_NAME" 8781 90 "$(_env_file_for_target)"; then
+    _seamless_auto_rollback "DB 未就绪 (database not configured 风险)" "$version" || true
+    exit 1
+  fi
+  if ! _verify_running_release "$version"; then
+    _seamless_auto_rollback "运行二进制与 release bundle 不一致" "$version" || true
+    exit 1
+  fi
+  if ! host_mark_verified "$SSH_CMD" "$TARGET" "$version" 2>&1 | sed 's/^/    /'; then
+    _seamless_auto_rollback "标记 release verified 失败" "$version" || true
+    exit 1
+  fi
+  ok "healthz + DB + running release 通过，标记 verified"
 
   # 9.6 安装日志轮转配置 (按 systemd unit 模式自动分支)
   # 必做：服务已 healthz OK，再装轮转即便失败也不影响 deploy。
@@ -565,8 +583,9 @@ do_rollback() {
     exit 1
   fi
   if host_wait_healthy "$SSH_CMD" "$TARGET" 60 2>&1 \
-    && deploy_verify_gateway_ready "$SSH_CMD" "$SERVICE_NAME" 8781 90 "$(_env_file_for_target)"; then
-    ok "回滚完成 → $target_version (healthz + DB OK)"
+    && _verify_running_release "$target_version" \
+    && deploy_preflight_pg_from_remote_env "$SSH_CMD" "$(_env_file_for_target)"; then
+    ok "回滚完成 → $target_version (healthz + running release + PG OK)"
     $SSH_CMD "curl -fsS '$HEALTH_URL' >/dev/null && echo '  healthz OK'" 2>/dev/null || true
   else
     err "回滚后 healthz/DB 失败! 手动检查"

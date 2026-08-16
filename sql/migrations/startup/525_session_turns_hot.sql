@@ -632,16 +632,24 @@ BEGIN
         RAISE EXCEPTION 'session_turns_with_current_month must use security_invoker=true';
     END IF;
 
-    IF NOT EXISTS (
+    IF EXISTS (
         SELECT 1
-        FROM pg_policies
-        WHERE schemaname = 'public'
-          AND tablename = 'session_turns_hot'
-          AND policyname = 'session_turns_hot_owner_filter'
-          AND qual::TEXT ~ 'request_logs_hot'
-          AND qual::TEXT ~ 'request_logs([^_[:alnum:]]|$)'
+        FROM (VALUES
+            ('session_turns', 'session_turns_owner_filter'),
+            ('session_turns_hot', 'session_turns_hot_owner_filter')
+        ) expected(table_name, policy_name)
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM pg_policies p
+            WHERE p.schemaname = 'public'
+              AND p.tablename = expected.table_name
+              AND p.policyname = expected.policy_name
+              AND p.permissive = 'RESTRICTIVE'
+              AND p.qual::TEXT ~ 'request_logs_hot'
+              AND p.qual::TEXT ~ 'request_logs([^_[:alnum:]]|$)'
+        )
     ) THEN
-        RAISE EXCEPTION 'hot owner filter must inspect request_logs_hot and request_logs';
+        RAISE EXCEPTION 'parent and hot owner filters must be restrictive and inspect both request log stores';
     END IF;
 END $$;
 

@@ -135,7 +135,7 @@ func (cf *credForwarder) acquire(qr *QueuedRequest) bool {
 			qr.CredRetryCount = maxRetryBudget
 		}
 		metricOverflow.WithLabelValues("pace_timeout").Inc()
-		cf.pipe.routeFailover(qr, err)
+		cf.pipe.routeFailover(qr, err, false)
 		return false
 	}
 
@@ -205,5 +205,5 @@ func (cf *credForwarder) attempt(qr *QueuedRequest) {
 		return
 	}
 	metricForwarded.WithLabelValues(itoa(cf.cred.CredentialID), "fail_prefirstbyte").Inc()
-	cf.pipe.routeFailover(qr, out.Err)
+	cf.pipe.routeFailover(qr, out.Err, out.FatalCredential)
 }

@@ -13,6 +13,7 @@ DECLARE
     v_view_columns TEXT[];
     v_moved BIGINT;
     v_hot_id BIGINT;
+    v_followup_hot_id BIGINT;
     v_rejected BOOLEAN;
 BEGIN
     IF current_setting('server_version_num')::integer < 150000 THEN
@@ -294,18 +295,45 @@ BEGIN
         'full', 'live', 'verified'
     ) RETURNING id INTO v_hot_id;
 
-    BEGIN
-        PERFORM public.promote_session_turns_hot_to_partition(INTERVAL '7 days', 1);
-        RAISE EXCEPTION '525: expected parent uniqueness conflict';
-    EXCEPTION WHEN unique_violation THEN
-        NULL;
-    END;
+    INSERT INTO public.session_turns_hot (
+        id, session_id, turn_no, tenant_id, request_id,
+        ts, partition_date, submit_mode, source_kind, quality
+    ) VALUES (
+        -9223372036854770525,
+        'test-525-session-followup', 4,
+        'test-525-tenant', 'test-525-promote-followup',
+        '-infinity'::TIMESTAMPTZ, CURRENT_DATE,
+        'full', 'live', 'verified'
+    ) RETURNING id INTO v_followup_hot_id;
 
+    SELECT public.promote_session_turns_hot_to_partition(INTERVAL '7 days', 1)
+    INTO v_moved;
+
+    IF v_moved <> 1 THEN
+        RAISE EXCEPTION '525: duplicate poison row blocked follow-up promote';
+    END IF;
     IF NOT EXISTS (
         SELECT 1 FROM public.session_turns_hot
         WHERE id = v_hot_id AND partition_date = CURRENT_DATE
     ) THEN
-        RAISE EXCEPTION '525: atomic promote lost hot row after insert failure';
+        RAISE EXCEPTION '525: duplicate hot row must remain for explicit reconciliation';
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM public.session_turns_hot
+        WHERE id = v_followup_hot_id AND partition_date = CURRENT_DATE
+    ) OR NOT EXISTS (
+        SELECT 1 FROM public.session_turns
+        WHERE id = v_followup_hot_id AND partition_date = CURRENT_DATE
+    ) THEN
+        RAISE EXCEPTION '525: normal follow-up row was not promoted past duplicate';
+    END IF;
+    IF (
+        SELECT count(*)
+        FROM public.session_turns_with_current_month
+        WHERE tenant_id = 'test-525-tenant'
+          AND request_id = 'test-525-promote-conflict'
+    ) <> 1 THEN
+        RAISE EXCEPTION '525: unified view exposed both hot and archived duplicates';
     END IF;
 
     DELETE FROM public.session_turns_hot
@@ -315,5 +343,83 @@ BEGIN
     WHERE tenant_id = 'test-525-tenant'
       AND request_id LIKE 'test-525-%';
 END $$;
+
+-- Exercise the security-invoker view as a real NOBYPASSRLS non-owner role.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'session_turns_rls_test') THEN
+        CREATE ROLE session_turns_rls_test NOLOGIN NOBYPASSRLS;
+    END IF;
+END $$;
+
+GRANT USAGE ON SCHEMA public TO session_turns_rls_test;
+GRANT SELECT ON public.session_turns, public.session_turns_hot,
+    public.session_turns_with_current_month,
+    public.request_logs, public.request_logs_hot
+TO session_turns_rls_test;
+
+INSERT INTO public.request_logs_hot (gw_session_id, owner_user, ts)
+VALUES ('test-525-rls-parent', 'owner-525', NOW() - INTERVAL '2 hours');
+INSERT INTO public.request_logs (gw_session_id, owner_user, ts)
+VALUES ('test-525-rls-hot', 'owner-525', NOW() - INTERVAL '1 hour');
+INSERT INTO public.session_turns (
+    session_id, turn_no, tenant_id, request_id, ts, partition_date
+) VALUES (
+    'test-525-rls-parent', 1, 'test-525-rls-tenant',
+    'test-525-rls-parent-request', NOW(), CURRENT_DATE
+);
+INSERT INTO public.session_turns_hot (
+    session_id, turn_no, tenant_id, request_id, ts, partition_date
+) VALUES (
+    'test-525-rls-hot', 1, 'test-525-rls-tenant',
+    'test-525-rls-hot-request', NOW(), CURRENT_DATE
+);
+
+SET ROLE session_turns_rls_test;
+SELECT set_config('app.current_tenant', 'test-525-rls-tenant', false);
+SELECT set_config('app.current_role', 'tenant_admin', false);
+SELECT set_config('app.bypass_rls', 'false', false);
+SELECT set_config('app.current_user', 'owner-525', false);
+DO $$
+BEGIN
+    IF (SELECT count(*) FROM public.session_turns_with_current_month
+        WHERE tenant_id = 'test-525-rls-tenant') <> 2 THEN
+        RAISE EXCEPTION '525: owner cannot see both hot and parent rows through security-invoker view';
+    END IF;
+END $$;
+
+SELECT set_config('app.current_user', 'stranger-525', false);
+DO $$
+BEGIN
+    IF (SELECT count(*) FROM public.session_turns_with_current_month
+        WHERE tenant_id = 'test-525-rls-tenant') <> 0 THEN
+        RAISE EXCEPTION '525: non-owner can see rows through security-invoker view';
+    END IF;
+END $$;
+
+SELECT set_config('app.current_role', 'super_admin', false);
+DO $$
+BEGIN
+    IF (SELECT count(*) FROM public.session_turns_with_current_month
+        WHERE tenant_id = 'test-525-rls-tenant') <> 2 THEN
+        RAISE EXCEPTION '525: super_admin cannot see both hot and parent rows';
+    END IF;
+END $$;
+RESET ROLE;
+
+DELETE FROM public.session_turns_hot
+WHERE tenant_id = 'test-525-rls-tenant';
+DELETE FROM public.session_turns
+WHERE tenant_id = 'test-525-rls-tenant';
+DELETE FROM public.request_logs_hot
+WHERE gw_session_id IN ('test-525-rls-parent', 'test-525-rls-hot');
+DELETE FROM public.request_logs
+WHERE gw_session_id IN ('test-525-rls-parent', 'test-525-rls-hot');
+REVOKE ALL ON public.session_turns, public.session_turns_hot,
+    public.session_turns_with_current_month,
+    public.request_logs, public.request_logs_hot
+FROM session_turns_rls_test;
+REVOKE USAGE ON SCHEMA public FROM session_turns_rls_test;
+DROP ROLE session_turns_rls_test;
 
 SELECT '524/525: all checks passed' AS result;
