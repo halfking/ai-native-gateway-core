@@ -464,8 +464,13 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 			bytesSent = true
 		}
 	}
+	kind := classifyExecError(execErr)
 	e.recordDispatchError(params, cand, execErr, probeConsumed, len(dctx.candidates))
-	return dispatch.ForwardOutcome{Err: execErr, BytesSent: bytesSent}
+	return dispatch.ForwardOutcome{
+		Err:             execErr,
+		BytesSent:       bytesSent,
+		FatalCredential: errorsx.IsCredentialFatal(kind),
+	}
 }
 
 // recordDispatchSuccess applies the routing-critical success side-effects

@@ -932,6 +932,79 @@ func TestRetryBudgetRequestOverride(t *testing.T) {
 	}
 }
 
+// TestSkipSameCredRetryOnCredentialFatal: when the forward outcome marks the
+// failure as credential-fatal (quota exhausted / auth revoked), the mover must
+// skip the same-credential retry ladder and switch to a healthy sibling
+// immediately. Retry-while-quota-dead was the root cause of incident
+// afd75c81… (claude-opus-5 retried the exhausted credential 34 instead of
+// switching to the healthy credential 17). The control case (RetryPerCredential
+// left at the global default for a non-fatal error) confirms same-credential
+// retry still happens for transient errors, so the new branch is scoped to
+// fatal kinds only.
+func TestSkipSameCredRetryOnCredentialFatal(t *testing.T) {
+	// ── Fatal case: cred1 returns quota-exhausted + FatalCredential → switch ──
+	f := &fakeDeps{
+		refsByModel: map[string][]CredentialRef{"m": {
+			cred(1, ModeConcurrency, 5),
+			cred(2, ModeConcurrency, 5),
+		}},
+		forwardFn: func(ctx context.Context, qr *QueuedRequest, c CredentialRef) ForwardOutcome {
+			if c.CredentialID == 1 {
+				return ForwardOutcome{Err: errors.New("usage limit exceeded"), FatalCredential: true}
+			}
+			return ForwardOutcome{}
+		},
+		forwardCalls: map[int]int{},
+	}
+	p := f.pipeline()
+	p.Start()
+	defer p.Stop()
+
+	qr := NewQueuedRequest("r1", "t", "m", context.Background(), nil)
+	// Global default RetryPerCredential is > 0, so without the fatal guard cred1
+	// would be retried. Confirm the fatal flag overrides the budget.
+	res, err := p.Submit(context.Background(), qr)
+	if err != nil {
+		t.Fatalf("expected switch to cred2 success, got: %v", err)
+	}
+	if res != "ok:cred2:call1" {
+		t.Fatalf("expected cred2 to serve on first attempt, got: %v", res)
+	}
+	if got := f.forwardCalls[1]; got != 1 {
+		t.Fatalf("cred1 must be tried exactly once (no same-cred retry on fatal); calls=%d", got)
+	}
+	if got := f.forwardCalls[2]; got != 1 {
+		t.Fatalf("cred2 must be tried exactly once; calls=%d", got)
+	}
+
+	// ── Control: non-fatal transient still retries same credential ──
+	ctrl := &fakeDeps{
+		refsByModel: map[string][]CredentialRef{"m": {
+			cred(1, ModeConcurrency, 5),
+			cred(2, ModeConcurrency, 5),
+		}},
+		forwardFn: func(ctx context.Context, qr *QueuedRequest, c CredentialRef) ForwardOutcome {
+			if c.CredentialID == 1 {
+				return ForwardOutcome{Err: errors.New("transient 5xx")} // FatalCredential=false (zero value)
+			}
+			return ForwardOutcome{}
+		},
+		forwardCalls: map[int]int{},
+	}
+	cp := ctrl.pipeline()
+	cp.Start()
+	defer cp.Stop()
+	cqr := NewQueuedRequest("r2", "t", "m", context.Background(), nil)
+	cqr.RetryPerCredential = 2 // allow up to 2 same-credential retries
+	if _, err := cp.Submit(context.Background(), cqr); err != nil {
+		t.Fatalf("control case expected success after retry, got: %v", err)
+	}
+	// cred1 must be retried (call count > 1) before switching to cred2.
+	if got := ctrl.forwardCalls[1]; got < 2 {
+		t.Fatalf("control: non-fatal error must still retry cred1; calls=%d", got)
+	}
+}
+
 // TestTier2StopDrainsQueuedRequests is the Tier-2 analogue of
 // TestStopNoDrainLoss. A request sits in the credential forwarder's Tier-2
 // queue (governor pacing wait) when Stop() fires. Under the bug the
