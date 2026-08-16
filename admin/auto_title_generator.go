@@ -35,8 +35,9 @@ const (
 // AutoTitleGenerator handles automatic session title generation.
 // It runs asynchronously after the first request in a session completes.
 type AutoTitleGenerator struct {
-	handler *Handler
-	enabled bool
+	handler        *Handler
+	enabled        bool
+	firstTurnCheck func(sessionID, tenantID, requestID string) bool
 }
 
 // NewAutoTitleGenerator creates a new auto title generator.
@@ -47,8 +48,9 @@ func NewAutoTitleGenerator(handler *Handler) *AutoTitleGenerator {
 	}
 }
 
-// MaybeGenerateTitle checks if a session needs a title and generates one.
-// Called asynchronously after the first request in a session completes.
+// MaybeGenerateTitle checks whether this completed request is the first
+// successful user turn in its session before generating a title. Continuing
+// sessions keep their existing title until a summary refreshes it.
 // requestBody is the full (redacted) inbound request body JSON — used to
 // extract the actual user message for title generation. requestPreview is the
 // 320-byte summary used as fallback.
@@ -63,13 +65,52 @@ func NewAutoTitleGenerator(handler *Handler) *AutoTitleGenerator {
 // list show no titles. Empty taskID falls back to 'auto' to keep the legacy
 // marker for any caller that cannot resolve a real task.
 // This function is fire-and-forget and will not block the main request path.
-func (g *AutoTitleGenerator) MaybeGenerateTitle(sessionID, tenantID, taskID, requestBody, requestPreview, parentRequestID string) {
+func (g *AutoTitleGenerator) MaybeGenerateTitle(sessionID, tenantID, taskID, requestBody, requestPreview, parentRequestID, requestID string) {
 	if !g.enabled || g.handler == nil || g.handler.db == nil {
+		return
+	}
+	if strings.TrimSpace(sessionID) == "" || !g.isFirstSuccessfulUserTurn(sessionID, tenantID, requestID) {
 		return
 	}
 
 	// Run in a separate goroutine to avoid blocking
 	go g.generateTitleAsync(sessionID, tenantID, taskID, requestBody, requestPreview, parentRequestID)
+}
+
+// isFirstSuccessfulUserTurn determines title eligibility from persisted
+// session history. A completed request is eligible when there is no earlier
+// successful non-internal request in the same session. Excluding the current
+// request keeps this check reliable even when request-log persistence lags the
+// telemetry callback. The session_titles conflict guard still makes concurrent
+// first-turn attempts idempotent.
+func (g *AutoTitleGenerator) isFirstSuccessfulUserTurn(sessionID, tenantID, requestID string) bool {
+	if g.firstTurnCheck != nil {
+		return g.firstTurnCheck(sessionID, tenantID, requestID)
+	}
+	if strings.TrimSpace(requestID) == "" {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	var hasPrior bool
+	err := g.handler.db.QueryRow(ctx, `
+		SELECT EXISTS(
+			SELECT 1
+			FROM request_logs_with_current_month
+			WHERE gw_session_id = $1
+			  AND tenant_id = $2
+			  AND success = TRUE
+			  AND COALESCE(is_auto_request, FALSE) = FALSE
+			  AND request_id <> $3
+		)
+	`, sessionID, tenantID, requestID).Scan(&hasPrior)
+	if err != nil {
+		slog.Warn("auto_title: first-turn check unavailable; skipping title generation",
+			"session_id", sessionID, "tenant_id", tenantID, "request_id", requestID, "error", err)
+		return false
+	}
+	return !hasPrior
 }
 
 func (g *AutoTitleGenerator) generateTitleAsync(sessionID, tenantID, taskID, requestBody, requestPreview, parentRequestID string) {
@@ -284,7 +325,7 @@ func extractMessagesForTitle(requestBody string) string {
 	}
 	const maxPerMsg = 1200  // chars per message (was 500 — bumped 2026-08-06)
 	const maxTotal = 6000   // total chars cap (was 3000)
-	const maxMsgs = 10      // at most first 10 messages (was 6)
+	const maxMsgs = 10      // semantic messages, excluding tool/function traffic
 	const maxSysChars = 800 // long system messages (IDE tool descriptions) get truncated at this length
 	const sysSnippet = 300  // how much of a long system message to keep
 
@@ -304,17 +345,23 @@ func extractMessagesForTitle(requestBody string) string {
 	}
 
 	var parts []string
-	for i, msg := range parsed.Messages {
-		if i >= maxMsgs {
-			break
-		}
+	semanticMessages := 0
+	for _, msg := range parsed.Messages {
 		role := strings.TrimSpace(msg.Role)
-		text := strings.Join(strings.Fields(contentToString(msg.Content)), " ") // collapse whitespace
-		if text == "" {
+		// Tool/function records contain implementation output, not the user's
+		// intent. Exclude them before counting the corpus budget so tool-heavy
+		// turns cannot crowd out later conversation messages.
+		if role == "tool" || role == "function" {
 			continue
 		}
-		// Skip tool/function messages - they contain output data, not user intent
-		if role == "tool" || role == "function" {
+		if role != "user" && role != "assistant" && role != "system" {
+			continue
+		}
+		if semanticMessages >= maxMsgs {
+			break
+		}
+		text := strings.Join(strings.Fields(contentToString(msg.Content)), " ") // collapse whitespace
+		if text == "" {
 			continue
 		}
 		// Long system prompts (IDE tool descriptions) are usually boilerplate;
@@ -326,6 +373,7 @@ func extractMessagesForTitle(requestBody string) string {
 			text = text[:maxPerMsg] + "…"
 		}
 		parts = append(parts, role+": "+text)
+		semanticMessages++
 	}
 	// Truncate the prefix loop's joined output to maxTotal so a long IDE
 	// system prompt doesn't crowd out the preserved user message below.

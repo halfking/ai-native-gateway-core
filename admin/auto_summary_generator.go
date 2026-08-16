@@ -340,9 +340,26 @@ func (g *AutoSummaryGenerator) runSummaryAsync(sessionID, tenantID, requestBody,
 			"session_id", sessionID,
 			"tenant_id", tenantID)
 	}
+	canonicalTitle := normalizeSessionTitle(title)
+	if !isValidSessionTitle(canonicalTitle) {
+		metrics.AutoSummaryTrigger.WithLabelValues("title_invalid").Inc()
+		logger.Warn("auto_summary: summary persisted but generated title was invalid", "title", title)
+		return
+	}
+	taskID, err := g.handler.resolveSessionTitleTaskID(ctx, sessionID, tenantID)
+	if err != nil {
+		metrics.AutoSummaryTrigger.WithLabelValues("title_scope_error").Inc()
+		logger.Error("auto_summary: summary persisted but title task lookup failed", "error", err)
+		return
+	}
+	if err := g.handler.upsertSessionTitle(ctx, taskID, sessionID, canonicalTitle, "auto-summary:"+model, 0); err != nil {
+		metrics.AutoSummaryTrigger.WithLabelValues("title_sync_error").Inc()
+		logger.Error("auto_summary: summary persisted but canonical title sync failed", "error", err)
+		return
+	}
 	metrics.AutoSummaryTrigger.WithLabelValues("ok").Inc()
 	logger.Info("auto_summary saved",
-		"title", title,
+		"title", canonicalTitle,
 		"summary_len", len(summary),
 		"model", model)
 }
@@ -350,10 +367,10 @@ func (g *AutoSummaryGenerator) runSummaryAsync(sessionID, tenantID, requestBody,
 // shouldTriggerSummary returns whether to run the summary LLM this turn.
 // It implements the incremental-rolling gate with a minimum session length
 // requirement:
-//   1. Session must have at least minimumTurns() successful turns (default 5)
-//   2. If never summarized before, allow (satisfies rule 1)
-//   3. If summarized before, only re-run when ≥ rollingTurnGate() new turns
-//      have been recorded since the previous summary (default 3)
+//  1. Session must have at least minimumTurns() successful turns (default 5)
+//  2. If never summarized before, allow (satisfies rule 1)
+//  3. If summarized before, only re-run when ≥ rollingTurnGate() new turns
+//     have been recorded since the previous summary (default 3)
 //
 // 2026-08-06 audit fix: added rule 1 to enforce the requirement that summaries
 // should only be generated for sessions with at least 5 turns. This prevents
@@ -362,8 +379,8 @@ func (g *AutoSummaryGenerator) runSummaryAsync(sessionID, tenantID, requestBody,
 // Returns:
 //   - shouldRun bool
 //   - reason    string  — "session_too_short_{N}_turns" | "never_summarized"
-//                         | "rolling_gate_open" | "only_{N}_new_turns_since_last_summary"
-//                         | "db_error"
+//     | "rolling_gate_open" | "only_{N}_new_turns_since_last_summary"
+//     | "db_error"
 //   - lastSum   time.Time
 //   - err       error
 func (g *AutoSummaryGenerator) shouldTriggerSummary(ctx context.Context, sessionID string) (bool, string, time.Time, error) {
