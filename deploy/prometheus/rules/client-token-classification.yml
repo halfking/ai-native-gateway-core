@@ -1,0 +1,29 @@
+groups:
+  - name: llmgw_client_token_classification
+    interval: 30s
+    rules:
+      - alert: LLMGatewayClientTokenUnknownShareHigh
+        expr: |
+          (
+            sum by (tenant_id) (
+              rate(gateway_client_token_requests_total{client_type="unknown",outcome="acquired"}[5m])
+            )
+            /
+            clamp_min(
+              sum by (tenant_id) (
+                rate(gateway_client_token_requests_total{outcome="acquired"}[5m])
+              ),
+              0.001
+            )
+          ) > 0.20
+          and on (tenant_id)
+          sum by (tenant_id) (
+            rate(gateway_client_token_requests_total{outcome="acquired"}[5m])
+          ) >= 0.1
+        for: 5m
+        labels:
+          severity: warning
+          component: routing
+        annotations:
+          summary: "Client-token unknown classification share is high"
+          description: "More than 20% of completed outer requests for tenant {{ $labels.tenant_id }} were classified as unknown over the last five minutes. This is based on gateway request completion, not fingerprint-slot acquisition success. Check X-Gw-Client-Type and User-Agent classification changes."

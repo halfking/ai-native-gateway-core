@@ -96,6 +96,10 @@ type Lease struct {
 	CredentialID int
 	Holder       string
 	TenantID     string
+
+	inFlight  bool
+	releaseMu sync.Mutex
+	released  bool
 }
 
 // resolveActiveGateSeconds returns the configured active gate, falling
@@ -328,6 +332,8 @@ func (m *Manager) Acquire(ctx context.Context, credentialID int, limit *int, hol
 	switch outcome {
 	case acquireOK:
 		recordAcquireSuccess()
+		lease.inFlight = true
+		recordClientTokenInFlight(tenantID, credentialID, 1)
 		return lease, true
 	case acquireRedisError:
 		recordAcquireRedisError()
@@ -373,12 +379,18 @@ const (
 // executors/executor.go) now passes an independent background context so a
 // cancelled request context can no longer abort the release.
 func (m *Manager) Release(ctx context.Context, lease *Lease) {
-	if lease == nil || lease.Unlimited {
+	if lease == nil || lease.Unlimited || m.client == nil {
 		return
 	}
-	if m.client == nil {
+	lease.releaseMu.Lock()
+	defer lease.releaseMu.Unlock()
+	if lease.released {
 		return
 	}
+	m.releaseFiniteLease(ctx, lease)
+}
+
+func (m *Manager) releaseFiniteLease(ctx context.Context, lease *Lease) {
 	tenantID := normalizeTenantID(lease.TenantID)
 	key := tenantSlotRedisKey(tenantID, lease.CredentialID, lease.SlotIndex)
 	pinKey := tenantPinRedisKey(tenantID, lease.Holder, lease.CredentialID)
@@ -404,6 +416,10 @@ func (m *Manager) Release(ctx context.Context, lease *Lease) {
 				)
 			}
 			recordReleaseSuccess()
+			if lease.inFlight {
+				recordClientTokenInFlight(lease.TenantID, lease.CredentialID, -1)
+			}
+			lease.released = true
 			return
 		}
 
