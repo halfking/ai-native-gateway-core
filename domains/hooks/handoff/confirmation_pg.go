@@ -125,6 +125,12 @@ func (s *PGStore) Confirm(ctx context.Context, in ConfirmationInput) (*Confirmat
 	p.Status = confirmationStatusAccountingConfirmed
 	p.RestoreStatus = stringValue(newRestoreStatus)
 	p.ConfirmedAt = now
+	// Mirror MemoryConfirmationStore.Confirm: populate the proposal-level
+	// NewSessionID from the input on first confirmation so downstream
+	// ConfirmationResult consumers see the right value. Without this the
+	// scanned target is empty (the DB row was pending) and
+	// confirmationResult would return NewSessionID="".
+	p.NewSessionID = in.NewSessionID
 	return confirmationResult(&p, true), nil
 }
 

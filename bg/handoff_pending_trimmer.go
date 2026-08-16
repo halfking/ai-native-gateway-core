@@ -2,6 +2,7 @@ package bg
 
 import (
 	"context"
+	"database/sql"
 	"log/slog"
 	"sync"
 	"time"
@@ -89,6 +90,49 @@ WHERE id IN (
 		return expired, err
 	}
 	deleted := delRes.RowsAffected()
+	return expired + deleted, nil
+}
+
+// TrimOnceDB mirrors TrimOnce against a database/sql handle. It exists for
+// the integration test harness (go-sqlmock) so the trim path can be exercised
+// without spinning up a pgxpool. Production callers continue to use
+// HandoffPendingTrimmer.TrimOnce against a pgxpool.Pool.
+func TrimOnceDB(ctx context.Context, db *sql.DB) (int64, error) {
+	if db == nil {
+		return 0, nil
+	}
+	expireRes, err := db.ExecContext(ctx, `
+UPDATE handoff_pending_confirmations
+SET status = 'expired', updated_at = NOW()
+WHERE id IN (
+    SELECT id FROM handoff_pending_confirmations
+    WHERE status = 'pending' AND expires_at <= NOW()
+    ORDER BY expires_at
+    LIMIT 5000
+)`)
+	if err != nil {
+		return 0, err
+	}
+	expired, err := expireRes.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	retention := pendingConfirmationRetention()
+	delRes, err := db.ExecContext(ctx, `
+DELETE FROM handoff_pending_confirmations
+WHERE id IN (
+    SELECT id FROM handoff_pending_confirmations
+    WHERE proposal_created_at < NOW() - $1::interval
+    ORDER BY proposal_created_at
+    LIMIT 5000
+)`, retention.String())
+	if err != nil {
+		return expired, err
+	}
+	deleted, err := delRes.RowsAffected()
+	if err != nil {
+		return expired, err
+	}
 	return expired + deleted, nil
 }
 
