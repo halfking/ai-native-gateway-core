@@ -45,6 +45,21 @@ func (s *memoryGoalStore) UpdateSessionState(_ context.Context, tenantID, id str
 	}
 	return nil
 }
+func (s *memoryGoalStore) CompareAndSetState(_ context.Context, tenantID, id string, allowedFrom []goal.State, target goal.State) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	session, ok := s.sessions[id]
+	if !ok {
+		return false, nil
+	}
+	for _, st := range allowedFrom {
+		if session.State == st {
+			session.State = target
+			return true, nil
+		}
+	}
+	return false, nil
+}
 func (s *memoryGoalStore) IncrementAutoContinueCount(context.Context, string, string) error {
 	return nil
 }

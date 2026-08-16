@@ -64,6 +64,28 @@ func (s *fakeStore) UpdateSessionState(_ context.Context, tenantID, sessionID st
 	return nil
 }
 
+// CompareAndSetState mirrors PGStore's WHERE state = ANY($4) guard. Terminal
+// states (completed/failed) are sticky: once set, the CAS no-ops. An empty
+// allowedFrom behaves like a never-transition CAS.
+func (s *fakeStore) CompareAndSetState(_ context.Context, tenantID, sessionID string, allowedFrom []State, target State) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sess, ok := s.sessions[sessionID]
+	if !ok || sess.TenantID != tenantID {
+		return false, nil
+	}
+	if len(allowedFrom) == 0 {
+		return false, nil
+	}
+	for _, st := range allowedFrom {
+		if sess.State == st {
+			sess.State = target
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func (s *fakeStore) IncrementAutoContinueCount(_ context.Context, tenantID, sessionID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -700,4 +722,250 @@ func TestRecordResponse_RepeatTracking(t *testing.T) {
 // jsonParse is a tiny test helper wrapping json.Unmarshal.
 func jsonParse(data []byte, v any) error {
 	return json.Unmarshal(data, v)
+}
+
+// ── Per-tenant completion-threshold isolation ──────────────────────────────
+//
+// The CompletionDetector is a singleton on ModeHook, which is shared across
+// all tenants on ChatHandler. Previously the threshold lived on the detector
+// as a shared atomic.Uint64 and each interception wrote its tenant's value
+// before reading — which meant one tenant could observe another tenant's
+// threshold in checkWithLLM. After the fix the threshold is a per-request
+// argument; this test exercises the same load pattern concurrently and
+// asserts each tenant's LLM verdict honours its own threshold.
+//
+// The test wires the LLM caller to return a fixed confidence=0.85 verdict.
+// Tenant A sets minConfidence=0.9 (verdict below threshold → NOT completed);
+// Tenant B sets minConfidence=0.6 (verdict above threshold → completed). The
+// body deliberately contains no completion keywords so only the LLM strategy
+// runs — the threshold argument is what makes the two tenants differ. The
+// same detector serves both goroutines, and after N concurrent invocations
+// each tenant's outcome must match its own threshold — never the other one.
+// Run with -race to catch any shared-mutable-state regressions.
+func TestCompletionDetector_PerTenantThreshold_NoCrossContamination(t *testing.T) {
+	const totalRounds = 200
+	// Body without any completion keyword, so the LLM strategy is the only
+	// strategy that can return completed.
+	body := []byte(`{"choices":[{"message":{"role":"assistant","content":"refactor step 7 of 12 in progress"}}]}`)
+
+	llm := &stubLLMCaller{}
+	// Stub returns confidence 0.85 — sits between A's 0.9 and B's 0.6 so the
+	// thresholds can be distinguished.
+	for i := 0; i < totalRounds*2; i++ {
+		llm.responses = append(llm.responses, `{"completed":true,"confidence":0.85,"reason":"llm_verdict"}`)
+	}
+
+	detector := NewCompletionDetector(newFakeStore(), llm)
+
+	tenantA := func() (completed, notCompleted int) {
+		for i := 0; i < totalRounds; i++ {
+			done, _, _ := detector.IsCompleted(context.Background(), &response.InterceptRequest{
+				SessionID: "a", TenantID: "ta", ResponseBody: body,
+			}, 0.9)
+			if done {
+				completed++
+			} else {
+				notCompleted++
+			}
+		}
+		return
+	}
+	tenantB := func() (completed, notCompleted int) {
+		for i := 0; i < totalRounds; i++ {
+			done, _, _ := detector.IsCompleted(context.Background(), &response.InterceptRequest{
+				SessionID: "b", TenantID: "tb", ResponseBody: body,
+			}, 0.6)
+			if done {
+				completed++
+			} else {
+				notCompleted++
+			}
+		}
+		return
+	}
+
+	var wg sync.WaitGroup
+	var aDone, aMiss, bDone, bMiss int
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		aDone, aMiss = tenantA()
+	}()
+	go func() {
+		defer wg.Done()
+		bDone, bMiss = tenantB()
+	}()
+	wg.Wait()
+
+	if aDone != 0 {
+		t.Errorf("tenant A should NEVER see completed (threshold 0.9 > verdict 0.85); got %d completions", aDone)
+	}
+	if aMiss != totalRounds {
+		t.Errorf("tenant A should see %d NOT-completed, got %d", totalRounds, aMiss)
+	}
+	if bDone != totalRounds {
+		t.Errorf("tenant B should ALWAYS see completed (threshold 0.6 <= verdict 0.85); got %d/%d", bDone, totalRounds)
+	}
+	if bMiss != 0 {
+		t.Errorf("tenant B should see 0 NOT-completed, got %d", bMiss)
+	}
+}
+
+// end-to-end check that the per-request threshold reaches the detector through
+// the full InterceptNonStream path. Tenant A's LLM verdict (confidence 0.85)
+// passes tenant B's 0.6 threshold (completed) and fails tenant A's 0.9
+// threshold (NOT completed → continue follow-up injected). The body must not
+// contain completion keywords so the LLM strategy is the sole arbiter.
+func TestInterceptNonStream_PerTenantCompletionThreshold(t *testing.T) {
+	body := []byte(`{"choices":[{"message":{"role":"assistant","content":"step 7 of 12 in progress, almost there"},"finish_reason":"stop"}]}`)
+
+	// Tenant A: threshold 0.9 → LLM verdict 0.85 must NOT trigger completion.
+	storeA := newFakeStore()
+	storeA.seed(&Session{SessionID: "sa", TenantID: "tA", State: StateActive})
+	llmA := &stubLLMCaller{responses: []string{`{"completed":true,"confidence":0.85,"reason":"r"}`}}
+	hookA := newTestHook(t, storeA, llmA)
+	hookA.config.CompletionConfidence = 0.9
+	resA, _ := hookA.InterceptNonStream(context.Background(), &response.InterceptRequest{
+		SessionID: "sa", TenantID: "tA", ResponseBody: body, FinishReason: "stop",
+	})
+	if resA == nil || resA.Action != "goal_continue" {
+		t.Fatalf("tenant A should inject a continue follow-up (LLM verdict 0.85 < threshold 0.9); got action=%v", resA)
+	}
+	sessA, _ := storeA.GetSession(context.Background(), "tA", "sa")
+	if sessA.State == StateCompleted {
+		t.Fatalf("tenant A session must NOT be completed; got %q", sessA.State)
+	}
+
+	// Tenant B: threshold 0.6 → LLM verdict 0.85 SHOULD trigger completion.
+	storeB := newFakeStore()
+	storeB.seed(&Session{SessionID: "sb", TenantID: "tB", State: StateActive})
+	llmB := &stubLLMCaller{responses: []string{`{"completed":true,"confidence":0.85,"reason":"r"}`}}
+	hookB := newTestHook(t, storeB, llmB)
+	hookB.config.CompletionConfidence = 0.6
+	hookB.config.UseAudit = false // don't inject audit follow-up — we only assert state
+	hookB.InterceptNonStream(context.Background(), &response.InterceptRequest{
+		SessionID: "sb", TenantID: "tB", ResponseBody: body, FinishReason: "stop",
+	})
+	sessB, _ := storeB.GetSession(context.Background(), "tB", "sb")
+	if sessB.State != StateCompleted {
+		t.Fatalf("tenant B session should be completed (verdict 0.85 >= threshold 0.6); got %q", sessB.State)
+	}
+}
+
+// ── CompareAndSetState terminal-state preservation ─────────────────────────
+//
+// PGStore.CompareAndSetState mirrors the WHERE state = ANY($4) guard. These
+// tests exercise the in-memory fakeStore equivalent so the hook's terminal-
+// write contract is unit-tested without PG.
+func TestCompareAndSetState_TerminalBlocksDowngrade(t *testing.T) {
+	store := newFakeStore()
+	store.seed(&Session{SessionID: "cs1", TenantID: "t1", State: StateCompleted})
+
+	// Failed write must NOT downgrade completed.
+	won, err := store.CompareAndSetState(context.Background(), "t1", "cs1",
+		[]State{StateActive, StateRetrying, StatePaused}, StateFailed)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if won {
+		t.Fatal("CAS must NOT win when current state is terminal (completed)")
+	}
+	sess, _ := store.GetSession(context.Background(), "t1", "cs1")
+	if sess.State != StateCompleted {
+		t.Fatalf("state must remain completed, got %q", sess.State)
+	}
+}
+
+func TestCompareAndSetState_TerminalBlocksUpgrade(t *testing.T) {
+	store := newFakeStore()
+	store.seed(&Session{SessionID: "cs2", TenantID: "t1", State: StateFailed})
+
+	// A late completion verdict must NOT overwrite failed.
+	won, _ := store.CompareAndSetState(context.Background(), "t1", "cs2",
+		[]State{StateActive, StateRetrying, StatePaused}, StateCompleted)
+	if won {
+		t.Fatal("CAS must NOT win when current state is terminal (failed)")
+	}
+	sess, _ := store.GetSession(context.Background(), "t1", "cs2")
+	if sess.State != StateFailed {
+		t.Fatalf("state must remain failed, got %q", sess.State)
+	}
+}
+
+func TestCompareAndSetState_EmptyAllowed_Noop(t *testing.T) {
+	store := newFakeStore()
+	store.seed(&Session{SessionID: "cs3", TenantID: "t1", State: StateActive})
+	won, _ := store.CompareAndSetState(context.Background(), "t1", "cs3", nil, StateFailed)
+	if won {
+		t.Fatal("empty allowedFrom must never transition")
+	}
+}
+
+func TestCompareAndSetState_NonExistentSession_Noop(t *testing.T) {
+	store := newFakeStore()
+	won, _ := store.CompareAndSetState(context.Background(), "t1", "missing",
+		[]State{StateActive}, StateCompleted)
+	if won {
+		t.Fatal("non-existent session must not match CAS")
+	}
+}
+
+func TestCompareAndSetState_HappyPath(t *testing.T) {
+	store := newFakeStore()
+	store.seed(&Session{SessionID: "cs4", TenantID: "t1", State: StateActive})
+	won, err := store.CompareAndSetState(context.Background(), "t1", "cs4",
+		[]State{StateActive, StateRetrying, StatePaused}, StateCompleted)
+	if err != nil || !won {
+		t.Fatalf("happy-path CAS should win: won=%v err=%v", won, err)
+	}
+	sess, _ := store.GetSession(context.Background(), "t1", "cs4")
+	if sess.State != StateCompleted {
+		t.Fatalf("state should be completed, got %q", sess.State)
+	}
+}
+
+// Concurrent CAS race: N goroutines try to flip an active session to
+// completed/failed simultaneously. Exactly one writer wins per attempt, and
+// once a terminal state is set, all subsequent attempts no-op.
+func TestCompareAndSetState_ConcurrentRace(t *testing.T) {
+	store := newFakeStore()
+	store.seed(&Session{SessionID: "cs5", TenantID: "t1", State: StateActive})
+
+	const writers = 32
+	var wg sync.WaitGroup
+	var completedWins, failedWins int
+	var mu sync.Mutex
+	for i := 0; i < writers; i++ {
+		i := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			target := StateCompleted
+			if i%2 == 0 {
+				target = StateFailed
+			}
+			won, _ := store.CompareAndSetState(context.Background(), "t1", "cs5",
+				[]State{StateActive, StateRetrying, StatePaused, ""}, target)
+			if won {
+				mu.Lock()
+				if target == StateCompleted {
+					completedWins++
+				} else {
+					failedWins++
+				}
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+
+	totalWins := completedWins + failedWins
+	if totalWins != 1 {
+		t.Fatalf("exactly one writer should win, got %d (completed=%d failed=%d)",
+			totalWins, completedWins, failedWins)
+	}
+	sess, _ := store.GetSession(context.Background(), "t1", "cs5")
+	if sess.State != StateCompleted && sess.State != StateFailed {
+		t.Fatalf("final state must be terminal, got %q", sess.State)
+	}
 }
