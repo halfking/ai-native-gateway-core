@@ -21,20 +21,20 @@ import (
 // fakeForegroundStore extends the handler fake with the foreground surface.
 type fakeForegroundStore struct {
 	fakeDurableHandlerStore
-	renews         []durableRenewCall
-	checks         []durable.CheckpointParams
-	terminals      []durable.TerminalCommit
-	renewErr       error
-	checkErr       error
-	rescheduleErr  error
+	renews          []durableRenewCall
+	checks          []durable.CheckpointParams
+	terminals       []durable.TerminalCommit
+	renewErr        error
+	checkErr        error
+	rescheduleErr   error
 	rescheduleCalls int
-	intents        []durable.TerminalCommit
-	intentErr      error
-	intentFailures int
-	intentCalls    int
-	claims         []*durable.ClaimedSettlement
-	finalizeErr    error
-	retried        []durable.ClaimedSettlement
+	intents         []durable.TerminalCommit
+	intentErr       error
+	intentFailures  int
+	intentCalls     int
+	claims          []*durable.ClaimedSettlement
+	finalizeErr     error
+	retried         []durable.ClaimedSettlement
 }
 
 type durableRenewCall struct {

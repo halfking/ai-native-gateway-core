@@ -207,8 +207,8 @@ func TestDoCallSummaryOnce_EmitsBranchSessionAndParentHeaders(t *testing.T) {
 		t.Context(), srv.URL+"/v1/chat/completions",
 		[]byte(`{"model":"minimax-m2.7","messages":[]}`),
 		"sk-fake",
-		"gw_abc123",          // user main session
-		"parent-req-id-xyz",  // user request id that triggered this
+		"gw_abc123",         // user main session
+		"parent-req-id-xyz", // user request id that triggered this
 		task,
 		"minimax-m2.7",
 		"summary",
