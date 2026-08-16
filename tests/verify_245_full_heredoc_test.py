@@ -33,4 +33,5 @@ string_env_keys = {
 
 missing = required_keys - string_env_keys
 assert not missing, f"env.get keys must remain Python strings: {sorted(missing)}"
+assert "'\"'\"'" not in python_source, "remote Python must not contain shell quote artifacts"
 print("PASS: remote Python heredoc compiles and env keys remain strings")
