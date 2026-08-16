@@ -10,8 +10,9 @@ import (
 // failoverItem pairs a request with the pre-firstbyte error that caused the
 // forwarder to hand it to the ③ mover.
 type failoverItem struct {
-	qr  *QueuedRequest
-	err error
+	qr              *QueuedRequest
+	err             error
+	fatalCredential bool
 }
 
 // runFailover is a ③ Failover Mover worker.
@@ -23,7 +24,7 @@ func (p *Pipeline) runFailover() {
 			if !ok {
 				return
 			}
-			p.move(it.qr, it.err)
+			p.move(it.qr, it.err, it.fatalCredential)
 		case <-p.stopCh:
 			return
 		}
@@ -36,7 +37,7 @@ func (p *Pipeline) runFailover() {
 //  3. cross-provider credential switch only when the request allows it;
 //  4. model-change only when both global and request-level switches allow it;
 //  5. terminal → complete with the real upstream error when present.
-func (p *Pipeline) move(qr *QueuedRequest, err error) {
+func (p *Pipeline) move(qr *QueuedRequest, err error, fatalCredential bool) {
 	// Global safety net: cap total forward attempts so a request can never
 	// churn an unbounded candidate set. Under normal operation this is well
 	// above candidate count × retry and never trips.
@@ -48,8 +49,12 @@ func (p *Pipeline) move(qr *QueuedRequest, err error) {
 		p.complete(qr, ForwardOutcome{Err: terminalErr(err)})
 		return
 	}
-	// (1) Same-credential retry.
-	if qr.CredRetryCount < p.retryBudget(qr) {
+	// (1) Same-credential retry — skipped for credential-fatal errors.
+	// Retrying a quota-exhausted / auth-revoked credential deterministically
+	// re-yields the same upstream rejection, wasting a concurrency slot and
+	// delaying the switch to a healthy sibling. Mirrors the legacy executor
+	// loop's errorsx.IsCredentialFatal → continue path (executor.go:3510).
+	if !fatalCredential && qr.CredRetryCount < p.retryBudget(qr) {
 		qr.CredRetryCount++
 		metricFailover.WithLabelValues("cred_retry").Inc()
 		// V3.3-OBS OBS-B1 (2026-08-15): node_switch 动作事件，retry=true、
