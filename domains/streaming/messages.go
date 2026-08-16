@@ -14,6 +14,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/authentication" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"    //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/response"      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/identity"            //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/session"             //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -466,6 +467,7 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// ── SR-12 durable snapshot cut point (doc 18 §11.2) ────────────────
+	var durableStream *DurableStreamBinding
 	if h.chatHandler.durableStore != nil && DurableRequested(r, isStream) {
 		in := DurableSnapshotInput{
 			Protocol:       "anthropic-messages",
@@ -482,11 +484,11 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			RequestID:      requestID,
 			ToolsRequested: len(reqBody.Tools) > 0,
 		}
-		// These endpoints have no survival branch yet: streaming durable
-		// stays fail-closed (501) until their coordinator wiring lands.
-		if decision, _ := h.chatHandler.maybeStartDurable(w, r, in, isStream, false); decision == durableHandled {
+		decision, binding := h.chatHandler.maybeStartDurable(w, r, in, isStream, true)
+		if decision == durableHandled {
 			return
 		}
+		durableStream = binding
 	}
 
 	candidates, policy, _, candErr := resolveCandidatesForRequest(r.Context(), h.chatHandler.provider, clientModel, clientID.Fingerprint.ClientProfile, tenantID, bodyBytes)
@@ -498,6 +500,7 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.chatHandler.recordFailedRequestWithKey(requestID, clientModel, "",
 			nil, nil, rc.code, rc.message, latency, bodyBytes, keyInfo, r)
 		*attemptLogged = true
+		releaseDurableBeforeSurvival(durableStream, "candidate_resolution_failed")
 		writeAnthropicError(w, rc.httpStatus, "api_error", rc.message)
 		return
 	}
@@ -509,6 +512,7 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.chatHandler.recordFailedRequestWithKey(requestID, clientModel, "",
 			nil, nil, attemptErrCode, attemptErrMsg, latency, bodyBytes, keyInfo, r)
 		*attemptLogged = true
+		releaseDurableBeforeSurvival(durableStream, "no_candidate")
 		writeAnthropicError(w, http.StatusServiceUnavailable, "overloaded_error", attemptErrMsg)
 		return
 	}
@@ -570,57 +574,76 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		logCtx,
 	)
 
-	result, execErr := h.chatHandler.executor.Execute(&executors.ExecParams{
-		W:                    w,
-		R:                    r,
-		BodyBytes:            upstreamBody,
-		IsStream:             isStream,
-		SuppressSuccessWrite: !isStream,
-		ClientProtocol:       "anthropic-messages",
-		ClientModel:          clientModel,
-		// See domains/streaming/handler.go for the rationale: the
-		// executor resolves the upstream model per candidate using
-		// params.Transform + cand.RawModel, so we deliberately pass
-		// clientModel here (instead of explicitOutbound / outboundForLog)
-		// to avoid leaking the FIRST candidate's upstream id into a
-		// retry/failover attempt — which on NVIDIA NIM manifests as
-		// "model_not_found" when candidate #2+ uses a different publisher
-		// prefix.
-		OutboundModel:  clientModel,
-		ClientID:       clientID,
-		Transform:      txResult,
-		Resolution:     modelResolution,
-		Candidates:     candidates,
-		Policy:         policy,
-		AuditBuilder:   auditBuilder,
-		Capture:        streamCapture,
-		ToolsRequested: len(reqBody.Tools) > 0,
-		StickyKey:      buildRouteStickyKey(tenant(keyInfo), appID(keyInfo), apiKeyIDPtr(keyInfo), clientID.Fingerprint.ClientProfile),
-		KeyID: func() int {
-			if keyInfo != nil {
-				return keyInfo.ID
-			}
-			return 0
-		}(),
-		KeyConcurrentLimit: func() int {
-			if keyInfo != nil {
-				return keyInfo.EffectiveConcurrent()
-			}
-			return 0
-		}(),
-		// 2026-07-07: Multi-level sticky routing (L1 session+model, L2 client+model, L3 client).
-		// Without SessionID/Model here, /v1/messages (Anthropic) requests would fall back to
-		// L3-only sticky, routing all concurrent sessions to the same credential.
-		SessionID: gwSessionID,
-		Model:     clientModel,
-		TenantID:  tenant(keyInfo),
-		AppID:     appID(keyInfo),
-		ApiKeyID:  apiKeyIDPtr(keyInfo),
-		// 2026-07-14: hand the per-request id to the executor so the
-		// no-candidates fallback can pass it to ActiveProbeWorker as
-		// the probe row's parent_request_id.
-		RequestID: requestID,
-	})
+	buildExecParams := func(streamWriter http.ResponseWriter) *executors.ExecParams {
+		return &executors.ExecParams{
+			W:                    streamWriter,
+			R:                    r,
+			BodyBytes:            upstreamBody,
+			IsStream:             isStream,
+			SuppressSuccessWrite: !isStream,
+			ClientProtocol:       "anthropic-messages",
+			ClientModel:          clientModel,
+			// See domains/streaming/handler.go for the rationale: the
+			// executor resolves the upstream model per candidate using
+			// params.Transform + cand.RawModel, so we deliberately pass
+			// clientModel here (instead of explicitOutbound / outboundForLog)
+			// to avoid leaking the FIRST candidate's model into retries.
+			OutboundModel:  clientModel,
+			ClientID:       clientID,
+			Transform:      txResult,
+			Resolution:     modelResolution,
+			Candidates:     candidates,
+			Policy:         policy,
+			AuditBuilder:   auditBuilder,
+			Capture:        streamCapture,
+			ToolsRequested: len(reqBody.Tools) > 0,
+			StickyKey:      buildRouteStickyKey(tenant(keyInfo), appID(keyInfo), apiKeyIDPtr(keyInfo), clientID.Fingerprint.ClientProfile),
+			KeyID: func() int {
+				if keyInfo != nil {
+					return keyInfo.ID
+				}
+				return 0
+			}(),
+			KeyConcurrentLimit: func() int {
+				if keyInfo != nil {
+					return keyInfo.EffectiveConcurrent()
+				}
+				return 0
+			}(),
+			SessionID: gwSessionID,
+			Model:     clientModel,
+			TenantID:  tenant(keyInfo),
+			AppID:     appID(keyInfo),
+			ApiKeyID:  apiKeyIDPtr(keyInfo),
+			RequestID: requestID,
+		}
+	}
+
+	usedSurvival := isStream && (durableStream != nil || h.chatHandler.survivalTenantAllowed != nil && h.chatHandler.survivalTenantAllowed(tenantID))
+	var result *executors.ExecuteResult
+	var execErr error
+	if usedSurvival {
+		base := w
+		if h.chatHandler.responseInterceptor != nil {
+			base = newInterceptingStreamWriter(w, h.chatHandler.responseInterceptor, r.Context(), response.StreamMeta{
+				SessionID:   gwSessionID,
+				RequestID:   requestID,
+				TenantID:    tenantID,
+				ClientModel: clientModel,
+			})
+			defer base.(*interceptingStreamWriter).finish()
+		}
+		result, execErr = h.chatHandler.runSurvivalCoordinator(r, base, buildExecParams, tenantID, durableStream)
+	} else {
+		if durableStream != nil {
+			durableStream.Stop()
+			slog.Error("durable stream escaped survival branch; failing closed",
+				"request_id", requestID, "task_id", durableStream.task.ID)
+			writeAnthropicError(w, http.StatusServiceUnavailable, "api_error", "durable request cannot run in-connection on this gateway")
+			return
+		}
+		result, execErr = h.chatHandler.executor.Execute(buildExecParams(w))
+	}
 
 	if execErr != nil {
 		errCode := "provider_error"
@@ -635,6 +658,9 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.chatHandler.recordFailedRequestWithKey(requestID, clientModel, explicitOutbound,
 			attemptProviderID, attemptCredentialID, errCode, errMsg, latency, upstreamBody, keyInfo, r)
 		*attemptLogged = true
+		if usedSurvival {
+			return
+		}
 		if execErr, ok := execErr.(*executors.ExecuteError); ok && execErr.Exhausted {
 			// Content moderation: render 400 with upstream reason + hint.
 			if execErr.LastKind == errorsx.KindContentFilter {

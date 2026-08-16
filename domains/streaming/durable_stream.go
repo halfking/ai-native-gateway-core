@@ -213,6 +213,22 @@ func (b *DurableStreamBinding) ReleaseToWorker(ctx context.Context, reason strin
 	})
 }
 
+// releaseDurableBeforeSurvival hands a foreground-claimed task to the worker
+// when a handler fails after the snapshot cut point but before the coordinator
+// can own its lease. No semantic bytes reached the client, so recovery is safe
+// and must not wait for the frontend lease to expire.
+func releaseDurableBeforeSurvival(b *DurableStreamBinding, reason string) {
+	if b == nil {
+		return
+	}
+	ctx, cancel := settleCtx()
+	defer cancel()
+	if err := b.ReleaseToWorker(ctx, reason); err != nil {
+		logSettleError("release_before_survival", b, err)
+	}
+	b.Stop()
+}
+
 // settleCtx bounds settlement store writes: they run after the survival
 // loop ends and must survive a disconnected client, but must not pin the
 // handler forever.
