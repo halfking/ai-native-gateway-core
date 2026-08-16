@@ -2,9 +2,10 @@ package sync
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/redis/go-redis/v9"
+
+	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/store"
 )
 
 type Seed struct {
@@ -25,10 +26,7 @@ func NewSyncer(rdb *redis.Client, prefix string) *Syncer {
 }
 
 func (s *Syncer) nodeKey(tenant string, cid int, raw string) string {
-	if tenant == "" {
-		return fmt.Sprintf("%snode:%d:%s", s.prefix, cid, raw)
-	}
-	return fmt.Sprintf("%snode:%s:%d:%s", s.prefix, tenant, cid, raw)
+	return store.NodeKeyForTenant(s.prefix, tenant, cid, raw)
 }
 
 func (s *Syncer) UpsertNodeSeed(ctx context.Context, seed Seed) error {

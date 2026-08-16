@@ -182,8 +182,64 @@ func (m *Manager) WarmupFromExistingKeys(ctx context.Context) (int, error) {
 	return len(keys), nil
 }
 
-// RestoreIfClosed is the convenience wrapper used by
-// systemmonitor.healthCheckLoop on the fallback→healthy transition.
+// ValidateCoverage verifies the migration manifest and every expected tenant-aware
+// node hash. It intentionally does not change the ready gate.
+func (m *Manager) ValidateCoverage(ctx context.Context) (int, error) {
+	if m == nil || m.rdb == nil {
+		return 0, fmt.Errorf("ursm.v2: nil manager / redis client")
+	}
+	keys, err := m.rdb.SMembers(ctx, store.CoverageKey(m.prefix)).Result()
+	if err != nil {
+		return 0, fmt.Errorf("ursm.v2: read coverage manifest: %w", err)
+	}
+	if len(keys) == 0 {
+		return 0, fmt.Errorf("ursm.v2: coverage manifest is empty")
+	}
+	pipe := m.rdb.Pipeline()
+	exists := make([]*redis.IntCmd, len(keys))
+	fields := make([]*redis.SliceCmd, len(keys))
+	for i, key := range keys {
+		exists[i] = pipe.Exists(ctx, key)
+		fields[i] = pipe.HMGet(ctx, key, "generation", "available")
+	}
+	if _, err := pipe.Exec(ctx); err != nil {
+		return 0, fmt.Errorf("ursm.v2: validate coverage: %w", err)
+	}
+	for i, key := range keys {
+		parsed, ok := store.ParseNodeKey(m.prefix, key)
+		if !ok || parsed.TenantID == "" {
+			return 0, fmt.Errorf("ursm.v2: coverage key is not tenant-aware: %s", key)
+		}
+		if exists[i].Val() != 1 {
+			return 0, fmt.Errorf("ursm.v2: coverage key missing: %s", key)
+		}
+		values, err := fields[i].Result()
+		if err != nil || len(values) < 2 || values[0] == nil || values[1] == nil {
+			return 0, fmt.Errorf("ursm.v2: coverage hash incomplete: %s", key)
+		}
+	}
+	return len(keys), nil
+}
+
+// WarmupFromCoverage validates the migration manifest and atomically opens the
+// gate only after every expected node is present.
+func (m *Manager) WarmupFromCoverage(ctx context.Context) (int, error) {
+	if err := m.SetReady(ctx, false); err != nil {
+		return 0, err
+	}
+	count, err := m.ValidateCoverage(ctx)
+	if err != nil {
+		m.recordError(err)
+		return 0, err
+	}
+	if err := m.SetReady(ctx, true); err != nil {
+		return 0, err
+	}
+	m.recordRecovery(count)
+	m.clearError()
+	return count, nil
+}
+
 // When the gate is already open it returns (0, nil) as a no-op; when
 // the gate is closed it re-warms from existing keys and returns the
 // observed count.

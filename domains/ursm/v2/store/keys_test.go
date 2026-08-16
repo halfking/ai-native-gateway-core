@@ -25,6 +25,14 @@ func TestParseNodeKey(t *testing.T) {
 	if !ok || tenant.TenantID != "tenant-a" || tenant.CredentialID != 34 || tenant.RawModel != "model:with:colon" {
 		t.Fatalf("tenant parse = %+v ok=%v", tenant, ok)
 	}
+	numericKey := NodeKeyForTenant("ursm:v2:", "123", 34, "model:with:colon")
+	if numericKey != "ursm:v2:node:t:123:34:model:with:colon" {
+		t.Fatalf("numeric tenant key = %q", numericKey)
+	}
+	numeric, ok := ParseNodeKey("ursm:v2:", numericKey)
+	if !ok || numeric.TenantID != "123" || numeric.CredentialID != 34 || numeric.RawModel != "model:with:colon" {
+		t.Fatalf("numeric tenant parse = %+v ok=%v", numeric, ok)
+	}
 	if _, ok := ParseNodeKey("ursm:v2:", "ursm:v2:node:tenant-a:not-a-number:model"); ok {
 		t.Fatal("invalid credential ID must not parse")
 	}

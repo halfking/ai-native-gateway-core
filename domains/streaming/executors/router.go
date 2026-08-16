@@ -280,37 +280,37 @@ func (r *Router) PlanCandidatesWithContext(
 		// OUTER label, not the inner one.
 		views, _, err := r.URSMv2.FilterAndScoreReadyWithSource(ctx, seeds, *readySnapshot)
 		if err != nil {
-			slog.Warn("router: URSM v2 FilterAndScore failed, failing open",
+			slog.Warn("router: URSM v2 FilterAndScore failed, rejecting authoritative route",
 				"error", err,
 				"seed_count", len(seeds),
 				"mode", r.URSMv2.Mode(),
 			)
 			recordOuterSource(statesource.StateSourceFallback)
-		} else {
-			recordOuterSource(statesource.StateSourceAuthoritative)
-			allow := make(map[string]bool, len(views))
-			for _, v := range views {
-				if v.Available {
-					allow[seedLookupKey(v.ProviderID, v.CredentialID, v.RawModel)] = true
-				}
-			}
-			filtered := make([]provider.Candidate, 0, len(candidates))
-			for i, c := range candidates {
-				if allow[seedLookupKey(seeds[i].ProviderID, c.CredentialID, c.RawModel)] {
-					filtered = append(filtered, c)
-				}
-			}
-			candidates = filtered
-			if len(candidates) == 0 {
-				return nil
+			return nil
+		}
+		recordOuterSource(statesource.StateSourceAuthoritative)
+		allow := make(map[string]bool, len(views))
+		for _, v := range views {
+			if v.Available {
+				allow[seedLookupKey(v.ProviderID, v.CredentialID, v.RawModel)] = true
 			}
 		}
+		filtered := make([]provider.Candidate, 0, len(candidates))
+		for i, c := range candidates {
+			if allow[seedLookupKey(seeds[i].ProviderID, c.CredentialID, c.RawModel)] {
+				filtered = append(filtered, c)
+			}
+		}
+		candidates = filtered
+		if len(candidates) == 0 {
+			return nil
+		}
 	} else if r.URSMv2 != nil && r.URSMv2.Mode() == ursmv2api.ModeAuthoritative {
-		// Authoritative but not ready. Per spec §8.2 the legacy
-		// state source must NOT be the authoritative health judge,
-		// but the router still needs to surface that we did not
-		// consult v2 on this request → StateSourceFallback.
+		// Strict authoritative mode never substitutes DB-only or legacy state
+		// while the recovery gate is closed. A route may resume only after v2
+		// coverage has been revalidated and the gate has reopened.
 		recordOuterSource(statesource.StateSourceFallback)
+		return nil
 	}
 
 	// 2026-07-24 Phase 2.3: 应用压力惩罚（feature flag 控制）
@@ -372,9 +372,10 @@ func (r *Router) PlanCandidatesWithContext(
 			}
 		}
 
-		// 2026-07-24 Phase 1: 在 authoritative 模式下也保留降级模式。
-		// 降级模式是保护机制，用于处理瞬态故障导致的完全失败。
-		// URSM v2 authoritative 模式下的冷却决策仍在生效，降级只是最后的保护。
+		if stateBackend.IsAuthoritative() {
+			slog.Warn("router: authoritative URSM v2 rejected all candidates", "total", len(candidates), "reasons", reasonCounts)
+			return nil
+		}
 		if len(candidates) <= 2 {
 			degradedCandidates := r.tryDegradedMode(queryCtx, candidates)
 			if len(degradedCandidates) > 0 {
