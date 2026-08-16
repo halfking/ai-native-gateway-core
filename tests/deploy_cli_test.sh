@@ -241,6 +241,58 @@ test_target_support() {
   rc=$?; assert_eq "kaixuan-1 plan refuses" "$rc" "64"
 }
 
+# 252 must retain no guessed runtime fields while preserving SSH metadata.
+test_252_contract() {
+  echo "── 252_contract ──"
+  local contract
+  contract=$(bash -c "source '$LIB_TARGETS' && target_contract 252")
+  assert_match "252 support is deferred" "$contract" '"support":"deferred"'
+  for field in service_manager service_name binary_path web_path health_url; do
+    assert_match "252 $field is unresolved" "$contract" "\"$field\":\"\""
+  done
+  assert_match "252 rollback is refused" "$contract" '"rollback_policy":"refuse"'
+  assert_match "252 SSH host is retained" "$contract" '"ssh_host":"root@115.29.212.252"'
+  assert_match "252 SSH key metadata is retained" "$contract" '"ssh_key_env":"SSH_KEY_252"'
+}
+
+# Deferred CLI actions must stop before fake mutating commands are invoked.
+test_252_cli_is_fail_closed() {
+  echo "── 252_cli_is_fail_closed ──"
+  local tmp out rc
+  tmp=$(setup_fake_bin)
+  out=$(PATH="$tmp/fake-bin:$PATH" TMPDIR="$tmp" bash "$SCRIPT_DEPLOY" deploy 252 2>&1); rc=$?
+  assert_eq "deploy 252 returns 64" "$rc" "64"
+  assert_match "deploy 252 explains deferral" "$out" 'deferred'
+
+  out=$(PATH="$tmp/fake-bin:$PATH" TMPDIR="$tmp" bash "$SCRIPT_DEPLOY" rollback 252 2>&1); rc=$?
+  assert_eq "rollback 252 returns 64" "$rc" "64"
+  assert_match "rollback 252 explains deferral" "$out" 'deferred'
+
+  if [[ ! -s "$tmp/fake-bin/.log" ]]; then
+    log_pass "252 CLI invokes no mutating commands"
+  else
+    log_fail "252 CLI invoked commands: $(cat "$tmp/fake-bin/.log")"
+  fi
+  rm -rf "$tmp"
+}
+
+# The historical direct 252 deployer must refuse before parsing dependencies
+# or touching the network/filesystem.
+test_legacy_252_entry_is_frozen() {
+  echo "── legacy_252_entry_is_frozen ──"
+  local tmp out rc
+  tmp=$(setup_fake_bin)
+  out=$(PATH="$tmp/fake-bin:$PATH" TMPDIR="$tmp" bash "$REPO_ROOT/deploy-to-252.sh" --skip-build --skip-migration --skip-restart 2>&1); rc=$?
+  assert_eq "legacy 252 deployer returns 64" "$rc" "64"
+  assert_match "legacy 252 deployer names infrastructure role" "$out" 'database/infrastructure'
+  if [[ ! -s "$tmp/fake-bin/.log" ]]; then
+    log_pass "legacy 252 deployer invokes no external commands"
+  else
+    log_fail "legacy 252 deployer invoked commands: $(cat "$tmp/fake-bin/.log")"
+  fi
+  rm -rf "$tmp"
+}
+
 # AC-3 (local lock) — Slice 3 stub: acquire and refuse the second
 # concurrent acquire. We don't exercise the orchestrator's full wrapper
 # here because that requires slice 1's scripts/deploy.sh to be the
@@ -349,6 +401,9 @@ run_all() {
   test_plan_required_fields
   test_alias_resolution
   test_target_support
+  test_252_contract
+  test_252_cli_is_fail_closed
+  test_legacy_252_entry_is_frozen
   test_local_lock_contention
   test_sops_regex_placeholder
   test_scan_secrets_placeholder
@@ -370,6 +425,9 @@ if [[ $# -gt 0 ]]; then
     plan_required_fields)    test_plan_required_fields ;;
     alias_resolution)        test_alias_resolution ;;
     target_support)          test_target_support ;;
+    252_contract)            test_252_contract ;;
+    252_cli_fail_closed)     test_252_cli_is_fail_closed ;;
+    legacy_252_frozen)       test_legacy_252_entry_is_frozen ;;
     local_lock_contention)   test_local_lock_contention ;;
     sops_regex)              test_sops_regex_placeholder ;;
     scan_secrets)            test_scan_secrets_placeholder ;;
