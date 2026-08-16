@@ -11,29 +11,43 @@ import (
 var collectionKeys = []string{"data", "models", "items", "results", "result", "response"}
 var modelIDKeys = []string{"id", "name", "model", "model_id", "model_name", "slug"}
 
+// maxCollectDepth bounds collectModelIDs recursion. The parser only walks
+// vendor model-list responses, where the realistic depth is 4-6 (wrapper →
+// collection → model object). A cap of 64 is generous for any documented
+// provider shape and still small enough to keep the goroutine stack safe
+// against a hostile or pathological body that nests objects thousands deep
+// (the previous implementation recursed without bound and would stack-overflow
+// on such input, killing the worker goroutine).
+const maxCollectDepth = 64
+
 // ParseModelIDs accepts common OpenAI-compatible and vendor-wrapped model lists.
 func ParseModelIDs(data []byte) ([]string, error) {
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.UseNumber()
 	var root any
-	if err := decoder.Decode(&root); err != nil {
+	if err := json.NewDecoder(bytes.NewReader(data)).Decode(&root); err != nil {
 		return nil, fmt.Errorf("parse models response failed: %w (context: body_bytes=%d)", err, len(data))
 	}
 
 	ids := make([]string, 0)
 	seen := make(map[string]struct{})
-	collectModelIDs(root, false, &ids, seen)
+	collectModelIDs(root, false, 0, &ids, seen)
 	if len(ids) == 0 {
 		return nil, fmt.Errorf("unrecognized models response format")
 	}
 	return ids, nil
 }
 
-func collectModelIDs(value any, inCollection bool, ids *[]string, seen map[string]struct{}) {
+func collectModelIDs(value any, inCollection bool, depth int, ids *[]string, seen map[string]struct{}) {
+	if depth > maxCollectDepth {
+		// Bound the recursion: the parser has walked deep enough that any
+		// further model id is, by construction, unreachable through the
+		// known collection keys. Stop descending instead of risking a
+		// stack overflow on a hostile body.
+		return
+	}
 	switch current := value.(type) {
 	case []any:
 		for _, item := range current {
-			collectModelIDs(item, true, ids, seen)
+			collectModelIDs(item, true, depth+1, ids, seen)
 		}
 	case map[string]any:
 		if inCollection {
@@ -44,7 +58,7 @@ func collectModelIDs(value any, inCollection bool, ids *[]string, seen map[strin
 		}
 		for _, key := range collectionKeys {
 			if nested, ok := current[key]; ok {
-				collectModelIDs(nested, key != "result" && key != "response", ids, seen)
+				collectModelIDs(nested, key != "result" && key != "response", depth+1, ids, seen)
 			}
 		}
 	case string:
