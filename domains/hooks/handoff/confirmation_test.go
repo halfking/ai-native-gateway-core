@@ -39,6 +39,27 @@ func TestConfirmationProposalStoresOnlyHashAndRotates(t *testing.T) {
 	}
 }
 
+func TestConfirmationStoreAcceptsTargetCreatedWithinProposalSecond(t *testing.T) {
+	store := NewMemoryConfirmationStore()
+	proposalTime := time.Date(2026, 8, 17, 3, 0, 0, 900_000_000, time.UTC)
+	record := &HandoffRecord{SessionKey: "gw_previous", TenantID: "tenant-a", CreatedAt: proposalTime}
+	proposal, token, err := NewConfirmationProposal(record, 1, proposalTime.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SavePending(context.Background(), proposal); err != nil {
+		t.Fatal(err)
+	}
+	result, err := store.Confirm(context.Background(), ConfirmationInput{
+		ProposalID: proposal.ID, TenantID: "tenant-a", APIKeyID: 1, Token: token,
+		NewSessionID: "gw_new", TargetCreatedAt: proposalTime.Truncate(time.Second),
+		IdempotencyKey: "idempotency-key-second-precision",
+	})
+	if err != nil || result == nil || !result.FirstConfirmation {
+		t.Fatalf("same-second target confirmation failed: result=%+v err=%v", result, err)
+	}
+}
+
 func TestConfirmationStoreRejectsExpiryAndPreexistingTarget(t *testing.T) {
 	store := NewMemoryConfirmationStore()
 	record := &HandoffRecord{SessionKey: "gw_previous", TenantID: "tenant-a", CreatedAt: time.Now()}

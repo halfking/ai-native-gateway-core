@@ -35,6 +35,7 @@ var (
 	ErrConfirmationCooldownActive  = errors.New("handoff confirmation cooldown is active")
 	ErrGoalRestoreRetryable        = errors.New("handoff goal restore is incomplete; retry confirmation")
 	ErrGoalRestoreManualRequired   = errors.New("handoff goal restore requires manual recovery")
+	ErrGoalRestoreStateInvalid     = errors.New("handoff durable goal state is invalid")
 )
 
 // ConfirmationProposal is the durable one-time capability returned with an
@@ -250,7 +251,7 @@ func (s *MemoryConfirmationStore) Confirm(_ context.Context, input ConfirmationI
 		proposal.Status = confirmationStatusExpired
 		return nil, ErrConfirmationExpired
 	}
-	if proposal.Status != confirmationStatusPending || input.NewSessionID == "" || input.NewSessionID == proposal.PreviousSessionID || input.IdempotencyKey == "" || (!input.TargetCreatedAt.IsZero() && input.TargetCreatedAt.Before(proposal.Record.CreatedAt)) {
+	if proposal.Status != confirmationStatusPending || input.NewSessionID == "" || input.NewSessionID == proposal.PreviousSessionID || input.IdempotencyKey == "" || (!input.TargetCreatedAt.IsZero() && input.TargetCreatedAt.Truncate(time.Second).Before(proposal.Record.CreatedAt.Truncate(time.Second))) {
 		return nil, ErrConfirmationInvalid
 	}
 	proposal.Status = confirmationStatusAccountingConfirmed

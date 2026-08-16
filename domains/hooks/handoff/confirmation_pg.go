@@ -61,11 +61,6 @@ func (s *PGStore) Confirm(ctx context.Context, in ConfirmationInput) (*Confirmat
 	p.GoalStateVersion = int(goalVersion.Int64)
 	p.RestoreStatus = restoreStatus.String
 	p.RestoreError = restoreError.String
-	p.RestoreAttemptedAt = restoreAttemptedAt.Time
-	p.RestoredAt = restoredAt.Time
-	if p.GoalState, err = unmarshalPersistedGoalState(goalPayload, p.GoalStateVersion); err != nil {
-		return nil, err
-	}
 	if p.APIKeyID != in.APIKeyID || !p.MatchesToken(in.Token) {
 		return nil, ErrConfirmationInvalid
 	}
@@ -87,7 +82,7 @@ func (s *PGStore) Confirm(ctx context.Context, in ConfirmationInput) (*Confirmat
 		}
 		return nil, ErrConfirmationExpired
 	}
-	if p.Status != confirmationStatusPending || p.PreviousSessionID == in.NewSessionID || (!in.TargetCreatedAt.IsZero() && in.TargetCreatedAt.Before(p.Record.CreatedAt)) {
+	if p.Status != confirmationStatusPending || p.PreviousSessionID == in.NewSessionID || (!in.TargetCreatedAt.IsZero() && in.TargetCreatedAt.Truncate(time.Second).Before(p.Record.CreatedAt.Truncate(time.Second))) {
 		return nil, ErrConfirmationInvalid
 	}
 	var count int
@@ -163,7 +158,11 @@ func (s *PGStore) GetGoalRestoreState(ctx context.Context, proposalID, tenantID 
 	state.RestoreError = restoreError.String
 	state.RestoreAttemptedAt = attempted.Time
 	state.RestoredAt = restored.Time
-	state.GoalState, _ = unmarshalPersistedGoalState(payload, int(version.Int64))
+	goalState, err := unmarshalPersistedGoalState(payload, int(version.Int64))
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrGoalRestoreStateInvalid, err)
+	}
+	state.GoalState = goalState
 	return &state, nil
 }
 
