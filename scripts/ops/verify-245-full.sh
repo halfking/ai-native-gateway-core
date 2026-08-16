@@ -20,7 +20,7 @@ warn() { echo "  ⚠ $*"; WARN=$((WARN+1)); }
 
 echo "=== 245 完整验证 (ops + blocklist + board) ==="
 
-ssh "${SSH_OPTS[@]}" "$SSH_HOST" 'python3 - <<'"'"'PY'"'"'
+ssh "${SSH_OPTS[@]}" "$SSH_HOST" 'python3 -' <<'PY'
 import json, os, sys, time, urllib.request, urllib.error
 from pathlib import Path
 
@@ -149,13 +149,14 @@ if entry_id:
 
 # 6) env checks
 if env.get("LLM_GATEWAY_CENTER_URL"):
-    ok(f"LLM_GATEWAY_CENTER_URL={env.get('LLM_GATEWAY_CENTER_URL').split(chr(10))[0]}")
+    ok("LLM_GATEWAY_CENTER_URL set")
 else:
     fail("LLM_GATEWAY_CENTER_URL missing")
 if env.get("OPS_COLLECT_URL"):
-    ok(f"OPS_COLLECT_URL={env.get('"'"'OPS_COLLECT_URL'"'"').split(chr(10))[0]}")
+    ok("OPS_COLLECT_URL set")
 else:
     fail("OPS_COLLECT_URL missing")
+
 if env.get("OPS_NODE_REGION") == "245":
     ok("OPS_NODE_REGION=245")
 else:
@@ -184,7 +185,7 @@ if DB:
 
 print(f"\n=== RESULT pass={PASS} fail={FAIL} warn={WARN} ===")
 sys.exit(1 if FAIL else 0)
-PY'
+PY
 
 echo ""
 echo "=== 252 数据面（经 245 查询）==="
