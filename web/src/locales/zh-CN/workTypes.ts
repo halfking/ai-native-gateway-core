@@ -90,8 +90,10 @@ export default {
     dragToReorder: '拖动调整优先级',
     emptyPrimary: '尚未配置首选模型 — 点击「添加首选」',
     emptySecondary: '尚未配置备选模型 — 点击「添加备选」',
+    emptyFallback: '尚未配置托底模型 — 点击「添加托底」',
     addPrimary: '+ 添加首选',
     addSecondary: '+ 添加备选',
+    addFallback: '+ 添加托底',
   },
   routes: {
     title: '模型类型路由',

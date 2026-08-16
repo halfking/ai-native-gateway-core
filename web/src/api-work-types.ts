@@ -19,11 +19,8 @@ async function req<T>(method: string, path: string, body?: unknown): Promise<T> 
   return resp.json() as Promise<T>
 }
 
-// work_type_model_route.tier is a two-layer (primary/secondary) priority
-// ordering for the response model sequence. `fallback` is reserved for
-// future per-tier tertiary routes; we still accept it on the wire for
-// forward-compat with the index tier system but the UI only edits the
-// two primary layers.
+// work_type_model_route.tier is a three-layer priority ordering. Every tier
+// can contain multiple canonical models; weight orders models within a tier.
 export type ModelRouteTier = 'primary' | 'secondary' | 'fallback'
 
 export interface ModelRoute {
@@ -64,7 +61,7 @@ export function normalizeRouteTier(rt: Partial<ModelRoute>): ModelRouteTier {
 }
 
 /**
- * Bucket model routes by tier for the two-layer UI. Routes that have
+ * Bucket model routes by tier for the three-layer UI. Routes that have
  * an empty canonical_name are dropped (frontend can have a half-filled
  * draft row, but it should never be persisted). Unknown tiers fall into
  * the `secondary` bucket so legacy data still renders.
