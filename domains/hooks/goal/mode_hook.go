@@ -136,6 +136,13 @@ type GoalStore interface {
 	GetSession(ctx context.Context, tenantID, sessionID string) (*Session, error)
 	CreateSession(ctx context.Context, session *Session) error
 	UpdateSessionState(ctx context.Context, tenantID, sessionID string, state State) error
+	// CompareAndSetState atomically transitions state to target only when the
+	// current state is in allowedFrom. Returns (true, nil) on success,
+	// (false, nil) when the row is in another state (including a terminal
+	// state already set by a concurrent writer), and (false, err) on DB error.
+	// Used to keep terminal states (completed/failed) sticky against racing
+	// retry-exhaustion writes.
+	CompareAndSetState(ctx context.Context, tenantID, sessionID string, allowedFrom []State, target State) (bool, error)
 	IncrementAutoContinueCount(ctx context.Context, tenantID, sessionID string) error
 	IncrementDecisionCount(ctx context.Context, tenantID, sessionID string) error
 	UpdateSessionAudit(ctx context.Context, tenantID, sessionID string, auditResult []byte) (bool, error)
@@ -151,6 +158,15 @@ type GoalStore interface {
 	// rotated model gets a fresh continue budget. Returns true if this caller
 	// won the rotation (false = already at the switch cap).
 	AtomicModelSwitch(ctx context.Context, tenantID, sessionID, newModel string, maxAllowed int) (bool, error)
+}
+
+// allowedNonTerminalStates lists the source states from which a transition
+// into a terminal state (completed/failed) is permitted. Empty string is
+// included so the CAS gracefully no-ops when the goal session row does not
+// yet exist (the proposal may not have created a goal_sessions row before the
+// failure path runs).
+func allowedNonTerminalStates() []State {
+	return []State{StateActive, StateRetrying, StatePaused, ""}
 }
 
 // LLMCaller abstracts LLM invocation.
@@ -224,13 +240,21 @@ func (h *ModeHook) InterceptNonStream(ctx context.Context, req *response.Interce
 	// or even "tool_calls" (structured status field). Completion short-circuits
 	// the auto-continue path: a finished task should be audited, not nudged.
 	//
-	// Apply the tenant's configured completion-confidence threshold first so
-	// the verdict honours goal.completion_confidence (hot-reloadable).
-	h.detector.SetMinConfidence(h.loadFloat(req.TenantID, "goal.completion_confidence", h.config.CompletionConfidence))
-	completed, confidence, reason := h.detector.IsCompleted(ctx, req)
+	// Resolve the tenant's configured completion-confidence threshold per
+	// request and pass it explicitly to the detector. The detector is a
+	// singleton on ChatHandler, so any per-instance threshold state would race
+	// between concurrent tenants — passing it as an argument keeps each
+	// tenant's verdict isolated.
+	minConfidence := h.loadFloat(req.TenantID, "goal.completion_confidence", h.config.CompletionConfidence)
+	completed, confidence, reason := h.detector.IsCompleted(ctx, req, minConfidence)
 	if completed {
 		slog.Info("task_completed", "session_id", req.SessionID, "confidence", confidence, "reason", reason)
-		_ = h.db.UpdateSessionState(ctx, req.TenantID, req.SessionID, StateCompleted)
+		// CompareAndSetState guards against the loop-exhaustion / provider-retry
+		// paths racing in to overwrite "completed" with "failed". A concurrent
+		// failure write simply no-ops; the task stays marked completed.
+		if won, _ := h.db.CompareAndSetState(ctx, req.TenantID, req.SessionID, allowedNonTerminalStates(), StateCompleted); !won {
+			slog.Info("goal_completion_state_already_terminal", "session_id", req.SessionID, "tenant_id", req.TenantID)
+		}
 		h.observeOutcome(ctx, Outcome{
 			Kind: OutcomeCompleted, SessionID: req.SessionID, TenantID: req.TenantID,
 			Reason: reason, Source: "completion_detector", RetryCount: goalSession.RetryCount,
@@ -313,8 +337,13 @@ func (h *ModeHook) decideAndContinue(ctx context.Context, req *response.Intercep
 			"reason", decision.reason,
 			"auto_continue_count", sess.AutoContinueCount,
 			"model_switch_count", sess.ModelSwitchCount)
-		if err := h.db.UpdateSessionState(ctx, req.TenantID, req.SessionID, StateFailed); err != nil {
+		// CompareAndSetState preserves a concurrently-set terminal state. If a
+		// completion verdict already won the race, the failed write is dropped
+		// (logged below) — completed is sticky and audit will follow.
+		if won, err := h.db.CompareAndSetState(ctx, req.TenantID, req.SessionID, allowedNonTerminalStates(), StateFailed); err != nil {
 			slog.Warn("goal_failed_state_persist_failed", "session_id", req.SessionID, "error", err)
+		} else if !won {
+			slog.Info("goal_failed_state_skipped_terminal", "session_id", req.SessionID, "tenant_id", req.TenantID)
 		}
 		h.observeOutcome(ctx, Outcome{
 			Kind: OutcomeFailed, SessionID: req.SessionID, TenantID: req.TenantID,
@@ -358,8 +387,10 @@ func (h *ModeHook) shouldAutoContinue(ctx context.Context, req *response.Interce
 			return true
 		}
 		// Otherwise re-check completion so we don't loop forever nudging a
-		// finished task (legacy stream path only).
-		completed, _, _ := h.detector.IsCompleted(ctx, req)
+		// finished task (legacy stream path only). Threshold is resolved per
+		// request; see InterceptNonStream for the rationale.
+		minConfidence := h.loadFloat(req.TenantID, "goal.completion_confidence", h.config.CompletionConfidence)
+		completed, _, _ := h.detector.IsCompleted(ctx, req, minConfidence)
 		if completed {
 			return false
 		}
@@ -436,11 +467,13 @@ func (h *ModeHook) InterceptStreamEnd(ctx context.Context, meta *response.Stream
 	// completion path: detect completion, otherwise hand off to the unified
 	// decideAndContinue (which also handles model switching on loops).
 	if len(meta.ResponseBody) > 0 {
-		h.detector.SetMinConfidence(h.loadFloat(meta.TenantID, "goal.completion_confidence", h.config.CompletionConfidence))
-		completed, confidence, reason := h.detector.IsCompleted(ctx, req)
+		minConfidence := h.loadFloat(meta.TenantID, "goal.completion_confidence", h.config.CompletionConfidence)
+		completed, confidence, reason := h.detector.IsCompleted(ctx, req, minConfidence)
 		if completed {
 			slog.Info("task_completed_stream", "session_id", meta.SessionID, "confidence", confidence, "reason", reason)
-			_ = h.db.UpdateSessionState(ctx, meta.TenantID, meta.SessionID, StateCompleted)
+			if won, _ := h.db.CompareAndSetState(ctx, meta.TenantID, meta.SessionID, allowedNonTerminalStates(), StateCompleted); !won {
+				slog.Info("goal_completion_state_already_terminal", "session_id", meta.SessionID, "tenant_id", meta.TenantID, "source", "stream")
+			}
 			h.observeOutcome(ctx, Outcome{
 				Kind: OutcomeCompleted, SessionID: meta.SessionID, TenantID: meta.TenantID,
 				Reason: reason, Source: "completion_detector", RetryCount: goalSession.RetryCount,

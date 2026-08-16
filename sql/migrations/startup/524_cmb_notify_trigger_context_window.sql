@@ -1,6 +1,6 @@
 -- Migration 524: make the auto_route NOTIFY trigger fire on context_window_override
 --
--- 522 added credential_model_bindings.context_window_override, which feeds the
+-- 523 added credential_model_bindings.context_window_override, which feeds the
 -- runtime candidate SQL (provider/client.go) and therefore the compression
 -- trigger thresholds (transformation.ThresholdBytes, the session compressor's
 -- TOKEN trigger, and the 4xx smart-window recovery cut point).
