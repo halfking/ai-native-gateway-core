@@ -226,21 +226,21 @@ func (h *Handler) updateModelOffer(w http.ResponseWriter, r *http.Request, provi
 		// smart-window recovery cut point). Without this wakeup other gateway
 		// instances keep a stale candCache and trim off the old window —
 		// exactly the multi-layer-cache hazard the review flagged.
-		// Migration 523 widens the DB trigger to NOTIFY on the column, but we
+		// Migration 524 widens the DB trigger to NOTIFY on the column, but we
 		// also fire an explicit NOTIFY here (matching the other manual-override
 		// endpoints) so a missed DB-event path can't strand sibling processes.
 		invalidateRoutingCaches(r.Context(), h.db, "credential_model_bindings", offerID)
 	}
 
 	var result struct {
-		ID                  int     `json:"id"`
-		RawModelName        string  `json:"raw_model_name"`
-		StandardizedName    *string `json:"standardized_name"`
-		CanonicalID         *int    `json:"canonical_id"`
-		CanonicalName       *string `json:"canonical_name"`
-		OutboundModelName   *string `json:"outbound_model_name"`
-		ContextWindow       *int    `json:"context_window"`
-		ContextWindowOverride *int  `json:"context_window_override"`
+		ID                    int     `json:"id"`
+		RawModelName          string  `json:"raw_model_name"`
+		StandardizedName      *string `json:"standardized_name"`
+		CanonicalID           *int    `json:"canonical_id"`
+		CanonicalName         *string `json:"canonical_name"`
+		OutboundModelName     *string `json:"outbound_model_name"`
+		ContextWindow         *int    `json:"context_window"`
+		ContextWindowOverride *int    `json:"context_window_override"`
 	}
 	//nolint:errcheck // scan error non-critical
 	h.db.QueryRow(ctx, `
@@ -620,21 +620,21 @@ func (h *Handler) setCredentialManualDisabled(w http.ResponseWriter, r *http.Req
 	ursmApplied := h.applyURSMManualDisabled(ctx, credID, req.ManualDisabled, req.Reason, actor)
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"message":             "updated",
-		"manual_disabled":     req.ManualDisabled,
-		"actor":               actor,
-		"ursm_v2_applied":     ursmApplied.applied,
-		"ursm_v2_models":      ursmApplied.models,
-		"ursm_v2_errors":      ursmApplied.errors,
+		"message":         "updated",
+		"manual_disabled": req.ManualDisabled,
+		"actor":           actor,
+		"ursm_v2_applied": ursmApplied.applied,
+		"ursm_v2_models":  ursmApplied.models,
+		"ursm_v2_errors":  ursmApplied.errors,
 	})
 }
 
 // urmsManualDisableResult reports the URSM v2 manual-hold fan-out outcome for
 // setCredentialManualDisabled. Used only to surface diagnostics in the response.
 type urmsManualDisableResult struct {
-	applied bool   // true if at least one model's ApplyAdmin succeeded
-	models  int    // number of bound raw_models attempted
-	errors  int    // number of per-model ApplyAdmin failures
+	applied bool // true if at least one model's ApplyAdmin succeeded
+	models  int  // number of bound raw_models attempted
+	errors  int  // number of per-model ApplyAdmin failures
 }
 
 // applyURSMManualDisabled fans an URSM v2 manual-hold (or release) across every

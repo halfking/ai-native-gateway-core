@@ -875,4 +875,5 @@
 |-----------|------|---------|--------|
 | 522 | `522_request_state_transitions_tenant_contract.sql` | `5d0b1080fe54e650c0ccbc3e4dea94da0b0d8323271dcc4e0c466518708da658` | applied+verified on 252 at 2026-08-16 22:50:38 +08; no-op after deployed 521_repair superset; tenant_id NOT NULL, tenant/request index, and RLS policies verified. |
 | 523 | `523_credential_model_context_window_override.sql` | `7b805b01095ae48514ad1516cb59f9456bbda7a4c5f48bf646eddea9d6059da0` | applied+verified on 252 at 2026-08-17 00:27:31 +08; exact deployed source restored with post-condition assertions. |
+| 524 | `524_cmb_notify_trigger_context_window.sql` | `58fad10ea0543022d49d469f829f25e0f7dece765c7e7bdbe8d6e94298ab840d` | renumbered from an undeployed 523 source collision; deployment evidence pending. |
 
