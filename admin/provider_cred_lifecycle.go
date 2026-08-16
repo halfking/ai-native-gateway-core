@@ -254,6 +254,7 @@ func (h *Handler) doHealthCheck(ctx context.Context, providerID, credID int, mod
 						healthError = "chat succeeded; models endpoint format was not recognized"
 					}
 				} else {
+					healthStatus = "degraded"
 					probeError = fmt.Sprintf("chat endpoint returned %d: %s", chatResult.statusCode, chatResult.errorMessage)
 				}
 			}
