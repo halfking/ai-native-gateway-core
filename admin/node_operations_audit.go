@@ -44,9 +44,9 @@ func (a *nodeOperationAuditLogger) auditTestNow(providerID int, operatorID, stat
 		requestID := generateTestNowRequestID(providerID)
 
 		_, err := a.db.Exec(ctx, `
-			INSERT INTO request_state_transitions (request_id, transition_type, from_state, to_state, metadata)
-			VALUES ($1, $2, $3, $4, $5)`,
-			requestID, "state", "admin_trigger", "test_completed", metadataJSON)
+				INSERT INTO request_state_transitions (request_id, tenant_id, transition_type, from_state, to_state, metadata)
+				VALUES ($1, $2, $3, $4, $5, $6)`,
+			requestID, "default", "state", "admin_trigger", "test_completed", metadataJSON)
 
 		if err != nil {
 			slog.Warn("audit test-now failed (non-blocking)",
@@ -83,9 +83,9 @@ func (a *nodeOperationAuditLogger) auditNodeToggle(providerID int, enabled bool,
 		}
 
 		_, err := a.db.Exec(ctx, `
-			INSERT INTO request_state_transitions (request_id, transition_type, from_state, to_state, metadata)
-			VALUES ($1, $2, $3, $4, $5)`,
-			requestID, "state", fromState, toState, metadataJSON)
+				INSERT INTO request_state_transitions (request_id, tenant_id, transition_type, from_state, to_state, metadata)
+				VALUES ($1, $2, $3, $4, $5, $6)`,
+			requestID, "default", "state", fromState, toState, metadataJSON)
 
 		if err != nil {
 			slog.Warn("audit node toggle failed (non-blocking)",

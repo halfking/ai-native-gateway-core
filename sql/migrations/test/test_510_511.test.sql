@@ -45,12 +45,12 @@ SELECT '511: index request exists' AS check_name,
    AND indexname = 'idx_state_transitions_request';
 
 -- ── 511: 插入 + 查询 + CHECK ──────────────────────────────────
-INSERT INTO request_state_transitions (request_id, transition_type, from_state, to_state, metadata)
-VALUES ('test-511-req', 'route', NULL, 'route_resolve',
+INSERT INTO request_state_transitions (request_id, tenant_id, transition_type, from_state, to_state, metadata)
+VALUES ('test-511-req', 'default', 'route', NULL, 'route_resolve',
         '{"candidates": ["cred-1"], "block_reason": null}'::jsonb),
-       ('test-511-req', 'retry', 'upstream_request', 'route_credential',
+       ('test-511-req', 'default', 'retry', 'upstream_request', 'route_credential',
         '{"retry_seq": 1, "reason_class": "rate_limit"}'::jsonb),
-       ('test-511-req', 'node_switch', 'cred-1', 'cred-2',
+       ('test-511-req', 'default', 'node_switch', 'cred-1', 'cred-2',
         '{"from_node": "cred-1", "to_node": "cred-2"}'::jsonb);
 
 SELECT '511: insert + query' AS check_name,

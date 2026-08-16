@@ -108,6 +108,40 @@ _psql -v ON_ERROR_STOP=1 -tAc \"$cond\" 2>/dev/null" 2>/dev/null | grep -qE '^[1
   done <<<"$conditions"
 }
 
+_deploy_state_transitions_contract_gate() {
+  local ssh_cmd=$1 env_file=$2
+  local remote_psql result
+  remote_psql=$(_deploy_remote_psql_script "$env_file")
+
+  result=$(_deploy_verify_ssh "$ssh_cmd" "${remote_psql}
+_psql -v ON_ERROR_STOP=1 -tAc \"SELECT
+  (SELECT count(*) FROM information_schema.columns
+   WHERE table_schema = current_schema()
+     AND table_name = 'request_state_transitions'
+     AND column_name = 'tenant_id'
+     AND is_nullable = 'NO') || '|' ||
+  (SELECT count(*) FROM pg_indexes
+   WHERE schemaname = current_schema()
+     AND tablename = 'request_state_transitions'
+     AND indexname = 'idx_state_transitions_tenant_request') || '|' ||
+  (SELECT count(*) FROM pg_indexes
+   WHERE schemaname = current_schema()
+     AND tablename = 'request_state_transitions'
+     AND indexname = 'uq_state_transitions_request_seq')\"" 2>/dev/null) || {
+    _db_err "无法读取 request_state_transitions schema contract"
+    return 1
+  }
+  result=$(printf '%s' "$result" | tr -d '[:space:]')
+
+  local tenant_column tenant_index replay_index
+  IFS='|' read -r tenant_column tenant_index replay_index <<<"$result"
+  if [[ "$tenant_column" != "1" || "$tenant_index" != "1" || "$replay_index" != "1" ]]; then
+    _db_err "request_state_transitions schema contract 不完整 (tenant_id_not_null=${tenant_column:-0}, tenant_index=${tenant_index:-0}, replay_index=${replay_index:-0})"
+    _db_err "拒绝切换版本；请先应用前向修复 migration 并核验真实表结构"
+    return 1
+  fi
+}
+
 _deploy_migration_history_gate() {
   local ssh_cmd=$1 env_file=$2
   local remote_psql result
@@ -422,6 +456,7 @@ _psql -v ON_ERROR_STOP=1 -tAc \"SELECT checksum FROM llm_gateway_migration_check
   done
 
   "$ssh_cmd" "rm -rf '$remote_dir'" || true
+  _deploy_state_transitions_contract_gate "$ssh_cmd" "$env_file" || return 1
   _db_log "✓ 迁移完成 ($applied_count 新应用 / ${#pending[@]} 检查)"
   deploy_append_db_changelog "$target" "$seq" "$git_sha" "${applied_files[@]}"
 }
