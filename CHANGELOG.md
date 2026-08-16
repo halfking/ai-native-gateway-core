@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - 2026-08-17 (Long-Running Request Recovery)
+
+### Fixed
+
+- **请求级恢复预算**：所有 Chat/Anthropic 真实上游 HTTP 调用共享原子预算，单个客户端请求最多 100 次；预算耗尽后在未提交语义输出时终止，避免 Survival 与 dispatch 嵌套重试放大调用次数。
+- **节点与模型切换**：同一节点连续失败 3 次后才切换，凭据致命失败仍立即跳过；模型候选必须具备已知 Standard IQ、不低于初始模型且匹配任务能力。
+- **长程保活与退避**：request-survival 默认可等待 24 小时，退避指数增长但严格不超过 120 秒；等待期间 Anthropic 收到原生 ping，OpenAI Chat/Responses 收到 SSE comment，客户端取消立即停止。
+- **配置契约**：同步 request-survival 示例、默认值和边界测试，阻止超过 100 次或 120 秒的配置回归。
+
 ## [Unreleased] - 2026-08-16 (Auto Loopback Parent Correlation Repair)
 
 ### Fixed
