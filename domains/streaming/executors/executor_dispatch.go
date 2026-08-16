@@ -3,12 +3,12 @@ package executors
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"strconv"
 	"sync"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/autoroute"
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/domains/dispatch"
 	"github.com/kaixuan/llm-gateway-go/domains/transformation"
@@ -41,6 +41,7 @@ type dispatchCtx struct {
 	params         *ExecParams
 	candidates     []provider.Candidate
 	byModel        map[string][]provider.Candidate
+	initialModel   string
 	holder         string
 	fpSlotDegraded bool
 	retryPerCred   int
@@ -79,15 +80,22 @@ func (d *dispatchCtx) outcomeSnapshot() []dispatchRequestOutcome {
 // dispatch_v2 gate is off, Execute uses the legacy synchronous loop.
 func (e *Executor) SetDispatchPipeline(p *dispatch.Pipeline) { e.dispatchPipeline = p }
 
+// SetDispatchModelRecommender wires the autoroute decision service used after
+// the current model's credentials are exhausted before the first byte.
+func (e *Executor) SetDispatchModelRecommender(d DispatchModelRecommender) {
+	e.dispatchModelRecommender = d
+}
+
 // NewDispatchPipeline builds the shared, long-lived dispatch.Pipeline with
 // adapters that read per-request context from QueuedRequest.Payload. Call once
 // at startup (cmd/gateway), then SetDispatchPipeline + pipeline.Start().
-func (e *Executor) NewDispatchPipeline(allowModelChange bool) *dispatch.Pipeline {
+func (e *Executor) NewDispatchPipeline() *dispatch.Pipeline {
 	return dispatch.NewPipeline(dispatch.Deps{
-		RouteFunc:        e.dispatchRoute,
-		ModelResolveFunc: e.dispatchResolveModel,
-		ForwardFunc:      e.dispatchForward,
-		AllowModelChange: allowModelChange,
+		RouteFunc:            e.dispatchRoute,
+		ModelResolveFunc:     e.dispatchResolveModel,
+		ModelRecommendFunc:   e.dispatchRecommendModels,
+		ForwardFunc:          e.dispatchForward,
+		AllowModelChangeFunc: dispatch.IsModelChangeEnabled,
 	})
 }
 
@@ -158,6 +166,25 @@ func (e *Executor) dispatchRoute(ctx context.Context, qr *dispatch.QueuedRequest
 // dispatch does not have to infer intent from the rewritten body.
 func (e *Executor) dispatchResolveModel(_ context.Context, requested string, _ []string) (string, []string, error) {
 	return requested, nil, nil
+}
+
+func (e *Executor) dispatchRecommendModels(ctx context.Context, qr *dispatch.QueuedRequest, tried []string) ([]string, error) {
+	dctx, ok := qr.Payload.(*dispatchCtx)
+	if !ok || dctx == nil || dctx.params == nil {
+		return nil, errDispatchBadPayload
+	}
+	params := dctx.params
+	if e.dispatchModelRecommender == nil || !params.DispatchAllowModelChange {
+		return nil, autoroute.ErrNoCandidates
+	}
+	return e.dispatchModelRecommender.RecommendModelAlternatives(ctx, autoroute.ModelAlternativeRequest{
+		Task:        autoroute.TaskType(params.DispatchAutoTask),
+		Signals:     params.DispatchAutoSignals,
+		Profile:     autoroute.Profile(params.DispatchAutoProfile),
+		SessionID:   params.SessionID,
+		WorkType:    params.DispatchAutoWorkType,
+		TriedModels: append([]string(nil), tried...),
+	})
 }
 
 // dispatchForward is the executor-supplied ForwardFunc: one per-candidate
@@ -265,19 +292,20 @@ func (e *Executor) executeViaDispatch(
 	if params.Policy != nil {
 		retryPerCred = params.Policy.RetryPerCredential
 	}
+	requestedModel := params.Model
+	if requestedModel == "" {
+		requestedModel = params.ClientModel
+	}
 	dctx := &dispatchCtx{
 		params:         params,
 		candidates:     candidates,
 		byModel:        mapCandidatesByModel(candidates),
+		initialModel:   requestedModel,
 		holder:         holder,
 		fpSlotDegraded: fpSlotDegraded,
 		retryPerCred:   retryPerCred,
 		tTotal:         time.Now(),
 		stickyCredID:   stickyCredID,
-	}
-	requestedModel := params.Model
-	if requestedModel == "" {
-		requestedModel = params.ClientModel
 	}
 	dispatchCtx, cancelDispatch := dispatchExecutionContext(params)
 	defer cancelDispatch()
@@ -286,7 +314,7 @@ func (e *Executor) executeViaDispatch(
 	// admin /sessions/{id}/timeline endpoint. Empty for one-shot traffic.
 	qr.SessionID = params.SessionID
 	qr.EstimatedTokens = estimatePromptTokens(params)
-	qr.AllowModelChange = params.DispatchAllowModelChange && len(params.DispatchModelAlternatives) > 0
+	qr.AllowModelChange = params.DispatchAllowModelChange
 	qr.AllowProviderChange = params.DispatchAllowProviderChange
 	qr.RetryPerCredential = retryPerCred
 	qr.ModelAlternatives = append([]string(nil), params.DispatchModelAlternatives...)
@@ -339,21 +367,31 @@ func (e *Executor) dispatchCandidatesForModel(ctx context.Context, d *dispatchCt
 	if d == nil {
 		return nil
 	}
-	if model == "" {
+	if model == "" || model == d.initialModel {
 		return d.candidates
 	}
 	if cands := d.candidatesForModel(model); len(cands) > 0 {
 		return cands
 	}
-	if e.Provider == nil || d.params == nil || d.params.DispatchRequestModality == "" {
-		return d.candidates
+	if e.Provider == nil || d.params == nil {
+		return nil
 	}
-	resolver, ok := e.Provider.(modalityProviderResolver)
-	if !ok {
-		return d.candidates
+	var (
+		cands  []provider.Candidate
+		policy *provider.Policy
+		err    error
+	)
+	if d.params.DispatchRequestModality != "" {
+		resolver, ok := e.Provider.(modalityProviderResolver)
+		if !ok {
+			return nil
+		}
+		cands, policy, err = resolver.GetCandidatesByModality(ctx, model,
+			d.params.ClientID.Fingerprint.ClientProfile, d.params.TenantID, d.params.DispatchRequestModality)
+	} else {
+		cands, policy, err = e.Provider.GetCandidates(ctx, model,
+			d.params.ClientID.Fingerprint.ClientProfile, d.params.TenantID)
 	}
-	cands, policy, err := resolver.GetCandidatesByModality(ctx, model,
-		d.params.ClientID.Fingerprint.ClientProfile, d.params.TenantID, d.params.DispatchRequestModality)
 	if err != nil || len(cands) == 0 {
 		slog.Warn("dispatch: alternate model candidate resolve failed",
 			"request_id", d.params.RequestID, "model", model, "error", err)
@@ -376,10 +414,7 @@ func (d *dispatchCtx) candidatesForModel(model string) []provider.Candidate {
 	if model == "" {
 		return d.candidates
 	}
-	if cands := d.byModel[model]; len(cands) > 0 {
-		return cands
-	}
-	return d.candidates
+	return d.byModel[model]
 }
 
 func mapCandidatesByModel(candidates []provider.Candidate) map[string][]provider.Candidate {
@@ -403,16 +438,21 @@ func mapCandidatesByModel(candidates []provider.Candidate) map[string][]provider
 func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate) dispatch.ForwardOutcome {
 	params := dctx.params
 
-	// ── FP slot (best-effort; degraded mode tolerates failure) ──
+	// ── FP slot (best-effort). A slot can become saturated after the
+	// prefilter but before this queued request reaches Forward. Degrade at the
+	// actual Acquire point as well; fingerprint isolation must not turn a
+	// healthy provider into a request failure under concurrent dispatch. ──
 	var fpLease *credentialfpslot.Lease
 	if e.FpSlots != nil && e.FpSlots.Enabled() {
 		lease, ok := e.FpSlots.Acquire(params.R.Context(), cand.CredentialID, cand.FpSlotLimit, dctx.holder, fpSlotTenantID(params))
 		if !ok {
-			if dctx.fpSlotDegraded {
-				fpLease = nil
-			} else {
-				return dispatch.ForwardOutcome{Err: errDispatchFpSlotSaturated}
-			}
+			dctx.fpSlotDegraded = true
+			fpSlotDegradedTotal.WithLabelValues(params.ClientModel, "acquire_saturated").Inc()
+			slog.Warn("dispatch fp slot saturated, running without slot",
+				"request_id", params.RequestID,
+				"credential_id", cand.CredentialID,
+				"provider_id", cand.ProviderID,
+			)
 		} else {
 			fpLease = lease
 		}
@@ -452,17 +492,17 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 	var result *ExecuteResult
 	var execErr error
 	func() {
-		defer func() {
-			if recovered := recover(); recovered != nil {
-				execErr = fmt.Errorf("dispatch executor panic: %v", recovered)
-			}
-		}()
-		defer release()
-		defer releaseFpLease(e.FpSlots, fpLease)
-		if e.PeakCollector != nil {
+		releasePeak := e.PeakCollector != nil
+		if releasePeak {
 			e.PeakCollector.Acquire(int64(cand.CredentialID), cand.RawModel)
-			defer e.PeakCollector.Release(int64(cand.CredentialID), cand.RawModel)
 		}
+		defer func() {
+			if releasePeak {
+				e.PeakCollector.Release(int64(cand.CredentialID), cand.RawModel)
+			}
+			release()
+			releaseFpLease(e.FpSlots, fpLease)
+		}()
 
 		// multi-key rotation (same as legacy loop).
 		if cand.KeyRotator != nil {

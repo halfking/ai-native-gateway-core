@@ -3562,10 +3562,9 @@ func (h *ChatHandler) serveWithExecutor(
 
 	// Retry loop
 	dispatchModelAlternatives := []string(nil)
-	dispatchAllowModelChange := false
-	if logCtx != nil && logCtx.IsAutoRequest && len(logCtx.AutoFallbackModels) > 0 && dispatchAllowModelChangeEnabled() {
+	dispatchAllowModelChange := logCtx != nil && logCtx.IsAutoRequest && dispatchAllowModelChangeEnabled()
+	if dispatchAllowModelChange {
 		dispatchModelAlternatives = append([]string(nil), logCtx.AutoFallbackModels...)
-		dispatchAllowModelChange = true
 	}
 	dispatchAllowProviderChange := hasMultipleProviders(candidates)
 	dispatchModelAlternativesConsumed := dispatchAllowModelChange
@@ -3681,6 +3680,10 @@ func (h *ChatHandler) serveWithExecutor(
 			Policy:                      policy,
 			DispatchModelAlternatives:   append([]string(nil), dispatchModelAlternatives...),
 			DispatchAllowModelChange:    dispatchAllowModelChange,
+			DispatchAutoTask:            autoTaskFromLogContext(logCtx),
+			DispatchAutoProfile:         autoProfileFromLogContext(logCtx),
+			DispatchAutoWorkType:        autoWorkTypeFromLogContext(logCtx),
+			DispatchAutoSignals:         autoSignalsFromLogContext(logCtx),
 			DispatchAllowProviderChange: dispatchAllowProviderChange,
 			PinCredentialID:             parsePinCredentialHeader(r),
 			DispatchRequestModality:     requestModality,

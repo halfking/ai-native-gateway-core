@@ -90,21 +90,28 @@ func (p *Pipeline) selectAndEnqueue(qr *QueuedRequest) bool {
 // current model are exhausted, switch to an alternative model. If model-change
 // is disabled or no alternative exists, complete with the original cause.
 func (p *Pipeline) tryModelChange(qr *QueuedRequest, cause error) {
-	if !p.allowModelChange || !qr.AllowModelChange {
+	if !p.modelChangeEnabled() || !qr.AllowModelChange {
 		p.emitNoRouteIfCause(qr, cause)
 		p.complete(qr, ForwardOutcome{Err: terminalErr(cause)})
 		return
 	}
 	qr.markTriedModel(qr.ResolvedModel)
-	alts := qr.ModelAlternatives
-	if len(alts) == 0 {
-		_, resolvedAlts, err := p.modelResolveFunc(qr.Ctx, qr.RequestedModel, triedList(qr.TriedModels))
-		if err != nil {
-			p.emitNoRouteIfCause(qr, cause)
-			p.complete(qr, ForwardOutcome{Err: terminalErr(cause)})
-			return
+	var (
+		alts []string
+		err  error
+	)
+	if p.modelRecommendFunc != nil {
+		alts, err = p.modelRecommendFunc(qr.Ctx, qr, triedList(qr.TriedModels))
+	} else {
+		alts = qr.ModelAlternatives
+		if len(alts) == 0 {
+			_, alts, err = p.modelResolveFunc(qr.Ctx, qr.RequestedModel, triedList(qr.TriedModels))
 		}
-		alts = resolvedAlts
+	}
+	if err != nil {
+		p.emitNoRouteIfCause(qr, cause)
+		p.complete(qr, ForwardOutcome{Err: terminalErr(cause)})
+		return
 	}
 	if len(alts) == 0 {
 		p.emitNoRouteIfCause(qr, cause)
@@ -140,7 +147,7 @@ func (p *Pipeline) tryModelChange(qr *QueuedRequest, cause error) {
 	qr.TriedCredentials = make(map[int]struct{})
 	qr.CredRetryCount = 0
 	qr.InitialProviderID = 0
-	metricFailover.WithLabelValues("model_switch").Inc()
+	metricFailover.WithLabelValues("model_change").Inc()
 	slog.Info("dispatch: model change",
 		"request_id", qr.ID, "from", qr.RequestedModel, "to", chosen,
 		"tried_models", len(qr.TriedModels))

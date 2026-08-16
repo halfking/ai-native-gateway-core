@@ -280,18 +280,8 @@ func (h *Handler) settingsPut(w http.ResponseWriter, r *http.Request, key string
 		writeError(w, http.StatusInternalServerError, "save failed: "+err.Error())
 		return
 	}
-	if !tenant && key == ratelimit.RateLimitGateKey {
-		var enabled bool
-		if err := json.Unmarshal(body.Value, &enabled); err == nil {
-			ratelimit.SetRateLimitEnabled(enabled)
-		}
-	}
-	// 2026-08-11 (479): 即时同步 dispatch_v2.enabled 到 dispatch 包的 atomic 缓存。
-	if !tenant && key == dispatch.DispatchGateKey {
-		var enabled bool
-		if err := json.Unmarshal(body.Value, &enabled); err == nil {
-			dispatch.SetDispatchEnabled(enabled)
-		}
+	if !tenant {
+		applyRuntimeSetting(key, body.Value)
 	}
 
 	// Audit.
@@ -362,11 +352,8 @@ func (h *Handler) settingsRollback(w http.ResponseWriter, r *http.Request, key s
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if !tenant && key == ratelimit.RateLimitGateKey {
-		var enabled bool
-		if err := json.Unmarshal(newVal, &enabled); err == nil {
-			ratelimit.SetRateLimitEnabled(enabled)
-		}
+	if !tenant {
+		applyRuntimeSetting(key, newVal)
 	}
 
 	user, role, ip := authIdentity(r)
@@ -385,6 +372,21 @@ func (h *Handler) settingsRollback(w http.ResponseWriter, r *http.Request, key s
 		"status":         "ok",
 		"rolled_back_to": newVal,
 	})
+}
+
+func applyRuntimeSetting(key string, raw json.RawMessage) {
+	var enabled bool
+	if err := json.Unmarshal(raw, &enabled); err != nil {
+		return
+	}
+	switch key {
+	case ratelimit.RateLimitGateKey:
+		ratelimit.SetRateLimitEnabled(enabled)
+	case dispatch.DispatchGateKey:
+		dispatch.SetDispatchEnabled(enabled)
+	case dispatch.ModelChangeGateKey:
+		dispatch.SetModelChangeEnabled(enabled)
+	}
 }
 
 // dbSettingsStore returns the DB-backed settings store, or (nil, false).

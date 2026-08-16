@@ -27,10 +27,10 @@ func DispatchSpecs() []*Spec {
 			Type:        TypeBool,
 			Scope:       ScopePlatform,
 			Category:    CategoryDispatch,
-			Default:     false, // v1：模型自动变更关闭；后续 phase 接入 autoroute 后开启
+			Default:     false,
 			Description: "允许同模型所有凭据耗尽时自动切换到其它模型",
 			DangerLevel: Warning,
-			HotReload:   false, // 构造 Pipeline 时读取，需重启生效
+			HotReload:   true,
 		},
 	}
 }
