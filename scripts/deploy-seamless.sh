@@ -159,7 +159,7 @@ if current != expected:
     raise SystemExit(f'current mismatch: {current} != {expected}')
 pid = subprocess.check_output(
     ['systemctl', 'show', service, '--property=MainPID', '--value'],
-    text=True,
+    universal_newlines=True,
 ).strip()
 if not pid or pid == '0':
     raise SystemExit('systemd MainPID is not running')
