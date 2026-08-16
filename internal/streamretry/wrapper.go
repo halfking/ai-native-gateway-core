@@ -21,6 +21,38 @@ import (
 // streamretry package self-contained (the request id is already stamped
 // upstream by domains/streaming/handler.go).
 type requestIDCtxKey struct{}
+type tenantCarrierCtxKey struct{}
+
+type tenantCarrier struct {
+	mu       sync.RWMutex
+	tenantID string
+}
+
+func withTenantCarrier(ctx context.Context) context.Context {
+	return context.WithValue(ctx, tenantCarrierCtxKey{}, &tenantCarrier{})
+}
+
+// SetAuthenticatedTenant records the tenant resolved by the trusted key verifier.
+// It is intentionally a no-op unless the retry wrapper installed a request carrier.
+func SetAuthenticatedTenant(ctx context.Context, tenantID string) {
+	carrier, _ := ctx.Value(tenantCarrierCtxKey{}).(*tenantCarrier)
+	if carrier == nil || strings.TrimSpace(tenantID) == "" {
+		return
+	}
+	carrier.mu.Lock()
+	carrier.tenantID = tenantID
+	carrier.mu.Unlock()
+}
+
+func authenticatedTenantFromCtx(ctx context.Context) string {
+	carrier, _ := ctx.Value(tenantCarrierCtxKey{}).(*tenantCarrier)
+	if carrier == nil {
+		return ""
+	}
+	carrier.mu.RLock()
+	defer carrier.mu.RUnlock()
+	return carrier.tenantID
+}
 
 // withRequestID attaches a request id to ctx (set by ServeHTTP from the
 // inbound X-Request-Id header).
@@ -182,11 +214,12 @@ func (w *Wrapper) ExecuteWithMetrics(ctx context.Context, httpW http.ResponseWri
 		// nil-safe — no logger wired (DB disabled / test mode) → no-op.
 		// Pulled from X-Request-Id header so the row joins request_logs.request_id.
 		// ADR-V3-102: reuse the existing request_id, never mint a new one.
-		// Tenant identity is intentionally left empty until a trusted, authenticated
-		// context is threaded into this outer retry wrapper.
-		if requestID := requestIDFromCtx(ctx); requestID != "" {
-			dispatch.LogRetryGlobal(requestID, "", rc.Attempt+1, classify.Reason,
-
+		// Retry transitions are emitted only after the inner handler's trusted key
+		// verifier has populated the request-scoped tenant carrier.
+		requestID := requestIDFromCtx(ctx)
+		tenantID := authenticatedTenantFromCtx(ctx)
+		if requestID != "" && tenantID != "" {
+			dispatch.LogRetryGlobal(requestID, tenantID, rc.Attempt+1, classify.Reason,
 				map[string]any{
 					"next_attempt": rc.Attempt + 2,
 					"retriable":    classify.Retriable,
@@ -293,8 +326,9 @@ func NewDefaultStreamExecutor(handler http.Handler, config Config) *DefaultStrea
 // it in the context so the retry loop can call LogRetryGlobal with the
 // existing request id (ADR-V3-102 — never mint a new id).
 func (e *DefaultStreamExecutor) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	ctx := withRequestID(req.Context(), strings.TrimSpace(req.Header.Get("X-Request-Id")))
-	_ = e.ExecuteStream(ctx, w, req)
+	ctx := withTenantCarrier(req.Context())
+	ctx = withRequestID(ctx, strings.TrimSpace(req.Header.Get("X-Request-Id")))
+	_ = e.ExecuteStream(ctx, w, req.WithContext(ctx))
 }
 
 // ExecuteStream implements the StreamExecutor interface.

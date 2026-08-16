@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/kaixuan/llm-gateway-go/internal/clienttype"
 	"github.com/kaixuan/llm-gateway-go/telemetry"
 )
 
@@ -22,7 +23,7 @@ import (
 func extractClientType(r *http.Request) string {
 	// 1. 明确的客户端类型头（优先级最高）
 	if ct := r.Header.Get("X-Gw-Client-Type"); ct != "" {
-		return strings.ToLower(ct)
+		return clienttype.Normalize(ct)
 	}
 
 	// 2. User-Agent 解析（IDE/Agent 特征字符串）
@@ -93,12 +94,9 @@ func extractClientTypeWithPrompt(r *http.Request, systemPrompt string) string {
 // 出于避免跨包依赖的考虑内联了一份等价副本 clientTokenOf（见
 // domains/streaming/executors/executor.go），FpSlot holder 实际由那份副本
 // 生成；两处逻辑必须保持一致，修改任一处需同步另一处。
-func ClientTokenOf(userKey, clientType string) string {
+func ClientTokenOf(userKey, clientTypeValue string) string {
 	if userKey == "" {
 		userKey = "anon"
 	}
-	if clientType == "" {
-		clientType = "unknown"
-	}
-	return userKey + "|" + clientType
+	return userKey + "|" + clienttype.Normalize(clientTypeValue)
 }

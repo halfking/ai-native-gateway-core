@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -327,6 +328,36 @@ func TestModelChangeDoesNotCrossTierAfterFirstByte(t *testing.T) {
 	}
 	if want := []string{"primary"}; !reflect.DeepEqual(attempts, want) {
 		t.Fatalf("post-first-byte request must not change models: got %v, want %v", attempts, want)
+	}
+}
+
+func TestForwardPanicReleasesGovernorAndCompletes(t *testing.T) {
+	var calls atomic.Int32
+	f := &fakeDeps{
+		refsByModel: map[string][]CredentialRef{"m": {cred(1, ModeConcurrency, 1)}},
+		forwardFn: func(context.Context, *QueuedRequest, CredentialRef) ForwardOutcome {
+			if calls.Add(1) == 1 {
+				panic("synthetic forward panic")
+			}
+			return ForwardOutcome{}
+		},
+		forwardCalls: map[int]int{},
+	}
+	p := f.pipeline()
+	p.Start()
+	defer p.Stop()
+
+	first := NewQueuedRequest("panic-req", "tenant-a", "m", context.Background(), nil)
+	_, err := p.Submit(context.Background(), first)
+	if err == nil || !strings.Contains(err.Error(), "forward panic") {
+		t.Fatalf("first Submit error = %v, want recovered forward panic", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	second := NewQueuedRequest("after-panic", "tenant-a", "m", ctx, nil)
+	if _, err := p.Submit(ctx, second); err != nil {
+		t.Fatalf("second Submit after panic = %v; governor permit leaked", err)
 	}
 }
 
