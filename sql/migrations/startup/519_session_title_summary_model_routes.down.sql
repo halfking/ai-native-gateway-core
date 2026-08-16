@@ -1,0 +1,6 @@
+-- Rollback for migration 519.
+--
+-- No-op by design. Migration 519 updates existing administrator-configurable
+-- route weights and prompt text, whose prior values cannot be recovered safely
+-- from a generic down migration. Use an operator-authored route update to
+-- restore a specific historical configuration if needed.

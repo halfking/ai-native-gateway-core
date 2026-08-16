@@ -846,7 +846,7 @@ type ChatHandler struct {
 		// request_logs_hot.parent_request_id makes the loopback joinable.
 		// 2026-08-06: taskID is the request's gw_task_id so the stored title
 		// row matches request_logs on (task_id, scoped_session_id).
-		MaybeGenerateTitle(sessionID, tenantID, taskID, requestBody, requestPreview, parentRequestID string)
+		MaybeGenerateTitle(sessionID, tenantID, taskID, requestBody, requestPreview, parentRequestID, requestID string)
 	}
 
 	// autoSummaryGenerator (2026-08-06) incrementally rolls session
@@ -1280,7 +1280,7 @@ func (h *ChatHandler) newStreamCapture() *audit.StreamCapture {
 // 2026-08-06: signature extended with taskID so the stored title row matches
 // request_logs on (task_id, scoped_session_id).
 func (h *ChatHandler) SetAutoTitleGenerator(atg interface {
-	MaybeGenerateTitle(sessionID, tenantID, taskID, requestBody, requestPreview, parentRequestID string)
+	MaybeGenerateTitle(sessionID, tenantID, taskID, requestBody, requestPreview, parentRequestID, requestID string)
 }) {
 	h.autoTitleGenerator = atg
 }
@@ -5413,7 +5413,7 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 		if reqLog.GwTaskID != nil {
 			taskID = *reqLog.GwTaskID
 		}
-		h.autoTitleGenerator.MaybeGenerateTitle(*reqLog.GwSessionID, tenantID, taskID, body, preview, evt.RequestID)
+		h.autoTitleGenerator.MaybeGenerateTitle(*reqLog.GwSessionID, tenantID, taskID, body, preview, evt.RequestID, reqLog.RequestID)
 	}
 
 	// 2026-08-06: auto-summary — fires after auto-title on the same
