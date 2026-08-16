@@ -279,9 +279,15 @@ if (typeof document !== 'undefined') {
       console.log(`[LiveStream] Page visible after ${Math.round(hiddenDuration / 1000)}s`)
       
       if (visibilityState.missedWhileHidden) {
-        console.log('[LiveStream] Missed updates while hidden, requesting full snapshot')
-        // Request full snapshot refresh from backend
-        _requestSnapshotRefresh()
+        console.log('[LiveStream] Missed updates while hidden, reconnecting for authoritative replay')
+        // A snapshot_refresh only repairs request tiles. Reconnect so the
+        // server also replays request_lifecycle and child_request frames.
+        // The existing connection is intentionally closed first; openConnection
+        // will perform the normal initial_data + lifecycle replay handshake.
+        if (refCount > 0) {
+          closeConnection()
+          openConnection()
+        }
         visibilityState.missedWhileHidden = false
       }
     } else if (document.hidden) {
@@ -625,10 +631,15 @@ function applyInitialData(items: LiveRequest[]) {
     }
   }
   idIndex.clear()
+  liveStreamState.children.clear()
+  childrenTotal = 0
   for (const r of kept) {
     if (r.type !== 'idle_marker' && r.request_id) idIndex.add(r.request_id)
   }
   liveStreamState.requests = kept
+  for (const r of kept) {
+    if (r.parentRequestId) applyChildRequest(r.parentRequestId, r)
+  }
 }
 
 function handleEnvelope(env: LiveStreamEnvelope) {

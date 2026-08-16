@@ -467,10 +467,43 @@ func (h *LiveStreamSSEHub) fanOutLifecycleActions(actions []liveactions.ActionEv
 
 // ── initial replay ──────────────────────────────────────────────────────────
 
-// replayLifecycleActions replays the most recent actions to a freshly
-// connected client, ordered ascending by (ts, seq) per 24号 §4, scoped to
-// the client's tenant visibility.
+func snapshotRequestIDs(snapshot *LiveStreamSnapshot) map[string]struct{} {
+	if snapshot == nil {
+		return nil
+	}
+	ids := make(map[string]struct{})
+	add := func(dimensions map[string][]LiveStreamLane) {
+		for _, lanes := range dimensions {
+			for _, lane := range lanes {
+				for _, tile := range lane.Requests {
+					if tile.RequestID != "" {
+						ids[tile.RequestID] = struct{}{}
+					}
+				}
+			}
+		}
+	}
+	if len(snapshot.DetailDimensions) > 0 {
+		add(snapshot.DetailDimensions)
+	}
+	if len(ids) == 0 {
+		add(snapshot.Dimensions)
+	}
+	return ids
+}
+
+// replayLifecycleActions preserves the legacy unrestricted helper used by
+// focused unit tests and callers that do not have an initial snapshot.
 func (h *LiveStreamSSEHub) replayLifecycleActions(ctx context.Context, client *liveStreamClient) {
+	h.replayLifecycleActionsFor(ctx, client, nil)
+}
+
+// replayLifecycleActionsFor replays lifecycle actions for a freshly connected
+// client. When requestIDs is non-nil, only actions belonging to request cards
+// included in the just-sent initial snapshot are replayed. This keeps the
+// global action list from filling the frontend timeline index with unrelated
+// high-volume requests.
+func (h *LiveStreamSSEHub) replayLifecycleActionsFor(ctx context.Context, client *liveStreamClient, requestIDs map[string]struct{}) {
 	if h == nil || h.cfg.RedisClient == nil || client == nil {
 		return
 	}
@@ -480,7 +513,11 @@ func (h *LiveStreamSSEHub) replayLifecycleActions(ctx context.Context, client *l
 	}
 	ctx, cancel := context.WithTimeout(ctx, actionReadTimeout)
 	defer cancel()
-	entries, err := h.cfg.RedisClient.LRange(ctx, liveactions.RedisKey, 0, int64(limit)-1).Result()
+	scanLimit := limit
+	if requestIDs != nil && actionScanPerPoll > scanLimit {
+		scanLimit = actionScanPerPoll
+	}
+	entries, err := h.cfg.RedisClient.LRange(ctx, liveactions.RedisKey, 0, int64(scanLimit)-1).Result()
 	if err != nil {
 		atomic.AddInt64(&h.actionScanErrors, 1)
 		slog.Debug("live actions replay failed", "err", err.Error())
@@ -496,6 +533,11 @@ func (h *LiveStreamSSEHub) replayLifecycleActions(ctx context.Context, client *l
 		if !isRequestScopedAction(ev) {
 			continue // 节点维度 state_change 不进 lifecycle 回放（24号 §2）
 		}
+		if requestIDs != nil {
+			if _, ok := requestIDs[ev.RequestID]; !ok {
+				continue
+			}
+		}
 		events = append(events, ev)
 	}
 	if len(events) == 0 {
@@ -507,6 +549,9 @@ func (h *LiveStreamSSEHub) replayLifecycleActions(ctx context.Context, client *l
 	subset := events
 	if !client.isSuper {
 		subset = h.actionsVisibleToTenant(events, client.tenantID)
+	}
+	if len(subset) > limit {
+		subset = subset[len(subset)-limit:]
 	}
 	if len(subset) == 0 {
 		return
