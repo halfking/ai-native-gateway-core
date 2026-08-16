@@ -3538,11 +3538,11 @@ func (h *ChatHandler) serveWithExecutor(
 	// resolver may exist process-wide, but ordinary chat requests must not
 	// inherit Goal retry latency or upstream side effects.
 	goalRetryActive := false
-	if h.goalRetryRecorder != nil && gwSessionID != "" {
+	if h.goalRetryRecorder != nil && gwSessionID != "" && keyInfo != nil && keyInfo.TenantID != "" {
 		if reader, ok := h.goalRetryRecorder.(interface {
-			GetSession(context.Context, string) (*goal.Session, error)
+			GetSession(context.Context, string, string) (*goal.Session, error)
 		}); ok {
-			session, err := reader.GetSession(r.Context(), gwSessionID)
+			session, err := reader.GetSession(r.Context(), keyInfo.TenantID, gwSessionID)
 			goalRetryActive = err == nil && session != nil
 		}
 	}

@@ -5,6 +5,7 @@ ALTER TABLE handoff_pending_confirmations
     DROP CONSTRAINT IF EXISTS handoff_pending_confirmations_status_check;
 
 ALTER TABLE handoff_pending_confirmations
+    ALTER COLUMN status TYPE VARCHAR(32),
     ADD COLUMN IF NOT EXISTS goal_state JSONB,
     ADD COLUMN IF NOT EXISTS goal_state_version INTEGER,
     ADD COLUMN IF NOT EXISTS restore_status VARCHAR(32),

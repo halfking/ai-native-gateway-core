@@ -455,6 +455,10 @@ end
 if current ~= '' and current ~= '0' then
   return {'bound', current}
 end
+local storedTenant = redis.call('HGET', KEYS[1], 'tenant_id')
+if storedTenant ~= false and storedTenant ~= '' and storedTenant ~= ARGV[2] then
+  return {'tenant_mismatch', storedTenant}
+end
 redis.call('HSET', KEYS[1], 'api_key_id', ARGV[1], 'tenant_id', ARGV[2])
 redis.call('EXPIRE', KEYS[1], ARGV[3])
 redis.call('SADD', KEYS[2], ARGV[4])
@@ -483,11 +487,11 @@ func (sm *Manager) BindAPIKey(ctx context.Context, sessionID string, apiKeyID in
 		return nil
 	case "missing":
 		return ErrSessionNotFound
-	case "bound":
+	case "bound", "tenant_mismatch":
 		if len(result) > 1 {
 			return fmt.Errorf("session already bound to api key %s", result[1])
 		}
-		return fmt.Errorf("session already bound to an api key")
+		return fmt.Errorf("session is unavailable for api key binding")
 	default:
 		return fmt.Errorf("unexpected session claim result %q", result[0])
 	}

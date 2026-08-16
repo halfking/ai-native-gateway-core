@@ -112,6 +112,19 @@ func TestManager_BindAPIKey(t *testing.T) {
 	}
 }
 
+func TestManager_BindAPIKey_RejectsDifferentOrphanTenant(t *testing.T) {
+	mgr, _ := newTestManager(t)
+	ctx := context.Background()
+	sess, _ := mgr.Create(ctx, 0, "tenant-a", "d")
+	if err := mgr.BindAPIKey(ctx, sess.SessionID, 99, "tenant-b"); err == nil {
+		t.Fatal("expected tenant mismatch when claiming an orphan session")
+	}
+	got, err := mgr.Get(ctx, sess.SessionID)
+	if err != nil || got.TenantID != "tenant-a" || got.APIKeyID != 0 {
+		t.Fatalf("orphan ownership changed: session=%+v err=%v", got, err)
+	}
+}
+
 func TestManager_BindAPIKey_AlreadyBound(t *testing.T) {
 	mgr, _ := newTestManager(t)
 	ctx := context.Background()

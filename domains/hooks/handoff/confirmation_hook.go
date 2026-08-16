@@ -2,6 +2,7 @@ package handoff
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -98,7 +99,11 @@ func (h *TriggerHook) restoreGoalState(ctx context.Context, input ConfirmationIn
 	if durable != nil {
 		durableState, err := durable.GetGoalRestoreState(ctx, input.ProposalID, input.TenantID)
 		if err != nil {
-			return fmt.Errorf("load durable goal restore state: %w", err)
+			if errors.Is(err, ErrGoalRestoreStateInvalid) {
+				_ = durable.MarkGoalRestoreManualRequired(ctx, input.ProposalID, input.TenantID, err.Error())
+				return fmt.Errorf("%w: %v", ErrGoalRestoreManualRequired, err)
+			}
+			return fmt.Errorf("%w: load durable goal restore state: %v", ErrGoalRestoreRetryable, err)
 		}
 		if durableState == nil {
 			return nil
