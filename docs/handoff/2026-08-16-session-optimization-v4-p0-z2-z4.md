@@ -83,9 +83,9 @@
 - `go test ./domains/session/v2/...`、受影响 session/streaming/telemetry/admin/bg/sessionsummary/gateway/validator 包、`go test ./...`、`go vet ./...`、`go build ./...` 与 `git diff --check` 均在合并前通过。
 - strict secrets 全仓扫描命中仓库既有基线（57 BLOCK / 1052 WARN），与本改动无关；针对本主题 8 个文件运行的 strict 扫描为 0 findings。
 
-待补充：
+PG17 隔离复验：
 
-- PostgreSQL 17 隔离临时库执行 `test_525_526.test.sql` 的真实 apply、重复 apply 与清理结果。本次结果必须写入本节及相应 `FIXME`，不可只在聊天记录中声明。
+- PostgreSQL 17 隔离临时库复验（2026-08-17）：使用合同完整的 pre-525 fixture（46 列 partitioned parent、当月 leaf、sequence、`ensure_sessions_v2_partitions(date)`、request log 双表和既有 RLS policy）在 Docker `postgres:17` server `170011` 上完成。首次顺序 apply 525 → 526 与 SQL 验收通过；重复 apply 525 → 526 后第二次 SQL 验收同样通过，最终 parent/hot 均为 50 列。验收覆盖 schema/index contract、atomic promotion、hot/parent duplicate 隔离与 RLS security-invoker owner/stranger/cross-tenant/super-admin 路径，均以 `525/526: all checks passed` 结束。526 down 对非空 hot 表按预期 fail-closed；清空后执行 526 down → 525 down 成功，恢复 46 列、移除 hot 表和四个维度。临时 `session_turns_rls_test` 角色已由验收脚本清理。
 
 ## 5. 回滚与运维约束
 
@@ -108,7 +108,7 @@
 - 历史 backfill 可从 `request_context_attrs`、`request_logs_hot`、`request_logs` 按 request ID 回填 project/parent/task，并统计 NULL 比例。
 - 早期失败或仅有 provisional session ID 的请求无法可靠恢复 namespace；保持 NULL，不根据 ID 猜测。
 - installer embed 的 `01-schema.sql` 整体仍缺 Sessions V2。主 schema、deploy baseline 与 table object 已具备完整 50 列合同，但不得伪造 installer 的不完整结构。
-- `docs/会话优化v4/05-rollout-runbook.md` 仍有旧 524/525 编号，需要改为 525/526。
+- rollout runbook 的旧编号需在文档维护时按 production ledger 使用 525/526；此前交接中引用的 `docs/会话优化v4/05-rollout-runbook.md` 在当前 checkout 不存在，不能作为可执行引用。
 - Gateway→SM durable outbox 仍为 partial：部署态 HMAC、consumer 幂等和 ownership 对账尚未闭环，完成前不得将 capability 标记为 current。
 
 ## 7. 相关文件
