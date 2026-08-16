@@ -353,6 +353,65 @@ func TestExecuteOpenAI_StreamSuccessRecordedOnlyAfterBodyCompletes(t *testing.T)
 	}
 }
 
+func TestExecuteOpenAI_NetworkStreamFailureFailsOverToNextCandidate(t *testing.T) {
+	var streamCalls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+
+	exec := NewExecutor(
+		NewRouter(NewStickyCache(), credential.NewLimiter()), credential.NewManager(), credential.NewLimiter(),
+		pool.NewPoolManager(nil), nil, func(chunk []byte, _ bool) []byte { return chunk }, nil, nil,
+	)
+	exec.StreamRetryThreshold = 50
+	exec.StreamChat = func(http.ResponseWriter, *http.Response, string, string, string, NormalizerFunc, *audit.StreamCapture, bool) StreamOutcome {
+		if streamCalls.Add(1) == 1 {
+			return StreamOutcome{
+				Interrupted: true,
+				Reason:      "network_error",
+				Kind:        errorsx.KindNetwork,
+				Resumable:   true,
+				ChunkCount:  0,
+			}
+		}
+		return StreamOutcome{ChunkCount: 1}
+	}
+
+	first := overloadTestCandidate(upstream.URL)
+	first.ProviderID = 1
+	first.CredentialID = 101
+	first.RawModel = "gpt-test"
+	first.APIKey = "key-1"
+	second := first
+	second.ProviderID = 2
+	second.CredentialID = 102
+	second.APIKey = "key-2"
+	candidates := []provider.Candidate{first, second}
+
+	result, err := exec.Execute(&ExecParams{
+		W:              httptest.NewRecorder(),
+		R:              httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
+		BodyBytes:      []byte(`{"model":"gpt-test","messages":[],"stream":true}`),
+		IsStream:       true,
+		ClientProtocol: "openai-completions",
+		ClientModel:    "gpt-test",
+		ClientID:       identity.ClientIdentity{IdentityHash: "network-failover-test"},
+		Candidates:     candidates,
+		Policy:         &provider.Policy{TierFallbackMax: 4, RetryPerCredential: 0},
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if result == nil || result.Candidate.CredentialID != 102 {
+		t.Fatalf("result candidate = %+v, want credential 102", result)
+	}
+	if got := streamCalls.Load(); got != 2 {
+		t.Fatalf("stream calls = %d, want exactly 2 candidate attempts", got)
+	}
+}
+
 // SR-05 (doc 18 §17 Phase 0): under request survival the executor performs a
 // single bounded pass — the SurvivalCoordinator owns every retry decision.
 func TestShouldAsyncFallback_DisabledWhenSurvivalAttempt(t *testing.T) {
