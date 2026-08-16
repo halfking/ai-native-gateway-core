@@ -107,6 +107,7 @@ type ScoringBreakdown struct {
 	AffinityApplied   bool    `json:"affinity_applied"`
 	Explore           bool    `json:"explore"`
 	RouteBoostApplied bool    `json:"route_boost_applied,omitempty"`
+	RouteTier         string  `json:"route_tier,omitempty"`
 	Composite         float64 `json:"composite"`
 
 	// PopularityBoost (RT-3) is the additive ordering weight contributed by

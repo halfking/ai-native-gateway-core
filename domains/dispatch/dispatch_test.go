@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -246,7 +247,89 @@ func TestModelChange(t *testing.T) {
 	}
 }
 
-// TestNoRoute: everything fails, model-change disabled → ErrNoRoute.
+func TestModelChangeUsesConfiguredAlternativeOrder(t *testing.T) {
+	var attempts []string
+	var mu sync.Mutex
+	f := &fakeDeps{
+		refsByModel: map[string][]CredentialRef{
+			"primary":   {cred(1, ModeConcurrency, 5)},
+			"primary-b": {cred(2, ModeConcurrency, 5)},
+			"secondary": {cred(3, ModeConcurrency, 5)},
+			"fallback":  {cred(4, ModeConcurrency, 5)},
+		},
+		forwardFn: func(_ context.Context, qr *QueuedRequest, c CredentialRef) ForwardOutcome {
+			mu.Lock()
+			attempts = append(attempts, qr.ResolvedModel)
+			mu.Unlock()
+			if c.CredentialID != 4 {
+				return ForwardOutcome{Err: errors.New("pre-first-byte failure")}
+			}
+			return ForwardOutcome{}
+		},
+		forwardCalls: map[int]int{},
+		allowChange:  true,
+	}
+	p := f.pipeline()
+	p.Start()
+	defer p.Stop()
+
+	qr := NewQueuedRequest("r1", "t", "primary", context.Background(), nil)
+	qr.AllowModelChange = true
+	qr.ModelAlternatives = []string{"primary-b", "secondary", "fallback"}
+	if _, err := p.Submit(context.Background(), qr); err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	want := []string{"primary", "primary-b", "secondary", "fallback"}
+	if got := distinctAttemptedModels(attempts); !reflect.DeepEqual(got, want) {
+		t.Fatalf("model-change order: got %v, want %v (all attempts %v)", got, want, attempts)
+	}
+}
+
+func distinctAttemptedModels(attempts []string) []string {
+	seen := make(map[string]struct{}, len(attempts))
+	out := make([]string, 0, len(attempts))
+	for _, model := range attempts {
+		if _, duplicate := seen[model]; duplicate {
+			continue
+		}
+		seen[model] = struct{}{}
+		out = append(out, model)
+	}
+	return out
+}
+
+func TestModelChangeDoesNotCrossTierAfterFirstByte(t *testing.T) {
+	var attempts []string
+	var mu sync.Mutex
+	f := &fakeDeps{
+		refsByModel: map[string][]CredentialRef{
+			"primary":   {cred(1, ModeConcurrency, 5)},
+			"secondary": {cred(2, ModeConcurrency, 5)},
+		},
+		forwardFn: func(_ context.Context, qr *QueuedRequest, _ CredentialRef) ForwardOutcome {
+			mu.Lock()
+			attempts = append(attempts, qr.ResolvedModel)
+			mu.Unlock()
+			return ForwardOutcome{Err: errors.New("mid-stream failure"), BytesSent: true}
+		},
+		forwardCalls: map[int]int{},
+		allowChange:  true,
+	}
+	p := f.pipeline()
+	p.Start()
+	defer p.Stop()
+
+	qr := NewQueuedRequest("r1", "t", "primary", context.Background(), nil)
+	qr.AllowModelChange = true
+	qr.ModelAlternatives = []string{"secondary"}
+	if _, err := p.Submit(context.Background(), qr); err == nil {
+		t.Fatal("expected post-first-byte failure")
+	}
+	if want := []string{"primary"}; !reflect.DeepEqual(attempts, want) {
+		t.Fatalf("post-first-byte request must not change models: got %v, want %v", attempts, want)
+	}
+}
+
 func TestNoRoute(t *testing.T) {
 	f := &fakeDeps{
 		refsByModel: map[string][]CredentialRef{"a": {cred(1, ModeConcurrency, 5)}},

@@ -3,6 +3,7 @@ package streaming
 import (
 	"encoding/json"
 	"net/http/httptest"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -14,7 +15,24 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
 )
 
-// TestRequestLogContext_BuildFailureEntry_ClientRequestID asserts that
+func TestRequestLogContext_SetAutoDecisionCanonicalizesTierFailoverModels(t *testing.T) {
+	ctx := &RequestLogContext{}
+	ctx.SetAutoDecision(&autoRouteDecision{
+		ChosenModel: "Z-AI/GLM-5.2",
+		failoverModels: []string{
+			"glm-5.2",
+			" Anthropic/Claude-Sonnet ",
+			"claude-sonnet",
+			"openai/gpt-5.1",
+			"",
+		},
+	})
+	want := []string{"claude-sonnet", "gpt-5.1"}
+	if !reflect.DeepEqual(ctx.AutoFallbackModels, want) {
+		t.Fatalf("AutoFallbackModels: got %v, want %v", ctx.AutoFallbackModels, want)
+	}
+}
+
 // the 2026-06-26 client-request-id propagation works end-to-end inside
 // the streaming package: a failure entry produced by EmitFailure must
 // carry the client-supplied id on telemetry.RequestLogEntry.ClientRequestID

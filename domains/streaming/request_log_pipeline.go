@@ -17,7 +17,8 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/session"                       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"           //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	agenttelemetry "github.com/kaixuan/llm-gateway-go/telemetry"              //nolint:depguard // aliased: system-prompt extractor for agent fallback (avoids clash with /domains/hooks/observability/telemetry)
+	"github.com/kaixuan/llm-gateway-go/modelname"
+	agenttelemetry "github.com/kaixuan/llm-gateway-go/telemetry" //nolint:depguard // aliased: system-prompt extractor for agent fallback (avoids clash with /domains/hooks/observability/telemetry)
 )
 
 // jsonMarshal is a local alias used by auto_route.go to avoid pulling
@@ -707,19 +708,18 @@ func (c *RequestLogContext) SetAutoDecision(wire *autoRouteDecision) {
 	c.TaskType = wire.TaskType
 	c.AutoProfile = wire.Profile
 	c.AutoConfidence = wire.Confidence
-	// D5: extract fallback model names (all top-3 except the chosen winner).
-	if len(wire.CandidatesTop3) > 1 {
-		fallbacks := make([]string, 0, len(wire.CandidatesTop3)-1)
+	// D5: extract the ordered, canonical fallback sequence. The process-local
+	// tier plan is preferred because the wire CandidatesTop3 is an audit view
+	// and may omit lower tiers; the wire list remains the compatibility fallback.
+	fallbacks := wire.failoverModels
+	if len(fallbacks) == 0 {
+		fallbacks = make([]string, 0, len(wire.CandidatesTop3))
 		for _, cand := range wire.CandidatesTop3 {
-			if cand.Model == "" || cand.Model == wire.ChosenModel {
-				continue
-			}
 			fallbacks = append(fallbacks, cand.Model)
 		}
-		if len(fallbacks) > 0 {
-			c.AutoFallbackModels = fallbacks
-		}
 	}
+	c.AutoFallbackModels = orderedAutoFallbackModels(wire.ChosenModel, fallbacks)
+
 	b, err := jsonMarshal(wire)
 	if err == nil {
 		c.AutoDecision = b
@@ -729,6 +729,26 @@ func (c *RequestLogContext) SetAutoDecision(wire *autoRouteDecision) {
 		// column existed.
 		c.recordMetadataLoss("auto_decision", err)
 	}
+}
+
+// orderedAutoFallbackModels canonicalizes and de-duplicates the model-level
+// failover sequence while preserving the router-provided order.
+func orderedAutoFallbackModels(chosen string, models []string) []string {
+	chosen = modelname.CanonicalizeClientModel(chosen)
+	seen := make(map[string]struct{}, len(models))
+	out := make([]string, 0, len(models))
+	for _, raw := range models {
+		name := modelname.CanonicalizeClientModel(raw)
+		if name == "" || name == chosen {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		out = append(out, name)
+	}
+	return out
 }
 
 // BuildFailureEntry assembles a failure row from cached context + exit metadata.

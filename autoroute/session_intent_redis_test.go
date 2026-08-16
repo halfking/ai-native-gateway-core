@@ -19,13 +19,13 @@ func TestIntentDoubleWrite(t *testing.T) {
 	c := NewSessionIntentCache(time.Minute)
 	c.SetRedisStore(store)
 
-	c.Put("sess1", CachedIntent{TaskType: TaskChat, ChosenModel: "m", CredentialID: 3})
+	c.Put("sess1", CachedIntent{TaskType: TaskChat, WorkType: "chat_general", ChosenModel: "m", CredentialID: 3})
 	got, ok := c.Get("sess1")
 	if !ok || got.CredentialID != 3 || got.ChosenModel != "m" {
 		t.Fatalf("in-memory miss: %+v ok=%v", got, ok)
 	}
 	redisIn, ok := store.Get(context.Background(), "sess1")
-	if !ok || redisIn.CredentialID != 3 || redisIn.ChosenModel != "m" {
+	if !ok || redisIn.CredentialID != 3 || redisIn.ChosenModel != "m" || redisIn.WorkType != "chat_general" {
 		t.Fatalf("Redis double-write missing: %+v ok=%v", redisIn, ok)
 	}
 }
