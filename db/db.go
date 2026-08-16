@@ -596,8 +596,9 @@ VALUES
     ARRAY['总结','摘要','会话','日志'],
     24,
     '你是会话日志分析助手。请严格输出 JSON，格式如下：
-{"summary":"一段连贯的中文摘要（80-200字），说明会话目标、关键步骤、最终结果","key_points":["要点1","要点2","要点3"]}
+{"title":"简短准确的中文会话标题（12-20字）","summary":"一段连贯的中文摘要（80-200字），说明会话目标、关键步骤、最终结果","key_points":["要点1","要点2","要点3"],"user_intent":"用户核心目标"}
 要求：
+- title 概括用户当前目标与已取得的结果，不要使用引号或解释
 - summary 必须是完整句子，涵盖：做了什么、怎么做的、结果如何
 - key_points 提取 3-5 个关键事实或决策点，每条 15-40 字
 - 不要输出 JSON 以外的任何文本
@@ -607,9 +608,11 @@ ON CONFLICT (key) DO NOTHING;
 
 INSERT INTO work_type_model_route (work_type_key, canonical_name, weight, min_score, enabled)
 VALUES
-  ('session_title',   'minimax-m3',         1.00, 0, TRUE),
+  ('session_title',   'minimax-m2.7',       1.00, 0, TRUE),
+  ('session_title',   'glm-5.1',            0.95, 0, TRUE),
   ('session_title',   'deepseek-v4-flash',  0.90, 0, TRUE),
-  ('session_summary', 'minimax-m3',         1.00, 0, TRUE),
+  ('session_summary', 'minimax-m2.7',       1.00, 0, TRUE),
+  ('session_summary', 'glm-5.1',            0.95, 0, TRUE),
   ('session_summary', 'deepseek-v4-flash',  0.90, 0, TRUE)
 ON CONFLICT (work_type_key, canonical_name) DO NOTHING;
 `

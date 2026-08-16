@@ -1192,21 +1192,6 @@ func (a sessionSummaryWorkerAdapter) GenerateSummary(ctx context.Context, tenant
 	return a.summarizer.GenerateRollingSummary(ctx, tenantID, sessionKey)
 }
 
-// GenerateTitle satisfies sessionanalysis.TitleGenerator so the per-session
-// AnalysisHook can generate a title on the first request.
-//
-// sessionsummary.Summarizer.GenerateTitle returns (title, error) — it persists
-// the title to session_summaries and caches it internally, so the returned
-// string is informational. The TitleGenerator contract only needs the error, so
-// the title is discarded here. Without this method the AnalysisHook's
-// TitleGenerator slot is nil and first-request title generation is silently
-// skipped (the hook guards on `engines.TitleGenerator != nil`, see
-// domains/hooks/sessionanalysis/hook.go). See docs/omni-ref3/01-M7.
-func (a sessionSummaryWorkerAdapter) GenerateTitle(ctx context.Context, tenantID, gwSessionID, firstMessage string) error {
-	_, err := a.summarizer.GenerateTitle(ctx, tenantID, gwSessionID, firstMessage)
-	return err
-}
-
 // SetV2DispatchAnalysisResources (PR-V4-09 / PR-V4-10 / PR-V4-11) 把 main.go 持有的
 // DB pool、ApprovalManager、Publisher、IntentStore、可选 hook detector/checker 注入 deps。
 //
@@ -1303,17 +1288,6 @@ func SetV2DispatchAnalysisResources(
 		engines := &sessionanalysis.Engines{
 			RequestSummarizer: sessionanalytics.NewRequestSummarizer(analyticsDB, cfg, analysisClient, slog.Default()),
 			Tagger:            sessionanalytics.NewSessionTagger(analyticsDB, cfg, slog.Default()),
-		}
-		// M7 (docs/omni-ref3/01): wire TitleGenerator so AnalysisHook can
-		// generate a title on the first request. sessionSummaryWorkerAdapter
-		// wraps *sessionsummary.Summarizer and now implements TitleGenerator;
-		// deps.SessionSummarizer is the workers.SessionSummarizer interface, so
-		// assert back to the concrete adapter. If no summarizer is configured
-		// (analysis URL/key absent), TitleGenerator stays nil and the hook
-		// skips title generation — matching the original, safe-by-default
-		// behavior. Generation is still gated by cfg.TitleOnFirstRequest().
-		if adapter, ok := deps.SessionSummarizer.(sessionanalysis.TitleGenerator); ok {
-			engines.TitleGenerator = adapter
 		}
 		deps.SessionAnalysisEngines = engines
 		deps.SessionAnalysisConfig = cfg

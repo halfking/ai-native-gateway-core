@@ -173,6 +173,9 @@ func (s *Summarizer) GenerateSummary(ctx context.Context, tenantID, sessionKey s
 	if err := s.saveSummaryToDB(ctx, tenantID, summary); err != nil {
 		return nil, fmt.Errorf("failed to save summary: %w", err)
 	}
+	if err := s.syncCanonicalSessionTitle(ctx, tenantID, summary.SessionKey, summary.Title); err != nil {
+		return nil, fmt.Errorf("failed to synchronize session title: %w", err)
+	}
 
 	// 7. 缓存结果（24小时）
 	if err := s.cacheSummary(ctx, tenantID, summary, 24*time.Hour); err != nil {
@@ -365,6 +368,9 @@ func (s *Summarizer) GenerateRollingSummary(ctx context.Context, tenantID, sessi
 
 	if err := s.saveSummaryToDB(ctx, tenantID, summary); err != nil {
 		return nil, fmt.Errorf("failed to save rolling summary: %w", err)
+	}
+	if err := s.syncCanonicalSessionTitle(ctx, tenantID, summary.SessionKey, summary.Title); err != nil {
+		return nil, fmt.Errorf("failed to synchronize rolling session title: %w", err)
 	}
 	if err := s.cacheSummary(ctx, tenantID, summary, 24*time.Hour); err != nil {
 		fmt.Printf("warn: failed to cache summary: %v\n", err)
@@ -570,6 +576,49 @@ func (s *Summarizer) saveSummaryToDB(ctx context.Context, tenantID string, summa
 		UserIntent:     summary.UserIntent,
 		LastSummarized: summary.GeneratedAt,
 	})
+	return err
+}
+
+// syncCanonicalSessionTitle updates the request-log title source after a
+// successful summary. Session summaries do not carry a task ID, so resolve it
+// from the latest successful user request and retain the legacy auto scope when
+// the session predates task IDs.
+func (s *Summarizer) syncCanonicalSessionTitle(ctx context.Context, tenantID, sessionKey, title string) error {
+	if s.store == nil {
+		return fmt.Errorf("sessionsummary: store not configured")
+	}
+	pool := s.store.Pool()
+	if pool == nil {
+		return fmt.Errorf("sessionsummary: store pool is nil")
+	}
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return fmt.Errorf("sessionsummary: generated title is empty")
+	}
+
+	var taskID string
+	if err := pool.QueryRow(ctx, `
+		SELECT COALESCE(NULLIF(TRIM(gw_task_id), ''), 'auto')
+		FROM request_logs_with_current_month
+		WHERE gw_session_id = $1
+		  AND tenant_id = $2
+		  AND success = TRUE
+		  AND COALESCE(is_auto_request, FALSE) = FALSE
+		ORDER BY ts DESC, id DESC
+		LIMIT 1
+	`, sessionKey, tenantID).Scan(&taskID); err != nil {
+		return fmt.Errorf("resolve title task: %w", err)
+	}
+
+	_, err := pool.Exec(ctx, `
+		INSERT INTO session_titles (task_id, scoped_session_id, title, generated_at, model, api_key_id)
+		VALUES ($1, $2, $3, NOW(), 'session-summary', NULL)
+		ON CONFLICT (task_id, scoped_session_id) DO UPDATE SET
+			title = EXCLUDED.title,
+			generated_at = EXCLUDED.generated_at,
+			model = EXCLUDED.model,
+			api_key_id = EXCLUDED.api_key_id
+	`, taskID, sessionKey, title)
 	return err
 }
 
