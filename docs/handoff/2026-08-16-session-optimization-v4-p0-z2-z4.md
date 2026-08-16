@@ -109,6 +109,7 @@ PG17 隔离复验：
 - 早期失败或仅有 provisional session ID 的请求无法可靠恢复 namespace；保持 NULL，不根据 ID 猜测。
 - installer embed 的 `01-schema.sql` 整体仍缺 Sessions V2。主 schema、deploy baseline 与 table object 已具备完整 50 列合同，但不得伪造 installer 的不完整结构。
 - rollout runbook 的旧编号需在文档维护时按 production ledger 使用 525/526；此前交接中引用的 `docs/会话优化v4/05-rollout-runbook.md` 在当前 checkout 不存在，不能作为可执行引用。
+- 245 晋级 smoke（2026-08-17）被 dev 端点门禁阻断：本地目标仓库 `llm-gateway-go-4` 的 local dry-run 识别 commit `9aeff9e4b` / version `2.5.0-...-1567`；全路径 dry-run 在 `https://llm.itestu.cn/healthz` 收到 HTTP 502，未继续 245、未注入 245 凭据、未执行任何部署。只读诊断确认 DNS 指向 `115.29.212.252`，252 nginx 的 `llm.itestu.cn` vhost 代理到 `127.0.0.1:11008`，该端口无监听且 nginx error log 为 `connect() failed (111: Connection refused)`；252 本机 `127.0.0.1:8780` 也无监听。NPS active config 没有 11008 task，`Nps.service` 处于 auto-restart，原因是 `0.0.0.0:8024` 已被既有 nps 进程占用。恢复需要有权限的运维先明确正确 backend（252:8780 或 kaixuan-1:8781/NPS tunnel），修复 NPS/服务或 vhost 后，再从 local → dev → 245 重跑 smoke；本会话不执行重启、配置修改或部署。
 - Gateway→SM durable outbox 仍为 partial：部署态 HMAC、consumer 幂等和 ownership 对账尚未闭环，完成前不得将 capability 标记为 current。
 
 ## 7. 相关文件
