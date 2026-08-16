@@ -83,6 +83,24 @@ type preStreamKeepalive struct {
 	paused atomic.Bool
 }
 
+type retryCommitWriter struct {
+	http.ResponseWriter
+	wrote atomic.Bool
+}
+
+func (w *retryCommitWriter) Write(p []byte) (int, error) {
+	if len(p) > 0 {
+		w.wrote.Store(true)
+	}
+	return w.ResponseWriter.Write(p)
+}
+
+func (w *retryCommitWriter) Flush() {
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
 // interceptingStreamWriter applies the response interceptor chain to complete
 // SSE events before they reach the client. Upstream bridges may split an SSE
 // event across multiple Write calls, so the writer buffers until the event
@@ -3516,8 +3534,19 @@ func (h *ChatHandler) serveWithExecutor(
 		})
 	}
 
-	// Retry configuration - Phase 1.5: read from Phase 0 cost_mode preset
-	// 2026-07-23: Use resolver for runtime policy if available
+	// Goal retry is only meaningful for an active Goal session. The policy
+	// resolver may exist process-wide, but ordinary chat requests must not
+	// inherit Goal retry latency or upstream side effects.
+	goalRetryActive := false
+	if h.goalRetryRecorder != nil && gwSessionID != "" {
+		if reader, ok := h.goalRetryRecorder.(interface {
+			GetSession(context.Context, string) (*goal.Session, error)
+		}); ok {
+			session, err := reader.GetSession(r.Context(), gwSessionID)
+			goalRetryActive = err == nil && session != nil
+		}
+	}
+
 	var retryPolicy GoalRetryPolicy
 	var policySource string
 	if h.goalRetryPolicyResolver != nil && keyInfo != nil && keyInfo.TenantID != "" {
@@ -3546,6 +3575,10 @@ func (h *ChatHandler) serveWithExecutor(
 				"reason", "resolver_not_available")
 			recordGoalRetryPolicyResolution(keyInfo.TenantID, retryPolicy.CostMode, policySource)
 		}
+	}
+
+	if !goalRetryActive {
+		retryPolicy.Enabled = false
 	}
 
 	// Extract values from policy. 2026-07-24 审计修复：通过 EffectiveMaxRetries()
@@ -3805,10 +3838,15 @@ func (h *ChatHandler) serveWithExecutor(
 		}
 
 		// Execute the request
-		streamWriter := w
+		streamWriter := http.ResponseWriter(w)
 		var interceptedWriter *interceptingStreamWriter
+		var retryWriter *retryCommitWriter
+		if isStream {
+			retryWriter = &retryCommitWriter{ResponseWriter: w}
+			streamWriter = retryWriter
+		}
 		if isStream && h.responseInterceptor != nil {
-			interceptedWriter = newInterceptingStreamWriter(w, h.responseInterceptor, r.Context(), response.StreamMeta{
+			interceptedWriter = newInterceptingStreamWriter(streamWriter, h.responseInterceptor, r.Context(), response.StreamMeta{
 				SessionID:   gwSessionID,
 				RequestID:   requestID,
 				TenantID:    tenantID,
@@ -3829,6 +3867,14 @@ func (h *ChatHandler) serveWithExecutor(
 					"attempt", attempt,
 					"total_elapsed_sec", time.Since(retryStartTime).Seconds())
 			}
+			break
+		}
+
+		if retryWriter != nil && retryWriter.wrote.Load() {
+			slog.Warn("goal_retry_suppressed_after_stream_commit",
+				"request_id", requestID,
+				"attempt", attempt,
+				"error", execErr)
 			break
 		}
 

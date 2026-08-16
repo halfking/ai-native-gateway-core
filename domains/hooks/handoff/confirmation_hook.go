@@ -7,10 +7,7 @@ import (
 	"time"
 )
 
-const (
-	defaultConfirmationTTL    = 5 * time.Minute
-	goalRestoreRequiredMarker = "goal-restore-required:v1"
-)
+const defaultConfirmationTTL = 5 * time.Minute
 
 // PrepareConfirmation persists a short-lived capability only for an explicit
 // request-side handoff. Transparent handoffs never create pending state.
@@ -31,12 +28,9 @@ func (h *TriggerHook) PrepareConfirmation(ctx context.Context, result *RequestRe
 	record := *result.Record
 	record.SummaryText = redactResumeSensitive(record.SummaryText)
 	record.HandoffPrompt = redactResumeSensitive(record.HandoffPrompt)
-	if result.GoalState != nil {
-		if result.GoalState.TenantID == "" || result.GoalState.TenantID != record.TenantID {
-			abortReservation()
-			return nil, "", fmt.Errorf("handoff goal state tenant mismatch")
-		}
-		record.HandoffPrompt = goalRestoreRequiredMarker
+	if result.GoalState != nil && (result.GoalState.TenantID == "" || result.GoalState.TenantID != record.TenantID) {
+		abortReservation()
+		return nil, "", fmt.Errorf("handoff goal state tenant mismatch")
 	}
 	proposal, token, err := NewConfirmationProposal(&record, apiKeyID, time.Now().Add(defaultConfirmationTTL))
 	if err != nil {
@@ -57,8 +51,8 @@ func (h *TriggerHook) PrepareConfirmation(ctx context.Context, result *RequestRe
 }
 
 // ConfirmRequest commits an already authenticated and ownership-checked
-// proposal. Goal restore is fail-closed and retryable with the same idempotency
-// key; notifications are sent only after restoration succeeds.
+// proposal. Goal restore is fail-open after durable confirmation; notification
+// is sent only for the initial durable confirmation.
 func (h *TriggerHook) ConfirmRequest(ctx context.Context, input ConfirmationInput) (*ConfirmationResult, error) {
 	if h == nil {
 		return nil, fmt.Errorf("handoff hook is unavailable")
@@ -78,7 +72,6 @@ func (h *TriggerHook) ConfirmRequest(ctx context.Context, input ConfirmationInpu
 	}
 	if err := h.restoreGoalState(ctx, input, result); err != nil {
 		slog.Warn("handoff_goal_restore_failed", "session_id", result.NewSessionID, "error", err)
-		return result, err
 	}
 	if result.FirstConfirmation {
 		level := NotifyLevel(h.loadString(result.Record.TenantID, "handoff.notify_level", string(h.config.NotifyLevel)))
@@ -99,9 +92,6 @@ func (h *TriggerHook) restoreGoalState(ctx context.Context, input ConfirmationIn
 		state = h.config.GoalTrigger.Peek(input.ProposalID, input.TenantID)
 	}
 	if state == nil {
-		if result.Record.HandoffPrompt == goalRestoreRequiredMarker {
-			return ErrGoalRestoreRetryable
-		}
 		return nil
 	}
 	if state.TenantID == "" || state.TenantID != input.TenantID {

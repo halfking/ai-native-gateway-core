@@ -64,6 +64,8 @@ type MemoryHandoffTrigger struct {
 	acknowledged   map[string]proposalState
 }
 
+// NewMemoryHandoffTrigger creates a concurrency-safe trigger. A non-positive
+// ttl uses the confirmation TTL; an optional GoalStore filters Goal outcomes.
 func NewMemoryHandoffTrigger(ttl time.Duration, stores ...goal.GoalStore) *MemoryHandoffTrigger {
 	if ttl <= 0 {
 		ttl = defaultConfirmationTTL

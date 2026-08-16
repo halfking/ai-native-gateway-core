@@ -34,6 +34,8 @@ type MemoryHandoffMessageBuilder struct {
 	now      func() time.Time
 }
 
+// NewMemoryHandoffMessageBuilder creates a builder with maxBytes as its encoded
+// payload limit. A non-positive limit uses the contract default of 2 KiB.
 func NewMemoryHandoffMessageBuilder(maxBytes int) *MemoryHandoffMessageBuilder {
 	if maxBytes <= 0 {
 		maxBytes = defaultHandoffMaxBytes
@@ -73,6 +75,17 @@ func (b *MemoryHandoffMessageBuilder) Build(sourceSessionID string, signal Trigg
 	encoded, err = json.Marshal(message)
 	if err != nil {
 		return nil, fmt.Errorf("encode bounded handoff message: %w", err)
+	}
+	if len(encoded) <= b.maxBytes {
+		return message, nil
+	}
+	if message.GoalState != nil {
+		message.GoalState.TaskDescription = ""
+		message.GoalState.RemainingWork = ""
+	}
+	encoded, err = json.Marshal(message)
+	if err != nil {
+		return nil, fmt.Errorf("encode minimal handoff message: %w", err)
 	}
 	if len(encoded) > b.maxBytes {
 		return nil, fmt.Errorf("handoff message exceeds %d bytes", b.maxBytes)

@@ -55,6 +55,8 @@ type MemoryGoalStateSerializer struct {
 	now   func() time.Time
 }
 
+// NewMemoryGoalStateSerializer creates a serializer backed by the supplied
+// GoalStore. Proposal persistence remains owned by the handoff transport.
 func NewMemoryGoalStateSerializer(store goal.GoalStore) *MemoryGoalStateSerializer {
 	return &MemoryGoalStateSerializer{store: store, now: time.Now}
 }
