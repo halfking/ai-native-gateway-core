@@ -3,11 +3,18 @@ package durable
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/pashagolub/pgxmock/v4"
 )
+
+func TestClaimSelectSQLAllowsFiveSecondScheduleTolerance(t *testing.T) {
+	if !strings.Contains(claimSelectSQL, "next_retry_at <= $2 + INTERVAL '5 seconds'") {
+		t.Fatalf("claim SQL must allow a five-second retry tolerance: %s", claimSelectSQL)
+	}
+}
 
 func claimOpts() ClaimOptions {
 	return ClaimOptions{

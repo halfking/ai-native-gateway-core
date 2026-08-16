@@ -132,7 +132,8 @@ type Config struct {
 	RequestSurvivalWorkerCount     int `yaml:"request_survival_worker_count" env:"LLM_GATEWAY_REQUEST_SURVIVAL_WORKER_COUNT"`
 	RequestSurvivalWorkerLeaseSecs int `yaml:"request_survival_worker_lease_seconds" env:"LLM_GATEWAY_REQUEST_SURVIVAL_WORKER_LEASE_SECONDS"`
 
-	// RequestSurvivalMaxAttempts: per-task attempt cap. Default 100.
+	// RequestSurvivalMaxAttempts: retries allowed after a task's initial
+	// execution. Default 100, for at most 101 total executions.
 	RequestSurvivalMaxAttempts int `yaml:"request_survival_max_attempts" env:"LLM_GATEWAY_REQUEST_SURVIVAL_MAX_ATTEMPTS"`
 
 	// RequestSurvivalMaxActiveTasksPerTenant: tenant-level active durable

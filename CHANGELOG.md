@@ -21,6 +21,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   auto-summary 测试中锁定缺陷行为的 `gs:` 断言。
 - 详见 `docs/changelogs/2026-08-16-auto-loopback-parent-correlation.md`。
 
+## [Unreleased] - 2026-08-16 (Durable Queue Retry Boundaries)
+
+### Fixed
+
+- **durable 队列重试边界**：`durable_llm_tasks.attempt_count` 作为唯一执行账本；初次执行后最多重试 100 次，第 101 次执行仍失败时进入终态，不再创建第 102 次执行。
+- **稳定退避与领取容差**：队列重试从 2 秒指数增长并封顶 120 秒，上游建议延迟同样限制在 120 秒；claim SQL 允许最多 5 秒提前领取以匹配 worker 的 5 秒轮询节奏。
+- 详见 `docs/changelogs/2026-08-16-long-running-request-survival.md`。
+
 ## [Unreleased] - 2026-08-16 (Handoff Explicit Client Confirmation)
 
 ### Added

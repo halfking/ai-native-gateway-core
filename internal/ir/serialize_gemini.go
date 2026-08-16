@@ -343,13 +343,7 @@ func buildGeminiContents(messages []Message) []map[string]any {
 				}
 			case "tool_result":
 				if block.ToolResult != nil {
-					respText := extractTextFromContent(block.ToolResult.Content)
-					parts = append(parts, map[string]any{
-						"functionResponse": map[string]any{
-							"name":     toolUseNameFromID(block.ToolResult.ToolUseID),
-							"response": map[string]any{"result": respText},
-						},
-					})
+					parts = append(parts, geminiFunctionResponse(block.ToolResult))
 				}
 			case "thinking":
 				// Gemini 2.5+ thinking part (with includeThoughts=true)
@@ -572,6 +566,50 @@ func extractTextFromContent(blocks []ContentBlock) string {
 		}
 	}
 	return out
+}
+
+// geminiFunctionResponse builds the functionResponse part for a tool result.
+// Plain-text results keep the previous {"result": "<text>"} shape. Results
+// that carry structured params (non-text content blocks, e.g. a tool that
+// returns JSON) are preserved verbatim so round-trips don't silently drop
+// params — the same guarantee buildGeminiContents provides for tool calls.
+func geminiFunctionResponse(tr *ToolResult) map[string]any {
+	name := toolUseNameFromID(tr.ToolUseID)
+	respText := extractTextFromContent(tr.Content)
+
+	hasNonText := false
+	for _, b := range tr.Content {
+		if b.Type != "text" {
+			hasNonText = true
+			break
+		}
+	}
+
+	var response map[string]any
+	if hasNonText {
+		response = make(map[string]any, len(tr.Content))
+		for _, b := range tr.Content {
+			switch b.Type {
+			case "text":
+				if b.Text != "" {
+					response["result"] = b.Text
+				}
+			case "tool_use":
+				if b.ToolUse != nil {
+					response[b.ToolUse.Name] = b.ToolUse.Input
+				}
+			}
+		}
+	} else {
+		response = map[string]any{"result": respText}
+	}
+
+	return map[string]any{
+		"functionResponse": map[string]any{
+			"name":     name,
+			"response": response,
+		},
+	}
 }
 
 // toolUseNameFromID extracts the function name from a synthetic tool_use_id

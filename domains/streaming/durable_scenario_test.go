@@ -297,7 +297,7 @@ func newScenarioHarness(t *testing.T) *scenarioHarness {
 	h.resolver = &durableRunnerResolverFake{cands: []provider.Candidate{{ProviderID: 3}}}
 	h.runner = NewDurableAttemptRunner(h.exec, h.resolver, h.verifier)
 	h.worker = NewDurableRecoveryWorker(h.store, nil, h.runner, DurableWorkerOptions{
-		Owner: "worker-b", Lease: time.Minute, RetryFloor: time.Millisecond,
+		Owner: "worker-b", Lease: time.Minute, RetryBase: time.Millisecond,
 	})
 	return h
 }
