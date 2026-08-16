@@ -16,6 +16,7 @@ package durable
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"sync"
 	"testing"
@@ -31,14 +32,23 @@ import (
 	"github.com/kaixuan/llm-gateway-go/secret"
 )
 
-// readMigrationSQL loads the production migration 516 so the integration
-// suite exercises the exact schema shipped to deployments.
+// readMigrationSQL loads the production migrations required by the durable
+// store so the integration suite exercises the exact shipped schema.
 func readMigrationSQL() (string, error) {
-	b, err := os.ReadFile("../sql/migrations/startup/516_durable_llm_tasks.sql")
-	if err != nil {
-		return "", err
+	paths := []string{
+		"../sql/migrations/startup/516_durable_llm_tasks.sql",
+		"../sql/migrations/startup/520_durable_task_settlement_intents.sql",
 	}
-	return string(b), nil
+	var out []byte
+	for _, path := range paths {
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return "", err
+		}
+		out = append(out, b...)
+		out = append(out, '\n')
+	}
+	return string(out), nil
 }
 
 // One shared container for the whole package run: five parallel containers
@@ -99,6 +109,15 @@ func startDurablePG(t *testing.T) *Store {
 			itErr = err
 			return
 		}
+		var settlementTable string
+		if err = pool.QueryRow(ctx, `SELECT to_regclass('public.durable_task_settlement_intents')`).Scan(&settlementTable); err != nil {
+			itErr = err
+			return
+		}
+		if settlementTable != "durable_task_settlement_intents" {
+			itErr = fmt.Errorf("settlement intents table missing after migration setup")
+			return
+		}
 		itKR = integrationKeyringForInit()
 		itStore = NewStore(pool, itKR)
 	})
@@ -107,7 +126,7 @@ func startDurablePG(t *testing.T) *Store {
 	// gives each test a clean append-only event table too.
 	t.Cleanup(func() {
 		_, err := itStore.db.Exec(context.Background(),
-			`TRUNCATE durable_llm_tasks, durable_llm_task_events, durable_pending_outbox CASCADE`)
+			`TRUNCATE durable_task_settlement_intents, durable_llm_tasks, durable_llm_task_events, durable_pending_outbox CASCADE`)
 		require.NoError(t, err)
 	})
 	return itStore

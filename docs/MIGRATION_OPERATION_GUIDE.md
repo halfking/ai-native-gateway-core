@@ -21,7 +21,11 @@ migration is not recorded.
 
 ## Deployment checksum ledger
 
-`deploy-seamless.sh` uses `schema_migrations.version` as the legacy applied-version source of truth and maintains a separate `llm_gateway_migration_checksums` table. Before a switch it validates every applied startup migration at or above `DB_LEDGER_RECONCILE_FROM` (default `412`) against the local filename and SHA-256. A missing checksum row is reconciled once; an existing filename or checksum mismatch fails closed.
+`deploy-seamless.sh` uses `schema_migrations.version` as the legacy applied-version source of truth and maintains a separate `llm_gateway_migration_checksums` table. Before a switch it validates every applied startup migration at or above `DB_LEDGER_RECONCILE_FROM` (default `412`) against the local filename and SHA-256. A missing checksum row, or an existing filename or checksum mismatch, fails closed; ordinary deployment never backfills the checksum ledger.
+
+### Historical 488/489 identity mismatch on 252
+
+252 recorded the pre-renumber probe queue migrations as 488 and 489. The current repository reserves 488 for `488_request_logs_hot_add_model.sql` and contains post-renumber probe files at 489/490. The historical 488/489 source bytes could not be recovered from the repository, related worktrees, or accessible 252 artifacts. Do not rename a current file, update a remote ledger checksum, or waive the mismatch based on a semantic guess. Recover a source file only when its filename and SHA-256 exactly match the remote ledger; otherwise preserve the history and ship any missing schema as a new forward migration after review.
 
 Startup migration numbers must be unique within one pending deployment. Duplicate numeric versions already present in historical local files are tolerated only when the remote checksum ledger identifies the applied filename; if the ledger is missing for a repeated version, deployment stops and requires manual reconciliation. Duplicate pending files are always rejected before SSH, SQL, or service operations because the legacy ledger cannot distinguish two files with the same version. Files explicitly marked `SUPERSEDED` or `DEPRECATED` are excluded from these checks.
 
