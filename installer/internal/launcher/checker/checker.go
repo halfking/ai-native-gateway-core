@@ -14,11 +14,14 @@ import (
 
 // FoundRelease describes a new version discovered by the checker.
 type FoundRelease struct {
-	Version     string
-	DownloadURL string
-	SHA256      string
-	Changelog   string
-	Image       string // compose image tag (optional, set by master)
+	Version                  string
+	DownloadURL              string
+	SHA256                   string
+	Changelog                string
+	Image                    string // compose image tag (optional, set by master)
+	AutoUpgrade              bool
+	UpgradePolicyID          string
+	EstimatedDowntimeMinutes int
 }
 
 // Source abstracts the version-discovery mechanism (real impl: MasterHTTPSource).
