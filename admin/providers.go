@@ -961,7 +961,7 @@ func (h *Handler) updateProvider(w http.ResponseWriter, r *http.Request, id int)
 						slog.Warn("auto-reprobe: task insert failed", "provider_id", pid, "credential_id", cid, "error", taskErr)
 						return
 					}
-					h.runHealthCheck(pid, cid, taskID)
+					h.runHealthCheck(pid, cid, "", taskID)
 				}(id, cid)
 			}
 		}

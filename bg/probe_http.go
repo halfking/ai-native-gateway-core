@@ -19,6 +19,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/internal/modelresponse"
+
 	"github.com/kaixuan/llm-gateway-go/internal/probeutil"
 	"github.com/kaixuan/llm-gateway-go/internal/providercap"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
@@ -233,48 +235,11 @@ func classifyHTTPResponse(httpStatus int, body string, latencyMs int) httpProbeR
 //   - Gemini:    {"models": [{"name": "models/..."}]}
 //   - Raw:       ["model-a", "model-b"] (fallback)
 func parseModelList(body string) []string {
-	if body == "" {
+	models, err := modelresponse.ParseModelIDs([]byte(body))
+	if err != nil {
 		return nil
 	}
-	var out []string
-	// Try OpenAI/Anthropic shape
-	var openAIShape struct {
-		Data []struct {
-			ID    string `json:"id"`
-			Model string `json:"model"`
-		} `json:"data"`
-		Models []struct {
-			Name string `json:"name"`
-			ID   string `json:"id"`
-		} `json:"models"`
-	}
-	if err := json.Unmarshal([]byte(body), &openAIShape); err == nil {
-		for _, m := range openAIShape.Data {
-			if m.ID != "" {
-				out = append(out, m.ID)
-			}
-		}
-		for _, m := range openAIShape.Models {
-			id := m.Name
-			if id == "" {
-				id = m.ID
-			}
-			// Strip "models/" prefix from Gemini
-			id = strings.TrimPrefix(id, "models/")
-			if id != "" {
-				out = append(out, id)
-			}
-		}
-		if len(out) > 0 {
-			return out
-		}
-	}
-	// Try raw array
-	var rawArr []string
-	if err := json.Unmarshal([]byte(body), &rawArr); err == nil {
-		return rawArr
-	}
-	return nil
+	return models
 }
 
 // parseErrorCodeAndMessage extracts {"error":{"code":"...","message":"..."}} if present.

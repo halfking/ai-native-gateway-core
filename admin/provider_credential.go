@@ -147,7 +147,7 @@ func (h *Handler) addCredential(w http.ResponseWriter, r *http.Request, provider
 			slog.Warn("auto-probe: task insert failed", "provider_id", pid, "credential_id", cid, "error", taskErr)
 			return
 		}
-		h.runHealthCheck(pid, cid, taskID)
+		h.runHealthCheck(pid, cid, "", taskID)
 	}(providerID, id)
 
 	provider.InvalidateAllCandidateCache()
