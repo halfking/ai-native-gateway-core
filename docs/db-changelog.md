@@ -868,3 +868,10 @@
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
 | 521 | `521_repair_state_transitions_tenant.sql` | `40d83e463de0c690b90f99e95a882d3c3ee39c5bc9a190ada622d4150bd6555c` | applied+verified |
+
+## 2026-08-16T22:05:00Z — audit: resolve migration 521 sequence-number collision
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 522 | `522_request_state_transitions_tenant_contract.sql` | `5d0b1080fe54e650c0ccbc3e4dea94da0b0d8323271dcc4e0c466518708da658` | renumbered from 521 to clear collision with the deployed 521_repair superset; no-op on envs that ran 521 (ADD COLUMN/CREATE INDEX IF NOT EXISTS). Not yet applied — pending deploy. |
+

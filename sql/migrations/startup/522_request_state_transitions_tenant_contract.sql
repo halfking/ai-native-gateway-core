@@ -1,4 +1,11 @@
--- Migration 521: reconcile request_state_transitions schema contract
+-- Migration 522: reconcile request_state_transitions schema contract
+--
+-- Renumbered from 521 to clear a sequence-number collision with
+-- 521_repair_state_transitions_tenant.sql (the deployed, changelog-verified
+-- superset that also installs RLS policies). On any environment that already
+-- ran 521 this migration is a no-op: ADD COLUMN IF NOT EXISTS, UPDATE backfill
+-- is vacuous (tenant_id is already NOT NULL DEFAULT 'default'), and CREATE
+-- INDEX IF NOT EXISTS skips. Retained for audit lineage.
 --
 -- Purpose
 -- ───────
