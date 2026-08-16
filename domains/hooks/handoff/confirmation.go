@@ -23,6 +23,7 @@ var (
 	ErrConfirmationReplay          = errors.New("handoff confirmation has already been used")
 	ErrConfirmationBudgetExhausted = errors.New("handoff confirmation budget is exhausted")
 	ErrConfirmationCooldownActive  = errors.New("handoff confirmation cooldown is active")
+	ErrGoalRestoreRetryable        = errors.New("handoff goal restore is incomplete; retry confirmation")
 )
 
 // ConfirmationProposal is the durable one-time capability returned with an

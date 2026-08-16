@@ -51,9 +51,9 @@ type SessionSummaryRequest struct {
 
 // SessionSummaryResponse 是总结响应的结构
 type SessionSummaryResponse struct {
-	Title          string `json:"title"`
-	Summary        string `json:"summary"`
-	TurnsAnalyzed  int    `json:"turns_analyzed"`
+	Title         string `json:"title"`
+	Summary       string `json:"summary"`
+	TurnsAnalyzed int    `json:"turns_analyzed"`
 }
 
 func (api *SessionSummaryV2API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -143,9 +143,10 @@ func (api *SessionSummaryV2API) queryTurnsForSummary(
 			t.turn_no,
 			b.request_delta, 
 			b.response_delta
-		FROM public.session_turns t
+		FROM public.session_turns_with_current_month t
 		LEFT JOIN public.session_bodies b 
-			ON t.session_id = b.session_id 
+			ON t.tenant_id = b.tenant_id
+			AND t.session_id = b.session_id
 			AND t.turn_no = b.turn_no
 			AND t.partition_date = b.partition_date
 		WHERE t.session_id = $1 AND t.tenant_id = $2
@@ -157,7 +158,7 @@ func (api *SessionSummaryV2API) queryTurnsForSummary(
 		args = append(args, *upToTurn)
 	}
 
-	query += " ORDER BY t.turn_no ASC"  // Chronological order for summary
+	query += " ORDER BY t.turn_no ASC" // Chronological order for summary
 
 	rows, err := api.pool.Query(ctx, query, args...)
 	if err != nil {
@@ -189,10 +190,10 @@ func (api *SessionSummaryV2API) queryTurnsForSummary(
 // buildConversationText 将turns转换为适合LLM分析的文本格式
 func buildConversationText(turns []turnForSummary) string {
 	var buf bytes.Buffer
-	
+
 	for _, t := range turns {
 		buf.WriteString(fmt.Sprintf("=== Turn %d ===\n", t.TurnNo))
-		
+
 		// Request
 		buf.WriteString("User: ")
 		if t.RequestDelta != nil {
@@ -203,7 +204,7 @@ func buildConversationText(turns []turnForSummary) string {
 			}
 		}
 		buf.WriteString("\n\n")
-		
+
 		// Response
 		buf.WriteString("Assistant: ")
 		if t.ResponseDelta != nil {
@@ -215,7 +216,7 @@ func buildConversationText(turns []turnForSummary) string {
 		}
 		buf.WriteString("\n\n")
 	}
-	
+
 	return buf.String()
 }
 
@@ -223,13 +224,13 @@ func buildConversationText(turns []turnForSummary) string {
 func extractMessageContent(delta any) (string, bool) {
 	// Delta format: {"role": "user", "content": "text"}
 	// Or: [{"role": "user", "content": "text"}]
-	
+
 	if deltaMap, ok := delta.(map[string]any); ok {
 		if content, ok := deltaMap["content"].(string); ok {
 			return content, true
 		}
 	}
-	
+
 	if deltaSlice, ok := delta.([]any); ok && len(deltaSlice) > 0 {
 		if msg, ok := deltaSlice[0].(map[string]any); ok {
 			if content, ok := msg["content"].(string); ok {
@@ -237,7 +238,7 @@ func extractMessageContent(delta any) (string, bool) {
 			}
 		}
 	}
-	
+
 	return "", false
 }
 
@@ -245,7 +246,7 @@ func extractMessageContent(delta any) (string, bool) {
 func callLLMForSummary(ctx context.Context, conversationText string) (title string, summary string, err error) {
 	// TODO: 这里应该调用实际的LLM API
 	// 为了演示，我们先使用一个简化版本
-	
+
 	// 构建LLM请求
 	systemPrompt := `你是一个专业的会话分析助手。请分析以下对话内容，生成：
 1. 一个简洁的标题（10-20字）
@@ -270,7 +271,7 @@ func callLLMForSummary(ctx context.Context, conversationText string) (title stri
 			{"role": "user", "content": userPrompt},
 		},
 		"temperature": 0.7,
-		"max_tokens": 500,
+		"max_tokens":  500,
 	}
 
 	requestJSON, err := json.Marshal(requestBody)
@@ -351,7 +352,7 @@ func generateFallbackSummary(conversationText string) (string, string, error) {
 	}
 
 	title := fmt.Sprintf("会话总结 (%d轮)", turnCount)
-	
+
 	// Extract first 200 chars as summary
 	summary := conversationText
 	if len(summary) > 200 {
@@ -365,7 +366,7 @@ func generateFallbackSummary(conversationText string) (string, string, error) {
 func extractTitleAndSummaryFromText(text string) (string, string, error) {
 	// Simple heuristic: first line is title, rest is summary
 	lines := bytes.Split([]byte(text), []byte("\n"))
-	
+
 	if len(lines) == 0 {
 		return "会话总结", text, nil
 	}

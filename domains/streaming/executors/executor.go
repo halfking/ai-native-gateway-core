@@ -879,8 +879,8 @@ type Executor struct {
 
 	// URSMv2 (2026-07-21, URSM v2 plan T8): 旁路写新管线，影子/金丝雀模式下
 	// 通过 RecordRequest 把结果回写到 v2 store，**不影响**任何现有决策路径。
-	// 当 URSMv2 == nil 或 v2 模式为 off/shadow 时 Manager.RecordRequest
-	// 内部短路；本字段 nil 即保留所有旧行为。
+	// 当 URSMv2 == nil、mode=off，或 shadow 未开启 double-write 时
+	// Manager.RecordRequest 内部短路；本字段 nil 即保留所有旧行为。
 	//
 	// 2026-07-26 URSM v1→v2 统一: 旧字段 URSM (v1, domains/ursm.Manager) 已删除。
 	// v1 在 main.go 中从未 wire，运行时恒为 nil。executor 唯一的请求状态写入

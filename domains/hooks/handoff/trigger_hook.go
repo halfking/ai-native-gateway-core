@@ -107,6 +107,13 @@ type TriggerConfig struct {
 	NotifyWebhook       string
 	ContinueHintTpl     string
 
+	// Goal coordination is optional. Nil preserves the standalone handoff path.
+	ContextMonitor      ContextMonitor
+	GoalStateSerializer GoalStateSerializer
+	GoalTrigger         HandoffTrigger
+	MessageBuilder      HandoffMessageBuilder
+	GoalCostMode        func(tenantID string) string
+
 	// SettingsGetter resolves per-tenant overrides (mirrors goal.SettingsGetter).
 	SettingsGetter SettingsGetter
 
@@ -532,7 +539,7 @@ func (h *TriggerHook) buildSummary(ctx context.Context, req *response.InterceptR
 	if out == "" {
 		out = "Session completed (no summary available)"
 	}
-	return truncateRunes(out, 4000)
+	return truncateRunes(redactResumeSensitive(out), 4000)
 }
 
 func derefInt(i int) int {

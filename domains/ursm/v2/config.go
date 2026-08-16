@@ -109,6 +109,11 @@ func LoadFromEnv() Config {
 			c.CanaryPercent = n
 		}
 	}
+	if v := os.Getenv("URSM_V2_SHADOW_SAMPLE_RATE"); v != "" {
+		if n, err := strconv.ParseFloat(v, 64); err == nil && n >= 0 && n <= 1 {
+			c.ShadowSampleRate = n
+		}
+	}
 	// 2026-07-24: 支持通过环境变量配置 URSM v2 冷却时间
 	if v := os.Getenv("URSM_V2_COOL_SECONDS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {

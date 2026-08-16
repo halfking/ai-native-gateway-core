@@ -463,6 +463,21 @@ func TestMergeRequestLogEntry_PreservesClientPerceptionFields(t *testing.T) {
 	require.Equal(t, virtualID, *dst.VirtualClientID)
 }
 
+func TestMergeRequestLogEntry_PreservesMirrorDimensions(t *testing.T) {
+	projectID := "project-123"
+	namespace := "workspace"
+	dst := &RequestLogEntry{
+		RequestID: "req-mirror-dimensions",
+		ProjectID: &projectID,
+		Namespace: &namespace,
+	}
+
+	mergeRequestLogEntry(dst, &RequestLogEntry{RequestID: dst.RequestID, Success: true})
+
+	require.Equal(t, projectID, *dst.ProjectID)
+	require.Equal(t, namespace, *dst.Namespace)
+}
+
 func TestMergeRequestLogEntry_ClearsErrorKindOnSuccess(t *testing.T) {
 	// 2026-06-20 audit fix: when a failure entry is merged with
 

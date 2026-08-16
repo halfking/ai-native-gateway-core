@@ -337,20 +337,20 @@ func buildTurnsSessionWhere(r *http.Request, tenantID string, tsFrom, tsTo time.
 	// loadTurnsForSessions 会用同样条件过滤会话内展示的轮次。
 	if v := strings.TrimSpace(r.URL.Query().Get("model")); v != "" {
 		clauses = append(clauses, fmt.Sprintf(
-			"EXISTS (SELECT 1 FROM public.session_turns ft WHERE ft.session_id = s.session_id AND ft.tenant_id = s.tenant_id AND ft.model = $%d)", argIdx))
+			"EXISTS (SELECT 1 FROM public.session_turns_with_current_month ft WHERE ft.session_id = s.session_id AND ft.tenant_id = s.tenant_id AND ft.model = $%d)", argIdx))
 		args = append(args, v)
 		argIdx++
 	}
 	if v := strings.TrimSpace(r.URL.Query().Get("provider")); v != "" {
 		clauses = append(clauses, fmt.Sprintf(
-			"EXISTS (SELECT 1 FROM public.session_turns ft WHERE ft.session_id = s.session_id AND ft.tenant_id = s.tenant_id AND ft.provider = $%d)", argIdx))
+			"EXISTS (SELECT 1 FROM public.session_turns_with_current_month ft WHERE ft.session_id = s.session_id AND ft.tenant_id = s.tenant_id AND ft.provider = $%d)", argIdx))
 		args = append(args, v)
 		argIdx++
 	}
 	if v := strings.TrimSpace(r.URL.Query().Get("status_code")); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			clauses = append(clauses, fmt.Sprintf(
-				"EXISTS (SELECT 1 FROM public.session_turns ft WHERE ft.session_id = s.session_id AND ft.tenant_id = s.tenant_id AND ft.status_code = $%d)", argIdx))
+				"EXISTS (SELECT 1 FROM public.session_turns_with_current_month ft WHERE ft.session_id = s.session_id AND ft.tenant_id = s.tenant_id AND ft.status_code = $%d)", argIdx))
 			args = append(args, n)
 			argIdx++
 		}
@@ -471,7 +471,7 @@ func (h *Handler) loadTurnsForSessions(ctx context.Context, sessions []*TurnsSes
 			COALESCE(t.attachment_count, 0) AS attachment_count,
 			COALESCE(t.attempt_no, 0) AS attempt_no,
 			t.latency_ms
-		FROM public.session_turns t
+		FROM public.session_turns_with_current_month t
 		WHERE %s
 		ORDER BY t.session_id, t.turn_no ASC
 	`, turnWhere)

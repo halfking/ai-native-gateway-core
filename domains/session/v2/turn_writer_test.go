@@ -204,7 +204,7 @@ func TestTurnWriter_GetTurn(t *testing.T) {
 	require.NoError(t, err)
 
 	// Retrieve the turn
-	retrievedRec, err := writer.GetTurn(ctx, "req_get_test")
+	retrievedRec, err := writer.GetTurn(ctx, originalRec.TenantID, "req_get_test")
 	require.NoError(t, err)
 	require.NotNil(t, retrievedRec)
 

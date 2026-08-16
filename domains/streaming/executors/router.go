@@ -17,12 +17,99 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/credentialstate" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	ursmv2 "github.com/kaixuan/llm-gateway-go/domains/ursm/v2"
 	ursmv2api "github.com/kaixuan/llm-gateway-go/domains/ursm/v2/api"
+	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/shadow"
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/statesource"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/provider"
 )
 
 var tierOrder = [4]int{1, 2, 3, 9}
+
+const ursmShadowQueueSize = 128
+
+type ursmShadowTask struct {
+	manager   *ursmv2.Manager
+	seeds     []ursmv2.CandidateSeed
+	legacyIDs []string
+	tenant    string
+	canonical string
+	requestID string
+}
+
+type ursmShadowWorker struct {
+	mu      sync.RWMutex
+	queue   chan ursmShadowTask
+	stop    chan struct{}
+	done    chan struct{}
+	stopped bool
+	observe func(ursmShadowTask)
+}
+
+func newURSMShadowWorker(size int, observe func(ursmShadowTask)) *ursmShadowWorker {
+	if size < 1 {
+		size = 1
+	}
+	if observe == nil {
+		observe = observeURSMv2Shadow
+	}
+	w := &ursmShadowWorker{
+		queue:   make(chan ursmShadowTask, size),
+		stop:    make(chan struct{}),
+		done:    make(chan struct{}),
+		observe: observe,
+	}
+	go w.run()
+	return w
+}
+
+func (w *ursmShadowWorker) run() {
+	defer close(w.done)
+	for {
+		select {
+		case task := <-w.queue:
+			w.observe(task)
+		case <-w.stop:
+			for {
+				select {
+				case <-w.queue:
+					continue
+				default:
+					return
+				}
+			}
+		}
+	}
+}
+
+func (w *ursmShadowWorker) enqueue(task ursmShadowTask) bool {
+	if w == nil {
+		return false
+	}
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	if w.stopped {
+		return false
+	}
+	select {
+	case w.queue <- task:
+		return true
+	default:
+		return false
+	}
+}
+
+func (w *ursmShadowWorker) stopAndWait() {
+	if w == nil {
+		return
+	}
+	w.mu.Lock()
+	if !w.stopped {
+		w.stopped = true
+		close(w.stop)
+	}
+	w.mu.Unlock()
+	<-w.done
+}
 
 type Router struct {
 	Sticky  *StickyCache
@@ -46,6 +133,10 @@ type Router struct {
 	}
 	// weightCounters isolates deterministic weighted selection by candidate set.
 	weightCounters sync.Map
+
+	shadowMu      sync.Mutex
+	shadowWorker  *ursmShadowWorker
+	shadowStopped bool
 
 	// 新增：状态管理器引用（向后兼容）
 	StateManager credentialstate.StateProvider
@@ -107,13 +198,25 @@ func (r *Router) PlanCandidatesWithContext(
 	tenantID string,
 	canonical string,
 	requestID string,
-) []provider.Candidate {
+) (result []provider.Candidate) {
 	if requestCtx == nil {
 		requestCtx = context.Background()
 	}
 	candidates = deduplicateCandidates(candidates)
 	if len(candidates) == 0 {
 		return nil
+	}
+	shadowInput := append([]provider.Candidate(nil), candidates...)
+	var shadowLegacy []provider.Candidate
+	shadowLegacySet := false
+	if r.URSMv2 != nil && (r.URSMv2.Mode() == ursmv2api.ModeShadow || r.URSMv2.Mode() == ursmv2api.ModeCanary) {
+		defer func() {
+			legacy := result
+			if shadowLegacySet {
+				legacy = shadowLegacy
+			}
+			r.enqueueURSMv2Shadow(shadowInput, legacy, tenantID, canonical, requestID)
+		}()
 	}
 
 	// S-3 (Step 5 round 1): decide and record the OUTER
@@ -330,6 +433,11 @@ func (r *Router) PlanCandidatesWithContext(
 		ordered = applyProtocolAffinity(ordered, egressPreference)
 	}
 
+	if r.URSMv2 != nil && (r.URSMv2.Mode() == ursmv2api.ModeShadow || r.URSMv2.Mode() == ursmv2api.ModeCanary) {
+		shadowLegacy = append([]provider.Candidate(nil), ordered...)
+		shadowLegacySet = true
+	}
+
 	if r.URSMv2 != nil && r.URSMv2.Mode() == ursmv2api.ModeCanary && r.URSMv2.ShouldUseV2(tenantID, canonical, requestID) {
 		if v2Ordered := r.planWithURSMv2Context(ordered, requestCtx, tenantID, canonical, requestID, readySnapshot != nil && *readySnapshot); v2Ordered != nil {
 			ordered = v2Ordered
@@ -355,6 +463,113 @@ func (r *Router) PlanCandidatesWithContext(
 	}
 
 	return ordered
+}
+
+func (r *Router) enqueueURSMv2Shadow(candidates, legacyOrder []provider.Candidate, tenant, canonical, requestID string) {
+	if r.URSMv2 == nil {
+		return
+	}
+	if !r.URSMv2.ShouldSampleShadow(tenant, canonical, requestID) {
+		shadow.Record(shadow.OutcomeSampledOut)
+		return
+	}
+
+	seeds := make([]ursmv2.CandidateSeed, 0, len(candidates))
+	for _, c := range candidates {
+		seeds = append(seeds, candidateSeed(c, tenant, canonical))
+	}
+	legacyIDs := make([]string, 0, len(legacyOrder))
+	for _, c := range legacyOrder {
+		legacyIDs = append(legacyIDs, seedLookupKey(c.ProviderID, c.CredentialID, c.RawModel))
+	}
+	task := ursmShadowTask{
+		manager: r.URSMv2, seeds: seeds, legacyIDs: legacyIDs,
+		tenant: tenant, canonical: canonical, requestID: requestID,
+	}
+	worker := r.getOrStartShadowWorker()
+	if worker == nil || !worker.enqueue(task) {
+		shadow.Record(shadow.OutcomeDropped)
+	}
+}
+
+func (r *Router) getOrStartShadowWorker() *ursmShadowWorker {
+	if r == nil {
+		return nil
+	}
+	r.shadowMu.Lock()
+	defer r.shadowMu.Unlock()
+	if r.shadowStopped {
+		return nil
+	}
+	if r.shadowWorker == nil {
+		r.shadowWorker = newURSMShadowWorker(ursmShadowQueueSize, nil)
+	}
+	return r.shadowWorker
+}
+
+// StopShadowWorker stops shadow observation and discards queued work. It is
+// idempotent and primarily exists so tests and explicit application shutdowns
+// can bound the worker lifecycle.
+func (r *Router) StopShadowWorker() {
+	if r == nil {
+		return
+	}
+	r.shadowMu.Lock()
+	r.shadowStopped = true
+	worker := r.shadowWorker
+	r.shadowWorker = nil
+	r.shadowMu.Unlock()
+	worker.stopAndWait()
+}
+
+func candidateSeed(c provider.Candidate, tenant, canonical string) ursmv2.CandidateSeed {
+	return ursmv2.CandidateSeed{
+		ProviderID: c.ProviderID, CredentialID: c.CredentialID, RawModel: c.RawModel,
+		Canonical: firstNonEmpty(c.StandardizedName, canonical), TenantID: tenant,
+		PriceIn: derefPrice(c.PriceInPer1M), PriceOut: derefPrice(c.PriceOutPer1M),
+		BillingMode: c.BillingMode, BaseURLMs: c.P50LatencyMs,
+	}
+}
+
+func observeURSMv2Shadow(task ursmShadowTask) {
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	ready, err := task.manager.ReadyWithError(ctx)
+	if err != nil {
+		shadow.Record(shadow.OutcomeError)
+		return
+	}
+	if !ready {
+		shadow.Record(shadow.OutcomeNotReady)
+		return
+	}
+
+	v2Ordered, err := task.manager.PlanReadyObserved(ctx, task.seeds, task.tenant, task.canonical, true)
+	if err != nil {
+		shadow.Record(shadow.OutcomeError)
+		return
+	}
+
+	v2IDs := make([]string, 0, len(v2Ordered))
+	for _, seed := range v2Ordered {
+		v2IDs = append(v2IDs, seedLookupKey(seed.ProviderID, seed.CredentialID, seed.RawModel))
+	}
+	diff := shadow.Compute(task.requestID, task.tenant, task.canonical, task.legacyIDs, v2IDs)
+	outcome := diff.Outcome()
+	shadow.Record(outcome)
+	if diff.HasTop1Mismatch() {
+		shadow.Record(shadow.OutcomeTop1Mismatch)
+	}
+	if outcome != shadow.OutcomeIdentical {
+		slog.Debug("ursm.v2: shadow routing diff",
+			"request_id", task.requestID,
+			"tenant_id", task.tenant,
+			"canonical_model", task.canonical,
+			"type", outcome,
+			"legacy_order", task.legacyIDs,
+			"v2_order", v2IDs,
+		)
+	}
 }
 
 // planWithURSMv2Context is the request-aware variant used by canary routing.

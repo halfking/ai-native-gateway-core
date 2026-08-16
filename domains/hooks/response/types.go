@@ -12,16 +12,17 @@ import (
 
 // InterceptRequest contains the context for intercepting a non-streaming response.
 type InterceptRequest struct {
-	SessionID     string
-	RequestID     string
-	TenantID      string
-	ClientModel   string
-	ResponseBody  []byte
-	TokensUsed    int
-	ContextWindow int
-	MessageCount  int
-	FinishReason  string
-	IsStreaming   bool
+	SessionID      string
+	RequestID      string
+	TenantID       string
+	ClientModel    string
+	ResponseBody   []byte
+	TokensUsed     int
+	ContextWindow  int
+	MessageCount   int
+	FinishReason   string
+	IsStreaming    bool
+	FollowUpAction string
 }
 
 // InterceptResult contains the outcome of response interception.
@@ -41,16 +42,17 @@ type InterceptResult struct {
 // detection and audit logic as the non-streaming path. Empty when the caller
 // has not reassembled the body.
 type StreamMeta struct {
-	SessionID     string
-	RequestID     string
-	TenantID      string
-	ClientModel   string
-	ContextWindow int
-	MessageCount  int
-	TokensUsed    int
-	ChunkIndex    int
-	ResponseBody  []byte
-	FinishReason  string
+	SessionID      string
+	RequestID      string
+	TenantID       string
+	ClientModel    string
+	ContextWindow  int
+	MessageCount   int
+	TokensUsed     int
+	ChunkIndex     int
+	ResponseBody   []byte
+	FinishReason   string
+	FollowUpAction string
 }
 
 // ChunkResult contains the outcome of stream chunk interception.

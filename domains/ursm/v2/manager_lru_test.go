@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/api"
+	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/statesource"
 )
 
 // newMirrorManager builds a Manager in authoritative mode with the LRU mirror
@@ -191,6 +192,20 @@ func TestFilterAndScoreReady_RejectsMirrorWhenNotReady(t *testing.T) {
 	require.Len(t, views, 1)
 	assert.True(t, views[0].Available,
 		"mirror-cached availability must survive when ready=true")
+}
+
+func TestPlanReadyObservedDoesNotPopulateMirror(t *testing.T) {
+	mgr, mr, _ := newMirrorManager(t)
+	seedNode(t, mr, 23, "m", 1, true, 50, 0.9)
+	seeds := []CandidateSeed{{ProviderID: 1, CredentialID: 23, RawModel: "m", TenantID: "t"}}
+
+	before := statesource.Snapshot()
+	ordered, err := mgr.PlanReadyObserved(context.Background(), seeds, "t", "m", true)
+	require.NoError(t, err)
+	require.Len(t, ordered, 1)
+	assert.Equal(t, before, statesource.Snapshot(), "observe-only planning must not record routing sources")
+	_, cached := mgr.nodeMirror.PeekForTenant("t", 23, "m")
+	assert.False(t, cached, "observe-only planning must not backfill production mirror state")
 }
 
 func TestManagerCloseIsIdempotent(t *testing.T) {

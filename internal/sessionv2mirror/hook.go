@@ -62,11 +62,10 @@ func PersistHook(writer V2Writer, dims ...DimWriter) func(entry *telemetry.Reque
 			return
 		}
 
-		// 2026-08-06: skip gateway-internal auto requests (auto title/summary
-		// loopback calls marked via X-Gw-Is-Auto). These are ephemeral and must
-		// not be mirrored into the session V2 tables — doing so pollutes the
-		// session's turn history with title-generation traffic.
-		if entry.IsAutoRequest != nil && *entry.IsAutoRequest {
+		// Gateway-internal title/summary loopbacks are not user turns. Business
+		// auto-route requests also set IsAutoRequest, but carry TaskType and must
+		// be mirrored so the task dimension is queryable from session_turns.
+		if isInternalAutoEntry(entry) {
 			return
 		}
 
@@ -140,17 +139,21 @@ func entryToProcessedRequest(entry *telemetry.RequestLogEntry) *v2.ProcessedRequ
 		eventTime = *entry.EventAt
 	}
 	req := &v2.ProcessedRequest{
-		SessionID:   *entry.GwSessionID,
-		TenantID:    entry.TenantID,
-		RequestID:   entry.RequestID,
-		Timestamp:   eventTime,
-		ClientModel: strVal(entry.ClientModel),
-		ProviderID:  providerID(entry.ProviderID),
-		Success:     entry.Success,
-		ErrorKind:   strVal(entry.ErrorKind),
-		StatusCode:  statusCode(entry),
-		StartedAt:   eventTime,
-		CompletedAt: eventTime,
+		SessionID:       *entry.GwSessionID,
+		TenantID:        entry.TenantID,
+		RequestID:       entry.RequestID,
+		Timestamp:       eventTime,
+		ProjectID:       strVal(entry.ProjectID),
+		Namespace:       strVal(entry.Namespace),
+		ParentRequestID: strVal(entry.ParentRequestID),
+		TaskType:        strVal(entry.TaskType),
+		ClientModel:     strVal(entry.ClientModel),
+		ProviderID:      providerID(entry.ProviderID),
+		Success:         entry.Success,
+		ErrorKind:       strVal(entry.ErrorKind),
+		StatusCode:      statusCode(entry),
+		StartedAt:       eventTime,
+		CompletedAt:     eventTime,
 	}
 
 	// Usage & cost
@@ -522,6 +525,25 @@ func intStr(v int) string {
 		buf[i], buf[j] = buf[j], buf[i]
 	}
 	return string(buf)
+}
+
+func isInternalAutoEntry(entry *telemetry.RequestLogEntry) bool {
+	if entry == nil || entry.IsAutoRequest == nil || !*entry.IsAutoRequest {
+		return false
+	}
+	if entry.RequestType != nil {
+		switch strings.TrimSpace(*entry.RequestType) {
+		case "title_gen", "summary":
+			return true
+		}
+	}
+	if entry.OriginActor != nil {
+		switch strings.TrimSpace(*entry.OriginActor) {
+		case "auto-title-generator", "auto-summary-generator", "session-summary":
+			return true
+		}
+	}
+	return entry.TaskType == nil || strings.TrimSpace(*entry.TaskType) == ""
 }
 
 func isTerminalFailure(entry *telemetry.RequestLogEntry) bool {

@@ -39,22 +39,25 @@ func (h *TriggerHook) DefaultExplicit(tenantID string) bool {
 // ResumePacket is the bounded handoff payload passed to a fresh session. It
 // deliberately excludes credentials and raw authentication material.
 type ResumePacket struct {
-	Version         int    `json:"version"`
-	PreviousSession string `json:"previous_session_id"`
-	TriggerReason   string `json:"trigger_reason"`
-	Summary         string `json:"summary"`
-	SkillName       string `json:"skill_name"`
+	Version         int             `json:"version"`
+	PreviousSession string          `json:"previous_session_id"`
+	TriggerReason   string          `json:"trigger_reason"`
+	Summary         string          `json:"summary"`
+	SkillName       string          `json:"skill_name"`
+	GoalHandoff     *HandoffMessage `json:"goal_handoff,omitempty"`
 }
 
 // RequestResult describes a request-side handoff decision. The handler owns
 // session creation because it is responsible for session ownership checks.
 type RequestResult struct {
-	Triggered    bool
-	Explicit     bool
-	Reason       string
-	Body         []byte
-	ResumePacket ResumePacket
-	Record       *HandoffRecord
+	Triggered     bool
+	Explicit      bool
+	Reason        string
+	Body          []byte
+	ResumePacket  ResumePacket
+	Record        *HandoffRecord
+	GoalState     *GoalState
+	ReservationID string
 }
 
 var skillNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
@@ -62,6 +65,7 @@ var skillNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
 var resumeSensitivePatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)(bearer\s+)[A-Za-z0-9._-]{12,}`),
 	regexp.MustCompile(`(?i)(sk-[A-Za-z0-9_-]{12,})`),
+	regexp.MustCompile(`(?i)((?:api[_-]?key|secret|token|password)\s*[:=]\s*)[^\s,;\"']{8,}`),
 	regexp.MustCompile(`(?s)(-----BEGIN [A-Z ]*PRIVATE KEY-----).*?(-----END [A-Z ]*PRIVATE KEY-----)`),
 }
 
@@ -91,20 +95,55 @@ func (h *TriggerHook) PrepareRequest(ctx context.Context, req *Request) (*Reques
 		return nil, nil
 	}
 
+	sessionTokens, sessionMessages := h.requestTotals(ctx, req)
 	interceptReq := &response.InterceptRequest{
 		SessionID: req.SessionID, TenantID: req.TenantID, ClientModel: req.ClientModel,
-		TokensUsed: req.TokenEstimate, ContextWindow: req.ContextWindow, MessageCount: req.MessageCount,
+		TokensUsed: sessionTokens, ContextWindow: req.ContextWindow, MessageCount: sessionMessages,
 	}
-	var d *decision
+	var (
+		d             *decision
+		goalSignal    TriggerSignal
+		reservationID string
+	)
 	if manual {
-		d = &decision{reason: "manual_skill:" + skillName, tokensAtTrig: req.TokenEstimate, msgCount: req.MessageCount}
+		d = &decision{reason: "manual_skill:" + skillName, tokensAtTrig: sessionTokens, msgCount: sessionMessages}
+		goalSignal = TriggerSignal{Kind: SignalGoalDegraded, Source: "manual", Reason: d.reason, Severity: 3, ObservedAt: time.Now().UTC()}
 	} else {
+		if !req.Explicit {
+			return nil, nil
+		}
 		d = h.evaluate(ctx, interceptReq, mode)
+		if h.config.ContextMonitor != nil && h.config.GoalTrigger != nil {
+			contextSignal := h.config.ContextMonitor.Evaluate(ContextSnapshot{
+				SessionID: req.SessionID, TenantID: req.TenantID, TokensUsed: sessionTokens,
+				ContextWindow: req.ContextWindow, MessageCount: sessionMessages,
+				AbsoluteThreshold:   h.loadInt(req.TenantID, "handoff.absolute_threshold", h.config.AbsoluteThreshold),
+				PercentageThreshold: h.loadFloat(req.TenantID, "handoff.percentage_threshold", h.config.PercentageThreshold),
+			})
+			if d != nil {
+				if contextSignal.Kind == SignalNone {
+					contextSignal = TriggerSignal{Kind: SignalContextPressure, Source: "handoff", Severity: 2, ObservedAt: time.Now().UTC()}
+				}
+				if contextSignal.Kind == SignalContextPressure {
+					contextSignal.Reason = d.reason
+				}
+			}
+			if !h.canPrepareRequest(ctx, req.TenantID, req.SessionID, sessionMessages) {
+				return nil, nil
+			}
+			if id, signal, ok := h.config.GoalTrigger.Reserve(req.SessionID, contextSignal); ok {
+				reservationID = id
+				goalSignal = signal
+				d = &decision{reason: signal.Reason, tokensAtTrig: sessionTokens, msgCount: sessionMessages}
+			} else {
+				d = nil
+			}
+		}
 	}
 	if d == nil || !h.canPrepareRequest(ctx, req.TenantID, req.SessionID, d.msgCount) {
-		return nil, nil
-	}
-	if !req.Explicit && !manual {
+		if h.config.GoalTrigger != nil {
+			h.config.GoalTrigger.Abort(reservationID)
+		}
 		return nil, nil
 	}
 
@@ -114,12 +153,39 @@ func (h *TriggerHook) PrepareRequest(ctx context.Context, req *Request) (*Reques
 		summaryRequest.Body = stripSkillInvocation(req.Body, skillName)
 	}
 	summary := h.buildRequestSummary(ctx, &summaryRequest, engine)
+	var goalState *GoalState
+	if h.config.GoalStateSerializer != nil {
+		costMode := ""
+		if h.config.GoalCostMode != nil {
+			costMode = h.config.GoalCostMode(req.TenantID)
+		}
+		var err error
+		goalState, err = h.config.GoalStateSerializer.Serialize(ctx, GoalStateInput{
+			SessionID: req.SessionID, CostMode: costMode, TokensUsed: sessionTokens, MessageCount: sessionMessages,
+		})
+		if err != nil {
+			slog.Warn("handoff_goal_state_serialize_failed", "session_id", req.SessionID, "error", err)
+			goalState = nil
+		}
+	}
 	packet := ResumePacket{
 		Version: 1, PreviousSession: req.SessionID, TriggerReason: d.reason,
 		Summary: summary, SkillName: skillName,
 	}
+	if goalState != nil && h.config.MessageBuilder != nil {
+		if goalSignal.Kind == SignalNone {
+			goalSignal = TriggerSignal{Kind: SignalContextPressure, Source: "handoff", Reason: d.reason, Severity: 2, ObservedAt: time.Now().UTC()}
+		}
+		message, err := h.config.MessageBuilder.Build(req.SessionID, goalSignal, goalState, summary)
+		if err != nil {
+			slog.Warn("handoff_goal_message_build_failed", "session_id", req.SessionID, "error", err)
+		} else {
+			packet.GoalHandoff = message
+		}
+	}
 	result := &RequestResult{
 		Triggered: true, Explicit: true, Reason: d.reason, ResumePacket: packet,
+		GoalState: goalState, ReservationID: reservationID,
 		Record: &HandoffRecord{
 			SessionKey: req.SessionID, TenantID: req.TenantID, TriggerMode: string(mode), TriggerReason: d.reason,
 			TokensAtTrigger: req.TokenEstimate, ContextWindow: req.ContextWindow, MessagesAtTrigger: d.msgCount,
@@ -147,6 +213,20 @@ func (h *TriggerHook) CommitRequest(ctx context.Context, result *RequestResult, 
 	}
 	level := NotifyLevel(h.loadString(record.TenantID, "handoff.notify_level", string(h.config.NotifyLevel)))
 	h.notify(ctx, level, &record)
+}
+
+func (h *TriggerHook) requestTotals(ctx context.Context, req *Request) (int, int) {
+	tokens, messages := req.TokenEstimate, req.MessageCount
+	if h.db == nil || req.SessionID == "" {
+		return tokens, messages
+	}
+	if value, err := h.db.GetSessionTokens(ctx, req.SessionID); err == nil && value > 0 {
+		tokens = value
+	}
+	if value, err := h.db.GetSessionMessages(ctx, req.SessionID); err == nil && value > 0 {
+		messages = value
+	}
+	return tokens, messages
 }
 
 func (h *TriggerHook) canPrepareRequest(ctx context.Context, tenantID, sessionID string, msgCount int) bool {
@@ -195,8 +275,9 @@ func (h *TriggerHook) buildRequestSummary(ctx context.Context, req *Request, eng
 			{"role": "user", "content": prompt + "\n\n# Conversation\n" + conversation},
 		}, req.UpstreamAPIKey)
 		if err == nil && strings.TrimSpace(out) != "" {
-			return truncateRunes(strings.TrimSpace(out), maxChars)
+			return truncateRunes(redactResumeSensitive(strings.TrimSpace(out)), maxChars)
 		}
+
 	}
 	return truncateRunes(conversation, maxChars)
 }

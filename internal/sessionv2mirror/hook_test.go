@@ -113,6 +113,46 @@ func TestPersistHook_MirrorsTerminalFailure(t *testing.T) {
 	}
 }
 
+func TestPersistHook_MirrorsBusinessAutoRouteWithTaskType(t *testing.T) {
+	var got *v2.ProcessedRequest
+	writer := captureWriterV2{fn: func(req *v2.ProcessedRequest) { got = req }}
+	hook := PersistHook(writer)
+	isAuto := true
+	hookEntry := &telemetry.RequestLogEntry{
+		RequestID:     "req-auto-route",
+		GwSessionID:   gwSessionPtr("sess-auto-route"),
+		Success:       true,
+		RequestStatus: strPtr(telemetry.RequestStatusSuccess),
+		IsAutoRequest: &isAuto,
+		TaskType:      strPtr("code"),
+	}
+	withShadowFlags(t, func() { hook(hookEntry) })
+	if got == nil || got.TaskType != "code" {
+		t.Fatalf("business auto-route result = %#v, want mirrored task_type=code", got)
+	}
+}
+
+func TestPersistHook_SkipsInternalAutoLoopback(t *testing.T) {
+	called := 0
+	writer := captureWriterV2{fn: func(*v2.ProcessedRequest) { called++ }}
+	hook := PersistHook(writer)
+	isAuto := true
+	requestType := "title_gen"
+	withShadowFlags(t, func() {
+		hook(&telemetry.RequestLogEntry{
+			RequestID:     "req-title-loopback",
+			GwSessionID:   gwSessionPtr("sess-title-loopback"),
+			Success:       true,
+			RequestStatus: strPtr(telemetry.RequestStatusSuccess),
+			IsAutoRequest: &isAuto,
+			RequestType:   &requestType,
+		})
+	})
+	if called != 0 {
+		t.Fatalf("internal auto loopback reached V2 writer %d times, want 0", called)
+	}
+}
+
 func TestPersistHook_MirrorsTerminalRateLimited(t *testing.T) {
 	var got *v2.ProcessedRequest
 	writer := captureWriterV2{fn: func(req *v2.ProcessedRequest) { got = req }}
@@ -168,6 +208,10 @@ func TestEntryToProcessedRequest_CoreFields(t *testing.T) {
 		RequestID:          "req_abc123",
 		GwSessionID:        gwSessionPtr("sess_v2_test_001"),
 		TenantID:           "tenant_demo",
+		ProjectID:          strPtr("project_demo"),
+		Namespace:          strPtr("workspace"),
+		ParentRequestID:    strPtr("req_parent"),
+		TaskType:           strPtr("code"),
 		ClientModel:        strPtr("gpt-4o-mini"),
 		ProviderID:         intPtr(36),
 		CredentialID:       intPtr(42),
@@ -186,6 +230,10 @@ func TestEntryToProcessedRequest_CoreFields(t *testing.T) {
 	check(t, "SessionID", req.SessionID, "sess_v2_test_001")
 	check(t, "TenantID", req.TenantID, "tenant_demo")
 	check(t, "RequestID", req.RequestID, "req_abc123")
+	check(t, "ProjectID", req.ProjectID, "project_demo")
+	check(t, "Namespace", req.Namespace, "workspace")
+	check(t, "ParentRequestID", req.ParentRequestID, "req_parent")
+	check(t, "TaskType", req.TaskType, "code")
 	check(t, "ClientModel", req.ClientModel, "gpt-4o-mini")
 	check(t, "ErrorKind", req.ErrorKind, "")
 	check(t, "CredentialID", req.CredentialID, "42")

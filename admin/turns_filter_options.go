@@ -146,7 +146,7 @@ func (h *Handler) lastActiveQuery(source string) string {
 // lastActiveTurnQuery 组装基于 session_turns 的热门值查询。
 func (h *Handler) lastActiveTurnQuery(valueExpr, filter, tenantWhere string) string {
 	return fmt.Sprintf(
-		"SELECT v FROM (SELECT %s AS v, MAX(t.ts) AS last_at FROM public.session_turns t"+
+		"SELECT v FROM (SELECT %s AS v, MAX(t.ts) AS last_at FROM public.session_turns_with_current_month t"+
 			" WHERE %s AND t.ts > NOW() - INTERVAL '%d days'%s GROUP BY 1)"+
 			" t2 ORDER BY last_at DESC LIMIT %d",
 		valueExpr, filter, turnsFilterOptionsWindowDays, tenantWhere, turnsFilterOptionsLimit)

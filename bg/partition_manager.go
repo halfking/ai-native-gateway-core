@@ -684,7 +684,7 @@ func ensureSpecs() []archiveSpec {
 		// 这里只是把它们接入 24h 定时轮转。
 		//
 		// timestamptz 签名（默认 argExpr="$1"）
-		{fnName: "ensure_credit_ledger_partition", label: "credit_ledger"},      // Migration 334
+		{fnName: "ensure_credit_ledger_partition", label: "credit_ledger"},       // Migration 334
 		{fnName: "ensure_tool_usage_stats_partition", label: "tool_usage_stats"}, // Migration 335
 
 		// date 签名 —— pgx 传 time.Time 为 timestamptz，需显式 ::date 转换，
@@ -755,6 +755,7 @@ func promoteSpecs() []archiveSpec {
 		// 按 lifecycle.model_probe_runs_ttl_days 直接 DELETE 清理。
 		// {fnName: "promote_model_probe_runs_hot_to_partition", label: "model_probe_runs_hot"},
 		{fnName: "promote_candidate_failure_logs_hot_to_partition", label: "candidate_failure_logs_hot"}, // Migration 392
+		{fnName: "promote_session_turns_hot_to_partition", label: "session_turns_hot"},                   // Migration 525
 	}
 }
 

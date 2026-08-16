@@ -97,6 +97,7 @@ func New(d Dependencies) *Manager {
 			CanaryPercent:     cfg.CanaryPercent,
 			CanaryTenants:     cfg.CanaryTenants,
 			CanaryModels:      cfg.CanaryModels,
+			ShadowSampleRate:  cfg.ShadowSampleRate,
 			ShadowDoubleWrite: cfg.ShadowDoubleWrite,
 		}),
 		fp:   d.FP,
@@ -131,13 +132,39 @@ func (m *Manager) ShouldUseV2(tenant, model, requestID string) bool {
 	return m.rollout.ShouldUseV2(tenant, model, requestID)
 }
 
-// Ready returns the v2 recovery gate state. False means the v2
-// pipeline is not authoritative yet; callers should treat v2 as off.
-func (m *Manager) Ready(ctx context.Context) bool {
+func (m *Manager) ShadowDoubleWrite() bool {
 	if m == nil {
 		return false
 	}
-	return m.recovery.Ready(ctx)
+	return m.rollout.ShadowDoubleWrite()
+}
+
+func (m *Manager) ShadowSampleRate() float64 {
+	if m == nil {
+		return 0
+	}
+	return m.rollout.ShadowSampleRate()
+}
+
+func (m *Manager) ShouldSampleShadow(tenant, model, requestID string) bool {
+	if m == nil {
+		return false
+	}
+	return m.rollout.ShouldSampleShadow(tenant, model, requestID)
+}
+
+// Ready returns the v2 recovery gate state. False means the v2
+// pipeline is not authoritative yet; callers should treat v2 as off.
+func (m *Manager) Ready(ctx context.Context) bool {
+	ready, _ := m.ReadyWithError(ctx)
+	return ready
+}
+
+func (m *Manager) ReadyWithError(ctx context.Context) (bool, error) {
+	if m == nil {
+		return false, fmt.Errorf("ursm.v2: nil manager")
+	}
+	return m.recovery.ReadyWithError(ctx)
 }
 
 // SetReady toggles the v2 recovery gate. Used by recovery / boot flows
@@ -528,6 +555,53 @@ func (m *Manager) PlanReady(ctx context.Context, seeds []CandidateSeed, tenant, 
 // the read path runs); the router must not record a source in that
 // case.
 func (m *Manager) PlanReadyWithSource(ctx context.Context, seeds []CandidateSeed, tenant, canonical string, ready bool) ([]CandidateSeed, statesource.RoutingStateSource, error) {
+	return m.planReadyWithSource(ctx, seeds, tenant, canonical, ready, true)
+}
+
+// PlanReadyObserved runs an observe-only v2 plan directly against Redis. It
+// neither records production routing-source metrics nor reads/backfills the
+// process NodeMirror, so shadow traffic cannot change production cache state or
+// LRU recency.
+func (m *Manager) PlanReadyObserved(ctx context.Context, seeds []CandidateSeed, tenant, canonical string, ready bool) ([]CandidateSeed, error) {
+	if m == nil || m.store == nil {
+		return nil, fmt.Errorf("ursm.v2: nil manager/store")
+	}
+	if m.Mode() == api.ModeOff {
+		return nil, nil
+	}
+	if !ready {
+		return nil, fmt.Errorf("ursm.v2: not ready")
+	}
+
+	queries := make([]store.NodeQuery, 0, len(seeds))
+	for _, seed := range seeds {
+		queries = append(queries, store.NodeQuery{
+			TenantID: seed.TenantID, CredentialID: seed.CredentialID, RawModel: seed.RawModel,
+		})
+	}
+	views, err := m.store.PipelineNodeViews(ctx, m.cfg.RedisKeyPrefix, queries)
+	if err != nil {
+		return nil, fmt.Errorf("ursm.v2: observed pipeline: %w", err)
+	}
+	scoreAndSort(views, seeds, m.cfg.ScoringWeights)
+
+	idx := make(map[string]int, len(seeds))
+	for i, seed := range seeds {
+		idx[seedKey(seed.CredentialID, seed.RawModel)] = i
+	}
+	out := make([]CandidateSeed, 0, len(views))
+	for _, view := range views {
+		if !view.Available {
+			continue
+		}
+		if i, ok := idx[seedKey(view.CredentialID, view.RawModel)]; ok {
+			out = append(out, seeds[i])
+		}
+	}
+	return out, nil
+}
+
+func (m *Manager) planReadyWithSource(ctx context.Context, seeds []CandidateSeed, tenant, canonical string, ready, recordSource bool) ([]CandidateSeed, statesource.RoutingStateSource, error) {
 	if m == nil {
 		return nil, "", nil
 	}
@@ -543,7 +617,9 @@ func (m *Manager) PlanReadyWithSource(ctx context.Context, seeds []CandidateSeed
 		// records the outer Canary label separately; the inner
 		// counter is the manager's responsibility.
 		m.log.Warn("ursm.v2: Plan filter failed, falling back", "error", err, "seed_count", len(seeds))
-		statesource.RecordRoutingStateSource(statesource.StateSourceFallback)
+		if recordSource {
+			statesource.RecordRoutingStateSource(statesource.StateSourceFallback)
+		}
 		return nil, statesource.StateSourceFallback, err
 	}
 	if len(views) == 0 {
@@ -572,7 +648,7 @@ func (m *Manager) PlanReadyWithSource(ctx context.Context, seeds []CandidateSeed
 	// contract as FilterAndScoreReadyWithSource on the authoritative
 	// path). On the empty-source path (off-mode short-circuit), we
 	// skip — the router must not see a misleading inner label.
-	if src != "" {
+	if recordSource && src != "" {
 		statesource.RecordRoutingStateSource(src)
 	}
 	if len(out) == 0 {
@@ -730,8 +806,8 @@ func (m *Manager) SetSeedForTest(ctx context.Context, s CandidateSeed) error {
 //   - the receiver is nil (defensive — protects against bad wiring),
 //   - the store is not configured,
 //   - the rollout controller decides this request is not on the v2
-//     path (ModeOff always; ModeShadow by design; ModeCanary
-//     unless the canary hash / tenant / model matches),
+//     path (ModeOff always; ModeShadow unless double-write is enabled;
+//     ModeCanary unless the canary hash / tenant / model matches),
 //
 // On the success/failure path the call is forwarded to the v2 store
 // via the RecordRequest Lua script. The context is detached
@@ -772,6 +848,13 @@ func (m *Manager) RecordRequest(ctx context.Context, ev api.RequestOutcome) erro
 	window1m := store.WindowKeyForTenant(m.cfg.RedisKeyPrefix, ev.TenantID, ev.CredentialID, ev.RawModel, "1m")
 	window5m := store.WindowKeyForTenant(m.cfg.RedisKeyPrefix, ev.TenantID, ev.CredentialID, ev.RawModel, "5m")
 	window30m := store.WindowKeyForTenant(m.cfg.RedisKeyPrefix, ev.TenantID, ev.CredentialID, ev.RawModel, "30m")
+	dedupKey := ev.DedupKey
+	if dedupKey == "" {
+		dedupKey = ev.RequestID
+	}
+	if ev.Terminal && dedupKey != "" {
+		dedupKey += ":terminal"
+	}
 	if _, err := m.store.RecordRequest(rctx,
 		nodeKey,
 		window1m,
@@ -783,7 +866,7 @@ func (m *Manager) RecordRequest(ctx context.Context, ev api.RequestOutcome) erro
 			NowMs:        time.Now().UnixMilli(),
 			LatencyMs:    ev.LatencyMs,
 			RequestID:    ev.RequestID,
-			DedupKey:     ev.RequestID,
+			DedupKey:     dedupKey,
 			NodeTTL:      m.cfg.NodeTTL,
 			Window5mTTL:  m.cfg.Window5mTTL,
 			Window30mTTL: m.cfg.Window30mTTL,

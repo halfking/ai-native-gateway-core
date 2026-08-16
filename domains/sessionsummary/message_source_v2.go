@@ -65,7 +65,7 @@ const v2SessionBodiesBaseQuery = `
 		b.ts,
 		b.request_delta
 	FROM public.session_bodies b
-		LEFT JOIN public.session_turns t
+		LEFT JOIN public.session_turns_with_current_month t
 		  ON t.tenant_id = b.tenant_id
 		 AND t.request_id = b.request_id
 	WHERE b.session_id = $1

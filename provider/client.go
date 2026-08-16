@@ -147,7 +147,7 @@ type Candidate struct {
 	// Used by the Q1/Q2/Q3 client-side context trim path
 	// (transformation.CompressMessagesIfNeeded). nil means "unknown" — in which
 	// case the trim path is a no-op.
-	ContextWindow *int `json:"context_window,omitempty"`
+	ContextWindow *int   `json:"context_window,omitempty"`
 	APIKey        string `json:"-"`
 	// APIKeys holds additional decrypted keys for multi-key rotation (beyond the
 	// primary APIKey). nil/empty for single-key credentials. Index 0 in the
@@ -305,6 +305,44 @@ type cacheEntry[T any] struct {
 	expires time.Time
 }
 
+const (
+	candidateCacheTTL        = 30 * time.Second
+	candidateCacheStaleGrace = 30 * time.Second
+	candidateGenerationTries = 3
+)
+
+var errCandidateCacheInvalidated = errors.New("candidate cache invalidated during lookup")
+
+type candidateGenerationInvalidatedError struct {
+	queried uint64
+	current uint64
+}
+
+func (e *candidateGenerationInvalidatedError) Error() string {
+	return fmt.Sprintf("%v: queried generation %d, current generation %d", errCandidateCacheInvalidated, e.queried, e.current)
+}
+
+func (e *candidateGenerationInvalidatedError) Unwrap() error {
+	return errCandidateCacheInvalidated
+}
+
+type candidateFlightResult struct {
+	response   *resolveResponse
+	generation uint64
+}
+
+func candidateFlightKey(key string, generation uint64) string {
+	return fmt.Sprintf("cand:%s:g%d", key, generation)
+}
+
+func candidateGenerationChanged(queried, current uint64) bool {
+	return queried != current
+}
+
+func candidateGenerationRetryError(tries int, cause error) error {
+	return fmt.Errorf("candidate lookup invalidated after %d attempts: %w", tries, cause)
+}
+
 type Client struct {
 	dbPool              *pgxpool.Pool
 	redis               *redis.Client
@@ -317,10 +355,11 @@ type Client struct {
 	// Shared across all candidate enrichments so health persists across requests.
 	keyRotator *credential.KeyRotator
 
-	mu        sync.RWMutex
-	candCache map[string]cacheEntry[*resolveResponse]
-	polCache  cacheEntry[*Policy]
-	keyCache  map[int]cacheEntry[string]
+	mu             sync.RWMutex
+	candCache      map[string]cacheEntry[*resolveResponse]
+	candGeneration uint64
+	polCache       cacheEntry[*Policy]
+	keyCache       map[int]cacheEntry[string]
 
 	sf singleflight.Group
 }
@@ -345,6 +384,7 @@ func InvalidateAllCandidateCache() {
 		return
 	}
 	defaultClient.mu.Lock()
+	defaultClient.candGeneration++
 	defaultClient.candCache = make(map[string]cacheEntry[*resolveResponse])
 	defaultClient.mu.Unlock()
 	// 2026-07-03: 降级为 Debug —— 此函数在每次永久故障/状态变更时都会被调用，
@@ -369,6 +409,7 @@ func InvalidateCandidateCacheForCredential(credentialID int) {
 	}
 	defaultClient.mu.Lock()
 	defer defaultClient.mu.Unlock()
+	defaultClient.candGeneration++
 	for key, entry := range defaultClient.candCache {
 		if entry.value == nil {
 			delete(defaultClient.candCache, key)
@@ -453,14 +494,25 @@ func (c *Client) getCandidates(ctx context.Context, model, profile, tenantID, mo
 		key = key + "|modality:" + modality
 	}
 
-	cacheState := "miss"
-	c.mu.RLock()
-	if entry, ok := c.candCache[key]; ok {
-		if time.Now().Before(entry.expires) {
+	var invalidatedErr error
+	for attempt := 0; attempt < candidateGenerationTries; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return nil, DefaultPolicy(), err
+		}
+
+		cacheState := "miss"
+		c.mu.RLock()
+		queryGeneration := c.candGeneration
+		entry, cacheOK := c.candCache[key]
+		if cacheOK && time.Now().Before(entry.expires) {
 			cacheState = "hit"
 			c.mu.RUnlock()
 			policy, _ := c.getPolicyCached(ctx)
 			cands := c.enrichWithAPIKeys(ctx, entry.value)
+			if !c.candidateGenerationIsCurrent(queryGeneration) {
+				invalidatedErr = c.candidateGenerationInvalidatedError(queryGeneration)
+				continue
+			}
 			if len(cands) == 0 {
 				logCandidateDiagnostic("cache_empty",
 					"model", routeModel,
@@ -473,48 +525,49 @@ func (c *Client) getCandidates(ctx context.Context, model, profile, tenantID, mo
 			}
 			return cands, policy, nil
 		}
-		cacheState = "expired"
-	}
-	c.mu.RUnlock()
-	slog.Debug("[candidate_diag] candidate cache lookup",
-		"cache_state", cacheState,
-		"model", routeModel,
-		"profile", profile,
-		"tenant_id", tenantID,
-		"cache_key", key,
-	)
+		if cacheOK {
+			cacheState = "expired"
+		}
+		c.mu.RUnlock()
+		slog.Debug("[candidate_diag] candidate cache lookup",
+			"cache_state", cacheState,
+			"model", routeModel,
+			"profile", profile,
+			"tenant_id", tenantID,
+			"cache_key", key,
+			"generation", queryGeneration,
+		)
 
-	v, err, shared := c.sf.Do("cand:"+key, func() (any, error) {
-		resp, fetchErr := c.fetchCandidatesDB(ctx, routeModel, profile, tenantID, modality)
-		if fetchErr != nil {
-			return nil, fetchErr
+		resp, shared, err := c.fetchCandidateGeneration(key, queryGeneration, func() (*resolveResponse, error) {
+			resp, fetchErr := c.fetchCandidatesDB(ctx, routeModel, profile, tenantID, modality)
+			if fetchErr == nil && (planCount(resp) == 0 || candidateCount(resp) == 0) {
+				logCandidateDiagnostic("db_empty",
+					"model", routeModel,
+					"profile", profile,
+					"tenant_id", tenantID,
+					"cache_key", key,
+					"plan_count", planCount(resp),
+					"candidate_count", candidateCount(resp),
+				)
+			}
+			return resp, fetchErr
+		})
+		if errors.Is(err, errCandidateCacheInvalidated) {
+			invalidatedErr = err
+			continue
 		}
-		if planCount(resp) == 0 || candidateCount(resp) == 0 {
-			logCandidateDiagnostic("db_empty",
-				"model", routeModel,
-				"profile", profile,
-				"tenant_id", tenantID,
-				"cache_key", key,
-				"plan_count", planCount(resp),
-				"candidate_count", candidateCount(resp),
-			)
-		}
-
-		c.mu.Lock()
-		c.candCache[key] = cacheEntry[*resolveResponse]{
-			value:   resp,
-			expires: time.Now().Add(30 * time.Second),
-		}
-		c.mu.Unlock()
-		return resp, nil
-	})
-	if err != nil {
-		// 🆕 Fail-Safe: 数据库查询失败时，尝试使用过期缓存
-		c.mu.RLock()
-		if staleEntry, ok := c.candCache[key]; ok {
+		if err != nil {
+			// Stale fallback is limited to retryable failures, live contexts, and
+			// non-empty entries that are still inside the fresh TTL plus grace.
+			c.mu.RLock()
+			staleEntry, ok := c.candCache[key]
 			c.mu.RUnlock()
+			if !ok || !canServeStaleCandidateCache(ctx, err, staleEntry, time.Now()) {
+				return nil, DefaultPolicy(), err
+			}
 
 			cacheAge := time.Since(staleEntry.expires)
+			recordCandidateDiagnostic("db_unavailable")
 			slog.Warn("[candidate_diag] database unavailable, serving stale cache",
 				"model", routeModel,
 				"profile", profile,
@@ -526,42 +579,101 @@ func (c *Client) getCandidates(ctx context.Context, model, profile, tenantID, mo
 				"db_error", err.Error(),
 			)
 
-			policy, _ := c.getPolicyCached(ctx)
 			cands := c.enrichWithAPIKeys(ctx, staleEntry.value)
-
-			if len(cands) == 0 {
+			if !c.candidateGenerationIsCurrent(queryGeneration) {
+				invalidatedErr = c.candidateGenerationInvalidatedError(queryGeneration)
+				continue
+			}
+			if ctx.Err() != nil || len(cands) == 0 {
 				logCandidateDiagnostic("stale_cache_empty",
 					"model", routeModel,
 					"profile", profile,
 					"tenant_id", tenantID,
 					"cache_age", cacheAge,
 				)
+				return nil, DefaultPolicy(), err
 			}
 
+			policy, _ := c.getPolicyCached(ctx)
 			return cands, policy, nil
 		}
-		c.mu.RUnlock()
 
-		// 缓存也没有，真正失败
-		return nil, DefaultPolicy(), err
+		policy, _ := c.getPolicyCached(ctx)
+		cands := c.enrichWithAPIKeys(ctx, resp)
+		if !c.candidateGenerationIsCurrent(queryGeneration) {
+			invalidatedErr = c.candidateGenerationInvalidatedError(queryGeneration)
+			continue
+		}
+		if len(cands) == 0 && candidateCount(resp) > 0 {
+			logCandidateDiagnostic("enrich_empty",
+				"model", routeModel,
+				"profile", profile,
+				"tenant_id", tenantID,
+				"cache_key", key,
+				"singleflight_shared", shared,
+				"plan_count", planCount(resp),
+				"candidate_count", candidateCount(resp),
+				"enriched_count", len(cands),
+			)
+		}
+		return cands, policy, nil
 	}
 
-	policy, _ := c.getPolicyCached(ctx)
-	resp := v.(*resolveResponse)
-	cands := c.enrichWithAPIKeys(ctx, resp)
-	if len(cands) == 0 && candidateCount(resp) > 0 {
-		logCandidateDiagnostic("enrich_empty",
-			"model", routeModel,
-			"profile", profile,
-			"tenant_id", tenantID,
-			"cache_key", key,
-			"singleflight_shared", shared,
-			"plan_count", planCount(resp),
-			"candidate_count", candidateCount(resp),
-			"enriched_count", len(cands),
-		)
+	return nil, DefaultPolicy(), candidateGenerationRetryError(candidateGenerationTries, invalidatedErr)
+}
+
+func (c *Client) fetchCandidateGeneration(key string, queryGeneration uint64, fetch func() (*resolveResponse, error)) (*resolveResponse, bool, error) {
+	v, err, shared := c.sf.Do(candidateFlightKey(key, queryGeneration), func() (any, error) {
+		resp, fetchErr := fetch()
+		now := time.Now()
+
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		if candidateGenerationChanged(queryGeneration, c.candGeneration) {
+			return nil, &candidateGenerationInvalidatedError{queried: queryGeneration, current: c.candGeneration}
+		}
+		if fetchErr != nil {
+			return nil, fetchErr
+		}
+
+		current, currentOK := c.candCache[key]
+		if currentOK && candidateResponseNonEmpty(current.value) && !candidateResponseNonEmpty(resp) && staleCandidateCacheUsable(current, now) {
+			logCandidateDiagnostic("db_empty_fallback",
+				"cache_key", key,
+				"cache_age", now.Sub(current.expires),
+				"plan_count", planCount(resp),
+				"candidate_count", candidateCount(resp),
+			)
+			return candidateFlightResult{response: current.value, generation: queryGeneration}, nil
+		}
+
+		c.candCache[key] = cacheEntry[*resolveResponse]{
+			value:   resp,
+			expires: now.Add(candidateCacheTTL),
+		}
+		return candidateFlightResult{response: resp, generation: queryGeneration}, nil
+	})
+	if err != nil {
+		return nil, shared, err
 	}
-	return cands, policy, nil
+
+	result := v.(candidateFlightResult)
+	if !c.candidateGenerationIsCurrent(result.generation) {
+		return nil, shared, c.candidateGenerationInvalidatedError(result.generation)
+	}
+	return result.response, shared, nil
+}
+
+func (c *Client) candidateGenerationIsCurrent(queryGeneration uint64) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.candGeneration == queryGeneration
+}
+
+func (c *Client) candidateGenerationInvalidatedError(queryGeneration uint64) error {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return &candidateGenerationInvalidatedError{queried: queryGeneration, current: c.candGeneration}
 }
 
 func planCount(resp *resolveResponse) int {
@@ -578,7 +690,21 @@ func candidateCount(resp *resolveResponse) int {
 	return len(resp.Candidates)
 }
 
+func candidateResponseNonEmpty(resp *resolveResponse) bool {
+	return planCount(resp) > 0 && candidateCount(resp) > 0
+}
+
+func staleCandidateCacheUsable(entry cacheEntry[*resolveResponse], now time.Time) bool {
+	return candidateResponseNonEmpty(entry.value) &&
+		!entry.expires.IsZero() && now.Before(entry.expires.Add(candidateCacheStaleGrace))
+}
+
+func canServeStaleCandidateCache(ctx context.Context, err error, entry cacheEntry[*resolveResponse], now time.Time) bool {
+	return ctx != nil && ctx.Err() == nil && isRetryableDBError(err) && staleCandidateCacheUsable(entry, now)
+}
+
 func logCandidateDiagnostic(event string, args ...any) {
+	recordCandidateDiagnostic(event)
 	slog.Warn("[candidate_diag] "+event, args...)
 }
 
@@ -1300,6 +1426,7 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 		}
 
 		backoff := time.Duration(50*(attempt+1)) * time.Millisecond
+		recordCandidateDiagnostic("db_query_retry")
 		slog.Warn("[candidate_diag] db query retry",
 			"model", clientModel,
 			"tenant_id", tenantID,

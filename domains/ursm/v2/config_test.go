@@ -1,6 +1,7 @@
 package v2
 
 import (
+	"math"
 	"testing"
 
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/api"
@@ -63,5 +64,29 @@ func TestDefaultConfig_ShadowDoubleWriteOff(t *testing.T) {
 	cfg := DefaultConfig()
 	if cfg.ShadowDoubleWrite {
 		t.Fatal("DefaultConfig() must ship with ShadowDoubleWrite=false; opt-in only")
+	}
+}
+
+func TestLoadFromEnv_ShadowSampleRate(t *testing.T) {
+	cases := []struct {
+		value string
+		want  float64
+	}{
+		{"", 0.01},
+		{"0", 0},
+		{"0.25", 0.25},
+		{"1", 1},
+		{"-0.1", 0.01},
+		{"1.1", 0.01},
+		{"invalid", 0.01},
+	}
+	for _, tc := range cases {
+		t.Run(tc.value, func(t *testing.T) {
+			t.Setenv("URSM_V2_SHADOW_SAMPLE_RATE", tc.value)
+			got := LoadFromEnv().ShadowSampleRate
+			if math.Abs(got-tc.want) > 1e-9 {
+				t.Fatalf("ShadowSampleRate=%v, want %v", got, tc.want)
+			}
+		})
 	}
 }

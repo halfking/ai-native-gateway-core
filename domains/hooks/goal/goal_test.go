@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 
@@ -15,12 +17,12 @@ import (
 // without a database. It implements the AtomicAutoContinue CAS faithfully so
 // the continue-budget tests reflect real concurrency behaviour.
 type fakeStore struct {
-	mu                  sync.Mutex
-	sessions            map[string]*Session
-	autoContinueCount   map[string]int
-	atomicWonCalls      int
-	atomicLostCalls     int
-	auditUpdated        bool
+	mu                sync.Mutex
+	sessions          map[string]*Session
+	autoContinueCount map[string]int
+	atomicWonCalls    int
+	atomicLostCalls   int
+	auditUpdated      bool
 }
 
 func newFakeStore() *fakeStore {
@@ -143,10 +145,10 @@ func (s *fakeStore) AtomicAutoContinue(_ context.Context, sessionID string, maxA
 // stubLLMCaller returns canned responses keyed by an index, capturing the
 // messages it was called with.
 type stubLLMCaller struct {
-	mu       sync.Mutex
+	mu        sync.Mutex
 	responses []string
-	idx      int
-	calls    []stubCall
+	idx       int
+	calls     []stubCall
 }
 
 type stubCall struct {
@@ -251,7 +253,7 @@ func TestInterceptNonStream_Completed_NoContinue(t *testing.T) {
 	}
 
 	res, _ := hook.InterceptNonStream(context.Background(), req)
-	// With UseAutorouteForAudit=false the hook returns nil after marking
+	// With UseAudit=false the hook returns nil after marking
 	// completed — definitely no continue.
 	if res != nil && res.Action == "goal_continue" {
 		t.Fatalf("did not expect a continue for a completed task, got action=%q", res.Action)
@@ -260,6 +262,56 @@ func TestInterceptNonStream_Completed_NoContinue(t *testing.T) {
 	sess, _ := store.GetSession(context.Background(), "s2")
 	if sess.State != StateCompleted {
 		t.Fatalf("session state = %q, want completed", sess.State)
+	}
+}
+
+func TestInterceptNonStream_Completed_AuditEnablementIndependentOfAutoroute(t *testing.T) {
+	store := newFakeStore()
+	store.seed(&Session{SessionID: "s-audit", TenantID: "t1", State: StateActive})
+	hook := newTestHook(t, store, nil)
+	hook.config.UseAudit = true
+	hook.config.UseAutorouteForAudit = false
+	hook.config.FallbackAuditModel = "audit-model"
+
+	body := `{"choices":[{"message":{"role":"assistant","content":"任务完成，所有文件都已成功重构。"},"finish_reason":"stop"}]}`
+	res, err := hook.InterceptNonStream(context.Background(), &response.InterceptRequest{
+		SessionID: "s-audit", TenantID: "t1", ResponseBody: []byte(body), FinishReason: "stop",
+	})
+	if err != nil {
+		t.Fatalf("InterceptNonStream error: %v", err)
+	}
+	if res == nil || res.Action != "audit" {
+		t.Fatalf("result=%+v, want audit action", res)
+	}
+	if !strings.Contains(string(res.InjectFollowUp), `"model":"audit-model"`) {
+		t.Fatalf("audit follow-up must use fallback model when autoroute is off: %s", res.InjectFollowUp)
+	}
+}
+
+func TestInterceptStreamEnd_Completed_UseAuditGate(t *testing.T) {
+	body := []byte(`{"choices":[{"message":{"role":"assistant","content":"任务完成，所有文件都已成功重构。"},"finish_reason":"stop"}]}`)
+	for _, enabled := range []bool{false, true} {
+		t.Run(strconv.FormatBool(enabled), func(t *testing.T) {
+			store := newFakeStore()
+			store.seed(&Session{SessionID: "s-stream", TenantID: "t1", State: StateActive})
+			hook := newTestHook(t, store, nil)
+			hook.config.UseAudit = enabled
+			hook.config.UseAutorouteForAudit = false
+			hook.config.FallbackAuditModel = "audit-model"
+
+			res, err := hook.InterceptStreamEnd(context.Background(), &response.StreamMeta{
+				SessionID: "s-stream", TenantID: "t1", ResponseBody: body, FinishReason: "stop",
+			})
+			if err != nil {
+				t.Fatalf("InterceptStreamEnd error: %v", err)
+			}
+			if enabled && (res == nil || res.Action != "audit") {
+				t.Fatalf("result=%+v, want audit action", res)
+			}
+			if !enabled && res != nil {
+				t.Fatalf("result=%+v, want nil when audit is disabled", res)
+			}
+		})
 	}
 }
 
@@ -443,11 +495,11 @@ func TestNoopHistoryStore(t *testing.T) {
 func TestInterceptNonStream_BudgetExhausted_SwitchesModel(t *testing.T) {
 	store := newFakeStore()
 	store.seed(&Session{
-		SessionID:        "ms1",
-		TenantID:         "t1",
-		State:            StateActive,
+		SessionID:         "ms1",
+		TenantID:          "t1",
+		State:             StateActive,
 		AutoContinueCount: 3, // == MaxAutoContinueCount (3)
-		CurrentModel:     "gpt-4o",
+		CurrentModel:      "gpt-4o",
 	})
 
 	hook := newTestHook(t, store, nil)
@@ -531,11 +583,11 @@ func TestInterceptNonStream_RepeatedResponse_SwitchesModel(t *testing.T) {
 func TestInterceptNonStream_SwitchDisabled_GivesUp(t *testing.T) {
 	store := newFakeStore()
 	store.seed(&Session{
-		SessionID:        "ms3",
-		TenantID:         "t1",
-		State:            StateActive,
+		SessionID:         "ms3",
+		TenantID:          "t1",
+		State:             StateActive,
 		AutoContinueCount: 3,
-		CurrentModel:     "gpt-4o",
+		CurrentModel:      "gpt-4o",
 	})
 
 	hook := newTestHook(t, store, nil)

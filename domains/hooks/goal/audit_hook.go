@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/response" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 )
@@ -78,6 +79,9 @@ func NewAuditHookWithHistory(db GoalStore, llmCaller LLMCaller, config AuditConf
 
 // InterceptNonStream handles audit logic for completed goal sessions.
 func (a *AuditHook) InterceptNonStream(ctx context.Context, req *response.InterceptRequest) (*response.InterceptResult, error) {
+	if strings.HasPrefix(req.FollowUpAction, "audit") {
+		return nil, nil
+	}
 	if a.db == nil || a.llmCaller == nil {
 		return nil, nil
 	}

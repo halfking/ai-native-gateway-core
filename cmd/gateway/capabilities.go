@@ -51,9 +51,11 @@ func NewCapabilitiesHandler(version, listenAddr string) http.Handler {
 			Version: version,
 			Status:  "native",
 			Features: map[string]string{
-				"data_plane":           "current",
-				"sticky_session":       "current",
-				"tenant_quota":         "current",
+				"data_plane":     "current",
+				"sticky_session": "current",
+				"tenant_quota":   "current",
+				// Gateway-to-SM outbox delivery is wired but remains opt-in; deployed
+				// HMAC delivery, consumer idempotency, and ownership reconciliation are not closed-loop.
 				"durable_outbox":       "partial",
 				"plugin_runtime":       "partial",
 				"webhook_subscription": "planned",

@@ -610,26 +610,29 @@ func main() {
 	// 2026-07-21, URSM v2 plan T20: 接入 v2 Manager。LoadFromEnv 默认 mode=off，
 	// 整个 v2 路径在生产环境（URSM_V2_MODE 未设）下保持 dead：URSMv2 != nil 走
 	// fast path 但 Manager 内部 Mode()==off 时 Plan/FilterAndScore 立即返回 nil。
-	// 当且仅当环境变量显式设为 shadow/canary/authoritative 时才 SetReady(true)，
-	// 把 v2 recovery gate 打开；off 模式下连 SetReady 都不调，保持 store 未初始化
-	// 状态。这是 T8 / T16 / T20 一脉相承的"opt-in 启用"约定。
+	// shadow/canary 可立即 SetReady(true)；authoritative 必须等待后续迁移和
+	// warmup 成功才开 recovery gate。off 模式不调 SetReady，保持 no-op。
+	// 这是 T8 / T16 / T20 一脉相承的"opt-in 启用"约定。
 	var ursmV2Mgr *ursmv2.Manager
+	ursmV2Cfg := ursmv2.LoadFromEnv()
 	if redisClientForCache != nil {
 		ursmV2Mgr = ursmv2.New(ursmv2.Dependencies{
 			Redis:  redisClientForCache.Client(),
-			Config: ursmv2.LoadFromEnv(),
+			Config: ursmV2Cfg,
 		})
-		// Non-authoritative rollout modes may become ready immediately because
-		// they cannot reject a route. Authoritative mode stays closed until the
-		// migration below has established live node state.
-		if env := os.Getenv("URSM_V2_MODE"); env == "shadow" || env == "canary" {
+		// Shadow and canary cannot reject a route before their own guarded
+		// planning branches, so they may open immediately. Authoritative stays
+		// closed until the migration below has established live node state.
+		if ursmV2Cfg.Mode == ursmv2api.ModeShadow || ursmV2Cfg.Mode == ursmv2api.ModeCanary {
 			if err := ursmV2Mgr.SetReady(context.Background(), true); err != nil {
 				slog.Warn("ursm.v2: ready set failed", "error", err)
 			}
 		}
 		slog.Info("ursm.v2 manager constructed",
 			"mode", ursmV2Mgr.Mode(),
-			"ready", ursmV2Mgr.Ready(context.Background()))
+			"ready", ursmV2Mgr.Ready(context.Background()),
+			"shadow_double_write", ursmV2Cfg.ShadowDoubleWrite,
+			"shadow_sample_rate", ursmV2Cfg.ShadowSampleRate)
 	} else {
 		slog.Info("ursm.v2 manager disabled (no redis client)")
 	}
@@ -923,14 +926,13 @@ func main() {
 		// wired into healthTracker; started later after probe services
 		// are initialised.
 		//
-		// 2026-08-02, spec §10 Step 5 C-1: In URSM v2 authoritative mode
-		// the legacy credentialstate.Manager must NOT be assembled — v2
-		// is the single authority, and leaving the legacy manager wired
-		// would reintroduce a live read/write path that the step requires
-		// to be zero. We therefore leave stateManager == nil (so every
-		// downstream `if stateManager != nil` wire-up is skipped) and log
-		// the disablement. off/canary/shadow keep the legacy assembly so
-		// the rollback / dual-run paths remain exercised.
+		// Only authoritative mode disables the legacy credentialstate.Manager.
+		// off, canary, and shadow must keep it assembled for rollback and
+		// comparison. In shadow, legacy remains the production read/write
+		// authority; URSM v2 only receives outcome sidecar writes and performs
+		// sampled observe-only diffs, neither of which may change routing.
+		// Authoritative leaves stateManager nil so downstream legacy wiring is
+		// skipped and v2 is the single state authority.
 		if ursmV2Mgr != nil && ursmV2Mgr.Mode() == ursmv2api.ModeAuthoritative {
 			slog.Info("credentialstate.Manager disabled in URSM v2 authoritative mode (spec §10 Step 5 C-1)")
 			// stateManager stays nil; fall through without wiring.

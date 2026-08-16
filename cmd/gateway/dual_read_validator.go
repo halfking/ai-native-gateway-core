@@ -14,9 +14,9 @@ import (
 // disagree, which must be reconciled before flipping the primary read.
 type DualReadDiff struct {
 	SessionID string
-	Compared  int       // number of V1 rows seen for the session
-	TokenDiff int64     // V1 total tokens - V2 total tokens
-	CostDiff  float64   // V1 total cost_usd - V2 total cost_usd
+	Compared  int     // number of V1 rows seen for the session
+	TokenDiff int64   // V1 total tokens - V2 total tokens
+	CostDiff  float64 // V1 total cost_usd - V2 total cost_usd
 	SampleAt  time.Time
 }
 
@@ -63,7 +63,7 @@ func (v *DualReadValidator) Compare(ctx context.Context, tenant, session string,
 		v2 AS (
 			SELECT COALESCE(prompt_tokens + completion_tokens, 0) AS total_tokens,
 			       COALESCE(cost_usd, 0) AS cost
-			FROM public.session_turns
+			FROM public.session_turns_with_current_month
 			WHERE tenant_id=$1 AND session_id=$2
 		)
 		SELECT

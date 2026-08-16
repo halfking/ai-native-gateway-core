@@ -88,6 +88,27 @@ func TestPrepareRequest_RedactsSensitiveRuleSummary(t *testing.T) {
 	}
 }
 
+func TestPrepareRequest_RedactsSensitiveLLMSummaryEcho(t *testing.T) {
+	hook := NewTriggerHook(TriggerConfig{
+		Enabled: true, TriggerMode: TriggerModeManual, SummaryEngine: SummaryLLM,
+		MaxPerSession: 5, SettingsGetter: &stubSettings{},
+		LLMCaller: fakeLLMCaller{out: "summary api_key=super-secret-value-123456"},
+	}, &memoryStore{})
+	result, err := hook.PrepareRequest(context.Background(), &Request{
+		SessionID: "gw_old", TenantID: "tenant-a",
+		Body: []byte(`{"messages":[{"role":"user","content":"/handoff continue"}]}`), MessageCount: 1,
+	})
+	if err != nil || result == nil {
+		t.Fatalf("expected handoff, result=%+v err=%v", result, err)
+	}
+	if strings.Contains(result.ResumePacket.Summary, "super-secret") || !strings.Contains(result.ResumePacket.Summary, "[redacted]") {
+		t.Fatalf("LLM secret echo leaked into packet: %q", result.ResumePacket.Summary)
+	}
+	if result.Record == nil || strings.Contains(result.Record.SummaryText, "super-secret") {
+		t.Fatalf("LLM secret echo leaked into record: %+v", result.Record)
+	}
+}
+
 func TestPrepareRequest_ExplicitReturnsPacketWithoutRewrite(t *testing.T) {
 	store := &memoryStore{tokenCount: 200_000, msgCount: 12}
 	hook := NewTriggerHook(TriggerConfig{
