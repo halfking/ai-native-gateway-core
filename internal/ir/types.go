@@ -377,7 +377,11 @@ type ToolResult struct {
 	IsError   bool           `json:"is_error,omitempty"`
 	// GeminiResponse preserves a native Gemini functionResponse.response value.
 	// Nil means response was absent; []byte("null") means it was explicitly null.
-	GeminiResponse json.RawMessage `json:"-"`
+	// The json tag is required so the value survives the session-persistence
+	// round-trip (ir_message_adapter marshals ToolResult via json.Marshal); the
+	// protocol serializers emit functionResponse.response from this field directly
+	// and never marshal ToolResult struct tags onto the wire.
+	GeminiResponse json.RawMessage `json:"gemini_response,omitempty"`
 }
 
 // ToolDefinition is a callable tool schema.

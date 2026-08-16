@@ -166,6 +166,25 @@ func TestPersist_EveryContentBlockKindSurvives(t *testing.T) {
 			},
 		},
 		{
+			name: "tool_result keeps native Gemini response",
+			block: ir.ContentBlock{Type: "tool_result", ToolResult: &ir.ToolResult{
+				ToolUseID:      "gemini_call_lookup",
+				Content:        []ir.ContentBlock{{Type: "text", Text: `{"value":7}`}},
+				GeminiResponse: json.RawMessage(`{"value":7,"unknown":{"keep":true}}`),
+			}},
+			check: func(t *testing.T, b ir.ContentBlock) {
+				if b.ToolResult == nil {
+					t.Fatal("tool_result lost")
+				}
+				if b.ToolResult.GeminiResponse == nil {
+					t.Fatal("GeminiResponse lost across persistence round-trip")
+				}
+				if string(b.ToolResult.GeminiResponse) != `{"value":7,"unknown":{"keep":true}}` {
+					t.Fatalf("GeminiResponse = %s, want structured value preserved", b.ToolResult.GeminiResponse)
+				}
+			},
+		},
+		{
 			name: "thinking keeps its signature",
 			block: ir.ContentBlock{Type: "thinking", Thinking: &ir.ThinkingBlock{
 				Thinking: "step one", Signature: "sig-abc",
