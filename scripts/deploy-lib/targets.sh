@@ -164,15 +164,14 @@ target_154_contract() {
 }
 
 # Slice 1 / 4 target: 245 (gateway server, full versioned rollback).
-# 245 uses the same canonical gateway unit as production. The deployment gate
-# validates this contract before any apply so legacy template names cannot
-# silently route a release to the wrong service.
+# 245 has its own pre-production unit name so deployment and verification
+# cannot accidentally target the production service contract.
 target_245_contract() {
   _json_object \
     target "245" \
     support "canonical" \
     service_manager "systemd" \
-    service_name "llm-gateway-go.service" \
+    service_name "llmgo-245.service" \
     binary_path "/opt/llm-gateway-go/gateway" \
     web_path "/opt/llm-gateway-go/web" \
     health_url "http://127.0.0.1:8781/healthz" \

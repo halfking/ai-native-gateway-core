@@ -260,6 +260,29 @@ func TestWriteOnError_PerModelKind_EmptyRawModel_AllBindings(t *testing.T) {
 	}
 }
 
+func TestWriteOnError_RequestLevelErrorsDoNotWriteState(t *testing.T) {
+	for _, kind := range []errorsx.ErrorKind{
+		errorsx.KindContextLength,
+		errorsx.KindUnsupportedFeature,
+		errorsx.KindClientBug,
+		errorsx.KindContentFilter,
+		errorsx.KindToolCallIdMismatch,
+	} {
+		t.Run(string(kind), func(t *testing.T) {
+			mockDB := newSQLOnlyMock()
+			defer mockDB.Close()
+
+			w := &Writer{dbPool: mockDB}
+			if err := w.WriteOnError(context.Background(), 22, "glm-5.2", Failure{Kind: kind, Detail: "request rejected"}); err != nil {
+				t.Fatalf("WriteOnError(%q): %v", kind, err)
+			}
+			if err := mockDB.ExpectationsWereMet(); err != nil {
+				t.Fatalf("request-level kind %q wrote database state: %v", kind, err)
+			}
+		})
+	}
+}
+
 // TestWriteOnError_KindAuth_SetsRecoverAt pins BUG #2 fix (2026-07-22):
 // KindAuth must write a future availability_recover_at timestamp so
 // bg/credential_recovery.go's 60s ticker can flip the credential back to
