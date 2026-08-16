@@ -177,6 +177,27 @@ func TestDurableStreamBindingRenewalLeaseLossCountsBothMetricFamilies(t *testing
 	}
 }
 
+func TestReleaseDurableBeforeSurvivalHandsTaskToWorker(t *testing.T) {
+	store := &fakeForegroundStore{}
+	b := newStreamBinding(store)
+
+	releaseDurableBeforeSurvival(b, "candidate_resolution_failed")
+
+	if len(store.resched) != 1 {
+		t.Fatalf("reschedules = %d, want 1", len(store.resched))
+	}
+	got := store.resched[0]
+	if got.TaskID != b.task.ID || got.LeaseOwner != b.task.LeaseOwner || got.FencingToken != b.task.FencingToken {
+		t.Fatalf("reschedule fence = %+v, want task fence %+v", got, b.task)
+	}
+	if got.Reason != "candidate_resolution_failed" {
+		t.Fatalf("reschedule reason = %q, want candidate_resolution_failed", got.Reason)
+	}
+	if len(store.terminals) != 0 {
+		t.Fatalf("pre-survival release must not terminalize task, got %+v", store.terminals)
+	}
+}
+
 func TestSettleDurableStreamLeaseLossCountsBothMetricFamilies(t *testing.T) {
 	beforeSurvival := gatherMetricValue(t, "gateway_survival_lease_conflicts_total")
 	beforeDurable := gatherMetricValue(t, "durable_lease_lost_total")
