@@ -317,24 +317,14 @@ func (w *Writer) WriteOnError(ctx context.Context, credentialID int, rawModel st
 		// availability_state (see writeModelLevelFailureOnly rationale).
 		recoverAt := time.Now().UTC().Add(30 * 24 * time.Hour)
 		return w.writeModelLevelFailureOnly(ctx, credentialID, rawModel, "auto_model_deprecated", recoverAt, detail)
-	case errorsx.KindContextLength:
-		// 2026-07-03 fix: Bug #2 - context_length_exceeded is per-request
-		// but indicates the model configuration may be wrong. Mark unavailable
-		// with short cooling (5 min) to avoid immediate retry but allow quick
-		// recovery if admin fixes the issue.
-		recoverAt := time.Now().UTC().Add(5 * time.Minute)
-		return w.writeModelLevelFailureOnly(ctx, credentialID, rawModel, "auto_context_length_exceeded", recoverAt, detail)
-	case errorsx.KindUnsupportedFeature:
-		// 2026-07-03 fix: Bug #2 - unsupported_feature (e.g., tools not supported)
-		// is configuration-related. Mark unavailable with medium cooling (1 hour)
-		// to avoid repeated failures but allow retry after potential config fix.
-		recoverAt := time.Now().UTC().Add(1 * time.Hour)
-		return w.writeModelLevelFailureOnly(ctx, credentialID, rawModel, "auto_unsupported_feature", recoverAt, detail)
-	case errorsx.KindToolCallIdMismatch, errorsx.KindCanceled:
-		// 2026-07-03 fix: Bug #2 - true client bugs (tool_call_id_mismatch,
-		// canceled) should NOT write any state - these are client errors that
-		// don't reflect provider/model availability.
+	case errorsx.KindContextLength, errorsx.KindUnsupportedFeature,
+		errorsx.KindToolCallIdMismatch, errorsx.KindClientBug,
+		errorsx.KindContentFilter, errorsx.KindCanceled:
+		// Request shape, context-window, capability, tool-history, and
+		// content-policy rejections describe this request, not credential
+		// health. They must never cool a binding or change credential state.
 		return nil
+
 	default:
 		// Unknown error kinds: log but don't write state to avoid false negatives
 		return nil

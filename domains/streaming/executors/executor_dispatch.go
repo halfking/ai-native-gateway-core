@@ -579,16 +579,20 @@ func (e *Executor) recordDispatchError(params *ExecParams, cand provider.Candida
 	kind := classifyExecError(err)
 	sideEffectCtx, sideEffectCancel := runctx.DetachedTimeout(params.R.Context(), 5*time.Second)
 	defer sideEffectCancel()
+	modelNotFound := false
 	if mnf, ok := err.(*modelNotFoundError); ok {
+		modelNotFound = true
 		mnfKind := mnf.resolvedKind()
 		e.recordModelNotFound(sideEffectCtx, mnf.credentialID, mnf.rawModel, mnf.body, mnf.status, mnfKind)
 		e.writeCredentialStateOnError(sideEffectCtx, mnf.credentialID, cand.StandardizedName, mnfKind, err)
 		e.recordMnfStreak(params, cand.CredentialID)
-	} else if !errorsx.IsClientBug(kind) {
+	} else if shouldWriteCredentialState(kind) {
 		e.writeCredentialStateOnError(sideEffectCtx, cand.CredentialID, cand.StandardizedName, kind, err)
 	}
 
-	propagateToBreaker := !errorsx.IsClientBug(kind) && !freeCredentialsTolerateTransient(cand.BillingMode, kind) && totalCandidates > 1
+	credentialHealthyFailure := dispatchFailureIsCredentialHealthy(kind, modelNotFound)
+	propagateToBreaker := !credentialHealthyFailure &&
+		!freeCredentialsTolerateTransient(cand.BillingMode, kind) && totalCandidates > 1
 	if propagateToBreaker && e.Circuit != nil {
 		e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, kind)
 	} else if probeConsumed && e.Circuit != nil {
@@ -640,6 +644,11 @@ func (e *Executor) recordDispatchOutcomes(params *ExecParams, outcomes []dispatc
 				"success", outcome.success, "terminal", terminal)
 		}
 	}
+}
+
+func dispatchFailureIsCredentialHealthy(kind errorsx.ErrorKind, modelNotFound bool) bool {
+	return modelNotFound || errorsx.IsClientBug(kind) ||
+		errorsx.IsContentFilter(kind) || kind == errorsx.KindContextLength
 }
 
 // estimatePromptTokens returns a rough pre-send token estimate for tpm pacing.

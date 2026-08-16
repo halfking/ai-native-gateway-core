@@ -20,7 +20,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/discovery"
-	"github.com/kaixuan/llm-gateway-go/domains/credentialstate" //nolint:depguard // emergency-repair state recovery (2026-08-15)
+	"github.com/kaixuan/llm-gateway-go/domains/credentialstate"     //nolint:depguard // emergency-repair state recovery (2026-08-15)
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2"
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/api"
@@ -811,6 +811,24 @@ func (h *Handler) handleRoutingCandidateBindingReorder(w http.ResponseWriter, r 
 	})
 }
 
+const forceEnableCredentialSQL = `
+	UPDATE credentials SET
+		manual_disabled = false,
+		lifecycle_status = 'active',
+		availability_state = 'ready',
+		availability_recover_at = NULL,
+		quota_state = 'ok',
+		quota_recover_at = NULL,
+		circuit_state = 'closed',
+		cooling_until = NULL,
+		health_status = 'healthy',
+		consecutive_failures = 0,
+		state_reason_code = NULL,
+		state_reason_detail = $2,
+		state_updated_at = NOW()
+	WHERE id = $1
+`
+
 // handleEmergencyRepair handles emergency repair actions for credentials.
 // PATCH /api/routing/emergency-repair
 // Body: {"credential_id": int, "raw_model": string, "action": string}
@@ -924,22 +942,8 @@ func (h *Handler) handleEmergencyRepair(w http.ResponseWriter, r *http.Request) 
 		}
 		defer tx.Rollback(ctx)
 
-		if _, err := tx.Exec(ctx, `
-			UPDATE credentials SET
-				manual_disabled = false,
-				availability_state = 'ready',
-				availability_recover_at = NULL,
-				quota_state = 'ok',
-				quota_recover_at = NULL,
-				circuit_state = 'closed',
-				cooling_until = NULL,
-				health_status = 'healthy',
-				consecutive_failures = 0,
-				state_reason_code = NULL,
-				state_reason_detail = $2,
-				state_updated_at = NOW()
-			WHERE id = $1
-		`, req.CredentialID, "emergency force_enable: "+req.Reason); err != nil {
+		if _, err := tx.Exec(ctx, forceEnableCredentialSQL,
+			req.CredentialID, "emergency force_enable: "+req.Reason); err != nil {
 			writeError(w, http.StatusInternalServerError, "update credentials failed: "+err.Error())
 			return
 		}
