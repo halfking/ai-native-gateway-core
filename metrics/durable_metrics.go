@@ -78,6 +78,21 @@ var (
 		Name: "durable_recovery_stop_grace_exceeded_total",
 		Help: "Recovery worker Stop() calls that timed out waiting for the in-flight attempt to exit.",
 	})
+
+	// DurableSettlementStageFailuresTotal counts foreground settlement stage
+	// writes that exhausted their bounded retry budget and surfaced an
+	// error. The stage label pinpoints where the durable foreground path
+	// could not land the write: persist (PersistSettlementIntent), claim
+	// (ClaimSettlementIntent), finalize (FinalizeSettlement's
+	// RetrySettlementIntent bookkeeping), reschedule (release_to_worker),
+	// fail_terminal, or complete. The task is left in `running` with an
+	// expired lease and is owned by the safety reaper / deadline reaper —
+	// this metric is the only signal that a request entered that
+	// worst-case window. Alert on rate(stage=...) > 0.
+	DurableSettlementStageFailuresTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "durable_settlement_stage_failures_total",
+		Help: "Foreground settlement stage writes that exhausted retries and left the task to the safety reaper.",
+	}, []string{"stage"})
 )
 
 // durableActiveTenants remembers every tenant series ever published so a

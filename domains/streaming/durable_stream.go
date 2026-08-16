@@ -268,6 +268,24 @@ func settleCtx() (context.Context, context.CancelFunc) {
 // ends. clientDisconnected reports whether the connection dropped (the
 // coordinator's client_disconnected verdict). body is the captured wire
 // output (may be nil when capture is unavailable or oversize).
+//
+// Worst-case failure window (doc 18 §10.3 / SR-W3):
+//
+//   - PersistSettlementIntent exhausted -> task stays `running`, lease
+//     eventually expires -> ReapDeadlines owns it (default 15s lease).
+//   - ClaimSettlementIntent exhausted -> an intent row exists; the worker
+//     drainSettlementIntents loop picks it up on its next tick (5s).
+//   - FinalizeSettlement non-lease-loss error -> the intent row is parked
+//     via RetrySettlementIntent; the worker retries with bounded backoff.
+//   - ReleaseToWorker (reschedule) failure -> task stays `running`; safety
+//     reaper / lease expiry own it; never re-execute, never replay.
+//
+// None of these branches invents a foreground fall-back write — re-execution
+// safety depends on the safety reaper so the post-content
+// "resume_safety_blocked" / no-replay contract is preserved end-to-end.
+// Stage failures are surfaced via
+// durable_settlement_stage_failures_total{stage=...} so an alert can catch
+// the worst-case window before the reaper closes it.
 func settleDurableStream(_ context.Context, b *DurableStreamBinding, res SurvivalResult, body []byte, contentType string, clientDisconnected bool) {
 	if b == nil {
 		return
@@ -337,12 +355,23 @@ func retrySettlement(ctx context.Context, write func() error) error {
 	return fmt.Errorf("durable settlement failed after %d attempts: %w", len(settlementRetryDelays), err)
 }
 
+// logSettleError is the single funnel for foreground settlement write
+// failures. It records the durable_settlement_stage_failures_total{stage}
+// signal so an alert can detect a task that entered the worst-case window
+// (stuck in `running` until the safety reaper / lease-expiry owns it).
+// Lease-loss is counted in both observability families and does not
+// increment the stage failure metric — losing the lease is a benign
+// ownership change, not a stuck write.
 func logSettleError(stage string, b *DurableStreamBinding, err error) {
 	if err == durable.ErrLeaseLost {
 		metrics.SurvivalLeaseConflictsTotal.Inc()
 		metrics.DurableLeaseLostTotal.Inc()
+		slog.Warn("durable foreground settlement step fenced off", "stage", stage, "task_id", b.task.ID, "error", err)
+		return
 	}
-	slog.Warn("durable foreground settlement step failed", "stage", stage, "task_id", b.task.ID, "error", err)
+	metrics.DurableSettlementStageFailuresTotal.WithLabelValues(stage).Inc()
+	slog.Warn("durable foreground settlement step failed; task left to safety reaper",
+		"stage", stage, "task_id", b.task.ID, "error", err)
 }
 
 // durableWireCapture tees the committed wire bytes of one durable stream so
