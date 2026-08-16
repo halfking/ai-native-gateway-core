@@ -20,31 +20,55 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-// fakeTransitionDB mock stateTransitionExecer。可按次数注入失败。
 type fakeTransitionDB struct {
-	stateTransitionExecer // embed（nil），只重写 Exec
-
-	failFirstN int // 前 N 次 Exec 返回错误
-	calls      int
-	execSQL    []string
-	execArgs   [][]any
+	failFirstN    int
+	insertCalls   int
+	beginCalls    int
+	commitCalls   int
+	rollbackCalls int
+	execSQL       []string
+	execArgs      [][]any
 }
 
-func (f *fakeTransitionDB) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
-	f.calls++
-	f.execSQL = append(f.execSQL, sql)
-	f.execArgs = append(f.execArgs, args)
-	if f.calls <= f.failFirstN {
-		return pgconn.NewCommandTag(""), errors.New("injected db failure")
+type fakeTransitionTx struct {
+	db        *fakeTransitionDB
+	committed bool
+}
+
+func (f *fakeTransitionDB) Begin(context.Context) (stateTransitionTx, error) {
+	f.beginCalls++
+	return &fakeTransitionTx{db: f}, nil
+}
+
+func (tx *fakeTransitionTx) Exec(_ context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
+	tx.db.execSQL = append(tx.db.execSQL, sql)
+	tx.db.execArgs = append(tx.db.execArgs, args)
+	if strings.Contains(sql, "INSERT INTO request_state_transitions") {
+		tx.db.insertCalls++
+		if tx.db.insertCalls <= tx.db.failFirstN {
+			return pgconn.NewCommandTag(""), errors.New("injected db failure")
+		}
+		return pgconn.NewCommandTag("INSERT 0 1"), nil
 	}
 	if strings.Contains(sql, "DELETE") {
 		return pgconn.NewCommandTag("DELETE 7"), nil
 	}
-	return pgconn.NewCommandTag("INSERT 0 1"), nil
+	return pgconn.NewCommandTag("SELECT 1"), nil
+}
+
+func (tx *fakeTransitionTx) Commit(context.Context) error {
+	tx.committed = true
+	tx.db.commitCalls++
+	return nil
+}
+
+func (tx *fakeTransitionTx) Rollback(context.Context) error {
+	tx.db.rollbackCalls++
+	return nil
 }
 
 // newTestLogger 构造不启动后台 goroutine 的 logger（确定性测试）。
-func newTestLogger(db stateTransitionExecer, now func() time.Time) *StateTransitionLogger {
+func newTestLogger(db stateTransitionDB, now func() time.Time) *StateTransitionLogger {
 	return &StateTransitionLogger{
 		db:               db,
 		buf:              make([]pendingTransition, 0, 8),
@@ -94,24 +118,37 @@ func TestFlushFailureEnqueuesRetryThenReplaySucceeds(t *testing.T) {
 		t.Fatalf("after due replay, retry queue len = %d, want 0", got)
 	}
 
-	// 重放成功的 INSERT 必须带幂等子句。
-	if len(db.execSQL) != 4 {
-		t.Fatalf("exec calls = %d, want 4 (2 failed + 2 replayed)", len(db.execSQL))
+	// 每次写入必须先在同一事务设置 tenant，再执行幂等 INSERT。
+	if len(db.execSQL) != 8 {
+		t.Fatalf("exec calls = %d, want 8 (4 tenant GUC + 4 inserts)", len(db.execSQL))
 	}
-	for i, sql := range db.execSQL {
-		if !strings.Contains(sql, "ON CONFLICT (request_id, seq) DO NOTHING") {
-			t.Errorf("exec[%d] missing idempotent clause, got:\n%s", i, sql)
+	insertIndexes := []int{1, 3, 5, 7}
+	for txIndex, insertIndex := range insertIndexes {
+		gucIndex := insertIndex - 1
+		if !strings.Contains(db.execSQL[gucIndex], "set_config('app.current_tenant'") {
+			t.Errorf("tx[%d] first exec must set tenant, got:\n%s", txIndex, db.execSQL[gucIndex])
+		}
+		if got := db.execArgs[gucIndex][0]; got != "admin" {
+			t.Errorf("tx[%d] tenant GUC = %v, want admin", txIndex, got)
+		}
+		if !strings.Contains(db.execSQL[insertIndex], "ON CONFLICT (request_id, seq) DO NOTHING") {
+			t.Errorf("tx[%d] insert missing idempotent clause, got:\n%s", txIndex, db.execSQL[insertIndex])
 		}
 	}
 	// 重放行的 (request_id, seq) 与首次失败行一致（seq 不变）。
 	for i := 2; i < 4; i++ {
-		if got := db.execArgs[i][0]; got != "req-1" {
+		original := insertIndexes[i-2]
+		replay := insertIndexes[i]
+		if got := db.execArgs[replay][0]; got != "req-1" {
 			t.Errorf("replay[%d] request_id = %v, want req-1", i, got)
 		}
-		if seq := db.execArgs[i][6]; seq != db.execArgs[i-2][6] {
+		if seq := db.execArgs[replay][6]; seq != db.execArgs[original][6] {
 			t.Errorf("replay[%d] seq = %v differs from original %v (idempotency key must be stable)",
-				i, seq, db.execArgs[i-2][6])
+				i, seq, db.execArgs[original][6])
 		}
+	}
+	if db.commitCalls != 2 {
+		t.Errorf("commits = %d, want 2 successful replay commits", db.commitCalls)
 	}
 }
 
@@ -127,15 +164,18 @@ func TestRetryBackoffDropsAfterMaxAttempts(t *testing.T) {
 	}
 
 	// 重试 #1 (attempts=1, due at +1s)、#2 (+2s)、#3 (+4s) 全部失败后应被丢弃。
-	l.processRetriesDue(fixedNow().Add(time.Second))       // retry 1 fails
-	l.processRetriesDue(fixedNow().Add(3 * time.Second))   // retry 2 fails
-	l.processRetriesDue(fixedNow().Add(10 * time.Second))  // retry 3 fails → drop
+	l.processRetriesDue(fixedNow().Add(time.Second))      // retry 1 fails
+	l.processRetriesDue(fixedNow().Add(3 * time.Second))  // retry 2 fails
+	l.processRetriesDue(fixedNow().Add(10 * time.Second)) // retry 3 fails → drop
 	if got := l.retryQueueLen(); got != 0 {
 		t.Fatalf("after 3 failed retries, retry queue len = %d, want 0 (dropped)", got)
 	}
-	// 1 次首写 + 3 次重试 = 4 次执行。
-	if db.calls != 4 {
-		t.Errorf("exec calls = %d, want 4 (initial + 3 retries)", db.calls)
+	// 1 次首写 + 3 次重试 = 4 次 INSERT；全部失败，不应 commit。
+	if db.insertCalls != 4 {
+		t.Errorf("insert calls = %d, want 4 (initial + 3 retries)", db.insertCalls)
+	}
+	if db.commitCalls != 0 {
+		t.Errorf("commits = %d, want 0 for failed transactions", db.commitCalls)
 	}
 
 	// 退避时长本身：1s → 2s → 4s。
@@ -187,22 +227,37 @@ func TestCleanupOldTransitionsDeletesExpiredRows(t *testing.T) {
 	if n != 7 {
 		t.Errorf("rows affected = %d, want 7 (from mock tag)", n)
 	}
-	if len(db.execSQL) != 1 {
-		t.Fatalf("exec calls = %d, want 1", len(db.execSQL))
+	if len(db.execSQL) != 2 {
+		t.Fatalf("exec calls = %d, want bypass GUC + DELETE", len(db.execSQL))
 	}
-	sql := db.execSQL[0]
+	if !strings.Contains(db.execSQL[0], "set_config('app.bypass_rls', 'true', true)") {
+		t.Errorf("cleanup must set transaction-local RLS bypass first, got:\n%s", db.execSQL[0])
+	}
+	sql := db.execSQL[1]
 	if !strings.Contains(sql, "DELETE FROM request_state_transitions") {
 		t.Errorf("cleanup SQL must DELETE from request_state_transitions, got:\n%s", sql)
 	}
 	if !strings.Contains(sql, "created_at < NOW() - $1::interval") {
 		t.Errorf("cleanup SQL must filter by created_at retention, got:\n%s", sql)
 	}
-	if got := db.execArgs[0][0]; got != "168h0m0s" {
+	if got := db.execArgs[1][0]; got != "168h0m0s" {
 		t.Errorf("retention arg = %v, want 168h0m0s (7 days)", got)
+	}
+	if db.commitCalls != 1 {
+		t.Errorf("commits = %d, want 1", db.commitCalls)
 	}
 }
 
 // TestNilDBNoOp: db 为 nil（DB 禁用/测试模式）时所有入口 no-op，不 panic。
+func TestEmptyTenantDoesNotEnterBuffer(t *testing.T) {
+	db := &fakeTransitionDB{}
+	l := newTestLogger(db, fixedNow)
+	l.LogRetry("req", "", 1, "timeout", nil)
+	if len(l.buf) != 0 {
+		t.Fatalf("empty-tenant transition entered buffer: %d", len(l.buf))
+	}
+}
+
 func TestNilDBNoOp(t *testing.T) {
 	l := newTestLogger(nil, fixedNow)
 	l.LogRouteDecision("req", "admin", "a", "b", nil)

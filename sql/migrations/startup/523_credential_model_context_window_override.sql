@@ -1,9 +1,66 @@
--- Migration 522 down: revert credential_model_bindings context-window override
+-- Migration 523: credential_model_bindings.context_window_override
+-- POST_CONDITION: SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='credential_model_bindings' AND column_name IN ('context_window_override','context_window_source','context_window_updated_at') HAVING count(*) = 3;
+-- POST_CONDITION: SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='model_offers' AND column_name='context_window_override' HAVING count(*) = 1;
 --
--- 先把视图恢复到无 context_window_override 列的定义，再删除三列（视图不再引用）。
+-- 每个供应商凭据下的模型上下文大小不一定与主流（标准目录 models_canonical
+-- .context_window）一致：同一标准模型在不同凭证、不同套餐/上游端点下的实际上下文
+-- 窗口可能被供应商上修或下修（虚标）。469 已在 models_canonical 上增加了
+-- context_window_override，但那是「一个标准模型一个值」，所有映射到该标准模型
+-- 的凭据共享同一窗口。本迁移把覆盖能力下沉到 credential_model_bindings —— 即
+-- 「凭据 × 模型」粒度，让运营可以针对某一条凭证下的某一个模型单独标定上下文
+-- 大小，而不影响其它凭据下同名的模型。
+--
+-- 新增列（均与 469 同语义，可空、可回滚）：
+--   context_window_override  integer  —— 非空时优先于 models_canonical 的值
+--   context_window_source    text     —— provenance: catalog/discovery/manual/probe
+--   context_window_updated_at timestamptz —— 最近一次覆盖时间（审计）
+--
+-- 运行时优先级链（provider/client.go 候选 SQL）：
+--   COALESCE(cmb.context_window_override, mc.context_window_override, mc.context_window)
+--   即：凭据级覆盖 > 标准模型级覆盖 > 标准目录默认值
+--
+-- model_offers 视图新增 context_window_override 列，便于读路径与候选 SQL 通过
+-- mo.context_window_override 取值；INSTEAD OF UPDATE 触发器以 COALESCE 透传，
+-- 避免视图级部分更新静默丢弃该列。
+--
+-- Idempotent: IF NOT EXISTS 守卫，可重复执行。
 
 BEGIN;
 
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name = 'credential_model_bindings'
+      AND column_name = 'context_window_override'
+  ) THEN
+    ALTER TABLE public.credential_model_bindings ADD COLUMN context_window_override integer;
+    COMMENT ON COLUMN public.credential_model_bindings.context_window_override IS '凭据×模型级上下文窗口覆盖。非空时优先于 models_canonical.context_window_override / context_window。';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name = 'credential_model_bindings'
+      AND column_name = 'context_window_source'
+  ) THEN
+    ALTER TABLE public.credential_model_bindings ADD COLUMN context_window_source text DEFAULT 'catalog';
+    COMMENT ON COLUMN public.credential_model_bindings.context_window_source IS '凭据×模型级上下文窗口的 provenance：catalog/discovery/manual/probe。';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name = 'credential_model_bindings'
+      AND column_name = 'context_window_updated_at'
+  ) THEN
+    ALTER TABLE public.credential_model_bindings ADD COLUMN context_window_updated_at timestamp with time zone;
+    COMMENT ON COLUMN public.credential_model_bindings.context_window_updated_at IS '凭据×模型级 context_window_override 的最近一次更新时间。';
+  END IF;
+END $$;
+
+-- 暴露凭据级覆盖给读路径与候选 SQL（mo.context_window_override）。
 CREATE OR REPLACE VIEW public.model_offers AS
  SELECT cmb.id,
     cmb.credential_id,
@@ -35,15 +92,12 @@ CREATE OR REPLACE VIEW public.model_offers AS
     cmb.admin_protected,
     cmb.created_at,
     cmb.updated_at,
-    pm.modality AS provider_modality
+    pm.modality AS provider_modality,
+    cmb.context_window_override
    FROM (public.credential_model_bindings cmb
      JOIN public.provider_models pm ON ((pm.id = cmb.provider_model_id)));
 
-ALTER TABLE public.credential_model_bindings DROP COLUMN IF EXISTS context_window_override;
-ALTER TABLE public.credential_model_bindings DROP COLUMN IF EXISTS context_window_source;
-ALTER TABLE public.credential_model_bindings DROP COLUMN IF EXISTS context_window_updated_at;
-
--- 恢复触发器为不含 context_window_override 的原始版本。
+-- 让 INSTEAD OF UPDATE 触发器透传新列，避免视图级部分更新静默丢弃该列。
 CREATE OR REPLACE FUNCTION public.model_offers_update_trigger() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -94,6 +148,7 @@ BEGIN
         billing_mode = COALESCE(NEW.billing_mode, credential_model_bindings.billing_mode),
         pricing_source = COALESCE(NEW.pricing_source, credential_model_bindings.pricing_source),
         pricing_updated_at = COALESCE(NEW.pricing_updated_at, credential_model_bindings.pricing_updated_at),
+        context_window_override = COALESCE(NEW.context_window_override, credential_model_bindings.context_window_override),
         updated_at = now()
     WHERE id = OLD.id;
 

@@ -34,6 +34,7 @@ import (
 	ursmv2 "github.com/kaixuan/llm-gateway-go/domains/ursm/v2"
 	ursmv2api "github.com/kaixuan/llm-gateway-go/domains/ursm/v2/api"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
+	"github.com/kaixuan/llm-gateway-go/internal/clienttype"
 	"github.com/kaixuan/llm-gateway-go/internal/irconv"
 	"github.com/kaixuan/llm-gateway-go/internal/liveactions"
 	"github.com/kaixuan/llm-gateway-go/internal/runctx"
@@ -1013,7 +1014,7 @@ func extractClientType(r *http.Request) string {
 		return ""
 	}
 	if ct := r.Header.Get("X-Gw-Client-Type"); ct != "" {
-		return strings.ToLower(ct)
+		return clienttype.Normalize(ct)
 	}
 	ua := strings.ToLower(r.Header.Get("User-Agent"))
 	switch {
@@ -1052,14 +1053,11 @@ func extractClientType(r *http.Request) string {
 //
 // 与 streaming/client_fingerprint.go:ClientTokenOf 行为一致；本地重复一份
 // 是为了保持 executors 包零外部依赖。维护注意：两份逻辑需同步演进。
-func clientTokenOf(userKey, clientType string) string {
+func clientTokenOf(userKey, clientTypeValue string) string {
 	if userKey == "" {
 		userKey = "anon"
 	}
-	if clientType == "" {
-		clientType = "unknown"
-	}
-	return userKey + "|" + clientType
+	return userKey + "|" + clienttype.Normalize(clientTypeValue)
 }
 
 func clientTokenForMetrics(params *ExecParams) string {

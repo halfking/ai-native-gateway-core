@@ -45,6 +45,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/liveactions"
 	"github.com/kaixuan/llm-gateway-go/internal/modelpolicy"
 	"github.com/kaixuan/llm-gateway-go/internal/observability"
+	"github.com/kaixuan/llm-gateway-go/internal/streamretry" //nolint:depguard // trusted tenant propagation to outer retry wrapper
 	gwtrace "github.com/kaixuan/llm-gateway-go/internal/trace"
 	"github.com/kaixuan/llm-gateway-go/maas"
 	"github.com/kaixuan/llm-gateway-go/metrics"
@@ -1979,6 +1980,7 @@ func (h *ChatHandler) serveWithExecutor(
 		}
 		keyInfo = ki
 		logCtx.SetKey(ki)
+		streamretry.SetAuthenticatedTenant(r.Context(), ki.TenantID)
 
 		// Round 38 (2026-06-16) — emit multi-tenant OTel span
 		// attributes per docs/multi-tenant-otel-design.md §3.1.

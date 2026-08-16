@@ -98,7 +98,7 @@ export GLM_API_KEY="your-actual-api-key"
 ./scripts/diagnose-glm52.sh -k "your-actual-api-key" -v
 
 # 方式 3: 运行集成测试
-go test -tags=integration ./tests/integration -v -run TestGLM52
+go test -tags='integration,integration_debug' ./tests/integration -v -run TestGLM52
 ```
 
 ### 收集日志（在 71 服务器）

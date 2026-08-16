@@ -39,11 +39,20 @@ func TestExtractClientType_UserAgent(t *testing.T) {
 }
 
 func TestExtractClientType_XGwHeader(t *testing.T) {
-	req := httptest.NewRequest("POST", "/v1/chat/completions", nil)
-	req.Header.Set("X-Gw-Client-Type", "my-custom-agent")
-	got := extractClientType(req)
-	if got != "my-custom-agent" {
-		t.Errorf("extractClientType(X-Gw-Client-Type=my-custom-agent) = %q, want %q", got, "my-custom-agent")
+	for _, tt := range []struct {
+		header string
+		want   string
+	}{
+		{" Cursor ", "cursor"},
+		{"CLAUDE-CODE", "claude-code"},
+		{"my-custom-agent", "unknown"},
+		{"cursor|other", "unknown"},
+	} {
+		req := httptest.NewRequest("POST", "/v1/chat/completions", nil)
+		req.Header.Set("X-Gw-Client-Type", tt.header)
+		if got := extractClientType(req); got != tt.want {
+			t.Errorf("extractClientType(X-Gw-Client-Type=%q) = %q, want %q", tt.header, got, tt.want)
+		}
 	}
 }
 
@@ -52,8 +61,8 @@ func TestExtractClientTypeWithPrompt_HeaderTakesPriority(t *testing.T) {
 	req := httptest.NewRequest("POST", "/v1/chat/completions", nil)
 	req.Header.Set("X-Gw-Client-Type", "explicit-agent")
 	got := extractClientTypeWithPrompt(req, "You are ZCode, an AI assistant")
-	if got != "explicit-agent" {
-		t.Errorf("extractClientTypeWithPrompt() = %q, want %q (header should win)", got, "explicit-agent")
+	if got != "unknown" {
+		t.Errorf("extractClientTypeWithPrompt() = %q, want %q (unknown explicit header should stay bounded)", got, "unknown")
 	}
 }
 
@@ -72,7 +81,9 @@ func TestClientTokenOf_Defaults(t *testing.T) {
 		{"empty userKey", "", "cursor", "anon|cursor"},
 		{"empty clientType", "alice", "", "alice|unknown"},
 		{"whitespace userKey", "   ", "claude-code", "   |claude-code"},
-		{"whitespace clientType", "bob", "   ", "bob|   "},
+		{"whitespace clientType", "bob", "   ", "bob|unknown"},
+		{"custom clientType", "bob", "my-agent", "bob|unknown"},
+		{"delimiter clientType", "bob", "cursor|other", "bob|unknown"},
 		{"normal", "alice", "cursor", "alice|cursor"},
 		{"normal other", "bob", "claude-code", "bob|claude-code"},
 	}
