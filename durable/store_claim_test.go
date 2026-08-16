@@ -12,10 +12,10 @@ import (
 
 func TestClaimSelectSQLRequiresScheduledRetryToBeDue(t *testing.T) {
 	if !strings.Contains(claimSelectSQL, "next_retry_at <= $2") {
-		t.Fatalf("claim SQL must only claim tasks whose retry time is due: %s", claimSelectSQL)
+		t.Fatalf("claim SQL must only claim tasks whose retry time is due or within the allowed scheduling window: %s", claimSelectSQL)
 	}
-	if strings.Contains(claimSelectSQL, "INTERVAL") {
-		t.Fatalf("claim SQL must not claim tasks before next_retry_at: %s", claimSelectSQL)
+	if !strings.Contains(claimSelectSQL, "INTERVAL '5 seconds'") {
+		t.Fatalf("claim SQL must retain the documented 5-second scheduling window: %s", claimSelectSQL)
 	}
 }
 

@@ -28,6 +28,30 @@ type workerFakeStore struct {
 	lastReschedule                                        durable.RescheduleParams
 }
 
+func (f *workerFakeStore) PersistSettlementIntent(_ context.Context, c durable.TerminalCommit) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.commitCalls++
+	f.lastOutcome = c.Outcome
+	return f.commitErr
+}
+
+func (f *workerFakeStore) ClaimSettlementIntent(_ context.Context, taskID, owner string, lease time.Duration, now time.Time) (*durable.ClaimedSettlement, error) {
+	return &durable.ClaimedSettlement{SettlementIntent: durable.SettlementIntent{TaskID: taskID, Attempts: 1}, ClaimOwner: owner, ClaimUntil: now.Add(lease), ClaimFencingToken: 1}, nil
+}
+
+func (f *workerFakeStore) ClaimSettlementIntents(context.Context, string, time.Duration, int, time.Time) ([]*durable.ClaimedSettlement, error) {
+	return nil, nil
+}
+
+func (f *workerFakeStore) FinalizeSettlement(context.Context, durable.ClaimedSettlement) (*durable.TerminalProjection, error) {
+	return &durable.TerminalProjection{Committed: true}, nil
+}
+
+func (f *workerFakeStore) RetrySettlementIntent(context.Context, durable.ClaimedSettlement, time.Time, error) error {
+	return nil
+}
+
 func (f *workerFakeStore) ClaimRunnable(context.Context, durable.ClaimOptions) ([]*durable.Task, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

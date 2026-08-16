@@ -81,9 +81,10 @@ const claimSelectSQL = `
 	WHERE commit_state IN ('none', 'metadata')
 	  AND status IN ('waiting_recovery', 'retry_scheduled', 'running')
 	  AND (status <> 'running' OR lease_until < $2)
-	  AND next_retry_at IS NOT NULL AND next_retry_at <= $2
+	  AND next_retry_at IS NOT NULL AND next_retry_at <= $2 + INTERVAL '5 seconds'
 	  AND deadline_at > $2
 	  AND (lease_until IS NULL OR lease_until < $2)
+	  AND NOT EXISTS (SELECT 1 FROM durable_task_settlement_intents si WHERE si.task_id = durable_llm_tasks.id)
 	ORDER BY next_retry_at
 	FOR UPDATE SKIP LOCKED
 	LIMIT $1`

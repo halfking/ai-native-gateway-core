@@ -31,9 +31,13 @@ import (
 // satisfies it.
 type DurableForegroundStore interface {
 	DurableHandlerStore
-	RenewLease(ctx context.Context, taskID, owner string, token int64, until time.Time) error
-	CheckpointCommitState(ctx context.Context, p durable.CheckpointParams) error
-	CommitTerminal(ctx context.Context, c durable.TerminalCommit) (*durable.TerminalProjection, error)
+	RenewLease(context.Context, string, string, int64, time.Time) error
+	CheckpointCommitState(context.Context, durable.CheckpointParams) error
+	PersistSettlementIntent(context.Context, durable.TerminalCommit) error
+	ClaimSettlementIntent(context.Context, string, string, time.Duration, time.Time) (*durable.ClaimedSettlement, error)
+	ClaimSettlementIntents(context.Context, string, time.Duration, int, time.Time) ([]*durable.ClaimedSettlement, error)
+	FinalizeSettlement(context.Context, durable.ClaimedSettlement) (*durable.TerminalProjection, error)
+	RetrySettlementIntent(context.Context, durable.ClaimedSettlement, time.Time, error) error
 }
 
 // DurableStreamBinding is the foreground lease/checkpoint/settlement
@@ -177,27 +181,42 @@ func (b *DurableStreamBinding) ContentCommitted() bool {
 	return b.lastRank >= durable.CommitStateRank(durable.CommitStateContent)
 }
 
-// Complete settles a successful stream with its captured wire bytes.
+// Complete persists a terminal intent before attempting immediate finalization.
 func (b *DurableStreamBinding) Complete(ctx context.Context, body []byte, contentType string) error {
-	_, err := b.store.CommitTerminal(ctx, durable.TerminalCommit{
+	return b.settleTerminal(ctx, durable.TerminalCommit{
 		Task:        b.task,
 		Outcome:     durable.StatusCompleted,
 		Body:        body,
 		ContentType: contentType,
 		Attempt:     b.task.AttemptCount,
 	})
-	return err
 }
 
-// FailTerminal settles a foreground terminal failure.
+// FailTerminal persists a terminal intent before attempting immediate finalization.
 func (b *DurableStreamBinding) FailTerminal(ctx context.Context, reason, kind string) error {
-	_, err := b.store.CommitTerminal(ctx, durable.TerminalCommit{
+	return b.settleTerminal(ctx, durable.TerminalCommit{
 		Task:       b.task,
 		Outcome:    durable.StatusFailed,
 		ReasonCode: reason,
 		ErrorKind:  kind,
 		Attempt:    b.task.AttemptCount,
 	})
+}
+
+func (b *DurableStreamBinding) settleTerminal(ctx context.Context, c durable.TerminalCommit) error {
+	if err := b.store.PersistSettlementIntent(ctx, c); err != nil {
+		return err
+	}
+	claim, err := b.store.ClaimSettlementIntent(ctx, b.task.ID, b.task.LeaseOwner, b.lease, time.Now())
+	if err != nil || claim == nil {
+		return err
+	}
+	_, err = b.store.FinalizeSettlement(ctx, *claim)
+	if err != nil && err != durable.ErrLeaseLost {
+		if retryErr := b.store.RetrySettlementIntent(ctx, *claim, time.Now().Add(2*time.Second), err); retryErr != nil {
+			return retryErr
+		}
+	}
 	return err
 }
 
