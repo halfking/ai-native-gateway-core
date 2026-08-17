@@ -105,10 +105,12 @@ logs/
 
 # Vendored kx-design (use services/shared/kx-design instead)
 kx-design/
-version.json
 web/public/version.json
 web-vue/tsconfig.tsbuildinfo
 traffic-replay-bin
+
+# Python linter cache
+.ruff_cache/
 
 # ─────────────────────────────────────────────────────────────
 # 敏感信息防护 (2026-06-25 双仓库策略补充)
