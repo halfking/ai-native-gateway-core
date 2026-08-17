@@ -89,6 +89,43 @@ func newTestLogger(db stateTransitionDB, now func() time.Time) *StateTransitionL
 
 func fixedNow() time.Time { return time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC) }
 
+func TestFlushEncodesMetadataAsJSONText(t *testing.T) {
+	db := &fakeTransitionDB{}
+	l := newTestLogger(db, fixedNow)
+
+	l.LogRouteDecision("req-metadata", "admin", "arrived", "routed", map[string]any{
+		"attempt": 2,
+		"reason":  "timeout",
+	})
+	l.Flush()
+
+	if len(db.execArgs) != 2 {
+		t.Fatalf("exec calls = %d, want tenant GUC + INSERT", len(db.execArgs))
+	}
+	metadata, ok := db.execArgs[1][5].(string)
+	if !ok {
+		t.Fatalf("metadata arg type = %T, want string for jsonb text encoding", db.execArgs[1][5])
+	}
+	if metadata != `{"attempt":2,"reason":"timeout"}` {
+		t.Errorf("metadata arg = %s, want encoded JSON object", metadata)
+	}
+}
+
+func TestFlushPreservesNilMetadataAsSQLNull(t *testing.T) {
+	db := &fakeTransitionDB{}
+	l := newTestLogger(db, fixedNow)
+
+	l.LogRouteDecision("req-null-metadata", "admin", "arrived", "routed", nil)
+	l.Flush()
+
+	if len(db.execArgs) != 2 {
+		t.Fatalf("exec calls = %d, want tenant GUC + INSERT", len(db.execArgs))
+	}
+	if metadata := db.execArgs[1][5]; metadata != nil {
+		t.Fatalf("metadata arg = %#v (%T), want nil SQL NULL", metadata, metadata)
+	}
+}
+
 // TestFlushFailureEnqueuesRetryThenReplaySucceeds: 失败注入 → 重试队列 →
 // 到期后重放成功，且 INSERT 是幂等形式（ON CONFLICT (request_id, seq) DO NOTHING）。
 func TestFlushFailureEnqueuesRetryThenReplaySucceeds(t *testing.T) {

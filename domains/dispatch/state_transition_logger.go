@@ -310,13 +310,13 @@ func (l *StateTransitionLogger) insertTransition(ctx context.Context, p pendingT
 	if strings.TrimSpace(p.t.TenantID) == "" {
 		return fmt.Errorf("empty tenant_id")
 	}
-	var metaJSON []byte
+	var metadataArg any
 	if p.t.Metadata != nil {
-		var err error
-		metaJSON, err = json.Marshal(p.t.Metadata)
+		metaJSON, err := json.Marshal(p.t.Metadata)
 		if err != nil {
 			return fmt.Errorf("marshal transition metadata: %w", err)
 		}
+		metadataArg = string(metaJSON)
 	}
 	tx, err := l.db.Begin(ctx)
 	if err != nil {
@@ -332,7 +332,7 @@ func (l *StateTransitionLogger) insertTransition(ctx context.Context, p pendingT
 		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		ON CONFLICT (request_id, seq) DO NOTHING`,
 		p.t.RequestID, p.t.TenantID, p.t.TransitionType,
-		nullStr(p.t.FromState), nullStr(p.t.ToState), metaJSON, p.seq); err != nil {
+		nullStr(p.t.FromState), nullStr(p.t.ToState), metadataArg, p.seq); err != nil {
 		return fmt.Errorf("insert transition: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
