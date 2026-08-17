@@ -3764,6 +3764,14 @@ func (d *DB) ensurePartitionAutovacuumSchema(ctx context.Context) error {
 // quota contract introduced by P0-C. The shadow rollout is driven by
 // settings (credential_client_quota.mode); the table only records policy
 // rows and never blocks credential health writes.
+//
+// Parked by AUDIT_24H_20260817.md B1 (option C): the bootstrap call at
+// applyMigrationsOnce is commented out until the dispatch path actually
+// consumes credential_client_quota.mode, so this method is currently
+// uncalled. The body is retained to make restoring one line of caller +
+// re-enabling the spec registration enough to un-park; suppress the
+// resulting U1000 so a future staticcheck gate stays clean in the meantime.
+//lint:ignore U1000 retained for credentialquota un-park; see AUDIT_24H_20260817.md B1
 func (d *DB) ensureCredentialClientQuotaSchema(ctx context.Context) error {
 	if d == nil || d.pool == nil {
 		return nil

@@ -254,9 +254,14 @@ func TestStreamAnthropicPassthrough_OtherSideClosedIsNetworkError(t *testing.T) 
 	assert.True(t, out.Interrupted)
 	assert.Equal(t, "network_error", out.Reason)
 	assert.Equal(t, errorsx.KindNetwork, out.Kind)
-	assert.True(t, out.Resumable)
+	// 2026-08-17: the content frame already committed the attempt, so the
+	// gateway renders its own structured terminal error event; a transparent
+	// retry would duplicate the client-visible content.
+	assert.False(t, out.Resumable)
 	assert.Equal(t, 1, out.ChunkCount)
 	assert.Contains(t, rec.Body.String(), `"text":"hello"`)
+	assert.Contains(t, rec.Body.String(), "event: error")
+	assert.Contains(t, rec.Body.String(), "upstream stream interrupted: network_error")
 }
 
 // TestStreamAnthropicPassthrough_BytesForPassThrough ensures the

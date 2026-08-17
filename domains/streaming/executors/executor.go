@@ -3296,6 +3296,38 @@ func (e *Executor) Execute(params *ExecParams) (result *ExecuteResult, err error
 				}
 			}
 
+			// 2026-08-17: mid-stream interruptions previously never reached
+			// the generic FailureLogger call below — this branch either
+			// continues to the next candidate or returns directly — so the
+			// exact failure mode users hit during node switching ("other
+			// side closed", upstream terminal error events) left no
+			// candidate_failure_logs row. Record one row here for both the
+			// resumable (switch) and terminal (last candidate) paths, with
+			// the executor's pre-classified kind.
+			if e.FailureLogger != nil {
+				perAttemptMs := int(time.Since(attemptStart).Milliseconds())
+				extra := buildEnhancedErrorContext(params, kind, execErr, len(candidates), tried)
+				if extra == nil {
+					extra = map[string]any{}
+				}
+				extra["stream_reason"] = sie.reason
+				extra["stream_resumable"] = sie.resumable
+				e.FailureLogger.LogFailureWithKind(
+					params.R.Header.Get("X-Request-Id"),
+					tenantFromCtx(params.R),
+					params.SessionID,
+					cand.CredentialID,
+					cand.ProviderID,
+					cand.RawModel,
+					tried,
+					execErr,
+					kind,
+					nil,
+					&perAttemptMs,
+					extra,
+				)
+			}
+
 			if mayRetryInterruptedStream(params, sie) {
 				// Stream is resumable and no semantic output was committed - try next candidate.
 				// The inner tryCandidate already wrote the credential state
@@ -3433,9 +3465,12 @@ func (e *Executor) Execute(params *ExecParams) (result *ExecuteResult, err error
 			// call. This is the single-attempt latency (excludes
 			// candidate-switching overhead). See migration 300.
 			perAttemptMs := int(time.Since(attemptStart).Milliseconds())
+			// 2026-08-17 (V358): session_id 直接落行，同一会话的
+			// 全部切换尝试可按 session_id 归集，不再绕道 request_logs。
 			e.FailureLogger.LogFailure(
 				params.R.Header.Get("X-Request-Id"),
 				tenantFromCtx(params.R),
+				params.SessionID,
 				cand.CredentialID,
 				cand.ProviderID,
 				cand.RawModel,
