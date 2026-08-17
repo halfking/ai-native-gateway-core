@@ -2,17 +2,28 @@ package trace
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/jackc/pgx/v5"
+	"github.com/kaixuan/llm-gateway-go/upstream"
 
 	"github.com/redis/go-redis/v9"
 )
+
+type retryError struct {
+	err error
+}
+
+func (e *retryError) Error() string { return "retry exhausted: " + e.err.Error() }
+func (e *retryError) Unwrap() error { return e.err }
 
 // 测试辅助: 用 miniredis 替代真实 Redis,避免外部依赖。
 // 注: 项目此前未引入 miniredis, 这里改为用 in-process test double,
@@ -81,6 +92,51 @@ func TestEventBuilder_WithErrorMarksFailed(t *testing.T) {
 	}
 	if ev.Error != "dial timeout" {
 		t.Errorf("error msg not captured: %s", ev.Error)
+	}
+}
+
+func TestUpstreamFailureWithBody_ExtractsWrappedUpstreamError(t *testing.T) {
+	body := []byte(`{"error":{"message":"` + strings.Repeat("x", 600) + `"}}`)
+	upstreamErr := &upstream.Error{
+		Kind:       upstream.KindUpstreamDown,
+		Message:    "bad gateway",
+		StatusCode: 502,
+		Body:       body,
+	}
+	wrapped := &retryError{err: fmt.Errorf("attempt failed: %w", upstreamErr)}
+
+	ev := UpstreamFailureWithBody("https://user:secret@api.example.com/v1?api_key=secret#fragment", wrapped).Build()
+
+	if got := ev.Details["url"]; got != "https://api.example.com/v1" {
+		t.Fatalf("sanitized url = %#v, want URL without credentials, query, or fragment", got)
+	}
+	if got := ev.Details["http_status"]; got != 502 {
+		t.Fatalf("http_status = %#v, want 502", got)
+	}
+	if got := ev.Details["response_body_len"]; got != len(body) {
+		t.Fatalf("response_body_len = %#v, want %d", got, len(body))
+	}
+	if _, ok := ev.Details["response_body"]; ok {
+		t.Fatal("raw upstream response body must not be recorded")
+	}
+	wantHash := fmt.Sprintf("%x", sha256.Sum256(body))
+	if got := ev.Details["response_body_sha256"]; got != wantHash {
+		t.Fatalf("response_body_sha256 = %#v, want %s", got, wantHash)
+	}
+	if got := ev.Details["failure_hint"]; got != "upstream_5xx" {
+		t.Fatalf("failure_hint = %#v, want upstream_5xx", got)
+	}
+	if ev.Error != "upstream_5xx" || ev.Details["error"] != "upstream_5xx" {
+		t.Fatalf("trace error must be a safe classification, got event=%q details=%#v", ev.Error, ev.Details["error"])
+	}
+	if strings.Contains(ev.Error, "bad gateway") || strings.Contains(ev.Error, strings.Repeat("x", 16)) {
+		t.Fatalf("trace error leaked upstream content: %q", ev.Error)
+	}
+	if _, ok := ev.Details["headers"]; ok {
+		t.Fatal("sensitive upstream headers must not be recorded")
+	}
+	if _, ok := ev.Details["response_headers"]; ok {
+		t.Fatal("sensitive upstream response headers must not be recorded")
 	}
 }
 

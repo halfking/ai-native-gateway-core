@@ -2,7 +2,10 @@ package trace
 
 import (
 	"context"
+	"crypto/sha256"
+	"errors"
 	"fmt"
+	"net/url"
 	"time"
 
 	i18n "github.com/kaixuan/llm-gateway-go/i18n"
@@ -162,7 +165,7 @@ func UpstreamRequest(url string, timeoutMs int, viaProxy bool) EventBuilder {
 		module: ModuleUpstream,
 		status: StatusSuccess,
 		details: map[string]any{
-			"url":        url,
+			"url":        sanitizeTraceURL(url),
 			"timeout_ms": timeoutMs,
 			"via_proxy":  viaProxy,
 		},
@@ -177,7 +180,7 @@ func UpstreamFailure(url string, statusCode int, err error, model string, creden
 		status: StatusFailed,
 		errMsg: fmt.Sprintf("http_status=%d err=%v", statusCode, err),
 		details: map[string]any{
-			"url":         url,
+			"url":         sanitizeTraceURL(url),
 			"http_status": statusCode,
 		},
 	}
@@ -193,53 +196,65 @@ func UpstreamFailure(url string, statusCode int, err error, model string, creden
 	return eb
 }
 
-// UpstreamFailureWithBody 增强版 UpstreamFailure，携带 upstream.Error 的完整上下文
-// (StatusCode, Body, Headers)。用于 5xx 错误详细诊断（满足 rule 需求：不只是 5xx 标签）。
+// UpstreamFailureWithBody carries the upstream HTTP status and a body digest.
+// Raw response bodies and headers never enter trace storage.
+func sanitizeTraceURL(raw string) string {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	parsed.User = nil
+	parsed.RawQuery = ""
+	parsed.ForceQuery = false
+	parsed.Fragment = ""
+	return parsed.String()
+}
+
 func UpstreamFailureWithBody(url string, uErr error) EventBuilder {
 	eb := EventBuilder{
 		stage:  StageUpstreamRequest,
 		module: ModuleUpstream,
 		status: StatusFailed,
-		errMsg: fmt.Sprintf("upstream_error: %v", uErr),
+		errMsg: "upstream request failed",
 		details: map[string]any{
-			"url": url,
+			"url": sanitizeTraceURL(url),
 		},
 	}
 	if uErr == nil {
 		return eb
 	}
 
-	// 类型断言提取 upstream.Error
+	// Keep trace decoupled from the concrete upstream package while allowing
+	// errors.As to traverse ExecuteError/retry/fmt.Errorf wrapping chains.
 	type upstreamError interface {
 		error
-		StatusCode() int
-		Body() []byte
+		UpstreamStatusCode() int
+		UpstreamBody() []byte
 	}
 
-	// 尝试断言为 *upstream.Error（通过接口模式避免循环导入）
 	var statusCode int
 	var body []byte
-	if ue, ok := uErr.(upstreamError); ok {
-		statusCode = ue.StatusCode()
-		body = ue.Body()
+	var ue upstreamError
+	if errors.As(uErr, &ue) {
+		statusCode = ue.UpstreamStatusCode()
+		body = ue.UpstreamBody()
 	}
 
 	if statusCode > 0 {
 		eb.details["http_status"] = statusCode
 	}
 	if len(body) > 0 {
-		bodyStr := string(body)
-		if len(bodyStr) > 512 {
-			bodyStr = bodyStr[:512] + "..." // 限制 trace_events 大小
-		}
-		eb.details["response_body"] = bodyStr
 		eb.details["response_body_len"] = len(body)
+		eb.details["response_body_sha256"] = fmt.Sprintf("%x", sha256.Sum256(body))
 	}
 
-	eb.details["error"] = uErr.Error()
-	if hint := classifyUpstreamError(uErr, statusCode); hint != "" {
-		eb.details["failure_hint"] = hint
+	hint := classifyUpstreamError(uErr, statusCode)
+	if hint == "" {
+		hint = "upstream_error"
 	}
+	eb.errMsg = hint
+	eb.details["error"] = hint
+	eb.details["failure_hint"] = hint
 
 	return eb
 }
@@ -380,6 +395,20 @@ func classifyUpstreamError(err error, statusCode int) string {
 	if err == nil && statusCode == 0 {
 		return ""
 	}
+	// A readable HTTP response is not a transport failure, even when the error
+	// carrying it has been wrapped by retry/execution layers.
+	switch {
+	case statusCode >= 500:
+		return "upstream_5xx"
+	case statusCode == 429:
+		return "upstream_rate_limit"
+	case statusCode == 401, statusCode == 403:
+		return "upstream_auth_error"
+	case statusCode == 404:
+		return "upstream_not_found"
+	case statusCode >= 400:
+		return "upstream_4xx"
+	}
 	if err != nil {
 		msg := err.Error()
 		switch {
@@ -393,18 +422,6 @@ func classifyUpstreamError(err error, statusCode int) string {
 			return "upstream_io_error"
 		}
 		return "upstream_network_error"
-	}
-	switch {
-	case statusCode >= 500:
-		return "upstream_5xx"
-	case statusCode == 429:
-		return "upstream_rate_limit"
-	case statusCode == 401, statusCode == 403:
-		return "upstream_auth_error"
-	case statusCode == 404:
-		return "upstream_not_found"
-	case statusCode >= 400:
-		return "upstream_4xx"
 	}
 	return ""
 }

@@ -178,26 +178,14 @@ func (e *Executor) dispatchForward(ctx context.Context, qr *dispatch.QueuedReque
 	if cand.CredentialID == 0 {
 		return dispatch.ForwardOutcome{Err: errDispatchNoCandidate}
 	}
-	// V3.3-OBS OBS-B1 (2026-08-15): dispatch_v2 路径的 upstream_request 动作
-	// 事件（S7，每个候选转发开始）。
 	attemptRef, ok := qr.ActiveAttemptRef()
 	if !ok {
 		return dispatch.ForwardOutcome{Err: errDispatchMissingAttempt}
 	}
-	attempt := attemptRef.AttemptNo
-	e.liveActions.Emit(ctx, liveactions.ActionEvent{
-		RequestID:    qr.ID,
-		Action:       liveactions.ActionUpstreamRequest,
-		Model:        qr.ResolvedModel,
-		CredentialID: ref.CredentialID,
-		Retry:        attempt > 1,
-		RetrySeq:     attempt,
-		Detail: map[string]string{
-			"attempt":     strconv.Itoa(attempt),
-			"provider_id": strconv.Itoa(ref.ProviderID),
-		},
-	})
-	return e.forwardForDispatch(dctx, cand, attemptRef.AttemptID, qr.FirstSemanticByteCallback())
+	// ActionUpstreamRequest is emitted by beginUpstreamAttempt immediately
+	// before the real HTTP call. Dispatch preparation can still fail in the
+	// circuit, limiter, or key rotator and must not look like provider traffic.
+	return e.forwardForDispatch(dctx, cand, attemptRef.AttemptID, qr.FirstSemanticByteCallback(), ctx)
 }
 
 // candidateToRef maps a routing candidate into dispatch's decoupled view.
@@ -249,7 +237,10 @@ func copyDispatchAttemptMetadata(ee *ExecuteError, qr *dispatch.QueuedRequest) {
 	if ee == nil || qr == nil {
 		return
 	}
-	ee.Tried = qr.AttemptCount
+	dctx, _ := qr.Payload.(*dispatchCtx)
+	if dctx != nil && dctx.params != nil && dctx.params.UpstreamAttempts != nil {
+		ee.Tried = dctx.params.UpstreamAttempts.Used()
+	}
 }
 
 // executeViaDispatch is the V2 entry point called from Execute. It packages
@@ -411,8 +402,11 @@ func mapCandidatesByModel(candidates []provider.Candidate) map[string][]provider
 // loop (fp slot → circuit → Limiter.AcquireAllNoCredLayer → key rotator →
 // executeOpenAI/executeAnthropic → success/error side effects) but returns
 // control to the dispatch mover on pre-firstbyte failure.
-func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate, attemptID string, firstSemanticByte func()) (out dispatch.ForwardOutcome) {
+func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate, attemptID string, firstSemanticByte func(), dispatchContexts ...context.Context) (out dispatch.ForwardOutcome) {
 	paramsCopy := *dctx.params
+	if len(dispatchContexts) > 0 && dispatchContexts[0] != nil {
+		paramsCopy.R = paramsCopy.R.WithContext(dispatchContexts[0])
+	}
 	paramsCopy.DispatchAttempt = true
 	paramsCopy.DispatchAttemptID = attemptID
 	paramsCopy.FirstSemanticByteCallback = firstSemanticByte

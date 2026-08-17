@@ -29,6 +29,15 @@ migration is not recorded.
 
 Startup migration numbers must be unique within one pending deployment. Duplicate numeric versions already present in historical local files are tolerated only when the remote checksum ledger identifies the applied filename; if the ledger is missing for a repeated version, deployment stops and requires manual reconciliation. Duplicate pending files are always rejected before SSH, SQL, or service operations because the legacy ledger cannot distinguish two files with the same version. Files explicitly marked `SUPERSEDED` or `DEPRECATED` are excluded from these checks.
 
+### Controlled repair for a missing 528 checksum row
+
+If `schema_migrations` shows migration 528 as applied but `llm_gateway_migration_checksums` has no 528 row, do not edit 528, relabel 529, or bypass the ordinary gate. Run `scripts/repair-252-migration-ledger.sh` in its default read-only mode first. The operator must resolve the remote `(version, description)` to the exact local canonical filename and SHA-256; an ambiguous filename or checksum mismatch is a hard stop.
+
+Only after that preflight is reviewed may an approved operator use `--apply`. The repair script must create and retain a `pg_dump` backup of `schema_migrations` and `llm_gateway_migration_checksums`, then perform the ledger repair transactionally under its advisory lock. This is ledger reconciliation, not deployment: it does not replay migration 528, change its bytes/checksum, or apply 529. Afterward, rerun the ordinary gate and require an exact filename/checksum match before any pending migration or service operation. This procedure must not connect to or modify the database as part of a code review or local test.
+
+### TTL-managed historical partitions
+
+`request_logs_bodies_2026_07` created or repaired by migration 529 is a backlog-drain target, not a permanent audit-retention guarantee. `drop_old_request_logs_bodies_partitions(7)` may drop it once its month end is at or before the TTL cutoff. A 529 postcondition or audit test must therefore assert the exact parent and bounds when the partition is expected to be within retention, while accepting its absence after TTL cleanup. Do not add a forward migration solely to recreate an already-expired July partition or to make the cleanup manager skip it; that would contradict the configured retention policy.
 
 Migrations `382_session_module_executions.sql` and
 `383_dashboard_access_events.sql` create the operational hot/archive tables. Their

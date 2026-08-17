@@ -89,7 +89,7 @@ func (h *ChatHandler) ensureSessionID(
 		if deviceSeed == "" {
 			deviceSeed = "default"
 		}
-		taskID := r.Header.Get("X-Gw-Task-Id")
+		taskID := sanitizeRequestCorrelationID(r.Header.Get("X-Gw-Task-Id"))
 		newSession, err := h.sessionGetter.CreateV2(ctx, keyInfo.ID, keyInfo.TenantID, deviceSeed, taskID)
 		if err == nil && newSession != nil {
 			return newSession.SessionID
@@ -129,7 +129,7 @@ func (h *ChatHandler) assignGatewaySessionWithFinder(
 	if deviceSeed == "" {
 		deviceSeed = "default"
 	}
-	taskID := r.Header.Get("X-Gw-Task-Id")
+	taskID := sanitizeRequestCorrelationID(r.Header.Get("X-Gw-Task-Id"))
 
 	createSession := func() (*sessionAssignment, error) {
 		newSession, err := h.sessionGetter.CreateV2(ctx, keyInfo.ID, keyInfo.TenantID, deviceSeed, taskID)
