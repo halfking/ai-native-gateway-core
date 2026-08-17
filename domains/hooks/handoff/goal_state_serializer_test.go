@@ -49,7 +49,7 @@ func (s *memoryGoalStore) CompareAndSetState(_ context.Context, tenantID, id str
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	session, ok := s.sessions[id]
-	if !ok {
+	if !ok || session.TenantID != tenantID {
 		return false, nil
 	}
 	for _, st := range allowedFrom {

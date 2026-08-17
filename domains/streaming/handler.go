@@ -3614,9 +3614,11 @@ func (h *ChatHandler) serveWithExecutor(
 	// buildExecParams assembles the per-attempt ExecParams shared by the
 	// legacy goal-retry loop and the SR-W2 survival branch (doc 18 §5.1):
 	// one construction site, zero drift between the two paths.
+	upstreamAttempts := executors.NewUpstreamAttemptBudget(executors.DefaultUpstreamAttemptLimit)
 	buildExecParams := func(streamWriter http.ResponseWriter) *executors.ExecParams {
 		return &executors.ExecParams{
 			W:                  streamWriter,
+			UpstreamAttempts:   upstreamAttempts,
 			AttachmentMetadata: attachmentsForOutbound(logCtx),
 			R:                  r,
 			BodyBytes:          upstreamBody,

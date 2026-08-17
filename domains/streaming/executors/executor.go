@@ -1142,6 +1142,9 @@ type ExecParams struct {
 	// retry-now / wait-recovery / terminal. Copied by value into sub-Execute
 	// calls so no nested path can re-enable them.
 	SurvivalAttempt bool
+	// DispatchAttempt means the dispatch mover owns same-node retries. Protocol
+	// executors must not add their legacy minimum retry underneath that owner.
+	DispatchAttempt bool
 	// OnStreamReady is called exactly once right before the executor hands
 	// control to the normal stream writer. The caller uses it to stop any
 	// pre-stream keepalive goroutine so no writes race with StreamChat.
@@ -1196,6 +1199,13 @@ type ExecParams struct {
 	// downstream agents (which only inspect the structured field) recognise
 	// the call and dispatch the tool.
 	ToolsRequested bool
+	// ClientType is the normalized request-boundary client type. Empty is only
+	// allowed for legacy direct executor callers, which use header/UA fallback.
+	ClientType string
+	// UpstreamAttempts bounds the number of upstream HTTP calls this request
+	// can issue across all candidate attempts. Optional; nil disables the
+	// per-request budget.
+	UpstreamAttempts *UpstreamAttemptBudget
 	// ClientProtocol is the wire format the client used: "openai-completions"
 	// for /v1/chat/completions, "anthropic-messages" for /v1/messages.
 	// Empty defaults to "openai-completions". Used by executeAnthropic to
@@ -1947,6 +1957,9 @@ func buildEnhancedErrorContext(params *ExecParams, kind errorsx.ErrorKind, execE
 }
 
 func (e *Executor) Execute(params *ExecParams) (result *ExecuteResult, err error) {
+	if params.UpstreamAttempts == nil {
+		params.UpstreamAttempts = NewUpstreamAttemptBudget(DefaultUpstreamAttemptLimit)
+	}
 	if !params.clientTokenMetricsOwner {
 		params.clientTokenMetricsOwner = true
 		holder := clientTokenForMetrics(params)

@@ -23,14 +23,14 @@ func TestRequestSurvivalDefaults(t *testing.T) {
 func TestRequestSurvivalNormalizeFillsDefaults(t *testing.T) {
 	cfg := &Config{}
 	cfg.NormalizeRequestSurvival()
-	if cfg.RequestSurvivalInteractiveDeadlineSeconds != 1800 {
-		t.Fatalf("interactive deadline = %d, want 1800", cfg.RequestSurvivalInteractiveDeadlineSeconds)
+	if cfg.RequestSurvivalInteractiveDeadlineSeconds != 86400 {
+		t.Fatalf("interactive deadline = %d, want 86400", cfg.RequestSurvivalInteractiveDeadlineSeconds)
 	}
 	if cfg.RequestSurvivalDurableDeadlineSeconds != 86400 {
 		t.Fatalf("durable deadline = %d, want 86400", cfg.RequestSurvivalDurableDeadlineSeconds)
 	}
-	if cfg.RequestSurvivalRetryBaseSeconds != 2 || cfg.RequestSurvivalRetryMaxSeconds != 300 {
-		t.Fatalf("retry base/max = %d/%d, want 2/300", cfg.RequestSurvivalRetryBaseSeconds, cfg.RequestSurvivalRetryMaxSeconds)
+	if cfg.RequestSurvivalRetryBaseSeconds != 2 || cfg.RequestSurvivalRetryMaxSeconds != 120 {
+		t.Fatalf("retry base/max = %d/%d, want 2/120", cfg.RequestSurvivalRetryBaseSeconds, cfg.RequestSurvivalRetryMaxSeconds)
 	}
 	if cfg.RequestSurvivalWorkerCount != 4 || cfg.RequestSurvivalWorkerLeaseSecs != 60 {
 		t.Fatalf("worker count/lease = %d/%d, want 4/60", cfg.RequestSurvivalWorkerCount, cfg.RequestSurvivalWorkerLeaseSecs)
@@ -40,6 +40,14 @@ func TestRequestSurvivalNormalizeFillsDefaults(t *testing.T) {
 	}
 	if cfg.RequestSurvivalStatusIntervalSeconds != 60 {
 		t.Fatalf("status interval = %d, want 60", cfg.RequestSurvivalStatusIntervalSeconds)
+	}
+}
+
+func TestRequestSurvivalNormalizeClampsRetryLimits(t *testing.T) {
+	cfg := &Config{RequestSurvivalRetryMaxSeconds: 600, RequestSurvivalMaxAttempts: 500}
+	cfg.NormalizeRequestSurvival()
+	if cfg.RequestSurvivalRetryMaxSeconds != 120 || cfg.RequestSurvivalMaxAttempts != 100 {
+		t.Fatalf("retry max/attempts = %d/%d, want 120/100", cfg.RequestSurvivalRetryMaxSeconds, cfg.RequestSurvivalMaxAttempts)
 	}
 }
 

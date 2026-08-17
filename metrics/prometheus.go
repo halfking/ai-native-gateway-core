@@ -30,13 +30,13 @@ type PrometheusRecorder struct {
 	adapterActive             *prometheus.GaugeVec
 
 	// Scheduler
-	schedulerSelections            prometheus.Counter
-	schedulerSelectionsByProvider  *prometheus.CounterVec
-	schedulerWeight                *prometheus.GaugeVec
-	schedulerCurrentWeight         *prometheus.GaugeVec
-	schedulerEffectiveWeight       *prometheus.GaugeVec
-	schedulerSelectionDuration     prometheus.Histogram
-	schedulerAvailableCredentials  prometheus.Gauge
+	schedulerSelections           prometheus.Counter
+	schedulerSelectionsByProvider *prometheus.CounterVec
+	schedulerWeight               *prometheus.GaugeVec
+	schedulerCurrentWeight        *prometheus.GaugeVec
+	schedulerEffectiveWeight      *prometheus.GaugeVec
+	schedulerSelectionDuration    prometheus.Histogram
+	schedulerAvailableCredentials prometheus.Gauge
 
 	// Safety
 	safetyChecks        *prometheus.CounterVec
@@ -69,9 +69,9 @@ type PrometheusRecorder struct {
 	// rawAuditFailed     : raw audit JSONL write/rotate/sync failed. CRITICAL
 	//                      because audit JSONL is the only immutable local copy
 	//                      before cross-machine replication (P2-2).
-	shadowWriteFailed    *prometheus.CounterVec
-	ringBufferDropped    prometheus.Counter
-	rawAuditWriteFailed  prometheus.Counter
+	shadowWriteFailed   *prometheus.CounterVec
+	ringBufferDropped   prometheus.Counter
+	rawAuditWriteFailed prometheus.Counter
 
 	// streamSynthDoneTotal (P1 hot-patch 2026-08-06): counts streams
 	// where the gateway had to inject "data: [DONE]\n\n" because the
@@ -95,7 +95,7 @@ type PrometheusRecorder struct {
 
 // NewPrometheusRecorder 创建 Prometheus Recorder
 func NewPrometheusRecorder() *PrometheusRecorder {
-	return &PrometheusRecorder{
+	recorder := &PrometheusRecorder{
 		// Circuit Breaker
 		circuitRequests: promauto.NewCounterVec(
 			prometheus.CounterOpts{
@@ -368,6 +368,10 @@ func NewPrometheusRecorder() *PrometheusRecorder {
 
 		logger: logger.New("metrics"),
 	}
+	for _, result := range []string{"recorded", "skipped", "failed"} {
+		recorder.ursmv2ShadowResult.WithLabelValues(result).Add(0)
+	}
+	return recorder
 }
 
 // Circuit Breaker methods

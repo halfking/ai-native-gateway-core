@@ -1575,9 +1575,11 @@ func main() {
 		// goal-retry loop runs untouched.
 		if cfg.RequestSurvivalEnabled {
 			chatHandler.SetRequestSurvival(cfg.RequestSurvivalEnabledForTenant, streaming.SurvivalOptions{
-				Deadline:  time.Duration(cfg.RequestSurvivalInteractiveDeadlineSeconds) * time.Second,
-				RetryBase: time.Duration(cfg.RequestSurvivalRetryBaseSeconds) * time.Second,
-				RetryMax:  time.Duration(cfg.RequestSurvivalRetryMaxSeconds) * time.Second,
+				Deadline:          time.Duration(cfg.RequestSurvivalInteractiveDeadlineSeconds) * time.Second,
+				RetryBase:         time.Duration(cfg.RequestSurvivalRetryBaseSeconds) * time.Second,
+				RetryMax:          time.Duration(cfg.RequestSurvivalRetryMaxSeconds) * time.Second,
+				MaxRetries:        cfg.RequestSurvivalMaxAttempts,
+				KeepaliveInterval: time.Duration(cfg.KeepaliveInterval) * time.Second,
 			})
 			slog.Info("request_survival_armed",
 				"interactive_deadline_sec", cfg.RequestSurvivalInteractiveDeadlineSeconds,

@@ -4,10 +4,13 @@ import "errors"
 
 // Hard limits that bound a single request's lifetime in the pipeline.
 const (
+	// MaxNodeFailures is the maximum number of failed upstream calls allowed on
+	// one node for one request before dispatch switches to a sibling node.
+	MaxNodeFailures = 3
 	// maxAttempts is the absolute ceiling on total forward attempts across all
 	// credentials/models. Prevents a pathological request from churning the
 	// whole candidate set; well above any realistic candidate count × retry.
-	maxAttempts = 32
+	maxAttempts = 100
 	// maxRetryBudget is a sentinel used to force-skip same-credential retry
 	// (e.g. on pacing timeout where retrying a saturated credential is futile).
 	maxRetryBudget = 1 << 30
