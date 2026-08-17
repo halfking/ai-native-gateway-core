@@ -155,24 +155,6 @@ func (a *AnthropicExecutor) WriteNonStreamResponse(w http.ResponseWriter, resp *
 	if err != nil {
 		return nil, err
 	}
-	// Copy upstream response headers, but drop hop-by-hop / length headers
-	// (Content-Length will be re-derived from the body bytes written, and
-	// Content-Type/Connection/etc are set explicitly below). Copying
-	// Content-Length verbatim produced a duplicate Content-Length line —
-	// nginx rejects it as 'upstream sent duplicate header line' and the
-	// client sees a 502 even though the gateway returned 200 internally.
-	for k, vs := range resp.Header {
-		if strings.EqualFold(k, "Content-Length") ||
-			strings.EqualFold(k, "Content-Encoding") ||
-			strings.EqualFold(k, "Connection") ||
-			strings.EqualFold(k, "Transfer-Encoding") {
-			continue
-		}
-		for _, v := range vs {
-			w.Header().Add(k, v)
-		}
-	}
-
 	// Q3 mode (openai client -> anthropic upstream): translate the
 	// Anthropic Messages response body into an OpenAI chat.completion
 	// body so the OpenAI parser doesn't choke on the shape mismatch.
@@ -249,8 +231,10 @@ func (a *AnthropicExecutor) WriteNonStreamResponse(w http.ResponseWriter, resp *
 				qualitySignals.Score = score
 			}
 		}
+		copyNonStreamResponseHeaders(w.Header(), resp.Header, len(body))
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(resp.StatusCode)
+
 		_, err = w.Write(body)
 		return body, err
 	}
@@ -269,11 +253,7 @@ func (a *AnthropicExecutor) WriteNonStreamResponse(w http.ResponseWriter, resp *
 	// instead of receiving a single text blob the user can't tell apart from
 	// the answer.
 	body = splitEmbeddedThinkTags(body)
-	for k, vs := range resp.Header {
-		for _, v := range vs {
-			w.Header().Add(k, v)
-		}
-	}
+	copyNonStreamResponseHeaders(w.Header(), resp.Header, len(body))
 	w.WriteHeader(resp.StatusCode)
 	_, err = w.Write(body)
 	return body, err

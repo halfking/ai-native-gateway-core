@@ -123,11 +123,7 @@ func (c *ChatExecutor) WriteNonStreamResponse(w http.ResponseWriter, resp *http.
 	if c.RedactBodyFn != nil {
 		body = c.RedactBodyFn(body, "", "")
 	}
-	for k, vs := range resp.Header {
-		for _, v := range vs {
-			w.Header().Add(k, v)
-		}
-	}
+	copyNonStreamResponseHeaders(w.Header(), resp.Header, len(body))
 	w.WriteHeader(resp.StatusCode)
 	_, err = w.Write(body)
 	return body, err
@@ -1281,11 +1277,7 @@ func (e *Executor) executeOpenAI(
 					})
 				}
 				e.logClientResponse(params, diagnosticProtocol(params.ClientProtocol, "openai-completions"), respBody)
-				for k, vs := range resp.Header {
-					for _, v := range vs {
-						params.W.Header().Add(k, v)
-					}
-				}
+				copyNonStreamResponseHeaders(params.W.Header(), resp.Header, len(respBody))
 				params.W.WriteHeader(resp.StatusCode)
 				//nolint:errcheck // HTTP write error non-recoverable
 				params.W.Write(respBody)

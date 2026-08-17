@@ -53,3 +53,17 @@ func TestDeployedMigration528ChecksumIsStable(t *testing.T) {
 		t.Fatalf("deployed startup migration %s checksum changed: got %s want %s", name, got, want)
 	}
 }
+
+func TestDeployedMigration529ChecksumIsStable(t *testing.T) {
+	const (
+		name = "529_repair_shared_pg_sticky_and_bodies_2026_07.sql"
+		want = "3a21c6943da9ede672c4a0f2074bcbfee3e94efcd4e84dec09b12df3154d41c6"
+	)
+	body, err := os.ReadFile(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fmt.Sprintf("%x", sha256.Sum256(body)); got != want {
+		t.Fatalf("deployed startup migration %s checksum changed: got %s want %s", name, got, want)
+	}
+}

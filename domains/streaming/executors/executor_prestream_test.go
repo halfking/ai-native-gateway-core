@@ -2,11 +2,13 @@ package executors
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -398,6 +400,101 @@ func TestExecuteOpenAI_StreamSuccessRecordedOnlyAfterBodyCompletes(t *testing.T)
 				}
 			}
 		})
+	}
+}
+
+func TestExecuteOpenAI_NonStreamRewritesContentLengthAfterBodyTransform(t *testing.T) {
+	const lengthDelta = 152
+	upstreamModel := strings.Repeat("x", lengthDelta+len("gpt-4o"))
+	upstreamBody := []byte(`{"id":"chatcmpl-245","object":"chat.completion","model":"` + upstreamModel + `","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Upstream-Request-Id", "provider-245")
+		_, _ = w.Write(upstreamBody)
+	}))
+	defer upstream.Close()
+
+	exec := newOverloadTestExecutor()
+	rec := httptest.NewRecorder()
+	result, err := exec.executeOpenAI(&ExecParams{
+		W:              rec,
+		R:              httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
+		BodyBytes:      []byte(`{"model":"gpt-4o","messages":[]}`),
+		ClientProtocol: "openai-completions",
+		ClientModel:    "gpt-4o",
+		ClientID:       identity.ClientIdentity{IdentityHash: "content-length-test"},
+	}, overloadTestCandidate(upstream.URL), 0, time.Now(), nil)
+	if err != nil {
+		t.Fatalf("executeOpenAI() error = %v", err)
+	}
+	if result == nil {
+		t.Fatal("executeOpenAI() returned nil result")
+	}
+	if got := rec.Header().Get("Content-Length"); got != strconv.Itoa(rec.Body.Len()) {
+		t.Fatalf("Content-Length = %q, body length = %d", got, rec.Body.Len())
+	}
+	if got := rec.Header().Get("X-Upstream-Request-Id"); got != "provider-245" {
+		t.Fatalf("X-Upstream-Request-Id = %q, want provider-245", got)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &decoded); err != nil {
+		t.Fatalf("response body is not valid JSON: %v", err)
+	}
+}
+
+func TestExecuteOpenAI_NonStreamIRConversionRewritesContentLength(t *testing.T) {
+	const lengthDelta = 152
+	upstreamModel := strings.Repeat("x", lengthDelta+len("gpt-4o"))
+	upstreamBody := []byte(`{"id":"chatcmpl-245-ir","object":"chat.completion","model":"` + upstreamModel + `","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Upstream-Request-Id", "provider-245-ir")
+		_, _ = w.Write(upstreamBody)
+	}))
+	defer upstream.Close()
+
+	exec := newOverloadTestExecutor()
+	exec.IR = &irAdapterForTest{}
+	rec := httptest.NewRecorder()
+	result, err := exec.executeOpenAI(&ExecParams{
+		W:              rec,
+		R:              httptest.NewRequest(http.MethodPost, "/v1/messages", nil),
+		BodyBytes:      []byte(`{"model":"claude-3-5-sonnet","messages":[{"role":"user","content":"hi"}],"max_tokens":16}`),
+		ClientProtocol: "anthropic-messages",
+		ClientModel:    "claude-3-5-sonnet",
+		ClientID:       identity.ClientIdentity{IdentityHash: "content-length-ir-test"},
+	}, provider.Candidate{
+		CredentialID:      2,
+		ProviderID:        314,
+		BaseURL:           upstream.URL,
+		Protocol:          "openai-completions",
+		CatalogCode:       "openai",
+		RawModel:          "gpt-4o",
+		APIKey:            "sk-test",
+		Routable:          true,
+		LifecycleStatus:   "active",
+		AvailabilityState: "ready",
+		QuotaState:        "ok",
+		CircuitState:      "closed",
+	}, 0, time.Now(), nil)
+	if err != nil {
+		t.Fatalf("executeOpenAI() error = %v", err)
+	}
+	if result == nil {
+		t.Fatal("executeOpenAI() returned nil result")
+	}
+	if got := rec.Header().Get("Content-Length"); got != strconv.Itoa(rec.Body.Len()) {
+		t.Fatalf("IR Content-Length = %q, body length = %d", got, rec.Body.Len())
+	}
+	if got := rec.Header().Get("Content-Length"); got == strconv.Itoa(len(upstreamBody)) {
+		t.Fatalf("IR Content-Length still uses upstream length %q", got)
+	}
+	if got := rec.Header().Get("X-Upstream-Request-Id"); got != "provider-245-ir" {
+		t.Fatalf("X-Upstream-Request-Id = %q, want provider-245-ir", got)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &decoded); err != nil {
+		t.Fatalf("IR response body is not valid JSON: %v", err)
 	}
 }
 
