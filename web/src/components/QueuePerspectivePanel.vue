@@ -597,7 +597,9 @@ function formatTs(ts: string | undefined): string {
 
 /* ── OBS-UI：按模型分组的可用节点（2026-08-17） ────────────────────────── */
 .qp-layer--model-groups {
-  background: var(--kx-surface-2, var(--kx-surface));
+  /* 用主题已有的 surface-soft 别名（color-mix 微透明）做柔和下层；无主题覆盖时
+     退到 --kx-bg 让区块与上层 --kx-surface 形成微弱对比。 */
+  background: var(--surface-soft, var(--kx-bg, var(--kx-surface)));
   border-radius: var(--kx-radius-sm, 6px);
   padding: 8px 10px;
 }
@@ -626,7 +628,7 @@ function formatTs(ts: string | undefined): string {
   display: inline-block;
   width: 12px;
   font-size: 12px;
-  color: var(--kx-text-muted, var(--kx-text));
+  color: var(--kx-muted, var(--kx-text));
   transition: transform 120ms ease;
 }
 .qp-model-group-caret--open {
@@ -647,9 +649,11 @@ function formatTs(ts: string | undefined): string {
   font-size: 11px;
   padding: 1px 8px;
   border-radius: 10px;
-  background: var(--kx-surface-3, var(--kx-surface));
+  /* 用 --kx-bg 比 surface 略深，做出"凹陷 pill" 视觉；无主题时退到
+     --kx-surface 保持可见性。 */
+  background: var(--kx-bg, var(--kx-surface));
   border: 1px solid var(--kx-border);
-  color: var(--kx-text-muted, var(--kx-text));
+  color: var(--kx-muted, var(--kx-text));
 }
 .qp-pill--active {
   color: var(--kx-primary, #5b8cff);
@@ -675,7 +679,7 @@ function formatTs(ts: string | undefined): string {
   flex-wrap: wrap;
   gap: 8px;
   font-size: 12px;
-  color: var(--kx-text-muted, var(--kx-text));
+  color: var(--kx-muted, var(--kx-text));
 }
 .qp-status-text {
   color: var(--kx-text);
@@ -715,8 +719,8 @@ function formatTs(ts: string | undefined): string {
   font-size: 11px;
   padding: 0 6px;
   border-radius: 6px;
-  background: var(--kx-surface-3, var(--kx-surface));
-  color: var(--kx-text-muted, var(--kx-text));
+  background: var(--kx-bg, var(--kx-surface));
+  color: var(--kx-muted, var(--kx-text));
   border: 1px solid var(--kx-border);
 }
 .qp-rq-status--success {
@@ -736,14 +740,14 @@ function formatTs(ts: string | undefined): string {
   border-color: var(--kx-warning, #d4a72c);
 }
 .qp-rq-latency {
-  color: var(--kx-text-muted, var(--kx-text));
+  color: var(--kx-muted, var(--kx-text));
 }
 .qp-rq-err {
   color: var(--kx-danger, #e5484d);
 }
 .qp-rq-ts {
   margin-left: auto;
-  color: var(--kx-text-muted, var(--kx-text));
+  color: var(--kx-muted, var(--kx-text));
   font-variant-numeric: tabular-nums;
 }
 </style>
