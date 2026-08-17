@@ -1,6 +1,8 @@
 package startup
 
 import (
+	"crypto/sha256"
+	"fmt"
 	"os"
 	"regexp"
 	"strconv"
@@ -35,5 +37,19 @@ func TestNumericUpMigrationVersionsAreUnique(t *testing.T) {
 			t.Fatalf("startup migration version %s is duplicated by %s and %s", match[1], previous, name)
 		}
 		seen[match[1]] = name
+	}
+}
+
+func TestDeployedMigration528ChecksumIsStable(t *testing.T) {
+	const (
+		name = "528_request_logs_bodies_expired_hot_cleanup.sql"
+		want = "6998edec4991e2cd261061c5094e21829b85d699becabeaadc3a86dfc5d56cd1"
+	)
+	body, err := os.ReadFile(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fmt.Sprintf("%x", sha256.Sum256(body)); got != want {
+		t.Fatalf("deployed startup migration %s checksum changed: got %s want %s", name, got, want)
 	}
 }

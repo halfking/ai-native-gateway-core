@@ -95,19 +95,19 @@ func TestFlushEncodesMetadataAsJSONText(t *testing.T) {
 
 	l.LogRouteDecision("req-metadata", "admin", "arrived", "routed", map[string]any{
 		"attempt": 2,
-		"reason":  "timeout",
+		"reason":  "provider's timeout",
 	})
 	l.Flush()
 
-	if len(db.execArgs) != 2 {
-		t.Fatalf("exec calls = %d, want tenant GUC + INSERT", len(db.execArgs))
+	if len(db.execSQL) != 2 {
+		t.Fatalf("exec calls = %d, want tenant GUC + INSERT", len(db.execSQL))
 	}
-	metadata, ok := db.execArgs[1][5].(string)
-	if !ok {
-		t.Fatalf("metadata arg type = %T, want string for jsonb text encoding", db.execArgs[1][5])
+	wantLiteral := `'{"attempt":2,"reason":"provider''s timeout"}'::jsonb`
+	if !strings.Contains(db.execSQL[1], wantLiteral) {
+		t.Fatalf("metadata must be embedded as escaped JSON text cast to jsonb, got:\n%s", db.execSQL[1])
 	}
-	if metadata != `{"attempt":2,"reason":"timeout"}` {
-		t.Errorf("metadata arg = %s, want encoded JSON object", metadata)
+	if got := db.execArgs[1]; len(got) != 6 || got[5] != int64(1) {
+		t.Fatalf("INSERT args = %#v, want six args with seq 1 at $6", got)
 	}
 }
 
@@ -118,11 +118,14 @@ func TestFlushPreservesNilMetadataAsSQLNull(t *testing.T) {
 	l.LogRouteDecision("req-null-metadata", "admin", "arrived", "routed", nil)
 	l.Flush()
 
-	if len(db.execArgs) != 2 {
-		t.Fatalf("exec calls = %d, want tenant GUC + INSERT", len(db.execArgs))
+	if len(db.execSQL) != 2 {
+		t.Fatalf("exec calls = %d, want tenant GUC + INSERT", len(db.execSQL))
 	}
-	if metadata := db.execArgs[1][5]; metadata != nil {
-		t.Fatalf("metadata arg = %#v (%T), want nil SQL NULL", metadata, metadata)
+	if !strings.Contains(db.execSQL[1], "VALUES ($1, $2, $3, $4, $5, NULL, $6)") {
+		t.Fatalf("nil metadata must be inserted as SQL NULL, got:\n%s", db.execSQL[1])
+	}
+	if got := db.execArgs[1]; len(got) != 6 || got[5] != int64(1) {
+		t.Fatalf("INSERT args = %#v, want six args with seq 1 at $6", got)
 	}
 }
 
