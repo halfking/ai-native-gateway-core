@@ -8,7 +8,7 @@
 # 依赖的宿主实例（均已在运行，不重建）:
 #   - llm-gateway-pg   (kx-citus-pg17:offline-arm64, 127.0.0.1:5432,
 #                       citus 13.3 + citus_columnar, DB=llm_gateway,
-#                       user=llm_gateway / pass=llm_gateway_db_pass_2026_secure)
+#                       user=llm_gateway; password follows the local shared credential manifest)
 #   - nbjl-redis       (kx-redis:7.4.9-arm64, acc-local-net 容器名可达)
 #
 # 已评估弃用: kxmemory-rls-pg17 (pgvector:pg17) 无 citus/columnar 支持，
@@ -32,7 +32,7 @@ services:
     environment:
       # ── 存储（复用宿主实例）────────────────────────────────────
       # llm-gateway-pg 在默认 bridge 网络（无容器 DNS），经宿主发布端口访问。
-      LLM_GATEWAY_DATABASE_URL: "postgres://llm_gateway:llm_gateway_db_pass_2026_secure@host.docker.internal:5432/llm_gateway?sslmode=disable"
+      LLM_GATEWAY_DATABASE_URL: "postgres://llm_gateway:${LLM_GATEWAY_DB_PASSWORD:?set LLM_GATEWAY_DB_PASSWORD}@host.docker.internal:5432/llm_gateway?sslmode=disable"
       # nbjl-redis 与本容器同在 acc-local-net，按容器名直连。
       LLM_GATEWAY_REDIS_ADDR: "nbjl-redis:6379"
       LLM_GATEWAY_REDIS_DB: "5"   # v4 本地专用 db，避免污染其它项目的键
