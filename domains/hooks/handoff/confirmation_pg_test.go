@@ -52,13 +52,13 @@ func proposalFor(id, tenant string) *ConfirmationProposal {
 		},
 		Status: confirmationStatusPending,
 		GoalState: &GoalState{
-			Version:          GoalStateVersion,
-			TenantID:         tenant,
-			SourceSessionID:  "gw_old",
-			TaskDescription:  "refactor goal handoff",
-			RemainingWork:    "stage 3 of 5",
-			CompletedSteps:   []string{"stage1", "stage2"},
-			CurrentModel:     "auto",
+			Version:         GoalStateVersion,
+			TenantID:        tenant,
+			SourceSessionID: "gw_old",
+			TaskDescription: "refactor goal handoff",
+			RemainingWork:   "stage 3 of 5",
+			CompletedSteps:  []string{"stage1", "stage2"},
+			CurrentModel:    "auto",
 		},
 	}
 }
@@ -111,13 +111,13 @@ func TestPGStore_Confirm_FirstConfirmation_Success(t *testing.T) {
 
 	p := proposalFor("p1", "tenant-a")
 	input := ConfirmationInput{
-		ProposalID:     p.ID,
-		TenantID:       p.TenantID,
-		APIKeyID:       p.APIKeyID,
-		Token:          "token-" + p.ID,
-		NewSessionID:   "gw_new",
-		IdempotencyKey: "idem-1",
-		MaxPerSession:  5,
+		ProposalID:      p.ID,
+		TenantID:        p.TenantID,
+		APIKeyID:        p.APIKeyID,
+		Token:           "token-" + p.ID,
+		NewSessionID:    "gw_new",
+		IdempotencyKey:  "idem-1",
+		MaxPerSession:   5,
 		CooldownSeconds: 0,
 	}
 
@@ -146,8 +146,8 @@ func TestPGStore_Confirm_FirstConfirmation_Success(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta(`SELECT COALESCE(handoff_count,0),last_handoff_at FROM session_summaries WHERE session_key=$1 AND tenant_id=$2 FOR UPDATE`)).
 		WithArgs(p.PreviousSessionID, p.TenantID).
 		WillReturnRows(sqlmock.NewRows([]string{"handoff_count", "last_handoff_at"}).AddRow(0, nil))
-	// 3. INSERT handoff_logs RETURNING id
-	mock.ExpectQuery(regexp.QuoteMeta(`INSERT INTO handoff_logs`)).
+	// 3. INSERT handoff_logs_hot RETURNING id
+	mock.ExpectQuery(regexp.QuoteMeta(`INSERT INTO handoff_logs_hot (`)).
 		WithArgs(
 			p.Record.SessionKey, p.Record.TenantID, p.Record.TriggerReason, p.Record.TokensAtTrigger,
 			p.Record.ContextWindow, p.Record.HandoffPrompt, input.NewSessionID,

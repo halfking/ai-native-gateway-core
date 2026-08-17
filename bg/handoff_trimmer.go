@@ -25,11 +25,10 @@ import (
 	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
-// defaultHandoffRetention is the fallback retention when settings
-// is unavailable or the key is missing. 14 days balances forensic
-// value (handoff prompts are the primary post-mortem artifact for
-// context-overflow incidents) against storage cost.
-const defaultHandoffRetention = 14 * 24 * time.Hour
+// defaultHandoffRetention is the promote-failure safety valve. Normal 8-hour
+// rotation is owned by PartitionManager; only rows still stranded in the heap
+// after the historical retention window are eligible for this bounded cleanup.
+const defaultHandoffRetention = 30 * 24 * time.Hour
 
 // HandoffTrimmer periodically deletes expired handoff_logs rows.
 type HandoffTrimmer struct {
@@ -41,8 +40,8 @@ type HandoffTrimmer struct {
 	stopOnce  sync.Once
 }
 
-// NewHandoffTrimmer constructs the worker with default 14-day
-// retention and 24-hour tick.
+// NewHandoffTrimmer constructs the worker with the 30-day promote-failure
+// safety window and a 24-hour tick.
 func NewHandoffTrimmer(pool *pgxpool.Pool) *HandoffTrimmer {
 	return &HandoffTrimmer{
 		pool:      pool,
@@ -90,9 +89,9 @@ func (t *HandoffTrimmer) TrimOnce(ctx context.Context) (int64, error) {
 		return 0, nil
 	}
 
-	ttlDays := settings.GetPlatformInt("lifecycle.handoff_logs_ttl_days", 14)
+	ttlDays := settings.GetPlatformInt("lifecycle.handoff_logs_ttl_days", 30)
 	if ttlDays < 1 {
-		ttlDays = 14 // safety floor — never set to 0 (would wipe the table)
+		ttlDays = 30 // safety floor; historical TTL is not the normal hot rotation
 	}
 	retention := time.Duration(ttlDays) * 24 * time.Hour
 

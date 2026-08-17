@@ -16,8 +16,8 @@ func TestNewHandoffTrimmer_Defaults(t *testing.T) {
 	if tr == nil {
 		t.Fatal("NewHandoffTrimmer returned nil")
 	}
-	if tr.retention != 14*24*time.Hour {
-		t.Errorf("default retention = %v, want 14d", tr.retention)
+	if tr.retention != 30*24*time.Hour {
+		t.Errorf("default retention = %v, want 30d", tr.retention)
 	}
 	if tr.tick != 24*time.Hour {
 		t.Errorf("default tick = %v, want 24h", tr.tick)

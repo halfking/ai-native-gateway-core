@@ -32,6 +32,7 @@ func TestEnsureSpecsCoversAllPartitionedTables(t *testing.T) {
 		"ensure_session_module_executions_partition": false, // Migration 382
 		"ensure_dashboard_events_partition":          false, // Migration 383
 		"ensure_cache_metrics_partition":             false, // Migration 475
+		"ensure_handoff_logs_partition":              false, // Migration 532
 	}
 	for _, s := range specs {
 		if _, ok := expected[s.fnName]; !ok {
@@ -65,6 +66,7 @@ func TestPromoteSpecsCoversAllDefaultPartitions(t *testing.T) {
 		"promote_tool_usage_stats_hot_to_partition":       false,
 		"promote_candidate_failure_logs_hot_to_partition": false, // Migration 392
 		"promote_session_turns_hot_to_partition":          false, // Migration 526
+		"promote_handoff_logs_hot_to_partition":           false, // Migration 532
 	}
 	for _, s := range specs {
 		if _, ok := expected[s.fnName]; !ok {
@@ -170,9 +172,16 @@ func TestResolvePromoteConfigBodiesBatchSize(t *testing.T) {
 	}
 }
 
-// TestPromoteLockKeyDeterministic pins that the advisory-lock key for a
-// hot-table label is stable across gateway instances — both 245 and 154
-// share one PG and must derive the same key to serialize promote cycles.
+func TestResolvePromoteConfigHandoffRetention(t *testing.T) {
+	retention, batch := resolvePromoteConfig("handoff_logs_hot")
+	if retention != 8*time.Hour {
+		t.Fatalf("handoff retention = %v, want 8h default", retention)
+	}
+	if batch < 100 || batch > 50_000 {
+		t.Fatalf("handoff batch = %d, outside safety bounds", batch)
+	}
+}
+
 func TestPromoteLockKeyDeterministic(t *testing.T) {
 	a := promoteLockKey("request_logs_bodies")
 	b := promoteLockKey("request_logs_bodies")
