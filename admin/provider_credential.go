@@ -23,6 +23,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -32,6 +33,8 @@ import (
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/provider"
 )
+
+const maxRotateCredentialPrimaryKeyBodyBytes = 64 << 10
 
 func (h *Handler) addCredential(w http.ResponseWriter, r *http.Request, providerID int) {
 	var req struct {
@@ -545,6 +548,122 @@ func (h *Handler) updateCredential(w http.ResponseWriter, r *http.Request, provi
 	}
 	provider.InvalidateAllCandidateCache()
 	writeJSON(w, http.StatusOK, map[string]string{"message": "updated"})
+}
+
+// rotateCredentialPrimaryKey replaces one credential's primary secret without
+// changing its identity or model bindings. The selected bound model is probed
+// after commit so operators get immediate recovery evidence.
+func (h *Handler) rotateCredentialPrimaryKey(w http.ResponseWriter, r *http.Request, providerID, credID int) {
+	var req struct {
+		APIKey       string `json:"api_key"`
+		RawModelName string `json:"raw_model_name"`
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxRotateCredentialPrimaryKeyBodyBytes)
+	decoder := json.NewDecoder(r.Body)
+	if err := decoder.Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		writeError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	apiKeyBlank := strings.TrimSpace(req.APIKey) == ""
+	req.RawModelName = strings.TrimSpace(req.RawModelName)
+	if apiKeyBlank || req.RawModelName == "" {
+		writeError(w, http.StatusBadRequest, "api_key and raw_model_name required")
+		return
+	}
+
+	encrypted, err := h.encryptCred([]byte(req.APIKey))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "encryption failed")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	tx, err := h.db.Begin(ctx)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "begin rotation failed")
+		return
+	}
+	defer func() {
+		if rbErr := tx.Rollback(ctx); rbErr != nil && !strings.Contains(rbErr.Error(), "tx is closed") {
+			slog.Warn("credential primary key rotation rollback failed", "credential_id", credID, "error", rbErr)
+		}
+	}()
+
+	var bindingExists bool
+	err = tx.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM credentials c
+			JOIN credential_model_bindings cmb ON cmb.credential_id = c.id
+			JOIN provider_models pm ON pm.id = cmb.provider_model_id
+			WHERE c.id = $1
+			  AND c.provider_id = $2
+			  AND pm.provider_id = c.provider_id
+			  AND pm.raw_model_name = $3
+			FOR UPDATE OF c, cmb, pm
+		)`, credID, providerID, req.RawModelName).Scan(&bindingExists)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "validate model binding failed")
+		return
+	}
+	if !bindingExists {
+		writeError(w, http.StatusBadRequest, "raw_model_name is not bound to credential")
+		return
+	}
+
+	tag, err := tx.Exec(ctx, `
+		UPDATE credentials
+		SET secret_ciphertext = $1, updated_at = NOW()
+		WHERE id = $2 AND provider_id = $3`, encrypted, credID, providerID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "rotate primary key failed")
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		writeError(w, http.StatusNotFound, "credential not found")
+		return
+	}
+	if err := tx.Commit(ctx); err != nil {
+		writeError(w, http.StatusInternalServerError, "commit rotation failed")
+		return
+	}
+
+	provider.InvalidateCredentialKeyCache(credID)
+	provider.InvalidateCandidateCacheForCredential(credID)
+	provider.ResetKeyRotatorForCredential(credID)
+	h.writeAuditLog(r, "credential.primary_key_rotated", "credential", credID, map[string]any{
+		"provider_id":         providerID,
+		"raw_model_name":      req.RawModelName,
+		"primary_key_rotated": true,
+	})
+
+	probeStatus := h.queueCredentialRotationProbe(credID, req.RawModelName)
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"message":      "primary key rotated",
+		"probe_status": probeStatus,
+		"probe_queued": probeStatus == "queued",
+	})
+}
+
+func (h *Handler) queueCredentialRotationProbe(credID int, rawModelName string) string {
+	if h.modelProbe == nil {
+		return "not_configured"
+	}
+	if err := h.modelProbe.SubmitManualProbe(credID, rawModelName); err != nil {
+		slog.Warn("credential primary key rotation probe submission failed",
+			"credential_id", credID,
+			"model", rawModelName,
+			"error", err,
+		)
+		return "queue_unavailable"
+	}
+	return "queued"
 }
 
 func (h *Handler) deleteCredential(w http.ResponseWriter, r *http.Request, providerID, credID int) {

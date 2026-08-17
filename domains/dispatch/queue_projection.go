@@ -180,9 +180,9 @@ func nonNegative(value int64) int64 {
 // Snapshot returns a sorted, detached queue read model.
 func (p *QueueProjection) Snapshot() *SnapshotView {
 	if p == nil || !p.wired.Load() {
-		return &SnapshotView{Enabled: IsDispatchEnabled(), Wired: false, Models: []LaneView{}, Credentials: []LaneView{}}
+		return &SnapshotView{Enabled: true, Wired: false, Models: []LaneView{}, Credentials: []LaneView{}}
 	}
-	enabled := IsDispatchEnabled()
+	enabled := true // AUDIT_24H B2b: dispatch is the only path
 	p.mu.RLock()
 	if !p.wired.Load() {
 		p.mu.RUnlock()
@@ -234,7 +234,7 @@ func (p *QueueProjection) Snapshot() *SnapshotView {
 func (p *QueueProjection) SnapshotWaterfall(limit int, model string, credentialID int) WaterfallSnapshot {
 	snapshot := WaterfallSnapshot{
 		Requests: []WaterfallRequest{},
-		Enabled:  IsDispatchEnabled(),
+		Enabled:  true, // AUDIT_24H B2b: dispatch is the only path
 		Wired:    p != nil && p.wired.Load(),
 		BottleneckDiagnosis: BottleneckDiagnosis{
 			Bottleneck: "none",

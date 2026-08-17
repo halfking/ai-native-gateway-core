@@ -40,8 +40,9 @@ func stableGatewayInstanceID() string {
 
 // wireDispatchPipeline builds the V2 dispatch pipeline from the executor,
 // starts its worker pools, injects it into the executor, and returns it. If
-// routingExec is nil the pipeline is skipped (the executor falls back to the
-// legacy synchronous loop regardless of the gate).
+// routingExec is nil the pipeline is skipped — and since AUDIT_24H B2b
+// (2026-08-17) the executor has no fallback path, so a nil routingExec means
+// every request fails with "dispatch pipeline not wired" (a wiring bug).
 func wireDispatchPipeline(routingExec *executors.Executor) *dispatch.Pipeline {
 	if routingExec == nil {
 		slog.Warn("dispatch: routingExec nil, V2 pipeline not wired")
@@ -57,9 +58,8 @@ func wireDispatchPipeline(routingExec *executors.Executor) *dispatch.Pipeline {
 	p.Start()
 	routingExec.SetDispatchPipeline(p)
 	gatewayDispatchPipeline = p
-	slog.Info("dispatch_v2 pipeline wired",
-		"allow_model_change", dispatch.IsModelChangeEnabled(),
-		"enabled", dispatch.IsDispatchEnabled())
+	slog.Info("dispatch_v2 pipeline wired (only execute path, AUDIT_24H B2b)",
+		"allow_model_change", dispatch.IsModelChangeEnabled())
 	return p
 }
 
@@ -114,7 +114,7 @@ func handleDispatchWaterfall(w http.ResponseWriter, r *http.Request) {
 	if gatewayQueueProjection != nil {
 		snap = gatewayQueueProjection.SnapshotWaterfall(limit, model, credID)
 	} else {
-		snap = dispatch.WaterfallSnapshot{Requests: []dispatch.WaterfallRequest{}, Enabled: dispatch.IsDispatchEnabled(), Wired: false,
+		snap = dispatch.WaterfallSnapshot{Requests: []dispatch.WaterfallRequest{}, Enabled: true, Wired: false,
 			BottleneckDiagnosis: dispatch.BottleneckDiagnosis{Bottleneck: "none", Message: "dispatch queue projection not wired"}}
 	}
 	w.Header().Set("Content-Type", "application/json")

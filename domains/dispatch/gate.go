@@ -11,44 +11,28 @@ package dispatch
 
 import (
 	"os"
-	"sync"
 	"sync/atomic"
 )
 
-// DispatchGateKey is the settings_kv / Spec key backing the dispatch_v2
-// feature-flag. Mirrors ratelimit.RateLimitGateKey.
-const DispatchGateKey = "dispatch_v2.enabled"
+// AUDIT_24H B2b (2026-08-17): the dispatch_v2.enabled kill-switch was retired.
+// The multi-tier pipeline is the only execute path — the legacy synchronous
+// candidate loop in executor.Execute was deleted, so a gate that could "fall
+// back" no longer had anything to fall back to. The dispatch_v2.enabled spec,
+// boot sync, admin hot-reload branch and transition handlers went with it.
+// Snapshot views keep a literal `Enabled: true` for admin UI compatibility.
 
 // ModelChangeGateKey controls pre-first-byte model failover. It remains off by
 // default and may be changed live through the platform settings endpoint.
 const ModelChangeGateKey = "dispatch_v2.allow_model_change"
 
 var (
-	// dispatchEnabled is the hot-path atomic cache of the dispatch_v2 gate.
-	// Read on every Submit so the request path never touches the DB. Boot
-	// sync from settings happens in cmd/gateway/main_settings.go; admin PUT
-	// flips it live in admin/settings.go.
-	dispatchEnabled    atomic.Bool
+	// modelChangeEnabled is the hot-path atomic cache of the allow_model_change
+	// gate. Read on the dispatch failover path so requests never touch the DB.
 	modelChangeEnabled atomic.Bool
-
-	// transitionMu protects transitionHandlers (mirrors ratelimit gate).
-	transitionMu       sync.RWMutex
-	transitionHandlers []func(enabled bool)
 )
 
 func init() {
-	// Default ON per design (ADR-Disp-005). The boot sync may flip it OFF
-	// if settings_kv says so; KILL_DISPATCH_V2=1 forces OFF via the settings
-	// kill-switch mechanism at startup.
-	dispatchEnabled.Store(true)
 	modelChangeEnabled.Store(false)
-}
-
-// IsDispatchEnabled reports whether the V2 multi-tier dispatch pipeline is
-// active. When false, the executor falls back to the synchronous candidate
-// loop (executor.Execute).
-func IsDispatchEnabled() bool {
-	return dispatchEnabled.Load()
 }
 
 // IsModelChangeEnabled reports whether dispatch may ask autoroute for another
@@ -61,28 +45,4 @@ func IsModelChangeEnabled() bool {
 // legacy AUTO_ROUTE_FALLBACK_ENABLED=true override remains force-on.
 func SetModelChangeEnabled(v bool) {
 	modelChangeEnabled.Store(v)
-}
-
-// SetDispatchEnabled updates the dispatch_v2 gate. Transition handlers run
-// after the store (mirrors ratelimit.SetRateLimitEnabled).
-func SetDispatchEnabled(v bool) {
-	prev := dispatchEnabled.Swap(v)
-	if prev == v {
-		return
-	}
-	transitionMu.RLock()
-	handlers := make([]func(bool), len(transitionHandlers))
-	copy(handlers, transitionHandlers)
-	transitionMu.RUnlock()
-	for _, h := range handlers {
-		h(v)
-	}
-}
-
-// RegisterTransitionHandler registers a callback fired on every gate
-// transition. Mirrors ratelimit.RegisterTransitionHandler.
-func RegisterTransitionHandler(h func(enabled bool)) {
-	transitionMu.Lock()
-	transitionHandlers = append(transitionHandlers, h)
-	transitionMu.Unlock()
 }

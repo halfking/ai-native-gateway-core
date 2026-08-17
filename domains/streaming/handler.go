@@ -26,7 +26,6 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/authentication" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/autocombo"
 	"github.com/kaixuan/llm-gateway-go/domains/credential"                          //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/domains/dispatch"                            //nolint:depguard // V3.2 state-transition logger
 	"github.com/kaixuan/llm-gateway-go/domains/freeresource"                        //nolint:depguard // OmniFree quota tracker
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"                         //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"                   //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -46,7 +45,6 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/liveactions"
 	"github.com/kaixuan/llm-gateway-go/internal/modelpolicy"
 	"github.com/kaixuan/llm-gateway-go/internal/observability"
-	"github.com/kaixuan/llm-gateway-go/internal/streamretry" //nolint:depguard // trusted tenant propagation to outer retry wrapper
 	gwtrace "github.com/kaixuan/llm-gateway-go/internal/trace"
 	"github.com/kaixuan/llm-gateway-go/maas"
 	"github.com/kaixuan/llm-gateway-go/metrics"
@@ -1939,7 +1937,6 @@ func (h *ChatHandler) serveWithExecutor(
 		keyInfo = ki
 		logCtx.SetKey(ki)
 		bindRequestJourney(r, ki.TenantID, logCtx.ClientModel)
-		streamretry.SetAuthenticatedTenant(r.Context(), ki.TenantID)
 
 		// Round 38 (2026-06-16) — emit multi-tenant OTel span
 		// attributes per docs/multi-tenant-otel-design.md §3.1.
@@ -2996,19 +2993,14 @@ func (h *ChatHandler) serveWithExecutor(
 		pid := candidates[0].ProviderID
 		cid := candidates[0].CredentialID
 		logCtx.SetRoute(&pid, &cid)
-
-		// 2026-08-14 V3.2 (BE-B1): record route decision in state transitions.
-		// nil-safe helper — no logger wired (DB disabled / test mode) → no-op.
-		// Captures from_state="route_resolve" + chosen credential's display name
-		// so the timeline view shows "route_resolve → provider-X (cred-Y)".
-		dispatch.LogRouteDecisionGlobal(requestID, tenantID, "route_resolve", "credential_selected",
-			map[string]any{
-				"chosen_provider_id":   pid,
-				"chosen_credential_id": cid,
-				"chosen_raw_model":     candidates[0].RawModel,
-				"candidates_count":     len(candidates),
-				"profile":              clientID.Fingerprint.ClientProfile,
-			})
+		// 2026-08-17 B3-PR1: the V3.2 LogRouteDecisionGlobal transition row is
+		// retired. The journey stream already covers this boundary with better
+		// fidelity: route_resolved (emitted upstream in serveWithExecutor)
+		// plus dispatch's credential_selected observation, which records the
+		// credential that actually served the attempt rather than the first
+		// candidate. The legacy row's unique payload (candidates_count,
+		// client profile) is unrepresentable in the content-free journey
+		// contract (migration 530 forbids metadata on journey rows).
 	}
 
 	var modelResolution *resolve.Resolution
@@ -4185,39 +4177,6 @@ goalRetryLoopDone:
 		if execErrTyped, ok := execErr.(*executors.ExecuteError); ok {
 			tried = execErrTyped.Tried
 			failTrace = execErrTyped.Trace
-		}
-		// Track C C4 (2026-06-18): the executor demoted a slow
-		// request to async mode. Surface 202 + X-Gw-Pending so the
-		// client knows to poll GET /v1/sessions/{id}/pending-response
-		// (see sessions/handler.go C3). The body is a small JSON
-		// status object; the real response lands in pending store
-		// when the async goroutine completes.
-		var asyncErr *executors.AsyncPendingError
-		if errors.As(execErr, &asyncErr) {
-			if preStreamPrepared {
-				logCtx.SetError("async_pending_unsupported_after_stream_start", "stream already prepared")
-				writePrewarmedStreamError(w, "upstream request delayed; async fallback unavailable after stream start", "server_error", "provider_error")
-				return
-			}
-			w.Header().Set("X-Gw-Pending", asyncErr.SessionID)
-			w.Header().Set("X-Gw-Pending-Request", asyncErr.RequestID)
-			w.Header().Set("Retry-After", "5")
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusAccepted)
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"status":      "in_progress",
-				"session_id":  asyncErr.SessionID,
-				"request_id":  asyncErr.RequestID,
-				"retry_after": 5,
-				"started_at":  asyncErr.StartedAt.Format(time.RFC3339),
-				"poll_url":    "/v1/sessions/" + asyncErr.SessionID + "/pending-response?request_id=" + asyncErr.RequestID,
-			})
-			slog.Info("async_pending_dispatched",
-				"session_id", asyncErr.SessionID,
-				"request_id", asyncErr.RequestID,
-				"model", clientModel,
-			)
-			return
 		}
 
 		errCode := "provider_error"

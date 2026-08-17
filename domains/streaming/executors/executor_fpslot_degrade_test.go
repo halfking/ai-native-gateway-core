@@ -66,6 +66,7 @@ func TestExecutor_FpSlotAllSaturated_DegradesInsteadOfFailing(t *testing.T) {
 		UpstreamTimeout: 5 * time.Second,
 		StreamTimeout:   10 * time.Second,
 	}
+	wireDispatchPipelineForTest(t, e)
 
 	fpLimit := 1
 	cand := provider.Candidate{
@@ -148,6 +149,7 @@ func TestExecutor_FpSlotNotSaturated_PrefersFilteredSet(t *testing.T) {
 		UpstreamTimeout: 5 * time.Second,
 		StreamTimeout:   10 * time.Second,
 	}
+	wireDispatchPipelineForTest(t, e)
 
 	fpLimit := 5
 	cand := provider.Candidate{

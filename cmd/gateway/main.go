@@ -1408,36 +1408,12 @@ func main() {
 			"threshold", routingExec.MnfCoolThreshold,
 			"cool_minutes", routingExec.MnfCoolMinutes,
 		)
-		// Track C C4 (2026-06-18): wire the pending response cache
-		// into the executor so it can demote a slow synchronous
-		// walk to async mode. Defaults: 15s short (synchronous
-		// budget), 300s long (async total deadline), 2 fallback
-		// credentials. Override via env for emergency rollback.
+		// Track C C4 (2026-06-18): wire the pending response cache into
+		// the executor for the session retry-replay read path. The async
+		// 202 demotion (and the LLM_GATEWAY_ASYNC_* env knobs) went with
+		// the legacy sync candidate loop — AUDIT_24H B2b, 2026-08-17.
 		if pendingStore != nil {
 			routingExec.PendingStore = pendingStore
-			routingExec.AsyncShortTimeout = 15 * time.Second
-			routingExec.AsyncLongTimeout = 300 * time.Second
-			routingExec.AsyncMaxFallbackCreds = 2
-			if v := os.Getenv("LLM_GATEWAY_ASYNC_SHORT_TIMEOUT"); v != "" {
-				if n, err := strconv.Atoi(v); err == nil && n > 0 {
-					routingExec.AsyncShortTimeout = time.Duration(n) * time.Second
-				}
-			}
-			if v := os.Getenv("LLM_GATEWAY_ASYNC_LONG_TIMEOUT"); v != "" {
-				if n, err := strconv.Atoi(v); err == nil && n > 0 {
-					routingExec.AsyncLongTimeout = time.Duration(n) * time.Second
-				}
-			}
-			if v := os.Getenv("LLM_GATEWAY_ASYNC_MAX_FALLBACK_CREDS"); v != "" {
-				if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-					routingExec.AsyncMaxFallbackCreds = n
-				}
-			}
-			slog.Info("async_pending_enabled",
-				"short_timeout", routingExec.AsyncShortTimeout,
-				"long_timeout", routingExec.AsyncLongTimeout,
-				"max_fallback_creds", routingExec.AsyncMaxFallbackCreds,
-			)
 		}
 		// Round 47 compression v7 T16: build the unified compression dispatcher.
 		// The Compressor reads LLM_GATEWAY_COMPRESSION_MODE (default=on_4xx per
@@ -1588,34 +1564,9 @@ func main() {
 				"interval_seconds", routingExec.KeepaliveInterval)
 		}
 		routingExec.TTFBTracker = executors.NewTTFBTracker()
-		// O-1 predictive TTFT pre-skip is explicitly default-off. Require
-		// multiple fresh observations before bypassing a candidate so a single
-		// transient slow response cannot remove a route from consideration.
-		predictiveTTFBMinSamples := 3
-		if v := os.Getenv("LLM_GATEWAY_PREDICTIVE_TTFB_MIN_SAMPLES"); v != "" {
-			if n, err := strconv.Atoi(v); err == nil && n > 0 {
-				predictiveTTFBMinSamples = n
-			}
-		}
-		predictiveTTFBThreshold := time.Duration(0)
-		if v := os.Getenv("LLM_GATEWAY_PREDICTIVE_TTFB_THRESHOLD_MS"); v != "" {
-			if n, err := strconv.Atoi(v); err == nil && n > 0 {
-				predictiveTTFBThreshold = time.Duration(n) * time.Millisecond
-			}
-		}
-		if predictiveTTFBThreshold > 0 {
-			routingExec.PredictiveTTFBSkipper = executors.NewPredictiveSkipper(
-				routingExec.TTFBTracker,
-				predictiveTTFBThreshold,
-				predictiveTTFBMinSamples,
-			)
-			slog.Info("predictive_ttfb_skip_enabled",
-				"threshold_ms", predictiveTTFBThreshold.Milliseconds(),
-				"min_samples", predictiveTTFBMinSamples,
-			)
-		} else {
-			slog.Debug("predictive_ttfb_skip_disabled")
-		}
+		// O-1 predictive TTFT pre-skip went with the legacy sync candidate
+		// loop (AUDIT_24H B2b, 2026-08-17): the dispatch path explicitly
+		// excluded it, and its only consumer was that loop.
 
 		routingExec.PreRequestValidator = executors.NewRequestValidator(false) // non-strict mode
 		if routingExec.State != nil {
@@ -1828,14 +1779,6 @@ func main() {
 
 	if telemetryClient.Enabled() {
 		// 2026-06-20: wire telemetry into the executor so that
-		// runAsyncRetry can write success back to request_logs.
-		// Without this, async-retry success leaves the original
-		// in_progress / model_not_found row uncorrected (the sync
-		// phase returns 202 + AsyncPendingError without calling
-		// emitTelemetry).
-		if routingExec != nil {
-			routingExec.RequestLogEmitter = telemetryClient
-		}
 		slog.Info("telemetry emission enabled (chatHandler + routingExec)")
 	}
 
@@ -4028,12 +3971,13 @@ func main() {
 			adminHandler.SetPeakCollector(peakCollector)
 			slog.Info("CHECKPOINT: after SetPeakCollector")
 
-			// 2026-08-14 V3.2: wire state-transition logger. The SSE
-			// queue_snapshot provider is wired once, after the dispatch
-			// pipeline (and its QueueProjection) exists — see the
-			// wireDispatchPipeline call below.
+			// 2026-08-17 B3-PR1: the V3.2 state-transition logger is retired;
+			// its two event producers now write through the requestjourney
+			// recorder, and its table-retention duty moved to the journey
+			// retention worker (1h tick / 7d retention, same semantics).
 			if dbConn != nil && dbConn.Enabled() {
-				wireStateTransitionLogger(dbConn.Pool())
+				retention := requestjourney.NewRetentionWorker(dbConn.Pool())
+				retention.Start()
 			}
 
 			// 2026-08-11: expose the on-demand node IQ test endpoint. Only wire

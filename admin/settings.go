@@ -382,8 +382,8 @@ func applyRuntimeSetting(key string, raw json.RawMessage) {
 	switch key {
 	case ratelimit.RateLimitGateKey:
 		ratelimit.SetRateLimitEnabled(enabled)
-	case dispatch.DispatchGateKey:
-		dispatch.SetDispatchEnabled(enabled)
+	// AUDIT_24H B2b (2026-08-17): dispatch_v2.enabled hot-reload removed —
+	// the pipeline is the only execute path, the kill-switch was retired.
 	case dispatch.ModelChangeGateKey:
 		dispatch.SetModelChangeEnabled(enabled)
 	}
