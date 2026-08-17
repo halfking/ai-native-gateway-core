@@ -590,7 +590,7 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if isStream {
 		cfg := currentStreamRuntimeConfig()
 		if cfg.enablePreStreamKeepalive {
-			if psk, ok := startPreStreamKeepalive(w, cfg.keepaliveInterval, requestID); ok {
+			if psk, ok := startPreStreamKeepalive(r.Context(), w, cfg.keepaliveInterval, requestID); ok {
 				preStream = psk
 				preStreamPrepared = true
 				w = psk.Writer()

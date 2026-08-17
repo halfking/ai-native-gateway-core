@@ -61,12 +61,16 @@ func (c *clientStreamWriter) write(line string) bool {
 	return true
 }
 
-// flush performs a best-effort flush if the client is still connected.
-func (c *clientStreamWriter) flush() {
+// flush flushes the client connection and latches any error as a disconnect.
+func (c *clientStreamWriter) flush() bool {
 	if c.clientDisconnected || c.flusher == nil {
-		return
+		return false
 	}
-	safeFlush(c.flusher)
+	if !safeFlush(c.flusher) {
+		c.clientDisconnected = true
+		return false
+	}
+	return true
 }
 
 func applyClientDisconnectOutcome(outcome *StreamOutcome, clientWriter *clientStreamWriter, upstreamCompleted bool) {
@@ -148,7 +152,18 @@ func StreamAnthropicPassthroughWithDiagnostics(
 	w, attemptGate = wrapAttemptWriter(w, ProtocolAnthropic)
 	defer func() {
 		if finisher, ok := w.(interface{ Finish() error }); ok {
-			_ = finisher.Finish()
+			if err := finisher.Finish(); err != nil && !outcome.Interrupted {
+				outcome = StreamOutcome{
+					Interrupted: true,
+					Reason:      "client_write_failed",
+					Kind:        errorsx.KindCanceled,
+					Resumable:   true,
+					ChunkCount:  outcome.ChunkCount,
+				}
+				if capture != nil {
+					capture.MarkInterruptedWithReason("client_write_failed")
+				}
+			}
 		}
 	}()
 	_ = attemptGate
@@ -175,33 +190,45 @@ func StreamAnthropicPassthroughWithDiagnostics(
 	}
 
 	reader := bufio.NewReaderSize(resp.Body, anthropicSSEBufSize)
-	clientDisconnected := false
+	var ctx context.Context
+	if resp.Request != nil {
+		ctx = resp.Request.Context()
+	} else {
+		ctx = context.Background()
+	}
+	runtimeCfg := currentStreamRuntimeConfig()
+	clientWriter := newClientStreamWriter(w, flusher)
 	chunkCount := 0
 
 	for {
-		line, err := reader.ReadString('\n')
-		if err != nil && !errors.Is(err, io.EOF) {
-			if clientDisconnected {
-				outcome = StreamOutcome{
-					Interrupted: true,
-					Reason:      "client_write_failed",
-					Kind:        errorsx.KindCanceled,
-					ChunkCount:  chunkCount,
-				}
+		line, err := readLineWithTimeoutAndCloser(ctx, reader, resp.Body, runtimeCfg.streamChunkTimeout)
+		if err != nil {
+			// EOF after a client disconnect is still a successful upstream
+			// capture; pending replay must be allowed to finalize.
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			if clientWriter.clientDisconnected {
+				outcome = StreamOutcome{Interrupted: true, Reason: "client_write_failed", Kind: errorsx.KindCanceled, ChunkCount: chunkCount}
 				return outcome
 			}
-			outcome = streamReadFailureOutcome(err, chunkCount)
-			if capture != nil {
+			if errors.Is(err, context.Canceled) || (ctx != nil && errors.Is(ctx.Err(), context.Canceled)) {
+				outcome = StreamOutcome{Interrupted: true, Reason: "client_cancel", Kind: errorsx.KindCanceled, Resumable: false, ChunkCount: chunkCount}
+			} else if errors.Is(err, context.DeadlineExceeded) || strings.Contains(strings.ToLower(err.Error()), "stream read timeout") {
+				outcome = StreamOutcome{Interrupted: true, Reason: "stream_chunk_timeout", Kind: errorsx.KindStreamTimeout, Resumable: true, ChunkCount: chunkCount}
+			} else {
+				outcome = streamReadFailureOutcome(err, chunkCount)
+			}
+			if outcome.Interrupted && capture != nil {
 				capture.MarkInterruptedWithReason(outcome.Reason)
 			}
 			return outcome
 		}
-		if line == "" && errors.Is(err, io.EOF) {
-			break
+		if line == "" {
+			continue
 		}
-		if !clientDisconnected {
-			if !safeWriteSSE(w, line) || !safeFlush(flusher) {
-				clientDisconnected = true
+		if !clientWriter.clientDisconnected {
+			if !clientWriter.write(line) {
 				slog.Info("anthropic passthrough: client disconnected; continuing capture")
 			} else if strings.HasPrefix(strings.TrimSpace(line), "data:") {
 				chunkCount++
@@ -217,16 +244,13 @@ func StreamAnthropicPassthroughWithDiagnostics(
 		}
 
 		logRawUpstreamFrame(diagnostics, auditFromDiagnostics(diagnostics, requestID, "anthropic-messages"), []byte(line))
-
-		if line == "\n" && !clientDisconnected {
-			safeFlush(flusher)
-		}
 		if err == io.EOF {
 			break
 		}
 	}
-	if !clientDisconnected {
-		safeFlush(flusher)
+	if !clientWriter.clientDisconnected && !clientWriter.flush() {
+		outcome = StreamOutcome{Interrupted: true, Reason: "client_write_failed", Kind: errorsx.KindCanceled, ChunkCount: chunkCount}
+		return outcome
 	}
 	outcome.ChunkCount = chunkCount
 	return outcome

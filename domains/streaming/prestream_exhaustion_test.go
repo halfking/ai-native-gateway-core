@@ -1,6 +1,7 @@
 package streaming
 
 import (
+	"context"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -30,7 +31,7 @@ func TestPreStreamExhaustion_ClientReceivesErrorFrame(t *testing.T) {
 	rec := httptest.NewRecorder()
 
 	// Commit the prewarmed 200 exactly as the handler does before executing.
-	psk, ok := startPreStreamKeepalive(rec, time.Hour, "req-overload-1")
+	psk, ok := startPreStreamKeepalive(context.Background(), rec, time.Hour, "req-overload-1")
 	if !ok {
 		t.Fatal("expected a flusher-backed recorder")
 	}
@@ -71,7 +72,7 @@ func TestPreStreamExhaustion_ClientReceivesErrorFrame(t *testing.T) {
 // requests still get the header, because those write their status later.
 func TestPreStreamExhaustion_RetryAfterHeaderIsUnreachable(t *testing.T) {
 	rec := httptest.NewRecorder()
-	psk, ok := startPreStreamKeepalive(rec, time.Hour, "req-overload-2")
+	psk, ok := startPreStreamKeepalive(context.Background(), rec, time.Hour, "req-overload-2")
 	if !ok {
 		t.Fatal("expected a flusher-backed recorder")
 	}
@@ -136,7 +137,7 @@ func TestNonPrewarmedExhaustion_RetryAfterHeaderIsDelivered(t *testing.T) {
 // at handler.go:3714 already takes.
 func TestPreStreamExhaustion_FrameCarriesRealKind(t *testing.T) {
 	rec := httptest.NewRecorder()
-	psk, ok := startPreStreamKeepalive(rec, time.Hour, "req-overload-kind")
+	psk, ok := startPreStreamKeepalive(context.Background(), rec, time.Hour, "req-overload-kind")
 	if !ok {
 		t.Fatal("expected a flusher-backed recorder")
 	}
