@@ -60,6 +60,11 @@ V358 上线实测（2026-08-17，252 生产库 / Citus 13.3，154 网关共用�
 - 252 的 `candidate_failure_logs` 是 **citus_columnar 单表**（INSERT-only，不支持 UPDATE），回填按 access method 守护自动跳过——此时历史 request_logs 行也已随热表轮转缺失（可回填行数为 0），跳过即正确结果；heap 环境（本地 PG17 实测）回填语义正常（可回填行补齐、孤儿/空会话保持 NULL、重复执行至 0 行），索引 `idx_candidate_failure_logs_session_ts` 走 Index Scan；
 - columnar 上的会话过滤由 ColumnarScan 的 Chunk Group Filters（minmax 剪枝）承担，btree 索引不参与执行计划。
 
+审计追加发现（同日第二轮，详见 `docs/session-logs/2026/08/2026-08-17-v358-deploy-and-audit.md`）：
+- **252 表丢失 `ts DEFAULT now()`**（历史 columnar 重建未保留），写入方 INSERT 不带 ts/id → 85% 行（72k/85k）NULL ts，对 admin/监控/TTL 全部不可见且仍在增长。V358 已补 `ALTER COLUMN ts SET DEFAULT now()` 并在 252 生效；admin 端点 id 改 NULL 容忍。
+- **读端消费方**：`GET /api/candidate-failures` 新增可选 `?session=` 过滤与 `session_id` 输出，credential 历史端点同步输出 session_id——V358 列自此有 API 消费方。
+- 遗留：72k NULL ts 历史行不可修复（columnar 无 UPDATE）、opslog_trimmer 的 DELETE 在 columnar 上失败致 TTL 失效，需独立治理（分区化/重建表）。
+
 **缺口 B — 中途断流不落行**：`streamInterruptedError` 分支（executor.go:3222+）在“可恢复切换 continue”和“终态 return”两条路径上都**绕过了** 3436 的 `LogFailure`——也就是说用户实际遭遇的故障形态（"other side closed"、上游终态错误事件导致的断流切换）**从未在 candidate_failure_logs 留痕**。本轮在该分支补 `LogFailureWithKind` 调用：带上执行器已分类的精确 kind（消息兜底会把 `stream_interrupted: network_error` 拍平成 transient）、`stream_reason`、`stream_resumable` 上下文。两条路径各留一行，同一 session_id 归集。
 
 slog 结构化日志（`candidate_failed_trying_next` / `executor: stream interrupted` / `anthropic passthrough: upstream terminal error event` 等）此前已如实记录错误，未改动。
