@@ -310,15 +310,18 @@ func (l *StateTransitionLogger) insertTransition(ctx context.Context, p pendingT
 	if strings.TrimSpace(p.t.TenantID) == "" {
 		return fmt.Errorf("empty tenant_id")
 	}
-var metaJSON any
+	// Build the SQL inline so the metadata column receives a jsonb literal
+	// on the wire, regardless of whether the connection uses simple protocol
+	// (which encodes []byte as bytea and cannot drive a JSONB parameter
+	// without a forced type OID). The metadata is JSON-marshaled by us, so
+	// splicing the literal is safe.
+	var metadataSQL string
 	if p.t.Metadata != nil {
 		encoded, err := json.Marshal(p.t.Metadata)
 		if err != nil {
 			return fmt.Errorf("marshal transition metadata: %w", err)
 		}
-		// The gateway uses pgx simple protocol globally. Under simple protocol,
-		// []byte is encoded as bytea, which PostgreSQL cannot parse as JSONB.
-		metaJSON = string(encoded)
+		metadataSQL = string(encoded)
 	}
 	tx, err := l.db.Begin(ctx)
 	if err != nil {
@@ -331,16 +334,26 @@ var metaJSON any
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO request_state_transitions
 		  (request_id, tenant_id, transition_type, from_state, to_state, metadata, seq)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		VALUES ($1, $2, $3, $4, $5, `+metadataLiteral(metadataSQL)+`, $6)
 		ON CONFLICT (request_id, seq) DO NOTHING`,
 		p.t.RequestID, p.t.TenantID, p.t.TransitionType,
-		nullStr(p.t.FromState), nullStr(p.t.ToState), metaJSON, p.seq); err != nil {
+		nullStr(p.t.FromState), nullStr(p.t.ToState), p.seq); err != nil {
 		return fmt.Errorf("insert transition: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit transition: %w", err)
 	}
 	return nil
+}
+
+// metadataLiteral returns either the SQL NULL literal or an inlined
+// jsonb-cast JSON literal. The data is JSON-encoded by the caller, so the
+// literal only needs escaping for SQL string boundaries.
+func metadataLiteral(encodedJSON string) string {
+	if encodedJSON == "" {
+		return "NULL"
+	}
+	return "'" + strings.ReplaceAll(encodedJSON, "'", "''") + "'::jsonb"
 }
 
 // retryQueueLen 返回重试队列当前长度（测试/诊断用）。
