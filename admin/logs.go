@@ -930,14 +930,19 @@ func (h *Handler) getLog(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 2026-08-17 BUGFIX: 二阶段 body 读取，避开 columnar 扫描（见上方长注释）。
-	// 优先 hot（idx 命中 <1ms）；找不到再查 columnar 视图（慢路径，给独立 20s ctx）。
+	// 优先 cache（<1ms）；miss → hot（idx 命中 <1ms）；找不到再查 columnar 视图
+	// （慢路径，给独立 20s ctx）。
 	var bodyErr error
 	detail.RequestBody, detail.ResponseBody, bodyErr = h.fetchRequestBodies(ctx, requestID)
 	if bodyErr != nil {
-		slog.WarnContext(ctx, "admin getLog body fetch failed",
-			"request_id", requestID,
-			"total_elapsed_ms", time.Since(start).Milliseconds(),
-			"error", bodyErr.Error())
+		// sql.ErrNoRows（两端都没找到 body）是预期情况 — 不打 WARN 噪音。
+		// transport 错误（ctx cancel, conn refused, ...）才打 WARN 便于排查。
+		if !errors.Is(bodyErr, sql.ErrNoRows) {
+			slog.WarnContext(ctx, "admin getLog body fetch failed",
+				"request_id", requestID,
+				"total_elapsed_ms", time.Since(start).Milliseconds(),
+				"error", bodyErr.Error())
+		}
 		// body 缺失不应让详情接口 500 — metadata 已成功返回，前端可正常展示
 		// 请求/响应以外的所有字段（latency/tokens/cost/model…）。只把 body 置 nil。
 		detail.RequestBody = nil
@@ -966,6 +971,9 @@ func normalizeJSONForAPI(raw json.RawMessage) json.RawMessage {
 // fetchRequestBodies 2026-08-17 BUGFIX 二阶段 body 读取：从 request_logs_bodies
 // 中拉取单条请求的 request_body/response_body。
 //
+//   - 阶段 0：内存 LRU+TTL 缓存（rule 36 §1 持久化语义）。
+//     dashboard 用户经常"开 → 关 → 再开"同一个 request_id 来回比对；
+//     重复点击走 cache < 1ms 而非 5s columnar 扫描。命中条件：5min 内同 ID。
 //   - 阶段 1：查 request_logs_bodies_hot (heap, 单条索引 <1ms)，
 //     覆盖 dashboard "实时请求流 → 点击请求" 高频路径（24h 内请求都还在 hot）。
 //   - 阶段 2：hot 找不到时回退到 request_logs_bodies 视图（含 columnar 月分区，
@@ -977,10 +985,25 @@ func normalizeJSONForAPI(raw json.RawMessage) json.RawMessage {
 // request_logs_bodies_with_current_month 会强制 planner 扫 columnar 分区；
 // 在 hot-first 分支里提前 LIMIT 1 短路后，columnar 分区永远不会被触达。
 //
-// 返回值约定：hot 命中 → (body, body, nil)；cold 命中 → (body, body, nil)；
-// 两边都没行 → (nil, nil, sql.ErrNoRows)；caller 把 body 置 nil 但 metadata 仍 200。
+// 返回值约定：cache hit → (body, body, nil)；hot 命中 → (body, body, nil)；
+// cold 命中 → (body, body, nil)；两边都没行 → (nil, nil, sql.ErrNoRows)；
+// transport 错误 → (nil, nil, err)。caller 把 body 置 nil 但 metadata 仍 200。
 func (h *Handler) fetchRequestBodies(ctx context.Context, requestID string) (requestBody, responseBody any, err error) {
 	start := time.Now()
+
+	// 阶段 0: cache hit fast path。命中后立即返回（连 hot 1ms 都省了）。
+	if entry, ok := h.bodyFetchCache.Get(requestID); ok {
+		if elapsed := time.Since(start); elapsed > 10*time.Millisecond {
+			slog.WarnContext(ctx, "admin fetchRequestBodies cache hit unusually slow",
+				"request_id", requestID, "elapsed_ms", elapsed.Milliseconds())
+		}
+		// entry.body / entry.resp 都是 nil 表示"两端都没找到"的 sentinel，
+		// 还原为 sql.ErrNoRows 给 caller（保持原有契约）。
+		if entry.body == nil && entry.resp == nil {
+			return nil, nil, sql.ErrNoRows
+		}
+		return entry.body, entry.resp, nil
+	}
 
 	// 阶段 1: hot (heap, 索引秒级) — 派生自 metadata ctx（30s），
 	// 单查询预算 3s；如果 metadata 自己卡到 30s 边界，hot 会跟着取消 — 这是
@@ -995,12 +1018,14 @@ func (h *Handler) fetchRequestBodies(ctx context.Context, requestID string) (req
 		 LIMIT 1
 	`, requestID)
 	if scanErr := row.Scan(&rb, &ob); scanErr == nil {
+		body, resp := decodeStoredBodyForAdmin(rb), decodeStoredBodyForAdmin(ob)
+		h.bodyFetchCache.Put(requestID, body, resp)
 		elapsed := time.Since(start)
 		if elapsed > 1*time.Second {
 			slog.InfoContext(ctx, "admin fetchRequestBodies hot path slow",
 				"request_id", requestID, "elapsed_ms", elapsed.Milliseconds())
 		}
-		return decodeStoredBodyForAdmin(rb), decodeStoredBodyForAdmin(ob), nil
+		return body, resp, nil
 	} else if !errors.Is(scanErr, sql.ErrNoRows) {
 		// 真正的查询错误（非 not found）— 仍尝试阶段 2
 		slog.WarnContext(ctx, "admin fetchRequestBodies hot scan failed",
@@ -1020,16 +1045,27 @@ func (h *Handler) fetchRequestBodies(ctx context.Context, requestID string) (req
 	`, requestID)
 	if scanErr := row.Scan(&rb, &ob); scanErr != nil {
 		elapsed := time.Since(start)
+		// 两端都没找到 → 缓存 sql.ErrNoRows sentinel（5min 内重复查询直接命中）
+		if errors.Is(scanErr, sql.ErrNoRows) {
+			h.bodyFetchCache.Put(requestID, nil, nil)
+			slog.InfoContext(ctx, "admin fetchRequestBodies no body anywhere",
+				"request_id", requestID, "elapsed_ms", elapsed.Milliseconds())
+			return nil, nil, sql.ErrNoRows
+		}
 		if errors.Is(scanErr, context.DeadlineExceeded) {
 			slog.WarnContext(ctx, "admin fetchRequestBodies cold path timeout",
 				"request_id", requestID, "elapsed_ms", elapsed.Milliseconds())
 		}
+		// transport-class error（ctx cancel, conn refused, ...）不缓存 — 让
+		// 下一次请求能 retry（rule 22 §4 错误缓存防抖）。
 		return nil, nil, scanErr
 	}
+	body, resp := decodeStoredBodyForAdmin(rb), decodeStoredBodyForAdmin(ob)
+	h.bodyFetchCache.Put(requestID, body, resp)
 	elapsed := time.Since(start)
 	slog.InfoContext(ctx, "admin fetchRequestBodies cold path hit",
 		"request_id", requestID, "elapsed_ms", elapsed.Milliseconds())
-	return decodeStoredBodyForAdmin(rb), decodeStoredBodyForAdmin(ob), nil
+	return body, resp, nil
 }
 
 func (h *Handler) listTopModels(w http.ResponseWriter, r *http.Request) {
