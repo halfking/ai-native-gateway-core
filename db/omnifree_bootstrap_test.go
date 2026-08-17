@@ -89,7 +89,7 @@ func TestOmniFreeBootstrap_MatchesMigrationContract(t *testing.T) {
 	}
 
 	// tos_verdict CHECK constraint must accept the seed data's full enum,
-	// including 'ambiguous' (docs/omnifree/seed/free_resource_catalog.json).
+	// including 'ambiguous' (configs/seed/free_resource_catalog.json).
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO free_resource_catalog (provider_code, model_id, display_name, free_type, tos_verdict, tenant_id)
 		VALUES ('bootstrap-test', 'bootstrap-model', 'Test', 'keyless', 'ambiguous', 'default')

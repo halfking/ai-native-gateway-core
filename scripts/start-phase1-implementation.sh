@@ -40,7 +40,7 @@ echo ""
 echo "📁 创建实施文件目录结构"
 mkdir -p domains/streaming/executors
 mkdir -p settings
-mkdir -p deploy/monitoring/grafana-alerts
+mkdir -p deploy/prometheus/alerts
 echo "✅ 目录创建完成"
 echo ""
 
@@ -57,7 +57,7 @@ echo ""
 echo "改进 2: 添加降级模式监控"
 echo "  → 创建: domains/streaming/executors/metrics_degradation.go"
 echo "  → 修改: domains/streaming/executors/executor.go"
-echo "  → 创建: deploy/monitoring/grafana-alerts/fp-slot-saturation.yaml"
+echo "  → 创建: deploy/prometheus/alerts/fp-slot-saturation.yaml"
 echo ""
 echo "改进 3: 优化 Sticky TTL"
 echo "  → 修改: domains/streaming/executors/sticky.go"

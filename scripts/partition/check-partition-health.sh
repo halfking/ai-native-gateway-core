@@ -536,7 +536,7 @@ else
   echo ""
   echo "✨ 下一步："
   echo "  - 定期运行本脚本（建议每天）"
-  echo "  - 配置 Prometheus 告警（observability/alerts/partition_health.yml）"
+  echo "  - 配置 Prometheus 告警（deploy/prometheus/rules/partition-health.yml）"
   echo "  - 检查 bg/partition_manager.go 日志确认 promote 正常执行"
   exit 0
 fi

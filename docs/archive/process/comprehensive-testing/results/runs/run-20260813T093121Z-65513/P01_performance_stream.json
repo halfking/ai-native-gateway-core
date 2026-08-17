@@ -1,0 +1,81 @@
+{
+  "schema_version": "1.0",
+  "run_id": "run-20260813T093121Z-65513",
+  "scenario": "P01_performance_stream",
+  "category": "performance",
+  "status": "PASS",
+  "commit": "d53e20a4118ad4df9781f1d50c45a95d4a752c94",
+  "gateway": "http://127.0.0.1:8793",
+  "checks": {
+    "load_completed": true
+  },
+  "metrics": {
+    "total": 441,
+    "succ": 441,
+    "fail": 0,
+    "success_rate": 1.0,
+    "p50_ms": 1455.161500023678,
+    "p95_ms": 2404.320207890123,
+    "p99_ms": 2991.0229169763625,
+    "max_ms": 3384.65508306399,
+    "ttfb_p50_ms": 517.212790902704,
+    "ttfb_p95_ms": 1056.6520418506116,
+    "ttfb_p99_ms": 1641.03241590783,
+    "throughput_rps": 18.356714449187916,
+    "elapsed_sec": 24.023906958987936,
+    "fail_by_status": {},
+    "fail_by_kind": {},
+    "stream_total": 441,
+    "stream_completed": 441,
+    "stream_completion_rate": 1.0,
+    "stream_parse_failed": 0,
+    "stream_cancelled": 0,
+    "cancelled": 0,
+    "request_id_count": 441
+  },
+  "evidence": {
+    "raw_metrics": {
+      "total": 441,
+      "succ": 441,
+      "fail": 0,
+      "success_rate": 1.0,
+      "p50_ms": 1455.161500023678,
+      "p95_ms": 2404.320207890123,
+      "p99_ms": 2991.0229169763625,
+      "max_ms": 3384.65508306399,
+      "ttfb_p50_ms": 517.212790902704,
+      "ttfb_p95_ms": 1056.6520418506116,
+      "ttfb_p99_ms": 1641.03241590783,
+      "throughput_rps": 18.356714449187916,
+      "elapsed_sec": 24.023906958987936,
+      "fail_by_status": {},
+      "fail_by_kind": {},
+      "stream_total": 441,
+      "stream_completed": 441,
+      "stream_completion_rate": 1.0,
+      "stream_parse_failed": 0,
+      "stream_cancelled": 0,
+      "cancelled": 0,
+      "request_id_count": 441
+    },
+    "models": [
+      "loadtest-mini-alpha",
+      "loadtest-mini-beta",
+      "loadtest-standard-alpha"
+    ]
+  },
+  "failures": [],
+  "parameters": {
+    "gateway": "http://127.0.0.1:8793",
+    "n_clients": 40,
+    "rps_per_client": 3.0,
+    "duration_sec": 20,
+    "prompt_size": "short",
+    "sticky_ratio": 0.0,
+    "stream_ratio": 1.0,
+    "fault_inject_cancel": 0.0,
+    "compression": null,
+    "no_cache": false,
+    "protocol": null
+  }
+}
