@@ -773,8 +773,6 @@ func (h *Handler) getLog(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	var detail requestLogDetail
-	var requestBodyRaw []byte
-	var responseBodyRaw []byte
 
 	// Detail drawer needs the full payload including outbound_body /
 	// outbound_msg_hashes / compression_meta, so use requestLogsDetailCols
@@ -784,14 +782,25 @@ func (h *Handler) getLog(w http.ResponseWriter, r *http.Request) {
 	// COALESCE ensures backwards compatibility with old data still in request_logs_hot.
 	// 2026-07-06: 使用视图查询，避免遗漏 hot 表数据（migration 341）
 	// 2026-07-23 BUGFIX: request_id 是唯一标识，JOIN 只需匹配 request_id
+	//
+	// 2026-08-17 BUGFIX: dashboard "实时请求流 → 点击请求" 报 "query failed"
+	// (HTTP 500 + db_error "timeout: context deadline exceeded")。
+	// 根因：request_logs_bodies 的 2026_08 月分区是 Citus columnar (2020 MB)，
+	// 不支持 btree 索引，planner 必须 ColumnarScan + 反压 JSONB chunk group，
+	// 单 ID 查询 30s+ timeout，把 getLog 5s context 打爆。dashboard 实时流命中的
+	// 请求体仍在 request_logs_bodies_hot（heap, <1ms），与 columnar 同走一个视图
+	// UNION ALL 被迫全表扫描。
+	//
+	// 修复策略：把 body JOIN 从主查询剥离，拆成两步：
+	//   (1) 主查询只读 request_logs_with_current_month（metadata + 主表内嵌 body）
+	//   (2) 若主表内嵌 body 为空（hot 表已迁移 body 列到 sibling 表），
+	//       单独查 body：先 request_logs_bodies_hot（idx 命中，<1ms），
+	//       找不到再回退到 request_logs_bodies 视图（columnar，慢但可走 20s ctx）。
+	// 这样 dashboard 实时流（24h 内请求）走 hot fast path，不会再 5s timeout。
 	err = h.db.QueryRow(ctx, fmt.Sprintf(`
-		SELECT %s, 
-		       COALESCE(rb.request_body::text, rl.request_body::text) AS request_body,
-		       COALESCE(rb.response_body::text, rl.response_body::text) AS response_body
+		SELECT %s
 		  FROM request_logs_with_current_month rl
 		%s
-		  LEFT JOIN request_logs_bodies_with_current_month rb 
-		    ON rb.request_id = rl.request_id
 		 WHERE rl.request_id = $1
 		   AND ($2 OR rl.tenant_id = $3)
 		 ORDER BY rl.ts DESC
@@ -877,8 +886,6 @@ func (h *Handler) getLog(w http.ResponseWriter, r *http.Request) {
 		&detail.Attachments,
 		&detail.RoutingAttempts,
 		&detail.RoutingSummary,
-		&requestBodyRaw,
-		&responseBodyRaw,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -898,8 +905,17 @@ func (h *Handler) getLog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	detail.RequestBody = decodeStoredBodyForAdmin(requestBodyRaw)
-	detail.ResponseBody = decodeStoredBodyForAdmin(responseBodyRaw)
+	// 2026-08-17 BUGFIX: 二阶段 body 读取，避开 columnar 扫描（见上方长注释）。
+	// 优先 hot（idx 命中 <1ms）；找不到再查 columnar 视图（慢路径，给独立 20s ctx）。
+	var bodyErr error
+	detail.RequestBody, detail.ResponseBody, bodyErr = h.fetchRequestBodies(ctx, requestID)
+	if bodyErr != nil {
+		slog.Warn("admin getLog body fetch failed", "request_id", requestID, "error", bodyErr.Error())
+		// body 缺失不应让详情接口 500 — metadata 已成功返回，前端可正常展示
+		// 请求/响应以外的所有字段（latency/tokens/cost/model…）。只把 body 置 nil。
+		detail.RequestBody = nil
+		detail.ResponseBody = nil
+	}
 	// Outbound body: it's already a JSON RawMessage from JSONB scan; convert to
 	// a structured payload so the UI can render it as a message list.
 	if len(detail.OutboundBody) > 0 {
@@ -918,6 +934,52 @@ func (h *Handler) getLog(w http.ResponseWriter, r *http.Request) {
 // transformations (e.g. stripping sensitive fields before sending to the UI).
 func normalizeJSONForAPI(raw json.RawMessage) json.RawMessage {
 	return raw
+}
+
+// fetchRequestBodies 2026-08-17 BUGFIX 二阶段 body 读取：从 request_logs_bodies
+// 中拉取单条请求的 request_body/response_body。
+//
+//   - 阶段 1：查 request_logs_bodies_hot (heap, 单条索引 <1ms)，
+//     覆盖 dashboard "实时请求流 → 点击请求" 高频路径（24h 内请求都还在 hot）。
+//   - 阶段 2：hot 找不到时回退到 request_logs_bodies 视图（含 columnar 月分区，
+//     单 ID 扫描可能 30s+），走独立的 20s ctx。dashboard 抽屉本身 5s ctx，
+//     但 body 缺失不应让 metadata 接口 500；本函数返回 error 由 caller 决定
+//     是否继续（当前 caller 把 body 置 nil，metadata 仍返回）。
+//
+// 之所以拆出来（而不是 LEFT JOIN 进主查询），是因为 UNION ALL 视图
+// request_logs_bodies_with_current_month 会强制 planner 扫 columnar 分区；
+// 在 hot-first 分支里提前 LIMIT 1 短路后，columnar 分区永远不会被触达。
+func (h *Handler) fetchRequestBodies(ctx context.Context, requestID string) (requestBody, responseBody any, err error) {
+	// 阶段 1: hot (heap, 索引秒级)
+	hotCtx, hotCancel := context.WithTimeout(ctx, 3*time.Second)
+	defer hotCancel()
+	var rb, ob []byte
+	row := h.db.QueryRow(hotCtx, `
+		SELECT request_body::text, response_body::text
+		  FROM request_logs_bodies_hot
+		 WHERE request_id = $1
+		 LIMIT 1
+	`, requestID)
+	if scanErr := row.Scan(&rb, &ob); scanErr == nil {
+		return decodeStoredBodyForAdmin(rb), decodeStoredBodyForAdmin(ob), nil
+	} else if !errors.Is(scanErr, sql.ErrNoRows) {
+		// 真正的查询错误（非 not found）— 仍尝试阶段 2
+		slog.Warn("admin fetchRequestBodies hot scan failed", "request_id", requestID, "error", scanErr.Error())
+	}
+
+	// 阶段 2: columnar 月分区（可能慢，给 20s ctx）
+	coldCtx, coldCancel := context.WithTimeout(ctx, 20*time.Second)
+	defer coldCancel()
+	row = h.db.QueryRow(coldCtx, `
+		SELECT request_body::text, response_body::text
+		  FROM request_logs_bodies_with_current_month
+		 WHERE request_id = $1
+		 LIMIT 1
+	`, requestID)
+	if scanErr := row.Scan(&rb, &ob); scanErr != nil {
+		return nil, nil, scanErr
+	}
+	return decodeStoredBodyForAdmin(rb), decodeStoredBodyForAdmin(ob), nil
 }
 
 func (h *Handler) listTopModels(w http.ResponseWriter, r *http.Request) {
