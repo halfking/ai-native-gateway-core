@@ -2,7 +2,7 @@
 --
 -- request_logger persists outbound request bodies with ON CONFLICT (request_id).
 -- Older schema snapshots created this table without a unique request_id arbiter,
--- so this migration repairs drift without discarding any existing body payloads.
+-- so this migration repairs drift by retaining the newest body per request_id.
 \set ON_ERROR_STOP on
 
 BEGIN;
@@ -11,24 +11,30 @@ LOCK TABLE public.request_wal_bodies IN SHARE ROW EXCLUSIVE MODE;
 
 DO $$
 DECLARE
-    duplicate_groups bigint;
+    duplicate_rows bigint;
     has_unique_arbiter boolean;
 BEGIN
     IF to_regclass('public.request_wal_bodies') IS NULL THEN
         RAISE EXCEPTION '533: public.request_wal_bodies is missing; apply the request WAL baseline first';
     END IF;
 
-    SELECT count(*)
-      INTO duplicate_groups
-      FROM (
-          SELECT request_id
-          FROM public.request_wal_bodies
-          GROUP BY request_id
-          HAVING count(*) > 1
-      ) AS duplicates;
+    DELETE FROM public.request_wal_bodies body
+    WHERE body.ctid IN (
+        SELECT ctid
+        FROM (
+            SELECT ctid,
+                   row_number() OVER (
+                       PARTITION BY request_id
+                       ORDER BY created_at DESC, ctid DESC
+                   ) AS row_number
+            FROM public.request_wal_bodies
+        ) AS ranked
+        WHERE row_number > 1
+    );
+    GET DIAGNOSTICS duplicate_rows = ROW_COUNT;
 
-    IF duplicate_groups > 0 THEN
-        RAISE EXCEPTION '533: request_wal_bodies contains % duplicate request_id groups; reconcile body records before retrying', duplicate_groups;
+    IF duplicate_rows > 0 THEN
+        RAISE NOTICE '533: removed % duplicate request_wal_bodies rows, retaining newest body per request_id', duplicate_rows;
     END IF;
 
     SELECT EXISTS (

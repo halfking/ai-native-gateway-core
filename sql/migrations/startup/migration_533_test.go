@@ -20,8 +20,12 @@ func TestMigration533RequestWALBodiesUniqueRequestIDContract(t *testing.T) {
 	for _, required := range []string{
 		"BEGIN;",
 		"LOCK TABLE public.request_wal_bodies IN SHARE ROW EXCLUSIVE MODE",
-		"HAVING count(*) > 1",
-		"RAISE EXCEPTION '533: request_wal_bodies contains",
+		"DELETE FROM public.request_wal_bodies body",
+		"row_number() OVER",
+		"PARTITION BY request_id",
+		"ORDER BY created_at DESC, ctid DESC",
+		"GET DIAGNOSTICS duplicate_rows = ROW_COUNT",
+		"RAISE NOTICE '533: removed % duplicate request_wal_bodies rows",
 		"i.indisvalid",
 		"i.indisunique",
 		"i.indpred IS NULL",
@@ -33,8 +37,8 @@ func TestMigration533RequestWALBodiesUniqueRequestIDContract(t *testing.T) {
 			t.Errorf("migration 533 missing %q", required)
 		}
 	}
-	if strings.Contains(upSQL, "DELETE FROM public.request_wal_bodies") {
-		t.Error("migration 533 must not silently discard duplicate body records")
+	if strings.Contains(upSQL, "RAISE EXCEPTION '533: request_wal_bodies contains") {
+		t.Error("migration 533 must reconcile duplicate body records instead of blocking deployment")
 	}
 
 	downSQL := string(down)
