@@ -10,7 +10,9 @@
 
 | 类型 | 文件 | 状态 |
 |---|---|---|
-| _（待补充）_ | | |
+| 测试方案 | `02-test-plans/会话优化v4/客户端会话保持-测试方案与用例.md`（v4 总册：环境/初始数据要求 + 单元/集成/混沌用例 + 执行门禁） | active |
+| 测试方案 | `02-test-plans/testing/comprehensive-test-plan.md`（全方位测试方案，已融合进 v4 总册） | active |
+| 测试方案 | `02-test-plans/testing/ROUTING_TEST_PLAN.md`、`testing/three-env-unified-verification.md` | active |
 
 ## 命名约定
 
