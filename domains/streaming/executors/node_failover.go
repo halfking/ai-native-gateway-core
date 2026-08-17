@@ -1,17 +1,13 @@
 package executors
 
 import (
-	"context"
 	"encoding/json"
 	"log/slog"
-	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/hotconfig"
-	"github.com/kaixuan/llm-gateway-go/internal/liveactions"
-	"github.com/kaixuan/llm-gateway-go/provider"
 )
 
 var globalHotCfg atomic.Pointer[hotconfig.Config]
@@ -22,120 +18,6 @@ func SetHotConfig(cfg *hotconfig.Config) {
 
 func LoadHotConfig() *hotconfig.Config {
 	return globalHotCfg.Load()
-}
-
-type NodeFailoverConfig struct {
-	NodeTimeoutSeconds          int
-	RetryCount                  int
-	SingleNodeRetryDelaySeconds int
-}
-
-type NodeTracker struct {
-	triedCredentials map[int]bool
-	triedProviders   map[int]bool
-	attempts         int
-	startTime        time.Time
-	maxRetries       int
-	hotCfg           *hotconfig.Config
-}
-
-func NewNodeTracker(hotCfg *hotconfig.Config) *NodeTracker {
-	cfg := DefaultNodeFailoverConfig()
-	if hotCfg != nil {
-		cfg = LoadNodeFailoverConfig(hotCfg)
-	}
-	return &NodeTracker{
-		triedCredentials: make(map[int]bool),
-		triedProviders:   make(map[int]bool),
-		startTime:        time.Now(),
-		maxRetries:       cfg.RetryCount,
-		hotCfg:           hotCfg,
-	}
-}
-
-func (nt *NodeTracker) Record(cand provider.Candidate) {
-	nt.triedCredentials[cand.CredentialID] = true
-	nt.triedProviders[cand.ProviderID] = true
-	nt.attempts++
-}
-
-func (nt *NodeTracker) HasTriedCredential(cand provider.Candidate) bool {
-	return nt.triedCredentials[cand.CredentialID]
-}
-
-func (nt *NodeTracker) ShouldFailover(currentCredID int) bool {
-	return nt.triedCredentials[currentCredID]
-}
-
-func (nt *NodeTracker) Attempts() int {
-	return nt.attempts
-}
-
-func (nt *NodeTracker) IsSingleNode(candidates []provider.Candidate) bool {
-	uniqueCreds := make(map[int]bool)
-	for _, c := range candidates {
-		uniqueCreds[c.CredentialID] = true
-	}
-	return len(uniqueCreds) <= 1
-}
-
-func (nt *NodeTracker) SingleNodeRetryDelay() time.Duration {
-	cfg := DefaultNodeFailoverConfig()
-	if nt.hotCfg != nil {
-		cfg = LoadNodeFailoverConfig(nt.hotCfg)
-	}
-	if cfg.SingleNodeRetryDelaySeconds < 5 {
-		return 10 * time.Second
-	}
-	return time.Duration(cfg.SingleNodeRetryDelaySeconds) * time.Second
-}
-
-func (nt *NodeTracker) MaxRetries() int {
-	cfg := DefaultNodeFailoverConfig()
-	if nt.hotCfg != nil {
-		cfg = LoadNodeFailoverConfig(nt.hotCfg)
-	}
-	return cfg.RetryCount
-}
-
-func LoadNodeFailoverConfig(hotCfg *hotconfig.Config) NodeFailoverConfig {
-	if hotCfg == nil {
-		return DefaultNodeFailoverConfig()
-	}
-	return NodeFailoverConfig{
-		// llmgw_node_timeout_seconds: Max execution time per node (default 180s, range 10-600s).
-		// 2026-08-15: raised 120→180 to stay aligned with FirstByteTimeout (which
-		// itself went 120→180 on 2026-08-04 for long-thinking models). The node
-		// timeout must be >= FirstByteTimeout, otherwise the per-node timer cuts
-		// the request before the first-byte deadline can fire (see
-		// docs/会话优化v3/29 §A4).
-		// Note: This is per-node timeout; total retry time = NodeTimeout * RetryCount.
-		NodeTimeoutSeconds:          clampInt(hotCfg.GetInt("llmgw_node_timeout_seconds", 180), 10, 600),
-		RetryCount:                  clampInt(hotCfg.GetInt("llmgw_retry_count", 2), 0, 5),
-		SingleNodeRetryDelaySeconds: clampInt(hotCfg.GetInt("llmgw_single_node_retry_delay_seconds", 10), 5, 60),
-	}
-}
-
-func DefaultNodeFailoverConfig() NodeFailoverConfig {
-	return NodeFailoverConfig{
-		// 2026-07-23: 30→60→120s (two-step), aligned with FirstByteTimeout.
-		// 2026-08-15: 120→180s, aligned with the current FirstByteTimeout
-		// (stream_runtime.go, 180s since 2026-08-04). Long-thinking
-		// Claude/NVIDIA models exceed 60s before first byte.
-		NodeTimeoutSeconds:          180,
-		RetryCount:                  2,
-		SingleNodeRetryDelaySeconds: 10,
-	}
-}
-
-func clampInt(v, min, max int) int {
-	if v < min {
-		return min
-	}
-	if v > max {
-		return max
-	}
-	return v
 }
 
 func LoadRetryKeywords(hotCfg *hotconfig.Config) (continueKeywords, retryKeywords []string) {
@@ -169,56 +51,22 @@ func LoadRetryKeywords(hotCfg *hotconfig.Config) (continueKeywords, retryKeyword
 	return continueKeywords, retryKeywords
 }
 
-// emitNodeSwitch (2026-08-15, V3.3-OBS OBS-B1) 发射 node_switch 动作事件
-// （24 号 §2: from/to/reason/retry/retry_seq；retry=true 时前端打特别标）。
-//
-// 它取代了旧的 SendNodeJumpEvent / SendRetrySSE（docs/会话优化v3/25 §8 判定
-// 为死代码，仓库内零调用点）：那两个函数假设"执行器手里有客户端的
-// http.ResponseWriter"并直接向响应流写 node_jump/node_retry SSE 事件，但
-// 节点切换的调用点在候选循环深处，拿到的 w 与真正的 SSE 出口
-// （admin/live_stream_sse.go 单出口原则，ADR-V3-101）完全脱节，所以从未被
-// 接线。动作事件走独立旁路（internal/liveactions → Redis 回放队列 → SSE
-// request_lifecycle），不需要也不应该碰 ResponseWriter，因此删除死代码、
-// 由本发射器直接复活其调用语义（from/to/reason/attempt）。
-func (e *Executor) emitNodeSwitch(params *ExecParams, fromCred, toCred int, reason string, attempt int) {
-	if e == nil || params == nil {
-		return
-	}
-	ctx := context.Background()
-	if params.R != nil {
-		ctx = params.R.Context()
-	}
-	e.liveActions.Emit(ctx, liveactions.ActionEvent{
-		RequestID:    params.RequestID,
-		Action:       liveactions.ActionNodeSwitch,
-		Model:        params.ClientModel,
-		CredentialID: toCred,
-		Retry:        fromCred == toCred,
-		RetrySeq:     attempt,
-		Detail: map[string]string{
-			"from_credential_id": strconv.Itoa(fromCred),
-			"to_credential_id":   strconv.Itoa(toCred),
-			"reason":             reason,
-		},
-	})
-}
-
-// nextCandidateCredentialID returns the credential id of the candidate after
-// idx. 0 when idx is the last — the switch target is then the sync-retry /
-// model-fallback path rather than a sibling node (to_credential_id=0).
-func nextCandidateCredentialID(candidates []provider.Candidate, idx int) int {
-	if idx+1 < len(candidates) {
-		return candidates[idx+1].CredentialID
-	}
-	return 0
-}
-
+// NodeTimeout returns the max execution time per node. Default 180s
+// (2026-08-15, aligned with FirstByteTimeout; must stay >= FirstByteTimeout
+// or the per-node timer cuts the request before the first-byte deadline can
+// fire — docs/会话优化v3/29 §A4). The old NodeFailoverConfig/NodeTracker
+// machinery went with the legacy sync candidate loop (AUDIT_24H B2b).
 func NodeTimeout(hotCfg *hotconfig.Config) time.Duration {
-	cfg := DefaultNodeFailoverConfig()
-	if hotCfg != nil {
-		cfg = LoadNodeFailoverConfig(hotCfg)
+	if hotCfg == nil {
+		return 180 * time.Second
 	}
-	return time.Duration(cfg.NodeTimeoutSeconds) * time.Second
+	v := hotCfg.GetInt("llmgw_node_timeout_seconds", 180)
+	if v < 10 {
+		v = 10
+	} else if v > 600 {
+		v = 600
+	}
+	return time.Duration(v) * time.Second
 }
 
 // continuationMaxRuneLen bounds how long the trailing user message may be

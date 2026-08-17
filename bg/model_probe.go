@@ -104,8 +104,9 @@ type ModelProbeRunner struct {
 	// manualProbeQueue holds async manual probe requests submitted via
 	// SubmitManualProbe. Worker goroutine consumes tasks and executes
 	// TriggerManual synchronously in background (2026-08-14).
-	manualProbeQueue chan manualProbeTask
-	manualProbeWG    sync.WaitGroup
+	manualProbeQueue      chan manualProbeTask
+	manualProbeWG         sync.WaitGroup
+	manualProbeWorkerOnce sync.Once
 }
 
 type manualProbeTask struct {
@@ -134,7 +135,7 @@ func (r *ModelProbeRunner) Start(ctx context.Context) {
 	// Layer 4: featured model deep ping every 30 minutes (v5, 2026-06-20)
 	go r.featuredCycleLoop(ctx)
 	// Layer 5: manual probe worker (2026-08-14)
-	go r.manualProbeWorker(ctx)
+	r.startManualProbeWorker(ctx)
 	slog.Info("model probe runner v2 (consensus+backoff) started",
 		"interval", ProbeInterval,
 		"required_consensus", RequiredConsensus,
@@ -162,6 +163,7 @@ func (r *ModelProbeRunner) StartFeaturedOnly(ctx context.Context) {
 	// non-featured bindings — no HTTP probe, just timestamp arithmetic. This
 	// keeps "其它模型降频" honest in the default new mode.
 	go r.nonfeaturedWatchdogLoop(fctx)
+	r.startManualProbeWorker(fctx)
 	slog.Info("model probe featured-only cycle (常用模型 deep ping) + nonfeatured watchdog started")
 }
 
@@ -268,6 +270,12 @@ func (r *ModelProbeRunner) nonfeaturedWatchdogTick(ctx context.Context) {
 		slog.Info("nonfeatured watchdog extended next_retry_at",
 			"rows", n, "mult", mult, "target_hours", targetSecs/3600)
 	}
+}
+
+func (r *ModelProbeRunner) startManualProbeWorker(ctx context.Context) {
+	r.manualProbeWorkerOnce.Do(func() {
+		go r.manualProbeWorker(ctx)
+	})
 }
 
 // SubmitManualProbe submits a manual probe task to the async queue.

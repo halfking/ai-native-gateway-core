@@ -15,7 +15,7 @@ func NewQueueMetricsCollector(projection *QueueProjection) *QueueMetricsCollecto
 // Snapshot returns the current queue snapshot for admin SSE consumption.
 func (c *QueueMetricsCollector) Snapshot() *SnapshotView {
 	if c == nil || c.projection == nil {
-		return &SnapshotView{Enabled: IsDispatchEnabled(), Wired: false, Models: []LaneView{}, Credentials: []LaneView{}}
+		return &SnapshotView{Enabled: true, Wired: false, Models: []LaneView{}, Credentials: []LaneView{}}
 	}
 	return c.projection.Snapshot()
 }

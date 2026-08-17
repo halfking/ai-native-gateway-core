@@ -373,6 +373,9 @@ type Client struct {
 	candGeneration uint64
 	polCache       cacheEntry[*Policy]
 	keyCache       map[int]cacheEntry[string]
+	// keyGeneration prevents a reveal that started before an operator rotates a
+	// primary key from putting stale plaintext back into keyCache afterwards.
+	keyGeneration map[int]uint64
 	// keyCacheNeg memoises "this credential's API key failed to decrypt"
 	// for decryptFailureCacheTTL seconds. Previously every request within
 	// the 5-minute positive window re-fetched ciphertext from PG and
@@ -390,8 +393,9 @@ var defaultClient *Client
 
 func NewClient() *Client {
 	c := &Client{
-		candCache: make(map[string]cacheEntry[*resolveResponse]),
-		keyCache:  make(map[int]cacheEntry[string]),
+		candCache:     make(map[string]cacheEntry[*resolveResponse]),
+		keyCache:      make(map[int]cacheEntry[string]),
+		keyGeneration: make(map[int]uint64),
 	}
 	c.asyncExitSuspicious = c.defaultAsyncExitSuspicious
 	defaultClient = c
@@ -458,6 +462,24 @@ func ResetKeyRotatorForCredential(credentialID int) {
 	}
 	defaultClient.keyRotator.ResetCredential(credentialID)
 	slog.Debug("key rotator reset for credential", "credential_id", credentialID)
+}
+
+// InvalidateCredentialKeyCache evicts both primary-key caches for one
+// credential. The generation fence makes an already in-flight reveal unable
+// to reinsert the pre-rotation plaintext after this function returns.
+func InvalidateCredentialKeyCache(credentialID int) {
+	if defaultClient == nil || credentialID == 0 {
+		return
+	}
+	defaultClient.mu.Lock()
+	if defaultClient.keyGeneration == nil {
+		defaultClient.keyGeneration = make(map[int]uint64)
+	}
+	defaultClient.keyGeneration[credentialID]++
+	delete(defaultClient.keyCache, credentialID)
+	delete(defaultClient.keyCacheNeg, credentialID)
+	defaultClient.mu.Unlock()
+	slog.Debug("primary key cache invalidated for credential", "credential_id", credentialID)
 }
 
 func (c *Client) Enabled() bool {
@@ -1702,52 +1724,78 @@ func uniqueRawModels(values []string) []string {
 	return out
 }
 
-func (c *Client) RevealAPIKey(ctx context.Context, providerID, credentialID int) (string, error) {
-	c.mu.RLock()
-	if entry, ok := c.keyCache[credentialID]; ok && time.Now().Before(entry.expires) {
-		c.mu.RUnlock()
-		return entry.value, nil
-	}
-	if neg, ok := c.keyCacheNeg[credentialID]; ok && time.Now().Before(neg.expires) {
-		c.mu.RUnlock()
-		// 2026-08-17 P0 fix: avoid re-trying a known-broken decryption for
-		// decryptFailureCacheTTL. Previously every request within the 5-minute
-		// positive window hit PG + DecryptAny + a "reveal failed" warning;
-		// on 154 production this produced 60+ identical log lines per minute
-		// for credentials whose secret was actually rotated / corrupted.
-		slog.Debug("reveal: decrypt failure cached, skipping retry",
-			"credential_id", credentialID,
-			"provider_id", providerID,
-			"cached_err", neg.value,
-			"expires_in", time.Until(neg.expires).String(),
-		)
-		return "", fmt.Errorf("decrypt failure cached (credential_id=%d): %s", credentialID, neg.value)
-	}
-	c.mu.RUnlock()
+const maxRevealGenerationAttempts = 2
 
-	v, err, _ := c.sf.Do(fmt.Sprintf("key:%d", credentialID), func() (any, error) {
-		key, fetchErr := c.fetchReveal(ctx, providerID, credentialID)
-		if fetchErr != nil {
-			c.mu.Lock()
-			c.recordNegativeCacheLocked(credentialID, fetchErr.Error())
-			c.mu.Unlock()
-			return "", fetchErr
+func (c *Client) RevealAPIKey(ctx context.Context, providerID, credentialID int) (string, error) {
+	for attempt := 0; attempt < maxRevealGenerationAttempts; attempt++ {
+		c.mu.RLock()
+		generation := c.keyGeneration[credentialID]
+		if entry, ok := c.keyCache[credentialID]; ok && time.Now().Before(entry.expires) {
+			c.mu.RUnlock()
+			return entry.value, nil
 		}
-		c.mu.Lock()
-		c.keyCache[credentialID] = cacheEntry[string]{
-			value:   key,
-			expires: time.Now().Add(5 * time.Minute),
+		if neg, ok := c.keyCacheNeg[credentialID]; ok && time.Now().Before(neg.expires) {
+			c.mu.RUnlock()
+			// 2026-08-17 P0 fix: avoid re-trying a known-broken decryption for
+			// decryptFailureCacheTTL. Previously every request within the 5-minute
+			// positive window hit PG + DecryptAny + a "reveal failed" warning;
+			// on 154 production this produced 60+ identical log lines per minute
+			// for credentials whose secret was actually rotated / corrupted.
+			slog.Debug("reveal: decrypt failure cached, skipping retry",
+				"credential_id", credentialID,
+				"provider_id", providerID,
+				"cached_err", neg.value,
+				"expires_in", time.Until(neg.expires).String(),
+			)
+			return "", fmt.Errorf("decrypt failure cached (credential_id=%d): %s", credentialID, neg.value)
 		}
-		// Successful reveal invalidates any prior negative entry so the
-		// next call doesn't carry forward a stale "broken" signal.
-		delete(c.keyCacheNeg, credentialID)
-		c.mu.Unlock()
-		return key, nil
-	})
-	if err != nil {
-		return "", err
+		c.mu.RUnlock()
+
+		v, err, _ := c.sf.Do(fmt.Sprintf("key:%d:g%d", credentialID, generation), func() (any, error) {
+			key, fetchErr := c.fetchReveal(ctx, providerID, credentialID)
+			if fetchErr != nil {
+				c.cacheRevealFailureIfCurrent(credentialID, generation, fetchErr.Error())
+				return "", fetchErr
+			}
+			c.cacheRevealedKeyIfCurrent(credentialID, generation, key)
+			return key, nil
+		})
+
+		c.mu.RLock()
+		currentGeneration := c.keyGeneration[credentialID]
+		c.mu.RUnlock()
+		if currentGeneration != generation {
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		return v.(string), nil
 	}
-	return v.(string), nil
+	return "", fmt.Errorf("credential key rotation invalidated reveal (credential_id=%d)", credentialID)
+}
+
+func (c *Client) cacheRevealFailureIfCurrent(credentialID int, generation uint64, errMsg string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.keyGeneration[credentialID] == generation {
+		c.recordNegativeCacheLocked(credentialID, errMsg)
+	}
+}
+
+func (c *Client) cacheRevealedKeyIfCurrent(credentialID int, generation uint64, key string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.keyGeneration[credentialID] != generation {
+		return
+	}
+	c.keyCache[credentialID] = cacheEntry[string]{
+		value:   key,
+		expires: time.Now().Add(5 * time.Minute),
+	}
+	// Successful reveal invalidates any prior negative entry so the next call
+	// doesn't carry forward a stale "broken" signal.
+	delete(c.keyCacheNeg, credentialID)
 }
 
 // recordNegativeCacheLocked inserts a decrypt-failure entry into

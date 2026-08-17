@@ -6,8 +6,12 @@
 //
 //	GET /api/admin/requests/{id}/transitions   按 created_at 升序返回状态变更链
 //
-// 数据源：request_state_transitions（migration 511），由
-// domains/dispatch.StateTransitionLogger 旁路异步写入。
+// 数据源：request_state_transitions（migration 511）。2026-08-17 B3-PR1 起，
+// streaming / streamretry 两个事件点已迁入 requestjourney（journey 行，
+// event_type 非空，经 admin/request_journey.go serveList 查询）；本 endpoint
+// 只剩 admin 节点操作审计（node_operations_audit.go）仍在写 legacy 行
+// （transition_type 非空），以及迁移前的历史行。endpoint 收敛计划见
+// AUDIT_24H_20260817.md §E.3（B3 PR2）。
 package admin
 
 import (
