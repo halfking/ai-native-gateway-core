@@ -51,3 +51,33 @@ func TestWriterCollectsEmptyRedis(t *testing.T) {
 	_ = sql.ErrNoRows
 	_ = (*pgxpool.Pool)(nil)
 }
+
+// TestWriterCollectsHealthStatusBridge pins the persist half of UT-UR-12
+// (会话优化 v4 T5 / P1-5): the "health" hash field written by
+// record_request.lua lands in Row.HealthStatus, which Flush already
+// persists into ursm_node_snapshot_min.health_status — the admin snapshot
+// therefore renders the bridged rich health state with no schema change.
+func TestWriterCollectsHealthStatusBridge(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	ctx := context.Background()
+	if err := rdb.HSet(ctx, "ursm:v2:node:t:55:bridge-model", map[string]string{
+		"available": "0", "health": "degraded", "generation": "9", "source_priority": "10",
+	}).Err(); err != nil {
+		t.Fatalf("seed node: %v", err)
+	}
+	w := New(rdb, "ursm:v2:", nil)
+	rows, err := w.Collect(ctx)
+	if err != nil {
+		t.Fatalf("collect: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("row count=%d, want 1", len(rows))
+	}
+	if rows[0].HealthStatus != "degraded" {
+		t.Fatalf("HealthStatus=%q, want degraded (bridge must reach the persist snapshot)", rows[0].HealthStatus)
+	}
+	if rows[0].Available {
+		t.Fatalf("Available=true, want false — health is display-only; availability stays independently captured")
+	}
+}

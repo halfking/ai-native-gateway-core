@@ -57,6 +57,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/credential"                          //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/credentialstate"                     //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/dbdegradation"                       //nolint:depguard // 数据库降级模块
+	"github.com/kaixuan/llm-gateway-go/domains/dispatch"                            //nolint:depguard // v4 T2: queue mirror wiring at pipeline assembly
 	"github.com/kaixuan/llm-gateway-go/domains/freeresource"                        //nolint:depguard // OmniFree quota tracker
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"                         //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"                   //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -623,7 +624,13 @@ func main() {
 		}
 	}
 
-	journeyConfig := requestjourney.LoadConfig(executorHotConfig)
+	// requestjourney.LoadConfig accepts an interface. Do not pass a nil
+	// *hotconfig.Config directly: it becomes a non-nil typed interface and
+	// dereferences during cold/no-DB local startup.
+	journeyConfig := requestjourney.DefaultConfig()
+	if executorHotConfig != nil {
+		journeyConfig = requestjourney.LoadConfig(executorHotConfig)
+	}
 	journeyProjection := requestjourney.NewProjection(journeyConfig)
 	var journeyRedisStore *requestjourney.RedisStore
 	if redisClientForCache != nil {
@@ -695,6 +702,11 @@ func main() {
 			"ready", ursmV2Mgr.Ready(context.Background()),
 			"shadow_double_write", ursmV2Cfg.ShadowDoubleWrite,
 			"shadow_sample_rate", ursmV2Cfg.ShadowSampleRate)
+		// 会话优化 v4 (T5/P1-6): URSM 快恢复参数（cool/node-TTL/退避封顶）
+		// 与镜像宽限档接入 settings_kv 热更新（键 llmgw_ursm_*）。
+		if executorHotConfig != nil {
+			ursmV2Mgr.SetHotConfig(executorHotConfig)
+		}
 	} else {
 		slog.Info("ursm.v2 manager disabled (no redis client)")
 	}
@@ -2186,6 +2198,11 @@ func main() {
 			adminDB = dbConn.Pool()
 		}
 		adminHandler = admin.NewHandler(adminDB, cfg.SecretKey, fernetKey)
+		// 会话优化 v4 (T4/R1.6): 流式连接注册表 — request_id → 客户端写出
+		// 流，供心跳/思考帧桥接回写与 /api/admin/connection-registry 只读
+		// 投影；写 deadline 默认 30s（G7：慢/僵死客户端按断开处理）。
+		// 流式 ingress 的 Register/Unregister 挂接见 streaming handler 装配。
+		admin.SetConnectionRegistry(streaming.NewConnectionRegistry(0, 0))
 		// 注册 /api/admin/prompt-injection/* 路由(策略、规则、引擎、
 		// Canary、严重度矩阵、检测日志、统计)。修复前端调用 404 的 bug。
 		// 之前 handler 已实现但从未被 wire 到 main mux,导致 SPA 中所有
@@ -2730,6 +2747,18 @@ func main() {
 	if dbConn != nil && dbConn.Enabled() {
 		slog.Info("CHECKPOINT: inside bg services enabled block")
 		credRecovery = bg.NewCredentialRecovery(dbConn.Pool())
+		// 会话优化 v4 (T5/R4.4): 36h 成功回看扫描 — 探测结果以 Recover(30)
+		// 优先级回写 URSM；扫描间隔/回看窗口走 settings_kv 热配置。
+		if ursmV2Mgr != nil {
+			credRecovery.SetURSMRecoverSink(func(ctx context.Context, tenantID string, credID int, model string, success bool, latencyMs int) error {
+				return ursmV2Mgr.ApplyProbeForTenantWithSource(ctx, tenantID, ursmv2api.ProbeOutcome{
+					CredentialID: credID, RawModel: model, Success: success, LatencyMs: latencyMs,
+				}, ursmv2api.SourcePriorityRecover)
+			})
+		}
+		if executorHotConfig != nil {
+			credRecovery.SetLookbackHotConfig(executorHotConfig)
+		}
 		// 2026-08-17 P0 fix: allow ops to override the recovery tick interval
 		// via env without recompiling. Default stays at 30s (set inside
 		// bg/credential_recovery.go). Set to 0 to disable the loop entirely
@@ -5327,6 +5356,17 @@ func main() {
 	// 因此只要在 srv 接受请求前注入即可。dispatch_v2.enabled 的 atomic 缓存
 	// 已在 syncDispatchGateFromSettings 同步；此处仅构造与启动 worker 池。
 	pipeline := wireDispatchPipeline(routingExec)
+	// 会话优化 v4 (T2): 定时重试调度器（retry_at 到点拾取再入队）与调度
+	// 队列状态 Redis 镜像（仅观测/元数据重建，不赋予重启执行能力，R1.3）。
+	if pipeline != nil {
+		if sched := pipeline.NewDefaultRetryScheduler(); sched != nil {
+			pipeline.SetRetryScheduler(sched)
+			defer sched.Close()
+		}
+		if redisClientForCache != nil {
+			pipeline.SetQueueMirror(dispatch.NewQueueMirror(redisClientForCache.Client()))
+		}
+	}
 	if liveStreamHub != nil {
 		liveStreamHub.SetQueueSnapshotProvider(wireQueueSnapshotProvider(gatewayQueueProjection))
 		slog.Info("live stream: queue snapshot provider wired", "wired", gatewayQueueProjection != nil)

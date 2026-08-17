@@ -38,6 +38,43 @@ const (
 	SourcePriorityAdmin   = 40
 )
 
+// Rich node health status vocabulary for the NodeView.HealthStatus bridge
+// (P1-5 / T5-lite, FR-4 R4.1). These are NEUTRAL constants: this package
+// deliberately does not import domains/nodehealth or domains/requestjourney
+// to keep the URSM store contract dependency-free. The string values are
+// identical to requestjourney's NodeHealthStatus vocabulary
+// (requestjourney/contract.go:218-229, consumed by nodehealth.OutcomeReducer):
+//
+//	Healthy     ↔ requestjourney.NodeHealthHealthy
+//	Suspect     ↔ requestjourney.NodeHealthSuspect
+//	Degraded    ↔ requestjourney.NodeHealthDegraded
+//	Quarantined ↔ requestjourney.NodeHealthQuarantined
+//	Recovering  ↔ requestjourney.NodeHealthRecovering
+//
+// BOUNDARY: HealthStatus is display/observability only. It never
+// participates in routing eligibility — routing eligibility is decided
+// exclusively by the availability fields (available/disabled/cool_until_ms)
+// adjudicated in record_request.lua / apply_probe.lua.
+const (
+	HealthStatusHealthy     = "healthy"
+	HealthStatusSuspect     = "suspect"
+	HealthStatusDegraded    = "degraded"
+	HealthStatusQuarantined = "quarantined"
+	HealthStatusRecovering  = "recovering"
+)
+
+// IsValidHealthStatus reports whether s is one of the bridge vocabulary
+// values. record_request.lua refuses to overwrite an existing health field
+// with anything outside this set (empty is treated as "not supplied").
+func IsValidHealthStatus(s string) bool {
+	switch s {
+	case HealthStatusHealthy, HealthStatusSuspect, HealthStatusDegraded,
+		HealthStatusQuarantined, HealthStatusRecovering:
+		return true
+	}
+	return false
+}
+
 type NodeView struct {
 	ProviderID    int       `json:"provider_id"`
 	CredentialID  int       `json:"credential_id"`
@@ -93,6 +130,13 @@ type RequestOutcome struct {
 	// assigns it a distinct dedup namespace from intermediate attempt outcomes.
 	Terminal    bool
 	BillingMode string
+	// HealthStatus is the optional rich node-health enum (see the
+	// HealthStatus* constants). Supplied by the executor from
+	// nodehealth.OutcomeReducer via the EffectUpdateURSM channel; empty
+	// keeps the previously persisted value in Redis. Display-only — it
+	// never feeds routing eligibility (see the boundary note on the
+	// HealthStatus* constants).
+	HealthStatus string
 	// AdminHold indicates whether a manual admin hold is currently set on
 	// the (credential, raw_model) target. When true, the request outcome
 	// MUST NOT mutate availability — admin priority dominates.

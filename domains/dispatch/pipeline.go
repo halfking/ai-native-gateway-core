@@ -46,7 +46,11 @@ type Deps struct {
 	AllowModelChange     bool
 	AllowModelChangeFunc func() bool
 	// HotCfg is read once at construction; live reload re-reads via Reload.
-	HotCfg               *atomic.Value // *Config; may be nil → DefaultConfig
+	HotCfg *atomic.Value // *Config; may be nil → DefaultConfig
+	// RetryScheduler, when non-nil, defers same-credential retries until
+	// retry_at (v4 T3-8). nil keeps the legacy immediate-retry behavior.
+	// The caller owns the scheduler's lifecycle (pipeline does not Close it).
+	RetryScheduler       RetryScheduler
 	ObservationSink      ObservationSink
 	QueueObservationSink QueueObservationSink
 }
@@ -59,6 +63,16 @@ type Pipeline struct {
 	forwardFunc          ForwardFunc
 	allowModelChange     bool
 	allowModelChangeFunc func() bool
+
+	// lifecycle registry (v4 R1.1/T2): request_id → pending/in-flight/
+	// completed + retry_at. Bookkeeping bypass only — never gates execution
+	// except the R1.8 unfinished admission limit.
+	registry *LifecycleRegistry
+	// retryScheduler optionally defers failed re-execution until retry_at.
+	// nil ⇒ immediate failover (legacy behavior).
+	retryScheduler RetryScheduler
+	// queueMirror optionally projects queue state to Redis (observation only).
+	queueMirror *QueueMirror
 
 	cfg atomic.Value // *Config
 
@@ -145,13 +159,14 @@ func (p *Pipeline) observeQueue(observation QueueObservation) {
 	p.queueObservationMu.RLock()
 	sink := p.queueObservationSink
 	p.queueObservationMu.RUnlock()
-	if sink == nil {
-		return
+	if sink != nil {
+		func() {
+			defer func() { _ = recover() }()
+			sink.ObserveQueue(observation)
+		}()
 	}
-	func() {
-		defer func() { _ = recover() }()
-		sink.ObserveQueue(observation)
-	}()
+	// Redis mirror bypass (async, bounded, never blocks the transition site).
+	p.queueMirror.ObserveQueue(observation)
 }
 
 func (p *Pipeline) observeOverflow(reason string) {
@@ -169,6 +184,7 @@ func NewPipeline(deps Deps) *Pipeline {
 		observationSink:      deps.ObservationSink,
 		queueObservationSink: deps.QueueObservationSink,
 		allowModelChangeFunc: deps.AllowModelChangeFunc,
+		retryScheduler:       deps.RetryScheduler,
 		models:               make(map[string]*modelQueue),
 		forwarders:           make(map[int]*credForwarder),
 		stopCh:               make(chan struct{}),
@@ -179,8 +195,61 @@ func NewPipeline(deps Deps) *Pipeline {
 			cfg = *v
 		}
 	}
+	p.registry = NewLifecycleRegistry(cfg.RegistryCapacity, cfg.CompletedWatermark, cfg.MaxQueueDepth)
+	p.registry.SetEvictHook(p.emitRegistryEviction)
 	p.cfg.Store(&cfg)
 	return p
+}
+
+// SetRetryScheduler swaps the optional timed-retry scheduler (before or
+// after Start; nil disables timed retries). The caller owns Close().
+func (p *Pipeline) SetRetryScheduler(s RetryScheduler) {
+	if p == nil {
+		return
+	}
+	p.retryScheduler = s
+}
+
+// NewDefaultRetryScheduler builds a started HeapRetryScheduler wired to
+// this pipeline's pickup path. Convenience for composition roots; the
+// caller must Close() it (typically after Pipeline.Stop).
+func (p *Pipeline) NewDefaultRetryScheduler() *HeapRetryScheduler {
+	if p == nil {
+		return nil
+	}
+	return NewHeapRetryScheduler(p.onRetryDue, nil, nil)
+}
+
+// SetQueueMirror wires the optional Redis queue-state mirror. Nil disables
+// mirroring (nil-receiver methods are no-ops).
+func (p *Pipeline) SetQueueMirror(m *QueueMirror) {
+	if p == nil {
+		return
+	}
+	p.queueMirror = m
+}
+
+// LifecycleSnapshot exposes the request registry view (admin/tests). The
+// optional states filter narrows the result; empty returns every entry.
+func (p *Pipeline) LifecycleSnapshot(states ...LifecycleState) RegistrySnapshot {
+	if p == nil || p.registry == nil {
+		return RegistrySnapshot{Entries: []RegistryEntry{}}
+	}
+	return p.registry.Snapshot(states...)
+}
+
+// emitRegistryEviction reports registry completed-entry eviction as a queue
+// observation (v4 R1.8: 淘汰必须发 journey/action 事件). Runs on registry
+// mutex release, never inline with the hot path.
+func (p *Pipeline) emitRegistryEviction(evicted []RegistryEntry) {
+	if p == nil || len(evicted) == 0 {
+		return
+	}
+	ids := make([]string, 0, len(evicted))
+	for _, entry := range evicted {
+		ids = append(ids, entry.RequestID)
+	}
+	p.observeQueue(QueueObservation{Kind: QueueLifecycleEviction, EvictedRequestIDs: ids})
 }
 
 func (p *Pipeline) modelChangeEnabled() bool {
@@ -194,9 +263,13 @@ func (p *Pipeline) modelChangeEnabled() bool {
 }
 
 // Reload swaps the live config (hot-reload). Worker/forwarder counts do not
-// resize live, but queue-wait budgets and retry budgets pick up immediately.
+// resize live, but queue-wait budgets, retry budgets and registry limits
+// pick up immediately.
 func (p *Pipeline) Reload(cfg Config) {
 	p.cfg.Store(&cfg)
+	if p.registry != nil {
+		p.registry.UpdateLimits(cfg.RegistryCapacity, cfg.CompletedWatermark, cfg.MaxQueueDepth)
+	}
 }
 
 func (p *Pipeline) config() Config {
@@ -306,21 +379,43 @@ func (p *Pipeline) Submit(ctx context.Context, qr *QueuedRequest) (any, error) {
 		qr.EnqueuedAt = time.Now()
 	}
 
+	// V4 R1.1/R1.8: register the request in the lifecycle registry. The ONLY
+	// refusal here is the unfinished admission limit (pending+in-flight at
+	// the scheduling bound); capacity pressure evicts completed entries
+	// instead of rejecting. Registration failure of any other kind is a
+	// bookkeeping bypass — execution continues regardless (UT-DQ-07).
+	if !p.registry.RegisterPending(qr.ID, qr.RequestedModel, time.Now()) {
+		metricOverflow.WithLabelValues("registry_unfinished_full").Inc()
+		p.observeOverflow("registry_unfinished_full")
+		overflow := &OverflowError{Reason: "registry_unfinished_full", RetryAfter: DefaultOverflowRetryAfter}
+		p.emitRequestTerminal(qr, ForwardOutcome{Err: overflow})
+		return nil, overflow
+	}
+
 	// V3.1: Record T1 timestamp (total queue enqueue)
 	qr.SetT1_TotalEnqueued()
 
 	modelKey := queueKeyFor(qr.RequestedModel)
 	if !p.enqueueModel(modelKey, qr) {
+		// These paths return WITHOUT entering the pipeline (no complete()
+		// call will follow), so the registry entry registered above must be
+		// terminally closed here — otherwise it would leak an unfinished
+		// admission slot forever (R1.8).
 		if p.shutdown.Load() {
 			// Stop raced us between the entry check and admission: report
 			// shutdown, not a misleading queue-full overflow.
+			p.registry.MarkCompleted(qr.ID, time.Now())
 			p.emitRequestTerminal(qr, ForwardOutcome{Err: ErrShutdown})
 			return nil, ErrShutdown
 		}
 		metricOverflow.WithLabelValues("model_queue_full").Inc()
 		p.observeOverflow("model_queue_full")
-		p.emitRequestTerminal(qr, ForwardOutcome{Err: ErrOverflow})
-		return nil, ErrOverflow
+		// R1.3: full ⇒ immediate, retryable overflow with a Retry-After
+		// suggestion (G9) — zero queue wait, no parking.
+		overflow := &OverflowError{Reason: "model_queue_full", RetryAfter: DefaultOverflowRetryAfter}
+		p.registry.MarkCompleted(qr.ID, time.Now())
+		p.emitRequestTerminal(qr, ForwardOutcome{Err: overflow})
+		return nil, overflow
 	}
 	select {
 	case out := <-qr.ResultCh:
@@ -473,6 +568,12 @@ func (p *Pipeline) complete(qr *QueuedRequest, out ForwardOutcome) {
 	if !qr.completed.CompareAndSwap(false, true) {
 		return
 	}
+
+	// V4 R1.1: registry terminal transition (completed; kept until the
+	// R1.8 watermark evicts it). Bookkeeping bypass — never gates delivery.
+	now := time.Now()
+	p.registry.MarkCompleted(qr.ID, now)
+	p.queueMirror.ClearRetryAt(qr.ID)
 
 	// V3.1: Record T9 timestamp (response end - stream completed)
 	qr.SetT9_ResponseEnd()
@@ -678,14 +779,17 @@ func (p *Pipeline) getOrCreateForwarder(cred CredentialRef) *credForwarder {
 	return cf
 }
 
-// queueWaitBudget returns the max pacing wait for a request on its selected cred.
+// queueWaitBudget returns the max pacing wait for a request on its selected
+// cred. Since v4 (R1.3) a non-positive budget means ZERO wait: a saturated
+// governor fails over immediately instead of parking the request. The old
+// 30s hard floor was deliberately REMOVED — see UT-DQ-02.
 func (p *Pipeline) queueWaitBudget(qr *QueuedRequest) time.Duration {
 	ms := qr.SelectedCred.MaxQueueWaitMS
 	if ms <= 0 {
 		ms = p.config().MaxQueueWaitMS
 	}
 	if ms <= 0 {
-		return 30 * time.Second // hard floor safety
+		return 0
 	}
 	return time.Duration(ms) * time.Millisecond
 }

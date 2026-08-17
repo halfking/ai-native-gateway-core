@@ -477,6 +477,15 @@ func projectSnapshot(
 	if event.NodeHealthStatus != "" {
 		snapshot.NodeHealthStatus = event.NodeHealthStatus
 	}
+	if event.RetryAt != nil {
+		retryAt := *event.RetryAt
+		snapshot.RetryAt = &retryAt
+	}
+	snapshot.LifecycleState = lifecycleStateForEvent(event)
+	if snapshot.LifecycleState != LifecyclePending {
+		// retry_at only matters while the request is parked in pending.
+		snapshot.RetryAt = nil
+	}
 	if event.Stage == StageTerminal {
 		completed := event.OccurredAt
 		snapshot.CompletedAt = &completed
@@ -484,10 +493,35 @@ func projectSnapshot(
 	return snapshot
 }
 
+// lifecycleStateForEvent derives the request-registry state from a journey
+// event (v4 spec §6 mapping). A retrying event carrying retry_at parks the
+// request back into pending; retrying without retry_at stays in-flight
+// (immediate failover).
+func lifecycleStateForEvent(event JourneyEvent) LifecycleState {
+	switch event.Stage {
+	case StageTerminal:
+		return LifecycleCompleted
+	case StageUpstream, StageStreaming:
+		return LifecycleInFlight
+	case StageRetrying:
+		if event.RetryAt != nil {
+			return LifecyclePending
+		}
+		return LifecycleInFlight
+	default:
+		// received / routing / model_queue / credential_queue / node_selection
+		return LifecyclePending
+	}
+}
+
 func cloneEvent(event JourneyEvent) JourneyEvent {
 	if event.Attempt != nil {
 		attempt := *event.Attempt
 		event.Attempt = &attempt
+	}
+	if event.RetryAt != nil {
+		retryAt := *event.RetryAt
+		event.RetryAt = &retryAt
 	}
 	return event
 }
@@ -509,6 +543,10 @@ func cloneSnapshot(snapshot RequestSnapshot) RequestSnapshot {
 	if snapshot.CompletedAt != nil {
 		completed := *snapshot.CompletedAt
 		snapshot.CompletedAt = &completed
+	}
+	if snapshot.RetryAt != nil {
+		retryAt := *snapshot.RetryAt
+		snapshot.RetryAt = &retryAt
 	}
 	return snapshot
 }
