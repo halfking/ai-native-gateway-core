@@ -175,4 +175,85 @@ describe('QueuePerspectivePanel', () => {
     expect(wrapper.text()).toContain('路由选择')
     expect(wrapper.find('.trail-stage').exists()).toBe(false)
   })
+
+  // ── OBS-UI：按模型分组的可用节点（2026-08-17） ────────────────────────────
+
+  it('hides the model-grouped section entirely when no node reports raw_models', () => {
+    liveStreamState.nodes = [
+      { credential_id: 1, provider_id: 2, manual_disabled: false, circuit_state: 'closed' },
+      { credential_id: 2, provider_id: 2, manual_disabled: false, circuit_state: 'closed' },
+    ]
+    const wrapper = mount(QueuePerspectivePanel)
+    expect(wrapper.find('.qp-layer--model-groups').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('按模型分组的可用节点')
+  })
+
+  it('groups nodes by their raw_models and shows request counts under each model', () => {
+    liveStreamState.nodes = [
+      { credential_id: 1, provider_id: 2, provider_code: 'a', manual_disabled: false, circuit_state: 'closed', raw_models: ['gpt-4o'] },
+      { credential_id: 2, provider_id: 3, provider_code: 'b', manual_disabled: false, circuit_state: 'closed', raw_models: ['gpt-4o', 'claude-sonnet'] },
+      { credential_id: 3, provider_id: 4, provider_code: 'c', manual_disabled: false, circuit_state: 'closed', raw_models: ['claude-sonnet'] },
+    ]
+    __testing.handleEnvelope({
+      type: 'request_lifecycle',
+      ts: '2026-08-17T00:00:00Z',
+      action: [
+        { request_id: 'r-gpt', seq: 1, action: 'credential_selected', credential_id: 1 },
+        { request_id: 'r-claude', seq: 1, action: 'credential_selected', credential_id: 3 },
+      ],
+    })
+    liveStreamState.requests = [
+      { ts: '2026-08-17T00:00:01Z', request_id: 'r-gpt', model: 'gpt-4o', status: 'in_progress', latency_ms: 320 },
+      { ts: '2026-08-17T00:00:02Z', request_id: 'r-claude', model: 'claude-sonnet', status: 'success', latency_ms: 880 },
+    ]
+
+    const wrapper = mount(QueuePerspectivePanel)
+    const groupLayer = wrapper.find('.qp-layer--model-groups')
+    expect(groupLayer.exists()).toBe(true)
+    expect(groupLayer.text()).toContain('按模型分组的可用节点')
+
+    const groups = groupLayer.findAll('.qp-model-group')
+    expect(groups).toHaveLength(2)
+    // 节点数都=2，按 localeCompare 升序：claude-sonnet 在前
+    expect(groups[0].text()).toContain('claude-sonnet')
+    expect(groups[0].text()).toContain('2 节点')
+    expect(groups[0].text()).toContain('1 请求')
+    expect(groups[1].text()).toContain('gpt-4o')
+    expect(groups[1].text()).toContain('2 节点')
+    expect(groups[1].text()).toContain('1 请求')
+
+    // 折叠态下不展开请求列表
+    expect(groups[0].findAll('.qp-model-group-requests')).toHaveLength(0)
+  })
+
+  it('expands a model to show node ops and the requests routed to those nodes', async () => {
+    liveStreamState.nodes = [
+      { credential_id: 5, provider_id: 1, provider_code: 'p', manual_disabled: false, circuit_state: 'closed', raw_models: ['m-1'] },
+    ]
+    __testing.handleEnvelope({
+      type: 'request_lifecycle',
+      ts: '2026-08-17T00:00:00Z',
+      action: [
+        { request_id: 'r-A', seq: 1, action: 'credential_selected', credential_id: 5 },
+      ],
+    })
+    liveStreamState.requests = [
+      { ts: '2026-08-17T00:00:01Z', request_id: 'r-A', model: 'm-1', status: 'success', latency_ms: 410 },
+    ]
+
+    const wrapper = mount(QueuePerspectivePanel)
+    const toggle = wrapper.find('.qp-model-group-toggle')
+    expect(toggle.exists()).toBe(true)
+    await toggle.trigger('click')
+
+    const body = wrapper.find('.qp-model-group-body')
+    expect(body.exists()).toBe(true)
+    // 复用 NodeOpsRow（其 CSS class 是 .node-ops-row）
+    expect(body.find('.node-ops-row').exists()).toBe(true)
+    const reqList = body.find('[data-testid="mng-requests-5"]')
+    expect(reqList.exists()).toBe(true)
+    expect(reqList.text()).toContain('m-1')
+    expect(reqList.text()).toContain('success')
+    expect(reqList.text()).toContain('410ms')
+  })
 })

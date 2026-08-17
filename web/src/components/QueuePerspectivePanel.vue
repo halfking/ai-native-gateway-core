@@ -13,8 +13,16 @@
  *   - 三态：加载 Skeleton / 空 EmptyState / 错误 ErrorBanner
  *   - 动画只用 transform/opacity
  */
-import { computed } from 'vue'
-import { queueRef, nodesRef, type LiveNodeStatus } from '../composables/liveStreamStore'
+import { computed, ref } from 'vue'
+import {
+  queueRef,
+  nodesRef,
+  liveStreamState,
+  getNodesForModel,
+  getRequestsForCredential,
+  type LiveNodeStatus,
+  type LiveRequest,
+} from '../composables/liveStreamStore'
 import RequestProcessingTrail from './RequestProcessingTrail.vue'
 import NodeOpsRow from './NodeOpsRow.vue'
 
@@ -108,6 +116,94 @@ const opsNodes = computed<LiveNodeStatus[]>(() => {
     })
     .slice(0, 8)
 })
+
+// ── OBS-UI：按模型分组的可用节点（2026-08-17） ─────────────────────────────
+//
+// 目标：回答"模型 X 现在有哪些可用节点 / 该节点下当前的请求"。
+// - 节点来源：LiveNodeStatus.raw_models（后端投影 credential_model_bindings）
+// - 请求来源：liveStreamState.requests ∩ 凭据匹配（requestCredential 索引）
+//
+// 只在 raw_models 真正上报时渲染该区块（缺省隐藏，禁零值冒充）。
+// 任一节点的状态字段都缺省显示，不要为"零"渲染为虚假徽标。
+interface ModelGroup {
+  model: string
+  nodes: LiveNodeStatus[]
+  requestCount: number
+}
+
+const expandedModels = ref<Set<string>>(new Set())
+
+function toggleModel(model: string) {
+  const next = new Set(expandedModels.value)
+  if (next.has(model)) next.delete(model)
+  else next.add(model)
+  expandedModels.value = next
+}
+
+const modelGroups = computed<ModelGroup[]>(() => {
+  // 从节点收集 distinct 模型；按节点数降序以稳定展示
+  const byModel = new Map<string, Set<number>>()
+  for (const n of nodes.value) {
+    if (!n || !Array.isArray(n.raw_models)) continue
+    for (const m of n.raw_models) {
+      if (!m) continue
+      let set = byModel.get(m)
+      if (!set) {
+        set = new Set<number>()
+        byModel.set(m, set)
+      }
+      set.add(n.credential_id)
+    }
+  }
+  const out: ModelGroup[] = []
+  for (const [model, credSet] of byModel) {
+    const credNodes = getNodesForModel(model)
+    if (credNodes.length === 0) continue
+    let requestCount = 0
+    for (const credID of credSet) {
+      requestCount += getRequestsForCredential(credID).length
+    }
+    out.push({ model, nodes: credNodes, requestCount })
+  }
+  out.sort((a, b) => b.nodes.length - a.nodes.length || a.model.localeCompare(b.model))
+  return out
+})
+
+const hasModelGroups = computed(() => modelGroups.value.length > 0)
+
+function nodeStatusSummary(n: LiveNodeStatus): string {
+  const parts: string[] = []
+  if (n.manual_disabled) parts.push('手工禁用')
+  if (n.circuit_state === 'open') parts.push('熔断')
+  else if (n.circuit_state === 'half_open') parts.push('半开')
+  if (n.fp_disabled) parts.push('fpslot 禁用')
+  if (n.disable_kind === 'system') parts.push('系统降级')
+  if ((n.quota_state ?? '').includes('exhausted')) parts.push('配额耗尽')
+  if (n.availability_state === 'suspended') parts.push('暂停')
+  if (parts.length === 0) parts.push('可用')
+  return parts.join(' / ')
+}
+
+function requestsForNode(n: LiveNodeStatus): LiveRequest[] {
+  return getRequestsForCredential(n.credential_id)
+}
+
+function formatLatency(ms: number | null | undefined): string {
+  if (ms == null) return '—'
+  if (ms < 1000) return `${ms}ms`
+  return `${(ms / 1000).toFixed(2)}s`
+}
+
+function formatTs(ts: string | undefined): string {
+  if (!ts) return ''
+  try {
+    const d = new Date(ts)
+    if (Number.isNaN(d.getTime())) return ts
+    return d.toLocaleTimeString()
+  } catch {
+    return ts
+  }
+}
 </script>
 
 <template>
@@ -236,6 +332,70 @@ const opsNodes = computed<LiveNodeStatus[]>(() => {
           <span class="qp-layer-count">{{ opsNodes.length }}/{{ nodes.length }} 个节点</span>
         </div>
         <NodeOpsRow v-for="n in opsNodes" :key="n.credential_id" :node="n" />
+      </div>
+
+      <!-- OBS-UI：按模型分组的可用节点（2026-08-17） ───────────────────────────
+           缺省隐藏：raw_models 未上报时整节不出。
+           节点复用 NodeOpsRow；节点下请求列表来自 requestCredential 索引
+           （窗口语义：仅 SSE 回放窗口内的请求）。 -->
+      <div v-if="hasModelGroups" class="qp-layer qp-layer--model-groups">
+        <div class="qp-layer-header">
+          <span class="qp-layer-name">按模型分组的可用节点</span>
+          <span class="qp-layer-count">{{ modelGroups.length }} 个模型</span>
+        </div>
+        <div v-for="g in modelGroups" :key="g.model" class="qp-model-group">
+          <button
+            type="button"
+            class="qp-model-group-toggle"
+            :aria-expanded="expandedModels.has(g.model)"
+            @click="toggleModel(g.model)"
+          >
+            <span class="qp-model-group-caret" :class="{ 'qp-model-group-caret--open': expandedModels.has(g.model) }">▸</span>
+            <span class="qp-model-group-name">{{ g.model }}</span>
+            <span class="qp-model-group-counts">
+              <span class="qp-pill">{{ g.nodes.length }} 节点</span>
+              <span class="qp-pill" :class="{ 'qp-pill--active': g.requestCount > 0 }">
+                {{ g.requestCount }} 请求
+              </span>
+            </span>
+          </button>
+          <div v-if="expandedModels.has(g.model)" class="qp-model-group-body">
+            <div v-for="n in g.nodes" :key="n.credential_id" class="qp-model-group-node">
+              <NodeOpsRow :node="n" />
+              <div class="qp-model-group-node-meta">
+                <span class="qp-status-text">{{ nodeStatusSummary(n) }}</span>
+                <span v-if="typeof n.last_latency_ms === 'number'" class="qp-meta-text">
+                  最近延迟 {{ formatLatency(n.last_latency_ms) }}
+                </span>
+                <span v-if="typeof n.in_flight === 'number' && n.in_flight > 0" class="qp-meta-text">
+                  在途 {{ n.in_flight }}
+                </span>
+                <span v-if="n.last_error" class="qp-meta-text qp-meta-text--err">
+                  最近错误：{{ n.last_error }}
+                </span>
+              </div>
+              <ul
+                v-if="requestsForNode(n).length > 0"
+                class="qp-model-group-requests"
+                :data-testid="`mng-requests-${n.credential_id}`"
+              >
+                <li
+                  v-for="r in requestsForNode(n)"
+                  :key="r.request_id"
+                  class="qp-model-group-request"
+                >
+                  <span class="qp-rq-model">{{ r.model || '—' }}</span>
+                  <span class="qp-rq-status" :class="`qp-rq-status--${r.status}`">{{ r.status || '—' }}</span>
+                  <span v-if="typeof r.latency_ms === 'number'" class="qp-rq-latency">
+                    {{ formatLatency(r.latency_ms) }}
+                  </span>
+                  <span v-if="r.error_kind" class="qp-rq-err">{{ r.error_kind }}</span>
+                  <span class="qp-rq-ts">{{ formatTs(r.ts) }}</span>
+                </li>
+              </ul>
+            </div>
+          </div>
+        </div>
       </div>
 
       <RequestProcessingTrail />
@@ -433,5 +593,157 @@ const opsNodes = computed<LiveNodeStatus[]>(() => {
   color: var(--kx-text);
   min-width: 24px;
   text-align: right;
+}
+
+/* ── OBS-UI：按模型分组的可用节点（2026-08-17） ────────────────────────── */
+.qp-layer--model-groups {
+  background: var(--kx-surface-2, var(--kx-surface));
+  border-radius: var(--kx-radius-sm, 6px);
+  padding: 8px 10px;
+}
+.qp-model-group {
+  border-top: 1px solid var(--kx-border);
+  padding: 6px 0;
+}
+.qp-model-group:first-child {
+  border-top: none;
+}
+.qp-model-group-toggle {
+  all: unset;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  cursor: pointer;
+  padding: 4px 0;
+  color: var(--kx-text);
+}
+.qp-model-group-toggle:focus-visible {
+  outline: 2px solid var(--kx-focus, var(--kx-primary, #5b8cff));
+  outline-offset: 2px;
+}
+.qp-model-group-caret {
+  display: inline-block;
+  width: 12px;
+  font-size: 12px;
+  color: var(--kx-text-muted, var(--kx-text));
+  transition: transform 120ms ease;
+}
+.qp-model-group-caret--open {
+  transform: rotate(90deg);
+}
+.qp-model-group-name {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--kx-text);
+}
+.qp-model-group-counts {
+  display: inline-flex;
+  gap: 6px;
+  margin-left: auto;
+}
+.qp-pill {
+  display: inline-block;
+  font-size: 11px;
+  padding: 1px 8px;
+  border-radius: 10px;
+  background: var(--kx-surface-3, var(--kx-surface));
+  border: 1px solid var(--kx-border);
+  color: var(--kx-text-muted, var(--kx-text));
+}
+.qp-pill--active {
+  color: var(--kx-primary, #5b8cff);
+  border-color: var(--kx-primary, #5b8cff);
+}
+.qp-model-group-body {
+  padding: 6px 0 4px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.qp-model-group-node {
+  border: 1px solid var(--kx-border);
+  border-radius: var(--kx-radius-sm, 6px);
+  padding: 6px 8px;
+  background: var(--kx-surface);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.qp-model-group-node-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--kx-text-muted, var(--kx-text));
+}
+.qp-status-text {
+  color: var(--kx-text);
+  font-weight: 500;
+}
+.qp-meta-text--err {
+  color: var(--kx-danger, #e5484d);
+}
+.qp-model-group-requests {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.qp-model-group-request {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 12px;
+  padding: 2px 4px;
+  border-top: 1px dashed var(--kx-border);
+  color: var(--kx-text);
+}
+.qp-model-group-request:first-child {
+  border-top: none;
+}
+.qp-rq-model {
+  font-weight: 500;
+  min-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.qp-rq-status {
+  font-size: 11px;
+  padding: 0 6px;
+  border-radius: 6px;
+  background: var(--kx-surface-3, var(--kx-surface));
+  color: var(--kx-text-muted, var(--kx-text));
+  border: 1px solid var(--kx-border);
+}
+.qp-rq-status--success {
+  color: var(--kx-success, #1f9d55);
+  border-color: var(--kx-success, #1f9d55);
+}
+.qp-rq-status--failure {
+  color: var(--kx-danger, #e5484d);
+  border-color: var(--kx-danger, #e5484d);
+}
+.qp-rq-status--in_progress {
+  color: var(--kx-primary, #5b8cff);
+  border-color: var(--kx-primary, #5b8cff);
+}
+.qp-rq-status--rate_limited {
+  color: var(--kx-warning, #d4a72c);
+  border-color: var(--kx-warning, #d4a72c);
+}
+.qp-rq-latency {
+  color: var(--kx-text-muted, var(--kx-text));
+}
+.qp-rq-err {
+  color: var(--kx-danger, #e5484d);
+}
+.qp-rq-ts {
+  margin-left: auto;
+  color: var(--kx-text-muted, var(--kx-text));
+  font-variant-numeric: tabular-nums;
 }
 </style>
