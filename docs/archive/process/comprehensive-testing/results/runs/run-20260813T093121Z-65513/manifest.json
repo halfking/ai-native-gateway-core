@@ -1,0 +1,8 @@
+{
+  "schema_version": "1.0",
+  "run_id": "run-20260813T093121Z-65513",
+  "suite": "performance",
+  "scenarios": [
+    "P01_performance"
+  ]
+}

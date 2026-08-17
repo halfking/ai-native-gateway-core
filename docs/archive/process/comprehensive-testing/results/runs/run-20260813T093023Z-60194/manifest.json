@@ -1,0 +1,8 @@
+{
+  "schema_version": "1.0",
+  "run_id": "run-20260813T093023Z-60194",
+  "suite": "concurrency",
+  "scenarios": [
+    "C01_concurrency"
+  ]
+}
