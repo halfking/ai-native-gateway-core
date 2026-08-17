@@ -50,8 +50,9 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 	pc *pendingCapturer,
 	diagnostics *DiagnosticContext,
 ) (outcome StreamOutcome) {
+	bodyCloser := &onceReadCloser{ReadCloser: resp.Body}
 	//nolint:errcheck // best-effort close
-	defer resp.Body.Close()
+	defer bodyCloser.Close()
 	defer func() {
 		if r := recover(); r != nil {
 			slog.Error("anthropic stream panic recovered", "panic", r, "stack", string(debug.Stack()), "request_id", requestID)
@@ -163,7 +164,6 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 
 	// BUG-1 fix: hold the body closer so readNextStreamLine can close it on
 	// chunk timeout, unblocking the ReadString goroutine immediately.
-	bodyCloser := resp.Body
 	reader := bufio.NewReaderSize(bodyCloser, streamBufSize)
 	lastSend := time.Now()
 
@@ -194,7 +194,7 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 	textAccMode := textAccProbing
 
 	// First-byte timeout
-	firstLine, err := readLineWithTimeout(ctx, reader, runtimeCfg.firstByteTimeout)
+	firstLine, err := readLineWithTimeoutAndCloser(ctx, reader, bodyCloser, runtimeCfg.firstByteTimeout)
 	if err != nil {
 		if capture != nil {
 			capture.MarkInterruptedWithReason("first_byte_timeout")

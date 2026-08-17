@@ -1139,6 +1139,19 @@ func readLineWithTimeoutAndCloser(ctx context.Context, reader *bufio.Reader, clo
 	return newTimedLineReader(reader, closer).ReadLine(ctx, timeout)
 }
 
+type onceReadCloser struct {
+	io.ReadCloser
+	once sync.Once
+	err  error
+}
+
+func (c *onceReadCloser) Close() error {
+	c.once.Do(func() {
+		c.err = c.ReadCloser.Close()
+	})
+	return c.err
+}
+
 type timedLineReader struct {
 	reader *bufio.Reader
 	// closer is the underlying io.ReadCloser (e.g. resp.Body). When non-nil,

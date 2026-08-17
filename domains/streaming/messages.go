@@ -559,7 +559,11 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if modelResolution != nil {
 		canonicalID = modelResolution.CanonicalID
 	}
-	gwSessionID, gwTaskID := gwSessionTaskFromRequest(r, session.SessionFromContext(r.Context()))
+	gwSessionID, gwTaskID := gwSessionTaskFromRequest(r, sessionInfo)
+	auditCtx := executors.AuditContextFromRequest(r, sessionInfo, bodyBytes, keyInfo)
+	auditCtx.RequestID = requestID
+	auditCtx.GWSessionID = gwSessionID
+	auditCtx.GWTaskID = gwTaskID
 	outboundForLog := explicitOutbound
 	if len(candidates) > 0 {
 		outboundForLog = outboundModelForLog(clientModel, explicitOutbound, candidates[0].RawModel)
@@ -611,12 +615,18 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				}
 				return 0
 			}(),
-			SessionID: gwSessionID,
-			Model:     clientModel,
-			TenantID:  tenant(keyInfo),
-			AppID:     appID(keyInfo),
-			ApiKeyID:  apiKeyIDPtr(keyInfo),
-			RequestID: requestID,
+			SessionID:       gwSessionID,
+			Model:           clientModel,
+			TenantID:        tenant(keyInfo),
+			AppID:           appID(keyInfo),
+			ApiKeyID:        apiKeyIDPtr(keyInfo),
+			RequestID:       requestID,
+			ClientRequestID: auditCtx.ClientRequestID,
+			GWTaskID:        auditCtx.GWTaskID,
+			ParentRequestID: auditCtx.ParentRequestID,
+			TraceID:         auditCtx.TraceID,
+			SpanID:          auditCtx.SpanID,
+			Audit:           auditCtx,
 		}
 	}
 

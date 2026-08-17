@@ -206,22 +206,7 @@ func (e *Executor) dispatchForward(ctx context.Context, qr *dispatch.QueuedReque
 	if cand.CredentialID == 0 {
 		return dispatch.ForwardOutcome{Err: errDispatchNoCandidate}
 	}
-	// V3.3-OBS OBS-B1 (2026-08-15): dispatch_v2 路径的 upstream_request 动作
-	// 事件（S7，每个候选转发开始）。AttemptCount 从 1 开始计。
-	attempt := qr.AttemptCount + 1
-	e.liveActions.Emit(ctx, liveactions.ActionEvent{
-		RequestID:    qr.ID,
-		Action:       liveactions.ActionUpstreamRequest,
-		Model:        qr.ResolvedModel,
-		CredentialID: ref.CredentialID,
-		Retry:        attempt > 1,
-		RetrySeq:     attempt,
-		Detail: map[string]string{
-			"attempt":     strconv.Itoa(attempt),
-			"provider_id": strconv.Itoa(ref.ProviderID),
-		},
-	})
-	return e.forwardForDispatch(dctx, cand)
+	return e.forwardForDispatch(ctx, dctx, cand)
 }
 
 // candidateToRef maps a routing candidate into dispatch's decoupled view.
@@ -265,17 +250,21 @@ func dispatchExecutionContext(params *ExecParams) (context.Context, context.Canc
 	if params == nil || params.R == nil {
 		return context.WithCancel(context.Background())
 	}
-	if params.IsStream {
-		return context.WithCancel(context.WithoutCancel(params.R.Context()))
+	parent := params.R.Context()
+	if params.IsStream && (hasSessionID(params) || params.SurvivalAttempt) {
+		parent = context.WithoutCancel(parent)
 	}
-	return context.WithCancel(params.R.Context())
+	return context.WithCancel(parent)
 }
 
 func copyDispatchAttemptMetadata(ee *ExecuteError, qr *dispatch.QueuedRequest) {
 	if ee == nil || qr == nil {
 		return
 	}
-	ee.Tried = qr.AttemptCount
+	dctx, _ := qr.Payload.(*dispatchCtx)
+	if dctx != nil && dctx.params != nil && dctx.params.UpstreamAttempts != nil {
+		ee.Tried = dctx.params.UpstreamAttempts.Used()
+	}
 }
 
 // executeViaDispatch is the V2 entry point called from Execute. It packages
@@ -435,8 +424,9 @@ func mapCandidatesByModel(candidates []provider.Candidate) map[string][]provider
 // loop (fp slot → circuit → Limiter.AcquireAllNoCredLayer → key rotator →
 // executeOpenAI/executeAnthropic → success/error side effects) but returns
 // control to the dispatch mover on pre-firstbyte failure.
-func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate) dispatch.ForwardOutcome {
+func (e *Executor) forwardForDispatch(ctx context.Context, dctx *dispatchCtx, cand provider.Candidate) dispatch.ForwardOutcome {
 	paramsCopy := *dctx.params
+	paramsCopy.R = paramsCopy.R.WithContext(ctx)
 	paramsCopy.DispatchAttempt = true
 	params := &paramsCopy
 
