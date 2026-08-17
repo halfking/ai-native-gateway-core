@@ -554,6 +554,9 @@ func TestAnthropicExecutor_Q3QualityFix_RenamesEmptyToolName(t *testing.T) {
 	if _, err := ae.WriteNonStreamResponse(rec, resp, "client-model", "fix", nil); err != nil {
 		t.Fatalf("WriteNonStreamResponse: %v", err)
 	}
+	if got := rec.Header().Get("Content-Length"); got != strconvItoa(rec.Body.Len()) {
+		t.Fatalf("Q3 Content-Length = %q, body length = %d", got, rec.Body.Len())
+	}
 	out := rec.Body.String()
 	if !strings.Contains(out, `__unknown_tool_0__`) {
 		t.Fatalf("Q3 quality fix did not rewrite empty tool name; body=%s", out)

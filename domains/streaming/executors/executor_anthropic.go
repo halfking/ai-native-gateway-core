@@ -155,24 +155,6 @@ func (a *AnthropicExecutor) WriteNonStreamResponse(w http.ResponseWriter, resp *
 	if err != nil {
 		return nil, err
 	}
-	// Copy upstream response headers, but drop hop-by-hop / length headers
-	// (Content-Length will be re-derived from the body bytes written, and
-	// Content-Type/Connection/etc are set explicitly below). Copying
-	// Content-Length verbatim produced a duplicate Content-Length line —
-	// nginx rejects it as 'upstream sent duplicate header line' and the
-	// client sees a 502 even though the gateway returned 200 internally.
-	for k, vs := range resp.Header {
-		if strings.EqualFold(k, "Content-Length") ||
-			strings.EqualFold(k, "Content-Encoding") ||
-			strings.EqualFold(k, "Connection") ||
-			strings.EqualFold(k, "Transfer-Encoding") {
-			continue
-		}
-		for _, v := range vs {
-			w.Header().Add(k, v)
-		}
-	}
-
 	// Q3 mode (openai client -> anthropic upstream): translate the
 	// Anthropic Messages response body into an OpenAI chat.completion
 	// body so the OpenAI parser doesn't choke on the shape mismatch.
@@ -249,6 +231,7 @@ func (a *AnthropicExecutor) WriteNonStreamResponse(w http.ResponseWriter, resp *
 				qualitySignals.Score = score
 			}
 		}
+		copyNonStreamResponseHeaders(w.Header(), resp.Header, len(body))
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(resp.StatusCode)
 		_, err = w.Write(body)
@@ -269,11 +252,7 @@ func (a *AnthropicExecutor) WriteNonStreamResponse(w http.ResponseWriter, resp *
 	// instead of receiving a single text blob the user can't tell apart from
 	// the answer.
 	body = splitEmbeddedThinkTags(body)
-	for k, vs := range resp.Header {
-		for _, v := range vs {
-			w.Header().Add(k, v)
-		}
-	}
+	copyNonStreamResponseHeaders(w.Header(), resp.Header, len(body))
 	w.WriteHeader(resp.StatusCode)
 	_, err = w.Write(body)
 	return body, err
@@ -871,6 +850,13 @@ func (e *Executor) executeAnthropicOnce(
 		e.DisguisePool.MaybeRotate()
 	}
 
+	timeout := e.UpstreamTimeout
+	if params.IsStream {
+		timeout = e.StreamTimeout
+	}
+	ctx, cancel := e.upstreamContext(params, timeout)
+	defer cancel()
+
 	var httpClient *http.Client
 	var reqPool *pool.Pool
 	var poolUnavailable error
@@ -889,7 +875,7 @@ func (e *Executor) executeAnthropicOnce(
 	}
 	if httpClient == nil {
 		httpClient = http.DefaultClient
-	} else if err := reqPool.Acquire(params.R.Context()); err != nil {
+	} else if err := reqPool.Acquire(ctx); err != nil {
 		poolUnavailable = err
 		httpClient = nil
 	} else {
@@ -899,24 +885,9 @@ func (e *Executor) executeAnthropicOnce(
 		return nil, poolUnavailable
 	}
 
-	timeout := e.UpstreamTimeout
-	if params.IsStream {
-		timeout = e.StreamTimeout
-	}
-	// Track C (2026-06-21): when the request carries a gateway session
-	// id (X-Gw-Session-Id / X-Session-Id), decouple the upstream context
-	// from the client request context so a client disconnect does not
-	// cancel the vendor call. The capturer in the Anthropic stream
-	// (cmd/gateway/main.go wiring) keeps reading until completion and
-	// saves the body to pending store, letting the client pick up the
-	// reply on reconnect via GET /v1/sessions/{id}/pending-response.
-	//
-	// For non-session requests we keep the original behaviour: client
-	// disconnect cancels upstream immediately to avoid wasting vendor
-	// budget on requests the client will not retrieve. The timeout is
-	// still respected in both cases.
-	ctx, cancel := e.upstreamContext(params, timeout)
-	defer cancel()
+	// Use the same lifecycle for pool acquisition and the vendor request.
+	// Ordinary streams follow client cancellation; explicit stream sessions and
+	// survival attempts remain alive for pending-response capture.
 	req = req.WithContext(ctx)
 
 	if e.Upstream != nil {
@@ -924,8 +895,7 @@ func (e *Executor) executeAnthropicOnce(
 			return io.NopCloser(bytes.NewReader(bodyBytes)), nil
 		}
 	}
-	e.logUpstreamRequest(params, diagnosticProtocol(cand.Protocol, "anthropic-messages"), bodyBytes)
-	if err := consumeUpstreamAttempt(params); err != nil {
+	if err := e.beginUpstreamAttempt(params, cand, diagnosticProtocol(cand.Protocol, "anthropic-messages"), bodyBytes); err != nil {
 		return nil, err
 	}
 

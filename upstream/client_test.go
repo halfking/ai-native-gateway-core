@@ -454,6 +454,12 @@ func TestError_NilReceiver_2026_07_20(t *testing.T) {
 	if got := nilPtr.Unwrap(); got != nil {
 		t.Fatalf("(*Error).Unwrap() returned %v on nil receiver; want nil", got)
 	}
+	if got := nilPtr.UpstreamStatusCode(); got != 0 {
+		t.Fatalf("(*Error).UpstreamStatusCode() returned %d on nil receiver; want 0", got)
+	}
+	if got := nilPtr.UpstreamBody(); got != nil {
+		t.Fatalf("(*Error).UpstreamBody() returned %q on nil receiver; want nil", got)
+	}
 }
 
 // TestError_NonNilReceiver_2026_07_20 confirms the nil-receiver guards
@@ -465,6 +471,7 @@ func TestError_NonNilReceiver_2026_07_20(t *testing.T) {
 		Message:    "rate limited",
 		Err:        fmt.Errorf("429 hit"),
 		StatusCode: 429,
+		Body:       []byte(`{"error":"rate limited"}`),
 	}
 	got := e.Error()
 	want := "[rate_limit] rate limited: 429 hit"
@@ -473,6 +480,12 @@ func TestError_NonNilReceiver_2026_07_20(t *testing.T) {
 	}
 	if err := e.Unwrap(); err == nil || err.Error() != "429 hit" {
 		t.Fatalf("(*Error).Unwrap() returned %v, want non-nil with %q", err, "429 hit")
+	}
+	if got := e.UpstreamStatusCode(); got != 429 {
+		t.Fatalf("(*Error).UpstreamStatusCode() = %d, want 429", got)
+	}
+	if got := string(e.UpstreamBody()); got != `{"error":"rate limited"}` {
+		t.Fatalf("(*Error).UpstreamBody() = %q, want captured body", got)
 	}
 }
 
