@@ -92,6 +92,7 @@
 
 ## 已知后续项（本轮未做）
 
-- `deploy/sql/objects/`（7.5MB 结构快照，与 `sql/` 三处并存）→ 收敛为单一规范源+生成物。
+- `deploy/sql/schemas/baseline/` 与 `sql/schema/` 为有意维护的双副本（installer 嵌入用，
+  `migrate-sql-files.sh` 同步）——保持现状，改动 schema 时记得双侧同步。
 - Go 包分层迁移 → ADR-0002。
 - git 历史中的大二进制（约 70MB）与已泄漏密钥 → 需历史重写+密钥轮换专项。
