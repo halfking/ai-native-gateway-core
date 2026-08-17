@@ -58,6 +58,29 @@ func TestStreamSessionStopEndsHeartbeatLoop(t *testing.T) {
 	session.Stop()
 }
 
+func TestStreamSessionContextCancelEndsHeartbeatLoop(t *testing.T) {
+	rec := newSyncRecorder()
+	ctx, cancel := context.WithCancel(context.Background())
+	session := NewStreamSession(rec, 5*time.Millisecond, sseKeepaliveComment)
+	session.Start(ctx)
+	deadline := time.Now().Add(250 * time.Millisecond)
+	for strings.Count(rec.String(), sseKeepaliveComment) == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	cancel()
+	select {
+	case <-session.doneCh:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("heartbeat loop did not stop after request context cancellation")
+	}
+	before := rec.String()
+	time.Sleep(20 * time.Millisecond)
+	if got := rec.String(); got != before {
+		t.Fatalf("wire changed after request context cancellation: before=%q after=%q", before, got)
+	}
+	session.Stop()
+}
+
 func TestStreamSessionSerializesHeartbeatAndSemanticFrames(t *testing.T) {
 	rec := newSyncRecorder()
 	session := NewStreamSession(rec, time.Hour, sseKeepaliveComment)

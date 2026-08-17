@@ -291,6 +291,28 @@ func TestStreamAnthropicPassthrough_BytesForPassThrough(t *testing.T) {
 	assert.False(t, out.Interrupted)
 }
 
+func TestStreamAnthropicPassthrough_KeepaliveBeforeFirstSemanticFrameDoesNotCommit(t *testing.T) {
+	body := ": upstream ping\n\ndata: {\"type\":\"content_block_delta\"}\n\n"
+	resp := &http.Response{Body: io.NopCloser(strings.NewReader(body))}
+	writer := newBridgeWriter()
+	out := StreamAnthropicPassthrough(writer, resp, "claude", "claude", "req-boundary", nil, nil)
+	if out.Interrupted {
+		t.Fatalf("outcome = %+v", out)
+	}
+	if !strings.HasPrefix(writer.buf.String(), ": upstream ping\n\n") {
+		t.Fatalf("wire = %q, keepalive must precede first semantic frame", writer.buf.String())
+	}
+}
+
+func TestStreamAnthropicPassthrough_FlushErrorAfterSemanticFrameIsClientFailure(t *testing.T) {
+	resp := &http.Response{Body: io.NopCloser(strings.NewReader("data: {\"type\":\"content_block_delta\"}\n\n"))}
+	writer := &initialFlushErrorWriter{header: make(http.Header), flushErr: errors.New("client gone")}
+	out := StreamAnthropicPassthrough(writer, resp, "claude", "claude", "req-flush", nil, nil)
+	if !out.Interrupted || out.Reason != "client_write_failed" || out.Kind != errorsx.KindCanceled {
+		t.Fatalf("outcome = %+v, want client_write_failed cancellation", out)
+	}
+}
+
 func TestStreamAnthropicPassthrough_ForwardsUnterminatedFinalFrame(t *testing.T) {
 	const body = `data: {"type":"message_stop"}`
 	resp := &http.Response{Body: io.NopCloser(strings.NewReader(body))}

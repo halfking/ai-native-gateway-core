@@ -183,7 +183,7 @@ func (w *interceptingStreamWriter) writeFrame(frame []byte) {
 	}
 }
 
-func startPreStreamKeepalive(w http.ResponseWriter, interval time.Duration, requestID string) (*preStreamKeepalive, bool) {
+func startPreStreamKeepalive(ctx context.Context, w http.ResponseWriter, interval time.Duration, requestID string) (*preStreamKeepalive, bool) {
 	if _, ok := w.(http.Flusher); !ok {
 		return nil, false
 	}
@@ -199,7 +199,7 @@ func startPreStreamKeepalive(w http.ResponseWriter, interval time.Duration, requ
 	}
 	streamWriter.WriteHeader(http.StatusOK)
 	_ = session.Heartbeat()
-	session.Start(context.Background())
+	session.Start(ctx)
 	return psk, true
 }
 
@@ -3435,7 +3435,7 @@ func (h *ChatHandler) serveWithExecutor(
 	if isStream {
 		cfg := currentStreamRuntimeConfig()
 		if cfg.enablePreStreamKeepalive {
-			if psk, ok := startPreStreamKeepalive(w, cfg.keepaliveInterval, requestID); ok {
+			if psk, ok := startPreStreamKeepalive(r.Context(), w, cfg.keepaliveInterval, requestID); ok {
 				preStream = psk
 				preStreamPrepared = true
 				// 2026-08-15 (A-P2-6): every later body write on this

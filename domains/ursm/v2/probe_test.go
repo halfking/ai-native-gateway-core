@@ -3,6 +3,7 @@ package v2
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
@@ -19,6 +20,25 @@ func TestApplyProbeSuccessUpdatesAvailable(t *testing.T) {
 		CredentialID: 1, RawModel: "m", Success: true,
 	}); err != nil {
 		t.Fatalf("probe: %v", err)
+	}
+}
+
+func TestApplyProbeRefreshesNodeTTL(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	cfg := DefaultConfig()
+	cfg.NodeTTL = time.Hour
+	mgr := New(Dependencies{Redis: rdb, Config: cfg})
+	ctx := context.Background()
+	if err := mgr.ApplyProbe(ctx, api.ProbeOutcome{CredentialID: 1, RawModel: "m", Success: true}); err != nil {
+		t.Fatalf("probe: %v", err)
+	}
+	ttl, err := rdb.TTL(ctx, "ursm:v2:node:1:m").Result()
+	if err != nil {
+		t.Fatalf("ttl: %v", err)
+	}
+	if ttl <= 0 || ttl > time.Hour {
+		t.Fatalf("probe node ttl=%s, want positive value no greater than configured hour", ttl)
 	}
 }
 

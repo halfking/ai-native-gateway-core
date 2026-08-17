@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"math"
+	"strconv"
 	"testing"
 	"time"
 
@@ -28,6 +30,100 @@ func TestRecordRequestSuccess(t *testing.T) {
 	}
 	if res.Status != "applied" {
 		t.Fatalf("status=%s", res.Status)
+	}
+}
+
+func TestRecordRequestMaintainsWindowsRatesAndLatencyAtomically(t *testing.T) {
+	s, mr := newTestStore(t)
+	defer mr.Close()
+	ctx := context.Background()
+	node := "ursm:v2:node:metrics:test"
+	w1, w5, w30 := "ursm:v2:win:1m:metrics:test", "ursm:v2:win:5m:metrics:test", "ursm:v2:win:30m:metrics:test"
+	for i, success := range []bool{true, false, true} {
+		res, err := s.RecordRequest(ctx, node, w1, w5, w30, RecordOutcome{
+			Success: success, ErrorKind: "timeout", NowMs: int64(1_000_000 + i*1_000),
+			LatencyMs: 100 + i*100, RequestID: string(rune('a' + i)), NodeTTL: time.Hour,
+			Window5mTTL: 6 * time.Minute, Window30mTTL: 35 * time.Minute,
+		})
+		if err != nil || res.Status != "applied" {
+			t.Fatalf("record %d: result=%+v err=%v", i, res, err)
+		}
+	}
+	for field, want := range map[string]string{
+		"samples_1m": "3", "samples_5m": "3", "samples_30m": "3",
+		"lat_ewma_ms": "169",
+	} {
+		got := mr.HGet(node, field)
+		if got != want {
+			t.Fatalf("%s=%q, want %q", field, got, want)
+		}
+	}
+	for _, field := range []string{"sr_1m", "sr_5m", "sr_30m"} {
+		got, err := strconv.ParseFloat(mr.HGet(node, field), 64)
+		if err != nil || math.Abs(got-2.0/3.0) > 1e-12 {
+			t.Fatalf("%s=%q err=%v, want approximately 2/3", field, mr.HGet(node, field), err)
+		}
+	}
+	for _, key := range []string{w1, w5, w30} {
+		got, err := s.rdb.ZCard(ctx, key).Result()
+		if err != nil || got != 3 {
+			t.Fatalf("window %s has %d events, err=%v, want 3", key, got, err)
+		}
+	}
+}
+
+func TestRecordRequestCountsLegacyWindowMembersDuringRollingUpgrade(t *testing.T) {
+	s, mr := newTestStore(t)
+	defer mr.Close()
+	ctx := context.Background()
+	now := int64(2_000_000)
+	node := "ursm:v2:node:legacy-window"
+	window := "ursm:v2:win:5m:legacy-window"
+	mr.ZAdd(window, float64(now-1000), "0:1:100")
+	mr.ZAdd(window, float64(now-900), "request-2:0:100")
+	if _, err := s.RecordRequest(ctx, node,
+		"ursm:v2:win:1m:legacy-window", window, "ursm:v2:win:30m:legacy-window",
+		RecordOutcome{Success: true, NowMs: now, LatencyMs: 100, RequestID: "new", NodeTTL: time.Hour,
+			Window5mTTL: 6 * time.Minute, Window30mTTL: 35 * time.Minute}); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	if got := mr.HGet(node, "samples_5m"); got != "3" {
+		t.Fatalf("samples_5m=%q, want 3 including legacy members", got)
+	}
+	rate, err := strconv.ParseFloat(mr.HGet(node, "sr_5m"), 64)
+	if err != nil || math.Abs(rate-2.0/3.0) > 1e-12 {
+		t.Fatalf("sr_5m=%q err=%v, want approximately 2/3", mr.HGet(node, "sr_5m"), err)
+	}
+}
+
+func TestRecordRequestPreservesHigherSourcePriorityWhileRecordingTelemetry(t *testing.T) {
+	s, mr := newTestStore(t)
+	defer mr.Close()
+	ctx := context.Background()
+	node := "ursm:v2:node:priority:test"
+	mr.HSet(node, "source_priority", "40", "available", "0", "generation", "9", "lat_ewma_ms", "500")
+	res, err := s.RecordRequest(ctx, node,
+		"ursm:v2:win:1m:priority:test", "ursm:v2:win:5m:priority:test", "ursm:v2:win:30m:priority:test",
+		RecordOutcome{Success: true, NowMs: 2_000_000, LatencyMs: 100, RequestID: "priority", NodeTTL: time.Hour,
+			Window5mTTL: 6 * time.Minute, Window30mTTL: 35 * time.Minute})
+	if err != nil || res.Status != "applied" {
+		t.Fatalf("record: result=%+v err=%v", res, err)
+	}
+	if got := mr.HGet(node, "source_priority"); got != "40" {
+		t.Fatalf("source_priority=%q, want 40", got)
+	}
+	if got := mr.HGet(node, "available"); got != "0" {
+		t.Fatalf("available=%q, want 0", got)
+	}
+	if got := mr.HGet(node, "generation"); got != "9" {
+		t.Fatalf("generation=%q, want 9", got)
+	}
+	if got := mr.HGet(node, "lat_ewma_ms"); got != "400" {
+		t.Fatalf("lat_ewma_ms=%q, want 400 (telemetry may update while routing state remains protected)", got)
+	}
+	zcard, zerr := s.rdb.ZCard(ctx, "ursm:v2:win:1m:priority:test").Result()
+	if got := mr.HGet(node, "samples_1m"); got != "1" || zerr != nil || zcard != 1 {
+		t.Fatalf("telemetry not recorded for high-priority node: samples=%q zcard=%d err=%v", got, zcard, zerr)
 	}
 }
 
