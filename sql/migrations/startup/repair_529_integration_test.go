@@ -12,7 +12,7 @@ import (
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
 )
 
-func TestMigration528RepairsPartitionAndStickyConflictKey(t *testing.T) {
+func TestMigration529RepairsPartitionAndStickyConflictKey(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
@@ -75,15 +75,15 @@ func TestMigration528RepairsPartitionAndStickyConflictKey(t *testing.T) {
 		t.Fatalf("create baseline tables: %v", err)
 	}
 
-	migration, err := os.ReadFile("528_repair_shared_pg_sticky_and_bodies_2026_07.sql")
+	migration, err := os.ReadFile("529_repair_shared_pg_sticky_and_bodies_2026_07.sql")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx, string(migration)); err != nil {
-		t.Fatalf("apply migration 528: %v", err)
+		t.Fatalf("apply migration 529: %v", err)
 	}
 	if _, err := pool.Exec(ctx, string(migration)); err != nil {
-		t.Fatalf("reapply migration 528: %v", err)
+		t.Fatalf("reapply migration 529: %v", err)
 	}
 
 	_, err = pool.Exec(ctx, `
@@ -94,7 +94,7 @@ func TestMigration528RepairsPartitionAndStickyConflictKey(t *testing.T) {
 		VALUES ('tenant:model:profile', 2, NOW() + INTERVAL '1 hour')
 		ON CONFLICT (sticky_key) DO UPDATE SET credential_id = EXCLUDED.credential_id;
 		INSERT INTO public.request_logs_bodies (request_id, ts, request_body)
-		VALUES ('req-528', '2026-07-15 12:00:00+08', '{}'::jsonb);
+		VALUES ('req-529', '2026-07-15 12:00:00+08', '{}'::jsonb);
 	`)
 	if err != nil {
 		t.Fatalf("exercise repaired schema: %v", err)
@@ -111,7 +111,7 @@ func TestMigration528RepairsPartitionAndStickyConflictKey(t *testing.T) {
 		t.Fatalf("repaired schema rows = sticky:%d partition:%d, want 1/1", stickyRows, partitionRows)
 	}
 
-	down, err := os.ReadFile("528_repair_shared_pg_sticky_and_bodies_2026_07.down.sql")
+	down, err := os.ReadFile("529_repair_shared_pg_sticky_and_bodies_2026_07.down.sql")
 	if err != nil {
 		t.Fatal(err)
 	}

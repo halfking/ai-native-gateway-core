@@ -43,6 +43,8 @@ cd "$PROJECT_ROOT"
 source "$SCRIPT_DIR/deploy-lib/targets.sh"
 # shellcheck source=deploy-lib/ssh-retry.sh
 source "$SCRIPT_DIR/deploy-lib/ssh-retry.sh"
+# shellcheck source=deploy-lib/lock.sh
+source "$SCRIPT_DIR/deploy-lib/lock.sh"
 # shellcheck source=deploy-lib/host.sh
 source "$SCRIPT_DIR/deploy-lib/host.sh"
 # shellcheck source=deploy-lib/post-deploy-verify.sh
@@ -81,6 +83,32 @@ case "$TARGET" in
   154|245) ;;
   *) err "不支持的目标: $TARGET (仅 154|245)"; exit 1 ;;
 esac
+
+DEPLOY_LOCAL_LOCK_HELD=0
+DEPLOY_REMOTE_LOCK_HELD=0
+DEPLOY_REMOTE_LOCK_PATH="/var/lib/llm-gateway-go/deploy.lock"
+if [[ "$ACTION" == deploy || "$ACTION" == rollback ]]; then
+  # 154 and 245 share version files, web/dist, and local build artifacts.
+  # A repository-wide lock prevents cross-target bundles from mixing.
+  LOCK_LOCAL_DIR="${TMPDIR:-/tmp}/kx-llm-gateway-deploy.lock"
+  LOCK_LOCAL_TARGET="$TARGET"
+  lock_acquire_local || exit $?
+  DEPLOY_LOCAL_LOCK_HELD=1
+fi
+
+deploy_cleanup() {
+  local status=$?
+  trap - EXIT INT TERM
+  if [[ "${DEPLOY_REMOTE_LOCK_HELD:-0}" == 1 ]]; then
+    lock_release_remote remote_ssh "$DEPLOY_REMOTE_LOCK_PATH" || true
+  fi
+  if [[ "${DEPLOY_LOCAL_LOCK_HELD:-0}" == 1 ]]; then
+    lock_release_local || true
+  fi
+  ssh_retry_close_all || true
+  exit "$status"
+}
+trap deploy_cleanup EXIT INT TERM
 
 # Load the shared envs SSOT before resolving SSH keys or target settings.
 ENVS_ROOT="${ENVS_ROOT:-${HOME}/workspace/ai-native-tools/envs}"
@@ -127,6 +155,11 @@ remote_ssh_pipe() {
   ssh_run_pipe "$TARGET" "$1"
 }
 SSH_CMD="remote_ssh"
+
+if [[ "$ACTION" == deploy || "$ACTION" == rollback ]]; then
+  lock_acquire_remote remote_ssh_pipe "$TARGET" "$DEPLOY_REMOTE_LOCK_PATH" || exit $?
+  DEPLOY_REMOTE_LOCK_HELD=1
+fi
 
 # upload 不用 scp，用 tar 管道走 ssh (单连接，更可靠)。
 REMOTE_ROOT=$(host_root_for "$TARGET")

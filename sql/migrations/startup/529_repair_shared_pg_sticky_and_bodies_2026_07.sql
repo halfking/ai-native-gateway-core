@@ -1,4 +1,4 @@
--- Migration 528: repair shared-PG sticky conflict key and missing 2026-07 body partition
+-- Migration 529: repair shared-PG sticky conflict key and missing 2026-07 body partition
 --
 -- The shared 245/154 PostgreSQL ledger records migration 481 as applied, but
 -- request_logs_bodies_2026_07 is physically absent. The sticky write path also
@@ -22,7 +22,7 @@ DECLARE
         'FOR VALUES FROM (''2026-07-01 00:00:00+08'') TO (''2026-08-01 00:00:00+08'')';
 BEGIN
     IF to_regclass('public.sticky_sessions') IS NULL THEN
-        RAISE EXCEPTION '528: public.sticky_sessions is missing';
+        RAISE EXCEPTION '529: public.sticky_sessions is missing';
     END IF;
 
     SELECT count(*)
@@ -35,7 +35,7 @@ BEGIN
     ) AS duplicates;
 
     IF duplicate_groups > 0 THEN
-        RAISE EXCEPTION '528: sticky_sessions contains % duplicate sticky_key groups', duplicate_groups;
+        RAISE EXCEPTION '529: sticky_sessions contains % duplicate sticky_key groups', duplicate_groups;
     END IF;
 
     IF EXISTS (
@@ -45,7 +45,7 @@ BEGIN
           AND conname = 'uq_sticky_sessions_sticky_key'
           AND contype <> 'u'
     ) THEN
-        RAISE EXCEPTION '528: uq_sticky_sessions_sticky_key exists but is not UNIQUE';
+        RAISE EXCEPTION '529: uq_sticky_sessions_sticky_key exists but is not UNIQUE';
     END IF;
 
     IF NOT EXISTS (
@@ -74,7 +74,7 @@ BEGIN
         WHERE inhrelid = partition_oid
           AND inhparent = 'public.request_logs_bodies'::regclass
     ) THEN
-        RAISE EXCEPTION '528: request_logs_bodies_2026_07 exists but is not attached to request_logs_bodies';
+        RAISE EXCEPTION '529: request_logs_bodies_2026_07 exists but is not attached to request_logs_bodies';
     END IF;
 
     SELECT pg_get_expr(c.relpartbound, c.oid)
@@ -83,7 +83,7 @@ BEGIN
     WHERE c.oid = partition_oid;
 
     IF partition_bound IS DISTINCT FROM expected_bound THEN
-        RAISE EXCEPTION '528: request_logs_bodies_2026_07 has unexpected bounds: %', partition_bound;
+        RAISE EXCEPTION '529: request_logs_bodies_2026_07 has unexpected bounds: %', partition_bound;
     END IF;
 
     IF NOT EXISTS (
@@ -97,7 +97,7 @@ BEGIN
           AND i.indnkeyatts = 1
           AND a.attname = 'sticky_key'
     ) THEN
-        RAISE EXCEPTION '528: sticky_key unique conflict arbiter was not created';
+        RAISE EXCEPTION '529: sticky_key unique conflict arbiter was not created';
     END IF;
 END $$;
 
