@@ -109,7 +109,7 @@ type Config struct {
 	RequestSurvivalDurableEnabled bool `yaml:"request_survival_durable_enabled" env:"LLM_GATEWAY_REQUEST_SURVIVAL_DURABLE_ENABLED"`
 
 	// RequestSurvivalInteractiveDeadlineSeconds: max in-connection wait for
-	// ordinary streaming requests. Default 1800 (30 min).
+	// ordinary streaming requests. Default 86400 (24h).
 	RequestSurvivalInteractiveDeadlineSeconds int `yaml:"request_survival_interactive_deadline_seconds" env:"LLM_GATEWAY_REQUEST_SURVIVAL_INTERACTIVE_DEADLINE_SECONDS"`
 
 	// RequestSurvivalDurableDeadlineSeconds: max total wait for durable
@@ -123,7 +123,7 @@ type Config struct {
 	// RequestSurvivalRetryBaseSeconds / RetryMaxSeconds: exponential backoff
 	// base and cap for the fallback delay when no authoritative recovery time
 	// exists. Authoritative Retry-After / recover_at is NOT truncated by the
-	// cap. Defaults 2s / 300s.
+	// cap. Defaults 2s / 120s.
 	RequestSurvivalRetryBaseSeconds int `yaml:"request_survival_retry_base_seconds" env:"LLM_GATEWAY_REQUEST_SURVIVAL_RETRY_BASE_SECONDS"`
 	RequestSurvivalRetryMaxSeconds  int `yaml:"request_survival_retry_max_seconds" env:"LLM_GATEWAY_REQUEST_SURVIVAL_RETRY_MAX_SECONDS"`
 
@@ -247,7 +247,7 @@ func (cfg *Config) IsProduction() bool {
 // prerequisite.
 func (cfg *Config) NormalizeRequestSurvival() {
 	if cfg.RequestSurvivalInteractiveDeadlineSeconds <= 0 {
-		cfg.RequestSurvivalInteractiveDeadlineSeconds = 1800
+		cfg.RequestSurvivalInteractiveDeadlineSeconds = 86400
 	}
 	if cfg.RequestSurvivalDurableDeadlineSeconds <= 0 {
 		cfg.RequestSurvivalDurableDeadlineSeconds = 86400
@@ -258,8 +258,8 @@ func (cfg *Config) NormalizeRequestSurvival() {
 	if cfg.RequestSurvivalRetryBaseSeconds <= 0 {
 		cfg.RequestSurvivalRetryBaseSeconds = 2
 	}
-	if cfg.RequestSurvivalRetryMaxSeconds <= 0 {
-		cfg.RequestSurvivalRetryMaxSeconds = 300
+	if cfg.RequestSurvivalRetryMaxSeconds <= 0 || cfg.RequestSurvivalRetryMaxSeconds > 120 {
+		cfg.RequestSurvivalRetryMaxSeconds = 120
 	}
 	if cfg.RequestSurvivalWorkerCount <= 0 {
 		cfg.RequestSurvivalWorkerCount = 4
@@ -267,7 +267,7 @@ func (cfg *Config) NormalizeRequestSurvival() {
 	if cfg.RequestSurvivalWorkerLeaseSecs <= 0 {
 		cfg.RequestSurvivalWorkerLeaseSecs = 60
 	}
-	if cfg.RequestSurvivalMaxAttempts <= 0 {
+	if cfg.RequestSurvivalMaxAttempts <= 0 || cfg.RequestSurvivalMaxAttempts > 100 {
 		cfg.RequestSurvivalMaxAttempts = 100
 	}
 	if cfg.RequestSurvivalMaxActiveTasksPerTenant <= 0 {
@@ -415,11 +415,11 @@ func Load() *Config {
 		// mutually exclusive with StreamRetryEnabled (startup check).
 		RequestSurvivalEnabled:                    false,
 		RequestSurvivalDurableEnabled:             false,
-		RequestSurvivalInteractiveDeadlineSeconds: 1800,
+		RequestSurvivalInteractiveDeadlineSeconds: 86400,
 		RequestSurvivalDurableDeadlineSeconds:     86400,
 		RequestSurvivalStatusIntervalSeconds:      60,
 		RequestSurvivalRetryBaseSeconds:           2,
-		RequestSurvivalRetryMaxSeconds:            300,
+		RequestSurvivalRetryMaxSeconds:            120,
 		RequestSurvivalWorkerCount:                4,
 		RequestSurvivalWorkerLeaseSecs:            60,
 		RequestSurvivalMaxAttempts:                100,

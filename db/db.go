@@ -189,6 +189,9 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	if err := db.ensureTenantModelPoliciesSchema(migCtx); err != nil {
 		return err
 	}
+	if err := db.ensureCredentialClientQuotaSchema(migCtx); err != nil {
+		return err
+	}
 	if err := db.ensureResponseFormatAnomaliesSchema(migCtx); err != nil {
 		return err
 	}
@@ -3745,5 +3748,110 @@ func (d *DB) ensurePartitionAutovacuumSchema(ctx context.Context) error {
 		return err
 	}
 	slog.Info("partition autovacuum settings ensured (hot + partition tables)")
+	return nil
+}
+
+// ensureCredentialClientQuotaSchema mirrors the per-credential, per-client
+// quota contract introduced by P0-C. The shadow rollout is driven by
+// settings (credential_client_quota.mode); the table only records policy
+// rows and never blocks credential health writes.
+func (d *DB) ensureCredentialClientQuotaSchema(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS public.credential_client_quota (
+		    credential_id    BIGINT NOT NULL REFERENCES public.credentials(id) ON DELETE CASCADE,
+		    client_type      VARCHAR(64) NOT NULL,
+		    owner_tenant_id  TEXT NOT NULL,
+		    max_concurrent   INTEGER,
+		    max_fp_slots     INTEGER,
+		    fp_enforce_after TIMESTAMPTZ,
+		    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+		    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+		    updated_by       TEXT,
+		    CONSTRAINT credential_client_quota_pkey
+		        PRIMARY KEY (credential_id, client_type),
+		    CONSTRAINT credential_client_quota_client_type_check
+		        CHECK (client_type IN (
+		            'cursor', 'claude-code', 'opencode', 'zcode', 'codex', 'roocode',
+		            'vscode', 'copilot', 'windsurf', 'zed', 'jetbrains', 'unknown'
+		        )),
+		    CONSTRAINT credential_client_quota_max_concurrent_check
+		        CHECK (max_concurrent IS NULL OR max_concurrent > 0),
+		    CONSTRAINT credential_client_quota_max_fp_slots_check
+		        CHECK (max_fp_slots IS NULL OR max_fp_slots > 0),
+		    CONSTRAINT credential_client_quota_has_limit_check
+		        CHECK (max_concurrent IS NOT NULL OR max_fp_slots IS NOT NULL)
+		);
+		CREATE INDEX IF NOT EXISTS idx_credential_client_quota_owner_client
+		    ON public.credential_client_quota (owner_tenant_id, client_type);
+		ALTER TABLE public.credential_client_quota
+		    ADD COLUMN IF NOT EXISTS updated_by TEXT;
+	`)
+	if err != nil {
+		return err
+	}
+	_, err = d.pool.Exec(ctx, `
+		CREATE OR REPLACE FUNCTION public.credential_client_quota_set_owner_tenant()
+		RETURNS TRIGGER AS $fn$
+		DECLARE
+		    parent_tenant TEXT;
+		BEGIN
+		    SELECT tenant_id INTO parent_tenant
+		    FROM public.credentials
+		    WHERE id = NEW.credential_id;
+		    IF NOT FOUND THEN
+		        RAISE EXCEPTION 'credential_client_quota credential_id % does not exist', NEW.credential_id
+		            USING ERRCODE = '23503';
+		    END IF;
+		    NEW.owner_tenant_id := parent_tenant;
+		    RETURN NEW;
+		END;
+		$fn$ LANGUAGE plpgsql;
+		DROP TRIGGER IF EXISTS trg_credential_client_quota_set_owner_tenant
+		    ON public.credential_client_quota;
+		CREATE TRIGGER trg_credential_client_quota_set_owner_tenant
+		    BEFORE INSERT OR UPDATE OF credential_id, owner_tenant_id
+		    ON public.credential_client_quota
+		    FOR EACH ROW
+		    EXECUTE FUNCTION public.credential_client_quota_set_owner_tenant();
+
+		CREATE OR REPLACE FUNCTION public.credential_client_quota_touch_updated_at()
+		RETURNS TRIGGER AS $fn$
+		BEGIN
+		    NEW.updated_at := now();
+		    RETURN NEW;
+		END;
+		$fn$ LANGUAGE plpgsql;
+		DROP TRIGGER IF EXISTS trg_credential_client_quota_touch_updated_at
+		    ON public.credential_client_quota;
+		CREATE TRIGGER trg_credential_client_quota_touch_updated_at
+		    BEFORE UPDATE ON public.credential_client_quota
+		    FOR EACH ROW
+		    EXECUTE FUNCTION public.credential_client_quota_touch_updated_at();
+
+		ALTER TABLE public.credential_client_quota ENABLE ROW LEVEL SECURITY;
+		ALTER TABLE public.credential_client_quota FORCE ROW LEVEL SECURITY;
+
+		DROP POLICY IF EXISTS tenant_isolation_credential_client_quota
+		    ON public.credential_client_quota;
+		CREATE POLICY tenant_isolation_credential_client_quota
+		    ON public.credential_client_quota
+		    USING (
+		        owner_tenant_id = public.get_current_tenant()
+		        OR current_setting('app.current_role', true) = 'super_admin'
+		        OR current_setting('app.bypass_rls', true) = 'true'
+		    )
+		    WITH CHECK (
+		        owner_tenant_id = public.get_current_tenant()
+		        OR current_setting('app.current_role', true) = 'super_admin'
+		        OR current_setting('app.bypass_rls', true) = 'true'
+		    );
+	`)
+	if err != nil {
+		return err
+	}
+	slog.Info("credential_client_quota schema ensured")
 	return nil
 }

@@ -9,6 +9,7 @@ for k in ~/.ssh/id_ed25519 ~/.ssh/56_id_rsa ~/.ssh/71_id_rsa; do
 done
 SSH_OPTS=(-i "$SSH_KEY_FILE" -p "$SSH_PORT" -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=12)
 SSH_HOST="${LLM_GATEWAY_245_SSH:-root@8.136.114.245}"
+SERVICE_NAME="llmgo-245.service"
 
 PASS=0
 FAIL=0
@@ -149,17 +150,17 @@ if entry_id:
 
 # 6) env checks
 if env.get("LLM_GATEWAY_CENTER_URL"):
-    ok(f"LLM_GATEWAY_CENTER_URL={env.get('LLM_GATEWAY_CENTER_URL').split(chr(10))[0]}")
+    ok("LLM_GATEWAY_CENTER_URL={}".format(env.get("LLM_GATEWAY_CENTER_URL").split(chr(10))[0]))
 else:
     fail("LLM_GATEWAY_CENTER_URL missing")
 if env.get("OPS_COLLECT_URL"):
-    ok(f"OPS_COLLECT_URL={env.get('"'"'OPS_COLLECT_URL'"'"').split(chr(10))[0]}")
+    ok("OPS_COLLECT_URL={}".format(env.get("OPS_COLLECT_URL").split(chr(10))[0]))
 else:
     fail("OPS_COLLECT_URL missing")
 if env.get("OPS_NODE_REGION") == "245":
     ok("OPS_NODE_REGION=245")
 else:
-    warn(f"OPS_NODE_REGION={env.get('"'"'OPS_NODE_REGION'"'"')}")
+    warn("OPS_NODE_REGION={}".format(env.get("OPS_NODE_REGION")))
 if env.get("OPS_COLLECT_LICENSE_KEY"):
     ok("OPS_COLLECT_LICENSE_KEY set")
 else:
@@ -192,4 +193,4 @@ bash "$(dirname "$0")/verify-ops-data-plane.sh" 245 2>&1 | sed 's/^/  /'
 
 echo ""
 echo "=== 远端日志：ops reporter / blocklist ==="
-ssh "${SSH_OPTS[@]}" "$SSH_HOST" "journalctl -u llm-gateway-go.service --since '10 min ago' --no-pager 2>&1 | grep -iE 'ops reporter|blocklist|center agent' | tail -10 || echo '  (no matching log lines)'"
+ssh "${SSH_OPTS[@]}" "$SSH_HOST" "journalctl -u '$SERVICE_NAME' --since '10 min ago' --no-pager 2>&1 | grep -iE 'ops reporter|blocklist|center agent|request_survival' | tail -10 || echo '  (no matching log lines)'"

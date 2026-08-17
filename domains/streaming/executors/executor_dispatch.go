@@ -178,12 +178,14 @@ func (e *Executor) dispatchRecommendModels(ctx context.Context, qr *dispatch.Que
 		return nil, autoroute.ErrNoCandidates
 	}
 	return e.dispatchModelRecommender.RecommendModelAlternatives(ctx, autoroute.ModelAlternativeRequest{
-		Task:        autoroute.TaskType(params.DispatchAutoTask),
-		Signals:     params.DispatchAutoSignals,
-		Profile:     autoroute.Profile(params.DispatchAutoProfile),
-		SessionID:   params.SessionID,
-		WorkType:    params.DispatchAutoWorkType,
-		TriedModels: append([]string(nil), tried...),
+		Task:            autoroute.TaskType(params.DispatchAutoTask),
+		Signals:         params.DispatchAutoSignals,
+		Profile:         autoroute.Profile(params.DispatchAutoProfile),
+		SessionID:       params.SessionID,
+		WorkType:        params.DispatchAutoWorkType,
+		InitialModel:    dctx.initialModel,
+		TriedModels:     append([]string(nil), tried...),
+		PreferredModels: append([]string(nil), params.DispatchModelAlternatives...),
 	})
 }
 
@@ -288,10 +290,6 @@ func (e *Executor) executeViaDispatch(
 	if e.dispatchPipeline == nil {
 		return nil, nil
 	}
-	retryPerCred := 0
-	if params.Policy != nil {
-		retryPerCred = params.Policy.RetryPerCredential
-	}
 	requestedModel := params.Model
 	if requestedModel == "" {
 		requestedModel = params.ClientModel
@@ -303,9 +301,11 @@ func (e *Executor) executeViaDispatch(
 		initialModel:   requestedModel,
 		holder:         holder,
 		fpSlotDegraded: fpSlotDegraded,
-		retryPerCred:   retryPerCred,
-		tTotal:         time.Now(),
-		stickyCredID:   stickyCredID,
+		// Dispatch mover owns same-node retry. Protocol-local loops must perform
+		// exactly one HTTP call or retry ownership multiplies (mover × protocol).
+		retryPerCred: 0,
+		tTotal:       time.Now(),
+		stickyCredID: stickyCredID,
 	}
 	dispatchCtx, cancelDispatch := dispatchExecutionContext(params)
 	defer cancelDispatch()
@@ -316,7 +316,7 @@ func (e *Executor) executeViaDispatch(
 	qr.EstimatedTokens = estimatePromptTokens(params)
 	qr.AllowModelChange = params.DispatchAllowModelChange
 	qr.AllowProviderChange = params.DispatchAllowProviderChange
-	qr.RetryPerCredential = retryPerCred
+	qr.RetryPerCredential = dispatch.MaxNodeFailures - 1
 	qr.ModelAlternatives = append([]string(nil), params.DispatchModelAlternatives...)
 
 	result, err := e.dispatchPipeline.Submit(dispatchCtx, qr)
@@ -436,7 +436,9 @@ func mapCandidatesByModel(candidates []provider.Candidate) map[string][]provider
 // executeOpenAI/executeAnthropic → success/error side effects) but returns
 // control to the dispatch mover on pre-firstbyte failure.
 func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate) dispatch.ForwardOutcome {
-	params := dctx.params
+	paramsCopy := *dctx.params
+	paramsCopy.DispatchAttempt = true
+	params := &paramsCopy
 
 	// ── FP slot (best-effort). A slot can become saturated after the
 	// prefilter but before this queued request reaches Forward. Degrade at the

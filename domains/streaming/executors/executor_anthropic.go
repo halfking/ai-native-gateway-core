@@ -918,6 +918,9 @@ func (e *Executor) executeAnthropicOnce(
 		}
 	}
 	e.logUpstreamRequest(params, diagnosticProtocol(cand.Protocol, "anthropic-messages"), bodyBytes)
+	if err := consumeUpstreamAttempt(params); err != nil {
+		return nil, err
+	}
 
 	reqStart := time.Now()
 	var resp *http.Response

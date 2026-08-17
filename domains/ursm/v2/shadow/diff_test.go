@@ -21,6 +21,12 @@ func TestOrderMismatch(t *testing.T) {
 	if !d.HasOrderMismatch() {
 		t.Fatalf("order must mismatch")
 	}
+	if !d.HasTop1Mismatch() {
+		t.Fatal("reordered first candidate must record a top1 mismatch")
+	}
+	if d.Outcome() != OutcomeOrderMismatch {
+		t.Fatalf("Outcome()=%q, want %q", d.Outcome(), OutcomeOrderMismatch)
+	}
 	if d.HasAvailabilityMismatch() {
 		t.Fatalf("availability must match")
 	}
