@@ -1,0 +1,30 @@
+{
+  "schema_version": "1.0",
+  "run_id": "run-20260813T091619Z-44427",
+  "suite": "functional",
+  "scenarios": [
+    "S01_baseline",
+    "S02_cost_route",
+    "S03_concurrency_diff",
+    "S04_quota_failover",
+    "S05_quality_penalty",
+    "S06_mixed_fault",
+    "S07_peak_dispatch",
+    "S08_sticky",
+    "S09_streaming",
+    "S10_long_prompt",
+    "S11_quota_recovery",
+    "S12_comprehensive",
+    "S13_no_candidate",
+    "S14_model_not_found",
+    "S15_cross_group_failover",
+    "S16_quick_recovery",
+    "S17_stream_continuation",
+    "S18_null_handling",
+    "S19_tenant_isolation",
+    "S20_auto_title",
+    "S21_branch_session",
+    "S22_instant_summary",
+    "S23_long_text_chunked"
+  ]
+}

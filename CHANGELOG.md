@@ -10,6 +10,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### 📦 Archived
 - docs/archive/* — 138 process docs archived on 2026-08-17 (see docs/archive/INDEX.md)
 
+### Changed
+- 监控配置收敛至 `deploy/prometheus/`：`deploy/grafana/` 仪表盘并入 `grafana/provisioning/dashboards/`
+  （删除重复的 auto-summary-monitoring.json），`deploy/monitoring/grafana-alerts/` 并入 `alerts/`，
+  同步更新 phase1 脚本引用；REPO_LAYOUT.md 修正根目录 `install.*` 定位（离线交付包入口，打包脚本依赖，
+  勿移动），三个安装入口系不同用途、非重复。
+
+### Added
+- `docs/architecture/REPO_LAYOUT.md`：仓库布局权威地图（顶层目录用途/分类/入位规则/后续项）。
+- `docs/adr/ADR-0002-target-go-package-layout.md`：Go 包分层迁移 ADR（B1 前置 + 4 波次路线）。
+- `docs/changelogs/2026-08-17-repo-restructure.md`：本轮治理 6 段式变更记录。
+
+### Fixed
+- `cmd/seed-free-resources` 契约测试失败（docs 归档误伤了运行数据）：omnifree 种子 JSON
+  属于命令运行数据而非过程文档，已从 `docs/archive/process/omnifree/seed/` 迁至 `configs/seed/`，
+  同步更新 cmd README、main_test、scripts/omnifree/ 4 个脚本的引用。
+
+### Changed
+- 根目录去杂（可读性治理第 1 轮，稳妥版）：
+  - 过程文档归档（rule 36）：`SUMMARY.md`→`docs/archive/process/impl-summaries/`、
+    `QUICK_REFERENCE.txt`+`apply_p0_fixes.sh`→`docs/archive/2026-08/`、`audit-20260808-002500/`→
+    `docs/archive/process/audits/2026-08/`、`knowledge/`→`docs/archive/process/incidents/2026-07/`、
+    `memory-bank/`→`docs/archive/process/audits/2026-06/`、`reports/`→impl-summaries+audits-collection、
+    `scratch/`→`docs/archive/process/analysis/`（7 个根目录消失）。
+  - 根目录脚本分桶：`doctor.sh`/`check_expired.lua`→`scripts/ops/`、`verify-columnar-fix.sh`→
+    `scripts/partition/`、`test-*.sh`×3→`scripts/test/`、`fix-nginx-timeout.sh`/`demo-quality-monitor.sh`→
+    `scripts/deprecated/`；同步修正 4 处悬空路径引用。
+  - 测试目录收敛：`regression/`→`tests/regression/`（相对 SQL 路径已改）、`local_test/`→`tests/local/`；
+    `test-results/` untrack+删除。
+  - 目录去重：`k8s/`（单文件）→`deploy/k8s/cron/`、`migrations/timeout-optimization`→`sql/migrations/`、
+    `observability/alerts`→`deploy/prometheus/rules/`（3 个根目录消失）。
+  - 过程状态目录 untrack（磁盘保留）：`.scratch/`、`.zcode/`、`.vite/`。
+
+### Removed
+- 取消跟踪并本地清理构建产物：`llm-gateway-linux-amd64`（61MB）、`routing-test-client`（8MB）、
+  根目录 `gateway`/`llm-gateway`/`*.test`/`migrate-ursm-v2`、`dist/`（1.7GB 发布包）、`build/logs`、`logs/`。
+  `make clean` 同步增强，覆盖根目录二进制。
+- 删除废弃构建计数文件 `build_seq`（`scripts/bump-version.sh` 已声明废弃，SSOT 为 `version.json`）。
+- `.gitignore`：移除与跟踪文件矛盾的 `version.json` 规则，新增 `.ruff_cache/`。
+- 删除 6 个零引用死包：`tracing/`、`logging/`、`alerting/`、`safety/`、`circuit/`、`integration/`
+  （grep 复核全仓库 0 外部 import，`go build ./...` 通过）。可追溯性由 git 历史保证。
+
+### Security
+- 删除根目录含硬编码凭据的调试脚本（均已进入 git 历史，密钥需线下轮换）：
+  `debug.go`（base64 签名/加密密钥）、`test_volcengine_{glm52,correct_models,direct,models_list}.sh`
+  （volcengine ark API key）、`.tmp_check154.py`、`check_154_routing.sh`（root@8.136.114.154 SSH 探测）。
+
 ### Fixed
 
 - **dashboard 实时请求流 → 点击请求 报 "query failed"**：`/api/logs/{request_id}` 返回

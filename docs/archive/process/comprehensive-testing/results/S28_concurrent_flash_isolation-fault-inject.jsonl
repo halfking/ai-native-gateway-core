@@ -1,0 +1,6 @@
+{"action": "kill", "group": "G", "rc": 0, "stderr": "", "at_sec": 2.442}
+{"action": "kill", "group": "H", "rc": 0, "stderr": "", "at_sec": 2.862}
+{"action": "kill", "group": "I", "rc": 0, "stderr": "", "at_sec": 3.324}
+{"action": "restart", "group": "G", "rc": 0, "started": 5, "at_sec": 10.24}
+{"action": "restart", "group": "H", "rc": 0, "started": 5, "at_sec": 10.537}
+{"action": "restart", "group": "I", "rc": 0, "started": 5, "at_sec": 10.773}

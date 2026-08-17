@@ -1,0 +1,22 @@
+{
+  "schema_version": "1.0",
+  "run_id": "run-20260813T093227Z-69036",
+  "scenario": "R01_reliability",
+  "category": "functional",
+  "status": "FAIL",
+  "commit": "d53e20a4118ad4df9781f1d50c45a95d4a752c94",
+  "gateway": "http://127.0.0.1:8793",
+  "checks": {
+    "script_exit_zero": false
+  },
+  "metrics": {},
+  "evidence": {
+    "previous_result": {},
+    "script_exit": 1
+  },
+  "failures": [
+    "scenario script exited with 1"
+  ],
+  "parameters": {},
+  "reason": "scenario script exited with 1"
+}

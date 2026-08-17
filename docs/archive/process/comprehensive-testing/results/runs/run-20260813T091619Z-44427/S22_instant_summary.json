@@ -1,0 +1,46 @@
+{
+  "schema_version": "1.0",
+  "run_id": "run-20260813T091619Z-44427",
+  "scenario": "S22_instant_summary",
+  "category": "functional",
+  "status": "FAIL",
+  "commit": "d53e20a4118ad4df9781f1d50c45a95d4a752c94",
+  "gateway": "http://127.0.0.1:8793",
+  "checks": {
+    "script_exit_zero": false
+  },
+  "metrics": {
+    "delta_22_1": 0,
+    "delta_22_2": 0,
+    "delta_22_3": 0,
+    "delta_22_4_fail": 0,
+    "driver": "cmd/scenario_driver/main.go (Go) — 避免 bash 5 子 shell EOF bug"
+  },
+  "evidence": {
+    "previous_result": {
+      "scenario": "S22_instant_summary",
+      "passed": false,
+      "checks": {
+        "22_1_basic_chat_logged": false,
+        "22_2_count_trigger": false,
+        "22_3_token_trigger": false,
+        "22_4_mechanical_fallback": false,
+        "22_5_auto_summary_trigger": true,
+        "22_5_admin_manual": "TODO"
+      },
+      "metrics": {
+        "delta_22_1": 0,
+        "delta_22_2": 0,
+        "delta_22_3": 0,
+        "delta_22_4_fail": 0,
+        "driver": "cmd/scenario_driver/main.go (Go) — 避免 bash 5 子 shell EOF bug"
+      }
+    },
+    "script_exit": 1
+  },
+  "failures": [
+    "scenario script exited with 1"
+  ],
+  "parameters": {},
+  "reason": "scenario script exited with 1"
+}
