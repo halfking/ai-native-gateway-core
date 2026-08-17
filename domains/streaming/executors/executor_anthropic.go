@@ -873,23 +873,30 @@ func (e *Executor) executeAnthropicOnce(
 
 	var httpClient *http.Client
 	var reqPool *pool.Pool
+	var poolUnavailable error
+
 	if e.Pools != nil {
 		poolKey := pool.PoolKey{
 			IdentityHash: params.ClientID.IdentityHash,
 			ProviderID:   cand.ProviderID,
 			CredentialID: cand.CredentialID,
 		}
-		if p := e.Pools.GetOrCreate(poolKey, ""); p != nil && p.State() == pool.PoolActive {
+		if p := e.Pools.GetOrCreate(poolKey, ""); p != nil {
 			reqPool = p
 			httpClient = p.Client()
 		}
+
 	}
 	if httpClient == nil {
 		httpClient = http.DefaultClient
 	} else if err := reqPool.Acquire(params.R.Context()); err != nil {
-		return nil, err
+		poolUnavailable = err
+		httpClient = nil
 	} else {
 		defer reqPool.Release()
+	}
+	if poolUnavailable != nil {
+		return nil, poolUnavailable
 	}
 
 	timeout := e.UpstreamTimeout
@@ -926,15 +933,27 @@ func (e *Executor) executeAnthropicOnce(
 	var resp *http.Response
 	var uErr *upstreampkg.Error
 	if e.Upstream != nil {
-		resp, uErr = e.Upstream.Do(req)
+		if reqPool != nil {
+			resp, uErr = e.Upstream.DoWithHTTPClient(req, httpClient)
+		} else {
+			resp, uErr = e.Upstream.Do(req)
+		}
 	} else {
 		var doErr error
 		resp, doErr = httpClient.Do(req)
+
 		if doErr != nil {
 			uErr = &upstreampkg.Error{Kind: errorsx.ClassifyError(doErr, nil), Message: doErr.Error(), Err: doErr}
 		}
 	}
 	upstreamLatency := time.Since(reqStart)
+	if reqPool != nil {
+		if uErr != nil || resp == nil || resp.StatusCode >= 500 {
+			reqPool.RecordFailure()
+		} else {
+			reqPool.RecordSuccess()
+		}
+	}
 
 	if uErr != nil && (resp == nil || resp.StatusCode >= 500) {
 		errKind := uErr.Kind
