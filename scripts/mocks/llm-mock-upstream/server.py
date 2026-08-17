@@ -21,6 +21,7 @@ import asyncio
 import json
 import os
 import random
+import re
 import time
 import uuid
 from datetime import datetime, timezone
@@ -102,6 +103,51 @@ class MockState:
 
 STATE = MockState()
 STATE.load()
+
+
+def make_fact_content(transcript: str) -> str:
+    """Return a deterministic, grounded ASM fact envelope when possible."""
+    lines = transcript.splitlines()
+    for index, line in enumerate(lines):
+        match = re.match(r"^\[body_ref:\s*([^\]]+)\]", line)
+        if not match:
+            continue
+        body_ref = match.group(1).strip()
+        for candidate in lines[index + 1 :]:
+            if re.match(r"^\[body_ref:\s*[^\]]+\]", candidate):
+                break
+            quote = candidate.strip()
+            if not quote:
+                continue
+            quote = quote[:300]
+            return json.dumps(
+                {
+                    "facts": [
+                        {
+                            "fact_type": "statement",
+                            "subject": "conversation statement",
+                            "statement": f"The conversation includes this statement: {quote}",
+                            "confidence": 0.9,
+                            "privacy": "normal",
+                            "body_ref": body_ref,
+                            "quote": quote,
+                        }
+                    ]
+                },
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+    return json.dumps({"facts": []}, separators=(",", ":"), sort_keys=True)
+
+
+def fact_extractor_mode(body: dict, is_stream: bool) -> bool:
+    response_format = body.get("response_format")
+    return (
+        os.environ.get("MOCK_FACT_EXTRACTOR") == "1"
+        and not is_stream
+        and isinstance(response_format, dict)
+        and response_format.get("type") == "json_object"
+    )
 
 
 def make_response(model: str, content: str, request_id: str) -> dict:
@@ -318,8 +364,12 @@ async def handle_chat(request: web.Request) -> web.StreamResponse:
         delay_ms = random.randint(STATE.latency_min_ms, STATE.latency_max_ms)
         await asyncio.sleep(delay_ms / 1000.0)
 
-    # Success path: return normal response
-    content = f"echo: {user_last[:80]}"
+    # Success path: return normal response unless the local ASM extractor
+    # behavior is explicitly enabled for a JSON-object request.
+    if fact_extractor_mode(body, is_stream):
+        content = make_fact_content(user_last)
+    else:
+        content = f"echo: {user_last[:80]}"
 
     if is_stream:
         response = web.StreamResponse(

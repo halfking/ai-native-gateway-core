@@ -87,8 +87,9 @@ func TestRenderWireEnvelope_ValidatesAgainstV1Schema(t *testing.T) {
 	}
 
 	for name, env := range map[string]EventEnvelope{
-		"success": envSuccess,
-		"error":   envError,
+		"success":        envSuccess,
+		"error":          envError,
+		"session opened": mustBuildSessionOpenedEventV1(t, "tenant-123", "session-abc", "42"),
 	} {
 		t.Run(name, func(t *testing.T) {
 			wire, err := RenderWireEnvelope(env)
@@ -333,6 +334,15 @@ func TestFormatCostUSD(t *testing.T) {
 			}
 		})
 	}
+}
+
+func mustBuildSessionOpenedEventV1(t *testing.T, tenantID, sessionID, userID string) EventEnvelope {
+	t.Helper()
+	env, err := BuildSessionOpenedEventV1(tenantID, sessionID, userID)
+	if err != nil {
+		t.Fatalf("BuildSessionOpenedEventV1: %v", err)
+	}
+	return env
 }
 
 func float64Ptr(v float64) *float64 { return &v }

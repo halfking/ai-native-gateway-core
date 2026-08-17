@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1303,84 +1305,117 @@ $48,
 		}
 	}
 
-	// Phase 3 WP4: Write request.completed event to outbox_events in same transaction
+	// Publish only the session opener here. The request is provisional until
+	// its terminal update supplies final usage, latency, and status.
 	if c.outboxWriter != nil && entry.GwSessionID != nil && *entry.GwSessionID != "" {
-		// Extract required fields with safe defaults
-		sessionID := stringValue(entry.GwSessionID)
-		requestID := entry.RequestID
-		tenantID := entry.TenantID
-		if tenantID == "" {
-			tenantID = "default"
+		tenantID := nonEmpty(entry.TenantID, "default")
+		userID := "unknown"
+		if entry.EndUserID != nil && strings.TrimSpace(*entry.EndUserID) != "" {
+			userID = *entry.EndUserID
+		} else if entry.APIKeyID != nil {
+			userID = strconv.Itoa(*entry.APIKeyID)
 		}
-		// Phase 2 Enhancement: Resolve provider name from ProviderID
-		provider := lookupProviderName(ctx, tx, entry.ProviderID)
-		model := stringValue(entry.OutboundModel)
-		if model == "" {
-			model = stringValue(entry.ClientModel)
-		}
-		status := stringValue(entry.RequestStatus)
-
-		promptTokens := intValue(entry.PromptTokens)
-		completionTokens := intValue(entry.CompletionTokens)
-		latencyMs := intValue(entry.LatencyMs)
-		success := entry.Success
-
-		// Phase 2 Enhancement: Calculate turn number from session history
-		turnNo := lookupTurnNumber(ctx, tx, sessionID)
-
-		// Phase 2 Enhancement: Separate correlation_id and idempotency_key from request_id
-		// correlation_id: Use client-provided X-Request-Id if available, fallback to request_id
-		// idempotency_key: Use request_id (Gateway-generated, guarantees uniqueness)
-		correlationID := stringValue(entry.ClientRequestID)
-		idempotencyKey := requestID
-
-		// Build event envelope using outbox builder V3 (GW-1.2: payload
-		// validates against gateway-event-schema-v1.json; legacy omni-ref2
-		// payload fields are retained for existing consumers).
-		envelope, err := outbox.BuildRequestCompletedEventV3(
-			tenantID, sessionID, turnNo,
-			requestID, correlationID, idempotencyKey,
-			provider, model, status,
-			promptTokens, completionTokens, latencyMs,
-			entry.CostUSD,
-			success,
-		)
+		opened, err := outbox.BuildSessionOpenedEventV1(tenantID, stringValue(entry.GwSessionID), userID)
 		if err != nil {
-			slog.Warn("outbox: build event failed", "request_id", requestID, "error", err)
-		} else {
-			// Serialize payload to JSON for outbox_events.payload column
-			payloadJSON, err := json.Marshal(envelope.Payload)
-			if err != nil {
-				slog.Warn("outbox: marshal payload failed", "request_id", requestID, "error", err)
-			} else {
-				// Write directly to outbox_events in the same pgx transaction
-				_, err = tx.Exec(ctx, `
-					INSERT INTO outbox_events (
-						event_id, event_type, schema_version, tenant_id,
-						aggregate_id, aggregate_version, occurred_at, payload, status
-					) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending')
-				`,
-					envelope.EventID,
-					envelope.EventType,
-					envelope.SchemaVersion,
-					envelope.TenantID,
-					envelope.AggregateID,
-					envelope.AggregateVersion,
-					envelope.OccurredAt,
-					payloadJSON,
-				)
-				if err != nil {
-					slog.Warn("outbox: insert event failed", "request_id", requestID, "error", err)
-					// Non-fatal: continue with request_logs commit even if outbox write fails
-				}
-			}
+			return err
+		}
+		if err := insertSessionOpenedEvent(ctx, tx, opened, entry.RequestID); err != nil {
+			return err
 		}
 	}
 
 	return tx.Commit(ctx)
 }
 
-// CorrectEstimatedUsage (CO-2, 2026-08-15) overwrites the token columns of a
+// insertSessionOpenedEvent writes the idempotent session opener as part of the
+// request-log transaction.
+func insertSessionOpenedEvent(ctx context.Context, tx pgx.Tx, envelope outbox.EventEnvelope, requestID string) error {
+	payloadJSON, err := json.Marshal(envelope.Payload)
+	if err != nil {
+		return fmt.Errorf("marshal session opened payload: %w", err)
+	}
+	_, err = tx.Exec(ctx, `
+		INSERT INTO outbox_events (
+			event_id, event_type, schema_version, tenant_id,
+			aggregate_id, aggregate_version, occurred_at, payload, status
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending')
+		ON CONFLICT (event_id) DO NOTHING
+	`,
+		envelope.EventID,
+		envelope.EventType,
+		envelope.SchemaVersion,
+		envelope.TenantID,
+		envelope.AggregateID,
+		envelope.AggregateVersion,
+		envelope.OccurredAt,
+		payloadJSON,
+	)
+	if err != nil {
+		return fmt.Errorf("insert session opened event for request %s: %w", requestID, err)
+	}
+	return nil
+}
+
+func insertRequestCompletedEvent(ctx context.Context, tx pgx.Tx, envelope outbox.EventEnvelope) error {
+	payloadJSON, err := json.Marshal(envelope.Payload)
+	if err != nil {
+		return fmt.Errorf("marshal request completed payload: %w", err)
+	}
+	_, err = tx.Exec(ctx, `
+		INSERT INTO outbox_events (
+			event_id, event_type, schema_version, tenant_id,
+			aggregate_id, aggregate_version, occurred_at, payload, status
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending')
+		ON CONFLICT (event_id) DO NOTHING
+	`,
+		envelope.EventID,
+		envelope.EventType,
+		envelope.SchemaVersion,
+		envelope.TenantID,
+		envelope.AggregateID,
+		envelope.AggregateVersion,
+		envelope.OccurredAt,
+		payloadJSON,
+	)
+	if err != nil {
+		return fmt.Errorf("insert request completed event: %w", err)
+	}
+	return nil
+}
+
+func requestLogEntryTerminal(entry *RequestLogEntry) bool {
+	if entry == nil || entry.RequestStatus == nil {
+		return false
+	}
+	switch *entry.RequestStatus {
+	case RequestStatusSuccess, RequestStatusFailure, RequestStatusRateLimited:
+		return true
+	default:
+		return false
+	}
+}
+
+func buildRequestCompletedEvent(ctx context.Context, tx pgx.Tx, entry *RequestLogEntry) (outbox.EventEnvelope, error) {
+	if entry == nil || entry.GwSessionID == nil || *entry.GwSessionID == "" {
+		return outbox.EventEnvelope{}, fmt.Errorf("request completed event requires session_id")
+	}
+	sessionID := stringValue(entry.GwSessionID)
+	tenantID := nonEmpty(entry.TenantID, "default")
+	requestID := entry.RequestID
+	provider := lookupProviderName(ctx, tx, entry.ProviderID)
+	model := stringValue(entry.OutboundModel)
+	if model == "" {
+		model = stringValue(entry.ClientModel)
+	}
+	return outbox.BuildRequestCompletedEventV3(
+		tenantID, sessionID, lookupTurnNumber(ctx, tx, sessionID),
+		requestID, stringValue(entry.ClientRequestID), requestID,
+		provider, model, stringValue(entry.RequestStatus),
+		intValue(entry.PromptTokens), intValue(entry.CompletionTokens), intValue(entry.LatencyMs),
+		entry.CostUSD, entry.Success,
+	)
+}
+
 // request_logs row that still carries usage_source='estimated' with the real
 // LLM-reported usage contained in entry, marking the row usage_source=
 // 'corrected'. It is the write-side counterpart of the estimation fallback in
@@ -1781,6 +1816,16 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 			WHERE id = $1
 		`, *entry.APIKeyID, promptAdd, completionAdd, costAdd)
 		if err != nil {
+			return err
+		}
+	}
+
+	if c.outboxWriter != nil && entry.GwSessionID != nil && *entry.GwSessionID != "" && requestLogEntryTerminal(entry) {
+		completed, err := buildRequestCompletedEvent(ctx, tx, entry)
+		if err != nil {
+			return err
+		}
+		if err := insertRequestCompletedEvent(ctx, tx, completed); err != nil {
 			return err
 		}
 	}
