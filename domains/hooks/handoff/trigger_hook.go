@@ -673,7 +673,7 @@ func (s *PGStore) RecordHandoff(ctx context.Context, r *HandoffRecord) error {
 		return nil
 	}
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO handoff_logs (
+		INSERT INTO handoff_logs_hot (
 			session_id, tenant_id, trigger_reason, tokens_at_handoff, context_window,
 			handoff_prompt, new_session_id, summary_text, summary_engine, trigger_mode,
 			tokens_in_session, messages_in_session, skill_name, duration_ms, created_at
