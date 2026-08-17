@@ -1,12 +1,25 @@
 package requestjourney
 
-import "time"
+import (
+	"reflect"
+	"time"
+)
 
 const (
+	// DefaultTotalRequestCapacity is the observation-projection capacity of
+	// the total (cross-model) FIFO view.
 	DefaultTotalRequestCapacity = 100
-	DefaultPerModelCapacity     = 100
-	DefaultPerNodeCapacity      = 100
-	DefaultDetailTTL            = 24 * time.Hour
+	// DefaultPerModelCapacity is the observation-projection capacity of each
+	// per-model FIFO view. 30 since 会话优化 v4 (was 100): it is a DISPLAY
+	// bound only, explicitly distinct from the dispatch scheduling bound
+	// (300, llmgw_dispatch_max_queue_depth) and the request registry bound
+	// (1000, llmgw_dispatch_registry_capacity). Being squeezed out of the
+	// projection never affects execution.
+	DefaultPerModelCapacity = 30
+	// DefaultPerNodeCapacity is the observation-projection capacity of each
+	// per-node FIFO view.
+	DefaultPerNodeCapacity = 100
+	DefaultDetailTTL       = 24 * time.Hour
 
 	HotKeyTotalRequestCapacity = "llmgw_request_history_total_capacity"
 	HotKeyPerModelCapacity     = "llmgw_request_history_model_capacity"
@@ -46,7 +59,7 @@ func DefaultConfig() Config {
 // negative values all fall back independently to the documented defaults.
 func LoadConfig(source IntConfigSource) Config {
 	defaults := DefaultConfig()
-	if source == nil {
+	if isNilConfigSource(source) {
 		return defaults
 	}
 	return Config{
@@ -57,6 +70,22 @@ func LoadConfig(source IntConfigSource) Config {
 			configInt(source, HotKeyDetailTTLSeconds, legacyHotKeyDetailTTLSeconds, int(defaults.DetailTTL/time.Second)),
 			int(defaults.DetailTTL/time.Second),
 		)) * time.Second,
+	}
+}
+
+// isNilConfigSource also catches a nil pointer stored in IntConfigSource. This
+// happens when optional *hotconfig.Config initialization fails: Go considers
+// the interface non-nil, but calling GetInt would dereference the nil pointer.
+func isNilConfigSource(source IntConfigSource) bool {
+	if source == nil {
+		return true
+	}
+	v := reflect.ValueOf(source)
+	switch v.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return v.IsNil()
+	default:
+		return false
 	}
 }
 

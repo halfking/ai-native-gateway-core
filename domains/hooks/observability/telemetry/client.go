@@ -1303,6 +1303,15 @@ $48,
 		}
 	}
 
+	// v4 T7 (2026-08-18, migration 532): terminal-success rows with a
+	// gw_session_id claim the session's single final-success marker in the
+	// same transaction. Best-effort: any failure (incl. a lost concurrent
+	// claim, SQLSTATE 23505 from uq_request_logs_hot_final_success_session)
+	// degrades to a normal success row — never fails the business write.
+	if shouldClaimFinalSuccess(entry) {
+		claimSessionFinalSuccess(ctx, tx, entry.RequestID)
+	}
+
 	// Phase 3 WP4: Write request.completed event to outbox_events in same transaction
 	if c.outboxWriter != nil && entry.GwSessionID != nil && *entry.GwSessionID != "" {
 		// Extract required fields with safe defaults
@@ -1785,7 +1794,108 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		}
 	}
 
+	// v4 T7 (2026-08-18, migration 532): same final-success claim as the
+	// INSERT path — see insertRequestLog for the degrade semantics. The
+	// RowsAffected==0 fallback above re-enters insertRequestLog, which
+	// claims on its own.
+	if shouldClaimFinalSuccess(entry) {
+		claimSessionFinalSuccess(ctx, tx, entry.RequestID)
+	}
+
 	return tx.Commit(ctx)
+}
+
+// shouldClaimFinalSuccess reports whether entry represents a terminal success
+// that carries a session key and therefore must attempt the v4 T7
+// session-level final-success claim. Failures, cancellations, client
+// disconnects and rows without a gw_session_id never claim (R6.2: 空
+// gw_session_id 不受唯一约束；失败/取消路径不改).
+func shouldClaimFinalSuccess(entry *RequestLogEntry) bool {
+	return entry != nil &&
+		entry.Success &&
+		entry.GwSessionID != nil &&
+		*entry.GwSessionID != ""
+}
+
+// claimSessionFinalSuccess marks the request_logs_hot row for requestID as
+// THE single final success of its gw_session_id (v4 T7 / R6.2 / P1-7,
+// migration 532). At most one row per session keeps is_final_success=TRUE;
+// superseded success rows are left untouched (history is never rewritten —
+// the admin timeline labels them "superseded" at read time).
+//
+// The claim is a single self-guarding UPDATE inside the caller's transaction:
+//   - only terminal-success rows (success=TRUE AND request_status='success')
+//     with a non-empty gw_session_id can claim;
+//   - NOT EXISTS checks both the hot table and the promoted partition parent
+//     (request_logs), so a claim already held by an earlier success — whether
+//     still hot or already promoted past the 7-day window — blocks the claim;
+//   - concurrent double claims lose the race against the partial unique
+//     index uq_request_logs_hot_final_success_session (SQLSTATE 23505).
+//
+// Failure semantics (all non-fatal, business row still commits):
+//   - 23505: lost race → row degrades to a normal success (superseded);
+//   - any other error (e.g. 42703 on a pre-532 schema during rolling deploy):
+//     claim skipped with a warning, row degrades to an unmarked success that
+//     sql/scripts/report_duplicate_session_success.sql can report for manual
+//     backfill.
+func claimSessionFinalSuccess(ctx context.Context, tx pgx.Tx, requestID string) {
+	if tx == nil || requestID == "" {
+		return
+	}
+	// The savepoint isolates the claim: without it a 23505 would abort the
+	// whole request_logs transaction and drop the business row.
+	if _, err := tx.Exec(ctx, `SAVEPOINT gw_final_success_claim`); err != nil {
+		slog.Debug("final-success claim: savepoint failed, skipping",
+			"request_id", requestID, "error", err)
+		return
+	}
+	tag, err := tx.Exec(ctx, `
+		UPDATE request_logs_hot
+		   SET is_final_success = TRUE
+		 WHERE request_id = $1
+		   AND success = TRUE
+		   AND request_status = 'success'
+		   AND COALESCE(gw_session_id, '') <> ''
+		   AND NOT EXISTS (
+		        SELECT 1
+		          FROM request_logs_hot other
+		         WHERE other.gw_session_id = request_logs_hot.gw_session_id
+		           AND other.is_final_success
+		           AND other.request_id <> request_logs_hot.request_id
+		   )
+		   AND NOT EXISTS (
+		        SELECT 1
+		          FROM request_logs promoted
+		         WHERE promoted.gw_session_id = request_logs_hot.gw_session_id
+		           AND promoted.is_final_success
+		   )
+	`, requestID)
+	if err != nil {
+		_, rbErr := tx.Exec(ctx, `ROLLBACK TO SAVEPOINT gw_final_success_claim`)
+		var pgErr *pgconn.PgError
+		// 23505 = unique_violation (lost the race against
+		// uq_request_logs_hot_final_success_session).
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			// Lost the concurrent claim race: this row stays a normal
+			// success (superseded by the winner). R6.2: 不回改历史行.
+			slog.Info("final-success claim superseded by concurrent winner",
+				"request_id", requestID)
+		} else {
+			slog.Warn("final-success claim degraded (non-fatal)",
+				"request_id", requestID, "error", err)
+		}
+		if rbErr != nil {
+			slog.Warn("final-success claim: rollback to savepoint failed",
+				"request_id", requestID, "error", rbErr)
+		}
+		return
+	}
+	if tag.RowsAffected() > 0 {
+		slog.Debug("final-success claim granted", "request_id", requestID)
+	}
+	// Release is cosmetic (released at COMMIT anyway) and must not fail the tx.
+	//nolint:errcheck // best-effort
+	_, _ = tx.Exec(ctx, `RELEASE SAVEPOINT gw_final_success_claim`)
 }
 
 // upsertRequestLogBodies writes request/response body to request_logs_bodies_hot.

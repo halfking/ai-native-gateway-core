@@ -15,6 +15,7 @@ import (
 	"context"
 	"encoding/json"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -36,6 +37,15 @@ func submitAndWait(t *testing.T, p *Pipeline, n int) {
 }
 
 func TestPipelineQueueStats_RealPipelineTraffic(t *testing.T) {
+	// v4 (R1.3): the pipeline default is zero queue-wait, which would fail
+	// saturated requests over to the failover ladder instead of queueing
+	// them. This contract test needs a real queue backlog, so it opts into
+	// an explicit wait budget (and disables same-cred retry churn).
+	cfg := DefaultConfig()
+	cfg.MaxQueueWaitMS = 2000
+	cfg.RetryPerCredential = 0
+	hotCfg := &atomic.Value{}
+	hotCfg.Store(&cfg)
 	p := NewPipeline(Deps{
 		RouteFunc: func(ctx context.Context, qr *QueuedRequest) ([]CredentialRef, error) {
 			return []CredentialRef{{
@@ -51,6 +61,7 @@ func TestPipelineQueueStats_RealPipelineTraffic(t *testing.T) {
 			time.Sleep(200 * time.Millisecond) // hold in-flight + queue backlog
 			return ForwardOutcome{}
 		},
+		HotCfg: hotCfg,
 	})
 	p.Start()
 	defer p.Stop()

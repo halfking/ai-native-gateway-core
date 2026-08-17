@@ -210,6 +210,29 @@ func (qr *QueuedRequest) lastAttemptRef() *AttemptRef {
 	return copyAttemptRef(qr.attempts[len(qr.attempts)-1].ref)
 }
 
+// exhaustionAttempts builds the aggregate model×node×reason summary carried
+// by ExhaustedError (R2.4 / UT-FO-05: the terminal error body lists every
+// tried combination). Attempts with no classified error default to the
+// coarse "upstream_error" bucket.
+func (qr *QueuedRequest) exhaustionAttempts() []ExhaustionAttempt {
+	qr.attemptMu.Lock()
+	defer qr.attemptMu.Unlock()
+	out := make([]ExhaustionAttempt, 0, len(qr.attempts))
+	for _, attempt := range qr.attempts {
+		reason := attempt.errorKind
+		if reason == "" {
+			reason = "upstream_error"
+		}
+		out = append(out, ExhaustionAttempt{
+			Model:        attempt.ref.Model,
+			ProviderID:   attempt.ref.ProviderID,
+			CredentialID: attempt.ref.CredentialID,
+			Reason:       reason,
+		})
+	}
+	return out
+}
+
 func (qr *QueuedRequest) waterfallAttempts() []WaterfallAttempt {
 	qr.attemptMu.Lock()
 	defer qr.attemptMu.Unlock()
