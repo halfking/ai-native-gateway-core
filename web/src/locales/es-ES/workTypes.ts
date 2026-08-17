@@ -85,8 +85,10 @@ export default {
     dragToReorder: 'Arrastrar para reordenar la prioridad',
     emptyPrimary: 'Aún no hay modelos principales — haz clic en «Añadir principal»',
     emptySecondary: 'Aún no hay modelos secundarios — haz clic en «Añadir secundario»',
+    emptyFallback: 'Aún no hay modelos de respaldo — haz clic en «Añadir respaldo»',
     addPrimary: '+ Añadir principal',
     addSecondary: '+ Añadir secundario',
+    addFallback: '+ Añadir respaldo',
   },
   routes: {
     title: 'Model type routes',

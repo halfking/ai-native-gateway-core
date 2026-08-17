@@ -85,8 +85,10 @@ export default {
     dragToReorder: 'اسحب لإعادة ترتيب الأولوية',
     emptyPrimary: 'لا توجد نماذج أساسية بعد — انقر على «إضافة أساسي»',
     emptySecondary: 'لا توجد نماذج ثانوية بعد — انقر على «إضافة ثانوي»',
+    emptyFallback: 'لا توجد نماذج احتياطية بعد — انقر على «إضافة احتياطي»',
     addPrimary: '+ إضافة أساسي',
     addSecondary: '+ إضافة ثانوي',
+    addFallback: '+ إضافة احتياطي',
   },
   routes: {
     title: 'Model type routes',
