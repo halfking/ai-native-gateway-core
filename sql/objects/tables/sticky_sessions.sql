@@ -8,6 +8,7 @@ CREATE TABLE public.sticky_sessions (
     set_at timestamp with time zone DEFAULT now() NOT NULL,
     expires_at timestamp with time zone NOT NULL,
     canonical_id bigint,
-    last_request_id text
+    last_request_id text,
+    CONSTRAINT uq_sticky_sessions_sticky_key UNIQUE (sticky_key)
 );
 

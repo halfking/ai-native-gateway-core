@@ -492,12 +492,11 @@ do_deploy() {
   : "${_std_out:=}"
   : "${_std_err:=}"
   log "  unit mode: StandardOutput=${_std_out:-<unset>} StandardError=${_std_err:-<unset>}"
-  # decide: append: → logrotate; journal/inherit → journald drop-in; else skip
+  # decide: systemctl exposes the sink kind (append/journal/inherit), not
+  # the configured path, so match the two-property pair directly.
   case "${_std_out}:${_std_err}" in
-    append:*:*) _target_rotate="logrotate" ;;
-    *:append:*) _target_rotate="logrotate" ;;
-    journal:*|*:journal|journal:*|*:inherit|*:*:inherit)
-      # journal:inherit / journal:journal / inherit:* / inherit:inherit / 空 → journald
+    append:*|*:append) _target_rotate="logrotate" ;;
+    journal:*|*:journal|inherit:*|*:inherit)
       _target_rotate="journald" ;;
     *)
       warn "  未识别的 unit 模式 (${_std_out:-<unset>}:${_std_err:-<unset>}), 跳过轮转配置"
