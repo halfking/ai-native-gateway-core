@@ -42,7 +42,29 @@
 ## 贡献者
 查看 Git 提交记录了解贡献者信息。
 
+## 归档（2026-08-17）
+
+> 仓库根目录历史累积的 87 个过期过程文档（bugfix / audit / fix / phase / handoff / deploy-report / summary / report）已迁移至 `docs/archive/`。文件内容保持不变，可通过 `git revert` 100% 还原。详见 [docs/archive/README.md](./archive/README.md)。
+
+### 活跃文档与目录速查
+
+| 类别 | 入口 |
+|---|---|
+| API 参考 | [./API.md](./API.md) · [./api/](./api/) |
+| 架构与 ADR | [./architecture/](./architecture/) · [./adr/](./adr/) |
+| 部署与迁移 | [./DEPLOYMENT.md](./DEPLOYMENT.md) · [./MIGRATION_OPERATION_GUIDE.md](./MIGRATION_OPERATION_GUIDE.md) · [./migrations/](./migrations/) |
+| 运维 | [./OPERATIONS.md](./OPERATIONS.md) · [./db-changelog.md](./db-changelog.md) · [./runbooks/](./runbooks/) |
+| 变更日志 | [./CHANGELOG.md](../CHANGELOG.md) · [./changelogs/](./changelogs/) |
+| 事故与复盘 | [./incidents/](./incidents/) · [./lessons-learned/](./lessons-learned/) |
+| 重构规划 | [./refactor-plans/](./refactor-plans/) |
+| 待办索引 | [./TODO_INDEX.md](./TODO_INDEX.md) |
+
+### 已归档（按月份）
+
+- [2026-07/](./archive/2026-07/) — 50 个过程文档（7-19~7-31 mtime）
+- [2026-08/](./archive/2026-08/) — 37 个过程文档（8-02~8-13 mtime）
+
 ---
 
-**最后更新**: 2026-07-03
+**最后更新**: 2026-08-17
 **维护者**: LLM Gateway Team
