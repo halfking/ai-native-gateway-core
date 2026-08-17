@@ -243,11 +243,11 @@ func newIncidentPublishFn(hub *admin.LiveStreamSSEHub) func(*routeincident.Trans
 // admin SSE wire type. It never reads or locks the dispatch Pipeline.
 func liveQueueSnapshotProvider(projection *dispatch.QueueProjection) *admin.LiveQueueSnapshot {
 	if projection == nil {
-		return liveQueueSnapshotFromLanes(nil, nil, dispatch.IsDispatchEnabled(), false)
+		return liveQueueSnapshotFromLanes(nil, nil, true, false)
 	}
 	view := projection.Snapshot()
 	if view == nil {
-		return liveQueueSnapshotFromLanes(nil, nil, dispatch.IsDispatchEnabled(), false)
+		return liveQueueSnapshotFromLanes(nil, nil, true, false)
 	}
 	out := &admin.LiveQueueSnapshot{Enabled: view.Enabled, Wired: view.Wired, SourceVersion: view.SourceVersion,
 		Models: make([]admin.LiveQueueLaneSnapshot, 0, len(view.Models)), Credentials: make([]admin.LiveQueueLaneSnapshot, 0, len(view.Credentials))}

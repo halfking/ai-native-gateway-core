@@ -33,10 +33,11 @@ type RecordOutcome struct {
 	// BillingMode (2026-08-10): when "free", record_request.lua tolerates
 	// transient error kinds (rate_limit/timeout/stream_timeout/
 	// upstream_down/empty_response/transient) — fail_streak still
-	// accumulates but the node is not hard-disabled. Mirrors
-	// domains/ursm/v2/reducer/reducer.go's transientErrors soft-demote
-	// policy. Empty/non-"free" values keep the pre-existing hard-disable
-	// behavior for all other billing modes.
+	// accumulates but the node is not hard-disabled. (The old
+	// soft-demote twin in domains/ursm/v2/reducer was deleted — zero
+	// importers, AUDIT_24H B2a; this Lua script is the authoritative
+	// implementation.) Empty/non-"free" values keep the pre-existing
+	// hard-disable behavior for all other billing modes.
 	BillingMode string
 }
 

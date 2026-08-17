@@ -1588,34 +1588,9 @@ func main() {
 				"interval_seconds", routingExec.KeepaliveInterval)
 		}
 		routingExec.TTFBTracker = executors.NewTTFBTracker()
-		// O-1 predictive TTFT pre-skip is explicitly default-off. Require
-		// multiple fresh observations before bypassing a candidate so a single
-		// transient slow response cannot remove a route from consideration.
-		predictiveTTFBMinSamples := 3
-		if v := os.Getenv("LLM_GATEWAY_PREDICTIVE_TTFB_MIN_SAMPLES"); v != "" {
-			if n, err := strconv.Atoi(v); err == nil && n > 0 {
-				predictiveTTFBMinSamples = n
-			}
-		}
-		predictiveTTFBThreshold := time.Duration(0)
-		if v := os.Getenv("LLM_GATEWAY_PREDICTIVE_TTFB_THRESHOLD_MS"); v != "" {
-			if n, err := strconv.Atoi(v); err == nil && n > 0 {
-				predictiveTTFBThreshold = time.Duration(n) * time.Millisecond
-			}
-		}
-		if predictiveTTFBThreshold > 0 {
-			routingExec.PredictiveTTFBSkipper = executors.NewPredictiveSkipper(
-				routingExec.TTFBTracker,
-				predictiveTTFBThreshold,
-				predictiveTTFBMinSamples,
-			)
-			slog.Info("predictive_ttfb_skip_enabled",
-				"threshold_ms", predictiveTTFBThreshold.Milliseconds(),
-				"min_samples", predictiveTTFBMinSamples,
-			)
-		} else {
-			slog.Debug("predictive_ttfb_skip_disabled")
-		}
+		// O-1 predictive TTFT pre-skip went with the legacy sync candidate
+		// loop (AUDIT_24H B2b, 2026-08-17): the dispatch path explicitly
+		// excluded it, and its only consumer was that loop.
 
 		routingExec.PreRequestValidator = executors.NewRequestValidator(false) // non-strict mode
 		if routingExec.State != nil {
@@ -1828,14 +1803,6 @@ func main() {
 
 	if telemetryClient.Enabled() {
 		// 2026-06-20: wire telemetry into the executor so that
-		// runAsyncRetry can write success back to request_logs.
-		// Without this, async-retry success leaves the original
-		// in_progress / model_not_found row uncorrected (the sync
-		// phase returns 202 + AsyncPendingError without calling
-		// emitTelemetry).
-		if routingExec != nil {
-			routingExec.RequestLogEmitter = telemetryClient
-		}
 		slog.Info("telemetry emission enabled (chatHandler + routingExec)")
 	}
 

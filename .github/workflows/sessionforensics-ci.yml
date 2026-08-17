@@ -125,12 +125,32 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      # AUDIT_24H (2026-08-17): ratchet mode. The repo carries ~224+ legacy
+      # lint findings, so a plain `golangci-lint run` is permanently red and
+      # gates nothing. --new-from-rev makes the job fail only on issues
+      # introduced by the pushed commits; the legacy stock ratchets down as
+      # it gets cleaned. Base = previous main tip on push events, merge base
+      # (HEAD~1) on PRs; zero-SHA (branch creation) falls back to HEAD~1.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-go@v5
         with:
           go-version: '1.25'
+      - name: Determine ratchet base
+        run: |
+          BASE="HEAD~1"
+          if [ "${{ github.event_name }}" = "push" ]; then
+            BEFORE="${{ github.event.before }}"
+            if [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ] \
+               && git cat-file -e "$BEFORE"^{commit} 2>/dev/null; then
+              BASE="$BEFORE"
+            fi
+          fi
+          echo "LINT_RATCHET_BASE=$BASE" >> "$GITHUB_ENV"
+          echo "lint ratchet base: $BASE"
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v6
         with:
           version: v2.0
-          args: --timeout=5m
+          args: --timeout=5m --new-from-rev=${{ env.LINT_RATCHET_BASE }}
