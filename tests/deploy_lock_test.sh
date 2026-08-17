@@ -306,9 +306,44 @@ SSHEOF
   rm -rf "$tmp"
 }
 
-# --- AC-L7: lock metadata contains no secrets ---------------------
+# --- AC-L7: failed remote metadata write cleans partial lock ------
+test_remote_metadata_failure_cleans_lock() {
+  echo "── AC-L7: remote metadata failure cleanup ──"
+  local tmp; tmp=$(mktemp -d -t kx-remote-lock.XXXXXX)
+  local lock_path="$tmp/deploy.lock"
+  local call=0
+  failing_remote() {
+    call=$((call + 1))
+    case "$call" in
+      1) mkdir "$lock_path" ;;
+      2) return 9 ;;
+      3) rm -rf "$lock_path" ;;
+      *) return 1 ;;
+    esac
+  }
+
+  local rc
+  if lock_acquire_remote failing_remote 245 "$lock_path" 2>/dev/null; then
+    rc=0
+  else
+    rc=$?
+  fi
+  if [[ $rc -eq 75 ]]; then
+    log_pass "metadata failure returns EX_TEMPFAIL"
+  else
+    log_fail "metadata failure returned rc=$rc, want 75"
+  fi
+  if [[ ! -e "$lock_path" ]]; then
+    log_pass "partial remote lock removed after metadata failure"
+  else
+    log_fail "partial remote lock leaked after metadata failure"
+  fi
+  rm -rf "$tmp"
+}
+
+# --- AC-L8: lock metadata contains no secrets ---------------------
 test_lock_metadata_no_secrets() {
-  echo "── AC-L7: lock metadata contains no secrets ──"
+  echo "── AC-L8: lock metadata contains no secrets ──"
   local tmp; tmp=$(setup_lock_env)
   lock_acquire_local 2>/dev/null
 
@@ -361,6 +396,7 @@ run_all() {
   test_stale_lock_detection
   test_trap_release_on_crash
   test_force_unlock
+  test_remote_metadata_failure_cleans_lock
   test_lock_metadata_no_secrets
 
   echo

@@ -106,7 +106,7 @@ lock_acquire_remote() {
     "$ssh_cmd" "cat '$lock_path/metadata' 2>/dev/null" >&2 || true
     return 75
   }
-  "$ssh_cmd" "cat > '$lock_path/metadata'" <<EOF
+  if ! "$ssh_cmd" "cat > '$lock_path/metadata'" <<EOF
 target=$target
 source_user=${SOURCE_USER:-$(id -un 2>/dev/null || echo unknown)}
 source_host=${SOURCE_HOST:-$(hostname 2>/dev/null || echo unknown)}
@@ -115,6 +115,11 @@ started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 commit=${SOURCE_COMMIT:-$(git rev-parse HEAD 2>/dev/null || echo unknown)}
 version=${SOURCE_VERSION:-unknown}
 EOF
+  then
+    "$ssh_cmd" "rm -rf '$lock_path'" >/dev/null 2>&1 || true
+    echo "ERROR: remote lock metadata write failed at $lock_path on $target" >&2
+    return 75
+  fi
 }
 
 lock_release_remote() {
