@@ -52,9 +52,10 @@ func TestLoadFromEnv_ShadowDoubleWrite_DoesNotChangeMode(t *testing.T) {
 	if cfg.ShadowDoubleWrite != true {
 		t.Fatalf("expected ShadowDoubleWrite=true, got %v", cfg.ShadowDoubleWrite)
 	}
-	if cfg.Mode != api.ModeOff {
-		t.Fatalf("expected Mode=ModeOff (default), got %v — ShadowDoubleWrite env must NOT silently promote Mode", cfg.Mode)
+	if cfg.Mode != api.ModeAuthoritative {
+		t.Fatalf("expected Mode=ModeAuthoritative (default), got %v — ShadowDoubleWrite env must NOT change the direct-start mode", cfg.Mode)
 	}
+
 }
 
 // TestDefaultConfig_ShadowDoubleWriteOff pins the default-off contract
@@ -75,7 +76,8 @@ func TestLoadFromEnv_ModeAndCanaryPercent(t *testing.T) {
 		wantMode    api.RolloutMode
 		wantPercent int
 	}{
-		{"defaults", "", "", api.ModeOff, 0},
+		{"defaults", "", "", api.ModeAuthoritative, 0},
+
 		{"shadow", "shadow", "", api.ModeShadow, 0},
 		{"canary zero", "canary", "0", api.ModeCanary, 0},
 		{"canary hundred", "canary", "100", api.ModeCanary, 100},

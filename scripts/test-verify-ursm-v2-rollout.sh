@@ -67,6 +67,21 @@ if bash "$SCRIPT_DIR/verify-ursm-v2-rollout.sh" --stage canary --metrics-file "$
   exit 1
 fi
 
+cat >"$tmp/authoritative.prom" <<'METRICS'
+routing_state_source_total{source="authoritative"} 10
+routing_state_source_total{source="fallback"} 0
+METRICS
+bash "$SCRIPT_DIR/verify-ursm-v2-rollout.sh" --stage authoritative --metrics-file "$tmp/authoritative.prom" >/dev/null
+
+cat >"$tmp/authoritative-fallback.prom" <<'METRICS'
+routing_state_source_total{source="authoritative"} 10
+routing_state_source_total{source="fallback"} 1
+METRICS
+if bash "$SCRIPT_DIR/verify-ursm-v2-rollout.sh" --stage authoritative --metrics-file "$tmp/authoritative-fallback.prom" >/dev/null 2>&1; then
+  printf '%s\n' 'nonzero authoritative fallback must fail validation' >&2
+  exit 1
+fi
+
 cat >"$tmp/shadow-failed.prom" <<'METRICS'
 llm_gateway_ursm_v2_shadow_records_total{result="recorded"} 42
 llm_gateway_ursm_v2_shadow_records_total{result="skipped"} 0

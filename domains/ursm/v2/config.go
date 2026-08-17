@@ -1,6 +1,7 @@
 package v2
 
 import (
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -33,6 +34,7 @@ func DefaultScoringWeights() ScoringWeights {
 // (RedisKeyPrefix is empty and Mode is "" rather than api.ModeOff).
 type Config struct {
 	Mode                api.RolloutMode
+	loadErr             error
 	CanaryPercent       int
 	CanaryTenants       []string
 	CanaryModels        []string
@@ -74,7 +76,7 @@ type Config struct {
 
 func DefaultConfig() Config {
 	return Config{
-		Mode:                api.ModeOff,
+		Mode:                api.ModeAuthoritative,
 		CanaryPercent:       0,
 		ShadowSampleRate:    0.01,
 		RecordTimeoutMs:     20,
@@ -101,14 +103,19 @@ func DefaultConfig() Config {
 
 func LoadFromEnv() Config {
 	c := DefaultConfig()
-	if v := os.Getenv("URSM_V2_MODE"); v != "" {
+	if v := strings.TrimSpace(os.Getenv("URSM_V2_MODE")); v != "" {
 		c.Mode = api.RolloutMode(v)
 	}
-	if v := os.Getenv("URSM_V2_CANARY_PERCENT"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
+	if v := strings.TrimSpace(os.Getenv("URSM_V2_CANARY_PERCENT")); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 || n > 100 {
+			c.loadErr = fmt.Errorf("URSM_V2_CANARY_PERCENT must be an integer from 0 to 100")
+		} else {
 			c.CanaryPercent = n
 		}
 	}
+	c.CanaryTenants = parseCSV(os.Getenv("URSM_V2_CANARY_TENANTS"))
+	c.CanaryModels = parseCSV(os.Getenv("URSM_V2_CANARY_MODELS"))
 	if v := os.Getenv("URSM_V2_SHADOW_SAMPLE_RATE"); v != "" {
 		if n, err := strconv.ParseFloat(v, 64); err == nil && n >= 0 && n <= 1 {
 			c.ShadowSampleRate = n
@@ -135,11 +142,44 @@ func LoadFromEnv() Config {
 	// P0-3: shadow double-write env. Truthy (1/true/yes, case-insensitive)
 	// turns on sidecar writes in ModeShadow. Operators MUST also leave
 	// URSM_V2_MODE=shadow (NOT authoritative) so routing stays on legacy.
-	// Invalid values are silently ignored — default-off is the safe choice.
+	// Invalid values are ignored; shadow double-write remains disabled unless explicitly enabled.
 	if v := strings.ToLower(strings.TrimSpace(os.Getenv("URSM_V2_SHADOW_DOUBLE_WRITE"))); v != "" {
 		if v == "1" || v == "true" || v == "yes" {
 			c.ShadowDoubleWrite = true
 		}
 	}
 	return c
+}
+
+func (c Config) Validate() error {
+	if c.loadErr != nil {
+		return c.loadErr
+	}
+	switch c.Mode {
+	case api.ModeOff, api.ModeShadow, api.ModeCanary, api.ModeAuthoritative:
+	default:
+		return fmt.Errorf("URSM_V2_MODE must be off, shadow, canary, or authoritative (got %q)", c.Mode)
+	}
+	if c.CanaryPercent < 0 || c.CanaryPercent > 100 {
+		return fmt.Errorf("URSM_V2_CANARY_PERCENT must be an integer from 0 to 100")
+	}
+	return nil
+}
+
+func parseCSV(raw string) []string {
+	parts := strings.Split(raw, ",")
+	values := make([]string, 0, len(parts))
+	seen := make(map[string]struct{}, len(parts))
+	for _, part := range parts {
+		value := strings.TrimSpace(part)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		values = append(values, value)
+	}
+	return values
 }
