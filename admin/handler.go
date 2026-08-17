@@ -914,11 +914,11 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// Platform-level aggregate stats: active/idle/closed counts, average health score, recycled today.
 	mux.HandleFunc("/api/admin/sessions/inspector-stats", admin(h.HandleSessionInspectorStats))
 
-	// 2026-08-14 V3.2 (BE-B1 + BE-B2): 状态变更历史 + 在线会话浏览。
-	// 路径中 /online 显式写在 /sessions/ 通配之前（Go 1.22+ ServeMux 长前缀优先，
-	// 但显式更清晰）；/timeline 用 {id} 通配。
-	// 鉴权：只读，走 admin 中间件（JWT 或 admin_key）。
-	mux.HandleFunc("/api/admin/requests/{id}/transitions", admin(h.handleRequestTransitions))
+	// B3 PR2 (2026-08-17): admin 节点操作审计独立查询面，替换
+	// /api/admin/requests/{id}/transitions 中 audit 行查询部分
+	// （transition_type='state' 的伪 request_id 行）。请求生命周期事件
+	// 已迁入 requestjourney，由 /api/admin/request-journeys/ Detail 覆盖。
+	mux.HandleFunc("/api/admin/audit/node-operations", admin(h.handleAuditNodeOperations))
 	mux.HandleFunc("/api/admin/sessions/online", admin(h.handleSessionsOnline))
 	mux.HandleFunc("/api/admin/sessions/{id}/timeline", admin(h.handleSessionTimeline))
 	// 2026-08-15 V3.3-OBS (OBS-BE6): 会话轮次-子请求树（仅元数据，分页）。
