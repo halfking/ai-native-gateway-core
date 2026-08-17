@@ -44,4 +44,16 @@
 - `docs/adr/ADR-0002-target-go-package-layout.md`（Go 分层迁移路线）
 - 需线下轮换密钥：debug.go 签名/加密 key（base64 `AwoRGB8m...`）、volcengine ark key
   `ark-a0e01643-...-dbc14`、（建议）8.136.114.154 root SSH 通道审计
-- 后续项：git 历史重写清除 70MB 二进制与密钥、`deploy/sql/objects` 收敛、安装面三处合并
+- 后续项：git 历史重写清除 70MB 二进制与密钥、Go 分层迁移（ADR-0002，B1 前置）
+
+## 附记：后续项清理轮（同日晚间，已推送 main）
+
+并行会话曾把分支 rebase 同步 origin/main 期间产生了基线提交的重复副本（main 上
+472e7b893 为 amend 前不完整版），已验证内容包含关系后以 reset+ff 方式安全收敛并推送
+（ce774af08）。随后完成三个后续项：
+1. 监控收敛：`deploy/grafana/`+`deploy/monitoring/` → `deploy/prometheus/`
+   （839a46ba9，删除重复 dashboard，更新 phase1 脚本引用）；
+2. `deploy/sql/objects/` 7.5MB 生成副本删除+ignore（87916ed8a，实测漂移 19 处、
+   无引用；`schemas/baseline/` 确认为 installer/离线包实际使用而保留）；
+3. 根 `install.*` 定位勘误：系离线交付包入口（build-offline-packages.sh 复制依赖），
+   三个安装入口各司其职、非重复，REPO_LAYOUT.md 已修正。
