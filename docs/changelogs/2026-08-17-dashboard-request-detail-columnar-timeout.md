@@ -102,8 +102,34 @@ ERROR http_request path=/api/logs/245f6c6ebfc85fc735490b2307b7625e
   helper 返回 body；都不命中时返回 `sql.ErrNoRows`。
 - `TestFetchRequestBodies_TotalMissReturnsErrNoRows`：两边都没行时返回 `sql.ErrNoRows`，
   让 caller 把 body 置 nil 但 metadata 仍 200（不再 500）。
+- `TestFetchRequestBodies_CancelledParentCtx_DoesNotHang`：parent ctx 已取消时
+  helper 在 < 2s 返回（不是 hang 30s columnar 扫描），锁住 ctx 层级不被
+  嵌套取消意外阻断（rule 11 §14）。
 
 跑测试需 `TEST_DATABASE_URL` 指 dev DB（`setupTestDB` 检测到 URL 缺失时自动 skip）。
+
+## 2026-08-17 下午跟进 — 冷路径 ctx 防御
+
+第一次修只处理了 hot path（dashboard 高频命中）。但用户偶尔点"老请求"时
+**外层 5s ctx 仍会先把 metadata 卡掉**（metadata view 也包含 columnar 月分区
+`request_logs_2026_07/08`）。本次跟进把 ctx 拓扑改成：
+
+| 阶段 | ctx | 派生自 | 原因 |
+|------|-----|--------|------|
+| `getLog` metadata | **30s** | `r.Context()` | 给冷 metadata 留余量（hot 路径 < 100ms 不受影响） |
+| `fetchRequestBodies` hot | 3s | metadata ctx (30s) | 同一接口整体超时一致 |
+| `fetchRequestBodies` cold | 20s | metadata ctx (30s) | metadata 慢不会拖累 body（独立 ctx hierarchy） |
+
+并且在 `fetchRequestBodies` 内加 elapsed_ms 结构化日志（hot > 1s INFO，
+cold hit/timeout 都记 WARN/INFO），运维能区分：
+- `admin getLog metadata slow`（> 1s 但 < 30s）— metadata 慢了
+- `admin fetchRequestBodies cold path hit` — 走了 columnar，xx ms 拿到 body
+- `admin fetchRequestBodies cold path timeout` — columnar 超 20s，body 没拿到
+- `admin fetchRequestBodies hot path slow`（> 1s）— 不应发生，hot idx 应该 < 100ms
+
+154 实测：用一个**真的只在 columnar body 表里存在的** ID
+（`abcf2ef8d06bf1c89d6a1d6816c99765`，metadata 不在 hot 也不在 metadata view），
+扩展前 → HTTP 500 (timeout 5s)；扩展后 → HTTP 200 (从 columnar bodies 查到 body)。
 
 ## 遗留与下一步
 

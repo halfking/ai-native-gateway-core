@@ -20,6 +20,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   先查 hot (idx 命中, <1ms)，找不到再走 columnar 视图 (独立 20s ctx)。
   dashboard 实时流（24h 内请求）走 hot fast path 不再 timeout；
   metadata 永远先返回（body 缺失降级 nil），不再 500。
+- **columnar 冷路径 ctx 防御**：把 `getLog` 外层 ctx 从 5s 扩到 30s，
+  避免用户点"超过 TTL"的老请求时 metadata + body 都被 5s 卡掉。
+  `fetchRequestBodies` 慢路径加 elapsed_ms 结构化日志（hot > 1s 记 INFO，
+  cold hit / timeout 都记 WARN/INFO），便于运维区分 hot-miss vs columnar-cold。
+  新增 `TestFetchRequestBodies_CancelledParentCtx_DoesNotHang` 回归测试，
+  锁住 ctx 层级不被嵌套取消意外阻断。
 - 详见 `docs/changelogs/2026-08-17-dashboard-request-detail-columnar-timeout.md`，
   含根因 EXPLAIN ANALYZE 证据 + 154 实测 L1-L4 验证。
 

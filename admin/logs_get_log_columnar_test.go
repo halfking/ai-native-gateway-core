@@ -124,6 +124,33 @@ func TestFetchRequestBodies_TotalMissReturnsErrNoRows(t *testing.T) {
 	assert.Nil(t, respBody)
 }
 
+// TestFetchRequestBodies_CancelledParentCtx_DoesNotHang is the regression
+// for the cold-path defense (2026-08-17 follow-up). fetchRequestBodies
+// receives a parent ctx; the cold-path must derive its own sub-ctx from
+// that parent so that if the parent is cancelled (e.g. http.Server
+// shutting down mid-handler, or the outer 30s ctx of getLog fires), the
+// helper returns within ms — not hang on a 30s columnar scan.
+//
+// We simulate by passing an already-cancelled context and asserting the
+// helper returns an error (sql.ErrNoRows or context.DeadlineExceeded)
+// quickly (< 2s).
+func TestFetchRequestBodies_CancelledParentCtx_DoesNotHang(t *testing.T) {
+	pool := setupTestDB(t)
+	defer pool.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel before the call
+
+	h := &Handler{db: pool}
+	start := time.Now()
+	_, _, err := h.fetchRequestBodies(ctx, "any-request-id")
+	elapsed := time.Since(start)
+
+	require.Error(t, err, "cancelled parent ctx should yield error")
+	assert.Less(t, elapsed, 2*time.Second,
+		"cancelled parent ctx must propagate to cold path immediately (got %s; if this hangs the ctx hierarchy regressed)", elapsed)
+}
+
 // insertBodyIntoPartitionedOnly writes a body row directly into
 // request_logs_bodies (no hot counterpart). Used to exercise the cold
 // fallback path in fetchRequestBodies.
