@@ -223,3 +223,56 @@ func TestRequestJourneyAPINilReaderGracefullyDegrades(t *testing.T) {
 		t.Fatalf("status/body = %d/%s", response.Code, response.Body.String())
 	}
 }
+
+// TestRequestJourneyQueuesLifecycleFilter (v4 R1.1/T2): the queues view
+// exposes the additive lifecycle_state / retry_at snapshot fields and the
+// optional lifecycle_state filter; invalid states are rejected and an absent
+// filter keeps every row (backward compatible).
+func TestRequestJourneyQueuesLifecycleFilter(t *testing.T) {
+	retryAt := time.Unix(1700000123, 0).UTC()
+	stub := &requestJourneyReaderStub{listResult: requestjourney.ListResult{
+		ObservationStatus: requestjourney.ObservationComplete,
+		Requests: []requestjourney.RequestSnapshot{
+			{RequestID: "pending-1", LifecycleState: requestjourney.LifecyclePending, RetryAt: &retryAt},
+			{RequestID: "done-1", LifecycleState: requestjourney.LifecycleCompleted},
+		},
+	}}
+
+	request := httptest.NewRequest(http.MethodGet, requestJourneyAPIPath+"/queues?view=total", nil)
+	request = SetAuthContext(request, &AuthContext{TenantID: "tenant-a", Role: "tenant_admin", IsJWT: true})
+	response := httptest.NewRecorder()
+	NewRequestJourneyAPI(stub).ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, want := range []string{
+		`"lifecycle_state":"pending"`,
+		`"lifecycle_state":"completed"`,
+		`"retry_at":"` + retryAt.Format(time.RFC3339Nano)[:10], // date prefix suffices
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("unfiltered view missing %s: %s", want, body)
+		}
+	}
+
+	request = httptest.NewRequest(http.MethodGet, requestJourneyAPIPath+"/queues?view=total&lifecycle_state=pending", nil)
+	request = SetAuthContext(request, &AuthContext{TenantID: "tenant-a", Role: "tenant_admin", IsJWT: true})
+	response = httptest.NewRecorder()
+	NewRequestJourneyAPI(stub).ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("filtered status = %d, body = %s", response.Code, response.Body.String())
+	}
+	body = response.Body.String()
+	if !strings.Contains(body, "pending-1") || strings.Contains(body, "done-1") {
+		t.Fatalf("lifecycle filter must keep only pending rows: %s", body)
+	}
+
+	request = httptest.NewRequest(http.MethodGet, requestJourneyAPIPath+"/queues?view=total&lifecycle_state=running", nil)
+	request = SetAuthContext(request, &AuthContext{TenantID: "tenant-a", Role: "tenant_admin", IsJWT: true})
+	response = httptest.NewRecorder()
+	NewRequestJourneyAPI(stub).ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("invalid lifecycle_state must 400, got %d: %s", response.Code, response.Body.String())
+	}
+}

@@ -56,13 +56,19 @@ func TestProjectionEvictsThe101stOldestRequest(t *testing.T) {
 
 	total := projection.RecentTotal("tenant-a")
 	model := projection.RecentModel("tenant-a", "model-a")
-	for name, got := range map[string][]RequestSnapshot{"total": total, "model": model} {
-		if len(got) != 100 {
-			t.Fatalf("%s length = %d, want 100", name, len(got))
-		}
-		if got[0].RequestID != "request-002" || got[99].RequestID != "request-101" {
-			t.Fatalf("%s boundaries = %q..%q", name, got[0].RequestID, got[99].RequestID)
-		}
+	// v4: total projection stays 100; per-model projection is 30 (display
+	// bound — see DefaultPerModelCapacity). Both evict FIFO oldest-first.
+	if len(total) != 100 {
+		t.Fatalf("total length = %d, want 100", len(total))
+	}
+	if total[0].RequestID != "request-002" || total[99].RequestID != "request-101" {
+		t.Fatalf("total boundaries = %q..%q", total[0].RequestID, total[99].RequestID)
+	}
+	if len(model) != 30 {
+		t.Fatalf("model length = %d, want 30 (v4 per-model projection)", len(model))
+	}
+	if model[0].RequestID != "request-072" || model[29].RequestID != "request-101" {
+		t.Fatalf("model boundaries = %q..%q", model[0].RequestID, model[29].RequestID)
 	}
 	if _, err := projection.Detail("tenant-a", "request-001"); !errors.Is(err, ErrJourneyNotFound) {
 		t.Fatalf("evicted detail error = %v, want ErrJourneyNotFound", err)
@@ -205,6 +211,60 @@ func TestProjectionConcurrentReadersAndWriters(t *testing.T) {
 	wg.Wait()
 	if got := len(projection.RecentTotal("tenant-race")); got != DefaultTotalRequestCapacity {
 		t.Fatalf("recent total length = %d", got)
+	}
+}
+
+// TestProjectionDerivesLifecycleStateAndRetryAt (v4 R1.1/T2): snapshots
+// expose the derived request-registry state (pending → in_flight →
+// completed); a retrying event with retry_at parks the snapshot back to
+// pending and keeps retry_at visible until the request resumes.
+func TestProjectionDerivesLifecycleStateAndRetryAt(t *testing.T) {
+	projection := NewProjection(DefaultConfig())
+	const tenant, request = "tenant-a", "request-001"
+
+	mustApply(t, projection, testJourneyEvent(tenant, request, 1))
+
+	total := projection.RecentTotal(tenant)
+	if len(total) != 1 || total[0].LifecycleState != LifecyclePending {
+		t.Fatalf("received event should project pending, got %#v", total)
+	}
+
+	attempt := testAttemptEvent(tenant, request, 2, "attempt-1", 1, 11)
+	mustApply(t, projection, attempt)
+	total = projection.RecentTotal(tenant)
+	if total[0].LifecycleState != LifecycleInFlight {
+		t.Fatalf("upstream attempt should project in_flight, got %#v", total[0])
+	}
+
+	retryAt := time.Unix(1700000100, 0).UTC()
+	retry := testJourneyEvent(tenant, request, 3)
+	retry.Type = EventRetryScheduled
+	retry.Stage = StageRetrying
+	retry.RetryAt = &retryAt
+	mustApply(t, projection, retry)
+	total = projection.RecentTotal(tenant)
+	if total[0].LifecycleState != LifecyclePending {
+		t.Fatalf("retrying with retry_at should project pending, got %#v", total[0])
+	}
+	if total[0].RetryAt == nil || !total[0].RetryAt.Equal(retryAt) {
+		t.Fatalf("retry_at should be visible while parked, got %#v", total[0].RetryAt)
+	}
+
+	resumed := testAttemptEvent(tenant, request, 4, "attempt-2", 2, 11)
+	mustApply(t, projection, resumed)
+	total = projection.RecentTotal(tenant)
+	if total[0].LifecycleState != LifecycleInFlight || total[0].RetryAt != nil {
+		t.Fatalf("resumed attempt should be in_flight without retry_at, got %#v", total[0])
+	}
+
+	terminal := testJourneyEvent(tenant, request, 5)
+	terminal.Type = EventRequestSucceeded
+	terminal.Stage = StageTerminal
+	terminal.Outcome = OutcomeSuccess
+	mustApply(t, projection, terminal)
+	total = projection.RecentTotal(tenant)
+	if total[0].LifecycleState != LifecycleCompleted {
+		t.Fatalf("terminal should project completed, got %#v", total[0])
 	}
 }
 
