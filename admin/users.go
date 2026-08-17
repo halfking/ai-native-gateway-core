@@ -49,7 +49,7 @@ type updateUserRequest struct {
 }
 
 // writeAuditLog inserts a row into routing_audit_log using r's AuthContext (best-effort, async).
-func (h *Handler) writeAuditLog(r *http.Request, action, targetType string, targetID int, details string) {
+func (h *Handler) writeAuditLog(r *http.Request, action, targetType string, targetID int, details any) {
 	auth := GetAuthContext(r)
 	actor := "unknown"
 	if auth != nil && auth.Username != "" {
