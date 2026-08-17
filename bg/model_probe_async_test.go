@@ -3,18 +3,31 @@ package bg
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
 
+func TestStartFeaturedOnly_ArmsManualProbeWorker(t *testing.T) {
+	src := mustReadFile(t, "model_probe.go")
+	start := strings.Index(src, "func (r *ModelProbeRunner) StartFeaturedOnly")
+	if start < 0 {
+		t.Fatal("StartFeaturedOnly not found")
+	}
+	end := strings.Index(src[start:], "func (r *ModelProbeRunner) nonfeaturedWatchdogLoop")
+	if end < 0 || !strings.Contains(src[start:start+end], "r.startManualProbeWorker(fctx)") {
+		t.Fatal("featured-only mode must start the manual probe worker")
+	}
+}
+
 func TestSubmitManualProbe_Success(t *testing.T) {
 	r := NewModelProbeRunner(nil, nil)
-	
+
 	err := r.SubmitManualProbe(123, "gpt-4")
 	if err != nil {
 		t.Fatalf("SubmitManualProbe failed: %v", err)
 	}
-	
+
 	select {
 	case task := <-r.manualProbeQueue:
 		if task.CredentialID != 123 || task.RawModel != "gpt-4" {
@@ -27,14 +40,14 @@ func TestSubmitManualProbe_Success(t *testing.T) {
 
 func TestSubmitManualProbe_QueueFull(t *testing.T) {
 	r := NewModelProbeRunner(nil, nil)
-	
+
 	// Fill queue to capacity (64)
 	for i := 0; i < 64; i++ {
 		if err := r.SubmitManualProbe(i, "model"); err != nil {
 			t.Fatalf("failed to fill queue at %d: %v", i, err)
 		}
 	}
-	
+
 	// 65th should fail
 	err := r.SubmitManualProbe(999, "overflow")
 	if err == nil {
@@ -49,9 +62,9 @@ func TestManualProbeWorker_ProcessesTasks(t *testing.T) {
 	r := NewModelProbeRunner(nil, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	
+
 	processed := make(chan manualProbeTask, 1)
-	
+
 	// Mock worker that captures tasks instead of calling TriggerManual
 	go func() {
 		for {
@@ -63,9 +76,9 @@ func TestManualProbeWorker_ProcessesTasks(t *testing.T) {
 			}
 		}
 	}()
-	
+
 	r.SubmitManualProbe(456, "claude-3")
-	
+
 	select {
 	case task := <-processed:
 		if task.CredentialID != 456 || task.RawModel != "claude-3" {
@@ -79,7 +92,7 @@ func TestManualProbeWorker_ProcessesTasks(t *testing.T) {
 func TestTriggerManualRaceProtection_SQLContract(t *testing.T) {
 	// This test verifies the recheck query structure exists in TriggerManual
 	src := mustReadFile(t, "model_probe.go")
-	
+
 	requiredChecks := []string{
 		"Race protection - recheck eligibility before decrypt",
 		"COALESCE(c.status, 'active') = 'active'",
@@ -90,7 +103,7 @@ func TestTriggerManualRaceProtection_SQLContract(t *testing.T) {
 		"disabled_after_query",
 		"credential became ineligible between query and probe",
 	}
-	
+
 	for _, check := range requiredChecks {
 		if !contains(src, check) {
 			t.Errorf("TriggerManual missing race protection check: %q", check)
