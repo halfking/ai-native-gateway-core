@@ -160,6 +160,9 @@ deploy/prod-*.yml
 # 部署记录目录（含完整方案/SQL变更/验证记录）
 deploy/r*-*/
 
+# deploy/sql/objects/ 为 sync-objects.sh 生成的派生副本（SSOT = sql/objects/）
+deploy/sql/objects/
+
 
 # 环境变量（明文，不提交）
 # Spec cf8aad1a9 §SOPS and Credentials: only encrypted forms are
