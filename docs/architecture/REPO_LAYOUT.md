@@ -51,7 +51,7 @@
 | `configs/` | 运维 | 环境脚本（env-252.sh 等）+ 敏感词数据；**无 Go** |
 | `db/` | 平台 | DB 连接 Go 包 + `db/migrations/`（编号至 362，Go 加载） |
 | `sql/` | 数据 | 规范 SQL 仓：`schema/`、`seed/`、`objects/`、`migrations/`（含 `startup/`、`timeout-optimization/`） |
-| `deploy/` | 运维 | systemd/nginx/k8s/grafana/prometheus/one-click/monitoring + `deploy/sql/`（252 结构快照，待治理） |
+| `deploy/` | 运维 | systemd/nginx/**k8s（含 cron）**/grafana/prometheus（alerts+rules+dashboards）/one-click + `deploy/sql/`（252 结构快照，待治理） |
 | `scripts/` | 运维 | 分桶：`ops/` `test/` `partition/` `install/` `deploy/` `deprecated/` `rollback/` 等；一次性脚本入 `deprecated/` 或归档 |
 | `installer/` | 运维 | **独立嵌套 Go module**（自有 go.mod），一键安装器 |
 | `packaging/` | 运维 | 打包物料 |
@@ -77,7 +77,7 @@
 | `Makefile` `go.mod` `go.sum` `VERSION` `version.json` | 构建/版本 SSOT = `version.json`（`build_seq` 已废弃删除） |
 | `Dockerfile{,.incremental,.local-arm64,.web-patch}` `docker-compose{,.persistent,.dev-research,.deploy-test}.yml` | 镜像与编排 |
 | `config.example.yaml` `.env.example` `.env.*.enc` `.sops.yaml` | 配置样例与 sops 密文 |
-| `install.sh/.bat/.ps1` `uninstall.sh/.ps1` | 用户入口 wrapper；**已知三处安装面并存**（此处 / `deploy/one-click/` / `scripts/install/`），权威 = `installer/`，合并列入后续项 |
+| `install.sh/.bat/.ps1` `uninstall.sh/.ps1` | **离线交付包入口**（`scripts/build-offline-packages.sh` 会复制到包根，勿移动）；三个安装入口各司其职：此处=客户离线包 / `deploy/one-click/`=整套环境部署 / `scripts/install/`=已装实例运维 |
 | `LOCAL_CONFIG.md.template` | 本机配置模板 |
 
 ## 入位规则（新文件放哪）
@@ -93,7 +93,5 @@
 ## 已知后续项（本轮未做）
 
 - `deploy/sql/objects/`（7.5MB 结构快照，与 `sql/` 三处并存）→ 收敛为单一规范源+生成物。
-- 安装面三处并存（见上）。
-- `deploy/` 内部 `grafana/`+`monitoring/`+`prometheus/` 三处监控配置的进一步合并。
 - Go 包分层迁移 → ADR-0002。
 - git 历史中的大二进制（约 70MB）与已泄漏密钥 → 需历史重写+密钥轮换专项。
