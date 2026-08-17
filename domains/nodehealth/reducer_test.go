@@ -6,6 +6,9 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/kaixuan/llm-gateway-go/domains/nodehealth"
 	"github.com/kaixuan/llm-gateway-go/domains/requestjourney"
@@ -58,6 +61,90 @@ func TestOutcomeReducerTemporaryFailureProgression(t *testing.T) {
 	}
 }
 
+func TestOutcomeReducerModelBindingFailureIsolatesCredentialScope(t *testing.T) {
+	r := nodehealth.NewOutcomeReducer()
+	node := nodehealth.NodeKey{CredentialID: 42, Model: "model-a"}
+
+	decision, err := r.Reduce(nodehealth.Observation{
+		Node: node, AttemptID: "attempt-1", Phase: nodehealth.PhaseRequest,
+		Outcome: requestjourney.OutcomeFailure, ErrorKind: nodehealth.ErrorKindModelBinding,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Status != requestjourney.NodeHealthQuarantined {
+		t.Fatalf("decision = %+v, want quarantined binding node", decision)
+	}
+	for _, required := range []nodehealth.EffectKind{
+		nodehealth.EffectPersistNodeStatus,
+		nodehealth.EffectUpdateURSM,
+		nodehealth.EffectSetBindingUnavailable,
+		nodehealth.EffectInvalidateCandidateCache,
+		nodehealth.EffectScheduleProbe,
+		nodehealth.EffectQuarantine,
+	} {
+		assertEffect(t, decision, required)
+	}
+	for _, forbidden := range []nodehealth.EffectKind{
+		nodehealth.EffectRecordCircuitFailure,
+		nodehealth.EffectSetCredentialUnavailable,
+	} {
+		assertNoEffect(t, decision, forbidden)
+	}
+}
+
+func TestOutcomeReducerSiblingModelKeepsServingAfterBindingFailure(t *testing.T) {
+	r := nodehealth.NewOutcomeReducer()
+	modelA := nodehealth.NodeKey{CredentialID: 42, Model: "model-a"}
+	modelB := nodehealth.NodeKey{CredentialID: 42, Model: "model-b"}
+
+	bindingFailure, err := r.Reduce(nodehealth.Observation{
+		Node: modelA, AttemptID: "attempt-a", Phase: nodehealth.PhaseRequest,
+		Outcome: requestjourney.OutcomeFailure, ErrorKind: nodehealth.ErrorKindModelBinding,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bindingFailure.Status != requestjourney.NodeHealthQuarantined {
+		t.Fatalf("model-a binding failure = %+v, want quarantined", bindingFailure)
+	}
+
+	// model-b on the same credential starts from its own healthy state and
+	// its failures still carry full credential-wide evidence.
+	bFailure, err := r.Reduce(nodehealth.Observation{
+		Node: modelB, AttemptID: "attempt-b", Phase: nodehealth.PhaseRequest,
+		Outcome: requestjourney.OutcomeFailure, ErrorKind: nodehealth.ErrorKindNetwork,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bFailure.PreviousStatus != requestjourney.NodeHealthHealthy {
+		t.Fatalf("model-b state polluted by model-a binding failure: %+v", bFailure)
+	}
+	assertEffect(t, bFailure, nodehealth.EffectUpdateURSM)
+	assertNoEffect(t, bFailure, nodehealth.EffectRecordCircuitFailure)
+
+	// A model-b success still performs the full credential recovery —
+	// model-a's quarantine never fenced it.
+	bSuccess, err := r.Reduce(nodehealth.Observation{
+		Node: modelB, AttemptID: "attempt-b2", Phase: nodehealth.PhaseRequest,
+		Outcome: requestjourney.OutcomeSuccess,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bSuccess.Status != requestjourney.NodeHealthHealthy {
+		t.Fatalf("model-b success = %+v, want healthy", bSuccess)
+	}
+	for _, effect := range []nodehealth.EffectKind{
+		nodehealth.EffectRecoverCircuit,
+		nodehealth.EffectRestoreBinding,
+		nodehealth.EffectRestoreCredential,
+	} {
+		assertEffect(t, bSuccess, effect)
+	}
+}
+
 func TestOutcomeReducerPermanentFailuresQuarantineImmediately(t *testing.T) {
 	for _, kind := range []nodehealth.ErrorKind{
 		nodehealth.ErrorKindAuth,
@@ -77,6 +164,13 @@ func TestOutcomeReducerPermanentFailuresQuarantineImmediately(t *testing.T) {
 			}
 			if decision.Status != requestjourney.NodeHealthQuarantined {
 				t.Fatalf("decision = %+v, want quarantined", decision)
+			}
+			// Credential-scoped permanent kinds escalate the credential-wide
+			// circuit and availability. ModelBinding is deliberately excluded:
+			// its isolation contract is pinned by
+			// TestOutcomeReducerModelBindingFailureIsolatesCredentialScope.
+			if kind == nodehealth.ErrorKindModelBinding {
+				return
 			}
 			for _, required := range []nodehealth.EffectKind{
 				nodehealth.EffectRecordCircuitFailure,
@@ -277,6 +371,162 @@ func TestOutcomeReducerDeduplicatesAttemptPhase(t *testing.T) {
 	}
 	if duplicate.Status != requestjourney.NodeHealthSuspect || duplicate.ConsecutiveFailures != 1 {
 		t.Fatalf("duplicate changed state: %+v", duplicate)
+	}
+}
+
+func TestOutcomeReducerSeenEntryExpiresAfterTTL(t *testing.T) {
+	now := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)
+	r := nodehealth.NewOutcomeReducerWithConfig(nodehealth.ReducerConfig{
+		SeenTTL: 10 * time.Minute,
+		Now:     func() time.Time { return now },
+	})
+	observation := nodehealth.Observation{
+		Node:      nodehealth.NodeKey{CredentialID: 42, Model: "model-a"},
+		AttemptID: "attempt-1",
+		Phase:     nodehealth.PhaseRequest,
+		Outcome:   requestjourney.OutcomeFailure,
+		ErrorKind: nodehealth.ErrorKindNetwork,
+	}
+
+	first, err := r.Reduce(observation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !first.Accepted || first.Duplicate {
+		t.Fatalf("first decision = %+v, want accepted", first)
+	}
+
+	within, err := r.Reduce(observation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !within.Duplicate || within.Accepted {
+		t.Fatalf("replay within TTL = %+v, want deduplicated", within)
+	}
+
+	now = now.Add(11 * time.Minute)
+	expired, err := r.Reduce(observation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !expired.Accepted || expired.Duplicate {
+		t.Fatalf("replay after TTL = %+v, want re-accepted once the entry expired", expired)
+	}
+}
+
+func TestOutcomeReducerTTLReclaimKeepsNodeState(t *testing.T) {
+	now := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)
+	r := nodehealth.NewOutcomeReducerWithConfig(nodehealth.ReducerConfig{
+		SeenTTL: 5 * time.Minute,
+		Now:     func() time.Time { return now },
+	})
+	node := nodehealth.NodeKey{CredentialID: 42, Model: "model-a"}
+	for i := 0; i < 3; i++ {
+		if _, err := r.Reduce(nodehealth.Observation{
+			Node: node, AttemptID: fmt.Sprintf("attempt-%d", i+1), Phase: nodehealth.PhaseRequest,
+			Outcome: requestjourney.OutcomeFailure, ErrorKind: nodehealth.ErrorKindNetwork,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	now = now.Add(6 * time.Minute)
+	replayed, err := r.Reduce(nodehealth.Observation{
+		Node: node, AttemptID: "attempt-1", Phase: nodehealth.PhaseRequest,
+		Outcome: requestjourney.OutcomeSuccess,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !replayed.Accepted || replayed.Duplicate {
+		t.Fatalf("expired event should be accepted again: %+v", replayed)
+	}
+	if replayed.PreviousStatus != requestjourney.NodeHealthDegraded {
+		t.Fatalf("node state was reset during TTL reclaim: %+v", replayed)
+	}
+	if replayed.Status != requestjourney.NodeHealthHealthy || replayed.ConsecutiveFailures != 0 {
+		t.Fatalf("success after TTL reclaim did not recover node: %+v", replayed)
+	}
+}
+
+// seenEvictedTotal reads the nodehealth_reducer_seen_evicted_total counter for
+// one reason label. Counters are process-global; tests assert deltas.
+func seenEvictedTotal(t *testing.T, reason string) float64 {
+	t.Helper()
+	mfs, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		t.Fatalf("gather prometheus metrics: %v", err)
+	}
+	for _, mf := range mfs {
+		if mf.GetName() != "nodehealth_reducer_seen_evicted_total" {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			for _, label := range m.GetLabel() {
+				if label.GetName() == "reason" && label.GetValue() == reason {
+					return m.GetCounter().GetValue()
+				}
+			}
+		}
+	}
+	return 0
+}
+
+func TestOutcomeReducerCountsSeenEvictionsByReason(t *testing.T) {
+	node := nodehealth.NodeKey{CredentialID: 42, Model: "model-a"}
+	failure := func(attemptID string) nodehealth.Observation {
+		return nodehealth.Observation{
+			Node: node, AttemptID: attemptID, Phase: nodehealth.PhaseRequest,
+			Outcome: requestjourney.OutcomeFailure, ErrorKind: nodehealth.ErrorKindNetwork,
+		}
+	}
+
+	ttlBefore := seenEvictedTotal(t, "ttl")
+	now := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)
+	ttlReducer := nodehealth.NewOutcomeReducerWithConfig(nodehealth.ReducerConfig{
+		SeenTTL: 5 * time.Minute,
+		Now:     func() time.Time { return now },
+	})
+	if _, err := ttlReducer.Reduce(failure("attempt-1")); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(6 * time.Minute)
+	if _, err := ttlReducer.Reduce(failure("attempt-2")); err != nil {
+		t.Fatal(err)
+	}
+	if delta := seenEvictedTotal(t, "ttl") - ttlBefore; delta < 1 {
+		t.Fatalf("ttl evictions delta = %v, want >= 1", delta)
+	}
+
+	capacityBefore := seenEvictedTotal(t, "capacity")
+	capacityReducer := nodehealth.NewOutcomeReducerWithConfig(nodehealth.ReducerConfig{
+		SeenCapacity: 2,
+		Now:          func() time.Time { return now },
+	})
+	for _, attemptID := range []string{"attempt-1", "attempt-2", "attempt-3"} {
+		if _, err := capacityReducer.Reduce(failure(attemptID)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if delta := seenEvictedTotal(t, "capacity") - capacityBefore; delta < 1 {
+		t.Fatalf("capacity evictions delta = %v, want >= 1", delta)
+	}
+}
+
+func TestOutcomeReducerZeroValueUsable(t *testing.T) {
+	var r nodehealth.OutcomeReducer
+	decision, err := r.Reduce(nodehealth.Observation{
+		Node:      nodehealth.NodeKey{CredentialID: 42, Model: "model-a"},
+		AttemptID: "attempt-1",
+		Phase:     nodehealth.PhaseRequest,
+		Outcome:   requestjourney.OutcomeFailure,
+		ErrorKind: nodehealth.ErrorKindNetwork,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !decision.Accepted || decision.Status != requestjourney.NodeHealthSuspect {
+		t.Fatalf("zero-value reducer decision = %+v, want accepted suspect", decision)
 	}
 }
 

@@ -12,6 +12,9 @@ import (
 const (
 	defaultRecorderQueueCapacity = 4096
 	defaultRecorderWriteTimeout  = 5 * time.Second
+	defaultRecorderMaxAttempts   = 5
+	defaultRecorderBackoff       = 25 * time.Millisecond
+	maxTrackedJourneyRequests    = 8192
 )
 
 var (
@@ -28,25 +31,271 @@ type ingressEventWriter interface {
 }
 
 type recorderWrite struct {
-	journey *JourneyEvent
-	ingress *IngressEvent
+	journey  *JourneyEvent
+	ingress  *IngressEvent
+	attempts int
+	due      time.Time
 }
 
 type recorderOptions struct {
-	queueCapacity int
-	writeTimeout  time.Duration
+	queueCapacity  int
+	writeTimeout   time.Duration
+	maxAttempts    int
+	initialBackoff time.Duration
+}
+
+// StoreStats exposes per-store writer health for tests and admin diagnostics:
+// Pending is the lag (queue + outbox depth), the rest are lifetime counters.
+type StoreStats struct {
+	Store        string `json:"store"`
+	Pending      int64  `json:"pending"`
+	Written      int64  `json:"written"`
+	Replayed     int64  `json:"replayed"`
+	WriteDrops   int64  `json:"write_drops"`
+	EnqueueDrops int64  `json:"enqueue_drops"`
+	SequenceGaps int64  `json:"sequence_gaps"`
+}
+
+type storeStats struct {
+	pending      atomic.Int64
+	written      atomic.Int64
+	replayed     atomic.Int64
+	writeDrops   atomic.Int64
+	enqueueDrops atomic.Int64
+	gaps         atomic.Int64
+}
+
+func (s *storeStats) snapshot(store string) StoreStats {
+	return StoreStats{
+		Store: store, Pending: s.pending.Load(), Written: s.written.Load(),
+		Replayed: s.replayed.Load(), WriteDrops: s.writeDrops.Load(),
+		EnqueueDrops: s.enqueueDrops.Load(), SequenceGaps: s.gaps.Load(),
+	}
+}
+
+// seqTracker finalizes per-store sequence gaps when a journey reaches its
+// terminal event: gap = terminalSeq - delivered - stillParked. Counting only
+// at the terminal makes the metric immune to outbox reordering (a retried
+// write that lands after later sequences is not a hole). Journeys whose key
+// the tracker never saw (eviction beyond the bound, or a terminal arriving
+// with no prior observation) settle conservatively to zero instead of
+// guessing. Worker-goroutine-only state; bounded insertion order evicts the
+// oldest tracked request when the map exceeds its limit.
+type seqTracker struct {
+	count map[string]int64
+	order []string
+}
+
+func newSeqTracker() *seqTracker {
+	return &seqTracker{count: make(map[string]int64)}
+}
+
+func (t *seqTracker) observe(event JourneyEvent, parked int64) int64 {
+	key := event.TenantID + "\x1f" + event.RequestID
+	delivered, seenBefore := t.count[key]
+	delivered++
+	if event.Stage != StageTerminal {
+		if !seenBefore {
+			t.track(key)
+		}
+		t.count[key] = delivered
+		return 0
+	}
+	delete(t.count, key)
+	if !seenBefore {
+		return 0
+	}
+	gap := event.Seq - delivered - parked
+	if gap < 0 {
+		return 0
+	}
+	return gap
+}
+
+func (t *seqTracker) track(key string) {
+	t.order = append(t.order, key)
+	for len(t.order) > maxTrackedJourneyRequests {
+		delete(t.count, t.order[0])
+		t.order = t.order[1:]
+	}
+}
+
+// parkedFor counts outbox entries still waiting for the same journey, so a
+// terminal settling while an earlier sequence is mid-replay is not misread
+// as a hole. Worker-goroutine-only: pending is owned by the pump.
+func (p *storePump) parkedFor(event JourneyEvent) int64 {
+	if len(p.pending) == 0 {
+		return 0
+	}
+	key := event.TenantID + "\x1f" + event.RequestID
+	var parked int64
+	for _, write := range p.pending {
+		if write.journey != nil && write.journey.TenantID+"\x1f"+write.journey.RequestID == key {
+			parked++
+		}
+	}
+	return parked
+}
+
+// storePump is one bounded FIFO worker per external store. Writes that fail
+// enter an in-store outbox and replay with backoff; a pump never blocks the
+// request path, it only builds lag until it drops.
+type storePump struct {
+	name        string // metric label: redis, postgres, redis_ingress
+	displayName string // error-message prefix
+	queue       chan recorderWrite
+
+	writeFn        func(context.Context, recorderWrite) error
+	onWriteDrop    func(recorderWrite, error)
+	writeTimeout   time.Duration
+	maxAttempts    int
+	initialBackoff time.Duration
+
+	pendingCount atomic.Int64
+	pending      []recorderWrite // in-worker outbox, kept sorted by due
+	stats        storeStats
+	seq          *seqTracker
+	done         chan struct{}
+}
+
+func (p *storePump) pendingCap() int {
+	return cap(p.queue)
+}
+
+func (p *storePump) start() {
+	go p.run()
+}
+
+func (p *storePump) run() {
+	defer close(p.done)
+	setJourneyQueueDepth(p.name, 0)
+	queueOpen := true
+	for {
+		if write, ok := p.nextDue(); ok {
+			p.deliver(write)
+			continue
+		}
+		if !queueOpen && p.pendingCount.Load() == 0 {
+			return
+		}
+		if len(p.pending) == 0 {
+			item, ok := <-p.queue
+			if !ok {
+				queueOpen = false
+				continue
+			}
+			p.stats.pending.Store(int64(len(p.queue)) + p.pendingCount.Load())
+			p.deliver(item)
+			continue
+		}
+		// Outbox head not due yet: prefer new writes so a store recovering on
+		// old retries is not starved by backoff, then wait for the head.
+		if queueOpen {
+			timer := time.NewTimer(time.Until(p.pending[0].due))
+			select {
+			case item, ok := <-p.queue:
+				timer.Stop()
+				if !ok {
+					queueOpen = false
+					continue
+				}
+				p.deliver(item)
+			case <-timer.C:
+			}
+			continue
+		}
+		<-time.After(time.Until(p.pending[0].due))
+	}
+}
+
+func (p *storePump) nextDue() (recorderWrite, bool) {
+	if len(p.pending) == 0 || time.Now().Before(p.pending[0].due) {
+		return recorderWrite{}, false
+	}
+	write := p.pending[0]
+	p.pending = p.pending[1:]
+	p.pendingCount.Add(-1)
+	return write, true
+}
+
+func (p *storePump) deliver(write recorderWrite) {
+	p.updateDepth()
+	ctx, cancel := context.WithTimeout(context.Background(), p.writeTimeout)
+	err := p.writeFn(ctx, write)
+	cancel()
+	if err == nil {
+		if write.attempts > 0 {
+			p.stats.replayed.Add(1)
+			recordJourneyReplay(p.name)
+		} else {
+			p.stats.written.Add(1)
+		}
+		if write.journey != nil && p.seq != nil {
+			if gap := p.seq.observe(*write.journey, p.parkedFor(*write.journey)); gap > 0 {
+				p.stats.gaps.Add(gap)
+				recordJourneyGap(p.name, gap)
+			}
+		}
+		return
+	}
+	write.attempts++
+	if write.attempts < p.maxAttempts && len(p.pending) < p.pendingCap() {
+		write.due = time.Now().Add(p.backoffDelay(write.attempts))
+		p.park(write)
+		return
+	}
+	reason := "write_failed"
+	if write.attempts < p.maxAttempts {
+		reason = "outbox_full"
+	}
+	p.stats.writeDrops.Add(1)
+	recordJourneyDropWithStore(reason, p.name)
+	recordJourneyDegradedWithStore(reason, p.name)
+	if p.onWriteDrop != nil {
+		p.onWriteDrop(write, err)
+	}
+}
+
+func (p *storePump) backoffDelay(failedAttempts int) time.Duration {
+	delay := p.initialBackoff
+	for i := 1; i < failedAttempts && delay < time.Second; i++ {
+		delay *= 2
+	}
+	return delay
+}
+
+// park inserts a retry into the outbox in due order so an earlier-deadline
+// retry is never gated behind a later one. Worker-goroutine-only.
+func (p *storePump) park(write recorderWrite) {
+	index := len(p.pending)
+	for index > 0 && p.pending[index-1].due.After(write.due) {
+		index--
+	}
+	p.pending = append(p.pending, recorderWrite{})
+	copy(p.pending[index+1:], p.pending[index:])
+	p.pending[index] = write
+	p.pendingCount.Add(1)
+}
+
+func (p *storePump) updateDepth() {
+	depth := p.depthValue()
+	p.stats.pending.Store(depth)
+	setJourneyQueueDepth(p.name, int(depth))
+}
+
+// depthValue is safe from any goroutine: channel length and the outbox
+// counter are both atomic-safe reads, unlike the worker-owned pending slice.
+func (p *storePump) depthValue() int64 {
+	return int64(len(p.queue)) + p.pendingCount.Load()
 }
 
 // Recorder synchronously updates the local projection and asynchronously fans
-// accepted events into optional shared stores through one bounded FIFO worker.
+// accepted events into optional shared stores. Each store has its own bounded
+// worker, so a slow PostgreSQL never starves the Redis hot projection.
 type Recorder struct {
-	memory       *Projection
-	redis        journeyEventWriter
-	ingressRedis ingressEventWriter
-	pg           journeyEventWriter
-	queue        chan recorderWrite
-	writeTimeout time.Duration
-	done         chan struct{}
+	memory      *Projection
+	pumps       []*storePump
+	ingressPump *storePump
 
 	applyMu sync.Mutex
 	stateMu sync.RWMutex
@@ -83,17 +332,78 @@ func newRecorderWithIngress(memory *Projection, redisWriter journeyEventWriter, 
 	if options.writeTimeout <= 0 {
 		options.writeTimeout = defaultRecorderWriteTimeout
 	}
-	r := &Recorder{
-		memory:       memory,
-		redis:        redisWriter,
-		ingressRedis: ingressRedisWriter,
-		pg:           pgWriter,
-		queue:        make(chan recorderWrite, options.queueCapacity),
-		writeTimeout: options.writeTimeout,
-		done:         make(chan struct{}),
+	if options.maxAttempts <= 0 {
+		options.maxAttempts = defaultRecorderMaxAttempts
 	}
-	go r.run()
+	if options.initialBackoff <= 0 {
+		options.initialBackoff = defaultRecorderBackoff
+	}
+	r := &Recorder{memory: memory}
+	if redisWriter != nil {
+		r.pumps = append(r.pumps, newJourneyPump("redis", "Redis", options, redisWriter.Apply))
+	}
+	if pgWriter != nil {
+		r.pumps = append(r.pumps, newJourneyPump("postgres", "PostgreSQL", options, pgWriter.Apply))
+	}
+	if ingressRedisWriter != nil {
+		r.ingressPump = newIngressPump(options, ingressRedisWriter.ApplyIngress)
+		r.pumps = append(r.pumps, r.ingressPump)
+	}
+	for _, pump := range r.pumps {
+		pump.onWriteDrop = r.makeWriteDropHandler(pump)
+		pump.start()
+	}
 	return r
+}
+
+func newJourneyPump(name, displayName string, options recorderOptions, apply func(context.Context, JourneyEvent) error) *storePump {
+	return &storePump{
+		name: name, displayName: displayName,
+		queue:          make(chan recorderWrite, options.queueCapacity),
+		writeFn:        func(ctx context.Context, write recorderWrite) error { return apply(ctx, *write.journey) },
+		writeTimeout:   options.writeTimeout,
+		maxAttempts:    options.maxAttempts,
+		initialBackoff: options.initialBackoff,
+		seq:            newSeqTracker(),
+		done:           make(chan struct{}),
+	}
+}
+
+func newIngressPump(options recorderOptions, apply func(context.Context, IngressEvent) error) *storePump {
+	return &storePump{
+		name: "redis_ingress", displayName: "Redis ingress",
+		queue:          make(chan recorderWrite, options.queueCapacity),
+		writeFn:        func(ctx context.Context, write recorderWrite) error { return apply(ctx, *write.ingress) },
+		writeTimeout:   options.writeTimeout,
+		maxAttempts:    options.maxAttempts,
+		initialBackoff: options.initialBackoff,
+		done:           make(chan struct{}),
+	}
+}
+
+func (r *Recorder) makeWriteDropHandler(pump *storePump) func(recorderWrite, error) {
+	return func(write recorderWrite, writeErr error) {
+		if write.journey != nil {
+			r.markObservationDegraded(*write.journey)
+		} else if r.memory != nil {
+			r.memory.MarkIngressDegraded()
+		}
+		r.report(fmt.Errorf("request journey %s write: %w", pump.displayName, writeErr))
+	}
+}
+
+// StoreStats returns a snapshot of per-store writer health in pump order.
+// Read-only: the Prometheus gauge stays owned by the worker.
+func (r *Recorder) StoreStats() []StoreStats {
+	if r == nil {
+		return nil
+	}
+	result := make([]StoreStats, 0, len(r.pumps))
+	for _, pump := range r.pumps {
+		pump.stats.pending.Store(pump.depthValue())
+		result = append(result, pump.stats.snapshot(pump.name))
+	}
+	return result
 }
 
 // SetErrorHandler atomically replaces the optional observation error callback.
@@ -108,8 +418,9 @@ func (r *Recorder) SetErrorHandler(handler func(error)) {
 }
 
 // Apply validates and updates memory synchronously, so local reads and sequence
-// conflicts are immediate. Accepted events are enqueued without waiting for
-// Redis or PostgreSQL; asynchronous failures are reported to the error handler.
+// conflicts are immediate. Accepted events fan out into each store's bounded
+// queue without waiting for Redis or PostgreSQL; a store that is slow or full
+// degrades only its own observation stream.
 func (r *Recorder) Apply(_ context.Context, event JourneyEvent) error {
 	if r == nil {
 		return errors.New("request journey recorder is nil")
@@ -125,21 +436,25 @@ func (r *Recorder) Apply(_ context.Context, event JourneyEvent) error {
 			return err
 		}
 	}
-	var enqueueErr error
-	if r.redis != nil || r.pg != nil {
+	var dropped []*storePump
+	var enqueueErrs []error
+	for _, pump := range r.journeyPumps() {
 		eventCopy := cloneEvent(event)
-		enqueueErr = r.enqueue(recorderWrite{journey: &eventCopy})
+		if err := r.enqueuePump(pump, recorderWrite{journey: &eventCopy}); err != nil {
+			pump.stats.enqueueDrops.Add(1)
+			dropped = append(dropped, pump)
+			enqueueErrs = append(enqueueErrs, fmt.Errorf("request journey %s enqueue: %w", pump.displayName, err))
+		}
 	}
-
-	if enqueueErr != nil {
+	if len(dropped) > 0 {
 		r.markObservationDegraded(event)
 	}
 	r.applyMu.Unlock()
 
-	if enqueueErr != nil {
-		recordJourneyDrop(enqueueReason(enqueueErr))
-		recordJourneyDegraded(enqueueReason(enqueueErr))
-		r.report(enqueueErr)
+	for i, pump := range dropped {
+		recordJourneyDropWithStore(enqueueReasonPump(enqueueErrs[i]), pump.name)
+		recordJourneyDegradedWithStore(enqueueReasonPump(enqueueErrs[i]), pump.name)
+		r.report(enqueueErrs[i])
 	}
 	return nil
 }
@@ -162,16 +477,22 @@ func (r *Recorder) RecordIngress(_ context.Context, event IngressEvent) error {
 		}
 	}
 	var enqueueErr error
-	if r.ingressRedis != nil {
+	ingressPump := r.ingressPump
+	if ingressPump != nil {
 		eventCopy := event
-		enqueueErr = r.enqueue(recorderWrite{ingress: &eventCopy})
+		err := r.enqueuePump(ingressPump, recorderWrite{ingress: &eventCopy})
+		if err != nil {
+			ingressPump.stats.enqueueDrops.Add(1)
+			enqueueErr = fmt.Errorf("request journey %s enqueue: %w", ingressPump.displayName, err)
+		}
 	}
 	r.applyMu.Unlock()
 	if enqueueErr != nil {
 		if r.memory != nil {
 			r.memory.MarkIngressDegraded()
 		}
-		recordJourneyDrop(enqueueReason(enqueueErr))
+		recordJourneyDropWithStore(enqueueReasonPump(enqueueErr), "redis_ingress")
+		recordJourneyDegradedWithStore(enqueueReasonPump(enqueueErr), "redis_ingress")
 		r.report(enqueueErr)
 	}
 	return nil
@@ -188,8 +509,9 @@ func (r *Recorder) EmitJourneyEvent(ctx context.Context, event JourneyEvent) {
 	}
 }
 
-// Close rejects new external writes, drains queued writes, and waits until the
-// worker exits or ctx expires. It is safe to call concurrently and repeatedly.
+// Close rejects new external writes, drains queued writes and pending outbox
+// retries, and waits until every store worker exits or ctx expires. It is safe
+// to call concurrently and repeatedly.
 func (r *Recorder) Close(ctx context.Context) error {
 	if r == nil {
 		return nil
@@ -200,73 +522,44 @@ func (r *Recorder) Close(ctx context.Context) error {
 	r.stateMu.Lock()
 	if !r.closed {
 		r.closed = true
-		close(r.queue)
+		for _, pump := range r.pumps {
+			close(pump.queue)
+		}
 	}
 	r.stateMu.Unlock()
 
-	select {
-	case <-r.done:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
+	for _, pump := range r.pumps {
+		select {
+		case <-pump.done:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
+	return nil
 }
 
-func (r *Recorder) enqueue(write recorderWrite) error {
+func (r *Recorder) journeyPumps() []*storePump {
+	var pumps []*storePump
+	for _, pump := range r.pumps {
+		if pump.name == "redis" || pump.name == "postgres" {
+			pumps = append(pumps, pump)
+		}
+	}
+	return pumps
+}
+
+func (r *Recorder) enqueuePump(pump *storePump, write recorderWrite) error {
 	r.stateMu.RLock()
 	defer r.stateMu.RUnlock()
 	if r.closed {
 		return ErrRecorderClosed
 	}
 	select {
-	case r.queue <- write:
+	case pump.queue <- write:
 		return nil
 	default:
 		return ErrRecorderQueueFull
 	}
-}
-
-func (r *Recorder) run() {
-	defer close(r.done)
-	for write := range r.queue {
-		if write.journey != nil {
-			r.write("postgres", r.pg, *write.journey)
-			r.write("redis", r.redis, *write.journey)
-		}
-		if write.ingress != nil {
-			r.writeIngress(*write.ingress)
-		}
-	}
-}
-
-func (r *Recorder) writeIngress(event IngressEvent) {
-	if r.ingressRedis == nil {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), r.writeTimeout)
-	err := r.ingressRedis.ApplyIngress(ctx, event)
-	cancel()
-	if err != nil {
-		if r.memory != nil {
-			r.memory.MarkIngressDegraded()
-		}
-		r.report(fmt.Errorf("request journey Redis ingress write: %w", err))
-	}
-}
-
-func (r *Recorder) write(storeName string, writer journeyEventWriter, event JourneyEvent) {
-	if writer == nil {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), r.writeTimeout)
-	err := writer.Apply(ctx, event)
-	cancel()
-	if err == nil {
-		return
-	}
-	r.markObservationDegraded(event)
-	recordJourneyDegraded(storeName)
-	r.report(fmt.Errorf("request journey %s write: %w", storeName, err))
 }
 
 func (r *Recorder) report(err error) {
@@ -281,7 +574,7 @@ func (r *Recorder) report(err error) {
 	}
 }
 
-func enqueueReason(err error) string {
+func enqueueReasonPump(err error) string {
 	if errors.Is(err, ErrRecorderClosed) {
 		return "closed"
 	}
