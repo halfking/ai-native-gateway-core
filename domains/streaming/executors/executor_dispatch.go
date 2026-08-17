@@ -178,13 +178,14 @@ func (e *Executor) dispatchRecommendModels(ctx context.Context, qr *dispatch.Que
 		return nil, autoroute.ErrNoCandidates
 	}
 	return e.dispatchModelRecommender.RecommendModelAlternatives(ctx, autoroute.ModelAlternativeRequest{
-		Task:         autoroute.TaskType(params.DispatchAutoTask),
-		Signals:      params.DispatchAutoSignals,
-		Profile:      autoroute.Profile(params.DispatchAutoProfile),
-		SessionID:    params.SessionID,
-		WorkType:     params.DispatchAutoWorkType,
-		InitialModel: dctx.initialModel,
-		TriedModels:  append([]string(nil), tried...),
+		Task:            autoroute.TaskType(params.DispatchAutoTask),
+		Signals:         params.DispatchAutoSignals,
+		Profile:         autoroute.Profile(params.DispatchAutoProfile),
+		SessionID:       params.SessionID,
+		WorkType:        params.DispatchAutoWorkType,
+		InitialModel:    dctx.initialModel,
+		TriedModels:     append([]string(nil), tried...),
+		PreferredModels: append([]string(nil), params.DispatchModelAlternatives...),
 	})
 }
 
