@@ -424,6 +424,14 @@ export interface ModelOffer {
   node_iq_avg?: number | null
   node_iq_sample_count?: number
   node_iq_tested_at?: string | null
+  /**
+   * 2026-08-17: effective context window for this credential×model binding
+   * (`COALESCE(cmb.context_window_override, mc.context_window_override, mc.context_window)`).
+   * null when neither the binding nor the canonical model advertise a window.
+   */
+  context_window?: number | null
+  /** Raw binding-level override.  null when the canonical value is in effect. */
+  context_window_override?: number | null
 }
 
 export interface QueryModelsResponse {
@@ -527,6 +535,12 @@ export function updateModelOffer(
     // Volcano Ark endpoint ID like "ep-20241227XXXX").  Pass an empty
     // string to clear it (revert to raw_model_name).
     outbound_model_name?: string | null
+    // 2026-08-17: context_window override at the credential-model binding
+    // level.  Positive value = save as override; null / 0 / negative =
+    // clear the override so the canonical model value takes effect.
+    // The backend writes directly to credential_model_bindings
+    // (skipping the model_offers view INSTEAD OF UPDATE trigger).
+    context_window?: number | null
   }
 ) {
   return req<{
@@ -537,6 +551,8 @@ export function updateModelOffer(
     canonical_name: string | null
     display_name: string | null
     outbound_model_name: string | null
+    context_window: number | null
+    context_window_override: number | null
   }>('PATCH', `/api/providers/${providerId}/models/${offerId}`, body)
 }
 
