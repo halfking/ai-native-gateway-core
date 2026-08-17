@@ -128,7 +128,7 @@ func (h *HandoffLogsHandler) handleList(w http.ResponseWriter, r *http.Request) 
 			       new_session_id, created_at,
 			       LEFT(COALESCE(summary_text, ''), 200) AS summary_preview,
 			       LEFT(COALESCE(handoff_prompt, ''), 200) AS prompt_preview
-			  FROM handoff_logs
+			  FROM handoff_logs_with_current_month
 			  `+whereSQL+`
 			 ORDER BY created_at DESC
 			 LIMIT `+strconv.Itoa(limit)+` OFFSET `+strconv.Itoa(offset)+`
@@ -214,7 +214,7 @@ func (h *HandoffLogsHandler) handleGet(w http.ResponseWriter, r *http.Request, i
 			       tokens_at_handoff, context_window, tokens_in_session,
 			       messages_in_session, summary_engine, skill_name, duration_ms,
 			       new_session_id, created_at, summary_text, handoff_prompt
-			  FROM handoff_logs
+			  FROM handoff_logs_with_current_month
 			 WHERE id = $1
 		`, id)
 		if err := row.Scan(&outID, &sessionID, &tenantID, &triggerReason, &triggerMode,
@@ -284,7 +284,7 @@ func (h *HandoffLogsHandler) handleStats(w http.ResponseWriter, r *http.Request)
 		// 1. counts per trigger_reason.
 		reasonRows, err := tx.Query(ctx, `
 			SELECT trigger_reason, COUNT(*) AS n
-			  FROM handoff_logs
+			  FROM handoff_logs_with_current_month
 			 WHERE created_at > NOW() - ($1 || ' days')::interval
 			 GROUP BY trigger_reason
 			 ORDER BY n DESC
@@ -309,7 +309,7 @@ func (h *HandoffLogsHandler) handleStats(w http.ResponseWriter, r *http.Request)
 		// 2. counts per day.
 		dayRows, err := tx.Query(ctx, `
 			SELECT TO_CHAR(DATE_TRUNC('day', created_at), 'YYYY-MM-DD') AS d, COUNT(*)
-			  FROM handoff_logs
+			  FROM handoff_logs_with_current_month
 			 WHERE created_at > NOW() - ($1 || ' days')::interval
 			 GROUP BY 1
 			 ORDER BY 1
@@ -334,7 +334,7 @@ func (h *HandoffLogsHandler) handleStats(w http.ResponseWriter, r *http.Request)
 		// 3. top 10 sessions by handoff count.
 		topRows, err := tx.Query(ctx, `
 			SELECT session_id, COUNT(*) AS n
-			  FROM handoff_logs
+			  FROM handoff_logs_with_current_month
 			 WHERE created_at > NOW() - ($1 || ' days')::interval
 			 GROUP BY session_id
 			 ORDER BY n DESC
@@ -360,7 +360,7 @@ func (h *HandoffLogsHandler) handleStats(w http.ResponseWriter, r *http.Request)
 		// 4. summary engine distribution.
 		engineRows, err := tx.Query(ctx, `
 			SELECT COALESCE(summary_engine, 'unknown') AS engine, COUNT(*)
-			  FROM handoff_logs
+			  FROM handoff_logs_with_current_month
 			 WHERE created_at > NOW() - ($1 || ' days')::interval
 			 GROUP BY 1
 		`, strconv.Itoa(days))
