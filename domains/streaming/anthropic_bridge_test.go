@@ -9,13 +9,64 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 )
+
+type closeUnblocksReadCloser struct {
+	closed     chan struct{}
+	closeOnce  sync.Once
+	mu         sync.Mutex
+	closeCalls int
+}
+
+func newCloseUnblocksReadCloser() *closeUnblocksReadCloser {
+	return &closeUnblocksReadCloser{closed: make(chan struct{})}
+}
+
+func (r *closeUnblocksReadCloser) Read([]byte) (int, error) {
+	<-r.closed
+	return 0, io.ErrClosedPipe
+}
+
+func (r *closeUnblocksReadCloser) Close() error {
+	r.mu.Lock()
+	r.closeCalls++
+	r.mu.Unlock()
+	r.closeOnce.Do(func() { close(r.closed) })
+	return nil
+}
+
+func (r *closeUnblocksReadCloser) CloseCalls() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.closeCalls
+}
+
+type blockTimeoutWriteResponseWriter struct {
+	header  http.Header
+	release chan struct{}
+}
+
+func newBlockTimeoutWriteResponseWriter() *blockTimeoutWriteResponseWriter {
+	return &blockTimeoutWriteResponseWriter{header: http.Header{}, release: make(chan struct{})}
+}
+
+func (w *blockTimeoutWriteResponseWriter) Header() http.Header { return w.header }
+func (w *blockTimeoutWriteResponseWriter) WriteHeader(int)     {}
+func (w *blockTimeoutWriteResponseWriter) Flush()              {}
+func (w *blockTimeoutWriteResponseWriter) Write(p []byte) (int, error) {
+	if bytes.Contains(p, []byte("upstream first-byte timeout")) {
+		<-w.release
+	}
+	return len(p), nil
+}
 
 // TestConvertChatRequestToAnthropic_OpenAIToAnthropic verifies the
 // Q2 OpenAI→Anthropic request body conversion. The first system
@@ -127,6 +178,45 @@ func TestStreamAnthropicSSEToOpenAI_WrappedEOFIsCleanCompletion(t *testing.T) {
 	assert.False(t, out.Interrupted)
 	assert.Contains(t, rec.Body.String(), `"content":"hello"`)
 	assert.Contains(t, rec.Body.String(), "data: [DONE]")
+}
+
+func TestStreamOpenAIToAnthropicSSE_FirstByteTimeoutClosesBlockingBody(t *testing.T) {
+	previousStore := streamConfigStore.Load()
+	SetConfigStore(nil)
+	t.Cleanup(func() { SetConfigStore(previousStore) })
+	t.Setenv("LLM_GATEWAY_FIRST_BYTE_TIMEOUT", "1")
+	body := newCloseUnblocksReadCloser()
+	resp := &http.Response{
+		Body:    body,
+		Request: httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
+	}
+	w := newBlockTimeoutWriteResponseWriter()
+	done := make(chan StreamOutcome, 1)
+	go func() {
+		done <- StreamOpenAIToAnthropicSSE(
+			w, resp, "claude-test", "upstream-test", "req-blocking-body", nil, nil,
+		)
+	}()
+
+	select {
+	case <-body.closed:
+		close(w.release)
+	case <-time.After(3 * time.Second):
+		close(w.release)
+		_ = body.Close()
+		<-done
+		t.Fatal("first-byte timeout did not close the blocking response body before rendering the timeout")
+	}
+
+	select {
+	case outcome := <-done:
+		assert.True(t, outcome.Interrupted)
+		assert.Equal(t, "first_byte_timeout", outcome.Reason)
+		assert.Equal(t, errorsx.KindStreamTimeout, outcome.Kind)
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("stream bridge did not return promptly after closing the blocking body")
+	}
+	assert.Equal(t, 1, body.CloseCalls(), "underlying response body must be closed exactly once")
 }
 
 func TestStreamAnthropicPassthrough_ClientDisconnectWinsOverLaterUpstreamError(t *testing.T) {

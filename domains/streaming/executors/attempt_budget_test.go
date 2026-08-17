@@ -36,10 +36,10 @@ func TestUpstreamAttemptBudgetCapsConcurrentConsumption(t *testing.T) {
 
 func TestConsumeUpstreamAttemptReturnsStableLimitError(t *testing.T) {
 	params := &ExecParams{UpstreamAttempts: NewUpstreamAttemptBudget(1)}
-	if err := consumeUpstreamAttempt(params); err != nil {
-		t.Fatalf("first attempt: %v", err)
+	if attempt, err := consumeUpstreamAttempt(params); err != nil || attempt != 1 {
+		t.Fatalf("first attempt = %d, %v; want 1, nil", attempt, err)
 	}
-	if err := consumeUpstreamAttempt(params); !errors.Is(err, ErrUpstreamAttemptLimit) {
+	if _, err := consumeUpstreamAttempt(params); !errors.Is(err, ErrUpstreamAttemptLimit) {
 		t.Fatalf("second attempt error = %v, want ErrUpstreamAttemptLimit", err)
 	}
 }

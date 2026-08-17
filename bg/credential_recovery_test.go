@@ -663,15 +663,16 @@ func TestRecoverFreshDegradedBindingsNoOpWhenNoSubmitter(t *testing.T) {
 // TestCredentialRecoverySetTickInterval pins the env-overridable interval
 // added for the 2026-08-17 P0 fix. Verifies:
 //   - new instance uses defaultCredentialRecoveryInterval until overridden
-//   - SetTickInterval(<smaller>) is picked up by tickIntervalLocked()
-//   - SetTickInterval(0) disables (tickIntervalLocked returns default,
-//     matching what we want for "disabled" callers in run())
-//   - SetTickInterval(-1) is ignored (no panic, no overwrite)
+//   - SetTickInterval(<positive>) is picked up by tickIntervalLocked()
+//   - Very-short positive intervals are clamped to 1s.
+//   - SetTickInterval(0) marks the loop "disabled": tickIntervalLocked()
+//     returns 0 so run() can switch to the long heart-beat (see run()).
+//   - SetTickInterval(-1) is ignored (no panic, no overwrite).
 func TestCredentialRecoverySetTickInterval(t *testing.T) {
 	r := &CredentialRecovery{}
 
 	if got := r.tickIntervalLocked(); got != defaultCredentialRecoveryInterval {
-		t.Fatalf("default tickIntervalLocked() = %v, want %v", got, defaultCredentialRecoveryInterval)
+		t.Fatalf("default tickIntervalLocked() = %v, want %v (no override yet → boot default)", got, defaultCredentialRecoveryInterval)
 	}
 
 	r.SetTickInterval(20 * time.Second)
@@ -692,11 +693,66 @@ func TestCredentialRecoverySetTickInterval(t *testing.T) {
 		t.Fatalf("after SetTickInterval(-1s) tickIntervalLocked() = %v, want previous 1s (no overwrite)", got)
 	}
 
-	// 0 = disabled. tickIntervalLocked() returns the default in that case
-	// (run() is the one that interprets 0 as disabled); the value persists on
-	// the struct so callers can read it back.
+	// 0 = disabled sentinel: tickIntervalLocked() returns 0 so that run()
+	// can resolve it to a long heart-beat (disabledProbeInterval) instead
+	// of crashing NewTicker(0). The key invariant: tickIntervalLocked() never
+	// silently resurrects the boot default once the operator has explicitly
+	// disabled us.
 	r.SetTickInterval(0)
-	if got := r.tickIntervalLocked(); got != defaultCredentialRecoveryInterval {
-		t.Fatalf("after SetTickInterval(0) tickIntervalLocked() = %v, want default", got)
+	if got := r.tickIntervalLocked(); got != 0 {
+		t.Fatalf("after SetTickInterval(0) tickIntervalLocked() = %v, want 0 (disabled sentinel, not boot default)", got)
+	}
+
+	// Re-arming with a positive value must put us back in the enabled state
+	// — the disabled state is reversible.
+	r.SetTickInterval(45 * time.Second)
+	if got := r.tickIntervalLocked(); got != 45*time.Second {
+		t.Fatalf("after SetTickInterval(45s) re-arm tickIntervalLocked() = %v, want 45s", got)
+	}
+}
+
+// TestCredentialRecoveryRunDoesNotPanicOnDisabled is the regression pin for
+// the 2026-08-17 audit finding that SetTickInterval(0) used to flow through
+// to time.NewTicker(0), which panics with "non-positive interval for
+// NewTicker". The run() loop must resolve a 0 interval to
+// disabledProbeInterval before constructing the ticker.
+func TestCredentialRecoveryRunDoesNotPanicOnDisabled(t *testing.T) {
+	r := &CredentialRecovery{done: make(chan struct{})}
+	r.SetTickInterval(0) // would have panicked before the fix
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		defer func() {
+			if rec := recover(); rec != nil {
+				t.Errorf("run() panicked on disabled interval: %v", rec)
+			}
+			cancel()
+		}()
+		// Give the loop a slice of a second to arm the ticker; if NewTicker
+		// were called with 0 it would panic before this sleep finishes.
+		time.Sleep(150 * time.Millisecond)
+	}()
+	r.run(ctx)
+}
+
+// TestHealthAutoRecoverSetTickIntervalDisabled mirrors the credential
+// recovery test for the secondary recovery worker: SetTickInterval(0) must
+// drive the loop into the disabled state (return 0 from currentInterval),
+// not silently revert to the boot-time default.
+func TestHealthAutoRecoverSetTickIntervalDisabled(t *testing.T) {
+	w := NewHealthAutoRecover(nil, time.Minute)
+
+	if got := w.currentInterval(); got != time.Minute {
+		t.Fatalf("default currentInterval() = %v, want 1m", got)
+	}
+
+	w.SetTickInterval(0)
+	if got := w.currentInterval(); got != 0 {
+		t.Fatalf("after SetTickInterval(0) currentInterval() = %v, want 0 (disabled)", got)
+	}
+
+	w.SetTickInterval(30 * time.Second)
+	if got := w.currentInterval(); got != 30*time.Second {
+		t.Fatalf("after re-arm SetTickInterval(30s) currentInterval() = %v, want 30s", got)
 	}
 }

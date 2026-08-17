@@ -43,7 +43,7 @@ func TestConfirmationStoreAcceptsTargetCreatedWithinProposalSecond(t *testing.T)
 	store := NewMemoryConfirmationStore()
 	proposalTime := time.Date(2026, 8, 17, 3, 0, 0, 900_000_000, time.UTC)
 	record := &HandoffRecord{SessionKey: "gw_previous", TenantID: "tenant-a", CreatedAt: proposalTime}
-	proposal, token, err := NewConfirmationProposal(record, 1, proposalTime.Add(time.Minute))
+	proposal, token, err := NewConfirmationProposal(record, 1, time.Now().Add(time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}

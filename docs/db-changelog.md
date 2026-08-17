@@ -899,3 +899,30 @@ The current repository instead uses 488 for `request_logs_hot_add_model` and 489
 |-----------|------|---------|--------|
 | 524 | `524_cmb_notify_trigger_context_window.sql` | `58fad10ea0543022d49d469f829f25e0f7dece765c7e7bdbe8d6e94298ab840d` | standard deployment blocked by the unresolved 488/489 historical identity mismatch; this session made no SQL or ledger write. Read-only inspection found the widened trigger predicate present on 252, but no 524 `schema_migrations` or checksum-ledger row, so it is not marked applied+verified |
 
+## 2026-08-17 — audit: resolve migration 528 sequence-number collision
+
+245 and 154 share the same 252 PostgreSQL migration ledger. Local deployment handoff evidence (`/tmp/handoff-20260817-1036.md`, SHA-256 `6629c541cf5f8d89ffbf68cb14da6b5e9eb60e4f9674b4eee41262bd0434c3b7`) records that the body cleanup source was manually applied from the 154 deployment path and won version 528 in `schema_migrations`; it also explicitly flags the repair source's competing 528 identity. This audit did not connect to 252; the corresponding `llm_gateway_migration_checksums` row remains unverified and the ordinary deployment gate must fail closed if it is absent or different.
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 528 | `528_request_logs_bodies_expired_hot_cleanup.sql` | `6998edec4991e2cd261061c5094e21829b85d699becabeaadc3a86dfc5d56cd1` | preserve deployed identity and source checksum; local handoff records manual apply plus `schema_migrations` 528 on shared 252 via 154; checksum-ledger row unverified; no database access in this audit |
+| 529 | `529_repair_shared_pg_sticky_and_bodies_2026_07.sql` | `3a21c6943da9ede672c4a0f2074bcbfee3e94efcd4e84dec09b12df3154d41c6` | renumbered with its down migration from the colliding 528; fail-closed and idempotent; pending deployment verification |
+
+## 2026-08-17T06:16:44Z — deploy 245 build_seq 1575 (fa343374)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 529 | `529_repair_shared_pg_sticky_and_bodies_2026_07.sql` | `3a21c6943da9ede672c4a0f2074bcbfee3e94efcd4e84dec09b12df3154d41c6` | applied+verified |
+
+## 2026-08-17T08:37:34Z — deploy 245 build_seq 1583 (86243f39)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 530 | `530_request_journey_contract.sql` | `70162427750db07a35b91e491ead8123e62df23ccb5bdb0dd73b34ae3321cd34` | applied+verified |
+
+## 2026-08-17T09:27:56Z — deploy 245 build_seq 1585 (169d14ae)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 531 | `531_request_journey_tenant_uniqueness.sql` | `726cf74f09ca8aed8f24bdb773f348d9b04938e546e6297739df1cf2050e4f60` | applied+verified |
+
