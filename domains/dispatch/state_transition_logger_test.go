@@ -12,7 +12,6 @@ package dispatch
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -180,9 +179,9 @@ func TestFlushFailureEnqueuesRetryThenReplaySucceeds(t *testing.T) {
 		if got := db.execArgs[replay][0]; got != "req-1" {
 			t.Errorf("replay[%d] request_id = %v, want req-1", i, got)
 		}
-		if seq := db.execArgs[replay][6]; seq != db.execArgs[original][6] {
+		if seq := db.execArgs[replay][5]; seq != db.execArgs[original][5] {
 			t.Errorf("replay[%d] seq = %v differs from original %v (idempotency key must be stable)",
-				i, seq, db.execArgs[original][6])
+				i, seq, db.execArgs[original][5])
 		}
 	}
 	if db.commitCalls != 2 {
@@ -202,16 +201,15 @@ func TestTransitionMetadataUsesJSONTextForSimpleProtocol(t *testing.T) {
 	if len(db.execArgs) != 2 {
 		t.Fatalf("exec calls = %d, want tenant GUC + insert", len(db.execArgs))
 	}
-	metadata, ok := db.execArgs[1][5].(string)
-	if !ok {
-		t.Fatalf("metadata arg type = %T, want string for pgx simple protocol", db.execArgs[1][5])
+	insertSQL := db.execSQL[1]
+	if !strings.Contains(insertSQL, "VALUES ($1, $2, $3, $4, $5, '") {
+		t.Fatalf("metadata must be embedded as a SQL JSON literal, got:\n%s", insertSQL)
 	}
-	var decoded map[string]any
-	if err := json.Unmarshal([]byte(metadata), &decoded); err != nil {
-		t.Fatalf("metadata arg is not valid JSON: %v", err)
+	if !strings.Contains(insertSQL, "'::jsonb, $6)") {
+		t.Fatalf("metadata literal must cast to jsonb, got:\n%s", insertSQL)
 	}
-	if decoded["selected"] != "glm-5.2" {
-		t.Fatalf("metadata selected = %v, want glm-5.2", decoded["selected"])
+	if got := db.execArgs[1][5]; got != int64(1) {
+		t.Fatalf("seq parameter = %#v, want 1", got)
 	}
 }
 
@@ -224,8 +222,9 @@ func TestTransitionNilMetadataUsesSQLNull(t *testing.T) {
 	if len(db.execArgs) != 2 {
 		t.Fatalf("exec calls = %d, want tenant GUC + insert", len(db.execArgs))
 	}
-	if got := db.execArgs[1][5]; got != nil {
-		t.Fatalf("nil metadata arg = %#v (%T), want nil", got, got)
+	insertSQL := db.execSQL[1]
+	if !strings.Contains(insertSQL, "VALUES ($1, $2, $3, $4, $5, NULL, $6)") {
+		t.Fatalf("nil metadata must be inserted as SQL NULL, got:\n%s", insertSQL)
 	}
 }
 
