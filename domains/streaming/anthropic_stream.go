@@ -133,27 +133,6 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 		}
 	}
 
-	initialMsg := map[string]any{
-		"type": "message_start",
-		"message": map[string]any{
-			"id":            msgID,
-			"type":          "message",
-			"role":          "assistant",
-			"content":       []any{},
-			"model":         clientModel,
-			"stop_reason":   nil,
-			"stop_sequence": nil,
-			"usage":         map[string]any{"input_tokens": 0, "output_tokens": 0},
-		},
-	}
-	captureSSE("message_start", initialMsg)
-	captureSSE("content_block_start", map[string]any{
-		"type":          "content_block_start",
-		"index":         0,
-		"content_block": map[string]any{"type": "text", "text": ""},
-	})
-	captureSSE("ping", map[string]any{"type": "ping"})
-
 	var ctx context.Context
 	if resp.Request != nil {
 		ctx = resp.Request.Context()
@@ -194,7 +173,8 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 	textAccMode := textAccProbing
 
 	// First-byte timeout
-	firstLine, err := readLineWithTimeout(ctx, reader, runtimeCfg.firstByteTimeout)
+	firstLine, err := readLineWithTimeoutAndCloser(ctx, reader, resp.Body, runtimeCfg.firstByteTimeout)
+
 	if err != nil {
 		if capture != nil {
 			capture.MarkInterruptedWithReason("first_byte_timeout")
@@ -204,7 +184,8 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 			"first_byte_timeout_seconds", int(runtimeCfg.firstByteTimeout.Seconds()),
 			"hint", "if frequent, increase LLM_GATEWAY_FIRST_BYTE_TIMEOUT or admin config (default 120s)",
 		)
-		if gate.MayWriteTerminal() {
+		terminalVisible := gate.MayWriteTerminal()
+		if terminalVisible {
 			errPayload := map[string]any{
 				"type":  "error",
 				"error": map[string]any{"type": "timeout", "message": "upstream first-byte timeout"},
@@ -216,7 +197,9 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 		outcome.Interrupted = true
 		outcome.Reason = "first_byte_timeout"
 		outcome.Kind = errorsx.KindStreamTimeout
+		outcome.Resumable = !terminalVisible
 		return outcome
+
 	}
 
 	// 2026-06-20 audit fix: detect non-SSE JSON error bodies on
@@ -238,7 +221,8 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 			if capture != nil {
 				capture.MarkInterruptedWithReason("json_error_in_stream")
 			}
-			if gate.MayWriteTerminal() {
+			terminalVisible := gate.MayWriteTerminal()
+			if terminalVisible {
 				captureSSE("error", map[string]any{
 					"type":  "error",
 					"error": map[string]any{"type": "upstream_error", "message": errMsg, "code": errKind},
@@ -248,13 +232,30 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 			outcome.Interrupted = true
 			outcome.Reason = "json_error_in_stream"
 			outcome.Kind = errorsx.KindUpstreamDown
-			outcome.Resumable = true
+			outcome.Resumable = !terminalVisible
+
 			outcome.ChunkCount = 0
 			return outcome
 		}
 	}
 
+	initialMsg := map[string]any{
+		"type": "message_start",
+		"message": map[string]any{
+			"id": msgID, "type": "message", "role": "assistant", "content": []any{},
+			"model": clientModel, "stop_reason": nil, "stop_sequence": nil,
+			"usage": map[string]any{"input_tokens": 0, "output_tokens": 0},
+		},
+	}
+	captureSSE("message_start", initialMsg)
+	captureSSE("content_block_start", map[string]any{
+		"type": "content_block_start", "index": 0,
+		"content_block": map[string]any{"type": "text", "text": ""},
+	})
+	captureSSE("ping", map[string]any{"type": "ping"})
+
 	processLine := func(line string) bool {
+
 		line = strings.TrimSpace(line)
 		if line == "" || !strings.HasPrefix(line, "data: ") {
 			return false

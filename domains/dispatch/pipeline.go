@@ -93,6 +93,15 @@ type Pipeline struct {
 
 	eventSinkMu sync.RWMutex
 	eventSink   EventSink
+	eventChMu   sync.RWMutex
+	eventCh     chan journeyEvent
+	eventClosed bool
+	eventWg     sync.WaitGroup
+}
+
+type journeyEvent struct {
+	ctx   context.Context
+	event requestjourney.JourneyEvent
 }
 
 // SetLiveActions wires the request-lifecycle action-event emitter (V3.3-OBS
@@ -178,6 +187,28 @@ func (p *Pipeline) Start() {
 		p.wg.Add(1)
 		go p.runFailover()
 	}
+	p.eventCh = make(chan journeyEvent, maxInt(1024, cfg.StatsBuffer*16))
+	p.eventWg.Add(1)
+	go p.runJourneyEvents()
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func (p *Pipeline) runJourneyEvents() {
+	defer p.eventWg.Done()
+	for item := range p.eventCh {
+		p.eventSinkMu.RLock()
+		sink := p.eventSink
+		p.eventSinkMu.RUnlock()
+		if sink != nil {
+			sink.EmitJourneyEvent(item.ctx, item.event)
+		}
+	}
 }
 
 // Stop drains workers. After Stop, Submit returns ErrShutdown.
@@ -200,6 +231,13 @@ func (p *Pipeline) Stop() {
 	p.forwarders = map[int]*credForwarder{}
 	p.credMu.Unlock()
 	p.wg.Wait()
+	p.eventChMu.Lock()
+	if p.eventCh != nil && !p.eventClosed {
+		p.eventClosed = true
+		close(p.eventCh)
+	}
+	p.eventChMu.Unlock()
+	p.eventWg.Wait()
 }
 
 // Submit enqueues a request into the Tier-1 model queue and blocks until the
@@ -208,12 +246,25 @@ func (p *Pipeline) Stop() {
 func (p *Pipeline) Submit(ctx context.Context, qr *QueuedRequest) (any, error) {
 	qr.Ctx = ctx
 	qr.setJourneyEmitter(func(event requestjourney.JourneyEvent) {
-		p.eventSinkMu.RLock()
-		sink := p.eventSink
-		p.eventSinkMu.RUnlock()
-		if sink != nil {
-			sink.EmitJourneyEvent(context.WithoutCancel(ctxOf(qr)), event)
+		p.eventChMu.RLock()
+		if p.eventCh == nil || p.eventClosed {
+			p.eventChMu.RUnlock()
+			p.eventSinkMu.RLock()
+			sink := p.eventSink
+			p.eventSinkMu.RUnlock()
+			if sink != nil && p.shutdown.Load() {
+				sink.EmitJourneyEvent(context.WithoutCancel(ctxOf(qr)), event)
+			}
+			return
 		}
+		item := journeyEvent{ctx: context.WithoutCancel(ctxOf(qr)), event: event}
+		select {
+		case p.eventCh <- item:
+		default:
+			// Observation is deliberately lossy and never backpressures execution.
+			metricOverflow.WithLabelValues("journey_event_full").Inc()
+		}
+		p.eventChMu.RUnlock()
 	})
 	if p.shutdown.Load() || !p.started.Load() {
 		p.emitRequestTerminal(qr, ForwardOutcome{Err: ErrShutdown})

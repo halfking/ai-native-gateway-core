@@ -7,6 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/requestjourney"
 )
@@ -34,6 +35,19 @@ func (r *journeyRecorder) snapshot(t *testing.T) []requestjourney.JourneyEvent {
 		t.Fatalf("invalid journey events: %v", r.errs)
 	}
 	return append([]requestjourney.JourneyEvent(nil), r.events...)
+}
+
+func (r *journeyRecorder) waitSnapshot(t *testing.T, minimum int) []requestjourney.JourneyEvent {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		events := r.snapshot(t)
+		if len(events) >= minimum {
+			return events
+		}
+		time.Sleep(time.Millisecond)
+	}
+	return r.snapshot(t)
 }
 
 func journeyCredential(id, provider int, vendor string) CredentialRef {
@@ -144,7 +158,7 @@ func TestJourneySameNodeRetryFailureThenSuccess(t *testing.T) {
 		t.Fatalf("Submit() = (%v, %v), want (ok, nil)", result, err)
 	}
 
-	events := recorder.snapshot(t)
+	events := recorder.waitSnapshot(t, 13)
 	assertEventTypes(t, events, []requestjourney.EventType{
 		requestjourney.EventModelEnqueued,
 		requestjourney.EventCredentialSelected,
@@ -206,7 +220,7 @@ func TestJourneyDoesNotInferOrMisattributeFirstByte(t *testing.T) {
 	if _, err := p.Submit(context.Background(), qr); err != nil {
 		t.Fatalf("Submit: %v", err)
 	}
-	for _, event := range recorder.snapshot(t) {
+	for _, event := range recorder.waitSnapshot(t, 10) {
 		if event.Type == requestjourney.EventFirstByte {
 			t.Fatalf("unexpected first_byte from outcome or stale callback: %+v", event)
 		}
@@ -235,7 +249,7 @@ func TestJourneyNodeAndModelSwitches(t *testing.T) {
 		if _, err := p.Submit(context.Background(), qr); err != nil {
 			t.Fatalf("Submit: %v", err)
 		}
-		events := recorder.snapshot(t)
+		events := recorder.waitSnapshot(t, 12)
 		assertAttemptSequence(t, events, 1)
 		var switched *requestjourney.JourneyEvent
 		for i := range events {
@@ -267,7 +281,7 @@ func TestJourneyNodeAndModelSwitches(t *testing.T) {
 		if _, err := p.Submit(context.Background(), qr); err != nil {
 			t.Fatalf("Submit: %v", err)
 		}
-		events := recorder.snapshot(t)
+		events := recorder.waitSnapshot(t, 12)
 		assertAttemptSequence(t, events, 1)
 		var switched *requestjourney.JourneyEvent
 		for i := range events {
@@ -296,7 +310,7 @@ func TestJourneyTerminalFailurePreservesDiagnostics(t *testing.T) {
 	if _, err := p.Submit(context.Background(), qr); err == nil {
 		t.Fatal("Submit succeeded, want terminal failure")
 	}
-	events := recorder.snapshot(t)
+	events := recorder.waitSnapshot(t, 7)
 	last := events[len(events)-1]
 	if last.Type != requestjourney.EventRequestFailed || last.Outcome != requestjourney.OutcomeFailure || last.ErrorKind != "quota_exhausted" || last.HTTPStatus != 429 {
 		t.Fatalf("terminal event = %+v", last)
@@ -325,7 +339,16 @@ func TestJourneyHandlerAndDispatchShareContinuousSequence(t *testing.T) {
 	// the dispatch terminal as the only request terminal.
 	lifecycle.Terminal(context.Background(), "tenant-journey", requestjourney.OutcomeSuccess, "", 200)
 
-	journey, err := projection.Detail("tenant-journey", "journey-shared-seq")
+	deadline := time.Now().Add(time.Second)
+	var journey *requestjourney.RequestJourney
+	var err error
+	for time.Now().Before(deadline) {
+		journey, err = projection.Detail("tenant-journey", "journey-shared-seq")
+		if err == nil && len(journey.Events) >= 3 && journey.Events[len(journey.Events)-1].Stage == requestjourney.StageTerminal {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
 	if err != nil {
 		t.Fatalf("Detail: %v", err)
 	}
@@ -425,7 +448,7 @@ func TestJourneyConcurrentFirstByteIsEmittedOnce(t *testing.T) {
 	if _, err := p.Submit(context.Background(), qr); err != nil {
 		t.Fatalf("Submit: %v", err)
 	}
-	events := recorder.snapshot(t)
+	events := recorder.waitSnapshot(t, 8)
 	firstBytes := 0
 	for _, event := range events {
 		if event.Type == requestjourney.EventFirstByte {

@@ -64,6 +64,12 @@ func TestProjectionEvictsThe101stOldestRequest(t *testing.T) {
 			t.Fatalf("%s boundaries = %q..%q", name, got[0].RequestID, got[99].RequestID)
 		}
 	}
+	if _, err := projection.Detail("tenant-a", "request-001"); !errors.Is(err, ErrJourneyNotFound) {
+		t.Fatalf("evicted detail error = %v, want ErrJourneyNotFound", err)
+	}
+	if _, err := projection.Detail("tenant-a", "request-002"); err != nil {
+		t.Fatalf("retained detail: %v", err)
+	}
 }
 
 func TestProjectionEvictsThe101stOldestAttemptPerNode(t *testing.T) {
