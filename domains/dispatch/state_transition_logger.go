@@ -310,13 +310,15 @@ func (l *StateTransitionLogger) insertTransition(ctx context.Context, p pendingT
 	if strings.TrimSpace(p.t.TenantID) == "" {
 		return fmt.Errorf("empty tenant_id")
 	}
-	var metaJSON []byte
+	var metaJSON any
 	if p.t.Metadata != nil {
-		var err error
-		metaJSON, err = json.Marshal(p.t.Metadata)
+		encoded, err := json.Marshal(p.t.Metadata)
 		if err != nil {
 			return fmt.Errorf("marshal transition metadata: %w", err)
 		}
+		// The gateway uses pgx simple protocol globally. Under simple protocol,
+		// []byte is encoded as bytea, which PostgreSQL cannot parse as JSONB.
+		metaJSON = string(encoded)
 	}
 	tx, err := l.db.Begin(ctx)
 	if err != nil {

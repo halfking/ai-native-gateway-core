@@ -87,7 +87,12 @@ func NewIntegrityProbePlanner(db *pgxpool.Pool, queue *ProbeQueue, cfg Integrity
 	if cfg.DedupWindow <= 0 {
 		cfg.DedupWindow = 24 * time.Hour
 	}
-	return &IntegrityProbePlanner{db: db, queue: queue, cfg: cfg}
+	return &IntegrityProbePlanner{
+		db:    db,
+		queue: queue,
+		cfg:   cfg,
+		done:  make(chan struct{}),
+	}
 }
 
 // Start launches the background loop. Idempotent.
