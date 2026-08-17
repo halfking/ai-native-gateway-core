@@ -38,6 +38,7 @@ type bodyFetchEntry struct {
 type bodyFetchCache struct {
 	lru       *cache.LRU[string, bodyFetchEntry]
 	ttl       time.Duration
+	cap       int // 容量上限快照，仅供 stats 端点回显（避免前端硬编码）
 	hits      atomic.Uint64
 	misses    atomic.Uint64
 	evictions atomic.Uint64
@@ -51,6 +52,7 @@ func newBodyFetchCache(cap int, ttl time.Duration) *bodyFetchCache {
 	return &bodyFetchCache{
 		lru: cache.NewLRU[string, bodyFetchEntry](cap),
 		ttl: ttl,
+		cap: cap,
 	}
 }
 
@@ -109,14 +111,16 @@ func (c *bodyFetchCache) Stats() (size, hits, misses, evictions int) {
 }
 
 // handleBodyFetchCacheStats 是缓存的可观测端点 — GET /api/admin/logs/body-cache-stats。
-// 返回当前 size / hits / misses / evictions 快照, 以及命中率。
-// 调用方: super admin (rule 20 §6)。ops 用于判断 cold path 是否被 cache 缓解。
+// 返回当前 size / hits / misses / evictions / cap / hit_rate 快照。
+// 鉴权：admin()（与 /api/admin/compression/stats、data-lifecycle/stats 同级的
+// 诊断端点；计数器为进程级聚合、不含租户数据）。前端仅在 super admin 视图展示。
+// ops 用于判断 cold path 是否被 cache 缓解。
 //
 // 200 OK 示例:
 //
-//	{"size": 142, "hits": 1023, "misses": 287, "evictions": 5, "hit_rate": 0.781}
+//	{"size": 142, "hits": 1023, "misses": 287, "evictions": 5, "hit_rate": 0.781, "cap": 1024}
 //
-// 404 when 缓存未初始化（h.bodyFetchCache == nil, 理论上 NewHandler 总会初始化）。
+// 503 when 缓存未初始化（h.bodyFetchCache == nil, 理论上 NewHandler 总会初始化）。
 func (h *Handler) handleBodyFetchCacheStats(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -138,5 +142,6 @@ func (h *Handler) handleBodyFetchCacheStats(w http.ResponseWriter, r *http.Reque
 		"misses":    misses,
 		"evictions": evictions,
 		"hit_rate":  hitRate,
+		"cap":       h.bodyFetchCache.cap,
 	})
 }

@@ -47,6 +47,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ops 无需 curl 即可判断 cold path 缓解情况（此前端点 backend-only 无 UI）。
   顺带补齐 6 个 locale 缺失的 `workTypes.layers.addFallback/emptyFallback`
   （恢复 i18n parity 门禁为绿）。
+- **body-cache-stats 审计修正**：响应新增 `cap` 字段（LRU 容量回显，消除前端
+  硬编码 1024 的耦合）；修正端点注释的鉴权描述（实为 admin() 诊断级，与
+  compression/data-lifecycle stats 同级，非 super admin 专属）与"404"误标
+  （实为 503）；无流量时 UI 命中率显示 "—" 而非误导性 0.0%；
+  补 handler 级测试（GET 契约含 cap / 冷启动 / 405 / 503，DB-free）。
 
 ## [Unreleased] - 2026-08-17 (Long-Running Request Recovery)
 
