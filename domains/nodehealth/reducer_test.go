@@ -160,6 +160,7 @@ func TestOutcomeReducerProbeRecoveryRequiresBothPhases(t *testing.T) {
 		t.Fatalf("gateway decision = %+v, want healthy reset", gateway)
 	}
 	assertEffect(t, gateway, nodehealth.EffectRestoreBinding)
+	assertEffect(t, gateway, nodehealth.EffectRestoreCredential)
 	assertEffect(t, gateway, nodehealth.EffectRecoverCircuit)
 }
 
