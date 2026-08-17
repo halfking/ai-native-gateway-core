@@ -190,6 +190,15 @@ func mergeJourneySources(memory, shared, durable *RequestJourney, redisTTL time.
 		fallback := present[0].journey
 		return fallback, []string{"content_conflict"}
 	}
+	// journeyFromEvents rebuilds from event-level statuses, which cannot
+	// express a source's journey-level degradation (e.g. the local projection
+	// marked a dropped external write). Carry that knowledge across the merge.
+	for _, source := range present {
+		if source.journey.ObservationStatus == ObservationDegraded {
+			markJourneyDegraded(merged)
+			break
+		}
+	}
 
 	var divergences []string
 	if conflicts > 0 {
@@ -221,22 +230,22 @@ func mergeJourneySources(memory, shared, durable *RequestJourney, redisTTL time.
 
 // sameJourneyEvent compares the canonical form of two events. OccurredAt is
 // normalized to UTC microseconds because PostgreSQL timestamptz truncates to
-// microsecond precision while the local projection keeps nanoseconds.
+// microsecond precision while the local projection keeps nanoseconds. An
+// event that cannot be canonicalized never equals another, so a marshal
+// failure surfaces as a conflict rather than silently matching.
 func sameJourneyEvent(left, right JourneyEvent) bool {
-	return journeyEventCanonical(left) == journeyEventCanonical(right)
+	leftBody, leftOK := journeyEventCanonical(left)
+	rightBody, rightOK := journeyEventCanonical(right)
+	return leftOK && rightOK && leftBody == rightBody
 }
 
-func journeyEventCanonical(event JourneyEvent) string {
+func journeyEventCanonical(event JourneyEvent) (string, bool) {
 	event.OccurredAt = event.OccurredAt.UTC().Truncate(time.Microsecond)
-	body, err := jsonMarshalStable(event)
+	body, err := json.Marshal(event)
 	if err != nil {
-		return ""
+		return "", false
 	}
-	return string(body)
-}
-
-func jsonMarshalStable(event JourneyEvent) ([]byte, error) {
-	return json.Marshal(event)
+	return string(body), true
 }
 
 func unionSeqs(left, right map[int64]bool) map[int64]bool {

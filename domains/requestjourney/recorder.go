@@ -12,7 +12,7 @@ import (
 const (
 	defaultRecorderQueueCapacity = 4096
 	defaultRecorderWriteTimeout  = 5 * time.Second
-	defaultRecorderMaxAttempts   = 3
+	defaultRecorderMaxAttempts   = 5
 	defaultRecorderBackoff       = 25 * time.Millisecond
 	maxTrackedJourneyRequests    = 8192
 )
@@ -73,41 +73,68 @@ func (s *storeStats) snapshot(store string) StoreStats {
 	}
 }
 
-// seqTracker counts sequence gaps per store on the worker goroutine only.
-// Terminal journeys release their slot; bounded insertion order evicts the
+// seqTracker finalizes per-store sequence gaps when a journey reaches its
+// terminal event: gap = terminalSeq - delivered - stillParked. Counting only
+// at the terminal makes the metric immune to outbox reordering (a retried
+// write that lands after later sequences is not a hole). Journeys whose key
+// the tracker never saw (eviction beyond the bound, or a terminal arriving
+// with no prior observation) settle conservatively to zero instead of
+// guessing. Worker-goroutine-only state; bounded insertion order evicts the
 // oldest tracked request when the map exceeds its limit.
 type seqTracker struct {
-	last  map[string]int64
+	count map[string]int64
 	order []string
 }
 
 func newSeqTracker() *seqTracker {
-	return &seqTracker{last: make(map[string]int64)}
+	return &seqTracker{count: make(map[string]int64)}
 }
 
-func (t *seqTracker) observe(event JourneyEvent) int64 {
+func (t *seqTracker) observe(event JourneyEvent, parked int64) int64 {
 	key := event.TenantID + "\x1f" + event.RequestID
-	var gap int64
-	if prev, ok := t.last[key]; ok {
-		if event.Seq > prev+1 {
-			gap = event.Seq - prev - 1
+	delivered, seenBefore := t.count[key]
+	delivered++
+	if event.Stage != StageTerminal {
+		if !seenBefore {
+			t.track(key)
 		}
-	} else {
-		if event.Seq > 1 {
-			gap = event.Seq - 1
-		}
-		t.order = append(t.order, key)
-		for len(t.order) > maxTrackedJourneyRequests {
-			delete(t.last, t.order[0])
-			t.order = t.order[1:]
-		}
+		t.count[key] = delivered
+		return 0
 	}
-	if event.Stage == StageTerminal {
-		delete(t.last, key)
-		return gap
+	delete(t.count, key)
+	if !seenBefore {
+		return 0
 	}
-	t.last[key] = event.Seq
+	gap := event.Seq - delivered - parked
+	if gap < 0 {
+		return 0
+	}
 	return gap
+}
+
+func (t *seqTracker) track(key string) {
+	t.order = append(t.order, key)
+	for len(t.order) > maxTrackedJourneyRequests {
+		delete(t.count, t.order[0])
+		t.order = t.order[1:]
+	}
+}
+
+// parkedFor counts outbox entries still waiting for the same journey, so a
+// terminal settling while an earlier sequence is mid-replay is not misread
+// as a hole. Worker-goroutine-only: pending is owned by the pump.
+func (p *storePump) parkedFor(event JourneyEvent) int64 {
+	if len(p.pending) == 0 {
+		return 0
+	}
+	key := event.TenantID + "\x1f" + event.RequestID
+	var parked int64
+	for _, write := range p.pending {
+		if write.journey != nil && write.journey.TenantID+"\x1f"+write.journey.RequestID == key {
+			parked++
+		}
+	}
+	return parked
 }
 
 // storePump is one bounded FIFO worker per external store. Writes that fail
@@ -118,14 +145,14 @@ type storePump struct {
 	displayName string // error-message prefix
 	queue       chan recorderWrite
 
-	writeFn       func(context.Context, recorderWrite) error
-	onWriteDrop   func(recorderWrite, error)
-	writeTimeout  time.Duration
-	maxAttempts   int
+	writeFn        func(context.Context, recorderWrite) error
+	onWriteDrop    func(recorderWrite, error)
+	writeTimeout   time.Duration
+	maxAttempts    int
 	initialBackoff time.Duration
 
 	pendingCount atomic.Int64
-	pending      []recorderWrite // in-worker outbox, ordered, head gated by due
+	pending      []recorderWrite // in-worker outbox, kept sorted by due
 	stats        storeStats
 	seq          *seqTracker
 	done         chan struct{}
@@ -204,7 +231,7 @@ func (p *storePump) deliver(write recorderWrite) {
 			p.stats.written.Add(1)
 		}
 		if write.journey != nil && p.seq != nil {
-			if gap := p.seq.observe(*write.journey); gap > 0 {
+			if gap := p.seq.observe(*write.journey, p.parkedFor(*write.journey)); gap > 0 {
 				p.stats.gaps.Add(gap)
 				recordJourneyGap(p.name, gap)
 			}
@@ -214,8 +241,7 @@ func (p *storePump) deliver(write recorderWrite) {
 	write.attempts++
 	if write.attempts < p.maxAttempts && len(p.pending) < p.pendingCap() {
 		write.due = time.Now().Add(p.backoffDelay(write.attempts))
-		p.pending = append(p.pending, write)
-		p.pendingCount.Add(1)
+		p.park(write)
 		return
 	}
 	reason := "write_failed"
@@ -238,17 +264,38 @@ func (p *storePump) backoffDelay(failedAttempts int) time.Duration {
 	return delay
 }
 
+// park inserts a retry into the outbox in due order so an earlier-deadline
+// retry is never gated behind a later one. Worker-goroutine-only.
+func (p *storePump) park(write recorderWrite) {
+	index := len(p.pending)
+	for index > 0 && p.pending[index-1].due.After(write.due) {
+		index--
+	}
+	p.pending = append(p.pending, recorderWrite{})
+	copy(p.pending[index+1:], p.pending[index:])
+	p.pending[index] = write
+	p.pendingCount.Add(1)
+}
+
 func (p *storePump) updateDepth() {
-	p.stats.pending.Store(int64(len(p.queue)) + p.pendingCount.Load())
-	setJourneyQueueDepth(p.name, int(p.stats.pending.Load()))
+	depth := p.depthValue()
+	p.stats.pending.Store(depth)
+	setJourneyQueueDepth(p.name, int(depth))
+}
+
+// depthValue is safe from any goroutine: channel length and the outbox
+// counter are both atomic-safe reads, unlike the worker-owned pending slice.
+func (p *storePump) depthValue() int64 {
+	return int64(len(p.queue)) + p.pendingCount.Load()
 }
 
 // Recorder synchronously updates the local projection and asynchronously fans
 // accepted events into optional shared stores. Each store has its own bounded
 // worker, so a slow PostgreSQL never starves the Redis hot projection.
 type Recorder struct {
-	memory *Projection
-	pumps  []*storePump
+	memory      *Projection
+	pumps       []*storePump
+	ingressPump *storePump
 
 	applyMu sync.Mutex
 	stateMu sync.RWMutex
@@ -299,7 +346,8 @@ func newRecorderWithIngress(memory *Projection, redisWriter journeyEventWriter, 
 		r.pumps = append(r.pumps, newJourneyPump("postgres", "PostgreSQL", options, pgWriter.Apply))
 	}
 	if ingressRedisWriter != nil {
-		r.pumps = append(r.pumps, newIngressPump(options, ingressRedisWriter.ApplyIngress))
+		r.ingressPump = newIngressPump(options, ingressRedisWriter.ApplyIngress)
+		r.pumps = append(r.pumps, r.ingressPump)
 	}
 	for _, pump := range r.pumps {
 		pump.onWriteDrop = r.makeWriteDropHandler(pump)
@@ -311,25 +359,25 @@ func newRecorderWithIngress(memory *Projection, redisWriter journeyEventWriter, 
 func newJourneyPump(name, displayName string, options recorderOptions, apply func(context.Context, JourneyEvent) error) *storePump {
 	return &storePump{
 		name: name, displayName: displayName,
-		queue:         make(chan recorderWrite, options.queueCapacity),
-		writeFn:       func(ctx context.Context, write recorderWrite) error { return apply(ctx, *write.journey) },
-		writeTimeout:  options.writeTimeout,
-		maxAttempts:   options.maxAttempts,
+		queue:          make(chan recorderWrite, options.queueCapacity),
+		writeFn:        func(ctx context.Context, write recorderWrite) error { return apply(ctx, *write.journey) },
+		writeTimeout:   options.writeTimeout,
+		maxAttempts:    options.maxAttempts,
 		initialBackoff: options.initialBackoff,
-		seq:           newSeqTracker(),
-		done:          make(chan struct{}),
+		seq:            newSeqTracker(),
+		done:           make(chan struct{}),
 	}
 }
 
 func newIngressPump(options recorderOptions, apply func(context.Context, IngressEvent) error) *storePump {
 	return &storePump{
 		name: "redis_ingress", displayName: "Redis ingress",
-		queue:         make(chan recorderWrite, options.queueCapacity),
-		writeFn:       func(ctx context.Context, write recorderWrite) error { return apply(ctx, *write.ingress) },
-		writeTimeout:  options.writeTimeout,
-		maxAttempts:   options.maxAttempts,
+		queue:          make(chan recorderWrite, options.queueCapacity),
+		writeFn:        func(ctx context.Context, write recorderWrite) error { return apply(ctx, *write.ingress) },
+		writeTimeout:   options.writeTimeout,
+		maxAttempts:    options.maxAttempts,
 		initialBackoff: options.initialBackoff,
-		done:          make(chan struct{}),
+		done:           make(chan struct{}),
 	}
 }
 
@@ -345,13 +393,14 @@ func (r *Recorder) makeWriteDropHandler(pump *storePump) func(recorderWrite, err
 }
 
 // StoreStats returns a snapshot of per-store writer health in pump order.
+// Read-only: the Prometheus gauge stays owned by the worker.
 func (r *Recorder) StoreStats() []StoreStats {
 	if r == nil {
 		return nil
 	}
 	result := make([]StoreStats, 0, len(r.pumps))
 	for _, pump := range r.pumps {
-		pump.updateDepth()
+		pump.stats.pending.Store(pump.depthValue())
 		result = append(result, pump.stats.snapshot(pump.name))
 	}
 	return result
@@ -428,13 +477,7 @@ func (r *Recorder) RecordIngress(_ context.Context, event IngressEvent) error {
 		}
 	}
 	var enqueueErr error
-	var ingressPump *storePump
-	for _, pump := range r.pumps {
-		if pump.name == "redis_ingress" {
-			ingressPump = pump
-			break
-		}
-	}
+	ingressPump := r.ingressPump
 	if ingressPump != nil {
 		eventCopy := event
 		err := r.enqueuePump(ingressPump, recorderWrite{ingress: &eventCopy})

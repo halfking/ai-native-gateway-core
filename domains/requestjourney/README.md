@@ -13,9 +13,10 @@ own queue and can never starve the Redis hot projection.
 
 Each store worker is a bounded FIFO with an in-worker outbox:
 
-- A failed write is parked and replayed with backoff (idempotent applies on
-  both stores make replay safe). Replay success counts as `replayed`, not
-  `written`.
+- A failed write is parked in a due-sorted outbox and replayed with backoff
+  (default 5 attempts, backoff doubling from 25ms capped at 1s; idempotent
+  applies on both stores make replay safe). Replay success counts as
+  `replayed`, not `written`.
 - A write is dropped only after retries are exhausted (`write_failed`) or the
   outbox is full (`outbox_full`). Drops mark the affected observation
   `observation_degraded` in memory, increment drop/degraded counters with the
@@ -31,9 +32,11 @@ replayed, write/enqueue drops, sequence gaps) and the Prometheus metrics
 `request_journey_recorder_{queue_depth,written_total,replayed_total,
 dropped_total,degraded_total,seq_gap_total}` with a `store` label.
 
-Sequence gaps: each journey worker tracks the last seq written per
-(tenant, request); writing seq N when the store never saw earlier sequences
-counts the hole, and terminal journeys release their tracker slot.
+Sequence gaps settle at the journey's terminal event: gap = terminal seq −
+delivered events − writes still parked in the outbox. Counting only at the
+terminal makes the metric immune to outbox reordering (a retried write that
+lands after later sequences is not a hole), and journeys the tracker never
+observed (bound eviction, 8192 concurrent) settle conservatively to zero.
 
 ## Read path (QueryService)
 

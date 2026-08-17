@@ -213,9 +213,9 @@ func (*alwaysFailingWriter) Apply(context.Context, JourneyEvent) error {
 	return errors.New("store down")
 }
 
-// TestRecorderCountsSequenceGapsPerStore guards gap observability: when a
-// store never receives seq 2 (dropped upstream), writing seq 3 must surface
-// the hole instead of silently presenting a contiguous-looking history.
+// TestRecorderCountsSequenceGapsPerStore guards gap observability: a journey
+// whose seq 2 never reached the store must settle exactly one hole at its
+// terminal event, not on intermediate deliveries.
 func TestRecorderCountsSequenceGapsPerStore(t *testing.T) {
 	store := &fakeJourneyWriter{}
 	recorder := newRecorder(NewProjection(DefaultConfig()), store, nil, recorderOptions{
@@ -223,26 +223,95 @@ func TestRecorderCountsSequenceGapsPerStore(t *testing.T) {
 	})
 	defer closeRecorder(t, recorder)
 
-	first := testJourneyEvent("tenant-a", "request-1", 1)
-	if err := recorder.Apply(context.Background(), first); err != nil {
-		t.Fatal(err)
+	for _, event := range []JourneyEvent{
+		testJourneyEvent("tenant-a", "request-1", 1),
+		func() JourneyEvent {
+			skipped := testJourneyEvent("tenant-a", "request-1", 3)
+			skipped.Stage = StageUpstream
+			return skipped
+		}(),
+	} {
+		if err := recorder.Apply(context.Background(), event); err != nil {
+			t.Fatalf("Apply(seq=%d) error = %v", event.Seq, err)
+		}
 	}
-	stats, err := waitForStoreStats(recorder, "redis", func(s StoreStats) bool { return s.Written == 1 })
+
+	// The hole is provisional while the journey is still in flight.
+	stats, err := waitForStoreStats(recorder, "redis", func(s StoreStats) bool { return s.Written == 2 })
 	if err != nil {
 		t.Fatal(err)
 	}
 	if stats.SequenceGaps != 0 {
-		t.Fatalf("initial gaps = %d", stats.SequenceGaps)
+		t.Fatalf("in-flight gaps = %d, want 0", stats.SequenceGaps)
 	}
 
-	skipped := testJourneyEvent("tenant-a", "request-1", 3)
-	skipped.Stage = StageUpstream
-	if err := recorder.Apply(context.Background(), skipped); err != nil {
+	terminal := testJourneyEvent("tenant-a", "request-1", 4)
+	terminal.Type = EventRequestSucceeded
+	terminal.Stage = StageTerminal
+	terminal.Outcome = OutcomeSuccess
+	if err := recorder.Apply(context.Background(), terminal); err != nil {
 		t.Fatal(err)
 	}
 	if stats, err = waitForStoreStats(recorder, "redis", func(s StoreStats) bool {
-		return s.Written == 2 && s.SequenceGaps == 1
+		return s.Written == 3 && s.SequenceGaps == 1
 	}); err != nil {
-		t.Fatalf("gap after skipped seq: %v", err)
+		t.Fatalf("terminal settlement: %+v", stats)
+	}
+}
+
+// selectiveJourneyWriter fails the first delivery of one chosen sequence and
+// succeeds everywhere else, forcing the pump to park that write in the outbox
+// while later sequences are delivered first.
+type selectiveJourneyWriter struct {
+	mu         sync.Mutex
+	failSeq    int64
+	failedOnce bool
+	events     []JourneyEvent
+}
+
+func (w *selectiveJourneyWriter) Apply(_ context.Context, event JourneyEvent) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if event.Seq == w.failSeq && !w.failedOnce {
+		w.failedOnce = true
+		return errors.New("transient failure for chosen seq")
+	}
+	w.events = append(w.events, event)
+	return nil
+}
+
+func (w *selectiveJourneyWriter) delivered() []JourneyEvent {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]JourneyEvent(nil), w.events...)
+}
+
+// TestRecorderReorderedReplayDoesNotInflateGaps guards gap accounting under
+// outbox reordering: seq 3 may be written before a retried seq 2 lands, and
+// that reorder must not count as a store-side sequence gap.
+func TestRecorderReorderedReplayDoesNotInflateGaps(t *testing.T) {
+	store := &selectiveJourneyWriter{failSeq: 2}
+	recorder := newRecorder(NewProjection(DefaultConfig()), store, nil, recorderOptions{
+		queueCapacity: 8, writeTimeout: time.Second,
+		maxAttempts: 3, initialBackoff: time.Millisecond,
+	})
+	defer closeRecorder(t, recorder)
+
+	for seq := int64(1); seq <= 4; seq++ {
+		event := testJourneyEvent("tenant-a", "request-1", seq)
+		event.OccurredAt = event.OccurredAt.Add(time.Duration(seq) * time.Second)
+		if err := recorder.Apply(context.Background(), event); err != nil {
+			t.Fatalf("Apply(seq=%d) error = %v", seq, err)
+		}
+	}
+
+	stats, err := waitForStoreStats(recorder, "redis", func(s StoreStats) bool {
+		return s.Written+s.Replayed == 4 && s.Pending == 0
+	})
+	if err != nil {
+		t.Fatalf("all writes never settled: %+v", stats)
+	}
+	if stats.SequenceGaps != 0 {
+		t.Fatalf("reordered replay inflated gaps to %d", stats.SequenceGaps)
 	}
 }
