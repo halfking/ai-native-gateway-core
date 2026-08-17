@@ -305,6 +305,19 @@ type cacheEntry[T any] struct {
 	expires time.Time
 }
 
+// decryptFailureCacheTTL bounds how long we remember a decryption failure
+// for a (credential_id) so repeated upstream requests don't keep re-trying
+// the same broken secret. Short enough that an operator fixing the secret
+// (rotation, keyring reload, ciphertext migration) sees traffic resume
+// within one minute without manual intervention.
+const decryptFailureCacheTTL = 1 * time.Minute
+
+// decryptFailureCacheMax prevents the negative cache from growing unbounded
+// across thousands of credentials. When the cap is reached we evict the
+// oldest entries — failure-cache entries are short-lived (1 minute) so
+// this only matters in pathological fleets with many broken secrets at once.
+const decryptFailureCacheMax = 1024
+
 const (
 	candidateCacheTTL        = 30 * time.Second
 	candidateCacheStaleGrace = 30 * time.Second
@@ -360,6 +373,15 @@ type Client struct {
 	candGeneration uint64
 	polCache       cacheEntry[*Policy]
 	keyCache       map[int]cacheEntry[string]
+	// keyCacheNeg memoises "this credential's API key failed to decrypt"
+	// for decryptFailureCacheTTL seconds. Previously every request within
+	// the 5-minute positive window re-fetched ciphertext from PG and
+	// re-tried DecryptAny, generating a steady stream of
+	// "enrichWithAPIKeys: reveal failed" warnings and DB scans. With the
+	// negative cache we only retry once a minute — the same window as the
+	// upstream call health-probe (bg/credential_recovery.go), which is
+	// granular enough that an operator-rotated secret is picked up promptly.
+	keyCacheNeg map[int]cacheEntry[string]
 
 	sf singleflight.Group
 }
@@ -1686,11 +1708,29 @@ func (c *Client) RevealAPIKey(ctx context.Context, providerID, credentialID int)
 		c.mu.RUnlock()
 		return entry.value, nil
 	}
+	if neg, ok := c.keyCacheNeg[credentialID]; ok && time.Now().Before(neg.expires) {
+		c.mu.RUnlock()
+		// 2026-08-17 P0 fix: avoid re-trying a known-broken decryption for
+		// decryptFailureCacheTTL. Previously every request within the 5-minute
+		// positive window hit PG + DecryptAny + a "reveal failed" warning;
+		// on 154 production this produced 60+ identical log lines per minute
+		// for credentials whose secret was actually rotated / corrupted.
+		slog.Debug("reveal: decrypt failure cached, skipping retry",
+			"credential_id", credentialID,
+			"provider_id", providerID,
+			"cached_err", neg.value,
+			"expires_in", time.Until(neg.expires).String(),
+		)
+		return "", fmt.Errorf("decrypt failure cached (credential_id=%d): %s", credentialID, neg.value)
+	}
 	c.mu.RUnlock()
 
 	v, err, _ := c.sf.Do(fmt.Sprintf("key:%d", credentialID), func() (any, error) {
 		key, fetchErr := c.fetchReveal(ctx, providerID, credentialID)
 		if fetchErr != nil {
+			c.mu.Lock()
+			c.recordNegativeCacheLocked(credentialID, fetchErr.Error())
+			c.mu.Unlock()
 			return "", fetchErr
 		}
 		c.mu.Lock()
@@ -1698,6 +1738,9 @@ func (c *Client) RevealAPIKey(ctx context.Context, providerID, credentialID int)
 			value:   key,
 			expires: time.Now().Add(5 * time.Minute),
 		}
+		// Successful reveal invalidates any prior negative entry so the
+		// next call doesn't carry forward a stale "broken" signal.
+		delete(c.keyCacheNeg, credentialID)
 		c.mu.Unlock()
 		return key, nil
 	})
@@ -1705,6 +1748,36 @@ func (c *Client) RevealAPIKey(ctx context.Context, providerID, credentialID int)
 		return "", err
 	}
 	return v.(string), nil
+}
+
+// recordNegativeCacheLocked inserts a decrypt-failure entry into
+// keyCacheNeg, evicting the oldest entries if the cap is exceeded. Must be
+// called with c.mu held for writing.
+func (c *Client) recordNegativeCacheLocked(credentialID int, errMsg string) {
+	if c.keyCacheNeg == nil {
+		c.keyCacheNeg = make(map[int]cacheEntry[string])
+	}
+	if len(c.keyCacheNeg) >= decryptFailureCacheMax {
+		// Evict the entry with the earliest expiry; the map is small so a
+		// linear scan is cheap and avoids dragging in a heap for a corner
+		// case that only fires when there are 1024+ simultaneously broken
+		// credentials — by definition a deeper problem than this cache.
+		var oldestID int
+		var oldestExp time.Time
+		first := true
+		for id, e := range c.keyCacheNeg {
+			if first || e.expires.Before(oldestExp) {
+				oldestID = id
+				oldestExp = e.expires
+				first = false
+			}
+		}
+		delete(c.keyCacheNeg, oldestID)
+	}
+	c.keyCacheNeg[credentialID] = cacheEntry[string]{
+		value:   errMsg,
+		expires: time.Now().Add(decryptFailureCacheTTL),
+	}
 }
 
 func (c *Client) fetchReveal(ctx context.Context, providerID, credentialID int) (string, error) {
