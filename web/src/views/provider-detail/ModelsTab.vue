@@ -97,6 +97,23 @@ interface EditDraft {
    * Empty string == use raw_model_name.
    */
   outbound_model_name: string
+  /**
+   * 2026-08-17: context window override for this credential-model binding.
+   *
+   * Runtime type widens beyond `number | null` because `<input type="number">`
+   * with `v-model.number` yields `''` (empty string) when the user clears
+   * the field — Vue only falls back to `null` if the input is removed
+   * entirely.  We accept all three and normalize at dispatch time.
+   *
+   * Backend contract: JSON `null` is treated by Go as "field omitted" (no-op
+   * write); `0` or any non-positive number clears the override; a positive
+   * number sets the override.  We therefore never send JSON `null` for
+   * intent-to-clear — we send `0`.  And we only include the field in the
+   * PATCH body when the draft differs from the initial value, so that
+   * editing other fields (e.g. `standardized_name`) does not silently
+   * clobber an existing override.
+   */
+  context_window: number | '' | null
   saving: boolean
   toggling: boolean
   loadingSuggest: boolean
@@ -105,6 +122,13 @@ interface EditDraft {
   saveErr: string
 }
 const draft = reactive<Partial<EditDraft>>({})
+
+// 2026-08-17: snapshot of the binding's initial context-window override
+// captured when the drawer opens.  Used by saveEdit() to detect whether
+// the user actually edited the field, so we can omit the field from the
+// PATCH body (preserving an existing override) when the user only edits
+// unrelated fields like standardized_name.
+const initialContextWindow = ref<number | null>(null)
 
 // 2026-08-11: node IQ history for the drawer (time-series chart) + on-demand test.
 const iqHistory = ref<IQHistoryPoint[]>([])
@@ -455,6 +479,16 @@ function resetDraft(o: ModelOffer) {
   draft.standardized_name = o.standardized_name ?? ''
   draft.canonical_id = o.canonical_id ?? null
   draft.outbound_model_name = o.outbound_model_name ?? ''
+  // 2026-08-17: initialize the override input from the binding-level
+  // override if set, otherwise leave it null/empty so the operator can
+  // type a fresh value.  We deliberately do NOT pre-fill from the
+  // effective (COALESCE'd) value — the read-only "effective" line below
+  // already shows it, so pre-filling the input would invite accidental
+  // "set as binding override" submissions that match the catalog value
+  // and shadow any future catalog changes.  `initialContextWindow` is
+  // captured for delta-detection at save time.
+  draft.context_window = o.context_window_override ?? null
+  initialContextWindow.value = o.context_window_override ?? null
   draft.saving = false
   draft.toggling = false
   draft.loadingSuggest = false
@@ -641,12 +675,48 @@ async function saveEdit() {
   if (!o) return
   draft.saving = true
   draft.saveErr = ''
+  // 2026-08-17: context window override payload.
+  //
+  // The Go backend uses a `*int` pointer to distinguish three states:
+  //   1. field omitted (JSON null OR not present) → no-op (no DB write)
+  //   2. present, value <= 0                     → clear override
+  //   3. present, value > 0                      → set override
+  //
+  // Frontend behavior must match:
+  //   • user untouched the field          → OMIT (preserve existing value)
+  //   • user typed a positive integer      → SEND positive (set override)
+  //   • user cleared / typed 0 / typed ""  → SEND 0 (clear override)
+  //
+  // We detect "untouched" by comparing draft.context_window to the
+  // snapshot captured in resetDraft (initialContextWindow).  This is
+  // critical: without it, editing only standardized_name would silently
+  // clobber an existing override.
+  //
+  // We normalize "" to 0 because `<input type="number">` with
+  // `v-model.number` yields "" when the user clears it — sending ""
+  // would cause Go's json decoder to reject with HTTP400 "cannot
+  // unmarshal string into int".
+  const rawCw = draft.context_window
+  const isTouched = rawCw !== initialContextWindow.value
+  const body: {
+    standardized_name?: string | null
+    canonical_id?: number | null
+    outbound_model_name?: string | null
+    context_window?: number | null
+  } = {
+    standardized_name: (draft.standardized_name ?? '').trim() || null,
+    canonical_id: draft.canonical_id ?? null,
+    outbound_model_name: (draft.outbound_model_name ?? '').trim() || null,
+  }
+  if (isTouched) {
+    const cw: number =
+      rawCw == null || rawCw === '' || (typeof rawCw === 'number' && rawCw <= 0)
+        ? 0
+        : (rawCw as number)
+    body.context_window = cw
+  }
   try {
-    const updated = await updateModelOffer(props.providerId, o.id, {
-      standardized_name: (draft.standardized_name ?? '').trim() || null,
-      canonical_id: draft.canonical_id ?? null,
-      outbound_model_name: (draft.outbound_model_name ?? '').trim() || null,
-    })
+    const updated = await updateModelOffer(props.providerId, o.id, body)
     const idx = offers.value.findIndex(x => x.id === o.id)
     if (idx >= 0) {
       offers.value[idx] = {
@@ -654,8 +724,13 @@ async function saveEdit() {
         standardized_name: updated.standardized_name ?? '',
         canonical_id: updated.canonical_id,
         outbound_model_name: updated.outbound_model_name ?? null,
+        context_window: updated.context_window,
+        context_window_override: updated.context_window_override,
       }
       selected.value = offers.value[idx]
+      // Re-sync the initial snapshot so a subsequent re-edit of the drawer
+      // uses the post-save value as its baseline.
+      initialContextWindow.value = updated.context_window_override ?? null
     }
   } catch (e: unknown) {
     draft.saveErr = e instanceof Error ? e.message : pm('saveFailed')
@@ -907,6 +982,7 @@ load()
             <th>{{ pm('table.credential') }}</th>
             <th>{{ pm('table.available') }}</th>
             <th>{{ pm('table.source') }}</th>
+            <th>{{ pm('table.contextWindow') }}</th>
             <th>{{ pm('table.latencyP95') }}</th>
             <th>{{ pm('table.successRate') }}</th>
             <th>{{ pm('table.standardIq') }}</th>
@@ -914,8 +990,8 @@ load()
           </tr>
         </thead>
         <tbody>
-          <tr v-if="loading"><td colspan="9">{{ pm('tableLoading') }}</td></tr>
-          <tr v-else-if="!offers.length"><td colspan="9">{{ pm('tableEmpty') }}</td></tr>
+          <tr v-if="loading"><td colspan="10">{{ pm('tableLoading') }}</td></tr>
+          <tr v-else-if="!offers.length"><td colspan="10">{{ pm('tableEmpty') }}</td></tr>
           <tr
             v-for="o in offers"
             :key="o.id"
@@ -939,6 +1015,15 @@ load()
               <span class="badge" :class="o.availability_source === 'auto' ? 'badge-amber' : o.availability_source === 'manual' ? 'badge-blue' : ''">
                 {{ sourceLabel(o.availability_source) }}
               </span>
+            </td>
+            <td>
+              <span v-if="o.context_window_override != null" class="cw-cell" :title="pm('contextWindowOverrideHint')">
+                <code>{{ o.context_window_override }}</code>
+              </span>
+              <span v-else-if="o.context_window != null" class="cell-muted">
+                {{ o.context_window }}
+              </span>
+              <span v-else class="cell-muted">—</span>
             </td>
             <td>{{ o.p95_latency_ms != null ? o.p95_latency_ms + 'ms' : '—' }}</td>
             <td>{{ o.success_rate != null ? (o.success_rate * 100).toFixed(1) + '%' : '—' }}</td>
@@ -1055,6 +1140,49 @@ load()
               <span v-else class="cell-muted">
                 {{ pm('drawerOutboundUnset') }} <code>{{ selected?.raw_model_name }}</code>
               </span>
+            </div>
+          </div>
+
+          <!-- 2026-08-17: context window override (binding-level).
+               Resolution chain: cmb.context_window_override > mc.context_window_override > mc.context_window.
+               Empty / 0 in the input clears the override; positive integer saves it.
+               We omit the field from the PATCH body when the draft equals the
+               initial snapshot, so editing unrelated fields does not clobber
+               an existing override. -->
+          <div class="drawer-section">
+            <div class="drawer-section-title">
+              {{ pm('drawerSectionContextWindow') }}
+              <span
+                class="hint"
+                :title="pm('drawerContextWindowHint')"
+              >?</span>
+            </div>
+            <div style="display:flex;gap:8px;align-items:center">
+              <input
+                v-model.number="draft.context_window"
+                type="number"
+                min="0"
+                step="1"
+                class="field-input"
+                :placeholder="pm('drawerContextWindowPlaceholder')"
+                style="flex:1;min-width:0"
+              />
+              <button
+                type="button"
+                class="btn btn-sm btn-outline"
+                :disabled="draft.context_window === '' || draft.context_window == null || draft.context_window === 0"
+                :title="pm('drawerContextWindowClearTitle')"
+                @click="draft.context_window = 0"
+              >{{ pm('drawerContextWindowClearBtn') }}</button>
+            </div>
+            <div class="cell-sub" style="margin-top:6px">
+              <span v-if="selected.context_window_override != null">
+                {{ pm('drawerContextWindowOverride') }}<code>{{ selected.context_window_override }}</code>
+              </span>
+              <span v-else-if="selected.context_window != null" class="cell-muted">
+                {{ pm('drawerContextWindowEffective') }}<code>{{ selected.context_window }}</code>
+              </span>
+              <span v-else class="cell-muted">—</span>
             </div>
           </div>
 
