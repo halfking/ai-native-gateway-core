@@ -621,7 +621,7 @@ function formatTs(ts: string | undefined): string {
   color: var(--kx-text);
 }
 .qp-model-group-toggle:focus-visible {
-  outline: 2px solid var(--kx-focus, var(--kx-primary, #5b8cff));
+  outline: 2px solid var(--kx-primary);
   outline-offset: 2px;
 }
 .qp-model-group-caret {
@@ -656,8 +656,8 @@ function formatTs(ts: string | undefined): string {
   color: var(--kx-muted, var(--kx-text));
 }
 .qp-pill--active {
-  color: var(--kx-primary, #5b8cff);
-  border-color: var(--kx-primary, #5b8cff);
+  color: var(--kx-primary);
+  border-color: var(--kx-primary);
 }
 .qp-model-group-body {
   padding: 6px 0 4px 20px;
@@ -686,7 +686,7 @@ function formatTs(ts: string | undefined): string {
   font-weight: 500;
 }
 .qp-meta-text--err {
-  color: var(--kx-danger, #e5484d);
+  color: var(--kx-danger);
 }
 .qp-model-group-requests {
   list-style: none;
@@ -724,26 +724,26 @@ function formatTs(ts: string | undefined): string {
   border: 1px solid var(--kx-border);
 }
 .qp-rq-status--success {
-  color: var(--kx-success, #1f9d55);
-  border-color: var(--kx-success, #1f9d55);
+  color: var(--kx-success);
+  border-color: var(--kx-success);
 }
 .qp-rq-status--failure {
-  color: var(--kx-danger, #e5484d);
-  border-color: var(--kx-danger, #e5484d);
+  color: var(--kx-danger);
+  border-color: var(--kx-danger);
 }
 .qp-rq-status--in_progress {
-  color: var(--kx-primary, #5b8cff);
-  border-color: var(--kx-primary, #5b8cff);
+  color: var(--kx-primary);
+  border-color: var(--kx-primary);
 }
 .qp-rq-status--rate_limited {
-  color: var(--kx-warning, #d4a72c);
-  border-color: var(--kx-warning, #d4a72c);
+  color: var(--kx-warning);
+  border-color: var(--kx-warning);
 }
 .qp-rq-latency {
   color: var(--kx-muted, var(--kx-text));
 }
 .qp-rq-err {
-  color: var(--kx-danger, #e5484d);
+  color: var(--kx-danger);
 }
 .qp-rq-ts {
   margin-left: auto;
