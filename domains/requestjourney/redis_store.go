@@ -43,8 +43,8 @@ var applyRedisIngressScript = redis.NewScript(`
 local exists = redis.call('HEXISTS', KEYS[2], ARGV[1]) == 1
 redis.call('HSET', KEYS[2], ARGV[1], ARGV[2])
 if not exists then
-  redis.call('ZADD', KEYS[1], 0, ARGV[1])
-  while redis.call('ZCARD', KEYS[1]) > tonumber(ARGV[3]) do
+  redis.call('ZADD', KEYS[1], ARGV[3], ARGV[1])
+  while redis.call('ZCARD', KEYS[1]) > tonumber(ARGV[4]) do
     local evicted = redis.call('ZRANGE', KEYS[1], 0, 0)[1]
     if evicted then
       redis.call('ZREM', KEYS[1], evicted)
@@ -52,8 +52,8 @@ if not exists then
     end
   end
 end
-redis.call('EXPIRE', KEYS[1], ARGV[4])
-redis.call('EXPIRE', KEYS[2], ARGV[4])
+redis.call('EXPIRE', KEYS[1], ARGV[5])
+redis.call('EXPIRE', KEYS[2], ARGV[5])
 return exists and 0 or 1
 `)
 
@@ -73,6 +73,7 @@ func (s *RedisStore) ApplyIngress(ctx context.Context, event IngressEvent) error
 	_, err = applyRedisIngressScript.Run(ctx, s.client,
 		[]string{redisIngressOrderKey(), redisIngressItemsKey()},
 		redisIngressIdentity(event.ArrivedAt, event.GatewayInstanceID, event.RequestID), string(body),
+		strconv.FormatInt(event.ArrivedAt.UnixNano(), 10),
 		s.config.TotalRequestCapacity,
 		maxInt64(1, int64(s.config.DetailTTL/time.Second)),
 	).Result()
@@ -130,7 +131,7 @@ local function append_once(key, value, capacity, enabled, reset)
 end
 
 append_once(KEYS[2], ARGV[4], tonumber(ARGV[8]), '1', detail_was_empty)
-append_once(KEYS[3], ARGV[4], tonumber(ARGV[9]), ARGV[6], detail_was_empty)
+append_once(KEYS[3], ARGV[4], tonumber(ARGV[9]), ARGV[6], false)
 append_once(KEYS[4], ARGV[5], tonumber(ARGV[10]), ARGV[7], false)
 if ARGV[6] == '1' then redis.call('SADD', KEYS[5], ARGV[11]); redis.call('EXPIRE', KEYS[5], ARGV[3]) end
 if ARGV[7] == '1' then redis.call('SADD', KEYS[6], ARGV[12]); redis.call('EXPIRE', KEYS[6], ARGV[3]) end
