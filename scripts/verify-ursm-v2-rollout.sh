@@ -125,6 +125,7 @@ case "$stage" in
   authoritative)
     require_metric routing_state_source_total source authoritative || failures=$((failures + 1))
     require_metric routing_state_source_total source fallback || failures=$((failures + 1))
+    require_zero routing_state_source_total source fallback
     ;;
 esac
 

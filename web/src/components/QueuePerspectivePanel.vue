@@ -597,7 +597,9 @@ function formatTs(ts: string | undefined): string {
 
 /* ── OBS-UI：按模型分组的可用节点（2026-08-17） ────────────────────────── */
 .qp-layer--model-groups {
-  background: var(--kx-surface-2, var(--kx-surface));
+  /* 用主题已有的 surface-soft 别名（color-mix 微透明）做柔和下层；无主题覆盖时
+     退到 --kx-bg 让区块与上层 --kx-surface 形成微弱对比。 */
+  background: var(--surface-soft, var(--kx-bg, var(--kx-surface)));
   border-radius: var(--kx-radius-sm, 6px);
   padding: 8px 10px;
 }
@@ -619,14 +621,14 @@ function formatTs(ts: string | undefined): string {
   color: var(--kx-text);
 }
 .qp-model-group-toggle:focus-visible {
-  outline: 2px solid var(--kx-focus, var(--kx-primary, #5b8cff));
+  outline: 2px solid var(--kx-primary);
   outline-offset: 2px;
 }
 .qp-model-group-caret {
   display: inline-block;
   width: 12px;
   font-size: 12px;
-  color: var(--kx-text-muted, var(--kx-text));
+  color: var(--kx-muted, var(--kx-text));
   transition: transform 120ms ease;
 }
 .qp-model-group-caret--open {
@@ -647,13 +649,15 @@ function formatTs(ts: string | undefined): string {
   font-size: 11px;
   padding: 1px 8px;
   border-radius: 10px;
-  background: var(--kx-surface-3, var(--kx-surface));
+  /* 用 --kx-bg 比 surface 略深，做出"凹陷 pill" 视觉；无主题时退到
+     --kx-surface 保持可见性。 */
+  background: var(--kx-bg, var(--kx-surface));
   border: 1px solid var(--kx-border);
-  color: var(--kx-text-muted, var(--kx-text));
+  color: var(--kx-muted, var(--kx-text));
 }
 .qp-pill--active {
-  color: var(--kx-primary, #5b8cff);
-  border-color: var(--kx-primary, #5b8cff);
+  color: var(--kx-primary);
+  border-color: var(--kx-primary);
 }
 .qp-model-group-body {
   padding: 6px 0 4px 20px;
@@ -675,14 +679,14 @@ function formatTs(ts: string | undefined): string {
   flex-wrap: wrap;
   gap: 8px;
   font-size: 12px;
-  color: var(--kx-text-muted, var(--kx-text));
+  color: var(--kx-muted, var(--kx-text));
 }
 .qp-status-text {
   color: var(--kx-text);
   font-weight: 500;
 }
 .qp-meta-text--err {
-  color: var(--kx-danger, #e5484d);
+  color: var(--kx-danger);
 }
 .qp-model-group-requests {
   list-style: none;
@@ -715,35 +719,35 @@ function formatTs(ts: string | undefined): string {
   font-size: 11px;
   padding: 0 6px;
   border-radius: 6px;
-  background: var(--kx-surface-3, var(--kx-surface));
-  color: var(--kx-text-muted, var(--kx-text));
+  background: var(--kx-bg, var(--kx-surface));
+  color: var(--kx-muted, var(--kx-text));
   border: 1px solid var(--kx-border);
 }
 .qp-rq-status--success {
-  color: var(--kx-success, #1f9d55);
-  border-color: var(--kx-success, #1f9d55);
+  color: var(--kx-success);
+  border-color: var(--kx-success);
 }
 .qp-rq-status--failure {
-  color: var(--kx-danger, #e5484d);
-  border-color: var(--kx-danger, #e5484d);
+  color: var(--kx-danger);
+  border-color: var(--kx-danger);
 }
 .qp-rq-status--in_progress {
-  color: var(--kx-primary, #5b8cff);
-  border-color: var(--kx-primary, #5b8cff);
+  color: var(--kx-primary);
+  border-color: var(--kx-primary);
 }
 .qp-rq-status--rate_limited {
-  color: var(--kx-warning, #d4a72c);
-  border-color: var(--kx-warning, #d4a72c);
+  color: var(--kx-warning);
+  border-color: var(--kx-warning);
 }
 .qp-rq-latency {
-  color: var(--kx-text-muted, var(--kx-text));
+  color: var(--kx-muted, var(--kx-text));
 }
 .qp-rq-err {
-  color: var(--kx-danger, #e5484d);
+  color: var(--kx-danger);
 }
 .qp-rq-ts {
   margin-left: auto;
-  color: var(--kx-text-muted, var(--kx-text));
+  color: var(--kx-muted, var(--kx-text));
   font-variant-numeric: tabular-nums;
 }
 </style>
