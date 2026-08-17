@@ -131,6 +131,32 @@ cold hit/timeout 都记 WARN/INFO），运维能区分：
 （`abcf2ef8d06bf1c89d6a1d6816c99765`，metadata 不在 hot 也不在 metadata view），
 扩展前 → HTTP 500 (timeout 5s)；扩展后 → HTTP 200 (从 columnar bodies 查到 body)。
 
+## 2026-08-17 傍晚优化 — bodyFetchCache (in-memory LRU+TTL)
+
+ctx 防御解决了"不 500"，但用户**重复点击同一 request_id** 仍然每次都走 5s columnar 扫描。
+dashboard 实际操作中经常"开 → 关 → 再开"同一条 request 来回比对 payload — 这是缓存最高频的场景。
+
+新增 `admin/logs_body_cache.go`（LRU + TTL + stats），包装在 `fetchRequestBodies` 阶段 0：
+
+| 配置 | 值 | 理由 |
+|------|-----|------|
+| 容量 | 1024 entries | 每条 body ~20KB JSONB → 20MB 上限（rule 23 §3 footprint 预算） |
+| TTL | 5min | body 写入后罕见被修改；超时让 re-fetch（hot 命中便宜） |
+| ErrNoRows 缓存 | ✅ | 两端都没找到是确定性结果，5min 内重复点击不再打 PG |
+| Transport err 缓存 | ❌ | ctx cancel / conn refused 必须能被 caller 重试（rule 22 §4） |
+
+可观测端点：**GET /api/admin/logs/body-cache-stats**
+```json
+{"size": 142, "hits": 1023, "misses": 287, "evictions": 5, "hit_rate": 0.781}
+```
+运维看 `hit_rate` 判断 cold path 是否被 cache 缓解（预期 > 50%）。
+
+回归测试（`admin/logs_get_log_columnar_test.go`）：
+- `TestBodyFetchCache_HitUnderOneMillisecond`：第一次走 DB，第二次 < 1ms
+- `TestBodyFetchCache_TTLExpires`：TTL 1ms 强制过期 → 第二次走 DB（hits=0）
+- `TestBodyFetchCache_NotFoundIsCached`：sql.ErrNoRows 也走 cache
+- `TestBodyFetchCache_LRUEvictsOldest`：容量满后最久未用被淘汰
+
 ## 遗留与下一步
 
 - 防御性增强：给 `/api/logs/{id}` 加更长 ctx（20s），抵御历史冷请求慢路径。
