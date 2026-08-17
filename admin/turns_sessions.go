@@ -215,7 +215,7 @@ func (h *Handler) handleTurnsSessions(w http.ResponseWriter, r *http.Request) {
 		-- LATERAL LIMIT 1 防止多次轮换记录导致行扩展。
 		LEFT JOIN LATERAL (
 			SELECT hl.session_id AS parent_session_id, hl.trigger_reason
-			FROM public.handoff_logs hl
+			FROM public.handoff_logs_with_current_month hl
 			WHERE hl.new_session_id = s.session_id
 			ORDER BY hl.created_at DESC
 			LIMIT 1

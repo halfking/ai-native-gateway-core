@@ -2,10 +2,10 @@ package bg
 
 // handoff_trimmer.go — daily TTL worker for handoff_logs.
 //
-// Trims rows older than the configured retention from handoff_logs.
-// Each row can hold a multi-MB handoff_prompt (full context dump at
-// the moment of an auto-handoff), so without a TTL the table grows
-// unbounded — measured ~600 MB/day on 2026-07-12 on the 252 instance.
+// 2026-08-18 hot+columnar 架构：历史保留改由 drop_old_state_partitions 按月度
+// columnar 分区整体 DROP（citus columnar 不支持行级 DELETE），本 trimmer 只负责
+// 兜底清理热层 handoff_logs_hot —— 正常情况下 promote cron 在 8 小时窗口内已把
+// 老数据搬走，这里仅在 promote 长期故障导致热层积压时生效。
 //
 // Retention: 14 days by default (hot-reloadable via
 // lifecycle.handoff_logs_ttl_days). Cadence: 24h. The trim is
@@ -98,9 +98,9 @@ func (t *HandoffTrimmer) TrimOnce(ctx context.Context) (int64, error) {
 
 	start := time.Now()
 	res, err := t.pool.Exec(ctx, `
-		DELETE FROM handoff_logs
+		DELETE FROM handoff_logs_hot
 		WHERE id IN (
-			SELECT id FROM handoff_logs
+			SELECT id FROM handoff_logs_hot
 			WHERE created_at < NOW() - $1::interval
 			ORDER BY created_at
 			LIMIT 5000
