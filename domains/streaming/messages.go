@@ -54,6 +54,9 @@ func NewMessagesHandler(ch *ChatHandler) *MessagesHandler {
 }
 
 func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	w, r, journeyWriter := beginRequestJourney(w, r, h.chatHandler)
+	defer finishRequestJourney(r, journeyWriter)
+	r = markExplicitStreamSession(r)
 	//nolint:errcheck // best-effort close
 	defer r.Body.Close()
 
@@ -189,6 +192,7 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		} else {
 			keyInfo = ki
 			attemptKeyInfo = ki
+			bindRequestJourney(r, ki.TenantID, attemptClientModel)
 		}
 	}
 
@@ -307,6 +311,7 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// in the executor (IR path). The original body bytes are forwarded
 	// unchanged; the executor handles Q2/Q4 dispatch internally.
 	attemptClientModel = reqBody.Model
+	requestedModel := reqBody.Model
 
 	// model=auto: classify + rewrite before CanonicalizeClientModel.
 	if reqBody.Model == autoRequestMagic {
@@ -335,6 +340,7 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// 2026-07-14: lowercase at the wire boundary.
 	clientModel := modelname.CanonicalizeClientModel(reqBody.Model)
+	resolveRequestJourney(r, tenant(keyInfo), requestedModel, clientModel)
 
 	// ── Tenant model policy (Round 48, 2026-06-21) ──────────────
 	// Inserted here so a denied request never reaches GetCandidates.
@@ -575,12 +581,36 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		logCtx,
 	)
 
+	var preStream *preStreamKeepalive
+	preStreamPrepared := false
+	if isStream {
+		cfg := currentStreamRuntimeConfig()
+		if cfg.enablePreStreamKeepalive {
+			if psk, ok := startPreStreamKeepalive(w, cfg.keepaliveInterval, requestID); ok {
+				preStream = psk
+				preStreamPrepared = true
+				w = psk.Writer()
+				defer psk.stop()
+			}
+		}
+	}
+
+	journeyInstanceID, journeySeq, journeyTerminal := requestJourneyExecState(r)
 	buildExecParams := func(streamWriter http.ResponseWriter) *executors.ExecParams {
 		return &executors.ExecParams{
-			W:                    streamWriter,
-			R:                    r,
-			BodyBytes:            upstreamBody,
-			IsStream:             isStream,
+			W:                          streamWriter,
+			R:                          r,
+			BodyBytes:                  upstreamBody,
+			IsStream:                   isStream,
+			StreamSurvivesClientCancel: explicitStreamSession(r.Context()),
+			PreStreamPrepared:          preStreamPrepared,
+			OnStreamReady:              func() {},
+			OnStreamHeartbeat: func() error {
+				if preStream != nil {
+					return preStream.session.Heartbeat()
+				}
+				return nil
+			},
 			SuppressSuccessWrite: !isStream,
 			ClientProtocol:       "anthropic-messages",
 			ClientModel:          clientModel,
@@ -611,12 +641,15 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				}
 				return 0
 			}(),
-			SessionID: gwSessionID,
-			Model:     clientModel,
-			TenantID:  tenant(keyInfo),
-			AppID:     appID(keyInfo),
-			ApiKeyID:  apiKeyIDPtr(keyInfo),
-			RequestID: requestID,
+			SessionID:                gwSessionID,
+			Model:                    clientModel,
+			TenantID:                 tenant(keyInfo),
+			AppID:                    appID(keyInfo),
+			ApiKeyID:                 apiKeyIDPtr(keyInfo),
+			RequestID:                requestID,
+			JourneyGatewayInstanceID: journeyInstanceID,
+			JourneySeq:               journeySeq,
+			JourneyTerminal:          journeyTerminal,
 		}
 	}
 
@@ -670,13 +703,25 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					map[string]any{"Reason": reason})
 				h.chatHandler.recordFailedRequestWithKey(requestID, clientModel, explicitOutbound,
 					attemptProviderID, attemptCredentialID, "content_filter", msg, latency, upstreamBody, keyInfo, r)
-				writeAnthropicError(w, http.StatusBadRequest, "content_filter", msg)
+				if preStreamPrepared {
+					writeAnthropicStreamError(w, "content_filter", msg)
+				} else {
+					writeAnthropicError(w, http.StatusBadRequest, "content_filter", msg)
+				}
 				return
 			}
-			writeAnthropicError(w, http.StatusServiceUnavailable, "overloaded_error", "All providers unavailable")
+			if preStreamPrepared {
+				writeAnthropicStreamError(w, "overloaded_error", "All providers unavailable")
+			} else {
+				writeAnthropicError(w, http.StatusServiceUnavailable, "overloaded_error", "All providers unavailable")
+			}
 			return
 		}
-		writeAnthropicError(w, http.StatusServiceUnavailable, "overloaded_error", "Upstream request failed")
+		if preStreamPrepared {
+			writeAnthropicStreamError(w, "overloaded_error", "Upstream request failed")
+		} else {
+			writeAnthropicError(w, http.StatusServiceUnavailable, "overloaded_error", "Upstream request failed")
+		}
 		return
 	}
 	if result != nil && result.CachedReplay {
@@ -1256,6 +1301,17 @@ func mapAnthropicStopReason(finishReason string) string {
 		return "end_turn"
 	default:
 		return "end_turn"
+	}
+}
+
+func writeAnthropicStreamError(w http.ResponseWriter, errType, message string) {
+	payload, _ := json.Marshal(map[string]any{
+		"type":  "error",
+		"error": map[string]any{"type": errType, "message": message},
+	})
+	_, _ = fmt.Fprintf(w, "event: error\ndata: %s\n\n", payload)
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
 	}
 }
 

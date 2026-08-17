@@ -41,6 +41,32 @@ func TestResponsesHandler_InvalidJSON(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
+func TestStreamHeartbeatDoesNotCommitBeforeFormatValidation(t *testing.T) {
+	chat := NewChatHandler(credential.NewManager(), credential.NewLimiter(), nil, nil, nil, nil)
+	tests := []struct {
+		name string
+		path string
+		h    http.Handler
+	}{
+		{name: "responses", path: "/v1/responses", h: NewResponsesHandler(chat)},
+		{name: "messages", path: "/v1/messages", h: NewMessagesHandler(chat)},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			r := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader("bad"))
+			r.Header.Set("Content-Type", "application/json")
+			tc.h.ServeHTTP(w, r)
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400 before heartbeat commit", w.Code)
+			}
+			if strings.Contains(w.Body.String(), sseKeepaliveComment) {
+				t.Fatalf("invalid request emitted heartbeat: %q", w.Body.String())
+			}
+		})
+	}
+}
+
 func TestConvertResponsesToChatBody_PreservesExtraParams(t *testing.T) {
 	var req responsesRequestBody
 	err := json.Unmarshal([]byte(`{

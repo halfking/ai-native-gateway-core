@@ -36,6 +36,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/response"                      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	sessionaudithook "github.com/kaixuan/llm-gateway-go/domains/hooks/sessionaudit" //nolint:depguard
 	"github.com/kaixuan/llm-gateway-go/domains/identity"                            //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/requestjourney"                      //nolint:depguard // request lifecycle observation
 	"github.com/kaixuan/llm-gateway-go/domains/session"                             //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"                 //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/transformation"                      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -66,21 +67,7 @@ const maxBodySize = 128 << 20 // 128MB - increased for large context models like
 func MaxBodySize() int { return maxBodySize }
 
 type preStreamKeepalive struct {
-	w       http.ResponseWriter
-	flusher http.Flusher
-	stopCh  chan struct{}
-	doneCh  chan struct{}
-	mu      sync.Mutex
-	once    sync.Once
-	// paused is set by the executor when entering the synchronous
-	// no-candidate probe hold. While paused, the loop() goroutine
-	// skips writing SSE keepalive comments so the client does not
-	// interpret a stale comment as a response-start signal during
-	// the hold. Resumed by resume(); the goroutine checks the flag
-	// on every tick so the resume latency is at most one keepalive
-	// interval (default 15s — but the executor's 5s probe timeout
-	// means we resume long before that regardless).
-	paused atomic.Bool
+	session *StreamSession
 }
 
 type retryCommitWriter struct {
@@ -200,74 +187,26 @@ func startPreStreamKeepalive(w http.ResponseWriter, interval time.Duration, requ
 	if _, ok := w.(http.Flusher); !ok {
 		return nil, false
 	}
-	if interval <= 0 {
-		interval = 15 * time.Second
-	}
-	// 2026-08-15 (A-P2-6): the keepalive loop is one of several producers on
-	// this connection — the bridges write the same ResponseWriter once the
-	// stream starts. Wrap the connection in a serializedResponseWriter so
-	// keepalive comments and stream frames can never interleave; the handler
-	// reassigns its local writer to psk.Writer() so later writes join the
-	// same channel. The survival path (survival_wiring.go) installs its own
-	// SerializedStreamWriter after stopping this loop, so the two never
-	// overlap on one connection.
-	sw := NewSerializedResponseWriter(w)
-	psk := &preStreamKeepalive{
-		w:       sw,
-		flusher: sw,
-		stopCh:  make(chan struct{}),
-		doneCh:  make(chan struct{}),
-	}
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	// 2026-08-04: set X-Accel-Buffering here so nginx/reverse proxies disable
-	// response buffering from the very first byte. Previously this header was
-	// only set inside each protocol bridge (stream.go/anthropic_bridge.go/
-	// responses_bridge.go) AFTER WriteHeader — too late for the prewarmed
-	// path, where keepalive comments would be buffered and never reach the
-	// client, defeating the whole purpose.
-	w.Header().Set("X-Accel-Buffering", "no")
-	// 2026-08-04: stamp X-Request-Id here so the response carries the
-	// request id on the prewarmed path. Each protocol bridge sets it again
-	// later, but that happens AFTER its own WriteHeader — too late once we
-	// have already committed headers. The caller passes the already-resolved
-	// id as a parameter (see preStreamKeepalive call site) rather than
-	// re-reading r.Header, which may not be populated yet.
+	session := NewStreamSession(w, interval, sseKeepaliveComment)
+	psk := &preStreamKeepalive{session: session}
+	streamWriter := session.Writer()
+	streamWriter.Header().Set("Content-Type", "text/event-stream")
+	streamWriter.Header().Set("Cache-Control", "no-cache")
+	streamWriter.Header().Set("Connection", "keep-alive")
+	streamWriter.Header().Set("X-Accel-Buffering", "no")
 	if requestID != "" {
-		w.Header().Set("X-Request-Id", requestID)
+		streamWriter.Header().Set("X-Request-Id", requestID)
 	}
-	w.WriteHeader(http.StatusOK)
-	psk.writeComment(sseKeepaliveComment)
-	go psk.loop(interval)
+	streamWriter.WriteHeader(http.StatusOK)
+	_ = session.Heartbeat()
+	session.Start(context.Background())
 	return psk, true
 }
 
-func (p *preStreamKeepalive) loop(interval time.Duration) {
-	defer close(p.doneCh)
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-p.stopCh:
-			return
-		case <-ticker.C:
-			if p.paused.Load() {
-				continue
-			}
-			p.writeComment(sseKeepaliveComment)
-		}
-	}
-}
-
 func (p *preStreamKeepalive) writeComment(line string) {
-	if p == nil {
-		return
+	if p != nil {
+		_ = p.session.WriteTransportFrame(line)
 	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	safeWriteSSE(p.w, line)
-	safeFlush(p.flusher)
 }
 
 // writeThinking sends a thinking event to the client (SSE event: thinking).
@@ -287,41 +226,31 @@ func (p *preStreamKeepalive) writeThinking(message string) {
 	if p == nil {
 		return
 	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
 	escaped, _ := json.Marshal(message)
-	fmt.Fprintf(p.w, ": thinking: %s\n\n", escaped)
-	safeFlush(p.flusher)
+	_ = p.session.WriteTransportFrame(fmt.Sprintf(": thinking: %s\n\n", escaped))
 }
 
 // pause suspends future keepalive comments. Idempotent.
 func (p *preStreamKeepalive) pause() {
-	if p == nil {
-		return
+	if p != nil {
+		p.session.Pause()
 	}
-	p.paused.Store(true)
 }
 
 // resume re-enables keepalive comment writes. Idempotent.
 func (p *preStreamKeepalive) resume() {
-	if p == nil {
-		return
+	if p != nil {
+		p.session.Resume()
 	}
-	p.paused.Store(false)
 }
 
-// Writer returns the serialized connection view (the serializedResponseWriter
-// this keepalive installed). The handler reassigns its local ResponseWriter
-// to it so bridge writes share the keepalive's serialized channel instead of
-// racing the keepalive loop on the raw connection (doc 20 A-P2-6).
-func (p *preStreamKeepalive) Writer() http.ResponseWriter { return p.w }
+// Writer returns the serialized connection view shared by all producers.
+func (p *preStreamKeepalive) Writer() http.ResponseWriter { return p.session.Writer() }
 
 func (p *preStreamKeepalive) stop() {
-	if p == nil {
-		return
+	if p != nil {
+		p.session.Stop()
 	}
-	p.once.Do(func() { close(p.stopCh) })
-	<-p.doneCh
 }
 
 func writePrewarmedStreamError(w http.ResponseWriter, message, errType, code string) {
@@ -867,6 +796,9 @@ type ChatHandler struct {
 	// 旁路异步、满即丢，不阻塞请求热路径。
 	liveActions *liveactions.Emitter
 
+	journeyRecorder          *requestjourney.Recorder
+	journeyGatewayInstanceID string
+
 	// autoTitleGenerator (2026-06-22) automatically generates session titles
 	// after the first successful request. nil disables auto-title generation.
 	autoTitleGenerator interface {
@@ -1054,6 +986,11 @@ func (h *ChatHandler) SetTraceRecorder(rec gwtrace.Recorder) {
 // 发射器。传 nil 等价于禁用（Emit 对 nil receiver 是 no-op）。
 func (h *ChatHandler) SetLiveActions(e *liveactions.Emitter) {
 	h.liveActions = e
+}
+
+func (h *ChatHandler) SetRequestJourney(recorder *requestjourney.Recorder, gatewayInstanceID string) {
+	h.journeyRecorder = recorder
+	h.journeyGatewayInstanceID = strings.TrimSpace(gatewayInstanceID)
 }
 
 // clientProtocolFromPath infers the inbound wire protocol from the URL path
@@ -1584,6 +1521,9 @@ type QuotaRecorder interface {
 // wraps the real handler so sensitive info in r.Body is replaced with
 // placeholders + persisted to Redis before any request processing.
 func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	w, r, journeyWriter := beginRequestJourney(w, r, h)
+	defer finishRequestJourney(r, journeyWriter)
+	r = markExplicitStreamSession(r)
 	if h.sanitizeInputMiddleware != nil {
 		h.sanitizeInputMiddleware(http.HandlerFunc(h.serveHTTPInner)).ServeHTTP(w, r)
 		return
@@ -1998,6 +1938,7 @@ func (h *ChatHandler) serveWithExecutor(
 		}
 		keyInfo = ki
 		logCtx.SetKey(ki)
+		bindRequestJourney(r, ki.TenantID, logCtx.ClientModel)
 		streamretry.SetAuthenticatedTenant(r.Context(), ki.TenantID)
 
 		// Round 38 (2026-06-16) — emit multi-tenant OTel span
@@ -2255,6 +2196,9 @@ func (h *ChatHandler) serveWithExecutor(
 	// work without lower() wrappers.
 	clientModel := modelname.CanonicalizeClientModel(reqBody.Model)
 	logCtx.SetClientModel(clientModel)
+	if clientModel != autoRequestMagic {
+		resolveRequestJourney(r, tenant(keyInfo), clientModel, clientModel)
+	}
 
 	// ========== Message Field Validation (2026-07-26) ==========
 	// Validate messages field with enhanced checks for common issues.
@@ -2646,6 +2590,8 @@ func (h *ChatHandler) serveWithExecutor(
 		}
 	}
 
+	resolveRequestJourney(r, tenant(keyInfo), preAutoModel, clientModel)
+
 	// ── Phase 3: tool_ids expansion ────────────────────────────────────
 	// If the client provided tool_ids, expand them to full tool definitions.
 	// tool_ids takes precedence over tools (if both provided, tools is ignored).
@@ -2717,6 +2663,9 @@ func (h *ChatHandler) serveWithExecutor(
 	var preStream *preStreamKeepalive
 	preStreamPrepared := false
 	defer func() {
+		if preStream != nil {
+			preStream.stop()
+		}
 		if streamCapture != nil {
 			auditBuilder.StreamMetrics(streamCapture)
 		}
@@ -3615,20 +3564,26 @@ func (h *ChatHandler) serveWithExecutor(
 	// legacy goal-retry loop and the SR-W2 survival branch (doc 18 §5.1):
 	// one construction site, zero drift between the two paths.
 	upstreamAttempts := executors.NewUpstreamAttemptBudget(executors.DefaultUpstreamAttemptLimit)
+	journeyInstanceID, journeySeq, journeyTerminal := requestJourneyExecState(r)
 	buildExecParams := func(streamWriter http.ResponseWriter) *executors.ExecParams {
 		return &executors.ExecParams{
-			W:                  streamWriter,
-			UpstreamAttempts:   upstreamAttempts,
-			AttachmentMetadata: attachmentsForOutbound(logCtx),
-			R:                  r,
-			BodyBytes:          upstreamBody,
-			IsStream:           isStream,
-			PreStreamPrepared:  preStreamPrepared,
-			OnStreamReady: func() {
+			W:                          streamWriter,
+			UpstreamAttempts:           upstreamAttempts,
+			AttachmentMetadata:         attachmentsForOutbound(logCtx),
+			R:                          r,
+			BodyBytes:                  upstreamBody,
+			IsStream:                   isStream,
+			StreamSurvivesClientCancel: explicitStreamSession(r.Context()),
+			PreStreamPrepared:          preStreamPrepared,
+			// The StreamSession heartbeat remains active while the protocol
+			// bridge is blocked on upstream reads. The request-level defer owns
+			// shutdown at the terminal outcome.
+			OnStreamReady: func() {},
+			OnStreamHeartbeat: func() error {
 				if preStream != nil {
-					preStream.stop()
-					preStream = nil
+					return preStream.session.Heartbeat()
 				}
+				return nil
 			},
 			OnStreamStarted: func(ttfbMs int) {
 				h.emitTrace(r.Context(), requestID, gwtrace.StreamStart(ttfbMs))
@@ -3751,7 +3706,10 @@ func (h *ChatHandler) serveWithExecutor(
 			// as the probe row's parent_request_id. Without this the
 			// probe row in request_logs / live-stream would have no link
 			// back to the failed business request.
-			RequestID: requestID,
+			RequestID:                requestID,
+			JourneyGatewayInstanceID: journeyInstanceID,
+			JourneySeq:               journeySeq,
+			JourneyTerminal:          journeyTerminal,
 			// 2026-07-07: Multi-level sticky routing (L1: session+model, L2: client+model, L3: client).
 			SessionID: gwSessionID,
 			Model:     clientModel,
@@ -5952,6 +5910,7 @@ func buildRequestPreview(body map[string]any) string {
 
 // recordFailedRequestWithKey records a failure via the unified RequestLogContext pipeline.
 func (h *ChatHandler) recordFailedRequestWithKey(requestID, clientModel, outboundModel string, providerID, credentialID *int, errCode, errMessage string, latencyMs int, requestBody []byte, keyInfo *authentication.KeyInfo, r *http.Request) {
+	markRequestJourneyFailure(r, keyInfo, errCode)
 	ctx := &RequestLogContext{
 		handler:       h,
 		RequestID:     requestID,

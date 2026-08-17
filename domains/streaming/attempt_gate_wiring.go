@@ -71,10 +71,18 @@ func wrapAttemptWriter(w http.ResponseWriter, protocol ClientProtocol) (http.Res
 	if gw, ok := w.(*GateWriter); ok {
 		return w, gw.UnderlyingAttemptGate()
 	}
-	if !attemptGateEnabled() {
+	var firstSemanticByte func()
+	if source, ok := w.(interface{ FirstSemanticByteCallback() func() }); ok {
+		firstSemanticByte = source.FirstSemanticByteCallback()
+	}
+	if !attemptGateEnabled() && firstSemanticByte == nil {
 		return w, nil
 	}
+	mode := attemptGateMode()
+	if !attemptGateEnabled() {
+		mode = GateModeImmediate
+	}
 	sw := NewSerializedStreamWriter(w)
-	gate := NewAttemptCommitGate(protocol, sw, GateOptions{Mode: attemptGateMode()})
+	gate := NewAttemptCommitGate(protocol, sw, GateOptions{Mode: mode, FirstSemanticByte: firstSemanticByte})
 	return NewGateWriterWithResponse(gate, w), gate
 }

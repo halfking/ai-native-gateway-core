@@ -987,6 +987,7 @@ func (c *RequestLogContext) EmitFailure(errCode, errMessage string, providerID, 
 	if c == nil || c.handler == nil {
 		return
 	}
+	markRequestJourneyFailure(c.Request, c.KeyInfo, errCode)
 	// 2026-08-02 (GAP 2): Use SetTerminal CAS so that success/failure/
 	// disconnect three-way race has a single in-process winner. If
 	// another path already claimed the terminal transition, skip the
@@ -1025,6 +1026,7 @@ func (c *RequestLogContext) EmitRateLimited(errCode, errMessage string, provider
 	if c == nil || c.handler == nil {
 		return
 	}
+	markRequestJourneyFailure(c.Request, c.KeyInfo, errCode)
 	// 2026-08-02 (GAP 2): Use SetTerminal CAS so that success/failure/
 	// disconnect three-way race has a single in-process winner.
 	if !c.SetTerminal("rate_limited", nil) {

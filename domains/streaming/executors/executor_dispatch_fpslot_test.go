@@ -60,7 +60,7 @@ func TestForwardForDispatchDegradesWhenFpSlotSaturatesAfterPrefilter(t *testing.
 		fpSlotDegraded: false,
 	}
 
-	outcome := exec.forwardForDispatch(dctx, candidate)
+	outcome := exec.forwardForDispatch(dctx, candidate, "dispatch-fp-attempt", func() {})
 	if outcome.Err != nil {
 		t.Fatalf("forward failed after fp-slot race degradation: %v", outcome.Err)
 	}

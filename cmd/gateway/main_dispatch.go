@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"os"
 	"strconv"
+	"strings"
 
 	"github.com/kaixuan/llm-gateway-go/domains/dispatch"
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
@@ -24,6 +26,18 @@ var gatewayDispatchPipeline *dispatch.Pipeline
 // (model_enqueued / node_enqueued / node_switch / model_switch / no_route).
 var gatewayLiveActionsEmitter *liveactions.Emitter
 
+var gatewayRequestJourneySink dispatch.EventSink
+
+func stableGatewayInstanceID() string {
+	if configured := strings.TrimSpace(os.Getenv("LLM_GATEWAY_INSTANCE_ID")); configured != "" {
+		return configured
+	}
+	if hostname, err := os.Hostname(); err == nil && strings.TrimSpace(hostname) != "" {
+		return strings.TrimSpace(hostname)
+	}
+	return "llm-gateway"
+}
+
 // wireDispatchPipeline builds the V2 dispatch pipeline from the executor,
 // starts its worker pools, injects it into the executor, and returns it. If
 // routingExec is nil the pipeline is skipped (the executor falls back to the
@@ -34,6 +48,7 @@ func wireDispatchPipeline(routingExec *executors.Executor) *dispatch.Pipeline {
 		return nil
 	}
 	p := routingExec.NewDispatchPipeline()
+	p.SetEventSink(gatewayRequestJourneySink)
 	// V3.3-OBS OBS-B1 (2026-08-15): 动作事件发射器注入 dispatch pipeline。
 	// nil 安全（发射点全部 no-op），发射器本身旁路异步、满即丢。
 	p.SetLiveActions(gatewayLiveActionsEmitter)
