@@ -119,61 +119,6 @@ func TestPipelineQueueStats_RealPipelineTraffic(t *testing.T) {
 	}
 }
 
-func TestPipelineQueueStats_GateDisabledOmitsPipeline(t *testing.T) {
-	original := IsDispatchEnabled()
-	defer SetDispatchEnabled(original)
-
-	p := NewPipeline(Deps{
-		RouteFunc:        func(ctx context.Context, qr *QueuedRequest) ([]CredentialRef, error) { return nil, nil },
-		ModelResolveFunc: func(ctx context.Context, req string, tried []string) (string, []string, error) { return "m", nil, nil },
-		ForwardFunc: func(ctx context.Context, qr *QueuedRequest, cred CredentialRef) ForwardOutcome {
-			return ForwardOutcome{}
-		},
-	})
-	p.Start()
-	defer p.Stop()
-
-	c := newQueueCollectorForPipeline(p)
-
-	// One enabled tick so the collector records a baseline version.
-	if s := c.Snapshot(); s.Pipeline == nil {
-		t.Fatal("precondition: pipeline present while enabled")
-	}
-
-	SetDispatchEnabled(false)
-	time.Sleep(10 * time.Millisecond) // transition handler propagation
-
-	snap := c.Snapshot()
-	if snap.Pipeline != nil {
-		t.Errorf("expected pipeline field absent when dispatch disabled, got %+v", snap.Pipeline)
-	}
-	if snap.SourceVersion != 0 {
-		t.Errorf("expected sourceVersion omitted when dispatch disabled, got %d", snap.SourceVersion)
-	}
-	if snap.Enabled {
-		t.Error("expected Enabled=false after gate disable")
-	}
-	if !snap.Wired {
-		t.Error("wired semantics must be unaffected by the gate")
-	}
-
-	// Wire-level check: the JSON must not contain the keys at all.
-	raw, err := json.Marshal(snap)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var m map[string]any
-	if err := json.Unmarshal(raw, &m); err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := m["pipeline"]; ok {
-		t.Errorf("pipeline key must be absent from JSON when disabled, got %s", raw)
-	}
-	if _, ok := m["sourceVersion"]; ok {
-		t.Errorf("sourceVersion key must be absent from JSON when disabled, got %s", raw)
-	}
-}
-
 func TestPipelineQueueStats_DegradedOnDisabledGovernor(t *testing.T) {
 	p := NewPipeline(Deps{
 		RouteFunc: func(ctx context.Context, qr *QueuedRequest) ([]CredentialRef, error) {

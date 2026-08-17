@@ -41,6 +41,7 @@ func TestExecutor_NoCandidateProbe_Recovers(t *testing.T) {
 		SyncNoCandidateProbe:   true,
 		SyncNoCandidateTimeout: 2 * time.Second,
 	}
+	wireDispatchPipelineForTest(t, e)
 
 	probeCalled := atomic.Bool{}
 	e.ProbeSync = func(ctx context.Context, candidates []credentialstate.NoCandidatesCandidate, tenantID, parentReqID string) bool {
@@ -116,6 +117,7 @@ func TestExecutor_NoCandidateProbe_Exhausted(t *testing.T) {
 		SyncNoCandidateProbe:   true,
 		SyncNoCandidateTimeout: 500 * time.Millisecond,
 	}
+	wireDispatchPipelineForTest(t, e)
 
 	holdStartCount := atomic.Int32{}
 	holdEndCount := atomic.Int32{}
@@ -192,6 +194,7 @@ func TestExecutor_NoCandidateProbe_DisabledByFlag(t *testing.T) {
 		StreamTimeout:        10 * time.Second,
 		SyncNoCandidateProbe: false, // KILL-SWITCH
 	}
+	wireDispatchPipelineForTest(t, e)
 
 	probeCalled := atomic.Bool{}
 	e.ProbeSync = func(ctx context.Context, candidates []credentialstate.NoCandidatesCandidate, tenantID, parentReqID string) bool {
@@ -252,6 +255,7 @@ func TestExecutor_NoCandidateProbe_HonorsClientCancel(t *testing.T) {
 		SyncNoCandidateProbe:   true,
 		SyncNoCandidateTimeout: 5 * time.Second,
 	}
+	wireDispatchPipelineForTest(t, e)
 
 	probeStartCalled := atomic.Bool{}
 	e.ProbeSync = func(ctx context.Context, candidates []credentialstate.NoCandidatesCandidate, tenantID, parentReqID string) bool {

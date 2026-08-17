@@ -165,7 +165,7 @@ func (p *Pipeline) recordWaterfall(qr *QueuedRequest, out ForwardOutcome) {
 func (p *Pipeline) SnapshotWaterfall(limit int, model string, credentialID int) WaterfallSnapshot {
 	snap := WaterfallSnapshot{
 		Requests: []WaterfallRequest{},
-		Enabled:  IsDispatchEnabled(),
+		Enabled:  true, // AUDIT_24H B2b: dispatch is the only path
 		Wired:    p != nil,
 		BottleneckDiagnosis: BottleneckDiagnosis{
 			Bottleneck: "none",
