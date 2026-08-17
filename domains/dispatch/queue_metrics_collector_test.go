@@ -7,6 +7,15 @@ import (
 	"time"
 )
 
+func newQueueCollectorForPipeline(p *Pipeline) *QueueMetricsCollector {
+	if p == nil {
+		return NewQueueMetricsCollector(nil)
+	}
+	projection := NewQueueProjection()
+	p.SetQueueObservationSink(projection)
+	return NewQueueMetricsCollector(projection)
+}
+
 // TestQueueMetricsCollector_DegradedMode verifies that a nil pipeline
 // results in a permanently degraded collector (Wired=false).
 func TestQueueMetricsCollector_DegradedMode(t *testing.T) {
@@ -22,8 +31,8 @@ func TestQueueMetricsCollector_DegradedMode(t *testing.T) {
 	if snap.Wired {
 		t.Errorf("expected Wired=false in degraded mode, got true")
 	}
-	if snap.Enabled {
-		t.Errorf("expected Enabled=false in degraded mode, got true")
+	if !snap.Enabled {
+		t.Errorf("expected Enabled=true in degraded mode, got false")
 	}
 }
 
@@ -44,7 +53,7 @@ func TestQueueMetricsCollector_WiredMode(t *testing.T) {
 	p.Start()
 	defer p.Stop()
 
-	c := NewQueueMetricsCollector(p)
+	c := newQueueCollectorForPipeline(p)
 	if c == nil {
 		t.Fatal("NewQueueMetricsCollector(pipeline) returned nil")
 	}
@@ -83,7 +92,7 @@ func TestQueueMetricsCollector_SnapshotReflectsPipelineState(t *testing.T) {
 	p.Start()
 	defer p.Stop()
 
-	c := NewQueueMetricsCollector(p)
+	c := newQueueCollectorForPipeline(p)
 
 	// Submit a request to populate model queue (non-blocking via goroutine)
 	go func() {
@@ -126,7 +135,7 @@ func TestQueueMetricsCollector_ConcurrentSnapshots(t *testing.T) {
 	p.Start()
 	defer p.Stop()
 
-	c := NewQueueMetricsCollector(p)
+	c := newQueueCollectorForPipeline(p)
 
 	// Simulate 10 concurrent SSE ticks reading snapshots
 	var wg sync.WaitGroup
@@ -171,7 +180,7 @@ func TestQueueMetricsCollector_GateTransition(t *testing.T) {
 	p.Start()
 	defer p.Stop()
 
-	c := NewQueueMetricsCollector(p)
+	c := newQueueCollectorForPipeline(p)
 
 	// Initial state (should be enabled by default)
 	snap1 := c.Snapshot()
@@ -215,7 +224,7 @@ func TestQueueMetricsCollector_RecordHooksNonBlocking(t *testing.T) {
 	p.Start()
 	defer p.Stop()
 
-	c := NewQueueMetricsCollector(p)
+	c := newQueueCollectorForPipeline(p)
 
 	// Should not panic
 	c.RecordEnqueue("gpt-4", 0, "")
