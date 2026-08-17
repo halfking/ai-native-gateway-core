@@ -5,6 +5,7 @@ package integration
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -188,11 +189,17 @@ func TestRequestLifecycle_CompleteFlow(t *testing.T) {
 	// Test 4: Concurrent writes
 	t.Run("ConcurrentWrites_1000", func(t *testing.T) {
 		const numRequests = 100
+		prefix := fmt.Sprintf("test-req-concurrent-%d-", time.Now().UnixNano())
 		done := make(chan error, numRequests)
+
+		t.Cleanup(func() {
+			_, _ = pool.Exec(ctx, `DELETE FROM request_wal_bodies WHERE request_id LIKE $1`, prefix+"%")
+			_, _ = pool.Exec(ctx, `DELETE FROM request_wal_hot WHERE request_id LIKE $1`, prefix+"%")
+		})
 
 		for i := 0; i < numRequests; i++ {
 			go func(idx int) {
-				reqID := "test-req-concurrent-" + time.Now().Format("20060102150405") + "-" + string(rune('A'+idx%26))
+				reqID := fmt.Sprintf("%s%03d", prefix, idx)
 				err := rl.CreateInitial(ctx, &telemetry.InitialRequest{
 					RequestID:   reqID,
 					TenantID:    "test-tenant",
@@ -209,10 +216,10 @@ func TestRequestLifecycle_CompleteFlow(t *testing.T) {
 			}
 		}
 
-		// Count records created
+		// Count records created for this test run only.
 		var count int
 		err = pool.QueryRow(ctx,
-			`SELECT count(*) FROM request_wal_hot WHERE request_id LIKE 'test-req-concurrent-%'`,
+			`SELECT count(*) FROM request_wal_hot WHERE request_id LIKE $1`, prefix+"%",
 		).Scan(&count)
 		if err != nil {
 			t.Fatalf("count: %v", err)
@@ -258,6 +265,10 @@ func TestRequestBodies_Storage(t *testing.T) {
 
 	// Write both the main WAL row and body row through the production logger path.
 	reqID := "test-body-" + time.Now().Format("20060102150405.000000")
+	t.Cleanup(func() {
+		_, _ = pool.Exec(ctx, `DELETE FROM request_wal_bodies WHERE request_id = $1`, reqID)
+		_, _ = pool.Exec(ctx, `DELETE FROM request_wal_hot WHERE request_id = $1`, reqID)
+	})
 	if err := rl.CreateInitial(ctx, &telemetry.InitialRequest{
 		RequestID:   reqID,
 		TenantID:    "test-tenant",

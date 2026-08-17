@@ -103,7 +103,7 @@ func (s *PGStore) Confirm(ctx context.Context, in ConfirmationInput) (*Confirmat
 	}
 	p.Record.NewSessionID, p.Record.CreatedAt = in.NewSessionID, now
 	var logID int64
-	err = tx.QueryRowContext(ctx, `INSERT INTO handoff_logs (session_id,tenant_id,trigger_reason,tokens_at_handoff,context_window,handoff_prompt,new_session_id,summary_text,summary_engine,trigger_mode,tokens_in_session,messages_in_session,skill_name,duration_ms,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING id`, p.Record.SessionKey, p.Record.TenantID, p.Record.TriggerReason, p.Record.TokensAtTrigger, p.Record.ContextWindow, p.Record.HandoffPrompt, p.Record.NewSessionID, p.Record.SummaryText, p.Record.SummaryEngine, p.Record.TriggerMode, p.Record.TokensInSession, p.Record.MessagesAtTrigger, p.Record.SkillName, p.Record.DurationMs, p.Record.CreatedAt).Scan(&logID)
+	err = tx.QueryRowContext(ctx, `INSERT INTO handoff_logs_hot (session_id,tenant_id,trigger_reason,tokens_at_handoff,context_window,handoff_prompt,new_session_id,summary_text,summary_engine,trigger_mode,tokens_in_session,messages_in_session,skill_name,duration_ms,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING id`, p.Record.SessionKey, p.Record.TenantID, p.Record.TriggerReason, p.Record.TokensAtTrigger, p.Record.ContextWindow, p.Record.HandoffPrompt, p.Record.NewSessionID, p.Record.SummaryText, p.Record.SummaryEngine, p.Record.TriggerMode, p.Record.TokensInSession, p.Record.MessagesAtTrigger, p.Record.SkillName, p.Record.DurationMs, p.Record.CreatedAt).Scan(&logID)
 	if err != nil {
 		return nil, err
 	}
