@@ -15,9 +15,11 @@ func TestShadowDiffMetricHasStableLabels(t *testing.T) {
 		string(OutcomeIdentical):            false,
 		string(OutcomeAvailabilityMismatch): false,
 		string(OutcomeOrderMismatch):        false,
+		string(OutcomeTop1Mismatch):         false,
 		string(OutcomeNotReady):             false,
 		string(OutcomeError):                false,
 		string(OutcomeSampledOut):           false,
+		string(OutcomeDropped):              false,
 	}
 	for _, family := range families {
 		if family.GetName() != "ursm_shadow_diff_total" {

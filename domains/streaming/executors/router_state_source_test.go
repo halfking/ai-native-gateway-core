@@ -374,11 +374,11 @@ func TestPlanCandidates_Canary_RecordsInnerFallbackOnRedisDown(t *testing.T) {
 	)
 
 	snap := statesource.Snapshot()
-	if got := snap[statesource.StateSourceCanary]; got != 1 {
-		t.Fatalf("canary outer count = %d, want 1; full snapshot = %+v", got, snap)
+	if got := snap[statesource.StateSourceCanary]; got != 0 {
+		t.Fatalf("canary outer count = %d, want 0 on v2 read failure; full snapshot = %+v", got, snap)
 	}
-	if got := snap[statesource.StateSourceFallback]; got != 1 {
-		t.Fatalf("inner fallback count = %d, want 1 on Redis-down; full snapshot = %+v", got, snap)
+	if got := snap[statesource.StateSourceFallback]; got != 2 {
+		t.Fatalf("fallback count = %d, want 2 (inner and outer) on Redis-down; full snapshot = %+v", got, snap)
 	}
 }
 

@@ -442,17 +442,13 @@ func (r *Router) PlanCandidatesWithContext(
 	if r.URSMv2 != nil && r.URSMv2.Mode() == ursmv2api.ModeCanary && r.URSMv2.ShouldUseV2(tenantID, canonical, requestID) {
 		if v2Ordered := r.planWithURSMv2Context(ordered, requestCtx, tenantID, canonical, requestID, readySnapshot != nil && *readySnapshot); v2Ordered != nil {
 			ordered = v2Ordered
+			recordOuterSource(statesource.StateSourceCanary)
+		} else {
+			// Canary is allowed to retain the legacy ordering on a v2 read
+			// failure, but that degraded decision must be visible to the
+			// promotion gate rather than counted as a successful canary route.
+			recordOuterSource(statesource.StateSourceFallback)
 		}
-		// S-3 (Step 5 round 1): the canary v2 path was applied to
-		// this request — the outer source is Canary. The inner
-		// NodeMirror source (hit/miss/stale/fallback) is recorded
-		// inside planWithURSMv2Context -> PlanReadyWithSource ->
-		// FilterAndScoreReadyWithSource, which auto-records into the
-		// shared statesource counter (same contract as the
-		// authoritative path). Spec §8.2 requires both inner and
-		// outer to be observable; the canary path now satisfies
-		// that.
-		recordOuterSource(statesource.StateSourceCanary)
 	}
 
 	// S-3: if we got here without recording an outer source, the
