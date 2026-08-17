@@ -207,25 +207,13 @@ func (e *Executor) dispatchForward(ctx context.Context, qr *dispatch.QueuedReque
 	if cand.CredentialID == 0 {
 		return dispatch.ForwardOutcome{Err: errDispatchNoCandidate}
 	}
-	// V3.3-OBS OBS-B1 (2026-08-15): dispatch_v2 路径的 upstream_request 动作
-	// 事件（S7，每个候选转发开始）。
 	attemptRef, ok := qr.ActiveAttemptRef()
 	if !ok {
 		return dispatch.ForwardOutcome{Err: errDispatchMissingAttempt}
 	}
-	attempt := attemptRef.AttemptNo
-	e.liveActions.Emit(ctx, liveactions.ActionEvent{
-		RequestID:    qr.ID,
-		Action:       liveactions.ActionUpstreamRequest,
-		Model:        qr.ResolvedModel,
-		CredentialID: ref.CredentialID,
-		Retry:        attempt > 1,
-		RetrySeq:     attempt,
-		Detail: map[string]string{
-			"attempt":     strconv.Itoa(attempt),
-			"provider_id": strconv.Itoa(ref.ProviderID),
-		},
-	})
+	// ActionUpstreamRequest is emitted by beginUpstreamAttempt immediately
+	// before the real HTTP call. Dispatch preparation can still fail in the
+	// circuit, limiter, or key rotator and must not look like provider traffic.
 	return e.forwardForDispatch(dctx, cand, attemptRef.AttemptID, qr.FirstSemanticByteCallback(), ctx)
 }
 
