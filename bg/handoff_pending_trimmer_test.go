@@ -74,7 +74,7 @@ func TestTrimOnceDB_ExpiresAndDeletes(t *testing.T) {
 // Expire error must short-circuit the trim and surface to the caller. The
 // delete step must NOT fire when the expire step fails.
 func TestTrimOnceDB_PropagatesExpireError(t *testing.T) {
-	db, mock, err := sqlmock.New()
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
 	if err != nil {
 		t.Fatalf("sqlmock.New: %v", err)
 	}
