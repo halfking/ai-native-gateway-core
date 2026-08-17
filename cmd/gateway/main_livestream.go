@@ -398,7 +398,17 @@ func decorateFPNodeState(ctx context.Context, pool *pgxpool.Pool, fps *credentia
 	nowUnix := time.Now().Unix()
 	idx := 0
 	for i := range out {
-		count := len(modelsByCred[out[i].CredentialID])
+		credID := out[i].CredentialID
+		// 2026-08-17 (OBS-UI model-grouped nodes): publish the bound model
+		// list to the wire so the frontend can group available nodes by
+		// model. The SQL/Redis cost is unchanged (we already had
+		// modelsByCred in scope).
+		if names := modelsByCred[credID]; len(names) > 0 {
+			dup := make([]string, len(names))
+			copy(dup, names)
+			out[i].RawModels = dup
+		}
+		count := len(modelsByCred[credID])
 		proj := fpNodeProjection(nowUnix, states[idx:idx+count])
 		idx += count
 		out[i].FPDisabled = proj.fpDisabled

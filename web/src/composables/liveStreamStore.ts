@@ -202,6 +202,10 @@ export interface LiveNodeStatus {
   disable_kind?: 'manual' | 'system' | ''
   system_recover_at?: string
   last_error_at?: string
+  // 2026-08-17 (OBS-UI model-grouped nodes): 该凭据当前路由可见的原始
+  // 模型名列表（credential_model_bindings 投影）。未上报时缺省，
+  // 前端不得用空数组冒充"无绑定"。
+  raw_models?: string[]
 }
 
 export interface LiveStreamEnvelope {
@@ -424,6 +428,87 @@ function seqOf(a: ActionEvent): number {
   return a.seq ?? 0
 }
 
+// 2026-08-17 (OBS-UI model-grouped nodes): 派生索引 request_id → 当前
+// credential_id。ActionEvent 在 credential_selected / node_selected /
+// upstream_request / node_switch / reply 等动作上携带 credential_id（同
+// request 内以 seq 递增）。仅取该请求最近一条带 credential_id 的动作作为
+// "当前凭据"——支持故障转移（node_switch.from→to）只保留最新。
+//
+// 窗口语义：仅覆盖当前 SSE 回放窗口内（≈最近 200 条 + 实时流入）的请求。
+// 与"实时请求流"栏目本身的窗口语义一致，不承诺全量历史。
+type RequestCredentialIndex = Map<string, { credentialId: number; seq: number; ts: number }>
+const requestCredential: RequestCredentialIndex = new Map()
+
+// Carry-credential actions: ActionEvent 中带 credential_id 且表示"请求
+// 绑定到该凭据"的子集。node_switch 携带 from_credential_id +
+// to_credential_id；reply 携带 credential_id；其余只携带 credential_id。
+function extractCredentialFromAction(action: ActionEvent): { credentialId: number; seq: number; ts: number } | null {
+  const seq = action.seq ?? 0
+  const ts = action.ts ? Date.parse(action.ts) : 0
+  if (action.action === 'node_switch') {
+    // 故障转移目标优先；缺省时退回到原凭据（让索引至少有一个非空值）。
+    if (typeof action.to_credential_id === 'number') {
+      return { credentialId: action.to_credential_id, seq, ts }
+    }
+    if (typeof action.from_credential_id === 'number') {
+      return { credentialId: action.from_credential_id, seq, ts }
+    }
+    return null
+  }
+  if (typeof action.credential_id === 'number') {
+    return { credentialId: action.credential_id, seq, ts }
+  }
+  return null
+}
+
+function applyRequestCredentialIndex(requestId: string, action: ActionEvent) {
+  const next = extractCredentialFromAction(action)
+  if (!next) return
+  const prev = requestCredential.get(requestId)
+  // 用 (seq, ts) 比较保证：① seq 大的胜出；② seq 缺失/相同时 ts 大的胜出
+  // —— 避免 node_switch 乱序造成"旧凭据"覆盖"新凭据"。
+  if (prev && prev.seq > next.seq) return
+  if (prev && prev.seq === next.seq && prev.ts > next.ts) return
+  requestCredential.set(requestId, next)
+}
+
+export function getRequestCredentialId(requestId: string): number | null {
+  return requestCredential.get(requestId)?.credentialId ?? null
+}
+
+/** Return the requests in the current SSE replay window that are bound to
+ *  the given credential_id. Filter runs over the flat `liveStreamState.requests`
+ *  buffer, no extra data is kept. */
+export function getRequestsForCredential(credentialId: number): LiveRequest[] {
+  if (!Number.isFinite(credentialId)) return []
+  const out: LiveRequest[] = []
+  for (const r of liveStreamState.requests) {
+    if (!r || r.type === 'idle_marker' || !r.request_id) continue
+    if (getRequestCredentialId(r.request_id) === credentialId) {
+      out.push(r)
+    }
+  }
+  return out
+}
+
+/** Reverse index for model-grouped nodes: model name → nodes that
+ *  route-serve that model. Backed solely by the wire `raw_models` field. */
+export function getNodesForModel(model: string): LiveNodeStatus[] {
+  if (!model) return []
+  const out: LiveNodeStatus[] = []
+  for (const n of liveStreamState.nodes) {
+    if (!n) continue
+    if (Array.isArray(n.raw_models) && n.raw_models.includes(model)) {
+      out.push(n)
+    }
+  }
+  return out
+}
+
+export function clearRequestCredentialIndex() {
+  requestCredential.clear()
+}
+
 /** Insert one action into its request's timeline, kept sorted by seq ASC.
  *  Re-delivering an existing seq (Redis replay dedupe) replaces in place. */
 function recordAction(action: ActionEvent) {
@@ -452,6 +537,7 @@ function recordAction(action: ActionEvent) {
   // overall order depends only on seq — never on message arrival history.
   list.sort((a, b) => seqOf(a) - seqOf(b))
   actionsTotal += 1
+  applyRequestCredentialIndex(requestId, action)
 
   // Per-request cap: drop the OLDEST actions (smallest seq).
   while (list.length > ACTIONS_PER_REQUEST_CAP) {
@@ -1176,6 +1262,7 @@ export function resetStream() {
   liveStreamState.snapshot = null
   liveStreamState.actions.clear()
   liveStreamState.children.clear()
+  requestCredential.clear()
   actionsTotal = 0
   childrenTotal = 0
   idIndex.clear()
@@ -1213,6 +1300,11 @@ export const __testing = {
   applyChildRequest,
   actionsTotal: () => actionsTotal,
   childrenTotal: () => childrenTotal,
+  requestCredential,
+  getRequestCredentialId,
+  getRequestsForCredential,
+  getNodesForModel,
+  clearRequestCredentialIndex,
   resetStream,
   refCount: () => refCount,
   es: () => es,

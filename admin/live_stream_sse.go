@@ -185,6 +185,12 @@ type LiveNodeStatus struct {
 	DisableKind     string     `json:"disable_kind,omitempty"`
 	SystemRecoverAt *time.Time `json:"system_recover_at,omitempty"`
 	LastErrorAt     *time.Time `json:"last_error_at,omitempty"`
+
+	// RawModels (2026-08-17, OBS-UI model-grouped nodes): 路由可见的原始模型
+	// 名列表（credential_model_bindings JOIN provider_models 投影）。该字段
+	// 决定"按模型分组显示可用节点"的能力：前端基于此建立
+	// model → LiveNodeStatus[] 索引。不上报时按缺省隐藏，禁止零值冒充空数组。
+	RawModels []string `json:"raw_models,omitempty"`
 }
 
 // LiveIncidentUpdate is the wire shape of a route incident update

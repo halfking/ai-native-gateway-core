@@ -160,3 +160,88 @@ func TestLiveNodeStatusDisableProjectionThroughEnvelope(t *testing.T) {
 		}
 	}
 }
+
+// TestLiveNodeStatusRawModelsFieldContract 锚定 OBS-UI (2026-08-17)：
+// LiveNodeStatus 新增 raw_models（路由可见模型名列表）字段的 JSON 契约。
+//
+//   - 字段 optional（omitempty）：未上报时整键缺失，前端按缺省隐藏"按模型
+//     分组"区块，禁止零值冒充（[] 会被省略但 nil/len==0 都不渲染）。
+//   - 出现时为 []string，元素为原始模型名（与 credential_model_bindings
+//     JOIN provider_models 投影一致）。
+//   - 透传到 node_update envelope（initial_data / node_update 共享
+//     LiveNodeStatus wire shape）。
+func TestLiveNodeStatusRawModelsFieldContract(t *testing.T) {
+	// 健康/未上报节点：键必须缺失。
+	minimal := LiveNodeStatus{CredentialID: 1, ProviderID: 2, ProviderCode: "anthropic"}
+	b, err := json.Marshal(minimal)
+	if err != nil {
+		t.Fatalf("marshal minimal: %v", err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatalf("unmarshal minimal: %v", err)
+	}
+	if _, ok := m["raw_models"]; ok {
+		t.Fatalf("healthy node must omit raw_models, got payload %s", b)
+	}
+	if _, ok := m["credential_id"]; !ok {
+		t.Fatalf("legacy credential_id must remain non-optional, got %s", b)
+	}
+
+	// 上报节点：键出现且元素是字符串。
+	full := LiveNodeStatus{
+		CredentialID: 7,
+		ProviderCode: "openai",
+		RawModels:    []string{"gpt-4o", "gpt-4o-mini"},
+	}
+	b, err = json.Marshal(full)
+	if err != nil {
+		t.Fatalf("marshal full: %v", err)
+	}
+	m = nil
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatalf("unmarshal full: %v", err)
+	}
+	v, ok := m["raw_models"]
+	if !ok {
+		t.Fatalf("raw_models must be present when set, payload %s", b)
+	}
+	arr, isArr := v.([]any)
+	if !isArr {
+		t.Fatalf("raw_models must serialise as JSON array, got %T (%v)", v, v)
+	}
+	if len(arr) != 2 || arr[0] != "gpt-4o" || arr[1] != "gpt-4o-mini" {
+		t.Fatalf("raw_models elements mismatch, got %v", arr)
+	}
+
+	// 显式空切片：omitempty 语义下 len==0 会省略——与"未上报"在线上一致。
+	empty := LiveNodeStatus{CredentialID: 9, ProviderCode: "anthropic", RawModels: []string{}}
+	b, err = json.Marshal(empty)
+	if err != nil {
+		t.Fatalf("marshal empty: %v", err)
+	}
+	if strings.Contains(string(b), `"raw_models"`) {
+		t.Fatalf("empty raw_models slice must be omitted (omitempty), got %s", b)
+	}
+}
+
+// TestLiveNodeStatusRawModelsThroughEnvelope 确认 raw_models 字段经
+// node_update envelope 原样透传。
+func TestLiveNodeStatusRawModelsThroughEnvelope(t *testing.T) {
+	env := LiveStreamEnvelope{
+		Type: "node_update",
+		Nodes: []LiveNodeStatus{{
+			CredentialID: 3,
+			ProviderCode: "openai",
+			RawModels:    []string{"gpt-4o"},
+		}},
+	}
+	b, err := json.Marshal(env)
+	if err != nil {
+		t.Fatalf("marshal envelope: %v", err)
+	}
+	s := string(b)
+	if !strings.Contains(s, `"raw_models":["gpt-4o"]`) {
+		t.Fatalf("node_update envelope missing raw_models, payload %s", s)
+	}
+}
