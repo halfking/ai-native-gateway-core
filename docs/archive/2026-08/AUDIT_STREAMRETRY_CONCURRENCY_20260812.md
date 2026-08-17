@@ -1,3 +1,12 @@
+---
+archived_from: (legacy) docs/archive/2026-08/AUDIT_STREAMRETRY_CONCURRENCY_20260812.md
+archived_at: 2026-08-17
+archived_by: docs-archive remediate v1.0
+backup_ts: 20260817-190917
+status: archived
+note: legacy archive, frontmatter retroactively added
+---
+
 # StreamRetry — Concurrency Audit & Hardening (2026-08-12)
 
 **Session:** 2026-08-12 · branch `main` · working tree

@@ -1,3 +1,12 @@
+---
+archived_from: (legacy) docs/archive/2026-07/GIT_COMMIT_GUIDE.md
+archived_at: 2026-08-17
+archived_by: docs-archive remediate v1.0
+backup_ts: 20260817-190919
+status: archived
+note: legacy archive, frontmatter retroactively added
+---
+
 # Git 提交指南
 
 ## 本次修复包含的文件

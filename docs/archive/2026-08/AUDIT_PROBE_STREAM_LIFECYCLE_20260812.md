@@ -1,3 +1,12 @@
+---
+archived_from: (legacy) docs/archive/2026-08/AUDIT_PROBE_STREAM_LIFECYCLE_20260812.md
+archived_at: 2026-08-17
+archived_by: docs-archive remediate v1.0
+backup_ts: 20260817-190917
+status: archived
+note: legacy archive, frontmatter retroactively added
+---
+
 # Code Audit Report — Probe Stream Lifecycle (2026-08-12)
 
 **Scope**: `b3f4c216`, `771d86d5`, `58eae0a6` — 自检队列 SSE 流、节点状态恢复、容量加权。

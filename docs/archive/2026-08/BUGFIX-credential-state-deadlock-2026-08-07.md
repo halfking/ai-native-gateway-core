@@ -1,3 +1,12 @@
+---
+archived_from: (legacy) docs/archive/2026-08/BUGFIX-credential-state-deadlock-2026-08-07.md
+archived_at: 2026-08-17
+archived_by: docs-archive remediate v1.0
+backup_ts: 20260817-190918
+status: archived
+note: legacy archive, frontmatter retroactively added
+---
+
 # BUG修复：凭据状态死锁 - suspended 无法自动恢复 (2026-08-07)
 
 ## 问题描述

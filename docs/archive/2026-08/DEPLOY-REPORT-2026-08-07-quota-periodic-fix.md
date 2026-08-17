@@ -1,3 +1,12 @@
+---
+archived_from: (legacy) docs/archive/2026-08/DEPLOY-REPORT-2026-08-07-quota-periodic-fix.md
+archived_at: 2026-08-17
+archived_by: docs-archive remediate v1.0
+backup_ts: 20260817-190917
+status: archived
+note: legacy archive, frontmatter retroactively added
+---
+
 # 智谱AI周期性配额用尽修复 - 部署验证报告
 
 **日期**: 2026-08-07  

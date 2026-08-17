@@ -1,3 +1,12 @@
+---
+archived_from: (legacy) docs/archive/2026-07/QUICK_START.md
+archived_at: 2026-08-17
+archived_by: docs-archive remediate v1.0
+backup_ts: 20260817-190919
+status: archived
+note: legacy archive, frontmatter retroactively added
+---
+
 # 网关打包与下载 - 快速开始
 
 > 本指南帮助你快速开始使用自动化打包系统

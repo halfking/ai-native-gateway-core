@@ -1,3 +1,12 @@
+---
+archived_from: (legacy) docs/archive/2026-07/PROGRESS_UPDATE.md
+archived_at: 2026-08-17
+archived_by: docs-archive remediate v1.0
+backup_ts: 20260817-190918
+status: archived
+note: legacy archive, frontmatter retroactively added
+---
+
 # 自动化打包与分发 - 进度更新
 
 > **更新时间**: 2026-07-23

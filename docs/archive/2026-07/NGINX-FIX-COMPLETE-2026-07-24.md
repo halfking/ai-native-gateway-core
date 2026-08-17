@@ -1,3 +1,12 @@
+---
+archived_from: (legacy) docs/archive/2026-07/NGINX-FIX-COMPLETE-2026-07-24.md
+archived_at: 2026-08-17
+archived_by: docs-archive remediate v1.0
+backup_ts: 20260817-190919
+status: archived
+note: legacy archive, frontmatter retroactively added
+---
+
 # Nginx 超时配置修复 - 完成报告
 
 ## ✅ 修复完成

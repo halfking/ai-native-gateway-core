@@ -1,3 +1,12 @@
+---
+archived_from: (legacy) docs/archive/2026-08/AUDIT_CROSSCUTTING_CONCURRENCY_20260813.md
+archived_at: 2026-08-17
+archived_by: docs-archive remediate v1.0
+backup_ts: 20260817-190917
+status: archived
+note: legacy archive, frontmatter retroactively added
+---
+
 # Cross-Cutting Concurrency & Reliability Audit — Integration Report (2026-08-13)
 
 **Scope:** 集成本轮 5 个子领域审计的最终结论。基线 commit `944346ab`。

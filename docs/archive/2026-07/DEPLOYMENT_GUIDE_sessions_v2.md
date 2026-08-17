@@ -1,3 +1,12 @@
+---
+archived_from: (legacy) docs/archive/2026-07/DEPLOYMENT_GUIDE_sessions_v2.md
+archived_at: 2026-08-17
+archived_by: docs-archive remediate v1.0
+backup_ts: 20260817-190919
+status: archived
+note: legacy archive, frontmatter retroactively added
+---
+
 # Sessions V2 完整部署指南
 
 ## 🎉 项目概览

@@ -1,3 +1,12 @@
+---
+archived_from: (legacy) docs/archive/2026-08/BUGFIX-stale-periodic-cleanup-respects-quota-recover-at-2026-08-08.md
+archived_at: 2026-08-17
+archived_by: docs-archive remediate v1.0
+backup_ts: 20260817-190918
+status: archived
+note: legacy archive, frontmatter retroactively added
+---
+
 # BUG修复：stale periodic cleanup 无视 quota_recover_at 造成 429→suspend→clear 死循环 (2026-08-08)
 
 ## 问题描述

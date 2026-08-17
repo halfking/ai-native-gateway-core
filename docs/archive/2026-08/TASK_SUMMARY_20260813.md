@@ -1,3 +1,12 @@
+---
+archived_from: (legacy) docs/archive/2026-08/TASK_SUMMARY_20260813.md
+archived_at: 2026-08-17
+archived_by: docs-archive remediate v1.0
+backup_ts: 20260817-190917
+status: archived
+note: legacy archive, frontmatter retroactively added
+---
+
 # 路由节点状态问题修复 - 工作草稿
 
 > **更新时间**: 2026-08-13

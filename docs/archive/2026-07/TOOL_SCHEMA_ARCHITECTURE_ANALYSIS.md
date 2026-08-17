@@ -1,3 +1,12 @@
+---
+archived_from: (legacy) docs/archive/2026-07/TOOL_SCHEMA_ARCHITECTURE_ANALYSIS.md
+archived_at: 2026-08-17
+archived_by: docs-archive remediate v1.0
+backup_ts: 20260817-190919
+status: archived
+note: legacy archive, frontmatter retroactively added
+---
+
 # LLM Gateway Tool Schema 架构分析报告
 
 ## 问题背景

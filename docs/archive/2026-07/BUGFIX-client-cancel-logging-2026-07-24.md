@@ -1,3 +1,12 @@
+---
+archived_from: (legacy) docs/archive/2026-07/BUGFIX-client-cancel-logging-2026-07-24.md
+archived_at: 2026-08-17
+archived_by: docs-archive remediate v1.0
+backup_ts: 20260817-190919
+status: archived
+note: legacy archive, frontmatter retroactively added
+---
+
 # Bug Fix: 客户端取消/超时请求日志记录不完整
 
 ## 问题描述
