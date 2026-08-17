@@ -6,14 +6,12 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
-	"sync"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/autoroute"
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/domains/dispatch"
 	"github.com/kaixuan/llm-gateway-go/domains/transformation"
-	ursmv2api "github.com/kaixuan/llm-gateway-go/domains/ursm/v2/api"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/liveactions"
 	"github.com/kaixuan/llm-gateway-go/internal/runctx"
@@ -47,34 +45,7 @@ type dispatchCtx struct {
 	fpSlotDegraded bool
 	retryPerCred   int
 	tTotal         time.Time
-	stickyCredID   *int // session-affinity pin (honored on first attempt; excluded once tried)
-	outcomeMu      sync.Mutex
-	outcomes       []dispatchRequestOutcome
-}
-
-type dispatchRequestOutcome struct {
-	candidate provider.Candidate
-	success   bool
-	latencyMs int
-	errorKind errorsx.ErrorKind
-}
-
-func (d *dispatchCtx) appendOutcome(outcome dispatchRequestOutcome) {
-	if d == nil {
-		return
-	}
-	d.outcomeMu.Lock()
-	d.outcomes = append(d.outcomes, outcome)
-	d.outcomeMu.Unlock()
-}
-
-func (d *dispatchCtx) outcomeSnapshot() []dispatchRequestOutcome {
-	if d == nil {
-		return nil
-	}
-	d.outcomeMu.Lock()
-	defer d.outcomeMu.Unlock()
-	return append([]dispatchRequestOutcome(nil), d.outcomes...)
+	stickyCredID *int // session-affinity pin (honored on first attempt; excluded once tried)
 }
 
 // SetDispatchPipeline wires the V2 dispatch pipeline. When nil OR when the
@@ -556,9 +527,6 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 
 	if execErr == nil {
 		e.recordDispatchSuccess(params, cand, result)
-		dctx.appendOutcome(dispatchRequestOutcome{
-			candidate: cand, success: true, latencyMs: latencyOr(result, 0),
-		})
 		return dispatch.ForwardOutcome{Result: result}
 	}
 
@@ -569,7 +537,6 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 		}
 	}
 	kind := e.recordDispatchError(params, cand, execErr)
-	dctx.appendOutcome(dispatchRequestOutcome{candidate: cand, errorKind: kind})
 	return dispatch.ForwardOutcome{
 		Err:             execErr,
 		BytesSent:       bytesSent,
@@ -611,51 +578,6 @@ func (e *Executor) recordDispatchError(params *ExecParams, cand provider.Candida
 		e.recordMnfStreak(params, cand.CredentialID)
 	}
 	return kind
-}
-
-func (e *Executor) recordDispatchOutcomes(params *ExecParams, outcomes []dispatchRequestOutcome) {
-	if e == nil || e.URSMv2 == nil || params == nil || params.R == nil || len(outcomes) == 0 {
-		return
-	}
-	requestID := params.R.Header.Get("X-Request-Id")
-	if requestID == "" {
-		requestID = params.RequestID
-	}
-	if requestID == "" {
-		requestID = "async-" + time.Now().Format("20060102T150405.000")
-	}
-
-	sideEffectCtx, cancel := runctx.DetachedTimeout(params.R.Context(), 5*time.Second)
-	defer cancel()
-	recordable := make([]dispatchRequestOutcome, 0, len(outcomes))
-	for _, outcome := range outcomes {
-		if !outcome.success && errorsx.IsClientBug(outcome.errorKind) {
-			continue
-		}
-		recordable = append(recordable, outcome)
-	}
-	for i, outcome := range recordable {
-		terminal := i == len(recordable)-1
-		dedupKey := requestID + ":dispatch-attempt:" + strconv.Itoa(i+1)
-		err := e.URSMv2.RecordRequest(sideEffectCtx, ursmv2api.RequestOutcome{
-			CredentialID: outcome.candidate.CredentialID,
-			RawModel:     outcome.candidate.RawModel,
-			TenantID:     params.TenantID,
-			BillingMode:  outcome.candidate.BillingMode,
-			Success:      outcome.success,
-			LatencyMs:    outcome.latencyMs,
-			ErrorKind:    string(outcome.errorKind),
-			RequestID:    requestID,
-			DedupKey:     dedupKey,
-			Terminal:     terminal,
-		})
-		if err != nil {
-			slog.Warn("ursm.v2: record dispatch outcome failed",
-				"error", err, "request_id", requestID, "dedup_key", dedupKey,
-				"credential_id", outcome.candidate.CredentialID,
-				"success", outcome.success, "terminal", terminal)
-		}
-	}
 }
 
 func dispatchFailureIsCredentialHealthy(kind errorsx.ErrorKind, modelNotFound bool) bool {
