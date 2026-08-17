@@ -26,7 +26,6 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/authentication" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/autocombo"
 	"github.com/kaixuan/llm-gateway-go/domains/credential"                          //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/domains/dispatch"                            //nolint:depguard // V3.2 state-transition logger
 	"github.com/kaixuan/llm-gateway-go/domains/freeresource"                        //nolint:depguard // OmniFree quota tracker
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"                         //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"                   //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -46,7 +45,6 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/liveactions"
 	"github.com/kaixuan/llm-gateway-go/internal/modelpolicy"
 	"github.com/kaixuan/llm-gateway-go/internal/observability"
-	"github.com/kaixuan/llm-gateway-go/internal/streamretry" //nolint:depguard // trusted tenant propagation to outer retry wrapper
 	gwtrace "github.com/kaixuan/llm-gateway-go/internal/trace"
 	"github.com/kaixuan/llm-gateway-go/maas"
 	"github.com/kaixuan/llm-gateway-go/metrics"
@@ -1939,7 +1937,6 @@ func (h *ChatHandler) serveWithExecutor(
 		keyInfo = ki
 		logCtx.SetKey(ki)
 		bindRequestJourney(r, ki.TenantID, logCtx.ClientModel)
-		streamretry.SetAuthenticatedTenant(r.Context(), ki.TenantID)
 
 		// Round 38 (2026-06-16) — emit multi-tenant OTel span
 		// attributes per docs/multi-tenant-otel-design.md §3.1.
@@ -2996,19 +2993,14 @@ func (h *ChatHandler) serveWithExecutor(
 		pid := candidates[0].ProviderID
 		cid := candidates[0].CredentialID
 		logCtx.SetRoute(&pid, &cid)
-
-		// 2026-08-14 V3.2 (BE-B1): record route decision in state transitions.
-		// nil-safe helper — no logger wired (DB disabled / test mode) → no-op.
-		// Captures from_state="route_resolve" + chosen credential's display name
-		// so the timeline view shows "route_resolve → provider-X (cred-Y)".
-		dispatch.LogRouteDecisionGlobal(requestID, tenantID, "route_resolve", "credential_selected",
-			map[string]any{
-				"chosen_provider_id":   pid,
-				"chosen_credential_id": cid,
-				"chosen_raw_model":     candidates[0].RawModel,
-				"candidates_count":     len(candidates),
-				"profile":              clientID.Fingerprint.ClientProfile,
-			})
+		// 2026-08-17 B3-PR1: the V3.2 LogRouteDecisionGlobal transition row is
+		// retired. The journey stream already covers this boundary with better
+		// fidelity: route_resolved (emitted upstream in serveWithExecutor)
+		// plus dispatch's credential_selected observation, which records the
+		// credential that actually served the attempt rather than the first
+		// candidate. The legacy row's unique payload (candidates_count,
+		// client profile) is unrepresentable in the content-free journey
+		// contract (migration 530 forbids metadata on journey rows).
 	}
 
 	var modelResolution *resolve.Resolution

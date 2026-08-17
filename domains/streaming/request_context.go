@@ -10,6 +10,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/authentication" //nolint:depguard // trusted tenant identity
 	"github.com/kaixuan/llm-gateway-go/domains/requestjourney" //nolint:depguard // request lifecycle observation
 	"github.com/kaixuan/llm-gateway-go/domains/session"        //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/internal/streamretry"   //nolint:depguard // retry-loop journey carrier
 )
 
 type explicitStreamSessionKey struct{}
@@ -137,11 +138,24 @@ func ensureRequestJourney(r *http.Request, handler *ChatHandler, requestID strin
 	if handler == nil || handler.journeyRecorder == nil || handler.journeyGatewayInstanceID == "" || requestID == "" {
 		return r, nil
 	}
+	// streamretry retries re-invoke the whole handler with the wrapper's
+	// context, so each attempt would otherwise build a fresh lifecycle whose
+	// sequence restarts at 1 — every later event of the request would then be
+	// rejected by the journey projection as a sequence conflict. Seed the new
+	// lifecycle from the previous attempt's high-water mark (published through
+	// the wrapper's request carrier) and bind the new lifecycle back so the
+	// wrapper's retry boundary events and the next attempt continue the same
+	// sequence.
+	previous := streamretry.JourneyObserverFromCtx(r.Context())
 	protocol, pathClass := requestJourneyIngressClass(r.URL.Path)
 	lifecycle := requestjourney.NewIngressLifecycle(
 		handler.journeyRecorder, handler.journeyGatewayInstanceID, requestID,
 		protocol, pathClass, time.Now(),
 	)
+	if previous != nil {
+		lifecycle.SeedSequence(previous.SequenceHighWater())
+	}
+	streamretry.BindJourneyObserver(r.Context(), lifecycle)
 	r = r.WithContext(context.WithValue(r.Context(), requestJourneyContextKey{}, lifecycle))
 	if handler.keyVerifier == nil || !handler.keyVerifier.Enabled() {
 		lifecycle.BindTenant(r.Context(), "default", "")

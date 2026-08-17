@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -726,6 +727,52 @@ func (l *Lifecycle) RouteResolved(ctx context.Context, tenantID, requestedModel,
 		Stage:         StageRouting,
 		ResolvedModel: resolvedModel,
 	})
+}
+
+// RetryScheduled records the retry boundary between two attempts of a
+// retried request: the wrapped handler attempt already emitted its own
+// terminal, and this event explains why another attempt follows it. Emission
+// requires a trusted tenant; there is deliberately no terminal guard.
+func (l *Lifecycle) RetryScheduled(ctx context.Context, retryReason string) {
+	if l == nil || strings.TrimSpace(retryReason) == "" {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.tenantID == "" {
+		return
+	}
+	l.emitLocked(ctx, JourneyEvent{
+		Type:        EventRetryScheduled,
+		Stage:       StageRetrying,
+		RetryReason: retryReason,
+	})
+}
+
+// SeedSequence raises the sequence base to highWater when it is above the
+// current value. A retry wrapper re-invokes the whole handler per attempt, so
+// each attempt owns a fresh lifecycle; seeding it from the previous attempt's
+// high-water mark keeps one strictly increasing sequence per request instead
+// of restarting at 1 and being rejected as a sequence conflict.
+func (l *Lifecycle) SeedSequence(highWater int64) {
+	if l == nil || highWater <= 0 {
+		return
+	}
+	for {
+		current := l.seq.Load()
+		if highWater <= current || l.seq.CompareAndSwap(current, highWater) {
+			return
+		}
+	}
+}
+
+// SequenceHighWater returns the last allocated sequence for this lifecycle.
+// Retry wrappers thread it into the next attempt's lifecycle via SeedSequence.
+func (l *Lifecycle) SequenceHighWater() int64 {
+	if l == nil {
+		return 0
+	}
+	return l.seq.Load()
 }
 
 // Finish completes global ingress and, only when a trusted tenant was already

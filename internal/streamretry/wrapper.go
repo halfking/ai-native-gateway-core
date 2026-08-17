@@ -8,80 +8,75 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"strings"
 	"sync"
 
-	"github.com/kaixuan/llm-gateway-go/domains/dispatch" //nolint:depguard // V3.2 state-transition logger
 	"github.com/kaixuan/llm-gateway-go/internal/retryowner"
 )
 
-// requestIDCtxKey is the private context key used to thread the inbound
-// X-Request-Id from the http.Request into the wrapper's retry loop. We
-// deliberately avoid touching the streaming / identity packages to keep the
-// streamretry package self-contained (the request id is already stamped
-// upstream by domains/streaming/handler.go).
-type requestIDCtxKey struct{}
-type tenantCarrierCtxKey struct{}
+// requestCarrierCtxKey is the private context key for the request carrier
+// installed by ServeHTTP. The streamretry package stays self-contained: it
+// never imports the streaming / requestjourney packages directly.
+type requestCarrierCtxKey struct{}
 
-type tenantCarrier struct {
-	mu       sync.RWMutex
-	tenantID string
+// JourneyObserver is the request-scoped journey emission surface this wrapper
+// needs between attempts: the retry boundary event plus the sequence
+// high-water that seeds the next attempt's lifecycle.
+// *requestjourney.Lifecycle satisfies it; the local interface keeps this
+// package free of domain imports.
+type JourneyObserver interface {
+	// RetryScheduled emits the retry boundary event (reason = error class).
+	RetryScheduled(ctx context.Context, reason string)
+	// SequenceHighWater returns the last allocated journey sequence.
+	SequenceHighWater() int64
 }
 
-func withTenantCarrier(ctx context.Context) context.Context {
-	return context.WithValue(ctx, tenantCarrierCtxKey{}, &tenantCarrier{})
+// requestCarrier is the mutable per-request state installed by the wrapper.
+// ctx values are immutable, so the wrapped handler writes the requestjourney
+// lifecycle back through this pointer. It is the bridge that lets retry
+// attempts share one journey sequence and lets the wrapper observe the retry
+// boundary. (The V3.2 tenant/request-id carrier slots were retired with the
+// state-transition writer: the journey lifecycle carries both identities.)
+type requestCarrier struct {
+	mu      sync.RWMutex
+	journey JourneyObserver
 }
 
-// SetAuthenticatedTenant records the tenant resolved by the trusted key verifier.
-// It is intentionally a no-op unless the retry wrapper installed a request carrier.
-func SetAuthenticatedTenant(ctx context.Context, tenantID string) {
-	carrier, _ := ctx.Value(tenantCarrierCtxKey{}).(*tenantCarrier)
-	if carrier == nil || strings.TrimSpace(tenantID) == "" {
+func withRequestCarrier(ctx context.Context) context.Context {
+	// Re-entry (a request context reaching ServeHTTP again, e.g. driven
+	// twice in tests) keeps the existing carrier so the journey binding
+	// survives; fresh requests always install a fresh carrier.
+	if carrier, _ := ctx.Value(requestCarrierCtxKey{}).(*requestCarrier); carrier != nil {
+		return ctx
+	}
+	return context.WithValue(ctx, requestCarrierCtxKey{}, &requestCarrier{})
+}
+
+// BindJourneyObserver publishes the request journey lifecycle into the
+// request carrier. Called by the wrapped handler each attempt; the retry loop
+// and the next attempt read it back through the same carrier. No-op unless
+// the retry wrapper installed a carrier (non-retry entry paths simply do not
+// observe retry events).
+func BindJourneyObserver(ctx context.Context, observer JourneyObserver) {
+	carrier, _ := ctx.Value(requestCarrierCtxKey{}).(*requestCarrier)
+	if carrier == nil || observer == nil {
 		return
 	}
 	carrier.mu.Lock()
-	carrier.tenantID = tenantID
+	carrier.journey = observer
 	carrier.mu.Unlock()
 }
 
-func authenticatedTenantFromCtx(ctx context.Context) string {
-	carrier, _ := ctx.Value(tenantCarrierCtxKey{}).(*tenantCarrier)
+// JourneyObserverFromCtx returns the journey lifecycle bound by the wrapped
+// handler, or nil when the request never bound one.
+func JourneyObserverFromCtx(ctx context.Context) JourneyObserver {
+	carrier, _ := ctx.Value(requestCarrierCtxKey{}).(*requestCarrier)
 	if carrier == nil {
-		return ""
+		return nil
 	}
 	carrier.mu.RLock()
 	defer carrier.mu.RUnlock()
-	return carrier.tenantID
+	return carrier.journey
 }
-
-// withRequestID attaches a request id to ctx (set by ServeHTTP from the
-// inbound X-Request-Id header).
-func withRequestID(ctx context.Context, requestID string) context.Context {
-	if requestID == "" {
-		return ctx
-	}
-	return context.WithValue(ctx, requestIDCtxKey{}, requestID)
-}
-
-// requestIDFromCtx returns the request id stashed by withRequestID, or "".
-func requestIDFromCtx(ctx context.Context) string {
-	if v, ok := ctx.Value(requestIDCtxKey{}).(string); ok {
-		return v
-	}
-	// Fallback: try the standard X-Request-Id header in case the caller
-	// didn't route through ServeHTTP (e.g. legacy callers using Execute
-	// directly). Some upstream callers place the id in the request itself,
-	// not just the context.
-	if req, ok := ctx.Value(httpReqCtxKey{}).(*http.Request); ok && req != nil {
-		return strings.TrimSpace(req.Header.Get("X-Request-Id"))
-	}
-	return ""
-}
-
-// httpReqCtxKey is a secondary context key used by callers that prefer
-// to pass the *http.Request directly (e.g. unit tests). Production flows
-// use http.ServerMux → ServeHTTP → withRequestID.
-type httpReqCtxKey struct{}
 
 // StreamFunc represents a function that executes a streaming request.
 // It should return an error if the stream fails, or nil if it completes successfully.
@@ -210,21 +205,14 @@ func (w *Wrapper) ExecuteWithMetrics(ctx context.Context, httpW http.ResponseWri
 			"attempt", rc.Attempt+1,
 			"next_attempt", rc.Attempt+2)
 
-		// 2026-08-14 V3.2 (BE-B1): record state transition for the retry.
-		// nil-safe — no logger wired (DB disabled / test mode) → no-op.
-		// Pulled from X-Request-Id header so the row joins request_logs.request_id.
-		// ADR-V3-102: reuse the existing request_id, never mint a new one.
-		// Retry transitions are emitted only after the inner handler's trusted key
-		// verifier has populated the request-scoped tenant carrier.
-		requestID := requestIDFromCtx(ctx)
-		tenantID := authenticatedTenantFromCtx(ctx)
-		if requestID != "" && tenantID != "" {
-			dispatch.LogRetryGlobal(requestID, tenantID, rc.Attempt+1, classify.Reason,
-				map[string]any{
-					"next_attempt": rc.Attempt + 2,
-					"retriable":    classify.Retriable,
-					"reason":       classify.Reason,
-				})
+		// 2026-08-17 B3-PR1: the retry boundary enters the request journey
+		// stream (event_type=retry_scheduled) through the lifecycle the
+		// wrapped handler bound into the request carrier. The legacy
+		// dispatch.LogRetryGlobal state-transition writer was retired with
+		// the rest of the V3.2 logger; the journey lifecycle itself guards
+		// emission until a trusted tenant is bound.
+		if observer := JourneyObserverFromCtx(ctx); observer != nil {
+			observer.RetryScheduled(ctx, classify.Reason)
 		}
 
 		// Sleep with backoff (and send keepalive notification)
@@ -322,12 +310,13 @@ func NewDefaultStreamExecutor(handler http.Handler, config Config) *DefaultStrea
 // context is forwarded to ExecuteStream so context cancellation (client
 // disconnect, request timeout) propagates naturally and stops the retry loop.
 //
-// 2026-08-14 V3.2: extract X-Request-Id from the inbound header and stash
-// it in the context so the retry loop can call LogRetryGlobal with the
-// existing request id (ADR-V3-102 — never mint a new id).
+// The wrapper installs a mutable request carrier in the context; the wrapped
+// handler writes the journey lifecycle (BindJourneyObserver) back through it,
+// and the retry loop reads the observer to emit the retry boundary between
+// attempts. The request id is not threaded here — the journey lifecycle owns
+// it, and the handler stamps X-Request-Id on the response either way.
 func (e *DefaultStreamExecutor) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	ctx := withTenantCarrier(req.Context())
-	ctx = withRequestID(ctx, strings.TrimSpace(req.Header.Get("X-Request-Id")))
+	ctx := withRequestCarrier(req.Context())
 	_ = e.ExecuteStream(ctx, w, req.WithContext(ctx))
 }
 

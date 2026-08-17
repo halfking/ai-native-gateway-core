@@ -26,18 +26,100 @@ func (w *flushErrorResponseWriter) FlushError() error {
 	return w.flushErr
 }
 
-func TestAuthenticatedTenantCarrier(t *testing.T) {
-	ctx := withTenantCarrier(context.Background())
-	if got := authenticatedTenantFromCtx(ctx); got != "" {
-		t.Fatalf("initial tenant = %q, want empty", got)
+// fakeJourneyObserver records retry boundary emissions for assertions.
+type fakeJourneyObserver struct {
+	mu      sync.Mutex
+	reasons []string
+	high    int64
+}
+
+func (f *fakeJourneyObserver) RetryScheduled(ctx context.Context, reason string) {
+	f.mu.Lock()
+	f.reasons = append(f.reasons, reason)
+	f.mu.Unlock()
+}
+
+func (f *fakeJourneyObserver) SequenceHighWater() int64 { return f.high }
+
+func (f *fakeJourneyObserver) retryReasons() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.reasons...)
+}
+
+func TestJourneyCarrierBinding(t *testing.T) {
+	observer := &fakeJourneyObserver{}
+	ctx := withRequestCarrier(context.Background())
+	if got := JourneyObserverFromCtx(ctx); got != nil {
+		t.Fatalf("initial observer = %v, want nil", got)
 	}
-	SetAuthenticatedTenant(ctx, "tenant-a")
-	if got := authenticatedTenantFromCtx(ctx); got != "tenant-a" {
-		t.Fatalf("tenant = %q, want tenant-a", got)
+	BindJourneyObserver(ctx, observer)
+	if got := JourneyObserverFromCtx(ctx); got != observer {
+		t.Fatalf("observer = %v, want the bound observer", got)
 	}
-	SetAuthenticatedTenant(context.Background(), "ignored")
-	if got := authenticatedTenantFromCtx(context.Background()); got != "" {
-		t.Fatalf("context without carrier returned tenant %q", got)
+	BindJourneyObserver(context.Background(), observer)
+	if got := JourneyObserverFromCtx(context.Background()); got != nil {
+		t.Fatalf("context without carrier returned observer %v", got)
+	}
+}
+
+// TestWrapperRetryEmitsJourneyRetryScheduled drives the retry loop through two
+// retriable failures and asserts the journey observer sees one retry boundary
+// per retry with the classified error reason, and nothing on the success path.
+func TestWrapperRetryEmitsJourneyRetryScheduled(t *testing.T) {
+	observer := &fakeJourneyObserver{}
+	var attempts int32
+	streamFunc := func(ctx context.Context, w http.ResponseWriter) error {
+		n := atomic.AddInt32(&attempts, 1)
+		if n < 3 {
+			return &HTTPError{StatusCode: http.StatusServiceUnavailable, Err: errors.New("service unavailable")}
+		}
+		return nil
+	}
+
+	cfg := DefaultConfig()
+	cfg.BaseDelayMs = 1
+	cfg.MaxDelayMs = 2
+	wrapper := NewWrapper(cfg, nil)
+
+	ctx := withRequestCarrier(context.Background())
+	BindJourneyObserver(ctx, observer)
+	if _, err := wrapper.ExecuteWithMetrics(ctx, httptest.NewRecorder(), streamFunc); err != nil {
+		t.Fatalf("ExecuteWithMetrics() error = %v", err)
+	}
+
+	reasons := observer.retryReasons()
+	if len(reasons) != 2 {
+		t.Fatalf("retry emissions = %v, want one per retry (2)", reasons)
+	}
+	for _, reason := range reasons {
+		if reason == "" {
+			t.Fatalf("retry emission carried empty reason: %v", reasons)
+		}
+	}
+}
+
+// TestWrapperRetryWithoutObserverIsNoOp verifies requests that never bound a
+// journey lifecycle (non-retry entry paths, unit callers) retry unchanged.
+func TestWrapperRetryWithoutObserverIsNoOp(t *testing.T) {
+	var attempts int32
+	streamFunc := func(ctx context.Context, w http.ResponseWriter) error {
+		if atomic.AddInt32(&attempts, 1) < 2 {
+			return &HTTPError{StatusCode: http.StatusServiceUnavailable, Err: errors.New("service unavailable")}
+		}
+		return nil
+	}
+
+	cfg := DefaultConfig()
+	cfg.BaseDelayMs = 1
+	cfg.MaxDelayMs = 2
+	wrapper := NewWrapper(cfg, nil)
+
+	if _, err := wrapper.ExecuteWithMetrics(context.Background(), httptest.NewRecorder(), streamFunc); err != nil {
+		t.Fatalf("ExecuteWithMetrics() error = %v", err)
+	}
+	if got := atomic.LoadInt32(&attempts); got != 2 {
+		t.Fatalf("attempts = %d, want 2", got)
 	}
 }
 
