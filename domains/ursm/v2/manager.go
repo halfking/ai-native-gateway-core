@@ -7,6 +7,7 @@ package v2
 import (
 	"context"
 	"fmt"
+	"math"
 	"sort"
 	"strconv"
 	stdsync "sync"
@@ -454,12 +455,12 @@ func (m *Manager) filterAndScore(ctx context.Context, seeds []CandidateSeed, rea
 	}
 	for j, idx := range missIndices {
 		views[idx] = fetched[j]
+		backfillSeedIdentity(&views[idx], seeds[idx])
 		// Backfill the mirror from the authoritative Redis read. applyToLRU
 		// is generation-safe (rejects stale writes), so this never lets an
 		// older snapshot overwrite a newer LRU entry.
 		if m.nodeMirror != nil {
-			fetched[j].TenantID = seeds[idx].TenantID
-			m.nodeMirror.ApplyFromAPI(fetched[j])
+			m.nodeMirror.ApplyFromAPI(views[idx])
 		}
 	}
 
@@ -481,11 +482,27 @@ func (m *Manager) filterAndScore(ctx context.Context, seeds []CandidateSeed, rea
 	}
 }
 
+func backfillSeedIdentity(v *api.NodeView, s CandidateSeed) {
+	v.ProviderID = s.ProviderID
+	v.CredentialID = s.CredentialID
+	v.RawModel = s.RawModel
+	v.CanonicalName = s.Canonical
+	v.TenantID = s.TenantID
+	v.PriceIn = s.PriceIn
+	v.PriceOut = s.PriceOut
+	v.BillingMode = s.BillingMode
+	v.Trust = s.Trust
+	v.BaseURLMs = s.BaseURLMs
+}
+
 // scoreAndSort applies the price/latency/stability scoring and orders views
 // by ascending Score. Extracted so the LRU fast path and the Redis miss path
 // share identical scoring.
 func scoreAndSort(views []api.NodeView, seeds []CandidateSeed, weights ScoringWeights) {
-	// 评分：price 0.4 + latency 0.4 + stability 0.2 (SR5m)；lat 缺失回退 baseURLMs
+	// Lower score wins. Price and latency are direct costs; stability is a
+	// failure-rate penalty so a higher success rate ranks better. An empty SR5m
+	// window is neutral (0.5), matching the Redis protocol contract, while
+	// malformed/out-of-range telemetry is made safe before it can affect order.
 	for i := range views {
 		s := seeds[i]
 		v := &views[i]
@@ -494,9 +511,23 @@ func scoreAndSort(views []api.NodeView, seeds []CandidateSeed, weights ScoringWe
 		if lat == 0 {
 			lat = s.BaseURLMs
 		}
-		v.Score = weights.Price*price + weights.Latency*float64(lat) + weights.Stability*v.SR5m*1000
+		successRate := safeSR5m(v.SR5m, v.Samples5m)
+		v.Score = weights.Price*price + weights.Latency*float64(lat) + weights.Stability*(1-successRate)*1000
 	}
 	sort.SliceStable(views, func(i, j int) bool { return views[i].Score < views[j].Score })
+}
+
+func safeSR5m(sr float64, samples int) float64 {
+	if samples <= 0 || math.IsNaN(sr) || math.IsInf(sr, 0) {
+		return 0.5
+	}
+	if sr < 0 {
+		return 0
+	}
+	if sr > 1 {
+		return 1
+	}
+	return sr
 }
 
 // mirrorToAPIView expands a cached NodeView (the score-relevant subset) into
@@ -605,18 +636,21 @@ func (m *Manager) PlanReadyObserved(ctx context.Context, seeds []CandidateSeed, 
 	if err != nil {
 		return nil, fmt.Errorf("ursm.v2: observed pipeline: %w", err)
 	}
+	for i := range views {
+		backfillSeedIdentity(&views[i], seeds[i])
+	}
 	scoreAndSort(views, seeds, m.cfg.ScoringWeights)
 
 	idx := make(map[string]int, len(seeds))
 	for i, seed := range seeds {
-		idx[seedKey(seed.CredentialID, seed.RawModel)] = i
+		idx[seedKey(seed.ProviderID, seed.CredentialID, seed.RawModel)] = i
 	}
 	out := make([]CandidateSeed, 0, len(views))
 	for _, view := range views {
 		if !view.Available {
 			continue
 		}
-		if i, ok := idx[seedKey(view.CredentialID, view.RawModel)]; ok {
+		if i, ok := idx[seedKey(view.ProviderID, view.CredentialID, view.RawModel)]; ok {
 			out = append(out, seeds[i])
 		}
 	}
@@ -653,14 +687,14 @@ func (m *Manager) planReadyWithSource(ctx context.Context, seeds []CandidateSeed
 	// with Available=false on missing Redis data).
 	idx := make(map[string]int, len(seeds))
 	for i, s := range seeds {
-		idx[seedKey(s.CredentialID, s.RawModel)] = i
+		idx[seedKey(s.ProviderID, s.CredentialID, s.RawModel)] = i
 	}
 	out := make([]CandidateSeed, 0, len(views))
 	for _, v := range views {
 		if !v.Available {
 			continue
 		}
-		i, ok := idx[seedKey(v.CredentialID, v.RawModel)]
+		i, ok := idx[seedKey(v.ProviderID, v.CredentialID, v.RawModel)]
 		if !ok {
 			continue
 		}
@@ -704,14 +738,14 @@ func (m *Manager) plan(ctx context.Context, seeds []CandidateSeed, tenant, canon
 	// with Available=false on missing Redis data).
 	idx := make(map[string]int, len(seeds))
 	for i, s := range seeds {
-		idx[seedKey(s.CredentialID, s.RawModel)] = i
+		idx[seedKey(s.ProviderID, s.CredentialID, s.RawModel)] = i
 	}
 	out := make([]CandidateSeed, 0, len(views))
 	for _, v := range views {
 		if !v.Available {
 			continue
 		}
-		i, ok := idx[seedKey(v.CredentialID, v.RawModel)]
+		i, ok := idx[seedKey(v.ProviderID, v.CredentialID, v.RawModel)]
 		if !ok {
 			continue
 		}
@@ -720,10 +754,11 @@ func (m *Manager) plan(ctx context.Context, seeds []CandidateSeed, tenant, canon
 	return out
 }
 
-// seedKey joins a credential/model pair into a single string for use as a
-// lookup map key. Cheap and avoids fmt.Sprintf allocations on the hot path.
-func seedKey(credentialID int, rawModel string) string {
-	return strconv.Itoa(credentialID) + "|" + rawModel
+// seedKey joins the full provider/credential/model identity into a single
+// string for use as a lookup map key. Provider is required because the same
+// credential/model pair can legitimately be exposed by different providers.
+func seedKey(providerID, credentialID int, rawModel string) string {
+	return strconv.Itoa(providerID) + "|" + strconv.Itoa(credentialID) + "|" + rawModel
 }
 
 func (m *Manager) invalidateNode(tenant string, credentialID int, rawModel string) {
