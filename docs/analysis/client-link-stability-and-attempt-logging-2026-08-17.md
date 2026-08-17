@@ -48,12 +48,17 @@
 ## 3. 日志与落库（多尝试、同会话、仅一成功）
 
 ### 落库模型
-- **request_logs：一个 request_id 一行**，带 `session_id`（有索引）。请求全生命周期通过 WAL 阶段更新（StageExecuteFail 等），最终状态唯一——**天然“只有一条成功记录”**。`routing_attempts` JSONB 记录全部路由轮次（含每轮的候选、结果、错误）。
-- **candidate_failure_logs：每个失败尝试一行**（request_id, credential, model, attempt_index, error_kind/message, 上游状态码与响应体预览, retryable, context）——即“切换的过程生成多条记录”。
+- **request_logs：一个 request_id 一行**，带 `gw_session_id`（有索引）。请求全生命周期通过 WAL 阶段更新（StageExecuteFail 等），最终状态唯一——**天然“只有一条成功记录”**。`routing_attempts` JSONB 记录全部路由轮次（含每轮的候选、结果、错误）。
+- **candidate_failure_logs：每个失败尝试一行**（request_id, session_id, credential, model, attempt_index, error_kind/message, 上游状态码与响应体预览, retryable, context）——即“切换的过程生成多条记录”。
 
 ### 本轮修复的两处缺口
 
-**缺口 A — session_id 不在行上**：此前会话归集只能 `candidate_failure_logs.request_id → request_logs.session_id` 间接关联。V358 迁移给 `candidate_failure_logs` 直接加 `session_id` 列 + `(session_id, ts DESC)` 索引 + 历史回填；写入链路（`candidate_failure_logger.go` → `executor.go:3436`）同步传 `params.SessionID`。
+**缺口 A — session_id 不在行上**：此前会话归集只能 `candidate_failure_logs.request_id → request_logs.gw_session_id` 间接关联（注意 request_logs 的会话列是 `gw_session_id`，不是 `session_id`）。V358 迁移给 `candidate_failure_logs` 直接加 `session_id` 列 + `(session_id, ts DESC)` 索引 + 历史回填；写入链路（`candidate_failure_logger.go` → `executor.go:3436`）同步传 `params.SessionID`（与 `gw_session_id` 同一标识空间）。
+
+V358 上线实测（2026-08-17，252 生产库 / Citus 13.3，154 网关共用此库）：
+- 初版回填误写 `request_logs.session_id`（该列不存在，任何环境都会报错），已改为 `gw_session_id`；
+- 252 的 `candidate_failure_logs` 是 **citus_columnar 单表**（INSERT-only，不支持 UPDATE），回填按 access method 守护自动跳过——此时历史 request_logs 行也已随热表轮转缺失（可回填行数为 0），跳过即正确结果；heap 环境（本地 PG17 实测）回填语义正常（可回填行补齐、孤儿/空会话保持 NULL、重复执行至 0 行），索引 `idx_candidate_failure_logs_session_ts` 走 Index Scan；
+- columnar 上的会话过滤由 ColumnarScan 的 Chunk Group Filters（minmax 剪枝）承担，btree 索引不参与执行计划。
 
 **缺口 B — 中途断流不落行**：`streamInterruptedError` 分支（executor.go:3222+）在“可恢复切换 continue”和“终态 return”两条路径上都**绕过了** 3436 的 `LogFailure`——也就是说用户实际遭遇的故障形态（"other side closed"、上游终态错误事件导致的断流切换）**从未在 candidate_failure_logs 留痕**。本轮在该分支补 `LogFailureWithKind` 调用：带上执行器已分类的精确 kind（消息兜底会把 `stream_interrupted: network_error` 拍平成 transient）、`stream_reason`、`stream_resumable` 上下文。两条路径各留一行，同一 session_id 归集。
 
