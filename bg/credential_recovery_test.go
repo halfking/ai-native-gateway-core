@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/pashagolub/pgxmock/v4"
 )
@@ -515,5 +516,187 @@ func TestRecoverExpiredBindingsIgnoresBackoffState(t *testing.T) {
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+// -----------------------------------------------------------------------------
+// 2026-08-17 P0 fix: fresh-degraded (in-cooldown) self-check tests
+// -----------------------------------------------------------------------------
+
+// TestFreshDegradedCmbSQLGuards pins the safety guards of the new
+// fresh-degraded SELECT. See freshDegradedCmbSQL() for the full contract.
+func TestFreshDegradedCmbSQLGuards(t *testing.T) {
+	sql := freshDegradedCmbSQL()
+	mustContain := []string{
+		// cmb 谓词：只挑 continuous_failure + cooldown 内 + 已被踢至少 60s
+		"cmb.available = FALSE",
+		"cmb.unavailable_reason = 'continuous_failure'",
+		"cmb.unavailable_at <= now() - INTERVAL '60 seconds'",
+		"cmb.unavailable_recover_at IS NOT NULL",
+		"cmb.unavailable_recover_at > now()",
+		// 硬保护：manual / admin_protected / lifecycle 一律不动
+		"COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'",
+		"COALESCE(cmb.admin_protected, FALSE) = FALSE",
+		"COALESCE(c.status, 'active') = 'active'",
+		"COALESCE(c.lifecycle_status, 'active') = 'active'",
+		"COALESCE(c.manual_disabled, FALSE) = FALSE",
+		"c.availability_state = 'ready'",
+		"COALESCE(p.manual_disabled, FALSE) = FALSE",
+		"p.enabled = TRUE",
+		// 跳过 node_probe_state paused 或 mid-cycle
+		"nps.paused = TRUE OR nps.next_retry_at > now()",
+		// 输出列：必须包含 credential_id + raw_model_name
+		"cmb.credential_id",
+		"pm.raw_model_name",
+		// ORDER BY 最旧 → 最新的，方便已恢复的供应商先被探活
+		"ORDER BY cmb.unavailable_at ASC",
+		// LIMIT 防止惊群
+		"LIMIT 30",
+	}
+	for _, want := range mustContain {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("freshDegradedCmbSQL missing %q in:\n%s", want, sql)
+		}
+	}
+	// 该 SELECT 必须不触碰 cmb.available（只读路径，由 probe 路径写回）。
+	mustNotContain := []string{
+		"UPDATE credential_model_bindings",
+		"SET cmb.available = TRUE",
+		"SET    available = TRUE",
+	}
+	for _, want := range mustNotContain {
+		if strings.Contains(sql, want) {
+			t.Fatalf("freshDegradedCmbSQL must NOT mutate cmb.available (got %q) in:\n%s", want, sql)
+		}
+	}
+}
+
+// TestRecoverFreshDegradedBindingsEnqueuesProbes mirrors the
+// TestRecoverExpiredBindingsEnqueuesProbes test but for the new
+// in-cooldown self-check branch: rows returned by the SELECT are handed to
+// the probeSubmitter, the candidate cache is invalidated for unique cred
+// IDs, and the function returns nil error when pgxmock provides two rows.
+func TestRecoverFreshDegradedBindingsEnqueuesProbes(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool: %v", err)
+	}
+	defer mock.Close()
+
+	rows := pgxmock.NewRows([]string{"credential_id", "raw_model_name"}).
+		AddRow(22, "glm-5.2"). // 智码 zhipu glm-5.2
+		AddRow(33, "minimax-m3") // 智码 minimax-m3
+	mock.ExpectQuery("FROM credential_model_bindings cmb").
+		WillReturnRows(rows)
+
+	r := &CredentialRecovery{db: mock, done: make(chan struct{})}
+
+	var (
+		mu          sync.Mutex
+		submitted   []string
+		invalidated = make(map[int]int)
+	)
+	r.SetProbeSubmitter(func(credID int, model string) {
+		mu.Lock()
+		defer mu.Unlock()
+		submitted = append(submitted, fmt.Sprintf("%d|%s", credID, model))
+	})
+	r.SetInvalidateCandidateCache(func(credID int) {
+		mu.Lock()
+		defer mu.Unlock()
+		invalidated[credID]++
+	})
+
+	if err := r.recoverFreshDegradedBindings(context.Background()); err != nil {
+		t.Fatalf("recoverFreshDegradedBindings: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	wantSubmitted := []string{"22|glm-5.2", "33|minimax-m3"}
+	if len(submitted) != len(wantSubmitted) {
+		t.Fatalf("submitted count = %d, want %d (got %v)", len(submitted), len(wantSubmitted), submitted)
+	}
+	for _, w := range wantSubmitted {
+		found := false
+		for _, s := range submitted {
+			if s == w {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("missing submit for %q (got %v)", w, submitted)
+		}
+	}
+	if invalidated[22] < 1 || invalidated[33] < 1 {
+		t.Errorf("expected invalidateCandidateCache to be called for cred 22 & 33, got %v", invalidated)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("pgxmock expectations not met: %v", err)
+	}
+}
+
+// TestRecoverFreshDegradedBindingsNoOpWhenNoSubmitter mirrors the
+// safety pattern from the expired-binding tests: when no NodeProbeWorker
+// is wired yet, the new branch must be a silent no-op (no DB query,
+// no error).
+func TestRecoverFreshDegradedBindingsNoOpWhenNoSubmitter(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool: %v", err)
+	}
+	defer mock.Close()
+	// No ExpectQuery: if the code actually runs the SELECT, pgxmock will
+	// panic with "unexpected call".
+
+	r := &CredentialRecovery{db: mock, done: make(chan struct{})}
+	if err := r.recoverFreshDegradedBindings(context.Background()); err != nil {
+		t.Fatalf("expected nil error when probeSubmitter is nil, got %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("pgxmock expectations not met: %v", err)
+	}
+}
+
+// TestCredentialRecoverySetTickInterval pins the env-overridable interval
+// added for the 2026-08-17 P0 fix. Verifies:
+//   - new instance uses defaultCredentialRecoveryInterval until overridden
+//   - SetTickInterval(<smaller>) is picked up by tickIntervalLocked()
+//   - SetTickInterval(0) disables (tickIntervalLocked returns default,
+//     matching what we want for "disabled" callers in run())
+//   - SetTickInterval(-1) is ignored (no panic, no overwrite)
+func TestCredentialRecoverySetTickInterval(t *testing.T) {
+	r := &CredentialRecovery{}
+
+	if got := r.tickIntervalLocked(); got != defaultCredentialRecoveryInterval {
+		t.Fatalf("default tickIntervalLocked() = %v, want %v", got, defaultCredentialRecoveryInterval)
+	}
+
+	r.SetTickInterval(20 * time.Second)
+	if got := r.tickIntervalLocked(); got != 20*time.Second {
+		t.Fatalf("after SetTickInterval(20s) tickIntervalLocked() = %v, want 20s", got)
+	}
+
+	// Very short intervals get clamped to 1s so a typo in env doesn't
+	// DDoS the database.
+	r.SetTickInterval(100 * time.Millisecond)
+	if got := r.tickIntervalLocked(); got != time.Second {
+		t.Fatalf("after SetTickInterval(100ms) tickIntervalLocked() = %v, want 1s clamp", got)
+	}
+
+	// Negative values are ignored (defensive — env parsing may yield -1).
+	r.SetTickInterval(-1 * time.Second)
+	if got := r.tickIntervalLocked(); got != time.Second {
+		t.Fatalf("after SetTickInterval(-1s) tickIntervalLocked() = %v, want previous 1s (no overwrite)", got)
+	}
+
+	// 0 = disabled. tickIntervalLocked() returns the default in that case
+	// (run() is the one that interprets 0 as disabled); the value persists on
+	// the struct so callers can read it back.
+	r.SetTickInterval(0)
+	if got := r.tickIntervalLocked(); got != defaultCredentialRecoveryInterval {
+		t.Fatalf("after SetTickInterval(0) tickIntervalLocked() = %v, want default", got)
 	}
 }

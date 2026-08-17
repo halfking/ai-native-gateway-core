@@ -20,6 +20,13 @@ type HealthAutoRecover struct {
 	// so a second Stop() panicked with "close of closed channel".
 	// Same guard as bg/routing_health_checker.go.
 	stopOnce sync.Once
+
+	// 2026-08-17 P0 fix: tickInterval is the live, possibly-updated interval.
+	// Reads/writes are guarded by tickMu so cmd/gateway/main.go can install an
+	// env-driven override (LLM_GATEWAY_AUTO_RECOVER_INTERVAL_SECONDS) at any
+	// point in the worker lifecycle.
+	tickMu       sync.RWMutex
+	tickInterval  time.Duration
 }
 
 // NewHealthAutoRecover creates a recovery worker.
@@ -32,18 +39,45 @@ func NewHealthAutoRecover(
 	}
 
 	return &HealthAutoRecover{
-		db:       db,
-		interval: interval,
-		stopCh:   make(chan struct{}),
+		db:          db,
+		interval:    interval,
+		tickInterval: interval,
+		stopCh:      make(chan struct{}),
 	}
+}
+
+// SetTickInterval changes the recovery loop period at runtime. Set to 0 to
+// disable the loop (the next tick simply won't fire). The change is picked
+// up after the current tick completes. Useful for ops who want to silence
+// the worker temporarily during a maintenance window without recompiling.
+func (w *HealthAutoRecover) SetTickInterval(d time.Duration) {
+	if d < 0 {
+		return
+	}
+	if d > 0 && d < time.Second {
+		d = time.Second
+	}
+	w.tickMu.Lock()
+	w.tickInterval = d
+	w.tickMu.Unlock()
+}
+
+func (w *HealthAutoRecover) currentInterval() time.Duration {
+	w.tickMu.RLock()
+	defer w.tickMu.RUnlock()
+	if w.tickInterval <= 0 {
+		return w.interval // legacy field used as the boot-time default
+	}
+	return w.tickInterval
 }
 
 // Start begins the recovery loop.
 func (w *HealthAutoRecover) Start(ctx context.Context) {
-	slog.Info("health_auto_recover started", "interval", w.interval)
+	slog.Info("health_auto_recover started", "interval", w.currentInterval().String())
 
 	go func() {
-		ticker := time.NewTicker(w.interval)
+		interval := w.currentInterval()
+		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 
 		for {
@@ -57,6 +91,12 @@ func (w *HealthAutoRecover) Start(ctx context.Context) {
 			case <-ticker.C:
 				if err := w.recover(ctx); err != nil {
 					slog.Error("health_auto_recover failed", "error", err)
+				}
+				if newInterval := w.currentInterval(); newInterval != interval && newInterval > 0 {
+					interval = newInterval
+					ticker.Reset(interval)
+					slog.Info("health_auto_recover: tick interval updated",
+						"new_interval", interval.String())
 				}
 			}
 		}

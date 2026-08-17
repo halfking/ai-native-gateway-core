@@ -2787,6 +2787,20 @@ func main() {
 	if dbConn != nil && dbConn.Enabled() {
 		slog.Info("CHECKPOINT: inside bg services enabled block")
 		credRecovery = bg.NewCredentialRecovery(dbConn.Pool())
+		// 2026-08-17 P0 fix: allow ops to override the recovery tick interval
+		// via env without recompiling. Default stays at 30s (set inside
+		// bg/credential_recovery.go). Set to 0 to disable the loop entirely
+		// (useful during maintenance windows).
+		if intervalSec := strings.TrimSpace(os.Getenv("LLM_GATEWAY_CRED_RECOVERY_INTERVAL_SECONDS")); intervalSec != "" {
+			if v, err := strconv.Atoi(intervalSec); err == nil && v >= 0 {
+				credRecovery.SetTickInterval(time.Duration(v) * time.Second)
+				slog.Info("credRecovery: tick interval overridden by env",
+					"seconds", v, "disabled", v == 0)
+			} else {
+				slog.Warn("credRecovery: invalid LLM_GATEWAY_CRED_RECOVERY_INTERVAL_SECONDS, using default",
+					"value", intervalSec)
+			}
+		}
 		credRecovery.Start(context.Background())
 		slog.Info("CHECKPOINT: credRecovery started")
 		// 2026-08-13 (需求 6 bullet 3): delayed-rollback for tentative probe restores.
@@ -3588,6 +3602,17 @@ func main() {
 
 			slog.Info("CHECKPOINT: before healthAutoRecover")
 			healthAutoRecover = bg.NewHealthAutoRecover(dbConn.Pool(), 1*time.Minute)
+			// 2026-08-17 P0 fix: ops can shrink this to 30s during a flapping
+			// provider window without recompiling. Default 60s preserved.
+			if intervalSec := strings.TrimSpace(os.Getenv("LLM_GATEWAY_AUTO_RECOVER_INTERVAL_SECONDS")); intervalSec != "" {
+				if v, err := strconv.Atoi(intervalSec); err == nil && v >= 0 {
+					healthAutoRecover.SetTickInterval(time.Duration(v) * time.Second)
+					slog.Info("healthAutoRecover: tick interval overridden by env", "seconds", v)
+				} else {
+					slog.Warn("healthAutoRecover: invalid LLM_GATEWAY_AUTO_RECOVER_INTERVAL_SECONDS, using default",
+						"value", intervalSec)
+				}
+			}
 			healthAutoRecover.Start(context.Background())
 			slog.Info("CHECKPOINT: after healthAutoRecover.Start")
 

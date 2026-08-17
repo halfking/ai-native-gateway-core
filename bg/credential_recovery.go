@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -19,6 +20,46 @@ import (
 type credentialRecoveryDB interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}
+
+// Default tick for the CredentialRecovery loop. The previous hard-coded 60s
+// was fine when continuous_failure carried a 15-minute cooldown: by the
+// time the tick re-queried expired bindings, ~14 minutes had passed and the
+// cooldown was about to elapse on its own. After 2026-08-17 we want the
+// recovery loop to (a) check expired bindings sooner so cooldown finishes
+// don't have to wait a full tick boundary, and (b) probe fresh-degraded
+// bindings during the cooldown window. 30s hits both goals without flooding
+// the database or upstream providers.
+const defaultCredentialRecoveryInterval = 30 * time.Second
+
+// SetTickInterval lets callers tune the recovery loop period after Start.
+// Useful for ops who want to silence the loop temporarily (set to 0 to
+// disable — see run() for the disabled short-circuit). Setting an interval
+// shorter than 1s is clamped to 1s to keep the DB and upstream friendly.
+// Has no effect until the current ticker fires at least once.
+func (r *CredentialRecovery) SetTickInterval(d time.Duration) {
+	if d < 0 {
+		return
+	}
+	r.tickMu.Lock()
+	defer r.tickMu.Unlock()
+	if d == 0 {
+		r.tickInterval = 0 // disabled
+		return
+	}
+	if d < time.Second {
+		d = time.Second
+	}
+	r.tickInterval = d
+}
+
+func (r *CredentialRecovery) tickIntervalLocked() time.Duration {
+	r.tickMu.Lock()
+	defer r.tickMu.Unlock()
+	if r.tickInterval <= 0 {
+		return defaultCredentialRecoveryInterval
+	}
+	return r.tickInterval
 }
 
 type CredentialRecovery struct {
@@ -38,6 +79,8 @@ type CredentialRecovery struct {
 	invalidateCandidateCache func(credID int)
 	cancel                   context.CancelFunc
 	done                     chan struct{}
+	tickMu                   sync.Mutex
+	tickInterval             time.Duration
 }
 
 func NewCredentialRecovery(db *pgxpool.Pool) *CredentialRecovery {
@@ -66,7 +109,7 @@ func (r *CredentialRecovery) SetInvalidateCandidateCache(fn func(credID int)) {
 func (r *CredentialRecovery) Start(ctx context.Context) {
 	ctx, r.cancel = context.WithCancel(ctx)
 	go r.run(ctx)
-	slog.Info("credential recovery task started", "interval", "60s")
+	slog.Info("credential recovery task started", "interval", r.tickIntervalLocked().String())
 }
 
 func (r *CredentialRecovery) Stop() {
@@ -79,7 +122,8 @@ func (r *CredentialRecovery) Stop() {
 func (r *CredentialRecovery) run(ctx context.Context) {
 	defer close(r.done)
 
-	ticker := time.NewTicker(60 * time.Second)
+	interval := r.tickIntervalLocked()
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	for {
@@ -88,6 +132,12 @@ func (r *CredentialRecovery) run(ctx context.Context) {
 			return
 		case <-ticker.C:
 			r.recover(ctx)
+			if newInterval := r.tickIntervalLocked(); newInterval != interval {
+				interval = newInterval
+				ticker.Reset(interval)
+				slog.Info("credential_recovery: tick interval updated",
+					"new_interval", interval.String())
+			}
 		}
 	}
 }
@@ -353,6 +403,29 @@ func (r *CredentialRecovery) recover(ctx context.Context) {
 	// continues to advance.
 	if err := r.recoverExpiredBindings(timeoutCtx); err != nil {
 		slog.Warn("expired-binding probe recovery failed", "error", err)
+	}
+
+	// 2026-08-17 P0 fix: actively probe (cred, model) bindings that were
+	// just marked unavailable via the continuous_failure path even though
+	// their cooldown hasn't elapsed yet. Previously the recovery loop only
+	// did anything once unavailable_recover_at <= now(), which meant a
+	// binding degraded by an upstream blip sat in cooldown for the entire
+	// 15-minute degradedCooldown with no way to know the upstream was back.
+	//
+	// Symptom (154 production): ZhiMa / SenseNova / NVIDIA NIM providers
+	// would flap on transient upstream 5xx, get cmb.available flipped to
+	// FALSE by credentialhealth/checker.go (15-minute cooldown), and then
+	// stay invisible to routing until the cooldown elapsed and the
+	// recovery tick happened to land on a row whose probe succeeded —
+	// total downtime ≈ cooldown + probe-cycle delay.
+	//
+	// This branch hands in-cooldown (cred, model) pairs to the same
+	// NodeProbeWorker.Submit path that the expired branch uses; the only
+	// difference is the eligibility SQL. The probe path is still the
+	// authoritative writer of cmb.available (runOne success branch), so
+	// we never blindly restore a binding.
+	if err := r.recoverFreshDegradedBindings(timeoutCtx); err != nil {
+		slog.Warn("fresh-degraded binding probe recovery failed", "error", err)
 	}
 }
 
@@ -637,6 +710,121 @@ func (r *CredentialRecovery) recoverExpiredBindings(ctx context.Context) error {
 	slog.Info("expired-binding probe recovery queued",
 		"pairs", len(seen),
 		"unique_credentials", len(invalidSet),
+	)
+	return nil
+}
+
+// freshDegradedCmbSQL returns (credential_id, raw_model_name) pairs that
+// were just marked unavailable via the continuous_failure path but whose
+// unavailable_recover_at has NOT yet elapsed. The companion to
+// expiredCmbRecoverySQL: while the expired path waits for cooldown to
+// elapse, this one hands still-cooldown rows to NodeProbeWorker so a
+// recovered ZhiMa / SenseNova / NVIDIA NIM upstream is detected within
+// seconds instead of minutes.
+//
+// Eligibility contract:
+//
+//	- cmb.available = FALSE + unavailable_reason = 'continuous_failure'.
+//	  Other reasons use different code paths:
+//	    - 'manual*' : operators chose those; never auto-restore.
+//	    - 'probe_*' : already covered by node_probe.go's own re-arm ladder.
+//	    - 'auto_*'   : written by domains/credential/writer.go for transient
+//	                   per-model failures; out of scope for this branch.
+//	- unavailable_recover_at IS NOT NULL AND > now() (i.e., still in cooldown).
+//	- unavailable_at <= now() - 60 seconds. Don't re-probe a row that was
+//	  just marked unavailable seconds ago — give the original failure burst
+//	  a chance to settle. 60s matches the original 60s tick so the first
+//	  re-check happens on the second tick after degradation.
+//	- Same hard guards as the expired branch (manual, lifecycle, provider,
+//	  admin_protected, availability_state, paused).
+//	- Skip rows whose node_probe_state already has a future next_retry_at
+//	  so we don't pile probes on top of an in-flight backoff ladder.
+//	- ORDER BY oldest unavailable_at first so the most-stale rows (the
+//	  ones most likely to have recovered upstream-side) get probed first.
+//	- LIMIT 30/tick to bound fan-out.
+func freshDegradedCmbSQL() string {
+	return `
+		SELECT cmb.credential_id, pm.raw_model_name
+		FROM credential_model_bindings cmb
+		JOIN provider_models pm ON pm.id = cmb.provider_model_id
+		JOIN credentials c      ON c.id = cmb.credential_id
+		JOIN providers p        ON p.id = c.provider_id
+		WHERE cmb.available = FALSE
+		  AND cmb.unavailable_reason = 'continuous_failure'
+		  AND cmb.unavailable_at IS NOT NULL
+		  AND cmb.unavailable_at <= now() - INTERVAL '60 seconds'
+		  AND cmb.unavailable_recover_at IS NOT NULL
+		  AND cmb.unavailable_recover_at > now()
+		  AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
+		  AND COALESCE(cmb.admin_protected, FALSE) = FALSE
+		  AND COALESCE(c.status, 'active') = 'active'
+		  AND COALESCE(c.lifecycle_status, 'active') = 'active'
+		  AND COALESCE(c.manual_disabled, FALSE) = FALSE
+		  AND c.availability_state = 'ready'
+		  AND COALESCE(p.manual_disabled, FALSE) = FALSE
+		  AND p.enabled = TRUE
+		  AND NOT EXISTS (
+		      SELECT 1 FROM node_probe_state nps
+		      WHERE nps.credential_id  = cmb.credential_id
+		        AND nps.raw_model_name = pm.raw_model_name
+		        AND (nps.paused = TRUE OR nps.next_retry_at > now())
+		  )
+		ORDER BY cmb.unavailable_at ASC
+		LIMIT 30
+	`
+}
+
+// recoverFreshDegradedBindings hands in-cooldown continuous_failure rows
+// to the NodeProbeWorker so the upstream can be re-tested before the
+// degradedCooldown elapses. Same wiring contract as
+// recoverExpiredBindings: SELECT-only, hands pairs to the Submit hook,
+// no direct write to cmb.available. Safe to call with a nil probeSubmitter.
+func (r *CredentialRecovery) recoverFreshDegradedBindings(ctx context.Context) error {
+	if r.probeSubmitter == nil {
+		return nil
+	}
+	rows, err := r.db.Query(ctx, freshDegradedCmbSQL())
+	if err != nil {
+		return fmt.Errorf("query fresh-degraded cmb bindings: %w", err)
+	}
+	defer rows.Close()
+
+	type pair struct {
+		credID int
+		model  string
+	}
+	var (
+		seen       []pair
+		invalidSet = make(map[int]struct{})
+	)
+	for rows.Next() {
+		var p pair
+		if err := rows.Scan(&p.credID, &p.model); err != nil {
+			slog.Warn("fresh-degraded recovery scan failed", "error", err)
+			continue
+		}
+		seen = append(seen, p)
+		invalidSet[p.credID] = struct{}{}
+		// parentReqID labels the probe tile in the live stream so operators
+		// can see at a glance that this probe was triggered by the new
+		// fresh-degraded self-check, not by a real upstream failure.
+		r.probeSubmitter(p.credID, p.model)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate fresh-degraded cmb bindings: %w", err)
+	}
+	if len(seen) == 0 {
+		return nil
+	}
+	if r.invalidateCandidateCache != nil {
+		for credID := range invalidSet {
+			r.invalidateCandidateCache(credID)
+		}
+	}
+	slog.Info("credential_recovery: fresh-degraded (in-cooldown) probe queued",
+		"pairs", len(seen),
+		"unique_credentials", len(invalidSet),
+		"reason", "self_check_during_cooldown",
 	)
 	return nil
 }
