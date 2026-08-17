@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - docs/archive/* — 138 process docs archived on 2026-08-17 (see docs/archive/INDEX.md)
 
 ### Changed
+- `deploy/sql/objects/`（7.5MB、839 文件）从 git 删除并 ignore：它是 `sync-objects.sh` 从
+  `sql/objects/` 生成的部署副本（实测已漂移 19 处、无脚本引用），需要时重新生成即可；
+  `schemas/baseline/` 确认为 installer/离线包/one-click 引导实际使用，保留并在
+  REPO_LAYOUT.md 标注为有意维护的双副本。
 - 监控配置收敛至 `deploy/prometheus/`：`deploy/grafana/` 仪表盘并入 `grafana/provisioning/dashboards/`
   （删除重复的 auto-summary-monitoring.json），`deploy/monitoring/grafana-alerts/` 并入 `alerts/`，
   同步更新 phase1 脚本引用；REPO_LAYOUT.md 修正根目录 `install.*` 定位（离线交付包入口，打包脚本依赖，
