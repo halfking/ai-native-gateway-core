@@ -69,9 +69,9 @@ else
     info "导入种子数据..."
     /tmp/seed-free-resources \
         --db-url "$DB_URL" \
-        --catalog docs/omnifree/seed/free_resource_catalog.json \
-        --templates docs/omnifree/seed/auto_combo_templates.json \
-        --keyless docs/omnifree/seed/keyless_providers.json \
+        --catalog configs/seed/free_resource_catalog.json \
+        --templates configs/seed/auto_combo_templates.json \
+        --keyless configs/seed/keyless_providers.json \
         || error "种子数据导入失败"
     success "种子数据导入完成"
 fi

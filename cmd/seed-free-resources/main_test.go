@@ -9,7 +9,7 @@ import (
 
 func loadSeedJSON[T any](t *testing.T, name string, target *T) {
 	t.Helper()
-	path := filepath.Join("..", "..", "docs", "omnifree", "seed", name)
+	path := filepath.Join("..", "..", "configs", "seed", name)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read %s: %v", path, err)
