@@ -5,10 +5,12 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
 	"github.com/kaixuan/llm-gateway-go/domains/authentication"
 	"github.com/kaixuan/llm-gateway-go/domains/requestjourney"
+	"github.com/kaixuan/llm-gateway-go/internal/streamretry" //nolint:depguard // retry-loop journey carrier under test
 )
 
 func TestInitializeRequestIdentityUsesMiddlewareContract(t *testing.T) {
@@ -165,5 +167,88 @@ func TestRequestJourneyCoversAllProtocolEntryPoints(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestRequestJourneySurvivesStreamretryReentry drives two handler passes
+// through the real streamretry entry (ServeHTTP reuses the request carrier on
+// re-entry), which is how a retry re-invokes the whole handler. Before B3-PR1
+// the second pass built a fresh lifecycle whose sequence restarted at 1, so
+// every attempt-2 event was rejected by the journey projection as a sequence
+// conflict and the request's journey silently froze after attempt 1. The
+// carrier must now carry the lifecycle binding across passes: one ordered,
+// valid stream with a terminal per attempt.
+func TestRequestJourneySurvivesStreamretryReentry(t *testing.T) {
+	projection := requestjourney.NewProjection(requestjourney.DefaultConfig())
+	recorder := requestjourney.NewRecorder(projection, nil, nil)
+	t.Cleanup(func() { _ = recorder.Close(context.Background()) })
+	handler := NewChatHandler(nil, nil, nil, nil, nil, nil)
+	handler.SetRequestJourney(recorder, "gateway-test")
+
+	var attempts int32
+	var reentryCtx context.Context
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The wrapper's retry loop re-invokes the handler with the context it
+		// originally passed in — the derived lifecycle context never escapes
+		// back to the wrapper. Capture that entry context here.
+		reentryCtx = r.Context()
+		writer, r, statusWriter := beginRequestJourney(w, r, handler)
+		resolveRequestJourney(r, "default", "auto", "provider-a/standard")
+		if atomic.AddInt32(&attempts, 1) == 1 {
+			markRequestJourneyFailure(r, nil, "upstream_error")
+			writer.WriteHeader(http.StatusServiceUnavailable)
+			finishRequestJourney(r, statusWriter)
+			return
+		}
+		writer.WriteHeader(http.StatusOK)
+		finishRequestJourney(r, statusWriter)
+	})
+
+	executor := streamretry.NewDefaultStreamExecutor(inner, streamretry.DefaultConfig())
+
+	requestID := "request-retry-reentry"
+	newRequest := func() *http.Request {
+		request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+		request.Header.Set("X-Request-Id", requestID)
+		return request
+	}
+
+	response := httptest.NewRecorder()
+	executor.ServeHTTP(response, newRequest())
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("attempt-1 status = %d, want 503", response.Code)
+	}
+
+	// The retry pass: same request context (carrier intact), fresh pass
+	// through ServeHTTP exactly like the wrapper's retry re-invocation.
+	response2 := httptest.NewRecorder()
+	executor.ServeHTTP(response2, newRequest().WithContext(reentryCtx))
+	if response2.Code != http.StatusOK {
+		t.Fatalf("attempt-2 status = %d, want 200", response2.Code)
+	}
+	if got := atomic.LoadInt32(&attempts); got != 2 {
+		t.Fatalf("attempts = %d, want 2", got)
+	}
+
+	// keyVerifier is nil in this construction, so the lifecycle binds the
+	// default tenant (same as TestRequestJourneyCoversAllProtocolEntryPoints).
+	journey, err := projection.Detail("default", requestID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := journey.Validate(); err != nil {
+		t.Fatalf("retried journey is not a valid ordered stream: %v", err)
+	}
+	var terminals int
+	for _, event := range journey.Events {
+		if event.Type == requestjourney.EventRequestFailed || event.Type == requestjourney.EventRequestSucceeded {
+			terminals++
+		}
+	}
+	if terminals != 2 {
+		t.Fatalf("attempt terminals = %d, want 2 (one per attempt)", terminals)
+	}
+	if len(journey.Events) < 6 {
+		t.Fatalf("journey events = %d, want both attempts fully recorded (≥6)", len(journey.Events))
 	}
 }

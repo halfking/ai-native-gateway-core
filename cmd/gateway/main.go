@@ -3971,12 +3971,13 @@ func main() {
 			adminHandler.SetPeakCollector(peakCollector)
 			slog.Info("CHECKPOINT: after SetPeakCollector")
 
-			// 2026-08-14 V3.2: wire state-transition logger. The SSE
-			// queue_snapshot provider is wired once, after the dispatch
-			// pipeline (and its QueueProjection) exists — see the
-			// wireDispatchPipeline call below.
+			// 2026-08-17 B3-PR1: the V3.2 state-transition logger is retired;
+			// its two event producers now write through the requestjourney
+			// recorder, and its table-retention duty moved to the journey
+			// retention worker (1h tick / 7d retention, same semantics).
 			if dbConn != nil && dbConn.Enabled() {
-				wireStateTransitionLogger(dbConn.Pool())
+				retention := requestjourney.NewRetentionWorker(dbConn.Pool())
+				retention.Start()
 			}
 
 			// 2026-08-11: expose the on-demand node IQ test endpoint. Only wire
