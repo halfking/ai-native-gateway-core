@@ -1,3 +1,12 @@
+---
+archived_from: (legacy) docs/archive/2026-07/BUGFIX_MINIMAX_REQUEST_MESSAGE_EMPTY.md
+archived_at: 2026-08-17
+archived_by: docs-archive remediate v1.0
+backup_ts: 20260817-190919
+status: archived
+note: legacy archive, frontmatter retroactively added
+---
+
 # Bug 修复：minimax-m3 请求消息为空 & request not found
 
 ## 问题现象

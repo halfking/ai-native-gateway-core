@@ -1,3 +1,12 @@
+---
+archived_from: (legacy) docs/archive/2026-07/DEPLOYMENT_STATUS_154.md
+archived_at: 2026-08-17
+archived_by: docs-archive remediate v1.0
+backup_ts: 20260817-190919
+status: archived
+note: legacy archive, frontmatter retroactively added
+---
+
 # Deployment Status Report - Server 154
 
 **Date:** 2026-07-26  

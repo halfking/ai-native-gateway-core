@@ -1,3 +1,12 @@
+---
+archived_from: (legacy) docs/archive/2026-08/EXECUTION_SUMMARY_20260813_FINAL.md
+archived_at: 2026-08-17
+archived_by: docs-archive remediate v1.0
+backup_ts: 20260817-190918
+status: archived
+note: legacy archive, frontmatter retroactively added
+---
+
 # LLM Gateway 队列调度深度优化 - 最终执行总结
 
 **执行日期**: 2026-08-13  

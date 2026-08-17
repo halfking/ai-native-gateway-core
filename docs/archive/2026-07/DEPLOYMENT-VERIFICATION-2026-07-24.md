@@ -1,3 +1,12 @@
+---
+archived_from: (legacy) docs/archive/2026-07/DEPLOYMENT-VERIFICATION-2026-07-24.md
+archived_at: 2026-08-17
+archived_by: docs-archive remediate v1.0
+backup_ts: 20260817-190919
+status: archived
+note: legacy archive, frontmatter retroactively added
+---
+
 # 部署验证报告 - VSCode Copilot 客户端取消问题修复
 
 **日期**: 2026-07-24  

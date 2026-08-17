@@ -1,3 +1,12 @@
+---
+archived_from: (legacy) docs/archive/2026-07/FINAL-SUMMARY-2026-07-24.md
+archived_at: 2026-08-17
+archived_by: docs-archive remediate v1.0
+backup_ts: 20260817-190919
+status: archived
+note: legacy archive, frontmatter retroactively added
+---
+
 # 🎉 客户端取消问题 - 完整解决方案总结
 
 ## 📋 问题回顾

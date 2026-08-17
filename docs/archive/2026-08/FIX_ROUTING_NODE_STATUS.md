@@ -1,3 +1,12 @@
+---
+archived_from: (legacy) docs/archive/2026-08/FIX_ROUTING_NODE_STATUS.md
+archived_at: 2026-08-17
+archived_by: docs-archive remediate v1.0
+backup_ts: 20260817-190917
+status: archived
+note: legacy archive, frontmatter retroactively added
+---
+
 # 路由节点状态修复实施方案
 
 > **创建日期**: 2026-08-13  

@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-08-17 (Dashboard Request Detail 5s Timeout)
 
+### 📦 Archived
+- docs/archive/* — 138 process docs archived on 2026-08-17 (see docs/archive/INDEX.md)
+
 ### Fixed
 
 - **dashboard 实时请求流 → 点击请求 报 "query failed"**：`/api/logs/{request_id}` 返回
@@ -38,6 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-08-17 (Long-Running Request Recovery)
 
+
 ### Fixed
 
 - **请求级恢复预算**：所有 Chat/Anthropic 真实上游 HTTP 调用共享原子预算，单个客户端请求最多 100 次；预算耗尽后在未提交语义输出时终止，避免 Survival 与 dispatch 嵌套重试放大调用次数。
@@ -46,6 +50,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **配置契约**：同步 request-survival 示例、默认值和边界测试，阻止超过 100 次或 120 秒的配置回归。
 
 ## [Unreleased] - 2026-08-16 (Auto Loopback Parent Correlation Repair)
+
 
 ### Fixed
 
@@ -63,6 +68,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-08-16 (Durable Queue Retry Boundaries)
 
+
 ### Fixed
 
 - **durable 队列重试边界**：`durable_llm_tasks.attempt_count` 作为唯一执行账本；初次执行后最多重试 100 次，第 101 次执行仍失败时进入终态，不再创建第 102 次执行。
@@ -70,6 +76,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 详见 `docs/changelogs/2026-08-16-long-running-request-survival.md`。
 
 ## [Unreleased] - 2026-08-16 (Handoff Explicit Client Confirmation)
+
 
 ### Added
 
@@ -86,6 +93,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-08-15 (Status Badge Theme Tokens)
 
+
 ### Fixed
 
 - **模型状态徽章主题化**：凭据监控的五态模型可用性徽章改用现有 daylight/night
@@ -95,6 +103,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 详见 `docs/changelogs/2026-08-15-status-badge-theme-tokens.md`。
 
 ## [Unreleased] - 2026-08-15 (Streaming JSON DONE Boundary Repair)
+
 
 ### Fixed
 
@@ -107,6 +116,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-08-15 (会话优化v4 版本裁决与实施计划)
 
+
 ### Added
 
 - **会话优化v4 权威设计 + 实施计划**：整合 6 套历史文档（会话优化v1~v3 / 路由优化v3 / 修订0811 / 自检优化）为 7 份文档，落地 `docs/会话优化v4/`（`00-README` / `01-现状基线与版本裁决` / `02-会话管理与压缩` / `03-缓存映射与请求队列` / `04-节点状态与路由处理` / `05-会话分析与模型选择` / `10-实施计划`）。
@@ -117,6 +127,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-08-15 (Route Flow Sankey Theme Tokens)
 
+
 ### Fixed
 
 - **Sankey 分类色主题化**：路由流向图的 8 类任务颜色与中性 fallback 改用现有 daylight/night 语义 token，移除页面级 hex 色和禁用紫色，同时保持分类映射、数据、布局与交互不变。
@@ -124,6 +135,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 详见 `docs/changelogs/2026-08-15-route-flow-sankey-theme-tokens.md`。
 
 ## [Unreleased] - 2026-08-15 (Credential Lifecycle Contract Integrity)
+
 
 ### Fixed
 
@@ -133,6 +145,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 详见 `rules/53-state-domain-contract-integrity.md`（新增 Vibe Coding 状态域规范）。
 
 ## [Unreleased] - 2026-08-15 (Node Operations Audit Fixes)
+
 
 ### Fixed
 
@@ -144,6 +157,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-08-15 (Priority Component Color Tokens)
 
+
 ### Fixed
 
 - **优先页面硬编码色治理**：`LiveRequestStreamV2`、`SystemStatusIndicator` 与 shell
@@ -154,11 +168,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-08-15 (Vendor Synchronization)
 
+
 ### Fixed
 
 - Regenerated `vendor/` from `go.mod` and `go.sum` after adding Testcontainers dependencies, restoring the default Go vendor-mode test, build, and vet workflow.
 
 ## [Unreleased] - 2026-08-14 (Live Stream Queue Controls)
+
 
 ### Fixed
 
@@ -173,6 +189,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 详见 `docs/changelogs/2026-08-14-live-stream-queue-controls.md`。
 
 ## [Unreleased] - 2026-08-14 (Flash Disconnect Test Suite)
+
 
 ### Added
 
@@ -196,6 +213,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-08-14 (V3.2 Integration Verification)
 
+
 ### Verified
 
 - **V3.2 多智能体并行验证（2026-08-14）**：使用3个并行子代理验证 V3.2 集成完整性
@@ -211,6 +229,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **构建产物忽略规则**：`.gitignore` 添加 `/llm-gateway-*` 通配符，覆盖所有平台构建产物（linux-amd64 等）
 
 ## [Unreleased] - 2026-08-13 (V3.2 partial)
+
 
 ### Added
 
@@ -243,6 +262,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **执行记录与 SUMMARY 虚报修正（rule 11 §5 诚实汇报红线）**：先前 `08-执行记录.md` 声称 "admin/handler.go 注册 4 条新路由 / live_stream_sse.go envelope 扩展 / main.go wire provider 注入" 均已完成，实际**路由未注册、SSE 类型仅 admin 包内可见、main.go 未调 setter**。`SUMMARY.md` 同样将 4 个不存在的 admin API 标为已完成。本次按 rule 11 §5 修正为真实状态（详见 08-执行记录 2026-08-13 known_gaps）。
 
 ## [Unreleased] - 2026-08-09
+
 
 ### Fixed
 
@@ -659,6 +679,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-08-04
 
+
 ### Fixed
 
 - **v2 dispatch summarizer 迁移到 *pgxpool.Pool + summarystore (2026-08-06)**:
@@ -967,6 +988,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-07-29
 
+
 ### Fixed
 
 - **R1.12 本地部署 /v1/models 返回空 (2026-07-31)**:
@@ -1049,6 +1071,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-07-28
 
+
 ### Fixed
 
 - **请求入口身份、终态和拒绝路径追踪收敛** (2026-07-28): Chat/Messages/Responses/Gemini 共享稳定的 request/session 身份派生；Messages/Responses/Gemini 回写最终 `X-Gw-Session-Id`，直连 handler 时也回写 `X-Request-Id`；session middleware 优先读取 `X-Gw-Session-Id`、兼容回退 `X-Session-Id` 并回写规范 header；RequestLogContext 增加原子终态门，success/failure/disconnect 竞争只允许一个终态；全局 middleware 拒绝仍遵循“logs + audit、无强制 WAL”边界，Auth 401 保留 `X-Request-Id` 供客户端关联。
@@ -1062,6 +1085,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **测试**（`admin/live_stream_redis_store_test.go`）：5 个新回归测试 `TestIdleMarker_VisibleInDimensionQueueSnapshot` / `TestIdleMarker_StableRequestIdAcrossTicks` / `TestIdleMarker_PushedRightByNewRequest` / `TestIdleMarker_RefreshesTsOnEachTick` / `TestIdleMarker_BothMainAndDimQueueUpdated` 覆盖"dim 队列可见 / 跨 tick RequestID 稳定 / 新请求左推 / Ts 跨 tick 刷新 / 双写 main+dim"；新增 `TestBuildLiveStreamSnapshot_DedupesIdleMarkersPerLane` 覆盖跨 scope 旧重复块。原 `TestIdleMarkerAnchorsAtSilenceStart` 改写为 `TestIdleMarkerUsesScanTimeAsTs` 反映新语义。
 
 ## [Unreleased] - 2026-07-26
+
 
 ### Added
 
@@ -1179,6 +1203,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Dashboard 实时数据流泳道渲染方向修复** (2026-07-23): `web/src/components/SwimLane.vue` 的 `visibleRequests` computed 错误地对后端 ASC 时间戳数组执行 `.reverse()`，导致泳道色块最左 = 最新（与设计文档 `DASHBOARD_V2_VERIFICATION.md §1.7` 要求的"新请求追加到泳道末尾"相反）。去掉 `.reverse()`，让渲染顺序与后端数据顺序保持一致（左→右 由旧→新），并同步修正组件 CSS 处的误导性注释。详见 [docs/changelogs/2026-07-23-swimlane-direction-fix.md](docs/changelogs/2026-07-23-swimlane-direction-fix.md)。
 
 ## [Unreleased] - 2026-07-18
+
 
 ### Changed
 
@@ -1401,6 +1426,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
      when a new request arrives (vendor/provider/model dimensions).
 
 ## [Unreleased] - 2026-07-16
+
 
 ### Fixed
 
@@ -2466,6 +2492,7 @@ Detailed acceptance criteria + design decisions: `docs/audits/2026-07-14-deploym
 
 ## [Unreleased] - 2026-07-13
 
+
 ### Changed (multimodal attachment documentation audit)
 - **新增** `docs/会话优化v2/04-厂商标准与适配矩阵.md`：涵盖 OpenAI、Anthropic、Gemini、Mistral 的图片/音频/文档/文件引用官方能力与网关适配约束。
 - **修正** README 厂商适配结论与待办优先级标题编号。
@@ -3034,6 +3061,7 @@ Detailed acceptance criteria + design decisions: `docs/audits/2026-07-14-deploym
 - 部署到 184：build_seq 5 → 6，验证 https://llmgo.kxpms.cn/api/admin/data-lifecycle/storage 返回正常 JSON，无 warnings。
 
 ## [Unreleased] - 2026-07-02
+
 
 ### 概述
 

@@ -1,3 +1,12 @@
+---
+archived_from: (legacy) docs/archive/2026-08/AUDIT_ROUND2_SESSION_URSM_PROM_20260812.md
+archived_at: 2026-08-17
+archived_by: docs-archive remediate v1.0
+backup_ts: 20260817-190918
+status: archived
+note: legacy archive, frontmatter retroactively added
+---
+
 # Round-2 Audit — Session Queue / Session V2 Mirror / URSM v2 / Prometheus Registration (2026-08-12)
 
 **Session:** 2026-08-12 · branch `main` · commit `c916c64a5` (post streamretry fix)

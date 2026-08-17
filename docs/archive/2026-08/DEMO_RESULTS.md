@@ -1,3 +1,12 @@
+---
+archived_from: (legacy) docs/archive/2026-08/DEMO_RESULTS.md
+archived_at: 2026-08-17
+archived_by: docs-archive remediate v1.0
+backup_ts: 20260817-190918
+status: archived
+note: legacy archive, frontmatter retroactively added
+---
+
 # LLM模型质量监控系统 v2.0 - 演示结果
 
 ## 演示时间

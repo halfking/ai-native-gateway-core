@@ -1,3 +1,12 @@
+---
+archived_from: (legacy) docs/archive/2026-08/README_ROUTING_FIX.md
+archived_at: 2026-08-17
+archived_by: docs-archive remediate v1.0
+backup_ts: 20260817-190917
+status: archived
+note: legacy archive, frontmatter retroactively added
+---
+
 # 路由节点状态修复 - 文档索引
 
 > **问题**: "No available provider for model 'X'. All 0 candidates"  

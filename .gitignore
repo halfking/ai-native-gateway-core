@@ -217,6 +217,9 @@ bin/
 backups/
 # Local DB dumps / pre-sync backups (large binaries, never commit)
 local-pre-sync-backup-*.dump
+
+# 2026-08-17: docs-archive skill backup directories (per-rule-08, soft-link originals for rollback)
+/docs/.archive-backup-*
 *.dump
 llm-gateway-go.v969.linux.amd64
 fix-selfcheck-keyhash

@@ -1,3 +1,12 @@
+---
+archived_from: (legacy) docs/archive/2026-07/README_LOADTEST_SETUP.md
+archived_at: 2026-08-17
+archived_by: docs-archive remediate v1.0
+backup_ts: 20260817-190918
+status: archived
+note: legacy archive, frontmatter retroactively added
+---
+
 # LLM Gateway 本地压力测试环境 - 项目总结
 
 ## 📋 任务完成清单

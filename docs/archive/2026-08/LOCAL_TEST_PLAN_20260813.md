@@ -1,3 +1,12 @@
+---
+archived_from: (legacy) docs/archive/2026-08/LOCAL_TEST_PLAN_20260813.md
+archived_at: 2026-08-17
+archived_by: docs-archive remediate v1.0
+backup_ts: 20260817-190917
+status: archived
+note: legacy archive, frontmatter retroactively added
+---
+
 # 本地集成测试计划 - 路由 Fail-Safe 机制
 
 > **测试目标**: 验证三层 Fail-Safe 机制在本地环境的完整功能  

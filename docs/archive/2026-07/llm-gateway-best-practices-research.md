@@ -1,3 +1,12 @@
+---
+archived_from: (legacy) docs/archive/2026-07/llm-gateway-best-practices-research.md
+archived_at: 2026-08-17
+archived_by: docs-archive remediate v1.0
+backup_ts: 20260817-190919
+status: archived
+note: legacy archive, frontmatter retroactively added
+---
+
 # LLM Gateway / API Gateway Best Practices Research (2024–2026)
 
 > **Purpose**: Comprehensive research for llm-gateway-go architecture design

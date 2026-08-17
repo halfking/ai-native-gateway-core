@@ -1,3 +1,12 @@
+---
+archived_from: (legacy) docs/archive/2026-08/AUDIT_24H_CREDENTIAL_STATE_20260807.md
+archived_at: 2026-08-17
+archived_by: docs-archive remediate v1.0
+backup_ts: 20260817-190917
+status: archived
+note: legacy archive, frontmatter retroactively added
+---
+
 # 24h 修改审计报告 — 凭据+模型状态机 (2026-08-07)
 
 ## 1. 审计范围
