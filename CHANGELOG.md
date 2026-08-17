@@ -10,6 +10,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### 📦 Archived
 - docs/archive/* — 138 process docs archived on 2026-08-17 (see docs/archive/INDEX.md)
 
+### Changed
+- 根目录去杂（可读性治理第 1 轮，稳妥版）：
+  - 过程文档归档（rule 36）：`SUMMARY.md`→`docs/archive/process/impl-summaries/`、
+    `QUICK_REFERENCE.txt`+`apply_p0_fixes.sh`→`docs/archive/2026-08/`、`audit-20260808-002500/`→
+    `docs/archive/process/audits/2026-08/`、`knowledge/`→`docs/archive/process/incidents/2026-07/`、
+    `memory-bank/`→`docs/archive/process/audits/2026-06/`、`reports/`→impl-summaries+audits-collection、
+    `scratch/`→`docs/archive/process/analysis/`（7 个根目录消失）。
+  - 根目录脚本分桶：`doctor.sh`/`check_expired.lua`→`scripts/ops/`、`verify-columnar-fix.sh`→
+    `scripts/partition/`、`test-*.sh`×3→`scripts/test/`、`fix-nginx-timeout.sh`/`demo-quality-monitor.sh`→
+    `scripts/deprecated/`；同步修正 4 处悬空路径引用。
+  - 测试目录收敛：`regression/`→`tests/regression/`（相对 SQL 路径已改）、`local_test/`→`tests/local/`；
+    `test-results/` untrack+删除。
+  - 目录去重：`k8s/`（单文件）→`deploy/k8s/cron/`、`migrations/timeout-optimization`→`sql/migrations/`、
+    `observability/alerts`→`deploy/prometheus/rules/`（3 个根目录消失）。
+  - 过程状态目录 untrack（磁盘保留）：`.scratch/`、`.zcode/`、`.vite/`。
+
 ### Removed
 - 取消跟踪并本地清理构建产物：`llm-gateway-linux-amd64`（61MB）、`routing-test-client`（8MB）、
   根目录 `gateway`/`llm-gateway`/`*.test`/`migrate-ursm-v2`、`dist/`（1.7GB 发布包）、`build/logs`、`logs/`。

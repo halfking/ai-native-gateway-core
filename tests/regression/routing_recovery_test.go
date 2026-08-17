@@ -7,7 +7,7 @@ import (
 )
 
 func TestDefaultRoutingSeedsUseRoutableFallbackModels(t *testing.T) {
-	body, err := os.ReadFile("../sql/migrations/startup/480_model_iq_cost_calibration.sql")
+	body, err := os.ReadFile("../../sql/migrations/startup/480_model_iq_cost_calibration.sql")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -19,7 +19,7 @@ func TestDefaultRoutingSeedsUseRoutableFallbackModels(t *testing.T) {
 		t.Fatal("default routing must retain a routable deepseek-v4-flash fallback")
 	}
 
-	body, err = os.ReadFile("../sql/migrations/startup/491_work_type_default_routes.sql")
+	body, err = os.ReadFile("../../sql/migrations/startup/491_work_type_default_routes.sql")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +48,7 @@ func TestHealthyProbeReconciliationClearsNodeRouteGate(t *testing.T) {
 }
 
 func TestWorkTypeSeedIsPerRouteIdempotent(t *testing.T) {
-	body, err := os.ReadFile("../sql/migrations/startup/491_work_type_default_routes.sql")
+	body, err := os.ReadFile("../../sql/migrations/startup/491_work_type_default_routes.sql")
 	if err != nil {
 		t.Fatal(err)
 	}
