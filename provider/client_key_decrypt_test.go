@@ -208,6 +208,52 @@ func findCandidateByID(cands []Candidate, credentialID int) *Candidate {
 	return nil
 }
 
+func TestInvalidateCredentialKeyCachePreventsStaleRevealReinsert(t *testing.T) {
+	previousDefault := defaultClient
+	client := NewClient()
+	defer func() { defaultClient = previousDefault }()
+
+	const credentialID = 17
+	client.keyCache[credentialID] = cacheEntry[string]{
+		value:   "old-primary-key",
+		expires: time.Now().Add(time.Hour),
+	}
+	client.keyCacheNeg = map[int]cacheEntry[string]{
+		credentialID: {
+			value:   "old decrypt failure",
+			expires: time.Now().Add(time.Hour),
+		},
+	}
+	staleGeneration := client.keyGeneration[credentialID]
+
+	InvalidateCredentialKeyCache(credentialID)
+	if _, ok := client.keyCache[credentialID]; ok {
+		t.Fatal("primary key cache entry was not evicted")
+	}
+	if _, ok := client.keyCacheNeg[credentialID]; ok {
+		t.Fatal("negative key cache entry was not evicted")
+	}
+	if client.keyGeneration[credentialID] == staleGeneration {
+		t.Fatal("credential key generation did not advance")
+	}
+
+	// A reveal that began before rotation must not restore either stale value.
+	client.cacheRevealedKeyIfCurrent(credentialID, staleGeneration, "old-primary-key")
+	client.cacheRevealFailureIfCurrent(credentialID, staleGeneration, "old decrypt failure")
+	if _, ok := client.keyCache[credentialID]; ok {
+		t.Fatal("stale reveal restored primary key cache entry")
+	}
+	if _, ok := client.keyCacheNeg[credentialID]; ok {
+		t.Fatal("stale reveal restored negative key cache entry")
+	}
+
+	currentGeneration := client.keyGeneration[credentialID]
+	client.cacheRevealedKeyIfCurrent(credentialID, currentGeneration, "new-primary-key")
+	if got := client.keyCache[credentialID].value; got != "new-primary-key" {
+		t.Fatalf("current reveal cached %q, want new primary key", got)
+	}
+}
+
 // TestRevealAPIKeyNegativeCache pins the 2026-08-17 P0 fix that memoises
 // decrypt failures for decryptFailureCacheTTL seconds. Without the cache,
 // every request within the 5-minute positive cache window re-fetches
@@ -222,8 +268,8 @@ func findCandidateByID(cands []Candidate, credentialID int) *Candidate {
 //  4. Verify a separate credential with no entry still gets a fresh error.
 func TestRevealAPIKeyNegativeCache(t *testing.T) {
 	client := &Client{
-		candCache:  make(map[string]cacheEntry[*resolveResponse]),
-		keyCache:   make(map[int]cacheEntry[string]),
+		candCache:   make(map[string]cacheEntry[*resolveResponse]),
+		keyCache:    make(map[int]cacheEntry[string]),
 		keyCacheNeg: make(map[int]cacheEntry[string]),
 	}
 
