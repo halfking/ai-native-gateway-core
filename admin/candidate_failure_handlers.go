@@ -91,7 +91,7 @@ func (h *candidateFailureHandlers) listCandidateFailures(w http.ResponseWriter, 
 			raw_model_name, attempt_index, error_kind, error_message,
 			upstream_status_code, upstream_response_preview, latency_ms,
 			retryable, session_id
-		FROM candidate_failure_logs
+		FROM candidate_failure_logs_with_current_month
 		WHERE ts >= $1
 		  AND ($2 = '' OR error_kind = $2)
 		  AND ($3 = '' OR retryable::text = $3)
@@ -167,7 +167,7 @@ func (h *candidateFailureHandlers) getCandidateFailuresByCredential(w http.Respo
 			id, ts, request_id, raw_model_name, attempt_index, error_kind,
 			upstream_status_code, upstream_response_preview, latency_ms,
 			session_id
-		FROM candidate_failure_logs
+		FROM candidate_failure_logs_with_current_month
 		WHERE credential_id = $1
 		  AND ts >= $2
 		ORDER BY ts DESC, id DESC
@@ -236,7 +236,7 @@ func (h *candidateFailureHandlers) getCandidateFailureStats(w http.ResponseWrite
 			COUNT(DISTINCT upstream_status_code) AS distinct_status_codes,
 			MAX(ts)                        AS last_seen,
 			MIN(ts)                        AS first_seen
-		FROM candidate_failure_logs
+		FROM candidate_failure_logs_with_current_month
 		WHERE ts >= $1
 		GROUP BY raw_model_name, error_kind, credential_id, provider_id
 		ORDER BY count DESC
