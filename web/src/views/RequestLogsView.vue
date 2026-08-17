@@ -908,6 +908,19 @@ async function loadBodyCache() {
   }
 }
 
+// 命中率：无流量（hits+misses=0）时显示 "—"，避免冷启动误读为 0%。
+const bodyCacheHitRate = computed(() => {
+  if (!bodyCache.value) return '—'
+  const { hits, misses, hit_rate: rate } = bodyCache.value
+  return hits + misses > 0 ? `${(rate * 100).toFixed(1)}%` : '—'
+})
+
+// tooltip 与容量分母都取后端回显的 cap，不在前端硬编码 LRU 上限。
+const bodyCacheTitle = computed(
+  () =>
+    `/api/logs/{id} 详情 body 抓取的进程内缓存（LRU ${bodyCache.value?.cap ?? '—'} × TTL 5min）。未命中走热分区（亚毫秒）或列存冷路径（秒级）；条目指当前缓存内 request 数。`,
+)
+
 async function load() {
   loading.value = true
   error.value = null
@@ -1547,17 +1560,14 @@ onMounted(async () => {
 
     <!-- 2026-08-17: 详情 body 缓存可观测条（super admin 专属，随列表刷新更新）。
          低命中率说明重复点击少（miss 走热分区亚毫秒，代价低）；evictions > 0
-         说明 1024 容量吃紧，需要评估调大 LRU 上限。 -->
-    <div
-      v-if="isSuperAdmin() && bodyCache"
-      class="body-cache-strip"
-      title="/api/logs/{id} 详情 body 抓取的进程内缓存（LRU 1024 × TTL 5min）。未命中走热分区（亚毫秒）或列存冷路径（秒级）；条目指当前缓存内 request 数。"
-    >
+         说明容量吃紧，需要评估调大 LRU 上限。容量分母取后端 cap 字段（audit:
+         不硬编码 1024）；无流量时命中率显示 "—" 而非误导性的 0.0%。 -->
+    <div v-if="isSuperAdmin() && bodyCache" class="body-cache-strip" :title="bodyCacheTitle">
       <span class="body-cache-strip__label">⚡ 详情缓存</span>
-      <span>命中率 <strong>{{ (bodyCache.hit_rate * 100).toFixed(1) }}%</strong></span>
+      <span>命中率 <strong>{{ bodyCacheHitRate }}</strong></span>
       <span>命中 {{ bodyCache.hits }}</span>
       <span>未命中 {{ bodyCache.misses }}</span>
-      <span>条目 {{ bodyCache.size }}/1024</span>
+      <span>条目 {{ bodyCache.size }}<template v-if="bodyCache.cap">/{{ bodyCache.cap }}</template></span>
       <span>逐出 {{ bodyCache.evictions }}</span>
     </div>
 
