@@ -111,11 +111,18 @@ type Adapter interface {
 	ApplyNodeHealthDecision(context.Context, Decision) error
 }
 
+// DefaultSeenCapacity bounds request/phase deduplication history. Node state is
+// retained independently, so evicting an old event never resets health.
+const DefaultSeenCapacity = 100000
+
 // OutcomeReducer is safe for concurrent Reduce calls.
 type OutcomeReducer struct {
-	mu    sync.Mutex
-	nodes map[NodeKey]*nodeState
-	seen  map[eventKey]Decision
+	mu        sync.Mutex
+	nodes     map[NodeKey]*nodeState
+	seen      map[eventKey]Decision
+	seenOrder []eventKey
+	seenHead  int
+	maxSeen   int
 }
 
 type nodeState struct {
@@ -130,9 +137,19 @@ type eventKey struct {
 }
 
 func NewOutcomeReducer() *OutcomeReducer {
+	return NewOutcomeReducerWithSeenCapacity(DefaultSeenCapacity)
+}
+
+// NewOutcomeReducerWithSeenCapacity constructs a reducer with bounded event
+// deduplication history. Values below one use the production default.
+func NewOutcomeReducerWithSeenCapacity(maxSeen int) *OutcomeReducer {
+	if maxSeen < 1 {
+		maxSeen = DefaultSeenCapacity
+	}
 	return &OutcomeReducer{
-		nodes: make(map[NodeKey]*nodeState),
-		seen:  make(map[eventKey]Decision),
+		nodes:   make(map[NodeKey]*nodeState),
+		seen:    make(map[eventKey]Decision),
+		maxSeen: maxSeen,
 	}
 }
 
@@ -212,8 +229,23 @@ func (r *OutcomeReducer) Reduce(observation Observation) (Decision, error) {
 	decision.Status = state.status
 	decision.ConsecutiveFailures = state.consecutiveFailures
 	decision.Effects = effectsFor(observation, decision)
-	r.seen[key] = decision
+	r.rememberLocked(key, decision)
 	return decision, nil
+}
+
+func (r *OutcomeReducer) rememberLocked(key eventKey, decision Decision) {
+	if r.maxSeen < 1 {
+		r.maxSeen = DefaultSeenCapacity
+	}
+	if len(r.seenOrder) < r.maxSeen {
+		r.seenOrder = append(r.seenOrder, key)
+	} else {
+		oldest := r.seenOrder[r.seenHead]
+		delete(r.seen, oldest)
+		r.seenOrder[r.seenHead] = key
+		r.seenHead = (r.seenHead + 1) % r.maxSeen
+	}
+	r.seen[key] = decision
 }
 
 // ReduceAndApply invokes adapter hooks only for a newly accepted observation.

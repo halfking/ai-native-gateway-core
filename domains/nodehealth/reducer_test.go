@@ -279,3 +279,33 @@ func TestOutcomeReducerDeduplicatesAttemptPhase(t *testing.T) {
 		t.Fatalf("duplicate changed state: %+v", duplicate)
 	}
 }
+
+func TestOutcomeReducerEvictsOldDedupEntriesWithoutResettingNodeState(t *testing.T) {
+	r := nodehealth.NewOutcomeReducerWithSeenCapacity(2)
+	node := nodehealth.NodeKey{CredentialID: 42, Model: "model-a"}
+	for _, attemptID := range []string{"attempt-1", "attempt-2", "attempt-3"} {
+		if _, err := r.Reduce(nodehealth.Observation{
+			Node: node, AttemptID: attemptID, Phase: nodehealth.PhaseRequest,
+			Outcome: requestjourney.OutcomeFailure, ErrorKind: nodehealth.ErrorKindNetwork,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	replayed, err := r.Reduce(nodehealth.Observation{
+		Node: node, AttemptID: "attempt-1", Phase: nodehealth.PhaseRequest,
+		Outcome: requestjourney.OutcomeSuccess,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !replayed.Accepted || replayed.Duplicate {
+		t.Fatalf("evicted event should be accepted again: %+v", replayed)
+	}
+	if replayed.PreviousStatus != requestjourney.NodeHealthDegraded {
+		t.Fatalf("node state was reset during event eviction: %+v", replayed)
+	}
+	if replayed.Status != requestjourney.NodeHealthHealthy || replayed.ConsecutiveFailures != 0 {
+		t.Fatalf("success after eviction did not recover node: %+v", replayed)
+	}
+}
