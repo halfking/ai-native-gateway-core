@@ -162,14 +162,8 @@ ALTER TABLE request_state_transitions
         )
     );
 
--- Replace migration 515's global replay index for journey rows. Legacy rows
--- retain the old request-scoped uniqueness contract; journey rows are scoped
--- by tenant so identical request IDs can safely exist in different tenants.
-DROP INDEX IF EXISTS uq_state_transitions_request_seq;
-CREATE UNIQUE INDEX IF NOT EXISTS uq_state_transitions_legacy_request_seq
-    ON request_state_transitions (request_id, seq)
-    WHERE event_type IS NULL;
-
+-- Keep migration 515's (request_id, seq) replay index for existing writers.
+-- The tenant-scoped key freezes the RequestJourney lookup/idempotency contract.
 CREATE UNIQUE INDEX IF NOT EXISTS uq_state_transitions_tenant_request_seq
     ON request_state_transitions (tenant_id, request_id, seq)
     WHERE event_type IS NOT NULL;
