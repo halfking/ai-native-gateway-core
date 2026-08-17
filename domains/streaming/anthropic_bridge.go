@@ -146,8 +146,10 @@ func StreamAnthropicPassthroughWithDiagnostics(
 
 	// SR-W1: route client frames through the attempt commit gate.
 	// Disabled (default) this is the identity function — legacy wire bytes.
-	// This passthrough has no error-path terminal rendering (interrupted
-	// reads already return outcome-only), so the gate handle is unused here.
+	// The gate drives the error-path terminal rendering below: while the
+	// attempt is still uncommitted (buffered mode), intercepted upstream
+	// error frames never reach the wire and the interruption stays
+	// transparently retryable.
 	var attemptGate *AttemptCommitGate
 	w, attemptGate = wrapAttemptWriter(w, ProtocolAnthropic)
 	defer func() {
@@ -166,7 +168,6 @@ func StreamAnthropicPassthroughWithDiagnostics(
 			}
 		}
 	}()
-	_ = attemptGate
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)
@@ -200,12 +201,69 @@ func StreamAnthropicPassthroughWithDiagnostics(
 	clientWriter := newClientStreamWriter(w, flusher)
 	chunkCount := 0
 
+	// Upstream error-event interception (2026-08-17): Anthropic `event:
+	// error` frames are terminal stream failures, but relay-style upstreams
+	// pack multi-line diagnostic blobs ("Turn execution failed / provider=…
+	// reason=… retryable=…") into the error message. Forwarding those frames
+	// byte-for-byte surfaced the relay's internals to the client and — when
+	// the relay closed the connection cleanly right after — recorded the
+	// turn as a success (EOF path). Intercept the frame instead: classify
+	// it, keep the raw payload on the audit side channels only, and either
+	// leave the interruption transparently retryable (nothing client-visible
+	// yet) or render the gateway's own structured error event.
+	interceptUpstreamErrorEvent := func(payload string) StreamOutcome {
+		var ev struct {
+			Error *struct {
+				Type    string `json:"type"`
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		_ = json.Unmarshal([]byte(payload), &ev)
+		errType := ""
+		if ev.Error != nil {
+			errType = ev.Error.Type
+		}
+		kind := classifyAnthropicStreamError(errType, []byte(payload))
+		msg := "upstream stream error"
+		if errType != "" {
+			msg = "upstream stream error: " + errType
+		}
+		oc := StreamOutcome{Interrupted: true, Reason: "upstream_error", Kind: kind, Resumable: true, ChunkCount: chunkCount}
+		// finalize before MarkInterruptedWithReason: the mark pins the
+		// capture's chunk counters, and finalize's RecordChunkSent must
+		// still be able to advance them.
+		finalizePassthroughInterruption(clientWriter, attemptGate, capture, &oc, chunkCount, msg)
+		if capture != nil {
+			observeAnthropicPayload(capture, payload, clientModel, outboundModel)
+			capture.MarkInterruptedWithReason("upstream_error")
+		}
+		slog.Warn("anthropic passthrough: upstream terminal error event",
+			"request_id", requestID,
+			"error_type", errType,
+			"kind", string(kind),
+			"client_visible_chunks", chunkCount,
+		)
+		return oc
+	}
+
+	// heldErrorEventLine buffers a seen `event: error` line until its data
+	// payload arrives: the forward/drop decision needs the payload, and an
+	// event line without data never dispatches client-side (SSE spec), so
+	// holding it is invisible to the client.
+	heldErrorEventLine := ""
+
 	for {
 		line, err := readLineWithTimeoutAndCloser(ctx, reader, resp.Body, runtimeCfg.streamChunkTimeout)
 		if err != nil {
 			// EOF after a client disconnect is still a successful upstream
 			// capture; pending replay must be allowed to finalize.
 			if errors.Is(err, io.EOF) {
+				if heldErrorEventLine != "" {
+					// `event: error` then hard EOF: the frame never
+					// completed, but the upstream's intent is unambiguous.
+					outcome = interceptUpstreamErrorEvent("")
+					return outcome
+				}
 				break
 			}
 			if clientWriter.clientDisconnected {
@@ -219,28 +277,81 @@ func StreamAnthropicPassthroughWithDiagnostics(
 			} else {
 				outcome = streamReadFailureOutcome(err, chunkCount)
 			}
+			// The stream already ended abnormally, so the relay's error
+			// blob can no longer arrive — but if content frames of this
+			// attempt are client-visible the client needs a structured
+			// terminal error instead of a bare connection end, and the
+			// capture must reflect that a retry would duplicate content.
+			// finalize runs BEFORE the mark: MarkInterruptedWithReason
+			// pins the chunk counters, and finalize's RecordChunkSent
+			// must still be able to advance them.
+			finalizePassthroughInterruption(clientWriter, attemptGate, capture, &outcome, chunkCount,
+				fmt.Sprintf("upstream stream interrupted: %s", outcome.Reason))
 			if outcome.Interrupted && capture != nil {
 				capture.MarkInterruptedWithReason(outcome.Reason)
 			}
 			return outcome
 		}
 		if line == "" {
+			// Blank line terminates an SSE event; a held `event: error`
+			// line with no data payload never dispatches — drop the hold.
+			heldErrorEventLine = ""
 			continue
+		}
+		trimmed := strings.TrimSpace(line)
+		isDataLine := strings.HasPrefix(trimmed, "data:")
+		var dataPayload string
+		if isDataLine {
+			dataPayload = strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
+		}
+		if heldErrorEventLine != "" {
+			held := heldErrorEventLine
+			heldErrorEventLine = ""
+			if dataPayload != "" {
+				// The event line declared `error`: terminal regardless of
+				// the payload's shape (relays sometimes ship malformed
+				// payloads — classification handles those).
+				if pc != nil {
+					pc.append(line)
+				}
+				logRawUpstreamFrame(diagnostics, auditFromDiagnostics(diagnostics, requestID, "anthropic-messages"), []byte(line))
+				outcome = interceptUpstreamErrorEvent(dataPayload)
+				return outcome
+			}
+			// No data payload on the error event — release the held line.
+			if !clientWriter.clientDisconnected && !clientWriter.write(held) {
+				slog.Info("anthropic passthrough: client disconnected; continuing capture")
+			}
+		} else if isSSEEventLineNamed(trimmed, "error") {
+			// Hold the error event line; side channels see it immediately.
+			heldErrorEventLine = line
+			if pc != nil {
+				pc.append(line)
+			}
+			logRawUpstreamFrame(diagnostics, auditFromDiagnostics(diagnostics, requestID, "anthropic-messages"), []byte(line))
+			continue
+		}
+		if dataPayload != "" && isAnthropicErrorPayload(dataPayload) {
+			// Standalone error payload (relay omitted the event: line).
+			if pc != nil {
+				pc.append(line)
+			}
+			logRawUpstreamFrame(diagnostics, auditFromDiagnostics(diagnostics, requestID, "anthropic-messages"), []byte(line))
+			outcome = interceptUpstreamErrorEvent(dataPayload)
+			return outcome
 		}
 		if !clientWriter.clientDisconnected {
 			if !clientWriter.write(line) {
 				slog.Info("anthropic passthrough: client disconnected; continuing capture")
-			} else if strings.HasPrefix(strings.TrimSpace(line), "data:") {
+			} else if isDataLine {
 				chunkCount++
 			}
 		}
 		if pc != nil {
 			pc.append(line)
 		}
-		if capture != nil && strings.HasPrefix(line, "data: ") {
-			payload := strings.TrimPrefix(line, "data: ")
-			payload = strings.TrimSpace(payload)
-			observeAnthropicPayload(capture, payload, clientModel, outboundModel)
+		if capture != nil && isDataLine {
+			observeAnthropicPayload(capture, dataPayload, clientModel, outboundModel)
 		}
 
 		logRawUpstreamFrame(diagnostics, auditFromDiagnostics(diagnostics, requestID, "anthropic-messages"), []byte(line))
@@ -254,6 +365,107 @@ func StreamAnthropicPassthroughWithDiagnostics(
 	}
 	outcome.ChunkCount = chunkCount
 	return outcome
+}
+
+// finalizePassthroughInterruption renders the gateway's own Anthropic error
+// event when frames of this attempt are already client-visible, and pins the
+// capture's sent-chunk counter so the executor's mayRetryInterruptedStream
+// cannot approve a retry that would duplicate client-visible content
+// (RecordChunkSent was previously only wired on the OpenAI→OpenAI bridge).
+//
+// Nothing is rendered while the attempt commit gate still holds the frames
+// uncommitted (buffered mode): those bytes die with the gate and the
+// interruption stays transparently retryable (outcome.Resumable untouched).
+func finalizePassthroughInterruption(
+	cw *clientStreamWriter,
+	gate *AttemptCommitGate,
+	capture *audit.StreamCapture,
+	oc *StreamOutcome,
+	chunkCount int,
+	message string,
+) {
+	if oc == nil || !oc.Interrupted || oc.Kind == errorsx.KindCanceled {
+		return
+	}
+	if chunkCount == 0 || cw == nil || cw.clientDisconnected {
+		return
+	}
+	if gate != nil && !gate.MayWriteTerminal() {
+		return
+	}
+	writePassthroughErrorEvent(cw, "upstream_error", message)
+	// A client-visible terminal error makes the attempt non-transparently
+	// retryable even when no capture is attached (capture==nil otherwise
+	// bypasses the snapshot check in mayRetryInterruptedStream).
+	oc.Resumable = false
+	if capture != nil {
+		capture.RecordChunkSent()
+	}
+}
+
+// writePassthroughErrorEvent renders one Anthropic-shaped error event with
+// the gateway's own envelope, replacing the raw upstream error frame so
+// relay-internal diagnostic blobs never reach the client verbatim.
+func writePassthroughErrorEvent(cw *clientStreamWriter, errType, message string) {
+	if cw == nil {
+		return
+	}
+	payload, _ := json.Marshal(map[string]any{
+		"type":  "error",
+		"error": map[string]any{"type": errType, "message": message},
+	})
+	cw.write(fmt.Sprintf("event: error\ndata: %s\n\n", payload))
+}
+
+// isAnthropicErrorPayload reports whether an SSE data payload is an
+// Anthropic terminal error event — the canonical
+// {"type":"error","error":{...}} shape plus the bare {"error":{...}}
+// variant some relays emit.
+func isAnthropicErrorPayload(payload string) bool {
+	if payload == "" || payload == "[DONE]" {
+		return false
+	}
+	var probe struct {
+		Type  string          `json:"type"`
+		Error json.RawMessage `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(payload), &probe); err != nil {
+		return false
+	}
+	return probe.Type == "error" || (len(probe.Error) > 0 && string(probe.Error) != "null")
+}
+
+// isSSEEventLineNamed reports whether trimmedLine is an `event: <name>`
+// declaration for the named SSE event.
+func isSSEEventLineNamed(trimmedLine, name string) bool {
+	if !strings.HasPrefix(trimmedLine, "event:") {
+		return false
+	}
+	return strings.TrimSpace(strings.TrimPrefix(trimmedLine, "event:")) == name
+}
+
+// classifyAnthropicStreamError maps an upstream Anthropic error event to an
+// errorsx kind for the executor's circuit / failover bookkeeping. Known
+// error.type tokens map directly; anything else falls back to body-pattern
+// classification (overload phrasing etc.), defaulting to KindUpstreamDown
+// so in-stream terminal errors are always retryable-classified rather than
+// the generic transient.
+func classifyAnthropicStreamError(errType string, payload []byte) errorsx.ErrorKind {
+	switch errType {
+	case "overloaded_error":
+		return errorsx.KindUpstreamOverloaded
+	case "rate_limit_error":
+		return errorsx.KindRateLimit
+	case "authentication_error", "permission_error":
+		return errorsx.KindAuth
+	case "timeout", "timeout_error":
+		return errorsx.KindTimeout
+	}
+	kind := errorsx.ClassifyErrorWithBody(0, payload)
+	if kind == errorsx.KindTransient {
+		return errorsx.KindUpstreamDown
+	}
+	return kind
 }
 
 // observeAnthropicPayload inspects a single Anthropic SSE data payload
