@@ -1,1 +1,0 @@
-vendor-pricing-table.py
