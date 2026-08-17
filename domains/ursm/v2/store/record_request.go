@@ -39,6 +39,15 @@ type RecordOutcome struct {
 	// implementation.) Empty/non-"free" values keep the pre-existing
 	// hard-disable behavior for all other billing modes.
 	BillingMode string
+	// HealthStatus (会话优化 v4 T5 / P1-5): optional rich health enum
+	// (api.HealthStatus*). Empty or out-of-vocabulary values leave the
+	// stored "health" field untouched. Display-only — see
+	// record_request.lua's bridge block for the eligibility boundary.
+	HealthStatus string
+	// BackoffCapSeconds (UT-UR-05): caps cool_seconds × 2^disable_count
+	// in record_request.lua. <=0 falls back to 1800 (the T5 target; the
+	// value was hard-coded 3600 in the Lua before parameterization).
+	BackoffCapSeconds int
 }
 
 type RecordResult struct {
@@ -62,6 +71,10 @@ func (s *Store) RecordRequest(ctx context.Context, nodeKey, win1m, win5m, win30m
 	if failStreakLimit <= 0 {
 		failStreakLimit = 3
 	}
+	backoffCapSeconds := o.BackoffCapSeconds
+	if backoffCapSeconds <= 0 {
+		backoffCapSeconds = 1800 // 会话优化 v4 T5 target (was hard-coded 3600 in the Lua)
+	}
 	res, err := RecordRequestScript.Run(ctx, s.rdb,
 		[]string{nodeKey, win1m, win5m, win30m, requestDedupKey(nodeKey, o.DedupKey)},
 		BoolFlag(o.Success), o.ErrorKind, fmt.Sprintf("%d", o.NowMs),
@@ -74,6 +87,8 @@ func (s *Store) RecordRequest(ctx context.Context, nodeKey, win1m, win5m, win30m
 		fmt.Sprintf("%d", failStreakLimit),
 		BoolFlag(o.DedupKey != ""),
 		o.BillingMode,
+		o.HealthStatus,
+		fmt.Sprintf("%d", backoffCapSeconds),
 	).Slice()
 	if err != nil {
 		return RecordResult{}, fmt.Errorf("ursm.v2: record_request: %w", err)

@@ -584,7 +584,7 @@ func TestRecoverFreshDegradedBindingsEnqueuesProbes(t *testing.T) {
 	defer mock.Close()
 
 	rows := pgxmock.NewRows([]string{"credential_id", "raw_model_name"}).
-		AddRow(22, "glm-5.2"). // 智码 zhipu glm-5.2
+		AddRow(22, "glm-5.2").   // 智码 zhipu glm-5.2
 		AddRow(33, "minimax-m3") // 智码 minimax-m3
 	mock.ExpectQuery("FROM credential_model_bindings cmb").
 		WillReturnRows(rows)
@@ -754,5 +754,295 @@ func TestHealthAutoRecoverSetTickIntervalDisabled(t *testing.T) {
 	w.SetTickInterval(30 * time.Second)
 	if got := w.currentInterval(); got != 30*time.Second {
 		t.Fatalf("after re-arm SetTickInterval(30s) currentInterval() = %v, want 30s", got)
+	}
+}
+
+// -----------------------------------------------------------------------------
+// 会话优化 v4 T5 — 36h 成功回看恢复扫描 (FR-4 R4.4 / UT-CR-09)
+// -----------------------------------------------------------------------------
+
+// TestLookbackCandidateSQLGuards pins the UT-CR-09 eligibility contract:
+// only degraded/offline bindings with a SUCCESS inside the lookback window
+// are candidates; the SELECT never mutates cmb.available.
+func TestLookbackCandidateSQLGuards(t *testing.T) {
+	sql := lookbackCandidateSQL()
+	mustContain := []string{
+		// degraded/offline predicate with cooldown elapsed-or-unscheduled
+		"cmb.available = FALSE",
+		"cmb.unavailable_recover_at IS NULL OR cmb.unavailable_recover_at <= now()",
+		// hard guards (mirror expiredCmbRecoverySQL)
+		"COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'",
+		"COALESCE(cmb.admin_protected, FALSE) = FALSE",
+		"COALESCE(c.status, 'active') = 'active'",
+		"COALESCE(c.lifecycle_status, 'active') = 'active'",
+		"COALESCE(c.manual_disabled, FALSE) = FALSE",
+		"c.availability_state = 'ready'",
+		// the 36h success window — on BOTH log tables
+		"FROM request_logs_hot rl",
+		"FROM request_logs rl",
+		"rl.success = TRUE",
+		"rl.ts > now() - make_interval(hours => $1)",
+		"COALESCE(rl.outbound_model, rl.client_model) = pm.raw_model_name",
+		// bounded fan-out
+		"LIMIT $2",
+	}
+	for _, want := range mustContain {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("lookbackCandidateSQL missing %q in:\n%s", want, sql)
+		}
+	}
+	// SELECT-only: the authoritative cmb.available flip belongs to the
+	// node_probe runOne success branch, never to the scan.
+	for _, banned := range []string{"UPDATE credential_model_bindings", "SET available = TRUE"} {
+		if strings.Contains(sql, banned) {
+			t.Fatalf("lookbackCandidateSQL must NOT contain %q (select-only contract):\n%s", banned, sql)
+		}
+	}
+}
+
+// mapHotStub satisfies LookbackHotConfig for the resolution tests.
+type mapHotStub map[string]int
+
+func (m mapHotStub) GetInt(key string, defaultValue int) int {
+	if v, ok := m[key]; ok {
+		return v
+	}
+	return defaultValue
+}
+
+// TestLookbackIntervalAndWindowResolution pins the config precedence:
+// hotconfig → env → default (15min / 36h). Non-positive window values fall
+// back to the default so a bad settings row cannot disable the predicate.
+func TestLookbackIntervalAndWindowResolution(t *testing.T) {
+	r := &CredentialRecovery{}
+	if got := r.lookbackScanIntervalLocked(); got != defaultLookbackScanInterval {
+		t.Fatalf("default lookback interval = %v, want %v", got, defaultLookbackScanInterval)
+	}
+	if got := r.lookbackWindowHoursLocked(); got != defaultLookbackWindowHours {
+		t.Fatalf("default lookback window = %dh, want %dh", got, defaultLookbackWindowHours)
+	}
+
+	t.Setenv("LLM_GATEWAY_RECOVERY_LOOKBACK_INTERVAL_SECONDS", "120")
+	if got := r.lookbackScanIntervalLocked(); got != 2*time.Minute {
+		t.Fatalf("env interval = %v, want 2m", got)
+	}
+	t.Setenv("LLM_GATEWAY_RECOVERY_LOOKBACK_WINDOW_HOURS", "12")
+	if got := r.lookbackWindowHoursLocked(); got != 12 {
+		t.Fatalf("env window = %dh, want 12h", got)
+	}
+
+	r.SetLookbackHotConfig(mapHotStub{
+		HotKeyRecoveryLookbackIntervalSeconds: 30,
+		HotKeyRecoveryLookbackWindowHours:     48,
+	})
+	if got := r.lookbackScanIntervalLocked(); got != 30*time.Second {
+		t.Fatalf("hotconfig interval = %v, want 30s (hotconfig wins over env)", got)
+	}
+	if got := r.lookbackWindowHoursLocked(); got != 48 {
+		t.Fatalf("hotconfig window = %dh, want 48h (hotconfig wins over env)", got)
+	}
+
+	// Non-positive window from hotconfig falls back to env, then default.
+	r.SetLookbackHotConfig(mapHotStub{HotKeyRecoveryLookbackWindowHours: 0})
+	if got := r.lookbackWindowHoursLocked(); got != 12 {
+		t.Fatalf("hotconfig window 0 must fall back to env 12h, got %dh", got)
+	}
+
+	// Very small intervals clamp to 1s.
+	r.SetLookbackHotConfig(mapHotStub{HotKeyRecoveryLookbackIntervalSeconds: 1})
+	if got := r.lookbackScanIntervalLocked(); got != time.Second {
+		t.Fatalf("1s hotconfig interval must stay 1s, got %v", got)
+	}
+
+	// An explicit 0 from hotconfig is the disabled sentinel (same semantics
+	// as SetTickInterval(0) on the 30s loop) — NOT a fall-through to default.
+	r.SetLookbackHotConfig(mapHotStub{HotKeyRecoveryLookbackIntervalSeconds: 0})
+	if got := r.lookbackScanIntervalLocked(); got != 0 {
+		t.Fatalf("explicit hotconfig 0 must disable the scan (0 sentinel), got %v", got)
+	}
+}
+
+// TestScanLookbackTriggersRecoveryAndProbe pins the positive UT-CR-09
+// semantics at the unit level: a candidate row (already filtered by the SQL
+// success predicate) is claimed via the SKIP LOCKED lease tx, receives the
+// Recover(30) success write, and is handed to the dual-round probe entry.
+func TestScanLookbackTriggersRecoveryAndProbe(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool: %v", err)
+	}
+	defer mock.Close()
+
+	// Candidate query: one degraded binding with in-window success.
+	mock.ExpectQuery("FROM credential_model_bindings cmb").
+		WithArgs(36, lookbackBatchLimit).
+		WillReturnRows(pgxmock.NewRows([]string{"credential_id", "raw_model_name", "tenant_id"}).
+			AddRow(22, "glm-5.2", "default"))
+
+	// Claim: BEGIN → SELECT ... FOR UPDATE SKIP LOCKED (row exists) →
+	// UPDATE lease → COMMIT (the node_probe.go:1140-1209 shape).
+	mock.ExpectBegin()
+	mock.ExpectQuery("FOR UPDATE SKIP LOCKED").
+		WithArgs(22, "glm-5.2").
+		WillReturnRows(pgxmock.NewRows([]string{"one"}).AddRow(1))
+	mock.ExpectExec("UPDATE node_probe_state").
+		WithArgs(pgxmock.AnyArg(), 22, "glm-5.2").
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	mock.ExpectCommit()
+
+	r := &CredentialRecovery{db: mock, lookbackDB: mock, done: make(chan struct{})}
+	var (
+		mu        sync.Mutex
+		recovers  []string
+		submitted []string
+	)
+	r.SetURSMRecoverSink(func(ctx context.Context, tenantID string, credID int, model string, success bool, latencyMs int) error {
+		mu.Lock()
+		defer mu.Unlock()
+		recovers = append(recovers, fmt.Sprintf("%s|%d|%s|%v", tenantID, credID, model, success))
+		return nil
+	})
+	r.SetProbeSubmitter(func(credID int, model string) {
+		mu.Lock()
+		defer mu.Unlock()
+		submitted = append(submitted, fmt.Sprintf("%d|%s", credID, model))
+	})
+	r.SetInvalidateCandidateCache(func(int) {})
+
+	r.scanLookbackRecoveries(context.Background())
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(recovers) != 1 || recovers[0] != "default|22|glm-5.2|true" {
+		t.Fatalf("recover writes = %v, want one evidence-backed success=true write", recovers)
+	}
+	if len(submitted) != 1 || submitted[0] != "22|glm-5.2" {
+		t.Fatalf("probe submissions = %v, want the dual-round probe for 22|glm-5.2", submitted)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("pgxmock expectations not met: %v", err)
+	}
+}
+
+// TestScanLookbackNoRowsNoTrigger pins the negative half of UT-CR-09 at the
+// unit level: no candidate rows (SQL excluded them — no in-window success)
+// → zero recover writes, zero probe submissions, no claim transactions.
+func TestScanLookbackNoRowsNoTrigger(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool: %v", err)
+	}
+	defer mock.Close()
+
+	mock.ExpectQuery("FROM credential_model_bindings cmb").
+		WithArgs(36, lookbackBatchLimit).
+		WillReturnRows(pgxmock.NewRows([]string{"credential_id", "raw_model_name", "tenant_id"}))
+
+	r := &CredentialRecovery{db: mock, lookbackDB: mock, done: make(chan struct{})}
+	calls := 0
+	r.SetURSMRecoverSink(func(context.Context, string, int, string, bool, int) error {
+		calls++
+		return nil
+	})
+	r.SetProbeSubmitter(func(int, string) { calls++ })
+
+	r.scanLookbackRecoveries(context.Background())
+	if calls != 0 {
+		t.Fatalf("no candidates must trigger nothing, got %d hook calls", calls)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("pgxmock expectations not met: %v", err)
+	}
+}
+
+// TestScanLookbackSkipsLeasedOrPausedRows pins the cross-instance lease: a
+// claim whose SELECT finds no lease-free row and whose INSERT loses the ON
+// CONFLICT race (row exists, leased/paused elsewhere) reports claimed=false
+// and the scan skips both the recover write and the probe submission.
+func TestScanLookbackSkipsLeasedOrPausedRows(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool: %v", err)
+	}
+	defer mock.Close()
+
+	mock.ExpectQuery("FROM credential_model_bindings cmb").
+		WithArgs(36, lookbackBatchLimit).
+		WillReturnRows(pgxmock.NewRows([]string{"credential_id", "raw_model_name", "tenant_id"}).
+			AddRow(33, "minimax-m3", "default"))
+
+	// SELECT FOR UPDATE SKIP LOCKED → no rows (leased by another instance);
+	// INSERT ... ON CONFLICT DO NOTHING → 0 rows affected (row existed).
+	mock.ExpectBegin()
+	mock.ExpectQuery("FOR UPDATE SKIP LOCKED").
+		WithArgs(33, "minimax-m3").
+		WillReturnRows(pgxmock.NewRows([]string{"one"}))
+	mock.ExpectExec("INSERT INTO node_probe_state").
+		WithArgs(33, "minimax-m3", pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("INSERT", 0))
+	mock.ExpectRollback()
+
+	r := &CredentialRecovery{db: mock, lookbackDB: mock, done: make(chan struct{})}
+	calls := 0
+	r.SetURSMRecoverSink(func(context.Context, string, int, string, bool, int) error {
+		calls++
+		return nil
+	})
+	r.SetProbeSubmitter(func(int, string) { calls++ })
+
+	r.scanLookbackRecoveries(context.Background())
+	if calls != 0 {
+		t.Fatalf("leased candidate must be skipped entirely, got %d hook calls", calls)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("pgxmock expectations not met: %v", err)
+	}
+}
+
+// TestClaimLookbackInsertsMissingProbeRow pins the never-probed branch: a
+// candidate degraded purely by continuous_failure (no node_probe_state row)
+// gets one INSERTed with a 5s-armed next_retry_at plus the lease so the
+// worker can pick it up — the scan does not silently drop it.
+func TestClaimLookbackInsertsMissingProbeRow(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool: %v", err)
+	}
+	defer mock.Close()
+
+	mock.ExpectBegin()
+	mock.ExpectQuery("FOR UPDATE SKIP LOCKED").
+		WithArgs(44, "never-probed-model").
+		WillReturnRows(pgxmock.NewRows([]string{"one"}))
+	mock.ExpectExec("INSERT INTO node_probe_state").
+		WithArgs(44, "never-probed-model", pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectCommit()
+
+	r := &CredentialRecovery{lookbackDB: mock}
+	claimed, err := r.claimLookbackCandidate(context.Background(), 44, "never-probed-model")
+	if err != nil || !claimed {
+		t.Fatalf("claim = (%v, %v), want (true, nil) for a never-probed candidate", claimed, err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("pgxmock expectations not met: %v", err)
+	}
+}
+
+// TestScanLookbackNoOpWithoutHooks pins the wiring safety: with neither the
+// URSM recover sink nor the probe submitter wired, the scan is a silent
+// no-op (no SQL issued) — mirroring recoverFreshDegradedBindings.
+func TestScanLookbackNoOpWithoutHooks(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool: %v", err)
+	}
+	defer mock.Close()
+	// No expectations: any query would fail the test.
+
+	r := &CredentialRecovery{db: mock, lookbackDB: mock, done: make(chan struct{})}
+	r.scanLookbackRecoveries(context.Background())
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("pgxmock expectations not met: %v", err)
 	}
 }

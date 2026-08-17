@@ -64,6 +64,12 @@ type Manager struct {
 	conc     resource.Concurrency
 	rpm      resource.RPM
 	log      Logger
+	// hotMu guards hotSrc — the live settings_kv source wired by
+	// SetHotConfig (会话优化 v4 T5 / P1-6). nil until the integrator wires
+	// one; every hot-configurable read goes through effectiveConfig(), so
+	// boot values stay in effect until then.
+	hotMu  stdsync.RWMutex
+	hotSrc HotConfigSource
 	// nodeMirror is the process-local LRU read accelerator for node views
 	// (M2, spec Decision 2). nil when LRUMirrorSize==0 (mirror disabled).
 	// Always a read-only replica of Redis; never written before a successful
@@ -72,6 +78,37 @@ type Manager struct {
 	invalidationStop context.CancelFunc
 	invalidationWG   stdsync.WaitGroup
 	closeOnce        stdsync.Once
+}
+
+// SetHotConfig wires the live settings_kv source (hotconfig.Config
+// satisfies HotConfigSource). Values are read per use — following the
+// requestjourney/config.go live-source pattern — so a settings_kv change
+// takes effect on the next call without any reload loop inside this
+// package. Passing nil detaches the source and reverts to boot config.
+func (m *Manager) SetHotConfig(src HotConfigSource) {
+	if m == nil {
+		return
+	}
+	m.hotMu.Lock()
+	m.hotSrc = src
+	m.hotMu.Unlock()
+}
+
+// effectiveConfig returns the boot config with live hot-config overrides
+// layered on top (see LoadHot). Called on the few paths that consume
+// hot-configurable parameters: RecordRequest (cool/node-TTL/backoff cap),
+// ApplyProbe* (node TTL), and the mirror gear decision.
+func (m *Manager) effectiveConfig() Config {
+	if m == nil {
+		return DefaultConfig()
+	}
+	m.hotMu.RLock()
+	src := m.hotSrc
+	m.hotMu.RUnlock()
+	if src == nil {
+		return m.cfg
+	}
+	return LoadHot(m.cfg, src)
 }
 
 // New constructs a Manager. If d.Config.RedisKeyPrefix is empty the
@@ -373,16 +410,34 @@ func (m *Manager) FilterAndScoreReadyWithSource(ctx context.Context, seeds []Can
 }
 
 func (m *Manager) filterAndScore(ctx context.Context, seeds []CandidateSeed, ready bool) ([]api.NodeView, statesource.RoutingStateSource, error) {
-	// M2 (2026-07-27, spec Decision 2 + Decision 3 fail-open): serve the hot
-	// path from the process LRU mirror first. If EVERY seed hits the mirror,
-	// the caller's Ready snapshot still governs whether this result may be used
-	// as authoritative routing state.
-	// path from the process LRU mirror first. If EVERY seed hits the mirror,
-	// we return WITHOUT consulting Redis or the Ready gate — this is the
-	// "Redis 不可达 → LRU 镜像" fail-open path. Only on a miss do we require
-	// Ready + Redis. The mirror is a read-only replica, backfilled only AFTER
-	// a Redis read; applyToLRU enforces the generation-monotonic contract so a
-	// stale snapshot can never overwrite a newer LRU entry.
+	// M2 (2026-07-27, spec Decision 2): serve the hot path from the process
+	// LRU mirror first. The mirror is a read-only replica, backfilled only
+	// AFTER a Redis read; applyToLRU enforces the generation-monotonic
+	// contract so a stale snapshot can never overwrite a newer LRU entry.
+	//
+	// 会话优化 v4 §14.3 mirror-first gear contract (2026-08-18, closes the
+	// P0-1 residual): a full mirror hit is NO LONGER an unconditional
+	// fail-open path that skips Redis entirely. Two explicit gears:
+	//
+	//   target gear (default, MirrorGraceEnabled=false, consistency-first):
+	//     a full mirror hit is served only after a cheap Redis liveness
+	//     verify (PING). If Redis is unreachable the call is protectively
+	//     rejected — the data plane stops routing rather than serving
+	//     mirror state of unknown freshness. Redis HA (sentinel/cluster) +
+	//     the ready gate (MarkClosedDebounced/RestoreIfClosed) are the
+	//     availability story for this gear.
+	//
+	//   optional grace gear (MirrorGraceEnabled=true via settings_kv key
+	//     llmgw_ursm_mirror_grace_enabled, availability-over-consistency):
+	//     a full mirror hit within the soft TTL (default 30s) may serve
+	//     degraded read-only routing with zero Redis IO; soft-expired
+	//     entries already fall through to the Redis read path below (and
+	//     are rejected when that fails). Source is still reported as
+	//     StateSourceNodeMirrorHit so dashboards can size the gear.
+	//
+	// The afb13c9ea ready-gate fix is unchanged: a false readiness snapshot
+	// ALWAYS rejects, mirror contents notwithstanding — no gear may bypass
+	// the recovery gate.
 	views := make([]api.NodeView, len(seeds))
 	missIndices := make([]int, 0, len(seeds))
 	// Per-seed source tally for the S-3 helper. We classify each seed
@@ -393,7 +448,6 @@ func (m *Manager) filterAndScore(ctx context.Context, seeds []CandidateSeed, rea
 	// The aggregate is decided below.
 	var mirrorHit, mirrorStale, mirrorMiss int
 	if m.nodeMirror != nil {
-		now := time.Now()
 		for i, s := range seeds {
 			if mv, ok := m.nodeMirror.GetForTenant(s.TenantID, s.CredentialID, s.RawModel); ok {
 				views[i] = mirrorToAPIView(mv, s)
@@ -406,7 +460,6 @@ func (m *Manager) filterAndScore(ctx context.Context, seeds []CandidateSeed, rea
 			// honour soft-TTL (it's an introspection helper), which is
 			// exactly what we need here.
 			if _, present := m.nodeMirror.PeekForTenant(s.TenantID, s.CredentialID, s.RawModel); present {
-				_ = now // time check is encapsulated in softExpireAt
 				missIndices = append(missIndices, i)
 				mirrorStale++
 				continue
@@ -425,22 +478,30 @@ func (m *Manager) filterAndScore(ctx context.Context, seeds []CandidateSeed, rea
 
 	// A false readiness snapshot must always fall back, including when the
 	// process mirror contains every requested node. The mirror is only a
-	// read accelerator; it cannot bypass the recovery gate.
+	// read accelerator; it cannot bypass the recovery gate (afb13c9ea).
 	if !ready {
 		return nil, "", fmt.Errorf("ursm.v2: not ready")
 	}
 	if len(missIndices) == 0 {
+		if !m.effectiveConfig().MirrorGraceEnabled {
+			// Target gear: verify Redis liveness before serving a
+			// mirror-only answer. One PING bounds the check; failure is a
+			// protective rejection (wraps store.ErrRedisUnavailable so
+			// callers can errors.Is it exactly like the pipeline path).
+			if err := m.verifyRedisForMirrorServe(ctx); err != nil {
+				return nil, "", fmt.Errorf("ursm.v2: mirror serve rejected, redis unavailable: %w", err)
+			}
+		}
+		// Grace gear skips the verify: entries served here are within the
+		// mirror soft TTL by construction (GetForTenant honours it), so the
+		// degrade window is bounded by LRUMirrorSoftTTL (default 30s).
 		scoreAndSort(views, seeds, m.cfg.ScoringWeights)
 		// Every seed resolved from the mirror (no soft-expired entries).
 		return views, statesource.StateSourceNodeMirrorHit, nil
 	}
 
-	// A Redis miss must use the caller's request snapshot. A false snapshot
-	// rejects the miss, while a mirror-only request remains fail-open above.
-	// authoritative read). A false snapshot must never be bypassed by the LRU.
-	if !ready {
-		return nil, "", fmt.Errorf("ursm.v2: not ready")
-	}
+	// At least one seed missed the mirror: the Redis pipeline below is the
+	// authoritative read, and its failure is already a protective rejection.
 	missQueries := make([]store.NodeQuery, 0, len(missIndices))
 	for _, idx := range missIndices {
 		missQueries = append(missQueries, store.NodeQuery{
@@ -451,7 +512,11 @@ func (m *Manager) filterAndScore(ctx context.Context, seeds []CandidateSeed, rea
 	}
 	fetched, err := m.store.PipelineNodeViews(ctx, m.cfg.RedisKeyPrefix, missQueries)
 	if err != nil {
-		return nil, "", fmt.Errorf("ursm.v2: pipeline: %w", err)
+		// Wrap store.ErrRedisUnavailable explicitly (会话优化 v4 §14.3):
+		// the FilterAndScore doc contract promises errors.Is(err,
+		// store.ErrRedisUnavailable) on Redis failures — previously only the
+		// nil-client path satisfied it, network errors surfaced bare.
+		return nil, "", fmt.Errorf("ursm.v2: pipeline: %w: %v", store.ErrRedisUnavailable, err)
 	}
 	for j, idx := range missIndices {
 		views[idx] = fetched[j]
@@ -480,6 +545,29 @@ func (m *Manager) filterAndScore(ctx context.Context, seeds []CandidateSeed, rea
 	default:
 		return views, statesource.StateSourceNodeMirrorMiss, nil
 	}
+}
+
+// mirrorServeVerifyTimeout bounds the Redis liveness PING on the
+// full-mirror-hit path (target gear). Kept short: it runs on the request
+// hot path, and its only purpose is distinguishing "Redis reachable" from
+// "Redis down" — a slow-but-alive Redis still answers PING in well under
+// this budget.
+const mirrorServeVerifyTimeout = 100 * time.Millisecond
+
+// verifyRedisForMirrorServe implements the §14.3 target-gear check: before
+// a mirror-only answer may be served, Redis must be demonstrably
+// reachable. The error wraps store.ErrRedisUnavailable so callers can
+// errors.Is it identically to the pipeline-read failure path.
+func (m *Manager) verifyRedisForMirrorServe(ctx context.Context) error {
+	if m == nil || m.store == nil {
+		return store.ErrRedisUnavailable
+	}
+	pingCtx, cancel := context.WithTimeout(ctx, mirrorServeVerifyTimeout)
+	defer cancel()
+	if err := m.store.RawClient().Ping(pingCtx).Err(); err != nil {
+		return fmt.Errorf("%w: mirror liveness ping: %v", store.ErrRedisUnavailable, err)
+	}
+	return nil
 }
 
 func backfillSeedIdentity(v *api.NodeView, s CandidateSeed) {
@@ -532,9 +620,15 @@ func safeSR5m(sr float64, samples int) float64 {
 
 // mirrorToAPIView expands a cached NodeView (the score-relevant subset) into
 // an api.NodeView for the scoring loop. Fields not held in the cache (SR1m,
-// Samples*, LatP50/P95, HealthStatus) are left zero — they are not read by
-// the scorer, only by observers, and a soft-expired entry would have missed
-// the LRU anyway (so we never score off a stale entry).
+// Samples*, LatP50/P95) are left zero — they are not read by the scorer,
+// only by observers, and a soft-expired entry would have missed the LRU
+// anyway (so we never score off a stale entry).
+//
+// 会话优化 v4 T5 / P1-5 (UT-UR-12): HealthStatus now round-trips through
+// the mirror (cache.NodeView.HealthStatus ← Redis "health" field via
+// ApplyFromAPI). It is carried for DISPLAY ONLY — nothing in
+// scoreAndSort or the availability filter consults it; routing eligibility
+// stays decided by Available/CoolUntil per the §14.3/FR-4 boundary.
 func mirrorToAPIView(mv cache.NodeView, s CandidateSeed) api.NodeView {
 	return api.NodeView{
 		ProviderID:    s.ProviderID,
@@ -544,6 +638,7 @@ func mirrorToAPIView(mv cache.NodeView, s CandidateSeed) api.NodeView {
 		TenantID:      s.TenantID,
 		Available:     mv.Available,
 		Reason:        mv.Reason,
+		HealthStatus:  mv.HealthStatus,
 		FailStreak:    mv.FailStreak,
 		CoolUntil:     mv.CoolUntil,
 		LatEWMA:       mv.LatEWMA,
@@ -891,6 +986,9 @@ func (m *Manager) RecordRequest(ctx context.Context, ev api.RequestOutcome) erro
 	timeout := time.Duration(m.cfg.RecordTimeoutMs) * time.Millisecond
 	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
 	defer cancel()
+	// 会话优化 v4 T5 / P1-6: hot-configurable parameters are resolved per
+	// call (settings_kv overrides over boot defaults, see LoadHot).
+	live := m.effectiveConfig()
 	// M3 (2026-07-28): record_request.lua now reads manual_hold directly
 	// inside the script (single atomic Redis op), so we no longer pre-read
 	// manual_hold here. This:
@@ -924,16 +1022,22 @@ func (m *Manager) RecordRequest(ctx context.Context, ev api.RequestOutcome) erro
 			LatencyMs:    ev.LatencyMs,
 			RequestID:    ev.RequestID,
 			DedupKey:     dedupKey,
-			NodeTTL:      m.cfg.NodeTTL,
+			NodeTTL:      live.NodeTTL,
 			Window5mTTL:  m.cfg.Window5mTTL,
 			Window30mTTL: m.cfg.Window30mTTL,
 			AdminHold:    false, // deprecated; handled in lua
-			// 2026-07-24: 使用配置的冷却时间，与 circuit breaker 冷却时间对齐
-			CoolSeconds:     m.cfg.CoolSeconds,
-			FailStreakLimit: 3,
+			// 会话优化 v4 T5 / P1-6: cool seconds / backoff cap are
+			// hot-configurable (settings_kv llmgw_ursm_cool_seconds /
+			// llmgw_ursm_backoff_cap_seconds) and read per call.
+			CoolSeconds:       live.CoolSeconds,
+			FailStreakLimit:   3,
+			BackoffCapSeconds: live.BackoffCapSeconds,
 			// 2026-08-10: free-tier transient tolerance — see
 			// record_request.lua / reducer.go transientErrors.
 			BillingMode: ev.BillingMode,
+			// 会话优化 v4 T5 / P1-5: rich health enum from the executor
+			// (nodehealth bridge); empty keeps the stored value.
+			HealthStatus: ev.HealthStatus,
 		}); err != nil {
 		metrics.Global().RecordURSMv2ShadowResult("failed")
 		m.log.Warn("ursm.v2: record failed", "error", err, "cid", ev.CredentialID)

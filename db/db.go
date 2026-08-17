@@ -411,7 +411,25 @@ func (d *DB) ensureRequestLogSchema(ctx context.Context) error {
 		return err
 	}
 
-	slog.Info("request_logs schema ensured (gw_session_id, gw_task_id, request_status, api_key_prefix, api_key_owner_user, application_code, parent_request_id, compression_reason, compression_strategy, compression_meta, outbound_body, outbound_msg_count, outbound_token_est, outbound_msg_hashes, quality_flags, quality_fix_actions, quality_score, client_request_id)")
+	// 会话优化 v4 (migration 532): 会话级最终成功标记。hot 侧部分唯一索引
+	// 保证同 gw_session_id 至多一条 final success（历史存量行全 FALSE，谓词
+	// 空集，054 时代重复数据不会阻塞索引构建）；分区侧由 SQL migration 的
+	// ensure_request_logs_partition 为新分区补建（columnar AM 可能拒建唯一
+	// 索引，故此处只做 hot 侧 Go 镜像）。
+	_, err = d.pool.Exec(ctx, `
+		ALTER TABLE request_logs_hot
+		    ADD COLUMN IF NOT EXISTS is_final_success BOOLEAN NOT NULL DEFAULT FALSE;
+		ALTER TABLE request_logs
+		    ADD COLUMN IF NOT EXISTS is_final_success BOOLEAN NOT NULL DEFAULT FALSE;
+		CREATE UNIQUE INDEX IF NOT EXISTS uq_request_logs_hot_final_success_session
+		    ON request_logs_hot (gw_session_id)
+		    WHERE is_final_success AND gw_session_id IS NOT NULL AND gw_session_id <> '';
+	`)
+	if err != nil {
+		return err
+	}
+
+	slog.Info("request_logs schema ensured (gw_session_id, gw_task_id, request_status, api_key_prefix, api_key_owner_user, application_code, parent_request_id, compression_reason, compression_strategy, compression_meta, outbound_body, outbound_msg_count, outbound_token_est, outbound_msg_hashes, quality_flags, quality_fix_actions, quality_score, client_request_id, is_final_success)")
 	return nil
 }
 
@@ -3771,6 +3789,7 @@ func (d *DB) ensurePartitionAutovacuumSchema(ctx context.Context) error {
 // uncalled. The body is retained to make restoring one line of caller +
 // re-enabling the spec registration enough to un-park; suppress the
 // resulting U1000 so a future staticcheck gate stays clean in the meantime.
+//
 //lint:ignore U1000 retained for credentialquota un-park; see AUDIT_24H_20260817.md B1
 func (d *DB) ensureCredentialClientQuotaSchema(ctx context.Context) error {
 	if d == nil || d.pool == nil {
