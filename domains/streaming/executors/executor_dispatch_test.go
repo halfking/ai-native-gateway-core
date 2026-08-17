@@ -128,7 +128,7 @@ func TestDispatchUsesJourneyAttemptIDForNodeHealthReduction(t *testing.T) {
 		initialModel: "model-a", retryPerCred: 0, tTotal: time.Now(),
 	}
 
-	var journeyAttemptID string
+	journeyAttemptIDCh := make(chan string, 1)
 	pipeline := dispatch.NewPipeline(dispatch.Deps{
 		RouteFunc: func(context.Context, *dispatch.QueuedRequest) ([]dispatch.CredentialRef, error) {
 			return []dispatch.CredentialRef{candidateToRef(candidate)}, nil
@@ -139,7 +139,10 @@ func TestDispatchUsesJourneyAttemptIDForNodeHealthReduction(t *testing.T) {
 		ForwardFunc: exec.dispatchForward,
 		EventSink: dispatch.EventSinkFunc(func(_ context.Context, event requestjourney.JourneyEvent) {
 			if event.Type == requestjourney.EventAttemptStarted && event.Attempt != nil {
-				journeyAttemptID = event.Attempt.AttemptID
+				select {
+				case journeyAttemptIDCh <- event.Attempt.AttemptID:
+				default:
+				}
 			}
 		}),
 	})
@@ -151,6 +154,12 @@ func TestDispatchUsesJourneyAttemptIDForNodeHealthReduction(t *testing.T) {
 	result, err := pipeline.Submit(params.R.Context(), qr)
 	if err != nil || result == nil {
 		t.Fatalf("Submit() = (%v, %v), want success", result, err)
+	}
+	var journeyAttemptID string
+	select {
+	case journeyAttemptID = <-journeyAttemptIDCh:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for journey attempt ID")
 	}
 	if _, err := uuid.Parse(journeyAttemptID); err != nil {
 		t.Fatalf("journey attempt ID %q is not a UUID: %v", journeyAttemptID, err)
