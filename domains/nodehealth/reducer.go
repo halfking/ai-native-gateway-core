@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/requestjourney"
 )
@@ -115,14 +116,23 @@ type Adapter interface {
 // retained independently, so evicting an old event never resets health.
 const DefaultSeenCapacity = 100000
 
+// DefaultSeenTTL bounds how long one terminal outcome keeps suppressing
+// replays of the same attempt/phase. Replays arrive within seconds (outbox
+// retry, journey re-reading); the two-phase probe window is minutes, so
+// fifteen minutes suppresses every legitimate replay while still reclaiming
+// idle history without waiting for capacity pressure.
+const DefaultSeenTTL = 15 * time.Minute
+
 // OutcomeReducer is safe for concurrent Reduce calls.
 type OutcomeReducer struct {
-	mu        sync.Mutex
-	nodes     map[NodeKey]*nodeState
-	seen      map[eventKey]Decision
-	seenOrder []eventKey
-	seenHead  int
-	maxSeen   int
+	mu       sync.Mutex
+	nodes    map[NodeKey]*nodeState
+	seen     map[eventKey]Decision
+	seenRing []seenEntry
+	seenHead int
+	maxSeen  int
+	seenTTL  time.Duration
+	now      func() time.Time
 }
 
 type nodeState struct {
@@ -136,20 +146,48 @@ type eventKey struct {
 	phase     Phase
 }
 
+// seenEntry is one slot of the insertion-ordered deduplication ring.
+type seenEntry struct {
+	key eventKey
+	at  time.Time
+}
+
+// ReducerConfig tunes the outcome reducer. Zero values select production
+// defaults; Now is injectable so tests can advance time deterministically.
+type ReducerConfig struct {
+	SeenCapacity int
+	SeenTTL      time.Duration
+	Now          func() time.Time
+}
+
 func NewOutcomeReducer() *OutcomeReducer {
-	return NewOutcomeReducerWithSeenCapacity(DefaultSeenCapacity)
+	return NewOutcomeReducerWithConfig(ReducerConfig{})
 }
 
 // NewOutcomeReducerWithSeenCapacity constructs a reducer with bounded event
 // deduplication history. Values below one use the production default.
 func NewOutcomeReducerWithSeenCapacity(maxSeen int) *OutcomeReducer {
-	if maxSeen < 1 {
-		maxSeen = DefaultSeenCapacity
+	return NewOutcomeReducerWithConfig(ReducerConfig{SeenCapacity: maxSeen})
+}
+
+// NewOutcomeReducerWithConfig constructs a reducer, normalizing invalid
+// configuration to the production defaults.
+func NewOutcomeReducerWithConfig(cfg ReducerConfig) *OutcomeReducer {
+	if cfg.SeenCapacity < 1 {
+		cfg.SeenCapacity = DefaultSeenCapacity
+	}
+	if cfg.SeenTTL <= 0 {
+		cfg.SeenTTL = DefaultSeenTTL
+	}
+	if cfg.Now == nil {
+		cfg.Now = time.Now
 	}
 	return &OutcomeReducer{
 		nodes:   make(map[NodeKey]*nodeState),
 		seen:    make(map[eventKey]Decision),
-		maxSeen: maxSeen,
+		maxSeen: cfg.SeenCapacity,
+		seenTTL: cfg.SeenTTL,
+		now:     cfg.Now,
 	}
 }
 
@@ -164,6 +202,10 @@ func (r *OutcomeReducer) Reduce(observation Observation) (Decision, error) {
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	r.defaultsLocked()
+	now := r.now()
+	r.reclaimSeenLocked(now)
 
 	key := eventKey{node: observation.Node, attemptID: observation.AttemptID, phase: observation.Phase}
 	if previous, ok := r.seen[key]; ok {
@@ -229,23 +271,72 @@ func (r *OutcomeReducer) Reduce(observation Observation) (Decision, error) {
 	decision.Status = state.status
 	decision.ConsecutiveFailures = state.consecutiveFailures
 	decision.Effects = effectsFor(observation, decision)
-	r.rememberLocked(key, decision)
+	r.rememberLocked(key, decision, now)
 	return decision, nil
 }
 
-func (r *OutcomeReducer) rememberLocked(key eventKey, decision Decision) {
+// defaultsLocked repairs a zero-value OutcomeReducer in place so Reduce is
+// safe on any constructed instance, matching the constructor defaults.
+func (r *OutcomeReducer) defaultsLocked() {
+	if r.nodes == nil {
+		r.nodes = make(map[NodeKey]*nodeState)
+	}
+	if r.seen == nil {
+		r.seen = make(map[eventKey]Decision)
+	}
 	if r.maxSeen < 1 {
 		r.maxSeen = DefaultSeenCapacity
 	}
-	if len(r.seenOrder) < r.maxSeen {
-		r.seenOrder = append(r.seenOrder, key)
-	} else {
-		oldest := r.seenOrder[r.seenHead]
-		delete(r.seen, oldest)
-		r.seenOrder[r.seenHead] = key
-		r.seenHead = (r.seenHead + 1) % r.maxSeen
+	if r.seenTTL <= 0 {
+		r.seenTTL = DefaultSeenTTL
 	}
+	if r.now == nil {
+		r.now = time.Now
+	}
+}
+
+func (r *OutcomeReducer) rememberLocked(key eventKey, decision Decision, now time.Time) {
+	if len(r.seenRing)-r.seenHead >= r.maxSeen {
+		oldest := r.seenRing[r.seenHead]
+		delete(r.seen, oldest.key)
+		r.seenHead++
+		recordSeenEviction(evictionReasonCapacity)
+	}
+	r.seenRing = append(r.seenRing, seenEntry{key: key, at: now})
 	r.seen[key] = decision
+	r.compactSeenLocked()
+}
+
+// reclaimSeenLocked drops deduplication entries older than the TTL. The ring
+// is insertion-ordered, so expiry scans from the head and stops at the first
+// live entry; per Reduce the work is proportional to the entries reclaimed.
+// Node state lives in a separate map and is never touched here.
+func (r *OutcomeReducer) reclaimSeenLocked(now time.Time) {
+	deadline := now.Add(-r.seenTTL)
+	for r.seenHead < len(r.seenRing) && r.seenRing[r.seenHead].at.Before(deadline) {
+		delete(r.seen, r.seenRing[r.seenHead].key)
+		r.seenHead++
+		recordSeenEviction(evictionReasonTTL)
+	}
+	r.compactSeenLocked()
+}
+
+// compactSeenLocked reclaims ring slots the head pointer already skipped so
+// the backing array does not grow without bound. Amortized O(1) per event.
+func (r *OutcomeReducer) compactSeenLocked() {
+	if r.seenHead == 0 {
+		return
+	}
+	if r.seenHead >= len(r.seenRing) {
+		r.seenRing = r.seenRing[:0]
+		r.seenHead = 0
+		return
+	}
+	if r.seenHead >= len(r.seenRing)/2 {
+		n := copy(r.seenRing, r.seenRing[r.seenHead:])
+		r.seenRing = r.seenRing[:n]
+		r.seenHead = 0
+	}
 }
 
 // ReduceAndApply invokes adapter hooks only for a newly accepted observation.
@@ -287,7 +378,16 @@ func effectsFor(observation Observation, decision Decision) []Effect {
 	}
 
 	effects = append(effects, Effect{Kind: EffectUpdateURSM})
-	if isPermanent(observation.ErrorKind) || decision.ConsecutiveFailures >= 3 {
+	if isBindingScoped(observation.ErrorKind) {
+		// A binding-scoped error invalidates only the (credential, model)
+		// binding. The credential-wide circuit and availability stay
+		// untouched: sibling models on the same credential keep serving.
+		effects = append(effects,
+			Effect{Kind: EffectSetBindingUnavailable},
+			Effect{Kind: EffectInvalidateCandidateCache},
+			Effect{Kind: EffectScheduleProbe},
+		)
+	} else if isPermanent(observation.ErrorKind) || decision.ConsecutiveFailures >= 3 {
 		effects = append(effects,
 			Effect{Kind: EffectRecordCircuitFailure},
 			Effect{Kind: EffectSetBindingUnavailable},
@@ -304,6 +404,15 @@ func effectsFor(observation Observation, decision Decision) []Effect {
 
 func isPermanent(kind ErrorKind) bool {
 	return kind == ErrorKindAuth || kind == ErrorKindQuota || kind == ErrorKindModelBinding
+}
+
+// isBindingScoped reports whether an error kind only invalidates the
+// (credential, model) binding rather than the credential itself. Binding
+// failures are quarantined per node and never feed the credential-wide
+// circuit, so model-a going missing must not affect model-b availability
+// on the same credential.
+func isBindingScoped(kind ErrorKind) bool {
+	return kind == ErrorKindModelBinding
 }
 
 func (o Observation) validate() error {

@@ -3872,6 +3872,16 @@ func (h *ChatHandler) serveWithExecutor(
 				return "unknown"
 			}())
 
+		// 2026-08-17: keep the client informed (and the link visibly alive)
+		// during the backoff window. Pure SSE comment — wire-safe for every
+		// parser (see preStreamKeepalive.writeThinking). The session
+		// heartbeat continues underneath; this adds the human-readable
+		// progress line the user asked for during gateway-side retries.
+		if preStream != nil {
+			preStream.writeThinking(fmt.Sprintf("上游请求失败，正在重试 (第 %d/%d 次，等待 %v)...",
+				attempt+1, maxRetries, delay.Round(time.Millisecond)))
+		}
+
 		// Wait for delay or context cancellation
 		timer := time.NewTimer(delay)
 		select {

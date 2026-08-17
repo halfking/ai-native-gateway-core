@@ -569,6 +569,56 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 		}
 	}
 	kind := e.recordDispatchError(params, cand, execErr)
+
+	// candidate_failure_logs (migration 300 + V358 session_id): one row per
+	// failed dispatch attempt. Ported from the retired legacy sync loop —
+	// both of ee2565046's call sites (generic per-candidate failure +
+	// mid-stream interruption) lived in the loop, so without this port the
+	// table (and V358's session-scoped aggregation) would have no writer.
+	// streamInterruptedError carries no *upstream.Error; pass the classified
+	// kind explicitly there — the message-based fallback would flatten e.g.
+	// KindNetwork to transient.
+	if e.FailureLogger != nil {
+		perAttemptMs := int(time.Since(startedAt).Milliseconds())
+		extra := buildEnhancedErrorContext(params, kind, execErr, len(dctx.candidates), params.AttemptNo)
+		if extra == nil {
+			extra = map[string]any{}
+		}
+		var sie *streamInterruptedError
+		if errors.As(execErr, &sie) && sie != nil {
+			extra["stream_reason"] = sie.reason
+			extra["stream_resumable"] = sie.resumable
+			e.FailureLogger.LogFailureWithKind(
+				params.R.Header.Get("X-Request-Id"),
+				tenantFromCtx(params.R),
+				params.SessionID,
+				cand.CredentialID,
+				cand.ProviderID,
+				cand.RawModel,
+				params.AttemptNo,
+				execErr,
+				kind,
+				nil,
+				&perAttemptMs,
+				extra,
+			)
+		} else {
+			e.FailureLogger.LogFailure(
+				params.R.Header.Get("X-Request-Id"),
+				tenantFromCtx(params.R),
+				params.SessionID,
+				cand.CredentialID,
+				cand.ProviderID,
+				cand.RawModel,
+				params.AttemptNo,
+				execErr,
+				nil, // latency_ms: end-to-end candidate latency, not tracked per dispatch forward
+				&perAttemptMs,
+				extra,
+			)
+		}
+	}
+
 	return dispatch.ForwardOutcome{
 		Err:             execErr,
 		BytesSent:       bytesSent,

@@ -36,10 +36,11 @@ import (
 )
 
 // candidateFailureLog is the row shape for candidate_failure_logs. Mirrors
-// the migration 037 + 300 schema; keep in sync.
+// the migration 037 + 300 + 358 schema; keep in sync.
 type candidateFailureLog struct {
 	RequestID               string
 	TenantID                string
+	SessionID               string
 	CredentialID            int
 	ProviderID              int
 	RawModelName            string
@@ -83,7 +84,7 @@ func NewCandidateFailureWriter(pool *pgxpool.Pool) *CandidateFailureWriter {
 //     and any caller-supplied extras — the column is JSONB so callers
 //     can attach custom fields without a schema change.
 func (w *CandidateFailureWriter) LogFailure(
-	requestID, tenantID string,
+	requestID, tenantID, sessionID string,
 	credentialID, providerID int,
 	rawModelName string,
 	attemptIndex int,
@@ -92,11 +93,47 @@ func (w *CandidateFailureWriter) LogFailure(
 	perAttemptLatencyMs *int,
 	extraContext map[string]any,
 ) {
+	// explicitKind "" 让 buildRow 走自动分类（upstream.Error 类型优先，消息兜底）。
+	w.logFailure(requestID, tenantID, sessionID, credentialID, providerID, rawModelName,
+		attemptIndex, execErr, "", latencyMs, perAttemptLatencyMs, extraContext)
+}
+
+// LogFailureWithKind is LogFailure with a caller-preclassified errorsx kind.
+// Used by the mid-stream interruption path where the executor already
+// classified the precise kind (streamInterruptedError carries no
+// *upstream.Error, so the message-based fallback in buildRow would flatten
+// e.g. KindNetwork to KindTransient).
+func (w *CandidateFailureWriter) LogFailureWithKind(
+	requestID, tenantID, sessionID string,
+	credentialID, providerID int,
+	rawModelName string,
+	attemptIndex int,
+	execErr error,
+	explicitKind errorsx.ErrorKind,
+	latencyMs *int,
+	perAttemptLatencyMs *int,
+	extraContext map[string]any,
+) {
+	w.logFailure(requestID, tenantID, sessionID, credentialID, providerID, rawModelName,
+		attemptIndex, execErr, explicitKind, latencyMs, perAttemptLatencyMs, extraContext)
+}
+
+func (w *CandidateFailureWriter) logFailure(
+	requestID, tenantID, sessionID string,
+	credentialID, providerID int,
+	rawModelName string,
+	attemptIndex int,
+	execErr error,
+	explicitKind errorsx.ErrorKind,
+	latencyMs *int,
+	perAttemptLatencyMs *int,
+	extraContext map[string]any,
+) {
 	if w == nil || w.pool == nil || execErr == nil {
 		return
 	}
 
-	row := w.buildRow(requestID, tenantID, credentialID, providerID, rawModelName, attemptIndex, execErr, latencyMs, perAttemptLatencyMs, extraContext)
+	row := w.buildRow(requestID, tenantID, sessionID, credentialID, providerID, rawModelName, attemptIndex, execErr, explicitKind, latencyMs, perAttemptLatencyMs, extraContext)
 
 	// Independent context: never block the request hot path on a slow DB.
 	// 3s matches the other telemetry writers in this codebase.
@@ -105,18 +142,18 @@ func (w *CandidateFailureWriter) LogFailure(
 
 	_, err := w.pool.Exec(ctx, `
 		INSERT INTO candidate_failure_logs (
-			request_id, tenant_id, credential_id, provider_id, raw_model_name,
+			request_id, tenant_id, session_id, credential_id, provider_id, raw_model_name,
 			attempt_index, error_kind, error_message,
 			upstream_status_code, upstream_response_body, upstream_response_preview,
 			latency_ms, per_attempt_latency_ms, retryable, context
 		) VALUES (
-			$1, $2, $3, $4, $5,
-			$6, $7, $8,
-			$9, NULLIF($10, ''), NULLIF($11, ''),
-			$12, $13, $14, $15::text::jsonb
+			$1, $2, NULLIF($3, ''), $4, $5, $6,
+			$7, $8, $9,
+			$10, NULLIF($11, ''), NULLIF($12, ''),
+			$13, $14, $15, $16::text::jsonb
 		)
 	`,
-		row.RequestID, row.TenantID, row.CredentialID, row.ProviderID, row.RawModelName,
+		row.RequestID, row.TenantID, row.SessionID, row.CredentialID, row.ProviderID, row.RawModelName,
 		row.AttemptIndex, row.ErrorKind, row.ErrorMessage,
 		row.UpstreamStatusCode, row.UpstreamResponseBody, row.UpstreamResponsePreview,
 		row.LatencyMs, row.PerAttemptLatencyMs, row.Retryable, marshalContext(row.Context),
@@ -135,11 +172,12 @@ func (w *CandidateFailureWriter) LogFailure(
 // pull the typed *upstream.Error when present (Phase 1 added Body and
 // StatusCode fields to that struct).
 func (w *CandidateFailureWriter) buildRow(
-	requestID, tenantID string,
+	requestID, tenantID, sessionID string,
 	credentialID, providerID int,
 	rawModelName string,
 	attemptIndex int,
 	execErr error,
+	explicitKind errorsx.ErrorKind,
 	latencyMs *int,
 	perAttemptLatencyMs *int,
 	extraContext map[string]any,
@@ -147,6 +185,7 @@ func (w *CandidateFailureWriter) buildRow(
 	row := candidateFailureLog{
 		RequestID:    requestID,
 		TenantID:     tenantID,
+		SessionID:    sessionID,
 		CredentialID: credentialID,
 		ProviderID:   providerID,
 		RawModelName: rawModelName,
@@ -195,6 +234,16 @@ func (w *CandidateFailureWriter) buildRow(
 		kind := errorsx.ClassifyError(execErr, nil)
 		row.ErrorKind = string(kind)
 		retryable := errorsx.IsRetryable(kind)
+		row.Retryable = &retryable
+	}
+
+	// Caller-preclassified kind wins: the executor's stream-interruption
+	// path already resolved the precise kind (e.g. KindNetwork for an
+	// "other side closed" read failure) and the message-based fallback
+	// cannot recover it from "stream_interrupted: <reason>".
+	if explicitKind != "" {
+		row.ErrorKind = string(explicitKind)
+		retryable := errorsx.IsRetryable(explicitKind)
 		row.Retryable = &retryable
 	}
 
