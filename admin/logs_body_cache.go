@@ -85,9 +85,9 @@ func (c *bodyFetchCache) Put(requestID string, body, resp any) {
 	if c == nil {
 		return
 	}
-	if body == nil && resp == nil {
-		// nil/nil 表示 ErrNoRows 路径 — 仍然缓存（ttl 内重复点击同样结果）
-	}
+	// nil/nil 表示 ErrNoRows 路径 — 仍然缓存（ttl 内重复点击同样结果）。
+	// 这里与其它 err 一样落到下方 entry 构造，不需要单独分支。
+	_ = body
 	entry := bodyFetchEntry{
 		body:     body,
 		resp:     resp,
