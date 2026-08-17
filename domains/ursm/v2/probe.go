@@ -25,6 +25,10 @@ func (m *Manager) ApplyProbeForTenant(ctx context.Context, tenant string, p api.
 	// Eval. Admin priority still dominates via the lua-internal manual_hold
 	// read. ARGV[4]=0 / ARGV[5]="0" keep ABI parity for older callers;
 	// the lua's live-read short-circuit runs unconditionally.
+	nodeTTLSeconds := int(m.cfg.NodeTTL / time.Second)
+	if nodeTTLSeconds <= 0 {
+		nodeTTLSeconds = int(DefaultConfig().NodeTTL / time.Second)
+	}
 	_, err := store.ApplyProbeScript.Run(ctx, m.store.RawClient(),
 		[]string{key},
 		store.BoolFlag(p.Success),
@@ -32,6 +36,7 @@ func (m *Manager) ApplyProbeForTenant(ctx context.Context, tenant string, p api.
 		fmt.Sprintf("%d", time.Now().UnixMilli()),
 		"0", // deprecated: caller-supplied admin_hold (always 0 here)
 		"0", // deprecated: pre-read current_admin_hold (lua reads it instead)
+		fmt.Sprintf("%d", nodeTTLSeconds),
 	).Slice()
 	if err != nil {
 		return fmt.Errorf("ursm.v2: apply_probe: %w", err)
