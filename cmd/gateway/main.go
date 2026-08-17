@@ -81,6 +81,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/transformation"        //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	ursmv2 "github.com/kaixuan/llm-gateway-go/domains/ursm/v2"        //nolint:depguard // URSM v2 wiring (T20)
 	ursmv2api "github.com/kaixuan/llm-gateway-go/domains/ursm/v2/api" //nolint:depguard // URSM v2 ModeOff constant (Task 8)
+	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/bootstrap"
 	ursmcache "github.com/kaixuan/llm-gateway-go/domains/ursm/v2/cache"
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/persist" //nolint:depguard // URSM v2 persist writer
 	"github.com/kaixuan/llm-gateway-go/durable"
@@ -608,14 +609,25 @@ func main() {
 		slog.Warn("session manager disabled (no LLM_GATEWAY_REDIS_ADDR)")
 	}
 
-	// 2026-07-21, URSM v2 plan T20: 接入 v2 Manager。LoadFromEnv 默认 mode=off，
-	// 整个 v2 路径在生产环境（URSM_V2_MODE 未设）下保持 dead：URSMv2 != nil 走
-	// fast path 但 Manager 内部 Mode()==off 时 Plan/FilterAndScore 立即返回 nil。
-	// shadow/canary 可立即 SetReady(true)；authoritative 必须等待后续迁移和
-	// warmup 成功才开 recovery gate。off 模式不调 SetReady，保持 no-op。
-	// 这是 T8 / T16 / T20 一脉相承的"opt-in 启用"约定。
+	// URSM v2 starts authoritative by default. The ready gate remains closed
+	// until legacy state bootstrap and full coverage validation complete; off,
+	// shadow, and canary remain explicit diagnostic or rollback modes.
 	var ursmV2Mgr *ursmv2.Manager
 	ursmV2Cfg := ursmv2.LoadFromEnv()
+	if err := ursmV2Cfg.Validate(); err != nil {
+		slog.Error("ursm.v2: invalid startup configuration", "error", err)
+		return
+	}
+	if ursmV2Cfg.Mode == ursmv2api.ModeAuthoritative {
+		if redisClientForCache == nil {
+			slog.Error("ursm.v2: authoritative mode requires reachable Redis")
+			return
+		}
+		if dbConn == nil || !dbConn.Enabled() {
+			slog.Error("ursm.v2: authoritative mode requires reachable PostgreSQL")
+			return
+		}
+	}
 	if redisClientForCache != nil {
 		ursmV2Mgr = ursmv2.New(ursmv2.Dependencies{
 			Redis:  redisClientForCache.Client(),
@@ -657,13 +669,28 @@ func main() {
 	if redisClientForCache != nil && ursmV2Mgr != nil && ursmV2Mgr.Mode() != ursmv2api.ModeOff {
 		if ursmV2Mgr.Mode() == ursmv2api.ModeAuthoritative {
 			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-			count, err := ursmV2Mgr.WarmupFromCoverage(ctx)
-			cancel()
-			if err != nil {
-				slog.Error("ursm.v2: authoritative startup refused; coverage validation failed", "error", err)
+			result, bootstrapErr := bootstrap.Apply(ctx, bootstrap.Options{
+				Pool:        dbConn.Pool(),
+				Redis:       redisClientForCache.Client(),
+				KeyPrefix:   ursmV2Cfg.RedisKeyPrefix,
+				CoolSeconds: ursmV2Cfg.CoolSeconds,
+			})
+			if bootstrapErr != nil {
+				cancel()
+				slog.Error("ursm.v2: authoritative startup refused; legacy bootstrap failed", "error", bootstrapErr)
 				return
 			}
-			slog.Info("ursm.v2: authoritative gate opened after coverage validation", "node_count", count)
+			count, warmupErr := ursmV2Mgr.WarmupFromCoverage(ctx)
+			cancel()
+			if warmupErr != nil {
+				slog.Error("ursm.v2: authoritative startup refused; coverage validation failed", "error", warmupErr)
+				return
+			}
+			slog.Info("ursm.v2: authoritative gate opened after bootstrap and coverage validation",
+				"node_count", count,
+				"bootstrap_total", result.Total,
+				"bootstrap_written", result.Written,
+				"bootstrap_skipped", result.Skipped)
 		} else {
 			go func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)

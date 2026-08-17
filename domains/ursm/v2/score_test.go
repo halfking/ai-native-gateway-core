@@ -14,8 +14,7 @@ func TestScorePreferLowerPriceAndLatency(t *testing.T) {
 	mr := miniredis.RunT(t)
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	cfg := DefaultConfig()
-	// DefaultConfig() is ModeOff, which short-circuits FilterAndScore.
-	// Flip to Canary with 100% to actually exercise the read + score path.
+	// Use Canary with 100% to exercise cohort planning and the read + score path.
 	cfg.Mode = api.ModeCanary
 	cfg.CanaryPercent = 100
 	mgr := New(Dependencies{Redis: rdb, Config: cfg})
