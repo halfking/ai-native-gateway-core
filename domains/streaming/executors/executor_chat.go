@@ -780,7 +780,7 @@ func (e *Executor) executeOpenAI(
 					resp.StatusCode != 403 && resp.StatusCode != 402 &&
 					errKind != errorsx.KindConcurrent {
 					if !errorsx.IsClientBug(errKind) {
-						e.Circuit.RecordSuccess(cand.ProviderID, cand.CredentialID)
+						e.recordProtocolCircuitSuccess(params, cand.ProviderID, cand.CredentialID)
 					} else {
 						slog.Info("upstream rejected request as client bug",
 							"credential_id", cand.CredentialID,
@@ -793,7 +793,7 @@ func (e *Executor) executeOpenAI(
 				} else if errKind == errorsx.KindRateLimit {
 					e.Limiter.Shrink(cand.ProviderID, cand.CredentialID)
 				} else if errKind == errorsx.KindConcurrent {
-					e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, cand.StandardizedName, errorsx.KindConcurrent,
+					e.writeProtocolCredentialStateOnError(params, params.R.Context(), cand.CredentialID, cand.StandardizedName, errorsx.KindConcurrent,
 						&upstreampkg.Error{
 							Kind:       errorsx.KindConcurrent,
 							Message:    fmt.Sprintf("upstream %d concurrent overload", resp.StatusCode),
@@ -908,7 +908,7 @@ func (e *Executor) executeOpenAI(
 				e.TTFBTracker.Record(cand.CredentialID, upstreamLatency)
 			}
 			recordAttemptSuccess := func(chunkCount int) {
-				e.Circuit.RecordSuccess(cand.ProviderID, cand.CredentialID)
+				e.recordProtocolCircuitSuccess(params, cand.ProviderID, cand.CredentialID)
 				if e.PostExecutionHook != nil {
 					_ = e.PostExecutionHook.RecordOutcome(params.R.Context(), ExecutionOutcome{
 						CredentialID:   cand.CredentialID,
@@ -1066,18 +1066,18 @@ func (e *Executor) executeOpenAI(
 							RoutingTracker:      params.RoutingTracker,
 						}, nil
 					} else if isResumable {
-						e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, streamKind)
+						e.recordProtocolCircuitFailure(params, cand.ProviderID, cand.CredentialID, streamKind)
 						if streamKind == errorsx.KindConcurrent {
-							e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, cand.StandardizedName, streamKind,
+							e.writeProtocolCredentialStateOnError(params, params.R.Context(), cand.CredentialID, cand.StandardizedName, streamKind,
 								fmt.Errorf("stream %s (concurrent-overload inferred)", streamOutcome.Reason))
 							e.forceUnpinOnFatalKind(params.R.Context(), fpLease.Holder, cand.CredentialID, streamKind)
 						} else if e.shouldWriteCredentialStateOnConfirmedFailure(cand.ProviderID, cand.CredentialID, streamKind) {
-							e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, cand.StandardizedName, streamKind, fmt.Errorf("stream %s", streamOutcome.Reason))
+							e.writeProtocolCredentialStateOnError(params, params.R.Context(), cand.CredentialID, cand.StandardizedName, streamKind, fmt.Errorf("stream %s", streamOutcome.Reason))
 							e.forceUnpinOnFatalKind(params.R.Context(), fpLease.Holder, cand.CredentialID, streamKind)
 						}
 					} else if streamKind == errorsx.KindConcurrent {
-						e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, streamKind)
-						e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, cand.StandardizedName, streamKind,
+						e.recordProtocolCircuitFailure(params, cand.ProviderID, cand.CredentialID, streamKind)
+						e.writeProtocolCredentialStateOnError(params, params.R.Context(), cand.CredentialID, cand.StandardizedName, streamKind,
 							fmt.Errorf("stream %s (concurrent-overload inferred, non-resumable)", streamOutcome.Reason))
 						e.forceUnpinOnFatalKind(params.R.Context(), fpLease.Holder, cand.CredentialID, streamKind)
 						slog.Warn("non-resumable stream interrupted by concurrent-overload, credential now in 5-min cooling",
@@ -1087,9 +1087,9 @@ func (e *Executor) executeOpenAI(
 							"chunk_count", streamOutcome.ChunkCount,
 						)
 					} else {
-						e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, streamKind)
+						e.recordProtocolCircuitFailure(params, cand.ProviderID, cand.CredentialID, streamKind)
 						if e.shouldWriteCredentialStateOnConfirmedFailure(cand.ProviderID, cand.CredentialID, streamKind) {
-							e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, cand.StandardizedName, streamKind,
+							e.writeProtocolCredentialStateOnError(params, params.R.Context(), cand.CredentialID, cand.StandardizedName, streamKind,
 								fmt.Errorf("stream %s (non-resumable)", streamOutcome.Reason))
 							e.forceUnpinOnFatalKind(params.R.Context(), fpLease.Holder, cand.CredentialID, streamKind)
 						}
@@ -1789,47 +1789,17 @@ func strPtrCompat(s string) *string {
 	return &s
 }
 
-// hasSessionID reports whether the request carries a gateway session
-// id (X-Gw-Session-Id). When true, the executor decouples the
-// upstream context from the client context so a client disconnect
-// does not cancel the vendor request — the response is cached for
-// the client to pick up on reconnect (see pending/ Store + the GET
-// endpoint in sessions/handler.go).
-//
-// Track C (2026-06-18). Mirrors the X-Session-Id → X-Gw-Session-Id
-// fallback used in relay/handler.go, but here we only care about
-// "is the client claiming session tracking" — the actual lookup
-// happens earlier in the handler.
-func hasSessionID(params *ExecParams) bool {
-	if params == nil || params.R == nil {
-		return false
-	}
-	if v := sanitizeCorrelationID(params.R.Header.Get("X-Gw-Session-Id")); v != "" {
-		return true
-	}
-	if v := sanitizeCorrelationID(params.R.Header.Get("X-Session-Id")); v != "" {
-		return true
-	}
-	return false
-}
-
-// upstreamContext (Track C, 2026-06-18) returns the context used for
-// the upstream HTTP call. Session and survival streams are decoupled from
-// client cancellation because their owners need background completion.
-// Ordinary streams retain client cancellation to avoid spending vendor quota
-// after the client disconnects.
-//
-// 2026-08-04: streaming requests no longer carry a wall-clock deadline.
-// Long-running streams are bounded by inactivity instead: the transport's
-// ResponseHeaderTimeout while awaiting headers and streamChunkTimeout for each
-// bridge read. Non-streaming requests still use timeout as a total deadline.
+// Streaming requests carry no wall-clock deadline. A stuck vendor is bounded
+// by ResponseHeaderTimeout and the bridge's per-read streamChunkTimeout. An
+// ordinary stream still derives from the request context, so client disconnect
+// cancels promptly; only session/survival ownership uses WithoutCancel so its
+// pending or durable result can finish.
 func (e *Executor) upstreamContext(params *ExecParams, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if params.IsStream && (params.StreamSurvivesClientCancel || params.SurvivalAttempt) {
+		return context.WithCancel(context.WithoutCancel(params.R.Context()))
+	}
 	if params.IsStream {
-		parent := params.R.Context()
-		if hasSessionID(params) || params.SurvivalAttempt {
-			parent = context.WithoutCancel(parent)
-		}
-		return context.WithCancel(parent)
+		return context.WithCancel(params.R.Context())
 	}
 	return context.WithTimeout(params.R.Context(), timeout)
 }

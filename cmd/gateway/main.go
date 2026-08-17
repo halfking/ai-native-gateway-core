@@ -67,6 +67,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/notification"                        //nolint:depguard // 审批通知器
 	"github.com/kaixuan/llm-gateway-go/domains/providerprofile"                     //nolint:depguard // 供应商画像告警 handler (AlertType)
 	"github.com/kaixuan/llm-gateway-go/domains/quotafetcher"                        //nolint:depguard // P1 proactive upstream quota prefetch
+	"github.com/kaixuan/llm-gateway-go/domains/requestjourney"                      //nolint:depguard // request lifecycle observation
 	"github.com/kaixuan/llm-gateway-go/domains/routeincident"                       //nolint:depguard // 2026-07-13 route incident diagnosis (Phase 1)
 	"github.com/kaixuan/llm-gateway-go/domains/routingstate"
 	"github.com/kaixuan/llm-gateway-go/domains/session" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -609,6 +610,49 @@ func main() {
 		slog.Warn("session manager disabled (no LLM_GATEWAY_REDIS_ADDR)")
 	}
 
+	// RequestJourney and the executor share one hot-reload source so queue
+	// capacities and retry settings observe the same configuration snapshot.
+	var executorHotConfig *hotconfig.Config
+	if dbConn != nil && dbConn.Enabled() {
+		executorHotConfig = hotconfig.New(dbConn.Pool())
+		if err := executorHotConfig.Start(context.Background()); err != nil {
+			slog.Warn("executor hotconfig disabled", "error", err)
+			executorHotConfig = nil
+		} else {
+			defer executorHotConfig.Stop()
+		}
+	}
+
+	journeyConfig := requestjourney.LoadConfig(executorHotConfig)
+	journeyProjection := requestjourney.NewProjection(journeyConfig)
+	var journeyRedisStore *requestjourney.RedisStore
+	if redisClientForCache != nil {
+		journeyRedisStore = requestjourney.NewRedisStore(redisClientForCache.Client(), journeyConfig)
+	} else {
+		journeyRedisStore = requestjourney.NewRedisStore(nil, journeyConfig)
+	}
+	var journeyRepository *requestjourney.PostgresRepository
+	if dbConn != nil && dbConn.Enabled() {
+		journeyRepository = requestjourney.NewPostgresRepository(dbConn.Pool())
+	} else {
+		journeyRepository = requestjourney.NewPostgresRepository(nil)
+	}
+	journeyRecorder := requestjourney.NewRecorder(journeyProjection, journeyRedisStore, journeyRepository)
+	journeyRecorder.SetErrorHandler(func(err error) {
+		slog.Warn("request journey observation degraded", "error", err)
+	})
+	journeyQueryService := requestjourney.NewQueryService(journeyRedisStore, journeyRepository, journeyProjection, journeyConfig)
+	journeyInstanceID := stableGatewayInstanceID()
+	chatHandler.SetRequestJourney(journeyRecorder, journeyInstanceID)
+	gatewayRequestJourneySink = journeyRecorder
+	slog.Info("request journey recorder wired",
+		"gateway_instance_id", journeyInstanceID,
+		"redis", redisClientForCache != nil,
+		"postgres", dbConn != nil && dbConn.Enabled(),
+		"total_capacity", journeyConfig.TotalRequestCapacity,
+		"per_model_capacity", journeyConfig.PerModelCapacity,
+		"per_node_capacity", journeyConfig.PerNodeCapacity)
+
 	// URSM v2 starts authoritative by default. The ready gate remains closed
 	// until legacy state bootstrap and full coverage validation complete; off,
 	// shadow, and canary remain explicit diagnostic or rollback modes.
@@ -904,17 +948,7 @@ func main() {
 	}
 
 	// Keep executor continuation/retry settings backed by the same hot-reload
-	// source used by the gateway runtime. Defaults remain active without DB.
-	var executorHotConfig *hotconfig.Config
-	if dbConn != nil && dbConn.Enabled() {
-		executorHotConfig = hotconfig.New(dbConn.Pool())
-		if err := executorHotConfig.Start(context.Background()); err != nil {
-			slog.Warn("executor hotconfig disabled", "error", err)
-			executorHotConfig = nil
-		} else {
-			defer executorHotConfig.Stop()
-		}
-	}
+	// source used by RequestJourney. Defaults remain active without DB.
 	executors.SetHotConfig(executorHotConfig)
 
 	// ── Routing executor (multi-candidate P2C) ──────────────────────────
@@ -4927,11 +4961,18 @@ func main() {
 	// wrapAdmin wraps a handler with admin JWT/API-key authentication.
 	// Used for Phase 2/3 admin endpoints registered outside RegisterRoutes.
 	var wrapAdmin func(http.HandlerFunc) http.HandlerFunc
+	var adminPool *pgxpool.Pool
 	if dbConn != nil {
-		pool := dbConn.Pool()
-		secret := cfg.SecretKey
-		wrapAdmin = newWrapAdmin(pool, secret)
+		adminPool = dbConn.Pool()
+		wrapAdmin = newWrapAdmin(adminPool, cfg.SecretKey)
 	}
+	requestJourneyWrapAdmin := newWrapAdmin(adminPool, cfg.SecretKey)
+	requestJourneyAPI := admin.NewRequestJourneyAPI(journeyQueryService)
+	mux.HandleFunc("/api/admin/request-journeys/queues", requestJourneyWrapAdmin(requestJourneyAPI.ServeHTTP))
+	mux.HandleFunc("/api/admin/request-journeys/", requestJourneyWrapAdmin(requestJourneyAPI.ServeHTTP))
+	slog.Info("request journey admin API enabled",
+		"routes", []string{"GET /api/admin/request-journeys/queues", "GET /api/admin/request-journeys/{id}"})
+
 	var wrapSessionAnalytics func(http.HandlerFunc) http.HandlerFunc
 	if dbConn != nil {
 		pool := dbConn.Pool()
@@ -5460,7 +5501,18 @@ func main() {
 	stopDone := make(chan struct{}, 1)
 
 	go func() {
+		// Stop dispatch before its RequestJourney Redis/PostgreSQL dependencies.
+		if pipeline != nil {
+			pipeline.Stop()
+			pipeline.SetEventSink(nil)
+		}
+		gatewayRequestJourneySink = nil
+		if err := journeyRecorder.Close(stopCtx); err != nil {
+			slog.Warn("request journey recorder drain failed", "error", err)
+		}
+
 		// Stop outbox dispatcher before other background services
+
 		if outboxDispatcherStop != nil {
 			outboxDispatcherStop()
 		}

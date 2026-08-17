@@ -91,8 +91,12 @@ type SurvivalCoordinator struct {
 	// executor's internal refresh ladder is suppressed under survival).
 	Refresh func(ctx context.Context)
 	// Keepalive emits a transport-level comment through the shared writer.
-	// Nil → the coordinator writes the default comment itself.
+	// Nil means the coordinator uses TransportHeartbeat or its default frame.
 	Keepalive func()
+	// TransportHeartbeat is the error-preserving heartbeat owner supplied by
+	// the HTTP session. It bypasses semantic/durable capture while sharing the
+	// connection's serialized writer.
+	TransportHeartbeat func() error
 	// Terminal renders the final protocol frame(s) once the task ends.
 	// committed reports whether the client already saw semantic output
 	// (resume-blocked) and therefore needs a well-formed stream ending
@@ -133,6 +137,13 @@ func (c *SurvivalCoordinator) sleep(ctx context.Context, d time.Duration) error 
 func (c *SurvivalCoordinator) keepalive(sw *SerializedStreamWriter) error {
 	if c.Keepalive != nil {
 		c.Keepalive()
+		return nil
+	}
+	if c.TransportHeartbeat != nil {
+		if err := c.TransportHeartbeat(); err != nil {
+			recordSurvivalKeepaliveWriteError(c.Protocol)
+			return err
+		}
 		return nil
 	}
 	if sw != nil {

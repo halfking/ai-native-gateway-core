@@ -9,7 +9,6 @@ import (
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
-	"github.com/kaixuan/llm-gateway-go/domains/dispatch"
 	"github.com/kaixuan/llm-gateway-go/provider"
 	"github.com/redis/go-redis/v9"
 )
@@ -56,7 +55,7 @@ func TestForwardForDispatchPopulatesAttemptAuditEnvelope(t *testing.T) {
 	}
 	dctx := &dispatchCtx{params: params, candidates: []provider.Candidate{candidate}, tTotal: time.Now()}
 
-	outcome := exec.forwardForDispatch(t.Context(), dctx, candidate)
+	outcome := exec.forwardForDispatch(dctx, candidate, "dispatch-audit-attempt", func() {}, t.Context())
 	if outcome.Err != nil {
 		t.Fatalf("forward failed: %v", outcome.Err)
 	}
@@ -105,11 +104,8 @@ func TestDispatchForwardUsesPipelineContextAndAttemptNumber(t *testing.T) {
 	dispatchCtx, cancelDispatch := dispatchExecutionContext(params)
 	defer cancelDispatch()
 	cancelClient()
-	qr := dispatch.NewQueuedRequest("req-dispatch", "default", "glm-5.2", dispatchCtx, dctx)
-	qr.ResolvedModel = "glm-5.2"
-	qr.AttemptCount = 1
 
-	outcome := exec.dispatchForward(dispatchCtx, qr, candidateToRef(candidate))
+	outcome := exec.forwardForDispatch(dctx, candidate, "dispatch-context-attempt", func() {}, dispatchCtx)
 	if outcome.Err != nil {
 		t.Fatalf("detached dispatch forward failed: %v", outcome.Err)
 	}
@@ -170,7 +166,7 @@ func TestForwardForDispatchDegradesWhenFpSlotSaturatesAfterPrefilter(t *testing.
 		fpSlotDegraded: false,
 	}
 
-	outcome := exec.forwardForDispatch(t.Context(), dctx, candidate)
+	outcome := exec.forwardForDispatch(dctx, candidate, "dispatch-fp-attempt", func() {}, t.Context())
 	if outcome.Err != nil {
 		t.Fatalf("forward failed after fp-slot race degradation: %v", outcome.Err)
 	}

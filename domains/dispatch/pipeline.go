@@ -2,11 +2,13 @@ package dispatch
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/domains/requestjourney"
 	"github.com/kaixuan/llm-gateway-go/internal/liveactions"
 )
 
@@ -45,7 +47,8 @@ type Deps struct {
 	AllowModelChange     bool
 	AllowModelChangeFunc func() bool
 	// HotCfg is read once at construction; live reload re-reads via Reload.
-	HotCfg *atomic.Value // *Config; may be nil → DefaultConfig
+	HotCfg    *atomic.Value // *Config; may be nil → DefaultConfig
+	EventSink EventSink     // optional RequestJourney observation sink
 }
 
 // Pipeline is the multi-tier dispatch core. Construct once, Start, then Submit.
@@ -87,6 +90,9 @@ type Pipeline struct {
 	// docs/会话优化v3/24 §2）。nil 安全（Emit 对 nil receiver 是 no-op），
 	// 旁路异步，热路径零阻塞。
 	liveActions *liveactions.Emitter
+
+	eventSinkMu sync.RWMutex
+	eventSink   EventSink
 }
 
 // SetLiveActions wires the request-lifecycle action-event emitter (V3.3-OBS
@@ -98,6 +104,17 @@ func (p *Pipeline) SetLiveActions(e *liveactions.Emitter) {
 	p.liveActions = e
 }
 
+// SetEventSink replaces the optional RequestJourney sink. It is safe before or
+// after Start; a nil sink disables journey emission.
+func (p *Pipeline) SetEventSink(sink EventSink) {
+	if p == nil {
+		return
+	}
+	p.eventSinkMu.Lock()
+	p.eventSink = sink
+	p.eventSinkMu.Unlock()
+}
+
 // NewPipeline constructs a pipeline. Call Start before Submit.
 func NewPipeline(deps Deps) *Pipeline {
 	p := &Pipeline{
@@ -106,6 +123,7 @@ func NewPipeline(deps Deps) *Pipeline {
 		modelRecommendFunc:   deps.ModelRecommendFunc,
 		forwardFunc:          deps.ForwardFunc,
 		allowModelChange:     deps.AllowModelChange,
+		eventSink:            deps.EventSink,
 		allowModelChangeFunc: deps.AllowModelChangeFunc,
 		models:               make(map[string]*modelQueue),
 		forwarders:           make(map[int]*credForwarder),
@@ -188,13 +206,19 @@ func (p *Pipeline) Stop() {
 // pipeline completes the request (success/terminal-failure) or ctx expires.
 // Returns (opaqueResult, nil) on success, (nil, err) otherwise.
 func (p *Pipeline) Submit(ctx context.Context, qr *QueuedRequest) (any, error) {
-	if p.shutdown.Load() {
-		return nil, ErrShutdown
-	}
-	if !p.started.Load() {
-		return nil, ErrShutdown
-	}
 	qr.Ctx = ctx
+	qr.setJourneyEmitter(func(event requestjourney.JourneyEvent) {
+		p.eventSinkMu.RLock()
+		sink := p.eventSink
+		p.eventSinkMu.RUnlock()
+		if sink != nil {
+			sink.EmitJourneyEvent(context.WithoutCancel(ctxOf(qr)), event)
+		}
+	})
+	if p.shutdown.Load() || !p.started.Load() {
+		p.emitRequestTerminal(qr, ForwardOutcome{Err: ErrShutdown})
+		return nil, ErrShutdown
+	}
 	if qr.EnqueuedAt.IsZero() {
 		qr.EnqueuedAt = time.Now()
 	}
@@ -207,9 +231,11 @@ func (p *Pipeline) Submit(ctx context.Context, qr *QueuedRequest) (any, error) {
 		if p.shutdown.Load() {
 			// Stop raced us between the entry check and admission: report
 			// shutdown, not a misleading queue-full overflow.
+			p.emitRequestTerminal(qr, ForwardOutcome{Err: ErrShutdown})
 			return nil, ErrShutdown
 		}
 		metricOverflow.WithLabelValues("model_queue_full").Inc()
+		p.emitRequestTerminal(qr, ForwardOutcome{Err: ErrOverflow})
 		return nil, ErrOverflow
 	}
 	select {
@@ -258,6 +284,9 @@ func (p *Pipeline) enqueueModel(name string, qr *QueuedRequest) bool {
 	if mq == nil {
 		return false
 	}
+	resolvedModel := qr.ResolvedModel
+	qr.journeyMu.Lock()
+	enqueuedAt := time.Now()
 	select {
 	case mq.ch <- qr:
 		mq.depth.Add(1)
@@ -271,8 +300,17 @@ func (p *Pipeline) enqueueModel(name string, qr *QueuedRequest) bool {
 				"queue_depth": strconv.FormatInt(mq.depth.Load(), 10),
 			},
 		})
+		qr.emitJourneyLocked(requestjourney.JourneyEvent{
+			Type:          requestjourney.EventModelEnqueued,
+			Stage:         requestjourney.StageModelQueue,
+			Model:         name,
+			ResolvedModel: resolvedModel,
+			OccurredAt:    enqueuedAt,
+		})
+		qr.journeyMu.Unlock()
 		return true
 	default:
+		qr.journeyMu.Unlock()
 		return false
 	}
 }
@@ -352,6 +390,7 @@ func (p *Pipeline) complete(qr *QueuedRequest, out ForwardOutcome) {
 
 	// V3.1: Record T9 timestamp (response end - stream completed)
 	qr.SetT9_ResponseEnd()
+	p.emitRequestTerminal(qr, out)
 
 	// V3.1: Export stage histograms + waterfall ring even if the caller
 	// already left — abandoned requests still carry useful latency signal.
@@ -365,6 +404,30 @@ func (p *Pipeline) complete(qr *QueuedRequest, out ForwardOutcome) {
 	default:
 		// cap-1 channel with a single reader; shouldn't happen. Drain-safe.
 	}
+}
+
+func (p *Pipeline) emitRequestTerminal(qr *QueuedRequest, out ForwardOutcome) {
+	event := requestjourney.JourneyEvent{
+		Type:          requestjourney.EventRequestSucceeded,
+		Stage:         requestjourney.StageTerminal,
+		ResolvedModel: qr.ResolvedModel,
+		Model:         qr.ResolvedModel,
+		Outcome:       requestjourney.OutcomeSuccess,
+	}
+	if out.Err != nil {
+		event.Type = requestjourney.EventRequestFailed
+		event.Outcome = requestjourney.OutcomeFailure
+		event.ErrorKind = out.ErrorKind
+		if event.ErrorKind == "" {
+			event.ErrorKind = classifyError(out.Err)
+		}
+		event.HTTPStatus = out.HTTPStatus
+		if errors.Is(out.Err, context.Canceled) || errors.Is(out.Err, context.DeadlineExceeded) {
+			event.Type = requestjourney.EventRequestCanceled
+			event.Outcome = requestjourney.OutcomeCanceled
+		}
+	}
+	qr.emitJourney(event)
 }
 
 // resultLabel maps a ForwardOutcome to the closed-enum "result" label used by
@@ -424,12 +487,10 @@ func observeStageMetrics(qr *QueuedRequest, out ForwardOutcome) {
 	}
 }
 
-// routeFailover hands a pre-firstbyte failure to the ③ mover. fatalCredential
-// mirrors ForwardOutcome.FatalCredential so the mover can skip the
-// same-credential retry ladder for credential-fatal errors.
-func (p *Pipeline) routeFailover(qr *QueuedRequest, err error, fatalCredential bool) {
+// routeFailover hands a pre-firstbyte failure to the ③ mover.
+func (p *Pipeline) routeFailover(qr *QueuedRequest, out ForwardOutcome) {
 	select {
-	case p.failoverCh <- failoverItem{qr: qr, err: err, fatalCredential: fatalCredential}:
+	case p.failoverCh <- failoverItem{qr: qr, out: out}:
 	case <-p.stopCh:
 		// Pipeline is shutting down and the failover channel may never be
 		// drained. Complete the request so its Submit caller is not left
@@ -467,6 +528,7 @@ func (p *Pipeline) tryEnqueueCred(cred CredentialRef, qr *QueuedRequest) bool {
 	// TestModelChange).
 	reqID, model, emitCtx := qr.ID, qr.ResolvedModel, ctxOf(qr)
 
+	qr.journeyMu.Lock()
 	select {
 	case cf.queue <- qr:
 		metricCredQueueDepth.WithLabelValues(itoa(cred.CredentialID), cred.ConcurrencyMode).Inc()
@@ -482,8 +544,19 @@ func (p *Pipeline) tryEnqueueCred(cred CredentialRef, qr *QueuedRequest) bool {
 				"vendor":      cred.Vendor,
 			},
 		})
+		qr.emitJourneyLocked(requestjourney.JourneyEvent{
+			Type:          requestjourney.EventNodeEnqueued,
+			Stage:         requestjourney.StageCredentialQueue,
+			ResolvedModel: model,
+			Model:         model,
+			ProviderID:    int64(cred.ProviderID),
+			Provider:      cred.Vendor,
+			CredentialID:  int64(cred.CredentialID),
+		})
+		qr.journeyMu.Unlock()
 		return true
 	default:
+		qr.journeyMu.Unlock()
 		cf.depth.Add(-1)
 		metricOverflow.WithLabelValues("cred_queue_full").Inc()
 		return false

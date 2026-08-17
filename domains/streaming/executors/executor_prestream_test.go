@@ -29,9 +29,10 @@ func TestUpstreamContext_SessionStreamDetachesCancellationAndRetainsTenant(t *te
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil).WithContext(ctx)
 	req.Header.Set("X-Gw-Session-Id", "session-1")
 	params := &ExecParams{
-		R:        req,
-		IsStream: true,
-		TenantID: "tenant-a",
+		R:                          req,
+		IsStream:                   true,
+		StreamSurvivesClientCancel: true,
+		TenantID:                   "tenant-a",
 	}
 	params.R = params.R.WithContext(session.SetTenantID(params.R.Context(), params.TenantID))
 	cancel()
@@ -98,6 +99,18 @@ func TestUpstreamContext_SurvivalStreamDetachesCancellationWithoutDeadline(t *te
 // change did not affect non-streaming requests: those still get the timeout
 // as a hard deadline (there is no streaming read loop to provide stall
 // detection, so a total deadline remains the correct backstop).
+func TestUpstreamContext_OrdinaryStreamKeepsClientCancellation(t *testing.T) {
+	ctx, cancelClient := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil).WithContext(ctx)
+	upstreamCtx, cancelUpstream := (&Executor{}).upstreamContext(&ExecParams{R: req, IsStream: true}, time.Second)
+	defer cancelUpstream()
+
+	cancelClient()
+	if !errors.Is(upstreamCtx.Err(), context.Canceled) {
+		t.Fatalf("ordinary stream context error = %v, want context.Canceled", upstreamCtx.Err())
+	}
+}
+
 func TestUpstreamContext_NonStreamRetainsDeadline(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	params := &ExecParams{

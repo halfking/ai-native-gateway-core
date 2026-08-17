@@ -29,6 +29,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/identity"                      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/memory"                        //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/nodehealth"
 	"github.com/kaixuan/llm-gateway-go/domains/routingstate"
 	"github.com/kaixuan/llm-gateway-go/domains/session"        //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/transformation" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -640,6 +641,13 @@ type Executor struct {
 	RedactBodyFn func([]byte, string, string) []byte
 	Auditor      audit.Sink
 	State        *credential.Writer
+	// NodeOutcomeReducer is the dispatch-attempt node-health authority. Main may
+	// inject a process-shared reducer; when nil, the executor constructs one
+	// lazily on first dispatch attempt. NodeHealthAdapter is optional; when nil,
+	// the executor adapts its existing circuit/state/URSM/probe dependencies.
+	NodeOutcomeReducer *nodehealth.OutcomeReducer
+	NodeHealthAdapter  nodehealth.Adapter
+	nodeHealthMu       sync.Mutex
 	// Provider is the credential/candidate resolver. Typed as an interface
 	// (defined in routing) so the compaction fallback tests can inject a
 	// stub without standing up a real pgx pool. The concrete
@@ -1156,6 +1164,10 @@ type ExecParams struct {
 	R         *http.Request
 	BodyBytes []byte
 	IsStream  bool
+	// StreamSurvivesClientCancel explicitly grants the stream a lifetime beyond
+	// the client connection (session capture or durable/survival ownership).
+	// Provisional correlation session IDs must not set this flag.
+	StreamSurvivesClientCancel bool
 	// PreStreamPrepared means the caller already committed a 200
 	// text/event-stream response and may be emitting keep-alive comments
 	// while the executor is still retrying upstream credentials. In this
@@ -1172,10 +1184,20 @@ type ExecParams struct {
 	// DispatchAttempt means the dispatch mover owns same-node retries. Protocol
 	// executors must not add their legacy minimum retry underneath that owner.
 	DispatchAttempt bool
+	// DispatchAttemptID is stable for one real dispatch ForwardFunc invocation
+	// and is the idempotency key for node-health reduction.
+	DispatchAttemptID string
+	// FirstSemanticByteCallback is bound to the current dispatch attempt. Stream
+	// bridges invoke it only for the first real content/tool SSE frame; non-stream
+	// execution invokes it after the complete successful response is available.
+	FirstSemanticByteCallback func()
 	// OnStreamReady is called exactly once right before the executor hands
-	// control to the normal stream writer. The caller uses it to stop any
-	// pre-stream keepalive goroutine so no writes race with StreamChat.
+	// control to the normal stream writer. Kept for compatibility; heartbeat
+	// owners now remain active until the request reaches a terminal outcome.
 	OnStreamReady func()
+	// OnStreamHeartbeat emits one protocol-safe transport frame through the
+	// request's serialized writer. It must not update semantic capture counters.
+	OnStreamHeartbeat func() error
 	// OnStreamStarted is called once when the upstream stream is ready, before
 	// the shared protocol-specific stream writer starts writing bytes.
 	OnStreamStarted func(ttfbMs int)
@@ -1266,6 +1288,11 @@ type ExecParams struct {
 	// The handler passes the same value it uses for request_logs insert;
 	// executor does not generate one itself.
 	RequestID string
+	// RequestJourney state is allocated by the protocol handler and shared with
+	// dispatch so handler and pipeline events remain one monotonic sequence.
+	JourneyGatewayInstanceID string
+	JourneySeq               *atomic.Int64
+	JourneyTerminal          *atomic.Bool
 	// clientTokenMetricsOwner marks the outermost Execute call. Recursive
 	// failover/probe calls share the same request and must not double-count it.
 	clientTokenMetricsOwner bool
@@ -1371,10 +1398,39 @@ func (d *discardResponseWriter) Flush()                      {}
 // can pass the result straight into the stream/response writers without
 // a nil check.
 func responseSink(params *ExecParams) http.ResponseWriter {
+	var writer http.ResponseWriter = &discardResponseWriter{}
 	if params != nil && params.W != nil {
-		return params.W
+		writer = params.W
 	}
-	return &discardResponseWriter{}
+	if params != nil && params.IsStream && params.FirstSemanticByteCallback != nil {
+		if target, ok := writer.(interface{ SetFirstSemanticByteCallback(func()) }); ok {
+			target.SetFirstSemanticByteCallback(params.FirstSemanticByteCallback)
+			return writer
+		}
+		return &firstSemanticResponseWriter{ResponseWriter: writer, callback: params.FirstSemanticByteCallback}
+	}
+	return writer
+}
+
+type firstSemanticResponseWriter struct {
+	http.ResponseWriter
+	callback func()
+}
+
+func (w *firstSemanticResponseWriter) FirstSemanticByteCallback() func() { return w.callback }
+
+func (w *firstSemanticResponseWriter) Flush() {
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+func (w *firstSemanticResponseWriter) FlushError() error {
+	if flusher, ok := w.ResponseWriter.(interface{ FlushError() error }); ok {
+		return flusher.FlushError()
+	}
+	w.Flush()
+	return nil
 }
 
 // SetTraceRecorder (2026-07-17) 注入请求链路追踪器,

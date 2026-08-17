@@ -4,15 +4,15 @@ import (
 	"log/slog"
 	"strconv"
 
+	"github.com/kaixuan/llm-gateway-go/domains/requestjourney"
 	"github.com/kaixuan/llm-gateway-go/internal/liveactions"
 )
 
 // failoverItem pairs a request with the pre-firstbyte error that caused the
 // forwarder to hand it to the ③ mover.
 type failoverItem struct {
-	qr              *QueuedRequest
-	err             error
-	fatalCredential bool
+	qr  *QueuedRequest
+	out ForwardOutcome
 }
 
 // runFailover is a ③ Failover Mover worker.
@@ -24,7 +24,7 @@ func (p *Pipeline) runFailover() {
 			if !ok {
 				return
 			}
-			p.move(it.qr, it.err, it.fatalCredential)
+			p.move(it.qr, it.out)
 		case <-p.stopCh:
 			return
 		}
@@ -37,7 +37,9 @@ func (p *Pipeline) runFailover() {
 //  3. cross-provider credential switch only when the request allows it;
 //  4. model-change only when both global and request-level switches allow it;
 //  5. terminal → complete with the real upstream error when present.
-func (p *Pipeline) move(qr *QueuedRequest, err error, fatalCredential bool) {
+func (p *Pipeline) move(qr *QueuedRequest, out ForwardOutcome) {
+	err := out.Err
+	fatalCredential := out.FatalCredential
 	// Global safety net: cap total forward attempts so a request can never
 	// churn an unbounded candidate set. Under normal operation this is well
 	// above candidate count × retry and never trips.
@@ -46,7 +48,8 @@ func (p *Pipeline) move(qr *QueuedRequest, err error, fatalCredential bool) {
 		slog.Warn("dispatch: attempt cap reached, giving up",
 			"request_id", qr.ID, "attempts", qr.AttemptCount,
 			"tried_creds", len(qr.TriedCredentials))
-		p.complete(qr, ForwardOutcome{Err: terminalErr(err)})
+		out.Err = terminalErr(err)
+		p.complete(qr, out)
 		return
 	}
 	// (1) Same-credential retry — skipped for credential-fatal errors.
@@ -60,6 +63,17 @@ func (p *Pipeline) move(qr *QueuedRequest, err error, fatalCredential bool) {
 		// V3.3-OBS OBS-B1 (2026-08-15): node_switch 动作事件，retry=true、
 		// retry_seq 递增时前端打特别标（24 号 §1）。
 		p.emitNodeSwitch(qr, qr.SelectedCred.CredentialID, qr.SelectedCred.CredentialID, "cred_retry", true, qr.CredRetryCount)
+		qr.emitJourney(requestjourney.JourneyEvent{
+			Type:          requestjourney.EventRetryScheduled,
+			Stage:         requestjourney.StageRetrying,
+			ResolvedModel: qr.ResolvedModel,
+			Model:         qr.ResolvedModel,
+			ProviderID:    int64(qr.SelectedCred.ProviderID),
+			Provider:      qr.SelectedCred.Vendor,
+			CredentialID:  int64(qr.SelectedCred.CredentialID),
+			Attempt:       qr.lastAttemptRef(),
+			RetryReason:   firstNonEmpty(out.ErrorKind, classifyError(err)),
+		})
 		if p.tryEnqueueCred(qr.SelectedCred, qr) {
 			return
 		}
@@ -79,10 +93,24 @@ func (p *Pipeline) move(qr *QueuedRequest, err error, fatalCredential bool) {
 			continue
 		}
 		fromCred := qr.SelectedCred.CredentialID
+		fromModel := qr.ResolvedModel
 		p.selectCredential(qr, ref)
 		metricFailover.WithLabelValues("cred_switch").Inc()
 		// V3.3-OBS OBS-B1 (2026-08-15): node_switch 动作事件（跨凭据切换）。
 		p.emitNodeSwitch(qr, fromCred, ref.CredentialID, "cred_switch", false, 0)
+		qr.emitJourney(requestjourney.JourneyEvent{
+			Type:             requestjourney.EventNodeSwitched,
+			Stage:            requestjourney.StageRetrying,
+			ResolvedModel:    fromModel,
+			Model:            fromModel,
+			ProviderID:       int64(ref.ProviderID),
+			Provider:         ref.Vendor,
+			CredentialID:     int64(ref.CredentialID),
+			FromCredentialID: int64(fromCred),
+			ToCredentialID:   int64(ref.CredentialID),
+			Attempt:          qr.lastAttemptRef(),
+			SwitchReason:     "cred_switch",
+		})
 		if p.tryEnqueueCred(ref, qr) {
 			return
 		}
@@ -93,7 +121,7 @@ func (p *Pipeline) move(qr *QueuedRequest, err error, fatalCredential bool) {
 	slog.Info("dispatch: all credentials exhausted under model, trying model-change",
 		"request_id", qr.ID, "model", qr.ResolvedModel,
 		"tried_creds", len(qr.TriedCredentials))
-	p.tryModelChange(qr, err)
+	p.tryModelChangeOutcome(qr, out)
 }
 
 func (p *Pipeline) retryBudget(qr *QueuedRequest) int {

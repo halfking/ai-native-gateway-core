@@ -974,12 +974,12 @@ func (e *Executor) executeAnthropicOnce(
 			resp.StatusCode != 403 && resp.StatusCode != 402 &&
 			errKind != errorsx.KindConcurrent {
 			if !errorsx.IsClientBug(errKind) {
-				e.Circuit.RecordSuccess(cand.ProviderID, cand.CredentialID)
+				e.recordProtocolCircuitSuccess(params, cand.ProviderID, cand.CredentialID)
 			}
 		} else if errKind == errorsx.KindRateLimit {
 			e.Limiter.Shrink(cand.ProviderID, cand.CredentialID)
 		} else if errKind == errorsx.KindConcurrent {
-			e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, cand.StandardizedName, errorsx.KindConcurrent,
+			e.writeProtocolCredentialStateOnError(params, params.R.Context(), cand.CredentialID, cand.StandardizedName, errorsx.KindConcurrent,
 				&upstreampkg.Error{
 					Kind:       errorsx.KindConcurrent,
 					Message:    fmt.Sprintf("upstream %d concurrent overload", resp.StatusCode),
@@ -1124,10 +1124,10 @@ func (e *Executor) executeAnthropicOnce(
 
 			if !isBenignEOF && isResumable {
 			} else if !isBenignEOF {
-				e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, streamKind)
+				e.recordProtocolCircuitFailure(params, cand.ProviderID, cand.CredentialID, streamKind)
 			}
 			if isBenignEOF {
-				e.Circuit.RecordSuccess(cand.ProviderID, cand.CredentialID)
+				e.recordProtocolCircuitSuccess(params, cand.ProviderID, cand.CredentialID)
 			}
 			return &ExecuteResult{
 				Response:    resp,
@@ -1138,7 +1138,7 @@ func (e *Executor) executeAnthropicOnce(
 				InboundBody: sourceBody,
 			}, &streamInterruptedError{reason: outcome.Reason, credentialID: cand.CredentialID, resumable: isResumable, kind: streamKind}
 		}
-		e.Circuit.RecordSuccess(cand.ProviderID, cand.CredentialID)
+		e.recordProtocolCircuitSuccess(params, cand.ProviderID, cand.CredentialID)
 		return &ExecuteResult{
 			Response:    resp,
 			Candidate:   cand,
@@ -1168,7 +1168,7 @@ func (e *Executor) executeAnthropicOnce(
 		return nil, err
 	}
 	e.logClientResponse(params, diagnosticProtocol(params.ClientProtocol, "anthropic-messages"), responseBody)
-	e.Circuit.RecordSuccess(cand.ProviderID, cand.CredentialID)
+	e.recordProtocolCircuitSuccess(params, cand.ProviderID, cand.CredentialID)
 	return &ExecuteResult{
 		Response:    resp,
 		Candidate:   cand,

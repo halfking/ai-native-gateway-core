@@ -3,6 +3,7 @@ package executors
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strconv"
 	"sync"
@@ -206,7 +207,26 @@ func (e *Executor) dispatchForward(ctx context.Context, qr *dispatch.QueuedReque
 	if cand.CredentialID == 0 {
 		return dispatch.ForwardOutcome{Err: errDispatchNoCandidate}
 	}
-	return e.forwardForDispatch(ctx, dctx, cand)
+	// V3.3-OBS OBS-B1 (2026-08-15): dispatch_v2 路径的 upstream_request 动作
+	// 事件（S7，每个候选转发开始）。
+	attemptRef, ok := qr.ActiveAttemptRef()
+	if !ok {
+		return dispatch.ForwardOutcome{Err: errDispatchMissingAttempt}
+	}
+	attempt := attemptRef.AttemptNo
+	e.liveActions.Emit(ctx, liveactions.ActionEvent{
+		RequestID:    qr.ID,
+		Action:       liveactions.ActionUpstreamRequest,
+		Model:        qr.ResolvedModel,
+		CredentialID: ref.CredentialID,
+		Retry:        attempt > 1,
+		RetrySeq:     attempt,
+		Detail: map[string]string{
+			"attempt":     strconv.Itoa(attempt),
+			"provider_id": strconv.Itoa(ref.ProviderID),
+		},
+	})
+	return e.forwardForDispatch(dctx, cand, attemptRef.AttemptID, qr.FirstSemanticByteCallback(), ctx)
 }
 
 // candidateToRef maps a routing candidate into dispatch's decoupled view.
@@ -240,21 +260,18 @@ func candidateToRef(c provider.Candidate) dispatch.CredentialRef {
 }
 
 // dispatchExecutionContext keeps the dispatch wait lifecycle aligned with the
-// upstream request. Streaming calls already detach the vendor context from a
-// client disconnect so pending capture can finish; Pipeline.Submit must wait on
-// the same detached lifetime instead of abandoning the request early.
-// Non-streaming requests (even those carrying a session id) keep the client
-// context: there's no capture to drain, and detaching would silently bill /
-// debit quota for a response the user never receives.
+// upstream request. Ordinary streams inherit client cancellation. Only an
+// explicit session or survival owner detaches so pending/durable capture can
+// finish after disconnect. Non-streaming requests keep the client context even
+// when they carry a session id: there is no stream capture to drain.
 func dispatchExecutionContext(params *ExecParams) (context.Context, context.CancelFunc) {
 	if params == nil || params.R == nil {
 		return context.WithCancel(context.Background())
 	}
-	parent := params.R.Context()
-	if params.IsStream && (hasSessionID(params) || params.SurvivalAttempt) {
-		parent = context.WithoutCancel(parent)
+	if params.IsStream && (params.StreamSurvivesClientCancel || params.SurvivalAttempt) {
+		return context.WithCancel(context.WithoutCancel(params.R.Context()))
 	}
-	return context.WithCancel(parent)
+	return context.WithCancel(params.R.Context())
 }
 
 func copyDispatchAttemptMetadata(ee *ExecuteError, qr *dispatch.QueuedRequest) {
@@ -299,6 +316,9 @@ func (e *Executor) executeViaDispatch(
 	dispatchCtx, cancelDispatch := dispatchExecutionContext(params)
 	defer cancelDispatch()
 	qr := dispatch.NewQueuedRequest(params.RequestID, params.TenantID, requestedModel, dispatchCtx, dctx)
+	qr.GatewayInstanceID = params.JourneyGatewayInstanceID
+	qr.JourneySharedSeq = params.JourneySeq
+	qr.JourneyTerminal = params.JourneyTerminal
 	// V3.1 waterfall: thread SessionID so WaterfallRequest can carry it for the
 	// admin /sessions/{id}/timeline endpoint. Empty for one-shot traffic.
 	qr.SessionID = params.SessionID
@@ -309,7 +329,6 @@ func (e *Executor) executeViaDispatch(
 	qr.ModelAlternatives = append([]string(nil), params.DispatchModelAlternatives...)
 
 	result, err := e.dispatchPipeline.Submit(dispatchCtx, qr)
-	e.recordDispatchOutcomes(params, dctx.outcomeSnapshot())
 	if err != nil {
 		// Wrap dispatch outcomes into *ExecuteError so the handler's
 		// Exhausted branch (handler.go:3878) emits 503 + Retry-After (not
@@ -424,11 +443,36 @@ func mapCandidatesByModel(candidates []provider.Candidate) map[string][]provider
 // loop (fp slot → circuit → Limiter.AcquireAllNoCredLayer → key rotator →
 // executeOpenAI/executeAnthropic → success/error side effects) but returns
 // control to the dispatch mover on pre-firstbyte failure.
-func (e *Executor) forwardForDispatch(ctx context.Context, dctx *dispatchCtx, cand provider.Candidate) dispatch.ForwardOutcome {
+func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate, attemptID string, firstSemanticByte func(), dispatchContexts ...context.Context) (out dispatch.ForwardOutcome) {
 	paramsCopy := *dctx.params
-	paramsCopy.R = paramsCopy.R.WithContext(ctx)
+	if len(dispatchContexts) > 0 && dispatchContexts[0] != nil {
+		paramsCopy.R = paramsCopy.R.WithContext(dispatchContexts[0])
+	}
 	paramsCopy.DispatchAttempt = true
+	paramsCopy.DispatchAttemptID = attemptID
+	paramsCopy.FirstSemanticByteCallback = firstSemanticByte
 	params := &paramsCopy
+	startedAt := time.Now()
+	probeConsumed := false
+	healthEvidence := false
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			out = dispatch.ForwardOutcome{Err: fmt.Errorf("dispatch forward panic: %v", recovered)}
+		}
+		if out.Err != nil {
+			kind := classifyExecError(out.Err)
+			out.ErrorKind = string(kind)
+			out.HTTPStatus = dispatchHTTPStatus(out.Err)
+		} else if result, ok := out.Result.(*ExecuteResult); ok && result != nil && result.Response != nil {
+			out.HTTPStatus = result.Response.StatusCode
+		}
+		sideEffectCtx, cancel := runctx.DetachedTimeout(params.R.Context(), 5*time.Second)
+		defer cancel()
+		decision, applied := e.reduceDispatchForwardOutcome(sideEffectCtx, params, cand, attemptID, out, startedAt, healthEvidence)
+		if probeConsumed && e.Circuit != nil && !dispatchOutcomeConsumesProbe(decision, applied) {
+			e.Circuit.ReleaseProbe(cand.ProviderID, cand.CredentialID)
+		}
+	}()
 
 	// ── FP slot (best-effort). A slot can become saturated after the
 	// prefilter but before this queued request reaches Forward. Degrade at the
@@ -452,7 +496,6 @@ func (e *Executor) forwardForDispatch(ctx context.Context, dctx *dispatchCtx, ca
 
 	// ── Circuit breaker (fail-open when the module is disabled) ──
 	circuitOpen := !settings.IsEnabled("circuit_degradation")
-	probeConsumed := false
 	if !circuitOpen {
 		probeConsumed = e.Circuit.Allow(cand.ProviderID, cand.CredentialID)
 		circuitOpen = !probeConsumed
@@ -477,6 +520,7 @@ func (e *Executor) forwardForDispatch(ctx context.Context, dctx *dispatchCtx, ca
 		releaseFpLease(e.FpSlots, fpLease)
 		if probeConsumed && e.Circuit != nil {
 			e.Circuit.ReleaseProbe(cand.ProviderID, cand.CredentialID)
+			probeConsumed = false
 		}
 		return dispatch.ForwardOutcome{Err: acquireErr}
 	}
@@ -507,6 +551,7 @@ func (e *Executor) forwardForDispatch(ctx context.Context, dctx *dispatchCtx, ca
 			}
 		}
 
+		healthEvidence = true
 		switch cand.Protocol {
 		case "anthropic-messages":
 			result, execErr = e.executeAnthropic(params, cand, dctx.retryPerCred, dctx.tTotal, fpLease)
@@ -529,28 +574,26 @@ func (e *Executor) forwardForDispatch(ctx context.Context, dctx *dispatchCtx, ca
 			bytesSent = true
 		}
 	}
-	kind := e.recordDispatchError(params, cand, execErr, probeConsumed, len(dctx.candidates))
+	kind := e.recordDispatchError(params, cand, execErr)
 	dctx.appendOutcome(dispatchRequestOutcome{candidate: cand, errorKind: kind})
 	return dispatch.ForwardOutcome{
 		Err:             execErr,
 		BytesSent:       bytesSent,
 		FatalCredential: errorsx.IsCredentialFatal(kind),
+		ErrorKind:       string(kind),
+		HTTPStatus:      dispatchHTTPStatus(execErr),
 	}
 }
 
-// recordDispatchSuccess applies the routing-critical success side-effects
-// (sticky, state restore, health, mnf-reset, URSM record). Focused subset of
+// recordDispatchSuccess applies non-authoritative routing side effects
+// (sticky, route recorder, health tracker, and mnf reset). Focused subset of
 // the legacy loop's success block (executor.go:2566-2696).
 func (e *Executor) recordDispatchSuccess(params *ExecParams, cand provider.Candidate, result *ExecuteResult) {
 	sideEffectCtx, sideEffectCancel := runctx.DetachedTimeout(params.R.Context(), 5*time.Second)
 	defer sideEffectCancel()
-	e.restoreCredentialState(sideEffectCtx, cand.CredentialID, cand.StandardizedName)
 	e.recordStickySuccess(params, cand.CredentialID)
 	if e.Recorder != nil && e.legacyWritersEnabled() {
 		e.Recorder.RecordSuccess(sideEffectCtx, cand.CredentialID, cand.RawModel)
-	}
-	if e.NodeProbeHealthy != nil && cand.RawModel != "" {
-		_ = e.NodeProbeHealthy(sideEffectCtx, cand.CredentialID, cand.RawModel)
 	}
 	e.resetMnfStreak(params, cand.CredentialID)
 	requestID := params.R.Header.Get("X-Request-Id")
@@ -562,33 +605,16 @@ func (e *Executor) recordDispatchSuccess(params *ExecParams, cand provider.Candi
 	}
 }
 
-// recordDispatchError classifies the error and updates credential state so a
-// failing credential cools. model_not_found is recorded at binding scope.
-// totalCandidates is the post-filter candidate count (from the dispatch
-// context), mirroring legacy's totalCandidates so the sole-candidate fail-open
-// rule is honoured: never escalate the breaker when only one candidate remains.
-func (e *Executor) recordDispatchError(params *ExecParams, cand provider.Candidate, err error, probeConsumed bool, totalCandidates int) errorsx.ErrorKind {
+// recordDispatchError classifies the error and retains model-not-found audit
+// and streak tracking. Node-health state and circuit writes are reducer-owned.
+func (e *Executor) recordDispatchError(params *ExecParams, cand provider.Candidate, err error) errorsx.ErrorKind {
 	kind := classifyExecError(err)
 	sideEffectCtx, sideEffectCancel := runctx.DetachedTimeout(params.R.Context(), 5*time.Second)
 	defer sideEffectCancel()
-	modelNotFound := false
 	if mnf, ok := err.(*modelNotFoundError); ok {
-		modelNotFound = true
 		mnfKind := mnf.resolvedKind()
 		e.recordModelNotFound(sideEffectCtx, mnf.credentialID, mnf.rawModel, mnf.body, mnf.status, mnfKind)
-		e.writeCredentialStateOnError(sideEffectCtx, mnf.credentialID, cand.StandardizedName, mnfKind, err)
 		e.recordMnfStreak(params, cand.CredentialID)
-	} else if shouldWriteCredentialState(kind) {
-		e.writeCredentialStateOnError(sideEffectCtx, cand.CredentialID, cand.StandardizedName, kind, err)
-	}
-
-	credentialHealthyFailure := dispatchFailureIsCredentialHealthy(kind, modelNotFound)
-	propagateToBreaker := !credentialHealthyFailure &&
-		!freeCredentialsTolerateTransient(cand.BillingMode, kind) && totalCandidates > 1
-	if propagateToBreaker && e.Circuit != nil {
-		e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, kind)
-	} else if probeConsumed && e.Circuit != nil {
-		e.Circuit.ReleaseProbe(cand.ProviderID, cand.CredentialID)
 	}
 	return kind
 }
@@ -725,6 +751,7 @@ func extractQueueTimestamps(qr *dispatch.QueuedRequest) (
 // sentinel errors for the dispatch forward path.
 var (
 	errDispatchNoCandidate     = newDispatchErr("dispatch: candidate not found in planned list")
+	errDispatchMissingAttempt  = newDispatchErr("dispatch: missing active attempt")
 	errDispatchBadResult       = newDispatchErr("dispatch: unexpected result type")
 	errDispatchBadPayload      = newDispatchErr("dispatch: payload is not *dispatchCtx")
 	errDispatchFpSlotSaturated = newDispatchErr("dispatch: fp slot saturated")

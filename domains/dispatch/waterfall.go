@@ -12,12 +12,13 @@ const waterfallRingCap = 200
 // WaterfallRequest is one completed request's 9-stage timeline for the
 // admin waterfall UI. Timestamps are RFC3339Nano when present.
 type WaterfallRequest struct {
-	RequestID  string `json:"request_id"`
-	SessionID  string `json:"session_id,omitempty"`
-	Model      string `json:"model,omitempty"`
-	Credential int    `json:"credential_id,omitempty"`
-	Result     string `json:"result"`
-	Vendor     string `json:"vendor,omitempty"`
+	RequestID  string             `json:"request_id"`
+	SessionID  string             `json:"session_id,omitempty"`
+	Model      string             `json:"model,omitempty"`
+	Credential int                `json:"credential_id,omitempty"`
+	Result     string             `json:"result"`
+	Vendor     string             `json:"vendor,omitempty"`
+	Attempts   []WaterfallAttempt `json:"attempts,omitempty"`
 
 	ArrivedAt       string `json:"arrived_at,omitempty"`
 	TotalEnqueuedAt string `json:"total_enqueued_at,omitempty"`
@@ -39,6 +40,22 @@ type WaterfallRequest struct {
 	StreamingDurationMS int `json:"streaming_duration_ms"`
 	QueueWaitMS         int `json:"queue_wait_ms"`
 	TotalMS             int `json:"total_ms"`
+}
+
+// WaterfallAttempt is one immutable upstream attempt in a request waterfall.
+// The request-level fields above remain for API compatibility.
+type WaterfallAttempt struct {
+	AttemptID    string `json:"attempt_id"`
+	AttemptNo    int    `json:"attempt_no"`
+	Model        string `json:"model,omitempty"`
+	ProviderID   int64  `json:"provider_id,omitempty"`
+	CredentialID int64  `json:"credential_id"`
+	Vendor       string `json:"vendor,omitempty"`
+	StartedAt    string `json:"started_at,omitempty"`
+	FirstByteAt  string `json:"first_byte_at,omitempty"`
+	EndedAt      string `json:"ended_at,omitempty"`
+	Outcome      string `json:"outcome,omitempty"`
+	ErrorKind    string `json:"error_kind,omitempty"`
 }
 
 // WaterfallSnapshot is the admin waterfall API response body.
@@ -183,6 +200,7 @@ func buildWaterfallRequest(qr *QueuedRequest, out ForwardOutcome) WaterfallReque
 		Credential: qr.SelectedCred.CredentialID,
 		Result:     resultLabel(out),
 		Vendor:     firstNonEmpty(qr.vendor, qr.SelectedCred.Vendor),
+		Attempts:   qr.waterfallAttempts(),
 		ArrivedAt:  formatTS(qr.T0_ArrivedAt),
 	}
 	item.TotalEnqueuedAt = formatTSPtr(qr.T1_TotalEnqueuedAt)

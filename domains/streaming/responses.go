@@ -100,6 +100,9 @@ func NewResponsesHandler(ch *ChatHandler) *ResponsesHandler {
 }
 
 func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	w, r, journeyWriter := beginRequestJourney(w, r, h.chatHandler)
+	defer finishRequestJourney(r, journeyWriter)
+	r = markExplicitStreamSession(r)
 	defer func() { _ = r.Body.Close() }()
 
 	var (
@@ -213,6 +216,7 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		keyInfo = ki
 		attemptKeyInfo = ki
+		bindRequestJourney(r, ki.TenantID, attemptClientModel)
 	}
 
 	if rlOutcome := checkGatewayRateLimit(keyInfo, h.chatHandler.rateLimiter); !rlOutcome.Skipped {
@@ -290,6 +294,7 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	attemptClientModel = reqBody.Model
+	requestedModel := reqBody.Model
 
 	// model=auto: classify + rewrite before CanonicalizeClientModel.
 	if reqBody.Model == autoRequestMagic {
@@ -315,6 +320,7 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// 2026-07-14: lowercase at the wire boundary.
 	clientModel := modelname.CanonicalizeClientModel(reqBody.Model)
+	resolveRequestJourney(r, tenant(keyInfo), requestedModel, clientModel)
 
 	if keyInfo != nil {
 		profile := clientProfileFromKey(keyInfo)
@@ -549,12 +555,36 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		logCtx,
 	)
 
+	var preStream *preStreamKeepalive
+	preStreamPrepared := false
+	if isStream {
+		cfg := currentStreamRuntimeConfig()
+		if cfg.enablePreStreamKeepalive {
+			if psk, ok := startPreStreamKeepalive(w, cfg.keepaliveInterval, requestID); ok {
+				preStream = psk
+				preStreamPrepared = true
+				w = psk.Writer()
+				defer psk.stop()
+			}
+		}
+	}
+
+	journeyInstanceID, journeySeq, journeyTerminal := requestJourneyExecState(r)
 	buildExecParams := func(streamWriter http.ResponseWriter) *executors.ExecParams {
 		return &executors.ExecParams{
-			W:                    streamWriter,
-			R:                    r,
-			BodyBytes:            chatBodyBytes,
-			IsStream:             isStream,
+			W:                          streamWriter,
+			R:                          r,
+			BodyBytes:                  chatBodyBytes,
+			IsStream:                   isStream,
+			StreamSurvivesClientCancel: explicitStreamSession(r.Context()),
+			PreStreamPrepared:          preStreamPrepared,
+			OnStreamReady:              func() {},
+			OnStreamHeartbeat: func() error {
+				if preStream != nil {
+					return preStream.session.Heartbeat()
+				}
+				return nil
+			},
 			SuppressSuccessWrite: !isStream,
 			// Phase E (2026-07-01): was incorrectly "openai-completions",
 			// which caused executor_anthropic.go to use the Q3 OpenAI
@@ -592,18 +622,21 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				}
 				return 0
 			}(),
-			SessionID:       gwSessionID,
-			Model:           clientModel,
-			TenantID:        tenant(keyInfo),
-			AppID:           appID(keyInfo),
-			ApiKeyID:        apiKeyIDPtr(keyInfo),
-			RequestID:       requestID,
-			ClientRequestID: auditCtx.ClientRequestID,
-			GWTaskID:        auditCtx.GWTaskID,
-			ParentRequestID: auditCtx.ParentRequestID,
-			TraceID:         auditCtx.TraceID,
-			SpanID:          auditCtx.SpanID,
-			Audit:           auditCtx,
+			SessionID:                gwSessionID,
+			Model:                    clientModel,
+			TenantID:                 tenant(keyInfo),
+			AppID:                    appID(keyInfo),
+			ApiKeyID:                 apiKeyIDPtr(keyInfo),
+			RequestID:                requestID,
+			ClientRequestID:          auditCtx.ClientRequestID,
+			GWTaskID:                 auditCtx.GWTaskID,
+			ParentRequestID:          auditCtx.ParentRequestID,
+			TraceID:                  auditCtx.TraceID,
+			SpanID:                   auditCtx.SpanID,
+			Audit:                    auditCtx,
+			JourneyGatewayInstanceID: journeyInstanceID,
+			JourneySeq:               journeySeq,
+			JourneyTerminal:          journeyTerminal,
 		}
 	}
 
@@ -657,13 +690,25 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					map[string]any{"Reason": reason})
 				h.chatHandler.recordFailedRequestWithKey(requestID, clientModel, explicitOutbound,
 					attemptProviderID, attemptCredentialID, "content_filter", msg, latency, chatBodyBytes, keyInfo, r)
-				writeResponsesError(w, http.StatusBadRequest, msg, "content_filter", "content_filter")
+				if preStreamPrepared {
+					writeResponsesStreamError(w, msg, "content_filter")
+				} else {
+					writeResponsesError(w, http.StatusBadRequest, msg, "content_filter", "content_filter")
+				}
 				return
 			}
-			writeResponsesError(w, http.StatusServiceUnavailable, "All providers unavailable", "server_error", "provider_unavailable")
+			if preStreamPrepared {
+				writeResponsesStreamError(w, "All providers unavailable", "provider_unavailable")
+			} else {
+				writeResponsesError(w, http.StatusServiceUnavailable, "All providers unavailable", "server_error", "provider_unavailable")
+			}
 			return
 		}
-		writeResponsesError(w, http.StatusServiceUnavailable, "Upstream request failed", "server_error", "upstream_error")
+		if preStreamPrepared {
+			writeResponsesStreamError(w, "Upstream request failed", "upstream_error")
+		} else {
+			writeResponsesError(w, http.StatusServiceUnavailable, "Upstream request failed", "server_error", "upstream_error")
+		}
 		return
 	}
 	if result != nil && result.CachedReplay {
@@ -1187,6 +1232,19 @@ func convertChatResponseToResponses(body []byte, clientModel, requestID string) 
 		return body
 	}
 	return result
+}
+
+func writeResponsesStreamError(w http.ResponseWriter, message, code string) {
+	payload, _ := json.Marshal(map[string]any{
+		"type": "response.failed",
+		"response": map[string]any{
+			"error": map[string]any{"code": code, "message": message},
+		},
+	})
+	_, _ = fmt.Fprintf(w, "event: response.failed\ndata: %s\n\n", payload)
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
 }
 
 func writeResponsesError(w http.ResponseWriter, statusCode int, message, errType, code string) {

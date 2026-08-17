@@ -47,7 +47,7 @@ func TestDispatchExecutionContextOrdinaryStreamKeepsClientCancel(t *testing.T) {
 
 	cancelClient()
 	if !errors.Is(ctx.Err(), context.Canceled) {
-		t.Fatalf("ordinary streaming dispatch context error = %v, want context.Canceled", ctx.Err())
+		t.Fatalf("ordinary stream dispatch context error = %v, want context.Canceled", ctx.Err())
 	}
 }
 
@@ -125,32 +125,49 @@ func TestMayRetryInterruptedStreamAllowsPreCommitResumable(t *testing.T) {
 	}
 }
 
-func TestDispatchExecutionContextSessionStreamDetaches(t *testing.T) {
+func TestDispatchExecutionContext_SessionStreamDetaches(t *testing.T) {
 	r := httptest.NewRequest("POST", "/v1/chat/completions", nil)
-	r.Header.Set("X-Gw-Session-Id", "sess-1")
 	clientCtx, cancelClient := context.WithCancel(r.Context())
 	defer cancelClient()
 
-	got, cancelDispatch := dispatchExecutionContext(&ExecParams{R: r.WithContext(clientCtx), IsStream: true})
+	got, cancelDispatch := dispatchExecutionContext(&ExecParams{
+		R: r.WithContext(clientCtx), IsStream: true, SessionID: "sess-1", StreamSurvivesClientCancel: true,
+	})
 	defer cancelDispatch()
 
 	cancelClient()
 	if errors.Is(got.Err(), context.Canceled) {
-		t.Fatal("session streaming dispatch wait must remain alive after client disconnect")
+		t.Fatal("session stream dispatch wait must remain alive after client disconnect")
 	}
 }
 
-func TestDispatchExecutionContextSurvivalStreamDetaches(t *testing.T) {
-	r := httptest.NewRequest("POST", "/v1/chat/completions", nil)
+func TestDispatchExecutionContext_ProvisionalSessionDoesNotDetach(t *testing.T) {
+	r := httptest.NewRequest("POST", "/v1/responses", nil)
 	clientCtx, cancelClient := context.WithCancel(r.Context())
 	defer cancelClient()
+	got, cancelDispatch := dispatchExecutionContext(&ExecParams{
+		R: r.WithContext(clientCtx), IsStream: true, SessionID: "gw_generated",
+	})
+	defer cancelDispatch()
 
-	got, cancelDispatch := dispatchExecutionContext(&ExecParams{R: r.WithContext(clientCtx), IsStream: true, SurvivalAttempt: true})
+	cancelClient()
+	if !errors.Is(got.Err(), context.Canceled) {
+		t.Fatalf("provisional session stream context error = %v, want context.Canceled", got.Err())
+	}
+}
+
+func TestDispatchExecutionContext_SurvivalAttemptDetaches(t *testing.T) {
+	r := httptest.NewRequest("POST", "/v1/messages", nil)
+	clientCtx, cancelClient := context.WithCancel(r.Context())
+	defer cancelClient()
+	got, cancelDispatch := dispatchExecutionContext(&ExecParams{
+		R: r.WithContext(clientCtx), IsStream: true, SurvivalAttempt: true,
+	})
 	defer cancelDispatch()
 
 	cancelClient()
 	if errors.Is(got.Err(), context.Canceled) {
-		t.Fatal("survival streaming dispatch wait must remain alive after client disconnect")
+		t.Fatal("survival-owned stream dispatch wait must remain alive after client disconnect")
 	}
 }
 

@@ -4,10 +4,8 @@
 // fed through the durable credential_probe_queue (需求 6). It replaces the
 // ad-hoc per-worker HTTP executors with one place that:
 //
-//   - runs the two-round probe (direct upstream THEN gateway, with the
-//     CRITICAL "update state before gateway round" ordering preserved from
-//     NodeProbeWorker.runOne — getting this wrong re-introduces routing
-//     oscillation);
+//   - runs the two-round probe (direct upstream THEN credential-pinned gateway)
+//     and restores routing-visible state only after both rounds succeed;
 //   - applies all post-probe side effects (binding/credential/observed state,
 //     circuit success, candidate-cache invalidate, URSM v2, model-IQ trigger,
 //     pg_notify);
@@ -39,13 +37,33 @@ import (
 type ProbeService struct {
 	worker   *NodeProbeWorker
 	executor *ActiveProbeExecutor
+
+	// Test seams keep Run behavior testable without an upstream, gateway, or DB.
+	// Production construction leaves these nil and uses the worker methods below.
+	directRoundFn  func(context.Context, int, string) nodeProbeRoundResult
+	gatewayRoundFn func(context.Context, int, string) gatewayProbeResult
+	applyOutcomeFn func(context.Context, probeOutcome)
 }
 
 // NewProbeService wires the service. worker supplies probeDirect + side-effect
-// helpers; executor supplies the pinned gateway round (optional — when nil or
-// gateway not configured, the service falls back to worker.probeGateway).
+// helpers; executor supplies the pinned gateway round. When executor is absent,
+// the service builds the same pinned request from the worker's gateway config.
 func NewProbeService(worker *NodeProbeWorker, executor *ActiveProbeExecutor) *ProbeService {
 	return &ProbeService{worker: worker, executor: executor}
+}
+
+type gatewayProbeResult struct {
+	round  nodeProbeRoundResult
+	pinned bool
+}
+
+type probeOutcome struct {
+	credentialID int
+	model        string
+	direct       nodeProbeRoundResult
+	gateway      nodeProbeRoundResult
+	success      bool
+	recoverAt    time.Time
 }
 
 // Run executes one queued probe task end-to-end and returns the queue result.
@@ -71,20 +89,9 @@ func (s *ProbeService) Run(ctx context.Context, task ProbeQueueTask) (ProbeQueue
 
 	s.worker.publishProbeEvent(credID, model, "in-flight", "node_probe", triggerKind, attempt)
 
-	// Round 1: direct upstream (reuses the proxy-aware probeClient + classifier).
-	direct := s.worker.probeDirect(ctx, credID, model)
-
-	// CRITICAL invariant (mirrored from runOne): on direct success, restore
-	// routing-visible state BEFORE the gateway round so the gateway round sees
-	// the recovered credential, not the stale cooling state.
-	if direct.ok {
-		s.worker.updateBindingAvailability(ctx, credID, model, true, "")
-		s.worker.updateCredentialHealth(ctx, credID)
-		s.worker.updateObservedState(ctx, credID, model, true, "", time.Now())
-		if s.worker.recordCircuitSuccess != nil {
-			s.worker.recordCircuitSuccess(direct.providerID, credID)
-		}
-	}
+	// Round 1 is evidence only. A direct success must not restore routing-visible
+	// state before the pinned gateway round has verified the same node.
+	direct := s.directRound(ctx, credID, model)
 
 	// Missing-binding short-circuit: a (cred, model) with no binding row is a
 	// config problem, not a health problem. Emit one audit row, drop the state,
@@ -97,22 +104,29 @@ func (s *ProbeService) Run(ctx context.Context, task ProbeQueueTask) (ProbeQueue
 		return ProbeQueueResult{Status: ProbeQueueSuccess, ReasonCode: "missing_binding_dropped"}, nil
 	}
 
-	// Round 2: gateway. Prefer the executor's pinned round (X-LLM-Pin-Credential
-	// → exact node) when configured; fall back to the legacy gateway round.
-	gw := s.gatewayRound(ctx, credID, model)
+	// Round 2 must be pinned to the same credential. A legacy unpinned gateway
+	// response is retained as an explicit failure result and cannot restore state.
+	gateway := s.gatewayRound(ctx, credID, model)
+	gw := gateway.round
+	if gw.ok && !gateway.pinned {
+		gw.ok = false
+		gw.errCode = "gateway_pin_unsupported"
+		gw.errDetail = "legacy gateway probe cannot prove credential attribution"
+	}
 
-	success := direct.ok && gw.ok
+	success := direct.ok && gw.ok && gateway.pinned
 	s.worker.updateURSMv2ProbeState(ctx, trigger.tenantID, credID, model, success, direct.latencyMs)
 	s.worker.emitProbe(ctx, credID, direct.providerID, model, direct.outboundModel, "direct", attempt, trigger, direct)
 	s.worker.emitProbe(ctx, credID, direct.providerID, model, direct.outboundModel, "gateway", attempt, trigger, gw)
-	if !direct.ok {
-		s.worker.updateBindingAvailability(ctx, credID, model, false, direct.errCode)
-		s.worker.updateObservedState(ctx, credID, model, false, direct.errCode, time.Now().Add(5*time.Minute))
-	}
-	if s.worker.invalidateCandidateCache != nil {
-		s.worker.invalidateCandidateCache(credID)
-	}
 	now := time.Now()
+	s.applyOutcome(ctx, probeOutcome{
+		credentialID: credID,
+		model:        model,
+		direct:       direct,
+		gateway:      gw,
+		success:      success,
+		recoverAt:    now.Add(5 * time.Minute),
+	})
 	durationMs := int(now.Sub(startedAt).Milliseconds())
 
 	backoff := ChainBackoffIndex(attempt, NodeProbeBackoffChain)
@@ -141,10 +155,8 @@ func (s *ProbeService) Run(ctx context.Context, task ProbeQueueTask) (ProbeQueue
 	s.worker.mirrorNodeProbeState(ctx, credID, model, attempt, success, direct, gw, now, backoff)
 
 	if success {
-		// Drop node_probe_failed immediately: invalidate candCache + pg_notify.
-		if s.worker.invalidateCandidateCache != nil {
-			s.worker.invalidateCandidateCache(credID)
-		}
+		// Drop node_probe_failed immediately. applyOutcome already invalidated the
+		// candidate cache after committing both-round recovery side effects.
 		s.worker.notifyAutoRouteRefresh(ctx, credID)
 	} else {
 		if s.worker.modelQualityTrigger != nil && attempt >= 2 {
@@ -167,24 +179,71 @@ func (s *ProbeService) Run(ctx context.Context, task ProbeQueueTask) (ProbeQueue
 		errCode = *c
 	}
 	return ProbeQueueResult{
-		Status:      ProbeQueueFailed,
-		ReasonCode:  errCode,
+		Status:       ProbeQueueFailed,
+		ReasonCode:   errCode,
 		ReasonDetail: firstErrDetailString(direct, gw),
-		HTTPStatus:  gw.httpStatus,
-		LatencyMs:   gw.latencyMs,
-		NextRunAt:   &nextRetryAt,
+		HTTPStatus:   gw.httpStatus,
+		LatencyMs:    gw.latencyMs,
+		NextRunAt:    &nextRetryAt,
 	}, nil
 }
 
-// gatewayRound runs the gateway probe round, preferring the executor's pinned
-// round (X-LLM-Pin-Credential → exact node) when configured.
-func (s *ProbeService) gatewayRound(ctx context.Context, credID int, model string) nodeProbeRoundResult {
-	if s.executor != nil && s.executor.GatewayEnabled() {
-		target := &ProbeTarget{CredentialID: credID, RawModel: model}
-		pr := s.executor.RunGateway(ctx, target)
-		return probeResultToRound(model, pr)
+func (s *ProbeService) directRound(ctx context.Context, credID int, model string) nodeProbeRoundResult {
+	if s.directRoundFn != nil {
+		return s.directRoundFn(ctx, credID, model)
 	}
-	return s.worker.probeGateway(ctx, credID, model)
+	return s.worker.probeDirect(ctx, credID, model)
+}
+
+// gatewayRound runs the gateway probe round, preferring the executor's pinned
+// round (X-LLM-Pin-Credential -> exact node) when configured. The legacy result
+// is explicit about its lack of attribution so it can never recover the node.
+func (s *ProbeService) gatewayRound(ctx context.Context, credID int, model string) gatewayProbeResult {
+	if s.gatewayRoundFn != nil {
+		return s.gatewayRoundFn(ctx, credID, model)
+	}
+	target := &ProbeTarget{CredentialID: credID, RawModel: model}
+	if s.executor != nil && s.executor.GatewayEnabled() {
+		pr := s.executor.RunGateway(ctx, target)
+		return gatewayProbeResult{round: probeResultToRound(model, pr), pinned: true}
+	}
+	if s.worker != nil && s.worker.client != nil && s.worker.baseURL != "" {
+		fallback := NewActiveProbeExecutor(nil, nil, nil, 0)
+		fallback.SetGateway(s.worker.baseURL, s.worker.apiKey, s.worker.client)
+		pr := fallback.RunGateway(ctx, target)
+		return gatewayProbeResult{round: probeResultToRound(model, pr), pinned: true}
+	}
+	return gatewayProbeResult{round: nodeProbeRoundResult{
+		errCode:   "gateway_pin_unsupported",
+		errDetail: "legacy gateway probe cannot prove credential attribution",
+	}, pinned: false}
+}
+
+func (s *ProbeService) applyOutcome(ctx context.Context, outcome probeOutcome) {
+	if s.applyOutcomeFn != nil {
+		s.applyOutcomeFn(ctx, outcome)
+		return
+	}
+	if outcome.success {
+		s.worker.updateBindingAvailability(ctx, outcome.credentialID, outcome.model, true, "")
+		if s.worker.db != nil {
+			s.worker.updateCredentialHealth(ctx, outcome.credentialID)
+		}
+		s.worker.updateObservedState(ctx, outcome.credentialID, outcome.model, true, "", time.Now())
+		if s.worker.recordCircuitSuccess != nil {
+			s.worker.recordCircuitSuccess(outcome.direct.providerID, outcome.credentialID)
+		}
+	} else {
+		errCode := "gateway_probe_failed"
+		if code := firstErrCode(outcome.direct, outcome.gateway); code != nil && *code != "" {
+			errCode = *code
+		}
+		s.worker.updateBindingAvailability(ctx, outcome.credentialID, outcome.model, false, errCode)
+		s.worker.updateObservedState(ctx, outcome.credentialID, outcome.model, false, errCode, outcome.recoverAt)
+	}
+	if s.worker.invalidateCandidateCache != nil {
+		s.worker.invalidateCandidateCache(outcome.credentialID)
+	}
 }
 
 // probeResultToRound converts an executor ProbeResult into the worker's round

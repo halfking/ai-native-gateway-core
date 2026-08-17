@@ -1,6 +1,21 @@
 import { mount } from '@vue/test-utils'
+import { createI18n } from 'vue-i18n'
 import { describe, expect, it } from 'vitest'
 import RoutingAttemptsTimeline from './RoutingAttemptsTimeline.vue'
+import requestJourneys from '../locales/zh-CN/requestJourneys'
+
+const i18n = createI18n({
+  legacy: false,
+  locale: 'zh-CN',
+  messages: { 'zh-CN': { requestJourneys } },
+})
+
+function mountTimeline(props: Record<string, unknown>) {
+  return mount(RoutingAttemptsTimeline, {
+    props,
+    global: { plugins: [i18n] },
+  })
+}
 
 const attempts = [
   {
@@ -29,11 +44,9 @@ const attempts = [
 
 describe('RoutingAttemptsTimeline', () => {
   it('renders the summary and ordered fallback attempts', () => {
-    const wrapper = mount(RoutingAttemptsTimeline, {
-      props: {
-        summary: '候选1: 火山方舟(35) 模型未找到 1.5s → 候选2: NVIDIA(18) 成功 2.3s',
-        attempts,
-      },
+    const wrapper = mountTimeline({
+      summary: '候选1: 火山方舟(35) 模型未找到 1.5s → 候选2: NVIDIA(18) 成功 2.3s',
+      attempts,
     })
 
     expect(wrapper.text()).toContain('模型未找到')
@@ -44,7 +57,7 @@ describe('RoutingAttemptsTimeline', () => {
   })
 
   it('renders an empty state when no routing attempts were persisted', () => {
-    const wrapper = mount(RoutingAttemptsTimeline, { props: { attempts: null } })
+    const wrapper = mountTimeline({ attempts: null })
 
     expect(wrapper.text()).toContain('暂无路由回退尝试记录')
     expect(wrapper.findAll('.attempt-item')).toHaveLength(0)
