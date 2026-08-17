@@ -62,6 +62,9 @@ func (h *coordHarness) coordinator() *SurvivalCoordinator {
 		Exec:     h.exec,
 		Protocol: ProtocolAnthropic,
 		Options:  SurvivalOptions{Deadline: 30 * time.Minute, RetryBase: 2 * time.Second, RetryMax: 2 * time.Minute},
+		// Deterministic ±20% jitter seam (T3): 0.5 keeps the scripted
+		// backoff steps exact for the assertions below.
+		JitterRand: func() float64 { return 0.5 },
 		Now: func() time.Time {
 			return h.clock
 		},

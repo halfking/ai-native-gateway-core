@@ -197,6 +197,10 @@ func (cf *credForwarder) attempt(qr *QueuedRequest) {
 		cf.pipe.complete(qr, ForwardOutcome{Err: errors.New("dispatch: missing allocated attempt")})
 		return
 	}
+	// V4 R1.1: registry pending → in-flight at the dequeue-for-execution
+	// boundary (spec §6: upstream attempts are in-flight). Bookkeeping
+	// bypass — never gates the forward.
+	cf.pipe.registry.MarkInFlight(qr.ID, startedAt)
 	qr.emitObservation(Observation{
 		Type:          ObservationAttemptStarted,
 		Stage:         StageUpstream,

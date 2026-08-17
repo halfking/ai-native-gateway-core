@@ -142,6 +142,17 @@ func (api *RequestJourneyAPI) serveQueues(w http.ResponseWriter, r *http.Request
 	if view == "" {
 		view = "total"
 	}
+	// v4 R1.1/T2: optional lifecycle_state filter (pending | in_flight |
+	// completed). Absent ⇒ unfiltered (backward compatible). Snapshots
+	// always carry the additive lifecycle_state / retry_at JSON fields.
+	var lifecycleFilter requestjourney.LifecycleState
+	if raw := strings.TrimSpace(r.URL.Query().Get("lifecycle_state")); raw != "" {
+		lifecycleFilter = requestjourney.LifecycleState(raw)
+		if !lifecycleFilter.Valid() {
+			writeRequestJourneyError(w, http.StatusBadRequest, "lifecycle_state must be pending, in_flight, or completed")
+			return
+		}
+	}
 	scope := strings.TrimSpace(r.URL.Query().Get("scope"))
 	if scope == "all" {
 		if view != "total" {
@@ -180,7 +191,7 @@ func (api *RequestJourneyAPI) serveQueues(w http.ResponseWriter, r *http.Request
 			result.ObservationStatus = requestjourney.ObservationDegraded
 		}
 		response.ObservationStatus = result.ObservationStatus
-		response.TotalSnapshot = &requestjourney.TotalRequestFIFOSnapshot{Capacity: result.Capacity, Requests: nonNilJourneyRequests(result.Requests)}
+		response.TotalSnapshot = &requestjourney.TotalRequestFIFOSnapshot{Capacity: result.Capacity, Requests: filterJourneyRequestsByLifecycle(nonNilJourneyRequests(result.Requests), lifecycleFilter)}
 	case "models":
 		result, err := api.reader.RecentModels(r.Context(), tenantID)
 		if err != nil {
@@ -190,6 +201,11 @@ func (api *RequestJourneyAPI) serveQueues(w http.ResponseWriter, r *http.Request
 		response.ModelSnapshots = result.Models
 		if response.ModelSnapshots == nil {
 			response.ModelSnapshots = []requestjourney.ModelFIFOSnapshot{}
+		}
+		if lifecycleFilter != "" {
+			for i, snapshot := range response.ModelSnapshots {
+				response.ModelSnapshots[i].Requests = filterJourneyRequestsByLifecycle(snapshot.Requests, lifecycleFilter)
+			}
 		}
 	case "nodes":
 		result, err := api.reader.RecentNodes(r.Context(), tenantID)
@@ -201,11 +217,31 @@ func (api *RequestJourneyAPI) serveQueues(w http.ResponseWriter, r *http.Request
 		if response.NodeSnapshots == nil {
 			response.NodeSnapshots = []requestjourney.NodeFIFOSnapshot{}
 		}
+		if lifecycleFilter != "" {
+			for i, snapshot := range response.NodeSnapshots {
+				response.NodeSnapshots[i].Requests = filterJourneyRequestsByLifecycle(snapshot.Requests, lifecycleFilter)
+			}
+		}
 	default:
 		writeRequestJourneyError(w, http.StatusBadRequest, "view must be total, models, or nodes")
 		return
 	}
 	writeRequestJourneyJSON(w, http.StatusOK, response)
+}
+
+// filterJourneyRequestsByLifecycle narrows snapshot requests to one
+// lifecycle state (v4 queues-view filter). Empty filter returns the input.
+func filterJourneyRequestsByLifecycle(requests []requestjourney.RequestSnapshot, filter requestjourney.LifecycleState) []requestjourney.RequestSnapshot {
+	if filter == "" {
+		return requests
+	}
+	filtered := make([]requestjourney.RequestSnapshot, 0, len(requests))
+	for _, request := range requests {
+		if request.LifecycleState == filter {
+			filtered = append(filtered, request)
+		}
+	}
+	return filtered
 }
 
 func nonNilJourneyRequests(requests []requestjourney.RequestSnapshot) []requestjourney.RequestSnapshot {

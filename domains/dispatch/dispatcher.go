@@ -95,8 +95,12 @@ func (p *Pipeline) tryModelChange(qr *QueuedRequest, cause error) {
 
 func (p *Pipeline) tryModelChangeOutcome(qr *QueuedRequest, outcome ForwardOutcome) {
 	cause := outcome.Err
+	// completeCause terminates the request. When the request actually made
+	// attempts, the cause is wrapped in the aggregate ExhaustedError (R2.4 /
+	// UT-FO-05): combination exhaustion fires here — BEFORE the attempt
+	// budget can matter — with the tried model/node/reason summary attached.
 	completeCause := func() {
-		outcome.Err = terminalErr(cause)
+		outcome.Err = p.exhaustedTerminal(qr, terminalErr(cause))
 		p.complete(qr, outcome)
 	}
 	if !p.modelChangeEnabled() || !qr.AllowModelChange {
@@ -140,6 +144,13 @@ func (p *Pipeline) tryModelChangeOutcome(qr *QueuedRequest, outcome ForwardOutco
 		completeCause()
 		return
 	}
+	// An alternative model remains: continuation, so the attempt budget
+	// guards it. (Exhaustion terminals above already returned by now —
+	// this is the R2.4 priority: 组合穷尽 > 预算. )
+	if qr.AttemptCount >= maxAttempts {
+		p.terminateOnAttemptCap(qr, outcome)
+		return
+	}
 	// V3.3-OBS OBS-B1 (2026-08-15): model_switch 动作事件（24 号 §2：
 	// from/to/reason；不产生新 request_id）。
 	fromModel := qr.ResolvedModel
@@ -178,7 +189,8 @@ func (p *Pipeline) tryModelChangeOutcome(qr *QueuedRequest, outcome ForwardOutco
 		}
 		metricOverflow.WithLabelValues("model_queue_full").Inc()
 		p.observeOverflow("model_queue_full")
-		p.complete(qr, ForwardOutcome{Err: ErrOverflow})
+		// R1.3: immediate, retryable overflow with a Retry-After hint.
+		p.complete(qr, ForwardOutcome{Err: &OverflowError{Reason: "model_queue_full", RetryAfter: DefaultOverflowRetryAfter}})
 	}
 }
 
