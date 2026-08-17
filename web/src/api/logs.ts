@@ -266,6 +266,22 @@ export function getRequestLogDetail(requestId: string) {
   return req<RequestLogDetail>('GET', `/api/logs/${encodeURIComponent(requestId)}`)
 }
 
+// 2026-08-17: getRequestLogDetail 的 body 抓取（fetchRequestBodies）走进程内
+// LRU(1024) × TTL(5min) 缓存，本端点返回其可观测快照。调用方：super admin
+// (rule 20 §6)，用于判断列存冷路径重复点击是否被缓存缓解。
+// GET /api/admin/logs/body-cache-stats → {"size":9,"hits":2,"misses":9,"evictions":0,"hit_rate":0.18}
+export interface BodyCacheStats {
+  size: number
+  hits: number
+  misses: number
+  evictions: number
+  hit_rate: number
+}
+
+export function getBodyCacheStats() {
+  return req<BodyCacheStats>('GET', '/api/admin/logs/body-cache-stats')
+}
+
 // 2026-07-01 (migration 325): 附件相关辅助。
 //
 // 附件实体文件由网关落盘 (LLM_GATEWAY_ATTACHMENT_DIR)，通过
