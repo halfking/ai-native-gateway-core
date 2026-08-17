@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### 📦 Archived
 - docs/archive/* — 138 process docs archived on 2026-08-17 (see docs/archive/INDEX.md)
 
+### Removed
+- 删除 6 个零引用死包：`tracing/`、`logging/`、`alerting/`、`safety/`、`circuit/`、`integration/`
+  （grep 复核全仓库 0 外部 import，`go build ./...` 通过）。可追溯性由 git 历史保证。
+
 ### Security
 - 删除根目录含硬编码凭据的调试脚本（均已进入 git 历史，密钥需线下轮换）：
   `debug.go`（base64 签名/加密密钥）、`test_volcengine_{glm52,correct_models,direct,models_list}.sh`
