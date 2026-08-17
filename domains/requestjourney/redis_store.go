@@ -183,7 +183,7 @@ func (s *RedisStore) Detail(ctx context.Context, tenantID, requestID string) (*R
 			return nil, fmt.Errorf("decode Redis journey event: %w", err)
 		}
 		if event.TenantID != tenantID || event.RequestID != requestID {
-			return nil, errors.New("Redis journey identity mismatch")
+			return nil, errors.New("redis journey identity mismatch")
 		}
 		events = append(events, event)
 	}

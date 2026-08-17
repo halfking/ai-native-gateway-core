@@ -24,16 +24,21 @@ func NewUpstreamAttemptBudget(limit int) *UpstreamAttemptBudget {
 }
 
 func (b *UpstreamAttemptBudget) TryConsume() bool {
+	_, ok := b.Consume()
+	return ok
+}
+
+func (b *UpstreamAttemptBudget) Consume() (int, bool) {
 	if b == nil {
-		return true
+		return 1, true
 	}
 	for {
 		used := b.used.Load()
 		if used >= b.limit {
-			return false
+			return 0, false
 		}
 		if b.used.CompareAndSwap(used, used+1) {
-			return true
+			return int(used + 1), true
 		}
 	}
 }
@@ -49,12 +54,17 @@ func (b *UpstreamAttemptBudget) Exhausted() bool {
 	return b != nil && b.used.Load() >= b.limit
 }
 
-func consumeUpstreamAttempt(params *ExecParams) error {
-	if params == nil || params.UpstreamAttempts == nil {
-		return nil
+func consumeUpstreamAttempt(params *ExecParams) (int, error) {
+	if params == nil {
+		return 1, nil
 	}
-	if !params.UpstreamAttempts.TryConsume() {
-		return ErrUpstreamAttemptLimit
+	if params.UpstreamAttempts == nil {
+		params.AttemptNo++
+		return params.AttemptNo, nil
 	}
-	return nil
+	attempt, ok := params.UpstreamAttempts.Consume()
+	if !ok {
+		return 0, ErrUpstreamAttemptLimit
+	}
+	return attempt, nil
 }

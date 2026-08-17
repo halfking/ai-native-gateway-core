@@ -33,6 +33,16 @@ func TestKeyVerifier_InvalidKeyError(t *testing.T) {
 	}
 }
 
+func TestKeyVerifier_InvalidPrefixIsClientAuthenticationError(t *testing.T) {
+	kv := NewKeyVerifier()
+	kv.setDBQuerier(&mockPool{}, "test-secret")
+	_, err := kv.Verify(context.Background(), "not-an-api-key")
+	var invalid *InvalidKeyError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("error = %T %v, want InvalidKeyError", err, err)
+	}
+}
+
 func TestKeyVerifier_BudgetExceededError(t *testing.T) {
 	var err error = &BudgetExceededError{KeyID: 1, Budget: 100.0, Spent: 150.0}
 	if err.Error() == "" {

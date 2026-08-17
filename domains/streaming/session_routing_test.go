@@ -20,6 +20,7 @@ func TestExtractSessionIDFromBody(t *testing.T) {
 		{name: "conversationId nested info", body: `{"info":{"conversationId":"conv-1"}}`, want: "conv-1"},
 		{name: "thread-id nested extra", body: `{"extra":{"thread-id":"thread-1"}}`, want: "thread-1"},
 		{name: "gw session normalized", body: `{"frontend":{"gwSessionId":"gw_12345678-1234-1234-1234-123456789abc"}}`, want: "gw_12345678-1234-1234-1234-123456789abc"},
+		{name: "invalid control character", body: "{\"sessionId\":\"bad\\u000avalue\"}", want: ""},
 		{name: "missing", body: `{"messages":[]}`, want: ""},
 	}
 

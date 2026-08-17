@@ -123,11 +123,7 @@ func (c *ChatExecutor) WriteNonStreamResponse(w http.ResponseWriter, resp *http.
 	if c.RedactBodyFn != nil {
 		body = c.RedactBodyFn(body, "", "")
 	}
-	for k, vs := range resp.Header {
-		for _, v := range vs {
-			w.Header().Add(k, v)
-		}
-	}
+	copyNonStreamResponseHeaders(w.Header(), resp.Header, len(body))
 	w.WriteHeader(resp.StatusCode)
 	_, err = w.Write(body)
 	return body, err
@@ -527,19 +523,16 @@ func (e *Executor) executeOpenAI(
 			}
 
 			// Track C (2026-06-18): upCtx is set at loop scope above.
-			// For session requests it is context.WithTimeout(background, streamTimeout)
-			// so client disconnect does not cancel the vendor call; the response
-			// is cached for reconnect via pending/ and sessions/handler.go C3.
-			// Streaming requests use a detached context so a browser cancellation
-			// cannot abort the upstream deadline before timeout health is recorded.
+			// Session and survival streams detach from client cancellation so
+			// background completion can finish. Ordinary streams retain client
+			// cancellation. No stream carries a total wall-clock deadline.
 
 			if e.Upstream != nil {
 				req.GetBody = func() (io.ReadCloser, error) {
 					return io.NopCloser(bytes.NewReader(bodyBytes)), nil
 				}
 			}
-			e.logUpstreamRequest(params, diagnosticProtocol(cand.Protocol, "openai-completions"), bodyBytes)
-			if err := consumeUpstreamAttempt(params); err != nil {
+			if err := e.beginUpstreamAttempt(params, cand, diagnosticProtocol(cand.Protocol, "openai-completions"), bodyBytes); err != nil {
 				return nil, err
 			}
 
@@ -1307,11 +1300,7 @@ func (e *Executor) executeOpenAI(
 					})
 				}
 				e.logClientResponse(params, diagnosticProtocol(params.ClientProtocol, "openai-completions"), respBody)
-				for k, vs := range resp.Header {
-					for _, v := range vs {
-						params.W.Header().Add(k, v)
-					}
-				}
+				copyNonStreamResponseHeaders(params.W.Header(), resp.Header, len(respBody))
 				params.W.WriteHeader(resp.StatusCode)
 				//nolint:errcheck // HTTP write error non-recoverable
 				params.W.Write(respBody)
@@ -1823,19 +1812,14 @@ func strPtrCompat(s string) *string {
 	return &s
 }
 
-// upstreamContext returns the context used for the upstream HTTP call.
-// Detachment is granted only by the explicit StreamSurvivesClientCancel or
-// SurvivalAttempt owner flags; correlation-only session IDs are insufficient.
-//
 // Streaming requests carry no wall-clock deadline. A stuck vendor is bounded
 // by ResponseHeaderTimeout and the bridge's per-read streamChunkTimeout. An
 // ordinary stream still derives from the request context, so client disconnect
 // cancels promptly; only session/survival ownership uses WithoutCancel so its
 // pending or durable result can finish.
 func (e *Executor) upstreamContext(params *ExecParams, timeout time.Duration) (context.Context, context.CancelFunc) {
-	if params.StreamSurvivesClientCancel || params.SurvivalAttempt {
-		ctx, cancel := context.WithCancel(context.WithoutCancel(params.R.Context()))
-		return ctx, cancel
+	if params.IsStream && (params.StreamSurvivesClientCancel || params.SurvivalAttempt) {
+		return context.WithCancel(context.WithoutCancel(params.R.Context()))
 	}
 	if params.IsStream {
 		return context.WithCancel(params.R.Context())

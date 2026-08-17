@@ -1085,6 +1085,33 @@ func clientTokenForMetrics(params *ExecParams) string {
 	return clientTokenOf(userKey, clientType)
 }
 
+func (e *Executor) beginUpstreamAttempt(params *ExecParams, cand provider.Candidate, protocol string, body []byte) error {
+	attempt, err := consumeUpstreamAttempt(params)
+	if err != nil {
+		return err
+	}
+	params.ProviderID = cand.ProviderID
+	params.CredentialID = cand.CredentialID
+	params.AttemptNo = attempt
+	params.UpstreamEndpoint = cand.BaseURL
+	params.Audit = AuditContextFromAttempt(params.Audit, cand.ProviderID, cand.CredentialID, cand.BaseURL, attempt)
+	e.liveActions.Emit(params.R.Context(), liveactions.ActionEvent{
+		RequestID:    params.RequestID,
+		Action:       liveactions.ActionUpstreamRequest,
+		Model:        params.ClientModel,
+		CredentialID: cand.CredentialID,
+		Retry:        attempt > 1,
+		RetrySeq:     attempt,
+		Detail: map[string]string{
+			"attempt":     strconv.Itoa(attempt),
+			"provider_id": strconv.Itoa(cand.ProviderID),
+			"raw_model":   candidateRawModel(cand),
+		},
+	})
+	e.logUpstreamRequest(params, protocol, body)
+	return nil
+}
+
 func (e *Executor) logUpstreamRequest(params *ExecParams, protocol string, body []byte) {
 	if e.RawDataLogger == nil {
 		return
@@ -2649,22 +2676,6 @@ func (e *Executor) Execute(params *ExecParams) (result *ExecuteResult, err error
 		tried++
 
 		nodeTracker.Record(cand)
-
-		// ── 2026-08-15 (V3.3-OBS OBS-B1): upstream_request 动作事件（S7）──
-		// 每个候选开始转发时发射；attempt=tried，tried>1 即同请求内的重试。
-		e.liveActions.Emit(params.R.Context(), liveactions.ActionEvent{
-			RequestID:    params.RequestID,
-			Action:       liveactions.ActionUpstreamRequest,
-			Model:        params.ClientModel,
-			CredentialID: cand.CredentialID,
-			Retry:        tried > 1,
-			RetrySeq:     tried,
-			Detail: map[string]string{
-				"attempt":     strconv.Itoa(tried),
-				"provider_id": strconv.Itoa(cand.ProviderID),
-				"raw_model":   candidateRawModel(cand),
-			},
-		})
 
 		// Reset the stream capture for this candidate so textContent, chunk
 		// count, checksum, and the done/interrupted flags from a prior

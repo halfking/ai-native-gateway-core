@@ -3,6 +3,7 @@ package executors
 import (
 	"net/http"
 	"strconv"
+	"strings"
 	"sync/atomic"
 
 	"github.com/kaixuan/llm-gateway-go/domains/authentication"
@@ -51,28 +52,39 @@ type AuditContext struct {
 }
 
 // AuditContextFromRequest builds the base AuditContext from the
-// resolved request, session, body, and key info. Headers
-// X-Request-Id, X-Gw-Task-Id, X-Trace-Id, X-Span-Id,
-// X-Parent-Request-Id are preferred when present; session fields
-// are the fallback. The body parameter is reserved for future
+// resolved request, session, body, and key info. X-Request-Id is the
+// gateway-owned request ID; X-Gw-Client-Request-Id (or legacy
+// X-Client-Request-Id) is the client request ID. Correlation headers and
+// session fields fill the remaining base context. The body parameter is reserved for future
 // derivation (e.g. extracting model name as a fallback for
 // GWTaskID) and is currently unused.
 func AuditContextFromRequest(r *http.Request, sn *session.Session, body []byte, ki *authentication.KeyInfo) *AuditContext {
 	_ = body // reserved; see comment above
 	ctx := &AuditContext{}
 	if r != nil {
-		ctx.ClientRequestID = r.Header.Get("X-Request-Id")
-		ctx.GWTaskID = r.Header.Get("X-Gw-Task-Id")
-		ctx.TraceID = r.Header.Get("X-Trace-Id")
-		ctx.SpanID = r.Header.Get("X-Span-Id")
-		ctx.ParentRequestID = r.Header.Get("X-Parent-Request-Id")
+		// RequestID is the gateway-owned id already stamped by middleware.
+		// The client id is kept separately by RequestIDMiddleware so a client
+		// cannot choose the request_logs primary key.
+		ctx.RequestID = strings.TrimSpace(r.Header.Get("X-Request-Id"))
+		ctx.ClientRequestID = sanitizeCorrelationID(r.Header.Get("X-Gw-Client-Request-Id"))
+		if ctx.ClientRequestID == "" {
+			ctx.ClientRequestID = sanitizeCorrelationID(r.Header.Get("X-Client-Request-Id"))
+		}
+		ctx.GWSessionID = sanitizeCorrelationID(r.Header.Get("X-Gw-Session-Id"))
+		if ctx.GWSessionID == "" {
+			ctx.GWSessionID = sanitizeCorrelationID(r.Header.Get("X-Session-Id"))
+		}
+		ctx.GWTaskID = sanitizeCorrelationID(r.Header.Get("X-Gw-Task-Id"))
+		ctx.TraceID = sanitizeCorrelationID(r.Header.Get("X-Trace-Id"))
+		ctx.SpanID = sanitizeCorrelationID(r.Header.Get("X-Span-Id"))
+		ctx.ParentRequestID = sanitizeCorrelationID(r.Header.Get("X-Parent-Request-Id"))
 	}
 	if sn != nil {
 		if ctx.GWSessionID == "" {
-			ctx.GWSessionID = sn.SessionID
+			ctx.GWSessionID = sanitizeCorrelationID(sn.SessionID)
 		}
 		if ctx.GWTaskID == "" {
-			ctx.GWTaskID = sn.TaskID
+			ctx.GWTaskID = sanitizeCorrelationID(sn.TaskID)
 		}
 		if ctx.TenantID == "" {
 			ctx.TenantID = sn.TenantID
@@ -93,6 +105,23 @@ func AuditContextFromRequest(r *http.Request, sn *session.Session, body []byte, 
 		}
 	}
 	return ctx
+}
+
+const maxCorrelationIDLen = 128
+
+func sanitizeCorrelationID(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || len(value) > maxCorrelationIDLen {
+		return ""
+	}
+	for _, ch := range value {
+		if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+			(ch >= '0' && ch <= '9') || ch == '-' || ch == '_' || ch == '.' || ch == ':' {
+			continue
+		}
+		return ""
+	}
+	return value
 }
 
 // AuditContextFromAttempt returns a copy of `base` with per-attempt

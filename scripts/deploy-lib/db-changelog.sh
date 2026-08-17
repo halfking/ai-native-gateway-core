@@ -123,11 +123,11 @@ _psql -v ON_ERROR_STOP=1 -tAc \"SELECT
   (SELECT count(*) FROM pg_indexes
    WHERE schemaname = current_schema()
      AND tablename = 'request_state_transitions'
-     AND indexname = 'idx_state_transitions_tenant_request') || '|' ||
+     AND indexname IN ('idx_state_transitions_tenant_request', 'uq_state_transitions_tenant_request_seq')) || '|' ||
   (SELECT count(*) FROM pg_indexes
    WHERE schemaname = current_schema()
      AND tablename = 'request_state_transitions'
-     AND indexname = 'uq_state_transitions_request_seq')\"" 2>/dev/null) || {
+     AND indexname IN ('uq_state_transitions_request_seq', 'uq_state_transitions_legacy_request_seq'))\"" 2>/dev/null) || {
     _db_err "无法读取 request_state_transitions schema contract"
     return 1
   }
