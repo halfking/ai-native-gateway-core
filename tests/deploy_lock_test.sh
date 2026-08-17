@@ -311,15 +311,15 @@ test_remote_metadata_failure_cleans_lock() {
   echo "── AC-L7: remote metadata failure cleanup ──"
   local tmp; tmp=$(mktemp -d -t kx-remote-lock.XXXXXX)
   local lock_path="$tmp/deploy.lock"
-  local call=0
+  local fakebin="$tmp/bin"
+  mkdir -p "$fakebin"
+  cat >"$fakebin/base64" <<'EOF'
+#!/usr/bin/env bash
+exit 9
+EOF
+  chmod +x "$fakebin/base64"
   failing_remote() {
-    call=$((call + 1))
-    case "$call" in
-      1) mkdir "$lock_path" ;;
-      2) return 9 ;;
-      3) rm -rf "$lock_path" ;;
-      *) return 1 ;;
-    esac
+    PATH="$fakebin:$PATH" bash -c "$1"
   }
 
   local rc

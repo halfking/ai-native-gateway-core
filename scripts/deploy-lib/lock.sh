@@ -100,13 +100,8 @@ lock_release_local() {
 # not pipe sensitive data into the lock. The caller is responsible for
 # staging the ssh command (the tests stub it via PATH).
 lock_acquire_remote() {
-  local ssh_cmd=$1 target=$2 lock_path=$3
-  "$ssh_cmd" "mkdir '$lock_path'" 2>/dev/null || {
-    echo "ERROR: remote lock held at $lock_path on $target" >&2
-    "$ssh_cmd" "cat '$lock_path/metadata' 2>/dev/null" >&2 || true
-    return 75
-  }
-  if ! "$ssh_cmd" "cat > '$lock_path/metadata'" <<EOF
+  local ssh_cmd=$1 target=$2 lock_path=$3 metadata metadata_b64 lock_q metadata_q
+  metadata=$(cat <<EOF
 target=$target
 source_user=${SOURCE_USER:-$(id -un 2>/dev/null || echo unknown)}
 source_host=${SOURCE_HOST:-$(hostname 2>/dev/null || echo unknown)}
@@ -115,9 +110,27 @@ started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 commit=${SOURCE_COMMIT:-$(git rev-parse HEAD 2>/dev/null || echo unknown)}
 version=${SOURCE_VERSION:-unknown}
 EOF
+)
+  metadata_b64=$(printf '%s\n' "$metadata" | base64 | tr -d '\n')
+  printf -v lock_q '%q' "$lock_path"
+  printf -v metadata_q '%q' "$metadata_b64"
+  if ! "$ssh_cmd" "LOCK_PATH=$lock_q METADATA_B64=$metadata_q bash -s" <<'REMOTE_LOCK'
+set -euo pipefail
+if ! mkdir "$LOCK_PATH" 2>/dev/null; then
+  cat "$LOCK_PATH/metadata" >&2 2>/dev/null || true
+  exit 75
+fi
+cleanup_partial_lock() {
+  rm -rf "$LOCK_PATH"
+}
+trap cleanup_partial_lock EXIT HUP INT TERM
+printf '%s' "$METADATA_B64" | base64 -d > "$LOCK_PATH/metadata.tmp"
+test -s "$LOCK_PATH/metadata.tmp"
+mv "$LOCK_PATH/metadata.tmp" "$LOCK_PATH/metadata"
+trap - EXIT HUP INT TERM
+REMOTE_LOCK
   then
-    "$ssh_cmd" "rm -rf '$lock_path'" >/dev/null 2>&1 || true
-    echo "ERROR: remote lock metadata write failed at $lock_path on $target" >&2
+    echo "ERROR: remote lock held or initialization failed at $lock_path on $target" >&2
     return 75
   fi
 }
