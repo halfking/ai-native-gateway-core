@@ -712,32 +712,14 @@ type Executor struct {
 	// goroutines and graceful-shutdown lifecycle.
 	MemoraSink memory.Writer
 
-	// PendingStore (Track C, 2026-06-18) is the durable cache for
-	// client reconnect and vendor async retry. When set, the
-	// executor can transparently demote a slow request to async
-	// mode: if the synchronous candidate walk exceeds
-	// AsyncShortTimeout (default 15s) without success, the
-	// executor spawns a goroutine that continues trying the
-	// remaining candidates with an independent context
-	// (AsyncLongTimeout, default 300s), writes the eventual
-	// outcome to PendingStore, and the handler returns 202 +
-	// X-Gw-Pending so the client can poll
-	// GET /v1/sessions/{id}/pending-response.
-	//
-	// Nil disables both async retry and the async branch — the
-	// executor falls back to the existing synchronous exhaustion
-	// path. Wired from main.go when Redis is available.
-	PendingStore          *pending.Store
-	AsyncShortTimeout     time.Duration
-	AsyncLongTimeout      time.Duration
-	AsyncMaxFallbackCreds int // cap on credential fallbacks in async goroutine
-
-	// AsyncRetrySem (2026-07-19, Phase 1 success-rate priority) limits
-	// concurrent async retry goroutines. When the semaphore is full,
-	// startAsyncRetry returns nil (no async) and the request falls back
-	// to synchronous exhaustion. Default 200 when non-nil. Nil = unlimited
-	// (preserves the pre-Phase-1 behaviour).
-	AsyncRetrySem chan struct{}
+	// PendingStore (Track C, 2026-06-18) is the durable pending-response
+	// cache. The executor reads it for the session retry-replay branch
+	// (a "retry" keyword with a cached completed response is replayed
+	// instead of hitting upstream); the approval flow writes to it
+	// independently. The async 202 demotion machinery that also used it
+	// was retired with the legacy sync candidate loop (AUDIT_24H B2b) —
+	// the Async* timeout/semaphore fields went with it.
+	PendingStore *pending.Store
 
 	// ModelFallbackChain (Phase 2, 2026-07-19) maps a client-requested
 	// model name to fallback model names from other providers. When all
@@ -1304,17 +1286,18 @@ type ExecParams struct {
 	// Audit (2026-07-28 §5.7) is the full AuditContext handle. When
 	// non-nil, envelopeFromParams delegates to it (and ignores the
 	// flat fields above). When nil, the flat fields above are used.
-	// The handler always sets Audit; tests and async-retry paths that
-	// construct ExecParams directly may set only the flat fields.
+	// The handler always sets Audit; tests that construct ExecParams
+	// directly may set only the flat fields.
 	Audit *AuditContext
 
 	diagnosticsLogged bool
 }
 
 // discardResponseWriter is a write-only sink used when there is no live
-// client to write to (async retry goroutine — see startAsyncRetry).
+// client to write to (params.W == nil; see responseSink).
 //
-// 并发修复 2026-07-27：异步重试 goroutine 里 ExecParams.W 为 nil，但
+// 并发修复 2026-07-27（原为异步重试 goroutine 引入，该机制已随
+// AUDIT_24H B2b 退役；responseSink 的 nil-W 防护仍需要本类型）：
 // 下游的流式/非流式写函数（StreamChat / StreamResponse /
 // WriteNonStreamResponse / 各 protocol bridge）都无条件解引用 writer。
 // 与其在每个调用点分支，不如给它们一个丢弃 writer：upstream body 仍会
@@ -2872,38 +2855,6 @@ func (e *Executor) recordStickySuccess(params *ExecParams, credentialID int) {
 		stickyTTL = time.Minute
 	}
 	e.Router.Sticky.RecordSuccess(params.StickyKey, credentialID, stickyTTL)
-}
-
-// AsyncPendingError (Track C C4, 2026-06-18) is returned by Execute
-// when the synchronous candidate walk has exceeded AsyncShortTimeout
-// and the request is eligible for the async fallback. The handler
-// (relay/handler.go) recognises this via errors.As and returns
-//
-//	HTTP 202 Accepted
-//	X-Gw-Pending: {sessionID}
-//	X-Gw-Pending-Request: {requestID}
-//	body: {"status":"in_progress", ...}
-//
-// The client then polls GET /v1/sessions/{id}/pending-response
-// (see sessions/handler.go C3) until the goroutine finishes and
-// either writes a completed body or marks the entry failed.
-//
-// This is a *graceful degradation*, not an error. We use a
-// distinct error type (rather than a sentinel error value) so
-// callers can inspect the request key without re-parsing the
-// message string.
-type AsyncPendingError struct {
-	SessionID string
-	RequestID string
-	// StartedAt is for observability; the handler does not need
-	// it. Stored for the "how long has the async goroutine been
-	// running" admin metric.
-	StartedAt time.Time
-}
-
-func (e *AsyncPendingError) Error() string {
-	return fmt.Sprintf("async_pending: session=%s request=%s started_at=%s",
-		e.SessionID, e.RequestID, e.StartedAt.Format(time.RFC3339))
 }
 
 func fpSlotTenantID(params *ExecParams) string {
