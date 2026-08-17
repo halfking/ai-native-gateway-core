@@ -2,8 +2,10 @@ package requestjourney
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sort"
+	"time"
 )
 
 // ListResult makes observation degradation explicit without discarding usable
@@ -24,10 +26,12 @@ type IngressListResult struct {
 }
 
 // DetailResult distinguishes a missing journey from unavailable observation
-// infrastructure while keeping the transport contract stable.
+// infrastructure while keeping the transport contract stable. Divergence lists
+// the cross-source inconsistencies detected while merging (empty when healthy).
 type DetailResult struct {
 	ObservationStatus ObservationStatus `json:"observation_status"`
 	Journey           *RequestJourney   `json:"journey,omitempty"`
+	Divergence        []string          `json:"divergence,omitempty"`
 }
 
 type ModelListResult struct {
@@ -58,53 +62,205 @@ func NewQueryService(redisStore *RedisStore, pg *PostgresRepository, memory *Pro
 	return &QueryService{redis: redisStore, pg: pg, memory: memory, config: config}
 }
 
-func (s *QueryService) Detail(ctx context.Context, tenantID, requestID string) (DetailResult, error) {
-	degraded := false
-	var infraErr error
-	if s != nil && s.redis != nil && s.redis.client != nil {
-		journey, err := s.redis.Detail(ctx, tenantID, requestID)
-		if err == nil {
-			return DetailResult{ObservationStatus: journey.ObservationStatus, Journey: journey}, nil
-		}
-		if !errors.Is(err, ErrJourneyNotFound) {
-			degraded = true
-			infraErr = errors.Join(infraErr, err)
-		}
-	} else {
-		degraded = true
-	}
+// queryDivergenceGrace bounds how long a hot-tier lag is treated as normal
+// asynchronous fan-out instead of divergence.
+const queryDivergenceGrace = 15 * time.Second
 
-	if s != nil && s.pg != nil && s.pg.db != nil {
-		journey, err := s.pg.Detail(ctx, tenantID, requestID)
-		if err == nil {
-			if degraded {
-				markJourneyDegraded(journey)
-			}
-			return DetailResult{ObservationStatus: journey.ObservationStatus, Journey: journey}, infraErr
-		}
-		if !errors.Is(err, ErrJourneyNotFound) {
-			degraded = true
-			infraErr = errors.Join(infraErr, err)
-		}
-	} else {
-		degraded = true
-	}
+// Detail merges the local projection, the shared Redis projection, and the
+// durable PostgreSQL projection by request_id+seq, returning the freshest
+// event set instead of the first tier that answers. Sources that disagree are
+// reported through Divergence and degrade the observation status, so a stale
+// tier can never be presented as a complete journey.
+func (s *QueryService) Detail(ctx context.Context, tenantID, requestID string) (DetailResult, error) {
+	var infraErr error
+	var memJourney, redisJourney, pgJourney *RequestJourney
 
 	if s != nil && s.memory != nil {
-		journey, err := s.memory.Detail(tenantID, requestID)
-		if err == nil {
-			if degraded {
-				markJourneyDegraded(journey)
-			}
-			return DetailResult{ObservationStatus: journey.ObservationStatus, Journey: journey}, infraErr
+		if journey, err := s.memory.Detail(tenantID, requestID); err == nil {
+			memJourney = journey
+		}
+	}
+	if s != nil && s.redis != nil && s.redis.client != nil {
+		journey, err := s.redis.Detail(ctx, tenantID, requestID)
+		switch {
+		case err == nil:
+			redisJourney = journey
+		case !errors.Is(err, ErrJourneyNotFound):
+			infraErr = errors.Join(infraErr, err)
+		}
+	}
+	if s != nil && s.pg != nil && s.pg.db != nil {
+		journey, err := s.pg.Detail(ctx, tenantID, requestID)
+		switch {
+		case err == nil:
+			pgJourney = journey
+		case !errors.Is(err, ErrJourneyNotFound):
+			infraErr = errors.Join(infraErr, err)
 		}
 	}
 
-	status := ObservationComplete
-	if degraded {
+	merged, divergences := mergeJourneySources(memJourney, redisJourney, pgJourney, s.redisTTL())
+	if merged == nil {
+		status := ObservationComplete
+		if infraErr != nil || s.observationTierIncomplete() {
+			status = ObservationDegraded
+		}
+		return DetailResult{ObservationStatus: status}, infraErr
+	}
+	status := merged.ObservationStatus
+	if infraErr != nil || len(divergences) > 0 {
+		markJourneyDegraded(merged)
 		status = ObservationDegraded
 	}
-	return DetailResult{ObservationStatus: status}, infraErr
+	return DetailResult{ObservationStatus: status, Journey: merged, Divergence: divergences}, infraErr
+}
+
+func (s *QueryService) redisTTL() time.Duration {
+	if s == nil || s.config.DetailTTL <= 0 {
+		return DefaultDetailTTL
+	}
+	return s.config.DetailTTL
+}
+
+// observationTierIncomplete reports whether a configured observation tier is
+// unusable, mirroring the fallback reads' degraded semantics.
+func (s *QueryService) observationTierIncomplete() bool {
+	if s == nil {
+		return false
+	}
+	redisMissing := s.redis == nil || s.redis.client == nil
+	pgMissing := s.pg == nil || s.pg.db == nil
+	return redisMissing || pgMissing
+}
+
+// mergeJourneySources unions events from every present source, preferring the
+// local projection on same-seq conflicts. Divergence rules:
+//   - content_conflict: two sources disagree about the same sequence.
+//   - redis_divergence: Redis lags, drops, or misses a journey the local
+//     projection still holds within the Redis retention window.
+//   - postgres_gap: durable PostgreSQL misses sequences the hot tiers hold,
+//     or the whole journey, once the fan-out grace has passed.
+//
+// Memory is never expected to be a superset (it evicts), and PostgreSQL may
+// hold sequences beyond the hot tiers (retention outlives both).
+func mergeJourneySources(memory, shared, durable *RequestJourney, redisTTL time.Duration) (*RequestJourney, []string) {
+	type sourceJourney struct {
+		name    string
+		journey *RequestJourney
+	}
+	sources := []sourceJourney{{"memory", memory}, {"redis", shared}, {"postgres", durable}}
+	present := make([]sourceJourney, 0, len(sources))
+	for _, source := range sources {
+		if source.journey != nil {
+			present = append(present, source)
+		}
+	}
+	if len(present) == 0 {
+		return nil, nil
+	}
+
+	eventsBySeq := make(map[int64]JourneyEvent)
+	seqsBySource := make(map[string]map[int64]bool, len(present))
+	conflicts := 0
+	for _, source := range present {
+		seqsBySource[source.name] = make(map[int64]bool, len(source.journey.Events))
+		for _, event := range source.journey.Events {
+			seqsBySource[source.name][event.Seq] = true
+			if existing, ok := eventsBySeq[event.Seq]; ok {
+				if !sameJourneyEvent(existing, event) {
+					conflicts++
+				}
+				continue
+			}
+			eventsBySeq[event.Seq] = event
+		}
+	}
+	mergedEvents := make([]JourneyEvent, 0, len(eventsBySeq))
+	for _, event := range eventsBySeq {
+		mergedEvents = append(mergedEvents, event)
+	}
+	sort.Slice(mergedEvents, func(i, j int) bool { return mergedEvents[i].Seq < mergedEvents[j].Seq })
+	merged, err := journeyFromEvents(mergedEvents)
+	if err != nil {
+		// A source returned events the projection rejects; keep the local copy
+		// when available so Detail never fails closed on bad remote data.
+		if memory != nil {
+			return memory, []string{"content_conflict"}
+		}
+		fallback := present[0].journey
+		return fallback, []string{"content_conflict"}
+	}
+
+	var divergences []string
+	if conflicts > 0 {
+		divergences = append(divergences, "content_conflict")
+	}
+	age := time.Since(merged.UpdatedAt)
+	if age >= queryDivergenceGrace {
+		hotSeqs := unionSeqs(seqsBySource["memory"], seqsBySource["redis"])
+		if len(hotSeqs) > 0 {
+			if durable == nil || missingAny(seqsBySource["postgres"], hotSeqs) {
+				divergences = append(divergences, "postgres_gap")
+			}
+		}
+		if memory != nil {
+			if shared == nil {
+				if age < redisTTL {
+					divergences = append(divergences, "redis_divergence")
+				}
+			} else if !sameSeqSets(seqsBySource["memory"], seqsBySource["redis"]) {
+				divergences = append(divergences, "redis_divergence")
+			}
+		}
+	}
+	for _, kind := range divergences {
+		recordJourneySourceDivergence(kind)
+	}
+	return merged, divergences
+}
+
+// sameJourneyEvent compares the canonical form of two events. OccurredAt is
+// normalized to UTC microseconds because PostgreSQL timestamptz truncates to
+// microsecond precision while the local projection keeps nanoseconds.
+func sameJourneyEvent(left, right JourneyEvent) bool {
+	return journeyEventCanonical(left) == journeyEventCanonical(right)
+}
+
+func journeyEventCanonical(event JourneyEvent) string {
+	event.OccurredAt = event.OccurredAt.UTC().Truncate(time.Microsecond)
+	body, err := jsonMarshalStable(event)
+	if err != nil {
+		return ""
+	}
+	return string(body)
+}
+
+func jsonMarshalStable(event JourneyEvent) ([]byte, error) {
+	return json.Marshal(event)
+}
+
+func unionSeqs(left, right map[int64]bool) map[int64]bool {
+	union := make(map[int64]bool, len(left)+len(right))
+	for seq := range left {
+		union[seq] = true
+	}
+	for seq := range right {
+		union[seq] = true
+	}
+	return union
+}
+
+func missingAny(have, want map[int64]bool) bool {
+	for seq := range want {
+		if !have[seq] {
+			return true
+		}
+	}
+	return false
+}
+
+func sameSeqSets(left, right map[int64]bool) bool {
+	return len(left) == len(right) && !missingAny(left, right) && !missingAny(right, left)
 }
 
 func (s *QueryService) RecentIngress(ctx context.Context) (IngressListResult, error) {
