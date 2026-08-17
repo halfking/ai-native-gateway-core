@@ -167,14 +167,14 @@ func (a executorNodeHealthAdapter) ApplyNodeHealthDecision(ctx context.Context, 
 				}
 			}
 		case nodehealth.EffectSetBindingUnavailable, nodehealth.EffectSetCredentialUnavailable:
-			if effect.Kind == nodehealth.EffectSetBindingUnavailable && e.State != nil && e.State.Enabled() {
+			if e.State != nil && e.State.Enabled() {
 				failure := credential.Failure{Kind: kind, Detail: decision.ErrorDetail}
 				if err := e.State.WriteOnError(ctx, int(decision.Node.CredentialID), decision.Node.Model, failure); err != nil {
 					errs = append(errs, err)
 				}
 			}
 		case nodehealth.EffectRestoreBinding, nodehealth.EffectRestoreCredential:
-			if effect.Kind == nodehealth.EffectRestoreBinding && e.State != nil && e.State.Enabled() {
+			if e.State != nil && e.State.Enabled() {
 				if err := e.State.RestoreOnSuccess(ctx, int(decision.Node.CredentialID), decision.Node.Model); err != nil {
 					errs = append(errs, err)
 				}

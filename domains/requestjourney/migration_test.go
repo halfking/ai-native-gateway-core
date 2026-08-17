@@ -54,6 +54,8 @@ func TestRequestJourneyMigrationContract(t *testing.T) {
 		"request_state_transitions_node_health_status_chk",
 		"CREATE UNIQUE INDEX IF NOT EXISTS uq_state_transitions_tenant_request_seq",
 		"(tenant_id, request_id, seq)",
+		"CREATE UNIQUE INDEX IF NOT EXISTS uq_state_transitions_legacy_request_seq",
+		"DROP INDEX IF EXISTS uq_state_transitions_request_seq",
 		"idx_state_transitions_journey_recent",
 		"idx_state_transitions_journey_model_recent",
 		"idx_state_transitions_journey_node_recent",
@@ -100,17 +102,19 @@ func TestRequestJourneyMigrationEnumParity(t *testing.T) {
 func TestRequestJourneyDownMigrationIsSymmetric(t *testing.T) {
 	body := readMigration(t, downMigrationPath)
 	for _, required := range []string{
+		"DO $$",
+		"cannot roll back request journey contract while journey rows exist",
 		"DROP INDEX IF EXISTS idx_state_transitions_journey_recent",
 		"DROP INDEX IF EXISTS idx_state_transitions_journey_model_recent",
 		"DROP INDEX IF EXISTS idx_state_transitions_journey_node_recent",
 		"DROP INDEX IF EXISTS uq_state_transitions_tenant_request_seq",
+		"DROP INDEX IF EXISTS uq_state_transitions_legacy_request_seq",
 		"DROP CONSTRAINT IF EXISTS request_state_transitions_journey_required_chk",
 		"DROP CONSTRAINT IF EXISTS request_state_transitions_journey_stage_chk",
 		"DROP CONSTRAINT IF EXISTS request_state_transitions_event_fields_chk",
 		"DROP CONSTRAINT IF EXISTS request_state_transitions_switch_fields_chk",
 		"DROP CONSTRAINT IF EXISTS request_state_transitions_canceled_outcome_chk",
 		"DROP CONSTRAINT IF EXISTS request_state_transitions_event_kind_chk",
-		"SET transition_type = 'state'",
 		"ALTER COLUMN transition_type SET NOT NULL",
 		"DROP COLUMN IF EXISTS gateway_instance_id",
 		"DROP COLUMN IF EXISTS stage",
@@ -121,6 +125,7 @@ func TestRequestJourneyDownMigrationIsSymmetric(t *testing.T) {
 		"DROP COLUMN IF EXISTS from_credential_id",
 		"DROP COLUMN IF EXISTS to_credential_id",
 		"DROP COLUMN IF EXISTS occurred_at",
+		"CREATE UNIQUE INDEX IF NOT EXISTS uq_state_transitions_request_seq",
 	} {
 		if !strings.Contains(body, required) {
 			t.Errorf("down migration missing %q", required)
