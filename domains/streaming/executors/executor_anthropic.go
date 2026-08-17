@@ -871,6 +871,13 @@ func (e *Executor) executeAnthropicOnce(
 		e.DisguisePool.MaybeRotate()
 	}
 
+	timeout := e.UpstreamTimeout
+	if params.IsStream {
+		timeout = e.StreamTimeout
+	}
+	ctx, cancel := e.upstreamContext(params, timeout)
+	defer cancel()
+
 	var httpClient *http.Client
 	var reqPool *pool.Pool
 	if e.Pools != nil {
@@ -886,30 +893,15 @@ func (e *Executor) executeAnthropicOnce(
 	}
 	if httpClient == nil {
 		httpClient = http.DefaultClient
-	} else if err := reqPool.Acquire(params.R.Context()); err != nil {
+	} else if err := reqPool.Acquire(ctx); err != nil {
 		return nil, err
 	} else {
 		defer reqPool.Release()
 	}
 
-	timeout := e.UpstreamTimeout
-	if params.IsStream {
-		timeout = e.StreamTimeout
-	}
-	// Track C (2026-06-21): when the request carries a gateway session
-	// id (X-Gw-Session-Id / X-Session-Id), decouple the upstream context
-	// from the client request context so a client disconnect does not
-	// cancel the vendor call. The capturer in the Anthropic stream
-	// (cmd/gateway/main.go wiring) keeps reading until completion and
-	// saves the body to pending store, letting the client pick up the
-	// reply on reconnect via GET /v1/sessions/{id}/pending-response.
-	//
-	// For non-session requests we keep the original behaviour: client
-	// disconnect cancels upstream immediately to avoid wasting vendor
-	// budget on requests the client will not retrieve. The timeout is
-	// still respected in both cases.
-	ctx, cancel := e.upstreamContext(params, timeout)
-	defer cancel()
+	// Use the same lifecycle for pool acquisition and the vendor request.
+	// Ordinary streams follow client cancellation; session and survival
+	// streams remain alive for pending-response capture.
 	req = req.WithContext(ctx)
 
 	if e.Upstream != nil {
@@ -917,8 +909,7 @@ func (e *Executor) executeAnthropicOnce(
 			return io.NopCloser(bytes.NewReader(bodyBytes)), nil
 		}
 	}
-	e.logUpstreamRequest(params, diagnosticProtocol(cand.Protocol, "anthropic-messages"), bodyBytes)
-	if err := consumeUpstreamAttempt(params); err != nil {
+	if err := e.beginUpstreamAttempt(params, cand, diagnosticProtocol(cand.Protocol, "anthropic-messages"), bodyBytes); err != nil {
 		return nil, err
 	}
 

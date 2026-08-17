@@ -82,6 +82,24 @@ func (e *Error) Unwrap() error {
 	return e.Err
 }
 
+// UpstreamStatusCode exposes the HTTP status without conflicting with the
+// existing StatusCode field.
+func (e *Error) UpstreamStatusCode() int {
+	if e == nil {
+		return 0
+	}
+	return e.StatusCode
+}
+
+// UpstreamBody exposes the captured response body without conflicting with the
+// existing Body field.
+func (e *Error) UpstreamBody() []byte {
+	if e == nil {
+		return nil
+	}
+	return e.Body
+}
+
 // Client wraps http.Client with upstream-specific configuration.
 type Client struct {
 	hc         *http.Client

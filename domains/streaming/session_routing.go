@@ -31,7 +31,7 @@ func extractSessionIDFromHeaders(r *http.Request) string {
 		if header == "X-Gw-Session-Id" {
 			return sanitizeGwSessionHeader(value)
 		}
-		return value
+		return sanitizeRequestCorrelationID(value)
 	}
 	return ""
 }
@@ -165,10 +165,7 @@ func sessionValueString(value any) string {
 	if !ok {
 		return ""
 	}
-	text = strings.TrimSpace(text)
-	if text == "" {
-		return ""
-	}
+	text = sanitizeRequestCorrelationID(text)
 	if strings.HasPrefix(text, "gw_") {
 		return sanitizeGwSessionHeader(text)
 	}

@@ -2,6 +2,7 @@ package executors
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -21,7 +22,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/provider"
 )
 
-func TestUpstreamContext_DetachesCancellationAndRetainsTenant(t *testing.T) {
+func TestUpstreamContext_SessionStreamDetachesCancellationAndRetainsTenant(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil).WithContext(ctx)
 	req.Header.Set("X-Gw-Session-Id", "session-1")
@@ -52,6 +53,45 @@ func TestUpstreamContext_DetachesCancellationAndRetainsTenant(t *testing.T) {
 	}
 }
 
+func TestUpstreamContext_OrdinaryStreamFollowsClientCancellationWithoutDeadline(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil).WithContext(ctx)
+	params := &ExecParams{R: req, IsStream: true}
+
+	upstreamCtx, upstreamCancel := (&Executor{}).upstreamContext(params, time.Second)
+	defer upstreamCancel()
+	if _, ok := upstreamCtx.Deadline(); ok {
+		t.Fatal("streaming upstream context must not carry a wall-clock deadline")
+	}
+
+	cancel()
+	select {
+	case <-upstreamCtx.Done():
+		if !errors.Is(upstreamCtx.Err(), context.Canceled) {
+			t.Fatalf("upstream context error = %v, want context.Canceled", upstreamCtx.Err())
+		}
+	case <-time.After(time.Second):
+		t.Fatal("ordinary stream upstream context did not follow client cancellation")
+	}
+}
+
+func TestUpstreamContext_SurvivalStreamDetachesCancellationWithoutDeadline(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil).WithContext(ctx)
+	params := &ExecParams{R: req, IsStream: true, SurvivalAttempt: true}
+
+	upstreamCtx, upstreamCancel := (&Executor{}).upstreamContext(params, time.Second)
+	defer upstreamCancel()
+	cancel()
+
+	if err := upstreamCtx.Err(); err != nil {
+		t.Fatalf("survival stream upstream context cancelled with client: %v", err)
+	}
+	if _, ok := upstreamCtx.Deadline(); ok {
+		t.Fatal("survival stream upstream context must not carry a wall-clock deadline")
+	}
+}
+
 // TestUpstreamContext_NonStreamRetainsDeadline verifies the 2026-08-04
 // change did not affect non-streaming requests: those still get the timeout
 // as a hard deadline (there is no streaming read loop to provide stall
@@ -63,10 +103,18 @@ func TestUpstreamContext_NonStreamRetainsDeadline(t *testing.T) {
 		IsStream: false,
 		TenantID: "tenant-a",
 	}
-	upstreamCtx, upstreamCancel := (&Executor{}).upstreamContext(params, 5*time.Second)
+	upstreamCtx, upstreamCancel := (&Executor{}).upstreamContext(params, 20*time.Millisecond)
 	defer upstreamCancel()
 	if _, ok := upstreamCtx.Deadline(); !ok {
 		t.Fatal("non-streaming upstream context must retain a timeout deadline")
+	}
+	select {
+	case <-upstreamCtx.Done():
+		if !errors.Is(upstreamCtx.Err(), context.DeadlineExceeded) {
+			t.Fatalf("non-streaming upstream context error = %v, want context.DeadlineExceeded", upstreamCtx.Err())
+		}
+	case <-time.After(time.Second):
+		t.Fatal("non-streaming upstream context did not enforce its timeout")
 	}
 }
 func TestShouldAsyncFallback_DisabledWhenPreStreamPrepared(t *testing.T) {

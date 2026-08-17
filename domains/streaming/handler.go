@@ -399,7 +399,7 @@ func initializeRequestIdentity(r *http.Request) RequestIdentity {
 }
 
 func sanitizeGwSessionHeader(v string) string {
-	s := strings.TrimSpace(v)
+	s := sanitizeRequestCorrelationID(v)
 	if s == "" {
 		return ""
 	}
@@ -2368,7 +2368,7 @@ func (h *ChatHandler) serveWithExecutor(
 				if deviceSeed == "" {
 					deviceSeed = "default"
 				}
-				taskID := r.Header.Get("X-Gw-Task-Id")
+				taskID := sanitizeRequestCorrelationID(r.Header.Get("X-Gw-Task-Id"))
 				newSession, createErr := h.sessionGetter.CreateV2(ctx, keyInfo.ID, keyInfo.TenantID, deviceSeed, taskID)
 				if createErr != nil {
 					slog.Error("session fallback create failed", "error", createErr, "session_id", sessionID)
@@ -2442,7 +2442,7 @@ func (h *ChatHandler) serveWithExecutor(
 				lsEntry := &session.LastSystemSessionEntry{
 					SessionID:  sessionID,
 					DeviceSeed: r.Header.Get("X-Device-Seed"),
-					TaskID:     r.Header.Get("X-Gw-Task-Id"),
+					TaskID:     sanitizeRequestCorrelationID(r.Header.Get("X-Gw-Task-Id")),
 				}
 				if lsEntry.DeviceSeed == "" {
 					lsEntry.DeviceSeed = r.Header.Get("X-Machine-Id")
@@ -2466,7 +2466,7 @@ func (h *ChatHandler) serveWithExecutor(
 			if deviceSeed == "" {
 				deviceSeed = "default"
 			}
-			taskID := r.Header.Get("X-Gw-Task-Id")
+			taskID := sanitizeRequestCorrelationID(r.Header.Get("X-Gw-Task-Id"))
 			lsEntry := &session.LastSystemSessionEntry{
 				SessionID:  sessionID,
 				DeviceSeed: deviceSeed,
@@ -3104,6 +3104,10 @@ func (h *ChatHandler) serveWithExecutor(
 		canonicalID = modelResolution.CanonicalID
 	}
 	gwSessionID, gwTaskID := gwSessionTaskFromRequest(r, sessionInfo)
+	auditCtx := executors.AuditContextFromRequest(r, sessionInfo, bodyBytes, keyInfo)
+	auditCtx.RequestID = requestID
+	auditCtx.GWSessionID = gwSessionID
+	auditCtx.GWTaskID = gwTaskID
 	outboundForLog := explicitOutbound
 	if len(candidates) > 0 {
 		outboundForLog = outboundModelForLog(clientModel, explicitOutbound, candidates[0].RawModel)
@@ -3751,7 +3755,13 @@ func (h *ChatHandler) serveWithExecutor(
 			// as the probe row's parent_request_id. Without this the
 			// probe row in request_logs / live-stream would have no link
 			// back to the failed business request.
-			RequestID: requestID,
+			RequestID:       requestID,
+			ClientRequestID: auditCtx.ClientRequestID,
+			GWTaskID:        auditCtx.GWTaskID,
+			ParentRequestID: auditCtx.ParentRequestID,
+			TraceID:         auditCtx.TraceID,
+			SpanID:          auditCtx.SpanID,
+			Audit:           auditCtx,
 			// 2026-07-07: Multi-level sticky routing (L1: session+model, L2: client+model, L3: client).
 			SessionID: gwSessionID,
 			Model:     clientModel,

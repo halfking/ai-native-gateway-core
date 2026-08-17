@@ -516,19 +516,16 @@ func (e *Executor) executeOpenAI(
 			}
 
 			// Track C (2026-06-18): upCtx is set at loop scope above.
-			// For session requests it is context.WithTimeout(background, streamTimeout)
-			// so client disconnect does not cancel the vendor call; the response
-			// is cached for reconnect via pending/ and sessions/handler.go C3.
-			// Streaming requests use a detached context so a browser cancellation
-			// cannot abort the upstream deadline before timeout health is recorded.
+			// Session and survival streams detach from client cancellation so
+			// background completion can finish. Ordinary streams retain client
+			// cancellation. No stream carries a total wall-clock deadline.
 
 			if e.Upstream != nil {
 				req.GetBody = func() (io.ReadCloser, error) {
 					return io.NopCloser(bytes.NewReader(bodyBytes)), nil
 				}
 			}
-			e.logUpstreamRequest(params, diagnosticProtocol(cand.Protocol, "openai-completions"), bodyBytes)
-			if err := consumeUpstreamAttempt(params); err != nil {
+			if err := e.beginUpstreamAttempt(params, cand, diagnosticProtocol(cand.Protocol, "openai-completions"), bodyBytes); err != nil {
 				return nil, err
 			}
 
@@ -1815,45 +1812,32 @@ func hasSessionID(params *ExecParams) bool {
 	if params == nil || params.R == nil {
 		return false
 	}
-	if v := params.R.Header.Get("X-Gw-Session-Id"); v != "" {
+	if v := sanitizeCorrelationID(params.R.Header.Get("X-Gw-Session-Id")); v != "" {
 		return true
 	}
-	if v := params.R.Header.Get("X-Session-Id"); v != "" {
+	if v := sanitizeCorrelationID(params.R.Header.Get("X-Session-Id")); v != "" {
 		return true
 	}
 	return false
 }
 
 // upstreamContext (Track C, 2026-06-18) returns the context used for
-// the upstream HTTP call. When the request carries a session id,
-// the context is decoupled from the client request context so a
-// client disconnect does not cancel the vendor request. Otherwise,
-// the original behaviour is preserved (client disconnect cancels
-// upstream immediately) to avoid wasting vendor budget on requests
-// the client will not retrieve.
-//
-// The decoupling is intentionally minimal in C1: we do NOT yet
-// implement the response buffering or the cache write — those are
-// C2 (stream.go) and C4 (executor.go async retry). C1 only proves
-// the "upstream does not cancel on client disconnect" building
-// block. The timeout is still respected, so a stuck vendor is
-// bounded regardless of client state.
+// the upstream HTTP call. Session and survival streams are decoupled from
+// client cancellation because their owners need background completion.
+// Ordinary streams retain client cancellation to avoid spending vendor quota
+// after the client disconnects.
 //
 // 2026-08-04: streaming requests no longer carry a wall-clock deadline.
-// Previously every stream was capped at StreamTimeout (900s), which silently
-// killed long-running agent tasks (multi-step reasoning + tool calls) whose
-// total streaming time exceeded 15 minutes even though data was flowing
-// normally. A stuck vendor is still bounded — independently of this context —
-// by two layers: ResponseHeaderTimeout (120s, awaits the first byte) on the
-// http.Transport, and streamChunkTimeout (300s+) on every read in the bridge
-// loop. Both fire on *inactivity*, which is the correct failure signal; a
-// pure wall-clock cap fires on age and causes false interruptions. We still
-// derive from WithoutCancel so a client disconnect never aborts an in-flight
-// vendor call (session/cache completion).
+// Long-running streams are bounded by inactivity instead: the transport's
+// ResponseHeaderTimeout while awaiting headers and streamChunkTimeout for each
+// bridge read. Non-streaming requests still use timeout as a total deadline.
 func (e *Executor) upstreamContext(params *ExecParams, timeout time.Duration) (context.Context, context.CancelFunc) {
-	if hasSessionID(params) || params.IsStream {
-		ctx, cancel := context.WithCancel(context.WithoutCancel(params.R.Context()))
-		return ctx, cancel
+	if params.IsStream {
+		parent := params.R.Context()
+		if hasSessionID(params) || params.SurvivalAttempt {
+			parent = context.WithoutCancel(parent)
+		}
+		return context.WithCancel(parent)
 	}
 	return context.WithTimeout(params.R.Context(), timeout)
 }
