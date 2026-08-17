@@ -12,6 +12,7 @@ import (
 	"context"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -40,14 +41,14 @@ func (p retentionPool) Begin(ctx context.Context) (RetentionTx, error) {
 // RetentionWorker 周期删除超过保留期的 request_state_transitions 行
 // （journey 行与 legacy 行一并覆盖，按 created_at 判定）。db 为 nil 时
 // Start 是 no-op。生命周期跟随进程；Stop 幂等，优雅退出时尽力清一次。
+// 未 Start 过的 worker 调 Stop 是安全 no-op（不会等待不存在的 goroutine）。
 type RetentionWorker struct {
 	db RetentionDB
 
 	interval  time.Duration
 	retention time.Duration
 
-	now func() time.Time
-
+	started  atomic.Bool
 	stopOnce sync.Once
 	stopCh   chan struct{}
 	done     chan struct{}
@@ -59,7 +60,6 @@ func NewRetentionWorker(db *pgxpool.Pool) *RetentionWorker {
 	w := &RetentionWorker{
 		interval:  time.Hour,
 		retention: 7 * 24 * time.Hour,
-		now:       time.Now,
 		stopCh:    make(chan struct{}),
 		done:      make(chan struct{}),
 	}
@@ -71,7 +71,7 @@ func NewRetentionWorker(db *pgxpool.Pool) *RetentionWorker {
 
 // Start 启动后台清理 goroutine（db 为 nil 时立即返回）。
 func (w *RetentionWorker) Start() {
-	if w == nil || w.db == nil {
+	if w == nil || w.db == nil || !w.started.CompareAndSwap(false, true) {
 		return
 	}
 	go w.run()
@@ -79,7 +79,7 @@ func (w *RetentionWorker) Start() {
 
 // Stop 停止清理 goroutine 并在退出前尽力执行一次清理。幂等，可安全多次调用。
 func (w *RetentionWorker) Stop() {
-	if w == nil || w.db == nil {
+	if w == nil || w.db == nil || !w.started.Load() {
 		return
 	}
 	w.stopOnce.Do(func() { close(w.stopCh) })
