@@ -32,19 +32,34 @@ type credentialRecoveryDB interface {
 // the database or upstream providers.
 const defaultCredentialRecoveryInterval = 30 * time.Second
 
+// disabledProbeInterval is the heart-beat used while the loop is in the
+// "disabled" state (SetTickInterval(0)). We can't simply stop the ticker
+// because then the loop couldn't notice when an operator sets the interval
+// back to a positive value — so we use a long heart-beat (10 minutes) just
+// to re-check the configured interval. The recover() body is skipped while
+// disabled, so the loop is effectively idle.
+const disabledProbeInterval = 10 * time.Minute
+
 // SetTickInterval lets callers tune the recovery loop period after Start.
-// Useful for ops who want to silence the loop temporarily (set to 0 to
-// disable — see run() for the disabled short-circuit). Setting an interval
-// shorter than 1s is clamped to 1s to keep the DB and upstream friendly.
-// Has no effect until the current ticker fires at least once.
+//
+// Semantics:
+//   - d < 0: ignored (defensive; env parsing may yield -1).
+//   - d == 0: the loop enters a disabled state — recover() is not called
+//     until a subsequent SetTickInterval(<positive>) re-arms it. Useful
+//     for maintenance windows when ops want to silence the worker.
+//   - 0 < d < 1s: clamped to 1s to keep the DB and upstream friendly.
+//   - d >= 1s: used as-is.
+//
+// The change is picked up at the next ticker boundary.
 func (r *CredentialRecovery) SetTickInterval(d time.Duration) {
 	if d < 0 {
 		return
 	}
 	r.tickMu.Lock()
 	defer r.tickMu.Unlock()
+	r.tickIntervalEverSet = true
 	if d == 0 {
-		r.tickInterval = 0 // disabled
+		r.tickInterval = 0 // disabled sentinel
 		return
 	}
 	if d < time.Second {
@@ -53,10 +68,14 @@ func (r *CredentialRecovery) SetTickInterval(d time.Duration) {
 	r.tickInterval = d
 }
 
+// tickIntervalLocked returns the configured interval, or the default if no
+// explicit value has ever been set (the sentinel -1 marks "never set"). A
+// value of 0 means "disabled": run() must NOT call NewTicker(0), which
+// would panic. See SetTickInterval for the disabled semantics.
 func (r *CredentialRecovery) tickIntervalLocked() time.Duration {
 	r.tickMu.Lock()
 	defer r.tickMu.Unlock()
-	if r.tickInterval <= 0 {
+	if r.tickInterval == 0 && !r.tickIntervalEverSet {
 		return defaultCredentialRecoveryInterval
 	}
 	return r.tickInterval
@@ -81,6 +100,10 @@ type CredentialRecovery struct {
 	done                     chan struct{}
 	tickMu                   sync.Mutex
 	tickInterval             time.Duration
+	// tickIntervalEverSet is false until SetTickInterval is called for the
+	// first time, so tickIntervalLocked can distinguish "no override yet,
+	// use the default" from "operator just disabled us with SetTickInterval(0)".
+	tickIntervalEverSet bool
 }
 
 func NewCredentialRecovery(db *pgxpool.Pool) *CredentialRecovery {
@@ -122,22 +145,39 @@ func (r *CredentialRecovery) Stop() {
 func (r *CredentialRecovery) run(ctx context.Context) {
 	defer close(r.done)
 
-	interval := r.tickIntervalLocked()
-	ticker := time.NewTicker(interval)
+	// resolveInterval maps the configured value to the ticker period we
+	// actually use. 0 (disabled) → disabledProbeInterval so the loop can
+	// still notice a subsequent SetTickInterval(<positive>). Any other
+	// value is used as-is.
+	resolveInterval := func() (period time.Duration, enabled bool) {
+		v := r.tickIntervalLocked()
+		if v == 0 {
+			return disabledProbeInterval, false
+		}
+		return v, true
+	}
+
+	period, enabled := resolveInterval()
+	ticker := time.NewTicker(period)
 	defer ticker.Stop()
+	slog.Info("credential_recovery: run loop armed",
+		"period", period.String(), "enabled", enabled)
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			r.recover(ctx)
-			if newInterval := r.tickIntervalLocked(); newInterval != interval {
-				interval = newInterval
-				ticker.Reset(interval)
-				slog.Info("credential_recovery: tick interval updated",
-					"new_interval", interval.String())
+			newPeriod, newEnabled := resolveInterval()
+			if newPeriod != period {
+				period = newPeriod
+				ticker.Reset(period)
 			}
+			if !newEnabled {
+				// Disabled: heart-beat only. Don't call recover().
+				continue
+			}
+			r.recover(ctx)
 		}
 	}
 }
