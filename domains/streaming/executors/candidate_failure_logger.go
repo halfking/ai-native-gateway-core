@@ -141,7 +141,7 @@ func (w *CandidateFailureWriter) logFailure(
 	defer cancel()
 
 	_, err := w.pool.Exec(ctx, `
-		INSERT INTO candidate_failure_logs (
+		INSERT INTO candidate_failure_logs_hot (
 			request_id, tenant_id, session_id, credential_id, provider_id, raw_model_name,
 			attempt_index, error_kind, error_message,
 			upstream_status_code, upstream_response_body, upstream_response_preview,
