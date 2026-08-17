@@ -160,53 +160,6 @@ func TestQueueMetricsCollector_ConcurrentSnapshots(t *testing.T) {
 	wg.Wait()
 }
 
-// TestQueueMetricsCollector_GateTransition verifies that the collector
-// tracks dispatch gate transitions (enabled ↔ disabled).
-func TestQueueMetricsCollector_GateTransition(t *testing.T) {
-	// Save original gate state and restore after test
-	originalState := IsDispatchEnabled()
-	defer SetDispatchEnabled(originalState)
-
-	p := NewPipeline(Deps{
-		RouteFunc: func(ctx context.Context, qr *QueuedRequest) ([]CredentialRef, error) { return nil, nil },
-		ModelResolveFunc: func(ctx context.Context, req string, tried []string) (string, []string, error) {
-			return "model-c", nil, nil
-		},
-		ForwardFunc: func(ctx context.Context, qr *QueuedRequest, cred CredentialRef) ForwardOutcome {
-			return ForwardOutcome{}
-		},
-		AllowModelChange: false,
-	})
-	p.Start()
-	defer p.Stop()
-
-	c := newQueueCollectorForPipeline(p)
-
-	// Initial state (should be enabled by default)
-	snap1 := c.Snapshot()
-	if !snap1.Enabled {
-		t.Errorf("expected initial Enabled=true, got false")
-	}
-
-	// Disable gate
-	SetDispatchEnabled(false)
-	time.Sleep(10 * time.Millisecond) // Allow transition handler to fire
-
-	snap2 := c.Snapshot()
-	if snap2.Enabled {
-		t.Errorf("expected Enabled=false after SetDispatchEnabled(false), got true")
-	}
-
-	// Re-enable gate
-	SetDispatchEnabled(true)
-	time.Sleep(10 * time.Millisecond)
-
-	snap3 := c.Snapshot()
-	if !snap3.Enabled {
-		t.Errorf("expected Enabled=true after SetDispatchEnabled(true), got false")
-	}
-}
-
 // TestQueueMetricsCollector_RecordHooksNonBlocking verifies that
 // RecordEnqueue/RecordDequeue hooks do not panic and are safe no-ops
 // (current implementation does not use push hooks, only pull via Snapshot).

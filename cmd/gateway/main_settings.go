@@ -55,14 +55,16 @@ func syncRateLimitGateFromSettings() {
 	slog.Info("rate_limit.enabled initialised", "enabled", b)
 }
 
-// syncDispatchGateFromSettings reads dispatch_v2.enabled from settings.Global
-// and applies it to dispatch's atomic.Bool cache (domains/dispatch/gate.go).
-// The cache is read on every Execute hot-path call so we never hit the
-// settings backend during a request. Mirrors syncRateLimitGateFromSettings.
-// Runtime changes go through the admin settings PUT handler which calls
-// dispatch.SetDispatchEnabled directly. Errors are non-fatal (keep default ON).
+// syncDispatchGateFromSettings reads dispatch_v2.allow_model_change from
+// settings.Global and applies it to dispatch's atomic.Bool cache
+// (domains/dispatch/gate.go). The cache is read on the dispatch failover
+// hot path so we never hit the settings backend during a request. Mirrors
+// syncRateLimitGateFromSettings. Runtime changes go through the admin
+// settings PUT handler. Errors are non-fatal (keep default OFF).
+//
+// AUDIT_24H B2b (2026-08-17): the dispatch_v2.enabled boot sync was removed —
+// the pipeline is the only execute path and its kill-switch was retired.
 func syncDispatchGateFromSettings() {
-	syncDispatchBoolSetting(dispatch.DispatchGateKey, dispatch.SetDispatchEnabled)
 	syncDispatchBoolSetting(dispatch.ModelChangeGateKey, dispatch.SetModelChangeEnabled)
 }
 

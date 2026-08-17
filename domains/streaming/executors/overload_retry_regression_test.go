@@ -25,7 +25,10 @@ const overloadRelayBody = `{"error":{"message":"Our servers are currently overlo
 // newOverloadTestExecutor builds the same minimal executor wiring used by
 // executor_prestream_test.go, forwarding the upstream stream verbatim.
 func newOverloadTestExecutor() *Executor {
-	return NewExecutor(
+	// AUDIT_24H B2b: wire the real dispatch pipeline — the legacy sync loop is
+	// gone, so Execute-driven tests must flow through dispatch. Workers idle
+	// after the test ends (no Stop; harmless for the test binary lifetime).
+	e := NewExecutor(
 		NewRouter(NewStickyCache(), credential.NewLimiter()),
 		credential.NewManager(),
 		credential.NewLimiter(),
@@ -41,6 +44,10 @@ func newOverloadTestExecutor() *Executor {
 		},
 		nil,
 	)
+	pipeline := e.NewDispatchPipeline()
+	pipeline.Start()
+	e.SetDispatchPipeline(pipeline)
+	return e
 }
 
 func overloadTestCandidate(baseURL string) provider.Candidate {
