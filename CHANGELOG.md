@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### 📦 Archived
 - docs/archive/* — 138 process docs archived on 2026-08-17 (see docs/archive/INDEX.md)
 
+### Security
+- 删除根目录含硬编码凭据的调试脚本（均已进入 git 历史，密钥需线下轮换）：
+  `debug.go`（base64 签名/加密密钥）、`test_volcengine_{glm52,correct_models,direct,models_list}.sh`
+  （volcengine ark API key）、`.tmp_check154.py`、`check_154_routing.sh`（root@8.136.114.154 SSH 探测）。
+
 ### Fixed
 
 - **dashboard 实时请求流 → 点击请求 报 "query failed"**：`/api/logs/{request_id}` 返回
