@@ -114,6 +114,79 @@ func (s JourneyStage) Valid() bool {
 	return false
 }
 
+// LifecycleState is the closed three-state request lifecycle of the request
+// registry (会话优化 v4 R1.1/T2). It is DERIVED from journey stages (spec §6):
+//
+//	received / routing / model_queue / credential_queue / node_selection
+//	  → pending
+//	upstream / streaming / retrying → in_flight
+//	  (a retrying event carrying retry_at parks back to pending)
+//	terminal → completed
+type LifecycleState string
+
+const (
+	// LifecyclePending is waiting-for-execution (incl. timed retry).
+	LifecyclePending LifecycleState = "pending"
+	// LifecycleInFlight is executing.
+	LifecycleInFlight LifecycleState = "in_flight"
+	// LifecycleCompleted is terminal (success or terminal failure).
+	LifecycleCompleted LifecycleState = "completed"
+)
+
+var lifecycleStates = []LifecycleState{LifecyclePending, LifecycleInFlight, LifecycleCompleted}
+
+// AllLifecycleStates returns a copy of the frozen lifecycle state set.
+func AllLifecycleStates() []LifecycleState {
+	return append([]LifecycleState(nil), lifecycleStates...)
+}
+
+// Valid reports whether the state belongs to the closed vocabulary.
+func (s LifecycleState) Valid() bool {
+	for _, candidate := range lifecycleStates {
+		if s == candidate {
+			return true
+		}
+	}
+	return false
+}
+
+// ErrorKind is the bounded failure classification carried by journey events.
+// The value set is deliberately NOT closed at validation time (producers span
+// dispatch, handlers and the durable lane, each with their own coarse
+// classifications), but the dispatch-sourced vocabulary below is frozen and
+// fixture-pinned (UT-CO-06): adding a word requires updating the fixture.
+const (
+	// ErrorKindCanceled marks client/context cancellation.
+	ErrorKindCanceled = "canceled"
+	// ErrorKindDeadlineExceeded marks deadline expiry.
+	ErrorKindDeadlineExceeded = "deadline_exceeded"
+	// ErrorKindShutdown marks pipeline shutdown.
+	ErrorKindShutdown = "shutdown"
+	// ErrorKindPaceTimeout marks governor pacing timeout.
+	ErrorKindPaceTimeout = "pace_timeout"
+	// ErrorKindNoRoute marks no routable credential/model.
+	ErrorKindNoRoute = "no_route"
+	// ErrorKindOverflow marks queue-admission refusal at a full scheduling
+	// queue (v4 R1.3/R1.8): the request was rejected immediately, zero
+	// queue wait, with a retryable semantics (503 + Retry-After upstream).
+	ErrorKindOverflow = "overflow"
+	// ErrorKindUpstreamError is the coarse upstream-failure bucket.
+	ErrorKindUpstreamError = "upstream_error"
+)
+
+// KnownErrorKinds returns the frozen dispatch-sourced error-kind vocabulary.
+func KnownErrorKinds() []string {
+	return []string{
+		ErrorKindCanceled,
+		ErrorKindDeadlineExceeded,
+		ErrorKindShutdown,
+		ErrorKindPaceTimeout,
+		ErrorKindNoRoute,
+		ErrorKindOverflow,
+		ErrorKindUpstreamError,
+	}
+}
+
 // ObservationStatus states whether the recorded journey is known to be
 // complete. Degraded observations remain usable but must not be presented as a
 // complete account of the request.
@@ -299,27 +372,31 @@ func (a AttemptRef) validate() error {
 // producers and consumers. It deliberately has no arbitrary metadata or body
 // field; only bounded diagnostic classifications and identifiers are allowed.
 type JourneyEvent struct {
-	TenantID          string            `json:"tenant_id"`
-	GatewayInstanceID string            `json:"gateway_instance_id"`
-	RequestID         string            `json:"request_id"`
-	Seq               int64             `json:"seq"`
-	Type              EventType         `json:"event_type"`
-	Stage             JourneyStage      `json:"stage"`
-	RequestedModel    string            `json:"requested_model,omitempty"`
-	ResolvedModel     string            `json:"resolved_model,omitempty"`
-	Model             string            `json:"model,omitempty"`
-	ProviderID        int64             `json:"provider_id,omitempty"`
-	Provider          string            `json:"provider,omitempty"`
-	CredentialID      int64             `json:"credential_id,omitempty"`
-	FromModel         string            `json:"from_model,omitempty"`
-	ToModel           string            `json:"to_model,omitempty"`
-	FromCredentialID  int64             `json:"from_credential_id,omitempty"`
-	ToCredentialID    int64             `json:"to_credential_id,omitempty"`
-	Attempt           *AttemptRef       `json:"attempt,omitempty"`
-	Outcome           Outcome           `json:"outcome,omitempty"`
-	ErrorKind         string            `json:"error_kind,omitempty"`
-	HTTPStatus        int               `json:"http_status,omitempty"`
-	RetryReason       string            `json:"retry_reason,omitempty"`
+	TenantID          string       `json:"tenant_id"`
+	GatewayInstanceID string       `json:"gateway_instance_id"`
+	RequestID         string       `json:"request_id"`
+	Seq               int64        `json:"seq"`
+	Type              EventType    `json:"event_type"`
+	Stage             JourneyStage `json:"stage"`
+	RequestedModel    string       `json:"requested_model,omitempty"`
+	ResolvedModel     string       `json:"resolved_model,omitempty"`
+	Model             string       `json:"model,omitempty"`
+	ProviderID        int64        `json:"provider_id,omitempty"`
+	Provider          string       `json:"provider,omitempty"`
+	CredentialID      int64        `json:"credential_id,omitempty"`
+	FromModel         string       `json:"from_model,omitempty"`
+	ToModel           string       `json:"to_model,omitempty"`
+	FromCredentialID  int64        `json:"from_credential_id,omitempty"`
+	ToCredentialID    int64        `json:"to_credential_id,omitempty"`
+	Attempt           *AttemptRef  `json:"attempt,omitempty"`
+	Outcome           Outcome      `json:"outcome,omitempty"`
+	ErrorKind         string       `json:"error_kind,omitempty"`
+	HTTPStatus        int          `json:"http_status,omitempty"`
+	RetryReason       string       `json:"retry_reason,omitempty"`
+	// RetryAt, set on retry_scheduled events emitted by the dispatch timed
+	// retry scheduler (v4 T3-8), is the time the parked request will be
+	// picked back up. nil on immediate (legacy) retries.
+	RetryAt           *time.Time        `json:"retry_at,omitempty"`
 	SwitchReason      string            `json:"switch_reason,omitempty"`
 	NodeHealthStatus  NodeHealthStatus  `json:"node_health_status,omitempty"`
 	ObservationStatus ObservationStatus `json:"observation_status"`
@@ -386,6 +463,9 @@ func (e JourneyEvent) Validate() error {
 		if e.ObservationStatus != ObservationDegraded {
 			return errors.New("observation_degraded event requires degraded observation status")
 		}
+	}
+	if e.RetryAt != nil && e.RetryAt.IsZero() {
+		return errors.New("retry_at, when present, must not be zero")
 	}
 	if e.OccurredAt.IsZero() {
 		return errors.New("occurred_at is required")

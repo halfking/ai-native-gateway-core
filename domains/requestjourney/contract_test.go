@@ -200,6 +200,81 @@ func TestFrozenEnums(t *testing.T) {
 	}
 }
 
+// TestLifecycleStateFrozenEnum (v4 R1.1/UT-CO-06): the request-registry
+// lifecycle vocabulary is frozen — pending / in_flight / completed.
+func TestLifecycleStateFrozenEnum(t *testing.T) {
+	want := []LifecycleState{LifecyclePending, LifecycleInFlight, LifecycleCompleted}
+	got := AllLifecycleStates()
+	if len(got) != len(want) {
+		t.Fatalf("lifecycle state count = %d, want %d: %v", len(got), len(want), got)
+	}
+	for i, state := range want {
+		if got[i] != state || !state.Valid() {
+			t.Errorf("lifecycle state[%d] = %q, want valid %q", i, got[i], state)
+		}
+	}
+	if LifecycleState("in-flight").Valid() || LifecycleState("running").Valid() {
+		t.Fatal("unapproved lifecycle states must be invalid")
+	}
+}
+
+// TestErrorKindVocabularyIncludesOverflow (v4 R1.3/UT-CO-06): the dispatch
+// error-kind vocabulary must include "overflow" — queue-admission refusal is
+// a first-class, fixture-pinned classification.
+func TestErrorKindVocabularyIncludesOverflow(t *testing.T) {
+	kinds := KnownErrorKinds()
+	want := map[string]bool{
+		ErrorKindCanceled: false, ErrorKindDeadlineExceeded: false,
+		ErrorKindShutdown: false, ErrorKindPaceTimeout: false,
+		ErrorKindNoRoute: false, ErrorKindOverflow: false,
+		ErrorKindUpstreamError: false,
+	}
+	for _, kind := range kinds {
+		if _, known := want[kind]; !known {
+			t.Fatalf("unexpected error kind %q in frozen vocabulary", kind)
+		}
+		want[kind] = true
+	}
+	for kind, seen := range want {
+		if !seen {
+			t.Errorf("frozen error kind %q missing from KnownErrorKinds()", kind)
+		}
+	}
+	if ErrorKindOverflow != "overflow" {
+		t.Fatalf("ErrorKindOverflow = %q, want overflow", ErrorKindOverflow)
+	}
+}
+
+// TestRetryScheduledEventCarriesRetryAt (v4 T3-8): retry_scheduled events
+// may carry retry_at; the field round-trips and a zero retry_at is rejected.
+func TestRetryScheduledEventCarriesRetryAt(t *testing.T) {
+	now := time.Date(2026, 8, 18, 9, 0, 0, 0, time.UTC)
+	retryAt := now.Add(30 * time.Second)
+	event := JourneyEvent{
+		TenantID: "tenant-1", GatewayInstanceID: "gateway-a", RequestID: "request-1",
+		Seq: 4, Type: EventRetryScheduled, Stage: StageRetrying,
+		ResolvedModel: "model-a", CredentialID: 11,
+		RetryReason: "upstream_error", RetryAt: &retryAt,
+		ObservationStatus: ObservationComplete, OccurredAt: now,
+	}
+	if err := event.Validate(); err != nil {
+		t.Fatalf("retry_scheduled with retry_at should validate: %v", err)
+	}
+	body, err := json.Marshal(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), `"retry_at":"`) {
+		t.Fatalf("serialized retry_scheduled missing retry_at: %s", body)
+	}
+
+	zero := time.Time{}
+	event.RetryAt = &zero
+	if err := event.Validate(); err == nil {
+		t.Fatal("zero retry_at must be rejected")
+	}
+}
+
 func TestJourneyEventExplicitSwitchFields(t *testing.T) {
 	now := time.Now().UTC()
 	event := JourneyEvent{

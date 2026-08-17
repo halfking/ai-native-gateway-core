@@ -12,6 +12,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
 // credentialRecoveryDB is the minimal database contract CredentialRecovery
@@ -83,6 +85,21 @@ func (r *CredentialRecovery) tickIntervalLocked() time.Duration {
 
 type CredentialRecovery struct {
 	db credentialRecoveryDB
+	// lookbackDB is the transaction-capable handle used by the 36h lookback
+	// scan's SELECT ... FOR UPDATE SKIP LOCKED claim (会话优化 v4 T5 /
+	// R4.4). Production wires the same *pgxpool.Pool as db; tests inject a
+	// pgxmock pool. Separated from the credentialRecoveryDB interface so the
+	// legacy recover() tick keeps its narrow contract.
+	lookbackDB lookbackBeginner
+	// lookbackHot supplies scan-interval / lookback-window overrides from
+	// settings_kv (hotconfig.Config satisfies it). nil → env/boot defaults.
+	lookbackHot LookbackHotConfig
+	// ursmRecoverSink writes evidence-backed recovery records into URSM v2
+	// at Recover(30) priority — the integrator wires it to
+	// (*ursmv2.Manager).ApplyProbeForTenantWithSource with
+	// api.SourcePriorityRecover. nil → the URSM half of the scan is a no-op
+	// (the dual-round probe submission still runs).
+	ursmRecoverSink func(ctx context.Context, tenantID string, credID int, model string, success bool, latencyMs int) error
 	// probeSubmitter hands (credential_id, raw_model_name) pairs to
 	// NodeProbeWorker.Submit so the authoritative probe path can
 	// flip cmb.available when it confirms the upstream is healthy
@@ -98,8 +115,12 @@ type CredentialRecovery struct {
 	invalidateCandidateCache func(credID int)
 	cancel                   context.CancelFunc
 	done                     chan struct{}
-	tickMu                   sync.Mutex
-	tickInterval             time.Duration
+	// lookbackDone signals the 36h lookback scan loop exited (Stop waits on
+	// both). Constructed together with done.
+	lookbackDone     chan struct{}
+	tickMu           sync.Mutex
+	tickInterval     time.Duration
+	lookbackInterval time.Duration
 	// tickIntervalEverSet is false until SetTickInterval is called for the
 	// first time, so tickIntervalLocked can distinguish "no override yet,
 	// use the default" from "operator just disabled us with SetTickInterval(0)".
@@ -107,7 +128,12 @@ type CredentialRecovery struct {
 }
 
 func NewCredentialRecovery(db *pgxpool.Pool) *CredentialRecovery {
-	return &CredentialRecovery{db: db, done: make(chan struct{})}
+	return &CredentialRecovery{
+		db:           db,
+		lookbackDB:   db,
+		done:         make(chan struct{}),
+		lookbackDone: make(chan struct{}),
+	}
 }
 
 // SetProbeSubmitter wires the (credID, model) -> probe enqueue hook.
@@ -129,10 +155,33 @@ func (r *CredentialRecovery) SetInvalidateCandidateCache(fn func(credID int)) {
 	r.invalidateCandidateCache = fn
 }
 
+// SetURSMRecoverSink wires the Recover(30) URSM v2 write used by the 36h
+// lookback scan (会话优化 v4 T5 / R4.4). The integrator binds it to
+// (*ursmv2.Manager).ApplyProbeForTenantWithSource with
+// api.SourcePriorityRecover. Safe to call before Start; nil keeps the URSM
+// half of the scan disabled.
+func (r *CredentialRecovery) SetURSMRecoverSink(fn func(ctx context.Context, tenantID string, credID int, model string, success bool, latencyMs int) error) {
+	if fn == nil {
+		return
+	}
+	r.ursmRecoverSink = fn
+}
+
+// SetLookbackHotConfig wires the settings_kv reader for the scan interval
+// (llmgw_recovery_lookback_interval_seconds) and lookback window hours
+// (llmgw_recovery_lookback_window_hours). *hotconfig.Config satisfies the
+// interface; nil keeps env/boot defaults.
+func (r *CredentialRecovery) SetLookbackHotConfig(src LookbackHotConfig) {
+	r.lookbackHot = src
+}
+
 func (r *CredentialRecovery) Start(ctx context.Context) {
 	ctx, r.cancel = context.WithCancel(ctx)
 	go r.run(ctx)
-	slog.Info("credential recovery task started", "interval", r.tickIntervalLocked().String())
+	go r.runLookbackScan(ctx)
+	slog.Info("credential recovery task started",
+		"interval", r.tickIntervalLocked().String(),
+		"lookback_scan_interval", r.lookbackScanIntervalLocked().String())
 }
 
 func (r *CredentialRecovery) Stop() {
@@ -140,6 +189,9 @@ func (r *CredentialRecovery) Stop() {
 		r.cancel()
 	}
 	<-r.done
+	if r.lookbackDone != nil {
+		<-r.lookbackDone
+	}
 }
 
 func (r *CredentialRecovery) run(ctx context.Context) {
@@ -764,24 +816,24 @@ func (r *CredentialRecovery) recoverExpiredBindings(ctx context.Context) error {
 //
 // Eligibility contract:
 //
-//	- cmb.available = FALSE + unavailable_reason = 'continuous_failure'.
-//	  Other reasons use different code paths:
-//	    - 'manual*' : operators chose those; never auto-restore.
-//	    - 'probe_*' : already covered by node_probe.go's own re-arm ladder.
-//	    - 'auto_*'   : written by domains/credential/writer.go for transient
-//	                   per-model failures; out of scope for this branch.
-//	- unavailable_recover_at IS NOT NULL AND > now() (i.e., still in cooldown).
-//	- unavailable_at <= now() - 60 seconds. Don't re-probe a row that was
-//	  just marked unavailable seconds ago — give the original failure burst
-//	  a chance to settle. 60s matches the original 60s tick so the first
-//	  re-check happens on the second tick after degradation.
-//	- Same hard guards as the expired branch (manual, lifecycle, provider,
-//	  admin_protected, availability_state, paused).
-//	- Skip rows whose node_probe_state already has a future next_retry_at
-//	  so we don't pile probes on top of an in-flight backoff ladder.
-//	- ORDER BY oldest unavailable_at first so the most-stale rows (the
-//	  ones most likely to have recovered upstream-side) get probed first.
-//	- LIMIT 30/tick to bound fan-out.
+//   - cmb.available = FALSE + unavailable_reason = 'continuous_failure'.
+//     Other reasons use different code paths:
+//   - 'manual*' : operators chose those; never auto-restore.
+//   - 'probe_*' : already covered by node_probe.go's own re-arm ladder.
+//   - 'auto_*'   : written by domains/credential/writer.go for transient
+//     per-model failures; out of scope for this branch.
+//   - unavailable_recover_at IS NOT NULL AND > now() (i.e., still in cooldown).
+//   - unavailable_at <= now() - 60 seconds. Don't re-probe a row that was
+//     just marked unavailable seconds ago — give the original failure burst
+//     a chance to settle. 60s matches the original 60s tick so the first
+//     re-check happens on the second tick after degradation.
+//   - Same hard guards as the expired branch (manual, lifecycle, provider,
+//     admin_protected, availability_state, paused).
+//   - Skip rows whose node_probe_state already has a future next_retry_at
+//     so we don't pile probes on top of an in-flight backoff ladder.
+//   - ORDER BY oldest unavailable_at first so the most-stale rows (the
+//     ones most likely to have recovered upstream-side) get probed first.
+//   - LIMIT 30/tick to bound fan-out.
 func freshDegradedCmbSQL() string {
 	return `
 		SELECT cmb.credential_id, pm.raw_model_name
@@ -867,4 +919,421 @@ func (r *CredentialRecovery) recoverFreshDegradedBindings(ctx context.Context) e
 		"reason", "self_check_during_cooldown",
 	)
 	return nil
+}
+
+// =============================================================================
+// 36h 成功回看恢复扫描 (会话优化 v4 T5 / FR-4 R4.4 / UT-CR-09)
+//
+// A slow, independent scan loop next to the 30s recover() tick. It selects
+// (credential, model) bindings that are currently degraded/offline
+// (cmb.available = FALSE with unavailable_recover_at elapsed or unset) but
+// have AT LEAST ONE successful request within the lookback window (default
+// 36h, configurable) in request_logs_hot or request_logs. Logged success is
+// real traffic evidence that the upstream works, so for each candidate:
+//
+//  1. CLAIM the node_probe_state row cross-instance with the same
+//     PostgreSQL `SELECT ... FOR UPDATE SKIP LOCKED` + `in_flight_until`
+//     lease pattern node_probe.go's pickDueAtomically uses
+//     (node_probe.go:1140-1209 — PG row locks, NOT Redis).
+//  2. WRITE the URSM v2 runtime layer back to available at Recover(30)
+//     priority via the ursmRecoverSink hook (integrator wires it to
+//     Manager.ApplyProbeForTenantWithSource with api.SourcePriorityRecover,
+//     the priority apply_probe.lua was parameterized for in T5). The write
+//     is success=true ONLY — it is backed by the logged success the SQL
+//     predicate demanded. The scanner never writes failure evidence at
+//     Recover priority, so a failed probe can never masquerade as recovery
+//     (“自检失败绝不直接回 active” is preserved by construction).
+//  3. TRIGGER the dual-round (direct + gateway) probe through the existing
+//     NodeProbeWorker.Submit hook (probeSubmitter), the same entry the
+//     expired-binding and fresh-degraded branches above use. runOne's
+//     success branch remains the authoritative writer of cmb.available —
+//     this scan NEVER flips the persistent binding directly.
+//
+// PROBE-REUSE BOUNDARY: NodeProbeWorker.runOne / probeDirect / probeGateway
+// are private methods coupled to *pgxpool.Pool, the secret keyring, and the
+// proxy-aware HTTP clients, so CredentialRecovery cannot call them directly.
+// Submit (via probeSubmitter) IS the existing dual-round probe entry this
+// package already reuses; a "minimal direct probe" is NOT reimplemented here
+// because decrypting credentials.secret_ciphertext requires the keyring,
+// which CredentialRecovery deliberately does not hold. If Submit is not
+// wired, the scan still performs the URSM Recover write (step 2) and skips
+// step 3.
+//
+// 36h-window semantics (UT-CR-09): a candidate with success inside the
+// window enters the scan; outside the window / no recent success → the SQL
+// predicate excludes it and nothing is triggered.
+// =============================================================================
+
+const (
+	// defaultLookbackScanInterval is the slow scan cadence (spec §11 T5:
+	// 默认 15min, hot-configurable via llmgw_recovery_lookback_interval_seconds).
+	defaultLookbackScanInterval = 15 * time.Minute
+	// defaultLookbackWindowHours is the success-lookback window (36h,
+	// hot-configurable via llmgw_recovery_lookback_window_hours).
+	defaultLookbackWindowHours = 36
+	// lookbackBatchLimit bounds per-scan fan-out so a large outage cannot
+	// stampede upstream providers.
+	lookbackBatchLimit = 20
+	// lookbackClaimLease is the in_flight_until lease the claim transaction
+	// stamps. Deliberately SHORT (unlike pickDueAtomically's 5-minute
+	// execution lease): this scanner hands the actual probe to
+	// NodeProbeWorker.Submit, whose arming branch clears in_flight_until, so
+	// a long lease would only delay the worker's own pick. The lease exists
+	// to dedup concurrent SCANNERS across instances.
+	lookbackClaimLease = 30 * time.Second
+)
+
+// Hot-config keys for the lookback scan (settings_kv, platform scope).
+const (
+	HotKeyRecoveryLookbackIntervalSeconds = "llmgw_recovery_lookback_interval_seconds"
+	HotKeyRecoveryLookbackWindowHours     = "llmgw_recovery_lookback_window_hours"
+)
+
+// LookbackHotConfig is the settings_kv read surface the scan needs.
+// *hotconfig.Config satisfies it; the interface stays local so bg does not
+// import hotconfig (mirrors requestjourney.IntConfigSource).
+type LookbackHotConfig interface {
+	GetInt(key string, defaultValue int) int
+}
+
+// lookbackTx is the transaction subset the claim needs; pgx.Tx satisfies it.
+type lookbackTx interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+	Commit(ctx context.Context) error
+	Rollback(ctx context.Context) error
+}
+
+// lookbackBeginner is satisfied by *pgxpool.Pool (production) and pgxmock
+// pools (tests).
+type lookbackBeginner interface {
+	Begin(ctx context.Context) (pgx.Tx, error)
+}
+
+// Metrics for the lookback scan (promauto, same registry as bg/metrics.go).
+var (
+	recoveryLookbackScans = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "llmgw_recovery_lookback_scans_total",
+		Help: "Number of 36h success-lookback recovery scan ticks executed.",
+	})
+	recoveryLookbackTriggers = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "llmgw_recovery_lookback_triggers_total",
+		Help: "Candidate outcomes per lookback scan: triggered (claimed+recovery write), lease_skipped, claim_error, recover_write_failed.",
+	}, []string{"outcome"})
+)
+
+// lookbackScanIntervalLocked resolves the scan period: direct field
+// override → hotconfig override → env override → default (15min). An
+// EXPLICIT zero from hotconfig or env disables the scan (same sentinel
+// semantics as SetTickInterval(0) on the 30s loop); positive values below
+// 1s clamp to 1s.
+func (r *CredentialRecovery) lookbackScanIntervalLocked() time.Duration {
+	r.tickMu.Lock()
+	defer r.tickMu.Unlock()
+	if r.lookbackInterval != 0 {
+		return clampLookbackInterval(r.lookbackInterval)
+	}
+	if r.lookbackHot != nil {
+		// -1 = key absent; 0 = explicit operator disable.
+		if n := r.lookbackHot.GetInt(HotKeyRecoveryLookbackIntervalSeconds, -1); n >= 0 {
+			return clampLookbackInterval(time.Duration(n) * time.Second)
+		}
+	}
+	if raw := os.Getenv("LLM_GATEWAY_RECOVERY_LOOKBACK_INTERVAL_SECONDS"); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n >= 0 {
+			return clampLookbackInterval(time.Duration(n) * time.Second)
+		}
+	}
+	return defaultLookbackScanInterval
+}
+
+// clampLookbackInterval keeps the disabled sentinel (0) intact and lifts
+// too-small positive periods to 1s.
+func clampLookbackInterval(v time.Duration) time.Duration {
+	if v != 0 && v < time.Second {
+		return time.Second
+	}
+	return v
+}
+
+// lookbackWindowHoursLocked resolves the success-lookback window (hours):
+// hotconfig → env → 36h default. Non-positive values fall back to the
+// default so a bad settings row cannot disable the window predicate.
+func (r *CredentialRecovery) lookbackWindowHoursLocked() int {
+	r.tickMu.Lock()
+	defer r.tickMu.Unlock()
+	if r.lookbackHot != nil {
+		if n := r.lookbackHot.GetInt(HotKeyRecoveryLookbackWindowHours, 0); n > 0 {
+			return n
+		}
+	}
+	if raw := os.Getenv("LLM_GATEWAY_RECOVERY_LOOKBACK_WINDOW_HOURS"); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			return n
+		}
+	}
+	return defaultLookbackWindowHours
+}
+
+// runLookbackScan is the slow scan loop. Mirrors run()'s disabled-sentinel
+// handling: interval 0 (hotconfig or env) → long heart-beat, scan body
+// skipped, so a later positive override re-arms the loop.
+func (r *CredentialRecovery) runLookbackScan(ctx context.Context) {
+	if r.lookbackDone != nil {
+		defer close(r.lookbackDone)
+	}
+	resolve := func() (period time.Duration, enabled bool) {
+		// An explicit 0 (hotconfig/env) is the disabled sentinel: the loop
+		// keeps a long heart-beat so a later positive override re-arms it,
+		// mirroring run()'s SetTickInterval(0) handling.
+		v := r.lookbackScanIntervalLocked()
+		if v <= 0 {
+			return disabledProbeInterval, false
+		}
+		return v, true
+	}
+	period, enabled := resolve()
+	ticker := time.NewTicker(period)
+	defer ticker.Stop()
+	slog.Info("credential_recovery: 36h lookback scan armed",
+		"period", period.String(), "enabled", enabled,
+		"window_hours", r.lookbackWindowHoursLocked())
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			newPeriod, newEnabled := resolve()
+			if newPeriod != period {
+				period = newPeriod
+				ticker.Reset(period)
+			}
+			if !newEnabled {
+				continue
+			}
+			r.scanLookbackRecoveries(ctx)
+		}
+	}
+}
+
+// lookbackCandidateSQL selects (credential_id, raw_model_name, tenant_id)
+// triples that are degraded/offline but demonstrably served successful
+// traffic inside the lookback window (UT-CR-09). SELECT-only — cmb.available
+// is never written here; the authoritative flip is node_probe runOne's
+// success branch.
+//
+// Guards mirror the sibling recovery queries (expiredCmbRecoverySQL):
+// manual* reasons and admin_protected rows are never auto-recovered;
+// credential/provider must be active and not manually disabled;
+// availability_state='ready' (a credential in cooling/auth_failed is the
+// 30s tick's business, not this scan's).
+//
+// The 36h-success predicate searches request_logs_hot first (hot rows,
+// ~7d retention) and falls back to request_logs (archived/promoted rows).
+// The success-model join mirrors passive_probe_listener.go:
+// COALESCE(outbound_model, client_model) = raw_model_name.
+func lookbackCandidateSQL() string {
+	return `
+		SELECT cmb.credential_id, pm.raw_model_name, COALESCE(c.tenant_id, '')
+		FROM credential_model_bindings cmb
+		JOIN provider_models pm ON pm.id = cmb.provider_model_id
+		JOIN credentials c      ON c.id = cmb.credential_id
+		JOIN providers p        ON p.id = c.provider_id
+		WHERE cmb.available = FALSE
+		  -- degraded/offline with cooldown elapsed (or never scheduled):
+		  -- unavailable_recover_at in the future means the cooldown still
+		  -- owns the row; the fresh-degraded branch of the 30s tick covers it.
+		  AND (cmb.unavailable_recover_at IS NULL OR cmb.unavailable_recover_at <= now())
+		  AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
+		  AND COALESCE(cmb.admin_protected, FALSE) = FALSE
+		  AND COALESCE(c.status, 'active') = 'active'
+		  AND COALESCE(c.lifecycle_status, 'active') = 'active'
+		  AND COALESCE(c.manual_disabled, FALSE) = FALSE
+		  AND c.availability_state = 'ready'
+		  AND COALESCE(p.enabled, TRUE) = TRUE
+		  AND COALESCE(p.manual_disabled, FALSE) = FALSE
+		  -- UT-CR-09: only nodes with a SUCCESS inside the lookback window
+		  -- are candidates. Outside the window / no success → excluded,
+		  -- nothing triggers.
+		  AND (
+		      EXISTS (
+		          SELECT 1 FROM request_logs_hot rl
+		          WHERE rl.credential_id = cmb.credential_id
+		            AND COALESCE(rl.outbound_model, rl.client_model) = pm.raw_model_name
+		            AND rl.success = TRUE
+		            AND rl.ts > now() - make_interval(hours => $1)
+		      )
+		      OR EXISTS (
+		          SELECT 1 FROM request_logs rl
+		          WHERE rl.credential_id = cmb.credential_id
+		            AND COALESCE(rl.outbound_model, rl.client_model) = pm.raw_model_name
+		            AND rl.success = TRUE
+		            AND rl.ts > now() - make_interval(hours => $1)
+		      )
+		  )
+		ORDER BY cmb.unavailable_at ASC NULLS LAST
+		LIMIT $2
+	`
+}
+
+// claimLookbackCandidate leases the (cred, model) row cross-instance,
+// mirroring node_probe.go pickDueAtomically (BEGIN → SELECT ... FOR UPDATE
+// SKIP LOCKED → UPDATE in_flight_until → COMMIT). Differences from the
+// reference, both deliberate:
+//
+//   - the SELECT targets ONE row (the scan already chose the candidate),
+//     so "SKIP LOCKED" resolves contention between instances scanning the
+//     same candidate at the same moment;
+//   - a candidate with NO node_probe_state row yet (degraded purely by
+//     continuous_failure, never probed) is INSERTed inside the same tx with
+//     next_retry_at = now()+5s so the worker can pick it up — mirroring
+//     Submit's arming — instead of being silently dropped.
+//
+// paused rows are never claimed (operator intent), matching
+// expiredCmbRecoverySQL's paused guard.
+func (r *CredentialRecovery) claimLookbackCandidate(ctx context.Context, credID int, model string) (bool, error) {
+	if r.lookbackDB == nil {
+		return false, fmt.Errorf("lookback claim: no transaction-capable db wired")
+	}
+	tx, err := r.lookbackDB.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("lookback claim begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	leaseSeconds := int(lookbackClaimLease.Seconds())
+
+	var one int
+	err = tx.QueryRow(ctx, `
+		SELECT 1 FROM node_probe_state
+		WHERE credential_id = $1
+		  AND raw_model_name = $2
+		  AND paused = FALSE
+		  AND (in_flight_until IS NULL OR in_flight_until <= now())
+		FOR UPDATE SKIP LOCKED
+	`, credID, model).Scan(&one)
+	switch {
+	case err == nil:
+		// Row exists and is lease-free: stamp the lease inside the same
+		// transaction (the pickDueAtomically shape).
+		if _, err := tx.Exec(ctx, `
+			UPDATE node_probe_state
+			   SET in_flight_until = now() + make_interval(secs => $1),
+			       updated_at = now()
+			 WHERE credential_id = $2 AND raw_model_name = $3
+		`, leaseSeconds, credID, model); err != nil {
+			return false, fmt.Errorf("lookback claim lease: %w", err)
+		}
+	case err.Error() == "no rows in result set":
+		// Absent, paused, or currently leased elsewhere. Only the ABSENT
+		// case proceeds: INSERT ON CONFLICT DO NOTHING loses to an existing
+		// row (paused or leased), which reports claim=false via RowsAffected.
+		tag, insErr := tx.Exec(ctx, `
+			INSERT INTO node_probe_state
+			    (credential_id, raw_model_name, next_retry_at, next_retry_seconds,
+			     paused, in_flight_until, consecutive_failures, last_err_code)
+			VALUES ($1, $2, now() + interval '5 seconds', 5, FALSE,
+			        now() + make_interval(secs => $3), 0, NULL)
+			ON CONFLICT (credential_id, raw_model_name) DO NOTHING
+		`, credID, model, leaseSeconds)
+		if insErr != nil {
+			return false, fmt.Errorf("lookback claim insert: %w", insErr)
+		}
+		if tag.RowsAffected() == 0 {
+			// Row existed (paused or leased by another instance/worker).
+			return false, nil
+		}
+	default:
+		return false, fmt.Errorf("lookback claim select: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("lookback claim commit: %w", err)
+	}
+	return true, nil
+}
+
+// scanLookbackRecoveries runs one scan pass. Safe against nil hooks: with
+// neither the recover sink nor the probe submitter wired it is a no-op (the
+// SQL is not even issued, mirroring recoverFreshDegradedBindings).
+func (r *CredentialRecovery) scanLookbackRecoveries(ctx context.Context) {
+	if r.ursmRecoverSink == nil && r.probeSubmitter == nil {
+		return
+	}
+	scanCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
+
+	windowHours := r.lookbackWindowHoursLocked()
+	recoveryLookbackScans.Inc()
+
+	rows, err := r.db.Query(scanCtx, lookbackCandidateSQL(), windowHours, lookbackBatchLimit)
+	if err != nil {
+		recoveryLookbackTriggers.WithLabelValues("scan_error").Inc()
+		slog.Warn("credential_recovery: lookback candidate query failed", "error", err)
+		return
+	}
+	type candidate struct {
+		credID   int
+		model    string
+		tenantID string
+	}
+	var candidates []candidate
+	for rows.Next() {
+		var c candidate
+		if err := rows.Scan(&c.credID, &c.model, &c.tenantID); err != nil {
+			slog.Warn("credential_recovery: lookback scan row failed", "error", err)
+			continue
+		}
+		candidates = append(candidates, c)
+	}
+	if err := rows.Err(); err != nil {
+		slog.Warn("credential_recovery: lookback scan iteration failed", "error", err)
+	}
+	rows.Close()
+	if len(candidates) == 0 {
+		return
+	}
+
+	triggered := 0
+	for _, c := range candidates {
+		claimed, err := r.claimLookbackCandidate(scanCtx, c.credID, c.model)
+		if err != nil {
+			recoveryLookbackTriggers.WithLabelValues("claim_error").Inc()
+			slog.Warn("credential_recovery: lookback claim failed",
+				"credential_id", c.credID, "model", c.model, "error", err)
+			continue
+		}
+		if !claimed {
+			recoveryLookbackTriggers.WithLabelValues("lease_skipped").Inc()
+			continue
+		}
+		// Evidence-backed Recover(30) write into URSM v2. success=true is
+		// justified by the SQL predicate (a logged success inside the
+		// window); the scanner NEVER writes failure at this priority.
+		if r.ursmRecoverSink != nil {
+			writeCtx, writeCancel := context.WithTimeout(scanCtx, 3*time.Second)
+			if err := r.ursmRecoverSink(writeCtx, c.tenantID, c.credID, c.model, true, 0); err != nil {
+				recoveryLookbackTriggers.WithLabelValues("recover_write_failed").Inc()
+				slog.Warn("credential_recovery: URSM recover write failed",
+					"credential_id", c.credID, "model", c.model, "error", err)
+			}
+			writeCancel()
+		}
+		// Dual-round probe through the existing NodeProbeWorker entry. The
+		// probe path owns cmb.available and all failure/backoff reporting.
+		if r.probeSubmitter != nil {
+			r.probeSubmitter(c.credID, c.model)
+		}
+		if r.invalidateCandidateCache != nil {
+			r.invalidateCandidateCache(c.credID)
+		}
+		recoveryLookbackTriggers.WithLabelValues("triggered").Inc()
+		triggered++
+	}
+	if triggered > 0 {
+		slog.Info("credential_recovery: 36h lookback scan triggered recoveries",
+			"window_hours", windowHours,
+			"candidates", len(candidates),
+			"triggered", triggered,
+		)
+	}
 }

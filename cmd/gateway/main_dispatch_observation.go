@@ -52,6 +52,7 @@ func translateDispatchObservation(observation dispatch.Observation) (requestjour
 		FromModel: observation.FromModel, ToModel: observation.ToModel, FromCredentialID: observation.FromCredentialID,
 		ToCredentialID: observation.ToCredentialID, Outcome: requestjourney.Outcome(observation.Outcome), ErrorKind: observation.ErrorKind,
 		HTTPStatus: observation.HTTPStatus, RetryReason: observation.RetryReason, SwitchReason: observation.SwitchReason,
+		RetryAt:           observation.RetryAt,
 		ObservationStatus: requestjourney.ObservationComplete, OccurredAt: observation.OccurredAt,
 	}
 	if observation.Attempt != nil {
