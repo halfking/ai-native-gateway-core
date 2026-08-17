@@ -12,19 +12,13 @@
  */
 import { ref, computed } from 'vue'
 import { nodesRef, type LiveNodeStatus } from '../composables/liveStreamStore'
-import { authBearer } from '../store'
+import NodeDetailDrawer from './NodeDetailDrawer.vue'
 
 const nodes = nodesRef
 
-// 选中节点的抽屉
+// 选中节点的统一详情抽屉
 const selectedNode = ref<LiveNodeStatus | null>(null)
 const drawerVisible = ref(false)
-
-// 操作状态
-const testing = ref(false)
-const testResult = ref<{ latency_ms: number; status: string; error?: string } | null>(null)
-const toggling = ref(false)
-const opError = ref('')
 
 // 节点状态汇总（用于矩阵卡片颜色）
 function nodeHealth(n: LiveNodeStatus): 'ok' | 'warn' | 'danger' | 'disabled' {
@@ -71,64 +65,7 @@ const sortedNodes = computed(() => {
 
 function openNode(n: LiveNodeStatus) {
   selectedNode.value = n
-  testResult.value = null
-  opError.value = ''
   drawerVisible.value = true
-}
-
-// 立即测试（同步 probe，5s 超时）
-async function testNow() {
-  if (!selectedNode.value || toggling.value) return
-  testing.value = true
-  testResult.value = null
-  opError.value = ''
-  try {
-    const resp = await fetch(`/api/admin/providers/${selectedNode.value.provider_id}/test-now`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authBearer()}` },
-    })
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
-    testResult.value = await resp.json()
-  } catch (e: any) {
-    opError.value = e?.message || '测试失败'
-  } finally {
-    testing.value = false
-  }
-}
-
-// 启用/禁用切换（二次确认）
-async function toggleEnable() {
-  if (!selectedNode.value || testing.value) return
-  const enabled = selectedNode.value.manual_disabled
-  if (!enabled && !confirm(`确认禁用节点 ${selectedNode.value.credential_id}？禁用后将立即从路由候选中摘除。`)) {
-    return
-  }
-  toggling.value = true
-  opError.value = ''
-  try {
-    const idempotencyKey = `node-toggle-${selectedNode.value.provider_id}-${enabled}-${Date.now()}`
-    const resp = await fetch(`/api/admin/providers/${selectedNode.value.provider_id}/enable`, {
-      method: 'PATCH',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${authBearer()}`,
-        'X-Confirm': 'yes',
-        'Idempotency-Key': idempotencyKey,
-        'X-Correlation-ID': idempotencyKey,
-      },
-      body: JSON.stringify({
-        enabled,
-        reason: enabled ? 'Enabled from node status matrix' : 'Disabled from node status matrix',
-      }),
-    })
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
-    // 乐观更新（SSE node_update 会在 2s 内同步真实状态）
-    selectedNode.value.manual_disabled = !enabled
-  } catch (e: any) {
-    opError.value = e?.message || '操作失败'
-  } finally {
-    toggling.value = false
-  }
 }
 
 const hasNodes = computed(() => nodes.value.length > 0)
@@ -328,50 +265,12 @@ const hasNodes = computed(() => nodes.value.length > 0)
       </div>
     </div>
 
-    <!-- 节点详情抽屉 -->
-    <Teleport to="body">
-      <div v-if="drawerVisible" class="nm-drawer-mask" @click="drawerVisible = false" />
-      <div v-if="drawerVisible" class="nm-drawer">
-        <div class="nm-drawer-header">
-          <span>节点 {{ selectedNode?.credential_id }} 详情</span>
-          <button class="nm-close" @click="drawerVisible = false">×</button>
-        </div>
-        <div v-if="selectedNode" class="nm-drawer-body">
-          <div class="nm-detail-row"><span>供应商</span><span>{{ selectedNode.provider_code || selectedNode.provider_id }}</span></div>
-          <div class="nm-detail-row"><span>熔断状态</span><span>{{ selectedNode.circuit_state }}</span></div>
-          <div class="nm-detail-row"><span>可用性</span><span>{{ selectedNode.availability_state }}</span></div>
-          <div class="nm-detail-row"><span>配额</span><span>{{ selectedNode.quota_state }}</span></div>
-          <div class="nm-detail-row"><span>健康</span><span>{{ selectedNode.health_status }}</span></div>
-          <div class="nm-detail-row"><span>手动禁用</span><span>{{ selectedNode.manual_disabled ? '是' : '否' }}</span></div>
-          <div v-if="selectedNode.last_error" class="nm-detail-row nm-detail-row--error">
-            <span>最近错误</span><span>{{ selectedNode.last_error }}</span>
-          </div>
+    <NodeDetailDrawer
+      v-model="drawerVisible"
+      :node="selectedNode"
+      @applied="drawerVisible = true"
+    />
 
-          <!-- 操作区 -->
-          <div class="nm-actions">
-            <button class="nm-btn nm-btn--primary" :disabled="testing || toggling" @click="testNow">
-              {{ testing ? '测试中…' : '立即测试' }}
-            </button>
-            <button
-              class="nm-btn"
-              :class="selectedNode.manual_disabled ? 'nm-btn--success' : 'nm-btn--danger'"
-              :disabled="testing || toggling"
-              @click="toggleEnable"
-            >
-              {{ toggling ? '处理中…' : selectedNode.manual_disabled ? '启用节点' : '禁用节点' }}
-            </button>
-          </div>
-
-          <!-- 测试结果 -->
-          <div v-if="testResult" class="nm-test-result" :class="`nm-test-result--${testResult.status === 'healthy' ? 'ok' : 'error'}`">
-            <div>状态：{{ testResult.status }}</div>
-            <div>延迟：{{ testResult.latency_ms }}ms</div>
-            <div v-if="testResult.error">错误：{{ testResult.error }}</div>
-          </div>
-          <div v-if="opError" class="nm-op-error">{{ opError }}</div>
-        </div>
-      </div>
-    </Teleport>
   </div>
 </template>
 

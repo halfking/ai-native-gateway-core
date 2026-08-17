@@ -39,7 +39,12 @@ function snapshot(requestId: string, updatedAt: string) {
 }
 
 function mountPanel() {
-  return mount(RequestJourneyQueues, { global: { plugins: [i18n] } })
+  return mount(RequestJourneyQueues, { attachTo: document.body, global: { plugins: [i18n], stubs: { Teleport: true } } })
+}
+
+async function openPanel(wrapper: ReturnType<typeof mount>) {
+  await wrapper.get('.journey-trigger').trigger('click')
+  await flushPromises()
 }
 
 describe('RequestJourneyQueues', () => {
@@ -63,7 +68,7 @@ describe('RequestJourneyQueues', () => {
     })
 
     const wrapper = mountPanel()
-    await flushPromises()
+    await openPanel(wrapper)
 
     expect(getQueues).toHaveBeenCalledWith('total', undefined)
     expect(wrapper.get('[data-testid="queue-window"]') .text()).toContain('2 / 100')
@@ -100,7 +105,7 @@ describe('RequestJourneyQueues', () => {
     })
 
     const wrapper = mountPanel()
-    await flushPromises()
+    await openPanel(wrapper)
 
     expect(getQueues).toHaveBeenCalledWith('total', 'all')
     const row = wrapper.get('[data-testid="journey-queue-row"]')
@@ -117,7 +122,7 @@ describe('RequestJourneyQueues', () => {
     })
 
     const wrapper = mountPanel()
-    await flushPromises()
+    await openPanel(wrapper)
 
     expect(wrapper.text()).toContain('Observation degraded')
     expect(wrapper.text()).toContain('No requests in this FIFO window')
@@ -144,7 +149,7 @@ describe('RequestJourneyQueues', () => {
       }])
 
     const wrapper = mountPanel()
-    await flushPromises()
+    await openPanel(wrapper)
     await wrapper.get('[data-view="models"]').trigger('click')
     await flushPromises()
 
@@ -179,7 +184,7 @@ describe('RequestJourneyQueues', () => {
       }])
 
     const wrapper = mountPanel()
-    await flushPromises()
+    await openPanel(wrapper)
     await wrapper.get('[data-view="nodes"]').trigger('click')
     await flushPromises()
 
@@ -212,7 +217,7 @@ describe('RequestJourneyQueues', () => {
     })
 
     const wrapper = mountPanel()
-    await flushPromises()
+    await openPanel(wrapper)
     await wrapper.get('[data-testid="journey-queue-row"]').trigger('click')
     await flushPromises()
 

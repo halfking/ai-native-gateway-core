@@ -13,7 +13,9 @@
  *   - 三态：加载 Skeleton / 空 EmptyState / 错误 ErrorBanner
  *   - 动画只用 transform/opacity
  */
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
+import { getFeatured } from '../api/routing'
+import { getRequestLogTopModels, type TopRequestModel } from '../api/logs'
 import {
   queueRef,
   nodesRef,
@@ -25,6 +27,7 @@ import {
 } from '../composables/liveStreamStore'
 import RequestProcessingTrail from './RequestProcessingTrail.vue'
 import NodeOpsRow from './NodeOpsRow.vue'
+import NodeDetailDrawer from './NodeDetailDrawer.vue'
 
 const queue = queueRef
 const nodes = nodesRef
@@ -129,7 +132,48 @@ interface ModelGroup {
   model: string
   nodes: LiveNodeStatus[]
   requestCount: number
+  featured: boolean
+  hotRequests: number
 }
+
+const featuredModels = ref<Set<string>>(new Set())
+const hotModels = ref<Map<string, number>>(new Map())
+const modelScopeLoading = ref(true)
+const modelScopeError = ref('')
+const selectedNode = ref<LiveNodeStatus | null>(null)
+const drawerVisible = ref(false)
+
+function modelKey(model: string): string {
+  return model.trim().toLowerCase()
+}
+
+function openNode(node: LiveNodeStatus) {
+  selectedNode.value = node
+  drawerVisible.value = true
+}
+
+async function loadModelScope() {
+  modelScopeLoading.value = true
+  modelScopeError.value = ''
+  const to = new Date()
+  const from = new Date(to.getTime() - 72 * 60 * 60 * 1000)
+  const [featured, hot] = await Promise.allSettled([
+    getFeatured(),
+    getRequestLogTopModels({ from: from.toISOString(), to: to.toISOString(), limit: 100 }),
+  ])
+  if (featured.status === 'fulfilled') {
+    featuredModels.value = new Set(featured.value.featured_models.map(modelKey))
+  }
+  if (hot.status === 'fulfilled') {
+    hotModels.value = new Map(hot.value.items.map((model: TopRequestModel) => [modelKey(model.canonical_name || model.display_name), model.request_count]))
+  }
+  if (featured.status === 'rejected' && hot.status === 'rejected') {
+    modelScopeError.value = '模型范围暂不可用，未展示模型节点。'
+  }
+  modelScopeLoading.value = false
+}
+
+onMounted(() => { void loadModelScope() })
 
 const expandedModels = ref<Set<string>>(new Set())
 
@@ -141,35 +185,46 @@ function toggleModel(model: string) {
 }
 
 const modelGroups = computed<ModelGroup[]>(() => {
-  // 从节点收集 distinct 模型；按节点数降序以稳定展示
   const byModel = new Map<string, Set<number>>()
-  for (const n of nodes.value) {
-    if (!n || !Array.isArray(n.raw_models)) continue
-    for (const m of n.raw_models) {
-      if (!m) continue
-      let set = byModel.get(m)
-      if (!set) {
-        set = new Set<number>()
-        byModel.set(m, set)
+  for (const node of nodes.value) {
+    if (!node || !Array.isArray(node.raw_models)) continue
+    for (const model of node.raw_models) {
+      if (!model) continue
+      const key = modelKey(model)
+      if (!featuredModels.value.has(key) && !hotModels.value.has(key)) continue
+      let credentialIds = byModel.get(model)
+      if (!credentialIds) {
+        credentialIds = new Set<number>()
+        byModel.set(model, credentialIds)
       }
-      set.add(n.credential_id)
+      credentialIds.add(node.credential_id)
     }
   }
-  const out: ModelGroup[] = []
-  for (const [model, credSet] of byModel) {
-    const credNodes = getNodesForModel(model)
-    if (credNodes.length === 0) continue
+  const groups: ModelGroup[] = []
+  for (const [model, credentialIds] of byModel) {
+    const modelNodes = getNodesForModel(model)
+    if (!modelNodes.length) continue
     let requestCount = 0
-    for (const credID of credSet) {
-      requestCount += getRequestsForCredential(credID).length
-    }
-    out.push({ model, nodes: credNodes, requestCount })
+    for (const credentialId of credentialIds) requestCount += getRequestsForCredential(credentialId).length
+    const key = modelKey(model)
+    groups.push({
+      model,
+      nodes: modelNodes,
+      requestCount,
+      featured: featuredModels.value.has(key),
+      hotRequests: hotModels.value.get(key) ?? 0,
+    })
   }
-  out.sort((a, b) => b.nodes.length - a.nodes.length || a.model.localeCompare(b.model))
-  return out
+  return groups.sort((a, b) =>
+    Number(b.featured) - Number(a.featured) ||
+    b.hotRequests - a.hotRequests ||
+    b.nodes.length - a.nodes.length ||
+    a.model.localeCompare(b.model),
+  )
 })
 
 const hasModelGroups = computed(() => modelGroups.value.length > 0)
+const hasReportedRawModels = computed(() => nodes.value.some(node => Array.isArray(node.raw_models)))
 
 function nodeStatusSummary(n: LiveNodeStatus): string {
   const parts: string[] = []
@@ -334,71 +389,49 @@ function formatTs(ts: string | undefined): string {
         <NodeOpsRow v-for="n in opsNodes" :key="n.credential_id" :node="n" />
       </div>
 
-      <!-- OBS-UI：按模型分组的可用节点（2026-08-17） ───────────────────────────
-           缺省隐藏：raw_models 未上报时整节不出。
-           节点复用 NodeOpsRow；节点下请求列表来自 requestCredential 索引
-           （窗口语义：仅 SSE 回放窗口内的请求）。 -->
-      <div v-if="hasModelGroups" class="qp-layer qp-layer--model-groups">
+      <!-- Dashboard 只保留特色模型和近 3 天有实际流量的热门模型；实时 SSE
+           不提供 raw_models 时保持整个分区隐藏，避免把未知误报为无绑定。 -->
+      <div v-if="hasReportedRawModels && (hasModelGroups || modelScopeLoading || modelScopeError)" class="qp-layer qp-layer--model-groups">
         <div class="qp-layer-header">
           <span class="qp-layer-name">按模型分组的可用节点</span>
-          <span class="qp-layer-count">{{ modelGroups.length }} 个模型</span>
+          <span v-if="hasModelGroups" class="qp-layer-count">{{ modelGroups.length }} 个模型</span>
+          <button type="button" class="qp-retry" :disabled="modelScopeLoading" @click="loadModelScope">{{ modelScopeLoading ? '加载中…' : '↻ 刷新范围' }}</button>
         </div>
-        <div v-for="g in modelGroups" :key="g.model" class="qp-model-group">
-          <button
-            type="button"
-            class="qp-model-group-toggle"
-            :aria-expanded="expandedModels.has(g.model)"
-            @click="toggleModel(g.model)"
-          >
-            <span class="qp-model-group-caret" :class="{ 'qp-model-group-caret--open': expandedModels.has(g.model) }">▸</span>
-            <span class="qp-model-group-name">{{ g.model }}</span>
-            <span class="qp-model-group-counts">
-              <span class="qp-pill">{{ g.nodes.length }} 节点</span>
-              <span class="qp-pill" :class="{ 'qp-pill--active': g.requestCount > 0 }">
-                {{ g.requestCount }} 请求
-              </span>
+        <div v-if="modelScopeLoading" class="qp-model-scope-state">正在加载特色模型和近 3 天热门模型…</div>
+        <div v-else-if="modelScopeError" class="qp-model-scope-state qp-model-scope-state--error">{{ modelScopeError }}</div>
+        <div v-else-if="!hasModelGroups" class="qp-model-scope-state">当前特色/热门模型没有实时节点绑定。</div>
+        <div v-else v-for="group in modelGroups" :key="group.model" class="qp-model-group">
+          <div class="qp-model-compact">
+            <button type="button" class="qp-model-group-toggle" :aria-expanded="expandedModels.has(group.model)" @click="toggleModel(group.model)">
+              <span class="qp-model-group-caret" :class="{ 'qp-model-group-caret--open': expandedModels.has(group.model) }">▸</span>
+              <strong class="qp-model-group-name">{{ group.model }}</strong>
+            </button>
+            <span v-if="group.featured" class="qp-model-tag">特色</span>
+            <span v-if="group.hotRequests" class="qp-model-tag qp-model-tag--hot">热门 {{ group.hotRequests }}</span>
+            <span class="qp-pill">{{ group.nodes.length }} 节点</span>
+            <span class="qp-pill" :class="{ 'qp-pill--active': group.requestCount > 0 }">{{ group.requestCount }} 当前请求</span>
+            <span class="qp-model-nodes">
+              <button v-for="node in group.nodes" :key="node.credential_id" type="button" class="qp-node-chip" :class="{ 'qp-node-chip--bad': nodeStatusSummary(node) !== '可用' }" :title="`节点 ${node.credential_id}：${nodeStatusSummary(node)}${node.last_error ? `；${node.last_error}` : ''}`" @click="openNode(node)">
+                节点 {{ node.credential_id }}（{{ nodeStatusSummary(node) }}<template v-if="node.in_flight"> · 在途 {{ node.in_flight }}</template><template v-if="node.last_latency_ms != null"> · {{ formatLatency(node.last_latency_ms) }}</template>）
+              </button>
             </span>
-          </button>
-          <div v-if="expandedModels.has(g.model)" class="qp-model-group-body">
-            <div v-for="n in g.nodes" :key="n.credential_id" class="qp-model-group-node">
-              <NodeOpsRow :node="n" />
-              <div class="qp-model-group-node-meta">
-                <span class="qp-status-text">{{ nodeStatusSummary(n) }}</span>
-                <span v-if="typeof n.last_latency_ms === 'number'" class="qp-meta-text">
-                  最近延迟 {{ formatLatency(n.last_latency_ms) }}
-                </span>
-                <span v-if="typeof n.in_flight === 'number' && n.in_flight > 0" class="qp-meta-text">
-                  在途 {{ n.in_flight }}
-                </span>
-                <span v-if="n.last_error" class="qp-meta-text qp-meta-text--err">
-                  最近错误：{{ n.last_error }}
-                </span>
-              </div>
-              <ul
-                v-if="requestsForNode(n).length > 0"
-                class="qp-model-group-requests"
-                :data-testid="`mng-requests-${n.credential_id}`"
-              >
-                <li
-                  v-for="r in requestsForNode(n)"
-                  :key="r.request_id"
-                  class="qp-model-group-request"
-                >
-                  <span class="qp-rq-model">{{ r.model || '—' }}</span>
-                  <span class="qp-rq-status" :class="`qp-rq-status--${r.status}`">{{ r.status || '—' }}</span>
-                  <span v-if="typeof r.latency_ms === 'number'" class="qp-rq-latency">
-                    {{ formatLatency(r.latency_ms) }}
-                  </span>
-                  <span v-if="r.error_kind" class="qp-rq-err">{{ r.error_kind }}</span>
-                  <span class="qp-rq-ts">{{ formatTs(r.ts) }}</span>
+          </div>
+          <div v-if="expandedModels.has(group.model)" class="qp-model-group-body">
+            <p class="qp-model-detail-hint">点击节点可查看完整明细、近期窗口、请求记录和维护设置。</p>
+            <ul v-if="group.nodes.some(node => requestsForNode(node).length)" class="qp-model-group-requests">
+              <template v-for="node in group.nodes" :key="node.credential_id">
+                <li v-for="request in requestsForNode(node)" :key="request.request_id" class="qp-model-group-request">
+                  <span class="qp-rq-node">节点 {{ node.credential_id }}</span><span class="qp-rq-model">{{ request.model || '—' }}</span><span class="qp-rq-status" :class="`qp-rq-status--${request.status}`">{{ request.status || '—' }}</span><span v-if="typeof request.latency_ms === 'number'" class="qp-rq-latency">{{ formatLatency(request.latency_ms) }}</span><span v-if="request.error_kind" class="qp-rq-err">{{ request.error_kind }}</span><span class="qp-rq-ts">{{ formatTs(request.ts) }}</span>
                 </li>
-              </ul>
-            </div>
+              </template>
+            </ul>
+            <p v-else class="qp-model-detail-hint">当前没有关联到该模型节点的实时请求。</p>
           </div>
         </div>
       </div>
 
       <RequestProcessingTrail />
+      <NodeDetailDrawer v-model="drawerVisible" :node="selectedNode" @applied="drawerVisible = true" />
     </div>
   </div>
 </template>
@@ -612,14 +645,23 @@ function formatTs(ts: string | undefined): string {
 }
 .qp-model-group-toggle {
   all: unset;
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 8px;
-  width: 100%;
   cursor: pointer;
   padding: 4px 0;
   color: var(--kx-text);
 }
+.qp-model-compact { display:flex; align-items:center; gap:7px; flex-wrap:wrap; padding:7px 9px; }
+.qp-model-tag { font-size:10px; padding:2px 6px; border-radius:999px; color:var(--kx-accent); background:color-mix(in srgb, var(--kx-accent) 12%, transparent); }
+.qp-model-tag--hot { color:var(--kx-warning); background:color-mix(in srgb, var(--kx-warning) 12%, transparent); }
+.qp-model-nodes { display:inline-flex; gap:5px; flex-wrap:wrap; flex:1 1 100%; padding-left:18px; }
+.qp-node-chip { border:0; border-bottom:1px dashed var(--kx-border); background:transparent; color:var(--kx-text-secondary); cursor:pointer; padding:2px 0; font-size:11px; }
+.qp-node-chip:hover { color:var(--kx-accent); }
+.qp-node-chip--bad { color:var(--kx-danger); }
+.qp-retry { margin-left:auto; border:0; background:transparent; color:var(--kx-text-secondary); cursor:pointer; font-size:11px; }
+.qp-model-scope-state,.qp-model-detail-hint { color:var(--kx-text-secondary); font-size:11px; padding:8px 10px; margin:0; }
+.qp-model-scope-state--error { color:var(--kx-danger); }
 .qp-model-group-toggle:focus-visible {
   outline: 2px solid var(--kx-primary);
   outline-offset: 2px;

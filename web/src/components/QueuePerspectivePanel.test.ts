@@ -1,7 +1,18 @@
-import { mount } from '@vue/test-utils'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { flushPromises, mount } from '@vue/test-utils'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import QueuePerspectivePanel from './QueuePerspectivePanel.vue'
 import { __testing, liveStreamState } from '../composables/liveStreamStore'
+
+vi.mock('../api/routing', () => ({
+  getFeatured: vi.fn().mockResolvedValue({ featured_models: ['gpt-4o', 'claude-sonnet', 'm-1'] }),
+}))
+vi.mock('../api/logs', () => ({
+  getRequestLogTopModels: vi.fn().mockResolvedValue({ items: [
+    { canonical_name: 'gpt-4o', display_name: 'gpt-4o', request_count: 12 },
+    { canonical_name: 'claude-sonnet', display_name: 'claude-sonnet', request_count: 8 },
+    { canonical_name: 'm-1', display_name: 'm-1', request_count: 3 },
+  ] }),
+}))
 
 describe('QueuePerspectivePanel', () => {
   beforeEach(() => {
@@ -188,7 +199,7 @@ describe('QueuePerspectivePanel', () => {
     expect(wrapper.text()).not.toContain('按模型分组的可用节点')
   })
 
-  it('groups nodes by their raw_models and shows request counts under each model', () => {
+  it('groups nodes by their raw_models and shows request counts under each model', async () => {
     liveStreamState.nodes = [
       { credential_id: 1, provider_id: 2, provider_code: 'a', manual_disabled: false, circuit_state: 'closed', raw_models: ['gpt-4o'] },
       { credential_id: 2, provider_id: 3, provider_code: 'b', manual_disabled: false, circuit_state: 'closed', raw_models: ['gpt-4o', 'claude-sonnet'] },
@@ -208,25 +219,26 @@ describe('QueuePerspectivePanel', () => {
     ]
 
     const wrapper = mount(QueuePerspectivePanel)
+    await flushPromises()
     const groupLayer = wrapper.find('.qp-layer--model-groups')
     expect(groupLayer.exists()).toBe(true)
     expect(groupLayer.text()).toContain('按模型分组的可用节点')
 
     const groups = groupLayer.findAll('.qp-model-group')
     expect(groups).toHaveLength(2)
-    // 节点数都=2，按 localeCompare 升序：claude-sonnet 在前
-    expect(groups[0].text()).toContain('claude-sonnet')
+    // 特色模型优先，其次按近三天热门请求数排序。
+    expect(groups[0].text()).toContain('gpt-4o')
     expect(groups[0].text()).toContain('2 节点')
-    expect(groups[0].text()).toContain('1 请求')
-    expect(groups[1].text()).toContain('gpt-4o')
+    expect(groups[0].text()).toContain('1 当前请求')
+    expect(groups[1].text()).toContain('claude-sonnet')
     expect(groups[1].text()).toContain('2 节点')
-    expect(groups[1].text()).toContain('1 请求')
+    expect(groups[1].text()).toContain('1 当前请求')
 
     // 折叠态下不展开请求列表
     expect(groups[0].findAll('.qp-model-group-requests')).toHaveLength(0)
   })
 
-  it('expands a model to show node ops and the requests routed to those nodes', async () => {
+  it('expands a model to show requests routed to those nodes', async () => {
     liveStreamState.nodes = [
       { credential_id: 5, provider_id: 1, provider_code: 'p', manual_disabled: false, circuit_state: 'closed', raw_models: ['m-1'] },
     ]
@@ -242,15 +254,14 @@ describe('QueuePerspectivePanel', () => {
     ]
 
     const wrapper = mount(QueuePerspectivePanel)
+    await flushPromises()
     const toggle = wrapper.find('.qp-model-group-toggle')
     expect(toggle.exists()).toBe(true)
     await toggle.trigger('click')
 
     const body = wrapper.find('.qp-model-group-body')
     expect(body.exists()).toBe(true)
-    // 复用 NodeOpsRow（其 CSS class 是 .node-ops-row）
-    expect(body.find('.node-ops-row').exists()).toBe(true)
-    const reqList = body.find('[data-testid="mng-requests-5"]')
+    const reqList = body.find('.qp-model-group-requests')
     expect(reqList.exists()).toBe(true)
     expect(reqList.text()).toContain('m-1')
     expect(reqList.text()).toContain('success')
