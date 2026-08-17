@@ -914,3 +914,9 @@ The current repository instead uses 488 for `request_logs_hot_add_model` and 489
 |-----------|------|---------|--------|
 | 529 | `529_repair_shared_pg_sticky_and_bodies_2026_07.sql` | `3a21c6943da9ede672c4a0f2074bcbfee3e94efcd4e84dec09b12df3154d41c6` | applied+verified |
 
+## 2026-08-17T08:37:34Z — deploy 245 build_seq 1583 (86243f39)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 530 | `530_request_journey_contract.sql` | `70162427750db07a35b91e491ead8123e62df23ccb5bdb0dd73b34ae3321cd34` | applied+verified |
+
