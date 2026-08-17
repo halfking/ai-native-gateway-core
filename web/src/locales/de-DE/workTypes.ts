@@ -85,8 +85,10 @@ export default {
     dragToReorder: 'Per Drag-and-Drop neu sortieren',
     emptyPrimary: 'Noch keine Vorrang-Modelle — auf „Vorrang hinzufügen" klicken',
     emptySecondary: 'Noch keine Ersatz-Modelle — auf „Ersatz hinzufügen" klicken',
+    emptyFallback: 'Noch keine Fallback-Modelle — auf „Fallback hinzufügen" klicken',
     addPrimary: '+ Vorrang hinzufügen',
     addSecondary: '+ Ersatz hinzufügen',
+    addFallback: '+ Fallback hinzufügen',
   },
   routes: {
     title: 'Model type routes',

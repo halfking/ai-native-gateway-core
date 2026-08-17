@@ -6,12 +6,14 @@ import { useI18n } from 'vue-i18n'
 import {
   getRequestLogs,
   getRequestLogDetail,
+  getBodyCacheStats,
   attachmentURL,
   getSessionSummary,
   sessionSummaryToMemora,
   getKeys,
   type RequestLogRow,
   type RequestLogDetail,
+  type BodyCacheStats,
   type AttachmentInfo,
   type ApiKey,
   type RequestLogsResponse,
@@ -42,6 +44,9 @@ const rows = ref<RequestLogRow[]>([])
 const keys = ref<ApiKey[]>([])
 const loading = ref(false)
 const error = ref<string | null>(null)
+// 2026-08-17: 详情 body 缓存统计（/api/admin/logs/body-cache-stats），
+// super admin 可观测条用；非 super admin 或端点失败时保持 null 不渲染。
+const bodyCache = ref<BodyCacheStats | null>(null)
 const apiKeyId = ref<number | ''>('')
 const keyword = ref('')
 const modelFilter = ref('')
@@ -892,9 +897,34 @@ function traceTaskTitle(id: string) {
   return `任务 ID（点击仅筛此任务）\n${id}`
 }
 
+// 详情 body 缓存统计随列表刷新一起拉取。纯诊断信息：失败静默置 null
+// （不渲染该条），不阻塞、不污染列表加载状态。
+async function loadBodyCache() {
+  if (!isSuperAdmin()) return
+  try {
+    bodyCache.value = await getBodyCacheStats()
+  } catch {
+    bodyCache.value = null
+  }
+}
+
+// 命中率：无流量（hits+misses=0）时显示 "—"，避免冷启动误读为 0%。
+const bodyCacheHitRate = computed(() => {
+  if (!bodyCache.value) return '—'
+  const { hits, misses, hit_rate: rate } = bodyCache.value
+  return hits + misses > 0 ? `${(rate * 100).toFixed(1)}%` : '—'
+})
+
+// tooltip 与容量分母都取后端回显的 cap，不在前端硬编码 LRU 上限。
+const bodyCacheTitle = computed(
+  () =>
+    `/api/logs/{id} 详情 body 抓取的进程内缓存（LRU ${bodyCache.value?.cap ?? '—'} × TTL 5min）。未命中走热分区（亚毫秒）或列存冷路径（秒级）；条目指当前缓存内 request 数。`,
+)
+
 async function load() {
   loading.value = true
   error.value = null
+  void loadBodyCache()
   try {
     const range = timeRange()
     const resp: RequestLogsResponse = await getRequestLogs({
@@ -1526,6 +1556,19 @@ onMounted(async () => {
         </label>
         <button class="btn btn-primary btn-sm" :disabled="loading" @click="load">刷新</button>
       </div>
+    </div>
+
+    <!-- 2026-08-17: 详情 body 缓存可观测条（super admin 专属，随列表刷新更新）。
+         低命中率说明重复点击少（miss 走热分区亚毫秒，代价低）；evictions > 0
+         说明容量吃紧，需要评估调大 LRU 上限。容量分母取后端 cap 字段（audit:
+         不硬编码 1024）；无流量时命中率显示 "—" 而非误导性的 0.0%。 -->
+    <div v-if="isSuperAdmin() && bodyCache" class="body-cache-strip" :title="bodyCacheTitle">
+      <span class="body-cache-strip__label">⚡ 详情缓存</span>
+      <span>命中率 <strong>{{ bodyCacheHitRate }}</strong></span>
+      <span>命中 {{ bodyCache.hits }}</span>
+      <span>未命中 {{ bodyCache.misses }}</span>
+      <span>条目 {{ bodyCache.size }}<template v-if="bodyCache.cap">/{{ bodyCache.cap }}</template></span>
+      <span>逐出 {{ bodyCache.evictions }}</span>
     </div>
 
     <div v-if="!isDefaultTenant()" class="tenant-notice" style="margin-bottom:12px;padding:8px 12px;background:rgba(59,130,246,0.1);border:1px solid rgba(59,130,246,0.3);border-radius:6px;font-size:12px;color:#3b82f6">
@@ -2480,6 +2523,29 @@ onMounted(async () => {
 </template>
 
 <style scoped>
+/* 2026-08-17: 详情 body 缓存可观测条（super admin）。轻量单行 chip，不抢
+   列表空间；数值用 tabular-nums 防刷新时跳动。 */
+.body-cache-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 14px;
+  margin-bottom: 12px;
+  padding: 5px 12px;
+  background: color-mix(in srgb, var(--accent) 4%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.body-cache-strip__label {
+  font-weight: 600;
+  white-space: nowrap;
+}
+.body-cache-strip strong {
+  color: var(--text-primary, inherit);
+}
 .request-log-row {
   cursor: pointer;
 }

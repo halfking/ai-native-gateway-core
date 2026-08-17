@@ -21,7 +21,8 @@ CREATE TABLE public.candidate_failure_logs (
     context jsonb,
     per_attempt_latency_ms integer,
     extracted_upstream_status_code integer,
-    diagnosed_error_kind text
+    diagnosed_error_kind text,
+    session_id text
 )
 WITH (autovacuum_enabled='true', autovacuum_vacuum_scale_factor='0.05', autovacuum_vacuum_threshold='10', autovacuum_analyze_scale_factor='0.02', autovacuum_analyze_threshold='50');
 
