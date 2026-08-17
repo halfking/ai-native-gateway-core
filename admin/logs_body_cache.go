@@ -19,7 +19,6 @@ package admin
 
 import (
 	"net/http"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -35,14 +34,13 @@ type bodyFetchEntry struct {
 }
 
 // bodyFetchCache 是 fetchRequestBodies 的请求级 LRU + TTL 缓存。
-// 线程安全：所有方法都在 mutex 内；stats 用 atomic 无锁。
+// 线程安全：底层 cache.LRU 自带 mutex，stats 用 atomic 无锁。
 type bodyFetchCache struct {
 	lru       *cache.LRU[string, bodyFetchEntry]
 	ttl       time.Duration
 	hits      atomic.Uint64
 	misses    atomic.Uint64
 	evictions atomic.Uint64
-	mu        sync.Mutex // guards ttl-expiry check vs concurrent Put
 }
 
 // newBodyFetchCache 构造缓存。cap < 1 panic（与 cache.LRU 一致）。
@@ -108,21 +106,6 @@ func (c *bodyFetchCache) Stats() (size, hits, misses, evictions int) {
 		return 0, 0, 0, 0
 	}
 	return c.lru.Len(), int(c.hits.Load()), int(c.misses.Load()), int(c.evictions.Load())
-}
-
-// shouldCacheErr returns true if the helper's err is safe to cache.
-//   - nil → success, 永远缓存
-//   - sql.ErrNoRows → 两端都没找到, 确定性结果, 缓存避免重复打 PG
-//   - 其它错误（ctx canceled, conn refused, 列存 timeout 等 transport-class）
-//     必须能被 caller 重试, 不缓存（rule 22 §4 错误缓存防抖）
-//
-// 当前实现: 仅 Put 路径负责此判断（Put 调用方决定是否写缓存）。
-// 保留 shouldCacheErr 函数以备未来需要"按 err 类型决定缓存"的场景。
-//
-// 注: 当前 fetchRequestBodies 直接 Put(nil, nil) 表示 ErrNoRows 路径，
-// transport err 走 fallback 不 Put。逻辑分散在 fetcher, 此 helper 暂未调用。
-func shouldCacheErr(err error) bool {
-	return err == nil
 }
 
 // handleBodyFetchCacheStats 是缓存的可观测端点 — GET /api/admin/logs/body-cache-stats。
