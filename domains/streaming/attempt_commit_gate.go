@@ -3,6 +3,7 @@ package streaming
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -439,7 +440,33 @@ func (g *AttemptCommitGate) FinishAttempt(partial string) error {
 		}
 		return g.writer.FlushError()
 	}
-	return g.appendBufferedLocked(partial)
+	class := ClassifyClientFrame(g.protocol, partial)
+	if !isPartialTerminalFrame(g.protocol, partial) {
+		return g.appendBufferedLocked(partial)
+	}
+	g.advanceStateLocked(class)
+	if err := g.commitLocked(); err != nil {
+		return err
+	}
+	if _, err := g.writer.Write([]byte(partial)); err != nil {
+		return err
+	}
+	g.markFirstSemanticByteLocked(class)
+	return g.writer.FlushError()
+}
+
+func isPartialTerminalFrame(protocol ClientProtocol, partial string) bool {
+	trimmed := strings.TrimSpace(partial)
+	switch protocol {
+	case ProtocolOpenAIChat:
+		return trimmed == "data: [DONE]"
+	case ProtocolOpenAIResponses:
+		return strings.Contains(trimmed, "event: response.completed") || strings.Contains(trimmed, `"type":"response.completed"`)
+	case ProtocolAnthropic:
+		return strings.Contains(trimmed, "event: message_stop") || strings.Contains(trimmed, `"type":"message_stop"`)
+	default:
+		return false
+	}
 }
 
 // Discard drops the attempt-local buffer without ever touching the client

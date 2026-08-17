@@ -144,7 +144,14 @@ func StreamAnthropicPassthroughWithDiagnostics(
 	// Disabled (default) this is the identity function — legacy wire bytes.
 	// This passthrough has no error-path terminal rendering (interrupted
 	// reads already return outcome-only), so the gate handle is unused here.
-	w, _ = wrapAttemptWriter(w, ProtocolAnthropic)
+	var attemptGate *AttemptCommitGate
+	w, attemptGate = wrapAttemptWriter(w, ProtocolAnthropic)
+	defer func() {
+		if finisher, ok := w.(interface{ Finish() error }); ok {
+			_ = finisher.Finish()
+		}
+	}()
+	_ = attemptGate
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)

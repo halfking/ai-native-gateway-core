@@ -534,14 +534,16 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 			"first_byte_timeout_seconds", int(runtimeCfg.firstByteTimeout.Seconds()),
 			"hint", "if frequent, increase LLM_GATEWAY_FIRST_BYTE_TIMEOUT or admin config (default 120s)",
 		)
-		if gate.MayWriteTerminal() {
+		terminalVisible := gate.MayWriteTerminal()
+		if terminalVisible {
 			safeWriteSSE(w, "data: {\"error\":{\"message\":\"upstream first-byte timeout\",\"type\":\"timeout\",\"code\":\"first_byte_timeout\"}}\n\n")
 			safeFlush(flusher)
 		}
 		outcome.Interrupted = true
 		outcome.Reason = "first_byte_timeout"
 		outcome.Kind = errorsx.KindStreamTimeout
-		outcome.Resumable = true // First-byte timeout is resumable (no chunks sent)
+		outcome.Resumable = !terminalVisible
+
 		outcome.ChunkCount = 0
 		return outcome
 	}
@@ -599,12 +601,16 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 			// the raw vendor error envelope, so SDK clients can
 			// parse it as a normal chat.completion.chunk stream
 			// error rather than choking on an unexpected shape.
-			safeWriteSSE(w, fmt.Sprintf("data: {\"error\":{\"message\":%q,\"type\":%q,\"code\":%q}}\n\n", errMsg, "upstream_error", errKind))
-			safeFlush(flusher)
+			terminalVisible := gate.MayWriteTerminal()
+			if terminalVisible {
+				safeWriteSSE(w, fmt.Sprintf("data: {\"error\":{\"message\":%q,\"type\":%q,\"code\":%q}}\n\n", errMsg, "upstream_error", errKind))
+				safeFlush(flusher)
+			}
 			outcome.Interrupted = true
 			outcome.Reason = "json_error_in_stream"
 			outcome.Kind = errorsx.KindUpstreamDown
-			outcome.Resumable = true
+			outcome.Resumable = !terminalVisible
+
 			outcome.ChunkCount = 0
 			return outcome
 		}
