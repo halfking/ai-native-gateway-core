@@ -132,21 +132,6 @@ func TestUpstreamContext_NonStreamRetainsDeadline(t *testing.T) {
 		t.Fatal("non-streaming upstream context did not enforce its timeout")
 	}
 }
-func TestShouldAsyncFallback_DisabledWhenPreStreamPrepared(t *testing.T) {
-	exec := &Executor{
-		AsyncShortTimeout: 1 * time.Second,
-		AsyncLongTimeout:  10 * time.Second,
-	}
-	req := httptest.NewRequest("POST", "/v1/chat/completions", nil)
-	req.Header.Set("X-Gw-Session-Id", "gw_test")
-	params := &ExecParams{
-		R:                 req,
-		PreStreamPrepared: true,
-	}
-	if exec.shouldAsyncFallback(params, time.Now().Add(-2*time.Second), 1, errorsx.KindTransient) {
-		t.Fatal("expected async fallback to be disabled after pre-stream response commit")
-	}
-}
 
 // TestExecuteOpenAI_StreamPreStreamStopOrdering is the focused
 // e2e-level check for the pre-stream keepalive contract:
@@ -375,6 +360,7 @@ func TestExecuteOpenAI_StreamSuccessRecordedOnlyAfterBodyCompletes(t *testing.T)
 			)
 			exec.PostExecutionHook = spy
 			exec.StreamRetryThreshold = 50
+			wireDispatchPipelineForTest(t, exec)
 			exec.StreamChat = func(http.ResponseWriter, *http.Response, string, string, string, NormalizerFunc, *audit.StreamCapture, bool) StreamOutcome {
 				time.Sleep(tc.streamWait)
 				return tc.outcome
@@ -524,6 +510,7 @@ func TestExecuteOpenAI_NetworkStreamFailureFailsOverToNextCandidate(t *testing.T
 		pool.NewPoolManager(nil), nil, func(chunk []byte, _ bool) []byte { return chunk }, nil, nil,
 	)
 	exec.StreamRetryThreshold = 50
+	wireDispatchPipelineForTest(t, exec)
 	exec.StreamChat = func(http.ResponseWriter, *http.Response, string, string, string, NormalizerFunc, *audit.StreamCapture, bool) StreamOutcome {
 		if streamCalls.Add(1) == 1 {
 			return StreamOutcome{
@@ -567,23 +554,5 @@ func TestExecuteOpenAI_NetworkStreamFailureFailsOverToNextCandidate(t *testing.T
 	}
 	if got := streamCalls.Load(); got != 2 {
 		t.Fatalf("stream calls = %d, want exactly 2 candidate attempts", got)
-	}
-}
-
-// SR-05 (doc 18 §17 Phase 0): under request survival the executor performs a
-// single bounded pass — the SurvivalCoordinator owns every retry decision.
-func TestShouldAsyncFallback_DisabledWhenSurvivalAttempt(t *testing.T) {
-	exec := &Executor{
-		AsyncShortTimeout: 1 * time.Second,
-		AsyncLongTimeout:  10 * time.Second,
-	}
-	req := httptest.NewRequest("POST", "/v1/chat/completions", nil)
-	req.Header.Set("X-Gw-Session-Id", "gw_test")
-	params := &ExecParams{
-		R:               req,
-		SurvivalAttempt: true,
-	}
-	if exec.shouldAsyncFallback(params, time.Now().Add(-2*time.Second), 1, errorsx.KindTransient) {
-		t.Fatal("expected async fallback to be disabled for survival-owned attempts")
 	}
 }

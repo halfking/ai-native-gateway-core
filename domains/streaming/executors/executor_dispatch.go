@@ -19,18 +19,15 @@ import (
 	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
-// executor_dispatch.go wires the multi-tier dispatch pipeline (domains/dispatch)
-// into the executor as a SEPARATE, feature-flagged code path:
-//   - dispatch_v2.enabled ON  → executeViaDispatch (per-credential queue +
-//     peak-flattening governor + tiered credential/model failover)
-//   - dispatch_v2.enabled OFF → the legacy synchronous candidate loop in
-//     Execute (unchanged, the kill-switch fallback)
-//
-// The dispatch path reuses the SAME primitives (Router, Limiter, Circuit,
-// FpSlots, executeOpenAI/executeAnthropic) so streaming/retry/state semantics
-// are preserved. It does not replicate every nuanced branch of the legacy loop
-// (predictive TTFB, session blacklist, content_filter sibling-skip, async
-// retry); those remain in the legacy OFF path. See
+// executor_dispatch.go implements the multi-tier dispatch pipeline
+// (domains/dispatch) — per-credential queues, peak-flattening governor,
+// tiered credential/model failover. Since AUDIT_24H B2b (2026-08-17) this is
+// the ONLY execute path: the dispatch_v2.enabled kill-switch and the legacy
+// synchronous candidate loop in Execute were retired. The dispatch path
+// reuses the SAME primitives (Router, Limiter, Circuit, FpSlots,
+// executeOpenAI/executeAnthropic) so streaming/retry/state semantics are
+// preserved. The MM-1/MM-2 outbound attachment transforms were ported here
+// from the retired loop (they had silently never run under dispatch). See
 // docs/会话优化v2/57-多层队列调度架构设计方案.md.
 
 // dispatchCtx carries the per-request context the shared pipeline's adapters
@@ -45,7 +42,7 @@ type dispatchCtx struct {
 	fpSlotDegraded bool
 	retryPerCred   int
 	tTotal         time.Time
-	stickyCredID *int // session-affinity pin (honored on first attempt; excluded once tried)
+	stickyCredID   *int // session-affinity pin (honored on first attempt; excluded once tried)
 }
 
 // SetDispatchPipeline wires the V2 dispatch pipeline. When nil OR when the
@@ -510,12 +507,53 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 			}
 		}
 
+		// ── MM-1/MM-2 outbound attachment transforms ─────────────────
+		// Ported from the retired legacy sync candidate loop (AUDIT_24H
+		// B2b, 2026-08-17). Per-candidate: derive the attempt body from the
+		// ORIGINAL body so a failover from a URL-mode provider to a
+		// data-URI-only provider never inherits rewritten URLs. Until this
+		// port the dispatch path silently skipped both hooks — the loop was
+		// their only consumer, so the feature had been inert in production
+		// since dispatch_v2 became the default path.
+		execParams := params
+		if e.AttachmentURLRewriter != nil && len(params.AttachmentMetadata) > 0 {
+			var newBody []byte
+			var n int
+			if params.ClientProtocol == "anthropic-messages" {
+				// E-P2-3 (doc 20): Anthropic-protocol clients bridged to a
+				// URL-mode OpenAI provider — rewrite the Anthropic base64
+				// source blocks to url sources before the bridge conversion
+				// maps them to image_url.
+				newBody, n = e.AttachmentURLRewriter.RewriteAnthropicBody(
+					params.BodyBytes, params.AttachmentMetadata, cand.CatalogCode)
+			} else {
+				newBody, n = e.AttachmentURLRewriter.RewriteOpenAIBody(
+					params.BodyBytes, params.AttachmentMetadata, cand.CatalogCode)
+			}
+			if n > 0 {
+				cp := *params
+				cp.BodyBytes = newBody
+				execParams = &cp
+			}
+		}
+		// MM-2 (doc 19): URL 拉取回退——目标 provider 矩阵判定不支持 url
+		// source 而出站 body 以网关 URL 引用附件时，取回内容重新内联
+		// base64。flag-off（nil）零开销直通。
+		if e.AttachmentURLFetchFallback != nil {
+			if newBody, n := e.AttachmentURLFetchFallback.InlineOpenAIBody(
+				execParams.BodyBytes, cand.CatalogCode); n > 0 {
+				cp := *execParams
+				cp.BodyBytes = newBody
+				execParams = &cp
+			}
+		}
+
 		healthEvidence = true
 		switch cand.Protocol {
 		case "anthropic-messages":
-			result, execErr = e.executeAnthropic(params, cand, dctx.retryPerCred, dctx.tTotal, fpLease)
+			result, execErr = e.executeAnthropic(execParams, cand, dctx.retryPerCred, dctx.tTotal, fpLease)
 		default:
-			result, execErr = e.executeOpenAI(params, cand, dctx.retryPerCred, dctx.tTotal, fpLease)
+			result, execErr = e.executeOpenAI(execParams, cand, dctx.retryPerCred, dctx.tTotal, fpLease)
 		}
 	}()
 
@@ -531,6 +569,56 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 		}
 	}
 	kind := e.recordDispatchError(params, cand, execErr)
+
+	// candidate_failure_logs (migration 300 + V358 session_id): one row per
+	// failed dispatch attempt. Ported from the retired legacy sync loop —
+	// both of ee2565046's call sites (generic per-candidate failure +
+	// mid-stream interruption) lived in the loop, so without this port the
+	// table (and V358's session-scoped aggregation) would have no writer.
+	// streamInterruptedError carries no *upstream.Error; pass the classified
+	// kind explicitly there — the message-based fallback would flatten e.g.
+	// KindNetwork to transient.
+	if e.FailureLogger != nil {
+		perAttemptMs := int(time.Since(startedAt).Milliseconds())
+		extra := buildEnhancedErrorContext(params, kind, execErr, len(dctx.candidates), params.AttemptNo)
+		if extra == nil {
+			extra = map[string]any{}
+		}
+		var sie *streamInterruptedError
+		if errors.As(execErr, &sie) && sie != nil {
+			extra["stream_reason"] = sie.reason
+			extra["stream_resumable"] = sie.resumable
+			e.FailureLogger.LogFailureWithKind(
+				params.R.Header.Get("X-Request-Id"),
+				tenantFromCtx(params.R),
+				params.SessionID,
+				cand.CredentialID,
+				cand.ProviderID,
+				cand.RawModel,
+				params.AttemptNo,
+				execErr,
+				kind,
+				nil,
+				&perAttemptMs,
+				extra,
+			)
+		} else {
+			e.FailureLogger.LogFailure(
+				params.R.Header.Get("X-Request-Id"),
+				tenantFromCtx(params.R),
+				params.SessionID,
+				cand.CredentialID,
+				cand.ProviderID,
+				cand.RawModel,
+				params.AttemptNo,
+				execErr,
+				nil, // latency_ms: end-to-end candidate latency, not tracked per dispatch forward
+				&perAttemptMs,
+				extra,
+			)
+		}
+	}
+
 	return dispatch.ForwardOutcome{
 		Err:             execErr,
 		BytesSent:       bytesSent,
