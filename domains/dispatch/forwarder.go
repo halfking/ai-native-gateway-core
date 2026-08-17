@@ -9,7 +9,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/kaixuan/llm-gateway-go/domains/requestjourney"
 	"github.com/kaixuan/llm-gateway-go/internal/liveactions"
 )
 
@@ -77,8 +76,9 @@ func (cf *credForwarder) loop() {
 			if !cf.acquire(qr) {
 				continue
 			}
-			cf.depth.Add(-1)
+			depth := cf.depth.Add(-1)
 			metricCredQueueDepth.WithLabelValues(itoa(cf.cred.CredentialID), cf.cred.ConcurrencyMode).Dec()
+			cf.pipe.observeQueue(QueueObservation{Kind: QueueCredentialDepth, CredentialID: cf.cred.CredentialID, Mode: cf.cred.ConcurrencyMode, Depth: depth, Delta: -1})
 			cf.wg.Add(1)
 			go cf.attempt(qr)
 		case <-cf.ctx.Done():
@@ -102,8 +102,9 @@ func (cf *credForwarder) drainAndComplete() {
 			if !ok {
 				return
 			}
-			cf.depth.Add(-1)
+			depth := cf.depth.Add(-1)
 			metricCredQueueDepth.WithLabelValues(itoa(cf.cred.CredentialID), cf.cred.ConcurrencyMode).Dec()
+			cf.pipe.observeQueue(QueueObservation{Kind: QueueCredentialDepth, CredentialID: cf.cred.CredentialID, Mode: cf.cred.ConcurrencyMode, Depth: depth, Delta: -1})
 			cf.pipe.complete(qr, ForwardOutcome{Err: ErrShutdown})
 		default:
 			return
@@ -126,8 +127,9 @@ func (cf *credForwarder) acquire(qr *QueuedRequest) bool {
 
 	if err := cf.gov.Acquire(ctx, qr, giveUp); err != nil {
 		qr.abandonReservedAttempt(attempt.AttemptID)
-		cf.depth.Add(-1)
+		depth := cf.depth.Add(-1)
 		metricCredQueueDepth.WithLabelValues(itoa(cf.cred.CredentialID), cf.cred.ConcurrencyMode).Dec()
+		cf.pipe.observeQueue(QueueObservation{Kind: QueueCredentialDepth, CredentialID: cf.cred.CredentialID, Mode: cf.cred.ConcurrencyMode, Depth: depth, Delta: -1})
 		if ctxOf(qr).Err() != nil {
 			cf.pipe.complete(qr, ForwardOutcome{Err: ctxOf(qr).Err()})
 			return false
@@ -140,6 +142,7 @@ func (cf *credForwarder) acquire(qr *QueuedRequest) bool {
 			qr.CredRetryCount = maxRetryBudget
 		}
 		metricOverflow.WithLabelValues("pace_timeout").Inc()
+		cf.pipe.observeOverflow("pace_timeout")
 		cf.pipe.routeFailover(qr, ForwardOutcome{Err: err})
 		return false
 	}
@@ -149,14 +152,16 @@ func (cf *credForwarder) acquire(qr *QueuedRequest) bool {
 	attempt, committed := qr.commitReservedAttempt(attempt.AttemptID)
 	if !committed {
 		cf.gov.Release(qr)
-		cf.depth.Add(-1)
+		depth := cf.depth.Add(-1)
 		metricCredQueueDepth.WithLabelValues(itoa(cf.cred.CredentialID), cf.cred.ConcurrencyMode).Dec()
+		cf.pipe.observeQueue(QueueObservation{Kind: QueueCredentialDepth, CredentialID: cf.cred.CredentialID, Mode: cf.cred.ConcurrencyMode, Depth: depth, Delta: -1})
 		cf.pipe.complete(qr, ForwardOutcome{Err: errors.New("dispatch: missing reserved attempt")})
 		return false
 	}
 
 	// V3.3-OBS OBS-B1 (2026-08-15): node_selected 动作事件（S7 前，最终选定
 	// 节点——通过 governor 准入，即将开始转发）。
+	cf.pipe.observeQueue(QueueObservation{Kind: QueueGovernorDegraded, CredentialID: cf.cred.CredentialID, Degraded: cf.gov.Mode() == ModeDisabled})
 	cf.pipe.liveActions.Emit(ctxOf(qr), liveactions.ActionEvent{
 		RequestID:    qr.ID,
 		Action:       liveactions.ActionNodeSelected,
@@ -166,9 +171,9 @@ func (cf *credForwarder) acquire(qr *QueuedRequest) bool {
 			"attempt": itoa(attempt.AttemptNo),
 		},
 	})
-	qr.emitJourney(requestjourney.JourneyEvent{
-		Type:          requestjourney.EventNodeSelected,
-		Stage:         requestjourney.StageNodeSelection,
+	qr.emitObservation(Observation{
+		Type:          ObservationNodeSelected,
+		Stage:         StageNodeSelection,
 		ResolvedModel: qr.ResolvedModel,
 		Model:         attempt.Model,
 		ProviderID:    attempt.ProviderID,
@@ -192,9 +197,9 @@ func (cf *credForwarder) attempt(qr *QueuedRequest) {
 		cf.pipe.complete(qr, ForwardOutcome{Err: errors.New("dispatch: missing allocated attempt")})
 		return
 	}
-	qr.emitJourney(requestjourney.JourneyEvent{
-		Type:          requestjourney.EventAttemptStarted,
-		Stage:         requestjourney.StageUpstream,
+	qr.emitObservation(Observation{
+		Type:          ObservationAttemptStarted,
+		Stage:         StageUpstream,
 		ResolvedModel: qr.ResolvedModel,
 		Model:         attempt.Model,
 		ProviderID:    attempt.ProviderID,
@@ -220,12 +225,16 @@ func (cf *credForwarder) attempt(qr *QueuedRequest) {
 	// noopGovernor whose Mode() returns "disabled", which would mismatch the
 	// "concurrency" label used on the queue-depth gauge for the same credential.
 	metricDequeued.WithLabelValues(itoa(cf.cred.CredentialID), mode).Inc()
+	inFlight := cf.pipe.inFlight.Add(1)
 	metricInFlight.WithLabelValues(itoa(cf.cred.CredentialID), mode).Inc()
+	cf.pipe.observeQueue(QueueObservation{Kind: QueueInFlight, InFlight: inFlight, Delta: 1})
 	var releaseOnce sync.Once
 	releaseResources := func() {
 		releaseOnce.Do(func() {
 			cf.gov.Release(qr)
+			inFlight := cf.pipe.inFlight.Add(-1)
 			metricInFlight.WithLabelValues(itoa(cf.cred.CredentialID), mode).Dec()
+			cf.pipe.observeQueue(QueueObservation{Kind: QueueInFlight, InFlight: inFlight, Delta: -1})
 		})
 	}
 	defer releaseResources()
@@ -254,23 +263,23 @@ func (p *Pipeline) emitAttemptFinished(qr *QueuedRequest, attemptID string, out 
 	if !ok {
 		return
 	}
-	event := requestjourney.JourneyEvent{
-		Type:          requestjourney.EventAttemptSucceeded,
-		Stage:         requestjourney.StageUpstream,
+	event := Observation{
+		Type:          ObservationAttemptSucceeded,
+		Stage:         StageUpstream,
 		ResolvedModel: qr.ResolvedModel,
 		Model:         attempt.Model,
 		ProviderID:    attempt.ProviderID,
 		Provider:      attempt.Provider,
 		CredentialID:  attempt.CredentialID,
 		Attempt:       copyAttemptRef(attempt),
-		Outcome:       requestjourney.OutcomeSuccess,
+		Outcome:       OutcomeSuccess,
 		OccurredAt:    endedAt,
 	}
 	if out.Err != nil {
-		event.Type = requestjourney.EventAttemptFailed
+		event.Type = ObservationAttemptFailed
 		event.Outcome = outcome
 		event.ErrorKind = errorKind
 		event.HTTPStatus = out.HTTPStatus
 	}
-	qr.emitJourney(event)
+	qr.emitObservation(event)
 }

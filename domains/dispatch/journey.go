@@ -6,89 +6,71 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/kaixuan/llm-gateway-go/domains/requestjourney"
 )
 
-// EventSink is the dispatch-to-RequestJourney observation seam. Implementations
-// must return quickly or arrange their own buffering. Observation must never
-// change the dispatch result.
-type EventSink interface {
-	EmitJourneyEvent(context.Context, requestjourney.JourneyEvent)
-}
-
-// EventSinkFunc adapts a function to EventSink.
-type EventSinkFunc func(context.Context, requestjourney.JourneyEvent)
-
-func (f EventSinkFunc) EmitJourneyEvent(ctx context.Context, event requestjourney.JourneyEvent) {
-	if f != nil {
-		f(ctx, event)
-	}
-}
-
-type journeyEmitter func(requestjourney.JourneyEvent)
+type observationEmitter func(Observation)
 
 type dispatchAttempt struct {
-	ref         requestjourney.AttemptRef
+	ref         AttemptRef
 	vendor      string
 	startedAt   time.Time
 	firstByteAt time.Time
 	endedAt     time.Time
-	outcome     requestjourney.Outcome
+	outcome     Outcome
 	errorKind   string
 }
 
-func (qr *QueuedRequest) setJourneyEmitter(emit journeyEmitter) {
+func (qr *QueuedRequest) setObservationEmitter(emit observationEmitter) {
 	qr.journeyMu.Lock()
-	qr.journeyEmit = emit
+	qr.observationEmit = emit
 	qr.journeyMu.Unlock()
 }
 
-// emitJourney serializes sequence allocation and sink delivery. This preserves
-// strict per-request ordering when streaming reports first byte concurrently
-// with the forward goroutine finishing the attempt.
-func (qr *QueuedRequest) emitJourney(event requestjourney.JourneyEvent) {
+// emitObservation serializes sequence allocation and sink delivery. This
+// preserves strict per-request ordering when streaming reports first byte
+// concurrently with the forward goroutine finishing the attempt.
+func (qr *QueuedRequest) emitObservation(observation Observation) {
 	if qr == nil {
 		return
 	}
 	qr.journeyMu.Lock()
 	defer qr.journeyMu.Unlock()
-	qr.emitJourneyLocked(event)
+	qr.emitObservationLocked(observation)
 }
 
-func (qr *QueuedRequest) emitJourneyLocked(event requestjourney.JourneyEvent) {
-	if qr.journeyEmit == nil || qr.TenantID == "" || qr.GatewayInstanceID == "" || qr.ID == "" {
+func (qr *QueuedRequest) emitObservationLocked(observation Observation) {
+	if qr.observationEmit == nil || qr.TenantID == "" || qr.GatewayInstanceID == "" || qr.ID == "" {
 		return
 	}
-	if event.Stage == requestjourney.StageTerminal && qr.JourneyTerminal != nil &&
+	if observation.Stage == StageTerminal && qr.JourneyTerminal != nil &&
 		!qr.JourneyTerminal.CompareAndSwap(false, true) {
 		return
 	}
-	event.TenantID = qr.TenantID
-	event.GatewayInstanceID = qr.GatewayInstanceID
-	event.RequestID = qr.ID
+	observation.TenantID = qr.TenantID
+	observation.GatewayInstanceID = qr.GatewayInstanceID
+	observation.RequestID = qr.ID
 	if qr.JourneySharedSeq != nil {
-		event.Seq = qr.JourneySharedSeq.Add(1)
+		observation.Seq = qr.JourneySharedSeq.Add(1)
 	} else {
-		event.Seq = qr.JourneySeq.Add(1)
+		observation.Seq = qr.JourneySeq.Add(1)
 	}
-	event.RequestedModel = qr.RequestedModel
-	event.ObservationStatus = requestjourney.ObservationComplete
-	if event.OccurredAt.IsZero() {
-		event.OccurredAt = time.Now()
+	observation.RequestedModel = qr.RequestedModel
+	if observation.OccurredAt.IsZero() {
+		observation.OccurredAt = time.Now()
 	}
-	if err := event.Validate(); err != nil {
+	if err := observation.Validate(); err != nil {
 		return
 	}
 	func() {
 		defer func() { _ = recover() }()
-		qr.journeyEmit(event)
+		qr.observationEmit(observation)
 	}()
 }
 
-func (qr *QueuedRequest) reserveAttempt(cred CredentialRef) requestjourney.AttemptRef {
+func (qr *QueuedRequest) reserveAttempt(cred CredentialRef) AttemptRef {
 	qr.attemptMu.Lock()
 	defer qr.attemptMu.Unlock()
-	ref := requestjourney.AttemptRef{
+	ref := AttemptRef{
 		AttemptID:    uuid.NewString(),
 		AttemptNo:    qr.AttemptCount + 1,
 		Model:        qr.ResolvedModel,
@@ -108,23 +90,23 @@ func (qr *QueuedRequest) abandonReservedAttempt(attemptID string) {
 	}
 }
 
-func (qr *QueuedRequest) commitReservedAttempt(attemptID string) (requestjourney.AttemptRef, bool) {
+func (qr *QueuedRequest) commitReservedAttempt(attemptID string) (AttemptRef, bool) {
 	qr.attemptMu.Lock()
 	defer qr.attemptMu.Unlock()
 	cur := qr.currentAttempt
 	if cur == nil || cur.ref.AttemptID != attemptID || cur.ref.AttemptNo != qr.AttemptCount+1 {
-		return requestjourney.AttemptRef{}, false
+		return AttemptRef{}, false
 	}
 	qr.AttemptCount++
 	return cur.ref, true
 }
 
-func (qr *QueuedRequest) startAllocatedAttempt() (requestjourney.AttemptRef, time.Time, bool) {
+func (qr *QueuedRequest) startAllocatedAttempt() (AttemptRef, time.Time, bool) {
 	qr.attemptMu.Lock()
 	defer qr.attemptMu.Unlock()
 	cur := qr.currentAttempt
 	if cur == nil || !cur.startedAt.IsZero() {
-		return requestjourney.AttemptRef{}, time.Time{}, false
+		return AttemptRef{}, time.Time{}, false
 	}
 	cur.startedAt = time.Now()
 	startedAt := cur.startedAt
@@ -135,14 +117,14 @@ func (qr *QueuedRequest) startAllocatedAttempt() (requestjourney.AttemptRef, tim
 
 // ActiveAttemptRef returns a read-only snapshot of the currently allocated
 // attempt. The returned value is detached from QueuedRequest's mutable state.
-func (qr *QueuedRequest) ActiveAttemptRef() (requestjourney.AttemptRef, bool) {
+func (qr *QueuedRequest) ActiveAttemptRef() (AttemptRef, bool) {
 	if qr == nil {
-		return requestjourney.AttemptRef{}, false
+		return AttemptRef{}, false
 	}
 	qr.attemptMu.Lock()
 	defer qr.attemptMu.Unlock()
 	if qr.currentAttempt == nil || !qr.currentAttempt.endedAt.IsZero() {
-		return requestjourney.AttemptRef{}, false
+		return AttemptRef{}, false
 	}
 	return qr.currentAttempt.ref, true
 }
@@ -184,9 +166,9 @@ func (qr *QueuedRequest) markFirstSemanticByte(attemptID string) {
 	firstByteAt := cur.firstByteAt
 	qr.T8_ResponseStartAt = &firstByteAt
 	ref := cur.ref
-	qr.emitJourney(requestjourney.JourneyEvent{
-		Type:         requestjourney.EventFirstByte,
-		Stage:        requestjourney.StageStreaming,
+	qr.emitObservation(Observation{
+		Type:         ObservationFirstByte,
+		Stage:        StageStreaming,
 		Model:        ref.Model,
 		ProviderID:   ref.ProviderID,
 		Provider:     ref.Provider,
@@ -196,19 +178,19 @@ func (qr *QueuedRequest) markFirstSemanticByte(attemptID string) {
 	})
 }
 
-func (qr *QueuedRequest) finishAttempt(attemptID string, out ForwardOutcome) (requestjourney.AttemptRef, requestjourney.Outcome, string, time.Time, bool) {
+func (qr *QueuedRequest) finishAttempt(attemptID string, out ForwardOutcome) (AttemptRef, Outcome, string, time.Time, bool) {
 	qr.attemptMu.Lock()
 	defer qr.attemptMu.Unlock()
 	cur := qr.currentAttempt
 	if cur == nil || cur.ref.AttemptID != attemptID || cur.startedAt.IsZero() || !cur.endedAt.IsZero() {
-		return requestjourney.AttemptRef{}, "", "", time.Time{}, false
+		return AttemptRef{}, "", "", time.Time{}, false
 	}
 	cur.endedAt = time.Now()
-	cur.outcome = requestjourney.OutcomeSuccess
+	cur.outcome = OutcomeSuccess
 	if out.Err != nil {
-		cur.outcome = requestjourney.OutcomeFailure
+		cur.outcome = OutcomeFailure
 		if errors.Is(out.Err, context.Canceled) || errors.Is(out.Err, context.DeadlineExceeded) {
-			cur.outcome = requestjourney.OutcomeCanceled
+			cur.outcome = OutcomeCanceled
 		}
 	}
 	cur.errorKind = out.ErrorKind
@@ -219,7 +201,7 @@ func (qr *QueuedRequest) finishAttempt(attemptID string, out ForwardOutcome) (re
 	return cur.ref, cur.outcome, cur.errorKind, cur.endedAt, true
 }
 
-func (qr *QueuedRequest) lastAttemptRef() *requestjourney.AttemptRef {
+func (qr *QueuedRequest) lastAttemptRef() *AttemptRef {
 	qr.attemptMu.Lock()
 	defer qr.attemptMu.Unlock()
 	if len(qr.attempts) == 0 {
@@ -250,7 +232,7 @@ func (qr *QueuedRequest) waterfallAttempts() []WaterfallAttempt {
 	return out
 }
 
-func copyAttemptRef(ref requestjourney.AttemptRef) *requestjourney.AttemptRef {
+func copyAttemptRef(ref AttemptRef) *AttemptRef {
 	copy := ref
 	return &copy
 }

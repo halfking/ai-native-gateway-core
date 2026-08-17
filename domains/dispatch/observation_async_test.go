@@ -4,8 +4,6 @@ import (
 	"context"
 	"testing"
 	"time"
-
-	"github.com/kaixuan/llm-gateway-go/domains/requestjourney"
 )
 
 type blockingJourneySink struct {
@@ -13,7 +11,7 @@ type blockingJourneySink struct {
 	release chan struct{}
 }
 
-func (s *blockingJourneySink) EmitJourneyEvent(context.Context, requestjourney.JourneyEvent) {
+func (s *blockingJourneySink) ObserveDispatch(context.Context, Observation) {
 	select {
 	case s.entered <- struct{}{}:
 	default:
@@ -25,7 +23,7 @@ func TestBlockingJourneySinkDoesNotBlockDispatchExecution(t *testing.T) {
 	sink := &blockingJourneySink{entered: make(chan struct{}, 1), release: make(chan struct{})}
 	cred := CredentialRef{CredentialID: 1, ProviderID: 1, ConcurrencyMode: ModeDisabled}
 	pipeline := NewPipeline(Deps{
-		EventSink: sink,
+		ObservationSink: sink,
 		ModelResolveFunc: func(context.Context, string, []string) (string, []string, error) {
 			return "model-a", nil, nil
 		},

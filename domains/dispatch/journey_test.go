@@ -8,17 +8,16 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/kaixuan/llm-gateway-go/domains/requestjourney"
 )
 
 type journeyRecorder struct {
 	mu     sync.Mutex
-	events []requestjourney.JourneyEvent
+	events []Observation
 	errs   []error
 }
 
-func (r *journeyRecorder) EmitJourneyEvent(_ context.Context, event requestjourney.JourneyEvent) {
+func (r *journeyRecorder) ObserveDispatch(_ context.Context, observation Observation) {
+	event := observation
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if err := event.Validate(); err != nil {
@@ -27,17 +26,17 @@ func (r *journeyRecorder) EmitJourneyEvent(_ context.Context, event requestjourn
 	r.events = append(r.events, event)
 }
 
-func (r *journeyRecorder) snapshot(t *testing.T) []requestjourney.JourneyEvent {
+func (r *journeyRecorder) snapshot(t *testing.T) []Observation {
 	t.Helper()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if len(r.errs) > 0 {
 		t.Fatalf("invalid journey events: %v", r.errs)
 	}
-	return append([]requestjourney.JourneyEvent(nil), r.events...)
+	return append([]Observation(nil), r.events...)
 }
 
-func (r *journeyRecorder) waitSnapshot(t *testing.T, minimum int) []requestjourney.JourneyEvent {
+func (r *journeyRecorder) waitSnapshot(t *testing.T, minimum int) []Observation {
 	t.Helper()
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
@@ -60,10 +59,10 @@ func journeyCredential(id, provider int, vendor string) CredentialRef {
 	}
 }
 
-func journeyPipeline(t *testing.T, sink EventSink, refs map[string][]CredentialRef, forward ForwardFunc, allowModelChange bool) *Pipeline {
+func journeyPipeline(t *testing.T, sink ObservationSink, refs map[string][]CredentialRef, forward ForwardFunc, allowModelChange bool) *Pipeline {
 	t.Helper()
 	p := NewPipeline(Deps{
-		EventSink: sink,
+		ObservationSink: sink,
 		RouteFunc: func(_ context.Context, qr *QueuedRequest) ([]CredentialRef, error) {
 			candidates := refs[qr.ResolvedModel]
 			out := make([]CredentialRef, 0, len(candidates))
@@ -100,15 +99,15 @@ func newJourneyRequest(id, model string) *QueuedRequest {
 	return qr
 }
 
-func eventTypes(events []requestjourney.JourneyEvent) []requestjourney.EventType {
-	out := make([]requestjourney.EventType, len(events))
+func eventTypes(events []Observation) []ObservationType {
+	out := make([]ObservationType, len(events))
 	for i := range events {
 		out[i] = events[i].Type
 	}
 	return out
 }
 
-func assertEventTypes(t *testing.T, events []requestjourney.JourneyEvent, want []requestjourney.EventType) {
+func assertEventTypes(t *testing.T, events []Observation, want []ObservationType) {
 	t.Helper()
 	got := eventTypes(events)
 	if fmt.Sprint(got) != fmt.Sprint(want) {
@@ -116,7 +115,7 @@ func assertEventTypes(t *testing.T, events []requestjourney.JourneyEvent, want [
 	}
 }
 
-func assertAttemptSequence(t *testing.T, events []requestjourney.JourneyEvent, firstSeq int64) {
+func assertAttemptSequence(t *testing.T, events []Observation, firstSeq int64) {
 	t.Helper()
 	attemptIDs := map[int]string{}
 	for i, event := range events {
@@ -159,20 +158,20 @@ func TestJourneySameNodeRetryFailureThenSuccess(t *testing.T) {
 	}
 
 	events := recorder.waitSnapshot(t, 13)
-	assertEventTypes(t, events, []requestjourney.EventType{
-		requestjourney.EventModelEnqueued,
-		requestjourney.EventCredentialSelected,
-		requestjourney.EventNodeEnqueued,
-		requestjourney.EventNodeSelected,
-		requestjourney.EventAttemptStarted,
-		requestjourney.EventAttemptFailed,
-		requestjourney.EventRetryScheduled,
-		requestjourney.EventNodeEnqueued,
-		requestjourney.EventNodeSelected,
-		requestjourney.EventAttemptStarted,
-		requestjourney.EventFirstByte,
-		requestjourney.EventAttemptSucceeded,
-		requestjourney.EventRequestSucceeded,
+	assertEventTypes(t, events, []ObservationType{
+		ObservationModelEnqueued,
+		ObservationCredentialSelected,
+		ObservationNodeEnqueued,
+		ObservationNodeSelected,
+		ObservationAttemptStarted,
+		ObservationAttemptFailed,
+		ObservationRetryScheduled,
+		ObservationNodeEnqueued,
+		ObservationNodeSelected,
+		ObservationAttemptStarted,
+		ObservationFirstByte,
+		ObservationAttemptSucceeded,
+		ObservationRequestSucceeded,
 	})
 	assertAttemptSequence(t, events, 8)
 	if events[5].ErrorKind != "upstream_503" || events[5].HTTPStatus != 503 {
@@ -221,7 +220,7 @@ func TestJourneyDoesNotInferOrMisattributeFirstByte(t *testing.T) {
 		t.Fatalf("Submit: %v", err)
 	}
 	for _, event := range recorder.waitSnapshot(t, 10) {
-		if event.Type == requestjourney.EventFirstByte {
+		if event.Type == ObservationFirstByte {
 			t.Fatalf("unexpected first_byte from outcome or stale callback: %+v", event)
 		}
 	}
@@ -251,9 +250,9 @@ func TestJourneyNodeAndModelSwitches(t *testing.T) {
 		}
 		events := recorder.waitSnapshot(t, 12)
 		assertAttemptSequence(t, events, 1)
-		var switched *requestjourney.JourneyEvent
+		var switched *Observation
 		for i := range events {
-			if events[i].Type == requestjourney.EventNodeSwitched {
+			if events[i].Type == ObservationNodeSwitched {
 				switched = &events[i]
 			}
 		}
@@ -283,9 +282,9 @@ func TestJourneyNodeAndModelSwitches(t *testing.T) {
 		}
 		events := recorder.waitSnapshot(t, 12)
 		assertAttemptSequence(t, events, 1)
-		var switched *requestjourney.JourneyEvent
+		var switched *Observation
 		for i := range events {
-			if events[i].Type == requestjourney.EventModelSwitched {
+			if events[i].Type == ObservationModelSwitched {
 				switched = &events[i]
 			}
 		}
@@ -312,69 +311,14 @@ func TestJourneyTerminalFailurePreservesDiagnostics(t *testing.T) {
 	}
 	events := recorder.waitSnapshot(t, 7)
 	last := events[len(events)-1]
-	if last.Type != requestjourney.EventRequestFailed || last.Outcome != requestjourney.OutcomeFailure || last.ErrorKind != "quota_exhausted" || last.HTTPStatus != 429 {
+	if last.Type != ObservationRequestFailed || last.Outcome != OutcomeFailure || last.ErrorKind != "quota_exhausted" || last.HTTPStatus != 429 {
 		t.Fatalf("terminal event = %+v", last)
-	}
-}
-
-func TestJourneyHandlerAndDispatchShareContinuousSequence(t *testing.T) {
-	projection := requestjourney.NewProjection(requestjourney.DefaultConfig())
-	recorder := requestjourney.NewRecorder(projection, nil, nil)
-	lifecycle := requestjourney.NewLifecycle(recorder, "gateway-test", "journey-shared-seq")
-	lifecycle.BindTenant(context.Background(), "tenant-journey", "auto")
-	lifecycle.RouteResolved(context.Background(), "tenant-journey", "auto", "m1")
-
-	ref := journeyCredential(11, 101, "vendor-a")
-	p := journeyPipeline(t, recorder, map[string][]CredentialRef{"m1": {ref}}, func(_ context.Context, qr *QueuedRequest, _ CredentialRef) ForwardOutcome {
-		qr.MarkFirstSemanticByte()
-		return ForwardOutcome{Result: "ok"}
-	}, false)
-	qr := newJourneyRequest("journey-shared-seq", "m1")
-	qr.JourneySharedSeq = lifecycle.Sequence()
-	qr.JourneyTerminal = lifecycle.TerminalState()
-	if _, err := p.Submit(context.Background(), qr); err != nil {
-		t.Fatalf("Submit: %v", err)
-	}
-	// Handler completion runs after dispatch; the shared terminal gate must keep
-	// the dispatch terminal as the only request terminal.
-	lifecycle.Terminal(context.Background(), "tenant-journey", requestjourney.OutcomeSuccess, "", 200)
-
-	deadline := time.Now().Add(time.Second)
-	var journey *requestjourney.RequestJourney
-	var err error
-	for time.Now().Before(deadline) {
-		journey, err = projection.Detail("tenant-journey", "journey-shared-seq")
-		if err == nil && len(journey.Events) >= 3 && journey.Events[len(journey.Events)-1].Stage == requestjourney.StageTerminal {
-			break
-		}
-		time.Sleep(time.Millisecond)
-	}
-	if err != nil {
-		t.Fatalf("Detail: %v", err)
-	}
-	if len(journey.Events) < 3 {
-		t.Fatalf("events = %+v", journey.Events)
-	}
-	if journey.Events[0].Type != requestjourney.EventRequestReceived || journey.Events[1].Type != requestjourney.EventRouteResolved {
-		t.Fatalf("handler events = %v, %v", journey.Events[0].Type, journey.Events[1].Type)
-	}
-	terminals := 0
-	for i, event := range journey.Events {
-		if event.Seq != int64(i+1) {
-			t.Fatalf("event %d seq = %d, want %d", i, event.Seq, i+1)
-		}
-		if event.Stage == requestjourney.StageTerminal {
-			terminals++
-		}
-	}
-	if terminals != 1 || journey.Events[len(journey.Events)-1].Type != requestjourney.EventRequestSucceeded {
-		t.Fatalf("terminal events = %d, last = %+v", terminals, journey.Events[len(journey.Events)-1])
 	}
 }
 
 func TestJourneyShutdownAndNilSinkAreSafe(t *testing.T) {
 	recorder := &journeyRecorder{}
-	p := NewPipeline(Deps{EventSink: recorder})
+	p := NewPipeline(Deps{ObservationSink: recorder})
 	p.Start()
 	p.Stop()
 	qr := newJourneyRequest("journey-shutdown", "m1")
@@ -382,11 +326,11 @@ func TestJourneyShutdownAndNilSinkAreSafe(t *testing.T) {
 		t.Fatalf("Submit after Stop = %v, want ErrShutdown", err)
 	}
 	events := recorder.snapshot(t)
-	if len(events) != 1 || events[0].Type != requestjourney.EventRequestFailed || events[0].ErrorKind != "shutdown" {
-		t.Fatalf("shutdown events = %+v", events)
+	if len(events) != 0 {
+		t.Fatalf("shutdown must not synchronously invoke a closed observation sink: %+v", events)
 	}
 
-	p.SetEventSink(nil)
+	p.SetObservationSink(nil)
 	qr2 := newJourneyRequest("journey-nil-sink", "m1")
 	if _, err := p.Submit(context.Background(), qr2); !errors.Is(err, ErrShutdown) {
 		t.Fatalf("Submit with nil sink = %v, want ErrShutdown", err)
@@ -451,7 +395,7 @@ func TestJourneyConcurrentFirstByteIsEmittedOnce(t *testing.T) {
 	events := recorder.waitSnapshot(t, 8)
 	firstBytes := 0
 	for _, event := range events {
-		if event.Type == requestjourney.EventFirstByte {
+		if event.Type == ObservationFirstByte {
 			firstBytes++
 		}
 	}

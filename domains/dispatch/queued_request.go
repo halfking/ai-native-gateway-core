@@ -65,8 +65,8 @@ type ForwardOutcome struct {
 type QueuedRequest struct {
 	ID       string // request_id
 	TenantID string
-	// GatewayInstanceID completes the stable RequestJourney identity. Callers
-	// wiring an EventSink must populate it before Submit.
+	// GatewayInstanceID completes the stable lifecycle observation identity. Callers
+	// wiring an ObservationSink must populate it before Submit.
 	GatewayInstanceID string
 	// SessionID is the V2 session identifier (public.sessions.id). Populated
 	// by the executor from ExecParams.SessionID so admin /sessions/{id}/timeline
@@ -117,19 +117,19 @@ type QueuedRequest struct {
 	// through an unbounded candidate set under pathological conditions.
 	AttemptCount int
 
-	// RequestJourney sequencing and attempt state are separately synchronized:
+	// Dispatch observation sequencing and attempt state are separately synchronized:
 	// streaming can report first semantic byte while the forward goroutine is
 	// returning, and sinks must still observe strictly increasing seq order.
 	journeyMu sync.Mutex
-	// JourneySeq is the last allocated RequestJourney sequence. Producers that
-	// emit request_received/route_resolved before dispatch may seed it before
+	// JourneySeq is the last allocated lifecycle observation sequence. Producers
+	// that emit request_received/route_resolved before dispatch may seed it before
 	// Submit; dispatch then continues monotonically from that value.
 	JourneySeq atomic.Int64
 	// JourneySharedSeq and JourneyTerminal are populated by request handlers.
 	// They let handler and dispatch events share one sequence/terminal owner.
 	JourneySharedSeq *atomic.Int64
 	JourneyTerminal  *atomic.Bool
-	journeyEmit      journeyEmitter
+	observationEmit  observationEmitter
 	attemptMu        sync.Mutex
 	attempts         []*dispatchAttempt
 	currentAttempt   *dispatchAttempt

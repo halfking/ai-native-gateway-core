@@ -13,7 +13,7 @@ import (
 )
 
 func TestLiveQueueSnapshotProvider(t *testing.T) {
-	p := dispatch.NewPipeline(dispatch.Deps{})
+	p := dispatch.NewQueueProjection()
 	got := liveQueueSnapshotProvider(p)
 	if !got.Enabled {
 		t.Fatalf("Enabled = false, want dispatch gate state true in test")

@@ -239,15 +239,28 @@ func newIncidentPublishFn(hub *admin.LiveStreamSSEHub) func(*routeincident.Trans
 	}
 }
 
-// liveQueueSnapshotProvider adapts the dispatch package's queue snapshot to
-// the admin SSE wire type. Snapshot acquires the pipeline's own locks, so the
-// provider is safe to call from the hub ticker without blocking dispatch work.
-func liveQueueSnapshotProvider(p *dispatch.Pipeline) *admin.LiveQueueSnapshot {
-	if p == nil {
+// liveQueueSnapshotProvider adapts the independent queue projection to the
+// admin SSE wire type. It never reads or locks the dispatch Pipeline.
+func liveQueueSnapshotProvider(projection *dispatch.QueueProjection) *admin.LiveQueueSnapshot {
+	if projection == nil {
 		return liveQueueSnapshotFromLanes(nil, nil, dispatch.IsDispatchEnabled(), false)
 	}
-	models, credentials := p.Snapshot()
-	return liveQueueSnapshotFromLanes(models, credentials, dispatch.IsDispatchEnabled(), true)
+	view := projection.Snapshot()
+	if view == nil {
+		return liveQueueSnapshotFromLanes(nil, nil, dispatch.IsDispatchEnabled(), false)
+	}
+	out := &admin.LiveQueueSnapshot{Enabled: view.Enabled, Wired: view.Wired, SourceVersion: view.SourceVersion,
+		Models: make([]admin.LiveQueueLaneSnapshot, 0, len(view.Models)), Credentials: make([]admin.LiveQueueLaneSnapshot, 0, len(view.Credentials))}
+	if view.Pipeline != nil {
+		out.Pipeline = &admin.LiveQueuePipelineStats{Depth: view.Pipeline.Depth, WaitingMsP50: view.Pipeline.WaitingMsP50, WaitingMsP95: view.Pipeline.WaitingMsP95, InFlight: view.Pipeline.InFlight, Degraded: view.Pipeline.Degraded}
+	}
+	for _, lane := range view.Models {
+		out.Models = append(out.Models, admin.LiveQueueLaneSnapshot{Model: lane.Model, Depth: lane.Depth})
+	}
+	for _, lane := range view.Credentials {
+		out.Credentials = append(out.Credentials, admin.LiveQueueLaneSnapshot{Credential: lane.Credential, Mode: lane.Mode, Depth: lane.Depth})
+	}
+	return out
 }
 
 func liveQueueSnapshotFromLanes(models, credentials []dispatch.QueueSnapshot, enabled, wired bool) *admin.LiveQueueSnapshot {
@@ -423,12 +436,12 @@ func decorateFPNodeState(ctx context.Context, pool *pgxpool.Pool, fps *credentia
 // snapshot-tested without Redis.
 //
 //   - fpDisabled:      true when any bound model is currently inside its
-//                      cooldown window (Disabled with DisabledUntil in the
-//                      future; an expired cooldown counts as recovered, the
-//                      same semantics as NodeState.IsUsable's expiry check).
+//     cooldown window (Disabled with DisabledUntil in the
+//     future; an expired cooldown counts as recovered, the
+//     same semantics as NodeState.IsUsable's expiry check).
 //   - fpDisabledUntil: the DisabledUntil belonging to the most recent
-//                      disable event (max LastDisabledAt; falls back to max
-//                      DisabledUntil when the P0 timestamp is absent).
+//     disable event (max LastDisabledAt; falls back to max
+//     DisabledUntil when the P0 timestamp is absent).
 //   - lastErrorAt:     max LastFailureAt across bound models.
 func fpNodeProjection(nowUnix int64, states []*credentialfpslot.NodeState) (proj struct {
 	fpDisabled      *bool

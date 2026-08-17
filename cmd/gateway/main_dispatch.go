@@ -15,10 +15,10 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/liveactions"
 )
 
-// gatewayDispatchPipeline holds the constructed pipeline so the admin
-// /api/admin/dispatch/queues handler can read live snapshots. nil when the
-// pipeline could not be built (e.g. routingExec absent).
+// gatewayDispatchPipeline is retained by the executor wiring only. Admin and
+// SSE reads use the independent projection below and never call Pipeline locks.
 var gatewayDispatchPipeline *dispatch.Pipeline
+var gatewayQueueProjection *dispatch.QueueProjection
 
 // gatewayLiveActionsEmitter (2026-08-15, V3.3-OBS OBS-B1) is the shared
 // request-lifecycle action-event emitter, constructed in main.go next to the
@@ -26,7 +26,7 @@ var gatewayDispatchPipeline *dispatch.Pipeline
 // (model_enqueued / node_enqueued / node_switch / model_switch / no_route).
 var gatewayLiveActionsEmitter *liveactions.Emitter
 
-var gatewayRequestJourneySink dispatch.EventSink
+var gatewayRequestJourneySink dispatch.ObservationSink
 
 func stableGatewayInstanceID() string {
 	if configured := strings.TrimSpace(os.Getenv("LLM_GATEWAY_INSTANCE_ID")); configured != "" {
@@ -48,7 +48,9 @@ func wireDispatchPipeline(routingExec *executors.Executor) *dispatch.Pipeline {
 		return nil
 	}
 	p := routingExec.NewDispatchPipeline()
-	p.SetEventSink(gatewayRequestJourneySink)
+	p.SetObservationSink(gatewayRequestJourneySink)
+	gatewayQueueProjection = dispatch.NewQueueProjection()
+	p.SetQueueObservationSink(gatewayQueueProjection)
 	// V3.3-OBS OBS-B1 (2026-08-15): 动作事件发射器注入 dispatch pipeline。
 	// nil 安全（发射点全部 no-op），发射器本身旁路异步、满即丢。
 	p.SetLiveActions(gatewayLiveActionsEmitter)
@@ -70,22 +72,12 @@ func handleDispatchQueues(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	view := gatewayQueueProjectionSnapshot()
 	resp := map[string]any{
-		"enabled":     dispatch.IsDispatchEnabled(),
-		"wired":       gatewayDispatchPipeline != nil,
-		"models":      []dispatch.QueueSnapshot{},
-		"credentials": []dispatch.QueueSnapshot{},
-	}
-	if gatewayDispatchPipeline != nil {
-		models, creds := gatewayDispatchPipeline.Snapshot()
-		if models == nil {
-			models = []dispatch.QueueSnapshot{}
-		}
-		if creds == nil {
-			creds = []dispatch.QueueSnapshot{}
-		}
-		resp["models"] = models
-		resp["credentials"] = creds
+		"enabled":     view.Enabled,
+		"wired":       view.Wired,
+		"models":      view.Models,
+		"credentials": view.Credentials,
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
@@ -119,18 +111,11 @@ func handleDispatchWaterfall(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var snap dispatch.WaterfallSnapshot
-	if gatewayDispatchPipeline != nil {
-		snap = gatewayDispatchPipeline.SnapshotWaterfall(limit, model, credID)
+	if gatewayQueueProjection != nil {
+		snap = gatewayQueueProjection.SnapshotWaterfall(limit, model, credID)
 	} else {
-		snap = dispatch.WaterfallSnapshot{
-			Requests: []dispatch.WaterfallRequest{},
-			Enabled:  dispatch.IsDispatchEnabled(),
-			Wired:    false,
-			BottleneckDiagnosis: dispatch.BottleneckDiagnosis{
-				Bottleneck: "none",
-				Message:    "dispatch pipeline not wired",
-			},
-		}
+		snap = dispatch.WaterfallSnapshot{Requests: []dispatch.WaterfallRequest{}, Enabled: dispatch.IsDispatchEnabled(), Wired: false,
+			BottleneckDiagnosis: dispatch.BottleneckDiagnosis{Bottleneck: "none", Message: "dispatch queue projection not wired"}}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(snap)

@@ -644,7 +644,7 @@ func main() {
 	journeyQueryService := requestjourney.NewQueryService(journeyRedisStore, journeyRepository, journeyProjection, journeyConfig)
 	journeyInstanceID := stableGatewayInstanceID()
 	chatHandler.SetRequestJourney(journeyRecorder, journeyInstanceID)
-	gatewayRequestJourneySink = journeyRecorder
+	gatewayRequestJourneySink = newDispatchJourneyAdapter(journeyRecorder)
 	slog.Info("request journey recorder wired",
 		"gateway_instance_id", journeyInstanceID,
 		"redis", redisClientForCache != nil,
@@ -4028,16 +4028,12 @@ func main() {
 			adminHandler.SetPeakCollector(peakCollector)
 			slog.Info("CHECKPOINT: after SetPeakCollector")
 
-			// 2026-08-14 V3.2: wire state-transition logger + SSE
-			// queue/node providers. All nil-safe; missing deps degrade
-			// to "feature disabled" without affecting the relay.
-			// See cmd/gateway/main_v32_wiring.go for the closure bodies.
+			// 2026-08-14 V3.2: wire state-transition logger. The SSE
+			// queue_snapshot provider is wired once, after the dispatch
+			// pipeline (and its QueueProjection) exists — see the
+			// wireDispatchPipeline call below.
 			if dbConn != nil && dbConn.Enabled() {
 				wireStateTransitionLogger(dbConn.Pool())
-			}
-			if liveStreamHub != nil {
-				liveStreamHub.SetQueueSnapshotProvider(wireQueueSnapshotProvider(gatewayDispatchPipeline))
-				slog.Info("V3.2 SSE provider wired: queue_snapshot; node_status uses cached provider")
 			}
 
 			// 2026-08-11: expose the on-demand node IQ test endpoint. Only wire
@@ -5388,10 +5384,8 @@ func main() {
 	// 已在 syncDispatchGateFromSettings 同步；此处仅构造与启动 worker 池。
 	pipeline := wireDispatchPipeline(routingExec)
 	if liveStreamHub != nil {
-		liveStreamHub.SetQueueSnapshotProvider(func() *admin.LiveQueueSnapshot {
-			return liveQueueSnapshotProvider(pipeline)
-		})
-		slog.Info("live stream: queue snapshot provider wired", "wired", pipeline != nil)
+		liveStreamHub.SetQueueSnapshotProvider(wireQueueSnapshotProvider(gatewayQueueProjection))
+		slog.Info("live stream: queue snapshot provider wired", "wired", gatewayQueueProjection != nil)
 	}
 
 	srv := &http.Server{
@@ -5529,9 +5523,14 @@ func main() {
 		// Stop dispatch before its RequestJourney Redis/PostgreSQL dependencies.
 		if pipeline != nil {
 			pipeline.Stop()
-			pipeline.SetEventSink(nil)
+			pipeline.SetObservationSink(nil)
+			pipeline.SetQueueObservationSink(nil)
 		}
 		gatewayRequestJourneySink = nil
+		if gatewayQueueProjection != nil {
+			gatewayQueueProjection.Close()
+			gatewayQueueProjection = nil
+		}
 		if err := journeyRecorder.Close(stopCtx); err != nil {
 			slog.Warn("request journey recorder drain failed", "error", err)
 		}
