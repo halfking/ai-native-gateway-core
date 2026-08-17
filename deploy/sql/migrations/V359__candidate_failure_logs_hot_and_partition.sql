@@ -93,21 +93,23 @@ $do$;
 -- ---------------------------------------------------------------------------
 -- 3. ALTER hot 表 owner（如需）+ 确保 ts 默认值
 -- ---------------------------------------------------------------------------
-\echo '--- 3. hot 表 ts 默认值兜底 ---'
+\echo '--- 3. hot 表 NOT NULL + DEFAULT 补齐（LIKE INCLUDING ALL 不继承 NOT NULL） ---'
 DO $do$
 BEGIN
-    -- V358 已 ALTER COLUMN ts SET DEFAULT now()（全局幂等）
-    -- 这里仅防御性确认
-    PERFORM 1 FROM information_schema.columns
-    WHERE table_name = 'candidate_failure_logs_hot'
-      AND column_name = 'ts'
-      AND column_default LIKE '%now%';
-    IF NOT FOUND THEN
-        ALTER TABLE candidate_failure_logs_hot ALTER COLUMN ts SET DEFAULT now();
-        RAISE NOTICE 'V359: defensive ALTER COLUMN ts SET DEFAULT now()';
-    ELSE
-        RAISE NOTICE 'V359: hot.ts already has now() default';
-    END IF;
+    -- NOT NULL 约束（必须与父表 + 原 columnar 表一致）
+    ALTER TABLE candidate_failure_logs_hot
+        ALTER COLUMN request_id SET NOT NULL,
+        ALTER COLUMN tenant_id SET DEFAULT 'default',
+        ALTER COLUMN tenant_id SET NOT NULL,
+        ALTER COLUMN credential_id SET NOT NULL,
+        ALTER COLUMN provider_id SET NOT NULL,
+        ALTER COLUMN raw_model_name SET NOT NULL,
+        ALTER COLUMN attempt_index SET DEFAULT 0,
+        ALTER COLUMN attempt_index SET NOT NULL,
+        ALTER COLUMN error_kind SET NOT NULL,
+        ALTER COLUMN ts SET DEFAULT now();
+
+    RAISE NOTICE 'V359: hot 表 NOT NULL + DEFAULT 补齐';
 END
 $do$;
 
@@ -118,14 +120,26 @@ $do$;
 DO $do$
 DECLARE
     has_partitions boolean;
+    has_table boolean;
 BEGIN
+    -- 检查父表是否已存在（恢复场景或重复执行）
     SELECT EXISTS (
-        SELECT 1 FROM pg_partitioned_table
-        WHERE partrelid = 'candidate_failure_logs'::regclass
-    ) INTO has_partitions;
+        SELECT 1 FROM pg_class
+        WHERE relname = 'candidate_failure_logs'
+          AND relnamespace = 'public'::regnamespace
+    ) INTO has_table;
 
-    IF has_partitions THEN
-        RAISE NOTICE 'V359: candidate_failure_logs already partitioned, skipping';
+    IF has_table THEN
+        SELECT EXISTS (
+            SELECT 1 FROM pg_partitioned_table
+            WHERE partrelid = 'candidate_failure_logs'::regclass
+        ) INTO has_partitions;
+
+        IF has_partitions THEN
+            RAISE NOTICE 'V359: candidate_failure_logs already partitioned, skipping';
+        ELSE
+            RAISE EXCEPTION 'V359: candidate_failure_logs exists but is not partitioned (heap?); manual intervention required';
+        END IF;
     ELSE
         EXECUTE $sql$
             CREATE TABLE candidate_failure_logs (
@@ -160,6 +174,7 @@ $do$;
 -- 5. ensure_partition 函数（沿用 392 模板）
 -- ---------------------------------------------------------------------------
 \echo '--- 5. CREATE ensure_candidate_failure_logs_partition ---'
+DROP FUNCTION IF EXISTS ensure_candidate_failure_logs_partition(timestamp with time zone);
 CREATE OR REPLACE FUNCTION ensure_candidate_failure_logs_partition(target_ts timestamp with time zone)
 RETURNS text
 LANGUAGE plpgsql
@@ -193,7 +208,14 @@ Mirrors 392 ensure_* pattern; idempotent.';
 -- ---------------------------------------------------------------------------
 -- 6. 创建当月 + 上下月分区（启动时只需保证当月 + 未来一个月可写）
 -- ---------------------------------------------------------------------------
-\echo '--- 6. CREATE 当月 + 上下月分区 ---'
+\echo '--- 6. CREATE 历史月份（2025-12 → 2026-06）+ 当月 + 上下月分区 ---'
+SELECT ensure_candidate_failure_logs_partition('2025-12-01'::timestamptz);
+SELECT ensure_candidate_failure_logs_partition('2026-01-01'::timestamptz);
+SELECT ensure_candidate_failure_logs_partition('2026-02-01'::timestamptz);
+SELECT ensure_candidate_failure_logs_partition('2026-03-01'::timestamptz);
+SELECT ensure_candidate_failure_logs_partition('2026-04-01'::timestamptz);
+SELECT ensure_candidate_failure_logs_partition('2026-05-01'::timestamptz);
+SELECT ensure_candidate_failure_logs_partition('2026-06-01'::timestamptz);
 SELECT ensure_candidate_failure_logs_partition((date_trunc('month', NOW()) - interval '1 month')::timestamp);
 SELECT ensure_candidate_failure_logs_partition(date_trunc('month', NOW())::timestamp);
 SELECT ensure_candidate_failure_logs_partition((date_trunc('month', NOW()) + interval '1 month')::timestamp);
@@ -274,10 +296,21 @@ CREATE INDEX IF NOT EXISTS idx_cfl_hot_session_ts
 -- ---------------------------------------------------------------------------
 \echo '--- 10. CREATE VIEW candidate_failure_logs_with_current_month ---'
 DROP VIEW IF EXISTS candidate_failure_logs_with_current_month;
+-- 显式列名（hot 来自 LIKE INCLUDING ALL，列顺序与父表不一致；UNION 需要按位置对齐）
 CREATE VIEW candidate_failure_logs_with_current_month AS
-SELECT * FROM candidate_failure_logs_hot
+SELECT
+    id, request_id, ts, tenant_id, credential_id, provider_id, raw_model_name, attempt_index,
+    error_kind, error_message, upstream_status_code, upstream_response_body, upstream_response_preview,
+    latency_ms, retryable, per_attempt_latency_ms, extracted_upstream_status_code, diagnosed_error_kind,
+    context, session_id
+FROM candidate_failure_logs_hot
 UNION ALL
-SELECT * FROM candidate_failure_logs;
+SELECT
+    id, request_id, ts, tenant_id, credential_id, provider_id, raw_model_name, attempt_index,
+    error_kind, error_message, upstream_status_code, upstream_response_body, upstream_response_preview,
+    latency_ms, retryable, per_attempt_latency_ms, extracted_upstream_status_code, diagnosed_error_kind,
+    context, session_id
+FROM candidate_failure_logs;
 
 COMMENT ON VIEW candidate_failure_logs_with_current_month IS
 'UNION ALL view: hot (24h retention, heap) ∪ partitioned parent (monthly columnar).
@@ -289,6 +322,7 @@ Created by V359 (2026-08-17).';
 -- 11. promote 函数（按 392 模板，从 hot → 月度分区）
 -- ---------------------------------------------------------------------------
 \echo '--- 11. CREATE promote_candidate_failure_logs_hot_to_partition ---'
+DROP FUNCTION IF EXISTS promote_candidate_failure_logs_hot_to_partition(interval, int);
 CREATE OR REPLACE FUNCTION promote_candidate_failure_logs_hot_to_partition(
     p_retention interval DEFAULT '24 hours',
     p_batch_size int DEFAULT 5000
