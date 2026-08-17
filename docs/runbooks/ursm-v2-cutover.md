@@ -1,7 +1,7 @@
-# URSM v2 渐进切换操作手册
+# URSM v2 直接启动操作手册
 
-> 路径：`off → shadow（双轨核对）→ canary（1% → 5% → 10%）→ authoritative`。
-> 252 gateway runtime 保持 deferred/fail-closed；仅沿 `local → dev → 245 → 154` 推进。每一阶段必须修改真实 systemd `EnvironmentFile` 或 Kubernetes Deployment，不使用 transient `systemctl set-environment`。
+> 默认路径是直接 `authoritative`：网关启动时会从 `node_probe_state` 全量导入 tenant-aware Redis 状态、发布 coverage manifest，并仅在校验成功后打开 ready gate。不需要 shadow 或 canary 灰度。
+> 每次部署必须修改真实 systemd `EnvironmentFile` 或 Kubernetes Deployment，不使用 transient `systemctl set-environment`。Redis、PostgreSQL 和 system monitor 任一不可用时，网关会在监听端口前退出。
 
 ## 1. 模式语义
 
@@ -12,111 +12,46 @@
 | `canary` | 命中请求使用 v2；未命中仍为 legacy | 命中请求写 v2 | 命中请求按 v2 排序，持续采样 diff |
 | `authoritative` | URSM v2 | 全量写 v2 | 全量 v2；gate/Redis 异常时保护性拒绝 |
 
-`URSM_V2_MODE` 缺省为 `off`。shadow 绝不改变 legacy 的生产路由或主写；不能以 `diff=0` 替代 outcome 旁写的成功证据。
+`URSM_V2_MODE` 缺省为 `authoritative`。`off` 保留为紧急回退开关；shadow 与 canary 仅保留给隔离诊断，不是上线前置流程。
 
-## 2. 切换前置条件
+## 2. 直接启动前置条件
 
 所有条件必须满足：
 
-1. Redis 已启用；authoritative 前 `LLM_GATEWAY_SYSTEM_MONITOR_ENABLED=true`。
-2. Prometheus 已抓取使用管理员 Bearer token 的 `/metrics`，retention 不少于 8 天。
+1. PostgreSQL、Redis 已启用且网关启动账号可访问；Redis 地址通过 `LLM_GATEWAY_REDIS_ADDR` 配置。
+2. 持久环境文件包含 `LLM_GATEWAY_SYSTEM_MONITOR_ENABLED=true`。默认 `URSM_V2_MODE=authoritative`；可显式写入同值以便审计。
 3. `go build ./...`、`go test -race ./domains/ursm/...`、`go test -race ./domains/streaming/executors` 通过。
-4. 完成 migration CLI 的 dry-run、apply 和 coverage manifest 校验；authoritative 使用全量 tenant-aware coverage，不接受局部 tenant manifest。
-5. 在每次模式变更前记录连续 24 小时的错误率、无候选率、P99 基线。
-6. local 与 dev 已验证 default-off、shadow 启动、认证 metrics 抓取和 `off` 回退。
+4. `node_probe_state` 含有效的全租户状态。网关在启动中自动创建全局 coverage manifest；若需要预先审计，使用 `go run ./cmd/migrate-ursm-v2 --apply`，禁止带 `--tenant-id` 后直接启动权威模式。
+5. Prometheus 已抓取使用管理员 Bearer token 的 `/metrics`，并记录部署前 24 小时错误率、无候选率和 P99 基线。
 
-用只读 evidence 工具确认当前 scrape 的标签契约完整；该工具不替代 Prometheus 的跨实例趋势查询：
+## 3. 直接权威启动
 
-```bash
-bash scripts/verify-ursm-v2-rollout.sh \
-  --stage shadow \
-  --url http://127.0.0.1:8781 \
-  --token "$LLM_GATEWAY_ADMIN_API_KEY"
-```
-
-## 3. Stage 1：local、dev、245 Shadow
-
-先在 local、dev 使用以下持久配置验证；通过后才在 245 使用相同配置：
-
-```text
-URSM_V2_MODE=shadow
-URSM_V2_SHADOW_DOUBLE_WRITE=true
-URSM_V2_SHADOW_SAMPLE_RATE=0.01
-# 删除 URSM_V2_CANARY_PERCENT
-```
-
-Systemd 修改 `/etc/llm-gateway-go/env` 后重启；Kubernetes 使用 `kubectl set env` 并执行 `rollout status`。启动后必须确认日志包含 URSM v2 manager 和 legacy credentialstate manager 创建：shadow 下后者仍是唯一生产权威。
-
-### 3.1 Shadow 双轨 GO 门槛
-
-245 必须连续观察 7 天。进程 counter 会在重启归零，因此以 Prometheus 的跨实例聚合为准：
-
-```promql
-sum(increase(llm_gateway_ursm_v2_shadow_records_total{result="failed"}[7d])) == 0
-sum(increase(llm_gateway_ursm_v2_shadow_records_total{result="recorded"}[7d])) > 0
-
-sum(increase(ursm_shadow_diff_total{type="availability"}[7d])) == 0
-sum(increase(ursm_shadow_diff_total{type="order"}[7d])) == 0
-sum(increase(ursm_shadow_diff_total{type="top1"}[7d])) == 0
-sum(increase(ursm_shadow_diff_total{type=~"error|not_ready"}[7d])) == 0
-sum(increase(ursm_shadow_diff_total{type="identical"}[7d])) >= 10000
-```
-
-第一组是 **outcome 旁写证据**；第二组是 **候选路由 diff 证据**，两组缺一不可。代码实际 label 是 `availability` 和 `order`，禁止使用历史错误标签 `availability_mismatch`、`order_mismatch`。
-
-性能门禁采用保守标准：相对本阶段前连续 24 小时基线，错误率与无候选率不得增加，P99 增幅不得超过 5%。任一项越线，不得进入 canary。
-
-## 4. Stage 2：Canary 逐档扩容
-
-仅当 245 shadow 的 7 天双轨证据和性能门禁全部通过时，按以下阶梯切换。保留 sample rate 以持续观察 v2/legacy 候选差异：
-
-| 阶段 | 配置 | 最短观察期 |
-|---|---|---|
-| C1 | `URSM_V2_MODE=canary`、`URSM_V2_CANARY_PERCENT=1`、`URSM_V2_SHADOW_SAMPLE_RATE=0.01` | 24 小时 |
-| C2 | `URSM_V2_CANARY_PERCENT=5` | 48 小时 |
-| C3 | `URSM_V2_CANARY_PERCENT=10` | 7 天 |
-
-每一档都必须满足以下条件，才能升到下一档：
-
-```promql
-sum(increase(llm_gateway_ursm_v2_shadow_records_total{result="failed"}[window])) == 0
-sum(increase(ursm_shadow_diff_total{type=~"availability|order|top1|error|not_ready"}[window])) == 0
-sum(increase(routing_state_source_total{source="canary"}[window])) > 0
-sum(increase(routing_state_source_total{source="fallback"}[window])) == 0
-```
-
-同时应用第 3.1 节的保守性能门禁。每次变更后运行：
-
-```bash
-bash scripts/verify-ursm-v2-rollout.sh \
-  --stage canary \
-  --url http://127.0.0.1:8781 \
-  --token "$LLM_GATEWAY_ADMIN_API_KEY"
-```
-
-工具若报告当前 `fallback` 或 sidecar `failed` 非零，会直接失败；跨实例趋势仍以该窗口的 `increase(...)=0` 为最终晋级依据。
-
-完成 245 C3 的完整 7 天证据后，154 从 shadow 重新执行同一套流程。authoritative 不在本轮直接切换，须在 154 canary 证据完整后另行作出 GO 决策。
-
-## 5. Authoritative 全量切换（另行审批）
-
-只有完成全部 shadow 和 canary 证据、全量 tenant-aware coverage 完整、并通过 Redis restart/recovery 演练后才可提交切换审批：
+在目标服务的持久环境文件中设置：
 
 ```text
 URSM_V2_MODE=authoritative
 LLM_GATEWAY_SYSTEM_MONITOR_ENABLED=true
-# 删除 URSM_V2_SHADOW_DOUBLE_WRITE、URSM_V2_SHADOW_SAMPLE_RATE、URSM_V2_CANARY_PERCENT
+# 不设置 URSM_V2_SHADOW_DOUBLE_WRITE、URSM_V2_SHADOW_SAMPLE_RATE、URSM_V2_CANARY_*
 ```
 
-启动必须先将 `ursm:v2:meta:ready=0`，全量 coverage 校验成功后才打开 gate。确认 `meta:ready=1`、legacy manager 已禁用、`routing_state_source_total{source="authoritative"}` 增长。Redis 读取失败或 gate 未 ready 时请求保护性拒绝，不回退 legacy。
+重启 systemd 服务或滚动发布 Kubernetes Deployment。启动日志必须依次显示 manager ready gate 已关闭、legacy bootstrap 总量/写入/跳过计数，以及 coverage 校验后 gate 已打开。任一步失败都会在服务监听前退出；不要绕过或手工打开 `ursm:v2:meta:ready`。
 
-## 6. 停止与回退
+启动完成后，确认 `meta:ready=1`、legacy credentialstate manager 未创建、`routing_state_source_total{source="authoritative"}` 增长。Redis 读取失败或 gate 未 ready 时请求保护性拒绝，不回退 legacy。
 
-立即停止晋级并执行对应回退：
+用只读 evidence 工具确认当前 scrape 的标签契约完整：
 
-- shadow 任意 outcome sidecar `failed`、availability/order/top1/error/not-ready 增长，或性能门禁越线：保持 shadow 排查，必要时回 `off`。
-- canary 任意 `fallback` 增长、双轨证据异常或性能门禁越线：将 `URSM_V2_MODE=shadow` 并删除 `URSM_V2_CANARY_PERCENT`。
-- authoritative coverage/gate/recovery 异常：回 `off`。
+```bash
+bash scripts/verify-ursm-v2-rollout.sh \
+  --stage authoritative \
+  --url http://127.0.0.1:8781 \
+  --token "$LLM_GATEWAY_ADMIN_API_KEY"
+```
+
+`fallback` 非零、错误率或无候选率高于 24 小时基线、或 P99 增幅超过 5% 时立即执行回退。
+
+## 4. 停止与回退
+
+authoritative coverage/gate/recovery 异常或生产指标越线时，持久回退到 `off`。
 
 回退必须修改真实部署配置并重启/滚动发布：
 

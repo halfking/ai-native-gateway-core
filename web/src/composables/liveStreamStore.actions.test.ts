@@ -308,6 +308,17 @@ describe('requestCredential index', () => {
     __testing.resetStream()
     expect(getRequestCredentialId('r1')).toBeNull()
   })
+
+  // 2026-08-17 (audit P1): 同 seq replay 也要同步 requestCredential 索引。
+  it('same-seq replay refreshes the credential binding (last write wins)', () => {
+    // 初次写入 credential_selected(7)
+    lifecycle(action('r1', 1, { action: 'credential_selected', credential_id: 7 }))
+    expect(getRequestCredentialId('r1')).toBe(7)
+    // Redis replay 可能缺少 ts；同 seq 修正帧仍要按 timeline 的
+    // last-write-wins 语义把 credential 更新为 9。
+    lifecycle({ request_id: 'r1', seq: 1, action: 'credential_selected', credential_id: 9 })
+    expect(getRequestCredentialId('r1')).toBe(9)
+  })
 })
 
 // ---------------------------------------------------------------------------
