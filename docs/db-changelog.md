@@ -920,3 +920,9 @@ The current repository instead uses 488 for `request_logs_hot_add_model` and 489
 |-----------|------|---------|--------|
 | 530 | `530_request_journey_contract.sql` | `70162427750db07a35b91e491ead8123e62df23ccb5bdb0dd73b34ae3321cd34` | applied+verified |
 
+## 2026-08-17T09:27:56Z — deploy 245 build_seq 1585 (169d14ae)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 531 | `531_request_journey_tenant_uniqueness.sql` | `726cf74f09ca8aed8f24bdb773f348d9b04938e546e6297739df1cf2050e4f60` | applied+verified |
+
