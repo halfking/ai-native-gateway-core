@@ -472,6 +472,13 @@ function applyRequestCredentialIndex(requestId: string, action: ActionEvent) {
   requestCredential.set(requestId, next)
 }
 
+function rebuildRequestCredentialIndex(requestId: string, timeline: ActionEvent[]) {
+  requestCredential.delete(requestId)
+  for (const action of timeline) {
+    applyRequestCredentialIndex(requestId, action)
+  }
+}
+
 export function getRequestCredentialId(requestId: string): number | null {
   return requestCredential.get(requestId)?.credentialId ?? null
 }
@@ -529,6 +536,9 @@ function recordAction(action: ActionEvent) {
   if (existingIndex >= 0) {
     // Same seq replays (snapshot refresh / reconnect): last write wins.
     list[existingIndex] = action
+    // 2026-08-17 (audit P1): timeline 用同 seq last-write-wins；索引必须
+    // 从替换后的 timeline 重建，不能让旧 action 的时间戳覆盖该语义。
+    rebuildRequestCredentialIndex(requestId, list)
     return
   }
 
