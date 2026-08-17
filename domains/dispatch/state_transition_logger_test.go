@@ -102,12 +102,12 @@ func TestFlushEncodesMetadataAsJSONText(t *testing.T) {
 	if len(db.execArgs) != 2 {
 		t.Fatalf("exec calls = %d, want tenant GUC + INSERT", len(db.execArgs))
 	}
-	metadata, ok := db.execArgs[1][5].(string)
-	if !ok {
-		t.Fatalf("metadata arg type = %T, want string for jsonb text encoding", db.execArgs[1][5])
+	insertSQL := db.execSQL[1]
+	if !strings.Contains(insertSQL, `'{"attempt":2,"reason":"timeout"}'::jsonb`) {
+		t.Fatalf("INSERT SQL does not contain encoded JSONB metadata: %s", insertSQL)
 	}
-	if metadata != `{"attempt":2,"reason":"timeout"}` {
-		t.Errorf("metadata arg = %s, want encoded JSON object", metadata)
+	if len(db.execArgs[1]) != 6 || db.execArgs[1][5] != int64(1) {
+		t.Fatalf("INSERT args = %#v, want seq as sixth argument", db.execArgs[1])
 	}
 }
 
@@ -121,8 +121,12 @@ func TestFlushPreservesNilMetadataAsSQLNull(t *testing.T) {
 	if len(db.execArgs) != 2 {
 		t.Fatalf("exec calls = %d, want tenant GUC + INSERT", len(db.execArgs))
 	}
-	if metadata := db.execArgs[1][5]; metadata != nil {
-		t.Fatalf("metadata arg = %#v (%T), want nil SQL NULL", metadata, metadata)
+	insertSQL := db.execSQL[1]
+	if !strings.Contains(insertSQL, "VALUES ($1, $2, $3, $4, $5, NULL, $6)") {
+		t.Fatalf("INSERT SQL does not preserve NULL metadata: %s", insertSQL)
+	}
+	if len(db.execArgs[1]) != 6 || db.execArgs[1][5] != int64(1) {
+		t.Fatalf("INSERT args = %#v, want seq as sixth argument", db.execArgs[1])
 	}
 }
 

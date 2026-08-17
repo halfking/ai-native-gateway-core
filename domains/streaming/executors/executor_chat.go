@@ -787,7 +787,7 @@ func (e *Executor) executeOpenAI(
 					resp.StatusCode != 403 && resp.StatusCode != 402 &&
 					errKind != errorsx.KindConcurrent {
 					if !errorsx.IsClientBug(errKind) {
-						e.Circuit.RecordSuccess(cand.ProviderID, cand.CredentialID)
+						e.recordProtocolCircuitSuccess(params, cand.ProviderID, cand.CredentialID)
 					} else {
 						slog.Info("upstream rejected request as client bug",
 							"credential_id", cand.CredentialID,
@@ -800,7 +800,7 @@ func (e *Executor) executeOpenAI(
 				} else if errKind == errorsx.KindRateLimit {
 					e.Limiter.Shrink(cand.ProviderID, cand.CredentialID)
 				} else if errKind == errorsx.KindConcurrent {
-					e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, cand.StandardizedName, errorsx.KindConcurrent,
+					e.writeProtocolCredentialStateOnError(params, params.R.Context(), cand.CredentialID, cand.StandardizedName, errorsx.KindConcurrent,
 						&upstreampkg.Error{
 							Kind:       errorsx.KindConcurrent,
 							Message:    fmt.Sprintf("upstream %d concurrent overload", resp.StatusCode),
@@ -915,7 +915,7 @@ func (e *Executor) executeOpenAI(
 				e.TTFBTracker.Record(cand.CredentialID, upstreamLatency)
 			}
 			recordAttemptSuccess := func(chunkCount int) {
-				e.Circuit.RecordSuccess(cand.ProviderID, cand.CredentialID)
+				e.recordProtocolCircuitSuccess(params, cand.ProviderID, cand.CredentialID)
 				if e.PostExecutionHook != nil {
 					_ = e.PostExecutionHook.RecordOutcome(params.R.Context(), ExecutionOutcome{
 						CredentialID:   cand.CredentialID,
@@ -1073,18 +1073,18 @@ func (e *Executor) executeOpenAI(
 							RoutingTracker:      params.RoutingTracker,
 						}, nil
 					} else if isResumable {
-						e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, streamKind)
+						e.recordProtocolCircuitFailure(params, cand.ProviderID, cand.CredentialID, streamKind)
 						if streamKind == errorsx.KindConcurrent {
-							e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, cand.StandardizedName, streamKind,
+							e.writeProtocolCredentialStateOnError(params, params.R.Context(), cand.CredentialID, cand.StandardizedName, streamKind,
 								fmt.Errorf("stream %s (concurrent-overload inferred)", streamOutcome.Reason))
 							e.forceUnpinOnFatalKind(params.R.Context(), fpLease.Holder, cand.CredentialID, streamKind)
 						} else if e.shouldWriteCredentialStateOnConfirmedFailure(cand.ProviderID, cand.CredentialID, streamKind) {
-							e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, cand.StandardizedName, streamKind, fmt.Errorf("stream %s", streamOutcome.Reason))
+							e.writeProtocolCredentialStateOnError(params, params.R.Context(), cand.CredentialID, cand.StandardizedName, streamKind, fmt.Errorf("stream %s", streamOutcome.Reason))
 							e.forceUnpinOnFatalKind(params.R.Context(), fpLease.Holder, cand.CredentialID, streamKind)
 						}
 					} else if streamKind == errorsx.KindConcurrent {
-						e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, streamKind)
-						e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, cand.StandardizedName, streamKind,
+						e.recordProtocolCircuitFailure(params, cand.ProviderID, cand.CredentialID, streamKind)
+						e.writeProtocolCredentialStateOnError(params, params.R.Context(), cand.CredentialID, cand.StandardizedName, streamKind,
 							fmt.Errorf("stream %s (concurrent-overload inferred, non-resumable)", streamOutcome.Reason))
 						e.forceUnpinOnFatalKind(params.R.Context(), fpLease.Holder, cand.CredentialID, streamKind)
 						slog.Warn("non-resumable stream interrupted by concurrent-overload, credential now in 5-min cooling",
@@ -1094,9 +1094,9 @@ func (e *Executor) executeOpenAI(
 							"chunk_count", streamOutcome.ChunkCount,
 						)
 					} else {
-						e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, streamKind)
+						e.recordProtocolCircuitFailure(params, cand.ProviderID, cand.CredentialID, streamKind)
 						if e.shouldWriteCredentialStateOnConfirmedFailure(cand.ProviderID, cand.CredentialID, streamKind) {
-							e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, cand.StandardizedName, streamKind,
+							e.writeProtocolCredentialStateOnError(params, params.R.Context(), cand.CredentialID, cand.StandardizedName, streamKind,
 								fmt.Errorf("stream %s (non-resumable)", streamOutcome.Reason))
 							e.forceUnpinOnFatalKind(params.R.Context(), fpLease.Holder, cand.CredentialID, streamKind)
 						}
@@ -1800,60 +1800,22 @@ func strPtrCompat(s string) *string {
 	return &s
 }
 
-// hasSessionID reports whether the request carries a gateway session
-// id (X-Gw-Session-Id). When true, the executor decouples the
-// upstream context from the client context so a client disconnect
-// does not cancel the vendor request — the response is cached for
-// the client to pick up on reconnect (see pending/ Store + the GET
-// endpoint in sessions/handler.go).
+// upstreamContext returns the context used for the upstream HTTP call.
+// Detachment is granted only by the explicit StreamSurvivesClientCancel or
+// SurvivalAttempt owner flags; correlation-only session IDs are insufficient.
 //
-// Track C (2026-06-18). Mirrors the X-Session-Id → X-Gw-Session-Id
-// fallback used in relay/handler.go, but here we only care about
-// "is the client claiming session tracking" — the actual lookup
-// happens earlier in the handler.
-func hasSessionID(params *ExecParams) bool {
-	if params == nil || params.R == nil {
-		return false
-	}
-	if v := params.R.Header.Get("X-Gw-Session-Id"); v != "" {
-		return true
-	}
-	if v := params.R.Header.Get("X-Session-Id"); v != "" {
-		return true
-	}
-	return false
-}
-
-// upstreamContext (Track C, 2026-06-18) returns the context used for
-// the upstream HTTP call. When the request carries a session id,
-// the context is decoupled from the client request context so a
-// client disconnect does not cancel the vendor request. Otherwise,
-// the original behaviour is preserved (client disconnect cancels
-// upstream immediately) to avoid wasting vendor budget on requests
-// the client will not retrieve.
-//
-// The decoupling is intentionally minimal in C1: we do NOT yet
-// implement the response buffering or the cache write — those are
-// C2 (stream.go) and C4 (executor.go async retry). C1 only proves
-// the "upstream does not cancel on client disconnect" building
-// block. The timeout is still respected, so a stuck vendor is
-// bounded regardless of client state.
-//
-// 2026-08-04: streaming requests no longer carry a wall-clock deadline.
-// Previously every stream was capped at StreamTimeout (900s), which silently
-// killed long-running agent tasks (multi-step reasoning + tool calls) whose
-// total streaming time exceeded 15 minutes even though data was flowing
-// normally. A stuck vendor is still bounded — independently of this context —
-// by two layers: ResponseHeaderTimeout (120s, awaits the first byte) on the
-// http.Transport, and streamChunkTimeout (300s+) on every read in the bridge
-// loop. Both fire on *inactivity*, which is the correct failure signal; a
-// pure wall-clock cap fires on age and causes false interruptions. We still
-// derive from WithoutCancel so a client disconnect never aborts an in-flight
-// vendor call (session/cache completion).
+// Streaming requests carry no wall-clock deadline. A stuck vendor is bounded
+// by ResponseHeaderTimeout and the bridge's per-read streamChunkTimeout. An
+// ordinary stream still derives from the request context, so client disconnect
+// cancels promptly; only session/survival ownership uses WithoutCancel so its
+// pending or durable result can finish.
 func (e *Executor) upstreamContext(params *ExecParams, timeout time.Duration) (context.Context, context.CancelFunc) {
-	if hasSessionID(params) || params.IsStream {
+	if params.StreamSurvivesClientCancel || params.SurvivalAttempt {
 		ctx, cancel := context.WithCancel(context.WithoutCancel(params.R.Context()))
 		return ctx, cancel
+	}
+	if params.IsStream {
+		return context.WithCancel(params.R.Context())
 	}
 	return context.WithTimeout(params.R.Context(), timeout)
 }

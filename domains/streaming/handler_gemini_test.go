@@ -133,11 +133,28 @@ func TestGeminiStreamWriter_ConvertsFlushedChunks(t *testing.T) {
 	if w.flushes != 1 {
 		t.Fatalf("flushes = %d, want 1", w.flushes)
 	}
-	if _, err := gw.Write([]byte("data: [DONE]\n\ndata: [DONE]\n")); err != nil {
-		t.Fatalf("done write: %v", err)
+	if _, err := gw.Write([]byte(": keep-alive\n\ndata: [DONE]\n\ndata: [DONE]\n")); err != nil {
+		t.Fatalf("transport write: %v", err)
 	}
-	if got := strings.Count(w.body.String(), "data: [DONE]"); got != 1 {
-		t.Fatalf("DONE count = %d, want 1", got)
+	if got := strings.Count(w.body.String(), ": keep-alive"); got != 1 {
+		t.Fatalf("heartbeat count = %d, want 1", got)
+	}
+	if got := strings.Count(w.body.String(), "data: [DONE]"); got != 0 {
+		t.Fatalf("Gemini stream leaked %d OpenAI DONE sentinels", got)
+	}
+}
+
+func TestGeminiSyntheticRequestPropagatesOriginalContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	original := httptest.NewRequest(http.MethodPost, "/v1beta/models/gemini:streamGenerateContent", nil).WithContext(ctx)
+	synthetic := newGeminiSyntheticRequest(original, []byte(`{"stream":true}`))
+
+	cancel()
+	if synthetic.Context().Err() != context.Canceled {
+		t.Fatalf("synthetic context error = %v, want context.Canceled", synthetic.Context().Err())
+	}
+	if got := synthetic.Header.Get("X-Gw-Client-Protocol"); got != ir.ProtocolGeminiGenerate {
+		t.Fatalf("client protocol = %q", got)
 	}
 }
 

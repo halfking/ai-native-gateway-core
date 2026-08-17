@@ -61,6 +61,7 @@ import approval from './approval'
 import probeHealth from './probeHealth'
 import tenantModels from './tenantModels'
 import publicPortal from './public'
+import requestJourneys from './requestJourneys'
 
 export default {
   common,
@@ -125,4 +126,5 @@ export default {
   tenantModels,
   customer,
   public: publicPortal,
+  requestJourneys,
 }

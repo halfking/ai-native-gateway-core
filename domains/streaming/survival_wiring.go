@@ -68,10 +68,9 @@ func (h *ChatHandler) runSurvivalCoordinator(
 	params := buildExecParams(w)
 	params.R = frozenReq
 
-	// A-P2-6 write-unification: the pre-stream keepalive goroutine writes
-	// the connection directly; from here on the coordinator's serialized
-	// writer is the single writer (recovery keepalives flow through it).
-	// Stop the pre-stream sender first so the two can never interleave.
+	// The handler-owned StreamSession stays active through terminal completion.
+	// OnStreamReady is retained for compatibility but no longer stops heartbeat;
+	// both heartbeat and coordinator output share the serialized connection.
 	if params.OnStreamReady != nil {
 		params.OnStreamReady()
 	}
@@ -92,9 +91,10 @@ func (h *ChatHandler) runSurvivalCoordinator(
 		attemptExec = h.executor
 	}
 	coordinator := &SurvivalCoordinator{
-		Exec:     attemptExec,
-		Protocol: protocol,
-		Options:  h.survivalOptions,
+		Exec:               attemptExec,
+		Protocol:           protocol,
+		Options:            h.survivalOptions,
+		TransportHeartbeat: params.OnStreamHeartbeat,
 		Refresh: func(ctx context.Context) {
 			cands, _, _, err := resolveCandidatesForRequest(
 				ctx, h.provider, params.ClientModel, params.ClientID.Fingerprint.ClientProfile,

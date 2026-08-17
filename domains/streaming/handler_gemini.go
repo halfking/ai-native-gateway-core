@@ -81,11 +81,14 @@ func (w *geminiStreamWriter) WriteHeader(status int) {
 
 func (w *geminiStreamWriter) writeChunk(line []byte) error {
 	if bytes.Equal(line, []byte("data: [DONE]")) {
-		if w.done {
-			return nil
-		}
+		// [DONE] is an OpenAI chat sentinel, not a Gemini protocol frame.
 		w.done = true
-		_, err := w.ResponseWriter.Write([]byte("data: [DONE]\n\n"))
+		return nil
+	}
+	if bytes.HasPrefix(line, []byte(":")) {
+		// SSE comments are protocol-neutral transport frames. Preserve them
+		// verbatim so native Gemini streams receive the shared heartbeat.
+		_, err := w.ResponseWriter.Write(append(append([]byte{}, line...), '\n', '\n'))
 		return err
 	}
 	chunk, err := ir.ParseOpenAIStreamChunk(string(line))
@@ -132,9 +135,25 @@ func NewGeminiHandler(ch *ChatHandler) *GeminiHandler {
 	return h
 }
 
+func newGeminiSyntheticRequest(original *http.Request, body []byte) *http.Request {
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	if original != nil {
+		req = req.WithContext(original.Context())
+		req.Header = original.Header.Clone()
+	}
+	if req.Header.Get("Content-Type") == "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	req.Header.Set("X-Gw-Client-Protocol", ir.ProtocolGeminiGenerate)
+	return req
+}
+
 // ServeHTTP routes a Gemini-native request through the IR translation
 // pipeline and back to Gemini-native response format.
 func (h *GeminiHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	w, r, journeyWriter := beginRequestJourney(w, r, h.chatHandler)
+	defer finishRequestJourney(r, journeyWriter)
+	r = markExplicitStreamSession(r)
 	// Step 4 audit fix (2026-07-28): per-request IR scope so anomaly dedup
 	// is bounded to this request (SerializeOpenAI at step 6 and
 	// SerializeGeminiResponse at the non-stream tail) rather than the
@@ -183,6 +202,7 @@ func (h *GeminiHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if irReq.Model == "" {
 		irReq.Model = model
 	}
+	resolveRequestJourney(r, "", model, irReq.Model)
 
 	// Step 5: Mark streaming intent on the IR (URL action wins over body)
 	wantStream := action == "streamGenerateContent" || irReq.Stream
@@ -206,14 +226,7 @@ func (h *GeminiHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Step 7: Build a synthetic /v1/chat/completions request that the
 	// existing ChatHandler will recognize and dispatch through the OpenAI
 	// executor (with all its infrastructure: credentials, sticky, audit).
-	synthReq := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
-		bytes.NewReader(openaiBody))
-	synthReq.Header = r.Header.Clone()
-	if synthReq.Header.Get("Content-Type") == "" {
-		synthReq.Header.Set("Content-Type", "application/json")
-	}
-	// Mark origin so downstream observability can distinguish Gemini-via-IR
-	synthReq.Header.Set("X-Gw-Client-Protocol", ir.ProtocolGeminiGenerate)
+	synthReq := newGeminiSyntheticRequest(r, openaiBody)
 
 	// Step 8: Stream through a real ResponseWriter so ChatHandler flushes
 	// reach the Gemini client as soon as each upstream chunk is available.

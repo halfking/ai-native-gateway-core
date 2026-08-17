@@ -113,6 +113,10 @@ type GateOptions struct {
 	// state may be sent (禁写网络). Buffering metadata alone never fires it:
 	// the first semantic commit's checkpoint covers the metadata rank too.
 	BeforeSemanticCommit func(CommitState) error
+	// FirstSemanticByte fires once when the first content/tool-call frame is
+	// accepted. Transport comments, ping, metadata, and terminal-only frames do
+	// not invoke it.
+	FirstSemanticByte func()
 	// MaxMetadataBufferAge bounds how long attempt metadata may stay
 	// buffered; 0 = DefaultMaxMetadataBufferAge. Overflow surfaces the
 	// same ErrAttemptMetadataBufferExceeded as the byte cap.
@@ -128,6 +132,8 @@ type AttemptCommitGate struct {
 	maxMetadata          int
 	maxMetadataAge       time.Duration
 	beforeSemanticCommit func(CommitState) error
+	firstSemanticByte    func()
+	firstSemanticSeen    bool
 
 	state     CommitState
 	committed bool
@@ -159,6 +165,7 @@ func NewAttemptCommitGate(protocol ClientProtocol, writer *SerializedStreamWrite
 		maxMetadata:          opts.MaxMetadataBufferBytes,
 		maxMetadataAge:       opts.MaxMetadataBufferAge,
 		beforeSemanticCommit: opts.BeforeSemanticCommit,
+		firstSemanticByte:    opts.FirstSemanticByte,
 	}
 }
 
@@ -194,6 +201,20 @@ func (g *AttemptCommitGate) MayWriteTerminal() bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return g.committed || g.mode == GateModeImmediate
+}
+
+// SetFirstSemanticByteCallback binds an attempt-scoped callback. It is safe to
+// call when a coordinator already created the gate before dispatch selected the
+// concrete attempt.
+func (g *AttemptCommitGate) SetFirstSemanticByteCallback(callback func()) {
+	if g == nil || callback == nil {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if !g.firstSemanticSeen {
+		g.firstSemanticByte = callback
+	}
 }
 
 // State returns the current commit state.
@@ -258,7 +279,11 @@ func (g *AttemptCommitGate) WriteFrame(frame string) error {
 		if _, err := g.writer.Write([]byte(frame)); err != nil {
 			return err
 		}
-		return g.writer.FlushError()
+		if err := g.writer.FlushError(); err != nil {
+			return err
+		}
+		g.markFirstSemanticByteLocked(class)
+		return nil
 	}
 
 	// Buffered mode, not yet committed.
@@ -271,7 +296,11 @@ func (g *AttemptCommitGate) WriteFrame(frame string) error {
 		if _, err := g.writer.Write([]byte(frame)); err != nil {
 			return err
 		}
-		return g.writer.FlushError()
+		if err := g.writer.FlushError(); err != nil {
+			return err
+		}
+		g.markFirstSemanticByteLocked(class)
+		return nil
 	}
 
 	return g.appendBufferedLocked(frame)
@@ -339,6 +368,17 @@ func isSemanticClass(class FrameClass) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+func (g *AttemptCommitGate) markFirstSemanticByteLocked(class FrameClass) {
+	if g.firstSemanticSeen || g.firstSemanticByte == nil {
+		return
+	}
+	switch class {
+	case FrameClassContent, FrameClassToolCall, FrameClassUnknown:
+		g.firstSemanticSeen = true
+		g.firstSemanticByte()
 	}
 }
 

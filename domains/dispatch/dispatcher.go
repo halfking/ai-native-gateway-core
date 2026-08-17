@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 
+	"github.com/kaixuan/llm-gateway-go/domains/requestjourney"
 	"github.com/kaixuan/llm-gateway-go/internal/liveactions"
 )
 
@@ -90,9 +91,18 @@ func (p *Pipeline) selectAndEnqueue(qr *QueuedRequest) bool {
 // current model are exhausted, switch to an alternative model. If model-change
 // is disabled or no alternative exists, complete with the original cause.
 func (p *Pipeline) tryModelChange(qr *QueuedRequest, cause error) {
+	p.tryModelChangeOutcome(qr, ForwardOutcome{Err: cause})
+}
+
+func (p *Pipeline) tryModelChangeOutcome(qr *QueuedRequest, outcome ForwardOutcome) {
+	cause := outcome.Err
+	completeCause := func() {
+		outcome.Err = terminalErr(cause)
+		p.complete(qr, outcome)
+	}
 	if !p.modelChangeEnabled() || !qr.AllowModelChange {
 		p.emitNoRouteIfCause(qr, cause)
-		p.complete(qr, ForwardOutcome{Err: terminalErr(cause)})
+		completeCause()
 		return
 	}
 	qr.markTriedModel(qr.ResolvedModel)
@@ -110,12 +120,12 @@ func (p *Pipeline) tryModelChange(qr *QueuedRequest, cause error) {
 	}
 	if err != nil {
 		p.emitNoRouteIfCause(qr, cause)
-		p.complete(qr, ForwardOutcome{Err: terminalErr(cause)})
+		completeCause()
 		return
 	}
 	if len(alts) == 0 {
 		p.emitNoRouteIfCause(qr, cause)
-		p.complete(qr, ForwardOutcome{Err: terminalErr(cause)})
+		completeCause()
 		return
 	}
 	// Take the first alternative not already tried.
@@ -128,20 +138,29 @@ func (p *Pipeline) tryModelChange(qr *QueuedRequest, cause error) {
 	}
 	if chosen == "" {
 		p.emitNoRouteIfCause(qr, cause)
-		p.complete(qr, ForwardOutcome{Err: terminalErr(cause)})
+		completeCause()
 		return
 	}
 	// V3.3-OBS OBS-B1 (2026-08-15): model_switch 动作事件（24 号 §2：
 	// from/to/reason；不产生新 request_id）。
+	fromModel := qr.ResolvedModel
 	p.liveActions.Emit(ctxOf(qr), liveactions.ActionEvent{
 		RequestID: qr.ID,
 		Action:    liveactions.ActionModelSwitch,
 		Model:     chosen,
 		Detail: map[string]string{
-			"from_model": qr.ResolvedModel,
+			"from_model": fromModel,
 			"to_model":   chosen,
 			"reason":     "no_node",
 		},
+	})
+	qr.emitJourney(requestjourney.JourneyEvent{
+		Type:          requestjourney.EventModelSwitched,
+		Stage:         requestjourney.StageRetrying,
+		ResolvedModel: fromModel,
+		FromModel:     fromModel,
+		ToModel:       chosen,
+		SwitchReason:  "no_node",
 	})
 	qr.ResolvedModel = chosen
 	qr.TriedCredentials = make(map[int]struct{})
@@ -169,6 +188,15 @@ func (p *Pipeline) selectCredential(qr *QueuedRequest, ref CredentialRef) {
 	if qr.InitialProviderID == 0 {
 		qr.InitialProviderID = ref.ProviderID
 	}
+	qr.emitJourney(requestjourney.JourneyEvent{
+		Type:          requestjourney.EventCredentialSelected,
+		Stage:         requestjourney.StageNodeSelection,
+		ResolvedModel: qr.ResolvedModel,
+		Model:         qr.ResolvedModel,
+		ProviderID:    int64(ref.ProviderID),
+		Provider:      ref.Vendor,
+		CredentialID:  int64(ref.CredentialID),
+	})
 }
 
 // abandoned-aware ctx helper: returns the request ctx or background.

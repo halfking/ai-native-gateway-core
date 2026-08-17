@@ -71,9 +71,20 @@ func (s *SerializedStreamWriter) Captured() ([]byte, error) {
 // Once detached it reports success without writing, so callers do not need
 // per-site detached checks.
 func (s *SerializedStreamWriter) Write(p []byte) (int, error) {
+	return s.write(p, true)
+}
+
+// WriteTransportFrame writes a transport-only frame, such as an SSE comment,
+// through the same serialized connection without adding it to semantic wire
+// capture. Heartbeats must not change durable result bytes or chunk accounting.
+func (s *SerializedStreamWriter) WriteTransportFrame(p []byte) (int, error) {
+	return s.write(p, false)
+}
+
+func (s *SerializedStreamWriter) write(p []byte, capture bool) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.captureLimit > 0 && !s.captureOverflow {
+	if capture && s.captureLimit > 0 && !s.captureOverflow {
 		if len(s.capture)+len(p) > s.captureLimit {
 			s.captureOverflow = true
 		} else {
