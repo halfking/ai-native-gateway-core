@@ -39,6 +39,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 详见 `docs/changelogs/2026-08-17-dashboard-request-detail-columnar-timeout.md`，
   含根因 EXPLAIN ANALYZE 证据 + 154 实测 L1-L4 验证。
 
+### Added
+
+- **请求日志页详情缓存可观测条**：`/request-logs` 页头下新增 super admin 专属
+  单行 chip，实时显示 `/api/admin/logs/body-cache-stats` 的
+  命中率/hits/misses/条目/逐出，随列表「刷新」按钮与自动刷新一起更新。
+  ops 无需 curl 即可判断 cold path 缓解情况（此前端点 backend-only 无 UI）。
+  顺带补齐 6 个 locale 缺失的 `workTypes.layers.addFallback/emptyFallback`
+  （恢复 i18n parity 门禁为绿）。
+
 ## [Unreleased] - 2026-08-17 (Long-Running Request Recovery)
 
 
