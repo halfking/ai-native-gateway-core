@@ -14,6 +14,17 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
+# Load shared local service credentials when present. The file is ignored by
+# git and must remain local-only; compose enforces the gateway password.
+if [ -f .env.local ]; then
+  set -a
+  # shellcheck disable=SC1091
+  source .env.local
+  set +a
+fi
+
+: "${LLM_GATEWAY_DB_PASSWORD:?set LLM_GATEWAY_DB_PASSWORD or create .env.local}"
+
 IMAGE_TAG="llm-gateway-go:v4-local"
 
 echo "==> [1/3] 编译 linux/arm64 二进制 (vendor 模式)"
