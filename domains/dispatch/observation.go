@@ -167,6 +167,10 @@ type Observation struct {
 	HTTPStatus int
 	// RetryReason is the bounded reason for retry-scheduled events.
 	RetryReason string
+	// RetryAt, when set on ObservationRetryScheduled (v4 R1.1/T3-8), is the
+	// time at which the timed retry will be picked back up. nil means an
+	// immediate retry (legacy failover behavior).
+	RetryAt *time.Time
 	// SwitchReason is the bounded reason for switch events.
 	SwitchReason string
 	// OccurredAt is the monotonic timestamp the dispatch pipeline recorded.
@@ -223,6 +227,9 @@ func (o Observation) Validate() error {
 		if o.Outcome != OutcomeCanceled {
 			return errors.New("request_canceled requires canceled outcome")
 		}
+	}
+	if o.RetryAt != nil && o.RetryAt.IsZero() {
+		return errors.New("retry_at, when present, must not be zero")
 	}
 	if o.OccurredAt.IsZero() {
 		return errors.New("occurred_at is required")

@@ -23,6 +23,10 @@ const (
 	QueueGovernorDegraded QueueObservationKind = "governor_degraded"
 	// QueueRequestCompleted appends one immutable waterfall sample.
 	QueueRequestCompleted QueueObservationKind = "request_completed"
+	// QueueLifecycleEviction records lifecycle-registry completed-entry
+	// eviction (v4 R1.8: 淘汰必须发事件). Observation-only — eviction never
+	// affects execution.
+	QueueLifecycleEviction QueueObservationKind = "lifecycle_eviction"
 )
 
 // QueueObservation carries one immutable queue transition. Delta is used for
@@ -48,6 +52,9 @@ type QueueObservation struct {
 	OverflowReason string
 	// Completed carries the immutable waterfall sample on QueueRequestCompleted.
 	Completed *WaterfallRequest
+	// EvictedRequestIDs lists registry entries evicted on
+	// QueueLifecycleEviction.
+	EvictedRequestIDs []string
 }
 
 // QueueObservationSink receives queue-state transitions. Implementations must

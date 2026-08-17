@@ -10,7 +10,17 @@ import (
 	"testing"
 )
 
+// TestDispatchProductionDoesNotImportRequestJourney guards the dispatch seam
+// (v4 UT-CO-08): dispatch production files may not import the projection
+// contract (requestjourney), the executor layer (executors) or the provider
+// registry — dispatch stays a decoupled core with injected callbacks. The
+// Redis mirror's go-redis dependency is allowed (observation bypass).
 func TestDispatchProductionDoesNotImportRequestJourney(t *testing.T) {
+	forbidden := map[string]bool{
+		"github.com/kaixuan/llm-gateway-go/domains/requestjourney":      true,
+		"github.com/kaixuan/llm-gateway-go/domains/streaming/executors": true,
+		"github.com/kaixuan/llm-gateway-go/domains/provider":            true,
+	}
 	_, currentFile, _, ok := runtime.Caller(0)
 	if !ok {
 		t.Fatal("resolve current file")
@@ -32,8 +42,8 @@ func TestDispatchProductionDoesNotImportRequestJourney(t *testing.T) {
 			if err != nil {
 				t.Fatalf("unquote import in %s: %v", file, err)
 			}
-			if path == "github.com/kaixuan/llm-gateway-go/domains/requestjourney" {
-				t.Fatalf("dispatch production file imports requestjourney: %s", file)
+			if forbidden[path] {
+				t.Fatalf("dispatch production file imports forbidden package %s: %s", path, file)
 			}
 		}
 	}

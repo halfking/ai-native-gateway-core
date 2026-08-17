@@ -51,7 +51,13 @@ type ForwardOutcome struct {
 	FatalCredential bool
 	// ErrorKind and HTTPStatus are optional bounded diagnostics supplied by the
 	// executor adapter. Dispatch falls back to a coarse local classification.
-	ErrorKind  string
+	ErrorKind string
+	// RetryAfter is the upstream Retry-After hint (R2.4: upstream hints take
+	// priority over the dispatch backoff ladder, clamped to [2s, 120s]).
+	// 0 = no hint. Populated by the executor adapter when the upstream
+	// supplies one; dispatch never parses headers itself.
+	RetryAfter time.Duration
+	// HTTPStatus is the upstream status for terminal events when known.
 	HTTPStatus int
 	Err        error
 }

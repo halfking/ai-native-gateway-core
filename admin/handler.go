@@ -800,6 +800,14 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("/api/admin/live-stream/trigger-snapshot", admin(h.liveStreamHub.HandleTriggerSnapshot))
 	}
 
+	// 2026-08-18: 会话优化 v4（T4）连接注册表只读投影 + 请求 action
+	// 时间线 REST 回退（liveactions Redis LIST 有界扫描，(request_id,seq)
+	// 去重）。仅元数据/计数，不暴露请求正文或凭据（§13.5 安全约束）。
+	// Registry 未装配时 list/get 返回 503（SetConnectionRegistry 门控）。
+	mux.HandleFunc("/api/admin/connection-registry", admin(h.handleConnectionRegistryList))
+	mux.HandleFunc("/api/admin/connection-registry/{request_id}", admin(h.handleConnectionRegistryGet))
+	mux.HandleFunc("/api/admin/requests/{id}/actions", admin(h.handleRequestActions))
+
 	// 2026-07-13: read-only route-incident diagnosis API (Phase 1).
 	// Super-admin only. nil handler means the diagnose entry is
 	// hidden on the swim lane and the SSE incident_update envelope

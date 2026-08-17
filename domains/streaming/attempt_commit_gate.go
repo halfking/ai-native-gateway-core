@@ -122,6 +122,19 @@ type GateOptions struct {
 	// buffered; 0 = DefaultMaxMetadataBufferAge. Overflow surfaces the
 	// same ErrAttemptMetadataBufferExceeded as the byte cap.
 	MaxMetadataBufferAge time.Duration
+	// HoldbackWindow (FR-12 L1, 会话优化 v4 T13): when > 0, the FIRST
+	// HoldbackMaxChunks semantic frames (or HoldbackWindow after the first
+	// semantic frame, whichever first) are held in the attempt-local buffer
+	// WITHOUT advancing commit state — Discard stays legal, so an
+	// interruption inside the window discards the buffer and replays
+	// invisibly (客户端零感知). 0 (default) keeps the existing behavior:
+	// the first semantic frame commits immediately.
+	HoldbackWindow time.Duration
+	// HoldbackMaxChunks is the chunk half of the L1 window; <= 0 →
+	// DefaultHoldbackMaxChunks (only meaningful when HoldbackWindow > 0).
+	HoldbackMaxChunks int
+	// Now is the clock seam for the holdback window (tests). nil → time.Now.
+	Now func() time.Time
 }
 
 // AttemptCommitGate is the per-attempt protocol-aware buffer sink.
@@ -135,6 +148,14 @@ type AttemptCommitGate struct {
 	beforeSemanticCommit func(CommitState) error
 	firstSemanticByte    func()
 	firstSemanticSeen    bool
+	nowFn                func() time.Time
+
+	// FR-12 L1 holdback window state (inactive when holdbackWindow == 0).
+	holdbackWindow    time.Duration
+	holdbackMaxChunks int
+	holdbackOpened    bool
+	holdbackOpenAt    time.Time
+	holdbackHeld      int
 
 	state     CommitState
 	committed bool
@@ -156,6 +177,9 @@ func NewAttemptCommitGate(protocol ClientProtocol, writer *SerializedStreamWrite
 	if opts.MaxMetadataBufferAge <= 0 {
 		opts.MaxMetadataBufferAge = DefaultMaxMetadataBufferAge
 	}
+	if opts.HoldbackWindow > 0 && opts.HoldbackMaxChunks <= 0 {
+		opts.HoldbackMaxChunks = DefaultHoldbackMaxChunks
+	}
 	if writer == nil {
 		panic("attempt commit gate requires a serialized stream writer")
 	}
@@ -167,6 +191,9 @@ func NewAttemptCommitGate(protocol ClientProtocol, writer *SerializedStreamWrite
 		maxMetadataAge:       opts.MaxMetadataBufferAge,
 		beforeSemanticCommit: opts.BeforeSemanticCommit,
 		firstSemanticByte:    opts.FirstSemanticByte,
+		nowFn:                opts.Now,
+		holdbackWindow:       opts.HoldbackWindow,
+		holdbackMaxChunks:    opts.HoldbackMaxChunks,
 	}
 }
 
@@ -262,6 +289,18 @@ func (g *AttemptCommitGate) WriteFrame(frame string) error {
 		return g.writer.FlushError()
 	}
 
+	// FR-12 L1 holdback (HoldbackWindow > 0): while the window is open,
+	// semantic frames buffer WITHOUT advancing commit state — Discard stays
+	// legal and an in-window interruption replays invisibly. The first
+	// semantic frame after the window closes falls through to the normal
+	// commit path, flushing the held frames in order.
+	if g.mode == GateModeBuffered && !g.committed && isSemanticClass(class) {
+		held, err := g.holdbackTryHoldLocked(frame)
+		if held || err != nil {
+			return err
+		}
+	}
+
 	advanced := g.advanceStateLocked(class)
 
 	// Write-ahead checkpoint (doc 18 §11.3): before bytes of a newly
@@ -330,6 +369,97 @@ func (g *AttemptCommitGate) appendBufferedLocked(frame string) error {
 		return ErrAttemptMetadataBufferExceeded
 	}
 	return nil
+}
+
+// holdbackTryHoldLocked implements the L1 window decision for one semantic
+// frame in buffered uncommitted mode (FR-12 R12.2 L1). The first semantic
+// frame opens the window; frames hold while
+//
+//	held < HoldbackMaxChunks  AND  now - openAt < HoldbackWindow
+//
+// (chunk #20 is still held, #21 flushes; elapsed == window closes —
+// deterministic boundaries, UT-SR-03/04). Returns held=true when the frame
+// was buffered (no state advance — Discard remains legal). Frames arriving
+// after the window closed return held=false so the caller falls through to
+// the normal commit path. The held bytes share the unified byte/age caps of
+// the attempt-local buffer.
+func (g *AttemptCommitGate) holdbackTryHoldLocked(frame string) (held bool, err error) {
+	if g.holdbackWindow <= 0 {
+		return false, nil
+	}
+	now := time.Now()
+	if g.nowFn != nil {
+		now = g.nowFn()
+	}
+	if !g.holdbackOpened {
+		g.holdbackOpened = true
+		g.holdbackOpenAt = now
+	}
+	if g.holdbackHeld >= g.holdbackMaxChunks || now.Sub(g.holdbackOpenAt) >= g.holdbackWindow {
+		return false, nil
+	}
+	if err := g.appendBufferedLocked(frame); err != nil {
+		return false, err
+	}
+	g.holdbackHeld++
+	return true, nil
+}
+
+// HoldbackHeldChunks reports how many semantic chunks the L1 window holds.
+func (g *AttemptCommitGate) HoldbackHeldChunks() int {
+	if g == nil {
+		return 0
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.holdbackHeld
+}
+
+// HoldbackWindowOpen reports whether the L1 window is configured, opened and
+// still within its limits (chunk/time). The recovery loop polls it to decide
+// DiscardAndReplay vs committed-prefix handling.
+func (g *AttemptCommitGate) HoldbackWindowOpen() bool {
+	if g == nil || g.holdbackWindow <= 0 {
+		return false
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.discarded || g.committed || !g.holdbackOpened {
+		return false
+	}
+	now := time.Now()
+	if g.nowFn != nil {
+		now = g.nowFn()
+	}
+	return g.holdbackHeld < g.holdbackMaxChunks && now.Sub(g.holdbackOpenAt) < g.holdbackWindow
+}
+
+// FlushHoldback force-closes the L1 window: held semantic frames commit to
+// the client now (write-ahead hook fires for the newly reached state). Use
+// it when the stream ended while the window was still open — no later frame
+// would trigger the lazy close. No-op for discarded/committed gates.
+func (g *AttemptCommitGate) FlushHoldback() error {
+	if g == nil {
+		return nil
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.flushHoldbackLocked()
+}
+
+func (g *AttemptCommitGate) flushHoldbackLocked() error {
+	if g.discarded || g.committed || g.holdbackWindow <= 0 || !g.holdbackOpened || g.bufferLen == 0 {
+		return nil
+	}
+	if advanced := g.advanceStateLocked(FrameClassContent); advanced && g.beforeSemanticCommit != nil {
+		if err := g.beforeSemanticCommit(g.state); err != nil {
+			return fmt.Errorf("attempt commit gate: write-ahead checkpoint %s: %w", g.state, err)
+		}
+	}
+	if err := g.commitLocked(); err != nil {
+		return err
+	}
+	return g.writer.FlushError()
 }
 
 // advanceStateLocked moves the commit state forward according to the frame
@@ -432,7 +562,12 @@ func (g *AttemptCommitGate) FinishAttempt(partial string) error {
 		if g.mode == GateModeImmediate || g.committed {
 			return g.writer.FlushError()
 		}
-		return nil
+		// The stream ended while the L1 holdback window still held semantic
+		// frames: no later frame will trigger the lazy close, so flush now —
+		// a successful attempt must never swallow held content. Metadata-only
+		// buffers keep the legacy finish semantics (retained, dropped with
+		// the gate).
+		return g.flushHoldbackLocked()
 	}
 	if g.mode == GateModeImmediate || g.committed {
 		if _, err := g.writer.Write([]byte(partial)); err != nil {

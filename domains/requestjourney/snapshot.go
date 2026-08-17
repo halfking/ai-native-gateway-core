@@ -4,19 +4,26 @@ import "time"
 
 // RequestSnapshot is the content-free list representation of one journey.
 type RequestSnapshot struct {
-	TenantID          string            `json:"tenant_id,omitempty"`
-	GatewayInstanceID string            `json:"gateway_instance_id,omitempty"`
-	RequestID         string            `json:"request_id"`
-	RequestedModel    string            `json:"requested_model,omitempty"`
-	ResolvedModel     string            `json:"resolved_model,omitempty"`
-	CurrentStage      JourneyStage      `json:"current_stage"`
-	LastSeq           int64             `json:"last_seq,omitempty"`
-	LastEventType     EventType         `json:"last_event_type,omitempty"`
-	Attempt           *AttemptRef       `json:"attempt,omitempty"`
-	Outcome           Outcome           `json:"outcome,omitempty"`
-	ErrorKind         string            `json:"error_kind,omitempty"`
-	HTTPStatus        int               `json:"http_status,omitempty"`
-	RetryReason       string            `json:"retry_reason,omitempty"`
+	TenantID          string       `json:"tenant_id,omitempty"`
+	GatewayInstanceID string       `json:"gateway_instance_id,omitempty"`
+	RequestID         string       `json:"request_id"`
+	RequestedModel    string       `json:"requested_model,omitempty"`
+	ResolvedModel     string       `json:"resolved_model,omitempty"`
+	CurrentStage      JourneyStage `json:"current_stage"`
+	LastSeq           int64        `json:"last_seq,omitempty"`
+	LastEventType     EventType    `json:"last_event_type,omitempty"`
+	Attempt           *AttemptRef  `json:"attempt,omitempty"`
+	Outcome           Outcome      `json:"outcome,omitempty"`
+	ErrorKind         string       `json:"error_kind,omitempty"`
+	HTTPStatus        int          `json:"http_status,omitempty"`
+	RetryReason       string       `json:"retry_reason,omitempty"`
+	// LifecycleState is the derived request-registry state (v4 R1.1/T2:
+	// pending / in_flight / completed). Empty on snapshots built by older
+	// producers (additive, backward-compatible JSON field).
+	LifecycleState LifecycleState `json:"lifecycle_state,omitempty"`
+	// RetryAt is the pending timed-retry deadline; set while the request is
+	// parked for a scheduled retry (additive, backward-compatible).
+	RetryAt           *time.Time        `json:"retry_at,omitempty"`
 	SwitchReason      string            `json:"switch_reason,omitempty"`
 	NodeHealthStatus  NodeHealthStatus  `json:"node_health_status,omitempty"`
 	ObservationStatus ObservationStatus `json:"observation_status,omitempty"`

@@ -60,10 +60,26 @@ type Config struct {
 	// still has an older Available=true entry.
 	LRUMirrorSoftTTL time.Duration
 	// CoolSeconds is the cooling duration (in seconds) when a node is disabled
-	// due to consecutive failures. Defaults to 120 (2 minutes) if not set.
-	// This should be aligned with the circuit breaker's cooling policies to
-	// ensure consistent behavior between the in-memory breaker and URSM v2.
+	// due to consecutive failures. Default 30 (会话优化 v4 T5 target, was 120
+	// before 2026-08-18): unstable small providers should return to the pool
+	// quickly (spec §14.5 lever 3 “快恢复”). Overridable at boot via
+	// URSM_V2_COOL_SECONDS and at runtime via settings_kv hot key
+	// llmgw_ursm_cool_seconds (see LoadHot).
 	CoolSeconds int
+	// BackoffCapSeconds caps the exponential cool (cool_seconds × 2^disable_count)
+	// during repeated failures inside record_request.lua. Default 1800
+	// (30 minutes; T5 target — previously hard-coded 3600 in the Lua).
+	// Runtime override: settings_kv llmgw_ursm_backoff_cap_seconds.
+	BackoffCapSeconds int
+	// MirrorGraceEnabled is the OPTIONAL availability-over-consistency gear
+	// for the NodeMirror fast path (spec §14.3 灰度档). Default false = the
+	// target contract: even a full NodeMirror hit is protectively rejected
+	// when Redis cannot be reached. When true, a full mirror hit whose
+	// entries are within the soft TTL (default 30s) may serve degraded
+	// read-only routing WITHOUT touching Redis; expired entries fall back to
+	// the Redis read path (and are rejected if that fails). Runtime override:
+	// settings_kv llmgw_ursm_mirror_grace_enabled.
+	MirrorGraceEnabled bool
 	// ShadowDoubleWrite opts shadow mode into writing sidecar records to
 	// the v2 store. Default false. P0-3 (audit §7.1) flips this true during
 	// the 7-day cutover comparison window. Routing stays on legacy
@@ -86,19 +102,73 @@ func DefaultConfig() Config {
 		Window1mTTL:         90 * time.Second,
 		Window5mTTL:         6 * time.Minute,
 		Window30mTTL:        35 * time.Minute,
-		NodeTTL:             60 * time.Minute,
-		ScoringWeights:      DefaultScoringWeights(),
+		// 会话优化 v4 T5 (2026-08-18): NodeTTL 60min → 15min, paired with
+		// CoolSeconds 120 → 30 and BackoffCapSeconds 3600(hard-coded) → 1800.
+		// Spec §5 参数总表 / §14.5 “快恢复” — degraded nodes return to the
+		// pool within 15min of the last probe/record touch. Hot-configurable
+		// via settings_kv (see LoadHot).
+		NodeTTL:        15 * time.Minute,
+		ScoringWeights: DefaultScoringWeights(),
 		// 2026-07-27 (M2): process LRU mirror defaults (spec Decision 2).
 		LRUMirrorSize:    100000,
 		LRUMirrorSoftTTL: 30 * time.Second,
-		// 2026-07-24: 降低冷却时间到2分钟，与circuit breaker的RateLimit/Concurrent冷却时间对齐
-		// 减少网关请求中断时长，提升多轮对话质量
-		CoolSeconds: 120,
+		// 2026-08-18 (会话优化 v4 T5): 30s fast-recovery cooldown (was 120s
+		// since 2026-07-24). Unstable small providers cool briefly and are
+		// re-admitted after one success; repeated failures still escalate
+		// exponentially up to BackoffCapSeconds.
+		CoolSeconds: 30,
+		// 2026-08-18 (会话优化 v4 T5 / P1-6): exponential-backoff cap, was
+		// hard-coded 3600 in record_request.lua:183-184. Parameterized and
+		// lowered to the spec target 1800s (30min).
+		BackoffCapSeconds: 1800,
+		// §14.3 target gear: mirror never bypasses a dead Redis. The grace
+		// gear is opt-in per deployment via settings_kv.
+		MirrorGraceEnabled: false,
 		// P0-3: shadow double-write is opt-in. Operators must explicitly
 		// flip URSM_V2_SHADOW_DOUBLE_WRITE=1 for the cutover comparison
 		// window. Default off keeps v2 Redis namespace clean.
 		ShadowDoubleWrite: false,
 	}
+}
+
+// Hot-config keys (settings_kv, polled by hotconfig.Config). Values are
+// platform-scoped (all instances) and take effect on the next read — the
+// Manager consults them per call via effectiveConfig(), following the
+// requestjourney/config.go live-source pattern (no second config channel).
+const (
+	HotKeyCoolSeconds       = "llmgw_ursm_cool_seconds"
+	HotKeyNodeTTLSeconds    = "llmgw_ursm_node_ttl_seconds"
+	HotKeyBackoffCapSeconds = "llmgw_ursm_backoff_cap_seconds"
+	HotKeyMirrorGrace       = "llmgw_ursm_mirror_grace_enabled"
+)
+
+// HotConfigSource is the live settings_kv read surface the v2 facade needs.
+// *hotconfig.Config satisfies it; the interface stays local so this domain
+// does not import hotconfig (mirrors requestjourney.IntConfigSource).
+type HotConfigSource interface {
+	GetInt(key string, defaultValue int) int
+	GetBool(key string, defaultValue bool) bool
+}
+
+// LoadHot layers live settings_kv values over the boot config and returns
+// the merged copy (会话优化 v4 T5 / P1-6: “URSM 快恢复参数热更新”). Missing,
+// zero, or negative values keep the boot value for each key independently,
+// so a partial settings_kv row can never zero out a safety parameter.
+func LoadHot(c Config, src HotConfigSource) Config {
+	if src == nil {
+		return c
+	}
+	if v := src.GetInt(HotKeyCoolSeconds, 0); v > 0 {
+		c.CoolSeconds = v
+	}
+	if v := src.GetInt(HotKeyNodeTTLSeconds, 0); v > 0 {
+		c.NodeTTL = time.Duration(v) * time.Second
+	}
+	if v := src.GetInt(HotKeyBackoffCapSeconds, 0); v > 0 {
+		c.BackoffCapSeconds = v
+	}
+	c.MirrorGraceEnabled = src.GetBool(HotKeyMirrorGrace, c.MirrorGraceEnabled)
+	return c
 }
 
 func LoadFromEnv() Config {
