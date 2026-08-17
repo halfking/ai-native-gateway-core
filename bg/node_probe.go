@@ -410,6 +410,12 @@ func (w *NodeProbeWorker) Stop() {
 			delete(w.wakeTimers, key)
 		}
 		w.mu.Unlock()
+		if w.client != nil {
+			w.client.CloseIdleConnections()
+		}
+		if w.probeClient != nil && w.probeClient != w.client {
+			w.probeClient.CloseIdleConnections()
+		}
 	})
 }
 

@@ -200,6 +200,10 @@ func extractOpenAIUsageFromBody(body []byte) (*int, *int) {
 // and is wired in by cmd/gateway/main.go through Executor's StreamChat field.
 // This fallback exists so ChatExecutor can be used standalone (Phase 1 tests).
 func legacyStreamChat(w http.ResponseWriter, resp *http.Response) StreamOutcome {
+	if resp == nil || resp.Body == nil {
+		return StreamOutcome{Interrupted: true, Reason: "empty_response", Kind: errorsx.KindEmptyResponse}
+	}
+	defer resp.Body.Close()
 	if flusher, ok := w.(http.Flusher); ok {
 		flusher.Flush()
 	}
@@ -496,23 +500,30 @@ func (e *Executor) executeOpenAI(
 			}
 
 			var httpClient *http.Client
+			var poolUnavailable error
 			if e.Pools != nil {
+
 				poolKey := pool.PoolKey{
 					IdentityHash: params.ClientID.IdentityHash,
 					ProviderID:   cand.ProviderID,
 					CredentialID: cand.CredentialID,
 				}
-				if p := e.Pools.GetOrCreate(poolKey, ""); p != nil && p.State() == pool.PoolActive {
+				if p := e.Pools.GetOrCreate(poolKey, ""); p != nil {
 					reqPool = p
 					httpClient = p.Client()
 				}
+
 			}
 			if httpClient == nil {
 				httpClient = http.DefaultClient
 			} else if err := reqPool.Acquire(upCtx); err != nil {
-				return nil, err
+				poolUnavailable = err
+				httpClient = nil
 			} else {
 				defer reqPool.Release()
+			}
+			if poolUnavailable != nil {
+				return nil, poolUnavailable
 			}
 
 			// Track C (2026-06-18): upCtx is set at loop scope above.
@@ -536,10 +547,15 @@ func (e *Executor) executeOpenAI(
 			var resp *http.Response
 			var uErr *upstreampkg.Error
 			if e.Upstream != nil {
-				resp, uErr = e.Upstream.Do(req)
+				if reqPool != nil {
+					resp, uErr = e.Upstream.DoWithHTTPClient(req, httpClient)
+				} else {
+					resp, uErr = e.Upstream.Do(req)
+				}
 			} else {
 				var doErr error
 				resp, doErr = httpClient.Do(req)
+
 				if doErr != nil {
 					kind := errorsx.ClassifyError(doErr, nil)
 					// P0 fix (2026-07-16): distinguish timeout from client cancel
@@ -557,6 +573,13 @@ func (e *Executor) executeOpenAI(
 				}
 			}
 			upstreamLatency := time.Since(reqStart)
+			if reqPool != nil {
+				if uErr != nil || resp == nil || resp.StatusCode >= 500 {
+					reqPool.RecordFailure()
+				} else {
+					reqPool.RecordSuccess()
+				}
+			}
 
 			// 2026-07-18: structured log around every upstream HTTP attempt
 			// so journald can correlate req_id → upstream url → status /

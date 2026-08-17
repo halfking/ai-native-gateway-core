@@ -166,7 +166,11 @@ func (p *Projection) Apply(event JourneyEvent) error {
 		tenant.total.items[event.RequestID], event, journey.StartedAt,
 		journey.UpdatedAt, journey.ObservationStatus,
 	)
+	wasInTotal := tenant.total.contains(event.RequestID)
 	tenant.total.upsert(event.RequestID, snapshot)
+	if !wasInTotal {
+		p.evictDetailsOutsideTotal(tenant)
+	}
 
 	for model := range modelsForEvent(event) {
 		fifo := tenant.models[model]
@@ -298,6 +302,25 @@ func (p *Projection) tenant(tenantID string) *tenantProjection {
 		p.tenants[tenantID] = tenant
 	}
 	return tenant
+}
+
+func (p *Projection) evictDetailsOutsideTotal(tenant *tenantProjection) {
+	if tenant == nil || tenant.total == nil {
+		return
+	}
+	for requestID := range tenant.details {
+		if !tenant.total.contains(requestID) {
+			delete(tenant.details, requestID)
+		}
+	}
+}
+
+func (f *orderedSnapshots) contains(id string) bool {
+	if f == nil {
+		return false
+	}
+	_, ok := f.items[id]
+	return ok
 }
 
 func newOrderedSnapshots(capacity int) *orderedSnapshots {

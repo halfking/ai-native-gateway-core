@@ -8,15 +8,10 @@ import (
 
 // attempt_gate_wiring.go — SR-W1 Phase 0B bridge integration (doc 18 §9.3).
 //
-// The bridges wrap their client writer via wrapAttemptWriter before deriving
-// the flusher: every existing write helper then flows through the
-// AttemptCommitGate without per-bridge changes. With the gate disabled
-// (default) wrapAttemptWriter is the identity function — the legacy wire
-// bytes are preserved verbatim; the returned gate is nil and every
-// gate.MayWriteTerminal() call site degrades to legacy behavior.
-//
-// LLM_GATEWAY_ATTEMPT_COMMIT_GATE=false is the production default until the
-// survival coordinator (SR-W2) owns the Commit()/Discard() decisions.
+// The gate is enabled in buffered mode by default. Transport heartbeat comments
+// still pass through immediately, while attempt-specific metadata and errors stay
+// discardable until the first semantic frame commits the selected supplier.
+// LLM_GATEWAY_ATTEMPT_COMMIT_GATE=false is the emergency legacy rollback.
 
 var (
 	attemptGateEnabledOverride atomic.Value // bool
@@ -34,7 +29,7 @@ func attemptGateEnabled() bool {
 	if v, ok := attemptGateEnabledOverride.Load().(bool); ok {
 		return v
 	}
-	return envBool("LLM_GATEWAY_ATTEMPT_COMMIT_GATE", false)
+	return envBool("LLM_GATEWAY_ATTEMPT_COMMIT_GATE", true)
 }
 
 func attemptGateMode() GateMode {
