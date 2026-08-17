@@ -11,6 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - docs/archive/* — 138 process docs archived on 2026-08-17 (see docs/archive/INDEX.md)
 
 ### Removed
+- 取消跟踪并本地清理构建产物：`llm-gateway-linux-amd64`（61MB）、`routing-test-client`（8MB）、
+  根目录 `gateway`/`llm-gateway`/`*.test`/`migrate-ursm-v2`、`dist/`（1.7GB 发布包）、`build/logs`、`logs/`。
+  `make clean` 同步增强，覆盖根目录二进制。
+- 删除废弃构建计数文件 `build_seq`（`scripts/bump-version.sh` 已声明废弃，SSOT 为 `version.json`）。
+- `.gitignore`：移除与跟踪文件矛盾的 `version.json` 规则，新增 `.ruff_cache/`。
 - 删除 6 个零引用死包：`tracing/`、`logging/`、`alerting/`、`safety/`、`circuit/`、`integration/`
   （grep 复核全仓库 0 外部 import，`go build ./...` 通过）。可追溯性由 git 历史保证。
 

@@ -157,5 +157,7 @@ open-mutation-report: ## 在浏览器打开 mutation 报告
 # ── Helpers ──────────────────────────────────────────────────────────────
 
 .PHONY: clean
-clean: ## 清理 bin/ 和 coverage.*
+clean: ## 清理 bin/、coverage.* 与根目录构建产物
 	rm -rf $(BIN_DIR) coverage.out coverage.html
+	rm -f gateway llm-gateway llm-gateway-linux-amd64 migrate-ursm-v2 routing-test-client
+	rm -f *.test
