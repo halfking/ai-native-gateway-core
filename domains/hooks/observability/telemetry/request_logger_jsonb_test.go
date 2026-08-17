@@ -96,7 +96,7 @@ func TestPersistUpdateInTx_BindsBodyCompressionMetaAsJSONText(t *testing.T) {
 		WithArgs(anyUpdateArgs...).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	mockDB.ExpectExec(`INSERT INTO request_wal_bodies`).
-		WithArgs(requestID, []byte("body"), jsonTextArgument{want: compressionMeta}).
+		WithArgs(requestID, "body", jsonTextArgument{want: compressionMeta}).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 
 	rl := &RequestLogger{}
