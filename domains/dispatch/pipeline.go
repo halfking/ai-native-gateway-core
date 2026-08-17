@@ -8,7 +8,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/kaixuan/llm-gateway-go/domains/requestjourney"
 	"github.com/kaixuan/llm-gateway-go/internal/liveactions"
 )
 
@@ -47,8 +46,9 @@ type Deps struct {
 	AllowModelChange     bool
 	AllowModelChangeFunc func() bool
 	// HotCfg is read once at construction; live reload re-reads via Reload.
-	HotCfg    *atomic.Value // *Config; may be nil → DefaultConfig
-	EventSink EventSink     // optional RequestJourney observation sink
+	HotCfg               *atomic.Value // *Config; may be nil → DefaultConfig
+	ObservationSink      ObservationSink
+	QueueObservationSink QueueObservationSink
 }
 
 // Pipeline is the multi-tier dispatch core. Construct once, Start, then Submit.
@@ -91,17 +91,21 @@ type Pipeline struct {
 	// 旁路异步，热路径零阻塞。
 	liveActions *liveactions.Emitter
 
-	eventSinkMu sync.RWMutex
-	eventSink   EventSink
-	eventChMu   sync.RWMutex
-	eventCh     chan journeyEvent
-	eventClosed bool
-	eventWg     sync.WaitGroup
+	observationSinkMu sync.RWMutex
+	observationSink   ObservationSink
+	observationChMu   sync.RWMutex
+	observationCh     chan observationItem
+	observationClosed bool
+	observationWg     sync.WaitGroup
+
+	queueObservationMu   sync.RWMutex
+	queueObservationSink QueueObservationSink
+	inFlight             atomic.Int64
 }
 
-type journeyEvent struct {
-	ctx   context.Context
-	event requestjourney.JourneyEvent
+type observationItem struct {
+	ctx         context.Context
+	observation Observation
 }
 
 // SetLiveActions wires the request-lifecycle action-event emitter (V3.3-OBS
@@ -113,15 +117,45 @@ func (p *Pipeline) SetLiveActions(e *liveactions.Emitter) {
 	p.liveActions = e
 }
 
-// SetEventSink replaces the optional RequestJourney sink. It is safe before or
-// after Start; a nil sink disables journey emission.
-func (p *Pipeline) SetEventSink(sink EventSink) {
+// SetObservationSink replaces the optional lifecycle observation sink. It is
+// safe before or after Start; a nil sink disables lifecycle emission.
+func (p *Pipeline) SetObservationSink(sink ObservationSink) {
 	if p == nil {
 		return
 	}
-	p.eventSinkMu.Lock()
-	p.eventSink = sink
-	p.eventSinkMu.Unlock()
+	p.observationSinkMu.Lock()
+	p.observationSink = sink
+	p.observationSinkMu.Unlock()
+}
+
+// SetQueueObservationSink replaces the queue read-model sink.
+func (p *Pipeline) SetQueueObservationSink(sink QueueObservationSink) {
+	if p == nil {
+		return
+	}
+	p.queueObservationMu.Lock()
+	p.queueObservationSink = sink
+	p.queueObservationMu.Unlock()
+}
+
+func (p *Pipeline) observeQueue(observation QueueObservation) {
+	if p == nil {
+		return
+	}
+	p.queueObservationMu.RLock()
+	sink := p.queueObservationSink
+	p.queueObservationMu.RUnlock()
+	if sink == nil {
+		return
+	}
+	func() {
+		defer func() { _ = recover() }()
+		sink.ObserveQueue(observation)
+	}()
+}
+
+func (p *Pipeline) observeOverflow(reason string) {
+	p.observeQueue(QueueObservation{Kind: QueueOverflow, OverflowReason: reason})
 }
 
 // NewPipeline constructs a pipeline. Call Start before Submit.
@@ -132,7 +166,8 @@ func NewPipeline(deps Deps) *Pipeline {
 		modelRecommendFunc:   deps.ModelRecommendFunc,
 		forwardFunc:          deps.ForwardFunc,
 		allowModelChange:     deps.AllowModelChange,
-		eventSink:            deps.EventSink,
+		observationSink:      deps.ObservationSink,
+		queueObservationSink: deps.QueueObservationSink,
 		allowModelChangeFunc: deps.AllowModelChangeFunc,
 		models:               make(map[string]*modelQueue),
 		forwarders:           make(map[int]*credForwarder),
@@ -187,9 +222,9 @@ func (p *Pipeline) Start() {
 		p.wg.Add(1)
 		go p.runFailover()
 	}
-	p.eventCh = make(chan journeyEvent, maxInt(1024, cfg.StatsBuffer*16))
-	p.eventWg.Add(1)
-	go p.runJourneyEvents()
+	p.observationCh = make(chan observationItem, maxInt(1024, cfg.StatsBuffer*16))
+	p.observationWg.Add(1)
+	go p.runObservations()
 }
 
 func maxInt(a, b int) int {
@@ -199,14 +234,17 @@ func maxInt(a, b int) int {
 	return b
 }
 
-func (p *Pipeline) runJourneyEvents() {
-	defer p.eventWg.Done()
-	for item := range p.eventCh {
-		p.eventSinkMu.RLock()
-		sink := p.eventSink
-		p.eventSinkMu.RUnlock()
+func (p *Pipeline) runObservations() {
+	defer p.observationWg.Done()
+	for item := range p.observationCh {
+		p.observationSinkMu.RLock()
+		sink := p.observationSink
+		p.observationSinkMu.RUnlock()
 		if sink != nil {
-			sink.EmitJourneyEvent(item.ctx, item.event)
+			func() {
+				defer func() { _ = recover() }()
+				sink.ObserveDispatch(item.ctx, item.observation)
+			}()
 		}
 	}
 }
@@ -231,13 +269,13 @@ func (p *Pipeline) Stop() {
 	p.forwarders = map[int]*credForwarder{}
 	p.credMu.Unlock()
 	p.wg.Wait()
-	p.eventChMu.Lock()
-	if p.eventCh != nil && !p.eventClosed {
-		p.eventClosed = true
-		close(p.eventCh)
+	p.observationChMu.Lock()
+	if p.observationCh != nil && !p.observationClosed {
+		p.observationClosed = true
+		close(p.observationCh)
 	}
-	p.eventChMu.Unlock()
-	p.eventWg.Wait()
+	p.observationChMu.Unlock()
+	p.observationWg.Wait()
 }
 
 // Submit enqueues a request into the Tier-1 model queue and blocks until the
@@ -245,26 +283,20 @@ func (p *Pipeline) Stop() {
 // Returns (opaqueResult, nil) on success, (nil, err) otherwise.
 func (p *Pipeline) Submit(ctx context.Context, qr *QueuedRequest) (any, error) {
 	qr.Ctx = ctx
-	qr.setJourneyEmitter(func(event requestjourney.JourneyEvent) {
-		p.eventChMu.RLock()
-		if p.eventCh == nil || p.eventClosed {
-			p.eventChMu.RUnlock()
-			p.eventSinkMu.RLock()
-			sink := p.eventSink
-			p.eventSinkMu.RUnlock()
-			if sink != nil && p.shutdown.Load() {
-				sink.EmitJourneyEvent(context.WithoutCancel(ctxOf(qr)), event)
-			}
+	qr.setObservationEmitter(func(observation Observation) {
+		p.observationChMu.RLock()
+		if p.observationCh == nil || p.observationClosed {
+			p.observationChMu.RUnlock()
 			return
 		}
-		item := journeyEvent{ctx: context.WithoutCancel(ctxOf(qr)), event: event}
+		item := observationItem{ctx: context.WithoutCancel(ctxOf(qr)), observation: observation}
 		select {
-		case p.eventCh <- item:
+		case p.observationCh <- item:
 		default:
-			// Observation is deliberately lossy and never backpressures execution.
-			metricOverflow.WithLabelValues("journey_event_full").Inc()
+			metricOverflow.WithLabelValues("dispatch_observation_full").Inc()
+			p.observeOverflow("dispatch_observation_full")
 		}
-		p.eventChMu.RUnlock()
+		p.observationChMu.RUnlock()
 	})
 	if p.shutdown.Load() || !p.started.Load() {
 		p.emitRequestTerminal(qr, ForwardOutcome{Err: ErrShutdown})
@@ -286,6 +318,7 @@ func (p *Pipeline) Submit(ctx context.Context, qr *QueuedRequest) (any, error) {
 			return nil, ErrShutdown
 		}
 		metricOverflow.WithLabelValues("model_queue_full").Inc()
+		p.observeOverflow("model_queue_full")
 		p.emitRequestTerminal(qr, ForwardOutcome{Err: ErrOverflow})
 		return nil, ErrOverflow
 	}
@@ -340,8 +373,9 @@ func (p *Pipeline) enqueueModel(name string, qr *QueuedRequest) bool {
 	enqueuedAt := time.Now()
 	select {
 	case mq.ch <- qr:
-		mq.depth.Add(1)
+		depth := mq.depth.Add(1)
 		metricModelQueueDepth.WithLabelValues(name).Inc()
+		p.observeQueue(QueueObservation{Kind: QueueModelDepth, Model: name, Depth: depth, Delta: 1})
 		// V3.3-OBS OBS-B1 (2026-08-15): model_enqueued 动作事件（S4）。
 		p.liveActions.Emit(ctxOf(qr), liveactions.ActionEvent{
 			RequestID: qr.ID,
@@ -351,9 +385,9 @@ func (p *Pipeline) enqueueModel(name string, qr *QueuedRequest) bool {
 				"queue_depth": strconv.FormatInt(mq.depth.Load(), 10),
 			},
 		})
-		qr.emitJourneyLocked(requestjourney.JourneyEvent{
-			Type:          requestjourney.EventModelEnqueued,
-			Stage:         requestjourney.StageModelQueue,
+		qr.emitObservationLocked(Observation{
+			Type:          ObservationModelEnqueued,
+			Stage:         StageModelQueue,
 			Model:         name,
 			ResolvedModel: resolvedModel,
 			OccurredAt:    enqueuedAt,
@@ -405,8 +439,9 @@ func (p *Pipeline) runModelDrainer(mq *modelQueue) {
 	for {
 		select {
 		case qr := <-mq.ch:
-			mq.depth.Add(-1)
+			depth := mq.depth.Add(-1)
 			metricModelQueueDepth.WithLabelValues(mq.name).Dec()
+			p.observeQueue(QueueObservation{Kind: QueueModelDepth, Model: mq.name, Depth: depth, Delta: -1})
 
 			// V3.1: Record T2 timestamp (model queue dequeue, routing start)
 			qr.SetT2_TotalDequeued()
@@ -443,9 +478,12 @@ func (p *Pipeline) complete(qr *QueuedRequest, out ForwardOutcome) {
 	qr.SetT9_ResponseEnd()
 	p.emitRequestTerminal(qr, out)
 
-	// V3.1: Export stage histograms + waterfall ring even if the caller
-	// already left — abandoned requests still carry useful latency signal.
+	// V3.1: Export stage histograms + waterfall/projection samples even if the
+	// caller already left — abandoned requests still carry useful latency signal.
 	p.recordStageMetrics(qr, out)
+	p.recordWaterfall(qr, out)
+	completed := buildWaterfallRequest(qr, out)
+	p.observeQueue(QueueObservation{Kind: QueueRequestCompleted, Completed: &completed})
 
 	if qr.abandoned.Load() {
 		return // caller already left; drop
@@ -458,27 +496,27 @@ func (p *Pipeline) complete(qr *QueuedRequest, out ForwardOutcome) {
 }
 
 func (p *Pipeline) emitRequestTerminal(qr *QueuedRequest, out ForwardOutcome) {
-	event := requestjourney.JourneyEvent{
-		Type:          requestjourney.EventRequestSucceeded,
-		Stage:         requestjourney.StageTerminal,
+	event := Observation{
+		Type:          ObservationRequestSucceeded,
+		Stage:         StageTerminal,
 		ResolvedModel: qr.ResolvedModel,
 		Model:         qr.ResolvedModel,
-		Outcome:       requestjourney.OutcomeSuccess,
+		Outcome:       OutcomeSuccess,
 	}
 	if out.Err != nil {
-		event.Type = requestjourney.EventRequestFailed
-		event.Outcome = requestjourney.OutcomeFailure
+		event.Type = ObservationRequestFailed
+		event.Outcome = OutcomeFailure
 		event.ErrorKind = out.ErrorKind
 		if event.ErrorKind == "" {
 			event.ErrorKind = classifyError(out.Err)
 		}
 		event.HTTPStatus = out.HTTPStatus
 		if errors.Is(out.Err, context.Canceled) || errors.Is(out.Err, context.DeadlineExceeded) {
-			event.Type = requestjourney.EventRequestCanceled
-			event.Outcome = requestjourney.OutcomeCanceled
+			event.Type = ObservationRequestCanceled
+			event.Outcome = OutcomeCanceled
 		}
 	}
-	qr.emitJourney(event)
+	qr.emitObservation(event)
 }
 
 // resultLabel maps a ForwardOutcome to the closed-enum "result" label used by
@@ -497,11 +535,9 @@ func resultLabel(out ForwardOutcome) string {
 }
 
 // recordStageMetrics observes the 9 V3.1 lifecycle histograms for one completed
-// request. Missing timestamps are skipped (early complete / failover paths).
-// When called via Pipeline.complete, also pushes a waterfall ring sample.
+// request.
 func (p *Pipeline) recordStageMetrics(qr *QueuedRequest, out ForwardOutcome) {
 	observeStageMetrics(qr, out)
-	p.recordWaterfall(qr, out)
 }
 
 // observeStageMetrics is the package-level histogram observer (testable without
@@ -558,10 +594,12 @@ func (p *Pipeline) tryEnqueueCred(cred CredentialRef, qr *QueuedRequest) bool {
 	cf := p.getOrCreateForwarder(cred)
 	if cf == nil {
 		metricOverflow.WithLabelValues("shutdown").Inc()
+		p.observeOverflow("shutdown")
 		return false
 	}
 	if !cf.tryReserve() {
 		metricOverflow.WithLabelValues("cred_queue_full").Inc()
+		p.observeOverflow("cred_queue_full")
 		return false
 	}
 	// Stamp the enqueue time BEFORE the channel send. The send/receive on
@@ -582,7 +620,9 @@ func (p *Pipeline) tryEnqueueCred(cred CredentialRef, qr *QueuedRequest) bool {
 	qr.journeyMu.Lock()
 	select {
 	case cf.queue <- qr:
+		depth := cf.depth.Load()
 		metricCredQueueDepth.WithLabelValues(itoa(cred.CredentialID), cred.ConcurrencyMode).Inc()
+		p.observeQueue(QueueObservation{Kind: QueueCredentialDepth, CredentialID: cred.CredentialID, Mode: cred.ConcurrencyMode, Depth: depth, Delta: 1})
 		// V3.3-OBS OBS-B1 (2026-08-15): node_enqueued 动作事件（S6，落入
 		// 凭据队列）。
 		p.liveActions.Emit(emitCtx, liveactions.ActionEvent{
@@ -595,9 +635,9 @@ func (p *Pipeline) tryEnqueueCred(cred CredentialRef, qr *QueuedRequest) bool {
 				"vendor":      cred.Vendor,
 			},
 		})
-		qr.emitJourneyLocked(requestjourney.JourneyEvent{
-			Type:          requestjourney.EventNodeEnqueued,
-			Stage:         requestjourney.StageCredentialQueue,
+		qr.emitObservationLocked(Observation{
+			Type:          ObservationNodeEnqueued,
+			Stage:         StageCredentialQueue,
 			ResolvedModel: model,
 			Model:         model,
 			ProviderID:    int64(cred.ProviderID),
@@ -610,6 +650,7 @@ func (p *Pipeline) tryEnqueueCred(cred CredentialRef, qr *QueuedRequest) bool {
 		qr.journeyMu.Unlock()
 		cf.depth.Add(-1)
 		metricOverflow.WithLabelValues("cred_queue_full").Inc()
+		p.observeOverflow("cred_queue_full")
 		return false
 	}
 }

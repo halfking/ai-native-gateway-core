@@ -4,7 +4,6 @@ import (
 	"log/slog"
 	"strconv"
 
-	"github.com/kaixuan/llm-gateway-go/domains/requestjourney"
 	"github.com/kaixuan/llm-gateway-go/internal/liveactions"
 )
 
@@ -45,6 +44,7 @@ func (p *Pipeline) move(qr *QueuedRequest, out ForwardOutcome) {
 	// above candidate count × retry and never trips.
 	if qr.AttemptCount >= maxAttempts {
 		metricOverflow.WithLabelValues("attempt_cap").Inc()
+		p.observeOverflow("attempt_cap")
 		slog.Warn("dispatch: attempt cap reached, giving up",
 			"request_id", qr.ID, "attempts", qr.AttemptCount,
 			"tried_creds", len(qr.TriedCredentials))
@@ -63,9 +63,9 @@ func (p *Pipeline) move(qr *QueuedRequest, out ForwardOutcome) {
 		// V3.3-OBS OBS-B1 (2026-08-15): node_switch 动作事件，retry=true、
 		// retry_seq 递增时前端打特别标（24 号 §1）。
 		p.emitNodeSwitch(qr, qr.SelectedCred.CredentialID, qr.SelectedCred.CredentialID, "cred_retry", true, qr.CredRetryCount)
-		qr.emitJourney(requestjourney.JourneyEvent{
-			Type:          requestjourney.EventRetryScheduled,
-			Stage:         requestjourney.StageRetrying,
+		qr.emitObservation(Observation{
+			Type:          ObservationRetryScheduled,
+			Stage:         StageRetrying,
 			ResolvedModel: qr.ResolvedModel,
 			Model:         qr.ResolvedModel,
 			ProviderID:    int64(qr.SelectedCred.ProviderID),
@@ -98,9 +98,9 @@ func (p *Pipeline) move(qr *QueuedRequest, out ForwardOutcome) {
 		metricFailover.WithLabelValues("cred_switch").Inc()
 		// V3.3-OBS OBS-B1 (2026-08-15): node_switch 动作事件（跨凭据切换）。
 		p.emitNodeSwitch(qr, fromCred, ref.CredentialID, "cred_switch", false, 0)
-		qr.emitJourney(requestjourney.JourneyEvent{
-			Type:             requestjourney.EventNodeSwitched,
-			Stage:            requestjourney.StageRetrying,
+		qr.emitObservation(Observation{
+			Type:             ObservationNodeSwitched,
+			Stage:            StageRetrying,
 			ResolvedModel:    fromModel,
 			Model:            fromModel,
 			ProviderID:       int64(ref.ProviderID),

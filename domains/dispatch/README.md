@@ -29,7 +29,9 @@ Tier-3: Metrics & Snapshot (可观测层)
 | `errors.go` | 错误定义和常量 (`maxAttempts`, `errPaceTimeout`) | §4.2 补充 |
 | `queued_request.go` | `QueuedRequest` / `CredentialRef` / `ForwardOutcome` | §4.1, §4.2 |
 | `governor.go` | 三模调速器 (concurrency/rpm/tpm/disabled) | §4.3 governor |
-| `snapshot.go` | `modelQueue` 结构 + `Pipeline.Snapshot()` API | §4.2 model_queue.go + cred_queue.go 合并 |
+| `snapshot.go` | `modelQueue` 结构 + 仅供 dispatch 内部诊断的 `Pipeline.Snapshot()` | §4.2 model_queue.go + cred_queue.go 合并 |
+| `observation.go` | dispatch 自有生命周期 Observation / Sink 契约 | RequestJourney adapter seam |
+| `queue_projection.go` | 独立 QueueProjection（depth/in-flight/overflow/waterfall） | Tier-3 read model |
 | `pipeline.go` | `Pipeline` 核心调度器 + Submit 入口 | §4.2 |
 | `dispatcher.go` | ① Model Dispatcher 执行器 | §2.2, §4.2 |
 | `forwarder.go` | ② Credential Forwarder 执行器 (含 Tier-2 队列逻辑) | §2.2, §4.2 |
@@ -49,9 +51,10 @@ Tier-3: Metrics & Snapshot (可观测层)
    - **理由**：两者都是简单的有界 channel 包装，无需独立文件
 
 2. **Tier-3 可观测层**：
-   - 设计要求：`StatsEvent` + 事件总线 + `StatsAggregator` goroutine
-   - 实际实现：直接使用 Prometheus `promauto` metrics + `Pipeline.Snapshot()` 查询接口
-   - **理由**：Prometheus 是行业标准，性能更好，避免额外的事件分发开销
+   - dispatch 发布两类内容无关 observation：生命周期 `Observation` 与队列 `QueueObservation`
+   - `cmd/gateway` 的 composition adapter 将生命周期 observation 翻译为 `requestjourney.JourneyEvent`
+   - 独立 `QueueProjection` 消费 depth/enqueue/dequeue/in-flight/overflow/waterfall；admin/SSE 只读 projection，不读取或锁定 `Pipeline`
+   - Prometheus 指标继续作为监控数据源，不承担管理 API 的实时 read model
 
 3. **错误集中管理**：
    - 额外添加 `errors.go` 集中定义 `maxAttempts`, `maxRetryBudget`, `errPaceTimeout` 等
@@ -73,8 +76,9 @@ Tier-3: Metrics & Snapshot (可观测层)
 1. **单所有者**：`QueuedRequest` 在任意时刻只被一个执行器持有 (hand-off)
 2. **ResultCh 单发**：每个请求的 `ResultCh` 恰好发送一次
 3. **有界队列**：Tier-1/Tier-2 全部有界，满则 overflow
-4. **Stats 不阻塞**：Metrics 记录从不阻塞热路径
-5. **ctx 取消贯穿**：客户端断开立即传播到所有执行器
+4. **Observation 不阻塞**：生命周期事件进入有界异步 FIFO；满时丢弃并记录 degraded，不能改变 dispatch 结果
+5. **Projection 独立**：admin/SSE 仅消费 `QueueProjection` 的深拷贝快照，不持有 `*Pipeline`
+6. **ctx 取消贯穿**：客户端断开立即传播到所有执行器
 
 ## ADR 决策记录
 
@@ -135,8 +139,9 @@ curl http://localhost:8080/api/admin/dispatch/queues
 ## 集成点
 
 ### cmd/gateway/main.go
-- `wireDispatchPipeline()` - 构建 Pipeline 并注入到 executor
-- 路由注册：`/api/admin/dispatch/queues` → `handleDispatchQueues`
+- `wireDispatchPipeline()` - 构建 Pipeline、Observation adapter 与 QueueProjection 并注入 executor
+- 路由注册：`/api/admin/dispatch/queues`、`/api/admin/dispatch/waterfall` 只读 QueueProjection
+- SSE `queue_snapshot` provider 捕获 QueueProjection，不捕获 Pipeline
 
 ### cmd/gateway/main_settings.go
 - `syncDispatchGateFromSettings()` - 启动时同步 `dispatch_v2.enabled` 到原子缓存
