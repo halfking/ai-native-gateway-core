@@ -29,7 +29,7 @@ func TestDefaultRoutingSeedsUseRoutableFallbackModels(t *testing.T) {
 }
 
 func TestHealthyProbeReconciliationClearsNodeRouteGate(t *testing.T) {
-	body, err := os.ReadFile("../bg/model_probe_reconcile_healthy.go")
+	body, err := os.ReadFile("../../bg/model_probe_reconcile_healthy.go")
 	if err != nil {
 		t.Fatal(err)
 	}
