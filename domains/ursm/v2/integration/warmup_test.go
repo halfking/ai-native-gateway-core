@@ -5,10 +5,8 @@
 // a node via the recovery warmup, then asks the Manager to resolve
 // that node through the regular read pipeline.
 //
-// Note: DefaultConfig() is ModeOff, which short-circuits FilterAndScore
-// to (nil, nil). We flip the config to ModeCanary + CanaryPercent: 100
-// so the read path actually executes, mirroring the pattern used by
-// score_test.go and admin_test.go.
+// The test uses ModeCanary with CanaryPercent: 100 to exercise cohort
+// planning as well as the normal read path.
 package integration
 
 import (

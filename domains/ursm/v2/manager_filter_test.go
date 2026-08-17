@@ -13,11 +13,8 @@ import (
 func TestFilterAndScoreRedisErrorProtectsRejection(t *testing.T) {
 	mr := miniredis.RunT(t)
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	// 2026-07-27 (M2): set Mode=authoritative so FilterAndScore actually
-	// exercises the read path. DefaultConfig() is ModeOff, which short-
-	// circuits before the Redis read — so the test only asserted the error
-	// by accident of the old statement ordering. With the LRU fail-open
-	// refactor, ModeOff returns (nil,nil) directly; use a real mode + an
+	// Use authoritative mode so FilterAndScore exercises the Redis read path.
+	// Explicit ModeOff returns (nil, nil) directly; use a real mode plus an
 	// empty mirror (cold start) so the miss path requires Redis and the
 	// protection-rejection invariant (miss + Redis down → error) is honored.
 	cfg := DefaultConfig()
