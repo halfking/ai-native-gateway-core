@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/kaixuan/llm-gateway-go/internal/outbox"
 	"github.com/pashagolub/pgxmock/v4"
 	"github.com/stretchr/testify/require"
 )
@@ -49,6 +50,28 @@ func requestLogUpdateArgs(entry RequestLogEntry) []interface{} {
 	return args
 }
 
+func TestInsertSessionOpenedEvent_IsIdempotent(t *testing.T) {
+	mockDB, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mockDB.Close()
+
+	mockDB.ExpectBegin()
+	tx, err := mockDB.Begin(context.Background())
+	require.NoError(t, err)
+	opened, err := outbox.BuildSessionOpenedEventV1("tenant-1", "session-1", "42")
+	require.NoError(t, err)
+
+	mockDB.ExpectExec(`INSERT INTO outbox_events[\s\S]*ON CONFLICT \(event_id\) DO NOTHING`).
+		WithArgs(
+			opened.EventID, opened.EventType, opened.SchemaVersion, opened.TenantID,
+			opened.AggregateID, opened.AggregateVersion, opened.OccurredAt, pgxmock.AnyArg(),
+		).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	require.NoError(t, insertSessionOpenedEvent(context.Background(), tx, opened, "req-1"))
+	mockDB.ExpectRollback()
+	require.NoError(t, tx.Rollback(context.Background()))
+	require.NoError(t, mockDB.ExpectationsWereMet())
+}
 func TestUpdateRequestLog_UsesTerminalStateGuard(t *testing.T) {
 	mockDB, err := pgxmock.NewPool()
 	require.NoError(t, err)

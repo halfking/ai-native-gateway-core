@@ -6,12 +6,14 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/bg"
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
@@ -36,20 +38,26 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+type controlledBodyDB interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
 type Handler struct {
-	db          *pgxpool.Pool
-	secret      string
-	encKey      []byte
-	keyring     *secret.Keyring // AES-256-GCM keyring; nil → Fernet legacy
-	discSvc     *discovery.Service
-	credCycler  *bg.CredentialCycler
-	credRecov   *bg.CredentialRecovery
-	envCleaner  *bg.EnvelopeCleaner
-	stickyClean *bg.StickyCleaner
-	taxSync     *bg.TaxonomySync
-	probeV2     *bg.CredentialProbeV2  // 900-series: mini-chat probe (spec §5)
-	probePicker *bg.DefaultProbePicker // 900-series: default probe model (spec §4)
-	modelProbe  *bg.ModelProbeRunner   // 2026-06-18: per-model re-probe of failing bindings (spec 2026-06-18-model-probe-rounds)
+	db                   *pgxpool.Pool
+	bodyDB               controlledBodyDB
+	bodyServiceJWTSecret string
+	secret               string
+	encKey               []byte
+	keyring              *secret.Keyring // AES-256-GCM keyring; nil → Fernet legacy
+	discSvc              *discovery.Service
+	credCycler           *bg.CredentialCycler
+	credRecov            *bg.CredentialRecovery
+	envCleaner           *bg.EnvelopeCleaner
+	stickyClean          *bg.StickyCleaner
+	taxSync              *bg.TaxonomySync
+	probeV2              *bg.CredentialProbeV2  // 900-series: mini-chat probe (spec §5)
+	probePicker          *bg.DefaultProbePicker // 900-series: default probe model (spec §4)
+	modelProbe           *bg.ModelProbeRunner   // 2026-06-18: per-model re-probe of failing bindings (spec 2026-06-18-model-probe-rounds)
 	// 2026-07-23: 系统监测模块 — 所有探测任务的唯一入口 (design §1.2 #1).
 	// nil 时 /api/admin/system-monitor/* 端点 503；探测仍可能由旧 worker 跑。
 	systemMonitor    SystemMonitorBackend
@@ -290,11 +298,13 @@ type Handler struct {
 
 func NewHandler(db *pgxpool.Pool, secretKey string, encKey []byte) *Handler {
 	h := &Handler{
-		db:          db,
-		secret:      secretKey,
-		encKey:      encKey,
-		rateLimiter: newNodeOperationsRateLimiter(),
-		auditLogger: newNodeOperationAuditLogger(db),
+		db:                   db,
+		bodyDB:               db,
+		bodyServiceJWTSecret: strings.TrimSpace(os.Getenv("LLM_GATEWAY_SESSION_SERVICE_JWT_SECRET")),
+		secret:               secretKey,
+		encKey:               encKey,
+		rateLimiter:          newNodeOperationsRateLimiter(),
+		auditLogger:          newNodeOperationAuditLogger(db),
 		// 2026-08-17 OPTIMIZATION: LRU 1024 entries × 5min TTL.
 		// 1024 entries × ~20KB/entry ≈ 20MB max footprint (rule 23 §3).
 		// 5min TTL ≈ body 数据写入后罕见被修改（rule 36 §1 持久化）。
@@ -721,8 +731,12 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// NOTE: /api/credentials/monitor-summary is registered later in
 	// RegisterMonitorRoutes (line ~460) via NewCredentialMonitorHandlers.
 	// Do NOT register it here to avoid mux.HandleFunc panic.
+	// Controlled body resolver: service JWT only; intentionally bypasses the
+	// human admin middleware and never exposes the /api/logs surface.
+	mux.HandleFunc("/api/admin/bodies/{body_ref...}", h.handleControlledBody)
 	mux.HandleFunc("/api/admin/compression/stats", admin(h.handleCompressionStats))
 	mux.HandleFunc("/api/admin/compression/sessions", admin(h.handleCompressionSessions))
+
 	// 2026-08-17 OPTIMIZATION: bodyFetchCache 命中率/淘汰数可观测端点。
 	// 运维用来判断 cold path 是否被 cache 缓解（命中率应 > 50%）。
 	mux.HandleFunc("/api/admin/logs/body-cache-stats", admin(h.handleBodyFetchCacheStats))
