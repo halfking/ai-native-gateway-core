@@ -38,7 +38,11 @@ func PlatformSpecs() []*Spec {
 	// 2026-08-11: V2 多层队列调度（模型/凭据队列 + 并发模式削峰 + 分层故障转移）。
 	out = append(out, DispatchSpecs()...)
 	// 2026-08-17: per-credential, per-client quota enforcement (FP-slot + concurrency).
-	out = append(out, CredentialClientQuotaSpecs()...)
+	// Parked (AUDIT_24H_20260817.md B1): the package has zero production
+	// importers and no code reads credential_client_quota.mode. Surfacing a
+	// no-op knob lets operators believe enforcement is "shadow"-on when nothing
+	// is recorded. Re-register when the dispatch path is actually wired.
+	// out = append(out, CredentialClientQuotaSpecs()...)
 	return out
 }
 

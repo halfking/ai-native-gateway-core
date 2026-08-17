@@ -189,9 +189,18 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	if err := db.ensureTenantModelPoliciesSchema(migCtx); err != nil {
 		return err
 	}
-	if err := db.ensureCredentialClientQuotaSchema(migCtx); err != nil {
-		return err
-	}
+	// TODO(credentialquota): bootstrap re-enabled when dispatch path is wired
+	// (see AUDIT_24H_20260817.md B1). The credential_client_quota table has no
+	// production reader/writer yet: domains/credentialquota has zero importers
+	// and credentialfpslot.Manager.AcquireWithQuota (the alleged exposure per
+	// commit 7b086ed52) is test-only and does not import domains/credentialquota.
+	// Auto-creating the RLS-protected table on 245/154 would land a permanently
+	// empty orphan schema that cannot be cleaned up without a real drop
+	// migration (>=530).
+	//
+	// if err := db.ensureCredentialClientQuotaSchema(migCtx); err != nil {
+	// 	return err
+	// }
 	if err := db.ensureResponseFormatAnomaliesSchema(migCtx); err != nil {
 		return err
 	}
