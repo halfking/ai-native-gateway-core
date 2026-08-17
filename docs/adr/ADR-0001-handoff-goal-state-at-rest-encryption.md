@@ -2,10 +2,11 @@
 
 - **Status**: Accepted (deferred implementation)
 - **Date**: 2026-08-17
-- **Authors**: GoalHandoff hardening task (see `/tmp/handoff-20260817-034449.md`)
+- **Authors**: GoalHandoff hardening round (`d032f5bb8..c2027514e`)
 - **Supersedes**: —
 - **Related**:
   - Implementation commits: `75c714b67 feat(handoff): durable GoalState restore`, `78a0cade5 fix(handoff): close durable restore audit gaps`
+  - This round: `d032f5bb8 fix(goal/handoff): per-request completion threshold + terminal-state CAS`, `c2027514e docs(adr): defer at-rest encryption of handoff_pending_confirmations.goal_state`
   - Schema: `db/migrations/362_handoff_durable_goal_state.sql`, `sql/migrations/startup/527_handoff_durable_goal_state.sql`
   - Module contract: `docs/modules/handoff.md`, `docs/会话优化v4/12-GoalHandoff契约.md`
 
