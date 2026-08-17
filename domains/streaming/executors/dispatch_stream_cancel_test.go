@@ -3,6 +3,7 @@ package executors
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http/httptest"
 	"testing"
 
@@ -11,24 +12,30 @@ import (
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 )
 
-func TestDispatchCanceledErrorPreservesAttemptCount(t *testing.T) {
-	qr := dispatch.NewQueuedRequest("req", "tenant", "glm-5.2", context.Background(), nil)
-	qr.AttemptCount = 1
+func TestDispatchCanceledErrorReportsActualHTTPAttempts(t *testing.T) {
+	for _, used := range []int{0, 1} {
+		t.Run(fmt.Sprintf("used_%d", used), func(t *testing.T) {
+			budget := NewUpstreamAttemptBudget(DefaultUpstreamAttemptLimit)
+			for range used {
+				budget.TryConsume()
+			}
+			dctx := &dispatchCtx{params: &ExecParams{UpstreamAttempts: budget}}
+			qr := dispatch.NewQueuedRequest("req", "tenant", "glm-5.2", context.Background(), dctx)
+			qr.AttemptCount = 3
 
-	ee := dispatchErrToExecuteError(context.Canceled)
-	copyDispatchAttemptMetadata(ee, qr)
+			ee := dispatchErrToExecuteError(context.Canceled)
+			copyDispatchAttemptMetadata(ee, qr)
 
-	if ee.Exhausted {
-		t.Fatal("client cancellation must not be reported as candidate exhaustion")
-	}
-	if ee.LastKind != errorsx.KindCanceled {
-		t.Fatalf("LastKind = %q, want %q", ee.LastKind, errorsx.KindCanceled)
-	}
-	if ee.Tried != 1 {
-		t.Fatalf("Tried = %d, want 1", ee.Tried)
-	}
-	if got := ee.Error(); got == "all 0 candidates failed: context canceled" {
-		t.Fatalf("misleading dispatch error retained: %q", got)
+			if ee.Exhausted {
+				t.Fatal("client cancellation must not be reported as candidate exhaustion")
+			}
+			if ee.LastKind != errorsx.KindCanceled {
+				t.Fatalf("LastKind = %q, want %q", ee.LastKind, errorsx.KindCanceled)
+			}
+			if ee.Tried != used {
+				t.Fatalf("Tried = %d, want actual HTTP attempts %d", ee.Tried, used)
+			}
+		})
 	}
 }
 
@@ -137,6 +144,7 @@ func TestDispatchExecutionContext_SessionStreamDetaches(t *testing.T) {
 func TestDispatchExecutionContext_ProvisionalSessionDoesNotDetach(t *testing.T) {
 	r := httptest.NewRequest("POST", "/v1/responses", nil)
 	clientCtx, cancelClient := context.WithCancel(r.Context())
+	defer cancelClient()
 	got, cancelDispatch := dispatchExecutionContext(&ExecParams{
 		R: r.WithContext(clientCtx), IsStream: true, SessionID: "gw_generated",
 	})
@@ -151,6 +159,7 @@ func TestDispatchExecutionContext_ProvisionalSessionDoesNotDetach(t *testing.T) 
 func TestDispatchExecutionContext_SurvivalAttemptDetaches(t *testing.T) {
 	r := httptest.NewRequest("POST", "/v1/messages", nil)
 	clientCtx, cancelClient := context.WithCancel(r.Context())
+	defer cancelClient()
 	got, cancelDispatch := dispatchExecutionContext(&ExecParams{
 		R: r.WithContext(clientCtx), IsStream: true, SurvivalAttempt: true,
 	})

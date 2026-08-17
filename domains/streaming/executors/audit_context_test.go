@@ -1,12 +1,19 @@
 package executors
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/authentication"
+	"github.com/kaixuan/llm-gateway-go/domains/credential"
+	"github.com/kaixuan/llm-gateway-go/domains/identity"
 	"github.com/kaixuan/llm-gateway-go/domains/session"
+	"github.com/kaixuan/llm-gateway-go/pool"
+	"github.com/kaixuan/llm-gateway-go/provider"
 )
 
 // TestAuditContextFromRequest_FullEnvelope covers the base-context
@@ -15,7 +22,8 @@ import (
 // remaining tenant/application/api_key values.
 func TestAuditContextFromRequest_FullEnvelope(t *testing.T) {
 	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-	r.Header.Set("X-Request-Id", "client-rid-1")
+	r.Header.Set("X-Request-Id", "server-rid-1")
+	r.Header.Set("X-Gw-Client-Request-Id", "client-rid-1")
 	r.Header.Set("X-Gw-Task-Id", "task-1")
 	r.Header.Set("X-Trace-Id", "trace-1")
 	r.Header.Set("X-Span-Id", "span-1")
@@ -27,6 +35,9 @@ func TestAuditContextFromRequest_FullEnvelope(t *testing.T) {
 	body := []byte(`{"model":"gpt-4o","messages":[]}`)
 	ctx := AuditContextFromRequest(r, sn, body, ki)
 
+	if ctx.RequestID != "server-rid-1" {
+		t.Errorf("request_id=%s", ctx.RequestID)
+	}
 	if ctx.ClientRequestID != "client-rid-1" {
 		t.Errorf("client_request_id=%s", ctx.ClientRequestID)
 	}
@@ -67,6 +78,24 @@ func TestAuditContextFromRequest_SessionFallback(t *testing.T) {
 	}
 	if ctx.GWTaskID != "session-task-fb" {
 		t.Errorf("gw_task_id=%s (session.TaskID must fill when header absent)", ctx.GWTaskID)
+	}
+}
+
+func TestAuditContextFromRequest_SanitizesClientCorrelationIDs(t *testing.T) {
+	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	r.Header.Set("X-Trace-Id", "hydrate-trace")
+	r.Header.Set("X-Span-Id", "invalid span")
+	r.Header.Set("X-Parent-Request-Id", strings.Repeat("x", maxCorrelationIDLen+1))
+
+	ctx := AuditContextFromRequest(r, nil, nil, nil)
+	if ctx.TraceID != "hydrate-trace" {
+		t.Fatalf("trace_id = %q, want hydrate-trace", ctx.TraceID)
+	}
+	if ctx.SpanID != "" {
+		t.Fatalf("invalid span_id must be dropped, got %q", ctx.SpanID)
+	}
+	if ctx.ParentRequestID != "" {
+		t.Fatalf("overlong parent_request_id must be dropped, got %q", ctx.ParentRequestID)
 	}
 }
 
@@ -155,6 +184,50 @@ func TestAuditContext_NilReceiver(t *testing.T) {
 
 // TestAuditContext_ChunkIndexAtomic verifies the streaming chunk
 // counter increments without races.
+func TestExecuteOpenAI_DoesNotForwardInboundTraceHeaders(t *testing.T) {
+	var upstreamHeaders http.Header
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHeaders = r.Header.Clone()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"id":"chatcmpl-1","model":"gpt-test","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`)
+	}))
+	defer upstream.Close()
+
+	exec := NewExecutor(
+		NewRouter(NewStickyCache(), credential.NewLimiter()), credential.NewManager(), credential.NewLimiter(),
+		pool.NewPoolManager(nil), nil, func(chunk []byte, _ bool) []byte { return chunk }, nil, nil,
+	)
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	req.Header.Set("X-Request-Id", "server-request-1")
+	req.Header.Set("X-Trace-Id", "untrusted-trace")
+	req.Header.Set("X-Span-Id", "untrusted-span")
+	cand := provider.Candidate{
+		ProviderID: 1, CredentialID: 1, BaseURL: upstream.URL,
+		Protocol: "openai-completions", RawModel: "gpt-test", APIKey: "key",
+	}
+
+	_, err := exec.executeOpenAI(&ExecParams{
+		W: httptest.NewRecorder(), R: req, RequestID: "server-request-1",
+		BodyBytes:      []byte(`{"model":"gpt-test","messages":[]}`),
+		ClientProtocol: "openai-completions", ClientModel: "gpt-test",
+		TraceID: "untrusted-trace", SpanID: "untrusted-span",
+		Audit:    &AuditContext{TraceID: "untrusted-trace", SpanID: "untrusted-span"},
+		ClientID: identity.ClientIdentity{IdentityHash: "test"},
+	}, cand, 0, time.Now(), nil)
+	if err != nil {
+		t.Fatalf("executeOpenAI: %v", err)
+	}
+	if got := upstreamHeaders.Get("X-Request-Id"); got != "server-request-1" {
+		t.Fatalf("provider request ID = %q", got)
+	}
+	if got := upstreamHeaders.Get("X-Trace-Id"); got != "" {
+		t.Fatalf("untrusted X-Trace-Id forwarded to provider: %q", got)
+	}
+	if got := upstreamHeaders.Get("X-Span-Id"); got != "" {
+		t.Fatalf("untrusted X-Span-Id forwarded to provider: %q", got)
+	}
+}
+
 func TestAuditContext_ChunkIndexAtomic(t *testing.T) {
 	ctx := &AuditContext{}
 	ctx.ChunkIndex.Add(1)

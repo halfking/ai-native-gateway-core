@@ -1,6 +1,13 @@
 package executors
 
 import (
+	"bytes"
+	"compress/gzip"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -42,6 +49,111 @@ func TestChatExecutor_BuildRequest(t *testing.T) {
 	}
 	if !strings.Contains(req.Header.Get("Content-Type"), "application/json") {
 		t.Errorf("Content-Type = %q, want application/json", req.Header.Get("Content-Type"))
+	}
+}
+
+func TestChatExecutor_WriteNonStreamResponse_DoesNotReuseUpstreamLengthAfterRewrite(t *testing.T) {
+	const lengthDelta = 152
+	upstreamModel := strings.Repeat("x", lengthDelta+len("gpt-4o"))
+	upstreamBody := []byte(`{"id":"chatcmpl-245","object":"chat.completion","model":"` + upstreamModel + `","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Upstream-Request-Id", "provider-245")
+		_, _ = w.Write(upstreamBody)
+	}))
+	defer upstream.Close()
+
+	resp, err := upstream.Client().Get(upstream.URL)
+	if err != nil {
+		t.Fatalf("GET upstream: %v", err)
+	}
+	upstreamLength := resp.ContentLength
+
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		ce := &ChatExecutor{}
+		if _, writeErr := ce.WriteNonStreamResponse(w, resp, "gpt-4o", "", nil); writeErr != nil {
+			t.Errorf("WriteNonStreamResponse: %v", writeErr)
+		}
+	}))
+	defer gateway.Close()
+
+	clientResp, err := gateway.Client().Get(gateway.URL)
+	if err != nil {
+		t.Fatalf("GET gateway: %v", err)
+	}
+	defer clientResp.Body.Close()
+	gotBody, err := io.ReadAll(clientResp.Body)
+	if err != nil {
+		t.Fatalf("read gateway response: %v", err)
+	}
+	if delta := upstreamLength - int64(len(gotBody)); delta != lengthDelta {
+		t.Fatalf("test setup delta = %d, want %d", delta, lengthDelta)
+	}
+	if got := clientResp.ContentLength; got != int64(len(gotBody)) {
+		t.Fatalf("gateway Content-Length = %d, body bytes = %d (upstream was %d)", got, len(gotBody), upstreamLength)
+	}
+	if got := clientResp.Header.Get("X-Upstream-Request-Id"); got != "provider-245" {
+		t.Fatalf("safe upstream header was not preserved: %q", got)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(gotBody, &decoded); err != nil {
+		t.Fatalf("gateway body is not valid JSON: %v", err)
+	}
+}
+
+func TestCopyNonStreamResponseHeaders_ReplacesWireHeaders(t *testing.T) {
+	dst := make(http.Header)
+	src := http.Header{
+		"Content-Length":    {"999"},
+		"Content-Encoding":  {"gzip"},
+		"Transfer-Encoding": {"chunked"},
+		"Connection":        {"close"},
+		"X-Request-Id":      {"provider-245"},
+	}
+	copyNonStreamResponseHeaders(dst, src, 847)
+	if got := dst.Get("Content-Length"); got != "847" {
+		t.Fatalf("Content-Length = %q, want 847", got)
+	}
+	for _, name := range []string{"Content-Encoding", "Transfer-Encoding", "Connection"} {
+		if got := dst.Get(name); got != "" {
+			t.Errorf("%s = %q, want omitted", name, got)
+		}
+	}
+	if got := dst.Get("X-Request-Id"); got != "provider-245" {
+		t.Errorf("X-Request-Id = %q, want provider-245", got)
+	}
+}
+
+func TestChatExecutor_WriteNonStreamResponse_CompressedUpstreamBodyIsReframed(t *testing.T) {
+	plain := []byte(`{"id":"chatcmpl-245","object":"chat.completion","model":"upstream-model","choices":[{"message":{"role":"assistant","content":"ok"}}]}`)
+	var compressed bytes.Buffer
+	gz := gzip.NewWriter(&compressed)
+	if _, err := gz.Write(plain); err != nil {
+		t.Fatalf("gzip write: %v", err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatalf("gzip close: %v", err)
+	}
+
+	resp := &http.Response{
+		StatusCode:    http.StatusOK,
+		Header:        http.Header{"Content-Type": {"application/json"}, "Content-Encoding": {"gzip"}},
+		Body:          io.NopCloser(bytes.NewReader(plain)),
+		ContentLength: int64(compressed.Len()),
+	}
+	rec := httptest.NewRecorder()
+	if _, err := (&ChatExecutor{}).WriteNonStreamResponse(rec, resp, "client-model", "", nil); err != nil {
+		t.Fatalf("WriteNonStreamResponse: %v", err)
+	}
+	if got := rec.Header().Get("Content-Encoding"); got != "" {
+		t.Fatalf("Content-Encoding = %q, want omitted for decoded body", got)
+	}
+	if got := rec.Header().Get("Content-Length"); got != strconv.Itoa(rec.Body.Len()) {
+		t.Fatalf("Content-Length = %q, want body length %d", got, rec.Body.Len())
+	}
+	if got := rec.Header().Get("Content-Length"); got == strconv.Itoa(compressed.Len()) {
+		t.Fatalf("Content-Length still uses compressed upstream length %q", got)
 	}
 }
 

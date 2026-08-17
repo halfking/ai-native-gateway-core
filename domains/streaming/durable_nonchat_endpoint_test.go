@@ -12,6 +12,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/authentication"
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
 	"github.com/kaixuan/llm-gateway-go/durable"
+	"github.com/kaixuan/llm-gateway-go/middleware"
 	"github.com/kaixuan/llm-gateway-go/provider"
 )
 
@@ -51,6 +52,15 @@ type durableEndpointExecutor struct {
 	err    error
 }
 
+type correlationCaptureExecutor struct {
+	params *executors.ExecParams
+}
+
+func (e *correlationCaptureExecutor) Execute(p *executors.ExecParams) (*executors.ExecuteResult, error) {
+	e.params = p
+	return &executors.ExecuteResult{}, nil
+}
+
 func (e durableEndpointExecutor) Execute(p *executors.ExecParams) (*executors.ExecuteResult, error) {
 	if e.write != "" {
 		if _, err := p.W.Write([]byte(e.write)); err != nil {
@@ -86,6 +96,84 @@ func newDurableNonChatRequest(t *testing.T, path, body string, ctx context.Conte
 	r.Header.Set("X-Gw-Session-Id", "gw_durable_endpoint")
 	r.Header.Set(GatewayCapabilitiesHeader, CapabilityDurableRecovery)
 	return r.WithContext(ctx)
+}
+
+func TestHTTPHandlersWireInboundTraceCorrelationToExecParams(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		body string
+		wrap func(*ChatHandler) http.Handler
+	}{
+		{
+			name: "chat",
+			path: "/v1/chat/completions",
+			body: `{"model":"gpt-4o","stream":true,"messages":[{"role":"user","content":"hi"}]}`,
+			wrap: func(h *ChatHandler) http.Handler { return h },
+		},
+		{
+			name: "responses",
+			path: "/v1/responses",
+			body: `{"model":"gpt-4o","stream":true,"input":"hi"}`,
+			wrap: func(h *ChatHandler) http.Handler { return NewResponsesHandler(h) },
+		},
+		{
+			name: "messages",
+			path: "/v1/messages",
+			body: `{"model":"gpt-4o","max_tokens":16,"stream":true,"messages":[{"role":"user","content":"hi"}]}`,
+			wrap: func(h *ChatHandler) http.Handler { return NewMessagesHandler(h) },
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			capture := &correlationCaptureExecutor{}
+			h := NewChatHandler(nil, nil, nil, nil, nil, nil)
+			h.setRequestKeyVerifierForTest(durableEndpointVerifier{key: &authentication.KeyInfo{
+				ID: 42, TenantID: "tenant-1", ApplicationID: 7,
+			}})
+			h.provider = durableEndpointResolver{}
+			h.executor = &executors.Executor{}
+			h.SetRequestSurvival(func(string) bool { return true }, SurvivalOptions{})
+			h.survivalAttemptExec = capture
+
+			req := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(tc.body))
+			req.Header.Set("Authorization", "Bearer sk-test")
+			req.Header.Set("X-Request-Id", "client-request-1")
+			req.Header.Set("X-Gw-Session-Id", "gw_trace_session")
+			req.Header.Set("X-Gw-Task-Id", "task-1")
+			req.Header.Set("X-Trace-Id", "trace-1")
+			req.Header.Set("X-Span-Id", "span-1")
+			rec := httptest.NewRecorder()
+
+			middleware.NewRequestIDMiddleware().Wrap(tc.wrap(h)).ServeHTTP(rec, req)
+
+			if capture.params == nil {
+				t.Fatalf("handler did not invoke executor: status=%d body=%s", rec.Code, rec.Body.String())
+			}
+			p := capture.params
+			serverRequestID := rec.Header().Get("X-Request-Id")
+			if serverRequestID == "" || serverRequestID == "client-request-1" || p.RequestID != serverRequestID {
+				t.Fatalf("request IDs: response=%q params=%q", serverRequestID, p.RequestID)
+			}
+			if p.ClientRequestID != "client-request-1" || p.TraceID != "trace-1" || p.SpanID != "span-1" {
+				t.Fatalf("flat correlation fields: client=%q trace=%q span=%q", p.ClientRequestID, p.TraceID, p.SpanID)
+			}
+			if p.Audit == nil {
+				t.Fatal("ExecParams.Audit is nil")
+			}
+			if p.Audit.RequestID != serverRequestID || p.Audit.ClientRequestID != "client-request-1" {
+				t.Fatalf("audit request IDs: server=%q client=%q", p.Audit.RequestID, p.Audit.ClientRequestID)
+			}
+			raw := p.Audit.RawCorrelationEnvelope()
+			if raw.TraceID != "trace-1" || raw.SpanID != "span-1" || raw.ClientRequestID != "client-request-1" {
+				t.Fatalf("raw correlation envelope: %+v", raw)
+			}
+			if raw.GWSessionID != "gw_trace_session" || raw.GWTaskID != "task-1" || raw.TenantID != "tenant-1" || raw.APIKeyID != 42 {
+				t.Fatalf("raw session/key correlation: %+v", raw)
+			}
+		})
+	}
 }
 
 func TestDurableNonChatEndpointsReleaseCandidateResolutionFailure(t *testing.T) {

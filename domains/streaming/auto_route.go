@@ -430,7 +430,7 @@ func recordAutoSelection(r *http.Request, sessionID string, decision *autoroute.
 	telemetry.WriteAutoSelection(telemetry.AutoSelection{
 		RequestID:       requestID,
 		SessionID:       sessionID,
-		TaskID:          r.Header.Get("X-Gw-Task-Id"),
+		TaskID:          sanitizeRequestCorrelationID(r.Header.Get("X-Gw-Task-Id")),
 		TaskType:        string(decision.TaskType),
 		Profile:         string(decision.Profile),
 		Classifier:      decision.Classifier,

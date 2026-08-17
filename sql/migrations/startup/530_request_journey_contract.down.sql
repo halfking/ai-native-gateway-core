@@ -1,24 +1,16 @@
--- Down migration 529: remove the additive RequestJourney contract.
+-- Down migration 530: remove the additive RequestJourney contract.
 -- Operator-gated: journey rows become legacy transition rows after rollback.
 
 BEGIN;
-
-DO $$
-BEGIN
-    IF EXISTS (
-        SELECT 1 FROM request_state_transitions WHERE event_type IS NOT NULL
-    ) THEN
-        RAISE EXCEPTION
-            'cannot roll back request journey contract while journey rows exist';
-    END IF;
-END
-$$;
 
 DROP INDEX IF EXISTS idx_state_transitions_journey_node_recent;
 DROP INDEX IF EXISTS idx_state_transitions_journey_model_recent;
 DROP INDEX IF EXISTS idx_state_transitions_journey_recent;
 DROP INDEX IF EXISTS uq_state_transitions_tenant_request_seq;
-DROP INDEX IF EXISTS uq_state_transitions_legacy_request_seq;
+
+UPDATE request_state_transitions
+SET transition_type = 'state'
+WHERE transition_type IS NULL;
 
 ALTER TABLE request_state_transitions
     DROP CONSTRAINT IF EXISTS request_state_transitions_node_health_status_chk,
@@ -60,8 +52,5 @@ ALTER TABLE request_state_transitions
     DROP COLUMN IF EXISTS event_type,
     DROP COLUMN IF EXISTS gateway_instance_id,
     ALTER COLUMN transition_type SET NOT NULL;
-
-CREATE UNIQUE INDEX IF NOT EXISTS uq_state_transitions_request_seq
-    ON request_state_transitions (request_id, seq);
 
 COMMIT;

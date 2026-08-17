@@ -17,7 +17,7 @@ type postgresClient interface {
 }
 
 // PostgresRepository persists and reconstructs the durable RequestJourney
-// projection using only the explicit content-free columns from migration 529.
+// projection using only the explicit content-free columns from migration 530.
 type PostgresRepository struct {
 	db postgresClient
 }
