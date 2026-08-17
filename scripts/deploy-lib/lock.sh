@@ -116,6 +116,12 @@ EOF
   printf -v metadata_q '%q' "$metadata_b64"
   if ! "$ssh_cmd" "LOCK_PATH=$lock_q METADATA_B64=$metadata_q bash -s" <<'REMOTE_LOCK'
 set -euo pipefail
+# The lock parent dir (e.g. /var/lib/llm-gateway-go) must exist before the
+# atomic mkdir of the lock directory itself. Creating only the parent is
+# a benign race — two concurrent callers both succeed, only one wins the
+# inner mkdir "$LOCK_PATH"; without this, a missing parent makes mkdir
+# fail with ENOENT and surfaces as "initialization failed".
+mkdir -p "$(dirname "$LOCK_PATH")"
 if ! mkdir "$LOCK_PATH" 2>/dev/null; then
   cat "$LOCK_PATH/metadata" >&2 2>/dev/null || true
   exit 75
