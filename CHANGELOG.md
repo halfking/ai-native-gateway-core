@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - 2026-08-17 (Dashboard Request Detail 5s Timeout)
+
+### Fixed
+
+- **dashboard 实时请求流 → 点击请求 报 "query failed"**：`/api/logs/{request_id}` 返回
+  HTTP 500 + `db_error: timeout: context deadline exceeded` (duration_ms=5000)。
+  根因：`getLog` 用 `LEFT JOIN request_logs_bodies_with_current_month` 拉 body，
+  该视图 UNION ALL 了 `request_logs_bodies_hot` (heap, idx <1ms) 和
+  `request_logs_bodies_2026_08` (Citus columnar, 2020 MB, 无 btree 索引)。
+  即使 body 在 hot 里命中，planner 也必须把 columnar 分区纳入 Append node，
+  ColumnarScan + JSONB 反压让单 ID 查询 >30s，5s ctx 直接超时。
+  修复策略：把 body JOIN 从主查询剥离成 `fetchRequestBodies` helper，
+  先查 hot (idx 命中, <1ms)，找不到再走 columnar 视图 (独立 20s ctx)。
+  dashboard 实时流（24h 内请求）走 hot fast path 不再 timeout；
+  metadata 永远先返回（body 缺失降级 nil），不再 500。
+- **columnar 冷路径 ctx 防御**：把 `getLog` 外层 ctx 从 5s 扩到 30s，
+  避免用户点"超过 TTL"的老请求时 metadata + body 都被 5s 卡掉。
+  `fetchRequestBodies` 慢路径加 elapsed_ms 结构化日志（hot > 1s 记 INFO，
+  cold hit / timeout 都记 WARN/INFO），便于运维区分 hot-miss vs columnar-cold。
+  新增 `TestFetchRequestBodies_CancelledParentCtx_DoesNotHang` 回归测试，
+  锁住 ctx 层级不被嵌套取消意外阻断。
+- 详见 `docs/changelogs/2026-08-17-dashboard-request-detail-columnar-timeout.md`，
+  含根因 EXPLAIN ANALYZE 证据 + 154 实测 L1-L4 验证。
+
 ## [Unreleased] - 2026-08-17 (Long-Running Request Recovery)
 
 ### Fixed
