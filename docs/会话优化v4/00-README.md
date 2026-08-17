@@ -1,8 +1,8 @@
 # 会话优化 v4 — 权威整合设计与实施计划
 
 > 本目录是 6 套历史文档（会话优化v1~v3 / 路由优化v3 / 修订0811 / 自检优化）的**版本裁决 + 权威整合**产物。
-> 生成日期：2026-08-16。代码基线：当前工作区 HEAD `9aeff9e4b`（2026-08-16 核实校正）+ 修订0811 main@`96bc1425f`（历史文档结论）。
-> 落地工作区：本目录（official-deploy/services/llm-gateway-go/docs/会话优化v4/）。
+> 当前事实日期：2026-08-17。代码基线：HEAD `ea4f49452`；工作树另含未提交的客户端/供应商稳定性修复，发布结论须同时注明该差异。
+> 落地工作区：`docs/会话优化v4/`。
 
 ---
 
@@ -17,6 +17,8 @@
 | `04-节点状态与路由处理设计.md` | 主题⑤供应商节点状态 + ⑥路由处理（URSM 裁决） |
 | `05-会话分析与模型选择设计.md` | 主题⑦会话分析 + ⑧任务模型选择 |
 | `10-实施计划.md` | 对齐代码基线的可执行实施计划（P0/P1/P2 分级 + 里程碑） |
+| `11-完成情况核实与并发执行方案.md` | **历史核验快照**：记录 2026-08-16 当时的文档/代码差异，不再作为 2026-08-17 当前实现状态源 |
+| `12-GoalHandoff契约.md` | Goal↔Handoff 组件边界、握手与恢复契约 |
 
 ---
 
@@ -24,15 +26,16 @@
 
 历史文档横跨 08-06 ~ 08-15 共 5 个版本层次，**非严格线性**，互相覆盖/纠错。v4 裁决三原则：
 
-1. **以代码为真相**：任何「实现状态」论断以当前代码基线（`9aeff9e4b`）为准，文档说法仅是历史记录。
+1. **以代码为真相**：任何「实现状态」论断以当前 HEAD `ea4f49452` 加工作树中未提交的稳定性修复为准；未提交修复不得冒充已发布版本。
 2. **以最新文档集为权威**：修订0811（v1.6，08-15）> 会话优化v3（08-14~15）> 会话优化v2（08-13）> 路由优化v3（08-12）> 自检优化（08-13）。
-3. **纸面 vs 接线**：URSM 设计蓝本（v3.0）多数仍为**纸面/漂移**；实际接线以 `ursm/v2` 三模式基座为准。详见 04 号文档。
+3. **纸面 vs 接线**：URSM v2 现为默认 `authoritative`；`off` 是紧急回退，`shadow`/`canary` 是兼容与隔离观测模式，不是上线前置流程。详见 04 号文档及[切换 runbook](../runbooks/ursm-v2-cutover.md)。
 
-> ⚠️ **2026-08-15 老板修正（代码证实）**：
-> - **schema 全在 `public.*`**（分区表除外），`gateway.*` schema 已于 migration 513 整库 DROP——v2 文档的 ADR-V2-001「gateway.* 正式 schema」为历史错误记录，以 public.* 为准。
-> - **缓存 = 会话三层数据**（①原始多轮会话 → ②压缩后多轮会话[可跨轮次] → ③安全脱敏后发送会话），不是 Redis/内存缓存层。
-> - **会话管理采用 `ursm/v2` 架构**（main.go:609 T20 已接线，ModeOff/shadow/canary）。
-> - **会话数据存储维度**：项目 + 任务 + 会话 + 轮次 + 附属会话 + 附属信息；轮次用分区表（hot + 分区表，如 session_turns_hot → session_turns_YYYY_MM）；保留旧存储模式（request_logs）双写，逐步移除。**老板 08-15 确认 session_turns 走 hot+分区表模式（对齐 request_logs_hot）。**
+> **2026-08-17 当前裁决**：
+> - schema 仍以 migration 513 证明的 `public.*` 为准（分区表除外）。
+> - 缓存指会话三层数据：原始多轮 → 压缩后多轮 → 安全脱敏后发送，不是 Redis/内存缓存层。
+> - 会话管理采用 `ursm/v2`；缺省模式为 `authoritative`。`off`/`shadow`/`canary` 仅承担兼容、观测和回退。
+> - migration 525/526 已落地六维字段与 `session_turns_hot`；生产回填和运行验证仍属 deployment pending。
+> - 客户端物理 TCP 断开不可恢复；首语义帧提交后不可透明切换供应商并从头重放。详见[稳定性审计](../audit/2026-08-17-ursm-v2-client-provider-stability-audit.md)。
 
 ---
 
@@ -46,7 +49,7 @@
 
 三件套为 **31 > 59 > 60** 优先级；43/44/45 属「历史诊断+方案」其结论已被 59/60 推翻。**schema 归属一律以代码/migration 513 为准：`public.*`。**
 
-> **2026-08-16 核实校正**：M3 durable 已落地，M4 验证已完成；逐项证据与边界见 `11-完成情况核实与并发执行方案.md`。
+> **状态证据分层（2026-08-17）**：M3/M4 必须分别标注 `implemented`（代码已实现）、`local verified`（本地/代码级验证通过）、`deployment pending`（真实 Redis/PG/provider 与部署 smoke 未完成）。11 号是 2026-08-16 的历史核验快照，不再单独承担当前裁决。
 
 ---
 
@@ -54,12 +57,12 @@
 
 | 锚点 | 值 | 用途 |
 |---|---|---|
-| 代码事实基线 | 当前工作区 HEAD `9aeff9e4b`（2026-08-16 核实校正；历史 go-3 `f249c4f4`） | 「已实现/未接线」判定的唯一依据 |
-| 文档历史基线 | 修订0811 main@`96bc1425f` | M0/M1/M2 完成的官方记录 |
-| 最近完成节点 | 修订0811/`24-M2收尾`（08-15） | P2-C1 信封适配 + P2-S1 KeepaliveSender 删除 |
-| 下一实施节点 | **OBS 收尾 + P0/P1 剩余项** | M3 durable 已落地，M4 验证已完成；详见 11 号 |
+| 代码事实基线 | HEAD `ea4f49452` + 工作树中未提交的稳定性修复（2026-08-17） | 区分 committed baseline 与未提交 implemented/local verified 证据 |
+| 文档历史基线 | 修订0811 main@`96bc1425f` | M0/M1/M2 完成的历史记录 |
+| 当前运行裁决 | URSM v2 默认 `authoritative` | `off` 回退；`shadow`/`canary` 兼容与观测 |
+| 下一实施节点 | **deployment pending 门禁 + OBS/P0/P1 收尾** | 真实 Redis/PG/provider 故障注入、部署 smoke 与既有产品阻塞项 |
 
-> ⚠️ **2026-08-16 核实校正**：M3 已落地，见 11 号。工作区差异：go-3 含 OBS-BE1 liveactions + web 新组件；official-deploy 含 24-M2 收尾文档。实施计划按两者合并视角编写。
+> **2026-08-17 发布边界**：当前稳定性修复达到 implemented/local verified，但工作树未提交，且真实 Redis/PG/provider 故障注入与部署 smoke 仍 pending。发布操作按[URSM v2 cutover runbook](../runbooks/ursm-v2-cutover.md)执行。
 
 ---
 
@@ -78,12 +81,13 @@
 
 ## 6. 交付物范围（A+B）
 
-- **A 权威设计方案**：02~05 号文档，覆盖 8 主题，标注「已实现 / 未接线 / 纸面 / 待办」。
-- **B 实施计划**：10 号文档，对齐代码基线，P0/P1/P2 分级 + 里程碑（M3 durable 收口 + M4 验证 + OBS 收尾）。
+- **A 权威设计方案**：02~05 号文档，覆盖 8 主题，按 `implemented / local verified / deployment pending / TARGET` 分层。
+- **B 实施计划**：10 号文档，对齐代码基线，P0/P1/P2 分级；11 号仅作为历史核验快照。
 
 ---
 
 **CHANGELOG**
+- 2026-08-17 v1.4：基线更新为 HEAD `ea4f49452`，注明工作树含未提交稳定性修复；URSM v2 缺省 authoritative，off/shadow/canary 归为兼容/观测/回退；补 11/12 导航、525/526 与 TCP/首语义重放边界；M3/M4 改用 implemented/local verified/deployment pending 分层并链接审计/runbook
 - 2026-08-16 v1.3：按 11 号核实校正基线锚点；确认 M3 durable 已落地、M4 已完成验证
 - 2026-08-15 v1.2：老板确认 public.* + session_turns 走 hot+分区表模式（对齐 request_logs_hot）
 - 2026-08-15 v1.1：老板修正落地——schema 全在 public.*（分区表除外）、缓存=会话三层数据、会话管理用 ursm/v2、会话维度分区表+双写逐步移除
