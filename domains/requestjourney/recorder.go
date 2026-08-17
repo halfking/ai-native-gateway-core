@@ -775,6 +775,17 @@ func (l *Lifecycle) SequenceHighWater() int64 {
 	return l.seq.Load()
 }
 
+// ArrivalTime returns the request's original ingress arrival. Retry wrappers
+// thread it into the next attempt's lifecycle so re-entry updates the same
+// ingress record instead of being rejected as an identity change (memory
+// projection) or duplicated as a second FIFO entry (Redis).
+func (l *Lifecycle) ArrivalTime() time.Time {
+	if l == nil {
+		return time.Time{}
+	}
+	return l.receivedAt
+}
+
 // Finish completes global ingress and, only when a trusted tenant was already
 // bound, emits the tenant journey terminal. It never infers a tenant.
 func (l *Lifecycle) Finish(ctx context.Context, outcome Outcome, errorKind string, httpStatus int) {

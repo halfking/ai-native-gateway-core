@@ -170,3 +170,24 @@ func TestRetentionWorkerNilDBIsNoOp(t *testing.T) {
 	}
 	worker.Stop()
 }
+
+func TestRetentionWorkerStopWithoutStartReturnsImmediately(t *testing.T) {
+	db := &fakeRetentionDB{}
+	worker := NewRetentionWorker(nil)
+	worker.db = db
+	// A worker that was never started must not hang waiting for a goroutine
+	// that does not exist (e.g. deferred Stop after failed wiring).
+	returned := make(chan struct{})
+	go func() {
+		worker.Stop()
+		close(returned)
+	}()
+	select {
+	case <-returned:
+	case <-time.After(time.Second):
+		t.Fatal("Stop() hung on a never-started worker")
+	}
+	if db.begins != 0 {
+		t.Fatalf("begins = %d, want 0 (no cleanup without Start)", db.begins)
+	}
+}

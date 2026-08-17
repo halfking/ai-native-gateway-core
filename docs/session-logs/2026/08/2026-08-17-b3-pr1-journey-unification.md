@@ -60,3 +60,14 @@
 
 audit: 双轴自审通过(Standards:与 requestjourney 既有模式一致/无新死代码;
 Spec:严格落在 §E.3 PR1 范围,三处超出均已在报告 §E.3.1 说明理由)。
+
+## 二审修正(同日收口前,报告 §E.3.2)
+
+1. **ingress 重入 identity 冲突(确定性 bug)**:attempt-2 新到达时间导致内存投影
+   拒绝 + Redis 重复入库;修复为经 carrier 继承首次到达时间(`ArrivalTime()`),
+   测试补 ingress 断言(1 条/终态 succeeded/无 degraded)。
+2. **RetentionWorker**:删只写不读 `now` 字段;`Stop` 加 `started` 守卫,
+   未启动的 worker 不再挂死(新增测试)。
+3. **竞态验证**:`complete()` 先发终态事件后送 ResultCh,seq 种子读取安全;
+   迟到流式回调的残余风险为单事件拒绝 + warn,接受并记入报告。
+4. 复验全绿(build/vet/test/gofmt/棘轮 0 issue)。

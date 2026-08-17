@@ -141,16 +141,24 @@ func ensureRequestJourney(r *http.Request, handler *ChatHandler, requestID strin
 	// streamretry retries re-invoke the whole handler with the wrapper's
 	// context, so each attempt would otherwise build a fresh lifecycle whose
 	// sequence restarts at 1 — every later event of the request would then be
-	// rejected by the journey projection as a sequence conflict. Seed the new
-	// lifecycle from the previous attempt's high-water mark (published through
-	// the wrapper's request carrier) and bind the new lifecycle back so the
-	// wrapper's retry boundary events and the next attempt continue the same
-	// sequence.
+	// rejected by the journey projection as a sequence conflict, and each
+	// re-arrival would be rejected as an ingress identity change (memory) or
+	// duplicated as a second FIFO entry (Redis). Seed the new lifecycle from
+	// the previous attempt's high-water mark and original arrival time
+	// (published through the wrapper's request carrier) and bind the new
+	// lifecycle back so the wrapper's retry boundary events and the next
+	// attempt continue the same sequence and ingress record.
 	previous := streamretry.JourneyObserverFromCtx(r.Context())
+	arrivedAt := time.Now()
+	if previous != nil {
+		if firstArrival := previous.ArrivalTime(); !firstArrival.IsZero() {
+			arrivedAt = firstArrival
+		}
+	}
 	protocol, pathClass := requestJourneyIngressClass(r.URL.Path)
 	lifecycle := requestjourney.NewIngressLifecycle(
 		handler.journeyRecorder, handler.journeyGatewayInstanceID, requestID,
-		protocol, pathClass, time.Now(),
+		protocol, pathClass, arrivedAt,
 	)
 	if previous != nil {
 		lifecycle.SeedSequence(previous.SequenceHighWater())

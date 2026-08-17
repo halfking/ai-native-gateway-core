@@ -31,6 +31,7 @@ type fakeJourneyObserver struct {
 	mu      sync.Mutex
 	reasons []string
 	high    int64
+	arrival time.Time
 }
 
 func (f *fakeJourneyObserver) RetryScheduled(ctx context.Context, reason string) {
@@ -40,6 +41,8 @@ func (f *fakeJourneyObserver) RetryScheduled(ctx context.Context, reason string)
 }
 
 func (f *fakeJourneyObserver) SequenceHighWater() int64 { return f.high }
+
+func (f *fakeJourneyObserver) ArrivalTime() time.Time { return f.arrival }
 
 func (f *fakeJourneyObserver) retryReasons() []string {
 	f.mu.Lock()

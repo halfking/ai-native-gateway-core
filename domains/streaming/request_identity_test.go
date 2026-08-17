@@ -251,4 +251,17 @@ func TestRequestJourneySurvivesStreamretryReentry(t *testing.T) {
 	if len(journey.Events) < 6 {
 		t.Fatalf("journey events = %d, want both attempts fully recorded (≥6)", len(journey.Events))
 	}
+
+	// Re-entry must update the SAME ingress record (original arrival time),
+	// not be rejected as an identity change or duplicated in the FIFO.
+	ingress := projection.RecentIngress()
+	if len(ingress) != 1 {
+		t.Fatalf("ingress entries = %d, want exactly 1 for the retried request", len(ingress))
+	}
+	if ingress[0].Status != requestjourney.IngressStatusSucceeded {
+		t.Fatalf("ingress final status = %s, want succeeded after the retry recovered", ingress[0].Status)
+	}
+	if projection.IngressDegraded() {
+		t.Fatal("ingress projection flagged degraded by the retry re-entry")
+	}
 }

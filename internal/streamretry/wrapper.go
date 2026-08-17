@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/kaixuan/llm-gateway-go/internal/retryowner"
 )
@@ -20,14 +21,17 @@ type requestCarrierCtxKey struct{}
 
 // JourneyObserver is the request-scoped journey emission surface this wrapper
 // needs between attempts: the retry boundary event plus the sequence
-// high-water that seeds the next attempt's lifecycle.
-// *requestjourney.Lifecycle satisfies it; the local interface keeps this
-// package free of domain imports.
+// high-water and original arrival time that seed the next attempt's
+// lifecycle. *requestjourney.Lifecycle satisfies it; the local interface
+// keeps this package free of domain imports.
 type JourneyObserver interface {
 	// RetryScheduled emits the retry boundary event (reason = error class).
 	RetryScheduled(ctx context.Context, reason string)
 	// SequenceHighWater returns the last allocated journey sequence.
 	SequenceHighWater() int64
+	// ArrivalTime returns the request's original ingress arrival, so the
+	// next attempt updates the same ingress record instead of duplicating it.
+	ArrivalTime() time.Time
 }
 
 // requestCarrier is the mutable per-request state installed by the wrapper.
