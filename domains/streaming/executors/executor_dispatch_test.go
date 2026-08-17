@@ -137,10 +137,10 @@ func TestDispatchUsesJourneyAttemptIDForNodeHealthReduction(t *testing.T) {
 			return requested, nil, nil
 		},
 		ForwardFunc: exec.dispatchForward,
-		EventSink: dispatch.EventSinkFunc(func(_ context.Context, event requestjourney.JourneyEvent) {
-			if event.Type == requestjourney.EventAttemptStarted && event.Attempt != nil {
+		ObservationSink: dispatch.ObservationSinkFunc(func(_ context.Context, observation dispatch.Observation) {
+			if observation.Type == dispatch.ObservationAttemptStarted && observation.Attempt != nil {
 				select {
-				case journeyAttemptIDCh <- event.Attempt.AttemptID:
+				case journeyAttemptIDCh <- observation.Attempt.AttemptID:
 				default:
 				}
 			}
@@ -175,7 +175,7 @@ func TestDispatchUsesJourneyAttemptIDForNodeHealthReduction(t *testing.T) {
 	if decision.Node != (nodehealth.NodeKey{TenantID: "tenant-a", ProviderID: 7, CredentialID: 22, Model: "model-a"}) {
 		t.Fatalf("node = %+v", decision.Node)
 	}
-	if decision.RequestID != params.RequestID || decision.BillingMode != candidate.BillingMode || decision.Outcome != requestjourney.OutcomeSuccess {
+	if decision.RequestID != params.RequestID || decision.BillingMode != candidate.BillingMode || string(decision.Outcome) != "success" {
 		t.Fatalf("observation metadata lost: %+v", decision)
 	}
 }

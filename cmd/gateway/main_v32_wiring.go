@@ -34,14 +34,14 @@ func wireStateTransitionLogger(db *pgxpool.Pool) *dispatch.StateTransitionLogger
 	return l
 }
 
-// wireQueueSnapshotProvider builds the QueueMetricsCollector and returns
-// the closure handed to LiveStreamSSEHub for V3.2 BE-A1 (V32-LP3).
-// The collector wraps dispatch.Pipeline and provides thread-safe,
-// non-blocking queue depth snapshots. Wired: false when pipeline is nil
-// (pre-deployment / test mode).
-func wireQueueSnapshotProvider(pipeline *dispatch.Pipeline) func() *admin.LiveQueueSnapshot {
-	// Create collector (handles nil pipeline gracefully with Wired=false)
-	collector := dispatch.NewQueueMetricsCollector(pipeline)
+// wireQueueSnapshotProvider wraps the independent QueueProjection in the
+// QueueMetricsCollector and returns the closure handed to LiveStreamSSEHub
+// for V3.2 BE-A1 (V32-LP3). The collector only reads the projection, so the
+// admin SSE path never locks or copies from the dispatch Pipeline.
+// Wired: false when projection is nil (pre-deployment / test mode).
+func wireQueueSnapshotProvider(projection *dispatch.QueueProjection) func() *admin.LiveQueueSnapshot {
+	// Create collector over the projection; admin/SSE never locks Pipeline.
+	collector := dispatch.NewQueueMetricsCollector(projection)
 
 	// Return closure that converts dispatch.SnapshotView → admin.LiveQueueSnapshot
 	return func() *admin.LiveQueueSnapshot {

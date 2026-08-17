@@ -5,7 +5,6 @@ import (
 	"errors"
 	"log/slog"
 
-	"github.com/kaixuan/llm-gateway-go/domains/requestjourney"
 	"github.com/kaixuan/llm-gateway-go/internal/liveactions"
 )
 
@@ -154,9 +153,9 @@ func (p *Pipeline) tryModelChangeOutcome(qr *QueuedRequest, outcome ForwardOutco
 			"reason":     "no_node",
 		},
 	})
-	qr.emitJourney(requestjourney.JourneyEvent{
-		Type:          requestjourney.EventModelSwitched,
-		Stage:         requestjourney.StageRetrying,
+	qr.emitObservation(Observation{
+		Type:          ObservationModelSwitched,
+		Stage:         StageRetrying,
 		ResolvedModel: fromModel,
 		FromModel:     fromModel,
 		ToModel:       chosen,
@@ -178,6 +177,7 @@ func (p *Pipeline) tryModelChangeOutcome(qr *QueuedRequest, outcome ForwardOutco
 			return
 		}
 		metricOverflow.WithLabelValues("model_queue_full").Inc()
+		p.observeOverflow("model_queue_full")
 		p.complete(qr, ForwardOutcome{Err: ErrOverflow})
 	}
 }
@@ -188,9 +188,9 @@ func (p *Pipeline) selectCredential(qr *QueuedRequest, ref CredentialRef) {
 	if qr.InitialProviderID == 0 {
 		qr.InitialProviderID = ref.ProviderID
 	}
-	qr.emitJourney(requestjourney.JourneyEvent{
-		Type:          requestjourney.EventCredentialSelected,
-		Stage:         requestjourney.StageNodeSelection,
+	qr.emitObservation(Observation{
+		Type:          ObservationCredentialSelected,
+		Stage:         StageNodeSelection,
 		ResolvedModel: qr.ResolvedModel,
 		Model:         qr.ResolvedModel,
 		ProviderID:    int64(ref.ProviderID),
