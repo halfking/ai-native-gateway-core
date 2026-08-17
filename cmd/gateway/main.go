@@ -3954,6 +3954,10 @@ func main() {
 			handoffPendingTrimmer.Start(context.Background())
 			defer handoffPendingTrimmer.Stop()
 
+			handoffTrimmer := bg.NewHandoffTrimmer(dbConn.Pool())
+			handoffTrimmer.Start(context.Background())
+			defer handoffTrimmer.Stop()
+
 			// v2.1: FeedbackAnalyzer — daily worker that generates
 			// tuning_proposals from tuning_signals. Skipped in data-plane
 			// mode to avoid write load on the secondary instance.

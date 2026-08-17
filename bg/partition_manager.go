@@ -697,6 +697,7 @@ func ensureSpecs() []archiveSpec {
 		{fnName: "ensure_session_module_executions_partition", label: "session_module_executions", argExpr: "$1::date"},              // Migration 382
 		{fnName: "ensure_dashboard_events_partition", label: "dashboard_access_events", argExpr: "$1::date"},                         // Migration 383
 		{fnName: "ensure_cache_metrics_partition", label: "cache_metrics", argExpr: "$1::date"},                                      // Migration 475
+		{fnName: "ensure_handoff_logs_partition", label: "handoff_logs"},                                                             // Migration 532
 
 		// model_probe_runs 已切换为纯 hot 表策略（2026-07-14），
 		// 不再 promote 到 columnar 分区，所以也不需要 ensure。
@@ -756,6 +757,7 @@ func promoteSpecs() []archiveSpec {
 		// {fnName: "promote_model_probe_runs_hot_to_partition", label: "model_probe_runs_hot"},
 		{fnName: "promote_candidate_failure_logs_hot_to_partition", label: "candidate_failure_logs_hot"}, // Migration 392
 		{fnName: "promote_session_turns_hot_to_partition", label: "session_turns_hot"},                   // Migration 526
+		{fnName: "promote_handoff_logs_hot_to_partition", label: "handoff_logs_hot"},                     // Migration 532
 	}
 }
 
@@ -904,6 +906,20 @@ func (pm *PartitionManager) analyzePartitionStats(ctx context.Context) {
 //     cleanup_old_credential_model_index())
 func resolvePromoteConfig(label string) (time.Duration, int) {
 	switch label {
+	case "handoff_logs_hot":
+		hours := settingsGetPlatformInt("lifecycle.handoff_logs_hot_retention_hours", 8)
+		retention := time.Duration(hours) * time.Hour
+		if retention < time.Hour {
+			retention = time.Hour
+		}
+		batchSize := settingsGetPlatformInt("lifecycle.promote_batch_size", promoteBatchSize)
+		if batchSize < 100 {
+			batchSize = 100
+		}
+		if batchSize > 50_000 {
+			batchSize = 50_000
+		}
+		return retention, batchSize
 	case "request_logs_bodies":
 		// 2026-07-13: request_logs_bodies stores full request/response
 		// payloads (TOAST). It grew to 3.4 GB / 24k rows in one month

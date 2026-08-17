@@ -262,6 +262,9 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	if err := db.ensurePartitionAutovacuumSchema(migCtx); err != nil {
 		return err
 	}
+	if err := db.ensureHandoffLogsHotColumnarSchema(migCtx); err != nil {
+		return err
+	}
 	// OmniFree schema (2026-08-07): 4 tables + extensions + RLS + triggers.
 	// Equivalent to sql/migrations/075-omnifree-schema.sql but idempotent
 	// and startup-safe.
