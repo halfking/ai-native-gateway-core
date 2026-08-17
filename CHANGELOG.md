@@ -10,6 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### 📦 Archived
 - docs/archive/* — 138 process docs archived on 2026-08-17 (see docs/archive/INDEX.md)
 
+### Changed
+- 监控配置收敛至 `deploy/prometheus/`：`deploy/grafana/` 仪表盘并入 `grafana/provisioning/dashboards/`
+  （删除重复的 auto-summary-monitoring.json），`deploy/monitoring/grafana-alerts/` 并入 `alerts/`，
+  同步更新 phase1 脚本引用；REPO_LAYOUT.md 修正根目录 `install.*` 定位（离线交付包入口，打包脚本依赖，
+  勿移动），三个安装入口系不同用途、非重复。
+
 ### Added
 - `docs/architecture/REPO_LAYOUT.md`：仓库布局权威地图（顶层目录用途/分类/入位规则/后续项）。
 - `docs/adr/ADR-0002-target-go-package-layout.md`：Go 包分层迁移 ADR（B1 前置 + 4 波次路线）。
