@@ -67,6 +67,32 @@ func TestDefaultConfig_ShadowDoubleWriteOff(t *testing.T) {
 	}
 }
 
+func TestLoadFromEnv_ModeAndCanaryPercent(t *testing.T) {
+	cases := []struct {
+		name        string
+		mode        string
+		percent     string
+		wantMode    api.RolloutMode
+		wantPercent int
+	}{
+		{"defaults", "", "", api.ModeOff, 0},
+		{"shadow", "shadow", "", api.ModeShadow, 0},
+		{"canary zero", "canary", "0", api.ModeCanary, 0},
+		{"canary hundred", "canary", "100", api.ModeCanary, 100},
+		{"invalid percent keeps default", "canary", "nope", api.ModeCanary, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("URSM_V2_MODE", tc.mode)
+			t.Setenv("URSM_V2_CANARY_PERCENT", tc.percent)
+			cfg := LoadFromEnv()
+			if cfg.Mode != tc.wantMode || cfg.CanaryPercent != tc.wantPercent {
+				t.Fatalf("LoadFromEnv() = mode=%q percent=%d, want mode=%q percent=%d", cfg.Mode, cfg.CanaryPercent, tc.wantMode, tc.wantPercent)
+			}
+		})
+	}
+}
+
 func TestLoadFromEnv_ShadowSampleRate(t *testing.T) {
 	cases := []struct {
 		value string

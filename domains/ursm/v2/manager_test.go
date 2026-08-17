@@ -8,7 +8,67 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/api"
+	"github.com/kaixuan/llm-gateway-go/metrics"
 )
+
+type ursmResultRecorder struct {
+	*metrics.NoopRecorder
+	results map[string]int
+}
+
+func (r *ursmResultRecorder) RecordURSMv2ShadowResult(result string) {
+	r.results[result]++
+}
+
+func TestRecordRequestReportsShadowOutcome(t *testing.T) {
+	previous := metrics.Global()
+	recorder := &ursmResultRecorder{NoopRecorder: metrics.NewNoopRecorder(), results: make(map[string]int)}
+	metrics.SetGlobal(recorder)
+	t.Cleanup(func() { metrics.SetGlobal(previous) })
+
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	outcome := api.RequestOutcome{TenantID: "tenant", CredentialID: 7, RawModel: "gpt-4", Success: true, RequestID: "request"}
+
+	off := New(Dependencies{Redis: rdb, Config: DefaultConfig()})
+	if err := off.RecordRequest(context.Background(), outcome); err != nil {
+		t.Fatalf("off record: %v", err)
+	}
+
+	quietCfg := DefaultConfig()
+	quietCfg.Mode = api.ModeShadow
+	quiet := New(Dependencies{Config: quietCfg})
+	if err := quiet.RecordRequest(context.Background(), outcome); err != nil {
+		t.Fatalf("quiet shadow record: %v", err)
+	}
+
+	activeCfg := DefaultConfig()
+	activeCfg.Mode = api.ModeShadow
+	activeCfg.ShadowDoubleWrite = true
+	active := New(Dependencies{Redis: rdb, Config: activeCfg})
+	t.Cleanup(active.Close)
+	if err := active.RecordRequest(context.Background(), outcome); err != nil {
+		t.Fatalf("double-write record: %v", err)
+	}
+	if exists := mr.Exists("ursm:v2:node:tenant:7:gpt-4"); !exists {
+		t.Fatal("double-write did not create tenant-aware node state")
+	}
+
+	mr.Close()
+	if err := active.RecordRequest(context.Background(), api.RequestOutcome{TenantID: "tenant", CredentialID: 8, RawModel: "gpt-4", RequestID: "redis-down"}); err == nil {
+		t.Fatal("redis failure must be returned from sidecar write")
+	}
+
+	if got := recorder.results["skipped"]; got != 2 {
+		t.Fatalf("skipped=%d, want 2", got)
+	}
+	if got := recorder.results["recorded"]; got != 1 {
+		t.Fatalf("recorded=%d, want 1", got)
+	}
+	if got := recorder.results["failed"]; got != 1 {
+		t.Fatalf("failed=%d, want 1", got)
+	}
+}
 
 // TestFacadeRecordsWithoutAffectingDecision is the spec test from the plan
 // (T8 Step 1). Under DefaultConfig() the rollout controller is ModeOff, so

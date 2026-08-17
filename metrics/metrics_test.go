@@ -112,7 +112,30 @@ func TestPrometheusRecorder(t *testing.T) {
 	assert.NotNil(t, r)
 }
 
-// TestPrometheusRecorder_ShadowWriteCounters (P0-2) pins the contract
+// TestPrometheusRecorder_URSMv2ShadowCounters pins all outcome labels used by
+// the rollout gate. Labels are pre-initialised at recorder construction so a
+// zero failed count is distinguishable from an uninstrumented sidecar.
+func TestPrometheusRecorder_URSMv2ShadowCounters(t *testing.T) {
+	r := testRecorder
+	readCounter := func(counter interface{ Write(*dto.Metric) error }) float64 {
+		m := &dto.Metric{}
+		if err := counter.Write(m); err != nil {
+			t.Fatalf("counter.Write: %v", err)
+		}
+		return m.GetCounter().GetValue()
+	}
+
+	for _, result := range []string{"recorded", "skipped", "failed"} {
+		counter := r.ursmv2ShadowResult.WithLabelValues(result)
+		before := readCounter(counter)
+		r.RecordURSMv2ShadowResult(result)
+		if got := readCounter(counter); got != before+1 {
+			t.Fatalf("ursmv2ShadowResult{%s}=%v, want %v", result, got, before+1)
+		}
+	}
+}
+
+// TestPrometheusRecorder_ShadowWriteCounters pins the contract
 // that the three new ShadowWrite counters actually move when their
 // methods are called. Without this regression test, adding the
 // counters in PrometheusRecorder and forgetting to wire them up would
