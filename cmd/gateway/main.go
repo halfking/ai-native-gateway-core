@@ -1408,36 +1408,12 @@ func main() {
 			"threshold", routingExec.MnfCoolThreshold,
 			"cool_minutes", routingExec.MnfCoolMinutes,
 		)
-		// Track C C4 (2026-06-18): wire the pending response cache
-		// into the executor so it can demote a slow synchronous
-		// walk to async mode. Defaults: 15s short (synchronous
-		// budget), 300s long (async total deadline), 2 fallback
-		// credentials. Override via env for emergency rollback.
+		// Track C C4 (2026-06-18): wire the pending response cache into
+		// the executor for the session retry-replay read path. The async
+		// 202 demotion (and the LLM_GATEWAY_ASYNC_* env knobs) went with
+		// the legacy sync candidate loop — AUDIT_24H B2b, 2026-08-17.
 		if pendingStore != nil {
 			routingExec.PendingStore = pendingStore
-			routingExec.AsyncShortTimeout = 15 * time.Second
-			routingExec.AsyncLongTimeout = 300 * time.Second
-			routingExec.AsyncMaxFallbackCreds = 2
-			if v := os.Getenv("LLM_GATEWAY_ASYNC_SHORT_TIMEOUT"); v != "" {
-				if n, err := strconv.Atoi(v); err == nil && n > 0 {
-					routingExec.AsyncShortTimeout = time.Duration(n) * time.Second
-				}
-			}
-			if v := os.Getenv("LLM_GATEWAY_ASYNC_LONG_TIMEOUT"); v != "" {
-				if n, err := strconv.Atoi(v); err == nil && n > 0 {
-					routingExec.AsyncLongTimeout = time.Duration(n) * time.Second
-				}
-			}
-			if v := os.Getenv("LLM_GATEWAY_ASYNC_MAX_FALLBACK_CREDS"); v != "" {
-				if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-					routingExec.AsyncMaxFallbackCreds = n
-				}
-			}
-			slog.Info("async_pending_enabled",
-				"short_timeout", routingExec.AsyncShortTimeout,
-				"long_timeout", routingExec.AsyncLongTimeout,
-				"max_fallback_creds", routingExec.AsyncMaxFallbackCreds,
-			)
 		}
 		// Round 47 compression v7 T16: build the unified compression dispatcher.
 		// The Compressor reads LLM_GATEWAY_COMPRESSION_MODE (default=on_4xx per
