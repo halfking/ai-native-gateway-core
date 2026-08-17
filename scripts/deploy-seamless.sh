@@ -88,7 +88,9 @@ DEPLOY_LOCAL_LOCK_HELD=0
 DEPLOY_REMOTE_LOCK_HELD=0
 DEPLOY_REMOTE_LOCK_PATH="/var/lib/llm-gateway-go/deploy.lock"
 if [[ "$ACTION" == deploy || "$ACTION" == rollback ]]; then
-  LOCK_LOCAL_DIR="${TMPDIR:-/tmp}/kx-llm-gateway-deploy-${TARGET}.lock"
+  # 154 and 245 share version files, web/dist, and local build artifacts.
+  # A repository-wide lock prevents cross-target bundles from mixing.
+  LOCK_LOCAL_DIR="${TMPDIR:-/tmp}/kx-llm-gateway-deploy.lock"
   LOCK_LOCAL_TARGET="$TARGET"
   lock_acquire_local || exit $?
   DEPLOY_LOCAL_LOCK_HELD=1
