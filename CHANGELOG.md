@@ -26,6 +26,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cold hit / timeout 都记 WARN/INFO），便于运维区分 hot-miss vs columnar-cold。
   新增 `TestFetchRequestBodies_CancelledParentCtx_DoesNotHang` 回归测试，
   锁住 ctx 层级不被嵌套取消意外阻断。
+- **body fetch 内存 LRU+TTL 缓存**：新增 `bodyFetchCache`（LRU 1024 entries × 5min TTL），
+  包装在 `fetchRequestBodies` 阶段 0。Dashboard 用户经常"开 → 关 → 再开"同一个
+  request_id 来回比对：第一次走 columnar 5s+，重复点击走 cache < 1ms。
+  只缓存 sql.ErrNoRows + 成功结果，transport 错误不缓存（rule 22 §4 防抖）。
+  新增 GET `/api/admin/logs/body-cache-stats` 暴露 size/hits/misses/evictions/hit_rate，
+  运维用来判断 cold path 是否被 cache 缓解（命中率应 > 50%）。
+  新增 4 个回归测试（hit-under-1ms / ttl-expires / not-found-cached / lru-evicts-oldest）。
 - 详见 `docs/changelogs/2026-08-17-dashboard-request-detail-columnar-timeout.md`，
   含根因 EXPLAIN ANALYZE 证据 + 154 实测 L1-L4 验证。
 
