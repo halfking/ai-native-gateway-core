@@ -157,7 +157,7 @@ remote_ssh_pipe() {
 SSH_CMD="remote_ssh"
 
 if [[ "$ACTION" == deploy || "$ACTION" == rollback ]]; then
-  lock_acquire_remote remote_ssh "$TARGET" "$DEPLOY_REMOTE_LOCK_PATH" || exit $?
+  lock_acquire_remote remote_ssh_pipe "$TARGET" "$DEPLOY_REMOTE_LOCK_PATH" || exit $?
   DEPLOY_REMOTE_LOCK_HELD=1
 fi
 
