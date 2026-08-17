@@ -30,7 +30,9 @@ func TestRecordRequestReportsShadowOutcome(t *testing.T) {
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	outcome := api.RequestOutcome{TenantID: "tenant", CredentialID: 7, RawModel: "gpt-4", Success: true, RequestID: "request"}
 
-	off := New(Dependencies{Redis: rdb, Config: DefaultConfig()})
+	offCfg := DefaultConfig()
+	offCfg.Mode = api.ModeOff
+	off := New(Dependencies{Redis: rdb, Config: offCfg})
 	if err := off.RecordRequest(context.Background(), outcome); err != nil {
 		t.Fatalf("off record: %v", err)
 	}
@@ -70,14 +72,14 @@ func TestRecordRequestReportsShadowOutcome(t *testing.T) {
 	}
 }
 
-// TestFacadeRecordsWithoutAffectingDecision is the spec test from the plan
-// (T8 Step 1). Under DefaultConfig() the rollout controller is ModeOff, so
-// RecordRequest short-circuits without writing. This guards the "default
-// mode is a no-op" invariant.
-func TestFacadeRecordsWithoutAffectingDecision(t *testing.T) {
+// TestFacadeOffModeDoesNotRecord confirms that the explicit rollback mode
+// remains a no-op even though direct authoritative startup is the default.
+func TestFacadeOffModeDoesNotRecord(t *testing.T) {
 	mr := miniredis.RunT(t)
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	mgr := New(Dependencies{Redis: rdb, Config: DefaultConfig()})
+	cfg := DefaultConfig()
+	cfg.Mode = api.ModeOff
+	mgr := New(Dependencies{Redis: rdb, Config: cfg})
 	if err := mgr.SetReady(context.Background(), true); err != nil {
 		t.Fatalf("ready: %v", err)
 	}

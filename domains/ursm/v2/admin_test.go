@@ -41,8 +41,7 @@ func TestApplyAdminSetsManualHold(t *testing.T) {
 	mr := miniredis.RunT(t)
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	cfg := DefaultConfig()
-	// DefaultConfig() is ModeOff, which short-circuits FilterAndScore.
-	// Flip to Canary with 100% so the read path actually runs and
+	// Use Canary with 100% so this test exercises cohort planning and
 	// observes the manual_hold the script just wrote.
 	cfg.Mode = api.ModeCanary
 	cfg.CanaryPercent = 100
