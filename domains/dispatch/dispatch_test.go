@@ -800,6 +800,10 @@ func TestTier2QueueBoundIncludesGovernorWait(t *testing.T) {
 
 	cfg := DefaultConfig()
 	cfg.RetryPerCredential = 0
+	// v4 (R1.3): MaxQueueWaitMS now defaults to 0 (zero-wait admission), so
+	// requests no longer park in the governor by default. This test asserts
+	// queue-bound behavior when waiting IS allowed — opt in explicitly.
+	cfg.MaxQueueWaitMS = 2000
 	hotCfg := &atomic.Value{}
 	hotCfg.Store(&cfg)
 	p := NewPipeline(Deps{

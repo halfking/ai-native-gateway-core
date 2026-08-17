@@ -14,9 +14,29 @@ func (m *Manager) ApplyProbe(ctx context.Context, p api.ProbeOutcome) error {
 	return m.ApplyProbeForTenant(ctx, "", p)
 }
 
+// ApplyProbeForTenant keeps the legacy fixed-priority (Probe=20) probe write.
 func (m *Manager) ApplyProbeForTenant(ctx context.Context, tenant string, p api.ProbeOutcome) error {
+	return m.ApplyProbeForTenantWithSource(ctx, tenant, p, api.SourcePriorityProbe)
+}
+
+// ApplyProbeForTenantWithSource is the priority-parameterized variant added
+// for 会话优化 v4 T5 / FR-4 R4.3 / UT-UR-08. apply_probe.lua previously
+// hard-coded source priority=Probe(20); the 36h lookback recovery scan
+// (bg/credential_recovery.go) needs to write at Recover(30)
+// (api.SourcePriorityRecover). sourcePriority <= 0 keeps the legacy
+// Probe=20 default so older callers are byte-for-byte compatible.
+//
+// Recovery semantics follow the existing lua state machine unchanged:
+// success during a cooling window recovers the node immediately;
+// manual_hold still short-circuits; record_request.lua's source-priority
+// guard (priority > 10 → telemetry only) still prevents ordinary request
+// traffic from overriding a Recover-priority write.
+func (m *Manager) ApplyProbeForTenantWithSource(ctx context.Context, tenant string, p api.ProbeOutcome, sourcePriority int) error {
 	if m == nil || m.store == nil {
 		return fmt.Errorf("ursm.v2: nil manager")
+	}
+	if sourcePriority <= 0 {
+		sourcePriority = api.SourcePriorityProbe
 	}
 	key := store.NodeKeyForTenant(m.cfg.RedisKeyPrefix, tenant, p.CredentialID, p.RawModel)
 	// M3 (2026-07-28): apply_probe.lua now reads manual_hold directly inside
@@ -25,7 +45,7 @@ func (m *Manager) ApplyProbeForTenant(ctx context.Context, tenant string, p api.
 	// Eval. Admin priority still dominates via the lua-internal manual_hold
 	// read. ARGV[4]=0 / ARGV[5]="0" keep ABI parity for older callers;
 	// the lua's live-read short-circuit runs unconditionally.
-	nodeTTLSeconds := int(m.cfg.NodeTTL / time.Second)
+	nodeTTLSeconds := int(m.effectiveConfig().NodeTTL / time.Second)
 	if nodeTTLSeconds <= 0 {
 		nodeTTLSeconds = int(DefaultConfig().NodeTTL / time.Second)
 	}
@@ -37,6 +57,7 @@ func (m *Manager) ApplyProbeForTenant(ctx context.Context, tenant string, p api.
 		"0", // deprecated: caller-supplied admin_hold (always 0 here)
 		"0", // deprecated: pre-read current_admin_hold (lua reads it instead)
 		fmt.Sprintf("%d", nodeTTLSeconds),
+		fmt.Sprintf("%d", sourcePriority), // 会话优化 v4 T5: Recover=30 for the 36h scan
 	).Slice()
 	if err != nil {
 		return fmt.Errorf("ursm.v2: apply_probe: %w", err)

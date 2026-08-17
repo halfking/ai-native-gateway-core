@@ -16,6 +16,13 @@
 -- ARGV[11] = fail_streak_limit (default 3)
 -- ARGV[12] = dedup enabled ("1"|"0")
 -- ARGV[13] = billing_mode (optional; "free" enables transient tolerance)
+-- ARGV[14] = health_status (optional; rich health enum, display-only bridge —
+--            one of healthy/suspect/degraded/quarantined/recovering. Empty or
+--            unknown values are ignored so an older caller cannot corrupt the
+--            field.)
+-- ARGV[15] = backoff_cap_seconds (optional; caps cool_seconds × 2^disable_count.
+--            Default 1800 = 30min. 会话优化 v4 T5 / UT-UR-05: was hard-coded
+--            3600 at the old lua:183-184 before parameterization.)
 
 local node_key = KEYS[1]
 local w1 = KEYS[2]
@@ -35,6 +42,8 @@ local cool_seconds = tonumber(ARGV[10]) or 300
 local fail_streak_limit = tonumber(ARGV[11]) or 3
 local dedup_enabled = ARGV[12] == "1"
 local billing_mode = ARGV[13] or ""
+local health_status = ARGV[14] or ""
+local backoff_cap_seconds = tonumber(ARGV[15]) or 1800
 
 local transient_kinds = {
   rate_limit = true,
@@ -152,6 +161,28 @@ if lat >= 0 then
   redis.call("HSET", node_key, "lat_ewma_ms", tostring(ewma))
 end
 
+-- HealthStatus bridge (会话优化 v4 T5 / P1-5, UT-UR-12): persist the rich
+-- node-health enum supplied by the executor (nodehealth.OutcomeReducer →
+-- EffectUpdateURSM) into the node hash "health" field. The field name
+-- matches the existing read paths (store/pipeline.go and persist/writer.go
+-- both read hash["health"]).
+--
+-- BOUNDARY: this field is DISPLAY-ONLY. It is deliberately written in the
+-- telemetry section — BEFORE the source-priority guard — and is never read
+-- by any availability adjudication branch below (routing eligibility stays
+-- owned by available/disabled/cool_until_ms). Unknown enum values are
+-- ignored so the bridge cannot corrupt legacy hashes.
+local valid_health = {
+  healthy = true,
+  suspect = true,
+  degraded = true,
+  quarantined = true,
+  recovering = true,
+}
+if valid_health[health_status] == true then
+  redis.call("HSET", node_key, "health", health_status)
+end
+
 local current_priority = tonumber(redis.call("HGET", node_key, "source_priority") or "0") or 0
 if current_priority > 10 then
   redis.call("EXPIRE", node_key, node_ttl)
@@ -180,8 +211,11 @@ if in_cool then
     redis.call("EXPIRE", node_key, node_ttl)
     return {"applied", "0", "0"}
   else
+    -- Exponential backoff on repeated failures inside the cool window.
+    -- The cap was hard-coded 3600s until 会话优化 v4 T5 (UT-UR-05)
+    -- parameterized it (ARGV[15]); the spec target is 1800s (30min).
     local new_cool_seconds = cool_seconds * math.pow(2, disable_count)
-    new_cool_seconds = math.min(new_cool_seconds, 3600)
+    new_cool_seconds = math.min(new_cool_seconds, backoff_cap_seconds)
     redis.call("HSET", node_key,
       "cool_until_ms", tostring(now_ms + (new_cool_seconds * 1000)),
       "last_err", err_kind,

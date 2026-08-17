@@ -1,0 +1,62 @@
+# ====================================================================
+# 会话优化 v4 — 本地 docker 部署（复用宿主既有服务实例）
+#
+# 用法（先在宿主编译二进制并打镜像，见 scripts/local-v4-build.sh）:
+#   docker compose -f docker-compose.v4-local.yml up -d
+#   curl http://127.0.0.1:18781/healthz
+#
+# 依赖的宿主实例（均已在运行，不重建）:
+#   - llm-gateway-pg   (kx-citus-pg17:offline-arm64, 127.0.0.1:5432,
+#                       citus 13.3 + citus_columnar, DB=llm_gateway,
+#                       user=llm_gateway; password follows the local shared credential manifest)
+#   - nbjl-redis       (kx-redis:7.4.9-arm64, acc-local-net 容器名可达)
+#
+# 已评估弃用: kxmemory-rls-pg17 (pgvector:pg17) 无 citus/columnar 支持，
+# 不满足 columnar 归档要求（2026-08-18 对比结论）。
+# ====================================================================
+
+services:
+  llm-gateway-v4:
+    image: llm-gateway-go:v4-local
+    container_name: llm-gateway-v4
+    restart: unless-stopped
+    networks:
+      - acc-local-net
+    ports:
+      - "127.0.0.1:18781:8781"
+    volumes:
+      # 持久化到宿主机，避免容器重启丢失附件、原始帧与文件日志。
+      - "${HOME}/Downloads/llm-gateway-files/attachments:/var/lib/llm-gateway/attachments"
+      - "${HOME}/Downloads/llm-gateway-files/raw-logs:/var/lib/llm-gateway/raw-logs"
+      - "${HOME}/Downloads/llm-gateway-files/logs:/var/log/llm-gateway"
+    environment:
+      # ── 存储（复用宿主实例）────────────────────────────────────
+      # llm-gateway-pg 在默认 bridge 网络（无容器 DNS），经宿主发布端口访问。
+      LLM_GATEWAY_DATABASE_URL: "postgres://llm_gateway:${LLM_GATEWAY_DB_PASSWORD:?set LLM_GATEWAY_DB_PASSWORD}@host.docker.internal:5432/llm_gateway?sslmode=disable"
+      # nbjl-redis 与本容器同在 acc-local-net，按容器名直连。
+      LLM_GATEWAY_REDIS_ADDR: "nbjl-redis:6379"
+      LLM_GATEWAY_REDIS_DB: "5"   # v4 本地专用 db，避免污染其它项目的键
+
+      # ── 本地开发密钥（非生产值）────────────────────────────────
+      LLM_GATEWAY_SECRET_KEY: "5IkQde8r5qM9_t6943T0uTFsNnuJBYMg"
+      LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY: "JxNCV2RSQ4qTTA4cal2J4tcNB9YCQCelUPSquxl-1Wg"
+      LLM_GATEWAY_SEED_ADMIN_PASSWORD: "v4local-admin-2026"
+      LLM_GATEWAY_ADMIN_PASSWORD: "v4local-admin-2026"
+
+      # ── 运行模式 ───────────────────────────────────────────────
+      LLM_GATEWAY_ENV: "local"
+      LLM_GATEWAY_LISTEN: ":8781"
+      LLM_GATEWAY_LOG_LEVEL: "info"
+      # CORS 中间件本身 fail-closed；本地测试只允许回环服务入口。
+      LLM_GATEWAY_CORS_ORIGINS: "http://127.0.0.1:18781,http://localhost:18781"
+      LLM_GATEWAY_LOG_FILE: "/var/log/llm-gateway/gateway.log"
+      LLM_GATEWAY_ATTACHMENT_DIR: "/var/lib/llm-gateway/attachments"
+      LLM_GATEWAY_RAW_LOG_DIR: "/var/lib/llm-gateway/raw-logs"
+      # URSM v2 authoritative 模式启动门控（main.go:705 要求）
+      LLM_GATEWAY_SYSTEM_MONITOR_ENABLED: "true"
+      # v4 保活默认 15s（会话优化 v4 FR-3）
+      LLM_GATEWAY_KEEPALIVE_INTERVAL: "15"
+
+networks:
+  acc-local-net:
+    external: true

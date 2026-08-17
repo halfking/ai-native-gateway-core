@@ -2,6 +2,7 @@ package streaming
 
 import (
 	"context"
+	"math/rand"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
@@ -28,8 +29,15 @@ import (
 
 // SurvivalOptions bounds the coordinator loop (doc 18 §5.1 interactive
 // deadline, §8.4 retry delay, §8.5 storm prevention).
+//
+// Termination priority (会话优化 v4 §8-14 / R2.4, T3): 组合穷尽 > 2h 时限 >
+// 100 次预算 — the deadline is the STRONGER stop condition versus the retry
+// budget (worst-case 100 × 120s backoff ≈ 3.2h exceeds it).
 type SurvivalOptions struct {
-	// Deadline is the total in-connection budget. 0 → 24 hours.
+	// Deadline is the total in-connection budget. 0 → 2 hours (v4 T3:
+	// 24h → 2h, aligned with the 2h request-cache TTL; env override
+	// LLM_GATEWAY_REQUEST_SURVIVAL_INTERACTIVE_DEADLINE_SECONDS still wins
+	// through the config wiring in cmd/gateway/main.go).
 	Deadline time.Duration
 	// RetryBase is the first backoff step. 0 → 2s.
 	RetryBase time.Duration
@@ -43,7 +51,7 @@ type SurvivalOptions struct {
 
 func (o SurvivalOptions) withDefaults() SurvivalOptions {
 	if o.Deadline <= 0 {
-		o.Deadline = 24 * time.Hour
+		o.Deadline = 2 * time.Hour
 	}
 	if o.RetryBase <= 0 {
 		o.RetryBase = 2 * time.Second
@@ -87,6 +95,10 @@ type SurvivalCoordinator struct {
 	// Now / Sleep are the clock seams. Sleep must honor ctx cancellation.
 	Now   func() time.Time
 	Sleep func(ctx context.Context, d time.Duration) error
+	// JitterRand is the ±20% backoff jitter seam (T3, anti retry-storm;
+	// mirrors legacy handler.go calculateRetryDelay). nil → math/rand.
+	// Float64() ∈ [0,1): 0 → −20%, 1 → +20%, 0.5 → unchanged.
+	JitterRand func() float64
 	// Refresh re-resolves the candidate list between attempts (the
 	// executor's internal refresh ladder is suppressed under survival).
 	Refresh func(ctx context.Context)
@@ -272,6 +284,9 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 				res.Decision.NextRetryAfter > wait && res.Decision.NextRetryAfter <= opts.RetryMax {
 				wait = res.Decision.NextRetryAfter
 			}
+			// ±20% jitter on the final backoff (Retry-After adopted values
+			// included) spreads retry storms across clients (T3).
+			wait = applyBackoffJitter(wait, c.JitterRand)
 			if recoveryStart.IsZero() {
 				recoveryStart = c.now()
 			}
@@ -317,6 +332,29 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 			return res
 		}
 	}
+}
+
+// applyBackoffJitter spreads one backoff step by ±20% (T3, 防重试风暴),
+// mirroring the legacy handler retry path (handler.go calculateRetryDelay):
+//
+//	jitter = d × 0.2 × (2·r − 1)   // r ∈ [0,1) → −20%..+20%
+//	final  = d + jitter            // clamped to [0.8·d, 1.2·d], never < 0
+//
+// randFloat nil → math/rand.Float64. Pure and deterministic under a fixed
+// seam so tests pin the exact boundaries.
+func applyBackoffJitter(d time.Duration, randFloat func() float64) time.Duration {
+	if d <= 0 {
+		return d
+	}
+	if randFloat == nil {
+		randFloat = rand.Float64
+	}
+	factor := 1 + 0.2*(2*randFloat()-1) // ∈ [0.8, 1.2)
+	jittered := time.Duration(float64(d) * factor)
+	if jittered < 0 {
+		return 0
+	}
+	return jittered
 }
 
 // finishGateWriter flushes any trailing partial frame at attempt end

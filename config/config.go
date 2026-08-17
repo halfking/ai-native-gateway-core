@@ -109,7 +109,8 @@ type Config struct {
 	RequestSurvivalDurableEnabled bool `yaml:"request_survival_durable_enabled" env:"LLM_GATEWAY_REQUEST_SURVIVAL_DURABLE_ENABLED"`
 
 	// RequestSurvivalInteractiveDeadlineSeconds: max in-connection wait for
-	// ordinary streaming requests. Default 86400 (24h).
+	// ordinary streaming requests. Default 7200 (2h, 会话优化 v4 T3 — 与请求
+	// 缓存 TTL 2h 对齐；终止优先级 组合穷尽 > 2h 时限 > 100 次预算).
 	RequestSurvivalInteractiveDeadlineSeconds int `yaml:"request_survival_interactive_deadline_seconds" env:"LLM_GATEWAY_REQUEST_SURVIVAL_INTERACTIVE_DEADLINE_SECONDS"`
 
 	// RequestSurvivalDurableDeadlineSeconds: max total wait for durable
@@ -247,7 +248,7 @@ func (cfg *Config) IsProduction() bool {
 // prerequisite.
 func (cfg *Config) NormalizeRequestSurvival() {
 	if cfg.RequestSurvivalInteractiveDeadlineSeconds <= 0 {
-		cfg.RequestSurvivalInteractiveDeadlineSeconds = 86400
+		cfg.RequestSurvivalInteractiveDeadlineSeconds = 7200
 	}
 	if cfg.RequestSurvivalDurableDeadlineSeconds <= 0 {
 		cfg.RequestSurvivalDurableDeadlineSeconds = 86400
@@ -415,7 +416,7 @@ func Load() *Config {
 		// mutually exclusive with StreamRetryEnabled (startup check).
 		RequestSurvivalEnabled:                    false,
 		RequestSurvivalDurableEnabled:             false,
-		RequestSurvivalInteractiveDeadlineSeconds: 86400,
+		RequestSurvivalInteractiveDeadlineSeconds: 7200,
 		RequestSurvivalDurableDeadlineSeconds:     86400,
 		RequestSurvivalStatusIntervalSeconds:      60,
 		RequestSurvivalRetryBaseSeconds:           2,
