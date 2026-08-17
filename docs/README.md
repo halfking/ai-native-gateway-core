@@ -9,9 +9,9 @@ docs/
 ├── README.md                ← 本文件：导览
 ├── INDEX.md                 ← 主题索引（按功能/模块）
 │
-├── adr/                     架构决策记录（1 个 ADR）
+├── adr/                     架构决策记录（2 个 ADR）
 ├── api/                     API 契约（OpenAPI / YAML，2 份）
-├── architecture/            活跃架构文档（13 份）
+├── architecture/            活跃架构文档（14 份，含 REPO_LAYOUT.md 仓库布局权威地图）
 ├── changelogs/              近 14 天变更日志（55 份，按日）
 ├── deploy/                  部署相关设计（1 份）
 ├── deployment/              部署/运维指南（14 份）

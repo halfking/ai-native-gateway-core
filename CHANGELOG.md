@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### 📦 Archived
 - docs/archive/* — 138 process docs archived on 2026-08-17 (see docs/archive/INDEX.md)
 
+### Added
+- `docs/architecture/REPO_LAYOUT.md`：仓库布局权威地图（顶层目录用途/分类/入位规则/后续项）。
+- `docs/adr/ADR-0002-target-go-package-layout.md`：Go 包分层迁移 ADR（B1 前置 + 4 波次路线）。
+- `docs/changelogs/2026-08-17-repo-restructure.md`：本轮治理 6 段式变更记录。
+
 ### Changed
 - 根目录去杂（可读性治理第 1 轮，稳妥版）：
   - 过程文档归档（rule 36）：`SUMMARY.md`→`docs/archive/process/impl-summaries/`、

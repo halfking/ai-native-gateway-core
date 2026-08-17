@@ -20,6 +20,7 @@
 | 文档 | 说明 |
 |---|---|
 | [architecture/ARCHITECTURE.md](./architecture/ARCHITECTURE.md) | 系统架构总览 |
+| [architecture/REPO_LAYOUT.md](./architecture/REPO_LAYOUT.md) | **仓库布局权威地图**（顶层目录用途+入位规则） |
 | [architecture/API.md](./architecture/API.md) | API 入口文档 |
 | [architecture/architecture-decisions.md](./architecture/architecture-decisions.md) | 架构决策汇总 |
 | [architecture/ARCHITECTURE_REFACTOR_GUIDE.md](./architecture/ARCHITECTURE_REFACTOR_GUIDE.md) | 架构重构指南 |
@@ -29,6 +30,7 @@
 ### 2.2 ADR（Architecture Decision Records）
 
 - [adr/ADR-0001-handoff-goal-state-at-rest-encryption.md](./adr/ADR-0001-handoff-goal-state-at-rest-encryption.md)
+- [adr/ADR-0002-target-go-package-layout.md](./adr/ADR-0002-target-go-package-layout.md) — Go 包分层迁移路线（分波次）
 
 ### 2.3 集成 / 接口
 
