@@ -202,6 +202,14 @@ reports/
 # 触发: docs/<feature>/results/*.json (如 docs/全方面测试/results/S*.json)
 docs/**/results/*.json
 
+# 2026-08-17: docs-archive overhaul
+# 历史过程文档（bugfix / audit / fix / phase / handoff / deploy-report / summary / report）
+# 统一归档到 docs/archive/，需要保留历史可追溯，**不应用上面的 SUMMARY/REPORT/AUDIT 排除规则**
+!docs/archive/**/*_SUMMARY.md
+!docs/archive/**/*_REPORT.md
+!docs/archive/**/*_AUDIT.md
+!docs/archive/**/TEST_RESULTS_*.md
+
 _to-be-deprecated/
 Dockerfile.web-fix
 web-dist.tar.gz

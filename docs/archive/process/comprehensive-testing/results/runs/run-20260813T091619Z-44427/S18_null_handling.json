@@ -1,0 +1,20 @@
+{
+  "scenario": "S18_null_handling",
+  "gateway": "http://127.0.0.1:8793",
+  "metrics": {
+    "total": 5,
+    "succ": 5,
+    "fail": 0,
+    "success_rate": 1,
+    "elapsed_sec": 35,
+    "fail_by_status": {},
+    "fail_by_kind": {},
+    "extra": {
+      "healthz_after_idle": "ok",
+      "first_request_http": 200,
+      "second_request_http": 200,
+      "gateway_alive": true,
+      "pass": true
+    }
+  }
+}

@@ -1,0 +1,95 @@
+{
+  "schema_version": "1.0",
+  "run_id": "run-20260813T091619Z-44427",
+  "scenario": "S17_stream_continuation",
+  "category": "functional",
+  "status": "PASS",
+  "commit": "d53e20a4118ad4df9781f1d50c45a95d4a752c94",
+  "gateway": "http://127.0.0.1:8793",
+  "checks": {
+    "load_completed": true
+  },
+  "metrics": {
+    "total": 515,
+    "succ": 380,
+    "fail": 135,
+    "success_rate": 0.7378640776699029,
+    "p50_ms": 62.597749987617135,
+    "p95_ms": 225.24029202759266,
+    "p99_ms": 247.81829118728638,
+    "max_ms": 511.8628751952201,
+    "ttfb_p50_ms": 41.858250042423606,
+    "ttfb_p95_ms": 92.60712517425418,
+    "ttfb_p99_ms": 345.3135408926755,
+    "throughput_rps": 15.600785275181767,
+    "elapsed_sec": 33.01115879206918,
+    "fail_by_status": {
+      "499": 135
+    },
+    "fail_by_kind": {
+      "client_cancel": 135
+    },
+    "stream_total": 342,
+    "stream_completed": 207,
+    "stream_completion_rate": 0.6052631578947368,
+    "stream_parse_failed": 0,
+    "stream_cancelled": 135,
+    "cancelled": 135,
+    "request_id_count": 380
+  },
+  "evidence": {
+    "raw_metrics": {
+      "total": 515,
+      "succ": 380,
+      "fail": 135,
+      "success_rate": 0.7378640776699029,
+      "p50_ms": 62.597749987617135,
+      "p95_ms": 225.24029202759266,
+      "p99_ms": 247.81829118728638,
+      "max_ms": 511.8628751952201,
+      "ttfb_p50_ms": 41.858250042423606,
+      "ttfb_p95_ms": 92.60712517425418,
+      "ttfb_p99_ms": 345.3135408926755,
+      "throughput_rps": 15.600785275181767,
+      "elapsed_sec": 33.01115879206918,
+      "fail_by_status": {
+        "499": 135
+      },
+      "fail_by_kind": {
+        "client_cancel": 135
+      },
+      "stream_total": 342,
+      "stream_completed": 207,
+      "stream_completion_rate": 0.6052631578947368,
+      "stream_parse_failed": 0,
+      "stream_cancelled": 135,
+      "cancelled": 135,
+      "request_id_count": 380
+    },
+    "models": [
+      "loadtest-mini-alpha",
+      "loadtest-standard-alpha",
+      "loadtest-pro-alpha"
+    ]
+  },
+  "failures": [],
+  "parameters": {
+    "gateway": "http://127.0.0.1:8793",
+    "n_clients": 10,
+    "rps_per_client": 2.0,
+    "duration_sec": 30,
+    "prompt_size": "short",
+    "sticky_ratio": 0.0,
+    "stream_ratio": 0.5,
+    "fault_inject_cancel": 0.3,
+    "compression": null,
+    "no_cache": false,
+    "protocol": null
+  },
+  "extra": {
+    "client_cancel": 135,
+    "pending_recovered": 0,
+    "pending_404": 5,
+    "pass": true
+  }
+}

@@ -1,0 +1,2 @@
+{"action": "kill", "group": "G", "rc": 0, "stderr": "", "at_sec": 0.236}
+{"action": "restart", "group": "G", "rc": 0, "started": 5, "at_sec": 5.271}
