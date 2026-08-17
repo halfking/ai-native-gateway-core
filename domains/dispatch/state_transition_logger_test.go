@@ -12,6 +12,7 @@ package dispatch
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -149,6 +150,45 @@ func TestFlushFailureEnqueuesRetryThenReplaySucceeds(t *testing.T) {
 	}
 	if db.commitCalls != 2 {
 		t.Errorf("commits = %d, want 2 successful replay commits", db.commitCalls)
+	}
+}
+
+func TestTransitionMetadataUsesJSONTextForSimpleProtocol(t *testing.T) {
+	db := &fakeTransitionDB{}
+	l := newTestLogger(db, fixedNow)
+	l.LogRouteDecision("req-json", "admin", "arrived", "routed", map[string]any{
+		"candidates": 4,
+		"selected":   "glm-5.2",
+	})
+	l.Flush()
+
+	if len(db.execArgs) != 2 {
+		t.Fatalf("exec calls = %d, want tenant GUC + insert", len(db.execArgs))
+	}
+	metadata, ok := db.execArgs[1][5].(string)
+	if !ok {
+		t.Fatalf("metadata arg type = %T, want string for pgx simple protocol", db.execArgs[1][5])
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(metadata), &decoded); err != nil {
+		t.Fatalf("metadata arg is not valid JSON: %v", err)
+	}
+	if decoded["selected"] != "glm-5.2" {
+		t.Fatalf("metadata selected = %v, want glm-5.2", decoded["selected"])
+	}
+}
+
+func TestTransitionNilMetadataUsesSQLNull(t *testing.T) {
+	db := &fakeTransitionDB{}
+	l := newTestLogger(db, fixedNow)
+	l.LogRouteDecision("req-null", "admin", "arrived", "routed", nil)
+	l.Flush()
+
+	if len(db.execArgs) != 2 {
+		t.Fatalf("exec calls = %d, want tenant GUC + insert", len(db.execArgs))
+	}
+	if got := db.execArgs[1][5]; got != nil {
+		t.Fatalf("nil metadata arg = %#v (%T), want nil", got, got)
 	}
 }
 

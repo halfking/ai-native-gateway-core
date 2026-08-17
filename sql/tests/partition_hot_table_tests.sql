@@ -494,6 +494,39 @@ BEGIN
 END $$;
 
 -- ============================================================
+-- Test 8: Migration 528 contract — promote drains expired hot bodies
+-- before attempting to migrate rows that are still inside the
+-- configurable body TTL window.
+-- ============================================================
+
+\echo ''
+\echo '=================================='
+\echo 'Test 8: Migration 528 expired-body first contract'
+\echo '=================================='
+
+DO $$
+DECLARE
+  body_proc text;
+BEGIN
+  SELECT pg_get_functiondef('public.promote_request_logs_bodies_hot_to_partition(interval, int)'::regprocedure)
+    INTO body_proc;
+  IF body_proc IS NULL THEN
+    RAISE WARNING '⚠️ promote_request_logs_bodies_hot_to_partition missing';
+  ELSE
+    IF body_proc ILIKE '%settings_kv%lifecycle.request_logs_bodies_ttl_days%' THEN
+      RAISE NOTICE '✅ migration 528 hot reads lifecycle.request_logs_bodies_ttl_days';
+    ELSE
+      RAISE WARNING '⚠️ promote does not read lifecycle.request_logs_bodies_ttl_days (expired-first contract missing)';
+    END IF;
+    IF body_proc ILIKE '%make_interval(days => v_ttl_days)%' AND body_proc ILIKE '%DELETE FROM request_logs_bodies_hot%' THEN
+      RAISE NOTICE '✅ promote deletes expired bodies before insert';
+    ELSE
+      RAISE WARNING '⚠️ promote does not delete expired bodies before insert';
+    END IF;
+  END IF;
+END $$;
+
+-- ============================================================
 -- 清理测试数据
 -- ============================================================
 
