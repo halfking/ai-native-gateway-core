@@ -226,3 +226,37 @@ func TestQueryServiceDetailFlagsContentConflict(t *testing.T) {
 		t.Fatalf("status/divergence = %q/%#v", result.ObservationStatus, result.Divergence)
 	}
 }
+
+// TestQueryServiceDetailPreservesSourceDegradedStatus guards merge fidelity:
+// a journey the local projection already marked observation-degraded (an
+// external write was dropped) must not be rebuilt into a complete-looking
+// journey, even inside the divergence grace window.
+func TestQueryServiceDetailPreservesSourceDegradedStatus(t *testing.T) {
+	memory := NewProjection(DefaultConfig())
+	fresh := testJourneyEvent("tenant-a", "request-1", 1)
+	fresh.OccurredAt = time.Now().UTC().Add(-2 * time.Second)
+	mustApply(t, memory, fresh)
+
+	server := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+	store := NewRedisStore(client, DefaultConfig())
+	if err := store.Apply(context.Background(), fresh); err != nil {
+		t.Fatal(err)
+	}
+
+	recorder := NewRecorder(memory, nil, nil)
+	recorder.markObservationDegraded(fresh)
+
+	result, err := NewQueryService(store, nil, memory, DefaultConfig()).
+		Detail(context.Background(), "tenant-a", "request-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Journey == nil {
+		t.Fatal("Detail returned no journey")
+	}
+	if result.ObservationStatus != ObservationDegraded {
+		t.Fatalf("degraded source status lost by merge: %q", result.ObservationStatus)
+	}
+}
