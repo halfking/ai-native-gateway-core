@@ -2,12 +2,14 @@ package dispatch
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/domains/requestjourney"
 	"github.com/kaixuan/llm-gateway-go/internal/liveactions"
 )
 
@@ -110,7 +112,7 @@ func (cf *credForwarder) drainAndComplete() {
 }
 
 func (cf *credForwarder) acquire(qr *QueuedRequest) bool {
-	qr.AttemptCount++
+	attempt := qr.reserveAttempt(cf.cred)
 	giveUp := time.Now().Add(cf.pipe.queueWaitBudget(qr))
 	ctx, cancel := context.WithCancel(ctxOf(qr))
 	defer cancel()
@@ -123,6 +125,7 @@ func (cf *credForwarder) acquire(qr *QueuedRequest) bool {
 	}()
 
 	if err := cf.gov.Acquire(ctx, qr, giveUp); err != nil {
+		qr.abandonReservedAttempt(attempt.AttemptID)
 		cf.depth.Add(-1)
 		metricCredQueueDepth.WithLabelValues(itoa(cf.cred.CredentialID), cf.cred.ConcurrencyMode).Dec()
 		if ctxOf(qr).Err() != nil {
@@ -137,12 +140,20 @@ func (cf *credForwarder) acquire(qr *QueuedRequest) bool {
 			qr.CredRetryCount = maxRetryBudget
 		}
 		metricOverflow.WithLabelValues("pace_timeout").Inc()
-		cf.pipe.routeFailover(qr, err, false)
+		cf.pipe.routeFailover(qr, ForwardOutcome{Err: err})
 		return false
 	}
 
 	// V3.1: Record T6 timestamp (credential queue dequeue, governor acquired)
 	qr.SetT6_CredDequeued()
+	attempt, committed := qr.commitReservedAttempt(attempt.AttemptID)
+	if !committed {
+		cf.gov.Release(qr)
+		cf.depth.Add(-1)
+		metricCredQueueDepth.WithLabelValues(itoa(cf.cred.CredentialID), cf.cred.ConcurrencyMode).Dec()
+		cf.pipe.complete(qr, ForwardOutcome{Err: errors.New("dispatch: missing reserved attempt")})
+		return false
+	}
 
 	// V3.3-OBS OBS-B1 (2026-08-15): node_selected 动作事件（S7 前，最终选定
 	// 节点——通过 governor 准入，即将开始转发）。
@@ -152,8 +163,18 @@ func (cf *credForwarder) acquire(qr *QueuedRequest) bool {
 		Model:        qr.ResolvedModel,
 		CredentialID: cf.cred.CredentialID,
 		Detail: map[string]string{
-			"attempt": itoa(qr.AttemptCount),
+			"attempt": itoa(attempt.AttemptNo),
 		},
+	})
+	qr.emitJourney(requestjourney.JourneyEvent{
+		Type:          requestjourney.EventNodeSelected,
+		Stage:         requestjourney.StageNodeSelection,
+		ResolvedModel: qr.ResolvedModel,
+		Model:         attempt.Model,
+		ProviderID:    attempt.ProviderID,
+		Provider:      attempt.Provider,
+		CredentialID:  attempt.CredentialID,
+		Attempt:       copyAttemptRef(attempt),
 	})
 
 	if !qr.CredEnqueuedAt.IsZero() {
@@ -166,13 +187,31 @@ func (cf *credForwarder) acquire(qr *QueuedRequest) bool {
 func (cf *credForwarder) attempt(qr *QueuedRequest) {
 	defer cf.wg.Done()
 	mode := cf.cred.ConcurrencyMode
+	attempt, startedAt, started := qr.startAllocatedAttempt()
+	if !started {
+		cf.pipe.complete(qr, ForwardOutcome{Err: errors.New("dispatch: missing allocated attempt")})
+		return
+	}
+	qr.emitJourney(requestjourney.JourneyEvent{
+		Type:          requestjourney.EventAttemptStarted,
+		Stage:         requestjourney.StageUpstream,
+		ResolvedModel: qr.ResolvedModel,
+		Model:         attempt.Model,
+		ProviderID:    attempt.ProviderID,
+		Provider:      attempt.Provider,
+		CredentialID:  attempt.CredentialID,
+		Attempt:       copyAttemptRef(attempt),
+		OccurredAt:    startedAt,
+	})
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			slog.Error("dispatch forward panic recovered",
 				"request_id", qr.ID,
 				"credential_id", cf.cred.CredentialID,
 				"panic", recovered)
-			cf.pipe.complete(qr, ForwardOutcome{Err: fmt.Errorf("forward panic: %v", recovered)})
+			out := ForwardOutcome{Err: fmt.Errorf("forward panic: %v", recovered), ErrorKind: "forward_panic"}
+			cf.pipe.emitAttemptFinished(qr, attempt.AttemptID, out)
+			cf.pipe.complete(qr, out)
 		}
 	}()
 	// Use the credential's CONFIGURED mode for all metric labels so labels are
@@ -191,18 +230,9 @@ func (cf *credForwarder) attempt(qr *QueuedRequest) {
 	}
 	defer releaseResources()
 
-	// V3.1: Record T7 timestamp (forward start to upstream)
-	qr.SetT7_ForwardStart()
-
 	out := cf.pipe.forwardFunc(ctxOf(qr), qr, cf.cred)
 	releaseResources()
-
-	// V3.1: Record T8 timestamp (response start - first byte received).
-	// This is an approximation; the actual HTTP client would be more precise.
-
-	if out.Err == nil || out.BytesSent {
-		qr.SetT8_ResponseStart()
-	}
+	cf.pipe.emitAttemptFinished(qr, attempt.AttemptID, out)
 
 	if out.Err == nil {
 		metricForwarded.WithLabelValues(itoa(cf.cred.CredentialID), "success").Inc()
@@ -216,5 +246,31 @@ func (cf *credForwarder) attempt(qr *QueuedRequest) {
 		return
 	}
 	metricForwarded.WithLabelValues(itoa(cf.cred.CredentialID), "fail_prefirstbyte").Inc()
-	cf.pipe.routeFailover(qr, out.Err, out.FatalCredential)
+	cf.pipe.routeFailover(qr, out)
+}
+
+func (p *Pipeline) emitAttemptFinished(qr *QueuedRequest, attemptID string, out ForwardOutcome) {
+	attempt, outcome, errorKind, endedAt, ok := qr.finishAttempt(attemptID, out)
+	if !ok {
+		return
+	}
+	event := requestjourney.JourneyEvent{
+		Type:          requestjourney.EventAttemptSucceeded,
+		Stage:         requestjourney.StageUpstream,
+		ResolvedModel: qr.ResolvedModel,
+		Model:         attempt.Model,
+		ProviderID:    attempt.ProviderID,
+		Provider:      attempt.Provider,
+		CredentialID:  attempt.CredentialID,
+		Attempt:       copyAttemptRef(attempt),
+		Outcome:       requestjourney.OutcomeSuccess,
+		OccurredAt:    endedAt,
+	}
+	if out.Err != nil {
+		event.Type = requestjourney.EventAttemptFailed
+		event.Outcome = outcome
+		event.ErrorKind = errorKind
+		event.HTTPStatus = out.HTTPStatus
+	}
+	qr.emitJourney(event)
 }

@@ -254,12 +254,15 @@ func CalculateRetryDelay(attempt int, baseDelayMs int, maxDelayMs int) time.Dura
 
 // KeepaliveWriter sends periodic thinking events to prevent client timeout during retry.
 type KeepaliveWriter struct {
-	w        http.ResponseWriter
-	flusher  http.Flusher
-	interval time.Duration
-	stopCh   chan struct{}
-	doneCh   chan struct{}
-	writeMu  sync.Mutex
+	w         http.ResponseWriter
+	flusher   http.Flusher
+	interval  time.Duration
+	stopCh    chan struct{}
+	doneCh    chan struct{}
+	writeMu   sync.Mutex
+	startOnce sync.Once
+	stopOnce  sync.Once
+	started   chan struct{}
 }
 
 type retryBlockedError struct {
@@ -288,6 +291,7 @@ func NewKeepaliveWriter(w http.ResponseWriter, interval time.Duration) *Keepaliv
 		interval: interval,
 		stopCh:   make(chan struct{}),
 		doneCh:   make(chan struct{}),
+		started:  make(chan struct{}),
 	}
 
 	return kw
@@ -296,6 +300,17 @@ func NewKeepaliveWriter(w http.ResponseWriter, interval time.Duration) *Keepaliv
 // Start begins sending keepalive events.
 // Must be called in a goroutine.
 func (kw *KeepaliveWriter) Start(ctx context.Context) {
+	if kw == nil {
+		return
+	}
+	owner := false
+	kw.startOnce.Do(func() {
+		close(kw.started)
+		owner = true
+	})
+	if !owner {
+		return
+	}
 	defer close(kw.doneCh)
 
 	ticker := time.NewTicker(kw.interval)
@@ -341,8 +356,13 @@ func (kw *KeepaliveWriter) Stop() {
 	if kw == nil {
 		return
 	}
-	close(kw.stopCh)
-	<-kw.doneCh
+	kw.stopOnce.Do(func() { close(kw.stopCh) })
+	select {
+	case <-kw.started:
+		<-kw.doneCh
+	default:
+		// A writer that was never started has no goroutine to join.
+	}
 }
 
 // RetryContext holds state for a retry loop.

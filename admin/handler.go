@@ -92,6 +92,10 @@ type Handler struct {
 	boardOperationalCache *boardOperationalCache
 	// opsOverviewCache bundles ops overview stats for /api/admin/ops/overview.
 	opsOverviewCache *opsOverviewCache
+	// 2026-08-17 OPTIMIZATION: in-memory LRU+TTL cache for fetchRequestBodies.
+	// Reduces repeat dashboard click latency from 5s columnar scan to < 1ms.
+	// Stats surfaced via admin/stats endpoint (see admin/handler.go stats handler).
+	bodyFetchCache *bodyFetchCache
 	// ipBlocklist backs security IP denylist admin + request gate cache.
 	ipBlocklist *ipblocklist.Service
 	// bodySizeTracker (2026-07-25) tracks request/response body size stats in Redis
@@ -291,6 +295,10 @@ func NewHandler(db *pgxpool.Pool, secretKey string, encKey []byte) *Handler {
 		encKey:      encKey,
 		rateLimiter: newNodeOperationsRateLimiter(),
 		auditLogger: newNodeOperationAuditLogger(db),
+		// 2026-08-17 OPTIMIZATION: LRU 1024 entries × 5min TTL.
+		// 1024 entries × ~20KB/entry ≈ 20MB max footprint (rule 23 §3).
+		// 5min TTL ≈ body 数据写入后罕见被修改（rule 36 §1 持久化）。
+		bodyFetchCache: newBodyFetchCache(1024, 5*time.Minute),
 	}
 	// Initialize auto title generator
 	h.autoTitleGen = NewAutoTitleGenerator(h)
@@ -715,6 +723,9 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// Do NOT register it here to avoid mux.HandleFunc panic.
 	mux.HandleFunc("/api/admin/compression/stats", admin(h.handleCompressionStats))
 	mux.HandleFunc("/api/admin/compression/sessions", admin(h.handleCompressionSessions))
+	// 2026-08-17 OPTIMIZATION: bodyFetchCache 命中率/淘汰数可观测端点。
+	// 运维用来判断 cold path 是否被 cache 缓解（命中率应 > 50%）。
+	mux.HandleFunc("/api/admin/logs/body-cache-stats", admin(h.handleBodyFetchCacheStats))
 	mux.HandleFunc("/api/admin/data-lifecycle/stats", admin(h.handleDataLifecycleStats))
 	mux.HandleFunc("/api/admin/data-lifecycle/cleanup/preview", admin(h.handleDataLifecycleCleanupPreview))
 	mux.HandleFunc("/api/admin/data-lifecycle/metrics", admin(h.handleDataLifecycleMetrics))

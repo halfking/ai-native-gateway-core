@@ -24,6 +24,7 @@ import EmergencyDiagnosticModal from './EmergencyDiagnosticModal.vue'
 import RouteIncidentDrawer from './RouteIncidentDrawer.vue'
 import LiveStreamFilterDialog from './LiveStreamFilterDialog.vue'
 import QueuePerspectivePanel from './QueuePerspectivePanel.vue'
+import RequestJourneyQueues from './RequestJourneyQueues.vue'
 import NodeStatusMatrix from './NodeStatusMatrix.vue'
 import type { GroupByDimension } from '../types/swimlane'
 import type { RouteIncident } from '../types/routeIncident'
@@ -486,6 +487,7 @@ function vendorOptionLabel(v: string) {
     <!-- 2026-08-14 V3.2: 按处理队列维度时显示队列透视 + 节点矩阵面板 -->
     <div v-if="groupBy === 'queue'" class="v32-queue-panels">
       <QueuePerspectivePanel />
+      <RequestJourneyQueues />
       <NodeStatusMatrix />
     </div>
 

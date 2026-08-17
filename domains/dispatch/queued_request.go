@@ -2,6 +2,7 @@ package dispatch
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -48,7 +49,11 @@ type ForwardOutcome struct {
 	// errorsx.IsCredentialFatal so the dispatch package stays decoupled
 	// from errorsx (see the import-cycle guard on CredentialRef).
 	FatalCredential bool
-	Err             error
+	// ErrorKind and HTTPStatus are optional bounded diagnostics supplied by the
+	// executor adapter. Dispatch falls back to a coarse local classification.
+	ErrorKind  string
+	HTTPStatus int
+	Err        error
 }
 
 // QueuedRequest is the unit of work flowing through the pipeline.
@@ -60,6 +65,9 @@ type ForwardOutcome struct {
 type QueuedRequest struct {
 	ID       string // request_id
 	TenantID string
+	// GatewayInstanceID completes the stable RequestJourney identity. Callers
+	// wiring an EventSink must populate it before Submit.
+	GatewayInstanceID string
 	// SessionID is the V2 session identifier (public.sessions.id). Populated
 	// by the executor from ExecParams.SessionID so admin /sessions/{id}/timeline
 	// can group in-flight + completed requests by session. Empty for one-shot
@@ -108,6 +116,23 @@ type QueuedRequest struct {
 	// credentials. Bounded by maxAttempts to prevent a request from looping
 	// through an unbounded candidate set under pathological conditions.
 	AttemptCount int
+
+	// RequestJourney sequencing and attempt state are separately synchronized:
+	// streaming can report first semantic byte while the forward goroutine is
+	// returning, and sinks must still observe strictly increasing seq order.
+	journeyMu sync.Mutex
+	// JourneySeq is the last allocated RequestJourney sequence. Producers that
+	// emit request_received/route_resolved before dispatch may seed it before
+	// Submit; dispatch then continues monotonically from that value.
+	JourneySeq atomic.Int64
+	// JourneySharedSeq and JourneyTerminal are populated by request handlers.
+	// They let handler and dispatch events share one sequence/terminal owner.
+	JourneySharedSeq *atomic.Int64
+	JourneyTerminal  *atomic.Bool
+	journeyEmit      journeyEmitter
+	attemptMu        sync.Mutex
+	attempts         []*dispatchAttempt
+	currentAttempt   *dispatchAttempt
 
 	// ===== 9-Stage Queue Timestamps (V3.1 Enhancement) =====
 	// These timestamps enable precise performance analysis and bottleneck diagnosis.
@@ -230,10 +255,10 @@ func (qr *QueuedRequest) SetT7_ForwardStart() {
 	qr.T7_ForwardStartAt = &now
 }
 
-// SetT8_ResponseStart records Stage 9: First byte received from upstream
+// SetT8_ResponseStart is the compatibility alias for MarkFirstSemanticByte.
+// New streaming integrations should call MarkFirstSemanticByte directly.
 func (qr *QueuedRequest) SetT8_ResponseStart() {
-	now := time.Now()
-	qr.T8_ResponseStartAt = &now
+	qr.MarkFirstSemanticByte()
 }
 
 // SetT9_ResponseEnd records Stage 10: Response stream completed

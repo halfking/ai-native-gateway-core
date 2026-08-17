@@ -16,6 +16,7 @@ export * from './settings'
 export * from './modules'
 export * from './usage'
 export * from './board'
+export * from './request-journeys'
 export {
   BASE,
   headers,

@@ -119,6 +119,14 @@ func (gw *GateWriter) UnderlyingAttemptGate() *AttemptCommitGate {
 	return gw.gate
 }
 
+// SetFirstSemanticByteCallback binds dispatch's attempt-scoped first-byte hook
+// to a coordinator-created gate without stacking a second classifier.
+func (gw *GateWriter) SetFirstSemanticByteCallback(callback func()) {
+	if gw != nil && gw.gate != nil {
+		gw.gate.SetFirstSemanticByteCallback(callback)
+	}
+}
+
 // frameBoundary returns the byte length of the first complete frame in buf
 // (content plus its blank-line terminator), or -1 when the buffer does not
 // yet contain a complete frame. Both "\n\n" and "\r\n\r\n" terminators

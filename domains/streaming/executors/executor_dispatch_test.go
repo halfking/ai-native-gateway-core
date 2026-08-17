@@ -3,11 +3,18 @@ package executors
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/kaixuan/llm-gateway-go/domains/dispatch"
+	"github.com/kaixuan/llm-gateway-go/domains/nodehealth"
+	"github.com/kaixuan/llm-gateway-go/domains/requestjourney"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
+	"github.com/kaixuan/llm-gateway-go/provider"
 )
 
 // TestDispatchErrMapping locks the contract that dispatch pipeline errors are
@@ -63,6 +70,202 @@ func TestDispatchFailureIsCredentialHealthy(t *testing.T) {
 				t.Fatalf("dispatchFailureIsCredentialHealthy(%q, %v) = %v, want %v", tc.kind, tc.modelNotFound, got, tc.want)
 			}
 		})
+	}
+}
+
+type dispatchHealthCapture struct {
+	mu        sync.Mutex
+	decisions []nodehealth.Decision
+}
+
+func (c *dispatchHealthCapture) ApplyNodeHealthDecision(_ context.Context, decision nodehealth.Decision) error {
+	c.mu.Lock()
+	c.decisions = append(c.decisions, decision)
+	c.mu.Unlock()
+	return nil
+}
+
+func (c *dispatchHealthCapture) snapshot() []nodehealth.Decision {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]nodehealth.Decision(nil), c.decisions...)
+}
+
+func TestDispatchUsesJourneyAttemptIDForNodeHealthReduction(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-1","object":"chat.completion","model":"model-a","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer upstream.Close()
+
+	limiter := newLimiterForTest()
+	defer limiter.Stop()
+	capture := &dispatchHealthCapture{}
+	exec := &Executor{
+		Circuit:            newCircuitManagerForTest(),
+		Limiter:            limiter,
+		UpstreamTimeout:    5 * time.Second,
+		StreamTimeout:      10 * time.Second,
+		NodeOutcomeReducer: nodehealth.NewOutcomeReducer(),
+		NodeHealthAdapter:  capture,
+	}
+	candidate := provider.Candidate{
+		ProviderID: 7, CredentialID: 22, BaseURL: upstream.URL,
+		Protocol: "openai-completions", RawModel: "vendor-model-a", StandardizedName: "model-a",
+		APIKey: "test-key", BillingMode: "token_plan", CatalogCode: "vendor-a",
+	}
+	params := &ExecParams{
+		W:           httptest.NewRecorder(),
+		R:           httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
+		BodyBytes:   []byte(`{"model":"model-a","messages":[{"role":"user","content":"hello"}]}`),
+		ClientModel: "model-a",
+		Model:       "model-a",
+		RequestID:   "dispatch-health-attempt",
+		TenantID:    "tenant-a",
+	}
+	dctx := &dispatchCtx{
+		params: params, candidates: []provider.Candidate{candidate}, byModel: mapCandidatesByModel([]provider.Candidate{candidate}),
+		initialModel: "model-a", retryPerCred: 0, tTotal: time.Now(),
+	}
+
+	var journeyAttemptID string
+	pipeline := dispatch.NewPipeline(dispatch.Deps{
+		RouteFunc: func(context.Context, *dispatch.QueuedRequest) ([]dispatch.CredentialRef, error) {
+			return []dispatch.CredentialRef{candidateToRef(candidate)}, nil
+		},
+		ModelResolveFunc: func(_ context.Context, requested string, _ []string) (string, []string, error) {
+			return requested, nil, nil
+		},
+		ForwardFunc: exec.dispatchForward,
+		EventSink: dispatch.EventSinkFunc(func(_ context.Context, event requestjourney.JourneyEvent) {
+			if event.Type == requestjourney.EventAttemptStarted && event.Attempt != nil {
+				journeyAttemptID = event.Attempt.AttemptID
+			}
+		}),
+	})
+	pipeline.Start()
+	defer pipeline.Stop()
+
+	qr := dispatch.NewQueuedRequest(params.RequestID, params.TenantID, params.Model, params.R.Context(), dctx)
+	qr.GatewayInstanceID = "gateway-test"
+	result, err := pipeline.Submit(params.R.Context(), qr)
+	if err != nil || result == nil {
+		t.Fatalf("Submit() = (%v, %v), want success", result, err)
+	}
+	if _, err := uuid.Parse(journeyAttemptID); err != nil {
+		t.Fatalf("journey attempt ID %q is not a UUID: %v", journeyAttemptID, err)
+	}
+	decisions := capture.snapshot()
+	if len(decisions) != 1 {
+		t.Fatalf("node-health decisions = %+v, want exactly one", decisions)
+	}
+	decision := decisions[0]
+	if decision.AttemptID != journeyAttemptID {
+		t.Fatalf("reducer attempt ID = %q, journey UUID = %q", decision.AttemptID, journeyAttemptID)
+	}
+	if decision.Node != (nodehealth.NodeKey{TenantID: "tenant-a", ProviderID: 7, CredentialID: 22, Model: "model-a"}) {
+		t.Fatalf("node = %+v", decision.Node)
+	}
+	if decision.RequestID != params.RequestID || decision.BillingMode != candidate.BillingMode || decision.Outcome != requestjourney.OutcomeSuccess {
+		t.Fatalf("observation metadata lost: %+v", decision)
+	}
+}
+
+func TestForwardForDispatchReducesFailureAndCancellationOnce(t *testing.T) {
+	t.Run("failure", func(t *testing.T) {
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error":{"message":"temporarily unavailable"}}`))
+		}))
+		defer upstream.Close()
+
+		capture := &dispatchHealthCapture{}
+		limiter := newLimiterForTest()
+		defer limiter.Stop()
+		exec := &Executor{
+			Circuit: newCircuitManagerForTest(), Limiter: limiter,
+			UpstreamTimeout: 5 * time.Second, StreamTimeout: 10 * time.Second,
+			NodeOutcomeReducer: nodehealth.NewOutcomeReducer(), NodeHealthAdapter: capture,
+		}
+		params := &ExecParams{
+			W: httptest.NewRecorder(), R: httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
+			BodyBytes:   []byte(`{"model":"model-a","messages":[{"role":"user","content":"hello"}]}`),
+			ClientModel: "model-a", Model: "model-a", RequestID: "dispatch-failure", TenantID: "tenant-a",
+		}
+		candidate := provider.Candidate{
+			ProviderID: 7, CredentialID: 22, BaseURL: upstream.URL, Protocol: "openai-completions",
+			RawModel: "vendor-model-a", StandardizedName: "model-a", APIKey: "test-key", BillingMode: "token_plan",
+		}
+		dctx := &dispatchCtx{params: params, candidates: []provider.Candidate{candidate}, retryPerCred: 0, tTotal: time.Now()}
+
+		out := exec.forwardForDispatch(dctx, candidate, "failure-attempt", func() {})
+		if out.Err == nil || out.ErrorKind == "" || out.HTTPStatus != http.StatusInternalServerError {
+			t.Fatalf("forward outcome = %+v", out)
+		}
+		decisions := capture.snapshot()
+		if len(decisions) != 1 {
+			t.Fatalf("decisions = %+v, want exactly one", decisions)
+		}
+		decision := decisions[0]
+		if decision.AttemptID != "failure-attempt" || decision.Outcome != requestjourney.OutcomeFailure || decision.HTTPStatus != http.StatusInternalServerError || decision.ErrorDetail == "" {
+			t.Fatalf("failure decision = %+v", decision)
+		}
+	})
+
+	t.Run("canceled", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		capture := &dispatchHealthCapture{}
+		limiter := newLimiterForTest()
+		defer limiter.Stop()
+		exec := &Executor{
+			Circuit: newCircuitManagerForTest(), Limiter: limiter,
+			NodeOutcomeReducer: nodehealth.NewOutcomeReducer(), NodeHealthAdapter: capture,
+		}
+		params := &ExecParams{
+			W: httptest.NewRecorder(), R: httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil).WithContext(ctx),
+			BodyBytes: []byte(`{"model":"model-a"}`), ClientModel: "model-a", Model: "model-a",
+			RequestID: "dispatch-canceled", TenantID: "tenant-a",
+		}
+		candidate := provider.Candidate{
+			ProviderID: 7, CredentialID: 22, Protocol: "openai-completions",
+			RawModel: "vendor-model-a", StandardizedName: "model-a", BillingMode: "token_plan",
+		}
+		dctx := &dispatchCtx{params: params, candidates: []provider.Candidate{candidate}, retryPerCred: 0, tTotal: time.Now()}
+
+		out := exec.forwardForDispatch(dctx, candidate, "canceled-attempt", func() {})
+		if !errors.Is(out.Err, context.Canceled) {
+			t.Fatalf("forward error = %v, want context canceled", out.Err)
+		}
+		decisions := capture.snapshot()
+		if len(decisions) != 1 {
+			t.Fatalf("decisions = %+v, want exactly one", decisions)
+		}
+		decision := decisions[0]
+		if decision.AttemptID != "canceled-attempt" || decision.Outcome != requestjourney.OutcomeCanceled || len(decision.Effects) != 0 {
+			t.Fatalf("canceled decision = %+v", decision)
+		}
+	})
+}
+
+func TestDispatchReducerDuplicateAppliesOnce(t *testing.T) {
+	capture := &dispatchHealthCapture{}
+	exec := &Executor{NodeOutcomeReducer: nodehealth.NewOutcomeReducer(), NodeHealthAdapter: capture}
+	observation := nodehealth.Observation{
+		Node:      nodehealth.NodeKey{TenantID: "tenant-a", ProviderID: 7, CredentialID: 22, Model: "model-a"},
+		AttemptID: "attempt-duplicate", Phase: nodehealth.PhaseRequest,
+		Outcome: requestjourney.OutcomeFailure, ErrorKind: nodehealth.ErrorKindNetwork,
+	}
+	first, applied := exec.reduceDispatchOutcome(context.Background(), observation)
+	if !applied || !first.Accepted {
+		t.Fatalf("first reduction = %+v, applied=%v", first, applied)
+	}
+	duplicate, applied := exec.reduceDispatchOutcome(context.Background(), observation)
+	if applied || duplicate.Accepted || !duplicate.Duplicate {
+		t.Fatalf("duplicate reduction = %+v, applied=%v", duplicate, applied)
+	}
+	if got := len(capture.snapshot()); got != 1 {
+		t.Fatalf("adapter calls = %d, want 1", got)
 	}
 }
 
