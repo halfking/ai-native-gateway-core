@@ -9,6 +9,16 @@ import (
 var (
 	candidateDiagnosticMetricsOnce sync.Once
 	candidateDiagnosticMetrics     *prometheus.CounterVec
+	candidateDiagnosticEvents      = []string{
+		"db_empty",
+		"db_empty_fallback",
+		"cache_empty",
+		"db_unavailable",
+		"stale_cache_empty",
+		"enrich_empty",
+		"db_query_retry",
+		"other",
+	}
 )
 
 func registerCandidateDiagnosticMetrics() {
@@ -21,7 +31,14 @@ func registerCandidateDiagnosticMetrics() {
 			[]string{"event"},
 		)
 		prometheus.MustRegister(candidateDiagnosticMetrics)
+		initializeCandidateDiagnosticMetrics()
 	})
+}
+
+func initializeCandidateDiagnosticMetrics() {
+	for _, event := range candidateDiagnosticEvents {
+		candidateDiagnosticMetrics.WithLabelValues(event).Add(0)
+	}
 }
 
 func init() { registerCandidateDiagnosticMetrics() }
@@ -29,9 +46,14 @@ func init() { registerCandidateDiagnosticMetrics() }
 // recordCandidateDiagnostic records one of the fixed, low-cardinality event
 // types. Unknown values are deliberately collapsed into "other".
 func recordCandidateDiagnostic(event string) {
-	switch event {
-	case "db_empty", "db_empty_fallback", "cache_empty", "db_unavailable", "stale_cache_empty", "enrich_empty", "db_query_retry", "other":
-	default:
+	allowed := false
+	for _, candidateEvent := range candidateDiagnosticEvents {
+		if event == candidateEvent {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
 		event = "other"
 	}
 	candidateDiagnosticMetrics.WithLabelValues(event).Inc()

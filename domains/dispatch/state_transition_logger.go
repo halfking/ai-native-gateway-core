@@ -310,7 +310,7 @@ func (l *StateTransitionLogger) insertTransition(ctx context.Context, p pendingT
 	if strings.TrimSpace(p.t.TenantID) == "" {
 		return fmt.Errorf("empty tenant_id")
 	}
-	var metaJSON any
+var metaJSON any
 	if p.t.Metadata != nil {
 		encoded, err := json.Marshal(p.t.Metadata)
 		if err != nil {
