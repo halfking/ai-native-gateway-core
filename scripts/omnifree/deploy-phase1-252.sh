@@ -111,9 +111,9 @@ echo "📥 Step 5: 导入种子数据..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 if ! ./cmd/seed-free-resources/seed-free-resources \
   --db-url "$DB_252" \
-  --catalog docs/omnifree/seed/free_resource_catalog.json \
-  --templates docs/omnifree/seed/auto_combo_templates.json \
-  --keyless docs/omnifree/seed/keyless_providers.json \
+  --catalog configs/seed/free_resource_catalog.json \
+  --templates configs/seed/auto_combo_templates.json \
+  --keyless configs/seed/keyless_providers.json \
   --tenant-id 1; then
     echo "❌ 种子数据导入失败！"
     exit 1
