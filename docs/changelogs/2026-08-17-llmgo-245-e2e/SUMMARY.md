@@ -82,3 +82,43 @@
 - 本次任务完成总结 commit hash（git status 暂未提交，未推 master — 按 rule 35 等老板 review 后再 commit+push）
 - 本地 backup：`/tmp/apiclaude-backup-20260817-0325/`（252 docker 内）
 - 本地 HEAD binary E2E 验证（debug log 完整）见 `/Users/xutaohuang/.local/share/opencode/tool-output/` 历次输出
+---
+
+# 补充分析 (2026-08-17 04:25) - 凭据状态管理全扫描
+
+## 数据：全 252 production DB provider/credential 状态
+
+- **48 providers / 37 credentials / 1217 credential_model_bindings / 1166 v_routable_credential_models rows**
+- **真正 routable 507 行 (43.5%) — 659 行 unroutable**（= 56.5%）
+- **task_default_routing 102 行** — dead data（V2 路径不读，matrix 实际不影响 routing）
+
+## Health buckets (37 credentials)
+
+| Bucket | 数量 | 示例 |
+|---|---|---|
+| status=disabled | 4 | minimax:6, minimax-anthropic:15, scnet:14, zhipu:7 |
+| lifecycle=disabled | 10 | apiclaude:33, maishouai:30, nvidia:8/19/23, pulian:29, sensenova:3, vapeur:13, xiaomi:9/24 |
+| availability=suspended | 2 | sensenova:25, zhima:34 |
+| manual_disabled=true | 4 | apiclaude:31, glm-5.2-oneday:20, 速云:38, 速云:39 |
+| (quota=exhausted) | 0 | （已并入其他类） |
+| (health=unreachable) | 0 | |
+| last_used_at=NULL | 17 | apiclaude:17, apigpt:2, apigpt-image:26/27/28, ...（**schema bug — last_used_at 从未更新**） |
+| OK (active+ready+enabled) | 17 | volcano-tokenplan:11, glm-5.2-month:36, sensenova:4, etc. |
+
+## Schema bug: `last_used_at` 从未被更新
+
+虽然 37 个 credentials 表的 `last_used_at` 全部 NULL，但 `request_logs_hot` 显示 24h 实际有 11k+ 调用。
+- 根因：verifier 只更新 `api_keys.last_used_at`，不更新 `credentials.last_used_at`
+- 影响：凭据"使用率"统计失真，所有"未用"判断不准
+
+## Request_logs 字段语义澄清
+
+`request_logs_hot.credential_id` 字段**记录"曾经考虑过的"cred**，不是"实际成功调用的"cred。例如 zhima:35 (lifecycle=disabled) 24h 出现 306 次记录，但其中 220 次 has_err=1（view 拒绝后 fallback），85 次 success 实际是其他 binding 响应，但 request log 仍记 zhima:35 为 "considered cred"。
+
+**所以**：v_routable is_routable=true 的 507 binding 才是真正可路由的；其余 659 binding 在请求路径上被 view 拒绝。
+
+## 245 binary 状态
+
+- 1568/8f60c033 binary strings 显示含 `v_routable_credential_models` + `manual_disabled` check + 900-series 注释
+- 与 HEAD d7fe717a1 SQL 一致（都含 v_routable LEFT JOIN + is_routable = TRUE）
+- 但 245 线上 E2E 仍走 fallback → 实际是 cache + 上游 creds 不可用的 combined effect，不是 binary 代码 bug

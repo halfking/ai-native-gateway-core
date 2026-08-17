@@ -84,6 +84,75 @@ func TestRedisStoreIsAtomicBoundedAndVisibleAcrossInstances(t *testing.T) {
 	}
 }
 
+func TestRedisStoreIngressRespectsArrivalOrder(t *testing.T) {
+	server := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+	writer := NewRedisStore(client, Config{TotalRequestCapacity: 3, DetailTTL: time.Hour})
+	reader := NewRedisStore(client, Config{TotalRequestCapacity: 3, DetailTTL: time.Hour})
+	ctx := context.Background()
+	base := time.Unix(1700000000, 0).UTC()
+	for i, requestID := range []string{"request-b", "request-a", "request-c"} {
+		event := IngressEvent{
+			RequestID: requestID, GatewayInstanceID: "gateway-1",
+			Protocol: IngressProtocolChat, PathClass: IngressPathChatCompletions,
+			ArrivedAt: base.Add(time.Duration(i) * time.Second),
+			UpdatedAt: base.Add(time.Duration(i) * time.Second),
+			Status:    IngressStatusArrived,
+		}
+		if err := writer.ApplyIngress(ctx, event); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	recent, err := reader.RecentIngress(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recent) != 3 || recent[0].RequestID != "request-b" || recent[1].RequestID != "request-a" || recent[2].RequestID != "request-c" {
+		t.Fatalf("recent = %#v", recent)
+	}
+}
+
+func TestRedisStoreModelSwitchAddsTargetModelQueue(t *testing.T) {
+	server := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+	store := NewRedisStore(client, DefaultConfig())
+	ctx := context.Background()
+
+	request := testJourneyEvent("tenant-a", "request-1", 1)
+	request.ResolvedModel = "model-a"
+	request.Type = EventRouteResolved
+	request.Stage = StageRouting
+	if err := store.Apply(ctx, request); err != nil {
+		t.Fatal(err)
+	}
+
+	switchEvent := request
+	switchEvent.Seq = 2
+	switchEvent.Type = EventModelSwitched
+	switchEvent.Stage = StageModelQueue
+	switchEvent.FromModel = "model-a"
+	switchEvent.ToModel = "model-b"
+	switchEvent.ResolvedModel = "model-b"
+	switchEvent.OccurredAt = switchEvent.OccurredAt.Add(time.Second)
+	if err := store.Apply(ctx, switchEvent); err != nil {
+		t.Fatal(err)
+	}
+
+	models, err := store.RecentModels(ctx, "tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(models) != 2 {
+		t.Fatalf("models = %#v", models)
+	}
+	if models[1].Model != "model-b" || len(models[1].Requests) != 1 || models[1].Requests[0].RequestID != "request-1" {
+		t.Fatalf("model switch queue = %#v", models)
+	}
+}
+
 func TestRedisStoreListsModelAndNodeFIFOsAcrossInstances(t *testing.T) {
 	server := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: server.Addr()})

@@ -106,10 +106,13 @@ func NewPool(key PoolKey, probeURL string, proxyFunc func(*http.Request) (*url.U
 		proxy = http.ProxyFromEnvironment
 	}
 	transport := &http.Transport{
-		Proxy:               proxy,
-		MaxIdleConns:        maxConnsPerHost,
-		MaxIdleConnsPerHost: maxIdleConnsPerHost,
-		IdleConnTimeout:     idleConnTimeout,
+		Proxy:                 proxy,
+		MaxConnsPerHost:       maxConnsPerHost,
+		MaxIdleConns:          maxConnsPerHost,
+		MaxIdleConnsPerHost:   maxIdleConnsPerHost,
+		IdleConnTimeout:       idleConnTimeout,
+		ResponseHeaderTimeout: 120 * time.Second,
+
 		// The request context owns the upstream and first-byte deadline. A
 		// transport-level response-header timeout would otherwise cut streaming
 		// requests short before the configured first-byte budget expires.
@@ -227,6 +230,7 @@ func (p *Pool) RecordFailure() {
 	// process restart. The Dead state was wrongly treated as terminal.
 	if count >= deadThreshold && currentState != PoolDraining {
 		p.state.Store(int32(PoolDraining))
+		p.transport.CloseIdleConnections()
 		p.drainingSince.Store(time.Now().UnixMilli())
 		p.failCount.Store(0) // reset so we don't immediately re-Dead
 		p.successCount.Store(0)
@@ -242,6 +246,7 @@ func (p *Pool) RecordFailure() {
 	// Transition to degraded if consecutive failures exceed degraded threshold
 	if count >= degradedThreshold && currentState == PoolActive {
 		p.state.Store(int32(PoolDegraded))
+		p.transport.CloseIdleConnections()
 		slog.Warn("pool marked degraded",
 			"key", p.key.String(),
 			"failures", count,
