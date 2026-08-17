@@ -16,6 +16,9 @@ type ModelAlternativeRequest struct {
 	WorkType     string
 	InitialModel string
 	TriedModels  []string
+	// PreferredModels is the ordered task/work-type candidate list selected at
+	// request admission. Failure recovery uses this list before global reranking.
+	PreferredModels []string
 }
 
 // RecommendModelAlternatives returns currently recommended canonical models,
@@ -68,17 +71,13 @@ func (d *Decider) RecommendModelAlternatives(ctx context.Context, req ModelAlter
 			excluded[model] = struct{}{}
 		}
 	}
-	seen := make(map[string]struct{}, len(recommended))
-	models := make([]string, 0, len(recommended))
+	eligible := make(map[string]struct{}, len(recommended))
 	for _, candidate := range recommended {
 		model := strings.TrimSpace(candidate.Candidate.CanonicalName)
 		if model == "" {
 			continue
 		}
 		if _, skip := excluded[model]; skip {
-			continue
-		}
-		if _, duplicate := seen[model]; duplicate {
 			continue
 		}
 		_, candidateIQ, candidateFound := StandardIQMatch(model, 0)
@@ -88,11 +87,34 @@ func (d *Decider) RecommendModelAlternatives(ctx context.Context, req ModelAlter
 		if req.Task != TaskChat && TaskMatchScore(req.Task, candidate.Candidate.Tags) <= 0 {
 			continue
 		}
-		seen[model] = struct{}{}
-		models = append(models, model)
+		eligible[model] = struct{}{}
 	}
+	models := orderedEligibleModels(req.PreferredModels, recommended, eligible)
 	if len(models) == 0 {
 		return nil, ErrNoCandidates
 	}
 	return models, nil
+}
+
+func orderedEligibleModels(preferred []string, recommended []ScoredCandidate, eligible map[string]struct{}) []string {
+	if len(preferred) == 0 {
+		preferred = make([]string, 0, len(recommended))
+		for _, candidate := range recommended {
+			preferred = append(preferred, candidate.Candidate.CanonicalName)
+		}
+	}
+	models := make([]string, 0, len(preferred))
+	seen := make(map[string]struct{}, len(preferred))
+	for _, model := range preferred {
+		model = strings.TrimSpace(model)
+		if _, ok := eligible[model]; !ok {
+			continue
+		}
+		if _, duplicate := seen[model]; duplicate {
+			continue
+		}
+		seen[model] = struct{}{}
+		models = append(models, model)
+	}
+	return models
 }

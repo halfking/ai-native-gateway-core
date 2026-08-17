@@ -15,6 +15,8 @@ attempt budget is exhausted.
 - Switch to a sibling credential after three non-fatal failures on a node;
   credential-fatal errors bypass same-node retries.
 - Keep model fallback task-aware and reject unknown or lower Standard IQ models.
+- Preserve the task/work-type candidate list order during model failover while
+  intersecting it with live availability, policy, capability, and quality gates.
 - Cap retry delay at 120 seconds and emit protocol-safe heartbeats throughout
   each recovery wait.
 

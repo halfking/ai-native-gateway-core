@@ -75,3 +75,30 @@ func TestRecommendModelAlternativesRequiresTaskCapability(t *testing.T) {
 		t.Fatalf("error = %v, want ErrNoCandidates", err)
 	}
 }
+
+func TestRecommendModelAlternativesPrefersTaskCandidateListOrder(t *testing.T) {
+	oldFlags := GetFeatureFlags()
+	SetGlobalFeatureFlagsForTest(&FeatureFlags{UseChannelQualityRouting: true})
+	defer SetGlobalFeatureFlagsForTest(oldFlags)
+
+	idx := &Index{entries: []Candidate{
+		{CredentialID: 1, CanonicalID: 1, CanonicalName: "claude-sonnet-4-5", Tags: []string{"code"}, SuccessRate: 0.99},
+		{CredentialID: 2, CanonicalID: 2, CanonicalName: "claude-opus-4-8", Tags: []string{"code"}, SuccessRate: 0.99},
+		{CredentialID: 3, CanonicalID: 3, CanonicalName: "claude-opus-4-6", Tags: []string{"code"}, SuccessRate: 0.99},
+	}, lastRefresh: time.Now()}
+	decider := NewDecider(&v2TestClassifier{task: TaskCode}, nil, idx, NewMemoryProfileStore())
+
+	got, err := decider.RecommendModelAlternatives(context.Background(), ModelAlternativeRequest{
+		Task:            TaskCode,
+		Profile:         ProfileSmart,
+		InitialModel:    "claude-sonnet-4-5",
+		TriedModels:     []string{"claude-sonnet-4-5"},
+		PreferredModels: []string{"claude-opus-4-6", "claude-opus-4-8"},
+	})
+	if err != nil {
+		t.Fatalf("RecommendModelAlternatives: %v", err)
+	}
+	if want := []string{"claude-opus-4-6", "claude-opus-4-8"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("alternatives = %v, want task candidate order %v", got, want)
+	}
+}
