@@ -25,15 +25,17 @@ DB_CONTAINER="${DB_CONTAINER_252:-pg-252-pg17}"
 DB_USER="${DB_USER_252:-llm_gateway}"
 DB_NAME="${DB_NAME_252:-llm_gateway}"
 LEDGER_FROM="${DB_LEDGER_RECONCILE_FROM:-412}"
+LEDGER_TO="${DB_LEDGER_RECONCILE_TO:-}"
 BACKUP_DIR="${MIGRATION_REPAIR_BACKUP_DIR:-$REPO_ROOT/build/252-migration-backups}"
 APPLY=0
 
 usage() {
   printf '%s\n' \
-    "Usage: $0 [--apply] [--ledger-from N] [--backup-dir DIR]" \
+    "Usage: $0 [--apply] [--ledger-from N] [--ledger-to N] [--backup-dir DIR]" \
     "  default       read-only preflight" \
     "  --apply       backup first, then repair in one database transaction" \
-    "  --ledger-from only reconcile applied numeric versions >= N (default: $LEDGER_FROM)"
+    "  --ledger-from only reconcile applied numeric versions >= N (default: $LEDGER_FROM)" \
+    "  --ledger-to   only reconcile applied numeric versions <= N (default: no upper bound)"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -42,6 +44,9 @@ while [[ $# -gt 0 ]]; do
     --ledger-from)
       [[ $# -ge 2 && "$2" =~ ^[0-9]+$ ]] || { echo "--ledger-from requires an integer" >&2; exit 64; }
       LEDGER_FROM="$2"; shift 2 ;;
+    --ledger-to)
+      [[ $# -ge 2 && "$2" =~ ^[0-9]+$ ]] || { echo "--ledger-to requires an integer" >&2; exit 64; }
+      LEDGER_TO="$2"; shift 2 ;;
     --backup-dir)
       [[ $# -ge 2 && -n "$2" ]] || { echo "--backup-dir requires a path" >&2; exit 64; }
       BACKUP_DIR="$2"; shift 2 ;;
@@ -49,6 +54,11 @@ while [[ $# -gt 0 ]]; do
     *) echo "unknown option: $1" >&2; usage >&2; exit 64 ;;
   esac
 done
+
+if [[ -n "$LEDGER_TO" ]] && (( LEDGER_TO < LEDGER_FROM )); then
+  echo "--ledger-to must be greater than or equal to --ledger-from" >&2
+  exit 64
+fi
 
 SSH_OPTS=(-i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new)
 SSH=(ssh "${SSH_OPTS[@]}" "$SSH_HOST")
@@ -136,7 +146,7 @@ sql_quote() {
 
 load_candidates
 
-log "target=$SSH_HOST:$SSH_PORT container=$DB_CONTAINER database=$DB_NAME ledger_from=$LEDGER_FROM"
+log "target=$SSH_HOST:$SSH_PORT container=$DB_CONTAINER database=$DB_NAME ledger_from=$LEDGER_FROM ledger_to=${LEDGER_TO:-unbounded}"
 log "checking SSH and PostgreSQL identity"
 remote_exec "docker exec '$DB_CONTAINER' psql -X -v ON_ERROR_STOP=1 -U '$DB_USER' -d '$DB_NAME' -Atc \"SELECT current_database() || '|' || current_user\"" >/dev/null \
   || fail "remote PostgreSQL identity check failed"
@@ -155,7 +165,11 @@ ledger_status=$(remote_psql "SELECT CASE WHEN to_regclass('public.llm_gateway_mi
 log "duplicate_rows=$duplicate_rows inconsistent_duplicate_pairs=$inconsistent_versions version_unique_constraint=$constraint_status checksum_ledger=$ledger_status"
 (( inconsistent_versions == 0 )) || fail "duplicate versions have different description/applied_at; refusing to guess"
 
-applied_rows=$(remote_psql "SELECT version || '|' || COALESCE(description,'') FROM public.schema_migrations WHERE version ~ '^[0-9]+$' AND version::int >= $LEDGER_FROM ORDER BY version::int")
+applied_filter="version::int >= $LEDGER_FROM"
+if [[ -n "$LEDGER_TO" ]]; then
+  applied_filter+=" AND version::int <= $LEDGER_TO"
+fi
+applied_rows=$(remote_psql "SELECT version || '|' || COALESCE(description,'') FROM public.schema_migrations WHERE version ~ '^[0-9]+$' AND $applied_filter ORDER BY version::int")
 
 # Resolve all applied versions at/after the boundary before any write. This is
 # also the dry-run proof that same-number files (431/432, etc.) are unambiguous.
