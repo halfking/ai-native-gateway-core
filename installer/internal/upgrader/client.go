@@ -421,6 +421,8 @@ type ReportUpdateRequest struct {
 	DurationMs int64  `json:"duration_ms"`
 }
 
+// ReportUpdate reports a legacy authority update outcome. It is retained for
+// the pre-P4 auto-update API and does not participate in the P3 task protocol.
 func (c *Client) ReportUpdate(ctx context.Context, req *ReportUpdateRequest) error {
 	return c.postLegacy(ctx, "/api/v1/updates/report", req)
 }
@@ -432,6 +434,8 @@ type ReportRollbackRequest struct {
 	Reason     string `json:"reason"`
 }
 
+// ReportRollback reports a legacy authority rollback. It is retained for the
+// pre-P4 auto-update API and does not participate in the P3 task protocol.
 func (c *Client) ReportRollback(ctx context.Context, req *ReportRollbackRequest) error {
 	return c.postLegacy(ctx, "/api/v1/updates/rollback", req)
 }

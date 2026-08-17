@@ -374,6 +374,13 @@ func main() {
 	// Checker: poll master, on new version build NOTIFIED plan (never auto-apply).
 	// CurrentVersion is a provider so the checker compares against the live
 	// post-Apply version, not the startup value (audit C9).
+	// P4.4 note: FoundRelease.AutoUpgrade surfaces the server's auto_upgrade
+	// hint, but the launcher still requires an operator Prepare → Apply. The
+	// AutoUpgradeAgent + AutoUpgradeExecutor path is a tested protocol
+	// component only; wiring it into this daemon additionally needs a
+	// launcher-native executor that turns a Maintain offline artifact
+	// (ticket URL + SHA-256) into a staged green runtime. Until that exists,
+	// auto_upgrade=true must NOT claim P3 tasks from here.
 	proof := deviceProofFromEnvironment()
 	d.checker = checker.New(checker.Config{
 		CurrentVersion: d.getCurrentVersion,
