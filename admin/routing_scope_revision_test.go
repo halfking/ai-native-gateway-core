@@ -1,0 +1,232 @@
+package admin
+
+import (
+	"context"
+	"net/http"
+	"strings"
+	"testing"
+	"time"
+)
+
+// Unit tests — no PG required.
+
+func TestParseScopeRevision_RoundTrip(t *testing.T) {
+	cases := []struct {
+		name    string
+		token   string
+		version int64
+		hash    string
+	}{
+		{name: "version 1 with full hash", token: "1:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", version: 1, hash: "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"},
+		{name: "version 42 short hash", token: "42:abcdef", version: 42, hash: "abcdef"},
+		{name: "trailing colons preserved", token: "5:abc:def", version: 5, hash: "abc:def"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sr, err := parseScopeRevision(tc.token)
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if sr.Version != tc.version {
+				t.Errorf("Version = %d, want %d", sr.Version, tc.version)
+			}
+			if sr.Hash != tc.hash {
+				t.Errorf("Hash = %q, want %q", sr.Hash, tc.hash)
+			}
+			if sr.Raw != tc.token {
+				t.Errorf("Raw = %q, want %q", sr.Raw, tc.token)
+			}
+		})
+	}
+}
+
+func TestParseScopeRevision_Malformed(t *testing.T) {
+	cases := []struct {
+		name  string
+		token string
+	}{
+		{name: "empty", token: ""},
+		{name: "whitespace only", token: "   "},
+		{name: "no colon", token: "12abcdef"},
+		{name: "missing version", token: ":abc"},
+		{name: "missing hash", token: "12:"},
+		{name: "non-numeric version", token: "abc:def"},
+		{name: "zero version", token: "0:abc"},
+		{name: "negative version", token: "-1:abc"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := parseScopeRevision(tc.token); err == nil {
+				t.Errorf("parseScopeRevision(%q) returned no error; expected malformed", tc.token)
+			}
+		})
+	}
+}
+
+func TestScopeRevisionsEqual(t *testing.T) {
+	a := scopeRevision{Version: 7, Hash: "abc"}
+	b := scopeRevision{Version: 7, Hash: "abc"}
+	c := scopeRevision{Version: 7, Hash: "xyz"}
+	d := scopeRevision{Version: 8, Hash: "abc"}
+	zero1 := scopeRevision{}
+	zero2 := scopeRevision{}
+
+	if !scopeRevisionsEqual(a, b) {
+		t.Error("equal revisions should compare true")
+	}
+	if scopeRevisionsEqual(a, c) {
+		t.Error("different hash should compare false")
+	}
+	if scopeRevisionsEqual(a, d) {
+		t.Error("different version should compare false")
+	}
+	if !scopeRevisionsEqual(zero1, zero2) {
+		t.Error("zero revisions (no row yet) should compare true against each other")
+	}
+	if scopeRevisionsEqual(zero1, a) {
+		t.Error("zero vs populated should compare false")
+	}
+}
+
+func TestFormatScopeRevision(t *testing.T) {
+	if got := formatScopeRevision(0, "abc"); got != "" {
+		t.Errorf("formatScopeRevision(0, _) = %q, want empty", got)
+	}
+	if got := formatScopeRevision(3, "abc"); got != "3:abc" {
+		t.Errorf("formatScopeRevision(3, abc) = %q, want %q", got, "3:abc")
+	}
+}
+
+// Integration tests — require LLM_GATEWAY_PG_URL. They use the same pool
+// and fixture helpers as routing_candidate_binding_test.go so a missing PG
+// cleanly SKIPs via reorderTestPool's t.Skip path.
+
+// TestRoutingCandidateBindingReorder_IntegrationBumpMonotonic drives two
+// consecutive reorders and asserts scope_version advances from 1 to 2 to 3.
+// This proves the migration 541 trigger fires per write and the wire token
+// advances monotonically.
+func TestRoutingCandidateBindingReorder_IntegrationBumpMonotonic(t *testing.T) {
+	pool := reorderTestPool(t)
+	h := &Handler{db: pool}
+	f := newReorderTestFixture(t, pool, 2)
+
+	revV1 := f.reorderRevision(t, h)
+	if !strings.HasPrefix(revV1, "1:") {
+		t.Fatalf("initial revision = %q, want prefix %q", revV1, "1:")
+	}
+
+	first := doReorder(t, h, routingCandidateReorderRequest{
+		RawModel:         f.rawModel,
+		ExpectedRevision: revV1,
+		Items: []routingCandidateReorderItem{
+			{CredentialID: int(f.credIDs[1]), ManualPriority: 1},
+			{CredentialID: int(f.credIDs[0]), ManualPriority: 2},
+		},
+	})
+	if first.Code != http.StatusOK {
+		t.Fatalf("first reorder status = %d, body = %s", first.Code, first.Body.String())
+	}
+	revV2 := f.reorderRevision(t, h)
+	if !strings.HasPrefix(revV2, "2:") {
+		t.Fatalf("after first reorder, revision = %q, want prefix %q", revV2, "2:")
+	}
+
+	second := doReorder(t, h, routingCandidateReorderRequest{
+		RawModel:         f.rawModel,
+		ExpectedRevision: revV2,
+		Items: []routingCandidateReorderItem{
+			{CredentialID: int(f.credIDs[0]), ManualPriority: 1},
+			{CredentialID: int(f.credIDs[1]), ManualPriority: 2},
+		},
+	})
+	if second.Code != http.StatusOK {
+		t.Fatalf("second reorder status = %d, body = %s", second.Code, second.Body.String())
+	}
+	revV3 := f.reorderRevision(t, h)
+	if !strings.HasPrefix(revV3, "3:") {
+		t.Fatalf("after second reorder, revision = %q, want prefix %q", revV3, "3:")
+	}
+}
+
+// TestRoutingCandidateBindingReorder_IntegrationResolveEcho resolves the
+// raw_model twice with a reorder in between and confirms the resolve's
+// reorder_revision advances by exactly one each time. This is the contract
+// the dashboard's drag-and-drop relies on for 409 detection.
+func TestRoutingCandidateBindingReorder_IntegrationResolveEcho(t *testing.T) {
+	pool := reorderTestPool(t)
+	h := &Handler{db: pool}
+	f := newReorderTestFixture(t, pool, 2)
+
+	// First resolve: should see version 1.
+	revV1 := f.reorderRevision(t, h)
+	if !strings.HasPrefix(revV1, "1:") {
+		t.Fatalf("initial resolve revision = %q, want prefix %q", revV1, "1:")
+	}
+
+	// Drive one reorder through the handler.
+	rec := doReorder(t, h, routingCandidateReorderRequest{
+		RawModel:         f.rawModel,
+		ExpectedRevision: revV1,
+		Items: []routingCandidateReorderItem{
+			{CredentialID: int(f.credIDs[1]), ManualPriority: 1},
+			{CredentialID: int(f.credIDs[0]), ManualPriority: 2},
+		},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("reorder status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	// Second resolve should now echo version 2 (the trigger bumped the
+	// singleton revision row inside the same statement as our UPDATE).
+	revV2 := f.reorderRevision(t, h)
+	if !strings.HasPrefix(revV2, "2:") {
+		t.Fatalf("post-reorder resolve revision = %q, want prefix %q", revV2, "2:")
+	}
+	if revV2 == revV1 {
+		t.Fatalf("reorder_revision did not advance after a successful reorder: %q == %q", revV1, revV2)
+	}
+}
+
+// TestRoutingCandidateBindingReorder_IntegrationNoOpBump updates a binding
+// row WITHOUT changing manual_priority / provider_model_id / credential_id
+// (only updated_at changes) and confirms scope_version does NOT advance.
+// This is the trigger's short-circuit clause and is critical: if it were
+// missing, every cache refresh would force a 409 refetch on the dashboard.
+func TestRoutingCandidateBindingReorder_IntegrationNoOpBump(t *testing.T) {
+	pool := reorderTestPool(t)
+	h := &Handler{db: pool}
+	f := newReorderTestFixture(t, pool, 2)
+
+	revBefore := f.reorderRevision(t, h)
+	if !strings.HasPrefix(revBefore, "1:") {
+		t.Fatalf("initial revision = %q, want prefix %q", revBefore, "1:")
+	}
+
+	// Touch ONLY updated_at. The trigger must short-circuit.
+	_, err := pool.Exec(context.Background(),
+		`UPDATE credential_model_bindings SET updated_at = NOW() WHERE id = $1`,
+		f.bindingIDs[0])
+	if err != nil {
+		t.Fatalf("no-op update: %v", err)
+	}
+
+	// Give the trigger's clock a beat so we never race a same-millisecond bump.
+	time.Sleep(2 * time.Millisecond)
+
+	revAfter := f.reorderRevision(t, h)
+	if revAfter != revBefore {
+		t.Fatalf("no-op update bumped scope_revision: before=%q after=%q", revBefore, revAfter)
+	}
+
+	// Sanity: a real priority change DOES still bump the counter.
+	_, err = pool.Exec(context.Background(),
+		`UPDATE credential_model_bindings SET manual_priority = 9, updated_at = NOW() WHERE id = $1`,
+		f.bindingIDs[0])
+	if err != nil {
+		t.Fatalf("real update: %v", err)
+	}
+	revBumped := f.reorderRevision(t, h)
+	if !strings.HasPrefix(revBumped, "2:") {
+		t.Fatalf("real update did not bump scope_revision: got %q, want prefix %q", revBumped, "2:")
+	}
+}

@@ -410,15 +410,11 @@ func (f *reorderTestFixture) priorities(t *testing.T) map[int64]int {
 
 func (f *reorderTestFixture) reorderRevision(t *testing.T, h *Handler) string {
 	t.Helper()
-	rows, err := fetchReorderScope(context.Background(), h.db, f.rawModel, false)
+	rev, err := loadScopeRevision(context.Background(), h.db, f.rawModel)
 	if err != nil {
-		t.Fatalf("fetchReorderScope: %v", err)
+		t.Fatalf("loadScopeRevision: %v", err)
 	}
-	rev, err := candidateReorderRevision(rows)
-	if err != nil {
-		t.Fatalf("candidateReorderRevision: %v", err)
-	}
-	return rev
+	return rev.Raw
 }
 
 func reorderItoa(n int64) string {
