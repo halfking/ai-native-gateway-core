@@ -38,6 +38,16 @@ const (
 	StatusAmbiguous  ItemStatus = "ambiguous"
 	StatusConflict   ItemStatus = "conflict"
 	StatusRolledBack ItemStatus = "rolled_back"
+	// StatusExpired is the durable marker for a source key that disappeared
+	// between preflight and copy; the SQL CHECK on
+	// ursm_key_migration_entries.state accepts it, and PersistCopyOutcome
+	// uses it as a terminal outcome so retries can be detected.
+	StatusExpired ItemStatus = "expired"
+	// StatusFenced is the durable marker for an entry whose deletion is
+	// being claimed before Redis DEL is attempted; PGStore.ClaimEntryForCleanup
+	// is the only writer and RecoverStaleCleanupClaim is the only path
+	// back to StatusCopied.
+	StatusFenced ItemStatus = "fenced"
 )
 
 // EntryStatus is an alias for ItemStatus kept so preflight.go (which names

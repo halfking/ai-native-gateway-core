@@ -45,6 +45,17 @@ const (
 )
 
 func main() {
+	// T0 fail-closed gate: refuse --apply before flag parsing or any
+	// Redis/PG client construction. The check runs ahead of flag.Parse
+	// so a misconfigured --redis cannot trigger a network round trip
+	// while T0 is BLOCKED / NO-GO. See handoff §3 / §2 for the contract
+	// and docs/03-design/.../14-URSM-...md for the durable apply path.
+	for _, arg := range os.Args[1:] {
+		if arg == "--apply" || strings.HasPrefix(arg, "--apply=") {
+			log.Fatal("k2 preflight apply is disabled while T0 is BLOCKED / NO-GO; preflight remains read-only")
+		}
+	}
+
 	var (
 		apply            = flag.Bool("apply", false, "Record the migration run in PostgreSQL. Default is dry-run.")
 		redisURL         = flag.String("redis", redisURLFromEnv(), "Redis URL")
