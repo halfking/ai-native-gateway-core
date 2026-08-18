@@ -49,6 +49,20 @@ export interface RequestOptions {
   signal?: AbortSignal
 }
 
+// ApiError carries the HTTP status code alongside the server-provided
+// detail string so callers can branch on status (e.g. stale-revision 409)
+// without parsing free-form messages.
+export class ApiError extends Error {
+  status: number
+  detail: string
+  constructor(status: number, detail: string) {
+    super(detail)
+    this.name = 'ApiError'
+    this.status = status
+    this.detail = detail
+  }
+}
+
 export async function req<T>(method: string, path: string, body?: unknown, options?: RequestOptions): Promise<T> {
   const r = await fetch(BASE + path, {
     method,
@@ -68,7 +82,7 @@ export async function req<T>(method: string, path: string, body?: unknown, optio
       }
     }
     // 公共/半公开端点 401（如 /healthz?full=true）只 throw，不强制 redirect，避免 loop
-    throw new Error('Unauthorized')
+    throw new ApiError(401, 'Unauthorized')
   }
   if (!r.ok) {
     // Try to parse JSON error first (backend uses {"error": "..."}),
@@ -90,7 +104,7 @@ export async function req<T>(method: string, path: string, body?: unknown, optio
     } catch {
       // network/abort error reading body; keep statusText
     }
-    throw new Error(msg)
+    throw new ApiError(r.status, msg)
   }
   if (r.status === 204) return undefined as T
   return r.json()

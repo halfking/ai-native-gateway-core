@@ -35,6 +35,7 @@ import SmartRoutingConfigDrawer from '../components/routing/SmartRoutingConfigDr
 import CandidateDetailDrawer from '../components/routing/CandidateDetailDrawer.vue'
 import CandidateSettingsDialog from '../components/routing/CandidateSettingsDialog.vue'
 import { isSuperAdmin } from '../store'
+import { ApiError } from '../api/_core'
 
 const { t } = useI18n()
 
@@ -552,12 +553,12 @@ async function onCandidateDrop(target: RoutingCandidate, event: DragEvent) {
     await doResolve()
   } catch (e: unknown) {
     resolveCandidates.value = previous
-    const message = e instanceof Error ? e.message : '排序保存失败'
-    if (/409|stale|incomplete|ordering conflict/i.test(message)) {
+    const fallback = e instanceof Error ? e.message : '排序保存失败'
+    if (e instanceof ApiError && e.status === 409) {
       reorderErr.value = '排序已过期，已重新查询，请重试。'
       void doResolve()
     } else {
-      reorderErr.value = message
+      reorderErr.value = fallback
     }
   } finally {
     reorderSaving.value = false

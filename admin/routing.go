@@ -114,6 +114,21 @@ type pgxAuditExecutor interface {
 }
 
 func requestActor(r *http.Request) string {
+	// Prefer the verified AuthContext subject (super_admin / tenant_admin
+	// username) over the network address so audit rows stay attributable
+	// to a real operator. The X-Admin-User header is intentionally NOT
+	// trusted here — any caller able to reach the admin API could forge it.
+	if auth := GetAuthContext(r); auth != nil {
+		if auth.Username != "" {
+			return auth.Username
+		}
+		if auth.UserID > 0 {
+			return fmt.Sprintf("user:%d", auth.UserID)
+		}
+		if auth.Role != "" {
+			return "role:" + auth.Role
+		}
+	}
 	actor := r.RemoteAddr
 	if actor == "" {
 		actor = "unknown"
@@ -485,7 +500,9 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 	}
 	// Reorder revision: only meaningful when the resolve hits exactly one
 	// raw_model — mixed aliases or canonical hits intentionally leave the
-	// field empty so the UI keeps reordering disabled.
+	// field empty so the UI keeps reordering disabled. Errors computing
+	// the revision are not fatal: the dashboard still works, just without
+	// drag-and-drop, so we log and continue with an empty token.
 	var reorderRevision string
 	if len(candidates) > 0 {
 		firstRaw := strings.TrimSpace(candidates[0].ModelName)
@@ -497,8 +514,15 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if singleRaw {
-			if rows, scopeErr := fetchReorderScope(ctx, h.db, firstRaw, false); scopeErr == nil && len(rows) > 0 {
-				if rev, hashErr := candidateReorderRevision(rows); hashErr == nil {
+			rows, scopeErr := fetchReorderScope(ctx, h.db, firstRaw, false)
+			if scopeErr != nil {
+				slog.Warn("routing resolve: reorder scope fetch failed; revision omitted",
+					"raw_model", firstRaw, "error", scopeErr.Error())
+			} else if len(rows) > 0 {
+				if rev, hashErr := candidateReorderRevision(rows); hashErr != nil {
+					slog.Warn("routing resolve: reorder revision hash failed",
+						"raw_model", firstRaw, "error", hashErr.Error())
+				} else {
 					reorderRevision = rev
 				}
 			}

@@ -27,6 +27,7 @@ import {
   type LiveRequest,
 } from '../composables/liveStreamStore'
 import { isSuperAdmin } from '../store'
+import { ApiError } from '../api/_core'
 import RequestProcessingTrail from './RequestProcessingTrail.vue'
 import NodeDetailDrawer from './NodeDetailDrawer.vue'
 
@@ -443,14 +444,14 @@ async function onDrop(event: DragEvent, group: ModelGroup, targetCredentialId: n
     await reorderCandidateBindings(items, { rawModel, expectedRevision })
     await loadModelScope()
   } catch (error) {
-    const message = error instanceof Error ? error.message : '调整优先级失败'
+    const fallback = error instanceof Error ? error.message : '调整优先级失败'
     // 409 stale / incomplete / transient ordering conflict — surface a
     // user-friendly hint and refetch so the UI catches up with the server.
-    if (/409|stale|incomplete|ordering conflict/i.test(message)) {
+    if (error instanceof ApiError && error.status === 409) {
       dragError.value = '排序已过期，已自动刷新候选列表，请重试。'
       void loadModelScope()
     } else {
-      dragError.value = message
+      dragError.value = fallback
     }
   } finally {
     dragSaving.value = false
