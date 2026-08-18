@@ -45,15 +45,6 @@ const (
 // without an extra layer of indirection.
 type EntryStatus = ItemStatus
 
-// Legacy aliases preserved for callers that import the short form.
-const (
-	ClassMigratable               = ClassificationMigratable
-	ClassCanonicalPresent         = ClassificationCanonicalPresent
-	ClassAmbiguous                = ClassificationAmbiguous
-	ClassExcludedNonAuthoritative = ClassificationExcludedNonAuthoritative
-	ClassConflict                 = ClassificationConflict
-)
-
 // Item is a single source-key entry in the migration ledger. Fields are
 // stable for the lifetime of a migration run; checksum + pttl_ms are
 // snapshotted at classification time so resume/copy are deterministic.

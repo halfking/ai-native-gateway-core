@@ -47,11 +47,6 @@ type EntryRecord struct {
 	Tuple         *store.ParsedNodeKey
 }
 
-// Entry is the alias name the per-entry helpers (EntryCopier / EntryCleaner)
-// use. It points at the same record as EntryRecord so callers can write
-// `entry Entry` without the `Record` suffix.
-type Entry = EntryRecord
-
 // EntryReport is a deterministic EntryPreflight result. Go is true only
 // when no ambiguous verdict exists; a non-zero excluded count does not
 // authorize those entries — it only records why they are non-authoritative.

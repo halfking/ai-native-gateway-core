@@ -194,17 +194,22 @@ func (c *Copy) copyOne(ctx context.Context, it Item, now time.Time) CopyResult {
 	case pttl == -1 * time.Millisecond:
 		// no TTL: do not call PEXPIRE
 	case pttl > 0:
-		// never extend beyond scan snapshot
+		// doc 14 §6.1: the target PEXPIRE equals the scan-time PTTL
+		// snapshot (it.PTTLMs), never more. The growth guard above
+		// (line 141) has already refused when current PTTL > scan
+		// PTTL, so here cap is at most it.PTTLMs; we never raise it.
 		cap := it.PTTLMs
 		if cap <= 0 {
-			cap = pttl.Milliseconds()
-		}
-		if pttl.Milliseconds() > cap {
-			cap = pttl.Milliseconds()
+			// No scan-snapshot TTL was recorded (-1 persistent).
+			// Do not extend a persistent source by accident: drop the
+			// TTL on the target rather than guess.
+			res.Status = CopyStatusSkipped
+			res.Reason = "no scan-snapshot TTL recorded; refusing to extend persistence"
+			return res
 		}
 		if cap <= 0 {
 			res.Status = CopyStatusSkipped
-			res.Reason = "pttl decayed to <=0"
+			res.Reason = "pttl decayed to <=0 since scan"
 			return res
 		}
 		pipe.PExpire(ctx, it.CanonicalKey, time.Duration(cap)*time.Millisecond)
@@ -237,6 +242,8 @@ var (
 )
 
 // EntryCopyStatus is the per-entry outcome enum for the per-entry copier.
+// EntryCopyStatus is the per-entry outcome enum for the per-entry copier
+// (parallel API style retained alongside Copy in this file).
 type EntryCopyStatus string
 
 const (
@@ -246,6 +253,9 @@ const (
 )
 
 // EntryCopyResult is the per-entry update emitted by EntryCopier.CopyHash.
+// EntryCopyResult is the per-entry update emitted by
+// (*EntryCopier).CopyHash. Status captures the LUA-side outcome
+// (applied / already_applied / skipped_expired).
 type EntryCopyResult struct{ Status EntryCopyStatus }
 
 //go:embed copy_hash.lua
@@ -274,11 +284,11 @@ func NewEntryCopier(rdb *redis.Client, prefix string) *EntryCopier {
 // from the source's remaining lifetime; the Lua script clamps the target
 // again against a second PTTL read, so copy latency cannot extend state
 // lifetime.
-func (c *EntryCopier) CopyHash(ctx context.Context, entry Entry) (EntryCopyResult, error) {
+func (c *EntryCopier) CopyHash(ctx context.Context, entry EntryRecord) (EntryCopyResult, error) {
 	if c == nil || c.rdb == nil {
 		return EntryCopyResult{}, fmt.Errorf("ursm.v2: copy requires redis")
 	}
-	if entry.Class != ClassMigratable || entry.TargetKey == "" {
+	if entry.Class != ClassificationMigratable || entry.TargetKey == "" {
 		return EntryCopyResult{}, fmt.Errorf("ursm.v2: copy entry is not migratable")
 	}
 	started := time.Now()

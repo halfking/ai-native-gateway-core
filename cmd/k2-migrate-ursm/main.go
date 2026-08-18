@@ -74,7 +74,7 @@ func main() {
 	}
 
 	ledger := migration.NewLedger(*ledgerPath)
-	mdStore := &migration.MetadataStore{Prefix: *keyPrefix, RDB: rdb}
+	mdStore := &migration.MetadataHash{Prefix: *keyPrefix, RDB: rdb}
 
 	switch cmd {
 	case "status":
@@ -99,7 +99,7 @@ func main() {
 	}
 }
 
-func handleStatus(ctx context.Context, store *migration.MetadataStore) {
+func handleStatus(ctx context.Context, store *migration.MetadataHash) {
 	m, err := store.Read(ctx)
 	if err != nil {
 		log.Fatalf("metadata read: %v", err)
@@ -116,7 +116,7 @@ func handlePreflight(ctx context.Context, ledger *migration.Ledger, rdb *redis.C
 	if owner == "" || ledgerID == "" {
 		log.Fatal("--owner and --ledger-id are required")
 	}
-	pre := &migration.Preflight{
+	pre := &migration.PreflightRunner{
 		Prefix:  prefix,
 		Ledger:  ledger,
 		Scanner: &migration.RedisScanner{RDB: rdb},
@@ -137,7 +137,7 @@ func handlePreflight(ctx context.Context, ledger *migration.Ledger, rdb *redis.C
 		PreflightChecksum: summary.Checksum,
 		Checkpoint:       migration.CheckpointPreflight,
 	}
-	if err := (&migration.MetadataStore{Prefix: prefix, RDB: rdb}).Write(ctx, md); err != nil {
+	if err := (&migration.MetadataHash{Prefix: prefix, RDB: rdb}).Write(ctx, md); err != nil {
 		log.Fatalf("metadata write: %v", err)
 	}
 	fmt.Printf("preflight done: total=%d migratable=%d canonical_present=%d ambiguous=%d excluded=%d conflicts=%d checksum=%s\n",

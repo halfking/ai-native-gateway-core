@@ -102,7 +102,7 @@ func TestPreflightClassifiesLegacyNodeKeyAsMigratable(t *testing.T) {
 	scanner := &RedisScanner{RDB: rdb}
 	ledgerPath := t.TempDir() + "/ledger.ndjson"
 	ledger := NewLedger(ledgerPath)
-	p := &Preflight{Prefix: migPrefix, Ledger: ledger, Scanner: scanner}
+	p := &PreflightRunner{Prefix: migPrefix, Ledger: ledger, Scanner: scanner}
 
 	summary, err := p.Preflight(context.Background())
 	if err != nil {
@@ -174,7 +174,7 @@ func TestPreflightRejectsAmbiguousCollisionPair(t *testing.T) {
 	scanner := &RedisScanner{RDB: rdb}
 	ledgerPath := t.TempDir() + "/ledger.ndjson"
 	ledger := NewLedger(ledgerPath)
-	p := &Preflight{Prefix: migPrefix, Ledger: ledger, Scanner: scanner}
+	p := &PreflightRunner{Prefix: migPrefix, Ledger: ledger, Scanner: scanner}
 
 	summary, err := p.Preflight(context.Background())
 	if err != nil {
@@ -221,7 +221,7 @@ func TestPreflightDetectsCanonicalPresentConflict(t *testing.T) {
 	scanner := &RedisScanner{RDB: rdb}
 	ledgerPath := t.TempDir() + "/ledger.ndjson"
 	ledger := NewLedger(ledgerPath)
-	p := &Preflight{Prefix: migPrefix, Ledger: ledger, Scanner: scanner}
+	p := &PreflightRunner{Prefix: migPrefix, Ledger: ledger, Scanner: scanner}
 
 	summary, err := p.Preflight(context.Background())
 	if err != nil {
@@ -290,9 +290,9 @@ func TestPreflightPreflightChecksumStableAcrossRunOrder(t *testing.T) {
 		migPrefix + "win:*":       nil,
 		migPrefix + "idx:model:*": nil,
 	}
-	p1 := &Preflight{Prefix: migPrefix, Ledger: NewLedger(t.TempDir() + "/a.ndjson"),
+	p1 := &PreflightRunner{Prefix: migPrefix, Ledger: NewLedger(t.TempDir() + "/a.ndjson"),
 		Scanner: &fakeScanner{pages: pageForward}, RunID: "fixed-run"}
-	p2 := &Preflight{Prefix: migPrefix, Ledger: NewLedger(t.TempDir() + "/b.ndjson"),
+	p2 := &PreflightRunner{Prefix: migPrefix, Ledger: NewLedger(t.TempDir() + "/b.ndjson"),
 		Scanner: &fakeScanner{pages: pageReverse}, RunID: "fixed-run"}
 	s1, err := p1.Preflight(context.Background())
 	if err != nil {

@@ -54,7 +54,7 @@ func TestPreflightScanProducesDeterministicChecksum(t *testing.T) {
 		t.Fatalf("entry count=%d, want 3", len(first.Entries))
 	}
 	for _, e := range first.Entries {
-		if e.Class == ClassAmbiguous && e.TargetKey != "" {
+		if e.Class == ClassificationAmbiguous && e.TargetKey != "" {
 			t.Fatalf("ambiguous entry must not have a target key: %+v", e)
 		}
 	}
