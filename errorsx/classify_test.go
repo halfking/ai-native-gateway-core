@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"testing"
+	"time"
 )
 
 // TestKindConversion_IsValid ensures the KindConversion constant used
@@ -581,6 +582,16 @@ func TestClassifyErrorWithBody_Protocol4xx(t *testing.T) {
 		// window_type 表明这是会按周期重置的用量窗口，应走 KindQuotaPeriodic。
 		{"429_zhima_window_type_total_now_periodic", 429, `{"error":"usage limit exceeded","window_type":"total"}`, KindQuotaPeriodic},
 		{"429_window_type_daily_now_periodic", 429, `usage limit exceeded, window_type: "daily"`, KindQuotaPeriodic},
+		// 2026-08-18 fix: 智谱AI GLM Coding Plan 的 5 小时窗口限额报文
+		// （无 reset 时间戳、无 window_type 字段，只提及 5 小时窗口）。
+		// 5 小时窗口按周期滚动重置，是 periodic 而非 permanent；
+		// 旧逻辑落到 KindQuotaPermanent → permanently_exhausted 无限挂起，
+		// 且 quota probe 队列无消费者（同日修复）导致永远等不到探活翻回。
+		{"429_five_hour_window_english_now_periodic", 429, `{"error":{"type":"usage_limit_exceeded","message":"usage limit exceeded, resets every 5 hours"}}`, KindQuotaPeriodic},
+		{"429_five_hour_window_compact_now_periodic", 429, `{"error":"usage limit exceeded","window_type":"five_hour"}`, KindQuotaPeriodic},
+		{"429_five_hour_window_hour5_now_periodic", 429, `usage limit exceeded (hour-5 window)`, KindQuotaPeriodic},
+		{"429_five_hour_window_chinese_now_periodic", 429, `{"error":{"message":"您已达到 5 小时用量上限"}}`, KindQuotaPeriodic},
+		{"429_five_hour_window_chinese_compact_now_periodic", 429, `5小时额度已用尽`, KindQuotaPeriodic},
 		// 2026-08-08 P0 fix: apiclaude.cc / 智码 / OneAPI-family relays
 		// return HTTP 403 with body {"code":"INSUFFICIENT_BALANCE",
 		// "message":"Insufficient account balance"} when the user's
@@ -1231,5 +1242,35 @@ func TestClassifyError_WrappedBudgetExceeded(t *testing.T) {
 					tc.err.Error(), got, tc.want)
 			}
 		})
+	}
+}
+
+// TestNextQuotaResetFiveHourWindow covers the 2026-08-18 fix: a body that
+// mentions a 5-hour usage window recovers at the next 5-hour boundary
+// (00/05/10/15/20 UTC+8) instead of the next UTC midnight. The midnight
+// default stretched a 凌晨 5 点重置的窗口到北京 08:00.
+func TestNextQuotaResetFiveHourWindow(t *testing.T) {
+	// 2026-08-18 03:30 北京 = 2026-08-17 19:30 UTC → next boundary
+	// 05:00 北京 = 21:00 UTC same day.
+	now := time.Date(2026, 8, 17, 19, 30, 0, 0, time.UTC)
+	want := time.Date(2026, 8, 17, 21, 0, 0, 0, time.UTC)
+	for _, body := range []string{
+		`{"error":{"type":"usage_limit_exceeded","message":"usage limit exceeded, resets every 5 hours"}}`,
+		`您已达到 5 小时用量上限`,
+		`5小时额度已用尽`,
+	} {
+		if got := NextQuotaReset(body, now); !got.Equal(want) {
+			t.Errorf("NextQuotaReset(%q) = %s, want next 5h boundary %s", body, got.UTC(), want.UTC())
+		}
+	}
+}
+
+// TestNextQuotaResetMonthlyStillMidnight guards the precedence: bodies
+// without a 5-hour hint keep the month/week/midnight semantics.
+func TestNextQuotaResetMonthlyStillMidnight(t *testing.T) {
+	now := time.Date(2026, 8, 17, 19, 30, 0, 0, time.UTC)
+	got := NextQuotaReset("monthly quota exceeded", now)
+	if got.Year() != 2026 || got.Month() != time.September || got.Day() != 1 {
+		t.Errorf("monthly body should snap to next month start, got %s", got.UTC())
 	}
 }

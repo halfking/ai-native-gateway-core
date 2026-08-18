@@ -7,6 +7,9 @@ package main
 import (
 	"encoding/base64"
 	"encoding/hex"
+	"fmt"
+	"io"
+	"os"
 	"strings"
 	"testing"
 )
@@ -115,5 +118,77 @@ func TestRewriteEnvelope_RoundTrip(t *testing.T) {
 	}
 	if decoded[0] != 0x80 {
 		t.Fatalf("decoded envelope body first byte = 0x%x, want 0x80", decoded[0])
+	}
+}
+
+// TestClassifyNullAndEmpty guards the regression that scanRows crashed on
+// the first NULL ciphertext row because classify tried to read rawBytes[0]
+// of an empty slice. NULL and empty bytea now route to FormatEmpty via
+// the empty hexForm short-circuit at the top of classify.
+func TestClassifyNullAndEmpty(t *testing.T) {
+	cases := []struct {
+		name string
+		row  Row
+		want Format
+	}{
+		{
+			name: "NULL ciphertext (empty hex, 0 bytes)",
+			row:  Row{CipherBytes: 0, hexForm: ""},
+			want: FormatEmpty,
+		},
+		{
+			name: "zero-length bytea (empty hex, 0 bytes)",
+			row:  Row{CipherBytes: 0, hexForm: ""},
+			want: FormatEmpty,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := classify(&tc.row); got != tc.want {
+				t.Fatalf("classify = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestPrintHumanFlagsAllAnomalies pins the "healthy" short-circuit so a
+// future refactor cannot accidentally silence raw / unknown / empty
+// anomalies. The function is internal, so we drive it through a
+// ScanResult struct and check stdout for the canonical line; this avoids
+// exporting printHuman or splitting it into smaller pieces.
+func TestPrintHumanFlagsAllAnomalies(t *testing.T) {
+	cases := []struct {
+		name   string
+		byFmt  map[Format]int
+		fmt    Format
+		expect int
+	}{
+		{name: "raw-fernet-binary visible", byFmt: map[Format]int{FormatRawFernetBinary: 1}, fmt: FormatRawFernetBinary, expect: 1},
+		{name: "unknown visible", byFmt: map[Format]int{FormatUnknown: 2}, fmt: FormatUnknown, expect: 2},
+		{name: "empty visible", byFmt: map[Format]int{FormatEmpty: 3}, fmt: FormatEmpty, expect: 3},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			old := os.Stdout
+			r, w, err := os.Pipe()
+			if err != nil {
+				t.Fatalf("pipe: %v", err)
+			}
+			os.Stdout = w
+			defer func() { os.Stdout = old }()
+
+			r2 := ScanResult{ByFormat: tc.byFmt}
+			printHuman(r2, false, false, true)
+			_ = w.Close()
+			out, _ := io.ReadAll(r)
+			got := string(out)
+			if !strings.Contains(got, string(tc.fmt)) {
+				t.Fatalf("expected output to mention format %q, got:\n%s", tc.fmt, got)
+			}
+			wantCount := fmt.Sprintf("%d", tc.expect)
+			if !strings.Contains(got, wantCount) {
+				t.Fatalf("expected output to include count %q, got:\n%s", wantCount, got)
+			}
+		})
 	}
 }

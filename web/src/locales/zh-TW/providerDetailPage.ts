@@ -52,5 +52,13 @@ export default {
     stability: '稳定性',
     costEfficiency: '成本效益',
     updatedAt: '更新时间',
+    requestStats: '請求統計',
+    totalRequests: '總請求次數',
+    monthRequests: '當月請求',
+    weekRequests: '當周請求',
+    dayRequests: '當天請求',
+    successCount: '成功次數',
+    failureCount: '失敗次數',
+    totalTokens: '總 Token 量',
   },
 }
