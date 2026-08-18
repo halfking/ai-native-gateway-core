@@ -482,7 +482,10 @@ func (sc *SessionCompressor) Prepare(
 				slog.Warn("session_compressor: summary breaker open, skipping LLM summary",
 					"session", gwSessionID, "trigger", winResult.Reason)
 			} else {
-				summarised, ok = sc.tryLLMSummary(ctx, outboundBody, tenantID, protocol, taskType)
+				// SP-03 (2026-08-19): route through the fallback wrapper so
+				// the LLM summary path can honour ctx cancellation (state
+				// machine cancels are propagated via the request ctx).
+				summarised, ok = sc.tryLLMSummaryWithFallback(ctx, outboundBody, tenantID, protocol, taskType)
 				// Record outcome: success only when it produced a usable, smaller body.
 				sc.breaker.RecordResult(ok && len(summarised) > 0 && len(summarised) < len(outboundBody), time.Now())
 			}
@@ -673,6 +676,17 @@ func (sc *SessionCompressor) tryLLMSummary(ctx context.Context, body []byte, ten
 		return nil, false
 	}
 
+	// SP-03 (2026-08-19): bail out early when ctx is already canceled so
+	// the LLM summary path never issues a network request after the
+	// state machine has signalled cancellation. The summarizer client
+	// also honours ctx, but the early exit avoids creating a new
+	// summarizer instance only to throw it away.
+	if err := ctx.Err(); err != nil {
+		slog.DebugContext(ctx, "session_compressor: ctx already canceled, skipping LLM summary",
+			"tenant", tenantID, "session", "<masked>")
+		return nil, false
+	}
+
 	conversation, err := extractConversationText(body, protocol)
 	if err != nil || strings.TrimSpace(conversation) == "" {
 		return nil, false
@@ -693,6 +707,36 @@ func (sc *SessionCompressor) tryLLMSummary(ctx context.Context, body []byte, ten
 		return nil, false
 	}
 	return newBody, true
+}
+
+// tryLLMSummaryWithFallback (SP-03, 2026-08-19) wraps tryLLMSummary so the
+// LLM summary path can honour ctx cancellation without touching the
+// underlying cache get/set semantics. The wrapper checks ctx first, runs
+// tryLLMSummary, then re-checks ctx before returning so a cancellation
+// that arrived mid-summary is reflected back to the caller as a no-op
+// (rather than silently shipping a summary that landed after the client
+// gave up).
+//
+// tryLLMSummaryWithFallback preserves the (body, ok) signature of
+// tryLLMSummary and is the only entry point the rest of the package
+// should call.
+func (sc *SessionCompressor) tryLLMSummaryWithFallback(ctx context.Context, body []byte, tenantID, protocol, taskType string) ([]byte, bool) {
+	if err := ctx.Err(); err != nil {
+		slog.DebugContext(ctx, "session_compressor: fallback skipping LLM summary (ctx canceled)",
+			"tenant", tenantID)
+		return nil, false
+	}
+	out, ok := sc.tryLLMSummary(ctx, body, tenantID, protocol, taskType)
+	// Re-check ctx after the call: if cancellation arrived while the
+	// LLM summary was in flight, the cached summarizer may have produced
+	// a result, but the client is gone — discard it instead of letting
+	// downstream code emit "still compressing" telemetry.
+	if err := ctx.Err(); err != nil && ok {
+		slog.DebugContext(ctx, "session_compressor: fallback discarding result due to ctx cancellation",
+			"tenant", tenantID)
+		return nil, false
+	}
+	return out, ok
 }
 
 func rebuildBodyAfterSummary(body []byte, summaryText, protocol string) ([]byte, bool) {

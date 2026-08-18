@@ -375,3 +375,45 @@ func TestNetworkError(t *testing.T) {
 		t.Errorf("Network timeout reason = %v, want network_timeout", result.Reason)
 	}
 }
+
+// TestStreamRetry_CancelDuringBackoff (SP-03, 2026-08-19) verifies that
+// when the state-machine cancel channel fires during a retry backoff,
+// Sleep() returns within microseconds (instead of waiting for the full
+// backoff window). Pre-SP-03 this test would take 5s+ (the cap of the
+// retry delay); post-SP-03 it must finish in <100ms.
+func TestStreamRetry_CancelDuringBackoff(t *testing.T) {
+	cfg := Config{
+		Enabled:     true,
+		MaxRetries:  5,
+		BaseDelayMs: 500, // 500ms base — pre-fix this was the floor
+		MaxDelayMs:  5000,
+	}
+
+	stateCancelCh := make(chan struct{})
+	rc := &RetryContext{
+		Config:        cfg,
+		Attempt:       0, // first retry uses base delay (≈500ms+)
+		StateCancelCh: stateCancelCh,
+	}
+
+	// Fire the state-machine cancel signal 50ms into the backoff. Pre-fix
+	// Sleep would block until the timer fired (≈500ms+); post-fix it
+	// returns within microseconds of the close.
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		close(stateCancelCh)
+	}()
+
+	ctx := context.Background()
+	start := time.Now()
+	err := rc.Sleep(ctx)
+	elapsed := time.Since(start)
+
+	if err != context.Canceled {
+		t.Errorf("Sleep() error = %v, want context.Canceled", err)
+	}
+	if elapsed > 100*time.Millisecond {
+		t.Errorf("Sleep() elapsed = %v, want <100ms (state cancel must short-circuit backoff)", elapsed)
+	}
+	t.Logf("SP-03 CancelDuringBackoff: elapsed=%v (under 100ms threshold)", elapsed)
+}

@@ -371,6 +371,12 @@ type RetryContext struct {
 	Attempt   int
 	LastError error
 	Keepalive *KeepaliveWriter
+	// StateCancelCh (SP-03, 2026-08-19) is the optional state-machine
+	// cancellation channel. When non-nil, Sleep() also exits early if
+	// this channel closes (in addition to ctx.Done()). Production
+	// callers that don't wire state-machine cancellation leave it nil;
+	// Sleep() then behaves exactly like the pre-SP-03 version.
+	StateCancelCh <-chan struct{}
 }
 
 // ShouldRetry determines if another retry attempt should be made.
@@ -406,6 +412,21 @@ func (rc *RetryContext) Sleep(ctx context.Context) error {
 	timer := time.NewTimer(delay)
 	defer timer.Stop()
 
+	// SP-03 (2026-08-19): also honour the state-machine cancel channel
+	// when wired. Production callers without it see the legacy
+	// ctx.Done() vs timer.C behaviour; with it, client_disconnect or
+	// upstream-cancel signals from the state machine exit Sleep in
+	// microseconds rather than waiting for the full backoff window.
+	if rc.StateCancelCh != nil {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-rc.StateCancelCh:
+			return context.Canceled
+		case <-timer.C:
+			return nil
+		}
+	}
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
