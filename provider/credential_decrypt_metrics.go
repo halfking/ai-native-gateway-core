@@ -67,22 +67,87 @@ var (
 	errRevealCached        = secret.ErrRevealCached
 )
 
-func registerCredentialRevealMetrics() {
+// Reveal-failure closed-vocabulary used for pre-warmup. Mirrors the
+// seven reasons listed on the CounterVec Help string above; kept in one
+// place so RegisterCredentialRevealMetrics() and the test can iterate
+// the same set instead of duplicating literals.
+//
+// Order matches the const block at the top of this file so test
+// fixtures and dashboards that depend on label-set ordering stay stable.
+var revealFailureReasons = []string{
+	revealFailUnknownFormat,
+	revealFailDecryptError,
+	revealFailCached,
+	revealFailNotFound,
+	revealFailNotConfigured,
+	revealFailRotation,
+	revealFailOther,
+}
+
+// ProviderIDPrewarmSentinel is the stringified provider_id used for the
+// pre-warmed {provider_id, reason} series at startup. Real provider IDs
+// are added lazily on first reveal failure; provider_id="0" is reserved
+// for the pre-warm so dashboards can filter
+// `provider_id!="0"` to exclude the pre-warm series if they only want
+// real activity.
+const ProviderIDPrewarmSentinel = "0"
+
+// RegisterCredentialRevealMetrics registers the credential-reveal-failure
+// CounterVec against prometheus.DefaultRegisterer and pre-warms every
+// {provider_id=ProviderIDPrewarmSentinel, reason} child series with Add(0).
+//
+// Why pre-warmup: prometheus/client_golang CounterVec only emits a
+// {label-values} series after the first WithLabelValues(...) call.
+// MustRegister alone is not enough — until the first Inc/Add, the
+// metric has no children, the gatherer returns no MetricFamily for it,
+// and the gateway's /metrics endpoint shows nothing at all (no HELP,
+// no TYPE, no series). For a credential-reveal metric that only fires
+// on the error path of a rare incident, "never fire" would have meant
+// "never visible" — making the alert rules meaningless (rate() of a
+// non-existent metric is silent).
+//
+// 2026-08-18 finding (see docs/handoff/2026-08-18-245-reveal-metric-not-exposed.md):
+// /metrics on 245 had 35 llmgw_* metrics but credential_reveal was
+// completely absent because no reveal failure had occurred since
+// process start. Pre-warmup is the contract: every reason is always
+// present with a 0 value so rate() / PromQL / alerts distinguish
+// "metric missing" from "metric = 0".
+//
+// Idempotent + safe under Reset(): the CounterVec construction is
+// guarded by sync.Once (so MustRegister cannot panic with
+// "duplicate collector"), but the pre-warm loop runs on every call.
+// This means a subsequent call after credentialRevealFailures.Reset()
+// (used by tests in this package) restores the pre-warm series
+// without re-registering the collector. The pre-warm is cheap (seven
+// Add(0) calls) so calling Register repeatedly is fine.
+func RegisterCredentialRevealMetrics() {
 	credentialRevealMetricsOnce.Do(func() {
 		credentialRevealFailures = prometheus.NewCounterVec(
 			prometheus.CounterOpts{
 				Name: "llmgw_credential_reveal_failure_total",
 				Help: "Credential API-key reveal failures. " +
 					"reason: unknown_format|decrypt_error|cached|not_found|not_configured|rotation|other. " +
-					"Absence means no reveal failures in the sample window.",
+					"Pre-warmed series carry provider_id=\"0\" as a sentinel; " +
+					"filter `provider_id!=\"0\"` to see real activity.",
 			},
 			[]string{"provider_id", "reason"},
 		)
-		prometheus.MustRegister(credentialRevealFailures)
+		prometheus.DefaultRegisterer.MustRegister(credentialRevealFailures)
 	})
+	// Pre-warm every call: cheap (seven Add(0)) and re-applies after
+	// any test-time Reset(). Construction of the CounterVec is gated
+	// by sync.Once above so we cannot panic on duplicate registration.
+	for _, reason := range revealFailureReasons {
+		credentialRevealFailures.WithLabelValues(ProviderIDPrewarmSentinel, reason).Add(0)
+	}
 }
 
-func init() { registerCredentialRevealMetrics() }
+// init() registers so importing provider is sufficient for /metrics to
+// include the metric. cmd/gateway/main.go also calls
+// RegisterCredentialRevealMetrics explicitly to make the wiring
+// auditable in source — sync.Once guarantees the CounterVec is only
+// constructed once, while the pre-warm loop is naturally idempotent.
+func init() { RegisterCredentialRevealMetrics() }
 
 // classifyRevealFailure maps a reveal error onto the closed reason
 // vocabulary. We resolve against package-local sentinels (errReveal*)

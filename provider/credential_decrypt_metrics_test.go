@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/require"
 
 	"github.com/kaixuan/llm-gateway-go/secret"
@@ -129,6 +130,94 @@ func TestRecordCredentialRevealCachedHitDedupesReasonBucket(t *testing.T) {
 	recordCredentialRevealCachedHit(587, "")
 	require.Equal(t, 2.0, readReason(t, 587, revealFailCached))
 	require.Equal(t, 0.0, readReason(t, 587, revealFailUnknownFormat))
+}
+
+// TestCredentialRevealMetricVisibleAfterPrewarm asserts the metric is
+// present in the default Gatherer with one pre-warmed child per
+// closed-vocabulary reason. This pins the contract that:
+//   - The metric always emits HELP/TYPE/series on /metrics (the 2026-08-18
+//     245 finding was that without pre-warmup the metric was completely
+//     absent until the first reveal failure, defeating the alert rules).
+//   - The pre-warm uses provider_id=ProviderIDPrewarmSentinel ("0") so
+//     dashboards can filter it out with `provider_id!="0"`.
+//
+// Without the pre-warm, prometheus/client_golang's *Vec family only
+// emits MetricFamilies after the first WithLabelValues() call, so an
+// alert that depends on rate(llmgw_credential_reveal_failure_total[5m])
+// would silently never fire.
+func TestCredentialRevealMetricVisibleAfterPrewarm(t *testing.T) {
+	// Other tests in this package use credentialRevealFailures.Reset()
+	// to isolate state, wiping both their own Inc() series AND the
+	// pre-warm children. Reset + re-Register gives us a clean baseline
+	// of exactly seven pre-warm series with value 0.
+	credentialRevealFailures.Reset()
+	RegisterCredentialRevealMetrics()
+
+	mfs, err := prometheus.DefaultGatherer.Gather()
+	require.NoError(t, err)
+
+	var found *dto.MetricFamily
+	for _, mf := range mfs {
+		if mf.GetName() == "llmgw_credential_reveal_failure_total" {
+			found = mf
+			break
+		}
+	}
+	require.NotNil(t, found, "metric must be present in default Gatherer; without pre-warmup a *Vec with no children is invisible")
+	require.Equal(t, dto.MetricType_COUNTER, found.GetType())
+	require.NotEmpty(t, found.GetHelp(), "Help string must be present so /metrics output is useful")
+
+	// Exactly one pre-warm child per reason; no duplicates and no
+	// missing entries. Real {provider_id=X, reason=Y} series appear
+	// later via recordCredentialRevealFailure and are additive.
+	wantReasons := map[string]bool{}
+	for _, r := range revealFailureReasons {
+		wantReasons[r] = false
+	}
+	require.Len(t, found.GetMetric(), len(revealFailureReasons),
+		"expected exactly one pre-warm child per closed-vocabulary reason")
+
+	for _, m := range found.GetMetric() {
+		var pid, reason string
+		for _, l := range m.GetLabel() {
+			switch l.GetName() {
+			case "provider_id":
+				pid = l.GetValue()
+			case "reason":
+				reason = l.GetValue()
+			}
+		}
+		require.Equal(t, ProviderIDPrewarmSentinel, pid,
+			"pre-warm series must use sentinel provider_id so dashboards can filter `provider_id!=\"0\"`")
+		_, ok := wantReasons[reason]
+		require.True(t, ok, "pre-warm series carries non-closed-vocabulary reason %q", reason)
+		wantReasons[reason] = true
+		require.Equal(t, 0.0, m.GetCounter().GetValue(),
+			"Add(0) must not move the counter from its zero value")
+	}
+	for r, seen := range wantReasons {
+		require.True(t, seen, "missing pre-warm child for closed-vocabulary reason %q", r)
+	}
+}
+
+// TestRegisterCredentialRevealMetricsIdempotent verifies the public
+// registration function is safe to call repeatedly. This matters because
+// both init() and cmd/gateway/main.go call it (the latter for explicit
+// wiring audit). A second call must not panic with duplicate-collector.
+func TestRegisterCredentialRevealMetricsIdempotent(t *testing.T) {
+	require.NotPanics(t, func() {
+		RegisterCredentialRevealMetrics()
+		RegisterCredentialRevealMetrics()
+	})
+	// Counter should still be present after the redundant call.
+	mfs, err := prometheus.DefaultGatherer.Gather()
+	require.NoError(t, err)
+	for _, mf := range mfs {
+		if mf.GetName() == "llmgw_credential_reveal_failure_total" {
+			return
+		}
+	}
+	t.Fatal("metric disappeared after redundant Register call — sync.Once must guard construction")
 }
 
 // TestRevealFailureMetric_NoCredentialLabel is the GW-00 cardinality
