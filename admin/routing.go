@@ -145,6 +145,9 @@ type resolveCandidate struct {
 	QuotaUsedUSD          float64  `json:"quota_used_usd"`
 	RuntimeRoutable       bool     `json:"runtime_routable"`
 	Routable              bool     `json:"routable"`
+	DBEligible            bool     `json:"db_eligible"`
+	URSMObserved          bool     `json:"ursm_observed"`
+	RuntimeState          string   `json:"runtime_state"`
 	BlockReason           string   `json:"block_reason,omitempty"`
 	ManualPriority        int      `json:"manual_priority"`
 	ActiveSessions        int      `json:"active_sessions"`
@@ -312,10 +315,14 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 		); err != nil {
 			continue
 		}
-		// 2026-07-02: 使用视图的 is_routable 判断，不再重复计算
-		// 视图已包含所有过滤规则：status, lifecycle, availability, quota, plan_type 兼容性
+		// Keep database eligibility separate from the authoritative runtime
+		// decision. The resolve endpoint is diagnostic and must not imply that
+		// a SQL-routable row is request-routable when URSM has no node view.
+		c.DBEligible = isRoutable
 		c.RuntimeRoutable = isRoutable
 		c.Routable = isRoutable
+		c.RuntimeState = "db_only"
+
 		if unavailableReason != nil {
 			c.BlockReason = *unavailableReason
 		}
@@ -356,8 +363,9 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 	case ursmManager == nil, ursmManager.Mode() == api.ModeOff:
 		applyResolveDefaults(candidates)
 	case !ursmManager.Ready(ctx):
-		slog.Debug("routing resolve: ursm v2 not ready, using DB defaults")
-		applyResolveDefaults(candidates)
+		slog.Debug("routing resolve: ursm v2 not ready; runtime state is unknown")
+		markResolveRuntimeUnknown(candidates, "ursm_not_ready")
+
 	default:
 		seeds := make([]v2.CandidateSeed, 0, len(candidates))
 		for _, c := range candidates {
@@ -383,15 +391,15 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 		}
 		views, err := ursmManager.FilterAndScore(ctx, seeds)
 		if err != nil {
-			slog.Warn("routing resolve: ursm v2 filter failed, using DB defaults",
+			slog.Warn("routing resolve: ursm v2 filter failed; runtime state is unknown",
 				"error", err.Error(), "model_count", len(seeds))
-			applyResolveDefaults(candidates)
+			markResolveRuntimeUnknown(candidates, "ursm_query_failed")
 		} else {
 			if len(views) != len(candidates) {
 				slog.Warn("routing resolve: ursm v2 partial result",
 					"got", len(views), "want", len(candidates))
 			}
-applyURSMOverlay(candidates, views, time.Now())
+			applyURSMOverlay(candidates, views, time.Now())
 		}
 	}
 
@@ -4399,11 +4407,27 @@ func resolveRuntimeDefaults(c *resolveCandidate) {
 	c.CoolingUntil = nil
 	c.ConsecutiveFailures = 0
 	c.CredentialConsecutiveFailures = 0
+	c.RuntimeState = "unobserved"
 	if c.SuccessRate == 0 {
 		c.SuccessRate = 0.9
 	}
 	if c.P95LatencyMs == 0 {
 		c.P95LatencyMs = 9999
+	}
+}
+
+func markResolveRuntimeUnknown(candidates []resolveCandidate, reason string) {
+	for i := range candidates {
+		c := &candidates[i]
+		c.RuntimeState = "unknown"
+		c.URSMObserved = false
+		if !c.DBEligible {
+			continue
+		}
+		c.Available = false
+		c.RuntimeRoutable = false
+		c.Routable = false
+		c.BlockReason = reason
 	}
 }
 
@@ -4422,8 +4446,8 @@ func resolveRuntimeDefaults(c *resolveCandidate) {
 //     Routable never reflected runtime state). Mutations now go through a
 //     pointer into the slice.
 //
-// Redis/mirror misses keep the defaults above so an unobserved node is not
-// shown as unavailable.
+// Redis/mirror misses are explicitly marked as missing so the diagnostic
+// surface agrees with authoritative request routing.
 func applyURSMOverlay(candidates []resolveCandidate, views []api.NodeView, now time.Time) {
 	viewByKey := make(map[string]api.NodeView, len(views))
 	for _, v := range views {
@@ -4431,11 +4455,21 @@ func applyURSMOverlay(candidates []resolveCandidate, views []api.NodeView, now t
 	}
 	for i := range candidates {
 		c := &candidates[i]
-		resolveRuntimeDefaults(c) // baseline；URSM 拿到 NodeView 才覆盖
+		resolveRuntimeDefaults(c)
 		v, ok := viewByKey[ursmViewKey(c.CredentialID, c.ModelName)]
 		if !ok {
+			if c.DBEligible {
+				c.Available = false
+				c.RuntimeRoutable = false
+				c.Routable = false
+				c.RuntimeState = "missing"
+				c.BlockReason = "ursm_node_missing"
+			}
 			continue
 		}
+		c.URSMObserved = true
+		c.RuntimeState = "observed"
+
 		c.Available = v.Available
 		c.ConsecutiveFailures = v.FailStreak
 		c.CredentialConsecutiveFailures = v.FailStreak
