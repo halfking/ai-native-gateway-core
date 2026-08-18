@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - 2026-08-18 (PROJECT_CONFIG.md Server Migration + Credential Redact)
+
+### Security
+- **PROJECT_CONFIG.md credential redact**（rule 31 §1 + rule 39）：
+  - SSH 地址 `14.103.112.184:25022`（已废弃）→ `<env:HOST_154>:25022`（rule 31 §1：184 废弃）
+  - 默认用户 `admin` → `root`（匹配 154 SSOT metadata.yaml）
+  - 默认密码 `Veritrans&9527` 与 Root 密码 `Kaixuan2026&#*9527`（已出现在 `scripts/scan-secrets.replacements` 的
+    已知泄露列表）→ 全部改为 `<env:SSHPASS>` 占位符（SSOT：`common/ssh-keys.yaml` `SSH_PASSWORD_ENV_VAR`）
+  - 数据库配置：从"经 184 SSH 隧道连接 `127.0.0.1:5432`" 改为"直连 252 内网
+    `<env:COMMON_PG_HOST_252>:<env:COMMON_PG_PORT_252>`"，DB 用户 `postgres` →
+    `<env:COMMON_PG_SUPERUSER>` (= `llm_gateway`)，DB 密码 → `<env:COMMON_PG_SUPERUSER_PASS>`
+  - SSH 命令示例：`ssh admin@14.103.112.184` + `sudo su -` + 明文 root 密码 → 证书认证
+    `ssh -i <env:SSH_KEY_154> root@<env:HOST_154>` + sshpass fallback
+  - DB 操作示例：移除 SSH tunnel，改用 `PGPASSWORD=<env:COMMON_PG_SUPERUSER_PASS> psql ...` 直连
+  - 文件头警告：原"包含敏感信息，请勿提交到公共仓库"（与现状自相矛盾）→ 改为
+    "<env:KEY> 占位符 + env-injector/loader.sh 运行时注入"（rule 39 / rule 47）
+
+### Fixed
+- 同步修正 `systemctl status/restart llm-gateway` 等命令：实际部署单元是
+  `llm-gateway-go.service`（metadata.yaml:19），文档原值会导致 status unknown。
+
 ## [Unreleased] - 2026-08-18 (Quality Provider Stats Per-Model Filter)
 
 ### Added
