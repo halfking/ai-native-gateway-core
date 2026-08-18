@@ -21,6 +21,7 @@
 | `12-GoalHandoff契约.md` | Goal↔Handoff 组件边界、握手与恢复契约 |
 | `13-T0契约冻结与所有权.md` | T0 身份、重启、URSM authoritative 契约与 workstream 所有权 |
 | `14-URSM Redis delimiter-safe key兼容迁移冻结决策.md` | delimiter-safe Redis key 版本化、双读/双写、TTL、清理、回滚与 G1/G4 门禁 |
+| `15-URSM delimiter-safe key迁移实施计划.md` | 协调方交给 Migration owner 的实施计划：可复用 ledger/checkpoint 模式、preflight 判定、拓扑裁决清单、状态机与 G1/G4 边界（不解除 NO-GO） |
 ---
 
 ## 2. 版本裁决结论（一句话版）
