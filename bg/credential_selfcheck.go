@@ -64,6 +64,7 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -462,7 +463,11 @@ func (w *CredentialSelfcheckWorker) runOne(ctx context.Context, credentialID int
 			strategy = fmt.Sprintf("fallback_%d", i)
 		}
 		attemptedJSON = append(attemptedJSON, model)
-		r := w.doRequest(ctx, model)
+		// 2026-08-18 (Agent C): stamp the trusted pin so the gateway round
+		// cannot be attributed to a different credential. Without this, a
+		// healthier sibling node could be picked and the verdict would
+		// silently land on the wrong node. See package doc.
+		r := w.doRequest(ctx, credentialID, model)
 		totalRounds++
 		totalTokens += r.Tokens
 		totalLatency += r.LatencyMs
@@ -722,15 +727,22 @@ type credentialSelfcheckRound struct {
 
 // doRequest issues a single ping + tool-call conversation against the
 // local gateway and returns the round result.  Outbound headers carry
-// the X-LLM-Origin-* identity so OriginMiddleware (commit 3) tags the
-// request_logs row correctly.
-func (w *CredentialSelfcheckWorker) doRequest(ctx context.Context, model string) credentialSelfcheckRound {
+// the X-LLM-Origin-* identity AND the trusted X-LLM-Pin-Credential so
+// OriginMiddleware (commit 3) tags the request_logs row correctly and
+// the routing layer's filtered plan (executor_dispatch.go:107) cannot
+// spill the verdict to a sibling credential.
+//
+// 2026-08-18 (Agent C): credentialID is now threaded through every
+// outbound probe so the result is attributable to the credential under
+// check. The previous "any available credential" path was the root
+// cause of the dashboard's false-positive daily self-check verdicts.
+func (w *CredentialSelfcheckWorker) doRequest(ctx context.Context, credentialID int, model string) credentialSelfcheckRound {
 	pingBody, _ := json.Marshal(map[string]any{
 		"model":      model,
 		"messages":   []map[string]string{{"role": "user", "content": "ping"}},
 		"max_tokens": 10,
 	})
-	r := w.doHTTP(ctx, model, string(pingBody), false)
+	r := w.doHTTP(ctx, credentialID, model, string(pingBody), false)
 	if !r.Success {
 		return r
 	}
@@ -742,12 +754,21 @@ func (w *CredentialSelfcheckWorker) doRequest(ctx context.Context, model string)
 		"max_tokens": 64,
 		"tools":      []map[string]any{selfCheckToolDef},
 	})
-	r2 := w.doHTTP(ctx, model, string(toolBody), true)
+	r2 := w.doHTTP(ctx, credentialID, model, string(toolBody), true)
 	return r2
 }
 
-func (w *CredentialSelfcheckWorker) doHTTP(ctx context.Context, model, body string, expectTool bool) credentialSelfcheckRound {
+func (w *CredentialSelfcheckWorker) doHTTP(ctx context.Context, credentialID int, model, body string, expectTool bool) credentialSelfcheckRound {
 	r := credentialSelfcheckRound{ErrType: "none"}
+	// 2026-08-18 (Agent C): if no credential id is provided, refuse to
+	// attribute the round to a random available credential. The probe
+	// is still useful for liveness but the caller must label the
+	// result as un-attributable rather than let the router pick.
+	if credentialID <= 0 {
+		r.ErrType = "unattributed"
+		r.ErrDetail = "credential_selfcheck: missing credential_id for pin; refusing to attribute"
+		return r
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, w.baseURL+"/chat/completions", strings.NewReader(body))
 	if err != nil {
 		r.ErrType = "internal"
@@ -758,6 +779,12 @@ func (w *CredentialSelfcheckWorker) doHTTP(ctx context.Context, model, body stri
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-LLM-Origin-Stage", "self_check")
 	req.Header.Set("X-LLM-Origin-Actor", "credential-selfcheck-worker")
+	// 2026-08-18 (Agent C): trusted pin header. OriginMiddleware only
+	// forwards this when the request carries the static global API key
+	// (system key path), so a public client cannot spoof it. The router
+	// plan reducer (executor_dispatch.go:107) drops every other node so
+	// the verdict is attributable to credentialID.
+	req.Header.Set("X-LLM-Pin-Credential", strconv.Itoa(credentialID))
 	if v := strings.TrimSpace(os.Getenv("LLM_GATEWAY_EGRESS_IP")); v != "" {
 		req.Header.Set("X-Real-IP", v)
 	}

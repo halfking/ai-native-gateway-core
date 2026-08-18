@@ -187,7 +187,25 @@ func TestGetProbeCandidates(t *testing.T) {
 		t.Errorf("GetProbeCandidates by canonical_name did not match the offer, got=%v", candsCanon)
 	}
 
-	// (5) empty model short-circuits to nil,nil (no DB roundtrip).
+	// (5) normal request candidate loading must use the same canonical-id path,
+	// not only GetProbeCandidates. This is the GLM-5.2 regression: an offer can
+	// retain a provider-facing raw name while canonical_id points at glm-5.2.
+	runtimeCands, err := client.loadCandidatesDB(ctx, "probe-test-model", "default")
+	if err != nil {
+		t.Fatalf("loadCandidatesDB by canonical_name errored: %v", err)
+	}
+	foundRuntime := false
+	for _, c := range runtimeCands {
+		if c.CredentialID == defCredID && c.OfferRawModel == "probe-test-alias" {
+			foundRuntime = true
+			break
+		}
+	}
+	if !foundRuntime {
+		t.Errorf("loadCandidatesDB by canonical_name did not return provider-facing offer, got=%v", runtimeCands)
+	}
+
+	// (6) empty model short-circuits to nil,nil (no DB roundtrip).
 	if got, err := client.GetProbeCandidates(ctx, "   ", "", "default"); err != nil || got != nil {
 		t.Errorf("empty model = (%v,%v), want (nil,nil)", got, err)
 	}

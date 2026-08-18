@@ -50,6 +50,22 @@ func TestEventFromTelemetryIsBodyFreeAndIdempotent(t *testing.T) {
 	}
 }
 
+func TestEventFromTelemetryTerminalIDDoesNotDependOnOutcome(t *testing.T) {
+	failure := telemetry.RequestStatusFailure
+	success := telemetry.RequestStatusSuccess
+	failed, ok := EventFromTelemetry(&telemetry.RequestLogEntry{Op: telemetry.RequestLogUpdate, RequestID: "req-terminal", TenantID: "t", RequestStatus: &failure}, time.Now())
+	if !ok {
+		t.Fatal("expected failure event")
+	}
+	completed, ok := EventFromTelemetry(&telemetry.RequestLogEntry{Op: telemetry.RequestLogUpdate, RequestID: "req-terminal", TenantID: "t", RequestStatus: &success}, time.Now())
+	if !ok {
+		t.Fatal("expected success event")
+	}
+	if failed.EventID != completed.EventID {
+		t.Fatalf("terminal id changed with outcome: %q vs %q", failed.EventID, completed.EventID)
+	}
+}
+
 func TestEventFromTelemetryClassifiesProbeAndRateLimit(t *testing.T) {
 	status := telemetry.RequestStatusRateLimited
 	origin := "node_probe"
