@@ -218,7 +218,7 @@ type CredentialModelStatus struct {
 // shape changes. The in-memory cache uses the version as part of the key, so
 // older cached responses (with the previous schema) are automatically
 // ignored after a redeploy — no manual flush needed.
-const monitorSummarySchemaVersion = 6
+const monitorSummarySchemaVersion = 7
 
 func monitorSummaryMeta(created, expires time.Time, cacheHit bool, serverDuration time.Duration) map[string]any {
 	return map[string]any{
@@ -260,7 +260,9 @@ func (m *CredentialMonitorHandlers) handleMonitorSummary(w http.ResponseWriter, 
 
 	providerID := queryInt(r, "provider_id", 0)
 	credentialID := queryInt(r, "credential_id", 0)
-	detailMode := credentialID > 0
+	mode := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("mode")))
+	coreMode := mode == "core"
+	detailMode := credentialID > 0 && !coreMode
 	// 2026-08-07: tenant_admin must only see their own credentials.
 	// Without this filter, the WHERE clause exposes every tenant's
 	// provider/credential names + IDs to anyone calling the endpoint.
@@ -279,7 +281,7 @@ func (m *CredentialMonitorHandlers) handleMonitorSummary(w http.ResponseWriter, 
 	// LATERAL success-rate join is the heaviest part. Cache key includes the
 	// caller's tenant scope so concurrent super_admin and tenant_admin
 	// callers do not share a cached payload that leaks cross-tenant rows.
-	cacheKey := fmt.Sprintf("p%d:c%d:d%t:t=%s:v%d", providerID, credentialID, detailMode, tenantID, monitorSummarySchemaVersion)
+	cacheKey := fmt.Sprintf("p%d:c%d:d%t:m%s:t=%s:v%d", providerID, credentialID, detailMode, mode, tenantID, monitorSummarySchemaVersion)
 	for {
 		if cached, created, expires, ok := monitorSummaryCache.get(cacheKey); ok {
 			cached["meta"] = monitorSummaryMeta(created, expires, true, 0)
@@ -302,7 +304,73 @@ func (m *CredentialMonitorHandlers) handleMonitorSummary(w http.ResponseWriter, 
 	// Summary mode keeps the list light: it returns only aggregate counts and
 	// the worst recent success rate, without materializing models[]. Detail mode
 	// reuses the same row shape but also includes the per-model JSON payload.
-	query := `
+	// Core mode deliberately avoids request-log and per-model rate/latency
+	// aggregates. It is used by the dashboard settings/maintenance path, where
+	// state must be available quickly but historical statistics are not needed.
+	var query string
+	if coreMode {
+		query = `
+			SELECT
+				c.id, c.provider_id,
+				COALESCE(p.display_name, p.catalog_code, '') AS provider_name,
+				COALESCE(c.label, '') AS label,
+				COALESCE(c.status, 'active') AS status,
+				COALESCE(c.availability_state, 'ready') AS availability_state,
+				COALESCE(c.health_status, 'unknown') AS health_status,
+				COALESCE(c.quota_state, 'ok') AS quota_state,
+				c.concurrency_limit,
+				c.concurrency_limit_auto,
+				COALESCE(c.concurrency_limit, c.concurrency_limit_auto, 5) AS effective_concurrency,
+				COALESCE(c.manual_disabled, FALSE) AS manual_disabled,
+				COALESCE(c.consecutive_failures, 0) AS consecutive_failures,
+				c.availability_recover_at,
+				c.state_reason_code,
+				c.state_reason_detail,
+				c.health_checked_at,
+				0::bigint AS total_requests,
+				COALESCE(ms.model_total, 0) AS model_total,
+				COALESCE(ms.model_available, 0) AS model_available,
+				COALESCE(ms.broken_model_count, 0) AS broken_model_count,
+				NULL::double precision AS aggregated_success_rate,
+				COALESCE(ms.models, '[]'::json) AS models
+			FROM credentials c
+			LEFT JOIN providers p ON c.provider_id = p.id
+			LEFT JOIN LATERAL (
+				SELECT
+					COUNT(*) AS model_total,
+					COUNT(*) FILTER (WHERE COALESCE(mo.available, TRUE) AND COALESCE(cmb.available, TRUE)) AS model_available,
+					COUNT(*) FILTER (WHERE COALESCE(mps.state, 'unknown') = 'broken_confirmed') AS broken_model_count,
+					json_agg(json_build_object(
+						'raw_model_name', mo.raw_model_name,
+						'offer_available', COALESCE(mo.available, TRUE),
+						'offer_unavailable_reason', mo.unavailable_reason,
+						'binding_available', COALESCE(cmb.available, TRUE),
+						'binding_unavailable_reason', cmb.unavailable_reason,
+						'probe_state', COALESCE(mps.state, 'unknown'),
+						'probe_last_status', mps.last_status,
+						'probe_last_attempt_at', mps.last_attempt_at,
+						'recent_samples', 0,
+						'p95_source', 'no_data',
+						'data_source', 'declared',
+						'total_calls', 0
+					) ORDER BY mo.raw_model_name) AS models
+				FROM model_offers mo
+				LEFT JOIN credential_model_bindings cmb
+					ON cmb.credential_id = mo.credential_id
+				   AND cmb.provider_model_id = (SELECT id FROM provider_models pm WHERE pm.raw_model_name = mo.raw_model_name AND pm.provider_id = c.provider_id LIMIT 1)
+				LEFT JOIN model_probe_state mps
+					ON mps.credential_id = mo.credential_id
+				   AND mps.raw_model_name = mo.raw_model_name
+				WHERE mo.credential_id = c.id
+			) ms ON true
+			WHERE ($1 = 0 OR c.provider_id = $1)
+			  AND ($2 = 0 OR c.id = $2)
+			  AND c.lifecycle_status != 'retired'
+			  AND ($3 = '' OR c.tenant_id = $3)
+			ORDER BY c.provider_id, c.id
+		`
+	} else {
+		query = `
 		SELECT
 			c.id, c.provider_id,
 			COALESCE(p.display_name, p.catalog_code, '') AS provider_name,
@@ -350,6 +418,7 @@ func (m *CredentialMonitorHandlers) handleMonitorSummary(w http.ResponseWriter, 
 		  AND ($3 = '' OR c.tenant_id = $3)
 		ORDER BY c.provider_id, c.id
 	`
+	}
 
 	modelsSelect := `NULL::json AS models`
 	aggregatedSuccessSelect := `MIN(rsr.rate) AS aggregated_success_rate`
@@ -472,8 +541,9 @@ func (m *CredentialMonitorHandlers) handleMonitorSummary(w http.ResponseWriter, 
 			s.AggregatedSuccessRate = &r
 		}
 
-		if detailMode {
+		if detailMode || coreMode {
 			models := make([]CredentialModelStatus, 0)
+
 			if len(modelsJSON) > 0 && string(modelsJSON) != "null" {
 				_ = json.Unmarshal(modelsJSON, &models)
 			}
