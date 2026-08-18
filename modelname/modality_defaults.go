@@ -111,8 +111,11 @@ var modalityRules = []modalityRule{
 	{"gemini-1.5-", "multimodal", 1},
 	{"gemini-2.0-", "multimodal", 1},
 	{"gemini-2.5-", "multimodal", 1},
-	{"gemini-3-", "multimodal", 1},
+	{"gemini-3.7-", "multimodal", 1}, // gemini-3.7-flash, etc.
+	{"gemini-3.6-", "multimodal", 1}, // gemini-3.6-flash, etc.
 	{"gemini-3.5-", "multimodal", 1},
+	{"gemini-3.1-", "multimodal", 1}, // gemini-3.1-pro, gemini-3.1-flash-lite, etc.
+	{"gemini-3-", "multimodal", 1},
 
 	// Meta Llama - Vision (specific patterns first)
 	{"llama-3.2-11b-vision", "vision", 1},
@@ -140,7 +143,7 @@ var modalityRules = []modalityRule{
 	// Zhipu marks vision models with a `v` immediately after the version
 	// number (glm-4v, glm-4.1v, glm-4.6v, glm-5v), so the text-family
 	// prefixes below (glm-4-, glm-) must not swallow them. The chat families
-	// GLM-4.5/4.6/4.7/5/5.1/5.2 are text-only per the same page — the
+	// GLM-4.5/4.6/4.7/5/5.1/5.2/5.3 are text-only per the same page — the
 	// existing `glm-` → text fallback is correct for those and is unchanged.
 	{"glm-4v-", "vision", 1},
 	{"glm-4.1v", "vision", 1}, // glm-4.1v-thinking-flash / -flashx
@@ -153,15 +156,21 @@ var modalityRules = []modalityRule{
 	{"glm-tts", "audio", 1},
 	{"glm-4-voice", "audio", 1},
 	{"cogview-", "vision", 1},
+	{"glm-5.3", "text", 0}, // GLM-5.3 exact match
+	{"glm-5-", "text", 1},
 	{"glm-4-", "text", 1},
 	{"glm-3-", "text", 1},
 	{"chatglm", "text", 1},
 	{"codegeex-", "text", 1},
 	{"glm-", "text", 1},
 
-	// Moonshot
+	// Moonshot / Kimi
 	{"moonshot-", "text", 1},
-	{"kimi-k3", "vision", 1}, // 2026-08-09: Aliyun Model Studio lists kimi-k3 under 图像与视频理解
+	{"kimi-k3", "multimodal", 0},            // 2.8T params, 1M context, text+image+video
+	{"kimi-k2.7-code", "text", 0},           // official catalog does not declare vision input
+	{"kimi-k2.7-code-highspeed", "text", 0}, // official catalog does not declare vision input
+	{"kimi-k2.6", "vision", 0},              // 256k context, vision support
+	{"kimi-k2-", "text", 1},                 // kimi-k2.x fallback
 	{"kimi-", "text", 1},
 
 	// ByteDance Doubao - Text specific patterns first (longer wins)
@@ -235,6 +244,7 @@ var modalityRules = []modalityRule{
 
 	// xAI Grok
 	{"grok-beta", "text", 0},      // exact match first
+	{"grok-4.6", "vision", 0},     // grok-4.6 supports image input
 	{"grok-vision-", "vision", 1}, // grok-vision-beta (12 chars)
 	{"grok-", "text", 1},          // fallback to text (5 chars)
 

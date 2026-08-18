@@ -127,6 +127,31 @@ func TestInferModality(t *testing.T) {
 		// xAI Grok
 		{"grok-vision-beta", "grok-vision-beta", "vision"},
 		{"grok-beta", "grok-beta", "text"},
+		{"grok-4.6", "grok-4.6", "vision"},
+		{"grok-3", "grok-3", "text"},
+		{"grok-3-mini", "grok-3-mini", "text"},
+
+		// Zhipu GLM
+		{"glm-5.3", "glm-5.3", "text"},
+		{"glm-5.2", "glm-5.2", "text"},
+		{"glm-5.1", "glm-5.1", "text"},
+		{"glm-4.7", "glm-4.7", "text"},
+
+		// Moonshot / Kimi
+		{"kimi-k3", "kimi-k3", "multimodal"},
+		{"kimi-k2.6", "kimi-k2.6", "vision"},
+		{"kimi-k2.7-code", "kimi-k2.7-code", "text"},
+		{"kimi-k2.7-code-highspeed", "kimi-k2.7-code-highspeed", "text"},
+
+		// Google Gemini 3 series
+		{"gemini-3.7-flash", "gemini-3.7-flash", "multimodal"},
+		{"gemini-3.6-flash", "gemini-3.6-flash", "multimodal"},
+		{"gemini-3.5-flash", "gemini-3.5-flash", "multimodal"},
+		{"gemini-3.5-flash-lite", "gemini-3.5-flash-lite", "multimodal"},
+		{"gemini-3.1-flash-lite", "gemini-3.1-flash-lite", "multimodal"},
+		{"gemini-3.1-pro", "gemini-3.1-pro", "multimodal"},
+		{"gemini-3.1-flash-image", "gemini-3.1-flash-image", "multimodal"},
+		{"gemini-3-pro-image", "gemini-3-pro-image", "multimodal"},
 
 		// NVIDIA
 		{"llama-3.1-nemotron-70b-instruct", "llama-3.1-nemotron-70b-instruct", "text"},
