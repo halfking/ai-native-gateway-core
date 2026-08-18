@@ -34,11 +34,23 @@ type Response struct {
 	Data    interface{} `json:"data,omitempty"`
 }
 
+// ProviderRequestStats 供应商请求统计（用于品质 tab 展示可用情况）
+type ProviderRequestStats struct {
+	TotalRequests int64 `json:"total_requests"`
+	MonthRequests int64 `json:"month_requests"`
+	WeekRequests  int64 `json:"week_requests"`
+	DayRequests   int64 `json:"day_requests"`
+	SuccessCount  int64 `json:"success_count"`
+	FailureCount  int64 `json:"failure_count"`
+	TotalTokens   int64 `json:"total_tokens"`
+}
+
 // ProviderQualityResponse 供应商质量画像响应
 type ProviderQualityResponse struct {
 	ProviderID   int64                 `json:"provider_id"`
 	ProviderName string                `json:"provider_name"`
 	Models       []ModelQualityProfile `json:"models"`
+	RequestStats ProviderRequestStats  `json:"request_stats"`
 }
 
 // ModelQualityProfile 模型质量画像
@@ -242,6 +254,16 @@ ORDER BY profile_date DESC, total_score DESC
 		return
 	}
 
+	// 请求统计（总数 / 当月 / 当周 / 当天 / 成功 / 失败 / token）。
+	// 数据源：usage_ledger_with_current_month（与 /api/usage/providers/:id 同源）。
+	// 窗口：近 30 天（对齐用量 tab 的 provider summary 默认窗口），限定扫描范围。
+	// 查询失败不阻断品质数据展示：记日志并返回零值，避免统计表缺失拖垮整个 tab。
+	requestStats, err := h.loadProviderRequestStats(ctx, providerID)
+	if err != nil {
+		slog.Error("quality: failed to load provider request stats", "error", err, "provider_id", providerID)
+		requestStats = ProviderRequestStats{}
+	}
+
 	h.writeJSON(w, http.StatusOK, Response{
 		Code:    0,
 		Message: "success",
@@ -249,8 +271,35 @@ ORDER BY profile_date DESC, total_score DESC
 			ProviderID:   providerID,
 			ProviderName: providerName,
 			Models:       models,
+			RequestStats: requestStats,
 		},
 	})
+}
+
+// loadProviderRequestStats 加载供应商请求统计（单条聚合查询）。
+// usage_ledger_with_current_month 的月度分区为列式存储，对 provider 级聚合扫描高效。
+// 窗口固定为近 30 天（与 /api/usage/providers/:id 的 summary 默认窗口一致），
+// 避免全量扫描历史分区，也保证与画像数据周期语义一致。
+func (h *QualityHandler) loadProviderRequestStats(ctx context.Context, providerID int64) (ProviderRequestStats, error) {
+	const query = `
+SELECT
+    COUNT(*)::bigint,
+    COUNT(*) FILTER (WHERE ts >= date_trunc('month', NOW()))::bigint,
+    COUNT(*) FILTER (WHERE ts >= date_trunc('week', NOW()))::bigint,
+    COUNT(*) FILTER (WHERE ts >= date_trunc('day', NOW()))::bigint,
+    COUNT(*) FILTER (WHERE success)::bigint,
+    COUNT(*) FILTER (WHERE NOT success)::bigint,
+    COALESCE(SUM(total_tokens), 0)::bigint
+FROM usage_ledger_with_current_month
+WHERE provider_id = $1
+  AND ts >= NOW() - INTERVAL '30 days'`
+
+	var s ProviderRequestStats
+	err := h.db.QueryRowContext(ctx, query, providerID).Scan(
+		&s.TotalRequests, &s.MonthRequests, &s.WeekRequests, &s.DayRequests,
+		&s.SuccessCount, &s.FailureCount, &s.TotalTokens,
+	)
+	return s, err
 }
 
 // handleGetSummary 供应商级品质汇总（优先 provider 级行，否则取最高分模型）

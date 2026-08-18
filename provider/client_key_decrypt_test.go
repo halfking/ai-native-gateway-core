@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 )
@@ -218,9 +219,10 @@ func TestInvalidateCredentialKeyCachePreventsStaleRevealReinsert(t *testing.T) {
 		value:   "old-primary-key",
 		expires: time.Now().Add(time.Hour),
 	}
-	client.keyCacheNeg = map[int]cacheEntry[string]{
+	client.keyCacheNeg = map[int]negativeCacheEntry{
 		credentialID: {
 			value:   "old decrypt failure",
+			reason:  "other",
 			expires: time.Now().Add(time.Hour),
 		},
 	}
@@ -239,7 +241,7 @@ func TestInvalidateCredentialKeyCachePreventsStaleRevealReinsert(t *testing.T) {
 
 	// A reveal that began before rotation must not restore either stale value.
 	client.cacheRevealedKeyIfCurrent(credentialID, staleGeneration, "old-primary-key")
-	client.cacheRevealFailureIfCurrent(credentialID, staleGeneration, "old decrypt failure")
+	client.cacheRevealFailureIfCurrent(credentialID, staleGeneration, errors.New("old decrypt failure"))
 	if _, ok := client.keyCache[credentialID]; ok {
 		t.Fatal("stale reveal restored primary key cache entry")
 	}
@@ -270,13 +272,14 @@ func TestRevealAPIKeyNegativeCache(t *testing.T) {
 	client := &Client{
 		candCache:   make(map[string]cacheEntry[*resolveResponse]),
 		keyCache:    make(map[int]cacheEntry[string]),
-		keyCacheNeg: make(map[int]cacheEntry[string]),
+		keyCacheNeg: make(map[int]negativeCacheEntry),
 	}
 
 	// Pre-populate the negative cache: credential 17 was seen 60 seconds ago
 	// with this exact error.
-	client.keyCacheNeg[17] = cacheEntry[string]{
+	client.keyCacheNeg[17] = negativeCacheEntry{
 		value:   "cannot decrypt: unknown format",
+		reason:  "other",
 		expires: time.Now().Add(decryptFailureCacheTTL),
 	}
 
@@ -295,14 +298,15 @@ func TestRevealAPIKeyNegativeCache(t *testing.T) {
 	if !contains(err.Error(), "cannot decrypt: unknown format") {
 		t.Fatalf("expected cached error to be wrapped, got %q", err.Error())
 	}
-	if !contains(err.Error(), "decrypt failure cached") {
-		t.Fatalf("expected negative-cache sentinel in error, got %q", err.Error())
+	if !errors.Is(err, errRevealCached) {
+		t.Fatalf("expected negative-cache sentinel errRevealCached, got %q (errors.Is=false)", err.Error())
 	}
 
 	// An entry past its expiry must be re-attempted (we don't have a real DB
 	// so the test stops here — we just confirm the cache no longer matches).
-	client.keyCacheNeg[17] = cacheEntry[string]{
+	client.keyCacheNeg[17] = negativeCacheEntry{
 		value:   "old-error",
+		reason:  "other",
 		expires: time.Now().Add(-1 * time.Second), // already expired
 	}
 	_, err = client.RevealAPIKey(context.Background(), 587, 17)
@@ -324,10 +328,11 @@ func TestRevealAPIKeySuccessInvalidatesNegativeCache(t *testing.T) {
 	client := &Client{
 		candCache:   make(map[string]cacheEntry[*resolveResponse]),
 		keyCache:    make(map[int]cacheEntry[string]),
-		keyCacheNeg: make(map[int]cacheEntry[string]),
+		keyCacheNeg: make(map[int]negativeCacheEntry),
 	}
-	client.keyCacheNeg[42] = cacheEntry[string]{
+	client.keyCacheNeg[42] = negativeCacheEntry{
 		value:   "previous failure",
+		reason:  "other",
 		expires: time.Now().Add(time.Hour),
 	}
 	// Pre-populate the positive cache so RevealAPIKey returns success
@@ -356,13 +361,13 @@ func TestRecordNegativeCacheLockedEvictsOldest(t *testing.T) {
 	client := &Client{
 		candCache:   make(map[string]cacheEntry[*resolveResponse]),
 		keyCache:    make(map[int]cacheEntry[string]),
-		keyCacheNeg: make(map[int]cacheEntry[string]),
+		keyCacheNeg: make(map[int]negativeCacheEntry),
 	}
 	now := time.Now()
 	// Three pre-existing entries; #2 has the earliest expiry.
-	client.keyCacheNeg[1] = cacheEntry[string]{value: "err1", expires: now.Add(30 * time.Second)}
-	client.keyCacheNeg[2] = cacheEntry[string]{value: "err2", expires: now.Add(10 * time.Second)}
-	client.keyCacheNeg[3] = cacheEntry[string]{value: "err3", expires: now.Add(60 * time.Second)}
+	client.keyCacheNeg[1] = negativeCacheEntry{value: "err1", reason: "other", expires: now.Add(30 * time.Second)}
+	client.keyCacheNeg[2] = negativeCacheEntry{value: "err2", reason: "other", expires: now.Add(10 * time.Second)}
+	client.keyCacheNeg[3] = negativeCacheEntry{value: "err3", reason: "other", expires: now.Add(60 * time.Second)}
 
 	// Force the map to look "full" by reducing the cap counter via direct
 	// insert of decryptFailureCacheMax-1 entries. To keep the test fast, we
@@ -377,8 +382,9 @@ func TestRecordNegativeCacheLockedEvictsOldest(t *testing.T) {
 	// by manually pre-populating decryptFailureCacheMax entries (1024),
 	// then inserting one more — slow but deterministic.
 	for i := 100; i < 100+decryptFailureCacheMax-3; i++ {
-		client.keyCacheNeg[i] = cacheEntry[string]{
+		client.keyCacheNeg[i] = negativeCacheEntry{
 			value:   "bulk",
+			reason:  "other",
 			expires: now.Add(time.Duration(i) * time.Second), // monotonically increasing
 		}
 	}
@@ -386,7 +392,7 @@ func TestRecordNegativeCacheLockedEvictsOldest(t *testing.T) {
 	// Inserting one more entry should evict the one with the earliest
 	// expiry (credential 2, expires at +10s).
 	client.mu.Lock()
-	client.recordNegativeCacheLocked(99, "fresh")
+	client.recordNegativeCacheLocked(99, "fresh", "other")
 	client.mu.Unlock()
 
 	if _, ok := client.keyCacheNeg[2]; ok {

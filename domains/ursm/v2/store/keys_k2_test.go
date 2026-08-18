@@ -1,6 +1,10 @@
 package store
 
-import "testing"
+import (
+	"fmt"
+	"math/rand"
+	"testing"
+)
 
 // Golden bytes for the k2 canonical schema (doc 14 §2) are derived
 // independently of the implementation (python3 base64.urlsafe_b64encode,
@@ -221,14 +225,14 @@ func TestCanonicalKeyCollisionProperty(t *testing.T) {
 		t.Fatal("frozen legacy collision pair must not collide in k2")
 	}
 
-	type tuple struct {
+	type tup struct {
 		tenant string
 		cid    int
 		raw    string
 	}
 	tenants := []string{"a", "a:7:b", "a:7", "123", ":t:", "t:", "租户", "café", "a:b:c:d:e"}
 	raws := []string{"m", "b:8:c", ":", "::", ":m:", "模型", "b:8", "m:1:2:3"}
-	seen := make(map[string]tuple)
+	seen := make(map[string]tup)
 	for _, tenant := range tenants {
 		for cid := 1; cid <= 3; cid++ {
 			for _, raw := range raws {
@@ -236,7 +240,7 @@ func TestCanonicalKeyCollisionProperty(t *testing.T) {
 				if err != nil {
 					t.Fatalf("tenant=%q cid=%d raw=%q: unexpected error: %v", tenant, cid, raw, err)
 				}
-				cur := tuple{tenant, cid, raw}
+				cur := tup{tenant, cid, raw}
 				if prev, dup := seen[k]; dup {
 					t.Fatalf("collision on key %q between %+v and %+v", k, prev, cur)
 				}
@@ -246,6 +250,85 @@ func TestCanonicalKeyCollisionProperty(t *testing.T) {
 					t.Fatalf("round-trip failed for %+v on key %q", cur, k)
 				}
 			}
+		}
+	}
+}
+
+// Strict window/candidate parsers share the same k2 marker and frozen
+// bucket vocabulary as the constructors; the parser-only path was
+// contributed by the parallel main-branch session and must stay consistent
+// with the production entry points (no rejoin, no re-canonicalisation).
+func TestParseWindowKeyAnyRoundTrip(t *testing.T) {
+	for _, bucket := range []string{"1m", "5m", "30m"} {
+		k, err := K2WindowKeyForTenant("ursm:v2:", "tenant-a", 7, "model:a", bucket)
+		if err != nil {
+			t.Fatalf("bucket=%s: unexpected error: %v", bucket, err)
+		}
+		p, ok := ParseWindowKeyAny("ursm:v2:", k)
+		if !ok || p.Bucket != bucket || p.TenantID != "tenant-a" || p.CredentialID != 7 || p.RawModel != "model:a" {
+			t.Fatalf("bucket=%s parse = %+v ok=%v", bucket, p, ok)
+		}
+	}
+	for _, bucket := range []string{"", "2m", "1h", "1m:extra"} {
+		k, _ := K2WindowKeyForTenant("ursm:v2:", "tenant-a", 7, "model:a", bucket)
+		if k == "" {
+			continue
+		}
+		if _, ok := ParseWindowKeyAny("ursm:v2:", k); ok {
+			t.Fatalf("unknown bucket must not parse: %s", k)
+		}
+	}
+	if _, ok := ParseWindowKeyAny("ursm:v2:", "ursm:v2:win:1m:tenant-a:7:model"); ok {
+		t.Fatal("legacy window key must not parse as k2")
+	}
+}
+
+func TestParseCandidateIndexKeyAnyRoundTrip(t *testing.T) {
+	k, err := K2CandidateIndexKey("ursm:v2:", "tenant-a", "model:a", "chat", "text")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	p, ok := ParseCandidateIndexKeyAny("ursm:v2:", k)
+	if !ok || p.TenantID != "tenant-a" || p.CanonicalModel != "model:a" || p.Profile != "chat" || p.Modality != "text" {
+		t.Fatalf("index parse = %+v ok=%v", p, ok)
+	}
+	if _, ok := ParseCandidateIndexKeyAny("ursm:v2:", "ursm:v2:idx:model:tenant-a:model-a:chat:text"); ok {
+		t.Fatal("legacy index key must not parse as k2")
+	}
+}
+
+// Property check: a randomly generated corpus must round-trip without
+// collisions; this is the broad version of the curated collision test
+// above, retained from the parallel main-branch session as an additional
+// injectivity guarantee.
+func TestCanonicalKeyCollisionPropertyOverGeneratedCorpus(t *testing.T) {
+	const prefix = "ursm:v2:"
+	rng := rand.New(rand.NewSource(1))
+	alphabet := []rune("ab:0129租户-αxX")
+	gen := func(maxLen int) string {
+		out := make([]rune, 1+rng.Intn(maxLen))
+		for i := range out {
+			out[i] = alphabet[rng.Intn(len(alphabet))]
+		}
+		return string(out)
+	}
+	seenNode := map[string]string{}
+	for i := 0; i < 200; i++ {
+		tenant, raw := gen(6), gen(9)
+		cid := 1 + rng.Intn(100000)
+		tupleID := fmt.Sprintf("%q/%d/%q", tenant, cid, raw)
+
+		nodeKey, err := K2NodeKeyForTenant(prefix, tenant, cid, raw)
+		if err != nil {
+			t.Fatalf("iter %d: unexpected error: %v", i, err)
+		}
+		if prev, dup := seenNode[nodeKey]; dup && prev != tupleID {
+			t.Fatalf("node key collision: %s vs %s both encode to %s", prev, tupleID, nodeKey)
+		}
+		seenNode[nodeKey] = tupleID
+		p, ok := ParseNodeKeyAny(prefix, nodeKey)
+		if !ok || p.TenantID != tenant || p.CredentialID != cid || p.RawModel != raw {
+			t.Fatalf("iter %d node round-trip = %+v ok=%v", i, p, ok)
 		}
 	}
 }

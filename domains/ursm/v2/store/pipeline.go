@@ -84,7 +84,7 @@ func (s *Store) PipelineNodeViews(ctx context.Context, prefix string, qs []NodeQ
 			pending = append(pending, i)
 			continue
 		}
-		out[i] = nodeViewFromHash(sl.query, raw, now)
+		out[i] = nodeViewFromHash(slots[i].query, raw, now)
 	}
 
 	if len(pending) > 0 {
@@ -129,25 +129,41 @@ func nodeViewFromHash(q NodeQuery, raw map[string]string, now time.Time) api.Nod
 	v.LatP95Ms = atoi(raw["lat_p95_ms"])
 	v.LatEWMA = atoi(raw["lat_ewma_ms"])
 
-	// Parse cool_until_ms and check if node is in cooling period
+	// Parse cool_until_ms and check if node is in cooling period.
 	if coolUntilMsStr := raw["cool_until_ms"]; coolUntilMsStr != "" {
 		coolUntilMs := atoi64(coolUntilMsStr)
 		if coolUntilMs > 0 {
 			coolUntil := time.UnixMilli(coolUntilMs)
 			v.CoolUntil = coolUntil
-			// If in cooling period, mark as unavailable
 			if coolUntil.After(now) {
+				// Active cool window: still unavailable.
 				v.Available = false
 				if v.Reason == "" {
 					v.Reason = "in_cool_until"
 				}
+			} else if !v.Available {
+				// 2026-08-18 fix (154 incident, minimax-m3 / cred 36):
+				// an EXPIRED cool window must half-open the node. The write
+				// side (record_request.lua:232) already treats
+				// "disabled=1 with expired cool_until" as recovered — but
+				// only when a NEW event arrives at that node. The read
+				// side kept returning the stale available="0" bit, the
+				// router kept filtering the node out, so no event ever
+				// arrived and the Lua recovery branch could never fire.
+				// With the fast-probe queue also dead (fixed separately)
+				// the node stayed unroutable until a process restart.
+				// Reading an expired cool as available re-arms the
+				// intended half-open circuit: if the next request fails,
+				// record_request re-disables with exponential backoff.
+				v.Available = true
 			}
 		}
 	}
 
-	// Check if disabled flag is set (fallback check)
+	// Check if disabled flag is set (fallback check). A disabled bit with
+	// NO cool window at all (e.g. admin hold) still blocks; the expired
+	// -cool half-open above takes precedence over the sticky bit.
 	if raw["disabled"] == "1" && v.Available {
-		// Only mark unavailable if not already marked by cool_until
 		if v.CoolUntil == (time.Time{}) || v.CoolUntil.After(now) {
 			v.Available = false
 			v.Reason = "node_disabled"

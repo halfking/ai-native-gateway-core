@@ -34,6 +34,17 @@ func (s KeySchema) String() string {
 	}
 }
 
+// ParseKeySchema returns the KeySchema for the wire form; unknown values
+// default to legacy so a stale row is never misreported as canonical.
+func ParseKeySchema(s string) KeySchema {
+	switch s {
+	case "k2":
+		return KeySchemaK2
+	default:
+		return KeySchemaLegacy
+	}
+}
+
 // k2EncodeSegment encodes one variable key component with raw unpadded
 // base64url so a component can never contain the `:` delimiter and every
 // delimiter-bearing value round-trips losslessly.
@@ -157,9 +168,13 @@ type ParsedNodeKeyWithSchema struct {
 }
 
 // k2DecodeSegment strictly decodes one raw unpadded base64url segment.
-// Decoding alone can accept some non-canonical encodings, so the decoded
-// bytes must re-encode to the exact input segment.
+// Empty segments, invalid alphabet and non-canonical trailing bits all
+// fail: decoding alone can accept some non-canonical encodings, so the
+// decoded bytes must re-encode to the exact input segment.
 func k2DecodeSegment(seg string) (string, bool) {
+	if seg == "" {
+		return "", false
+	}
 	b, err := base64.RawURLEncoding.DecodeString(seg)
 	if err != nil {
 		return "", false
@@ -219,4 +234,87 @@ func ParseNodeKeyAny(prefix, key string) (ParsedNodeKeyWithSchema, bool) {
 		return ParsedNodeKeyWithSchema{}, false
 	}
 	return ParsedNodeKeyWithSchema{Schema: KeySchemaLegacy, ParsedNodeKey: parsed}, true
+}
+
+// k2WindowBuckets is the frozen window bucket vocabulary (doc 14 §2).
+var k2WindowBuckets = map[string]bool{"1m": true, "5m": true, "30m": true}
+
+// ParsedWindowKey is the tuple recovered from a canonical k2 window key.
+type ParsedWindowKey struct {
+	Bucket       string
+	TenantID     string
+	CredentialID int
+	RawModel     string
+}
+
+// ParseWindowKeyAny strictly decodes the k2 window key. Legacy window
+// keys are not recognized here; callers needing both grammars must try
+// ParseNodeKeyAny first.
+func ParseWindowKeyAny(prefix, key string) (ParsedWindowKey, bool) {
+	baseKey := prefix + "win:k2:"
+	if !strings.HasPrefix(key, baseKey) {
+		return ParsedWindowKey{}, false
+	}
+	parts := strings.Split(strings.TrimPrefix(key, baseKey), ":")
+	if len(parts) != 4 {
+		return ParsedWindowKey{}, false
+	}
+	bucket := parts[0]
+	if !k2WindowBuckets[bucket] {
+		return ParsedWindowKey{}, false
+	}
+	tenant, ok := k2DecodeSegment(parts[1])
+	if !ok {
+		return ParsedWindowKey{}, false
+	}
+	if !isCanonicalDecimalCID(parts[2]) {
+		return ParsedWindowKey{}, false
+	}
+	credentialID, err := strconv.Atoi(parts[2])
+	if err != nil || credentialID <= 0 {
+		return ParsedWindowKey{}, false
+	}
+	raw, ok := k2DecodeSegment(parts[3])
+	if !ok || raw == "" {
+		return ParsedWindowKey{}, false
+	}
+	return ParsedWindowKey{Bucket: bucket, TenantID: tenant, CredentialID: credentialID, RawModel: raw}, true
+}
+
+// ParsedCandidateIndexKey is the tuple recovered from a canonical k2
+// candidate index key.
+type ParsedCandidateIndexKey struct {
+	TenantID       string
+	CanonicalModel string
+	Profile        string
+	Modality       string
+}
+
+// ParseCandidateIndexKeyAny strictly decodes the k2 candidate index key.
+func ParseCandidateIndexKeyAny(prefix, key string) (ParsedCandidateIndexKey, bool) {
+	baseKey := prefix + "idx:model:k2:"
+	if !strings.HasPrefix(key, baseKey) {
+		return ParsedCandidateIndexKey{}, false
+	}
+	parts := strings.Split(strings.TrimPrefix(key, baseKey), ":")
+	if len(parts) != 4 {
+		return ParsedCandidateIndexKey{}, false
+	}
+	tenant, ok := k2DecodeSegment(parts[0])
+	if !ok || tenant == "" {
+		return ParsedCandidateIndexKey{}, false
+	}
+	canonical, ok := k2DecodeSegment(parts[1])
+	if !ok || canonical == "" {
+		return ParsedCandidateIndexKey{}, false
+	}
+	profile, ok := k2DecodeSegment(parts[2])
+	if !ok || profile == "" {
+		return ParsedCandidateIndexKey{}, false
+	}
+	modality, ok := k2DecodeSegment(parts[3])
+	if !ok || modality == "" {
+		return ParsedCandidateIndexKey{}, false
+	}
+	return ParsedCandidateIndexKey{TenantID: tenant, CanonicalModel: canonical, Profile: profile, Modality: modality}, true
 }

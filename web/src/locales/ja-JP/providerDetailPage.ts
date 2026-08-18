@@ -52,5 +52,13 @@ export default {
     stability: '稳定性',
     costEfficiency: '成本效益',
     updatedAt: '更新时间',
+    requestStats: 'リクエスト統計',
+    totalRequests: '総リクエスト数',
+    monthRequests: '今月',
+    weekRequests: '今週',
+    dayRequests: '今日',
+    successCount: '成功数',
+    failureCount: '失敗数',
+    totalTokens: '総トークン数',
   },
 }

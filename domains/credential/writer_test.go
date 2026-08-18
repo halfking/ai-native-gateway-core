@@ -116,3 +116,67 @@ func TestInferQuotaRecoverAtRejectsPastTimestamp(t *testing.T) {
 		t.Fatalf("recover_at should still be in the future, got %s", got)
 	}
 }
+
+// TestInferQuotaRecoverAtFiveHourWindow covers the 2026-08-18 fix: a
+// quota-exhausted body that mentions a 5-hour window (智谱AI GLM Coding
+// Plan) recovers at the NEXT 5-hour boundary (00/05/10/15/20 北京时间),
+// not the next UTC midnight. The old default stretched a 凌晨 5 点重置的
+// 窗口到北京 08:00，凭据白白多挂 3 小时。
+func TestInferQuotaRecoverAtFiveHourWindow(t *testing.T) {
+	// 2026-08-18 03:30 北京时间 = 2026-08-17 19:30 UTC。当前 5h 窗口
+	// (00:00-05:00 北京) 在 05:00 结束，recover_at 必须是 05:00 北京
+	// = 2026-08-17 21:00 UTC，而不是次日 UTC 零点（北京 08:00）。
+	now := time.Date(2026, 8, 17, 19, 30, 0, 0, time.UTC)
+	for _, detail := range []string{
+		`{"error":"usage limit exceeded","window_type":"five_hour"}`,
+		`usage limit exceeded, resets every 5 hours`,
+		`You have exceeded your 5-hour usage window`,
+		`本周期（每 5 小时）用量已达上限`,
+		`5小时额度已用尽`,
+	} {
+		got := inferQuotaRecoverAtNow(detail, now)
+		want := time.Date(2026, 8, 17, 21, 0, 0, 0, time.UTC)
+		if !got.Equal(want) {
+			t.Errorf("inferQuotaRecoverAtNow(%q) = %s, want next 5h boundary %s", detail, got.UTC(), want.UTC())
+		}
+	}
+
+	// 恰好在窗口边界之后（05:00:01 北京 = 21:00:01 UTC）→ 下一边界 10:00 北京。
+	now = time.Date(2026, 8, 17, 21, 0, 1, 0, time.UTC)
+	got := inferQuotaRecoverAtNow(`usage limit exceeded every 5 hours`, now)
+	want := time.Date(2026, 8, 18, 2, 0, 0, 0, time.UTC) // 10:00 北京
+	if !got.Equal(want) {
+		t.Errorf("boundary+1s: inferQuotaRecoverAtNow = %s, want %s", got.UTC(), want.UTC())
+	}
+}
+
+// TestInferQuotaRecoverAtFiveHourRegexNegative guards against the
+// five-hour branch swallowing unrelated bodies: a plain weekly/monthly
+// message must keep the day-based heuristics.
+func TestInferQuotaRecoverAtFiveHourRegexNegative(t *testing.T) {
+	now := time.Date(2026, 8, 17, 19, 30, 0, 0, time.UTC)
+	// "weekly" body keeps the next-Monday-UTC-midnight semantics.
+	got := inferQuotaRecoverAtNow("You have exceeded your weekly usage cap", now)
+	if got.Hour() != 0 || got.Minute() != 0 {
+		t.Errorf("weekly body should still snap to UTC midnight, got %s", got.UTC())
+	}
+}
+
+func TestNextFiveHourBoundaryAlignment(t *testing.T) {
+	// Every returned boundary must be a 00/05/10/15/20 mark in UTC+8 and
+	// strictly in the future.
+	for _, utc := range []time.Time{
+		time.Date(2026, 8, 17, 16, 0, 0, 0, time.UTC),   // 北京 00:00 整点
+		time.Date(2026, 8, 17, 16, 0, 1, 0, time.UTC),   // 北京 00:00:01
+		time.Date(2026, 8, 17, 20, 59, 59, 0, time.UTC), // 北京 04:59:59
+	} {
+		got := nextFiveHourBoundary(utc)
+		if !got.After(utc) {
+			t.Fatalf("boundary %s not after now %s", got, utc)
+		}
+		local := got.In(cstZone)
+		if local.Hour()%5 != 0 || local.Minute() != 0 || local.Second() != 0 {
+			t.Fatalf("boundary %s is not a 5h mark in UTC+8 (local %s)", got, local)
+		}
+	}
+}

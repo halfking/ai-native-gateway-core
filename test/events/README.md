@@ -41,9 +41,9 @@ test/events/
 
 3. **测试套件** (`test/events/contract/request_completed_test.go`)
    - 6 个契约验证测试（当前 SKIP）
-   - 1 个当前实现分析测试（**FAIL - 预期**）
+   - 1 个当前实现分析测试（初测 FAIL；**2026-08-18 复核已 PASS**，见下方复核结果）
 
-### 测试运行结果
+### 测试运行结果（WP2 基线快照，2026-08 初；最新状态见下方复核）
 
 ```bash
 $ go test ./test/events/contract/... -v
@@ -76,7 +76,13 @@ $ go test ./test/events/contract/... -v
     request_completed_test.go:341: ⚠️  MISMATCH: status_code should be 'status' (string enum, not int)
 ```
 
-**关键发现**：
+**2026-08-18 复核**（`go test ./test/events/contract/... -count=1 -v`，HEAD `123de7e15`）：
+
+- `TestCurrentGatewayPublisher` **PASS**——下方"关键发现"所列 10 个缺失字段与 `user_content` 违规已在后续实现中解决；
+- 3 个 T0 fixture 校验（`TestRestartSemanticsV1Fixture` / `TestSessionIdentityV1Fixture` / `TestVocabularyV1Fixture`）**PASS**；
+- 6 个 `TestRequestCompletedV1_*` 交付契约测试仍 **SKIP**（outbox 交付路径未启用，见下方 Phase 2）。
+
+**关键发现**（WP2 基线时点的问题，2026-08-18 复核均已解决）：
 - 当前 Gateway 只发布 4 个字段，契约要求 11 个
 - 包含 1 个违规字段（`user_content` - prompt 正文不应在事件中）
 - 缺失 10 个必填字段
