@@ -198,13 +198,9 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	rawModels := append([]string{normalizedModel}, variants[1:]...)
-	// 2026-07-24 SQL 瘦身：cmb.available / c.circuit_state / c.cooling_until /
-	// cmb.consecutive_failures / c.consecutive_failures / cmb.success_rate /
-	// mo.p95_latency_ms 这些运行时状态在 URSM v2 里才是真相源，DB 只是
-	// credentialstate / v1 URSM 的周期性回写副本。Resolve handler 在拿到 SQL
-	// 行后会调用 h.ursmV2.FilterAndScore 按 (credential_id, raw_model) 覆写
-	// 这些字段；URSM v2 不可用（nil / ModeOff / not ready / pipeline 失败）
-	// 时落到下面的 default 分支，保留 DB 值作为 fallback。
+	// 这些字段由 URSM v2 覆写；在 authoritative 模式下 not-ready 或查询失败
+	// 会显式报告 unknown，而不是把数据库 eligibility 当作运行时可用。
+
 	rows, err := h.db.Query(ctx, `
 			SELECT
 				p.id AS provider_id,
@@ -350,9 +346,10 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 	// fail_streak=0 / success_rate=0.9 / p95_latency_ms=9999），保留旧的
 	// resolve 行为。
 	//
-	// T4 保护性拒绝契约：URSM v2 Redis miss ⇒ Available=false；这里
-	// **忽略** T4 默认值 —— 只有真正拿到 NodeView 才覆写。Redis miss 的
-	// 行（新人未观测）保持 Available=true，避免误判不可用。
+	// T4 保护性拒绝契约：URSM v2 Redis miss ⇒ Available=false。权威
+	// 模式下 resolve 仅把真正拿到的 NodeView 标为可路由；miss 会在
+	// applyURSMOverlay 中明确呈现为 runtime_state=missing。
+
 	ursmManager := h.ursmV2
 	applyResolveDefaults := func(candidates []resolveCandidate) {
 		for i := range candidates {
@@ -3417,21 +3414,16 @@ func (h *Handler) handleFreePoolStatus(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// overlayFreePoolRuntimeHealth overwrites the zero-valued runtime health fields
-// on each free-pool model entry with live values from URSM v2 (Redis-backed),
-// and re-derives `routable` from the runtime view. Mirrors the overlay logic in
-// handleRoutingResolve (routing.go ~367-460). No-op when URSM v2 is nil / off /
-// not ready — the zero defaults already set in the map remain (graceful).
-//
-// This is the fix for "看不到有效的变化": without it the free-pool page only
-// showed coarse persisted DB enums (availability_state / quota_state) and never
-// the router's real success_rate / latency / fail streak / cooling state.
+// overlayFreePoolRuntimeHealth overlays the free-pool page with authoritative
+// URSM v2 state. Missing views and an unavailable runtime store are marked
+// explicitly so persisted DB eligibility is not presented as a live route.
 func (h *Handler) overlayFreePoolRuntimeHealth(ctx context.Context, models []any) {
 	ursmManager := h.ursmV2
 	if ursmManager == nil || ursmManager.Mode() == api.ModeOff {
 		return
 	}
 	if !ursmManager.Ready(ctx) {
+		markFreePoolRuntimeUnknown(models, "ursm_not_ready")
 		return
 	}
 
@@ -3474,20 +3466,25 @@ func (h *Handler) overlayFreePoolRuntimeHealth(ctx context.Context, models []any
 	}
 	views, err := ursmManager.FilterAndScore(ctx, pureSeeds)
 	if err != nil {
-		slog.Debug("free-pool status: ursm v2 overlay failed, keeping DB defaults", "error", err.Error())
+		slog.Debug("free-pool status: ursm v2 overlay failed", "error", err.Error())
+		markFreePoolRuntimeUnknown(models, "ursm_query_failed")
 		return
 	}
 
+	viewByKey := make(map[string]api.NodeView, len(views))
+	for _, v := range views {
+		viewByKey[ursmViewKey(v.CredentialID, v.RawModel)] = v
+	}
 	now := time.Now()
-	for j, s := range seeds {
-		if j >= len(views) {
-			break
-		}
-		v := views[j]
-		if v.CredentialID != s.seed.CredentialID || v.RawModel != s.seed.RawModel {
+	for _, s := range seeds {
+		mm := models[s.idx].(map[string]any)
+		v, ok := viewByKey[ursmViewKey(s.seed.CredentialID, s.seed.RawModel)]
+		if !ok {
+			markFreePoolModelUnavailable(mm, "missing", "ursm_node_missing")
 			continue
 		}
-		mm := models[s.idx].(map[string]any)
+		mm["ursm_observed"] = true
+		mm["runtime_state"] = "observed"
 		if v.SR5m > 0 {
 			mm["success_rate"] = v.SR5m
 		}
@@ -3508,9 +3505,30 @@ func (h *Handler) overlayFreePoolRuntimeHealth(ctx context.Context, models []any
 		// If URSM says the node is unavailable, override routable regardless of
 		// the persisted availability_state.
 		if !v.Available {
-			mm["routable"] = false
+			reason := v.Reason
+			if reason == "" {
+				reason = "node_unavailable_by_ursm_v2"
+			}
+			markFreePoolModelUnavailable(mm, "observed", reason)
 		}
 	}
+}
+
+func markFreePoolRuntimeUnknown(models []any, reason string) {
+	for _, m := range models {
+		mm, ok := m.(map[string]any)
+		if !ok {
+			continue
+		}
+		markFreePoolModelUnavailable(mm, "unknown", reason)
+	}
+}
+
+func markFreePoolModelUnavailable(model map[string]any, runtimeState, reason string) {
+	model["ursm_observed"] = runtimeState == "observed"
+	model["runtime_state"] = runtimeState
+	model["routable"] = false
+	model["runtime_block_reason"] = reason
 }
 
 // nullTimeToAny converts a sql.NullTime to a JSON-friendly value: nil when
@@ -4396,11 +4414,10 @@ func ursmViewKey(credentialID int, rawModel string) string {
 	return strconv.Itoa(credentialID) + "\x00" + rawModel
 }
 
-// resolveRuntimeDefaults back-fills the runtime columns a candidate carries
-// when no URSM v2 NodeView is available (manager off / not ready / pipeline
-// error / Redis-miss): available=true, circuit closed, neutral telemetry.
-// This keeps the resolve table's legacy behaviour for unobserved rows (T4
-// 契约：URSM Redis miss 不得被显示为不可用).
+// resolveRuntimeDefaults back-fills display-only runtime columns when URSM v2
+// is disabled. Authoritative URSM misses, readiness failures, and query failures
+// are handled separately so the response never presents DB eligibility as runtime
+// reachability.
 func resolveRuntimeDefaults(c *resolveCandidate) {
 	c.Available = true
 	c.CircuitState = "closed"
@@ -4459,7 +4476,11 @@ func applyURSMOverlay(candidates []resolveCandidate, views []api.NodeView, now t
 		resolveRuntimeDefaults(c)
 		v, ok := viewByKey[ursmViewKey(c.CredentialID, c.ModelName)]
 		if !ok {
+			if !c.DBEligible {
+				continue
+			}
 			c.Available = false
+
 			c.RuntimeRoutable = false
 			c.Routable = false
 			c.RuntimeState = "missing"

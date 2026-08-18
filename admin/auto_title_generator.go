@@ -14,6 +14,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/kaixuan/llm-gateway-go/metrics"
 )
@@ -70,6 +71,25 @@ func (g *AutoTitleGenerator) MaybeGenerateTitle(sessionID, tenantID, taskID, req
 		return
 	}
 	if strings.TrimSpace(sessionID) == "" || !g.isFirstSuccessfulUserTurn(sessionID, tenantID, requestID) {
+		return
+	}
+
+	// 2026-08-19: short-user-message gate. If the LAST user message in the
+	// request body already fits inside the title budget (sessionTitleMaxRunes),
+	// the LLM round-trip would only produce a title no shorter than the input.
+	// Skip the goroutine entirely so we don't pay an upstream LLM call on a
+	// single-line user prompt. Falls through to the normal pipeline when the
+	// body has no parseable user message (preview/DB fallback still runs).
+	if n := extractLastUserMessageRuneCount(requestBody); n > 0 && n <= sessionTitleMaxRunes {
+		metrics.AutoTitleTrigger.WithLabelValues("short_user_message").Inc()
+		slog.Debug("auto_title: user message already short, skipping LLM call",
+			"component", "auto_title_generator",
+			"session_id", sessionID,
+			"tenant_id", tenantID,
+			"parent_request_id", parentRequestID,
+			"user_msg_runes", n,
+			"title_budget_runes", sessionTitleMaxRunes,
+		)
 		return
 	}
 
@@ -296,6 +316,39 @@ func truncateForLog(s string, max int) string {
 		return s[:max] + "…"
 	}
 	return s
+}
+
+// extractLastUserMessageRuneCount — v1 (2026-08-19): parses a chat completion
+// request body, finds the LAST user message, and returns its rune count
+// (whitespace-collapsed). Returns 0 if the body is empty/unparseable or has
+// no user message. Used by MaybeGenerateTitle's short-user-message gate to
+// decide whether an LLM title round-trip is worth the cost when the user
+// message is already shorter than sessionTitleMaxRunes.
+func extractLastUserMessageRuneCount(requestBody string) int {
+	body := []byte(requestBody)
+	if len(body) == 0 {
+		return 0
+	}
+	var parsed struct {
+		Messages []struct {
+			Role    string `json:"role"`
+			Content any    `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil || len(parsed.Messages) == 0 {
+		return 0
+	}
+	for i := len(parsed.Messages) - 1; i >= 0; i-- {
+		if !strings.EqualFold(strings.TrimSpace(parsed.Messages[i].Role), "user") {
+			continue
+		}
+		text := strings.Join(strings.Fields(contentToString(parsed.Messages[i].Content)), " ")
+		if text == "" {
+			return 0
+		}
+		return utf8.RuneCountInString(text)
+	}
+	return 0
 }
 
 // extractMessagesForTitle parses a chat completion request body (JSON) and
