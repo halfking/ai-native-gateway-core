@@ -500,9 +500,15 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 	}
 	// Reorder revision: only meaningful when the resolve hits exactly one
 	// raw_model — mixed aliases or canonical hits intentionally leave the
-	// field empty so the UI keeps reordering disabled. Errors computing
-	// the revision are not fatal: the dashboard still works, just without
-	// drag-and-drop, so we log and continue with an empty token.
+	// field empty so the UI keeps reordering disabled. We use the
+	// persistent scope revision (migration 541) so the value is monotonic
+	// across concurrent writers; the dashboard's drag-and-drop relies on
+	// the integer in front of the colon for 409 detection.
+	//
+	// Errors loading the revision are not fatal: the dashboard still works,
+	// just without drag-and-drop, so we log and continue with an empty
+	// token. An empty scope (no rows yet) also yields an empty token —
+	// loadScopeRevision returns the zero value when the row is absent.
 	var reorderRevision string
 	if len(candidates) > 0 {
 		firstRaw := strings.TrimSpace(candidates[0].ModelName)
@@ -514,17 +520,12 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if singleRaw {
-			rows, scopeErr := fetchReorderScope(ctx, h.db, firstRaw, false)
-			if scopeErr != nil {
+			_, rev, revErr := fetchReorderScope(ctx, h.db, firstRaw, false)
+			if revErr != nil {
 				slog.Warn("routing resolve: reorder scope fetch failed; revision omitted",
-					"raw_model", firstRaw, "error", scopeErr.Error())
-			} else if len(rows) > 0 {
-				if rev, hashErr := candidateReorderRevision(rows); hashErr != nil {
-					slog.Warn("routing resolve: reorder revision hash failed",
-						"raw_model", firstRaw, "error", hashErr.Error())
-				} else {
-					reorderRevision = rev
-				}
+					"raw_model", firstRaw, "error", revErr.Error())
+			} else {
+				reorderRevision = rev.Raw
 			}
 		}
 	}
@@ -732,33 +733,109 @@ type reorderScopeRow struct {
 // pgxQueryRower is the read surface shared by *pgxpool.Pool and pgx.Tx.
 type pgxQueryRower interface {
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
 // fetchReorderScope returns every binding row for rawModel in id order.
-// When q is a pgx.Tx, callers should append FOR UPDATE OF cmb to lock the
-// rows; the SQL above stays free of locking so resolve can reuse it.
-func fetchReorderScope(ctx context.Context, q pgxQueryRower, rawModel string, lock bool) ([]reorderScopeRow, error) {
+// PROBE-MARKER-2026-08-19-0338: file should have loadScopeRevision helper below.
+func fetchReorderScope(ctx context.Context, q pgxQueryRower, rawModel string, lock bool) ([]reorderScopeRow, scopeRevision, error) {
 	sqlText := reorderScopeSQL
 	if lock {
 		sqlText = sqlText + "\nFOR UPDATE OF cmb"
 	}
 	rows, err := q.Query(ctx, sqlText, rawModel)
 	if err != nil {
-		return nil, err
+		return nil, scopeRevision{}, err
 	}
 	defer rows.Close()
 	out := make([]reorderScopeRow, 0)
 	for rows.Next() {
 		var r reorderScopeRow
 		if err := rows.Scan(&r.ID, &r.CredentialID, &r.ManualPriority, &r.UpdatedAt); err != nil {
-			return nil, err
+			return nil, scopeRevision{}, err
 		}
 		out = append(out, r)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return nil, scopeRevision{}, err
 	}
-	return out, nil
+	rev, err := loadScopeRevision(ctx, q, rawModel)
+	if err != nil {
+		return nil, scopeRevision{}, err
+	}
+	return out, rev, nil
+}
+
+// scopeRevision is the persistent, monotonic version of a candidate-binding
+// scope. The Raw form is the wire payload sent to clients; Version is the
+// integer used for 409 detection.
+type scopeRevision struct {
+	Version int64
+	Hash    string // 64-char SHA-256 hex; empty when no rows exist for the scope
+	Raw     string // "<version>:<hash>" (or "" when the scope has no revision row yet)
+}
+
+func formatScopeRevision(version int64, hash string) string {
+	if version <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("%d:%s", version, hash)
+}
+
+// loadScopeRevision reads the persistent scope revision row. Missing rows
+// are NOT errors — a scope that has never been bumped returns the zero value
+// and a nil error so the caller can decide whether the empty token is
+// acceptable (resolve) or fatal (reorder).
+func loadScopeRevision(ctx context.Context, q pgxQueryRower, rawModel string) (scopeRevision, error) {
+	var version int64
+	var hash string
+	err := q.QueryRow(ctx, `
+		SELECT scope_version, scope_hash
+		  FROM public.candidate_binding_scope_revision
+		 WHERE raw_model = $1
+	`, rawModel).Scan(&version, &hash)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return scopeRevision{}, nil
+	}
+	if err != nil {
+		return scopeRevision{}, err
+	}
+	return scopeRevision{
+		Version: version,
+		Hash:    hash,
+		Raw:     formatScopeRevision(version, hash),
+	}, nil
+}
+
+// parseScopeRevision parses the wire form "<version>:<hash>" back into a
+// scopeRevision. The shape is forward-compatible: extra ":" segments after
+// the hash are preserved verbatim in Raw.
+func parseScopeRevision(token string) (scopeRevision, error) {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return scopeRevision{}, fmt.Errorf("malformed revision: empty token")
+	}
+	parts := strings.SplitN(token, ":", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return scopeRevision{}, fmt.Errorf("malformed revision %q: expected \"<version>:<hash>\"", token)
+	}
+	v, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil || v <= 0 {
+		return scopeRevision{}, fmt.Errorf("malformed revision %q: bad version", token)
+	}
+	return scopeRevision{Version: v, Hash: parts[1], Raw: token}, nil
+}
+
+// scopeRevisionsEqual returns true when two revisions refer to the same
+// committed state.
+func scopeRevisionsEqual(a, b scopeRevision) bool {
+	if a.Version != b.Version {
+		return false
+	}
+	if a.Version == 0 {
+		return true
+	}
+	return secureEqualString(a.Hash, b.Hash)
 }
 
 // candidateReorderRevision hashes the scope rows so the writer can detect
@@ -970,7 +1047,17 @@ func (h *Handler) handleRoutingCandidateBindingReorder(w http.ResponseWriter, r 
 	}
 	defer tx.Rollback(ctx)
 
-	scope, err := fetchReorderScope(ctx, tx, req.RawModel, true)
+	// Plumb the audit-attributable actor into the session GUC so the
+	// migration 541 trigger records it on candidate_binding_scope_revision.
+	// We do this BEFORE the first SELECT so the revision row written by
+	// our own UPDATE is attributed to this actor rather than NULL.
+	actor := requestActor(r)
+	if _, setErr := tx.Exec(ctx, "SELECT set_config('app.actor', $1, true)", actor); setErr != nil {
+		writeError(w, http.StatusInternalServerError, "set app.actor guc failed: "+setErr.Error())
+		return
+	}
+
+	scope, currentRev, err := fetchReorderScope(ctx, tx, req.RawModel, true)
 	if err != nil {
 		if isPgSerializationFailure(err) || isPgDeadlock(err) {
 			writeError(w, http.StatusConflict, "transient ordering conflict, retry")
@@ -983,12 +1070,13 @@ func (h *Handler) handleRoutingCandidateBindingReorder(w http.ResponseWriter, r 
 		writeError(w, http.StatusNotFound, "no candidate bindings found for raw_model")
 		return
 	}
-	currentRevision, err := candidateReorderRevision(scope)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "compute revision failed")
-		return
-	}
-	if !secureEqualString(currentRevision, req.ExpectedRevision) {
+	// The persistent scope revision (migration 541) is the source of truth
+	// for 409 detection. We parse the client token once and compare on
+	// the integer version (primary) plus the hash (defence-in-depth: catches
+	// scope contents drifting without a version bump, which would indicate
+	// the trigger is broken).
+	expectedRev, parseErr := parseScopeRevision(req.ExpectedRevision)
+	if parseErr != nil || !scopeRevisionsEqual(expectedRev, currentRev) {
 		writeError(w, http.StatusConflict, "stale candidate binding set, refetch and retry")
 		return
 	}
@@ -1000,10 +1088,20 @@ func (h *Handler) handleRoutingCandidateBindingReorder(w http.ResponseWriter, r 
 		writeError(w, http.StatusInternalServerError, "apply reorder failed: "+err.Error())
 		return
 	}
-	if err := logAuditExec(ctx, tx, requestActor(r),
+	// The trigger fired by applyReorderUpdate has already advanced
+	// scope_version inside the same statement; we re-read the row so the
+	// response carries the fresh token the client must echo on its next
+	// PATCH. We deliberately do NOT cache the pre-write currentRev here.
+	nextRev, err := loadScopeRevision(ctx, tx, req.RawModel)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "reload revision failed: "+err.Error())
+		return
+	}
+	if err := logAuditExec(ctx, tx, actor,
 		"routing_candidate_binding_reorder", map[string]any{
 			"raw_model":         req.RawModel,
 			"expected_revision": req.ExpectedRevision,
+			"scope_version":     nextRev.Version,
 			"items":             req.Items,
 		}); err != nil {
 		writeError(w, http.StatusInternalServerError, "audit insert failed: "+err.Error())
@@ -1021,7 +1119,7 @@ func (h *Handler) handleRoutingCandidateBindingReorder(w http.ResponseWriter, r 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"message":           "updated",
 		"raw_model":         req.RawModel,
-		"expected_revision": currentRevision,
+		"expected_revision": nextRev.Raw,
 		"items":             req.Items,
 	})
 }
