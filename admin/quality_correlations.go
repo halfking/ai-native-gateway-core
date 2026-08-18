@@ -313,8 +313,15 @@ func computeAllInsights(ctx context.Context, db pgxQueryer, r *http.Request, day
 
 // pgxQueryer is the minimal interface for computeAllInsights.
 // Satisfied by *pgxpool.Pool and *pgx.Tx.
+//
+// 2026-08-18 (Agent C): QueryRow was added so dashboard helpers
+// (admin/probe_dashboard.go: queryUnifiedProbeSystemHealth,
+// queryUnifiedProbeQueueStats) can drive single-row aggregates
+// without a separate type. *pgxpool.Pool and *pgx.Tx both expose
+// QueryRow(ctx, sql, args...) pgx.Row.
 type pgxQueryer interface {
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
 // bucketIndex maps a bucket label to an ordinal index for
