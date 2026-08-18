@@ -63,10 +63,14 @@ bash scripts/partition/bodies-hot-repack.sh --env=252 --mode=swap \
 
 # ── 3) 新活表防复发 reloptions（swap 后新表不继承 reloptions） ───────────────
 echo; echo "──── [3] 新活表 reloptions ────"
-PGPASSWORD="$COMMON_PG_SUPERUSER_PASS" psql -X -h 127.0.0.1 -p 15432 -U "$COMMON_PG_SUPERUSER" -d llm_gateway -v ON_ERROR_STOP=1 -c "
+PGOPTIONS='-c statement_timeout=0 -c idle_in_transaction_session_timeout=0' PGPASSWORD="$COMMON_PG_SUPERUSER_PASS" psql -X -h 127.0.0.1 -p 15432 -U "$COMMON_PG_SUPERUSER" -d llm_gateway -v ON_ERROR_STOP=1 -c "
 ALTER TABLE public.request_logs_bodies_hot SET (
+  fillfactor = 90,
+  autovacuum_enabled = true,
   autovacuum_vacuum_scale_factor = 0.02,
-  autovacuum_vacuum_threshold    = 1000
+  autovacuum_vacuum_threshold    = 1000,
+  autovacuum_analyze_scale_factor = 0.02,
+  autovacuum_analyze_threshold    = 50
 );" \
   || { echo "✗ reloptions 设置失败，中止（swap 已成功，备份表保留，可单独补 reloptions）" >&2; exit 1; }
 
