@@ -32,7 +32,7 @@ handoff `2026-08-17 23:10` §5.3 列为待办，需独立会话低峰执行。
 
 1. **最小破坏**：不允许破坏 INSERT 写入路径与 admin SELECT 读端；不允许破坏现有 RLS、索引、外键（如有）。
 2. **可回滚**：所有 DDL 必须可逆（`xxx.down.sql` 已存在 V358 down、392 down）。
-3. **不停写窗口 < 5min**：84,757 行 + 列清单（20 列）+ 索引 5 个 → 全部重建 ≈ 5min（实测 request_logs 月度分区重写在 71/184 上 1-3min）。
+3. **不停写窗口 < 5min**：84,757 行 + 列清单（20 列）+ 索引 5 个 → 全部重建 ≈ 5min（实测 request_logs 月度分区重写在 71/252 上 1-3min）。
 4. **历史数据保留**：84,757 行（含 72k NULL ts）必须归档可查，不可直接 DROP。
 5. **未来 TTL**：通过 DROP 月分区实现 30 天清理（参考 `drop_old_state_partitions` 391）。
 6. **ts 默认值兜底**：必须 `ALTER COLUMN ts SET DEFAULT now()` 已就位（V358 已做）。

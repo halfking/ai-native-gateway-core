@@ -1022,13 +1022,14 @@ func reconcileStaleNodeProbeStateSQL() string {
 		JOIN credentials c ON c.id = cmb.credential_id
 		JOIN providers   p ON p.id = c.provider_id
 		WHERE cmb.available = TRUE
-		  AND (
-		      nps.last_direct_ok  IS DISTINCT FROM TRUE
-		      OR nps.last_gateway_ok IS DISTINCT FROM TRUE
-		      OR nps.paused = TRUE
-		      OR nps.next_retry_at IS NULL
-		      OR nps.next_retry_at > now()
-		  )
+			  AND COALESCE(nps.paused, FALSE) = FALSE
+			  AND (
+			      nps.last_direct_ok  IS DISTINCT FROM TRUE
+			      OR nps.last_gateway_ok IS DISTINCT FROM TRUE
+			      OR nps.next_retry_at IS NULL
+			      OR nps.next_retry_at > now()
+			  )
+
 		  AND COALESCE(c.status, 'active') = 'active'
 		  AND COALESCE(c.lifecycle_status, 'active') = 'active'
 		  AND COALESCE(c.manual_disabled, FALSE) = FALSE

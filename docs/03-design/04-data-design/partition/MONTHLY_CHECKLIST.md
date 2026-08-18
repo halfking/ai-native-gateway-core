@@ -529,8 +529,8 @@ SELECT '319', CASE WHEN EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'ensure_cr
 "
 
 # 预期 SHA256：7e80d9aa6f886c484009839f6dc876a96f61c7547b7e464aefe1d6b8c7d23efd
-ls -lh /opt/databackup/pg-daily/184/pg-full-184-20260630.dump
-sha256sum /opt/databackup/pg-daily/184/pg-full-184-20260630.dump
+ls -lh /opt/databackup/pg-daily/252/pg-full-252-20260630.dump
+sha256sum /opt/databackup/pg-daily/252/pg-full-252-20260630.dump
 
 # Cron 检查
 crontab -l | grep columnar
@@ -543,7 +543,7 @@ crontab -l | grep columnar
 - 构建时间：2026-06-29T22:48:35Z
 - Git SHA：0b0d80e8
 - 部署日期：2026-06-30
-- 备份位置：`184:/opt/databackup/pg-daily/184/pg-full-184-20260630.dump`
+- 备份位置：`252:/opt/databackup/pg-daily/252/pg-full-252-20260630.dump`
 
 #### 部署命令
 

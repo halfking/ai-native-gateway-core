@@ -130,6 +130,7 @@ type PreflightEntry struct {
 	Status               EntryStatus
 	Generation           string
 	FieldChecksum        string
+	Tuple                *store.ParsedNodeKey
 	TargetKey            string
 	MemberCount          int64
 	MemberChecksum       string
@@ -196,10 +197,11 @@ func RunPreflight(ctx context.Context, opts Options) (*Report, error) {
 		opts.Prefix + "*request_dedup*",
 	}
 	type sk struct {
-		SourceKey string
-		KeyType   string
-		PTTLMs    int64
-		Gen       string
+		SourceKey     string
+		KeyType       string
+		PTTLMs        int64
+		Gen           string
+		FieldChecksum string
 	}
 	var scanned []sk
 	for _, p := range patterns {
@@ -218,13 +220,14 @@ func RunPreflight(ctx context.Context, opts Options) (*Report, error) {
 				if perr != nil {
 					continue
 				}
-				var gen string
+				var gen, checksum string
 				if kt == "hash" {
 					if f, ferr := opts.Redis.HGetAll(ctx, k).Result(); ferr == nil {
 						gen = f["generation"]
+						checksum = fieldChecksum(f)
 					}
 				}
-				scanned = append(scanned, sk{SourceKey: k, KeyType: kt, PTTLMs: pttl.Milliseconds(), Gen: gen})
+				scanned = append(scanned, sk{SourceKey: k, KeyType: kt, PTTLMs: pttl.Milliseconds(), Gen: gen, FieldChecksum: checksum})
 			}
 			if next == 0 {
 				break
@@ -303,6 +306,8 @@ func RunPreflight(ctx context.Context, opts Options) (*Report, error) {
 			ClassificationReason: reason,
 			Status:               status,
 			Generation:           s.Gen,
+			FieldChecksum:        s.FieldChecksum,
+			Tuple:                c.Tuple,
 			TargetKey:            target,
 			PTTLMS:               s.PTTLMs,
 			RunID:                runID,
@@ -336,7 +341,7 @@ func RunPreflight(ctx context.Context, opts Options) (*Report, error) {
 func checksumEntriesReport(entries []PreflightEntry) string {
 	type entrySnapshot struct {
 		SourceKey, Reason, Type, Schema, Gen, Target, FC string
-		Class, Status, RunID                            string
+		Class, Status, RunID                             string
 		PTTL                                             int64
 	}
 	snaps := make([]entrySnapshot, len(entries))

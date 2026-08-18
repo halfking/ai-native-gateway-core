@@ -116,6 +116,7 @@ type resolveCandidate struct {
 	BaseURL               string   `json:"base_url"`
 	ProviderEnabled       bool     `json:"provider_enabled"`
 	CredentialID          int      `json:"credential_id"`
+	TenantID              string   `json:"-"`
 	CredentialLabel       string   `json:"credential_label"`
 	CredentialStatus      string   `json:"credential_status"`
 	LifecycleStatus       string   `json:"lifecycle_status"`
@@ -209,8 +210,9 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 				COALESCE(p.protocol, 'openai-completions') AS protocol,
 				p.base_url,
 				p.enabled AS provider_enabled,
-				v.credential_id,
-				COALESCE(c.label, '') AS credential_label,
+					v.credential_id,
+					v.tenant_id,
+					COALESCE(c.label, '') AS credential_label,
 				c.status AS credential_status,
 				c.lifecycle_status,
 				c.availability_state,
@@ -255,9 +257,11 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 			-- resolves. models_canonical.canonical_name is lowercased by
 			-- migration 396; lower(...) is a safety net.
 			LEFT JOIN models_canonical mc ON mc.id = v.canonical_id
-			WHERE p.tenant_id = 'default'
-			  AND (
-			      lower(v.raw_model_name) = ANY($1)
+				WHERE ($2 = '' OR v.tenant_id = $2)
+				  AND v.tenant_id = p.tenant_id
+				  AND v.tenant_id = c.tenant_id
+				  AND (
+				      lower(v.raw_model_name) = ANY($1)
 			      OR lower(COALESCE(mo.standardized_name, v.raw_model_name)) = ANY($1)
 			      OR lower(mc.canonical_name) = ANY($1)
 			  )
@@ -276,7 +280,7 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 				COALESCE(cmb.routing_tier, 2),
 				COALESCE(cmb.weight, 100) DESC,
 				COALESCE(cmb.success_rate, 0.9) DESC
-			`, rawModels)
+				`, rawModels, EffectiveTenantIDAll(r))
 
 	if err != nil {
 		slog.Error("routing resolve query failed", "error", err.Error(), "model", model, "rawModels", rawModels)
@@ -298,7 +302,7 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 		// back-filled below if the manager is ready.
 		if err := rows.Scan(
 			&c.ProviderID, &c.ProviderName, &c.CatalogCode, &c.Protocol, &c.BaseURL,
-			&c.ProviderEnabled, &c.CredentialID, &c.CredentialLabel, &c.CredentialStatus,
+			&c.ProviderEnabled, &c.CredentialID, &c.TenantID, &c.CredentialLabel, &c.CredentialStatus,
 			&c.LifecycleStatus, &c.AvailabilityState, &c.AvailabilityRecoverAt,
 			&c.QuotaState, &c.QuotaRecoverAt, &c.ConcurrencyLimit, &c.EffectiveConcurrency,
 			&c.EffectiveAt, &c.ExpiresAt, &c.CredentialInEffect, &c.BalanceUSD,
@@ -378,7 +382,7 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 				CredentialID: c.CredentialID,
 				RawModel:     c.ModelName,
 				Canonical:    c.StandardizedName,
-				TenantID:     "default",
+				TenantID:     c.TenantID,
 				PriceIn:      priceIn,
 				PriceOut:     priceOut,
 				BillingMode:  c.BillingMode,

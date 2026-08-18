@@ -48,6 +48,35 @@ describe('dashboard board tab contract', () => {
     expect(source).not.toContain('boardState.operational.value')
   })
 
+  it('reuses one detail drawer without loading provider statistics', async () => {
+    const [logs, drawer] = await Promise.all([
+      readViewSource('RequestLogsView.vue'),
+      readFile(
+        resolve(process.cwd(), 'web/src/components/RequestLogDrawer.vue'),
+        'utf8',
+      ).catch(() => readFile(resolve(process.cwd(), 'src/components/RequestLogDrawer.vue'), 'utf8')),
+    ])
+
+    expect(logs).toContain('<RequestLogDrawer')
+    expect(logs).not.toContain('getRequestLogDetail')
+    expect(drawer).toContain('getRequestLogDetail')
+    expect(drawer).not.toContain('getProviderRequestStats')
+    expect(drawer).not.toContain('providerStats')
+  })
+
+  it('guards the shared drawer against stale detail and session writes', async () => {
+    const drawer = await readFile(
+      resolve(process.cwd(), 'web/src/components/RequestLogDrawer.vue'),
+      'utf8',
+    ).catch(() => readFile(resolve(process.cwd(), 'src/components/RequestLogDrawer.vue'), 'utf8'))
+
+    expect(drawer).toContain('let detailLoadSeq = 0')
+    expect(drawer).toContain('const loadSeq = ++detailLoadSeq')
+    expect(drawer).toContain('if (loadSeq !== detailLoadSeq || props.requestId !== id) return')
+    expect(drawer).toContain('function isCurrentDetail(requestId: string, loadSeq: number): boolean')
+    expect(drawer).toContain('if (!isCurrentDetail(requestId, loadSeq)) return')
+  })
+
   it('opens request details locally after the trace page was replaced by an inline panel', async () => {
     const [v2, legacy, logs] = await Promise.all([
       readViewSource('DashboardViewV2.vue'),
@@ -60,10 +89,13 @@ describe('dashboard board tab contract', () => {
     expect(legacy).toContain('activeRequestId.value = id')
     expect(v2).not.toContain('/admin/request-trace')
     expect(legacy).not.toContain('/admin/request-trace')
-    // 请求日志列表的流程详情应直接挂载内嵌面板 (RequestTracePanel),
-    // 而非 modal/teleport;并保留旧变量名 traceRequestId 作为状态载体。
-    expect(logs).toContain('traceRequestId.value = requestId')
-    expect(logs).toContain('<RequestTracePanel')
+    // 请求日志列表与首页实时流复用同一个请求详情抽屉；流程详情入口
+    // 通过抽屉的 initialTraceOpen prop 控制内嵌面板，而非维护第二套详情实现。
+    expect(logs).toContain("activeRequestId.value = requestId")
+    expect(logs).toContain("openDetailWithTrace.value = true")
+    expect(logs).toContain('<RequestLogDrawer')
+    expect(logs).toContain('mode="request-logs"')
+    expect(logs).toContain(':initial-trace-open="openDetailWithTrace"')
     expect(logs).not.toContain('<RequestTraceModal')
     expect(logs).not.toContain('/admin/request-trace')
   })

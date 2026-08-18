@@ -17,6 +17,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/migration"
 	"github.com/redis/go-redis/v9"
 )
@@ -47,7 +49,8 @@ func main() {
 	modeStr := common.String("mode", defaultMode, "Schema mode: legacy|dual|canonical")
 	apply := common.Bool("apply", false, "Write ledger/metadata. Default is dry-run.")
 	rate := common.Int("rate", 0, "Cleanup rate limit (keys/sec). 0 disables.")
-	forceRollback := common.Bool("force-rollback", false, "Allow cleanup in mode=legacy.")
+	pgDSN := common.String("pg", envOr("LLM_GATEWAY_DATABASE_URL", envOr("DATABASE_URL", "")), "Postgres DSN (required for --apply cleanup)")
+	rollbackDeadline := common.String("rollback-deadline", "", "Rollback deadline (RFC3339Nano) for preflight metadata")
 	if err := common.Parse(args); err != nil {
 		log.Fatalf("flag parse: %v", err)
 	}
@@ -86,13 +89,13 @@ func main() {
 		}
 		handleCopy(ctx, ledger, rdb, *keyPrefix)
 	case "cleanup":
-		handleCleanup(ctx, ledger, rdb, *keyPrefix, mode, *rate, *forceRollback, *apply)
+		handleCleanup(ctx, ledger, rdb, *keyPrefix, *pgDSN, mode, *rate, *apply)
 	case "preflight":
 		if !*apply {
 			fmt.Println("[DRY-RUN] preflight phase: would classify node:*/win:*/idx:model:* keys")
 			return
 		}
-		handlePreflight(ctx, ledger, rdb, *keyPrefix, *owner, *ledgerID, mode)
+		handlePreflight(ctx, ledger, rdb, *keyPrefix, *owner, *ledgerID, mode, *rollbackDeadline)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command %q\n", cmd)
 		os.Exit(2)
@@ -112,9 +115,13 @@ func handleStatus(ctx context.Context, store *migration.MetadataHash) {
 		m.LedgerID, m.Owner, m.Mode, m.Checkpoint, m.StartedAt.Format(time.RFC3339Nano), m.UpdatedAt.Format(time.RFC3339Nano), m.PreflightChecksum)
 }
 
-func handlePreflight(ctx context.Context, ledger *migration.Ledger, rdb *redis.Client, prefix, owner, ledgerID string, mode migration.Mode) {
+func handlePreflight(ctx context.Context, ledger *migration.Ledger, rdb *redis.Client, prefix, owner, ledgerID string, mode migration.Mode, rollbackDeadline string) {
 	if owner == "" || ledgerID == "" {
 		log.Fatal("--owner and --ledger-id are required")
+	}
+	deadline, err := time.Parse(time.RFC3339Nano, rollbackDeadline)
+	if err != nil || deadline.IsZero() {
+		log.Fatal("--rollback-deadline is required and must be RFC3339Nano")
 	}
 	pre := &migration.PreflightRunner{
 		Prefix:  prefix,
@@ -135,6 +142,7 @@ func handlePreflight(ctx context.Context, ledger *migration.Ledger, rdb *redis.C
 		StartedAt:         time.Now().UTC(),
 		UpdatedAt:         time.Now().UTC(),
 		PreflightChecksum: summary.Checksum,
+		RollbackDeadline:  deadline,
 		Checkpoint:        migration.CheckpointPreflight,
 	}
 	if err := (&migration.MetadataHash{Prefix: prefix, RDB: rdb}).Write(ctx, md); err != nil {
@@ -160,20 +168,45 @@ func handleCopy(ctx context.Context, ledger *migration.Ledger, rdb *redis.Client
 		counts[migration.CopyStatusUnchanged], len(results))
 }
 
-func handleCleanup(ctx context.Context, ledger *migration.Ledger, rdb *redis.Client, prefix string, mode migration.Mode, rate int, forceRollback, apply bool) {
+func handleCleanup(ctx context.Context, ledger *migration.Ledger, rdb *redis.Client, prefix, pgDSN string, mode migration.Mode, rate int, apply bool) {
 	if !apply {
 		fmt.Println("[DRY-RUN] cleanup phase: no writes")
 		return
+	}
+	if strings.TrimSpace(pgDSN) == "" {
+		log.Fatal("--apply cleanup requires --pg or DATABASE_URL / LLM_GATEWAY_DATABASE_URL")
+	}
+	pool, err := pgxpool.New(ctx, pgDSN)
+	if err != nil {
+		log.Fatalf("postgres connect: %v", err)
+	}
+	defer pool.Close()
+	if err := pool.Ping(ctx); err != nil {
+		log.Fatalf("postgres ping: %v", err)
+	}
+	pgStore := migration.NewPGStore(pool)
+	authorization, err := migration.LoadCleanupAuthorization(ctx, &migration.MetadataHash{Prefix: prefix, RDB: rdb}, pgStore)
+	if err != nil {
+		log.Fatalf("cleanup authorization: %v", err)
 	}
 	cl := &migration.Cleanup{
 		Prefix: prefix,
 		Ledger: ledger,
 		RDB:    rdb,
 		Opts: migration.CleanupOptions{
-			Mode:            mode,
+			Mode:            authorization.Run.Mode,
 			RateLimitPerSec: rate,
-			ForceRollback:   forceRollback,
-			Now:             func() time.Time { return time.Now().UTC() },
+			Authorization:   authorization,
+			Claim: func(item migration.Item) error {
+				return pgStore.ClaimEntryForCleanup(ctx, authorization.Run.LedgerID, item.SourceKey, item.FieldChecksum)
+			},
+			ReleaseClaim: func(item migration.Item) error {
+				return pgStore.ReleaseEntryCleanupClaim(ctx, authorization.Run.LedgerID, item.SourceKey, item.FieldChecksum)
+			},
+			MarkCleaned: func(item migration.Item) error {
+				return pgStore.MarkEntryCleaned(ctx, authorization.Run.LedgerID, item.SourceKey, item.FieldChecksum)
+			},
+			Now: func() time.Time { return time.Now().UTC() },
 		},
 	}
 	results, err := cl.Cleanup(ctx)

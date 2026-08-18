@@ -1,5 +1,7 @@
 # 245 Probe-Canary 现场证据与状态 — 2026-08-19
 
+> **发布判定：不通过。** 本次仅证明基础启动、队列 claim 和 direct round 可运行；`node_probe_runs` audit 为 0，URSM tenant key 与 routing resolve 未验证。因此本记录不能作为 245 全量或 154 发布证明。
+
 ## 1. 范围
 
 `docs/handoff/2026-08-19-global-routing-state-machine-remediation.md` 中设计的 245 probe-canary 现场执行结果。
@@ -58,7 +60,7 @@ ba1ce1911 docs(audit,remediation): state machine remediation round 2 — 4-agent
 - 现象：canary 启动时 `ApplyMigrations` 没执行 migration 538（inline ensure 函数缺失）
 - 现状：CHECK 约束在生产 PG 仍是旧 4 值
 - 已现场手工补救：跑 `/tmp/apply-538.sql` 把 CHECK 扩展为 9 值（`request_failure / manual / credential_recovery / sync_request / periodic / admin / integrity_probe_planner / selfcheck / external_async`）
-- **后续必须**：在 `db/db.go` 加 inline ensure 函数，让 binary 启动自动跑 538（建议 PR 单独提交，不在 245 canary 期间动）
+- **已在当前代码修复**：`db/db.go` 已接入启动时幂等 ensure；仍需在隔离数据库上验证旧约束升级和新值插入。生产 DDL 执行仍需 ops 审批。
 
 #### 问题 B：`node_probe_runs` audit 写入为 0
 
@@ -67,7 +69,7 @@ ba1ce1911 docs(audit,remediation): state machine remediation round 2 — 4-agent
   - canary 的 worker 路径是 `systemmonitor.SystemMonitor.processTask` 而不是 `ProbeService.Run`，因为 `unified probe service wired` log 没出现（说明 `cmd/gateway/main.go` 的 wiring 条件没满足，或 canary binary 与生产 env 在某分支未匹配）
   - `systemmonitor.audit.Write` 走 `system_probe_runs` 但写之前某些条件（`Enabled()` 返回 false 或 fallback mode）跳过
   - 或者 ProbeQueue worker 优先于 system_monitor claim 任务，但 audit 路径有 bug 没产生 row
-- **未在本 canary 解决**：需要后续在 245 全量或生产 154 部署后用真实任务流复现，定位 systemmonitor audit 为何 skipped
+- **未在本 canary 解决**：必须先在隔离、已获 ops 授权的 canary 复现并证明 audit/URSM/resolve 全链路；在三项通过前，禁止将 245 全量或 154 生产作为诊断环境。
 
 #### 问题 C：admin auth 路径不可用
 
@@ -114,9 +116,9 @@ ba1ce1911 docs(audit,remediation): state machine remediation round 2 — 4-agent
 2. **定位 systemmonitor audit skip 根因**：audit.Write 调用前 `Enabled()` 为 false 或 fallback mode 触发了静默 return
 3. **现场 PG 82 行伪成功清理**：ops 跑 `sql/migrations/operations/2026-08-19-pseudo-success-cleanup.sql`
 
-### P1 — 245 全量部署门禁
+### P1 — 发布门禁（P0 隔离 canary 通过后）
 
-4. 245 全量替换 8781：先 `systemctl stop llm-gateway-go-canary.service` 确认无残留；将 `LLM_GATEWAY_BG_MODE=full` 写入生产 env
+4. 245 全量替换 8781：仅在隔离 canary 的 audit/URSM/resolve 三项均通过且 ops 批准后，先确认 `llm-gateway-go-canary.service` 无残留，再评估 `LLM_GATEWAY_BG_MODE=full`
 5. 验证 24h：监控 `audit_persist_failed_total / lease_lost_total / audit_unknown_source_total` 全为 0
 
 ### P2 — 154 生产
@@ -127,7 +129,7 @@ ba1ce1911 docs(audit,remediation): state machine remediation round 2 — 4-agent
 ### P2 — 后续 sprint
 
 8. `record_request.lua:186-190` 单向守门（Agent D 报告 P2）
-9. resolve seed tenant 写死 `"default"`（Agent D 报告 P0，本轮未实施）
+9. resolve seed tenant 的 `"default"` 硬编码已在当前代码修复；仍需用多租户隔离数据做集成验证。
 
 ## 6. 文件清单
 

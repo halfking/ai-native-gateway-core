@@ -41,9 +41,9 @@
 ### Agent B — 探针审计 CHECK + lease
 
 **新增文件**：
-- `sql/migrations/startup/536_node_probe_runs_trigger_kind_unified_queue.sql`
-- `sql/migrations/startup/536_node_probe_runs_trigger_kind_unified_queue.down.sql`
-- `sql/migrations/startup/migration_536_test.go`
+- `sql/migrations/startup/538_node_probe_runs_trigger_kind_unified_queue.sql`
+- `sql/migrations/startup/538_node_probe_runs_trigger_kind_unified_queue.down.sql`
+- `sql/migrations/startup/migration_538_test.go`
 - `bg/probe_service_audit_lease_test.go`
 
 **修改文件**：
@@ -55,7 +55,7 @@
 - `cmd/gateway/main.go`（两处 probeService.SetProbeQueue 注入）
 
 **关键变更**：
-1. Migration 536 扩展 `node_probe_runs_trigger_kind_check` 接受全部 9 个统一队列 `task.Source`：`request_failure / manual / credential_recovery / sync_request / periodic / admin / integrity_probe_planner / selfcheck / external_async`。
+1. Migration 538 扩展 `node_probe_runs_trigger_kind_check` 接受全部 9 个统一队列 `task.Source`：`request_failure / manual / credential_recovery / sync_request / periodic / admin / integrity_probe_planner / selfcheck / external_async`。
 2. `bg/probe_service.go`：
    - `NormalizeTriggerKind` + `knownTriggerKind` map 兜底未知来源为 `request_failure`；
    - heartbeat goroutine（60s 心跳 ×5 覆盖 lease）；
@@ -176,11 +176,11 @@ go test ./sql/migrations/startup/...       → PASS
 ### 4.2 未决风险（需后续处理）
 
 1. **现场 DB 残留 82 行伪成功行**：`node_probe_state.last_direct_ok=TRUE AND last_gateway_ok=TRUE AND next_retry_at>now()` 需要 ops 一次性 SQL 清回 NULL/FALSE，并由新版本自然 probe 覆盖。代码路径已修复，DB 状态需单独清理。
-2. **`record_request.lua:186-190` 单向守门**：probe priority>10 后普通请求不能 unblock。当前由 Recovery + ProbeQueue 兜底，但若两者同时停摆会卡死。**Agent D 建议的 P2 修复未实施**，需后续 sprint 处理。
-3. **Resolve seed tenant 写死 `"default"`**：`admin/routing.go:376` 与生产 tenant 不命中，Agent D 标记 P0 但未在本轮修复（不在 A/B/C 范围）。需后续单独 sprint。
-4. **dashboard URSM SCAN max=0（无界）**：生产 `ursm:v2:node:tenant:*:*` 规模未确认，可能长尾。
-5. **Run 之前的 publisher 仍写 `pseudo_success_count`**：若 PG `v_routable_credential_models` 不存在会 500（agent C 已报告）。
-6. **`cmd/gateway/main.go:3255` 注释**确认 bearer 必须 system key；当前 `credential_selfcheck` 只用 `apiKey` 字段，正确。
+2. **`record_request.lua:186-190` 单向守门**：probe priority>10 后普通请求不能 unblock。当前由 Recovery + ProbeQueue 兜底，但若两者同时停摆会卡死。Agent D 建议的 P2 修复仍未实施，列入后续 handoff。
+3. **Resolve seed tenant**：已在当前代码移除 `admin/routing.go` 的 `default` seed，改为认证 scope + 数据库真实 tenant；仍需多租户隔离集成验证。
+4. **dashboard URSM coverage**：当前提供有界 K2 key count，但尚未实现 candidate 级 `present/missing/expired`、schema 和 TTL 维度。
+5. **system-monitor audit 现场链路**：当前代码已增加 audit backend 状态和关联字段日志；canary 的真实 `node_probe_runs/system_probe_runs` 仍需隔离环境复验。
+6. **生产状态**：migration 538、82 行 pseudo-success 清理、隔离 canary 与 24h 观察仍需 ops/变更授权，不在本地会话执行。
 
 ---
 

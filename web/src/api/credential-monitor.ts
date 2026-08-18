@@ -243,7 +243,7 @@ export interface ModelHistoryResponse {
   count: number
 }
 
-export function getModelHistory(credentialId: number, rawModel: string, limit = 50) {
+export function getModelHistory(credentialId: number, rawModel: string, limit = 50, requestOptions?: RequestOptions) {
   const params = new URLSearchParams()
   params.set('credential_id', String(credentialId))
   params.set('raw_model_name', rawModel)
@@ -251,6 +251,8 @@ export function getModelHistory(credentialId: number, rawModel: string, limit = 
   return req<ModelHistoryResponse>(
     'GET',
     `/api/credentials/model-history?${params.toString()}`,
+    undefined,
+    requestOptions,
   )
 }
 
@@ -282,7 +284,7 @@ export interface CredentialDecisionsResponse {
 // 2026-08-18: optional model filter scopes the list to one model×credential
 // pair (dashboard node detail drawer). Backend matches model/client_model/
 // outbound_model case-insensitively.
-export function getCredentialDecisions(credentialId: number, limit = 50, model?: string) {
+export function getCredentialDecisions(credentialId: number, limit = 50, model?: string, requestOptions?: RequestOptions) {
   const params = new URLSearchParams()
   params.set('credential_id', String(credentialId))
   params.set('limit', String(limit))
@@ -290,6 +292,8 @@ export function getCredentialDecisions(credentialId: number, limit = 50, model?:
   return req<CredentialDecisionsResponse>(
     'GET',
     `/api/credentials/decisions?${params.toString()}`,
+    undefined,
+    requestOptions,
   )
 }
 

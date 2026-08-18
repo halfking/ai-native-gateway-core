@@ -307,9 +307,21 @@ func (m *MetadataLuaStore) Read(ctx context.Context) (Metadata, error) {
 	if err != nil || epoch < 0 {
 		return Metadata{}, fmt.Errorf("ursm.v2: invalid stored cutover epoch %q", values["cutover_epoch"])
 	}
-	startedAt, _ := time.Parse(time.RFC3339Nano, values["started_at"])
-	updatedAt, _ := time.Parse(time.RFC3339Nano, values["updated_at"])
-	rollback, _ := time.Parse(time.RFC3339Nano, values["rollback_deadline"])
+	startedAt, err := time.Parse(time.RFC3339Nano, values["started_at"])
+	if err != nil {
+		return Metadata{}, fmt.Errorf("ursm.v2: invalid stored started_at: %w", err)
+	}
+	updatedAt, err := time.Parse(time.RFC3339Nano, values["updated_at"])
+	if err != nil {
+		return Metadata{}, fmt.Errorf("ursm.v2: invalid stored updated_at: %w", err)
+	}
+	rollback := time.Time{}
+	if raw := values["rollback_deadline"]; raw != "" {
+		rollback, err = time.Parse(time.RFC3339Nano, raw)
+		if err != nil {
+			return Metadata{}, fmt.Errorf("ursm.v2: invalid stored rollback_deadline: %w", err)
+		}
+	}
 	return Metadata{
 		Owner:             values["owner"],
 		LedgerID:          values["ledger_id"],

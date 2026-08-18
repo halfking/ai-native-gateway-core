@@ -1,3 +1,29 @@
+---
+archived_from: deploy/sql/DEPLOYMENT_PLAN.md
+archived_at: 2026-08-19
+archived_by: docs-archive v1.0 (audit follow-up)
+archived_reason: "184 服务器已下线（rule 31 §2.3）；当前 PROD 网关为 154 (47.97.111.154)，pre-prod 为 245 (8.136.114.245)；本文档整篇关于 184 + PG/Citus，与现状不再适用。归档保留供历史参考。"
+status: archived
+---
+
+> ⚠️ **DEPRECATED — 2026-08-19**
+>
+> 本文档归档于 `docs/archive/2026-07/specs/deployment-plan-v1-184-pg-citus.md`。
+> 原路径 `deploy/sql/DEPLOYMENT_PLAN.md` 已不存在。
+>
+> **当前 PROD 网关**: 154 (47.97.111.154) — systemd `llm-gateway-go.service`
+> **当前 pre-prod**: 245 (8.136.114.245) — systemd `llm-gateway-go.service`
+> **184 状态**: 已废弃（rule 31 §2.3 三层架构文档）；本文档中的 `184` / `172.31.0.3` / `172.31.0.4` 等引用全部失效。
+>
+> 新部署 / 迁移需求请参考：
+> - `knowledge/facts/server-topology.md` — 当前 SSOT 拓扑
+> - `deploy/standard-deploy/` — 部署骨架
+> - `skills/llm-gateway-deploy-test/` — 四环境部署测试
+>
+> 详细归档背景：本会话 (2026-08-19) audit follow-up，与 handoff `handoff-20260819-audit-and-concurrent-zcode-preserve.md` §4.5 owner 决策一致。
+
+---
+
 # 数据库部署方案
 
 > **版本**: v1.0  

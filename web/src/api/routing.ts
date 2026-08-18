@@ -1,4 +1,4 @@
-import { req } from './_core'
+import { req, type RequestOptions } from './_core'
 import type { CredentialLifecycleStatus } from './providers'
 
 // routing.ts — v6.0 audit T12 (2026-06-22)
@@ -125,11 +125,11 @@ export interface RoutingResolveResponse {
   candidates: RoutingCandidate[]
 }
 
-export function resolveRouting(model: string, clientProfile?: string, persistProbe = false) {
+export function resolveRouting(model: string, clientProfile?: string, persistProbe = false, options?: RequestOptions) {
   const qs = new URLSearchParams({ model })
   if (clientProfile) qs.set('client_profile', clientProfile)
   if (persistProbe) qs.set('persist_probe', '1')
-  return req<RoutingResolveResponse>('GET', `/api/routing/resolve?${qs}`)
+  return req<RoutingResolveResponse>('GET', `/api/routing/resolve?${qs}`, undefined, options)
 }
 
 // 2026-07-24: routing-v2 resolve 页管理员设置端点。

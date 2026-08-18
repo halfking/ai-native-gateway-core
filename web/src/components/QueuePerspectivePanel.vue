@@ -15,7 +15,7 @@
  */
 import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { getFeatured, resolveRouting } from '../api/routing'
+import { getFeatured, resolveRouting, reorderCandidateBindings, type CandidateBindingReorderItem, type RoutingCandidate } from '../api/routing'
 import { getRequestLogTopModels, type TopRequestModel } from '../api/logs'
 import {
   queueRef,
@@ -26,6 +26,7 @@ import {
   type LiveNodeStatus,
   type LiveRequest,
 } from '../composables/liveStreamStore'
+import { isSuperAdmin } from '../store'
 import RequestProcessingTrail from './RequestProcessingTrail.vue'
 import NodeDetailDrawer from './NodeDetailDrawer.vue'
 
@@ -128,10 +129,13 @@ interface ModelGroup {
   featured: boolean
   hotRequests: number
   aliases: string[]
+  /** 仅当所有节点都属于同一个完整 raw binding 列表时可安全重排。 */
+  reorderRawModel?: string
 }
 
 const modelScopeMeta = ref<Map<string, ModelScopeMeta>>(new Map())
 const modelScopeAliasIndex = ref<Map<string, string>>(new Map())
+const modelCandidatesByRawModel = ref<Map<string, RoutingCandidate[]>>(new Map())
 const modelScopeLoading = ref(true)
 const modelScopeError = ref('')
 const selectedNode = ref<LiveNodeStatus | null>(null)
@@ -176,6 +180,7 @@ async function loadModelScope() {
   if (featured.status === 'fulfilled') featured.value.featured_models.forEach(model => addScope(model, true, 0))
   if (hot.status === 'fulfilled') hot.value.items.forEach((model: TopRequestModel) => addScope(model.canonical_name || model.display_name, false, model.request_count))
   const aliases = new Map<string, string>()
+  const candidatesByRawModel = new Map<string, RoutingCandidate[]>()
   const resolveOne = async (meta: ModelScopeMeta) => {
     const name = [...meta.aliases][0]
     try {
@@ -188,7 +193,13 @@ async function loadModelScope() {
         else aliases.delete(key)
       }
       for (const raw of resolved.raw_models) assignAlias(raw)
-      for (const candidate of resolved.candidates) assignAlias(candidate.model_name)
+      for (const candidate of resolved.candidates) {
+        assignAlias(candidate.model_name)
+        const key = modelKey(candidate.model_name)
+        const candidates = candidatesByRawModel.get(key) ?? []
+        candidates.push(candidate)
+        candidatesByRawModel.set(key, candidates)
+      }
     } catch {
       // Keep exact canonical/featured matches; ambiguous aliases stay hidden.
     }
@@ -201,6 +212,7 @@ async function loadModelScope() {
   }
   modelScopeMeta.value = scope
   modelScopeAliasIndex.value = aliases
+  modelCandidatesByRawModel.value = candidatesByRawModel
   if (featured.status === 'rejected' && hot.status === 'rejected') modelScopeError.value = '模型范围暂不可用，未展示模型节点。'
   modelScopeLoading.value = false
 }
@@ -239,16 +251,162 @@ const modelGroups = computed<ModelGroup[]>(() => {
     }
     const modelNodes = nodes.value.filter(node => credentialIds.has(node.credential_id))
     const aliases = [scopeKey, ...rawModels].map(modelKey)
+    const rawModelList = [...rawModels]
+    const rawModel = rawModelList.length === 1 ? rawModelList[0] : undefined
+    const candidates = rawModel
+      ? modelCandidatesByRawModel.value.get(modelKey(rawModel)) ?? []
+      : []
+    const candidateOrder = new Map(candidates.map((candidate, index) => [candidate.credential_id, index]))
+    const candidatesMatchNodes = rawModel != null
+      && candidates.length === modelNodes.length
+      && candidates.every(candidate => candidateOrder.has(candidate.credential_id) && credentialIds.has(candidate.credential_id))
+    const orderedNodes = candidatesMatchNodes
+      ? [...modelNodes].sort((left, right) => (candidateOrder.get(left.credential_id) ?? Number.MAX_SAFE_INTEGER) - (candidateOrder.get(right.credential_id) ?? Number.MAX_SAFE_INTEGER))
+      : modelNodes
     const requestIds = new Set<string>()
     for (const credentialId of credentialIds) {
       for (const request of getRequestsForCredential(credentialId)) {
         if (request.request_id && aliases.includes(modelKey(request.model || ''))) requestIds.add(request.request_id)
       }
     }
-    groups.push({ model: scopeKey, nodes: modelNodes, requestCount: requestIds.size, featured: meta.featured, hotRequests: meta.hotRequests, aliases })
+    groups.push({
+      model: scopeKey,
+      nodes: orderedNodes,
+      requestCount: requestIds.size,
+      featured: meta.featured,
+      hotRequests: meta.hotRequests,
+      aliases,
+      reorderRawModel: candidatesMatchNodes ? rawModel : undefined,
+    })
   }
   return groups.sort((a, b) => Number(b.featured) - Number(a.featured) || b.hotRequests - a.hotRequests || b.nodes.length - a.nodes.length || a.model.localeCompare(b.model))
 })
+
+// ── 节点状态过滤（在用 / 降级 / 人工禁用 / 配额耗尽） ─────────────────────
+// 每个节点只归属一个主状态桶：人工禁用 > 耗尽/暂停 > 降级 > 在用。
+// 这样取消"耗尽"即可稳定排除耗尽节点，而不会被"在用"的 OR 条件重新匹配。
+type StatusBucket = 'active' | 'degraded' | 'manualDisabled' | 'exhausted'
+
+const statusFilter = ref<Record<StatusBucket, boolean>>({
+  active: true,
+  degraded: true,
+  manualDisabled: true,
+  exhausted: true,
+})
+
+function toggleStatusFilter(bucket: StatusBucket) {
+  statusFilter.value = { ...statusFilter.value, [bucket]: !statusFilter.value[bucket] }
+}
+
+function nodeStatusBucket(n: LiveNodeStatus): StatusBucket {
+  if (n.manual_disabled || n.disable_kind === 'manual') return 'manualDisabled'
+  if ((n.quota_state ?? '').includes('exhausted') || n.availability_state === 'suspended') return 'exhausted'
+  if (n.circuit_state === 'open' || n.circuit_state === 'half_open' || n.health_status === 'unreachable'
+    || n.availability_state === 'cooling' || n.disable_kind === 'system' || n.fp_disabled) return 'degraded'
+  return 'active'
+}
+
+function passesStatusFilter(n: LiveNodeStatus): boolean {
+  return statusFilter.value[nodeStatusBucket(n)]
+}
+
+// 仅展示当前过滤命中的节点；过滤全部命中数 + 命中节点
+const filteredModelGroups = computed<ModelGroup[]>(() => {
+  return modelGroups.value
+    .map(group => ({ ...group, nodes: group.nodes.filter(passesStatusFilter) }))
+    .filter(group => group.nodes.length > 0)
+})
+
+const hasFilteredGroups = computed(() => filteredModelGroups.value.length > 0)
+
+// ── 节点拖拽调整优先级（HTML5 dnd） ───────────────────────────────────────
+// 只在显示完整的单 raw-model 候选集且四个状态均显示时允许重排：后端排序
+// API 以该完整集合为原子单位，提交 `1..N` 的连续 manual_priority。
+const dragScopeKey = ref<string | null>(null)
+const dragSourceCredentialId = ref<number | null>(null)
+const dragOverCredentialId = ref<number | null>(null)
+const dragSaving = ref(false)
+const dragError = ref('')
+
+const filtersAreAllEnabled = computed(() => Object.values(statusFilter.value).every(Boolean))
+
+function canReorder(group: ModelGroup): boolean {
+  return isSuperAdmin() && !dragSaving.value && filtersAreAllEnabled.value && Boolean(group.reorderRawModel)
+}
+
+function dragDisabledHint(group: ModelGroup): string {
+  if (!isSuperAdmin()) return '仅超级管理员可以调整优先级。'
+  if (dragSaving.value) return '正在保存优先级调整。'
+  if (!filtersAreAllEnabled.value) return '请显示全部状态后再调整完整候选列表的优先级。'
+  if (!group.reorderRawModel) return '该模型分组合并了多个原始模型或实时节点不完整，无法安全调整优先级。'
+  return '拖动节点以调整优先级，越靠前优先级越高。'
+}
+
+function onDragStart(event: DragEvent, group: ModelGroup, credentialId: number) {
+  if (!canReorder(group)) {
+    event.preventDefault()
+    return
+  }
+  dragScopeKey.value = group.model
+  dragSourceCredentialId.value = credentialId
+  dragOverCredentialId.value = credentialId
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = 'move'
+    event.dataTransfer.setData('text/plain', `${group.model}:${credentialId}`)
+  }
+}
+
+function onDragOver(event: DragEvent, group: ModelGroup, credentialId: number) {
+  if (!canReorder(group) || dragScopeKey.value !== group.model) return
+  event.preventDefault()
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'
+  dragOverCredentialId.value = credentialId
+}
+
+function onDragLeave(group: ModelGroup, credentialId: number) {
+  if (dragScopeKey.value !== group.model) return
+  if (dragOverCredentialId.value === credentialId) dragOverCredentialId.value = null
+}
+
+function isDragTarget(scopeKey: string, credentialId: number): boolean {
+  return dragScopeKey.value === scopeKey && dragOverCredentialId.value === credentialId
+}
+
+function clearDragState() {
+  dragScopeKey.value = null
+  dragSourceCredentialId.value = null
+  dragOverCredentialId.value = null
+}
+
+async function onDrop(event: DragEvent, group: ModelGroup, targetCredentialId: number) {
+  if (!canReorder(group) || dragScopeKey.value !== group.model || !group.reorderRawModel) return
+  event.preventDefault()
+  const ordered = [...group.nodes]
+  const fromIndex = ordered.findIndex(n => n.credential_id === dragSourceCredentialId.value)
+  const toIndex = ordered.findIndex(n => n.credential_id === targetCredentialId)
+  if (fromIndex < 0 || toIndex < 0 || fromIndex === toIndex) {
+    clearDragState()
+    return
+  }
+  const [moved] = ordered.splice(fromIndex, 1)
+  ordered.splice(toIndex, 0, moved)
+  const items: CandidateBindingReorderItem[] = ordered.map((node, index) => ({
+    credential_id: node.credential_id,
+    raw_model: group.reorderRawModel!,
+    manual_priority: index + 1,
+  }))
+  clearDragState()
+  dragSaving.value = true
+  dragError.value = ''
+  try {
+    await reorderCandidateBindings(items)
+    await loadModelScope()
+  } catch (error) {
+    dragError.value = error instanceof Error ? error.message : '调整优先级失败'
+  } finally {
+    dragSaving.value = false
+  }
+}
 
 const hasModelGroups = computed(() => modelGroups.value.length > 0)
 const hasReportedRawModels = computed(() => nodes.value.some(node => Array.isArray(node.raw_models)))
@@ -413,13 +571,40 @@ function formatTs(ts: string | undefined): string {
       <div v-if="hasReportedRawModels && (hasModelGroups || modelScopeLoading || modelScopeError)" class="qp-layer qp-layer--model-groups">
         <div class="qp-layer-header">
           <span class="qp-layer-name">按模型分组的可用节点</span>
-          <span v-if="hasModelGroups" class="qp-layer-count">{{ modelGroups.length }} 个模型</span>
-          <button type="button" class="qp-retry" :disabled="modelScopeLoading" @click="loadModelScope">{{ modelScopeLoading ? t('requestJourneys.modelScopeLoading') : `↻ ${t('requestJourneys.refreshScope')}` }}</button>
+          <span v-if="hasModelGroups" class="qp-layer-count">{{ filteredModelGroups.length }} 个模型<template v-if="modelGroups.length !== filteredModelGroups.length"> / {{ modelGroups.length }}</template></span>
+          <button type="button" class="qp-retry" :disabled="modelScopeLoading || dragSaving" @click="loadModelScope">{{ dragSaving ? '正在保存…' : (modelScopeLoading ? t('requestJourneys.modelScopeLoading') : `↻ ${t('requestJourneys.refreshScope')}`) }}</button>
         </div>
+
+        <!-- 状态过滤多选框：在用 / 降级 / 人工禁用 / 配额耗尽 -->
+        <div v-if="hasModelGroups" class="qp-status-filters" role="group" :aria-label="'状态过滤'">
+          <label class="qp-status-filter" :class="{ 'is-active': statusFilter.active }">
+            <input type="checkbox" :checked="statusFilter.active" @change="toggleStatusFilter('active')" />
+            <span class="qp-status-filter-dot qp-dot--ok" aria-hidden="true"></span>
+            <span>在用</span>
+          </label>
+          <label class="qp-status-filter" :class="{ 'is-active': statusFilter.degraded }">
+            <input type="checkbox" :checked="statusFilter.degraded" @change="toggleStatusFilter('degraded')" />
+            <span class="qp-status-filter-dot qp-dot--bad" aria-hidden="true"></span>
+            <span>降级</span>
+          </label>
+          <label class="qp-status-filter" :class="{ 'is-active': statusFilter.manualDisabled }">
+            <input type="checkbox" :checked="statusFilter.manualDisabled" @change="toggleStatusFilter('manualDisabled')" />
+            <span class="qp-status-filter-dot qp-status-filter-dot--muted" aria-hidden="true"></span>
+            <span>人工禁用</span>
+          </label>
+          <label class="qp-status-filter" :class="{ 'is-active': statusFilter.exhausted }">
+            <input type="checkbox" :checked="statusFilter.exhausted" @change="toggleStatusFilter('exhausted')" />
+            <span class="qp-status-filter-dot qp-dot--bad" aria-hidden="true"></span>
+            <span>耗尽</span>
+          </label>
+          <span v-if="dragError" class="qp-status-filter-error">{{ dragError }}</span>
+        </div>
+
         <div v-if="modelScopeLoading" class="qp-model-scope-state">{{ t('requestJourneys.modelScopeLoading') }}</div>
         <div v-else-if="modelScopeError" class="qp-model-scope-state qp-model-scope-state--error">{{ t('requestJourneys.modelScopeError') }}</div>
+        <div v-else-if="!hasFilteredGroups && hasModelGroups" class="qp-model-scope-state">当前过滤条件下没有可用节点。请调整状态过滤多选框。</div>
         <div v-else-if="!hasModelGroups" class="qp-model-scope-state">{{ t('requestJourneys.noModelNodes') }}</div>
-        <div v-else v-for="group in modelGroups" :key="group.model" class="qp-model-group">
+        <div v-else v-for="group in filteredModelGroups" :key="group.model" class="qp-model-group">
           <div class="qp-model-compact">
             <button type="button" class="qp-model-group-toggle" :aria-expanded="expandedModels.has(group.model)" @click="toggleModel(group.model)">
               <span class="qp-model-group-caret" :class="{ 'qp-model-group-caret--open': expandedModels.has(group.model) }">▸</span>
@@ -429,24 +614,37 @@ function formatTs(ts: string | undefined): string {
             <span v-if="group.hotRequests" class="qp-model-tag qp-model-tag--hot">热门 {{ group.hotRequests }}</span>
             <span class="qp-pill">{{ group.nodes.length }} 节点</span>
             <span class="qp-pill" :class="{ 'qp-pill--active': group.requestCount > 0 }">{{ group.requestCount }} 当前请求</span>
+            <span class="qp-pill qp-pill--hint" :title="dragDisabledHint(group)">{{ canReorder(group) ? '拖动调整优先级' : '优先级排序不可用' }}</span>
             <div class="qp-model-nodes">
-              <button
+              <div
                 v-for="node in group.nodes"
                 :key="node.credential_id"
-                type="button"
-                class="qp-node-card"
-                :class="nodeCardTone(node)"
-                :title="`${nodeTitle(node)}：${nodeStatusSummary(node)}${node.last_error ? `；${node.last_error}` : ''}`"
-                @click="openNode(node, group.aliases)"
+                class="qp-node-card-wrap"
+                :class="{ 'is-drag-over': isDragTarget(group.model, node.credential_id) }"
+                @dragover="onDragOver($event, group, node.credential_id)"
+                @dragleave="onDragLeave(group, node.credential_id)"
+                @drop="onDrop($event, group, node.credential_id)"
               >
-                <span class="qp-node-card-title">{{ nodeTitle(node) }}</span>
-                <span class="qp-node-card-dots" :title="`熔断 ${node.circuit_state || '未知'} · 可用性 ${node.availability_state || '未知'} · 配额 ${node.quota_state || '未知'} · 健康 ${node.health_status || '未知'}`">
-                  <i class="qp-dot" :class="dotClass(circuitOk(node))" /><i class="qp-dot" :class="dotClass(availabilityOk(node))" /><i class="qp-dot" :class="dotClass(quotaOk(node))" /><i class="qp-dot" :class="dotClass(healthOk(node))" />
-                </span>
-                <span class="qp-node-card-meta">
-                  {{ nodeStatusSummary(node) }}<template v-if="node.in_flight"> · 在途 {{ node.in_flight }}</template><template v-if="node.last_latency_ms != null"> · {{ formatLatency(node.last_latency_ms) }}</template>
-                </span>
-              </button>
+                <button
+                  type="button"
+                  class="qp-node-card"
+                  :class="nodeCardTone(node)"
+                  :title="`${nodeTitle(node)}：${nodeStatusSummary(node)}${node.last_error ? `；${node.last_error}` : ''}`"
+                  :draggable="canReorder(group)"
+                  @click="openNode(node, group.aliases)"
+                  @dragstart="onDragStart($event, group, node.credential_id)"
+                  @dragend="clearDragState"
+                >
+                  <span class="qp-node-card-drag-handle" aria-hidden="true">⋮⋮</span>
+                  <span class="qp-node-card-title">{{ nodeTitle(node) }}</span>
+                  <span class="qp-node-card-dots" :title="`熔断 ${node.circuit_state || '未知'} · 可用性 ${node.availability_state || '未知'} · 配额 ${node.quota_state || '未知'} · 健康 ${node.health_status || '未知'}`">
+                    <i class="qp-dot" :class="dotClass(circuitOk(node))" /><i class="qp-dot" :class="dotClass(availabilityOk(node))" /><i class="qp-dot" :class="dotClass(quotaOk(node))" /><i class="qp-dot" :class="dotClass(healthOk(node))" />
+                  </span>
+                  <span class="qp-node-card-meta">
+                    {{ nodeStatusSummary(node) }}<template v-if="node.in_flight"> · 在途 {{ node.in_flight }}</template><template v-if="node.last_latency_ms != null"> · {{ formatLatency(node.last_latency_ms) }}</template>
+                  </span>
+                </button>
+              </div>
             </div>
           </div>
           <div v-if="expandedModels.has(group.model)" class="qp-model-group-body">
@@ -682,9 +880,14 @@ function formatTs(ts: string | undefined): string {
 .qp-model-tag { font-size:10px; padding:2px 6px; border-radius:999px; color:var(--kx-accent); background:color-mix(in srgb, var(--kx-accent) 12%, transparent); }
 .qp-model-tag--hot { color:var(--kx-warning); background:color-mix(in srgb, var(--kx-warning) 12%, transparent); }
 .qp-model-nodes { display:flex; gap:6px; flex-wrap:wrap; flex:1 1 100%; padding-left:18px; }
-.qp-node-card { display:grid; gap:4px; text-align:left; min-width:150px; max-width:230px; padding:7px 9px; border:1px solid var(--kx-border); border-left-width:3px; border-radius:6px; background:var(--kx-surface); cursor:pointer; color:var(--kx-text); }
+.qp-node-card-wrap { border-radius:6px; transition: background 120ms ease, outline-color 120ms ease; outline: 2px dashed transparent; outline-offset: 1px; }
+.qp-node-card-wrap.is-drag-over { background: color-mix(in srgb, var(--kx-accent) 14%, transparent); outline-color: var(--kx-accent); }
+.qp-node-card { display:grid; gap:4px; text-align:left; min-width:150px; max-width:230px; padding:7px 9px; border:1px solid var(--kx-border); border-left-width:3px; border-radius:6px; background:var(--kx-surface); cursor:pointer; color:var(--kx-text); position:relative; }
 .qp-node-card:hover { border-color:var(--kx-accent); }
-.qp-node-card-title { font-size:12px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.qp-node-card-drag-handle { position:absolute; top:3px; right:5px; font-size:10px; color:var(--kx-text-secondary); opacity:.6; line-height:1; user-select:none; }
+.qp-node-card[draggable="true"] { cursor: grab; }
+.qp-node-card[draggable="true"]:active { cursor: grabbing; }
+.qp-node-card-title { font-size:12px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; padding-right:14px; }
 .qp-node-card-dots { display:inline-flex; gap:4px; align-items:center; }
 .qp-dot { width:7px; height:7px; border-radius:50%; background:var(--kx-text-secondary); opacity:.5; }
 .qp-dot--ok { background:var(--kx-success); opacity:1; }
@@ -827,5 +1030,54 @@ function formatTs(ts: string | undefined): string {
   margin-left: auto;
   color: var(--kx-muted, var(--kx-text));
   font-variant-numeric: tabular-nums;
+}
+
+/* ── FE-A5 (2026-08-19): 状态过滤多选框 + 拖拽样式 ──────────────────────── */
+.qp-status-filters {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 10px;
+  padding: 6px 4px 8px;
+  border-bottom: 1px dashed var(--kx-border);
+  margin-bottom: 6px;
+}
+.qp-status-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--kx-border);
+  background: var(--kx-surface);
+  color: var(--kx-text-secondary);
+  cursor: pointer;
+  user-select: none;
+  transition: border-color 120ms ease, color 120ms ease, background 120ms ease;
+}
+.qp-status-filter:hover { border-color: var(--kx-accent); color: var(--kx-text); }
+.qp-status-filter.is-active { color: var(--kx-text); border-color: color-mix(in srgb, var(--kx-accent) 50%, var(--kx-border)); background: color-mix(in srgb, var(--kx-accent) 8%, var(--kx-surface)); }
+.qp-status-filter input { display: none; }
+.qp-status-filter-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+  background: var(--kx-text-secondary);
+  opacity: .5;
+}
+.qp-status-filter-dot.qp-dot--ok { background: var(--kx-success); opacity: 1; }
+.qp-status-filter-dot.qp-dot--bad { background: var(--kx-danger); opacity: 1; }
+.qp-status-filter-dot--muted { background: var(--kx-text-secondary); opacity: .8; }
+.qp-status-filter-error {
+  margin-left: 6px;
+  font-size: 11px;
+  color: var(--kx-danger);
+}
+.qp-pill--hint {
+  border-style: dashed;
+  color: var(--kx-muted, var(--kx-text-secondary));
+  cursor: help;
 }
 </style>
