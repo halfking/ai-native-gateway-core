@@ -53,7 +53,17 @@ ALTER TABLE public.node_probe_runs
     );
 
 COMMENT ON CONSTRAINT node_probe_runs_trigger_kind_check ON public.node_probe_runs IS
-    '536: trigger_kind 枚举扩展 —— 425 = request_failure | manual | credential_recovery | sync_request；536 = periodic | admin | integrity_probe_planner | selfcheck | external_async。完整支持统一 credential_probe_queue 的 task.Source 集合，避免 INSERT 校验拒绝后被静默吞掉。';
+    '538: trigger_kind 枚举扩展 —— 425 = request_failure | manual | credential_recovery | sync_request；538 = periodic | admin | integrity_probe_planner | selfcheck | external_async。完整支持统一 credential_probe_queue 的 task.Source 集合，避免 INSERT 校验拒绝后被静默吞掉。';
+
+-- Keep the queue producer and audit enum in lock-step. Self-check tasks use
+-- this source so their audit rows retain the real trigger attribution.
+ALTER TABLE public.credential_probe_queue
+    DROP CONSTRAINT IF EXISTS credential_probe_queue_source_check;
+ALTER TABLE public.credential_probe_queue
+    ADD CONSTRAINT credential_probe_queue_source_check CHECK (
+        source IN ('request_failure', 'periodic', 'external_async', 'admin',
+                   'integrity_probe_planner', 'selfcheck')
+    );
 
 \echo '--- trigger_kind CHECK 已扩展 ---'
 \echo '=== 536 完成 ==='

@@ -417,7 +417,7 @@ func TestQueryUnifiedProbeQueueStats_DBShape(t *testing.T) {
 		int64(3), int64(2), int64(15), int64(1),
 		int64(0), int64(1), int64(0), int64(4), int64(0), now,
 	)
-	mock.ExpectQuery(`WITH q AS`).WithArgs(pgxmock.AnyArg()).WillReturnRows(rows)
+	mock.ExpectQuery(`WITH q AS`).WillReturnRows(rows)
 
 	stats, err := queryUnifiedProbeQueueStats(context.Background(), mock)
 	if err != nil {
@@ -630,7 +630,6 @@ func TestProbeQueueSnapshotHandler_LegacyIsolation(t *testing.T) {
 	maxF := 0.0
 	// unified SELECT (one row).
 	mock.ExpectQuery(`WITH q AS`).
-		WithArgs(pgxmock.AnyArg()).
 		WillReturnRows(pgxmock.NewRows([]string{
 			"q_ready", "q_running", "q_finished", "q_stale",
 			"n_due", "n_running", "n_paused", "n_pending", "n_unclaimable", "q_last_run",
