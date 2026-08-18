@@ -33,9 +33,12 @@
 #
 # 注意：
 #   - 这个脚本只切换 gateway 进程的环境变量并重启；**不**清空 URSM v2 Redis 数据
-#   - 如果要清空 URSM v2 Redis 命名空间（比如做反向切回权威前清理），
-#     单独执行 `redis-cli --scan --pattern 'ursm:v2:*' | xargs redis-cli DEL`
-#   - 反向切回 URSM v2 authoritative：先重新跑 scripts/migrations/ursm_v2_initial_migration.sh --apply
+#   - 禁止用 `redis-cli --scan --pattern 'ursm:v2:*' | xargs redis-cli DEL` 这类批量删除
+#     清空命名空间（会话优化v4 14 号冻结决策 §6.2：legacy key 只能由 Migration owner 的
+#     exact-key ledger cleanup job 按 source key + checksum 删除，且须等到 rollback_deadline）
+#   - 本脚本只做 URSM_V2_MODE 运行回退；delimiter-safe key schema（legacy/k2）的回滚是
+#     独立开关，按 14 号冻结决策 §6.3 执行，同样不删除任何 Redis 证据
+#   - 反向切回 URSM v2 authoritative：先重新跑 `go run ./cmd/migrate-ursm-v2 --apply`
 #     再 URSM_V2_MODE=authoritative + 重启 gateway + 跑 L1-L4
 
 set -euo pipefail
@@ -202,7 +205,7 @@ echo ""
 echo "Next steps:"
 echo "  - file incident report at docs/archive/process/incidents/$(date +%Y-%m-%d)-ursmv2-rollback.md"
 echo "  - notify stakeholders (飞书 llm-gateway-go channel)"
-echo "  - if rolling back due to data corruption: run scripts/migrations/ursm_v2_initial_migration.sh --apply"
+echo "  - if rolling back due to data corruption: run 'go run ./cmd/migrate-ursm-v2 --apply'"
 echo "    before flipping URSM_V2_MODE back to authoritative"
 echo "  - if rolling back due to env misconfig: fix env, then bash scripts/rollback/ursm_v2_to_legacy.sh --env=$ENV again"
 echo ""
