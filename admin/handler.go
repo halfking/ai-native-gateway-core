@@ -1006,6 +1006,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// 路径中的 {id} 由 Go 1.22+ ServeMux 解析，handler 用 r.PathValue("id")。
 	mux.HandleFunc("/api/admin/providers/{id}/test-now", h.handleNodeTestNow)
 	mux.HandleFunc("/api/admin/providers/{id}/enable", h.handleNodeToggle)
+	mux.HandleFunc("/api/admin/credentials/{id}/session-ping", h.superAdmin(h.handleCredentialSessionPing))
 
 	// 2026-06-23 Phase 2 (P1) + Phase 3 (P2): candidate_failure_logs query
 	// endpoints + alert ring view from the CandidateFailureMonitor.

@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
-import { authBearer, isSuperAdmin } from '../store'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { isSuperAdmin } from '../store'
 import { emergencyRepair, patchCandidateBinding, resolveRouting, type RoutingCandidate } from '../api/routing'
 import { updateCredentialLifecycle, type CredentialLifecycleStatus } from '../api/providers'
 import {
@@ -9,6 +9,7 @@ import {
   getModelHistory,
   getSlidingWindow,
   setManualDisabled,
+  sessionPingCredential,
   toggleModelAvailability,
   type CredentialModelStatus,
   type CredentialMonitorSummary,
@@ -46,12 +47,14 @@ const decisions = ref<CredentialRoutingDecision[]>([])
 const saving = ref(false)
 const actionMessage = ref('')
 const actionError = ref('')
+const pingResult = ref<{ status: string; latency_ms: number; tested_at: string; error?: string } | null>(null)
 const lifecycle = ref<CredentialLifecycleStatus>('active')
 const manualPriority = ref(99)
 const routingTier = ref(2)
 const weight = ref(100)
 const modelActionReason = ref('')
 let sequence = 0
+let loadController: AbortController | null = null
 
 const visible = computed({
   get: () => props.modelValue,
@@ -147,71 +150,71 @@ async function loadCandidate(model: string, requestSequence: number) {
 async function loadNode() {
   const node = currentNode.value
   if (!node || !visible.value) return
+  loadController?.abort()
+  const controller = new AbortController()
+  loadController = controller
   const requestSequence = ++sequence
   loading.value = true
   loadError.value = ''
   actionMessage.value = ''
   actionError.value = ''
+  pingResult.value = null
   candidate.value = null
   monitor.value = null
   windowEntries.value = []
   windowStats.value = null
   history.value = []
   decisions.value = []
-  // scope 模型优先（模型分组入口传入的 raw 模型名）；无 scope 时沿用
-  // 已选模型或首个 raw 绑定作为初始猜测，全量请求一轮并行发出。
   const scope = scopedModel.value
   const requestedModel = selectedModel.value
-  const fallbackModel = (requestedModel && node.raw_models?.includes(requestedModel))
+  const initialModel = scope || ((requestedModel && node.raw_models?.includes(requestedModel))
     ? requestedModel
-    : (node.raw_models?.[0] || '')
-  const initialModel = scope || fallbackModel
+    : (node.raw_models?.[0] || ''))
   selectedModel.value = initialModel
-  try {
-    const monitorAndDecisions = (async () => {
-      const [monitorResult, decisionResult] = await Promise.allSettled([
-        getCredentialMonitorSummary({ credential_id: node.credential_id }),
-        // scope 时服务端按模型过滤（limit 提到 50）；无 scope 保持凭据级全量。
-        scope
-          ? getCredentialDecisions(node.credential_id, 50, scope)
-          : getCredentialDecisions(node.credential_id, 30),
-      ])
-      if (requestSequence !== sequence || currentNode.value?.credential_id !== node.credential_id) return
-      if (monitorResult.status === 'fulfilled') {
-        const monitorPayload = monitorResult.value as { credentials?: CredentialMonitorSummary[] }
-        monitor.value = monitorPayload.credentials?.[0] ?? null
-        // 仅无 scope 时允许 monitor 重选默认模型（broken 优先）；scope 锁定不重选。
-        if (!scope) {
-          const preferred = monitor.value?.models?.find(model => model.raw_model_name === initialModel)
-            ?? monitor.value?.models?.find(model => model.probe_state === 'broken_confirmed')
-            ?? monitor.value?.models?.[0]
-          const nextModel = preferred?.raw_model_name ?? initialModel
-          if (nextModel && nextModel !== initialModel) {
-            // 初始猜测作废：selectedModel 变化后，在途的初始 candidate/window
-            // 请求会被自身 stale 守卫丢弃；这里补拉新模型的数据。
-            selectedModel.value = nextModel
-            await Promise.all([
-              loadCandidate(nextModel, requestSequence),
-              loadModelDetails(nextModel, requestSequence),
-            ])
-          }
-        }
-      } else {
-        loadError.value = '未能加载节点的持久化明细；仍展示实时状态。'
+  let activeModel = initialModel
+
+  const isCurrent = () => requestSequence === sequence && currentNode.value?.credential_id === node.credential_id
+  const monitorTask = getCredentialMonitorSummary(
+    { credential_id: node.credential_id },
+    { signal: controller.signal },
+  ).then(payload => {
+    if (!isCurrent()) return
+    monitor.value = payload.credentials?.[0] ?? null
+    if (!scope) {
+      const preferred = monitor.value?.models?.find(model => model.raw_model_name === initialModel)
+        ?? monitor.value?.models?.find(model => model.probe_state === 'broken_confirmed')
+        ?? monitor.value?.models?.[0]
+      const nextModel = preferred?.raw_model_name ?? initialModel
+      if (nextModel && nextModel !== initialModel) {
+        activeModel = nextModel
+        selectedModel.value = nextModel
       }
-      if (decisionResult.status === 'fulfilled') {
-        decisions.value = (decisionResult.value as { decisions?: CredentialRoutingDecision[] }).decisions ?? []
-      }
-    })()
-    // 单轮并行：monitor+decisions 与初始模型的 candidate/window/history 同时发出。
-    await Promise.all([
-      monitorAndDecisions,
-      initialModel ? loadCandidate(initialModel, requestSequence) : Promise.resolve(),
-      initialModel ? loadModelDetails(initialModel, requestSequence) : Promise.resolve(),
-    ])
-  } finally {
-    if (requestSequence === sequence) loading.value = false
+    }
+  }).catch(error => {
+    if (isCurrent() && !(error instanceof DOMException && error.name === 'AbortError')) {
+      loadError.value = '未能加载节点的持久化明细；仍展示实时状态。'
+    }
+  })
+  const candidateTask = initialModel ? loadCandidate(initialModel, requestSequence) : Promise.resolve()
+
+  // Keep the drawer usable once its two critical panels are ready. The timeline,
+  // history and decision log are independently populated when their reads finish.
+  await Promise.allSettled([monitorTask, candidateTask])
+  if (isCurrent() && activeModel !== initialModel) {
+    candidate.value = null
+    await loadCandidate(activeModel, requestSequence)
   }
+  if (isCurrent()) loading.value = false
+
+  void Promise.allSettled([
+    activeModel ? loadModelDetails(activeModel, requestSequence) : Promise.resolve(),
+    (scope
+      ? getCredentialDecisions(node.credential_id, 50, scope)
+      : getCredentialDecisions(node.credential_id, 30)
+    ).then(result => {
+      if (isCurrent()) decisions.value = result.decisions ?? []
+    }),
+  ])
 }
 
 function chooseModel(model: string) {
@@ -227,20 +230,21 @@ function chooseModel(model: string) {
 
 async function testNow() {
   const node = currentNode.value
-  if (!node?.provider_id || !canEdit.value || saving.value) return
+  if (!node || !selectedModel.value || !canEdit.value || saving.value) return
   saving.value = true
   actionMessage.value = ''
   actionError.value = ''
+  pingResult.value = null
   try {
-    const response = await fetch(`/api/admin/providers/${node.provider_id}/test-now`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authBearer()}` },
-    })
-    if (!response.ok) throw new Error(`HTTP ${response.status}`)
-    const result = await response.json()
-    actionMessage.value = `测试完成${typeof result.latency_ms === 'number' ? `：${result.latency_ms}ms` : ''}`
+    const result = await sessionPingCredential(node.credential_id, selectedModel.value)
+    pingResult.value = result
+    if (result.status === 'healthy') {
+      actionMessage.value = `会话 Ping 成功：${result.latency_ms}ms`
+    } else {
+      actionError.value = result.error || `会话 Ping 失败：${result.status}`
+    }
   } catch (error) {
-    actionError.value = error instanceof Error ? error.message : '测试失败'
+    actionError.value = error instanceof Error ? error.message : '会话 Ping 失败'
   } finally {
     saving.value = false
   }
@@ -348,9 +352,13 @@ watch(() => [props.modelValue, props.node?.credential_id, props.model] as const,
     activeTab.value = 'detail'
     void loadNode()
   } else {
+    loadController?.abort()
+    loadController = null
     sequence++
   }
 }, { immediate: true })
+
+onBeforeUnmount(() => loadController?.abort())
 </script>
 
 <template>
@@ -456,7 +464,7 @@ watch(() => [props.modelValue, props.node?.credential_id, props.model] as const,
           <p v-if="!canEdit" class="nd-notice nd-notice--warn">仅系统管理员可以维护节点；当前以只读方式展示。</p>
           <section class="nd-section">
             <h3>连通性与紧急维护</h3>
-            <div class="nd-actions"><button class="btn btn-primary btn-sm" :disabled="saving || !canEdit || !node?.provider_id" @click="testNow">{{ saving ? '处理中…' : '立即测试' }}</button><button class="btn btn-success btn-sm" :disabled="saving || !canEdit" @click="repair('force_enable')">强制启用</button><button class="btn btn-danger btn-sm" :disabled="saving || !canEdit" @click="repair('force_disable')">强制禁用</button><button class="btn btn-warning btn-sm" :disabled="saving || !canEdit" @click="repair('clear_circuit')">清除熔断</button><button class="btn btn-sm" :disabled="saving || !canEdit" @click="repair('reset_errors')">重置错误</button></div>
+            <div class="nd-actions"><button class="btn btn-primary btn-sm" :disabled="saving || !canEdit || !selectedModel" @click="testNow">{{ saving ? '处理中…' : '会话 Ping' }}</button><span v-if="pingResult" class="nd-muted">{{ pingResult.status }} · {{ pingResult.latency_ms }}ms · {{ fmtTime(pingResult.tested_at) }}</span><button class="btn btn-success btn-sm" :disabled="saving || !canEdit" @click="repair('force_enable')">强制启用</button><button class="btn btn-danger btn-sm" :disabled="saving || !canEdit" @click="repair('force_disable')">强制禁用</button><button class="btn btn-warning btn-sm" :disabled="saving || !canEdit" @click="repair('clear_circuit')">清除熔断</button><button class="btn btn-sm" :disabled="saving || !canEdit" @click="repair('reset_errors')">重置错误</button></div>
           </section>
           <section v-if="candidate" class="nd-section">
             <h3>路由排序与生命周期 <small>{{ selectedModel }}</small></h3>

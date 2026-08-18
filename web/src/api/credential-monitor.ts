@@ -1,4 +1,4 @@
-import { req } from './_core'
+import { req, type RequestOptions } from './_core'
 
 // credential-monitor.ts — credential monitoring, sliding window, and manual promotion/demotion
 
@@ -98,18 +98,38 @@ export interface CallEntry {
   err?: string // error kind
 }
 
-export function getCredentialMonitorSummary(opts?: { provider_id?: number; credential_id?: number }) {
+export function getCredentialMonitorSummary(opts?: { provider_id?: number; credential_id?: number }, requestOptions?: RequestOptions) {
   const params = new URLSearchParams()
   if (opts?.provider_id) params.set('provider_id', String(opts.provider_id))
   if (opts?.credential_id) params.set('credential_id', String(opts.credential_id))
   const qs = params.toString()
   return req<{ credentials: CredentialMonitorSummary[]; count: number; meta?: CredentialMonitorMeta }>(
     'GET',
-    `/api/credentials/monitor-summary${qs ? `?${qs}` : ''}`
+    `/api/credentials/monitor-summary${qs ? `?${qs}` : ''}`,
+    undefined,
+    requestOptions,
   )
 }
 
-export function getSlidingWindow(credentialId: number, model: string, minutes = 60) {
+export interface CredentialSessionPingResponse {
+  credential_id: number
+  model: string
+  latency_ms: number
+  status: 'healthy' | 'timeout' | 'unreachable' | 'auth_failed' | 'model_not_found' | 'upstream_error' | 'error'
+  tested_at: string
+  error_code?: string
+  error?: string
+}
+
+export function sessionPingCredential(credentialId: number, model: string) {
+  return req<CredentialSessionPingResponse>(
+    'POST',
+    `/api/admin/credentials/${credentialId}/session-ping`,
+    { model },
+  )
+}
+
+export function getSlidingWindow(credentialId: number, model: string, minutes = 60, requestOptions?: RequestOptions) {
   const params = new URLSearchParams()
   params.set('credential_id', String(credentialId))
   params.set('model', model)
@@ -127,7 +147,7 @@ export function getSlidingWindow(credentialId: number, model: string, minutes = 
       failure_rate: number
       error_kinds: Record<string, number>
     }
-  }>('GET', `/api/credentials/sliding-window?${params.toString()}`)
+  }>('GET', `/api/credentials/sliding-window?${params.toString()}`, undefined, requestOptions)
 }
 
 export function promoteCredential(credentialId: number, reason: string) {
