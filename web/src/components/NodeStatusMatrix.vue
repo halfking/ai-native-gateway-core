@@ -139,6 +139,8 @@ const hasNodes = computed(() => nodes.value.length > 0)
       aria-haspopup="dialog"
       :aria-expanded="showDialog"
       @click="showDialog = true"
+      @keydown.enter.prevent="showDialog = true"
+      @keydown.space.prevent="showDialog = true"
     >
       <span class="nm-trigger-title">{{ t('requestJourneys.matrix.triggerTitle') }}</span>
       <span v-if="hasNodes" class="nm-trigger-meta" :class="{ 'nm-trigger-meta--warn': abnormalCount > 0 }">
@@ -179,7 +181,7 @@ const hasNodes = computed(() => nodes.value.length > 0)
           <div v-else class="nm-groups">
             <template v-for="group in healthGroups" :key="group.key">
               <div v-if="group.nodes.length > 0" class="nm-group">
-                <button type="button" class="nm-group-header" :aria-expanded="!collapsedGroups[group.key]" @click="toggleGroup(group.key)">
+                <button type="button" class="nm-group-header" :aria-expanded="!collapsedGroups[group.key]" @click="toggleGroup(group.key)" @keydown.enter.prevent="toggleGroup(group.key)" @keydown.space.prevent="toggleGroup(group.key)">
                   <span :class="['nm-group-title', `nm-group-title--${group.tone}`]">{{ t(group.titleKey, { count: group.nodes.length }) }}</span>
                   <span class="nm-collapse-icon">{{ collapsedGroups[group.key] ? '▶' : '▼' }}</span>
                 </button>
@@ -190,6 +192,8 @@ const hasNodes = computed(() => nodes.value.length > 0)
                     :key="n.credential_id"
                     :class="['nm-card', `nm-card--${group.tone}`]"
                     @click="openNode(n)"
+                    @keydown.enter.prevent="openNode(n)"
+                    @keydown.space.prevent="openNode(n)"
                   >
                     <div class="nm-card-header">
                       <span class="nm-card-id">{{ t('requestJourneys.matrix.nodeLabel', { credentialId: n.credential_id }) }}</span>

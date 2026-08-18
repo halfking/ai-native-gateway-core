@@ -160,6 +160,27 @@ describe('NodeStatusMatrix', () => {
     expect(wrapper.get('.nm-trigger').attributes('aria-expanded')).toBe('false')
   })
 
+  it('activates trigger, group header and node card via keyboard (Enter/Space)', async () => {
+    const wrapper = mountMatrix()
+
+    // Enter on the trigger opens the panorama via the explicit handler
+    // (not only native button activation), hardening keyboard a11y.
+    await wrapper.get('.nm-trigger').trigger('keydown', { key: 'Enter' })
+    expect(wrapper.find('.nm-modal').exists()).toBe(true)
+
+    // Enter on a node card opens the unified detail drawer (cards are
+    // visible while the default-expanded group is open).
+    await wrapper.find('.nm-card').trigger('keydown', { key: 'Enter' })
+    expect(wrapper.find('.nd-drawer').exists()).toBe(true)
+
+    // Space on a group header toggles its collapsed state.
+    const header = wrapper.get('.nm-group-header')
+    const before = header.attributes('aria-expanded')
+    await header.trigger('keydown', { key: ' ' })
+    await flushPromises()
+    expect(wrapper.get('.nm-group-header').attributes('aria-expanded')).not.toBe(before)
+  })
+
   it('renders the empty state inside the modal when no node_update data', async () => {
     liveStreamState.nodes = []
     const wrapper = mountMatrix()
