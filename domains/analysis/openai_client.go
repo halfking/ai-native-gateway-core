@@ -102,11 +102,12 @@ func (c *OpenAIClient) CompleteWithConfig(ctx context.Context, prompt string, co
 	}
 	messages = append(messages, map[string]string{"role": "user", "content": prompt})
 	payload := map[string]any{
-		"model":       config.Model,
-		"messages":    messages,
-		"max_tokens":  config.MaxTokens,
-		"temperature": config.Temperature,
-		"stream":      false,
+		"model":           config.Model,
+		"messages":        messages,
+		"max_tokens":      config.MaxTokens,
+		"temperature":     config.Temperature,
+		"stream":          false,
+		"response_format": map[string]string{"type": "json_object"},
 	}
 	var response struct {
 		Choices []struct {

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/jackc/pgx/v5"
 	"github.com/pashagolub/pgxmock/v4"
 	"github.com/stretchr/testify/require"
 )
@@ -178,6 +179,82 @@ func TestLookupControlledBodyTenantMismatchReturnsNoRows(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+func TestHandleControlledBodyRejectsInvalidServiceTokens(t *testing.T) {
+	secret := "test-secret"
+	now := time.Now().UTC()
+	base := controlledBodyClaims{
+		TenantID: "tenant-a",
+		Scope:    "session:read",
+		RegisteredClaims: jwt.RegisteredClaims{
+			Issuer:    controlledBodyIssuer,
+			Audience:  jwt.ClaimStrings{controlledBodyAudience},
+			Subject:   controlledBodySubject,
+			ExpiresAt: jwt.NewNumericDate(now.Add(time.Hour)),
+		},
+	}
+	sign := func(secret string, claims controlledBodyClaims) string {
+		token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+		signed, err := token.SignedString([]byte(secret))
+		require.NoError(t, err)
+		return signed
+	}
+	cases := []struct {
+		name  string
+		token string
+	}{
+		{"wrong secret", sign("other-secret", base)},
+		{"expired", sign(secret, func() controlledBodyClaims {
+			claims := base
+			claims.ExpiresAt = jwt.NewNumericDate(now.Add(-time.Minute))
+			return claims
+		}())},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/api/admin/bodies/internal://body/req-1/prompt", nil)
+			req.SetPathValue("body_ref", "internal://body/req-1/prompt")
+			req.Header.Set("Authorization", "Bearer "+tc.token)
+			recorder := httptest.NewRecorder()
+			(&Handler{bodyServiceJWTSecret: secret}).handleControlledBody(recorder, req)
+			require.Equal(t, http.StatusUnauthorized, recorder.Code)
+		})
+	}
+}
+
+func TestHandleControlledBodyHidesCrossTenantBody(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+
+	secret := "test-secret"
+	now := time.Now().UTC()
+	claims := controlledBodyClaims{
+		TenantID: "tenant-b",
+		Scope:    "session:read",
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(now.Add(time.Hour)),
+			Issuer:    controlledBodyIssuer,
+			Audience:  jwt.ClaimStrings{controlledBodyAudience},
+			Subject:   controlledBodySubject,
+		},
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	signed, err := token.SignedString([]byte(secret))
+	require.NoError(t, err)
+	mock.ExpectQuery(`(?s)SELECT rl\.ts,.*rl\.request_id = \$1.*rl\.tenant_id = \$2`).
+		WithArgs("req-cross-tenant", "tenant-b").WillReturnError(pgx.ErrNoRows)
+	mock.ExpectQuery(`(?s)SELECT rl\.ts,.*FROM request_logs_with_current_month.*rl\.request_id = \$1.*rl\.tenant_id = \$2`).
+		WithArgs("req-cross-tenant", "tenant-b").WillReturnError(pgx.ErrNoRows)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/bodies/internal://body/req-cross-tenant/prompt", nil)
+	req.SetPathValue("body_ref", "internal://body/req-cross-tenant/prompt")
+	req.Header.Set("Authorization", "Bearer "+signed)
+	recorder := httptest.NewRecorder()
+	(&Handler{bodyDB: mock, bodyServiceJWTSecret: secret}).handleControlledBody(recorder, req)
+	require.Equal(t, http.StatusNotFound, recorder.Code)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestControlledBodyResponseShape(t *testing.T) {
 	response := controlledBodyResponse{
 		BodyRef:     "internal://body/req_1/response",
@@ -189,4 +266,77 @@ func TestControlledBodyResponseShape(t *testing.T) {
 	encoded, err := json.Marshal(response)
 	require.NoError(t, err)
 	require.JSONEq(t, `{"body_ref":"internal://body/req_1/response","role":"assistant","content":"ok","content_type":"text/plain","occurred_at":"2026-08-18T00:00:00Z"}`, string(encoded))
+}
+
+func TestHandleControlledBodyFallsBackToArchiveView(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+
+	secret := "test-secret"
+	now := time.Now().UTC()
+	claims := controlledBodyClaims{
+		TenantID: "tenant-a",
+		Scope:    "session:read",
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(now.Add(time.Hour)),
+			Issuer:    controlledBodyIssuer,
+			Audience:  jwt.ClaimStrings{controlledBodyAudience},
+			Subject:   controlledBodySubject,
+		},
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	signed, err := token.SignedString([]byte(secret))
+	require.NoError(t, err)
+
+	occurred := time.Date(2026, 8, 17, 1, 2, 3, 0, time.UTC)
+	requestBody := `{"messages":[{"role":"user","content":"archived prompt"}]}`
+	mock.ExpectQuery(`(?s)SELECT rl\.ts,.*FROM request_logs_hot.*rl\.request_id = \$1.*rl\.tenant_id = \$2`).
+		WithArgs("req-archive", "tenant-a").WillReturnError(pgx.ErrNoRows)
+	mock.ExpectQuery(`(?s)SELECT rl\.ts,.*FROM request_logs_with_current_month.*rl\.request_id = \$1.*rl\.tenant_id = \$2`).
+		WithArgs("req-archive", "tenant-a").
+		WillReturnRows(pgxmock.NewRows([]string{"ts", "request_body", "response_body"}).AddRow(occurred, &requestBody, nil))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/bodies/internal://body/req-archive/prompt", nil)
+	req.SetPathValue("body_ref", "internal://body/req-archive/prompt")
+	req.Header.Set("Authorization", "Bearer "+signed)
+	recorder := httptest.NewRecorder()
+	(&Handler{bodyDB: mock, bodyServiceJWTSecret: secret}).handleControlledBody(recorder, req)
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Contains(t, recorder.Body.String(), "archived prompt")
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestHandleControlledBodyReturnsNotFoundForTenantWithoutBody(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+
+	secret := "test-secret"
+	now := time.Now().UTC()
+	claims := controlledBodyClaims{
+		TenantID: "tenant-a",
+		Scope:    "session:read",
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(now.Add(time.Hour)),
+			Issuer:    controlledBodyIssuer,
+			Audience:  jwt.ClaimStrings{controlledBodyAudience},
+			Subject:   controlledBodySubject,
+		},
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	signed, err := token.SignedString([]byte(secret))
+	require.NoError(t, err)
+	mock.ExpectQuery(`(?s)SELECT rl\.ts,.*rl\.request_id = \$1.*rl\.tenant_id = \$2`).
+		WithArgs("req-cross-tenant", "tenant-a").WillReturnError(pgx.ErrNoRows)
+	mock.ExpectQuery(`(?s)SELECT rl\.ts,.*FROM request_logs_with_current_month.*rl\.request_id = \$1.*rl\.tenant_id = \$2`).
+		WithArgs("req-cross-tenant", "tenant-a").WillReturnError(pgx.ErrNoRows)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/bodies/internal://body/req-cross-tenant/prompt", nil)
+	req.SetPathValue("body_ref", "internal://body/req-cross-tenant/prompt")
+	req.Header.Set("Authorization", "Bearer "+signed)
+	recorder := httptest.NewRecorder()
+	(&Handler{bodyDB: mock, bodyServiceJWTSecret: secret}).handleControlledBody(recorder, req)
+	require.Equal(t, http.StatusNotFound, recorder.Code)
+	require.NoError(t, mock.ExpectationsWereMet())
 }
