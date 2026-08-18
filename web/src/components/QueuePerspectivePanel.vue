@@ -15,7 +15,7 @@
  */
 import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { getFeatured, resolveRouting, reorderCandidateBindings, type CandidateBindingReorderItem } from '../api/routing'
+import { getFeatured, resolveRouting, reorderCandidateBindings, type CandidateBindingReorderItem, type RoutingCandidate } from '../api/routing'
 import { getRequestLogTopModels, type TopRequestModel } from '../api/logs'
 import {
   queueRef,
@@ -129,10 +129,13 @@ interface ModelGroup {
   featured: boolean
   hotRequests: number
   aliases: string[]
+  /** 仅当所有节点都属于同一个完整 raw binding 列表时可安全重排。 */
+  reorderRawModel?: string
 }
 
 const modelScopeMeta = ref<Map<string, ModelScopeMeta>>(new Map())
 const modelScopeAliasIndex = ref<Map<string, string>>(new Map())
+const modelCandidatesByRawModel = ref<Map<string, RoutingCandidate[]>>(new Map())
 const modelScopeLoading = ref(true)
 const modelScopeError = ref('')
 const selectedNode = ref<LiveNodeStatus | null>(null)
@@ -177,6 +180,7 @@ async function loadModelScope() {
   if (featured.status === 'fulfilled') featured.value.featured_models.forEach(model => addScope(model, true, 0))
   if (hot.status === 'fulfilled') hot.value.items.forEach((model: TopRequestModel) => addScope(model.canonical_name || model.display_name, false, model.request_count))
   const aliases = new Map<string, string>()
+  const candidatesByRawModel = new Map<string, RoutingCandidate[]>()
   const resolveOne = async (meta: ModelScopeMeta) => {
     const name = [...meta.aliases][0]
     try {
@@ -189,7 +193,13 @@ async function loadModelScope() {
         else aliases.delete(key)
       }
       for (const raw of resolved.raw_models) assignAlias(raw)
-      for (const candidate of resolved.candidates) assignAlias(candidate.model_name)
+      for (const candidate of resolved.candidates) {
+        assignAlias(candidate.model_name)
+        const key = modelKey(candidate.model_name)
+        const candidates = candidatesByRawModel.get(key) ?? []
+        candidates.push(candidate)
+        candidatesByRawModel.set(key, candidates)
+      }
     } catch {
       // Keep exact canonical/featured matches; ambiguous aliases stay hidden.
     }
@@ -202,6 +212,7 @@ async function loadModelScope() {
   }
   modelScopeMeta.value = scope
   modelScopeAliasIndex.value = aliases
+  modelCandidatesByRawModel.value = candidatesByRawModel
   if (featured.status === 'rejected' && hot.status === 'rejected') modelScopeError.value = '模型范围暂不可用，未展示模型节点。'
   modelScopeLoading.value = false
 }
@@ -240,21 +251,40 @@ const modelGroups = computed<ModelGroup[]>(() => {
     }
     const modelNodes = nodes.value.filter(node => credentialIds.has(node.credential_id))
     const aliases = [scopeKey, ...rawModels].map(modelKey)
+    const rawModelList = [...rawModels]
+    const rawModel = rawModelList.length === 1 ? rawModelList[0] : undefined
+    const candidates = rawModel
+      ? modelCandidatesByRawModel.value.get(modelKey(rawModel)) ?? []
+      : []
+    const candidateOrder = new Map(candidates.map((candidate, index) => [candidate.credential_id, index]))
+    const candidatesMatchNodes = rawModel != null
+      && candidates.length === modelNodes.length
+      && candidates.every(candidate => candidateOrder.has(candidate.credential_id) && credentialIds.has(candidate.credential_id))
+    const orderedNodes = candidatesMatchNodes
+      ? [...modelNodes].sort((left, right) => (candidateOrder.get(left.credential_id) ?? Number.MAX_SAFE_INTEGER) - (candidateOrder.get(right.credential_id) ?? Number.MAX_SAFE_INTEGER))
+      : modelNodes
     const requestIds = new Set<string>()
     for (const credentialId of credentialIds) {
       for (const request of getRequestsForCredential(credentialId)) {
         if (request.request_id && aliases.includes(modelKey(request.model || ''))) requestIds.add(request.request_id)
       }
     }
-    groups.push({ model: scopeKey, nodes: modelNodes, requestCount: requestIds.size, featured: meta.featured, hotRequests: meta.hotRequests, aliases })
+    groups.push({
+      model: scopeKey,
+      nodes: orderedNodes,
+      requestCount: requestIds.size,
+      featured: meta.featured,
+      hotRequests: meta.hotRequests,
+      aliases,
+      reorderRawModel: candidatesMatchNodes ? rawModel : undefined,
+    })
   }
   return groups.sort((a, b) => Number(b.featured) - Number(a.featured) || b.hotRequests - a.hotRequests || b.nodes.length - a.nodes.length || a.model.localeCompare(b.model))
 })
 
 // ── 节点状态过滤（在用 / 降级 / 人工禁用 / 配额耗尽） ─────────────────────
-// 状态分类落到唯一的桶，避免节点被双重计入/空选时全部隐藏。
-// 与 nodeCardTone 一致：ok → 在用，warn → 降级，disabled → 人工禁用，
-// 仅在配额字段含 'exhausted' 时算耗尽（独立桶，可与前三者叠加判断）。
+// 每个节点只归属一个主状态桶：人工禁用 > 耗尽/暂停 > 降级 > 在用。
+// 这样取消"耗尽"即可稳定排除耗尽节点，而不会被"在用"的 OR 条件重新匹配。
 type StatusBucket = 'active' | 'degraded' | 'manualDisabled' | 'exhausted'
 
 const statusFilter = ref<Record<StatusBucket, boolean>>({
@@ -268,31 +298,16 @@ function toggleStatusFilter(bucket: StatusBucket) {
   statusFilter.value = { ...statusFilter.value, [bucket]: !statusFilter.value[bucket] }
 }
 
-function nodeStatusBuckets(n: LiveNodeStatus): Set<StatusBucket> {
-  const buckets = new Set<StatusBucket>()
-  if (n.manual_disabled || n.disable_kind === 'manual') {
-    buckets.add('manualDisabled')
-  }
-  if ((n.quota_state ?? '').includes('exhausted')) {
-    buckets.add('exhausted')
-  }
-  const isDown = n.circuit_state === 'open' || n.health_status === 'unreachable'
-  const isHalfDown = n.circuit_state === 'half_open' || n.availability_state === 'cooling'
-  if (isDown || isHalfDown) buckets.add('degraded')
-  // 在用：未手工禁用且不在降级/耗尽桶里。允许在耗尽但非降级/非人工禁用下保留
-  // "在用"，由用户多选过滤自己取舍；保留判定的语义是"通过任一启用桶命中"。
-  if (!buckets.has('manualDisabled') && !buckets.has('degraded')) buckets.add('active')
-  return buckets
+function nodeStatusBucket(n: LiveNodeStatus): StatusBucket {
+  if (n.manual_disabled || n.disable_kind === 'manual') return 'manualDisabled'
+  if ((n.quota_state ?? '').includes('exhausted') || n.availability_state === 'suspended') return 'exhausted'
+  if (n.circuit_state === 'open' || n.circuit_state === 'half_open' || n.health_status === 'unreachable'
+    || n.availability_state === 'cooling' || n.disable_kind === 'system' || n.fp_disabled) return 'degraded'
+  return 'active'
 }
 
 function passesStatusFilter(n: LiveNodeStatus): boolean {
-  const buckets = nodeStatusBuckets(n)
-  // 任一勾选桶命中即展示。耗尽/降级/手工禁用/在用 都是 OR 关系。
-  if (buckets.has('manualDisabled') && statusFilter.value.manualDisabled) return true
-  if (buckets.has('exhausted') && statusFilter.value.exhausted) return true
-  if (buckets.has('degraded') && statusFilter.value.degraded) return true
-  if (buckets.has('active') && statusFilter.value.active) return true
-  return false
+  return statusFilter.value[nodeStatusBucket(n)]
 }
 
 // 仅展示当前过滤命中的节点；过滤全部命中数 + 命中节点
@@ -305,35 +320,51 @@ const filteredModelGroups = computed<ModelGroup[]>(() => {
 const hasFilteredGroups = computed(() => filteredModelGroups.value.length > 0)
 
 // ── 节点拖拽调整优先级（HTML5 dnd） ───────────────────────────────────────
-// 同一模型分组的节点顺序即 manual_priority 排序：列表越靠前，优先级越高。
-// 保存时按当前显示顺序生成 CandidateBindingReorderItem 并一次性提交。
+// 只在显示完整的单 raw-model 候选集且四个状态均显示时允许重排：后端排序
+// API 以该完整集合为原子单位，提交 `1..N` 的连续 manual_priority。
 const dragScopeKey = ref<string | null>(null)
+const dragSourceCredentialId = ref<number | null>(null)
 const dragOverCredentialId = ref<number | null>(null)
 const dragSaving = ref(false)
 const dragError = ref('')
 
-function onDragStart(event: DragEvent, scopeKey: string, credentialId: number) {
-  if (!isSuperAdmin()) {
+const filtersAreAllEnabled = computed(() => Object.values(statusFilter.value).every(Boolean))
+
+function canReorder(group: ModelGroup): boolean {
+  return isSuperAdmin() && !dragSaving.value && filtersAreAllEnabled.value && Boolean(group.reorderRawModel)
+}
+
+function dragDisabledHint(group: ModelGroup): string {
+  if (!isSuperAdmin()) return '仅超级管理员可以调整优先级。'
+  if (dragSaving.value) return '正在保存优先级调整。'
+  if (!filtersAreAllEnabled.value) return '请显示全部状态后再调整完整候选列表的优先级。'
+  if (!group.reorderRawModel) return '该模型分组合并了多个原始模型或实时节点不完整，无法安全调整优先级。'
+  return '拖动节点以调整优先级，越靠前优先级越高。'
+}
+
+function onDragStart(event: DragEvent, group: ModelGroup, credentialId: number) {
+  if (!canReorder(group)) {
     event.preventDefault()
     return
   }
-  dragScopeKey.value = scopeKey
+  dragScopeKey.value = group.model
+  dragSourceCredentialId.value = credentialId
   dragOverCredentialId.value = credentialId
   if (event.dataTransfer) {
     event.dataTransfer.effectAllowed = 'move'
-    event.dataTransfer.setData('text/plain', `${scopeKey}:${credentialId}`)
+    event.dataTransfer.setData('text/plain', `${group.model}:${credentialId}`)
   }
 }
 
-function onDragOver(event: DragEvent, scopeKey: string, credentialId: number) {
-  if (dragScopeKey.value !== scopeKey) return
+function onDragOver(event: DragEvent, group: ModelGroup, credentialId: number) {
+  if (!canReorder(group) || dragScopeKey.value !== group.model) return
   event.preventDefault()
   if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'
   dragOverCredentialId.value = credentialId
 }
 
-function onDragLeave(scopeKey: string, credentialId: number) {
-  if (dragScopeKey.value !== scopeKey) return
+function onDragLeave(group: ModelGroup, credentialId: number) {
+  if (dragScopeKey.value !== group.model) return
   if (dragOverCredentialId.value === credentialId) dragOverCredentialId.value = null
 }
 
@@ -341,43 +372,35 @@ function isDragTarget(scopeKey: string, credentialId: number): boolean {
   return dragScopeKey.value === scopeKey && dragOverCredentialId.value === credentialId
 }
 
-async function onDrop(event: DragEvent, scopeKey: string, targetCredentialId: number) {
-  if (dragScopeKey.value !== scopeKey) return
+function clearDragState() {
+  dragScopeKey.value = null
+  dragSourceCredentialId.value = null
+  dragOverCredentialId.value = null
+}
+
+async function onDrop(event: DragEvent, group: ModelGroup, targetCredentialId: number) {
+  if (!canReorder(group) || dragScopeKey.value !== group.model || !group.reorderRawModel) return
   event.preventDefault()
-  const group = filteredModelGroups.value.find(g => g.model === scopeKey)
-  if (!group) return
   const ordered = [...group.nodes]
-  const fromIndex = ordered.findIndex(n => n.credential_id === dragOverCredentialId.value)
+  const fromIndex = ordered.findIndex(n => n.credential_id === dragSourceCredentialId.value)
   const toIndex = ordered.findIndex(n => n.credential_id === targetCredentialId)
   if (fromIndex < 0 || toIndex < 0 || fromIndex === toIndex) {
-    dragScopeKey.value = null
-    dragOverCredentialId.value = null
+    clearDragState()
     return
   }
   const [moved] = ordered.splice(fromIndex, 1)
   ordered.splice(toIndex, 0, moved)
-  dragScopeKey.value = null
-  dragOverCredentialId.value = null
-  // 越靠前 manual_priority 越小；范围 1..N，给步骤留出 PATCH 余量。
-  // base 80，留出 1..79 给非该模型分组的紧急覆盖；超出 batch 由后端返回错误。
-  // 取 max(已存在最小优先级 - 1, 1) 作为基准，避免覆盖其他模型分组的优先级。
-  const BASE = 80
   const items: CandidateBindingReorderItem[] = ordered.map((node, index) => ({
     credential_id: node.credential_id,
-    raw_model: scopeKey,
-    // 第一位 = 最小值（优先级最高）；基底越大越安全，与 cmb 已有值不冲突
-    manual_priority: BASE - index,
+    raw_model: group.reorderRawModel!,
+    manual_priority: index + 1,
   }))
-  if (!isSuperAdmin()) {
-    dragError.value = '只有超级管理员可以调整优先级。'
-    return
-  }
+  clearDragState()
   dragSaving.value = true
   dragError.value = ''
   try {
     await reorderCandidateBindings(items)
-    // 触发最新一次 loadModelScope，让下一次 chip 显示的顺序与新优先级一致。
-    void loadModelScope()
+    await loadModelScope()
   } catch (error) {
     dragError.value = error instanceof Error ? error.message : '调整优先级失败'
   } finally {
@@ -591,26 +614,26 @@ function formatTs(ts: string | undefined): string {
             <span v-if="group.hotRequests" class="qp-model-tag qp-model-tag--hot">热门 {{ group.hotRequests }}</span>
             <span class="qp-pill">{{ group.nodes.length }} 节点</span>
             <span class="qp-pill" :class="{ 'qp-pill--active': group.requestCount > 0 }">{{ group.requestCount }} 当前请求</span>
-            <span class="qp-pill qp-pill--hint" :title="'拖动节点以调整优先级，越靠前优先级越高（仅超级管理员）。'">拖动调整优先级</span>
+            <span class="qp-pill qp-pill--hint" :title="dragDisabledHint(group)">{{ canReorder(group) ? '拖动调整优先级' : '优先级排序不可用' }}</span>
             <div class="qp-model-nodes">
               <div
                 v-for="node in group.nodes"
                 :key="node.credential_id"
                 class="qp-node-card-wrap"
                 :class="{ 'is-drag-over': isDragTarget(group.model, node.credential_id) }"
-                @dragover="onDragOver($event, group.model, node.credential_id)"
-                @dragleave="onDragLeave(group.model, node.credential_id)"
-                @drop="onDrop($event, group.model, node.credential_id)"
+                @dragover="onDragOver($event, group, node.credential_id)"
+                @dragleave="onDragLeave(group, node.credential_id)"
+                @drop="onDrop($event, group, node.credential_id)"
               >
                 <button
                   type="button"
                   class="qp-node-card"
                   :class="nodeCardTone(node)"
                   :title="`${nodeTitle(node)}：${nodeStatusSummary(node)}${node.last_error ? `；${node.last_error}` : ''}`"
-                  :draggable="isSuperAdmin()"
+                  :draggable="canReorder(group)"
                   @click="openNode(node, group.aliases)"
-                  @dragstart="onDragStart($event, group.model, node.credential_id)"
-                  @dragend="dragScopeKey = null; dragOverCredentialId = null"
+                  @dragstart="onDragStart($event, group, node.credential_id)"
+                  @dragend="clearDragState"
                 >
                   <span class="qp-node-card-drag-handle" aria-hidden="true">⋮⋮</span>
                   <span class="qp-node-card-title">{{ nodeTitle(node) }}</span>

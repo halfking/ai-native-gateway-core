@@ -5,9 +5,19 @@ import QueuePerspectivePanel from './QueuePerspectivePanel.vue'
 import NodeDetailDrawer from './NodeDetailDrawer.vue'
 import { __testing, liveStreamState } from '../composables/liveStreamStore'
 
+const { getFeatured, resolveRouting, reorderCandidateBindings, superAdmin } = vi.hoisted(() => ({
+  getFeatured: vi.fn(),
+  resolveRouting: vi.fn(),
+  reorderCandidateBindings: vi.fn(),
+  superAdmin: vi.fn(() => false),
+}))
+
+vi.mock('../store', () => ({ isSuperAdmin: superAdmin }))
+
 vi.mock('../api/routing', () => ({
-  getFeatured: vi.fn().mockResolvedValue({ featured_models: ['gpt-4o', 'claude-sonnet', 'm-1'] }),
-  resolveRouting: vi.fn().mockResolvedValue({ raw_models: [], candidates: [] }),
+  getFeatured,
+  resolveRouting,
+  reorderCandidateBindings,
 }))
 vi.mock('../api/logs', () => ({
   getRequestLogTopModels: vi.fn().mockResolvedValue({ items: [
@@ -57,6 +67,10 @@ describe('QueuePerspectivePanel', () => {
     }
     liveStreamState.requests = []
     liveStreamState.nodes = []
+    getFeatured.mockReset().mockResolvedValue({ featured_models: ['gpt-4o', 'claude-sonnet', 'm-1'] })
+    resolveRouting.mockReset().mockResolvedValue({ raw_models: [], candidates: [] })
+    reorderCandidateBindings.mockReset().mockResolvedValue({ message: 'updated', items: [] })
+    superAdmin.mockReturnValue(false)
   })
 
   it('shows an idle queue instead of reporting that data is not wired', () => {
@@ -320,5 +334,67 @@ describe('QueuePerspectivePanel', () => {
     expect(drawer.exists()).toBe(true)
     expect(drawer.props('modelValue')).toBe(true)
     expect(drawer.props('model')).toBe('m-1')
+  })
+
+  it('reorders a complete raw-model candidate list with contiguous priorities', async () => {
+    superAdmin.mockReturnValue(true)
+    resolveRouting.mockImplementation(async (model: string) => ({
+      raw_models: [model],
+      candidates: model === 'm-1'
+        ? [
+            { credential_id: 1, model_name: 'm-1', manual_priority: 1 },
+            { credential_id: 2, model_name: 'm-1', manual_priority: 2 },
+          ]
+        : [],
+    }))
+    liveStreamState.nodes = [
+      { credential_id: 1, provider_id: 1, provider_code: 'p', manual_disabled: false, circuit_state: 'closed', raw_models: ['m-1'] },
+      { credential_id: 2, provider_id: 1, provider_code: 'p', manual_disabled: false, circuit_state: 'closed', raw_models: ['m-1'] },
+    ]
+
+    const wrapper = mountPanel()
+    await flushPromises()
+    const cards = wrapper.findAll('.qp-node-card')
+    expect(cards).toHaveLength(2)
+    expect(cards.every(card => card.attributes('draggable') === 'true')).toBe(true)
+
+    const transfer = { effectAllowed: '', dropEffect: '', setData: vi.fn() }
+    await cards[0].trigger('dragstart', { dataTransfer: transfer })
+    await cards[1].trigger('dragover', { dataTransfer: transfer })
+    await cards[1].trigger('drop', { dataTransfer: transfer })
+    await flushPromises()
+
+    expect(reorderCandidateBindings).toHaveBeenCalledWith([
+      { credential_id: 2, raw_model: 'm-1', manual_priority: 1 },
+      { credential_id: 1, raw_model: 'm-1', manual_priority: 2 },
+    ])
+  })
+
+  it('disables reordering when a status filter hides part of the candidate list', async () => {
+    superAdmin.mockReturnValue(true)
+    resolveRouting.mockImplementation(async (model: string) => ({
+      raw_models: [model],
+      candidates: model === 'm-1'
+        ? [
+            { credential_id: 1, model_name: 'm-1', manual_priority: 1 },
+            { credential_id: 2, model_name: 'm-1', manual_priority: 2 },
+          ]
+        : [],
+    }))
+    liveStreamState.nodes = [
+      { credential_id: 1, provider_id: 1, manual_disabled: false, circuit_state: 'closed', raw_models: ['m-1'] },
+      { credential_id: 2, provider_id: 1, manual_disabled: true, circuit_state: 'closed', raw_models: ['m-1'] },
+    ]
+
+    const wrapper = mountPanel()
+    await flushPromises()
+    const manualDisabledFilter = wrapper.findAll('.qp-status-filter input')[2]
+    expect(manualDisabledFilter.exists()).toBe(true)
+    await manualDisabledFilter.setValue(false)
+
+    const cards = wrapper.findAll('.qp-node-card')
+    expect(cards).toHaveLength(1)
+    expect(cards[0].attributes('draggable')).toBe('false')
+    expect(wrapper.text()).toContain('优先级排序不可用')
   })
 })
