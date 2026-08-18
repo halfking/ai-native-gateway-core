@@ -48,7 +48,7 @@ export default {
     groupDisabled: '🚫 Disabled nodes ({count})',
     nodeLabel: 'Node {credentialId}',
     circuit: 'Circuit',
-    availability: 'Avail',
+    availability: 'Availability',
     quota: 'Quota',
     health: 'Health',
     inFlight: 'In flight {count}',
