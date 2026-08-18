@@ -10,7 +10,7 @@
 // 该组件被 DashboardViewV2 / TenantDashboardView / DashboardViewLegacy 等调用，
 // 作为请求详情抽屉入口（会话上下文跳转已随 SessionContextDetailView 迁移至 plugin）。
 
-import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
+import { ref, watch, onMounted, onBeforeUnmount } from 'vue'
 import { localeRef } from '../i18n'
 import { useI18n } from 'vue-i18n'
 import {
@@ -19,38 +19,61 @@ import {
   type RequestLogDetail,
   type AttachmentInfo,
 } from '../api'
-import { getProviderRequestStats } from '../api/quality'
-import type { ProviderRequestStats } from '../types/quality-api'
+import {
+  updateSessionTitle,
+  deleteSessionTitle,
+  summarizeSessionTitle,
+} from '../api/memora'
+import {
+  getSessionTags,
+  addSessionTag,
+  updateSessionTag,
+  deleteSessionTag,
+  type SessionTag,
+} from '../api/sessionAnalytics'
+import { isDefaultTenant } from '../store'
 import RequestTracePanel from './RequestTracePanel.vue'
 import RoutingAttemptsTimeline from './RoutingAttemptsTimeline.vue'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   requestId: string | null
-}>()
+  mode?: 'default' | 'request-logs'
+  initialTraceOpen?: boolean
+}>(), {
+  mode: 'default',
+  initialTraceOpen: false,
+})
 
 const emit = defineEmits<{
   close: []
   generateSessionSummary: [sessionId: string]
+  sessionTitleChanged: [{ taskId: string; sessionId: string | null; title: string | null }]
 }>()
 
 const loading = ref(false)
 const detail = ref<RequestLogDetail | null>(null)
 const error = ref('')
-const tab = ref<'request' | 'response' | 'attachments' | 'routing'>('request')
-
-// 2026-08-18: 供应商近 30 天请求统计（复用 /api/quality/providers/:id/stats），
-// 非致命：加载失败或供应商不存在时静默置空，不打断详情展示。
-const providerStats = ref<ProviderRequestStats | null>(null)
-
-// statsModelName 派生统计所作用的模型名（与加载时一致的 fallback 顺序）。
-const statsModelName = computed(
-  () => detail.value?.outbound_model ?? detail.value?.client_model ?? '',
-)
-
-// 2026-07-17: 流程详情 inline panel - 在"原始请求详情"内点击按钮,
-//  在「请求详情」与「Tabs/按钮」之间展开一层, 显示该请求的端到端链路 +
-// 失败快照 + AI 提示词生成器 (不再弹出 modal)。
+const tab = ref<'request' | 'outbound' | 'response' | 'attachments' | 'routing'>('request')
 const showTrace = ref(false)
+
+const sessionTags = ref<SessionTag[]>([])
+const sessionTagsLoading = ref(false)
+const sessionTagsError = ref<string | null>(null)
+const editingTitle = ref(false)
+const draftTitle = ref('')
+const titleSaving = ref(false)
+const titleError = ref<string | null>(null)
+const regeneratingTitle = ref(false)
+const addingTag = ref(false)
+const newTagKey = ref('')
+const newTagValue = ref('')
+const newTagSaving = ref(false)
+const editingTagId = ref<number | null>(null)
+const editTagDraftKey = ref('')
+const editTagDraftValue = ref('')
+const editTagSaving = ref(false)
+let detailLoadSeq = 0
+let sessionTagsLoadSeq = 0
 
 // 2026-07-02: 附件 lightbox 状态。Teleport 到 body 后由 handleKeydown 全局监听 ESC。
 const attachmentsLightbox = ref(false)
@@ -62,10 +85,14 @@ const { t } = useI18n()
 watch(
   () => props.requestId,
   async (id) => {
+    const loadSeq = ++detailLoadSeq
     detail.value = null
     error.value = ''
+    loading.value = false
     tab.value = 'request'
+    showTrace.value = props.initialTraceOpen
     closeLightbox()
+    resetSessionMetaState()
     if (!id) return
     loading.value = true
     try {
@@ -74,9 +101,10 @@ watch(
       // 2026-07-20: increased to 3 retries with 200/500/1500ms exponential
       // backoff — probe tiles and async telemetry writes may take longer.
       const retryMs = [200, 500, 1500]
+      let loadedDetail: RequestLogDetail | null = null
       for (let i = 0; i <= retryMs.length; i++) {
         try {
-          detail.value = await getRequestLogDetail(id)
+          loadedDetail = await getRequestLogDetail(id)
           break
         } catch (err: unknown) {
           const isNotFound = err instanceof Error &&
@@ -88,30 +116,240 @@ watch(
           await new Promise(r => setTimeout(r, retryMs[i]))
         }
       }
-      // 详情加载成功后，若含 provider_id 则拉取供应商 30 天统计（非致命）。
-      // 模型粒度对齐 ledger 写入语义 COALESCE(outbound_model, client_model)（telemetry.go rawModel）。
-      providerStats.value = null
-      if (detail.value?.provider_id) {
-        loadProviderStats(
-          detail.value.provider_id,
-          detail.value.outbound_model ?? detail.value.client_model ?? undefined,
-        )
+      if (loadSeq !== detailLoadSeq || props.requestId !== id) return
+      detail.value = loadedDetail
+      if (props.mode === 'request-logs' && loadedDetail?.gw_session_id) {
+        void loadSessionTags(loadedDetail.gw_session_id)
       }
     } catch (e: unknown) {
-      error.value = e instanceof Error ? e.message : '加载失败'
+      if (loadSeq === detailLoadSeq && props.requestId === id) {
+        error.value = e instanceof Error ? e.message : '加载失败'
+      }
     } finally {
-      loading.value = false
+      if (loadSeq === detailLoadSeq && props.requestId === id) {
+        loading.value = false
+      }
     }
   },
   { immediate: true },
 )
 
-async function loadProviderStats(providerId: number, model?: string) {
-  providerStats.value = null
+function resetSessionMetaState() {
+  sessionTagsLoadSeq++
+  sessionTags.value = []
+  sessionTagsLoading.value = false
+  sessionTagsError.value = null
+  editingTitle.value = false
+  draftTitle.value = ''
+  titleSaving.value = false
+  titleError.value = null
+  regeneratingTitle.value = false
+  addingTag.value = false
+  newTagKey.value = ''
+  newTagValue.value = ''
+  newTagSaving.value = false
+  editingTagId.value = null
+  editTagDraftKey.value = ''
+  editTagDraftValue.value = ''
+  editTagSaving.value = false
+}
+
+async function loadSessionTags(sessionId: string) {
+  const loadSeq = ++sessionTagsLoadSeq
+  sessionTagsLoading.value = true
+  sessionTagsError.value = null
   try {
-    providerStats.value = await getProviderRequestStats(providerId, model)
-  } catch {
-    providerStats.value = null
+    const response = await getSessionTags(sessionId)
+    if (loadSeq === sessionTagsLoadSeq && detail.value?.gw_session_id === sessionId) {
+      sessionTags.value = response.tags ?? []
+    }
+  } catch (e: unknown) {
+    if (loadSeq === sessionTagsLoadSeq) {
+      sessionTagsError.value = e instanceof Error ? e.message : String(e)
+    }
+  } finally {
+    if (loadSeq === sessionTagsLoadSeq) sessionTagsLoading.value = false
+  }
+}
+
+function startEditTitle() {
+  if (!detail.value) return
+  draftTitle.value = detail.value.session_title ?? ''
+  editingTitle.value = true
+  titleError.value = null
+}
+
+function cancelEditTitle() {
+  editingTitle.value = false
+  draftTitle.value = ''
+  titleError.value = null
+}
+
+function isCurrentDetail(requestId: string, loadSeq: number): boolean {
+  return detailLoadSeq === loadSeq && detail.value?.request_id === requestId
+}
+
+function publishSessionTitle(taskId: string, sessionId: string | null, title: string | null) {
+  emit('sessionTitleChanged', { taskId, sessionId, title })
+}
+
+async function saveEditTitle() {
+  if (!detail.value?.gw_task_id) return
+  const requestId = detail.value.request_id
+  const loadSeq = detailLoadSeq
+  const taskId = detail.value.gw_task_id
+  const sessionId = detail.value.gw_session_id
+  const title = draftTitle.value.trim()
+  if (!title) {
+    titleError.value = '标题不能为空'
+    return
+  }
+  titleSaving.value = true
+  titleError.value = null
+  try {
+    await updateSessionTitle(taskId, { title, scoped_session_id: sessionId ?? '' })
+    publishSessionTitle(taskId, sessionId, title)
+    if (isCurrentDetail(requestId, loadSeq)) {
+      detail.value!.session_title = title
+      editingTitle.value = false
+    }
+  } catch (e: unknown) {
+    if (isCurrentDetail(requestId, loadSeq)) {
+      titleError.value = e instanceof Error ? e.message : String(e)
+    }
+  } finally {
+    if (isCurrentDetail(requestId, loadSeq)) titleSaving.value = false
+  }
+}
+
+async function regenerateTitle() {
+  if (!detail.value?.gw_task_id) return
+  const requestId = detail.value.request_id
+  const loadSeq = detailLoadSeq
+  const taskId = detail.value.gw_task_id
+  const sessionId = detail.value.gw_session_id
+  regeneratingTitle.value = true
+  titleError.value = null
+  try {
+    const response = await summarizeSessionTitle(taskId, { session_id: sessionId ?? undefined })
+    publishSessionTitle(taskId, sessionId, response.title)
+    if (isCurrentDetail(requestId, loadSeq)) detail.value!.session_title = response.title
+  } catch (e: unknown) {
+    if (isCurrentDetail(requestId, loadSeq)) {
+      titleError.value = e instanceof Error ? e.message : String(e)
+    }
+  } finally {
+    if (isCurrentDetail(requestId, loadSeq)) regeneratingTitle.value = false
+  }
+}
+
+async function clearTitle() {
+  if (!detail.value?.gw_task_id || !confirm('确认清空此会话的标题？')) return
+  const requestId = detail.value.request_id
+  const loadSeq = detailLoadSeq
+  const taskId = detail.value.gw_task_id
+  const sessionId = detail.value.gw_session_id
+  titleSaving.value = true
+  titleError.value = null
+  try {
+    await deleteSessionTitle(taskId, sessionId ?? '')
+    publishSessionTitle(taskId, sessionId, null)
+    if (isCurrentDetail(requestId, loadSeq)) {
+      detail.value!.session_title = null
+      editingTitle.value = false
+    }
+  } catch (e: unknown) {
+    if (isCurrentDetail(requestId, loadSeq)) {
+      titleError.value = e instanceof Error ? e.message : String(e)
+    }
+  } finally {
+    if (isCurrentDetail(requestId, loadSeq)) titleSaving.value = false
+  }
+}
+
+function startAddTag() {
+  addingTag.value = true
+  newTagKey.value = ''
+  newTagValue.value = ''
+}
+
+function cancelAddTag() {
+  addingTag.value = false
+  newTagKey.value = ''
+  newTagValue.value = ''
+}
+
+async function submitAddTag() {
+  if (!detail.value?.gw_session_id) return
+  const requestId = detail.value.request_id
+  const loadSeq = detailLoadSeq
+  const sessionId = detail.value.gw_session_id
+  const key = newTagKey.value.trim()
+  const value = newTagValue.value.trim()
+  if (!key || !value) return
+  newTagSaving.value = true
+  try {
+    await addSessionTag(sessionId, key, value)
+    if (!isCurrentDetail(requestId, loadSeq)) return
+    cancelAddTag()
+    await loadSessionTags(sessionId)
+  } catch (e: unknown) {
+    if (isCurrentDetail(requestId, loadSeq)) {
+      sessionTagsError.value = e instanceof Error ? e.message : String(e)
+    }
+  } finally {
+    if (isCurrentDetail(requestId, loadSeq)) newTagSaving.value = false
+  }
+}
+
+function startEditTag(tag: SessionTag) {
+  editingTagId.value = tag.id
+  editTagDraftKey.value = tag.tag_key
+  editTagDraftValue.value = tag.tag_value
+}
+
+function cancelEditTag() {
+  editingTagId.value = null
+  editTagDraftKey.value = ''
+  editTagDraftValue.value = ''
+}
+
+async function submitEditTag() {
+  if (!detail.value?.gw_session_id || editingTagId.value === null) return
+  const requestId = detail.value.request_id
+  const loadSeq = detailLoadSeq
+  const sessionId = detail.value.gw_session_id
+  const tagId = editingTagId.value
+  const key = editTagDraftKey.value.trim()
+  const value = editTagDraftValue.value.trim()
+  if (!key || !value) return
+  editTagSaving.value = true
+  try {
+    await updateSessionTag(sessionId, tagId, { tag_key: key, tag_value: value })
+    if (!isCurrentDetail(requestId, loadSeq)) return
+    cancelEditTag()
+    await loadSessionTags(sessionId)
+  } catch (e: unknown) {
+    if (isCurrentDetail(requestId, loadSeq)) {
+      sessionTagsError.value = e instanceof Error ? e.message : String(e)
+    }
+  } finally {
+    if (isCurrentDetail(requestId, loadSeq)) editTagSaving.value = false
+  }
+}
+
+async function removeTag(tag: SessionTag) {
+  if (!detail.value?.gw_session_id || !confirm(`删除标签 ${tag.tag_key}: ${tag.tag_value}？`)) return
+  const requestId = detail.value.request_id
+  const loadSeq = detailLoadSeq
+  const sessionId = detail.value.gw_session_id
+  try {
+    await deleteSessionTag(sessionId, tag.id)
+    if (isCurrentDetail(requestId, loadSeq)) await loadSessionTags(sessionId)
+  } catch (e: unknown) {
+    if (isCurrentDetail(requestId, loadSeq)) {
+      sessionTagsError.value = e instanceof Error ? e.message : String(e)
+    }
   }
 }
 
@@ -195,6 +433,53 @@ onBeforeUnmount(() => {
 function fmtTs(v: string | null | undefined) {
   if (!v) return '—'
   return new Date(v).toLocaleString(localeRef.value)
+}
+
+function hasOutboundBody(row: RequestLogDetail | null): boolean {
+  if (!row?.outbound_body) return false
+  return row.outbound_msg_count == null || row.outbound_msg_count > 0
+}
+
+function outboundEqualsRequest(row: RequestLogDetail): boolean {
+  return JSON.stringify(row.request_body ?? '') === JSON.stringify(row.outbound_body ?? '')
+}
+
+function outboundMsgDelta(row: RequestLogDetail): string {
+  const outbound = row.outbound_msg_count ?? extractMessagesFromBody(row.outbound_body).length
+  const delta = outbound - extractMessagesFromBody(row.request_body).length
+  return delta > 0 ? `+${delta}` : String(delta)
+}
+
+function outboundSummaryMarker(row: RequestLogDetail): string {
+  const meta = row.compression_meta
+  return meta && typeof meta === 'object' && typeof meta.summary_marker === 'string'
+    ? meta.summary_marker
+    : ''
+}
+
+function isSummaryMarkerMessage(message: Record<string, unknown>): boolean {
+  const content = message.content
+  if (typeof content === 'string') return content.startsWith('[smm_v1:')
+  return Array.isArray(content) && content.some(
+    (part) => typeof part?.text === 'string' && part.text.startsWith('[smm_v1:'),
+  )
+}
+
+function bodyBytes(value: unknown): number {
+  if (!value) return 0
+  return new Blob([typeof value === 'string' ? value : JSON.stringify(value)]).size
+}
+
+function compressionSavings(row: RequestLogDetail) {
+  const requestBytes = bodyBytes(row.request_body)
+  const outboundBytes = bodyBytes(row.outbound_body)
+  const savedBytes = requestBytes - outboundBytes
+  const requestMessages = extractMessagesFromBody(row.request_body).length
+  const outboundMessages = row.outbound_msg_count ?? extractMessagesFromBody(row.outbound_body).length
+  return {
+    savedBytes: savedBytes > 0 ? `-${savedBytes > 1024 ? `${(savedBytes / 1024).toFixed(1)}KB` : `${savedBytes}B`}` : '≈0',
+    messageDelta: outboundMessages - requestMessages,
+  }
 }
 
 function formatJson(obj: unknown): string {
@@ -353,26 +638,72 @@ function routingAttempts(): RequestLogDetail['routing_attempts'] {
             <span><strong>Token:</strong> {{ detail.prompt_tokens ?? '—' }} / {{ detail.completion_tokens ?? '—' }}</span>
             <span v-if="detail.gw_session_id"><strong>Session:</strong> {{ detail.gw_session_id }}</span>
             <span v-if="detail.gw_task_id"><strong>Task:</strong> {{ detail.gw_task_id }}</span>
+            <template v-if="props.mode === 'request-logs'">
+              <span><strong>供应商:</strong> {{ detail.provider_name ?? '—' }}</span>
+              <span><strong>Key:</strong> {{ detail.api_key_prefix ?? (detail.api_key_id != null ? `key#${detail.api_key_id}` : '—') }}</span>
+              <span v-if="detail.application_code"><strong>应用:</strong> {{ detail.application_code }}</span>
+              <span v-if="detail.upstream_finish_reason"><strong>结束原因:</strong> {{ detail.upstream_finish_reason }}</span>
+              <span v-if="!isDefaultTenant()"><strong>积分消耗:</strong> {{ detail.credits_charged ?? '—' }}</span>
+            </template>
           </div>
         </div>
 
-        <!-- 2026-08-18: 供应商/模型近 30 天请求统计 — 复用 /api/quality/providers/:id/stats，
-             与品质 tab 同一聚合口径（近 30 天窗口）。有模型名时按模型粒度统计（方案 C）。
-             加载失败/供应商不存在时静默隐藏。 -->
-        <div v-if="providerStats" class="drawer-section">
-          <div class="meta-line">
-            <span>
-              <strong>{{ statsModelName ? `模型30天统计 (${statsModelName})` : '供应商30天统计' }}:</strong>
-            </span>
-            <span>总 {{ providerStats.total_requests }}</span>
-            <span>月 {{ providerStats.month_requests }}</span>
-            <span>周 {{ providerStats.week_requests }}</span>
-            <span>日 {{ providerStats.day_requests }}</span>
-            <span style="color: var(--success)">成功 {{ providerStats.success_count }}</span>
-            <span style="color: var(--danger)">失败 {{ providerStats.failure_count }}</span>
-            <span>Tokens {{ providerStats.total_tokens.toLocaleString() }}</span>
+        <section v-if="props.mode === 'request-logs'" class="drawer-section session-meta-section">
+          <div class="session-meta-title">
+            <strong>会话标题:</strong>
+            <template v-if="!editingTitle">
+              <span class="title-value" :class="{ 'title-missing': !detail.session_title }">{{ detail.session_title || '尚无标题' }}</span>
+              <button v-if="detail.gw_task_id" class="btn btn-sm" :disabled="titleSaving || regeneratingTitle" @click="startEditTitle">编辑</button>
+              <button v-if="detail.gw_task_id && detail.session_title" class="btn btn-sm" :disabled="titleSaving || regeneratingTitle" @click="regenerateTitle">{{ regeneratingTitle ? '重新生成中…' : '重新生成' }}</button>
+              <button v-if="detail.gw_task_id && detail.session_title" class="btn btn-sm btn-danger-ghost" :disabled="titleSaving || regeneratingTitle" @click="clearTitle">清空</button>
+            </template>
+            <template v-else>
+              <input v-model="draftTitle" class="title-input" maxlength="80" placeholder="2-80 字符，不含 XML 标签" @keydown.enter="saveEditTitle" @keydown.esc="cancelEditTitle" />
+              <button class="btn btn-sm btn-primary" :disabled="titleSaving" @click="saveEditTitle">{{ titleSaving ? '保存中…' : '保存' }}</button>
+              <button class="btn btn-sm" :disabled="titleSaving" @click="cancelEditTitle">取消</button>
+            </template>
+            <span v-if="titleError" class="meta-error">{{ titleError }}</span>
           </div>
-        </div>
+
+          <div class="session-meta-tags">
+            <div class="tags-header">
+              <strong>项目 / 任务等标签:</strong>
+              <button v-if="detail.gw_session_id && !addingTag" class="btn btn-sm" @click="startAddTag">+ 添加标签</button>
+              <button v-if="addingTag" class="btn btn-sm" :disabled="newTagSaving" @click="cancelAddTag">取消</button>
+            </div>
+            <div v-if="!detail.gw_session_id" class="text-muted">此请求未绑定会话，无法关联标签。</div>
+            <div v-else-if="sessionTagsLoading" class="text-muted">加载中…</div>
+            <div v-else-if="sessionTagsError" class="meta-error">{{ sessionTagsError }}</div>
+            <div v-else-if="!sessionTags.length && !addingTag" class="text-muted">暂无标签。可添加 project / task / client 等维度。</div>
+            <div v-else class="tags-list">
+              <div v-for="sessionTag in sessionTags" :key="sessionTag.id" class="tag-row">
+                <template v-if="editingTagId === sessionTag.id">
+                  <input v-model="editTagDraftKey" class="tag-input" maxlength="50" placeholder="key" @keydown.enter="submitEditTag" @keydown.esc="cancelEditTag" />
+                  <span>:</span>
+                  <input v-model="editTagDraftValue" class="tag-input tag-input-value" placeholder="value" @keydown.enter="submitEditTag" @keydown.esc="cancelEditTag" />
+                  <button class="btn btn-sm btn-primary" :disabled="editTagSaving" @click="submitEditTag">{{ editTagSaving ? '保存中…' : '保存' }}</button>
+                  <button class="btn btn-sm" :disabled="editTagSaving" @click="cancelEditTag">取消</button>
+                </template>
+                <template v-else>
+                  <span class="tag-key">{{ sessionTag.tag_key }}</span>
+                  <span>:</span>
+                  <span>{{ sessionTag.tag_value }}</span>
+                  <span v-if="sessionTag.tag_source" class="tag-source">{{ sessionTag.tag_source }}</span>
+                  <span class="tag-actions">
+                    <button class="btn btn-sm" :disabled="editingTagId !== null || addingTag" @click="startEditTag(sessionTag)">编辑</button>
+                    <button class="btn btn-sm btn-danger-ghost" :disabled="editingTagId !== null || addingTag" @click="removeTag(sessionTag)">删除</button>
+                  </span>
+                </template>
+              </div>
+              <div v-if="addingTag" class="tag-row">
+                <input v-model="newTagKey" class="tag-input" maxlength="50" placeholder="key" @keydown.enter="submitAddTag" @keydown.esc="cancelAddTag" />
+                <span>:</span>
+                <input v-model="newTagValue" class="tag-input tag-input-value" placeholder="value" @keydown.enter="submitAddTag" @keydown.esc="cancelAddTag" />
+                <button class="btn btn-sm btn-primary" :disabled="newTagSaving || !newTagKey.trim() || !newTagValue.trim()" @click="submitAddTag">{{ newTagSaving ? '添加中…' : '添加' }}</button>
+              </div>
+            </div>
+          </div>
+        </section>
 
         <!-- 2026-07-17: 流程详情内嵌面板 — 直接在「请求详情」与「Tabs/按钮」之间
              展开一层 (不再弹窗), 暗色背景不抢抽屉主视觉。 -->
@@ -385,6 +716,16 @@ function routingAttempts(): RequestLogDetail['routing_attempts'] {
         <div class="drawer-section">
           <div class="tab-row">
             <button class="btn btn-sm" type="button" :class="{ 'btn-primary': tab === 'request' }" @click="tab = 'request'">请求消息</button>
+            <button
+              v-if="props.mode === 'request-logs' && hasOutboundBody(detail)"
+              class="btn btn-sm"
+              type="button"
+              :class="{ 'btn-primary': tab === 'outbound' }"
+              @click="tab = 'outbound'"
+            >
+              转发消息
+              <span class="tab-badge">{{ outboundEqualsRequest(detail) ? '=' : `Δ${outboundMsgDelta(detail)}` }}</span>
+            </button>
             <button class="btn btn-sm" type="button" :class="{ 'btn-primary': tab === 'response' }" @click="tab = 'response'">响应内容</button>
             <!-- 2026-07-02: 附件 Tab，仅在 attachments.length > 0 时显示，
                  与 RequestLogsView.vue 行为一致；文案走 i18n。 -->
@@ -449,6 +790,31 @@ function routingAttempts(): RequestLogDetail['routing_attempts'] {
               </div>
             </template>
             <div v-else class="text-muted">(无请求数据)</div>
+          </template>
+
+          <template v-else-if="tab === 'outbound'">
+            <div class="outbound-summary">
+              <strong>转发体</strong>
+              <span>消息数 {{ detail.outbound_msg_count ?? '—' }}</span>
+              <span>估算 {{ detail.outbound_token_est ?? '—' }} tokens</span>
+              <span>节约 {{ compressionSavings(detail).savedBytes }}</span>
+              <span>消息变化 {{ compressionSavings(detail).messageDelta }}</span>
+              <span v-if="outboundSummaryMarker(detail)" class="summary-marker-badge">含 LLM 摘要</span>
+            </div>
+            <template v-if="extractMessagesFromBody(detail.outbound_body).length">
+              <div v-for="(msg, i) in extractMessagesFromBody(detail.outbound_body)" :key="i" class="msg-block">
+                <div class="msg-role" :style="{ color: roleColor(String(msg.role || '')) }">
+                  [{{ msg.role || 'unknown' }}]
+                  <span v-if="isSummaryMarkerMessage(msg)" class="summary-boundary">smm_v1 摘要边界</span>
+                </div>
+                <pre class="msg-pre">{{ formatJson(msg.content ?? msg) }}</pre>
+                <div v-if="msg.tool_calls" class="tool-block">
+                  <div class="tool-label">工具调用:</div>
+                  <pre v-for="(tc, j) in (msg.tool_calls as unknown[])" :key="j" class="tool-pre">{{ formatJson(tc) }}</pre>
+                </div>
+              </div>
+            </template>
+            <div v-else class="text-muted">(无转发数据)</div>
           </template>
 
           <template v-else-if="tab === 'response'">
@@ -746,6 +1112,53 @@ function routingAttempts(): RequestLogDetail['routing_attempts'] {
   border-radius: 4px;
   background: #000;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+}
+.session-meta-section {
+  background: var(--surface-primary);
+  border-radius: 6px;
+  padding: 8px 12px;
+  margin-top: 8px;
+}
+.session-meta-title,
+.tags-header,
+.tag-row,
+.outbound-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.session-meta-title { margin-bottom: 8px; }
+.session-meta-tags { border-top: 1px dashed var(--border); padding-top: 8px; }
+.tags-list { display: flex; flex-direction: column; gap: 4px; }
+.tag-row { padding: 4px 8px; border: 1px solid var(--border); border-radius: 4px; }
+.tag-key { font-family: ui-monospace, SFMono-Regular, monospace; font-weight: 600; }
+.tag-source, .summary-marker-badge, .summary-boundary {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+}
+.tag-actions { display: flex; gap: 4px; margin-left: auto; }
+.title-input, .tag-input {
+  min-width: 80px;
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 12px;
+}
+.title-input, .tag-input-value { flex: 1 1 160px; }
+.meta-error, .btn-danger-ghost { color: var(--danger); }
+.outbound-summary {
+  margin-bottom: 10px;
+  padding: 6px 10px;
+  border-radius: 4px;
+  background: var(--card);
+  color: var(--text-secondary);
 }
 .lightbox-close {
   position: fixed;
