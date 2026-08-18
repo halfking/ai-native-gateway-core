@@ -113,7 +113,33 @@ func (c *CredentialProbeV2) SubmitFastProbe(credID int) {
 	}
 }
 
+// fastProbeQueueLen exposes the pending fast-probe count for tests and
+// diagnostics. A persistently full queue (cap 64) means submissions are
+// being dropped — exactly the failure mode StartFastProbeConsumer exists
+// to prevent.
+func (c *CredentialProbeV2) fastProbeQueueLen() int {
+	return len(c.fastReprobeQueue)
+}
+
 func (c *CredentialProbeV2) Start(ctx context.Context) {
+	c.start(ctx, true)
+}
+
+// StartFastProbeConsumer starts ONLY the fast-reprobe queue drain loop,
+// skipping the legacy hourly cycleAll. LLM_GATEWAY_USE_NEW_PROBE_MODE=true
+// intentionally skips Start() (the new-mode workers own the scheduled
+// probe surface), but PeriodicQuotaProbe / BalanceQuotaProbe still submit
+// quota-recovery probes into fastReprobeQueue. Without a consumer those
+// submissions pile up until the 64-slot queue fills and every subsequent
+// probe is silently dropped — observed on 154 production (2026-08-18):
+// credentials stuck in permanently_exhausted/suspended for weeks while
+// "credential probe v2: fast probe queue full" logged every cycle and the
+// upstream had long recovered.
+func (c *CredentialProbeV2) StartFastProbeConsumer(ctx context.Context) {
+	c.start(ctx, false)
+}
+
+func (c *CredentialProbeV2) start(ctx context.Context, legacyCycle bool) {
 	ctx, cancel := context.WithCancel(ctx)
 	c.lifecycleMu.Lock()
 	if c.started || c.stopped {
@@ -127,8 +153,9 @@ func (c *CredentialProbeV2) Start(ctx context.Context) {
 	c.probeCtx = ctx
 	c.probeCtxMu.Unlock()
 	c.lifecycleMu.Unlock()
-	go c.run(ctx)
-	slog.Info("credential probe v2 started", "interval", c.interval)
+	go c.run(ctx, legacyCycle)
+	slog.Info("credential probe v2 started",
+		"interval", c.interval, "legacy_cycle", legacyCycle)
 }
 
 func (c *CredentialProbeV2) Stop() {
@@ -177,29 +204,35 @@ func (c *CredentialProbeV2) ProbeNowAsync(credID int) {
 	}()
 }
 
-func (c *CredentialProbeV2) run(ctx context.Context) {
+func (c *CredentialProbeV2) run(ctx context.Context, legacyCycle bool) {
 	defer close(c.done)
 
-	// Stagger from v1: v2 fires at minute 30 of each hour, v1 fires at minute 0.
-	// On first start, wait until next :30 mark.
-	if wait := time.Until(nextHalfHour()); wait > 0 && wait < c.interval {
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(wait):
+	if legacyCycle {
+		// Stagger from v1: v2 fires at minute 30 of each hour, v1 fires at minute 0.
+		// On first start, wait until next :30 mark.
+		if wait := time.Until(nextHalfHour()); wait > 0 && wait < c.interval {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(wait):
+			}
 		}
 	}
 
 	ticker := time.NewTicker(c.interval)
 	defer ticker.Stop()
 
-	c.cycleAll(ctx)
+	if legacyCycle {
+		c.cycleAll(ctx)
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			c.cycleAll(ctx)
+			if legacyCycle {
+				c.cycleAll(ctx)
+			}
 		case credID := <-c.fastReprobeQueue:
 			// P2: event-triggered fast reprobe after auth_failed/unreachable.
 			go func(id int) {

@@ -2933,6 +2933,13 @@ func main() {
 			slog.Info("CHECKPOINT: before credProbeV2.Start")
 			if useNewProbeMode() {
 				slog.Info("credProbeV2 (legacy 1h) skipped: LLM_GATEWAY_USE_NEW_PROBE_MODE=true")
+				// 2026-08-18 fix: periodicQuotaProbe/balanceQuotaProbe below
+				// still submit into credProbeV2.fastReprobeQueue. Skipping
+				// Start() entirely left that queue without a consumer, so it
+				// filled up (64 slots) and every quota-recovery probe was
+				// dropped ("fast probe queue full"). Keep the queue drain
+				// alive without the legacy hourly cycleAll.
+				credProbeV2.StartFastProbeConsumer(context.Background())
 			} else {
 				credProbeV2.Start(context.Background())
 			}

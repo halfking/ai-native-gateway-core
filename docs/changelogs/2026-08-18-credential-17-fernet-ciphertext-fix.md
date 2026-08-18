@@ -156,3 +156,54 @@ FROM credentials WHERE id = 17;
    消除 Fernet 路径（见 commit history 中 secret 包的双格式支持）
 4. 监控建议：Prometheus counter for `enrichWithAPIKeys: reveal failed`，
    阈值告警（例如 1 分钟内 > 5 次）
+
+## 7. 后续执行记录（2026-08-18 下午，handoff 后第二会话）
+
+对 §6 遗留工作的逐项执行结果：
+
+| §6 条目 | 状态 | 结果 |
+|---|---|---|
+| 1. 245 灰度扫描 | ✅ 完成 | 245 无 Go 工具链，改本地交叉编译 `check-credentials`（linux/amd64 静态）后 scp 执行。共享库（252 PG17，245/154 共用）**37 条 credential 全部 `v1-legacy-fernet`，0 解密失败**；id=17 (130dao) 确认 194 字节 envelope、`decrypt_ok=true` |
+| 2. VALIDATE CONSTRAINT | ✅ 完成 | **发现：约束此前从未应用到生产库**（migration 079 只进了仓库，`pg_constraint` 查无此约束）。本次在共享库应用 079（NOT VALID，`lock_timeout=10s`）后立即 VALIDATE，`convalidated=t`。245/154 共库，一处生效两边同时受 INSERT/UPDATE 防护 |
+| 3. EncryptFernet → AESGCM 迁移 | ⏳ 未动 | 长期项，见 §6 |
+| 4. 监控 counter | ✅ 代码完成，待部署 | `llmgw_credential_reveal_failure_total{provider_id,reason}`（详见 §8） |
+
+附带修复与清理：
+
+- **CLI bug**：`cmd/check-credentials/main.go` 的 `encode(updated_at,'escape')` 在
+  `updated_at TIMESTAMPTZ`（真实 schema）下报 `function encode(timestamp with time zone, unknown)
+  does not exist`——上一会话只跑了单测未连真库所以未暴露。已改为 `updated_at::text`，
+  并在 245 真库上验证通过。
+- **154 /tmp 残留清理**：删除 `/tmp/testdec/main.go`、`/tmp/enc17.go`（调试用解密 helper，
+  含密钥材料暴露面）。
+- **154 复发检查**：修复重启（13:03）后最近 15 分钟 `cannot decrypt` 为 0；13:01 前旧进程
+  的 8 条 WARN 均为修复前残留。
+- 全表 VALIDATE 前置预检查：`credentials` / `credential_keys` 的 bytea ciphertext 列
+  首字节 `0x80` 行数均为 0；其余 ciphertext 列（`api_keys.key_ciphertext` 等）为 text
+  类型，不受 raw-Fernet-binary 失败模式影响。
+
+## 8. 审计加固（2026-08-18 下午，第三会话审计）
+
+本次审计发现 §6/#1（CLI）和 §6/#4（counter）落地代码存在两处隐患，对应修订：
+
+### 8.1 check-credentials CLI
+
+| 隐患 | 修复 |
+|---|---|
+| NULL 密文 → `octet_length` / `encode` 返回 NULL → 扫描 `*int` / `*string` 失败，整次 scan abort | `COALESCE(octet_length(...), 0)` + `COALESCE(encode(...), '')`；NULL 行也能继续走 classify |
+| `Row.ID/ProviderID` 用 `int`，但 schema 是 `bigint` | 改 `int64`；`flag.Int64` 对齐 |
+| `FormatUnknown` 与 `FormatEmpty` 不计入异常、退出码为 0，导致 unknown/empty 被错误地报为 healthy | 两者纳入 `FormatAnom` 计数；非零退出码；`printHuman` 也显式列出 |
+| `fix` 用 `WHERE id=$id` 单行 UPDATE，无原值校验，并发轮转时可能覆盖新 ciphertext | 加乐观锁 `WHERE id=$1 AND secret_ciphertext=$2::bytea`；逐行事务；检查 `RowsAffected==1`；并发覆盖记 `RewriteFail`，不视作成功 |
+
+### 8.2 credential reveal 失败 metric
+
+| 隐患 | 修复 |
+|---|---|
+| 名称叫 `..._decrypt_failure_total` 但囊括了所有 `RevealAPIKey` 错误（含 DB 查询、配置缺失、rotation 失效），把 DB 故障误报为"解密失败" | 重命名为 `llmgw_credential_reveal_failure_total`，反映"获取密钥的全链路失败" |
+| 错误分类用 `strings.Contains` 匹配 `secret.DecryptAny` 的错误文案，未来文案 refactor 会静默降级到 `other` | 在 `provider/client.go` 引入 `errReveal*` 哨兵（`errRevealUnknownFormat` / `errRevealDecrypt` / `errRevealNotFound` / `errRevealNotConfigured` / `errRevealRotation` / `errRevealCached`），metric 端用 `errors.Is` 分类 |
+| 负缓存只存 `errMsg` 字符串，原始 cause 在缓存丢失，cached 命中时只能报 `cached` 桶、不能保住 `unknown_format` 桶 | `negativeCacheEntry` 增加 `reason` 字段；缓存写入时一次性算好 reason；cached 命中时同时 Inc `cached` + 原 cause 两桶，让 amplify 倍数与原 cause 频率都对 |
+| `enrichWithAPIKeys` 处的埋点会被负缓存命中重复计数（每次 reveal 都 Inc 一次） | 缓存命中改在 `RevealAPIKey` 缓存分支埋点；`enrichWithAPIKeys` 用 `errors.Is(err, errRevealCached)` 排除 cached，仅记录 fresh 失败 |
+
+reason 词表收窄：`unknown_format` / `decrypt_error` / `cached` / `not_found` /
+`not_configured` / `rotation` / `other`。在 245 实库上重跑 CLI 确认行为不变（id=17
+仍 `OK` + sha256 前缀 `08ee3f1b0cb6`）。

@@ -11,9 +11,11 @@
 //	另验：空/NULL gw_session_id 不受约束、promoted 分区侧 claim 互斥、
 //	      ensure_request_logs_partition 为新分区补索引、视图暴露新列、幂等重放。
 //
-// 门控（沿用 tests/integration 的 TEST_PG_URL 约定；testcontainers 在当前
-// vendor 集合下无法编译——docker/api/types/build 缺失，见
-// repair_529_integration_test.go 同样受影响的先例）：
+// 门控（沿用 tests/integration 的 TEST_PG_URL 约定，指向一次性测试库）。
+// 2026-08-18 复核：初版注释称 testcontainers 在当前 vendor 集合下无法编译；
+// 实测 repair_529_integration_test.go 的 testcontainers 用法可编译
+// （go vet -tags=integration ./sql/migrations/startup/ 通过），如需容器化
+// fixture 可参照该先例；本测试维持 TEST_PG_URL 约定不变。
 //
 //	TEST_PG_URL=postgres://user:pass@localhost:5432/dbname?sslmode=disable \
 //	go test -tags=integration ./sql/migrations/startup/ -run TestMigration532 -v -count=1
