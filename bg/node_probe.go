@@ -1537,14 +1537,14 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 		timeoutAtMs = direct.latencyMs
 	}
 
-	_, _ = w.db.Exec(ctx, `
+	_, err = w.db.Exec(ctx, `
 		INSERT INTO node_probe_runs (
 			credential_id, raw_model_name, trigger_kind, attempt, next_retry_seconds,
 			direct_ok, direct_http_status, direct_err_code, direct_latency_ms, direct_err_detail,
 			gateway_ok, gateway_http_status, gateway_err_code, gateway_latency_ms, gateway_err_detail,
 			success, started_at, completed_at, duration_ms,
-			api_model, outbound_model, provider_id, 
-			request_url, request_headers, request_body, response_body, 
+			api_model, outbound_model, provider_id,
+			request_url, request_headers, request_body, response_body,
 			timeout_at_ms, via_proxy
 		) VALUES (
 			$1, $2, $3, $4, $5,
@@ -1563,6 +1563,16 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 		direct.requestURL, requestHeadersJSON, direct.requestBody, direct.responseBody,
 		timeoutAtMs, direct.viaProxy,
 	)
+	if err != nil {
+		// 2026-08-18 Agent B: the legacy runOne path used to swallow this
+		// error with _, _ = ... — combined with the trigger_kind CHECK gap
+		// that is exactly how node_probe_runs froze. Surface it so the
+		// operator sees a gap and can replay the row out-of-band.
+		auditPersistFailedTotal.WithLabelValues(triggerKind).Inc()
+		slog.Error("node_probe: node_probe_runs audit insert failed (legacy runOne)",
+			"credential_id", credID, "model", model, "trigger_kind", triggerKind, "error", err)
+		return fmt.Errorf("audit insert: %w", err)
+	}
 	return nil
 }
 
