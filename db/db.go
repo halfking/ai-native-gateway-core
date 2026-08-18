@@ -436,6 +436,30 @@ func (d *DB) ensureRequestLogSchema(ctx context.Context) error {
 	}
 
 	slog.Info("request_logs schema ensured (gw_session_id, gw_task_id, request_status, api_key_prefix, api_key_owner_user, application_code, parent_request_id, compression_reason, compression_strategy, compression_meta, outbound_body, outbound_msg_count, outbound_token_est, outbound_msg_hashes, quality_flags, quality_fix_actions, quality_score, client_request_id, is_final_success)")
+
+	// Validate request_logs_hot is heap (not columnar) — UPDATE-heavy table
+	// Citus Columnar does not support UPDATE/CTID scans (SQLSTATE 0A000).
+	// See: https://github.com/citusdata/citus/issues/... (ColumnarScan UPDATE limitation)
+	var storage string
+	err = d.pool.QueryRow(ctx, `
+		SELECT am.amname
+		FROM pg_class c
+		JOIN pg_am am ON am.oid = c.relam
+		WHERE c.relname = 'request_logs_hot'
+	`).Scan(&storage)
+	if err != nil {
+		slog.Warn("request_logs_hot storage validation failed",
+			"error", err,
+			"hint", "ensure request_logs_hot exists and is accessible")
+	} else if storage != "heap" {
+		slog.Error("request_logs_hot storage is NOT heap - UPDATEs will fail!",
+			"actual_storage", storage,
+			"expected", "heap",
+			"action_required", "Convert to heap: ALTER TABLE request_logs_hot SET (storage = heap) or recreate as heap")
+	} else {
+		slog.Debug("request_logs_hot storage validation passed", "storage", storage)
+	}
+
 	return nil
 }
 
