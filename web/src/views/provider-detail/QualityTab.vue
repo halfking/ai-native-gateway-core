@@ -46,6 +46,11 @@ const bestModel = computed<ModelQualityProfile | null>(() => {
   return [...models].sort((a, b) => b.quality_score - a.quality_score)[0] ?? null
 })
 
+const requestStats = computed(() => data.value?.request_stats ?? null)
+
+const fmtNum = (n: number | undefined | null): string =>
+  new Intl.NumberFormat('zh-CN').format(n ?? 0)
+
 const radarData = computed(() => {
   const scores = bestModel.value?.scores
   if (!scores) return []
@@ -93,6 +98,40 @@ function modelLabel(name: string | null | undefined): string {
       {{ qp('noData') }}
     </div>
     <template v-else>
+      <div v-if="requestStats" class="card stats-card">
+        <h3 class="section-title">{{ qp('requestStats') }}</h3>
+        <div class="request-stats-row">
+          <div class="stat-cell">
+            <div class="stat-label">{{ qp('totalRequests') }}</div>
+            <div class="stat-value">{{ fmtNum(requestStats.total_requests) }}</div>
+          </div>
+          <div class="stat-cell">
+            <div class="stat-label">{{ qp('monthRequests') }}</div>
+            <div class="stat-value">{{ fmtNum(requestStats.month_requests) }}</div>
+          </div>
+          <div class="stat-cell">
+            <div class="stat-label">{{ qp('weekRequests') }}</div>
+            <div class="stat-value">{{ fmtNum(requestStats.week_requests) }}</div>
+          </div>
+          <div class="stat-cell">
+            <div class="stat-label">{{ qp('dayRequests') }}</div>
+            <div class="stat-value">{{ fmtNum(requestStats.day_requests) }}</div>
+          </div>
+          <div class="stat-cell">
+            <div class="stat-label">{{ qp('successCount') }}</div>
+            <div class="stat-value success">{{ fmtNum(requestStats.success_count) }}</div>
+          </div>
+          <div class="stat-cell">
+            <div class="stat-label">{{ qp('failureCount') }}</div>
+            <div class="stat-value failure">{{ fmtNum(requestStats.failure_count) }}</div>
+          </div>
+          <div class="stat-cell">
+            <div class="stat-label">{{ qp('totalTokens') }}</div>
+            <div class="stat-value">{{ fmtNum(requestStats.total_tokens) }}</div>
+          </div>
+        </div>
+      </div>
+
       <div class="overview-row">
         <div class="stat-card">
           <div class="stat-label">{{ qp('overallScore') }}</div>
@@ -186,6 +225,21 @@ function modelLabel(name: string | null | undefined): string {
   overflow: hidden;
 }
 .bar-fill { height: 100%; border-radius: 3px; }
+.stats-card { padding: 16px; margin-bottom: 16px; }
+.request-stats-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 12px;
+}
+.stat-cell {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+.stat-cell .stat-value { font-size: 20px; }
+.stat-value.success { color: var(--success); }
+.stat-value.failure { color: var(--danger); }
 .models-card { padding: 16px; }
 .section-title { margin: 0 0 12px; font-size: 14px; }
 .quality-table { width: 100%; border-collapse: collapse; font-size: 13px; }

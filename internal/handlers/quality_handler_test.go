@@ -76,6 +76,15 @@ func TestHandleGetProviderQuality_Success(t *testing.T) {
 			AddRow("claude-3-opus", 95.5, "S", 98.0, 92.0, 94.0, 85.0, now).
 			AddRow("claude-3-sonnet", 88.5, "A", 95.0, 88.0, 90.0, 80.0, now))
 
+	// Mock 请求统计查询（usage_ledger_with_current_month，近 30 天窗口）
+	mock.ExpectQuery(`SELECT.*FROM usage_ledger_with_current_month.*WHERE provider_id = \$1.*INTERVAL '30 days'`).
+		WithArgs(int64(1)).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"total_requests", "month_requests", "week_requests", "day_requests",
+			"success_count", "failure_count", "total_tokens",
+		}).
+			AddRow(int64(100), int64(30), int64(10), int64(5), int64(95), int64(5), int64(12345)))
+
 	req := httptest.NewRequest(http.MethodGet, "/api/quality/providers/1", nil)
 	w := httptest.NewRecorder()
 
@@ -92,6 +101,21 @@ func TestHandleGetProviderQuality_Success(t *testing.T) {
 
 	if resp.Code != 0 {
 		t.Errorf("expected code 0, got %d", resp.Code)
+	}
+
+	data, ok := resp.Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected data map, got %T", resp.Data)
+	}
+	stats, ok := data["request_stats"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected request_stats map, got %T", data["request_stats"])
+	}
+	if v, _ := stats["total_requests"].(float64); v != 100 {
+		t.Errorf("expected total_requests 100, got %v", stats["total_requests"])
+	}
+	if v, _ := stats["total_tokens"].(float64); v != 12345 {
+		t.Errorf("expected total_tokens 12345, got %v", stats["total_tokens"])
 	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -214,6 +238,15 @@ func TestHandleGetProviderQuality_WithModelFilter(t *testing.T) {
 			"updated_at",
 		}).
 			AddRow("claude-3-opus", 95.5, "S", 98.0, 92.0, 94.0, 85.0, now))
+
+	// Mock 请求统计查询（usage_ledger_with_current_month，近 30 天窗口）
+	mock.ExpectQuery(`SELECT.*FROM usage_ledger_with_current_month.*WHERE provider_id = \$1.*INTERVAL '30 days'`).
+		WithArgs(int64(1)).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"total_requests", "month_requests", "week_requests", "day_requests",
+			"success_count", "failure_count", "total_tokens",
+		}).
+			AddRow(int64(50), int64(50), int64(20), int64(3), int64(48), int64(2), int64(6000)))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/quality/providers/1?model_name=claude-3-opus", nil)
 	w := httptest.NewRecorder()
