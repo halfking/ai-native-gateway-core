@@ -109,10 +109,10 @@ describe('NodeDetailDrawer model×node scope', () => {
     await triggerDetailLoad(wrapper)
 
     // 所有请求按 scope 模型发出，且 monitor 重选被禁用（只调一轮）
-    expect(decisions).toHaveBeenCalledWith(5, 50, 'm-1')
-    expect(resolve).toHaveBeenCalledWith('m-1')
-    expect(slidingWindow).toHaveBeenCalledWith(5, 'm-1', 60)
-    expect(modelHistory).toHaveBeenCalledWith(5, 'm-1', 30)
+    expect(decisions).toHaveBeenCalledWith(5, 50, 'm-1', expect.objectContaining({ signal: expect.any(AbortSignal) }))
+    expect(resolve).toHaveBeenCalledWith('m-1', undefined, false, expect.objectContaining({ signal: expect.any(AbortSignal) }))
+    expect(slidingWindow).toHaveBeenCalledWith(5, 'm-1', 60, expect.objectContaining({ signal: expect.any(AbortSignal) }))
+    expect(modelHistory).toHaveBeenCalledWith(5, 'm-1', 30, expect.objectContaining({ signal: expect.any(AbortSignal) }))
     expect(monitorSummary).toHaveBeenCalledWith(
       { credential_id: 5 },
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
@@ -133,9 +133,9 @@ describe('NodeDetailDrawer model×node scope', () => {
 
     await triggerDetailLoad(wrapper)
 
-    expect(decisions).toHaveBeenCalledWith(5, 30)
+    expect(decisions).toHaveBeenCalledWith(5, 30, undefined, expect.objectContaining({ signal: expect.any(AbortSignal) }))
     // 初始模型 = raw_models[0]，monitor 认可后不触发二次加载
-    expect(resolve).toHaveBeenCalledWith('m-1')
+    expect(resolve).toHaveBeenCalledWith('m-1', undefined, false, expect.objectContaining({ signal: expect.any(AbortSignal) }))
     expect(resolve).toHaveBeenCalledTimes(1)
 
     const modelButtons = wrapper.findAll('.nd-model')
@@ -143,18 +143,21 @@ describe('NodeDetailDrawer model×node scope', () => {
     expect(wrapper.text()).toContain('m-2')
   })
 
-  it('reloads when the same node is reopened under a different model scope', async () => {
+  it('clears stale detail and waits for an explicit reload after model scope changes', async () => {
     const wrapper = mountDrawer('m-1')
     await triggerDetailLoad(wrapper)
-    expect(resolve).toHaveBeenNthCalledWith(1, 'm-1')
+    expect(resolve).toHaveBeenNthCalledWith(1, 'm-1', undefined, false, expect.objectContaining({ signal: expect.any(AbortSignal) }))
 
-    // 切换 scope：触发的「合并清理」 + settings 自动加载会在 watch 链上
-    // 重新加载 monitor/candidate 一次，因此 resolve 再次被调。
     await wrapper.setProps({ model: 'm-2' })
     await flushPromises()
 
-    expect(resolve).toHaveBeenCalledWith('m-2')
-    expect(decisions).toHaveBeenLastCalledWith(5, 50, 'm-2')
+    // 切换 scope 不会绕过懒加载；上一个 scope 的 monitor/candidate/decisions 被清空。
+    expect(resolve).toHaveBeenCalledTimes(1)
+    expect(wrapper.text()).toContain('加载明细数据')
+
+    await triggerDetailLoad(wrapper)
+    expect(resolve).toHaveBeenLastCalledWith('m-2', undefined, false, expect.objectContaining({ signal: expect.any(AbortSignal) }))
+    expect(decisions).toHaveBeenLastCalledWith(5, 50, 'm-2', expect.objectContaining({ signal: expect.any(AbortSignal) }))
     expect(wrapper.get('h2').text()).toBe('m-2')
   })
 })
