@@ -45,7 +45,7 @@ func TestOptionsValidation(t *testing.T) {
 		{"negative scan limit", Options{Redis: rdb, Prefix: testPrefix, Owner: "o", LedgerID: testLedgerID, ScanLimit: -1}, "scan limit"},
 	}
 	for _, c := range cases {
-		_, err := Preflight(context.Background(), c.opts)
+		_, err := RunPreflight(context.Background(), c.opts)
 		if err == nil {
 			t.Fatalf("%s: expected error", c.name)
 		}
@@ -91,7 +91,7 @@ func TestPreflightClassifiesLegacyAndCanonicalAndAmbiguous(t *testing.T) {
 	// bytes, not the value type, so this is still migratable.
 	mr.Set(testPrefix+"node:tenant-d:5:model-d", "x")
 
-	report, err := Preflight(ctx, Options{
+	report, err := RunPreflight(ctx, Options{
 		Redis: rdb, Prefix: testPrefix, Owner: "halfking",
 		LedgerID: testLedgerID, Now: fixedNow(),
 	})
@@ -137,7 +137,7 @@ func TestPreflightClassifiesLegacyAndCanonicalAndAmbiguous(t *testing.T) {
 
 	// Validate entries: source key order is alphabetical, migratable entry
 	// records the canonical target, canonical-present entry reports schema k2.
-	bySource := map[string]Entry{}
+	bySource := map[string]PreflightEntry{}
 	for _, e := range report.Ledger.Entries {
 		bySource[e.SourceKey] = e
 	}
@@ -165,14 +165,14 @@ func TestPreflightIsDeterministicAndSkipAppliedIdempotent(t *testing.T) {
 	mr.HSet(testPrefix+"node:tenant-b:9:model-b", "generation", "1")
 	mr.HSet(store.NodeKeyCanonical(testPrefix, "tenant-c", 11, "model-c"), "generation", "1")
 
-	first, err := Preflight(ctx, Options{
+	first, err := RunPreflight(ctx, Options{
 		Redis: rdb, Prefix: testPrefix, Owner: "halfking",
 		LedgerID: testLedgerID, Now: fixedNow(),
 	})
 	if err != nil {
 		t.Fatalf("Preflight: %v", err)
 	}
-	second, err := Preflight(ctx, Options{
+	second, err := RunPreflight(ctx, Options{
 		Redis: rdb, Prefix: testPrefix, Owner: "halfking",
 		LedgerID: testLedgerID, Now: fixedNow(),
 	})
@@ -184,7 +184,7 @@ func TestPreflightIsDeterministicAndSkipAppliedIdempotent(t *testing.T) {
 	}
 	// Mutation between runs must shift the checksum.
 	mr.HSet(testPrefix+"node:tenant-a:7:model-a", "generation", "2")
-	third, err := Preflight(ctx, Options{
+	third, err := RunPreflight(ctx, Options{
 		Redis: rdb, Prefix: testPrefix, Owner: "halfking",
 		LedgerID: testLedgerID, Now: fixedNow(),
 	})
@@ -201,7 +201,7 @@ func TestPreflightFrozenCollisionPairIsNotMigratable(t *testing.T) {
 	ctx := context.Background()
 	// doc 14 §1 frozen collision pair collapses to one legacy key.
 	mr.HSet(store.NodeKeyForTenant(testPrefix, "a", 7, "b:8:c"), "generation", "1")
-	report, err := Preflight(ctx, Options{
+	report, err := RunPreflight(ctx, Options{
 		Redis: rdb, Prefix: testPrefix, Owner: "halfking",
 		LedgerID: testLedgerID, Now: fixedNow(),
 	})
@@ -221,7 +221,7 @@ func TestPreflightFrozenCollisionPairIsNotMigratable(t *testing.T) {
 
 func TestPreflightEmptyKeyspaceProducesEmptyChecksumAndGo(t *testing.T) {
 	rdb, _ := newRedis(t)
-	report, err := Preflight(context.Background(), Options{
+	report, err := RunPreflight(context.Background(), Options{
 		Redis: rdb, Prefix: testPrefix, Owner: "halfking",
 		LedgerID: testLedgerID, Now: fixedNow(),
 	})
@@ -246,7 +246,7 @@ func TestPreflightContextCancellation(t *testing.T) {
 	// Anything that touches a closed ctx should fail; preflight does not
 	// have a non-Redis path so we simulate via empty mr state.
 	_ = mr
-	_, err := Preflight(ctx, Options{
+	_, err := RunPreflight(ctx, Options{
 		Redis: rdb, Prefix: testPrefix, Owner: "halfking",
 		LedgerID: testLedgerID, Now: fixedNow(),
 	})
@@ -282,7 +282,7 @@ func TestPreflightConflictOnDivergingGeneration(t *testing.T) {
 	mr.HSet(testPrefix+"node:tenant-x:1:model-x", "generation", "1", "value", "v1")
 	canonical := store.NodeKeyCanonical(testPrefix, "tenant-x", 1, "model-x")
 	mr.HSet(canonical, "generation", "9", "value", "v1")
-	report, err := Preflight(ctx, Options{
+	report, err := RunPreflight(ctx, Options{
 		Redis: rdb, Prefix: testPrefix, Owner: "halfking",
 		LedgerID: testLedgerID, Now: fixedNow(),
 	})
@@ -304,7 +304,7 @@ func TestPreflightSchemaModeCanonicalExcludesLegacySources(t *testing.T) {
 	rdb, mr := newRedis(t)
 	mr.HSet(testPrefix+"node:tenant-a:7:model-a", "generation", "1")
 	mr.HSet(store.NodeKeyCanonical(testPrefix, "tenant-b", 9, "model-b"), "generation", "1")
-	report, err := Preflight(context.Background(), Options{
+	report, err := RunPreflight(context.Background(), Options{
 		Redis: rdb, Prefix: testPrefix, Owner: "halfking",
 		LedgerID: testLedgerID, SchemaMode: SchemaModeCanonical, Now: fixedNow(),
 	})
@@ -334,18 +334,18 @@ func TestPreflightIncludesAllSourcePatterns(t *testing.T) {
 	mr.HSet(testPrefix+"idx:model:tenant-a:model-a:chat:text", "score", "1")
 	mr.HSet(testPrefix+"binding:1:model-a", "x", "y")
 	mr.Set(testPrefix+"meta:request_dedup:sha", "x")
-	report, err := Preflight(context.Background(), Options{
+	report, err := RunPreflight(context.Background(), Options{
 		Redis: rdb, Prefix: testPrefix, Owner: "halfking",
 		LedgerID: testLedgerID, Now: fixedNow(),
 	})
 	if err != nil {
 		t.Fatalf("Preflight: %v", err)
 	}
-	kinds := map[keyKind]int{}
+	kinds := map[string]int{}
 	for _, e := range report.Ledger.Entries {
 		kinds[e.KeyKind]++
 	}
-	want := map[keyKind]int{kindNode: 1, kindWindow: 1, kindIndex: 1, kindBinding: 1, kindDedup: 1}
+	want := map[string]int{KindNode: 1, KindWindow: 1, KindIndex: 1, KindBinding: 1, KindDedup: 1}
 	for k, v := range want {
 		if kinds[k] != v {
 			t.Fatalf("kind %s count = %d, want %d (kinds=%v)", k, kinds[k], v, kinds)
@@ -362,7 +362,7 @@ func TestPreflightZSetMemberChecksum(t *testing.T) {
 	idxKey := store.CandidateIndexKeyCanonical(testPrefix, "tenant-a", "model-a", "chat", "text")
 	mr.ZAdd(idxKey, 1.0, "cred-1")
 	mr.ZAdd(idxKey, 2.0, "cred-2")
-	report, err := Preflight(context.Background(), Options{
+	report, err := RunPreflight(context.Background(), Options{
 		Redis: rdb, Prefix: testPrefix, Owner: "halfking",
 		LedgerID: testLedgerID, Now: fixedNow(),
 	})
@@ -370,7 +370,7 @@ func TestPreflightZSetMemberChecksum(t *testing.T) {
 		t.Fatalf("Preflight: %v", err)
 	}
 	for _, e := range report.Ledger.Entries {
-		if e.KeyKind != kindIndex || e.Schema != store.SchemaK2 {
+		if e.KeyKind != KindIndex || e.Schema != store.SchemaK2 {
 			continue
 		}
 		if e.MemberCount != 2 {

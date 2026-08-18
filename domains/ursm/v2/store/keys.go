@@ -26,6 +26,44 @@ func NodeKey(prefix string, cid int, raw string) string {
 	return fmt.Sprintf("%snode:%d:%s", prefix, cid, raw)
 }
 
+// NodeKeySet groups the Redis keys that make up one logical node state: the
+// node hash plus the 1m/5m/30m window ZSETs. RecordRequest must read and
+// write these as one unit. The per-request dedup key is derived from Node at
+// the store layer (requestDedupKey), so it follows the node key's schema
+// automatically and is not listed here.
+//
+// The tuple fields retain the identity the set was built from: schema-aware
+// paths (dual/canonical) derive the k2 set from them instead of re-parsing
+// the legacy key, which delimiter-bearing tuples cannot survive.
+type NodeKeySet struct {
+	Prefix string
+	Node   string
+	Win1m  string
+	Win5m  string
+	Win30m string
+
+	TenantID     string
+	CredentialID int
+	RawModel     string
+}
+
+// NodeKeySetForTenant builds the complete key set for one
+// (tenant, credential, raw model) tuple using the legacy exact-byte
+// constructors. Callers must not assemble these keys by hand.
+func NodeKeySetForTenant(prefix, tenant string, cid int, raw string) NodeKeySet {
+	return NodeKeySet{
+		Prefix: prefix,
+		Node:   NodeKeyForTenant(prefix, tenant, cid, raw),
+		Win1m:  WindowKeyForTenant(prefix, tenant, cid, raw, "1m"),
+		Win5m:  WindowKeyForTenant(prefix, tenant, cid, raw, "5m"),
+		Win30m: WindowKeyForTenant(prefix, tenant, cid, raw, "30m"),
+
+		TenantID:     tenant,
+		CredentialID: cid,
+		RawModel:     raw,
+	}
+}
+
 // ParseNodeKey decodes the tagged tenant-scoped node:t:<tenant>:<credential>:<model>
 // form and the legacy node:<credential>:<model> form. It also accepts the prior
 // untagged string-tenant form for persistence compatibility; numeric tenants
@@ -37,6 +75,14 @@ func ParseNodeKey(prefix, key string) (ParsedNodeKey, bool) {
 	}
 	parts := strings.Split(strings.TrimPrefix(key, base), ":")
 	if len(parts) < 2 {
+		return ParsedNodeKey{}, false
+	}
+	// The k2 marker is reserved for the canonical grammar. The loose
+	// legacy branches below must never consume it: an all-digit base64url
+	// tenant segment (b64 of some tenants is only 0-9) would otherwise
+	// "successfully" decode as {tenant:"k2", cid:<digits>} with a wrong
+	// tuple. Canonical keys parse via ParseNodeKeyAny only.
+	if parts[0] == "k2" {
 		return ParsedNodeKey{}, false
 	}
 	if parts[0] == "t" && len(parts) >= 4 && isNumericTenant(parts[1]) {
@@ -95,14 +141,26 @@ func isNumericTenant(tenant string) bool {
 	return true
 }
 
+// BindingKey has no callers since the v2 store landed; it is kept only so
+// the frozen key surface stays inspectable.
+//
+// Deprecated: no callers; do not use in new code.
 func BindingKey(prefix string, cid int, raw string) string {
 	return fmt.Sprintf("%sbinding:%d:%s", prefix, cid, raw)
 }
 
+// CredentialKey has no callers since the v2 store landed; it is kept only so
+// the frozen key surface stays inspectable.
+//
+// Deprecated: no callers; do not use in new code.
 func CredentialKey(prefix string, cid int) string {
 	return fmt.Sprintf("%scredential:%d", prefix, cid)
 }
 
+// ProviderKey has no callers since the v2 store landed; it is kept only so
+// the frozen key surface stays inspectable.
+//
+// Deprecated: no callers; do not use in new code.
 func ProviderKey(prefix string, pid int) string {
 	return fmt.Sprintf("%sprovider:%d", prefix, pid)
 }

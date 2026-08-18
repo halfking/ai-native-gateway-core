@@ -1,9 +1,9 @@
 # 14 · URSM Redis delimiter-safe key 兼容迁移冻结决策
 
-> **状态**：T0 设计冻结；§0 前置事实已记录（2026-08-18），L1 起实施禁令解除；G1、G4 和发布均未开始
-> **事实基线**：`df6c6546310ec07ca5abb636cf5d8759bf2c3502`（`main` 与 `origin/main` 一致）
+> **状态**：T0 设计冻结；owner/ledger ID/目标拓扑已记录（§10），L1-L3 实施解锁；G1、G4 和发布均未开始（2026-08-18）
+> **事实基线**：`df6c6546310ec07ca5abb636cf5d8759bf2c3502`（设计冻结时 `main` 与 `origin/main` 一致）；实施基线见 §10
 > **裁决**：`M5-0/T0 = BLOCKED / NO-GO`。本文件只冻结兼容设计，不改变生产 key 格式，不构成 Redis、PostgreSQL、provider 或发布证据。
-> **唯一执行 owner**：`Migration owner` = `halfking`（§0 已记录）。owner 名称、migration ledger ID 和目标 Redis 拓扑记录前禁止实现或切换的门槛已由 §0 满足。
+> **唯一执行 owner**：`Migration owner`（已具名 `halfking`，见 §10）。owner 名称、migration ledger ID 和目标 Redis 拓扑已按本文件要求记录于 §10；其余禁止性约束全部不变。
 
 本决策补充 [13-T0契约冻结与所有权](./13-T0契约冻结与所有权.md) 的 delimiter-safe blocker，并约束后续 `NodeKeyForTenant`、`WindowKeyForTenant`、`CandidateIndexKey`、persist/recovery、Lua、coverage 与 cleanup 的唯一可接受迁移路径。
 
@@ -161,4 +161,50 @@ T0 design freeze
 ## 9. 变更记录
 
 - 2026-08-18：首次冻结 delimiter-safe Redis key compatibility 设计；明确版本化 namespace、base64url grammar、唯一 migration owner、preflight 分类、dual/canonical mode、TTL/cleanup/rollback 与 G1/G4 门禁。
+- 2026-08-18（第二次）：具名 Migration owner=`halfking`、`ledger_id=ursm-v2-k2-20260818-001`；冻结目标 Redis 拓扑为 standalone 单实例（Redis Cluster 为 NO-GO blocker，k2 grammar 不含 hash-tag）；记录 §10.1 从 URSM owner 显式移交的精确文件清单与 §10.2 Slice 0b 字节等价前置。L1-L3 实施解锁；`M5-0/T0` 仍为 `BLOCKED / NO-GO`，G1/G4 判定不受影响。
+- 2026-08-18（合并）：把并行 origin/main 的 §0 前置事实记录、`1×X` 严格 parser 集合与 154 incident 的"过期 cool 半开"修复并入本决策；唯一 ledger_id 仍为 `ursm-v2-k2-20260818-001`，文件清单未变。
+
+## 10. Owner、ledger ID 与拓扑冻结记录（2026-08-18）
+
+本节记录满足头部"owner 名称、migration ledger ID 和目标 Redis 拓扑被记录"的实现前置条件。它不解除 `M5-0/T0` 的 `BLOCKED / NO-GO` 裁决，不构成 G1/G4 或任何真实依赖证据。
+
+| 项 | 冻结值 |
+|---|---|
+| Migration owner | `halfking`（本人具名；ZCode 会话为其执行，ledger 与审计责任归属 halfking） |
+| ledger_id | `ursm-v2-k2-20260818-001`（不可复用） |
+| 目标 Redis 拓扑 | standalone 单实例（仓库内全部为 go-redis 单地址 `redis.NewClient` + `SELECT` db，零 Cluster/Sentinel 代码）。k2 grammar 不含 hash-tag，与 legacy 布局一致。**Redis Cluster 为 NO-GO blocker**：legacy key 无 hash-tag，任何 k2 hash-tag 方案都无法让 legacy+canonical 的原子 dual-write 在 Cluster 成立（legacy 侧必然跨 slot）；dual-write 进入真实环境（G 阶段）前，运维必须书面确认 154/245/acc 各目标 Redis 均为 standalone。 |
+| 实施基线 | worktree 分支 `feat/ursm-k2-migration`，基点 `fafdc60a5ec34416a72a0df654943ec81d001c34`（origin/main tip，2026-08-18）；该基点与设计基线 `df6c65463` 之间的提交均不触及 `domains/ursm/**` |
+| ledger 落点 | Redis `<prefix>meta:migration:*`（§3 全部字段）+ PG 顶层 migration `sql/migrations/080_ursm_key_migration_ledger.sql` 与 `db/db.go` ensure 函数（仓库双轨约定）；断点续跑复用 durable lane 的 owner+fencing_token 模式 |
+
+### 10.1 从 URSM owner 显式移交的精确文件清单
+
+Migration owner 仅可编辑以下 URSM key-schema 文件；其余 `domains/ursm/v2/**` 仍归 URSM owner，单一文件单一 owner 不变：
+
+- `domains/ursm/v2/store/keys.go`、`keys_test.go`、`keys_t0_contract_test.go`
+- `domains/ursm/v2/store/keys_k2.go`、`keys_k2_test.go`、`schema_mode.go`（新增）
+- `domains/ursm/v2/store/record_request.go`、`record_request.lua`、`record_request_test.go`
+- `domains/ursm/v2/store/pipeline.go`、`pipeline_test.go`
+- `domains/ursm/v2/persist/writer.go`（SCAN/parse 双 schema 识别与 ambiguous fail-closed）及其测试
+- `domains/ursm/v2/recovery/manager.go` 的 ValidateCoverage 与 warmup 计数段、`recovery/coverage_test.go`
+- `domains/ursm/v2/bootstrap/bootstrap.go`（canonical 模式写目标与 manifest）及其测试
+- `domains/ursm/v2/migration/**`（新增）、`cmd/ursm-k2-preflight/**`（新增）
+- `sql/migrations/080_ursm_key_migration_ledger.sql`（新增）、`db/db.go`（仅新增 ensure 函数）
+- 本文件与 [13-T0契约冻结与所有权](./13-T0契约冻结与所有权.md) 的变更记录
+
+URSM owner 保留：`domains/ursm/v2/manager.go`、`probe.go`、`admin.go`、`cache/**`、`sync/config_sync.go`、`recovery/warmup.go`、`index/**`（公开契约冻结，candidate dual-write 需单独授权）、`rollout/**`、`api/**`、`statesource/**`、`shadow/**`、`config.go`（仅协作新增 schema mode 字段）；`cmd/gateway/main.go` 接线变更须经协调方批准。
+
+### 10.2 移交前置（Slice 0b，字节等价重构）
+
+以下三项由 Migration owner 在移交文件上先行完成、URSM owner 审阅；三者输出 legacy 字节逐一不变，由既有 exact-byte 契约测试（`store/keys_t0_contract_test.go` 等）护栏，现有测试必须零修改通过：
+
+1. `manager.go` RecordRequest 路径的散装 node/window key 构造收敛为 store 层 `NodeKeySetForTenant` helper；
+2. `persist/writer.go` 内联的 `meta:epoch` 构造改用 `store.EpochKey`；
+3. `cache/migrate_fpslots.go` 硬编码的 `ursm:v2:node:%d:%s` 改为委托 `store.NodeKeyForTenant`（消除第二套 node-key 构造器）。
+
+另：`keys.go` 中零调用的 `BindingKey`、`CredentialKey`、`ProviderKey` 标注 deprecated、不删除，避免整文件移交带走无关契约。
+
+同批字节等价收敛（URSM owner 保留文件，仅 key 构造委托，输出字节逐一不变）：`index/index.go` 的内联 `idx:model:` 格式串改为委托 `store.CandidateIndexKey`，使该冻结 grammar 只有一个构造器（消除与 `store/keys.go` 的双实现分叉）。
+
 - 2026-08-18：§0 前置事实记录——Migration owner = `halfking`、ledger_id = `ursm-k2-mig-134e6d21-721b-41d4-af0b-adff143107e2`、目标拓扑 = standalone（k2 grammar 不引入 hash-tag）；登记 L1 文件移交（`keys_k2.go`/`keys_k2_test.go`）。header 实现禁令解除；`M5-0/T0 = BLOCKED / NO-GO` 裁决不变。
+
+> **合并期 ledger_id 冲突（2026-08-18）**：本会话采用 `ursm-v2-k2-20260818-001`（见 §10），与 origin/main 的 `ursm-k2-mig-134e6d21-...` 并存一次合并。下一次会话若要重命名，需在新 ledger_id 写入 Redis metadata 之前完成 owner-side 决策；保留期间以 §10 表行 + 本条作为审计追溯。

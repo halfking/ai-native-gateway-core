@@ -22,13 +22,18 @@ type Manager struct {
 	rdb    *redis.Client
 	prefix string
 
+	// schemaMode mirrors the store's boot-only key schema mode (doc 14
+	// §3): it decides which grammars coverage validation and warmup
+	// counting accept. Zero value legacy keeps the historical behavior.
+	schemaMode store.KeySchemaMode
+
 	// 2026-07-29 (audit follow-up #4): observability for the incident
 	// lifecycle. lastError / lastErrorAt record the most recent
 	// operation failure (MarkClosedDebounced, WarmupFromExistingKeys,
 	// etc.) so operators can correlate health-check noise with the
 	// recovery gate state. lastRecoveryAt records the timestamp of the
 	// most recent successful reopen, so a dashboard can show "last
-	// recovery was N minutes ago". All access is mutex-guarded; the
+	// recovery was N hours ago". All access is mutex-guarded; the
 	// fields are read by admin endpoints and Prometheus exporters, not
 	// by the request hot path, so contention is bounded.
 	mu              sync.RWMutex
@@ -41,6 +46,10 @@ type Manager struct {
 func New(rdb *redis.Client, prefix string) *Manager {
 	return &Manager{rdb: rdb, prefix: prefix}
 }
+
+// SetKeySchemaMode fixes the key schema mode. Boot-only by contract, kept
+// in lockstep with store.Store.SetKeySchemaMode.
+func (m *Manager) SetKeySchemaMode(mode store.KeySchemaMode) { m.schemaMode = mode }
 
 func (m *Manager) Ready(ctx context.Context) bool {
 	ready, _ := m.ReadyWithError(ctx)
@@ -159,7 +168,8 @@ func (m *Manager) WarmupFromExistingKeys(ctx context.Context) (int, error) {
 		m.recordError(err)
 		return 0, err
 	}
-	if len(keys) == 0 {
+	count := m.countWarmupNodes(keys)
+	if count == 0 {
 		err := fmt.Errorf("ursm.v2: warmup refused: no node state")
 		m.recordError(err)
 		return 0, err
@@ -167,7 +177,7 @@ func (m *Manager) WarmupFromExistingKeys(ctx context.Context) (int, error) {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	result, err := transitionRecoveryScript.Run(ctx, m.rdb,
 		[]string{store.ReadyKey(m.prefix), store.EpochKey(m.prefix)},
-		"open_if_epoch", "", now, observedEpoch, intToString(len(keys))).Text()
+		"open_if_epoch", "", now, observedEpoch, intToString(count)).Text()
 	if err != nil {
 		m.recordError(err)
 		return 0, fmt.Errorf("ursm.v2: warmup transition: %w", err)
@@ -177,9 +187,38 @@ func (m *Manager) WarmupFromExistingKeys(ctx context.Context) (int, error) {
 		m.recordError(err)
 		return 0, err
 	}
-	m.recordRecovery(len(keys))
+	m.recordRecovery(count)
 	m.clearError()
-	return len(keys), nil
+	return count, nil
+}
+
+// countWarmupNodes reduces the scanned node keys to the node count that
+// may reopen the gate under the current schema mode: legacy keeps the raw
+// key count (historical behavior), dual counts distinct logical tuples
+// (a tuple mirrored in both grammars is one node), canonical counts only
+// canonical keys — legacy-only state cannot reopen a canonical gate
+// (doc 14 §5.3).
+func (m *Manager) countWarmupNodes(keys []string) int {
+	switch m.schemaMode {
+	case store.KeySchemaModeCanonical:
+		n := 0
+		for _, k := range keys {
+			if p, ok := store.ParseNodeKeyAny(m.prefix, k); ok && p.Schema == store.KeySchemaK2 {
+				n++
+			}
+		}
+		return n
+	case store.KeySchemaModeDual:
+		seen := make(map[store.ParsedNodeKey]struct{}, len(keys))
+		for _, k := range keys {
+			if p, ok := store.ParseNodeKeyAny(m.prefix, k); ok {
+				seen[p.ParsedNodeKey] = struct{}{}
+			}
+		}
+		return len(seen)
+	default:
+		return len(keys)
+	}
 }
 
 // ValidateCoverage verifies the migration manifest and every expected tenant-aware
@@ -211,9 +250,14 @@ func (m *Manager) ValidateCoverage(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("ursm.v2: validate coverage: %w", err)
 	}
 	for i, key := range keys {
-		parsed, ok := store.ParseNodeKey(m.prefix, key)
+		parsed, ok := store.ParseNodeKeyAny(m.prefix, key)
 		if !ok || parsed.TenantID == "" {
 			return 0, fmt.Errorf("ursm.v2: coverage key is not tenant-aware: %s", key)
+		}
+		// Canonical mode is canonical-only: a legacy key in the manifest
+		// cannot open the authoritative gate (doc 14 §5.3).
+		if m.schemaMode == store.KeySchemaModeCanonical && parsed.Schema != store.KeySchemaK2 {
+			return 0, fmt.Errorf("ursm.v2: coverage key is not canonical: %s", key)
 		}
 		if exists[i].Val() != 1 {
 			return 0, fmt.Errorf("ursm.v2: coverage key missing: %s", key)
