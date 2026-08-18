@@ -24,8 +24,28 @@ describe('NodeStatusMatrix', () => {
     vi.unstubAllGlobals()
   })
 
+  it('renders only a lazy trigger by default and opens the panorama on demand', async () => {
+    const wrapper = mount(NodeStatusMatrix, { attachTo: document.body, global: { stubs: { Teleport: true } } })
+
+    // 默认零渲染：只有触发按钮 + 健康摘要，矩阵分组不挂载
+    const trigger = wrapper.get('.nm-trigger')
+    expect(trigger.text()).toContain('节点状态矩阵')
+    expect(trigger.text()).toContain('1 个节点')
+    expect(trigger.text()).toContain('异常 1')
+    expect(wrapper.find('.nm-group').exists()).toBe(false)
+
+    await trigger.trigger('click')
+    expect(wrapper.find('.nm-modal').exists()).toBe(true)
+    expect(wrapper.text()).toContain('异常节点 (1)')
+
+    // 关闭弹窗即销毁内容
+    await wrapper.get('.nm-modal-close').trigger('click')
+    expect(wrapper.find('.nm-modal').exists()).toBe(false)
+  })
+
   it('groups unhealthy nodes and opens the unified detail drawer', async () => {
     const wrapper = mount(NodeStatusMatrix, { attachTo: document.body, global: { stubs: { Teleport: true } } })
+    await wrapper.get('.nm-trigger').trigger('click')
     expect(wrapper.text()).toContain('异常节点 (1)')
 
     await wrapper.find('.nm-card').trigger('click')
@@ -35,6 +55,7 @@ describe('NodeStatusMatrix', () => {
 
   it('opens unified maintenance controls for a selected node', async () => {
     const wrapper = mount(NodeStatusMatrix, { attachTo: document.body, global: { stubs: { Teleport: true } } })
+    await wrapper.get('.nm-trigger').trigger('click')
     await wrapper.find('.nm-card').trigger('click')
     await wrapper.get('.nd-tabs button:last-child').trigger('click')
     await flushPromises()
@@ -47,6 +68,7 @@ describe('NodeStatusMatrix', () => {
 
   it('shows recent routing requests in a dedicated tab', async () => {
     const wrapper = mount(NodeStatusMatrix, { attachTo: document.body, global: { stubs: { Teleport: true } } })
+    await wrapper.get('.nm-trigger').trigger('click')
     await wrapper.find('.nm-card').trigger('click')
     await flushPromises()
 
