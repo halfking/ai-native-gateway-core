@@ -38,6 +38,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/requestjourney"                      //nolint:depguard // request lifecycle observation
 	"github.com/kaixuan/llm-gateway-go/domains/session"                             //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"                 //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/streaming/state"                     //nolint:depguard // SP-02 state machine wiring
 	"github.com/kaixuan/llm-gateway-go/domains/transformation"                      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/i18n"
@@ -1847,6 +1848,15 @@ func (h *ChatHandler) serveWithExecutor(
 	startTime := logCtx.StartTime
 	logCtx.EnsureCaptured()
 
+	// ── SP-02 (stream state machine): initialise runtime + RequestContext ──
+	// All downstream state transitions are emitted at the same call sites as
+	// the existing INFO logs (auth/routed/compressing/dispatching/firstByte/
+	// ended/failed/cancelled). The runtime runs on its own goroutine driven
+	// by r.Context(); defer cancel guarantees the event loop reaches a
+	// terminal state on every exit path.
+	rt, _ := h.initRequestStateMachine(r.Context(), requestID, "")
+	defer cancelRequestStateMachine(rt, nil)
+
 	// ── 2026-07-17: trace.body_parse ──────────────────────────────────────
 	// 在 EnsureCaptured 后 (body 已读取) 立即记录, body_size 用于分析上游
 	// prompt cache 命中与上下文窗口风险。
@@ -1937,6 +1947,8 @@ func (h *ChatHandler) serveWithExecutor(
 		keyInfo = ki
 		logCtx.SetKey(ki)
 		bindRequestJourney(r, ki.TenantID, logCtx.ClientModel)
+		// SP-02: state machine — auth succeeded.
+		rt.Emit(state.EventAuthed)
 
 		// Round 38 (2026-06-16) — emit multi-tenant OTel span
 		// attributes per docs/multi-tenant-otel-design.md §3.1.
@@ -2880,6 +2892,8 @@ func (h *ChatHandler) serveWithExecutor(
 				"candidates_count", len(candidates),
 				"err", err,
 			)
+			// SP-02: state machine — routing produced a final candidate set.
+			rt.Emit(state.EventRouted)
 		}
 	} else {
 		resolveStart := time.Now()
@@ -2892,6 +2906,8 @@ func (h *ChatHandler) serveWithExecutor(
 			"candidates_count", len(candidates),
 			"err", err,
 		)
+		// SP-02: state machine — routing produced a final candidate set.
+		rt.Emit(state.EventRouted)
 	}
 
 	// 2026-07-18: structured log of routing_resolve so journald can
@@ -3186,6 +3202,7 @@ func (h *ChatHandler) serveWithExecutor(
 	// window fires, produces a lossless LLM summary (or trims as fallback).
 	var scResult *compression.PrepareResult
 	if h.sessionCompressor != nil && gwSessionID != "" {
+		// entering the compressing block — runtime transitioned EventRouted → EventCompressing below
 		tenantForSC := "default"
 		if keyInfo != nil {
 			tenantForSC = keyInfo.TenantID
@@ -3201,6 +3218,8 @@ func (h *ChatHandler) serveWithExecutor(
 			ctxWindow = *candidates[0].ContextWindow
 		}
 		scPrepareStart := time.Now()
+		// SP-02: state machine — body compression has started.
+		rt.Emit(state.EventCompressing)
 		scResult = h.sessionCompressor.Prepare(
 			r.Context(),
 			bodyBytes,
@@ -3222,6 +3241,7 @@ func (h *ChatHandler) serveWithExecutor(
 			"has_session_id", gwSessionID != "",
 			"ctx_window", ctxWindow,
 		)
+		// SP-02: state machine — body compression completed successfully.
 		if scResult != nil && len(scResult.OutboundBody) > 0 {
 			// NeverWorse guard: the compressor must never inflate the request
 			// body. If the "compressed" output is >= the raw body length the
@@ -3466,6 +3486,13 @@ func (h *ChatHandler) serveWithExecutor(
 			logCtx.OutboundTokenEst = &te
 			logCtx.OutboundMsgHashes = append(logCtx.OutboundMsgHashes[:0], scResult.MsgHashes...)
 		}
+		// SP-02: state machine — body compression completed successfully.
+		rt.Emit(state.EventCompressingDone)
+	} else {
+		// SP-02: state machine — compression not needed (no session id or
+		// compressor disabled). Surface EventCompressingSkipped so the
+		// timeline still crosses the compression boundary.
+		rt.Emit(state.EventCompressingSkipped)
 	}
 
 	// Phase C (2026-06-22): Pass bodyBytes directly — per-candidate
@@ -3663,6 +3690,8 @@ func (h *ChatHandler) serveWithExecutor(
 						"ttfb_ms": strconv.Itoa(ttfbMs),
 					},
 				})
+				// SP-02: state machine — upstream first byte arrived.
+				rt.Emit(state.EventFirstByte)
 			},
 			OnStreamCompleted: func(outcome executors.StreamOutcome) {
 				h.emitTrace(r.Context(), requestID,
@@ -3676,6 +3705,13 @@ func (h *ChatHandler) serveWithExecutor(
 					event = event.WithError(fmt.Errorf("%s", outcome.Reason))
 				}
 				h.emitTrace(r.Context(), requestID, event)
+				// SP-02: state machine — upstream stream ended. An interrupted
+				// outcome is a failure, not a clean end.
+				if outcome.Interrupted {
+					rt.Emit(state.EventFailed)
+				} else {
+					rt.Emit(state.EventStreamEnded)
+				}
 			},
 
 			// 2026-07-17 同步探测回调：执行器进入同步探测 hold 时调用
@@ -3826,6 +3862,8 @@ func (h *ChatHandler) serveWithExecutor(
 			})
 			defer base.(*interceptingStreamWriter).finish()
 		}
+		// SP-02: state machine — survival branch dispatches upstream.
+		rt.Emit(state.EventDispatching)
 		result, execErr = h.runSurvivalCoordinator(r, base, buildExecParams, tenantID, durableStream)
 		goto goalRetryLoopDone
 	}
@@ -3887,6 +3925,9 @@ func (h *ChatHandler) serveWithExecutor(
 			})
 			streamWriter = interceptedWriter
 		}
+		// SP-02: state machine — executor has accepted the request and is now
+		// sending it upstream (no first byte yet).
+		rt.Emit(state.EventDispatching)
 		result, execErr = h.executor.Execute(buildExecParams(streamWriter))
 		if interceptedWriter != nil {
 			interceptedWriter.finish()
@@ -3963,6 +4004,14 @@ func (h *ChatHandler) serveWithExecutor(
 goalRetryLoopDone:
 
 	// ── End of retry loop ────────────────────────────────────────────────
+
+	// SP-02: state machine — if the executor returned a non-cancel error,
+	// surface EventFailed. (EventCancelled is already handled by the
+	// runtime event loop reacting to r.Context().Done(), so we only emit
+	// when the failure came from the executor itself.)
+	if execErr != nil && !errors.Is(retryCtx.Err(), context.Canceled) {
+		rt.Emit(state.EventFailed)
+	}
 
 	// 2026-08-09: attach the executor's StreamCapture to the log context so
 	// the client-disconnect probe (deferred in the handler safety net) can
