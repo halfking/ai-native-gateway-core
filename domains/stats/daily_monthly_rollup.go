@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -22,10 +21,11 @@ const (
 type DailyMonthlyRollup struct {
 	db       *pgxpool.Pool
 	interval time.Duration
-	cancel   context.CancelFunc
-	done     chan struct{}
-	started  atomic.Bool
-	stopOnce sync.Once
+
+	mu      sync.Mutex
+	cancel  context.CancelFunc
+	done    chan struct{}
+	started bool
 }
 
 func NewDailyMonthlyRollup(db *pgxpool.Pool, interval time.Duration) *DailyMonthlyRollup {
@@ -36,29 +36,44 @@ func NewDailyMonthlyRollup(db *pgxpool.Pool, interval time.Duration) *DailyMonth
 }
 
 func (r *DailyMonthlyRollup) Start(ctx context.Context) {
-	if r == nil || r.db == nil || !r.started.CompareAndSwap(false, true) {
+	if r == nil || r.db == nil {
 		return
 	}
-	cctx, cancel := context.WithCancel(ctx)
+	r.mu.Lock()
+	if r.started {
+		r.mu.Unlock()
+		return
+	}
+	rollupCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
 	r.cancel = cancel
-	go r.run(cctx)
+	r.done = done
+	r.started = true
+	r.mu.Unlock()
+
+	go r.run(rollupCtx, done)
 	slog.Info("stats daily/monthly rollup started", "interval", r.interval.String())
 }
 
 func (r *DailyMonthlyRollup) Stop() {
-	if r == nil || !r.started.Load() {
+	if r == nil {
 		return
 	}
-	r.stopOnce.Do(func() {
-		if r.cancel != nil {
-			r.cancel()
-		}
-	})
-	<-r.done
+	r.mu.Lock()
+	if !r.started {
+		r.mu.Unlock()
+		return
+	}
+	cancel := r.cancel
+	done := r.done
+	r.mu.Unlock()
+
+	cancel()
+	<-done
 }
 
-func (r *DailyMonthlyRollup) run(ctx context.Context) {
-	defer close(r.done)
+func (r *DailyMonthlyRollup) run(ctx context.Context, done chan struct{}) {
+	defer close(done)
 	// Populate a first snapshot shortly after startup, then refresh on a
 	// bounded interval. A failure is retried on the next tick.
 	r.refreshRecent(ctx)

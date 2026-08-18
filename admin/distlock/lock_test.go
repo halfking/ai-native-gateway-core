@@ -185,6 +185,45 @@ func TestRedisManager_ReleaseTokenSafe(t *testing.T) {
 	freshLeader.Release(context.Background())
 }
 
+func TestRedisManager_ConcurrentLeaderRelease(t *testing.T) {
+	m, _, rdb := newRedisManagerForTest(t)
+	leader, err := m.Acquire(context.Background(), AcquireOpts{Key: "redis-concurrent-release", TTL: time.Second})
+	if err != nil {
+		t.Fatalf("Acquire leader: %v", err)
+	}
+	follower, err := m.Acquire(context.Background(), AcquireOpts{Key: "redis-concurrent-release", TTL: time.Second})
+	if err != nil {
+		t.Fatalf("Acquire follower: %v", err)
+	}
+
+	waitDone := make(chan error, 1)
+	go func() { waitDone <- follower.Wait(context.Background()) }()
+
+	const releasers = 16
+	var wg sync.WaitGroup
+	wg.Add(releasers)
+	for release := 0; release < releasers; release++ {
+		go func() {
+			defer wg.Done()
+			leader.Release(context.Background())
+		}()
+	}
+	wg.Wait()
+
+	select {
+	case err := <-waitDone:
+		if err != nil {
+			t.Fatalf("follower Wait: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("follower did not wake after concurrent Release")
+	}
+	if _, err := rdb.Get(context.Background(), "redis-concurrent-release").Result(); err == nil {
+		t.Fatal("key should be deleted after Release")
+	}
+	follower.Release(context.Background())
+}
+
 // TestRedisManager_EmptyKeyRejected: defensive parity with LocalManager.
 func TestRedisManager_EmptyKeyRejected(t *testing.T) {
 	m, _, _ := newRedisManagerForTest(t)

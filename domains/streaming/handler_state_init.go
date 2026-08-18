@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/state"
+	"github.com/kaixuan/llm-gateway-go/internal/streamretry"
 )
 
 // requestStateInit wires a state.Runtime + RequestContext into the per-request
@@ -30,6 +31,7 @@ import (
 func (h *ChatHandler) initRequestStateMachine(parent context.Context, requestID, tenantID string) (*state.Runtime, *state.RequestContext) {
 	reqCtx := state.NewRequestContext(requestID, tenantID)
 	rt := state.NewRuntime(reqCtx)
+	streamretry.BindStateCancel(parent, reqCtx.Cancelled())
 	// Run the event loop in the background. r.Context() cancellation drives
 	// the StateCancelled path automatically (see runtime.eventLoop).
 	go func() {

@@ -419,6 +419,72 @@ func TestRuntime_ImmediateCancel(t *testing.T) {
 	}
 }
 
+func TestRuntime_CancelPrecedesBufferedTerminalEvent(t *testing.T) {
+	t.Parallel()
+	ctx := NewRequestContext("req-cancel-priority", "tenant-1")
+	rt := NewRuntime(ctx)
+
+	for _, event := range []Event{
+		EventAuthed, EventRouted, EventCompressingSkipped, EventFirstByte, EventStreamEnded,
+	} {
+		rt.Emit(event)
+	}
+	rt.Cancel(errors.New("client disconnected"))
+
+	if err := rt.Run(context.Background()); err == nil {
+		t.Fatal("Run returned nil after cancellation")
+	}
+	if got := rt.State(); got != StateCancelled {
+		t.Fatalf("state=%s want=%s", got, StateCancelled)
+	}
+}
+
+func TestRuntime_RunStartsSingleEventLoop(t *testing.T) {
+	t.Parallel()
+	ctx := NewRequestContext("req-run-once", "tenant-1")
+	rt := NewRuntime(ctx)
+
+	const runners = 8
+	results := make(chan error, runners)
+	for runner := 0; runner < runners; runner++ {
+		go func() { results <- rt.Run(context.Background()) }()
+	}
+	rt.Cancel(errors.New("stop"))
+
+	for runner := 0; runner < runners; runner++ {
+		select {
+		case err := <-results:
+			if err == nil {
+				t.Fatal("Run returned nil after cancellation")
+			}
+		case <-time.After(time.Second):
+			t.Fatal("concurrent Run did not return")
+		}
+	}
+}
+
+func TestRequestContext_ConcurrentSnapshots(t *testing.T) {
+	t.Parallel()
+	ctx := NewRequestContext("req-snapshots", "tenant-1")
+	rt := NewRuntime(ctx)
+	finished := make(chan struct{})
+
+	go func() {
+		defer close(finished)
+		for index := 0; index < 1000; index++ {
+			_ = ctx.EventLog()
+			_ = ctx.CancelErr()
+		}
+	}()
+
+	rt.Cancel(errors.New("snapshot cancellation"))
+	<-ctx.Cancelled()
+	<-finished
+	if ctx.CancelErr() == nil {
+		t.Fatal("CancelErr is nil after cancellation")
+	}
+}
+
 // =============================================================================
 // Test fakes
 // =============================================================================

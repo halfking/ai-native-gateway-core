@@ -41,8 +41,9 @@ type JourneyObserver interface {
 // boundary. (The V3.2 tenant/request-id carrier slots were retired with the
 // state-transition writer: the journey lifecycle carries both identities.)
 type requestCarrier struct {
-	mu      sync.RWMutex
-	journey JourneyObserver
+	mu          sync.RWMutex
+	journey     JourneyObserver
+	stateCancel <-chan struct{}
 }
 
 func withRequestCarrier(ctx context.Context) context.Context {
@@ -68,6 +69,29 @@ func BindJourneyObserver(ctx context.Context, observer JourneyObserver) {
 	carrier.mu.Lock()
 	carrier.journey = observer
 	carrier.mu.Unlock()
+}
+
+// BindStateCancel publishes the per-request state-machine cancellation
+// channel into the retry carrier. The channel is never stored on Wrapper,
+// because DefaultStreamExecutor shares its Wrapper across requests.
+func BindStateCancel(ctx context.Context, cancelled <-chan struct{}) {
+	carrier, _ := ctx.Value(requestCarrierCtxKey{}).(*requestCarrier)
+	if carrier == nil {
+		return
+	}
+	carrier.mu.Lock()
+	carrier.stateCancel = cancelled
+	carrier.mu.Unlock()
+}
+
+func stateCancelFromCtx(ctx context.Context) <-chan struct{} {
+	carrier, _ := ctx.Value(requestCarrierCtxKey{}).(*requestCarrier)
+	if carrier == nil {
+		return nil
+	}
+	carrier.mu.RLock()
+	defer carrier.mu.RUnlock()
+	return carrier.stateCancel
 }
 
 // JourneyObserverFromCtx returns the journey lifecycle bound by the wrapped
@@ -100,16 +124,6 @@ type Wrapper struct {
 	metricsMu sync.RWMutex
 	metrics   WrapperMetrics
 	logger    *slog.Logger
-
-	// stateCancelCh (SP-03, 2026-08-19) is the optional cancellation
-	// channel sourced from the streaming state machine
-	// (RequestContext.Cancelled in domains/streaming/state). When
-	// non-nil, ExecuteWithMetrics derives a child context that is
-	// canceled when either the parent ctx is canceled OR
-	// stateCancelCh fires. Production code paths that don't wire
-	// state-machine cancellation leave this nil and observe the
-	// legacy behaviour (parent ctx only).
-	stateCancelCh <-chan struct{}
 }
 
 // NewWrapper creates a new retry wrapper with the given configuration.
@@ -124,13 +138,11 @@ func NewWrapper(config Config, logger *slog.Logger) *Wrapper {
 	}
 }
 
-// WithStateCancelCh installs a state-machine cancellation channel.
-// Pass the wrapper's RequestContext.Cancelled() channel here so that
-// cancellation originating from the streaming state machine
-// (client_disconnect, upstream timeout, watchdog) immediately exits
-// retry backoff loops. Returns the receiver for chaining.
-func (w *Wrapper) WithStateCancelCh(ch <-chan struct{}) *Wrapper {
-	w.stateCancelCh = ch
+// WithStateCancelCh binds state cancellation to the current request carrier.
+// Prefer BindStateCancel at handler initialization; this method remains for
+// callers already operating inside the retry wrapper's request context.
+func (w *Wrapper) WithStateCancelCh(ctx context.Context, ch <-chan struct{}) *Wrapper {
+	BindStateCancel(ctx, ch)
 	return w
 }
 
@@ -160,7 +172,7 @@ func (w *Wrapper) ExecuteWithMetrics(ctx context.Context, httpW http.ResponseWri
 	// canceled OR the state machine closes its cancel channel. This
 	// keeps all existing ctx.Done() selects (retry backoff, keepalive
 	// tick) working unchanged while honouring state-machine signals.
-	ctx = w.bindStateCancel(ctx)
+	ctx = bindStateCancel(ctx, stateCancelFromCtx(ctx))
 
 	// Initialize metrics for this execution
 	metrics = WrapperMetrics{SuccessAttempt: -1}
@@ -187,7 +199,7 @@ func (w *Wrapper) ExecuteWithMetrics(ctx context.Context, httpW http.ResponseWri
 	rc := &RetryContext{
 		Config:        w.config,
 		Attempt:       0,
-		StateCancelCh: w.stateCancelCh,
+		StateCancelCh: stateCancelFromCtx(ctx),
 	}
 
 	// Keepalive messages are sent synchronously before backoff. A background
@@ -511,16 +523,15 @@ func (r *errorRecorder) Write(p []byte) (int, error) {
 	return n, err
 }
 
-// bindStateCancel (SP-03, 2026-08-19) returns a child context that is
-// canceled when the parent context is canceled OR the state-machine
-// cancel channel closes. Returns the input ctx unchanged when no
-// state cancel channel is installed.
+// bindStateCancel returns a child context that is canceled when the parent
+// context or the request state machine cancellation channel fires. It returns
+// the input context unchanged when no state cancellation channel is present.
 //
 // The returned context cancels exactly once (whichever signal fires
 // first), and the watcher goroutine exits when either signal has been
 // observed. A nil parent is tolerated and treated as context.Background().
-func (w *Wrapper) bindStateCancel(ctx context.Context) context.Context {
-	if w.stateCancelCh == nil {
+func bindStateCancel(ctx context.Context, stateCancelCh <-chan struct{}) context.Context {
+	if stateCancelCh == nil {
 		return ctx
 	}
 	if ctx == nil {
@@ -529,7 +540,7 @@ func (w *Wrapper) bindStateCancel(ctx context.Context) context.Context {
 	derived, cancel := context.WithCancel(ctx)
 	go func() {
 		select {
-		case <-w.stateCancelCh:
+		case <-stateCancelCh:
 			cancel()
 		case <-derived.Done():
 			// Parent ctx canceled (or already canceled itself);
