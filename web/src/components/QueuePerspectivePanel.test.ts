@@ -72,14 +72,19 @@ describe('QueuePerspectivePanel', () => {
 
   // ── OBS-FE2（OBS-BE3 pipeline 层）：缺省隐藏，禁止零值冒充 ──────────────
 
-  it('hides the pipeline overview entirely when the BE3 fields are absent', () => {
+  it('hides pipeline stats entirely when the BE3 fields are absent', () => {
     const wrapper = mountPanel()
 
-    expect(wrapper.find('.qp-pipeline').exists()).toBe(false)
-    // 禁止用零值冒充 pipeline 统计：p50/p95/降级键整体不出现
-    expect(wrapper.text()).not.toContain('等待 p50')
+    // 指标条只剩节点健康度一项；pipeline 的排队/在途/p50/p95 不出现
+    expect(wrapper.findAll('.qp-stat')).toHaveLength(1)
+    expect(wrapper.text()).not.toMatch(/排队 \d/)
+    expect(wrapper.text()).not.toMatch(/在途 \d/)
+    expect(wrapper.text()).not.toContain('p50')
     expect(wrapper.text()).not.toContain('p95')
-    expect(wrapper.find('.qp-pipeline-degraded').exists()).toBe(false)
+    expect(wrapper.find('.qp-stat-degraded').exists()).toBe(false)
+    // 节点健康度指标条仍然存在
+    expect(wrapper.find('.qp-stats').exists()).toBe(true)
+    expect(wrapper.text()).toContain('总 ·')
   })
 
   it('renders pipeline depth/inFlight and omits absent p50/p95 (never zeroes)', () => {
@@ -92,15 +97,13 @@ describe('QueuePerspectivePanel', () => {
     }
     const wrapper = mountPanel()
 
-    expect(wrapper.find('.qp-pipeline').exists()).toBe(true)
-    expect(wrapper.text()).toContain('排队')
-    expect(wrapper.text()).toContain('3')
-    expect(wrapper.text()).toContain('在途')
-    expect(wrapper.text()).toContain('7')
+    expect(wrapper.text()).toContain('调度链路')
+    expect(wrapper.text()).toContain('排队 3')
+    expect(wrapper.text()).toContain('在途 7')
     // 无样本 = 未上报：p50/p95 键整体不出现
-    expect(wrapper.text()).not.toContain('等待 p50')
+    expect(wrapper.text()).not.toContain('p50')
     expect(wrapper.text()).not.toContain('p95')
-    expect(wrapper.find('.qp-pipeline-degraded').exists()).toBe(false)
+    expect(wrapper.find('.qp-stat-degraded').exists()).toBe(false)
   })
 
   it('renders p50/p95 only when sampled and flags degradation', () => {
@@ -115,51 +118,42 @@ describe('QueuePerspectivePanel', () => {
 
     expect(wrapper.text()).toContain('240ms')
     expect(wrapper.text()).toContain('1890ms')
-    expect(wrapper.find('.qp-pipeline-degraded').exists()).toBe(true)
+    expect(wrapper.find('.qp-stat-degraded').exists()).toBe(true)
     expect(wrapper.text()).toContain('降级')
   })
 
-  // ── OBS-FE2（节点操作区） ────────────────────────────────────────────────
+  // ── 队列深度分区：默认折叠，拥堵时自动展开 ────────────────────────────────
 
-  it('renders the node ops section only when node_update data exists', () => {
+  it('collapses queue depth rows by default and expands on toggle', async () => {
+    liveStreamState.queue = {
+      enabled: true,
+      wired: true,
+      models: [{ model: 'glm-5.2', depth: 2 }],
+      credentials: [{ credential: 7, depth: 1 }],
+    }
     const wrapper = mountPanel()
-    expect(wrapper.text()).not.toContain('节点操作')
 
-    liveStreamState.nodes = [{
-      credential_id: 9,
-      provider_id: 2,
-      provider_code: 'anthropic',
-      manual_disabled: false,
-      circuit_state: 'open',
-    }]
-    const wrapper2 = mountPanel()
-    expect(wrapper2.text()).toContain('节点操作')
-    expect(wrapper2.text()).toContain('节点 9')
-    expect(wrapper2.text()).toContain('强制启用')
-    expect(wrapper2.text()).toContain('手工禁用 ▼')
+    expect(wrapper.text()).toContain('队列深度')
+    expect(wrapper.find('.qp-depth-body').exists()).toBe(false)
+
+    await wrapper.get('.qp-depth-toggle').trigger('click')
+    expect(wrapper.find('.qp-depth-body').exists()).toBe(true)
+    expect(wrapper.text()).toContain('总队列')
+    expect(wrapper.text()).toContain('glm-5.2')
+    expect(wrapper.text()).toContain('节点 7')
   })
 
-  it('sorts unhealthy nodes first in the ops list', () => {
-    liveStreamState.nodes = [
-      { credential_id: 1, provider_id: 2, manual_disabled: false, circuit_state: 'closed', health_status: 'healthy' },
-      { credential_id: 2, provider_id: 2, manual_disabled: true, circuit_state: 'closed' },
-      { credential_id: 3, provider_id: 2, manual_disabled: false, circuit_state: 'open' },
-    ]
+  it('auto-expands queue depth when congestion is detected', () => {
+    liveStreamState.queue = {
+      enabled: true,
+      wired: true,
+      models: [{ model: 'glm-5.2', depth: 60 }],
+      credentials: [],
+    }
     const wrapper = mountPanel()
-    const rows = wrapper.findAll('.node-ops-row .nor-id')
-    expect(rows.map(r => r.text())).toEqual(['节点 2', '节点 3', '节点 1'])
-  })
 
-  it('labels truncation explicitly when more than 8 nodes exist', () => {
-    liveStreamState.nodes = Array.from({ length: 10 }, (_, i) => ({
-      credential_id: i + 1,
-      provider_id: 2,
-      manual_disabled: false,
-      circuit_state: 'closed',
-    }))
-    const wrapper = mountPanel()
-    expect(wrapper.findAll('.node-ops-row')).toHaveLength(8)
-    expect(wrapper.text()).toContain('8/10 个节点')
+    expect(wrapper.text()).toContain('模型队列拥堵')
+    expect(wrapper.find('.qp-depth-body').exists()).toBe(true)
   })
 
   // ── 动作事件驱动的处理轨迹（24号 §7） ────────────────────────────────────
@@ -257,6 +251,12 @@ describe('QueuePerspectivePanel', () => {
     expect(groups[1].text()).toContain('2 节点')
     expect(groups[1].text()).toContain('2 当前请求')
 
+    // 节点以 供应商+凭据 小卡片呈现（标题 + 四态点 + 状态摘要）
+    const gptCards = groups[0].findAll('.qp-node-card')
+    expect(gptCards.map(card => card.get('.qp-node-card-title').text()).sort()).toEqual(['a #1', 'b #2'])
+    expect(gptCards[0].findAll('.qp-dot')).toHaveLength(4)
+    expect(gptCards[0].text()).toContain('可用')
+
     // 折叠态下不展开请求列表
     expect(groups[0].findAll('.qp-model-group-requests')).toHaveLength(0)
   })
@@ -286,6 +286,8 @@ describe('QueuePerspectivePanel', () => {
     expect(body.exists()).toBe(true)
     const reqList = body.find('.qp-model-group-requests')
     expect(reqList.exists()).toBe(true)
+    // 请求行的节点标示同样使用 供应商+凭据
+    expect(reqList.text()).toContain('p #5')
     expect(reqList.text()).toContain('m-1')
     expect(reqList.text()).toContain('success')
     expect(reqList.text()).toContain('410ms')
