@@ -73,8 +73,13 @@ export function getStatsErrors(query?: StatsQuery & { limit?: number }) {
 }
 
 export function getStatsReconciliation(query?: { run_id?: string; limit?: number }) {
+  // queryString is typed for StatsQuery; reconciliation accepts its own
+  // narrower shape (run_id, limit). Coerce through `unknown` so callers
+  // can pass the reconciliation-specific payload without re-declaring
+  // every optional field on StatsQuery.
+  const params = query as unknown as StatsQuery | undefined
   return req<{ runs: Array<Record<string, unknown>>; diffs: Array<Record<string, unknown>> }>(
     'GET',
-    `/api/admin/stats/reconciliation${queryString(query)}`,
+    `/api/admin/stats/reconciliation${queryString(params)}`,
   )
 }
