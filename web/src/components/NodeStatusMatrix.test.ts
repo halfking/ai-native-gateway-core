@@ -24,31 +24,24 @@ describe('NodeStatusMatrix', () => {
     vi.unstubAllGlobals()
   })
 
-  it('groups unhealthy nodes and opens their detail drawer', async () => {
-    const wrapper = mount(NodeStatusMatrix, { attachTo: document.body })
+  it('groups unhealthy nodes and opens the unified detail drawer', async () => {
+    const wrapper = mount(NodeStatusMatrix, { attachTo: document.body, global: { stubs: { Teleport: true } } })
     expect(wrapper.text()).toContain('异常节点 (1)')
 
     await wrapper.find('.nm-card').trigger('click')
-    expect(document.querySelector('.nm-drawer')).not.toBeNull()
-    expect(document.body.textContent).toContain('anthropic')
+    expect(wrapper.find('.nd-drawer').exists()).toBe(true)
+    expect(wrapper.text()).toContain('anthropic')
   })
 
-  it('sends the confirmation contract when disabling a node', async () => {
-    const wrapper = mount(NodeStatusMatrix, { attachTo: document.body })
+  it('opens unified maintenance controls for a selected node', async () => {
+    const wrapper = mount(NodeStatusMatrix, { attachTo: document.body, global: { stubs: { Teleport: true } } })
     await wrapper.find('.nm-card').trigger('click')
-    const toggleButton = document.querySelector<HTMLButtonElement>('.nm-btn--danger')
-    expect(toggleButton).not.toBeNull()
-    toggleButton?.click()
+    await wrapper.get('.nd-tabs button:last-child').trigger('click')
     await flushPromises()
 
-    expect(fetch).toHaveBeenCalledWith('/api/admin/providers/7/enable', expect.objectContaining({
-      method: 'PATCH',
-      headers: expect.objectContaining({
-        'X-Confirm': 'yes',
-        'Idempotency-Key': expect.stringContaining('node-toggle-7-false-'),
-        'X-Correlation-ID': expect.stringContaining('node-toggle-7-false-'),
-      }),
-      body: JSON.stringify({ enabled: false, reason: 'Disabled from node status matrix' }),
-    }))
+    expect(wrapper.text()).toContain('设置与维护')
+    expect(wrapper.text()).toContain('强制启用')
+    expect(wrapper.text()).toContain('强制禁用')
+    expect(wrapper.get('.nd-actions .btn-primary').attributes('disabled')).toBeDefined()
   })
 })

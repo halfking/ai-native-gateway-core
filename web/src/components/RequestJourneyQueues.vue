@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Close, RefreshRight } from '@element-plus/icons-vue'
 import {
@@ -28,7 +28,10 @@ interface QueueGroup {
   requests: RequestJourneySnapshot[]
 }
 
+const showDialog = ref(false)
+const hasLoaded = ref(false)
 const activeView = ref<RequestJourneyQueueView>('total')
+
 const payloads = ref<Partial<Record<RequestJourneyQueueView, RequestJourneyQueuesPayload>>>({})
 const loadingView = ref<RequestJourneyQueueView | null>(null)
 const viewErrors = ref<Partial<Record<RequestJourneyQueueView, string>>>({})
@@ -138,6 +141,7 @@ const canOpenDetails = computed(() => {
 
 async function loadView(view: RequestJourneyQueueView, force = false) {
   if (!force && payloads.value[view]) return
+  hasLoaded.value = true
   loadingView.value = view
   viewErrors.value[view] = ''
   try {
@@ -194,23 +198,33 @@ function formatTime(value: string | undefined): string {
   }).format(date)
 }
 
-onMounted(() => loadView('total'))
+function openDialog() {
+  showDialog.value = true
+  if (!hasLoaded.value) void loadView('total')
+}
+
+function closeDialog() {
+  showDialog.value = false
+  closeJourney()
+}
 </script>
 
 <template>
   <section class="journey-queues" :aria-label="t('requestJourneys.title')">
-    <div class="journey-header">
-      <h3>{{ t('requestJourneys.title') }}</h3>
-      <button
-        type="button"
-        class="icon-button"
-        :title="t('requestJourneys.retry')"
-        :aria-label="t('requestJourneys.retry')"
-        @click="loadView(activeView, true)"
-      >
-        <RefreshRight aria-hidden="true" />
-      </button>
-    </div>
+    <button type="button" class="journey-trigger" @click="openDialog">
+      <span class="journey-trigger-title">{{ t('requestJourneys.title') }}</span>
+      <span class="journey-trigger-meta">{{ hasLoaded ? (hasRequests ? t('requestJourneys.activeCount', { count: groups.reduce((sum, group) => sum + group.requests.length, 0) }) : t('requestJourneys.noActiveRequests')) : t('requestJourneys.triggerMeta') }}</span>
+      <RefreshRight aria-hidden="true" />
+    </button>
+  </section>
+
+  <Teleport to="body">
+    <div v-if="showDialog" class="journey-modal-mask" @click.self="closeDialog">
+      <section class="journey-modal" role="dialog" aria-modal="true" :aria-label="t('requestJourneys.title')">
+        <div class="journey-header">
+          <div><h3>{{ t('requestJourneys.title') }}</h3><p class="journey-modal-sub">{{ t('requestJourneys.modalSubtitle') }}</p></div>
+          <div class="journey-header-actions"><button type="button" class="icon-button" :title="t('requestJourneys.retry')" :aria-label="t('requestJourneys.retry')" @click="loadView(activeView, true)"><RefreshRight aria-hidden="true" /></button><button type="button" class="icon-button" aria-label="关闭" title="关闭" @click="closeDialog"><Close aria-hidden="true" /></button></div>
+        </div>
 
     <div class="journey-tabs" role="tablist" :aria-label="t('requestJourneys.title')">
       <button
@@ -302,15 +316,22 @@ onMounted(() => loadView('total'))
         <RoutingAttemptsTimeline :journey-events="journey.events" />
       </template>
     </section>
-  </section>
+      </section>
+    </div>
+  </Teleport>
 </template>
 
 <style scoped>
-.journey-queues {
-  min-width: 0;
-  border-top: 1px solid var(--kx-border);
-  padding-top: 12px;
-}
+.journey-queues { min-width: 0; }
+.journey-trigger { width:100%; display:flex; align-items:center; gap:10px; padding:9px 12px; border:1px solid var(--kx-border); border-radius:var(--kx-radius-sm, 6px); background:var(--kx-surface); color:var(--kx-text); cursor:pointer; text-align:left; }
+.journey-trigger:hover { border-color:var(--kx-primary); }
+.journey-trigger-title { font-weight:600; font-size:13px; }
+.journey-trigger-meta { color:var(--kx-text-secondary); font-size:11px; margin-left:auto; }
+.journey-trigger svg { width:15px; height:15px; color:var(--kx-text-secondary); }
+.journey-modal-mask { position:fixed; inset:0; z-index:2900; background:rgba(0,0,0,.38); display:flex; justify-content:flex-end; }
+.journey-modal { width:min(760px, 96vw); height:100vh; overflow:auto; background:var(--kx-surface); color:var(--kx-text); box-shadow:-10px 0 30px rgba(0,0,0,.24); padding:18px 20px 28px; box-sizing:border-box; }
+.journey-header-actions { display:flex; gap:6px; }
+.journey-modal-sub { margin:4px 0 0; color:var(--kx-text-secondary); font-size:11px; }
 .journey-header,
 .queue-group-header,
 .journey-detail-header {
