@@ -170,7 +170,9 @@ func decryptAESGCMStr(envelope string, kr *Keyring) ([]byte, error) {
 	if err != nil {
 		// Wrapped as the canonical secret.ErrDecrypt sentinel so callers
 		// can route via errors.Is without string-matching the message.
-		return nil, fmt.Errorf("%w: %v", ErrDecrypt, err)
+		// %w:%w keeps the underlying gcm.Open error in the unwrap chain
+		// so errors.Unwrap recovers the GCM error string for diagnostics.
+		return nil, fmt.Errorf("%w: %w", ErrDecrypt, err)
 	}
 	return plaintext, nil
 }
