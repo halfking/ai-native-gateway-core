@@ -185,6 +185,25 @@ func main() {
 	// repeated calls (e.g. main reload) are safe.
 	metrics.SetGlobal(metrics.NewPrometheusRecorder())
 
+	// 2026-08-18 fix: explicitly register credential reveal-failure metric.
+	// The provider package's init() already calls this, but main()-time
+	// invocation is auditable in source and removes the "metric visible
+	// only if init() ran" hidden dependency. The function is guarded by
+	// sync.Once so the second call is a no-op.
+	//
+	// Without this + the Add(0) pre-warm inside
+	// RegisterCredentialRevealMetrics, the CounterVec would have zero
+	// children until the first reveal failure (which is rare) and the
+	// gateway /metrics endpoint would not emit HELP/TYPE/series at all
+	// (prometheus/client_golang emits a *Vec family only after at least
+	// one WithLabelValues call). The 5 alert rules in
+	// deploy/prometheus/rules/credential-reveal-failures.yml all
+	// rate() this metric and would silently never fire.
+	//
+	// See docs/handoff/2026-08-18-245-reveal-metric-not-exposed.md for
+	// the 2026-08-18 245 finding that motivated this wiring change.
+	provider.RegisterCredentialRevealMetrics()
+
 	processStartedAt := time.Now()
 	// Round 39 (2026-06-16) — initialize OTel tracer.
 	// Default-disabled; activates only when OTEL_EXPORTER_OTLP_ENDPOINT
