@@ -49,6 +49,18 @@ var sqlSchema []byte
 //go:embed embeddata/02-seed.sql
 var sqlSeed []byte
 
+//go:embed embeddata/startup/536_stats_analytics_foundation.sql
+var statsMigration536 []byte
+
+//go:embed embeddata/startup/537_usage_facts.sql
+var statsMigration537 []byte
+
+//go:embed embeddata/startup/539_stats_reconciliation_tenant.sql
+var statsMigration539 []byte
+
+//go:embed embeddata/startup/540_stats_event_inbox_consumer.sql
+var statsMigration540 []byte
+
 // 临时存放 embed SQL 的目录（运行时写入）
 
 // ── Cobra 入口 ──────────────────────────────────────────────────
@@ -716,9 +728,16 @@ func copySQLBackup(root string) error {
 		"00-prereqs.sql": sqlPrereqs,
 		"01-schema.sql":  sqlSchema,
 		"02-seed.sql":    sqlSeed,
+		"startup/536_stats_analytics_foundation.sql":  statsMigration536,
+		"startup/537_usage_facts.sql":                 statsMigration537,
+		"startup/539_stats_reconciliation_tenant.sql": statsMigration539,
+		"startup/540_stats_event_inbox_consumer.sql":  statsMigration540,
 	}
 	for name, content := range files {
 		path := filepath.Join(initDir, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			return err
+		}
 		if err := os.WriteFile(path, content, 0644); err != nil {
 			return err
 		}
@@ -784,9 +803,17 @@ func setupSQLDir() (string, func(), error) {
 		"00-prereqs.sql": sqlPrereqs,
 		"01-schema.sql":  sqlSchema,
 		"02-seed.sql":    sqlSeed,
+		"startup/536_stats_analytics_foundation.sql":  statsMigration536,
+		"startup/537_usage_facts.sql":                 statsMigration537,
+		"startup/539_stats_reconciliation_tenant.sql": statsMigration539,
+		"startup/540_stats_event_inbox_consumer.sql":  statsMigration540,
 	}
 	for name, content := range files {
 		path := filepath.Join(tmp, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			cleanup()
+			return "", nil, fmt.Errorf("创建 %s 失败: %w", filepath.Dir(name), err)
+		}
 		if err := os.WriteFile(path, content, 0644); err != nil {
 			cleanup()
 			return "", nil, fmt.Errorf("写入 %s 失败: %w", name, err)
