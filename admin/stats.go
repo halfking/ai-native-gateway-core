@@ -2,6 +2,7 @@ package admin
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -40,6 +41,8 @@ func (h *Handler) handleStats(w http.ResponseWriter, r *http.Request) {
 		h.handleStatsErrors(w, r, start, end, tenant)
 	case "reconciliation":
 		h.handleStatsReconciliation(w, r)
+	case "reconciliation/approve":
+		h.handleStatsReconciliationApprove(w, r)
 	default:
 		writeError(w, http.StatusNotFound, "unknown stats resource")
 	}
@@ -281,6 +284,146 @@ func (h *Handler) handleStatsReconciliation(w http.ResponseWriter, r *http.Reque
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"runs": runItems, "diffs": diffItems})
+}
+
+func (h *Handler) handleStatsReconciliationApprove(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	auth := GetAuthContext(r)
+	if auth == nil || (auth.Role != "super_admin" && auth.Role != "admin_key") {
+		writeError(w, http.StatusForbidden, "only super_admin or admin_key can approve reconciliation diffs")
+		return
+	}
+
+	var req struct {
+		DiffIDs  []int64 `json:"diff_ids"`
+		Action   string  `json:"action"` // "approve" or "reject"
+		Reason   string  `json:"reason"`
+		Operator string  `json:"operator"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if len(req.DiffIDs) == 0 {
+		writeError(w, http.StatusBadRequest, "diff_ids is required")
+		return
+	}
+
+	if req.Action != "approve" && req.Action != "reject" {
+		writeError(w, http.StatusBadRequest, "action must be 'approve' or 'reject'")
+		return
+	}
+
+	operator := req.Operator
+	if operator == "" && auth != nil {
+		operator = fmt.Sprintf("user:%d", auth.UserID)
+	}
+	if operator == "" {
+		operator = "admin"
+	}
+
+	ctx := r.Context()
+	tx, err := h.db.Begin(ctx)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "begin transaction failed")
+		return
+	}
+	defer tx.Rollback(ctx)
+
+	approved := 0
+	rejected := 0
+
+	for _, diffID := range req.DiffIDs {
+		// Fetch the diff
+		var runID, tenantID, dimensionType, dimensionKey, metric string
+		var sourceValue, projectedValue, difference float64
+		var resolution string
+		err := tx.QueryRow(ctx, `
+			SELECT run_id, tenant_id, dimension_type, dimension_key, metric,
+			       source_value, projected_value, difference, resolution
+			FROM stats_reconciliation_diffs
+			WHERE id = $1
+		`, diffID).Scan(&runID, &tenantID, &dimensionType, &dimensionKey, &metric,
+			&sourceValue, &projectedValue, &difference, &resolution)
+		if err != nil {
+			writeError(w, http.StatusNotFound, fmt.Sprintf("diff %d not found", diffID))
+			return
+		}
+
+		// Verify tenant access for non-super-admin
+		if auth != nil && auth.Role != "super_admin" && auth.Role != "admin_key" {
+			if tenantID != auth.TenantID {
+				writeError(w, http.StatusForbidden, fmt.Sprintf("cannot approve diff for tenant %s", tenantID))
+				return
+			}
+		}
+
+		// Check if already resolved
+		if resolution == "approved" || resolution == "rejected" || resolution == "adjusted" {
+			continue // skip already resolved
+		}
+
+		if req.Action == "approve" {
+			// Update diff resolution
+			_, err = tx.Exec(ctx, `
+				UPDATE stats_reconciliation_diffs
+				SET resolution = 'approved'
+				WHERE id = $1
+			`, diffID)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "update diff failed")
+				return
+			}
+
+			// Create adjustment record
+			// Parse dimension_key to extract provider_id, credential_id, etc.
+			// For now, we'll create a simple adjustment record
+			_, err = tx.Exec(ctx, `
+				INSERT INTO stats_adjustments
+					(tenant_id, month_start, adjustment_type, dimension_type, dimension_key,
+					 metric_name, delta, currency, reason, source_event_id, 
+					 approved_by, approved_at, created_by, created_at)
+				VALUES ($1, date_trunc('month', now())::date, 'reconciliation', $2, $3,
+				        $4, $5, 'USD', $6, $7, $8, now(), $9, now())
+			`, tenantID, dimensionType, dimensionKey, metric, difference, 
+				req.Reason, runID, operator, operator)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "create adjustment failed")
+				return
+			}
+
+			approved++
+		} else {
+			// Reject
+			_, err = tx.Exec(ctx, `
+				UPDATE stats_reconciliation_diffs
+				SET resolution = 'rejected'
+				WHERE id = $1
+			`, diffID)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "update diff failed")
+				return
+			}
+			rejected++
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		writeError(w, http.StatusInternalServerError, "commit transaction failed")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"approved": approved,
+		"rejected": rejected,
+		"operator": operator,
+	})
 }
 
 func statsWhere(start, end time.Time, tenant string, r *http.Request) (string, []any) {

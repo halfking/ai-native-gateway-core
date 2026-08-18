@@ -226,6 +226,7 @@ func main() {
 	var statsEventWriter *stats.EventWriter
 	var statsInboxConsumer *stats.InboxConsumer
 	var statsDailyMonthlyRollup *stats.DailyMonthlyRollup
+	var statsReconciliationWorker *stats.ReconciliationWorker
 	var statsBoardCache *boardcache.Service
 
 	var statsMinuteRollup *bg.StatsMinuteRollup
@@ -3742,6 +3743,11 @@ func main() {
 			telemetryClient.AddOnRequestLogPersisted(statsEventWriter.Record)
 			statsDailyMonthlyRollup = stats.NewDailyMonthlyRollup(dbConn.Pool(), time.Hour)
 			statsDailyMonthlyRollup.Start(context.Background())
+			
+			// Start reconciliation worker to compare usage_facts with projections
+			statsReconciliationWorker = stats.NewReconciliationWorker(dbConn.Pool(), 6*time.Hour)
+			statsReconciliationWorker.Start(context.Background())
+			
 			slog.Info("stats event writer started", "queue_size", 4096)
 		}
 
@@ -5880,6 +5886,9 @@ func main() {
 		}
 		if statsDailyMonthlyRollup != nil {
 			statsDailyMonthlyRollup.Stop()
+		}
+		if statsReconciliationWorker != nil {
+			statsReconciliationWorker.Stop()
 		}
 		if statsMinuteAccumulator != nil {
 
