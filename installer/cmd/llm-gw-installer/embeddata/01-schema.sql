@@ -9453,7 +9453,7 @@ COMMENT ON COLUMN public.node_probe_runs.via_proxy IS 'probeDirect是否通过HT
 -- Name: CONSTRAINT node_probe_runs_trigger_kind_check ON node_probe_runs; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON CONSTRAINT node_probe_runs_trigger_kind_check ON public.node_probe_runs IS '425 + 536: trigger_kind 枚举 —— 425 增量 sync_request（同步探测，由 inbound 请求 no_candidate 路径发起）；536 增量 periodic / admin / integrity_probe_planner / selfcheck / external_async（统一 credential_probe_queue 的 task.Source 全集）';
+COMMENT ON CONSTRAINT node_probe_runs_trigger_kind_check ON public.node_probe_runs IS '425 + 538: trigger_kind 枚举 —— 425 增量 sync_request（同步探测，由 inbound 请求 no_candidate 路径发起）；538 增量 periodic / admin / integrity_probe_planner / selfcheck / external_async（统一 credential_probe_queue 的 task.Source 全集）';
 
 
 --
