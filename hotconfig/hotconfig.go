@@ -23,6 +23,8 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -144,16 +146,22 @@ func (c *Config) GetInt(key string, defaultValue int) int {
 		return defaultValue
 	}
 
-	// JSONB numbers are float64 in Go
+	// JSONB numbers are float64 in Go. Older settings rows and some admin
+	// clients persisted numeric values as JSON strings; accept those too so a
+	// valid hot setting does not silently fall back to the default.
 	switch v := val.(type) {
 	case float64:
 		return int(v)
 	case int:
 		return v
-	default:
-		slog.Warn("config: type mismatch", "key", key, "expected", "int", "got", fmt.Sprintf("%T", v))
-		return defaultValue
+	case string:
+		parsed, err := strconv.Atoi(strings.TrimSpace(v))
+		if err == nil {
+			return parsed
+		}
 	}
+	slog.Warn("config: type mismatch", "key", key, "expected", "int", "got", fmt.Sprintf("%T", val))
+	return defaultValue
 }
 
 // GetString reads a string setting.
