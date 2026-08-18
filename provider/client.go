@@ -1428,17 +1428,22 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 		      OR mo.standardized_name = $1
 		      -- (3) model_name_mapping lookup: centralized raw->standardized mapping
 		      OR mnm.standardized_name = $1
-		      -- (4) alias match: client_model points to a canonical that this offer belongs to
-		      OR EXISTS (
-		          SELECT 1 FROM model_aliases ma2
-		          WHERE ma2.raw_name = $1
-		            AND COALESCE(ma2.status, 'active') = 'active'
-		            AND (
-		                (mo.canonical_id IS NOT NULL AND ma2.canonical_id = mo.canonical_id)
-		                OR (mo.canonical_id IS NULL AND ma2.canonical_id IS NULL)
-		            )
-		      )
-		  )
+				-- (4) alias match: client_model points to a canonical that this offer belongs to
+				OR EXISTS (
+				    SELECT 1 FROM model_aliases ma2
+				    WHERE ma2.raw_name = $1
+				      AND COALESCE(ma2.status, 'active') = 'active'
+				      AND (
+				          (mo.canonical_id IS NOT NULL AND ma2.canonical_id = mo.canonical_id)
+				          OR (mo.canonical_id IS NULL AND ma2.canonical_id IS NULL)
+				      )
+				)
+				-- (5) canonical-id match: legacy offers may retain a provider-prefixed
+				-- canonical_raw_name while their canonical_id already points at the
+				-- client-facing catalog name. Keep this in sync with admin resolve.
+				OR lower(mc.canonical_name) = $1
+			)
+
 		ORDER BY
 			CASE COALESCE(mo.billing_mode, 'per_token')
 				WHEN 'free' THEN 1
