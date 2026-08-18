@@ -182,6 +182,39 @@ func TestMarkResolveRuntimeUnknownPreservesDatabaseVeto(t *testing.T) {
 	}
 }
 
+func TestFreePoolRuntimeOverlayPairsViewsByKey(t *testing.T) {
+	models := []any{
+		map[string]any{"credential_id": 1, "raw_model_name": "glm-5.2", "routable": true},
+		map[string]any{"credential_id": 2, "raw_model_name": "z-ai/glm-5.2", "routable": true},
+	}
+	views := []v2api.NodeView{
+		{CredentialID: 2, RawModel: "z-ai/glm-5.2", Available: true, SR5m: 0.98},
+		{CredentialID: 1, RawModel: "glm-5.2", Available: false, Reason: "in_cool_until"},
+	}
+	byKey := make(map[string]v2api.NodeView, len(views))
+	for _, view := range views {
+		byKey[ursmViewKey(view.CredentialID, view.RawModel)] = view
+	}
+	for _, raw := range models {
+		model := raw.(map[string]any)
+		credID := model["credential_id"].(int)
+		rawModel := model["raw_model_name"].(string)
+		view, ok := byKey[ursmViewKey(credID, rawModel)]
+		if !ok {
+			t.Fatalf("missing view for %d/%s", credID, rawModel)
+		}
+		if !view.Available {
+			markFreePoolModelUnavailable(model, "observed", view.Reason)
+		}
+	}
+	if models[0].(map[string]any)["runtime_block_reason"] != "in_cool_until" {
+		t.Fatalf("credential 1 was not paired with its own unavailable view: %#v", models[0])
+	}
+	if models[1].(map[string]any)["routable"] != true {
+		t.Fatalf("credential 2 inherited credential 1 state: %#v", models[1])
+	}
+}
+
 func TestURSMViewKeyIsCollisionFree(t *testing.T) {
 	if ursmViewKey(12, "m") == ursmViewKey(1, "2m") {
 		t.Fatalf("key collision between (12,\"m\") and (1,\"2m\")")
