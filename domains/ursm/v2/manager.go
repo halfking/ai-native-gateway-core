@@ -143,6 +143,11 @@ func New(d Dependencies) *Manager {
 		rpm:  d.RPM,
 		log:  log,
 	}
+	// Key schema mode is boot-only and shared by the store and the
+	// recovery gate so coverage validation and warmup counting agree with
+	// the write path (doc 14 §3).
+	m.store.SetKeySchemaMode(cfg.KeySchemaMode)
+	m.recovery.SetKeySchemaMode(cfg.KeySchemaMode)
 	// M2: enable the process LRU mirror when configured (default 100k / 30s).
 	// LRUMirrorSize==0 disables it (every read hits Redis).
 	if cfg.LRUMirrorSize > 0 {
