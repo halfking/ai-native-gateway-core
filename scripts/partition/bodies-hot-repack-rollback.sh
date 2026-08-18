@@ -73,4 +73,4 @@ ALTER TABLE public.$BACKUP RENAME TO $TABLE;
 COMMIT;
 ANALYZE public.$TABLE;
 SQL
-echo "== 回滚完成：$BACKUP → $TABLE（当前表改名为 ${TABLE}_aborted_${TS}，确认后可 DROP）"
+echo "== 回滚完成：${BACKUP} → ${TABLE}（当前表改名为 ${TABLE}_aborted_${TS}，确认后可 DROP）"
