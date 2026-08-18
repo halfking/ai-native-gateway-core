@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - 2026-08-19 (Archive: DEPLOYMENT_PLAN.md v1.0 → docs/archive/2026-07/)
+
+### Documentation
+- **Archive `deploy/sql/DEPLOYMENT_PLAN.md` (v1.0, Jul 21) → `docs/archive/2026-07/specs/deployment-plan-v1-184-pg-citus.md`**（rule 36 归档协议 + 上一会话 handoff `handoff-20260819-audit-and-concurrent-zcode-preserve.md` §4.5 owner 决策）。
+  原因：184 服务器已下线（rule 31 §2.3）；本文档整篇关于 184 + PostgreSQL + Citus 11.3，与当前 PROD（154 systemd）+ pre-prod（245 systemd）现状不再适用。
+  归档动作：
+  1. `git mv deploy/sql/DEPLOYMENT_PLAN.md → docs/archive/2026-07/specs/deployment-plan-v1-184-pg-citus.md`
+  2. 归档文件顶部加 frontmatter（YAML）+ deprecation banner：标注 `archived_from` / `archived_at` / `archived_reason`，并显指向 154/245 当前拓扑 + 新部署参考链接（`knowledge/facts/server-topology.md`、`deploy/standard-deploy/`、`skills/llm-gateway-deploy-test/`）
+  3. 文档内文保持不变（保留 184 / `172.31.0.3` / `172.31.0.4` 等历史引用，标注为失效）
+- 同步更新上一会话 "保留的 184 引用" 清单：从 `CHANGELOG.md` §历史豁免中移除 `deploy/sql/DEPLOYMENT_PLAN.md`（已归档）。
+- **前置状态**：3 ZCode stash 完整保留（`stash@{0}` version.json 1621 / `stash@{1}` 6 文件 URSM / `stash@{2}` admin/routing.go format）。
+- **本会话未做修改**：未 apply / pop / drop 任何 ZCode stash（rule 04 红线），未 commit 任何代码改动（待 ZCode 团队决策后下个 session 再处理）。
+- **154 / 245 部署状态确认**：
+  - 154 (生产) `git_sha=b3036166 / build_seq=1619` — 落后 HEAD 4 commits
+  - 245 (pre-prod) `git_sha=50bf5ba0 / build_seq=1621` — 落后 HEAD 2 commits
+  - 245 build 到 50bf5ba0 解释了 `stash@{0}` 存在原因（ZCode 手工 bump version.json → 1621 但未 commit 到 main）
+
 ## [Unreleased] - 2026-08-19 (Doc Sweep Audit: Complete 184 Server Redaction)
 
 ### Security
@@ -26,7 +43,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `CHANGELOG.md` 历史段、`docs/changelogs/2026-08-18-*`、`docs/session-logs/2026/08/*`（rule 36 归档/历史记录）
   - `tests/deploy_cli_test.sh`、`tests/deploy_sops_test.sh`（向后兼容 alias 重定向测试）
   - `docs/.archive-backup-20260817-190606/`（rule 36 归档备份）
-  - `deploy/sql/DEPLOYMENT_PLAN.md`（v1.0 历史方案，留待 owner 归档）
+  - `deploy/sql/DEPLOYMENT_PLAN.md` → 已于本日归档到 `docs/archive/2026-07/specs/deployment-plan-v1-184-pg-citus.md`（见顶部"Archive" 段）
   - `.kiro/skills/deploy-184.RETIRED.md`（本身标 RETIRED）
 
 ### Documentation
