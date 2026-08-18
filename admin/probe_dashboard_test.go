@@ -132,10 +132,10 @@ func TestHandleProbeNodeTasks_StatusClassification(t *testing.T) {
 	past := now.Add(-time.Hour)
 
 	cases := []struct {
-		name           string
-		inFlightUntil  *time.Time
-		paused         bool
-		wantStatus     string
+		name          string
+		inFlightUntil *time.Time
+		paused        bool
+		wantStatus    string
 	}{
 		{"leased and in-flight window still open -> running", &future, false, "running"},
 		{"in-flight window expired, not paused -> pending", &past, false, "pending"},
@@ -662,9 +662,9 @@ func TestProbeQueueSnapshotHandler_LegacyIsolation(t *testing.T) {
 	envelope := map[string]any{
 		"unified": stats,
 		"legacy": map[string]interface{}{
-			"queues":          legacyQueues,
-			"total":           len(legacyQueues),
-			"legacy":          true,
+			"queues":           legacyQueues,
+			"total":            len(legacyQueues),
+			"legacy":           true,
 			"legacy_mode_safe": false,
 			"legacy_source":    "model_probe_state",
 		},

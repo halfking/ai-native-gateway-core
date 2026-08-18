@@ -1,7 +1,10 @@
 -- =============================================================================
--- Migration 536: node_probe_runs.trigger_kind 扩展接受统一队列来源
+-- Migration 538: node_probe_runs.trigger_kind 扩展接受统一队列来源
 -- Created: 2026-08-18
 -- Author:  gateway maintainers (Agent B, 2026-08-18 全局路由审计)
+-- Note:    originally authored as migration 536; bumped to 538 to avoid
+--          collision with the concurrent 536_stats_analytics_foundation.sql
+--          shipping on the same main branch.
 --
 -- 背景 (2026-08-18 global routing audit, handoff §7 P0):
 --   迁移到统一 credential_probe_queue 之后，新来源 (periodic / admin /

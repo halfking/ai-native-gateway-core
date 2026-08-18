@@ -69,6 +69,11 @@ const ProbeQueueLeaseDefault = 5 * time.Minute
 var ProbeQueueHeartbeatInterval = 60 * time.Second
 
 var (
+	// ErrProbeHeartbeatFailed means the lease extension could not be confirmed.
+	// It is distinct from ErrProbeLeaseLost: a transient database failure must
+	// stop the current owner, but does not prove that another owner reclaimed it.
+	ErrProbeHeartbeatFailed = errors.New("probe service lease heartbeat failed")
+
 	auditPersistFailedTotal = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "llmgw_node_probe_audit_persist_failed_total",
@@ -247,6 +252,14 @@ func (s *ProbeService) Run(ctx context.Context, task ProbeQueueTask) (ProbeQueue
 
 	s.worker.publishProbeEvent(credID, model, "in-flight", "node_probe", triggerKind, attempt)
 	if err := probeRunContextErr(ctx, hbCtx, task); err != nil {
+		// Lease lost mid-run via heartbeat cancellation of hbCtx. Side effects
+		// have not been applied yet; bail with a "settle-as-no-op" success so
+		// the queue worker can release the lease without retrying or double
+		// attributing. Parent ctx cancellation (request shutdown) propagates
+		// as-is so the caller sees the real cause.
+		if errors.Is(err, ErrProbeLeaseLost) && ctx.Err() == nil {
+			return ProbeQueueResult{Status: ProbeQueueSuccess, ReasonCode: "lease_lost_during_run"}, nil
+		}
 		return ProbeQueueResult{}, err
 	}
 
@@ -254,6 +267,9 @@ func (s *ProbeService) Run(ctx context.Context, task ProbeQueueTask) (ProbeQueue
 	// state before the pinned gateway round has verified the same node.
 	direct := s.directRound(hbCtx, credID, model)
 	if err := probeRunContextErr(ctx, hbCtx, task); err != nil {
+		if errors.Is(err, ErrProbeLeaseLost) && ctx.Err() == nil {
+			return ProbeQueueResult{Status: ProbeQueueSuccess, ReasonCode: "lease_lost_during_run"}, nil
+		}
 		return ProbeQueueResult{}, err
 	}
 
@@ -263,23 +279,26 @@ func (s *ProbeService) Run(ctx context.Context, task ProbeQueueTask) (ProbeQueue
 	if isMissingBindingErr(direct) {
 		slog.Warn("probe_service: dropping probe for (cred, model) with no binding row",
 			"credential_id", credID, "model", model)
-			s.worker.emitProbe(hbCtx, credID, 0, model, model, "direct", attempt, trigger, direct)
-			s.worker.deleteNodeProbeState(hbCtx, credID, model)
-			// Still write the audit row so dashboards don't lose the signal.
-			now := time.Now()
-			if err := s.insertAuditRowWithLeaseCheck(hbCtx, hbCtx, task, credID, model, triggerKind, attempt, 0, direct, direct, false, startedAt, now, int(now.Sub(startedAt).Milliseconds())); err != nil {
+		s.worker.emitProbe(hbCtx, credID, 0, model, model, "direct", attempt, trigger, direct)
+		s.worker.deleteNodeProbeState(hbCtx, credID, model)
+		// Still write the audit row so dashboards don't lose the signal.
+		now := time.Now()
+		if err := s.insertAuditRowWithLeaseCheck(hbCtx, hbCtx, task, credID, model, triggerKind, attempt, 0, direct, direct, false, startedAt, now, int(now.Sub(startedAt).Milliseconds())); err != nil {
 			auditPersistFailedTotal.WithLabelValues(task.Source).Inc()
-			return ProbeQueueResult{Status: ProbeQueueSuccess, ReasonCode: "missing_binding_dropped"}, err
+			return ProbeQueueResult{Status: ProbeQueueSuccess, ReasonCode: "missing_binding_dropped"}, fmt.Errorf("%w: %v", ErrProbeAuditPersistFailed, err)
 		}
 		return ProbeQueueResult{Status: ProbeQueueSuccess, ReasonCode: "missing_binding_dropped"}, nil
 	}
 
-		// Round 2 must be pinned to the same credential. A legacy unpinned gateway
-		// response is retained as an explicit failure result and cannot restore state.
-		gateway := s.gatewayRound(hbCtx, credID, model)
-		if err := probeRunContextErr(ctx, hbCtx, task); err != nil {
-			return ProbeQueueResult{}, err
+	// Round 2 must be pinned to the same credential. A legacy unpinned gateway
+	// response is retained as an explicit failure result and cannot restore state.
+	gateway := s.gatewayRound(hbCtx, credID, model)
+	if err := probeRunContextErr(ctx, hbCtx, task); err != nil {
+		if errors.Is(err, ErrProbeLeaseLost) && ctx.Err() == nil {
+			return ProbeQueueResult{Status: ProbeQueueSuccess, ReasonCode: "lease_lost_during_run"}, nil
 		}
+		return ProbeQueueResult{}, err
+	}
 	gw := gateway.round
 	if gw.ok && !gateway.pinned {
 		gw.ok = false
@@ -289,6 +308,12 @@ func (s *ProbeService) Run(ctx context.Context, task ProbeQueueTask) (ProbeQueue
 
 	success := direct.ok && gw.ok && gateway.pinned
 	if err := probeRunContextErr(ctx, hbCtx, task); err != nil {
+		// Bail BEFORE side effects (URSM update + applyOutcome + mirror +
+		// notify) so the other worker that reclaimed this task does not
+		// see competing writes from us.
+		if errors.Is(err, ErrProbeLeaseLost) && ctx.Err() == nil {
+			return ProbeQueueResult{Status: ProbeQueueSuccess, ReasonCode: "lease_lost_during_run"}, nil
+		}
 		return ProbeQueueResult{}, err
 	}
 	s.worker.updateURSMv2ProbeState(hbCtx, trigger.tenantID, credID, model, success, direct.latencyMs)
@@ -329,6 +354,12 @@ func (s *ProbeService) Run(ctx context.Context, task ProbeQueueTask) (ProbeQueue
 	// Mirror into node_probe_state for backward compat with existing dashboard /
 	// recovery readers during the transition (C11 will drop this).
 	if err := probeRunContextErr(ctx, hbCtx, task); err != nil {
+		// applyOutcome already ran above. If lease was lost, skip mirror +
+		// notify + audit (insertAuditRowWithLeaseCheck also guards). Bail
+		// with a success-shaped no-op result.
+		if errors.Is(err, ErrProbeLeaseLost) && ctx.Err() == nil {
+			return ProbeQueueResult{Status: ProbeQueueSuccess, ReasonCode: "lease_lost_during_run"}, nil
+		}
 		return ProbeQueueResult{}, err
 	}
 	s.worker.mirrorNodeProbeState(hbCtx, credID, model, attempt, success, direct, gw, now, backoff)
@@ -411,6 +442,26 @@ func (s *ProbeService) Run(ctx context.Context, task ProbeQueueTask) (ProbeQueue
 	}, nil
 }
 
+// probeRunContextErr translates cancellation of the heartbeat context into a
+// typed error while preserving the caller's cancellation. The heartbeat context
+// is the context used by all probe and side-effect operations.
+func probeRunContextErr(parent, heartbeat context.Context, task ProbeQueueTask) error {
+	if err := parent.Err(); err != nil {
+		return err
+	}
+	if err := heartbeat.Err(); err != nil {
+		cause := context.Cause(heartbeat)
+		if cause == nil {
+			cause = err
+		}
+		if errors.Is(cause, ErrProbeLeaseLost) {
+			return fmt.Errorf("%w (queue_id=%d)", ErrProbeLeaseLost, task.ID)
+		}
+		return fmt.Errorf("%w (queue_id=%d): %v", ErrProbeHeartbeatFailed, task.ID, cause)
+	}
+	return nil
+}
+
 // startLeaseHeartbeat launches a goroutine that refreshes the lease window
 // every ProbeQueueHeartbeatInterval. The returned context is cancelled by
 // the returned cancel function so the heartbeat stops as soon as Run() is
@@ -420,7 +471,8 @@ func (s *ProbeService) startLeaseHeartbeat(parent context.Context, task ProbeQue
 	if s == nil || s.queue == nil || task.LeaseToken == "" {
 		return parent, func() {}
 	}
-	hbCtx, cancel := context.WithCancel(parent)
+	hbCtx, cancelCause := context.WithCancelCause(parent)
+	cancel := func() { cancelCause(nil) }
 	extend := s.heartbeatFn
 	if extend == nil {
 		extend = s.queue.ExtendLease
@@ -438,10 +490,18 @@ func (s *ProbeService) startLeaseHeartbeat(parent context.Context, task ProbeQue
 					// reclaimed this task. Stop heartbeating immediately and
 					// cancel the run context so Run() bails before writing
 					// side effects that the new owner may also be writing.
-					leaseLostTotal.WithLabelValues("probe_service").Inc()
-					slog.Warn("probe_service: lease lost during heartbeat — bailing to avoid double-settlement",
+					if errors.Is(err, ErrProbeLeaseLost) {
+						leaseLostTotal.WithLabelValues("probe_service").Inc()
+					} else {
+						slog.Warn("probe_service: lease heartbeat failed", "queue_id", task.ID, "error", err)
+					}
+					slog.Warn("probe_service: lease heartbeat stopped — bailing to avoid double-settlement",
 						"queue_id", task.ID, "error", err)
-					cancel()
+					if errors.Is(err, ErrProbeLeaseLost) {
+						cancelCause(ErrProbeLeaseLost)
+					} else {
+						cancelCause(fmt.Errorf("%w: %v", ErrProbeHeartbeatFailed, err))
+					}
 					return
 				}
 				heartbeatExtendedTotal.WithLabelValues("probe_service").Inc()

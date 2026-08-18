@@ -3149,7 +3149,8 @@ func main() {
 					ResultSink:   bg.NewPostgresIntegrityProbeResultSink(dbConn.Pool()),
 					BatchSize:    epWorkers,
 					Workers:      epWorkers,
-					Lease:        30 * time.Second,
+						Lease:        bg.ProbeQueueLeaseDefault,
+
 					PollInterval: 250 * time.Millisecond,
 				})
 				probeQueueWorker.Start(context.Background())
