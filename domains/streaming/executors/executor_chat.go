@@ -25,6 +25,51 @@ import (
 	upstreampkg "github.com/kaixuan/llm-gateway-go/upstream"
 )
 
+// ExecuteHooks (SP-03, 2026-08-19) lets the streaming state machine observe
+// the lifecycle of an upstream execution without taking a hard dependency on
+// the state package. The handler (SP-02) installs the hooks via
+// WithExecuteHooks(ctx, hooks); executeOpenAI reads them from
+// params.R.Context() and fires:
+//
+//   - OnCompressing — once at the top of executeOpenAI, before any work.
+//   - OnCompressed  — via defer at the top of executeOpenAI, with the
+//     terminal error (nil on success).
+//
+// Both fields are optional; nil = no-op (preserves existing call sites and
+// keeps tests that don't install hooks working).
+//
+// Because executeOpenAI can be invoked once per upstream attempt inside
+// Execute's retry loop, the hooks fire per attempt. Callers that want
+// one-shot semantics should wrap their callbacks with sync.Once externally.
+type ExecuteHooks struct {
+	OnCompressing func()
+	OnCompressed  func(err error)
+}
+
+type executeHooksCtxKey struct{}
+
+// WithExecuteHooks returns a derived context that carries the provided
+// ExecuteHooks. Pass the result to the executor via ExecParams.R so
+// executeOpenAI can observe lifecycle events.
+func WithExecuteHooks(parent context.Context, hooks *ExecuteHooks) context.Context {
+	if hooks == nil {
+		return parent
+	}
+	return context.WithValue(parent, executeHooksCtxKey{}, hooks)
+}
+
+// ExecuteHooksFromContext extracts hooks previously stored by
+// WithExecuteHooks. Returns nil if no hooks are attached.
+func ExecuteHooksFromContext(ctx context.Context) *ExecuteHooks {
+	if ctx == nil {
+		return nil
+	}
+	if v, ok := ctx.Value(executeHooksCtxKey{}).(*ExecuteHooks); ok {
+		return v
+	}
+	return nil
+}
+
 // ChatExecutor is the ProtocolHandler for OpenAI Chat Completions
 // protocol. It owns: chat-completions URL, Bearer auth, OpenAI-shaped
 // stream chunks, OpenAI usage field, XML tool-call fallback for
@@ -298,7 +343,26 @@ func (e *Executor) executeOpenAI(
 	maxRetries int,
 	tTotal time.Time,
 	fpLease *credentialfpslot.Lease,
-) (*ExecuteResult, error) {
+) (result *ExecuteResult, err error) {
+	// SP-03 (2026-08-19): state-machine lifecycle hooks. The handler
+	// (SP-02) installs these via WithExecuteHooks(ctx, &ExecuteHooks{...})
+	// and executeOpenAI reads them from params.R.Context(). Both fields
+	// default to nil so callers that don't install hooks see no behavior
+	// change. The hooks bracket this executeOpenAI invocation; SP-02 is
+	// responsible for wiring one-shot semantics if needed at the
+	// Execute() boundary. Named return values let the OnCompressed
+	// defer observe the terminal error/result regardless of which
+	// return path triggers.
+	execHooks := ExecuteHooksFromContext(params.R.Context())
+	if execHooks != nil && execHooks.OnCompressing != nil {
+		execHooks.OnCompressing()
+	}
+	if execHooks != nil && execHooks.OnCompressed != nil {
+		defer func() {
+			execHooks.OnCompressed(err)
+		}()
+	}
+
 	sourceBody := append([]byte(nil), params.BodyBytes...)
 	bodyBytes, err := e.finalizeOpenAIUpstreamBody(params, cand, sourceBody)
 	if err != nil {
