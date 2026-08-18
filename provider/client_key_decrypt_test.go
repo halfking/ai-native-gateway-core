@@ -6,6 +6,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/secret"
 )
 
 // TestEnrichWithAPIKeys_KeyDecryptFail 验证密钥解密失败时的降级行为。
@@ -298,7 +300,7 @@ func TestRevealAPIKeyNegativeCache(t *testing.T) {
 	if !contains(err.Error(), "cannot decrypt: unknown format") {
 		t.Fatalf("expected cached error to be wrapped, got %q", err.Error())
 	}
-	if !errors.Is(err, errRevealCached) {
+	if !errors.Is(err, secret.ErrRevealCached) {
 		t.Fatalf("expected negative-cache sentinel errRevealCached, got %q (errors.Is=false)", err.Error())
 	}
 
