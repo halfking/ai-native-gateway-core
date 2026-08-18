@@ -31,13 +31,17 @@ ticket 关闭状态与当前 active 计划。
 
 ### plan C — stream-request lifecycle state machine refactor
 
-- **状态**：🚧 **active**（2026-08-19 起）
+- **状态**：✅ **SP-01..05 merged**（2026-08-19）→ 🚧 **245 24h observation in progress**
 - **范围**：把散落在 handler / executor / compressor / streamretry 中
   的 `slog.Info` 生命周期标记合并为显式状态机（`domains/streaming/state/`）。
   5 个子工作 SP-01..05 按顺序合入 main，245 pre-prod 24h 观察门禁
   见 `docs/changelogs/2026-08-19-stream-state-machine.md` §3。
-- **基线**：HEAD `7bd6783b0`（`stream-state-machine-sp01` 分支），
-  SP-02..04 在各自 worktree 上有未提交改动。
+- **当前 main HEAD**：`d7ebf25f7`（含 SP-01..05 + credential-reveal metric fix
+  + PROJECT_CONFIG.md redact），5 commits ahead of dcab51553 handoff baseline。
+- **245 deploy 状态**：1618-d7ebf25f binary running on systemd unit
+  `llmgo-245.service`（MainPID 765601，ActiveState=active，Restart=always）。
+  L1-L4 baseline all green at T+0（23:27 CST）。详见
+  `.scratch/2026-08-19-245-observation/00-baseline.md`。
 - **设计文档**：`docs/design/2026-08-19-stream-state-machine.md`
   （4 个 ASCII 状态图 + 事件表 + RequestContext 字段表 + 取消传播
   时间线 + slog→状态机映射表 + 并发危险/守卫三件套）。
