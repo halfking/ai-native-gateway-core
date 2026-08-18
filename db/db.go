@@ -186,6 +186,9 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	if err := db.ensureProbeStateFunctionFixes(migCtx); err != nil {
 		return err
 	}
+	if err := db.ensureNodeProbeTriggerKindSchema(migCtx); err != nil {
+		return err
+	}
 	if err := db.ensureTenantModelPoliciesSchema(migCtx); err != nil {
 		return err
 	}
@@ -1711,6 +1714,49 @@ func (d *DB) ensureProbeStateFunctionFixes(ctx context.Context) error {
 		return err
 	}
 	slog.Info("probe state function fixes ensured (raw_model-only binding updates removed)")
+	return nil
+}
+
+// ensureNodeProbeTriggerKindSchema mirrors startup migration 538. Existing
+// deployments may have the tables with the old CHECK definitions, while some
+// older installations may not have the tables yet; only converge constraints
+// when the corresponding table exists.
+func (d *DB) ensureNodeProbeTriggerKindSchema(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		DO $$
+		BEGIN
+			IF to_regclass('public.node_probe_runs') IS NOT NULL THEN
+				ALTER TABLE public.node_probe_runs
+					DROP CONSTRAINT IF EXISTS node_probe_runs_trigger_kind_check;
+				ALTER TABLE public.node_probe_runs
+					ADD CONSTRAINT node_probe_runs_trigger_kind_check CHECK (
+						trigger_kind IN (
+							'request_failure', 'manual', 'credential_recovery',
+							'sync_request', 'periodic', 'admin',
+							'integrity_probe_planner', 'selfcheck', 'external_async'
+						)
+					);
+			END IF;
+			IF to_regclass('public.credential_probe_queue') IS NOT NULL THEN
+				ALTER TABLE public.credential_probe_queue
+					DROP CONSTRAINT IF EXISTS credential_probe_queue_source_check;
+				ALTER TABLE public.credential_probe_queue
+					ADD CONSTRAINT credential_probe_queue_source_check CHECK (
+						source IN (
+							'request_failure', 'periodic', 'external_async', 'admin',
+							'integrity_probe_planner', 'selfcheck'
+						)
+					);
+			END IF;
+		END
+		$$;
+	`)
+	if err != nil {
+		return fmt.Errorf("ensure migration 538 probe constraints: %w", err)
+	}
 	return nil
 }
 

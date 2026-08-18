@@ -31,13 +31,12 @@ ticket 关闭状态与当前 active 计划。
 
 ### plan C — stream-request lifecycle state machine refactor
 
-- **状态**：✅ **SP-01..05 merged**（2026-08-19）→ 🚧 **245 24h observation in progress**
+- **状态**：✅ **SP-01..05 merged**（2026-08-19）；stream-state-machine 观察记录与 probe-canary 发布门禁分开维护。当前 probe-canary 未通过全链路门禁，245/154 不应据此推广。
 - **范围**：把散落在 handler / executor / compressor / streamretry 中
   的 `slog.Info` 生命周期标记合并为显式状态机（`domains/streaming/state/`）。
   5 个子工作 SP-01..05 按顺序合入 main，245 pre-prod 24h 观察门禁
   见 `docs/changelogs/2026-08-19-stream-state-machine.md` §3。
-- **当前 main HEAD**：`d7ebf25f7`（含 SP-01..05 + credential-reveal metric fix
-  + PROJECT_CONFIG.md redact），5 commits ahead of dcab51553 handoff baseline。
+- **历史记录**：本节记录的是 stream-state-machine 观察快照，原记录中的 `d7ebf25f7` 不代表当前仓库 HEAD。当前代码 SHA 以 `git rev-parse HEAD` 和 `origin/main` 为准；probe-canary 状态见 `docs/handoff/2026-08-19-canary-evidence-and-status.md`。
 - **245 deploy 状态**：1618-d7ebf25f binary running on systemd unit
   `llmgo-245.service`（MainPID 765601，ActiveState=active，Restart=always）。
   L1-L4 baseline all green at T+0（23:27 CST）。详见
