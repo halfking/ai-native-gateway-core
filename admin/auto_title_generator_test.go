@@ -532,6 +532,124 @@ func TestExtractMessagesForTitle_ToolMessagesDoNotConsumeSemanticBudget(t *testi
 	}
 }
 
+// TestExtractLastUserMessageRuneCount (2026-08-19) — guards the short-user-message
+// gate that decides whether MaybeGenerateTitle can skip the LLM round-trip.
+// Returns the LAST user message's rune count (whitespace-collapsed), or 0 when
+// the body is unparseable / empty / has no user message.
+func TestExtractLastUserMessageRuneCount(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want int
+	}{
+		{
+			name: "empty body",
+			body: "",
+			want: 0,
+		},
+		{
+			name: "invalid json",
+			body: "not json",
+			want: 0,
+		},
+		{
+			name: "no messages array",
+			body: `{"model":"gpt-4"}`,
+			want: 0,
+		},
+		{
+			name: "only system messages",
+			body: `{"messages":[{"role":"system","content":"You are a helpful assistant"}]}`,
+			want: 0,
+		},
+		{
+			name: "single short user message",
+			body: `{"messages":[{"role":"user","content":"你好"}]}`,
+			want: 2, // 你好 = 2 runes
+		},
+		{
+			name: "last user message wins over earlier user message",
+			body: `{"messages":[
+				{"role":"user","content":"first long long long long long long long long prompt"},
+				{"role":"assistant","content":"ok"},
+				{"role":"user","content":"hi"}
+			]}`,
+			want: 2, // "hi"
+		},
+		{
+			name: "long user message exceeds title budget",
+			body: fmt.Sprintf(`{"messages":[{"role":"user","content":%q}]}`,
+				strings.Repeat("长", 200)),
+			want: 200,
+		},
+		{
+			name: "exactly at title budget boundary",
+			body: fmt.Sprintf(`{"messages":[{"role":"user","content":%q}]}`,
+				strings.Repeat("a", sessionTitleMaxRunes)),
+			want: sessionTitleMaxRunes,
+		},
+		{
+			name: "tool messages do not count as user",
+			body: `{"messages":[
+				{"role":"user","content":"hi"},
+				{"role":"tool","content":"tool output"}
+			]}`,
+			want: 2, // "hi" is the last user message
+		},
+		{
+			name: "case insensitive role match",
+			body: `{"messages":[{"role":"USER","content":"case test"}]}`,
+			want: 9, // "case test"
+		},
+		{
+			name: "whitespace-collapsed user message",
+			body: `{"messages":[{"role":"user","content":"   short   "}]}`,
+			want: 5, // "short"
+		},
+		{
+			name: "empty user content returns 0",
+			body: `{"messages":[{"role":"user","content":""}]}`,
+			want: 0,
+		},
+		{
+			name: "multimodal content flattened",
+			body: `{"messages":[{"role":"user","content":[
+				{"type":"text","text":"hello "},
+				{"type":"text","text":"world"}
+			]}]}`,
+			want: 11, // "hello world"
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := extractLastUserMessageRuneCount(tc.body)
+			if got != tc.want {
+				t.Fatalf("extractLastUserMessageRuneCount() = %d, want %d (body=%q)",
+					got, tc.want, tc.body)
+			}
+		})
+	}
+}
+
+// TestShortUserMessageGateThreshold (2026-08-19) — pins the gate's
+// relationship to sessionTitleMaxRunes: any last-user-message with rune count
+// in [1, sessionTitleMaxRunes] inclusive should be eligible to skip the LLM
+// round-trip. Anything above the budget (or 0 = no user message) must fall
+// through to the existing pipeline.
+func TestShortUserMessageGateThreshold(t *testing.T) {
+	short := strings.Repeat("a", sessionTitleMaxRunes)
+	long := strings.Repeat("a", sessionTitleMaxRunes+1)
+	shortBody := fmt.Sprintf(`{"messages":[{"role":"user","content":%q}]}`, short)
+	longBody := fmt.Sprintf(`{"messages":[{"role":"user","content":%q}]}`, long)
+
+	if n := extractLastUserMessageRuneCount(shortBody); n <= 0 || n > sessionTitleMaxRunes {
+		t.Fatalf("short body: rune count = %d, want 1..%d (gate should fire)", n, sessionTitleMaxRunes)
+	}
+	if n := extractLastUserMessageRuneCount(longBody); n <= sessionTitleMaxRunes {
+		t.Fatalf("long body: rune count = %d, want > %d (gate must NOT fire)", n, sessionTitleMaxRunes)
+	}
+}
+
 func TestIsTransientAutoTitleErr(t *testing.T) {
 	tests := []struct {
 		name   string
