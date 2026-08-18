@@ -15,7 +15,8 @@
 
 **文件**:新建 `domains/ursm/v2/store/keys_k2_test.go`(package `store`;14 号 §0 移交记录的精确列名文件),与 `keys_t0_contract_test.go` 同层同风格——纯函数 exact-bytes 契约,无需 miniredis。既有 `keys_t0_contract_test.go` 的 legacy exact bytes 断言保持不动(14 号 §1.3:legacy 精确字节是兼容契约)。
 
-**内容**:canonical node key 的 golden bytes + round-trip + 14 号 §1 冻结的历史 collision pair。golden bytes 按 14 号 §2 grammar 以 `base64.RawURLEncoding` 计算,已程序化复核(`printf|base64|tr '+/' '-_'`):
+**内容**:canonical node key 的 golden bytes + round-trip + 14 号 §1 冻结的历史 collision pair。golden bytes 按 14 号 §2 grammar 以 `base64.RawURLEncoding` 计算,已程序化复核(`printf|base64|tr '+/' '-_'`)。
+**L1 实施结果(2026-08-18)**:上述契约符号(`NodeKeyCanonical`/`ParseNodeKeyCanonical`/`SchemaK2`/`SchemaLegacy`/`WindowKeyCanonical`/`CandidateIndexKeyCanonical`)已在 `981c804e8 feat(ursm): L1 canonical k2 key primitives for delimiter-safe migration` 落盘(`domains/ursm/v2/store/keys_k2.go` 197 行 + `keys_k2_test.go` 280 行),与本节契约逐字对齐;`go test -count=1 ./domains/ursm/v2/store/` 全绿,slice 1-5 八个测试函数(`TestCanonicalNodeKeyK2RoundTripAndFrozenCollisionPair` / `TestCanonicalNodeKeyUnicodeGoldenAndRoundTrip` / `TestCanonicalConstructionUnrepresentableInputsFailAtParse` / `TestParseNodeKeyCanonicalRejectsMalformedKeys` / `TestParseNodeKeyCanonicalReportsSchemaSource` / `TestCanonicalWindowKeyGoldenBucketsAndRoundTrip` / `TestCanonicalIndexKeyGoldenCollisionAndRoundTrip` / `TestCanonicalKeyCollisionPropertyOverGeneratedCorpus`)全部 PASS。原"实现由 owner 决定、当前代码无这些符号、测试天然 RED"叙述随 L1 实施撤销;`keys.go` 等既有 URSM 文件保持不动。
 
 ```go
 func TestCanonicalNodeKeyK2RoundTripAndFrozenCollisionPair(t *testing.T) {
@@ -43,7 +44,7 @@ func TestCanonicalNodeKeyK2RoundTripAndFrozenCollisionPair(t *testing.T) {
 }
 ```
 
-函数名(`NodeKeyCanonical`/`ParseNodeKeyCanonical`/`SchemaK2`)是测试定义的外部契约,实现由 owner 决定;当前代码无这些符号,测试天然 RED。RED 的机器证明:现有 `NodeKeyForTenant`(`store/keys.go:15-27`)对该 pair 产出**同一个** legacy key `contract:node:a:7:b:8:c`,且 `ParseNodeKey`(`store/keys.go:33-66`)无法恢复原 tuple。断言全部落在"key 字节 + parse 结果 + schema 来源"外部可观察输出上,不触及内部实现。
+函数名(`NodeKeyCanonical`/`ParseNodeKeyCanonical`/`SchemaK2`)与 16 号 §2 落盘实现一致。L1 实施前的 RED 机器证明已被后续切片取代:既有 `NodeKeyForTenant`(`store/keys.go:15-27`)对该 pair 产出**同一个** legacy key `contract:node:a:7:b:8:c`(2026-08-18 审计复核通过),且 `ParseNodeKey`(`store/keys.go:33-66`)无法恢复原 tuple。L1 实现(`981c804e8`)同时新增 strict k2 parser 与 schema-reporting canonical parser(`ParseNodeKeyCanonical` 返回 `(ParsedNodeKey, Schema, bool)`,见 `keys_k2.go:84-92`),断言全部落在"key 字节 + parse 结果 + schema 来源"外部可观察输出上,不触及内部实现。
 
 ## 3. TDD vertical-slice 顺序
 
@@ -54,7 +55,7 @@ func TestCanonicalNodeKeyK2RoundTripAndFrozenCollisionPair(t *testing.T) {
 | 1 | L1 | canonical node golden bytes + round-trip + 冻结 collision pair(§2) | `store/keys_k2_test.go` | 纯函数 |
 | 2 | L1 | window key golden bytes(`<prefix>win:k2:<bucket>:<b64tenant>:<cid>:<b64model>`)+ round-trip;bucket 仅 `1m/5m/30m`,非法 bucket 构造/parse 拒绝 | 同上 | 纯函数 |
 | 3 | L1 | candidate index golden bytes + round-trip;**`index` 包**在 miniredis 上以 colon-bearing tenant/canonical 做 Upsert→Query 往返与隔离,并用 `mr.Keys()`/直接读断言实际写入的 key 字节等于 canonical grammar——堵住 `index/index.go:33` 与 `store.CandidateIndexKey`(`store/keys.go:110-112`)重复拼接的第二套 namespace(index 包当前无 production caller,与 14 号 §2 一致,已 grep 复核) | `store/keys_k2_test.go`(store 侧)+ `index/index_test.go` 扩展(URSM owner/另行移交) | 纯函数 + miniredis |
-| 4 | L1 | parser 严格性:segment 数错、非 base64url、credential 非正十进制、未知 marker、k2 空 tenant 一律失败;`ParseNodeKey` 对 legacy 返回 `SchemaLegacy`、对 k2 返回 `SchemaK2`,禁止宽松 fallback | `store/keys_k2_test.go` | 纯函数 |
+| 4 | L1 | parser 严格性:segment 数错、非 base64url、credential 非正十进制、未知 marker、k2 空 tenant 一律失败;`ParseNodeKeyCanonical` 对 legacy 返回 `SchemaLegacy`、对 k2 返回 `SchemaK2`,禁止宽松 fallback;strict k2-only 入口为 `parseNodeKeyK2`(`keys_k2.go:96`);legacy-only 入口仍为 `ParseNodeKey`(`keys.go:33`) | `store/keys_k2_test.go` | 纯函数 |
 | 5 | L1 | collision property:代表性 corpus(`:`、重复/前后 delimiter、numeric tenant、Unicode、空值)满足"不同 tuple → 不同 key"且 round-trip 还原;历史 collision pair 集不复现 | `store/keys_k2_test.go`(corpus 以表驱动固化;新增文件须先扩充移交) | 纯函数 |
 | 6 | L2 | schema mode=canonical/dual 下 authoritative 空 tenant 仍 fail-closed 且不写 legacy key(扩展 `manager_t0_contract_test.go` 既有模式) | `domains/ursm/v2/manager_t0_contract_test.go` | miniredis |
 | 7 | L2 | colon-bearing tenant/model 的 cross-tenant/model isolation:`RecordRequest`、`FilterAndScore`、NodeMirror、dedup、candidate index 在 `("a",7,"b:8:c")` vs `("a:7:b",8,"c")` 下互不可见、互不更新 | `manager_t0_contract_test.go` / `manager_filter_test.go` 扩展 | miniredis |
@@ -130,3 +131,4 @@ func TestCanonicalNodeKeyK2RoundTripAndFrozenCollisionPair(t *testing.T) {
 
 - 2026-08-18:首次落盘;在会话初版矩阵基础上完成审计更正(A1-A4)并复核全部事实;与 15 号实施计划配套。
 - 2026-08-18:对齐 origin/main(`50258a382`)的 14 号 §0 前置事实记录——前置条件标记为已满足,首个测试与 L1 slice 落点改为移交列名的 `keys_k2_test.go`,补 slice 所有权备注,G4 cluster 项按 standalone 裁决标记不适用。
+- 2026-08-18:L1 实施落盘后与本矩阵对齐——`§2` 撤销"实现由 owner 决定、当前代码无这些符号、测试天然 RED"叙述,改为记录 `981c804e8 feat(ursm): L1 canonical k2 key primitives for delimiter-safe migration` 的实施结果(slice 1-5 共八个测试函数全部 PASS,与本节契约逐字对齐);`§3` 行 4 改 `ParseNodeKey` → `ParseNodeKeyCanonical` 并补 strict k2-only 入口 `parseNodeKeyK2`(`keys_k2.go:96`)的事实;新增 L2 启动前置:`slice 6-10` 文件(`manager_t0_contract_test.go`/`manager_filter_test.go`/`store/` schema-aware/`persist/writer_test.go`/`recovery/coverage_test.go` 及其对应生产文件)仍按 14 号 §0 未移交,需 URSM owner 扩充移交清单后由 Migration owner 执行。
