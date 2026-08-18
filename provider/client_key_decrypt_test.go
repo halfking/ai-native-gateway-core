@@ -301,7 +301,7 @@ func TestRevealAPIKeyNegativeCache(t *testing.T) {
 		t.Fatalf("expected cached error to be wrapped, got %q", err.Error())
 	}
 	if !errors.Is(err, secret.ErrRevealCached) {
-		t.Fatalf("expected negative-cache sentinel errRevealCached, got %q (errors.Is=false)", err.Error())
+		t.Fatalf("expected negative-cache sentinel secret.ErrRevealCached, got %q (errors.Is=false)", err.Error())
 	}
 
 	// An entry past its expiry must be re-attempted (we don't have a real DB

@@ -68,37 +68,22 @@ func TestDecryptAESGCMReturnsErrDecrypt(t *testing.T) {
 // If two of them accidentally became the same value, classifyRevealFailure
 // would misroute alerts and the credential-17 dashboard would break.
 func TestErrRevealSentinelsAreDistinct(t *testing.T) {
-	sentinels := []error{
-		ErrRevealUnknownFormat,
-		ErrRevealDecrypt,
-		ErrRevealNotFound,
-		ErrRevealNotConfigured,
-		ErrRevealRotation,
-		ErrRevealCached,
+	sentinels := map[string]error{
+		"ErrRevealUnknownFormat": ErrRevealUnknownFormat,
+		"ErrRevealDecrypt":       ErrRevealDecrypt,
+		"ErrRevealNotFound":      ErrRevealNotFound,
+		"ErrRevealNotConfigured": ErrRevealNotConfigured,
+		"ErrRevealRotation":      ErrRevealRotation,
+		"ErrRevealCached":        ErrRevealCached,
+	}
+	if got, want := len(sentinels), 6; got != want {
+		t.Fatalf("map size = %d, want %d", got, want)
 	}
 	seen := make(map[error]string, len(sentinels))
-	for i, s := range sentinels {
+	for name, s := range sentinels {
 		if other, ok := seen[s]; ok {
-			t.Fatalf("sentinel %d duplicates %s", i, other)
+			t.Fatalf("%s and %s share the same sentinel identity", name, other)
 		}
-		seen[s] = sentinelName(i)
+		seen[s] = name
 	}
-}
-
-func sentinelName(i int) string {
-	switch i {
-	case 0:
-		return "ErrRevealUnknownFormat"
-	case 1:
-		return "ErrRevealDecrypt"
-	case 2:
-		return "ErrRevealNotFound"
-	case 3:
-		return "ErrRevealNotConfigured"
-	case 4:
-		return "ErrRevealRotation"
-	case 5:
-		return "ErrRevealCached"
-	}
-	return "?"
 }
