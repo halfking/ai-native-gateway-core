@@ -115,6 +115,17 @@ type PrepareResult struct {
 	// TokenEst is the token estimate for OutboundBody.
 	TokenEst int
 
+	// TokenBand records the threshold classification of the fully assembled
+	// outbound body (prior compressed session layer plus current delta).
+	TokenBand OutboundTokenBand
+
+	// PriorLayerTokens is the cached estimate of the previous outbound layer.
+	PriorLayerTokens int
+
+	// CompressionReason distinguishes an absolute threshold rewrite from the
+	// existing context-window/count/idle triggers.
+	CompressionReason string
+
 	// CompressionStrategy is the strategy that fired (or "" = no rewrite).
 	// Written to request_logs.compression_strategy.
 	CompressionStrategy string
@@ -293,8 +304,25 @@ func (sc *SessionCompressor) Prepare(
 	}
 
 	// ── Phase 4: v4 Smart modes ──────────────────────────────────────────
-	// delta_only and legacy/off modes never compress: delta-append only.
-	if mode == ModeDeltaOnly || (mode != ModeSmart && mode != ModeAggressive) {
+	// Keep explicit off/delta-only modes authoritative. Other legacy modes can
+	// be promoted for this request when the assembled outbound body exceeds the
+	// absolute threshold; the later window check re-evaluates after safe strips.
+	preliminaryBand := classifyOutboundTokenBand(res.TokenEst)
+	res.TokenBand = preliminaryBand
+	if state != nil {
+		res.PriorLayerTokens = state.TokenEstimate
+	}
+	switch preliminaryBand {
+	case OutboundTokenBandForced:
+		res.CompressionReason = "token_threshold_forced_absolute"
+		if mode != ModeOff && mode != ModeDeltaOnly {
+			mode = ModeSmart
+		}
+	case OutboundTokenBandPreliminary:
+		res.CompressionReason = "token_threshold_preliminary"
+	}
+
+	if mode == ModeOff || mode == ModeDeltaOnly || (mode != ModeSmart && mode != ModeAggressive) {
 		if !diffResult.Unchanged && !diffResult.IsNewSess {
 			res.OutboundBody = outboundBody
 			res.CompressionStrategy = "delta_append"
@@ -333,6 +361,15 @@ func (sc *SessionCompressor) Prepare(
 
 	// ── Phase 5: Window trigger check ─────────────────────────────────────
 	winResult := ShouldTriggerWindow(outboundBody, state, contextWindow, streamStarted, time.Now())
+	res.TokenBand = winResult.TokenBand
+	res.PriorLayerTokens = winResult.PriorLayerTokens
+	res.CompressionReason = ""
+	switch winResult.TokenBand {
+	case OutboundTokenBandForced:
+		res.CompressionReason = "token_threshold_forced_absolute"
+	case OutboundTokenBandPreliminary:
+		res.CompressionReason = "token_threshold_preliminary"
+	}
 
 	if winResult.SkipStream {
 		if !diffResult.Unchanged && !diffResult.IsNewSess {
@@ -472,7 +509,11 @@ func (sc *SessionCompressor) Prepare(
 			// summary model is erroring, skip the call (and its quota/latency
 			// cost) and go straight to mechanical trim until the breaker resets.
 			taskType := extractTaskType(ctx)
+			if winResult.TokenBand == OutboundTokenBandForced {
+				taskType = "document_summary"
+			}
 			now := time.Now()
+
 			allow, _ := sc.breaker.allowDecide(now)
 			var (
 				summarised []byte

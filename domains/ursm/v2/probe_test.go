@@ -11,6 +11,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/api"
+	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/store"
 )
 
 func TestApplyProbeSuccessUpdatesAvailable(t *testing.T) {
@@ -44,6 +45,99 @@ func TestApplyProbeRefreshesNodeTTL(t *testing.T) {
 	// below the floor is raised, never honoured verbatim.
 	if ttl < probeWriteTTLFloor || ttl > probeWriteTTLFloor+time.Minute {
 		t.Fatalf("probe node ttl=%s, want the %s probe-write floor", ttl, probeWriteTTLFloor)
+	}
+}
+
+func TestApplyProbeDualSchemaUpdatesBothNodeKeys(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	cfg := DefaultConfig()
+	cfg.KeySchemaMode = store.KeySchemaModeDual
+	mgr := New(Dependencies{Redis: rdb, Config: cfg})
+	ctx := context.Background()
+	tenant, model := "canary:tenant", "model:with:colon"
+	credentialID := 42
+
+	if err := mgr.ApplyProbeForTenant(ctx, tenant, api.ProbeOutcome{
+		CredentialID: credentialID,
+		RawModel:     model,
+		Success:      true,
+		LatencyMs:    17,
+	}); err != nil {
+		t.Fatalf("ApplyProbeForTenant: %v", err)
+	}
+
+	legacyKey := store.NodeKeyForTenant(cfg.RedisKeyPrefix, tenant, credentialID, model)
+	k2Key, err := store.K2NodeKeyForTenant(cfg.RedisKeyPrefix, tenant, credentialID, model)
+	if err != nil {
+		t.Fatalf("K2NodeKeyForTenant: %v", err)
+	}
+	for _, key := range []string{legacyKey, k2Key} {
+		available, err := rdb.HGet(ctx, key, "available").Result()
+		if err != nil || available != "1" {
+			t.Fatalf("%s available = %q, %v; want 1", key, available, err)
+		}
+		ttl, err := rdb.TTL(ctx, key).Result()
+		if err != nil || ttl < probeWriteTTLFloor {
+			t.Fatalf("%s ttl = %s, %v; want at least %s", key, ttl, err, probeWriteTTLFloor)
+		}
+	}
+}
+
+func TestApplyProbeCanonicalSchemaWritesOnlyK2(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	cfg := DefaultConfig()
+	cfg.KeySchemaMode = store.KeySchemaModeCanonical
+	mgr := New(Dependencies{Redis: rdb, Config: cfg})
+	ctx := context.Background()
+	tenant, model := "canary-tenant", "canary-model"
+	credentialID := 43
+
+	if err := mgr.ApplyProbeForTenant(ctx, tenant, api.ProbeOutcome{
+		CredentialID: credentialID,
+		RawModel:     model,
+		Success:      false,
+	}); err != nil {
+		t.Fatalf("ApplyProbeForTenant: %v", err)
+	}
+
+	legacyKey := store.NodeKeyForTenant(cfg.RedisKeyPrefix, tenant, credentialID, model)
+	if exists, err := rdb.Exists(ctx, legacyKey).Result(); err != nil || exists != 0 {
+		t.Fatalf("legacy key exists = %d, %v; want absent", exists, err)
+	}
+	k2Key, err := store.K2NodeKeyForTenant(cfg.RedisKeyPrefix, tenant, credentialID, model)
+	if err != nil {
+		t.Fatalf("K2NodeKeyForTenant: %v", err)
+	}
+	available, err := rdb.HGet(ctx, k2Key, "available").Result()
+	if err != nil || available != "0" {
+		t.Fatalf("K2 available = %q, %v; want 0", available, err)
+	}
+	views, err := mgr.store.PipelineNodeViews(ctx, cfg.RedisKeyPrefix, []store.NodeQuery{{
+		TenantID: tenant, CredentialID: credentialID, RawModel: model,
+	}})
+	if err != nil {
+		t.Fatalf("PipelineNodeViews: %v", err)
+	}
+	if len(views) != 1 || views[0].Available {
+		t.Fatalf("canonical pipeline views = %+v, want one unavailable K2 view", views)
+	}
+}
+
+func TestApplyProbeCanonicalSchemaRejectsEmptyTenant(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	cfg := DefaultConfig()
+	cfg.KeySchemaMode = store.KeySchemaModeCanonical
+	mgr := New(Dependencies{Redis: rdb, Config: cfg})
+
+	err := mgr.ApplyProbe(context.Background(), api.ProbeOutcome{CredentialID: 44, RawModel: "model", Success: true})
+	if err == nil {
+		t.Fatal("ApplyProbe with empty tenant succeeded in canonical mode")
+	}
+	if exists, existsErr := rdb.Exists(context.Background(), store.NodeKey(cfg.RedisKeyPrefix, 44, "model")).Result(); existsErr != nil || exists != 0 {
+		t.Fatalf("legacy key exists = %d, %v; want absent", exists, existsErr)
 	}
 }
 

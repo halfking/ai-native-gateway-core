@@ -65,6 +65,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/domains/credentialstate"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
@@ -107,6 +108,10 @@ type NodeProbeStateSink interface {
 	ApplyProbeForTenant(ctx context.Context, tenant string, credentialID int, rawModel string, success bool, latencyMs int) error
 }
 
+type nodeProbeAuditDB interface {
+	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
+}
+
 // NodeProbeWorker polls node_probe_state and executes the two-round
 // (direct + gateway) probe for each (credential, model) whose
 // next_retry_at has elapsed.
@@ -125,6 +130,7 @@ type NodeProbeStateSink interface {
 // "models briefly work then 5xx" pattern.
 type NodeProbeWorker struct {
 	db            *pgxpool.Pool
+	auditDB       nodeProbeAuditDB
 	encKey        []byte
 	keyring       *secret.Keyring
 	apiKey        string
@@ -305,6 +311,7 @@ func NewNodeProbeWorker(db *pgxpool.Pool, encKey []byte, keyring *secret.Keyring
 	}
 	w := &NodeProbeWorker{
 		db:          db,
+		auditDB:     db,
 		encKey:      encKey,
 		keyring:     keyring,
 		apiKey:      apiKey,
@@ -995,7 +1002,14 @@ func (w *NodeProbeWorker) ProbeSync(
 			if w.invalidateCandidateCache != nil {
 				w.invalidateCandidateCache(j.credID)
 			}
-			w.emitSyncAudit(ctx, j.credID, j.model, res.direct, res.gateway, start, parentReqID)
+			if err := w.emitSyncAudit(ctx, j.credID, j.model, res.direct, res.gateway, start, parentReqID); err != nil {
+				slog.Warn("node_probe_worker: sync audit persist failed",
+					"credential_id", j.credID,
+					"raw_model", j.model,
+					"trigger_kind", "sync_request",
+					"parent_request_id", parentReqID,
+					"error", err)
+			}
 			results <- res
 		}()
 	}
@@ -1147,9 +1161,13 @@ func (w *NodeProbeWorker) emitSyncAudit(
 	gw nodeProbeRoundResult,
 	startedAt time.Time,
 	parentReqID string,
-) {
-	if w.db == nil {
-		return
+) error {
+	auditDB := w.auditDB
+	if auditDB == nil {
+		auditDB = w.db
+	}
+	if auditDB == nil {
+		return nil
 	}
 	now := time.Now()
 	durationMs := int(now.Sub(startedAt).Milliseconds())
@@ -1164,7 +1182,7 @@ func (w *NodeProbeWorker) emitSyncAudit(
 	}
 	requestHeadersJSON, _ := json.Marshal(cleaned)
 
-	_, _ = w.db.Exec(ctx, `
+	_, err := auditDB.Exec(ctx, `
 		INSERT INTO node_probe_runs (
 			credential_id, raw_model_name, trigger_kind, attempt, next_retry_seconds,
 			direct_ok, direct_http_status, direct_err_code, direct_latency_ms, direct_err_detail,
@@ -1194,6 +1212,11 @@ func (w *NodeProbeWorker) emitSyncAudit(
 		direct.latencyMs, direct.viaProxy,
 		parentReqID,
 	)
+	if err != nil {
+		auditPersistFailedTotal.WithLabelValues("sync_request").Inc()
+		return fmt.Errorf("insert node_probe_runs sync audit: %w", err)
+	}
+	return nil
 }
 
 func (w *NodeProbeWorker) drainDue(ctx context.Context) {

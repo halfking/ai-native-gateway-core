@@ -51,7 +51,20 @@ func (m *Manager) ApplyProbeForTenantWithSource(ctx context.Context, tenant stri
 	if sourcePriority <= 0 {
 		sourcePriority = api.SourcePriorityProbe
 	}
-	key := store.NodeKeyForTenant(m.cfg.RedisKeyPrefix, tenant, p.CredentialID, p.RawModel)
+	legacyKey := store.NodeKeyForTenant(m.cfg.RedisKeyPrefix, tenant, p.CredentialID, p.RawModel)
+	keys := []string{legacyKey}
+	schemaMode := m.store.KeySchemaMode()
+	if schemaMode != store.KeySchemaModeLegacy {
+		k2Key, err := store.K2NodeKeyForTenant(m.cfg.RedisKeyPrefix, tenant, p.CredentialID, p.RawModel)
+		if err != nil {
+			return fmt.Errorf("ursm.v2: derive k2 probe key: %w", err)
+		}
+		if schemaMode == store.KeySchemaModeCanonical {
+			keys[0] = k2Key
+		} else {
+			keys = append(keys, k2Key)
+		}
+	}
 	// M3 (2026-07-28): apply_probe.lua now reads manual_hold directly inside
 	// the script. Removes a hot-path HGet (one fewer Redis round-trip per
 	// probe) and closes the prior TOCTOU window between Go-side HGet and
@@ -69,16 +82,28 @@ func (m *Manager) ApplyProbeForTenantWithSource(ctx context.Context, tenant stri
 	if floor := int(probeWriteTTLFloor / time.Second); nodeTTLSeconds < floor {
 		nodeTTLSeconds = floor
 	}
-	_, err := store.ApplyProbeScript.Run(ctx, m.store.RawClient(),
-		[]string{key},
-		store.BoolFlag(p.Success),
-		fmt.Sprintf("%d", p.LatencyMs),
-		fmt.Sprintf("%d", time.Now().UnixMilli()),
-		"0", // deprecated: caller-supplied admin_hold (always 0 here)
-		"0", // deprecated: pre-read current_admin_hold (lua reads it instead)
-		fmt.Sprintf("%d", nodeTTLSeconds),
-		fmt.Sprintf("%d", sourcePriority), // 会话优化 v4 T5: Recover=30 for the 36h scan
-	).Slice()
+	var err error
+	if schemaMode == store.KeySchemaModeDual {
+		_, err = store.ApplyProbeDualScript.Run(ctx, m.store.RawClient(), keys,
+			store.BoolFlag(p.Success),
+			fmt.Sprintf("%d", p.LatencyMs),
+			fmt.Sprintf("%d", time.Now().UnixMilli()),
+			"0", // deprecated: caller-supplied admin_hold (always 0 here)
+			"0", // deprecated: pre-read current_admin_hold (lua reads it instead)
+			fmt.Sprintf("%d", nodeTTLSeconds),
+			fmt.Sprintf("%d", sourcePriority), // 会话优化 v4 T5: Recover=30 for the 36h scan
+		).Slice()
+	} else {
+		_, err = store.ApplyProbeScript.Run(ctx, m.store.RawClient(), keys,
+			store.BoolFlag(p.Success),
+			fmt.Sprintf("%d", p.LatencyMs),
+			fmt.Sprintf("%d", time.Now().UnixMilli()),
+			"0", // deprecated: caller-supplied admin_hold (always 0 here)
+			"0", // deprecated: pre-read current_admin_hold (lua reads it instead)
+			fmt.Sprintf("%d", nodeTTLSeconds),
+			fmt.Sprintf("%d", sourcePriority), // 会话优化 v4 T5: Recover=30 for the 36h scan
+		).Slice()
+	}
 	if err != nil {
 		return fmt.Errorf("ursm.v2: apply_probe: %w", err)
 	}

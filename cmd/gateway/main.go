@@ -2544,7 +2544,7 @@ func main() {
 			sm, smErr := systemmonitor.NewSystemMonitor(systemmonitor.Config{
 				DB:          dbConn.Pool(),
 				Redis:       fpSlotRedis,
-				Keyring:     nil,
+				Keyring:     keyring,
 				EncKey:      fernetKey,
 				ProxyFunc:   upClient.Proxy().ProxyFunc(),
 				TimeoutMs:   30000,

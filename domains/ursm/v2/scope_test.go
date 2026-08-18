@@ -92,4 +92,18 @@ func TestStrictCanaryManagerRejectsOutOfScopeWrites(t *testing.T) {
 	if !errors.Is(err, ErrOutOfScope) {
 		t.Fatalf("out-of-scope request error=%v, want ErrOutOfScope", err)
 	}
+
+	hold := true
+	err = mgr.ApplyAdmin(ctx, api.AdminAction{TenantID: "canary-tenant", CredentialID: 102, RawModel: "glm-5.2", ManualDisabled: &hold})
+	if !errors.Is(err, ErrOutOfScope) {
+		t.Fatalf("out-of-scope admin error=%v, want ErrOutOfScope", err)
+	}
+	if mr.Exists("ursm:v2:canary:node:canary-tenant:102:glm-5.2") {
+		t.Fatal("out-of-scope admin wrote Redis state")
+	}
+
+	err = mgr.ClearStateForTenant(ctx, "canary-tenant", 102, "glm-5.2")
+	if !errors.Is(err, ErrOutOfScope) {
+		t.Fatalf("out-of-scope clear error=%v, want ErrOutOfScope", err)
+	}
 }

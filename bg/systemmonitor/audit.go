@@ -10,12 +10,17 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+type auditDB interface {
+	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
+}
+
 // Audit writes task results to the system_probe_runs table.
 type Audit struct {
-	db *pgxpool.Pool
+	db auditDB
 }
 
 // NewAudit constructs an Audit helper.
@@ -42,6 +47,9 @@ func (a *Audit) Write(ctx context.Context, task *Task, result *ExecutorResult, e
 	}
 	if task == nil {
 		return fmt.Errorf("audit: task is nil")
+	}
+	if extras == nil {
+		extras = make(map[string]any)
 	}
 
 	startedAt := time.Now()

@@ -62,14 +62,18 @@ type RequestLogContext struct {
 	// leak a different id on every helper invocation.
 	ProvisionalSessionID string
 
-	KeyInfo       *authentication.KeyInfo
-	Body          []byte
-	ClientModel   string
-	OutboundModel string
-	EndUser       string
-	ProviderID    *int
-	CredentialID  *int
-	ResponseBody  []byte
+	KeyInfo *authentication.KeyInfo
+	Body    []byte
+	// PromptTokensEstimate is the receipt-time estimate of the original client
+	// body. It is telemetry-only: compression uses the assembled outbound body
+	// after session delta-append and prior summaries have been applied.
+	PromptTokensEstimate *int
+	ClientModel          string
+	OutboundModel        string
+	EndUser              string
+	ProviderID           *int
+	CredentialID         *int
+	ResponseBody         []byte
 
 	// v2.0 auto-route fields (populated when model="auto" was used)
 	IsAutoRequest  bool
@@ -91,13 +95,16 @@ type RequestLogContext struct {
 	// v3 (2026-06-19) session-level outbound body fields.
 	// Populated by SessionCompressor.Prepare when it rewrites bodyBytes.
 	// All nil when the session compressor was not active.
-	OutboundBody            []byte
-	OutboundMsgCount        *int
-	OutboundTokenEst        *int
-	OutboundMsgHashes       []byte // JSON [{index, sha256}]
-	OutboundStrategy        string // compression_strategy value (e.g. "delta_append")
-	OutboundSummaryMarker   string
-	OutboundWindowTriggered string
+	OutboundBody              []byte
+	OutboundMsgCount          *int
+	OutboundTokenEst          *int
+	OutboundMsgHashes         []byte // JSON [{index, sha256}]
+	OutboundStrategy          string // compression_strategy value (e.g. "delta_append")
+	OutboundSummaryMarker     string
+	OutboundWindowTriggered   string
+	OutboundTokenBand         string
+	OutboundPriorLayerTokens  int
+	OutboundCompressionReason string
 
 	ErrCode string
 	ErrMsg  string
@@ -523,6 +530,7 @@ func (c *RequestLogContext) EnsureCaptured() {
 	if err := ensureRequestBodyBuffered(c.Request, &c.Body, &c.ClientModel); err != nil {
 		c.recordBodyCaptureFailure(err)
 	}
+	c.recordReceiptTokenEstimate()
 	// 2026-07-27: 智能体兜底识别 — 从已缓冲 body 抽出 system prompt,
 	// 让 fillAttemptMeta 能在 AgentName == "unknown" 时调用语义匹配。
 	// 只在第一次捕获后填一次,避免每次 refresh 都重新解析。
@@ -584,8 +592,17 @@ func (c *RequestLogContext) recordBodyCaptureFailure(err error) {
 		})
 }
 
+func (c *RequestLogContext) recordReceiptTokenEstimate() {
+	if c == nil || c.PromptTokensEstimate != nil || len(c.Body) == 0 {
+		return
+	}
+	tokens := EstimateInputTokens(c.Body)
+	c.PromptTokensEstimate = &tokens
+}
+
 func (c *RequestLogContext) CapturePartialBody(body []byte) {
 	capturePartialBodyOnReadError(body, &c.Body, &c.ClientModel)
+	c.recordReceiptTokenEstimate()
 }
 
 func (c *RequestLogContext) refreshMeta() {
@@ -775,6 +792,7 @@ func (c *RequestLogContext) buildEntry(errCode, errMessage string, providerID, c
 	if c == nil {
 		return nil
 	}
+	c.recordReceiptTokenEstimate()
 	if providerID != nil {
 		c.ProviderID = providerID
 	}
@@ -952,6 +970,11 @@ func (c *RequestLogContext) buildEntry(errCode, errMessage string, providerID, c
 		T8ResponseStartAt: c.T8ResponseStartAt,
 		T9ResponseEndAt:   c.T9ResponseEndAt,
 	}
+	if c.PromptTokensEstimate != nil {
+		v := *c.PromptTokensEstimate
+		reqLog.PromptTokens = &v
+		reqLog.UsageSource = strPtr(UsageSourceEstimated)
+	}
 	enrichRequestLogFromMeta(reqLog, c.KeyInfo, &c.meta)
 	applyAutoRouteFields(reqLog, c)
 	// 2026-08-06: flow X-Gw-Parent-Request-Id / X-Gw-Source-Actor into the
@@ -1083,22 +1106,27 @@ func applySessionCompressorFields(entry *telemetry.RequestLogEntry, c *RequestLo
 	if len(c.OutboundBody) > 0 {
 		entry.OutboundBody = json.RawMessage(c.OutboundBody)
 	}
-	if c.OutboundStrategy == "" {
-		return // compression_meta fields only when compression actually fired
+	if c.OutboundStrategy == "" && c.OutboundTokenBand == "" {
+		return // no compression rewrite or threshold observation to persist
 	}
 	if len(c.OutboundMsgHashes) > 0 {
 		entry.OutboundMsgHashes = json.RawMessage(c.OutboundMsgHashes)
 	}
 
-	// compression_strategy: prefer v7 value if set, else use v3 strategy
-	if entry.CompressionStrategy == nil || *entry.CompressionStrategy == "" {
+	// compression_strategy: prefer v7 value if set, else use v3 strategy.
+	if c.OutboundStrategy != "" && (entry.CompressionStrategy == nil || *entry.CompressionStrategy == "") {
 		entry.CompressionStrategy = strPtr(c.OutboundStrategy)
 	}
+	if c.OutboundCompressionReason != "" && (entry.CompressionReason == nil || *entry.CompressionReason == "") {
+		entry.CompressionReason = strPtr(c.OutboundCompressionReason)
+	}
 
-	// Merge window_triggered + summary_marker into compression_meta JSONB.
-	if c.OutboundWindowTriggered != "" || c.OutboundSummaryMarker != "" {
+	// Merge window-triggered, summary, and multi-layer threshold facts into
+	// compression_meta without clobbering fields written by other transforms.
+	if c.OutboundWindowTriggered != "" || c.OutboundSummaryMarker != "" || c.OutboundTokenBand != "" {
 		merged, err := mergeCompressionMetaV3(entry.CompressionMeta,
-			c.OutboundWindowTriggered, c.OutboundSummaryMarker)
+			c.OutboundWindowTriggered, c.OutboundSummaryMarker,
+			c.OutboundTokenBand, c.OutboundTokenEst, c.OutboundPriorLayerTokens)
 		if err != nil {
 			c.recordMetadataLoss("compression_meta", err)
 		}
@@ -1129,15 +1157,20 @@ func applySubmitModeHeader(entry *telemetry.RequestLogEntry, c *RequestLogContex
 	}
 }
 
-// mergeCompressionMetaV3 adds window_triggered and summary_marker to the
-// existing compression_meta JSONB without clobbering v7 fields.
+// mergeCompressionMetaV3 adds session-compression facts to the existing
+// compression_meta JSONB without clobbering v7 fields.
 //
 // Returns (result, droppedErr). A decode failure must NOT be merged into an
 // empty map: doing so returns a blob containing only the two new keys and
 // silently deletes the pre-existing v7 compression fields. On decode failure
 // the existing blob is preserved untouched and the error is reported so the
 // caller can record it.
-func mergeCompressionMetaV3(existing json.RawMessage, windowTriggered, summaryMarker string) (json.RawMessage, error) {
+func mergeCompressionMetaV3(
+	existing json.RawMessage,
+	windowTriggered, summaryMarker, tokenBand string,
+	outboundTokens *int,
+	priorLayerTokens int,
+) (json.RawMessage, error) {
 	m := make(map[string]any)
 	if len(existing) > 0 {
 		if err := json.Unmarshal(existing, &m); err != nil {
@@ -1149,6 +1182,13 @@ func mergeCompressionMetaV3(existing json.RawMessage, windowTriggered, summaryMa
 	}
 	if summaryMarker != "" {
 		m["summary_marker"] = summaryMarker
+	}
+	if tokenBand != "" {
+		m["token_band"] = tokenBand
+		m["prior_layer_tokens"] = priorLayerTokens
+		if outboundTokens != nil {
+			m["outbound_tokens"] = *outboundTokens
+		}
 	}
 	if len(m) == 0 {
 		return existing, nil
