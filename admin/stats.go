@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -242,7 +243,9 @@ func (h *Handler) handleStatsReconciliation(w http.ResponseWriter, r *http.Reque
 		where += " AND run_id = $" + strconv.Itoa(len(args)+1)
 		args = append(args, runID)
 	}
-	runs, err := h.db.Query(r.Context(), `SELECT run_id, period_start, period_end, scope, status, events_seen, rows_compared, rows_repaired, diff_count, source_watermark, started_at, finished_at FROM stats_reconciliation_runs WHERE `+where+` ORDER BY started_at DESC LIMIT `+strconv.Itoa(limit), args...)
+	// Use parameterized LIMIT to prevent any injection risk
+	args = append(args, limit)
+	runs, err := h.db.Query(r.Context(), `SELECT run_id, period_start, period_end, scope, status, events_seen, rows_compared, rows_repaired, diff_count, source_watermark, started_at, finished_at FROM stats_reconciliation_runs WHERE `+where+` ORDER BY started_at DESC LIMIT $`+strconv.Itoa(len(args)), args...)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "stats reconciliation query failed")
 		return
@@ -268,7 +271,9 @@ func (h *Handler) handleStatsReconciliation(w http.ResponseWriter, r *http.Reque
 		diffWhere += " AND run_id = $" + strconv.Itoa(len(diffArgs)+1)
 		diffArgs = append(diffArgs, runID)
 	}
-	diffRows, diffErr := h.db.Query(r.Context(), `SELECT run_id, tenant_id, dimension_type, dimension_key, metric, source_value, projected_value, difference, resolution, created_at FROM stats_reconciliation_diffs WHERE `+diffWhere+` ORDER BY created_at DESC LIMIT `+strconv.Itoa(limit), diffArgs...)
+	// Use parameterized LIMIT to prevent any injection risk
+	diffArgs = append(diffArgs, limit)
+	diffRows, diffErr := h.db.Query(r.Context(), `SELECT run_id, tenant_id, dimension_type, dimension_key, metric, source_value, projected_value, difference, resolution, created_at FROM stats_reconciliation_diffs WHERE `+diffWhere+` ORDER BY created_at DESC LIMIT $`+strconv.Itoa(len(diffArgs)), diffArgs...)
 	if diffErr != nil {
 		writeError(w, http.StatusInternalServerError, "stats reconciliation diff query failed")
 		return
@@ -352,20 +357,24 @@ func (h *Handler) handleStatsReconciliationApprove(w http.ResponseWriter, r *htt
 		`, diffID).Scan(&runID, &tenantID, &dimensionType, &dimensionKey, &metric,
 			&sourceValue, &projectedValue, &difference, &resolution)
 		if err != nil {
-			writeError(w, http.StatusNotFound, fmt.Sprintf("diff %d not found", diffID))
+			slog.Warn("failed to fetch diff for approval", "diff_id", diffID, "error", err)
+			writeError(w, http.StatusNotFound, "reconciliation diff not found")
 			return
 		}
 
 		// Verify tenant access for non-super-admin
 		if auth != nil && auth.Role != "super_admin" && auth.Role != "admin_key" {
 			if tenantID != auth.TenantID {
-				writeError(w, http.StatusForbidden, fmt.Sprintf("cannot approve diff for tenant %s", tenantID))
+				slog.Warn("tenant access violation in reconciliation approval",
+					"diff_id", diffID, "diff_tenant", tenantID, "user_tenant", auth.TenantID)
+				writeError(w, http.StatusForbidden, "access denied")
 				return
 			}
 		}
 
 		// Check if already resolved
 		if resolution == "approved" || resolution == "rejected" || resolution == "adjusted" {
+			slog.Info("skipping already resolved diff", "diff_id", diffID, "resolution", resolution)
 			continue // skip already resolved
 		}
 
@@ -377,13 +386,12 @@ func (h *Handler) handleStatsReconciliationApprove(w http.ResponseWriter, r *htt
 				WHERE id = $1
 			`, diffID)
 			if err != nil {
-				writeError(w, http.StatusInternalServerError, "update diff failed")
+				slog.Error("failed to update diff resolution", "diff_id", diffID, "error", err)
+				writeError(w, http.StatusInternalServerError, "failed to process approval")
 				return
 			}
 
 			// Create adjustment record
-			// Parse dimension_key to extract provider_id, credential_id, etc.
-			// For now, we'll create a simple adjustment record
 			_, err = tx.Exec(ctx, `
 				INSERT INTO stats_adjustments
 					(tenant_id, month_start, adjustment_type, dimension_type, dimension_key,
@@ -394,10 +402,14 @@ func (h *Handler) handleStatsReconciliationApprove(w http.ResponseWriter, r *htt
 			`, tenantID, dimensionType, dimensionKey, metric, difference, 
 				req.Reason, runID, operator, operator)
 			if err != nil {
-				writeError(w, http.StatusInternalServerError, "create adjustment failed")
+				slog.Error("failed to create adjustment", "diff_id", diffID, "tenant_id", tenantID, "error", err)
+				writeError(w, http.StatusInternalServerError, "failed to create adjustment record")
 				return
 			}
 
+			slog.Info("reconciliation diff approved",
+				"diff_id", diffID, "tenant_id", tenantID, "operator", operator,
+				"metric", metric, "difference", difference)
 			approved++
 		} else {
 			// Reject
@@ -407,15 +419,18 @@ func (h *Handler) handleStatsReconciliationApprove(w http.ResponseWriter, r *htt
 				WHERE id = $1
 			`, diffID)
 			if err != nil {
-				writeError(w, http.StatusInternalServerError, "update diff failed")
+				slog.Error("failed to reject diff", "diff_id", diffID, "error", err)
+				writeError(w, http.StatusInternalServerError, "failed to process rejection")
 				return
 			}
+			slog.Info("reconciliation diff rejected", "diff_id", diffID, "operator", operator)
 			rejected++
 		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		writeError(w, http.StatusInternalServerError, "commit transaction failed")
+		slog.Error("failed to commit reconciliation approval transaction", "error", err)
+		writeError(w, http.StatusInternalServerError, "transaction commit failed")
 		return
 	}
 
