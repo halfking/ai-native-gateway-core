@@ -3,6 +3,7 @@ package credential
 import (
 	"context"
 	"errors"
+	"regexp"
 	"strings"
 	"time"
 
@@ -464,10 +465,42 @@ func coolingDuration(kind errorsx.ErrorKind, retryAfter time.Duration) time.Dura
 	}
 }
 
+// fiveHourWindowRe detects 5-hour usage-window wording in quota-exhausted
+// error bodies. 智谱AI GLM Coding Plan (and Anthropic-compatible relays of
+// it) throttle on fixed 5-hour windows; a body mentioning that window is
+// periodic by construction and recovers at the next 5-hour boundary, not at
+// the next UTC midnight (2026-08-18 fix: the old default stretched a
+// 凌晨 5 点重置的 5h 窗口到次日 UTC 零点 = 北京 08:00，白白多挂 3 小时).
+var fiveHourWindowRe = regexp.MustCompile(`(?i)(five[_ -]?hour|5[_ -]?hours?|hour[_ -]?5|每.{0,3}5.{0,3}小时|5.{0,3}小时)`)
+
+// cstZone is the UTC+8 fixed zone used to align 5-hour quota windows.
+// 智谱AI coding-plan windows roll at 00/05/10/15/20 北京时间.
+var cstZone = time.FixedZone("CST", 8*3600)
+
+// nextFiveHourBoundary returns the first 5-hour mark (00/05/10/15/20 in
+// UTC+8) strictly after now.
+func nextFiveHourBoundary(now time.Time) time.Time {
+	local := now.In(cstZone)
+	nextHour := 5 * (local.Hour()/5 + 1)
+	day := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, cstZone)
+	if nextHour >= 24 {
+		nextHour -= 24
+		day = day.AddDate(0, 0, 1)
+	}
+	return day.Add(time.Duration(nextHour) * time.Hour)
+}
+
 func inferQuotaRecoverAt(detail string) time.Time {
-	now := time.Now().UTC()
+	return inferQuotaRecoverAtNow(detail, time.Now())
+}
+
+func inferQuotaRecoverAtNow(detail string, nowArg time.Time) time.Time {
+	now := nowArg.UTC()
 	if t, ok := parseQuotaResetTimestamp(detail); ok {
 		return t.UTC()
+	}
+	if fiveHourWindowRe.MatchString(detail) {
+		return nextFiveHourBoundary(nowArg)
 	}
 	lower := strings.ToLower(detail)
 	if strings.Contains(lower, "week") || strings.Contains(lower, "per week") || strings.Contains(lower, "周") {

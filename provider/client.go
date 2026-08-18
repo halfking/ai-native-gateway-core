@@ -384,7 +384,7 @@ type Client struct {
 	// negative cache we only retry once a minute — the same window as the
 	// upstream call health-probe (bg/credential_recovery.go), which is
 	// granular enough that an operator-rotated secret is picked up promptly.
-	keyCacheNeg map[int]cacheEntry[string]
+	keyCacheNeg map[int]negativeCacheEntry
 
 	sf singleflight.Group
 }
@@ -1726,6 +1726,18 @@ func uniqueRawModels(values []string) []string {
 
 const maxRevealGenerationAttempts = 2
 
+// negativeCacheEntry carries enough information for the cached-error
+// metric path to attribute the failure to the original cause (e.g.
+// unknown_format) while still letting the cache-amplification series
+// count hits independently. msg is the original error string for log
+// fidelity; reason is the closed-vocabulary metric label computed at
+// write time so cached lookups do not need to re-classify.
+type negativeCacheEntry struct {
+	value   string
+	reason  string
+	expires time.Time
+}
+
 func (c *Client) RevealAPIKey(ctx context.Context, providerID, credentialID int) (string, error) {
 	for attempt := 0; attempt < maxRevealGenerationAttempts; attempt++ {
 		c.mu.RLock()
@@ -1747,14 +1759,20 @@ func (c *Client) RevealAPIKey(ctx context.Context, providerID, credentialID int)
 				"cached_err", neg.value,
 				"expires_in", time.Until(neg.expires).String(),
 			)
-			return "", fmt.Errorf("decrypt failure cached (credential_id=%d): %s", credentialID, neg.value)
+			// Two counter increments: cached (amplification visibility) and
+			// the original cause reason (root-cause frequency), both with
+			// the same provider_id. The reason was computed at cache
+			// write time so the error chain does not need to survive into
+			// the cached string form.
+			recordCredentialRevealCachedHit(providerID, neg.reason)
+			return "", fmt.Errorf("%w (credential_id=%d): %s", errRevealCached, credentialID, neg.value)
 		}
 		c.mu.RUnlock()
 
 		v, err, _ := c.sf.Do(fmt.Sprintf("key:%d:g%d", credentialID, generation), func() (any, error) {
 			key, fetchErr := c.fetchReveal(ctx, providerID, credentialID)
 			if fetchErr != nil {
-				c.cacheRevealFailureIfCurrent(credentialID, generation, fetchErr.Error())
+				c.cacheRevealFailureIfCurrent(credentialID, generation, fetchErr)
 				return "", fetchErr
 			}
 			c.cacheRevealedKeyIfCurrent(credentialID, generation, key)
@@ -1772,14 +1790,14 @@ func (c *Client) RevealAPIKey(ctx context.Context, providerID, credentialID int)
 		}
 		return v.(string), nil
 	}
-	return "", fmt.Errorf("credential key rotation invalidated reveal (credential_id=%d)", credentialID)
+	return "", fmt.Errorf("%w (credential_id=%d)", errRevealRotation, credentialID)
 }
 
-func (c *Client) cacheRevealFailureIfCurrent(credentialID int, generation uint64, errMsg string) {
+func (c *Client) cacheRevealFailureIfCurrent(credentialID int, generation uint64, fetchErr error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.keyGeneration[credentialID] == generation {
-		c.recordNegativeCacheLocked(credentialID, errMsg)
+		c.recordNegativeCacheLocked(credentialID, fetchErr.Error(), classifyRevealFailure(fetchErr))
 	}
 }
 
@@ -1800,10 +1818,12 @@ func (c *Client) cacheRevealedKeyIfCurrent(credentialID int, generation uint64, 
 
 // recordNegativeCacheLocked inserts a decrypt-failure entry into
 // keyCacheNeg, evicting the oldest entries if the cap is exceeded. Must be
-// called with c.mu held for writing.
-func (c *Client) recordNegativeCacheLocked(credentialID int, errMsg string) {
+// called with c.mu held for writing. reason is the closed-vocabulary
+// metric label for this failure; cached lookups will use it directly
+// instead of re-classifying the error string.
+func (c *Client) recordNegativeCacheLocked(credentialID int, errMsg, reason string) {
 	if c.keyCacheNeg == nil {
-		c.keyCacheNeg = make(map[int]cacheEntry[string])
+		c.keyCacheNeg = make(map[int]negativeCacheEntry)
 	}
 	if len(c.keyCacheNeg) >= decryptFailureCacheMax {
 		// Evict the entry with the earliest expiry; the map is small so a
@@ -1822,8 +1842,9 @@ func (c *Client) recordNegativeCacheLocked(credentialID int, errMsg string) {
 		}
 		delete(c.keyCacheNeg, oldestID)
 	}
-	c.keyCacheNeg[credentialID] = cacheEntry[string]{
+	c.keyCacheNeg[credentialID] = negativeCacheEntry{
 		value:   errMsg,
+		reason:  reason,
 		expires: time.Now().Add(decryptFailureCacheTTL),
 	}
 }
@@ -1832,7 +1853,7 @@ func (c *Client) fetchReveal(ctx context.Context, providerID, credentialID int) 
 	if c.dbPool != nil && (c.keyring != nil || len(c.fernetKey) == 32) {
 		return c.fetchRevealDB(ctx, providerID, credentialID)
 	}
-	return "", fmt.Errorf("credential reveal not configured (no DB, keyring, or fernet key)")
+	return "", fmt.Errorf("%w (no DB, keyring, or fernet key)", errRevealNotConfigured)
 }
 
 func (c *Client) fetchRevealDB(ctx context.Context, providerID, credentialID int) (string, error) {
@@ -1844,7 +1865,7 @@ func (c *Client) fetchRevealDB(ctx context.Context, providerID, credentialID int
 	`, credentialID, providerID).Scan(&ciphertext)
 	if err != nil {
 		if err == pgx.ErrNoRows {
-			return "", fmt.Errorf("credential %d not found", credentialID)
+			return "", fmt.Errorf("credential %d: %w", credentialID, errRevealNotFound)
 		}
 		return "", err
 	}
@@ -1853,7 +1874,13 @@ func (c *Client) fetchRevealDB(ctx context.Context, providerID, credentialID int
 	}
 	pt, _, err := secret.DecryptAny(string(ciphertext), c.keyring, c.fernetKey)
 	if err != nil {
-		return "", err
+		// Wrap the upstream error with a package-local sentinel so callers
+		// (metrics, tests) can classify via errors.Is. The original error
+		// remains reachable through Unwrap for log formatting.
+		if strings.Contains(err.Error(), "unknown format") {
+			return "", fmt.Errorf("%w: %v", errRevealUnknownFormat, err)
+		}
+		return "", fmt.Errorf("%w: %v", errRevealDecrypt, err)
 	}
 	return string(pt), nil
 }
@@ -1941,6 +1968,12 @@ func (c *Client) enrichWithAPIKeys(ctx context.Context, rr *resolveResponse) []C
 				"provider_id", cand.ProviderID,
 				"error", err,
 			)
+			// Cached failures are already counted by recordCredentialRevealCachedHit
+			// inside RevealAPIKey; counting them again here would over-report
+			// cache amplification. Only record fresh failures here.
+			if !errors.Is(err, errRevealCached) {
+				recordCredentialRevealFailure(cand.ProviderID, err)
+			}
 			skippedCount++
 			reason := fmt.Sprintf("key_decrypt_failed: %v (credential_id=%d, provider_id=%d)", err, cand.CredentialID, cand.ProviderID)
 			cand.Routable = false
