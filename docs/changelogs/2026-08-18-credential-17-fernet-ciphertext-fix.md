@@ -166,7 +166,7 @@ FROM credentials WHERE id = 17;
 | 1. 245 灰度扫描 | ✅ 完成 | 245 无 Go 工具链，改本地交叉编译 `check-credentials`（linux/amd64 静态）后 scp 执行。共享库（252 PG17，245/154 共用）**37 条 credential 全部 `v1-legacy-fernet`，0 解密失败**；id=17 (130dao) 确认 194 字节 envelope、`decrypt_ok=true` |
 | 2. VALIDATE CONSTRAINT | ✅ 完成 | **发现：约束此前从未应用到生产库**（migration 079 只进了仓库，`pg_constraint` 查无此约束）。本次在共享库应用 079（NOT VALID，`lock_timeout=10s`）后立即 VALIDATE，`convalidated=t`。245/154 共库，一处生效两边同时受 INSERT/UPDATE 防护 |
 | 3. EncryptFernet → AESGCM 迁移 | ⏳ 未动 | 长期项，见 §6 |
-| 4. 监控 counter | ✅ 代码完成，待部署 | `llmgw_credential_reveal_failure_total{provider_id,reason}`（详见 §8） |
+| 4. 监控 counter | ✅ 已部署并验证（245） | `llmgw_credential_reveal_failure_total{provider_id,reason}`（详见 §8；启动时含 `provider_id="0"` 的 7 个预热系列，真实阈值查询应过滤 `provider_id!="0"`） |
 
 附带修复与清理：
 
