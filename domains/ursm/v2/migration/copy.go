@@ -100,13 +100,18 @@ func (c *Copy) Copy(ctx context.Context) ([]CopyResult, error) {
 
 func (c *Copy) copyOne(ctx context.Context, it Item, now time.Time) CopyResult {
 	res := CopyResult{Item: it, Status: CopyStatusSkipped}
-	if it.Classification != ClassificationMigratable && it.Classification != ClassificationCanonicalPresent {
+	if it.Classification != ClassificationMigratable {
 		res.Reason = "not migratable"
 		return res
 	}
-	if it.CanonicalKey == "" {
+	if it.SourceKey == "" || it.CanonicalKey == "" {
 		res.Status = CopyStatusRefused
-		res.Reason = "missing canonical key"
+		res.Reason = "missing source or canonical key"
+		return res
+	}
+	if it.SourceKey == it.CanonicalKey {
+		res.Status = CopyStatusRefused
+		res.Reason = "source key equals canonical key"
 		return res
 	}
 	// PTTL probe (doc 14 §6.1). The go-redis client maps -1/-2 to
@@ -191,7 +196,7 @@ func (c *Copy) copyOne(ctx context.Context, it Item, now time.Time) CopyResult {
 		pipe.HSet(ctx, it.CanonicalKey, anyMap)
 	}
 	switch {
-	case pttl == -1 * time.Millisecond:
+	case pttl == -1*time.Millisecond:
 		// no TTL: do not call PEXPIRE
 	case pttl > 0:
 		// doc 14 §6.1: the target PEXPIRE equals the scan-time PTTL
@@ -288,8 +293,9 @@ func (c *EntryCopier) CopyHash(ctx context.Context, entry EntryRecord) (EntryCop
 	if c == nil || c.rdb == nil {
 		return EntryCopyResult{}, fmt.Errorf("ursm.v2: copy requires redis")
 	}
-	if entry.Class != ClassificationMigratable || entry.TargetKey == "" {
-		return EntryCopyResult{}, fmt.Errorf("ursm.v2: copy entry is not migratable")
+	if entry.Class != ClassificationMigratable || entry.SourceKey == "" || entry.TargetKey == "" ||
+		entry.SourceKey == entry.TargetKey {
+		return EntryCopyResult{}, fmt.Errorf("ursm.v2: copy entry is not a distinct migratable source")
 	}
 	started := time.Now()
 	pttl, err := c.rdb.PTTL(ctx, entry.SourceKey).Result()

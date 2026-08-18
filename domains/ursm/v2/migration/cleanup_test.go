@@ -174,3 +174,100 @@ func TestCleanupChecksumMismatchRefuses(t *testing.T) {
 		t.Fatal("refused cleanup must not delete the source")
 	}
 }
+
+// TestCleanupPreservesCanonicalPresentAfterHistoricalStatusPollution ensures
+// a canonical key is safe even if an earlier copy pass wrote StatusCopied.
+func TestCleanupPreservesCanonicalPresentAfterHistoricalStatusPollution(t *testing.T) {
+	_, rdb := newFixtureRedis(t)
+	ledger := NewLedger(t.TempDir() + "/ledger.ndjson")
+	fields := legacyHashFieldsAsStrings()
+	item := Item{
+		SourceKey:      canonicalA,
+		KeyType:        "hash",
+		CanonicalKey:   canonicalA,
+		SchemaSource:   "k2",
+		Classification: ClassificationCanonicalPresent,
+		Status:         StatusCopied,
+		FieldChecksum:  fieldChecksum(fields),
+		Generation:     1,
+		ScanRunID:      "historical",
+	}
+	if err := ledger.Append(item); err != nil {
+		t.Fatalf("seed ledger: %v", err)
+	}
+	if err := rdb.HSet(context.Background(), canonicalA, fields).Err(); err != nil {
+		t.Fatalf("seed canonical: %v", err)
+	}
+
+	results, err := (&Cleanup{
+		Prefix: migPrefix,
+		Ledger: ledger,
+		RDB:    rdb,
+		Opts:   CleanupOptions{Mode: ModeDual},
+	}).Cleanup(context.Background())
+	if err != nil {
+		t.Fatalf("cleanup: %v", err)
+	}
+	if len(results) != 1 || results[0].Status != CleanupStatusPreserved {
+		t.Fatalf("cleanup results = %+v, want one preserved canonical result", results)
+	}
+	if results[0].Item.Status != StatusCopied {
+		t.Fatalf("canonical ledger status = %q, want copied retained for audit", results[0].Item.Status)
+	}
+	exists, err := rdb.Exists(context.Background(), canonicalA).Result()
+	if err != nil {
+		t.Fatalf("check canonical: %v", err)
+	}
+	if exists != 1 {
+		t.Fatal("cleanup deleted canonical key")
+	}
+}
+
+func TestEntryCleanerPreservesMigratableSelfTarget(t *testing.T) {
+	_, rdb := newFixtureRedis(t)
+	fields := legacyHashFieldsAsStrings()
+	if err := rdb.HSet(context.Background(), canonicalA, fields).Err(); err != nil {
+		t.Fatalf("seed canonical: %v", err)
+	}
+
+	result, err := NewEntryCleaner(rdb).DeleteExact(context.Background(), EntryRecord{
+		SourceKey:     canonicalA,
+		TargetKey:     canonicalA,
+		Class:         ClassificationMigratable,
+		FieldChecksum: checksumFields(fields),
+	})
+	if err != nil {
+		t.Fatalf("delete exact: %v", err)
+	}
+	if result.Status != CleanerSkippedIneligible {
+		t.Fatalf("status = %q, want skipped ineligible", result.Status)
+	}
+	exists, _ := rdb.Exists(context.Background(), canonicalA).Result()
+	if exists != 1 {
+		t.Fatal("entry cleaner deleted canonical key")
+	}
+}
+
+func TestEntryCleanerRejectsMigratableEmptyTarget(t *testing.T) {
+	_, rdb := newFixtureRedis(t)
+	fields := legacyHashFieldsAsStrings()
+	if err := rdb.HSet(context.Background(), legacyNodeA, fields).Err(); err != nil {
+		t.Fatalf("seed legacy: %v", err)
+	}
+
+	result, err := NewEntryCleaner(rdb).DeleteExact(context.Background(), EntryRecord{
+		SourceKey:     legacyNodeA,
+		Class:         ClassificationMigratable,
+		FieldChecksum: checksumFields(fields),
+	})
+	if err != nil {
+		t.Fatalf("delete exact: %v", err)
+	}
+	if result.Status != CleanerSkippedIneligible {
+		t.Fatalf("status = %q, want skipped ineligible", result.Status)
+	}
+	exists, _ := rdb.Exists(context.Background(), legacyNodeA).Result()
+	if exists != 1 {
+		t.Fatal("entry cleaner deleted source with empty target")
+	}
+}

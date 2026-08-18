@@ -103,3 +103,4 @@ CLI（`cmd/k2-migrate-ursm/main.go`）未 import 任何 URSM 包，仅 import `m
 ## 11 变更记录
 
 - 2026-08-18：L3 slice 11-13 落地（`domains/ursm/v2/migration/` + `cmd/k2-migrate-ursm/main.go`），17 个测试函数全部 PASS，CLI 默认 dry-run。
+- 2026-08-18：F-1/F-2 指定复现已修复：copy/cleanup 及 parallel entry API 对 canonical/self-target 和不完整条目 fail-closed，CLI 显式统计 `preserved`；新增 081 forward migration 与 runtime ensure 补齐 `rollback_deadline TIMESTAMPTZ`。隔离 Redis 7 实验 C、PostgreSQL 16 的 080→081/`PGStore`/runtime ensure 回归、全仓测试、race、vet 与 build 均通过。审计仍保留 rollback deadline cleanup gate、checksum/DEL 原子化、标准 migration runner 接入及其他 doc 14 exit criteria 为后续门禁；M5-0/T0 继续 BLOCKED / NO-GO。

@@ -2,7 +2,7 @@
 
 - **Finding**：F-1
 - **优先级**：P1（M5-0/T0 解封前置；数据安全）
-- **状态**：OPEN — 仅供 owner 提交修复
+- **状态**：RESOLVED — owner 修复 + 隔离 Redis 回归已完成（2026-08-18）
 - **Owner**：k2 migration owner（按 14 §0；当前具名 migration owner：`halfking`）
 - **发现基线**：`main` @ `ccf3929b9`（G4 真实 Redis/PG 证据已合并）
 - **证据**：`docs/handoff/2026-08-18-g4-real-redis-pg-evidence.md` §2、§6
@@ -68,7 +68,13 @@ go test ./domains/ursm/v2/migration -run 'Test(Copy|Cleanup)' -count=1 -v
 # 再按 docs/handoff/2026-08-18-g4-real-redis-pg-evidence.md §6 启动隔离 Redis，执行实验 B/C
 ```
 
-## 完成定义 / 解封门槛
+## 修复与复验（2026-08-18）
+
+- 修复将 ledger-driven `Copy` 收紧为只处理 `ClassificationMigratable`，且在所有 Redis 读写前拒绝空 source/canonical key 与 `SourceKey == CanonicalKey`。因此 canonical-present 自目标既不会被 Resume guard 提升为 `copied`，也不会落入 `DEL/HSET` pipeline。
+- `Cleanup.cleanupOne` 对 `canonical_present` 与 self-target 条目返回可审计的 `preserved`，保留历史 ledger 中已污染的 `StatusCopied` 行而不删除其 canonical key；`EntryCleaner.DeleteExact` 同样拒绝 self-target。
+- 隔离 `redis:7-alpine` 的完整实验 C 已复验：`preflight → copy → copy → rescan preflight → copy → cleanup` 产生 `copy skipped=1` 和 `cleanup deleted=1 preserved=2`；legacy source 被删除，canonical key 存活，canonical ledger 行保持 `classified`。该实验未接触生产或共享 Redis。
+- 自动回归：miniredis 覆盖 canonical self-target copy、历史 `StatusCopied` cleanup、parallel cleaner self-target 与完整 rescan 序列；`go test -count=1 ./...` 通过。
+
 
 - owner 提交代码、测试和变更说明；不得由本 ticket 执行生产修复。
 - fix-review 对 owner commit 做差分审查，确认 copy 与 cleanup 两条删除路径均有 canonical 拒绝保护，且无既有栅栏回退。

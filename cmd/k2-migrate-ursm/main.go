@@ -128,14 +128,14 @@ func handlePreflight(ctx context.Context, ledger *migration.Ledger, rdb *redis.C
 		log.Fatalf("preflight: %v", err)
 	}
 	md := migration.Metadata{
-		Owner:            owner,
-		LedgerID:         ledgerID,
-		Mode:             mode,
-		CutoverEpoch:     0,
-		StartedAt:        time.Now().UTC(),
-		UpdatedAt:        time.Now().UTC(),
+		Owner:             owner,
+		LedgerID:          ledgerID,
+		Mode:              mode,
+		CutoverEpoch:      0,
+		StartedAt:         time.Now().UTC(),
+		UpdatedAt:         time.Now().UTC(),
 		PreflightChecksum: summary.Checksum,
-		Checkpoint:       migration.CheckpointPreflight,
+		Checkpoint:        migration.CheckpointPreflight,
 	}
 	if err := (&migration.MetadataHash{Prefix: prefix, RDB: rdb}).Write(ctx, md); err != nil {
 		log.Fatalf("metadata write: %v", err)
@@ -184,9 +184,9 @@ func handleCleanup(ctx context.Context, ledger *migration.Ledger, rdb *redis.Cli
 	for _, r := range results {
 		counts[r.Status]++
 	}
-	fmt.Printf("cleanup done: deleted=%d skipped=%d refused=%d total=%d\n",
-		counts[migration.CleanupStatusDeleted], counts[migration.CleanupStatusSkipped],
-		counts[migration.CleanupStatusRefused], len(results))
+	fmt.Printf("cleanup done: deleted=%d preserved=%d skipped=%d refused=%d total=%d\n",
+		counts[migration.CleanupStatusDeleted], counts[migration.CleanupStatusPreserved],
+		counts[migration.CleanupStatusSkipped], counts[migration.CleanupStatusRefused], len(results))
 }
 
 func envOr(key, def string) string {

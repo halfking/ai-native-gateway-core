@@ -108,3 +108,10 @@ docker run -d --name k2-g4-pg -e POSTGRES_PASSWORD=g4 -e POSTGRES_DB=k2g4 -p 127
 # F-1 复现（§2 序列）+ F-2 复现（§3，--pg postgres://postgres:g4@127.0.0.1:5433/k2g4?sslmode=disable）
 # 期望：修复后 §2 序列 cleanup 仅删 legacy 键；§3 无 42703
 ```
+
+## 7. F-1/F-2 owner 修复后复验（2026-08-18）
+
+- **F-1**：`Copy` 现只处理 `migratable` 且 source/target 不同的条目；canonical-present/self-target 在 copy 前跳过，cleanup 对 canonical/self-target 返回 `preserved`。隔离 Redis 7 按 §2 实验 C 重跑：copy `skipped=1`，cleanup `deleted=1 preserved=2`；legacy 删除，canonical 仍存在，canonical ledger 状态保持 `classified`。miniredis 回归同时覆盖历史污染 `StatusCopied` 及 parallel `EntryCleaner` self-target。
+- **F-2**：新增 081 forward migration 以 nullable `rollback_deadline TIMESTAMPTZ` 修复已部署 080 schema，runtime ensure 也执行幂等补列。隔离 PostgreSQL 16 Testcontainers 真实执行 080 → 081 → 081，`OpenRun` deadline 写入/读回和 3 条 entries upsert 均成功；另从 080-only schema 连续调用 runtime ensure 两次均成功，未再出现 `42703`。
+- 差分审计确认 F-1 的 ledger-driven copy、ledger cleanup、parallel entry copy/cleanup 四条路径均 fail-closed 地拒绝 canonical/self-target 或不完整条目，且 TTL、generation、checksum、exact-key、mode、dry-run、rate-limit 与 rollback guard 未被放宽。F-2 的 PGStore INSERT 契约保持不变，080 历史 DDL 未修改，081、runtime ensure 与真实 schema 测试一致。
+- **门禁结论**：F-1/F-2 的指定复现已修复，但本证据不覆盖 rollback deadline 作为 cleanup 授权 gate、checksum 校验与 `DEL` 的原子化、081 的标准部署 runner 接入、§3 Lua 双写 atomic、双 CLI window 分类差异、`tuple_tenant` 空值、owner/ledger identity enforcement 或生产 cutover。因此 M5-0/T0 继续 BLOCKED / NO-GO，须按 doc 14 的全部 exit criteria 由 owner 评审。

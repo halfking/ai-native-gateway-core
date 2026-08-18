@@ -183,6 +183,73 @@ func TestCopyIdempotentResume(t *testing.T) {
 	}
 }
 
+// TestCopySkipsCanonicalPresentSelfTarget prevents a rescan of an existing
+// canonical key from promoting its ledger row to copied through a self-check.
+func TestCopySkipsCanonicalPresentSelfTarget(t *testing.T) {
+	_, rdb := newFixtureRedis(t)
+	ledger := NewLedger(t.TempDir() + "/ledger.ndjson")
+	fields := legacyHashFieldsAsStrings()
+	if err := rdb.HSet(context.Background(), canonicalA, fields).Err(); err != nil {
+		t.Fatalf("seed canonical: %v", err)
+	}
+	item := Item{
+		SourceKey:      canonicalA,
+		KeyType:        "hash",
+		CanonicalKey:   canonicalA,
+		SchemaSource:   "k2",
+		Classification: ClassificationCanonicalPresent,
+		Status:         StatusClassified,
+		PTTLMs:         -1,
+		Generation:     1,
+		FieldChecksum:  fieldChecksum(fields),
+		ScanRunID:      "rescan",
+	}
+	if err := ledger.Append(item); err != nil {
+		t.Fatalf("seed ledger: %v", err)
+	}
+
+	results, err := (&Copy{Prefix: migPrefix, Ledger: ledger, RDB: rdb}).Copy(context.Background())
+	if err != nil {
+		t.Fatalf("copy: %v", err)
+	}
+	if len(results) != 1 || results[0].Status != CopyStatusSkipped {
+		t.Fatalf("copy results = %+v, want one skipped canonical result", results)
+	}
+	if results[0].Item.Status != StatusClassified {
+		t.Fatalf("canonical status = %q, want classified", results[0].Item.Status)
+	}
+	got, err := rdb.HGetAll(context.Background(), canonicalA).Result()
+	if err != nil {
+		t.Fatalf("read canonical: %v", err)
+	}
+	if fieldChecksum(got) != fieldChecksum(fields) {
+		t.Fatal("copy changed the canonical hash")
+	}
+}
+
+func TestEntryCopierRejectsMigratableSelfTarget(t *testing.T) {
+	_, rdb := newFixtureRedis(t)
+	fields := legacyHashFieldsAsStrings()
+	if err := rdb.HSet(context.Background(), canonicalA, fields).Err(); err != nil {
+		t.Fatalf("seed canonical: %v", err)
+	}
+
+	_, err := NewEntryCopier(rdb, migPrefix).CopyHash(context.Background(), EntryRecord{
+		SourceKey:     canonicalA,
+		TargetKey:     canonicalA,
+		Class:         ClassificationMigratable,
+		Generation:    1,
+		FieldChecksum: checksumFields(fields),
+	})
+	if err == nil {
+		t.Fatal("entry copier accepted a self-target")
+	}
+	exists, _ := rdb.Exists(context.Background(), canonicalA).Result()
+	if exists != 1 {
+		t.Fatal("entry copier changed canonical key")
+	}
+}
+
 // legacyHashFieldsAsStrings returns the same shape as legacyHashFields() but
 // with all values coerced to strings (the form HGetAll returns).
 func legacyHashFieldsAsStrings() map[string]string {

@@ -2,7 +2,7 @@
 
 - **Finding**：F-2
 - **优先级**：P1（M5-0/T0 解封前置；ledger 不可用）
-- **状态**：OPEN — 仅供 owner 提交修复
+- **状态**：RESOLVED — forward migration、runtime ensure 与隔离 PostgreSQL 回归已完成（2026-08-18）
 - **Owner**：k2 migration owner（按 14 §0；当前具名 migration owner：`halfking`）
 - **发现基线**：`main` @ `ccf3929b9`（G4 真实 Redis/PG 证据已合并）
 - **证据**：`docs/handoff/2026-08-18-g4-real-redis-pg-evidence.md` §3、§6
@@ -67,7 +67,13 @@ go test ./domains/ursm/v2/migration -run 'TestPGStore|Test.*Migration.*Ledger' -
 # 再按 docs/handoff/2026-08-18-g4-real-redis-pg-evidence.md §6 启动隔离 PostgreSQL，执行 §3 apply/回归
 ```
 
-## 完成定义 / 解封门槛
+## 修复与复验（2026-08-18）
+
+- 新增 forward-only root migration `081-ursm-key-migration-ledger-add-rollback-deadline.sql`，以幂等的 nullable `TIMESTAMPTZ` 补列；历史 080 未被重写。081 down 明确为非破坏性，保留 rollback-gate 审计时间戳。
+- `ensureUrsmKeyMigrationLedgerSchema` 的 fresh schema 已包含该列，并在 `CREATE TABLE IF NOT EXISTS` 后无条件执行 `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`，覆盖既有 080 表。
+- 隔离 `postgres:16-alpine` Testcontainers 回归真实执行 080 → 081 → 081，验证列在 080 后缺失、081 后为 nullable `timestamp with time zone`、`PGStore.OpenRun` 写入/读回 deadline、`UpsertEntries` 成功写入 3 条 entries；未出现 SQLSTATE 42703。
+- 独立 runtime ensure 回归从 080-only schema 调用 ensure 两次，确认升级和重跑均成功。`go test -count=1 ./...` 通过。
+
 
 - owner 提交 081 migration、runtime ensure、真实 PG 集成测试和回滚说明；不得由本 ticket 执行生产 schema 变更。
 - fix-review 对 owner commit 做差分审查，确认正式 migration、runtime ensure、代码 query 与测试 schema 四者一致，并检查 down/既有库升级风险。
