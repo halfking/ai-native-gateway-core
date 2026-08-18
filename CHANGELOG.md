@@ -16,6 +16,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   加载失败静默隐藏（非致命）。配合既有供应商级统计块形成双层视图。
 - `docs/changelogs/2026-08-18-quality-provider-stats-model-filter.md`：本轮 6 段式变更记录。
 
+### Fixed (Database)
+- `sql/migrations/startup/044_health_source_probe_now.sql` + `.down.sql`：
+  `chk_credentials_health_source` 约束新增 `'probe_now'` 白名单值，修复 `bg/credential_probe_v2.go`
+  fast path 写 `health_source='probe_now'` 时触发 `SQLSTATE 23514` 导致 credential（如 22/25）
+  卡在 `auth_failed`/`unreachable` 不可恢复的回归。已同步应用到本地 docker (`llm-gateway-pg`)
+  与 252 podman (`pg-252-pg17`)，并更新 `repository_schema_migrations` ledger
+  (sha256=2770fb06...3dcbb2)。详见 `docs/session-logs/2026/08/2026-08-18-plan-c-follo-up-cleanup.md`。
+
 ## [Unreleased] - 2026-08-17 (Dashboard Request Detail 5s Timeout)
 
 ### 📦 Archived
