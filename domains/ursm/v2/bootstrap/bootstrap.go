@@ -24,6 +24,10 @@ type Options struct {
 	CoolSeconds    int
 	ForceOverwrite bool
 	Now            func() time.Time
+	// SchemaMode selects the bootstrap write target (doc 14 §5): legacy
+	// writes the frozen legacy bytes, dual writes both grammars, canonical
+	// writes canonical only. Zero value legacy keeps historical behavior.
+	SchemaMode store.KeySchemaMode
 }
 
 type Result struct {
@@ -78,8 +82,23 @@ func Apply(ctx context.Context, opts Options) (Result, error) {
 	}
 
 	nodes := make([]mappedNode, 0, len(rows))
+	coverage := make([]string, 0, len(rows))
 	for _, row := range rows {
-		nodes = append(nodes, mapRow(row, opts.KeyPrefix, opts.CoolSeconds, opts.Now()))
+		mapped, err := mapRowNodes(row, opts.KeyPrefix, opts.CoolSeconds, opts.Now(), opts.SchemaMode)
+		if err != nil {
+			return Result{}, err
+		}
+		nodes = append(nodes, mapped...)
+		// The coverage manifest carries the authoritative grammar's key:
+		// canonical in dual/canonical modes, legacy bytes otherwise
+		// (doc 14 §5.3).
+		coverageKey := mapped[0].Key
+		if opts.SchemaMode != store.KeySchemaModeLegacy {
+			if k2, k2err := store.K2NodeKeyForTenant(opts.KeyPrefix, row.TenantID, int(row.CredentialID), row.RawModel); k2err == nil {
+				coverageKey = k2
+			}
+		}
+		coverage = append(coverage, coverageKey)
 	}
 
 	toWrite, skipped, err := selectWrites(ctx, opts.Redis, nodes, opts.ForceOverwrite)
@@ -101,10 +120,6 @@ func Apply(ctx context.Context, opts Options) (Result, error) {
 		}
 	}
 
-	coverage := make([]string, 0, len(nodes))
-	for _, node := range nodes {
-		coverage = append(coverage, node.Key)
-	}
 	coverageKey := store.CoverageKey(opts.KeyPrefix)
 	if opts.TenantID != "" {
 		coverageKey += ":tenant:" + opts.TenantID
@@ -149,6 +164,38 @@ func readProbeRows(ctx context.Context, pool *pgxpool.Pool, tenantID string) ([]
 }
 
 func mapRow(row probeRow, prefix string, coolSeconds int, now time.Time) mappedNode {
+	return mappedNode{
+		Key:    store.NodeKeyForTenant(prefix, row.TenantID, int(row.CredentialID), row.RawModel),
+		Fields: rowFields(row, coolSeconds, now),
+	}
+}
+
+// mapRowNodes builds the node writes for one probe row under the schema
+// mode: legacy emits the frozen legacy key, dual emits the legacy and the
+// canonical node, canonical emits the canonical node only and refuses a
+// tuple the canonical grammar cannot represent (empty tenant, doc 14 §2).
+func mapRowNodes(row probeRow, prefix string, coolSeconds int, now time.Time, mode store.KeySchemaMode) ([]mappedNode, error) {
+	fields := rowFields(row, coolSeconds, now)
+	legacyKey := store.NodeKeyForTenant(prefix, row.TenantID, int(row.CredentialID), row.RawModel)
+	switch mode {
+	case store.KeySchemaModeCanonical:
+		k2Key, err := store.K2NodeKeyForTenant(prefix, row.TenantID, int(row.CredentialID), row.RawModel)
+		if err != nil {
+			return nil, fmt.Errorf("canonical bootstrap cannot map credential %d: %w", row.CredentialID, err)
+		}
+		return []mappedNode{{Key: k2Key, Fields: fields}}, nil
+	case store.KeySchemaModeDual:
+		if k2Key, err := store.K2NodeKeyForTenant(prefix, row.TenantID, int(row.CredentialID), row.RawModel); err == nil {
+			return []mappedNode{{Key: legacyKey, Fields: fields}, {Key: k2Key, Fields: fields}}, nil
+		}
+		// Empty tenant stays on legacy bytes only.
+		return []mappedNode{{Key: legacyKey, Fields: fields}}, nil
+	default:
+		return []mappedNode{{Key: legacyKey, Fields: fields}}, nil
+	}
+}
+
+func rowFields(row probeRow, coolSeconds int, now time.Time) map[string]string {
 	fields := map[string]string{
 		"generation":      "1",
 		"source_priority": "10",
@@ -163,20 +210,19 @@ func mapRow(row probeRow, prefix string, coolSeconds int, now time.Time) mappedN
 	if row.LastErrCode.Valid && row.LastErrCode.String != "" {
 		fields["last_err"] = row.LastErrCode.String
 	}
-	key := store.NodeKeyForTenant(prefix, row.TenantID, int(row.CredentialID), row.RawModel)
 	if row.Paused {
 		fields["available"] = "0"
 		fields["disabled"] = "1"
 		fields["manual_hold"] = "1"
 		fields["manual_hold_reason"] = "migrated_from_legacy_paused"
-		return mappedNode{Key: key, Fields: fields}
+		return fields
 	}
 	if row.ConsecutiveFailures >= failStreakLimit {
 		fields["available"] = "0"
 		fields["disabled"] = "1"
 		fields["cool_until_ms"] = strconv.FormatInt(now.Add(time.Duration(coolSeconds)*time.Second).UnixMilli(), 10)
 		fields["cool_reason"] = "migrated_from_legacy_fail_streak"
-		return mappedNode{Key: key, Fields: fields}
+		return fields
 	}
 	fields["available"] = "1"
 	fields["disabled"] = "0"
@@ -184,7 +230,7 @@ func mapRow(row probeRow, prefix string, coolSeconds int, now time.Time) mappedN
 		fields["last_ok_ms"] = strconv.FormatInt(row.LastAttemptAt.Time.UnixMilli(), 10)
 	}
 	fields["updated_at_ms"] = strconv.FormatInt(now.UnixMilli(), 10)
-	return mappedNode{Key: key, Fields: fields}
+	return fields
 }
 
 func selectWrites(ctx context.Context, rdb *redis.Client, nodes []mappedNode, force bool) ([]mappedNode, int, error) {

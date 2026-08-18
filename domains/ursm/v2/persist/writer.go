@@ -25,8 +25,13 @@ func New(rdb *redis.Client, prefix string, db *pgxpool.Pool) *Writer {
 }
 
 type Row struct {
-	SnapshotTS     time.Time
-	RecoveryEpoch  int64
+	SnapshotTS    time.Time
+	RecoveryEpoch int64
+	// Schema records which key grammar the row was collected from
+	// (store.KeySchemaLegacy / store.KeySchemaK2). When one logical tuple
+	// exists in both grammars the canonical row replaces its legacy twin,
+	// so a snapshot never double-counts a node (doc 14 §2).
+	Schema         store.KeySchema
 	ProviderID     int
 	CredentialID   int
 	RawModel       string
@@ -75,10 +80,13 @@ func (w *Writer) Collect(ctx context.Context) ([]Row, error) {
 	for iter.Next(ctx) {
 		k := iter.Val()
 
-		// 4. Decode the tenant-aware Redis key without losing colons in raw model.
-		parsed, ok := store.ParseNodeKey(w.prefix, k)
+		// 4. Decode the node key under either grammar. A key neither
+		// grammar can decode is ambiguous: it is excluded from the
+		// snapshot and left to the migration preflight's NO-GO
+		// classification — never guessed into a tuple (doc 14 §4).
+		parsed, ok := store.ParseNodeKeyAny(w.prefix, k)
 		if !ok {
-			slog.Warn("ursm.v2: persist skipped invalid node key", "key", k)
+			slog.Warn("ursm.v2: persist excluded ambiguous node key", "key", k)
 			continue
 		}
 
@@ -100,6 +108,7 @@ func (w *Writer) Collect(ctx context.Context) ([]Row, error) {
 		row := Row{
 			SnapshotTS:     snapshotTS,
 			RecoveryEpoch:  recoveryEpoch,
+			Schema:         parsed.Schema,
 			CredentialID:   parsed.CredentialID,
 			RawModel:       parsed.RawModel,
 			ProviderID:     atoi(hash["provider_id"]),
@@ -146,6 +155,29 @@ func (w *Writer) Collect(ctx context.Context) ([]Row, error) {
 	if err := iter.Err(); err != nil {
 		return nil, fmt.Errorf("redis scan failed: %w", err)
 	}
+
+	// During dual mode one logical tuple exists in both grammars; the
+	// canonical row is authoritative and replaces its legacy twin so a
+	// snapshot never double-counts a node (doc 14 §5.2.1).
+	type tupleKey struct {
+		tenant string
+		cid    int
+		raw    string
+	}
+	idxByTuple := make(map[tupleKey]int, len(out))
+	uniq := make([]Row, 0, len(out))
+	for _, r := range out {
+		key := tupleKey{r.TenantID, r.CredentialID, r.RawModel}
+		if idx, seen := idxByTuple[key]; seen {
+			if r.Schema == store.KeySchemaK2 {
+				uniq[idx] = r
+			}
+			continue
+		}
+		idxByTuple[key] = len(uniq)
+		uniq = append(uniq, r)
+	}
+	out = uniq
 
 	// 7. 诊断日志：帮助定位为何没有数据
 	if len(out) == 0 {
