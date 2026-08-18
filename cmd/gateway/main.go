@@ -691,6 +691,20 @@ func main() {
 		slog.Error("ursm.v2: invalid startup configuration", "error", err)
 		return
 	}
+	if ursmV2Cfg.StrictCanary {
+		if redisClientForCache == nil {
+			slog.Error("ursm.v2: strict canary requires reachable isolated Redis")
+			return
+		}
+		if dbConn == nil || !dbConn.Enabled() {
+			slog.Error("ursm.v2: strict canary requires reachable isolated PostgreSQL")
+			return
+		}
+		if envBoolOff("LLM_GATEWAY_PROBE_QUEUE_ENABLED") || !useNewProbeMode() {
+			slog.Error("ursm.v2: strict canary requires durable probe queue and LLM_GATEWAY_USE_NEW_PROBE_MODE=true")
+			return
+		}
+	}
 	if ursmV2Cfg.Mode == ursmv2api.ModeAuthoritative {
 		if redisClientForCache == nil {
 			slog.Error("ursm.v2: authoritative mode requires reachable Redis")
@@ -3134,6 +3148,9 @@ func main() {
 			} else {
 				queueExecutor = bg.NewActiveProbeExecutor(dbConn.Pool(), keyring, fernetKey, epTimeoutMs)
 				probeQueue = bg.NewProbeQueue(dbConn.Pool())
+				if ursmV2Mgr != nil && ursmV2Mgr.StrictCanary() {
+					probeQueue.SetScope(ursmV2Mgr)
+				}
 				if probeStreamHub != nil {
 					probeQueue.SetProbeSink(probeStreamHub)
 					// OBS-BE5 (2026-08-15): enriched transitions (origin +
@@ -3143,13 +3160,14 @@ func main() {
 					probeQueue.SetProbeTaskDetailSink(probeStreamHub)
 				}
 				probeQueueWorker = bg.NewProbeQueueWorker(bg.ProbeQueueWorkerConfig{
-					Queue:        probeQueue,
-					Executor:     queueExecutor,
-					Emitter:      newProbeEmitter(),
-					ResultSink:   bg.NewPostgresIntegrityProbeResultSink(dbConn.Pool()),
-					BatchSize:    epWorkers,
-					Workers:      epWorkers,
-						Lease:        bg.ProbeQueueLeaseDefault,
+					Queue:      probeQueue,
+					Executor:   queueExecutor,
+					Scope:      ursmV2Mgr,
+					Emitter:    newProbeEmitter(),
+					ResultSink: bg.NewPostgresIntegrityProbeResultSink(dbConn.Pool()),
+					BatchSize:  epWorkers,
+					Workers:    epWorkers,
+					Lease:      bg.ProbeQueueLeaseDefault,
 
 					PollInterval: 250 * time.Millisecond,
 				})
@@ -3206,17 +3224,21 @@ func main() {
 			if shouldStartNewProbeWorkers(selfCheckAPIKey) {
 				// A. credential_selfcheck — 24h/cred daily check
 				// (uses the same system api key as the legacy worker).
-				credentialSelfcheckWorker = bg.NewCredentialSelfcheckWorker(dbConn.Pool(), selfCheckAPIKey, "")
-				if probeStreamHub != nil {
-					credentialSelfcheckWorker.SetProbeSink(probeStreamHub)
+				if !ursmV2Cfg.StrictCanary {
+					credentialSelfcheckWorker = bg.NewCredentialSelfcheckWorker(dbConn.Pool(), selfCheckAPIKey, "")
+					if probeStreamHub != nil {
+						credentialSelfcheckWorker.SetProbeSink(probeStreamHub)
+					}
+					credentialSelfcheckWorker.Start(context.Background())
+					slog.Info("CHECKPOINT: credential_selfcheck_worker started")
+				} else {
+					slog.Info("credential_selfcheck_worker skipped in strict canary mode")
 				}
-				credentialSelfcheckWorker.Start(context.Background())
-				slog.Info("CHECKPOINT: credential_selfcheck_worker started")
 
 				// B. node_probe — error-triggered 5s/30s/60s/5m/1h/2h/24h
 				// backoff, direct + gateway two rounds.
 				nodeProbeWorker = bg.NewNodeProbeWorker(dbConn.Pool(), fernetKey, keyring, selfCheckAPIKey, "", upClient.Proxy().ProxyFunc())
-				if ursmV2Mgr != nil && ursmV2Mgr.Mode() == ursmv2api.ModeAuthoritative {
+				if ursmV2Mgr != nil && (ursmV2Mgr.Mode() == ursmv2api.ModeAuthoritative || ursmV2Mgr.StrictCanary()) {
 					nodeProbeWorker.SetNodeStateSink(ursmV2ProbeSink{manager: ursmV2Mgr})
 				}
 				nodeProbeWorker.SetStateObserver(stateManager)
@@ -3267,6 +3289,9 @@ func main() {
 					}
 					probeService := bg.NewProbeService(nodeProbeWorker, queueExecutor)
 					probeService.SetProbeQueue(probeQueue)
+					if ursmV2Mgr != nil && ursmV2Mgr.StrictCanary() {
+						probeService.SetScope(ursmV2Mgr)
+					}
 					probeQueueWorker.SetProbeService(probeService)
 					nodeProbeWorker.SetProbeQueue(probeQueue)
 					slog.Info("unified probe service wired",

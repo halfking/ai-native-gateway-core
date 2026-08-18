@@ -2,9 +2,9 @@
 
 ## 状态与安全门禁
 
-本文只记录隔离要求和验证顺序，**不是可直接执行的部署脚本**。当前代码尚未实现 `LLM_GATEWAY_CANARY_*` 的进程内 fail-closed 范围强制；在该能力完成并通过独立测试前，不得启动 `BG_MODE=full` canary，不得复制生产环境文件，不得连接共享生产 PostgreSQL/Redis，也不得执行任何手工 INSERT、DELETE 或 `FLUSHDB`。
+本文只记录隔离要求和验证顺序，**不是可直接执行的部署脚本**。严格范围强制由 `URSM_V2_STRICT_CANARY=true` 提供：启动必须同时配置 canary tenant、credential ID、raw model 白名单和非默认 Redis key prefix；queue 入队、claim 后执行、URSM probe/request 写入和 routing 都按同一三元组 fail-closed。严格模式还要求 durable queue 与新 probe mode，并禁用全局 `CredentialSelfcheckWorker` 扫描。
 
-任何后续执行必须由 ops 单独审批，并使用短期凭据、专用主机/容器、专用 Redis DB 或实例，以及经过代码强制限制的 canary tenant、credential 和模型白名单。文档中不保存连接串、密码、token 或真实主机操作命令。
+在通过独立测试且 ops 单独审批前，不得在 245 启动 canary，不得复制生产环境文件，不得连接共享生产 PostgreSQL/Redis，也不得执行任何手工 INSERT、DELETE 或 `FLUSHDB`。
 
 ## 目标链路
 

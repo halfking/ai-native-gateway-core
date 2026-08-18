@@ -60,6 +60,7 @@ type Manager struct {
 	store    *store.Store
 	recovery *recovery.Manager
 	rollout  *rollout.Controller
+	scope    Scope
 	fp       resource.FP
 	conc     resource.Concurrency
 	rpm      resource.RPM
@@ -130,6 +131,7 @@ func New(d Dependencies) *Manager {
 		cfg:      cfg,
 		store:    store.New(d.Redis),
 		recovery: recovery.New(d.Redis, cfg.RedisKeyPrefix),
+		scope:    newScope(cfg.StrictCanary, cfg.CanaryTenants, cfg.CanaryCredentials, cfg.CanaryModels),
 		rollout: rollout.New(rollout.Config{
 			Mode:              cfg.Mode,
 			CanaryPercent:     cfg.CanaryPercent,
@@ -165,6 +167,17 @@ func (m *Manager) Mode() api.RolloutMode {
 		return api.ModeOff
 	}
 	return m.rollout.Mode()
+}
+
+// StrictCanary reports whether this manager enforces an exact canary scope.
+func (m *Manager) StrictCanary() bool {
+	return m != nil && m.scope.Strict()
+}
+
+// AllowsIdentity is the shared candidate identity gate used by probe and
+// routing callers. Non-strict modes intentionally preserve existing behavior.
+func (m *Manager) AllowsIdentity(tenant string, credentialID int, rawModel string) bool {
+	return m == nil || m.scope.Allows(tenant, credentialID, rawModel)
 }
 
 // ShouldUseV2 delegates to the rollout controller.
@@ -984,8 +997,11 @@ func (m *Manager) RecordRequest(ctx context.Context, ev api.RequestOutcome) erro
 	if m == nil || m.store == nil {
 		return nil
 	}
-	if ev.TenantID == "" && m.Mode() == api.ModeAuthoritative {
+	if ev.TenantID == "" && (m.Mode() == api.ModeAuthoritative || m.StrictCanary()) {
 		return fmt.Errorf("ursm.v2: tenant_id is required")
+	}
+	if !m.scope.Allows(ev.TenantID, ev.CredentialID, ev.RawModel) {
+		return fmt.Errorf("%w: tenant=%q credential_id=%d model=%q", ErrOutOfScope, ev.TenantID, ev.CredentialID, ev.RawModel)
 	}
 	// P0-3 (audit §7.1 R-7.1): shadow double-write is opt-in via
 	// ShadowDoubleWrite. Default false → ShouldUseV2 returns false →

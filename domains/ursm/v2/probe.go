@@ -45,6 +45,9 @@ func (m *Manager) ApplyProbeForTenantWithSource(ctx context.Context, tenant stri
 	if m == nil || m.store == nil {
 		return fmt.Errorf("ursm.v2: nil manager")
 	}
+	if !m.scope.Allows(tenant, p.CredentialID, p.RawModel) {
+		return fmt.Errorf("%w: tenant=%q credential_id=%d model=%q", ErrOutOfScope, tenant, p.CredentialID, p.RawModel)
+	}
 	if sourcePriority <= 0 {
 		sourcePriority = api.SourcePriorityProbe
 	}
