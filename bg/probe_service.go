@@ -159,6 +159,7 @@ type ProbeService struct {
 	// (tests), heartbeat is a no-op and the lease defaults are still safe
 	// because the queue's Complete() guards on lease_token + status='running'.
 	queue *ProbeQueue
+	scope ProbeScope
 
 	// Test seams keep Run behavior testable without an upstream, gateway, or DB.
 	// Production construction leaves these nil and uses the worker methods below.
@@ -185,6 +186,13 @@ func NewProbeService(worker *NodeProbeWorker, executor *ActiveProbeExecutor) *Pr
 func (s *ProbeService) SetProbeQueue(q *ProbeQueue) {
 	if s != nil {
 		s.queue = q
+	}
+}
+
+// SetScope installs the same identity gate used by the durable queue.
+func (s *ProbeService) SetScope(scope ProbeScope) {
+	if s != nil {
+		s.scope = scope
 	}
 }
 
@@ -232,6 +240,10 @@ func (s *ProbeService) Run(ctx context.Context, task ProbeQueueTask) (ProbeQueue
 	if s == nil || s.worker == nil {
 		return ProbeQueueResult{Status: ProbeQueueFailed, ReasonCode: "probe_service_not_configured"},
 			fmt.Errorf("probe service not configured")
+	}
+	if s.scope != nil && !s.scope.AllowsIdentity(task.TenantID, int(task.CredentialID), task.RawModel) {
+		return ProbeQueueResult{Status: ProbeQueueSuccess, ReasonCode: "probe_out_of_scope"},
+			fmt.Errorf("%w: tenant=%q credential_id=%d model=%q", ErrProbeOutOfScope, task.TenantID, task.CredentialID, task.RawModel)
 	}
 	triggerKind, _ := NormalizeTriggerKind(task.Source)
 	trigger := nodeProbeTrigger{tenantID: task.TenantID, parentID: task.ParentReqID}

@@ -490,8 +490,22 @@ func (r *Router) planCandidates(
 		shadowLegacySet = true
 	}
 
-	if r.URSMv2 != nil && r.URSMv2.Mode() == ursmv2api.ModeCanary && r.URSMv2.ShouldUseV2(tenantID, canonical, requestID) {
-		if v2Ordered := r.planWithURSMv2Context(ordered, requestCtx, tenantID, canonical, requestID, readySnapshot != nil && *readySnapshot); v2Ordered != nil {
+	if r.URSMv2 != nil && r.URSMv2.Mode() == ursmv2api.ModeCanary && (r.URSMv2.StrictCanary() || r.URSMv2.ShouldUseV2(tenantID, canonical, requestID)) {
+		if r.URSMv2.StrictCanary() {
+			scoped, legacy := splitStrictCanaryCandidates(r.URSMv2, tenantID, ordered)
+			if len(scoped) > 0 {
+				v2Ordered := r.planWithURSMv2Context(scoped, requestCtx, tenantID, canonical, requestID, readySnapshot != nil && *readySnapshot)
+				if probePin != nil {
+					v2Ordered = rescuePinnedCandidate(scoped, v2Ordered, *probePin)
+				}
+				ordered = append(v2Ordered, legacy...)
+				if len(v2Ordered) > 0 {
+					recordOuterSource(statesource.StateSourceCanary)
+				} else {
+					recordOuterSource(statesource.StateSourceFallback)
+				}
+			}
+		} else if v2Ordered := r.planWithURSMv2Context(ordered, requestCtx, tenantID, canonical, requestID, readySnapshot != nil && *readySnapshot); v2Ordered != nil {
 			ordered = v2Ordered
 			recordOuterSource(statesource.StateSourceCanary)
 		} else {
@@ -568,6 +582,20 @@ func (r *Router) StopShadowWorker() {
 	r.shadowWorker = nil
 	r.shadowMu.Unlock()
 	worker.stopAndWait()
+}
+
+func splitStrictCanaryCandidates(manager *ursmv2.Manager, tenant string, candidates []provider.Candidate) (scoped, legacy []provider.Candidate) {
+	if manager == nil || !manager.StrictCanary() {
+		return candidates, nil
+	}
+	for _, candidate := range candidates {
+		if manager.AllowsIdentity(tenant, candidate.CredentialID, candidate.RawModel) {
+			scoped = append(scoped, candidate)
+		} else {
+			legacy = append(legacy, candidate)
+		}
+	}
+	return scoped, legacy
 }
 
 func candidateSeed(c provider.Candidate, tenant, canonical string) ursmv2.CandidateSeed {

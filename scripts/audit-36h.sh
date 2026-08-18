@@ -12,20 +12,27 @@
 #   - ANALYSIS_REPORT.md：综合分析（最新版会在此覆盖）
 #
 # 假设：
-#   - SSH_KEY_154 / SSH_KEY_252 / PG_LLM_GATEWAY_USER / PG_LLM_GATEWAY_PASS 已 export
+#   - 154 wrapper 变量和 252/PG 变量均由 env-injector export
 #   - 当前主机 macOS/Linux + sshpass 可用
 
 set -euo pipefail
 
-HOST_154="${HOST_154:-47.97.111.154}"
-SSH_PORT_154="${SSH_PORT_154:-25022}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+: "${SSH_WRAPPER_HOP_KEY:?run env-injector inject aliyun-gateway-154 first}"
+: "${SSH_WRAPPER_HOP_HOST:?run env-injector inject aliyun-gateway-154 first}"
+: "${SSH_WRAPPER_TARGET_IP:?run env-injector inject aliyun-gateway-154 first}"
+: "${SSH_WRAPPER_TARGET_HOST:?run env-injector inject aliyun-gateway-154 first}"
+: "${SSHPASS_154:?run env-injector inject aliyun-gateway-154 first}"
+
+HOST_154="$SSH_WRAPPER_TARGET_HOST"
 HOST_252="${HOST_252:-115.29.212.252}"
 SSH_PORT_252="${SSH_PORT_252:-25022}"
 DB_CONTAINER="${DB_CONTAINER:-pg-252-pg17}"
 DB_NAME="${DB_NAME:-llm_gateway}"
 DB_USER="${DB_USER:-llm_gateway}"
 
-SSH_BASE_154="sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=8 -p $SSH_PORT_154 root@$HOST_154"
+PATH="$SCRIPT_DIR:$PATH"
+SSH_BASE_154="ssh -o ConnectTimeout=8 root@$HOST_154"
 SSH_BASE_252="sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=8 -p $SSH_PORT_252 root@$HOST_252"
 SCP_BASE_252="sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -P $SSH_PORT_252"
 
@@ -36,10 +43,7 @@ echo "[1/5] 154 status ..."
 $SSH_BASE_154 'systemctl status llm-gateway-go --no-pager -n 3 2>&1; cat /opt/llm-gateway-go/VERSION 2>/dev/null' > "$REPORT_DIR/154-status.txt"
 
 echo "[2/5] 154 36h log pull ..."
-$SSH_BASE_154 'journalctl -u llm-gateway-go --since "36 hours ago" --no-pager > /tmp/log-154-36h.txt 2>&1'
-$SCP_BASE_252 root@$HOST_252:/dev/null >/dev/null 2>&1 || true
-scp -P "$SSH_PORT_154" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-    root@$HOST_154:/tmp/log-154-36h.txt "$REPORT_DIR/log-154-36h.txt"
+$SSH_BASE_154 'journalctl -u llm-gateway-go --since "36 hours ago" --no-pager 2>&1' > "$REPORT_DIR/log-154-36h.txt"
 
 echo "[3/5] 252 36h log pull ..."
 $SSH_BASE_252 'journalctl -u llm-gateway-go --since "36 hours ago" --no-pager > /tmp/log-252-36h.txt 2>&1'

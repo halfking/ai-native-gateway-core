@@ -16,6 +16,13 @@ const ProbeQueueTTL = 5 * time.Minute
 // this worker wrote its result. Callers must not retry Complete with the stale
 // task because a newer owner may already have recorded a result.
 var ErrProbeLeaseLost = errors.New("probe queue lease lost")
+var ErrProbeOutOfScope = errors.New("probe queue task is outside strict canary scope")
+
+// ProbeScope is implemented by URSM v2 Manager. Keeping this tiny interface
+// avoids coupling the durable queue to the URSM package's concrete type.
+type ProbeScope interface {
+	AllowsIdentity(tenant string, credentialID int, rawModel string) bool
+}
 
 type ProbeQueueStatus string
 
@@ -121,6 +128,7 @@ type ProbeQueue struct {
 	// set it takes precedence over probeSink for the queue's own transitions
 	// so origin/next_retry_at reach the dashboard without double-emitting.
 	detailSink ProbeTaskDetailSink
+	scope      ProbeScope
 }
 
 func NewProbeQueue(db *pgxpool.Pool) *ProbeQueue {
@@ -144,6 +152,13 @@ func (q *ProbeQueue) SetProbeSink(sink ProbeEventSink) {
 func (q *ProbeQueue) SetProbeTaskDetailSink(sink ProbeTaskDetailSink) {
 	if q != nil {
 		q.detailSink = sink
+	}
+}
+
+// SetScope installs the strict-canary identity gate for all future enqueues.
+func (q *ProbeQueue) SetScope(scope ProbeScope) {
+	if q != nil {
+		q.scope = scope
 	}
 }
 
@@ -266,6 +281,9 @@ func (q *ProbeQueue) Enqueue(ctx context.Context, task ProbeQueueTask) (int64, b
 	}
 	if task.TenantID == "" {
 		task.TenantID = "default"
+	}
+	if q.scope != nil && !q.scope.AllowsIdentity(task.TenantID, int(task.CredentialID), task.RawModel) {
+		return 0, false, fmt.Errorf("%w: tenant=%q credential_id=%d model=%q", ErrProbeOutOfScope, task.TenantID, task.CredentialID, task.RawModel)
 	}
 	if task.Mode == "" {
 		task.Mode = "single"

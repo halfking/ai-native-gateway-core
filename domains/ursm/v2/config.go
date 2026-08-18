@@ -38,7 +38,9 @@ type Config struct {
 	loadErr             error
 	CanaryPercent       int
 	CanaryTenants       []string
+	CanaryCredentials   []int
 	CanaryModels        []string
+	StrictCanary        bool
 	ShadowSampleRate    float64
 	RecordTimeoutMs     int
 	RecoveryBlockOnMiss bool
@@ -192,7 +194,14 @@ func LoadFromEnv() Config {
 		}
 	}
 	c.CanaryTenants = parseCSV(os.Getenv("URSM_V2_CANARY_TENANTS"))
+	c.CanaryCredentials, c.loadErr = parsePositiveIntCSV(os.Getenv("URSM_V2_CANARY_CREDENTIALS"), c.loadErr)
 	c.CanaryModels = parseCSV(os.Getenv("URSM_V2_CANARY_MODELS"))
+	if v := strings.ToLower(strings.TrimSpace(os.Getenv("URSM_V2_STRICT_CANARY"))); v == "1" || v == "true" || v == "yes" {
+		c.StrictCanary = true
+	}
+	if v := strings.TrimSpace(os.Getenv("URSM_V2_REDIS_KEY_PREFIX")); v != "" {
+		c.RedisKeyPrefix = v
+	}
 	if v := os.Getenv("URSM_V2_SHADOW_SAMPLE_RATE"); v != "" {
 		if n, err := strconv.ParseFloat(v, 64); err == nil && n >= 0 && n <= 1 {
 			c.ShadowSampleRate = n
@@ -250,6 +259,9 @@ func (c Config) Validate() error {
 	if c.CanaryPercent < 0 || c.CanaryPercent > 100 {
 		return fmt.Errorf("URSM_V2_CANARY_PERCENT must be an integer from 0 to 100")
 	}
+	if err := validateStrictCanaryScope(c); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -269,4 +281,28 @@ func parseCSV(raw string) []string {
 		values = append(values, value)
 	}
 	return values
+}
+
+func parsePositiveIntCSV(raw string, prior error) ([]int, error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, prior
+	}
+	values := make([]int, 0)
+	seen := make(map[int]struct{})
+	for _, part := range strings.Split(raw, ",") {
+		value := strings.TrimSpace(part)
+		if value == "" {
+			return nil, fmt.Errorf("URSM_V2_CANARY_CREDENTIALS must contain positive integer IDs")
+		}
+		n, err := strconv.Atoi(value)
+		if err != nil || n <= 0 {
+			return nil, fmt.Errorf("URSM_V2_CANARY_CREDENTIALS must contain positive integer IDs")
+		}
+		if _, ok := seen[n]; ok {
+			continue
+		}
+		seen[n] = struct{}{}
+		values = append(values, n)
+	}
+	return values, prior
 }

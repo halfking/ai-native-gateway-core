@@ -17,6 +17,7 @@ type ProbeQueueWorkerConfig struct {
 	// (two-round direct+gateway, side-effects, audit). When nil, node_probe
 	// tasks fall back to the executor's direct-only RunCommand.
 	ProbeService *ProbeService
+	Scope        ProbeScope
 	BatchSize    int
 	Workers      int
 	Lease        time.Duration
@@ -141,12 +142,22 @@ func (w *ProbeQueueWorker) maybeReviveExpiredReady(ctx context.Context) {
 }
 
 func (w *ProbeQueueWorker) processTask(ctx context.Context, task ProbeQueueTask) {
+	if w.cfg.Scope != nil && !w.cfg.Scope.AllowsIdentity(task.TenantID, int(task.CredentialID), task.RawModel) {
+		slog.Info("probe queue skipped out-of-scope task", "queue_id", task.ID)
+		w.complete(ctx, task, ProbeQueueResult{Status: ProbeQueueSuccess, ReasonCode: "probe_out_of_scope"})
+		return
+	}
 	// Unified node_probe path (需求 6): ProbeService.Run does the two-round
 	// direct+gateway probe with all side-effects + audit, and returns a result
 	// whose NextRunAt already reflects the 7-step node-probe backoff chain.
 	if task.Command == "node_probe" && w.cfg.ProbeService != nil {
 		result, err := w.cfg.ProbeService.Run(ctx, task)
 		if err != nil {
+			if errors.Is(err, ErrProbeOutOfScope) {
+				slog.Info("probe_service skipped out-of-scope task", "queue_id", task.ID)
+				w.complete(ctx, task, result)
+				return
+			}
 			// Run may have completed both probe rounds and applied routing
 			// side effects before the audit INSERT failed. Settle the result
 			// it returned instead of re-running the probe on the next retry.
