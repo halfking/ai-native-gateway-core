@@ -69,6 +69,46 @@ fi
 TS=$(date +%Y%m%d_%H%M%S)
 BACKUP="${TABLE}_bloat_backup_${TS}"
 NEW="${TABLE}_repacked_${TS}"
+VIEW_REFRESH_SQL=""
+
+# ALTER TABLE ... RENAME preserves dependent views' old relation OIDs. For the
+# known bodies view, recreate its rule after the new table takes the live name.
+# Any unrecognized dependent view blocks the swap rather than silently serving
+# the retained backup table.
+if [[ "$TABLE" == "request_logs_bodies_hot" ]]; then
+  DEPENDENT_VIEWS=$(run_sql -Atc "
+    SELECT DISTINCT n.nspname || '.' || c.relname
+    FROM pg_depend d
+    JOIN pg_rewrite r ON r.oid = d.objid
+    JOIN pg_class c ON c.oid = r.ev_class
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE d.refobjid = 'public.$TABLE'::regclass
+      AND c.relkind IN ('v', 'm')
+    ORDER BY 1;" || true)
+  if [[ -n "$DEPENDENT_VIEWS" && "$DEPENDENT_VIEWS" != "public.request_logs_bodies_with_current_month" ]]; then
+    echo "✗ 检测到未配置的依赖 VIEW/MATVIEW，拒绝 swap 以避免 OID 漂移：$DEPENDENT_VIEWS" >&2
+    exit 1
+  fi
+  if [[ "$DEPENDENT_VIEWS" == "public.request_logs_bodies_with_current_month" ]]; then
+    VIEW_REFRESH_SQL=$(cat <<'SQL'
+CREATE OR REPLACE VIEW public.request_logs_bodies_with_current_month AS
+SELECT request_logs_bodies_hot.request_id,
+       request_logs_bodies_hot.ts,
+       request_logs_bodies_hot.request_body,
+       request_logs_bodies_hot.outbound_body,
+       request_logs_bodies_hot.response_body
+FROM public.request_logs_bodies_hot
+UNION ALL
+SELECT request_logs_bodies.request_id,
+       request_logs_bodies.ts,
+       request_logs_bodies.request_body,
+       request_logs_bodies.outbound_body,
+       request_logs_bodies.response_body
+FROM public.request_logs_bodies;
+SQL
+)
+  fi
+fi
 
 # ── 维护窗口守卫（破坏性模式） ─────────────────────────────────────────────
 if [[ "$MODE" != "dry-run" && "$FORCE" != true ]]; then
@@ -91,6 +131,7 @@ case "$MODE" in
     echo "== DRY-RUN：以下为 swap 模式将执行的事务（未执行） =="
     cat <<SQL
 BEGIN;
+SET LOCAL statement_timeout = '0';
 LOCK TABLE public.$TABLE IN ACCESS EXCLUSIVE MODE;
 CREATE TABLE public.$NEW (LIKE public.$TABLE INCLUDING ALL);
 INSERT INTO public.$NEW SELECT * FROM public.$TABLE;
@@ -103,6 +144,7 @@ BEGIN
 END \$\$;
 ALTER TABLE public.$TABLE RENAME TO $BACKUP;
 ALTER TABLE public.$NEW RENAME TO $TABLE;
+$VIEW_REFRESH_SQL
 COMMIT;
 ANALYZE public.$TABLE;
 SQL
