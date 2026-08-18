@@ -10,7 +10,7 @@
 // 该组件被 DashboardViewV2 / TenantDashboardView / DashboardViewLegacy 等调用，
 // 作为请求详情抽屉入口（会话上下文跳转已随 SessionContextDetailView 迁移至 plugin）。
 
-import { ref, watch, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { localeRef } from '../i18n'
 import { useI18n } from 'vue-i18n'
 import {
@@ -19,6 +19,8 @@ import {
   type RequestLogDetail,
   type AttachmentInfo,
 } from '../api'
+import { getProviderRequestStats } from '../api/quality'
+import type { ProviderRequestStats } from '../types/quality-api'
 import RequestTracePanel from './RequestTracePanel.vue'
 import RoutingAttemptsTimeline from './RoutingAttemptsTimeline.vue'
 
@@ -35,6 +37,15 @@ const loading = ref(false)
 const detail = ref<RequestLogDetail | null>(null)
 const error = ref('')
 const tab = ref<'request' | 'response' | 'attachments' | 'routing'>('request')
+
+// 2026-08-18: 供应商近 30 天请求统计（复用 /api/quality/providers/:id/stats），
+// 非致命：加载失败或供应商不存在时静默置空，不打断详情展示。
+const providerStats = ref<ProviderRequestStats | null>(null)
+
+// statsModelName 派生统计所作用的模型名（与加载时一致的 fallback 顺序）。
+const statsModelName = computed(
+  () => detail.value?.outbound_model ?? detail.value?.client_model ?? '',
+)
 
 // 2026-07-17: 流程详情 inline panel - 在"原始请求详情"内点击按钮,
 //  在「请求详情」与「Tabs/按钮」之间展开一层, 显示该请求的端到端链路 +
@@ -77,6 +88,15 @@ watch(
           await new Promise(r => setTimeout(r, retryMs[i]))
         }
       }
+      // 详情加载成功后，若含 provider_id 则拉取供应商 30 天统计（非致命）。
+      // 模型粒度对齐 ledger 写入语义 COALESCE(outbound_model, client_model)（telemetry.go rawModel）。
+      providerStats.value = null
+      if (detail.value?.provider_id) {
+        loadProviderStats(
+          detail.value.provider_id,
+          detail.value.outbound_model ?? detail.value.client_model ?? undefined,
+        )
+      }
     } catch (e: unknown) {
       error.value = e instanceof Error ? e.message : '加载失败'
     } finally {
@@ -85,6 +105,15 @@ watch(
   },
   { immediate: true },
 )
+
+async function loadProviderStats(providerId: number, model?: string) {
+  providerStats.value = null
+  try {
+    providerStats.value = await getProviderRequestStats(providerId, model)
+  } catch {
+    providerStats.value = null
+  }
+}
 
 // ── 附件辅助 (与 RequestLogsView.vue 保持一致；不抽 composable 以避免引入新依赖) ──
 
@@ -324,6 +353,24 @@ function routingAttempts(): RequestLogDetail['routing_attempts'] {
             <span><strong>Token:</strong> {{ detail.prompt_tokens ?? '—' }} / {{ detail.completion_tokens ?? '—' }}</span>
             <span v-if="detail.gw_session_id"><strong>Session:</strong> {{ detail.gw_session_id }}</span>
             <span v-if="detail.gw_task_id"><strong>Task:</strong> {{ detail.gw_task_id }}</span>
+          </div>
+        </div>
+
+        <!-- 2026-08-18: 供应商/模型近 30 天请求统计 — 复用 /api/quality/providers/:id/stats，
+             与品质 tab 同一聚合口径（近 30 天窗口）。有模型名时按模型粒度统计（方案 C）。
+             加载失败/供应商不存在时静默隐藏。 -->
+        <div v-if="providerStats" class="drawer-section">
+          <div class="meta-line">
+            <span>
+              <strong>{{ statsModelName ? `模型30天统计 (${statsModelName})` : '供应商30天统计' }}:</strong>
+            </span>
+            <span>总 {{ providerStats.total_requests }}</span>
+            <span>月 {{ providerStats.month_requests }}</span>
+            <span>周 {{ providerStats.week_requests }}</span>
+            <span>日 {{ providerStats.day_requests }}</span>
+            <span style="color: var(--success)">成功 {{ providerStats.success_count }}</span>
+            <span style="color: var(--danger)">失败 {{ providerStats.failure_count }}</span>
+            <span>Tokens {{ providerStats.total_tokens.toLocaleString() }}</span>
           </div>
         </div>
 
