@@ -9,9 +9,9 @@
 
 \set ON_ERROR_STOP on
 
-\echo '=== 536 DOWN: 恢复 trigger_kind CHECK（移除 536 增量）==='
+\echo '=== 538 DOWN: 恢复 trigger_kind CHECK（移除 538 增量）==='
 
--- 防御：536 增量行如果还在，必须先删除或重映射，否则 ADD CONSTRAINT 会失败。
+-- 防御：538 增量行如果还在，必须先删除或重映射，否则 ADD CONSTRAINT 会失败。
 DO $$
 BEGIN
     IF EXISTS (
@@ -20,7 +20,7 @@ BEGIN
         LIMIT 1
     ) THEN
         RAISE EXCEPTION
-            '536 DOWN aborted: node_probe_runs still contains 536-only trigger_kind values; clean them up first.';
+            '538 DOWN aborted: node_probe_runs still contains 538-only trigger_kind values; clean them up first.';
     END IF;
 END
 $$;
@@ -66,4 +66,4 @@ ALTER TABLE public.credential_probe_queue
     );
 
 \echo '--- trigger_kind CHECK 已恢复 425 状态 ---'
-\echo '=== 536 DOWN 完成 ==='
+\echo '=== 538 DOWN 完成 ==='

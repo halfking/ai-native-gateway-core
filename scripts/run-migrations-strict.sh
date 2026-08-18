@@ -85,12 +85,27 @@ file_checksum() {
 migration_files() {
   local scope=$1 file filename version version_number migration_root
   migration_root="$ROOT_DIR/sql/migrations/$scope"
-  while IFS= read -r file; do
-    filename=$(basename "$file")
-    version=${filename%%_*}
-    version_number=${version%%[^0-9]*}
-    printf '%s\t%s\t%s\n' "$version_number" "$version" "$file"
-  done < <(find "$migration_root" -type f -name '[0-9]*.sql' ! -name '*.down.sql' -print) |
+  if [[ "$scope" == "ursm" ]]; then
+    migration_root="$ROOT_DIR/sql/migrations"
+
+    while IFS= read -r file; do
+      filename=$(basename "$file")
+      case "$filename" in
+        080-ursm-key-migration-ledger.sql|081-ursm-key-migration-ledger-add-rollback-deadline.sql) ;;
+        *) continue ;;
+      esac
+      version=${filename%%-*}
+      version_number=${version%%[^0-9]*}
+      printf '%s\t%s\t%s\n' "$version_number" "$version" "$file"
+    done < <(find "$migration_root" -maxdepth 1 -type f -name '[0-9]*-*.sql' ! -name '*.down.sql' -print)
+  else
+    while IFS= read -r file; do
+      filename=$(basename "$file")
+      version=${filename%%_*}
+      version_number=${version%%[^0-9]*}
+      printf '%s\t%s\t%s\n' "$version_number" "$version" "$file"
+    done < <(find "$migration_root" -type f -name '[0-9]*.sql' ! -name '*.down.sql' -print)
+  fi |
     LC_ALL=C sort -n -k1,1 -k2,2 |
     cut -f3-
 }
@@ -108,7 +123,11 @@ apply_scope() {
 
   while IFS= read -r file; do
     filename=$(basename "$file")
-    version=${filename%%_*}
+    if [[ "$scope" == "ursm" ]]; then
+      version=${filename%%-*}
+    else
+      version=${filename%%_*}
+    fi
     version_number=${version%%[^0-9]*}
     checksum=$(file_checksum "$file")
     stored_checksum=$("${psql_base[@]}" -Atq -v scope="$scope" -v name="$filename" -c "SELECT checksum FROM public.repository_schema_migrations WHERE scope = :'scope' AND migration_name = :'name';")
@@ -136,4 +155,5 @@ apply_scope() {
 
 apply_scope startup
 apply_scope domain
+apply_scope ursm
 printf 'Repository migrations completed successfully.\n'

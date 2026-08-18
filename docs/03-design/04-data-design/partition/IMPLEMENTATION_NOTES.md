@@ -344,7 +344,7 @@ ERROR: columnar tables do not support UPDATE
 
 2. **分区健康诊断脚本** - `scripts/partition/check-partition-health.sh`
    - 一键检查所有分区表状态
-   - 支持 local/71/184 多环境
+   - 支持 local/71/252 多环境
    - 6 个维度诊断
 
 **使用方法**：

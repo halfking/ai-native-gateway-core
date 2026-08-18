@@ -1069,10 +1069,9 @@ func TestScanLookbackNoOpWithoutHooks(t *testing.T) {
 //  2. Pairs only cmb.available=TRUE rows so we don't double-enqueue for
 //     bindings that the credential / availability UPDATE above still
 //     owns.
-//  3. Targets node_probe_state rows that are still in failed/backoff/
-//     paused state, NEVER a row whose both rounds are TRUE and whose
-//     ladder has elapsed (those are owned by Submit's arming branch and
-//     don't need re-verification).
+//  3. Targets node_probe_state rows with stale direct/gateway evidence or an
+//     invalid retry timestamp. Paused rows remain operator-owned and are not
+//     auto-submitted by recovery.
 //  4. Hard guards identical to recoverExpiredBindings (manual*,
 //     admin_protected, lifecycle, manual_disabled, availability_state,
 //     paused).
@@ -1085,9 +1084,10 @@ func TestReconcileStaleNodeProbeStateSQLGuards(t *testing.T) {
 		// ── 状态谓词：拿掉还失败的行 ──
 		"nps.last_direct_ok  IS DISTINCT FROM TRUE",
 		"nps.last_gateway_ok IS DISTINCT FROM TRUE",
-		"nps.paused = TRUE",
 		"nps.next_retry_at IS NULL",
 		"nps.next_retry_at > now()",
+		"COALESCE(nps.paused, FALSE) = FALSE",
+
 		// ── 硬保护 ──
 		"COALESCE(c.status, 'active') = 'active'",
 		"COALESCE(c.lifecycle_status, 'active') = 'active'",

@@ -50,7 +50,7 @@ func TestPreflightRescanCopyAndCleanupPreservesCanonical(t *testing.T) {
 		Prefix: migPrefix,
 		Ledger: ledger,
 		RDB:    rdb,
-		Opts:   CleanupOptions{Mode: ModeDual},
+		Opts:   CleanupOptions{Mode: ModeDual, Authorization: authorizationForLedger(t, ledger)},
 	}).Cleanup(context.Background())
 	if err != nil {
 		t.Fatalf("cleanup: %v", err)

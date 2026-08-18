@@ -97,7 +97,7 @@ case "$ENV" in
     PGUSER="${PGUSER:-kxuser}"
     PGDATABASE="${PGDATABASE:-llm_gateway}"
     ;;
-  # 71/184 removed — servers decommissioned
+  # 71/184 removed — servers decommissioned (154 = 生产网关, 252 = DB/中间层)
   *)
     echo "错误：未知环境 '$ENV'" >&2
     echo "用法：$0 [local]" >&2

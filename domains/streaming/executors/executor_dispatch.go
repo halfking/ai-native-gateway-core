@@ -90,7 +90,7 @@ func (e *Executor) dispatchRoute(ctx context.Context, qr *dispatch.QueuedRequest
 	)
 	refs := make([]dispatch.CredentialRef, 0, len(planned))
 	for _, c := range planned {
-		if !c.IsAvailable() {
+		if !dispatchCandidateAllowed(c, dctx.params.PinCredentialID) {
 			continue
 		}
 		if qr.HasTriedCredential(c.CredentialID) {
@@ -127,6 +127,13 @@ func (e *Executor) dispatchRoute(ctx context.Context, qr *dispatch.QueuedRequest
 		})
 	}
 	return refs, nil
+}
+
+// dispatchCandidateAllowed preserves a trusted probe pin that the router has
+// already rescued from runtime availability filtering; ordinary traffic still
+// requires the candidate's normal availability gate.
+func dispatchCandidateAllowed(candidate provider.Candidate, pinCredentialID *int) bool {
+	return pinCredentialID != nil || candidate.IsAvailable()
 }
 
 // dispatchResolveModel returns the requested concrete model plus request-scoped

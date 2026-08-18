@@ -38,7 +38,7 @@ import (
 
 const (
 	defaultRedisURL  = "redis://localhost:6379/2"
-	defaultKeyPrefix  = "ursm:v2:"
+	defaultKeyPrefix = "ursm:v2:"
 	defaultLedgerID  = "ursm-v2-k2-20260818-001"
 	defaultOwner     = "halfking"
 	defaultDeadline  = "2026-09-01T00:00:00Z"
@@ -46,15 +46,15 @@ const (
 
 func main() {
 	var (
-		apply          = flag.Bool("apply", false, "Record the migration run in PostgreSQL. Default is dry-run.")
-		redisURL       = flag.String("redis", redisURLFromEnv(), "Redis URL")
-		pgDSN          = flag.String("pg", envOr("LLM_GATEWAY_DATABASE_URL", envOr("DATABASE_URL", "")), "Postgres DSN")
-		keyPrefix      = flag.String("key-prefix", defaultKeyPrefix, "URSM v2 Redis key prefix")
-		owner          = flag.String("owner", defaultOwner, "Migration owner recorded in the ledger")
-		ledgerID       = flag.String("ledger-id", defaultLedgerID, "Non-reusable migration ledger id")
-		mode           = flag.String("mode", store.KeySchemaModeLegacy.String(), "Planned key schema mode (legacy/dual/canonical) — recorded only when --apply is set")
+		apply            = flag.Bool("apply", false, "Record the migration run in PostgreSQL. Default is dry-run.")
+		redisURL         = flag.String("redis", redisURLFromEnv(), "Redis URL")
+		pgDSN            = flag.String("pg", envOr("LLM_GATEWAY_DATABASE_URL", envOr("DATABASE_URL", "")), "Postgres DSN")
+		keyPrefix        = flag.String("key-prefix", defaultKeyPrefix, "URSM v2 Redis key prefix")
+		owner            = flag.String("owner", defaultOwner, "Migration owner recorded in the ledger")
+		ledgerID         = flag.String("ledger-id", defaultLedgerID, "Non-reusable migration ledger id")
+		mode             = flag.String("mode", store.KeySchemaModeLegacy.String(), "Planned key schema mode (legacy/dual/canonical) — recorded only when --apply is set")
 		rollbackDeadline = flag.String("rollback-deadline", defaultDeadline, "When the legacy shadow must be cleaned up")
-		limit          = flag.Int("limit", 0, "Limit SCAN output (0 = no limit)")
+		limit            = flag.Int("limit", 0, "Limit SCAN output (0 = no limit)")
 	)
 	flag.Parse()
 
@@ -129,6 +129,10 @@ func main() {
 		log.Fatalf("--apply refused: ambiguous/conflict verdicts must be resolved out-of-band first")
 	}
 
+	deadline, err := time.Parse(time.RFC3339Nano, *rollbackDeadline)
+	if err != nil || deadline.IsZero() {
+		log.Fatalf("invalid --rollback-deadline: must be RFC3339Nano: %v", err)
+	}
 	pool, err := pgxpool.New(ctx, *pgDSN)
 	if err != nil {
 		log.Fatalf("postgres connect: %v", err)
@@ -145,7 +149,7 @@ func main() {
 		KeySchemaMode:     keySchemaMode,
 		PreflightChecksum: report.Ledger.PreflightChecksum,
 		Checkpoint:        migration.CheckpointPreflight,
-		RollbackDeadline:  *rollbackDeadline,
+		RollbackDeadline:  deadline.Format(time.RFC3339Nano),
 		Total:             len(entries),
 		Migratable:        report.Counts[migration.ClassificationMigratable],
 		CanonicalPresent:  report.Counts[migration.ClassificationCanonicalPresent],
@@ -157,7 +161,20 @@ func main() {
 	if err := store_.UpsertEntries(ctx, *ledgerID, entries); err != nil {
 		log.Fatalf("upsert ledger entries: %v", err)
 	}
-	fmt.Printf("migration run %s opened with %d entries\n", *ledgerID, len(entries))
+	if err := (&migration.MetadataHash{Prefix: *keyPrefix, RDB: rdb}).Write(ctx, migration.Metadata{
+		Owner:             *owner,
+		LedgerID:          *ledgerID,
+		Mode:              migration.Mode(keySchemaMode.String()),
+		CutoverEpoch:      0,
+		StartedAt:         nowFn(),
+		UpdatedAt:         nowFn(),
+		PreflightChecksum: report.Ledger.PreflightChecksum,
+		RollbackDeadline:  deadline,
+		Checkpoint:        migration.CheckpointPreflight,
+	}); err != nil {
+		log.Fatalf("publish Redis migration metadata: %v", err)
+	}
+	fmt.Printf("migration run %s opened with %d entries and Redis metadata published\n", *ledgerID, len(entries))
 }
 
 // toEntryRecords projects the in-memory PreflightLedger entries into the
@@ -169,13 +186,15 @@ func toEntryRecords(es []migration.PreflightEntry) []migration.EntryRecord {
 	out := make([]migration.EntryRecord, 0, len(es))
 	for _, e := range es {
 		out = append(out, migration.EntryRecord{
-			SourceKey:  e.SourceKey,
-			TargetKey:  e.TargetKey,
-			Class:      e.Classification,
-			Reason:     e.ClassificationReason,
-			Type:       e.KeyType,
-			PTTLMillis: e.PTTLMS,
-			Generation: int64(parseIntOrZero(e.Generation)),
+			SourceKey:     e.SourceKey,
+			TargetKey:     e.TargetKey,
+			Class:         e.Classification,
+			Reason:        e.ClassificationReason,
+			Type:          e.KeyType,
+			PTTLMillis:    e.PTTLMS,
+			Generation:    int64(parseIntOrZero(e.Generation)),
+			FieldChecksum: e.FieldChecksum,
+			Tuple:         e.Tuple,
 		})
 	}
 	return out

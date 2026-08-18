@@ -135,7 +135,12 @@ _psql -v ON_ERROR_STOP=1 -tAc \"SELECT
 
   local tenant_column tenant_index replay_index
   IFS='|' read -r tenant_column tenant_index replay_index <<<"$result"
-  if [[ "$tenant_column" != "1" || "$tenant_index" != "1" || "$replay_index" != "1" ]]; then
+  # contract fix 2026-08-19: V531 同时创建了 idx_state_transitions_tenant_request
+  # 和 uq_state_transitions_tenant_request_seq 两个租户相关索引,以及
+  # uq_state_transitions_legacy_request_seq 替代旧的 uq_state_transitions_request_seq。
+  # 老 contract 严格要求各组正好 1 个索引,与 V531 后现状不符。
+  # 新 contract: 每组至少 1 个索引存在即可。
+  if [[ "$tenant_column" != "1" || "$tenant_index" -lt 1 || "$replay_index" -lt 1 ]]; then
     _db_err "request_state_transitions schema contract 不完整 (tenant_id_not_null=${tenant_column:-0}, tenant_index=${tenant_index:-0}, replay_index=${replay_index:-0})"
     _db_err "拒绝切换版本；请先应用前向修复 migration 并核验真实表结构"
     return 1
@@ -334,6 +339,70 @@ _psql -v ON_ERROR_STOP=1 -tAc \"SELECT migration_name || '|' || checksum FROM ll
 _psql -v ON_ERROR_STOP=1 -tAc \"SELECT version || '|' || COALESCE(description,'') FROM schema_migrations WHERE version ~ '^[0-9]+$' AND version::int >= $ledger_reconcile_from ORDER BY version::int\"" 2>/dev/null)
 }
 
+
+_deploy_apply_ursm_repository_migrations() {
+  local ssh_cmd=$1 env_file=$2
+  local repo_root remote_psql remote_dir f base version checksum stored applied=0
+  local -a files=(
+    sql/migrations/080-ursm-key-migration-ledger.sql
+    sql/migrations/081-ursm-key-migration-ledger-add-rollback-deadline.sql
+  )
+
+  repo_root=$(_db_changelog_repo_root)
+  remote_psql=$(_deploy_remote_psql_script "$env_file")
+  if ! _deploy_verify_ssh "$ssh_cmd" "${remote_psql}
+_psql -v ON_ERROR_STOP=1 -c \"CREATE TABLE IF NOT EXISTS public.repository_schema_migrations (scope TEXT NOT NULL, version TEXT NOT NULL, migration_name TEXT NOT NULL, checksum TEXT NOT NULL, applied_at TIMESTAMPTZ NOT NULL DEFAULT now(), PRIMARY KEY (scope, migration_name));\" >/dev/null"; then
+    _db_err "无法初始化 repository_schema_migrations URSM scope ledger"
+    return 1
+  fi
+
+  remote_dir="/tmp/llm-gateway-ursm-migrations-$(date +%s)"
+  "$ssh_cmd" "mkdir -p '$remote_dir'"
+  for f in "${files[@]}"; do
+    [[ -f "$repo_root/$f" ]] || {
+      _db_err "缺少 URSM root migration: $f"
+      "$ssh_cmd" "rm -rf '$remote_dir'" || true
+      return 1
+    }
+    base=$(basename "$f")
+    checksum=$(_db_migration_checksum "$repo_root/$f")
+    stored=$(_deploy_verify_ssh "$ssh_cmd" "${remote_psql}
+_psql -v ON_ERROR_STOP=1 -tAc \"SELECT checksum FROM public.repository_schema_migrations WHERE scope = 'ursm' AND migration_name = '$base'\"" 2>/dev/null) || {
+      _db_err "无法读取 URSM root migration ledger: $base"
+      "$ssh_cmd" "rm -rf '$remote_dir'" || true
+      return 1
+    }
+    stored=$(printf '%s' "$stored" | tr -d '[:space:]')
+    if [[ -n "$stored" ]]; then
+      if [[ "$stored" != "$checksum" ]]; then
+        _db_err "已应用 URSM root migration checksum 不匹配：$base"
+        "$ssh_cmd" "rm -rf '$remote_dir'" || true
+        return 1
+      fi
+      _db_log "  ⊘ URSM root migration 已应用: $base"
+      continue
+    fi
+
+    tar czf - -C "$repo_root" "$f" | "$ssh_cmd" "tar xzf - -C /tmp && mv '/tmp/$f' '$remote_dir/$base'"
+    _db_log "  → URSM root migration $base (sha256=${checksum:0:12})"
+    if ! _deploy_verify_ssh "$ssh_cmd" "${remote_psql}
+_psql -v ON_ERROR_STOP=1 -f '$remote_dir/$base'"; then
+      _db_err "  ✗ URSM root migration 失败: $base"
+      "$ssh_cmd" "rm -rf '$remote_dir'" || true
+      return 1
+    fi
+    version=${base%%-*}
+    if ! _deploy_verify_ssh "$ssh_cmd" "${remote_psql}
+_psql -v ON_ERROR_STOP=1 -c \"INSERT INTO public.repository_schema_migrations (scope, version, migration_name, checksum) VALUES ('ursm', '$version', '$base', '$checksum');\" >/dev/null"; then
+      _db_err "  ✗ URSM root migration 已执行但 ledger 写入失败: $base"
+      "$ssh_cmd" "rm -rf '$remote_dir'" || true
+      return 1
+    fi
+    applied=$((applied + 1))
+  done
+  "$ssh_cmd" "rm -rf '$remote_dir'" || true
+  _db_log "✓ URSM root migration scope 完成 ($applied 新应用)"
+}
 deploy_apply_pending_migrations() {
   local ssh_cmd=$1 env_file=$2 target=$3 seq=$4 git_sha=$5
   local repo_root remote_dir applied_count=0 remote_psql
@@ -362,6 +431,7 @@ _psql -v ON_ERROR_STOP=1 -tAc \"SELECT 1 FROM pg_class WHERE oid = 'public.llm_g
   if [[ -n "$applied_csv" ]]; then
     _deploy_migration_checksum_reconcile "$ssh_cmd" "$env_file" "$repo_root" || return 1
   fi
+  _deploy_apply_ursm_repository_migrations "$ssh_cmd" "$env_file" || return 1
 
   if [[ ${#pending[@]} -eq 0 ]]; then
     _db_log "无 pending startup 迁移；checksum ledger 校验通过"

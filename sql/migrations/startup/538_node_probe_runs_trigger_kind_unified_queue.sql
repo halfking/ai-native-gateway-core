@@ -30,7 +30,7 @@
 
 \set ON_ERROR_STOP on
 
-\echo '=== 536: node_probe_runs.trigger_kind CHECK 扩展（统一队列来源）==='
+\echo '=== 538: node_probe_runs.trigger_kind CHECK 扩展（统一队列来源）==='
 
 ALTER TABLE public.node_probe_runs
     DROP CONSTRAINT IF EXISTS node_probe_runs_trigger_kind_check;
@@ -43,7 +43,7 @@ ALTER TABLE public.node_probe_runs
             'manual',
             'credential_recovery',
             'sync_request',
-            -- 536 增量（统一 credential_probe_queue 实际来源）
+            -- 538 增量（统一 credential_probe_queue 实际来源）
             'periodic',
             'admin',
             'integrity_probe_planner',
@@ -66,4 +66,4 @@ ALTER TABLE public.credential_probe_queue
     );
 
 \echo '--- trigger_kind CHECK 已扩展 ---'
-\echo '=== 536 完成 ==='
+\echo '=== 538 完成 ==='
