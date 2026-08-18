@@ -54,6 +54,25 @@ func TestPreferCapturedBody_UsesContextSnapshotWhenPrimaryMissing(t *testing.T) 
 	}
 }
 
+func TestRequestLogContext_BuildFailureEntry_UsesReceiptTokenEstimate(t *testing.T) {
+	ch := NewChatHandler(nil, nil, nil, nil, nil, nil)
+	body := []byte(`{"model":"glm-5.1","messages":[{"role":"user","content":"failed request still counts"}]}`)
+	ctx := ch.NewRequestLogContext(httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(string(body))), "server-uuid-tokens", time.Now())
+	ctx.Body = body
+	ctx.recordReceiptTokenEstimate()
+
+	entry := ctx.BuildFailureEntry("validation_error", "invalid request", nil, nil)
+	if entry == nil || entry.PromptTokens == nil {
+		t.Fatal("failure entry must retain receipt-time prompt token estimate")
+	}
+	if got, want := *entry.PromptTokens, EstimateInputTokens(body); got != want {
+		t.Fatalf("PromptTokens = %d, want %d", got, want)
+	}
+	if entry.UsageSource == nil || *entry.UsageSource != UsageSourceEstimated {
+		t.Fatalf("UsageSource = %v, want estimated", entry.UsageSource)
+	}
+}
+
 func TestRequestLogContext_BuildFailureEntry_ClientRequestID(t *testing.T) {
 	ch := NewChatHandler(nil, nil, nil, nil, nil, nil)
 	r := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"glm-5.1"}`))

@@ -16,16 +16,36 @@ var applyAdminSrc string
 
 var ApplyAdminScript = redis.NewScript(applyAdminSrc)
 
+//go:embed apply_admin_dual.lua
+var applyAdminDualSrc string
+
+// ApplyAdminDualScript applies one operator action to legacy and K2 node
+// hashes atomically during the schema migration window.
+var ApplyAdminDualScript = redis.NewScript(applyAdminDualSrc)
+
 //go:embed apply_probe.lua
 var applyProbeSrc string
 
 var ApplyProbeScript = redis.NewScript(applyProbeSrc)
+
+//go:embed apply_probe_dual.lua
+var applyProbeDualSrc string
+
+// ApplyProbeDualScript applies probe state transitions to legacy and K2 node
+// hashes atomically during the schema migration window.
+var ApplyProbeDualScript = redis.NewScript(applyProbeDualSrc)
 
 //go:embed clear_state.lua
 var clearStateSrc string
 
 // ClearStateScript clears cooling state and error counters for emergency repair.
 var ClearStateScript = redis.NewScript(clearStateSrc)
+
+//go:embed clear_state_dual.lua
+var clearStateDualSrc string
+
+// ClearStateDualScript clears matching legacy and K2 node state atomically.
+var ClearStateDualScript = redis.NewScript(clearStateDualSrc)
 
 type Store struct {
 	rdb        *redis.Client

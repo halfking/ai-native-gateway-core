@@ -10,12 +10,13 @@ const SummaryModelAuto = "auto"
 type SummaryDimension string
 
 const (
-	SummaryDimensionProject   SummaryDimension = "project"
-	SummaryDimensionKeywords  SummaryDimension = "keywords"
-	SummaryDimensionTasks     SummaryDimension = "tasks"
-	SummaryDimensionDecisions SummaryDimension = "decisions"
-	SummaryDimensionProblems  SummaryDimension = "problems"
-	SummaryDimensionTechnical SummaryDimension = "technical"
+	SummaryDimensionProject         SummaryDimension = "project"
+	SummaryDimensionKeywords        SummaryDimension = "keywords"
+	SummaryDimensionTasks           SummaryDimension = "tasks"
+	SummaryDimensionDecisions       SummaryDimension = "decisions"
+	SummaryDimensionProblems        SummaryDimension = "problems"
+	SummaryDimensionTechnical       SummaryDimension = "technical"
+	SummaryDimensionDocumentSummary SummaryDimension = "document_summary"
 )
 
 // AllSummaryDimensions returns the canonical dimension order. The order is
@@ -41,6 +42,9 @@ func ParseSummaryDimension(raw string) (SummaryDimension, bool) {
 
 // Valid reports whether d is a supported summary dimension.
 func (d SummaryDimension) Valid() bool {
+	if d == SummaryDimensionDocumentSummary {
+		return true
+	}
 	for _, candidate := range AllSummaryDimensions() {
 		if d == candidate {
 			return true
@@ -64,6 +68,8 @@ func (d SummaryDimension) SummaryModelKey() string {
 		return "summary_models.problems"
 	case SummaryDimensionTechnical:
 		return "summary_models.technical_details"
+	case SummaryDimensionDocumentSummary:
+		return "summary_models.document_summary"
 	default:
 		return ""
 	}

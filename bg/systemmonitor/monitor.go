@@ -21,6 +21,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/secret"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -161,7 +162,7 @@ const DefaultRecoveryDebounceTTL = 5 * time.Minute
 type Config struct {
 	DB          *pgxpool.Pool
 	Redis       *redis.Client
-	Keyring     interface{}
+	Keyring     *secret.Keyring
 	EncKey      []byte
 	ProxyFunc   func(*http.Request) (*url.URL, error)
 	TimeoutMs   int
@@ -219,7 +220,7 @@ func NewSystemMonitor(cfg Config) (*SystemMonitor, error) {
 	sm := &SystemMonitor{
 		queue:                 NewQueue(cfg.Redis, scripts),
 		dedup:                 NewInflightDedup(cfg.Redis),
-		executor:              NewExecutor(ExecutorConfig{DB: cfg.DB, Keyring: nil, EncKey: cfg.EncKey, ProxyFunc: cfg.ProxyFunc, TimeoutMs: cfg.TimeoutMs}),
+		executor:              NewExecutor(ExecutorConfig{DB: cfg.DB, Keyring: cfg.Keyring, EncKey: cfg.EncKey, ProxyFunc: cfg.ProxyFunc, TimeoutMs: cfg.TimeoutMs}),
 		audit:                 NewAudit(cfg.DB),
 		metricsCollector:      NewMetricsCollector(cfg.DB),
 		concurrency:           cfg.Concurrency,
@@ -802,7 +803,11 @@ func (sm *SystemMonitor) classifyResult(task *Task, result *ExecutorResult, exec
 	extras := map[string]any{}
 	if result == nil || result.Result == nil {
 		extras["err_code"] = "executor_nil_result"
-		extras["err_detail"] = execErr.Error()
+		if execErr != nil {
+			extras["err_detail"] = execErr.Error()
+		} else {
+			extras["err_detail"] = "executor returned nil result"
+		}
 		return TaskStatusFailed, extras
 	}
 	pr := result.Result

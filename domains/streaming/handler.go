@@ -3300,6 +3300,10 @@ func (h *ChatHandler) serveWithExecutor(
 			logCtx.OutboundMsgHashes = []byte(scResult.MsgHashes)
 			logCtx.OutboundSummaryMarker = scResult.SummaryMarker
 			logCtx.OutboundWindowTriggered = scResult.WindowTriggered
+			logCtx.OutboundTokenBand = string(scResult.TokenBand)
+			logCtx.OutboundPriorLayerTokens = scResult.PriorLayerTokens
+			logCtx.OutboundCompressionReason = scResult.CompressionReason
+
 		}
 		if scResult != nil && scResult.CompressionStrategy != "" {
 			logCtx.OutboundStrategy = scResult.CompressionStrategy
@@ -5045,6 +5049,8 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 		LatencyMs:      intPtr(result.LatencyMs),
 		Success:        true,
 		RequestStatus:  strPtr(telemetry.RequestStatusSuccess),
+		PromptTokens:   promptTokensEstimateFromContext(logCtx, requestBody),
+		UsageSource:    usageSourceForEstimate(logCtx, requestBody),
 		// 2026-06-20: explicitly clear ErrorKind so any stale
 		// error_kind from a prior failed UPDATE attempt for the
 		// same request_id is wiped. The UPSERT also handles this
@@ -5140,17 +5146,23 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 	// exists, prefer the session compressor value so the row is queryable.
 	// (v7 and v3 strategies are mutually exclusive in a single request.)
 
+	promptTokensFromLLM := false
 	if capture != nil {
 		m := capture.SummaryAsMap()
+
 		// Only set pointers when the captured value is non-zero. Some providers
+
 		// (e.g. minimax) include `"usage": null` in every SSE chunk, so the
 		// stream summary may have the keys present with value 0. Setting a
 		// non-nil *int to 0 would otherwise suppress the estimator fallback
 		// below (because the nil-check would be false).
 		if v, ok := m["prompt_tokens"].(int); ok && v > 0 {
 			reqLog.PromptTokens = &v
+			promptTokensFromLLM = true
 		}
+
 		if v, ok := m["completion_tokens"].(int); ok && v > 0 {
+
 			reqLog.CompletionTokens = &v
 		}
 		if v, ok := m["cache_read_tokens"].(int); ok && v > 0 {
@@ -5317,11 +5329,15 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 	if len(result.ResponseBody) > 0 {
 		pt, ct, crt, cwt := extractTokensFromResponseBody(result.ResponseBody)
 		if pt > 0 || ct > 0 {
-			// Only overwrite if not already set from streaming capture
-			if reqLog.PromptTokens == nil || *reqLog.PromptTokens == 0 {
+			// A receipt-time estimate is provisional. Replace it whenever the
+			// upstream response provides the real prompt token count.
+			if pt > 0 && !promptTokensFromLLM {
 				reqLog.PromptTokens = &pt
+				promptTokensFromLLM = true
 			}
+
 			if reqLog.CompletionTokens == nil || *reqLog.CompletionTokens == 0 {
+
 				reqLog.CompletionTokens = &ct
 			}
 			if crt > 0 && (reqLog.CacheReadTokens == nil || *reqLog.CacheReadTokens == 0) {
@@ -5413,8 +5429,11 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 			}
 		}
 
-	} else if reqLog.UsageSource == nil {
+	}
+	if promptTokensFromLLM {
 		reqLog.UsageSource = strPtr(UsageSourceLLM)
+	} else if reqLog.UsageSource == nil && (reqLog.PromptTokens != nil || reqLog.CompletionTokens != nil) {
+		reqLog.UsageSource = strPtr(UsageSourceEstimated)
 	}
 
 	// CO-2 (2026-08-15): 真实 usage 到达时，异步修正本请求此前可能已落库的
@@ -6317,6 +6336,8 @@ func (h *ChatHandler) recordInitialRequestLog(
 		GwTaskID:          strPtr(gwTaskID),
 		Success:           false,
 		RequestStatus:     strPtr(telemetry.RequestStatusInProgress),
+		PromptTokens:      promptTokensEstimateFromContext(autoCtx, requestBody),
+		UsageSource:       usageSourceForEstimate(autoCtx, requestBody),
 		RequestBody:       requestBodyText,
 		RequestPreview:    requestPreviewPtr,
 		TransformSummary:  transformSummaryPtr,
