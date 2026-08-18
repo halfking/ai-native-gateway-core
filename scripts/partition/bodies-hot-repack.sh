@@ -112,7 +112,7 @@ SQL
 
   swap)
     echo
-    echo "== 执行 swap 重写（旧表保留为 $BACKUP） =="
+    echo "== 执行 swap 重写（旧表保留为 ${BACKUP}） =="
     run_sql_tx <<SQL
 BEGIN;
 LOCK TABLE public.$TABLE IN ACCESS EXCLUSIVE MODE;
@@ -132,7 +132,7 @@ SQL
     echo "== 完成。后置校验："
     run_sql -c "SELECT pg_size_pretty(pg_total_relation_size('public.$TABLE')) AS new_size,
                        (SELECT count(*) FROM public.$TABLE) AS new_rows;"
-    echo "备份表：public.$BACKUP（确认稳定后可 DROP 释放 ~35GB；回滚用 rollback 脚本）"
+    echo "备份表：public.${BACKUP}（确认稳定后可 DROP 释放 ~35GB；回滚用 rollback 脚本）"
     ;;
 
   vacuum-full)

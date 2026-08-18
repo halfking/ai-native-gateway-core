@@ -159,7 +159,7 @@ log "父表数据: $PARENT_COUNT 行"
 if [[ "$VIEW_COUNT" -gt "$PARENT_COUNT" ]]; then
     ok "VIEW 包含更多数据（包含 hot 表）"
 else
-    warn "VIEW 数据可能不完整（VIEW=$VIEW_COUNT, 父表=$PARENT_COUNT）"
+    warn "VIEW 数据可能不完整（VIEW=${VIEW_COUNT}, 父表=${PARENT_COUNT}）"
 fi
 
 # ========================================
