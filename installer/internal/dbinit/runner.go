@@ -13,10 +13,11 @@ import (
 
 // Runner DB 初始化执行器
 type Runner struct {
-	CitusContainer string  // "kx-citus"
-	DBUser         string  // "kxuser"
-	DBName         string  // "llm_gateway"
-	SQLDir         string  // 包含 00-prereqs.sql / 01-schema.sql / 02-seed.sql
+	CitusContainer string // "kx-citus"
+	DBUser         string // "kxuser"
+	DBName         string // "llm_gateway"
+	SQLDir         string // 包含 00-prereqs.sql / 01-schema.sql / 02-seed.sql
+	StartupFiles   []string
 }
 
 // NewRunner 创建 Runner
@@ -26,6 +27,12 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 		DBUser:         dbUser,
 		DBName:         dbName,
 		SQLDir:         sqlDir,
+		StartupFiles: []string{
+			"536_stats_analytics_foundation.sql",
+			"537_usage_facts.sql",
+			"539_stats_reconciliation_tenant.sql",
+			"540_stats_event_inbox_consumer.sql",
+		},
 	}
 }
 
@@ -58,6 +65,13 @@ func (r *Runner) InitSchema(logger func(string)) error {
 			return fmt.Errorf("应用 %s 失败: %w", f.name, err)
 		}
 		logger(fmt.Sprintf("  ✅ %s 完成", f.name))
+	}
+	for _, name := range r.StartupFiles {
+		logger(fmt.Sprintf("  ▶ 应用 startup migration %s ...", name))
+		if err := r.applySQL(filepath.Join("startup", name)); err != nil {
+			return fmt.Errorf("应用 startup migration %s 失败: %w", name, err)
+		}
+		logger(fmt.Sprintf("  ✅ startup migration %s 完成", name))
 	}
 	return nil
 }
