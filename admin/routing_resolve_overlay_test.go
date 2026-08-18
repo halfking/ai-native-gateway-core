@@ -17,9 +17,9 @@ import (
 func TestApplyURSMOverlayPairsViewsByKey(t *testing.T) {
 	now := time.Now()
 	candidates := []resolveCandidate{
-		{CredentialID: 35, ModelName: "glm-5.2", Routable: true, RuntimeRoutable: true},
-		{CredentialID: 18, ModelName: "z-ai/glm-5.2", Routable: true, RuntimeRoutable: true},
-		{CredentialID: 8, ModelName: "z-ai/glm-5.2", Routable: true, RuntimeRoutable: true},
+		{CredentialID: 35, ModelName: "glm-5.2", Routable: true, RuntimeRoutable: true, DBEligible: true},
+		{CredentialID: 18, ModelName: "z-ai/glm-5.2", Routable: true, RuntimeRoutable: true, DBEligible: true},
+		{CredentialID: 8, ModelName: "z-ai/glm-5.2", Routable: true, RuntimeRoutable: true, DBEligible: true},
 	}
 	// Deliberately shuffled relative to the candidate order, mirroring the
 	// sort-by-score contract of FilterAndScore.
@@ -61,26 +61,26 @@ func TestApplyURSMOverlayPairsViewsByKey(t *testing.T) {
 // fields after the overlay runs.
 func TestApplyURSMOverlayWritesBackMutations(t *testing.T) {
 	candidates := []resolveCandidate{
-		{CredentialID: 22, ModelName: "glm-5.2", Routable: true, RuntimeRoutable: true},
-		{CredentialID: 7, ModelName: "glm-5.2", Routable: true, RuntimeRoutable: true},
+		{CredentialID: 22, ModelName: "glm-5.2", Routable: true, RuntimeRoutable: true, DBEligible: true},
+		{CredentialID: 7, ModelName: "glm-5.2", Routable: true, RuntimeRoutable: true, DBEligible: true},
 	}
-	// One view, one miss: the miss must keep the T4 defaults (available,
-	// closed circuit) instead of the zero values the discarded copy left
-	// behind (Available=false, CircuitState="").
+	// One view, one miss: the miss is explicitly marked unavailable because
+	// authoritative request routing treats an absent URSM node as unavailable.
 	views := []v2api.NodeView{
 		{CredentialID: 22, RawModel: "glm-5.2", Available: true, FailStreak: 0},
 	}
 
 	applyURSMOverlay(candidates, views, time.Now())
 
-	if !candidates[1].Available {
-		t.Fatalf("Redis-miss candidate should keep default Available=true (T4 contract), got false")
+	if candidates[1].Available {
+		t.Fatalf("Redis-miss candidate must be unavailable in authoritative diagnostics")
 	}
-	if candidates[1].CircuitState != "closed" {
-		t.Fatalf("Redis-miss candidate should keep default circuit closed, got %q", candidates[1].CircuitState)
+	if candidates[1].RuntimeRoutable || candidates[1].Routable {
+		t.Fatalf("Redis-miss candidate must not be runtime-routable")
 	}
-	if candidates[1].SuccessRate != 0.9 {
-		t.Fatalf("Redis-miss candidate should keep default success rate 0.9, got %v", candidates[1].SuccessRate)
+	if candidates[1].RuntimeState != "missing" || candidates[1].BlockReason != "ursm_node_missing" {
+		t.Fatalf("Redis-miss diagnostics = state=%q reason=%q, want missing/ursm_node_missing",
+			candidates[1].RuntimeState, candidates[1].BlockReason)
 	}
 	if !candidates[0].Available || candidates[0].CircuitState != "closed" {
 		t.Fatalf("overlaid candidate lost runtime defaults: available=%v circuit=%q",
@@ -94,8 +94,8 @@ func TestApplyURSMOverlayWritesBackMutations(t *testing.T) {
 func TestApplyURSMOverlayCoolUntilFlipsCircuit(t *testing.T) {
 	now := time.Now()
 	candidates := []resolveCandidate{
-		{CredentialID: 1, ModelName: "m", Routable: true, RuntimeRoutable: true},
-		{CredentialID: 2, ModelName: "m", Routable: true, RuntimeRoutable: true},
+		{CredentialID: 1, ModelName: "m", Routable: true, RuntimeRoutable: true, DBEligible: true},
+		{CredentialID: 2, ModelName: "m", Routable: true, RuntimeRoutable: true, DBEligible: true},
 	}
 	views := []v2api.NodeView{
 		{CredentialID: 1, RawModel: "m", Available: true, CoolUntil: now.Add(10 * time.Minute)},
