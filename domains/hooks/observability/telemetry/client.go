@@ -1877,6 +1877,13 @@ func shouldClaimFinalSuccess(entry *RequestLogEntry) bool {
 //   - concurrent double claims lose the race against the partial unique
 //     index uq_request_logs_hot_final_success_session (SQLSTATE 23505).
 //
+// Storage note: The UPDATE targets request_logs_hot (heap storage) NOT the
+// parent partitioned table request_logs. Citus Columnar partitions do NOT
+// support UPDATE/CTID scans (SQLSTATE 0A000: "UPDATE and CTID scans not
+// supported for ColumnarScan"). The hot table is heap and supports UPDATE.
+// The NOT EXISTS subquery checks the parent table (which may have Columnar
+// partitions) but that is a SELECT, which Columnar supports.
+//
 // Failure semantics (all non-fatal, business row still commits):
 //   - 23505: lost race → row degrades to a normal success (superseded);
 //   - any other error (e.g. 42703 on a pre-532 schema during rolling deploy):
