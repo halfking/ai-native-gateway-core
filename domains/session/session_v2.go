@@ -57,6 +57,13 @@ func (sm *Manager) CreateV2(ctx context.Context, apiKeyID int, tenantID, deviceS
 		"devices":             string(devicesJSON),
 		"provider_cache_info": string(cacheInfoJSON),
 	})
+	// 2026-08-18: this Expire was missing, so every v2 session hash was
+	// persistent. Sessions with no follow-up state write (the majority —
+	// last_active == created_at) never hit the TTL re-arm done by
+	// SetTitle/UpdateState/etc., accumulating ~90k dead keys in the shared
+	// session Redis. The session:key index below DID expire, orphaning the
+	// main hash forever.
+	pipe.Expire(ctx, "session:"+sessionID, sm.ttl)
 	pipe.Set(ctx, sessionKeyRedis, sessionID, sm.ttl)
 	pipe.SAdd(ctx, activeKeyRedis, sessionID)
 	pipe.Expire(ctx, activeKeyRedis, sm.ttl)
