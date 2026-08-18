@@ -23,12 +23,18 @@ PATH="$TMP/bin:$PATH" PSQL_LOG="$TMP/psql.log" DATABASE_URL='postgres://runner-t
 
 grep -Fx 'Applying ursm/080-ursm-key-migration-ledger.sql' "$TMP/runner.out" >/dev/null
 grep -Fx 'Applying ursm/081-ursm-key-migration-ledger-add-rollback-deadline.sql' "$TMP/runner.out" >/dev/null
+grep -Fx 'Applying ursm/082-ursm-key-migration-state-machine.sql' "$TMP/runner.out" >/dev/null
+grep -Fx 'Applying ursm/083-ursm-key-migration-add-dual-checkpoint.sql' "$TMP/runner.out" >/dev/null
 grep -F -- '-v scope=ursm -v version=080 -v name=080-ursm-key-migration-ledger.sql' "$TMP/psql.log" >/dev/null
 grep -F -- '-v scope=ursm -v version=081 -v name=081-ursm-key-migration-ledger-add-rollback-deadline.sql' "$TMP/psql.log" >/dev/null
+grep -F -- '-v scope=ursm -v version=082 -v name=082-ursm-key-migration-state-machine.sql' "$TMP/psql.log" >/dev/null
+grep -F -- '-v scope=ursm -v version=083 -v name=083-ursm-key-migration-add-dual-checkpoint.sql' "$TMP/psql.log" >/dev/null
 
 OUT="$TMP/bundle"
 DRY_RUN=1 "$ROOT/scripts/build-db-release-bundle.sh" runner-test --out "$OUT" >/dev/null
 grep -F -- '-- Source: sql/migrations/080-ursm-key-migration-ledger.sql' "$OUT/db/03-current-upgrade.sql" >/dev/null
 grep -F -- '-- Source: sql/migrations/081-ursm-key-migration-ledger-add-rollback-deadline.sql' "$OUT/db/03-current-upgrade.sql" >/dev/null
+grep -F -- '-- Source: sql/migrations/082-ursm-key-migration-state-machine.sql' "$OUT/db/03-current-upgrade.sql" >/dev/null
+grep -F -- '-- Source: sql/migrations/083-ursm-key-migration-add-dual-checkpoint.sql' "$OUT/db/03-current-upgrade.sql" >/dev/null
 
 printf 'ursm root migration runner regression tests: passed\n'

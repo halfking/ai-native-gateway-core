@@ -123,7 +123,7 @@ func (a *CleanupAuthorization) validate(now time.Time) error {
 	if a.Metadata.Checkpoint != CheckpointCleanup || a.Run.Checkpoint != CheckpointCleanup {
 		return fmt.Errorf("migration: cleanup authorization checkpoint must be cleanup")
 	}
-	if a.Metadata.Mode == ModeLegacy {
+	if a.Metadata.Mode == ModeLegacy || a.Run.Mode == ModeLegacy {
 		return fmt.Errorf("migration: cleanup authorization refused in mode=legacy")
 	}
 	if a.Metadata.RollbackDeadline.IsZero() || a.Run.RollbackDeadline.IsZero() {
@@ -161,6 +161,9 @@ func LoadCleanupAuthorization(ctx context.Context, metadata *MetadataHash, pg *P
 	run, err := pg.LoadRun(ctx, live.LedgerID)
 	if err != nil {
 		return nil, fmt.Errorf("migration: cleanup load PG run: %w", err)
+	}
+	if err := pg.HasApprovedCleanupPromotion(ctx, run.LedgerID, run.Owner, run.CutoverEpoch); err != nil {
+		return nil, fmt.Errorf("migration: cleanup durable promotion evidence: %w", err)
 	}
 	entries, err := pg.LoadEntries(ctx, live.LedgerID)
 	if err != nil {

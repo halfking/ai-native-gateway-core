@@ -46,7 +46,10 @@ func TestPGStoreOpenRunAfter080And081(t *testing.T) {
 	execMigrationScript(t, ctx, dsn, migrationScriptPath(t, "080-ursm-key-migration-ledger.sql"))
 	assertRollbackDeadlineColumn(t, ctx, pool, false)
 	execMigrationScript(t, ctx, dsn, migrationScriptPath(t, "081-ursm-key-migration-ledger-add-rollback-deadline.sql"))
-	execMigrationScript(t, ctx, dsn, migrationScriptPath(t, "081-ursm-key-migration-ledger-add-rollback-deadline.sql"))
+	execMigrationScript(t, ctx, dsn, migrationScriptPath(t, "082-ursm-key-migration-state-machine.sql"))
+	execMigrationScript(t, ctx, dsn, migrationScriptPath(t, "082-ursm-key-migration-state-machine.sql"))
+	execMigrationScript(t, ctx, dsn, migrationScriptPath(t, "083-ursm-key-migration-add-dual-checkpoint.sql"))
+	execMigrationScript(t, ctx, dsn, migrationScriptPath(t, "083-ursm-key-migration-add-dual-checkpoint.sql"))
 	assertRollbackDeadlineColumn(t, ctx, pool, true)
 
 	deadline := time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
@@ -57,7 +60,8 @@ func TestPGStoreOpenRunAfter080And081(t *testing.T) {
 		Owner:             "migration-test-owner",
 		KeySchemaMode:     store.KeySchemaModeDual,
 		PreflightChecksum: "checksum",
-		Checkpoint:        CheckpointPreflight,
+		Checkpoint:        CheckpointCopy,
+		CutoverEpoch:      7,
 		RollbackDeadline:  deadline.Format(time.RFC3339Nano),
 		Total:             3,
 		Migratable:        1,
@@ -110,18 +114,45 @@ func TestPGStoreOpenRunAfter080And081(t *testing.T) {
 		t.Fatalf("entries = count:%d tenant:%q, want count:%d tenant:a", count, tenant, len(entries))
 	}
 
-	if _, err := pool.Exec(ctx, `UPDATE ursm_key_migration_runs SET checkpoint = 'cleanup' WHERE ledger_id = $1`, ledgerID); err != nil {
-		t.Fatalf("set cleanup checkpoint: %v", err)
+	pttl := int64(-1)
+	outcome := CopyOutcome{
+		LedgerID: ledgerID, Owner: run.Owner, Epoch: run.CutoverEpoch,
+		SourceKey: legacyNodeA, TargetKey: canonicalA, Generation: 1,
+		FieldChecksum: "legacy-checksum", State: StatusCopied, CopiedPTTLMs: &pttl,
 	}
-	if _, err := pool.Exec(ctx, `UPDATE ursm_key_migration_entries SET state = 'copied' WHERE ledger_id = $1 AND source_key = $2`, ledgerID, legacyNodeA); err != nil {
-		t.Fatalf("prepare copied entry: %v", err)
+	if err := pgStore.PersistCopyOutcome(ctx, outcome); err != nil {
+		t.Fatalf("persist durable copy outcome: %v", err)
 	}
+	if err := pgStore.PersistCopyOutcome(ctx, outcome); err != nil {
+		t.Fatalf("replay durable copy outcome: %v", err)
+	}
+	stale := outcome
+	stale.Epoch++
+	if err := pgStore.PersistCopyOutcome(ctx, stale); err == nil {
+		t.Fatal("stale copy epoch must be fenced")
+	}
+
+	evidence := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	advance := func(from, to Checkpoint, epoch int64, mode Mode) {
+		t.Helper()
+		if err := pgStore.advanceRun(ctx, PromotionRequest{
+			LedgerID: ledgerID, Owner: run.Owner, ExpectedCheckpoint: from, ExpectedEpoch: epoch,
+			Checkpoint: to, Mode: mode, Actor: run.Owner, ApprovedBy: "migration-test-reviewer",
+			EvidenceSHA256: evidence, EvidenceRef: "test://evidence/" + string(to),
+		}, deadline); err != nil {
+			t.Fatalf("advance %s to %s: %v", from, to, err)
+		}
+	}
+	advance(CheckpointCopy, CheckpointCoverage, 7, ModeDual)
+	advance(CheckpointCoverage, CheckpointDual, 8, ModeDual)
+	advance(CheckpointDual, CheckpointObserve, 9, ModeDual)
+	advance(CheckpointObserve, CheckpointCleanup, 10, ModeCanonical)
 	loadedRun, err := pgStore.LoadRun(ctx, ledgerID)
 	if err != nil {
 		t.Fatalf("load run: %v", err)
 	}
-	if loadedRun.Checkpoint != CheckpointCleanup || !loadedRun.RollbackDeadlineTime.Equal(deadline) {
-		t.Fatalf("loaded run = %+v, want cleanup checkpoint and deadline %s", loadedRun, deadline)
+	if loadedRun.Checkpoint != CheckpointCleanup || loadedRun.CutoverEpoch != 11 || !loadedRun.RollbackDeadlineTime.Equal(deadline) {
+		t.Fatalf("loaded run = %+v, want cleanup checkpoint, epoch 10, and deadline %s", loadedRun, deadline)
 	}
 	loadedEntries, err := pgStore.LoadEntries(ctx, ledgerID)
 	if err != nil {
@@ -142,8 +173,20 @@ func TestPGStoreOpenRunAfter080And081(t *testing.T) {
 	if err := pgStore.ClaimEntryForCleanup(ctx, ledgerID, copied.SourceKey, copied.FieldChecksum); err != nil {
 		t.Fatalf("claim cleanup: %v", err)
 	}
-	if err := pgStore.ClaimEntryForCleanup(ctx, ledgerID, copied.SourceKey, copied.FieldChecksum); err == nil {
-		t.Fatal("second cleanup claim must fail closed")
+	if _, err := pool.Exec(ctx, `UPDATE ursm_key_migration_entries SET cleanup_claimed_at = $1 WHERE ledger_id = $2 AND source_key = $3`, deadline, ledgerID, copied.SourceKey); err != nil {
+		t.Fatalf("set fenced claim clock: %v", err)
+	}
+	if err := pgStore.RecoverStaleCleanupClaim(ctx, ledgerID, copied.SourceKey, run.Owner, 11, time.Hour, deadline); err == nil {
+		t.Fatal("unexpired cleanup claim must not be recovered")
+	}
+	if _, err := pool.Exec(ctx, `UPDATE ursm_key_migration_entries SET cleanup_claimed_at = $1 WHERE ledger_id = $2 AND source_key = $3`, deadline.Add(-2*time.Hour), ledgerID, copied.SourceKey); err != nil {
+		t.Fatalf("age fenced claim: %v", err)
+	}
+	if err := pgStore.RecoverStaleCleanupClaim(ctx, ledgerID, copied.SourceKey, run.Owner, 11, time.Hour, deadline); err != nil {
+		t.Fatalf("recover stale claim: %v", err)
+	}
+	if err := pgStore.ClaimEntryForCleanup(ctx, ledgerID, copied.SourceKey, copied.FieldChecksum); err != nil {
+		t.Fatalf("reclaim cleanup after stale recovery: %v", err)
 	}
 	if err := pgStore.MarkEntryCleaned(ctx, ledgerID, copied.SourceKey, copied.FieldChecksum); err != nil {
 		t.Fatalf("mark cleaned: %v", err)

@@ -91,7 +91,7 @@ migration_files() {
     while IFS= read -r file; do
       filename=$(basename "$file")
       case "$filename" in
-        080-ursm-key-migration-ledger.sql|081-ursm-key-migration-ledger-add-rollback-deadline.sql) ;;
+        080-ursm-key-migration-ledger.sql|081-ursm-key-migration-ledger-add-rollback-deadline.sql|082-ursm-key-migration-state-machine.sql|083-ursm-key-migration-add-dual-checkpoint.sql) ;;
         *) continue ;;
       esac
       version=${filename%%-*}
