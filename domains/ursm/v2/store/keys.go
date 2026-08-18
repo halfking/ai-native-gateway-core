@@ -63,6 +63,14 @@ func ParseNodeKey(prefix, key string) (ParsedNodeKey, bool) {
 	if len(parts) < 2 {
 		return ParsedNodeKey{}, false
 	}
+	// The k2 marker is reserved for the canonical grammar. The loose
+	// legacy branches below must never consume it: an all-digit base64url
+	// tenant segment (b64 of some tenants is only 0-9) would otherwise
+	// "successfully" decode as {tenant:"k2", cid:<digits>} with a wrong
+	// tuple. Canonical keys parse via ParseNodeKeyAny only.
+	if parts[0] == "k2" {
+		return ParsedNodeKey{}, false
+	}
 	if parts[0] == "t" && len(parts) >= 4 && isNumericTenant(parts[1]) {
 		if parts[1] == "" {
 			return ParsedNodeKey{}, false
@@ -119,26 +127,26 @@ func isNumericTenant(tenant string) bool {
 	return true
 }
 
-// BindingKey has no callers since the v2 store landed. Deprecated: kept only
-// so the frozen key surface stays inspectable; do not use in new code.
+// BindingKey has no callers since the v2 store landed; it is kept only so
+// the frozen key surface stays inspectable.
 //
-// Deprecated: no callers.
+// Deprecated: no callers; do not use in new code.
 func BindingKey(prefix string, cid int, raw string) string {
 	return fmt.Sprintf("%sbinding:%d:%s", prefix, cid, raw)
 }
 
-// CredentialKey has no callers since the v2 store landed. Deprecated: kept
-// only so the frozen key surface stays inspectable; do not use in new code.
+// CredentialKey has no callers since the v2 store landed; it is kept only so
+// the frozen key surface stays inspectable.
 //
-// Deprecated: no callers.
+// Deprecated: no callers; do not use in new code.
 func CredentialKey(prefix string, cid int) string {
 	return fmt.Sprintf("%scredential:%d", prefix, cid)
 }
 
-// ProviderKey has no callers since the v2 store landed. Deprecated: kept
-// only so the frozen key surface stays inspectable; do not use in new code.
+// ProviderKey has no callers since the v2 store landed; it is kept only so
+// the frozen key surface stays inspectable.
 //
-// Deprecated: no callers.
+// Deprecated: no callers; do not use in new code.
 func ProviderKey(prefix string, pid int) string {
 	return fmt.Sprintf("%sprovider:%d", prefix, pid)
 }
