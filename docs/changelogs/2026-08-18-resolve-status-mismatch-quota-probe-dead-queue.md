@@ -88,3 +88,38 @@
    反映 URSM 真实状态；"view out of order" 日志消失。
 3. 此后智谱 5h 限额耗尽会走 periodic 通道：恢复时间对齐下一 5 小时
    边界，到期 `credential_recovery` 自动翻回，探活兜底。
+
+## 6. 追加（同日第二起）：minimax-m3 "没有可用节点"（no_candidates）
+
+用户复报 `minimax-m3` 解析无可用节点。生产证据：
+
+- `request_logs`：2026-08-18 13:41:53 与 13:45:41 两条
+  `error_kind=no_candidates`；
+- 执行器日志：`executor: no candidates after router,
+  input_candidates=2, reasons={availability_check_failed:2}`；
+- URSM 快照（tenant=default）：(36, minimax-m3)
+  `available=f, fail_streak=3, cool_until=13:35:17` —— cool 已过期
+  6 分钟仍不可用；(32, minimax-m3) 无 Redis key（从未观测）→ 请求面
+  T4 保护性拒绝；(21, MiniMax-M3) 可用但不在该请求的输入候选里；
+- 13:50 服务重启后恢复（内存态重建 + 后续成功事件清除禁用位）。
+
+### 根因：URSM 熔断"冷却过期不半开"的读写不对称死锁
+
+- 写侧 `record_request.lua`：fail_streak 达限 → `disabled=1,
+  available=0, cool_until_ms=now+cool`；其恢复分支（lua:232）只在
+  **新事件到达**时清禁用位（半开语义）。
+- 读侧 `store/pipeline.go`：`available = hash["available"]=="1"` 直接
+  信任粘滞位；`cool_until` 只会在"未来"强制不可用，**过期不恢复**。
+- 路由不派流量 → 没有新事件 → 写侧恢复永不触发；fast-probe 队列
+  又是死的（本日修复 1）→ 没有探活事件 → 节点不可用直到进程重启。
+
+### 修复
+
+`domains/ursm/v2/store/pipeline.go`：`cool_until_ms` 存在且已过期时，
+将节点读为 available（半开重试探）。与写侧 lua:232 语义对齐：若下一
+请求再失败，写侧按 `cool × 2^disable_count`（封顶 30min）指数退避重新
+禁用。`disabled=1` 且无 cool 窗口（管理持有类）不自动恢复。
+
+测试：`pipeline_test.go` 新增过期 cool 半开 / 未来 cool 仍拦 / 无 cool
+的 disabled 仍拦 三个用例。
+
