@@ -15,6 +15,30 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/summarystore"
 )
 
+func TestNewAutoSummaryGeneratorReadsEnabledEnv(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  bool
+	}{
+		{name: "defaults enabled", want: true},
+		{name: "false disables", value: "false", want: false},
+		{name: "true enables", value: "true", want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.value == "" {
+				unsetEnvForTest(t, "LLM_GATEWAY_AUTO_SUMMARY_ENABLED")
+			} else {
+				t.Setenv("LLM_GATEWAY_AUTO_SUMMARY_ENABLED", tt.value)
+			}
+			if got := NewAutoSummaryGenerator(nil, nil).enabled; got != tt.want {
+				t.Fatalf("NewAutoSummaryGenerator().enabled = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 // TestSplitCorpusIntoChunks (2026-08-06) — guards the map-reduce splitter
 // that decides when a session is "long enough" to need chunking. Pure
 // function, no DB or HTTP dependencies.
