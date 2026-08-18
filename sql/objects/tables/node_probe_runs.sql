@@ -35,6 +35,6 @@ CREATE TABLE public.node_probe_runs (
     timeout_at_ms integer,
     via_proxy boolean,
     CONSTRAINT node_probe_runs_attempt_check CHECK (((attempt >= 1) AND (attempt <= 7))),
-    CONSTRAINT node_probe_runs_trigger_kind_check CHECK ((trigger_kind = ANY (ARRAY['request_failure'::text, 'manual'::text, 'credential_recovery'::text, 'sync_request'::text])))
+    CONSTRAINT node_probe_runs_trigger_kind_check CHECK ((trigger_kind = ANY (ARRAY['request_failure'::text, 'manual'::text, 'credential_recovery'::text, 'sync_request'::text, 'periodic'::text, 'admin'::text, 'integrity_probe_planner'::text, 'selfcheck'::text, 'external_async'::text])))
 );
 
