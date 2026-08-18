@@ -39,13 +39,17 @@ services:
       - alertmanager-data:/alertmanager
     # 2026-08-18 credential 17 follow-up: alertmanager 0.26 does not
     # resolve ${CREDENTIAL_TEAM_WEBHOOK_URL} inline (issue prom/alertmanager
-    # #2719). We substitute ##CREDENTIAL_TEAM_WEBHOOK_URL## in
-    # alertmanager.yml via sed at container start so the secret never
-    # lives in the committed file. The ##...## wrapper avoids accidental
-    # matches inside comment blocks (e.g. the docstring above uses the
-    # un-wrapped form for readability). If CREDENTIAL_TEAM_WEBHOOK_URL is
-    # unset the placeholder is left untouched and webhook delivery will
-    # fail loudly — preferable to a silently dropped alert.
+    # #2719). We substitute the placeholder token in alertmanager.yml via sed
+    # at container start so the secret never lives in the committed file. The
+    # placeholder is `https://placeholder.invalid/##CREDENTIAL_TEAM_WEBHOOK_URL##`
+    # — the `https://placeholder.invalid/` prefix (RFC-2606 reserved TLD) is
+    # kept so an unconfigured deploy fails loudly instead of hitting a real
+    # endpoint. The sed MUST match the whole prefix+token: `s|https://
+    # placeholder.invalid/##CREDENTIAL_TEAM_WEBHOOK_URL##|URL|g`. A suffix-only
+    # substitution (`s|##CREDENTIAL_TEAM_WEBHOOK_URL##|URL|g`) would yield the
+    # malformed `https://placeholder.invalid/URL` and silently drop every alert.
+    # If CREDENTIAL_TEAM_WEBHOOK_URL is unset the placeholder is left untouched
+    # and webhook delivery fails loudly — preferable to a silently dropped alert.
     environment:
       - CREDENTIAL_TEAM_WEBHOOK_URL=${CREDENTIAL_TEAM_WEBHOOK_URL:-}
     entrypoint:
@@ -55,7 +59,7 @@ services:
         set -eu
         cp /etc/alertmanager/alertmanager.yml /tmp/alertmanager.rendered.yml
         if [ -n "$$CREDENTIAL_TEAM_WEBHOOK_URL" ]; then
-          sed -i "s|##CREDENTIAL_TEAM_WEBHOOK_URL##|$$CREDENTIAL_TEAM_WEBHOOK_URL|g" /tmp/alertmanager.rendered.yml
+          sed -i "s|https://placeholder.invalid/##CREDENTIAL_TEAM_WEBHOOK_URL##|$$CREDENTIAL_TEAM_WEBHOOK_URL|g" /tmp/alertmanager.rendered.yml
         fi
         exec /bin/alertmanager \
           --config.file=/tmp/alertmanager.rendered.yml \
