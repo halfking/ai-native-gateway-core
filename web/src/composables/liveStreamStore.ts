@@ -911,9 +911,26 @@ function handleLaneIdleCheck_UNUSED(laneIds: string[], backendTs: string) {
   }
 }
 
+function normalizeLaneTiles(lane: LiveStreamLane) {
+  const tiles = [...lane.requests]
+  mergeTilesById(lane.requests, tiles)
+}
+
 /** Merge server snapshot without dropping lanes that disappeared from Redis. */
 function mergeSnapshotFromServer(incoming: LiveStreamSnapshot) {
   if (!liveStreamState.snapshot) {
+    // The backend serializes lane tiles newest-first for its own replay/cap
+    // semantics. The UI contract is the opposite: FIFO, oldest on the left
+    // and newest on the right. Normalize the first snapshot too; incremental
+    // merges already pass through mergeTilesById below.
+    for (const dim of ['vendor', 'provider', 'model'] as const) {
+      for (const lane of incoming.dimensions[dim] || []) {
+        normalizeLaneTiles(lane)
+      }
+      for (const lane of incoming.detail_dimensions[dim] || []) {
+        normalizeLaneTiles(lane)
+      }
+    }
     liveStreamState.snapshot = incoming
     return
   }
@@ -1060,11 +1077,15 @@ function mergeLanesById(existing: LiveStreamLane[], incoming: LiveStreamLane[]) 
   for (const lane of incoming) {
     const idx = byId.get(lane.id)
     if (idx === undefined) {
-      // New lane — append at the tail. Keep the relative order
-      // the backend produced for any other brand-new lanes in the
-      // same delta.
+      // New lane — normalize its tiles before appending. The backend sends
+      // lane requests newest-first, while the UI renders FIFO left-to-right.
+      const normalizedLane = {
+        ...lane,
+        requests: [...lane.requests],
+      }
+      normalizeLaneTiles(normalizedLane)
       byId.set(lane.id, existing.length)
-      existing.push(lane)
+      existing.push(normalizedLane)
     } else {
       // Existing lane — mutate in place. Don't touch .id (it's the
       // merge key) or .dimension (it's structural).

@@ -425,6 +425,77 @@ describe('mergeTilesById — deterministic ordering (no-jump invariants)', () =>
     expect(ids).toEqual(['a', 'b', 'c'])
   })
 
+  it('normalizes newest-first refresh snapshots to oldest-left order', () => {
+    const newestFirst = [
+      { ...tile('newest'), timestamp: tsAt(30) },
+      { ...tile('middle'), timestamp: tsAt(20) },
+      { ...tile('oldest'), timestamp: tsAt(10) },
+    ]
+
+    __testing.resetStream()
+    __testing.handleEnvelope({
+      type: 'snapshot_refresh',
+      ts: tsAt(30),
+      snapshot: {
+        summary: { total: 3, success: 3, failure: 0 },
+        dimensions: {
+          vendor: [lane('openai', 3, [...newestFirst])],
+          provider: [lane('openai', 3, [...newestFirst])],
+          model: [lane('gpt-4o', 3, [...newestFirst])],
+        },
+        detail_dimensions: {
+          vendor: [lane('openai', 3, [...newestFirst])],
+          provider: [lane('openai', 3, [...newestFirst])],
+          model: [lane('gpt-4o', 3, [...newestFirst])],
+        },
+        dimension_legends: { vendor: [], provider: [], model: [] },
+        status_legends: [],
+        latest_request_ts: tsAt(30),
+      },
+    })
+
+    for (const dimension of ['vendor', 'provider', 'model'] as const) {
+      const requests = __testing.state.snapshot!.dimensions[dimension][0].requests
+      expect(requests.map((request) => request.request_id)).toEqual([
+        'oldest',
+        'middle',
+        'newest',
+      ])
+      const detailRequests = __testing.state.snapshot!.detail_dimensions[dimension][0].requests
+      expect(detailRequests.map((request) => request.request_id)).toEqual([
+        'oldest',
+        'middle',
+        'newest',
+      ])
+    }
+  })
+
+  it('normalizes a newly created delta lane before appending it', () => {
+    const newestFirst = [
+      { ...tile('newest'), timestamp: tsAt(30) },
+      { ...tile('oldest'), timestamp: tsAt(10) },
+    ]
+
+    __testing.resetStream()
+    __testing.handleEnvelope({
+      type: 'request',
+      ts: tsAt(30),
+      delta: {
+        summary: { total: 2, success: 2, failure: 0 },
+        changed_lanes: {
+          vendor: [lane('new-vendor', 2, newestFirst)],
+          provider: [],
+          model: [],
+        },
+        dimension_legends: { vendor: [], provider: [], model: [] },
+        status_legends: [],
+      },
+    })
+
+    expect(__testing.state.snapshot!.dimensions.vendor[0].requests.map((request) => request.request_id))
+      .toEqual(['oldest', 'newest'])
+  })
+
   it('truncates to 20 keeping the NEWEST tiles when over capacity', () => {
     const incoming: LiveStreamTile[] = []
     // 25 tiles, oldest first in the authoritative sense
