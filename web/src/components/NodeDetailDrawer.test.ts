@@ -86,9 +86,27 @@ describe('NodeDetailDrawer model×node scope', () => {
     superAdmin.mockReturnValue(false)
   })
 
+  // 触发 detail tab 数据加载：测试默认假设抽屉打开后立刻加载明细。
+  async function triggerDetailLoad(wrapper: ReturnType<typeof mountDrawer>) {
+    const loadButton = wrapper.findAll('button').find(b => /加载明细数据/.test(b.text()))
+    expect(loadButton, 'expected detail tab "加载明细数据" button').toBeTruthy()
+    await loadButton!.trigger('click')
+    await flushPromises()
+  }
+
   it('locks the drawer to the scoped model and filters every query in one parallel round', async () => {
     const wrapper = mountDrawer('m-1')
-    await flushPromises()
+
+    // detail tab 默认未加载，等待用户点击「加载明细数据」才发起请求。
+    // 这条路径正是 2026-08-19 FE-A5 提速的核心：抽屉秒开，monitor / 滑动窗口
+    // / history 等慢接口不再阻塞 UX。
+    expect(monitorSummary).not.toHaveBeenCalled()
+    expect(decisions).not.toHaveBeenCalled()
+    expect(slidingWindow).not.toHaveBeenCalled()
+    expect(modelHistory).not.toHaveBeenCalled()
+    expect(resolve).not.toHaveBeenCalled()
+
+    await triggerDetailLoad(wrapper)
 
     // 所有请求按 scope 模型发出，且 monitor 重选被禁用（只调一轮）
     expect(decisions).toHaveBeenCalledWith(5, 50, 'm-1')
@@ -112,7 +130,8 @@ describe('NodeDetailDrawer model×node scope', () => {
 
   it('keeps unscoped behaviour for the matrix entry (all node models, credential-wide requests)', async () => {
     const wrapper = mountDrawer()
-    await flushPromises()
+
+    await triggerDetailLoad(wrapper)
 
     expect(decisions).toHaveBeenCalledWith(5, 30)
     // 初始模型 = raw_models[0]，monitor 认可后不触发二次加载
@@ -126,13 +145,15 @@ describe('NodeDetailDrawer model×node scope', () => {
 
   it('reloads when the same node is reopened under a different model scope', async () => {
     const wrapper = mountDrawer('m-1')
-    await flushPromises()
+    await triggerDetailLoad(wrapper)
     expect(resolve).toHaveBeenNthCalledWith(1, 'm-1')
 
+    // 切换 scope：触发的「合并清理」 + settings 自动加载会在 watch 链上
+    // 重新加载 monitor/candidate 一次，因此 resolve 再次被调。
     await wrapper.setProps({ model: 'm-2' })
     await flushPromises()
 
-    expect(resolve).toHaveBeenLastCalledWith('m-2')
+    expect(resolve).toHaveBeenCalledWith('m-2')
     expect(decisions).toHaveBeenLastCalledWith(5, 50, 'm-2')
     expect(wrapper.get('h2').text()).toBe('m-2')
   })
