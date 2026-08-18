@@ -40,7 +40,7 @@ export default {
     triggerMeta: 'ノード {total}',
     abnormalCount: '異常 {count}',
     empty: 'ノードデータがまだありません',
-    emptyHint: 'node_update 推送を待機中',
+    emptyHint: 'node_update のプッシュを待機中',
     modalSubtitle: '全ノードをヘルス別にグループ化した全景。カードをクリックしてモデル × ノード詳細とメンテナンスを表示',
     groupDanger: '⚠️ 異常ノード ({count})',
     groupWarn: '⚡ 警告ノード ({count})',

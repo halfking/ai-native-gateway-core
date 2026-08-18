@@ -142,6 +142,24 @@ describe('NodeStatusMatrix', () => {
     expect(wrapper.find('.nd-drawer').exists()).toBe(false)
   })
 
+  it('supports keyboard access and closes the panorama with Escape', async () => {
+    const wrapper = mountMatrix()
+    await wrapper.get('.nm-trigger').trigger('click')
+
+    const groupHeader = wrapper.get('.nm-group-header')
+    expect(groupHeader.element.tagName).toBe('BUTTON')
+    expect(groupHeader.attributes('aria-expanded')).toBe('true')
+    expect(wrapper.get('.nm-card').element.tagName).toBe('BUTTON')
+
+    await groupHeader.trigger('click')
+    expect(wrapper.get('.nm-group-header').attributes('aria-expanded')).toBe('false')
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    await flushPromises()
+    expect(wrapper.find('.nm-modal').exists()).toBe(false)
+    expect(wrapper.get('.nm-trigger').attributes('aria-expanded')).toBe('false')
+  })
+
   it('renders the empty state inside the modal when no node_update data', async () => {
     liveStreamState.nodes = []
     const wrapper = mountMatrix()

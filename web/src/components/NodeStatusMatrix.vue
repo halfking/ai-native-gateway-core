@@ -10,7 +10,7 @@
  *
  * 设计约束：var(--kx-*) token；三态；操作有 loading/成功/失败反馈；禁用需 confirm。
  */
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onBeforeUnmount } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { nodesRef, type LiveNodeStatus } from '../composables/liveStreamStore'
 import NodeDetailDrawer from './NodeDetailDrawer.vue'
@@ -102,11 +102,30 @@ function closeDialog() {
 
 // 关闭弹窗时同步清掉详情抽屉的引用并把抽屉状态重置，
 // 避免关闭后抽屉缓存的 stale 状态随再次打开泄漏。
+let escapeHandler: ((event: KeyboardEvent) => void) | null = null
+function attachEscapeClose() {
+  if (escapeHandler) return
+  escapeHandler = (event: KeyboardEvent) => {
+    if (event.key === 'Escape') closeDialog()
+  }
+  window.addEventListener('keydown', escapeHandler)
+}
+function detachEscapeClose() {
+  if (escapeHandler) {
+    window.removeEventListener('keydown', escapeHandler)
+    escapeHandler = null
+  }
+}
+onBeforeUnmount(detachEscapeClose)
 watch(showDialog, (open) => {
   if (!open) {
     drawerVisible.value = false
     selectedNode.value = null
+    detachEscapeClose()
+    return
   }
+  // 打开弹窗后注册 Escape 关闭：键盘可达性补齐（与 A11y 增强一致）。
+  attachEscapeClose()
 })
 
 const hasNodes = computed(() => nodes.value.length > 0)
@@ -160,12 +179,13 @@ const hasNodes = computed(() => nodes.value.length > 0)
           <div v-else class="nm-groups">
             <template v-for="group in healthGroups" :key="group.key">
               <div v-if="group.nodes.length > 0" class="nm-group">
-                <div class="nm-group-header" @click="toggleGroup(group.key)">
+                <button type="button" class="nm-group-header" :aria-expanded="!collapsedGroups[group.key]" @click="toggleGroup(group.key)">
                   <span :class="['nm-group-title', `nm-group-title--${group.tone}`]">{{ t(group.titleKey, { count: group.nodes.length }) }}</span>
                   <span class="nm-collapse-icon">{{ collapsedGroups[group.key] ? '▶' : '▼' }}</span>
-                </div>
+                </button>
                 <div v-if="!collapsedGroups[group.key]" class="nm-grid">
-                  <div
+                  <button
+                    type="button"
                     v-for="n in group.nodes"
                     :key="n.credential_id"
                     :class="['nm-card', `nm-card--${group.tone}`]"
@@ -198,7 +218,7 @@ const hasNodes = computed(() => nodes.value.length > 0)
                       <span v-if="n.last_latency_ms" class="nm-latency">{{ t('requestJourneys.matrix.lastLatency', { ms: n.last_latency_ms }) }}</span>
                       <span v-if="group.key === 'disabled'" class="nm-disabled-tag">{{ t('requestJourneys.matrix.disabledTag') }}</span>
                     </div>
-                  </div>
+                  </button>
                 </div>
               </div>
             </template>
@@ -291,12 +311,15 @@ const hasNodes = computed(() => nodes.value.length > 0)
 }
 .nm-group-header {
   display: flex;
+  width: 100%;
   justify-content: space-between;
   align-items: center;
   padding: 10px 12px;
   background: var(--kx-bg-elevated);
   cursor: pointer;
   user-select: none;
+  text-align: left;
+  border: none;
   transition: background 0.15s ease;
 }
 .nm-group-header:hover {
@@ -327,6 +350,10 @@ const hasNodes = computed(() => nodes.value.length > 0)
   border-radius: var(--kx-radius-sm, 6px);
   padding: 10px;
   cursor: pointer;
+  text-align: left;
+  background: var(--kx-surface);
+  font: inherit;
+  color: inherit;
   transition: transform 0.15s ease, box-shadow 0.15s ease;
 }
 .nm-card:hover { transform: translateY(-2px); box-shadow: var(--kx-shadow-sm); }
