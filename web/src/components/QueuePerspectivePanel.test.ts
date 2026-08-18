@@ -1,7 +1,37 @@
-import { mount } from '@vue/test-utils'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { flushPromises, mount } from '@vue/test-utils'
+import { createI18n } from 'vue-i18n'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import QueuePerspectivePanel from './QueuePerspectivePanel.vue'
 import { __testing, liveStreamState } from '../composables/liveStreamStore'
+
+vi.mock('../api/routing', () => ({
+  getFeatured: vi.fn().mockResolvedValue({ featured_models: ['gpt-4o', 'claude-sonnet', 'm-1'] }),
+}))
+vi.mock('../api/logs', () => ({
+  getRequestLogTopModels: vi.fn().mockResolvedValue({ items: [
+    { canonical_name: 'gpt-4o', display_name: 'gpt-4o', request_count: 12 },
+    { canonical_name: 'claude-sonnet', display_name: 'claude-sonnet', request_count: 8 },
+    { canonical_name: 'm-1', display_name: 'm-1', request_count: 3 },
+  ] }),
+}))
+
+const i18n = createI18n({
+  legacy: false,
+  locale: 'zh-CN',
+  messages: { 'zh-CN': { requestJourneys: {
+    modelScopeLoading: '正在加载特色模型和近 3 天热门模型…',
+    refreshScope: '刷新范围',
+    modelScopeError: '模型范围暂不可用，未展示模型节点。',
+    noModelNodes: '当前特色/热门模型没有实时节点绑定。',
+    nodeDetailHint: '点击节点可查看完整明细、近期窗口、请求记录和维护设置。',
+    noNodeRequests: '当前没有关联到该模型节点的实时请求。',
+  } } },
+})
+
+function mountPanel() {
+  return mount(QueuePerspectivePanel, { global: { plugins: [i18n] } })
+}
+
 
 describe('QueuePerspectivePanel', () => {
   beforeEach(() => {
@@ -16,7 +46,7 @@ describe('QueuePerspectivePanel', () => {
   })
 
   it('shows an idle queue instead of reporting that data is not wired', () => {
-    const wrapper = mount(QueuePerspectivePanel)
+    const wrapper = mountPanel()
 
     expect(wrapper.text()).toContain('当前无排队请求')
     expect(wrapper.text()).not.toContain('队列数据未接入')
@@ -32,7 +62,7 @@ describe('QueuePerspectivePanel', () => {
       latency_ms: 820,
     }]
 
-    const wrapper = mount(QueuePerspectivePanel)
+    const wrapper = mountPanel()
 
     expect(wrapper.text()).toContain('最近请求处理轨迹')
     expect(wrapper.text()).toContain('claude-sonnet')
@@ -43,7 +73,7 @@ describe('QueuePerspectivePanel', () => {
   // ── OBS-FE2（OBS-BE3 pipeline 层）：缺省隐藏，禁止零值冒充 ──────────────
 
   it('hides the pipeline overview entirely when the BE3 fields are absent', () => {
-    const wrapper = mount(QueuePerspectivePanel)
+    const wrapper = mountPanel()
 
     expect(wrapper.find('.qp-pipeline').exists()).toBe(false)
     // 禁止用零值冒充 pipeline 统计：p50/p95/降级键整体不出现
@@ -60,7 +90,7 @@ describe('QueuePerspectivePanel', () => {
       models: [],
       credentials: [],
     }
-    const wrapper = mount(QueuePerspectivePanel)
+    const wrapper = mountPanel()
 
     expect(wrapper.find('.qp-pipeline').exists()).toBe(true)
     expect(wrapper.text()).toContain('排队')
@@ -81,7 +111,7 @@ describe('QueuePerspectivePanel', () => {
       models: [],
       credentials: [],
     }
-    const wrapper = mount(QueuePerspectivePanel)
+    const wrapper = mountPanel()
 
     expect(wrapper.text()).toContain('240ms')
     expect(wrapper.text()).toContain('1890ms')
@@ -92,7 +122,7 @@ describe('QueuePerspectivePanel', () => {
   // ── OBS-FE2（节点操作区） ────────────────────────────────────────────────
 
   it('renders the node ops section only when node_update data exists', () => {
-    const wrapper = mount(QueuePerspectivePanel)
+    const wrapper = mountPanel()
     expect(wrapper.text()).not.toContain('节点操作')
 
     liveStreamState.nodes = [{
@@ -102,7 +132,7 @@ describe('QueuePerspectivePanel', () => {
       manual_disabled: false,
       circuit_state: 'open',
     }]
-    const wrapper2 = mount(QueuePerspectivePanel)
+    const wrapper2 = mountPanel()
     expect(wrapper2.text()).toContain('节点操作')
     expect(wrapper2.text()).toContain('节点 9')
     expect(wrapper2.text()).toContain('强制启用')
@@ -115,7 +145,7 @@ describe('QueuePerspectivePanel', () => {
       { credential_id: 2, provider_id: 2, manual_disabled: true, circuit_state: 'closed' },
       { credential_id: 3, provider_id: 2, manual_disabled: false, circuit_state: 'open' },
     ]
-    const wrapper = mount(QueuePerspectivePanel)
+    const wrapper = mountPanel()
     const rows = wrapper.findAll('.node-ops-row .nor-id')
     expect(rows.map(r => r.text())).toEqual(['节点 2', '节点 3', '节点 1'])
   })
@@ -127,7 +157,7 @@ describe('QueuePerspectivePanel', () => {
       manual_disabled: false,
       circuit_state: 'closed',
     }))
-    const wrapper = mount(QueuePerspectivePanel)
+    const wrapper = mountPanel()
     expect(wrapper.findAll('.node-ops-row')).toHaveLength(8)
     expect(wrapper.text()).toContain('8/10 个节点')
   })
@@ -153,7 +183,7 @@ describe('QueuePerspectivePanel', () => {
       ],
     })
 
-    const wrapper = mount(QueuePerspectivePanel)
+    const wrapper = mountPanel()
 
     expect(wrapper.text()).toContain('动作事件驱动')
     expect(wrapper.text()).toContain('anthropic-messages')
@@ -170,7 +200,7 @@ describe('QueuePerspectivePanel', () => {
       provider_code: 'zhipu',
       status: 'in_progress',
     }]
-    const wrapper = mount(QueuePerspectivePanel)
+    const wrapper = mountPanel()
 
     expect(wrapper.text()).toContain('路由选择')
     expect(wrapper.find('.trail-stage').exists()).toBe(false)
@@ -183,12 +213,12 @@ describe('QueuePerspectivePanel', () => {
       { credential_id: 1, provider_id: 2, manual_disabled: false, circuit_state: 'closed' },
       { credential_id: 2, provider_id: 2, manual_disabled: false, circuit_state: 'closed' },
     ]
-    const wrapper = mount(QueuePerspectivePanel)
+    const wrapper = mountPanel()
     expect(wrapper.find('.qp-layer--model-groups').exists()).toBe(false)
     expect(wrapper.text()).not.toContain('按模型分组的可用节点')
   })
 
-  it('groups nodes by their raw_models and shows request counts under each model', () => {
+  it('groups nodes by their raw_models and shows request counts under each model', async () => {
     liveStreamState.nodes = [
       { credential_id: 1, provider_id: 2, provider_code: 'a', manual_disabled: false, circuit_state: 'closed', raw_models: ['gpt-4o'] },
       { credential_id: 2, provider_id: 3, provider_code: 'b', manual_disabled: false, circuit_state: 'closed', raw_models: ['gpt-4o', 'claude-sonnet'] },
@@ -199,34 +229,39 @@ describe('QueuePerspectivePanel', () => {
       ts: '2026-08-17T00:00:00Z',
       action: [
         { request_id: 'r-gpt', seq: 1, action: 'credential_selected', credential_id: 1 },
+        { request_id: 'r-gpt-b', seq: 1, action: 'credential_selected', credential_id: 2 },
         { request_id: 'r-claude', seq: 1, action: 'credential_selected', credential_id: 3 },
+        { request_id: 'r-claude-b', seq: 1, action: 'credential_selected', credential_id: 2 },
       ],
     })
     liveStreamState.requests = [
       { ts: '2026-08-17T00:00:01Z', request_id: 'r-gpt', model: 'gpt-4o', status: 'in_progress', latency_ms: 320 },
-      { ts: '2026-08-17T00:00:02Z', request_id: 'r-claude', model: 'claude-sonnet', status: 'success', latency_ms: 880 },
+      { ts: '2026-08-17T00:00:02Z', request_id: 'r-gpt-b', model: 'gpt-4o', status: 'success', latency_ms: 420 },
+      { ts: '2026-08-17T00:00:03Z', request_id: 'r-claude', model: 'claude-sonnet', status: 'success', latency_ms: 880 },
+      { ts: '2026-08-17T00:00:04Z', request_id: 'r-claude-b', model: 'claude-sonnet', status: 'success', latency_ms: 900 },
     ]
 
-    const wrapper = mount(QueuePerspectivePanel)
+    const wrapper = mountPanel()
+    await flushPromises()
     const groupLayer = wrapper.find('.qp-layer--model-groups')
     expect(groupLayer.exists()).toBe(true)
     expect(groupLayer.text()).toContain('按模型分组的可用节点')
 
     const groups = groupLayer.findAll('.qp-model-group')
     expect(groups).toHaveLength(2)
-    // 节点数都=2，按 localeCompare 升序：claude-sonnet 在前
-    expect(groups[0].text()).toContain('claude-sonnet')
+    // 特色模型优先，其次按近三天热门请求数排序。
+    expect(groups[0].text()).toContain('gpt-4o')
     expect(groups[0].text()).toContain('2 节点')
-    expect(groups[0].text()).toContain('1 请求')
-    expect(groups[1].text()).toContain('gpt-4o')
+    expect(groups[0].text()).toContain('2 当前请求')
+    expect(groups[1].text()).toContain('claude-sonnet')
     expect(groups[1].text()).toContain('2 节点')
-    expect(groups[1].text()).toContain('1 请求')
+    expect(groups[1].text()).toContain('2 当前请求')
 
     // 折叠态下不展开请求列表
     expect(groups[0].findAll('.qp-model-group-requests')).toHaveLength(0)
   })
 
-  it('expands a model to show node ops and the requests routed to those nodes', async () => {
+  it('expands a model to show requests routed to those nodes', async () => {
     liveStreamState.nodes = [
       { credential_id: 5, provider_id: 1, provider_code: 'p', manual_disabled: false, circuit_state: 'closed', raw_models: ['m-1'] },
     ]
@@ -241,16 +276,15 @@ describe('QueuePerspectivePanel', () => {
       { ts: '2026-08-17T00:00:01Z', request_id: 'r-A', model: 'm-1', status: 'success', latency_ms: 410 },
     ]
 
-    const wrapper = mount(QueuePerspectivePanel)
+    const wrapper = mountPanel()
+    await flushPromises()
     const toggle = wrapper.find('.qp-model-group-toggle')
     expect(toggle.exists()).toBe(true)
     await toggle.trigger('click')
 
     const body = wrapper.find('.qp-model-group-body')
     expect(body.exists()).toBe(true)
-    // 复用 NodeOpsRow（其 CSS class 是 .node-ops-row）
-    expect(body.find('.node-ops-row').exists()).toBe(true)
-    const reqList = body.find('[data-testid="mng-requests-5"]')
+    const reqList = body.find('.qp-model-group-requests')
     expect(reqList.exists()).toBe(true)
     expect(reqList.text()).toContain('m-1')
     expect(reqList.text()).toContain('success')
