@@ -412,6 +412,10 @@ const resolveLog = ref<ResolveLogEntry[]>([])
 const draggingCredentialId = ref<number | null>(null)
 const reorderSaving = ref(false)
 const reorderErr = ref('')
+// 2026-08-19: opaque token echoed back to
+// /api/routing/candidate-bindings/reorder. Backend refuses mixed-model
+// reorders and stale revisions; the UI keeps both cases disabled.
+const resolveReorderRevision = ref<string>('')
 // 2026-07-24: routing-v2 resolve 页「候选明细 / 设置」状态。
 const detailCandidate = ref<RoutingCandidate | null>(null)
 const settingsCandidate = ref<RoutingCandidate | null>(null)
@@ -488,7 +492,7 @@ function resolveStateHint(c: RoutingCandidate): string {
 }
 
 function onCandidateDragStart(c: RoutingCandidate, event: DragEvent) {
-  if (!superAdmin || reorderSaving.value) {
+  if (!superAdmin || reorderSaving.value || !resolveReorderRevision.value) {
     event.preventDefault()
     return
   }
@@ -498,7 +502,7 @@ function onCandidateDragStart(c: RoutingCandidate, event: DragEvent) {
 }
 
 function onCandidateDragOver(event: DragEvent) {
-  if (!superAdmin || draggingCredentialId.value === null) return
+  if (!superAdmin || draggingCredentialId.value === null || !resolveReorderRevision.value) return
   event.preventDefault()
   if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'
 }
@@ -508,6 +512,11 @@ async function onCandidateDrop(target: RoutingCandidate, event: DragEvent) {
   const sourceID = draggingCredentialId.value
   draggingCredentialId.value = null
   if (!superAdmin || sourceID === null || sourceID === target.credential_id || reorderSaving.value) return
+  const expectedRevision = resolveReorderRevision.value
+  if (!expectedRevision) {
+    reorderErr.value = '该模型分组合并了多个原始模型，无法安全调整优先级。'
+    return
+  }
 
   const previous = [...resolveCandidates.value]
   const sourceIndex = previous.findIndex(c => c.credential_id === sourceID)
@@ -522,19 +531,34 @@ async function onCandidateDrop(target: RoutingCandidate, event: DragEvent) {
     rank: index + 1,
     manual_priority: index + 1,
   }))
-  const items: CandidateBindingReorderItem[] = resolveCandidates.value.map((candidate, index) => ({
+  // All candidates share one raw_model at this point (resolveReorderRevision
+  // is only populated for single-model resolves), so reuse candidate.model_name
+  // for every item. The backend re-validates the contract and rejects drift.
+  const rawModel = next[0]?.model_name ?? ''
+  if (!rawModel) {
+    reorderErr.value = '无法确定原始模型名，请重新查询后再试。'
+    resolveCandidates.value = previous
+    return
+  }
+  const items: CandidateBindingReorderItem[] = next.map((candidate, index) => ({
     credential_id: candidate.credential_id,
-    raw_model: candidate.model_name,
+    raw_model: rawModel,
     manual_priority: index + 1,
   }))
   reorderSaving.value = true
   reorderErr.value = ''
   try {
-    await reorderCandidateBindings(items)
+    await reorderCandidateBindings(items, { rawModel, expectedRevision })
     await doResolve()
   } catch (e: unknown) {
     resolveCandidates.value = previous
-    reorderErr.value = e instanceof Error ? e.message : '排序保存失败'
+    const message = e instanceof Error ? e.message : '排序保存失败'
+    if (/409|stale|incomplete|ordering conflict/i.test(message)) {
+      reorderErr.value = '排序已过期，已重新查询，请重试。'
+      void doResolve()
+    } else {
+      reorderErr.value = message
+    }
   } finally {
     reorderSaving.value = false
   }
@@ -595,6 +619,7 @@ async function doResolve() {
     resolution.value = res
     resolveCandidates.value = res.candidates
     resolved.value = true
+    resolveReorderRevision.value = singleRawModelRevision(res)
     appendResolveLog(res, profile)
   } catch (e: unknown) {
     resolveErr.value = e instanceof Error ? e.message : t('routing.queryFailed')
@@ -614,9 +639,24 @@ async function refreshResolveSilent() {
     const res = await resolveRouting(modelInput.value.trim(), profile || undefined, true)
     resolution.value = res
     resolveCandidates.value = res.candidates
+    resolveReorderRevision.value = singleRawModelRevision(res)
   } catch {
     // swallow — keep stale list; next tick retries
   }
+}
+
+// singleRawModelRevision returns the server's reorder revision only when
+// every candidate shares the exact same raw_model. Mixed aliases /
+// canonical hits intentionally produce an empty string so the reorder
+// path stays disabled.
+function singleRawModelRevision(res: RoutingResolveResponse): string {
+  if (!res.reorder_revision || res.candidates.length === 0) return ''
+  const first = res.candidates[0].model_name
+  if (!first) return ''
+  for (const c of res.candidates) {
+    if (c.model_name !== first) return ''
+  }
+  return res.reorder_revision
 }
 
 function replayFromLog(entry: ResolveLogEntry) {
