@@ -52,13 +52,17 @@ const (
 
 // Row is one credential's classification result. HexCiphertext is omitted
 // from JSON output to avoid leaking the underlying key bytes.
+//
+// IDs are int64 to match the canonical schema's bigint columns; using int
+// would overflow or filter inconsistently on platforms with 32-bit int or
+// where credential IDs exceed math.MaxInt32.
 type Row struct {
-	ID            int    `json:"id"`
-	ProviderID    int    `json:"provider_id"`
+	ID            int64  `json:"id"`
+	ProviderID    int64  `json:"provider_id"`
 	Label         string `json:"label"`
 	TenantID      string `json:"tenant_id"`
 	SecretKid     string `json:"secret_kid"`
-	CipherBytes   int    `json:"cipher_bytes"`
+	CipherBytes   int64  `json:"cipher_bytes"`
 	Format        Format `json:"format"`
 	DecryptOK     bool   `json:"decrypt_ok"`
 	DecryptError  string `json:"decrypt_error,omitempty"`
@@ -71,19 +75,26 @@ type Row struct {
 	hexForm string
 }
 
-// ScanResult is the full report.
+// ScanResult is the full report. FormatAnomaly counts rows that cannot be
+// decrypted by the running gateway (raw-fernet-binary + unknown + a v1
+// envelope that failed DecryptAny). FormatUnknownEmpty counts rows whose
+// ciphertext is empty bytea (these trip the CHECK constraint on next write
+// and should not be reported as healthy).
 type ScanResult struct {
 	ScannedAt   string         `json:"scanned_at"`
 	TotalRows   int            `json:"total_rows"`
 	ByFormat    map[Format]int `json:"by_format"`
 	DecryptFail int            `json:"decrypt_failures"`
+	FormatAnom  int            `json:"format_anomalies"`
+	EmptyRows   int            `json:"empty_ciphertext_rows"`
 	Rewritten   int            `json:"rows_rewritten"`
+	RewriteFail int            `json:"rewrite_failures"`
 	Rows        []Row          `json:"rows"`
 }
 
 func main() {
 	var (
-		credID  = flag.Int("credential", 0, "scan only this credential id (0 = all)")
+		credID  = flag.Int64("credential", 0, "scan only this credential id (0 = all)")
 		tenant  = flag.String("tenant", "", "limit to this tenant_id (default: all)")
 		jsonOut = flag.Bool("json", false, "emit machine-readable JSON")
 		fix     = flag.Bool("fix", false, "rewrite raw-binary Fernet rows to v1:legacy:<b64> envelopes")
@@ -135,6 +146,7 @@ func main() {
 				row.DecryptOK = false
 				row.DecryptError = derr.Error()
 				result.DecryptFail++
+				result.FormatAnom++
 			} else {
 				row.DecryptOK = true
 				row.PlaintextHash = shortHash(pt)
@@ -145,6 +157,7 @@ func main() {
 			// (which expects base64-encoded ciphertext). Surface this
 			// explicitly; with -fix, wrap back into v1:legacy:<b64>.
 			row.DecryptError = "raw Fernet binary; DecryptAny requires base64 envelope"
+			result.FormatAnom++
 			if *fix {
 				if fernetKey == nil {
 					row.DecryptError = "raw Fernet binary AND no fernet key configured; refusing to rewrite"
@@ -157,10 +170,17 @@ func main() {
 					row.RewriteTarget = envelope
 					row.WillRewrite = true
 					if !*dryRun {
-						if uerr := rewriteCiphertext(context.Background(), dbConn, row.ID, envelope); uerr != nil {
+						// Optimistic concurrency: re-check the original
+						// hex form before writing. If a concurrent rotation
+						// replaced the ciphertext between scanRows() and
+						// now, the UPDATE affects 0 rows and we surface that
+						// as a failure rather than silently overwriting.
+						if uerr := rewriteCiphertext(context.Background(), dbConn,
+							row.ID, row.hexForm, envelope); uerr != nil {
 							row.DecryptError = "rewrite failed: " + uerr.Error()
-							result.DecryptFail++
 							row.WillRewrite = false
+							result.RewriteFail++
+							result.DecryptFail++
 						} else {
 							row.PlaintextHash = shortHash([]byte(pt))
 							result.Rewritten++
@@ -170,6 +190,24 @@ func main() {
 			} else {
 				result.DecryptFail++
 			}
+
+		case FormatUnknown:
+			// Bytes that pass the CHECK constraint but cannot be decrypted.
+			// Either an unknown envelope prefix, malformed body, or a value
+			// written outside the encryptCred path. Either way: the gateway
+			// will fail RevealAPIKey on this row.
+			row.DecryptError = "unknown format; DecryptAny cannot classify or decrypt"
+			result.FormatAnom++
+			result.DecryptFail++
+
+		case FormatEmpty:
+			// Empty bytea: CHECK constraint 079 forbids this on new writes,
+			// but historical rows may still exist (e.g. credentials in
+			// import/pool_group workflows before the column was populated).
+			// Surfacing them as anomalies lets operators fix or NULL them.
+			result.EmptyRows++
+			result.FormatAnom++
+			row.DecryptError = "empty ciphertext; gateway returns no key"
 		}
 	}
 	result.TotalRows = len(result.Rows)
@@ -193,7 +231,10 @@ func main() {
 // classify inspects the raw ciphertext byte sequence and labels its format.
 // Does NOT mutate state.
 func classify(r *Row) Format {
-	if r.CipherBytes == 0 {
+	if r.hexForm == "" {
+		// NULL ciphertext or empty bytea both come back as the empty string
+		// from COALESCE(encode(...),''). Distinguish them via CipherBytes:
+		// 0 with empty hex is either NULL or zero-length bytea (empty).
 		return FormatEmpty
 	}
 	rawBytes := decodeHex(r.hexForm)
@@ -232,12 +273,17 @@ func printHuman(r ScanResult, verbose, fix, dryRun bool) {
 		}
 		fmt.Printf("  %-20s %d\n", fmtType, n)
 	}
-	fmt.Printf("\ndecrypt failures: %d\n", r.DecryptFail)
+	fmt.Printf("\ndecrypt failures:    %d\n", r.DecryptFail)
+	fmt.Printf("format anomalies:    %d (raw + unknown + failed decrypts)\n", r.FormatAnom)
+	fmt.Printf("empty ciphertext:    %d\n", r.EmptyRows)
 	if fix {
-		fmt.Printf("rows rewritten:   %d (dry-run=%v)\n", r.Rewritten, dryRun)
+		fmt.Printf("rows rewritten:      %d (dry-run=%v)\n", r.Rewritten, dryRun)
+		if r.RewriteFail > 0 {
+			fmt.Printf("rewrite failures:    %d (concurrent change or DB error)\n", r.RewriteFail)
+		}
 	}
 
-	if !verbose && r.DecryptFail == 0 && r.ByFormat[FormatRawFernetBinary] == 0 {
+	if !verbose && r.DecryptFail == 0 && r.ByFormat[FormatRawFernetBinary] == 0 && r.ByFormat[FormatUnknown] == 0 {
 		fmt.Println("\nall credentials look healthy")
 		return
 	}
@@ -252,6 +298,8 @@ func printHuman(r ScanResult, verbose, fix, dryRun bool) {
 			mark = "RAW"
 		case row.Format == FormatUnknown:
 			mark = "?? "
+		case row.Format == FormatEmpty:
+			mark = "EMP"
 		}
 		fmt.Printf("%s  id=%-4d label=%-20s format=%-20s bytes=%-4d",
 			mark, row.ID, row.Label, row.Format, row.CipherBytes)
@@ -270,7 +318,7 @@ func printHuman(r ScanResult, verbose, fix, dryRun bool) {
 
 // --- SQL helpers -----------------------------------------------------------
 
-func scanRows(ctx context.Context, dbConn *db.DB, credID int, tenant string) ([]Row, error) {
+func scanRows(ctx context.Context, dbConn *db.DB, credID int64, tenant string) ([]Row, error) {
 	var (
 		clauses []string
 		args    []any
@@ -284,11 +332,14 @@ func scanRows(ctx context.Context, dbConn *db.DB, credID int, tenant string) ([]
 		clauses = append(clauses, " AND c.tenant_id = $"+strconv.Itoa(len(args)))
 	}
 
+	// NULL-aware projections: secret_ciphertext is NULL-able, so
+	// octet_length/encode must be wrapped in COALESCE before being scanned
+	// into Go scalars — otherwise the first NULL row aborts the whole scan.
 	q := `
 SELECT c.id, c.provider_id, c.tenant_id, c.label, COALESCE(c.secret_kid,''),
-       octet_length(c.secret_ciphertext) AS ctlen,
-       encode(c.secret_ciphertext, 'hex')  AS hexform,
-       COALESCE(encode(c.updated_at, 'escape'), '') AS updated_at
+       COALESCE(octet_length(c.secret_ciphertext), 0) AS ctlen,
+       COALESCE(encode(c.secret_ciphertext, 'hex'), '')  AS hexform,
+       COALESCE(c.updated_at::text, '') AS updated_at
 FROM credentials c
 WHERE 1=1` + strings.Join(clauses, "") + ` ORDER BY c.id`
 
@@ -307,17 +358,59 @@ WHERE 1=1` + strings.Join(clauses, "") + ` ORDER BY c.id`
 		}
 		rows = append(rows, r)
 	}
-	return rows, raw.Err()
+	if err := raw.Err(); err != nil {
+		return nil, fmt.Errorf("scan rows: %w", err)
+	}
+	return rows, nil
 }
 
-func rewriteCiphertext(ctx context.Context, dbConn *db.DB, id int, envelope string) error {
-	_, err := dbConn.Pool().Exec(ctx, `
+// rewriteCiphertext atomically swaps the raw-Fernet ciphertext for the
+// v1:legacy:<b64> envelope. oldHex is the value scanRows observed; the
+// WHERE clause ensures we only overwrite rows whose ciphertext hasn't
+// changed in the meantime. Returns ErrConcurrentRewrite (a sentinel the
+// caller maps to a non-fatal per-row failure) when RowsAffected != 1.
+func rewriteCiphertext(ctx context.Context, dbConn *db.DB, id int64, oldHex, envelope string) error {
+	if oldHex == "" {
+		return fmt.Errorf("refusing to rewrite: original ciphertext is empty (id=%d)", id)
+	}
+	oldBytes, err := hex.DecodeString(oldHex)
+	if err != nil {
+		return fmt.Errorf("decode original ciphertext hex: %w", err)
+	}
+	tx, err := dbConn.Pool().Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback(context.Background())
+		}
+	}()
+
+	tag, err := tx.Exec(ctx, `
 		UPDATE credentials
 		SET secret_ciphertext = $1::bytea, updated_at = NOW()
-		WHERE id = $2
-	`, []byte(envelope), id)
-	return err
+		WHERE id = $2 AND secret_ciphertext = $3::bytea
+	`, []byte(envelope), id, oldBytes)
+	if err != nil {
+		return fmt.Errorf("update: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return errConcurrentRewrite
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
+	committed = true
+	return nil
 }
+
+// errConcurrentRewrite signals that another writer changed
+// secret_ciphertext between scan and fix. Surfaced per-row rather than as
+// a fatal scan error so a single concurrent rotation does not abort the
+// whole batch.
+var errConcurrentRewrite = fmt.Errorf("concurrent ciphertext change detected")
 
 // --- in-memory helpers -----------------------------------------------------
 
