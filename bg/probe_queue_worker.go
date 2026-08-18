@@ -9,10 +9,10 @@ import (
 )
 
 type ProbeQueueWorkerConfig struct {
-	Queue        *ProbeQueue
-	Executor     *ActiveProbeExecutor
-	Emitter      *ActiveProbeEmitter
-	ResultSink   IntegrityProbeResultSink
+	Queue      *ProbeQueue
+	Executor   *ActiveProbeExecutor
+	Emitter    *ActiveProbeEmitter
+	ResultSink IntegrityProbeResultSink
 	// ProbeService (2026-08-13, 需求 6) owns execution of node_probe tasks
 	// (two-round direct+gateway, side-effects, audit). When nil, node_probe
 	// tasks fall back to the executor's direct-only RunCommand.
@@ -56,7 +56,11 @@ func NewProbeQueueWorker(cfg ProbeQueueWorkerConfig) *ProbeQueueWorker {
 		cfg.Workers = 1
 	}
 	if cfg.Lease <= 0 {
-		cfg.Lease = 30 * time.Second
+		// 2026-08-18 Agent B: bumped 30s → ProbeQueueLeaseDefault (5m) so a
+		// two-round probe + side effects run is not reclaimed by
+		// RequeueExpiredLeases mid-flight. The lease heartbeat inside
+		// ProbeService.Run keeps the window refreshed while side effects run.
+		cfg.Lease = ProbeQueueLeaseDefault
 	}
 	if cfg.PollInterval <= 0 {
 		cfg.PollInterval = 250 * time.Millisecond
@@ -140,16 +144,30 @@ func (w *ProbeQueueWorker) processTask(ctx context.Context, task ProbeQueueTask)
 	// Unified node_probe path (需求 6): ProbeService.Run does the two-round
 	// direct+gateway probe with all side-effects + audit, and returns a result
 	// whose NextRunAt already reflects the 7-step node-probe backoff chain.
-	if task.Command == "node_probe" && w.cfg.ProbeService != nil {
-		result, err := w.cfg.ProbeService.Run(ctx, task)
-		if err != nil {
-			slog.Warn("probe_service run failed", "queue_id", task.ID, "error", err)
-			w.completeFailure(ctx, task, "probe_service_error", err.Error(), 0, 0, "")
+		if task.Command == "node_probe" && w.cfg.ProbeService != nil {
+			result, err := w.cfg.ProbeService.Run(ctx, task)
+			if err != nil {
+				// Run may have completed both probe rounds and applied routing
+				// side effects before the audit INSERT failed. Settle the result
+				// it returned instead of re-running the probe on the next retry.
+				if errors.Is(err, ErrProbeAuditPersistFailed) {
+					slog.Warn("probe_service audit persistence failed after probe completion", "queue_id", task.ID, "error", err)
+					w.completeNodeProbe(ctx, task, result)
+					return
+				}
+				// A reclaimed lease belongs to the new owner. The stale owner must
+				// not complete or re-arm the row with its old lease token.
+				if errors.Is(err, ErrProbeLeaseLost) {
+					slog.Info("probe_service stopped after lease loss", "queue_id", task.ID)
+					return
+				}
+				slog.Warn("probe_service run failed", "queue_id", task.ID, "error", err)
+				w.completeFailure(ctx, task, "probe_service_error", err.Error(), 0, 0, "")
+				return
+			}
+			w.completeNodeProbe(ctx, task, result)
 			return
 		}
-		w.completeNodeProbe(ctx, task, result)
-		return
-	}
 	target, err := w.cfg.Executor.LoadTarget(ctx, int(task.CredentialID), task.RawModel)
 	if err != nil {
 		w.recordIntegrityResult(ctx, task, nil, nil, err)

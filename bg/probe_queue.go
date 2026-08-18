@@ -383,7 +383,12 @@ func (q *ProbeQueue) Claim(ctx context.Context, limit int, lease time.Duration) 
 		limit = 1
 	}
 	if lease <= 0 {
-		lease = 30 * time.Second
+		// 2026-08-18 Agent B: default lease bumped 30s → ProbeQueueLeaseDefault
+		// (5m) so a direct+gateway+side-effects run that takes >30s cannot be
+		// reclaimed by RequeueExpiredLeases and double-settled. The lease
+		// heartbeat in ProbeService.Run keeps the window refreshed every
+		// ProbeQueueHeartbeatInterval while side effects run.
+		lease = ProbeQueueLeaseDefault
 	}
 	tx, err := q.db.Begin(ctx)
 	if err != nil {
@@ -490,7 +495,7 @@ func (q *ProbeQueue) ExtendLease(ctx context.Context, task ProbeQueueTask, lease
 		return fmt.Errorf("extend probe lease failed: database is unavailable (queue_id=%d)", task.ID)
 	}
 	if lease <= 0 {
-		lease = 30 * time.Second
+		lease = ProbeQueueLeaseDefault
 	}
 	tag, err := q.db.Exec(ctx, `
 		UPDATE credential_probe_queue

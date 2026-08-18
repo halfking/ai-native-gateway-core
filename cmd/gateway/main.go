@@ -3265,6 +3265,7 @@ func main() {
 						queueExecutor.SetGateway(gatewayURL, selfCheckAPIKey, &http.Client{Timeout: 30 * time.Second})
 					}
 					probeService := bg.NewProbeService(nodeProbeWorker, queueExecutor)
+					probeService.SetProbeQueue(probeQueue)
 					probeQueueWorker.SetProbeService(probeService)
 					nodeProbeWorker.SetProbeQueue(probeQueue)
 					slog.Info("unified probe service wired",
@@ -3508,7 +3509,9 @@ func main() {
 				if queueExecutor != nil {
 					queueExecutor.SetGateway(gatewayURL, selfCheckAPIKey, &http.Client{Timeout: 30 * time.Second})
 				}
-				probeQueueWorker.SetProbeService(bg.NewProbeService(nodeProbeWorker, queueExecutor))
+				ps := bg.NewProbeService(nodeProbeWorker, queueExecutor)
+				ps.SetProbeQueue(probeQueue)
+				probeQueueWorker.SetProbeService(ps)
 				nodeProbeWorker.SetProbeQueue(probeQueue)
 			}
 			// 2026-08-18: the legacy block above wires SyncNoCandidateProbe /
