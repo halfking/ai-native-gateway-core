@@ -6,7 +6,8 @@
 
 ## 基线与范围
 
-- 审计基线：`9268b656b2cda2b564219c76edb1f05219eba2f9`
+- 审计起始基线：`9268b656b2cda2b564219c76edb1f05219eba2f9`
+- 本轮收口代码基线：`df6c6546310ec07ca5abb636cf5d8759bf2c3502`（当前 `main` 与 `origin/main` 同步）
 - 分支：`audit/session-v4-t0`（从 `main` 创建）
 - 原始 WIP：4 个 tracked 文件和 T0 文档、fixtures、contract tests
 - 本轮 owner 范围：Coordinator/T0 文档、`domains/dispatch/**`、`domains/ursm/v2/**`、`pending/**`、`domains/streaming/**` durable test、`test/events/**`
@@ -14,7 +15,7 @@
 
 ## 审计 findings 与修正
 
-1. T0 文档基线错误：更新为实际 `9268b656...`，注明 `b3399ad9` 为祖先。
+1. T0 文档起始基线记录为 `9268b656...`；本轮修正收口后的代码基线为 `df6c654...`，两者按各自用途保留。
 2. URSM ready gate 顺序错误：`ready=false` 现在先于 mirror 和 tenant 校验返回。
 3. 空 tenant 范围过宽：仅 authoritative filter/read path 拒绝；RecordRequest 已保持 authoritative-only。
 4. identity fixture 漏 `attempt_no` 语义和完整 distinct 检查：已补。

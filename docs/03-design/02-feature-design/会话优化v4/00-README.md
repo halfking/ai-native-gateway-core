@@ -1,7 +1,7 @@
 # 会话优化 v4 — 权威整合设计与实施计划
 
 > 本目录是 6 套历史文档（会话优化v1~v3 / 路由优化v3 / 修订0811 / 自检优化）的**版本裁决 + 权威整合**产物。
-> 当前事实日期：2026-08-17。代码基线：HEAD `ea4f49452`；工作树另含未提交的客户端/供应商稳定性修复，发布结论须同时注明该差异。
+> **历史 v4 基线快照（2026-08-17）**：当时代码基线为 HEAD `ea4f49452`，工作树另含未提交的客户端/供应商稳定性修复；它不是当前代码或发布事实。当前 T0/key-schema 裁决以 [13-T0契约冻结与所有权](./13-T0契约冻结与所有权.md)、[14-URSM Redis delimiter-safe key兼容迁移冻结决策](./14-URSM Redis delimiter-safe key兼容迁移冻结决策.md) 和相应 session audit 为准。
 > 落地工作区：`docs/会话优化v4/`。
 
 ---
@@ -19,23 +19,24 @@
 | `10-实施计划.md` | 对齐代码基线的可执行实施计划（P0/P1/P2 分级 + 里程碑） |
 | `11-完成情况核实与并发执行方案.md` | **历史核验快照**：记录 2026-08-16 当时的文档/代码差异，不再作为 2026-08-17 当前实现状态源 |
 | `12-GoalHandoff契约.md` | Goal↔Handoff 组件边界、握手与恢复契约 |
-
+| `13-T0契约冻结与所有权.md` | T0 身份、重启、URSM authoritative 契约与 workstream 所有权 |
+| `14-URSM Redis delimiter-safe key兼容迁移冻结决策.md` | delimiter-safe Redis key 版本化、双读/双写、TTL、清理、回滚与 G1/G4 门禁 |
 ---
 
 ## 2. 版本裁决结论（一句话版）
 
 历史文档横跨 08-06 ~ 08-15 共 5 个版本层次，**非严格线性**，互相覆盖/纠错。v4 裁决三原则：
 
-1. **以代码为真相**：任何「实现状态」论断以当前 HEAD `ea4f49452` 加工作树中未提交的稳定性修复为准；未提交修复不得冒充已发布版本。
+1. **以代码为真相**：历史实现状态论断以其声明的历史 HEAD 与工作树快照为准；当前 T0/key-schema 状态以 13/14 号冻结文档及当前 Git 状态为准，未提交修复不得冒充已发布版本。
 2. **以最新文档集为权威**：修订0811（v1.6，08-15）> 会话优化v3（08-14~15）> 会话优化v2（08-13）> 路由优化v3（08-12）> 自检优化（08-13）。
-3. **纸面 vs 接线**：URSM v2 现为默认 `authoritative`；`off` 是紧急回退，`shadow`/`canary` 是兼容与隔离观测模式，不是上线前置流程。详见 04 号文档及[切换 runbook](../runbooks/ursm-v2-cutover.md)。
+3. **纸面 vs 接线**：URSM v2 现为默认 `authoritative`；`off` 是紧急回退，`shadow`/`canary` 是兼容与隔离观测模式，不是上线前置流程。详见 04 号文档及[切换 runbook](../../../06-deployment/04-runbooks/runbooks/ursm-v2-cutover.md)。
 
 > **2026-08-17 当前裁决**：
 > - schema 仍以 migration 513 证明的 `public.*` 为准（分区表除外）。
 > - 缓存指会话三层数据：原始多轮 → 压缩后多轮 → 安全脱敏后发送，不是 Redis/内存缓存层。
 > - 会话管理采用 `ursm/v2`；缺省模式为 `authoritative`。`off`/`shadow`/`canary` 仅承担兼容、观测和回退。
 > - migration 525/526 已落地六维字段与 `session_turns_hot`；生产回填和运行验证仍属 deployment pending。
-> - 客户端物理 TCP 断开不可恢复；首语义帧提交后不可透明切换供应商并从头重放。详见[稳定性审计](../audit/2026-08-17-ursm-v2-client-provider-stability-audit.md)。
+> - 客户端物理 TCP 断开不可恢复；首语义帧提交后不可透明切换供应商并从头重放。详见[稳定性审计](../../../archive/process/audit-collection/2026-08-17-ursm-v2-client-provider-stability-audit.md)。
 
 ---
 
@@ -62,7 +63,7 @@
 | 当前运行裁决 | URSM v2 默认 `authoritative` | `off` 回退；`shadow`/`canary` 兼容与观测 |
 | 下一实施节点 | **deployment pending 门禁 + OBS/P0/P1 收尾** | 真实 Redis/PG/provider 故障注入、部署 smoke 与既有产品阻塞项 |
 
-> **2026-08-17 发布边界**：当前稳定性修复达到 implemented/local verified，但工作树未提交，且真实 Redis/PG/provider 故障注入与部署 smoke 仍 pending。发布操作按[URSM v2 cutover runbook](../runbooks/ursm-v2-cutover.md)执行。
+> **2026-08-17 发布边界**：当前稳定性修复达到 implemented/local verified，但工作树未提交，且真实 Redis/PG/provider 故障注入与部署 smoke 仍 pending。发布操作按[URSM v2 cutover runbook](../../../06-deployment/04-runbooks/runbooks/ursm-v2-cutover.md)执行。
 
 ---
 
