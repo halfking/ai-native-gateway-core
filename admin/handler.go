@@ -862,6 +862,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/dashboard/errors", admin(h.handleDashboardErrors))
 	mux.HandleFunc("/api/admin/dashboard/performance", admin(h.handleDashboardPerformance))
 	mux.HandleFunc("/api/admin/dashboard/board", admin(h.handleDashboardBoard))
+	mux.HandleFunc("/api/admin/stats", admin(h.handleStats))
+	mux.HandleFunc("/api/admin/stats/", admin(h.handleStats))
 	mux.HandleFunc("/api/admin/dashboard/operational", admin(h.handleDashboardOperational))
 	mux.HandleFunc("/api/admin/dashboard/board/error-drill", admin(h.handleDashboardBoardErrorDrill))
 	mux.HandleFunc("/api/admin/ops/overview", admin(h.handleOpsOverview))

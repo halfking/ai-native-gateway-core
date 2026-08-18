@@ -80,7 +80,37 @@ func (r *DailyMonthlyRollup) refreshRecent(ctx context.Context) {
 	defer cancel()
 	if err := r.Refresh(refreshCtx, now.Add(-rollupLookback), now); err != nil {
 		slog.Warn("stats daily/monthly rollup failed", "error", err)
+		return
 	}
+	if err := r.CloseEligibleMonths(refreshCtx, now); err != nil {
+		slog.Warn("stats monthly close failed", "error", err)
+	}
+}
+
+// CloseEligibleMonths seals months after the late-arrival window. Closed rows
+// are immutable; later corrections must be represented by stats_adjustments.
+func (r *DailyMonthlyRollup) CloseEligibleMonths(ctx context.Context, now time.Time) error {
+	if r == nil || r.db == nil {
+		return nil
+	}
+	_, err := r.db.Exec(ctx, `
+		WITH eligible AS (
+			SELECT DISTINCT month_start
+			FROM stats_usage_monthly
+			WHERE status IN ('open', 'closing')
+			  AND month_start + INTERVAL '1 month' + INTERVAL '72 hours' <= $1
+		), sealed AS (
+			UPDATE stats_usage_monthly m
+			SET status = 'closed', closed_at = COALESCE(closed_at, $1),
+			    row_checksum = md5(concat_ws('|', m.month_start, m.tenant_id,
+			      m.provider_id, m.credential_id, m.canonical_id, m.raw_model_name,
+			      m.request_count, m.total_tokens, m.cost_usd, m.credits_charged))
+			FROM eligible e
+			WHERE m.month_start = e.month_start AND m.status IN ('open', 'closing')
+			RETURNING m.month_start
+		)
+		SELECT count(*) FROM sealed`, now)
+	return err
 }
 
 // Refresh rebuilds daily buckets intersecting [since, until), then rebuilds
@@ -94,6 +124,11 @@ func (r *DailyMonthlyRollup) Refresh(ctx context.Context, since, until time.Time
 	}
 	since = since.UTC()
 	until = until.UTC()
+	// Daily rows are whole UTC buckets. Rebuilding a partial day while
+	// deleting the existing row would permanently erase the earlier part of
+	// that day, so expand the source window to complete day boundaries.
+	dailySince := time.Date(since.Year(), since.Month(), since.Day(), 0, 0, 0, 0, time.UTC)
+	dailyUntil := time.Date(until.Year(), until.Month(), until.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 0, 1)
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin stats rollup: %w", err)
@@ -103,22 +138,19 @@ func (r *DailyMonthlyRollup) Refresh(ctx context.Context, since, until time.Time
 	if _, err := tx.Exec(ctx, `
 		DELETE FROM stats_usage_daily
 		WHERE day_utc >= ($1 AT TIME ZONE 'UTC')::date
-		  AND day_utc < (($2 - INTERVAL '1 microsecond') AT TIME ZONE 'UTC')::date + 1`, since, until); err != nil {
+		  AND day_utc < (($2 - INTERVAL '1 microsecond') AT TIME ZONE 'UTC')::date + 1`, dailySince, dailyUntil); err != nil {
 		return fmt.Errorf("clear daily buckets: %w", err)
 	}
-	if _, err := tx.Exec(ctx, dailyInsertSQL, since, until); err != nil {
+	if _, err := tx.Exec(ctx, dailyInsertSQL, dailySince, dailyUntil); err != nil {
 		return fmt.Errorf("rebuild daily buckets: %w", err)
 	}
 
 	monthStart := time.Date(since.Year(), since.Month(), 1, 0, 0, 0, 0, time.UTC)
 	monthEnd := time.Date(until.Year(), until.Month(), 1, 0, 0, 0, 0, time.UTC).AddDate(0, 1, 0)
 	if _, err := tx.Exec(ctx, `
-		DELETE FROM stats_usage_monthly m
-		WHERE m.month_start >= $1::date AND m.month_start < $2::date
-	  AND NOT EXISTS (
-			SELECT 1 FROM stats_usage_monthly closed
-			WHERE closed.month_start = m.month_start AND closed.status = 'closed'
-	  )`, monthStart, monthEnd); err != nil {
+		DELETE FROM stats_usage_monthly
+		WHERE month_start >= $1::date AND month_start < $2::date
+		  AND status <> 'closed'`, monthStart, monthEnd); err != nil {
 		return fmt.Errorf("clear open monthly buckets: %w", err)
 	}
 	if _, err := tx.Exec(ctx, monthlyInsertSQL, monthStart, monthEnd); err != nil {
@@ -148,23 +180,37 @@ INSERT INTO stats_usage_daily (
 	latency_sum_ms, ttft_count, ttft_sum_ms, source_event_count,
 	source_max_occurred_at, updated_at
 )
-SELECT
-	(occurred_at AT TIME ZONE 'UTC')::date,
-	COALESCE(tenant_id, 'default'), COALESCE(provider_id, 0), COALESCE(credential_id, 0),
-	COALESCE(canonical_id, 0), COALESCE(raw_model_name, ''), 'provider_model',
-	COALESCE(raw_model_name, ''), COALESCE(traffic_class, 'unknown'),
-	COUNT(*), COUNT(*) FILTER (WHERE status = 'success'),
-	COUNT(*) FILTER (WHERE status = 'failure'), COUNT(*) FILTER (WHERE status = 'timeout'),
-	COUNT(*) FILTER (WHERE status = 'rate_limited'), COUNT(*), 0,
-	COUNT(*) FILTER (WHERE traffic_class <> 'business'), 0,
-	SUM(prompt_tokens), SUM(completion_tokens), SUM(cache_read_tokens), SUM(cache_write_tokens),
-	SUM(reasoning_tokens), SUM(image_tokens), SUM(audio_tokens), SUM(video_tokens),
-	SUM(provider_tokens), SUM(total_tokens), SUM(credits_charged), SUM(cost_amount),
-	COUNT(*) FILTER (WHERE latency_ms > 0), SUM(latency_ms) FILTER (WHERE latency_ms > 0),
-	COUNT(*) FILTER (WHERE ttft_ms > 0), SUM(ttft_ms) FILTER (WHERE ttft_ms > 0), COUNT(*),
-	MAX(occurred_at), now()
-FROM latest
-GROUP BY 1,2,3,4,5,6,8,9
+	SELECT
+		(occurred_at AT TIME ZONE 'UTC')::date,
+		COALESCE(tenant_id, 'default'), COALESCE(provider_id, 0), COALESCE(credential_id, 0),
+		COALESCE(canonical_id, 0), COALESCE(raw_model_name, ''), dimension_type,
+		dimension_key, COALESCE(traffic_class, 'unknown'),
+		COUNT(*), COUNT(*) FILTER (WHERE status = 'success'),
+		COUNT(*) FILTER (WHERE status = 'failure'), COUNT(*) FILTER (WHERE status = 'timeout'),
+		COUNT(*) FILTER (WHERE status = 'rate_limited'), COUNT(*), 0,
+		COUNT(*) FILTER (WHERE traffic_class <> 'business'), 0,
+		SUM(prompt_tokens), SUM(completion_tokens), SUM(cache_read_tokens), SUM(cache_write_tokens),
+		SUM(reasoning_tokens), SUM(image_tokens), SUM(audio_tokens), SUM(video_tokens),
+		SUM(provider_tokens), SUM(total_tokens), SUM(credits_charged), SUM(cost_amount),
+		COUNT(*) FILTER (WHERE latency_ms > 0), SUM(latency_ms) FILTER (WHERE latency_ms > 0),
+		COUNT(*) FILTER (WHERE ttft_ms > 0), SUM(ttft_ms) FILTER (WHERE ttft_ms > 0), COUNT(*),
+		MAX(occurred_at), now()
+	FROM (
+		SELECT latest.*, 'provider_model'::text AS dimension_type,
+			COALESCE(latest.raw_model_name, '') AS dimension_key FROM latest
+		UNION ALL
+		SELECT latest.*, 'tenant'::text, COALESCE(latest.tenant_id, 'default') FROM latest
+		UNION ALL
+		SELECT latest.*, 'provider'::text, COALESCE(latest.provider_id, 0)::text FROM latest
+		UNION ALL
+		SELECT latest.*, 'credential'::text, COALESCE(latest.credential_id, 0)::text FROM latest
+		UNION ALL
+		SELECT latest.*, 'person'::text, COALESCE(NULLIF(latest.person_hash, ''), '__unknown__') FROM latest
+		UNION ALL
+		SELECT latest.*, 'error'::text, COALESCE(NULLIF(latest.error_class, ''), 'unknown') FROM latest
+			WHERE latest.status IN ('failure', 'timeout', 'rate_limited')
+	) dimensions
+	GROUP BY 1,2,3,4,5,6,7,8,9
 ON CONFLICT (day_utc, tenant_id, provider_id, credential_id, canonical_id, raw_model_name, dimension_type, dimension_key, traffic_class)
 DO UPDATE SET
 	request_count = EXCLUDED.request_count, success_count = EXCLUDED.success_count,
