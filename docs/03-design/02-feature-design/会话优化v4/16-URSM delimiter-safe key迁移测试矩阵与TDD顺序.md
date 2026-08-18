@@ -2,16 +2,18 @@
 
 > **状态**:测试计划文档(审计修正版);不改变 [13 号](./13-T0契约冻结与所有权.md)/[14 号](./14-URSM%20Redis%20delimiter-safe%20key兼容迁移冻结决策.md)/[15 号](./15-URSM%20delimiter-safe%20key迁移实施计划.md) 的任何裁决,不解除 `M5-0/T0 = BLOCKED / NO-GO`。
 > **事实基线**:冻结基线 `df6c65463`(14 号);本矩阵探索与审计复核时 HEAD `51223fd37` → `123de7e15`(main 与 origin/main 一致)。`domains/ursm/v2/{store,recovery,persist,index}` 与 `scripts/rollback/**` 自冻结基线起无代码变动(`git log df6c65463..HEAD -- <path>` 为空,已核验),故全部 `path:line` 引用按冻结基线有效。
-> **定位**:与 15 号实施计划配套——15 号回答"怎么迁"(模式/状态机/裁决清单),本文件回答"按什么顺序写测试、每个测试依赖什么层级、什么证据算数"。首个 RED 测试与 slice 顺序供 Migration owner 在前置条件满足后执行;在 14 号 §0 前置条件( owner 名称、ledger ID、目标拓扑)记录之前,任何 slice 不得落生产代码。
+> **定位**:与 15 号实施计划配套——15 号回答"怎么迁"(模式/状态机/裁决清单),本文件回答"按什么顺序写测试、每个测试依赖什么层级、什么证据算数"。首个 RED 测试与 slice 顺序供 Migration owner 执行;**14 号 §0 前置事实已在 origin/main(`50258a382`)记录**(owner=`halfking`、ledger_id=`ursm-k2-mig-134e6d21-721b-41d4-af0b-adff143107e2`、拓扑=standalone、L1 移交 `keys_k2.go`/`keys_k2_test.go`),L1 实施禁令已解除;`M5-0/T0 = BLOCKED / NO-GO` 裁决不变。
 
 ## 1. 写第一个测试前的两个前置条件
 
-1. **Owner / ledger / 拓扑记录**(14 号 §0):Migration owner 身份、不可复用的 migration ledger ID、目标 Redis 拓扑(standalone / cluster;cluster 须先冻结 hash-tag,见 15 号 §3)。
-2. **文件移交**(13 号 §1):`domains/ursm/v2/store/keys.go` 及其测试属 URSM owner;Migration owner 仅可编辑"协调方显式移交并在 ledger 列名的精确 key-schema 文件"。移交记录先于第一行 RED 代码。
+两项前置条件**均已满足**(14 号 §0,2026-08-18 记录):
+
+1. **Owner / ledger / 拓扑**:Migration owner = `halfking`;ledger_id = `ursm-k2-mig-134e6d21-721b-41d4-af0b-adff143107e2`(一次性签发,不得复用);目标拓扑 = **standalone**,k2 grammar 不引入 hash-tag(未来迁 Sentinel/Cluster 须按 14 号 §2 签发新 marker 与新 ledger_id)。
+2. **文件移交**:L1 仅移交 `domains/ursm/v2/store/keys_k2.go`(新增)与 `domains/ursm/v2/store/keys_k2_test.go`(新增)两个精确文件;`keys.go`、manager/recovery/persist 等既有 URSM 文件**仍未移交**——本矩阵 slice 6-10 涉及的既有测试文件,在获得扩充移交前由 URSM owner 执行(见 §3 备注)。
 
 ## 2. 首个 L1 RED→GREEN 测试
 
-**文件**:新建 `domains/ursm/v2/store/keys_k2_contract_test.go`(package `store`),与 `keys_t0_contract_test.go` 同层同风格——纯函数 exact-bytes 契约,无需 miniredis。既有 `keys_t0_contract_test.go` 的 legacy exact bytes 断言保持不动(14 号 §1.3:legacy 精确字节是兼容契约)。
+**文件**:新建 `domains/ursm/v2/store/keys_k2_test.go`(package `store`;14 号 §0 移交记录的精确列名文件),与 `keys_t0_contract_test.go` 同层同风格——纯函数 exact-bytes 契约,无需 miniredis。既有 `keys_t0_contract_test.go` 的 legacy exact bytes 断言保持不动(14 号 §1.3:legacy 精确字节是兼容契约)。
 
 **内容**:canonical node key 的 golden bytes + round-trip + 14 号 §1 冻结的历史 collision pair。golden bytes 按 14 号 §2 grammar 以 `base64.RawURLEncoding` 计算,已程序化复核(`printf|base64|tr '+/' '-_'`):
 
@@ -49,11 +51,11 @@ func TestCanonicalNodeKeyK2RoundTripAndFrozenCollisionPair(t *testing.T) {
 
 | # | 层 | 行为(外部可观察) | 落点 | 依赖 |
 |---|---|---|---|---|
-| 1 | L1 | canonical node golden bytes + round-trip + 冻结 collision pair(§2) | `store/keys_k2_contract_test.go` | 纯函数 |
+| 1 | L1 | canonical node golden bytes + round-trip + 冻结 collision pair(§2) | `store/keys_k2_test.go` | 纯函数 |
 | 2 | L1 | window key golden bytes(`<prefix>win:k2:<bucket>:<b64tenant>:<cid>:<b64model>`)+ round-trip;bucket 仅 `1m/5m/30m`,非法 bucket 构造/parse 拒绝 | 同上 | 纯函数 |
-| 3 | L1 | candidate index golden bytes + round-trip;**`index` 包**在 miniredis 上以 colon-bearing tenant/canonical 做 Upsert→Query 往返与隔离,并用 `mr.Keys()`/直接读断言实际写入的 key 字节等于 canonical grammar——堵住 `index/index.go:33` 与 `store.CandidateIndexKey`(`store/keys.go:110-112`)重复拼接的第二套 namespace(index 包当前无 production caller,与 14 号 §2 一致,已 grep 复核) | `store/keys_k2_contract_test.go` + `index/index_test.go` 扩展 | 纯函数 + miniredis |
+| 3 | L1 | candidate index golden bytes + round-trip;**`index` 包**在 miniredis 上以 colon-bearing tenant/canonical 做 Upsert→Query 往返与隔离,并用 `mr.Keys()`/直接读断言实际写入的 key 字节等于 canonical grammar——堵住 `index/index.go:33` 与 `store.CandidateIndexKey`(`store/keys.go:110-112`)重复拼接的第二套 namespace(index 包当前无 production caller,与 14 号 §2 一致,已 grep 复核) | `store/keys_k2_test.go`(store 侧)+ `index/index_test.go` 扩展(URSM owner/另行移交) | 纯函数 + miniredis |
 | 4 | L1 | parser 严格性:segment 数错、非 base64url、credential 非正十进制、未知 marker、k2 空 tenant 一律失败;`ParseNodeKey` 对 legacy 返回 `SchemaLegacy`、对 k2 返回 `SchemaK2`,禁止宽松 fallback | `store/keys_k2_test.go` | 纯函数 |
-| 5 | L1 | collision property:代表性 corpus(`:`、重复/前后 delimiter、numeric tenant、Unicode、空值)满足"不同 tuple → 不同 key"且 round-trip 还原;历史 collision pair 集不复现 | `store/keys_k2_property_test.go`(Go fuzz seed corpus 固化) | 纯函数 |
+| 5 | L1 | collision property:代表性 corpus(`:`、重复/前后 delimiter、numeric tenant、Unicode、空值)满足"不同 tuple → 不同 key"且 round-trip 还原;历史 collision pair 集不复现 | `store/keys_k2_test.go`(corpus 以表驱动固化;新增文件须先扩充移交) | 纯函数 |
 | 6 | L2 | schema mode=canonical/dual 下 authoritative 空 tenant 仍 fail-closed 且不写 legacy key(扩展 `manager_t0_contract_test.go` 既有模式) | `domains/ursm/v2/manager_t0_contract_test.go` | miniredis |
 | 7 | L2 | colon-bearing tenant/model 的 cross-tenant/model isolation:`RecordRequest`、`FilterAndScore`、NodeMirror、dedup、candidate index 在 `("a",7,"b:8:c")` vs `("a:7:b",8,"c")` 下互不可见、互不更新 | `manager_t0_contract_test.go` / `manager_filter_test.go` 扩展 | miniredis |
 | 8 | L2 | dual-read precedence:legacy-only、canonical-only、both-present(canonical 优先,仅 ledger `migratable` 同 tuple 允许 legacy fallback)、conflict 拒绝;node + 3 window + dedup 作为同一 key set 一致读写(禁混配,14 号 §5.2.2) | `store/` schema-aware store 测试 | miniredis |
@@ -64,6 +66,8 @@ func TestCanonicalNodeKeyK2RoundTripAndFrozenCollisionPair(t *testing.T) {
 | 13 | L3 | cleanup:仅按 ledger exact key + checksum 删除、限速/暂停/重跑;负向测试"不在 ledger 的 key 不被删";rollback 后不删证据 | 同上 | miniredis |
 | 14 | G1 前 | 双写/copy Lua 真实 Redis dialect smoke(复用 `store/record_request_test.go:639-654` 的 `TestRecordRequestLuaSmokeOnRealRedis` 模式:唯一前缀 + `TEST_REDIS_URL` gate) | 对应包 real-smoke 测试 | **真实 Redis** |
 | 15 | G1 | 门禁全量(§5) | — | 见 §5 |
+
+所有权备注:slice 1-5 落在 14 号 §0 已移交的 `keys_k2.go`/`keys_k2_test.go`(Migration owner);slice 6-10 的落点(`manager_t0_contract_test.go`、`manager_filter_test.go`、`store/` schema-aware 测试、`persist/writer_test.go`、`recovery/coverage_test.go`)及其对应生产文件均未移交——由 URSM owner 执行,或按 14 号 §0 机制扩充移交后再交 Migration owner;slice 11-13 的 L3 新包属 Migration owner 自有范围。
 
 ## 4. 依赖层级边界:miniredis / sqlmock / 不可达地址仅证明 L1/L2
 
@@ -88,7 +92,7 @@ func TestCanonicalNodeKeyK2RoundTripAndFrozenCollisionPair(t *testing.T) {
 
 **G4(M5-5 真实依赖证据)— 三块独立必需**:
 
-1. **隔离真实 Redis**(专用一次性实例):`TEST_REDIS_URL`(默认 `127.0.0.1:6379`,沿用 `realRedisClient` 模式 `manager_filter_test.go:25-40`:DialTimeout 500ms、Ping 失败 Skipf、唯一前缀 `ursm:v2:test:<nanos>:`)。场景:dual-write/cutover/rollback 全程、真实 restart、`NOSCRIPT`(SCRIPT FLUSH 后重放)、连接重建、Pub/Sub、真实 TTL/cleanup、coverage warmup;cluster 则加 CROSSSLOT/hash-tag/failover。gated 用例必须实际运行、零 SKIP。
+1. **隔离真实 Redis**(专用一次性实例):`TEST_REDIS_URL`(默认 `127.0.0.1:6379`,沿用 `realRedisClient` 模式 `manager_filter_test.go:25-40`:DialTimeout 500ms、Ping 失败 Skipf、唯一前缀 `ursm:v2:test:<nanos>:`)。场景:dual-write/cutover/rollback 全程、真实 restart、`NOSCRIPT`(SCRIPT FLUSH 后重放)、连接重建、Pub/Sub、真实 TTL/cleanup、coverage warmup。拓扑已裁决 standalone(14 号 §0),Cluster 专属项(CROSSSLOT/hash-tag/failover)不适用。gated 用例必须实际运行、零 SKIP。
 2. **真实 PG lease/fencing**:两途均可——(a) `TEST_PG_URL` 指一次性库 + `//go:build integration`(migration 532 约定);(b) testcontainers(repair_529 先例;当前 vendor 集合下 `go vet -tags=integration ./sql/migrations/startup/` 通过,2026-08-18 复核,需 Docker daemon)。注意 `cmd/test_sql` 用的是独立变量 `LLM_GATEWAY_TEST_PG_URL`。
 3. **真实 provider / slow-client / chaos**:`tests/integration/request_flow_fault_injection_test.go` 模式(`TEST_PG_URL` + `TEST_REDIS_URL` 双 gate、`//go:build integration`)+ llm-gateway-test skill(网关级真实环境功能矩阵:协议 × 模型 × 错误路径 × 性能;环境隔离、key 走环境变量、JSON/MD/HTML 报告工件)。
 
@@ -125,3 +129,4 @@ func TestCanonicalNodeKeyK2RoundTripAndFrozenCollisionPair(t *testing.T) {
 ## 8. 变更记录
 
 - 2026-08-18:首次落盘;在会话初版矩阵基础上完成审计更正(A1-A4)并复核全部事实;与 15 号实施计划配套。
+- 2026-08-18:对齐 origin/main(`50258a382`)的 14 号 §0 前置事实记录——前置条件标记为已满足,首个测试与 L1 slice 落点改为移交列名的 `keys_k2_test.go`,补 slice 所有权备注,G4 cluster 项按 standalone 裁决标记不适用。
