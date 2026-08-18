@@ -2,6 +2,7 @@ package migration
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -97,5 +98,87 @@ func TestMetadataInitializeCannotReplaceLedgerIdentity(t *testing.T) {
 	first.LedgerID = "two"
 	if err := metadata.Initialize(ctx, first); err == nil {
 		t.Fatal("metadata initialize must reject a different, non-reusable ledger ID")
+	}
+}
+
+// TestMirrorPromotionFencedByIdentityAndEpoch covers the Lua CAS in
+// MetadataHash.mirrorPromotion: an owner-approved PG transition only
+// advances Redis when (owner, ledger_id, cutover_epoch, predecessor
+// checkpoint) all agree. Any disagreement leaves the durable HASH intact
+// so the next ReconcilePromotion can retry without losing authority.
+func TestMirrorPromotionFencedByIdentityAndEpoch(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	ctx := context.Background()
+	store := &MetadataHash{Prefix: "p:", RDB: rdb}
+	now := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
+	if err := store.Write(ctx, Metadata{
+		Owner: "halfking", LedgerID: "ursm-v2-k2-test", Mode: ModeDual,
+		CutoverEpoch: 3, StartedAt: now, UpdatedAt: now,
+		Checkpoint: CheckpointCopy,
+	}); err != nil {
+		t.Fatalf("seed metadata: %v", err)
+	}
+	evidence := strings.Repeat("a", 64)
+	good := PromotionRequest{
+		LedgerID: "ursm-v2-k2-test", Owner: "halfking",
+		ExpectedCheckpoint: CheckpointCopy, ExpectedEpoch: 3,
+		Checkpoint: CheckpointCoverage, Mode: ModeDual,
+		Actor: "halfking", ApprovedBy: "reviewer",
+		EvidenceSHA256: evidence, EvidenceRef: "evidence://coverage",
+	}
+	if err := store.mirrorPromotion(ctx, good, now); err != nil {
+		t.Fatalf("mirror good promotion: %v", err)
+	}
+	md, err := store.Read(ctx)
+	if err != nil {
+		t.Fatalf("read after mirror: %v", err)
+	}
+	if md.Checkpoint != CheckpointCoverage || md.CutoverEpoch != 4 {
+		t.Fatalf("post-mirror = checkpoint:%q epoch:%d, want coverage/4", md.Checkpoint, md.CutoverEpoch)
+	}
+	// Stale epoch must fail closed.
+	stale := good
+	stale.ExpectedEpoch = 3 // already advanced to 4
+	if err := store.mirrorPromotion(ctx, stale, now); err == nil {
+		t.Fatal("mirror with stale epoch must fail closed")
+	}
+	// Different owner must fail closed.
+	wrong := good
+	wrong.Owner = "not-the-owner"
+	wrong.ExpectedEpoch = 4
+	if err := store.mirrorPromotion(ctx, wrong, now); err == nil {
+		t.Fatal("mirror with mismatched owner must fail closed")
+	}
+	// Different ledger_id must fail closed.
+	wrong = good
+	wrong.LedgerID = "ursm-v2-k2-other"
+	wrong.ExpectedEpoch = 4
+	if err := store.mirrorPromotion(ctx, wrong, now); err == nil {
+		t.Fatal("mirror with mismatched ledger_id must fail closed")
+	}
+	// Mismatched predecessor checkpoint must fail closed.
+	wrong = good
+	wrong.ExpectedCheckpoint = CheckpointPreflight
+	wrong.ExpectedEpoch = 4
+	if err := store.mirrorPromotion(ctx, wrong, now); err == nil {
+		t.Fatal("mirror with mismatched predecessor must fail closed")
+	}
+	// Authoritative next promotion still succeeds.
+	next := good
+	next.ExpectedCheckpoint = CheckpointCoverage
+	next.ExpectedEpoch = 4
+	next.Checkpoint = CheckpointDual
+	next.Mode = ModeDual
+	next.EvidenceRef = "evidence://dual"
+	if err := store.mirrorPromotion(ctx, next, now); err != nil {
+		t.Fatalf("mirror authoritative next promotion: %v", err)
+	}
+	md, err = store.Read(ctx)
+	if err != nil {
+		t.Fatalf("read after second mirror: %v", err)
+	}
+	if md.Checkpoint != CheckpointDual || md.CutoverEpoch != 5 {
+		t.Fatalf("post-second-mirror = checkpoint:%q epoch:%d, want dual/5", md.Checkpoint, md.CutoverEpoch)
 	}
 }

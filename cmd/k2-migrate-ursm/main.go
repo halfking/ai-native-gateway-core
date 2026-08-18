@@ -40,6 +40,17 @@ func main() {
 	cmd := os.Args[1]
 	args := os.Args[2:]
 
+	// T0 fail-closed gate: refuse --apply before flag parsing or any
+	// Redis/PG client construction. The check runs ahead of flag.Parse
+	// so a misconfigured --redis cannot trigger a network round trip
+	// while T0 is BLOCKED / NO-GO. See handoff §3 / §2 for the contract
+	// and docs/03-design/.../14-URSM-...md for the durable apply path.
+	for _, arg := range args {
+		if arg == "--apply" || strings.HasPrefix(arg, "--apply=") {
+			log.Fatal("k2 migration apply is disabled while T0 is BLOCKED / NO-GO; use the owner-reviewed durable library APIs only")
+		}
+	}
+
 	common := flag.NewFlagSet(cmd, flag.ExitOnError)
 	redisURL := common.String("redis", redisURLFromEnv(), "Redis URL")
 	keyPrefix := common.String("key-prefix", defaultRedisKeyPrefix, "URSM v2 Redis prefix")

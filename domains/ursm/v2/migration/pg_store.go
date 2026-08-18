@@ -471,10 +471,10 @@ func validMigrationClassification(class Classification) bool {
 func validMigrationState(state ItemStatus) bool {
 	switch state {
 	case StatusClassified, StatusCopied, StatusCleaned, StatusRolledBack,
-		StatusConflict:
+		StatusConflict, StatusExpired, StatusFenced:
 		return true
 	}
-	return state == "expired" || state == "fenced"
+	return false
 }
 
 func (p *PGStore) UpsertEntries(ctx context.Context, ledgerID string, entries []EntryRecord) error {

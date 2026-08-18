@@ -162,7 +162,7 @@ func (o CopyOutcome) validate() error {
 		if o.CopiedPTTLMs == nil {
 			return errors.New("ursm.v2: copied outcome requires target PTTL")
 		}
-	case StatusConflict, ItemStatus("expired"):
+	case StatusConflict, StatusExpired:
 	default:
 		return fmt.Errorf("ursm.v2: invalid durable copy outcome state %q", o.State)
 	}
@@ -203,7 +203,7 @@ func (c *DurableCopy) CopyEntry(ctx context.Context, ledgerID, owner string, epo
 	if result.Status == EntryCopySkippedExpired {
 		if err := c.PG.PersistCopyOutcome(ctx, CopyOutcome{
 			LedgerID: ledgerID, Owner: owner, Epoch: epoch, SourceKey: entry.SourceKey, TargetKey: entry.TargetKey,
-			Generation: entry.Generation, FieldChecksum: entry.FieldChecksum, State: ItemStatus("expired"), LastError: "source expired before copy",
+			Generation: entry.Generation, FieldChecksum: entry.FieldChecksum, State: StatusExpired, LastError: "source expired before copy",
 		}); err != nil {
 			return EntryCopyResult{}, err
 		}
