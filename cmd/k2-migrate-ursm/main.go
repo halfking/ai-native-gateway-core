@@ -46,7 +46,7 @@ func main() {
 	// while T0 is BLOCKED / NO-GO. See handoff §3 / §2 for the contract
 	// and docs/03-design/.../14-URSM-...md for the durable apply path.
 	for _, arg := range args {
-		if arg == "--apply" || strings.HasPrefix(arg, "--apply=") {
+		if arg == "--apply" || arg == "-apply" || strings.HasPrefix(arg, "--apply=") || strings.HasPrefix(arg, "-apply=") {
 			log.Fatal("k2 migration apply is disabled while T0 is BLOCKED / NO-GO; use the owner-reviewed durable library APIs only")
 		}
 	}

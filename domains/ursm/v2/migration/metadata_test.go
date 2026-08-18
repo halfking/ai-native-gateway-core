@@ -86,12 +86,48 @@ func TestMetadataReadRejectsInvalidRollbackDeadline(t *testing.T) {
 	}
 }
 
+func TestMetadataReadRejectsIncompleteIdentity(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	ctx := context.Background()
+	if err := rdb.HSet(ctx, MetadataKey("p:"), map[string]string{
+		"owner": "halfking", "ledger_id": "ursm-v2-k2-test", "mode": "dual", "cutover_epoch": "0",
+	}).Err(); err != nil {
+		t.Fatalf("seed incomplete metadata: %v", err)
+	}
+	if _, err := NewMetadataLua(rdb, "p:").Read(ctx); err == nil {
+		t.Fatal("incomplete metadata must be rejected")
+	}
+}
+
+func TestMetadataInitializeRejectsInvalidModeWithoutPartialWrite(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	ctx := context.Background()
+	metadata := NewMetadataLua(rdb, "p:")
+	now := time.Date(2026, 8, 18, 0, 0, 0, 0, time.UTC)
+	if err := metadata.Initialize(ctx, Metadata{
+		Owner: "halfking", LedgerID: "ursm-v2-k2-test", Mode: Mode("invalid"),
+		CutoverEpoch: 0, StartedAt: now, UpdatedAt: now, Checkpoint: CheckpointPreflight,
+	}); err == nil {
+		t.Fatal("invalid mode must be rejected")
+	}
+	if values, err := rdb.HGetAll(ctx, metadata.key()).Result(); err != nil {
+		t.Fatalf("read metadata after rejected initialize: %v", err)
+	} else if len(values) != 0 {
+		t.Fatalf("rejected initialize left partial metadata: %v", values)
+	}
+}
 func TestMetadataInitializeCannotReplaceLedgerIdentity(t *testing.T) {
 	mr := miniredis.RunT(t)
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	ctx := context.Background()
 	metadata := NewMetadataLua(rdb, "p:")
-	first := Metadata{Owner: "halfking", LedgerID: "one", Mode: ModeLegacy, Checkpoint: CheckpointPreflight}
+	now := time.Date(2026, 8, 18, 0, 0, 0, 0, time.UTC)
+	first := Metadata{
+		Owner: "halfking", LedgerID: "one", Mode: ModeLegacy,
+		CutoverEpoch: 0, StartedAt: now, UpdatedAt: now, Checkpoint: CheckpointPreflight,
+	}
 	if err := metadata.Initialize(ctx, first); err != nil {
 		t.Fatalf("first initialize: %v", err)
 	}

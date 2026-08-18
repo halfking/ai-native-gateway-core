@@ -246,43 +246,27 @@ func (m *MetadataLuaStore) Initialize(ctx context.Context, in Metadata) error {
 	if m == nil || m.rdb == nil {
 		return fmt.Errorf("ursm.v2: migration metadata requires redis")
 	}
-	if in.Owner == "" || in.LedgerID == "" || in.Checkpoint == "" {
-		return fmt.Errorf("ursm.v2: migration metadata requires owner, ledger_id and checkpoint")
-	}
 	if in.StartedAt.IsZero() {
 		in.StartedAt = time.Now().UTC()
 	}
 	in.UpdatedAt = time.Now().UTC()
-	existing, err := m.Read(ctx)
-	if err != nil && err != redis.Nil {
-		return err
+	if err := in.Validate(); err != nil {
+		return fmt.Errorf("ursm.v2: initialize migration metadata: %w", err)
 	}
-	if err == nil {
-		if existing.Owner != in.Owner || existing.LedgerID != in.LedgerID {
-			return fmt.Errorf("ursm.v2: migration metadata identity already belongs to owner=%q ledger_id=%q", existing.Owner, existing.LedgerID)
-		}
-		return nil
+	schemaMode, err := store.ParseKeySchemaMode(string(in.Mode))
+	if err != nil {
+		return fmt.Errorf("ursm.v2: initialize migration metadata mode: %w", err)
 	}
-	schemaMode, _ := store.ParseKeySchemaMode(string(in.Mode))
-	ok, err := m.rdb.HSetNX(ctx, m.key(), "owner", in.Owner).Result()
+	deadline := rollbackDeadlineWire(in.RollbackDeadline)
+	result, err := metadataIdentityWriteScript.Run(ctx, m.rdb, []string{m.key()},
+		in.Owner, in.LedgerID, schemaMode.String(), strconv.FormatInt(in.CutoverEpoch, 10),
+		in.StartedAt.UTC().Format(time.RFC3339Nano), in.UpdatedAt.UTC().Format(time.RFC3339Nano),
+		in.PreflightChecksum, string(in.Checkpoint), deadline).Text()
 	if err != nil {
 		return fmt.Errorf("ursm.v2: initialize migration metadata: %w", err)
 	}
-	if !ok {
-		// A concurrent initializer won. Re-read to enforce its identity.
-		return m.Initialize(ctx, in)
-	}
-	if err := m.rdb.HSet(ctx, m.key(), map[string]string{
-		"ledger_id":          in.LedgerID,
-		"mode":               schemaMode.String(),
-		"cutover_epoch":      strconv.FormatInt(in.CutoverEpoch, 10),
-		"started_at":         in.StartedAt.UTC().Format(time.RFC3339Nano),
-		"updated_at":         in.UpdatedAt.UTC().Format(time.RFC3339Nano),
-		"preflight_checksum": in.PreflightChecksum,
-		"rollback_deadline":  rollbackDeadlineWire(in.RollbackDeadline),
-		"checkpoint":         string(in.Checkpoint),
-	}).Err(); err != nil {
-		return fmt.Errorf("ursm.v2: complete migration metadata initialize: %w", err)
+	if result != "ok" {
+		return fmt.Errorf("ursm.v2: migration metadata identity already belongs to another run")
 	}
 	return nil
 }
@@ -323,7 +307,7 @@ func (m *MetadataLuaStore) Read(ctx context.Context) (Metadata, error) {
 			return Metadata{}, fmt.Errorf("ursm.v2: invalid stored rollback_deadline: %w", err)
 		}
 	}
-	return Metadata{
+	metadata := Metadata{
 		Owner:             values["owner"],
 		LedgerID:          values["ledger_id"],
 		Mode:              Mode(mode.String()),
@@ -333,7 +317,11 @@ func (m *MetadataLuaStore) Read(ctx context.Context) (Metadata, error) {
 		PreflightChecksum: values["preflight_checksum"],
 		RollbackDeadline:  rollback,
 		Checkpoint:        Checkpoint(values["checkpoint"]),
-	}, nil
+	}
+	if err := metadata.Validate(); err != nil {
+		return Metadata{}, fmt.Errorf("ursm.v2: invalid stored migration metadata: %w", err)
+	}
+	return metadata, nil
 }
 
 // Advance is disabled because Redis-only checkpoint changes cannot establish
