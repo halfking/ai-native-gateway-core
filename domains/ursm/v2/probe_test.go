@@ -39,8 +39,11 @@ func TestApplyProbeRefreshesNodeTTL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ttl: %v", err)
 	}
-	if ttl <= 0 || ttl > time.Hour {
-		t.Fatalf("probe node ttl=%s, want positive value no greater than configured hour", ttl)
+	// 2026-08-18: probe writes carry a TTL floor (probeWriteTTLFloor) so the
+	// evidence outlives the probe worker's retry ladder — a configured NodeTTL
+	// below the floor is raised, never honoured verbatim.
+	if ttl < probeWriteTTLFloor || ttl > probeWriteTTLFloor+time.Minute {
+		t.Fatalf("probe node ttl=%s, want the %s probe-write floor", ttl, probeWriteTTLFloor)
 	}
 }
 

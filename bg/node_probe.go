@@ -879,6 +879,15 @@ func (w *NodeProbeWorker) ProbeSync(
 				recoverAt := time.Now().Add(5 * time.Minute)
 				w.updateObservedState(ctx, j.credID, j.model, false, res.direct.errCode, recoverAt)
 			}
+			// 2026-08-18: the sync path also drives the URSM v2 authoritative
+			// router. Without this write the probe "recovered" only the PG
+			// binding while PlanCandidatesWithContext kept rejecting the node
+			// for its missing/expired Redis node key, so the executor's retry
+			// after ProbeSync returned 503 again (glm-5.2 outage on 154).
+			// Success reflects the direct round only: the gateway round is
+			// routed through this same URSM filter and can 503 circularly
+			// while the key is missing.
+			w.updateURSMv2ProbeState(ctx, tenantID, j.credID, j.model, res.direct.ok, res.direct.latencyMs)
 			if w.invalidateCandidateCache != nil {
 				w.invalidateCandidateCache(j.credID)
 			}
@@ -1291,7 +1300,13 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 	gw := w.probeGateway(ctx, credID, model)
 
 	success := direct.ok && gw.ok
-	w.updateURSMv2ProbeState(ctx, trigger.tenantID, credID, model, success, direct.latencyMs)
+	// 2026-08-18: URSM availability reflects the direct (upstream) round only.
+	// The gateway round is itself routed through the URSM v2 filter; when the
+	// node key is missing/expired the round 503s circularly and writing that
+	// composite result back as available=0 turned a transient key expiry into
+	// a persistent "confirmed unavailable" lockout (glm-5.2 outage on 154).
+	// The composite still drives the backoff ladder and audit below.
+	w.updateURSMv2ProbeState(ctx, trigger.tenantID, credID, model, direct.ok, direct.latencyMs)
 	w.emitProbe(ctx, credID, direct.providerID, model, direct.outboundModel, "direct", attempt, trigger, direct)
 	w.emitProbe(ctx, credID, direct.providerID, model, direct.outboundModel, "gateway", attempt, trigger, gw)
 	if !direct.ok {

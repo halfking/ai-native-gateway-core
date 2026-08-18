@@ -402,17 +402,27 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 				slog.Warn("routing resolve: ursm v2 partial result",
 					"got", len(views), "want", len(candidates))
 			}
+			// 2026-08-18 fix: FilterAndScore returns views sorted by score
+			// (scoreAndSort), NOT in seed order — the previous positional
+			// views[i] pairing produced "ursm v2 view out of order" on every
+			// multi-candidate resolve and skipped the override. Match by
+			// (provider, credential, raw_model) instead.
+			viewByKey := make(map[string]api.NodeView, len(views))
+			for _, v := range views {
+				viewByKey[fmt.Sprintf("%d|%d|%s", v.ProviderID, v.CredentialID, v.RawModel)] = v
+			}
 			now := time.Now()
-			for i, c := range candidates {
-				defaults(&c) // baseline；URSM 拿到 NodeView 才覆盖
-				if i >= len(views) {
-					continue
-				}
-				v := views[i]
-				if v.CredentialID != c.CredentialID || v.RawModel != c.ModelName {
-					slog.Warn("routing resolve: ursm v2 view out of order",
-						"want_cred", c.CredentialID, "want_model", c.ModelName,
-						"got_cred", v.CredentialID, "got_model", v.RawModel)
+			// 2026-08-18 fix: the previous `for i, c := range candidates`
+			// mutated a struct copy and never wrote it back, so every URSM
+			// override below (Available / CircuitState / the !v.Available →
+			// Routable=false re-derivation) was silently discarded and the
+			// dashboard rendered SQL-routable nodes green even while the
+			// authoritative router rejected them.
+			for i := range candidates {
+				c := &candidates[i]
+				defaults(c) // baseline；URSM 拿到 NodeView 才覆盖
+				v, ok := viewByKey[fmt.Sprintf("%d|%d|%s", c.ProviderID, c.CredentialID, c.ModelName)]
+				if !ok {
 					continue
 				}
 				c.Available = v.Available
