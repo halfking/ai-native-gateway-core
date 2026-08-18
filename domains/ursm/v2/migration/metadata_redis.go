@@ -20,16 +20,46 @@ func MetadataKey(prefix string) string {
 
 // MetadataHash wraps the Redis HASH write/read operations for Metadata.
 // Independent type from the LUA-CAS MetadataStore in metadata.go: this one
-// exposes plain Write/Read plus a CASCheckpoint Lua script, while
+// exposes identity-CAS Write/Read plus a CASCheckpoint Lua script, while
 // MetadataStore owns the epoch-fenced Advance / idempotent Initialize path.
+
+var metadataIdentityWriteScript = redis.NewScript(`
+local owner = redis.call('HGET', KEYS[1], 'owner')
+local ledger = redis.call('HGET', KEYS[1], 'ledger_id')
+if (owner == false) ~= (ledger == false) then
+  return redis.error_reply('incomplete migration metadata identity')
+end
+if owner ~= false then
+  if owner ~= ARGV[1] or ledger ~= ARGV[2] or
+     redis.call('HGET', KEYS[1], 'mode') ~= ARGV[3] or
+     redis.call('HGET', KEYS[1], 'cutover_epoch') ~= ARGV[4] or
+     redis.call('HGET', KEYS[1], 'started_at') ~= ARGV[5] or
+     redis.call('HGET', KEYS[1], 'preflight_checksum') ~= ARGV[7] or
+     redis.call('HGET', KEYS[1], 'checkpoint') ~= ARGV[8] or
+     (redis.call('HGET', KEYS[1], 'rollback_deadline') or '') ~= ARGV[9] then
+    return 'conflict'
+  end
+end
+redis.call('HSET', KEYS[1],
+  'owner', ARGV[1], 'ledger_id', ARGV[2], 'mode', ARGV[3],
+  'cutover_epoch', ARGV[4], 'started_at', ARGV[5], 'updated_at', ARGV[6],
+  'preflight_checksum', ARGV[7], 'checkpoint', ARGV[8])
+if ARGV[9] == '' then
+  redis.call('HDEL', KEYS[1], 'rollback_deadline')
+else
+  redis.call('HSET', KEYS[1], 'rollback_deadline', ARGV[9])
+end
+return 'ok'
+`)
+
 type MetadataHash struct {
 	Prefix string
 	RDB    *redis.Client
 }
 
-// Write stores the metadata fields atomically. It uses HSET (not HSETNX) so
-// the operator can re-publish a corrected snapshot; the immutable contract
-// is the ledger_id (one-shot, doc 14 §0).
+// Write atomically establishes the immutable run snapshot. Repeating the
+// same snapshot is idempotent; any identity or authorization-field change is
+// rejected so a cleanup gate cannot be rewritten in place.
 func (s *MetadataHash) Write(ctx context.Context, m Metadata) error {
 	if err := m.Validate(); err != nil {
 		return err
@@ -37,21 +67,19 @@ func (s *MetadataHash) Write(ctx context.Context, m Metadata) error {
 	if s.Prefix == "" || s.RDB == nil {
 		return fmt.Errorf("migration: metadata store: missing prefix/redis client")
 	}
-	values := map[string]any{
-		"owner":              m.Owner,
-		"ledger_id":          m.LedgerID,
-		"mode":               string(m.Mode),
-		"cutover_epoch":      fmt.Sprintf("%d", m.CutoverEpoch),
-		"started_at":         m.StartedAt.UTC().Format(time.RFC3339Nano),
-		"updated_at":         m.UpdatedAt.UTC().Format(time.RFC3339Nano),
-		"preflight_checksum": m.PreflightChecksum,
-		"checkpoint":         string(m.Checkpoint),
-	}
+	deadline := ""
 	if !m.RollbackDeadline.IsZero() {
-		values["rollback_deadline"] = m.RollbackDeadline.UTC().Format(time.RFC3339Nano)
+		deadline = m.RollbackDeadline.UTC().Format(time.RFC3339Nano)
 	}
-	if err := s.RDB.HSet(ctx, MetadataKey(s.Prefix), values).Err(); err != nil {
-		return fmt.Errorf("migration: hset metadata: %w", err)
+	result, err := metadataIdentityWriteScript.Run(ctx, s.RDB, []string{MetadataKey(s.Prefix)},
+		m.Owner, m.LedgerID, string(m.Mode), fmt.Sprintf("%d", m.CutoverEpoch),
+		m.StartedAt.UTC().Format(time.RFC3339Nano), m.UpdatedAt.UTC().Format(time.RFC3339Nano),
+		m.PreflightChecksum, string(m.Checkpoint), deadline).Text()
+	if err != nil {
+		return fmt.Errorf("migration: write metadata identity: %w", err)
+	}
+	if result != "ok" {
+		return fmt.Errorf("migration: metadata identity already owned by another run")
 	}
 	return nil
 }
@@ -87,15 +115,16 @@ func (s *MetadataHash) CASCheckpoint(ctx context.Context, expectedEpoch int64, n
 		return fmt.Errorf("migration: cas invalid checkpoint %q", newCheckpoint)
 	}
 	const script = `
-		local cur = redis.call('HGET', KEYS[1], 'cutover_epoch')
-		if cur ~= false and tonumber(cur) ~= tonumber(ARGV[1]) then
-			return 0
-		end
-		redis.call('HSET', KEYS[1],
-			'checkpoint', ARGV[2],
-			'updated_at', ARGV[3])
-		return 1
-	`
+			local cur = redis.call('HGET', KEYS[1], 'cutover_epoch')
+			if cur == false or tonumber(cur) == nil or tonumber(cur) ~= tonumber(ARGV[1]) then
+				return 0
+			end
+			redis.call('HSET', KEYS[1],
+				'checkpoint', ARGV[2],
+				'cutover_epoch', tostring(tonumber(ARGV[1]) + 1),
+				'updated_at', ARGV[3])
+			return 1
+		`
 	res, err := s.RDB.Eval(ctx, script, []string{MetadataKey(s.Prefix)},
 		fmt.Sprintf("%d", expectedEpoch),
 		string(newCheckpoint),

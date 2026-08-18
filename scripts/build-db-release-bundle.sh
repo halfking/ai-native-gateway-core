@@ -140,8 +140,11 @@ upgrade="$DB_DIR/03-current-upgrade.sql"
   echo "-- execute only migrations not yet applied in that environment."
   echo
   shopt -s nullglob
-  files=(sql/migrations/startup/*.sql sql/migrations/domain/*.sql sql/migrations/manual/*.sql)
+  files=(sql/migrations/startup/*.sql sql/migrations/domain/*.sql sql/migrations/manual/*.sql sql/migrations/080-ursm-key-migration-ledger.sql sql/migrations/081-ursm-key-migration-ledger-add-rollback-deadline.sql)
   shopt -u nullglob
+  if [[ ${#files[@]} -gt 0 ]]; then
+    mapfile -t files < <(printf '%s\n' "${files[@]}" | LC_ALL=C sort -V)
+  fi
   if [[ ${#files[@]} -eq 0 ]]; then
     echo "-- No migration SQL files found."
   else
