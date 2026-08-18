@@ -69,7 +69,7 @@ ba1ce1911 docs(audit,remediation): state machine remediation round 2 — 4-agent
   - canary 的 worker 路径是 `systemmonitor.SystemMonitor.processTask` 而不是 `ProbeService.Run`，因为 `unified probe service wired` log 没出现（说明 `cmd/gateway/main.go` 的 wiring 条件没满足，或 canary binary 与生产 env 在某分支未匹配）
   - `systemmonitor.audit.Write` 走 `system_probe_runs` 但写之前某些条件（`Enabled()` 返回 false 或 fallback mode）跳过
   - 或者 ProbeQueue worker 优先于 system_monitor claim 任务，但 audit 路径有 bug 没产生 row
-- **未在本 canary 解决**：需要后续在 245 全量或生产 154 部署后用真实任务流复现，定位 systemmonitor audit 为何 skipped
+- **未在本 canary 解决**：必须先在隔离、已获 ops 授权的 canary 复现并证明 audit/URSM/resolve 全链路；在三项通过前，禁止将 245 全量或 154 生产作为诊断环境。
 
 #### 问题 C：admin auth 路径不可用
 
@@ -116,9 +116,9 @@ ba1ce1911 docs(audit,remediation): state machine remediation round 2 — 4-agent
 2. **定位 systemmonitor audit skip 根因**：audit.Write 调用前 `Enabled()` 为 false 或 fallback mode 触发了静默 return
 3. **现场 PG 82 行伪成功清理**：ops 跑 `sql/migrations/operations/2026-08-19-pseudo-success-cleanup.sql`
 
-### P1 — 245 全量部署门禁
+### P1 — 发布门禁（P0 隔离 canary 通过后）
 
-4. 245 全量替换 8781：先 `systemctl stop llm-gateway-go-canary.service` 确认无残留；将 `LLM_GATEWAY_BG_MODE=full` 写入生产 env
+4. 245 全量替换 8781：仅在隔离 canary 的 audit/URSM/resolve 三项均通过且 ops 批准后，先确认 `llm-gateway-go-canary.service` 无残留，再评估 `LLM_GATEWAY_BG_MODE=full`
 5. 验证 24h：监控 `audit_persist_failed_total / lease_lost_total / audit_unknown_source_total` 全为 0
 
 ### P2 — 154 生产
