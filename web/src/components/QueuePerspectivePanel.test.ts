@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import QueuePerspectivePanel from './QueuePerspectivePanel.vue'
 import NodeDetailDrawer from './NodeDetailDrawer.vue'
 import { __testing, liveStreamState } from '../composables/liveStreamStore'
+import { ApiError } from '../api/_core'
 
 const { getFeatured, resolveRouting, reorderCandidateBindings, superAdmin } = vi.hoisted(() => ({
   getFeatured: vi.fn(),
@@ -410,7 +411,7 @@ describe('QueuePerspectivePanel', () => {
           ]
         : [],
     }))
-    reorderCandidateBindings.mockReset().mockRejectedValueOnce(new Error('409 stale candidate binding set, refetch and retry'))
+    reorderCandidateBindings.mockReset().mockRejectedValueOnce(new ApiError(409, 'stale candidate binding set, refetch and retry'))
     liveStreamState.nodes = [
       { credential_id: 1, provider_id: 1, provider_code: 'p', manual_disabled: false, circuit_state: 'closed', raw_models: ['m-1'] },
       { credential_id: 2, provider_id: 1, provider_code: 'p', manual_disabled: false, circuit_state: 'closed', raw_models: ['m-1'] },
