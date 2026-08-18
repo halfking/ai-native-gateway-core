@@ -2,6 +2,7 @@ package migration
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -103,40 +104,45 @@ func (s *MetadataHash) Read(ctx context.Context) (Metadata, error) {
 	return m, nil
 }
 
-// CASCheckpoint performs a Lua-driven compare-and-swap on the cutover_epoch
-// + checkpoint pair so concurrent migration runs cannot stomp on each
-// other (doc 14 §4 state machine, doc 15 §4). The Lua returns 1 when the
-// CAS succeeds, 0 otherwise.
-func (s *MetadataHash) CASCheckpoint(ctx context.Context, expectedEpoch int64, newCheckpoint Checkpoint, now time.Time) error {
+// mirrorPromotion mirrors a durable PG transition only when the complete immutable
+// identity, expected predecessor, and epoch agree. It is private so Redis cannot
+// be advanced independently of the owner-approved PG transition.
+func (s *MetadataHash) mirrorPromotion(ctx context.Context, request PromotionRequest, now time.Time) error {
 	if s.Prefix == "" || s.RDB == nil {
 		return fmt.Errorf("migration: metadata store: missing prefix/redis client")
 	}
-	if !newCheckpoint.Valid() {
-		return fmt.Errorf("migration: cas invalid checkpoint %q", newCheckpoint)
+	if err := validPromotion(request); err != nil {
+		return err
 	}
 	const script = `
-			local cur = redis.call('HGET', KEYS[1], 'cutover_epoch')
-			if cur == false or tonumber(cur) == nil or tonumber(cur) ~= tonumber(ARGV[1]) then
-				return 0
-			end
-			redis.call('HSET', KEYS[1],
-				'checkpoint', ARGV[2],
-				'cutover_epoch', tostring(tonumber(ARGV[1]) + 1),
-				'updated_at', ARGV[3])
-			return 1
-		`
-	res, err := s.RDB.Eval(ctx, script, []string{MetadataKey(s.Prefix)},
-		fmt.Sprintf("%d", expectedEpoch),
-		string(newCheckpoint),
-		now.UTC().Format(time.RFC3339Nano),
-	).Int64()
+		local owner = redis.call('HGET', KEYS[1], 'owner')
+		local ledger = redis.call('HGET', KEYS[1], 'ledger_id')
+		local epoch = redis.call('HGET', KEYS[1], 'cutover_epoch')
+		local checkpoint = redis.call('HGET', KEYS[1], 'checkpoint')
+		if owner ~= ARGV[1] or ledger ~= ARGV[2] or epoch == false or tonumber(epoch) ~= tonumber(ARGV[3]) or checkpoint ~= ARGV[4] then
+			return 0
+		end
+		redis.call('HSET', KEYS[1], 'checkpoint', ARGV[5], 'mode', ARGV[6],
+			'cutover_epoch', tostring(tonumber(ARGV[3]) + 1), 'updated_at', ARGV[7])
+		return 1
+	`
+	result, err := s.RDB.Eval(ctx, script, []string{MetadataKey(s.Prefix)},
+		request.Owner, request.LedgerID, fmt.Sprintf("%d", request.ExpectedEpoch),
+		string(request.ExpectedCheckpoint), string(request.Checkpoint), string(request.Mode),
+		now.UTC().Format(time.RFC3339Nano)).Int64()
 	if err != nil {
-		return fmt.Errorf("migration: cas checkpoint: %w", err)
+		return fmt.Errorf("migration: mirror durable checkpoint: %w", err)
 	}
-	if res != 1 {
-		return fmt.Errorf("migration: cas checkpoint: epoch mismatch (expected %d)", expectedEpoch)
+	if result != 1 {
+		return errors.New("migration: durable checkpoint mirror fenced by identity, epoch, or predecessor")
 	}
 	return nil
+}
+
+// CASCheckpoint is retained only as a fail-closed compatibility stub. New
+// production paths must use PromotionCoordinator.
+func (s *MetadataHash) CASCheckpoint(ctx context.Context, expectedEpoch int64, newCheckpoint Checkpoint, now time.Time) error {
+	return errors.New("migration: direct checkpoint CAS disabled; use owner-approved PromotionCoordinator")
 }
 
 func decodeMetadata(values map[string]string) (Metadata, error) {

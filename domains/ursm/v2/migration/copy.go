@@ -302,13 +302,13 @@ func (c *EntryCopier) CopyHash(ctx context.Context, entry EntryRecord) (EntryCop
 	if err != nil {
 		return EntryCopyResult{}, fmt.Errorf("ursm.v2: copy source pttl: %w", err)
 	}
-	if pttl == -2*time.Nanosecond {
+	if pttl == -2*time.Millisecond {
 		return EntryCopyResult{Status: EntryCopySkippedExpired}, nil
 	}
 	if pttl == 0 {
 		return EntryCopyResult{Status: EntryCopySkippedExpired}, nil
 	}
-	if pttl < 0 && pttl != -1*time.Nanosecond {
+	if pttl < 0 && pttl != -1*time.Millisecond {
 		return EntryCopyResult{}, fmt.Errorf("ursm.v2: invalid source pttl %v", pttl)
 	}
 	fields, err := c.rdb.HGetAll(ctx, entry.SourceKey).Result()

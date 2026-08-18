@@ -10,6 +10,7 @@ import (
 	"context"
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"time"
@@ -335,25 +336,10 @@ func (m *MetadataLuaStore) Read(ctx context.Context) (Metadata, error) {
 	}, nil
 }
 
-// Advance uses the metadata hash's epoch as a fencing token. A stale caller
-// cannot overwrite a newer cutover/checkpoint; successful advances increment
-// the epoch exactly once.
+// Advance is disabled because Redis-only checkpoint changes cannot establish
+// durable owner approval or evidence. Use PromotionCoordinator instead.
 func (m *MetadataLuaStore) Advance(ctx context.Context, expectedEpoch int64, checkpoint Checkpoint, mode store.KeySchemaMode) error {
-	if m == nil || m.rdb == nil {
-		return fmt.Errorf("ursm.v2: migration metadata requires redis")
-	}
-	if checkpoint == "" {
-		return fmt.Errorf("ursm.v2: migration checkpoint is required")
-	}
-	result, err := metadataAdvanceScript.Run(ctx, m.rdb, []string{m.key()},
-		strconv.FormatInt(expectedEpoch, 10), string(checkpoint), mode.String(), time.Now().UTC().Format(time.RFC3339Nano)).Text()
-	if err != nil {
-		return fmt.Errorf("ursm.v2: advance migration metadata: %w", err)
-	}
-	if result != "advanced" {
-		return fmt.Errorf("ursm.v2: migration metadata epoch superseded")
-	}
-	return nil
+	return errors.New("ursm.v2: direct metadata advance disabled; use owner-approved PromotionCoordinator")
 }
 
 //go:embed metadata_advance.lua

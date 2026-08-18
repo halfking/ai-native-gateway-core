@@ -57,6 +57,9 @@ func main() {
 		limit            = flag.Int("limit", 0, "Limit SCAN output (0 = no limit)")
 	)
 	flag.Parse()
+	if *apply {
+		log.Fatal("k2 preflight apply is disabled while T0 is BLOCKED / NO-GO; preflight remains read-only")
+	}
 
 	keySchemaMode, err := store.ParseKeySchemaMode(*mode)
 	if err != nil {

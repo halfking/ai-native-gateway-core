@@ -59,6 +59,10 @@ func main() {
 		fmt.Println("[DRY-RUN] no writes; pass --apply to enable writes")
 	}
 
+	if *apply && cmd != "status" {
+		log.Fatal("k2 migration apply is disabled while T0 is BLOCKED / NO-GO; use the owner-reviewed durable library APIs only")
+	}
+
 	mode := migration.Mode(*modeStr)
 	if !mode.Valid() {
 		log.Fatalf("invalid mode %q", *modeStr)
