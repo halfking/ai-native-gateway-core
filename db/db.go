@@ -3898,13 +3898,14 @@ func (d *DB) ensureCredentialClientQuotaSchema(ctx context.Context) error {
 	return nil
 }
 
-// ensureUrsmKeyMigrationLedgerSchema mirrors
-// sql/migrations/080-ursm-key-migration-ledger.sql. Idempotent and
-// startup-safe so multi-key admin/runtime paths do not depend on an
-// external file runner applying root sql/migrations/*.sql. The schema
-// records the durable migration identity (owner / ledger_id / mode /
-// preflight checksum / checkpoint) and one row per exact source Redis
-// key so copy and cleanup remain exact-key and interruptible.
+// ensureUrsmKeyMigrationLedgerSchema maintains the final schema formed by
+// sql/migrations/080-ursm-key-migration-ledger.sql and the additive 081
+// rollback_deadline repair. Idempotent and startup-safe so multi-key
+// admin/runtime paths do not depend on an external file runner applying root
+// sql/migrations/*.sql. The schema records the durable migration identity
+// (owner / ledger_id / mode / preflight checksum / checkpoint) and one row per
+// exact source Redis key so copy and cleanup remain exact-key and
+// interruptible.
 func (d *DB) ensureUrsmKeyMigrationLedgerSchema(ctx context.Context) error {
 	if d == nil || d.pool == nil {
 		return nil
@@ -3921,8 +3922,9 @@ func (d *DB) ensureUrsmKeyMigrationLedgerSchema(ctx context.Context) error {
 		    preflight_ambiguous INT NOT NULL DEFAULT 0,
 		    preflight_excluded INT NOT NULL DEFAULT 0,
 		    checkpoint         TEXT NOT NULL,
-		    cutover_epoch      BIGINT NOT NULL DEFAULT 0,
-		    started_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			cutover_epoch      BIGINT NOT NULL DEFAULT 0,
+			rollback_deadline  TIMESTAMPTZ,
+			started_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 		    updated_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 		    finished_at        TIMESTAMPTZ,
 		    CONSTRAINT ursm_key_migration_runs_checkpoint_chk CHECK (
@@ -3931,9 +3933,12 @@ func (d *DB) ensureUrsmKeyMigrationLedgerSchema(ctx context.Context) error {
 		    CONSTRAINT ursm_key_migration_runs_mode_chk CHECK (
 		        key_schema_mode IN ('legacy','dual','canonical')
 		    )
-		);
+			);
 
-		CREATE TABLE IF NOT EXISTS ursm_key_migration_entries (
+			ALTER TABLE ursm_key_migration_runs
+			    ADD COLUMN IF NOT EXISTS rollback_deadline TIMESTAMPTZ;
+
+			CREATE TABLE IF NOT EXISTS ursm_key_migration_entries (
 		    ledger_id        TEXT NOT NULL REFERENCES ursm_key_migration_runs(ledger_id) ON DELETE CASCADE,
 		    source_key       TEXT NOT NULL,
 		    target_key       TEXT NOT NULL DEFAULT '',

@@ -110,6 +110,16 @@ func (c *Cleanup) Cleanup(ctx context.Context) ([]CleanupResult, error) {
 
 func (c *Cleanup) cleanupOne(ctx context.Context, it Item, now time.Time) CleanupResult {
 	res := CleanupResult{Item: it, Status: CleanupStatusSkipped}
+	if it.Classification == ClassificationCanonicalPresent ||
+		(it.CanonicalKey != "" && it.SourceKey == it.CanonicalKey) {
+		res.Status = CleanupStatusPreserved
+		res.Reason = "canonical source is never eligible for cleanup"
+		return res
+	}
+	if it.Classification != ClassificationMigratable || it.SourceKey == "" || it.CanonicalKey == "" {
+		res.Reason = "not a complete migratable source"
+		return res
+	}
 	switch it.Status {
 	case StatusCleaned:
 		res.Reason = "already cleaned"
@@ -204,7 +214,8 @@ func (c *EntryCleaner) DeleteExact(ctx context.Context, entry EntryRecord) (Clea
 	if c == nil || c.rdb == nil {
 		return CleanerEntryResult{}, fmt.Errorf("ursm.v2: cleanup requires redis")
 	}
-	if entry.Class != ClassificationMigratable || entry.SourceKey == "" || entry.FieldChecksum == "" {
+	if entry.Class != ClassificationMigratable || entry.SourceKey == "" || entry.TargetKey == "" || entry.FieldChecksum == "" ||
+		entry.SourceKey == entry.TargetKey {
 		return CleanerEntryResult{Status: CleanerSkippedIneligible}, nil
 	}
 	fields, err := c.rdb.HGetAll(ctx, entry.SourceKey).Result()
