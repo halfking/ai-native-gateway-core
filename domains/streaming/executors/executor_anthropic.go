@@ -925,6 +925,26 @@ func (e *Executor) executeAnthropicOnce(
 		}
 	}
 
+	attemptAttrs := []any{
+		"request_id", params.RequestID,
+		"provider_id", cand.ProviderID,
+		"credential_id", cand.CredentialID,
+		"raw_model", cand.RawModel,
+		"client_model", params.Model,
+		"upstream_url", req.URL.String(),
+		"upstream_method", req.Method,
+		"body_bytes", len(bodyBytes),
+		"is_stream", params.IsStream,
+		"latency_ms", upstreamLatency.Milliseconds(),
+	}
+	if uErr != nil {
+		attemptAttrs = append(attemptAttrs, "err_kind", uErr.Kind, "err_message", uErr.Message)
+	}
+	if resp != nil {
+		attemptAttrs = append(attemptAttrs, "upstream_status", resp.StatusCode)
+	}
+	slog.Info("upstream_http_attempt", attemptAttrs...)
+
 	if uErr != nil && (resp == nil || resp.StatusCode >= 500) {
 		errKind := uErr.Kind
 		// 2026-08-08: see executor_chat.go — an overload-shaped 5xx body is a
@@ -1139,6 +1159,21 @@ func (e *Executor) executeAnthropicOnce(
 			}
 			isResumable := outcome.Resumable && outcome.ChunkCount < e.StreamRetryThreshold
 			isBenignEOF := outcome.Reason == "eof_without_done" && outcome.ChunkCount > 0
+
+			slog.Warn("executor: stream interrupted",
+				"request_id", params.RequestID,
+				"provider_id", cand.ProviderID,
+				"credential_id", cand.CredentialID,
+				"raw_model", cand.RawModel,
+				"client_model", params.Model,
+				"upstream_url", cand.BaseURL,
+				"reason", outcome.Reason,
+				"kind", streamKind,
+				"chunk_count", outcome.ChunkCount,
+				"resumable", isResumable,
+				"classified_as", streamKind,
+				"benign_eof", isBenignEOF,
+			)
 
 			if !isBenignEOF && isResumable {
 			} else if !isBenignEOF {

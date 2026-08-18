@@ -1152,9 +1152,14 @@ func (e *Executor) executeOpenAI(
 					isBenignEOF := streamOutcome.Reason == "eof_without_done" && streamOutcome.ChunkCount > 0
 
 					slog.Warn("executor: stream interrupted",
-						"credential_id", cand.CredentialID,
+						"request_id", params.RequestID,
 						"provider_id", cand.ProviderID,
+						"credential_id", cand.CredentialID,
+						"raw_model", cand.RawModel,
+						"client_model", params.Model,
+						"upstream_url", cand.BaseURL,
 						"reason", streamOutcome.Reason,
+						"kind", streamKind,
 						"chunk_count", streamOutcome.ChunkCount,
 						"resumable", isResumable,
 						"classified_as", streamKind,
