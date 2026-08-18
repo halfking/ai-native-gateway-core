@@ -3489,6 +3489,23 @@ func main() {
 				probeQueueWorker.SetProbeService(bg.NewProbeService(nodeProbeWorker, queueExecutor))
 				nodeProbeWorker.SetProbeQueue(probeQueue)
 			}
+			// 2026-08-18: the legacy block above wires SyncNoCandidateProbe /
+			// ProbeSync / NodeProbeHealthy on the executor, but only when the
+			// credentialstate.Manager exists. In authoritative URSM v2 mode the
+			// manager is disabled (spec §10 Step 5 C-1) and this fallback path
+			// runs instead — without this wiring a request whose node keys
+			// expired (NodeTTL < probe backoff) got an immediate 503 with no
+			// probe and no recovery path (glm-5.2 outage on 154).
+			if routingExec != nil {
+				syncOn := !envBoolOff("LLM_GATEWAY_SYNC_NO_CANDIDATE_PROBE")
+				routingExec.SyncNoCandidateProbe = syncOn
+				routingExec.SyncNoCandidateTimeout = 5 * time.Second
+				routingExec.ProbeSync = nodeProbeWorker.ProbeSync
+				routingExec.NodeProbeHealthy = func(ctx context.Context, credentialID int, rawModel string) error {
+					return bg.MarkNodeProbeHealthy(ctx, dbConn.Pool(), credentialID, rawModel)
+				}
+				slog.Info("sync_no_candidate_probe", "enabled", syncOn, "path", "authoritative_fallback", "timeout", routingExec.SyncNoCandidateTimeout)
+			}
 			nodeProbeWorker.Start(context.Background())
 			slog.Info("authoritative URSM v2 node_probe_worker started")
 		}
@@ -5594,6 +5611,15 @@ func main() {
 		}
 		if probeQueueWorker != nil {
 			probeQueueWorker.Stop()
+		}
+		// Quota probe producers must stop before their shared
+		// CredentialProbeV2 consumer; otherwise a final ticker event can
+		// enqueue work after the consumer has exited.
+		if periodicQuotaProbe != nil {
+			periodicQuotaProbe.Stop()
+		}
+		if balanceQuotaProbe != nil {
+			balanceQuotaProbe.Stop()
 		}
 		if credProbeV2 != nil {
 			credProbeV2.Stop()

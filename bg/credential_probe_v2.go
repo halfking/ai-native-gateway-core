@@ -33,19 +33,21 @@ import (
 //
 // Spec: docs/superpowers/specs/2026-06-12-credential-availability-audit-design.md §5
 type CredentialProbeV2 struct {
-	db               *pgxpool.Pool
-	encKey           []byte
-	keyring          *secret.Keyring
-	cache            *ModelAvailabilityCache
-	interval         time.Duration
-	fastReprobeDelay time.Duration
-	fastReprobeQueue chan int // credential IDs
-	cancel           context.CancelFunc
-	done             chan struct{}
-	started          bool
-	stopped          bool
-	lifecycleMu      sync.Mutex
-	probeWG          sync.WaitGroup
+	db                 *pgxpool.Pool
+	encKey             []byte
+	keyring            *secret.Keyring
+	cache              *ModelAvailabilityCache
+	interval           time.Duration
+	fastReprobeDelay   time.Duration
+	fastReprobeQueue   chan int // credential IDs
+	fastReprobeMu      sync.Mutex
+	fastReprobePending map[int]struct{}
+	cancel             context.CancelFunc
+	done               chan struct{}
+	started            bool
+	stopped            bool
+	lifecycleMu        sync.Mutex
+	probeWG            sync.WaitGroup
 
 	// 新增：状态管理器引用
 	stateManager credentialstate.StateObserver
@@ -81,12 +83,13 @@ func NewCredentialProbeV2(db *pgxpool.Pool, encKey []byte) *CredentialProbeV2 {
 		}
 	}
 	return &CredentialProbeV2{
-		db:               db,
-		encKey:           encKey,
-		interval:         interval,
-		fastReprobeDelay: fastDelay,
-		fastReprobeQueue: make(chan int, 64),
-		done:             make(chan struct{}),
+		db:                 db,
+		encKey:             encKey,
+		interval:           interval,
+		fastReprobeDelay:   fastDelay,
+		fastReprobeQueue:   make(chan int, 64),
+		fastReprobePending: make(map[int]struct{}),
+		done:               make(chan struct{}),
 	}
 }
 
@@ -103,14 +106,50 @@ func (c *CredentialProbeV2) SetStateManager(sm credentialstate.StateObserver) {
 	c.stateManager = sm
 }
 
-// SubmitFastProbe 提交到快速探测队列（新增公共方法）
+// SubmitFastProbe queues a delayed credential probe. At most one pending
+// delayed probe is allowed per credential: PeriodicQuotaProbe (5 min),
+// BalanceQuotaProbe (2 min), and transient-error recovery can otherwise all
+// submit the same credential faster than fastReprobeDelay (normally 5 min),
+// creating an unbounded pile of sleeping goroutines after the queue consumer
+// starts. The pending mark is released when the queued task finishes or when
+// a full queue rejects it.
 func (c *CredentialProbeV2) SubmitFastProbe(credID int) {
+	if c == nil || credID <= 0 {
+		return
+	}
+	// Atomically reject a submission once Stop has begun. Keep the lifecycle
+	// lock through the non-blocking send so shutdown cannot leave a pending
+	// mark in a queue whose consumer has already exited.
+	c.lifecycleMu.Lock()
+	if c.stopped {
+		c.lifecycleMu.Unlock()
+		return
+	}
+	c.fastReprobeMu.Lock()
+	if _, pending := c.fastReprobePending[credID]; pending {
+		c.fastReprobeMu.Unlock()
+		c.lifecycleMu.Unlock()
+		slog.Debug("credential probe v2: fast probe already pending", "credential_id", credID)
+		return
+	}
+	c.fastReprobePending[credID] = struct{}{}
 	select {
 	case c.fastReprobeQueue <- credID:
+		c.fastReprobeMu.Unlock()
+		c.lifecycleMu.Unlock()
 		slog.Debug("credential probe v2: fast probe submitted", "credential_id", credID)
 	default:
+		delete(c.fastReprobePending, credID)
+		c.fastReprobeMu.Unlock()
+		c.lifecycleMu.Unlock()
 		slog.Warn("credential probe v2: fast probe queue full", "credential_id", credID)
 	}
+}
+
+func (c *CredentialProbeV2) releaseFastProbe(credID int) {
+	c.fastReprobeMu.Lock()
+	delete(c.fastReprobePending, credID)
+	c.fastReprobeMu.Unlock()
 }
 
 // fastProbeQueueLen exposes the pending fast-probe count for tests and
@@ -119,6 +158,12 @@ func (c *CredentialProbeV2) SubmitFastProbe(credID int) {
 // to prevent.
 func (c *CredentialProbeV2) fastProbeQueueLen() int {
 	return len(c.fastReprobeQueue)
+}
+
+func (c *CredentialProbeV2) fastProbePendingLen() int {
+	c.fastReprobeMu.Lock()
+	defer c.fastReprobeMu.Unlock()
+	return len(c.fastReprobePending)
 }
 
 func (c *CredentialProbeV2) Start(ctx context.Context) {
@@ -175,6 +220,15 @@ func (c *CredentialProbeV2) Stop() {
 		<-c.done
 	}
 	c.probeWG.Wait()
+	// A cancelled consumer can leave queue entries that it never received.
+	// The worker is terminal after Stop, but clear their marks so lifecycle
+	// state remains internally consistent and tests/diagnostics cannot report
+	// phantom pending probes.
+	c.fastReprobeMu.Lock()
+	for credID := range c.fastReprobePending {
+		delete(c.fastReprobePending, credID)
+	}
+	c.fastReprobeMu.Unlock()
 }
 
 // ProbeNowAsync executes a credential probe immediately in the background.
@@ -235,7 +289,12 @@ func (c *CredentialProbeV2) run(ctx context.Context, legacyCycle bool) {
 			}
 		case credID := <-c.fastReprobeQueue:
 			// P2: event-triggered fast reprobe after auth_failed/unreachable.
+			// Track the delayed goroutine so Stop waits for its cancellation
+			// path and it always releases the per-credential pending mark.
+			c.probeWG.Add(1)
 			go func(id int) {
+				defer c.probeWG.Done()
+				defer c.releaseFastProbe(id)
 				select {
 				case <-ctx.Done():
 					return

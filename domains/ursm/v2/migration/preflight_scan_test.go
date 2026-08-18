@@ -35,7 +35,7 @@ func TestPreflightScanProducesDeterministicChecksum(t *testing.T) {
 		t.Fatalf("ambiguous seed: %v", err)
 	}
 
-	p := NewPreflight(rdb, "p:")
+	p := NewEntryPreflight(rdb, "p:")
 	first, err := p.Scan(ctx)
 	if err != nil {
 		t.Fatalf("first scan: %v", err)
@@ -71,7 +71,7 @@ func TestPreflightCapturesHashChecksumAndPTTL(t *testing.T) {
 	if err := rdb.PExpire(ctx, key, 10_000_000_000).Err(); err != nil {
 		t.Fatalf("pexpire: %v", err)
 	}
-	r, err := NewPreflight(rdb, "p:").Scan(ctx)
+	r, err := NewEntryPreflight(rdb, "p:").Scan(ctx)
 	if err != nil {
 		t.Fatalf("scan: %v", err)
 	}
@@ -90,7 +90,7 @@ func TestPreflightCapturesHashChecksumAndPTTL(t *testing.T) {
 	if err := rdb2.HSet(ctx, key, "generation", "7", "a", "first", "z", "last").Err(); err != nil {
 		t.Fatalf("seed 2: %v", err)
 	}
-	r2, err := NewPreflight(rdb2, "p:").Scan(ctx)
+	r2, err := NewEntryPreflight(rdb2, "p:").Scan(ctx)
 	if err != nil {
 		t.Fatalf("scan 2: %v", err)
 	}

@@ -222,6 +222,13 @@ func TestManager_CreateV2(t *testing.T) {
 	if sess.TaskID != "task-x" {
 		t.Fatalf("TaskID = %q", sess.TaskID)
 	}
+	ttl, err := mgr.redis.client.TTL(ctx, "session:"+sess.SessionID).Result()
+	if err != nil {
+		t.Fatalf("main session TTL: %v", err)
+	}
+	if ttl <= 0 || ttl > time.Hour {
+		t.Fatalf("main session TTL = %s, want (0, 1h]", ttl)
+	}
 }
 
 func TestManager_CreateV2_DefaultTask(t *testing.T) {

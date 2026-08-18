@@ -471,7 +471,9 @@ func coolingDuration(kind errorsx.ErrorKind, retryAfter time.Duration) time.Dura
 // periodic by construction and recovers at the next 5-hour boundary, not at
 // the next UTC midnight (2026-08-18 fix: the old default stretched a
 // 凌晨 5 点重置的 5h 窗口到次日 UTC 零点 = 北京 08:00，白白多挂 3 小时).
-var fiveHourWindowRe = regexp.MustCompile(`(?i)(five[_ -]?hour|5[_ -]?hours?|hour[_ -]?5|每.{0,3}5.{0,3}小时|5.{0,3}小时)`)
+// \b 词边界防止误吞 "25 hours"/"15 hours" 或 "25小时" 的尾部子串；
+// standalone `5小时`/`每5小时` 仍会匹配，恢复时间再由探活纠偏。
+var fiveHourWindowRe = regexp.MustCompile(`(?i)(?:\bfive[_ -]?hours?\b|\b5[_ -]?hours?\b|\bhour[_ -]?5\b|每.{0,3}\b5.{0,3}小时|\b5.{0,3}小时)`)
 
 // cstZone is the UTC+8 fixed zone used to align 5-hour quota windows.
 // 智谱AI coding-plan windows roll at 00/05/10/15/20 北京时间.

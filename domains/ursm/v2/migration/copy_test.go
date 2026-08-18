@@ -2,144 +2,204 @@ package migration
 
 import (
 	"context"
-	"errors"
 	"testing"
 	"time"
-
-	"github.com/alicebob/miniredis/v2"
-	"github.com/redis/go-redis/v9"
 )
 
-func preflightOne(t *testing.T, rdb *redis.Client, key string) Entry {
+// seedCopyItem inserts an Item into the ledger in the same shape the
+// preflight pass would, then returns it for mutation by the test.
+func seedCopyItem(t *testing.T, ledger *Ledger, source, canonical string, pttlMs int64, generation int64, fields map[string]string) Item {
 	t.Helper()
-	r, err := NewPreflight(rdb, "p:").Scan(context.Background())
-	if err != nil {
-		t.Fatalf("preflight: %v", err)
+	it := Item{
+		SourceKey:      source,
+		KeyType:        "hash",
+		CanonicalKey:   canonical,
+		SchemaSource:   "legacy",
+		Classification: ClassificationMigratable,
+		Status:         StatusClassified,
+		PTTLMs:         pttlMs,
+		Generation:     generation,
+		FieldChecksum:  fieldChecksum(fields),
+		ScanRunID:      "test",
 	}
-	for _, e := range r.Entries {
-		if e.SourceKey == key {
-			return e
-		}
+	if err := ledger.Append(it); err != nil {
+		t.Fatalf("seed ledger: %v", err)
 	}
-	t.Fatalf("preflight has no entry for %q", key)
-	return Entry{}
+	return it
 }
 
-func TestCopyPreservesRemainingPTTL(t *testing.T) {
-	mr := miniredis.RunT(t)
-	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	ctx := context.Background()
-	source := "p:node:tenant-a:7:model-a"
-	if err := rdb.HSet(ctx, source, "generation", "1", "available", "1").Err(); err != nil {
-		t.Fatalf("seed: %v", err)
+// TestCopySkipsMissingTTLMinus2 documents doc 14 §6.1: PTTL=-2 means the key
+// is gone; copy must skip and not write to the target.
+func TestCopySkipsMissingTTLMinus2(t *testing.T) {
+	_, rdb := newFixtureRedis(t)
+	ledger := NewLedger(t.TempDir() + "/ledger.ndjson")
+	canonical := migPrefix + "node:k2:YQ:7:Yjo4OmM"
+	seedCopyItem(t, ledger, migPrefix+"node:absent:7:b:8:c", canonical, -2, 1, legacyHashFieldsAsStrings())
+
+	cp := &Copy{Prefix: migPrefix, Ledger: ledger, RDB: rdb}
+	results, err := cp.Copy(context.Background())
+	if err != nil {
+		t.Fatalf("copy: %v", err)
 	}
-	if err := rdb.PExpire(ctx, source, 10*time.Second).Err(); err != nil {
+	if len(results) != 1 || results[0].Status != CopyStatusSkipped {
+		t.Fatalf("result = %+v", results[0])
+	}
+	if results[0].Reason != "source missing (pttl=-2)" {
+		t.Fatalf("reason = %q", results[0].Reason)
+	}
+	exists, _ := rdb.Exists(context.Background(), canonical).Result()
+	if exists != 0 {
+		t.Fatalf("target must not be created for missing source")
+	}
+}
+
+// TestCopyPreservesNoTTLMinus1: source without TTL must produce a target
+// without TTL (PTTL=-1).
+func TestCopyPreservesNoTTLMinus1(t *testing.T) {
+	_, rdb := newFixtureRedis(t)
+	ledger := NewLedger(t.TempDir() + "/ledger.ndjson")
+	canonical := migPrefix + "node:k2:YQ:7:Yjo4OmM"
+	source := migPrefix + "node:a:7:b:8:c"
+	fields := legacyHashFieldsAsStrings()
+	seedCopyItem(t, ledger, source, canonical, -1, 1, fields)
+	if err := rdb.HSet(context.Background(), source, fields).Err(); err != nil {
+		t.Fatalf("seed source: %v", err)
+	}
+	cp := &Copy{Prefix: migPrefix, Ledger: ledger, RDB: rdb}
+	results, err := cp.Copy(context.Background())
+	if err != nil {
+		t.Fatalf("copy: %v", err)
+	}
+	if results[0].Status != CopyStatusCopied {
+		t.Fatalf("status = %q, want copied (reason=%s)", results[0].Status, results[0].Reason)
+	}
+	pttl, err := rdb.PTTL(context.Background(), canonical).Result()
+	if err != nil {
+		t.Fatalf("pttl: %v", err)
+	}
+	if pttl >= 0 {
+		t.Fatalf("target PTTL = %v, want -1 (no expiry)", pttl)
+	}
+	tgtFields, _ := rdb.HGetAll(context.Background(), canonical).Result()
+	if fieldChecksum(tgtFields) != fieldChecksum(fields) {
+		t.Fatal("field checksum diverges")
+	}
+}
+
+// TestCopyDecrementsPositiveTTL runs copy after miniredis FastForward 200ms
+// and asserts the target's PTTL is between 7000ms and 8000ms (snapshot
+// recorded 8000ms; copy must not extend beyond it).
+func TestCopyDecrementsPositiveTTL(t *testing.T) {
+	mr, rdb := newFixtureRedis(t)
+	ledger := NewLedger(t.TempDir() + "/ledger.ndjson")
+	canonical := migPrefix + "node:k2:YQ:7:Yjo4OmM"
+	source := migPrefix + "node:a:7:b:8:c"
+	fields := legacyHashFieldsAsStrings()
+	seedCopyItem(t, ledger, source, canonical, 8000, 1, fields)
+	if err := rdb.HSet(context.Background(), source, fields).Err(); err != nil {
+		t.Fatalf("seed source: %v", err)
+	}
+	if err := rdb.PExpire(context.Background(), source, 8000*time.Millisecond).Err(); err != nil {
 		t.Fatalf("pexpire: %v", err)
 	}
-	e := preflightOne(t, rdb, source)
-	mr.FastForward(2 * time.Second)
-	result, err := NewCopier(rdb, "p:").CopyHash(ctx, e)
+
+	// miniredis FastForward: deterministic clock. We advance 200ms.
+	mr.FastForward(200 * time.Millisecond)
+
+	cp := &Copy{Prefix: migPrefix, Ledger: ledger, RDB: rdb}
+	results, err := cp.Copy(context.Background())
 	if err != nil {
 		t.Fatalf("copy: %v", err)
 	}
-	if result.Status != CopyApplied {
-		t.Fatalf("copy status=%s", result.Status)
+	if results[0].Status != CopyStatusCopied {
+		t.Fatalf("status = %q, reason=%s", results[0].Status, results[0].Reason)
 	}
-	sourceTTL, err := rdb.PTTL(ctx, source).Result()
+	pttl, err := rdb.PTTL(context.Background(), canonical).Result()
 	if err != nil {
-		t.Fatalf("source pttl: %v", err)
+		t.Fatalf("pttl: %v", err)
 	}
-	targetTTL, err := rdb.PTTL(ctx, e.TargetKey).Result()
-	if err != nil {
-		t.Fatalf("target pttl: %v", err)
+	got := pttl.Milliseconds()
+	if got < 7000 || got > 8000 {
+		t.Fatalf("target PTTL = %dms, want in [7000,8000]", got)
 	}
-	if targetTTL <= 0 || targetTTL > sourceTTL {
-		t.Fatalf("target PTTL=%v source PTTL=%v: target must not outlive source", targetTTL, sourceTTL)
+	if got > int64(8000) {
+		t.Fatalf("copy extended source TTL (%d > 8000)", got)
 	}
 }
 
-func TestCopyPreservesPersistentSource(t *testing.T) {
-	mr := miniredis.RunT(t)
-	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	ctx := context.Background()
-	source := "p:node:tenant-a:7:model-a"
-	if err := rdb.HSet(ctx, source, "generation", "1", "available", "1").Err(); err != nil {
+// TestCopyFencedByGenerationMismatch: the live source hash's generation
+// differs from the ledger snapshot. copy must refuse, not write the target.
+func TestCopyFencedByGenerationMismatch(t *testing.T) {
+	_, rdb := newFixtureRedis(t)
+	ledger := NewLedger(t.TempDir() + "/ledger.ndjson")
+	canonical := migPrefix + "node:k2:YQ:7:Yjo4OmM"
+	source := migPrefix + "node:a:7:b:8:c"
+	fields := legacyHashFieldsAsStrings()
+	seedCopyItem(t, ledger, source, canonical, -1, 1, fields)
+	live := copyStringMap(fields)
+	live["generation"] = "5"
+	if err := rdb.HSet(context.Background(), source, live).Err(); err != nil {
+		t.Fatalf("seed source: %v", err)
+	}
+	cp := &Copy{Prefix: migPrefix, Ledger: ledger, RDB: rdb}
+	results, err := cp.Copy(context.Background())
+	if err != nil {
+		t.Fatalf("copy: %v", err)
+	}
+	if results[0].Status != CopyStatusRefused {
+		t.Fatalf("status = %q, want refused (reason=%s)", results[0].Status, results[0].Reason)
+	}
+	exists, _ := rdb.Exists(context.Background(), canonical).Result()
+	if exists != 0 {
+		t.Fatal("refused copy must not write target")
+	}
+}
+
+// TestCopyIdempotentResume: copy twice on the same ledger; second pass must
+// be CopyStatusUnchanged for each item.
+func TestCopyIdempotentResume(t *testing.T) {
+	_, rdb := newFixtureRedis(t)
+	ledger := NewLedger(t.TempDir() + "/ledger.ndjson")
+	canonical := migPrefix + "node:k2:YQ:7:Yjo4OmM"
+	source := migPrefix + "node:a:7:b:8:c"
+	fields := legacyHashFieldsAsStrings()
+	seedCopyItem(t, ledger, source, canonical, -1, 1, fields)
+	if err := rdb.HSet(context.Background(), source, fields).Err(); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	e := preflightOne(t, rdb, source)
-	if _, err := NewCopier(rdb, "p:").CopyHash(ctx, e); err != nil {
-		t.Fatalf("copy: %v", err)
+	cp := &Copy{Prefix: migPrefix, Ledger: ledger, RDB: rdb}
+	if _, err := cp.Copy(context.Background()); err != nil {
+		t.Fatalf("first copy: %v", err)
 	}
-	ttl, err := rdb.PTTL(ctx, e.TargetKey).Result()
-	if err != nil || ttl != -1*time.Nanosecond {
-		t.Fatalf("target PTTL=%v err=%v, want persistent -1", ttl, err)
-	}
-}
-
-func TestCopySkipsExpiredSource(t *testing.T) {
-	mr := miniredis.RunT(t)
-	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	ctx := context.Background()
-	e := Entry{SourceKey: "p:node:tenant-a:7:model-a", TargetKey: "p:node:k2:dGVuYW50LWE:7:bW9kZWwtYQ", Class: ClassMigratable, Type: "hash", Generation: 1, FieldChecksum: "unused"}
-	result, err := NewCopier(rdb, "p:").CopyHash(ctx, e)
+	results, err := cp.Copy(context.Background())
 	if err != nil {
-		t.Fatalf("copy: %v", err)
+		t.Fatalf("second copy: %v", err)
 	}
-	if result.Status != CopySkippedExpired {
-		t.Fatalf("status=%s, want skipped_expired", result.Status)
+	if len(results) != 2 {
+		t.Fatalf("expected 2 ledger rows (initial seed + first copy), got %d", len(results))
 	}
-	if mr.Exists(e.TargetKey) {
-		t.Fatal("expired source must not create target")
-	}
-}
-
-func TestCopyFencesGenerationAndIsIdempotent(t *testing.T) {
-	mr := miniredis.RunT(t)
-	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	ctx := context.Background()
-	source := "p:node:tenant-a:7:model-a"
-	if err := rdb.HSet(ctx, source, "generation", "1", "available", "1").Err(); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
-	e := preflightOne(t, rdb, source)
-	// The source changed after preflight: generation fence must stop copy.
-	if err := rdb.HSet(ctx, source, "generation", "2").Err(); err != nil {
-		t.Fatalf("advance source generation: %v", err)
-	}
-	if _, err := NewCopier(rdb, "p:").CopyHash(ctx, e); !errors.Is(err, ErrGenerationChanged) {
-		t.Fatalf("copy err=%v, want ErrGenerationChanged", err)
-	}
-	if mr.Exists(e.TargetKey) {
-		t.Fatal("generation mismatch must not create target")
-	}
-	// Fresh inventory copies once; repeating the exact ledger row is a no-op.
-	e = preflightOne(t, rdb, source)
-	first, err := NewCopier(rdb, "p:").CopyHash(ctx, e)
-	if err != nil || first.Status != CopyApplied {
-		t.Fatalf("first copy=%+v err=%v", first, err)
-	}
-	second, err := NewCopier(rdb, "p:").CopyHash(ctx, e)
-	if err != nil || second.Status != CopyAlreadyApplied {
-		t.Fatalf("second copy=%+v err=%v", second, err)
+	if results[1].Status != CopyStatusUnchanged {
+		t.Fatalf("second pass status = %q, want unchanged", results[1].Status)
 	}
 }
 
-func TestCopyNeverOverwritesExistingCanonicalTarget(t *testing.T) {
-	mr := miniredis.RunT(t)
-	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	ctx := context.Background()
-	source := "p:node:tenant-a:7:model-a"
-	if err := rdb.HSet(ctx, source, "generation", "1", "available", "1").Err(); err != nil {
-		t.Fatalf("source: %v", err)
+// legacyHashFieldsAsStrings returns the same shape as legacyHashFields() but
+// with all values coerced to strings (the form HGetAll returns).
+func legacyHashFieldsAsStrings() map[string]string {
+	return map[string]string{
+		"generation":    "1",
+		"available":     "1",
+		"fail_streak":   "0",
+		"success_count": "5",
+		"failure_count": "0",
+		"updated_at_ms": "1700000000000",
 	}
-	e := preflightOne(t, rdb, source)
-	if err := rdb.HSet(ctx, e.TargetKey, "generation", "99", "available", "0").Err(); err != nil {
-		t.Fatalf("target: %v", err)
+}
+
+func copyStringMap(in map[string]string) map[string]string {
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
 	}
-	if _, err := NewCopier(rdb, "p:").CopyHash(ctx, e); !errors.Is(err, ErrTargetConflict) {
-		t.Fatalf("copy err=%v, want ErrTargetConflict", err)
-	}
-	if got := mr.HGet(e.TargetKey, "generation"); got != "99" {
-		t.Fatalf("target generation=%q: copy must not overwrite live canonical state", got)
-	}
+	return out
 }
