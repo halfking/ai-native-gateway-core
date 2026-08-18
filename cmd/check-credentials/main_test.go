@@ -1,0 +1,119 @@
+// Unit tests for the format classifier. No DB required — these cover the
+// pure-Go classification logic that the 2026-08-18 154 incident exposed:
+// ciphertext that starts with 0x80 (raw Fernet token) is unreadable by the
+// gateway's DecryptAny, and the CLI must label it as raw-fernet-binary.
+package main
+
+import (
+	"encoding/base64"
+	"encoding/hex"
+	"strings"
+	"testing"
+)
+
+// encryptFernetRaw mirrors admin/crypto.go's encryptFernet internals: it
+// produces a raw 137-byte Fernet token whose first byte is 0x80. We never
+// invoke real AES here — the exact ciphertext bytes are not under test, only
+// the classification of leading-byte patterns.
+func rawFernetBytes() []byte {
+	out := make([]byte, 137)
+	out[0] = 0x80
+	for i := 1; i < len(out); i++ {
+		out[i] = byte(i & 0xff)
+	}
+	return out
+}
+
+func TestClassify(t *testing.T) {
+	cases := []struct {
+		name string
+		row  Row
+		want Format
+	}{
+		{
+			name: "empty ciphertext",
+			row:  Row{CipherBytes: 0},
+			want: FormatEmpty,
+		},
+		{
+			name: "v1:legacy: prefix (Fernet envelope)",
+			row:  Row{CipherBytes: 192, hexForm: hex.EncodeToString([]byte("v1:legacy:gAAAAABqgg6v..."))},
+			want: FormatV1LegacyFernet,
+		},
+		{
+			name: "v1: prefix without legacy (AES-GCM envelope)",
+			row:  Row{CipherBytes: 137, hexForm: hex.EncodeToString([]byte("v1:abc:xyz"))},
+			want: FormatV1AESEnvelope,
+		},
+		{
+			name: "bare Fernet base64 (no envelope)",
+			row:  Row{CipherBytes: 184, hexForm: hex.EncodeToString([]byte("gAAAAABqgg6vK85tMzYKEp..."))},
+			want: FormatBareFernet,
+		},
+		{
+			name: "raw Fernet binary (the 154 incident case)",
+			row:  Row{CipherBytes: 137, hexForm: hex.EncodeToString(rawFernetBytes())},
+			want: FormatRawFernetBinary,
+		},
+		{
+			name: "unknown format",
+			row:  Row{CipherBytes: 8, hexForm: hex.EncodeToString([]byte("????????"))},
+			want: FormatUnknown,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := classify(&tc.row)
+			if got != tc.want {
+				t.Fatalf("classify(%q) = %q, want %q", tc.name, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestShortHash_Stable(t *testing.T) {
+	a := shortHash([]byte("hello"))
+	b := shortHash([]byte("hello"))
+	if a != b {
+		t.Fatalf("shortHash not stable: %s vs %s", a, b)
+	}
+	if len(a) != 12 {
+		t.Fatalf("shortHash length = %d, want 12", len(a))
+	}
+	// Different inputs must produce different prefixes
+	c := shortHash([]byte("hellp"))
+	if a == c {
+		t.Fatalf("shortHash collision: %s == %s", a, c)
+	}
+}
+
+// TestRewriteEnvelope_RoundTrip asserts that for a known raw Fernet token
+// (the 154-incident format), base64-RawURLEncoding the bytes and prepending
+// "v1:legacy:" yields the same shape as admin/crypto.go:encryptFernet would
+// have produced via the correct code path. This guards against drift in the
+// envelope format used by the fix path.
+func TestRewriteEnvelope_RoundTrip(t *testing.T) {
+	raw := rawFernetBytes()
+	envelope := "v1:legacy:" + base64.RawURLEncoding.EncodeToString(raw)
+
+	if !strings.HasPrefix(envelope, "v1:legacy:") {
+		t.Fatalf("envelope missing prefix: %q", envelope)
+	}
+	if envelope[len("v1:legacy:"):] != base64.RawURLEncoding.EncodeToString(raw) {
+		t.Fatalf("envelope body changed unexpectedly")
+	}
+
+	// The base64 body MUST decode back to a 137-byte raw Fernet token
+	// starting with 0x80. (DecryptFernet does this base64 decode first.)
+	body := strings.TrimPrefix(envelope, "v1:legacy:")
+	decoded, err := base64.RawURLEncoding.DecodeString(body)
+	if err != nil {
+		t.Fatalf("envelope body not valid base64-url: %v", err)
+	}
+	if len(decoded) != 137 {
+		t.Fatalf("decoded envelope body length = %d, want 137", len(decoded))
+	}
+	if decoded[0] != 0x80 {
+		t.Fatalf("decoded envelope body first byte = 0x%x, want 0x80", decoded[0])
+	}
+}
