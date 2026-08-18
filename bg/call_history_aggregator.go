@@ -325,6 +325,9 @@ type aggregateRow struct {
 // correct semantics is to REPLACE (the row is the authoritative tally for
 // this window bucket), not accumulate.
 func (a *CallHistoryAggregator) insertBatch(ctx context.Context, rows []aggregateRow) error {
+	// Keep the batch atomic from the watermark's perspective. If any row
+	// fails, the caller must not advance any Redis high-watermark; the next
+	// tick can safely retry the complete batch.
 	// For simplicity, insert one-by-one with ON CONFLICT.
 	// Production would use pgx.CopyFrom or multi-row INSERT.
 	for _, r := range rows {
@@ -353,8 +356,7 @@ func (a *CallHistoryAggregator) insertBatch(ctx context.Context, rows []aggregat
 			r.ErrorRateLimitCount, r.ErrorQuotaCount, r.ErrorConcurrentCount,
 			r.ErrorNetworkCount, r.ErrorAuthCount, r.ErrorOtherCount)
 		if err != nil {
-			slog.Error("call_history_aggregator: insert failed", "error", err)
-			// Continue with next row
+			return fmt.Errorf("insert credential call history for credential=%d model=%s: %w", r.CredentialID, r.RawModel, err)
 		}
 	}
 	return nil

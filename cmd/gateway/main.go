@@ -223,7 +223,10 @@ func main() {
 	var peakCollector *bg.ConcurrencyPeakCollector
 	var weeklyPeakRollup *bg.WeeklyPeakRollup
 	var statsMinuteAccumulator *stats.MinuteAccumulator
+	var statsEventWriter *stats.EventWriter
+	var statsDailyMonthlyRollup *stats.DailyMonthlyRollup
 	var statsBoardCache *boardcache.Service
+
 	var statsMinuteRollup *bg.StatsMinuteRollup
 	var slotSuggester *bg.SlotSuggester
 	var autoIndexRefresher *bg.AutoIndexRefresher
@@ -3691,8 +3694,18 @@ func main() {
 				slog.Info("body size tracker wired (telemetry onPersisted)")
 			}
 		}
+		if dbConn.Pool() != nil && telemetryClient.Enabled() {
+			statsEventWriter = stats.NewEventWriter(dbConn.Pool(), 4096)
+			statsEventWriter.Start(context.Background())
+			telemetryClient.AddOnRequestLogPersisted(statsEventWriter.Record)
+			statsDailyMonthlyRollup = stats.NewDailyMonthlyRollup(dbConn.Pool(), time.Hour)
+			statsDailyMonthlyRollup.Start(context.Background())
+			slog.Info("stats event writer started", "queue_size", 4096)
+		}
+
 		if dbConn.Pool() != nil && fpSlotRedis != nil && adminHandler != nil {
 			blSvc := ipblocklist.NewService(dbConn.Pool(), fpSlotRedis)
+
 			if err := blSvc.Warmup(context.Background()); err != nil {
 				slog.Warn("ip blocklist warmup failed", "error", err)
 			}
@@ -3708,14 +3721,13 @@ func main() {
 			weeklyPeakRollup = bg.NewWeeklyPeakRollup(dbConn.Pool())
 			weeklyPeakRollup.Start(context.Background())
 
-			statsMinuteAccumulator = stats.NewMinuteAccumulator(dbConn.Pool())
-			statsMinuteAccumulator.Start(context.Background())
+			// The database rollup is the sole writer for request_stats_minute.
+			// The former onPersisted accumulator used additive upserts in
+			// parallel with the scanner, which made a retry double-count a
+			// bucket. Keep the type available for a future event projection,
+			// but do not wire it into the live request path.
 			statsMinuteRollup = bg.NewStatsMinuteRollup(dbConn.Pool())
 			statsMinuteRollup.Start(context.Background())
-			if telemetryClient.Enabled() {
-				telemetryClient.AddOnRequestLogPersisted(statsMinuteAccumulator.Record)
-				slog.Info("stats minute accumulator wired (telemetry onPersisted)")
-			}
 
 			slog.Info("CHECKPOINT: after weeklyPeakRollup.Start")
 			slotSuggester = bg.NewSlotSuggester(dbConn.Pool())
@@ -5818,7 +5830,14 @@ func main() {
 		if statsBoardCache != nil {
 			statsBoardCache.Stop()
 		}
+		if statsEventWriter != nil {
+			statsEventWriter.Stop()
+		}
+		if statsDailyMonthlyRollup != nil {
+			statsDailyMonthlyRollup.Stop()
+		}
 		if statsMinuteAccumulator != nil {
+
 			statsMinuteAccumulator.Stop()
 		}
 		if statsMinuteRollup != nil {
