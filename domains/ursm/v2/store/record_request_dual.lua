@@ -10,7 +10,28 @@
 --               KEYS[6] == "" when the tuple cannot be represented
 --               canonically (empty tenant): the script then maintains the
 --               legacy set only (doc 14 §2).
--- ARGV is identical to record_request.lua.
+-- ARGV[1] = "1"|"0"   (success)
+-- ARGV[2] = error_kind
+-- ARGV[3] = event_ts_ms
+-- ARGV[4] = latency_ms
+-- ARGV[5] = request_id
+-- ARGV[6] = node_ttl_sec
+-- ARGV[7] = window_5m_ttl_sec
+-- ARGV[8] = window_30m_ttl_sec
+-- ARGV[9] = admin_hold_flag ("1"|"0") [deprecated; live hash value wins]
+-- ARGV[10] = cool_seconds (default 300 = 5min)
+-- ARGV[11] = fail_streak_limit (default 3)
+-- ARGV[12] = dedup enabled ("1"|"0")
+-- ARGV[13] = billing_mode (optional; "free" enables transient tolerance)
+-- ARGV[14] = health_status (optional; rich health enum, display-only bridge)
+-- ARGV[15] = backoff_cap_seconds (optional; caps cool_seconds × 2^disable_count)
+--
+-- Per-set apply_set mirrors record_request.lua: window counters
+-- (samples_/successes_/sr_*) live in the node hash and stay coherent with
+-- the ZSET members; the legacy request_id of "0" heuristic (doc 14 §5.2.2)
+-- is preserved verbatim. Health bridge is display-only and runs before the
+-- source-priority guard, so an older caller's unknown enum value can never
+-- corrupt a live hash.
 
 local legacy_node = KEYS[1]
 local legacy_w1 = KEYS[2]
