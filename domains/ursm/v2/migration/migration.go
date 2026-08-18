@@ -36,7 +36,7 @@ func (m *Migrator) defaults() {
 		m.Owner = "halfking"
 	}
 	if m.LedgerID == "" {
-		m.LedgerID = "ursm-k2-mig-134e6d21-721b-41d4-af0b-adff143107e2"
+		m.LedgerID = "ursm-v2-k2-20260818-001"
 	}
 	if m.Mode == "" {
 		m.Mode = ModeDual
