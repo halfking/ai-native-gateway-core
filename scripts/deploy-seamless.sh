@@ -487,6 +487,14 @@ do_deploy() {
     exit 1
   fi
 
+  # 先确认 DB 已就绪，再同步 admin 密码并验证登录。
+  # 否则网关在 postgres disabled (db == nil) 时 handleLogin 返回 503 database not configured，
+  # 会误触发自动回滚；与 deploy_verify_gateway_ready 的 503-tolerant 契约保持一致。
+  if ! deploy_verify_gateway_ready "$SSH_CMD" "$SERVICE_NAME" 8781 90 "$(_env_file_for_target)"; then
+    _seamless_auto_rollback "DB 未就绪 (database not configured 风险)" "$version" || true
+    exit 1
+  fi
+
   if [[ "${DEPLOY_SYNC_ADMIN_PASSWORD:-true}" == "true" ]]; then
     log "[9.1/9] 同步 admin 密码 (env → users)"
     if ! bash "$SCRIPT_DIR/ops/sync-admin-password-from-env.sh" "$TARGET"; then
@@ -496,10 +504,6 @@ do_deploy() {
     ok "admin 密码已同步"
   fi
 
-  if ! deploy_verify_gateway_ready "$SSH_CMD" "$SERVICE_NAME" 8781 90 "$(_env_file_for_target)"; then
-    _seamless_auto_rollback "DB 未就绪 (database not configured 风险)" "$version" || true
-    exit 1
-  fi
   if ! _verify_running_release "$version"; then
     _seamless_auto_rollback "运行二进制与 release bundle 不一致" "$version" || true
     exit 1
