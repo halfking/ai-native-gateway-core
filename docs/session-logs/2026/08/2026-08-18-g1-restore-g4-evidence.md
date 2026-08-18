@@ -19,7 +19,7 @@
 
 - 仅 docs：ticket `2026-08-18-go1.26-vendor-incompat.md`（§9 解决记录）、本日志、`2026-08-18-g4-real-redis-pg-evidence.md`（新）。
 - 未动任何生产代码/Lua/SQL/CLI/vendor/go.mod（遵守 14 §0 移交边界）。
-- commit：`ef6c7fb1d`（ticket 解决记录，已 push）；本日志+证据文档随后提交。
+- commit：`ef6c7fb1d`（ticket 解决记录，已 push）；`2094993d9`（G4 证据文档 + 本日志，已 push，含 2 次远端 rebase：远端 `4112ecde3` 已 merge）
 - 临时资源：docker 容器 `k2-g4-redis`/`k2-g4-pg` 会话末清理；`/tmp/k2-g4/`、`/tmp/g1-run-*.out` 留存复验。
 
 ## 4. 遗留

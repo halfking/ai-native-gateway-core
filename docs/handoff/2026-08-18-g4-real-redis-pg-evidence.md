@@ -12,7 +12,7 @@
 | PostgreSQL | `postgres:16-alpine` 一次性容器 `k2-g4-pg` @ `127.0.0.1:5433`，scratch 库 `k2g4` |
 | 生产/共享实例 | **零接触**（本机 6379/5432 未使用；未向任何环境写 k2 marker） |
 | CLI | `cmd/k2-migrate-ursm`、`cmd/ursm-k2-preflight`，main @ `ef6c7fb1d` 构建 |
-| 原始产物 | `/tmp/k2-g4/`（01-preflight.out … 09-pg-preflight.out、ledger*.ndjson、monitor*.log） |
+| 原始产物 | `/tmp/k2-g4/`（01-preflight.out … 09-pg-preflight.out、ledger*.ndjson、monitor*.log；**注**：会话末 `/tmp/k2-g4/` 因磁盘回收已清理，文档正文引用的关键 stdout 已转录到对应小节；保留的硬证据包括 `ledger3.ndjson` 状态演化链、§2 MONITOR DEL 命令捕获、§3 PG 表结构 dump） |
 
 ## 1. G4a：真实 Redis preflight/copy/cleanup 证据（通过项）
 
@@ -54,8 +54,10 @@ ursm:v2:node:k2:NDAwNA:9:Z2xtLTR4 -> classified → copied → classified → cl
 机制链（代码定位）：
 
 1. preflight 重扫把 canonical 键登记为条目：`source_key == canonical_key`，`classification=canonical_present`，`status=classified`（`preflight.go:299-306` 默认状态）。
-2. copy 的 Resume 守卫（`copy.go:169-178`）**不检查 `it.Classification`**：对 canonical_present 条目，`HGetAll(it.CanonicalKey)`（=自己）必然存在且 checksum 恒等 → 返回 Unchanged 并盖章 `res.Item.Status = StatusCopied`（copy.go:176）。注释写的是 "if a **migratable** item is already in StatusCopied"，代码未限定 migratable。
+2. copy 的 Resume 守卫（`copy.go:174-178`：`HGetAll(it.CanonicalKey)` + checksum 比对 → `CopyStatusUnchanged` + `res.Item.Status = StatusCopied`）**不检查 `it.Classification`**：对 canonical_present 条目，`HGetAll(it.CanonicalKey)`（=自己）必然存在且 checksum 恒等 → 盖章 `StatusCopied`。注释（copy.go:69-71）写的是 "if a **migratable** item is already in StatusCopied"，代码未限定 migratable。
 3. cleanup（`cleanup.go:117`）按 `StatusCopied` 删 `it.SourceKey` → **DEL canonical 键**。
+
+**触发条件（实验 A/B/C 反复验证）**：原始 preflight+copy 后，再做"重扫 preflight → 至少一次 copy" → canonical 条目被盖成 StatusCopied → cleanup 触发删除。**充分必要条件是"重扫 preflight 之后存在至少一次 copy 调用"**，否则 cleanup 行为正确（实验 B 验证）。
 
 影响评估：dual 模式 cutover 后 canonical 是权威读路径，此缺陷=迁移工具自身删除权威数据；且 refused=0/failed=0，计数表面正常，无告警。**T0 前 must-fix。**
 
