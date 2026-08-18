@@ -7,7 +7,7 @@
 1. **代码开发**: 实现完整的injectFollowUpRequest功能
 2. **代码审计**: 多轮审计，所有包通过go vet和编译
 3. **代码提交**: 提交并推送到远程main分支 (commit: 1b196763)
-4. **代码同步**: 同步response_interceptor_helpers.go到184服务器
+4. **代码同步**: 同步response_interceptor_helpers.go到154生产
 5. **数据库Migration**: 成功创建handoff_logs和goal_sessions表
 
 ### 📊 核心变更
@@ -59,7 +59,7 @@ CREATE TABLE goal_sessions (
 
 ### 🔧 部署位置
 
-**184测试环境**:
+**154生产**:
 - 服务器: __PUB_IP_1__:__PORT_1__
 - 代码目录: `__SERVER_PATH_2__`
 - K8s命名空间: `pms-test`
@@ -101,7 +101,7 @@ INSERT INTO settings (scope, key, value, tenant_id) VALUES
 ### 🎯 下一步行动
 
 1. 在有registry访问权限的环境中重新构建镜像
-2. 更新184的k8s deployment
+2. 更新154的k8s deployment
 3. 配置测试租户启用auto-control功能
 4. 验证handoff和goal模式正常工作
 5. 监控日志确认injectFollowUpRequest正常执行

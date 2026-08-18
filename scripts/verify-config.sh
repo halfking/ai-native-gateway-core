@@ -88,7 +88,7 @@ check_var "LLM_GATEWAY_IDENTITY_SALT" "身份盐值"
 check_var "LLM_GATEWAY_LISTEN" "监听地址 (LLM_GATEWAY_LISTEN)"
 check_var "LLM_GATEWAY_ENV" "运行环境 (LLM_GATEWAY_ENV)"
 
-#（71/184 服务器已退役）
+#（71/184 服务器已退役；154 = 生产网关, 252 = 数据库/中间层, 245 = 预生产验证）
 
 echo "" >&2
 
