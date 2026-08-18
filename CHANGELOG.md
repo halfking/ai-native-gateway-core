@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - 2026-08-18 (Quality Provider Stats Per-Model Filter)
+
+### Added
+- 品质统计支持按模型粒度过滤：`GET /api/quality/providers/:id/stats?model=<name>`（方案 C）。
+  可选 `?model=` 参数按 `usage_ledger_hot.raw_model_name`（= `COALESCE(outbound_model, client_model)`）
+  过滤 30 天聚合，缺省即供应商级，向后兼容。
+- 节点详情抽屉（RequestLogDrawer）新增"模型30天统计"块：打开请求详情时按
+  `detail.outbound_model ?? detail.client_model` 拉取模型级统计，7 个数字（总/月/周/日/成功/失败/Tokens）；
+  加载失败静默隐藏（非致命）。配合既有"供应商30天统计"（方案 A）形成双层视图。
+- `docs/changelogs/2026-08-18-quality-provider-stats-model-filter.md`：本轮 6 段式变更记录。
+
 ## [Unreleased] - 2026-08-17 (Dashboard Request Detail 5s Timeout)
 
 ### 📦 Archived

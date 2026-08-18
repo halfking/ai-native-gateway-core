@@ -114,6 +114,13 @@ func (h *QualityHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.handleGetRanking(w, r)
+	} else if strings.HasPrefix(path, "/api/quality/providers/") && strings.HasSuffix(path, "/stats") {
+		// GET /api/quality/providers/:id/stats — 仅供应商近 30 天请求统计
+		if r.Method != http.MethodGet {
+			h.writeError(w, http.StatusMethodNotAllowed, 40501, "方法不允许")
+			return
+		}
+		h.handleGetProviderRequestStats(w, r)
 	} else if strings.HasPrefix(path, "/api/quality/providers/") && strings.HasSuffix(path, "/recalculate") {
 		// POST /api/quality/providers/:id/recalculate
 		if r.Method != http.MethodPost {
@@ -132,6 +139,47 @@ func (h *QualityHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, http.StatusNotFound, 40404, "路径不存在")
 	}
 }
+
+// handleGetProviderRequestStats 仅返回供应商近 30 天请求统计，供请求详情抽屉等
+// 轻量场景复用（避免拉取整套质量画像）。数据源与 query 复用 loadProviderRequestStats。
+func (h *QualityHandler) handleGetProviderRequestStats(w http.ResponseWriter, r *http.Request) {
+	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/quality/providers/"), "/")
+	if len(parts) < 1 || parts[0] == "" {
+		h.writeError(w, http.StatusBadRequest, 40001, "参数错误: provider_id 缺失")
+		return
+	}
+	providerID, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil {
+		h.writeError(w, http.StatusBadRequest, 40001, "参数错误: provider_id 必须是数字")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	var exists int
+	err = h.db.QueryRowContext(ctx, "SELECT 1 FROM providers WHERE id = $1", providerID).Scan(&exists)
+	if err == sql.ErrNoRows {
+		h.writeError(w, http.StatusNotFound, 40401, "供应商不存在")
+		return
+	} else if err != nil {
+		slog.Error("quality: check provider exists failed", "error", err, "provider_id", providerID)
+		h.writeError(w, http.StatusInternalServerError, 50001, "服务器内部错误")
+		return
+	}
+
+	// 可选 ?model=<raw_model_name>：按模型粒度统计（方案 C）。缺省为 provider 级（向后兼容）。
+	rawModelName := r.URL.Query().Get("model")
+
+	stats, err := h.loadProviderRequestStats(ctx, providerID, rawModelName)
+	if err != nil {
+		slog.Error("quality: failed to load provider request stats", "error", err, "provider_id", providerID)
+		h.writeError(w, http.StatusInternalServerError, 50001, "服务器内部错误")
+		return
+	}
+	h.writeJSON(w, http.StatusOK, Response{Code: 0, Message: "success", Data: stats})
+}
+
 func (h *QualityHandler) handleGetProviderQuality(w http.ResponseWriter, r *http.Request) {
 	slog.Info("quality: handleGetProviderQuality called", "path", r.URL.Path, "query", r.URL.RawQuery)
 
@@ -258,7 +306,7 @@ ORDER BY profile_date DESC, total_score DESC
 	// 数据源：usage_ledger_with_current_month（与 /api/usage/providers/:id 同源）。
 	// 窗口：近 30 天（对齐用量 tab 的 provider summary 默认窗口），限定扫描范围。
 	// 查询失败不阻断品质数据展示：记日志并返回零值，避免统计表缺失拖垮整个 tab。
-	requestStats, err := h.loadProviderRequestStats(ctx, providerID)
+	requestStats, err := h.loadProviderRequestStats(ctx, providerID, "")
 	if err != nil {
 		slog.Error("quality: failed to load provider request stats", "error", err, "provider_id", providerID)
 		requestStats = ProviderRequestStats{}
@@ -280,8 +328,12 @@ ORDER BY profile_date DESC, total_score DESC
 // usage_ledger_with_current_month 的月度分区为列式存储，对 provider 级聚合扫描高效。
 // 窗口固定为近 30 天（与 /api/usage/providers/:id 的 summary 默认窗口一致），
 // 避免全量扫描历史分区，也保证与画像数据周期语义一致。
-func (h *QualityHandler) loadProviderRequestStats(ctx context.Context, providerID int64) (ProviderRequestStats, error) {
-	const query = `
+//
+// rawModelName 非空时追加 AND raw_model_name = $2 条件（方案 C：按模型粒度统计）。
+// 该表无 provider_id 索引，加 raw_model_name 条件不改变执行计划（同样靠 ts 分区裁剪
+// 后顺序扫描过滤），性能开销可忽略，无需新增索引。
+func (h *QualityHandler) loadProviderRequestStats(ctx context.Context, providerID int64, rawModelName string) (ProviderRequestStats, error) {
+	query := `
 SELECT
     COUNT(*)::bigint,
     COUNT(*) FILTER (WHERE ts >= date_trunc('month', NOW()))::bigint,
@@ -293,9 +345,14 @@ SELECT
 FROM usage_ledger_with_current_month
 WHERE provider_id = $1
   AND ts >= NOW() - INTERVAL '30 days'`
+	args := []any{providerID}
+	if rawModelName != "" {
+		query += "\n  AND raw_model_name = $2"
+		args = append(args, rawModelName)
+	}
 
 	var s ProviderRequestStats
-	err := h.db.QueryRowContext(ctx, query, providerID).Scan(
+	err := h.db.QueryRowContext(ctx, query, args...).Scan(
 		&s.TotalRequests, &s.MonthRequests, &s.WeekRequests, &s.DayRequests,
 		&s.SuccessCount, &s.FailureCount, &s.TotalTokens,
 	)
