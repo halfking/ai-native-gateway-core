@@ -209,15 +209,15 @@ go run ./cmd/compression-bench/ \
   -dsn="$DATABASE_URL"
 ```
 
-### 连接 184 DB（Kubernetes）
+### 连接 PG（252 server，Kubernetes 共享）
 
 ```bash
-# 1. 建立隧道
-ssh -p 25022 root@14.103.112.184 -L 18432:10.43.118.61:5432 -N -f
+# 1. 建立隧道（PG17 在 252 上，172.16.2.210:5432）
+ssh -p 25022 root@<env:HOST_252> -L 25232:172.16.2.210:5432 -N -f
 
 # 2. 运行 benchmark
 go run ./cmd/compression-bench/ \
-  -dsn="postgres://llm_gateway:xxx@127.0.0.1:18432/llm_gateway?sslmode=disable"
+  -dsn="postgres://llm_gateway:<env:LLM_GATEWAY_DB_PASS>@127.0.0.1:25232/llm_gateway?sslmode=disable"
 ```
 
 ## 测试用例建议
