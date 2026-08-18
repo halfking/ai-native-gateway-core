@@ -69,6 +69,52 @@ fi
 TS=$(date +%Y%m%d_%H%M%S)
 BACKUP="${TABLE}_bloat_backup_${TS}"
 NEW="${TABLE}_repacked_${TS}"
+TABLE_REL_OPTIONS=$(run_sql -Atc "SELECT coalesce(array_to_string(reloptions, ', '), '') FROM pg_class WHERE oid = 'public.$TABLE'::regclass;")
+REL_OPTIONS_SQL=""
+if [[ -n "$TABLE_REL_OPTIONS" ]]; then
+  REL_OPTIONS_SQL="ALTER TABLE public.$TABLE SET ($TABLE_REL_OPTIONS);"
+fi
+INDEX_NAME_NORMALIZE_SQL=$(cat <<SQL
+DO \$\$
+DECLARE
+  source_index record;
+  live_index_name text;
+  backup_index_name text;
+BEGIN
+  FOR source_index IN
+    SELECT source_idx.relname AS index_name,
+           source.indisunique, source.indisprimary, source.indkey,
+           source.indclass, source.indcollation, source.indoption,
+           source.indpred, source.indexprs
+    FROM pg_index source
+    JOIN pg_class source_idx ON source_idx.oid = source.indexrelid
+    WHERE source.indrelid = 'public.$BACKUP'::regclass
+    ORDER BY source_idx.oid
+  LOOP
+    SELECT live_idx.relname INTO live_index_name
+    FROM pg_index live
+    JOIN pg_class live_idx ON live_idx.oid = live.indexrelid
+    WHERE live.indrelid = 'public.$TABLE'::regclass
+      AND live.indisunique = source_index.indisunique
+      AND live.indisprimary = source_index.indisprimary
+      AND live.indkey = source_index.indkey
+      AND live.indclass = source_index.indclass
+      AND live.indcollation = source_index.indcollation
+      AND live.indoption = source_index.indoption
+      AND live.indpred IS NOT DISTINCT FROM source_index.indpred
+      AND live.indexprs IS NOT DISTINCT FROM source_index.indexprs
+    LIMIT 1;
+    IF live_index_name IS NULL THEN
+      RAISE EXCEPTION 'cannot match copied index % on public.$TABLE', source_index.index_name;
+    END IF;
+    backup_index_name := left(source_index.index_name, 35)
+      || '_bak_' || left(md5(source_index.index_name), 4) || '_$TS';
+    EXECUTE format('ALTER INDEX public.%I RENAME TO %I', source_index.index_name, backup_index_name);
+    EXECUTE format('ALTER INDEX public.%I RENAME TO %I', live_index_name, source_index.index_name);
+  END LOOP;
+END \$\$;
+SQL
+)
 VIEW_REFRESH_SQL=""
 
 # ALTER TABLE ... RENAME preserves dependent views' old relation OIDs. For the
@@ -132,6 +178,7 @@ case "$MODE" in
     cat <<SQL
 BEGIN;
 SET LOCAL statement_timeout = '0';
+SET LOCAL idle_in_transaction_session_timeout = '0';
 LOCK TABLE public.$TABLE IN ACCESS EXCLUSIVE MODE;
 CREATE TABLE public.$NEW (LIKE public.$TABLE INCLUDING ALL);
 INSERT INTO public.$NEW SELECT * FROM public.$TABLE;
@@ -144,6 +191,8 @@ BEGIN
 END \$\$;
 ALTER TABLE public.$TABLE RENAME TO $BACKUP;
 ALTER TABLE public.$NEW RENAME TO $TABLE;
+$REL_OPTIONS_SQL
+$INDEX_NAME_NORMALIZE_SQL
 $VIEW_REFRESH_SQL
 COMMIT;
 ANALYZE public.$TABLE;
@@ -157,6 +206,8 @@ SQL
     echo "== 执行 swap 重写（旧表保留为 ${BACKUP}） =="
     run_sql_tx <<SQL
 BEGIN;
+SET LOCAL statement_timeout = '0';
+SET LOCAL idle_in_transaction_session_timeout = '0';
 LOCK TABLE public.$TABLE IN ACCESS EXCLUSIVE MODE;
 CREATE TABLE public.$NEW (LIKE public.$TABLE INCLUDING ALL);
 INSERT INTO public.$NEW SELECT * FROM public.$TABLE;
@@ -168,6 +219,9 @@ BEGIN
 END \$\$;
 ALTER TABLE public.$TABLE RENAME TO $BACKUP;
 ALTER TABLE public.$NEW RENAME TO $TABLE;
+$REL_OPTIONS_SQL
+$INDEX_NAME_NORMALIZE_SQL
+$VIEW_REFRESH_SQL
 COMMIT;
 ANALYZE public.$TABLE;
 SQL

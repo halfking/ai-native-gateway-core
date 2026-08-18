@@ -51,9 +51,11 @@ autovacuum 对 TOAST 的回收无法归还空间给 OS。同时 18.8w 次 UPDATE
 | `pg-repack` | 在线 | 约 2× | 工具内建 | 需先装 PG17 匹配版 |
 
 swap 语义说明：
-- 单事务内 `LOCK ... ACCESS EXCLUSIVE` → 建新表（LIKE INCLUDING ALL）→ 复制活行 → 行数校验 →
-  旧表换名 `*_bloat_backup_<ts>` → 新表换回原名 → COMMIT。
-- 应用 upsert 在锁期间短暂阻塞，COMMIT 后继续写新表；**不经过 promote/归档路径，无数据语义变化**。
+- 单事务内会禁用该维护会话的 statement/idle-in-transaction timeout，随后 `LOCK ... ACCESS EXCLUSIVE` →
+  建新表（`LIKE INCLUDING ALL`）→复制活行→行数校验→旧表换名 `*_bloat_backup_<ts>` →
+  新表换回原名→恢复源表 reloptions、规范化新旧索引名称、重建已知依赖 VIEW → COMMIT。
+- 执行器只允许已登记的 `request_logs_bodies_with_current_month` 依赖 VIEW；发现未知依赖 VIEW/MATVIEW
+  会 fail-closed 中止，防止 rename 后视图仍指向 backup 表 OID。
 - 行数校验不等即抛错整体回滚。
 
 ### 回滚（仅限 swap 后立即发现异常）
