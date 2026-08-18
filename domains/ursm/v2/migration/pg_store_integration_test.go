@@ -52,7 +52,7 @@ func TestPGStoreOpenRunAfter080And081(t *testing.T) {
 	deadline := time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
 	ledgerID := "ursm-test-081"
 	pgStore := NewPGStore(pool)
-	if err := pgStore.OpenRun(ctx, RunRecord{
+	run := RunRecord{
 		LedgerID:          ledgerID,
 		Owner:             "migration-test-owner",
 		KeySchemaMode:     store.KeySchemaModeDual,
@@ -63,8 +63,14 @@ func TestPGStoreOpenRunAfter080And081(t *testing.T) {
 		Migratable:        1,
 		CanonicalPresent:  1,
 		Excluded:          1,
-	}); err != nil {
+	}
+	if err := pgStore.OpenRun(ctx, run); err != nil {
 		t.Fatalf("open run after 081: %v", err)
+	}
+	changedRun := run
+	changedRun.Owner = "different-owner"
+	if err := pgStore.OpenRun(ctx, changedRun); err == nil {
+		t.Fatal("reopening ledger_id with a different owner must fail closed")
 	}
 
 	var gotDeadline time.Time
@@ -102,6 +108,48 @@ func TestPGStoreOpenRunAfter080And081(t *testing.T) {
 	}
 	if count != len(entries) || tenant != "a" {
 		t.Fatalf("entries = count:%d tenant:%q, want count:%d tenant:a", count, tenant, len(entries))
+	}
+
+	if _, err := pool.Exec(ctx, `UPDATE ursm_key_migration_runs SET checkpoint = 'cleanup' WHERE ledger_id = $1`, ledgerID); err != nil {
+		t.Fatalf("set cleanup checkpoint: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE ursm_key_migration_entries SET state = 'copied' WHERE ledger_id = $1 AND source_key = $2`, ledgerID, legacyNodeA); err != nil {
+		t.Fatalf("prepare copied entry: %v", err)
+	}
+	loadedRun, err := pgStore.LoadRun(ctx, ledgerID)
+	if err != nil {
+		t.Fatalf("load run: %v", err)
+	}
+	if loadedRun.Checkpoint != CheckpointCleanup || !loadedRun.RollbackDeadlineTime.Equal(deadline) {
+		t.Fatalf("loaded run = %+v, want cleanup checkpoint and deadline %s", loadedRun, deadline)
+	}
+	loadedEntries, err := pgStore.LoadEntries(ctx, ledgerID)
+	if err != nil {
+		t.Fatalf("load entries: %v", err)
+	}
+	if len(loadedEntries) != len(entries) || loadedEntries[0].FieldChecksum == "" {
+		t.Fatalf("loaded entries = %+v, expected persisted checksum rows", loadedEntries)
+	}
+	var copied LoadedEntry
+	for _, entry := range loadedEntries {
+		if entry.SourceKey == legacyNodeA {
+			copied = entry
+		}
+	}
+	if copied.State != StatusCopied || copied.Tuple == nil || copied.Tuple.TenantID != "a" {
+		t.Fatalf("copied entry = %+v, want copied row with tuple", copied)
+	}
+	if err := pgStore.ClaimEntryForCleanup(ctx, ledgerID, copied.SourceKey, copied.FieldChecksum); err != nil {
+		t.Fatalf("claim cleanup: %v", err)
+	}
+	if err := pgStore.ClaimEntryForCleanup(ctx, ledgerID, copied.SourceKey, copied.FieldChecksum); err == nil {
+		t.Fatal("second cleanup claim must fail closed")
+	}
+	if err := pgStore.MarkEntryCleaned(ctx, ledgerID, copied.SourceKey, copied.FieldChecksum); err != nil {
+		t.Fatalf("mark cleaned: %v", err)
+	}
+	if err := pgStore.MarkEntryCleaned(ctx, ledgerID, copied.SourceKey, copied.FieldChecksum); err == nil {
+		t.Fatal("second cleanup state transition must fail closed")
 	}
 }
 
