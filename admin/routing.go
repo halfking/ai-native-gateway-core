@@ -4421,9 +4421,6 @@ func markResolveRuntimeUnknown(candidates []resolveCandidate, reason string) {
 		c := &candidates[i]
 		c.RuntimeState = "unknown"
 		c.URSMObserved = false
-		if !c.DBEligible {
-			continue
-		}
 		c.Available = false
 		c.RuntimeRoutable = false
 		c.Routable = false
@@ -4458,13 +4455,11 @@ func applyURSMOverlay(candidates []resolveCandidate, views []api.NodeView, now t
 		resolveRuntimeDefaults(c)
 		v, ok := viewByKey[ursmViewKey(c.CredentialID, c.ModelName)]
 		if !ok {
-			if c.DBEligible {
-				c.Available = false
-				c.RuntimeRoutable = false
-				c.Routable = false
-				c.RuntimeState = "missing"
-				c.BlockReason = "ursm_node_missing"
-			}
+			c.Available = false
+			c.RuntimeRoutable = false
+			c.Routable = false
+			c.RuntimeState = "missing"
+			c.BlockReason = "ursm_node_missing"
 			continue
 		}
 		c.URSMObserved = true
