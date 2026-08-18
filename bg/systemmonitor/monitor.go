@@ -526,6 +526,7 @@ func (sm *SystemMonitor) Start(ctx context.Context) {
 		"worker_count", sm.workerCount,
 		"concurrency", sm.concurrency,
 		"fallback", sm.fallback,
+		"audit_enabled", sm.audit != nil && sm.audit.Enabled(),
 	)
 	for i := 0; i < sm.workerCount; i++ {
 		sm.wg.Add(1)
@@ -641,6 +642,16 @@ func (sm *SystemMonitor) fetchTask(ctx context.Context, workerLog *slog.Logger) 
 	return nil, false
 }
 
+// writeAudit makes an unconfigured audit backend observable instead of
+// silently treating it as a successful best-effort write. Queue completion
+// remains independent so an audit outage does not strand a claimed task.
+func (sm *SystemMonitor) writeAudit(ctx context.Context, task *Task, result *ExecutorResult, extras map[string]any) error {
+	if sm == nil || sm.audit == nil || !sm.audit.Enabled() {
+		return errors.New("system monitor audit backend is disabled")
+	}
+	return sm.audit.Write(ctx, task, result, extras)
+}
+
 // processTask handles a single claimed task end-to-end.
 //
 // Order matters:
@@ -683,8 +694,14 @@ func (sm *SystemMonitor) processTask(ctx context.Context, task *Task, workerLog 
 			task.RecentRequestAt = &info.At
 			sm.publishEvent(ctx, "skipped", task)
 
-			if err := sm.audit.Write(ctx, task, nil, extras); err != nil {
-				workerLog.Warn("system_monitor: audit skip write failed", "error", err)
+			if err := sm.writeAudit(ctx, task, nil, extras); err != nil {
+				workerLog.Warn("system_monitor: audit skip write failed",
+					"task_id", task.ID,
+					"credential_id", task.CredentialID,
+					"raw_model", task.RawModel,
+					"source", task.Source,
+					"attempt", task.Attempt,
+					"error", err)
 			}
 			if !sm.IsFallback() {
 				if err := sm.queue.Complete(ctx, task, TaskStatusSkipped, extras); err != nil {
@@ -723,8 +740,15 @@ func (sm *SystemMonitor) processTask(ctx context.Context, task *Task, workerLog 
 	sm.publishEvent(ctx, string(status), task)
 
 	// Audit
-	if err := sm.audit.Write(ctx, task, result, extras); err != nil {
-		workerLog.Warn("system_monitor: audit write failed", "error", err)
+	if err := sm.writeAudit(ctx, task, result, extras); err != nil {
+		workerLog.Warn("system_monitor: audit write failed",
+			"task_id", task.ID,
+			"credential_id", task.CredentialID,
+			"raw_model", task.RawModel,
+			"source", task.Source,
+			"attempt", task.Attempt,
+			"status", task.Status,
+			"error", err)
 	}
 
 	// Complete (Redis status update + running removal)
