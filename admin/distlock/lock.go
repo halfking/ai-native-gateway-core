@@ -63,10 +63,6 @@ const releaseScript = `if redis.call('GET', KEYS[1]) == ARGV[1] then
 end
 return 0`
 
-// releaseScript is one-line to keep lint happy and the Redis log readable:
-// (multi-line constants are fine in Go, but a single-line keeps it visible
-// in redis MONITOR output as one operation.)
-
 // RedisManager is the production implementation backed by go-redis.
 // All goroutines that share a *redis.Client should share one *RedisManager.
 type RedisManager struct {
@@ -152,10 +148,27 @@ func (m *RedisManager) Acquire(ctx context.Context, opts AcquireOpts) (*Handle, 
 		return nil, fmt.Errorf("distlock: follower subscribe %q: %w", opts.Key, err)
 	}
 	ch := pubsub.Channel()
+
+	// Read the actual remaining TTL from Redis so the follower's wait
+	// timer matches the real lock expiry. If the key is already gone
+	// (PTTL returns -2) or has no expiry (-1), treat the lock as already
+	// released and return a follower that will wake immediately.
+	var followerTTL time.Duration
+	if rem, err := m.rdb.PTTL(subCtx, opts.Key).Result(); err == nil {
+		if rem > 0 {
+			followerTTL = rem
+		} else {
+			followerTTL = 0 // key already gone, will wake immediately
+		}
+	} else {
+		// PTTL failed; fall back to the original TTL. This is conservative
+		// (may wait a bit longer than the real TTL) but safe.
+		followerTTL = ttl
+	}
 	return &Handle{
 		leader:  false,
 		key:     opts.Key,
-		ttl:     ttl,
+		ttl:     followerTTL,
 		channel: ch,
 		pubsub:  pubsub,
 		backend: &redisBackend{rdb: m.rdb, key: opts.Key},
