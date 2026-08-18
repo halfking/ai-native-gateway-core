@@ -1,7 +1,9 @@
 package streaming
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -18,6 +20,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/identity"            //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/session"             //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/streaming/state"     //nolint:depguard // SP-02 state machine wiring
 	"github.com/kaixuan/llm-gateway-go/domains/transformation"      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/i18n"
@@ -90,6 +93,13 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	logCtx := h.chatHandler.NewRequestLogContext(r, requestID, time.Now())
 	logCtx.ClientRequestID = clientRequestID
 	startTime := logCtx.StartTime
+
+	// SP-02: state machine — share the same entry point as chat completions.
+	// requests that fail before any state transition still hit a terminal
+	// state via the deferred cancel below.
+	rt, _ := h.chatHandler.initRequestStateMachine(r.Context(), requestID, "")
+	defer cancelRequestStateMachine(rt, nil)
+
 	// Generate a provisional session ID for early-failure branches.
 	// Declared before the deferred safety-net so the closure can capture it.
 	provisionalSessionID := requestIdentity.SessionID
@@ -193,6 +203,8 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			keyInfo = ki
 			attemptKeyInfo = ki
 			bindRequestJourney(r, ki.TenantID, attemptClientModel)
+			// SP-02: state machine — auth succeeded.
+			rt.Emit(state.EventAuthed)
 		}
 	}
 
@@ -499,7 +511,11 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	candidates, policy, _, candErr := resolveCandidatesForRequest(r.Context(), h.chatHandler.provider, clientModel, clientID.Fingerprint.ClientProfile, tenantID, bodyBytes)
+	// SP-02: state machine — routing produced a final candidate set.
+	rt.Emit(state.EventRouted)
 	if candErr != nil {
+		// SP-02: routing error path.
+		rt.Emit(state.EventFailed)
 		// Database or infrastructure error - do NOT disguise as no_candidate
 		slog.Error("failed to get candidates from provider", "error", candErr, "model", clientModel, "request_id", requestID)
 		rc := classifyRoutingError(candErr)
@@ -677,6 +693,8 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			})
 			defer base.(*interceptingStreamWriter).finish()
 		}
+		// SP-02: state machine — survival branch dispatches upstream.
+		rt.Emit(state.EventDispatching)
 		result, execErr = h.chatHandler.runSurvivalCoordinator(r, base, buildExecParams, tenantID, durableStream)
 	} else {
 		if durableStream != nil {
@@ -686,10 +704,18 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeAnthropicError(w, http.StatusServiceUnavailable, "api_error", "durable request cannot run in-connection on this gateway")
 			return
 		}
+		// SP-02: state machine — executor has accepted the request.
+		rt.Emit(state.EventDispatching)
 		result, execErr = h.chatHandler.executor.Execute(buildExecParams(w))
 	}
 
 	if execErr != nil {
+		// SP-02: state machine — executor failed (skip when the failure was a
+		// client cancel, since r.Context() cancellation has already driven
+		// the runtime to StateCancelled).
+		if !errors.Is(r.Context().Err(), context.Canceled) {
+			rt.Emit(state.EventFailed)
+		}
 		errCode := "provider_error"
 		errMsg := execErr.Error()
 		if ee, ok := execErr.(*executors.ExecuteError); ok && ee.Exhausted {
