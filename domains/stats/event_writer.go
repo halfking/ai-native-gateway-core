@@ -11,13 +11,25 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
 )
 
+const maxPersistRetries = 5
+
 type EventWriter struct {
-	db       *pgxpool.Pool
-	queue    chan Event
-	cancel   context.CancelFunc
-	done     chan struct{}
-	stopOnce sync.Once
-	dropped  atomic.Uint64
+	db            *pgxpool.Pool
+	queue         chan Event
+	cancel        context.CancelFunc
+	done          chan struct{}
+	stopOnce      sync.Once
+	dropped       atomic.Uint64
+	persistFailed atomic.Uint64
+	deadLettered  atomic.Uint64
+}
+
+// Stats exposes writer health counters for tests and future metrics export.
+func (w *EventWriter) Stats() (dropped, persistFailed, deadLettered uint64) {
+	if w == nil {
+		return 0, 0, 0
+	}
+	return w.dropped.Load(), w.persistFailed.Load(), w.deadLettered.Load()
 }
 
 func NewEventWriter(db *pgxpool.Pool, queueSize int) *EventWriter {
@@ -57,10 +69,27 @@ func (w *EventWriter) Record(entry *telemetry.RequestLogEntry) {
 	}
 	select {
 	case w.queue <- e:
+		return
 	default:
-		w.dropped.Add(1)
-		slog.Warn("stats event queue full", "request_id", e.RequestID, "event_type", e.EventType, "dropped", w.dropped.Load())
 	}
+
+	if w.db == nil {
+		w.dropped.Add(1)
+		slog.Warn("stats event queue full with persistence disabled", "request_id", e.RequestID, "event_type", e.EventType, "dropped", w.dropped.Load())
+		return
+	}
+
+	// Hooks run on the telemetry worker, not on the client request goroutine.
+	// If the bounded queue is saturated, use a short synchronous fallback so
+	// a transient analytics backlog does not silently lose the terminal fact.
+	fallbackCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	err := w.persist(fallbackCtx, []Event{e})
+	cancel()
+	if err == nil {
+		return
+	}
+	w.dropped.Add(1)
+	slog.Warn("stats event queue and fallback full", "request_id", e.RequestID, "event_type", e.EventType, "dropped", w.dropped.Load(), "error", err)
 }
 
 func (w *EventWriter) run(ctx context.Context) {
@@ -68,19 +97,32 @@ func (w *EventWriter) run(ctx context.Context) {
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
 	batch := make([]Event, 0, 64)
+	retries := 0
 	flush := func() bool {
 		if len(batch) == 0 {
 			return true
 		}
-		flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		err := w.persist(flushCtx, batch)
-		cancel()
-		if err != nil {
-			slog.Warn("stats event persist failed", "error", err, "events", len(batch))
-			return false
+		var err error
+		for attempt := 0; attempt < 3; attempt++ {
+			flushCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			err = w.persist(flushCtx, batch)
+			cancel()
+			if err == nil {
+				batch = batch[:0]
+				retries = 0
+				return true
+			}
+			time.Sleep(time.Duration(attempt+1) * 100 * time.Millisecond)
 		}
-		batch = batch[:0]
-		return true
+		w.persistFailed.Add(1)
+		retries++
+		slog.Warn("stats event persist failed", "error", err, "events", len(batch), "retry", retries, "max_retries", maxPersistRetries)
+		if retries >= maxPersistRetries {
+			w.deadLettered.Add(uint64(len(batch)))
+			batch = batch[:0]
+			retries = 0
+		}
+		return false
 	}
 	for {
 		select {
@@ -97,7 +139,10 @@ func (w *EventWriter) run(ctx context.Context) {
 				case e := <-w.queue:
 					batch = append(batch, e)
 				default:
-					flush()
+					if !flush() && len(batch) > 0 {
+						w.deadLettered.Add(uint64(len(batch)))
+						batch = batch[:0]
+					}
 					return
 				}
 			}
@@ -115,17 +160,17 @@ func (w *EventWriter) persist(ctx context.Context, events []Event) error {
 		if err := e.Valid(); err != nil {
 			return err
 		}
-		result, err := tx.Exec(ctx, `
-			INSERT INTO stats_event_dedup (event_id, occurred_at)
-			VALUES ($1, $2) ON CONFLICT (event_id) DO NOTHING`, e.EventID, e.OccurredAt)
-		if err != nil {
+		// Keep the global dedup row pointed at the newest terminal update.
+		// The inbox/fact rows remain append-only by (event_id, occurred_at),
+		// so a late final success can supersede an earlier failure during
+		// rollup.
+		if _, err := tx.Exec(ctx, `
+				INSERT INTO stats_event_dedup (event_id, occurred_at)
+				VALUES ($1, $2)
+				ON CONFLICT (event_id) DO UPDATE SET occurred_at = EXCLUDED.occurred_at`, e.EventID, e.OccurredAt); err != nil {
 			return err
 		}
-		if result.RowsAffected() == 0 {
-			// The global dedup table is authoritative even though the inbox is
-			// partitioned and cannot enforce a cross-partition event_id key.
-			continue
-		}
+
 		_, err = tx.Exec(ctx, `
 			INSERT INTO stats_event_inbox (
 				event_id, occurred_at, request_id, event_type, traffic_class,
@@ -152,7 +197,15 @@ func (w *EventWriter) persist(ctx context.Context, events []Event) error {
 			return err
 		}
 		_, err = tx.Exec(ctx, `
-			INSERT INTO usage_facts (
+				UPDATE stats_event_inbox
+				SET processed_at = now(), processing_owner = 'telemetry-writer',
+				    process_attempts = process_attempts + 1, last_error = NULL
+				WHERE event_id = $1 AND occurred_at = $2`, e.EventID, e.OccurredAt)
+		if err != nil {
+			return err
+		}
+		_, err = tx.Exec(ctx, `
+				INSERT INTO usage_facts (
 				event_id, request_id, revision, occurred_at, finalized_at, tenant_id,
 				traffic_class, status, provider_id, credential_id, canonical_id, raw_model_name,
 				api_key_id, application_id, end_user_id, person_hash, prompt_tokens,

@@ -136,7 +136,9 @@ func EventFromTelemetry(entry *telemetry.RequestLogEntry, now time.Time) (Event,
 		rawModel = valueString(entry.ClientModel)
 	}
 	e := Event{
-		EventID: eventID(entry.RequestID, string(typeOf), 0), OccurredAt: occurred,
+		// A request has one terminal fact. Keep the id independent of the
+		// outcome so a late correction cannot create a second terminal fact.
+		EventID: eventID(entry.RequestID, "request_terminal", 0), OccurredAt: occurred,
 		RequestID: entry.RequestID, EventType: typeOf, Traffic: trafficClass(entry),
 		TenantID: tenant, ProviderID: entry.ProviderID, CredentialID: entry.CredentialID,
 		CanonicalID: entry.CanonicalID, RawModelName: rawModel, APIKeyID: entry.APIKeyID,

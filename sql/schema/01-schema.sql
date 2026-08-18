@@ -9382,7 +9382,7 @@ CREATE TABLE public.node_probe_runs (
     timeout_at_ms integer,
     via_proxy boolean,
     CONSTRAINT node_probe_runs_attempt_check CHECK (((attempt >= 1) AND (attempt <= 7))),
-    CONSTRAINT node_probe_runs_trigger_kind_check CHECK ((trigger_kind = ANY (ARRAY['request_failure'::text, 'manual'::text, 'credential_recovery'::text, 'sync_request'::text])))
+    CONSTRAINT node_probe_runs_trigger_kind_check CHECK ((trigger_kind = ANY (ARRAY['request_failure'::text, 'manual'::text, 'credential_recovery'::text, 'sync_request'::text, 'periodic'::text, 'admin'::text, 'integrity_probe_planner'::text, 'selfcheck'::text, 'external_async'::text])))
 );
 
 
@@ -9453,7 +9453,7 @@ COMMENT ON COLUMN public.node_probe_runs.via_proxy IS 'probeDirect是否通过HT
 -- Name: CONSTRAINT node_probe_runs_trigger_kind_check ON node_probe_runs; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON CONSTRAINT node_probe_runs_trigger_kind_check ON public.node_probe_runs IS '425: trigger_kind 枚举扩展 —— 新增 sync_request（同步探测，由 inbound 请求 no_candidate 路径发起）';
+COMMENT ON CONSTRAINT node_probe_runs_trigger_kind_check ON public.node_probe_runs IS '425 + 536: trigger_kind 枚举 —— 425 增量 sync_request（同步探测，由 inbound 请求 no_candidate 路径发起）；536 增量 periodic / admin / integrity_probe_planner / selfcheck / external_async（统一 credential_probe_queue 的 task.Source 全集）';
 
 
 --
