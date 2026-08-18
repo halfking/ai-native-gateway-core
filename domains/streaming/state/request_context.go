@@ -297,18 +297,20 @@ func (c *RequestContext) EventLog() []EventLogEntry {
 	return out
 }
 
-// appendEventLog is called by the runtime under the runtime's own
-// write lock — it does not take c.mu because the runtime serialises
-// every transition.
+// appendEventLog records a transition while allowing EventLog callers to take
+// a consistent snapshot concurrently with the runtime.
 func (c *RequestContext) appendEventLog(e EventLogEntry) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.eventLog = append(c.eventLog, e)
 }
 
-// performCancel is invoked by Runtime.Cancel under the runtime's lock.
-// It closes the channel exactly once and records the reason.
+// performCancel closes the channel exactly once and records the reason.
 func (c *RequestContext) performCancel(err error) {
 	c.cancelOnce.Do(func() {
+		c.mu.Lock()
 		c.cancelErr = err
+		c.mu.Unlock()
 		close(c.cancelled)
 	})
 }

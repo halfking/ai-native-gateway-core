@@ -98,10 +98,10 @@ type InboxConsumer struct {
 	db  InboxDB
 	cfg InboxConfig
 
-	cancel    context.CancelFunc
-	done      chan struct{}
-	startOnce sync.Once
-	stopOnce  sync.Once
+	mu      sync.Mutex
+	cancel  context.CancelFunc
+	done    chan struct{}
+	started bool
 
 	claimed      atomic.Uint64
 	processed    atomic.Uint64
@@ -143,11 +143,19 @@ func (c *InboxConsumer) Start(ctx context.Context) {
 	if c == nil || c.db == nil {
 		return
 	}
-	c.startOnce.Do(func() {
-		workerCtx, cancel := context.WithCancel(ctx)
-		c.cancel = cancel
-		go c.run(workerCtx)
-	})
+	c.mu.Lock()
+	if c.started {
+		c.mu.Unlock()
+		return
+	}
+	workerCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	c.cancel = cancel
+	c.done = done
+	c.started = true
+	c.mu.Unlock()
+
+	go c.run(workerCtx, done)
 }
 
 // Stop cancels the polling loop and is safe before Start.
@@ -155,16 +163,21 @@ func (c *InboxConsumer) Stop() {
 	if c == nil {
 		return
 	}
-	c.stopOnce.Do(func() {
-		if c.cancel != nil {
-			c.cancel()
-			<-c.done
-		}
-	})
+	c.mu.Lock()
+	if !c.started {
+		c.mu.Unlock()
+		return
+	}
+	cancel := c.cancel
+	done := c.done
+	c.mu.Unlock()
+
+	cancel()
+	<-done
 }
 
-func (c *InboxConsumer) run(ctx context.Context) {
-	defer close(c.done)
+func (c *InboxConsumer) run(ctx context.Context, done chan struct{}) {
+	defer close(done)
 	ticker := time.NewTicker(c.cfg.Interval)
 	defer ticker.Stop()
 	for {
@@ -188,12 +201,21 @@ func (c *InboxConsumer) RunOnce(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	var firstErr error
 	for _, claimed := range events {
 		if err := c.projectAndMarkProcessed(ctx, claimed); err != nil {
-			return err
+			if markErr := c.markFailed(ctx, claimed, err); markErr != nil {
+				if firstErr == nil {
+					firstErr = fmt.Errorf("stats inbox project %s: %w; record failure: %v", claimed.Event.EventID, err, markErr)
+				}
+				continue
+			}
+			if firstErr == nil {
+				firstErr = fmt.Errorf("stats inbox project %s: %w", claimed.Event.EventID, err)
+			}
 		}
 	}
-	return nil
+	return firstErr
 }
 
 func (c *InboxConsumer) claim(ctx context.Context, limit int) ([]InboxEvent, error) {
@@ -234,7 +256,6 @@ func (c *InboxConsumer) projectAndMarkProcessed(ctx context.Context, claimed Inb
 	var currentToken int64
 	if err := tx.QueryRow(ctx, projectLeaseSQL, claimed.Event.EventID, claimed.Event.OccurredAt, c.cfg.Owner, claimed.FencingToken).Scan(&currentToken); err != nil {
 		if err == pgx.ErrNoRows {
-			c.leaseLost.Add(1)
 			return fmt.Errorf("stats inbox projection lost lease for %s", claimed.Event.EventID)
 		}
 		return fmt.Errorf("stats inbox verify lease: %w", err)
@@ -248,7 +269,6 @@ func (c *InboxConsumer) projectAndMarkProcessed(ctx context.Context, claimed Inb
 		return fmt.Errorf("stats inbox mark projected: %w", err)
 	}
 	if result.RowsAffected() != 1 {
-		c.leaseLost.Add(1)
 		return fmt.Errorf("stats inbox mark projected lost lease for %s", claimed.Event.EventID)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -256,6 +276,59 @@ func (c *InboxConsumer) projectAndMarkProcessed(ctx context.Context, claimed Inb
 	}
 	c.processed.Add(1)
 	return nil
+}
+
+func (c *InboxConsumer) markFailed(ctx context.Context, claimed InboxEvent, projectErr error) error {
+	if claimed.ProcessAttempts <= 0 {
+		return fmt.Errorf("stats inbox invalid attempt count for %s", claimed.Event.EventID)
+	}
+	tx, err := c.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("stats inbox begin failure update: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	status := "retryable"
+	if claimed.ProcessAttempts >= c.cfg.MaxAttempts {
+		status = "dead_letter"
+	}
+	result, err := tx.Exec(ctx, markFailedSQL,
+		claimed.Event.EventID,
+		claimed.Event.OccurredAt,
+		c.cfg.Owner,
+		claimed.FencingToken,
+		status,
+		truncateInboxError(projectErr),
+	)
+	if err != nil {
+		return fmt.Errorf("stats inbox mark failure: %w", err)
+	}
+	if result.RowsAffected() != 1 {
+		c.leaseLost.Add(1)
+		return fmt.Errorf("stats inbox mark failure lost lease for %s", claimed.Event.EventID)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("stats inbox commit failure update: %w", err)
+	}
+	c.failed.Add(1)
+	if status == "dead_letter" {
+		c.deadLettered.Add(1)
+	} else {
+		c.retried.Add(1)
+	}
+	return nil
+}
+
+func truncateInboxError(err error) string {
+	const maxErrorBytes = 1024
+	if err == nil {
+		return ""
+	}
+	message := err.Error()
+	if len(message) <= maxErrorBytes {
+		return message
+	}
+	return message[:maxErrorBytes]
 }
 
 // ReplayDLQ makes selected dead-letter rows eligible for another claim.
@@ -310,6 +383,21 @@ SET processing_status = 'processed', processed_at = now(),
 WHERE event_id = $1 AND occurred_at = $2
   AND processing_status = 'processing'
   AND processing_owner = $3 AND fencing_token = $4`
+
+const markFailedSQL = `
+UPDATE stats_event_inbox
+SET processing_status = $5,
+    processing_owner = NULL,
+    lease_until = NULL,
+    retryable = ($5 = 'retryable'),
+    next_attempt_at = CASE WHEN $5 = 'retryable' THEN now() + INTERVAL '1 minute' ELSE now() END,
+    last_error = $6,
+    dead_lettered_at = CASE WHEN $5 = 'dead_letter' THEN now() ELSE NULL END,
+    dead_letter_reason = CASE WHEN $5 = 'dead_letter' THEN $6 ELSE NULL END
+WHERE event_id = $1 AND occurred_at = $2
+  AND processing_status = 'processing'
+  AND processing_owner = $3 AND fencing_token = $4
+  AND lease_until > now()`
 
 const claimSQL = `
 WITH claimable AS (

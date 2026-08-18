@@ -24,15 +24,15 @@ type Runtime struct {
 	err      error
 	finalErr error
 
-	// Event channels. events is buffered for normal traffic; cancel
-	// is signal-only and always takes priority in the event loop.
+	// Event channels. events is buffered for normal traffic; cancellation is
+	// signalled through the RequestContext and always takes priority.
 	events chan Event
-	cancel chan struct{}
 	done   chan struct{}
 
 	// WaitGroup tracking the event loop goroutine so Run() can wait
 	// for it to fully tear down before returning.
-	wg sync.WaitGroup
+	wg      sync.WaitGroup
+	runOnce sync.Once
 
 	enterHooks map[RequestState]Hook
 	exitHooks  map[RequestState]Hook
@@ -45,7 +45,6 @@ func NewRuntime(ctx *RequestContext) *Runtime {
 		ctx:        ctx,
 		current:    StateReceived,
 		events:     make(chan Event, 64),
-		cancel:     make(chan struct{}, 1),
 		done:       make(chan struct{}),
 		enterHooks: make(map[RequestState]Hook, 9),
 		exitHooks:  make(map[RequestState]Hook, 9),
@@ -116,11 +115,6 @@ func (r *Runtime) Cancel(reason error) {
 		reason = errors.New("cancelled")
 	}
 	r.ctx.performCancel(reason)
-	select {
-	case r.cancel <- struct{}{}:
-	default:
-		// Already pending.
-	}
 }
 
 // Run starts the event loop and blocks until the state machine reaches
@@ -128,8 +122,10 @@ func (r *Runtime) Cancel(reason error) {
 // (nil for StateCompleted, the cancel reason for StateCancelled, or the
 // underlying error for StateFailed).
 func (r *Runtime) Run(parent context.Context) error {
-	r.wg.Add(1)
-	go r.eventLoop(parent)
+	r.runOnce.Do(func() {
+		r.wg.Add(1)
+		go r.eventLoop(parent)
+	})
 	<-r.done
 	r.wg.Wait()
 	return r.Err()
@@ -142,16 +138,20 @@ func (r *Runtime) eventLoop(parent context.Context) {
 	defer r.wg.Done()
 
 	for {
+		if r.cancelIfPending(parent) {
+			return
+		}
 		select {
 		case <-parent.Done():
-			r.apply(EventCancelled, fmt.Errorf("parent cancelled: %w", parent.Err()))
-			r.shutdown()
+			r.cancel(fmt.Errorf("parent cancelled: %w", parent.Err()))
 			return
-		case <-r.cancel:
-			r.apply(EventCancelled, r.ctx.CancelErr())
-			r.shutdown()
+		case <-r.ctx.Cancelled():
+			r.cancel(r.ctx.CancelErr())
 			return
 		case event := <-r.events:
+			if r.cancelIfPending(parent) {
+				return
+			}
 			r.apply(event, nil)
 			if r.State().IsTerminal() {
 				r.shutdown()
@@ -159,6 +159,30 @@ func (r *Runtime) eventLoop(parent context.Context) {
 			}
 		}
 	}
+}
+
+// cancelIfPending gives cancellation precedence over queued lifecycle events.
+// It is called before waiting for and before applying an event so an already
+// signalled cancellation cannot be overtaken by a buffered terminal event.
+func (r *Runtime) cancelIfPending(parent context.Context) bool {
+	select {
+	case <-parent.Done():
+		r.cancel(fmt.Errorf("parent cancelled: %w", parent.Err()))
+		return true
+	default:
+	}
+	select {
+	case <-r.ctx.Cancelled():
+		r.cancel(r.ctx.CancelErr())
+		return true
+	default:
+		return false
+	}
+}
+
+func (r *Runtime) cancel(reason error) {
+	r.apply(EventCancelled, reason)
+	r.shutdown()
 }
 
 // apply is the only function that mutates r.current. It runs hooks,

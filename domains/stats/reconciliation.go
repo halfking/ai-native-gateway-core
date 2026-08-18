@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -27,10 +26,11 @@ const (
 type ReconciliationWorker struct {
 	db       *pgxpool.Pool
 	interval time.Duration
-	cancel   context.CancelFunc
-	done     chan struct{}
-	started  atomic.Bool
-	stopOnce sync.Once
+
+	mu      sync.Mutex
+	cancel  context.CancelFunc
+	done    chan struct{}
+	started bool
 }
 
 func NewReconciliationWorker(db *pgxpool.Pool, interval time.Duration) *ReconciliationWorker {
@@ -45,29 +45,44 @@ func NewReconciliationWorker(db *pgxpool.Pool, interval time.Duration) *Reconcil
 }
 
 func (w *ReconciliationWorker) Start(ctx context.Context) {
-	if w == nil || w.db == nil || !w.started.CompareAndSwap(false, true) {
+	if w == nil || w.db == nil {
 		return
 	}
-	cctx, cancel := context.WithCancel(ctx)
+	w.mu.Lock()
+	if w.started {
+		w.mu.Unlock()
+		return
+	}
+	workerCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
 	w.cancel = cancel
-	go w.run(cctx)
+	w.done = done
+	w.started = true
+	w.mu.Unlock()
+
+	go w.run(workerCtx, done)
 	slog.Info("stats reconciliation worker started", "interval", w.interval.String())
 }
 
 func (w *ReconciliationWorker) Stop() {
-	if w == nil || !w.started.Load() {
+	if w == nil {
 		return
 	}
-	w.stopOnce.Do(func() {
-		if w.cancel != nil {
-			w.cancel()
-		}
-	})
-	<-w.done
+	w.mu.Lock()
+	if !w.started {
+		w.mu.Unlock()
+		return
+	}
+	cancel := w.cancel
+	done := w.done
+	w.mu.Unlock()
+
+	cancel()
+	<-done
 }
 
-func (w *ReconciliationWorker) run(ctx context.Context) {
-	defer close(w.done)
+func (w *ReconciliationWorker) run(ctx context.Context, done chan struct{}) {
+	defer close(done)
 	ticker := time.NewTicker(w.interval)
 	defer ticker.Stop()
 	for {
@@ -150,7 +165,7 @@ func (w *ReconciliationWorker) ReconcilePeriod(ctx context.Context, start, end t
 	diffCount = diffs - repaired
 
 	w.finishRun(ctx, runID, "completed", eventsSeen, rowsCompared, rowsRepaired, diffCount, sourceWatermark, "")
-	
+
 	slog.Info("reconciliation run completed",
 		"run_id", runID,
 		"events_seen", eventsSeen,
@@ -219,7 +234,7 @@ func (w *ReconciliationWorker) reconcileDaily(ctx context.Context, runID string,
 		modelName    string
 		trafficClass string
 	}
-	
+
 	type factMetrics struct {
 		requests    int64
 		successes   int64
@@ -275,6 +290,7 @@ func (w *ReconciliationWorker) reconcileDaily(ctx context.Context, runID string,
 	defer projRows.Close()
 
 	var totalDiffs, autoRepaired int64
+	var pendingRepairs int64
 
 	projRowCount := 0
 	for projRows.Next() {
@@ -339,8 +355,8 @@ func (w *ReconciliationWorker) reconcileDaily(ctx context.Context, runID string,
 
 			resolution := "open"
 			if canAutoRepair {
-				resolution = "auto_repaired"
-				autoRepaired++
+				resolution = "auto_repair_pending"
+				pendingRepairs++
 			}
 
 			// Record diff
@@ -371,9 +387,10 @@ func (w *ReconciliationWorker) reconcileDaily(ctx context.Context, runID string,
 		dimensionKey := fmt.Sprintf("provider:%d:cred:%d:model:%d:%s",
 			key.providerID, key.credentialID, key.canonicalID, key.modelName)
 
-		// Missing projection is always auto-repairable (rebuild will add it)
-		resolution := "auto_repaired"
-		autoRepaired++
+		// Missing projections can be rebuilt from the source facts, but are
+		// not resolved until that rebuild has committed.
+		resolution := "auto_repair_pending"
+		pendingRepairs++
 
 		_, err := w.db.Exec(ctx, `
 			INSERT INTO stats_reconciliation_diffs 
@@ -386,14 +403,39 @@ func (w *ReconciliationWorker) reconcileDaily(ctx context.Context, runID string,
 		}
 	}
 
-	// Trigger rebuild for the period to fix auto-repairable diffs
+	// Rebuild first; only then mark the candidate diffs repaired. This keeps
+	// reconciliation counters truthful when the projection refresh fails.
+	if pendingRepairs > 0 {
+		rollup := NewDailyMonthlyRollup(w.db, 0)
+		if err := rollup.Refresh(ctx, start, end); err != nil {
+			w.resetPendingRepairs(ctx, runID)
+			return 0, 0, fmt.Errorf("refresh projections: %w", err)
+		}
+		result, err := w.db.Exec(ctx, `
+			UPDATE stats_reconciliation_diffs
+			SET resolution = 'auto_repaired'
+			WHERE run_id = $1 AND resolution = 'auto_repair_pending'`, runID)
+		if err != nil {
+			return 0, 0, fmt.Errorf("mark repaired diffs: %w", err)
+		}
+		autoRepaired = result.RowsAffected()
+	}
+
 	if autoRepaired > 0 {
-		slog.Info("triggering rebuild for auto-repaired diffs",
+		slog.Info("rebuild completed for auto-repaired diffs",
 			"run_id", runID, "auto_repaired", autoRepaired)
-		// The existing DailyMonthlyRollup.Refresh will rebuild from usage_facts
 	}
 
 	return totalDiffs, autoRepaired, nil
+}
+
+func (w *ReconciliationWorker) resetPendingRepairs(ctx context.Context, runID string) {
+	if _, err := w.db.Exec(ctx, `
+		UPDATE stats_reconciliation_diffs
+		SET resolution = 'open'
+		WHERE run_id = $1 AND resolution = 'auto_repair_pending'`, runID); err != nil {
+		slog.Error("failed to restore pending reconciliation diffs", "run_id", runID, "error", err)
+	}
 }
 
 func abs(x float64) float64 {

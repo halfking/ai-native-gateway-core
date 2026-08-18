@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -152,6 +153,17 @@ func (m *RedisManager) Acquire(ctx context.Context, opts AcquireOpts) (*Handle, 
 		return nil, fmt.Errorf("distlock: follower subscribe %q: %w", opts.Key, err)
 	}
 	ch := pubsub.Channel()
+	// Re-check after the subscription handshake. A leader can release after
+	// SetNX reports contention but before Redis registers this subscriber;
+	// without this check the follower would wait an entire TTL for a message it
+	// cannot receive.
+	if _, err := m.rdb.Get(ctx, opts.Key).Result(); errors.Is(err, redis.Nil) {
+		_ = pubsub.Close()
+		return &Handle{leader: false, key: opts.Key, ttl: ttl}, nil
+	} else if err != nil {
+		_ = pubsub.Close()
+		return nil, fmt.Errorf("distlock: follower recheck %q: %w", opts.Key, err)
+	}
 	return &Handle{
 		leader:  false,
 		key:     opts.Key,
@@ -209,9 +221,12 @@ type Handle struct {
 
 	// Follower-only transport state. Exactly one of {channel, localWait}
 	// is non-nil depending on which manager issued the handle.
-	channel  <-chan *redis.Message // Redis pub/sub channel (RedisManager follower)
-	localWait <-chan struct{}      // leader's release chan (LocalManager follower)
-	pubsub   *redis.PubSub         // Redis pub/sub handle (RedisManager follower)
+	channel   <-chan *redis.Message // Redis pub/sub channel (RedisManager follower)
+	localWait <-chan struct{}       // leader's release chan (LocalManager follower)
+	pubsub    *redis.PubSub         // Redis pub/sub handle (RedisManager follower)
+
+	mu          sync.Mutex
+	releaseOnce sync.Once
 }
 
 // handleBackend is the small surface Handle.Release / Wait use to
@@ -245,17 +260,23 @@ func (h *Handle) Wait(ctx context.Context) error {
 	if h == nil || h.leader {
 		return nil
 	}
-	ttlTimer := time.NewTimer(h.ttl)
+	h.mu.Lock()
+	channel := h.channel
+	localWait := h.localWait
+	ttl := h.ttl
+	h.mu.Unlock()
+
+	ttlTimer := time.NewTimer(ttl)
 	defer ttlTimer.Stop()
 	switch {
-	case h.channel != nil:
+	case channel != nil:
 		for {
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
 			case <-ttlTimer.C:
 				return ErrTTLExpired
-			case msg, ok := <-h.channel:
+			case msg, ok := <-channel:
 				if !ok {
 					return ErrPubSubClosed
 				}
@@ -265,13 +286,13 @@ func (h *Handle) Wait(ctx context.Context) error {
 				return nil
 			}
 		}
-	case h.localWait != nil:
+	case localWait != nil:
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ttlTimer.C:
 			return ErrTTLExpired
-		case <-h.localWait:
+		case <-localWait:
 			return nil
 		}
 	default:
@@ -299,23 +320,30 @@ func (h *Handle) Release(ctx context.Context) {
 	if h == nil {
 		return
 	}
-	if h.leader {
-		if h.backend != nil {
-			h.backend.leaderRelease(ctx)
-		}
+	h.releaseOnce.Do(func() {
+		h.mu.Lock()
+		leader := h.leader
+		backend := h.backend
+		pubsub := h.pubsub
 		h.backend = nil
-		return
-	}
-	if h.pubsub != nil {
-		_ = h.pubsub.Close()
 		h.pubsub = nil
 		h.channel = nil
-	}
-	h.localWait = nil
-	if h.backend != nil {
-		h.backend.followerClose()
-		h.backend = nil
-	}
+		h.localWait = nil
+		h.mu.Unlock()
+
+		if leader {
+			if backend != nil {
+				backend.leaderRelease(ctx)
+			}
+			return
+		}
+		if pubsub != nil {
+			_ = pubsub.Close()
+		}
+		if backend != nil {
+			backend.followerClose()
+		}
+	})
 }
 
 // newToken returns a 128-bit random hex string used to make the leader's

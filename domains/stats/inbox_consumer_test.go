@@ -51,6 +51,17 @@ func TestInboxConsumerSQLContracts(t *testing.T) {
 		t.Error("projection lease SQL must reject an expired claim")
 	}
 	for _, needle := range []string{
+		"processing_status = $5",
+		"processing_owner = $3 AND fencing_token = $4",
+		"lease_until > now()",
+		"dead_lettered_at = CASE WHEN $5 = 'dead_letter' THEN now() ELSE NULL END",
+		"next_attempt_at = CASE WHEN $5 = 'retryable' THEN now() + INTERVAL '1 minute' ELSE now() END",
+	} {
+		if !strings.Contains(markFailedSQL, needle) {
+			t.Errorf("failure SQL missing fenced transition %q", needle)
+		}
+	}
+	for _, needle := range []string{
 		"processing_status = 'dead_letter'",
 		"process_attempts = 0",
 		"dead_letter_reason = NULL",

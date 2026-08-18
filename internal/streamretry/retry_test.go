@@ -5,6 +5,8 @@ import (
 	"errors"
 	"io"
 	"net"
+	"net/http"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -373,6 +375,41 @@ func TestNetworkError(t *testing.T) {
 	}
 	if result.Reason != "network_timeout" {
 		t.Errorf("Network timeout reason = %v, want network_timeout", result.Reason)
+	}
+}
+
+func TestWrapper_RequestCarrierStateCancellation(t *testing.T) {
+	cfg := Config{Enabled: true, MaxRetries: 5, BaseDelayMs: 500, MaxDelayMs: 5000}
+	wrapper := NewWrapper(cfg, nil)
+	stateCancelCh := make(chan struct{})
+	ctx := withRequestCarrier(context.Background())
+	BindStateCancel(ctx, stateCancelCh)
+
+	var attempts atomic.Int32
+	done := make(chan error, 1)
+	go func() {
+		done <- wrapper.Execute(ctx, nil, func(ctx context.Context, _ http.ResponseWriter) error {
+			attempts.Add(1)
+			return io.ErrUnexpectedEOF
+		})
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for attempts.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	close(stateCancelCh)
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Execute error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("state cancellation did not stop retry backoff")
+	}
+	if got := attempts.Load(); got != 1 {
+		t.Fatalf("attempts = %d, want 1", got)
 	}
 }
 

@@ -85,6 +85,42 @@ func TestLocalManager_FollowerWaitsUntilLeaderReleases(t *testing.T) {
 	next.Release(context.Background())
 }
 
+func TestLocalManager_ConcurrentLeaderRelease(t *testing.T) {
+	m := NewLocalManager()
+	leader, err := m.Acquire(context.Background(), AcquireOpts{Key: "concurrent-release"})
+	if err != nil {
+		t.Fatalf("Acquire leader: %v", err)
+	}
+	follower, err := m.Acquire(context.Background(), AcquireOpts{Key: "concurrent-release"})
+	if err != nil {
+		t.Fatalf("Acquire follower: %v", err)
+	}
+
+	waitDone := make(chan error, 1)
+	go func() { waitDone <- follower.Wait(context.Background()) }()
+
+	const releasers = 16
+	var wg sync.WaitGroup
+	wg.Add(releasers)
+	for release := 0; release < releasers; release++ {
+		go func() {
+			defer wg.Done()
+			leader.Release(context.Background())
+		}()
+	}
+	wg.Wait()
+
+	select {
+	case err := <-waitDone:
+		if err != nil {
+			t.Fatalf("follower Wait: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("follower did not wake after concurrent Release")
+	}
+	follower.Release(context.Background())
+}
+
 // TestLocalManager_DifferentKeysIndependent: locks on different keys do
 // not contend with each other.
 func TestLocalManager_DifferentKeysIndependent(t *testing.T) {
