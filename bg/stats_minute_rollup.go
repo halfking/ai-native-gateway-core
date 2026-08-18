@@ -201,15 +201,15 @@ func (w *StatsMinuteRollup) rollupMain(ctx context.Context, since, until time.Ti
 		  AND r.ts > $1 AND r.ts <= $2
 		GROUP BY 1, 2, 3, 4
 		ON CONFLICT (bucket, tenant_id, provider_id, canonical_id) DO UPDATE SET
-requests = EXCLUDED.requests,
-				success_count = EXCLUDED.success_count,
-				failure_count = EXCLUDED.failure_count,
-				prompt_tokens = EXCLUDED.prompt_tokens,
-				completion_tokens = EXCLUDED.completion_tokens,
-				total_tokens = EXCLUDED.total_tokens,
-				credits_charged = EXCLUDED.credits_charged,
-				cost_usd = EXCLUDED.cost_usd,
-				latency_ms_sum = EXCLUDED.latency_ms_sum
+			requests = EXCLUDED.requests,
+			success_count = EXCLUDED.success_count,
+			failure_count = EXCLUDED.failure_count,
+			prompt_tokens = EXCLUDED.prompt_tokens,
+			completion_tokens = EXCLUDED.completion_tokens,
+			total_tokens = EXCLUDED.total_tokens,
+			credits_charged = EXCLUDED.credits_charged,
+			cost_usd = EXCLUDED.cost_usd,
+			latency_ms_sum = EXCLUDED.latency_ms_sum
 	`, since, until)
 	return err
 }

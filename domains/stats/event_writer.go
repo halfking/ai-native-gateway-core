@@ -11,13 +11,21 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
 )
 
+// maxPersistRetries bounds how many consecutive flush attempts a single batch
+// survives before being counted as dead-letter. The queue is bounded, so a
+// persistent DB failure must not silently lose telemetry, but it also must
+// not stall the writer indefinitely.
+const maxPersistRetries = 5
+
 type EventWriter struct {
-	db       *pgxpool.Pool
-	queue    chan Event
-	cancel   context.CancelFunc
-	done     chan struct{}
-	stopOnce sync.Once
-	dropped  atomic.Uint64
+	db            *pgxpool.Pool
+	queue         chan Event
+	cancel        context.CancelFunc
+	done          chan struct{}
+	stopOnce      sync.Once
+	dropped       atomic.Uint64 // queue full → event never enqueued
+	persistFailed atomic.Uint64 // individual flush attempts that returned err
+	deadLettered  atomic.Uint64 // batches dropped after maxPersistRetries
 }
 
 func NewEventWriter(db *pgxpool.Pool, queueSize int) *EventWriter {
@@ -25,6 +33,14 @@ func NewEventWriter(db *pgxpool.Pool, queueSize int) *EventWriter {
 		queueSize = 4096
 	}
 	return &EventWriter{db: db, queue: make(chan Event, queueSize), done: make(chan struct{})}
+}
+
+// Stats exposes internal counters for tests and future metrics export.
+func (w *EventWriter) Stats() (dropped, persistFailed, deadLettered uint64) {
+	if w == nil {
+		return 0, 0, 0
+	}
+	return w.dropped.Load(), w.persistFailed.Load(), w.deadLettered.Load()
 }
 
 func (w *EventWriter) Start(ctx context.Context) {
@@ -68,6 +84,7 @@ func (w *EventWriter) run(ctx context.Context) {
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
 	batch := make([]Event, 0, 64)
+	retries := 0
 	flush := func() bool {
 		if len(batch) == 0 {
 			return true
@@ -76,10 +93,25 @@ func (w *EventWriter) run(ctx context.Context) {
 		err := w.persist(flushCtx, batch)
 		cancel()
 		if err != nil {
-			slog.Warn("stats event persist failed", "error", err, "events", len(batch))
+			w.persistFailed.Add(1)
+			retries++
+			slog.Warn("stats event persist failed",
+				"error", err,
+				"events", len(batch),
+				"retry", retries,
+				"max_retries", maxPersistRetries)
+			if retries >= maxPersistRetries {
+				w.deadLettered.Add(uint64(len(batch)))
+				slog.Error("stats event batch dead-lettered after max retries",
+					"events", len(batch),
+					"last_error", err)
+				batch = batch[:0]
+				retries = 0
+			}
 			return false
 		}
 		batch = batch[:0]
+		retries = 0
 		return true
 	}
 	for {
@@ -97,7 +129,15 @@ func (w *EventWriter) run(ctx context.Context) {
 				case e := <-w.queue:
 					batch = append(batch, e)
 				default:
-					flush()
+					// On shutdown, do one best-effort flush; if it still
+					// fails the batch becomes dead-letter to avoid hanging
+					// the process on a stuck DB.
+					if !flush() {
+						w.deadLettered.Add(uint64(len(batch)))
+						slog.Error("stats event batch dead-lettered on shutdown",
+							"events", len(batch))
+						batch = batch[:0]
+					}
 					return
 				}
 			}
