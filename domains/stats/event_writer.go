@@ -11,13 +11,25 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
 )
 
+const maxPersistRetries = 5
+
 type EventWriter struct {
-	db       *pgxpool.Pool
-	queue    chan Event
-	cancel   context.CancelFunc
-	done     chan struct{}
-	stopOnce sync.Once
-	dropped  atomic.Uint64
+	db            *pgxpool.Pool
+	queue         chan Event
+	cancel        context.CancelFunc
+	done          chan struct{}
+	stopOnce      sync.Once
+	dropped       atomic.Uint64
+	persistFailed atomic.Uint64
+	deadLettered  atomic.Uint64
+}
+
+// Stats exposes writer health counters for tests and future metrics export.
+func (w *EventWriter) Stats() (dropped, persistFailed, deadLettered uint64) {
+	if w == nil {
+		return 0, 0, 0
+	}
+	return w.dropped.Load(), w.persistFailed.Load(), w.deadLettered.Load()
 }
 
 func NewEventWriter(db *pgxpool.Pool, queueSize int) *EventWriter {
@@ -85,6 +97,7 @@ func (w *EventWriter) run(ctx context.Context) {
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
 	batch := make([]Event, 0, 64)
+	retries := 0
 	flush := func() bool {
 		if len(batch) == 0 {
 			return true
@@ -96,11 +109,19 @@ func (w *EventWriter) run(ctx context.Context) {
 			cancel()
 			if err == nil {
 				batch = batch[:0]
+				retries = 0
 				return true
 			}
 			time.Sleep(time.Duration(attempt+1) * 100 * time.Millisecond)
 		}
-		slog.Warn("stats event persist failed", "error", err, "events", len(batch))
+		w.persistFailed.Add(1)
+		retries++
+		slog.Warn("stats event persist failed", "error", err, "events", len(batch), "retry", retries, "max_retries", maxPersistRetries)
+		if retries >= maxPersistRetries {
+			w.deadLettered.Add(uint64(len(batch)))
+			batch = batch[:0]
+			retries = 0
+		}
 		return false
 	}
 	for {

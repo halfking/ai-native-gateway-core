@@ -446,6 +446,48 @@ func (r *CredentialRecovery) recover(ctx context.Context) {
 	// probe work below; it must not claim direct/gateway success without an
 	// upstream observation because authoritative URSM treats its own node key as
 	// the runtime source of truth.
+	//
+	// 2026-08-18 P0 fix (commit 8ebaee0b2): the previous SQL UPDATE block here
+	// wrote `last_direct_ok=TRUE`, `last_gateway_ok=TRUE` and pushed
+	// `next_retry_at` one hour into the future whenever the credential /
+	// provider / cmb surfaces all looked healthy. That UPDATE was the root
+	// cause of the 126-line "DB says healthy, URSM tenant key missing, actual
+	// request fails" cohort observed across glm-5.2 / glm-5.1 / gpt-5.5 /
+	// kimi-k2.6 / doubao on 154 — without a real probe run the row had no
+	// fresh evidence, so the routing filter happily picked a credential whose
+	// last real attempt had been a failure and whose cool_until_ms had
+	// silently elapsed without a follow-up probe. Pushing next_retry_at 1h
+	// into the future also starved the node_probe backoff ladder of any
+	// re-attempt before the next 30s tick.
+	//
+	// Replacement contract (kept intact from upstream HEAD's no-fake-success
+	// position + this commit's durable-enqueue addition):
+	//   * `node_probe_state.last_direct_ok/last_gateway_ok` and
+	//     `node_probe_state.next_retry_at` are NEVER written from this loop.
+	//     Only the unified probe path (NodeProbeWorker.Submit →
+	//     ProbeQueue → ProbeService.Run → mirrorNodeProbeState) may touch
+	//     them, and only after a real direct + gateway round both succeed.
+	//   * reconcileStaleNodeProbeStates below is read-only SELECT. For each
+	//     (cred, model) whose node_probe_state is in failed/unknown state
+	//     but whose underlying cmb/credential/provider surfaces look
+	//     healthy, it hands the pair to NodeProbeWorker.Submit (via the
+	//     same probeSubmitter hook the expired-binding and fresh-degraded
+	//     branches use). The queue's `ON CONFLICT DO NOTHING` dedup_key
+	//     collapses concurrent submissions so two recover() goroutines
+	//     (this process, a peer instance, or the 36h lookback scan in the
+	//     same tick) cannot double-enqueue.
+	//   * The URSM v2 source-priority contract is preserved: the probe
+	//     path calls `updateURSMv2ProbeState` at Probe(20) priority via
+	//     Manager.ApplyProbe (NOT Recover(30) — that priority belongs to
+	//     scanLookbackRecoveries where the SQL predicate proved an in-window
+	//     logged success). apply_probe.lua's `source_priority <= 10`
+	//     guard in record_request.lua is therefore never preempted by a
+	//     recovery write because we never write at Recover priority from
+	//     this branch; the only Recover writes are the gated ones in the
+	//     36h lookback scan (evidence-backed success=true).
+	if err := r.reconcileStaleNodeProbeStates(timeoutCtx); err != nil {
+		slog.Warn("node probe state stale reconciliation failed", "error", err)
+	}
 
 	// 2026-07-24 P0 fix: re-probe (cred, model) bindings whose cmb.available
 	// was flipped to FALSE by continuous_failure (credentialhealth/checker.go)
@@ -909,6 +951,149 @@ func (r *CredentialRecovery) recoverFreshDegradedBindings(ctx context.Context) e
 		"pairs", len(seen),
 		"unique_credentials", len(invalidSet),
 		"reason", "self_check_during_cooldown",
+	)
+	return nil
+}
+
+// =============================================================================
+// 2026-08-18 P0 fix: replacement for the previous "fake-success" UPDATE.
+//
+// reconcileStaleNodeProbeStates replaces the legacy SQL UPDATE that
+// unconditionally wrote
+//
+//	last_direct_ok = TRUE, last_gateway_ok = TRUE,
+//	next_retry_at  = now() + interval '1 hour'
+//
+// on any node_probe_state row whose credential / cmb / provider surfaces
+// all looked healthy, regardless of whether a real direct + gateway probe
+// run had ever succeeded for that pair. The legacy SQL produced the
+// 126-row "DB says healthy, URSM tenant key missing, real request fails"
+// cohort that was the trigger for the 2026-08-18 global routing audit.
+//
+// This function is read-only on node_probe_state / cmb / credentials /
+// providers / model_probe_state. For each (cred, model) whose
+// node_probe_state shows a stale failed / backoff / paused row whose
+// surfaces are all healthy it hands the pair to NodeProbeWorker.Submit via
+// probeSubmitter (same hook the expired-binding and fresh-degraded
+// branches use). The probe worker routes the submission through the
+// durable credential_probe_queue, whose ON CONFLICT DO NOTHING on
+// dedup_key prevents double-enqueue from concurrent recover() goroutines
+// (this process, peer instances, or the 36h lookback scan running in the
+// same tick).
+//
+// Eligibility (mirrors the existing recoverExpiredBindings /
+// recoverFreshDegradedBindings guards so this branch composes with them):
+//
+//   - cmb.available = TRUE (the binding has been admitted by the probe
+//     or the catalog path; otherwise the credential_recovery availability
+//     UPDATE above is responsible for the row, not this branch).
+//   - node_probe_state is in a stale failed/backoff/paused state —
+//     i.e. at least one of last_direct_ok/last_gateway_ok/paused/
+//     next_retry_at indicates the pair needs re-verification. We use
+//     `last_direct_ok IS DISTINCT FROM TRUE OR paused OR next_retry_at
+//     IS NULL OR next_retry_at > now()` so a row that was probed
+//     successfully AND whose ladder has elapsed still gets a fresh
+//     round (the ladder continues naturally — Submit's arming branch
+//     only re-arms paused or expired rows).
+//   - credential / lifecycle / provider / manual guards identical to
+//     recoverExpiredBindings.
+//   - availability_state = 'ready' (do not enqueue a probe for a
+//     credential whose own state machine is in cooling / rate_limited /
+//     auth_failed — those are owned by the availability UPDATE above).
+//   - cmb.unavailable_reason NOT LIKE 'manual%' AND admin_protected =
+//     FALSE (operators chose manual; never auto-restore).
+//
+// IMPORTANT: this branch NEVER writes node_probe_state columns. It only
+// invokes the existing probeSubmitter, which goes through ProbeQueue →
+// ProbeService.Run → mirrorNodeProbeState. That path is the single
+// authoritative writer of last_direct_ok / last_gateway_ok /
+// next_retry_at, and only after BOTH probe rounds succeed. The
+// pg_notify('auto_route_refresh', ...) emitted from the previous fake-
+// success block is no longer needed because Submit's success branch
+// already calls notifyAutoRouteRefresh (probe_service.go:160).
+func reconcileStaleNodeProbeStateSQL() string {
+	return `
+		SELECT nps.credential_id, pm.raw_model_name
+		FROM node_probe_state nps
+		JOIN provider_models pm ON pm.raw_model_name = nps.raw_model_name
+		JOIN credential_model_bindings cmb
+		     ON cmb.credential_id = nps.credential_id
+		    AND cmb.provider_model_id = pm.id
+		JOIN credentials c ON c.id = cmb.credential_id
+		JOIN providers   p ON p.id = c.provider_id
+		WHERE cmb.available = TRUE
+		  AND (
+		      nps.last_direct_ok  IS DISTINCT FROM TRUE
+		      OR nps.last_gateway_ok IS DISTINCT FROM TRUE
+		      OR nps.paused = TRUE
+		      OR nps.next_retry_at IS NULL
+		      OR nps.next_retry_at > now()
+		  )
+		  AND COALESCE(c.status, 'active') = 'active'
+		  AND COALESCE(c.lifecycle_status, 'active') = 'active'
+		  AND COALESCE(c.manual_disabled, FALSE) = FALSE
+		  AND COALESCE(p.manual_disabled, FALSE) = FALSE
+		  AND COALESCE(p.enabled, TRUE) = TRUE
+		  AND c.availability_state = 'ready'
+		  AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
+		  AND COALESCE(cmb.admin_protected, FALSE) = FALSE
+		ORDER BY nps.updated_at ASC NULLS FIRST
+		LIMIT 50
+	`
+}
+
+// reconcileStaleNodeProbeStates replaces the legacy "fake-success" SQL
+// UPDATE. It is read-only on node_probe_state and only invokes the
+// unified probe path (probeSubmitter). Safe against a nil probeSubmitter:
+// the function is a no-op so a freshly-constructed CredentialRecovery
+// (before NodeProbeWorker is wired) does not flag a wiring gap as an
+// error. The probe queue's ON CONFLICT DO NOTHING on dedup_key
+// ("node_probe:<credID>:<model>") means two concurrent recover()
+// goroutines — this instance + a peer instance + the 36h lookback scan
+// running on the same tick — collapse into a single enqueue per pair.
+func (r *CredentialRecovery) reconcileStaleNodeProbeStates(ctx context.Context) error {
+	if r.probeSubmitter == nil {
+		return nil
+	}
+	rows, err := r.db.Query(ctx, reconcileStaleNodeProbeStateSQL())
+	if err != nil {
+		return fmt.Errorf("query stale node_probe_state rows: %w", err)
+	}
+	defer rows.Close()
+
+	type pair struct {
+		credID int
+		model  string
+	}
+	var (
+		seen       []pair
+		invalidSet = make(map[int]struct{})
+	)
+	for rows.Next() {
+		var p pair
+		if err := rows.Scan(&p.credID, &p.model); err != nil {
+			slog.Warn("stale node_probe_state scan failed", "error", err)
+			continue
+		}
+		seen = append(seen, p)
+		invalidSet[p.credID] = struct{}{}
+		r.probeSubmitter(p.credID, p.model)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate stale node_probe_state rows: %w", err)
+	}
+	if len(seen) == 0 {
+		return nil
+	}
+	if r.invalidateCandidateCache != nil {
+		for credID := range invalidSet {
+			r.invalidateCandidateCache(credID)
+		}
+	}
+	slog.Info("credential_recovery: stale node_probe_state rows handed to probe queue",
+		"pairs", len(seen),
+		"unique_credentials", len(invalidSet),
+		"reason", "stale_node_probe_state_reverify",
 	)
 	return nil
 }
