@@ -87,7 +87,7 @@ func (d *PreflightDriver) Run(ctx context.Context) (PreflightSummary, error) {
 	if d.DryRun {
 		return PreflightSummary{}, nil
 	}
-	pre := &Preflight{
+	pre := &PreflightRunner{
 		Prefix:  d.Migrator.Prefix,
 		Ledger:  d.Migrator.Ledger,
 		Scanner: &RedisScanner{RDB: d.Migrator.RDB},

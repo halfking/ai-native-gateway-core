@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/api"
+	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/store"
 )
 
 // ScoringWeights are the additive weights used by FilterAndScore when
@@ -88,6 +89,12 @@ type Config struct {
 	// matching rollout-layer knob — both must agree for the sidecar to
 	// fire. Loaded from URSM_V2_SHADOW_DOUBLE_WRITE (truthy 1/true/yes).
 	ShadowDoubleWrite bool
+	// KeySchemaMode selects the Redis key grammar(s) the store maintains
+	// (doc 14 §3): legacy (default), dual or canonical. It is boot-only
+	// via URSM_V2_KEY_SCHEMA_MODE, independent of Mode above, and any
+	// transition must close the recovery ready gate first. An invalid
+	// value fails Validate instead of silently booting legacy.
+	KeySchemaMode store.KeySchemaMode
 }
 
 func DefaultConfig() Config {
@@ -216,6 +223,16 @@ func LoadFromEnv() Config {
 	if v := strings.ToLower(strings.TrimSpace(os.Getenv("URSM_V2_SHADOW_DOUBLE_WRITE"))); v != "" {
 		if v == "1" || v == "true" || v == "yes" {
 			c.ShadowDoubleWrite = true
+		}
+	}
+	// Boot-only key schema mode (doc 14 §3). Fail closed on a typo: the
+	// migration must never silently boot the wrong grammar.
+	if v := strings.TrimSpace(os.Getenv("URSM_V2_KEY_SCHEMA_MODE")); v != "" {
+		mode, err := store.ParseKeySchemaMode(v)
+		if err != nil {
+			c.loadErr = err
+		} else {
+			c.KeySchemaMode = mode
 		}
 	}
 	return c

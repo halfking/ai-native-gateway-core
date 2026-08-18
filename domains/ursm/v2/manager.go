@@ -143,6 +143,11 @@ func New(d Dependencies) *Manager {
 		rpm:  d.RPM,
 		log:  log,
 	}
+	// Key schema mode is boot-only and shared by the store and the
+	// recovery gate so coverage validation and warmup counting agree with
+	// the write path (doc 14 §3).
+	m.store.SetKeySchemaMode(cfg.KeySchemaMode)
+	m.recovery.SetKeySchemaMode(cfg.KeySchemaMode)
 	// M2: enable the process LRU mirror when configured (default 100k / 30s).
 	// LRUMirrorSize==0 disables it (every read hits Redis).
 	if cfg.LRUMirrorSize > 0 {
@@ -1008,10 +1013,9 @@ func (m *Manager) RecordRequest(ctx context.Context, ev api.RequestOutcome) erro
 	//     read.
 	// Keys are tenant-aware. Authoritative requests with an empty tenant were
 	// rejected above, so this path cannot silently write the legacy key.
-	nodeKey := store.NodeKeyForTenant(m.cfg.RedisKeyPrefix, ev.TenantID, ev.CredentialID, ev.RawModel)
-	window1m := store.WindowKeyForTenant(m.cfg.RedisKeyPrefix, ev.TenantID, ev.CredentialID, ev.RawModel, "1m")
-	window5m := store.WindowKeyForTenant(m.cfg.RedisKeyPrefix, ev.TenantID, ev.CredentialID, ev.RawModel, "5m")
-	window30m := store.WindowKeyForTenant(m.cfg.RedisKeyPrefix, ev.TenantID, ev.CredentialID, ev.RawModel, "30m")
+	// The node/window keys form one logical key set and are built by the
+	// store-layer authority (NodeKeySetForTenant), never assembled here.
+	keys := store.NodeKeySetForTenant(m.cfg.RedisKeyPrefix, ev.TenantID, ev.CredentialID, ev.RawModel)
 	dedupKey := ev.DedupKey
 	if dedupKey == "" {
 		dedupKey = ev.RequestID
@@ -1019,11 +1023,7 @@ func (m *Manager) RecordRequest(ctx context.Context, ev api.RequestOutcome) erro
 	if ev.Terminal && dedupKey != "" {
 		dedupKey += ":terminal"
 	}
-	if _, err := m.store.RecordRequest(rctx,
-		nodeKey,
-		window1m,
-		window5m,
-		window30m,
+	if _, err := m.store.RecordRequestKeySet(rctx, keys,
 		store.RecordOutcome{
 			Success:      ev.Success,
 			ErrorKind:    ev.ErrorKind,

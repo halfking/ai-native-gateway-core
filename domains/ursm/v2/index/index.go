@@ -5,6 +5,8 @@ import (
 	"fmt"
 
 	"github.com/redis/go-redis/v9"
+
+	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/store"
 )
 
 type Query struct {
@@ -29,8 +31,11 @@ func New(rdb *redis.Client, prefix string) *Index {
 	return &Index{rdb: rdb, prefix: prefix}
 }
 
+// key defers to the store authority so the legacy idx:model: grammar has
+// exactly one constructor (doc 14 §2 keeps it a public compatibility
+// contract even without a production routing caller).
 func (i *Index) key(q Query) string {
-	return fmt.Sprintf("%sidx:model:%s:%s:%s:%s", i.prefix, q.Tenant, q.Canonical, q.Profile, q.Modality)
+	return store.CandidateIndexKey(i.prefix, q.Tenant, q.Canonical, q.Profile, q.Modality)
 }
 
 func (i *Index) member(c Candidate) string {
