@@ -68,7 +68,7 @@ func TestMetadataValidateAndJSON(t *testing.T) {
 	now := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
 	m := Metadata{
 		Owner:        "halfking",
-		LedgerID:     "ursm-k2-mig-134e6d21-721b-41d4-af0b-adff143107e2",
+		LedgerID:     "ursm-v2-k2-20260818-001",
 		Mode:         ModeDual,
 		CutoverEpoch: 42,
 		StartedAt:    now,

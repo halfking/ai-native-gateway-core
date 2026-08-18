@@ -16,13 +16,15 @@ import (
 type Classification string
 
 const (
-	ClassificationMigratable              Classification = "migratable"
-	ClassificationCanonicalPresent        Classification = "canonical_present"
-	ClassificationAmbiguous               Classification = "ambiguous"
+	ClassificationMigratable               Classification = "migratable"
+	ClassificationCanonicalPresent         Classification = "canonical_present"
+	ClassificationAmbiguous                Classification = "ambiguous"
 	ClassificationExcludedNonAuthoritative Classification = "excluded_non_authoritative"
+	ClassificationConflict                 Classification = "conflict"
 )
 
-// ItemStatus tracks the per-key state machine (doc 15 §4).
+// ItemStatus tracks the per-key state machine (doc 15 §4). Both Item
+// (on-disk) and Entry (preflight in-memory) share the same enum.
 type ItemStatus string
 
 const (
@@ -36,6 +38,20 @@ const (
 	StatusAmbiguous  ItemStatus = "ambiguous"
 	StatusConflict   ItemStatus = "conflict"
 	StatusRolledBack ItemStatus = "rolled_back"
+)
+
+// EntryStatus is an alias for ItemStatus kept so preflight.go (which names
+// the type EntryStatus in its struct field) can refer to the same constants
+// without an extra layer of indirection.
+type EntryStatus = ItemStatus
+
+// Legacy aliases preserved for callers that import the short form.
+const (
+	ClassMigratable               = ClassificationMigratable
+	ClassCanonicalPresent         = ClassificationCanonicalPresent
+	ClassAmbiguous                = ClassificationAmbiguous
+	ClassExcludedNonAuthoritative = ClassificationExcludedNonAuthoritative
+	ClassConflict                 = ClassificationConflict
 )
 
 // Item is a single source-key entry in the migration ledger. Fields are

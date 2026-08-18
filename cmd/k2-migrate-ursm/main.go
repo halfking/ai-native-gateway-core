@@ -26,7 +26,7 @@ const (
 	defaultRedisURL       = "redis://localhost:6379/15"
 	defaultLedgerPath     = "/var/tmp/k2-ledger.ndjson"
 	defaultOwner          = "halfking"
-	defaultLedgerID       = "ursm-k2-mig-134e6d21-721b-41d4-af0b-adff143107e2"
+	defaultLedgerID       = "ursm-v2-k2-20260818-001"
 	defaultMode           = string(migration.ModeDual)
 )
 

@@ -21,8 +21,8 @@ const (
 // CleanupOptions controls the exact-ledger delete pass. RateLimitPerSec=0
 // disables rate limiting (useful for tests).
 type CleanupOptions struct {
-	Mode           Mode
-	Now            func() time.Time
+	Mode            Mode
+	Now             func() time.Time
 	RateLimitPerSec int
 	// ForceRollback when true allows cleanup to proceed even when
 	// Mode=legacy. Off by default: rollback preserves evidence (doc 14 §6.3).
@@ -77,9 +77,7 @@ func (c *Cleanup) Cleanup(ctx context.Context) ([]CleanupResult, error) {
 		interval := time.Second / time.Duration(rate)
 		tokens := time.NewTicker(interval)
 		defer tokens.Stop()
-		var (
-			results []CleanupResult
-		)
+		var results []CleanupResult
 		for _, it := range items {
 			select {
 			case <-ctx.Done():
@@ -157,4 +155,92 @@ func (c *Cleanup) cleanupOne(ctx context.Context, it Item, now time.Time) Cleanu
 	res.Item.Status = StatusCleaned
 	res.Item.CleanedAtUnixMs = now.UnixMilli()
 	return res
+}
+
+// ============================================================================
+// Per-entry exact-key cleaner retained from the feature branch (parallel
+// API style: callers iterate the preflight output themselves rather than
+// loading the ledger). Both implementations honour doc 14 §6.2 — exact key
+// only, no SCAN+DEL — and verify the live checksum before deleting.
+// ============================================================================
+
+// CleanerEntryStatus is the per-entry outcome enum for the per-entry
+// cleaner (parallel API style retained alongside Cleanup above).
+type CleanerEntryStatus string
+
+const (
+	CleanerDeleted           CleanerEntryStatus = "deleted"
+	CleanerSkippedChecksum   CleanerEntryStatus = "skipped_checksum"
+	CleanerSkippedIneligible CleanerEntryStatus = "skipped_ineligible"
+	CleanerSkippedMissing    CleanerEntryStatus = "skipped_missing"
+)
+
+type CleanerEntryResult struct{ Status CleanerEntryStatus }
+
+type CleanerBatchResult struct {
+	Deleted int
+	Next    int
+}
+
+// EntryCleaner is the parallel per-entry counterpart to Cleanup. It only
+// receives entries already recorded by the authoritative ledger and has
+// no SCAN method: broad SCAN+DEL cleanup is forbidden by doc 14 §6.2.
+type EntryCleaner struct{ rdb *redis.Client }
+
+// NewEntryCleaner builds a per-entry cleaner around the given Redis client.
+func NewEntryCleaner(rdb *redis.Client) *EntryCleaner { return &EntryCleaner{rdb: rdb} }
+
+// DeleteExact deletes an exact source hash only after its current field
+// checksum still equals the preflight ledger checksum. Any mutation after
+// preflight preserves the source for review; cleanup never tries to merge
+// canonical state backward into it.
+func (c *EntryCleaner) DeleteExact(ctx context.Context, entry Entry) (CleanerEntryResult, error) {
+	if c == nil || c.rdb == nil {
+		return CleanerEntryResult{}, fmt.Errorf("ursm.v2: cleanup requires redis")
+	}
+	if entry.Class != ClassMigratable || entry.SourceKey == "" || entry.FieldChecksum == "" {
+		return CleanerEntryResult{Status: CleanerSkippedIneligible}, nil
+	}
+	fields, err := c.rdb.HGetAll(ctx, entry.SourceKey).Result()
+	if err != nil {
+		return CleanerEntryResult{}, fmt.Errorf("ursm.v2: cleanup read %s: %w", entry.SourceKey, err)
+	}
+	if len(fields) == 0 {
+		return CleanerEntryResult{Status: CleanerSkippedMissing}, nil
+	}
+	if checksumFields(fields) != entry.FieldChecksum {
+		return CleanerEntryResult{Status: CleanerSkippedChecksum}, nil
+	}
+	// Exact source key only. There is intentionally no prefix/pattern
+	// expansion and no delete of derived or canonical keys.
+	if err := c.rdb.Del(ctx, entry.SourceKey).Err(); err != nil {
+		return CleanerEntryResult{}, fmt.Errorf("ursm.v2: cleanup delete %s: %w", entry.SourceKey, err)
+	}
+	return CleanerEntryResult{Status: CleanerDeleted}, nil
+}
+
+// DeleteBatch processes at most limit ledger entries, allowing an operator
+// to pause after any batch and resume from CleanerBatchResult.Next. Limit
+// <= 0 is rejected so a caller cannot accidentally request unbounded
+// cleanup.
+func (c *EntryCleaner) DeleteBatch(ctx context.Context, entries []Entry, limit int) (CleanerBatchResult, error) {
+	if limit <= 0 {
+		return CleanerBatchResult{}, fmt.Errorf("ursm.v2: cleanup batch limit must be positive")
+	}
+	result := CleanerBatchResult{}
+	for i, entry := range entries {
+		if i >= limit {
+			result.Next = i
+			return result, nil
+		}
+		outcome, err := c.DeleteExact(ctx, entry)
+		if err != nil {
+			return result, err
+		}
+		if outcome.Status == CleanerDeleted {
+			result.Deleted++
+		}
+		result.Next = i + 1
+	}
+	return result, nil
 }
