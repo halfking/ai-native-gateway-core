@@ -60,8 +60,8 @@ elif [[ "$ENV_ARG" == "252" ]]; then
   # shellcheck disable=SC1091
   source "$HOME/workspace/ai-native-tools/envs/loader.sh" --all --project llm-gateway-go --server 115.29.212.252 --mode plain >/dev/null 2>&1 || {
     echo "envs loader 失败（252 凭据）" >&2; exit 1; }
-  run_sql()  { PGPASSWORD="$COMMON_PG_SUPERUSER_PASS" psql -X -h 127.0.0.1 -p 15432 -U "$COMMON_PG_SUPERUSER" -d llm_gateway -v ON_ERROR_STOP=1 "$@"; }
-  run_sql_tx() { PGPASSWORD="$COMMON_PG_SUPERUSER_PASS" psql -X -h 127.0.0.1 -p 15432 -U "$COMMON_PG_SUPERUSER" -d llm_gateway -v ON_ERROR_STOP=1 -q; }
+  run_sql()  { PGOPTIONS='-c statement_timeout=0 -c idle_in_transaction_session_timeout=0' PGPASSWORD="$COMMON_PG_SUPERUSER_PASS" psql -X -h 127.0.0.1 -p 15432 -U "$COMMON_PG_SUPERUSER" -d llm_gateway -v ON_ERROR_STOP=1 "$@"; }
+  run_sql_tx() { PGOPTIONS='-c statement_timeout=0 -c idle_in_transaction_session_timeout=0' PGPASSWORD="$COMMON_PG_SUPERUSER_PASS" psql -X -h 127.0.0.1 -p 15432 -U "$COMMON_PG_SUPERUSER" -d llm_gateway -v ON_ERROR_STOP=1 -q; }
 else
   echo "unknown --env: $ENV_ARG (local|252)" >&2; exit 1
 fi
