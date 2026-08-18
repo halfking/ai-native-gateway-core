@@ -43,3 +43,28 @@ func TestReadyKey(t *testing.T) {
 		t.Fatalf("unexpected ready key %q", k)
 	}
 }
+
+func TestNodeKeySetForTenantMatchesIndividualConstructors(t *testing.T) {
+	cases := []struct {
+		name   string
+		tenant string
+		cid    int
+		raw    string
+	}{
+		{"legacy empty tenant", "", 12, "gpt-4"},
+		{"string tenant", "tenant-a", 34, "model:with:colon"},
+		{"numeric tenant", "123", 34, "model:with:colon"},
+	}
+	for _, tc := range cases {
+		set := NodeKeySetForTenant("ursm:v2:", tc.tenant, tc.cid, tc.raw)
+		want := NodeKeySet{
+			Node:   NodeKeyForTenant("ursm:v2:", tc.tenant, tc.cid, tc.raw),
+			Win1m:  WindowKeyForTenant("ursm:v2:", tc.tenant, tc.cid, tc.raw, "1m"),
+			Win5m:  WindowKeyForTenant("ursm:v2:", tc.tenant, tc.cid, tc.raw, "5m"),
+			Win30m: WindowKeyForTenant("ursm:v2:", tc.tenant, tc.cid, tc.raw, "30m"),
+		}
+		if set != want {
+			t.Fatalf("%s: key set = %+v, want %+v", tc.name, set, want)
+		}
+	}
+}
