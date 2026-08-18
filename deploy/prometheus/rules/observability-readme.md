@@ -8,6 +8,13 @@ This directory holds Prometheus alert rules for the llm-gateway-go
 - `availability.rules.yml` — two alert groups covering the
   Redis-availability-cache and the routing-layer suspicious-exit
   hot path.
+- `credential-reveal-failures.yml` — credential API-key reveal failure
+  alerting (counter `llmgw_credential_reveal_failure_total{provider_id,
+  reason}` emitted by `provider/credential_decrypt_metrics.go`).
+  Five rules cover the closed-vocabulary reason taxonomy:
+  ciphertext format / decrypt error / cache amplification / config
+  drift / first-incident burst. See file header for the full taxonomy
+  and the GW-00 cardinality guard rationale.
 
 ## Loading
 
