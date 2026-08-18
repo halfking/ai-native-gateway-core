@@ -460,6 +460,32 @@ func (d *DB) ensureRequestLogSchema(ctx context.Context) error {
 		slog.Debug("request_logs_hot storage validation passed", "storage", storage)
 	}
 
+	// Validate current month partition of request_logs is heap (DETACHED, supports UPDATE)
+	// The current month partition must be heap because it receives UPDATEs from claimSessionFinalSuccess
+	// via the NOT EXISTS check against request_logs. If it's columnar, UPDATEs routed to it will fail.
+	currentMonthPartition := "request_logs_" + time.Now().Format("2006_01")
+	err = d.pool.QueryRow(ctx, `
+		SELECT am.amname
+		FROM pg_class c
+		JOIN pg_am am ON am.oid = c.relam
+		WHERE c.relname = $1
+	`, currentMonthPartition).Scan(&storage)
+	if err != nil {
+		// Partition might not exist yet (first day of month) - log as debug
+		slog.Debug("current month partition storage validation skipped",
+			"partition", currentMonthPartition,
+			"reason", err.Error())
+	} else if storage != "heap" {
+		slog.Error("current month partition is NOT heap - UPDATEs may fail!",
+			"partition", currentMonthPartition,
+			"actual_storage", storage,
+			"expected", "heap",
+			"action_required", "DETACH partition and ensure it uses heap storage. See rule 33.")
+	} else {
+		slog.Debug("current month partition storage validation passed",
+			"partition", currentMonthPartition, "storage", storage)
+	}
+
 	return nil
 }
 
