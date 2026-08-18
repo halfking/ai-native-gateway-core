@@ -1,7 +1,7 @@
 // verify-model-fetch probes every active credential's /models endpoint using
 // the same resolveModelsForCredential path as the admin "从供应商读取" button.
 //
-// Usage (on a host with DB + decrypt keys, e.g. 71/184 llm-gateway-go env):
+// Usage (on a host with DB + decrypt keys, e.g. 154/252 llm-gateway-go env):
 //
 //	go run ./cmd/verify-model-fetch
 //	go run ./cmd/verify-model-fetch -provider 14

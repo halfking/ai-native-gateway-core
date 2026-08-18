@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - 2026-08-19 (Doc Sweep: Redact Remaining 184 Server References)
+
+### Security
+- **Active-doc 184 server redact**（rule 39 铁律 1 + rule 47）：3 文件 5 行。
+  沿 8/18 `d7ebf25f7` PROJECT_CONFIG.md redact 工作的下一波。
+  - `docs/06-deployment/01-environments/deployment/CONFIGURATION_GUIDE.md`：`.env.184.enc` → `.env.154.enc`、`.env.71.enc` → `.env.252.enc`、`__PUB_IP_1__` 示例 `14.103.112.184` → `<env:HOST_154>`
+  - `cmd/compression-bench/README.md`：连接 K8s DB 端口转发示例 184 → 252 (PG17)、端口 18432 → 25232、DSN 走 `<env:LLM_GATEWAY_DB_PASS>`
+  - `cmd/verify-model-fetch/main.go` 注释：host 说明 `71/184` → `154/252`
+- 历史归档（`docs/archive/**`、`CHANGELOG.md` 历史段、8/18 redact changelog）按 rule 36 不动。
+- 测试代码（`tests/deploy_cli_test.sh`、`tests/deploy_sops_test.sh`）保留 184 字面值（向后兼容 alias 重定向测试）。
+- 历史部署方案 `deploy/sql/DEPLOYMENT_PLAN.md`（v1.0, Jul 21）整篇关于 184 + PG/Citus，留待后续归档到 `docs/archive/2026-07/`（移交 owner）。
+
+### Documentation
+- 新增 `docs/changelogs/2026-08-19-doc-sweep-redact-remaining-184-refs.md`：6 段式变更记录。
+- 新增 `docs/session-logs/2026/08/2026-08-19-audit-and-concurrent-zcode-preserve.md`（8/19 维护 session log）。
+
 ## [Unreleased] - 2026-08-18 (PROJECT_CONFIG.md Server Migration + Credential Redact)
 
 ### Security

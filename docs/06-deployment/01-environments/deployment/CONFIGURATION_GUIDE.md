@@ -16,8 +16,8 @@
 │        环境变量层    │   scripts/load-env.sh 统一加载     │
 ├──────────────────────┼──────────────────────────────────┤
 │  SOPS 加密 (生产)     │  明文 (开发/本地)                 │
-│  .env.184.enc        │  .env.local                      │
-│  .env.71.enc         │  cp .env.example .env.local      │
+│  .env.154.enc        │  .env.local                      │
+│  .env.252.enc        │  cp .env.example .env.local      │
 │  git 提交 (加密状态)  │  .gitignore 排除                  │
 └──────────────────────┴──────────────────────────────────┘
                        │
@@ -127,7 +127,7 @@ LLM_GATEWAY_ANALYSIS_API_KEY=__ANALYSIS_API_KEY_1__
 
 | 类别 | 前缀 | 示例 |
 |------|------|------|
-| 公网 IP | `__PUB_IP_N__` | `__PUB_IP_1__` = `14.103.112.184` |
+| 公网 IP | `__PUB_IP_N__` | `__PUB_IP_1__` = `<env:HOST_154>` |
 | 内网 IP | `__PRIV_IP_N__` | `__PRIV_IP_1__` = `172.31.0.2` |
 | 生产域名 | `__DOMAIN_N__` | `__DOMAIN_1__` = `llmgo.kxpms.cn` |
 | SSH 密码 | `__SSH_PWD_N__` | SSH 服务器密码 |
