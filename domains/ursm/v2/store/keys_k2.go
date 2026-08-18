@@ -23,6 +23,17 @@ const (
 	KeySchemaK2
 )
 
+// String returns the wire string for a KeySchema. Unknown values default
+// to legacy so a stale database row never gets misreported as canonical.
+func (s KeySchema) String() string {
+	switch s {
+	case KeySchemaK2:
+		return "k2"
+	default:
+		return "legacy"
+	}
+}
+
 // k2EncodeSegment encodes one variable key component with raw unpadded
 // base64url so a component can never contain the `:` delimiter and every
 // delimiter-bearing value round-trips losslessly.
