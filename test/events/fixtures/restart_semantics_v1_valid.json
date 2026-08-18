@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "unknown_version": "reject",
+  "cases": [
+    {
+      "lane": "ordinary_dispatch",
+      "execution_recovery": false,
+      "result_replay": false,
+      "lease_required": false,
+      "fencing_required": false,
+      "metadata_rebuild": false,
+      "lease_live_upstream_calls": 0,
+      "lease_expired_upstream_calls": 0,
+      "takeover_requires_fencing": false,
+      "expected_projection": "dropped"
+    },
+    {
+      "lane": "pending",
+      "execution_recovery": false,
+      "result_replay": true,
+      "lease_required": false,
+      "fencing_required": false,
+      "metadata_rebuild": false,
+      "lease_live_upstream_calls": 0,
+      "lease_expired_upstream_calls": 0,
+      "takeover_requires_fencing": false,
+      "expected_projection": "replayed_result"
+    },
+    {
+      "lane": "durable",
+      "execution_recovery": true,
+      "result_replay": true,
+      "lease_required": true,
+      "fencing_required": true,
+      "metadata_rebuild": false,
+      "lease_live_upstream_calls": 0,
+      "lease_expired_upstream_calls": 1,
+      "takeover_requires_fencing": true,
+      "expected_projection": "recovered_terminal"
+    },
+    {
+      "lane": "queue_mirror",
+      "execution_recovery": false,
+      "result_replay": false,
+      "lease_required": false,
+      "fencing_required": false,
+      "metadata_rebuild": true,
+      "lease_live_upstream_calls": 0,
+      "lease_expired_upstream_calls": 0,
+      "takeover_requires_fencing": false,
+      "expected_projection": "metadata_only"
+    }
+  ]
+}

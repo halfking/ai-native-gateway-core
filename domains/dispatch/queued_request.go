@@ -74,10 +74,11 @@ type QueuedRequest struct {
 	// GatewayInstanceID completes the stable lifecycle observation identity. Callers
 	// wiring an ObservationSink must populate it before Submit.
 	GatewayInstanceID string
-	// SessionID is the V2 session identifier (public.sessions.id). Populated
-	// by the executor from ExecParams.SessionID so admin /sessions/{id}/timeline
-	// can group in-flight + completed requests by session. Empty for one-shot
-	// traffic (probe / health checks).
+	// SessionID is the Sessions V2 textual identifier (public.sessions.session_id).
+	// It is distinct from the numeric public.sessions.id surrogate key used by
+	// admin session_pk resolution. Populated by the executor from ExecParams.SessionID
+	// so admin /sessions/{id}/timeline can group in-flight + completed requests by
+	// session. Empty for one-shot traffic (probe / health checks).
 	SessionID      string
 	RequestedModel string // client model (may be "auto")
 	ResolvedModel  string // set by the dispatcher after auto-resolution

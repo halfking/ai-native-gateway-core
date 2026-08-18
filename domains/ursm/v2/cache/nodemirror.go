@@ -75,11 +75,22 @@ const NodeMirrorShards = 16
 type NodeMirror struct {
 	shards  [NodeMirrorShards]*LRU[string, NodeView]
 	softTTL time.Duration
+	prefix  string
 }
 
 func NewNodeMirror(capacity int, softTTL time.Duration) *NodeMirror {
+	return NewNodeMirrorWithPrefix(capacity, softTTL, "ursm:v2:")
+}
+
+// NewNodeMirrorWithPrefix constructs a mirror whose internal key namespace
+// matches the configured URSM Redis prefix. This prefix is process-local cache
+// namespacing only; Redis remains the authoritative store.
+func NewNodeMirrorWithPrefix(capacity int, softTTL time.Duration, prefix string) *NodeMirror {
 	if capacity <= 0 {
 		capacity = 1
+	}
+	if prefix == "" {
+		prefix = "ursm:v2:"
 	}
 	// Distribute total capacity evenly across shards. Round up per shard so
 	// total >= requested capacity (overshoot is bounded by shard count).
@@ -87,11 +98,20 @@ func NewNodeMirror(capacity int, softTTL time.Duration) *NodeMirror {
 	if per < 1 {
 		per = 1
 	}
-	m := &NodeMirror{softTTL: softTTL}
+	m := &NodeMirror{softTTL: softTTL, prefix: prefix}
 	for i := 0; i < NodeMirrorShards; i++ {
 		m.shards[i] = NewLRU[string, NodeView](per)
 	}
 	return m
+}
+
+// Prefix returns the Redis namespace mirrored by this process-local cache.
+// It is exposed for diagnostics and contract tests; Redis remains authoritative.
+func (m *NodeMirror) Prefix() string {
+	if m == nil {
+		return ""
+	}
+	return m.prefix
 }
 
 // shardOf returns a deterministic shard index for the given cache key.
@@ -126,7 +146,7 @@ func (m *NodeMirror) shard(key string) *LRU[string, NodeView] {
 //
 // 其余情况接受(覆盖)。
 func (m *NodeMirror) applyToLRU(v NodeView) {
-	key := nodeMirrorKeyForTenant(v.TenantID, v.CredentialID, v.RawModel)
+	key := nodeMirrorKeyForTenantWithPrefix(m.prefix, v.TenantID, v.CredentialID, v.RawModel)
 	v.softExpireAt = time.Now().Add(m.softTTL)
 	l := m.shard(key)
 	if l == nil {
@@ -158,7 +178,7 @@ func (m *NodeMirror) GetForTenant(tenant string, credID int, raw string) (NodeVi
 	if m == nil {
 		return NodeView{}, false
 	}
-	key := nodeMirrorKeyForTenant(tenant, credID, raw)
+	key := nodeMirrorKeyForTenantWithPrefix(m.prefix, tenant, credID, raw)
 	v, ok := m.shard(key).Get(key)
 	if !ok {
 		return NodeView{}, false
@@ -180,7 +200,7 @@ func (m *NodeMirror) PeekForTenant(tenant string, credID int, raw string) (NodeV
 	if m == nil {
 		return NodeView{}, false
 	}
-	key := nodeMirrorKeyForTenant(tenant, credID, raw)
+	key := nodeMirrorKeyForTenantWithPrefix(m.prefix, tenant, credID, raw)
 	return m.shard(key).Peek(key)
 }
 
@@ -192,7 +212,7 @@ func (m *NodeMirror) InvalidateForTenant(tenant string, credID int, raw string) 
 	if m == nil {
 		return false
 	}
-	key := nodeMirrorKeyForTenant(tenant, credID, raw)
+	key := nodeMirrorKeyForTenantWithPrefix(m.prefix, tenant, credID, raw)
 	return m.shard(key).Delete(key)
 }
 

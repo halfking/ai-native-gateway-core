@@ -146,7 +146,7 @@ func New(d Dependencies) *Manager {
 	// M2: enable the process LRU mirror when configured (default 100k / 30s).
 	// LRUMirrorSize==0 disables it (every read hits Redis).
 	if cfg.LRUMirrorSize > 0 {
-		m.nodeMirror = cache.NewNodeMirror(cfg.LRUMirrorSize, cfg.LRUMirrorSoftTTL)
+		m.nodeMirror = cache.NewNodeMirrorWithPrefix(cfg.LRUMirrorSize, cfg.LRUMirrorSoftTTL, cfg.RedisKeyPrefix)
 		if cfg.Mode != api.ModeOff {
 			m.startInvalidationSubscriber(d.Redis)
 		}
@@ -410,6 +410,18 @@ func (m *Manager) FilterAndScoreReadyWithSource(ctx context.Context, seeds []Can
 }
 
 func (m *Manager) filterAndScore(ctx context.Context, seeds []CandidateSeed, ready bool) ([]api.NodeView, statesource.RoutingStateSource, error) {
+	// Readiness is the authoritative gate and must win before mirror access or
+	// request-shape validation. This keeps all modes fail-closed on a stale gate.
+	if !ready {
+		return nil, "", fmt.Errorf("ursm.v2: not ready")
+	}
+	if m.Mode() == api.ModeAuthoritative {
+		for _, seed := range seeds {
+			if seed.TenantID == "" {
+				return nil, "", fmt.Errorf("ursm.v2: tenant_id is required")
+			}
+		}
+	}
 	// M2 (2026-07-27, spec Decision 2): serve the hot path from the process
 	// LRU mirror first. The mirror is a read-only replica, backfilled only
 	// AFTER a Redis read; applyToLRU enforces the generation-monotonic
@@ -476,12 +488,6 @@ func (m *Manager) filterAndScore(ctx context.Context, seeds []CandidateSeed, rea
 		}
 	}
 
-	// A false readiness snapshot must always fall back, including when the
-	// process mirror contains every requested node. The mirror is only a
-	// read accelerator; it cannot bypass the recovery gate (afb13c9ea).
-	if !ready {
-		return nil, "", fmt.Errorf("ursm.v2: not ready")
-	}
 	if len(missIndices) == 0 {
 		if !m.effectiveConfig().MirrorGraceEnabled {
 			// Target gear: verify Redis liveness before serving a
@@ -973,6 +979,9 @@ func (m *Manager) RecordRequest(ctx context.Context, ev api.RequestOutcome) erro
 	if m == nil || m.store == nil {
 		return nil
 	}
+	if ev.TenantID == "" && m.Mode() == api.ModeAuthoritative {
+		return fmt.Errorf("ursm.v2: tenant_id is required")
+	}
 	// P0-3 (audit §7.1 R-7.1): shadow double-write is opt-in via
 	// ShadowDoubleWrite. Default false → ShouldUseV2 returns false →
 	// "skipped" metric. When ShadowDoubleWrite is true AND ModeShadow,
@@ -997,8 +1006,8 @@ func (m *Manager) RecordRequest(ctx context.Context, ev api.RequestOutcome) erro
 	//   - saves one hot-path RTT (2 IO → 1 IO per record);
 	//   - admin priority still dominates via the lua-internal manual_hold
 	//     read.
-	// Keys are tenant-aware (afb13c9ea, 2026-07-28) — empty TenantID falls
-	// back to the legacy non-tenant key.
+	// Keys are tenant-aware. Authoritative requests with an empty tenant were
+	// rejected above, so this path cannot silently write the legacy key.
 	nodeKey := store.NodeKeyForTenant(m.cfg.RedisKeyPrefix, ev.TenantID, ev.CredentialID, ev.RawModel)
 	window1m := store.WindowKeyForTenant(m.cfg.RedisKeyPrefix, ev.TenantID, ev.CredentialID, ev.RawModel, "1m")
 	window5m := store.WindowKeyForTenant(m.cfg.RedisKeyPrefix, ev.TenantID, ev.CredentialID, ev.RawModel, "5m")
