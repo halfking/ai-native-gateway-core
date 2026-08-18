@@ -2,8 +2,12 @@ package admin
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -16,8 +20,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/discovery"
 	"github.com/kaixuan/llm-gateway-go/domains/credentialstate"     //nolint:depguard // emergency-repair state recovery (2026-08-15)
@@ -84,24 +88,37 @@ func (h *Handler) logAudit(r *http.Request, action string, details map[string]an
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
 
+	actor := requestActor(r)
+	if err := logAuditExec(ctx, h.db, actor, action, details); err != nil {
+		slog.Debug("routing audit insert failed (best-effort)", "action", action, "error", err.Error())
+	}
+}
+
+// logAuditExec inserts a row into routing_audit_log using the supplied
+// executor (typically *pgxpool.Pool or pgx.Tx). It is exported so handlers
+// running inside a transaction can keep their audit row tied to the same
+// commit boundary as the data change.
+func logAuditExec(ctx context.Context, exec pgxAuditExecutor, actor, action string, details map[string]any) error {
 	detailsJSON, _ := json.Marshal(details)
-	// Do NOT use X-Actor header as the authoritative identity — any client that
-	// can reach the admin API can forge it. Use the verified remote address as
-	// a tamper-evident fallback. If a proper auth layer (JWT, mTLS) is added
-	// later, extract the principal from that context instead.
+	_, err := exec.Exec(ctx, `
+		INSERT INTO routing_audit_log (actor, action, target_type, after_json)
+		VALUES ($1, $2, $3, $4)
+	`, actor, action, action, detailsJSON)
+	return err
+}
+
+// pgxAuditExecutor is the small surface area logAuditExec needs. Both
+// *pgxpool.Pool and pgx.Tx satisfy it via pgx v5's stable signatures.
+type pgxAuditExecutor interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
+
+func requestActor(r *http.Request) string {
 	actor := r.RemoteAddr
 	if actor == "" {
 		actor = "unknown"
 	}
-
-	// Schema (sql/030_routing_v2.sql): id, ts, actor, action, target_type, target_id,
-	// before_json, after_json. Use action as target_type so logAudit stays a
-	// single-call helper; structured details go into after_json.
-	//nolint:errcheck // best-effort exec, non-critical
-	h.db.Exec(ctx, `
-		INSERT INTO routing_audit_log (actor, action, target_type, after_json)
-		VALUES ($1, $2, $3, $4)
-	`, actor, action, action, detailsJSON)
+	return actor
 }
 
 // resolveCandidate is one row of the routing resolve table. It was a
@@ -466,14 +483,36 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 			resolutionPath = "canonical:variant"
 		}
 	}
+	// Reorder revision: only meaningful when the resolve hits exactly one
+	// raw_model — mixed aliases or canonical hits intentionally leave the
+	// field empty so the UI keeps reordering disabled.
+	var reorderRevision string
+	if len(candidates) > 0 {
+		firstRaw := strings.TrimSpace(candidates[0].ModelName)
+		singleRaw := firstRaw != ""
+		for _, c := range candidates[1:] {
+			if c.ModelName != candidates[0].ModelName {
+				singleRaw = false
+				break
+			}
+		}
+		if singleRaw {
+			if rows, scopeErr := fetchReorderScope(ctx, h.db, firstRaw, false); scopeErr == nil && len(rows) > 0 {
+				if rev, hashErr := candidateReorderRevision(rows); hashErr == nil {
+					reorderRevision = rev
+				}
+			}
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"client_model":    model,
-		"canonical_name":  rawModels[0],
-		"canonical_id":    nil,
-		"resolution_path": resolutionPath,
-		"raw_models":      rawModels,
-		"plan_order":      []any{},
-		"candidates":      candidates,
+		"client_model":     model,
+		"canonical_name":   rawModels[0],
+		"canonical_id":     nil,
+		"resolution_path":  resolutionPath,
+		"raw_models":       rawModels,
+		"plan_order":       []any{},
+		"candidates":       candidates,
+		"reorder_revision": reorderRevision,
 	})
 }
 
@@ -642,6 +681,154 @@ func (h *Handler) handleRoutingCandidateBindingUpdate(w http.ResponseWriter, r *
 
 const maxRoutingCandidateReorderItems = 99
 
+// reorderScopeSQL selects every binding row for an exact raw_model in
+// deterministic id order. The same SQL backs the resolve endpoint's
+// reorder_revision helper, so the revision hash stays aligned with the
+// scope the writer will mutate.
+const reorderScopeSQL = `
+SELECT cmb.id,
+       cmb.credential_id,
+       cmb.manual_priority,
+       cmb.updated_at
+FROM credential_model_bindings cmb
+JOIN provider_models pm ON pm.id = cmb.provider_model_id
+WHERE pm.raw_model_name = $1
+ORDER BY cmb.id
+`
+
+// reorderScopeRow is one ordered entry of the reorder scope. Sorted by
+// id before hashing so concurrent transactions agree on the digest.
+type reorderScopeRow struct {
+	ID             int64
+	CredentialID   int64
+	ManualPriority int
+	UpdatedAt      time.Time
+}
+
+// pgxQueryRower is the read surface shared by *pgxpool.Pool and pgx.Tx.
+type pgxQueryRower interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}
+
+// fetchReorderScope returns every binding row for rawModel in id order.
+// When q is a pgx.Tx, callers should append FOR UPDATE OF cmb to lock the
+// rows; the SQL above stays free of locking so resolve can reuse it.
+func fetchReorderScope(ctx context.Context, q pgxQueryRower, rawModel string, lock bool) ([]reorderScopeRow, error) {
+	sqlText := reorderScopeSQL
+	if lock {
+		sqlText = sqlText + "\nFOR UPDATE OF cmb"
+	}
+	rows, err := q.Query(ctx, sqlText, rawModel)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]reorderScopeRow, 0)
+	for rows.Next() {
+		var r reorderScopeRow
+		if err := rows.Scan(&r.ID, &r.CredentialID, &r.ManualPriority, &r.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// candidateReorderRevision hashes the scope rows so the writer can detect
+// membership or priority drift between the client's snapshot and the
+// locked current state. UpdatedAt is included so direct PATCH or legacy
+// view-trigger writes invalidate the digest.
+func candidateReorderRevision(rows []reorderScopeRow) (string, error) {
+	sorted := make([]reorderScopeRow, len(rows))
+	copy(sorted, rows)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].ID < sorted[j].ID })
+	hasher := sha256.New()
+	for _, r := range sorted {
+		if _, err := fmt.Fprintf(hasher, "%d|%d|%d|%s\n",
+			r.ID, r.CredentialID, r.ManualPriority,
+			r.UpdatedAt.UTC().Format(time.RFC3339Nano)); err != nil {
+			return "", err
+		}
+	}
+	return hex.EncodeToString(hasher.Sum(nil)), nil
+}
+
+// secureEqualString compares opaque revsions in constant time so callers
+// can't infer match probability from response timing.
+func secureEqualString(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
+}
+
+func isPgSerializationFailure(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "40001"
+}
+
+func isPgDeadlock(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "40P01"
+}
+
+// validateReorderCompleteness rejects partial or mismatched submissions:
+// the request must cover every binding currently in scope.
+func validateReorderCompleteness(scope []reorderScopeRow, items []routingCandidateReorderItem) error {
+	if len(scope) != len(items) {
+		return fmt.Errorf("incomplete candidate set, refetch and retry (scope=%d, submitted=%d)", len(scope), len(items))
+	}
+	scopeIDs := make(map[int64]struct{}, len(scope))
+	for _, r := range scope {
+		scopeIDs[r.CredentialID] = struct{}{}
+	}
+	seenIDs := make(map[int64]struct{}, len(items))
+	for _, it := range items {
+		if _, ok := scopeIDs[int64(it.CredentialID)]; !ok {
+			return fmt.Errorf("incomplete candidate set, refetch and retry (credential_id=%d not in scope)", it.CredentialID)
+		}
+		seenIDs[int64(it.CredentialID)] = struct{}{}
+	}
+	if len(seenIDs) != len(scopeIDs) {
+		return fmt.Errorf("incomplete candidate set, refetch and retry (missing credentials)")
+	}
+	return nil
+}
+
+// applyReorderUpdate writes the new priorities in a single statement,
+// parameterised in id order so concurrent transactions lock rows in the
+// same sequence and avoid reverse-order deadlocks.
+func applyReorderUpdate(ctx context.Context, tx pgx.Tx, scope []reorderScopeRow, items []routingCandidateReorderItem) error {
+	if len(scope) == 0 {
+		return nil
+	}
+	picked := make(map[int64]int, len(items))
+	for _, it := range items {
+		picked[int64(it.CredentialID)] = it.ManualPriority
+	}
+	args := make([]any, 0, 2*len(scope))
+	values := make([]string, 0, len(scope))
+	for _, r := range scope {
+		priority, ok := picked[r.CredentialID]
+		if !ok {
+			return fmt.Errorf("missing priority for credential_id=%d", r.CredentialID)
+		}
+		values = append(values, fmt.Sprintf("($%d::bigint, $%d::int)", len(args)+1, len(args)+2))
+		args = append(args, r.ID, priority)
+	}
+	sqlText := fmt.Sprintf(`
+		UPDATE credential_model_bindings
+		SET manual_priority = v.priority, updated_at = NOW()
+		FROM (VALUES %s) AS v(id, priority)
+		WHERE credential_model_bindings.id = v.id
+	`, strings.Join(values, ","))
+	_, err := tx.Exec(ctx, sqlText, args...)
+	return err
+}
+
 type routingCandidateReorderItem struct {
 	CredentialID   int    `json:"credential_id"`
 	RawModel       string `json:"raw_model"`
@@ -649,7 +836,14 @@ type routingCandidateReorderItem struct {
 }
 
 type routingCandidateReorderRequest struct {
-	Items []routingCandidateReorderItem `json:"items"`
+	// RawModel scopes the entire reorder to one exact provider_models.raw_model_name.
+	// Mixed-model submissions are rejected to keep the write path atomic.
+	RawModel string `json:"raw_model"`
+	// ExpectedRevision is the opaque token the client received from
+	// /api/routing/resolve. The handler locks the scope, recomputes the
+	// revision, and rejects stale clients with HTTP 409.
+	ExpectedRevision string                          `json:"expected_revision"`
+	Items            []routingCandidateReorderItem   `json:"items"`
 }
 
 func validateRoutingCandidateReorder(req routingCandidateReorderRequest) string {
@@ -690,8 +884,22 @@ func validateRoutingCandidateReorder(req routingCandidateReorderRequest) string 
 }
 
 // handleRoutingCandidateBindingReorder persists the complete resolve-list order
-// in one transaction. It intentionally updates only manual_priority; health,
-// availability, lifecycle, and circuit state remain owned by their monitors.
+// in one transaction. The write path enforces three invariants:
+//
+//  1. The reorder targets exactly one raw_model (the top-level RawModel field).
+//     Mixed-model submissions are rejected at validation time.
+//  2. The submission covers every credential currently bound to that raw_model.
+//     A subset write would silently orphan sibling rows.
+//  3. The client's ExpectedRevision matches the locked current scope state.
+//     Mismatches indicate a stale view and surface as HTTP 409 so the UI can
+//     refetch before retrying.
+//
+// Authorization: super_admin only (registered via h.superAdmin).
+// Concurrency: SERIALIZABLE isolation; every binding row is locked with
+// FOR UPDATE OF cmb in id order before any UPDATE, which both serialises
+// concurrent writers and prevents reverse-order deadlocks.
+// Audit: written inside the same transaction so the audit row commits or
+// rolls back together with the priority change.
 func (h *Handler) handleRoutingCandidateBindingReorder(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPatch {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -702,54 +910,95 @@ func (h *Handler) handleRoutingCandidateBindingReorder(w http.ResponseWriter, r 
 		writeError(w, http.StatusBadRequest, "invalid body")
 		return
 	}
+	req.RawModel = strings.TrimSpace(req.RawModel)
+	if req.RawModel == "" {
+		writeError(w, http.StatusBadRequest, "raw_model is required")
+		return
+	}
+	req.ExpectedRevision = strings.TrimSpace(req.ExpectedRevision)
+	if req.ExpectedRevision == "" {
+		writeError(w, http.StatusBadRequest, "expected_revision is required")
+		return
+	}
+	for i := range req.Items {
+		itemRaw := strings.TrimSpace(req.Items[i].RawModel)
+		switch {
+		case itemRaw == "":
+			req.Items[i].RawModel = req.RawModel
+		case !strings.EqualFold(itemRaw, req.RawModel):
+			writeError(w, http.StatusBadRequest, "raw_model mismatch between request and item")
+			return
+		default:
+			req.Items[i].RawModel = itemRaw
+		}
+	}
 	if validationErr := validateRoutingCandidateReorder(req); validationErr != "" {
 		writeError(w, http.StatusBadRequest, validationErr)
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
 	defer cancel()
-	tx, err := h.db.Begin(ctx)
+	tx, err := h.db.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "begin reorder transaction failed")
 		return
 	}
-	defer tx.Rollback(ctx) // harmless after a successful commit
+	defer tx.Rollback(ctx)
 
-	for _, item := range req.Items {
-		var bindingID int
-		err := tx.QueryRow(ctx, `
-			SELECT cmb.id
-			FROM credential_model_bindings cmb
-			JOIN provider_models pm ON pm.id = cmb.provider_model_id
-			WHERE cmb.credential_id = $1
-			  AND pm.raw_model_name = $2
-			LIMIT 1
-		`, item.CredentialID, strings.TrimSpace(item.RawModel)).Scan(&bindingID)
-		if err != nil {
-			writeError(w, http.StatusNotFound, "binding not found for credential/model pair")
+	scope, err := fetchReorderScope(ctx, tx, req.RawModel, true)
+	if err != nil {
+		if isPgSerializationFailure(err) || isPgDeadlock(err) {
+			writeError(w, http.StatusConflict, "transient ordering conflict, retry")
 			return
 		}
-		if _, err := tx.Exec(ctx, `
-			UPDATE credential_model_bindings
-			SET manual_priority = $1, updated_at = NOW()
-			WHERE id = $2
-		`, item.ManualPriority, bindingID); err != nil {
-			writeError(w, http.StatusInternalServerError, "reorder update failed")
-			return
-		}
+		writeError(w, http.StatusInternalServerError, "load reorder scope failed: "+err.Error())
+		return
+	}
+	if len(scope) == 0 {
+		writeError(w, http.StatusNotFound, "no candidate bindings found for raw_model")
+		return
+	}
+	currentRevision, err := candidateReorderRevision(scope)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "compute revision failed")
+		return
+	}
+	if !secureEqualString(currentRevision, req.ExpectedRevision) {
+		writeError(w, http.StatusConflict, "stale candidate binding set, refetch and retry")
+		return
+	}
+	if err := validateReorderCompleteness(scope, req.Items); err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	if err := applyReorderUpdate(ctx, tx, scope, req.Items); err != nil {
+		writeError(w, http.StatusInternalServerError, "apply reorder failed: "+err.Error())
+		return
+	}
+	if err := logAuditExec(ctx, tx, requestActor(r),
+		"routing_candidate_binding_reorder", map[string]any{
+			"raw_model":         req.RawModel,
+			"expected_revision": req.ExpectedRevision,
+			"items":             req.Items,
+		}); err != nil {
+		writeError(w, http.StatusInternalServerError, "audit insert failed: "+err.Error())
+		return
 	}
 	if err := tx.Commit(ctx); err != nil {
-		writeError(w, http.StatusInternalServerError, "commit reorder failed")
+		if isPgSerializationFailure(err) || isPgDeadlock(err) {
+			writeError(w, http.StatusConflict, "transient ordering conflict, retry")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "commit reorder failed: "+err.Error())
 		return
 	}
 
-	h.logAudit(r, "routing_candidate_binding_reorder", map[string]any{
-		"items": req.Items,
-	})
 	writeJSON(w, http.StatusOK, map[string]any{
-		"message": "updated",
-		"items":   req.Items,
+		"message":           "updated",
+		"raw_model":         req.RawModel,
+		"expected_revision": currentRevision,
+		"items":             req.Items,
 	})
 }
 
