@@ -316,7 +316,10 @@ func (s *ProbeService) Run(ctx context.Context, task ProbeQueueTask) (ProbeQueue
 		}
 		return ProbeQueueResult{}, err
 	}
-	s.worker.updateURSMv2ProbeState(hbCtx, trigger.tenantID, credID, model, success, direct.latencyMs)
+	// The direct upstream round is the recovery signal for authoritative URSM.
+	// The pinned gateway round depends on that same URSM key and may fail while
+	// the key is absent; using the composite result here would renew the lockout.
+	s.worker.updateURSMv2ProbeState(hbCtx, trigger.tenantID, credID, model, direct.ok, direct.latencyMs)
 	s.worker.emitProbe(hbCtx, credID, direct.providerID, model, direct.outboundModel, "direct", attempt, trigger, direct)
 	s.worker.emitProbe(hbCtx, credID, direct.providerID, model, direct.outboundModel, "gateway", attempt, trigger, gw)
 	now := time.Now()
