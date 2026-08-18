@@ -13,9 +13,13 @@ route:
   # is split — credential warnings still go to credential-team, everything
   # else falls through to the default receiver.
   routes:
+    # 2026-08-18 credential-17 P0 deploy fix: matchers MUST use double quotes.
+    # Prometheus matcher syntax rejects single quotes, so `severity = 'critical'`
+    # is silently unparseable and the route never matches — every credential
+    # alert fell through to the (webhook-less) default receiver and was dropped.
     - matchers:
-        - severity = 'critical'
-        - component = 'credential'
+        - severity = "critical"
+        - component = "credential"
       receiver: 'credential-team'
       group_by: ['alertname', 'provider_id']
       group_wait: 10s
@@ -23,8 +27,8 @@ route:
       repeat_interval: 30m
       continue: false
     - matchers:
-        - severity = 'warning'
-        - component = 'credential'
+        - severity = "warning"
+        - component = "credential"
       receiver: 'credential-team'
       group_by: ['alertname', 'provider_id']
       group_wait: 30s
@@ -43,13 +47,13 @@ receivers:
 
   # 2026-08-18: credential-team oncall receiver. The webhook URL is sourced
   # from $CREDENTIAL_TEAM_WEBHOOK_URL at container start (docker-compose
-  # entrypoint runs sed to substitute ##CREDENTIAL_TEAM_WEBHOOK_URL## with
-  # the env var before alertmanager reads the file). Until the env var is
-  # populated, the placeholder URL fails webhook delivery and alertmanager
-  # logs "webhook delivery failed" — visible as a missing integration in
-  # `amtool config show`. The placeholder host "placeholder.invalid" is a
-  # reserved TLD per RFC 2606 so a misconfigured deploy cannot accidentally
-  # hit a real endpoint during a smoke test.
+  # entrypoint runs sed to substitute the whole placeholder token
+  # `https://placeholder.invalid/##CREDENTIAL_TEAM_WEBHOOK_URL##` with the env
+  # var before alertmanager reads the file). Until the env var is populated,
+  # the placeholder URL fails webhook delivery and alertmanager logs "webhook
+  # delivery failed" — visible as a missing integration in `amtool config show`.
+  # The placeholder host "placeholder.invalid" is a reserved TLD per RFC 2606
+  # so a misconfigured deploy cannot accidentally hit a real endpoint.
   - name: 'credential-team'
     webhook_configs:
       - url: 'https://placeholder.invalid/##CREDENTIAL_TEAM_WEBHOOK_URL##'
