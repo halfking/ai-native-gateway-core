@@ -1875,14 +1875,14 @@ BEGIN
          FOR VALUES FROM (%L) TO (%L)',
         partition_suffix, month_start, month_end
     );
-    
+
     -- session_turns 分区（heap格式）
     EXECUTE format(
         'CREATE TABLE IF NOT EXISTS public.session_turns_%s PARTITION OF public.session_turns
          FOR VALUES FROM (%L) TO (%L)',
         partition_suffix, month_start, month_end
     );
-    
+
     -- session_bodies 分区使用 heap，因为正文写入支持冲突更新。
     EXECUTE format(
         'CREATE TABLE IF NOT EXISTS public.session_bodies_%s PARTITION OF public.session_bodies
@@ -2616,7 +2616,8 @@ CREATE FUNCTION public.model_probe_mark_available(p_credential_id bigint, p_raw_
 		    WHERE cmb.provider_model_id = pm.id
 		      AND cmb.credential_id = p_credential_id
 		      AND pm.raw_model_name = p_raw_model_name
-		      AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%';
+		      AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
+		      AND COALESCE(cmb.admin_protected, FALSE) = FALSE;
 		END;
 		$$;
 
@@ -2664,7 +2665,8 @@ CREATE FUNCTION public.model_probe_mark_unavailable(p_credential_id bigint, p_ra
 		    WHERE cmb.provider_model_id = pm.id
 		      AND cmb.credential_id = p_credential_id
 		      AND pm.raw_model_name = p_raw_model_name
-		      AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%';
+		      AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
+		      AND COALESCE(cmb.admin_protected, FALSE) = FALSE;
 		END;
 		$$;
 
@@ -3660,7 +3662,8 @@ CREATE FUNCTION public.unified_probe_mark_failing(p_credential_id bigint, p_raw_
 		    WHERE cmb.provider_model_id = pm.id
 		      AND cmb.credential_id = p_credential_id
 		      AND pm.raw_model_name = p_raw_model_name
-		      AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%';
+		      AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
+		      AND COALESCE(cmb.admin_protected, FALSE) = FALSE;
 		END;
 		$$;
 
@@ -3727,7 +3730,8 @@ CREATE FUNCTION public.unified_probe_mark_healthy(p_credential_id bigint, p_raw_
 		    WHERE cmb.provider_model_id = pm.id
 		      AND cmb.credential_id = p_credential_id
 		      AND pm.raw_model_name = p_raw_model_name
-		      AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%';
+		      AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
+		      AND COALESCE(cmb.admin_protected, FALSE) = FALSE;
 		END;
 		$$;
 
@@ -9378,7 +9382,7 @@ CREATE TABLE public.node_probe_runs (
     timeout_at_ms integer,
     via_proxy boolean,
     CONSTRAINT node_probe_runs_attempt_check CHECK (((attempt >= 1) AND (attempt <= 7))),
-    CONSTRAINT node_probe_runs_trigger_kind_check CHECK ((trigger_kind = ANY (ARRAY['request_failure'::text, 'manual'::text, 'credential_recovery'::text, 'sync_request'::text])))
+    CONSTRAINT node_probe_runs_trigger_kind_check CHECK ((trigger_kind = ANY (ARRAY['request_failure'::text, 'manual'::text, 'credential_recovery'::text, 'sync_request'::text, 'periodic'::text, 'admin'::text, 'integrity_probe_planner'::text, 'selfcheck'::text, 'external_async'::text])))
 );
 
 
@@ -9449,7 +9453,7 @@ COMMENT ON COLUMN public.node_probe_runs.via_proxy IS 'probeDirect是否通过HT
 -- Name: CONSTRAINT node_probe_runs_trigger_kind_check ON node_probe_runs; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON CONSTRAINT node_probe_runs_trigger_kind_check ON public.node_probe_runs IS '425: trigger_kind 枚举扩展 —— 新增 sync_request（同步探测，由 inbound 请求 no_candidate 路径发起）';
+COMMENT ON CONSTRAINT node_probe_runs_trigger_kind_check ON public.node_probe_runs IS '425 + 536: trigger_kind 枚举 —— 425 增量 sync_request（同步探测，由 inbound 请求 no_candidate 路径发起）；536 增量 periodic / admin / integrity_probe_planner / selfcheck / external_async（统一 credential_probe_queue 的 task.Source 全集）';
 
 
 --

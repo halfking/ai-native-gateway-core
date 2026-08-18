@@ -332,9 +332,9 @@ func queryUnifiedProbeQueueStats(ctx context.Context, db pgxQueryer) (UnifiedPro
 			SELECT
 				COUNT(*) FILTER (WHERE status = 'ready')    AS q_ready,
 				COUNT(*) FILTER (WHERE status = 'running')  AS q_running,
-				COUNT(*) FILTER (WHERE status = 'running'
-				                   AND started_at IS NOT NULL
-				                   AND started_at < now() - $1::interval) AS q_stale,
+			COUNT(*) FILTER (WHERE status = 'running'
+			                   AND lease_until IS NOT NULL
+			                   AND lease_until < now()) AS q_stale,
 				COUNT(*) FILTER (WHERE status IN ('success','failed','expired','cancelled')
 				                   AND COALESCE(finished_at, updated_at) > now() - interval '2 hours') AS q_finished,
 				COUNT(*) FILTER (WHERE status = 'success'
@@ -366,9 +366,8 @@ func queryUnifiedProbeQueueStats(ctx context.Context, db pgxQueryer) (UnifiedPro
 			COALESCE(n.n_unclaimable, 0),
 			q.q_last_run
 		FROM q, n
-	`,
-		fmt.Sprintf("%d seconds", int(unifiedProbeQueueLeaseWindow.Seconds())),
-	)
+		`)
+
 	var lastRun time.Time
 	if err := row.Scan(
 		&out.QueueReady,
@@ -807,6 +806,10 @@ func (h *Handler) handleProbeQueueSnapshot(w http.ResponseWriter, r *http.Reques
 		"unified": unified,
 		// Legacy view: tagged as legacy: true and preserved under
 		// its own key so the operator can compare the two.
+		// Keep the established top-level shape for existing clients while
+		// exposing the source-labelled views for new clients.
+		"queues": queues,
+		"total":  len(queues),
 		"legacy": map[string]interface{}{
 			"queues":           queues,
 			"total":            len(queues),
@@ -839,7 +842,7 @@ func (h *Handler) handleProbeSystemHealth(w http.ResponseWriter, r *http.Request
 	// legacy llmgw:avail count is intentionally NOT mixed here — the
 	// new source is the authoritative runtime signal.
 	if rc, ok := h.redisClient.(*redis.Client); ok {
-		ursm := countURSMKeys(r.Context(), rc, "ursm:v2:node:tenant:*:*", 0)
+		ursm := countURSMKeys(r.Context(), rc, "ursm:v2:node:k2:*", 0)
 		unified.URSMKeyCount = ursm
 	}
 
@@ -929,12 +932,17 @@ func (h *Handler) handleProbeSystemHealth(w http.ResponseWriter, r *http.Request
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{
-		"unified":          unified,
-		"legacy":           legacyHealth,
-		"legacy_mode_safe": false,
-		"snapshot_at":      time.Now(),
-	})
+	// Preserve every historical top-level field for existing dashboard clients;
+	// the source-labelled payloads remain available for the cutover view.
+	legacyPayload := make(map[string]any)
+	if raw, marshalErr := json.Marshal(legacyHealth); marshalErr == nil {
+		_ = json.Unmarshal(raw, &legacyPayload)
+	}
+	legacyPayload["unified"] = unified
+	legacyPayload["legacy"] = legacyHealth
+	legacyPayload["legacy_mode_safe"] = false
+	legacyPayload["snapshot_at"] = time.Now()
+	_ = json.NewEncoder(w).Encode(legacyPayload)
 }
 
 // GET /api/admin/probe/model/{model}/nodes
