@@ -2670,8 +2670,8 @@ func (h *ChatHandler) serveWithExecutor(
 	}()
 
 	// 2026-08-18 (B1-PR1): commit the HTTP 200 + first SSE keepalive comment
-	// IMMEDIATELY after we know the request is streaming — BEFORE the
-	// session compressor, model resolution, and other heavy stages run.
+	// after routing and handoff validation, but BEFORE the session compressor
+	// and other known heavy stages run.
 	//
 	// Root cause of the e0a849a3f29abff690818a812fa44c34 incident (and
 	// the cluster of 838-message minimax-m3 provider_error failures on
@@ -2685,35 +2685,12 @@ func (h *ChatHandler) serveWithExecutor(
 	// have this problem because the vendor endpoint emits SSE
 	// keep-alive pings during thinking.
 	//
-	// This block MUST run before the session compressor / candidate
-	// resolution pipeline so the client sees a healthy connection.
+	// Candidate and handoff errors must still be able to return their proper
+	// HTTP status, so this block intentionally runs after those gates.
 	// The keepalive is a pure SSE comment (": keep-alive\n\n") which
 	// every conformant SSE parser silently ignores, so it is wire-safe
 	// even for non-streaming clients (they'll just see the comments
 	// before the actual error envelope).
-	if isStream {
-		cfg := currentStreamRuntimeConfig()
-		if cfg.enablePreStreamKeepalive {
-			if psk, ok := startPreStreamKeepalive(r.Context(), w, cfg.keepaliveInterval, requestID); ok {
-				preStream = psk
-				preStreamPrepared = true
-				// 2026-08-15 (A-P2-6): every later body write on this
-				// connection (bridges, interceptor chain, prewarmed error
-				// envelopes, survival coordinator) goes through the
-				// keepalive's serialized channel so keepalive comments and
-				// stream frames can never interleave mid-frame. Headers and
-				// status still delegate to the original ResponseWriter.
-				w = psk.Writer()
-				slog.Info("pre_stream_keepalive_started_early",
-					"request_id", requestID,
-					"reason", "send_200_immediately_to_prevent_client_idle_timeout",
-					"keepalive_interval_ms", cfg.keepaliveInterval.Milliseconds(),
-					"body_bytes", len(bodyBytes),
-				)
-			}
-		}
-	}
-
 	// ── Armor security check (Track A B1-5, 2026-06-25) ──────────────────
 	// Score prompt for prompt-injection before provider resolution.
 	// v1 observe-only: even if score > threshold, never block (only log).
@@ -3177,6 +3154,27 @@ func (h *ChatHandler) serveWithExecutor(
 				"confirmation_expires_at": proposal.ExpiresAt,
 			})
 			return
+		}
+	}
+
+	// Keep the client connection alive while session compression runs. This
+	// must stay after routing/handoff gates so those failures retain their
+	// correct HTTP status instead of being written into a committed 200 SSE
+	// response.
+	if isStream {
+		cfg := currentStreamRuntimeConfig()
+		if cfg.enablePreStreamKeepalive {
+			if psk, ok := startPreStreamKeepalive(r.Context(), w, cfg.keepaliveInterval, requestID); ok {
+				preStream = psk
+				preStreamPrepared = true
+				w = psk.Writer()
+				slog.Info("pre_stream_keepalive_started_early",
+					"request_id", requestID,
+					"reason", "send_200_before_session_compressor",
+					"keepalive_interval_ms", cfg.keepaliveInterval.Milliseconds(),
+					"body_bytes", len(bodyBytes),
+				)
+			}
 		}
 	}
 

@@ -14,7 +14,7 @@ import (
 // 通过环境变量配置：
 //   - LLM_GATEWAY_RAW_LOG_ENABLED: true/false (默认false，需显式启用)
 //   - LLM_GATEWAY_RAW_LOG_DIR: 日志目录路径 (默认 ./logs/raw_data)
-//   - LLM_GATEWAY_RAW_LOG_MAX_SIZE: 单文件最大字节数 (默认且上限 200MB)
+//   - LLM_GATEWAY_RAW_LOG_MAX_SIZE: 单文件最大字节数 (默认且上限 100MB)
 //
 // 2026-07-28: This helper is still consulted by the historical
 // initEnhancedIRTransport path (now removed). The main wiring lives in
@@ -33,7 +33,7 @@ func initRawDataLogger() *logging.RawDataLogger {
 	}
 
 	maxSizeStr := os.Getenv("LLM_GATEWAY_RAW_LOG_MAX_SIZE")
-	maxSize := int64(200 * 1024 * 1024) // 200MB default
+	maxSize := int64(100 * 1024 * 1024) // 100MB default
 	if maxSizeStr != "" {
 		if parsed, err := strconv.ParseInt(maxSizeStr, 10, 64); err == nil {
 			maxSize = parsed
