@@ -175,8 +175,14 @@ const (
 	CleanerSkippedMissing    CleanerEntryStatus = "skipped_missing"
 )
 
+// CleanerEntryResult is the per-entry outcome emitted by
+// (*EntryCleaner).DeleteExact.
 type CleanerEntryResult struct{ Status CleanerEntryStatus }
 
+// CleanerBatchResult is the resumable summary emitted by
+// (*EntryCleaner).DeleteBatch. Next is the index of the next entry to
+// process on resume; Deleted is the count of source keys actually
+// removed.
 type CleanerBatchResult struct {
 	Deleted int
 	Next    int
@@ -194,11 +200,11 @@ func NewEntryCleaner(rdb *redis.Client) *EntryCleaner { return &EntryCleaner{rdb
 // checksum still equals the preflight ledger checksum. Any mutation after
 // preflight preserves the source for review; cleanup never tries to merge
 // canonical state backward into it.
-func (c *EntryCleaner) DeleteExact(ctx context.Context, entry Entry) (CleanerEntryResult, error) {
+func (c *EntryCleaner) DeleteExact(ctx context.Context, entry EntryRecord) (CleanerEntryResult, error) {
 	if c == nil || c.rdb == nil {
 		return CleanerEntryResult{}, fmt.Errorf("ursm.v2: cleanup requires redis")
 	}
-	if entry.Class != ClassMigratable || entry.SourceKey == "" || entry.FieldChecksum == "" {
+	if entry.Class != ClassificationMigratable || entry.SourceKey == "" || entry.FieldChecksum == "" {
 		return CleanerEntryResult{Status: CleanerSkippedIneligible}, nil
 	}
 	fields, err := c.rdb.HGetAll(ctx, entry.SourceKey).Result()
@@ -223,7 +229,7 @@ func (c *EntryCleaner) DeleteExact(ctx context.Context, entry Entry) (CleanerEnt
 // to pause after any batch and resume from CleanerBatchResult.Next. Limit
 // <= 0 is rejected so a caller cannot accidentally request unbounded
 // cleanup.
-func (c *EntryCleaner) DeleteBatch(ctx context.Context, entries []Entry, limit int) (CleanerBatchResult, error) {
+func (c *EntryCleaner) DeleteBatch(ctx context.Context, entries []EntryRecord, limit int) (CleanerBatchResult, error) {
 	if limit <= 0 {
 		return CleanerBatchResult{}, fmt.Errorf("ursm.v2: cleanup batch limit must be positive")
 	}

@@ -40,7 +40,7 @@ func TestOptionsValidation(t *testing.T) {
 		{"missing redis", Options{Prefix: testPrefix, Owner: "o", LedgerID: testLedgerID}, "Redis client"},
 		{"missing prefix", Options{Redis: rdb, Owner: "o", LedgerID: testLedgerID}, "prefix is required"},
 		{"missing owner", Options{Redis: rdb, Prefix: testPrefix, LedgerID: testLedgerID}, "owner is required"},
-		{"bad ledger id", Options{Redis: rdb, Prefix: testPrefix, Owner: "o", LedgerID: "not-a-uuid"}, "ledger_id"},
+		{"bad ledger id", Options{Redis: rdb, Prefix: testPrefix, Owner: "o", LedgerID: "with/slash"}, "ledger_id"},
 		{"unknown mode", Options{Redis: rdb, Prefix: testPrefix, Owner: "o", LedgerID: testLedgerID, SchemaMode: SchemaMode("foo")}, "schema mode"},
 		{"negative scan limit", Options{Redis: rdb, Prefix: testPrefix, Owner: "o", LedgerID: testLedgerID, ScanLimit: -1}, "scan limit"},
 	}
@@ -59,8 +59,16 @@ func TestIsLedgerID(t *testing.T) {
 	good := []string{
 		"134e6d21-721b-41d4-af0b-adff143107e2",
 		"ABCDEF01-2345-6789-ABCD-EF0123456789",
+		// Operator-named (doc 14 §0 also accepts these):
+		"ursm-v2-k2-20260818-001",
+		"k2.migration.2026_08_18",
 	}
-	bad := []string{"", "short", "not-a-uuid-of-correct-length-xx", "zzzzzzzz-721b-41d4-af0b-adff143107e2"}
+	bad := []string{
+		"",        // below the 4..64 envelope
+		"abc",     // length 3, below envelope
+		"with space", // space is not in the operator alphabet
+		"with/slash", // slash is not in the operator alphabet
+	}
 	for _, s := range good {
 		if !isLedgerID(s) {
 			t.Fatalf("expected %q to be a valid ledger id", s)
@@ -99,14 +107,14 @@ func TestPreflightClassifiesLegacyAndCanonicalAndAmbiguous(t *testing.T) {
 		t.Fatalf("Preflight: %v", err)
 	}
 
-	if report.Counts[ClassMigratable] != 3 {
-		t.Fatalf("migratable count = %d, want 3 (%v)", report.Counts[ClassMigratable], report.Counts)
+	if report.Counts[ClassificationMigratable] != 3 {
+		t.Fatalf("migratable count = %d, want 3 (%v)", report.Counts[ClassificationMigratable], report.Counts)
 	}
-	if report.Counts[ClassCanonicalPresent] != 1 {
-		t.Fatalf("canonical_present count = %d, want 1 (%v)", report.Counts[ClassCanonicalPresent], report.Counts)
+	if report.Counts[ClassificationCanonicalPresent] != 1 {
+		t.Fatalf("canonical_present count = %d, want 1 (%v)", report.Counts[ClassificationCanonicalPresent], report.Counts)
 	}
-	if report.Counts[ClassAmbiguous] < 2 {
-		t.Fatalf("ambiguous count = %d, want >=2 (extra-colon legacy + malformed reserved k2) (%v)", report.Counts[ClassAmbiguous], report.Counts)
+	if report.Counts[ClassificationAmbiguous] < 2 {
+		t.Fatalf("ambiguous count = %d, want >=2 (extra-colon legacy + malformed reserved k2) (%v)", report.Counts[ClassificationAmbiguous], report.Counts)
 	}
 	if report.MigrationGoable {
 		t.Fatalf("report must be NO-GO when ambiguous/conflict > 0, reasons=%v", report.Reasons)
@@ -142,15 +150,15 @@ func TestPreflightClassifiesLegacyAndCanonicalAndAmbiguous(t *testing.T) {
 		bySource[e.SourceKey] = e
 	}
 	m := bySource[testPrefix+"node:tenant-a:7:model-a"]
-	if m.Classification != ClassMigratable || m.TargetKey != k2 || m.Generation != "1" {
+	if m.Classification != ClassificationMigratable || m.TargetKey != k2 || m.Generation != "1" {
 		t.Fatalf("migratable entry = %+v", m)
 	}
 	c := bySource[k2]
-	if c.Classification != ClassCanonicalPresent || c.Schema != store.SchemaK2 || c.TargetKey != k2 {
+	if c.Classification != ClassificationCanonicalPresent || c.Schema != store.SchemaK2 || c.TargetKey != k2 {
 		t.Fatalf("canonical entry = %+v", c)
 	}
 	reserved := bySource[testPrefix+"node:k2:1234:07:YQ"]
-	if reserved.Classification != ClassAmbiguous {
+	if reserved.Classification != ClassificationAmbiguous {
 		t.Fatalf("malformed reserved k2 must be ambiguous, got %+v", reserved)
 	}
 	if reserved.Schema != "" {
@@ -208,11 +216,11 @@ func TestPreflightFrozenCollisionPairIsNotMigratable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Preflight: %v", err)
 	}
-	if report.Counts[ClassMigratable] != 0 {
+	if report.Counts[ClassificationMigratable] != 0 {
 		t.Fatalf("collision-pair source must not be migratable (it is round-tripable but the alternative tuple is not): counts=%v decisions=%v", report.Counts, report.Decisions)
 	}
-	if report.Counts[ClassAmbiguous] != 1 {
-		t.Fatalf("ambiguous count = %d, want 1", report.Counts[ClassAmbiguous])
+	if report.Counts[ClassificationAmbiguous] != 1 {
+		t.Fatalf("ambiguous count = %d, want 1", report.Counts[ClassificationAmbiguous])
 	}
 	if report.MigrationGoable {
 		t.Fatal("collision pair must force NO-GO")
@@ -275,7 +283,7 @@ func TestFieldChecksumDeterministicAndOrderIndependent(t *testing.T) {
 
 // doc 14 §4 / doc 15 §2: when a canonical k2 key for the same logical
 // tuple already exists with a diverging generation, preflight must emit
-// ClassConflict on the legacy source so the runner stops with NO-GO.
+// ClassificationConflict on the legacy source so the runner stops with NO-GO.
 func TestPreflightConflictOnDivergingGeneration(t *testing.T) {
 	rdb, mr := newRedis(t)
 	ctx := context.Background()
@@ -289,8 +297,8 @@ func TestPreflightConflictOnDivergingGeneration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Preflight: %v", err)
 	}
-	if report.Counts[ClassConflict] != 1 {
-		t.Fatalf("conflict count = %d, want 1 (%v)", report.Counts[ClassConflict], report.Counts)
+	if report.Counts[ClassificationConflict] != 1 {
+		t.Fatalf("conflict count = %d, want 1 (%v)", report.Counts[ClassificationConflict], report.Counts)
 	}
 	if report.MigrationGoable {
 		t.Fatalf("must be NO-GO when conflict > 0: %v", report.Reasons)
@@ -311,13 +319,13 @@ func TestPreflightSchemaModeCanonicalExcludesLegacySources(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Preflight: %v", err)
 	}
-	if report.Counts[ClassMigratable] != 0 {
+	if report.Counts[ClassificationMigratable] != 0 {
 		t.Fatalf("canonical mode must not produce migratable: %v", report.Counts)
 	}
-	if report.Counts[ClassExcludedNonAuthoritative] != 1 {
+	if report.Counts[ClassificationExcludedNonAuthoritative] != 1 {
 		t.Fatalf("expected 1 excluded legacy source, got %v", report.Counts)
 	}
-	if report.Counts[ClassCanonicalPresent] != 1 {
+	if report.Counts[ClassificationCanonicalPresent] != 1 {
 		t.Fatalf("expected 1 canonical_present, got %v", report.Counts)
 	}
 	if !report.MigrationGoable {
@@ -351,7 +359,7 @@ func TestPreflightIncludesAllSourcePatterns(t *testing.T) {
 			t.Fatalf("kind %s count = %d, want %d (kinds=%v)", k, kinds[k], v, kinds)
 		}
 	}
-	if report.Counts[ClassExcludedNonAuthoritative] < 2 {
+	if report.Counts[ClassificationExcludedNonAuthoritative] < 2 {
 		t.Fatalf("binding/dedup must be excluded non-authoritative, counts=%v", report.Counts)
 	}
 }

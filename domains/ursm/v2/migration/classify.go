@@ -117,11 +117,7 @@ type PreflightRunner struct {
 	Now     func() time.Time
 }
 
-// Preflight is an alias for PreflightRunner kept so cmd/k2-migrate-ursm's
-// `&migration.Preflight{Prefix: ..., ...}` literal still compiles. The
-// free-function Preflight in preflight.go is a separate symbol that wraps
-// the struct method into a *Report.
-type Preflight = PreflightRunner
+// (Preflight type alias removed; callers now use PreflightRunner directly.)
 
 // PreflightSummary is the aggregate result of a preflight pass.
 type PreflightSummary struct {

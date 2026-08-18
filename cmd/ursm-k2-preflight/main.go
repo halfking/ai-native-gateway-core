@@ -76,26 +76,45 @@ func main() {
 		log.Fatalf("redis ping: %v", err)
 	}
 
-	report, err := migration.NewEntryPreflight(rdb, *keyPrefix).Scan(ctx)
+	// RunPreflight is the full free-function wrapper that scans every
+	// source-key pattern doc 15 §2 mandates (node / win / idx:model /
+	// binding / credential / provider / request_dedup). The per-entry
+	// NewEntryPreflight helper would only cover node:* and miss the
+	// window / index / dedup namespaces that doc 14 §2 / doc 16 slice
+	// 4 require for the GO / NO-GO decision.
+	nowFn := func() time.Time { return time.Now().UTC() }
+	report, err := migration.RunPreflight(ctx, migration.Options{
+		Redis:      rdb,
+		Prefix:     *keyPrefix,
+		Owner:      *owner,
+		LedgerID:   *ledgerID,
+		SchemaMode: migrationKeySchemaMode(keySchemaMode),
+		Now:        nowFn,
+	})
 	if err != nil {
 		log.Fatalf("preflight scan: %v", err)
 	}
 
-	if *limit > 0 && len(report.Entries) > *limit {
-		report.Entries = report.Entries[:*limit]
+	if *limit > 0 && len(report.Ledger.Entries) > *limit {
+		report.Ledger.Entries = report.Ledger.Entries[:*limit]
 	}
 
 	fmt.Printf("preflight ledger=%s owner=%s mode=%s\n", *ledgerID, *owner, keySchemaMode.String())
-	fmt.Printf("checksum=%s\n", report.Checksum)
-	fmt.Printf("totals: migratable=%d canonical_present=%d ambiguous=%d excluded=%d go=%v\n",
-		report.Migratable, report.CanonicalPresent, report.Ambiguous, report.Excluded, report.Go())
-	for _, e := range report.Entries {
-		fmt.Printf("  %s class=%s schema=%s reason=%q ttl_ms=%d gen=%d\n",
-			e.SourceKey, e.Class, e.Schema, e.Reason, e.PTTLMillis, e.Generation)
+	fmt.Printf("checksum=%s\n", report.Ledger.PreflightChecksum)
+	fmt.Printf("totals: migratable=%d canonical_present=%d ambiguous=%d excluded=%d conflict=%d go=%v\n",
+		report.Counts[migration.ClassificationMigratable],
+		report.Counts[migration.ClassificationCanonicalPresent],
+		report.Counts[migration.ClassificationAmbiguous],
+		report.Counts[migration.ClassificationExcludedNonAuthoritative],
+		report.Counts[migration.ClassificationConflict],
+		report.MigrationGoable)
+	for _, e := range report.Ledger.Entries {
+		fmt.Printf("  %s class=%s schema=%s reason=%q ttl_ms=%d gen=%s\n",
+			e.SourceKey, e.Classification, e.Schema, e.ClassificationReason, e.PTTLMS, e.Generation)
 	}
 
 	if !*apply {
-		if !report.Go() {
+		if !report.MigrationGoable {
 			log.Printf("DRY-RUN: ambiguous or conflict verdicts present — ref --apply is forbidden until they are resolved")
 		} else {
 			fmt.Println("[DRY-RUN] no Redis or PG writes; pass --apply to open a migration run")
@@ -106,7 +125,7 @@ func main() {
 	if *pgDSN == "" {
 		log.Fatalf("--apply requires --pg or DATABASE_URL / LLM_GATEWAY_DATABASE_URL")
 	}
-	if !report.Go() {
+	if !report.MigrationGoable {
 		log.Fatalf("--apply refused: ambiguous/conflict verdicts must be resolved out-of-band first")
 	}
 
@@ -119,25 +138,55 @@ func main() {
 		log.Fatalf("postgres ping: %v", err)
 	}
 	store_ := migration.NewPGStore(pool)
+	entries := toEntryRecords(report.Ledger.Entries)
 	if err := store_.OpenRun(ctx, migration.RunRecord{
 		LedgerID:          *ledgerID,
 		Owner:             *owner,
 		KeySchemaMode:     keySchemaMode,
-		PreflightChecksum: report.Checksum,
+		PreflightChecksum: report.Ledger.PreflightChecksum,
 		Checkpoint:        migration.CheckpointPreflight,
 		RollbackDeadline:  *rollbackDeadline,
-		Total:             len(report.Entries),
-		Migratable:        report.Migratable,
-		CanonicalPresent:  report.CanonicalPresent,
-		Ambiguous:         report.Ambiguous,
-		Excluded:          report.Excluded,
+		Total:             len(entries),
+		Migratable:        report.Counts[migration.ClassificationMigratable],
+		CanonicalPresent:  report.Counts[migration.ClassificationCanonicalPresent],
+		Ambiguous:         report.Counts[migration.ClassificationAmbiguous],
+		Excluded:          report.Counts[migration.ClassificationExcludedNonAuthoritative],
 	}); err != nil {
 		log.Fatalf("open migration run: %v", err)
 	}
-	if err := store_.UpsertEntries(ctx, *ledgerID, report.Entries); err != nil {
+	if err := store_.UpsertEntries(ctx, *ledgerID, entries); err != nil {
 		log.Fatalf("upsert ledger entries: %v", err)
 	}
-	fmt.Printf("migration run %s opened with %d entries\n", *ledgerID, len(report.Entries))
+	fmt.Printf("migration run %s opened with %d entries\n", *ledgerID, len(entries))
+}
+
+// toEntryRecords projects the in-memory PreflightLedger entries into the
+// per-entry helper's EntryRecord shape so PGStore can persist them. Fields
+// not present in PreflightEntry (Tuple / Type) are left zero — the PG
+// ledger captures the schema-mode-aware counts + checksum, not the raw
+// tuple.
+func toEntryRecords(es []migration.PreflightEntry) []migration.EntryRecord {
+	out := make([]migration.EntryRecord, 0, len(es))
+	for _, e := range es {
+		out = append(out, migration.EntryRecord{
+			SourceKey:  e.SourceKey,
+			TargetKey:  e.TargetKey,
+			Class:      e.Classification,
+			Reason:     e.ClassificationReason,
+			Type:       e.KeyType,
+			PTTLMillis: e.PTTLMS,
+			Generation: int64(parseIntOrZero(e.Generation)),
+		})
+	}
+	return out
+}
+
+func parseIntOrZero(s string) int {
+	n, err := strconv.Atoi(s)
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
 }
 
 func envOr(key, def string) string {
@@ -163,4 +212,17 @@ func redisURLFromEnv() string {
 		endpoint.User = url.UserPassword("", password)
 	}
 	return endpoint.String()
+}
+
+// migrationKeySchemaMode translates store.KeySchemaMode (used by the CLI
+// flag) into migration.SchemaMode (the string form RunPreflight expects).
+func migrationKeySchemaMode(m store.KeySchemaMode) migration.SchemaMode {
+	switch m {
+	case store.KeySchemaModeDual:
+		return migration.SchemaModeDual
+	case store.KeySchemaModeCanonical:
+		return migration.SchemaModeCanonical
+	default:
+		return migration.SchemaModeLegacy
+	}
 }

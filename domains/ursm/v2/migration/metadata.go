@@ -157,11 +157,6 @@ func NewMetadataLua(rdb *redis.Client, prefix string) *MetadataLuaStore {
 	return &MetadataLuaStore{rdb: rdb, prefix: prefix}
 }
 
-// MetadataStore is the public name for the plain HASH write/read wrapper
-// declared in metadata_redis.go. The alias keeps cmd/k2-migrate-ursm's
-// `&migration.MetadataStore{Prefix, RDB}` literal compiling.
-type MetadataStore = MetadataHash
-
 // storeKeySchemaModeFromMode bridges the public Mode string alias (used by
 // the free-function Preflight wrapper and cmd) to the underlying
 // store.KeySchemaMode int the LUA-CAS Advance path expects.
@@ -176,23 +171,41 @@ func storeKeySchemaModeFromMode(m Mode) (out store.KeySchemaMode) {
 	}
 }
 
-// isLedgerID returns true for the one-shot UUIDv4-style identifier used as
-// the migration ledger_id (doc 14 §0): 36 chars, hyphens at 8/13/18/23,
-// hex elsewhere.
+// isLedgerID returns true for a one-shot migration ledger_id. Two shapes
+// are accepted (doc 14 §0):
+//
+//   - UUIDv4-style: 36 chars, hyphens at 8/13/18/23, hex elsewhere
+//     (e.g. "134e6d21-721b-41d4-af0b-adff143107e2")
+//   - operator-named: lowercase letters / digits / dashes / dots /
+//     underscores, 4..64 chars; this is the production shape used by the
+//     k2 CLI defaults (e.g. "ursm-v2-k2-20260818-001") and what an
+//     operator passes via --ledger-id on the dry-run / apply boundary.
 func isLedgerID(s string) bool {
-	if len(s) != 36 {
+	if l := len(s); l < 4 || l > 64 {
 		return false
 	}
-	for i, r := range s {
-		switch i {
-		case 8, 13, 18, 23:
-			if r != '-' {
-				return false
+	if len(s) == 36 {
+		for i, r := range s {
+			switch i {
+			case 8, 13, 18, 23:
+				if r != '-' {
+					return false
+				}
+			default:
+				if !isHex(r) {
+					return false
+				}
 			}
+		}
+		return true
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= '0' && r <= '9':
+		case r == '-' || r == '.' || r == '_':
 		default:
-			if !isHex(r) {
-				return false
-			}
+			return false
 		}
 	}
 	return true
@@ -235,8 +248,6 @@ func (m *MetadataLuaStore) Initialize(ctx context.Context, in Metadata) error {
 	if in.Owner == "" || in.LedgerID == "" || in.Checkpoint == "" {
 		return fmt.Errorf("ursm.v2: migration metadata requires owner, ledger_id and checkpoint")
 	}
-	now := time.Now().UTC()
-	_ = now
 	if in.StartedAt.IsZero() {
 		in.StartedAt = time.Now().UTC()
 	}

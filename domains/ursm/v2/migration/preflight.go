@@ -423,11 +423,11 @@ func classifyNodeKeyK2(prefix, key string) ClassifiedKey {
 	if strings.HasPrefix(key, prefix+"node:k2:") {
 		if p, ok := store.ParseNodeKeyAny(prefix, key); ok && p.Schema == store.KeySchemaK2 {
 			t := p.ParsedNodeKey
-			return ClassifiedKey{SourceKey: key, Class: ClassCanonicalPresent, Reason: "canonical node key", Schema: store.KeySchemaK2, Tuple: &t}
+			return ClassifiedKey{SourceKey: key, Class: ClassificationCanonicalPresent, Reason: "canonical node key", Schema: store.KeySchemaK2, Tuple: &t}
 		}
 		// Malformed reserved k2: ambiguous verdict with no schema — the
 		// reserved namespace must fail closed (doc 14 §2).
-		return ClassifiedKey{SourceKey: key, Class: ClassAmbiguous, Reason: "malformed canonical node key"}
+		return ClassifiedKey{SourceKey: key, Class: ClassificationAmbiguous, Reason: "malformed canonical node key"}
 	}
 	parts := strings.Split(strings.TrimPrefix(key, prefix+"node:"), ":")
 	var tenant, cidStr, raw string
@@ -453,7 +453,7 @@ func classifyNodeKeyK2(prefix, key string) ClassifiedKey {
 	}
 	return ClassifiedKey{
 		SourceKey: key,
-		Class:     ClassMigratable,
+		Class:     ClassificationMigratable,
 		Reason:    "unique tuple, strict segments, exact round-trip",
 		Schema:    store.KeySchemaLegacy,
 		Tuple:     &store.ParsedNodeKey{TenantID: tenant, CredentialID: cid, RawModel: raw},
@@ -462,7 +462,7 @@ func classifyNodeKeyK2(prefix, key string) ClassifiedKey {
 
 func classifyWindowKeyK2(prefix, key string) ClassifiedKey {
 	if strings.HasPrefix(key, prefix+"win:k2:") {
-		return ClassifiedKey{SourceKey: key, Class: ClassCanonicalPresent, Reason: "canonical window key", Schema: store.KeySchemaK2}
+		return ClassifiedKey{SourceKey: key, Class: ClassificationCanonicalPresent, Reason: "canonical window key", Schema: store.KeySchemaK2}
 	}
 	rest := strings.TrimPrefix(key, prefix+"win:")
 	bucket := rest
@@ -498,7 +498,7 @@ func classifyWindowKeyK2(prefix, key string) ClassifiedKey {
 	}
 	return ClassifiedKey{
 		SourceKey: key,
-		Class:     ClassMigratable,
+		Class:     ClassificationMigratable,
 		Reason:    "unique window tuple, strict segments, exact round-trip",
 		Schema:    store.KeySchemaLegacy,
 		Tuple:     &store.ParsedNodeKey{TenantID: tenant, CredentialID: cid, RawModel: raw},
@@ -506,11 +506,11 @@ func classifyWindowKeyK2(prefix, key string) ClassifiedKey {
 }
 
 func excludedK2(key, reason string) ClassifiedKey {
-	return ClassifiedKey{SourceKey: key, Class: ClassExcludedNonAuthoritative, Reason: reason}
+	return ClassifiedKey{SourceKey: key, Class: ClassificationExcludedNonAuthoritative, Reason: reason}
 }
 
 func ambiguousK2(key, reason string) ClassifiedKey {
-	return ClassifiedKey{SourceKey: key, Class: ClassAmbiguous, Reason: reason}
+	return ClassifiedKey{SourceKey: key, Class: ClassificationAmbiguous, Reason: reason}
 }
 
 func isAllDigitsK2(s string) bool {

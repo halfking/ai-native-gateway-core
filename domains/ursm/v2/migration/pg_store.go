@@ -69,7 +69,7 @@ func (p *PGStore) OpenRun(ctx context.Context, run RunRecord) error {
 	return nil
 }
 
-func (p *PGStore) UpsertEntries(ctx context.Context, ledgerID string, entries []Entry) error {
+func (p *PGStore) UpsertEntries(ctx context.Context, ledgerID string, entries []EntryRecord) error {
 	if p == nil || p.pool == nil {
 		return errors.New("ursm.v2: PGStore requires pgx pool")
 	}
