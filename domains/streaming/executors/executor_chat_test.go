@@ -3,6 +3,7 @@ package executors
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -347,4 +348,36 @@ func TestSelectUpstreamTimeout_NoAdapterUsesStreamTimeout(t *testing.T) {
 	if got != 900*time.Second {
 		t.Errorf("without adapter, streaming should use StreamTimeout=900s, got %v", got)
 	}
+}
+
+// TestExecuteHooks_RoundTrip (SP-03, 2026-08-19) covers the public
+// accessor for ExecuteHooks (WithExecuteHooks + ExecuteHooksFromContext).
+// Verifies:
+//   - nil hook passes through ctx untouched
+//   - non-nil hook is retrievable from the same context
+//   - nil ctx returns nil
+func TestExecuteHooks_RoundTrip(t *testing.T) {
+	t.Run("nil hooks keep ctx unchanged", func(t *testing.T) {
+		ctx := context.Background()
+		got := WithExecuteHooks(ctx, nil)
+		if got != ctx {
+			t.Errorf("WithExecuteHooks(nil) should return same ctx, got %v", got)
+		}
+	})
+	t.Run("hooks round-trip", func(t *testing.T) {
+		hooks := &ExecuteHooks{OnCompressing: func() {}, OnCompressed: func(error) {}}
+		ctx := WithExecuteHooks(context.Background(), hooks)
+		got := ExecuteHooksFromContext(ctx)
+		if got != hooks {
+			t.Errorf("ExecuteHooksFromContext() = %v, want %v", got, hooks)
+		}
+	})
+	t.Run("missing hooks returns nil", func(t *testing.T) {
+		if got := ExecuteHooksFromContext(context.Background()); got != nil {
+			t.Errorf("missing hooks should return nil, got %v", got)
+		}
+		if got := ExecuteHooksFromContext(nil); got != nil { //nolint:staticcheck // intentional nil-ctx test
+			t.Errorf("nil ctx should return nil, got %v", got)
+		}
+	})
 }
