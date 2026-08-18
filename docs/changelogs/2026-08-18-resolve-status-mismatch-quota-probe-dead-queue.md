@@ -123,3 +123,24 @@
 测试：`pipeline_test.go` 新增过期 cool 半开 / 未来 cool 仍拦 / 无 cool
 的 disabled 仍拦 三个用例。
 
+## 7. 提交前审计修正
+
+审计并快进同步了 6 个他人提交（v1603 release、credential 17 follow-up、
+URSM k2 key primitives、质量页面等），本修复文件与其没有重叠，未丢弃任何
+远程改动。额外修正：
+
+1. **手工禁用优先级**：`apply_admin.lua` 的 force-disable 会写
+   `manual_hold=1` 与 `available=0`，但可能保留此前自动熔断的
+   `cool_until_ms`。半开逻辑现在显式跳过 `manual_hold=1`，防止手工禁用
+   在旧 cool 到期后被意外放回路由；补回归测试。
+2. **fast-probe 生命周期闭环**：开启 queue consumer 后，周期性 quota
+   worker 可重复提交同一 credential，而每项会等待 5 分钟。现按
+   credential 去重，任务结束/队列满/关停时均释放 pending 标记；延迟
+   goroutine 纳入 `probeWG`，`Stop()` 等待其退出。gateway shutdown 先停
+   periodic/balance producer 再停 consumer，避免末尾 tick 向已停止消费者
+   入队；补 -race 测试。
+3. **5h 文本精度**：英文 5h 正则加词边界，避免把 `25 hours` / `15 hours`
+   尾部的 `5 hours` 误判为 5 小时窗口；保留中文无词边界场景的保守偏早
+   恢复策略（探活会纠偏）；补正反例测试。
+4. **测试质量**：移除 `ursmViewKey` collision 测试中的恒真条件。
+

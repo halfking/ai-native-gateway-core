@@ -139,7 +139,7 @@ func TestApplyURSMOverlayKeepsSQLVetoReason(t *testing.T) {
 }
 
 func TestURSMViewKeyIsCollisionFree(t *testing.T) {
-	if ursmViewKey(1, "a:b") == ursmViewKey(1, "a:b") && ursmViewKey(12, "m") == ursmViewKey(1, "2m") {
-		t.Fatalf("key collision between (1,\"2m\") and (12,\"m\")")
+	if ursmViewKey(12, "m") == ursmViewKey(1, "2m") {
+		t.Fatalf("key collision between (12,\"m\") and (1,\"2m\")")
 	}
 }

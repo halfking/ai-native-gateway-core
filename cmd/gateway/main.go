@@ -5611,6 +5611,15 @@ func main() {
 		if probeQueueWorker != nil {
 			probeQueueWorker.Stop()
 		}
+		// Quota probe producers must stop before their shared
+		// CredentialProbeV2 consumer; otherwise a final ticker event can
+		// enqueue work after the consumer has exited.
+		if periodicQuotaProbe != nil {
+			periodicQuotaProbe.Stop()
+		}
+		if balanceQuotaProbe != nil {
+			balanceQuotaProbe.Stop()
+		}
 		if credProbeV2 != nil {
 			credProbeV2.Stop()
 		}

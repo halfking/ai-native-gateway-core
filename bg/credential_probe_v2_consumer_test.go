@@ -11,7 +11,7 @@ import (
 // =true the legacy Start() is skipped, and nothing consumed
 // fastReprobeQueue. PeriodicQuotaProbe/BalanceQuotaProbe kept submitting,
 // the 64-slot queue filled, and every quota-recovery probe was dropped
-// ("fast probe queue full") — quota-exhausted credentials never recovered
+// ("fast probe queue full") - quota-exhausted credentials never recovered
 // even after the upstream window reset.
 //
 // The probe delay is set long so the drained goroutines park on their delay
@@ -28,6 +28,9 @@ func TestStartFastProbeConsumerDrainsQueue(t *testing.T) {
 	}
 	if got := c.fastProbeQueueLen(); got != 64 {
 		t.Fatalf("queue should cap at 64 without a consumer, got %d", got)
+	}
+	if got := c.fastProbePendingLen(); got != 64 {
+		t.Fatalf("pending set should track the queued credentials, got %d", got)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -54,6 +57,55 @@ func TestStartFastProbeConsumerDrainsQueue(t *testing.T) {
 
 	cancel()
 	c.Stop()
+	if got := c.fastProbePendingLen(); got != 0 {
+		t.Fatalf("Stop must clear pending fast probes, got %d", got)
+	}
+}
+
+// TestFastProbeDeduplicatesCredential verifies a periodic quota worker cannot
+// turn one credential into an unbounded pile of sleeping delayed goroutines.
+// Repeated submissions while the first task is queued or waiting must be
+// coalesced; cancellation releases the pending mark.
+func TestFastProbeDeduplicatesCredential(t *testing.T) {
+	t.Setenv("LLM_GATEWAY_CRED_PROBE_V2_FAST_REPROBE_DELAY", "1h")
+	t.Setenv("LLM_GATEWAY_CRED_PROBE_V2_INTERVAL", "1h")
+
+	c := NewCredentialProbeV2(nil, nil)
+	for i := 0; i < 128; i++ {
+		c.SubmitFastProbe(36)
+	}
+	if got := c.fastProbeQueueLen(); got != 1 {
+		t.Fatalf("duplicate credential should occupy one queue slot, got %d", got)
+	}
+	if got := c.fastProbePendingLen(); got != 1 {
+		t.Fatalf("duplicate credential should have one pending mark, got %d", got)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	c.StartFastProbeConsumer(ctx)
+	deadline := time.Now().Add(5 * time.Second)
+	for c.fastProbeQueueLen() > 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("consumer did not receive duplicate probe")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// The delayed task is now waiting; another submission still must coalesce.
+	c.SubmitFastProbe(36)
+	if got := c.fastProbePendingLen(); got != 1 {
+		t.Fatalf("waiting delayed probe should remain coalesced, got %d marks", got)
+	}
+
+	cancel()
+	c.Stop()
+	if got := c.fastProbePendingLen(); got != 0 {
+		t.Fatalf("Stop must release the delayed probe mark, got %d", got)
+	}
+	// Stopped workers reject new submissions and cannot accumulate a new mark.
+	c.SubmitFastProbe(36)
+	if got := c.fastProbePendingLen(); got != 0 {
+		t.Fatalf("stopped worker accepted a new pending probe, got %d", got)
+	}
 }
 
 // TestStartFastProbeConsumerSkipsCycleAll verifies the consumer-only mode

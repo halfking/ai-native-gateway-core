@@ -412,11 +412,13 @@ var quotaResetsRe = regexp.MustCompile(
 		// （"usage limit exceeded ... every 5 hours"，无 reset 时间戳）。
 		// 提及 5 小时窗口即表明这是周期性重置窗口，不是永久耗尽；
 		// 旧逻辑落到 KindQuotaPermanent → permanently_exhausted 无限挂起。
-		`five[_ -]?hour|` +
-		`5[_ -]?hours?|` +
-		`hour[_ -]?5|` +
-		`每.{0,3}5.{0,3}小时|` +
-		`5.{0,3}小时|` +
+		// \b 词边界防止误吞 "25 hours"/"15 hours" 或 "25小时" 的尾部子串；
+		// standalone `5小时`/`每5小时` 仍会匹配，恢复时间再由探活纠偏。
+		`\bfive[_ -]?hours?\b|` +
+		`\b5[_ -]?hours?\b|` +
+		`\bhour[_ -]?5\b|` +
+		`每.{0,3}\b5.{0,3}小时|` +
+		`\b5.{0,3}小时|` +
 		// Chinese "重置" with up to 80 chars between the noun and 重置
 		// (covers 智谱AI "...限额将在 YYYY-MM-DD HH:MM:SS 重置。").
 		`(限额|使用量|配额|额度|余额).{0,80}重置|` +
@@ -945,8 +947,8 @@ func midnightUTCShared(t time.Time) time.Time {
 
 // fiveHourWindowHintRe mirrors domains/credential/writer.fiveHourWindowRe:
 // any mention of a 5-hour usage window in a quota-exhausted body means the
-// limit rolls on that window cadence.
-var fiveHourWindowHintRe = regexp.MustCompile(`(?i)(five[_ -]?hour|5[_ -]?hours?|hour[_ -]?5|每.{0,3}5.{0,3}小时|5.{0,3}小时)`)
+// limit rolls on that window cadence. Word boundaries keep 25h variants out.
+var fiveHourWindowHintRe = regexp.MustCompile(`(?i)(?:\bfive[_ -]?hours?\b|\b5[_ -]?hours?\b|\bhour[_ -]?5\b|每.{0,3}\b5.{0,3}小时|\b5.{0,3}小时)`)
 
 // utc8Zone is the fixed UTC+8 zone used to align 5-hour quota windows.
 var utc8Zone = time.FixedZone("UTC+8", 8*3600)
