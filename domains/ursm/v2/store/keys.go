@@ -31,11 +31,20 @@ func NodeKey(prefix string, cid int, raw string) string {
 // write these as one unit. The per-request dedup key is derived from Node at
 // the store layer (requestDedupKey), so it follows the node key's schema
 // automatically and is not listed here.
+//
+// The tuple fields retain the identity the set was built from: schema-aware
+// paths (dual/canonical) derive the k2 set from them instead of re-parsing
+// the legacy key, which delimiter-bearing tuples cannot survive.
 type NodeKeySet struct {
+	Prefix string
 	Node   string
 	Win1m  string
 	Win5m  string
 	Win30m string
+
+	TenantID     string
+	CredentialID int
+	RawModel     string
 }
 
 // NodeKeySetForTenant builds the complete key set for one
@@ -43,10 +52,15 @@ type NodeKeySet struct {
 // constructors. Callers must not assemble these keys by hand.
 func NodeKeySetForTenant(prefix, tenant string, cid int, raw string) NodeKeySet {
 	return NodeKeySet{
+		Prefix: prefix,
 		Node:   NodeKeyForTenant(prefix, tenant, cid, raw),
 		Win1m:  WindowKeyForTenant(prefix, tenant, cid, raw, "1m"),
 		Win5m:  WindowKeyForTenant(prefix, tenant, cid, raw, "5m"),
 		Win30m: WindowKeyForTenant(prefix, tenant, cid, raw, "30m"),
+
+		TenantID:     tenant,
+		CredentialID: cid,
+		RawModel:     raw,
 	}
 }
 
