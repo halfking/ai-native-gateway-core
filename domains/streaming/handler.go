@@ -2669,6 +2669,51 @@ func (h *ChatHandler) serveWithExecutor(
 		h.auditor.Emit(context.Background(), auditBuilder.Build())
 	}()
 
+	// 2026-08-18 (B1-PR1): commit the HTTP 200 + first SSE keepalive comment
+	// IMMEDIATELY after we know the request is streaming — BEFORE the
+	// session compressor, model resolution, and other heavy stages run.
+	//
+	// Root cause of the e0a849a3f29abff690818a812fa44c34 incident (and
+	// the cluster of 838-message minimax-m3 provider_error failures on
+	// 154 around 11:30-12:00 2026-08-18): large request bodies with
+	// 800+ messages made session compressor Prepare take 5-10 seconds,
+	// during which the gateway sent NO bytes to the client. The
+	// opencode SDK's HTTP idle timeout (default ~10s) fired and the
+	// client disconnected, canceling r.Context() — by the time the
+	// pre-stream keepalive would have started, the connection was
+	// already dead. Direct connections to api.minimaxi.com did not
+	// have this problem because the vendor endpoint emits SSE
+	// keep-alive pings during thinking.
+	//
+	// This block MUST run before the session compressor / candidate
+	// resolution pipeline so the client sees a healthy connection.
+	// The keepalive is a pure SSE comment (": keep-alive\n\n") which
+	// every conformant SSE parser silently ignores, so it is wire-safe
+	// even for non-streaming clients (they'll just see the comments
+	// before the actual error envelope).
+	if isStream {
+		cfg := currentStreamRuntimeConfig()
+		if cfg.enablePreStreamKeepalive {
+			if psk, ok := startPreStreamKeepalive(r.Context(), w, cfg.keepaliveInterval, requestID); ok {
+				preStream = psk
+				preStreamPrepared = true
+				// 2026-08-15 (A-P2-6): every later body write on this
+				// connection (bridges, interceptor chain, prewarmed error
+				// envelopes, survival coordinator) goes through the
+				// keepalive's serialized channel so keepalive comments and
+				// stream frames can never interleave mid-frame. Headers and
+				// status still delegate to the original ResponseWriter.
+				w = psk.Writer()
+				slog.Info("pre_stream_keepalive_started_early",
+					"request_id", requestID,
+					"reason", "send_200_immediately_to_prevent_client_idle_timeout",
+					"keepalive_interval_ms", cfg.keepaliveInterval.Milliseconds(),
+					"body_bytes", len(bodyBytes),
+				)
+			}
+		}
+	}
+
 	// ── Armor security check (Track A B1-5, 2026-06-25) ──────────────────
 	// Score prompt for prompt-injection before provider resolution.
 	// v1 observe-only: even if score > threshold, never block (only log).
@@ -2848,13 +2893,27 @@ func (h *ChatHandler) serveWithExecutor(
 				slog.Debug("omnifree resolve failed, fall back to provider resolver",
 					"error", omniErr, "model", clientModel, "request_id", requestID)
 			}
+			resolveStart := time.Now()
 			candidates, policy, requestModality, err = resolveCandidatesForRequest(
 				r.Context(), h.provider, clientModel, clientID.Fingerprint.ClientProfile, tenantID, bodyBytes,
 			)
+			slog.Info("candidates_resolved",
+				"request_id", requestID,
+				"elapsed_ms", time.Since(resolveStart).Milliseconds(),
+				"candidates_count", len(candidates),
+				"err", err,
+			)
 		}
 	} else {
+		resolveStart := time.Now()
 		candidates, policy, requestModality, err = resolveCandidatesForRequest(
 			r.Context(), h.provider, clientModel, clientID.Fingerprint.ClientProfile, tenantID, bodyBytes,
+		)
+		slog.Info("candidates_resolved",
+			"request_id", requestID,
+			"elapsed_ms", time.Since(resolveStart).Milliseconds(),
+			"candidates_count", len(candidates),
+			"err", err,
 		)
 	}
 
@@ -3143,6 +3202,7 @@ func (h *ChatHandler) serveWithExecutor(
 		if len(candidates) > 0 && candidates[0].ContextWindow != nil {
 			ctxWindow = *candidates[0].ContextWindow
 		}
+		scPrepareStart := time.Now()
 		scResult = h.sessionCompressor.Prepare(
 			r.Context(),
 			bodyBytes,
@@ -3151,6 +3211,18 @@ func (h *ChatHandler) serveWithExecutor(
 			protocolForSC,
 			ctxWindow,
 			false, // not streaming yet at this point
+		)
+		// 2026-08-18 (B1-PR2): detailed timing log around session compressor.
+		// The 838-message e0a849a3f29abff690818a812fa44c34 incident showed
+		// Prepare can take 5-10s for large bodies — this log surfaces the
+		// exact cost so we can attribute client-timeout cancellations to
+		// the right stage.
+		slog.Info("session_compressor_prepare_done",
+			"request_id", requestID,
+			"elapsed_ms", time.Since(scPrepareStart).Milliseconds(),
+			"body_bytes", len(bodyBytes),
+			"has_session_id", gwSessionID != "",
+			"ctx_window", ctxWindow,
 		)
 		if scResult != nil && len(scResult.OutboundBody) > 0 {
 			// NeverWorse guard: the compressor must never inflate the request
@@ -3422,21 +3494,22 @@ func (h *ChatHandler) serveWithExecutor(
 	// thinking; the gateway now fills that gap for every protocol.
 	//
 	// The keepalive emits pure SSE comments (": keep-alive\n\n") which every
-	// conformant SSE parser silently ignores, so this is wire-safe for all
-	// protocol shapes (see writeThinking comment re: opencode Zod union).
-	if isStream {
+	// 2026-08-18 (B1-PR1): pre-stream keepalive is now started earlier
+	// (right after isStream is determined, see lines ~2680 above). This
+	// late-stage initialization is kept as a no-op fallback for callers
+	// that haven't gone through the early-start path, but the normal
+	// stream path will see preStreamPrepared=true already.
+	if isStream && !preStreamPrepared {
 		cfg := currentStreamRuntimeConfig()
 		if cfg.enablePreStreamKeepalive {
 			if psk, ok := startPreStreamKeepalive(r.Context(), w, cfg.keepaliveInterval, requestID); ok {
 				preStream = psk
 				preStreamPrepared = true
-				// 2026-08-15 (A-P2-6): every later body write on this
-				// connection (bridges, interceptor chain, prewarmed error
-				// envelopes, survival coordinator) goes through the
-				// keepalive's serialized channel so keepalive comments and
-				// stream frames can never interleave mid-frame. Headers and
-				// status still delegate to the original ResponseWriter.
 				w = psk.Writer()
+				slog.Warn("pre_stream_keepalive_late_fallback",
+					"request_id", requestID,
+					"reason", "early_start_missed_should_not_happen",
+				)
 			}
 		}
 	}

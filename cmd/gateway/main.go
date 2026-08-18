@@ -1167,7 +1167,8 @@ func main() {
 				logDir = "./logs/raw_data"
 			}
 			maxSizeStr := os.Getenv("LLM_GATEWAY_RAW_LOG_MAX_SIZE")
-			maxSize := int64(200 * 1024 * 1024) // 200MB default
+			// 2026-08-18: 默认 100MB/文件（rule 11 §3 红线），保留 10 个 ≈ 1000MB。
+			maxSize := int64(100 * 1024 * 1024) // 100MB default
 			if maxSizeStr != "" {
 				if parsed, err := strconv.ParseInt(maxSizeStr, 10, 64); err == nil && parsed > 0 {
 					maxSize = parsed
