@@ -164,11 +164,11 @@ func (r *DailyMonthlyRollup) Refresh(ctx context.Context, since, until time.Time
 
 const dailyInsertSQL = `
 WITH latest AS (
-	SELECT DISTINCT ON (event_id)
-		*
-	FROM usage_facts
-	WHERE occurred_at >= $1 AND occurred_at < $2
-	ORDER BY event_id, revision DESC, finalized_at DESC
+	SELECT f.*
+	FROM usage_facts f
+	JOIN stats_event_dedup d
+	  ON d.event_id = f.event_id AND d.occurred_at = f.occurred_at
+	WHERE f.occurred_at >= $1 AND f.occurred_at < $2
 )
 INSERT INTO stats_usage_daily (
 	day_utc, tenant_id, provider_id, credential_id, canonical_id, raw_model_name,
