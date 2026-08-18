@@ -5,7 +5,7 @@
 >   - `docs/handoff/2026-08-18-credential-17-fernet-ciphertext-fix.md`
 >   - handoff: `/tmp/handoff-20260818-195012.md`（第九/十会话主交接）
 >   - runbook: `deploy/prometheus/NATIVE-245-DEPLOY.md`
->   - fix commit: 待提交（commit message 含本文件引用）
+>   - fix commit: `3b6bdce18`（已 push 到 `origin/main`）
 
 ## 标题
 
@@ -53,9 +53,9 @@ curl -s -G "http://127.0.0.1:9090/api/v1/query" \
 | 假设 | 验证手段 | 结果 |
 |---|---|---|
 | `/metrics` 401 拒 scrape | bearer_token_file 检查（`prometheus.yml:62`，`secrets/admin_token` 25B 0600） | ✅ 已正确配置，scrape UP |
-| 网关没编译进 metric 代码 | `strings` on `releases/1614-ce8920cf/gateway` | ✅ 含 `"llmgw_credential_reveal_failure_total"` + `"provider.registerCredentialRevealMetrics"` |
+| 网关没编译进 metric 代码（原始故障时） | `strings` on `releases/1614-ce8920cf/gateway` | ✅ 含 `"llmgw_credential_reveal_failure_total"` + `"provider.registerCredentialRevealMetrics"` |
 | 源码缺失 metric 注册 | `git log -1 --format="%ai" e6bcf4723` → 2026-08-18 14:17；`6b083b70` 在 17:30，`ce8920cf` 更晚 | ✅ main 上源码完整 |
-| 网关进程跑旧 binary | `/proc/$(pgrep gateway)/exe` 验证 | ✅ 当前 PID 用 `1614-ce8920cf/gateway` |
+| 网关进程跑旧 binary（原始故障时） | `/proc/$(pgrep gateway)/exe` 验证 | ✅ 原始 PID 使用 `1614-ce8920cf/gateway` |
 | registry 不匹配（default vs 私有） | 源码 `middleware/prometheus_mw.go:37-39` 是 `promhttp.Handler()` → `HandlerFor(DefaultGatherer, …)`；repo 无 `prometheus.NewRegistry()` | ✅ 共享同一 default registry |
 | reveal 路径从未执行，0 值 lazy-export skip | —— | ❌ **不成立**：prometheus/client_golang 的 *Vec 类型**只要没有 child，gather 完全不输出**（连 HELP/TYPE 都不在）——不是 lazy，而是 absent |
 
@@ -129,14 +129,14 @@ func initializeCandidateDiagnosticMetrics() {
    ```bash
    TOKEN=$(cat /opt/monitoring/prometheus/secrets/admin_token)
    curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8781/metrics | grep "^llmgw_credential_reveal_failure_total"
-   # 期望：7 行 +HELP +TYPE
+   # 期望：2 行 HELP/TYPE + 7 条 `llmgw_credential_reveal_failure_total{provider_id="0",reason=...} 0` 系列
    ```
 
 ## 引用
 
 - 真实 metric 注册代码（修复后）：`provider/credential_decrypt_metrics.go`
 - main 显式调用：`cmd/gateway/main.go`（`metrics.SetGlobal` 之后）
-- 修复 commit：待提交
-- 当前 245 binary：`/opt/llm-gateway-go/releases/1614-ce8920cf/gateway`（修复后切换到 1617+）
+- 修复 commit：`3b6bdce18`（已 push 到 `origin/main`）
+- 当前 245 binary：`/opt/llm-gateway-go/releases/1617-3b6bdce18/gateway`（Linux x86_64，systemd `llmgo-245.service`）
 - systemd unit：`/etc/systemd/system/llmgo-245.service`
 - 告警规则：`deploy/prometheus/rules/credential-reveal-failures.yml`（5 条）
