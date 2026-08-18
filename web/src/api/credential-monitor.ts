@@ -98,10 +98,14 @@ export interface CallEntry {
   err?: string // error kind
 }
 
-export function getCredentialMonitorSummary(opts?: { provider_id?: number; credential_id?: number }, requestOptions?: RequestOptions) {
+export function getCredentialMonitorSummary(
+  opts?: { provider_id?: number; credential_id?: number; mode?: 'core' | 'detail' },
+  requestOptions?: RequestOptions,
+) {
   const params = new URLSearchParams()
   if (opts?.provider_id) params.set('provider_id', String(opts.provider_id))
   if (opts?.credential_id) params.set('credential_id', String(opts.credential_id))
+  if (opts?.mode) params.set('mode', opts.mode)
   const qs = params.toString()
   return req<{ credentials: CredentialMonitorSummary[]; count: number; meta?: CredentialMonitorMeta }>(
     'GET',
