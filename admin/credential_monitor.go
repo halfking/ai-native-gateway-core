@@ -1129,10 +1129,13 @@ func (m *CredentialMonitorHandlers) handleModelHistory(w http.ResponseWriter, r 
 }
 
 // handleCredentialDecisions returns recent routing decisions for a specific credential (2026-06-23).
-// GET /api/credentials/decisions?credential_id=123&limit=50
+// GET /api/credentials/decisions?credential_id=123&limit=50[&model=gpt-4o]
 //
 // Returns routing_decision_log entries where chosen_credential_id matches.
 // Useful for the credential detail drawer to show "what traffic is this credential handling".
+// 2026-08-18: optional model filter scopes the list to one model×credential pair
+// (dashboard node detail drawer). Matches model/client_model/outbound_model
+// case-insensitively because callers may pass canonical, raw, or client names.
 func (m *CredentialMonitorHandlers) handleCredentialDecisions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -1154,24 +1157,27 @@ func (m *CredentialMonitorHandlers) handleCredentialDecisions(w http.ResponseWri
 	defer cancel()
 
 	// tenant_admin callers can only see decisions for their own tenant
-	var tenantClause string
-	var args []any
+	args := []any{credentialID}
+	clauses := ""
 	if IsTenantAdmin(r) {
-		tenantClause = "AND rdl.tenant_id = $2"
-		args = []any{credentialID, GetTenantID(r), limit}
-	} else {
-		args = []any{credentialID, limit}
+		args = append(args, GetTenantID(r))
+		clauses += fmt.Sprintf(" AND rdl.tenant_id = $%d", len(args))
 	}
+	if model := queryString(r, "model"); model != "" {
+		args = append(args, model)
+		clauses += fmt.Sprintf(" AND (lower(rdl.model) = lower($%d) OR lower(rdl.client_model) = lower($%d) OR lower(rdl.outbound_model) = lower($%d))", len(args), len(args), len(args))
+	}
+	args = append(args, limit)
 
 	q := fmt.Sprintf(`
 		SELECT rdl.ts, rdl.request_id::text, rdl.model, rdl.tier, rdl.success,
 		       rdl.latency_ms, rdl.error_class, rdl.chosen_provider_id,
 		       rdl.client_model, rdl.outbound_model, rdl.sticky_hit
 		FROM routing_decision_log rdl
-		WHERE rdl.chosen_credential_id = $1 %s
+		WHERE rdl.chosen_credential_id = $1%s
 		ORDER BY rdl.ts DESC
 		LIMIT $%d
-	`, tenantClause, len(args))
+	`, clauses, len(args))
 
 	rows, err := m.h.db.Query(ctx, q, args...)
 	if err != nil {

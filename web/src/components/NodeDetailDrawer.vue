@@ -21,6 +21,8 @@ import { nodesRef, type LiveNodeStatus } from '../composables/liveStreamStore'
 const props = defineProps<{
   modelValue: boolean
   node: LiveNodeStatus | null
+  /** 模型×节点 scope：来自模型分组的 raw 模型名。传入后抽屉锁定该模型，不展示/切换其他模型。 */
+  model?: string
 }>()
 
 const emit = defineEmits<{
@@ -61,7 +63,14 @@ const currentNode = computed<LiveNodeStatus | null>(() => {
   return nodesRef.value.find(node => node.credential_id === props.node?.credential_id) ?? props.node
 })
 const node = currentNode
-const models = computed<CredentialModelStatus[]>(() => monitor.value?.models ?? [])
+// 模型×节点 scope：有 scope 时模型状态区只显示该模型，不展示无关模型。
+const scopedModel = computed(() => props.model?.trim() || '')
+const models = computed<CredentialModelStatus[]>(() => {
+  const all = monitor.value?.models ?? []
+  const scope = scopedModel.value.toLowerCase()
+  if (!scope) return all
+  return all.filter(model => model.raw_model_name.toLowerCase() === scope)
+})
 const selectedModelStatus = computed(() => models.value.find(model => model.raw_model_name === selectedModel.value) ?? null)
 const headlineState = computed(() => {
   const node = currentNode.value
@@ -149,33 +158,56 @@ async function loadNode() {
   windowStats.value = null
   history.value = []
   decisions.value = []
+  // scope 模型优先（模型分组入口传入的 raw 模型名）；无 scope 时沿用
+  // 已选模型或首个 raw 绑定作为初始猜测，全量请求一轮并行发出。
+  const scope = scopedModel.value
   const requestedModel = selectedModel.value
-  const preferredModel = (requestedModel && node.raw_models?.includes(requestedModel))
+  const fallbackModel = (requestedModel && node.raw_models?.includes(requestedModel))
     ? requestedModel
     : (node.raw_models?.[0] || '')
-  selectedModel.value = preferredModel
+  const initialModel = scope || fallbackModel
+  selectedModel.value = initialModel
   try {
-    const [monitorResult, decisionResult] = await Promise.allSettled([
-      getCredentialMonitorSummary({ credential_id: node.credential_id }),
-      getCredentialDecisions(node.credential_id, 30),
-    ])
-    if (requestSequence !== sequence || currentNode.value?.credential_id !== node.credential_id) return
-    if (monitorResult.status === 'fulfilled') {
-      const monitorPayload = monitorResult.value as { credentials?: CredentialMonitorSummary[] }
-      monitor.value = monitorPayload.credentials?.[0] ?? null
-      const preferred = monitor.value?.models?.find(model => model.raw_model_name === preferredModel)
-        ?? monitor.value?.models?.find(model => model.probe_state === 'broken_confirmed')
-        ?? monitor.value?.models?.[0]
-      selectedModel.value = preferred?.raw_model_name ?? preferredModel
-    } else {
-      loadError.value = '未能加载节点的持久化明细；仍展示实时状态。'
-    }
-    if (decisionResult.status === 'fulfilled') {
-      decisions.value = (decisionResult.value as { decisions?: CredentialRoutingDecision[] }).decisions ?? []
-    }
+    const monitorAndDecisions = (async () => {
+      const [monitorResult, decisionResult] = await Promise.allSettled([
+        getCredentialMonitorSummary({ credential_id: node.credential_id }),
+        // scope 时服务端按模型过滤（limit 提到 50）；无 scope 保持凭据级全量。
+        scope
+          ? getCredentialDecisions(node.credential_id, 50, scope)
+          : getCredentialDecisions(node.credential_id, 30),
+      ])
+      if (requestSequence !== sequence || currentNode.value?.credential_id !== node.credential_id) return
+      if (monitorResult.status === 'fulfilled') {
+        const monitorPayload = monitorResult.value as { credentials?: CredentialMonitorSummary[] }
+        monitor.value = monitorPayload.credentials?.[0] ?? null
+        // 仅无 scope 时允许 monitor 重选默认模型（broken 优先）；scope 锁定不重选。
+        if (!scope) {
+          const preferred = monitor.value?.models?.find(model => model.raw_model_name === initialModel)
+            ?? monitor.value?.models?.find(model => model.probe_state === 'broken_confirmed')
+            ?? monitor.value?.models?.[0]
+          const nextModel = preferred?.raw_model_name ?? initialModel
+          if (nextModel && nextModel !== initialModel) {
+            // 初始猜测作废：selectedModel 变化后，在途的初始 candidate/window
+            // 请求会被自身 stale 守卫丢弃；这里补拉新模型的数据。
+            selectedModel.value = nextModel
+            await Promise.all([
+              loadCandidate(nextModel, requestSequence),
+              loadModelDetails(nextModel, requestSequence),
+            ])
+          }
+        }
+      } else {
+        loadError.value = '未能加载节点的持久化明细；仍展示实时状态。'
+      }
+      if (decisionResult.status === 'fulfilled') {
+        decisions.value = (decisionResult.value as { decisions?: CredentialRoutingDecision[] }).decisions ?? []
+      }
+    })()
+    // 单轮并行：monitor+decisions 与初始模型的 candidate/window/history 同时发出。
     await Promise.all([
-      loadCandidate(selectedModel.value, requestSequence),
-      loadModelDetails(selectedModel.value, requestSequence),
+      monitorAndDecisions,
+      initialModel ? loadCandidate(initialModel, requestSequence) : Promise.resolve(),
+      initialModel ? loadModelDetails(initialModel, requestSequence) : Promise.resolve(),
     ])
   } finally {
     if (requestSequence === sequence) loading.value = false
@@ -310,7 +342,8 @@ async function toggleSelectedModel() {
   }
 }
 
-watch(() => [props.modelValue, props.node?.credential_id] as const, ([open]) => {
+// props.model 变化（同一节点换模型分组打开）也要触发重载。
+watch(() => [props.modelValue, props.node?.credential_id, props.model] as const, ([open]) => {
   if (open) {
     activeTab.value = 'detail'
     void loadNode()
