@@ -268,9 +268,18 @@ func (tm *TTLManager) shrinkSessionTTLs(ctx context.Context, target time.Duratio
 				}
 				var over []string
 				for j, cmd := range ttlCmds {
+					// redis.Nil = 键已被并发删除（race with SCAN）；跳过，
+					// 不要把它当成 ttl=0 去"收紧"。
 					// -1 = 无 TTL（CreateV2 泄漏键等）：也收回 target，
 					// 让它们重新进入自然过期轨道。
-					if cmd.Err() == nil && (cmd.Val() < 0 || cmd.Val() > target) {
+					if cmd.Err() == redis.Nil {
+						continue
+					}
+					if cmd.Err() != nil {
+						continue
+					}
+					val := cmd.Val()
+					if val < 0 || val > target {
 						over = append(over, batch[j])
 					}
 				}

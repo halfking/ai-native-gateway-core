@@ -48,3 +48,29 @@ func TestTTLManager_DoesNotTouchURSMKeys(t *testing.T) {
 		t.Fatalf("ursm TTL touched on exit: %s -> %s", originalURSM, got)
 	}
 }
+
+// shrinkSessionTTLs must skip keys that disappear between SCAN and TTL
+// (the SCAN cursor can return keys another writer deleted before our
+// pipeline runs); treating them as "no TTL" / "ttl=0" would write Expire
+// against an empty slot, creating a phantom session key. Verified here by
+// deleting the key after SCAN, then asserting shrinkSessionTTLs does not
+// recreate it.
+func TestTTLManager_ShrinkSkipsMissingKeys(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rc := session.NewRedisClient(mr.Addr(), "", 0)
+	tm := NewTTLManager(rc, time.Hour, 30*24*time.Hour)
+
+	mr.Set("session:phantom", "namespace=gw")
+	mr.SetTTL("session:phantom", 30*24*time.Hour)
+
+	if err := tm.EnterDegradedMode(t.Context()); err != nil {
+		t.Fatalf("EnterDegradedMode: %v", err)
+	}
+	mr.Del("session:phantom")
+	if err := tm.ExitDegradedMode(t.Context()); err != nil {
+		t.Fatalf("ExitDegradedMode: %v", err)
+	}
+	if mr.Exists("session:phantom") {
+		t.Fatal("shrinkSessionTTLs recreated a deleted key")
+	}
+}
