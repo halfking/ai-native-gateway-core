@@ -9,6 +9,7 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -16,6 +17,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/kaixuan/llm-gateway-go/admin/distlock"
 )
 
 const (
@@ -56,6 +59,51 @@ func (h *Handler) handleSessionSummarizeTitle(w http.ResponseWriter, r *http.Req
 
 	if !requireSessionTaskAccess(w, r, ctx, h.db, taskID) {
 		return
+	}
+
+	// 2026-08-19: per-session, per-trigger-type distributed lock so two
+	// concurrent manual "regenerate" clicks (or cross-replica races) do
+	// not both call the LLM. Auto-title and manual-title have
+	// independent keys so the user can regenerate while auto-title is
+	// mid-run, and vice-versa.
+	//
+	// Follower semantics: wait for the leader, then re-read the stored
+	// title. If the leader wrote one, return it; otherwise fall through
+	// to the normal pipeline so the user sees a useful error rather
+	// than a silent no-op.
+	var lockHandle *distlock.Handle
+	if h.titleDistLock != nil {
+		key := titleDistLockKey("manual", taskID, scopedKey)
+		hh, lerr := h.titleDistLock.Acquire(ctx, distlock.AcquireOpts{
+			Key: key,
+			TTL: 60 * time.Second,
+		})
+		if lerr != nil && !errors.Is(lerr, distlock.ErrNotEnabled) {
+			slog.Warn("session_title: distlock acquire failed; proceeding without lock",
+				"task_id", taskID, "session_id", scopedKey, "error", lerr)
+		} else if hh != nil {
+			lockHandle = hh
+			defer lockHandle.Release(context.Background())
+			if !lockHandle.IsLeader() {
+				waitErr := lockHandle.Wait(ctx)
+				if waitErr == nil {
+					if title, ok := h.loadStoredSessionTitle(ctx, taskID, scopedKey); ok {
+						meta := sessionTitleMeta{
+							TaskID:          taskID,
+							ScopedSessionID: sc.SessionID,
+							GeneratedAt:     time.Now().UTC().Format(time.RFC3339),
+							Model:           "manual-follower",
+						}
+						writeJSON(w, http.StatusOK, sessionTitleResponse{Title: title, Meta: meta})
+						return
+					}
+				}
+				// Leader failed or wait errored — fall through so this
+				// caller can retry rather than silently returning 200.
+				slog.Info("session_title: follower giving up after leader release without title",
+					"task_id", taskID, "session_id", scopedKey, "wait_err", waitErr)
+			}
+		}
 	}
 
 	logs, err := h.loadTaskLogsForTitle(ctx, taskID, sc, r)
@@ -324,6 +372,12 @@ type titleUpdateRequest struct {
 // generated_at=now(), model="manual" so it is distinguishable from
 // auto-generated titles. Empty/whitespace titles are rejected so we
 // never overwrite a usable title with empty data.
+//
+// 2026-08-19: per-session distributed lock so two concurrent PUTs
+// (e.g. operator race + UI rapid edit) do not interleave. Followers
+// wait for the leader, then re-SELECT the row and return whatever the
+// leader wrote — guarantees the API consumer sees the same value
+// that is now in the database, regardless of who "won" the write.
 func (h *Handler) handleSessionTitleUpdate(w http.ResponseWriter, r *http.Request, taskID string) {
 	if taskID == "" {
 		writeError(w, http.StatusBadRequest, "task_id required")
@@ -351,6 +405,44 @@ func (h *Handler) handleSessionTitleUpdate(w http.ResponseWriter, r *http.Reques
 
 	if !requireSessionTaskAccess(w, r, ctx, h.db, taskID) {
 		return
+	}
+
+	// 2026-08-19: acquire the per-session distributed lock. Followers
+	// wait for the leader and re-read the final row so the operator
+	// sees the title that is now persisted, regardless of write order.
+	var lockHandle *distlock.Handle
+	if h.titleDistLock != nil {
+		key := titleDistLockKey("manual", taskID, scopedKey)
+		hh, lerr := h.titleDistLock.Acquire(ctx, distlock.AcquireOpts{
+			Key: key,
+			TTL: 30 * time.Second,
+		})
+		if lerr != nil && !errors.Is(lerr, distlock.ErrNotEnabled) {
+			slog.Warn("session_title_update: distlock acquire failed; proceeding without lock",
+				"task_id", taskID, "session_id", scopedKey, "error", lerr)
+		} else if hh != nil {
+			lockHandle = hh
+			defer lockHandle.Release(context.Background())
+			if !lockHandle.IsLeader() {
+				waitErr := lockHandle.Wait(ctx)
+				if waitErr == nil {
+					if title, ok := h.loadStoredSessionTitle(ctx, taskID, scopedKey); ok {
+						writeJSON(w, http.StatusOK, map[string]any{
+							"task_id":           taskID,
+							"scoped_session_id": scopedKey,
+							"title":             title,
+							"model":             "manual-follower",
+							"updated_at":        time.Now().UTC().Format(time.RFC3339),
+						})
+						return
+					}
+				}
+				// Leader failed — fall through and let this caller
+				// attempt the write again.
+				slog.Info("session_title_update: follower falling through after leader failure",
+					"task_id", taskID, "session_id", scopedKey, "wait_err", waitErr)
+			}
+		}
 	}
 
 	// Manual overrides are stamped with model="manual" so future
@@ -384,6 +476,11 @@ func (h *Handler) handleSessionTitleUpdate(w http.ResponseWriter, r *http.Reques
 // Removes the title row so the next list render falls back to the
 // short-id display, and so a fresh summarize-title can run unblocked.
 // No-op if the row doesn't exist (200 + deleted:false).
+//
+// 2026-08-19: per-session distributed lock so two concurrent DELETEs
+// (or DELETE racing summarize-title) do not interleave. Followers wait
+// for the leader, then re-check the row and return whatever the final
+// state is — guarantees the API consumer sees the row's final state.
 func (h *Handler) handleSessionTitleDelete(w http.ResponseWriter, r *http.Request, taskID string) {
 	if taskID == "" {
 		writeError(w, http.StatusBadRequest, "task_id required")
@@ -400,6 +497,42 @@ func (h *Handler) handleSessionTitleDelete(w http.ResponseWriter, r *http.Reques
 
 	if !requireSessionTaskAccess(w, r, ctx, h.db, taskID) {
 		return
+	}
+
+	// 2026-08-19: acquire the per-session distributed lock. Followers
+	// wait for the leader and re-check the row.
+	var lockHandle *distlock.Handle
+	if h.titleDistLock != nil {
+		key := titleDistLockKey("manual", taskID, scopedKey)
+		hh, lerr := h.titleDistLock.Acquire(ctx, distlock.AcquireOpts{
+			Key: key,
+			TTL: 30 * time.Second,
+		})
+		if lerr != nil && !errors.Is(lerr, distlock.ErrNotEnabled) {
+			slog.Warn("session_title_delete: distlock acquire failed; proceeding without lock",
+				"task_id", taskID, "session_id", scopedKey, "error", lerr)
+		} else if hh != nil {
+			lockHandle = hh
+			defer lockHandle.Release(context.Background())
+			if !lockHandle.IsLeader() {
+				waitErr := lockHandle.Wait(ctx)
+				if waitErr == nil {
+					if _, ok := h.loadStoredSessionTitle(ctx, taskID, scopedKey); !ok {
+						// Leader already deleted the row.
+						writeJSON(w, http.StatusOK, map[string]any{
+							"task_id":           taskID,
+							"scoped_session_id": scopedKey,
+							"deleted":           false,
+						})
+						return
+					}
+				}
+				// Row still exists (or wait errored) — fall through
+				// and retry the delete.
+				slog.Info("session_title_delete: follower falling through after leader release",
+					"task_id", taskID, "session_id", scopedKey, "wait_err", waitErr)
+			}
+		}
 	}
 
 	tag, err := h.db.Exec(ctx, `

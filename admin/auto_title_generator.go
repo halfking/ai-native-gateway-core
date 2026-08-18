@@ -17,6 +17,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/kaixuan/llm-gateway-go/admin/distlock"
 	"github.com/kaixuan/llm-gateway-go/metrics"
 )
 
@@ -33,6 +34,18 @@ const (
 	autoParentRequestIDHeader = "X-Gw-Parent-Request-Id"
 	autoSourceActorHeader     = "X-Gw-Source-Actor"
 )
+
+// titleDistLockKey builds the distributed-lock key for a (kind, taskID,
+// sessionID) tuple. The kind ("auto" or "manual") keeps the two trigger
+// pipelines from blocking each other, matching the operator requirement
+// that auto-title and manual-title are independently concurrency-gated.
+//
+// Key shape: llmgw:distlock:title:<kind>:<taskID>\x00<sessionID>
+// The \x00 separator matches sessionTitleMapKey so cross-pipeline key
+// lookups are stable.
+func titleDistLockKey(kind, taskID, sessionID string) string {
+	return "llmgw:distlock:title:" + kind + ":" + strings.TrimSpace(taskID) + "\x00" + strings.TrimSpace(sessionID)
+}
 
 // AutoTitleGenerator handles automatic session title generation.
 // It runs asynchronously after the first request in a session completes.
@@ -164,6 +177,65 @@ func (g *AutoTitleGenerator) generateTitleAsync(sessionID, tenantID, taskID, req
 		"tenant_id", tenantID,
 		"parent_request_id", parentRequestID,
 	)
+
+	// 2026-08-19: per-session, per-trigger-type distributed lock.
+	//
+	// Why: two concurrent first-turn requests (client retry, racing
+	// sessions, multi-replica deployment) used to both pass
+	// isFirstSuccessfulUserTurn, both spawn a goroutine, both invoke
+	// the LLM, and both attempt the same INSERT — wasting N-1 upstream
+	// LLM calls per duplicate. The session_titles ON CONFLICT DO NOTHING
+	// guard kept the DB consistent but did nothing to suppress the
+	// upstream chatter.
+	//
+	// Semantics (admin/distlock):
+	//   - Acquire returns either a leader handle (proceed) or a
+	//     follower handle (wait, re-check, skip-or-give-up).
+	//   - Leader defers Release; follower Releases too (no-op).
+	//   - Redis errors fall through to "proceed without lock" so a
+	//     Redis outage cannot stop title generation — the DB ON CONFLICT
+	//     guard is the final correctness guarantee.
+	mgr := g.handler.titleDistLock
+	if mgr != nil {
+		key := titleDistLockKey("auto", taskID, sessionID)
+		h, lerr := mgr.Acquire(ctx, distlock.AcquireOpts{
+			Key: key,
+			TTL: 60 * time.Second,
+		})
+		if lerr != nil && !errors.Is(lerr, distlock.ErrNotEnabled) {
+			// Soft-fail: log and proceed so Redis outages don't block
+			// title generation. DB ON CONFLICT keeps us consistent.
+			logger.Warn("auto_title: distlock acquire failed; proceeding without lock",
+				"key", key, "error", lerr)
+		} else if h != nil {
+			defer h.Release(context.Background())
+			if !h.IsLeader() {
+				// Follower: wait for leader to release, then re-check.
+				// Re-check covers two cases:
+				//   - Leader wrote the title → skip this round.
+				//   - Leader failed → skip this round; the next
+				//     first-turn request will retry.
+				waitErr := h.Wait(ctx)
+				hasTitle, terr := g.checkSessionHasTitle(ctx, sessionID)
+				if terr != nil {
+					logger.Warn("auto_title: follower re-check failed; skipping round",
+						"wait_err", waitErr, "check_err", terr)
+					return
+				}
+				if hasTitle {
+					logger.Debug("auto_title: follower skipped; leader already saved title",
+						"wait_err", waitErr)
+					return
+				}
+				// Leader failed or TTL elapsed without saving.
+				// Give up this round — better than hammering an
+				// already-stuck upstream.
+				logger.Info("auto_title: follower giving up after leader release without title",
+					"wait_err", waitErr)
+				return
+			}
+		}
+	}
 
 	// Step 1: Check if title already exists (avoid duplicate work)
 	hasTitle, err := g.checkSessionHasTitle(ctx, sessionID)
