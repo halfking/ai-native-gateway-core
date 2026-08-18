@@ -8030,6 +8030,13 @@ func detectUpstreamContextLoss(m map[string]any, reqLog *telemetry.RequestLogEnt
 		return false // substantial reply — assume the context was honoured
 	}
 
+	// A tool-call turn is intentionally short: the model emits a structured
+	// action for the gateway to execute, so low completion_tokens are expected.
+	// Do not treat its tool-call arguments as evidence that the prompt vanished.
+	if hasStructuredToolCalls(m["tool_calls"]) {
+		return false
+	}
+
 	// Require a clean terminator: this fault class closes the stream
 	// normally, which is why no interruption detector catches it.
 	reason := ""

@@ -452,6 +452,7 @@ func TestDetectUpstreamContextLoss(t *testing.T) {
 		completionSet   bool // false → leave CompletionTokens nil
 		finishReason    string
 		includeFinish   bool // false → omit upstream_finish_reason from m
+		toolCalls       bool
 		wantContextLoss bool
 	}{
 		{
@@ -542,8 +543,21 @@ func TestDetectUpstreamContextLoss(t *testing.T) {
 			wantContextLoss: false,
 		},
 		{
-			name:            "stop terminator with full body still flags when prompt drops",
-			bodyBytes:       919 * 1024,
+			name:            "tool call with short usage is not detected",
+			bodyBytes:       129774,
+			promptTokens:    33,
+			promptSet:       true,
+			completion:      39,
+			completionSet:   true,
+			finishReason:    "tool_calls",
+			includeFinish:   true,
+			toolCalls:       true,
+			wantContextLoss: false,
+		},
+		{
+			name:      "stop terminator with full body still flags when prompt drops",
+			bodyBytes: 919 * 1024,
+
 			promptTokens:    500,
 			promptSet:       true,
 			completion:      30,
@@ -570,9 +584,16 @@ func TestDetectUpstreamContextLoss(t *testing.T) {
 			if tt.includeFinish {
 				m["upstream_finish_reason"] = tt.finishReason
 			}
+			if tt.toolCalls {
+				m["tool_calls"] = []map[string]any{{
+					"id":   "toolu_test",
+					"type": "function",
+				}}
+			}
 
 			got := detectUpstreamContextLoss(m, entry)
 			if got != tt.wantContextLoss {
+
 				t.Fatalf("detectUpstreamContextLoss() = %v, want %v", got, tt.wantContextLoss)
 			}
 		})
