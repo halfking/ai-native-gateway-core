@@ -50,5 +50,13 @@ export default {
     stability: 'Stability',
     costEfficiency: 'Cost efficiency',
     updatedAt: 'Updated at',
+    requestStats: 'Request stats',
+    totalRequests: 'Total requests',
+    monthRequests: 'This month',
+    weekRequests: 'This week',
+    dayRequests: 'Today',
+    successCount: 'Success',
+    failureCount: 'Failures',
+    totalTokens: 'Total tokens',
   },
 }

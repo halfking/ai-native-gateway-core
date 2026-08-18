@@ -104,6 +104,60 @@ func (h *Handler) logAudit(r *http.Request, action string, details map[string]an
 	`, actor, action, action, detailsJSON)
 }
 
+// resolveCandidate is one row of the routing resolve table. It was a
+// function-local type until 2026-08-18; promoted to package scope so
+// applyURSMOverlay (and its unit tests) can operate on the slice directly.
+type resolveCandidate struct {
+	Rank                  int      `json:"rank"`
+	ProviderID            int      `json:"provider_id"`
+	ProviderName          string   `json:"provider_name"`
+	CatalogCode           string   `json:"catalog_code"`
+	Protocol              string   `json:"protocol"`
+	BaseURL               string   `json:"base_url"`
+	ProviderEnabled       bool     `json:"provider_enabled"`
+	CredentialID          int      `json:"credential_id"`
+	CredentialLabel       string   `json:"credential_label"`
+	CredentialStatus      string   `json:"credential_status"`
+	LifecycleStatus       string   `json:"lifecycle_status"`
+	AvailabilityState     string   `json:"availability_state"`
+	AvailabilityRecoverAt *string  `json:"availability_recover_at"`
+	QuotaState            string   `json:"quota_state"`
+	QuotaRecoverAt        *string  `json:"quota_recover_at"`
+	ConcurrencyLimit      *int     `json:"concurrency_limit"`
+	EffectiveConcurrency  *int     `json:"effective_concurrency"`
+	EffectiveAt           *string  `json:"effective_at"`
+	ExpiresAt             *string  `json:"expires_at"`
+	CredentialInEffect    bool     `json:"credential_in_effect"`
+	BalanceUSD            *float64 `json:"balance_usd"`
+	CircuitState          string   `json:"circuit_state"`
+	CoolingUntil          *string  `json:"cooling_until"`
+	Available             bool     `json:"available"`
+	Tier                  int      `json:"tier"`
+	Weight                int      `json:"weight"`
+	UnitPriceInPer1M      *float64 `json:"unit_price_in_per_1m"`
+	UnitPriceOutPer1M     *float64 `json:"unit_price_out_per_1m"`
+	Currency              string   `json:"currency"`
+	SuccessRate           float64  `json:"success_rate"`
+	P95LatencyMs          int      `json:"p95_latency_ms"`
+	ModelName             string   `json:"model_name"`
+	StandardizedName      string   `json:"standardized_name"`
+	QuotaCapUSD           float64  `json:"quota_cap_usd"`
+	QuotaUsedUSD          float64  `json:"quota_used_usd"`
+	RuntimeRoutable       bool     `json:"runtime_routable"`
+	Routable              bool     `json:"routable"`
+	BlockReason           string   `json:"block_reason,omitempty"`
+	ManualPriority        int      `json:"manual_priority"`
+	ActiveSessions        int      `json:"active_sessions"`
+	// R7 fix: 前端将基于这个字段判断 show 重置计数按钮，
+	// 而 resolve 操作的是 credentials.consecutive_failures。
+	// 这里增列 credential-level 的值用于显示，避免误判。
+	ConsecutiveFailures           int     `json:"consecutive_failures"`
+	CredentialConsecutiveFailures int     `json:"credential_consecutive_failures"`
+	CompositeScore                float64 `json:"composite_score"`
+	BillingMode                   string  `json:"billing_mode"`
+	BillingRound                  int     `json:"billing_round"`
+}
+
 func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -139,57 +193,6 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-
-	type candidate struct {
-		Rank                  int      `json:"rank"`
-		ProviderID            int      `json:"provider_id"`
-		ProviderName          string   `json:"provider_name"`
-		CatalogCode           string   `json:"catalog_code"`
-		Protocol              string   `json:"protocol"`
-		BaseURL               string   `json:"base_url"`
-		ProviderEnabled       bool     `json:"provider_enabled"`
-		CredentialID          int      `json:"credential_id"`
-		CredentialLabel       string   `json:"credential_label"`
-		CredentialStatus      string   `json:"credential_status"`
-		LifecycleStatus       string   `json:"lifecycle_status"`
-		AvailabilityState     string   `json:"availability_state"`
-		AvailabilityRecoverAt *string  `json:"availability_recover_at"`
-		QuotaState            string   `json:"quota_state"`
-		QuotaRecoverAt        *string  `json:"quota_recover_at"`
-		ConcurrencyLimit      *int     `json:"concurrency_limit"`
-		EffectiveConcurrency  *int     `json:"effective_concurrency"`
-		EffectiveAt           *string  `json:"effective_at"`
-		ExpiresAt             *string  `json:"expires_at"`
-		CredentialInEffect    bool     `json:"credential_in_effect"`
-		BalanceUSD            *float64 `json:"balance_usd"`
-		CircuitState          string   `json:"circuit_state"`
-		CoolingUntil          *string  `json:"cooling_until"`
-		Available             bool     `json:"available"`
-		Tier                  int      `json:"tier"`
-		Weight                int      `json:"weight"`
-		UnitPriceInPer1M      *float64 `json:"unit_price_in_per_1m"`
-		UnitPriceOutPer1M     *float64 `json:"unit_price_out_per_1m"`
-		Currency              string   `json:"currency"`
-		SuccessRate           float64  `json:"success_rate"`
-		P95LatencyMs          int      `json:"p95_latency_ms"`
-		ModelName             string   `json:"model_name"`
-		StandardizedName      string   `json:"standardized_name"`
-		QuotaCapUSD           float64  `json:"quota_cap_usd"`
-		QuotaUsedUSD          float64  `json:"quota_used_usd"`
-		RuntimeRoutable       bool     `json:"runtime_routable"`
-		Routable              bool     `json:"routable"`
-		BlockReason           string   `json:"block_reason,omitempty"`
-		ManualPriority        int      `json:"manual_priority"`
-		ActiveSessions        int      `json:"active_sessions"`
-		// R7 fix: 前端将基于这个字段判断 show 重置计数按钮，
-		// 而 resolve 操作的是 credentials.consecutive_failures。
-		// 这里增列 credential-level 的值用于显示，避免误判。
-		ConsecutiveFailures           int     `json:"consecutive_failures"`
-		CredentialConsecutiveFailures int     `json:"credential_consecutive_failures"`
-		CompositeScore                float64 `json:"composite_score"`
-		BillingMode                   string  `json:"billing_mode"`
-		BillingRound                  int     `json:"billing_round"`
-	}
 
 	rawModels := append([]string{normalizedModel}, variants[1:]...)
 	// 2026-07-24 SQL 瘦身：cmb.available / c.circuit_state / c.cooling_until /
@@ -284,9 +287,9 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 
 	weights := scoringWeightsFromMap(h.getScoringWeights(ctx))
-	candidates := make([]candidate, 0)
+	candidates := make([]resolveCandidate, 0)
 	for rows.Next() {
-		var c candidate
+		var c resolveCandidate
 		var isRoutable bool
 		var unavailableReason *string
 
@@ -344,29 +347,17 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 	// **忽略** T4 默认值 —— 只有真正拿到 NodeView 才覆写。Redis miss 的
 	// 行（新人未观测）保持 Available=true，避免误判不可用。
 	ursmManager := h.ursmV2
-	defaults := func(c *candidate) {
-		c.Available = true
-		c.CircuitState = "closed"
-		c.CoolingUntil = nil
-		c.ConsecutiveFailures = 0
-		c.CredentialConsecutiveFailures = 0
-		if c.SuccessRate == 0 {
-			c.SuccessRate = 0.9
-		}
-		if c.P95LatencyMs == 0 {
-			c.P95LatencyMs = 9999
+	applyResolveDefaults := func(candidates []resolveCandidate) {
+		for i := range candidates {
+			resolveRuntimeDefaults(&candidates[i])
 		}
 	}
 	switch {
 	case ursmManager == nil, ursmManager.Mode() == api.ModeOff:
-		for i := range candidates {
-			defaults(&candidates[i])
-		}
+		applyResolveDefaults(candidates)
 	case !ursmManager.Ready(ctx):
 		slog.Debug("routing resolve: ursm v2 not ready, using DB defaults")
-		for i := range candidates {
-			defaults(&candidates[i])
-		}
+		applyResolveDefaults(candidates)
 	default:
 		seeds := make([]v2.CandidateSeed, 0, len(candidates))
 		for _, c := range candidates {
@@ -394,85 +385,17 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			slog.Warn("routing resolve: ursm v2 filter failed, using DB defaults",
 				"error", err.Error(), "model_count", len(seeds))
-			for i := range candidates {
-				defaults(&candidates[i])
-			}
+			applyResolveDefaults(candidates)
 		} else {
 			if len(views) != len(candidates) {
 				slog.Warn("routing resolve: ursm v2 partial result",
 					"got", len(views), "want", len(candidates))
 			}
-			// 2026-08-18 fix: FilterAndScore returns views sorted by score
-			// (scoreAndSort), NOT in seed order — the previous positional
-			// views[i] pairing produced "ursm v2 view out of order" on every
-			// multi-candidate resolve and skipped the override. Match by
-			// (provider, credential, raw_model) instead.
-			viewByKey := make(map[string]api.NodeView, len(views))
-			for _, v := range views {
-				viewByKey[fmt.Sprintf("%d|%d|%s", v.ProviderID, v.CredentialID, v.RawModel)] = v
-			}
-			now := time.Now()
-			// 2026-08-18 fix: the previous `for i, c := range candidates`
-			// mutated a struct copy and never wrote it back, so every URSM
-			// override below (Available / CircuitState / the !v.Available →
-			// Routable=false re-derivation) was silently discarded and the
-			// dashboard rendered SQL-routable nodes green even while the
-			// authoritative router rejected them.
-			for i := range candidates {
-				c := &candidates[i]
-				defaults(c) // baseline；URSM 拿到 NodeView 才覆盖
-				v, ok := viewByKey[fmt.Sprintf("%d|%d|%s", c.ProviderID, c.CredentialID, c.ModelName)]
-				if !ok {
-					continue
-				}
-				c.Available = v.Available
-				c.ConsecutiveFailures = v.FailStreak
-				c.CredentialConsecutiveFailures = v.FailStreak
-				if v.SR5m > 0 {
-					c.SuccessRate = v.SR5m
-				}
-				if v.LatP95Ms > 0 {
-					c.P95LatencyMs = v.LatP95Ms
-				}
-				if !v.CoolUntil.IsZero() && v.CoolUntil.After(now) {
-					c.CircuitState = "open"
-					s := v.CoolUntil.UTC().Format(time.RFC3339)
-					c.CoolingUntil = &s
-				} else {
-					c.CircuitState = "closed"
-					c.CoolingUntil = nil
-				}
-				// Re-derive Routable: SQL view covers schema gating
-				// (provider enabled, plan compatibility, etc.); URSM v2
-				// covers runtime gating. AND them together.
-				if !c.Routable {
-					continue // SQL view 已经否决 —— 保持它的原因
-				}
-				if !v.Available {
-					c.Routable = false
-					c.RuntimeRoutable = false
-					if v.Reason != "" {
-						c.BlockReason = v.Reason
-					} else {
-						c.BlockReason = "node_unavailable_by_ursm_v2"
-					}
-					continue
-				}
-				if c.CircuitState == "open" {
-					c.Routable = false
-					c.RuntimeRoutable = false
-					if v.Reason != "" {
-						c.BlockReason = v.Reason
-					} else {
-						c.BlockReason = "node_in_cool_until"
-					}
-					continue
-				}
-			}
+applyURSMOverlay(candidates, views, time.Now())
 		}
 	}
 
-	toProviderCandidate := func(c candidate) provider.Candidate {
+	toProviderCandidate := func(c resolveCandidate) provider.Candidate {
 		return provider.Candidate{
 			CredentialID:        c.CredentialID,
 			Tier:                c.Tier,
@@ -4456,4 +4379,105 @@ func (h *Handler) mirrorExistingKeys(ctx context.Context) []map[string]any {
 		}
 	}
 	return results
+}
+
+// ursmViewKey builds the map key that pairs a URSM v2 NodeView with a
+// resolve candidate. Credential IDs cannot contain the NUL separator, so
+// the pair (credential_id, raw_model) is collision-free.
+func ursmViewKey(credentialID int, rawModel string) string {
+	return strconv.Itoa(credentialID) + "\x00" + rawModel
+}
+
+// resolveRuntimeDefaults back-fills the runtime columns a candidate carries
+// when no URSM v2 NodeView is available (manager off / not ready / pipeline
+// error / Redis-miss): available=true, circuit closed, neutral telemetry.
+// This keeps the resolve table's legacy behaviour for unobserved rows (T4
+// 契约：URSM Redis miss 不得被显示为不可用).
+func resolveRuntimeDefaults(c *resolveCandidate) {
+	c.Available = true
+	c.CircuitState = "closed"
+	c.CoolingUntil = nil
+	c.ConsecutiveFailures = 0
+	c.CredentialConsecutiveFailures = 0
+	if c.SuccessRate == 0 {
+		c.SuccessRate = 0.9
+	}
+	if c.P95LatencyMs == 0 {
+		c.P95LatencyMs = 9999
+	}
+}
+
+// applyURSMOverlay merges URSM v2 runtime NodeViews into the resolve
+// candidates. Two 2026-08-18 fixes live here:
+//
+//  1. FilterAndScore sorts views by score before returning them, so views
+//     are NOT guaranteed to stay in seed order. The previous index pairing
+//     mismatched rows whenever the sort order differed (log spam: "ursm v2
+//     view out of order") and silently skipped the overlay for every
+//     misaligned candidate. Views are now paired by (credential_id,
+//     raw_model).
+//  2. The previous loop iterated `for i, c := range candidates` and mutated
+//     the loop COPY c — defaults and overlay writes were discarded, so the
+//     emitted candidates always carried zero-valued runtime fields (and
+//     Routable never reflected runtime state). Mutations now go through a
+//     pointer into the slice.
+//
+// Redis/mirror misses keep the defaults above so an unobserved node is not
+// shown as unavailable.
+func applyURSMOverlay(candidates []resolveCandidate, views []api.NodeView, now time.Time) {
+	viewByKey := make(map[string]api.NodeView, len(views))
+	for _, v := range views {
+		viewByKey[ursmViewKey(v.CredentialID, v.RawModel)] = v
+	}
+	for i := range candidates {
+		c := &candidates[i]
+		resolveRuntimeDefaults(c) // baseline；URSM 拿到 NodeView 才覆盖
+		v, ok := viewByKey[ursmViewKey(c.CredentialID, c.ModelName)]
+		if !ok {
+			continue
+		}
+		c.Available = v.Available
+		c.ConsecutiveFailures = v.FailStreak
+		c.CredentialConsecutiveFailures = v.FailStreak
+		if v.SR5m > 0 {
+			c.SuccessRate = v.SR5m
+		}
+		if v.LatP95Ms > 0 {
+			c.P95LatencyMs = v.LatP95Ms
+		}
+		if !v.CoolUntil.IsZero() && v.CoolUntil.After(now) {
+			c.CircuitState = "open"
+			s := v.CoolUntil.UTC().Format(time.RFC3339)
+			c.CoolingUntil = &s
+		} else {
+			c.CircuitState = "closed"
+			c.CoolingUntil = nil
+		}
+		// Re-derive Routable: SQL view covers schema gating (provider
+		// enabled, plan compatibility, etc.); URSM v2 covers runtime
+		// gating. AND them together.
+		if !c.Routable {
+			continue // SQL view 已经否决 —— 保持它的原因
+		}
+		if !v.Available {
+			c.Routable = false
+			c.RuntimeRoutable = false
+			if v.Reason != "" {
+				c.BlockReason = v.Reason
+			} else {
+				c.BlockReason = "node_unavailable_by_ursm_v2"
+			}
+			continue
+		}
+		if c.CircuitState == "open" {
+			c.Routable = false
+			c.RuntimeRoutable = false
+			if v.Reason != "" {
+				c.BlockReason = v.Reason
+			} else {
+				c.BlockReason = "node_in_cool_until"
+			}
+			continue
+		}
+	}
 }
