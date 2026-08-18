@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - 2026-08-19 (Doc Sweep Audit: Complete 184 Server Redaction)
+
+### Security
+- **Audit follow-up: complete 184 server redaction across remaining active docs**（rule 39 铁律 1 + rule 47）。
+  8/19 `f54ae6de8`（doc sweep）只扫到 3 文件 5 行；本轮审计发现还有 9 个 active 文件含 184 引用，
+  全部按相同模式切换到 154/252 占位符或注释保留（迁移说明/历史记录除外）：
+  - `docs/06-deployment/01-environments/deployment/DATABASE-ENVIRONMENT-SEPARATION.md`：4 处（测试环境段、`本地开发/测试` 描述、对比表 2 列）
+  - `docs/06-deployment/01-environments/deployment/DASHBOARD_V2_VERIFICATION.md`：1 处（部署状态 "已上线184" → "已上线154"）
+  - `docs/06-deployment/01-environments/deployment/AUTO_CONTROL_DEPLOYMENT_20260701.md`：3 处（代码同步、**184测试环境** 段、k8s deployment 更新）
+  - `docs/03-design/04-data-design/governance/candidate-failure-logs-252-governance-2026-08-17.md`：1 处（实测分区重写耗时上下文 `71/184` → `71/252`）
+  - `docs/03-design/04-data-design/partition/MONTHLY_CHECKLIST.md`：3 处（备份路径 `/opt/databackup/pg-daily/184/` → `252/`）
+  - `docs/03-design/04-data-design/partition/IMPLEMENTATION_NOTES.md`：1 处（多环境支持 `local/71/184` → `252`）
+  - `sql/scripts/phase-22-extension-and-role-sync/README.md`：3 处（schema 来源 + 重新生成步骤）
+  - `scripts/verify-config.sh`：1 处注释（追加 "154/252 是当前生产/中间层" 说明）
+  - `scripts/partition/check-partition-health.sh`：1 处注释（同上）
+- 保留的 184 引用（合规豁免）：
+  - `PROJECT_CONFIG.md:22`（迁移说明本身）
+  - `scripts/redact-docs.py`、`scripts/scan-secrets.replacements`（脱敏工具与替换表本身）
+  - `CHANGELOG.md` 历史段、`docs/changelogs/2026-08-18-*`、`docs/session-logs/2026/08/*`（rule 36 归档/历史记录）
+  - `tests/deploy_cli_test.sh`、`tests/deploy_sops_test.sh`（向后兼容 alias 重定向测试）
+  - `docs/.archive-backup-20260817-190606/`（rule 36 归档备份）
+  - `deploy/sql/DEPLOYMENT_PLAN.md`（v1.0 历史方案，留待 owner 归档）
+  - `.kiro/skills/deploy-184.RETIRED.md`（本身标 RETIRED）
+
+### Documentation
+- 新增 `docs/changelogs/2026-08-19-doc-sweep-audit-completion.md`：8 段式 audit 报告 + follow-up 改动清单。
+- 新增 `docs/session-logs/2026/08/2026-08-19-audit-and-zcode-preserve.md`：本会话维护 session log。
+
 ## [Unreleased] - 2026-08-19 (Doc Sweep: Redact Remaining 184 Server References)
 
 ### Security

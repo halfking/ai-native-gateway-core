@@ -136,10 +136,10 @@ After applying both phases, local matches 184 production on:
 
 ## Source
 
-Generated from 184 reference schema on 2026-06-26.
+Generated from 252 reference schema on 2026-06-26.
 
-To regenerate after major schema changes on 184:
-1. Run: `pg_dump -U llm_gateway -d llm_gateway --schema-only > /tmp/184-ref.sql` (and other DBs)
+To regenerate after major schema changes on 252:
+1. Run: `pg_dump -U llm_gateway -d llm_gateway --schema-only > /tmp/252-ref.sql` (and other DBs)
 2. Re-run diff tool
 3. Update Phase 21 / Phase 22 sync files
 4. Test on local before committing
