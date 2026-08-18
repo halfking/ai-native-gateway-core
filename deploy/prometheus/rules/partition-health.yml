@@ -145,12 +145,20 @@ groups:
       # 告警 4：月度分区缺失
       # ========================================
       
+      # 2026-08-18 P0 deploy fix: the original expr used PostgreSQL-flavored
+      # syntax (`now()`, `interval '1 month'`, `::epoch`) which is NOT valid
+      # PromQL and fails to parse on Prometheus 2.47.0 (the pinned image).
+      # Rewritten in PromQL using only 2.47.0-available functions. Intent:
+      # warn in the last ~5 days of the month AND when the next-month partition
+      # has not been created. `day_of_month(time()) >= 26` approximates "within
+      # ~5 days of month end" (valid on 2.47.0; `now()` and `date_trunc()` are
+      # not). Requires the still-unimplemented `partition_next_month_exists` gauge
+      # plus a postgres exporter; until then this rule is dormant (no data → no
+      # fire), which is expected.
       - alert: PartitionMonthlyPartitionMissing
         expr: |
-          (
-            time() - (date_trunc('month', now()) + interval '1 month')::epoch
-          ) / 86400 > 25  # 距离下月还有 < 5 天
-          AND
+          day_of_month(vector(1)) >= 26
+          and
           partition_next_month_exists == 0
         for: 1h
         labels:
