@@ -16,7 +16,7 @@ import {
   type ModelHistoryEvent,
   type WindowStats,
 } from '../api/credential-monitor'
-import type { LiveNodeStatus } from '../composables/liveStreamStore'
+import { nodesRef, type LiveNodeStatus } from '../composables/liveStreamStore'
 
 const props = defineProps<{
   modelValue: boolean
@@ -33,6 +33,7 @@ const activeTab = ref<Tab>('detail')
 const loading = ref(false)
 const loadError = ref('')
 const candidate = ref<RoutingCandidate | null>(null)
+const candidateLoading = ref(false)
 const monitor = ref<CredentialMonitorSummary | null>(null)
 const selectedModel = ref('')
 const windowEntries = ref<Array<{ rid: string; ts: number; ok: boolean; lat: number; err?: string }>>([])
@@ -55,10 +56,15 @@ const visible = computed({
   set: (value: boolean) => emit('update:modelValue', value),
 })
 const canEdit = computed(() => isSuperAdmin())
+const currentNode = computed<LiveNodeStatus | null>(() => {
+  if (!props.node) return null
+  return nodesRef.value.find(node => node.credential_id === props.node?.credential_id) ?? props.node
+})
+const node = currentNode
 const models = computed<CredentialModelStatus[]>(() => monitor.value?.models ?? [])
 const selectedModelStatus = computed(() => models.value.find(model => model.raw_model_name === selectedModel.value) ?? null)
 const headlineState = computed(() => {
-  const node = props.node
+  const node = currentNode.value
   if (!node) return '未知'
   if (node.manual_disabled || node.disable_kind === 'manual') return '手工禁用'
   if (node.circuit_state === 'open') return '熔断'
@@ -83,7 +89,7 @@ function statusClass(value: string | null | undefined): string {
 }
 
 async function loadModelDetails(model: string, requestSequence: number) {
-  const node = props.node
+  const node = currentNode.value
   if (!node || !model) {
     windowEntries.value = []
     windowStats.value = null
@@ -94,7 +100,7 @@ async function loadModelDetails(model: string, requestSequence: number) {
     getSlidingWindow(node.credential_id, model, 60),
     getModelHistory(node.credential_id, model, 30),
   ])
-  if (requestSequence !== sequence || props.node?.credential_id !== node.credential_id || selectedModel.value !== model) return
+  if (requestSequence !== sequence || currentNode.value?.credential_id !== node.credential_id || selectedModel.value !== model) return
   if (windowResult.status === 'fulfilled') {
     windowEntries.value = windowResult.value.entries
     windowStats.value = windowResult.value.stats
@@ -107,8 +113,30 @@ async function loadModelDetails(model: string, requestSequence: number) {
   history.value = historyResult.status === 'fulfilled' ? historyResult.value.events : []
 }
 
+async function loadCandidate(model: string, requestSequence: number) {
+  const node = currentNode.value
+  if (!node || !model) {
+    candidate.value = null
+    return
+  }
+  candidateLoading.value = true
+  try {
+    const result = await resolveRouting(model)
+    if (requestSequence !== sequence || currentNode.value?.credential_id !== node.credential_id || selectedModel.value !== model) return
+    candidate.value = result.candidates.find(item => item.credential_id === node.credential_id && item.model_name === model) ?? null
+    lifecycle.value = (candidate.value?.lifecycle_status ?? 'active') as CredentialLifecycleStatus
+    manualPriority.value = candidate.value?.manual_priority ?? 99
+    routingTier.value = candidate.value?.tier ?? 2
+    weight.value = candidate.value?.weight ?? 100
+  } catch {
+    if (requestSequence === sequence && currentNode.value?.credential_id === node.credential_id) candidate.value = null
+  } finally {
+    if (requestSequence === sequence) candidateLoading.value = false
+  }
+}
+
 async function loadNode() {
-  const node = props.node
+  const node = currentNode.value
   if (!node || !visible.value) return
   const requestSequence = ++sequence
   loading.value = true
@@ -121,15 +149,17 @@ async function loadNode() {
   windowStats.value = null
   history.value = []
   decisions.value = []
-  const preferredModel = node.raw_models?.[0] || ''
+  const requestedModel = selectedModel.value
+  const preferredModel = (requestedModel && node.raw_models?.includes(requestedModel))
+    ? requestedModel
+    : (node.raw_models?.[0] || '')
   selectedModel.value = preferredModel
   try {
-    const [monitorResult, decisionResult, resolveResult] = await Promise.allSettled([
+    const [monitorResult, decisionResult] = await Promise.allSettled([
       getCredentialMonitorSummary({ credential_id: node.credential_id }),
       getCredentialDecisions(node.credential_id, 30),
-      preferredModel ? resolveRouting(preferredModel) : Promise.reject(new Error('节点未上报模型绑定')),
     ])
-    if (requestSequence !== sequence || props.node?.credential_id !== node.credential_id) return
+    if (requestSequence !== sequence || currentNode.value?.credential_id !== node.credential_id) return
     if (monitorResult.status === 'fulfilled') {
       const monitorPayload = monitorResult.value as { credentials?: CredentialMonitorSummary[] }
       monitor.value = monitorPayload.credentials?.[0] ?? null
@@ -137,21 +167,16 @@ async function loadNode() {
         ?? monitor.value?.models?.find(model => model.probe_state === 'broken_confirmed')
         ?? monitor.value?.models?.[0]
       selectedModel.value = preferred?.raw_model_name ?? preferredModel
+    } else {
+      loadError.value = '未能加载节点的持久化明细；仍展示实时状态。'
     }
     if (decisionResult.status === 'fulfilled') {
       decisions.value = (decisionResult.value as { decisions?: CredentialRoutingDecision[] }).decisions ?? []
     }
-    if (resolveResult.status === 'fulfilled') {
-      candidate.value = resolveResult.value.candidates.find(item => item.credential_id === node.credential_id) ?? null
-    }
-    if (monitorResult.status === 'rejected' && resolveResult.status === 'rejected') {
-      loadError.value = '未能加载节点的持久化明细；仍展示实时状态。'
-    }
-    lifecycle.value = (candidate.value?.lifecycle_status ?? 'active') as CredentialLifecycleStatus
-    manualPriority.value = candidate.value?.manual_priority ?? 99
-    routingTier.value = candidate.value?.tier ?? 2
-    weight.value = candidate.value?.weight ?? 100
-    await loadModelDetails(selectedModel.value, requestSequence)
+    await Promise.all([
+      loadCandidate(selectedModel.value, requestSequence),
+      loadModelDetails(selectedModel.value, requestSequence),
+    ])
   } finally {
     if (requestSequence === sequence) loading.value = false
   }
@@ -160,16 +185,22 @@ async function loadNode() {
 function chooseModel(model: string) {
   if (model === selectedModel.value) return
   selectedModel.value = model
-  void loadModelDetails(model, ++sequence)
+  const requestSequence = ++sequence
+  candidate.value = null
+  void Promise.all([
+    loadCandidate(model, requestSequence),
+    loadModelDetails(model, requestSequence),
+  ])
 }
 
 async function testNow() {
-  if (!props.node?.provider_id || saving.value) return
+  const node = currentNode.value
+  if (!node?.provider_id || !canEdit.value || saving.value) return
   saving.value = true
   actionMessage.value = ''
   actionError.value = ''
   try {
-    const response = await fetch(`/api/admin/providers/${props.node.provider_id}/test-now`, {
+    const response = await fetch(`/api/admin/providers/${node.provider_id}/test-now`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authBearer()}` },
     })
@@ -184,7 +215,7 @@ async function testNow() {
 }
 
 async function saveSettings() {
-  const node = props.node
+  const node = currentNode.value
   const row = candidate.value
   if (!node || !row || !canEdit.value || saving.value) return
   saving.value = true
@@ -210,7 +241,7 @@ async function saveSettings() {
 }
 
 async function repair(action: 'force_enable' | 'force_disable' | 'clear_circuit' | 'reset_errors') {
-  const node = props.node
+  const node = currentNode.value
   if (!node || saving.value || !canEdit.value) return
   const labels = { force_enable: '强制启用', force_disable: '强制禁用', clear_circuit: '清除熔断', reset_errors: '重置错误' }
   if (action === 'force_disable' && !confirm(`确认${labels[action]}节点 ${node.credential_id}？`)) return
@@ -218,6 +249,10 @@ async function repair(action: 'force_enable' | 'force_disable' | 'clear_circuit'
   actionMessage.value = ''
   actionError.value = ''
   try {
+    if (!candidate.value && selectedModel.value) {
+      actionError.value = '当前模型没有可用的路由候选，已阻止模型级维护。'
+      return
+    }
     await emergencyRepair({ credential_id: node.credential_id, raw_model: selectedModel.value, action, reason: `dashboard node detail: ${labels[action]}` })
     actionMessage.value = `${labels[action]}已提交，等待 node_update 实时对账。`
     emit('applied')
@@ -230,7 +265,7 @@ async function repair(action: 'force_enable' | 'force_disable' | 'clear_circuit'
 }
 
 async function setCredentialDisabled(disabled: boolean) {
-  const node = props.node
+  const node = currentNode.value
   if (!node || saving.value || !canEdit.value) return
   const reason = modelActionReason.value.trim()
   if (!reason) {
@@ -252,7 +287,7 @@ async function setCredentialDisabled(disabled: boolean) {
 }
 
 async function toggleSelectedModel() {
-  const node = props.node
+  const node = currentNode.value
   const model = selectedModelStatus.value
   if (!node || !model || saving.value || !canEdit.value) return
   const reason = modelActionReason.value.trim()
@@ -325,12 +360,12 @@ watch(() => [props.modelValue, props.node?.credential_id] as const, ([open]) => 
               <div><dt>配额</dt><dd :class="statusClass(node.quota_state)">{{ node.quota_state || '未知' }}</dd></div>
               <div><dt>健康</dt><dd :class="statusClass(node.health_status)">{{ node.health_status || '未知' }}</dd></div>
               <div><dt>手工禁用</dt><dd>{{ node.manual_disabled ? '是' : '否' }}</dd></div>
-              <div><dt>最近错误</dt><dd class="nd-wrap">{{ node.last_error || '—' }}</dd></div>
+              <div><dt>最近错误</dt><dd class="nd-wrap">{{ node.last_error || '—' }}<small v-if="node.last_error_at"> · {{ fmtTime(node.last_error_at) }}</small></dd></div>
             </dl>
           </section>
 
           <section v-if="candidate" class="nd-section">
-            <h3>路由候选明细</h3>
+            <h3>路由候选明细 <small v-if="candidateLoading">加载中…</small></h3>
             <dl class="nd-grid">
               <div><dt>凭据</dt><dd>#{{ candidate.credential_id }} · {{ candidate.credential_label }}</dd></div>
               <div><dt>Provider</dt><dd>{{ candidate.provider_name }}</dd></div>
@@ -386,10 +421,10 @@ watch(() => [props.modelValue, props.node?.credential_id] as const, ([open]) => 
           <p v-if="!canEdit" class="nd-notice nd-notice--warn">仅系统管理员可以维护节点；当前以只读方式展示。</p>
           <section class="nd-section">
             <h3>连通性与紧急维护</h3>
-            <div class="nd-actions"><button class="btn btn-primary btn-sm" :disabled="saving || !node.provider_id" @click="testNow">{{ saving ? '处理中…' : '立即测试' }}</button><button class="btn btn-success btn-sm" :disabled="saving || !canEdit" @click="repair('force_enable')">强制启用</button><button class="btn btn-danger btn-sm" :disabled="saving || !canEdit" @click="repair('force_disable')">强制禁用</button><button class="btn btn-warning btn-sm" :disabled="saving || !canEdit" @click="repair('clear_circuit')">清除熔断</button><button class="btn btn-sm" :disabled="saving || !canEdit" @click="repair('reset_errors')">重置错误</button></div>
+            <div class="nd-actions"><button class="btn btn-primary btn-sm" :disabled="saving || !canEdit || !node?.provider_id" @click="testNow">{{ saving ? '处理中…' : '立即测试' }}</button><button class="btn btn-success btn-sm" :disabled="saving || !canEdit" @click="repair('force_enable')">强制启用</button><button class="btn btn-danger btn-sm" :disabled="saving || !canEdit" @click="repair('force_disable')">强制禁用</button><button class="btn btn-warning btn-sm" :disabled="saving || !canEdit" @click="repair('clear_circuit')">清除熔断</button><button class="btn btn-sm" :disabled="saving || !canEdit" @click="repair('reset_errors')">重置错误</button></div>
           </section>
           <section v-if="candidate" class="nd-section">
-            <h3>路由排序与生命周期</h3>
+            <h3>路由排序与生命周期 <small>{{ selectedModel }}</small></h3>
             <div class="nd-form-grid"><label>人工优先级<input v-model.number="manualPriority" type="number" min="0" max="99" :disabled="!canEdit" /></label><label>Routing Tier<input v-model.number="routingTier" type="number" min="0" max="9" :disabled="!canEdit" /></label><label>权重<input v-model.number="weight" type="number" min="0" max="10000" :disabled="!canEdit" /></label><label>生命周期<select v-model="lifecycle" :disabled="!canEdit"><option value="active">active（在用）</option><option value="disabled">disabled（停用）</option><option value="suspended">suspended（暂停）</option><option value="retired">retired（退役）</option></select></label></div><button class="btn btn-primary btn-sm" :disabled="saving || !canEdit" @click="saveSettings">保存设置</button>
           </section>
           <section class="nd-section">

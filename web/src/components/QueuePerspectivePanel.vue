@@ -14,7 +14,8 @@
  *   - 动画只用 transform/opacity
  */
 import { computed, onMounted, ref } from 'vue'
-import { getFeatured } from '../api/routing'
+import { useI18n } from 'vue-i18n'
+import { getFeatured, resolveRouting } from '../api/routing'
 import { getRequestLogTopModels, type TopRequestModel } from '../api/logs'
 import {
   queueRef,
@@ -29,6 +30,7 @@ import RequestProcessingTrail from './RequestProcessingTrail.vue'
 import NodeOpsRow from './NodeOpsRow.vue'
 import NodeDetailDrawer from './NodeDetailDrawer.vue'
 
+const { t } = useI18n()
 const queue = queueRef
 const nodes = nodesRef
 
@@ -128,16 +130,24 @@ const opsNodes = computed<LiveNodeStatus[]>(() => {
 //
 // 只在 raw_models 真正上报时渲染该区块（缺省隐藏，禁零值冒充）。
 // 任一节点的状态字段都缺省显示，不要为"零"渲染为虚假徽标。
+interface ModelScopeMeta {
+  key: string
+  featured: boolean
+  hotRequests: number
+  aliases: Set<string>
+}
+
 interface ModelGroup {
   model: string
   nodes: LiveNodeStatus[]
   requestCount: number
   featured: boolean
   hotRequests: number
+  aliases: string[]
 }
 
-const featuredModels = ref<Set<string>>(new Set())
-const hotModels = ref<Map<string, number>>(new Map())
+const modelScopeMeta = ref<Map<string, ModelScopeMeta>>(new Map())
+const modelScopeAliasIndex = ref<Map<string, string>>(new Map())
 const modelScopeLoading = ref(true)
 const modelScopeError = ref('')
 const selectedNode = ref<LiveNodeStatus | null>(null)
@@ -159,17 +169,41 @@ async function loadModelScope() {
   const from = new Date(to.getTime() - 72 * 60 * 60 * 1000)
   const [featured, hot] = await Promise.allSettled([
     getFeatured(),
-    getRequestLogTopModels({ from: from.toISOString(), to: to.toISOString(), limit: 100 }),
+    getRequestLogTopModels({ from: from.toISOString(), to: to.toISOString(), limit: 50 }),
   ])
-  if (featured.status === 'fulfilled') {
-    featuredModels.value = new Set(featured.value.featured_models.map(modelKey))
+  const scope = new Map<string, ModelScopeMeta>()
+  const addScope = (model: string, isFeatured: boolean, hotRequests: number) => {
+    const key = modelKey(model)
+    if (!key) return
+    const current = scope.get(key) ?? { key, featured: false, hotRequests: 0, aliases: new Set<string>() }
+    current.featured ||= isFeatured
+    current.hotRequests = Math.max(current.hotRequests, hotRequests)
+    current.aliases.add(key)
+    scope.set(key, current)
   }
-  if (hot.status === 'fulfilled') {
-    hotModels.value = new Map(hot.value.items.map((model: TopRequestModel) => [modelKey(model.canonical_name || model.display_name), model.request_count]))
+  if (featured.status === 'fulfilled') featured.value.featured_models.forEach(model => addScope(model, true, 0))
+  if (hot.status === 'fulfilled') hot.value.items.forEach((model: TopRequestModel) => addScope(model.canonical_name || model.display_name, false, model.request_count))
+  const aliases = new Map<string, string>()
+  for (const meta of scope.values()) {
+    const name = [...meta.aliases][0]
+    try {
+      const resolved = await resolveRouting(name)
+      const assignAlias = (raw: string) => {
+        const key = modelKey(raw)
+        if (!key) return
+        const existing = aliases.get(key)
+        if (!existing || existing === meta.key) aliases.set(key, meta.key)
+        else aliases.delete(key)
+      }
+      for (const raw of resolved.raw_models) assignAlias(raw)
+      for (const candidate of resolved.candidates) assignAlias(candidate.model_name)
+    } catch {
+      // Keep exact canonical/featured matches; ambiguous aliases stay hidden.
+    }
   }
-  if (featured.status === 'rejected' && hot.status === 'rejected') {
-    modelScopeError.value = '模型范围暂不可用，未展示模型节点。'
-  }
+  modelScopeMeta.value = scope
+  modelScopeAliasIndex.value = aliases
+  if (featured.status === 'rejected' && hot.status === 'rejected') modelScopeError.value = '模型范围暂不可用，未展示模型节点。'
   modelScopeLoading.value = false
 }
 
@@ -185,42 +219,37 @@ function toggleModel(model: string) {
 }
 
 const modelGroups = computed<ModelGroup[]>(() => {
-  const byModel = new Map<string, Set<number>>()
+  const rawByScope = new Map<string, Set<string>>()
   for (const node of nodes.value) {
-    if (!node || !Array.isArray(node.raw_models)) continue
-    for (const model of node.raw_models) {
-      if (!model) continue
-      const key = modelKey(model)
-      if (!featuredModels.value.has(key) && !hotModels.value.has(key)) continue
-      let credentialIds = byModel.get(model)
-      if (!credentialIds) {
-        credentialIds = new Set<number>()
-        byModel.set(model, credentialIds)
-      }
-      credentialIds.add(node.credential_id)
+    if (!Array.isArray(node.raw_models)) continue
+    for (const rawModel of node.raw_models) {
+      const rawKey = modelKey(rawModel)
+      const scopeKey = modelScopeAliasIndex.value.get(rawKey) ?? (modelScopeMeta.value.has(rawKey) ? rawKey : '')
+      if (!scopeKey) continue
+      const rawModels = rawByScope.get(scopeKey) ?? new Set<string>()
+      rawModels.add(rawModel)
+      rawByScope.set(scopeKey, rawModels)
     }
   }
   const groups: ModelGroup[] = []
-  for (const [model, credentialIds] of byModel) {
-    const modelNodes = getNodesForModel(model)
-    if (!modelNodes.length) continue
-    let requestCount = 0
-    for (const credentialId of credentialIds) requestCount += getRequestsForCredential(credentialId).length
-    const key = modelKey(model)
-    groups.push({
-      model,
-      nodes: modelNodes,
-      requestCount,
-      featured: featuredModels.value.has(key),
-      hotRequests: hotModels.value.get(key) ?? 0,
-    })
+  for (const [scopeKey, rawModels] of rawByScope) {
+    const meta = modelScopeMeta.value.get(scopeKey)
+    if (!meta) continue
+    const credentialIds = new Set<number>()
+    for (const rawModel of rawModels) {
+      for (const node of getNodesForModel(rawModel)) credentialIds.add(node.credential_id)
+    }
+    const modelNodes = nodes.value.filter(node => credentialIds.has(node.credential_id))
+    const aliases = [scopeKey, ...rawModels].map(modelKey)
+    const requestIds = new Set<string>()
+    for (const credentialId of credentialIds) {
+      for (const request of getRequestsForCredential(credentialId)) {
+        if (request.request_id && aliases.includes(modelKey(request.model || ''))) requestIds.add(request.request_id)
+      }
+    }
+    groups.push({ model: scopeKey, nodes: modelNodes, requestCount: requestIds.size, featured: meta.featured, hotRequests: meta.hotRequests, aliases })
   }
-  return groups.sort((a, b) =>
-    Number(b.featured) - Number(a.featured) ||
-    b.hotRequests - a.hotRequests ||
-    b.nodes.length - a.nodes.length ||
-    a.model.localeCompare(b.model),
-  )
+  return groups.sort((a, b) => Number(b.featured) - Number(a.featured) || b.hotRequests - a.hotRequests || b.nodes.length - a.nodes.length || a.model.localeCompare(b.model))
 })
 
 const hasModelGroups = computed(() => modelGroups.value.length > 0)
@@ -239,8 +268,10 @@ function nodeStatusSummary(n: LiveNodeStatus): string {
   return parts.join(' / ')
 }
 
-function requestsForNode(n: LiveNodeStatus): LiveRequest[] {
-  return getRequestsForCredential(n.credential_id)
+function requestsForNode(n: LiveNodeStatus, aliases?: string[]): LiveRequest[] {
+  const requests = getRequestsForCredential(n.credential_id)
+  if (!aliases?.length) return requests
+  return requests.filter(request => aliases.includes(modelKey(request.model || '')))
 }
 
 function formatLatency(ms: number | null | undefined): string {
@@ -395,11 +426,11 @@ function formatTs(ts: string | undefined): string {
         <div class="qp-layer-header">
           <span class="qp-layer-name">按模型分组的可用节点</span>
           <span v-if="hasModelGroups" class="qp-layer-count">{{ modelGroups.length }} 个模型</span>
-          <button type="button" class="qp-retry" :disabled="modelScopeLoading" @click="loadModelScope">{{ modelScopeLoading ? '加载中…' : '↻ 刷新范围' }}</button>
+          <button type="button" class="qp-retry" :disabled="modelScopeLoading" @click="loadModelScope">{{ modelScopeLoading ? t('requestJourneys.modelScopeLoading') : `↻ ${t('requestJourneys.refreshScope')}` }}</button>
         </div>
-        <div v-if="modelScopeLoading" class="qp-model-scope-state">正在加载特色模型和近 3 天热门模型…</div>
-        <div v-else-if="modelScopeError" class="qp-model-scope-state qp-model-scope-state--error">{{ modelScopeError }}</div>
-        <div v-else-if="!hasModelGroups" class="qp-model-scope-state">当前特色/热门模型没有实时节点绑定。</div>
+        <div v-if="modelScopeLoading" class="qp-model-scope-state">{{ t('requestJourneys.modelScopeLoading') }}</div>
+        <div v-else-if="modelScopeError" class="qp-model-scope-state qp-model-scope-state--error">{{ t('requestJourneys.modelScopeError') }}</div>
+        <div v-else-if="!hasModelGroups" class="qp-model-scope-state">{{ t('requestJourneys.noModelNodes') }}</div>
         <div v-else v-for="group in modelGroups" :key="group.model" class="qp-model-group">
           <div class="qp-model-compact">
             <button type="button" class="qp-model-group-toggle" :aria-expanded="expandedModels.has(group.model)" @click="toggleModel(group.model)">
@@ -417,15 +448,15 @@ function formatTs(ts: string | undefined): string {
             </span>
           </div>
           <div v-if="expandedModels.has(group.model)" class="qp-model-group-body">
-            <p class="qp-model-detail-hint">点击节点可查看完整明细、近期窗口、请求记录和维护设置。</p>
-            <ul v-if="group.nodes.some(node => requestsForNode(node).length)" class="qp-model-group-requests">
+            <p class="qp-model-detail-hint">{{ t('requestJourneys.nodeDetailHint') }}</p>
+            <ul v-if="group.nodes.some(node => requestsForNode(node, group.aliases).length)" class="qp-model-group-requests">
               <template v-for="node in group.nodes" :key="node.credential_id">
-                <li v-for="request in requestsForNode(node)" :key="request.request_id" class="qp-model-group-request">
+                <li v-for="request in requestsForNode(node, group.aliases)" :key="request.request_id" class="qp-model-group-request">
                   <span class="qp-rq-node">节点 {{ node.credential_id }}</span><span class="qp-rq-model">{{ request.model || '—' }}</span><span class="qp-rq-status" :class="`qp-rq-status--${request.status}`">{{ request.status || '—' }}</span><span v-if="typeof request.latency_ms === 'number'" class="qp-rq-latency">{{ formatLatency(request.latency_ms) }}</span><span v-if="request.error_kind" class="qp-rq-err">{{ request.error_kind }}</span><span class="qp-rq-ts">{{ formatTs(request.ts) }}</span>
                 </li>
               </template>
             </ul>
-            <p v-else class="qp-model-detail-hint">当前没有关联到该模型节点的实时请求。</p>
+            <p v-else class="qp-model-detail-hint">{{ t('requestJourneys.noNodeRequests') }}</p>
           </div>
         </div>
       </div>
