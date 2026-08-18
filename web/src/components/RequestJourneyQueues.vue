@@ -213,7 +213,7 @@ function closeDialog() {
   <section class="journey-queues" :aria-label="t('requestJourneys.title')">
     <button type="button" class="journey-trigger" @click="openDialog">
       <span class="journey-trigger-title">{{ t('requestJourneys.title') }}</span>
-      <span class="journey-trigger-meta">{{ hasLoaded ? (hasRequests ? `${groups.reduce((sum, group) => sum + group.requests.length, 0)} 条进行中` : '暂无进行中请求') : '按需查看' }}</span>
+      <span class="journey-trigger-meta">{{ hasLoaded ? (hasRequests ? t('requestJourneys.activeCount', { count: groups.reduce((sum, group) => sum + group.requests.length, 0) }) : t('requestJourneys.noActiveRequests')) : t('requestJourneys.triggerMeta') }}</span>
       <RefreshRight aria-hidden="true" />
     </button>
   </section>
@@ -222,7 +222,7 @@ function closeDialog() {
     <div v-if="showDialog" class="journey-modal-mask" @click.self="closeDialog">
       <section class="journey-modal" role="dialog" aria-modal="true" :aria-label="t('requestJourneys.title')">
         <div class="journey-header">
-          <div><h3>{{ t('requestJourneys.title') }}</h3><p class="journey-modal-sub">队列窗口、请求状态和完整路由轨迹</p></div>
+          <div><h3>{{ t('requestJourneys.title') }}</h3><p class="journey-modal-sub">{{ t('requestJourneys.modalSubtitle') }}</p></div>
           <div class="journey-header-actions"><button type="button" class="icon-button" :title="t('requestJourneys.retry')" :aria-label="t('requestJourneys.retry')" @click="loadView(activeView, true)"><RefreshRight aria-hidden="true" /></button><button type="button" class="icon-button" aria-label="关闭" title="关闭" @click="closeDialog"><Close aria-hidden="true" /></button></div>
         </div>
 

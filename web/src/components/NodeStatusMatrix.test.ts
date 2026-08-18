@@ -42,5 +42,6 @@ describe('NodeStatusMatrix', () => {
     expect(wrapper.text()).toContain('设置与维护')
     expect(wrapper.text()).toContain('强制启用')
     expect(wrapper.text()).toContain('强制禁用')
+    expect(wrapper.get('.nd-actions .btn-primary').attributes('disabled')).toBeDefined()
   })
 })
