@@ -22,6 +22,7 @@
 | `13-T0契约冻结与所有权.md` | T0 身份、重启、URSM authoritative 契约与 workstream 所有权 |
 | `14-URSM Redis delimiter-safe key兼容迁移冻结决策.md` | delimiter-safe Redis key 版本化、双读/双写、TTL、清理、回滚与 G1/G4 门禁 |
 | `15-URSM delimiter-safe key迁移实施计划.md` | 协调方交给 Migration owner 的实施计划：可复用 ledger/checkpoint 模式、preflight 判定、拓扑裁决清单、状态机与 G1/G4 边界（不解除 NO-GO） |
+| `16-URSM delimiter-safe key迁移测试矩阵与TDD顺序.md` | k2 迁移的 L1/L2/L3/G1/G4 测试矩阵、首个 RED→GREEN 测试与 slice 顺序、依赖层级边界、SKIP 报告规则（含 2026-08-18 审计更正 A1-A4；不解除 NO-GO） |
 ---
 
 ## 2. 版本裁决结论（一句话版）
