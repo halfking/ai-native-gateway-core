@@ -4421,10 +4421,14 @@ func markResolveRuntimeUnknown(candidates []resolveCandidate, reason string) {
 		c := &candidates[i]
 		c.RuntimeState = "unknown"
 		c.URSMObserved = false
+		if !c.DBEligible {
+			continue
+		}
 		c.Available = false
 		c.RuntimeRoutable = false
 		c.Routable = false
 		c.BlockReason = reason
+
 	}
 }
 
