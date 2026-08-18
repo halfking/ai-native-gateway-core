@@ -26,6 +26,30 @@ func NodeKey(prefix string, cid int, raw string) string {
 	return fmt.Sprintf("%snode:%d:%s", prefix, cid, raw)
 }
 
+// NodeKeySet groups the Redis keys that make up one logical node state: the
+// node hash plus the 1m/5m/30m window ZSETs. RecordRequest must read and
+// write these as one unit. The per-request dedup key is derived from Node at
+// the store layer (requestDedupKey), so it follows the node key's schema
+// automatically and is not listed here.
+type NodeKeySet struct {
+	Node   string
+	Win1m  string
+	Win5m  string
+	Win30m string
+}
+
+// NodeKeySetForTenant builds the complete key set for one
+// (tenant, credential, raw model) tuple using the legacy exact-byte
+// constructors. Callers must not assemble these keys by hand.
+func NodeKeySetForTenant(prefix, tenant string, cid int, raw string) NodeKeySet {
+	return NodeKeySet{
+		Node:   NodeKeyForTenant(prefix, tenant, cid, raw),
+		Win1m:  WindowKeyForTenant(prefix, tenant, cid, raw, "1m"),
+		Win5m:  WindowKeyForTenant(prefix, tenant, cid, raw, "5m"),
+		Win30m: WindowKeyForTenant(prefix, tenant, cid, raw, "30m"),
+	}
+}
+
 // ParseNodeKey decodes the tagged tenant-scoped node:t:<tenant>:<credential>:<model>
 // form and the legacy node:<credential>:<model> form. It also accepts the prior
 // untagged string-tenant form for persistence compatibility; numeric tenants
@@ -95,14 +119,26 @@ func isNumericTenant(tenant string) bool {
 	return true
 }
 
+// BindingKey has no callers since the v2 store landed. Deprecated: kept only
+// so the frozen key surface stays inspectable; do not use in new code.
+//
+// Deprecated: no callers.
 func BindingKey(prefix string, cid int, raw string) string {
 	return fmt.Sprintf("%sbinding:%d:%s", prefix, cid, raw)
 }
 
+// CredentialKey has no callers since the v2 store landed. Deprecated: kept
+// only so the frozen key surface stays inspectable; do not use in new code.
+//
+// Deprecated: no callers.
 func CredentialKey(prefix string, cid int) string {
 	return fmt.Sprintf("%scredential:%d", prefix, cid)
 }
 
+// ProviderKey has no callers since the v2 store landed. Deprecated: kept
+// only so the frozen key surface stays inspectable; do not use in new code.
+//
+// Deprecated: no callers.
 func ProviderKey(prefix string, pid int) string {
 	return fmt.Sprintf("%sprovider:%d", prefix, pid)
 }

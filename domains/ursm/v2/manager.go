@@ -1008,10 +1008,9 @@ func (m *Manager) RecordRequest(ctx context.Context, ev api.RequestOutcome) erro
 	//     read.
 	// Keys are tenant-aware. Authoritative requests with an empty tenant were
 	// rejected above, so this path cannot silently write the legacy key.
-	nodeKey := store.NodeKeyForTenant(m.cfg.RedisKeyPrefix, ev.TenantID, ev.CredentialID, ev.RawModel)
-	window1m := store.WindowKeyForTenant(m.cfg.RedisKeyPrefix, ev.TenantID, ev.CredentialID, ev.RawModel, "1m")
-	window5m := store.WindowKeyForTenant(m.cfg.RedisKeyPrefix, ev.TenantID, ev.CredentialID, ev.RawModel, "5m")
-	window30m := store.WindowKeyForTenant(m.cfg.RedisKeyPrefix, ev.TenantID, ev.CredentialID, ev.RawModel, "30m")
+	// The node/window keys form one logical key set and are built by the
+	// store-layer authority (NodeKeySetForTenant), never assembled here.
+	keys := store.NodeKeySetForTenant(m.cfg.RedisKeyPrefix, ev.TenantID, ev.CredentialID, ev.RawModel)
 	dedupKey := ev.DedupKey
 	if dedupKey == "" {
 		dedupKey = ev.RequestID
@@ -1020,10 +1019,10 @@ func (m *Manager) RecordRequest(ctx context.Context, ev api.RequestOutcome) erro
 		dedupKey += ":terminal"
 	}
 	if _, err := m.store.RecordRequest(rctx,
-		nodeKey,
-		window1m,
-		window5m,
-		window30m,
+		keys.Node,
+		keys.Win1m,
+		keys.Win5m,
+		keys.Win30m,
 		store.RecordOutcome{
 			Success:      ev.Success,
 			ErrorKind:    ev.ErrorKind,

@@ -55,7 +55,7 @@ func (w *Writer) Collect(ctx context.Context) ([]Row, error) {
 	}
 
 	// 1. Read recovery_epoch from the hash written by recovery.Manager.
-	epochKey := fmt.Sprintf("%smeta:epoch", w.prefix)
+	epochKey := store.EpochKey(w.prefix)
 	epochStr, err := w.rdb.HGet(ctx, epochKey, "counter").Result()
 	var recoveryEpoch int64
 	if err == nil {
