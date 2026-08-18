@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -45,11 +46,29 @@ type AutoTitleGenerator struct {
 func NewAutoTitleGenerator(handler *Handler) *AutoTitleGenerator {
 	return &AutoTitleGenerator{
 		handler: handler,
-		enabled: true, // TODO: make configurable via env var
+		enabled: readAutoGeneratorEnabled("LLM_GATEWAY_AUTO_TITLE_ENABLED", true),
 	}
 }
 
-// MaybeGenerateTitle checks whether this completed request is the first
+// readAutoGeneratorEnabled returns the default-enabled state unless the
+// environment contains a valid boolean override.
+func readAutoGeneratorEnabled(envName string, fallback bool) bool {
+	raw, ok := os.LookupEnv(envName)
+	if !ok || strings.TrimSpace(raw) == "" {
+		return fallback
+	}
+	value, err := strconv.ParseBool(strings.TrimSpace(raw))
+	if err != nil {
+		slog.Warn("auto generator enabled flag invalid; using default",
+			"env", envName,
+			"value", raw,
+			"fallback", fallback,
+		)
+		return fallback
+	}
+	return value
+}
+
 // successful user turn in its session before generating a title. Continuing
 // sessions keep their existing title until a summary refreshes it.
 // requestBody is the full (redacted) inbound request body JSON — used to
@@ -496,13 +515,16 @@ func (g *AutoTitleGenerator) extractTitleFromPreview(preview string) string {
 	}
 
 	// Step 4: Truncate if needed (after combining IDE + prompt)
-	maxLen := 80
-	if len(title) > maxLen {
-		cutoff := maxLen
-		if idx := strings.LastIndex(title[:maxLen], " "); idx > 0 && idx > maxLen-20 {
-			cutoff = idx
+	titleRunes := []rune(title)
+	if len(titleRunes) > sessionTitleMaxRunes {
+		cutoff := sessionTitleMaxRunes - 1
+		for i := cutoff - 1; i >= 0; i-- {
+			if titleRunes[i] == ' ' && i > cutoff-20 {
+				cutoff = i
+				break
+			}
 		}
-		title = title[:cutoff] + "…"
+		title = string(titleRunes[:cutoff]) + "…"
 	}
 
 	// Step 5: Light normalization (remove quotes, excessive spaces)
@@ -606,13 +628,17 @@ func (g *AutoTitleGenerator) extractUserPrompt(preview string) string {
 	// Take first meaningful user line
 	userPrompt := userLines[0]
 
-	// Truncate to 60 chars for the prompt part
-	if len(userPrompt) > 60 {
+	// Truncate to 60 runes for the prompt part.
+	promptRunes := []rune(userPrompt)
+	if len(promptRunes) > 60 {
 		cutoff := 60
-		if idx := strings.LastIndex(userPrompt[:60], " "); idx > 40 {
-			cutoff = idx
+		for i := cutoff - 1; i >= 0; i-- {
+			if promptRunes[i] == ' ' && i > 40 {
+				cutoff = i
+				break
+			}
 		}
-		userPrompt = userPrompt[:cutoff] + "…"
+		userPrompt = string(promptRunes[:cutoff]) + "…"
 	}
 
 	return userPrompt
