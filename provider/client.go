@@ -1765,7 +1765,7 @@ func (c *Client) RevealAPIKey(ctx context.Context, providerID, credentialID int)
 			// write time so the error chain does not need to survive into
 			// the cached string form.
 			recordCredentialRevealCachedHit(providerID, neg.reason)
-			return "", fmt.Errorf("%w (credential_id=%d): %s", errRevealCached, credentialID, neg.value)
+			return "", fmt.Errorf("%w (credential_id=%d): %s", secret.ErrRevealCached, credentialID, neg.value)
 		}
 		c.mu.RUnlock()
 
@@ -1790,7 +1790,7 @@ func (c *Client) RevealAPIKey(ctx context.Context, providerID, credentialID int)
 		}
 		return v.(string), nil
 	}
-	return "", fmt.Errorf("%w (credential_id=%d)", errRevealRotation, credentialID)
+	return "", fmt.Errorf("%w (credential_id=%d)", secret.ErrRevealRotation, credentialID)
 }
 
 func (c *Client) cacheRevealFailureIfCurrent(credentialID int, generation uint64, fetchErr error) {
@@ -1853,7 +1853,7 @@ func (c *Client) fetchReveal(ctx context.Context, providerID, credentialID int) 
 	if c.dbPool != nil && (c.keyring != nil || len(c.fernetKey) == 32) {
 		return c.fetchRevealDB(ctx, providerID, credentialID)
 	}
-	return "", fmt.Errorf("%w (no DB, keyring, or fernet key)", errRevealNotConfigured)
+	return "", fmt.Errorf("%w (no DB, keyring, or fernet key)", secret.ErrRevealNotConfigured)
 }
 
 func (c *Client) fetchRevealDB(ctx context.Context, providerID, credentialID int) (string, error) {
@@ -1865,7 +1865,7 @@ func (c *Client) fetchRevealDB(ctx context.Context, providerID, credentialID int
 	`, credentialID, providerID).Scan(&ciphertext)
 	if err != nil {
 		if err == pgx.ErrNoRows {
-			return "", fmt.Errorf("credential %d: %w", credentialID, errRevealNotFound)
+			return "", fmt.Errorf("credential %d: %w", credentialID, secret.ErrRevealNotFound)
 		}
 		return "", err
 	}
@@ -1874,13 +1874,14 @@ func (c *Client) fetchRevealDB(ctx context.Context, providerID, credentialID int
 	}
 	pt, _, err := secret.DecryptAny(string(ciphertext), c.keyring, c.fernetKey)
 	if err != nil {
-		// Wrap the upstream error with a package-local sentinel so callers
+		// Wrap the upstream error with a canonical sentinel so callers
 		// (metrics, tests) can classify via errors.Is. The original error
-		// remains reachable through Unwrap for log formatting.
-		if strings.Contains(err.Error(), "unknown format") {
-			return "", fmt.Errorf("%w: %v", errRevealUnknownFormat, err)
+		// also goes into the unwrap chain via %w so errors.Unwrap recovers
+		// the underlying decrypt error for diagnostics.
+		if errors.Is(err, secret.ErrUnknownFormat) {
+			return "", fmt.Errorf("%w: %w", secret.ErrRevealUnknownFormat, err)
 		}
-		return "", fmt.Errorf("%w: %v", errRevealDecrypt, err)
+		return "", fmt.Errorf("%w: %w", secret.ErrRevealDecrypt, err)
 	}
 	return string(pt), nil
 }
@@ -1971,7 +1972,7 @@ func (c *Client) enrichWithAPIKeys(ctx context.Context, rr *resolveResponse) []C
 			// Cached failures are already counted by recordCredentialRevealCachedHit
 			// inside RevealAPIKey; counting them again here would over-report
 			// cache amplification. Only record fresh failures here.
-			if !errors.Is(err, errRevealCached) {
+			if !errors.Is(err, secret.ErrRevealCached) {
 				recordCredentialRevealFailure(cand.ProviderID, err)
 			}
 			skippedCount++

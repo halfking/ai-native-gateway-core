@@ -6,6 +6,8 @@ import (
 	"sync"
 
 	"github.com/prometheus/client_golang/prometheus"
+
+	"github.com/kaixuan/llm-gateway-go/secret"
 )
 
 // 2026-08-18 credential-17 incident (154): a raw-Fernet-binary
@@ -51,20 +53,18 @@ const (
 	revealFailOther         = "other"
 )
 
-// Package-local sentinels used by fetchReveal / RevealAPIKey so the
-// metric side can classify errors via errors.Is rather than by string
-// match. Adding a new sentinel here is a contract change; reason labels
-// above must list every constant in this block.
+// Reveal-path sentinel aliases. The canonical definitions live in the
+// secret package as ErrReveal*; these lowercase aliases let the
+// classifyRevealFailure switch stay compact without rewriting every test
+// reference. New call sites should prefer the exported secret.ErrReveal*
+// symbols directly.
 var (
-	errRevealUnknownFormat = errors.New("credential reveal: decrypt unknown format")
-	errRevealDecrypt       = errors.New("credential reveal: decrypt failed")
-	errRevealNotFound      = errors.New("credential reveal: not found or disabled")
-	errRevealNotConfigured = errors.New("credential reveal: not configured")
-	errRevealRotation      = errors.New("credential reveal: rotation invalidated")
-	// errRevealCached wraps a previously cached failure with its original
-	// cause so classifyRevealFailure can surface the incident signature
-	// (e.g. unknown_format) rather than masking it as "cached".
-	errRevealCached = errors.New("credential reveal: cached failure")
+	errRevealUnknownFormat = secret.ErrRevealUnknownFormat
+	errRevealDecrypt       = secret.ErrRevealDecrypt
+	errRevealNotFound      = secret.ErrRevealNotFound
+	errRevealNotConfigured = secret.ErrRevealNotConfigured
+	errRevealRotation      = secret.ErrRevealRotation
+	errRevealCached        = secret.ErrRevealCached
 )
 
 func registerCredentialRevealMetrics() {

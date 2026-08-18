@@ -168,7 +168,9 @@ func decryptAESGCMStr(envelope string, kr *Keyring) ([]byte, error) {
 	}
 	plaintext, err := gcm.Open(nil, nonce, ctAndTag, []byte(gcmAAD))
 	if err != nil {
-		return nil, errors.New("AES-GCM decryption failed — tampered data or wrong key")
+		// Wrapped as the canonical secret.ErrDecrypt sentinel so callers
+		// can route via errors.Is without string-matching the message.
+		return nil, fmt.Errorf("%w: %v", ErrDecrypt, err)
 	}
 	return plaintext, nil
 }
@@ -203,7 +205,7 @@ func DecryptAny(ciphertext string, kr *Keyring, fernetKey []byte) ([]byte, bool,
 				return []byte(pt), true, nil
 			}
 		}
-		return nil, false, errors.New("cannot decrypt: unknown format")
+		return nil, false, ErrUnknownFormat
 	}
 	// Try Fernet legacy (handles tokens without v1: prefix)
 	if len(fernetKey) == 32 {
@@ -212,7 +214,7 @@ func DecryptAny(ciphertext string, kr *Keyring, fernetKey []byte) ([]byte, bool,
 			return []byte(pt), true, nil
 		}
 	}
-	return nil, false, errors.New("cannot decrypt: unknown format")
+	return nil, false, ErrUnknownFormat
 }
 
 // --- Helpers -----------------------------------------------------------------
