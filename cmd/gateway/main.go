@@ -33,6 +33,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/admin"
+	"github.com/kaixuan/llm-gateway-go/admin/distlock" // 2026-08-19 title-gen per-session distributed lock
 	"github.com/kaixuan/llm-gateway-go/api"
 	"github.com/kaixuan/llm-gateway-go/apihub"
 	"github.com/kaixuan/llm-gateway-go/autoroute"
@@ -4138,6 +4139,10 @@ func main() {
 				if modelAvailabilityKeyCounter != nil {
 					adminHandler.SetAvailabilityKeyCounter(modelAvailabilityKeyCounter)
 				}
+				// 2026-08-19: upgrade the title-generation distlock from
+				// the in-process LocalManager to a Redis-backed manager so
+				// multi-replica deployments get single-flight semantics.
+				adminHandler.SetTitleDistLock(distlock.NewRedisManager(fpSlotRedis))
 			}
 			slog.Info("CHECKPOINT: after SetRedisClient")
 		}

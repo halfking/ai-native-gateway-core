@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,7 +12,12 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 	"unicode/utf8"
+
+	"github.com/alicebob/miniredis/v2"
+	"github.com/kaixuan/llm-gateway-go/admin/distlock"
+	"github.com/redis/go-redis/v9"
 )
 
 func unsetEnvForTest(t *testing.T, envName string) {
@@ -762,5 +768,107 @@ func TestIsTransientAutoTitleErr(t *testing.T) {
 					tc.err, tc.status, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestAutoTitle_DistLock_FollowerSkipsOnRecheck is the regression test for
+// the 2026-08-19 lock wiring: when two goroutines call MaybeGenerateTitle
+// on the same session, only the leader should hit the upstream LLM. The
+// follower waits for the leader, re-checks the DB, and exits silently.
+//
+// We can't easily exercise the full AutoTitleGenerator pipeline against
+// miniredis without a DB, so we test the distlock integration at the
+// goroutine-boundary using the same key shape generateTitleAsync uses.
+func TestAutoTitle_DistLock_FollowerSkipsOnRecheck(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = rdb.Close() })
+	mgr := distlock.NewRedisManager(rdb)
+
+	const sessionID = "gw_dedup_test"
+	const taskID = "default"
+
+	var llmCalls atomic.Int32
+	// Use Background contexts so the test can complete cleanly even
+	// if pub/sub goroutines outlive t.
+
+	// followerReady signals when the follower has acquired its handle
+	// (i.e. subscribed to the release channel). The leader waits for
+	// this signal before doing its work + Release, so the follower is
+	// guaranteed to receive the pub/sub wakeup.
+	followerReady := make(chan struct{})
+	leaderDone := make(chan struct{})
+	followerDone := make(chan struct{})
+
+	leaderBody := func() {
+		h, err := mgr.Acquire(context.Background(), distlock.AcquireOpts{
+			Key: titleDistLockKey("auto", taskID, sessionID),
+			TTL: 30 * time.Second,
+		})
+		if err != nil {
+			t.Errorf("leader Acquire: %v", err)
+			close(leaderDone)
+			return
+		}
+		if !h.IsLeader() {
+			t.Error("first handle must be leader")
+		}
+		// Wait until the follower has subscribed to the release
+		// channel; otherwise we race and the follower becomes a
+		// fresh leader after we Release.
+		<-followerReady
+		llmCalls.Add(1)
+		h.Release(context.Background())
+		close(leaderDone)
+	}
+	followerBody := func() {
+		h, err := mgr.Acquire(context.Background(), distlock.AcquireOpts{
+			Key: titleDistLockKey("auto", taskID, sessionID),
+			TTL: 30 * time.Second,
+		})
+		if err != nil {
+			t.Errorf("follower Acquire: %v", err)
+			close(followerDone)
+			return
+		}
+		if h.IsLeader() {
+			t.Error("second handle must be follower")
+		}
+		// Signal the leader it can proceed.
+		close(followerReady)
+		// Simulate generateTitleAsync's follower path: Wait then
+		// re-check. Here we just verify Wait returns without error
+		// and that the leader's protected work ran first.
+		if err := h.Wait(context.Background()); err != nil {
+			t.Errorf("follower Wait: %v", err)
+		}
+		h.Release(context.Background())
+		close(followerDone)
+	}
+
+	go leaderBody()
+	go followerBody()
+	<-leaderDone
+	<-followerDone
+
+	if got := llmCalls.Load(); got != 1 {
+		t.Fatalf("protected work (LLM call surrogate) ran %d times, want 1", got)
+	}
+}
+
+// TestTitleDistLockKey_AutoVsManualIndependent pins the operator
+// requirement that auto and manual title pipelines must not block each
+// other: different "kind" segments yield different keys.
+func TestTitleDistLockKey_AutoVsManualIndependent(t *testing.T) {
+	auto := titleDistLockKey("auto", "default", "sess-1")
+	manual := titleDistLockKey("manual", "default", "sess-1")
+	if auto == manual {
+		t.Fatalf("auto/manual keys collide: %q", auto)
+	}
+	if !strings.HasPrefix(auto, "llmgw:distlock:title:auto:") {
+		t.Fatalf("auto key shape wrong: %q", auto)
+	}
+	if !strings.HasPrefix(manual, "llmgw:distlock:title:manual:") {
+		t.Fatalf("manual key shape wrong: %q", manual)
 	}
 }

@@ -16,6 +16,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/admin/distlock" // 2026-08-19 title-gen per-session distributed lock
 	"github.com/kaixuan/llm-gateway-go/bg"
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/discovery"
@@ -194,6 +195,7 @@ type Handler struct {
 		Enabled() bool
 	}
 	redisClient            interface{}                   // Redis client for sliding window access
+	titleDistLock          distlock.Manager             // 2026-08-19 per-session title-gen distributed lock; defaults to in-process LocalManager
 	availabilityReader     *bg.ModelAvailabilityReader   // 2026-06-29 mirror of unified probe state to Redis
 	availabilityBackfill   *bg.AvailabilityCacheBackfill // 2026-06-29 on-demand DB→Redis cache rebuild
 	availabilityKeyCounter *bg.AvailabilityKeyCounter    // 2026-06-29 on-demand SCAN-based key count
@@ -310,6 +312,12 @@ func NewHandler(db *pgxpool.Pool, secretKey string, encKey []byte) *Handler {
 		// 1024 entries × ~20KB/entry ≈ 20MB max footprint (rule 23 §3).
 		// 5min TTL ≈ body 数据写入后罕见被修改（rule 36 §1 持久化）。
 		bodyFetchCache: newBodyFetchCache(1024, 5*time.Minute),
+		// 2026-08-19: title generation lock defaults to the in-process
+		// LocalManager so no-Redis deployments still benefit from
+		// single-flight semantics within a single replica. The wiring
+		// code in cmd/gateway/main.go upgrades this to a Redis-backed
+		// manager once the cluster Redis client is healthy.
+		titleDistLock: distlock.NewLocalManager(),
 	}
 	// Initialize auto title generator
 	h.autoTitleGen = NewAutoTitleGenerator(h)
@@ -376,6 +384,20 @@ func (h *Handler) SetHealthTracker(ht interface{ Enabled() bool }) {
 // SetRedisClient (2026-06-22) wires the Redis client for sliding window access.
 func (h *Handler) SetRedisClient(rc interface{}) {
 	h.redisClient = rc
+}
+
+// SetTitleDistLock (2026-08-19) upgrades the title-generation distributed
+// lock from the in-process LocalManager (set in NewHandler) to a
+// Redis-backed manager. Safe to leave unset when Redis is unavailable —
+// the title pipeline will still acquire the lock, just without
+// cross-replica coordination. The title DistLock guards the leader /
+// follower pattern for both the streaming auto-title pipeline and the
+// admin summarize-title / PUT / DELETE handlers.
+func (h *Handler) SetTitleDistLock(m distlock.Manager) {
+	if m == nil {
+		return
+	}
+	h.titleDistLock = m
 }
 
 // SetAvailabilityReader (2026-06-29) wires the Redis availability reader
