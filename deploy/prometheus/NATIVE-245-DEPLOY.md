@@ -84,8 +84,12 @@ cat /opt/monitoring/smoke/received.log    # 应看到 receiver=credential-team �
 - **`CREDENTIAL_TEAM_WEBHOOK_URL` 尚未提供**：webhook 保持 `https://placeholder.invalid/##...##`
   占位，credential 告警派发会 loud-fail（设计内"请配置我"信号）。runtime 与派发链路本身
   已通过 smoke 验证可用。
-- `llmgw_credential_reveal_failure_total` 计数器已注册（provider/credential_decrypt_metrics.go），
-  当前 0 series（无失败发生属正常；Prometheus counter 懒导出）。
+- `llmgw_credential_reveal_failure_total` 计数器已注册并在进程启动时预热
+  （`provider/credential_decrypt_metrics.go`），当前应可见 7 个
+  `provider_id="0"` sentinel series，均为 0；真实失败会按真实 `provider_id` 懒增量创建。
+  baseline、dashboard 和阈值查询必须使用 `provider_id!="0"` 排除 sentinel。
+- 真实 `CREDENTIAL_TEAM_WEBHOOK_URL` 注入、真实 reveal failure E2E 与 24h baseline
+  校准仍待 owner/oncall 授权和运营数据；不要用破坏性 ciphertext 注入替代这些前置条件。
 - `partition-health.yml` 解析 bug 已修复（`now()`/`date_trunc` 均为 2.49/2.50+ 函数），
   但其规则依赖未实现的自定义指标（`partition_next_month_exists` 等）+ postgres exporter，
   故仍置于 `rules-disabled/`，规则处于休眠态。
