@@ -15,7 +15,7 @@
  */
 import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { getFeatured, resolveRouting } from '../api/routing'
+import { getFeatured, resolveRouting, reorderCandidateBindings, type CandidateBindingReorderItem } from '../api/routing'
 import { getRequestLogTopModels, type TopRequestModel } from '../api/logs'
 import {
   queueRef,
@@ -26,6 +26,7 @@ import {
   type LiveNodeStatus,
   type LiveRequest,
 } from '../composables/liveStreamStore'
+import { isSuperAdmin } from '../store'
 import RequestProcessingTrail from './RequestProcessingTrail.vue'
 import NodeDetailDrawer from './NodeDetailDrawer.vue'
 
@@ -250,6 +251,140 @@ const modelGroups = computed<ModelGroup[]>(() => {
   return groups.sort((a, b) => Number(b.featured) - Number(a.featured) || b.hotRequests - a.hotRequests || b.nodes.length - a.nodes.length || a.model.localeCompare(b.model))
 })
 
+// ── 节点状态过滤（在用 / 降级 / 人工禁用 / 配额耗尽） ─────────────────────
+// 状态分类落到唯一的桶，避免节点被双重计入/空选时全部隐藏。
+// 与 nodeCardTone 一致：ok → 在用，warn → 降级，disabled → 人工禁用，
+// 仅在配额字段含 'exhausted' 时算耗尽（独立桶，可与前三者叠加判断）。
+type StatusBucket = 'active' | 'degraded' | 'manualDisabled' | 'exhausted'
+
+const statusFilter = ref<Record<StatusBucket, boolean>>({
+  active: true,
+  degraded: true,
+  manualDisabled: true,
+  exhausted: true,
+})
+
+function toggleStatusFilter(bucket: StatusBucket) {
+  statusFilter.value = { ...statusFilter.value, [bucket]: !statusFilter.value[bucket] }
+}
+
+function nodeStatusBuckets(n: LiveNodeStatus): Set<StatusBucket> {
+  const buckets = new Set<StatusBucket>()
+  if (n.manual_disabled || n.disable_kind === 'manual') {
+    buckets.add('manualDisabled')
+  }
+  if ((n.quota_state ?? '').includes('exhausted')) {
+    buckets.add('exhausted')
+  }
+  const isDown = n.circuit_state === 'open' || n.health_status === 'unreachable'
+  const isHalfDown = n.circuit_state === 'half_open' || n.availability_state === 'cooling'
+  if (isDown || isHalfDown) buckets.add('degraded')
+  // 在用：未手工禁用且不在降级/耗尽桶里。允许在耗尽但非降级/非人工禁用下保留
+  // "在用"，由用户多选过滤自己取舍；保留判定的语义是"通过任一启用桶命中"。
+  if (!buckets.has('manualDisabled') && !buckets.has('degraded')) buckets.add('active')
+  return buckets
+}
+
+function passesStatusFilter(n: LiveNodeStatus): boolean {
+  const buckets = nodeStatusBuckets(n)
+  // 任一勾选桶命中即展示。耗尽/降级/手工禁用/在用 都是 OR 关系。
+  if (buckets.has('manualDisabled') && statusFilter.value.manualDisabled) return true
+  if (buckets.has('exhausted') && statusFilter.value.exhausted) return true
+  if (buckets.has('degraded') && statusFilter.value.degraded) return true
+  if (buckets.has('active') && statusFilter.value.active) return true
+  return false
+}
+
+// 仅展示当前过滤命中的节点；过滤全部命中数 + 命中节点
+const filteredModelGroups = computed<ModelGroup[]>(() => {
+  return modelGroups.value
+    .map(group => ({ ...group, nodes: group.nodes.filter(passesStatusFilter) }))
+    .filter(group => group.nodes.length > 0)
+})
+
+const hasFilteredGroups = computed(() => filteredModelGroups.value.length > 0)
+
+// ── 节点拖拽调整优先级（HTML5 dnd） ───────────────────────────────────────
+// 同一模型分组的节点顺序即 manual_priority 排序：列表越靠前，优先级越高。
+// 保存时按当前显示顺序生成 CandidateBindingReorderItem 并一次性提交。
+const dragScopeKey = ref<string | null>(null)
+const dragOverCredentialId = ref<number | null>(null)
+const dragSaving = ref(false)
+const dragError = ref('')
+
+function onDragStart(event: DragEvent, scopeKey: string, credentialId: number) {
+  if (!isSuperAdmin()) {
+    event.preventDefault()
+    return
+  }
+  dragScopeKey.value = scopeKey
+  dragOverCredentialId.value = credentialId
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = 'move'
+    event.dataTransfer.setData('text/plain', `${scopeKey}:${credentialId}`)
+  }
+}
+
+function onDragOver(event: DragEvent, scopeKey: string, credentialId: number) {
+  if (dragScopeKey.value !== scopeKey) return
+  event.preventDefault()
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'
+  dragOverCredentialId.value = credentialId
+}
+
+function onDragLeave(scopeKey: string, credentialId: number) {
+  if (dragScopeKey.value !== scopeKey) return
+  if (dragOverCredentialId.value === credentialId) dragOverCredentialId.value = null
+}
+
+function isDragTarget(scopeKey: string, credentialId: number): boolean {
+  return dragScopeKey.value === scopeKey && dragOverCredentialId.value === credentialId
+}
+
+async function onDrop(event: DragEvent, scopeKey: string, targetCredentialId: number) {
+  if (dragScopeKey.value !== scopeKey) return
+  event.preventDefault()
+  const group = filteredModelGroups.value.find(g => g.model === scopeKey)
+  if (!group) return
+  const ordered = [...group.nodes]
+  const fromIndex = ordered.findIndex(n => n.credential_id === dragOverCredentialId.value)
+  const toIndex = ordered.findIndex(n => n.credential_id === targetCredentialId)
+  if (fromIndex < 0 || toIndex < 0 || fromIndex === toIndex) {
+    dragScopeKey.value = null
+    dragOverCredentialId.value = null
+    return
+  }
+  const [moved] = ordered.splice(fromIndex, 1)
+  ordered.splice(toIndex, 0, moved)
+  dragScopeKey.value = null
+  dragOverCredentialId.value = null
+  // 越靠前 manual_priority 越小；范围 1..N，给步骤留出 PATCH 余量。
+  // base 80，留出 1..79 给非该模型分组的紧急覆盖；超出 batch 由后端返回错误。
+  // 取 max(已存在最小优先级 - 1, 1) 作为基准，避免覆盖其他模型分组的优先级。
+  const BASE = 80
+  const items: CandidateBindingReorderItem[] = ordered.map((node, index) => ({
+    credential_id: node.credential_id,
+    raw_model: scopeKey,
+    // 第一位 = 最小值（优先级最高）；基底越大越安全，与 cmb 已有值不冲突
+    manual_priority: BASE - index,
+  }))
+  if (!isSuperAdmin()) {
+    dragError.value = '只有超级管理员可以调整优先级。'
+    return
+  }
+  dragSaving.value = true
+  dragError.value = ''
+  try {
+    await reorderCandidateBindings(items)
+    // 触发最新一次 loadModelScope，让下一次 chip 显示的顺序与新优先级一致。
+    void loadModelScope()
+  } catch (error) {
+    dragError.value = error instanceof Error ? error.message : '调整优先级失败'
+  } finally {
+    dragSaving.value = false
+  }
+}
+
 const hasModelGroups = computed(() => modelGroups.value.length > 0)
 const hasReportedRawModels = computed(() => nodes.value.some(node => Array.isArray(node.raw_models)))
 
@@ -413,13 +548,40 @@ function formatTs(ts: string | undefined): string {
       <div v-if="hasReportedRawModels && (hasModelGroups || modelScopeLoading || modelScopeError)" class="qp-layer qp-layer--model-groups">
         <div class="qp-layer-header">
           <span class="qp-layer-name">按模型分组的可用节点</span>
-          <span v-if="hasModelGroups" class="qp-layer-count">{{ modelGroups.length }} 个模型</span>
-          <button type="button" class="qp-retry" :disabled="modelScopeLoading" @click="loadModelScope">{{ modelScopeLoading ? t('requestJourneys.modelScopeLoading') : `↻ ${t('requestJourneys.refreshScope')}` }}</button>
+          <span v-if="hasModelGroups" class="qp-layer-count">{{ filteredModelGroups.length }} 个模型<template v-if="modelGroups.length !== filteredModelGroups.length"> / {{ modelGroups.length }}</template></span>
+          <button type="button" class="qp-retry" :disabled="modelScopeLoading || dragSaving" @click="loadModelScope">{{ dragSaving ? '正在保存…' : (modelScopeLoading ? t('requestJourneys.modelScopeLoading') : `↻ ${t('requestJourneys.refreshScope')}`) }}</button>
         </div>
+
+        <!-- 状态过滤多选框：在用 / 降级 / 人工禁用 / 配额耗尽 -->
+        <div v-if="hasModelGroups" class="qp-status-filters" role="group" :aria-label="'状态过滤'">
+          <label class="qp-status-filter" :class="{ 'is-active': statusFilter.active }">
+            <input type="checkbox" :checked="statusFilter.active" @change="toggleStatusFilter('active')" />
+            <span class="qp-status-filter-dot qp-dot--ok" aria-hidden="true"></span>
+            <span>在用</span>
+          </label>
+          <label class="qp-status-filter" :class="{ 'is-active': statusFilter.degraded }">
+            <input type="checkbox" :checked="statusFilter.degraded" @change="toggleStatusFilter('degraded')" />
+            <span class="qp-status-filter-dot qp-dot--bad" aria-hidden="true"></span>
+            <span>降级</span>
+          </label>
+          <label class="qp-status-filter" :class="{ 'is-active': statusFilter.manualDisabled }">
+            <input type="checkbox" :checked="statusFilter.manualDisabled" @change="toggleStatusFilter('manualDisabled')" />
+            <span class="qp-status-filter-dot qp-status-filter-dot--muted" aria-hidden="true"></span>
+            <span>人工禁用</span>
+          </label>
+          <label class="qp-status-filter" :class="{ 'is-active': statusFilter.exhausted }">
+            <input type="checkbox" :checked="statusFilter.exhausted" @change="toggleStatusFilter('exhausted')" />
+            <span class="qp-status-filter-dot qp-dot--bad" aria-hidden="true"></span>
+            <span>耗尽</span>
+          </label>
+          <span v-if="dragError" class="qp-status-filter-error">{{ dragError }}</span>
+        </div>
+
         <div v-if="modelScopeLoading" class="qp-model-scope-state">{{ t('requestJourneys.modelScopeLoading') }}</div>
         <div v-else-if="modelScopeError" class="qp-model-scope-state qp-model-scope-state--error">{{ t('requestJourneys.modelScopeError') }}</div>
+        <div v-else-if="!hasFilteredGroups && hasModelGroups" class="qp-model-scope-state">当前过滤条件下没有可用节点。请调整状态过滤多选框。</div>
         <div v-else-if="!hasModelGroups" class="qp-model-scope-state">{{ t('requestJourneys.noModelNodes') }}</div>
-        <div v-else v-for="group in modelGroups" :key="group.model" class="qp-model-group">
+        <div v-else v-for="group in filteredModelGroups" :key="group.model" class="qp-model-group">
           <div class="qp-model-compact">
             <button type="button" class="qp-model-group-toggle" :aria-expanded="expandedModels.has(group.model)" @click="toggleModel(group.model)">
               <span class="qp-model-group-caret" :class="{ 'qp-model-group-caret--open': expandedModels.has(group.model) }">▸</span>
@@ -429,24 +591,37 @@ function formatTs(ts: string | undefined): string {
             <span v-if="group.hotRequests" class="qp-model-tag qp-model-tag--hot">热门 {{ group.hotRequests }}</span>
             <span class="qp-pill">{{ group.nodes.length }} 节点</span>
             <span class="qp-pill" :class="{ 'qp-pill--active': group.requestCount > 0 }">{{ group.requestCount }} 当前请求</span>
+            <span class="qp-pill qp-pill--hint" :title="'拖动节点以调整优先级，越靠前优先级越高（仅超级管理员）。'">拖动调整优先级</span>
             <div class="qp-model-nodes">
-              <button
+              <div
                 v-for="node in group.nodes"
                 :key="node.credential_id"
-                type="button"
-                class="qp-node-card"
-                :class="nodeCardTone(node)"
-                :title="`${nodeTitle(node)}：${nodeStatusSummary(node)}${node.last_error ? `；${node.last_error}` : ''}`"
-                @click="openNode(node, group.aliases)"
+                class="qp-node-card-wrap"
+                :class="{ 'is-drag-over': isDragTarget(group.model, node.credential_id) }"
+                @dragover="onDragOver($event, group.model, node.credential_id)"
+                @dragleave="onDragLeave(group.model, node.credential_id)"
+                @drop="onDrop($event, group.model, node.credential_id)"
               >
-                <span class="qp-node-card-title">{{ nodeTitle(node) }}</span>
-                <span class="qp-node-card-dots" :title="`熔断 ${node.circuit_state || '未知'} · 可用性 ${node.availability_state || '未知'} · 配额 ${node.quota_state || '未知'} · 健康 ${node.health_status || '未知'}`">
-                  <i class="qp-dot" :class="dotClass(circuitOk(node))" /><i class="qp-dot" :class="dotClass(availabilityOk(node))" /><i class="qp-dot" :class="dotClass(quotaOk(node))" /><i class="qp-dot" :class="dotClass(healthOk(node))" />
-                </span>
-                <span class="qp-node-card-meta">
-                  {{ nodeStatusSummary(node) }}<template v-if="node.in_flight"> · 在途 {{ node.in_flight }}</template><template v-if="node.last_latency_ms != null"> · {{ formatLatency(node.last_latency_ms) }}</template>
-                </span>
-              </button>
+                <button
+                  type="button"
+                  class="qp-node-card"
+                  :class="nodeCardTone(node)"
+                  :title="`${nodeTitle(node)}：${nodeStatusSummary(node)}${node.last_error ? `；${node.last_error}` : ''}`"
+                  :draggable="isSuperAdmin()"
+                  @click="openNode(node, group.aliases)"
+                  @dragstart="onDragStart($event, group.model, node.credential_id)"
+                  @dragend="dragScopeKey = null; dragOverCredentialId = null"
+                >
+                  <span class="qp-node-card-drag-handle" aria-hidden="true">⋮⋮</span>
+                  <span class="qp-node-card-title">{{ nodeTitle(node) }}</span>
+                  <span class="qp-node-card-dots" :title="`熔断 ${node.circuit_state || '未知'} · 可用性 ${node.availability_state || '未知'} · 配额 ${node.quota_state || '未知'} · 健康 ${node.health_status || '未知'}`">
+                    <i class="qp-dot" :class="dotClass(circuitOk(node))" /><i class="qp-dot" :class="dotClass(availabilityOk(node))" /><i class="qp-dot" :class="dotClass(quotaOk(node))" /><i class="qp-dot" :class="dotClass(healthOk(node))" />
+                  </span>
+                  <span class="qp-node-card-meta">
+                    {{ nodeStatusSummary(node) }}<template v-if="node.in_flight"> · 在途 {{ node.in_flight }}</template><template v-if="node.last_latency_ms != null"> · {{ formatLatency(node.last_latency_ms) }}</template>
+                  </span>
+                </button>
+              </div>
             </div>
           </div>
           <div v-if="expandedModels.has(group.model)" class="qp-model-group-body">
@@ -682,9 +857,14 @@ function formatTs(ts: string | undefined): string {
 .qp-model-tag { font-size:10px; padding:2px 6px; border-radius:999px; color:var(--kx-accent); background:color-mix(in srgb, var(--kx-accent) 12%, transparent); }
 .qp-model-tag--hot { color:var(--kx-warning); background:color-mix(in srgb, var(--kx-warning) 12%, transparent); }
 .qp-model-nodes { display:flex; gap:6px; flex-wrap:wrap; flex:1 1 100%; padding-left:18px; }
-.qp-node-card { display:grid; gap:4px; text-align:left; min-width:150px; max-width:230px; padding:7px 9px; border:1px solid var(--kx-border); border-left-width:3px; border-radius:6px; background:var(--kx-surface); cursor:pointer; color:var(--kx-text); }
+.qp-node-card-wrap { border-radius:6px; transition: background 120ms ease, outline-color 120ms ease; outline: 2px dashed transparent; outline-offset: 1px; }
+.qp-node-card-wrap.is-drag-over { background: color-mix(in srgb, var(--kx-accent) 14%, transparent); outline-color: var(--kx-accent); }
+.qp-node-card { display:grid; gap:4px; text-align:left; min-width:150px; max-width:230px; padding:7px 9px; border:1px solid var(--kx-border); border-left-width:3px; border-radius:6px; background:var(--kx-surface); cursor:pointer; color:var(--kx-text); position:relative; }
 .qp-node-card:hover { border-color:var(--kx-accent); }
-.qp-node-card-title { font-size:12px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.qp-node-card-drag-handle { position:absolute; top:3px; right:5px; font-size:10px; color:var(--kx-text-secondary); opacity:.6; line-height:1; user-select:none; }
+.qp-node-card[draggable="true"] { cursor: grab; }
+.qp-node-card[draggable="true"]:active { cursor: grabbing; }
+.qp-node-card-title { font-size:12px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; padding-right:14px; }
 .qp-node-card-dots { display:inline-flex; gap:4px; align-items:center; }
 .qp-dot { width:7px; height:7px; border-radius:50%; background:var(--kx-text-secondary); opacity:.5; }
 .qp-dot--ok { background:var(--kx-success); opacity:1; }
@@ -827,5 +1007,54 @@ function formatTs(ts: string | undefined): string {
   margin-left: auto;
   color: var(--kx-muted, var(--kx-text));
   font-variant-numeric: tabular-nums;
+}
+
+/* ── FE-A5 (2026-08-19): 状态过滤多选框 + 拖拽样式 ──────────────────────── */
+.qp-status-filters {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 10px;
+  padding: 6px 4px 8px;
+  border-bottom: 1px dashed var(--kx-border);
+  margin-bottom: 6px;
+}
+.qp-status-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--kx-border);
+  background: var(--kx-surface);
+  color: var(--kx-text-secondary);
+  cursor: pointer;
+  user-select: none;
+  transition: border-color 120ms ease, color 120ms ease, background 120ms ease;
+}
+.qp-status-filter:hover { border-color: var(--kx-accent); color: var(--kx-text); }
+.qp-status-filter.is-active { color: var(--kx-text); border-color: color-mix(in srgb, var(--kx-accent) 50%, var(--kx-border)); background: color-mix(in srgb, var(--kx-accent) 8%, var(--kx-surface)); }
+.qp-status-filter input { display: none; }
+.qp-status-filter-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+  background: var(--kx-text-secondary);
+  opacity: .5;
+}
+.qp-status-filter-dot.qp-dot--ok { background: var(--kx-success); opacity: 1; }
+.qp-status-filter-dot.qp-dot--bad { background: var(--kx-danger); opacity: 1; }
+.qp-status-filter-dot--muted { background: var(--kx-text-secondary); opacity: .8; }
+.qp-status-filter-error {
+  margin-left: 6px;
+  font-size: 11px;
+  color: var(--kx-danger);
+}
+.qp-pill--hint {
+  border-style: dashed;
+  color: var(--kx-muted, var(--kx-text-secondary));
+  cursor: help;
 }
 </style>

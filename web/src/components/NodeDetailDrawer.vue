@@ -34,6 +34,9 @@ const emit = defineEmits<{
 type Tab = 'detail' | 'requests' | 'settings'
 const activeTab = ref<Tab>('detail')
 const loading = ref(false)
+const detailLoaded = ref(false)
+const requestsLoaded = ref(false)
+const settingsLoaded = ref(false)
 const loadError = ref('')
 const candidate = ref<RoutingCandidate | null>(null)
 const candidateLoading = ref(false)
@@ -55,6 +58,35 @@ const weight = ref(100)
 const modelActionReason = ref('')
 let sequence = 0
 let loadController: AbortController | null = null
+
+// 默认不加载统计数据：仅在用户首次激活对应 tab 或主动刷新时才发起网络请求。
+// 这让"点击卡片 → 直接调整状态"的快路径无需等待 monitor / candidate /
+// sliding-window / history 等慢接口；侧栏实时状态直接来源于 liveStreamStore。
+// 注意：detail tab 默认打开时仍展示"未加载"，必须用户点"加载明细数据"或切到
+// requests/settings tab 之一才触发首次加载——这样 monitor / 滑动窗口阻塞路径被消除。
+function ensureTabLoaded(tab: Tab) {
+  if (!visible.value || !currentNode.value) return
+  if (tab === 'detail' && !detailLoaded.value) {
+    detailLoaded.value = true
+    void loadNode({ detailOnly: true })
+  } else if (tab === 'requests' && !requestsLoaded.value) {
+    requestsLoaded.value = true
+    void loadDecisionsOnly()
+  } else if (tab === 'settings' && !settingsLoaded.value) {
+    settingsLoaded.value = true
+    void loadNode({ settingsOnly: true })
+  }
+}
+
+// 当前激活的 tab 是否需要自动加载。detail tab 默认打开时希望保持「未加载」
+// 状态以避免阻塞 UX，因此仅当用户切到非 detail tab 才自动加载；回到 detail
+// tab 时也保持已加载状态（无网络抖动）。手动点"加载明细数据"按钮时直接调用
+// ensureTabLoaded('detail') 即可触发首次加载。
+function maybeAutoLoad(tab: Tab) {
+  if (!visible.value || !currentNode.value) return
+  if (tab === 'detail') return
+  ensureTabLoaded(tab)
+}
 
 const visible = computed({
   get: () => props.modelValue,
@@ -147,7 +179,36 @@ async function loadCandidate(model: string, requestSequence: number) {
   }
 }
 
-async function loadNode() {
+async function loadDecisionsOnly() {
+  const node = currentNode.value
+  if (!node) return
+  const controller = new AbortController()
+  loadController?.abort()
+  loadController = controller
+  const scope = scopedModel.value
+  try {
+    const result = scope
+      ? await getCredentialDecisions(node.credential_id, 50, scope)
+      : await getCredentialDecisions(node.credential_id, 30)
+    if (controller.signal.aborted) return
+    decisions.value = result.decisions ?? []
+  } catch (error) {
+    if (!(error instanceof DOMException && error.name === 'AbortError')) {
+      loadError.value = '未能加载路由决策记录。'
+    }
+  }
+}
+
+interface LoadNodeOptions {
+  /** 只加载明细 tab 所需的 monitor + candidate + 滑动窗口 + 历史 */
+  detailOnly?: boolean
+  /** 只加载设置 tab 所需的 monitor + candidate */
+  settingsOnly?: boolean
+  /** 加载全部（默认行为，例如用户点 ↻ 刷新时） */
+  full?: boolean
+}
+
+async function loadNode(options: LoadNodeOptions = {}) {
   const node = currentNode.value
   if (!node || !visible.value) return
   loadController?.abort()
@@ -159,12 +220,22 @@ async function loadNode() {
   actionMessage.value = ''
   actionError.value = ''
   pingResult.value = null
-  candidate.value = null
-  monitor.value = null
-  windowEntries.value = []
-  windowStats.value = null
-  history.value = []
-  decisions.value = []
+  // full 模式标记三个 tab 全部已加载过一次，确保再次拉取覆盖旧值
+  if (options.full) {
+    detailLoaded.value = true
+    requestsLoaded.value = true
+    settingsLoaded.value = true
+  }
+  // 拆分子集时各 tab 自管状态；full 模式清空所有旧值。
+  if (options.full || (!options.detailOnly && !options.settingsOnly)) {
+    candidate.value = null
+    monitor.value = null
+    windowEntries.value = []
+    windowStats.value = null
+    history.value = []
+    decisions.value = []
+  }
+  // 当前要构建的初始模型
   const scope = scopedModel.value
   const requestedModel = selectedModel.value
   const initialModel = scope || ((requestedModel && node.raw_models?.includes(requestedModel))
@@ -174,46 +245,59 @@ async function loadNode() {
   let activeModel = initialModel
 
   const isCurrent = () => requestSequence === sequence && currentNode.value?.credential_id === node.credential_id
-  const monitorTask = getCredentialMonitorSummary(
-    { credential_id: node.credential_id },
-    { signal: controller.signal },
-  ).then(payload => {
-    if (!isCurrent()) return
-    monitor.value = payload.credentials?.[0] ?? null
-    if (!scope) {
-      const preferred = monitor.value?.models?.find(model => model.raw_model_name === initialModel)
-        ?? monitor.value?.models?.find(model => model.probe_state === 'broken_confirmed')
-        ?? monitor.value?.models?.[0]
-      const nextModel = preferred?.raw_model_name ?? initialModel
-      if (nextModel && nextModel !== initialModel) {
-        activeModel = nextModel
-        selectedModel.value = nextModel
-      }
-    }
-  }).catch(error => {
-    if (isCurrent() && !(error instanceof DOMException && error.name === 'AbortError')) {
-      loadError.value = '未能加载节点的持久化明细；仍展示实时状态。'
-    }
-  })
-  const candidateTask = initialModel ? loadCandidate(initialModel, requestSequence) : Promise.resolve()
+  const wantMonitor = options.detailOnly || options.settingsOnly || options.full
+  const wantDetailExtras = options.detailOnly || options.full
+  // 仅在需要时才发起 monitor 摘要（detail & settings tab 用）。
+  const monitorTask = wantMonitor
+    ? getCredentialMonitorSummary(
+        { credential_id: node.credential_id },
+        { signal: controller.signal },
+      ).then(payload => {
+        if (!isCurrent()) return
+        monitor.value = payload.credentials?.[0] ?? null
+        if (!scope && wantDetailExtras) {
+          const preferred = monitor.value?.models?.find(model => model.raw_model_name === initialModel)
+            ?? monitor.value?.models?.find(model => model.probe_state === 'broken_confirmed')
+            ?? monitor.value?.models?.[0]
+          const nextModel = preferred?.raw_model_name ?? initialModel
+          if (nextModel && nextModel !== initialModel) {
+            activeModel = nextModel
+            selectedModel.value = nextModel
+          }
+        }
+      }).catch(error => {
+        if (isCurrent() && !(error instanceof DOMException && error.name === 'AbortError')) {
+          loadError.value = '未能加载节点的持久化明细；仍展示实时状态。'
+        }
+      })
+    : Promise.resolve()
+  const candidateTask = initialModel && wantMonitor
+    ? loadCandidate(initialModel, requestSequence)
+    : Promise.resolve()
 
   // Keep the drawer usable once its two critical panels are ready. The timeline,
   // history and decision log are independently populated when their reads finish.
   await Promise.allSettled([monitorTask, candidateTask])
-  if (isCurrent() && activeModel !== initialModel) {
+  if (isCurrent() && activeModel !== initialModel && wantDetailExtras) {
     candidate.value = null
     await loadCandidate(activeModel, requestSequence)
   }
   if (isCurrent()) loading.value = false
 
+  // 仅 detail tab 加载滑动窗口 + 历史
   void Promise.allSettled([
-    activeModel ? loadModelDetails(activeModel, requestSequence) : Promise.resolve(),
-    (scope
-      ? getCredentialDecisions(node.credential_id, 50, scope)
-      : getCredentialDecisions(node.credential_id, 30)
-    ).then(result => {
-      if (isCurrent()) decisions.value = result.decisions ?? []
-    }),
+    wantDetailExtras && activeModel
+      ? loadModelDetails(activeModel, requestSequence)
+      : Promise.resolve(),
+    wantDetailExtras
+      ? (
+        scope
+          ? getCredentialDecisions(node.credential_id, 50, scope)
+          : getCredentialDecisions(node.credential_id, 30)
+      ).then(result => {
+        if (isCurrent()) decisions.value = result.decisions ?? []
+      }).catch(() => {})
+      : Promise.resolve(),
   ])
 }
 
@@ -347,16 +431,49 @@ async function toggleSelectedModel() {
 }
 
 // props.model 变化（同一节点换模型分组打开）也要触发重载。
-watch(() => [props.modelValue, props.node?.credential_id, props.model] as const, ([open]) => {
+// 关注 props.modelValue（开/关）、credential_id（换节点）、model（换 scope）任一变化；
+// 抽屉打开或节点/scope 实际切换时，统一把三个 loaded 标记清零，让按需加载策略
+// 在新节点/scope 上重新走一遍。
+let lastWatchKey = ''
+watch(() => [props.modelValue, props.node?.credential_id, props.model] as const, ([open, , model]) => {
+  const key = `${open ? 1 : 0}|${props.node?.credential_id ?? ''}|${model ?? ''}`
   if (open) {
+    const isInitial = lastWatchKey === ''
+    const nodeChanged = lastWatchKey !== '' && lastWatchKey !== key
+    lastWatchKey = key
     activeTab.value = 'detail'
-    void loadNode()
+    detailLoaded.value = false
+    requestsLoaded.value = false
+    settingsLoaded.value = false
+    selectedModel.value = ''
+    if (nodeChanged) {
+      // 节点或 scope 变化时清空旧数据并主动加载一遍，保证用户切到 detail/settings
+      // 时就能看到正确 scope 的数据。
+      void loadNode({ full: true })
+    }
+    // 不立即加载任何数据；让用户切到对应 tab 时按需加载。
+    // 这样"点击节点 → 立即看到状态 + 修改"路径不会被 monitor / 滑动窗口阻塞。
+    void isInitial
   } else {
+    lastWatchKey = ''
     loadController?.abort()
     loadController = null
     sequence++
   }
 }, { immediate: true })
+
+// Tab 切换触发按需加载：当前激活 tab + 当前会话（visible）
+// 第一次切到 settings / requests tab 时才发起对应的网络请求；
+// detail tab 保持「未加载」直到用户点「加载明细数据」按钮，避免抽屉打开瞬间
+// 被 monitor / 滑动窗口 / 历史拉取的慢接口阻塞。
+watch(
+  () => [visible.value, activeTab.value] as const,
+  ([visible, tab]) => {
+    if (!visible) return
+    maybeAutoLoad(tab)
+  },
+  { immediate: true },
+)
 
 onBeforeUnmount(() => loadController?.abort())
 </script>
@@ -376,22 +493,29 @@ onBeforeUnmount(() => loadController?.abort())
           </div>
         </div>
         <div class="nd-header-actions">
-          <button class="btn btn-sm btn-ghost" :disabled="loading || saving" @click="loadNode">↻ 刷新</button>
+          <button class="btn btn-sm btn-ghost" :disabled="loading || saving" @click="loadNode({ full: true })">↻ 刷新</button>
           <button class="btn btn-sm btn-ghost" @click="visible = false">关闭</button>
         </div>
       </header>
 
       <div class="nd-tabs" role="tablist">
-        <button :class="{ active: activeTab === 'detail' }" role="tab" @click="activeTab = 'detail'">明细与近期情况</button>
-        <button :class="{ active: activeTab === 'requests' }" role="tab" @click="activeTab = 'requests'">最近路由请求</button>
-        <button :class="{ active: activeTab === 'settings' }" role="tab" @click="activeTab = 'settings'">设置与维护</button>
+        <button :class="{ active: activeTab === 'detail' }" role="tab" @click="activeTab = 'detail'">明细与近期情况<small v-if="!detailLoaded"> · 未加载</small></button>
+        <button :class="{ active: activeTab === 'requests' }" role="tab" @click="activeTab = 'requests'">最近路由请求<small v-if="!requestsLoaded"> · 未加载</small></button>
+        <button :class="{ active: activeTab === 'settings' }" role="tab" @click="activeTab = 'settings'">设置与维护<small v-if="!settingsLoaded"> · 未加载</small></button>
       </div>
 
       <div class="nd-body">
         <p v-if="loadError" class="nd-notice nd-notice--warn">{{ loadError }}</p>
         <p v-if="actionMessage" class="nd-notice nd-notice--ok">{{ actionMessage }}</p>
         <p v-if="actionError" class="nd-notice nd-notice--error">{{ actionError }}</p>
-        <div v-if="loading" class="nd-loading">正在加载节点路由、健康和近期请求数据…</div>
+
+        <!-- Detail tab 尚未加载：默认打开抽屉时进入此 tab，按需一键加载 -->
+        <template v-if="activeTab === 'detail' && !detailLoaded">
+          <div class="nd-loading">
+            <p class="nd-muted">实时状态已就绪。点击下方按钮按需加载 monitor 摘要、模型状态、滑动窗口和历史记录。</p>
+            <button class="btn btn-primary btn-sm" :disabled="loading" @click="ensureTabLoaded('detail')">{{ loading ? '加载中…' : '加载明细数据' }}</button>
+          </div>
+        </template>
 
         <template v-else-if="activeTab === 'detail'">
           <section class="nd-section">
@@ -452,12 +576,26 @@ onBeforeUnmount(() => loadController?.abort())
           </section>
         </template>
 
+        <template v-else-if="activeTab === 'requests' && !requestsLoaded">
+          <div class="nd-loading">
+            <p class="nd-muted">路由决策/请求记录按需加载。</p>
+            <button class="btn btn-primary btn-sm" :disabled="loading" @click="ensureTabLoaded('requests')">{{ loading ? '加载中…' : '加载请求记录' }}</button>
+          </div>
+        </template>
+
         <template v-else-if="activeTab === 'requests'">
           <section class="nd-section">
             <h3>最近路由请求 <small v-if="decisions.length">({{ decisions.length }})</small></h3>
             <p v-if="!decisions.length" class="nd-muted">暂无路由请求记录。</p>
             <div v-else class="nd-table-wrap"><table class="nd-table"><thead><tr><th>时间</th><th>请求</th><th>模型</th><th>结果</th><th>延迟</th><th>错误</th></tr></thead><tbody><tr v-for="decision in decisions" :key="decision.request_id"><td>{{ fmtTime(decision.ts) }}</td><td>{{ decision.request_id.slice(0, 8) }}</td><td>{{ decision.client_model || decision.model }}</td><td :class="decision.success ? 'is-ok' : 'is-bad'">{{ decision.success ? '成功' : '失败' }}</td><td>{{ decision.latency_ms == null ? '—' : `${decision.latency_ms}ms` }}</td><td>{{ decision.error_class || '—' }}</td></tr></tbody></table></div>
           </section>
+        </template>
+
+        <template v-else-if="activeTab === 'settings' && !settingsLoaded">
+          <div class="nd-loading">
+            <p class="nd-muted">设置面板按需加载。设置界面包括连通性维护、路由排序和凭据维护（仅超管）。</p>
+            <button class="btn btn-primary btn-sm" :disabled="loading" @click="ensureTabLoaded('settings')">{{ loading ? '加载中…' : '加载设置面板' }}</button>
+          </div>
         </template>
 
         <template v-else>
