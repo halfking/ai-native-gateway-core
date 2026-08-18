@@ -19,6 +19,16 @@ func (m *Manager) ApplyProbeForTenant(ctx context.Context, tenant string, p api.
 	return m.ApplyProbeForTenantWithSource(ctx, tenant, p, api.SourcePriorityProbe)
 }
 
+// probeWriteTTLFloor bounds the Redis TTL applied by probe-priority writes.
+// The node probe worker re-verifies a healthy node at most every 1h and a
+// failing one at most every 6h (NodeProbeBackoffChain cap), but node keys
+// carry the traffic-oriented NodeTTL (minutes-to-hours). A probe confirming
+// a node healthy with a TTL shorter than the next scheduled probe left the
+// key expired in between; the T4 read contract then treats the missing key
+// as Available=false and the model locked out until manual intervention
+// (glm-5.2 outage on 154, 2026-08-18). 7h covers the 6h cap with slack.
+const probeWriteTTLFloor = 7 * time.Hour
+
 // ApplyProbeForTenantWithSource is the priority-parameterized variant added
 // for 会话优化 v4 T5 / FR-4 R4.3 / UT-UR-08. apply_probe.lua previously
 // hard-coded source priority=Probe(20); the 36h lookback recovery scan
@@ -48,6 +58,13 @@ func (m *Manager) ApplyProbeForTenantWithSource(ctx context.Context, tenant stri
 	nodeTTLSeconds := int(m.effectiveConfig().NodeTTL / time.Second)
 	if nodeTTLSeconds <= 0 {
 		nodeTTLSeconds = int(DefaultConfig().NodeTTL / time.Second)
+	}
+	// Probe evidence must outlive the worker's retry ladder — see
+	// probeWriteTTLFloor. Traffic writes (record_request.lua) keep the
+	// hot-configured NodeTTL because they refresh continuously while the
+	// node serves requests.
+	if floor := int(probeWriteTTLFloor / time.Second); nodeTTLSeconds < floor {
+		nodeTTLSeconds = floor
 	}
 	_, err := store.ApplyProbeScript.Run(ctx, m.store.RawClient(),
 		[]string{key},
