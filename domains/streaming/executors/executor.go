@@ -2088,10 +2088,11 @@ func (e *Executor) Execute(params *ExecParams) (result *ExecuteResult, err error
 		)
 	}
 
-	candidates := e.Router.PlanCandidatesWithContext(
+	candidates := e.Router.PlanCandidatesPinned(
 		params.R.Context(),
 		params.Candidates,
 		stickyCredID,
+		params.PinCredentialID,
 		params.Policy,
 		egressPref(params.Transform),
 		params.TenantID,
@@ -2295,8 +2296,8 @@ func (e *Executor) Execute(params *ExecParams) (result *ExecuteResult, err error
 					if ratelimit.IsRateLimitEnabled() {
 						retrySticky = stickyCredID
 					}
-					subCandidates := e.Router.PlanCandidatesWithContext(
-						params.R.Context(), retryCandidates, retrySticky, params.Policy,
+					subCandidates := e.Router.PlanCandidatesPinned(
+						params.R.Context(), retryCandidates, retrySticky, params.PinCredentialID, params.Policy,
 						egressPref(params.Transform), params.TenantID, params.ClientModel, params.RequestID,
 					)
 

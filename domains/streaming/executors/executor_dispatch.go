@@ -84,8 +84,8 @@ func (e *Executor) dispatchRoute(ctx context.Context, qr *dispatch.QueuedRequest
 	if !qr.HasTriedCredential(0) && len(qr.TriedCredentials) == 0 {
 		sticky = dctx.stickyCredID
 	}
-	planned := e.Router.PlanCandidatesWithContext(
-		ctx, e.dispatchCandidatesForModel(ctx, dctx, qr.ResolvedModel), sticky, dctx.params.Policy, nil,
+	planned := e.Router.PlanCandidatesPinned(
+		ctx, e.dispatchCandidatesForModel(ctx, dctx, qr.ResolvedModel), sticky, dctx.params.PinCredentialID, dctx.params.Policy, nil,
 		dctx.params.TenantID, dctx.params.ClientModel, dctx.params.RequestID,
 	)
 	refs := make([]dispatch.CredentialRef, 0, len(planned))

@@ -1,7 +1,9 @@
 package admin
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -38,7 +40,7 @@ func TestHandleTriggerAvailability_NoWorker(t *testing.T) {
 	if !body.NewProbeMode {
 		t.Fatalf("new_probe_mode should mirror LLM_GATEWAY_USE_NEW_PROBE_MODE")
 	}
-	if body.ErrorCode != "self_check.trigger.disabled_in_new_probe_mode" {
+	if body.ErrorCode != "self_check.trigger.no_probe_path" {
 		t.Fatalf("unexpected error_code: %q", body.ErrorCode)
 	}
 	if !strings.Contains(body.Reason, "new probe mode") {
@@ -95,11 +97,93 @@ func TestHandleTrigger_NoWorkerReturnsGone(t *testing.T) {
 	if err := json.NewDecoder(rr.Body).Decode(&body); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if body.ErrorCode != "self_check.trigger.disabled_in_new_probe_mode" {
-		t.Fatalf("expected disabled_in_new_probe_mode, got %q", body.ErrorCode)
+	if body.ErrorCode != "self_check.trigger.no_probe_path" {
+		t.Fatalf("expected no_probe_path, got %q", body.ErrorCode)
 	}
-	if !strings.Contains(body.Message, "NodeProbe") {
-		t.Fatalf("message should point to the new probes, got: %q", body.Message)
+	if !strings.Contains(body.Message, "durable probe queue") {
+		t.Fatalf("message should mention the missing durable probe queue, got: %q", body.Message)
+	}
+}
+
+// TestHandleTrigger_ProbeEnqueue (2026-08-18): under the new probe mode the
+// trigger now fans out through the durable queue instead of 410-ing. This is
+// the glm-5.2 incident follow-up: operators must always have a manual way to
+// demand fresh probe evidence.
+func TestHandleTrigger_ProbeEnqueue(t *testing.T) {
+	t.Setenv("LLM_GATEWAY_USE_NEW_PROBE_MODE", "true")
+	h := &SelfCheckHandler{}
+	h.SetProbeEnqueue(func(ctx context.Context, model string) (int, error) {
+		if model != "glm-5.2" {
+			t.Errorf("unexpected model %q", model)
+		}
+		return 3, nil
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/self-check/trigger",
+		strings.NewReader(`{"model":"glm-5.2"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	h.handleTrigger(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 (got %d, body=%s)", rr.Code, rr.Body.String())
+	}
+	var body struct {
+		OK       bool   `json:"ok"`
+		Mode     string `json:"mode"`
+		Enqueued int    `json:"enqueued"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !body.OK || body.Mode != "probe_queue" || body.Enqueued != 3 {
+		t.Fatalf("unexpected body: %+v", body)
+	}
+}
+
+// TestHandleTrigger_ProbeEnqueueError surfaces enqueue failures as 503.
+func TestHandleTrigger_ProbeEnqueueError(t *testing.T) {
+	t.Setenv("LLM_GATEWAY_USE_NEW_PROBE_MODE", "true")
+	h := &SelfCheckHandler{}
+	h.SetProbeEnqueue(func(ctx context.Context, model string) (int, error) {
+		return 0, errors.New("db down")
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/self-check/trigger",
+		strings.NewReader(`{"model":"glm-5.2"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	h.handleTrigger(rr, req)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 (got %d)", rr.Code)
+	}
+}
+
+// TestHandleTriggerAvailability_ProbeEnqueue verifies the availability
+// endpoint reports available=true with mode=probe_queue once the enqueue
+// path is wired (drives the UI button state).
+func TestHandleTriggerAvailability_ProbeEnqueue(t *testing.T) {
+	t.Setenv("LLM_GATEWAY_USE_NEW_PROBE_MODE", "true")
+	h := &SelfCheckHandler{}
+	h.SetProbeEnqueue(func(ctx context.Context, model string) (int, error) { return 0, nil })
+
+	req := httptest.NewRequest(http.MethodGet, "/api/self-check/trigger/availability", nil)
+	rr := httptest.NewRecorder()
+	h.handleTriggerAvailability(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 (got %d)", rr.Code)
+	}
+	var body struct {
+		Available bool   `json:"available"`
+		Mode      string `json:"mode"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !body.Available || body.Mode != "probe_queue" {
+		t.Fatalf("expected available probe_queue mode, got: %+v", body)
 	}
 }
 

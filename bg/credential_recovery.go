@@ -238,13 +238,30 @@ func (r *CredentialRecovery) recover(ctx context.Context) {
 	timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
+	// 2026-08-18 fix (glm-5.2 outage): 智谱 GLM Coding Plan 5 小时窗口的 429
+	// 在 44f197505 之前被误标为 quota_permanent / permanently_exhausted（硬配额），
+	// 且 quota_recover_at / availability_recover_at 均为 NULL —— 上游窗口每 5
+	// 小时重置一次，但这两个"永久"状态没有任何自动恢复路径（上面的 periodic
+	// 恢复只认 periodic_exhausted，suspended 恢复被硬配额守卫拦住）。存量行必须
+	// 一次性重评：state_reason_detail 以 '[quota_periodic]' 开头即周期性证据，
+	// 降级为 periodic_exhausted 并把两个 recover_at 置为立即可恢复，交由下方
+	// 既有恢复块 + PeriodicQuotaProbe 探活纠偏。新增 429 不会再进入这条路径
+	// （writer 已按 5h 窗口分类）。
+	tag, err := r.db.Exec(timeoutCtx, misclassifiedPeriodicQuotaReclassSQL())
+	if err != nil {
+		slog.Warn("misclassified periodic quota reclass failed", "error", err)
+	} else if tag.RowsAffected() > 0 {
+		slog.Info("misclassified periodic quota reclassified (permanently_exhausted → periodic_exhausted)",
+			"count", tag.RowsAffected())
+	}
+
 	// 2026-08-07 P0 修复：availability 恢复必须先于 quota 恢复执行。
 	// 原因：suspended 恢复的条件要求 quota_state 当前不是硬配额（见下方
 	// suspended 守卫）。若 quota SQL 先跑把 periodic_exhausted 清成 'ok'，
 	// availability 恢复就分不清"本次刚到期的 periodic"与"本来就 ok"，
 	// 无法正确联动。先跑 availability（读到真实 quota_state），再跑 quota
 	// （按 quota_recover_at 到期清除）才能各取所需。
-	tag, err := r.db.Exec(timeoutCtx, `
+	tag, err = r.db.Exec(timeoutCtx, `
 		UPDATE credentials
 		SET availability_state = 'ready',
 		    availability_recover_at = NULL,
@@ -585,6 +602,23 @@ func (r *CredentialRecovery) recover(ctx context.Context) {
 // periodic_exhausted 时不设 quota_recover_at（本文件注释根因 1），
 // 因此 `quota_recover_at IS NULL` 分支保留原有"探活健康即恢复"的
 // 兜底语义，两条路径互不干扰。
+// misclassifiedPeriodicQuotaReclassSQL downgrades 存量 misclassified
+// permanent-quota rows (pre-44f197505 zhipu 5h-window 429s) to periodic so
+// the existing periodic/quota recovery blocks can actually fire. Guards:
+// only quota_state='permanently_exhausted'; only rows whose
+// state_reason_detail carries the periodic signature; recover_at columns
+// use COALESCE so an already-scheduled recovery time is preserved.
+func misclassifiedPeriodicQuotaReclassSQL() string {
+	return `
+		UPDATE credentials
+		SET quota_state = 'periodic_exhausted',
+		    quota_recover_at = COALESCE(quota_recover_at, now()),
+		    availability_recover_at = COALESCE(availability_recover_at, now()),
+		    state_updated_at = now()
+		WHERE quota_state = 'permanently_exhausted'
+		  AND COALESCE(state_reason_detail, '') LIKE '[quota_periodic]%'`
+}
+
 func stalePeriodicExhaustedCleanupSQL() string {
 	return `
 		UPDATE credentials

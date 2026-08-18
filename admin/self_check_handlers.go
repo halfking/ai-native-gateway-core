@@ -32,6 +32,13 @@ type SelfCheckHandler struct {
 	worker interface {
 		TriggerManualRun(model string) error
 	}
+	// probeEnqueue (2026-08-18): under the new probe mode the legacy
+	// featured-model worker is retired, but operators still need a working
+	// "手动触发" button. When wired, the trigger fans a node_probe task out
+	// to every credential bound to the model through the durable
+	// credential_probe_queue (the same path POST /api/admin/probe/tasks
+	// uses), so the 自检 page drives real probes instead of 410-ing.
+	probeEnqueue func(ctx context.Context, model string) (int, error)
 }
 
 func NewSelfCheckHandler(db *pgxpool.Pool) *SelfCheckHandler {
@@ -41,6 +48,12 @@ func NewSelfCheckHandler(db *pgxpool.Pool) *SelfCheckHandler {
 // SetWorker is called after the worker is created to enable manual triggering.
 func (h *SelfCheckHandler) SetWorker(w interface{ TriggerManualRun(model string) error }) {
 	h.worker = w
+}
+
+// SetProbeEnqueue wires the new-probe-mode trigger path (durable queue
+// fan-out). Called from main.go after the probe queue is constructed.
+func (h *SelfCheckHandler) SetProbeEnqueue(fn func(ctx context.Context, model string) (int, error)) {
+	h.probeEnqueue = fn
 }
 
 // RegisterRoutes registers the self-check admin routes.
@@ -447,11 +460,11 @@ func (h *SelfCheckHandler) handleUpdateSettings(w http.ResponseWriter, r *http.R
 // --- Trigger ---
 
 // handleTriggerAvailability reports whether POST /api/self-check/trigger can
-// accept runs right now. In the new probe mode (LLM_GATEWAY_USE_NEW_PROBE_MODE
-// default true since 2026-07-14), the legacy featured-model worker is no
-// longer instantiated, so manual triggers are intentionally unavailable.
-// Front-end uses this to disable the "触发测试" / "手动触发" buttons instead
-// of letting them fire a request that would 503.
+// accept runs right now. Two paths exist: the legacy featured-model worker
+// (when instantiated) or, since 2026-08-18, the durable-queue fan-out under
+// the new probe mode (LLM_GATEWAY_USE_NEW_PROBE_MODE=true) — previously this
+// endpoint hard-disabled the button, which left operators with no manual
+// self-check exactly when the automated pipeline was dead.
 //
 // Route: GET /api/self-check/trigger/availability (admin).
 func (h *SelfCheckHandler) handleTriggerAvailability(w http.ResponseWriter, r *http.Request) {
@@ -459,15 +472,20 @@ func (h *SelfCheckHandler) handleTriggerAvailability(w http.ResponseWriter, r *h
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
-	available := h.worker != nil
+	available := h.worker != nil || h.probeEnqueue != nil
 	resp := map[string]any{
 		"available":      available,
 		"new_probe_mode": scNewProbeMode(),
 	}
+	if h.probeEnqueue != nil {
+		resp["mode"] = "probe_queue"
+	} else if h.worker != nil {
+		resp["mode"] = "legacy_worker"
+	}
 	if !available {
 		if scNewProbeMode() {
-			resp["reason"] = "self-check worker disabled in new probe mode (LLM_GATEWAY_USE_NEW_PROBE_MODE=true); use NodeProbe / ActiveProbe / SystemHealth instead"
-			resp["error_code"] = "self_check.trigger.disabled_in_new_probe_mode"
+			resp["reason"] = "no probe path wired (worker retired in new probe mode and probe queue unavailable)"
+			resp["error_code"] = "self_check.trigger.no_probe_path"
 		} else {
 			resp["reason"] = "self-check worker is not initialized (server may still be starting)"
 			resp["error_code"] = "self_check.trigger.worker_unavailable"
@@ -489,6 +507,25 @@ func (h *SelfCheckHandler) handleTrigger(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if h.worker == nil {
+		// New probe mode: fan a node_probe task out to every credential
+		// bound to the model through the durable queue. This resurrects the
+		// 自检 page's manual trigger (previously 410 Gone since the legacy
+		// worker was retired — during the 2026-08-18 glm-5.2 incident that
+		// left operators with no way to demand fresh evidence).
+		if h.probeEnqueue != nil {
+			ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+			defer cancel()
+			n, err := h.probeEnqueue(ctx, body.Model)
+			if err != nil {
+				writeJSON(w, 503, map[string]any{"error": "trigger failed", "message": err.Error()})
+				return
+			}
+			writeJSON(w, 200, map[string]any{
+				"ok": true, "mode": "probe_queue", "enqueued": n,
+				"message": "node_probe tasks enqueued", "model": body.Model,
+			})
+			return
+		}
 		// 410 Gone: this endpoint is intentionally retired under the new
 		// probe mode (no longer transiently unavailable). 503 misled the UI
 		// into a red "服务不可用" banner that wasn't actionable.
@@ -497,8 +534,8 @@ func (h *SelfCheckHandler) handleTrigger(w http.ResponseWriter, r *http.Request)
 			"message": "self-check worker is not initialized",
 		}
 		if scNewProbeMode() {
-			resp["message"] = "self-check is disabled in new probe mode (LLM_GATEWAY_USE_NEW_PROBE_MODE=true). Use NodeProbe / ActiveProbe / SystemHealth for live probes."
-			resp["error_code"] = "self_check.trigger.disabled_in_new_probe_mode"
+			resp["message"] = "self-check is disabled in new probe mode and the durable probe queue is not wired."
+			resp["error_code"] = "self_check.trigger.no_probe_path"
 		} else {
 			resp["error_code"] = "self_check.trigger.worker_unavailable"
 		}
@@ -653,12 +690,49 @@ func (h *SelfCheckHandler) handleStats(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Probe-system health (2026-08-18): the 自检 page previously showed only
+	// self_check_runs, which stopped updating a month before the glm-5.2
+	// incident while the real probe pipeline was silently dead. Surface the
+	// durable-queue liveness signals here so "page green, pipeline dead"
+	// can't happen again: unclaimable-ready > 0 or a stale last_activity
+	// means probes are not executing even if old runs look fine.
+	probeSystem := map[string]any{}
+	var qs struct {
+		Ready            int        `json:"-"`
+		ReadyExpired     int        `json:"-"`
+		Running          int        `json:"-"`
+		LastActivity     *time.Time `json:"-"`
+		LastProbeAttempt *time.Time `json:"-"`
+		DueStates        int        `json:"-"`
+	}
+	_ = h.db.QueryRow(r.Context(), `
+		SELECT
+			COUNT(*) FILTER (WHERE status='ready' AND expires_at > now()),
+			COUNT(*) FILTER (WHERE status='ready' AND expires_at <= now()),
+			COUNT(*) FILTER (WHERE status='running'),
+			MAX(updated_at)
+		FROM credential_probe_queue`).Scan(
+		&qs.Ready, &qs.ReadyExpired, &qs.Running, &qs.LastActivity)
+	_ = h.db.QueryRow(r.Context(), `
+		SELECT MAX(last_attempt_at), COUNT(*) FILTER (WHERE paused=FALSE AND next_retry_at <= now())
+		FROM node_probe_state`).Scan(&qs.LastProbeAttempt, &qs.DueStates)
+	probeSystem["queue_ready"] = qs.Ready
+	probeSystem["queue_ready_unclaimable"] = qs.ReadyExpired
+	probeSystem["queue_running"] = qs.Running
+	probeSystem["queue_last_activity_at"] = qs.LastActivity
+	probeSystem["last_probe_attempt_at"] = qs.LastProbeAttempt
+	probeSystem["due_states"] = qs.DueStates
+	probeSystem["executing"] = qs.Running > 0
+	probeSystem["healthy"] = qs.ReadyExpired == 0 &&
+		(qs.Running > 0 || qs.LastActivity == nil || time.Since(*qs.LastActivity) < 15*time.Minute)
+
 	writeJSON(w, 200, map[string]any{
 		"range":           rangeParam,
 		"summary":         s,
 		"by_model":        byModel,
 		"error_breakdown": errBreakdown,
 		"trend":           trend,
+		"probe_system":    probeSystem,
 	})
 }
 
