@@ -82,7 +82,11 @@ var k2WindowBuckets = map[string]bool{"1m": true, "5m": true, "30m": true}
 // base64url segments, positive decimal credential — with no lenient
 // fallback and no guessing of ambiguous legacy tuples.
 func ParseNodeKeyCanonical(prefix, key string) (ParsedNodeKey, Schema, bool) {
-	if parsed, ok := parseNodeKeyK2(prefix, key); ok {
+	if strings.HasPrefix(key, prefix+"node:k2:") {
+		parsed, ok := parseNodeKeyK2(prefix, key)
+		if !ok {
+			return ParsedNodeKey{}, "", false
+		}
 		return parsed, SchemaK2, true
 	}
 	if parsed, ok := ParseNodeKey(prefix, key); ok {
