@@ -227,10 +227,11 @@ func (g *AutoTitleGenerator) generateTitleAsync(sessionID, tenantID, taskID, req
 						"wait_err", waitErr)
 					return
 				}
-				// Leader failed or TTL elapsed without saving.
-				// Give up this round — better than hammering an
-				// already-stuck upstream.
-				logger.Info("auto_title: follower giving up after leader release without title",
+				// Leader didn't save a title (failed, or wait
+				// errored). Give up this round — better than
+				// hammering an already-stuck upstream. The next
+				// first-turn request will retry.
+				logger.Info("auto_title: follower skipping after leader release without title",
 					"wait_err", waitErr)
 				return
 			}

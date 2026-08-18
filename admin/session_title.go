@@ -98,9 +98,11 @@ func (h *Handler) handleSessionSummarizeTitle(w http.ResponseWriter, r *http.Req
 						return
 					}
 				}
-				// Leader failed or wait errored — fall through so this
-				// caller can retry rather than silently returning 200.
-				slog.Info("session_title: follower giving up after leader release without title",
+				// Leader didn't write a title (either failed, or
+				// the wait errored before leader finished). Fall
+				// through so this caller can retry rather than
+				// silently returning 200.
+				slog.Info("session_title: follower retrying after leader release without title",
 					"task_id", taskID, "session_id", scopedKey, "wait_err", waitErr)
 			}
 		}

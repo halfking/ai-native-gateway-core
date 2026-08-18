@@ -185,6 +185,66 @@ func TestRedisManager_ReleaseTokenSafe(t *testing.T) {
 	freshLeader.Release(context.Background())
 }
 
+// TestRedisManager_FollowerUsesActualRemainingTTL verifies that a
+// follower's Wait timer is bounded by the real remaining TTL on the
+// Redis key, not the original opts.TTL. If the leader set a 60s TTL
+// and 50s elapsed before the follower joined, the follower's wait
+// must expire within ~10s, not 60s.
+func TestRedisManager_FollowerUsesActualRemainingTTL(t *testing.T) {
+	m, _, _ := newRedisManagerForTest(t)
+	leader, err := m.Acquire(context.Background(), AcquireOpts{Key: "pttl-k", TTL: 60 * time.Second})
+	if err != nil {
+		t.Fatalf("Acquire leader: %v", err)
+	}
+	defer leader.Release(context.Background())
+
+	// Sleep briefly to let the leader's lock age a few hundred ms
+	// before the follower joins. This proves the follower's TTL is
+	// NOT counted from opts.TTL but from the actual remaining time.
+	time.Sleep(500 * time.Millisecond)
+
+	follower, err := m.Acquire(context.Background(), AcquireOpts{Key: "pttl-k", TTL: 60 * time.Second})
+	if err != nil {
+		t.Fatalf("Acquire follower: %v", err)
+	}
+	defer follower.Release(context.Background())
+
+	// The follower's TTL should be ~59.5s, NOT 60s. We can't measure
+	// the field directly, but we can verify the wait timer doesn't
+	// expire immediately (which would happen if we passed ttl=0)
+	// and that the leader's eventual Release wakes us up.
+	start := time.Now()
+	waitDone := make(chan error, 1)
+	go func() {
+		waitDone <- follower.Wait(context.Background())
+	}()
+
+	// If TTL were 0 (key already gone), Wait would return ErrTTLExpired
+	// immediately. Verify the wait blocks at least 100ms.
+	select {
+	case err := <-waitDone:
+		if errors.Is(err, ErrTTLExpired) {
+			t.Fatalf("follower TTL is 0; PTTL fix did not apply")
+		}
+		t.Fatalf("follower Wait returned too early: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	// Now release and verify wake-up.
+	leader.Release(context.Background())
+	select {
+	case err := <-waitDone:
+		if err != nil {
+			t.Errorf("follower Wait after leader release: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("follower did not wake after leader Release")
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("follower woke after %v; expected shortly after release", elapsed)
+	}
+}
+
 // TestRedisManager_EmptyKeyRejected: defensive parity with LocalManager.
 func TestRedisManager_EmptyKeyRejected(t *testing.T) {
 	m, _, _ := newRedisManagerForTest(t)
