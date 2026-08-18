@@ -224,6 +224,7 @@ func main() {
 	var weeklyPeakRollup *bg.WeeklyPeakRollup
 	var statsMinuteAccumulator *stats.MinuteAccumulator
 	var statsEventWriter *stats.EventWriter
+	var statsInboxConsumer *stats.InboxConsumer
 	var statsDailyMonthlyRollup *stats.DailyMonthlyRollup
 	var statsBoardCache *boardcache.Service
 
@@ -3143,13 +3144,13 @@ func main() {
 					probeQueue.SetProbeTaskDetailSink(probeStreamHub)
 				}
 				probeQueueWorker = bg.NewProbeQueueWorker(bg.ProbeQueueWorkerConfig{
-					Queue:        probeQueue,
-					Executor:     queueExecutor,
-					Emitter:      newProbeEmitter(),
-					ResultSink:   bg.NewPostgresIntegrityProbeResultSink(dbConn.Pool()),
-					BatchSize:    epWorkers,
-					Workers:      epWorkers,
-						Lease:        bg.ProbeQueueLeaseDefault,
+					Queue:      probeQueue,
+					Executor:   queueExecutor,
+					Emitter:    newProbeEmitter(),
+					ResultSink: bg.NewPostgresIntegrityProbeResultSink(dbConn.Pool()),
+					BatchSize:  epWorkers,
+					Workers:    epWorkers,
+					Lease:      bg.ProbeQueueLeaseDefault,
 
 					PollInterval: 250 * time.Millisecond,
 				})
@@ -3700,6 +3701,18 @@ func main() {
 		}
 		if dbConn.Pool() != nil && telemetryClient.Enabled() {
 			statsEventWriter = stats.NewEventWriter(dbConn.Pool(), 4096)
+			if ready, err := stats.InboxConsumerSchemaReady(context.Background(), dbConn.Pool()); err != nil {
+				slog.Warn("stats inbox consumer schema check failed; retaining synchronous projection", "error", err)
+			} else if ready && os.Getenv("LLM_GATEWAY_STATS_INBOX_CONSUMER") == "1" {
+				statsEventWriter.SetAsyncProjection(true)
+				statsInboxConsumer = stats.NewInboxConsumer(dbConn.Pool(), stats.InboxConfig{})
+				statsInboxConsumer.Start(context.Background())
+				slog.Info("stats inbox consumer started")
+			} else if ready {
+				slog.Info("stats inbox consumer schema ready; retaining synchronous projection until LLM_GATEWAY_STATS_INBOX_CONSUMER=1")
+			} else {
+				slog.Warn("stats inbox consumer schema unavailable; retaining synchronous projection")
+			}
 			statsEventWriter.Start(context.Background())
 			telemetryClient.AddOnRequestLogPersisted(statsEventWriter.Record)
 			statsDailyMonthlyRollup = stats.NewDailyMonthlyRollup(dbConn.Pool(), time.Hour)
@@ -5836,6 +5849,9 @@ func main() {
 		}
 		if statsEventWriter != nil {
 			statsEventWriter.Stop()
+		}
+		if statsInboxConsumer != nil {
+			statsInboxConsumer.Stop()
 		}
 		if statsDailyMonthlyRollup != nil {
 			statsDailyMonthlyRollup.Stop()

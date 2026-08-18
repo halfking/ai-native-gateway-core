@@ -273,31 +273,38 @@ func (a *OfflineApplier) loadDockerImages(imagesPath string) error {
 	return nil
 }
 
-// executeMigrations 执行 SQL 迁移（按文件名顺序）
+// executeMigrations executes forward SQL migrations recursively in lexical
+// path order. Down migrations are release artifacts, never upgrade inputs.
 func (a *OfflineApplier) executeMigrations(ctx context.Context, migrationsDir string) error {
-	entries, err := os.ReadDir(migrationsDir)
+	sqlFiles, err := forwardMigrationFiles(migrationsDir)
 	if err != nil {
 		return err
 	}
-
-	// 按文件名排序（376_*.sql → 377_*.sql）
-	var sqlFiles []string
-	for _, entry := range entries {
-		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".sql") {
-			sqlFiles = append(sqlFiles, entry.Name())
+	for _, sqlPath := range sqlFiles {
+		if err := a.executeSQLFile(ctx, sqlPath); err != nil {
+			return fmt.Errorf("execute %s: %w", filepath.Base(sqlPath), err)
 		}
+	}
+	return nil
+}
+
+func forwardMigrationFiles(migrationsDir string) ([]string, error) {
+	var sqlFiles []string
+	err := filepath.WalkDir(migrationsDir, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") || strings.HasSuffix(entry.Name(), ".down.sql") {
+			return nil
+		}
+		sqlFiles = append(sqlFiles, path)
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	sort.Strings(sqlFiles)
-
-	// 逐个执行
-	for _, sqlFile := range sqlFiles {
-		sqlPath := filepath.Join(migrationsDir, sqlFile)
-		if err := a.executeSQLFile(ctx, sqlPath); err != nil {
-			return fmt.Errorf("execute %s: %w", sqlFile, err)
-		}
-	}
-
-	return nil
+	return sqlFiles, nil
 }
 
 // executeSQLFile 执行单个 SQL 文件

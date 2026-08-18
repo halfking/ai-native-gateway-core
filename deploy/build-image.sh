@@ -52,6 +52,9 @@ echo "  推送: ${PUSH}"
 # ── 检查 Docker 可用 ──────────────────────────────────────────────
 command -v docker >/dev/null 2>&1 || { echo "❌ docker 未安装"; exit 1; }
 
+# ── 校验 stats schema 发布工件 ─────────────────────────────────────
+"${PROJECT_ROOT}/scripts/verify-stats-schema-mirror.sh"
+
 # ── 构建镜像（多架构支持） ─────────────────────────────────────────
 BUILD_ARGS=(
   --platform linux/amd64

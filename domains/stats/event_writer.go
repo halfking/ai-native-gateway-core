@@ -14,14 +14,15 @@ import (
 const maxPersistRetries = 5
 
 type EventWriter struct {
-	db            *pgxpool.Pool
-	queue         chan Event
-	cancel        context.CancelFunc
-	done          chan struct{}
-	stopOnce      sync.Once
-	dropped       atomic.Uint64
-	persistFailed atomic.Uint64
-	deadLettered  atomic.Uint64
+	db              *pgxpool.Pool
+	queue           chan Event
+	cancel          context.CancelFunc
+	done            chan struct{}
+	stopOnce        sync.Once
+	dropped         atomic.Uint64
+	persistFailed   atomic.Uint64
+	deadLettered    atomic.Uint64
+	asyncProjection atomic.Bool
 }
 
 // Stats exposes writer health counters for tests and future metrics export.
@@ -39,6 +40,13 @@ func NewEventWriter(db *pgxpool.Pool, queueSize int) *EventWriter {
 	return &EventWriter{db: db, queue: make(chan Event, queueSize), done: make(chan struct{})}
 }
 
+// SetAsyncProjection selects the inbox consumer as the only usage_facts writer.
+// It is enabled only after the consumer schema has been verified at startup.
+func (w *EventWriter) SetAsyncProjection(enabled bool) {
+	if w != nil {
+		w.asyncProjection.Store(enabled)
+	}
+}
 func (w *EventWriter) Start(ctx context.Context) {
 	if w == nil || w.db == nil || w.cancel != nil {
 		return
@@ -196,34 +204,17 @@ func (w *EventWriter) persist(ctx context.Context, events []Event) error {
 		if err != nil {
 			return err
 		}
-		_, err = tx.Exec(ctx, `
-				UPDATE stats_event_inbox
-				SET processed_at = now(), processing_owner = 'telemetry-writer',
-				    process_attempts = process_attempts + 1, last_error = NULL
-				WHERE event_id = $1 AND occurred_at = $2`, e.EventID, e.OccurredAt)
-		if err != nil {
-			return err
-		}
-		_, err = tx.Exec(ctx, `
-				INSERT INTO usage_facts (
-				event_id, request_id, revision, occurred_at, finalized_at, tenant_id,
-				traffic_class, status, provider_id, credential_id, canonical_id, raw_model_name,
-				api_key_id, application_id, end_user_id, person_hash, prompt_tokens,
-				completion_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens,
-				image_tokens, audio_tokens, video_tokens, provider_tokens, total_tokens,
-				cost_amount, cost_currency, credits_charged, usage_source, pricing_version,
-				latency_ms, ttft_ms, error_kind, error_class, failure_stage, source
-			) VALUES ($1,$2,1,$3,now(),$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35)
-			ON CONFLICT (event_id, revision, occurred_at) DO NOTHING`,
-			e.EventID, e.RequestID, e.OccurredAt, e.TenantID, e.Traffic, e.Status,
-			e.ProviderID, e.CredentialID, e.CanonicalID, e.RawModelName, e.APIKeyID,
-			e.ApplicationID, e.EndUserID, e.PersonHash, e.PromptTokens, e.CompletionTokens,
-			e.CacheReadTokens, e.CacheWriteTokens, e.ReasoningTokens, e.ImageTokens,
-			e.AudioTokens, e.VideoTokens, e.ProviderTokens, e.TotalTokens, e.CostUSD,
-			e.CostCurrency, e.CreditsCharged, e.UsageSource, e.PricingVersion, e.LatencyMs,
-			e.TTFTMs, e.ErrorKind, e.ErrorClass, e.FailureStage, "stats_event_inbox")
-		if err != nil {
-			return err
+		if !w.asyncProjection.Load() {
+			if err := insertUsageFactTx(ctx, tx, e); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(ctx, `
+					UPDATE stats_event_inbox
+					SET processed_at = now(), processing_owner = 'telemetry-writer',
+					    process_attempts = process_attempts + 1, last_error = NULL
+					WHERE event_id = $1 AND occurred_at = $2`, e.EventID, e.OccurredAt); err != nil {
+				return err
+			}
 		}
 	}
 	return tx.Commit(ctx)
