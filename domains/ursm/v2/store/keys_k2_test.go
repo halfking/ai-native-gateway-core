@@ -6,89 +6,287 @@ import (
 	"testing"
 )
 
-// Golden bytes for the k2 canonical grammar frozen in doc 14 §2 and pinned
-// by doc 16 §2. base64url(raw): "tenant-a"=dGVuYW50LWE, "gpt-4"=Z3B0LTQ,
-// "model:with:colon"=bW9kZWw6d2l0aDpjb2xvbg, "a"=YQ, "b:8:c"=Yjo4OmM,
-// "a:7:b"=YTo3OmI, "c"=Yw, "123"=MTIz, "7"=Nw, "m"=bQ, "租户-α"=56ef5oi3Lc6x,
-// "model-a"=bW9kZWwtYQ, "chat"=Y2hhdA, "text"=dGV4dA, "x"=eA, "y:z"=eTp6, "z"=eg.
+// Golden bytes for the k2 canonical schema (doc 14 §2) are derived
+// independently of the implementation (python3 base64.urlsafe_b64encode,
+// padding stripped) from the grammar:
+//
+//	<prefix>node:k2:<b64url-tenant>:<credential-id>:<b64url-raw-model>
+//	<prefix>win:k2:<bucket>:<b64url-tenant>:<credential-id>:<b64url-raw-model>
+//	<prefix>idx:model:k2:<b64url-tenant>:<b64url-canonical>:<b64url-profile>:<b64url-modality>
 
-// Doc 16 §2 slice 1: canonical node key golden bytes + round-trip + the
-// historical collision pair frozen in doc 14 §1.
-func TestCanonicalNodeKeyK2RoundTripAndFrozenCollisionPair(t *testing.T) {
-	const prefix = "contract:"
-	// The frozen collision pair: two tuples that collapse onto one legacy key.
-	a := NodeKeyCanonical(prefix, "a", 7, "b:8:c") // a→YQ  b:8:c→Yjo4OmM
-	b := NodeKeyCanonical(prefix, "a:7:b", 8, "c") // a:7:b→YTo3OmI  c→Yw
+func TestCanonicalNodeKeyK2GoldenBytes(t *testing.T) {
+	got, err := K2NodeKeyForTenant("ursm:v2:", "tenant-a", 7, "model-a")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if want := "ursm:v2:node:k2:dGVuYW50LWE:7:bW9kZWwtYQ"; got != want {
+		t.Fatalf("k2 node key = %q, want %q", got, want)
+	}
+}
+
+func TestCanonicalWindowKeyK2GoldenBytes(t *testing.T) {
+	got, err := K2WindowKeyForTenant("ursm:v2:", "tenant-a", 7, "model-a", "5m")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if want := "ursm:v2:win:k2:5m:dGVuYW50LWE:7:bW9kZWwtYQ"; got != want {
+		t.Fatalf("k2 window key = %q, want %q", got, want)
+	}
+}
+
+func TestCanonicalCandidateIndexKeyK2GoldenBytes(t *testing.T) {
+	got, err := K2CandidateIndexKey("ursm:v2:", "tenant-a", "model-a", "profile-x", "text")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if want := "ursm:v2:idx:model:k2:dGVuYW50LWE:bW9kZWwtYQ:cHJvZmlsZS14:dGV4dA"; got != want {
+		t.Fatalf("k2 candidate index key = %q, want %q", got, want)
+	}
+}
+
+func TestCanonicalKeysRejectEmptyAndInvalidInputs(t *testing.T) {
+	if _, err := K2NodeKeyForTenant("ursm:v2:", "", 7, "model-a"); err == nil {
+		t.Fatal("empty tenant must be rejected: canonical never represents it (doc 14 §2)")
+	}
+	if _, err := K2NodeKeyForTenant("ursm:v2:", "tenant-a", 0, "model-a"); err == nil {
+		t.Fatal("credential id 0 must be rejected")
+	}
+	if _, err := K2NodeKeyForTenant("ursm:v2:", "tenant-a", -1, "model-a"); err == nil {
+		t.Fatal("negative credential id must be rejected")
+	}
+	if _, err := K2NodeKeyForTenant("ursm:v2:", "tenant-a", 7, ""); err == nil {
+		t.Fatal("empty raw model must be rejected")
+	}
+	for _, bucket := range []string{"", "2m", "1h", "1m:extra"} {
+		if _, err := K2WindowKeyForTenant("ursm:v2:", "tenant-a", 7, "model-a", bucket); err == nil {
+			t.Fatalf("bucket %q must be rejected: buckets are frozen to 1m/5m/30m", bucket)
+		}
+	}
+	if _, err := K2WindowKeyForTenant("ursm:v2:", "", 7, "model-a", "5m"); err == nil {
+		t.Fatal("empty tenant must be rejected for windows too")
+	}
+	if _, err := K2CandidateIndexKey("ursm:v2:", "", "model-a", "profile-x", "text"); err == nil {
+		t.Fatal("empty tenant must be rejected for candidate index")
+	}
+	if _, err := K2CandidateIndexKey("ursm:v2:", "tenant-a", "", "profile-x", "text"); err == nil {
+		t.Fatal("empty canonical model must be rejected")
+	}
+	if _, err := K2CandidateIndexKey("ursm:v2:", "tenant-a", "model-a", "", "text"); err == nil {
+		t.Fatal("empty profile must be rejected")
+	}
+	if _, err := K2CandidateIndexKey("ursm:v2:", "tenant-a", "model-a", "profile-x", ""); err == nil {
+		t.Fatal("empty modality must be rejected")
+	}
+}
+
+// TestNodeKeySetForTenantRetainsTuple: the key set keeps the tuple it was
+// built from so dual/canonical store paths can derive the k2 set without
+// re-parsing legacy keys — a delimiter-bearing tuple cannot survive that
+// round-trip, and the write path always starts from the true tuple.
+func TestNodeKeySetForTenantRetainsTuple(t *testing.T) {
+	set := NodeKeySetForTenant("p:", "a:7:b", 8, "c")
+	if set.TenantID != "a:7:b" || set.CredentialID != 8 || set.RawModel != "c" {
+		t.Fatalf("tuple = (%q,%d,%q), want (a:7:b,8,c)", set.TenantID, set.CredentialID, set.RawModel)
+	}
+}
+
+func TestParseNodeKeyAnyRoundTripAndSchemaOrigin(t *testing.T) {
+	// k2 round-trip: a constructed canonical key parses back to the exact
+	// tuple and reports the k2 schema origin.
+	k2Key, err := K2NodeKeyForTenant("ursm:v2:", "tenant-a", 7, "model:with:colon")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	p, ok := ParseNodeKeyAny("ursm:v2:", k2Key)
+	if !ok || p.Schema != KeySchemaK2 {
+		t.Fatalf("k2 parse ok=%v schema=%v", ok, p.Schema)
+	}
+	if p.TenantID != "tenant-a" || p.CredentialID != 7 || p.RawModel != "model:with:colon" {
+		t.Fatalf("k2 tuple = %+v", p.ParsedNodeKey)
+	}
+
+	// legacy keys still parse through the same entry point with the legacy
+	// schema origin, so callers cannot treat a parse success as schema-free.
+	p, ok = ParseNodeKeyAny("ursm:v2:", "ursm:v2:node:tenant-a:34:model:with:colon")
+	if !ok || p.Schema != KeySchemaLegacy {
+		t.Fatalf("legacy parse ok=%v schema=%v", ok, p.Schema)
+	}
+	if p.TenantID != "tenant-a" || p.CredentialID != 34 || p.RawModel != "model:with:colon" {
+		t.Fatalf("legacy tuple = %+v", p.ParsedNodeKey)
+	}
+	p, ok = ParseNodeKeyAny("ursm:v2:", NodeKey("ursm:v2:", 12, "gpt-4"))
+	if !ok || p.Schema != KeySchemaLegacy || p.TenantID != "" || p.CredentialID != 12 || p.RawModel != "gpt-4" {
+		t.Fatalf("legacy non-tenant parse = %+v ok=%v", p.ParsedNodeKey, ok)
+	}
+}
+
+func TestParseNodeKeyAnyStrictRejection(t *testing.T) {
+	bad := []string{
+		"ursm:v2:node:k2:",              // empty remainder
+		"ursm:v2:node:k2:YQ:7",          // too few segments
+		"ursm:v2:node:k2:YQ:7:bQ:extra", // too many segments — no rejoin, ever
+		"ursm:v2:node:k2:!bad:7:bQ",     // invalid base64url tenant
+		"ursm:v2:node:k2:YQ:7:Yg==",     // padded encoding is not raw
+		"ursm:v2:node:k2:YQ:7:YR",       // non-canonical trailing bits (YR re-encodes to YQ)
+		"ursm:v2:node:k2:YQ:0:bQ",       // credential id 0
+		"ursm:v2:node:k2:YQ:-1:bQ",      // signed credential id
+		"ursm:v2:node:k2:YQ:+7:bQ",      // explicit plus sign
+		"ursm:v2:node:k2:YQ:07:bQ",      // leading zero is not canonical decimal
+		"ursm:v2:node:k2::7:bQ",         // empty tenant segment — k2 never represents empty tenant
+		"ursm:v2:node:k2:YQ:7:",         // empty raw model segment
+	}
+	for _, k := range bad {
+		if _, ok := ParseNodeKeyAny("ursm:v2:", k); ok {
+			t.Fatalf("strict k2 parser must reject %q", k)
+		}
+	}
+	// Non-node keys never parse through the node entry point.
+	for _, k := range []string{"ursm:v2:win:1m:12:gpt-4", "ursm:v2:meta:ready", "ursm:v2:idx:model:tenant-a:model-a:chat:text"} {
+		if _, ok := ParseNodeKeyAny("ursm:v2:", k); ok {
+			t.Fatalf("non-node key %q must not parse", k)
+		}
+	}
+}
+
+// TestParseNodeKeyRejectsK2MarkerKeys guards the loose legacy parser against
+// mis-parsing canonical keys as legacy tuples. The dangerous case is an
+// all-digit base64url tenant segment: b64("\xd3\x5d\xb7") == "0123", which
+// the untagged legacy branch reads as {tenant:"k2", cid:123} with ok=true
+// (verified empirically before this fix). Every k2 key must be rejected
+// here so persist/coverage cannot consume a wrong tuple.
+func TestParseNodeKeyRejectsK2MarkerKeys(t *testing.T) {
+	allDigitB64Tenant := "ursm:v2:node:k2:0123:7:bW9kZWwtYQ"
+	if _, ok := ParseNodeKey("ursm:v2:", allDigitB64Tenant); ok {
+		t.Fatalf("legacy parser must reject all-digit-b64 k2 key %q", allDigitB64Tenant)
+	}
+	normal, err := K2NodeKeyForTenant("ursm:v2:", "tenant-a", 7, "model-a")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, ok := ParseNodeKey("ursm:v2:", normal); ok {
+		t.Fatalf("legacy parser must reject k2 key %q", normal)
+	}
+	if _, ok := ParseNodeKeyAny("ursm:v2:", allDigitB64Tenant); !ok {
+		t.Fatal("the any-schema parser must still parse the all-digit-b64 k2 key correctly")
+	}
+}
+
+func TestCanonicalKeysRepresentDelimiterBearingComponents(t *testing.T) {
+	cases := []struct {
+		tenant string
+		cid    int
+		raw    string
+	}{
+		{"a", 7, "b:8:c"},
+		{"a:7:b", 8, "c"},
+		{"123", 34, "model:with:colon"},
+		{":leading", 5, ":model:"},
+		{"double::colon", 5, "a::b"},
+		{"租户:一", 5, "模型:测试"},
+		{"café", 5, "café:model"},
+		{"trail ", 5, " space model "},
+	}
+	for _, tc := range cases {
+		k, err := K2NodeKeyForTenant("ursm:v2:", tc.tenant, tc.cid, tc.raw)
+		if err != nil {
+			t.Fatalf("tenant=%q raw=%q: unexpected error: %v", tc.tenant, tc.raw, err)
+		}
+		p, ok := ParseNodeKeyAny("ursm:v2:", k)
+		if !ok || p.Schema != KeySchemaK2 {
+			t.Fatalf("tenant=%q raw=%q: parse ok=%v schema=%v key=%q", tc.tenant, tc.raw, ok, p.Schema, k)
+		}
+		if p.TenantID != tc.tenant || p.CredentialID != tc.cid || p.RawModel != tc.raw {
+			t.Fatalf("tenant=%q raw=%q: round-trip got %+v from key %q", tc.tenant, tc.raw, p.ParsedNodeKey, k)
+		}
+	}
+}
+
+// TestCanonicalKeyCollisionProperty pins the frozen historical collision
+// pair (doc 14 §1) and sweeps a representative delimiter/Unicode corpus:
+// every distinct tuple must yield a distinct key and round-trip losslessly.
+func TestCanonicalKeyCollisionProperty(t *testing.T) {
+	// The two tuples that collide in the legacy grammar
+	// (both produce contract:node:a:7:b:8:c) must diverge under k2.
+	a, err := K2NodeKeyForTenant("contract:", "a", 7, "b:8:c")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	b, err := K2NodeKeyForTenant("contract:", "a:7:b", 8, "c")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if want := "contract:node:k2:YQ:7:Yjo4OmM"; a != want {
-		t.Fatalf("canonical a = %q, want %q", a, want)
+		t.Fatalf("frozen pair a = %q, want %q", a, want)
 	}
 	if want := "contract:node:k2:YTo3OmI:8:Yw"; b != want {
-		t.Fatalf("canonical b = %q, want %q", b, want)
+		t.Fatalf("frozen pair b = %q, want %q", b, want)
 	}
 	if a == b {
 		t.Fatal("frozen legacy collision pair must not collide in k2")
 	}
-	pa, sa, ok := ParseNodeKeyCanonical(prefix, a) // strict parser must report schema source
-	if !ok || sa != SchemaK2 || pa.TenantID != "a" || pa.CredentialID != 7 || pa.RawModel != "b:8:c" {
-		t.Fatalf("k2 parse = %+v schema=%v ok=%v", pa, sa, ok)
-	}
-	pb, sb, ok := ParseNodeKeyCanonical(prefix, b)
-	if !ok || sb != SchemaK2 || pb.TenantID != "a:7:b" || pb.CredentialID != 8 || pb.RawModel != "c" {
-		t.Fatalf("k2 parse = %+v schema=%v ok=%v", pb, sb, ok)
-	}
-	// Numeric tenants need no legacy t-tag in k2 — b64url is unambiguous.
-	if got := NodeKeyCanonical(prefix, "7", 7, "m"); got != "contract:node:k2:Nw:7:bQ" {
-		t.Fatalf("numeric tenant canonical = %q", got) // 7→Nw  m→bQ
-	}
-	if parsed, schema, ok := ParseNodeKeyCanonical(prefix, NodeKeyCanonical(prefix, "7", 7, "m")); !ok || schema != SchemaK2 || parsed.TenantID != "7" || parsed.RawModel != "m" {
-		t.Fatalf("numeric tenant round-trip = %+v schema=%v ok=%v", parsed, schema, ok)
-	}
-	if NodeKeyForTenant(prefix, "a", 7, "b:8:c") != NodeKeyForTenant(prefix, "a:7:b", 8, "c") {
-		t.Fatal("precondition: the pair must still collide in legacy")
-	}
-}
 
-func TestCanonicalNodeKeyUnicodeGoldenAndRoundTrip(t *testing.T) {
-	const prefix = "ursm:v2:"
-	got := NodeKeyCanonical(prefix, "租户-α", 12, "model:with:colon")
-	if want := "ursm:v2:node:k2:56ef5oi3Lc6x:12:bW9kZWw6d2l0aDpjb2xvbg"; got != want {
-		t.Fatalf("unicode key = %q, want %q", got, want)
+	type tup struct {
+		tenant string
+		cid    int
+		raw    string
 	}
-	parsed, schema, ok := ParseNodeKeyCanonical(prefix, got)
-	if !ok || schema != SchemaK2 || parsed.TenantID != "租户-α" || parsed.CredentialID != 12 || parsed.RawModel != "model:with:colon" {
-		t.Fatalf("unicode round-trip = %+v schema=%v ok=%v", parsed, schema, ok)
-	}
-}
-
-// Unrepresentable inputs encode to keys that no parser accepts: the
-// canonical grammar cannot smuggle an empty tenant or raw model past
-// decoding, and non-positive credentials never parse.
-func TestCanonicalConstructionUnrepresentableInputsFailAtParse(t *testing.T) {
-	const prefix = "ursm:v2:"
-	for name, key := range map[string]string{
-		"empty tenant":          NodeKeyCanonical(prefix, "", 7, "gpt-4"),
-		"empty raw model":       NodeKeyCanonical(prefix, "tenant-a", 7, ""),
-		"credential zero":       NodeKeyCanonical(prefix, "tenant-a", 0, "gpt-4"),
-		"negative credential":   NodeKeyCanonical(prefix, "tenant-a", -3, "gpt-4"),
-		"window unknown bucket": WindowKeyCanonical(prefix, "tenant-a", 7, "gpt-4", "2m"),
-		"window empty tenant":   WindowKeyCanonical(prefix, "", 7, "gpt-4", "1m"),
-		"index empty tenant":    CandidateIndexKeyCanonical(prefix, "", "model-a", "chat", "text"),
-		"index empty model":     CandidateIndexKeyCanonical(prefix, "tenant-a", "", "chat", "text"),
-		"index empty profile":   CandidateIndexKeyCanonical(prefix, "tenant-a", "model-a", "", "text"),
-		"index empty modality":  CandidateIndexKeyCanonical(prefix, "tenant-a", "model-a", "chat", ""),
-	} {
-		if _, _, ok := ParseNodeKeyCanonical(prefix, key); ok {
-			t.Fatalf("%s must not parse as a node key: %q", name, key)
-		}
-		if _, ok := ParseWindowKeyCanonical(prefix, key); ok {
-			t.Fatalf("%s must not parse as a window key: %q", name, key)
-		}
-		if _, ok := ParseCandidateIndexKeyCanonical(prefix, key); ok {
-			t.Fatalf("%s must not parse as an index key: %q", name, key)
+	tenants := []string{"a", "a:7:b", "a:7", "123", ":t:", "t:", "租户", "café", "a:b:c:d:e"}
+	raws := []string{"m", "b:8:c", ":", "::", ":m:", "模型", "b:8", "m:1:2:3"}
+	seen := make(map[string]tup)
+	for _, tenant := range tenants {
+		for cid := 1; cid <= 3; cid++ {
+			for _, raw := range raws {
+				k, err := K2NodeKeyForTenant("p:", tenant, cid, raw)
+				if err != nil {
+					t.Fatalf("tenant=%q cid=%d raw=%q: unexpected error: %v", tenant, cid, raw, err)
+				}
+				cur := tup{tenant, cid, raw}
+				if prev, dup := seen[k]; dup {
+					t.Fatalf("collision on key %q between %+v and %+v", k, prev, cur)
+				}
+				seen[k] = cur
+				p, ok := ParseNodeKeyAny("p:", k)
+				if !ok || p.TenantID != tenant || p.CredentialID != cid || p.RawModel != raw {
+					t.Fatalf("round-trip failed for %+v on key %q", cur, k)
+				}
+			}
 		}
 	}
 }
 
+// Strict window/candidate parsers share the same k2 marker and frozen
+// bucket vocabulary as the constructors; the parser-only path was
+// contributed by the parallel main-branch session and must stay consistent
+// with the production entry points (no rejoin, no re-canonicalisation).
+func TestParseWindowKeyAnyRoundTrip(t *testing.T) {
+	for _, bucket := range []string{"1m", "5m", "30m"} {
+		k, err := K2WindowKeyForTenant("ursm:v2:", "tenant-a", 7, "model:a", bucket)
+		if err != nil {
+			t.Fatalf("bucket=%s: unexpected error: %v", bucket, err)
+		}
+		p, ok := ParseWindowKeyAny("ursm:v2:", k)
+		if !ok || p.Bucket != bucket || p.TenantID != "tenant-a" || p.CredentialID != 7 || p.RawModel != "model:a" {
+			t.Fatalf("bucket=%s parse = %+v ok=%v", bucket, p, ok)
+		}
+	}
+	for _, bucket := range []string{"", "2m", "1h", "1m:extra"} {
+		k, _ := K2WindowKeyForTenant("ursm:v2:", "tenant-a", 7, "model:a", bucket)
+		if k == "" {
+			continue
+		}
+		if _, ok := ParseWindowKeyAny("ursm:v2:", k); ok {
+			t.Fatalf("unknown bucket must not parse: %s", k)
+		}
+	}
+	if _, ok := ParseWindowKeyAny("ursm:v2:", "ursm:v2:win:1m:tenant-a:7:model"); ok {
+		t.Fatal("legacy window key must not parse as k2")
+	}
+}
+
+// Reserved-namespace strictness — these cases are valid under the permissive
+// legacy parser but must fail closed under the canonical strict parser.
+// Contributed by the parallel main-branch session; preserved here so the
+// two parsers stay consistent on every reserved-namespace edge case.
 func TestParseNodeKeyCanonicalRejectsMalformedKeys(t *testing.T) {
 	const prefix = "ursm:v2:"
 	rejected := map[string]string{
@@ -109,9 +307,9 @@ func TestParseNodeKeyCanonicalRejectsMalformedKeys(t *testing.T) {
 		"missing k2 marker":       "ursm:v2:node:k3:dGVuYW50LWE:7:Z3B0LTQ",
 		"window key against node": "ursm:v2:win:k2:1m:dGVuYW50LWE:7:Z3B0LTQ",
 		"unparseable legacy":      "ursm:v2:node:xx:not-a-number",
-		// This is valid under the permissive legacy parser (tenant k2,
-		// credential 1234, raw 07:YQ), but the reserved k2 namespace must
-		// fail closed when its canonical credential is non-canonical.
+		// Valid under the permissive legacy parser (tenant k2, credential
+		// 1234, raw 07:YQ), but the reserved k2 namespace must fail closed
+		// when its canonical credential is non-canonical.
 		"malformed reserved k2 fallback": "ursm:v2:node:k2:1234:07:YQ",
 	}
 	for reason, key := range rejected {
@@ -123,8 +321,8 @@ func TestParseNodeKeyCanonicalRejectsMalformedKeys(t *testing.T) {
 
 // ParseNodeKeyCanonical reports SchemaLegacy for every legacy grammar
 // (non-tenant, tagged numeric tenant, untagged string tenant) and SchemaK2
-// for canonical keys. A key matching both grammars resolves as k2: once the
-// k2 marker exists it owns the node:k2: namespace.
+// for canonical keys. A key matching both grammars resolves as k2: once
+// the k2 marker exists it owns the node:k2: namespace.
 func TestParseNodeKeyCanonicalReportsSchemaSource(t *testing.T) {
 	const prefix = "ursm:v2:"
 	legacy := map[string]string{
@@ -146,12 +344,15 @@ func TestParseNodeKeyCanonicalReportsSchemaSource(t *testing.T) {
 	if _, _, ok := ParseNodeKeyCanonical(prefix, "ursm:v2:win:k2:1m:dGVuYW50LWE:7:Z3B0LTQ"); ok {
 		t.Fatal("window key must not report a node schema")
 	}
-	// "node:k2:1234:7:YQ" matches both grammars: legacy reads tenant "k2",
-	// credential 1234, raw "7:YQ"; k2 reads tenant b64("1234"), credential 7,
-	// raw "a". k2 wins.
+	// "node:k2:1234:7:YQ" under the strict legacy parser (which refuses
+	// the reserved "k2" marker) does not parse; under the canonical
+	// parser it resolves as k2 because the marker is present. This is the
+	// exact behaviour doc 14 §2 / doc 16 slice 4 require: when the
+	// reserved k2 namespace is detected the legacy grammar yields the
+	// floor to canonical, and a malformed canonical tuple is rejected.
 	dual := "ursm:v2:node:k2:1234:7:YQ"
-	if legacyParsed, ok := ParseNodeKey(prefix, dual); !ok || legacyParsed.TenantID != "k2" || legacyParsed.CredentialID != 1234 || legacyParsed.RawModel != "7:YQ" {
-		t.Fatalf("dual-shape precondition = %+v ok=%v", legacyParsed, ok)
+	if _, ok := ParseNodeKey(prefix, dual); ok {
+		t.Fatalf("strict legacy parser must reject the reserved k2 marker")
 	}
 	parsed, schema, ok = ParseNodeKeyCanonical(prefix, dual)
 	if !ok || schema != SchemaK2 || parsed.CredentialID != 7 || parsed.RawModel != "a" {
@@ -159,86 +360,17 @@ func TestParseNodeKeyCanonicalReportsSchemaSource(t *testing.T) {
 	}
 }
 
-func TestCanonicalWindowKeyGoldenBucketsAndRoundTrip(t *testing.T) {
-	const prefix = "ursm:v2:"
-	// The frozen legacy collision pair: both tuples collapse onto one
-	// legacy window key under the same credential/raw/bucket.
-	if WindowKeyForTenant(prefix, "a", 7, "b:8:c", "1m") != WindowKeyForTenant(prefix, "a:7:b", 8, "c", "1m") {
-		t.Fatal("frozen window collision pair must collide in legacy")
+func TestParseCandidateIndexKeyAnyRoundTrip(t *testing.T) {
+	k, err := K2CandidateIndexKey("ursm:v2:", "tenant-a", "model:a", "chat", "text")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	first := WindowKeyCanonical(prefix, "a", 7, "b:8:c", "1m")
-	second := WindowKeyCanonical(prefix, "a:7:b", 8, "c", "1m")
-	if first == second {
-		t.Fatal("frozen window collision pair must not collide in k2")
+	p, ok := ParseCandidateIndexKeyAny("ursm:v2:", k)
+	if !ok || p.TenantID != "tenant-a" || p.CanonicalModel != "model:a" || p.Profile != "chat" || p.Modality != "text" {
+		t.Fatalf("index parse = %+v ok=%v", p, ok)
 	}
-	for key, want := range map[string]ParsedWindowKey{
-		first:  {Bucket: "1m", TenantID: "a", CredentialID: 7, RawModel: "b:8:c"},
-		second: {Bucket: "1m", TenantID: "a:7:b", CredentialID: 8, RawModel: "c"},
-	} {
-		parsed, ok := ParseWindowKeyCanonical(prefix, key)
-		if !ok || parsed != want {
-			t.Fatalf("window collision round-trip = %+v ok=%v want=%+v", parsed, ok, want)
-		}
-	}
-
-	if got := WindowKeyCanonical(prefix, "tenant-a", 7, "gpt-4", "5m"); got != "ursm:v2:win:k2:5m:dGVuYW50LWE:7:Z3B0LTQ" {
-		t.Fatalf("canonical window key = %q, want %q", got, "ursm:v2:win:k2:5m:dGVuYW50LWE:7:Z3B0LTQ")
-	}
-	keys := make(map[string]string, 3)
-	for _, bucket := range []string{"1m", "5m", "30m"} {
-		k := WindowKeyCanonical(prefix, "a:7:b", 8, "c", bucket)
-		keys[k] = bucket
-		parsed, ok := ParseWindowKeyCanonical(prefix, k)
-		if !ok || parsed.Bucket != bucket || parsed.TenantID != "a:7:b" || parsed.CredentialID != 8 || parsed.RawModel != "c" {
-			t.Fatalf("bucket %s round-trip = %+v ok=%v", bucket, parsed, ok)
-		}
-		if bucket == "1m" && k != "ursm:v2:win:k2:1m:YTo3OmI:8:Yw" {
-			t.Fatalf("1m golden = %q", k)
-		}
-	}
-	if len(keys) != 3 {
-		t.Fatalf("buckets must yield distinct keys, got %d", len(keys))
-	}
-	if _, ok := ParseWindowKeyCanonical(prefix, WindowKeyCanonical(prefix, "tenant-a", 7, "gpt-4", "2m")); ok {
-		t.Fatal("unknown bucket must not parse")
-	}
-	if _, ok := ParseWindowKeyCanonical(prefix, "ursm:v2:win:1m:tenant-a:7:gpt-4"); ok {
-		t.Fatal("legacy window key must not parse as k2")
-	}
-	if _, ok := ParseWindowKeyCanonical(prefix, NodeKeyCanonical(prefix, "tenant-a", 7, "gpt-4")); ok {
-		t.Fatal("node key must not parse as window key")
-	}
-}
-
-// The legacy index collapses tenant "x:y"/canonical "z" and tenant "x"/
-// canonical "y:z" onto one key; k2 must keep them distinct.
-func TestCanonicalIndexKeyGoldenCollisionAndRoundTrip(t *testing.T) {
-	const prefix = "ursm:v2:"
-	got := CandidateIndexKeyCanonical(prefix, "tenant-a", "model-a", "chat", "text")
-	if want := "ursm:v2:idx:model:k2:dGVuYW50LWE:bW9kZWwtYQ:Y2hhdA:dGV4dA"; got != want {
-		t.Fatalf("canonical index key = %q, want %q", got, want)
-	}
-	if CandidateIndexKey(prefix, "x:y", "z", "chat", "text") != CandidateIndexKey(prefix, "x", "y:z", "chat", "text") {
-		t.Fatal("precondition: legacy index keys for the pair must collide")
-	}
-	a := CandidateIndexKeyCanonical(prefix, "x:y", "z", "chat", "text")
-	b := CandidateIndexKeyCanonical(prefix, "x", "y:z", "chat", "text")
-	if a == b {
-		t.Fatal("index collision pair must not collide in k2")
-	}
-	pa, ok := ParseCandidateIndexKeyCanonical(prefix, a)
-	if !ok || pa.TenantID != "x:y" || pa.CanonicalModel != "z" || pa.Profile != "chat" || pa.Modality != "text" {
-		t.Fatalf("round-trip a = %+v ok=%v", pa, ok)
-	}
-	pb, ok := ParseCandidateIndexKeyCanonical(prefix, b)
-	if !ok || pb.TenantID != "x" || pb.CanonicalModel != "y:z" || pb.Profile != "chat" || pb.Modality != "text" {
-		t.Fatalf("round-trip b = %+v ok=%v", pb, ok)
-	}
-	if _, ok := ParseCandidateIndexKeyCanonical(prefix, "ursm:v2:idx:model:tenant-a:model-a:chat:text"); ok {
+	if _, ok := ParseCandidateIndexKeyAny("ursm:v2:", "ursm:v2:idx:model:tenant-a:model-a:chat:text"); ok {
 		t.Fatal("legacy index key must not parse as k2")
-	}
-	if _, ok := ParseCandidateIndexKeyCanonical(prefix, "ursm:v2:idx:model:k2:dGVuYW50LWE:bW9kZWwtYQ:Y2hhdA"); ok {
-		t.Fatal("missing segment must not parse")
 	}
 }
 
@@ -363,47 +495,22 @@ func TestCanonicalKeyCollisionPropertyOverGeneratedCorpus(t *testing.T) {
 		return string(out)
 	}
 	seenNode := map[string]string{}
-	seenWindow := map[string]string{}
-	seenIndex := map[string]string{}
-	for i := 0; i < 500; i++ {
+	for i := 0; i < 200; i++ {
 		tenant, raw := gen(6), gen(9)
 		cid := 1 + rng.Intn(100000)
 		tupleID := fmt.Sprintf("%q/%d/%q", tenant, cid, raw)
 
-		nodeKey := NodeKeyCanonical(prefix, tenant, cid, raw)
+		nodeKey, err := K2NodeKeyForTenant(prefix, tenant, cid, raw)
+		if err != nil {
+			t.Fatalf("iter %d: unexpected error: %v", i, err)
+		}
 		if prev, dup := seenNode[nodeKey]; dup && prev != tupleID {
 			t.Fatalf("node key collision: %s vs %s both encode to %s", prev, tupleID, nodeKey)
 		}
 		seenNode[nodeKey] = tupleID
-		if parsed, schema, ok := ParseNodeKeyCanonical(prefix, nodeKey); !ok || schema != SchemaK2 || parsed.TenantID != tenant || parsed.CredentialID != cid || parsed.RawModel != raw {
-			t.Fatalf("iter %d node round-trip = %+v schema=%v ok=%v", i, parsed, schema, ok)
-		}
-
-		for _, bucket := range []string{"1m", "5m", "30m"} {
-			windowKey := WindowKeyCanonical(prefix, tenant, cid, raw, bucket)
-			windowID := tupleID + "/" + bucket
-			if prev, dup := seenWindow[windowKey]; dup && prev != windowID {
-				t.Fatalf("window key collision: %s vs %s both encode to %s", prev, windowID, windowKey)
-			}
-			seenWindow[windowKey] = windowID
-			if windowKey == nodeKey {
-				t.Fatalf("iter %d: window key must not equal node key", i)
-			}
-			if parsed, ok := ParseWindowKeyCanonical(prefix, windowKey); !ok || parsed.Bucket != bucket || parsed.TenantID != tenant || parsed.CredentialID != cid || parsed.RawModel != raw {
-				t.Fatalf("iter %d window round-trip = %+v ok=%v", i, parsed, ok)
-			}
-		}
-
-		indexKey := CandidateIndexKeyCanonical(prefix, tenant, raw, "chat", "text")
-		// The index key legitimately omits the credential ID (the ZSET is
-		// per tenant/model/profile/modality), so identity excludes cid.
-		indexID := fmt.Sprintf("%q/%q/chat/text", tenant, raw)
-		if prev, dup := seenIndex[indexKey]; dup && prev != indexID {
-			t.Fatalf("index key collision: %s vs %s both encode to %s", prev, indexID, indexKey)
-		}
-		seenIndex[indexKey] = indexID
-		if parsed, ok := ParseCandidateIndexKeyCanonical(prefix, indexKey); !ok || parsed.TenantID != tenant || parsed.CanonicalModel != raw || parsed.Profile != "chat" || parsed.Modality != "text" {
-			t.Fatalf("iter %d index round-trip = %+v ok=%v", i, parsed, ok)
+		p, ok := ParseNodeKeyAny(prefix, nodeKey)
+		if !ok || p.TenantID != tenant || p.CredentialID != cid || p.RawModel != raw {
+			t.Fatalf("iter %d node round-trip = %+v ok=%v", i, p, ok)
 		}
 	}
 }

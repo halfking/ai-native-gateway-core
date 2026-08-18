@@ -277,6 +277,9 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	if err := db.ensureWebCookieSessionsSchema(migCtx); err != nil {
 		return err
 	}
+	if err := db.ensureUrsmKeyMigrationLedgerSchema(migCtx); err != nil {
+		return err
+	}
 	// 2026-08-11: model IQ system — standard_iq column on models_canonical
 	// plus model_iq_runs / node_iq_latest. Mirrors migration 350.
 	if err := db.ensureModelsCanonicalStandardIQ(migCtx); err != nil {
@@ -3892,5 +3895,84 @@ func (d *DB) ensureCredentialClientQuotaSchema(ctx context.Context) error {
 		return err
 	}
 	slog.Info("credential_client_quota schema ensured")
+	return nil
+}
+
+// ensureUrsmKeyMigrationLedgerSchema mirrors
+// sql/migrations/080-ursm-key-migration-ledger.sql. Idempotent and
+// startup-safe so multi-key admin/runtime paths do not depend on an
+// external file runner applying root sql/migrations/*.sql. The schema
+// records the durable migration identity (owner / ledger_id / mode /
+// preflight checksum / checkpoint) and one row per exact source Redis
+// key so copy and cleanup remain exact-key and interruptible.
+func (d *DB) ensureUrsmKeyMigrationLedgerSchema(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS ursm_key_migration_runs (
+		    ledger_id          TEXT PRIMARY KEY,
+		    owner              TEXT NOT NULL,
+		    key_schema_mode    TEXT NOT NULL,
+		    preflight_checksum TEXT NOT NULL,
+		    preflight_total    INT  NOT NULL DEFAULT 0,
+		    preflight_migratable INT NOT NULL DEFAULT 0,
+		    preflight_canonical_present INT NOT NULL DEFAULT 0,
+		    preflight_ambiguous INT NOT NULL DEFAULT 0,
+		    preflight_excluded INT NOT NULL DEFAULT 0,
+		    checkpoint         TEXT NOT NULL,
+		    cutover_epoch      BIGINT NOT NULL DEFAULT 0,
+		    started_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		    updated_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		    finished_at        TIMESTAMPTZ,
+		    CONSTRAINT ursm_key_migration_runs_checkpoint_chk CHECK (
+		        checkpoint IN ('preflight','copy','coverage','observe','cleanup','rollback','done')
+		    ),
+		    CONSTRAINT ursm_key_migration_runs_mode_chk CHECK (
+		        key_schema_mode IN ('legacy','dual','canonical')
+		    )
+		);
+
+		CREATE TABLE IF NOT EXISTS ursm_key_migration_entries (
+		    ledger_id        TEXT NOT NULL REFERENCES ursm_key_migration_runs(ledger_id) ON DELETE CASCADE,
+		    source_key       TEXT NOT NULL,
+		    target_key       TEXT NOT NULL DEFAULT '',
+		    classification   TEXT NOT NULL,
+		    schema_origin    TEXT NOT NULL DEFAULT '',
+		    key_type         TEXT NOT NULL DEFAULT '',
+		    pttl_ms          BIGINT NOT NULL DEFAULT -2,
+		    generation       BIGINT NOT NULL DEFAULT 0,
+		    field_checksum   TEXT NOT NULL DEFAULT '',
+		    tuple_tenant     TEXT NOT NULL DEFAULT '',
+		    tuple_credential BIGINT NOT NULL DEFAULT 0,
+		    tuple_raw_model  TEXT NOT NULL DEFAULT '',
+		    state            TEXT NOT NULL DEFAULT 'classified',
+		    copied_at        TIMESTAMPTZ,
+		    copied_pttl_ms   BIGINT,
+		    cleaned_at       TIMESTAMPTZ,
+		    last_error       TEXT NOT NULL DEFAULT '',
+		    created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		    updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		    PRIMARY KEY (ledger_id, source_key),
+		    CONSTRAINT ursm_key_migration_entries_class_chk CHECK (
+		        classification IN ('migratable','canonical_present','ambiguous','excluded_non_authoritative')
+		    ),
+		    CONSTRAINT ursm_key_migration_entries_schema_chk CHECK (
+		        schema_origin IN ('','legacy','k2')
+		    ),
+		    CONSTRAINT ursm_key_migration_entries_state_chk CHECK (
+		        state IN ('classified','copied','cleaned','rolled_back','conflict','expired','fenced')
+		    )
+		);
+
+		CREATE INDEX IF NOT EXISTS ursm_key_migration_entries_state_idx
+		    ON ursm_key_migration_entries (ledger_id, state);
+		CREATE INDEX IF NOT EXISTS ursm_key_migration_entries_class_idx
+		    ON ursm_key_migration_entries (ledger_id, classification);
+	`)
+	if err != nil {
+		return err
+	}
+	slog.Info("ursm_key_migration ledger schema ensured")
 	return nil
 }

@@ -109,13 +109,19 @@ func parseInt64OrZero(s string) int64 {
 // the four categories, computes a per-item field checksum, and writes the
 // outcome to the ledger. The returned summary includes the deterministic
 // preflight_checksum that becomes Metadata.PreflightChecksum.
-type Preflight struct {
+type PreflightRunner struct {
 	Prefix  string
 	Ledger  *Ledger
 	Scanner Scanner
 	RunID   string
 	Now     func() time.Time
 }
+
+// Preflight is an alias for PreflightRunner kept so cmd/k2-migrate-ursm's
+// `&migration.Preflight{Prefix: ..., ...}` literal still compiles. The
+// free-function Preflight in preflight.go is a separate symbol that wraps
+// the struct method into a *Report.
+type Preflight = PreflightRunner
 
 // PreflightSummary is the aggregate result of a preflight pass.
 type PreflightSummary struct {
@@ -136,12 +142,12 @@ type ClassifyResult struct {
 	Copyable bool
 }
 
-func (p *Preflight) scannerOrDefault() Scanner { return p.Scanner }
+func (p *PreflightRunner) scannerOrDefault() Scanner { return p.Scanner }
 
 // Preflight is the public entry point. It scans node/win/idx namespaces and
 // writes classified items to the ledger. The first error short-circuits but
 // already-appended items stay on disk (so resume works).
-func (p *Preflight) Preflight(ctx context.Context) (PreflightSummary, error) {
+func (p *PreflightRunner) Preflight(ctx context.Context) (PreflightSummary, error) {
 	if p.Prefix == "" {
 		return PreflightSummary{}, fmt.Errorf("migration: preflight: prefix is required")
 	}
@@ -217,7 +223,7 @@ func (s *PreflightSummary) bump(c Classification, status ItemStatus) {
 	}
 }
 
-func (p *Preflight) classifyOne(ctx context.Context, sk ScannedKey, runID string) Item {
+func (p *PreflightRunner) classifyOne(ctx context.Context, sk ScannedKey, runID string) Item {
 	it := Item{
 		SourceKey: sk.SourceKey,
 		KeyType:   sk.KeyType,

@@ -730,6 +730,7 @@ func main() {
 				Redis:       redisClientForCache.Client(),
 				KeyPrefix:   ursmV2Cfg.RedisKeyPrefix,
 				CoolSeconds: ursmV2Cfg.CoolSeconds,
+				SchemaMode:  ursmV2Cfg.KeySchemaMode,
 			})
 			if bootstrapErr != nil {
 				cancel()

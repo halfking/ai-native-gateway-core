@@ -6,7 +6,14 @@ import (
 	"fmt"
 
 	"github.com/redis/go-redis/v9"
+
+	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/store"
 )
+
+// fpSlotsTargetPrefix is the fixed destination namespace of this one-shot
+// migration; it intentionally does not read the runtime RedisKeyPrefix
+// config because the fp-slot seeds always targeted the default namespace.
+const fpSlotsTargetPrefix = "ursm:v2:"
 
 // migrateIfAbsentScript atomically seeds a v2 node Hash ONLY when its
 // `generation` field does not yet exist. It takes the node key plus an
@@ -75,7 +82,10 @@ func MigrateFpSlotsNodeStates(ctx context.Context, rdb *redis.Client) (int, erro
 		if st.CredentialID == 0 || st.Model == "" {
 			continue
 		}
-		nodeKey := fmt.Sprintf("ursm:v2:node:%d:%s", st.CredentialID, st.Model)
+		// The target stays the exact legacy non-tenant node key bytes
+		// (ursm:v2:node:<cid>:<model>); construction is delegated to the
+		// store authority so there is no second hand-rolled key builder.
+		nodeKey := store.NodeKeyForTenant(fpSlotsTargetPrefix, "", st.CredentialID, st.Model)
 		// Build the seed field/value list. available defaults to "1"; a
 		// disabled node flips it to "0" and adds cool_until_ms + reason.
 		available := "1"

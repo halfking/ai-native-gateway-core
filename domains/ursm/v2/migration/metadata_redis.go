@@ -18,8 +18,11 @@ func MetadataKey(prefix string) string {
 	return prefix + "mig:k2:meta"
 }
 
-// MetadataStore wraps the Redis HASH write/read operations for Metadata.
-type MetadataStore struct {
+// MetadataHash wraps the Redis HASH write/read operations for Metadata.
+// Independent type from the LUA-CAS MetadataStore in metadata.go: this one
+// exposes plain Write/Read plus a CASCheckpoint Lua script, while
+// MetadataStore owns the epoch-fenced Advance / idempotent Initialize path.
+type MetadataHash struct {
 	Prefix string
 	RDB    *redis.Client
 }
@@ -27,7 +30,7 @@ type MetadataStore struct {
 // Write stores the metadata fields atomically. It uses HSET (not HSETNX) so
 // the operator can re-publish a corrected snapshot; the immutable contract
 // is the ledger_id (one-shot, doc 14 §0).
-func (s *MetadataStore) Write(ctx context.Context, m Metadata) error {
+func (s *MetadataHash) Write(ctx context.Context, m Metadata) error {
 	if err := m.Validate(); err != nil {
 		return err
 	}
@@ -54,7 +57,7 @@ func (s *MetadataStore) Write(ctx context.Context, m Metadata) error {
 }
 
 // Read loads the metadata HASH. A missing key returns (zero, nil).
-func (s *MetadataStore) Read(ctx context.Context) (Metadata, error) {
+func (s *MetadataHash) Read(ctx context.Context) (Metadata, error) {
 	if s.Prefix == "" || s.RDB == nil {
 		return Metadata{}, fmt.Errorf("migration: metadata store: missing prefix/redis client")
 	}
@@ -76,7 +79,7 @@ func (s *MetadataStore) Read(ctx context.Context) (Metadata, error) {
 // + checkpoint pair so concurrent migration runs cannot stomp on each
 // other (doc 14 §4 state machine, doc 15 §4). The Lua returns 1 when the
 // CAS succeeds, 0 otherwise.
-func (s *MetadataStore) CASCheckpoint(ctx context.Context, expectedEpoch int64, newCheckpoint Checkpoint, now time.Time) error {
+func (s *MetadataHash) CASCheckpoint(ctx context.Context, expectedEpoch int64, newCheckpoint Checkpoint, now time.Time) error {
 	if s.Prefix == "" || s.RDB == nil {
 		return fmt.Errorf("migration: metadata store: missing prefix/redis client")
 	}
