@@ -259,10 +259,14 @@ export interface CredentialDecisionsResponse {
   total: number
 }
 
-export function getCredentialDecisions(credentialId: number, limit = 50) {
+// 2026-08-18: optional model filter scopes the list to one model×credential
+// pair (dashboard node detail drawer). Backend matches model/client_model/
+// outbound_model case-insensitively.
+export function getCredentialDecisions(credentialId: number, limit = 50, model?: string) {
   const params = new URLSearchParams()
   params.set('credential_id', String(credentialId))
   params.set('limit', String(limit))
+  if (model) params.set('model', model)
   return req<CredentialDecisionsResponse>(
     'GET',
     `/api/credentials/decisions?${params.toString()}`,

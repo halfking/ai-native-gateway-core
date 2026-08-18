@@ -135,14 +135,22 @@ const modelScopeAliasIndex = ref<Map<string, string>>(new Map())
 const modelScopeLoading = ref(true)
 const modelScopeError = ref('')
 const selectedNode = ref<LiveNodeStatus | null>(null)
+const selectedNodeModel = ref('')
 const drawerVisible = ref(false)
 
 function modelKey(model: string): string {
   return model.trim().toLowerCase()
 }
 
-function openNode(node: LiveNodeStatus) {
+// 点击模型分组中的节点卡片：把「模型 + 节点」一起传给详情抽屉。
+// aliases 含分组 scope key 与该组的 raw 模型名，取该节点在此分组下的
+// raw 绑定作为 scope 模型（与 monitor/sliding-window/history 的 raw 命名一致）。
+function openNode(node: LiveNodeStatus, aliases: string[] = []) {
   selectedNode.value = node
+  const aliasSet = aliases.map(modelKey)
+  selectedNodeModel.value = node.raw_models?.find(model => aliasSet.includes(modelKey(model)))
+    ?? node.raw_models?.[0]
+    ?? ''
   drawerVisible.value = true
 }
 
@@ -168,7 +176,7 @@ async function loadModelScope() {
   if (featured.status === 'fulfilled') featured.value.featured_models.forEach(model => addScope(model, true, 0))
   if (hot.status === 'fulfilled') hot.value.items.forEach((model: TopRequestModel) => addScope(model.canonical_name || model.display_name, false, model.request_count))
   const aliases = new Map<string, string>()
-  for (const meta of scope.values()) {
+  const resolveOne = async (meta: ModelScopeMeta) => {
     const name = [...meta.aliases][0]
     try {
       const resolved = await resolveRouting(name)
@@ -184,6 +192,12 @@ async function loadModelScope() {
     } catch {
       // Keep exact canonical/featured matches; ambiguous aliases stay hidden.
     }
+  }
+  // 8 并发分块并行解析，避免特色+热门最多 ~60 个模型的串行长尾。
+  const scopeEntries = [...scope.values()]
+  const RESOLVE_CONCURRENCY = 8
+  for (let index = 0; index < scopeEntries.length; index += RESOLVE_CONCURRENCY) {
+    await Promise.all(scopeEntries.slice(index, index + RESOLVE_CONCURRENCY).map(resolveOne))
   }
   modelScopeMeta.value = scope
   modelScopeAliasIndex.value = aliases
@@ -423,7 +437,7 @@ function formatTs(ts: string | undefined): string {
                 class="qp-node-card"
                 :class="nodeCardTone(node)"
                 :title="`${nodeTitle(node)}：${nodeStatusSummary(node)}${node.last_error ? `；${node.last_error}` : ''}`"
-                @click="openNode(node)"
+                @click="openNode(node, group.aliases)"
               >
                 <span class="qp-node-card-title">{{ nodeTitle(node) }}</span>
                 <span class="qp-node-card-dots" :title="`熔断 ${node.circuit_state || '未知'} · 可用性 ${node.availability_state || '未知'} · 配额 ${node.quota_state || '未知'} · 健康 ${node.health_status || '未知'}`">
@@ -450,7 +464,7 @@ function formatTs(ts: string | undefined): string {
       </div>
 
       <RequestProcessingTrail />
-      <NodeDetailDrawer v-model="drawerVisible" :node="selectedNode" @applied="drawerVisible = true" />
+      <NodeDetailDrawer v-model="drawerVisible" :node="selectedNode" :model="selectedNodeModel" @applied="drawerVisible = true" />
     </div>
   </div>
 </template>

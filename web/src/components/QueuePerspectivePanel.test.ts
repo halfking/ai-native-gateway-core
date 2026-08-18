@@ -2,10 +2,12 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { createI18n } from 'vue-i18n'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import QueuePerspectivePanel from './QueuePerspectivePanel.vue'
+import NodeDetailDrawer from './NodeDetailDrawer.vue'
 import { __testing, liveStreamState } from '../composables/liveStreamStore'
 
 vi.mock('../api/routing', () => ({
   getFeatured: vi.fn().mockResolvedValue({ featured_models: ['gpt-4o', 'claude-sonnet', 'm-1'] }),
+  resolveRouting: vi.fn().mockResolvedValue({ raw_models: [], candidates: [] }),
 }))
 vi.mock('../api/logs', () => ({
   getRequestLogTopModels: vi.fn().mockResolvedValue({ items: [
@@ -13,6 +15,18 @@ vi.mock('../api/logs', () => ({
     { canonical_name: 'claude-sonnet', display_name: 'claude-sonnet', request_count: 8 },
     { canonical_name: 'm-1', display_name: 'm-1', request_count: 3 },
   ] }),
+}))
+vi.mock('../api/credential-monitor', () => ({
+  getCredentialMonitorSummary: vi.fn().mockResolvedValue({ credentials: [] }),
+  getCredentialDecisions: vi.fn().mockResolvedValue({ decisions: [] }),
+  getSlidingWindow: vi.fn().mockResolvedValue({ entries: [], stats: { total: 0, success: 0, failed: 0, failure_rate: 0, error_kinds: {} }, source: 'redis' }),
+  getModelHistory: vi.fn().mockResolvedValue({ events: [] }),
+  setManualDisabled: vi.fn(),
+  toggleModelAvailability: vi.fn(),
+}))
+vi.mock('../api/providers', () => ({
+  updateCredentialLifecycle: vi.fn(),
+  CREDENTIAL_LIFECYCLE_STATUSES: ['active', 'disabled', 'suspended', 'retired'],
 }))
 
 const i18n = createI18n({
@@ -291,5 +305,20 @@ describe('QueuePerspectivePanel', () => {
     expect(reqList.text()).toContain('m-1')
     expect(reqList.text()).toContain('success')
     expect(reqList.text()).toContain('410ms')
+  })
+
+  it('passes the clicked model group as the drawer scope', async () => {
+    liveStreamState.nodes = [
+      { credential_id: 5, provider_id: 1, provider_code: 'p', manual_disabled: false, circuit_state: 'closed', raw_models: ['m-1', 'm-2'] },
+    ]
+
+    const wrapper = mountPanel()
+    await flushPromises()
+    await wrapper.get('.qp-node-card').trigger('click')
+
+    const drawer = wrapper.findComponent(NodeDetailDrawer)
+    expect(drawer.exists()).toBe(true)
+    expect(drawer.props('modelValue')).toBe(true)
+    expect(drawer.props('model')).toBe('m-1')
   })
 })
