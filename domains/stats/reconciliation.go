@@ -16,8 +16,9 @@ import (
 const (
 	defaultReconciliationInterval = 6 * time.Hour
 	reconciliationLookback        = 7 * 24 * time.Hour
-	autoRepairThreshold           = 0.02 // 2% difference threshold for auto-repair
-	autoRepairMaxValue            = 1000  // max absolute value for auto-repair
+	autoRepairThreshold           = 0.02   // 2% difference threshold for auto-repair
+	autoRepairMaxValue            = 1000   // max absolute value for auto-repair
+	maxReconciliationRows         = 100000 // max rows to prevent OOM
 )
 
 // ReconciliationWorker periodically compares usage_facts (source of truth) with
@@ -232,7 +233,11 @@ func (w *ReconciliationWorker) reconcileDaily(ctx context.Context, runID string,
 
 	factsMap := make(map[factKey]factMetrics)
 
+	rowCount := 0
 	for factRows.Next() {
+		if rowCount >= maxReconciliationRows {
+			return 0, 0, fmt.Errorf("reconciliation row limit exceeded: %d rows", maxReconciliationRows)
+		}
 		var key factKey
 		var metrics factMetrics
 		if err := factRows.Scan(
@@ -245,6 +250,7 @@ func (w *ReconciliationWorker) reconcileDaily(ctx context.Context, runID string,
 			return 0, 0, fmt.Errorf("scan fact row: %w", err)
 		}
 		factsMap[key] = metrics
+		rowCount++
 	}
 
 	if err := factRows.Err(); err != nil {
@@ -270,7 +276,11 @@ func (w *ReconciliationWorker) reconcileDaily(ctx context.Context, runID string,
 
 	var totalDiffs, autoRepaired int64
 
+	projRowCount := 0
 	for projRows.Next() {
+		if projRowCount >= maxReconciliationRows {
+			return 0, 0, fmt.Errorf("projection row limit exceeded: %d rows", maxReconciliationRows)
+		}
 		var key factKey
 		var projected factMetrics
 		if err := projRows.Scan(
@@ -348,6 +358,7 @@ func (w *ReconciliationWorker) reconcileDaily(ctx context.Context, runID string,
 
 		// Remove from map to track missing projections
 		delete(factsMap, key)
+		projRowCount++
 	}
 
 	if err := projRows.Err(); err != nil {
