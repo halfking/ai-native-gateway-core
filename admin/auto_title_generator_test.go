@@ -789,67 +789,76 @@ func TestAutoTitle_DistLock_FollowerSkipsOnRecheck(t *testing.T) {
 	const taskID = "default"
 
 	var llmCalls atomic.Int32
-	// Use Background contexts so the test can complete cleanly even
-	// if pub/sub goroutines outlive t.
+	ctx := context.Background()
 
-	// followerReady signals when the follower has acquired its handle
-	// (i.e. subscribed to the release channel). The leader waits for
-	// this signal before doing its work + Release, so the follower is
-	// guaranteed to receive the pub/sub wakeup.
-	followerReady := make(chan struct{})
-	leaderDone := make(chan struct{})
-	followerDone := make(chan struct{})
-
-	leaderBody := func() {
-		h, err := mgr.Acquire(context.Background(), distlock.AcquireOpts{
-			Key: titleDistLockKey("auto", taskID, sessionID),
-			TTL: 30 * time.Second,
-		})
-		if err != nil {
-			t.Errorf("leader Acquire: %v", err)
-			close(leaderDone)
-			return
-		}
-		if !h.IsLeader() {
-			t.Error("first handle must be leader")
-		}
-		// Wait until the follower has subscribed to the release
-		// channel; otherwise we race and the follower becomes a
-		// fresh leader after we Release.
-		<-followerReady
-		llmCalls.Add(1)
-		h.Release(context.Background())
-		close(leaderDone)
+	// Pre-acquire the leader handle so the lock is already held when
+	// the second goroutine joins. This eliminates the "who runs first"
+	// race that otherwise lets both goroutines see themselves as
+	// leader (the second one runs after the first releases). The test
+	// then verifies that a concurrent Acquire is correctly classified
+	// as a follower and waits for the leader to release.
+	leader, err := mgr.Acquire(ctx, distlock.AcquireOpts{
+		Key: titleDistLockKey("auto", taskID, sessionID),
+		TTL: 30 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("leader Acquire: %v", err)
 	}
-	followerBody := func() {
-		h, err := mgr.Acquire(context.Background(), distlock.AcquireOpts{
+	if !leader.IsLeader() {
+		t.Fatal("first handle must be leader")
+	}
+
+	followerAcquired := make(chan *distlock.Handle, 1)
+	go func() {
+		h, err := mgr.Acquire(ctx, distlock.AcquireOpts{
 			Key: titleDistLockKey("auto", taskID, sessionID),
 			TTL: 30 * time.Second,
 		})
 		if err != nil {
 			t.Errorf("follower Acquire: %v", err)
-			close(followerDone)
+			followerAcquired <- nil
 			return
 		}
-		if h.IsLeader() {
-			t.Error("second handle must be follower")
+		followerAcquired <- h
+	}()
+
+	// Give the goroutine time to subscribe to the release channel.
+	var follower *distlock.Handle
+	select {
+	case follower = <-followerAcquired:
+		if follower == nil {
+			t.Fatal("follower Acquire failed")
 		}
-		// Signal the leader it can proceed.
-		close(followerReady)
-		// Simulate generateTitleAsync's follower path: Wait then
-		// re-check. Here we just verify Wait returns without error
-		// and that the leader's protected work ran first.
-		if err := h.Wait(context.Background()); err != nil {
-			t.Errorf("follower Wait: %v", err)
-		}
-		h.Release(context.Background())
-		close(followerDone)
+	case <-time.After(2 * time.Second):
+		t.Fatal("follower did not acquire in time")
 	}
 
-	go leaderBody()
-	go followerBody()
-	<-leaderDone
-	<-followerDone
+	if follower.IsLeader() {
+		t.Fatal("second handle must be follower (pre-held lock should serialize)")
+	}
+
+	// Simulate generateTitleAsync's follower path: Wait then re-check.
+	// Here we just verify Wait returns without error and that the
+	// leader's protected work ran first.
+	waitDone := make(chan error, 1)
+	go func() {
+		waitDone <- follower.Wait(ctx)
+	}()
+
+	// The leader runs its protected work then releases.
+	llmCalls.Add(1)
+	leader.Release(ctx)
+
+	// Follower must wake up cleanly.
+	select {
+	case err := <-waitDone:
+		if err != nil {
+			t.Errorf("follower Wait: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("follower did not wake after leader Release")
+	}
+	follower.Release(ctx)
 
 	if got := llmCalls.Load(); got != 1 {
 		t.Fatalf("protected work (LLM call surrogate) ran %d times, want 1", got)
