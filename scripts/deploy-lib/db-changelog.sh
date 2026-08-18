@@ -135,7 +135,12 @@ _psql -v ON_ERROR_STOP=1 -tAc \"SELECT
 
   local tenant_column tenant_index replay_index
   IFS='|' read -r tenant_column tenant_index replay_index <<<"$result"
-  if [[ "$tenant_column" != "1" || "$tenant_index" != "1" || "$replay_index" != "1" ]]; then
+  # contract fix 2026-08-19: V531 同时创建了 idx_state_transitions_tenant_request
+  # 和 uq_state_transitions_tenant_request_seq 两个租户相关索引,以及
+  # uq_state_transitions_legacy_request_seq 替代旧的 uq_state_transitions_request_seq。
+  # 老 contract 严格要求各组正好 1 个索引,与 V531 后现状不符。
+  # 新 contract: 每组至少 1 个索引存在即可。
+  if [[ "$tenant_column" != "1" || "$tenant_index" -lt 1 || "$replay_index" -lt 1 ]]; then
     _db_err "request_state_transitions schema contract 不完整 (tenant_id_not_null=${tenant_column:-0}, tenant_index=${tenant_index:-0}, replay_index=${replay_index:-0})"
     _db_err "拒绝切换版本；请先应用前向修复 migration 并核验真实表结构"
     return 1
