@@ -58,9 +58,16 @@ func K2WindowKeyForTenant(prefix, tenant string, cid int, raw, bucket string) (s
 // candidate index has no production routing caller; its grammar is still a
 // public compatibility contract (doc 14 §2).
 func K2CandidateIndexKey(prefix, tenant, canonical, profile, modality string) (string, error) {
-	for name, part := range map[string]string{"tenant": tenant, "canonical model": canonical, "profile": profile, "modality": modality} {
-		if part == "" {
-			return "", fmt.Errorf("ursm.v2.store: k2 candidate index key requires non-empty %s", name)
+	// Ordered checks keep the error message deterministic when several
+	// components are empty at once.
+	for _, c := range []struct{ name, part string }{
+		{"tenant", tenant},
+		{"canonical model", canonical},
+		{"profile", profile},
+		{"modality", modality},
+	} {
+		if c.part == "" {
+			return "", fmt.Errorf("ursm.v2: k2 candidate index key requires non-empty %s", c.name)
 		}
 	}
 	return fmt.Sprintf("%sidx:model:k2:%s:%s:%s:%s",
@@ -72,23 +79,25 @@ func K2CandidateIndexKey(prefix, tenant, canonical, profile, modality string) (s
 // the empty tenant), positive decimal credential ID, non-empty raw model.
 func k2ValidateNodeTuple(tenant string, cid int, raw string) error {
 	if tenant == "" {
-		return fmt.Errorf("ursm.v2.store: k2 key requires non-empty tenant (empty tenant is legacy-compatibility only, doc 14 §2)")
+		return fmt.Errorf("ursm.v2: k2 key requires non-empty tenant (empty tenant is legacy-compatibility only, doc 14 §2)")
 	}
 	if cid <= 0 {
-		return fmt.Errorf("ursm.v2.store: k2 key requires positive credential id, got %d", cid)
+		return fmt.Errorf("ursm.v2: k2 key requires positive credential id, got %d", cid)
 	}
 	if raw == "" {
-		return fmt.Errorf("ursm.v2.store: k2 key requires non-empty raw model")
+		return fmt.Errorf("ursm.v2: k2 key requires non-empty raw model")
 	}
 	return nil
 }
 
+// k2ValidateBucket enforces the frozen window bucket set shared by the k2
+// constructor and any future k2 window parser.
 func k2ValidateBucket(bucket string) error {
 	switch bucket {
 	case "1m", "5m", "30m":
 		return nil
 	}
-	return fmt.Errorf("ursm.v2.store: k2 window bucket %q is not one of the frozen 1m/5m/30m", bucket)
+	return fmt.Errorf("ursm.v2: k2 window bucket %q is not one of the frozen 1m/5m/30m", bucket)
 }
 
 // ParsedNodeKeyWithSchema is a node key tuple plus the grammar that
