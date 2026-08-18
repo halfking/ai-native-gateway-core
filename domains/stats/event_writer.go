@@ -139,7 +139,10 @@ func (w *EventWriter) run(ctx context.Context) {
 				case e := <-w.queue:
 					batch = append(batch, e)
 				default:
-					flush()
+					if !flush() && len(batch) > 0 {
+						w.deadLettered.Add(uint64(len(batch)))
+						batch = batch[:0]
+					}
 					return
 				}
 			}
