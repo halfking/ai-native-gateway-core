@@ -408,6 +408,15 @@ var quotaResetsRe = regexp.MustCompile(
 		// 一个会按周期重置的用量窗口，应走 KindQuotaPeriodic 的恢复通道，
 		// 由 balance_quota_probe 实测探活后自动翻回。
 		`window[_ -]?type|"window_type"|` +
+		// 2026-08-18 fix: 智谱AI GLM Coding Plan 的 5 小时窗口限额报文
+		// （"usage limit exceeded ... every 5 hours"，无 reset 时间戳）。
+		// 提及 5 小时窗口即表明这是周期性重置窗口，不是永久耗尽；
+		// 旧逻辑落到 KindQuotaPermanent → permanently_exhausted 无限挂起。
+		`five[_ -]?hour|` +
+		`5[_ -]?hours?|` +
+		`hour[_ -]?5|` +
+		`每.{0,3}5.{0,3}小时|` +
+		`5.{0,3}小时|` +
 		// Chinese "重置" with up to 80 chars between the noun and 重置
 		// (covers 智谱AI "...限额将在 YYYY-MM-DD HH:MM:SS 重置。").
 		`(限额|使用量|配额|额度|余额).{0,80}重置|` +
@@ -879,6 +888,13 @@ func NextQuotaReset(body string, now time.Time) time.Time {
 		return t.UTC()
 	}
 	lower := strings.ToLower(body)
+	// 2026-08-18 fix: 5-hour usage windows (智谱AI GLM Coding Plan and
+	// Anthropic-compatible relays of it) roll at fixed 00/05/10/15/20 UTC+8
+	// marks. Recover at the next boundary, not the next UTC midnight —
+	// midnight stretched a 凌晨 5 点 window reset to 北京 08:00.
+	if fiveHourWindowHintRe.MatchString(body) {
+		return nextFiveHourBoundaryUTC8(now)
+	}
 	if strings.Contains(lower, "month") || strings.Contains(lower, "per month") || strings.Contains(lower, "月") {
 		return time.Date(now.Year(), now.Month()+1, 1, 0, 0, 0, 0, time.UTC)
 	}
@@ -925,6 +941,27 @@ func scanQuotaResetTimestamp(detail string, now time.Time) (time.Time, bool) {
 
 func midnightUTCShared(t time.Time) time.Time {
 	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
+}
+
+// fiveHourWindowHintRe mirrors domains/credential/writer.fiveHourWindowRe:
+// any mention of a 5-hour usage window in a quota-exhausted body means the
+// limit rolls on that window cadence.
+var fiveHourWindowHintRe = regexp.MustCompile(`(?i)(five[_ -]?hour|5[_ -]?hours?|hour[_ -]?5|每.{0,3}5.{0,3}小时|5.{0,3}小时)`)
+
+// utc8Zone is the fixed UTC+8 zone used to align 5-hour quota windows.
+var utc8Zone = time.FixedZone("UTC+8", 8*3600)
+
+// nextFiveHourBoundaryUTC8 returns the first 5-hour mark (00/05/10/15/20
+// in UTC+8) strictly after now.
+func nextFiveHourBoundaryUTC8(now time.Time) time.Time {
+	local := now.In(utc8Zone)
+	nextHour := 5 * (local.Hour()/5 + 1)
+	day := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, utc8Zone)
+	if nextHour >= 24 {
+		nextHour -= 24
+		day = day.AddDate(0, 0, 1)
+	}
+	return day.Add(time.Duration(nextHour) * time.Hour)
 }
 
 // ClassifyResponseBody inspects an error body fragment (e.g. SSE error
