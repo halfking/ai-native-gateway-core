@@ -8,6 +8,8 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/require"
+
+	"github.com/kaixuan/llm-gateway-go/secret"
 )
 
 // readReason reads the value of the {provider_id, reason} child via the
@@ -65,6 +67,15 @@ func TestClassifyRevealFailureClosedVocabulary(t *testing.T) {
 		// package error refactors cannot silently demote incidents.
 		{"text only", errors.New("cannot decrypt: unknown format"), revealFailOther},
 		{"nil", nil, revealFailOther},
+
+		// 2026-08-18 follow-up: client.go now uses `%w: %w` so the
+		// underlying secret.ErrUnknownFormat also enters the unwrap chain.
+		// This case guards that errors.Is still finds the reveal-layer
+		// classification even when the original decrypt error is reachable
+		// through Unwrap.
+		{"unknown_format with cause in chain",
+			fmt.Errorf("%w: %w", secret.ErrRevealUnknownFormat, secret.ErrUnknownFormat),
+			revealFailUnknownFormat},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
