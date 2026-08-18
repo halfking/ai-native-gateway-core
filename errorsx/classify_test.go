@@ -1274,3 +1274,30 @@ func TestNextQuotaResetMonthlyStillMidnight(t *testing.T) {
 		t.Errorf("monthly body should snap to next month start, got %s", got.UTC())
 	}
 }
+
+// TestQuotaResetsReFiveHourWordBoundary guards the audit refinement of the
+// 2026-08-18 five-hour patterns: "25 hours"/"15 hours" (non-window retry
+// phrasing, no other reset keyword) must not trip the 5-hour periodic
+// classification, while exact five-hour wording still does.
+func TestQuotaResetsReFiveHourWordBoundary(t *testing.T) {
+	for _, body := range []string{
+		`usage limit exceeded, cooldown 25 hours`,
+		`quota exceeded, limit 15 hours`,
+		`usage limit exceeded, cooldown 25小时`,
+		`quota exceeded, limit 15 小时`,
+	} {
+		if quotaResetsRe.MatchString(body) {
+			t.Errorf("quotaResetsRe should not treat %q as a five-hour window hint", body)
+		}
+	}
+	for _, body := range []string{
+		`usage limit exceeded, resets every 5 hours`,
+		`usage limit exceeded every 5 hours`,
+		`5-hour window exhausted`,
+		`usage limit exceeded (hour-5 window)`,
+	} {
+		if !quotaResetsRe.MatchString(body) {
+			t.Errorf("quotaResetsRe should match five-hour wording in %q", body)
+		}
+	}
+}

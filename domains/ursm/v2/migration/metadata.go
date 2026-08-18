@@ -1,8 +1,15 @@
+// Package migration implements the L3 k2 migration machinery described in
+// docs 14/15/16 (slice 11-13). It owns preflight classification, copy with
+// PTTL preservation, and exact-ledger cleanup. The package is self-contained:
+// the only URSM symbols it imports are those explicitly handed over in
+// 14 §0 (store.NodeKeyCanonical/WindowKeyCanonical/CandidateIndexKeyCanonical
+// and the corresponding Parse*Canonical helpers plus Schema/SchemaK2/SchemaLegacy).
 package migration
 
 import (
 	"context"
 	_ "embed"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"time"
@@ -12,66 +19,228 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/store"
 )
 
-// Checkpoint is the durable migration phase recorded in Redis metadata and
-// the PG ledger. A failure transition records CheckpointRollback before the
-// schema returns to legacy (doc 14 §6.3).
+// Mode describes the k2 schema mode for the Redis key layout (doc 14 §3).
+// It is orthogonal to api.RolloutMode (URSM v2 vs legacy routing authority).
+type Mode string
+
+const (
+	ModeLegacy    Mode = "legacy"
+	ModeDual      Mode = "dual"
+	ModeCanonical Mode = "canonical"
+)
+
+// Valid returns true iff Mode is one of the frozen values above.
+func (m Mode) Valid() bool {
+	switch m {
+	case ModeLegacy, ModeDual, ModeCanonical:
+		return true
+	}
+	return false
+}
+
+// Checkpoint values for the metadata state machine (doc 14 §4 / 15 §4).
 type Checkpoint string
 
 const (
 	CheckpointPreflight Checkpoint = "preflight"
 	CheckpointCopy      Checkpoint = "copy"
 	CheckpointCoverage  Checkpoint = "coverage"
+	CheckpointDual      Checkpoint = "dual"
 	CheckpointObserve   Checkpoint = "observe"
 	CheckpointCleanup   Checkpoint = "cleanup"
+	CheckpointDone      Checkpoint = "done"
 	CheckpointRollback  Checkpoint = "rollback"
 )
 
-// Metadata is the runtime state mandated by doc 14 §3. The full per-key
-// audit ledger belongs in PostgreSQL; this hash lets every gateway enforce
-// a single owner/ledger identity and monotonic cutover transitions.
-type Metadata struct {
-	Owner             string
-	LedgerID          string
-	Mode              store.KeySchemaMode
-	CutoverEpoch      int64
-	StartedAt         string
-	UpdatedAt         string
-	PreflightChecksum string
-	RollbackDeadline  string
-	Checkpoint        Checkpoint
+// Valid returns true iff Checkpoint is one of the frozen values above.
+func (c Checkpoint) Valid() bool {
+	switch c {
+	case CheckpointPreflight, CheckpointCopy, CheckpointCoverage,
+		CheckpointDual, CheckpointObserve, CheckpointCleanup,
+		CheckpointDone, CheckpointRollback:
+		return true
+	}
+	return false
 }
 
-//go:embed metadata_advance.lua
-var metadataAdvanceSrc string
+// Metadata mirrors doc 14 §3 exactly. The JSON form is the canonical
+// representation on disk and in the Redis HASH (one field per row).
+type Metadata struct {
+	Owner             string     `json:"owner"`
+	LedgerID          string     `json:"ledger_id"`
+	Mode              Mode       `json:"mode"`
+	CutoverEpoch      int64      `json:"cutover_epoch"`
+	StartedAt         time.Time  `json:"started_at"`
+	UpdatedAt         time.Time  `json:"updated_at"`
+	PreflightChecksum string     `json:"preflight_checksum,omitempty"`
+	RollbackDeadline  time.Time  `json:"rollback_deadline,omitempty"`
+	Checkpoint        Checkpoint `json:"checkpoint"`
+}
 
-var metadataAdvanceScript = redis.NewScript(metadataAdvanceSrc)
+// Validate enforces doc 14 §0/§3 invariants. Owner/ledger_id non-empty, mode
+// and checkpoint are valid, cutover_epoch is non-negative, timestamps are
+// non-zero. Used at every entry point to fail-closed on misconfigured runs.
+func (m Metadata) Validate() error {
+	if m.Owner == "" {
+		return fmt.Errorf("migration: owner is required")
+	}
+	if m.LedgerID == "" {
+		return fmt.Errorf("migration: ledger_id is required")
+	}
+	if !m.Mode.Valid() {
+		return fmt.Errorf("migration: invalid mode %q", m.Mode)
+	}
+	if !m.Checkpoint.Valid() {
+		return fmt.Errorf("migration: invalid checkpoint %q", m.Checkpoint)
+	}
+	if m.CutoverEpoch < 0 {
+		return fmt.Errorf("migration: cutover_epoch must be non-negative")
+	}
+	if m.StartedAt.IsZero() {
+		return fmt.Errorf("migration: started_at is required")
+	}
+	if m.UpdatedAt.IsZero() {
+		return fmt.Errorf("migration: updated_at is required")
+	}
+	return nil
+}
 
-type MetadataStore struct {
+// MarshalJSON keeps the time format stable (RFC3339Nano) regardless of the
+// caller's locale so checksums and Redis HASH fields stay deterministic.
+func (m Metadata) MarshalJSON() ([]byte, error) {
+	type wire struct {
+		Owner             string `json:"owner"`
+		LedgerID          string `json:"ledger_id"`
+		Mode              Mode   `json:"mode"`
+		CutoverEpoch      int64  `json:"cutover_epoch"`
+		StartedAt         string `json:"started_at"`
+		UpdatedAt         string `json:"updated_at"`
+		PreflightChecksum string `json:"preflight_checksum,omitempty"`
+		RollbackDeadline  string `json:"rollback_deadline,omitempty"`
+		Checkpoint        string `json:"checkpoint"`
+	}
+	w := wire{
+		Owner:             m.Owner,
+		LedgerID:          m.LedgerID,
+		Mode:              m.Mode,
+		CutoverEpoch:      m.CutoverEpoch,
+		StartedAt:         m.StartedAt.UTC().Format(time.RFC3339Nano),
+		UpdatedAt:         m.UpdatedAt.UTC().Format(time.RFC3339Nano),
+		PreflightChecksum: m.PreflightChecksum,
+		Checkpoint:        string(m.Checkpoint),
+	}
+	if !m.RollbackDeadline.IsZero() {
+		w.RollbackDeadline = m.RollbackDeadline.UTC().Format(time.RFC3339Nano)
+	}
+	return json.Marshal(w)
+}
+
+// ============================================================================
+// Runtime Redis metadata store retained from the feature branch. It owns the
+// `<prefix>meta:migration` HASH and exposes CAS advance / Initialize via
+// metadata_advance.lua. The wire format mirrors Metadata above, with the
+// schema mode serialised through store.KeySchemaMode (rather than the Mode
+// alias) so the durable HASH stays aligned with store's parse path.
+// ============================================================================
+
+// MetadataStore is the runtime Redis metadata HASH wrapper for the migration
+// state machine (doc 14 §3). The full per-key audit ledger belongs in
+// PostgreSQL; this hash lets every gateway enforce a single owner/ledger
+// identity and monotonic cutover transitions.
+type MetadataLuaStore struct {
 	rdb    *redis.Client
 	prefix string
 }
 
-func NewMetadata(rdb *redis.Client, prefix string) *MetadataStore {
-	return &MetadataStore{rdb: rdb, prefix: prefix}
+// NewMetadataLua builds a MetadataLuaStore bound to prefix.
+func NewMetadataLua(rdb *redis.Client, prefix string) *MetadataLuaStore {
+	return &MetadataLuaStore{rdb: rdb, prefix: prefix}
 }
 
-func (m *MetadataStore) key() string { return m.prefix + "meta:migration" }
+// MetadataStore is the public name for the plain HASH write/read wrapper
+// declared in metadata_redis.go. The alias keeps cmd/k2-migrate-ursm's
+// `&migration.MetadataStore{Prefix, RDB}` literal compiling.
+type MetadataStore = MetadataHash
+
+// storeKeySchemaModeFromMode bridges the public Mode string alias (used by
+// the free-function Preflight wrapper and cmd) to the underlying
+// store.KeySchemaMode int the LUA-CAS Advance path expects.
+func storeKeySchemaModeFromMode(m Mode) (out store.KeySchemaMode) {
+	switch m {
+	case ModeDual:
+		return store.KeySchemaModeDual
+	case ModeCanonical:
+		return store.KeySchemaModeCanonical
+	default:
+		return store.KeySchemaModeLegacy
+	}
+}
+
+// isLedgerID returns true for the one-shot UUIDv4-style identifier used as
+// the migration ledger_id (doc 14 §0): 36 chars, hyphens at 8/13/18/23,
+// hex elsewhere.
+func isLedgerID(s string) bool {
+	if len(s) != 36 {
+		return false
+	}
+	for i, r := range s {
+		switch i {
+		case 8, 13, 18, 23:
+			if r != '-' {
+				return false
+			}
+		default:
+			if !isHex(r) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func isHex(r rune) bool {
+	switch {
+	case r >= '0' && r <= '9':
+		return true
+	case r >= 'a' && r <= 'f':
+		return true
+	case r >= 'A' && r <= 'F':
+		return true
+	}
+	return false
+}
+
+// keyKind values exported via aliases so callers (cmd + tests) can refer to
+// them without importing the unexported type from classify.go.
+const (
+	KindNode         = "node"
+	KindWindow       = "window"
+	KindIndex        = "index"
+	KindBinding      = "binding"
+	KindCredential   = "credential"
+	KindProvider     = "provider"
+	KindDedup        = "request_dedup"
+	KindUnrecognised = "unrecognised"
+)
+
+func (m *MetadataLuaStore) key() string { return m.prefix + "meta:migration" }
 
 // Initialize atomically establishes the immutable owner/ledger identity.
 // Re-initializing with the same identity is idempotent; a different identity
 // is rejected because ledger IDs are non-reusable (doc 14 §3).
-func (m *MetadataStore) Initialize(ctx context.Context, in Metadata) error {
+func (m *MetadataLuaStore) Initialize(ctx context.Context, in Metadata) error {
 	if m == nil || m.rdb == nil {
 		return fmt.Errorf("ursm.v2: migration metadata requires redis")
 	}
 	if in.Owner == "" || in.LedgerID == "" || in.Checkpoint == "" {
 		return fmt.Errorf("ursm.v2: migration metadata requires owner, ledger_id and checkpoint")
 	}
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if in.StartedAt == "" {
-		in.StartedAt = now
+	now := time.Now().UTC()
+	_ = now
+	if in.StartedAt.IsZero() {
+		in.StartedAt = time.Now().UTC()
 	}
-	in.UpdatedAt = now
+	in.UpdatedAt = time.Now().UTC()
 	existing, err := m.Read(ctx)
 	if err != nil && err != redis.Nil {
 		return err
@@ -82,6 +251,7 @@ func (m *MetadataStore) Initialize(ctx context.Context, in Metadata) error {
 		}
 		return nil
 	}
+	schemaMode, _ := store.ParseKeySchemaMode(string(in.Mode))
 	ok, err := m.rdb.HSetNX(ctx, m.key(), "owner", in.Owner).Result()
 	if err != nil {
 		return fmt.Errorf("ursm.v2: initialize migration metadata: %w", err)
@@ -92,12 +262,12 @@ func (m *MetadataStore) Initialize(ctx context.Context, in Metadata) error {
 	}
 	if err := m.rdb.HSet(ctx, m.key(), map[string]string{
 		"ledger_id":          in.LedgerID,
-		"mode":               in.Mode.String(),
+		"mode":               schemaMode.String(),
 		"cutover_epoch":      strconv.FormatInt(in.CutoverEpoch, 10),
-		"started_at":         in.StartedAt,
-		"updated_at":         in.UpdatedAt,
+		"started_at":         in.StartedAt.UTC().Format(time.RFC3339Nano),
+		"updated_at":         in.UpdatedAt.UTC().Format(time.RFC3339Nano),
 		"preflight_checksum": in.PreflightChecksum,
-		"rollback_deadline":  in.RollbackDeadline,
+		"rollback_deadline":  rollbackDeadlineWire(in.RollbackDeadline),
 		"checkpoint":         string(in.Checkpoint),
 	}).Err(); err != nil {
 		return fmt.Errorf("ursm.v2: complete migration metadata initialize: %w", err)
@@ -105,7 +275,9 @@ func (m *MetadataStore) Initialize(ctx context.Context, in Metadata) error {
 	return nil
 }
 
-func (m *MetadataStore) Read(ctx context.Context) (Metadata, error) {
+// Read returns the current metadata HASH, or redis.Nil when it has not been
+// initialized.
+func (m *MetadataLuaStore) Read(ctx context.Context) (Metadata, error) {
 	if m == nil || m.rdb == nil {
 		return Metadata{}, fmt.Errorf("ursm.v2: migration metadata requires redis")
 	}
@@ -124,15 +296,18 @@ func (m *MetadataStore) Read(ctx context.Context) (Metadata, error) {
 	if err != nil || epoch < 0 {
 		return Metadata{}, fmt.Errorf("ursm.v2: invalid stored cutover epoch %q", values["cutover_epoch"])
 	}
+	startedAt, _ := time.Parse(time.RFC3339Nano, values["started_at"])
+	updatedAt, _ := time.Parse(time.RFC3339Nano, values["updated_at"])
+	rollback, _ := time.Parse(time.RFC3339Nano, values["rollback_deadline"])
 	return Metadata{
 		Owner:             values["owner"],
 		LedgerID:          values["ledger_id"],
-		Mode:              mode,
+		Mode:              Mode(mode.String()),
 		CutoverEpoch:      epoch,
-		StartedAt:         values["started_at"],
-		UpdatedAt:         values["updated_at"],
+		StartedAt:         startedAt,
+		UpdatedAt:         updatedAt,
 		PreflightChecksum: values["preflight_checksum"],
-		RollbackDeadline:  values["rollback_deadline"],
+		RollbackDeadline:  rollback,
 		Checkpoint:        Checkpoint(values["checkpoint"]),
 	}, nil
 }
@@ -140,7 +315,7 @@ func (m *MetadataStore) Read(ctx context.Context) (Metadata, error) {
 // Advance uses the metadata hash's epoch as a fencing token. A stale caller
 // cannot overwrite a newer cutover/checkpoint; successful advances increment
 // the epoch exactly once.
-func (m *MetadataStore) Advance(ctx context.Context, expectedEpoch int64, checkpoint Checkpoint, mode store.KeySchemaMode) error {
+func (m *MetadataLuaStore) Advance(ctx context.Context, expectedEpoch int64, checkpoint Checkpoint, mode store.KeySchemaMode) error {
 	if m == nil || m.rdb == nil {
 		return fmt.Errorf("ursm.v2: migration metadata requires redis")
 	}
@@ -156,4 +331,16 @@ func (m *MetadataStore) Advance(ctx context.Context, expectedEpoch int64, checkp
 		return fmt.Errorf("ursm.v2: migration metadata epoch superseded")
 	}
 	return nil
+}
+
+//go:embed metadata_advance.lua
+var metadataAdvanceSrc string
+
+var metadataAdvanceScript = redis.NewScript(metadataAdvanceSrc)
+
+func rollbackDeadlineWire(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339Nano)
 }

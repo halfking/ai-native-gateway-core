@@ -119,3 +119,28 @@ func TestPipelineDisabledWithoutCoolStaysUnavailable(t *testing.T) {
 		t.Fatalf("disabled without a cool window must stay unavailable")
 	}
 }
+
+// TestPipelineManualHoldBeatsExpiredCool: apply_admin.lua writes
+// manual_hold=1 + available=0 without clearing a pre-existing cool_until_ms,
+// so an admin force_disable issued during an auto-cool window must NOT be
+// half-opened back into rotation when the window expires (audit guard for
+// the 2026-08-18 half-open fix).
+func TestPipelineManualHoldBeatsExpiredCool(t *testing.T) {
+	s, mr := newTestStore(t)
+	ctx := context.Background()
+	past := time.Now().Add(-10 * time.Minute).UnixMilli()
+	mr.HSet("ursm:v2:node:default:22:glm-5.2",
+		"available", "0",
+		"disabled", "1",
+		"manual_hold", "1",
+		"cool_until_ms", strconv.FormatInt(past, 10))
+	views, err := s.PipelineNodeViews(ctx, "ursm:v2:", []NodeQuery{{
+		TenantID: "default", CredentialID: 22, RawModel: "glm-5.2",
+	}})
+	if err != nil {
+		t.Fatalf("pipeline: %v", err)
+	}
+	if views[0].Available {
+		t.Fatalf("manual_hold must keep the node unavailable even with an expired cool window")
+	}
+}

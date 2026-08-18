@@ -391,7 +391,7 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 				slog.Warn("routing resolve: ursm v2 partial result",
 					"got", len(views), "want", len(candidates))
 			}
-			applyURSMOverlay(candidates, views, time.Now())
+applyURSMOverlay(candidates, views, time.Now())
 		}
 	}
 

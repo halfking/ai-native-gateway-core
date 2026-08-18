@@ -141,7 +141,7 @@ func nodeViewFromHash(q NodeQuery, raw map[string]string, now time.Time) api.Nod
 				if v.Reason == "" {
 					v.Reason = "in_cool_until"
 				}
-			} else if !v.Available {
+			} else if !v.Available && raw["manual_hold"] != "1" {
 				// 2026-08-18 fix (154 incident, minimax-m3 / cred 36):
 				// an EXPIRED cool window must half-open the node. The write
 				// side (record_request.lua:232) already treats
@@ -155,6 +155,12 @@ func nodeViewFromHash(q NodeQuery, raw map[string]string, now time.Time) api.Nod
 				// Reading an expired cool as available re-arms the
 				// intended half-open circuit: if the next request fails,
 				// record_request re-disables with exponential backoff.
+				//
+				// Audit guard (2026-08-18): manual_hold wins. apply_admin
+				// .lua writes manual_hold=1 + available=0 WITHOUT touching
+				// a pre-existing cool_until_ms, so an admin force_disable
+				// issued during an auto-cool window must not be half-opened
+				// back into rotation when that window expires.
 				v.Available = true
 			}
 		}

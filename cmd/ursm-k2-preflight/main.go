@@ -76,7 +76,7 @@ func main() {
 		log.Fatalf("redis ping: %v", err)
 	}
 
-	report, err := migration.NewPreflight(rdb, *keyPrefix).Scan(ctx)
+	report, err := migration.NewEntryPreflight(rdb, *keyPrefix).Scan(ctx)
 	if err != nil {
 		log.Fatalf("preflight scan: %v", err)
 	}

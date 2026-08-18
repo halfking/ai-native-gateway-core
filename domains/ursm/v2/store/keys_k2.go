@@ -239,6 +239,66 @@ func ParseNodeKeyAny(prefix, key string) (ParsedNodeKeyWithSchema, bool) {
 // k2WindowBuckets is the frozen window bucket vocabulary (doc 14 §2).
 var k2WindowBuckets = map[string]bool{"1m": true, "5m": true, "30m": true}
 
+// Schema is the string wire form of the node key grammar. Two grammars
+// coexist during the k2 migration (doc 14 §2); the wire form must be
+// stable across PG / Redis / log paths.
+type Schema string
+
+const (
+	SchemaLegacy Schema = "legacy"
+	SchemaK2     Schema = "k2"
+)
+
+// ParseNodeKeyCanonical decodes node keys of both grammars and reports the
+// schema source next to the tuple. k2 is probed first: once the k2 marker
+// exists it owns the node:k2: namespace, so a key matching both grammars
+// resolves as k2. Decoding is strict — exact segment count, canonical
+// base64url segments, positive decimal credential — with no lenient
+// fallback and no guessing of ambiguous legacy tuples.
+func ParseNodeKeyCanonical(prefix, key string) (ParsedNodeKey, Schema, bool) {
+	if strings.HasPrefix(key, prefix+"node:k2:") {
+		parsed, ok := parseNodeKeyK2(prefix, key)
+		if !ok {
+			return ParsedNodeKey{}, "", false
+		}
+		return parsed, SchemaK2, true
+	}
+	if parsed, ok := ParseNodeKey(prefix, key); ok {
+		return parsed, SchemaLegacy, true
+	}
+	return ParsedNodeKey{}, "", false
+}
+
+// parseNodeKeyK2 strictly decodes the k2 grammar emitted by
+// NodeKeyCanonical; legacy node keys are not recognized here. This wraps
+// k2DecodeSegment from the canonical primitive set so the two k2 entry
+// points stay byte-equivalent on a round-trip (doc 15 §2).
+func parseNodeKeyK2(prefix, key string) (ParsedNodeKey, bool) {
+	base := prefix + "node:k2:"
+	if !strings.HasPrefix(key, base) {
+		return ParsedNodeKey{}, false
+	}
+	parts := strings.Split(strings.TrimPrefix(key, base), ":")
+	if len(parts) != 3 {
+		return ParsedNodeKey{}, false
+	}
+	tenant, ok := k2DecodeSegment(parts[0])
+	if !ok || tenant == "" {
+		return ParsedNodeKey{}, false
+	}
+	if !isCanonicalDecimalCID(parts[1]) {
+		return ParsedNodeKey{}, false
+	}
+	credentialID, err := strconv.Atoi(parts[1])
+	if err != nil || credentialID <= 0 {
+		return ParsedNodeKey{}, false
+	}
+	raw, ok := k2DecodeSegment(parts[2])
+	if !ok || raw == "" {
+		return ParsedNodeKey{}, false
+	}
+	return ParsedNodeKey{TenantID: tenant, CredentialID: credentialID, RawModel: raw}, true
+}
 // ParsedWindowKey is the tuple recovered from a canonical k2 window key.
 type ParsedWindowKey struct {
 	Bucket       string
@@ -317,4 +377,56 @@ func ParseCandidateIndexKeyAny(prefix, key string) (ParsedCandidateIndexKey, boo
 		return ParsedCandidateIndexKey{}, false
 	}
 	return ParsedCandidateIndexKey{TenantID: tenant, CanonicalModel: canonical, Profile: profile, Modality: modality}, true
+}
+
+// ============================================================================
+// Canonical constructors / parsers used by the migration package (doc 14
+// §0 handover list). These mirror K2NodeKeyForTenant / K2WindowKeyForTenant
+// / K2CandidateIndexKey but use the simpler name + ParsedWindowKey return
+// shape the migration machinery imports.
+// ============================================================================
+
+// NodeKeyCanonical builds the canonical k2 node key. Returns "" when the
+// tuple is invalid (empty tenant / non-positive cid / empty raw) so the
+// migration code can compare without error handling on the hot path.
+func NodeKeyCanonical(prefix, tenant string, cid int, raw string) string {
+	k, err := K2NodeKeyForTenant(prefix, tenant, cid, raw)
+	if err != nil {
+		return ""
+	}
+	return k
+}
+
+// WindowKeyCanonical builds the canonical k2 window key. Returns "" when
+// any input is invalid (bucket, tenant, cid, raw) so the migration code
+// can compare without error handling.
+func WindowKeyCanonical(prefix, tenant string, cid int, raw, bucket string) string {
+	k, err := K2WindowKeyForTenant(prefix, tenant, cid, raw, bucket)
+	if err != nil {
+		return ""
+	}
+	return k
+}
+
+// CandidateIndexKeyCanonical builds the canonical k2 candidate index key.
+// Returns "" when any component is empty.
+func CandidateIndexKeyCanonical(prefix, tenant, canonical, profile, modality string) string {
+	k, err := K2CandidateIndexKey(prefix, tenant, canonical, profile, modality)
+	if err != nil {
+		return ""
+	}
+	return k
+}
+
+// ParseWindowKeyCanonical strictly decodes the k2 window grammar. Returns
+// the parsed tuple + ok; callers needing both grammars must try
+// ParseNodeKeyCanonical first.
+func ParseWindowKeyCanonical(prefix, key string) (ParsedWindowKey, bool) {
+	return ParseWindowKeyAny(prefix, key)
+}
+
+// ParseCandidateIndexKeyCanonical strictly decodes the k2 candidate index
+// grammar.
+func ParseCandidateIndexKeyCanonical(prefix, key string) (ParsedCandidateIndexKey, bool) {
+	return ParseCandidateIndexKeyAny(prefix, key)
 }

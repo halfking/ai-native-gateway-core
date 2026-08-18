@@ -15,19 +15,26 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/store"
 )
 
-// Preflight performs the read-only inventory phase. It never writes a key:
-// its output is the input to the durable ledger/copy phases (doc 14 §4).
-type Preflight struct {
+// EntryPreflight performs the read-only inventory phase for callers that
+// iterate the report themselves rather than going through the durable
+// ledger (parallel API style retained alongside the ledger-driven Preflight
+// in preflight.go). It never writes a key: its output is the input to the
+// copy / cleanup phases (doc 14 §4).
+type EntryPreflight struct {
 	rdb    *redis.Client
 	prefix string
 }
 
-func NewPreflight(rdb *redis.Client, prefix string) *Preflight {
-	return &Preflight{rdb: rdb, prefix: prefix}
+// NewEntryPreflight builds an EntryPreflight bound to prefix.
+func NewEntryPreflight(rdb *redis.Client, prefix string) *EntryPreflight {
+	return &EntryPreflight{rdb: rdb, prefix: prefix}
 }
 
-// Entry is the exact, auditable inventory record for one source Redis key.
-type Entry struct {
+// EntryRecord is the exact, auditable inventory record for one source
+// Redis key, returned by EntryPreflight. Independent from Item (the ledger
+// record emitted by the ledger-driven Preflight) so the two parallel APIs
+// do not have to share struct fields.
+type EntryRecord struct {
 	SourceKey     string
 	TargetKey     string
 	Class         Classification
@@ -40,11 +47,16 @@ type Entry struct {
 	Tuple         *store.ParsedNodeKey
 }
 
-// Report is a deterministic preflight result. Go is true only when no
-// ambiguous or conflict verdict exists; a non-zero excluded count does not
+// Entry is the alias name the per-entry helpers (EntryCopier / EntryCleaner)
+// use. It points at the same record as EntryRecord so callers can write
+// `entry Entry` without the `Record` suffix.
+type Entry = EntryRecord
+
+// EntryReport is a deterministic EntryPreflight result. Go is true only
+// when no ambiguous verdict exists; a non-zero excluded count does not
 // authorize those entries — it only records why they are non-authoritative.
-type Report struct {
-	Entries          []Entry
+type EntryReport struct {
+	Entries          []EntryRecord
 	Checksum         string
 	Migratable       int
 	CanonicalPresent int
@@ -52,22 +64,25 @@ type Report struct {
 	Excluded         int
 }
 
-func (r Report) Go() bool { return r.Ambiguous == 0 }
+// Go returns true only when no ambiguous verdict exists; a non-zero
+// excluded count does not authorize those entries — it only records why
+// they are non-authoritative.
+func (r EntryReport) Go() bool { return r.Ambiguous == 0 }
 
 // Scan uses SCAN rather than KEYS and reads only `prefix + node:*` in this
 // slice. Associated windows and candidate indexes are accounted for by the
 // logical node tuple in later copy/cleanup phases; candidate indexes are
 // separately rebuilt, never copied (doc 14 §2/§5.2.6).
-func (p *Preflight) Scan(ctx context.Context) (Report, error) {
+func (p *EntryPreflight) Scan(ctx context.Context) (EntryReport, error) {
 	if p == nil || p.rdb == nil {
-		return Report{}, fmt.Errorf("ursm.v2: preflight requires redis")
+		return EntryReport{}, fmt.Errorf("ursm.v2: preflight requires redis")
 	}
 	var keys []string
 	var cursor uint64
 	for {
 		batch, next, err := p.rdb.Scan(ctx, cursor, p.prefix+"node:*", 200).Result()
 		if err != nil {
-			return Report{}, fmt.Errorf("ursm.v2: preflight scan: %w", err)
+			return EntryReport{}, fmt.Errorf("ursm.v2: preflight scan: %w", err)
 		}
 		keys = append(keys, batch...)
 		if next == 0 {
@@ -76,21 +91,21 @@ func (p *Preflight) Scan(ctx context.Context) (Report, error) {
 		cursor = next
 	}
 	sort.Strings(keys)
-	report := Report{Entries: make([]Entry, 0, len(keys))}
+	report := EntryReport{Entries: make([]EntryRecord, 0, len(keys))}
 	for _, key := range keys {
 		entry, err := p.inspect(ctx, key)
 		if err != nil {
-			return Report{}, err
+			return EntryReport{}, err
 		}
 		report.Entries = append(report.Entries, entry)
 		switch entry.Class {
-		case ClassMigratable:
+		case ClassificationMigratable:
 			report.Migratable++
-		case ClassCanonicalPresent:
+		case ClassificationCanonicalPresent:
 			report.CanonicalPresent++
-		case ClassAmbiguous:
+		case ClassificationAmbiguous:
 			report.Ambiguous++
-		case ClassExcludedNonAuthoritative:
+		case ClassificationExcludedNonAuthoritative:
 			report.Excluded++
 		}
 	}
@@ -98,31 +113,31 @@ func (p *Preflight) Scan(ctx context.Context) (Report, error) {
 	return report, nil
 }
 
-func (p *Preflight) inspect(ctx context.Context, key string) (Entry, error) {
-	c := ClassifyKey(p.prefix, key)
-	e := Entry{SourceKey: key, Class: c.Class, Reason: c.Reason, Schema: c.Schema, Tuple: c.Tuple}
+func (p *EntryPreflight) inspect(ctx context.Context, key string) (EntryRecord, error) {
+	c := ClassifyKeyK2(p.prefix, key)
+	e := EntryRecord{SourceKey: key, Class: c.Class, Reason: c.Reason, Schema: c.Schema, Tuple: c.Tuple}
 	kind, err := p.rdb.Type(ctx, key).Result()
 	if err != nil {
-		return Entry{}, fmt.Errorf("ursm.v2: preflight type %s: %w", key, err)
+		return EntryRecord{}, fmt.Errorf("ursm.v2: preflight type %s: %w", key, err)
 	}
 	e.Type = kind
 	pttl, err := p.rdb.PTTL(ctx, key).Result()
 	if err != nil {
-		return Entry{}, fmt.Errorf("ursm.v2: preflight pttl %s: %w", key, err)
+		return EntryRecord{}, fmt.Errorf("ursm.v2: preflight pttl %s: %w", key, err)
 	}
 	e.PTTLMillis = pttlMillis(pttl)
 	if kind == "hash" {
 		fields, err := p.rdb.HGetAll(ctx, key).Result()
 		if err != nil {
-			return Entry{}, fmt.Errorf("ursm.v2: preflight hgetall %s: %w", key, err)
+			return EntryRecord{}, fmt.Errorf("ursm.v2: preflight hgetall %s: %w", key, err)
 		}
 		e.FieldChecksum = checksumFields(fields)
 		e.Generation = parseGeneration(fields["generation"])
 	}
-	if e.Class == ClassMigratable && e.Tuple != nil {
+	if e.Class == ClassificationMigratable && e.Tuple != nil {
 		target, err := store.K2NodeKeyForTenant(p.prefix, e.Tuple.TenantID, e.Tuple.CredentialID, e.Tuple.RawModel)
 		if err != nil {
-			return Entry{}, fmt.Errorf("ursm.v2: preflight canonical target %s: %w", key, err)
+			return EntryRecord{}, fmt.Errorf("ursm.v2: preflight canonical target %s: %w", key, err)
 		}
 		e.TargetKey = target
 	}
@@ -169,7 +184,7 @@ func checksumFields(fields map[string]string) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-func checksumEntries(entries []Entry) string {
+func checksumEntries(entries []EntryRecord) string {
 	h := sha256.New()
 	for _, e := range entries {
 		parts := []string{
