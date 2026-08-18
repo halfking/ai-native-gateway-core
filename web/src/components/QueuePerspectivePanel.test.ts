@@ -336,10 +336,11 @@ describe('QueuePerspectivePanel', () => {
     expect(drawer.props('model')).toBe('m-1')
   })
 
-  it('reorders a complete raw-model candidate list with contiguous priorities', async () => {
+  it('reorders a complete raw-model candidate list with contiguous priorities and echoes the server revision', async () => {
     superAdmin.mockReturnValue(true)
     resolveRouting.mockImplementation(async (model: string) => ({
       raw_models: [model],
+      reorder_revision: `rev-${model}`,
       candidates: model === 'm-1'
         ? [
             { credential_id: 1, model_name: 'm-1', manual_priority: 1 },
@@ -364,10 +365,68 @@ describe('QueuePerspectivePanel', () => {
     await cards[1].trigger('drop', { dataTransfer: transfer })
     await flushPromises()
 
-    expect(reorderCandidateBindings).toHaveBeenCalledWith([
-      { credential_id: 2, raw_model: 'm-1', manual_priority: 1 },
-      { credential_id: 1, raw_model: 'm-1', manual_priority: 2 },
-    ])
+    expect(reorderCandidateBindings).toHaveBeenCalledWith(
+      [
+        { credential_id: 2, raw_model: 'm-1', manual_priority: 1 },
+        { credential_id: 1, raw_model: 'm-1', manual_priority: 2 },
+      ],
+      { rawModel: 'm-1', expectedRevision: 'rev-m-1' },
+    )
+  })
+
+  it('disables reordering when the server did not return a reorder revision', async () => {
+    superAdmin.mockReturnValue(true)
+    resolveRouting.mockImplementation(async (model: string) => ({
+      raw_models: [model],
+      candidates: model === 'm-1'
+        ? [
+            { credential_id: 1, model_name: 'm-1', manual_priority: 1 },
+            { credential_id: 2, model_name: 'm-1', manual_priority: 2 },
+          ]
+        : [],
+    }))
+    liveStreamState.nodes = [
+      { credential_id: 1, provider_id: 1, provider_code: 'p', manual_disabled: false, circuit_state: 'closed', raw_models: ['m-1'] },
+      { credential_id: 2, provider_id: 1, provider_code: 'p', manual_disabled: false, circuit_state: 'closed', raw_models: ['m-1'] },
+    ]
+
+    const wrapper = mountPanel()
+    await flushPromises()
+    const cards = wrapper.findAll('.qp-node-card')
+    expect(cards).toHaveLength(2)
+    expect(cards.every(card => card.attributes('draggable') === 'false')).toBe(true)
+    expect(wrapper.html()).toContain('尚未拿到后端修订版本')
+  })
+
+  it('surfaces a stale-revision hint and refetches when the backend rejects the reorder with 409', async () => {
+    superAdmin.mockReturnValue(true)
+    resolveRouting.mockImplementation(async (model: string) => ({
+      raw_models: [model],
+      reorder_revision: `rev-${model}`,
+      candidates: model === 'm-1'
+        ? [
+            { credential_id: 1, model_name: 'm-1', manual_priority: 1 },
+            { credential_id: 2, model_name: 'm-1', manual_priority: 2 },
+          ]
+        : [],
+    }))
+    reorderCandidateBindings.mockReset().mockRejectedValueOnce(new Error('409 stale candidate binding set, refetch and retry'))
+    liveStreamState.nodes = [
+      { credential_id: 1, provider_id: 1, provider_code: 'p', manual_disabled: false, circuit_state: 'closed', raw_models: ['m-1'] },
+      { credential_id: 2, provider_id: 1, provider_code: 'p', manual_disabled: false, circuit_state: 'closed', raw_models: ['m-1'] },
+    ]
+
+    const wrapper = mountPanel()
+    await flushPromises()
+    const cards = wrapper.findAll('.qp-node-card')
+    const transfer = { effectAllowed: '', dropEffect: '', setData: vi.fn() }
+    await cards[0].trigger('dragstart', { dataTransfer: transfer })
+    await cards[1].trigger('dragover', { dataTransfer: transfer })
+    await cards[1].trigger('drop', { dataTransfer: transfer })
+    await flushPromises()
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('排序已过期')
   })
 
   it('disables reordering when a status filter hides part of the candidate list', async () => {

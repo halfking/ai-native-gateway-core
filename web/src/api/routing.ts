@@ -123,6 +123,11 @@ export interface RoutingResolveResponse {
   raw_models: string[]
   plan_order: Array<{ credential_id: number; provider_id: number; raw_model: string; tier: number }>
   candidates: RoutingCandidate[]
+  // Opaque token the frontend must echo back to
+  // /api/routing/candidate-bindings/reorder. Present only when the
+  // resolve hits exactly one raw_model — mixed alias / canonical hits
+  // leave it undefined so the UI keeps reordering disabled.
+  reorder_revision?: string
 }
 
 export function resolveRouting(model: string, clientProfile?: string, persistProbe = false, options?: RequestOptions) {
@@ -159,14 +164,42 @@ export interface CandidateBindingReorderItem {
 }
 
 export interface CandidateBindingReorderRequest {
+  // Single exact raw_model the reorder targets. Mixed-model submissions
+  // are rejected by the backend so the write path stays atomic.
+  raw_model: string
+  // Opaque token echoed from RoutingResolveResponse.reorder_revision.
+  // The handler rejects mismatches with HTTP 409 so stale views refetch
+  // before retrying.
+  expected_revision: string
   items: CandidateBindingReorderItem[]
 }
 
-export function reorderCandidateBindings(items: CandidateBindingReorderItem[]) {
-  return req<{ message: string; items: CandidateBindingReorderItem[] }>(
+export interface CandidateBindingReorderOptions {
+  rawModel: string
+  expectedRevision: string
+  signal?: AbortSignal
+}
+
+export interface CandidateBindingReorderResponse {
+  message: string
+  raw_model: string
+  expected_revision: string
+  items: CandidateBindingReorderItem[]
+}
+
+export function reorderCandidateBindings(
+  items: CandidateBindingReorderItem[],
+  options: CandidateBindingReorderOptions,
+) {
+  return req<CandidateBindingReorderResponse>(
     'PATCH',
     '/api/routing/candidate-bindings/reorder',
-    { items },
+    {
+      raw_model: options.rawModel,
+      expected_revision: options.expectedRevision,
+      items,
+    },
+    options.signal ? { signal: options.signal } : undefined,
   )
 }
 
