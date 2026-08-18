@@ -59,8 +59,13 @@ const manualPriority = ref(99)
 const routingTier = ref(2)
 const weight = ref(100)
 const modelActionReason = ref('')
+const coreLoaded = ref(false)
+const coreLoading = ref(false)
 let sequence = 0
 let loadController: AbortController | null = null
+let requestsController: AbortController | null = null
+let coreController: AbortController | null = null
+let coreTask: Promise<boolean> | null = null
 
 function isAbortError(error: unknown): boolean {
   return error instanceof DOMException && error.name === 'AbortError'
@@ -68,9 +73,16 @@ function isAbortError(error: unknown): boolean {
 
 function resetDrawerData() {
   loadController?.abort()
+  requestsController?.abort()
+  coreController?.abort()
   loadController = null
+  requestsController = null
+  coreController = null
+  coreTask = null
   sequence++
   loading.value = false
+  coreLoaded.value = false
+  coreLoading.value = false
   detailLoaded.value = false
   detailLoading.value = false
   requestsLoaded.value = false
@@ -99,8 +111,42 @@ function detailEntriesReset() {
   history.value = []
 }
 
-// 默认不加载统计数据：抽屉打开后只显示 SSE 实时状态。详情统计仅在用户
-// 主动加载详情时读取；设置和请求 tab 分别按需加载，失败时保留重试入口。
+function startCorePreload(): Promise<boolean> | null {
+  const node = currentNode.value
+  if (!visible.value || !node || coreLoading.value || coreLoaded.value) return coreTask
+  const controller = new AbortController()
+  const requestSequence = sequence
+  coreController = controller
+  coreLoading.value = true
+  const scope = scopedModel.value
+  const initialModel = scope || node.raw_models?.[0] || ''
+  selectedModel.value = initialModel
+  const isCurrent = () => !controller.signal.aborted
+    && requestSequence === sequence
+    && currentNode.value?.credential_id === node.credential_id
+  const monitorTask = getCredentialMonitorSummary(
+    { credential_id: node.credential_id, mode: 'core' },
+    { signal: controller.signal },
+  ).then(result => {
+    if (!isCurrent()) return false
+    monitor.value = result.credentials?.[0] ?? null
+    return true
+  }).catch(error => {
+    if (!isAbortError(error) && isCurrent()) loadError.value = '节点核心状态加载失败，仍展示实时状态。'
+    return false
+  })
+  const candidateTask = initialModel ? loadCandidate(initialModel, requestSequence, controller.signal) : Promise.resolve(true)
+  coreTask = Promise.all([monitorTask, candidateTask]).then(([monitorReady]) => {
+    if (isCurrent()) {
+      coreLoaded.value = monitorReady
+      coreLoading.value = false
+      coreController = null
+    }
+    return monitorReady
+  }).catch(() => false)
+  return coreTask
+}
+
 async function ensureTabLoaded(tab: Tab) {
   if (!visible.value || !currentNode.value) return
   if (tab === 'detail' && !detailLoaded.value && !detailLoading.value) {
@@ -116,12 +162,10 @@ async function ensureTabLoaded(tab: Tab) {
     requestsLoading.value = false
     requestsLoaded.value = loaded
   } else if (tab === 'settings' && !settingsLoaded.value && !settingsLoading.value) {
-    candidate.value = null
-    monitor.value = null
     settingsLoading.value = true
-    const loaded = await loadNode('settings')
+    const loaded = await startCorePreload()
     settingsLoading.value = false
-    settingsLoaded.value = loaded
+    settingsLoaded.value = loaded === true
   }
 }
 
@@ -231,10 +275,10 @@ async function loadCandidate(model: string, requestSequence: number, signal: Abo
 async function loadDecisionsOnly() {
   const node = currentNode.value
   if (!node || !visible.value) return false
-  loadController?.abort()
+  requestsController?.abort()
   const controller = new AbortController()
-  loadController = controller
-  const requestSequence = ++sequence
+  requestsController = controller
+  const requestSequence = sequence
   const scope = scopedModel.value
   try {
     const result = scope
@@ -246,77 +290,55 @@ async function loadDecisionsOnly() {
   } catch (error) {
     if (!isAbortError(error) && requestSequence === sequence) loadError.value = '未能加载路由决策记录，请重试。'
     return false
+  } finally {
+    if (requestsController === controller) requestsController = null
   }
 }
 
-type LoadTarget = 'detail' | 'settings' | 'full'
-
-async function loadNode(target: LoadTarget): Promise<boolean> {
+async function loadNode(target: 'detail'): Promise<boolean> {
   const node = currentNode.value
   if (!node || !visible.value) return false
+  const pendingCoreTask = coreTask
   loadController?.abort()
   const controller = new AbortController()
   loadController = controller
-  const requestSequence = ++sequence
+  const requestSequence = sequence
   loading.value = true
   loadError.value = ''
   const scope = scopedModel.value
-  const requestedModel = selectedModel.value
-  const initialModel = scope || ((requestedModel && node.raw_models?.includes(requestedModel))
-    ? requestedModel
-    : (node.raw_models?.[0] || ''))
-  selectedModel.value = initialModel
-  let activeModel = initialModel
-  const isCurrent = () => !controller.signal.aborted && requestSequence === sequence && currentNode.value?.credential_id === node.credential_id
-  let monitorLoaded = false
+  const initialModel = scope || selectedModel.value || node.raw_models?.[0] || ''
+  const isCurrent = () => !controller.signal.aborted
+    && requestSequence === sequence
+    && currentNode.value?.credential_id === node.credential_id
   try {
-    const monitorResult = await getCredentialMonitorSummary(
-      { credential_id: node.credential_id },
+  const monitorResult = await getCredentialMonitorSummary(
+      { credential_id: node.credential_id, mode: 'detail' },
       { signal: controller.signal },
     )
     if (!isCurrent()) return false
-    monitor.value = monitorResult.credentials?.[0] ?? null
-    monitorLoaded = true
-    if (!scope && target !== 'settings') {
-      const preferred = monitor.value?.models?.find(model => model.raw_model_name === initialModel)
-        ?? monitor.value?.models?.find(model => model.probe_state === 'broken_confirmed')
-        ?? monitor.value?.models?.[0]
-      const nextModel = preferred?.raw_model_name ?? initialModel
-      if (nextModel && nextModel !== initialModel) {
-        activeModel = nextModel
-        selectedModel.value = nextModel
-      }
-    }
+    monitor.value = monitorResult.credentials?.[0] ?? monitor.value
+    const preferred = scope
+      ? initialModel
+      : monitor.value?.models?.find(model => model.raw_model_name === initialModel)?.raw_model_name
+        ?? monitor.value?.models?.find(model => model.probe_state === 'broken_confirmed')?.raw_model_name
+        ?? monitor.value?.models?.[0]?.raw_model_name
+        ?? initialModel
+    selectedModel.value = preferred
+    const candidateTask = candidate.value || !preferred
+      ? Promise.resolve(true)
+      : pendingCoreTask ?? loadCandidate(preferred, requestSequence, controller.signal)
+    const [detailsLoaded, candidateLoaded] = await Promise.all([
+      preferred ? loadModelDetails(preferred, requestSequence, controller.signal) : Promise.resolve(true),
+      candidateTask,
+    ])
+    return isCurrent() && detailsLoaded && candidateLoaded
   } catch (error) {
-    if (!isAbortError(error) && isCurrent()) loadError.value = '未能加载节点的持久化明细；仍展示实时状态。'
+    if (!isAbortError(error) && isCurrent()) loadError.value = '未能加载节点明细；核心实时状态仍可用。'
     return false
   } finally {
+    if (loadController === controller) loadController = null
     if (isCurrent()) loading.value = false
   }
-  if (!monitorLoaded || !isCurrent()) return false
-
-  const candidateLoaded = activeModel
-    ? await loadCandidate(activeModel, requestSequence, controller.signal)
-    : true
-  if (!isCurrent()) return false
-
-  if (target === 'settings') return candidateLoaded
-
-  const [detailsLoaded, decisionsLoaded] = await Promise.all([
-    activeModel ? loadModelDetails(activeModel, requestSequence, controller.signal) : Promise.resolve(true),
-    (scope
-      ? getCredentialDecisions(node.credential_id, 50, scope, { signal: controller.signal })
-      : getCredentialDecisions(node.credential_id, 30, undefined, { signal: controller.signal })
-    ).then(result => {
-      if (!isCurrent()) return false
-      decisions.value = result.decisions ?? []
-      return true
-    }).catch(error => {
-      if (!isAbortError(error) && isCurrent()) loadError.value = '未能加载路由决策记录，请重试。'
-      return false
-    }),
-  ])
-  return isCurrent() && candidateLoaded && detailsLoaded && decisionsLoaded
 }
 
 function chooseModel(model: string) {
@@ -473,6 +495,7 @@ watch(() => [props.modelValue, props.node?.credential_id, props.model] as const,
   lastWatchKey = key
   resetDrawerData()
   activeTab.value = 'detail'
+  void startCorePreload()
 }, { immediate: true })
 
 // Tab 切换触发按需加载：当前激活 tab + 当前会话（visible）
@@ -488,7 +511,11 @@ watch(
   { immediate: true },
 )
 
-onBeforeUnmount(() => loadController?.abort())
+onBeforeUnmount(() => {
+  loadController?.abort()
+  requestsController?.abort()
+  coreController?.abort()
+})
 </script>
 
 <template>
