@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "unknown_version": "reject",
+  "event_types": ["request_received", "route_resolved", "model_enqueued", "credential_selected", "node_enqueued", "node_selected", "attempt_started", "first_byte", "attempt_succeeded", "attempt_failed", "retry_scheduled", "node_switched", "model_switched", "request_succeeded", "request_failed", "request_canceled", "observation_degraded"],
+  "lifecycle_states": ["pending", "in_flight", "completed"],
+  "journey_stages": ["received", "routing", "model_queue", "credential_queue", "node_selection", "upstream", "streaming", "retrying", "terminal"],
+  "actions": ["arrive", "route_resolved", "model_enqueued", "credential_selected", "node_enqueued", "node_selected", "upstream_request", "first_byte", "reply", "node_switch", "model_switch", "state_change", "no_route"],
+  "known_error_kinds": ["canceled", "deadline_exceeded", "shutdown", "pace_timeout", "no_route", "overflow", "upstream_error"],
+  "resource_kind_policy": "derived_cache_only_no_admission_authority",
+  "resource_kinds": ["concurrency", "fp_slot", "rpm"],
+  "error_kind_policy": "open_with_frozen_dispatch_subset"
+}

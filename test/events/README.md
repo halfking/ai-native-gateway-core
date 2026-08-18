@@ -15,9 +15,15 @@ test/events/
 │   ├── request_completed_v1_stale.json              # 负例：旧版本
 │   ├── request_completed_v1_tamper.json             # 负例：签名篡改
 │   ├── request_completed_v1_tenant_mismatch.json    # 负例：tenant 不一致
-│   └── request_completed_v1_forbidden_fields.json   # 负例：禁止字段
+│   ├── request_completed_v1_forbidden_fields.json   # 负例：禁止字段
+│   ├── session_identity_v1_valid.json               # T0 五元身份与 attempt 语义
+│   ├── restart_semantics_v1_valid.json              # T0 四类重启语义
+│   └── vocabulary_v1_valid.json                     # T0 lifecycle/event/action/error/resource 词表
 └── contract/                          # 契约测试
-    └── request_completed_test.go      # request.completed.v1 测试套件
+    ├── request_completed_test.go      # request.completed.v1 测试套件
+    ├── session_identity_test.go       # T0 identity fixture 校验
+    ├── restart_semantics_test.go      # T0 restart fixture 校验
+    └── vocabulary_test.go             # T0 vocabulary fixture 校验
 ```
 
 ## 当前状态
