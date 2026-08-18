@@ -109,6 +109,10 @@ func TestParseNodeKeyCanonicalRejectsMalformedKeys(t *testing.T) {
 		"missing k2 marker":       "ursm:v2:node:k3:dGVuYW50LWE:7:Z3B0LTQ",
 		"window key against node": "ursm:v2:win:k2:1m:dGVuYW50LWE:7:Z3B0LTQ",
 		"unparseable legacy":      "ursm:v2:node:xx:not-a-number",
+		// This is valid under the permissive legacy parser (tenant k2,
+		// credential 1234, raw 07:YQ), but the reserved k2 namespace must
+		// fail closed when its canonical credential is non-canonical.
+		"malformed reserved k2 fallback": "ursm:v2:node:k2:1234:07:YQ",
 	}
 	for reason, key := range rejected {
 		if parsed, schema, ok := ParseNodeKeyCanonical(prefix, key); ok {
@@ -157,9 +161,28 @@ func TestParseNodeKeyCanonicalReportsSchemaSource(t *testing.T) {
 
 func TestCanonicalWindowKeyGoldenBucketsAndRoundTrip(t *testing.T) {
 	const prefix = "ursm:v2:"
-	got := WindowKeyCanonical(prefix, "tenant-a", 7, "gpt-4", "5m")
-	if want := "ursm:v2:win:k2:5m:dGVuYW50LWE:7:Z3B0LTQ"; got != want {
-		t.Fatalf("canonical window key = %q, want %q", got, want)
+	// The frozen legacy collision pair: both tuples collapse onto one
+	// legacy window key under the same credential/raw/bucket.
+	if WindowKeyForTenant(prefix, "a", 7, "b:8:c", "1m") != WindowKeyForTenant(prefix, "a:7:b", 8, "c", "1m") {
+		t.Fatal("frozen window collision pair must collide in legacy")
+	}
+	first := WindowKeyCanonical(prefix, "a", 7, "b:8:c", "1m")
+	second := WindowKeyCanonical(prefix, "a:7:b", 8, "c", "1m")
+	if first == second {
+		t.Fatal("frozen window collision pair must not collide in k2")
+	}
+	for key, want := range map[string]ParsedWindowKey{
+		first:  {Bucket: "1m", TenantID: "a", CredentialID: 7, RawModel: "b:8:c"},
+		second: {Bucket: "1m", TenantID: "a:7:b", CredentialID: 8, RawModel: "c"},
+	} {
+		parsed, ok := ParseWindowKeyCanonical(prefix, key)
+		if !ok || parsed != want {
+			t.Fatalf("window collision round-trip = %+v ok=%v want=%+v", parsed, ok, want)
+		}
+	}
+
+	if got := WindowKeyCanonical(prefix, "tenant-a", 7, "gpt-4", "5m"); got != "ursm:v2:win:k2:5m:dGVuYW50LWE:7:Z3B0LTQ" {
+		t.Fatalf("canonical window key = %q, want %q", got, "ursm:v2:win:k2:5m:dGVuYW50LWE:7:Z3B0LTQ")
 	}
 	keys := make(map[string]string, 3)
 	for _, bucket := range []string{"1m", "5m", "30m"} {
@@ -216,6 +239,112 @@ func TestCanonicalIndexKeyGoldenCollisionAndRoundTrip(t *testing.T) {
 	}
 	if _, ok := ParseCandidateIndexKeyCanonical(prefix, "ursm:v2:idx:model:k2:dGVuYW50LWE:bW9kZWwtYQ:Y2hhdA"); ok {
 		t.Fatal("missing segment must not parse")
+	}
+}
+
+// Deterministic corpus of delimiter-heavy, numeric, Unicode, leading/
+// trailing colon and repeated colon cases that the parser must classify
+// exactly (doc 14 §7, doc 16 slice 5). The property test above adds a
+// probabilistic check; this table freezes the edge cases it cannot prove.
+func TestCanonicalDeterministicDelimiterCorpusRoundTrip(t *testing.T) {
+	const prefix = "ursm:v2:"
+	for _, raw := range []string{
+		"",
+		":",
+		"::",
+		"a:",
+		":a",
+		":a:",
+		"a::b",
+		"租户-α",
+		"gpt-4.1-turbo",
+		"with:colon",
+		"trailing:",
+		":leading",
+		"::leading",
+		"trailing::",
+		"model with space",
+	} {
+		tenant := "t-" + raw
+		node := NodeKeyCanonical(prefix, tenant, 7, raw)
+		parsed, schema, ok := ParseNodeKeyCanonical(prefix, node)
+		if raw == "" {
+			if ok {
+				t.Fatalf("empty raw must not round-trip, got %+v schema=%v", parsed, schema)
+			}
+			continue
+		}
+		if !ok || schema != SchemaK2 || parsed.TenantID != tenant || parsed.CredentialID != 7 || parsed.RawModel != raw {
+			t.Fatalf("raw=%q node round-trip = %+v schema=%v ok=%v", raw, parsed, schema, ok)
+		}
+		parsedW, okW := ParseWindowKeyCanonical(prefix, WindowKeyCanonical(prefix, tenant, 7, raw, "5m"))
+		if !okW || parsedW.TenantID != tenant || parsedW.CredentialID != 7 || parsedW.RawModel != raw || parsedW.Bucket != "5m" {
+			t.Fatalf("raw=%q window round-trip = %+v ok=%v", raw, parsedW, okW)
+		}
+		parsedI, okI := ParseCandidateIndexKeyCanonical(prefix, CandidateIndexKeyCanonical(prefix, tenant, raw, "chat", "text"))
+		if !okI || parsedI.TenantID != tenant || parsedI.CanonicalModel != raw || parsedI.Profile != "chat" || parsedI.Modality != "text" {
+			t.Fatalf("raw=%q index round-trip = %+v ok=%v", raw, parsedI, okI)
+		}
+	}
+}
+
+// Every parser must reject the same strictness cases the node parser
+// rejects. Doc 14 §2 / doc 16 slice 4 require exact segment count,
+// canonical base64url segments, positive decimal credential and frozen
+// bucket whitelist.
+func TestCanonicalWindowAndIndexParsersRejectStrictnessViolations(t *testing.T) {
+	const prefix = "ursm:v2:"
+	rejected := []string{
+		// Empty tenant / model segments
+		"ursm:v2:win:k2:5m::7:Z3B0LTQ",
+		"ursm:v2:win:k2:5m:dGVuYW50LWE:7:",
+		// Invalid base64url alphabet
+		"ursm:v2:win:k2:5m:a+b:7:Z3B0LTQ",
+		"ursm:v2:win:k2:5m:a/b:7:Z3B0LTQ",
+		// Padded segment
+		"ursm:v2:win:k2:5m:YQ=:7:Z3B0LTQ",
+		// Non-canonical trailing bits
+		"ursm:v2:win:k2:5m:QR:7:Z3B0LTQ",
+		// Credential variants (must be a positive decimal)
+		"ursm:v2:win:k2:5m:dGVuYW50LWE:0:Z3B0LTQ",
+		"ursm:v2:win:k2:5m:dGVuYW50LWE:-7:Z3B0LTQ",
+		"ursm:v2:win:k2:5m:dGVuYW50LWE:07:Z3B0LTQ",
+		"ursm:v2:win:k2:5m:dGVuYW50LWE:+7:Z3B0LTQ",
+		"ursm:v2:win:k2:5m:dGVuYW50LWE:7x:Z3B0LTQ",
+		// Missing/extra segments
+		"ursm:v2:win:k2:5m:dGVuYW50LWE:7",
+		"ursm:v2:win:k2:5m:dGVuYW50LWE:7:Z3B0LTQ:YQ",
+		// Unknown bucket
+		"ursm:v2:win:k2:2m:dGVuYW50LWE:7:Z3B0LTQ",
+		// Wrong prefix / marker
+		"other:win:k2:5m:dGVuYW50LWE:7:Z3B0LTQ",
+		"ursm:v2:win:k3:5m:dGVuYW50LWE:7:Z3B0LTQ",
+		// Node keys fed to the window parser
+		"ursm:v2:node:k2:dGVuYW50LWE:7:Z3B0LTQ",
+	}
+	for _, key := range rejected {
+		if _, ok := ParseWindowKeyCanonical(prefix, key); ok {
+			t.Fatalf("window parser must reject %q", key)
+		}
+	}
+	indexRejected := []string{
+		"ursm:v2:idx:model:k2::bW9kZWwtYQ:Y2hhdA:dGV4dA",
+		"ursm:v2:idx:model:k2:dGVuYW50LWE::Y2hhdA:dGV4dA",
+		"ursm:v2:idx:model:k2:dGVuYW50LWE:bW9kZWwtYQ::dGV4dA",
+		"ursm:v2:idx:model:k2:dGVuYW50LWE:bW9kZWwtYQ:Y2hhdA:",
+		"ursm:v2:idx:model:k2:a+b:bW9kZWwtYQ:Y2hhdA:dGV4dA",
+		"ursm:v2:idx:model:k2:YQ=:bW9kZWwtYQ:Y2hhdA:dGV4dA",
+		"ursm:v2:idx:model:k2:QR:bW9kZWwtYQ:Y2hhdA:dGV4dA",
+		"ursm:v2:idx:model:k2:dGVuYW50LWE:bW9kZWwtYQ:Y2hhdA:dGV4dA:extra",
+		"ursm:v2:idx:model:k2:dGVuYW50LWE:bW9kZWwtYQ:Y2hhdA",
+		"other:idx:model:k2:dGVuYW50LWE:bW9kZWwtYQ:Y2hhdA:dGV4dA",
+		"ursm:v2:idx:model:k3:dGVuYW50LWE:bW9kZWwtYQ:Y2hhdA:dGV4dA",
+		"ursm:v2:node:k2:dGVuYW50LWE:7:Z3B0LTQ",
+	}
+	for _, key := range indexRejected {
+		if _, ok := ParseCandidateIndexKeyCanonical(prefix, key); ok {
+			t.Fatalf("index parser must reject %q", key)
+		}
 	}
 }
 
