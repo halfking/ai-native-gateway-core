@@ -35,7 +35,7 @@ func ParseKeySchemaMode(s string) (KeySchemaMode, error) {
 	case "canonical":
 		return KeySchemaModeCanonical, nil
 	}
-	return KeySchemaModeLegacy, fmt.Errorf("ursm.v2.store: unknown key schema mode %q (frozen set: legacy/dual/canonical)", s)
+	return KeySchemaModeLegacy, fmt.Errorf("ursm.v2: unknown key schema mode %q (frozen set: legacy/dual/canonical)", s)
 }
 
 func (m KeySchemaMode) String() string {

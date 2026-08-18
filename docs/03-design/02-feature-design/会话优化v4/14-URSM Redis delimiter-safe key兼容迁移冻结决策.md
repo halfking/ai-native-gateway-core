@@ -175,3 +175,5 @@ URSM owner 保留：`domains/ursm/v2/manager.go`、`probe.go`、`admin.go`、`ca
 3. `cache/migrate_fpslots.go` 硬编码的 `ursm:v2:node:%d:%s` 改为委托 `store.NodeKeyForTenant`（消除第二套 node-key 构造器）。
 
 另：`keys.go` 中零调用的 `BindingKey`、`CredentialKey`、`ProviderKey` 标注 deprecated、不删除，避免整文件移交带走无关契约。
+
+同批字节等价收敛（URSM owner 保留文件，仅 key 构造委托，输出字节逐一不变）：`index/index.go` 的内联 `idx:model:` 格式串改为委托 `store.CandidateIndexKey`，使该冻结 grammar 只有一个构造器（消除与 `store/keys.go` 的双实现分叉）。
