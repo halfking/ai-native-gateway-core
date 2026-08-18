@@ -537,6 +537,32 @@ func (e *Executor) executeOpenAI(
 			}
 
 			reqStart := time.Now()
+			// 2026-08-18 (B1-PR3): log the actual upstream HTTP call so we
+			// can see exactly when the request was sent, the upstream URL,
+			// and the timeout applied. Without this, the 5-10s gaps between
+			// routing_resolve and the first upstream call (during which the
+			// opencode client can time out) are invisible in the audit log.
+			dl, hasDeadline := upCtx.Deadline()
+			slog.Info("upstream_call_starting",
+				"request_id", params.RequestID,
+				"attempt", attempt,
+				"upstream_url", req.URL.String(),
+				"upstream_method", req.Method,
+				"body_bytes", len(bodyBytes),
+				"is_stream", params.IsStream,
+				"timeout_remaining_ms", func() int64 {
+					if hasDeadline {
+						return time.Until(dl).Milliseconds()
+					}
+					return -1
+				}(),
+				"rctx_err", func() error {
+					if params.R.Context() != nil {
+						return params.R.Context().Err()
+					}
+					return nil
+				}(),
+			)
 			var resp *http.Response
 			var uErr *upstreampkg.Error
 			if e.Upstream != nil {
