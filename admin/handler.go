@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -27,7 +28,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit"    //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/stats"
 	"github.com/kaixuan/llm-gateway-go/domains/stats/boardcache"
-	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2"
+	v2 "github.com/kaixuan/llm-gateway-go/domains/ursm/v2"
 	"github.com/kaixuan/llm-gateway-go/internal/summarystore" //nolint:depguard // 2026-08-06 auto summary persistence
 	"github.com/kaixuan/llm-gateway-go/pending"
 	"github.com/kaixuan/llm-gateway-go/secret"
@@ -465,15 +466,35 @@ func (h *Handler) SetSessionCleanupWorker(c *session.CleanupWorker) {
 // encryptCred encrypts a plaintext credential using AES-256-GCM (if keyring is
 // configured) or Fernet-CBC legacy (backward-compat fallback).
 // Returns the envelope string ready to store in key_ciphertext.
+//
+// 2026-08-18 (incident 154): a round-trip self-check is now performed before
+// returning. The 154 production failure was caused by raw Fernet bytes being
+// stored without base64-encode, leaving the column unreadable by DecryptAny.
+// The self-check catches any future drift in the Encrypt path — if a caller
+// returns an envelope that cannot be re-decrypted by the active keyring/fernet
+// key, we refuse to hand it back, so the bad value never reaches the DB.
 func (h *Handler) encryptCred(plaintext []byte) (string, error) {
+	var envelope string
 	if h.keyring != nil {
-		return secret.EncryptAESGCM(plaintext, h.keyring)
+		out, err := secret.EncryptAESGCM(plaintext, h.keyring)
+		if err != nil {
+			return "", err
+		}
+		envelope = out
+	} else {
+		enc, err := encryptFernet(plaintext, h.encKey)
+		if err != nil {
+			return "", err
+		}
+		envelope = string(enc)
 	}
-	enc, err := encryptFernet(plaintext, h.encKey)
-	if err != nil {
-		return "", err
+	// round-trip: ensure decryptCred can read back exactly the plaintext we
+	// just encrypted. If it fails, fail closed so callers never persist a
+	// ciphertext the gateway can't later decrypt.
+	if _, _, derr := h.decryptCred(envelope); derr != nil {
+		return "", fmt.Errorf("encryptCred round-trip failed: %w", derr)
 	}
-	return string(enc), nil
+	return envelope, nil
 }
 
 // decryptCred decrypts a credential stored as either a v1 AES-GCM envelope or
