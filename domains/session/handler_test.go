@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/kaixuan/llm-gateway-go/domains/authentication"
 )
 
 type stubVerifier struct {
@@ -117,12 +119,16 @@ func TestHandler_authenticate_MissingKey(t *testing.T) {
 	}
 }
 
+// TestHandler_authenticate_InvalidKey 测试生产路径的 InvalidKeyError 行为。
+// 2026-08-19 修正: 使用跨包 authentication.InvalidKeyError (生产场景),
+// 不是本地 session.InvalidKeyError (后者与 verifier 实际返回的类型不匹配,
+// 触发 NEW  403 历史 bug)。
 func TestHandler_authenticate_InvalidKey(t *testing.T) {
 	h := NewHandler(nil)
 	h.SetAuth(&stubVerifier{
 		enabled: true,
 		verify: func(ctx context.Context, rawKey string) (KeyInfo, error) {
-			return KeyInfo{}, &InvalidKeyError{Message: "bad"}
+			return KeyInfo{}, &authentication.InvalidKeyError{Message: "bad"}
 		},
 	})
 	r, _ := http.NewRequest("GET", "/", nil)
@@ -134,6 +140,40 @@ func TestHandler_authenticate_InvalidKey(t *testing.T) {
 	}
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401", w.Code)
+	}
+}
+
+// TestHandler_authenticate_InvalidKey_CrossPackage 回归测试: 模拟真实生产
+// 路径 (sessionAuthAdapter 包装 authentication.KeyVerifier,返回跨包类型
+// authentication.InvalidKeyError)。2026-08-19 fix: handler 必须断言
+// authentication.InvalidKeyError 而不是 session.InvalidKeyError — 同名不同包
+// 类型断言永不匹配,会导致所有 bearer 错误路径返回 503。
+func TestHandler_authenticate_InvalidKey_CrossPackage(t *testing.T) {
+	h := NewHandler(nil)
+	h.SetAuth(&stubVerifier{
+		enabled: true,
+		verify: func(ctx context.Context, rawKey string) (KeyInfo, error) {
+			// 模拟真实 production: verifier 返回跨包 authentication.InvalidKeyError
+			return KeyInfo{}, &authentication.InvalidKeyError{Message: "bad"}
+		},
+	})
+	r, _ := http.NewRequest("GET", "/", nil)
+	r.Header.Set("Authorization", "Bearer sk-x")
+	w := httptest.NewRecorder()
+	_, ok := h.authenticate(w, r)
+	if ok {
+		t.Fatal("invalid key should be rejected")
+	}
+	// 关键断言: 跨包 InvalidKeyError 必须被识别为 401 INVALID_KEY,不是 503
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 INVALID_KEY (not 503 AUTH_UNAVAILABLE) — handler.go:122 cross-package type assertion regression", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "INVALID_KEY") {
+		t.Fatalf("body = %q, want code=INVALID_KEY", body)
+	}
+	if strings.Contains(body, "AUTH_UNAVAILABLE") {
+		t.Fatalf("body = %q, leaked AUTH_UNAVAILABLE on InvalidKeyError path", body)
 	}
 }
 

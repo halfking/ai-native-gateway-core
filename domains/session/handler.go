@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/domains/authentication"
 )
 
 // KeyVerifier 是 Handler 用来验证 API key 的抽象。
@@ -22,7 +24,9 @@ type KeyInfo struct {
 	TenantID string
 }
 
-// InvalidKeyError 表示"key 无效/过期"错误。
+// InvalidKeyError 表示"key 无效/过期"错误 (session package 本地副本,
+// 保留供 handler_test.go 测试桩使用)。生产路径上,handler 必须断言
+// authentication.InvalidKeyError (跨包类型) — 见 handler.go line 122。
 type InvalidKeyError struct {
 	Message string
 }
@@ -117,7 +121,10 @@ func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request) (context.
 	}
 	ki, err := h.keyVerifier.Verify(r.Context(), rawKey)
 	if err != nil {
-		if _, ok := err.(*InvalidKeyError); ok {
+		// 2026-08-19 fix: 必须断言 authentication.InvalidKeyError (跨包类型) —
+		// session 本地的 InvalidKeyError 与 verifier 返回的类型同名不同包,
+		// 类型断言永不匹配,导致 /v1/sessions 所有 bearer 错误都回退到 503。
+		if _, ok := err.(*authentication.InvalidKeyError); ok {
 			writeErrorJSON(w, http.StatusUnauthorized, "", "Invalid or expired API key", "authentication_error", "INVALID_KEY")
 		} else {
 			writeErrorJSON(w, http.StatusServiceUnavailable, "", "Authentication service temporarily unavailable", "server_error", "AUTH_UNAVAILABLE")
