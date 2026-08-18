@@ -100,6 +100,42 @@ func k2ValidateBucket(bucket string) error {
 	return fmt.Errorf("ursm.v2: k2 window bucket %q is not one of the frozen 1m/5m/30m", bucket)
 }
 
+// K2KeySet mirrors NodeKeySet for the canonical grammar: the k2 node hash
+// and the three k2 window ZSET keys for one logical tuple.
+type K2KeySet struct {
+	Node   string
+	Win1m  string
+	Win5m  string
+	Win30m string
+}
+
+// K2KeySetForTenant derives the canonical key set for a tuple already
+// expressed as a legacy NodeKeySet. Tuples the canonical grammar cannot
+// represent (empty tenant) return an error; callers fall back to the
+// legacy set for those (doc 14 §2).
+func K2KeySetForTenant(prefix, tenant string, cid int, raw string) (K2KeySet, error) {
+	if err := k2ValidateNodeTuple(tenant, cid, raw); err != nil {
+		return K2KeySet{}, err
+	}
+	node, err := K2NodeKeyForTenant(prefix, tenant, cid, raw)
+	if err != nil {
+		return K2KeySet{}, err
+	}
+	w1, err := K2WindowKeyForTenant(prefix, tenant, cid, raw, "1m")
+	if err != nil {
+		return K2KeySet{}, err
+	}
+	w5, err := K2WindowKeyForTenant(prefix, tenant, cid, raw, "5m")
+	if err != nil {
+		return K2KeySet{}, err
+	}
+	w30, err := K2WindowKeyForTenant(prefix, tenant, cid, raw, "30m")
+	if err != nil {
+		return K2KeySet{}, err
+	}
+	return K2KeySet{Node: node, Win1m: w1, Win5m: w5, Win30m: w30}, nil
+}
+
 // ParsedNodeKeyWithSchema is a node key tuple plus the grammar that
 // produced it. persist, recovery and coverage code must consume the
 // schema origin explicitly instead of treating any successful parse as

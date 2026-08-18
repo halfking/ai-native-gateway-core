@@ -1018,11 +1018,7 @@ func (m *Manager) RecordRequest(ctx context.Context, ev api.RequestOutcome) erro
 	if ev.Terminal && dedupKey != "" {
 		dedupKey += ":terminal"
 	}
-	if _, err := m.store.RecordRequest(rctx,
-		keys.Node,
-		keys.Win1m,
-		keys.Win5m,
-		keys.Win30m,
+	if _, err := m.store.RecordRequestKeySet(rctx, keys,
 		store.RecordOutcome{
 			Success:      ev.Success,
 			ErrorKind:    ev.ErrorKind,

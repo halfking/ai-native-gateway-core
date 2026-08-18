@@ -75,6 +75,17 @@ func TestCanonicalKeysRejectEmptyAndInvalidInputs(t *testing.T) {
 	}
 }
 
+// TestNodeKeySetForTenantRetainsTuple: the key set keeps the tuple it was
+// built from so dual/canonical store paths can derive the k2 set without
+// re-parsing legacy keys — a delimiter-bearing tuple cannot survive that
+// round-trip, and the write path always starts from the true tuple.
+func TestNodeKeySetForTenantRetainsTuple(t *testing.T) {
+	set := NodeKeySetForTenant("p:", "a:7:b", 8, "c")
+	if set.TenantID != "a:7:b" || set.CredentialID != 8 || set.RawModel != "c" {
+		t.Fatalf("tuple = (%q,%d,%q), want (a:7:b,8,c)", set.TenantID, set.CredentialID, set.RawModel)
+	}
+}
+
 func TestParseNodeKeyAnyRoundTripAndSchemaOrigin(t *testing.T) {
 	// k2 round-trip: a constructed canonical key parses back to the exact
 	// tuple and reports the k2 schema origin.

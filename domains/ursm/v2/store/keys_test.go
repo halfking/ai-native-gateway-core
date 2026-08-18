@@ -58,10 +58,15 @@ func TestNodeKeySetForTenantMatchesIndividualConstructors(t *testing.T) {
 	for _, tc := range cases {
 		set := NodeKeySetForTenant("ursm:v2:", tc.tenant, tc.cid, tc.raw)
 		want := NodeKeySet{
+			Prefix: "ursm:v2:",
 			Node:   NodeKeyForTenant("ursm:v2:", tc.tenant, tc.cid, tc.raw),
 			Win1m:  WindowKeyForTenant("ursm:v2:", tc.tenant, tc.cid, tc.raw, "1m"),
 			Win5m:  WindowKeyForTenant("ursm:v2:", tc.tenant, tc.cid, tc.raw, "5m"),
 			Win30m: WindowKeyForTenant("ursm:v2:", tc.tenant, tc.cid, tc.raw, "30m"),
+
+			TenantID:     tc.tenant,
+			CredentialID: tc.cid,
+			RawModel:     tc.raw,
 		}
 		if set != want {
 			t.Fatalf("%s: key set = %+v, want %+v", tc.name, set, want)
