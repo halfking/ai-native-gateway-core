@@ -113,7 +113,16 @@ func Apply(ctx context.Context, opts Options) (Result, error) {
 		pipe := opts.Redis.Pipeline()
 		for _, node := range toWrite[start:end] {
 			pipe.HSet(ctx, node.Key, node.Fields)
-			pipe.Expire(ctx, node.Key, 90*time.Minute)
+			// 2026-08-18 (glm-5.2 outage on 154): bootstrap-seeded nodes used
+			// to expire after 90 minutes while the next evidence writer (node
+			// probe backoff cap 6h, healthy re-probe 1h) could legally not run
+			// until hours later — and on a zero-traffic gateway nothing else
+			// refreshed the key. The T4 read contract treats the expired key
+			// as Available=false, so every glm-5.2 provider went "unavailable"
+			// ~90 minutes after each restart. 7h mirrors v2.probeWriteTTLFloor
+			// (unexported in the parent package) so bootstrap evidence always
+			// outlives the retry ladder.
+			pipe.Expire(ctx, node.Key, 7*time.Hour)
 		}
 		if _, err := pipe.Exec(ctx); err != nil {
 			return Result{}, fmt.Errorf("write URSM v2 nodes: %w", err)

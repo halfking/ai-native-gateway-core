@@ -199,6 +199,45 @@ func (r *Router) PlanCandidatesWithContext(
 	canonical string,
 	requestID string,
 ) (result []provider.Candidate) {
+	return r.planCandidates(requestCtx, candidates, stickyCredentialID, nil, policy, egressPreference, tenantID, canonical, requestID)
+}
+
+// PlanCandidatesPinned is the probe-pin-aware variant used by the executor
+// when params.PinCredentialID is set (trusted self-check / node-probe callers
+// only; OriginMiddleware strips the header for everyone else). probePin
+// bypasses the URSM v2 / state-backend runtime availability filters for that
+// one credential — the whole point of a probe is to test a node the router
+// currently distrusts, so filtering it out deadlocks recovery: the pinned
+// gateway round can never succeed while the node is marked unavailable, so
+// the probe verdict can never flip the node back to available (glm-5.2
+// all-provider lockout on 154, 2026-08-18). DB-level business gates
+// (lifecycle/status/manual disable) still apply — those are admin decisions,
+// not runtime health evidence.
+func (r *Router) PlanCandidatesPinned(
+	requestCtx context.Context,
+	candidates []provider.Candidate,
+	stickyCredentialID *int,
+	probePin *int,
+	policy *provider.Policy,
+	egressPreference []string,
+	tenantID string,
+	canonical string,
+	requestID string,
+) (result []provider.Candidate) {
+	return r.planCandidates(requestCtx, candidates, stickyCredentialID, probePin, policy, egressPreference, tenantID, canonical, requestID)
+}
+
+func (r *Router) planCandidates(
+	requestCtx context.Context,
+	candidates []provider.Candidate,
+	stickyCredentialID *int,
+	probePin *int,
+	policy *provider.Policy,
+	egressPreference []string,
+	tenantID string,
+	canonical string,
+	requestID string,
+) (result []provider.Candidate) {
 	if requestCtx == nil {
 		requestCtx = context.Background()
 	}
@@ -297,7 +336,8 @@ func (r *Router) PlanCandidatesWithContext(
 		}
 		filtered := make([]provider.Candidate, 0, len(candidates))
 		for i, c := range candidates {
-			if allow[seedLookupKey(seeds[i].ProviderID, c.CredentialID, c.RawModel)] {
+			if allow[seedLookupKey(seeds[i].ProviderID, c.CredentialID, c.RawModel)] ||
+				(probePin != nil && c.CredentialID == *probePin) {
 				filtered = append(filtered, c)
 			}
 		}
@@ -323,6 +363,14 @@ func (r *Router) PlanCandidatesWithContext(
 	defer cancel()
 	stateBackend := selectStateBackendWithReady(r.URSMv2, r.StateManager, ctx, readySnapshot)
 	available := stateBackend.FilterAvailable(ctx, candidates)
+
+	// Probe-pin rescue: a pinned self-check probe must survive runtime
+	// availability filtering (see PlanCandidatesPinned). Rescue from the
+	// pre-filter candidate list so the len(available)==0 early return below
+	// cannot starve the probe of its only candidate.
+	if probePin != nil {
+		available = rescuePinnedCandidate(candidates, available, *probePin)
+	}
 
 	// 2026-07-25 Phase 2.4: 标记 Feature flag 状态（供外部观察）
 	SetPressureAwareRoutingEnabled(r.PressureAwareEnabled)
@@ -401,6 +449,9 @@ func (r *Router) PlanCandidatesWithContext(
 	// URSM v2 authoritative 已包含冷却期和健康状态判断，无需重复过滤。
 	if !stateBackend.IsAuthoritative() {
 		available = r.filterHealthyNodes(available)
+		if probePin != nil {
+			available = rescuePinnedCandidate(candidates, available, *probePin)
+		}
 	}
 
 	// Round 1: token_plan / code_plan / agent_plan / free — always before PAYG.
@@ -1116,6 +1167,28 @@ func removeCandidate(pool []provider.Candidate, target provider.Candidate) []pro
 		}
 	}
 	return pool
+}
+
+// rescuePinnedCandidate guarantees the probe-pinned credential survives a
+// runtime availability filter. If the pin is already present in filtered the
+// slice returns unchanged; otherwise the pinned candidate is appended (from
+// pre, the pre-filter list) so a self-check probe can still reach the node it
+// is explicitly testing. DB-level gates already ran before `pre` was built,
+// so business-disabled credentials are NOT resurrected here.
+func rescuePinnedCandidate(pre, filtered []provider.Candidate, pinID int) []provider.Candidate {
+	for _, c := range filtered {
+		if c.CredentialID == pinID {
+			return filtered
+		}
+	}
+	for _, c := range pre {
+		if c.CredentialID == pinID {
+			out := make([]provider.Candidate, 0, len(filtered)+1)
+			out = append(out, filtered...)
+			return append(out, c)
+		}
+	}
+	return filtered
 }
 
 func prioritizeSticky(ordered []provider.Candidate, stickyID int) []provider.Candidate {

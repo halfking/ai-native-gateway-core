@@ -77,6 +77,15 @@ const (
 
 	// 30s is a safety-net scan; Submit also wakes the worker immediately.
 	nodeProbeTickInterval = 30 * time.Second
+	// nodeProbeQueuePumpInterval paces the unified-queue pump that feeds due
+	// node_probe_state rows into credential_probe_queue (legacy picker is
+	// parked in that mode; without the pump the rows starve the queue).
+	nodeProbeQueuePumpInterval = 30 * time.Second
+	// nodeProbeQueuePumpBatch caps how many due rows one pump tick enqueues.
+	nodeProbeQueuePumpBatch = 20
+	// nodeProbeQueuePumpHoldoff advances a pumped row's next_retry_at so the
+	// same row is not re-enqueued on every tick while the queue drains it.
+	nodeProbeQueuePumpHoldoff = 10 * time.Minute
 	// A bounded batch keeps a large outage from monopolizing the worker.
 	nodeProbeBatchSize = 8
 
@@ -430,8 +439,24 @@ func (w *NodeProbeWorker) loop(ctx context.Context) {
 	// ProbeSync (synchronous request-path probe) does not use this loop.
 	if w.UseProbeQueue() {
 		slog.Info("node_probe_worker: unified-queue mode, legacy picker disabled")
-		<-ctx.Done()
-		return
+		// 2026-08-18 fix (glm-5.2 outage): with the picker parked, NOTHING fed
+		// the 569 due node_probe_state rows into the queue — the rows sat
+		// "ready" on dashboards forever while the durable queue starved
+		// (no traffic → no request_failure submissions). Pump due rows into
+		// the queue on a slow tick; dedup keys make double-enqueue a no-op.
+		pumpTicker := time.NewTicker(nodeProbeQueuePumpInterval)
+		defer pumpTicker.Stop()
+		w.pumpDueStatesToQueue(ctx)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-w.stopCh:
+				return
+			case <-pumpTicker.C:
+				w.pumpDueStatesToQueue(ctx)
+			}
+		}
 	}
 	ticker := time.NewTicker(nodeProbeTickInterval)
 	defer ticker.Stop()
@@ -587,6 +612,14 @@ func (w *NodeProbeWorker) Submit(credID int, model, tenantID, parentReqID string
 // task into credential_probe_queue; the ProbeQueueWorker + ProbeService execute
 // it. Best-effort on DB error (matches the legacy path which ignores UPSERT err).
 func (w *NodeProbeWorker) submitViaQueue(credID int, model, tenantID, parentReqID string) {
+	w.submitViaQueueSource(credID, model, tenantID, parentReqID, "request_failure")
+}
+
+// submitViaQueueSource is the source-parameterized enqueue used by Submit
+// ("request_failure") and the scheduled pump ("periodic"). The source feeds
+// the 自检 stream's origin badge and must stay inside the
+// credential_probe_queue.source CHECK constraint.
+func (w *NodeProbeWorker) submitViaQueueSource(credID int, model, tenantID, parentReqID, source string) {
 	if w.probeQueue == nil {
 		return
 	}
@@ -594,6 +627,9 @@ func (w *NodeProbeWorker) submitViaQueue(credID int, model, tenantID, parentReqI
 	defer cancel()
 	if tenantID == "" {
 		tenantID = "default"
+	}
+	if source == "" {
+		source = "request_failure"
 	}
 	task := ProbeQueueTask{
 		CredentialID: int64(credID),
@@ -605,7 +641,7 @@ func (w *NodeProbeWorker) submitViaQueue(credID int, model, tenantID, parentReqI
 		Priority:    FeaturedQueuePriority(model, 60),
 		MaxAttempts: nodeProbeMaxAttempts,
 		NextRunAt:   time.Now().Add(5 * time.Second),
-		Source:      "request_failure",
+		Source:      source,
 		ParentReqID: parentReqID,
 		DedupKey:    buildNodeProbeTaskID(credID, model),
 	}
@@ -618,6 +654,74 @@ func (w *NodeProbeWorker) submitViaQueue(credID int, model, tenantID, parentReqI
 	}
 	// publishProbeTask (called inside Enqueue) emits the pending tile using
 	// task.Command as TaskType, so it shows as node_probe on the 自检 stream.
+}
+
+// pumpDueStatesToQueue feeds due node_probe_state rows into the unified
+// credential_probe_queue. In unified-queue mode the legacy picker loop is
+// parked, so these rows (written by failures, watchdogs, and the hourly
+// healthy-mark reconciler) had no consumer at all — the dashboards kept
+// counting them as "ready probes" while zero probes executed (2026-08-18
+// glm-5.2 incident: 569 ready / 0 probing, oldest due since 2026-06-19).
+// Pumping keeps node_probe_state as the scheduling surface and the queue as
+// the execution surface. Enqueue dedup (buildNodeProbeTaskID) makes repeat
+// pumps a no-op; the holdoff UPDATE stops a tight re-pump loop.
+func (w *NodeProbeWorker) pumpDueStatesToQueue(ctx context.Context) {
+	if w == nil || w.db == nil || w.probeQueue == nil {
+		return
+	}
+	qCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	rows, err := w.db.Query(qCtx, `
+		SELECT nps.credential_id, nps.raw_model_name, COALESCE(c.tenant_id, 'default')
+		FROM node_probe_state nps
+		JOIN credentials c ON c.id = nps.credential_id
+		WHERE nps.paused = FALSE AND nps.next_retry_at <= now()
+		ORDER BY nps.next_retry_at
+		LIMIT $1`, nodeProbeQueuePumpBatch)
+	if err != nil {
+		slog.Warn("node_probe_worker: pump due states query failed", "error", err)
+		return
+	}
+	type dueRow struct {
+		credID int
+		model  string
+		tenant string
+	}
+	var due []dueRow
+	for rows.Next() {
+		var r dueRow
+		if err := rows.Scan(&r.credID, &r.model, &r.tenant); err != nil {
+			rows.Close()
+			slog.Warn("node_probe_worker: pump due states scan failed", "error", err)
+			return
+		}
+		due = append(due, r)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		slog.Warn("node_probe_worker: pump due states iterate failed", "error", err)
+		return
+	}
+	for _, r := range due {
+		// 'periodic' (not 'request_failure'): these are scheduled re-probes,
+		// and the CHECK constraint on credential_probe_queue.source rejects
+		// anything outside its enum anyway.
+		w.submitViaQueueSource(r.credID, r.model, r.tenant, "", "periodic")
+		// Advance the row so the next tick doesn't re-pump it before the
+		// queue has a chance to execute/claim it. Real outcomes (success
+		// reset / failure backoff) overwrite this via mirrorNodeProbeState.
+		if _, err := w.db.Exec(qCtx, `
+			UPDATE node_probe_state
+			SET next_retry_at = now() + $3, updated_at = now()
+			WHERE credential_id = $1 AND raw_model_name = $2 AND next_retry_at <= now()`,
+			r.credID, r.model, nodeProbeQueuePumpHoldoff); err != nil {
+			slog.Warn("node_probe_worker: pump holdoff update failed",
+				"credential_id", r.credID, "model", r.model, "error", err)
+		}
+	}
+	if len(due) > 0 {
+		slog.Info("node_probe_worker: pumped due states to queue", "count", len(due))
+	}
 }
 
 // publishProbeTask TaskType uses task.Command so node_probe / integrity_verify /
@@ -1819,6 +1923,37 @@ func (w *NodeProbeWorker) resolveDirectTarget(ctx context.Context, credID int, m
 		  AND p.enabled = TRUE AND p.manual_disabled = FALSE
 		LIMIT 1
 	`, credID, model).Scan(&ciphertext, &outboundModel, &baseURL, &protocol, &providerID)
+	if err != nil {
+		// 2026-08-18 fix (glm-5.2 outage): the strict gates above conflate
+		// "no binding row" (a config problem) with "credential currently
+		// status/lifecycle-disabled" (runtime state a probe exists to gather
+		// evidence about). Score automation flips lifecycle_status='disabled'
+		// on stale data; the probe then fails endpoint-build with "no rows",
+		// isMissingBindingErr short-circuits to a fake success, deletes
+		// node_probe_state and never writes URSM — the credential becomes
+		// unprobeable and unmonitorable. Retry once with only the
+		// human-intent gates (provider enabled + not manual_disabled) so
+		// direct evidence can still be collected for such credentials.
+		var looseErr error
+		looseErr = w.db.QueryRow(queryCtx, `
+			SELECT c.secret_ciphertext,
+			       COALESCE(NULLIF(pm.outbound_model_name, ''), pm.raw_model_name, ''),
+			       p.base_url, COALESCE(p.protocol, 'openai-completions'), p.id
+			FROM credentials c
+			JOIN providers p ON p.id = c.provider_id
+			JOIN credential_model_bindings cmb ON cmb.credential_id = c.id
+			JOIN provider_models pm ON pm.id = cmb.provider_model_id
+			WHERE c.id = $1 AND pm.raw_model_name = $2
+			  AND p.enabled = TRUE AND p.manual_disabled = FALSE
+			LIMIT 1
+		`, credID, model).Scan(&ciphertext, &outboundModel, &baseURL, &protocol, &providerID)
+		if looseErr == nil {
+			slog.Info("node_probe_worker: probing credential despite non-active status flags",
+				"credential_id", credID, "model", model,
+				"note", "status/lifecycle gates skipped to collect direct evidence")
+			err = nil
+		}
+	}
 	if err != nil {
 		// 2026-07-24 P0 fix: surface the missing-binding case explicitly.
 		// resolveDirectTarget requires (cred, raw_model_name) to have a

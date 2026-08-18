@@ -4783,6 +4783,75 @@ func main() {
 			if selfCheckWorker != nil {
 				selfCheckHandler.SetWorker(selfCheckWorker)
 			}
+			// 2026-08-18: under the new probe mode the legacy featured-model
+			// worker is retired, so the 自检 trigger gets a real path — fan a
+			// node_probe task out to every credential bound to the model via
+			// the durable queue (same executor as /api/admin/probe/tasks).
+			// Lifecycle-disabled credentials are included on purpose: a manual
+			// self-check is exactly how operators gather evidence to re-enable.
+			if probeQueue != nil {
+				pq, pool := probeQueue, dbConn.Pool()
+				selfCheckHandler.SetProbeEnqueue(func(ctx context.Context, model string) (int, error) {
+					if model == "" {
+						return 0, fmt.Errorf("model is required")
+					}
+					rows, err := pool.Query(ctx, `
+						SELECT DISTINCT cmb.credential_id, COALESCE(c.tenant_id, 'default')
+						FROM credential_model_bindings cmb
+						JOIN provider_models pm ON pm.id = cmb.provider_model_id
+						JOIN credentials c ON c.id = cmb.credential_id
+						JOIN providers p ON p.id = c.provider_id
+						WHERE pm.raw_model_name = $1
+						  AND COALESCE(c.status, 'active') = 'active'
+						  AND COALESCE(c.manual_disabled, FALSE) = FALSE
+						  AND COALESCE(p.enabled, TRUE) = TRUE
+						  AND COALESCE(p.manual_disabled, FALSE) = FALSE
+						LIMIT 50`, model)
+					if err != nil {
+						return 0, fmt.Errorf("list bound credentials: %w", err)
+					}
+					type boundCred struct {
+						id     int64
+						tenant string
+					}
+					var creds []boundCred
+					for rows.Next() {
+						var bc boundCred
+						if err := rows.Scan(&bc.id, &bc.tenant); err == nil {
+							creds = append(creds, bc)
+						}
+					}
+					rows.Close()
+					if err := rows.Err(); err != nil {
+						return 0, err
+					}
+					enqueued := 0
+					for _, bc := range creds {
+						credID, tenantID := bc.id, bc.tenant
+						_, inserted, err := pq.Enqueue(ctx, bg.ProbeQueueTask{
+							CredentialID: credID,
+							TenantID:     tenantID,
+							RawModel:     model,
+							Command:      "node_probe",
+							Mode:         "multi_round",
+							Priority:     80,
+							MaxAttempts:  7,
+							// CHECK constraint allows request_failure|periodic|
+							// external_async|admin|integrity_probe_planner;
+							// "selfcheck" would reject every enqueue.
+							Source:   "admin",
+							DedupKey: bg.BuildProbeDedupKey("node_probe", credID, model),
+						})
+						if err != nil {
+							return enqueued, err
+						}
+						if inserted {
+							enqueued++
+						}
+					}
+					return enqueued, nil
+				})
+			}
 			adminMw := newAdminMiddleware(dbConn.Pool(), cfg.SecretKey)
 			superAdminMw := newSuperAdminMiddleware(dbConn.Pool(), cfg.SecretKey)
 			selfCheckHandler.RegisterRoutes(mux, adminMw, superAdminMw)

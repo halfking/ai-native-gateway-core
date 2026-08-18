@@ -437,6 +437,20 @@ func (q *ProbeQueue) Claim(ctx context.Context, limit int, lease time.Duration) 
 	return tasks, nil
 }
 
+// completeProbeTaskSQL is extracted for guard tests. The expires_at CASE
+// arm is the 2026-08-18 fix: failure re-arms must refresh the task TTL or
+// the backoff ladder (up to 6h) always outlives the 5-minute expires_at and
+// the task starves to death mid-ladder.
+func completeProbeTaskSQL() string {
+	return `
+		UPDATE credential_probe_queue
+		SET status=$2, reason_code=$3, reason_detail=$4, result_http_status=$5,
+			result_latency_ms=$6, result_body_preview=$7, next_run_at=COALESCE($8,next_run_at),
+			lease_until=$9, finished_at=$10, updated_at=now(),
+			expires_at=CASE WHEN $2='ready' THEN now() + $12::interval ELSE expires_at END
+		WHERE id=$1 AND status='running' AND lease_token=$11::uuid`
+}
+
 func (q *ProbeQueue) Complete(ctx context.Context, task ProbeQueueTask, result ProbeQueueResult) error {
 	id := task.ID
 	if q == nil || q.db == nil {
@@ -447,15 +461,11 @@ func (q *ProbeQueue) Complete(ctx context.Context, task ProbeQueueTask, result P
 		now := time.Now()
 		result.FinishedAt = &now
 	}
-	tag, err := q.db.Exec(ctx, `
-		UPDATE credential_probe_queue
-		SET status=$2, reason_code=$3, reason_detail=$4, result_http_status=$5,
-			result_latency_ms=$6, result_body_preview=$7, next_run_at=COALESCE($8,next_run_at),
-			lease_until=$9, finished_at=$10, updated_at=now()
-		WHERE id=$1 AND status='running' AND lease_token=$11::uuid`,
+	tag, err := q.db.Exec(ctx, completeProbeTaskSQL(),
 		id, result.Status, nilString(result.ReasonCode), nilString(result.ReasonDetail),
 		result.HTTPStatus, result.LatencyMs, nilString(result.BodyPreview), result.NextRunAt,
-		result.LeaseUntil, result.FinishedAt, task.LeaseToken)
+		result.LeaseUntil, result.FinishedAt, task.LeaseToken,
+		fmt.Sprintf("%d seconds", int(ProbeQueueTTL.Seconds())))
 	if err != nil {
 		return fmt.Errorf("complete probe failed: %w (queue_id=%d)", err, id)
 	}
@@ -528,6 +538,48 @@ func (q *ProbeQueue) RequeueExpiredLeases(ctx context.Context) (int64, error) {
 		return 0, fmt.Errorf("requeue expired probes failed: %w (queue=credential_probe_queue)", err)
 	}
 	return result.RowsAffected(), nil
+}
+
+// ReviveExpiredReady rescues zombie 'ready' rows whose expires_at already
+// elapsed (2026-08-18 glm-5.2 incident: Claim requires expires_at > now(), so
+// such rows can never be claimed, yet their dedup_key also blocks a fresh
+// Enqueue insert unless the enqueue pre-step notices the expiry — rows left
+// behind by a crashed worker or a restart sat forever as "ready but dead",
+// and the queue looked alive on dashboards while executing nothing). Rows
+// still under the attempt cap get a fresh TTL; rows past the cap or without
+// remaining attempts are marked expired so they stop counting as pending.
+func (q *ProbeQueue) ReviveExpiredReady(ctx context.Context) (int64, error) {
+	if q == nil || q.db == nil {
+		return 0, fmt.Errorf("revive expired ready probes failed: database is unavailable (queue=credential_probe_queue)")
+	}
+	result, err := q.db.Exec(ctx, reviveExpiredReadySQL(),
+		fmt.Sprintf("%d seconds", int(ProbeQueueTTL.Seconds())))
+	if err != nil {
+		return 0, fmt.Errorf("revive expired ready probes failed: %w (queue=credential_probe_queue)", err)
+	}
+	return result.RowsAffected(), nil
+}
+
+// reviveExpiredReadySQL is extracted for guard tests. Required invariants:
+// only status='ready' rows with an elapsed expires_at are touched; rows
+// still under the attempt cap get a TTL that covers their whole next backoff
+// hop (GREATEST(next_run_at, now()) + TTL — otherwise a 30s sweep rewrites a
+// deep-backoff row every few minutes for hours); rows at/over the cap are
+// marked expired so dashboards stop counting them as pending.
+func reviveExpiredReadySQL() string {
+	return `
+		UPDATE credential_probe_queue
+		SET expires_at=CASE
+				WHEN attempt < max_attempts THEN GREATEST(next_run_at, now()) + $1::interval
+				ELSE expires_at
+			END,
+			status=CASE
+				WHEN attempt < max_attempts THEN status
+				ELSE 'expired'
+			END,
+			finished_at=CASE WHEN attempt < max_attempts THEN finished_at ELSE now() END,
+			updated_at=now()
+		WHERE status='ready' AND expires_at <= now()`
 }
 
 func nilString(value string) any {

@@ -29,6 +29,11 @@ type ProbeQueueWorker struct {
 	cfg    ProbeQueueWorkerConfig
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
+
+	// reviveMu/reviveAt throttle ReviveExpiredReady (every 30s, not every
+	// 250ms poll) — it is a maintenance sweep, not a hot-path step.
+	reviveMu sync.Mutex
+	reviveAt time.Time
 }
 
 // SetProbeService injects the node-probe execution owner after construction
@@ -100,6 +105,7 @@ func (w *ProbeQueueWorker) processBatch(ctx context.Context) error {
 	if _, err := w.cfg.Queue.RequeueExpiredLeases(ctx); err != nil {
 		return err
 	}
+	w.maybeReviveExpiredReady(ctx)
 	tasks, err := w.cfg.Queue.Claim(ctx, 1, w.cfg.Lease)
 	if err != nil {
 		return err
@@ -108,6 +114,26 @@ func (w *ProbeQueueWorker) processBatch(ctx context.Context) error {
 		w.processTask(ctx, task)
 	}
 	return nil
+}
+
+// maybeReviveExpiredReady runs the zombie-ready rescue at most once per 30s
+// across all worker goroutines (2026-08-18: leftover ready rows with expired
+// expires_at could never be claimed, silently killing the probe pipeline).
+func (w *ProbeQueueWorker) maybeReviveExpiredReady(ctx context.Context) {
+	w.reviveMu.Lock()
+	due := time.Since(w.reviveAt) >= 30*time.Second
+	if due {
+		w.reviveAt = time.Now()
+	}
+	w.reviveMu.Unlock()
+	if !due {
+		return
+	}
+	if n, err := w.cfg.Queue.ReviveExpiredReady(ctx); err != nil {
+		slog.Warn("probe queue revive expired-ready failed", "error", err)
+	} else if n > 0 {
+		slog.Info("probe queue revived expired ready tasks", "count", n)
+	}
 }
 
 func (w *ProbeQueueWorker) processTask(ctx context.Context, task ProbeQueueTask) {
