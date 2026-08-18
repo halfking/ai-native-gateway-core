@@ -441,53 +441,11 @@ func (r *CredentialRecovery) recover(ctx context.Context) {
 		}
 	}
 
-	// Reconcile the independent node_probe_state gate after the binding and
-	// credential surfaces recover. A stale failed/backoff row otherwise keeps
-	// v_routable_credential_models false even though the supplier is healthy.
-	if tag, err := r.db.Exec(timeoutCtx, `
-		UPDATE node_probe_state nps
-		SET consecutive_failures = 0,
-		    consecutive_successes = GREATEST(nps.consecutive_successes, 1),
-		    next_retry_at = now() + interval '1 hour',
-		    next_retry_seconds = 3600,
-		    paused = FALSE,
-		    in_flight_until = NULL,
-		    last_direct_ok = TRUE,
-		    last_gateway_ok = TRUE,
-		    last_err_code = NULL,
-		    last_err_detail = NULL,
-		    updated_at = now()
-		WHERE (
-			nps.last_direct_ok IS DISTINCT FROM TRUE
-			OR nps.paused = TRUE
-			OR nps.next_retry_at > now()
-		)
-		AND EXISTS (
-			SELECT 1
-			FROM credential_model_bindings cmb
-			JOIN provider_models pm ON pm.id = cmb.provider_model_id
-			JOIN credentials c ON c.id = cmb.credential_id
-			JOIN providers p ON p.id = c.provider_id
-			WHERE cmb.credential_id = nps.credential_id
-			  AND pm.raw_model_name = nps.raw_model_name
-			  AND cmb.available = TRUE
-			  AND COALESCE(c.status, 'active') = 'active'
-			  AND COALESCE(c.lifecycle_status, 'active') = 'active'
-			  AND COALESCE(c.manual_disabled, FALSE) = FALSE
-			  AND COALESCE(p.enabled, TRUE) = TRUE
-			  AND COALESCE(p.manual_disabled, FALSE) = FALSE
-			  AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
-			  AND COALESCE(cmb.admin_protected, FALSE) = FALSE
-		  )
-	`); err != nil {
-		slog.Warn("node probe state recovery failed", "error", err)
-	} else if tag.RowsAffected() > 0 {
-		slog.Info("node probe states reconciled after credential recovery", "count", tag.RowsAffected())
-		if _, notifyErr := r.db.Exec(timeoutCtx,
-			"SELECT pg_notify('auto_route_refresh', 'node-probe-recovery')"); notifyErr != nil {
-			slog.Warn("node probe recovery route refresh notify failed", "error", notifyErr)
-		}
-	}
+	// The node_probe_state row is intentionally left for the probe worker. A
+	// recovery tick only repairs credential-level metadata and submits durable
+	// probe work below; it must not claim direct/gateway success without an
+	// upstream observation because authoritative URSM treats its own node key as
+	// the runtime source of truth.
 
 	// 2026-07-24 P0 fix: re-probe (cred, model) bindings whose cmb.available
 	// was flipped to FALSE by continuous_failure (credentialhealth/checker.go)
