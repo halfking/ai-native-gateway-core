@@ -13,7 +13,7 @@
  *   - 三态：加载 Skeleton / 空 EmptyState / 错误 ErrorBanner
  *   - 动画只用 transform/opacity
  */
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { getFeatured, resolveRouting } from '../api/routing'
 import { getRequestLogTopModels, type TopRequestModel } from '../api/logs'
@@ -27,7 +27,6 @@ import {
   type LiveRequest,
 } from '../composables/liveStreamStore'
 import RequestProcessingTrail from './RequestProcessingTrail.vue'
-import NodeOpsRow from './NodeOpsRow.vue'
 import NodeDetailDrawer from './NodeDetailDrawer.vue'
 
 const { t } = useI18n()
@@ -99,28 +98,13 @@ const congestionHint = computed(() => {
 const hasData = computed(() => queue.value !== null && queue.value.wired)
 const isIdle = computed(() => hasData.value && totalDepth.value === 0)
 
-// ── OBS-FE2：节点操作行（26号 §2 最右列） ────────────────────────────────────
-// 异常/禁用节点排前，健康节点按在途数排后；上限 8 行避免把面板撑爆。
-// 只有真实节点数据（node_update 推送）才渲染，无数据时整节隐藏。
-function nodeSeverity(n: LiveNodeStatus): number {
-  if (n.manual_disabled || n.disable_kind === 'manual') return 0
-  if (n.circuit_state === 'open' || n.health_status === 'unreachable') return 1
-  if (n.fp_disabled) return 1
-  if (n.circuit_state === 'half_open' || n.availability_state === 'cooling' ||
-      (n.quota_state ?? '').includes('exhausted') || n.disable_kind === 'system') return 2
-  return 3
-}
-
-const opsNodes = computed<LiveNodeStatus[]>(() => {
-  if (nodes.value.length === 0) return []
-  return [...nodes.value]
-    .sort((a, b) => {
-      const diff = nodeSeverity(a) - nodeSeverity(b)
-      if (diff !== 0) return diff
-      return (b.in_flight ?? 0) - (a.in_flight ?? 0)
-    })
-    .slice(0, 8)
-})
+// ── 队列深度分区：默认折叠，拥堵时自动展开 ─────────────────────────────────
+// 队列深度是诊断信息，畅通时收起让模型分组和节点矩阵成为主内容；
+// congested 翻转为 true 时自动展开引导排查，恢复后不自动收起。
+const queueDepthOpen = ref(false)
+watch(congested, value => {
+  if (value) queueDepthOpen.value = true
+}, { immediate: true })
 
 // ── OBS-UI：按模型分组的可用节点（2026-08-17） ─────────────────────────────
 //
@@ -268,6 +252,44 @@ function nodeStatusSummary(n: LiveNodeStatus): string {
   return parts.join(' / ')
 }
 
+// ── 节点小卡片：标题用 供应商 + 凭据，状态用四态点 ─────────────────────────
+function providerLabel(n: LiveNodeStatus): string {
+  return n.provider_code || (n.provider_id ? `P${n.provider_id}` : '—')
+}
+
+function nodeTitle(n: LiveNodeStatus): string {
+  return `${providerLabel(n)} #${n.credential_id}`
+}
+
+// null = 字段未上报，按"未知"灰点展示（不冒充健康）。
+function circuitOk(n: LiveNodeStatus): boolean | null {
+  return n.circuit_state ? n.circuit_state === 'closed' : null
+}
+function availabilityOk(n: LiveNodeStatus): boolean | null {
+  return n.availability_state
+    ? n.availability_state === 'ready' || n.availability_state === 'active'
+    : null
+}
+function quotaOk(n: LiveNodeStatus): boolean | null {
+  return n.quota_state ? n.quota_state === 'ok' : null
+}
+function healthOk(n: LiveNodeStatus): boolean | null {
+  return n.health_status ? n.health_status === 'healthy' : null
+}
+
+function dotClass(ok: boolean | null): string {
+  if (ok === null) return 'qp-dot--unknown'
+  return ok ? 'qp-dot--ok' : 'qp-dot--bad'
+}
+
+function nodeCardTone(n: LiveNodeStatus): string {
+  if (n.manual_disabled || n.disable_kind === 'manual') return 'qp-node-card--disabled'
+  if (n.circuit_state === 'open' || n.health_status === 'unreachable') return 'qp-node-card--danger'
+  if (n.circuit_state === 'half_open' || n.availability_state === 'cooling' ||
+      (n.quota_state ?? '').includes('exhausted')) return 'qp-node-card--warn'
+  return 'qp-node-card--ok'
+}
+
 function requestsForNode(n: LiveNodeStatus, aliases?: string[]): LiveRequest[] {
   const requests = getRequestsForCredential(n.credential_id)
   if (!aliases?.length) return requests
@@ -305,25 +327,16 @@ function formatTs(ts: string | undefined): string {
       <span class="qp-empty-text">队列数据未接入（dispatch 未启用或未 wired）</span>
     </div>
 
-    <!-- 三层队列 -->
+    <!-- 紧凑指标条：调度链路（BE3 缺省隐藏对应项）+ 节点健康度 一行看完 -->
     <div v-else class="qp-layers">
-      <!-- 节点健康度摘要 -->
-      <div class="qp-node-summary">
-        <span class="qp-summary-item">
-          <span class="qp-summary-label">总节点</span>
-          <span class="qp-summary-value">{{ nodeStats.total }}</span>
+      <div class="qp-stats">
+        <span v-if="pipeline" class="qp-stat">
+          <span class="qp-stat-label">调度链路</span>
+          <span class="qp-stat-value">排队 {{ pipeline.depth }} · 在途 {{ pipeline.inFlight }}<template v-if="typeof pipeline.waitingMsP50 === 'number'"> · p50 {{ pipeline.waitingMsP50 }}ms</template><template v-if="typeof pipeline.waitingMsP95 === 'number'"> · p95 {{ pipeline.waitingMsP95 }}ms</template><template v-if="pipeline.degraded"> · <em class="qp-stat-degraded">降级</em></template></span>
         </span>
-        <span class="qp-summary-item qp-summary-item--ok">
-          <span class="qp-summary-label">可用</span>
-          <span class="qp-summary-value">{{ nodeStats.ready }}</span>
-        </span>
-        <span v-if="nodeStats.suspended > 0" class="qp-summary-item qp-summary-item--warn">
-          <span class="qp-summary-label">暂停</span>
-          <span class="qp-summary-value">{{ nodeStats.suspended }}</span>
-        </span>
-        <span v-if="nodeStats.exhausted > 0" class="qp-summary-item qp-summary-item--danger">
-          <span class="qp-summary-label">配额耗尽</span>
-          <span class="qp-summary-value">{{ nodeStats.exhausted }}</span>
+        <span class="qp-stat">
+          <span class="qp-stat-label">节点</span>
+          <span class="qp-stat-value">{{ nodeStats.total }} 总 · {{ nodeStats.ready }} 可用<template v-if="nodeStats.suspended > 0"> · {{ nodeStats.suspended }} 暂停</template><template v-if="nodeStats.exhausted > 0"> · {{ nodeStats.exhausted }} 配额耗尽</template></span>
         </span>
       </div>
 
@@ -331,93 +344,54 @@ function formatTs(ts: string | undefined): string {
         ✅ 当前无排队请求，调度链路畅通
       </div>
 
-      <!-- OBS-BE3 pipeline 总览行：字段缺省时整层隐藏（禁止零值冒充）。
-           waitingMsP50/P95 无样本时省略（不是 0）；degraded 才显示降级徽标。 -->
-      <div v-if="pipeline" class="qp-pipeline" :class="{ 'qp-pipeline--degraded': pipeline.degraded }">
-        <span class="qp-pipeline-label">调度链路</span>
-        <span class="qp-pipeline-stat">
-          <span class="qp-pipeline-stat-label">排队</span>
-          <span class="qp-pipeline-stat-value">{{ pipeline.depth }}</span>
-        </span>
-        <span class="qp-pipeline-stat">
-          <span class="qp-pipeline-stat-label">在途</span>
-          <span class="qp-pipeline-stat-value">{{ pipeline.inFlight }}</span>
-        </span>
-        <span v-if="typeof pipeline.waitingMsP50 === 'number'" class="qp-pipeline-stat">
-          <span class="qp-pipeline-stat-label">等待 p50</span>
-          <span class="qp-pipeline-stat-value">{{ pipeline.waitingMsP50 }}ms</span>
-        </span>
-        <span v-if="typeof pipeline.waitingMsP95 === 'number'" class="qp-pipeline-stat">
-          <span class="qp-pipeline-stat-label">p95</span>
-          <span class="qp-pipeline-stat-value">{{ pipeline.waitingMsP95 }}ms</span>
-        </span>
-        <span v-if="pipeline.degraded" class="qp-pipeline-degraded">降级</span>
-      </div>
-
-      <!-- 总队列 -->
+      <!-- 队列深度（诊断信息，默认折叠；拥堵时自动展开） -->
       <div class="qp-layer">
-        <div class="qp-layer-header">
-          <span class="qp-layer-name">总队列</span>
-          <span class="qp-layer-depth" :class="{ 'qp-depth--high': totalDepth > CONGESTION_THRESHOLD * 3 }">
-            {{ totalDepth }}
+        <button type="button" class="qp-layer-header qp-depth-toggle" :aria-expanded="queueDepthOpen" @click="queueDepthOpen = !queueDepthOpen">
+          <span class="qp-layer-name">队列深度</span>
+          <span class="qp-depth-summary">
+            <span class="qp-layer-depth" :class="{ 'qp-depth--high': totalDepth > CONGESTION_THRESHOLD * 3 }">{{ totalDepth }}</span>
+            <span class="qp-layer-count">{{ queue?.models.length || 0 }} 模型 · {{ queue?.credentials.length || 0 }} 节点</span>
           </span>
-        </div>
-        <div class="qp-bar">
-          <div
-            class="qp-bar-fill qp-bar-fill--total"
-            :style="{ transform: `scaleX(${Math.min(1, totalDepth / (CONGESTION_THRESHOLD * 6))})` }"
-          />
-        </div>
-      </div>
-
-      <!-- 模型队列 -->
-      <div class="qp-layer">
-        <div class="qp-layer-header">
-          <span class="qp-layer-name">模型队列</span>
-          <span class="qp-layer-count">{{ queue?.models.length || 0 }} 个模型</span>
-        </div>
-        <div v-for="m in topModels" :key="m.model" class="qp-row">
-          <span class="qp-row-label">{{ m.model }}</span>
-          <div class="qp-bar qp-bar--sm">
-            <div
-              class="qp-bar-fill qp-bar-fill--model"
-              :style="{ transform: `scaleX(${Math.min(1, (m.depth || 0) / (CONGESTION_THRESHOLD * 2))})` }"
-            />
+          <span class="qp-model-group-caret" :class="{ 'qp-model-group-caret--open': queueDepthOpen }">▸</span>
+        </button>
+        <div v-if="queueDepthOpen" class="qp-depth-body">
+          <div class="qp-row">
+            <span class="qp-row-label qp-row-label--total">总队列</span>
+            <div class="qp-bar">
+              <div
+                class="qp-bar-fill qp-bar-fill--total"
+                :style="{ transform: `scaleX(${Math.min(1, totalDepth / (CONGESTION_THRESHOLD * 6))})` }"
+              />
+            </div>
+            <span class="qp-row-depth" :class="{ 'qp-depth--high': totalDepth > CONGESTION_THRESHOLD * 3 }">
+              {{ totalDepth }}
+            </span>
           </div>
-          <span class="qp-row-depth" :class="{ 'qp-depth--high': (m.depth || 0) > CONGESTION_THRESHOLD }">
-            {{ m.depth }}
-          </span>
-        </div>
-      </div>
-
-      <!-- 节点队列 -->
-      <div class="qp-layer">
-        <div class="qp-layer-header">
-          <span class="qp-layer-name">节点队列</span>
-          <span class="qp-layer-count">{{ queue?.credentials.length || 0 }} 个节点</span>
-        </div>
-        <div v-for="c in topCredentials" :key="c.credential" class="qp-row">
-          <span class="qp-row-label">节点 {{ c.credential }}</span>
-          <div class="qp-bar qp-bar--sm">
-            <div
-              class="qp-bar-fill qp-bar-fill--cred"
-              :style="{ transform: `scaleX(${Math.min(1, (c.depth || 0) / (CONGESTION_THRESHOLD * 2))})` }"
-            />
+          <div v-for="m in topModels" :key="m.model" class="qp-row">
+            <span class="qp-row-label">{{ m.model }}</span>
+            <div class="qp-bar qp-bar--sm">
+              <div
+                class="qp-bar-fill qp-bar-fill--model"
+                :style="{ transform: `scaleX(${Math.min(1, (m.depth || 0) / (CONGESTION_THRESHOLD * 2))})` }"
+              />
+            </div>
+            <span class="qp-row-depth" :class="{ 'qp-depth--high': (m.depth || 0) > CONGESTION_THRESHOLD }">
+              {{ m.depth }}
+            </span>
           </div>
-          <span class="qp-row-depth" :class="{ 'qp-depth--high': (c.depth || 0) > CONGESTION_THRESHOLD }">
-            {{ c.depth }}
-          </span>
+          <div v-for="c in topCredentials" :key="c.credential" class="qp-row">
+            <span class="qp-row-label">节点 {{ c.credential }}</span>
+            <div class="qp-bar qp-bar--sm">
+              <div
+                class="qp-bar-fill qp-bar-fill--cred"
+                :style="{ transform: `scaleX(${Math.min(1, (c.depth || 0) / (CONGESTION_THRESHOLD * 2))})` }"
+              />
+            </div>
+            <span class="qp-row-depth" :class="{ 'qp-depth--high': (c.depth || 0) > CONGESTION_THRESHOLD }">
+              {{ c.depth }}
+            </span>
+          </div>
         </div>
-      </div>
-
-      <!-- OBS-FE2 节点操作区（26号 §2 最右列）：测试 / 强制启用 / 手工禁用下拉。
-           异常优先、上限 8 行，超出的用 n/total 标注（不做无提示截断）。 -->
-      <div v-if="opsNodes.length > 0" class="qp-layer">
-        <div class="qp-layer-header">
-          <span class="qp-layer-name">节点操作</span>
-          <span class="qp-layer-count">{{ opsNodes.length }}/{{ nodes.length }} 个节点</span>
-        </div>
-        <NodeOpsRow v-for="n in opsNodes" :key="n.credential_id" :node="n" />
       </div>
 
       <!-- Dashboard 只保留特色模型和近 3 天有实际流量的热门模型；实时 SSE
@@ -441,18 +415,32 @@ function formatTs(ts: string | undefined): string {
             <span v-if="group.hotRequests" class="qp-model-tag qp-model-tag--hot">热门 {{ group.hotRequests }}</span>
             <span class="qp-pill">{{ group.nodes.length }} 节点</span>
             <span class="qp-pill" :class="{ 'qp-pill--active': group.requestCount > 0 }">{{ group.requestCount }} 当前请求</span>
-            <span class="qp-model-nodes">
-              <button v-for="node in group.nodes" :key="node.credential_id" type="button" class="qp-node-chip" :class="{ 'qp-node-chip--bad': nodeStatusSummary(node) !== '可用' }" :title="`节点 ${node.credential_id}：${nodeStatusSummary(node)}${node.last_error ? `；${node.last_error}` : ''}`" @click="openNode(node)">
-                节点 {{ node.credential_id }}（{{ nodeStatusSummary(node) }}<template v-if="node.in_flight"> · 在途 {{ node.in_flight }}</template><template v-if="node.last_latency_ms != null"> · {{ formatLatency(node.last_latency_ms) }}</template>）
+            <div class="qp-model-nodes">
+              <button
+                v-for="node in group.nodes"
+                :key="node.credential_id"
+                type="button"
+                class="qp-node-card"
+                :class="nodeCardTone(node)"
+                :title="`${nodeTitle(node)}：${nodeStatusSummary(node)}${node.last_error ? `；${node.last_error}` : ''}`"
+                @click="openNode(node)"
+              >
+                <span class="qp-node-card-title">{{ nodeTitle(node) }}</span>
+                <span class="qp-node-card-dots" :title="`熔断 ${node.circuit_state || '未知'} · 可用性 ${node.availability_state || '未知'} · 配额 ${node.quota_state || '未知'} · 健康 ${node.health_status || '未知'}`">
+                  <i class="qp-dot" :class="dotClass(circuitOk(node))" /><i class="qp-dot" :class="dotClass(availabilityOk(node))" /><i class="qp-dot" :class="dotClass(quotaOk(node))" /><i class="qp-dot" :class="dotClass(healthOk(node))" />
+                </span>
+                <span class="qp-node-card-meta">
+                  {{ nodeStatusSummary(node) }}<template v-if="node.in_flight"> · 在途 {{ node.in_flight }}</template><template v-if="node.last_latency_ms != null"> · {{ formatLatency(node.last_latency_ms) }}</template>
+                </span>
               </button>
-            </span>
+            </div>
           </div>
           <div v-if="expandedModels.has(group.model)" class="qp-model-group-body">
             <p class="qp-model-detail-hint">{{ t('requestJourneys.nodeDetailHint') }}</p>
             <ul v-if="group.nodes.some(node => requestsForNode(node, group.aliases).length)" class="qp-model-group-requests">
               <template v-for="node in group.nodes" :key="node.credential_id">
                 <li v-for="request in requestsForNode(node, group.aliases)" :key="request.request_id" class="qp-model-group-request">
-                  <span class="qp-rq-node">节点 {{ node.credential_id }}</span><span class="qp-rq-model">{{ request.model || '—' }}</span><span class="qp-rq-status" :class="`qp-rq-status--${request.status}`">{{ request.status || '—' }}</span><span v-if="typeof request.latency_ms === 'number'" class="qp-rq-latency">{{ formatLatency(request.latency_ms) }}</span><span v-if="request.error_kind" class="qp-rq-err">{{ request.error_kind }}</span><span class="qp-rq-ts">{{ formatTs(request.ts) }}</span>
+                  <span class="qp-rq-node">{{ nodeTitle(node) }}</span><span class="qp-rq-model">{{ request.model || '—' }}</span><span class="qp-rq-status" :class="`qp-rq-status--${request.status}`">{{ request.status || '—' }}</span><span v-if="typeof request.latency_ms === 'number'" class="qp-rq-latency">{{ formatLatency(request.latency_ms) }}</span><span v-if="request.error_kind" class="qp-rq-err">{{ request.error_kind }}</span><span class="qp-rq-ts">{{ formatTs(request.ts) }}</span>
                 </li>
               </template>
             </ul>
@@ -512,38 +500,41 @@ function formatTs(ts: string | undefined): string {
   gap: 12px;
 }
 
-/* 节点健康度摘要 */
-.qp-node-summary {
+/* 紧凑指标条：调度链路 + 节点健康度合并为一行 */
+.qp-stats {
   display: flex;
-  gap: 12px;
-  padding: 8px 12px;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  padding: 7px 12px;
   background: var(--kx-bg-elevated);
   border-radius: var(--kx-radius-sm, 6px);
-  margin-bottom: 4px;
 }
-.qp-summary-item {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  font-size: 12px;
+.qp-stat {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
 }
-.qp-summary-label {
-  color: var(--kx-text-secondary);
+.qp-stat-label {
   font-size: 11px;
+  color: var(--kx-text-secondary);
+  white-space: nowrap;
 }
-.qp-summary-value {
+.qp-stat-value {
+  font-size: 12px;
   font-weight: 600;
-  font-size: 14px;
   color: var(--kx-text);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
 }
-.qp-summary-item--ok .qp-summary-value {
-  color: var(--kx-success);
-}
-.qp-summary-item--warn .qp-summary-value {
+.qp-stat-degraded {
+  font-style: normal;
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--kx-warning) 14%, var(--kx-surface));
   color: var(--kx-warning);
-}
-.qp-summary-item--danger .qp-summary-value {
-  color: var(--kx-danger);
 }
 
 .qp-idle {
@@ -554,47 +545,37 @@ function formatTs(ts: string | undefined): string {
   border-radius: var(--kx-radius-sm, 6px);
 }
 
-/* OBS-BE3 pipeline 总览行 */
-.qp-pipeline {
+/* 队列深度折叠分区 */
+.qp-depth-toggle {
+  all: unset;
   display: flex;
+  justify-content: space-between;
   align-items: center;
-  flex-wrap: wrap;
-  gap: 4px 14px;
-  padding: 6px 12px;
-  border: 1px solid color-mix(in srgb, var(--kx-primary) 30%, var(--kx-border));
-  border-radius: var(--kx-radius-sm, 6px);
-  background: color-mix(in srgb, var(--kx-primary) 6%, var(--kx-surface));
+  gap: 8px;
+  margin-bottom: 4px;
+  cursor: pointer;
+  box-sizing: border-box;
+  width: 100%;
 }
-.qp-pipeline--degraded {
-  border-color: var(--kx-warning);
-  background: color-mix(in srgb, var(--kx-warning) 10%, var(--kx-surface));
+.qp-depth-toggle:focus-visible {
+  outline: 2px solid var(--kx-primary);
+  outline-offset: 2px;
 }
-.qp-pipeline-label {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--kx-text);
-}
-.qp-pipeline-stat {
+.qp-depth-summary {
   display: inline-flex;
   align-items: baseline;
-  gap: 4px;
+  gap: 8px;
+  margin-left: auto;
 }
-.qp-pipeline-stat-label {
-  font-size: 11px;
-  color: var(--kx-text-secondary);
+.qp-depth-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-top: 4px;
 }
-.qp-pipeline-stat-value {
-  font-size: 13px;
+.qp-row-label--total {
   font-weight: 600;
   color: var(--kx-text);
-  font-variant-numeric: tabular-nums;
-}
-.qp-pipeline-degraded {
-  font-size: 11px;
-  padding: 1px 8px;
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--kx-warning) 14%, var(--kx-surface));
-  color: var(--kx-warning);
 }
 .qp-layer-header {
   display: flex;
@@ -686,10 +667,20 @@ function formatTs(ts: string | undefined): string {
 .qp-model-compact { display:flex; align-items:center; gap:7px; flex-wrap:wrap; padding:7px 9px; }
 .qp-model-tag { font-size:10px; padding:2px 6px; border-radius:999px; color:var(--kx-accent); background:color-mix(in srgb, var(--kx-accent) 12%, transparent); }
 .qp-model-tag--hot { color:var(--kx-warning); background:color-mix(in srgb, var(--kx-warning) 12%, transparent); }
-.qp-model-nodes { display:inline-flex; gap:5px; flex-wrap:wrap; flex:1 1 100%; padding-left:18px; }
-.qp-node-chip { border:0; border-bottom:1px dashed var(--kx-border); background:transparent; color:var(--kx-text-secondary); cursor:pointer; padding:2px 0; font-size:11px; }
-.qp-node-chip:hover { color:var(--kx-accent); }
-.qp-node-chip--bad { color:var(--kx-danger); }
+.qp-model-nodes { display:flex; gap:6px; flex-wrap:wrap; flex:1 1 100%; padding-left:18px; }
+.qp-node-card { display:grid; gap:4px; text-align:left; min-width:150px; max-width:230px; padding:7px 9px; border:1px solid var(--kx-border); border-left-width:3px; border-radius:6px; background:var(--kx-surface); cursor:pointer; color:var(--kx-text); }
+.qp-node-card:hover { border-color:var(--kx-accent); }
+.qp-node-card-title { font-size:12px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.qp-node-card-dots { display:inline-flex; gap:4px; align-items:center; }
+.qp-dot { width:7px; height:7px; border-radius:50%; background:var(--kx-text-secondary); opacity:.5; }
+.qp-dot--ok { background:var(--kx-success); opacity:1; }
+.qp-dot--bad { background:var(--kx-danger); opacity:1; }
+.qp-dot--unknown { background:var(--kx-text-secondary); opacity:.4; }
+.qp-node-card-meta { font-size:11px; color:var(--kx-text-secondary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.qp-node-card--ok { border-left-color:var(--kx-success); }
+.qp-node-card--warn { border-left-color:var(--kx-warning); }
+.qp-node-card--danger { border-left-color:var(--kx-danger); }
+.qp-node-card--disabled { border-left-color:var(--kx-text-secondary); opacity:.72; }
 .qp-retry { margin-left:auto; border:0; background:transparent; color:var(--kx-text-secondary); cursor:pointer; font-size:11px; }
 .qp-model-scope-state,.qp-model-detail-hint { color:var(--kx-text-secondary); font-size:11px; padding:8px 10px; margin:0; }
 .qp-model-scope-state--error { color:var(--kx-danger); }
