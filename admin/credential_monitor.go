@@ -27,6 +27,7 @@ type summaryCache struct {
 	mu      sync.RWMutex
 	ttl     time.Duration
 	entries map[string]summaryCacheEntry
+	flights map[string]chan struct{}
 }
 
 type summaryCacheEntry struct {
@@ -62,7 +63,49 @@ func (c *summaryCache) set(key string, value map[string]any, created time.Time) 
 	if c.entries == nil {
 		c.entries = make(map[string]summaryCacheEntry)
 	}
+	for cacheKey, entry := range c.entries {
+		if !created.Before(entry.expires) {
+			delete(c.entries, cacheKey)
+		}
+	}
 	c.entries[key] = summaryCacheEntry{value: cloneSummaryResponse(value), created: created, expires: created.Add(c.ttl)}
+}
+
+func (c *summaryCache) begin(key string) (<-chan struct{}, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.flights == nil {
+		c.flights = make(map[string]chan struct{})
+	}
+	if flight, ok := c.flights[key]; ok {
+		return flight, false
+	}
+	flight := make(chan struct{})
+	c.flights[key] = flight
+	return flight, true
+}
+
+func (c *summaryCache) finish(key string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if flight, ok := c.flights[key]; ok {
+		delete(c.flights, key)
+		close(flight)
+	}
+}
+
+func (c *summaryCache) invalidateCredential(credentialID int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if credentialID <= 0 {
+		c.entries = nil
+		return
+	}
+	for key := range c.entries {
+		if strings.Contains(key, fmt.Sprintf(":c%d:", credentialID)) {
+			delete(c.entries, key)
+		}
+	}
 }
 
 func (c *summaryCache) ttlSeconds() int {
@@ -237,10 +280,23 @@ func (m *CredentialMonitorHandlers) handleMonitorSummary(w http.ResponseWriter, 
 	// caller's tenant scope so concurrent super_admin and tenant_admin
 	// callers do not share a cached payload that leaks cross-tenant rows.
 	cacheKey := fmt.Sprintf("p%d:c%d:d%t:t=%s:v%d", providerID, credentialID, detailMode, tenantID, monitorSummarySchemaVersion)
-	if cached, created, expires, ok := monitorSummaryCache.get(cacheKey); ok {
-		cached["meta"] = monitorSummaryMeta(created, expires, true, 0)
-		writeJSON(w, http.StatusOK, cached)
-		return
+	for {
+		if cached, created, expires, ok := monitorSummaryCache.get(cacheKey); ok {
+			cached["meta"] = monitorSummaryMeta(created, expires, true, 0)
+			writeJSON(w, http.StatusOK, cached)
+			return
+		}
+		flight, leader := monitorSummaryCache.begin(cacheKey)
+		if leader {
+			defer monitorSummaryCache.finish(cacheKey)
+			break
+		}
+		select {
+		case <-flight:
+		case <-ctx.Done():
+			writeError(w, http.StatusGatewayTimeout, "monitor summary timed out waiting for refresh")
+			return
+		}
 	}
 
 	// Summary mode keeps the list light: it returns only aggregate counts and
@@ -264,29 +320,29 @@ func (m *CredentialMonitorHandlers) handleMonitorSummary(w http.ResponseWriter, 
 			c.state_reason_code,
 			c.state_reason_detail,
 			c.health_checked_at,
-			COALESCE((SELECT COUNT(*) FROM request_logs rl WHERE rl.credential_id = c.id), 0) AS total_requests,
+				COALESCE((SELECT COUNT(*) FROM request_logs_with_current_month rl WHERE rl.credential_id = c.id), 0) AS total_requests,
 			COALESCE(ms.model_total, 0) AS model_total,
 			COALESCE(ms.model_available, 0) AS model_available,
-			COALESCE(ms.broken_model_count, 0) AS broken_model_count,
-			ms.aggregated_success_rate AS aggregated_success_rate,
-			%s
-		FROM credentials c
+				COALESCE(ms.broken_model_count, 0) AS broken_model_count,
+				ms.aggregated_success_rate AS aggregated_success_rate,
+				%s
+			FROM credentials c
 		LEFT JOIN providers p ON c.provider_id = p.id
 		LEFT JOIN LATERAL (
 			SELECT
 				COUNT(*) AS model_total,
 				COUNT(*) FILTER (WHERE COALESCE(mo.available, TRUE) AND COALESCE(cmb.available, TRUE)) AS model_available,
-				COUNT(*) FILTER (WHERE COALESCE(mps.state, 'unknown') = 'broken_confirmed') AS broken_model_count,
-				MIN(rsr.rate) AS aggregated_success_rate
-			FROM model_offers mo
+					COUNT(*) FILTER (WHERE COALESCE(mps.state, 'unknown') = 'broken_confirmed') AS broken_model_count,
+					%s
+				FROM model_offers mo
 			LEFT JOIN credential_model_bindings cmb
 				ON cmb.credential_id = mo.credential_id
 			   AND cmb.provider_model_id = (SELECT id FROM provider_models pm WHERE (pm.raw_model_name = mo.raw_model_name OR pm.standardized_name = mo.standardized_name) AND pm.provider_id = c.provider_id LIMIT 1)
-			LEFT JOIN model_probe_state mps
-				ON mps.credential_id = mo.credential_id
-			   AND (mps.raw_model_name = mo.raw_model_name OR mps.raw_model_name = mo.standardized_name)
-			CROSS JOIN LATERAL recent_success_rate(c.id, mo.raw_model_name, 50) AS rsr
-			WHERE mo.credential_id = c.id
+				LEFT JOIN model_probe_state mps
+					ON mps.credential_id = mo.credential_id
+				   AND (mps.raw_model_name = mo.raw_model_name OR mps.raw_model_name = mo.standardized_name)
+				%s
+				WHERE mo.credential_id = c.id
 		) ms ON true
 		WHERE ($1 = 0 OR c.provider_id = $1)
 		  AND ($2 = 0 OR c.id = $2)
@@ -296,7 +352,11 @@ func (m *CredentialMonitorHandlers) handleMonitorSummary(w http.ResponseWriter, 
 	`
 
 	modelsSelect := `NULL::json AS models`
+	aggregatedSuccessSelect := `MIN(rsr.rate) AS aggregated_success_rate`
+	aggregatedSuccessJoin := `CROSS JOIN LATERAL recent_success_rate(c.id, mo.raw_model_name, 50) AS rsr`
 	if detailMode {
+		aggregatedSuccessSelect = `NULL::double precision AS aggregated_success_rate`
+		aggregatedSuccessJoin = ``
 		modelsSelect = `COALESCE((
 				SELECT json_agg(row_to_json(t))
 				FROM (
@@ -331,25 +391,24 @@ func (m *CredentialMonitorHandlers) handleMonitorSummary(w http.ResponseWriter, 
 						ON mps.credential_id = mo.credential_id
 					   AND mps.raw_model_name = mo.raw_model_name
 					-- P95: bg rollup (5min bucket, latest 1) - main hot path
-					LEFT JOIN LATERAL (
-						SELECT p95_latency_ms, bucket
-						FROM credential_model_index
-						WHERE credential_id = c.id AND raw_model = mo.raw_model_name
-						ORDER BY bucket DESC LIMIT 1
-					) cmi ON true
-					-- P95 live: percentile_cont 3h window fallback
-					LEFT JOIN LATERAL (
+						LEFT JOIN LATERAL (
+							SELECT p95_latency_ms, bucket
+							FROM credential_model_index_with_current_month
+							WHERE credential_id = c.id AND raw_model = mo.raw_model_name
+							ORDER BY bucket DESC LIMIT 1
+						) cmi ON true
+						-- Aggregate the live fallback once per credential instead of once per model.
+						LEFT JOIN LATERAL (
 							SELECT
+								lower(COALESCE(outbound_model, client_model)) AS canonical_raw_name,
 								percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms)::int AS p95_live,
 								AVG(latency_ms)::int AS avg_live
 							FROM request_logs_with_current_month
 							WHERE credential_id = c.id
-							  -- 2026-07-14: provider_models.canonical_raw_name is the
-							  -- lowercase client-facing key; compare directly.
-							  AND lower(COALESCE(outbound_model, client_model)) = mo.canonical_raw_name
 							  AND ts > NOW() - INTERVAL '3 hours'
 							  AND latency_ms IS NOT NULL
-						) live ON true
+							GROUP BY lower(COALESCE(outbound_model, client_model))
+						) live ON live.canonical_raw_name = mo.canonical_raw_name
 					-- 🆕 2026-06-23: last_used + total_calls (24h credential_model_call_history).
 					-- 184 host system postgres 真实表 schema (2026-06-24 实查, migration 033):
 					--   credential_id, raw_model, window_start, total_calls, success_calls,
@@ -374,7 +433,7 @@ func (m *CredentialMonitorHandlers) handleMonitorSummary(w http.ResponseWriter, 
 				) t
 				), '[]'::json) AS models`
 	}
-	query = fmt.Sprintf(query, modelsSelect)
+	query = fmt.Sprintf(query, modelsSelect, aggregatedSuccessSelect, aggregatedSuccessJoin)
 
 	rows, err := m.h.db.Query(ctx, query, providerID, credentialID, tenantID)
 	if err != nil {
@@ -423,6 +482,10 @@ func (m *CredentialMonitorHandlers) handleMonitorSummary(w http.ResponseWriter, 
 				ms := &models[i]
 				ms.EffectiveState = deriveModelEffectiveState(ms, s.ManualDisabled)
 				ms.ModelDisabledReason = humanizeDisabledReason(ms)
+				if ms.RecentSuccessRate != nil && (s.AggregatedSuccessRate == nil || *ms.RecentSuccessRate < *s.AggregatedSuccessRate) {
+					rate := *ms.RecentSuccessRate
+					s.AggregatedSuccessRate = &rate
+				}
 			}
 		}
 
@@ -619,6 +682,7 @@ func (m *CredentialMonitorHandlers) handlePromote(w http.ResponseWriter, r *http
 	m.h.auditLog("admin", "credential.promote", "credential", req.CredentialID, map[string]any{
 		"reason": req.Reason,
 	})
+	monitorSummaryCache.invalidateCredential(req.CredentialID)
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"success": true,
@@ -678,6 +742,7 @@ func (m *CredentialMonitorHandlers) handleDemote(w http.ResponseWriter, r *http.
 		"recover_after_hours": req.RecoverAfterHours,
 		"recover_at":          recoverAt.Format(time.RFC3339),
 	})
+	monitorSummaryCache.invalidateCredential(req.CredentialID)
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"success":    true,
@@ -733,6 +798,7 @@ func (m *CredentialMonitorHandlers) handleSetConcurrencyAuto(w http.ResponseWrit
 		"concurrency_limit_auto": req.ConcurrencyLimitAuto,
 		"reason":                 req.Reason,
 	})
+	monitorSummaryCache.invalidateCredential(req.CredentialID)
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"success": true,
@@ -962,6 +1028,8 @@ func (m *CredentialMonitorHandlers) handleModelToggle(w http.ResponseWriter, r *
 			"new_reason":     newReason,
 		},
 	)
+
+	monitorSummaryCache.invalidateCredential(req.CredentialID)
 
 	writeJSON(w, http.StatusOK, ModelToggleResponse{
 		Success:           true,
@@ -1305,10 +1373,7 @@ func (m *CredentialMonitorHandlers) handleClearManualDisabled(w http.ResponseWri
 		VALUES ($1, $2, $3, $4, $5)
 	`, actor, "credential.clear_manual_disabled", "credential", req.CredentialID, detailsJSON)
 
-	// Invalidate cache
-	monitorSummaryCache.mu.Lock()
-	monitorSummaryCache.entries = nil
-	monitorSummaryCache.mu.Unlock()
+	monitorSummaryCache.invalidateCredential(req.CredentialID)
 
 	// 2026-06-28: clear manual_disabled doesn't go through the PG trigger
 	// (trigger only watches status/availability_state/quota_state/circuit_state/
@@ -1413,10 +1478,7 @@ func (m *CredentialMonitorHandlers) handleSetManualDisabled(w http.ResponseWrite
 		VALUES ($1, $2, $3, $4, $5)
 	`, actor, action, "credential", req.CredentialID, detailsJSON)
 
-	// Invalidate cache
-	monitorSummaryCache.mu.Lock()
-	monitorSummaryCache.entries = nil
-	monitorSummaryCache.mu.Unlock()
+	monitorSummaryCache.invalidateCredential(req.CredentialID)
 
 	// 2026-06-28: same as handleClearManualDisabled — manual_disabled UPDATE
 	// does not fire trg_notify_auto_route_creds (PG trigger only watches

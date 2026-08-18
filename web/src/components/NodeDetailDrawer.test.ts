@@ -28,6 +28,7 @@ vi.mock('../api/credential-monitor', () => ({
   getSlidingWindow: slidingWindow,
   getModelHistory: modelHistory,
   setManualDisabled: vi.fn(),
+  sessionPingCredential: vi.fn(),
   toggleModelAvailability: vi.fn(),
 }))
 
@@ -94,7 +95,10 @@ describe('NodeDetailDrawer model×node scope', () => {
     expect(resolve).toHaveBeenCalledWith('m-1')
     expect(slidingWindow).toHaveBeenCalledWith(5, 'm-1', 60)
     expect(modelHistory).toHaveBeenCalledWith(5, 'm-1', 30)
-    expect(monitorSummary).toHaveBeenCalledWith({ credential_id: 5 })
+    expect(monitorSummary).toHaveBeenCalledWith(
+      { credential_id: 5 },
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    )
     expect(resolve).toHaveBeenCalledTimes(1)
     expect(slidingWindow).toHaveBeenCalledTimes(1)
 

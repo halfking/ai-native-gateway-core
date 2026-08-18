@@ -45,7 +45,11 @@ function isAdminProtectedPath(path: string): boolean {
   )
 }
 
-export async function req<T>(method: string, path: string, body?: unknown): Promise<T> {
+export interface RequestOptions {
+  signal?: AbortSignal
+}
+
+export async function req<T>(method: string, path: string, body?: unknown, options?: RequestOptions): Promise<T> {
   const r = await fetch(BASE + path, {
     method,
     headers: headers(method),
@@ -53,6 +57,7 @@ export async function req<T>(method: string, path: string, body?: unknown): Prom
     // server's AdminMiddleware can authenticate JWT logins via cookie.
     credentials: 'same-origin',
     body: body !== undefined ? JSON.stringify(body) : undefined,
+    signal: options?.signal,
   })
   if (r.status === 401) {
     if (isAdminProtectedPath(path)) {
