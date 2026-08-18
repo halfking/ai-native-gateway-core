@@ -1065,17 +1065,17 @@ func TestScanLookbackNoOpWithoutHooks(t *testing.T) {
 // TestReconcileStaleNodeProbeStateSQLGuards pins the eligibility contract
 // of the new SELECT. Required properties (matching the on-disk 2026-08-18
 // audit findings):
-//   1. Strictly read-only on node_probe_state (no UPDATE / SET).
-//   2. Pairs only cmb.available=TRUE rows so we don't double-enqueue for
-//      bindings that the credential / availability UPDATE above still
-//      owns.
-//   3. Targets node_probe_state rows that are still in failed/backoff/
-//      paused state, NEVER a row whose both rounds are TRUE and whose
-//      ladder has elapsed (those are owned by Submit's arming branch and
-//      don't need re-verification).
-//   4. Hard guards identical to recoverExpiredBindings (manual*,
-//      admin_protected, lifecycle, manual_disabled, availability_state,
-//      paused).
+//  1. Strictly read-only on node_probe_state (no UPDATE / SET).
+//  2. Pairs only cmb.available=TRUE rows so we don't double-enqueue for
+//     bindings that the credential / availability UPDATE above still
+//     owns.
+//  3. Targets node_probe_state rows that are still in failed/backoff/
+//     paused state, NEVER a row whose both rounds are TRUE and whose
+//     ladder has elapsed (those are owned by Submit's arming branch and
+//     don't need re-verification).
+//  4. Hard guards identical to recoverExpiredBindings (manual*,
+//     admin_protected, lifecycle, manual_disabled, availability_state,
+//     paused).
 func TestReconcileStaleNodeProbeStateSQLGuards(t *testing.T) {
 	sql := reconcileStaleNodeProbeStateSQL()
 	mustContain := []string{

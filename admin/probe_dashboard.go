@@ -206,10 +206,10 @@ type UnifiedProbeQueueStats struct {
 	QueueClaims   int `json:"queue_claims"`   // in-flight rows owned by an active lease
 
 	// node_probe_state counts (error-triggered NodeProbeWorker).
-	NodePending    int `json:"node_pending"`
-	NodeRunning    int `json:"node_running"`
-	NodePaused     int `json:"node_paused"`
-	NodeDue        int `json:"node_due"`        // next_retry_at <= now
+	NodePending     int `json:"node_pending"`
+	NodeRunning     int `json:"node_running"`
+	NodePaused      int `json:"node_paused"`
+	NodeDue         int `json:"node_due"`         // next_retry_at <= now
 	NodeUnclaimable int `json:"node_unclaimable"` // in_flight_until set but expired — no worker holds the lease
 
 	// Active leases that have not been renewed within the lease window.
@@ -245,28 +245,28 @@ type UnifiedProbeSystemHealth struct {
 	URSMKeyCount        int `json:"ursm_key_count"`
 
 	// New source: credential_probe_queue aggregate.
-	QueuePending    int `json:"queue_pending"`
-	QueueInFlight   int `json:"queue_in_flight"`
-	QueueCompleted  int `json:"queue_completed"` // last 2h
-	QueueFailed     int `json:"queue_failed"`    // last 2h
-	QueueExpired    int `json:"queue_expired"`   // last 2h
-	QueueTotal      int `json:"queue_total"`     // convenience total
+	QueuePending   int `json:"queue_pending"`
+	QueueInFlight  int `json:"queue_in_flight"`
+	QueueCompleted int `json:"queue_completed"` // last 2h
+	QueueFailed    int `json:"queue_failed"`    // last 2h
+	QueueExpired   int `json:"queue_expired"`   // last 2h
+	QueueTotal     int `json:"queue_total"`     // convenience total
 
 	// New source: node_probe_state aggregate.
-	NodeTotal    int `json:"node_total"`
-	NodeHealthy  int `json:"node_healthy"`
-	NodeFailing  int `json:"node_failing"`
-	NodePaused   int `json:"node_paused"`
-	NodeRunning  int `json:"node_running"`
-	NodeDueNow   int `json:"node_due_now"`
-	NodeLeased   int `json:"node_leased"`
+	NodeTotal   int `json:"node_total"`
+	NodeHealthy int `json:"node_healthy"`
+	NodeFailing int `json:"node_failing"`
+	NodePaused  int `json:"node_paused"`
+	NodeRunning int `json:"node_running"`
+	NodeDueNow  int `json:"node_due_now"`
+	NodeLeased  int `json:"node_leased"`
 
 	// New source: node_probe_runs aggregate.
-	RunsLast1h      int  `json:"runs_last_1h"`
-	RunsSuccess1h   int  `json:"runs_success_1h"`
-	RunsFailed1h    int  `json:"runs_failed_1h"`
-	RunsLastAt      *time.Time `json:"runs_last_at,omitempty"`
-	SuccessRateLast1h *float64 `json:"success_rate_last_1h,omitempty"`
+	RunsLast1h        int        `json:"runs_last_1h"`
+	RunsSuccess1h     int        `json:"runs_success_1h"`
+	RunsFailed1h      int        `json:"runs_failed_1h"`
+	RunsLastAt        *time.Time `json:"runs_last_at,omitempty"`
+	SuccessRateLast1h *float64   `json:"success_rate_last_1h,omitempty"`
 
 	// New source: recovery pseudo-success detection (handoff §6 P0).
 	// A credential is "pseudo-ok" if its latest node_probe_runs row
@@ -492,10 +492,10 @@ func queryUnifiedProbeSystemHealth(ctx context.Context, db pgxQueryer) (UnifiedP
 		FROM q, n, r, cr, ps
 	`)
 	var (
-		runsLastAt               sql.NullTime
+		runsLastAt                sql.NullTime
 		totalCreds, credsWithURSM int
-		pseudoSuccess            int
-		successRate              sql.NullFloat64
+		pseudoSuccess             int
+		successRate               sql.NullFloat64
 	)
 	if err := row.Scan(
 		&out.QueuePending,
@@ -577,7 +577,7 @@ func countURSMKeys(ctx context.Context, rc redisScanner, pattern string, max int
 		if err != nil {
 			return total
 		}
-			total += len(ks)
+		total += len(ks)
 		cursor = next
 		if cursor == 0 || total >= max {
 			break
@@ -808,9 +808,9 @@ func (h *Handler) handleProbeQueueSnapshot(w http.ResponseWriter, r *http.Reques
 		// Legacy view: tagged as legacy: true and preserved under
 		// its own key so the operator can compare the two.
 		"legacy": map[string]interface{}{
-			"queues":      queues,
-			"total":       len(queues),
-			"legacy":      true,
+			"queues":           queues,
+			"total":            len(queues),
+			"legacy":           true,
 			"legacy_mode_safe": false,
 			"legacy_source":    "model_probe_state",
 		},
@@ -930,10 +930,10 @@ func (h *Handler) handleProbeSystemHealth(w http.ResponseWriter, r *http.Request
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
-		"unified":     unified,
-		"legacy":      legacyHealth,
+		"unified":          unified,
+		"legacy":           legacyHealth,
 		"legacy_mode_safe": false,
-		"snapshot_at": time.Now(),
+		"snapshot_at":      time.Now(),
 	})
 }
 
@@ -1557,11 +1557,11 @@ func (h *Handler) handleProbeTaskCreate(w http.ResponseWriter, r *http.Request) 
 	var req struct {
 		CredentialID int64  `json:"credential_id"`
 		RawModel     string `json:"raw_model"`
-		Command      string `json:"command"`       // default node_probe
-		Source       string `json:"source"`        // default admin
-		Priority     int16  `json:"priority"`      // default 60
-		MaxAttempts  int    `json:"max_attempts"`  // default 7 (node-probe chain)
-		Reason       string `json:"reason"`        // free-form audit detail
+		Command      string `json:"command"`           // default node_probe
+		Source       string `json:"source"`            // default admin
+		Priority     int16  `json:"priority"`          // default 60
+		MaxAttempts  int    `json:"max_attempts"`      // default 7 (node-probe chain)
+		Reason       string `json:"reason"`            // free-form audit detail
 		RunAfterSec  int    `json:"run_after_seconds"` // schedule in future (0 = now)
 	}
 	if err := readJSON(r, &req); err != nil {
@@ -1643,8 +1643,8 @@ func (h *Handler) handleProbeTaskCancel(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"cancelled":  n,
-		"dedup_key":  key,
+		"cancelled": n,
+		"dedup_key": key,
 	})
 }
 
@@ -1659,26 +1659,26 @@ func ternary(b bool, t, f string) string {
 // 25 号 §6.2 三态队列). Metadata only — no result_body_preview, keeping the
 // 可观测安全红线 (body 不进 API/SSE) 一致。
 type ProbeTriStateTask struct {
-	ID           int64      `json:"id"`
-	DedupKey     string     `json:"dedup_key"`
-	CredentialID int64      `json:"credential_id"`
-	ProviderID   *int64     `json:"provider_id,omitempty"`
-	RawModel     string     `json:"raw_model"`
-	Command      string     `json:"command"`
-	Source       string     `json:"source"`
-	Origin       string     `json:"origin"`            // scheduled | error | manual
-	Status       string     `json:"status"`            // pending | in_flight | completed
-	Outcome      string     `json:"outcome,omitempty"` // success|failed|expired|cancelled (completed 行)
-	Attempt      int        `json:"attempt"`
-	MaxAttempts  int        `json:"max_attempts"`
-	Priority     int16      `json:"priority"`
-	NextRetryAtMs int64     `json:"next_retry_at_ms,omitempty"` // 退避下一跳（pending 重臂行）
-	ReasonCode   string     `json:"reason_code,omitempty"`
-	HTTPStatus   *int       `json:"http_status,omitempty"`
-	LatencyMs    *int       `json:"latency_ms,omitempty"`
-	CreatedAt    time.Time  `json:"created_at"`
-	UpdatedAt    time.Time  `json:"updated_at"`
-	FinishedAt   *time.Time `json:"finished_at,omitempty"`
+	ID            int64      `json:"id"`
+	DedupKey      string     `json:"dedup_key"`
+	CredentialID  int64      `json:"credential_id"`
+	ProviderID    *int64     `json:"provider_id,omitempty"`
+	RawModel      string     `json:"raw_model"`
+	Command       string     `json:"command"`
+	Source        string     `json:"source"`
+	Origin        string     `json:"origin"`            // scheduled | error | manual
+	Status        string     `json:"status"`            // pending | in_flight | completed
+	Outcome       string     `json:"outcome,omitempty"` // success|failed|expired|cancelled (completed 行)
+	Attempt       int        `json:"attempt"`
+	MaxAttempts   int        `json:"max_attempts"`
+	Priority      int16      `json:"priority"`
+	NextRetryAtMs int64      `json:"next_retry_at_ms,omitempty"` // 退避下一跳（pending 重臂行）
+	ReasonCode    string     `json:"reason_code,omitempty"`
+	HTTPStatus    *int       `json:"http_status,omitempty"`
+	LatencyMs     *int       `json:"latency_ms,omitempty"`
+	CreatedAt     time.Time  `json:"created_at"`
+	UpdatedAt     time.Time  `json:"updated_at"`
+	FinishedAt    *time.Time `json:"finished_at,omitempty"`
 }
 
 // probeTriStateOrigin maps credential_probe_queue.source onto the 26 号 §4

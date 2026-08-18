@@ -1,5 +1,5 @@
 -- =============================================================================
--- Migration 536 DOWN: 恢复 trigger_kind CHECK 到 425 状态
+-- Migration 538 DOWN: 恢复 trigger_kind CHECK 到 425 状态
 -- 2026-08-18
 --
 -- 注意：执行 down 前必须先清理所有 trigger_kind IN
