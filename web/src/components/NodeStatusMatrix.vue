@@ -1,12 +1,12 @@
 <script setup lang="ts">
 /**
- * NodeStatusMatrix — 节点状态矩阵（V3.2 FE-A2）
+ * NodeStatusMatrix — 节点状态矩阵（V3.2 FE-A2 → 2026-08-18 按需弹窗化）
  *
- * 展示所有可用节点的四态（circuit/availability/quota/health）+ 在途请求数，
- * 支持点击节点 → 抽屉：立即测试（test-now）+ 启用/禁用切换（enable）。
+ * 全量节点按健康分组（异常/警告/正常/已禁用）的全景视图，点击卡片打开统一详情抽屉。
+ * 队列视图日常视角已由指标条 + 模型分组节点卡片覆盖，本矩阵降级为按需全景：
+ * 页面只渲染一个带健康摘要的触发按钮，弹窗内容 v-if 挂载，默认零渲染、零交互。
  *
- * 数据源：liveStreamStore 的 node_update SSE 消息（BE-A4）；
- * 操作：POST /api/admin/providers/{id}/test-now、PATCH .../enable（BE-A2）。
+ * 数据源：liveStreamStore 的 node_update SSE 消息（BE-A4）。
  *
  * 设计约束：var(--kx-*) token；三态；操作有 loading/成功/失败反馈；禁用需 confirm。
  */
@@ -15,6 +15,9 @@ import { nodesRef, type LiveNodeStatus } from '../composables/liveStreamStore'
 import NodeDetailDrawer from './NodeDetailDrawer.vue'
 
 const nodes = nodesRef
+
+// 弹窗默认不显示：内容 v-if 挂载，关闭即销毁，不做任何默认渲染/交互
+const showDialog = ref(false)
 
 // 选中节点的统一详情抽屉
 const selectedNode = ref<LiveNodeStatus | null>(null)
@@ -43,6 +46,9 @@ const groupedNodes = computed(() => {
   return groups
 })
 
+// 触发按钮上的健康摘要（异常+警告），让全景入口本身可扫读
+const abnormalCount = computed(() => groupedNodes.value.danger.length + groupedNodes.value.warn.length)
+
 // 折叠状态（默认只展开异常和警告）
 const collapsedGroups = ref({
   danger: false,
@@ -55,17 +61,15 @@ function toggleGroup(group: keyof typeof collapsedGroups.value) {
   collapsedGroups.value[group] = !collapsedGroups.value[group]
 }
 
-const sortedNodes = computed(() => {
-  return [...nodes.value].sort((a, b) => {
-    // 异常节点排前面
-    const order = { danger: 0, warn: 1, ok: 2, disabled: 3 }
-    return order[nodeHealth(a)] - order[nodeHealth(b)]
-  })
-})
-
 function openNode(n: LiveNodeStatus) {
   selectedNode.value = n
   drawerVisible.value = true
+}
+
+function closeDialog() {
+  showDialog.value = false
+  drawerVisible.value = false
+  selectedNode.value = null
 }
 
 const hasNodes = computed(() => nodes.value.length > 0)
@@ -73,18 +77,33 @@ const hasNodes = computed(() => nodes.value.length > 0)
 
 <template>
   <div class="node-matrix">
-    <div class="nm-header">
-      <span class="nm-title">节点状态矩阵</span>
-      <span class="nm-count">{{ nodes.length }} 个节点</span>
-    </div>
+    <button type="button" class="nm-trigger" @click="showDialog = true">
+      <span class="nm-trigger-title">节点状态矩阵</span>
+      <span v-if="hasNodes" class="nm-trigger-meta" :class="{ 'nm-trigger-meta--warn': abnormalCount > 0 }">
+        {{ nodes.length }} 个节点<template v-if="abnormalCount > 0"> · 异常 {{ abnormalCount }}</template>
+      </span>
+      <span v-else class="nm-trigger-meta">暂无节点数据</span>
+      <span class="nm-trigger-hint">查看全景</span>
+    </button>
 
-    <!-- 空态 -->
-    <div v-if="!hasNodes" class="nm-empty">
-      <span class="nm-empty-text">暂无节点数据（等待 node_update 推送）</span>
-    </div>
+    <Teleport to="body">
+      <div v-if="showDialog" class="nm-modal-mask" @click.self="closeDialog">
+        <section class="nm-modal" role="dialog" aria-modal="true" aria-label="节点状态矩阵">
+          <div class="nm-modal-header">
+            <div>
+              <h3>节点状态矩阵</h3>
+              <p class="nm-modal-sub">全量节点按健康分组的全景；点击卡片查看模型×节点详情与维护</p>
+            </div>
+            <button type="button" class="nm-modal-close" aria-label="关闭" @click="closeDialog">×</button>
+          </div>
 
-    <!-- 节点矩阵（分组显示） -->
-    <div v-else class="nm-groups">
+          <!-- 空态 -->
+          <div v-if="!hasNodes" class="nm-empty">
+            <span class="nm-empty-text">暂无节点数据（等待 node_update 推送）</span>
+          </div>
+
+          <!-- 节点矩阵（分组显示） -->
+          <div v-else class="nm-groups">
       <!-- 异常节点组 -->
       <div v-if="groupedNodes.danger.length > 0" class="nm-group">
         <div class="nm-group-header" @click="toggleGroup('danger')">
@@ -270,26 +289,72 @@ const hasNodes = computed(() => nodes.value.length > 0)
       :node="selectedNode"
       @applied="drawerVisible = true"
     />
-
+        </section>
+      </div>
+    </Teleport>
   </div>
 </template>
 
 <style scoped>
 .node-matrix {
-  background: var(--kx-surface);
-  border: 1px solid var(--kx-border);
-  border-radius: var(--kx-radius-md, 8px);
-  padding: 12px 16px;
-  margin-bottom: 12px;
+  min-width: 0;
 }
-.nm-header {
+/* 页面常驻的只有一个紧凑触发按钮：健康摘要可扫读，全景按需打开 */
+.nm-trigger {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border: 1px solid var(--kx-border);
+  border-radius: var(--kx-radius-sm, 6px);
+  background: var(--kx-surface);
+  color: var(--kx-text);
+  cursor: pointer;
+  text-align: left;
+}
+.nm-trigger:hover { border-color: var(--kx-primary); }
+.nm-trigger-title { font-weight: 600; font-size: 13px; }
+.nm-trigger-meta { color: var(--kx-text-secondary); font-size: 11px; }
+.nm-trigger-meta--warn { color: var(--kx-danger); font-weight: 600; }
+.nm-trigger-hint { margin-left: auto; color: var(--kx-text-secondary); font-size: 11px; }
+
+/* 按需弹窗：内容 v-if 挂载，关闭即销毁 */
+.nm-modal-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 2900;
+  background: rgba(0, 0, 0, 0.38);
+  display: flex;
+  justify-content: flex-end;
+}
+.nm-modal {
+  width: min(860px, 96vw);
+  height: 100vh;
+  overflow: auto;
+  background: var(--kx-surface);
+  color: var(--kx-text);
+  box-shadow: -10px 0 30px rgba(0, 0, 0, 0.24);
+  padding: 18px 20px 28px;
+  box-sizing: border-box;
+}
+.nm-modal-header {
   display: flex;
   justify-content: space-between;
-  align-items: center;
-  margin-bottom: 10px;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 12px;
 }
-.nm-title { font-weight: 600; color: var(--kx-text); }
-.nm-count { font-size: 12px; color: var(--kx-text-secondary); }
+.nm-modal-header h3 { margin: 0; font-size: 15px; }
+.nm-modal-sub { margin: 4px 0 0; color: var(--kx-text-secondary); font-size: 11px; }
+.nm-modal-close {
+  background: none;
+  border: none;
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  color: var(--kx-text-secondary);
+}
 .nm-empty { padding: 16px; text-align: center; }
 .nm-empty-text { color: var(--kx-text-secondary); font-size: 13px; }
 
@@ -387,86 +452,4 @@ const hasNodes = computed(() => nodes.value.length > 0)
 .nm-inflight { color: var(--kx-primary); }
 .nm-latency { color: var(--kx-text); }
 .nm-disabled-tag { color: var(--kx-danger); }
-
-/* 抽屉 */
-.nm-drawer-mask {
-  position: fixed;
-  inset: 0;
-  background: color-mix(in srgb, var(--kx-text) 40%, transparent);
-  z-index: 1000;
-}
-.nm-drawer {
-  position: fixed;
-  top: 0;
-  right: 0;
-  width: 360px;
-  height: 100vh;
-  background: var(--kx-surface);
-  border-left: 1px solid var(--kx-border);
-  z-index: 1001;
-  overflow-y: auto;
-  box-shadow: var(--kx-shadow-lg);
-}
-.nm-drawer-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 16px;
-  border-bottom: 1px solid var(--kx-border);
-  font-weight: 600;
-  color: var(--kx-text);
-}
-.nm-close {
-  background: none;
-  border: none;
-  font-size: 24px;
-  cursor: pointer;
-  color: var(--kx-text-secondary);
-}
-.nm-drawer-body { padding: 16px; }
-.nm-detail-row {
-  display: flex;
-  justify-content: space-between;
-  padding: 8px 0;
-  border-bottom: 1px solid var(--kx-border-light);
-  font-size: 13px;
-  color: var(--kx-text);
-}
-.nm-detail-row--error { color: var(--kx-danger); }
-.nm-actions {
-  display: flex;
-  gap: 8px;
-  margin-top: 16px;
-}
-.nm-btn {
-  flex: 1;
-  padding: 8px 12px;
-  border: 1px solid var(--kx-border);
-  border-radius: var(--kx-radius-sm, 6px);
-  background: var(--kx-surface);
-  color: var(--kx-text);
-  cursor: pointer;
-  font-size: 13px;
-  transition: opacity 0.15s ease;
-}
-.nm-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-.nm-btn--primary { background: var(--kx-primary); color: var(--kx-text-on-primary); border-color: var(--kx-primary); }
-.nm-btn--success { background: var(--kx-success); color: var(--kx-text-on-primary); border-color: var(--kx-success); }
-.nm-btn--danger { background: var(--kx-danger); color: var(--kx-text-on-primary); border-color: var(--kx-danger); }
-.nm-test-result {
-  margin-top: 12px;
-  padding: 10px;
-  border-radius: var(--kx-radius-sm, 6px);
-  font-size: 13px;
-}
-.nm-test-result--ok { background: color-mix(in srgb, var(--kx-success) 12%, var(--kx-surface)); color: var(--kx-success); }
-.nm-test-result--error { background: color-mix(in srgb, var(--kx-danger) 12%, var(--kx-surface)); color: var(--kx-danger); }
-.nm-op-error {
-  margin-top: 12px;
-  padding: 10px;
-  border-radius: var(--kx-radius-sm, 6px);
-  background: color-mix(in srgb, var(--kx-danger) 12%, var(--kx-surface));
-  color: var(--kx-danger);
-  font-size: 13px;
-}
 </style>
