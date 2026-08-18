@@ -6,11 +6,81 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"unicode/utf8"
 )
+
+func unsetEnvForTest(t *testing.T, envName string) {
+	t.Helper()
+	original, wasSet := os.LookupEnv(envName)
+	if err := os.Unsetenv(envName); err != nil {
+		t.Fatalf("unset %s: %v", envName, err)
+	}
+	t.Cleanup(func() {
+		if wasSet {
+			_ = os.Setenv(envName, original)
+			return
+		}
+		_ = os.Unsetenv(envName)
+	})
+}
+
+func TestReadAutoGeneratorEnabled(t *testing.T) {
+	const envName = "LLM_GATEWAY_AUTO_TITLE_ENABLED"
+
+	tests := []struct {
+		name  string
+		value string
+		set   bool
+		want  bool
+	}{
+		{name: "unset uses fallback", want: true},
+		{name: "empty uses fallback", value: "", set: true, want: true},
+		{name: "trimmed false disables", value: " false ", set: true, want: false},
+		{name: "trimmed true enables", value: " true ", set: true, want: true},
+		{name: "invalid uses fallback", value: "not-a-bool", set: true, want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.set {
+				t.Setenv(envName, tt.value)
+			} else {
+				unsetEnvForTest(t, envName)
+			}
+			if got := readAutoGeneratorEnabled(envName, true); got != tt.want {
+				t.Fatalf("readAutoGeneratorEnabled() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNewAutoTitleGeneratorReadsEnabledEnv(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  bool
+	}{
+		{name: "defaults enabled", want: true},
+		{name: "false disables", value: "false", want: false},
+		{name: "true enables", value: "true", want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.value == "" {
+				unsetEnvForTest(t, "LLM_GATEWAY_AUTO_TITLE_ENABLED")
+			} else {
+				t.Setenv("LLM_GATEWAY_AUTO_TITLE_ENABLED", tt.value)
+			}
+			if got := NewAutoTitleGenerator(nil).enabled; got != tt.want {
+				t.Fatalf("NewAutoTitleGenerator().enabled = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
 
 func TestDetectIDESource(t *testing.T) {
 	gen := &AutoTitleGenerator{}
@@ -188,9 +258,12 @@ You are Zoo, a helpful assistant
 				t.Errorf("extractTitleFromPreview() length = %d, want >= %d (result: %q)",
 					len(result), tt.minLen, result)
 			}
-			if len(result) > tt.maxLen {
-				t.Errorf("extractTitleFromPreview() length = %d, want <= %d (result: %q)",
-					len(result), tt.maxLen, result)
+			if utf8.RuneCountInString(result) > sessionTitleMaxRunes {
+				t.Errorf("extractTitleFromPreview() rune count = %d, want <= %d (result: %q)",
+					utf8.RuneCountInString(result), sessionTitleMaxRunes, result)
+			}
+			if !utf8.ValidString(result) {
+				t.Errorf("extractTitleFromPreview() returned invalid UTF-8: %q", result)
 			}
 
 			if tt.wantIDE {
@@ -207,6 +280,22 @@ You are Zoo, a helpful assistant
 				}
 			}
 		})
+	}
+}
+
+func TestExtractTitleFromPreviewUsesRuneBudget(t *testing.T) {
+	gen := &AutoTitleGenerator{}
+	preview := strings.Repeat("你好啊\n", sessionTitleMaxRunes)
+
+	title := gen.extractTitleFromPreview(preview)
+	if !utf8.ValidString(title) {
+		t.Fatalf("extractTitleFromPreview() returned invalid UTF-8: %q", title)
+	}
+	if got := utf8.RuneCountInString(title); got <= 60 || got > sessionTitleMaxRunes {
+		t.Fatalf("extractTitleFromPreview() rune count = %d, want 61..%d", got, sessionTitleMaxRunes)
+	}
+	if !strings.HasSuffix(title, "…") {
+		t.Fatalf("extractTitleFromPreview() = %q, want ellipsis suffix", title)
 	}
 }
 

@@ -207,7 +207,7 @@ func NewAutoSummaryGenerator(handler *Handler, store *summarystore.Store) *AutoS
 	return &AutoSummaryGenerator{
 		handler:     handler,
 		store:       store,
-		enabled:     true, // TODO: env var
+		enabled:     readAutoGeneratorEnabled("LLM_GATEWAY_AUTO_SUMMARY_ENABLED", true),
 		rateByTnt:   make(map[string]*rate.Limiter),
 		ratePerMin:  ratePerMin,
 		workerSlots: make(chan struct{}, workerSlots),
