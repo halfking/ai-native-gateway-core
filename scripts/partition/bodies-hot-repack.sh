@@ -60,8 +60,8 @@ elif [[ "$ENV_ARG" == "252" ]]; then
   # shellcheck disable=SC1091
   source "$HOME/workspace/ai-native-tools/envs/loader.sh" --all --project llm-gateway-go --server 115.29.212.252 --mode plain >/dev/null 2>&1 || {
     echo "envs loader 失败（252 凭据）" >&2; exit 1; }
-  run_sql()  { PGPASSWORD="$COMMON_PG_SUPERUSER_PASS" psql -X -h 127.0.0.1 -p 15432 -U "$COMMON_PG_SUPERUSER" -d llm_gateway -v ON_ERROR_STOP=1 "$@"; }
-  run_sql_tx() { PGPASSWORD="$COMMON_PG_SUPERUSER_PASS" psql -X -h 127.0.0.1 -p 15432 -U "$COMMON_PG_SUPERUSER" -d llm_gateway -v ON_ERROR_STOP=1 -q; }
+  run_sql()  { PGOPTIONS='-c statement_timeout=0 -c idle_in_transaction_session_timeout=0' PGPASSWORD="$COMMON_PG_SUPERUSER_PASS" psql -X -h 127.0.0.1 -p 15432 -U "$COMMON_PG_SUPERUSER" -d llm_gateway -v ON_ERROR_STOP=1 "$@"; }
+  run_sql_tx() { PGOPTIONS='-c statement_timeout=0 -c idle_in_transaction_session_timeout=0' PGPASSWORD="$COMMON_PG_SUPERUSER_PASS" psql -X -h 127.0.0.1 -p 15432 -U "$COMMON_PG_SUPERUSER" -d llm_gateway -v ON_ERROR_STOP=1 -q; }
 else
   echo "unknown --env: $ENV_ARG (local|252)" >&2; exit 1
 fi
@@ -69,6 +69,46 @@ fi
 TS=$(date +%Y%m%d_%H%M%S)
 BACKUP="${TABLE}_bloat_backup_${TS}"
 NEW="${TABLE}_repacked_${TS}"
+VIEW_REFRESH_SQL=""
+
+# ALTER TABLE ... RENAME preserves dependent views' old relation OIDs. For the
+# known bodies view, recreate its rule after the new table takes the live name.
+# Any unrecognized dependent view blocks the swap rather than silently serving
+# the retained backup table.
+if [[ "$TABLE" == "request_logs_bodies_hot" ]]; then
+  DEPENDENT_VIEWS=$(run_sql -Atc "
+    SELECT DISTINCT n.nspname || '.' || c.relname
+    FROM pg_depend d
+    JOIN pg_rewrite r ON r.oid = d.objid
+    JOIN pg_class c ON c.oid = r.ev_class
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE d.refobjid = 'public.$TABLE'::regclass
+      AND c.relkind IN ('v', 'm')
+    ORDER BY 1;" || true)
+  if [[ -n "$DEPENDENT_VIEWS" && "$DEPENDENT_VIEWS" != "public.request_logs_bodies_with_current_month" ]]; then
+    echo "✗ 检测到未配置的依赖 VIEW/MATVIEW，拒绝 swap 以避免 OID 漂移：$DEPENDENT_VIEWS" >&2
+    exit 1
+  fi
+  if [[ "$DEPENDENT_VIEWS" == "public.request_logs_bodies_with_current_month" ]]; then
+    VIEW_REFRESH_SQL=$(cat <<'SQL'
+CREATE OR REPLACE VIEW public.request_logs_bodies_with_current_month AS
+SELECT request_logs_bodies_hot.request_id,
+       request_logs_bodies_hot.ts,
+       request_logs_bodies_hot.request_body,
+       request_logs_bodies_hot.outbound_body,
+       request_logs_bodies_hot.response_body
+FROM public.request_logs_bodies_hot
+UNION ALL
+SELECT request_logs_bodies.request_id,
+       request_logs_bodies.ts,
+       request_logs_bodies.request_body,
+       request_logs_bodies.outbound_body,
+       request_logs_bodies.response_body
+FROM public.request_logs_bodies;
+SQL
+)
+  fi
+fi
 
 # ── 维护窗口守卫（破坏性模式） ─────────────────────────────────────────────
 if [[ "$MODE" != "dry-run" && "$FORCE" != true ]]; then
@@ -91,6 +131,7 @@ case "$MODE" in
     echo "== DRY-RUN：以下为 swap 模式将执行的事务（未执行） =="
     cat <<SQL
 BEGIN;
+SET LOCAL statement_timeout = '0';
 LOCK TABLE public.$TABLE IN ACCESS EXCLUSIVE MODE;
 CREATE TABLE public.$NEW (LIKE public.$TABLE INCLUDING ALL);
 INSERT INTO public.$NEW SELECT * FROM public.$TABLE;
@@ -103,6 +144,7 @@ BEGIN
 END \$\$;
 ALTER TABLE public.$TABLE RENAME TO $BACKUP;
 ALTER TABLE public.$NEW RENAME TO $TABLE;
+$VIEW_REFRESH_SQL
 COMMIT;
 ANALYZE public.$TABLE;
 SQL
@@ -112,7 +154,7 @@ SQL
 
   swap)
     echo
-    echo "== 执行 swap 重写（旧表保留为 $BACKUP） =="
+    echo "== 执行 swap 重写（旧表保留为 ${BACKUP}） =="
     run_sql_tx <<SQL
 BEGIN;
 LOCK TABLE public.$TABLE IN ACCESS EXCLUSIVE MODE;
@@ -132,7 +174,7 @@ SQL
     echo "== 完成。后置校验："
     run_sql -c "SELECT pg_size_pretty(pg_total_relation_size('public.$TABLE')) AS new_size,
                        (SELECT count(*) FROM public.$TABLE) AS new_rows;"
-    echo "备份表：public.$BACKUP（确认稳定后可 DROP 释放 ~35GB；回滚用 rollback 脚本）"
+    echo "备份表：public.${BACKUP}（确认稳定后可 DROP 释放 ~35GB；回滚用 rollback 脚本）"
     ;;
 
   vacuum-full)

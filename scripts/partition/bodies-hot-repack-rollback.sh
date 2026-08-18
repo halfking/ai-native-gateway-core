@@ -65,12 +65,34 @@ if [[ "$CONFIRM" != true ]]; then
 fi
 
 TS=$(date +%Y%m%d_%H%M%S)
+VIEW_REFRESH_SQL=""
+if [[ "$TABLE" == "request_logs_bodies_hot" ]]; then
+  VIEW_REFRESH_SQL=$(cat <<'SQL'
+CREATE OR REPLACE VIEW public.request_logs_bodies_with_current_month AS
+SELECT request_logs_bodies_hot.request_id,
+       request_logs_bodies_hot.ts,
+       request_logs_bodies_hot.request_body,
+       request_logs_bodies_hot.outbound_body,
+       request_logs_bodies_hot.response_body
+FROM public.request_logs_bodies_hot
+UNION ALL
+SELECT request_logs_bodies.request_id,
+       request_logs_bodies.ts,
+       request_logs_bodies.request_body,
+       request_logs_bodies.outbound_body,
+       request_logs_bodies.response_body
+FROM public.request_logs_bodies;
+SQL
+)
+fi
 run_sql <<SQL
 BEGIN;
+SET LOCAL statement_timeout = '0';
 LOCK TABLE public.$TABLE IN ACCESS EXCLUSIVE MODE;
 ALTER TABLE public.$TABLE RENAME TO ${TABLE}_aborted_${TS};
 ALTER TABLE public.$BACKUP RENAME TO $TABLE;
+$VIEW_REFRESH_SQL
 COMMIT;
 ANALYZE public.$TABLE;
 SQL
-echo "== 回滚完成：$BACKUP → $TABLE（当前表改名为 ${TABLE}_aborted_${TS}，确认后可 DROP）"
+echo "== 回滚完成：${BACKUP} → ${TABLE}（当前表改名为 ${TABLE}_aborted_${TS}，确认后可 DROP）"
