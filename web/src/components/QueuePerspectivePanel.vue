@@ -13,7 +13,7 @@
  *   - 三态：加载 Skeleton / 空 EmptyState / 错误 ErrorBanner
  *   - 动画只用 transform/opacity
  */
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { getFeatured, resolveRouting, reorderCandidateBindings, type CandidateBindingReorderItem, type RoutingCandidate } from '../api/routing'
 import { getRequestLogTopModels, type TopRequestModel } from '../api/logs'
@@ -131,16 +131,23 @@ interface ModelGroup {
   aliases: string[]
   /** 仅当所有节点都属于同一个完整 raw binding 列表时可安全重排。 */
   reorderRawModel?: string
+  /**
+   * 服务端 reorder_revision 透传，缺失时表示当前分组不接受重排
+   * （别名聚合 / 多 raw-model / 未在 resolve 列表中）。
+   */
+  reorderRevision?: string
 }
 
 const modelScopeMeta = ref<Map<string, ModelScopeMeta>>(new Map())
 const modelScopeAliasIndex = ref<Map<string, string>>(new Map())
 const modelCandidatesByRawModel = ref<Map<string, RoutingCandidate[]>>(new Map())
+const reorderRevisionsByRawModel = ref<Map<string, string>>(new Map())
 const modelScopeLoading = ref(true)
 const modelScopeError = ref('')
 const selectedNode = ref<LiveNodeStatus | null>(null)
 const selectedNodeModel = ref('')
 const drawerVisible = ref(false)
+let modelScopeAbort: AbortController | null = null
 
 function modelKey(model: string): string {
   return model.trim().toLowerCase()
@@ -159,6 +166,9 @@ function openNode(node: LiveNodeStatus, aliases: string[] = []) {
 }
 
 async function loadModelScope() {
+  if (modelScopeAbort) modelScopeAbort.abort()
+  const controller = new AbortController()
+  modelScopeAbort = controller
   modelScopeLoading.value = true
   modelScopeError.value = ''
   const to = new Date()
@@ -167,6 +177,10 @@ async function loadModelScope() {
     getFeatured(),
     getRequestLogTopModels({ from: from.toISOString(), to: to.toISOString(), limit: 50 }),
   ])
+  if (controller.signal.aborted) {
+    modelScopeLoading.value = false
+    return
+  }
   const scope = new Map<string, ModelScopeMeta>()
   const addScope = (model: string, isFeatured: boolean, hotRequests: number) => {
     const key = modelKey(model)
@@ -181,10 +195,12 @@ async function loadModelScope() {
   if (hot.status === 'fulfilled') hot.value.items.forEach((model: TopRequestModel) => addScope(model.canonical_name || model.display_name, false, model.request_count))
   const aliases = new Map<string, string>()
   const candidatesByRawModel = new Map<string, RoutingCandidate[]>()
+  const revisionsByRawModel = new Map<string, string>()
   const resolveOne = async (meta: ModelScopeMeta) => {
     const name = [...meta.aliases][0]
     try {
-      const resolved = await resolveRouting(name)
+      const resolved = await resolveRouting(name, undefined, false, { signal: controller.signal })
+      if (controller.signal.aborted) return
       const assignAlias = (raw: string) => {
         const key = modelKey(raw)
         if (!key) return
@@ -200,6 +216,14 @@ async function loadModelScope() {
         candidates.push(candidate)
         candidatesByRawModel.set(key, candidates)
       }
+      // Only record a revision when the resolve hit a single raw_model so the
+      // panel can safely submit a complete-set reorder against it.
+      if (resolved.reorder_revision) {
+        const firstName = resolved.candidates[0]?.model_name
+        if (firstName && resolved.candidates.every(c => c.model_name === firstName)) {
+          revisionsByRawModel.set(modelKey(firstName), resolved.reorder_revision)
+        }
+      }
     } catch {
       // Keep exact canonical/featured matches; ambiguous aliases stay hidden.
     }
@@ -208,16 +232,23 @@ async function loadModelScope() {
   const scopeEntries = [...scope.values()]
   const RESOLVE_CONCURRENCY = 8
   for (let index = 0; index < scopeEntries.length; index += RESOLVE_CONCURRENCY) {
+    if (controller.signal.aborted) break
     await Promise.all(scopeEntries.slice(index, index + RESOLVE_CONCURRENCY).map(resolveOne))
+  }
+  if (controller.signal.aborted) {
+    modelScopeLoading.value = false
+    return
   }
   modelScopeMeta.value = scope
   modelScopeAliasIndex.value = aliases
   modelCandidatesByRawModel.value = candidatesByRawModel
+  reorderRevisionsByRawModel.value = revisionsByRawModel
   if (featured.status === 'rejected' && hot.status === 'rejected') modelScopeError.value = '模型范围暂不可用，未展示模型节点。'
   modelScopeLoading.value = false
 }
 
 onMounted(() => { void loadModelScope() })
+onUnmounted(() => { modelScopeAbort?.abort() })
 
 const expandedModels = ref<Set<string>>(new Set())
 
@@ -277,6 +308,9 @@ const modelGroups = computed<ModelGroup[]>(() => {
       hotRequests: meta.hotRequests,
       aliases,
       reorderRawModel: candidatesMatchNodes ? rawModel : undefined,
+      reorderRevision: candidatesMatchNodes && rawModel
+        ? reorderRevisionsByRawModel.value.get(modelKey(rawModel))
+        : undefined,
     })
   }
   return groups.sort((a, b) => Number(b.featured) - Number(a.featured) || b.hotRequests - a.hotRequests || b.nodes.length - a.nodes.length || a.model.localeCompare(b.model))
@@ -331,7 +365,11 @@ const dragError = ref('')
 const filtersAreAllEnabled = computed(() => Object.values(statusFilter.value).every(Boolean))
 
 function canReorder(group: ModelGroup): boolean {
-  return isSuperAdmin() && !dragSaving.value && filtersAreAllEnabled.value && Boolean(group.reorderRawModel)
+  return isSuperAdmin()
+    && !dragSaving.value
+    && filtersAreAllEnabled.value
+    && Boolean(group.reorderRawModel)
+    && Boolean(group.reorderRevision)
 }
 
 function dragDisabledHint(group: ModelGroup): string {
@@ -339,6 +377,7 @@ function dragDisabledHint(group: ModelGroup): string {
   if (dragSaving.value) return '正在保存优先级调整。'
   if (!filtersAreAllEnabled.value) return '请显示全部状态后再调整完整候选列表的优先级。'
   if (!group.reorderRawModel) return '该模型分组合并了多个原始模型或实时节点不完整，无法安全调整优先级。'
+  if (!group.reorderRevision) return '尚未拿到后端修订版本，请等待数据加载完成后再试。'
   return '拖动节点以调整优先级，越靠前优先级越高。'
 }
 
@@ -379,7 +418,7 @@ function clearDragState() {
 }
 
 async function onDrop(event: DragEvent, group: ModelGroup, targetCredentialId: number) {
-  if (!canReorder(group) || dragScopeKey.value !== group.model || !group.reorderRawModel) return
+  if (!canReorder(group) || dragScopeKey.value !== group.model || !group.reorderRawModel || !group.reorderRevision) return
   event.preventDefault()
   const ordered = [...group.nodes]
   const fromIndex = ordered.findIndex(n => n.credential_id === dragSourceCredentialId.value)
@@ -390,19 +429,29 @@ async function onDrop(event: DragEvent, group: ModelGroup, targetCredentialId: n
   }
   const [moved] = ordered.splice(fromIndex, 1)
   ordered.splice(toIndex, 0, moved)
+  const rawModel = group.reorderRawModel
+  const expectedRevision = group.reorderRevision
   const items: CandidateBindingReorderItem[] = ordered.map((node, index) => ({
     credential_id: node.credential_id,
-    raw_model: group.reorderRawModel!,
+    raw_model: rawModel,
     manual_priority: index + 1,
   }))
   clearDragState()
   dragSaving.value = true
   dragError.value = ''
   try {
-    await reorderCandidateBindings(items)
+    await reorderCandidateBindings(items, { rawModel, expectedRevision })
     await loadModelScope()
   } catch (error) {
-    dragError.value = error instanceof Error ? error.message : '调整优先级失败'
+    const message = error instanceof Error ? error.message : '调整优先级失败'
+    // 409 stale / incomplete / transient ordering conflict — surface a
+    // user-friendly hint and refetch so the UI catches up with the server.
+    if (/409|stale|incomplete|ordering conflict/i.test(message)) {
+      dragError.value = '排序已过期，已自动刷新候选列表，请重试。'
+      void loadModelScope()
+    } else {
+      dragError.value = message
+    }
   } finally {
     dragSaving.value = false
   }
