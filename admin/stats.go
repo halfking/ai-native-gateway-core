@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/kaixuan/llm-gateway-go/metrics"
 )
 
@@ -336,7 +338,7 @@ func (h *Handler) handleStatsReconciliationApprove(w http.ResponseWriter, r *htt
 	}
 
 	ctx := r.Context()
-	tx, err := h.db.Begin(ctx)
+	tx, err := beginApprovalTx(ctx, h)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "begin transaction failed")
 		return
@@ -360,17 +362,23 @@ func (h *Handler) handleStatsReconciliationApprove(w http.ResponseWriter, r *htt
 	}
 
 	for _, diffID := range req.DiffIDs {
-		// Fetch the diff
+		// Fetch the diff together with the originating run's period, so the
+		// resulting adjustment month_start is anchored to the run window
+		// rather than now() (P2 follow-up: cross-month approvals used to land
+		// in the wrong bucket).
 		var runID, tenantID, dimensionType, dimensionKey, metric string
 		var sourceValue, projectedValue, difference float64
 		var resolution string
+		var periodMonthStart time.Time
 		err := tx.QueryRow(ctx, `
-			SELECT run_id, tenant_id, dimension_type, dimension_key, metric,
-			       source_value, projected_value, difference, resolution
-			FROM stats_reconciliation_diffs
-			WHERE id = $1
+			SELECT d.run_id, d.tenant_id, d.dimension_type, d.dimension_key, d.metric,
+			       d.source_value, d.projected_value, d.difference, d.resolution,
+			       date_trunc('month', r.period_start)::date AS month_start
+			FROM stats_reconciliation_diffs d
+			JOIN stats_reconciliation_runs r ON r.run_id = d.run_id
+			WHERE d.id = $1
 		`, diffID).Scan(&runID, &tenantID, &dimensionType, &dimensionKey, &metric,
-			&sourceValue, &projectedValue, &difference, &resolution)
+			&sourceValue, &projectedValue, &difference, &resolution, &periodMonthStart)
 		if err != nil {
 			slog.Warn("failed to fetch diff for approval", "diff_id", diffID, "error", err)
 			recordFailedAccounting()
@@ -389,8 +397,12 @@ func (h *Handler) handleStatsReconciliationApprove(w http.ResponseWriter, r *htt
 			}
 		}
 
-		// Check if already resolved
-		if resolution == "approved" || resolution == "rejected" || resolution == "adjusted" {
+		// Check if already resolved. phantom_open is also non-approvable
+		// (reconciliation.go never feeds it to Refresh(); it represents a
+		// projection-without-source-facts gap that the operator must
+		// investigate out-of-band). Treating it as "skip" is consistent
+		// with the "no adjustment row needed" semantic.
+		if resolution == "approved" || resolution == "rejected" || resolution == "adjusted" || resolution == "phantom_open" {
 			slog.Info("skipping already resolved diff", "diff_id", diffID, "resolution", resolution)
 			continue // skip already resolved
 		}
@@ -409,19 +421,31 @@ func (h *Handler) handleStatsReconciliationApprove(w http.ResponseWriter, r *htt
 				return
 			}
 
-			// Create adjustment record
+			// Create adjustment record. The schema (migration 536) defines
+			// `adjustment_id`/`metric`; the previous version of this handler
+			// wrote `adjustment_type`/`metric_name` (not present in the
+			// current schema), which caused every approval to roll back
+			// (runbook §6). The schema-aligned INSERT below is the only
+			// green path; the follow-up migration 544 adds adjustment_type
+			// and metric_name columns so future adjustments can carry
+			// them explicitly without resorting to the reason prefix below.
+			adjustedReason := "[reconciliation] " + req.Reason
 			_, err = tx.Exec(ctx, `
 				INSERT INTO stats_adjustments
-					(tenant_id, month_start, adjustment_type, dimension_type, dimension_key,
-					 metric_name, delta, currency, reason, source_event_id,
+					(adjustment_id, tenant_id, month_start, dimension_type, dimension_key,
+					 metric, delta, currency, reason, source_event_id,
 					 approved_by, approved_at, created_by, created_at)
-				VALUES ($1, date_trunc('month', now())::date, 'reconciliation', $2, $3,
-				        $4, $5, 'USD', $6, $7, $8, now(), $9, now())
-			`, tenantID, dimensionType, dimensionKey, metric, difference,
-				req.Reason, runID, operator, operator)
+				VALUES (gen_random_uuid()::text, $1, $2, $3, $4,
+				        $5, $6, 'USD', $7, $8,
+				        $9, now(), $10, now())
+			`, tenantID, periodMonthStart, dimensionType, dimensionKey, metric, difference,
+				adjustedReason, runID, operator, operator)
 			if err != nil {
 				slog.Error("failed to create adjustment", "diff_id", diffID, "tenant_id", tenantID, "error", err)
-				recordFailedAccounting()
+				// The INSERT failed before approved++ ran, so recordFailedAccounting's
+				// closure cannot see this diff. Emit a single failed accounting
+				// record directly so the committed/failed split stays truthful.
+				metrics.RecordStatsAdjustment("approve", "failed", 1)
 				writeError(w, http.StatusInternalServerError, "failed to create adjustment record")
 				return
 			}
@@ -505,3 +529,21 @@ func statsWhere(start, end time.Time, tenant string, r *http.Request) (string, [
 func isMissingStatsRelation(err error) bool {
 	return strings.Contains(strings.ToLower(err.Error()), "stats_usage_daily") || strings.Contains(strings.ToLower(err.Error()), "stats_usage_monthly")
 }
+
+// beginApprovalTx opens the database transaction used by the reconciliation
+// approval handler. Tests override beginApprovalTxOverride to plug in pgxmock;
+// production callers fall back to h.db.Begin.
+func beginApprovalTx(ctx context.Context, h *Handler) (pgx.Tx, error) {
+	if beginApprovalTxOverride != nil {
+		return beginApprovalTxOverride(ctx, h)
+	}
+	if h == nil || h.db == nil {
+		return nil, fmt.Errorf("admin handler: nil database pool")
+	}
+	return h.db.Begin(ctx)
+}
+
+// beginApprovalTxOverride lets tests inject a fake pgx.Tx source. Nil in
+// production; the variable is package-private to keep the seam from leaking
+// into other packages.
+var beginApprovalTxOverride func(ctx context.Context, h *Handler) (pgx.Tx, error)

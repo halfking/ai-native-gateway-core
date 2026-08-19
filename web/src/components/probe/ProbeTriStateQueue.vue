@@ -38,6 +38,9 @@ interface ProbeCard {
   source: 'api' | 'sse'
   credential_id: number
   provider_id?: number
+  /** 供应商显示名（2026-08-20）— 自检 tab 卡片展示 供应商+凭据 用 */
+  provider_name?: string
+  provider_code?: string
   raw_model: string
   command?: string
   origin: ProbeOrigin
@@ -157,6 +160,11 @@ function upsertCard(next: ProbeCard) {
       key: targetKey,
       credential_id: next.credential_id || prev.credential_id,
       provider_id: next.provider_id ?? prev.provider_id,
+      // SSE deltas carry provider_name only when the publisher looked it up.
+      // Preserve the prior card's value when the delta omits it so a later
+      // completed/failed transition doesn't blank the cached supplier name.
+      provider_name: next.provider_name ?? prev?.provider_name,
+      provider_code: next.provider_code ?? prev?.provider_code,
       raw_model: next.raw_model || prev.raw_model,
       command: next.command ?? prev.command,
       origin: next.origin ?? prev.origin,
@@ -178,6 +186,8 @@ function taskToCard(t: ProbeTriStateTask): ProbeCard {
     source: 'api',
     credential_id: t.credential_id,
     provider_id: t.provider_id,
+    provider_name: t.provider_name,
+    provider_code: t.provider_code,
     raw_model: t.raw_model,
     command: t.command,
     origin: t.origin ?? originFromSource(t.source),
@@ -224,6 +234,8 @@ function tileToCard(tile: (typeof tiles.value)[number]): ProbeCard | null {
     source: 'sse',
     credential_id: tile.credential_id,
     provider_id: tile.provider_id,
+    provider_name: tile.provider_name,
+    provider_code: tile.provider_code,
     raw_model: tile.raw_model ?? '',
     origin: tile.origin ?? originFromSource(tile.source, tile.reason),
     status,
@@ -400,6 +412,27 @@ function originClass(o: ProbeOrigin): string {
     default: return 'is-primary'
   }
 }
+
+// credentialLabel 渲染 供应商 + 凭据 的主标签（2026-08-20 自检 tab 可读性
+// 修复）：当 provider_name 存在时显示 "<供应商> · 凭据 #<id>"，否则退回
+// "凭据 #<id>" 保持旧形状不变。fallback 用 provider_code，再退回纯 ID。
+function credentialLabel(c: ProbeCard): string {
+  const cred = `凭据 #${c.credential_id}`
+  if (c.provider_name) return `${c.provider_name} · ${cred}`
+  if (c.provider_code) return `${c.provider_code} · ${cred}`
+  return cred
+}
+
+// credentialTitle 在悬停 tooltip 里给出更完整的供应商 + 凭据 + 模型信息，
+// 方便排查时一眼看到 (供应商 code, 凭据 id, 模型)。
+function credentialTitle(c: ProbeCard): string {
+  const parts: string[] = []
+  if (c.provider_name) parts.push(c.provider_name)
+  if (c.provider_code && c.provider_code !== c.provider_name) parts.push(`(${c.provider_code})`)
+  parts.push(`凭据 #${c.credential_id}`)
+  if (c.raw_model) parts.push(c.raw_model)
+  return parts.join(' · ')
+}
 </script>
 
 <template>
@@ -440,8 +473,8 @@ function originClass(o: ProbeOrigin): string {
                 class="probe-card probe-card--pending"
                 data-testid="probe-pending-card"
               >
-                <div class="probe-card__target" :title="`凭据 #${c.credential_id} · ${c.raw_model}`">
-                  <span class="probe-card__cred">凭据 #{{ c.credential_id }}</span>
+                <div class="probe-card__target" :title="credentialTitle(c)">
+                  <span class="probe-card__cred">{{ credentialLabel(c) }}</span>
                   <span class="probe-card__model">{{ c.raw_model || '—' }}</span>
                 </div>
                 <div class="probe-card__meta">
@@ -473,8 +506,8 @@ function originClass(o: ProbeOrigin): string {
                 class="probe-card probe-card--inflight"
                 data-testid="probe-inflight-card"
               >
-                <div class="probe-card__target">
-                  <span class="probe-card__cred">凭据 #{{ c.credential_id }}</span>
+                <div class="probe-card__target" :title="credentialTitle(c)">
+                  <span class="probe-card__cred">{{ credentialLabel(c) }}</span>
                   <span class="probe-card__model">{{ c.raw_model || '—' }}</span>
                 </div>
                 <div class="probe-card__meta">
@@ -512,7 +545,7 @@ function originClass(o: ProbeOrigin): string {
                   <span class="tri-badge" :class="originClass(c.origin)" data-testid="origin-badge">
                     {{ ORIGIN_LABEL[c.origin] }}
                   </span>
-                  <span class="probe-card__cred">凭据 #{{ c.credential_id }}</span>
+                  <span class="probe-card__cred" :title="credentialTitle(c)">{{ credentialLabel(c) }}</span>
                   <span class="probe-card__model">{{ c.raw_model || '—' }}</span>
                   <span class="probe-card__latency">{{ fmtMs(c.latency_ms) }}</span>
                   <span class="probe-card__expand">{{ expandedKeys.has(c.key) ? '▾' : '▸' }}</span>
@@ -623,7 +656,7 @@ function originClass(o: ProbeOrigin): string {
 }
 
 .tri-cards--small .probe-card {
-  width: 220px;
+  width: 260px;
 }
 
 .tri-cards--large .probe-card {

@@ -143,7 +143,7 @@ func EventFromTelemetry(entry *telemetry.RequestLogEntry, now time.Time) (Event,
 		TenantID: tenant, ProviderID: entry.ProviderID, CredentialID: entry.CredentialID,
 		CanonicalID: entry.CanonicalID, RawModelName: rawModel, APIKeyID: entry.APIKeyID,
 		ApplicationID: entry.ApplicationID, EndUserID: valueString(entry.EndUserID),
-		PersonHash:    personHash(valueString(entry.APIKeyOwnerUser), valueString(entry.EndUserID)),
+		PersonHash:    personHash(tenant, valueString(entry.APIKeyOwnerUser), valueString(entry.EndUserID)),
 		ClientProfile: valueString(entry.ClientProfile), AgentName: valueString(entry.AgentName),
 		VirtualClient: valueString(entry.VirtualClientID), IdentityHash: valueString(entry.IdentityHash),
 		Status: status, ErrorKind: valueString(entry.ErrorKind), FailureStage: valueString(entry.FailureStage),
@@ -194,15 +194,15 @@ func valueFloat(v *float64) float64 {
 	return *v
 }
 
-func personHash(owner, endUser string) string {
+func personHash(tenant, owner, endUser string) string {
 	value := strings.TrimSpace(endUser)
 	if value == "" {
 		value = strings.TrimSpace(owner)
 	}
-	if value == "" {
+	if value == "" || tenant == "" {
 		return ""
 	}
-	sum := sha256.Sum256([]byte(value))
+	sum := sha256.Sum256([]byte(tenant + ":" + value))
 	return hex.EncodeToString(sum[:8])
 }
 
