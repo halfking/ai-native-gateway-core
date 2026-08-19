@@ -4579,7 +4579,7 @@ func main() {
 			ContextSecret: []byte(cfg.SecretKey),
 			SigningPubkey: os.Getenv("LLM_GATEWAY_PLUGIN_SIGNING_PUBKEY"),
 		})
-		pluginBases := ScanAndStartPlugins(sup, pluginsDir, pluginManifests)
+		pluginBases := ScanAndStartPluginsWithRegistry(sup, pluginRegistry, pluginManifests)
 		pluginActivations := make(map[string]pluginruntime.Activation, len(pluginManifests))
 		for _, manifest := range pluginManifests {
 			if manifest != nil {
