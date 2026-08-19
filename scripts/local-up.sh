@@ -179,7 +179,7 @@ ok "本地环境就绪"
 echo
 echo "  PG:       \$POSTGRES_HOST:\$POSTGRES_PORT (db=\$POSTGRES_DB, 凭证来自 .env.dev-research)"
 echo "  Redis:    localhost:6379"
-echo "  Mock:     http://localhost:${LLM_MOCK_HOST_PORT}  (真 OpenAI 兼容)"
+echo "  Mock:     http://localhost:${LLM_MOCK_HOST_PORT:-19080}  (真 OpenAI 兼容)"
 echo "  v1 GW:    http://localhost:8781   (cmd/gateway 生产入口)"
 echo "  v2 GW:    http://localhost:8782   (cmd/gateway-v2 演示入口)"
 echo
