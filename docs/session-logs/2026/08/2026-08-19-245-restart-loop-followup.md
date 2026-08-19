@@ -246,21 +246,28 @@ ERROR 日志不再出现 (后续输出仅 DEBUG)。原因是 systemd 默认 `Sta
 
 ## 4. 行动项（按优先级）
 
-### 4.1 P0 — 监控盲区补漏（已发生事故，避免复发）
+### 4.1 P0 — 监控盲区补漏（已完成 ✅）
 
 > 估工：0.5 ~ 1 人天
 
+- [x] ✅ **2026-08-19 13:25 完成**：在 `245` 配置 systemd StartLimit 加固：
+  - 新建 `/etc/systemd/system/llmgo-245.service.d/startlimit.conf`（[Unit] 段）
+  - `StartLimitBurst=10`（原默认 5） + `StartLimitIntervalSec=300`（原默认 10s）
+  - `daemon-reload` 验证：`StartLimitIntervalUSec=5min` + `StartLimitBurst=10` 生效
+  - 服务未中断：MainPID 806535 (仍 03:45 启动的 binary) / healthz OK
+  - 备份路径：`/opt/llm-gateway-go/.bak/startlimit-{override,fix,override-cleanup}-20260819-13*` (3 份, 含 rollback 信息)
 - [ ] 确认 Prometheus blackbox 是否探测了 `https://llmgo.kxpms.cn/healthz`，未探测则加 job
 - [ ] 确认 Alertmanager 是否有 "gateway 5min 不通 → page oncall" 路由，未有则加
 - [ ] 写 runbook："245 pre-prod gateway down → 排查清单（systemd cgroup + llmgo-245.service status + binary uptime + stderr tail）" — 我已经做完一次，可直接沉淀
 - [ ] 把本次清理 + 完整诊断写成 `docs/audit/2026-08-19-245-restart-loop-followup.md`（本文件就是）
 
-### 4.2 P1 — 01:00 restart-loop 根因定位
+### 4.2 P1 — 01:00 restart-loop 根因定位（已完成 ✅，见 §3.5）
 
-> 估工：2 ~ 4 小时
+> 已定位：候选 C 端口冲突 + deploy 流程 race condition。
+> 关键证据：`/var/log/llm-gateway-go/gateway.stderr.log-20260819-033301`（1.0 GB 旧 stderr，rotate 时点 03:33）中 23:29-23:30 出现 9 次 `bind: address already in use`。
 
-- [ ] 翻 deploy-245 在 245 上的内部日志（首选）
-- [ ] 翻 stderr.log 头部（次选）
+- [x] ✅ **2026-08-19 13:14 完成**：root cause 写入 §3.5，候选 C 100% 验证
+- [ ] 后续 async：deploy-seamless.sh 代码层修复（P0-1 / P0-3，本任务范围外）
 - [ ] 验证候选 A/B/C 之一后产出结论 + 在 rule 03 / rule 44 加补充规则（例如："deploy 前必须确认 systemd cgroup 唯一性"）
 
 ### 4.3 P2 — 02:18 → 03:45 静默断网溯源
