@@ -4579,7 +4579,7 @@ func main() {
 			ContextSecret: []byte(cfg.SecretKey),
 			SigningPubkey: os.Getenv("LLM_GATEWAY_PLUGIN_SIGNING_PUBKEY"),
 		})
-		pluginBases := ScanAndStartPlugins(sup, pluginsDir, pluginManifests)
+		pluginBases := ScanAndStartPluginsWithRegistry(sup, pluginRegistry, pluginManifests)
 		pluginActivations := make(map[string]pluginruntime.Activation, len(pluginManifests))
 		for _, manifest := range pluginManifests {
 			if manifest != nil {
@@ -5601,8 +5601,9 @@ func main() {
 		}
 	}
 	if liveStreamHub != nil {
-		liveStreamHub.SetQueueSnapshotProvider(wireQueueSnapshotProvider(gatewayQueueProjection))
-		slog.Info("live stream: queue snapshot provider wired", "wired", gatewayQueueProjection != nil)
+		projection := gatewayQueueProjection.Load()
+		liveStreamHub.SetQueueSnapshotProvider(wireQueueSnapshotProvider(projection))
+		slog.Info("live stream: queue snapshot provider wired", "wired", projection != nil)
 	}
 
 	srv := &http.Server{
@@ -5745,10 +5746,7 @@ func main() {
 			pipeline.SetQueueObservationSink(nil)
 		}
 		gatewayRequestJourneySink = nil
-		if gatewayQueueProjection != nil {
-			gatewayQueueProjection.Close()
-			gatewayQueueProjection = nil
-		}
+		gatewayQueueProjection.Close()
 		if err := journeyRecorder.Close(stopCtx); err != nil {
 			slog.Warn("request journey recorder drain failed", "error", err)
 		}

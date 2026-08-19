@@ -48,8 +48,13 @@ func ScanPlugins(pluginsDir string, reg *pluginruntime.Registry) ([]*pluginrunti
 			continue
 		}
 		reg.SetPlugin(&pluginruntime.PluginState{
-			PluginID: m.PluginID, PluginVersion: m.PluginVersion, Status: "ready",
+			PluginID: m.PluginID, PluginVersion: m.PluginVersion, Status: "discovered",
 		})
+		if err := reg.SetBindings(m.PluginID, m.Bindings, pluginruntime.BindingValidationOptions{}); err != nil {
+			fmt.Fprintf(os.Stderr, "plugin %s bindings invalid: %v\n", e.Name(), err)
+			reg.SetPluginStatus(m.PluginID, "failed")
+			continue
+		}
 		reg.SetNav(m.PluginID, m.PluginVersion, m.Pages)
 		manifests = append(manifests, m)
 	}

@@ -21,7 +21,10 @@ type command interface {
 
 // SupervisorConfig 是 supervisor 的初始化配置。
 type SupervisorConfig struct {
-	SocketDir     string
+	SocketDir string
+	// ContextSecret remains gateway-local and is used only to redact child output.
+	// Plugin-to-gateway calls must use a dedicated, revocable transport identity;
+	// the gateway secret is never placed in a child environment.
 	ContextSecret []byte
 	// SigningPubkey 是 ed25519 公钥 hex；为空时跳过 manifest 签名校验（开发模式）。
 	SigningPubkey string
@@ -50,9 +53,15 @@ func NewSupervisor(cfg SupervisorConfig) *Supervisor {
 	return s
 }
 
-// Start 启动插件进程并返回初始状态。握手（ready 判定）由 handshake.go 完成。
-// entrypoint 来自 manifest.Runtime.Entrypoint；socket/context secret/contract 通过 env 注入。
+// Start starts a plugin process in a restricted environment. Readiness is not
+// granted here: callers must complete handshake, health, and binding checks.
 func (s *Supervisor) Start(ctx context.Context, m *Manifest) (*PluginState, error) {
+	if m == nil || m.PluginID == "" {
+		return nil, fmt.Errorf("plugin manifest with id required")
+	}
+	if m.Runtime.Entrypoint == "" && m.ManifestPath != "" {
+		return nil, fmt.Errorf("plugin manifest entrypoint required")
+	}
 	if err := VerifyManifestSignature(m.ManifestPath, s.cfg.SigningPubkey); err != nil {
 		return nil, fmt.Errorf("plugin %s manifest signature: %w", m.PluginID, err)
 	}
@@ -62,18 +71,6 @@ func (s *Supervisor) Start(ctx context.Context, m *Manifest) (*PluginState, erro
 		"AI_SESSION_MANAGER_PLUGIN_SOCKET=" + socketPath,
 		"GATEWAY_PLUGIN_CONTRACT=" + m.GatewayCompatibility.APIContract,
 		"AI_SESSION_MANAGER_MANIFEST=" + manifestPath,
-	}
-	if len(s.cfg.ContextSecret) > 0 {
-		env = append(env, "AI_SESSION_MANAGER_GATEWAY_CONTEXT_SECRET="+string(s.cfg.ContextSecret))
-	}
-	// 显式透传插件所需的数据库 DSN。newExecCommand.Start 会以 append(os.Environ(),
-	// env...) 作为子进程环境，所以 supervisor 进程继承的 DATABASE_URL 也会兜底到达；
-	// 这里显式注入是为了：1) 让配置来源可观测（manifest/env 而非隐式继承）；
-	// 2) 在测试中可通过 SupervisorConfig 控制而非依赖全局 os.Getenv 污染。
-	// 见 cmd/session-manager/main.go 的 dbFromEnv() —— 插件侧用同一个 DSN 打开
-	// session_projection + session_state 表做本地读与 shadow 对账。
-	if v := os.Getenv("AI_SESSION_MANAGER_DATABASE_URL"); v != "" {
-		env = append(env, "AI_SESSION_MANAGER_DATABASE_URL="+v)
 	}
 	cmd := s.commandFactory(socketPath, m.Runtime.Entrypoint, env)
 	if err := cmd.Start(ctx); err != nil {
@@ -99,6 +96,11 @@ func (s *Supervisor) Stop(pluginID string) error {
 	s.mu.Lock()
 	cmd, ok := s.procs[pluginID]
 	delete(s.procs, pluginID)
+	if st := s.states[pluginID]; st != nil {
+		st.Status = "stopped"
+		st.SocketPath = ""
+		st.Pid = 0
+	}
 	s.mu.Unlock()
 	if !ok {
 		return fmt.Errorf("plugin %s not running", pluginID)
@@ -204,7 +206,7 @@ func (e *execCommand) Start(ctx context.Context) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	c := exec.CommandContext(ctx, e.entrypoint)
-	c.Env = append(os.Environ(), e.env...)
+	c.Env = append([]string(nil), e.env...)
 	// 插件 stdout/stderr 经过 redacting writer 过滤掉 context secret 后再写入 gateway 日志流；
 	// 防止插件把 env 打到日志里造成 HMAC secret 泄露。P5 计划改为结构化捕获。
 	c.Stdout = NewRedactingWriter(e.secret, os.Stderr)

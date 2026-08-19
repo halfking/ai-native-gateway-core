@@ -6352,16 +6352,16 @@ func (h *ChatHandler) recordInitialRequestLog(
 		CredentialID:    credentialID,
 		CanonicalID:     canonicalID,
 		// 2026-07-27: 标准模型名 (canonical_name),见 migration 458。
-		CanonicalModel:    strPtr(canonicalName),
-		ClientProfile:     strPtr(clientProfile),
-		IdentityHash:      strPtr(identityHash),
-		RequestMode:       strPtr(requestMode),
-		GwSessionID:       strPtr(gwSessionID),
-		GwTaskID:          strPtr(gwTaskID),
-		Success:           false,
-		RequestStatus:     strPtr(telemetry.RequestStatusInProgress),
-		PromptTokens:      promptTokensEstimateFromContext(autoCtx, requestBody),
-		UsageSource:       usageSourceForEstimate(autoCtx, requestBody),
+		CanonicalModel: strPtr(canonicalName),
+		ClientProfile:  strPtr(clientProfile),
+		IdentityHash:   strPtr(identityHash),
+		RequestMode:    strPtr(requestMode),
+		GwSessionID:    strPtr(gwSessionID),
+		GwTaskID:       strPtr(gwTaskID),
+		Success:        false,
+		RequestStatus:  strPtr(telemetry.RequestStatusInProgress),
+		PromptTokens:   promptTokensEstimateFromContext(autoCtx, requestBody),
+		UsageSource:    usageSourceForEstimate(autoCtx, requestBody),
 		// 2026-08-19: copy token_band from the SessionCompressor result so the
 		// initial in_progress row carries the same classification as the eventual
 		// success UPDATE. The success path's emitTelemetry will overwrite this
@@ -7137,7 +7137,7 @@ func streamErrorKindForDetailCode(outcome *StreamOutcome, detailCode string) str
 		return "client_cancel"
 	case "concurrent_overload", "concurrent":
 		return "concurrent_overload"
-	case "empty_stream_no_content":
+	case "empty_stream_no_content", "early_empty_detection":
 		return "empty_response"
 	case "eof_without_done":
 		return "eof_without_done"
