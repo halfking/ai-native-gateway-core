@@ -26,7 +26,29 @@ import { useSessionSummaryJump } from '../composables/useSessionSummaryJump'
 
 const { t } = useI18n()
 
-const days = ref(7)
+const STORAGE_KEY_DAYS = 'tenant_dashboard_days'
+const VALID_DAYS = [1, 7, 30] as const
+
+function readStoredDays(): number {
+  try {
+    const raw = Number(localStorage.getItem(STORAGE_KEY_DAYS))
+    return VALID_DAYS.includes(raw as typeof VALID_DAYS[number]) ? raw : 7
+  } catch {
+    return 7
+  }
+}
+
+function persistDays(value: number) {
+  try {
+    if (VALID_DAYS.includes(value as typeof VALID_DAYS[number])) {
+      localStorage.setItem(STORAGE_KEY_DAYS, String(value))
+    }
+  } catch {
+    // Storage failure should not prevent tenant statistics from loading.
+  }
+}
+
+const days = ref(readStoredDays())
 const summary = ref<MaasUsageSummary | null>(null)
 const wallet = ref<MaasWallet | null>(null)
 const loading = ref(false)
@@ -207,9 +229,26 @@ const { jumpToSessionSummary: openSessionSummary } = useSessionSummaryJump({
 const STORAGE_KEY_TAB = 'tenant_dashboard_active_tab'
 const activeTab = ref<'stream' | 'stats'>('stream')
 
+function readStoredTab(): 'stream' | 'stats' | null {
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY_TAB)
+    return saved === 'stream' || saved === 'stats' ? saved : null
+  } catch {
+    return null
+  }
+}
+
+function persistTab(tab: 'stream' | 'stats') {
+  try {
+    localStorage.setItem(STORAGE_KEY_TAB, tab)
+  } catch {
+    // Storage failure should not prevent tenant dashboard navigation.
+  }
+}
+
 function switchTab(tab: 'stream' | 'stats') {
   activeTab.value = tab
-  localStorage.setItem(STORAGE_KEY_TAB, tab)
+  persistTab(tab)
 }
 
 // 5 分钟自动刷新
@@ -227,8 +266,8 @@ function scheduleStatsRecalibrate() {
 }
 
 onMounted(() => {
-  const saved = localStorage.getItem(STORAGE_KEY_TAB)
-  if (saved === 'stream' || saved === 'stats') activeTab.value = saved
+  const saved = readStoredTab()
+  if (saved) activeTab.value = saved
   void load()
   scheduleStatsRecalibrate()
 })
@@ -267,7 +306,7 @@ onUnmounted(() => {
       </div>
       <div class="page-header-right">
         <span class="tenant-badge">{{ tenantLabel }}</span>
-        <select v-model.number="days" class="days-select" @change="load">
+          <select v-model.number="days" class="days-select" @change="persistDays(days); load()">
           <option :value="1">{{ t('tenants.dashboard.range.today') }}</option>
           <option :value="7">{{ t('tenants.dashboard.range.last7d') }}</option>
           <option :value="30">{{ t('tenants.dashboard.range.last30d') }}</option>
