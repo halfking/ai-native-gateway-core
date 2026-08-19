@@ -220,7 +220,7 @@ go test -v ./internal/quality
 
 ```bash
 # 启动本地 Docker 环境
-docker-compose -f docker-compose.local-r112.yml up -d
+docker-compose -f docker-compose.dev-research.yml up -d
 
 # 插入测试数据
 psql -h localhost -p 15432 -U kxuser -d llm_gateway < testdata/request_logs.sql
