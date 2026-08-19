@@ -3,6 +3,7 @@ import { fetchDashboardBoard, fetchBoardOperational, type BoardPayload, type Boa
 import { resolveDashboardRefreshMs } from './dashboardRefreshSettings'
 import { subscribeTerminalRequests, connectionRef } from './liveStreamStore'
 import { applyLiveRequestToBoard } from './boardLiveMerge'
+import { dashboardPreferenceStorageKey } from './liveStreamPreferences'
 import {
   defaultBoardTimeRange,
   boardRangeIncludesToday,
@@ -12,6 +13,43 @@ import {
 
 const DEFAULT_REFRESH_MS = 10_000
 const SSE_RECONCILE_MIN_MS = 30_000
+const LEGACY_TIME_RANGE_STORAGE_KEY = 'dashboard_board_time_range_v1'
+
+function isDateOnly(value: unknown): value is string {
+  return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(Date.parse(`${value}T00:00:00Z`))
+}
+
+function normalizeStoredTimeRange(value: unknown): BoardTimeRange | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const raw = value as Partial<BoardTimeRange>
+  if (raw.preset === 'today' || raw.preset === '7d' || raw.preset === '30d') {
+    const days = raw.preset === 'today' ? 1 : raw.preset === '7d' ? 7 : 30
+    return { preset: raw.preset, days }
+  }
+  if (raw.preset === 'custom' && isDateOnly(raw.start) && isDateOnly(raw.end) && raw.start <= raw.end) {
+    const days = Math.max(1, Math.round((Date.parse(`${raw.end}T00:00:00Z`) - Date.parse(`${raw.start}T00:00:00Z`)) / 86_400_000) + 1)
+    return { preset: 'custom', days, start: raw.start, end: raw.end }
+  }
+  return null
+}
+
+function readStoredTimeRange(): BoardTimeRange {
+  try {
+    const raw = localStorage.getItem(dashboardPreferenceStorageKey('board-range'))
+      ?? localStorage.getItem(LEGACY_TIME_RANGE_STORAGE_KEY)
+    return normalizeStoredTimeRange(raw ? JSON.parse(raw) : null) ?? defaultBoardTimeRange()
+  } catch {
+    return defaultBoardTimeRange()
+  }
+}
+
+function persistTimeRange(range: BoardTimeRange) {
+  try {
+    localStorage.setItem(dashboardPreferenceStorageKey('board-range'), JSON.stringify(range))
+  } catch {
+    // Browser storage can be unavailable; the board still works in-memory.
+  }
+}
 
 async function resolveRefreshMs(): Promise<number> {
   return resolveDashboardRefreshMs()
@@ -23,7 +61,7 @@ function sseConnectionActive(): boolean {
 }
 
 export function useDashboardBoard() {
-  const timeRange = ref<BoardTimeRange>(defaultBoardTimeRange())
+  const timeRange = ref<BoardTimeRange>(readStoredTimeRange())
   const days = computed(() => timeRange.value.days)
   const liveUpdatesEnabled = computed(() => boardRangeIncludesToday(timeRange.value))
 
@@ -188,7 +226,9 @@ export function useDashboardBoard() {
   }
 
   function setTimeRange(next: BoardTimeRange) {
-    timeRange.value = next
+    const normalized = normalizeStoredTimeRange(next) ?? defaultBoardTimeRange()
+    timeRange.value = normalized
+    persistTimeRange(normalized)
   }
 
   watch(liveUpdatesEnabled, (enabled) => {

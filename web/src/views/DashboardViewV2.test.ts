@@ -21,7 +21,7 @@ describe('dashboard board tab contract', () => {
   it('defaults to stream tab in DashboardView', async () => {
     const source = await readViewSource('DashboardView.vue')
     expect(source).toContain("ref<DashboardTabId>('stream')")
-    expect(source).toContain("saved === 'board'")
+    expect(source).toContain('readStoredTab')
   })
 
   it('renders BoardPanel only on board tab', async () => {

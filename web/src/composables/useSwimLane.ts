@@ -5,6 +5,7 @@
 import { computed, ref, type ComputedRef } from 'vue'
 import type { GroupByDimension, SwimLane, SwimLaneMode } from '../types/swimlane'
 import type { LiveRequest, LiveStreamSnapshot, LiveStreamLegendItem } from './liveStreamStore'
+import { readLiveStreamPreferences, writeLiveStreamPreferences } from './liveStreamPreferences'
 
 const emptySnapshot: LiveStreamSnapshot = {
   summary: { total: 0, success: 0, failure: 0, in_progress: 0 },
@@ -15,23 +16,16 @@ const emptySnapshot: LiveStreamSnapshot = {
 }
 
 export function useSwimLane(snapshotRef?: ComputedRef<LiveStreamSnapshot | null>) {
-  // 2026-08-14 V3.2: 默认选中"按处理队列"维度
-  const groupBy = ref<GroupByDimension>('queue')
-  const selectedLegends = ref<Set<string>>(new Set())
+  // Restore the user's overview preference before the first render.
+  const savedPreferences = readLiveStreamPreferences()
+  const groupBy = ref<GroupByDimension>(savedPreferences.groupBy)
+  const selectedLegends = ref<Set<string>>(new Set(savedPreferences.selectedLegends))
   const localSnapshot = ref<LiveStreamSnapshot>(emptySnapshot)
-  // 2026-07-23: 小模式（竖条）作为默认展示模式
-  const mode = ref<SwimLaneMode>('small')
-  const MODE_STORAGE_KEY = 'llmgw_swimlane_mode'
-
-  // 从 localStorage 恢复用户上次选择的模式
-  try {
-    const saved = localStorage.getItem(MODE_STORAGE_KEY)
-    if (saved === 'small' || saved === 'large') mode.value = saved
-  } catch { /* localStorage 不可用，忽略 */ }
+  const mode = ref<SwimLaneMode>(savedPreferences.mode)
 
   function setMode(next: SwimLaneMode) {
     mode.value = next
-    try { localStorage.setItem(MODE_STORAGE_KEY, next) } catch { /* ignore */ }
+    writeLiveStreamPreferences({ mode: next })
   }
 
   const snapshot = computed(() => snapshotRef?.value || localSnapshot.value)
@@ -61,6 +55,7 @@ export function useSwimLane(snapshotRef?: ComputedRef<LiveStreamSnapshot | null>
 
   function setGroupBy(dimension: GroupByDimension) {
     groupBy.value = dimension
+    writeLiveStreamPreferences({ groupBy: dimension })
   }
 
   function toggleLegend(key: string) {
@@ -68,10 +63,12 @@ export function useSwimLane(snapshotRef?: ComputedRef<LiveStreamSnapshot | null>
     if (next.has(key)) next.delete(key)
     else next.add(key)
     selectedLegends.value = next
+    writeLiveStreamPreferences({ selectedLegends: Array.from(next) })
   }
 
   function clearLegendSelection() {
     selectedLegends.value = new Set()
+    writeLiveStreamPreferences({ selectedLegends: [] })
   }
 
   function applySnapshot(next: LiveStreamSnapshot | null) {

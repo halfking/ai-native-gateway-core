@@ -19,6 +19,7 @@
 import { ref, computed, type Ref, type ComputedRef } from 'vue'
 import type { LiveStatus, LiveModelCategory } from './useLiveStream'
 import type { SwimLane } from '../types/swimlane'
+import { readLiveStreamPreferences, writeLiveStreamPreferences } from './liveStreamPreferences'
 
 export interface LiveStreamFiltersOptions {
   /** 泳道数据源（来自 useSwimLane 的 lanes） */
@@ -29,20 +30,25 @@ export function useLiveStreamFilters(options: LiveStreamFiltersOptions) {
   const { lanes } = options
 
   // ========== 过滤器状态 ==========
-  // 2026-07-24: 请求类型过滤。两项都选中表示显示全部请求。
-  const requestTypeFilter = ref<Set<'business' | 'probe'>>(new Set(['business', 'probe']))
+  const savedFilters = readLiveStreamPreferences().filters
+  // 请求类型过滤。两项都选中表示显示全部请求。
+  const requestTypeFilter = ref<Set<'business' | 'probe'>>(new Set(savedFilters.requestTypes))
 
-  // 2026-07-24: 多维过滤状态
-  const statusFilter = ref<Set<LiveStatus>>(new Set())
-  const modelFilter = ref<Set<string>>(new Set())
-  const providerFilter = ref<Set<string>>(new Set())
-  const vendorFilter = ref<Set<LiveModelCategory>>(new Set())
-  const agentFilter = ref<Set<string>>(new Set())  // 2026-07-27: 客户端过滤
+  // 多维过滤状态。空集合仍表示不筛选。
+  const statusFilter = ref<Set<LiveStatus>>(new Set(savedFilters.statuses as LiveStatus[]))
+  const modelFilter = ref<Set<string>>(new Set(savedFilters.models))
+  const providerFilter = ref<Set<string>>(new Set(savedFilters.providers))
+  const vendorFilter = ref<Set<LiveModelCategory>>(new Set(savedFilters.vendors as LiveModelCategory[]))
+  const agentFilter = ref<Set<string>>(new Set(savedFilters.agents))
 
   // Normalize model filter for case-insensitive comparison
   const normalizedModelFilter = computed(() =>
     Array.from(modelFilter.value).map(m => m.toLowerCase().trim())
   )
+
+  function persistFilter<K extends keyof typeof savedFilters>(key: K, value: typeof savedFilters[K]) {
+    writeLiveStreamPreferences({ filters: { [key]: value } })
+  }
 
   // ========== 切换请求类型 ==========
   function toggleRequestType(type: 'business' | 'probe') {
@@ -53,20 +59,25 @@ export function useLiveStreamFilters(options: LiveStreamFiltersOptions) {
       next.add(type)
     }
     requestTypeFilter.value = next
+    persistFilter('requestTypes', Array.from(next))
   }
 
   // ========== Apply 函数（弹窗选择后应用） ==========
   function applyStatusFilter(selected: string[]) {
     statusFilter.value = new Set(selected as LiveStatus[])
+    persistFilter('statuses', Array.from(statusFilter.value))
   }
   function applyModelFilter(selected: string[]) {
     modelFilter.value = new Set(selected)
+    persistFilter('models', Array.from(modelFilter.value))
   }
   function applyProviderFilter(selected: string[]) {
     providerFilter.value = new Set(selected)
+    persistFilter('providers', Array.from(providerFilter.value))
   }
   function applyVendorFilter(selected: string[]) {
     vendorFilter.value = new Set(selected as LiveModelCategory[])
+    persistFilter('vendors', Array.from(vendorFilter.value))
   }
   function applyAgentFilter(selected: string[]) {
     // agent_name is matched case-insensitively (see filteredLanes, which
@@ -74,16 +85,27 @@ export function useLiveStreamFilters(options: LiveStreamFiltersOptions) {
     // the stored set stays consistent with availableAgents (always lowercase)
     // and the filter dialog checkbox state (draft.has(opt)) stays in sync.
     agentFilter.value = new Set(selected.map(s => s.toLowerCase()))
+    persistFilter('agents', Array.from(agentFilter.value))
   }
 
   // ========== 清空所有过滤器 ==========
   function clearAllFilters() {
     requestTypeFilter.value = new Set(['business', 'probe'])
-    statusFilter.value.clear()
-    modelFilter.value.clear()
-    providerFilter.value.clear()
-    vendorFilter.value.clear()
-    agentFilter.value.clear()
+    statusFilter.value = new Set()
+    modelFilter.value = new Set()
+    providerFilter.value = new Set()
+    vendorFilter.value = new Set()
+    agentFilter.value = new Set()
+    writeLiveStreamPreferences({
+      filters: {
+        requestTypes: ['business', 'probe'],
+        statuses: [],
+        models: [],
+        providers: [],
+        vendors: [],
+        agents: [],
+      },
+    })
   }
 
   // ========== 可选项列表（从 lanes 实时提取） ==========
