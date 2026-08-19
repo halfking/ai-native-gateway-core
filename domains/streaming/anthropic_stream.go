@@ -184,7 +184,7 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 			"first_byte_timeout_seconds", int(runtimeCfg.firstByteTimeout.Seconds()),
 			"hint", "if frequent, increase LLM_GATEWAY_FIRST_BYTE_TIMEOUT or admin config (default 120s)",
 		)
-		terminalVisible := gate.MayWriteTerminal()
+		terminalVisible := attemptHasClientSemanticOutput(gate, 0)
 		if terminalVisible {
 			errPayload := map[string]any{
 				"type":  "error",
@@ -221,7 +221,7 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 			if capture != nil {
 				capture.MarkInterruptedWithReason("json_error_in_stream")
 			}
-			terminalVisible := gate.MayWriteTerminal()
+			terminalVisible := attemptHasClientSemanticOutput(gate, 0)
 			if terminalVisible {
 				captureSSE("error", map[string]any{
 					"type":  "error",
@@ -477,7 +477,7 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 				if capture != nil {
 					capture.MarkInterruptedWithReason("stream_timeout")
 				}
-				if gate.MayWriteTerminal() {
+				if attemptHasClientSemanticOutput(gate, chunkCount) {
 					errPayload := map[string]any{
 						"type":  "error",
 						"error": map[string]any{"type": "timeout", "message": "upstream read timeout"},
@@ -494,7 +494,7 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 				if capture != nil {
 					capture.MarkInterruptedWithReason(failure.Reason)
 				}
-				if gate.MayWriteTerminal() {
+				if attemptHasClientSemanticOutput(gate, chunkCount) {
 					errPayload := map[string]any{
 						"type":  "error",
 						"error": map[string]any{"type": "upstream_error", "message": fmt.Sprintf("stream read error: %v", readResult.err)},
