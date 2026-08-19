@@ -5675,7 +5675,10 @@ func main() {
 	slog.Info("gateway shutting down")
 
 	// 1. Stop accepting new connections — in-flight requests drain naturally
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// 2026-08-19: 30s→23s. systemd TimeoutStopSec=35s (drop-in), srv.Shutdown 必须 ≤ 23s
+	// 留 12s 余量给 worker stop (stopCtx 5s + 启动新进程 ~3s + 系统开销 ~4s).
+	// 245 实测 in-flight drain < 5s, 23s 足够覆盖 (handoff changelog §3 B1-follow-up).
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 23*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		slog.Error("gateway shutdown error", "error", err)
@@ -5687,11 +5690,9 @@ func main() {
 	}
 
 	// ── Stop background services with a global timeout ──
-	// systemd TimeoutStopSec is 25s; srv.Shutdown uses ~5s for
-	// in-flight HTTP drain, leaving ~20s for all Stop() calls.
-	// If they exceed this budget the process exits anyway (SIGKILL
-	// from systemd), but a clean(ish) log is better than a silent kill.
-	stopCtx, stopCancel := context.WithTimeout(context.Background(), 20*time.Second)
+	// 2026-08-19: stopCtx 20s→5s. systemd TimeoutStopSec=35s 总预算下, srv.Shutdown 23s 后
+	// 仅剩 12s, worker stop 必须快速失败. 5s 足够让 in-flight workers drain, 超时则 SIGKILL.
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer stopCancel()
 	stopDone := make(chan struct{}, 1)
 
