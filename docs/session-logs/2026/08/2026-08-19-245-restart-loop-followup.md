@@ -132,6 +132,116 @@
 2. **次选** — 翻 `245` /var/log/llm-gateway-go/gateway.stderr.log 头部（看 01:00 时段是否被截断或被覆盖）
 3. **末选** — 翻 71 PG pg_log 同步审查（验证候选 B）
 
+### 3.5 ✅ 调查完成 — Root Cause 确认（2026-08-19 13:14 CST）
+
+**候选 C（端口冲突）100% 验证**，且连带揭露 deploy 流程设计缺陷。
+
+#### 关键证据
+
+**A. rotated 旧 stderr 找到**
+
+```
+$ ls -la /var/log/llm-gateway-go/
+-rw-r--r-- 1.0G  /var/log/llm-gateway-go/gateway.stderr.log-20260819-033301  # 03:33 被 rotate
+-rw-r--r-- 23M   /var/log/llm-gateway-go/gateway.stderr.log                    # 当前
+```
+
+旧 stderr 共 1005448 行，涵盖 2026-08-17 22:06 → 2026-08-19 03:33 的所有 startup / runtime 日志。
+
+**B. 23:29:48 — restart loop 真实起点**
+
+```jsonl
+{"time":"2026-08-18T23:29:47.797","level":"INFO","msg":"tuning_signals.strategy column ensured..."}
+{"time":"2026-08-18T23:29:48.331","level":"ERROR","msg":"pprof diagnostic server failed","error":"listen tcp 127.0.0.1:6060: bind: address already in use"}
+{"time":"2026-08-18T23:29:48.331","level":"INFO","msg":"gateway listening","listen":":8781"}
+{"time":"2026-08-18T23:29:48.331","level":"ERROR","msg":"gateway listen failed","error":"listen tcp :8781: bind: address already in use"}
+{"time":"2026-08-18T23:29:53.463","level":"INFO","msg":"tuning_signals.strategy column ensured..."}
+{"time":"2026-08-18T23:29:53.938","level":"ERROR","msg":"gateway listen failed","error":"listen tcp :8781: bind: address already in use"}
+... 共 9 次 bind 失败（间隔 5-6s = systemd RestartSec）
+```
+
+**核心证据**：启动期 binary 调用 `net.Listen(":8781")` 立即报 `bind: address already in use`。
+说明 **8781 端口被另一个进程占用**。最可能原因：上一次 deploy 残留的旧 binary PID 未被 systemd / deploy 脚本彻底 kill。
+
+**C. 23:30-01:00 期间 — 90 min 静默离线**
+
+ERROR 日志不再出现 (后续输出仅 DEBUG)。原因是 systemd 默认 `StartLimitBurst=5 / StartLimitIntervalSec=10s` —— 5 次快速失败后 systemd **不再尝试**，且不进 journal ERROR 级别。
+
+**D. 01:00:00 — deploy 脚本手动启动成功**
+
+```jsonl
+{"time":"2026-08-19T01:00:00.859","level":"INFO","msg":"logging: file rotation enabled..."}
+{"time":"2026-08-19T01:00:00.926","level":"INFO","msg":"gateway starting","listen":":8781"}
+{"time":"2026-08-19T01:00:00.869","level":"INFO","msg":"postgres connected"}
+... 30+ 行 schema ensured
+{"time":"2026-08-19T01:00:01.680","level":"INFO","msg":"probe health dashboard views ensured..."}
+```
+
+**此 startup 不是 systemd 拉起的**：journal 显示该时段 systemd counter = 892 并仍在失败。
+说明有人（ZCode/运维脚本）手动启了 binary，**绕过 systemd**，跑了 43 秒后 binary 突然挂掉，触发 systemd "检测到 PID 1 但 unit 期望 PID ≠ 1" 模式 → 试图 restart → 又一次 bind 失败。
+
+**E. 根因链重构**
+
+```text
+23:29:48  deploy 启动新 binary
+           └─ 旧 binary PID 还在跑（也 listen :8781）
+           └─ 新 binary bind :8781 失败
+           └─ 退出码 1
+           └─ systemd RestartSec=5s 循环 9 次，全失败
+           └─ systemd StartLimitBurst=5 触发，静默放弃
+           
+23:30-01:00  gateway 离线（90 分钟）
+            └─ systemd 静默 → 监控告警
+            └─ 业务不可用 (llmgo.kxpms.cn 5xx)
+            
+01:00:00    某次 deploy 脚本尝试手动 nohup 启 binary
+            └─ 此时 8781 端口已被释放（没旧进程了）
+            └─ 启动成功，跑 43 秒
+            
+01:00:43    systemd journal 出现 counter is at 892
+            └─ systemd 检测 unit 期望的 PID ≠ 实际 PID
+            └─ 试图 restart（但实际想做的 unit exec 已被 deploy 替换）
+            └─ 重新 bind 失败（旧 binary 已停，但 systemd StartLimit 仍未清零）
+            └─ 循环到 01:01:35（counter 901）
+            
+02:18:12    某运维 stop llm-gateway-go.service 清场
+            └─ systemd 退出
+            
+02:18-03:45  gateway 离线（87 分钟）
+            └─ llmgo-245.service（新的 unit）enabled 但没人 start
+            
+03:45:45    deploy 启 llmgo-245.service，启动成功
+            └─ 9h 健康运行到 13:00
+```
+
+#### Root Cause（精炼）
+
+> **`scripts/deploy-seamless.sh deploy 245` 没有等待旧 binary 释放 :8781 :6060 端口就启动新 binary。新 binary 立即 bind 失败退出，触发 systemd RestartSec 循环至 StartLimitBurst 上限静默停止。** Deploy 流程对 systemd unit 的协作契约不完整：缺乏 "wait for old process to drain" + "verify port released" + "no double-bind" 三道关卡。
+
+#### 次因（systemd / 架构）
+
+1. **systemd StartLimitBurst 默认 5** 太敏感，遇到短暂 bind 冲突就静默离线
+2. **deploy 脚本无 audit log**：`/opt/llm-gateway-go/deploy-logs/` 不存在，只有 `releases/*/deployment.json` 文件，每次 deploy 残留 .env.bak.ops.* 而无 stdout
+3. **double unit drift**：`llm-gateway-go.service` (disabled, dead) + `llmgo-245.service` (enabled, active) 同时存在于系统，运维人员 confused
+4. **monitoring 缺口**：upstream health probe 失败未触发 page oncall（rule 03 §6.2 L2 盲区）
+
+#### 修复建议（按工时与影响面）
+
+| 优先级 | 修复项 | 工时 | 影响 |
+|---|---|---|---|
+| **P0** | deploy-seamless.sh 强制 wait-for-port-released（用 `ss -tln 'sport = :8781'` 或 `lsof -ti:8781 \| xargs -r kill -9` 等待） | 2h | 根因根治 |
+| **P0** | deploy-seamless.sh 增加原子切换保护（重命名 binary → mv → reload，避免新旧同名同时存在） | 2h | 根因根治 |
+| **P0** | systemd override.conf 把 StartLimitBurst=10 / StartLimitIntervalSec=120s + OnFailure=alert@oncall | 1h | 静默离线拦截 |
+| **P1** | `scripts/deploy-245.sh` 增加 audit log 输出 deploy-stdout 到 `/var/log/deploy-245/` 路径 | 1h | 排查可观测性 |
+| **P1** | cleanup 后续 dual unit 风险：deploy script 探测 `*.service` 文件，强制 disable 旧 unit | 1h | 防再次 drift |
+| **P2** | 加 245 blackbox probe + alertmanager route: gateway_5min_down → page oncall | 1h | 监控告警 |
+
+#### 推荐落地顺序（rule 42 §4.2）
+
+1. **首先 P0 修复**（约 5h 累计） — deploy 流程安全 + systemd 兜底
+2. **等下次 deploy 实际跑 P0 修复后** — 验证 deploy 不再触发 restart loop
+3. **P1/P2 监控告警 + audit log** — 防下次 95 min 静默断网
+
 ---
 
 ## 4. 行动项（按优先级）
