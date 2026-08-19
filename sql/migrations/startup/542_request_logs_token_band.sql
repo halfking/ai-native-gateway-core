@@ -36,8 +36,29 @@ UPDATE public.request_logs
 -- "show me forced compressions last hour" admin queries). Most rows have
 -- NULL and never enter the index.
 CREATE INDEX IF NOT EXISTS idx_request_logs_token_band_ts
-    ON public.request_logs (token_band, ts DESC)
+    ON ONLY public.request_logs (token_band, ts DESC)
     WHERE token_band IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_request_logs_token_band_ts_default
+    ON public.request_logs_default (token_band, ts DESC)
+    WHERE token_band IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_request_logs_token_band_ts_2026_09
+    ON public.request_logs_2026_09 (token_band, ts DESC)
+    WHERE token_band IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_request_logs_token_band_ts_2026_10
+    ON public.request_logs_2026_10 (token_band, ts DESC)
+    WHERE token_band IS NOT NULL;
+
+ALTER INDEX idx_request_logs_token_band_ts
+    ATTACH PARTITION idx_request_logs_token_band_ts_default;
+
+ALTER INDEX idx_request_logs_token_band_ts
+    ATTACH PARTITION idx_request_logs_token_band_ts_2026_09;
+
+ALTER INDEX idx_request_logs_token_band_ts
+    ATTACH PARTITION idx_request_logs_token_band_ts_2026_10;
 
 -- CHECK constraint locks the value space so an out-of-band string from a
 -- regression cannot poison GROUP BY aggregates.
