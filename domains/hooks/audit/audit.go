@@ -189,6 +189,15 @@ type StreamCapture struct {
 	// OpenAI and Anthropic upstream protocols (IR layer normalizes them).
 	ToolCalls []map[string]any
 
+	// DiscardEvents (2026-08-19) records every discard event the
+	// survival / stream-recovery / empty-gate pipelines observe. Each
+	// entry describes the buffered bytes the attempt dropped before a
+	// transparent retry. The field is JSON-encoded into
+	// request_logs_hot.discard_events by the audit upsert path so
+	// post-mortem can correlate "why was a partial response dropped"
+	// with the surrounding request_log row.
+	DiscardEvents []DiscardEvent
+
 	// textObserver is the optional incremental integrity observer. It is
 	// notified from appendText — the single funnel every transformer
 	// reaches, via ObserveChunk or ObservePayload — so the four stream
@@ -752,6 +761,14 @@ func (sc *StreamCapture) SummaryAsMap() map[string]any {
 	// Emit as JSONB-compatible array for persistence in request_logs.tool_calls.
 	if len(sc.ToolCalls) > 0 {
 		m["tool_calls"] = sc.ToolCalls
+	}
+	// 2026-08-19: surface every discard event the survival / recovery /
+	// empty-gate paths recorded. The audit upsert pipeline forwards this
+	// into request_logs_hot.discard_events JSONB so post-mortem SQL can
+	// answer "which attempts were dropped, and why" without joining the
+	// application log.
+	if len(sc.DiscardEvents) > 0 {
+		m["discard_events"] = sc.DiscardEvents
 	}
 	return m
 }

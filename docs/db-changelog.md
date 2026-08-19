@@ -17,3 +17,8 @@
 |-----------|------|---------|--------|
 | 542 | `542_request_logs_token_band.sql` | `2ed9d3e8c5b555774a6bb97757c8be73fa32e45a420c8118af036e387b2d079b` | applied+verified |
 
+## 2026-08-19T10:11:23Z — deploy 154 build_seq 1629 (b310b700)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 543 | `543_request_logs_discard_events.sql` | `6fe37eb4f0dd5cc75f400376473471b5f2b6f5f8edcdf2d92a1f71d291b18fa8` | applied+verified |

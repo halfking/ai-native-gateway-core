@@ -1260,9 +1260,12 @@ func (e *Executor) executeOpenAI(
 			// final fallback when ALL candidates are empty.
 			if !params.IsStream && isNonStreamEmptyResponse(respBody) {
 				slog.Warn("executor: non-stream empty response, failing over to next candidate",
+					"request_id", params.RequestID,
 					"credential_id", cand.CredentialID,
 					"provider_id", cand.ProviderID,
 					"raw_model", cand.RawModel,
+					"client_model", params.Model,
+					"status", resp.StatusCode,
 				)
 				return nil, &upstreampkg.Error{
 					Kind:       errorsx.KindEmptyResponse,

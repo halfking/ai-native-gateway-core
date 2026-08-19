@@ -75,8 +75,9 @@ func (h *Handler) handleSessionSummarizeTitle(w http.ResponseWriter, r *http.Req
 	if h.titleDistLock != nil {
 		key := titleDistLockKey("manual", taskID, scopedKey)
 		hh, lerr := h.titleDistLock.Acquire(ctx, distlock.AcquireOpts{
-			Key: key,
-			TTL: 60 * time.Second,
+			Key:   key,
+			TTL:   60 * time.Second,
+			Scope: "manual",
 		})
 		if lerr != nil && !errors.Is(lerr, distlock.ErrNotEnabled) {
 			slog.Warn("session_title: distlock acquire failed; proceeding without lock",
@@ -416,8 +417,9 @@ func (h *Handler) handleSessionTitleUpdate(w http.ResponseWriter, r *http.Reques
 	if h.titleDistLock != nil {
 		key := titleDistLockKey("manual", taskID, scopedKey)
 		hh, lerr := h.titleDistLock.Acquire(ctx, distlock.AcquireOpts{
-			Key: key,
-			TTL: 30 * time.Second,
+			Key:   key,
+			TTL:   30 * time.Second,
+			Scope: "manual",
 		})
 		if lerr != nil && !errors.Is(lerr, distlock.ErrNotEnabled) {
 			slog.Warn("session_title_update: distlock acquire failed; proceeding without lock",
@@ -507,8 +509,9 @@ func (h *Handler) handleSessionTitleDelete(w http.ResponseWriter, r *http.Reques
 	if h.titleDistLock != nil {
 		key := titleDistLockKey("manual", taskID, scopedKey)
 		hh, lerr := h.titleDistLock.Acquire(ctx, distlock.AcquireOpts{
-			Key: key,
-			TTL: 30 * time.Second,
+			Key:   key,
+			TTL:   30 * time.Second,
+			Scope: "manual",
 		})
 		if lerr != nil && !errors.Is(lerr, distlock.ErrNotEnabled) {
 			slog.Warn("session_title_delete: distlock acquire failed; proceeding without lock",

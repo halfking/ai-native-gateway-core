@@ -239,9 +239,12 @@ func StreamAnthropicPassthroughWithDiagnostics(
 		}
 		slog.Warn("anthropic passthrough: upstream terminal error event",
 			"request_id", requestID,
+			"client_model", clientModel,
+			"outbound_model", outboundModel,
 			"error_type", errType,
 			"kind", string(kind),
 			"client_visible_chunks", chunkCount,
+			"resumable", oc.Resumable,
 		)
 		return oc
 	}

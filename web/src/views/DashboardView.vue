@@ -13,10 +13,11 @@ import {
   type HotApiKeyEntry,
 } from '../api'
 import { useDashboardBoard } from '../composables/useDashboardBoard'
+import { dashboardPreferenceStorageKey } from '../composables/liveStreamPreferences'
 
 export type DashboardTabId = 'board' | 'stream' | 'stats' | 'selfcheck' | 'systemmonitor' // systemmonitor 保留兼容，已映射到 selfcheck
 
-const STORAGE_KEY_TAB = 'dashboard_active_tab'
+const LEGACY_STORAGE_KEY_TAB = 'dashboard_active_tab'
 const route = useRoute()
 const router = useRouter()
 
@@ -31,7 +32,10 @@ function normalizeTab(raw: unknown): DashboardTabId | null {
 
 function readStoredTab(): DashboardTabId | null {
   try {
-    return normalizeTab(localStorage.getItem(STORAGE_KEY_TAB))
+    return normalizeTab(
+      localStorage.getItem(dashboardPreferenceStorageKey('default-tab'))
+      ?? localStorage.getItem(LEGACY_STORAGE_KEY_TAB),
+    )
   } catch {
     return null
   }
@@ -39,7 +43,7 @@ function readStoredTab(): DashboardTabId | null {
 
 function persistTab(tab: DashboardTabId) {
   try {
-    localStorage.setItem(STORAGE_KEY_TAB, tab)
+    localStorage.setItem(dashboardPreferenceStorageKey('default-tab'), tab)
   } catch {
     // The dashboard remains usable when browser storage is unavailable.
   }
