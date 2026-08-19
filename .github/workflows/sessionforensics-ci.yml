@@ -154,3 +154,27 @@ jobs:
         with:
           version: v2.0
           args: --timeout=5m --new-from-rev=${{ env.LINT_RATCHET_BASE }}
+
+  identity-race:
+    # Identity unit tests under the race detector. These are the pure
+    # in-memory auth/identity logic in admin/auth_identity_test.go
+    # (TestIdentity_*, TestSignToken_*) and domains/identity/identity_test.go.
+    # The -run filter keeps us OFF the DB/network integration suites
+    # (no _RealDB, no pgx): the existing gateway-rls / gateway-session-v2
+    # jobs already cover those against a live PostgreSQL on self-hosted
+    # runners. Do NOT add a blanket `go test ./... -race` here — this repo
+    # has DB/network tests that would break the build in this job.
+    name: Identity unit tests (race)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: Run identity unit tests (race detector)
+        run: go test -race -count=1 ./admin -run 'Test(SignToken|MultiIssuer|ResolveToken|Identity|Authenticate)' ./domains/identity/...
