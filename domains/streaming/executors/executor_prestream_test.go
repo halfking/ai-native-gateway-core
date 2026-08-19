@@ -497,6 +497,76 @@ func TestExecuteOpenAI_NonStreamIRConversionRewritesContentLength(t *testing.T) 
 	}
 }
 
+func TestExecuteOpenAI_GLM52NetworkFailureFailsOverWithoutClientError(t *testing.T) {
+	var streamCalls atomic.Int32
+	var outboundModels []string
+	var mu sync.Mutex
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Model string `json:"model"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		mu.Lock()
+		outboundModels = append(outboundModels, body.Model)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, "data: [DONE]\\n\\n")
+	}))
+	defer upstream.Close()
+
+	exec := NewExecutor(
+		NewRouter(NewStickyCache(), credential.NewLimiter()), credential.NewManager(), credential.NewLimiter(),
+		pool.NewPoolManager(nil), nil, func(chunk []byte, _ bool) []byte { return chunk }, nil, nil,
+	)
+	exec.StreamRetryThreshold = 50
+	wireDispatchPipelineForTest(t, exec)
+	exec.StreamChat = func(http.ResponseWriter, *http.Response, string, string, string, NormalizerFunc, *audit.StreamCapture, bool) StreamOutcome {
+		if streamCalls.Add(1) == 1 {
+			return StreamOutcome{Interrupted: true, Reason: "network_error", Kind: errorsx.KindNetwork, Resumable: true}
+		}
+		return StreamOutcome{ChunkCount: 1}
+	}
+
+	first := overloadTestCandidate(upstream.URL)
+	first.ProviderID = 18
+	first.CredentialID = 209423
+	first.RawModel = "z-ai/glm-5.2"
+	first.OfferRawModel = "z-ai/glm-5.2"
+	first.APIKey = "key-1"
+	second := first
+	second.ProviderID = 19
+	second.CredentialID = 209424
+	second.APIKey = "key-2"
+
+	rec := httptest.NewRecorder()
+	result, err := exec.Execute(&ExecParams{
+		W:         rec,
+		R:         httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
+		BodyBytes: []byte(`{"model":"glm-5.2","messages":[],"stream":true}`),
+		IsStream:  true, ClientProtocol: "openai-completions", ClientModel: "glm-5.2",
+		ClientID:   identity.ClientIdentity{IdentityHash: "glm-52-network-failover"},
+		Candidates: []provider.Candidate{first, second},
+		Policy:     &provider.Policy{TierFallbackMax: 4, RetryPerCredential: 0},
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if result == nil || result.Candidate.CredentialID != second.CredentialID {
+		t.Fatalf("result candidate = %+v, want credential %d", result, second.CredentialID)
+	}
+	if got := streamCalls.Load(); got != 2 {
+		t.Fatalf("stream calls = %d, want 2 candidate attempts", got)
+	}
+	if strings.Contains(rec.Body.String(), "upstream") || strings.Contains(rec.Body.String(), "network_error") {
+		t.Fatalf("client received an upstream failure before failover: %q", rec.Body.String())
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(outboundModels) != 2 || outboundModels[0] != "z-ai/glm-5.2" || outboundModels[1] != "z-ai/glm-5.2" {
+		t.Fatalf("outbound models = %v, want current candidate model on both attempts", outboundModels)
+	}
+}
+
 func TestExecuteOpenAI_NetworkStreamFailureFailsOverToNextCandidate(t *testing.T) {
 	var streamCalls atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
