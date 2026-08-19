@@ -105,15 +105,18 @@ const isIdle = computed(() => hasData.value && totalDepth.value === 0)
 // 队列深度是诊断信息，畅通时收起让模型分组和节点矩阵成为主内容；
 // congested 翻转为 true 时自动展开引导排查，恢复后不自动收起。
 const savedQueuePreferences = readLiveStreamPreferences().queue
-const queueDepthOpen = ref(savedQueuePreferences.depthOpen)
+const queueDepthOpen = ref(savedQueuePreferences.depthOpen ?? false)
+const hasExplicitDepthPreference = ref(savedQueuePreferences.depthOpen !== undefined)
 const expandedModels = ref<Set<string>>(new Set(savedQueuePreferences.expandedModels))
 watch(congested, value => {
-  // 自动诊断展开不覆盖用户的持久化偏好；用户下次打开仍恢复主动选择。
-  if (value) queueDepthOpen.value = true
+  // A congestion diagnosis may expand the panel only before the user selects a
+  // preferred state. An explicit collapsed state must survive remounts.
+  if (value && !hasExplicitDepthPreference.value) queueDepthOpen.value = true
 }, { immediate: true })
 
 function toggleQueueDepth() {
   queueDepthOpen.value = !queueDepthOpen.value
+  hasExplicitDepthPreference.value = true
   writeLiveStreamPreferences({ queue: { depthOpen: queueDepthOpen.value } })
 }
 

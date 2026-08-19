@@ -46,17 +46,8 @@ export function useLiveStreamFilters(options: LiveStreamFiltersOptions) {
     Array.from(modelFilter.value).map(m => m.toLowerCase().trim())
   )
 
-  function persistFilters() {
-    writeLiveStreamPreferences({
-      filters: {
-        requestTypes: Array.from(requestTypeFilter.value),
-        statuses: Array.from(statusFilter.value),
-        models: Array.from(modelFilter.value),
-        providers: Array.from(providerFilter.value),
-        vendors: Array.from(vendorFilter.value),
-        agents: Array.from(agentFilter.value),
-      },
-    })
+  function persistFilter<K extends keyof typeof savedFilters>(key: K, value: typeof savedFilters[K]) {
+    writeLiveStreamPreferences({ filters: { [key]: value } })
   }
 
   // ========== 切换请求类型 ==========
@@ -68,25 +59,25 @@ export function useLiveStreamFilters(options: LiveStreamFiltersOptions) {
       next.add(type)
     }
     requestTypeFilter.value = next
-    persistFilters()
+    persistFilter('requestTypes', Array.from(next))
   }
 
   // ========== Apply 函数（弹窗选择后应用） ==========
   function applyStatusFilter(selected: string[]) {
     statusFilter.value = new Set(selected as LiveStatus[])
-    persistFilters()
+    persistFilter('statuses', Array.from(statusFilter.value))
   }
   function applyModelFilter(selected: string[]) {
     modelFilter.value = new Set(selected)
-    persistFilters()
+    persistFilter('models', Array.from(modelFilter.value))
   }
   function applyProviderFilter(selected: string[]) {
     providerFilter.value = new Set(selected)
-    persistFilters()
+    persistFilter('providers', Array.from(providerFilter.value))
   }
   function applyVendorFilter(selected: string[]) {
     vendorFilter.value = new Set(selected as LiveModelCategory[])
-    persistFilters()
+    persistFilter('vendors', Array.from(vendorFilter.value))
   }
   function applyAgentFilter(selected: string[]) {
     // agent_name is matched case-insensitively (see filteredLanes, which
@@ -94,7 +85,7 @@ export function useLiveStreamFilters(options: LiveStreamFiltersOptions) {
     // the stored set stays consistent with availableAgents (always lowercase)
     // and the filter dialog checkbox state (draft.has(opt)) stays in sync.
     agentFilter.value = new Set(selected.map(s => s.toLowerCase()))
-    persistFilters()
+    persistFilter('agents', Array.from(agentFilter.value))
   }
 
   // ========== 清空所有过滤器 ==========
@@ -105,7 +96,16 @@ export function useLiveStreamFilters(options: LiveStreamFiltersOptions) {
     providerFilter.value = new Set()
     vendorFilter.value = new Set()
     agentFilter.value = new Set()
-    persistFilters()
+    writeLiveStreamPreferences({
+      filters: {
+        requestTypes: ['business', 'probe'],
+        statuses: [],
+        models: [],
+        providers: [],
+        vendors: [],
+        agents: [],
+      },
+    })
   }
 
   // ========== 可选项列表（从 lanes 实时提取） ==========

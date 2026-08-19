@@ -3,6 +3,7 @@ import { fetchDashboardBoard, fetchBoardOperational, type BoardPayload, type Boa
 import { resolveDashboardRefreshMs } from './dashboardRefreshSettings'
 import { subscribeTerminalRequests, connectionRef } from './liveStreamStore'
 import { applyLiveRequestToBoard } from './boardLiveMerge'
+import { dashboardPreferenceStorageKey } from './liveStreamPreferences'
 import {
   defaultBoardTimeRange,
   boardRangeIncludesToday,
@@ -12,7 +13,7 @@ import {
 
 const DEFAULT_REFRESH_MS = 10_000
 const SSE_RECONCILE_MIN_MS = 30_000
-const TIME_RANGE_STORAGE_KEY = 'dashboard_board_time_range_v1'
+const LEGACY_TIME_RANGE_STORAGE_KEY = 'dashboard_board_time_range_v1'
 
 function isDateOnly(value: unknown): value is string {
   return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(Date.parse(`${value}T00:00:00Z`))
@@ -34,7 +35,8 @@ function normalizeStoredTimeRange(value: unknown): BoardTimeRange | null {
 
 function readStoredTimeRange(): BoardTimeRange {
   try {
-    const raw = localStorage.getItem(TIME_RANGE_STORAGE_KEY)
+    const raw = localStorage.getItem(dashboardPreferenceStorageKey('board-range'))
+      ?? localStorage.getItem(LEGACY_TIME_RANGE_STORAGE_KEY)
     return normalizeStoredTimeRange(raw ? JSON.parse(raw) : null) ?? defaultBoardTimeRange()
   } catch {
     return defaultBoardTimeRange()
@@ -43,7 +45,7 @@ function readStoredTimeRange(): BoardTimeRange {
 
 function persistTimeRange(range: BoardTimeRange) {
   try {
-    localStorage.setItem(TIME_RANGE_STORAGE_KEY, JSON.stringify(range))
+    localStorage.setItem(dashboardPreferenceStorageKey('board-range'), JSON.stringify(range))
   } catch {
     // Browser storage can be unavailable; the board still works in-memory.
   }
