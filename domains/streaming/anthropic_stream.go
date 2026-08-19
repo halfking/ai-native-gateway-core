@@ -149,6 +149,7 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 	finalFinishReason := ""
 	outputTokens := 0
 	inputTokens := 0
+	upstreamDoneReceived := false
 
 	// Phase 4 stream-end split: lazy probing of the running text content
 	// prefix. Most upstreams emit plain text and we want incremental
@@ -262,6 +263,7 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 		}
 		data := line[6:]
 		if data == "[DONE]" {
+			upstreamDoneReceived = true
 			return false
 		}
 
@@ -472,6 +474,16 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 				outcome.Reason = "client_cancel"
 				outcome.Kind = errorsx.KindCanceled
 			case streamReadEOF:
+				if !upstreamDoneReceived {
+					if capture != nil {
+						capture.MarkInterruptedWithReason("eof_without_done")
+					}
+					outcome.Interrupted = true
+					outcome.Reason = "eof_without_done"
+					outcome.Kind = errorsx.KindUpstreamDown
+					outcome.Resumable = !attemptHasClientSemanticOutput(gate, chunkCount)
+					outcome.ChunkCount = chunkCount
+				}
 			case streamReadTimeout:
 				slog.Warn("anthropic stream read timeout", "error", readResult.err)
 				if capture != nil {
@@ -488,6 +500,8 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 				outcome.Interrupted = true
 				outcome.Reason = "stream_timeout"
 				outcome.Kind = errorsx.KindStreamTimeout
+				outcome.Resumable = !attemptHasClientSemanticOutput(gate, chunkCount)
+				outcome.ChunkCount = chunkCount
 			default:
 				failure := streamReadFailureOutcome(readResult.err, chunkCount)
 				slog.Warn("anthropic stream read error", "error", readResult.err, "kind", failure.Kind, "reason", failure.Reason)
@@ -502,6 +516,7 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 					writeSSEWithCapturer(w, pc, "error", errPayload)
 					flusher.Flush()
 				}
+				failure.Resumable = !attemptHasClientSemanticOutput(gate, chunkCount)
 				outcome = failure
 			}
 			break
@@ -536,7 +551,7 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 	// coordinator to discard and retry.
 	pendingContent := (textAccMode == textAccProbing && probeBuf.Len() > 0) ||
 		(textAccMode == textAccBuffering && bufferedText.Len() > 0)
-	if gate.MayWriteTerminal() || pendingContent {
+	if (!outcome.Interrupted || !outcome.Resumable) && (gate.MayWriteTerminal() || pendingContent) {
 		switch textAccMode {
 		case textAccProbing:
 			if probeBuf.Len() > 0 {
@@ -545,12 +560,6 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 					"index": 0,
 					"delta": map[string]any{"type": "text_delta", "text": probeBuf.String()},
 				})
-			}
-			if gate.MayWriteTerminal() {
-				writeSSEWithCapturer(w, pc, "content_block_stop", map[string]any{"type": "content_block_stop", "index": 0})
-				if flusher != nil {
-					flusher.Flush()
-				}
 			}
 		case textAccBuffering:
 			flushBufferedText(w, flusher, pc, bufferedText.String(), capture)
@@ -561,9 +570,9 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 			}
 		}
 
-		// Content delivery above may have committed the gate; re-check
-		// before rendering the closing tail.
-		if gate.MayWriteTerminal() {
+		// Content delivery above may have committed the gate. A detached client
+		// still needs the clean terminal sequence in the pending capturer.
+		if gate.MayWriteTerminal() || pc != nil {
 			writeAnthropicTail(w, flusher, pc, msgID, clientModel, finalFinishReason, outputTokens, inputTokens, capture)
 		}
 	}

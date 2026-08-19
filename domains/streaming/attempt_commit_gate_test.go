@@ -33,12 +33,23 @@ func TestAttemptHasClientSemanticOutputIgnoresPreStreamHeaders(t *testing.T) {
 }
 
 func TestAttemptHasClientSemanticOutputAfterCommit(t *testing.T) {
-	g, _ := newGateForTest(GateModeBuffered)
-	if err := g.WriteFrame("event: content_block_delta\ndata: {\"delta\":{\"text\":\"hi\"}}\n\n"); err != nil {
-		t.Fatalf("write semantic frame: %v", err)
-	}
-	if !attemptHasClientSemanticOutput(g, 0) {
-		t.Fatal("committed semantic output must permit terminal error rendering")
+	for _, tc := range []struct {
+		name string
+		mode GateMode
+	}{
+		{name: "buffered", mode: GateModeBuffered},
+		{name: "immediate", mode: GateModeImmediate},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mode := tc.mode
+			g, _ := newGateForTest(mode)
+			if err := g.WriteFrame("event: content_block_delta\ndata: {\"delta\":{\"text\":\"hi\"}}\n\n"); err != nil {
+				t.Fatalf("write semantic frame: %v", err)
+			}
+			if !attemptHasClientSemanticOutput(g, 0) {
+				t.Fatal("semantic output must permit terminal error rendering")
+			}
+		})
 	}
 }
 

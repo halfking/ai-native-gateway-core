@@ -163,7 +163,7 @@ func TestConvertAnthropicResponseToChat_ToolCalls(t *testing.T) {
 	assert.Equal(t, `{"city":"SF"}`, fn["arguments"])
 }
 
-func TestStreamAnthropicSSEToOpenAI_WrappedEOFIsCleanCompletion(t *testing.T) {
+func TestStreamAnthropicSSEToOpenAI_WrappedEOFWithoutMessageStopIsInterrupted(t *testing.T) {
 	resp := &http.Response{
 		Body: &errorAfterDataReadCloser{
 			data: []byte("event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n\n"),
@@ -175,9 +175,11 @@ func TestStreamAnthropicSSEToOpenAI_WrappedEOFIsCleanCompletion(t *testing.T) {
 
 	out := StreamAnthropicSSEToOpenAI(rec, resp, "claude-test", "claude-test", "req-wrapped-eof", nil, nil)
 
-	assert.False(t, out.Interrupted)
-	assert.Contains(t, rec.Body.String(), `"content":"hello"`)
-	assert.Contains(t, rec.Body.String(), "data: [DONE]")
+	assert.True(t, out.Interrupted)
+	assert.Equal(t, "eof_without_done", out.Reason)
+	assert.Equal(t, errorsx.KindUpstreamDown, out.Kind)
+	assert.True(t, out.Resumable)
+	assert.NotContains(t, rec.Body.String(), "data: [DONE]")
 }
 
 func TestStreamOpenAIToAnthropicSSE_FirstByteTimeoutClosesBlockingBody(t *testing.T) {
@@ -360,7 +362,8 @@ func TestStreamOpenAIToAnthropicSSE_OtherSideClosedIsNetworkError(t *testing.T) 
 	assert.True(t, out.Interrupted)
 	assert.Equal(t, "network_error", out.Reason)
 	assert.Equal(t, errorsx.KindNetwork, out.Kind)
-	assert.Contains(t, rec.Body.String(), `"text":"hello"`)
+	assert.True(t, out.Resumable)
+	assert.NotContains(t, rec.Body.String(), `"text":"hello"`)
 }
 
 func TestStreamAnthropicSSEToOpenAI_ConvertsMessageStartToOpenAIChunk(t *testing.T) {
