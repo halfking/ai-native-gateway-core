@@ -87,6 +87,11 @@ func envInt(key string, def int) int {
 	return int(envInt64(key, int64(def)))
 }
 
+// maxRecoveryHoldbackWindowMS is the largest millisecond duration that fits in
+// time.Duration. Larger env values would overflow during conversion and must
+// never turn a requested holdback into a negative duration.
+const maxRecoveryHoldbackWindowMS = (1<<63 - 1) / int64(time.Millisecond)
+
 // RecoveryHoldbackFromEnv returns the L1 revocable-window parameters that
 // configure the per-attempt commit gate (AttemptCommitGate). The window is
 // OPT-IN: it is disabled unless the operator explicitly enables it via env,
@@ -110,10 +115,13 @@ func RecoveryHoldbackFromEnv() (window time.Duration, maxChunks int) {
 		return 0, 0
 	}
 	windowMS := envInt64("LLM_GATEWAY_RECOVERY_HOLDBACK_WINDOW_MS", 0)
-	if windowMS <= 0 {
+	if windowMS <= 0 || windowMS > maxRecoveryHoldbackWindowMS {
 		return 0, 0
 	}
 	maxChunks = envInt("LLM_GATEWAY_RECOVERY_HOLDBACK_MAX_CHUNKS", DefaultHoldbackMaxChunks)
+	if maxChunks <= 0 {
+		maxChunks = DefaultHoldbackMaxChunks
+	}
 	return time.Duration(windowMS) * time.Millisecond, maxChunks
 }
 
