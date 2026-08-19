@@ -23,10 +23,27 @@
 ALTER TABLE public.request_logs
     ADD COLUMN IF NOT EXISTS token_band TEXT;
 
+-- 2026-08-19 hot-table patch: telemetry INSERT path targets request_logs_hot
+-- (independent heap table, 0-7 day window) directly — not the parent
+-- request_logs. ALTER TABLE on a partitioned parent does NOT propagate to
+-- independent hot/archive tables. Add the column explicitly so future
+-- deploys that re-run this migration on fresh databases don't reintroduce
+-- the bug that produced `column "token_band" does not exist (SQLSTATE 42703)`
+-- at 23:32-23:37 on 245 (see changelog 2026-08-19-llmgo-245-followup-a2-a3-a4.md
+-- §3 + this changelog §2).
+ALTER TABLE public.request_logs_hot
+    ADD COLUMN IF NOT EXISTS token_band TEXT;
+
 -- Backfill from existing compression_meta payloads so historical rows are
 -- queryable. Idempotent: rows already non-NULL keep their value because
 -- the CASE only updates NULL inputs.
 UPDATE public.request_logs
+   SET token_band = compression_meta->>'token_band'
+ WHERE token_band IS NULL
+   AND compression_meta ? 'token_band'
+   AND compression_meta->>'token_band' IN ('below','preliminary','forced');
+
+UPDATE public.request_logs_hot
    SET token_band = compression_meta->>'token_band'
  WHERE token_band IS NULL
    AND compression_meta ? 'token_band'
@@ -73,7 +90,26 @@ BEGIN
             ADD CONSTRAINT chk_request_logs_token_band
             CHECK (token_band IS NULL OR token_band IN ('below','preliminary','forced'));
     END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'chk_request_logs_hot_token_band'
+          AND conrelid = 'public.request_logs_hot'::regclass
+    ) THEN
+        ALTER TABLE public.request_logs_hot
+            ADD CONSTRAINT chk_request_logs_hot_token_band
+            CHECK (token_band IS NULL OR token_band IN ('below','preliminary','forced'));
+    END IF;
 END$$;
+
+-- 2026-08-19 hot-table patch: same partial index for the hot table so the
+-- admin/compression/stats endpoint GROUP BY band query is also fast on the
+-- 0-7 day window.
+CREATE INDEX IF NOT EXISTS idx_request_logs_hot_token_band_ts
+    ON public.request_logs_hot (token_band, ts DESC)
+    WHERE token_band IS NOT NULL;
 
 COMMENT ON COLUMN public.request_logs.token_band IS
     '2026-08-19: classification of the actual outbound body after session delta-append + tool cache + thinking strip. below / preliminary / forced. Mirrors compression_meta.token_band but queryable directly. See domains/hooks/compression/window.go (OutboundTokenBand).';
+
+COMMENT ON COLUMN public.request_logs_hot.token_band IS
+    '2026-08-19 hot-table mirror of request_logs.token_band. Added by 542 hot-table patch to fix the SQLSTATE 42703 errors observed on 245 telemetry INSERT path.';
