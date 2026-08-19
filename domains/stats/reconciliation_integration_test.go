@@ -261,9 +261,17 @@ func TestReconciliation_MissingProjection(t *testing.T) {
 			 prompt_tokens, completion_tokens, total_tokens, cost_amount, credits_charged)
 		VALUES 
 			('evt_missing', 'req_missing', $1, 'tenant2', 'business', 'success', 
-			 2, 20, 'claude-3', 100, 50, 150, 0.01, 150)
-	`, today.Add(12*time.Hour))
+			 2, 20, 'claude-3', 100, 50, 150, 0.01, 150),
+			('evt_outside', 'req_outside', $2, 'tenant2', 'business', 'success',
+			 2, 20, 'claude-3', 300, 100, 400, 0.02, 400)
+	`, today.Add(12*time.Hour), today.Add(36*time.Hour))
 	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = conn.Exec(ctx, `
+		INSERT INTO stats_event_dedup (event_id, occurred_at)
+		VALUES ('evt_missing', $1), ('evt_outside', $2)
+	`, today.Add(12*time.Hour), today.Add(36*time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -297,5 +305,34 @@ func TestReconciliation_MissingProjection(t *testing.T) {
 	}
 	if autoRepaired <= 0 {
 		t.Error("missing projection should be auto-repairable")
+	}
+
+	var dailyRequests, dailyTokens int64
+	err = conn.QueryRow(ctx, `
+		SELECT request_count, total_tokens
+		FROM stats_usage_daily
+		WHERE day_utc = $1 AND tenant_id = 'tenant2'
+		  AND dimension_type = 'provider_model' AND dimension_key = 'claude-3'
+	`, today).Scan(&dailyRequests, &dailyTokens)
+	if err != nil {
+		t.Fatalf("rebuilt daily projection missing: %v", err)
+	}
+	if dailyRequests != 1 || dailyTokens != 150 {
+		t.Errorf("rebuilt daily projection=(requests=%d,tokens=%d), want (1,150)", dailyRequests, dailyTokens)
+	}
+
+	monthStart := time.Date(today.Year(), today.Month(), 1, 0, 0, 0, 0, time.UTC)
+	var monthlyRequests, monthlyTokens int64
+	err = conn.QueryRow(ctx, `
+		SELECT request_count, total_tokens
+		FROM stats_usage_monthly
+		WHERE month_start = $1 AND tenant_id = 'tenant2'
+		  AND dimension_type = 'provider_model' AND dimension_key = 'claude-3'
+	`, monthStart).Scan(&monthlyRequests, &monthlyTokens)
+	if err != nil {
+		t.Fatalf("rebuilt monthly projection missing: %v", err)
+	}
+	if monthlyRequests != 1 || monthlyTokens != 150 {
+		t.Errorf("rebuilt monthly projection=(requests=%d,tokens=%d), want (1,150)", monthlyRequests, monthlyTokens)
 	}
 }
