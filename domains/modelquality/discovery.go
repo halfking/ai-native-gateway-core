@@ -102,8 +102,22 @@ type CanonicalCatalogDiscovery struct {
 }
 
 // NewCanonicalCatalogDiscovery 构造基于 models_canonical 的发现器。
+// 默认 1s 查询超时（DB 慢不应阻塞监控循环）。
 func NewCanonicalCatalogDiscovery(pool *pgxpool.Pool) *CanonicalCatalogDiscovery {
 	return &CanonicalCatalogDiscovery{pool: pool, timeout: 1 * time.Second}
+}
+
+// WithTimeout 调整默认 1s 的查询超时。返回 d 本身以便链式调用。
+// timeout <= 0 表示恢复默认 1s。
+func (d *CanonicalCatalogDiscovery) WithTimeout(timeout time.Duration) *CanonicalCatalogDiscovery {
+	if d == nil {
+		return nil
+	}
+	if timeout <= 0 {
+		timeout = 1 * time.Second
+	}
+	d.timeout = timeout
+	return d
 }
 
 // DiscoverModels 实现 ModelDiscovery 接口：读取 (providers × provider_models × models_canonical)。

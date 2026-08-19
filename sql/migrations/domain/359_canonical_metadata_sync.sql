@@ -32,19 +32,38 @@
 --   - 不改 Go 代码的硬编码（reasoning_defaults.go 仍作为 tier-2 回退）
 --   - 不写 credentials / bindings（由 361-362 处理）
 --   - 不引入新的 vendor-prefix 别名（由 360 处理）
+--
+-- 审计修复（feat/standard-models-rollout 审计 2026-08-20）：
+--   - 防御性 ALTER TABLE：保证 359 在 478 未应用的环境下不报错
+--   - 在 reasoning_caps JSONB 中写入 'source'='migration-359' 键，让 down 迁移能区分
+--     运营热改 vs 迁移写入，避免 .down 误清空
 
 BEGIN;
 
+-- 防御性：478 (startup) 新增的 JSONB 列。如果环境只跑 domain 而没跑 startup，
+-- 这里确保 359 不至于在 column-does-not-exist 上失败。
+ALTER TABLE models_canonical
+  ADD COLUMN IF NOT EXISTS reasoning_caps JSONB;
+
+CREATE INDEX IF NOT EXISTS idx_models_canonical_reasoning_caps_supported
+  ON models_canonical ((reasoning_caps->>'supported'))
+  WHERE reasoning_caps IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_models_canonical_reasoning_caps_dialect
+  ON models_canonical ((reasoning_caps->>'dialect'))
+  WHERE reasoning_caps IS NOT NULL AND reasoning_caps->>'dialect' != '';
+
 -- ─────────────────────────────────────────────────────────────────────────
--- 1) reasoning_caps 回填（幂等：仅在 NULL 时写入）
+-- 1) reasoning_caps 回填（幂等：仅在 NULL 时写入；用 'source' 键标记迁移来源）
 -- ─────────────────────────────────────────────────────────────────────────
 
 -- grok-4.6 — Grok reasoning_effort 4 档
 UPDATE models_canonical
 SET reasoning_caps = jsonb_build_object(
-        'supported', true,
-        'dialect',   'grok',
-        'efforts',   jsonb_build_array('low', 'medium', 'high', 'xhigh'),
+        'source',      'migration-359',
+        'supported',   true,
+        'dialect',     'grok',
+        'efforts',     jsonb_build_array('low', 'medium', 'high', 'xhigh'),
         'can_disable', true
      ),
     updated_at = NOW()
@@ -54,9 +73,10 @@ WHERE canonical_name = 'grok-4.6'
 -- kimi-k3 — Kimi reasoning_effort (low/high/max)
 UPDATE models_canonical
 SET reasoning_caps = jsonb_build_object(
-        'supported', true,
-        'dialect',   'kimi_effort',
-        'efforts',   jsonb_build_array('low', 'high', 'max'),
+        'source',      'migration-359',
+        'supported',   true,
+        'dialect',     'kimi_effort',
+        'efforts',     jsonb_build_array('low', 'high', 'max'),
         'can_disable', true
      ),
     updated_at = NOW()
@@ -66,9 +86,10 @@ WHERE canonical_name = 'kimi-k3'
 -- kimi-k2.6 — Kimi thinking{keep}
 UPDATE models_canonical
 SET reasoning_caps = jsonb_build_object(
-        'supported', true,
-        'dialect',   'kimi_think',
-        'can_disable', true,
+        'source',        'migration-359',
+        'supported',     true,
+        'dialect',       'kimi_think',
+        'can_disable',   true,
         'history_field', 'keep'
      ),
     updated_at = NOW()
@@ -78,9 +99,10 @@ WHERE canonical_name = 'kimi-k2.6'
 -- kimi-k2.7-code — Kimi thinking{keep}
 UPDATE models_canonical
 SET reasoning_caps = jsonb_build_object(
-        'supported', true,
-        'dialect',   'kimi_think',
-        'can_disable', true,
+        'source',        'migration-359',
+        'supported',     true,
+        'dialect',       'kimi_think',
+        'can_disable',   true,
         'history_field', 'keep'
      ),
     updated_at = NOW()
@@ -90,9 +112,10 @@ WHERE canonical_name = 'kimi-k2.7-code'
 -- kimi-k2.7-code-highspeed — Kimi thinking{keep}
 UPDATE models_canonical
 SET reasoning_caps = jsonb_build_object(
-        'supported', true,
-        'dialect',   'kimi_think',
-        'can_disable', true,
+        'source',        'migration-359',
+        'supported',     true,
+        'dialect',       'kimi_think',
+        'can_disable',   true,
         'history_field', 'keep'
      ),
     updated_at = NOW()
@@ -103,9 +126,10 @@ WHERE canonical_name = 'kimi-k2.7-code-highspeed'
 -- 包括 355 写入的全部 10 个 ID（含 -image 变体，reasoning 与 base 一致）
 UPDATE models_canonical
 SET reasoning_caps = jsonb_build_object(
-        'supported', true,
-        'dialect',   'gemini3',
-        'efforts',   jsonb_build_array('minimal', 'low', 'medium', 'high'),
+        'source',      'migration-359',
+        'supported',   true,
+        'dialect',     'gemini3',
+        'efforts',     jsonb_build_array('minimal', 'low', 'medium', 'high'),
         'can_disable', true
      ),
     updated_at = NOW()
