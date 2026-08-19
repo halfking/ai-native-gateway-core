@@ -11,8 +11,10 @@ are immutable") is correct, but the failure mode was invisible.
 
 ## Changes
 - `domains/stats/daily_monthly_rollup.go`: `monthlyInsertSQL` is now a
-  CTE that also counts the number of pre-existing `status='closed'`
-  rows in the target month range. The result exposes
+  CTE that materialises the daily `GROUP BY` into a `daily_groups`
+  CTE, then runs the upsert from that CTE, and finally counts how
+  many target PK tuples (from `daily_groups`) map to a pre-existing
+  `status='closed'` row in `stats_usage_monthly`. The result exposes
   `skipped_closed_count`.
 - `domains/stats/daily_monthly_rollup.go`: the single call site in
   `Refresh` reads the CTE result via `QueryRow` and, when
@@ -20,6 +22,17 @@ are immutable") is correct, but the failure mode was invisible.
   `metrics.RecordStatsMonthlyClosedSkipped(n)`.
 - `metrics/stats_reconciliation_metrics.go`: new counter
   `llm_gateway_stats_monthly_closed_skipped_total`.
+
+## Why count against `daily_groups` (not the entire `stats_usage_monthly`)
+A previous version of the CTE simply counted `status='closed'` rows
+in the month range. That counted rows whose PK was not actually
+targeted by the upsert (e.g. a quiet closed month with no
+`stats_usage_daily` input) — every hourly Refresh would inflate the
+counter by the full closed-row cardinality even though no
+suppression actually happened. The new CTE joins against
+`daily_groups` (the intended target PK set), so the counter only
+increments for *actual* closed-PK suppressions, at most once per
+closed PK per Refresh.
 
 ## Operational impact
 - Operators can now alert on
