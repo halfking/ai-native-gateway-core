@@ -1588,8 +1588,8 @@ func (m *CredentialMonitorHandlers) handleClearManualDisabled(w http.ResponseWri
 	//nolint:errcheck
 	m.h.db.Exec(ctx, `
 		INSERT INTO routing_audit_log (actor, action, target_type, target_id, after_json)
-		VALUES ($1, $2, $3, $4, $5)
-	`, actor, "credential.clear_manual_disabled", "credential", req.CredentialID, detailsJSON)
+		VALUES ($1, $2, $3, $4, $5::text::jsonb)
+	`, actor, "credential.clear_manual_disabled", "credential", req.CredentialID, string(detailsJSON))
 
 	monitorSummaryCache.invalidateCredential(req.CredentialID)
 
@@ -1693,8 +1693,8 @@ func (m *CredentialMonitorHandlers) handleSetManualDisabled(w http.ResponseWrite
 	//nolint:errcheck
 	m.h.db.Exec(ctx, `
 		INSERT INTO routing_audit_log (actor, action, target_type, target_id, after_json)
-		VALUES ($1, $2, $3, $4, $5)
-	`, actor, action, "credential", req.CredentialID, detailsJSON)
+		VALUES ($1, $2, $3, $4, $5::text::jsonb)
+	`, actor, action, "credential", req.CredentialID, string(detailsJSON))
 
 	monitorSummaryCache.invalidateCredential(req.CredentialID)
 
