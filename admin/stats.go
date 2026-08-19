@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/metrics"
 )
 
 // handleStats exposes the canonical body-free statistics projections. It is
@@ -344,6 +346,19 @@ func (h *Handler) handleStatsReconciliationApprove(w http.ResponseWriter, r *htt
 	approved := 0
 	rejected := 0
 
+	// recordFailedAccounting emits metrics for diffs that were processed
+	// in-memory but never reached a durable commit. Called from every
+	// pre-commit return path so the committed/failed split reflects
+	// real durability, not in-memory increments.
+	recordFailedAccounting := func() {
+		if approved > 0 {
+			metrics.RecordStatsAdjustment("approve", "failed", int64(approved))
+		}
+		if rejected > 0 {
+			metrics.RecordStatsAdjustment("reject", "failed", int64(rejected))
+		}
+	}
+
 	for _, diffID := range req.DiffIDs {
 		// Fetch the diff
 		var runID, tenantID, dimensionType, dimensionKey, metric string
@@ -358,6 +373,7 @@ func (h *Handler) handleStatsReconciliationApprove(w http.ResponseWriter, r *htt
 			&sourceValue, &projectedValue, &difference, &resolution)
 		if err != nil {
 			slog.Warn("failed to fetch diff for approval", "diff_id", diffID, "error", err)
+			recordFailedAccounting()
 			writeError(w, http.StatusNotFound, "reconciliation diff not found")
 			return
 		}
@@ -367,6 +383,7 @@ func (h *Handler) handleStatsReconciliationApprove(w http.ResponseWriter, r *htt
 			if tenantID != auth.TenantID {
 				slog.Warn("tenant access violation in reconciliation approval",
 					"diff_id", diffID, "diff_tenant", tenantID, "user_tenant", auth.TenantID)
+				recordFailedAccounting()
 				writeError(w, http.StatusForbidden, "access denied")
 				return
 			}
@@ -387,6 +404,7 @@ func (h *Handler) handleStatsReconciliationApprove(w http.ResponseWriter, r *htt
 			`, diffID)
 			if err != nil {
 				slog.Error("failed to update diff resolution", "diff_id", diffID, "error", err)
+				recordFailedAccounting()
 				writeError(w, http.StatusInternalServerError, "failed to process approval")
 				return
 			}
@@ -395,14 +413,15 @@ func (h *Handler) handleStatsReconciliationApprove(w http.ResponseWriter, r *htt
 			_, err = tx.Exec(ctx, `
 				INSERT INTO stats_adjustments
 					(tenant_id, month_start, adjustment_type, dimension_type, dimension_key,
-					 metric_name, delta, currency, reason, source_event_id, 
+					 metric_name, delta, currency, reason, source_event_id,
 					 approved_by, approved_at, created_by, created_at)
 				VALUES ($1, date_trunc('month', now())::date, 'reconciliation', $2, $3,
 				        $4, $5, 'USD', $6, $7, $8, now(), $9, now())
-			`, tenantID, dimensionType, dimensionKey, metric, difference, 
+			`, tenantID, dimensionType, dimensionKey, metric, difference,
 				req.Reason, runID, operator, operator)
 			if err != nil {
 				slog.Error("failed to create adjustment", "diff_id", diffID, "tenant_id", tenantID, "error", err)
+				recordFailedAccounting()
 				writeError(w, http.StatusInternalServerError, "failed to create adjustment record")
 				return
 			}
@@ -420,6 +439,7 @@ func (h *Handler) handleStatsReconciliationApprove(w http.ResponseWriter, r *htt
 			`, diffID)
 			if err != nil {
 				slog.Error("failed to reject diff", "diff_id", diffID, "error", err)
+				recordFailedAccounting()
 				writeError(w, http.StatusInternalServerError, "failed to process rejection")
 				return
 			}
@@ -430,9 +450,13 @@ func (h *Handler) handleStatsReconciliationApprove(w http.ResponseWriter, r *htt
 
 	if err := tx.Commit(ctx); err != nil {
 		slog.Error("failed to commit reconciliation approval transaction", "error", err)
+		recordFailedAccounting()
 		writeError(w, http.StatusInternalServerError, "transaction commit failed")
 		return
 	}
+
+	metrics.RecordStatsAdjustment("approve", "committed", int64(approved))
+	metrics.RecordStatsAdjustment("reject", "committed", int64(rejected))
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"approved": approved,
