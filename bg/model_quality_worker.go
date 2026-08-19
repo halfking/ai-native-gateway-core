@@ -40,6 +40,11 @@ type ModelQualityWorker struct {
 	// 非空时 Start 用它（叠加 FileStorage 离线备份）替代纯文件存储。
 	dbStorage *modelquality.DBStorage
 
+	// 2026-08-20: DB-backed model discovery（feat/standard-models-rollout）。
+	// 由 main.go 在 worker.Start 之前注入；当 config 为 nil 时，Start 优先调用
+	// discovery.DiscoverModels 取目标列表；DB 不可达则回退 GetDefaultMonitorModels。
+	discovery modelquality.ModelDiscovery
+
 	// 2026-08-11 audit: dedup + cooldown for suspicious-action triggers so a
 	// flapping node cannot fan out an unbounded number of IQ tests (token cost).
 	triggerMu       sync.Mutex
@@ -109,6 +114,40 @@ func (w *ModelQualityWorker) SetDBStorage(dbStorage *modelquality.DBStorage) {
 	w.mu.Lock()
 	w.dbStorage = dbStorage
 	w.mu.Unlock()
+}
+
+// SetDiscovery 注入 DB-backed ModelDiscovery（feat/standard-models-rollout）。
+// 在 Start 之前调用。当 caller 没有显式传 config 且 worker.config == nil 时，
+// Start 会用 discovery.DiscoverModels 取目标模型列表；DB 不可达则回退静态兜底。
+// 传入 nil 表示显式关闭 DB 发现（强制使用静态回退）。
+func (w *ModelQualityWorker) SetDiscovery(d modelquality.ModelDiscovery) {
+	w.mu.Lock()
+	w.discovery = d
+	w.mu.Unlock()
+}
+
+// resolveDefaultTargetsLocked 在 worker.config == nil 时选取目标模型列表。
+// **调用者必须持有 w.mu 写锁**；内部直接读 w.discovery 字段，不再加锁。
+// 优先用注入的 discovery（DB-backed models_canonical × provider_models）；
+// DB 不可达或未注入则回退到静态 GetDefaultMonitorModels（Deprecated 兜底）。
+//
+// 注意：调用 disc.DiscoverModels 时持写锁，最坏情况阻塞所有并发注入 / Stop 整个
+// discovery 超时窗口（默认 1s）。当前唯一的 discovery 实现
+// (CanonicalCatalogDiscovery) 不回调 w，所以死锁风险为零；如未来新增回调型
+// discovery，需要把"取 discovery 引用"挪到锁外、调用挪到锁外。
+func (w *ModelQualityWorker) resolveDefaultTargetsLocked(ctx context.Context) []modelquality.ModelTarget {
+	disc := w.discovery
+	if disc != nil {
+		targets, err := disc.DiscoverModels(ctx)
+		if err == nil && len(targets) > 0 {
+			slog.Info("model quality worker: using DB-backed discovery",
+				"target_count", len(targets))
+			return targets
+		}
+		slog.Warn("model quality worker: DB discovery failed or empty, falling back to static",
+			"err", err)
+	}
+	return modelquality.GetDefaultMonitorModels()
 }
 
 // TestSingleNode 对单个 (credentialID, rawModel) 节点同步跑一次精简智商测试，
@@ -327,7 +366,13 @@ func (w *ModelQualityWorker) Start(ctx context.Context, config *modelquality.Mon
 	// 使用传入的配置，或默认配置
 	w.config = config
 	if w.config == nil {
-		targetModels := modelquality.GetDefaultMonitorModels()
+		// 2026-08-20 (feat/standard-models-rollout): 优先用注入的 DB-backed discovery；
+		// DB 不可达 / discovery 为 nil 时回退静态 GetDefaultMonitorModels。
+		//
+		// 在持锁状态下调用 discovery 会阻塞所有并发注入（SetDiscovery 等）整个
+		// discovery 超时窗口（默认 1s）。改为：先在锁外快照 discovery，调用完
+		// 再回到锁内赋值。
+		targetModels := w.resolveDefaultTargetsLocked(ctx) // must hold w.mu
 		w.config = &modelquality.MonitorConfig{
 			EnableScheduled:      true,
 			ScheduleInterval:     24 * time.Hour,
