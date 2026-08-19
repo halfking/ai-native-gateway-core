@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
 	"github.com/kaixuan/llm-gateway-go/internal/retryowner"
@@ -117,12 +118,46 @@ func (h *ChatHandler) runSurvivalCoordinator(
 	}
 
 	res := coordinator.Run(frozenCtx, sw, params)
+	// 2026-08-19: extend request_survival_finished with the correlation
+	// context the survival loop couldn't see (parent_request_id,
+	// session_id, tenant_id) plus the last-attempt provider/model/kinds so
+	// an offline grep by request_id reproduces the failure shape without
+	// joining the audit table.
+	lastProviderID := 0
+	lastRawModel := ""
+	lastKinds := ""
+	lastCommitState := ""
+	if res.FinalAttempt != nil {
+		lastCommitState = res.FinalAttempt.CommitState.String()
+		if res.FinalAttempt.ExecResult != nil {
+			c := res.FinalAttempt.ExecResult.Candidate
+			if c.RawModel != "" || c.ProviderID != 0 {
+				lastRawModel = c.RawModel
+			}
+		}
+		kinds := make([]string, 0, len(res.FinalAttempt.CandidateOutcomes))
+		for _, co := range res.FinalAttempt.CandidateOutcomes {
+			if co.Kind != "" {
+				kinds = append(kinds, string(co.Kind))
+			}
+			if co.ProviderID != 0 {
+				lastProviderID = co.ProviderID
+			}
+		}
+		lastKinds = strings.Join(kinds, ",")
+	}
 	slog.Info("request_survival_finished",
 		"request_id", params.RequestID,
 		"succeed", res.Succeed,
 		"attempts", res.Attempts,
 		"decision", res.Decision.Action.String(),
 		"reason", res.Decision.Reason,
+		"committed", res.FinalAttempt != nil && res.FinalAttempt.CommitState >= CommitStateContent,
+		"commit_state", lastCommitState,
+		"kinds", lastKinds,
+		"provider_id", lastProviderID,
+		"raw_model", lastRawModel,
+		"client_model", params.Model,
 	)
 	if durable != nil {
 		var body []byte

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -247,36 +248,58 @@ type RecoveryAction struct {
 // The caller owns the execution: feed observed state back (CommittedChunks,
 // SameNodeRetries, AlignmentScoreBP, RecoveryMode, RecoveryNo) after every
 // attempt and re-invoke on the next interruption.
+//
+// 2026-08-19 observability: this signature is preserved (called by
+// stream_recovery_test.go across many test fixtures). The ctx-aware variant
+// NextRecoveryActionCtx emits the structured slog alongside the same verdict
+// so the L1 DiscardAndReplay / L4 fallback decisions are greppable by
+// request_id in production logs.
 func NextRecoveryAction(state *StreamRecoveryState, cfg StreamRecoveryConfig, err error) RecoveryAction {
+	return NextRecoveryActionCtx(context.Background(), state, cfg, err)
+}
+
+// NextRecoveryActionCtx is the ctx-aware variant. Production callers pass
+// the request context so the structured log line carries the
+// request_id/parent_request_id/session_id/tenant_id correlation attrs
+// already attached by handler.go / survival_wiring.go.
+func NextRecoveryActionCtx(ctx context.Context, state *StreamRecoveryState, cfg StreamRecoveryConfig, err error) RecoveryAction {
 	c := cfg.withDefaults()
 	class, recoverable := ClassifyStreamError(err)
 	if !recoverable {
-		return RecoveryAction{
+		act := RecoveryAction{
 			Kind:   RecoveryActionErrorEnvelope,
 			Mode:   RecoveryModeError,
 			Reason: "non_recoverable: " + errDesc(err),
 		}
+		logRecoveryAction(ctx, state, act, class)
+		return act
 	}
 	if state == nil {
-		return RecoveryAction{Kind: RecoveryActionErrorEnvelope, Mode: RecoveryModeError,
+		act := RecoveryAction{Kind: RecoveryActionErrorEnvelope, Mode: RecoveryModeError,
 			Reason: "missing recovery state", Interrupt: class}
+		logRecoveryAction(ctx, state, act, class)
+		return act
 	}
 	recordStreamInterrupt(class)
 
 	// 恢复预算：stream_recovery_max_attempts 达限转 L4，不无限重生成 (UT-SR-09)。
 	if int(state.RecoveryNo) >= c.MaxRecoveryAttempts {
-		return l4Decision(c, class, "recovery budget exhausted")
+		act := l4Decision(c, class, "recovery budget exhausted")
+		logRecoveryAction(ctx, state, act, class)
+		return act
 	}
 
 	// L0 同节点重发：SameNodeRetries < same_node_stream_retries (UT-SR-02)。
 	if int(state.SameNodeRetries) < c.SameNodeStreamRetries {
-		return RecoveryAction{
+		act := RecoveryAction{
 			Kind:      RecoveryActionRetrySameNode,
 			Mode:      RecoveryModeSameNode,
 			NodeOrder: []NodeSelectionPolicy{NodePolicyOriginal},
 			Reason:    "L0 same-node resend",
 			Interrupt: class,
 		}
+		logRecoveryAction(ctx, state, act, class)
+		return act
 	}
 
 	unlocked := CrossCredentialUnlockAllowed(state, c)
@@ -289,13 +312,15 @@ func NextRecoveryAction(state *StreamRecoveryState, cfg StreamRecoveryConfig, er
 
 	// L1 可撤销窗口：语义内容尚未写客户端 → 丢弃缓冲重执行（客户端零感知）。
 	if state.CommittedChunks == 0 {
-		return RecoveryAction{
+		act := RecoveryAction{
 			Kind:      RecoveryActionDiscardAndReplay,
 			Mode:      RecoveryModeDiscardReplay,
 			NodeOrder: ladder,
 			Reason:    "L1 holdback window: discard buffered attempt and replay",
 			Interrupt: class,
 		}
+		logRecoveryAction(ctx, state, act, class)
+		return act
 	}
 
 	// L2: committed content. A previous aligned attempt that failed to align
@@ -306,24 +331,59 @@ func NextRecoveryAction(state *StreamRecoveryState, cfg StreamRecoveryConfig, er
 		recordAlignmentMiss()
 		if c.ContinuationEnabled {
 			// L3 白名单（任务类型/模型）由调用方经 ContinuationAllowed 复核。
-			return RecoveryAction{
+			act := RecoveryAction{
 				Kind:      RecoveryActionContinuationPrompt,
 				Mode:      RecoveryModeContinuation,
 				NodeOrder: ladder,
 				Reason:    "L2 alignment miss: L3 continuation prompt",
 				Interrupt: class,
 			}
+			logRecoveryAction(ctx, state, act, class)
+			return act
 		}
-		return l4Decision(c, class, "alignment miss and continuation disabled")
+		act := l4Decision(c, class, "alignment miss and continuation disabled")
+		logRecoveryAction(ctx, state, act, class)
+		return act
 	}
 
-	return RecoveryAction{
+	act := RecoveryAction{
 		Kind:      RecoveryActionAlignedContinuation,
 		Mode:      RecoveryModeAligned,
 		NodeOrder: ladder,
 		Reason:    "L2 committed-prefix aligned continuation",
 		Interrupt: class,
 	}
+	logRecoveryAction(ctx, state, act, class)
+	return act
+}
+
+// logRecoveryAction emits one structured log line per recovery decision so
+// the L1/L4 ladder is reconstructible from the application log without a
+// Prometheus round-trip. Level: info for routine decisions, warn for L4
+// (visible restart / error envelope) because the client sees an envelope.
+func logRecoveryAction(ctx context.Context, state *StreamRecoveryState, act RecoveryAction, class StreamInterruptClass) {
+	if state == nil {
+		// Defensive: callers may invoke the ladder before wiring state; do
+		// not panic the recovery path.
+		state = &StreamRecoveryState{}
+	}
+	level := slog.LevelInfo
+	if act.Kind == RecoveryActionErrorEnvelope || act.Kind == RecoveryActionVisibleRestart {
+		level = slog.LevelWarn
+	}
+	slog.LogAttrs(ctx, level, "survival_recovery_action",
+		slog.String("action", act.Kind.String()),
+		slog.String("mode", act.Mode.String()),
+		slog.String("reason", act.Reason),
+		slog.String("interrupt_class", string(class)),
+		slog.Bool("visible_restart", act.VisibleRestart),
+		slog.Uint64("committed_chunks", uint64(state.CommittedChunks)),
+		slog.Uint64("committed_bytes", uint64(state.CommittedBytes)),
+		slog.Uint64("holdback_chunks", uint64(state.HoldbackChunks)),
+		slog.Uint64("same_node_retries", uint64(state.SameNodeRetries)),
+		slog.Uint64("recovery_no", uint64(state.RecoveryNo)),
+		slog.Bool("visible_to_client", state.VisibleToClient),
+	)
 }
 
 // l4Decision picks the L4 degradation form (R12.2 L4, R12.8): stream-undo

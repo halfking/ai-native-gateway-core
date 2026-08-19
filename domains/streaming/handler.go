@@ -5304,6 +5304,29 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 				reqLog.ToolCalls = b
 			}
 		}
+		// 2026-08-19: discard_events from the audit StreamCapture. The
+		// column itself is not yet on request_logs_hot (follow-up
+		// migration), but the in-process RequestLogEntry now carries the
+		// JSONB so the structured record is available to anything that
+		// reads it (e.g. the gateway admin/audit pipeline). The
+		// application-log "survival_attempt_discarded" line remains the
+		// primary observability handle until the column lands.
+		if v, ok := m["discard_events"]; ok && v != nil {
+			switch t := v.(type) {
+			case []audit.DiscardEvent:
+				if b, err := json.Marshal(t); err == nil {
+					reqLog.DiscardEvents = b
+				}
+			case json.RawMessage:
+				if len(t) > 0 {
+					reqLog.DiscardEvents = t
+				}
+			case []any:
+				if b, err := json.Marshal(t); err == nil {
+					reqLog.DiscardEvents = b
+				}
+			}
+		}
 	}
 
 	// 2026-06-19 quality fix mode (017_quality_fix_mode.sql): propagate
