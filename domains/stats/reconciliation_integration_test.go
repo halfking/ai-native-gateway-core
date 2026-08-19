@@ -261,15 +261,17 @@ func TestReconciliation_MissingProjection(t *testing.T) {
 			 prompt_tokens, completion_tokens, total_tokens, cost_amount, credits_charged)
 		VALUES 
 			('evt_missing', 'req_missing', $1, 'tenant2', 'business', 'success', 
-			 2, 20, 'claude-3', 100, 50, 150, 0.01, 150)
-	`, today.Add(12*time.Hour))
+			 2, 20, 'claude-3', 100, 50, 150, 0.01, 150),
+			('evt_outside', 'req_outside', $2, 'tenant2', 'business', 'success',
+			 2, 20, 'claude-3', 300, 100, 400, 0.02, 400)
+	`, today.Add(12*time.Hour), today.Add(36*time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err = conn.Exec(ctx, `
 		INSERT INTO stats_event_dedup (event_id, occurred_at)
-		VALUES ('evt_missing', $1)
-	`, today.Add(12*time.Hour)); err != nil {
+		VALUES ('evt_missing', $1), ('evt_outside', $2)
+	`, today.Add(12*time.Hour), today.Add(36*time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 

@@ -143,12 +143,15 @@ func (r *DailyMonthlyRollup) Refresh(ctx context.Context, since, until time.Time
 	// deleting the existing row would permanently erase the earlier part of
 	// that day, so expand the source window to complete day boundaries.
 	dailySince := time.Date(since.Year(), since.Month(), since.Day(), 0, 0, 0, 0, time.UTC)
-	dailyUntil := time.Date(until.Year(), until.Month(), until.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 0, 1)
+	dailyUntil := time.Date(until.Year(), until.Month(), until.Day(), 0, 0, 0, 0, time.UTC)
+	if !until.Equal(dailyUntil) {
+		dailyUntil = dailyUntil.AddDate(0, 0, 1)
+	}
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin stats rollup: %w", err)
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	if _, err := tx.Exec(ctx, `
 		DELETE FROM stats_usage_daily
@@ -160,8 +163,11 @@ func (r *DailyMonthlyRollup) Refresh(ctx context.Context, since, until time.Time
 		return fmt.Errorf("rebuild daily buckets: %w", err)
 	}
 
-	monthStart := time.Date(since.Year(), since.Month(), 1, 0, 0, 0, 0, time.UTC)
-	monthEnd := time.Date(until.Year(), until.Month(), 1, 0, 0, 0, 0, time.UTC).AddDate(0, 1, 0)
+	monthStart := time.Date(dailySince.Year(), dailySince.Month(), 1, 0, 0, 0, 0, time.UTC)
+	monthEnd := time.Date(dailyUntil.Year(), dailyUntil.Month(), 1, 0, 0, 0, 0, time.UTC)
+	if !dailyUntil.Equal(monthEnd) {
+		monthEnd = monthEnd.AddDate(0, 1, 0)
+	}
 	if _, err := tx.Exec(ctx, `
 		DELETE FROM stats_usage_monthly
 		WHERE month_start >= $1::date AND month_start < $2::date
@@ -207,8 +213,8 @@ INSERT INTO stats_usage_daily (
 		SUM(prompt_tokens), SUM(completion_tokens), SUM(cache_read_tokens), SUM(cache_write_tokens),
 		SUM(reasoning_tokens), SUM(image_tokens), SUM(audio_tokens), SUM(video_tokens),
 		SUM(provider_tokens), SUM(total_tokens), SUM(credits_charged), SUM(cost_amount),
-			COUNT(*) FILTER (WHERE latency_ms > 0), COALESCE(SUM(latency_ms) FILTER (WHERE latency_ms > 0), 0),
-			COUNT(*) FILTER (WHERE ttft_ms > 0), COALESCE(SUM(ttft_ms) FILTER (WHERE ttft_ms > 0), 0), COUNT(*),
+		COUNT(*) FILTER (WHERE latency_ms > 0), COALESCE(SUM(latency_ms) FILTER (WHERE latency_ms > 0), 0),
+		COUNT(*) FILTER (WHERE ttft_ms > 0), COALESCE(SUM(ttft_ms) FILTER (WHERE ttft_ms > 0), 0), COUNT(*),
 		MAX(occurred_at), now()
 	FROM (
 		SELECT latest.*, 'provider_model'::text AS dimension_type,
