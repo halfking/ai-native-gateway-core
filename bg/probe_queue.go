@@ -185,9 +185,15 @@ func (q *ProbeQueue) SetScope(scope ProbeScope) {
 // provider name; per-event DB hits would be wasteful given the publish path
 // runs on every claim/complete).
 //
-// The cache is keyed by provider_id (TEXT PK in the providers table) and is
-// refreshed on a 5-minute TTL. provider_id is stored as int64 in
-// credential_probe_queue — the LEFT JOIN handles type coercion.
+// The cache is keyed by provider_id (BIGINT PK in the canonical providers
+// schema — sql/schema/01-schema.sql) and is refreshed on a 5-minute TTL.
+// provider_id is stored as BIGINT in credential_probe_queue — same type, no
+// coercion required.
+//
+// Fallback chain mirrors live_stream_sse.go providerCodeForCredential
+// (`NULLIF(display_name) → NULLIF(catalog_code) → NULLIF(code)`); omitting
+// catalog_code silently regresses any row whose display_name is empty but
+// catalog_code is populated (the canonical "未知供应商" guard).
 func (q *ProbeQueue) lookupProviderName(providerID int64) (string, string) {
 	if q == nil || providerID == 0 {
 		return "", ""
@@ -212,7 +218,8 @@ func (q *ProbeQueue) lookupProviderName(providerID int64) (string, string) {
 	defer cancel()
 	var name, code string
 	err := q.db.QueryRow(ctx,
-		`SELECT COALESCE(NULLIF(display_name, ''), NULLIF(code, ''), ''), COALESCE(code, '')
+		`SELECT COALESCE(NULLIF(display_name, ''), NULLIF(catalog_code, ''), NULLIF(code, ''), ''),
+		        COALESCE(NULLIF(catalog_code, ''), NULLIF(code, ''), '')
 		 FROM providers WHERE id = $1`, providerID).Scan(&name, &code)
 	if err != nil {
 		// Cache miss is not fatal — just log at debug so we don't spam logs on
@@ -284,6 +291,7 @@ func (q *ProbeQueue) publishProbeTask(task ProbeQueueTask, status string) {
 		CredentialID: task.CredentialID,
 		ProviderID:   task.ProviderID,
 		ProviderCode: providerCode,
+		ProviderName: providerName,
 		RawModel:     task.RawModel,
 		Attempt:      task.Attempt,
 		Reason:       task.Source,
