@@ -83,6 +83,10 @@ func wrapAttemptWriter(w http.ResponseWriter, protocol ClientProtocol) (http.Res
 	// gate's commit/discard log lines with the owning request (mirrors the
 	// survival path which passes params.RequestID explicitly).
 	reqID := w.Header().Get("X-Request-Id")
-	gate := NewAttemptCommitGate(protocol, sw, GateOptions{Mode: mode, RequestID: reqID, FirstSemanticByte: firstSemanticByte})
+	// FR-12 L1 revocable window (see survival_coordinator.go for rationale).
+	// Enabled by default via StreamRecoveryConfig defaults; tunable via
+	// LLM_GATEWAY_RECOVERY_HOLDBACK_* env, window 0 disables.
+	hbWindow, hbChunks := RecoveryHoldbackFromEnv()
+	gate := NewAttemptCommitGate(protocol, sw, GateOptions{Mode: mode, RequestID: reqID, FirstSemanticByte: firstSemanticByte, HoldbackWindow: hbWindow, HoldbackMaxChunks: hbChunks})
 	return NewGateWriterWithResponse(gate, w), gate
 }
