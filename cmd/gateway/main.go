@@ -3489,6 +3489,11 @@ func main() {
 				// them. Falls back to pure file storage when DB is unavailable.
 				if dbConn != nil {
 					modelQualityWorker.SetDBStorage(modelquality.NewDBStorage(dbConn.Pool()))
+					// 2026-08-20 (feat/standard-models-rollout): use DB-backed
+					// CanonicalCatalogDiscovery so grok-4.6 / kimi-k* / gemini-3.*
+					// show up in the monitor target list without code changes when
+					// new canonical rows land via migration.
+					modelQualityWorker.SetDiscovery(modelquality.NewCanonicalCatalogDiscovery(dbConn.Pool()))
 				}
 				modelQualityWorker.Start(context.Background(), mqConfig)
 				slog.Info("CHECKPOINT: model_quality_worker started",
