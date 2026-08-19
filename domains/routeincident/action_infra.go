@@ -393,7 +393,7 @@ func (s *Store) writeAudit(
 			confirmation_token_hash, idempotency_key,
 			request_payload, pre_snapshot, post_snapshot, response_payload,
 			outcome, failure_reason, diagnostic_run_id, actor_ip_hash
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10::jsonb, $11::jsonb, $12, $13, $14, $15)
 		ON CONFLICT (idempotency_key) DO NOTHING
 		RETURNING id
 	`
@@ -401,7 +401,7 @@ func (s *Store) writeAudit(
 	err := tx.QueryRow(ctx, sql,
 		inc.ID, call.TenantID, string(call.Action), call.Actor, call.Reason,
 		hashToken(call.ConfirmToken), call.IdempKey,
-		requestPayload, preSnapshot, postSnapshot, responsePayload,
+		string(requestPayload), string(preSnapshot), string(postSnapshot), string(responsePayload),
 		string(outcome), failureReason, resolvedRunID, call.ActorIPHash,
 	).Scan(&auditID)
 	if err != nil {
