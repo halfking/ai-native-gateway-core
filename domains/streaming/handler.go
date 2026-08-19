@@ -5051,6 +5051,7 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 		RequestStatus:  strPtr(telemetry.RequestStatusSuccess),
 		PromptTokens:   promptTokensEstimateFromContext(logCtx, requestBody),
 		UsageSource:    usageSourceForEstimate(logCtx, requestBody),
+		TokenBand:      tokenBandFromLogCtx(logCtx),
 		// 2026-06-20: explicitly clear ErrorKind so any stale
 		// error_kind from a prior failed UPDATE attempt for the
 		// same request_id is wiped. The UPSERT also handles this
@@ -6338,6 +6339,11 @@ func (h *ChatHandler) recordInitialRequestLog(
 		RequestStatus:     strPtr(telemetry.RequestStatusInProgress),
 		PromptTokens:      promptTokensEstimateFromContext(autoCtx, requestBody),
 		UsageSource:       usageSourceForEstimate(autoCtx, requestBody),
+		// 2026-08-19: copy token_band from the SessionCompressor result so the
+		// initial in_progress row carries the same classification as the eventual
+		// success UPDATE. The success path's emitTelemetry will overwrite this
+		// via tokenBandFromLogCtx.
+		TokenBand:         strPtrFromLogCtx(autoCtx),
 		RequestBody:       requestBodyText,
 		RequestPreview:    requestPreviewPtr,
 		TransformSummary:  transformSummaryPtr,
