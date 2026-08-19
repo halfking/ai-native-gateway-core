@@ -2,9 +2,10 @@
 // Prometheus metrics for the stats reconciliation pipeline.
 //
 // Metrics exposed:
-//   - llm_gateway_stats_reconciliation_runs_total       (CounterVec) reconciliation run terminal status (logical, post-Go decision)
-//   - llm_gateway_stats_reconciliation_diffs_total      (CounterVec) reconciliation diffs by terminal resolution
-//   - llm_gateway_stats_adjustments_total               (CounterVec) admin approval adjustments by action/result
+//   - llm_gateway_stats_reconciliation_runs_total            (CounterVec) reconciliation run terminal status (logical, post-Go decision)
+//   - llm_gateway_stats_reconciliation_diffs_total           (CounterVec) reconciliation diffs by terminal resolution
+//   - llm_gateway_stats_adjustments_total                    (CounterVec) admin approval adjustments by action/result
+//   - llm_gateway_stats_monthly_closed_skipped_total         (Counter)    monthly rollup rows suppressed by status='closed'
 package metrics
 
 import (
@@ -52,6 +53,21 @@ var (
 		},
 		[]string{"action", "result"}, // action: approve|reject, result: committed|failed
 	)
+
+	// statsMonthlyClosedSkipped counts stats_usage_monthly rows whose
+	// ON CONFLICT was suppressed by the `WHERE status <> 'closed'`
+	// clause in the monthly rollup. PostgreSQL silently degrades a
+	// qualifying WHERE clause on conflict to DO NOTHING — late facts
+	// (operator corrections, replays) targeting an already-closed month
+	// are therefore invisible unless we surface this counter. Operators
+	// should alert on `... > 0` and route those corrections via
+	// stats_adjustments instead of rollup.
+	statsMonthlyClosedSkipped = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "llm_gateway_stats_monthly_closed_skipped_total",
+			Help: "Number of stats_usage_monthly rows whose ON CONFLICT was suppressed because the target row was already status='closed'.",
+		},
+	)
 )
 
 // RecordStatsReconciliationRun records the terminal status of a single
@@ -87,6 +103,17 @@ func RecordStatsAdjustment(action, result string, n int64) {
 	statsAdjustments.WithLabelValues(action, result).Add(float64(n))
 }
 
+// RecordStatsMonthlyClosedSkipped records the number of monthly rollup
+// rows whose ON CONFLICT was suppressed because the target row was
+// already status='closed'. n must be the pre-aggregated count surfaced
+// by the rollup CTE; values <= 0 are a no-op.
+func RecordStatsMonthlyClosedSkipped(n int64) {
+	if n <= 0 {
+		return
+	}
+	statsMonthlyClosedSkipped.Add(float64(n))
+}
+
 // StatsReconciliationRunsVec exposes the runs CounterVec so tests can
 // assert on persisted counts without leaking the internal symbol.
 func StatsReconciliationRunsVec(status string) interface{ Write(*dto.Metric) error } {
@@ -101,4 +128,11 @@ func StatsReconciliationDiffsVec(resolution string) interface{ Write(*dto.Metric
 // StatsAdjustmentsVec exposes the adjustments CounterVec for tests.
 func StatsAdjustmentsVec(action, result string) interface{ Write(*dto.Metric) error } {
 	return statsAdjustments.WithLabelValues(action, result)
+}
+
+// StatsMonthlyClosedSkippedVec exposes the closed-skipped Counter for
+// tests so they can read the singleton value without leaking the
+// internal symbol. The counter has no labels.
+func StatsMonthlyClosedSkippedVec() interface{ Write(*dto.Metric) error } {
+	return statsMonthlyClosedSkipped
 }
