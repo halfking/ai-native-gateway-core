@@ -18,7 +18,7 @@
 # 启动后:
 #   PG:       host.docker.internal:5432  (从 .env.dev-research 读密码, db=llm_gateway_test_dev)
 #   Redis:    localhost:6379
-#   Mock:     http://localhost:18080  (真 OpenAI 兼容)
+#   Mock:     http://localhost:${LLM_MOCK_HOST_PORT:-19080}  (真 OpenAI 兼容)
 #   v1 GW:    http://localhost:8781   (cmd/gateway 生产入口)
 #   v2 GW:    http://localhost:8782   (cmd/gateway-v2 演示入口)
 # ─────────────────────────────────────────────────────────────────────
@@ -87,6 +87,7 @@ $COMPOSE_CMD -f "$COMPOSE_FILE" up -d redis llm-mock llm-mock-upstream memora-mc
 info "等待 host PG (max 60s)..."
 # shellcheck disable=SC1090
 set -a; source "$ENV_FILE"; set +a
+LLM_MOCK_HOST_PORT="${LLM_MOCK_HOST_PORT:-19080}"
 PG_OK=0
 for i in $(seq 1 60); do
   if PGPASSWORD="$POSTGRES_PASSWORD" psql -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U "$POSTGRES_USER" -d postgres -tAc "SELECT 1" >/dev/null 2>&1; then
@@ -105,7 +106,7 @@ for i in $(seq 1 30); do
   sleep 1
 done
 for i in $(seq 1 30); do
-  if curl -sf http://localhost:18080/healthz >/dev/null 2>&1; then
+  if curl -sf "http://localhost:${LLM_MOCK_HOST_PORT}/healthz" >/dev/null 2>&1; then
     ok "llm-mock-upstream ready"; break
   fi
   sleep 1
@@ -178,7 +179,7 @@ ok "本地环境就绪"
 echo
 echo "  PG:       \$POSTGRES_HOST:\$POSTGRES_PORT (db=\$POSTGRES_DB, 凭证来自 .env.dev-research)"
 echo "  Redis:    localhost:6379"
-echo "  Mock:     http://localhost:18080  (真 OpenAI 兼容)"
+echo "  Mock:     http://localhost:${LLM_MOCK_HOST_PORT}  (真 OpenAI 兼容)"
 echo "  v1 GW:    http://localhost:8781   (cmd/gateway 生产入口)"
 echo "  v2 GW:    http://localhost:8782   (cmd/gateway-v2 演示入口)"
 echo
