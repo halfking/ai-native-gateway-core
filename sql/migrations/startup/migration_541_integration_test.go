@@ -2,11 +2,13 @@ package startup
 
 import (
 	"context"
+	"errors"
 	"os"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 const fixtureCleanup541 = `
@@ -179,5 +181,98 @@ func TestMigration541ScopeRevisionIntegration(t *testing.T) {
 	}
 	if revisionExists {
 		t.Fatal("down migration did not remove candidate_binding_scope_revision")
+	}
+}
+
+// TestMigration541ScopeRevisionConcurrentBump exercises the advisory-lock
+// ordering on the revision row: two SERIALIZABLE connections race a
+// multi-row reorder against the same scope and exactly one must observe
+// the post-commit version while the other receives HTTP 40001 (handled as
+// "stale revision" by the handler).
+func TestMigration541ScopeRevisionConcurrentBump(t *testing.T) {
+	dsn := os.Getenv("TEST_PG_URL")
+	if dsn == "" {
+		t.Skip("TEST_PG_URL not set; migration 541 concurrency test requires a disposable PostgreSQL database")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	cfg, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
+	conn, err := pgx.ConnectConfig(ctx, cfg)
+	if err != nil {
+		t.Skipf("TEST_PG_URL unreachable: %v", err)
+	}
+	defer func() { _ = conn.Close(ctx) }()
+
+resetAndSeed := func(t *testing.T) {
+		t.Helper()
+		exec := func(sql string, args ...any) {
+			t.Helper()
+			if _, err := conn.Exec(ctx, sql, args...); err != nil {
+				t.Fatalf("exec failed: %v (sql=%s)", err, sql)
+			}
+		}
+		exec(fixtureCleanup541)
+		exec(fixtureDDL541)
+		exec(`INSERT INTO provider_models VALUES (1, 10, 'race-model'), (2, 20, 'race-model')`)
+		for i := 0; i < 4; i++ {
+			exec(`INSERT INTO credential_model_bindings (id, credential_id, provider_model_id, manual_priority, updated_at) VALUES ($1, $1+1000, $2, $3, '2026-01-01T00:00:00Z')`, i+1, (i%2)+1, i+1)
+		}
+		up, err := os.ReadFile("541_candidate_binding_scope_revision.sql")
+		if err != nil {
+			t.Fatal(err)
+		}
+		exec(string(up))
+	}
+	resetAndSeed(t)
+
+	tx1, err := conn.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
+	if err != nil {
+		t.Fatalf("begin tx1: %v", err)
+	}
+	tx2, err := conn.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
+	if err != nil {
+		t.Fatalf("begin tx2: %v", err)
+	}
+	defer tx1.Rollback(ctx)
+	defer tx2.Rollback(ctx)
+
+	// Both transactions touch the same scope; the advisory locks now
+	// serialise the trigger upserts deterministically rather than racing
+	// on the row's page lock. We expect exactly one commit succeeds.
+	if _, err := tx1.Exec(ctx, `SELECT set_config('app.actor', 'tx1', true)`); err != nil {
+		t.Fatalf("set actor tx1: %v", err)
+	}
+	if _, err := tx2.Exec(ctx, `SELECT set_config('app.actor', 'tx2', true)`); err != nil {
+		t.Fatalf("set actor tx2: %v", err)
+	}
+
+	if _, err := tx1.Exec(ctx,
+		`UPDATE credential_model_bindings
+		   SET manual_priority = manual_priority + 10, updated_at = updated_at + interval '1 second'
+		 WHERE id IN (1,2,3,4)`); err != nil {
+		t.Fatalf("tx1 update: %v", err)
+	}
+	if _, err := tx2.Exec(ctx,
+		`UPDATE credential_model_bindings
+		   SET manual_priority = manual_priority + 20, updated_at = updated_at + interval '1 second'
+		 WHERE id IN (1,2,3,4)`); err != nil {
+		t.Fatalf("tx2 update: %v", err)
+	}
+
+	if err := tx1.Commit(ctx); err != nil {
+		t.Fatalf("tx1 commit: %v", err)
+	}
+	err = tx2.Commit(ctx)
+	if err == nil {
+		t.Fatalf("expected tx2 commit to fail under SERIALIZABLE, got nil")
+	}
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "40001" {
+		t.Fatalf("expected SQLSTATE 40001 from tx2, got %v", err)
 	}
 }

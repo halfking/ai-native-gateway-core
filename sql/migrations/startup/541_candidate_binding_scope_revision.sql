@@ -67,7 +67,23 @@ ON CONFLICT (raw_model) DO NOTHING;
 -- statement, instead of bumping once per binding row.
 CREATE OR REPLACE FUNCTION public.bump_candidate_binding_scope_revision_insert()
 RETURNS TRIGGER AS $$
+DECLARE
+    v_actor text;
 BEGIN
+    -- Order locks on candidate_binding_scope_revision by raw_model via
+    -- advisory locks so concurrent statement-level triggers serialize
+    -- predictably. The reorder handler already takes FOR UPDATE OF cmb on
+    -- the underlying binding rows; this advisory lock extends that ordering
+    -- to the revision upsert without touching those rows again.
+    PERFORM pg_advisory_xact_lock(hashtextextended(s.raw_model, 0))
+       FROM (
+         SELECT DISTINCT pm.raw_model_name AS raw_model
+           FROM new_rows n
+           JOIN public.provider_models pm ON pm.id = n.provider_model_id
+          ORDER BY raw_model
+       ) s;
+    v_actor := current_setting('app.actor', true);
+
     WITH affected AS (
         SELECT DISTINCT pm.raw_model_name AS raw_model
           FROM new_rows n
@@ -91,7 +107,7 @@ BEGIN
     )
     INSERT INTO public.candidate_binding_scope_revision
         (raw_model, scope_version, scope_hash, last_bumped_at, last_bumped_by)
-    SELECT raw_model, 1, scope_hash, now(), current_setting('app.actor', true)
+    SELECT raw_model, 1, scope_hash, now(), v_actor
       FROM hashes
     ON CONFLICT (raw_model) DO UPDATE
         SET scope_version  = public.candidate_binding_scope_revision.scope_version + 1,
@@ -104,7 +120,18 @@ $$ LANGUAGE plpgsql;
 
 CREATE OR REPLACE FUNCTION public.bump_candidate_binding_scope_revision_delete()
 RETURNS TRIGGER AS $$
+DECLARE
+    v_actor text;
 BEGIN
+    PERFORM pg_advisory_xact_lock(hashtextextended(s.raw_model, 0))
+       FROM (
+         SELECT DISTINCT pm.raw_model_name AS raw_model
+           FROM old_rows o
+           JOIN public.provider_models pm ON pm.id = o.provider_model_id
+          ORDER BY raw_model
+       ) s;
+    v_actor := current_setting('app.actor', true);
+
     WITH affected AS (
         SELECT DISTINCT pm.raw_model_name AS raw_model
           FROM old_rows o
@@ -128,7 +155,7 @@ BEGIN
     )
     INSERT INTO public.candidate_binding_scope_revision
         (raw_model, scope_version, scope_hash, last_bumped_at, last_bumped_by)
-    SELECT raw_model, 1, scope_hash, now(), current_setting('app.actor', true)
+    SELECT raw_model, 1, scope_hash, now(), v_actor
       FROM hashes
     ON CONFLICT (raw_model) DO UPDATE
         SET scope_version  = public.candidate_binding_scope_revision.scope_version + 1,
@@ -141,7 +168,33 @@ $$ LANGUAGE plpgsql;
 
 CREATE OR REPLACE FUNCTION public.bump_candidate_binding_scope_revision_update()
 RETURNS TRIGGER AS $$
+DECLARE
+    v_actor text;
 BEGIN
+    -- Lock both the old and new raw_model in deterministic order so two
+    -- concurrent reorder transactions cannot deadlock on the revision row
+    -- when one moves a binding from scope A to scope B.
+    PERFORM pg_advisory_xact_lock(hashtextextended(s.raw_model, 0))
+       FROM (
+         SELECT DISTINCT pm.raw_model_name AS raw_model
+           FROM new_rows n
+           JOIN old_rows o USING (id)
+           JOIN public.provider_models pm ON pm.id = n.provider_model_id
+          WHERE o.manual_priority IS DISTINCT FROM n.manual_priority
+             OR o.provider_model_id IS DISTINCT FROM n.provider_model_id
+             OR o.credential_id     IS DISTINCT FROM n.credential_id
+         UNION
+         SELECT DISTINCT pm.raw_model_name AS raw_model
+           FROM new_rows n
+           JOIN old_rows o USING (id)
+           JOIN public.provider_models pm ON pm.id = o.provider_model_id
+          WHERE o.manual_priority IS DISTINCT FROM n.manual_priority
+             OR o.provider_model_id IS DISTINCT FROM n.provider_model_id
+             OR o.credential_id     IS DISTINCT FROM n.credential_id
+          ORDER BY raw_model
+       ) s;
+    v_actor := current_setting('app.actor', true);
+
     WITH affected AS (
         SELECT DISTINCT pm.raw_model_name AS raw_model
           FROM new_rows n
@@ -177,7 +230,7 @@ BEGIN
     )
     INSERT INTO public.candidate_binding_scope_revision
         (raw_model, scope_version, scope_hash, last_bumped_at, last_bumped_by)
-    SELECT raw_model, 1, scope_hash, now(), current_setting('app.actor', true)
+    SELECT raw_model, 1, scope_hash, now(), v_actor
       FROM hashes
     ON CONFLICT (raw_model) DO UPDATE
         SET scope_version  = public.candidate_binding_scope_revision.scope_version + 1,
