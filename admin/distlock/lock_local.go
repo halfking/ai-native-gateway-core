@@ -77,6 +77,7 @@ func (b *localBackend) followerClose() {
 // with RedisManager.
 func (m *LocalManager) Acquire(_ context.Context, opts AcquireOpts) (*Handle, error) {
 	if opts.Key == "" {
+		distlockAcquireTotal.WithLabelValues("error").Inc()
 		return nil, ErrNotEnabled
 	}
 	ttl := opts.TTL
@@ -90,10 +91,12 @@ func (m *LocalManager) Acquire(_ context.Context, opts AcquireOpts) (*Handle, er
 	if ch, ok := m.flights[opts.Key]; ok {
 		// Follower: reuse the leader's release channel.
 		m.mu.Unlock()
+		distlockAcquireTotal.WithLabelValues("follower").Inc()
 		return &Handle{
 			leader:    false,
 			key:       opts.Key,
 			ttl:       ttl,
+			scope:     normalizeLockScope(opts.Scope),
 			localWait: ch,
 			backend:   &localBackend{m: m, key: opts.Key, ch: ch},
 		}, nil
@@ -101,10 +104,12 @@ func (m *LocalManager) Acquire(_ context.Context, opts AcquireOpts) (*Handle, er
 	ch := make(chan struct{})
 	m.flights[opts.Key] = ch
 	m.mu.Unlock()
+	distlockAcquireTotal.WithLabelValues("leader").Inc()
 	return &Handle{
 		leader:  true,
 		key:     opts.Key,
 		ttl:     ttl,
+		scope:   normalizeLockScope(opts.Scope),
 		backend: &localBackend{m: m, key: opts.Key, ch: ch},
 	}, nil
 }

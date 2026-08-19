@@ -30,9 +30,10 @@ const (
 // AcquireOpts parameterizes Acquire. Key is required; TTL defaults to 60s
 // when zero. Mode defaults to ModeWaitFollower.
 type AcquireOpts struct {
-	Key  string
-	TTL  time.Duration
-	Mode Mode
+	Key   string
+	TTL   time.Duration
+	Mode  Mode
+	Scope string
 }
 
 // Manager is the entry-point interface implemented by both RedisManager
@@ -101,7 +102,12 @@ var ErrNotEnabled = errors.New("distlock: redis client not configured")
 //     initial SetNX / Subscribe handshake.
 //   - any other error: Redis is temporarily unavailable. Caller should
 //     log + proceed without the lock (DB ON CONFLICT is the final guard).
-func (m *RedisManager) Acquire(ctx context.Context, opts AcquireOpts) (*Handle, error) {
+func (m *RedisManager) Acquire(ctx context.Context, opts AcquireOpts) (h *Handle, err error) {
+	result := "error"
+	defer func() {
+		distlockAcquireTotal.WithLabelValues(result).Inc()
+	}()
+
 	if !m.Enabled() {
 		return nil, ErrNotEnabled
 	}
@@ -122,6 +128,7 @@ func (m *RedisManager) Acquire(ctx context.Context, opts AcquireOpts) (*Handle, 
 		return nil, fmt.Errorf("distlock: SetNX %q: %w", opts.Key, setErr)
 	}
 	if ok {
+		result = "leader"
 		// Leader path. The backend closure does the Lua compare-and-delete
 		// (which also publishes the release event).
 		backend := &redisBackend{
@@ -133,6 +140,7 @@ func (m *RedisManager) Acquire(ctx context.Context, opts AcquireOpts) (*Handle, 
 			leader:  true,
 			key:     opts.Key,
 			ttl:     ttl,
+			scope:   normalizeLockScope(opts.Scope),
 			backend: backend,
 		}, nil
 	}
@@ -153,7 +161,8 @@ func (m *RedisManager) Acquire(ctx context.Context, opts AcquireOpts) (*Handle, 
 	// SetNX reports contention but before Redis registers this subscriber.
 	if _, err := m.rdb.Get(subCtx, opts.Key).Result(); errors.Is(err, redis.Nil) {
 		_ = pubsub.Close()
-		return &Handle{leader: false, key: opts.Key, ttl: 0}, nil
+		result = "follower"
+		return &Handle{leader: false, key: opts.Key, ttl: 0, scope: normalizeLockScope(opts.Scope)}, nil
 	} else if err != nil {
 		_ = pubsub.Close()
 		return nil, fmt.Errorf("distlock: follower recheck %q: %w", opts.Key, err)
@@ -175,10 +184,12 @@ func (m *RedisManager) Acquire(ctx context.Context, opts AcquireOpts) (*Handle, 
 		// (may wait a bit longer than the real TTL) but safe.
 		followerTTL = ttl
 	}
+	result = "follower"
 	return &Handle{
 		leader:  false,
 		key:     opts.Key,
 		ttl:     followerTTL,
+		scope:   normalizeLockScope(opts.Scope),
 		channel: ch,
 		pubsub:  pubsub,
 		backend: &redisBackend{rdb: m.rdb, key: opts.Key},
@@ -228,6 +239,7 @@ type Handle struct {
 	leader  bool
 	key     string
 	ttl     time.Duration
+	scope   string
 	backend handleBackend
 
 	// Follower-only transport state. Exactly one of {channel, localWait}
@@ -271,6 +283,10 @@ func (h *Handle) Wait(ctx context.Context) error {
 	if h == nil || h.leader {
 		return nil
 	}
+	start := time.Now()
+	defer func() {
+		distlockWaitSeconds.WithLabelValues(normalizeLockScope(h.scope)).Observe(time.Since(start).Seconds())
+	}()
 	h.mu.Lock()
 	channel := h.channel
 	localWait := h.localWait
