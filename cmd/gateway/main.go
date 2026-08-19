@@ -5601,8 +5601,9 @@ func main() {
 		}
 	}
 	if liveStreamHub != nil {
-		liveStreamHub.SetQueueSnapshotProvider(wireQueueSnapshotProvider(gatewayQueueProjection))
-		slog.Info("live stream: queue snapshot provider wired", "wired", gatewayQueueProjection != nil)
+		projection := gatewayQueueProjection.Load()
+		liveStreamHub.SetQueueSnapshotProvider(wireQueueSnapshotProvider(projection))
+		slog.Info("live stream: queue snapshot provider wired", "wired", projection != nil)
 	}
 
 	srv := &http.Server{
@@ -5745,10 +5746,7 @@ func main() {
 			pipeline.SetQueueObservationSink(nil)
 		}
 		gatewayRequestJourneySink = nil
-		if gatewayQueueProjection != nil {
-			gatewayQueueProjection.Close()
-			gatewayQueueProjection = nil
-		}
+		gatewayQueueProjection.Close()
 		if err := journeyRecorder.Close(stopCtx); err != nil {
 			slog.Warn("request journey recorder drain failed", "error", err)
 		}
