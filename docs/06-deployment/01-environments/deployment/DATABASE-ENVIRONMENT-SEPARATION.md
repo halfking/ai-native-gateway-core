@@ -231,7 +231,7 @@ rm scripts/sync-db-from-71.sh.temp
 
 ```bash
 # 1. 本地测试通过
-docker compose -f docker-compose.local-r112.yml up -d
+docker compose -f docker-compose.dev-research.yml up -d
 ./scripts/local-r112-smoke.sh
 
 # 2. 构建镜像（在184服务器上）
