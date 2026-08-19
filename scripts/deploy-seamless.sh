@@ -487,6 +487,16 @@ do_deploy() {
     exit 1
   fi
 
+  # 9.5 2026-08-19 OOM 复盘加固: 验证目标机自身 nginx(443)→gateway 链路.
+  # 旧流程只检查 127.0.0.1:8781/healthz, gateway 存活 ≠ 公网通. OOM 现场
+  # gateway 活 + nginx failed = 1h21min 公网 502. 现增加 127.0.0.1:443/healthz
+  # 校验, 失败 = nginx failed → 自动 rollback.
+  log "[9.5/9] 验证目标机自身 nginx→gateway (127.0.0.1:443/healthz)"
+  if ! host_wait_https_healthy "$SSH_CMD" "$TARGET" 30 2>&1; then
+    _seamless_auto_rollback "nginx (443) healthz 失败 — OOM 或 nginx 未自愈, 立即回滚" "$version" || true
+    exit 1
+  fi
+
   # 先确认 DB 已就绪，再同步 admin 密码并验证登录。
   # 否则网关在 postgres disabled (db == nil) 时 handleLogin 返回 503 database not configured，
   # 会误触发自动回滚；与 deploy_verify_gateway_ready 的 503-tolerant 契约保持一致。
