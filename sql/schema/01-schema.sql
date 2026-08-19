@@ -929,22 +929,13 @@ $$;
 
 
 --
--- Name: columnar_drift_report(); Type: FUNCTION; Schema: public; Owner: -
+-- Name: columnar_insert_only_parents(); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.columnar_drift_report() RETURNS TABLE(parent_name text, compliant_count integer, noncompliant_count integer, total_size_bytes bigint, heap_size_bytes bigint, columnar_size_bytes bigint)
+CREATE FUNCTION public.columnar_insert_only_parents() RETURNS text[]
     LANGUAGE sql STABLE
     AS $$
-    SELECT
-        parent_name,
-        count(*) FILTER (WHERE compliant) AS compliant_count,
-        count(*) FILTER (WHERE NOT compliant) AS noncompliant_count,
-        sum(total_size_bytes)::bigint AS total_size_bytes,
-        sum(total_size_bytes) FILTER (WHERE storage='heap')::bigint AS heap_size_bytes,
-        sum(total_size_bytes) FILTER (WHERE storage='columnar')::bigint AS columnar_size_bytes
-    FROM columnar_healthcheck()
-    GROUP BY parent_name
-    ORDER BY parent_name;
+    SELECT ARRAY['routing_decision_log'];
 $$;
 
 
@@ -1049,19 +1040,25 @@ $$;
 
 
 --
--- Name: columnar_insert_only_parents(); Type: FUNCTION; Schema: public; Owner: -
+-- Name: columnar_drift_report(); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.columnar_insert_only_parents() RETURNS text[]
+CREATE FUNCTION public.columnar_drift_report() RETURNS TABLE(parent_name text, compliant_count integer, noncompliant_count integer, total_size_bytes bigint, heap_size_bytes bigint, columnar_size_bytes bigint)
     LANGUAGE sql STABLE
     AS $$
-    SELECT ARRAY['routing_decision_log'];
+    SELECT
+        parent_name,
+        count(*) FILTER (WHERE compliant) AS compliant_count,
+        count(*) FILTER (WHERE NOT compliant) AS noncompliant_count,
+        sum(total_size_bytes)::bigint AS total_size_bytes,
+        sum(total_size_bytes) FILTER (WHERE storage='heap')::bigint AS heap_size_bytes,
+        sum(total_size_bytes) FILTER (WHERE storage='columnar')::bigint AS columnar_size_bytes
+    FROM columnar_healthcheck()
+    GROUP BY parent_name
+    ORDER BY parent_name;
 $$;
 
 
---
--- Name: create_next_month_partitions(); Type: FUNCTION; Schema: public; Owner: -
---
 
 CREATE FUNCTION public.create_next_month_partitions() RETURNS text
     LANGUAGE plpgsql
