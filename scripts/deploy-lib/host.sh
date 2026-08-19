@@ -255,6 +255,32 @@ host_wait_healthy() {
   return 1
 }
 
+# 2026-08-19: OOM 复盘加固. OOM killer 杀 nginx 后 systemd 不自愈 (vendor unit
+# 缺 Restart=always), gateway 仍然存活且 127.0.0.1:8781/healthz OK — 旧 host_wait_healthy
+# 通过但公网 80/443 实际挂了 1h21min 才被发现.
+#
+# 本函数在 target 自身 curl https://127.0.0.1/healthz 验证 nginx→gateway 链路.
+# nginx 用的是 let's encrypt 给 kxpms.cn 的 cert, curl 127.0.0.1 会 CN mismatch,
+# 用 -k 跳过 cert verify. -k 在这里可接受: 我们只验证"链路通 + 返回 200", 不
+# 验证 TLS 身份 (TLS 身份由发起机器的公网 curl 验证, 见 deploy-245 SKILL).
+#
+# 当 target contract 有 internal_https_health_url 时调用, 空则跳过 (兼容 252/kaixuan).
+host_wait_https_healthy() {
+  local ssh_cmd=$1 target=$2 timeout_s=${3:-30}
+  local https_url
+  https_url=$(target_field "$target" internal_https_health_url)
+  [[ -n "$https_url" ]] || { echo "  internal_https_health_url not set for $target, skip"; return 0; }
+  local deadline=$(( $(date +%s) + timeout_s ))
+  while (( $(date +%s) < deadline )); do
+    if "$ssh_cmd" "curl -kfsS --max-time 3 '$https_url' >/dev/null 2>&1"; then
+      return 0
+    fi
+    sleep 2
+  done
+  echo "ERROR: $target nginx (443) https health check timed out after ${timeout_s}s — nginx may be down (post-OOM symptom)" >&2
+  return 1
+}
+
 # Mark a release bundle as verified=true once /healthz answers 2xx.
 # The metadata file is rewritten in-place — the orchestrator rolls
 # back via the deployment.json instead of new sidecars.
