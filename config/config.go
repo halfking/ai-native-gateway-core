@@ -165,6 +165,12 @@ type Config struct {
 	// regressions with a particular upstream.
 	EnableEmptyStreamGate bool `yaml:"enable_empty_stream_gate" env:"LLM_GATEWAY_ENABLE_EMPTY_STREAM_GATE"`
 
+	// EmptyStreamEarlyEmptyChunks (2026-08-20): valid empty OpenAI delta
+	// frames seen consecutively before any semantic content trigger an
+	// immediate KindEmptyResponse failover. Zero disables early detection;
+	// the end-of-stream empty gate remains available independently.
+	EmptyStreamEarlyEmptyChunks int `yaml:"empty_stream_early_empty_chunks" env:"LLM_GATEWAY_EMPTY_STREAM_EARLY_EMPTY_CHUNKS"`
+
 	// Pool grace period (seconds)
 	PoolGracePeriod int `yaml:"pool_grace_period_seconds" env:"LLM_GATEWAY_POOL_GRACE_PERIOD"`
 
@@ -440,6 +446,7 @@ func Load() *Config {
 		CredentialFpSlotReclaimIdleSeconds: 1800,  // 30 min — 自动清除无活动的时长
 		EnableDisguise:                     false, // off by default; opt-in
 		EnableEmptyStreamGate:              true,  // 2026-07-15: ON by default; kills the 13% NIM empty-stream failure mode.
+		EmptyStreamEarlyEmptyChunks:        3,     // 2026-08-20: fail over after three valid empty deltas.
 		DeployEnv:                          firstNonEmpty(os.Getenv("LLM_GATEWAY_ENV"), os.Getenv("GO_ENV"), os.Getenv("APP_ENV")),
 		DefaultLanguage:                    envOrDefault("LLM_GATEWAY_DEFAULT_LANGUAGE", "en"),
 		// WeChat Work notification settings
@@ -538,6 +545,7 @@ func Load() *Config {
 	if v := os.Getenv("LLM_GATEWAY_ENABLE_PRE_STREAM_KEEPALIVE"); v != "" {
 		cfg.EnablePreStreamKeepalive = v == "true" || v == "1"
 	}
+	applyNonNegativeIntEnv("LLM_GATEWAY_EMPTY_STREAM_EARLY_EMPTY_CHUNKS", &cfg.EmptyStreamEarlyEmptyChunks)
 	// streamretry flag: the struct tag declares the env var but the parse was
 	// historically missing, so env-only deployments silently ran with the
 	// wrapper off. Parsed here so the survival mutual-exclusion check in
@@ -596,6 +604,17 @@ func applyPositiveIntEnv(key string, target *int) {
 	}
 	if value := os.Getenv(key); value != "" {
 		if parsed, err := strconv.Atoi(value); err == nil && parsed > 0 {
+			*target = parsed
+		}
+	}
+}
+
+func applyNonNegativeIntEnv(key string, target *int) {
+	if target == nil {
+		return
+	}
+	if value := os.Getenv(key); value != "" {
+		if parsed, err := strconv.Atoi(value); err == nil && parsed >= 0 {
 			*target = parsed
 		}
 	}
@@ -696,7 +715,11 @@ func (cfg *Config) mergeFrom(other *Config) {
 	if other.EnablePreStreamKeepalive && os.Getenv("LLM_GATEWAY_ENABLE_PRE_STREAM_KEEPALIVE") == "" {
 		cfg.EnablePreStreamKeepalive = true
 	}
+	if other.EmptyStreamEarlyEmptyChunks != 0 && os.Getenv("LLM_GATEWAY_EMPTY_STREAM_EARLY_EMPTY_CHUNKS") == "" {
+		cfg.EmptyStreamEarlyEmptyChunks = other.EmptyStreamEarlyEmptyChunks
+	}
 	// Request survival file overrides (env wins, same pattern as above).
+
 	if other.RequestSurvivalEnabled && os.Getenv("LLM_GATEWAY_REQUEST_SURVIVAL_ENABLED") == "" {
 		cfg.RequestSurvivalEnabled = true
 	}
