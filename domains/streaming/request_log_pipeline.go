@@ -975,6 +975,14 @@ func (c *RequestLogContext) buildEntry(errCode, errMessage string, providerID, c
 		reqLog.PromptTokens = &v
 		reqLog.UsageSource = strPtr(UsageSourceEstimated)
 	}
+	// 2026-08-19: token-band observability. Failures after the
+	// SessionCompressor ran carry the band on the log context so operators
+	// can distinguish "session over the force threshold but upstream died"
+	// from a fresh-session failure.
+	if c.OutboundTokenBand != "" {
+		v := c.OutboundTokenBand
+		reqLog.TokenBand = &v
+	}
 	enrichRequestLogFromMeta(reqLog, c.KeyInfo, &c.meta)
 	applyAutoRouteFields(reqLog, c)
 	// 2026-08-06: flow X-Gw-Parent-Request-Id / X-Gw-Source-Actor into the

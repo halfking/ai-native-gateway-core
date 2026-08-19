@@ -27,3 +27,30 @@ func usageSourceForEstimate(c *RequestLogContext, body []byte) *string {
 	source := UsageSourceEstimated
 	return &source
 }
+
+// strPtrFromLogCtx copies the SessionCompressor's token-band classification
+// into a *string suitable for telemetry.RequestLogEntry.TokenBand. Returns
+// nil when no band has been recorded yet (the band is only known after
+// SessionCompressor.Prepare runs, which happens after this initial INSERT).
+func strPtrFromLogCtx(c *RequestLogContext) *string {
+	if c == nil || c.OutboundTokenBand == "" {
+		return nil
+	}
+	v := c.OutboundTokenBand
+	return &v
+}
+
+// tokenBandFromLogCtx is the emitTelemetry-time copy that prefers the most
+// recent SessionCompressor.Prepare result when available. It mirrors
+// promptTokensEstimateFromContext so success-path writers can populate the
+// column alongside prompt_tokens without re-implementing the nil-checks.
+func tokenBandFromLogCtx(c *RequestLogContext) *string {
+	if c == nil {
+		return nil
+	}
+	if c.OutboundTokenBand != "" {
+		v := c.OutboundTokenBand
+		return &v
+	}
+	return nil
+}
