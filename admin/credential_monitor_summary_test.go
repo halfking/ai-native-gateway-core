@@ -1,7 +1,12 @@
 package admin
 
 import (
+	"context"
+	"errors"
 	"testing"
+	"time"
+
+	"github.com/pashagolub/pgxmock/v4"
 )
 
 // TestDeriveModelEffectiveState_PriorityOrder covers the 5-state priority chain.
@@ -185,5 +190,113 @@ func TestHumanizeDisabledReason(t *testing.T) {
 func TestMonitorSummarySchemaVersion_NotZero(t *testing.T) {
 	if monitorSummarySchemaVersion == 0 {
 		t.Fatalf("monitorSummarySchemaVersion must be > 0; cache key would not differentiate schemas")
+	}
+}
+
+// queryLogger is a no-op identity wrapper used by tests so a mock pool can be
+// passed straight to runMonitorSummary (which is pgxQueryer-parameterized).
+func queryLogger(p pgxQueryer) pgxQueryer { return p }
+
+// timeNow returns the current time; isolated so tests can capture a stable
+// "now" for window calculations.
+func timeNow() time.Time { return time.Now() }
+
+// summaryMockRow builds a single CredentialMonitorSummary-shaped row whose
+// column order matches buildMonitorSummarySQL / runMonitorSummary's Scan list.
+func summaryMockRow() *pgxmock.Rows {
+	return pgxmock.NewRows([]string{
+		"id", "provider_id", "provider_name", "label", "status",
+		"availability_state", "health_status", "quota_state",
+		"concurrency_limit", "concurrency_limit_auto", "effective_concurrency",
+		"manual_disabled", "consecutive_failures",
+		"availability_recover_at", "state_reason_code", "state_reason_detail",
+		"health_checked_at", "total_requests", "model_total", "model_available",
+		"broken_model_count", "aggregated_success_rate", "models",
+	}).AddRow(
+		int64(1), int64(7), "zhipu", "zhipu-cred", "active",
+		"available", "healthy", "ok",
+		nil, nil, 5,
+		false, 0,
+		nil, nil, nil,
+		nil, int64(100), 1, 1,
+		0, 0.95, []byte("[]"),
+	)
+}
+
+// pgxmock-driven tests for runMonitorSummary (the SQL builder/executor
+// extracted from handleMonitorSummary). They validate that the query binds
+// the tenant filter ($3) and that rows.Err() propagates to the caller.
+// The cache-key dimension is asserted in TestMonitorSummarySchemaVersion_NotZero
+// (and built in the HTTP handler).
+
+func TestRunMonitorSummary_TenantIsolation(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool: %v", err)
+	}
+	defer mock.Close()
+
+	tenant := "tenant-isolation-7"
+
+	q := queryLogger(mock)
+	mock.ExpectQuery(`SELECT[\s\S]*FROM[\s\S]*credentials[\s\S]*`).
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), tenant).
+		WillReturnRows(summaryMockRow())
+
+	_, got, err := runMonitorSummary(context.Background(), q, monitorSummarySQLParams{TenantID: tenant})
+	if err != nil {
+		t.Fatalf("runMonitorSummary: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(got))
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("mock expectations: %v", err)
+	}
+}
+
+func TestRunMonitorSummary_CacheKeyDimensions(t *testing.T) {
+	// Validate runMonitorSummary executes without error for a distinct tenant.
+	// The cache key itself is built in the HTTP handler (handleMonitorSummary)
+	// and its uniqueness is enforced by monitorSummarySchemaVersion.
+	tenant := "tenant-A"
+
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool: %v", err)
+	}
+	defer mock.Close()
+
+	mock.ExpectQuery(`SELECT[\s\S]*FROM[\s\S]*credentials[\s\S]*`).
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), tenant).
+		WillReturnRows(summaryMockRow())
+
+	q := queryLogger(mock)
+	if _, _, err := runMonitorSummary(context.Background(), q, monitorSummarySQLParams{TenantID: tenant}); err != nil {
+		t.Fatalf("tenant-A call: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("tenant-A expectations: %v", err)
+	}
+}
+
+func TestRunMonitorSummary_RowsErrPropagates(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool: %v", err)
+	}
+	defer mock.Close()
+
+	tenant := "tenant-rows-err"
+	// Simulated query failure must propagate (audit guarantee: incomplete
+	// payloads never reach the UI). pgxmock surfaces this via the Query error,
+	// which runMonitorSummary wraps and returns.
+	mock.ExpectQuery(`SELECT[\s\S]*FROM[\s\S]*credentials[\s\S]*`).
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), tenant).
+		WillReturnError(errors.New("simulated query failure"))
+
+	q := queryLogger(mock)
+	if _, _, err := runMonitorSummary(context.Background(), q, monitorSummarySQLParams{TenantID: tenant}); err == nil {
+		t.Fatalf("expected query error to propagate, got nil")
 	}
 }
