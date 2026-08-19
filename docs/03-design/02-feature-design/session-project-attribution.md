@@ -17,7 +17,7 @@
 ### 1. 权威值与推断值分表存储
 
 - 权威值：`session_dim.project_id`（migration 407 已存在），供计费与对账。
-- 推断值：`session_project_attribution`（migration 544 新增），仅供归集分析。
+- 推断值：`session_project_attribution`（migration 547 新增），仅供归集分析。
 
 理由：一旦混存，就再也无法回答"这个项目的 token 数字可信吗"——分不清哪些
 是真实的、哪些是猜的。这与 OpenTelemetry GenAI 规范对
@@ -123,7 +123,7 @@ ChatGPT Projects 与 Claude Projects 均为用户手动组织（Anthropic 官方
 6. **`ORDER BY updated_at` 无索引支撑**（MEDIUM）。补
    `idx_spa_tenant_confirmed_updated` 部分索引。
 7. **down 迁移用 CASCADE**（LOW）。改为默认 RESTRICT，避免将来静默删掉依赖
-   `project_dim` 的视图；同时补上删除 544 新增的 `request_logs` 索引。
+   `project_dim` 的视图；同时补上删除 547 新增的 `request_logs` 索引。
 8. **测试是摆设**（MEDIUM）。歧义置信度原只断言 `< 0.95`，改成钉死 `0.6`；
    补空 `Ref`、LLM 只给 label、`ErrNoSignals`、`autoConfirm` 不影响继承层等
    回归用例。
