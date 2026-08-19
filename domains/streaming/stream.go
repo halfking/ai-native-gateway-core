@@ -163,6 +163,20 @@ func runEmptyStreamGate(
 	if startingLine != "" {
 		buffered = append(buffered, startingLine)
 		bufferedBytes += len(startingLine)
+		startingPayload := extractPayload(startingLine)
+		if startingPayload == "[DONE]" {
+			if capture != nil {
+				capture.MarkInterruptedWithReason("empty_stream_no_content")
+			}
+			return nil, &StreamOutcome{
+				Interrupted: true,
+				Reason:      "empty_stream_no_content",
+				Resumable:   true,
+			}
+		}
+		if chunkHasContent(startingPayload) {
+			return buffered, nil
+		}
 	}
 
 	for {
@@ -170,11 +184,34 @@ func runEmptyStreamGate(
 		// timeout semantics as the main loop.
 		line, err := readLineWithTimeoutAndCloser(ctx, reader, bodyCloser, firstByteTimeout)
 		if err != nil {
-			// Timeout / network error during buffering → flush whatever we
-			// have so the caller can write them, then let the main loop
-			// surface the error as a stream interruption.
-			return buffered, nil
+			// Nothing buffered by the gate has reached the client yet. Preserve
+			// the read classification so the executor can fail over instead of
+			// treating the closed upstream as a clean EOF.
+			state := classifyStreamReadError(ctx, err)
+			failure := StreamOutcome{
+				Interrupted: true,
+				Reason:      "read_error",
+				Kind:        errorsx.KindUpstreamDown,
+				Resumable:   true,
+			}
+			switch state {
+			case streamReadCanceled:
+				failure.Reason = "client_cancel"
+				failure.Kind = errorsx.KindCanceled
+				failure.Resumable = false
+			case streamReadTimeout:
+				failure.Reason = "stream_timeout"
+				failure.Kind = errorsx.KindStreamTimeout
+			case streamReadEOF:
+				failure.Reason = "eof_without_done"
+				failure.Kind = errorsx.KindUpstreamDown
+			}
+			if capture != nil {
+				capture.MarkInterruptedWithReason(failure.Reason)
+			}
+			return nil, &failure
 		}
+
 		normalizedLine, hasCombinedDone := splitCombinedDoneFrame(line)
 		line = normalizedLine
 		if onRawLine != nil {
@@ -514,8 +551,8 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 		outcome.Interrupted = true
 		outcome.Reason = "client_write_failed"
 		outcome.Kind = errorsx.KindCanceled
-		outcome.Resumable = chunkCount < 5
-		outcome.ChunkCount = chunkCount
+		outcome.Resumable = true
+		outcome.ChunkCount = 0
 		if capture != nil {
 			capture.MarkInterruptedWithReason("client_write_failed")
 		}
@@ -614,7 +651,23 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 			outcome.ChunkCount = 0
 			return outcome
 		}
+		if payload := extractPayload(firstLine); payload != "" && payload != "[DONE]" {
+			if _, parseErr := ir.ParseOpenAIStreamChunk(firstLine); parseErr != nil {
+				slog.Warn("stream: invalid first SSE chunk", "error", parseErr, "client_model", clientModel)
+				if capture != nil {
+					capture.MarkInterruptedWithReason("invalid_chunk")
+				}
+				return StreamOutcome{
+					Interrupted: true,
+					Reason:      "invalid_chunk",
+					Kind:        errorsx.KindUpstreamDown,
+					Resumable:   true,
+				}
+			}
+		}
+
 		// 2026-06-19 quality fix mode (017_quality_fix_mode.sql). Run
+
 		// before XML coercion so the scanner sees the raw upstream
 		// delta.tool_calls shape and can rewrite empty names to
 		// __unknown_tool_stream_<i>__. detect_only mode leaves the
@@ -768,20 +821,21 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 		if readResult.err != nil {
 			switch readResult.state {
 			case streamReadEOF:
-				// If upstream closed before sending [DONE], still send
-				// the terminator to the client (clients expect a
-				// well-formed stream) but mark the capture as
-				// interrupted with reason "eof_without_done" so audit
-				// queries can distinguish a clean completion from a
-				// premature close.
 				if !upstreamDoneReceived {
 					slog.Warn("upstream EOF without [DONE]", "client_model", clientModel)
 					if capture != nil {
 						capture.MarkInterruptedWithReason("eof_without_done")
 					}
+					terminalVisible := attemptHasClientSemanticOutput(gate, chunkCount)
+					if terminalVisible {
+						safeWriteSSE(w, "data: [DONE]\n\n")
+						safeFlush(flusher)
+						metrics.Global().RecordStreamSynthesizedDone()
+					}
 					outcome.Interrupted = true
 					outcome.Reason = "eof_without_done"
 					outcome.Kind = errorsx.KindUpstreamDown
+					outcome.Resumable = !terminalVisible
 				}
 				// When the client has gone away but the capturer is
 				// still alive and the upstream DID send [DONE], do NOT
@@ -790,27 +844,6 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 				if pc != nil && upstreamDoneReceived {
 					outcome.Interrupted = false
 					outcome.Reason = ""
-				}
-				// 2026-08-06 hot-patch: capture whether this branch had to
-				// synthesize the SSE terminator. The MiniMax API (~13% of
-				// streams as of 2026-07-28) ends without sending
-				// "data: [DONE]\n\n" — the gateway injects the trailing
-				// frame so SSE clients can finalize the stream. Decision
-				// "isBenignEOF" lives in executor_chat.go:975 + handler.go:5609;
-				// this signal only provides operator visibility, not
-				// classification.
-				synthesizedDone := !upstreamDoneReceived
-				if gate.MayWriteTerminal() {
-					safeWriteSSE(w, "data: [DONE]\n\n")
-					safeFlush(flusher)
-					if synthesizedDone {
-						slog.Warn("stream synthesized [DONE] terminator",
-							"client_model", clientModel,
-							"chunk_count", chunkCount,
-							"had_capture", capture != nil,
-						)
-						metrics.Global().RecordStreamSynthesizedDone()
-					}
 				}
 				if capture != nil && upstreamDoneReceived {
 					capture.ObserveChunk(&ir.StreamChunk{
@@ -962,13 +995,17 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 		diagnosticCollector.observeEmittedLine(line)
 		if writeClientLine(line) {
 			lastSend = time.Now()
-			chunkCount++ // Track chunks sent
+			chunkCount++ // Track chunks accepted by the client-facing gate
 			if capture != nil {
 				capture.RecordChunkSent()
 			}
 		}
+		if clientWriteFailure() {
+			return outcome
+		}
 
 	}
+
 }
 
 func extractPayload(line string) string {
@@ -1042,7 +1079,7 @@ func streamJSONTrailingKind(trailing string) string {
 }
 
 func prependDoneFrame(reader *bufio.Reader) *bufio.Reader {
-	return bufio.NewReaderSize(io.MultiReader(strings.NewReader("data: [DONE]\n"), reader), streamBufSize)
+	return bufio.NewReaderSize(io.MultiReader(strings.NewReader("data: [DONE]\n\n"), reader), streamBufSize)
 }
 
 // shouldDropEmptyChoicesFrame reports whether an SSE data line is a

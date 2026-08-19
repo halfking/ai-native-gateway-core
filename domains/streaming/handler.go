@@ -7046,19 +7046,14 @@ func boolPtr(v bool) *bool {
 // request log as failed. It returns (isError, detailCode).
 //
 // Benign cases that do NOT mark the request as failed:
-//   - "eof_without_done" with chunk_count > 0: upstream closed without [DONE]
-//     but content was already delivered (e.g. MiniMax). The gateway synthesises
-//     [DONE] for the client. This mirrors executor_chat.go's isBenignEOF.
 //   - "client_cancel" / "client_disconnected": the client went away; not a
 //     gateway or upstream error.
 func classifyStreamInterruption(m map[string]any) (isError bool, detailCode string) {
 	detailCode, _ = m["failure_detail_code"].(string)
-	chunkCount, _ := m["stream_chunk_count"].(int)
 
-	isBenignEOF := detailCode == "eof_without_done" && chunkCount > 0
 	isClientCancel := detailCode == "client_cancel" || detailCode == "client_disconnected"
 
-	if isBenignEOF || isClientCancel {
+	if isClientCancel {
 		return false, detailCode
 	}
 	return true, detailCode
@@ -7072,10 +7067,7 @@ func classifyStreamInterruption(m map[string]any) (isError bool, detailCode stri
 //	stream_timeout       — no data for >stream_chunk_timeout
 //	concurrent_overload  — circuit breaker inferred a 429-class overload
 //	empty_response       — upstream 200 with zero content (NIM pattern)
-//	eof_without_done     — upstream closed without sending [DONE]; benign
-//	                       when chunks > 0 (handled by executor_chat.go
-//	                       isBenignEOF before this mapper is reached),
-//	                       real failure when chunks == 0 (2026-07-29 split)
+//	eof_without_done     — upstream closed without sending its terminal marker
 //	stream_read_error    — generic read failure (malformed SSE, etc.)
 //	stream_panic         — recovered panic in a stream bridge
 //	client_cancel        — client disconnected before stream completion
@@ -7125,14 +7117,6 @@ func streamErrorKindForDetailCode(outcome *StreamOutcome, detailCode string) str
 	case "empty_stream_no_content":
 		return "empty_response"
 	case "eof_without_done":
-		// 2026-07-29: Decomposed from the "stream_read_error" bucket so the
-		// operator-facing error_kind column no longer conflates the benign
-		// "upstream closed without [DONE]" pattern (observed on MiniMax,
-		// ~13% of streams as of 2026-07-28) with generic read failures.
-		// Mirrors executor_chat.go isBenignEOF: chunk_count > 0 is
-		// classified as success and never reaches this mapping; chunks == 0
-		// remains a real failure but now has its own error_kind for
-		// accurate dashboard filtering.
 		return "eof_without_done"
 	case "anthropic_to_openai_read_error", "anthropic_to_responses_read_error",
 		"read_error", "stream_read_error":

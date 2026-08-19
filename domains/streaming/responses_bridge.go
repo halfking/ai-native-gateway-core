@@ -157,9 +157,21 @@ func (s *responsesScaffold) writeInitialEvents() {
 // bridge must return a structured outcome only (doc 18 §9.3).
 func (s *responsesScaffold) finishAttempt(gate *AttemptCommitGate, fullText, finishReason string, inputTokens, outputTokens, totalTokens int) {
 	if !gate.MayWriteTerminal() {
-		return
+		// A detached client may leave a buffered gate uncommitted even though the
+		// upstream completed normally. The pending capturer still needs a complete
+		// replay body; clientStreamWriter suppresses the dead network write.
+		if s.pc == nil || s.clientWriter == nil || !s.clientWriter.clientDisconnected {
+			return
+		}
 	}
 	s.writeFinalEvents(fullText, finishReason, inputTokens, outputTokens, totalTokens)
+}
+
+func (s *responsesScaffold) finishInterrupted(gate *AttemptCommitGate, fullText, reason string, inputTokens, outputTokens int) {
+	if !gate.MayWriteTerminal() {
+		return
+	}
+	s.writeFinalEvents(fullText, "length", inputTokens, outputTokens, inputTokens+outputTokens)
 }
 
 // writeFinalEvents emits response.output_text.done, response.output_item.done,
@@ -264,6 +276,9 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 	pc *pendingCapturer,
 	diagnostics *DiagnosticContext,
 ) (outcome StreamOutcome) {
+	// Declare the gate before panic recovery so a panic after client-visible
+	// semantic output can never be classified as transparently resumable.
+	var gate *AttemptCommitGate
 	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 	defer func() {
@@ -276,6 +291,7 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 			outcome.Interrupted = true
 			outcome.Reason = "stream_panic"
 			outcome.Kind = errorsx.KindUpstreamDown
+			outcome.Resumable = !attemptHasClientSemanticOutput(gate, 0)
 			if pc != nil {
 				pc.markInterrupted("stream_panic")
 			}
@@ -292,7 +308,7 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 
 	// SR-W1: route client frames through the attempt commit gate.
 	// Disabled (default) this is the identity function — legacy wire bytes.
-	w, gate := wrapAttemptWriter(w, ProtocolOpenAIResponses)
+	w, gate = wrapAttemptWriter(w, ProtocolOpenAIResponses)
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)
@@ -349,7 +365,8 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 		// correct item_id. The IR StreamChunk from
 		// ParseAnthropicStreamEvent sets tc.Index but leaves tc.ID empty
 		// for input_json_delta, so the bridge maintains this lookup.
-		toolCallIDs = make(map[int]string)
+		toolCallIDs         = make(map[int]string)
+		messageStopReceived bool
 	)
 
 	// writeChunkIR serializes one IR StreamChunk via the Responses API
@@ -407,22 +424,40 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 			if capture != nil {
 				capture.MarkInterruptedWithReason("stream_chunk_timeout")
 			}
-			totalTokens := inputTokens + outputTokens
-			scaffold.finishAttempt(gate, fullText.String(), finishReason, inputTokens, outputTokens, totalTokens)
-			outcome.Interrupted = true
-			outcome.Reason = "chunk_timeout"
-			outcome.Kind = errorsx.KindStreamTimeout
-			outcome.ChunkCount = chunkCount
+			outcome = StreamOutcome{
+				Interrupted: true,
+				Reason:      "chunk_timeout",
+				Kind:        errorsx.KindStreamTimeout,
+				Resumable:   !attemptHasClientSemanticOutput(gate, chunkCount),
+				ChunkCount:  chunkCount,
+			}
+			if !outcome.Resumable {
+				scaffold.finishInterrupted(gate, fullText.String(), outcome.Reason, inputTokens, outputTokens)
+			}
+
 			if pc != nil {
-				pc.markInterrupted("chunk_timeout")
+				pc.markInterrupted(outcome.Reason)
 			}
 			return outcome
 		}
 
 		if err != nil {
 			if errors.Is(err, io.EOF) {
-				totalTokens := inputTokens + outputTokens
-				scaffold.finishAttempt(gate, fullText.String(), finishReason, inputTokens, outputTokens, totalTokens)
+				if !messageStopReceived {
+					outcome = StreamOutcome{
+						Interrupted: true,
+						Reason:      "eof_without_done",
+						Kind:        errorsx.KindUpstreamDown,
+						Resumable:   !attemptHasClientSemanticOutput(gate, chunkCount),
+						ChunkCount:  chunkCount,
+					}
+
+					if capture != nil {
+						capture.MarkInterruptedWithReason(outcome.Reason)
+					}
+					return outcome
+				}
+				scaffold.finishAttempt(gate, fullText.String(), finishReason, inputTokens, outputTokens, inputTokens+outputTokens)
 				return StreamOutcome{ChunkCount: chunkCount}
 			}
 			failure := streamReadFailureOutcome(err, chunkCount)
@@ -430,7 +465,6 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 			if capture != nil {
 				capture.MarkInterruptedWithReason(failure.Reason)
 			}
-			scaffold.finishAttempt(gate, fullText.String(), finishReason, inputTokens, outputTokens, inputTokens+outputTokens)
 			return outcome
 		}
 
@@ -467,9 +501,30 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 
 		if chunk != nil {
 			diagnosticCollector.observeChunk(chunk)
+			if chunk.Type == ir.ChunkTypeError {
+				outcome = StreamOutcome{
+					Interrupted: true,
+					Reason:      "upstream_error",
+					Kind:        errorsx.KindUpstreamDown,
+					Resumable:   !attemptHasClientSemanticOutput(gate, chunkCount),
+					ChunkCount:  chunkCount,
+				}
+				if capture != nil {
+					capture.MarkInterruptedWithReason(outcome.Reason)
+				}
+				if pc != nil {
+					pc.markInterrupted(outcome.Reason)
+				}
+				return outcome
+			}
+		}
+
+		if eventType == "message_stop" {
+			messageStopReceived = true
 		}
 
 		// Track usage + finish_reason as they arrive so the final
+
 		// response.completed carries accurate metadata.
 		//
 		// FinishReason arrives in OpenAI form (the IR parser already
@@ -533,6 +588,9 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 	pc *pendingCapturer,
 	diagnostics *DiagnosticContext,
 ) (outcome StreamOutcome) {
+	// Declare the gate before panic recovery so a panic after client-visible
+	// semantic output can never be classified as transparently resumable.
+	var gate *AttemptCommitGate
 	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 	defer func() {
@@ -545,6 +603,7 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 			outcome.Interrupted = true
 			outcome.Reason = "stream_panic"
 			outcome.Kind = errorsx.KindUpstreamDown
+			outcome.Resumable = !attemptHasClientSemanticOutput(gate, 0)
 			if pc != nil {
 				pc.markInterrupted("stream_panic")
 			}
@@ -561,7 +620,7 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 
 	// SR-W1: route client frames through the attempt commit gate.
 	// Disabled (default) this is the identity function — legacy wire bytes.
-	w, gate := wrapAttemptWriter(w, ProtocolOpenAIResponses)
+	w, gate = wrapAttemptWriter(w, ProtocolOpenAIResponses)
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)
@@ -618,7 +677,8 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 		// carry the new arguments. The bridge maintains this lookup
 		// so each function_call_arguments.delta can reference the
 		// correct item_id (matching the Responses API contract).
-		toolCallIDs = make(map[int]string)
+		toolCallIDs          = make(map[int]string)
+		upstreamDoneReceived bool
 	)
 
 	writeChunkIR := func(chunk *ir.StreamChunk) {
@@ -672,6 +732,20 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 				outcome.Kind = errorsx.KindCanceled
 				return outcome
 			case streamReadEOF:
+				if !upstreamDoneReceived {
+					outcome = StreamOutcome{
+						Interrupted: true,
+						Reason:      "eof_without_done",
+						Kind:        errorsx.KindUpstreamDown,
+						Resumable:   !attemptHasClientSemanticOutput(gate, chunkCount),
+						ChunkCount:  chunkCount,
+					}
+
+					if capture != nil {
+						capture.MarkInterruptedWithReason(outcome.Reason)
+					}
+					return outcome
+				}
 				scaffold.finishAttempt(gate, fullText.String(), finishReason, inputTokens, outputTokens, inputTokens+outputTokens)
 				return StreamOutcome{ChunkCount: chunkCount}
 			case streamReadTimeout:
@@ -679,12 +753,15 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 				if capture != nil {
 					capture.MarkInterruptedWithReason("stream_timeout")
 				}
-				scaffold.finishAttempt(gate, fullText.String(), finishReason, inputTokens, outputTokens, inputTokens+outputTokens)
 				outcome.Interrupted = true
 				outcome.Reason = "stream_timeout"
 				outcome.Kind = errorsx.KindStreamTimeout
+				outcome.Resumable = !attemptHasClientSemanticOutput(gate, chunkCount)
+				outcome.ChunkCount = chunkCount
+
 				return outcome
 			default:
+
 				failure := streamReadFailureOutcome(readResult.err, chunkCount)
 				slog.Warn("openai_to_responses: stream read error", "error", readResult.err, "kind", failure.Kind, "reason", failure.Reason)
 				if capture != nil {
@@ -713,6 +790,7 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 		}
 		payload := strings.TrimPrefix(trimmed, "data: ")
 		if payload == "[DONE]" {
+			upstreamDoneReceived = true
 			scaffold.finishAttempt(gate, fullText.String(), finishReason, inputTokens, outputTokens, inputTokens+outputTokens)
 			return StreamOutcome{ChunkCount: chunkCount}
 		}
@@ -736,6 +814,22 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 
 		if chunk != nil {
 			diagnosticCollector.observeChunk(chunk)
+			if chunk.Type == ir.ChunkTypeError {
+				outcome = StreamOutcome{
+					Interrupted: true,
+					Reason:      "upstream_error",
+					Kind:        errorsx.KindUpstreamDown,
+					Resumable:   !attemptHasClientSemanticOutput(gate, chunkCount),
+					ChunkCount:  chunkCount,
+				}
+				if capture != nil {
+					capture.MarkInterruptedWithReason(outcome.Reason)
+				}
+				if pc != nil {
+					pc.markInterrupted(outcome.Reason)
+				}
+				return outcome
+			}
 		}
 
 		// Track usage + finish_reason for response.completed.

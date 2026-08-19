@@ -1149,8 +1149,6 @@ func (e *Executor) executeOpenAI(
 						streamKind = errorsx.KindEmptyResponse
 					}
 
-					isBenignEOF := streamOutcome.Reason == "eof_without_done" && streamOutcome.ChunkCount > 0
-
 					slog.Warn("executor: stream interrupted",
 						"request_id", params.RequestID,
 						"provider_id", cand.ProviderID,
@@ -1163,27 +1161,9 @@ func (e *Executor) executeOpenAI(
 						"chunk_count", streamOutcome.ChunkCount,
 						"resumable", isResumable,
 						"classified_as", streamKind,
-						"benign_eof", isBenignEOF,
 					)
 
-					if isBenignEOF {
-						recordAttemptSuccess(streamOutcome.ChunkCount)
-						return &ExecuteResult{
-							Response:    resp,
-							Candidate:   cand,
-							LatencyMs:   latencyMs,
-							RequestBody: append([]byte(nil), bodyBytes...),
-							// Phase D (2026-06-22): inbound body for audit logging
-							InboundBody: sourceBody,
-							// Round 47 T-NEW-4: stream success path also records
-							// pre-request trim metadata so emitTelemetry can write
-							// compression_meta for streaming requests.
-							CompressionReason:   strPtrCompat(contextLenRecovery.lastReason),
-							CompressionStrategy: strPtrCompat(contextLenRecovery.lastStrategy),
-							CompressionMeta:     mergeCompressionMeta(contextLenRecovery.lastMeta, preTrimMeta),
-							RoutingTracker:      params.RoutingTracker,
-						}, nil
-					} else if isResumable {
+					if isResumable {
 						e.recordProtocolCircuitFailure(params, cand.ProviderID, cand.CredentialID, streamKind)
 						if streamKind == errorsx.KindConcurrent {
 							e.writeProtocolCredentialStateOnError(params, params.R.Context(), cand.CredentialID, cand.StandardizedName, streamKind,

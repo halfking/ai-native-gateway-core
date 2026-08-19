@@ -1158,7 +1158,6 @@ func (e *Executor) executeAnthropicOnce(
 				streamKind = errorsx.KindConcurrent
 			}
 			isResumable := outcome.Resumable && outcome.ChunkCount < e.StreamRetryThreshold
-			isBenignEOF := outcome.Reason == "eof_without_done" && outcome.ChunkCount > 0
 
 			slog.Warn("executor: stream interrupted",
 				"request_id", params.RequestID,
@@ -1172,15 +1171,10 @@ func (e *Executor) executeAnthropicOnce(
 				"chunk_count", outcome.ChunkCount,
 				"resumable", isResumable,
 				"classified_as", streamKind,
-				"benign_eof", isBenignEOF,
 			)
 
-			if !isBenignEOF && isResumable {
-			} else if !isBenignEOF {
+			if !isResumable {
 				e.recordProtocolCircuitFailure(params, cand.ProviderID, cand.CredentialID, streamKind)
-			}
-			if isBenignEOF {
-				e.recordProtocolCircuitSuccess(params, cand.ProviderID, cand.CredentialID)
 			}
 			return &ExecuteResult{
 				Response:    resp,
