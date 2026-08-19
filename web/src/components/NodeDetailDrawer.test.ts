@@ -158,6 +158,52 @@ describe('NodeDetailDrawer model×node scope', () => {
     expect(decisions).toHaveBeenCalledWith(5, 50, 'm-1', expect.objectContaining({ signal: expect.any(AbortSignal) }))
   })
 
+  it('aborts in-flight core and detail requests when the drawer is closed', async () => {
+    let observedSignal: AbortSignal | undefined
+    monitorSummary.mockImplementationOnce((_opts: any, requestOptions?: any) => {
+      observedSignal = requestOptions?.signal
+      return new Promise(resolve => {
+        requestOptions?.signal?.addEventListener('abort', () => resolve({ credentials: [] }))
+      })
+    })
+
+    const wrapper = mountDrawer('m-1')
+    await flushPromises()
+    expect(observedSignal).toBeDefined()
+    expect(observedSignal!.aborted).toBe(false)
+
+    await wrapper.setProps({ modelValue: false })
+    await flushPromises()
+    expect(observedSignal!.aborted).toBe(true)
+  })
+
+  it('discards a stale core response when the node changes before the promise settles', async () => {
+    const wrapper = mountDrawer('m-1')
+
+    let resolveFirst!: (value: unknown) => void
+    monitorSummary.mockImplementationOnce(() => new Promise(resolve => { resolveFirst = resolve }))
+
+    await flushPromises()
+
+    // Switch the underlying node: the prior core request must be discarded.
+    liveStreamState.nodes = [{
+      credential_id: 99,
+      provider_id: 1,
+      provider_code: 'p',
+      manual_disabled: false,
+      circuit_state: 'closed',
+      raw_models: ['x-1'],
+    }]
+    await wrapper.setProps({ node: liveStreamState.nodes[0] })
+    await flushPromises()
+
+    // Late response from the original credential must not overwrite the new node state.
+    resolveFirst({ credentials: [{ id: 5, models: [] }] })
+    await flushPromises()
+
+    expect(wrapper.get('h2').text()).not.toBe('5')
+  })
+
   it('clears stale detail and reloads the new model scope', async () => {
     const wrapper = mountDrawer('m-1')
     await triggerDetailLoad(wrapper)
