@@ -297,3 +297,45 @@ ok  	github.com/kaixuan/llm-gateway-go/internal/reasoncap	(cached)
 **后续审计人**: ZCode AI Assistant
 **后续审计时间**: 2026-08-19
 **状态**: 构建恢复、迁移静态审计通过、实际迁移执行待 staging 凭据
+
+---
+
+## 集成审计（2026-08-19 · 续二：整合他人未提交修改）
+
+修复并推送 core 模式后，工作区仍有他人未提交的 4 处修改。按"不丢弃他人代码"的要求，逐项审计、测试并整合到主分支。
+
+### 审计对象与结论
+
+| 修改 | 作者来源 | 审计方式 | 结论 |
+|------|----------|----------|------|
+| `admin/credential_monitor_toggle_test.go` 新增 `TestMonitorSummaryCoreModeSkipsHeavyAggregates` | 他人 | `go test -run` + 全量 `admin` 测试 | ✅ 该测试是对已推送 core 模式 SQL 契约的正向锁：断言 core 分支不含 `request_logs_with_current_month` / `recent_success_rate` / `credential_model_index_with_current_month` / `credential_model_call_history` / `percentile_cont`，且仍包含 `model_probe_state` / `model_offers`。与我推送的 core SQL 完全一致，绿。 |
+| `web/src/components/NodeDetailDrawer.vue` `coreCandidateTask` 优化 | 他人（曾误判为半成品） | `vitest` 全量 57 文件 / 351 用例 | ✅ 实为完整优化：`startCorePreload` 预取的 candidate 任务被 `loadNode('detail')` 复用（`pendingCoreCandidateTask`），避免重复发起；`coreController` 在 `.finally` 释放。vue+test 一致，vitest 全绿，无回归。 |
+| `web/src/components/NodeDetailDrawer.test.ts` 细化 | 他人 | `vitest` | ✅ 断言"路由决策仅在打开 requests tab 后加载"与已提交的 `loadDecisionsOnly`（scoped → `getCredentialDecisions(id,50,scope)`）一致。4/4 绿。 |
+| `domains/ursm/v2/migration/g4_isolated_redis_evidence_test.go`（新增） | 他人 | `go vet -tags g4probe` + `gofmt` + 默认 tag 编译 | ✅ `//go:build g4probe` 守卫，默认构建不参与；探针显式拒绝连接共享 6379，仅连隔离实例（默认 63790）。`go vet -tags g4probe` 通过，已 `gofmt -w` 规范化。语义安全。 |
+
+### 构建与测试汇总（合并态）
+
+- `go build ./admin/`：通过。
+- `go test ./admin/`（含 `TestMonitorSummaryCoreModeSkipsHeavyAggregates` 与 monitor 套件）：通过。
+- `go test ./modelname/ ./internal/reasoncap/`：通过。
+- `go vet ./admin/ ./modelname/ ./internal/reasoncap/`：通过。
+- `go vet -tags g4probe ./domains/ursm/v2/migration/`：通过。
+- `gofmt -l`（全部受影响 Go 文件）：干净。
+- 前端 `vitest run`（全量）：57 文件 / 351 用例全绿，无回归。
+
+### 未做的事项（明确留待后续）
+
+1. **kimi-k3 模态不一致修正**：`modelname/modality_defaults.go` 为 `multimodal`，DB 迁移 354 为 `vision`。**不修改已提交迁移**；建议新增修正迁移 357 将 `kimi-k3` 的 `modality` 更新为 `multimodal`。
+2. **前端 `vue-tsc` / `vite build`**：本次仅跑 `vitest`（类型与运行时均绿）；生产构建验证留待 CI。
+3. **staging 数据库迁移 352-356、provider credentials、模型发现、端到端测试、监控**：本环境无 staging 凭据，需运维执行（见 HANDOFF_DEPLOYMENT.md）。
+
+### 推送的后续提交
+
+- `test(admin,web): pin core-mode aggregate contract and refine NodeDetailDrawer lazy-load` — 整合 core 模式锁测试 + vue 候选复用优化 + 前端测试细化。
+- `test(ursm): add g4probe-tagged isolated redis evidence probes` — 新增隔离 Redis 证据探针（build-tag 守卫）。
+
+---
+
+**集成审计人**: ZCode AI Assistant
+**集成审计时间**: 2026-08-19
+**状态**: 他人 4 处修改已审计、测试通过并整合到主分支；kimi-k3 模态修正与 staging 迁移留待后续
