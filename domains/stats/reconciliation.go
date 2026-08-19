@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -23,14 +24,19 @@ const (
 	maxReconciliationRows         = 100000 // max rows to prevent OOM
 )
 
-// DBQuerier is the subset of pgxpool.Pool that ReconciliationWorker needs.
-// Defined here (instead of imported from credentialhealth) to avoid a
-// cyclic import. Production callers pass a *pgxpool.Pool; tests pass a
-// pgxmock.PgxPoolIface.
+// DBQuerier is the subset of pgxpool.Pool that the stats package needs.
+// Production callers pass a *pgxpool.Pool which satisfies all four
+// methods; tests pass pgxmock.PgxPoolIface (which provides Exec/Query/
+// QueryRow) or a Tx-bound stub that also implements Begin.
+//
+// The Begin method is included so DailyMonthlyRollup.Refresh can be
+// driven from a Tx-aware test stub without falling back to a type
+// assertion. ReconciliationWorker uses Begin only when pendingRepairs>0.
 type DBQuerier interface {
 	Exec(ctx context.Context, sql string, args ...interface{}) (pgconn.CommandTag, error)
 	Query(ctx context.Context, sql string, args ...interface{}) (pgx.Rows, error)
 	QueryRow(ctx context.Context, sql string, args ...interface{}) pgx.Row
+	Begin(ctx context.Context) (pgx.Tx, error)
 }
 
 // ReconciliationWorker periodically compares usage_facts (source of truth) with
@@ -103,6 +109,20 @@ func (w *ReconciliationWorker) Stop() {
 
 func (w *ReconciliationWorker) run(ctx context.Context, done chan struct{}) {
 	defer close(done)
+	// Worker-level panic guard. ReconcilePeriod already installs its own
+	// defer recover that marks the run row 'failed' and re-raises, but
+	// without this outer recover an uncaught panic would terminate the
+	// worker goroutine and silence reconciliation for the rest of the
+	// process lifetime. We swallow the panic here, log it with the
+	// stack, increment a distinct metric, and let the next tick resume.
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("reconciliation worker panicked; will retry on next tick",
+				"panic", fmt.Sprintf("%v", r),
+				"stack", string(debug.Stack()))
+			metrics.RecordStatsReconciliationRun("panicked", 1)
+		}
+	}()
 	ticker := time.NewTicker(w.interval)
 	defer ticker.Stop()
 	for {
@@ -384,8 +404,6 @@ func (w *ReconciliationWorker) reconcileDailyOnce(ctx context.Context, runID str
 			}
 
 			diff := d.source - d.projected
-			totalDiffs++
-
 			dimensionKey := fmt.Sprintf("provider:%d:cred:%d:model:%d:%s",
 				key.providerID, key.credentialID, key.canonicalID, key.modelName)
 
@@ -418,19 +436,37 @@ func (w *ReconciliationWorker) reconcileDailyOnce(ctx context.Context, runID str
 				resolution = "phantom_open"
 			} else if canAutoRepair {
 				resolution = "auto_repair_pending"
-				pendingRepairs++
 			}
 
-			// Record diff
-			_, err := w.db.Exec(ctx, `
-				INSERT INTO stats_reconciliation_diffs 
-					(run_id, tenant_id, dimension_type, dimension_key, metric, 
+			// Record diff. ON CONFLICT DO NOTHING absorbs the rare case
+			// where reconcileDaily's binary shard recurses across a UTC
+			// day boundary and the same projection row is iterated by
+			// both halves. The unique index on
+			// (run_id, dimension_type, dimension_key, metric) (migration
+			// 546) makes the second INSERT a no-op; we only increment
+			// the in-memory counters (totalDiffs, pendingRepairs) when
+			// the INSERT actually inserted a row, so the aggregates
+			// stay truthful regardless of sharding path.
+			ct, err := w.db.Exec(ctx, `
+				INSERT INTO stats_reconciliation_diffs
+					(run_id, tenant_id, dimension_type, dimension_key, metric,
 					 source_value, projected_value, difference, resolution, created_at)
 				VALUES ($1, $2, 'daily_rollup', $3, $4, $5, $6, $7, $8, now())
+				ON CONFLICT (run_id, dimension_type, dimension_key, metric) DO NOTHING
 			`, runID, key.tenantID, dimensionKey, d.metric,
 				d.source, d.projected, diff, resolution)
 			if err != nil {
 				slog.Warn("failed to record diff", "error", err, "run_id", runID)
+				continue
+			}
+			if ct.RowsAffected() == 0 {
+				// Duplicate absorbed by the unique index; do not
+				// double-count.
+				continue
+			}
+			totalDiffs++
+			if !isPhantom && canAutoRepair {
+				pendingRepairs++
 			}
 		}
 
@@ -468,8 +504,16 @@ func (w *ReconciliationWorker) reconcileDailyOnce(ctx context.Context, runID str
 	// Rebuild first; only then mark the candidate diffs repaired. This keeps
 	// reconciliation counters truthful when the projection refresh fails.
 	if pendingRepairs > 0 {
-		rollup := NewDailyMonthlyRollup(w.db.(*pgxpool.Pool), 0)
+		// DailyMonthlyRollup.Refresh requires a DBQuerier that can Begin a
+		// transaction. In production this is *pgxpool.Pool. A Tx-bound test
+		// stub that only wraps a pgx.Tx does not satisfy Begin; we surface a
+		// clear error and revert pending repairs to 'open' rather than
+		// panicking on a type assertion.
+		rollup := NewDailyMonthlyRollup(w.db, 0)
 		if err := rollup.Refresh(ctx, start, end); err != nil {
+			// The Refresh error is already wrapped with the underlying cause
+			// (begin, exec, commit). We reset pending repairs to 'open' so
+			// the next reconciliation cycle retries them.
 			w.resetPendingRepairs(ctx, runID)
 			return 0, 0, false, fmt.Errorf("refresh projections: %w", err)
 		}
