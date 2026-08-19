@@ -1,45 +1,40 @@
-# 154 production gateway runbook
+# 245 pre-prod gateway runbook
 
-> **Audience**: 154 SRE / on-call
+> **Audience**: 245 SRE / on-call
 > **Date**: 2026-07-20
 > **Build under test**: `v2.4.7-cdb185f86-20260720-1215-7e721f86` (seq 1215)
+> **角色**: pre-prod（llmgo.kxpms.cn），新版本必须**先 245 后 154**（详见 §10）
 
-## 1. 154 主机基础
+## 1. 245 主机基础
 
 ```
-hostname:        iZbp1efbv6824518ejqh8aZ (alibaba-aliyun ECS)
-公网 IP:         47.97.111.154
-私网 IP:         172.16.2.209
+hostname:        [TODO: verify]
+公网 IP:         8.136.114.245
+私网 IP:         172.16.2.241
 SSH 端口:        25022
 SSH key:         ~/.ssh/id_ed25519 (operator's default)
 DB 接入:         172.16.2.210:5432/llm_gateway (shared PG17 on 252)
-Redis:           172.16.2.210:6389 (252)
-services:        llm-gateway-go (systemd, port 8781)
+Redis:           172.16.2.210:6389 (252, shared)
+services:        llmgo-245.service (systemd, port 8781, pre-prod vendor unit)
                  nginx (systemd, ports 80/443)
-                 casdoor-server (port 8000, 5 days up)
-                 license-authority (port 8443, 5 days up)
-                 maintain (port 8082, 5 minutes up)
-                 cloudreve (port 5212, 5 days up)
-                 local-redis (port 6379, 0 keys, only used by gateway internals)
-                 sendmail (port 25, legacy, not used)
+                 [TODO: verify - 其他常驻 service 列表]
 ```
 
 ## 2. 启动顺序 (cold start)
 
 1. 252 / 184 先起 (网关 DB / Redis / NPS / cert relay 都在 252)
-2. 154 自动起来 (`systemd default target`)
-3. `systemctl is-active llm-gateway-go nginx` 都应 `active`
+2. 245 自动起来 (`systemd default target`)
+3. `systemctl is-active llmgo-245 nginx` 都应 `active`
 4. `curl -sS http://127.0.0.1:8781/healthz` 应返回 200 + `2.4.7-...`
-5. 252 nginx 上 `kxpms-on-252.conf` 应当把 `kxpms_llm_backend` 指向 `172.16.2.209:8781` (=154)，**不是** 245。如果发现还是 245，跑：
-6. `systemctl show nginx | grep '^Restart='` → 必须 `Restart=always`（vendor unit 默认无，OOM 后不自愈；详见 changelog 2026-08-19）
+5. 252 nginx 上 `kxpms-on-252.conf` 应当把 `kxpms_llm_backend` 指向 `172.16.2.241:8781` (=245)，**不是** 154 (172.16.2.209)。如果发现还是 209，跑：
    ```bash
-   ssh 252 'sed -i "s|server 172.16.2.241:8781 max_fails=2 fail_timeout=5s;|server 172.16.2.209:8781 max_fails=2 fail_timeout=5s;|" /etc/nginx/conf.d/kxpms-on-252.conf'
+   ssh 252 'sed -i "s|server 172.16.2.209:8781 max_fails=2 fail_timeout=5s;|server 172.16.2.241:8781 max_fails=2 fail_timeout=5s;|" /etc/nginx/conf.d/kxpms-on-252.conf'
    ssh 252 'nginx -t && nginx -s reload'
    ```
 
-## 3. 部署 (deploy-245-style / deploy-seamless)
+## 3. 部署 (deploy-245)
 
-154 部署走 `deploy-seamless.sh deploy 154 --direct --seq N`：
+245 部署走 `deploy-245.sh`（或对应 skill）：
 
 ```bash
 # 1. 准备 (本地 main 分支)
@@ -52,33 +47,33 @@ git fetch origin
 bash scripts/bump-version.sh --seq 1216
 
 # 3. 部署
-bash scripts/deploy-seamless.sh deploy 154 --direct --seq 1216
-#  --direct: 跳过 252 跳板机 (154 公网 SSH 已通)
-#  --seq N:   build_seq 强制
+bash scripts/deploy-245.sh --seq 1216
+#  或通过 skill:
+#  /deploy-245
 
 # 4. 部署过程会做:
 #   - 前端 npm build + 后端 CGO_ENABLED=0 go build (本地 Mac 不需要 cross-compile)
-#   - tar pipe 把 release/{seq}-sha 推到 154 releases/
+#   - tar pipe 把 release/{seq}-sha 推到 245 releases/
 #   - 远端 sha256 校验
 #   - DB pending migration 跑 + db-changelog
 #   - 原子符号链接 current → releases/{seq}-sha
-#   - systemd restart llm-gateway-go
+#   - systemd restart llmgo-245
 #   - healthz + DB ready 验证 (失败自动 rollback)
 
 # 5. 部署完必看
-ssh 154 'systemctl status llm-gateway-go --no-pager -l | head -10'
-ssh 154 'curl -sS http://127.0.0.1:8781/healthz'
-ssh 154 'journalctl -u llm-gateway-go --since "3 min ago" --no-pager | grep -E "WARN|ERROR|panic" | head -10'
+ssh 245 'systemctl status llmgo-245 --no-pager -l | head -10'
+ssh 245 'curl -sS http://127.0.0.1:8781/healthz'
+ssh 245 'journalctl -u llmgo-245 --since "3 min ago" --no-pager | grep -E "WARN|ERROR|panic" | head -10'
 ```
 
 ## 4. 回滚 (rollback)
 
 ```bash
 # 方式 1: deploy-seamless 自动选择 verified+active 之前的版本
-bash scripts/deploy-seamless.sh rollback 154
+bash scripts/deploy-seamless.sh rollback 245
 
 # 方式 2: 手动回滚
-ssh 154 '
+ssh 245 '
   cd /opt/llm-gateway-go
   CURRENT=$(readlink current)
   # 列已有 releases:
@@ -87,7 +82,7 @@ ssh 154 '
   OLD=1201-c1a01552  # 改为你想回滚的版本
   ln -sfn releases/$OLD current
   ln -sfn current/llm-gateway-go llm-gateway-go
-  systemctl restart llm-gateway-go
+  systemctl restart llmgo-245
 '
 ```
 
@@ -96,13 +91,13 @@ ssh 154 '
 | signal | how to check | threshold |
 |---|---|---|
 | healthz | `curl -sS http://127.0.0.1:8781/healthz` | 200 |
-| nginx Restart | `systemctl show nginx \| grep '^Restart='` | `Restart=always`（vendor unit 默认无，OOM 后不自愈；Refs: changelog 2026-08-19） |
-| gateway 上游超时 | `journalctl -u llm-gateway-go --since "10m ago" \| grep "upstream_status" \| grep -E "(50[0-9]\|40[0-9])"` | 0 个 5xx 4xx |
-| 长 latency | `journalctl -u llm-gateway-go --since "10m ago" \| grep "latency_ms" \| awk -F, '{print $1}' \| sort -t: -k2 -n` | max < 30s |
-| commit/rollback | `journalctl -u llm-gateway-go --since "1h ago" \| grep -i "rollback"` | 0 |
-| panic | `journalctl -u llm-gateway-go --since "30d ago" \| grep -i panic` | 0 |
+| gateway 上游超时 | `journalctl -u llmgo-245 --since "10m ago" \| grep "upstream_status" \| grep -E "(50[0-9]\|40[0-9])"` | 0 个 5xx 4xx |
+| 长 latency | `journalctl -u llmgo-245 --since "10m ago" \| grep "latency_ms" \| awk -F, '{print $1}' \| sort -t: -k2 -n` | max < 30s |
+| commit/rollback | `journalctl -u llmgo-245 --since "1h ago" \| grep -i "rollback"` | 0 |
+| panic | `journalctl -u llmgo-245 --since "30d ago" \| grep -i panic` | 0 |
 | OOM killed | `dmesg --since "30d ago" \| grep -iE "oom\|killed process"` | 0 |
-| cert 剩余 | `ssh 154 'certbot certificates 2>&1 \| grep "Expiry Date"'` | ≥ 30 days |
+| MemoryMax 触发 | `journalctl -u llmgo-245 --since "10m ago" \| grep -i "memory" \| grep -i "kill"` | 0 |
+| cert 剩余 | `ssh 245 'certbot certificates 2>&1 \| grep "Expiry Date"'` | ≥ 30 days |
 | DB cache hit | `docker exec pg-252-pg17 psql -U llm_gateway -d llm_gateway -c "SELECT ROUND(100.0*blks_hit/(blks_hit+blks_read),1) FROM pg_stat_database WHERE datname='llm_gateway';"` | ≥ 99 % |
 | DB rollback 率 | `docker exec pg-252-pg17 psql -U llm_gateway -d llm_gateway -c "SELECT ROUND(100.0*xact_rollback::numeric/(xact_commit+xact_rollback),1) FROM pg_stat_database WHERE datname='llm_gateway';"` | ≤ 5 % |
 | 慢查询 top-5 | `docker exec pg-252-pg17 psql -U llm_gateway -d llm_gateway -c "SELECT substring(query,1,80), ROUND(mean_exec_time::numeric,1) FROM pg_stat_statements ORDER BY mean_exec_time DESC LIMIT 5;"` | mean < 1000 ms |
@@ -111,43 +106,45 @@ ssh 154 '
 
 ## 6. 已知警告 / 已知问题 / 风险
 
-- **certbot-renew.timer** 装在 154 (Mon 03:30)；reload-nginx hook 已配置。
-  风险：cron 失效时 cert 不会自动续签。需人工 fallback 流程（见 §7）。
-- **NVIDIA NIM provider_models.id=1155355 已 `available=false`**。客户端 minimax-m3 路由到 MiniMax 直连 (provider 14)。
-  风险：若要重新启用 NVIDIA minimax-m3，先确认 `integrate.api.nvidia.com/v1/chat/completions` model=`minimaxai/minimax-m3` 已恢复可用。
-- **`/etc/nginx/conf.d/llm-kxpms-cn.conf:27,28`** 仍有两个 `protocol options redefined` 警告 (重复 listen 80 + 443 + IPv4/IPv6)，不影响 serve。
-  是 nginx 老问题，可在下次 maintain 时一起改。
-- **`/etc/nginx/conf.d/kxpms-cn-auth.conf:13,14, kxpms-cn-www.conf:13,14`** 警告是其他 service conf，不归 154 管。
-- **252 nginx kxpms-on-252.conf 现在 upstream 指向 172.16.2.209:8781 (154)**。如果 154 down，fallback 是 252 → 252 → 154 自然错误，不会 fallback 到 245 (除非手动改 nginx conf)。
+- **MemoryHigh=1500M 在 cgroup v1 + systemd v239 上不生效**。
+  systemd v239 起 `MemoryHigh=` 仅 cgroup v2 支持；cgroup v1 下只有 `MemoryMax=2G` 硬上限起作用。
+  实际 OOM 触发后 systemd 直接 SIGKILL 进程（无 graceful throttle）。需监控 `dmesg | grep -i oom`。
+  缓解：长期方案升级 systemd 或迁移 cgroup v2；短期只看 MemoryMax 边界，不依赖 soft throttle。
+- **llmgo-245.service 是 pre-prod vendor unit**，不是通用 `llm-gateway-go.service`。
+  deploy-245 / deploy-seamless / journalctl / systemctl 一律用 `llmgo-245`，不要用 unit 名 `llm-gateway-go`。
+- **certbot-renew.timer** 是否启用与 154 独立。`[TODO: verify - 245 certbot timer 启用状态与续签 cron 配置]`
+- **252 nginx kxpms-on-252.conf 现在 upstream 指向 172.16.2.241:8781 (245)**。
+  245 是 pre-prod，154 production upstream = 172.16.2.209:8781。两个后端 IP 不混用，分别承载 llmgo.kxpms.cn / llm.kxpms.cn。
+- **`/etc/nginx/conf.d/llm-kxpms-cn.conf`** 重复 listen 警告（80 + 443 + IPv4/IPv6）[TODO: verify - 245 是否与 154 相同警告]。
 
 ## 7. cert 应急 / 失败时
 
 ```bash
 # 1. 看 cert 状态
-ssh 154 'certbot certificates'
+ssh 245 'certbot certificates'
 
 # 2. 如果 cert 真的过期 (X days negative), 手动跑 certonly
-ssh 154 'certbot certonly --nginx -d <DOMAIN> --non-interactive --agree-tos -m ops@kaixuan.ai'
+ssh 245 'certbot certonly --nginx -d <DOMAIN> --non-interactive --agree-tos -m ops@kaixuan.ai'
 
 # 3. 确认 timer 仍然 enabled
-ssh 154 'systemctl list-timers | grep certbot'
+ssh 245 'systemctl list-timers | grep certbot'
 
 # 4. dry-run 一次
-ssh 154 'certbot renew --dry-run'
+ssh 245 'certbot renew --dry-run'
 ```
 
 ## 8. Redis 容量 / cleanup
 
 ```bash
-# Redis local (154 上) 仅存 gateway 进程内部数据, 几乎空
-ssh 154 'redis-cli dbsize'
-# 应是 0 键, 看到 100+ 键要看为什么
+# 245 上是否独立 redis? [TODO: verify - 245 local-redis 是否启用, 还是只用 252 shared redis]
+ssh 245 'redis-cli dbsize'
+# 若 dbsize > 0 且 keys 数异常, 走 §8.1 排查
 ```
 
 ## 9. 常见 on-call 场景
 
 ### 9.1 "minimax 调用全 5xx"
-- `journalctl -u llm-gateway-go --since "10m ago" | grep "upstream_status\":5`
+- `journalctl -u llmgo-245 --since "10m ago" | grep "upstream_status\":5`
 - 确认 provider 14 (MiniMax api.minimaxi.com) 在 245 网关 curl 直连：
   ```bash
   curl -sS --max-time 5 -o /dev/null -w "HTTP=%{http_code} time=%{time_total}s\n" \
@@ -161,10 +158,10 @@ ssh 154 'redis-cli dbsize'
 - 若 245 也挂, 看 245 / 154 之间的 healthz 区别
 
 ### 9.2 "healthz 失败 / 5xx"
-- 立即 `systemctl status llm-gateway-go --no-pager -l | head -20`
-- 若 OOM, 看 `dmesg | tail -20` (kernel 杀进程记录)
+- 立即 `systemctl status llmgo-245 --no-pager -l | head -20`
+- 若 OOM, 看 `dmesg | tail -20` (kernel 杀进程记录) + `journalctl -u llmgo-245 | grep -i "memory"`
 - 若 panic, 看最近 200 行 gateway log
-- `kill -9` + `systemctl reset-failed llm-gateway-go && systemctl start llm-gateway-go`
+- `kill -9` + `systemctl reset-failed llmgo-245 && systemctl start llmgo-245`
 - 验证 build 仍 1215 (没被 deploy 覆盖) — `readlink /opt/llm-gateway-go/llm-gateway-go`
 
 ### 9.3 "deploy 失败 (verify/atomic 不通过)"
@@ -183,27 +180,32 @@ ssh 154 'redis-cli dbsize'
 - 看 `pg_stat_statements` top 5 slow query, 找 idempotent retry / N+1 pattern
 - 若 commit 等待 > 1s，看 checkpoint / bgwriter 状态
 
-## 10. 升级 checklist (新版本发布前)
+## 10. 升级 checklist (245 pre-prod → 154 production)
+
+245 是 pre-prod，新版本必须**先 245 后 154**（245 验收 ≥ 1 周稳定再升 154）：
 
 ```
 [ ] git log upstream main..HEAD 看新提交 (改了什么)
-[ ] 245 预发布已经 deploy + 1 周无 P0/P1 issue
-[ ] deploy-seamless dry-run: bash scripts/deploy-seamless.sh status 154
+[ ] deploy-seamless dry-run: bash scripts/deploy-seamless.sh status 245
 [ ] bump version 1216+ (按 deploy 顺序)
-[ ] deploy 到 154 (本文档 §3)
-[ ] 部署后必做:
+[ ] deploy 到 245 (本文档 §3)
+[ ] 部署后必做 (245 acceptance, 至少跑 1 周无 P0/P1):
     [ ] curl healthz
     [ ] curl minimax-m3 一次 (live, 用 hermes api key)
     [ ] curl claude-sonnet-5 一次
-    [ ] journalctl 最近 5 min 无 panic / OOM
+    [ ] journalctl 最近 5 min 无 panic / OOM / MemoryMax kill
     [ ] gateway pprof 看 goroutine 数 (稳定 100±10)
+    [ ] §5 所有监控指标 1 周稳态无漂移
 [ ] 通知 stakeholder (飞书 / slack)
+[ ] 245 跑 1 周稳定后, 按 154-runbook §10 流程升 154
 ```
 
 ## 11. Reference
 
-- 154 stability report: `docs/design/2026-07-20-154-stability-report.md`
-- deploy 脚本: `scripts/deploy-154.sh`, `scripts/deploy-seamless.sh`
+- 154 production runbook: `docs/06-deployment/04-runbooks/ops/154-runbook.md`
+- 245 stability report: [TODO: verify]
+- deploy 脚本: `scripts/deploy-245.sh`, `scripts/deploy-seamless.sh`
+- deploy skill: `/deploy-245` (in `~/.agents/skills/deploy-245/`)
 - P0/P1 修复 commit: 见 `git log --grep="P0\|P1" --oneline main`
-- live swim lane UI: 打开 llm.kxpms.cn admin → "供应商" 维度泳道
-- pprof diagnostic: `http://127.0.0.1:6060/debug/pprof/` (loopback only, ssh tunnel: `ssh -L 6060:127.0.0.1:6060 root@154`)
+- live swim lane UI: 打开 llmgo.kxpms.cn admin → "供应商" 维度泳道
+- pprof diagnostic: `http://127.0.0.1:6060/debug/pprof/` (loopback only, ssh tunnel: `ssh -L 6060:127.0.0.1:6060 root@245`)
