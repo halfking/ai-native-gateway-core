@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -96,6 +98,8 @@ type ProbeTaskTransition struct {
 	Status        string // pending | in-flight | ok | fail
 	CredentialID  int64
 	ProviderID    int64
+	ProviderName  string // 供应商显示名（2026-08-20 自检 tab 供应商+凭据）
+	ProviderCode  string
 	RawModel      string
 	Attempt       int
 	Origin        string // scheduled | error | manual
@@ -129,10 +133,24 @@ type ProbeQueue struct {
 	// so origin/next_retry_at reach the dashboard without double-emitting.
 	detailSink ProbeTaskDetailSink
 	scope      ProbeScope
+	// providerNameCache (2026-08-20) lets publishProbeTask / publishRearmTransition
+	// attach a 供应商 display name to SSE transitions without per-event DB hits.
+	// Lazy-loaded, 5-min TTL, never errors out (a cache miss returns empty
+	// strings — the dashboard already tolerates a missing provider name).
+	providerNameMu      sync.RWMutex
+	providerNameCache   map[int64]providerNameEntry
+	providerNameExpires time.Time
 }
 
+type providerNameEntry struct {
+	name string
+	code string
+}
+
+const providerNameCacheTTL = 5 * time.Minute
+
 func NewProbeQueue(db *pgxpool.Pool) *ProbeQueue {
-	return &ProbeQueue{db: db}
+	return &ProbeQueue{db: db, providerNameCache: map[int64]providerNameEntry{}}
 }
 
 // SetProbeSink wires the self-check SSE sink for the durable integrity-probe
@@ -162,6 +180,55 @@ func (q *ProbeQueue) SetScope(scope ProbeScope) {
 	}
 }
 
+// lookupProviderName returns the cached display name/code for a provider_id.
+// Cache miss or DB failure → empty strings (the dashboard tolerates a missing
+// provider name; per-event DB hits would be wasteful given the publish path
+// runs on every claim/complete).
+//
+// The cache is keyed by provider_id (TEXT PK in the providers table) and is
+// refreshed on a 5-minute TTL. provider_id is stored as int64 in
+// credential_probe_queue — the LEFT JOIN handles type coercion.
+func (q *ProbeQueue) lookupProviderName(providerID int64) (string, string) {
+	if q == nil || providerID == 0 {
+		return "", ""
+	}
+	q.providerNameMu.RLock()
+	cacheHit := false
+	var entry providerNameEntry
+	if q.providerNameCache != nil && time.Now().Before(q.providerNameExpires) {
+		if e, ok := q.providerNameCache[providerID]; ok {
+			entry = e
+			cacheHit = true
+		}
+	}
+	q.providerNameMu.RUnlock()
+	if cacheHit {
+		return entry.name, entry.code
+	}
+	if q.db == nil {
+		return "", ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	var name, code string
+	err := q.db.QueryRow(ctx,
+		`SELECT COALESCE(NULLIF(display_name, ''), NULLIF(code, ''), ''), COALESCE(code, '')
+		 FROM providers WHERE id = $1`, providerID).Scan(&name, &code)
+	if err != nil {
+		// Cache miss is not fatal — just log at debug so we don't spam logs on
+		// every publish for an unresolved provider (e.g. id removed mid-run).
+		if !errors.Is(err, pgx.ErrNoRows) {
+			slog.Debug("probe queue: provider name lookup failed", "provider_id", providerID, "error", err)
+		}
+		return "", ""
+	}
+	q.providerNameMu.Lock()
+	q.providerNameCache[providerID] = providerNameEntry{name: name, code: code}
+	q.providerNameExpires = time.Now().Add(providerNameCacheTTL)
+	q.providerNameMu.Unlock()
+	return name, code
+}
+
 // publishProbeTask is the shared hook for the durable queue's lifecycle events.
 // Best-effort: a nil sink or a publish error never blocks the enqueue/claim.
 //
@@ -178,6 +245,7 @@ func (q *ProbeQueue) publishProbeTask(task ProbeQueueTask, status string) {
 	if q == nil {
 		return
 	}
+	providerName, providerCode := q.lookupProviderName(task.ProviderID)
 	if q.detailSink != nil {
 		q.detailSink.PublishProbeTransition(ProbeTaskTransition{
 			ID:            probeQueueLifecycleID(task),
@@ -186,6 +254,8 @@ func (q *ProbeQueue) publishProbeTask(task ProbeQueueTask, status string) {
 			Status:        status,
 			CredentialID:  task.CredentialID,
 			ProviderID:    task.ProviderID,
+			ProviderName:  providerName,
+			ProviderCode:  providerCode,
 			RawModel:      task.RawModel,
 			Attempt:       task.Attempt,
 			Origin:        probeQueueOriginFromSource(task.Source),
@@ -213,6 +283,7 @@ func (q *ProbeQueue) publishProbeTask(task ProbeQueueTask, status string) {
 		Status:       status,
 		CredentialID: task.CredentialID,
 		ProviderID:   task.ProviderID,
+		ProviderCode: providerCode,
 		RawModel:     task.RawModel,
 		Attempt:      task.Attempt,
 		Reason:       task.Source,
@@ -231,6 +302,7 @@ func (q *ProbeQueue) publishRearmTransition(task ProbeQueueTask, nextRunAt *time
 	if q == nil || q.detailSink == nil {
 		return
 	}
+	providerName, providerCode := q.lookupProviderName(task.ProviderID)
 	q.detailSink.PublishProbeTransition(ProbeTaskTransition{
 		ID:            probeQueueLifecycleID(task),
 		TaskType:      probeQueueTaskType(task.Command),
@@ -238,6 +310,8 @@ func (q *ProbeQueue) publishRearmTransition(task ProbeQueueTask, nextRunAt *time
 		Status:        "pending",
 		CredentialID:  task.CredentialID,
 		ProviderID:    task.ProviderID,
+		ProviderName:  providerName,
+		ProviderCode:  providerCode,
 		RawModel:      task.RawModel,
 		Attempt:       task.Attempt,
 		Origin:        probeQueueOriginFromSource(task.Source),

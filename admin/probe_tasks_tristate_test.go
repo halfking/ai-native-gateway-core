@@ -24,6 +24,7 @@ import (
 func tristateRows() *pgxmock.Rows {
 	return pgxmock.NewRows([]string{
 		"id", "dedup_key", "credential_id", "provider_id",
+		"provider_name", "provider_code",
 		"raw_model", "probe_command", "source", "status",
 		"attempt", "max_attempts", "priority", "next_run_at",
 		"reason_code", "result_http_status", "result_latency_ms",
@@ -44,6 +45,7 @@ func TestQueryProbeTriStateTasks_Pending(t *testing.T) {
 		WithArgs(50).
 		WillReturnRows(tristateRows().
 			AddRow(int64(1), "node_probe:9:m", int64(9), nil,
+				"OpenAI", "openai",
 				"glm-4", "node_probe", "request_failure", "ready",
 				2, 7, int16(60), next,
 				"rate_limited", nil, nil,
@@ -59,6 +61,9 @@ func TestQueryProbeTriStateTasks_Pending(t *testing.T) {
 	task := tasks[0]
 	if task.Status != "pending" || task.Outcome != "" {
 		t.Fatalf("status mapping: %+v", task)
+	}
+	if task.ProviderName != "OpenAI" || task.ProviderCode != "openai" {
+		t.Fatalf("provider join: want OpenAI/openai, got %q/%q", task.ProviderName, task.ProviderCode)
 	}
 	if task.Origin != "error" {
 		t.Fatalf("origin: want error, got %q", task.Origin)
@@ -85,6 +90,7 @@ func TestQueryProbeTriStateTasks_Completed(t *testing.T) {
 		WithArgs(200).
 		WillReturnRows(tristateRows().
 			AddRow(int64(2), "node_probe:8:m", int64(8), int64Ptr(3),
+				"ZhipuAI", "zhipu",
 				"glm-4", "node_probe", "admin", "success",
 				1, 7, int16(60), time.Now(),
 				"", int32(httpStatus), int32(latency),
@@ -106,6 +112,9 @@ func TestQueryProbeTriStateTasks_Completed(t *testing.T) {
 	}
 	if task.HTTPStatus == nil || *task.HTTPStatus != 200 || task.LatencyMs == nil || *task.LatencyMs != 350 {
 		t.Fatalf("result fields: %+v", task)
+	}
+	if task.ProviderName != "ZhipuAI" || task.ProviderCode != "zhipu" {
+		t.Fatalf("provider join: want ZhipuAI/zhipu, got %q/%q", task.ProviderName, task.ProviderCode)
 	}
 	if task.NextRetryAtMs != 0 {
 		t.Fatalf("completed rows must not carry next_retry_at_ms: %+v", task)

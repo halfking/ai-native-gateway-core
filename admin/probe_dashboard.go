@@ -1671,6 +1671,12 @@ type ProbeTriStateTask struct {
 	DedupKey      string     `json:"dedup_key"`
 	CredentialID  int64      `json:"credential_id"`
 	ProviderID    *int64     `json:"provider_id,omitempty"`
+	// ProviderName / ProviderCode come from the providers table (LEFT JOIN).
+	// They let the 自检 tab render 供应商 + 凭据 instead of a bare
+	// "凭据 #<id>" — operator-facing dashboard readability (2026-08-20).
+	// omitempty so legacy clients keep working when the JOIN yields NULL.
+	ProviderName  string     `json:"provider_name,omitempty"`
+	ProviderCode  string     `json:"provider_code,omitempty"`
 	RawModel      string     `json:"raw_model"`
 	Command       string     `json:"command"`
 	Source        string     `json:"source"`
@@ -1730,11 +1736,14 @@ func queryProbeTriStateTasks(ctx context.Context, db pgxQueryer, status string, 
 	}
 	rows, err := db.Query(ctx, `
 		SELECT q.id, q.dedup_key, q.credential_id, q.provider_id,
+		       COALESCE(NULLIF(p.display_name, ''), NULLIF(p.code, ''), ''),
+		       COALESCE(p.code, ''),
 		       COALESCE(q.raw_model, ''), q.probe_command, q.source, q.status,
 		       q.attempt, q.max_attempts, q.priority, q.next_run_at,
 		       COALESCE(q.reason_code, ''), q.result_http_status, q.result_latency_ms,
 		       q.created_at, q.updated_at, q.finished_at
 		FROM credential_probe_queue q
+		LEFT JOIN providers p ON p.id = q.provider_id
 		WHERE `+where+`
 		ORDER BY `+order+`
 		LIMIT $1
@@ -1750,6 +1759,7 @@ func queryProbeTriStateTasks(ctx context.Context, db pgxQueryer, status string, 
 		var httpStatus, latency sql.NullInt32
 		if err := rows.Scan(
 			&t.ID, &t.DedupKey, &t.CredentialID, &t.ProviderID,
+			&t.ProviderName, &t.ProviderCode,
 			&t.RawModel, &t.Command, &t.Source, &t.Status,
 			&t.Attempt, &t.MaxAttempts, &t.Priority, &nextRunAt,
 			&t.ReasonCode, &httpStatus, &latency,

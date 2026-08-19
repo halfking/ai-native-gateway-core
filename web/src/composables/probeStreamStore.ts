@@ -30,6 +30,8 @@ export interface ProbeStreamTile {
   credential_id: number
   provider_id?: number
   provider_code?: string
+  /** 供应商显示名（2026-08-20）— 自检 tab 卡片显示 供应商+凭据 */
+  provider_name?: string
   raw_model?: string
   attempt?: number
   latency_ms?: number

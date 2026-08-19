@@ -54,6 +54,10 @@ type ProbeStreamTask struct {
 	CredentialID int64   `json:"credential_id"`
 	ProviderID   int64   `json:"provider_id,omitempty"`
 	ProviderCode string  `json:"provider_code,omitempty"`
+	// ProviderName (2026-08-20): 自检 tab 卡片显示 供应商+凭据 所需的供应商显示名。
+	// optional / omitempty so older SSE clients keep working when the field is
+	// absent (the dashboard falls back to "凭据 #N" in that case).
+	ProviderName string  `json:"provider_name,omitempty"`
 	RawModel     string  `json:"raw_model,omitempty"`
 	Attempt      int     `json:"attempt,omitempty"`
 	LatencyMs    *int    `json:"latency_ms,omitempty"`
@@ -336,6 +340,7 @@ func (h *ProbeSSEHub) PublishProbeEvent(evt bg.ProbeStreamEvent) {
 		CredentialID: evt.CredentialID,
 		ProviderID:   evt.ProviderID,
 		ProviderCode: evt.ProviderCode,
+		ProviderName: evt.ProviderName,
 		RawModel:     evt.RawModel,
 		Attempt:      evt.Attempt,
 		LatencyMs:    evt.LatencyMs,
@@ -369,6 +374,8 @@ func (h *ProbeSSEHub) PublishProbeTransition(t bg.ProbeTaskTransition) {
 		Status:        t.Status,
 		CredentialID:  t.CredentialID,
 		ProviderID:    t.ProviderID,
+		ProviderCode:  t.ProviderCode,
+		ProviderName:  t.ProviderName,
 		RawModel:      t.RawModel,
 		Attempt:       t.Attempt,
 		Origin:        t.Origin,
