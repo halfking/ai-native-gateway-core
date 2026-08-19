@@ -227,7 +227,7 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 	)
 
 	for {
-		gate := NewAttemptCommitGate(c.Protocol, sw, GateOptions{Mode: GateModeBuffered, BeforeSemanticCommit: func(state CommitState) error {
+		gate := NewAttemptCommitGate(c.Protocol, sw, GateOptions{Mode: GateModeBuffered, RequestID: params.RequestID, BeforeSemanticCommit: func(state CommitState) error {
 			if c.BeforeSemanticCommit == nil {
 				return nil
 			}
