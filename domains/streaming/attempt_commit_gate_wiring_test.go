@@ -40,6 +40,28 @@ func runBridge(t *testing.T, bc bridgeCase) string {
 	return rec.Body.String()
 }
 
+func TestWrapAttemptWriterDoesNotEnableRecoveryHoldback(t *testing.T) {
+	t.Setenv("LLM_GATEWAY_RECOVERY_HOLDBACK_WINDOW_MS", "5000")
+	t.Setenv("LLM_GATEWAY_RECOVERY_HOLDBACK_MAX_CHUNKS", "5")
+	restore := setAttemptGateForTest(true, GateModeBuffered)
+	defer restore()
+
+	rec := httptest.NewRecorder()
+	wrapped, gate := wrapAttemptWriter(rec, ProtocolOpenAIChat)
+	if wrapped == nil || gate == nil {
+		t.Fatal("wrapAttemptWriter must return a gate when enabled")
+	}
+	if gate.HoldbackWindowOpen() {
+		t.Fatal("standalone bridge gate must not enable the survival holdback window")
+	}
+	if err := gate.WriteFrame(openAIContentFrame("visible")); err != nil {
+		t.Fatalf("write semantic frame: %v", err)
+	}
+	if !strings.Contains(rec.Body.String(), "visible") {
+		t.Fatalf("standalone semantic output was not committed: %q", rec.Body.String())
+	}
+}
+
 func bridgeCases() []bridgeCase {
 	return []bridgeCase{
 		{
