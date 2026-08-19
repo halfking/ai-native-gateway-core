@@ -397,8 +397,12 @@ func (h *Handler) handleStatsReconciliationApprove(w http.ResponseWriter, r *htt
 			}
 		}
 
-		// Check if already resolved
-		if resolution == "approved" || resolution == "rejected" || resolution == "adjusted" {
+		// Check if already resolved. phantom_open is also non-approvable
+		// (reconciliation.go never feeds it to Refresh(); it represents a
+		// projection-without-source-facts gap that the operator must
+		// investigate out-of-band). Treating it as "skip" is consistent
+		// with the "no adjustment row needed" semantic.
+		if resolution == "approved" || resolution == "rejected" || resolution == "adjusted" || resolution == "phantom_open" {
 			slog.Info("skipping already resolved diff", "diff_id", diffID, "resolution", resolution)
 			continue // skip already resolved
 		}

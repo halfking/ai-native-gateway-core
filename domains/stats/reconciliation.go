@@ -355,8 +355,10 @@ func (w *ReconciliationWorker) reconcileDailyOnce(ctx context.Context, runID str
 		}
 
 		source, exists := factsMap[key]
-		if !exists {
-			// Projection exists but no source facts - this is a phantom row
+		isPhantom := !exists
+		if isPhantom {
+			// Projection exists but no source facts - this is a phantom row.
+			// Recorded separately with resolution='phantom_open' (see below).
 			source = factMetrics{}
 		}
 
@@ -387,19 +389,34 @@ func (w *ReconciliationWorker) reconcileDailyOnce(ctx context.Context, runID str
 			dimensionKey := fmt.Sprintf("provider:%d:cred:%d:model:%d:%s",
 				key.providerID, key.credentialID, key.canonicalID, key.modelName)
 
-			// Determine if auto-repairable: small relative diff or small absolute value
+			// canAutoRepair requires BOTH source and projected to be non-zero.
+			// The prior code relied on relDiff=1.0 falling outside
+			// autoRepairThreshold to exclude phantom rows (source=0,
+			// projected>0), but that exclusion was implicit and could be
+			// broken by future threshold changes. Phantom rows are recorded
+			// separately with resolution='phantom_open' below.
 			canAutoRepair := false
-			if d.projected != 0 {
+			if d.projected != 0 && d.source != 0 {
 				relDiff := abs(diff / d.projected)
 				if relDiff < autoRepairThreshold && abs(diff) < autoRepairMaxValue {
 					canAutoRepair = true
 				}
+			} else if d.projected != 0 && d.source == 0 {
+				// Phantom row: source is zero. Never auto-repair, regardless
+				// of magnitude. The diff row uses resolution='phantom_open'
+				// below.
 			} else if abs(diff) < autoRepairMaxValue {
+				// Both zero means no diff (already filtered above); keep
+				// guard for safety.
 				canAutoRepair = true
 			}
 
 			resolution := "open"
-			if canAutoRepair {
+			if isPhantom {
+				// Phantom rows: never auto-repaired, never fed to Refresh().
+				// Surfaces operator-visible diffs for human review.
+				resolution = "phantom_open"
+			} else if canAutoRepair {
 				resolution = "auto_repair_pending"
 				pendingRepairs++
 			}
