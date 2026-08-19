@@ -28,6 +28,7 @@ import {
 } from '../composables/liveStreamStore'
 import { isSuperAdmin } from '../store'
 import { ApiError } from '../api/_core'
+import { readLiveStreamPreferences, writeLiveStreamPreferences, type QueueStatusBucket } from '../composables/liveStreamPreferences'
 import RequestProcessingTrail from './RequestProcessingTrail.vue'
 import NodeDetailDrawer from './NodeDetailDrawer.vue'
 
@@ -103,10 +104,21 @@ const isIdle = computed(() => hasData.value && totalDepth.value === 0)
 // ── 队列深度分区：默认折叠，拥堵时自动展开 ─────────────────────────────────
 // 队列深度是诊断信息，畅通时收起让模型分组和节点矩阵成为主内容；
 // congested 翻转为 true 时自动展开引导排查，恢复后不自动收起。
-const queueDepthOpen = ref(false)
+const savedQueuePreferences = readLiveStreamPreferences().queue
+const queueDepthOpen = ref(savedQueuePreferences.depthOpen ?? false)
+const hasExplicitDepthPreference = ref(savedQueuePreferences.depthOpen !== undefined)
+const expandedModels = ref<Set<string>>(new Set(savedQueuePreferences.expandedModels))
 watch(congested, value => {
-  if (value) queueDepthOpen.value = true
+  // A congestion diagnosis may expand the panel only before the user selects a
+  // preferred state. An explicit collapsed state must survive remounts.
+  if (value && !hasExplicitDepthPreference.value) queueDepthOpen.value = true
 }, { immediate: true })
+
+function toggleQueueDepth() {
+  queueDepthOpen.value = !queueDepthOpen.value
+  hasExplicitDepthPreference.value = true
+  writeLiveStreamPreferences({ queue: { depthOpen: queueDepthOpen.value } })
+}
 
 // ── OBS-UI：按模型分组的可用节点（2026-08-17） ─────────────────────────────
 //
@@ -251,13 +263,12 @@ async function loadModelScope() {
 onMounted(() => { void loadModelScope() })
 onUnmounted(() => { modelScopeAbort?.abort() })
 
-const expandedModels = ref<Set<string>>(new Set())
-
 function toggleModel(model: string) {
   const next = new Set(expandedModels.value)
   if (next.has(model)) next.delete(model)
   else next.add(model)
   expandedModels.value = next
+  writeLiveStreamPreferences({ queue: { expandedModels: Array.from(next) } })
 }
 
 const modelGroups = computed<ModelGroup[]>(() => {
@@ -320,20 +331,15 @@ const modelGroups = computed<ModelGroup[]>(() => {
 // ── 节点状态过滤（在用 / 降级 / 人工禁用 / 配额耗尽） ─────────────────────
 // 每个节点只归属一个主状态桶：人工禁用 > 耗尽/暂停 > 降级 > 在用。
 // 这样取消"耗尽"即可稳定排除耗尽节点，而不会被"在用"的 OR 条件重新匹配。
-type StatusBucket = 'active' | 'degraded' | 'manualDisabled' | 'exhausted'
+const statusFilter = ref<Record<QueueStatusBucket, boolean>>(savedQueuePreferences.statusFilter)
 
-const statusFilter = ref<Record<StatusBucket, boolean>>({
-  active: true,
-  degraded: true,
-  manualDisabled: true,
-  exhausted: true,
-})
-
-function toggleStatusFilter(bucket: StatusBucket) {
-  statusFilter.value = { ...statusFilter.value, [bucket]: !statusFilter.value[bucket] }
+function toggleStatusFilter(bucket: QueueStatusBucket) {
+  const next = { ...statusFilter.value, [bucket]: !statusFilter.value[bucket] }
+  statusFilter.value = next
+  writeLiveStreamPreferences({ queue: { statusFilter: next } })
 }
 
-function nodeStatusBucket(n: LiveNodeStatus): StatusBucket {
+function nodeStatusBucket(n: LiveNodeStatus): QueueStatusBucket {
   if (n.manual_disabled || n.disable_kind === 'manual') return 'manualDisabled'
   if ((n.quota_state ?? '').includes('exhausted') || n.availability_state === 'suspended') return 'exhausted'
   if (n.circuit_state === 'open' || n.circuit_state === 'half_open' || n.health_status === 'unreachable'
@@ -568,7 +574,7 @@ function formatTs(ts: string | undefined): string {
 
       <!-- 队列深度（诊断信息，默认折叠；拥堵时自动展开） -->
       <div class="qp-layer">
-        <button type="button" class="qp-layer-header qp-depth-toggle" :aria-expanded="queueDepthOpen" @click="queueDepthOpen = !queueDepthOpen">
+        <button type="button" class="qp-layer-header qp-depth-toggle" :aria-expanded="queueDepthOpen" @click="toggleQueueDepth">
           <span class="qp-layer-name">队列深度</span>
           <span class="qp-depth-summary">
             <span class="qp-layer-depth" :class="{ 'qp-depth--high': totalDepth > CONGESTION_THRESHOLD * 3 }">{{ totalDepth }}</span>
