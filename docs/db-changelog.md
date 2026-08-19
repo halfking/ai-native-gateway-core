@@ -35,3 +35,9 @@
 |-----------|------|---------|--------|
 | 545 | `545_stats_reconciliation_phantom_resolution.sql` | `6f2cbdefb62fefa17ea5d9d5238b5f2062720fd636a97d60ebda9a862579a993` | applied+verified |
 | 546 | `546_stats_reconciliation_diffs_unique.sql` | `57a05c88937b` | applied+verified |
+## 2026-08-19T18:39:56Z — deploy 154 build_seq 1632 (0eec1b62)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 547 | `547_session_project_attribution.sql` | `359353c4155d1c4331ef56356d1cae8e408b7ece01c9e1ef95b8adb9dbda16a2` | applied+verified |
+
