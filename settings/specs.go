@@ -22,6 +22,8 @@ func PlatformSpecs() []*Spec {
 	out = append(out, LifecycleSpecs()...)
 	out = append(out, SessionAnalyticsSpecs()...)
 	out = append(out, DashboardSpecs()...)
+	// 2026-08-19: read-only legacy/canonical statistics shadow comparison.
+	out = append(out, StatsShadowSpecs()...)
 	// 2026-07-17: Sessions V2 feature flags (Migration 430)
 	out = append(out, SessionsV2Specs()...)
 	// 2026-07-18: dedicated session-manager service JWT gate.

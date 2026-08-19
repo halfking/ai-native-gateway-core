@@ -195,7 +195,7 @@ type Handler struct {
 		Enabled() bool
 	}
 	redisClient            interface{}                   // Redis client for sliding window access
-	titleDistLock          distlock.Manager             // 2026-08-19 per-session title-gen distributed lock; defaults to in-process LocalManager
+	titleDistLock          distlock.Manager              // 2026-08-19 per-session title-gen distributed lock; defaults to in-process LocalManager
 	availabilityReader     *bg.ModelAvailabilityReader   // 2026-06-29 mirror of unified probe state to Redis
 	availabilityBackfill   *bg.AvailabilityCacheBackfill // 2026-06-29 on-demand DB→Redis cache rebuild
 	availabilityKeyCounter *bg.AvailabilityKeyCounter    // 2026-06-29 on-demand SCAN-based key count
@@ -294,7 +294,8 @@ type Handler struct {
 
 	// rateLimiter (V3.2-LP5, 2026-08-14) 节点操作限流器：test-now 1req/s per-cred + 10req/min per-operator。
 	rateLimiter *nodeOperationsRateLimiter
-
+	// statsShadowExecutor runs bounded, read-only legacy/canonical comparisons.
+	statsShadowExecutor *statsShadowExecutor
 	// auditLogger (V3.2-LP5, 2026-08-14) 节点操作审计：异步写入 request_state_transitions。
 	auditLogger *nodeOperationAuditLogger
 }
@@ -311,7 +312,8 @@ func NewHandler(db *pgxpool.Pool, secretKey string, encKey []byte) *Handler {
 		// 2026-08-17 OPTIMIZATION: LRU 1024 entries × 5min TTL.
 		// 1024 entries × ~20KB/entry ≈ 20MB max footprint (rule 23 §3).
 		// 5min TTL ≈ body 数据写入后罕见被修改（rule 36 §1 持久化）。
-		bodyFetchCache: newBodyFetchCache(1024, 5*time.Minute),
+		bodyFetchCache:      newBodyFetchCache(1024, 5*time.Minute),
+		statsShadowExecutor: newStatsShadowExecutor(db),
 		// 2026-08-19: title generation lock defaults to the in-process
 		// LocalManager so no-Redis deployments still benefit from
 		// single-flight semantics within a single replica. The wiring
