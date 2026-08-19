@@ -249,3 +249,4 @@ test-history-demo.sh
 # 全方面测试 run 产物（本地跑测试产生的大量 JSON 报告，不入仓）
 docs/全方面测试/results/runs/
 docs/全方面测试/results/*.jsonl
+gui-test-screenshots/
