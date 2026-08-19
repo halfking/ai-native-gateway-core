@@ -1792,12 +1792,31 @@ func main() {
 				"endpoint_configured", asmEndpoint != "",
 				"secret_configured", hmacSecret != "")
 		}
+	} else {
+		slog.Warn("telemetry client created WITHOUT database connection",
+			"dbConn_nil", dbConn == nil,
+			"dbConn_enabled", dbConn != nil && dbConn.Enabled(),
+			"telemetry_will_be_disabled", true)
 	}
-	if telemetryClient.Enabled() {
-		chatHandler.SetTelemetry(telemetryClient)
-		if embeddingsHandler != nil {
-			embeddingsHandler.SetTelemetry(telemetryClient)
-		}
+
+	// Startup validation: log telemetry initialization state
+	slog.Info("telemetry client initialized",
+		"dbPool_set", telemetryClient.Enabled(),
+		"has_dbPool", false, // telemetryClient doesn't expose this; use Enabled() as proxy
+		"hooks_pending", true)
+	if !telemetryClient.Enabled() {
+		slog.Warn("telemetry DISABLED at startup — live stream, chat handler, embeddings will NOT receive telemetry",
+			"action_required", "check database connection and credentials",
+			"dbConn_nil", dbConn == nil,
+			"dbConn_enabled", dbConn != nil && dbConn.Enabled())
+	}
+
+	// Wire telemetry to handlers regardless of Enabled() state;
+	// handlers will no-op if client is disabled, but this ensures
+	// they're ready when telemetry becomes enabled later.
+	chatHandler.SetTelemetry(telemetryClient)
+	if embeddingsHandler != nil {
+		embeddingsHandler.SetTelemetry(telemetryClient)
 	}
 
 	// 2026-07-15: clientprofile 画像管线接通（消费 EventEmitter → ProfileWorker →
@@ -1830,9 +1849,13 @@ func main() {
 		}
 	}
 
+	// Telemetry wiring is now done at startup regardless of Enabled() state.
+	// This log reflects current enabled state for operator visibility.
 	if telemetryClient.Enabled() {
-		// 2026-06-20: wire telemetry into the executor so that
-		slog.Info("telemetry emission enabled (chatHandler + routingExec)")
+		slog.Info("telemetry emission enabled (chatHandler + routingExec + live stream)")
+	} else {
+		slog.Warn("telemetry DISABLED — no request logs will be persisted; live stream will be empty",
+			"check", "database connectivity and credentials")
 	}
 
 	// ── Live request stream SSE hub (2026-07-03) ───────────────────
@@ -1860,52 +1883,65 @@ func main() {
 	var integrityDriftWorker *bg.IntegrityFingerprintDrift
 	var integrityHarvester *bg.IntegrityHarvester
 	var integrityProbePlanner *bg.IntegrityProbePlanner
-	if dbConn != nil && dbConn.Enabled() {
-		liveStreamHub = admin.NewLiveStreamSSEHub(dbConn.Pool(), admin.LiveStreamConfig{
-			BroadcastQueueSize:            2048,
-			InitialReplayLimit:            200,
-			IdleThreshold:                 admin.LiveStreamIdleThreshold,
-			IdleTickInterval:              10 * time.Second,
-			KeepaliveInterval:             25 * time.Second,
-			RedisClient:                   fpSlotRedis, // reuse the existing Redis connection
-			CachedSnapshotTTL:             liveStreamCachedTTL,
-			CachedSnapshotCleanupInterval: liveStreamCachedCleanup,
-			SnapshotRefreshInterval:       liveStreamSnapshotRefresh,
-		})
-		go liveStreamHub.Run()
 
+	// Always create live stream hub; DB-backed features (replay, node status)
+	// are enabled only when database is available.
+	// Without DB, hub relays live broadcasts from telemetry — initial replay empty.
+	dbPool := (*pgxpool.Pool)(nil)
+	if dbConn != nil && dbConn.Enabled() {
+		dbPool = dbConn.Pool()
+	}
+	liveStreamHub = admin.NewLiveStreamSSEHub(dbPool, admin.LiveStreamConfig{
+		BroadcastQueueSize:            2048,
+		InitialReplayLimit:            200,
+		IdleThreshold:                 admin.LiveStreamIdleThreshold,
+		IdleTickInterval:              10 * time.Second,
+		KeepaliveInterval:             25 * time.Second,
+		RedisClient:                   fpSlotRedis, // reuse the existing Redis connection
+		CachedSnapshotTTL:             liveStreamCachedTTL,
+		CachedSnapshotCleanupInterval: liveStreamCachedCleanup,
+		SnapshotRefreshInterval:       liveStreamSnapshotRefresh,
+	})
+	go liveStreamHub.Run()
+
+	if dbPool != nil {
 		// V3.2 BE-A4: the hub emits node status from a cached DB projection.
 		// Refreshing outside the SSE goroutine keeps the 2s fan-out tick cheap.
-		liveNodeStatusCache, stopLiveNodeStatusRefresh := startLiveNodeStatusRefresh(dbConn.Pool(), 2*time.Second, fpSlots)
+		liveNodeStatusCache, stopLiveNodeStatusRefresh := startLiveNodeStatusRefresh(dbPool, 2*time.Second, fpSlots)
 		defer stopLiveNodeStatusRefresh()
 		liveStreamHub.SetNodeStatusProvider(liveNodeStatusCache.get)
-
-		// Publish terminal live-stream updates only after the request log
-		// transaction commits. Emitting before persistence allowed a green
-		// tile to reach the dashboard before GET /api/logs/{id} could see it.
-		// The provider_id→catalog_code resolution is bounded by the hub's
-		// short lookup context, and Publish remains non-blocking for clients.
-		// Live stream hub hook: register regardless of telemetryClient.Enabled()
-		// (sessionv2mirror/attachment hooks don't gate on Enabled()).
-		// If telemetry is disabled, log a clear warning so operators know
-		// the hub runs but receives no data.
-		if telemetryClient != nil {
-			hub := liveStreamHub
-			telemetryClient.AddOnRequestLogPersisted(func(entry *telemetry.RequestLogEntry) {
-				hub.Publish(adminLiveRequestFromEntry(entry, hub))
-			})
-			slog.Info("telemetry onPersisted wired → live stream SSE hub")
-		} else {
-			slog.Warn("live stream hub created but telemetryClient is nil; no data will flow to swim lanes")
-		}
-		if telemetryClient != nil && !telemetryClient.Enabled() {
-			slog.Warn("telemetryClient.Enabled() == false; live stream hub will receive no onPersisted callbacks")
-		}
-
-		slog.Info("live request stream hub enabled (sse /api/admin/live-stream)",
-			"cached_snapshot_ttl", liveStreamCachedTTL.String(),
-			"cached_snapshot_cleanup_interval", liveStreamCachedCleanup.String())
+		slog.Info("live stream hub: DB-backed replay and node status enabled")
+	} else {
+		slog.Warn("live stream hub created WITHOUT database — initial replay empty, node status disabled",
+			"dbConn_nil", dbConn == nil,
+			"dbConn_enabled", dbConn != nil && dbConn.Enabled())
 	}
+
+	// Publish terminal live-stream updates only after the request log
+	// transaction commits. Emitting before persistence allowed a green
+	// tile to reach the dashboard before GET /api/logs/{id} could see it.
+	// The provider_id→catalog_code resolution is bounded by the hub's
+	// short lookup context, and Publish remains non-blocking for clients.
+	// Live stream hub hook: register regardless of telemetryClient.Enabled()
+	// (sessionv2mirror/attachment hooks don't gate on Enabled()).
+	// If telemetry is disabled, log a clear warning so operators know
+	// the hub runs but receives no data.
+	if telemetryClient != nil {
+		hub := liveStreamHub
+		telemetryClient.AddOnRequestLogPersisted(func(entry *telemetry.RequestLogEntry) {
+			hub.Publish(adminLiveRequestFromEntry(entry, hub))
+		})
+		slog.Info("telemetry onPersisted wired → live stream SSE hub")
+	} else {
+		slog.Warn("live stream hub created but telemetryClient is nil; no data will flow to swim lanes")
+	}
+	if telemetryClient != nil && !telemetryClient.Enabled() {
+		slog.Warn("telemetryClient.Enabled() == false; live stream hub will receive no onPersisted callbacks")
+	}
+
+	slog.Info("live request stream hub enabled (sse /api/admin/live-stream)",
+		"cached_snapshot_ttl", liveStreamCachedTTL.String(),
+		"cached_snapshot_cleanup_interval", liveStreamCachedCleanup.String())
 
 	// ── Request WAL (Request Logger) ───────────────────────────────────────
 	// 2026-06-22: Synchronous initial log + async batch updates for request lifecycle.
