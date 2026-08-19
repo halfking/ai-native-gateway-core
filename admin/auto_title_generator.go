@@ -199,8 +199,9 @@ func (g *AutoTitleGenerator) generateTitleAsync(sessionID, tenantID, taskID, req
 	if mgr != nil {
 		key := titleDistLockKey("auto", taskID, sessionID)
 		h, lerr := mgr.Acquire(ctx, distlock.AcquireOpts{
-			Key: key,
-			TTL: 60 * time.Second,
+			Key:   key,
+			TTL:   60 * time.Second,
+			Scope: "auto",
 		})
 		if lerr != nil && !errors.Is(lerr, distlock.ErrNotEnabled) {
 			// Soft-fail: log and proceed so Redis outages don't block
