@@ -6,6 +6,110 @@ Adds canonical metadata sync, vendor-prefix aliases, provider_models pre-fill,
 binding placeholders, featured_models extension, and a DB-backed catalog
 discovery. Replaces the static fallback in `domains/modelquality/discovery.go`.
 
+## Audit Round 1 — Findings & Fixes (commit de0f1e91d)
+
+Audited by parallel sub-agents against the comprehensive-code-audit skill
+(data flow, closure, state machine, concurrency, compatibility).
+
+### P0 — Addressed in this commit
+
+1. **359.down `reasoning_caps->>'source' IS NULL` guard was always TRUE.**
+   `internal/reasoncap/pgsource.go` `capsJSON` struct has no `Source` field, so
+   the JSONB never contains a `source` key. The guard therefore matched every
+   row, and the down migration would unconditionally wipe operator overrides.
+   **Fix:** 359.up now writes `'source', 'migration-359'` into the JSONB;
+   359.down only clears rows where `reasoning_caps->>'source' = 'migration-359'`.
+
+2. **361 hard-coded `providers.id = 10/17/30` is environment-fragile.**
+   On a DB where operators added `xai/moonshot/google-gemini` rows via the admin
+   UI before the seed loaded, IDs would not match. **Fix:** 361 now uses
+   `providers.code` lookup (`SELECT p.id FROM providers p WHERE p.code = 'xai'
+   AND p.tenant_id = 'default'`).
+
+3. **359.up assumed `models_canonical.reasoning_caps` column exists.**
+   The column is added by 478 (startup migration). If 359 runs without 478
+   (e.g. domain-only batch), the migration crashes. **Fix:** Defensive
+   `ALTER TABLE models_canonical ADD COLUMN IF NOT EXISTS reasoning_caps JSONB`
+   + matching indexes at the top of 359.up.
+
+4. **Seed divergence on `routing_policy.featured_models` (line 934).**
+   `sql/schema/02-seed.sql` and the `deploy/.../02-seed.sql` +
+   `installer/.../02-seed.sql` differ in the line-934 INSERT — the latter two
+   already include `gemini-3.5-flash` and `gemini-3-flash-preview` that 363
+   adds. **Fix:** 363's WHERE clause now uses `featured_models @> ARRAY[...5
+   names]` so the migration only fires when ALL five are absent, avoiding
+   duplicate writes on the deploy/installer seeds.
+
+### P1 — Addressed
+
+5. **361.down DELETE removed discovery-written rows.** No source-tag filter.
+   **Fix:** Added `source text NOT NULL DEFAULT 'discovery'` column on
+   `provider_models` (defensive `ADD COLUMN IF NOT EXISTS`); 361.up writes
+   `source='migration-361'`; 361.down deletes only `source='migration-361'`.
+
+6. **361.up `last_seen_at = NOW()` on UPDATE wipes discovery values.**
+   Re-running 361 falsely makes every row look freshly probed.
+   **Fix:** 361.up's `ON CONFLICT DO UPDATE` no longer sets `last_seen_at`,
+   `canonical_raw_name`, `standardized_name`, `outbound_model_name`, or
+   `available` — only the columns a manual migration could safely refresh
+   (`canonical_id`, `modality`, `source`, `updated_at`).
+
+7. **362.down DELETE could clobber upgraded bindings.** If an onboarding
+   script forgot to NULL `unavailable_reason`, the down would delete a real
+   binding. **Fix:** Added a 30-day `created_at` age guard.
+
+8. **`CanonicalCatalogDiscovery` was dead code.** No production caller used
+   it; both `cmd/gateway/main.go:3423` and `bg/model_quality_worker.go:330`
+   hard-coded `GetDefaultMonitorModels()`. **Fix:** Added
+   `ModelQualityWorker.SetDiscovery(d)` + `resolveDefaultTargetsLocked(ctx)`
+   (held under `w.mu` write lock; concurrency-safe because the only current
+   discovery impl `CanonicalCatalogDiscovery` does not re-enter `w`). main.go
+   now calls `modelQualityWorker.SetDiscovery(modelquality.NewCanonicalCatalogDiscovery(dbConn.Pool()))`
+   alongside `SetDBStorage`.
+
+### P1 — Design improvements
+
+9. **`CanonicalCatalogDiscovery` had a dead `timeout` field.** Constructor
+   hard-coded 1s, no setter exposed. **Fix:** Added `WithTimeout(d)` option
+   method.
+
+10. **`discovery_canonical_test.go` had ~75 lines of dead mock types**
+    (`fakeRow`, `fakePool`, `fakeRows`, `pgxRows`). **Fix:** Removed; kept
+    only the three tests that actually run.
+
+11. **`errors.As(err, &pgErr)` block was a tautology.** **Fix:** Replaced with
+    `errors.Is(err, context.DeadlineExceeded)` for real signal.
+
+## Audit Round 1 — P2 Deferred (not blocking)
+
+- 360 / 361 / 362 silently no-op if upstream canonical rows don't exist yet
+  (352-355 not applied). Acceptable: idempotent + no destructive side-effect.
+- 363.down removes operator-added names that happen to overlap. Documented.
+- `provider_models.source` column added in 361.up via `ADD COLUMN IF NOT
+  EXISTS`. Production DBs likely already have `source` from earlier work;
+  the `IF NOT EXISTS` makes it a no-op.
+- Moonshot `currency = 'CNY'` in 362 is correct for the China-market Kimi
+  provider; verified the billing pipeline handles per-provider currency.
+
+## Verification
+
+- `go build ./...` — clean.
+- `go test ./domains/modelquality/ -run
+  "TestCanonicalCatalogDiscovery|TestStaticModelDiscovery"` — pass.
+- `go test ./bg/ -run TestModelQualityWorker` — pass (previously deadlocked
+  on `RLock` self-deadlock when `Start` called the discovery helper under
+  write lock; fixed by `resolveDefaultTargetsLocked` naming + lock-held
+  invariant).
+- `go test ./cmd/...` — pass.
+- `make test` — full suite passes; only intermittent
+  `TestTCPChecker_RealWorldScenario/Cloudflare_DNS` flake (pre-existing DNS
+  flake, unrelated; passes in isolation).
+
+## Audit Round 1 — Original Scope (unchanged from initial commit)
+
+Below this line is the original commit `de0f1e91d` audit; the fixes above are
+on top of that.
+
 ## Files Touched
 
 ### Migrations (new)

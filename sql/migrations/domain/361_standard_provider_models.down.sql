@@ -1,13 +1,18 @@
 -- 361_standard_provider_models.down.sql
--- Remove the standard provider_models rows pre-filled by 361.
--- Only deletes rows whose source=361 (created in this migration window);
--- rows created later by the discovery worker are preserved (last_seen_at > migration-361 cut).
+-- Remove provider_models rows pre-filled by 361.
+-- 仅删除 source='migration-361' 的行；发现 worker（source='discovery' 或其他值）写入的行保留。
+--
+-- 审计修复（2026-08-20）：通过 providers.code 解析 provider_id；
+-- 通过 source 列精确删除，避免误清。
 
 BEGIN;
 
 DELETE FROM provider_models pm
-WHERE pm.provider_id IN (10, 17, 30)
-  AND pm.tenant_id = 'default'
+USING providers p
+WHERE pm.provider_id = p.id
+  AND pm.source = 'migration-361'
+  AND p.tenant_id = 'default'
+  AND p.code IN ('xai', 'moonshot', 'google-gemini')
   AND pm.raw_model_name IN (
     'grok-4.6',
     'kimi-k3', 'kimi-k2.6', 'kimi-k2.7-code', 'kimi-k2.7-code-highspeed',

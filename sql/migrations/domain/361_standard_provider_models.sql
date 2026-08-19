@@ -15,125 +15,89 @@
 --   - 仅预填；不替代发现流程
 --   - 不触碰 credentials / bindings（由 362 处理）
 --   - 不修改 352-358 / 478 既有 canonical / alias 行
+--   - 通过 providers.code 解析 provider_id，避免硬编码 id（环境无关）
+--   - source 列标记 'migration-361'，便于 361.down 精确清理（不清发现写入的行）
+--
+-- 审计修复（feat/standard-models-rollout 2026-08-20）：
+--   - 改为 SELECT id FROM providers WHERE code = ... AND tenant_id = 'default'
+--   - UPDATE 不再覆盖 last_seen_at（避免误清发现 worker 的真实时间戳）
+--   - 不再 UPDATE canonical_raw_name / standardized_name / outbound_model_name（值不变）
+--   - 写入 source 列（新增列前以 NOT NULL DEFAULT 'discovery' 兼容旧 DB）
 
 BEGIN;
 
+-- 防御性 ALTER：source 列若不存在则添加。DEFAULT 'discovery' 兼容旧 provider_models 行。
+ALTER TABLE provider_models
+  ADD COLUMN IF NOT EXISTS source text NOT NULL DEFAULT 'discovery';
+
 -- ─────────────────────────────────────────────────────────────────────────
--- xai (providers.id = 30): grok-4.6
+-- xai (providers.code = 'xai'): grok-4.6
 -- ─────────────────────────────────────────────────────────────────────────
 INSERT INTO provider_models (
     provider_id, tenant_id, raw_model_name, canonical_id, canonical_raw_name,
-    standardized_name, outbound_model_name, modality, available, last_seen_at, updated_at
+    standardized_name, outbound_model_name, modality, available, source,
+    last_seen_at, updated_at
 )
-SELECT 30, 'default', 'grok-4.6', mc.id, 'grok-4.6',
-       'grok-4.6', 'grok-4.6', 'vision', true, NOW(), NOW()
-FROM models_canonical mc
-WHERE mc.canonical_name = 'grok-4.6'
+SELECT p.id, 'default', 'grok-4.6', mc.id, 'grok-4.6',
+       'grok-4.6', 'grok-4.6', 'vision', true, 'migration-361',
+       NOW(), NOW()
+FROM providers p
+JOIN models_canonical mc ON mc.canonical_name = 'grok-4.6'
+WHERE p.code = 'xai' AND p.tenant_id = 'default'
 ON CONFLICT (provider_id, raw_model_name) DO UPDATE
 SET canonical_id = EXCLUDED.canonical_id,
-    canonical_raw_name = EXCLUDED.canonical_raw_name,
-    standardized_name = EXCLUDED.standardized_name,
-    outbound_model_name = EXCLUDED.outbound_model_name,
     modality = EXCLUDED.modality,
-    available = EXCLUDED.available,
-    last_seen_at = NOW(),
+    source = EXCLUDED.source,
+    updated_at = NOW();
+-- 故意不更新 last_seen_at / canonical_raw_name / standardized_name / outbound_model_name /
+-- available：发现 worker 写入这些字段时应保持其值；361 仅在 INSERT 时设定它们。
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- moonshot (providers.code = 'moonshot'): kimi-k3 / kimi-k2.6 / kimi-k2.7-code / kimi-k2.7-code-highspeed
+-- ─────────────────────────────────────────────────────────────────────────
+INSERT INTO provider_models (
+    provider_id, tenant_id, raw_model_name, canonical_id, canonical_raw_name,
+    standardized_name, outbound_model_name, modality, available, source,
+    last_seen_at, updated_at
+)
+SELECT p.id, 'default', mc.canonical_name, mc.id, mc.canonical_name,
+       mc.canonical_name, mc.canonical_name,
+       CASE mc.canonical_name
+           WHEN 'kimi-k3'                  THEN 'multimodal'
+           WHEN 'kimi-k2.6'                THEN 'vision'
+           ELSE 'text'
+       END,
+       true, 'migration-361',
+       NOW(), NOW()
+FROM providers p
+JOIN models_canonical mc
+  ON mc.canonical_name IN ('kimi-k3', 'kimi-k2.6', 'kimi-k2.7-code', 'kimi-k2.7-code-highspeed')
+WHERE p.code = 'moonshot' AND p.tenant_id = 'default'
+ON CONFLICT (provider_id, raw_model_name) DO UPDATE
+SET canonical_id = EXCLUDED.canonical_id,
+    modality = EXCLUDED.modality,
+    source = EXCLUDED.source,
     updated_at = NOW();
 
 -- ─────────────────────────────────────────────────────────────────────────
--- moonshot (providers.id = 17): kimi-k3 / kimi-k2.6 / kimi-k2.7-code / kimi-k2.7-code-highspeed
+-- google-gemini (providers.code = 'google-gemini'): gemini-3.* (355 写入的全部 10 个)
 -- ─────────────────────────────────────────────────────────────────────────
 INSERT INTO provider_models (
     provider_id, tenant_id, raw_model_name, canonical_id, canonical_raw_name,
-    standardized_name, outbound_model_name, modality, available, last_seen_at, updated_at
+    standardized_name, outbound_model_name, modality, available, source,
+    last_seen_at, updated_at
 )
-SELECT 17, 'default', 'kimi-k3', mc.id, 'kimi-k3',
-       'kimi-k3', 'kimi-k3', 'multimodal', true, NOW(), NOW()
-FROM models_canonical mc
-WHERE mc.canonical_name = 'kimi-k3'
+SELECT p.id, 'default', mc.canonical_name, mc.id, mc.canonical_name,
+       mc.canonical_name, mc.canonical_name, 'multimodal', true, 'migration-361',
+       NOW(), NOW()
+FROM providers p
+JOIN models_canonical mc
+  ON mc.family = 'google-gemini' AND mc.canonical_name LIKE 'gemini-3%'
+WHERE p.code = 'google-gemini' AND p.tenant_id = 'default'
 ON CONFLICT (provider_id, raw_model_name) DO UPDATE
 SET canonical_id = EXCLUDED.canonical_id,
-    canonical_raw_name = EXCLUDED.canonical_raw_name,
-    standardized_name = EXCLUDED.standardized_name,
-    outbound_model_name = EXCLUDED.outbound_model_name,
     modality = EXCLUDED.modality,
-    available = EXCLUDED.available,
-    last_seen_at = NOW(),
-    updated_at = NOW();
-
-INSERT INTO provider_models (
-    provider_id, tenant_id, raw_model_name, canonical_id, canonical_raw_name,
-    standardized_name, outbound_model_name, modality, available, last_seen_at, updated_at
-)
-SELECT 17, 'default', 'kimi-k2.6', mc.id, 'kimi-k2.6',
-       'kimi-k2.6', 'kimi-k2.6', 'vision', true, NOW(), NOW()
-FROM models_canonical mc
-WHERE mc.canonical_name = 'kimi-k2.6'
-ON CONFLICT (provider_id, raw_model_name) DO UPDATE
-SET canonical_id = EXCLUDED.canonical_id,
-    canonical_raw_name = EXCLUDED.canonical_raw_name,
-    standardized_name = EXCLUDED.standardized_name,
-    outbound_model_name = EXCLUDED.outbound_model_name,
-    modality = EXCLUDED.modality,
-    available = EXCLUDED.available,
-    last_seen_at = NOW(),
-    updated_at = NOW();
-
-INSERT INTO provider_models (
-    provider_id, tenant_id, raw_model_name, canonical_id, canonical_raw_name,
-    standardized_name, outbound_model_name, modality, available, last_seen_at, updated_at
-)
-SELECT 17, 'default', 'kimi-k2.7-code', mc.id, 'kimi-k2.7-code',
-       'kimi-k2.7-code', 'kimi-k2.7-code', 'text', true, NOW(), NOW()
-FROM models_canonical mc
-WHERE mc.canonical_name = 'kimi-k2.7-code'
-ON CONFLICT (provider_id, raw_model_name) DO UPDATE
-SET canonical_id = EXCLUDED.canonical_id,
-    canonical_raw_name = EXCLUDED.canonical_raw_name,
-    standardized_name = EXCLUDED.standardized_name,
-    outbound_model_name = EXCLUDED.outbound_model_name,
-    modality = EXCLUDED.modality,
-    available = EXCLUDED.available,
-    last_seen_at = NOW(),
-    updated_at = NOW();
-
-INSERT INTO provider_models (
-    provider_id, tenant_id, raw_model_name, canonical_id, canonical_raw_name,
-    standardized_name, outbound_model_name, modality, available, last_seen_at, updated_at
-)
-SELECT 17, 'default', 'kimi-k2.7-code-highspeed', mc.id, 'kimi-k2.7-code-highspeed',
-       'kimi-k2.7-code-highspeed', 'kimi-k2.7-code-highspeed', 'text', true, NOW(), NOW()
-FROM models_canonical mc
-WHERE mc.canonical_name = 'kimi-k2.7-code-highspeed'
-ON CONFLICT (provider_id, raw_model_name) DO UPDATE
-SET canonical_id = EXCLUDED.canonical_id,
-    canonical_raw_name = EXCLUDED.canonical_raw_name,
-    standardized_name = EXCLUDED.standardized_name,
-    outbound_model_name = EXCLUDED.outbound_model_name,
-    modality = EXCLUDED.modality,
-    available = EXCLUDED.available,
-    last_seen_at = NOW(),
-    updated_at = NOW();
-
--- ─────────────────────────────────────────────────────────────────────────
--- google-gemini (providers.id = 10): gemini-3.* (355 写入的全部 10 个)
--- ─────────────────────────────────────────────────────────────────────────
-INSERT INTO provider_models (
-    provider_id, tenant_id, raw_model_name, canonical_id, canonical_raw_name,
-    standardized_name, outbound_model_name, modality, available, last_seen_at, updated_at
-)
-SELECT 10, 'default', mc.canonical_name, mc.id, mc.canonical_name,
-       mc.canonical_name, mc.canonical_name, 'multimodal', true, NOW(), NOW()
-FROM models_canonical mc
-WHERE mc.family = 'google-gemini'
-  AND mc.canonical_name LIKE 'gemini-3%'
-ON CONFLICT (provider_id, raw_model_name) DO UPDATE
-SET canonical_id = EXCLUDED.canonical_id,
-    canonical_raw_name = EXCLUDED.canonical_raw_name,
-    standardized_name = EXCLUDED.standardized_name,
-    outbound_model_name = EXCLUDED.outbound_model_name,
-    modality = EXCLUDED.modality,
-    available = EXCLUDED.available,
-    last_seen_at = NOW(),
+    source = EXCLUDED.source,
     updated_at = NOW();
 
 COMMIT;
