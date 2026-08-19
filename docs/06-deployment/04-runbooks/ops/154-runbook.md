@@ -31,6 +31,7 @@ services:        llm-gateway-go (systemd, port 8781)
 3. `systemctl is-active llm-gateway-go nginx` 都应 `active`
 4. `curl -sS http://127.0.0.1:8781/healthz` 应返回 200 + `2.4.7-...`
 5. 252 nginx 上 `kxpms-on-252.conf` 应当把 `kxpms_llm_backend` 指向 `172.16.2.209:8781` (=154)，**不是** 245。如果发现还是 245，跑：
+6. `systemctl show nginx | grep '^Restart='` → 必须 `Restart=always`（vendor unit 默认无，OOM 后不自愈；详见 changelog 2026-08-19）
    ```bash
    ssh 252 'sed -i "s|server 172.16.2.241:8781 max_fails=2 fail_timeout=5s;|server 172.16.2.209:8781 max_fails=2 fail_timeout=5s;|" /etc/nginx/conf.d/kxpms-on-252.conf'
    ssh 252 'nginx -t && nginx -s reload'
@@ -95,6 +96,7 @@ ssh 154 '
 | signal | how to check | threshold |
 |---|---|---|
 | healthz | `curl -sS http://127.0.0.1:8781/healthz` | 200 |
+| nginx Restart | `systemctl show nginx \| grep '^Restart='` | `Restart=always`（vendor unit 默认无，OOM 后不自愈；Refs: changelog 2026-08-19） |
 | gateway 上游超时 | `journalctl -u llm-gateway-go --since "10m ago" \| grep "upstream_status" \| grep -E "(50[0-9]\|40[0-9])"` | 0 个 5xx 4xx |
 | 长 latency | `journalctl -u llm-gateway-go --since "10m ago" \| grep "latency_ms" \| awk -F, '{print $1}' \| sort -t: -k2 -n` | max < 30s |
 | commit/rollback | `journalctl -u llm-gateway-go --since "1h ago" \| grep -i "rollback"` | 0 |

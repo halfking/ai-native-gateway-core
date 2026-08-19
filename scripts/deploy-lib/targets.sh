@@ -149,6 +149,11 @@ _ssh_host_for() {
 # Mirrors the same contract as 245 (release bundle + versioned rollback)
 # but rollback stays on the existing runbook for this slice.
 target_154_contract() {
+  # 2026-08-19 OOM 复盘: 154 同 245 一样, 公网 443 走 nginx → 8781 链路.
+  # deploy 完成后 SSH 到目标机 curl 这个, 验证目标自身 nginx 是否 alive,
+  # 失败 → 自动 rollback (因 154/245 nginx failed = deploy 目标机链路断).
+  # 注意: 公网 https://llm.kxpms.cn/healthz 走 252 → 154 内网 IP,
+  # 不归 deploy-154 责任 (252 由 252 部署脚本管理).
   _json_object \
     target "154" \
     support "canonical" \
@@ -157,6 +162,7 @@ target_154_contract() {
     binary_path "/opt/llm-gateway-go/llm-gateway-go" \
     web_path "/opt/llm-gateway-go/web" \
     health_url "http://127.0.0.1:8781/healthz" \
+    internal_https_health_url "https://127.0.0.1/healthz" \
     ssh_host "$(_ssh_host_for 154)" \
     ssh_key_env "SSH_KEY_154" \
     rollback_policy "runbook" \
@@ -167,6 +173,15 @@ target_154_contract() {
 # 245 has its own pre-production unit name so deployment and verification
 # cannot accidentally target the production service contract.
 target_245_contract() {
+  # 2026-08-19 OOM 复盘: 245 自身 nginx (443) 反代到 8781. 如果 245 nginx
+  # failed 但 gateway 还在跑, internal healthz 仍然 OK — 这是 OOM 现场.
+  # 新增 internal_https_health_url 让 deploy step 9.5 在 245 自身跑
+  # `curl -k https://127.0.0.1/healthz` 验证 nginx→gateway 链路,
+  # 失败 → 自动 rollback.
+  #
+  # 注意: 公网 https://llmgo.kxpms.cn/healthz 走的是 252 nginx → 245 内网 IP,
+  # 不归 deploy-245 责任 (252 由 252 部署脚本管理). 部署后应在发起机器跑
+  # `curl -fsS https://llmgo.kxpms.cn/healthz` 做 L4 业务真实门禁 (WARN 不 rollback).
   _json_object \
     target "245" \
     support "canonical" \
@@ -175,6 +190,7 @@ target_245_contract() {
     binary_path "/opt/llm-gateway-go/gateway" \
     web_path "/opt/llm-gateway-go/web" \
     health_url "http://127.0.0.1:8781/healthz" \
+    internal_https_health_url "https://127.0.0.1/healthz" \
     ssh_host "$(_ssh_host_for 245)" \
     ssh_key_env "SSH_KEY_245" \
     rollback_policy "versioned" \

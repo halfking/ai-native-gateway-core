@@ -203,12 +203,36 @@ host_verify_bundle() {
 
 # Restart the tracked service on the target host. Slice 1-4 only knows
 # systemd; the k3s and launchd paths come with their respective slices.
+#
+# 2026-08-19 (rule 11 §1 plan-first, follow-up §3.5 候选 C 验证):
+#   原实现 "$ssh_cmd \"systemctl restart '$service_name'\" 是 fire-and-forget:
+#   systemd stop 阶段旧 Go srv.Shutdown 最长阻塞 30s 让 :8781 端口,
+#   期间 systemd 拉起新 binary → bind :8781 失败 → exit 1 → RestartSec=5 循环.
+#   现改为显式 stop → 同步等端口释放 (healthz 不可达) → start 三段式,
+#   复用 host_drain_and_stop (下 328-351) 的 drain 模式避免重复代码.
+#   drain 超时 30s; 失败时函数返回 1 让上层 _seamless_auto_rollback 兜底.
 host_restart_service() {
   local ssh_cmd=$1 target=$2
-  local service_name
+  local service_name health_url deadline_port_release
   service_name=$(target_field "$target" service_name)
+  health_url=$(target_field "$target" health_url)
   [[ -n "$service_name" ]] || { echo "service_name missing for $target" >&2; return 1; }
-  "$ssh_cmd" "systemctl restart '$service_name'"
+  [[ -n "$health_url" ]] || { echo "health_url missing for $target" >&2; return 1; }
+
+  # Step 1: stop (旧 binary srv.Shutdown 开始 drain)
+  "$ssh_cmd" "systemctl stop '$service_name'" || true
+
+  # Step 2: 等 :8781 端口真释放 (healthz 不可达 = port freed)
+  deadline_port_release=$(( $(date +%s) + 30 ))
+  while (( $(date +%s) < deadline_port_release )); do
+    if ! "$ssh_cmd" "curl -fsS --max-time 1 '$health_url' >/dev/null 2>&1"; then
+      break
+    fi
+    sleep 1
+  done
+
+  # Step 3: 此时端口必已释放,启新 binary (systemd 接管后续 RestartSec 兜底)
+  "$ssh_cmd" "systemctl start '$service_name'"
 }
 
 # Wait for /healthz on the target host to answer 2xx. Slice 1-4 uses a
@@ -228,6 +252,32 @@ host_wait_healthy() {
     sleep 2
   done
   echo "ERROR: $target health check timed out after ${timeout_s}s" >&2
+  return 1
+}
+
+# 2026-08-19: OOM 复盘加固. OOM killer 杀 nginx 后 systemd 不自愈 (vendor unit
+# 缺 Restart=always), gateway 仍然存活且 127.0.0.1:8781/healthz OK — 旧 host_wait_healthy
+# 通过但公网 80/443 实际挂了 1h21min 才被发现.
+#
+# 本函数在 target 自身 curl https://127.0.0.1/healthz 验证 nginx→gateway 链路.
+# nginx 用的是 let's encrypt 给 kxpms.cn 的 cert, curl 127.0.0.1 会 CN mismatch,
+# 用 -k 跳过 cert verify. -k 在这里可接受: 我们只验证"链路通 + 返回 200", 不
+# 验证 TLS 身份 (TLS 身份由发起机器的公网 curl 验证, 见 deploy-245 SKILL).
+#
+# 当 target contract 有 internal_https_health_url 时调用, 空则跳过 (兼容 252/kaixuan).
+host_wait_https_healthy() {
+  local ssh_cmd=$1 target=$2 timeout_s=${3:-30}
+  local https_url
+  https_url=$(target_field "$target" internal_https_health_url)
+  [[ -n "$https_url" ]] || { echo "  internal_https_health_url not set for $target, skip"; return 0; }
+  local deadline=$(( $(date +%s) + timeout_s ))
+  while (( $(date +%s) < deadline )); do
+    if "$ssh_cmd" "curl -kfsS --max-time 3 '$https_url' >/dev/null 2>&1"; then
+      return 0
+    fi
+    sleep 2
+  done
+  echo "ERROR: $target nginx (443) https health check timed out after ${timeout_s}s — nginx may be down (post-OOM symptom)" >&2
   return 1
 }
 

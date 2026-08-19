@@ -265,14 +265,49 @@ The shadow queue is bounded (32 tasks, 2 workers). A full queue, a timeout, a mi
 
 Do not use the current UTC day alone as a primary cutover gate: legacy usage uses a rolling window while canonical stats are daily projections and can lag the live source. Start at a low sample rate, investigate `material_drift` logs (which contain tenant scope and field names), and only expand endpoint coverage after sustained low drift and zero sustained queue drops/timeouts.
 
+## Operational rollout
 
-1. **Prometheus metrics**: `stats_reconciliation_diffs_total{resolution}`, `stats_adjustments_total`
-2. **Webhook notifications**: Alert on large unresolved diffs
-3. **Monthly reconciliation**: Compare with `stats_usage_monthly` for closed periods
-4. **Auto-trigger rebuild**: Integrate with `DailyMonthlyRollup.Refresh()` after auto-repair
+For production enablement, drain/rollback, alert thresholds and the
+shadow-sampling ladder see
+[Stats Reconciliation Production Rollout Runbook](runbooks/stats-reconciliation-rollout.md).
+
+## Prometheus metrics
+
+Reconciliation emits three low-cardinality counter families. Labels are
+restricted to fixed enums; never add `run_id`, `diff_id`, `tenant_id`,
+`provider_id`, `credential_id`, `model`, `dimension_key`, `operator`,
+or raw error text.
+
+- `llm_gateway_stats_reconciliation_runs_total{status}` —
+  `completed` is incremented after a successful `ReconcilePeriod`
+  finishes the `finishRun` UPDATE; `failed` is incremented when any
+  early-exit branch (watermark, event-count, daily reconcile) fires.
+  The counter reflects the logical Go-level outcome — pair with
+  `stats_reconciliation_runs.status` from the database when
+  investigating drift because `finishRun` swallows UPDATE errors.
+- `llm_gateway_stats_reconciliation_diffs_total{resolution}` —
+  `auto_repaired` is the persisted `RowsAffected()` after
+  `DailyMonthlyRollup.Refresh` plus the resolution UPDATE succeed;
+  `open` is the diff count that remained unresolved after the run.
+- `llm_gateway_stats_adjustments_total{action,result}` —
+  `action ∈ {approve, reject}`, `result ∈ {committed, failed}`.
+  `committed` is only incremented after `tx.Commit` succeeds; any
+  pre-commit failure (loop error, commit error, schema mismatch)
+  emits `failed` instead. While migration 536's `stats_adjustments`
+  schema lags the handler's INSERT (it lacks `adjustment_id` /
+  `adjustment_type` / `metric_name`), this counter will surface
+  `result="failed"` for every approve batch — treat that as a
+  release-blocker until the schema is aligned (see the runbook §6).
+
+## Future work
+
+1. Webhook notifications: Alert on large unresolved diffs
+2. Monthly reconciliation: Compare with `stats_usage_monthly` for closed periods
+3. Auto-trigger rebuild: Already integrated with `DailyMonthlyRollup.Refresh()` after auto-repair
 
 ## See Also
 
+- [Stats Reconciliation Production Rollout Runbook](runbooks/stats-reconciliation-rollout.md)
 - [Statistics Architecture](stats-architecture.md)
 - [Usage Facts Design](usage-facts.md)
 - [Monthly Close Process](monthly-close.md)
