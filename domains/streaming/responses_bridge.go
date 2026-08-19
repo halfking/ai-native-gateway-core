@@ -276,6 +276,9 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 	pc *pendingCapturer,
 	diagnostics *DiagnosticContext,
 ) (outcome StreamOutcome) {
+	// Declare the gate before panic recovery so a panic after client-visible
+	// semantic output can never be classified as transparently resumable.
+	var gate *AttemptCommitGate
 	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 	defer func() {
@@ -288,7 +291,7 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 			outcome.Interrupted = true
 			outcome.Reason = "stream_panic"
 			outcome.Kind = errorsx.KindUpstreamDown
-			outcome.Resumable = true
+			outcome.Resumable = !attemptHasClientSemanticOutput(gate, 0)
 			if pc != nil {
 				pc.markInterrupted("stream_panic")
 			}
@@ -305,7 +308,7 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 
 	// SR-W1: route client frames through the attempt commit gate.
 	// Disabled (default) this is the identity function — legacy wire bytes.
-	w, gate := wrapAttemptWriter(w, ProtocolOpenAIResponses)
+	w, gate = wrapAttemptWriter(w, ProtocolOpenAIResponses)
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)
@@ -585,6 +588,9 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 	pc *pendingCapturer,
 	diagnostics *DiagnosticContext,
 ) (outcome StreamOutcome) {
+	// Declare the gate before panic recovery so a panic after client-visible
+	// semantic output can never be classified as transparently resumable.
+	var gate *AttemptCommitGate
 	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 	defer func() {
@@ -597,7 +603,7 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 			outcome.Interrupted = true
 			outcome.Reason = "stream_panic"
 			outcome.Kind = errorsx.KindUpstreamDown
-			outcome.Resumable = true
+			outcome.Resumable = !attemptHasClientSemanticOutput(gate, 0)
 			if pc != nil {
 				pc.markInterrupted("stream_panic")
 			}
@@ -614,7 +620,7 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 
 	// SR-W1: route client frames through the attempt commit gate.
 	// Disabled (default) this is the identity function — legacy wire bytes.
-	w, gate := wrapAttemptWriter(w, ProtocolOpenAIResponses)
+	w, gate = wrapAttemptWriter(w, ProtocolOpenAIResponses)
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)
