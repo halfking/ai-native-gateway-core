@@ -1,4 +1,4 @@
--- 544_session_project_attribution.sql
+-- 547_session_project_attribution.sql
 -- 2026-08-20: session → project attribution for non-ACC agents.
 --
 -- Two classes of traffic reach the gateway:
