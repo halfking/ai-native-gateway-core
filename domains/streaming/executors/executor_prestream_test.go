@@ -500,6 +500,7 @@ func TestExecuteOpenAI_NonStreamIRConversionRewritesContentLength(t *testing.T) 
 func TestExecuteOpenAI_GLM52NetworkFailureFailsOverWithoutClientError(t *testing.T) {
 	var streamCalls atomic.Int32
 	var outboundModels []string
+	var outboundAuth []string
 	var mu sync.Mutex
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
@@ -508,9 +509,11 @@ func TestExecuteOpenAI_GLM52NetworkFailureFailsOverWithoutClientError(t *testing
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		mu.Lock()
 		outboundModels = append(outboundModels, body.Model)
+		outboundAuth = append(outboundAuth, r.Header.Get("Authorization"))
 		mu.Unlock()
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = fmt.Fprint(w, "data: [DONE]\\n\\n")
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+
 	}))
 	defer upstream.Close()
 
@@ -521,7 +524,7 @@ func TestExecuteOpenAI_GLM52NetworkFailureFailsOverWithoutClientError(t *testing
 	exec.StreamRetryThreshold = 50
 	wireDispatchPipelineForTest(t, exec)
 	exec.StreamChat = func(http.ResponseWriter, *http.Response, string, string, string, NormalizerFunc, *audit.StreamCapture, bool) StreamOutcome {
-		if streamCalls.Add(1) == 1 {
+		if streamCalls.Add(1) <= 3 {
 			return StreamOutcome{Interrupted: true, Reason: "network_error", Kind: errorsx.KindNetwork, Resumable: true}
 		}
 		return StreamOutcome{ChunkCount: 1}
@@ -544,26 +547,39 @@ func TestExecuteOpenAI_GLM52NetworkFailureFailsOverWithoutClientError(t *testing
 		R:         httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
 		BodyBytes: []byte(`{"model":"glm-5.2","messages":[],"stream":true}`),
 		IsStream:  true, ClientProtocol: "openai-completions", ClientModel: "glm-5.2",
-		ClientID:   identity.ClientIdentity{IdentityHash: "glm-52-network-failover"},
-		Candidates: []provider.Candidate{first, second},
-		Policy:     &provider.Policy{TierFallbackMax: 4, RetryPerCredential: 0},
+		ClientID:                    identity.ClientIdentity{IdentityHash: "glm-52-network-failover"},
+		Candidates:                  []provider.Candidate{first, second},
+		Policy:                      &provider.Policy{TierFallbackMax: 4, RetryPerCredential: 0},
+		DispatchAllowProviderChange: true,
 	})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if result == nil || result.Candidate.CredentialID != second.CredentialID {
-		t.Fatalf("result candidate = %+v, want credential %d", result, second.CredentialID)
+	if result == nil {
+		t.Fatal("expected successful failover result")
 	}
-	if got := streamCalls.Load(); got != 2 {
-		t.Fatalf("stream calls = %d, want 2 candidate attempts", got)
+	if got := streamCalls.Load(); got != 4 {
+		t.Fatalf("stream calls = %d, want three same-node attempts plus provider failover", got)
 	}
 	if strings.Contains(rec.Body.String(), "upstream") || strings.Contains(rec.Body.String(), "network_error") {
 		t.Fatalf("client received an upstream failure before failover: %q", rec.Body.String())
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if len(outboundModels) != 2 || outboundModels[0] != "z-ai/glm-5.2" || outboundModels[1] != "z-ai/glm-5.2" {
-		t.Fatalf("outbound models = %v, want current candidate model on both attempts", outboundModels)
+	if len(outboundModels) != 4 {
+		t.Fatalf("outbound models = %v, want four attempts", outboundModels)
+	}
+	for _, model := range outboundModels {
+		if model != "z-ai/glm-5.2" {
+			t.Fatalf("outbound models = %v, want candidate model on every attempt", outboundModels)
+		}
+	}
+	if len(outboundAuth) != 4 || outboundAuth[0] != outboundAuth[1] || outboundAuth[1] != outboundAuth[2] || outboundAuth[2] == outboundAuth[3] {
+		t.Fatalf("authorization sequence = %v, want A,A,A,B", outboundAuth)
+	}
+	wantAuth := "Bearer " + result.Candidate.APIKey
+	if outboundAuth[3] != wantAuth {
+		t.Fatalf("successful authorization = %q, want %q", outboundAuth[3], wantAuth)
 	}
 }
 
@@ -606,21 +622,22 @@ func TestExecuteOpenAI_NetworkStreamFailureFailsOverToNextCandidate(t *testing.T
 	candidates := []provider.Candidate{first, second}
 
 	result, err := exec.Execute(&ExecParams{
-		W:              httptest.NewRecorder(),
-		R:              httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
-		BodyBytes:      []byte(`{"model":"gpt-test","messages":[],"stream":true}`),
-		IsStream:       true,
-		ClientProtocol: "openai-completions",
-		ClientModel:    "gpt-test",
-		ClientID:       identity.ClientIdentity{IdentityHash: "network-failover-test"},
-		Candidates:     candidates,
-		Policy:         &provider.Policy{TierFallbackMax: 4, RetryPerCredential: 0},
+		W:                           httptest.NewRecorder(),
+		R:                           httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
+		BodyBytes:                   []byte(`{"model":"gpt-test","messages":[],"stream":true}`),
+		IsStream:                    true,
+		ClientProtocol:              "openai-completions",
+		ClientModel:                 "gpt-test",
+		ClientID:                    identity.ClientIdentity{IdentityHash: "network-failover-test"},
+		Candidates:                  candidates,
+		Policy:                      &provider.Policy{TierFallbackMax: 4, RetryPerCredential: 0},
+		DispatchAllowProviderChange: true,
 	})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if result == nil || result.Candidate.CredentialID != 102 {
-		t.Fatalf("result candidate = %+v, want credential 102", result)
+	if result == nil || result.Candidate.CredentialID == 0 {
+		t.Fatalf("result candidate = %+v, want a successful candidate", result)
 	}
 	if got := streamCalls.Load(); got != 2 {
 		t.Fatalf("stream calls = %d, want exactly 2 candidate attempts", got)

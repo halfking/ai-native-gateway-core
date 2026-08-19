@@ -45,8 +45,8 @@ func attemptGateMode() GateMode {
 // setAttemptGateForTest overrides the enabled flag and gate mode for the
 // duration of a test. The returned restore function must be deferred.
 func setAttemptGateForTest(enabled bool, mode GateMode) (restore func()) {
-	oldEnabled, _ := attemptGateEnabledOverride.Load().(bool)
-	oldMode, _ := attemptGateModeOverride.Load().(GateMode)
+	oldEnabled := attemptGateEnabled()
+	oldMode := attemptGateMode()
 	attemptGateEnabledOverride.Store(enabled)
 	attemptGateModeOverride.Store(mode)
 	return func() {

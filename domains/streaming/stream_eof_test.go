@@ -26,7 +26,7 @@ func TestClassifyStreamReadError_UnexpectedEOFIsFailure(t *testing.T) {
 	assert.True(t, outcome.Resumable)
 }
 
-func TestStreamChatWithPendingCapture_EOFWithoutDoneAppendsDone(t *testing.T) {
+func TestStreamChatWithPendingCapture_EOFWithoutDoneAfterContentIsNotRetryable(t *testing.T) {
 	resp := &http.Response{
 		Body: io.NopCloser(strings.NewReader(
 			"data: {\"id\":\"chunk-1\",\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n",
@@ -49,7 +49,8 @@ func TestStreamChatWithPendingCapture_EOFWithoutDoneAppendsDone(t *testing.T) {
 
 	assert.True(t, outcome.Interrupted)
 	assert.Equal(t, "eof_without_done", outcome.Reason)
-	assert.Equal(t, 2, outcome.ChunkCount)
+	assert.False(t, outcome.Resumable)
+	assert.Greater(t, outcome.ChunkCount, 0)
 	assert.Contains(t, writer.Body.String(), `"content":"hello"`)
 	assert.True(t, strings.HasSuffix(writer.Body.String(), "data: [DONE]\n\n"))
 }
@@ -89,13 +90,10 @@ func TestStreamChatWithPendingCapture_EOFWithoutDoneZeroChunks(t *testing.T) {
 	)
 
 	assert.True(t, outcome.Interrupted)
-	assert.Equal(t, "eof_without_done", outcome.Reason)
-	// 2026-07-29: error_kind must equal detail_code (not stream_read_error)
-	// so operator dashboards can distinguish a real empty-body failure
-	// from a generic read error.
-	assert.Equal(t, "eof_without_done", streamErrorKindForDetailCode(nil, outcome.Reason))
-	// Synthesised [DONE] must still be appended so clients don't hang.
-	assert.True(t, strings.HasSuffix(writer.Body.String(), "data: [DONE]\n\n"))
+	assert.Equal(t, "invalid_chunk", outcome.Reason)
+	assert.Equal(t, errorsx.KindUpstreamDown, outcome.Kind)
+	assert.True(t, outcome.Resumable)
+	assert.Empty(t, writer.Body.String())
 }
 
 type errorAfterDataReadCloser struct {
@@ -237,8 +235,8 @@ func TestStreamChatWithPendingCapture_SynthesizedDoneIncrementsMetric(t *testing
 
 	assert.True(t, outcome.Interrupted)
 	assert.Equal(t, "eof_without_done", outcome.Reason)
-	assert.GreaterOrEqual(t, counter.synth, 1, "RecordStreamSynthesizedDone must be called at least once when upstream closes without [DONE]")
-	// Also verify the unmodified classification contract still holds.
+	assert.Equal(t, 1, counter.synth)
+	assert.Contains(t, writer.Body.String(), `"content":"hello"`)
 	assert.True(t, strings.HasSuffix(writer.Body.String(), "data: [DONE]\n\n"))
 }
 

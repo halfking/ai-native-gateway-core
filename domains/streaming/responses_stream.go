@@ -125,6 +125,7 @@ func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 	finalFinishReason := ""
 	promptTokens := 0
 	completionTokens := 0
+	upstreamDoneReceived := false
 
 	firstLine, err := readLineWithTimeoutAndCloser(ctx, reader, bodyCloser, runtimeCfg.firstByteTimeout)
 	if err != nil {
@@ -152,6 +153,7 @@ func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 		}
 		data := line[6:]
 		if data == "[DONE]" {
+			upstreamDoneReceived = true
 			return
 		}
 
@@ -242,6 +244,19 @@ func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 				outcome.Kind = errorsx.KindCanceled
 				return outcome
 			case streamReadEOF:
+				if !upstreamDoneReceived {
+					if capture != nil {
+						capture.MarkInterruptedWithReason("eof_without_done")
+					}
+					outcome = StreamOutcome{
+						Interrupted: true,
+						Reason:      "eof_without_done",
+						Kind:        errorsx.KindUpstreamDown,
+						Resumable:   !attemptHasClientSemanticOutput(gate, chunkCount),
+						ChunkCount:  chunkCount,
+					}
+					return outcome
+				}
 				stop = true
 			case streamReadTimeout:
 				slog.Warn("responses stream read timeout", "error", readResult.err)
@@ -254,6 +269,8 @@ func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 				outcome.Interrupted = true
 				outcome.Reason = "stream_timeout"
 				outcome.Kind = errorsx.KindStreamTimeout
+				outcome.Resumable = !attemptHasClientSemanticOutput(gate, chunkCount)
+				outcome.ChunkCount = chunkCount
 				return outcome
 			default:
 				failure := streamReadFailureOutcome(readResult.err, chunkCount)
