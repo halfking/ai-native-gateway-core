@@ -22,3 +22,16 @@
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
 | 543 | `543_request_logs_discard_events.sql` | `6fe37eb4f0dd5cc75f400376473471b5f2b6f5f8edcdf2d92a1f71d291b18fa8` | applied+verified |
+
+## 2026-08-19T10:11:23Z — deploy 154 build_seq 1629 (b310b700)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 544 | `544_stats_adjustments_alignment.sql` | `9c06b5ac0ee9e8ad04c9517963399518ff9118b14f3619a67475641e8058ea1e` | applied+verified |
+
+## 2026-08-20T02:37:33Z — deploy 154 build_seq 1631 (manual fix)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 545 | `545_stats_reconciliation_phantom_resolution.sql` | `6f2cbdefb62fefa17ea5d9d5238b5f2062720fd636a97d60ebda9a862579a993` | applied+verified |
+| 546 | `546_stats_reconciliation_diffs_unique.sql` | `57a05c88937b` | applied+verified |
