@@ -96,6 +96,42 @@ ChatGPT Projects 与 Claude Projects 均为用户手动组织（Anthropic 官方
 (jsonb) 里。`Signals.SystemPrompt` 保留字段但 `PGStore` 默认不填——为归集去
 反序列化整个 body 不划算；需要更高命中率的部署可自行注入。
 
+## 审计修正记录
+
+首版提交后做了一轮独立审计，修掉以下问题：
+
+1. **`PGStore` 根本无法构造**（CRITICAL）。只定义了 `Querier` 接口却没有适配
+   层，而 `pgxpool.Pool` 的 `Exec` 返回 `(CommandTag, error)`、`Query` 返回
+   `(pgx.Rows, error)`，签名不符。因为没有任何地方构造它，编译期也没暴露。
+   已补 `PgxQuerier` 适配层（参照 `domains/sessionforensics.PgxStore`）与
+   `NewPGStoreFromPool`，并加编译期断言 `var _ Querier = (*PgxQuerier)(nil)`
+   防止回归。
+2. **跨租户会话被静默丢弃**（HIGH）。唯一约束原为 `UNIQUE (gw_session_id)`，
+   但 `gw_session_id` 在本库不保证跨租户唯一，第二个租户的同名会话会被
+   `ON CONFLICT DO NOTHING` 吃掉、永远拿不到归属。已改为
+   `UNIQUE (tenant_id, gw_session_id)`，冲突目标同步调整。
+3. **`ErrNoRows` 被当成故障**（HIGH）。会话没有请求行是正常未命中，原实现
+   记 `WARN` 并计入 `failed`，会把真正的 DB 故障淹没在噪声里。已引入
+   `ErrNoSignals`，hook 侧归入 `unresolved`。
+4. **空 `Ref` 项目产出幽灵归属**（HIGH）。`Found()` 原本 label 非空即算命中，
+   导致只有名字、无法与 ACC 对账的结果被落库。已收紧为要求 `ProjectRef`
+   非空，`matchRules` 跳过 `Ref` 为空的脏数据，LLM 层同样要求返回 ref。
+5. **分区表全扫**（HIGH）。`request_logs` 按 `ts` RANGE 分区，原查询不带 `ts`
+   谓词无法裁剪分区。已在 `LoadSignals` 与 `InheritFromHistory` 的 EXISTS
+   子查询加 30 天窗口，并补 `idx_request_logs_tenant_session_ts`。
+   `EXPLAIN` 确认走索引且只扫单个分区。
+6. **`ORDER BY updated_at` 无索引支撑**（MEDIUM）。补
+   `idx_spa_tenant_confirmed_updated` 部分索引。
+7. **down 迁移用 CASCADE**（LOW）。改为默认 RESTRICT，避免将来静默删掉依赖
+   `project_dim` 的视图；同时补上删除 544 新增的 `request_logs` 索引。
+8. **测试是摆设**（MEDIUM）。歧义置信度原只断言 `< 0.95`，改成钉死 `0.6`；
+   补空 `Ref`、LLM 只给 label、`ErrNoSignals`、`autoConfirm` 不影响继承层等
+   回归用例。
+
+迁移已在 PostgreSQL 17 上用带分区的 `request_logs` 桩表验证：正向应用、
+重复执行、跨租户双写、人工确认行不被覆盖、分区裁剪、down 回滚且保留
+`request_logs` / `session_dim` 均通过。
+
 ## 待接线
 
 本次提交只落地领域逻辑、存储层与迁移，**未在 `cmd/gateway/main.go` 接线**，

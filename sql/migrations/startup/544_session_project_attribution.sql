@@ -68,11 +68,20 @@ CREATE TABLE IF NOT EXISTS public.session_project_attribution (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
-    CONSTRAINT uq_session_project_attribution UNIQUE (gw_session_id)
+    -- 按 (tenant_id, gw_session_id) 唯一而不是只按会话 id：本库不保证
+    -- gw_session_id 跨租户唯一，只按会话去重会让第二个租户的同名会话被
+    -- ON CONFLICT DO NOTHING 静默丢弃，永远拿不到归属。
+    CONSTRAINT uq_session_project_attribution UNIQUE (tenant_id, gw_session_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_spa_tenant_status
     ON public.session_project_attribution (tenant_id, status, created_at DESC);
+
+-- InheritFromHistory 按 updated_at DESC 取最近一条已确认归属；
+-- 上面按 created_at 排序的索引支撑不了这个 ORDER BY。
+CREATE INDEX IF NOT EXISTS idx_spa_tenant_confirmed_updated
+    ON public.session_project_attribution (tenant_id, updated_at DESC)
+    WHERE status = 'confirmed' AND project_ref IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_spa_project
     ON public.session_project_attribution (tenant_id, project_ref)
@@ -148,3 +157,19 @@ COMMENT ON TABLE public.project_dim IS
      供推断层做规则匹配与展示项目名，热路径只读本表。';
 COMMENT ON COLUMN public.project_dim.match_keywords IS
     '规则层关键词：命中即可 0 成本确定项目，无需调用模型';
+
+-- ============================================================
+-- 3. request_logs 支撑索引
+-- ============================================================
+-- LoadSignals 按 (tenant_id, gw_session_id) 取会话首条请求。migration 355
+-- 的 idx_request_logs_gw_session_id 只有 gw_session_id 单列，且本查询还要
+-- 按 ts 排序取第一条；补一个联合索引避免每次会话关闭都回表排序。
+--
+-- request_logs 按 ts RANGE 分区，查询侧已带 ts 窗口做分区裁剪，这里的索引
+-- 在每个分区上生效。
+CREATE INDEX IF NOT EXISTS idx_request_logs_tenant_session_ts
+    ON public.request_logs (tenant_id, gw_session_id, ts)
+    WHERE gw_session_id IS NOT NULL;
+
+COMMENT ON INDEX public.idx_request_logs_tenant_session_ts IS
+    '会话归属推断：按租户+会话取首条请求的信号（projectattr.LoadSignals）';

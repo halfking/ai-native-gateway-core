@@ -15,9 +15,9 @@
 //
 // 三级降级，命中即停，成本从零递增：
 //
-//	1. rule    — 确定性信号（工种键、仓库路径、项目关键词）。零成本。
-//	2. inherit — 同一设备/密钥近期已确认过的项目。零成本，一次查表。
-//	3. llm     — 模型兜底。仅处理前两级都没命中的长尾。
+//  1. rule    — 确定性信号（工种键、仓库路径、项目关键词）。零成本。
+//  2. inherit — 同一设备/密钥近期已确认过的项目。零成本，一次查表。
+//  3. llm     — 模型兜底。仅处理前两级都没命中的长尾。
 //
 // 触发点是会话关闭（SessionCloseHook），不是每次请求。这是本设计里最要紧
 // 的一个决定：会话级触发天然把 N 次请求压成 1 次调用，把放大倍数从"占比"
@@ -89,7 +89,12 @@ type Result struct {
 }
 
 // Found 报告是否得到了可用归属。
-func (r Result) Found() bool { return r.ProjectRef != "" || r.ProjectLabel != "" }
+//
+// 要求 ProjectRef 非空：只有一个人类可读的 label 而没有项目引用，无法用来
+// 归集，也无法在复核界面上跟 ACC 项目对上号。这类结果视为未命中，字段留空
+// ——与 OpenTelemetry 对 gen_ai.conversation.id 的要求一致：宁可留空，不可
+// 用兜底值冒充。
+func (r Result) Found() bool { return r.ProjectRef != "" }
 
 // InheritLookup 查同一设备/密钥近期已确认的项目。返回空串表示无历史。
 type InheritLookup func(ctx context.Context, s Signals) (projectRef string, err error)
@@ -174,8 +179,11 @@ func (a *Attributor) Attribute(ctx context.Context, s Signals) Result {
 	}
 
 	// 第三级：模型兜底，只处理长尾。
+	//
+	// 要求 ref 非空：模型只给出一个自由文本标签而无法对应到具体项目时，
+	// 该结果无法用于归集，按未命中处理。
 	if a.llm != nil {
-		if ref, label, err := a.llm(ctx, s, a.projects); err == nil && (ref != "" || label != "") {
+		if ref, label, err := a.llm(ctx, s, a.projects); err == nil && ref != "" {
 			return Result{
 				ProjectRef:   ref,
 				ProjectLabel: firstNonEmpty(label, a.labelFor(ref)),
@@ -213,6 +221,11 @@ func (a *Attributor) matchRules(s Signals) (Result, bool) {
 	var hits []hit
 
 	for _, p := range a.projects {
+		// 没有 Ref 的项目无法用于归集，直接跳过——否则它会一路走到
+		// Result 里，产出一个只有名字、无法与 ACC 对账的"幽灵归属"。
+		if p.Ref == "" {
+			continue
+		}
 		for _, rp := range p.RepoPaths {
 			rp = strings.ToLower(strings.TrimSpace(rp))
 			if rp != "" && strings.Contains(haystack, rp) {
