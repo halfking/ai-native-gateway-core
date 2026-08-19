@@ -59,8 +59,8 @@ func (b *localBackend) leaderRelease(_ context.Context) {
 	if cur, ok := b.m.flights[b.key]; ok && cur == b.ch {
 		delete(b.m.flights, b.key)
 	}
-	b.m.mu.Unlock()
 	close(b.ch)
+	b.m.mu.Unlock()
 }
 
 func (b *localBackend) followerClose() {
