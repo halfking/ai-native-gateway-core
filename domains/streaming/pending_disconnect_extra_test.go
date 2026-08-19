@@ -87,7 +87,7 @@ func TestStreamChatWithPendingCapture_ContinuesUntilDoneWithCapturer(t *testing.
 	require.True(t, ok)
 	assert.Equal(t, "completed", state.Status)
 	assert.Equal(t, body, string(bodyCaptured))
-	assert.Equal(t, 3, dw.writes, "expected first chunk write plus blocked subsequent writes")
+	assert.Equal(t, 2, dw.writes, "detached serialized writer must suppress later network writes")
 }
 
 // TestStreamAnthropicSSEToOpenAI_DisconnectsKeepsCapturer drives the

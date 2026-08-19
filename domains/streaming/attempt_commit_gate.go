@@ -264,11 +264,13 @@ func (g *AttemptCommitGate) Committed() bool {
 // rendered as a terminal client frame. HTTP headers, keepalive comments, and
 // pre-stream metadata do not make an attempt terminal: the gateway must be
 // able to discard that attempt and fail over without exposing the upstream
-// error. A nil gate is the legacy path, where chunkCount is the only reliable
-// indication that semantic output reached the client.
+// error. Immediate gates do not set committed because they never buffer, so
+// their semantic commit state is the authoritative signal.
 func attemptHasClientSemanticOutput(g *AttemptCommitGate, chunkCount int) bool {
 	if g != nil {
-		return g.Committed()
+		g.mu.Lock()
+		defer g.mu.Unlock()
+		return g.state >= CommitStateContent && (g.committed || g.mode == GateModeImmediate)
 	}
 	return chunkCount > 0
 }

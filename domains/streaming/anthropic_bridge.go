@@ -642,6 +642,7 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 		bufferedToolArgs    strings.Builder
 		currentToolCallID   string
 		initialArgsSent     bool
+		messageStopReceived bool
 	)
 
 	clientWriter := newClientStreamWriter(w, flusher)
@@ -750,7 +751,9 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 			outcome.Interrupted = true
 			outcome.Reason = "chunk_timeout"
 			outcome.Kind = errorsx.KindStreamTimeout
+			outcome.Resumable = !attemptHasClientSemanticOutput(gate, chunkCount)
 			outcome.ChunkCount = chunkCount
+
 			if pc != nil {
 				pc.markInterrupted("chunk_timeout")
 			}
@@ -759,6 +762,22 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 
 		if err != nil {
 			if errors.Is(err, io.EOF) {
+				// EOF without an Anthropic message_stop is an upstream
+				// interruption, not a successful completion. Only a stream
+				// that supplied its protocol terminal event may finalize.
+				if !messageStopReceived {
+					outcome = StreamOutcome{
+						Interrupted: true,
+						Reason:      "eof_without_done",
+						Kind:        errorsx.KindUpstreamDown,
+						Resumable:   !attemptHasClientSemanticOutput(gate, chunkCount),
+						ChunkCount:  chunkCount,
+					}
+					if capture != nil {
+						capture.MarkInterruptedWithReason(outcome.Reason)
+					}
+					return outcome
+				}
 				// SR-W1: pending REAL text must still be delivered even while
 				// the gate holds an uncommitted attempt — delivering it
 				// commits the attempt and the closing usage/done chunks
@@ -966,9 +985,11 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 
 				case "message_start", "message_delta":
 				}
+
 			}
 
 		case ir.ChunkTypeDone:
+			messageStopReceived = true
 			flushBufferedText()
 			if finishReason != nil && *finishReason == "tool_calls" && !hasEmittedToolCalls {
 				slog.Warn("inconsistent_tool_calls_finish_reason",
@@ -1019,6 +1040,7 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 			outcome.Interrupted = true
 			outcome.Reason = "upstream_error"
 			outcome.Kind = errorsx.KindUpstreamDown
+			outcome.Resumable = !attemptHasClientSemanticOutput(gate, chunkCount)
 			outcome.ChunkCount = chunkCount
 			return outcome
 		}
