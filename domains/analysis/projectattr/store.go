@@ -6,6 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // Store 是 session_project_attribution 的持久化接口。
@@ -14,26 +17,26 @@ type Store interface {
 	// HasAttribution 报告该会话是否已有归属记录。已有则不再重复推断——
 	// 包括已被人工 rejected 的，那是明确的"别再猜了"。
 	HasAttribution(ctx context.Context, tenantID, gwSessionID string) (bool, error)
-	// SaveAttribution 落库；同一会话重复写入按 gw_session_id 幂等。
+	// SaveAttribution 落库；同一租户下同一会话重复写入幂等。
 	SaveAttribution(ctx context.Context, tenantID, gwSessionID string, r Result) error
 	// LoadProjects 读 project_dim 快照，供规则层匹配。
 	LoadProjects(ctx context.Context, tenantID string) ([]Project, error)
-	// LoadSignals 组装推断输入（工种、system prompt、首轮用户文本等）。
+	// LoadSignals 组装推断输入。会话没有任何请求行时返回 ErrNoSignals。
 	LoadSignals(ctx context.Context, tenantID, gwSessionID string) (Signals, error)
 	// HasAuthoritativeProject 报告该会话是否已有 ACC 传入的权威 project_id
 	// （session_dim.project_id）。为 true 时整条推断链路直接跳过。
 	HasAuthoritativeProject(ctx context.Context, tenantID, gwSessionID string) (bool, error)
 }
 
-// PGStore 是 Store 的 PostgreSQL 实现。
-//
-// 用最小的 Querier 接口而不是直接依赖 *pgxpool.Pool，是为了和仓库里
-// domains/analysis 其余组件保持一致，也让单测能注入桩。
-type PGStore struct {
-	q Querier
-}
+// ErrNoStore 表示存储层未配置。
+var ErrNoStore = errors.New("projectattr: store not configured")
+
+// ErrNoSignals 表示会话没有可用的请求行——通常是尚未落库或已被清理。
+// 这是正常的未命中，调用方应当当作"判不出来"，而不是故障。
+var ErrNoSignals = errors.New("projectattr: no signals for session")
 
 // Querier 是 PGStore 需要的最小数据库能力。
+// 与 domains/sessionforensics 的 Store 接口同构：让单测不必依赖 pgx。
 type Querier interface {
 	QueryRow(ctx context.Context, sql string, args ...any) Row
 	Exec(ctx context.Context, sql string, args ...any) error
@@ -45,7 +48,7 @@ type Row interface {
 	Scan(dest ...any) error
 }
 
-// Rows 抽象多行扫描。
+// Rows 抽象多行结果集。
 type Rows interface {
 	Next() bool
 	Scan(dest ...any) error
@@ -53,11 +56,74 @@ type Rows interface {
 	Err() error
 }
 
+// PgxQuerier 是 *pgxpool.Pool → Querier 的薄适配层。
+//
+// 必须有这一层：pgxpool.Pool.Exec 返回 (pgconn.CommandTag, error)、Query
+// 返回 (pgx.Rows, error)，签名与 Querier 不一致，直接传 pool 会编译失败。
+// 参照 domains/sessionforensics.PgxStore 的既有写法。
+type PgxQuerier struct {
+	Pool *pgxpool.Pool
+}
+
+// NewPgxQuerier 包装连接池。pool 为 nil 时返回 nil，便于上层按需禁用。
+func NewPgxQuerier(pool *pgxpool.Pool) *PgxQuerier {
+	if pool == nil {
+		return nil
+	}
+	return &PgxQuerier{Pool: pool}
+}
+
+// QueryRow 实现 Querier。
+func (q *PgxQuerier) QueryRow(ctx context.Context, sql string, args ...any) Row {
+	return q.Pool.QueryRow(ctx, sql, args...)
+}
+
+// Exec 实现 Querier，丢弃 CommandTag 只保留错误。
+func (q *PgxQuerier) Exec(ctx context.Context, sql string, args ...any) error {
+	_, err := q.Pool.Exec(ctx, sql, args...)
+	return err
+}
+
+// Query 实现 Querier。
+func (q *PgxQuerier) Query(ctx context.Context, sql string, args ...any) (Rows, error) {
+	rows, err := q.Pool.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, err
+	}
+	return pgxRows{rows}, nil
+}
+
+// pgxRows 把 pgx.Rows 适配到 Rows（Close 无返回值）。
+type pgxRows struct{ rows pgx.Rows }
+
+func (r pgxRows) Next() bool             { return r.rows.Next() }
+func (r pgxRows) Scan(dest ...any) error { return r.rows.Scan(dest...) }
+func (r pgxRows) Close()                 { r.rows.Close() }
+func (r pgxRows) Err() error             { return r.rows.Err() }
+
+// signalLookbackDays 限制 request_logs 的扫描范围。
+//
+// request_logs 按 ts RANGE 分区，查询不带 ts 谓词就无法分区裁剪，会扫全部
+// 分区。归属推断只在会话关闭时触发，目标行必然是近期的，因此加窗口既能
+// 裁剪分区又不影响命中率。
+const signalLookbackDays = 30
+
+// PGStore 是 Store 的 PostgreSQL 实现。
+type PGStore struct {
+	q Querier
+}
+
 // NewPGStore 构造存储层。
 func NewPGStore(q Querier) *PGStore { return &PGStore{q: q} }
 
-// ErrNoStore 表示存储层未配置。
-var ErrNoStore = errors.New("projectattr: store not configured")
+// NewPGStoreFromPool 是最常用的构造方式：直接从连接池建存储层。
+func NewPGStoreFromPool(pool *pgxpool.Pool) *PGStore {
+	q := NewPgxQuerier(pool)
+	if q == nil {
+		return nil
+	}
+	return &PGStore{q: q}
+}
 
 // HasAuthoritativeProject 查 session_dim.project_id。
 //
@@ -74,8 +140,11 @@ func (s *PGStore) HasAuthoritativeProject(ctx context.Context, tenantID, gwSessi
 		LIMIT 1`
 	var has bool
 	if err := s.q.QueryRow(ctx, q, tenantID, gwSessionID).Scan(&has); err != nil {
-		// 没有 session_dim 行时视作"无权威值"，让推断继续。
-		return false, nil //nolint:nilerr // absent row is a valid negative
+		if errors.Is(err, pgx.ErrNoRows) {
+			// 没有 session_dim 行 = 没有权威值，推断可以继续。
+			return false, nil
+		}
+		return false, err
 	}
 	return has, nil
 }
@@ -99,8 +168,11 @@ func (s *PGStore) HasAttribution(ctx context.Context, tenantID, gwSessionID stri
 
 // SaveAttribution 幂等写入。
 //
-// ON CONFLICT DO NOTHING 而不是 DO UPDATE：人工确认过的结果是最终事实，
-// 一次后台重跑不该把它覆盖回 pending。
+// 冲突目标是 (tenant_id, gw_session_id)：gw_session_id 在本库中不保证跨租户
+// 唯一，只按会话 id 去重会让第二个租户的同名会话被静默丢弃。
+//
+// DO NOTHING 而不是 DO UPDATE：人工确认过的结果是最终事实，一次后台重跑
+// 不该把它覆盖回 pending。
 func (s *PGStore) SaveAttribution(ctx context.Context, tenantID, gwSessionID string, r Result) error {
 	if s == nil || s.q == nil {
 		return ErrNoStore
@@ -119,7 +191,7 @@ func (s *PGStore) SaveAttribution(ctx context.Context, tenantID, gwSessionID str
 			 method, confidence, status, evidence, created_at, updated_at)
 		VALUES ($1, $2, NULLIF($3,''), NULLIF($4,''), NULLIF($5,''),
 			 $6, $7, $8, $9, NOW(), NOW())
-		ON CONFLICT (gw_session_id) DO NOTHING`
+		ON CONFLICT (tenant_id, gw_session_id) DO NOTHING`
 	return s.q.Exec(ctx, q,
 		gwSessionID, tenantID, r.ProjectRef, r.ProjectLabel, r.TaskRef,
 		string(r.Method), r.Confidence, string(r.Status), evidence)
@@ -160,6 +232,8 @@ func (s *PGStore) LoadProjects(ctx context.Context, tenantID string) ([]Project,
 // 注意 request_logs 没有独立的 system_prompt 列，请求全文在 request_body
 // (jsonb) 里；这里只取轻量的 request_preview 作为文本信号，避免为了归集
 // 去反序列化整个 body。identity_hash 代替设备种子做历史继承的关联键。
+//
+// api_key_id / identity_hash 可空，用 COALESCE 兜底避免 Scan 到 NULL 报错。
 func (s *PGStore) LoadSignals(ctx context.Context, tenantID, gwSessionID string) (Signals, error) {
 	if s == nil || s.q == nil {
 		return Signals{}, ErrNoStore
@@ -169,12 +243,18 @@ func (s *PGStore) LoadSignals(ctx context.Context, tenantID, gwSessionID string)
 		       COALESCE(identity_hash, ''), COALESCE(api_key_id, 0)
 		FROM public.request_logs
 		WHERE tenant_id = $1 AND gw_session_id = $2
+		  AND ts > NOW() - ($3 || ' days')::interval
 		ORDER BY ts ASC
 		LIMIT 1`
 	sig := Signals{GwSessionID: gwSessionID, TenantID: tenantID}
-	err := s.q.QueryRow(ctx, q, tenantID, gwSessionID).
+	err := s.q.QueryRow(ctx, q, tenantID, gwSessionID, signalLookbackDays).
 		Scan(&sig.WorkType, &sig.UserText, &sig.IdentityHash, &sig.APIKeyID)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// 会话没有请求行是正常的未命中，不是故障：调用方据此标记
+			// unresolved，而不是往告警里灌 WARN。
+			return sig, ErrNoSignals
+		}
 		return sig, err
 	}
 	return sig, nil
@@ -188,6 +268,8 @@ func (s *PGStore) LoadSignals(ctx context.Context, tenantID, gwSessionID string)
 //
 // 只继承 status='confirmed' 的记录——未经人工确认的推断不应再成为下一次
 // 推断的依据，否则一个错误会顺着继承链扩散。
+//
+// EXISTS 子查询同样带 ts 窗口，保证 request_logs 能做分区裁剪。
 func InheritFromHistory(q Querier, window time.Duration) InheritLookup {
 	return func(ctx context.Context, s Signals) (string, error) {
 		if q == nil || s.IdentityHash == "" {
@@ -205,12 +287,13 @@ func InheritFromHistory(q Querier, window time.Duration) InheritLookup {
 			      WHERE rl.gw_session_id = spa.gw_session_id
 			        AND rl.tenant_id = spa.tenant_id
 			        AND rl.identity_hash = $2
+			        AND rl.ts > NOW() - ($4 || ' days')::interval
 			  )
 			ORDER BY spa.updated_at DESC
 			LIMIT 1`
 		var ref string
 		if err := q.QueryRow(ctx, sql, s.TenantID, s.IdentityHash,
-			int(window.Seconds())).Scan(&ref); err != nil {
+			int(window.Seconds()), signalLookbackDays).Scan(&ref); err != nil {
 			return "", nil //nolint:nilerr // no history is a normal miss
 		}
 		return ref, nil

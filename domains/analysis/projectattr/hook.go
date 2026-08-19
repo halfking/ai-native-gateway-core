@@ -2,6 +2,7 @@ package projectattr
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync/atomic"
 )
@@ -64,6 +65,12 @@ func (h *CloseHook) OnSessionClosed(ctx context.Context, tenantID, gwSessionID s
 
 	signals, err := h.store.LoadSignals(ctx, tenantID, gwSessionID)
 	if err != nil {
+		// 会话没有请求行是正常的未命中（尚未落库或已被清理），不是故障。
+		// 区分开才不会把告警淹没在这类噪声里。
+		if errors.Is(err, ErrNoSignals) {
+			h.unresolved.Add(1)
+			return nil
+		}
 		h.failed.Add(1)
 		h.logger.Warn("projectattr: load signals failed",
 			"tenant_id", tenantID, "session_id", gwSessionID, "error", err)

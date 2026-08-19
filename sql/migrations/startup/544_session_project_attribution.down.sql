@@ -1,7 +1,13 @@
 -- 544_session_project_attribution.down.sql
--- Both tables are new in 544 and nothing else references them, so a plain
--- DROP is safe. session_dim.project_id (migration 407) is untouched by
--- 544 and must survive this rollback.
+-- 两张表均为 544 新建，回滚时一并删除。
+--
+-- 用默认的 RESTRICT 而不是 CASCADE：将来若有视图/外键依赖 project_dim，
+-- CASCADE 会静默把它们一起删掉，RESTRICT 则会明确报错让人先处理依赖。
+--
+-- session_dim.project_id（migration 407）和 request_logs 本身不属于 544，
+-- 必须在回滚后保持原样；这里只删除 544 自己新增的索引。
 
-DROP TABLE IF EXISTS public.session_project_attribution CASCADE;
-DROP TABLE IF EXISTS public.project_dim CASCADE;
+DROP INDEX IF EXISTS public.idx_request_logs_tenant_session_ts;
+
+DROP TABLE IF EXISTS public.session_project_attribution;
+DROP TABLE IF EXISTS public.project_dim;

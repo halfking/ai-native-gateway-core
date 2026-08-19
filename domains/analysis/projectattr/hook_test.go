@@ -112,6 +112,27 @@ func TestCloseHook_UnresolvedWritesNothing(t *testing.T) {
 	}
 }
 
+// 会话没有请求行是正常未命中，不能计入 failed——否则运维会被这类噪声
+// 淹没，真正的 DB 故障反而看不见。
+func TestCloseHook_NoSignalsCountsAsUnresolvedNotFailed(t *testing.T) {
+	st := &fakeStore{signalsErr: ErrNoSignals}
+	h := newHook(t, st)
+
+	if err := h.OnSessionClosed(context.Background(), "t1", "gw_1"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	stats := h.Stats()
+	if stats["unresolved"] != 1 {
+		t.Fatalf("unresolved = %d, want 1; stats=%v", stats["unresolved"], stats)
+	}
+	if stats["failed"] != 0 {
+		t.Fatalf("failed = %d, want 0 — missing signals is not a failure", stats["failed"])
+	}
+	if len(st.saved) != 0 {
+		t.Fatalf("nothing should be persisted")
+	}
+}
+
 // 归集是辅助功能，任何失败都不得冒泡去触发事件重试。
 func TestCloseHook_ErrorsNeverPropagate(t *testing.T) {
 	cases := map[string]*fakeStore{

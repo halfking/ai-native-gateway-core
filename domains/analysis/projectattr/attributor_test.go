@@ -67,11 +67,25 @@ func TestAttribute_AmbiguousLowersConfidence(t *testing.T) {
 	if got.Method != MethodRule {
 		t.Fatalf("Method = %q, want rule", got.Method)
 	}
-	if got.Confidence >= 0.95 {
-		t.Fatalf("Confidence = %v, want lowered for ambiguous match", got.Confidence)
+	// 钉住具体数值：只断言"比 0.95 小"的话，把常量改成 0.94 也能过，
+	// 那样测试就成了摆设。
+	if got.Confidence != 0.6 {
+		t.Fatalf("Confidence = %v, want exactly 0.6 for ambiguous match", got.Confidence)
 	}
 	if got.Evidence["ambiguous"] != true {
 		t.Fatalf("ambiguous = %v, want true", got.Evidence["ambiguous"])
+	}
+}
+
+// 单一项目命中时应保持满置信度，与歧义分支形成对照。
+func TestAttribute_UnambiguousKeepsFullConfidence(t *testing.T) {
+	a := New(testProjects())
+	got := a.Attribute(context.Background(), Signals{UserText: "pms only"})
+	if got.Confidence != 0.95 {
+		t.Fatalf("Confidence = %v, want exactly 0.95", got.Confidence)
+	}
+	if got.Evidence["ambiguous"] != false {
+		t.Fatalf("ambiguous = %v, want false", got.Evidence["ambiguous"])
 	}
 }
 
@@ -120,18 +134,55 @@ func TestAttribute_LLMOnlyAsLastResort(t *testing.T) {
 	a := New(testProjects(),
 		WithInherit(func(context.Context, Signals) (string, error) { return "", nil }),
 		WithLLM(func(context.Context, Signals, []Project) (string, string, error) {
-			return "", "Ad-hoc Research", nil
+			return "p-pms", "PMS", nil
 		}),
 	)
 	got := a.Attribute(context.Background(), Signals{UserText: "totally unrelated"})
 	if got.Method != MethodLLM {
 		t.Fatalf("Method = %q, want llm", got.Method)
 	}
-	if got.ProjectLabel != "Ad-hoc Research" {
-		t.Fatalf("ProjectLabel = %q", got.ProjectLabel)
+	if got.ProjectRef != "p-pms" {
+		t.Fatalf("ProjectRef = %q, want p-pms", got.ProjectRef)
+	}
+	if got.Confidence != 0.55 {
+		t.Fatalf("Confidence = %v, want exactly 0.55", got.Confidence)
 	}
 	if got.Status != StatusPending {
 		t.Fatalf("Status = %q, want pending — LLM output always needs review", got.Status)
+	}
+}
+
+// 模型只给标签、给不出项目引用时无法用于归集，按未命中处理而不是存一条
+// 无法与 ACC 对账的"幽灵归属"。
+func TestAttribute_LLMLabelWithoutRefIsUnresolved(t *testing.T) {
+	a := New(testProjects(), WithLLM(func(context.Context, Signals, []Project) (string, string, error) {
+		return "", "Some Ad-hoc Thing", nil
+	}))
+	got := a.Attribute(context.Background(), Signals{UserText: "unmatched"})
+	if got.Found() {
+		t.Fatalf("expected unresolved when LLM returns no project ref, got %+v", got)
+	}
+}
+
+// 项目维表里 Ref 为空的脏数据不得产出归属。
+func TestAttribute_ProjectWithoutRefIsIgnored(t *testing.T) {
+	a := New([]Project{{Ref: "", Name: "Ghost", MatchKeywords: []string{"ghost"}}})
+	got := a.Attribute(context.Background(), Signals{UserText: "a ghost project"})
+	if got.Found() {
+		t.Fatalf("project without Ref must not produce an attribution, got %+v", got)
+	}
+	if got.ProjectRef != "" || got.ProjectLabel != "" {
+		t.Fatalf("expected fully empty result, got %+v", got)
+	}
+}
+
+// Found() 的契约：只有 label 不算命中。
+func TestResultFound_RequiresProjectRef(t *testing.T) {
+	if (Result{ProjectLabel: "only a label"}).Found() {
+		t.Fatal("Found() must be false without a ProjectRef")
+	}
+	if !(Result{ProjectRef: "p-a"}).Found() {
+		t.Fatal("Found() must be true with a ProjectRef")
 	}
 }
 
@@ -172,8 +223,27 @@ func TestAttribute_NoLLMConfiguredStaysZeroCost(t *testing.T) {
 func TestAttribute_AutoConfirmRules(t *testing.T) {
 	a := New(testProjects(), WithAutoConfirmRules(true))
 	got := a.Attribute(context.Background(), Signals{UserText: "pms task"})
+	if got.Method != MethodRule {
+		t.Fatalf("Method = %q, want rule", got.Method)
+	}
 	if got.Status != StatusConfirmed {
 		t.Fatalf("Status = %q, want confirmed", got.Status)
+	}
+}
+
+// autoConfirm 只应作用于规则层；继承层仍需人工确认，否则一条未经确认的
+// 推断会立刻成为下一次继承的依据。
+func TestAttribute_AutoConfirmDoesNotAffectInherit(t *testing.T) {
+	a := New(testProjects(),
+		WithAutoConfirmRules(true),
+		WithInherit(func(context.Context, Signals) (string, error) { return "p-pms", nil }),
+	)
+	got := a.Attribute(context.Background(), Signals{UserText: "no rule signal", IdentityHash: "fp"})
+	if got.Method != MethodInherit {
+		t.Fatalf("Method = %q, want inherit", got.Method)
+	}
+	if got.Status != StatusPending {
+		t.Fatalf("Status = %q, want pending for inherit tier", got.Status)
 	}
 }
 
