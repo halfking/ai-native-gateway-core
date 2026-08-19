@@ -105,6 +105,11 @@ const DefaultMaxMetadataBufferAge = 30 * time.Second
 // GateOptions configures an AttemptCommitGate.
 type GateOptions struct {
 	Mode                   GateMode
+	// RequestID correlates every commit/discard log line from this gate with
+	// the owning request (2026-08-19 observability pass — reconstruct any
+	// failure from `request_id` alone). Empty when the caller has no
+	// correlation ID (e.g. detached unit tests).
+	RequestID              string
 	MaxMetadataBufferBytes int
 	// BeforeSemanticCommit is the durable write-ahead hook (doc 18 §11.3):
 	// it fires exactly when the gate's commit state advances AND bytes of
@@ -144,6 +149,7 @@ type AttemptCommitGate struct {
 	protocol             ClientProtocol
 	writer               *SerializedStreamWriter
 	mode                 GateMode
+	requestID            string
 	maxMetadata          int
 	maxMetadataAge       time.Duration
 	beforeSemanticCommit func(CommitState) error
@@ -188,6 +194,7 @@ func NewAttemptCommitGate(protocol ClientProtocol, writer *SerializedStreamWrite
 		protocol:             protocol,
 		writer:               writer,
 		mode:                 opts.Mode,
+		requestID:            opts.RequestID,
 		maxMetadata:          opts.MaxMetadataBufferBytes,
 		maxMetadataAge:       opts.MaxMetadataBufferAge,
 		beforeSemanticCommit: opts.BeforeSemanticCommit,
@@ -346,6 +353,12 @@ func (g *AttemptCommitGate) WriteFrame(frame string) error {
 	if isSemanticClass(class) {
 		// First semantic frame triggers the normal semantic commit: flush
 		// buffered frames in original order, then this frame.
+		slog.Info("attempt_commit_gate: committing on first semantic frame",
+			"request_id", g.requestID,
+			"frame_class", int(class),
+			"buffer_len", g.bufferLen,
+			"time_since_first_meta_ms", time.Since(g.firstMetaAt).Milliseconds(),
+		)
 		if err := g.commitLocked(); err != nil {
 			return err
 		}
@@ -646,6 +659,7 @@ func (g *AttemptCommitGate) Discard() error {
 	// a transparent retry. The slog is at debug to keep production logs
 	// quiet on the common (no-op, zero-byte) case.
 	slog.Debug("attempt_buffer_discarded",
+		"request_id", g.requestID,
 		"protocol", g.protocol.String(),
 		"state", gateState.String(),
 		"buffer_bytes", bufferBytes,
