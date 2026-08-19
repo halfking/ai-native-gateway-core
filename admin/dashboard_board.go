@@ -38,10 +38,8 @@ func (h *Handler) handleDashboardBoard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	days := tr.Days
-	filterTenant := r.URL.Query().Get("tenant_id")
-	if filterTenant == "" {
-		filterTenant = EffectiveTenantIDAll(r)
-	}
+	filterTenant := statsTenantScope(r)
+
 	providerID, _ := strconv.ParseInt(r.URL.Query().Get("provider_id"), 10, 64)
 
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
@@ -57,6 +55,11 @@ func (h *Handler) handleDashboardBoard(w http.ResponseWriter, r *http.Request) {
 		}
 		if payload["source"] == nil {
 			payload["source"] = "redis_baseline_delta"
+		}
+		if summaryMap, ok := payload["summary"].(map[string]any); ok {
+			if summary, ok := statsSummaryFromMap(summaryMap); ok {
+				h.enqueueStatsShadow("dashboard_board", filterTenant, tr.Start, tr.End, summary)
+			}
 		}
 		payload["days"] = days
 		// 2026-07-25: Add body size stats from Redis tracker
@@ -78,6 +81,12 @@ func (h *Handler) handleDashboardBoard(w http.ResponseWriter, r *http.Request) {
 		summary = h.fallbackBoardSummary(ctx, filterTenant, tr)
 	}
 
+	if !tr.Custom {
+		if summary, ok := statsSummaryFromMap(summary); ok {
+			h.enqueueStatsShadow("dashboard_board", filterTenant, tr.Start, tr.End, summary)
+		}
+	}
+
 	pies, _ := h.resolveBoardPies(ctx, filterTenant, tr)
 	trends, _ := h.resolveBoardTrends(ctx, filterTenant, tr, providerID)
 
@@ -86,7 +95,7 @@ func (h *Handler) handleDashboardBoard(w http.ResponseWriter, r *http.Request) {
 		"pies":    pies,
 		"trends":  trends,
 		"days":    days,
-		"source":           boardSource(fromMinute) + func() string {
+		"source": boardSource(fromMinute) + func() string {
 			if tr.Custom {
 				return "_custom_range"
 			}

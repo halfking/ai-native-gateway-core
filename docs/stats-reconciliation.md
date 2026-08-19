@@ -245,7 +245,26 @@ const (
 )
 ```
 
-## Future Enhancements
+## Shadow Read Cutover
+
+The first migration stage keeps legacy responses authoritative and asynchronously compares their summary values with `stats_usage_daily`. It covers only `GET /api/usage/summary` and `GET /api/admin/dashboard/board` summary payloads; reconciliation approval, exports, session overview, and error drills are excluded.
+
+**Platform settings** (all hot reloadable):
+
+- `stats.shadow_read.enabled`: master switch; defaults to `false`.
+- `stats.shadow_read.sample_percent`: sampled requests from `0` to `100`; defaults to `0`.
+- `stats.shadow_read.timeout_ms`: background query timeout; defaults to `750`, bounded to `100`–`5000` ms.
+
+The shadow queue is bounded (32 tasks, 2 workers). A full queue, a timeout, a missing projection, or a comparison failure never changes or delays the primary response. Tenant scope is derived from authenticated context; only `super_admin` and `admin_key` may select another tenant through `tenant_id`.
+
+**Prometheus metrics**:
+
+- `llm_gateway_stats_shadow_comparisons_total{endpoint,result}` where `result` is `exact`, `tolerated_drift`, `material_drift`, `degraded`, `timeout`, or `query_error`.
+- `llm_gateway_stats_shadow_duration_seconds{endpoint}`.
+- `llm_gateway_stats_shadow_dropped_total{endpoint}`.
+
+Do not use the current UTC day alone as a primary cutover gate: legacy usage uses a rolling window while canonical stats are daily projections and can lag the live source. Start at a low sample rate, investigate `material_drift` logs (which contain tenant scope and field names), and only expand endpoint coverage after sustained low drift and zero sustained queue drops/timeouts.
+
 
 1. **Prometheus metrics**: `stats_reconciliation_diffs_total{resolution}`, `stats_adjustments_total`
 2. **Webhook notifications**: Alert on large unresolved diffs
