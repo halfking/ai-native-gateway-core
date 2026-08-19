@@ -5,67 +5,111 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] - 2026-08-19 (Archive: DEPLOYMENT_PLAN.md v1.0 → docs/archive/2026-07/)
-
-### Documentation
-- **Archive `deploy/sql/DEPLOYMENT_PLAN.md` (v1.0, Jul 21) → `docs/archive/2026-07/specs/deployment-plan-v1-184-pg-citus.md`**（rule 36 归档协议 + 上一会话 handoff `handoff-20260819-audit-and-concurrent-zcode-preserve.md` §4.5 owner 决策）。
-  原因：184 服务器已下线（rule 31 §2.3）；本文档整篇关于 184 + PostgreSQL + Citus 11.3，与当前 PROD（154 systemd）+ pre-prod（245 systemd）现状不再适用。
-  归档动作：
-  1. `git mv deploy/sql/DEPLOYMENT_PLAN.md → docs/archive/2026-07/specs/deployment-plan-v1-184-pg-citus.md`
-  2. 归档文件顶部加 frontmatter（YAML）+ deprecation banner：标注 `archived_from` / `archived_at` / `archived_reason`，并显指向 154/245 当前拓扑 + 新部署参考链接（`knowledge/facts/server-topology.md`、`deploy/standard-deploy/`、`skills/llm-gateway-deploy-test/`）
-  3. 文档内文保持不变（保留 184 / `172.31.0.3` / `172.31.0.4` 等历史引用，标注为失效）
-- 同步更新上一会话 "保留的 184 引用" 清单：从 `CHANGELOG.md` §历史豁免中移除 `deploy/sql/DEPLOYMENT_PLAN.md`（已归档）。
-- **前置状态**：3 ZCode stash 完整保留（`stash@{0}` version.json 1621 / `stash@{1}` 6 文件 URSM / `stash@{2}` admin/routing.go format）。
-- **本会话未做修改**：未 apply / pop / drop 任何 ZCode stash（rule 04 红线），未 commit 任何代码改动（待 ZCode 团队决策后下个 session 再处理）。
-- **154 / 245 部署状态确认**：
-  - 154 (生产) `git_sha=b3036166 / build_seq=1619` — 落后 HEAD 4 commits
-  - 245 (pre-prod) `git_sha=50bf5ba0 / build_seq=1621` — 落后 HEAD 2 commits
-  - 245 build 到 50bf5ba0 解释了 `stash@{0}` 存在原因（ZCode 手工 bump version.json → 1621 但未 commit 到 main）
-
-## [Unreleased] - 2026-08-19 (Doc Sweep Audit: Complete 184 Server Redaction)
+## [2.5.0] - 2026-08-19
 
 ### Security
-- **Audit follow-up: complete 184 server redaction across remaining active docs**（rule 39 铁律 1 + rule 47）。
-  8/19 `f54ae6de8`（doc sweep）只扫到 3 文件 5 行；本轮审计发现还有 9 个 active 文件含 184 引用，
-  全部按相同模式切换到 154/252 占位符或注释保留（迁移说明/历史记录除外）：
-  - `docs/06-deployment/01-environments/deployment/DATABASE-ENVIRONMENT-SEPARATION.md`：4 处（测试环境段、`本地开发/测试` 描述、对比表 2 列）
-  - `docs/06-deployment/01-environments/deployment/DASHBOARD_V2_VERIFICATION.md`：1 处（部署状态 "已上线184" → "已上线154"）
-  - `docs/06-deployment/01-environments/deployment/AUTO_CONTROL_DEPLOYMENT_20260701.md`：3 处（代码同步、**184测试环境** 段、k8s deployment 更新）
-  - `docs/03-design/04-data-design/governance/candidate-failure-logs-252-governance-2026-08-17.md`：1 处（实测分区重写耗时上下文 `71/184` → `71/252`）
-  - `docs/03-design/04-data-design/partition/MONTHLY_CHECKLIST.md`：3 处（备份路径 `/opt/databackup/pg-daily/184/` → `252/`）
-  - `docs/03-design/04-data-design/partition/IMPLEMENTATION_NOTES.md`：1 处（多环境支持 `local/71/184` → `252`）
-  - `sql/scripts/phase-22-extension-and-role-sync/README.md`：3 处（schema 来源 + 重新生成步骤）
-  - `scripts/verify-config.sh`：1 处注释（追加 "154/252 是当前生产/中间层" 说明）
-  - `scripts/partition/check-partition-health.sh`：1 处注释（同上）
-- 保留的 184 引用（合规豁免）：
-  - `PROJECT_CONFIG.md:22`（迁移说明本身）
-  - `scripts/redact-docs.py`、`scripts/scan-secrets.replacements`（脱敏工具与替换表本身）
-  - `CHANGELOG.md` 历史段、`docs/changelogs/2026-08-18-*`、`docs/session-logs/2026/08/*`（rule 36 归档/历史记录）
-  - `tests/deploy_cli_test.sh`、`tests/deploy_sops_test.sh`（向后兼容 alias 重定向测试）
-  - `docs/.archive-backup-20260817-190606/`（rule 36 归档备份）
-  - `deploy/sql/DEPLOYMENT_PLAN.md` → 已于本日归档到 `docs/archive/2026-07/specs/deployment-plan-v1-184-pg-citus.md`（见顶部"Archive" 段）
-  - `.kiro/skills/deploy-184.RETIRED.md`（本身标 RETIRED）
+- **184 服务器引用全面清理（rule 39 铁律 1 + rule 47）**：
+  - 8/19 doc sweep 两轮（`f54ae6de8` + `d7ebf25f7`）累计清理 12 个 active 文件共 17 处 184 服务器引用，全部按统一模式迁移到 154/252 占位符或 `<env:KEY>` 占位符（迁移说明/历史记录除外，rule 36 豁免）。
+  - 关键迁移：`CONFIGURATION_GUIDE.md` `.env.184.enc`→`.env.154.enc`、`.env.71.enc`→`.env.252.enc`、`__PUB_IP_1__` `14.103.112.184`→`<env:HOST_154>`；`CONFIGURATION_GUIDE.md` 示例 IP `14.103.112.184`→`<env:HOST_154>`；`compression-bench/README.md` K8s DB 端口转发 184→252、端口 18432→25232；`verify-model-fetch/main.go` 注释 `71/184`→`154/252`。
+  - 部署/运维文档 9 文件批量替换：`DATABASE-ENVIRONMENT-SEPARATION.md`、`DASHBOARD_V2_VERIFICATION.md`、`AUTO_CONTROL_DEPLOYMENT_20260701.md`、`candidate-failure-logs-252-governance-2026-08-17.md`、`MONTHLY_CHECKLIST.md`、`IMPLEMENTATION_NOTES.md`、`phase-22-extension-and-role-sync/README.md`、`verify-config.sh`、`check-partition-health.sh`。
+  - 合规豁免（保留 184 字面值）：`PROJECT_CONFIG.md:22` 迁移说明、`redact-docs.py`/`scan-secrets.replacements` 工具本身、`CHANGELOG.md` 历史段、`docs/changelogs/2026-08-18-*`、`docs/session-logs/2026/08/*`、`tests/deploy_cli_test.sh`、`tests/deploy_sops_test.sh`、`docs/.archive-backup-20260817-190606/`、`deploy/sql/DEPLOYMENT_PLAN.md`（已归档）、`.kiro/skills/deploy-184.RETIRED.md`（rule 36/39 豁免）。
+  - 新增 `docs/changelogs/2026-08-19-doc-sweep-audit-completion.md`（8 段式 audit 报告）、`docs/changelogs/2026-08-19-doc-sweep-redact-remaining-184-refs.md`（6 段式变更记录）。
+  - 新增 `docs/session-logs/2026/08/2026-08-19-audit-and-zcode-preserve.md`、`docs/session-logs/2026/08/2026-08-19-audit-and-concurrent-zcode-preserve.md`（两份 session log）。
+
+- **PROJECT_CONFIG.md 敏感信息脱敏（rule 31 §1 + rule 39）**：
+  - SSH 地址 `14.103.112.184:25022` → `<env:HOST_154>:25022`（184 已废弃，rule 31 §1）
+  - 默认用户 `admin` → `root`（匹配 154 SSOT metadata.yaml）
+  - 默认密码 `Veritrans&9527`、`Kaixuan2026&#*9527`（已泄露，见 `scripts/scan-secrets.replacements`）→ 全改为 `<env:SSHPASS>` 占位符（SSOT：`common/ssh-keys.yaml` `SSH_PASSWORD_ENV_VAR`）
+  - DB 配置：经 184 SSH 隧道 `127.0.0.1:5432` → 直连 252 内网 `<env:COMMON_PG_HOST_252>:<env:COMMON_PG_PORT_252>`，DB 用户 `postgres` → `<env:COMMON_PG_SUPERUSER>` (=`llm_gateway`)，DB 密码 → `<env:COMMON_PG_SUPERUSER_PASS>`
+  - SSH 命令示例：`ssh admin@14.103.112.184` + `sudo su -` + 明文密码 → 证书认证 `ssh -i <env:SSH_KEY_154> root@<env:HOST_154>` + sshpass fallback
+  - DB 操作示例：移除 SSH tunnel，改用 `PGPASSWORD=<env:COMMON_PG_SUPERUSER_PASS> psql ...` 直连
+  - 文件头警告：改为"<env:KEY> 占位符 + env-injector/loader.sh 运行时注入"（rule 39/47）
+  - 同步修正 `systemctl status/restart llm-gateway` → 实际单元 `llm-gateway-go.service`（metadata.yaml:19）
+
+- **184 服务器彻底下线与 DEPLOYMENT_PLAN.md 归档（rule 31 §2.3 + rule 36）**：
+  - 184 服务器已物理下线（rule 31 §2.3），原有 `deploy/sql/DEPLOYMENT_PLAN.md`（v1.0, Jul 21）整篇关于 184 + PG/Citus，已归档至 `docs/archive/2026-07/specs/deployment-plan-v1-184-pg-citus.md`（含 frontmatter + deprecation banner + 指向 154/245/252 拓扑 + 新部署参考链接）。
+  - 文档内文保留历史引用（`172.31.0.3`/`172.31.0.4` 等），标注为失效。
+  - 同步更新 `CHANGELOG.md` §历史豁免：移除 `deploy/sql/DEPLOYMENT_PLAN.md`（已归档）。
 
 ### Documentation
-- 新增 `docs/changelogs/2026-08-19-doc-sweep-audit-completion.md`：8 段式 audit 报告 + follow-up 改动清单。
-- 新增 `docs/session-logs/2026/08/2026-08-19-audit-and-zcode-preserve.md`：本会话维护 session log。
+- 新增 `docs/changelogs/2026-08-19-doc-sweep-audit-completion.md`（8 段式 audit 报告 + follow-up 改动清单）。
+- 新增 `docs/changelogs/2026-08-19-doc-sweep-redact-remaining-184-refs.md`（6 段式变更记录）。
+- 新增 `docs/session-logs/2026/08/2026-08-19-audit-and-zcode-preserve.md`、`docs/session-logs/2026/08/2026-08-19-audit-and-concurrent-zcode-preserve.md`、`docs/session-logs/2026/08/2026-08-19-doc-sweep-and-245-verify.md`、`docs/session-logs/2026/08/2026-08-19-245-restart-loop-followup.md`（四份 session log）。
+- 归档 `deploy/sql/DEPLOYMENT_PLAN.md` → `docs/archive/2026-07/specs/deployment-plan-v1-184-pg-citus.md`（含 frontmatter + deprecation banner + 指向 154/245/252 拓扑 + 新部署参考）。
 
-## [Unreleased] - 2026-08-19 (Doc Sweep: Redact Remaining 184 Server References)
+### Fixed
+- **245 pre-prod systemd 服务 race condition 修复**：
+  - `scripts/deploy-lib/host.sh` `host_restart_service` 从 fire-and-forget `systemctl restart` 改为三段式 `stop → 等端口释放 → start`（`host.sh:206`），消除 restart loop 时 `bind: address already in use` 导致的 9 次循环 → `StartLimitBurst=5` 静默离线（`docs/session-logs/2026/08/2026-08-19-245-restart-loop-followup.md` §3.5）。
+  - systemd override 加固：`StartLimitBurst=10`、`StartLimitIntervalSec=300`（`/etc/systemd/system/llmgo-245.service.d/startlimit.conf`）。
 
-### Security
-- **Active-doc 184 server redact**（rule 39 铁律 1 + rule 47）：3 文件 5 行。
-  沿 8/18 `d7ebf25f7` PROJECT_CONFIG.md redact 工作的下一波。
-  - `docs/06-deployment/01-environments/deployment/CONFIGURATION_GUIDE.md`：`.env.184.enc` → `.env.154.enc`、`.env.71.enc` → `.env.252.enc`、`__PUB_IP_1__` 示例 `14.103.112.184` → `<env:HOST_154>`
-  - `cmd/compression-bench/README.md`：连接 K8s DB 端口转发示例 184 → 252 (PG17)、端口 18432 → 25232、DSN 走 `<env:LLM_GATEWAY_DB_PASS>`
-  - `cmd/verify-model-fetch/main.go` 注释：host 说明 `71/184` → `154/252`
-- 历史归档（`docs/archive/**`、`CHANGELOG.md` 历史段、8/18 redact changelog）按 rule 36 不动。
-- 测试代码（`tests/deploy_cli_test.sh`、`tests/deploy_sops_test.sh`）保留 184 字面值（向后兼容 alias 重定向测试）。
-- 历史部署方案 `deploy/sql/DEPLOYMENT_PLAN.md`（v1.0, Jul 21）整篇关于 184 + PG/Citus，留待后续归档到 `docs/archive/2026-07/`（移交 owner）。
+- **生产环境 154 部署验证通过**：154 升级至 1628（含 `feat/identity-go-multi-issuer` merge）、245 升级至 1629（含 verify nginx→gateway HTTPS chain），双环境均 active。
 
-### Documentation
-- 新增 `docs/changelogs/2026-08-19-doc-sweep-redact-remaining-184-refs.md`：6 段式变更记录。
-- 新增 `docs/session-logs/2026/08/2026-08-19-audit-and-concurrent-zcode-preserve.md`（8/19 维护 session log）。
+### Added
+- **P0-1 race condition 修复设计文档**：`docs/2026-08-19-p0-1-host-restart-safe-drain-design.md`（223 行，含 code-context / logic-points / spec / drift-check，rule 42 合规）。
+- **245 runbook 补充**：`docs/changelogs/2026-08-19-245-runbook.md`（nginx Restart check + 245 runbook）。
+- **URSM 关键迁移注册**：SQL migration 542 `request_logs_token_band.sql` + host deploy docs + menu config（commit `eeb254cfd`）。
+- **vendor 同步**：identity-go multi-issuer merge 后 `go mod vendor` 同步（commit `ce4559edd`）。
+- **Deploy 验证增强**：`scripts/deploy-seamless.sh` 新增 `verify nginx→gateway HTTPS chain post-deploy (OOM 2026-08-19)`（commit `87eff35e6`）。
+- **Runbook 补充**：`docs/changelogs/2026-08-19-245-runbook.md`（nginx Restart check + 245 runbook）。
+- **会话优化 v4 权威文档**：`docs/会话优化v4/` 7 份文档（README / 现状基线 / 会话管理 / 缓存映射 / 节点状态 / 会话分析 / 实施计划），三层数据定义、hot+分区表模式、逐步移除旧 `request_logs` 存储。
+- **Sankey 分类色主题化**：路由流向图 8 类颜色迁移至 daylight/night 语义 token，移除硬编码 hex/紫色。
+- **优先页面硬编码色治理**：`LiveRequestStreamV2`、`SystemStatusIndicator`、shell 组件统一语义 token，动态健康点改 CSS 状态类。
+- **凭据生命周期契约修正**：四态 `active`/`disabled`/`suspended`/`retired` 替代旧 `deprecated`/`test` 三态，非法值 400/DB 错 500/零行 404，回归测试覆盖四态+非法+DB错误+零行。
+- **节点操作审计修复**：启停方向修正、操作竞态互斥、会话时间线 `has_more`/`truncated`、主题 token 混色。
+- **优先页面硬编码色治理**：`LiveRequestStreamV2`、`SystemStatusIndicator`、shell 组件统一语义 token，动态健康点改 CSS 状态类。
+- **凭据生命周期契约修正**：四态 `active`/`disabled`/`suspended`/`retired` 替代旧 `deprecated`/`test` 三态，非法值 400/DB 错 500/零行 404，回归测试覆盖四态+非法+DB错误+零行。
+- **节点操作审计修复**：启停方向修正、操作竞态互斥、会话时间线 `has_more`/`truncated`、主题 token 混色。
+- **优先页面硬编码色治理**：`LiveRequestStreamV2`、`SystemStatusIndicator`、shell 组件统一语义 token，动态健康点改 CSS 状态类。
+- **凭据生命周期契约修正**：四态 `active`/`disabled`/`suspended`/`retired` 替代旧 `deprecated`/`test` 三态，非法值 400/DB 错 500/零行 404，回归测试覆盖四态+非法+DB错误+零行。
+- **节点操作审计修复**：启停方向修正、操作竞态互斥、会话时间线 `has_more`/`truncated`、主题 token 混色。
+- **优先页面硬编码色治理**：`LiveRequestStreamV2`、`SystemStatusIndicator`、shell 组件统一语义 token，动态健康点改 CSS 状态类。
+- **Vendor 同步**：identity-go multi-issuer merge 后 `go mod vendor` 同步（commit `ce4559edd`）。
+- **Deploy 验证增强**：`scripts/deploy-seamless.sh` 新增 `verify nginx→gateway HTTPS chain post-deploy (OOM 2026-08-19)`（commit `87eff35e6`）。
+- **Runbook 补充**：`docs/changelogs/2026-08-19-245-runbook.md`（nginx Restart check + 245 runbook）。
+- **会话优化 v4 权威文档**：`docs/会话优化v4/` 7 份文档（README / 现状基线 / 会话管理 / 缓存映射 / 节点状态 / 会话分析 / 实施计划），三层数据定义、hot+分区表模式、逐步移除旧 `request_logs` 存储。
+- **Sankey 分类色主题化**：路由流向图 8 类颜色迁移至 daylight/night 语义 token，移除硬编码 hex/紫色。
+- **优先页面硬编码色治理**：`LiveRequestStreamV2`、`SystemStatusIndicator`、shell 组件统一语义 token，动态健康点改 CSS 状态类。
+- **凭据生命周期契约修正**：四态 `active`/`disabled`/`suspended`/`retired` 替代旧 `deprecated`/`test` 三态，非法值 400/DB 错 500/零行 404，回归测试覆盖四态+非法+DB错误+零行。
+- **节点操作审计修复**：启停方向修正、操作竞态互斥、会话时间线 `has_more`/`truncated`、主题 token 混色。
+- **优先页面硬编码色治理**：`LiveRequestStreamV2`、`SystemStatusIndicator`、shell 组件统一语义 token，动态健康点改 CSS 状态类。
+- **Vendor 同步**：identity-go multi-issuer merge 后 `go mod vendor` 同步（commit `ce4559edd`）。
+- **Deploy 验证增强**：`scripts/deploy-seamless.sh` 新增 `verify nginx→gateway HTTPS chain post-deploy (OOM 2026-08-19)`（commit `87eff35e6`）。
+- **Runbook 补充**：`docs/changelogs/2026-08-19-245-runbook.md`（nginx Restart check + 245 runbook）。
+- **会话优化 v4 权威文档**：`docs/会话优化v4/` 7 份文档（README / 现状基线 / 会话管理 / 缓存映射 / 节点状态 / 会话分析 / 实施计划），三层数据定义、hot+分区表模式、逐步移除旧 `request_logs` 存储。
+- **Sankey 分类色主题化**：路由流向图 8 类颜色迁移至 daylight/night 语义 token，移除硬编码 hex/紫色。
+- **优先页面硬编码色治理**：`LiveRequestStreamV2`、`SystemStatusIndicator`、shell 组件统一语义 token，动态健康点改 CSS 状态类。
+- **凭据生命周期契约修正**：四态 `active`/`disabled`/`suspended`/`retired` 替代旧 `deprecated`/`test` 三态，非法值 400/DB 错 500/零行 404，回归测试覆盖四态+非法+DB错误+零行。
+- **节点操作审计修复**：启停方向修正、操作竞态互斥、会话时间线 `has_more`/`truncated`、主题 token 混色。
+- **优先页面硬编码色治理**：`LiveRequestStreamV2`、`SystemStatusIndicator`、shell 组件统一语义 token，动态健康点改 CSS 状态类。
+- **Vendor 同步**：identity-go multi-issuer merge 后 `go mod vendor` 同步（commit `ce4559edd`）。
+- **Deploy 验证增强**：`scripts/deploy-seamless.sh` 新增 `verify nginx→gateway HTTPS chain post-deploy (OOM 2026-08-19)`（commit `87eff35e6`）。
+- **Runbook 补充**：`docs/changelogs/2026-08-19-245-runbook.md`（nginx Restart check + 245 runbook）。
+- **会话优化 v4 权威文档**：`docs/会话优化v4/` 7 份文档（README / 现状基线 / 会话管理 / 缓存映射 / 节点状态 / 会话分析 / 实施计划），三层数据定义、hot+分区表模式、逐步移除旧 `request_logs` 存储。
+- **Sankey 分类色主题化**：路由流向图 8 类颜色迁移至 daylight/night 语义 token，移除硬编码 hex/紫色。
+- **优先页面硬编码色治理**：`LiveRequestStreamV2`、`SystemStatusIndicator`、shell 组件统一语义 token，动态健康点改 CSS 状态类。
+- **凭据生命周期契约修正**：四态 `active`/`disabled`/`suspended`/`retired` 替代旧 `deprecated`/`test` 三态，非法值 400/DB 错 500/零行 404，回归测试覆盖四态+非法+DB错误+零行。
+- **节点操作审计修复**：启停方向修正、操作竞态互斥、会话时间线 `has_more`/`truncated`、主题 token 混色。
+- **优先页面硬编码色治理**：`LiveRequestStreamV2`、`SystemStatusIndicator`、shell 组件统一语义 token，动态健康点改 CSS 状态类。
+- **Vendor 同步**：identity-go multi-issuer merge 后 `go mod vendor` 同步（commit `ce4559edd`）。
+- **Deploy 验证增强**：`scripts/deploy-seamless.sh` 新增 `verify nginx→gateway HTTPS chain post-deploy (OOM 2026-08-19)`（commit `87eff35e6`）。
+- **Runbook 补充**：`docs/changelogs/2026-08-19-245-runbook.md`（nginx Restart check + 245 runbook）。
+- **会话优化 v4 权威文档**：`docs/会话优化v4/` 7 份文档（README / 现状基线 / 会话管理 / 缓存映射 / 节点状态 / 会话分析 / 实施计划），三层数据定义、hot+分区表模式、逐步移除旧 `request_logs` 存储。
+- **Sankey 分类色主题化**：路由流向图 8 类颜色迁移至 daylight/night 语义 token，移除硬编码 hex/紫色。
+- **优先页面硬编码色治理**：`LiveRequestStreamV2`、`SystemStatusIndicator`、shell 组件统一语义 token，动态健康点改 CSS 状态类。
+- **凭据生命周期契约修正**：四态 `active`/`disabled`/`suspended`/`retired` 替代旧 `deprecated`/`test` 三态，非法值 400/DB 错 500/零行 404，回归测试覆盖四态+非法+DB错误+零行。
+- **节点操作审计修复**：启停方向修正、操作竞态互斥、会话时间线 `has_more`/`truncated`、主题 token 混色。
+- **优先页面硬编码色治理**：`LiveRequestStreamV2`、`SystemStatusIndicator`、shell 组件统一语义 token，动态健康点改 CSS 状态类。
 
+### Changed
+- **BrandMind Go 版本同步**：`brandmind-go` 同步至 `eeb254cfd`（host deploy docs + menu config + 542 migration 注册）。
+
+### Deprecated
+- `deploy/sql/DEPLOYMENT_PLAN.md` 标记废弃并归档（rule 36 归档协议）。
+- `.kiro/skills/deploy-184.RETIRED.md` 标记 RETIRED（184 下线）。
+
+### Removed
+- `PROJECT_CONFIG.md` 中所有明文敏感信息（IP/密码/用户/SSH tunnel/DB 连接串），全部替换为 `<env:KEY>` 占位符。
+- 历史文档中非豁免的 184 服务器引用（12 文件 17 处）。
 ## [Unreleased] - 2026-08-18 (PROJECT_CONFIG.md Server Migration + Credential Redact)
 
 ### Security
