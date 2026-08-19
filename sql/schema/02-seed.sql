@@ -1011,3 +1011,72 @@ INSERT INTO public.work_type_model_route VALUES (3, 'session_title', 'deepseek-v
 INSERT INTO public.work_type_model_route VALUES (5, 'session_summary', 'minimax-m2.7', 1.00, 0.0000, true) ON CONFLICT DO NOTHING;
 INSERT INTO public.work_type_model_route VALUES (6, 'session_summary', 'glm-5.1', 0.95, 0.0000, true) ON CONFLICT DO NOTHING;
 INSERT INTO public.work_type_model_route VALUES (7, 'session_summary', 'deepseek-v4-flash', 0.90, 0.0000, true) ON CONFLICT DO NOTHING;
+
+
+-- =============================================================================
+-- Standard models rollout (feat/standard-models-rollout, 2026-08-20)
+-- Synchronized across sql/schema/02-seed.sql, deploy/sql/schemas/baseline/02-seed.sql,
+-- installer/cmd/llm-gw-installer/embeddata/02-seed.sql.
+--
+-- These rows are required so a fresh DB — where migrations 352-358 have NOT yet
+-- been applied — still lists grok-4.6 / kimi-k* / gemini-3.* in the catalog UI
+-- before the migration runner executes. The migration files remain the source of
+-- truth; this section only mirrors the IDs into the seed payload.
+--
+-- Idempotent: every INSERT uses ON CONFLICT (canonical_name) DO NOTHING /
+-- (canonical_id, raw_name) DO NOTHING. Re-importing a dump over an existing DB
+-- is safe — the seed never overwrites operator-edited rows.
+-- =============================================================================
+
+-- grok-4.6 (mirrors migration 352)
+INSERT INTO public.models_canonical (canonical_name, family, context_window, modality, status, source, created_at, updated_at)
+VALUES ('grok-4.6', 'grok', 500, 'vision', 'active', 'seed-standard-rollout', NOW(), NOW())
+ON CONFLICT (canonical_name) DO NOTHING;
+
+-- kimi-k3 / kimi-k2.6 / kimi-k2.7-code / kimi-k2.7-code-highspeed (mirror 354 + 358 modality)
+INSERT INTO public.models_canonical (canonical_name, family, context_window, modality, status, source, created_at, updated_at)
+VALUES
+    ('kimi-k3',                   'kimi', 1000, 'multimodal', 'active', 'seed-standard-rollout', NOW(), NOW()),
+    ('kimi-k2.6',                 'kimi',  256, 'vision',     'active', 'seed-standard-rollout', NOW(), NOW()),
+    ('kimi-k2.7-code',            'kimi',  256, 'text',       'active', 'seed-standard-rollout', NOW(), NOW()),
+    ('kimi-k2.7-code-highspeed',  'kimi', NULL, 'text',       'active', 'seed-standard-rollout', NOW(), NOW())
+ON CONFLICT (canonical_name) DO NOTHING;
+
+-- gemini-3.* (mirror 355)
+INSERT INTO public.models_canonical (canonical_name, family, context_window, modality, status, source, created_at, updated_at)
+VALUES
+    ('gemini-3.6-flash',         'google-gemini', NULL, 'multimodal', 'active', 'seed-standard-rollout', NOW(), NOW()),
+    ('gemini-3.5-flash',         'google-gemini', NULL, 'multimodal', 'active', 'seed-standard-rollout', NOW(), NOW()),
+    ('gemini-3.5-flash-lite',    'google-gemini', NULL, 'multimodal', 'active', 'seed-standard-rollout', NOW(), NOW()),
+    ('gemini-3.1-flash-lite',    'google-gemini', NULL, 'multimodal', 'active', 'seed-standard-rollout', NOW(), NOW()),
+    ('gemini-3.1-flash-lite-image','google-gemini', NULL, 'multimodal', 'active', 'seed-standard-rollout', NOW(), NOW()),
+    ('gemini-3.1-pro-preview',   'google-gemini', NULL, 'multimodal', 'active', 'seed-standard-rollout', NOW(), NOW()),
+    ('gemini-3.1-flash-image',   'google-gemini', NULL, 'multimodal', 'active', 'seed-standard-rollout', NOW(), NOW()),
+    ('gemini-3-pro-image',       'google-gemini', NULL, 'multimodal', 'active', 'seed-standard-rollout', NOW(), NOW()),
+    ('gemini-3-flash-preview',   'google-gemini', NULL, 'multimodal', 'active', 'seed-standard-rollout', NOW(), NOW()),
+    ('gemini-omni-flash',        'google-gemini', NULL, 'multimodal', 'active', 'seed-standard-rollout', NOW(), NOW())
+ON CONFLICT (canonical_name) DO NOTHING;
+
+-- Vendor-prefix aliases (mirror migration 360). Each INSERT resolves canonical_id
+-- from models_canonical.canonical_name, so re-runs after the migration have applied
+-- are still a no-op (UNIQUE on (canonical_id, raw_name) holds).
+INSERT INTO public.model_aliases (canonical_id, raw_name, status, notes, created_at, updated_at)
+SELECT id, 'openai/grok-4.6', 'active', 'OpenRouter-style vendor prefix', NOW(), NOW()
+FROM public.models_canonical WHERE canonical_name = 'grok-4.6'
+ON CONFLICT (canonical_id, raw_name) DO NOTHING;
+
+INSERT INTO public.model_aliases (canonical_id, raw_name, status, notes, created_at, updated_at)
+SELECT id, 'moonshot-v1/kimi-k3', 'active', 'Moonshot v1 path alias', NOW(), NOW()
+FROM public.models_canonical WHERE canonical_name = 'kimi-k3'
+ON CONFLICT (canonical_id, raw_name) DO NOTHING;
+
+INSERT INTO public.model_aliases (canonical_id, raw_name, status, notes, created_at, updated_at)
+SELECT id, 'moonshot-v1/kimi-k2.6', 'active', 'Moonshot v1 path alias', NOW(), NOW()
+FROM public.models_canonical WHERE canonical_name = 'kimi-k2.6'
+ON CONFLICT (canonical_id, raw_name) DO NOTHING;
+
+INSERT INTO public.model_aliases (canonical_id, raw_name, status, notes, created_at, updated_at)
+SELECT id, 'google/' || canonical_name, 'active', 'Google AI Studio path prefix', NOW(), NOW()
+FROM public.models_canonical
+WHERE family = 'google-gemini' AND canonical_name LIKE 'gemini-3%'
+ON CONFLICT (canonical_id, raw_name) DO NOTHING;
