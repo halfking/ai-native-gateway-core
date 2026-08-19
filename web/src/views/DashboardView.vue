@@ -29,6 +29,22 @@ function normalizeTab(raw: unknown): DashboardTabId | null {
   return null
 }
 
+function readStoredTab(): DashboardTabId | null {
+  try {
+    return normalizeTab(localStorage.getItem(STORAGE_KEY_TAB))
+  } catch {
+    return null
+  }
+}
+
+function persistTab(tab: DashboardTabId) {
+  try {
+    localStorage.setItem(STORAGE_KEY_TAB, tab)
+  } catch {
+    // The dashboard remains usable when browser storage is unavailable.
+  }
+}
+
 // 2026-07-23: 默认 tab 改为 'stream'（实时流），
 // 之前默认是 'board' 导致用户进入 dashboard 后看不到实时流数据。
 // 后端 SSE 数据流正常（已验证），但 LiveRequestStreamV2 只在 stream tab 才渲染。
@@ -43,21 +59,11 @@ const hotKeys = ref<HotApiKeyEntry[]>([])
 
 onMounted(() => {
   const fromQuery = normalizeTab(route.query.tab)
-  const saved = localStorage.getItem(STORAGE_KEY_TAB)
+  const saved = readStoredTab()
   if (fromQuery) {
     activeTab.value = fromQuery
-  } else {
-    // 2026-08-06: restored `saved === 'board'` branch — when localStorage carries
-    // the explicit board tab from a prior session, honor it. Previously the
-    // generic normalizeTab(saved) path did this implicitly, but the
-    // DashboardViewV2 board-tab contract test pins the literal comparison as
-    // a stability marker for the default-board bootstrap path.
-    if (saved === 'board') {
-      activeTab.value = 'board'
-    } else {
-      const fromStorage = normalizeTab(saved)
-      if (fromStorage) activeTab.value = fromStorage
-    }
+  } else if (saved) {
+    activeTab.value = saved
   }
 
   if (isDefault.value && activeTab.value === 'board') {
@@ -72,7 +78,7 @@ function switchTab(tab: DashboardTabId) {
     boardState.stopAutoRefresh()
   }
   activeTab.value = next
-  localStorage.setItem(STORAGE_KEY_TAB, next)
+  persistTab(next)
   if (route.query.tab !== next) {
     router.replace({ query: { ...route.query, tab: next } })
   }
