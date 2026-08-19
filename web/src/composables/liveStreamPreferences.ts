@@ -1,7 +1,23 @@
 import type { GroupByDimension, SwimLaneMode } from '../types/swimlane'
+import { getCurrentTenantId, store } from '../store'
 
-export const LIVE_STREAM_PREFERENCES_STORAGE_KEY = 'llmgw_live_stream_preferences_v1'
+const LIVE_STREAM_PREFERENCES_STORAGE_KEY_PREFIX = 'llmgw_live_stream_preferences_v1'
+const LEGACY_LIVE_STREAM_PREFERENCES_STORAGE_KEY = 'llmgw_live_stream_preferences_v1'
 const LEGACY_SWIM_LANE_MODE_STORAGE_KEY = 'llmgw_swimlane_mode'
+
+/** Current user + tenant-scoped key. Browser users never inherit each other's filters. */
+export function liveStreamPreferencesStorageKey(): string {
+  const userID = store.userInfo?.id ?? 'legacy'
+  const tenantID = getCurrentTenantId().replace(/[^a-zA-Z0-9._-]/g, '_') || 'default'
+  return `${LIVE_STREAM_PREFERENCES_STORAGE_KEY_PREFIX}:${userID}:${tenantID}`
+}
+
+/** Builds a user + tenant scoped key for other overview preferences. */
+export function dashboardPreferenceStorageKey(suffix: string): string {
+  const userID = store.userInfo?.id ?? 'legacy'
+  const tenantID = getCurrentTenantId().replace(/[^a-zA-Z0-9._-]/g, '_') || 'default'
+  return `llmgw_dashboard:${suffix}:${userID}:${tenantID}`
+}
 
 export type LiveStreamRequestType = 'business' | 'probe'
 export type QueueStatusBucket = 'active' | 'degraded' | 'manualDisabled' | 'exhausted'
@@ -16,7 +32,8 @@ export interface LiveStreamFilterPreferences {
 }
 
 export interface QueuePerspectivePreferences {
-  depthOpen: boolean
+  /** Undefined means the user has never chosen a depth panel state. */
+  depthOpen?: boolean
   expandedModels: string[]
   statusFilter: Record<QueueStatusBucket, boolean>
 }
@@ -57,7 +74,6 @@ function defaultFilters(): LiveStreamFilterPreferences {
 
 function defaultQueuePreferences(): QueuePerspectivePreferences {
   return {
-    depthOpen: false,
     expandedModels: [],
     statusFilter: {
       active: true,
@@ -95,13 +111,18 @@ function stringList(value: unknown, options?: { lowercase?: boolean; allowed?: r
   return Array.from(seen)
 }
 
-function readStorage(): unknown {
+function readStorage(key: string): unknown {
   try {
-    const raw = localStorage.getItem(LIVE_STREAM_PREFERENCES_STORAGE_KEY)
+    const raw = localStorage.getItem(key)
     return raw ? JSON.parse(raw) : null
   } catch {
     return null
   }
+}
+
+function hasValidMode(raw: unknown): boolean {
+  return Boolean(raw && typeof raw === 'object' && !Array.isArray(raw)
+    && isOneOf((raw as Record<string, unknown>).mode, MODE_VALUES))
 }
 
 function normalize(raw: unknown): LiveStreamPreferences {
@@ -134,7 +155,7 @@ function normalize(raw: unknown): LiveStreamPreferences {
       agents: stringList(filters.agents, { lowercase: true }),
     },
     queue: {
-      depthOpen: typeof queue.depthOpen === 'boolean' ? queue.depthOpen : defaults.queue.depthOpen,
+      depthOpen: typeof queue.depthOpen === 'boolean' ? queue.depthOpen : undefined,
       expandedModels: stringList(queue.expandedModels),
       statusFilter: Object.fromEntries(
         QUEUE_STATUS_BUCKET_VALUES.map(bucket => [
@@ -149,25 +170,48 @@ function normalize(raw: unknown): LiveStreamPreferences {
 }
 
 /**
- * Reads validated real-time dashboard preferences. Malformed or unsupported
- * storage values degrade field-by-field to defaults and never block page load.
+ * Reads validated real-time dashboard preferences for the active user + tenant.
+ * Malformed storage values degrade field-by-field to defaults and never block page load.
  */
 export function readLiveStreamPreferences(): LiveStreamPreferences {
-  const preferences = normalize(readStorage())
-  // Preserve the pre-v1 display-mode preference for existing users on first use.
-  if (preferences.mode === 'small') {
+  const key = liveStreamPreferencesStorageKey()
+  const scopedRaw = readStorage(key)
+  if (scopedRaw) return normalize(scopedRaw)
+
+  // One-time migration from the unscoped v1 key. A valid v1 mode always wins
+  // over the older standalone mode key; explicit small must never be mistaken
+  // for an uninitialized preference.
+  const legacyV1 = readStorage(LEGACY_LIVE_STREAM_PREFERENCES_STORAGE_KEY)
+  const legacyMode = (() => {
     try {
-      const legacyMode = localStorage.getItem(LEGACY_SWIM_LANE_MODE_STORAGE_KEY)
-      if (isOneOf(legacyMode, MODE_VALUES)) preferences.mode = legacyMode
+      return localStorage.getItem(LEGACY_SWIM_LANE_MODE_STORAGE_KEY)
     } catch {
-      // Storage can be unavailable in private mode or test/SSR environments.
+      return null
     }
+  })()
+  const source = legacyV1 ?? {}
+  const preferences = normalize(source)
+  if (!hasValidMode(source) && isOneOf(legacyMode, MODE_VALUES)) {
+    preferences.mode = legacyMode
+  }
+  if (legacyV1 || isOneOf(legacyMode, MODE_VALUES)) {
+    persistLiveStreamPreferences(key, preferences)
   }
   return preferences
 }
 
+function persistLiveStreamPreferences(key: string, preferences: LiveStreamPreferences) {
+  try {
+    localStorage.setItem(key, JSON.stringify(preferences))
+    localStorage.setItem(LEGACY_SWIM_LANE_MODE_STORAGE_KEY, preferences.mode)
+  } catch {
+    // Preference persistence must never prevent the dashboard from working.
+  }
+}
+
 /** Writes a validated partial update without losing selections owned by other dashboard controls. */
 export function writeLiveStreamPreferences(patch: LiveStreamPreferencesPatch): LiveStreamPreferences {
+  const key = liveStreamPreferencesStorageKey()
   const current = readLiveStreamPreferences()
   const next = normalize({
     ...current,
@@ -180,13 +224,6 @@ export function writeLiveStreamPreferences(patch: LiveStreamPreferencesPatch): L
       statusFilter: { ...current.queue.statusFilter, ...patch.queue?.statusFilter },
     },
   })
-
-  try {
-    localStorage.setItem(LIVE_STREAM_PREFERENCES_STORAGE_KEY, JSON.stringify(next))
-    // Keep the previous standalone key synchronized for safe downgrade/upgrade.
-    localStorage.setItem(LEGACY_SWIM_LANE_MODE_STORAGE_KEY, next.mode)
-  } catch {
-    // Preference persistence must never prevent the dashboard from working.
-  }
+  persistLiveStreamPreferences(key, next)
   return next
 }

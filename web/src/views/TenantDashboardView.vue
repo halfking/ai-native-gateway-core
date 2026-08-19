@@ -23,16 +23,18 @@ import LiveRequestStreamV2 from '../components/LiveRequestStreamV2.vue'
 import RequestLogDrawer from '../components/RequestLogDrawer.vue'
 import { useLiveStream } from '../composables/useLiveStream'
 import { useSessionSummaryJump } from '../composables/useSessionSummaryJump'
+import { dashboardPreferenceStorageKey } from '../composables/liveStreamPreferences'
 
 const { t } = useI18n()
 
-const STORAGE_KEY_DAYS = 'tenant_dashboard_days'
+const LEGACY_STORAGE_KEY_DAYS = 'tenant_dashboard_days'
 const VALID_DAYS = [1, 7, 30] as const
 
 function readStoredDays(): number {
   try {
-    const raw = Number(localStorage.getItem(STORAGE_KEY_DAYS))
-    return VALID_DAYS.includes(raw as typeof VALID_DAYS[number]) ? raw : 7
+    const key = dashboardPreferenceStorageKey('tenant-days')
+    const raw = localStorage.getItem(key) ?? localStorage.getItem(LEGACY_STORAGE_KEY_DAYS)
+    return VALID_DAYS.includes(Number(raw) as typeof VALID_DAYS[number]) ? Number(raw) : 7
   } catch {
     return 7
   }
@@ -41,7 +43,7 @@ function readStoredDays(): number {
 function persistDays(value: number) {
   try {
     if (VALID_DAYS.includes(value as typeof VALID_DAYS[number])) {
-      localStorage.setItem(STORAGE_KEY_DAYS, String(value))
+      localStorage.setItem(dashboardPreferenceStorageKey('tenant-days'), String(value))
     }
   } catch {
     // Storage failure should not prevent tenant statistics from loading.
@@ -226,12 +228,13 @@ const { jumpToSessionSummary: openSessionSummary } = useSessionSummaryJump({
 })
 
 // Tab 控制（与 DashboardViewV2 对齐：stream / stats）
-const STORAGE_KEY_TAB = 'tenant_dashboard_active_tab'
+const LEGACY_STORAGE_KEY_TAB = 'tenant_dashboard_active_tab'
 const activeTab = ref<'stream' | 'stats'>('stream')
 
 function readStoredTab(): 'stream' | 'stats' | null {
   try {
-    const saved = localStorage.getItem(STORAGE_KEY_TAB)
+    const saved = localStorage.getItem(dashboardPreferenceStorageKey('tenant-tab'))
+      ?? localStorage.getItem(LEGACY_STORAGE_KEY_TAB)
     return saved === 'stream' || saved === 'stats' ? saved : null
   } catch {
     return null
@@ -240,7 +243,7 @@ function readStoredTab(): 'stream' | 'stats' | null {
 
 function persistTab(tab: 'stream' | 'stats') {
   try {
-    localStorage.setItem(STORAGE_KEY_TAB, tab)
+    localStorage.setItem(dashboardPreferenceStorageKey('tenant-tab'), tab)
   } catch {
     // Storage failure should not prevent tenant dashboard navigation.
   }

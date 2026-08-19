@@ -3,7 +3,7 @@
 import { beforeEach, describe, it, expect } from 'vitest'
 import { ref } from 'vue'
 import { useLiveStreamFilters } from './useLiveStreamFilters'
-import { LIVE_STREAM_PREFERENCES_STORAGE_KEY } from './liveStreamPreferences'
+import { liveStreamPreferencesStorageKey } from './liveStreamPreferences'
 import type { SwimLane, RequestTile } from '../types/swimlane'
 
 // Test helper: create minimal RequestTile for testing
@@ -37,7 +37,7 @@ describe('useLiveStreamFilters', () => {
   })
 
   it('restores and persists all filter selections', () => {
-    localStorage.setItem(LIVE_STREAM_PREFERENCES_STORAGE_KEY, JSON.stringify({
+    localStorage.setItem(liveStreamPreferencesStorageKey(), JSON.stringify({
       version: 1,
       groupBy: 'queue',
       mode: 'small',
@@ -61,7 +61,7 @@ describe('useLiveStreamFilters', () => {
     expect([...filters.agentFilter.value]).toEqual(['zcode'])
 
     filters.applyAgentFilter(['OpenCode'])
-    const saved = JSON.parse(localStorage.getItem(LIVE_STREAM_PREFERENCES_STORAGE_KEY) || '{}')
+    const saved = JSON.parse(localStorage.getItem(liveStreamPreferencesStorageKey()) || '{}')
     expect(saved.filters.agents).toEqual(['opencode'])
     expect(saved.filters.providers).toEqual(['provider-a'])
   })
