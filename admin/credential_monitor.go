@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -512,6 +513,7 @@ func (m *CredentialMonitorHandlers) handleMonitorSummary(w http.ResponseWriter, 
 	defer rows.Close()
 
 	summaries := make([]CredentialMonitorSummary, 0)
+	scanFailures := 0
 	for rows.Next() {
 		var s CredentialMonitorSummary
 		var recoverAt, checkedAt *time.Time
@@ -525,6 +527,9 @@ func (m *CredentialMonitorHandlers) handleMonitorSummary(w http.ResponseWriter, 
 			&recoverAt, &s.StateReasonCode, &s.StateReasonDetail,
 			&checkedAt, &s.TotalRequests, &s.ModelTotal, &s.ModelAvailable, &s.BrokenModelCount, &successRate, &modelsJSON,
 		); err != nil {
+			scanFailures++
+			slog.Warn("monitor summary scan failed",
+				"credential_id", providerID, "error", err.Error())
 			continue
 		}
 
@@ -560,6 +565,16 @@ func (m *CredentialMonitorHandlers) handleMonitorSummary(w http.ResponseWriter, 
 		}
 
 		summaries = append(summaries, s)
+	}
+	if rows.Err() != nil {
+		slog.Error("monitor summary rows iteration failed",
+			"credential_id", providerID, "scan_failures", scanFailures, "error", rows.Err().Error())
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("rows iteration failed: %v", rows.Err()))
+		return
+	}
+	if scanFailures > 0 {
+		slog.Warn("monitor summary scan failures observed",
+			"credential_id", providerID, "scan_failures", scanFailures)
 	}
 
 	resp := map[string]any{
@@ -1228,6 +1243,7 @@ func (m *CredentialMonitorHandlers) handleModelHistory(w http.ResponseWriter, r 
 	defer rows.Close()
 
 	events := make([]ModelHistoryEvent, 0)
+	scanFailures := 0
 	for rows.Next() {
 		var (
 			ev          ModelHistoryEvent
@@ -1242,6 +1258,8 @@ func (m *CredentialMonitorHandlers) handleModelHistory(w http.ResponseWriter, r 
 		if err := rows.Scan(&ts, &ev.Source, &ev.TriggeredBy, &ev.Event,
 			&probeStatus, &httpStatus, &errCode, &errMsg,
 			&actor, &reason); err != nil {
+			scanFailures++
+			slog.Warn("model history scan failed", "credential_id", credentialID, "error", err.Error())
 			continue
 		}
 		ev.TS = ts.UTC().Format(time.RFC3339)
@@ -1256,6 +1274,12 @@ func (m *CredentialMonitorHandlers) handleModelHistory(w http.ResponseWriter, r 
 			ev.Reason = nil
 		}
 		events = append(events, ev)
+	}
+	if rows.Err() != nil {
+		slog.Error("model history rows iteration failed",
+			"credential_id", credentialID, "scan_failures", scanFailures, "error", rows.Err().Error())
+		writeError(w, http.StatusInternalServerError, "rows iteration failed: "+rows.Err().Error())
+		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -1339,16 +1363,25 @@ func (m *CredentialMonitorHandlers) handleCredentialDecisions(w http.ResponseWri
 	}
 
 	decisions := make([]Decision, 0)
+	scanFailures := 0
 	for rows.Next() {
 		var d Decision
 		var ts time.Time
 		if err := rows.Scan(&ts, &d.RequestID, &d.Model, &d.Tier, &d.Success,
 			&d.LatencyMs, &d.ErrorClass, &d.ChosenProviderID,
 			&d.ClientModel, &d.OutboundModel, &d.StickyHit); err != nil {
+			scanFailures++
+			slog.Warn("credential decisions scan failed", "credential_id", credentialID, "error", err.Error())
 			continue
 		}
 		d.TS = ts.UTC().Format(time.RFC3339)
 		decisions = append(decisions, d)
+	}
+	if rows.Err() != nil {
+		slog.Error("credential decisions rows iteration failed",
+			"credential_id", credentialID, "scan_failures", scanFailures, "error", rows.Err().Error())
+		writeError(w, http.StatusInternalServerError, "rows iteration failed: "+rows.Err().Error())
+		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{

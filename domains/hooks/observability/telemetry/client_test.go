@@ -37,16 +37,19 @@ func (m stringPointerMatcher) Match(value interface{}) bool {
 }
 
 func requestLogUpdateArgs(entry RequestLogEntry) []interface{} {
-	args := make([]interface{}, 81)
+	args := make([]interface{}, 82)
 	for index := range args {
 		args[index] = pgxmock.AnyArg()
 	}
+	// SQL $N → args[N-1]. SQL position 37=success, 38=request_status;
+	// client-perception fields at $79-$82. UsageSource is nonEmptyPtr-wrapped
+	// by nonEmptyPtr() and is nil-safe so we leave it as a generic matcher.
 	args[36] = boolPointerMatcher{want: entry.Success}
 	args[37] = stringPointerMatcher{want: entry.RequestStatus}
-	args[77] = stringPointerMatcher{want: entry.AgentName}
-	args[78] = stringPointerMatcher{want: entry.AgentType}
-	args[79] = stringPointerMatcher{want: entry.ClientProtocol}
-	args[80] = stringPointerMatcher{want: entry.VirtualClientID}
+	args[78] = stringPointerMatcher{want: entry.AgentName}
+	args[79] = stringPointerMatcher{want: entry.AgentType}
+	args[80] = stringPointerMatcher{want: entry.ClientProtocol}
+	args[81] = stringPointerMatcher{want: entry.VirtualClientID}
 	return args
 }
 
@@ -210,7 +213,7 @@ func TestUpdateRequestLog_MissingRequestFallsBackToInsert(t *testing.T) {
 	mockDB.ExpectExec(`INSERT INTO usage_ledger_hot`).
 		WithArgs(usageInsertArgs...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
-	requestInsertArgs := make([]interface{}, 100)
+	requestInsertArgs := make([]interface{}, 101)
 	for index := range requestInsertArgs {
 		requestInsertArgs[index] = pgxmock.AnyArg()
 	}

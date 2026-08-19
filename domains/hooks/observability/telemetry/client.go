@@ -233,6 +233,13 @@ type RequestLogEntry struct {
 	CompressionStrategy *string         `json:"compression_strategy,omitempty"`
 	CompressionMeta     json.RawMessage `json:"compression_meta,omitempty"`
 
+	// 2026-08-19: token-band observability for multi-layer session compression.
+	// Mirrors the token_band column added by
+	// sql/migrations/startup/542_request_logs_token_band.sql.
+	// Populated by SessionCompressor when sliding-window fires.
+	// Values: "below" | "preliminary" | "forced" | NULL.
+	TokenBand *string `json:"token_band,omitempty"`
+
 	// v3 (2026-06-19) session-level outbound body T23.
 	// Mirrors 4 columns added by db/migrations/016_outbound_body.sql.
 	// Populated by compression.SessionCompressor when the session cache
@@ -910,25 +917,27 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 			work_type, credits_charged,
 			-- Round 47 compression v7 T2: parent-child chain (4 columns).
 			parent_request_id, compression_reason, compression_strategy, compression_meta,
+			-- 2026-08-19: token-band observability (1 column).
+			token_band,
 			-- v3 (2026-06-19) T23: session-level outbound body (4 columns).
 			outbound_body, outbound_msg_count, outbound_token_est, outbound_msg_hashes,
-		-- 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
-		quality_flags, quality_fix_actions, quality_score,
-		-- 2026-06-19 T-NEW-7: split the semantic overload of failure_detail_code
-		-- (db/migrations/018_upstream_finish_reason.sql). The new column is
-		-- the SOLE home for the upstream finish_reason.
-		upstream_finish_reason,
-		-- 2026-06-23: structured tool_calls (042_tool_calls_column.sql).
-		tool_calls,
-		-- 2026-06-26: client-supplied X-Request-Id (debug only;
-		-- request_logs.request_id is server-generated, see migration 054).
-		client_request_id,
+			-- 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
+			quality_flags, quality_fix_actions, quality_score,
+			-- 2026-06-19 T-NEW-7: split the semantic overload of failure_detail_code
+			-- (db/migrations/018_upstream_finish_reason.sql). The new column is
+			-- the SOLE home for the upstream finish_reason.
+			upstream_finish_reason,
+			-- 2026-06-23: structured tool_calls (042_tool_calls_column.sql).
+			tool_calls,
+			-- 2026-06-26: client-supplied X-Request-Id (debug only;
+			-- request_logs.request_id is server-generated, see migration 454).
+			client_request_id,
 			-- 2026-06-30: upstream diagnostics (migration 320).
 			upstream_status_code, client_timeout, client_endpoint,
 			stream_chunk_errors, stream_chunks_sent,
-			-- 2026-07-01: 附件元数据 (migration 325)。JSONB 数组，
-			-- 存储从请求体提取的 base64/data-URI 附件元数据（路径/类型/大小/hash），
-			-- 附件实体文件已落盘，此处仅记录元信息。
+			-- 2026-07-01: 附件元数据 (migration 325). JSONB 数组,
+			-- 存储从请求体提取的 base64/data-URI 附件元数据(路径/类型/大小/hash),
+			-- 附件实体文件已落盘,此处仅记录元信息。
 			attachments,
 			-- 2026-07-14 (migration 341): client-side origin. client_ip / client_forwarded_for
 			-- were added by 2026-07-11-observability-fields.sql; origin_stage / origin_actor
@@ -937,18 +946,18 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 			client_ip, client_forwarded_for, origin_stage, origin_actor,
 			-- 2026-07-19 (migration 350): routing attempts tracking.
 			routing_attempts, routing_summary,
-			-- 2026-07-27: 客户端感知扩展 (主表 GROUP BY 统计需要)。
-			-- agent_name/agent_type 来自 telemetry.ExtractAgentName + 语义 fallback。
-			-- client_protocol 来自 URL path routing。
-			-- virtual_client_id 来自 identity.BuildIdentityFromRequest。
-			-- 之前这些字段只在侧表 request_context_attrs 写入,主表永远 NULL。
+			-- 2026-07-27: 客户端感知扩展 (主表 GROUP BY 统计需要).
+			-- agent_name/agent_type 来自 telemetry.ExtractAgentName + 语义 fallback.
+			-- client_protocol 来自 URL path routing.
+			-- virtual_client_id 来自 identity.BuildIdentityFromRequest.
+			-- 之前这些字段只在侧表 request_context_attrs 写入,主表永远 NULL.
 			agent_name, agent_type, client_protocol, virtual_client_id,
-			-- V3.1 (migration 491): 9-stage dispatch queue timestamps.
-			t0_arrived_at, t1_total_enqueued_at, t2_total_dequeued_at,
-			t3_model_enqueued_at, t4_model_dequeued_at,
-			t5_cred_enqueued_at, t6_cred_dequeued_at,
-			t7_forward_start_at, t8_response_start_at, t9_response_end_at
-		) VALUES (
+-- V3.1 (migration 491): 9-stage dispatch queue timestamps.
+		t0_arrived_at, t1_total_enqueued_at, t2_total_dequeued_at,
+		t3_model_enqueued_at, t4_model_dequeued_at,
+		t5_cred_enqueued_at, t6_cred_dequeued_at,
+		t7_forward_start_at, t8_response_start_at, t9_response_end_at
+	) VALUES (
 		$1, now(), $2, $3, $4,
 		$5, $6, $7,
 		$8, $9, $10,
@@ -967,27 +976,36 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		$42::text::jsonb, $43::text::jsonb,
 		$44, $45, $46,
 		$47,
-$48,
+		$48,
 		$49, $50,
 		$51, $52, $53,
 		$54, $55, $56, $57::text::jsonb, $58,
-		$59, $60,
-		$61, $62, $63, $64::text::jsonb,
-		$65, $66, $67, $68::text::jsonb,
-		CAST($69 AS text[]), $70::text::jsonb, $71,
-		$72,
-		$73::text::jsonb,
-		$74,
-		$75, $76, $77, $78, $79,
-		$80::text::jsonb,
+		-- 2026-08-19: token-band observability.
+		$59,
+		-- v3 (2026-06-19) T23: session-level outbound body.
+		$60::text::jsonb, $61, $62, $63::text::jsonb,
+		-- 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
+		CAST($64 AS text[]), $65::text::jsonb, $66,
+		-- 2026-06-19 T-NEW-7: split the semantic overload of failure_detail_code.
+		$67,
+		-- 2026-06-23: structured tool_calls (042_tool_calls_column.sql).
+		$68::text::jsonb,
+		-- 2026-06-26: client-supplied X-Request-Id.
+		$69,
+		-- 2026-06-30: upstream diagnostics (migration 320).
+		$70, $71, $72,
+		$73, $74,
+		-- 2026-07-01: 附件元数据 (migration 325).
+		$75::text::jsonb,
 		-- 2026-07-14 (migration 341): client-side origin.
-		$81, $82, $83, $84,
-			$85::text::jsonb, $86,
-			-- 2026-07-27: 客户端感知字段(主表 INSERT 必填)。
-			$87, $88, $89, $90,
-			-- V3.1 queue timestamps (migration 491).
-			$91, $92, $93, $94, $95, $96, $97, $98, $99, $100
-		)
+		$76, $77, $78, $79,
+		-- 2026-07-19 (migration 350): routing attempts tracking.
+		$80::text::jsonb, $81,
+		-- 2026-07-27: 客户端感知字段(主表 INSERT 必填).
+		$82, $83, $84, $85,
+		-- V3.1 queue timestamps (migration 491).
+		$86, $87, $88, $89, $90, $91, $92, $93, $94, $95
+	)
 				-- 2026-08-06 fix: INSERT targets request_logs_hot (NOT the partitioned parent).
 				-- Migration 455 (2026-07-23) gave request_logs_hot PRIMARY KEY (request_id),
 				-- so ON CONFLICT must be (request_id). Using (request_id, ts) here triggers
@@ -1199,6 +1217,8 @@ $48,
 		entry.CompressionReason,
 		entry.CompressionStrategy,
 		jsonOrNull(entry.CompressionMeta),
+		// 2026-08-19: token-band observability.
+		entry.TokenBand,
 		// v3 (2026-06-19) T23: session-level outbound body payload.
 		jsonOrNull(entry.OutboundBody),
 		entry.OutboundMsgCount,
@@ -1620,50 +1640,52 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		       auto_confidence = COALESCE($52, auto_confidence),
 		       work_type = COALESCE($53, work_type),
 		       credits_charged = COALESCE($54, credits_charged),
-		       -- Round 47 compression v7 T2: parent-child chain payload.
-		       parent_request_id = COALESCE($55, parent_request_id),
-		       compression_reason = COALESCE($56, compression_reason),
-		       compression_strategy = COALESCE($57, compression_strategy),
-		       compression_meta = COALESCE($58::text::jsonb, compression_meta),
-		       -- v3 (2026-06-19) T23: session-level outbound body payload.
-		       outbound_body      = COALESCE($59::text::jsonb, outbound_body),
-		       outbound_msg_count = COALESCE($60, outbound_msg_count),
-		       outbound_token_est = COALESCE($61, outbound_token_est),
-		       outbound_msg_hashes = COALESCE($62::text::jsonb, outbound_msg_hashes),
-		       -- 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
-		       quality_flags        = COALESCE(CAST($63 AS text[]), quality_flags),
-		       quality_fix_actions  = COALESCE($64::text::jsonb, quality_fix_actions),
-		       quality_score        = COALESCE($65, quality_score),
-	   -- 2026-06-19 T-NEW-7: split the semantic overload of failure_detail_code
-	   -- (db/migrations/018_upstream_finish_reason.sql). The new column is
-	   -- the SOLE home for the upstream finish_reason.
-	   upstream_finish_reason = COALESCE($66, upstream_finish_reason),
-	   -- 2026-06-23: structured tool_calls (042_tool_calls_column.sql).
-	   tool_calls = COALESCE($67::text::jsonb, tool_calls),
-	   -- 2026-06-26: client-supplied X-Request-Id (debug only). COALESCE so
-	   -- a late success UPDATE does not blank a value set on INSERT.
-	   client_request_id = COALESCE($68, client_request_id),
-	   -- 2026-06-30: upstream diagnostics (migration 320).
-	   upstream_status_code = COALESCE($69, upstream_status_code),
-	   client_timeout = COALESCE($70, client_timeout),
-	   client_endpoint = COALESCE($71, client_endpoint),
-	   stream_chunk_errors = COALESCE($72, stream_chunk_errors),
-	   stream_chunks_sent = COALESCE($73, stream_chunks_sent),
-	   -- 2026-07-14 (migration 341): origin metadata. First-write-wins
-	   -- (see INSERT path rationale) — middleware/origin_mw.go sets
-	   -- client_ip / client_forwarded_for on the inbound row and the
-	   -- probe workers set origin_stage / origin_actor on probe rows.
-	   client_ip            = COALESCE($74, client_ip),
-	   client_forwarded_for = COALESCE($75, client_forwarded_for),
-		   origin_stage         = COALESCE($76, origin_stage),
-		   origin_actor         = COALESCE($77, origin_actor),
-		   -- 2026-07-27: client perception fields. First-write-wins keeps
-		   -- values extracted on the inbound row when a later completion,
-		   -- failure, or disconnect update carries only partial metadata.
-		   agent_name           = COALESCE(agent_name, $78),
-		   agent_type           = COALESCE(agent_type, $79),
-		   client_protocol      = COALESCE(client_protocol, $80),
-		   virtual_client_id    = COALESCE(virtual_client_id, $81)
+-- Round 47 compression v7 T2: parent-child chain payload.
+			       parent_request_id = COALESCE($55, parent_request_id),
+			       compression_reason = COALESCE($56, compression_reason),
+			       compression_strategy = COALESCE($57, compression_strategy),
+			       compression_meta = COALESCE($58::text::jsonb, compression_meta),
+			       -- 2026-08-19: token-band observability.
+			       token_band = COALESCE($59, token_band),
+			       -- v3 (2026-06-19) T23: session-level outbound body payload.
+			       outbound_body      = COALESCE($60::text::jsonb, outbound_body),
+			       outbound_msg_count = COALESCE($61, outbound_msg_count),
+			       outbound_token_est = COALESCE($62, outbound_token_est),
+			       outbound_msg_hashes = COALESCE($63::text::jsonb, outbound_msg_hashes),
+			       -- 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
+			       quality_flags        = COALESCE(CAST($64 AS text[]), quality_flags),
+			       quality_fix_actions  = COALESCE($65::text::jsonb, quality_fix_actions),
+			       quality_score        = COALESCE($66, quality_score),
+		   -- 2026-06-19 T-NEW-7: split the semantic overload of failure_detail_code
+		   -- (db/migrations/018_upstream_finish_reason.sql). The new column is
+		   -- the SOLE home for the upstream finish_reason.
+		   upstream_finish_reason = COALESCE($67, upstream_finish_reason),
+		   -- 2026-06-23: structured tool_calls (042_tool_calls_column.sql).
+		   tool_calls = COALESCE($68::text::jsonb, tool_calls),
+		   -- 2026-06-26: client-supplied X-Request-Id (debug only). COALESCE so
+		   -- a late success UPDATE does not blank a value set on INSERT.
+		   client_request_id = COALESCE($69, client_request_id),
+		   -- 2026-06-30: upstream diagnostics (migration 320).
+		   upstream_status_code = COALESCE($70, upstream_status_code),
+		   client_timeout = COALESCE($71, client_timeout),
+		   client_endpoint = COALESCE($72, client_endpoint),
+		   stream_chunk_errors = COALESCE($73, stream_chunk_errors),
+		   stream_chunks_sent = COALESCE($74, stream_chunks_sent),
+		   -- 2026-07-14 (migration 341): origin metadata. First-write-wins
+		   -- (see INSERT path rationale) — middleware/origin_mw.go sets
+		   -- client_ip / client_forwarded_for on the inbound row and the
+		   -- probe workers set origin_stage / origin_actor on probe rows.
+		   client_ip            = COALESCE($75, client_ip),
+		   client_forwarded_for = COALESCE($76, client_forwarded_for),
+			   origin_stage         = COALESCE($77, origin_stage),
+			   origin_actor         = COALESCE($78, origin_actor),
+			   -- 2026-07-27: client perception fields. First-write-wins keeps
+			   -- values extracted on the inbound row when a later completion,
+			   -- failure, or disconnect update carries only partial metadata.
+			   agent_name           = COALESCE(agent_name, $79),
+			   agent_type           = COALESCE(agent_type, $80),
+			   client_protocol      = COALESCE(client_protocol, $81),
+			   virtual_client_id    = COALESCE(virtual_client_id, $82)
 		   WHERE request_id = $1
 
 		     AND NOT (
@@ -1741,6 +1763,8 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		entry.CompressionReason,
 		entry.CompressionStrategy,
 		string(jsonOrNull(entry.CompressionMeta)),
+		// 2026-08-19: token-band observability.
+		entry.TokenBand,
 		// v3 (2026-06-19) T23: session-level outbound body payload.
 		string(jsonOrNull(entry.OutboundBody)),
 		entry.OutboundMsgCount,
