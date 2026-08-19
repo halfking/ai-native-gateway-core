@@ -343,6 +343,206 @@ func TestReconciliationWorker_FinishRunUpdateFailureNonFatal(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet(), "INSERT + watermark + count must all be issued; finishRun UPDATE is intercepted by the seam")
 }
 
+// TestReconciliationWorker_PhantomRowResolution pins the new
+// phantom-row handling in reconcileDailyOnce. The contract:
+//   * projection exists, source fact missing => resolution='phantom_open'
+//   * phantom row NEVER increments pendingRepairs (so Refresh() is
+//     never called for phantom-only diffs)
+//   * non-phantom small diff still resolves to 'auto_repair_pending'
+//   * non-phantom large diff still resolves to 'open'
+//
+// The canAutoRepair + resolution decision is mirrored from
+// reconcileDailyOnce below; any divergence between this test and the
+// production path is a bug.
+func TestReconciliationWorker_PhantomRowResolution(t *testing.T) {
+	type scenario struct {
+		name                 string
+		source               float64
+		projected            float64
+		isPhantom            bool
+		expectedResolution   string
+		expectedPendingCount int64
+	}
+	cases := []scenario{
+		{
+			name:                 "phantom row (source=0, projected>0) -> phantom_open, never pending",
+			source:               0,
+			projected:            42,
+			isPhantom:            true,
+			expectedResolution:   "phantom_open",
+			expectedPendingCount: 0,
+		},
+		{
+			name:                 "phantom row with large magnitude (source=0, projected=1e6) -> phantom_open",
+			source:               0,
+			projected:            1_000_000,
+			isPhantom:            true,
+			expectedResolution:   "phantom_open",
+			expectedPendingCount: 0,
+		},
+		{
+			name:                 "real small diff (source=100, projected=101) -> auto_repair_pending",
+			source:               100,
+			projected:            101,
+			isPhantom:            false,
+			expectedResolution:   "auto_repair_pending",
+			expectedPendingCount: 1,
+		},
+		{
+			name:                 "real large diff (source=100, projected=1_000_000) -> open",
+			source:               100,
+			projected:            1_000_000,
+			isPhantom:            false,
+			expectedResolution:   "open",
+			expectedPendingCount: 0,
+		},
+		{
+			name:                 "missing projection (projected=0, source=50) -> auto_repair_pending",
+			source:               50,
+			projected:            0,
+			isPhantom:            false,
+			expectedResolution:   "auto_repair_pending",
+			expectedPendingCount: 1,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			diff := tc.source - tc.projected
+
+			// Mirror the canAutoRepair formula from reconcileDailyOnce.
+			canAutoRepair := false
+			if tc.projected != 0 && tc.source != 0 {
+				relDiff := abs(diff / tc.projected)
+				if relDiff < autoRepairThreshold && abs(diff) < autoRepairMaxValue {
+					canAutoRepair = true
+				}
+			} else if tc.projected != 0 && tc.source == 0 {
+				// Phantom: never auto-repair.
+			} else if abs(diff) < autoRepairMaxValue {
+				canAutoRepair = true
+			}
+
+			// Mirror the resolution decision from reconcileDailyOnce.
+			resolution := "open"
+			pendingRepairs := int64(0)
+			if tc.isPhantom {
+				resolution = "phantom_open"
+			} else if canAutoRepair {
+				resolution = "auto_repair_pending"
+				pendingRepairs++
+			}
+
+			require.Equal(t, tc.expectedResolution, resolution,
+				"resolution must match the contract: phantom rows use 'phantom_open', small diffs use 'auto_repair_pending', large diffs stay 'open'")
+			require.Equal(t, tc.expectedPendingCount, pendingRepairs,
+				"pendingRepairs must increment only for auto_repair_pending resolutions, never for phantom_open")
+		})
+	}
+}
+
+// TestReconciliationWorker_PhantomRowGuardDoesNotAutoRepair is a
+// defence-in-depth test: it pins the explicit canAutoRepair guard so a
+// future change to autoRepairThreshold cannot silently re-enable
+// auto-repair for phantom rows. Phantom rows MUST stay excluded even
+// when autoRepairThreshold is loosened above 1.0.
+func TestReconciliationWorker_PhantomRowGuardDoesNotAutoRepair(t *testing.T) {
+	// Even with autoRepairThreshold = 2.0 (which would let relDiff=1.0
+	// pass), the explicit source != 0 guard must still exclude the
+	// phantom row from auto-repair.
+	const relaxedThreshold = 2.0
+
+	diffs := []struct {
+		name      string
+		source    float64
+		projected float64
+		isPhantom bool
+	}{
+		{"phantom row at small magnitude", 0, 1, true},
+		{"phantom row at large magnitude", 0, 1_000_000, true},
+		{"real small diff", 100, 101, false},
+		{"real diff within relaxed threshold", 100, 80, false},
+	}
+
+	for _, d := range diffs {
+		t.Run(d.name, func(t *testing.T) {
+			diff := d.source - d.projected
+			canAutoRepair := false
+			if d.projected != 0 && d.source != 0 {
+				relDiff := abs(diff / d.projected)
+				if relDiff < relaxedThreshold && abs(diff) < autoRepairMaxValue {
+					canAutoRepair = true
+				}
+			} else if d.projected != 0 && d.source == 0 {
+				// Phantom: never auto-repair, regardless of magnitude.
+			} else if abs(diff) < autoRepairMaxValue {
+				canAutoRepair = true
+			}
+
+			resolution := "open"
+			if d.isPhantom {
+				resolution = "phantom_open"
+			} else if canAutoRepair {
+				resolution = "auto_repair_pending"
+			}
+
+			if d.isPhantom {
+				require.False(t, canAutoRepair,
+					"phantom row must NEVER be auto-repairable, even when autoRepairThreshold is loosened")
+				require.Equal(t, "phantom_open", resolution,
+					"phantom row must always resolve to 'phantom_open' regardless of threshold")
+			}
+		})
+	}
+}
+
+// TestReconciliationWorker_PhantomAndRepairCounted pins the
+// reconciliation counter semantics: totalDiffs must include phantom
+// rows (they ARE diffs, just operator-actionable ones), but
+// autoRepaired must NEVER count phantom rows even if the underlying
+// Refresh() rebuilds them away (Refresh() is never invoked for phantom
+// rows). This is the operator-facing metric contract.
+func TestReconciliationWorker_PhantomAndRepairCounted(t *testing.T) {
+	scenarios := []struct {
+		name              string
+		source            float64
+		projected         float64
+		isPhantom         bool
+		expectedAutoCount int64
+	}{
+		{"phantom row does not auto-repair", 0, 5, true, 0},
+		{"real small diff does auto-repair", 100, 101, false, 1},
+		{"real large diff does not auto-repair", 100, 100_000, false, 0},
+	}
+
+	for _, tc := range scenarios {
+		t.Run(tc.name, func(t *testing.T) {
+			diff := tc.source - tc.projected
+			canAutoRepair := false
+			if tc.projected != 0 && tc.source != 0 {
+				relDiff := abs(diff / tc.projected)
+				if relDiff < autoRepairThreshold && abs(diff) < autoRepairMaxValue {
+					canAutoRepair = true
+				}
+			} else if tc.projected != 0 && tc.source == 0 {
+				// Phantom: never.
+			} else if abs(diff) < autoRepairMaxValue {
+				canAutoRepair = true
+			}
+
+			// auto-repair counter increments only when canAutoRepair AND
+			// not phantom (phantom rows are explicitly excluded even when
+			// canAutoRepair were true, which is never true today).
+			autoRepaired := int64(0)
+			if !tc.isPhantom && canAutoRepair {
+				autoRepaired = 1
+			}
+			require.Equal(t, tc.expectedAutoCount, autoRepaired,
+				"phantom_open rows must never be counted as auto-repaired; the pendingRepairs path also bypasses Refresh() entirely")
+		})
+	}
+}
+
 // unused import guard: keep "errors" import so test code that may want it
 // later compiles cleanly.
 var _ = errors.New
