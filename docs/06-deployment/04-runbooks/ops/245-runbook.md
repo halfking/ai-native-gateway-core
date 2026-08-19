@@ -8,16 +8,23 @@
 ## 1. 245 主机基础
 
 ```
-hostname:        [TODO: verify]
+hostname:        iZbp1ipiir49tmm01urycqZ
 公网 IP:         8.136.114.245
 私网 IP:         172.16.2.241
 SSH 端口:        25022
 SSH key:         ~/.ssh/id_ed25519 (operator's default)
 DB 接入:         172.16.2.210:5432/llm_gateway (shared PG17 on 252)
-Redis:           172.16.2.210:6389 (252, shared)
+Redis:           172.16.2.210:6389 (252, shared, **245 本地无 redis**)
 services:        llmgo-245.service (systemd, port 8781, pre-prod vendor unit)
-                 nginx (systemd, ports 80/443)
-                 [TODO: verify - 其他常驻 service 列表]
+                  nginx (systemd, ports 80/443)
+                  llmgo-prometheus.service (systemd, :9090, host-resources.rules.yml)
+                  llmgo-alertmanager.service (systemd, :9093/:9094)
+                  quality-service.service (systemd, :8081, 5m scheduler)
+                  collector-service.service (systemd, 1m/1h interval)
+                  aegis.service (阿里云安全 agent)
+                  ai-native-maintain.service (lifecycle / ops)
+                  aliyun.service / cloudmonitor.service (阿里云监控)
+                  chronyd.service (NTP) / crond.service (cron jobs)
 ```
 
 ## 2. 启动顺序 (cold start)
@@ -112,10 +119,10 @@ ssh 245 '
   缓解：长期方案升级 systemd 或迁移 cgroup v2；短期只看 MemoryMax 边界，不依赖 soft throttle。
 - **llmgo-245.service 是 pre-prod vendor unit**，不是通用 `llm-gateway-go.service`。
   deploy-245 / deploy-seamless / journalctl / systemctl 一律用 `llmgo-245`，不要用 unit 名 `llm-gateway-go`。
-- **certbot-renew.timer** 是否启用与 154 独立。`[TODO: verify - 245 certbot timer 启用状态与续签 cron 配置]`
+- **certbot-renew.timer** 启用并独立于 154。`systemctl list-timers certbot-renew.timer` 显示 `Thu 2026-08-20 08:09:19 CST 9h left`（下次运行时间）。当前 245 上 certbot 管理的证书：**`download.kxpms.cn`**（2026-10-14 到期，VALID 55 天）。`llmgo.kxpms.cn` / `llm.kxpms.cn` 的证书是**手工放置**到 `/etc/letsencrypt/live/kxpms.cn/`（245 上由 nginx 持有，certbot **不管理**这两个证书，续签走手工流程）。
 - **252 nginx kxpms-on-252.conf 现在 upstream 指向 172.16.2.241:8781 (245)**。
   245 是 pre-prod，154 production upstream = 172.16.2.209:8781。两个后端 IP 不混用，分别承载 llmgo.kxpms.cn / llm.kxpms.cn。
-- **`/etc/nginx/conf.d/llm-kxpms-cn.conf`** 重复 listen 警告（80 + 443 + IPv4/IPv6）[TODO: verify - 245 是否与 154 相同警告]。
+- **`/etc/nginx/conf.d/llm-kxpms-cn.conf`** 重复 listen 警告（80 + 443 + IPv4/IPv6）：已确认。`nginx -T | grep "^listen"` 在 245 上输出 `listen 80; × 6`、`listen 443 ssl http2; × 3`、`listen [::]:80; × 1`、`listen [::]:443 ssl; × 1`，属于 nginx 多 vhost + IPv4/IPv6 双栈声明。**nginx 启动时只 WARN 不 FAIL**，245 当前 active 无问题；与 154 模式相同。
 
 ## 7. cert 应急 / 失败时
 
@@ -136,9 +143,11 @@ ssh 245 'certbot renew --dry-run'
 ## 8. Redis 容量 / cleanup
 
 ```bash
-# 245 上是否独立 redis? [TODO: verify - 245 local-redis 是否启用, 还是只用 252 shared redis]
-ssh 245 'redis-cli dbsize'
-# 若 dbsize > 0 且 keys 数异常, 走 §8.1 排查
+# 245 上没有本地 redis（已 SSH 验证：`ps -ef | grep redis` 空，`ss -tlnp | grep 6379` 空）
+# 仅使用 252 shared redis（172.16.2.210:6389）
+# 验证:
+ssh 245 'redis-cli -h 172.16.2.210 -p 6389 dbsize'
+# 异常排查走 §8.1
 ```
 
 ## 9. 常见 on-call 场景
@@ -203,7 +212,7 @@ ssh 245 'redis-cli dbsize'
 ## 11. Reference
 
 - 154 production runbook: `docs/06-deployment/04-runbooks/ops/154-runbook.md`
-- 245 stability report: [TODO: verify]
+- 245 stability report: **不存在**（项目内目前只有 154 stability report：`docs/archive/process/process/2026-07/2026-07-20-154-stability-report.md`；245 计划在 pre-prod 验收 1 周后产出 `docs/design/2026-08-XX-245-stability-report.md`，对齐 154 模板结构）
 - deploy 脚本: `scripts/deploy-245.sh`, `scripts/deploy-seamless.sh`
 - deploy skill: `/deploy-245` (in `~/.agents/skills/deploy-245/`)
 - P0/P1 修复 commit: 见 `git log --grep="P0\|P1" --oneline main`

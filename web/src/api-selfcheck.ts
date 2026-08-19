@@ -275,6 +275,10 @@ export interface ProbeTriStateTask {
   dedup_key: string
   credential_id: number
   provider_id?: number
+  /** 供应商显示名（来自 providers LEFT JOIN，2026-08-20）— 自检 tab 卡片显示 供应商+凭据 */
+  provider_name?: string
+  /** 供应商 code（来自 providers.code LEFT JOIN）— 自检 tab 卡片副标题 */
+  provider_code?: string
   raw_model: string
   command: string
   source: string

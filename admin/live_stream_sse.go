@@ -824,7 +824,7 @@ func (h *LiveStreamSSEHub) computeScopeDelta(ctx context.Context, tenantID strin
 	// full 20-tile allocation regardless of traffic distribution in main queue.
 	snapshot, err := h.store.SnapshotFromDimensionQueues(ctx, scope.tenantID, scope.isSuper)
 	if err != nil {
-		slog.Debug("live stream scope snapshot failed",
+		slog.Warn("live stream scope snapshot failed",
 			"scope_tenant", scope.tenantID, "is_super", scope.isSuper, "err", err.Error())
 		return nil
 	}
@@ -832,7 +832,7 @@ func (h *LiveStreamSSEHub) computeScopeDelta(ctx context.Context, tenantID strin
 		if items, replayErr := h.replay(ctx, scope.tenantID, scope.isSuper, h.cfg.InitialReplayLimit); replayErr == nil && len(items) > 0 {
 			snapshot = BuildLiveStreamSnapshot(items)
 		} else if replayErr != nil {
-			slog.Debug("live stream scope replay fallback failed",
+			slog.Warn("live stream scope replay fallback failed",
 				"scope_tenant", scope.tenantID, "is_super", scope.isSuper, "err", replayErr.Error())
 		}
 	}
@@ -842,6 +842,9 @@ func (h *LiveStreamSSEHub) computeScopeDelta(ctx context.Context, tenantID strin
 	// stops a 200ms Redis stall from clearing every dashboard.
 	if snapshot == nil || snapshot.Summary.Total == 0 {
 		atomic.AddInt64(&h.cachedSnapshotEmptySkips, 1)
+		slog.Warn("live stream: empty snapshot (no dimension data in Redis), skipping delta",
+			"scope_tenant", scope.tenantID, "is_super", scope.isSuper,
+			"empty_skips", atomic.LoadInt64(&h.cachedSnapshotEmptySkips))
 		return nil
 	}
 	h.cachedSnapshotMu.Lock()
@@ -1685,7 +1688,7 @@ func (h *LiveStreamSSEHub) Publish(req LiveRequest) {
 	if h.store != nil && h.cfg.RedisClient != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 		if err := h.store.Record(ctx, req, h.instanceID); err != nil {
-			slog.Debug("live stream redis record failed", "request_id", req.RequestID, "tenant_id", req.TenantID, "model", req.Model, "provider", req.ProviderCode, "err", err.Error())
+			slog.Warn("live stream redis record failed", "request_id", req.RequestID, "tenant_id", req.TenantID, "model", req.Model, "provider", req.ProviderCode, "err", err.Error())
 		}
 		cancel()
 		h.enqueueBroadcast(req)
@@ -1694,7 +1697,7 @@ func (h *LiveStreamSSEHub) Publish(req LiveRequest) {
 	if h.store != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 		if err := h.store.Record(ctx, req, h.instanceID); err != nil {
-			slog.Debug("live stream redis record failed", "request_id", req.RequestID, "tenant_id", req.TenantID, "model", req.Model, "provider", req.ProviderCode, "err", err.Error())
+			slog.Warn("live stream redis record failed", "request_id", req.RequestID, "tenant_id", req.TenantID, "model", req.Model, "provider", req.ProviderCode, "err", err.Error())
 		}
 		cancel()
 	}
