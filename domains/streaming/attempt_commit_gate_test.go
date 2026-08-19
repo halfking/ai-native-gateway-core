@@ -22,6 +22,26 @@ func newGateForTest(mode GateMode) (*AttemptCommitGate, *trackingFlusher) {
 	return g, f
 }
 
+func TestAttemptHasClientSemanticOutputIgnoresPreStreamHeaders(t *testing.T) {
+	g, _ := newGateForTest(GateModeImmediate)
+	if attemptHasClientSemanticOutput(g, 0) {
+		t.Fatal("pre-stream response state must not count as semantic client output")
+	}
+	if !attemptHasClientSemanticOutput(nil, 1) {
+		t.Fatal("legacy path should use emitted chunk count")
+	}
+}
+
+func TestAttemptHasClientSemanticOutputAfterCommit(t *testing.T) {
+	g, _ := newGateForTest(GateModeBuffered)
+	if err := g.WriteFrame("event: content_block_delta\ndata: {\"delta\":{\"text\":\"hi\"}}\n\n"); err != nil {
+		t.Fatalf("write semantic frame: %v", err)
+	}
+	if !attemptHasClientSemanticOutput(g, 0) {
+		t.Fatal("committed semantic output must permit terminal error rendering")
+	}
+}
+
 func TestAttemptCommitGateBuffersMetadataUntilSemanticCommit(t *testing.T) {
 	g, f := newGateForTest(GateModeBuffered)
 	meta := "event: message_start\ndata: {\"message\":{}}\n\n"

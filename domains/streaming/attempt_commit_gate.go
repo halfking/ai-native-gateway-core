@@ -260,6 +260,19 @@ func (g *AttemptCommitGate) Committed() bool {
 	return g.committed
 }
 
+// attemptHasClientSemanticOutput reports whether an upstream failure may be
+// rendered as a terminal client frame. HTTP headers, keepalive comments, and
+// pre-stream metadata do not make an attempt terminal: the gateway must be
+// able to discard that attempt and fail over without exposing the upstream
+// error. A nil gate is the legacy path, where chunkCount is the only reliable
+// indication that semantic output reached the client.
+func attemptHasClientSemanticOutput(g *AttemptCommitGate, chunkCount int) bool {
+	if g != nil {
+		return g.Committed()
+	}
+	return chunkCount > 0
+}
+
 // WriteFrame classifies and records one client-facing SSE frame. In
 // buffered mode the frame is held in the attempt-local buffer until commit;
 // keepalive frames pass through immediately and never advance state.
