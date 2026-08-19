@@ -136,7 +136,7 @@ func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 			"first_byte_timeout_seconds", int(runtimeCfg.firstByteTimeout.Seconds()),
 			"hint", "if frequent, increase LLM_GATEWAY_FIRST_BYTE_TIMEOUT or admin config (default 120s)",
 		)
-		if gate.MayWriteTerminal() {
+		if attemptHasClientSemanticOutput(gate, 0) {
 			writeResponsesIncomplete(w, flusher, respID, msgID, createdAt, clientModel, fullText, "first_byte_timeout")
 		}
 		outcome.Interrupted = true
@@ -234,7 +234,7 @@ func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 				if capture != nil {
 					capture.MarkInterruptedWithReason("client_disconnected")
 				}
-				if gate.MayWriteTerminal() {
+				if attemptHasClientSemanticOutput(gate, chunkCount) {
 					writeResponsesIncomplete(w, flusher, respID, msgID, createdAt, clientModel, fullText, "client_disconnected")
 				}
 				outcome.Interrupted = true
@@ -248,7 +248,7 @@ func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 				if capture != nil {
 					capture.MarkInterruptedWithReason("stream_timeout")
 				}
-				if gate.MayWriteTerminal() {
+				if attemptHasClientSemanticOutput(gate, chunkCount) {
 					writeResponsesIncomplete(w, flusher, respID, msgID, createdAt, clientModel, fullText, "stream_timeout")
 				}
 				outcome.Interrupted = true
@@ -261,7 +261,7 @@ func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 				if capture != nil {
 					capture.MarkInterruptedWithReason(failure.Reason)
 				}
-				if gate.MayWriteTerminal() {
+				if attemptHasClientSemanticOutput(gate, chunkCount) {
 					writeResponsesIncomplete(w, flusher, respID, msgID, createdAt, clientModel, fullText, failure.Reason)
 				}
 				outcome = failure

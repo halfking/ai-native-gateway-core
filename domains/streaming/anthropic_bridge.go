@@ -390,7 +390,7 @@ func finalizePassthroughInterruption(
 	if chunkCount == 0 || cw == nil || cw.clientDisconnected {
 		return
 	}
-	if gate != nil && !gate.MayWriteTerminal() {
+	if !attemptHasClientSemanticOutput(gate, chunkCount) {
 		return
 	}
 	writePassthroughErrorEvent(cw, "upstream_error", message)
@@ -720,7 +720,7 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 			if capture != nil {
 				capture.MarkInterruptedWithReason("stream_panic")
 			}
-			if gate.MayWriteTerminal() {
+			if attemptHasClientSemanticOutput(gate, chunkCount) {
 				emitAnthropicBridgeErrorChunk(w, "stream_panic",
 					fmt.Sprintf("internal error: %v", r), flusher)
 			}
@@ -743,7 +743,7 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 			if capture != nil {
 				capture.MarkInterruptedWithReason("stream_chunk_timeout")
 			}
-			if gate.MayWriteTerminal() {
+			if attemptHasClientSemanticOutput(gate, chunkCount) {
 				emitAnthropicBridgeErrorChunk(w, "stream_chunk_timeout",
 					fmt.Sprintf("no data received for %v", runtimeCfg.streamChunkTimeout), flusher)
 			}
@@ -795,7 +795,7 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 			if capture != nil {
 				capture.MarkInterruptedWithReason(failure.Reason)
 			}
-			if gate.MayWriteTerminal() {
+			if attemptHasClientSemanticOutput(gate, chunkCount) {
 				emitAnthropicBridgeErrorChunk(w, "stream_read_error", err.Error(), flusher)
 			}
 			return outcome
@@ -950,7 +950,7 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 							if capture != nil {
 								capture.AddQualityFlag("malformed_tool_args_blocked")
 							}
-							if gate.MayWriteTerminal() {
+							if attemptHasClientSemanticOutput(gate, chunkCount) {
 								emitAnthropicBridgeErrorChunk(w, "malformed_tool_args", "upstream tool arguments are invalid JSON", flusher)
 							}
 							outcome.Interrupted = true
@@ -1012,7 +1012,7 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 				capture.MarkInterruptedWithReason("upstream_error")
 			}
 			if chunk.Error != nil {
-				if gate.MayWriteTerminal() {
+				if attemptHasClientSemanticOutput(gate, chunkCount) {
 					emitAnthropicBridgeErrorChunk(w, chunk.Error.Type, chunk.Error.Message, flusher)
 				}
 			}
