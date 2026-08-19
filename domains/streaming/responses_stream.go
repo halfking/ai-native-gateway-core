@@ -269,7 +269,7 @@ func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 				outcome.Interrupted = true
 				outcome.Reason = "stream_timeout"
 				outcome.Kind = errorsx.KindStreamTimeout
-				outcome.Resumable = true
+				outcome.Resumable = !attemptHasClientSemanticOutput(gate, chunkCount)
 				outcome.ChunkCount = chunkCount
 				return outcome
 			default:
