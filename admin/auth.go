@@ -16,6 +16,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/crypto/bcrypt"
+
+	"github.com/kaixuan/llm-gateway-go/pkg/identity"
 )
 
 var errPasswordChangeRequired = errors.New("password change required before accessing other APIs")
@@ -56,6 +58,21 @@ func (h *Handler) handleLogout(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
+// legacyAdapter returns an identity.LegacyVerifier that delegates to
+// admin.VerifyToken. Bound to a specific secretKey so the verifier doesn't
+// have to plumb the secret through every call.
+func legacyAdapter(secretKey string) identity.LegacyVerifier {
+	return legacyVerifierAdapter{secretKey: secretKey}
+}
+
+type legacyVerifierAdapter struct {
+	secretKey string
+}
+
+func (a legacyVerifierAdapter) VerifyLegacy(tok string) (*identity.LegacyClaims, error) {
+	return VerifyLegacy(tok, a.secretKey)
+}
+
 func AdminMiddleware(next http.HandlerFunc, db *pgxpool.Pool, secretKey string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// Browser EventSource cannot set Authorization headers, so we
@@ -71,6 +88,30 @@ func AdminMiddleware(next http.HandlerFunc, db *pgxpool.Pool, secretKey string) 
 
 		// ── JWT auth (Bearer header or session cookie) ──
 		if tokenStr, ok := extractBearerOrCookieToken(r); ok {
+			// 1) Multi-issuer path (cross-project trust via identity-go).
+			//    When IDENTITY_SHARED_SECRET is set, this accepts tokens
+			//    signed by pocket / memora / redclaw / acc / llm-gateway as
+			//    long as aud=llm-gateway-api.
+			if p, err := identity.Verify(tokenStr, legacyAdapter(secretKey)); err == nil && p != nil && p.UserID > 0 {
+				if p.Source == "legacy" && p.MustChangePassword {
+					if !isPasswordChangeAllowedPath(r.URL.Path) {
+						writeError(w, http.StatusForbidden, errPasswordChangeRequired.Error())
+						return
+					}
+				}
+				authReq := SetAuthContext(r, &AuthContext{
+					UserID:             p.UserID,
+					TenantID:           p.TenantID,
+					Username:           p.Username,
+					Role:               p.Role,
+					IsJWT:              true,
+					MustChangePassword: p.MustChangePassword,
+				})
+				next(w, authReq)
+				return
+			}
+
+			// 2) Legacy single-secret path (always available, backward compat).
 			claims, err := VerifyToken(tokenStr, secretKey)
 			if err == nil && claims.UserID > 0 {
 				authReq := SetAuthContext(r, &AuthContext{
@@ -205,6 +246,11 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusInternalServerError, "token generation failed")
 				return
 			}
+
+			// Shadow mapping (provider=llm-gateway, subject=userID) into
+			// identity_shadow — used by cross-project trust to resolve
+			// canonical identities. DSN 未配置时 RecordShadow 内部 noop。
+			identity.RecordShadow("llm-gateway", u.ID, u.TenantID, u.DisplayName, u.Email)
 
 			h.auditLog(u.Username, "authentication.login", "user", u.ID, fmt.Sprintf("method=jwt role=%s tenant=%s ip=%s", u.Role, u.TenantID, r.RemoteAddr))
 			// Dual-write (rule 20 §6.1): set HttpOnly cookie AND return access_token

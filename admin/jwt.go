@@ -6,7 +6,15 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+
+	"github.com/kaixuan/llm-gateway-go/pkg/identity"
 )
+
+// AudienceName is the JWT aud claim this gateway stamps on locally-issued
+// user/admin tokens. Each project enforces its own resource-server audience
+// boundary; sibling projects (pocket / memora / redclaw / acc) verify tokens
+// against their own aud, never this one.
+const AudienceName = "llm-gateway-api"
 
 // JWTClaims extends the standard JWT claims with tenant/user info.
 type JWTClaims struct {
@@ -68,6 +76,7 @@ func SignToken(userID int, tenantID, username, role, secretKey string, mustChang
 			ExpiresAt: jwt.NewNumericDate(expiresAt),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
 			Issuer:    "llm-gateway",
+			Audience:  jwt.ClaimStrings{AudienceName},
 		},
 	}
 
@@ -95,4 +104,22 @@ func VerifyToken(tokenStr, secretKey string) (*JWTClaims, error) {
 		return nil, fmt.Errorf("invalid jwt claims")
 	}
 	return claims, nil
+}
+
+// VerifyLegacy is the adapter that pkg/identity uses to fall back to the
+// single-secret JWT verifier. It returns an identity.LegacyClaims shape
+// (defined in pkg/identity) so pkg/identity doesn't need to import this
+// package's types directly.
+func VerifyLegacy(tokenStr, secretKey string) (*identity.LegacyClaims, error) {
+	c, err := VerifyToken(tokenStr, secretKey)
+	if err != nil || c == nil {
+		return nil, err
+	}
+	return &identity.LegacyClaims{
+		UserID:             c.UserID,
+		TenantID:           c.TenantID,
+		Username:           c.Username,
+		Role:               c.Role,
+		MustChangePassword: c.MustChangePassword,
+	}, nil
 }
