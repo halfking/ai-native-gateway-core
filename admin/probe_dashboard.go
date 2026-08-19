@@ -1736,8 +1736,8 @@ func queryProbeTriStateTasks(ctx context.Context, db pgxQueryer, status string, 
 	}
 	rows, err := db.Query(ctx, `
 		SELECT q.id, q.dedup_key, q.credential_id, q.provider_id,
-		       COALESCE(NULLIF(p.display_name, ''), NULLIF(p.code, ''), ''),
-		       COALESCE(p.code, ''),
+		       COALESCE(NULLIF(p.display_name, ''), NULLIF(p.catalog_code, ''), NULLIF(p.code, ''), ''),
+		       COALESCE(NULLIF(p.catalog_code, ''), NULLIF(p.code, ''), ''),
 		       COALESCE(q.raw_model, ''), q.probe_command, q.source, q.status,
 		       q.attempt, q.max_attempts, q.priority, q.next_run_at,
 		       COALESCE(q.reason_code, ''), q.result_http_status, q.result_latency_ms,
