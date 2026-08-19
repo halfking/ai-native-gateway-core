@@ -153,7 +153,7 @@ func (r *DailyMonthlyRollup) Refresh(ctx context.Context, since, until time.Time
 	if _, err := tx.Exec(ctx, `
 		DELETE FROM stats_usage_daily
 		WHERE day_utc >= ($1 AT TIME ZONE 'UTC')::date
-		  AND day_utc < (($2 - INTERVAL '1 microsecond') AT TIME ZONE 'UTC')::date + 1`, dailySince, dailyUntil); err != nil {
+		  AND day_utc < ($2 AT TIME ZONE 'UTC')::date`, dailySince, dailyUntil); err != nil {
 		return fmt.Errorf("clear daily buckets: %w", err)
 	}
 	if _, err := tx.Exec(ctx, dailyInsertSQL, dailySince, dailyUntil); err != nil {
@@ -207,8 +207,8 @@ INSERT INTO stats_usage_daily (
 		SUM(prompt_tokens), SUM(completion_tokens), SUM(cache_read_tokens), SUM(cache_write_tokens),
 		SUM(reasoning_tokens), SUM(image_tokens), SUM(audio_tokens), SUM(video_tokens),
 		SUM(provider_tokens), SUM(total_tokens), SUM(credits_charged), SUM(cost_amount),
-		COUNT(*) FILTER (WHERE latency_ms > 0), SUM(latency_ms) FILTER (WHERE latency_ms > 0),
-		COUNT(*) FILTER (WHERE ttft_ms > 0), SUM(ttft_ms) FILTER (WHERE ttft_ms > 0), COUNT(*),
+			COUNT(*) FILTER (WHERE latency_ms > 0), COALESCE(SUM(latency_ms) FILTER (WHERE latency_ms > 0), 0),
+			COUNT(*) FILTER (WHERE ttft_ms > 0), COALESCE(SUM(ttft_ms) FILTER (WHERE ttft_ms > 0), 0), COUNT(*),
 		MAX(occurred_at), now()
 	FROM (
 		SELECT latest.*, 'provider_model'::text AS dimension_type,

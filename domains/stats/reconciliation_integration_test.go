@@ -266,6 +266,12 @@ func TestReconciliation_MissingProjection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err = conn.Exec(ctx, `
+		INSERT INTO stats_event_dedup (event_id, occurred_at)
+		VALUES ('evt_missing', $1)
+	`, today.Add(12*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
 
 	worker := NewReconciliationWorker(pool, time.Hour)
 	err = worker.ReconcilePeriod(ctx, today, today.Add(24*time.Hour), "missing_test")
@@ -297,5 +303,34 @@ func TestReconciliation_MissingProjection(t *testing.T) {
 	}
 	if autoRepaired <= 0 {
 		t.Error("missing projection should be auto-repairable")
+	}
+
+	var dailyRequests, dailyTokens int64
+	err = conn.QueryRow(ctx, `
+		SELECT request_count, total_tokens
+		FROM stats_usage_daily
+		WHERE day_utc = $1 AND tenant_id = 'tenant2'
+		  AND dimension_type = 'provider_model' AND dimension_key = 'claude-3'
+	`, today).Scan(&dailyRequests, &dailyTokens)
+	if err != nil {
+		t.Fatalf("rebuilt daily projection missing: %v", err)
+	}
+	if dailyRequests != 1 || dailyTokens != 150 {
+		t.Errorf("rebuilt daily projection=(requests=%d,tokens=%d), want (1,150)", dailyRequests, dailyTokens)
+	}
+
+	monthStart := time.Date(today.Year(), today.Month(), 1, 0, 0, 0, 0, time.UTC)
+	var monthlyRequests, monthlyTokens int64
+	err = conn.QueryRow(ctx, `
+		SELECT request_count, total_tokens
+		FROM stats_usage_monthly
+		WHERE month_start = $1 AND tenant_id = 'tenant2'
+		  AND dimension_type = 'provider_model' AND dimension_key = 'claude-3'
+	`, monthStart).Scan(&monthlyRequests, &monthlyTokens)
+	if err != nil {
+		t.Fatalf("rebuilt monthly projection missing: %v", err)
+	}
+	if monthlyRequests != 1 || monthlyTokens != 150 {
+		t.Errorf("rebuilt monthly projection=(requests=%d,tokens=%d), want (1,150)", monthlyRequests, monthlyTokens)
 	}
 }
