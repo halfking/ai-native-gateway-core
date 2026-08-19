@@ -13,7 +13,7 @@
 #   - 5432  postgres  (citusdata/citus:11.3.0, 与生产一致)
 #   - 6379  redis
 #   - 1080  llm-mock       (nginx 健康桩, 供 healthcheck 依赖)
-#   - 18080 llm-mock-upstream (真 OpenAI 兼容 mock, aiohttp)
+#   - ${LLM_MOCK_HOST_PORT:-19080} llm-mock-upstream (真 OpenAI 兼容 mock, aiohttp)
 #   - 8781  gateway        (v1 生产入口, cmd/gateway)
 #   - 8782  gateway-v2     (v2 演示入口, cmd/gateway-v2)
 #   - 10302 memora-mcp     (mock 占位, 注释说明)
@@ -106,8 +106,10 @@ services:
       dockerfile: Dockerfile
     image: r112-llm-mock-upstream:local
     container_name: r112_llm_mock_upstream
+    env_file:
+      - .env.dev-research
     ports:
-      - "18080:18080"
+      - "${LLM_MOCK_HOST_PORT:-19080}:18080"
     environment:
       # 本地快速验证: 50-100ms 延迟 (非 fp_slot 回归的 10-15s)
       MOCK_LATENCY_MS_MIN: "50"

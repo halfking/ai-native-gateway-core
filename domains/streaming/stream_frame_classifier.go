@@ -34,6 +34,22 @@ const (
 	ProtocolAnthropic
 )
 
+// String implements fmt.Stringer for log / metric labels. Centralising
+// the rendering here means the survival loop, attempt gate and recovery
+// ladder all emit the same canonical token.
+func (p ClientProtocol) String() string {
+	switch p {
+	case ProtocolOpenAIChat:
+		return "openai_chat"
+	case ProtocolOpenAIResponses:
+		return "openai_responses"
+	case ProtocolAnthropic:
+		return "anthropic"
+	default:
+		return "unknown"
+	}
+}
+
 // FrameClass is the coarse, protocol-independent classification of a single
 // client-facing SSE frame. Ordering matters: AttemptCommitGate keeps a
 // monotonic commit state and higher classes win.

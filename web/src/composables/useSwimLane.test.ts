@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { computed, ref } from 'vue'
-import { LIVE_STREAM_PREFERENCES_STORAGE_KEY } from './liveStreamPreferences'
+import { liveStreamPreferencesStorageKey } from './liveStreamPreferences'
 import { useSwimLane } from './useSwimLane'
 import type { LiveStreamSnapshot } from './liveStreamStore'
 
@@ -20,7 +20,7 @@ describe('useSwimLane preferences', () => {
   })
 
   it('restores group and mode, then persists later selections', () => {
-    localStorage.setItem(LIVE_STREAM_PREFERENCES_STORAGE_KEY, JSON.stringify({
+    localStorage.setItem(liveStreamPreferencesStorageKey(), JSON.stringify({
       version: 1,
       groupBy: 'vendor',
       mode: 'large',
@@ -34,7 +34,7 @@ describe('useSwimLane preferences', () => {
 
     state.setGroupBy('model')
     state.setMode('small')
-    const saved = JSON.parse(localStorage.getItem(LIVE_STREAM_PREFERENCES_STORAGE_KEY) || '{}')
+    const saved = JSON.parse(localStorage.getItem(liveStreamPreferencesStorageKey()) || '{}')
     expect(saved.groupBy).toBe('model')
     expect(saved.mode).toBe('small')
   })

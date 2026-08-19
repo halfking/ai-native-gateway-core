@@ -5,16 +5,23 @@ import QueuePerspectivePanel from './QueuePerspectivePanel.vue'
 import NodeDetailDrawer from './NodeDetailDrawer.vue'
 import { __testing, liveStreamState } from '../composables/liveStreamStore'
 import { ApiError } from '../api/_core'
-import { LIVE_STREAM_PREFERENCES_STORAGE_KEY } from '../composables/liveStreamPreferences'
+import { readLiveStreamPreferences, liveStreamPreferencesStorageKey } from '../composables/liveStreamPreferences'
 
-const { getFeatured, resolveRouting, reorderCandidateBindings, superAdmin } = vi.hoisted(() => ({
+const { getFeatured, resolveRouting, reorderCandidateBindings, superAdmin, mockedStore } = vi.hoisted(() => ({
   getFeatured: vi.fn(),
   resolveRouting: vi.fn(),
   reorderCandidateBindings: vi.fn(),
   superAdmin: vi.fn(() => false),
+  mockedStore: {
+    userInfo: null,
+  },
 }))
 
-vi.mock('../store', () => ({ isSuperAdmin: superAdmin }))
+vi.mock('../store', () => ({
+  isSuperAdmin: superAdmin,
+  store: mockedStore,
+  getCurrentTenantId: () => 'default',
+}))
 
 vi.mock('../api/routing', () => ({
   getFeatured,
@@ -156,7 +163,7 @@ describe('QueuePerspectivePanel', () => {
   // ── 队列深度分区：默认折叠，拥堵时自动展开 ────────────────────────────────
 
   it('restores queue depth and node-status selections, then persists user changes', async () => {
-    localStorage.setItem(LIVE_STREAM_PREFERENCES_STORAGE_KEY, JSON.stringify({
+    localStorage.setItem(liveStreamPreferencesStorageKey(), JSON.stringify({
       version: 1,
       groupBy: 'queue',
       mode: 'small',
@@ -190,7 +197,7 @@ describe('QueuePerspectivePanel', () => {
     expect((boxes[3].element as HTMLInputElement).checked).toBe(true)
 
     await wrapper.get('.qp-depth-toggle').trigger('click')
-    const saved = JSON.parse(localStorage.getItem(LIVE_STREAM_PREFERENCES_STORAGE_KEY) || '{}')
+    const saved = readLiveStreamPreferences()
     expect(saved.queue.depthOpen).toBe(false)
   })
 
@@ -211,6 +218,26 @@ describe('QueuePerspectivePanel', () => {
     expect(wrapper.text()).toContain('总队列')
     expect(wrapper.text()).toContain('glm-5.2')
     expect(wrapper.text()).toContain('节点 7')
+  })
+
+  it('keeps an explicit collapsed preference during congestion', () => {
+    localStorage.setItem(liveStreamPreferencesStorageKey(), JSON.stringify({
+      version: 1,
+      groupBy: 'queue',
+      mode: 'small',
+      selectedLegends: [],
+      filters: {},
+      queue: { depthOpen: false, expandedModels: [], statusFilter: {} },
+    }))
+    liveStreamState.queue = {
+      enabled: true,
+      wired: true,
+      models: [{ model: 'glm-5.2', depth: 60 }],
+      credentials: [],
+    }
+    const wrapper = mountPanel()
+    expect(wrapper.text()).toContain('模型队列拥堵')
+    expect(wrapper.find('.qp-depth-body').exists()).toBe(false)
   })
 
   it('auto-expands queue depth when congestion is detected', () => {
