@@ -7,8 +7,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/kaixuan/llm-gateway-go/metrics"
 )
 
@@ -21,7 +19,7 @@ const (
 // Rebuild semantics make retries and late usage corrections converge without
 // additive double counting.
 type DailyMonthlyRollup struct {
-	db       *pgxpool.Pool
+	db       DBQuerier
 	interval time.Duration
 
 	mu      sync.Mutex
@@ -30,7 +28,7 @@ type DailyMonthlyRollup struct {
 	started bool
 }
 
-func NewDailyMonthlyRollup(db *pgxpool.Pool, interval time.Duration) *DailyMonthlyRollup {
+func NewDailyMonthlyRollup(db DBQuerier, interval time.Duration) *DailyMonthlyRollup {
 	if interval <= 0 {
 		interval = defaultRollupInterval
 	}
@@ -260,7 +258,31 @@ DO UPDATE SET
 	source_max_occurred_at = EXCLUDED.source_max_occurred_at, updated_at = now()`
 
 const monthlyInsertSQL = `
-WITH upserted AS (
+WITH daily_groups AS (
+  -- Materialize the GROUP BY result so the upsert and the skipped
+  -- counter can both reference the same set of target PK tuples.
+  -- This is the "what would the upsert touch" set.
+  SELECT
+    date_trunc('month', day_utc)::date AS month_start, tenant_id, provider_id, credential_id, canonical_id,
+    raw_model_name, dimension_type, dimension_key, traffic_class,
+    SUM(request_count) AS request_count, SUM(success_count) AS success_count,
+    SUM(failure_count) AS failure_count, SUM(timeout_count) AS timeout_count,
+    SUM(rate_limited_count) AS rate_limited_count, SUM(attempt_count) AS attempt_count,
+    SUM(retry_count) AS retry_count, SUM(probe_count) AS probe_count,
+    SUM(switch_count) AS switch_count, SUM(prompt_tokens) AS prompt_tokens,
+    SUM(completion_tokens) AS completion_tokens, SUM(cache_read_tokens) AS cache_read_tokens,
+    SUM(cache_write_tokens) AS cache_write_tokens, SUM(reasoning_tokens) AS reasoning_tokens,
+    SUM(image_tokens) AS image_tokens, SUM(audio_tokens) AS audio_tokens,
+    SUM(video_tokens) AS video_tokens, SUM(provider_tokens) AS provider_tokens,
+    SUM(total_tokens) AS total_tokens, SUM(credits_charged) AS credits_charged, SUM(cost_usd) AS cost_usd,
+    SUM(latency_count) AS latency_count, SUM(latency_sum_ms) AS latency_sum_ms,
+    SUM(ttft_count) AS ttft_count, SUM(ttft_sum_ms) AS ttft_sum_ms,
+    COUNT(DISTINCT day_utc) AS source_day_count,
+    MAX(source_max_occurred_at) AS source_high_watermark
+  FROM stats_usage_daily
+  WHERE day_utc >= $1::date AND day_utc < $2::date
+  GROUP BY 1,2,3,4,5,6,7,8,9
+), upserted AS (
   INSERT INTO stats_usage_monthly (
     month_start, tenant_id, provider_id, credential_id, canonical_id, raw_model_name,
     dimension_type, dimension_key, traffic_class, request_count, success_count,
@@ -272,18 +294,14 @@ WITH upserted AS (
     updated_at
   )
   SELECT
-    date_trunc('month', day_utc)::date, tenant_id, provider_id, credential_id, canonical_id,
+    month_start, tenant_id, provider_id, credential_id, canonical_id,
     raw_model_name, dimension_type, dimension_key, traffic_class,
-    SUM(request_count), SUM(success_count), SUM(failure_count), SUM(timeout_count),
-    SUM(rate_limited_count), SUM(attempt_count), SUM(retry_count), SUM(probe_count),
-    SUM(switch_count), SUM(prompt_tokens), SUM(completion_tokens), SUM(cache_read_tokens),
-    SUM(cache_write_tokens), SUM(reasoning_tokens), SUM(image_tokens), SUM(audio_tokens),
-    SUM(video_tokens), SUM(provider_tokens), SUM(total_tokens), SUM(credits_charged), SUM(cost_usd),
-    SUM(latency_count), SUM(latency_sum_ms), SUM(ttft_count), SUM(ttft_sum_ms), COUNT(DISTINCT day_utc),
-    MAX(source_max_occurred_at), now()
-  FROM stats_usage_daily
-  WHERE day_utc >= $1::date AND day_utc < $2::date
-  GROUP BY 1,2,3,4,5,6,7,8,9
+    request_count, success_count, failure_count, timeout_count, rate_limited_count,
+    attempt_count, retry_count, probe_count, switch_count, prompt_tokens, completion_tokens,
+    cache_read_tokens, cache_write_tokens, reasoning_tokens, image_tokens, audio_tokens,
+    video_tokens, provider_tokens, total_tokens, credits_charged, cost_usd, latency_count,
+    latency_sum_ms, ttft_count, ttft_sum_ms, source_day_count, source_high_watermark, now()
+  FROM daily_groups
   ON CONFLICT (month_start, tenant_id, provider_id, credential_id, canonical_id, raw_model_name, dimension_type, dimension_key, traffic_class)
   DO UPDATE SET
     request_count = EXCLUDED.request_count, success_count = EXCLUDED.success_count,
@@ -301,11 +319,33 @@ WITH upserted AS (
     ttft_sum_ms = EXCLUDED.ttft_sum_ms, source_day_count = EXCLUDED.source_day_count,
     source_high_watermark = EXCLUDED.source_high_watermark, updated_at = now()
   WHERE stats_usage_monthly.status <> 'closed'
-  RETURNING month_start
+  RETURNING xmax = 0 AS inserted
 ), skipped AS (
+  -- Count closed rows that the upsert *would have* updated, by
+  -- joining daily_groups (the intended target PK set) against
+  -- stats_usage_monthly on the full PK tuple. PostgreSQL semantics:
+  -- when ON CONFLICT ... DO UPDATE WHERE fails, the statement
+  -- degrades to DO NOTHING and the target row in
+  -- stats_usage_monthly is left untouched at status='closed'. This
+  -- CTE surfaces exactly those target PKs.
+  --
+  -- Cardinality: a closed PK appears in this count once per Refresh
+  -- call regardless of how many daily_groups tuples map to it
+  -- (GROUP BY 1..9 deduplicates), so the counter increments at most
+  -- once per closed PK per Refresh.
   SELECT count(*)::bigint AS skipped_count
-  FROM stats_usage_monthly
-  WHERE month_start >= $1::date AND month_start < $2::date AND status = 'closed'
+  FROM stats_usage_monthly m
+  JOIN daily_groups g
+    ON m.month_start = g.month_start
+   AND m.tenant_id   = g.tenant_id
+   AND m.provider_id = g.provider_id
+   AND m.credential_id = g.credential_id
+   AND m.canonical_id = g.canonical_id
+   AND m.raw_model_name = g.raw_model_name
+   AND m.dimension_type = g.dimension_type
+   AND m.dimension_key  = g.dimension_key
+   AND m.traffic_class  = g.traffic_class
+  WHERE m.status = 'closed'
 )
 SELECT
   (SELECT count(*) FROM upserted) AS upserted_count,
