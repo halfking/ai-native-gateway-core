@@ -10,6 +10,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/kaixuan/llm-gateway-go/metrics"
 )
 
 const (
@@ -134,22 +136,24 @@ func (w *ReconciliationWorker) ReconcilePeriod(ctx context.Context, start, end t
 
 	// Get source watermark from usage_facts
 	err = w.db.QueryRow(ctx, `
-		SELECT COALESCE(MAX(occurred_at), $1) 
-		FROM usage_facts 
+		SELECT COALESCE(MAX(occurred_at), $1)
+		FROM usage_facts
 		WHERE occurred_at >= $1 AND occurred_at < $2
 	`, start, end).Scan(&sourceWatermark)
 	if err != nil && err != pgx.ErrNoRows {
 		w.finishRun(ctx, runID, "failed", eventsSeen, rowsCompared, rowsRepaired, diffCount, sourceWatermark, err.Error())
+		metrics.RecordStatsReconciliationRun("failed", 1)
 		return fmt.Errorf("get source watermark: %w", err)
 	}
 
 	// Count events seen
 	err = w.db.QueryRow(ctx, `
-		SELECT COUNT(*) FROM usage_facts 
+		SELECT COUNT(*) FROM usage_facts
 		WHERE occurred_at >= $1 AND occurred_at < $2
 	`, start, end).Scan(&eventsSeen)
 	if err != nil {
 		w.finishRun(ctx, runID, "failed", eventsSeen, rowsCompared, rowsRepaired, diffCount, sourceWatermark, err.Error())
+		metrics.RecordStatsReconciliationRun("failed", 1)
 		return fmt.Errorf("count events: %w", err)
 	}
 
@@ -157,6 +161,7 @@ func (w *ReconciliationWorker) ReconcilePeriod(ctx context.Context, start, end t
 	diffs, repaired, err := w.reconcileDaily(ctx, runID, start, end)
 	if err != nil {
 		w.finishRun(ctx, runID, "failed", eventsSeen, rowsCompared, rowsRepaired, diffCount, sourceWatermark, err.Error())
+		metrics.RecordStatsReconciliationRun("failed", 1)
 		return fmt.Errorf("reconcile daily: %w", err)
 	}
 
@@ -165,6 +170,9 @@ func (w *ReconciliationWorker) ReconcilePeriod(ctx context.Context, start, end t
 	diffCount = diffs - repaired
 
 	w.finishRun(ctx, runID, "completed", eventsSeen, rowsCompared, rowsRepaired, diffCount, sourceWatermark, "")
+	metrics.RecordStatsReconciliationRun("completed", 1)
+	metrics.ObserveStatsReconciliationDiffs("open", diffCount)
+	metrics.ObserveStatsReconciliationDiffs("auto_repaired", rowsRepaired)
 
 	slog.Info("reconciliation run completed",
 		"run_id", runID,

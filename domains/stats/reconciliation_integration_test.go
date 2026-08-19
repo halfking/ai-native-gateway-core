@@ -10,7 +10,10 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	dto "github.com/prometheus/client_model/go"
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
+
+	"github.com/kaixuan/llm-gateway-go/metrics"
 )
 
 func TestReconciliation_PostgreSQL(t *testing.T) {
@@ -334,5 +337,130 @@ func TestReconciliation_MissingProjection(t *testing.T) {
 	}
 	if monthlyRequests != 1 || monthlyTokens != 150 {
 		t.Errorf("rebuilt monthly projection=(requests=%d,tokens=%d), want (1,150)", monthlyRequests, monthlyTokens)
+	}
+}
+
+// TestReconciliation_Metrics_CompletedAndAutoRepaired verifies that the
+// reconciliation pipeline increments llm_gateway_stats_reconciliation_runs_total
+// and llm_gateway_stats_reconciliation_diffs_total on the persistence
+// boundary. The assertion uses dto.Metric.Write directly so unobserved
+// label combinations do not produce confusing zero defaults.
+func TestReconciliation_Metrics_CompletedAndAutoRepaired(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	pgContainer, err := postgres.Run(ctx,
+		"postgres:16-alpine",
+		postgres.WithDatabase("metricsdb"),
+		postgres.WithUsername("metricsuser"),
+		postgres.WithPassword("metricspass"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cleanupCancel()
+		_ = pgContainer.Terminate(cleanupCtx)
+	})
+
+	connStr, err := pgContainer.ConnectionString(ctx, "sslmode=disable")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := pgx.ParseConfig(connStr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
+
+	var conn *pgx.Conn
+	for attempt := 0; attempt < 30; attempt++ {
+		conn, err = pgx.ConnectConfig(ctx, cfg)
+		if err == nil {
+			break
+		}
+		time.Sleep(time.Second)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(ctx)
+
+	for _, name := range []string{
+		"../../sql/migrations/startup/536_stats_analytics_foundation.sql",
+		"../../sql/migrations/startup/537_usage_facts.sql",
+		"../../sql/migrations/startup/539_stats_reconciliation_tenant.sql",
+	} {
+		body, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := conn.Exec(ctx, string(body)); err != nil {
+			t.Fatalf("apply %s: %v", name, err)
+		}
+	}
+
+	pool, err := pgxpool.New(ctx, connStr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+
+	now := time.Now().UTC()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+
+	if _, err := conn.Exec(ctx, `
+		INSERT INTO usage_facts
+			(event_id, request_id, occurred_at, tenant_id, traffic_class, status,
+			 provider_id, canonical_id, raw_model_name,
+			 prompt_tokens, completion_tokens, total_tokens, cost_amount, credits_charged)
+		VALUES
+			('metric-evt-1', 'metric-req-1', $1, 'metric-tenant', 'business', 'success',
+			 7, 70, 'metric-model', 100, 50, 150, 0.01, 150)
+	`, today.Add(12*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+
+	// Projection missing: triggers auto_repair_pending → auto_repaired path.
+	worker := NewReconciliationWorker(pool, time.Hour)
+
+	readCounter := func(counter interface{ Write(*dto.Metric) error }) float64 {
+		m := &dto.Metric{}
+		if err := counter.Write(m); err != nil {
+			t.Fatalf("counter.Write: %v", err)
+		}
+		return m.GetCounter().GetValue()
+	}
+
+	completedBefore := readCounter(metrics.StatsReconciliationRunsVec("completed"))
+	autoRepairedBefore := readCounter(metrics.StatsReconciliationDiffsVec("auto_repaired"))
+	openBefore := readCounter(metrics.StatsReconciliationDiffsVec("open"))
+
+	if err := worker.ReconcilePeriod(ctx, today, today.Add(24*time.Hour), "metrics_test"); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := readCounter(metrics.StatsReconciliationRunsVec("completed")); got != completedBefore+1 {
+		t.Fatalf("runs{status=completed} delta = %v, want +1", got-completedBefore)
+	}
+
+	var persistedRepaired int64
+	if err := conn.QueryRow(ctx, `
+		SELECT COUNT(*) FROM stats_reconciliation_diffs
+		WHERE tenant_id = 'metric-tenant' AND resolution = 'auto_repaired'
+	`).Scan(&persistedRepaired); err != nil {
+		t.Fatal(err)
+	}
+	if persistedRepaired <= 0 {
+		t.Fatal("expected at least one auto_repaired diff to drive auto_repaired metric")
+	}
+	if got := readCounter(metrics.StatsReconciliationDiffsVec("auto_repaired")); got != autoRepairedBefore+float64(persistedRepaired) {
+		t.Fatalf("diffs{resolution=auto_repaired} delta = %v, want +%d", got-autoRepairedBefore, persistedRepaired)
+	}
+	// open diffs metric should remain flat: no unresolved diffs in this run.
+	if got := readCounter(metrics.StatsReconciliationDiffsVec("open")); got != openBefore {
+		t.Fatalf("diffs{resolution=open} delta = %v, want 0", got-openBefore)
 	}
 }
