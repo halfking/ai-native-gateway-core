@@ -7,28 +7,46 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/redis/go-redis/v9"
 )
 
-// Mode controls the leader-follower behavior. Currently only WaitFollower
-// is supported; the field is here for future flexibility (e.g. a "skip"
-// mode where followers immediately return without waiting).
+// Mode controls the leader-follower behavior.
 type Mode int
 
 const (
-	// ModeWaitFollower makes followers block on Wait until the leader
-	// releases or the lock TTL elapses. This is the only mode used by
-	// the title pipeline; the caller re-checks the persisted state
-	// after Wait returns to decide whether to skip or to retry as a
-	// new leader.
 	ModeWaitFollower Mode = iota
 )
 
-// AcquireOpts parameterizes Acquire. Key is required; TTL defaults to 60s
-// when zero. Mode defaults to ModeWaitFollower.
+const (
+	releaseChannelSuffix = ":release"
+	defaultTTL           = 60 * time.Second
+	handshakeTimeout     = 3 * time.Second
+)
+
+var (
+	ErrNotEnabled      = errors.New("distlock: redis client not configured")
+	ErrInvalidKey      = errors.New("distlock: key is required")
+	ErrUnsupportedMode = errors.New("distlock: unsupported mode")
+	ErrTTLExpired      = errors.New("distlock: leader TTL expired")
+	ErrPubSubClosed    = errors.New("distlock: pubsub channel closed unexpectedly")
+	ErrHandleReleased  = errors.New("distlock: handle released")
+	ErrLockReplaced    = errors.New("distlock: lock ownership replaced")
+	ErrPTTLInvalid     = errors.New("distlock: lock key has no expiry")
+	ErrLeaseLost       = errors.New("distlock: lease ownership lost")
+)
+
+// BuildKey creates a Redis Cluster-safe key. The release channel is derived
+// inside the release script, so only this key participates in EVAL routing.
+func BuildKey(namespace, logicalKey string) string {
+	return "llmgw:distlock:{" + strings.TrimSpace(namespace) + ":" + strings.TrimSpace(logicalKey) + "}:lock"
+}
+
+// AcquireOpts parameterizes Acquire. Scope is a bounded observability hint.
 type AcquireOpts struct {
 	Key   string
 	TTL   time.Duration
@@ -36,205 +54,228 @@ type AcquireOpts struct {
 	Scope string
 }
 
-// Manager is the entry-point interface implemented by both RedisManager
-// and LocalManager. Acquire returns a Handle whose IsLeader / Wait /
-// Release methods implement the leader-follower protocol.
-//
-// Enabled reports whether the underlying transport is usable. Callers
-// MAY short-circuit Acquire entirely when Enabled is false (the title
-// pipeline does exactly this so the in-process LocalManager is the only
-// path in no-Redis deployments).
 type Manager interface {
 	Acquire(ctx context.Context, opts AcquireOpts) (*Handle, error)
 	Enabled() bool
 }
 
-// releaseChannelSuffix is appended to the lock key to derive the pub/sub
-// channel that the leader publishes on Release. Keep in sync with the
-// Lua compare-and-delete in releaseScript.
-const releaseChannelSuffix = ":release"
-
-// releaseScript: only delete the key if we still own the token, and
-// publish on the release channel before deleting so concurrent followers
-// receive the wake-up event. Without the token check a leader whose TTL
-// expired and whose Release was delayed would delete a fresh lock
-// acquired by a follower (or a subsequent leader).
 const releaseScript = `if redis.call('GET', KEYS[1]) == ARGV[1] then
-	redis.call('PUBLISH', KEYS[2], ARGV[1])
+	redis.call('PUBLISH', KEYS[1] .. ':release', ARGV[1])
 	return redis.call('DEL', KEYS[1])
 end
 return 0`
 
-// RedisManager is the production implementation backed by go-redis.
-// All goroutines that share a *redis.Client should share one *RedisManager.
-type RedisManager struct {
-	rdb *redis.Client
+const renewScript = `if redis.call('GET', KEYS[1]) == ARGV[1] then
+	return redis.call('PEXPIRE', KEYS[1], ARGV[2])
+end
+return 0`
+
+type RedisManager struct{ rdb *redis.Client }
+
+func NewRedisManager(rdb *redis.Client) *RedisManager { return &RedisManager{rdb: rdb} }
+func (m *RedisManager) Enabled() bool                 { return m != nil && m.rdb != nil }
+
+func normalizeTTL(ttl time.Duration) time.Duration {
+	if ttl <= 0 {
+		return defaultTTL
+	}
+	return ttl
 }
 
-// NewRedisManager constructs a manager. rdb may be nil; in that case
-// Enabled returns false and Acquire returns ErrNotEnabled. The caller is
-// expected to gate Acquire behind Enabled.
-func NewRedisManager(rdb *redis.Client) *RedisManager {
-	return &RedisManager{rdb: rdb}
+func validMode(mode Mode) bool { return mode == ModeWaitFollower }
+
+func handshakeContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if deadline, ok := ctx.Deadline(); ok {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return context.WithCancel(ctx)
+		}
+		if remaining < handshakeTimeout {
+			return context.WithTimeout(ctx, remaining)
+		}
+	}
+	return context.WithTimeout(ctx, handshakeTimeout)
 }
 
-// Enabled reports whether the Redis transport is wired. Callers should
-// short-circuit Acquire when this is false.
-func (m *RedisManager) Enabled() bool {
-	return m != nil && m.rdb != nil
-}
-
-// ErrNotEnabled is returned by Acquire when the manager has no Redis
-// client. Callers should treat this as "skip the lock" rather than a
-// hard error.
-var ErrNotEnabled = errors.New("distlock: redis client not configured")
-
-// Acquire takes the SETNX lock at opts.Key, or subscribes to the release
-// channel as a follower if the lock is already held. The returned Handle
-// distinguishes leader vs follower via IsLeader; the caller MUST call
-// Release exactly once.
-//
-// Returned errors:
-//
-//   - ErrNotEnabled: rdb is nil. Caller should fall back to LocalManager
-//     or skip the lock entirely.
-//   - ctx.Err(): the caller's context was cancelled while doing the
-//     initial SetNX / Subscribe handshake.
-//   - any other error: Redis is temporarily unavailable. Caller should
-//     log + proceed without the lock (DB ON CONFLICT is the final guard).
 func (m *RedisManager) Acquire(ctx context.Context, opts AcquireOpts) (h *Handle, err error) {
+	scope := normalizeLockScope(opts.Scope)
 	result := "error"
-	defer func() {
-		distlockAcquireTotal.WithLabelValues(result).Inc()
-	}()
+	defer func() { distlockAcquireTotal.WithLabelValues(scope, result).Inc() }()
 
 	if !m.Enabled() {
+		result = "disabled"
 		return nil, ErrNotEnabled
 	}
-	if opts.Key == "" {
-		return nil, errors.New("distlock: opts.Key is required")
+	if strings.TrimSpace(opts.Key) == "" {
+		result = "invalid"
+		return nil, ErrInvalidKey
 	}
-	ttl := opts.TTL
-	if ttl <= 0 {
-		ttl = 60 * time.Second
+	if !validMode(opts.Mode) {
+		result = "invalid"
+		return nil, ErrUnsupportedMode
 	}
+
+	ttl := normalizeTTL(opts.TTL)
 	token, err := newToken()
 	if err != nil {
 		return nil, fmt.Errorf("distlock: token gen: %w", err)
 	}
-
-	ok, setErr := m.rdb.SetNX(ctx, opts.Key, token, ttl).Result()
-	if setErr != nil {
-		return nil, fmt.Errorf("distlock: SetNX %q: %w", opts.Key, setErr)
+	ok, err := m.rdb.SetNX(ctx, opts.Key, token, ttl).Result()
+	if err != nil {
+		return nil, fmt.Errorf("distlock: SetNX %q: %w", opts.Key, err)
 	}
 	if ok {
+		backend := &redisBackend{rdb: m.rdb, key: opts.Key, token: token, ttl: ttl, scope: scope}
+		h = newLeaderHandle(opts.Key, ttl, scope, backend)
+		backend.startRenewal(h)
 		result = "leader"
-		// Leader path. The backend closure does the Lua compare-and-delete
-		// (which also publishes the release event).
-		backend := &redisBackend{
-			rdb:   m.rdb,
-			key:   opts.Key,
-			token: token,
-		}
-		return &Handle{
-			leader:  true,
-			key:     opts.Key,
-			ttl:     ttl,
-			scope:   normalizeLockScope(opts.Scope),
-			backend: backend,
-		}, nil
+		return h, nil
 	}
 
-	// Follower path: subscribe to the release channel. The subscription
-	// must outlive the caller's request context (a 45s timeout upstream
-	// can expire before the leader releases), so we use context.Background
-	// for the SUBSCRIBE handshake and surface caller's ctx cancellation
-	// via Handle.Wait.
-	subCtx := context.Background()
-	pubsub := m.rdb.Subscribe(subCtx, opts.Key+releaseChannelSuffix)
-	if _, err := pubsub.Receive(subCtx); err != nil {
+	handshakeCtx, cancel := handshakeContext(ctx)
+	defer cancel()
+	pubsub := m.rdb.Subscribe(handshakeCtx, opts.Key+releaseChannelSuffix)
+	if _, err := pubsub.Receive(handshakeCtx); err != nil {
 		_ = pubsub.Close()
 		return nil, fmt.Errorf("distlock: follower subscribe %q: %w", opts.Key, err)
 	}
-	ch := pubsub.Channel()
-	// Re-check after the subscription handshake. A leader can release after
-	// SetNX reports contention but before Redis registers this subscriber.
-	if _, err := m.rdb.Get(subCtx, opts.Key).Result(); errors.Is(err, redis.Nil) {
+	ownerToken, err := m.rdb.Get(handshakeCtx, opts.Key).Result()
+	if errors.Is(err, redis.Nil) {
 		_ = pubsub.Close()
 		result = "follower"
-		return &Handle{leader: false, key: opts.Key, ttl: 0, scope: normalizeLockScope(opts.Scope)}, nil
-	} else if err != nil {
+		return newTerminalFollower(opts.Key, scope, ErrTTLExpired), nil
+	}
+	if err != nil {
 		_ = pubsub.Close()
 		return nil, fmt.Errorf("distlock: follower recheck %q: %w", opts.Key, err)
 	}
-
-	// Read the actual remaining TTL from Redis so the follower's wait
-	// timer matches the real lock expiry. If the key is already gone
-	// (PTTL returns -2) or has no expiry (-1), treat the lock as already
-	// released and return a follower that will wake immediately.
-	var followerTTL time.Duration
-	if rem, err := m.rdb.PTTL(subCtx, opts.Key).Result(); err == nil {
-		if rem > 0 {
-			followerTTL = rem
-		} else {
-			followerTTL = 0 // key already gone, will wake immediately
-		}
-	} else {
-		// PTTL failed; fall back to the original TTL. This is conservative
-		// (may wait a bit longer than the real TTL) but safe.
-		followerTTL = ttl
+	remaining, err := m.rdb.PTTL(handshakeCtx, opts.Key).Result()
+	if err != nil {
+		_ = pubsub.Close()
+		return nil, fmt.Errorf("distlock: follower PTTL %q: %w", opts.Key, err)
 	}
+	if remaining == -1*time.Millisecond {
+		_ = pubsub.Close()
+		return nil, ErrPTTLInvalid
+	}
+	if remaining == -2*time.Millisecond || remaining <= 0 {
+		_ = pubsub.Close()
+		result = "follower"
+		return newTerminalFollower(opts.Key, scope, ErrTTLExpired), nil
+	}
+
+	h = newFollowerHandle(opts.Key, remaining, scope, ownerToken, pubsub)
+	h.startRedisWatcher(m.rdb)
 	result = "follower"
-	return &Handle{
-		leader:  false,
-		key:     opts.Key,
-		ttl:     followerTTL,
-		scope:   normalizeLockScope(opts.Scope),
-		channel: ch,
-		pubsub:  pubsub,
-		backend: &redisBackend{rdb: m.rdb, key: opts.Key},
-	}, nil
+	return h, nil
 }
 
-// redisBackend implements the Handle.backend interface for the Redis
-// manager. The leader path needs the token to do the compare-and-delete;
-// the follower path does not need it.
 type redisBackend struct {
 	rdb   *redis.Client
 	key   string
-	token string // empty for follower handles
+	token string
+	ttl   time.Duration
+	scope string
+	local handleBackend
+
+	stopRenew chan struct{}
+	renewDone chan struct{}
+	lost      atomic.Bool
 }
 
-// leaderRelease does the Lua compare-and-delete (which also publishes the
-// release event for followers). Called from Handle.Release.
-func (b *redisBackend) leaderRelease(ctx context.Context) {
+func (b *redisBackend) startRenewal(h *Handle) {
+	if b == nil || b.local != nil || b.rdb == nil || b.token == "" || b.ttl <= 0 {
+		return
+	}
+	interval := b.ttl / 3
+	if interval < 10*time.Millisecond {
+		interval = 10 * time.Millisecond
+	}
+	b.stopRenew = make(chan struct{})
+	b.renewDone = make(chan struct{})
+	go func() {
+		defer close(b.renewDone)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-b.stopRenew:
+				return
+			case <-ticker.C:
+				ctx, cancel := context.WithTimeout(context.Background(), handshakeTimeout)
+				result, err := b.rdb.Eval(ctx, renewScript, []string{b.key}, b.token, b.ttl.Milliseconds()).Int()
+				cancel()
+				if err != nil {
+					distlockRenewTotal.WithLabelValues(b.scope, "error").Inc()
+					continue
+				}
+				if result == 0 {
+					b.lost.Store(true)
+					h.markLeaseLost()
+					distlockRenewTotal.WithLabelValues(b.scope, "lost").Inc()
+					return
+				}
+				distlockRenewTotal.WithLabelValues(b.scope, "success").Inc()
+			}
+		}
+	}()
+}
+
+func (b *redisBackend) stopRenewal() {
+	if b == nil || b.stopRenew == nil {
+		return
+	}
+	close(b.stopRenew)
+	<-b.renewDone
+	b.stopRenew = nil
+}
+
+func (b *redisBackend) leaderRelease(ctx context.Context) error {
+	if b != nil && b.local != nil {
+		return b.local.leaderRelease(ctx)
+	}
 	if b == nil || b.rdb == nil || b.token == "" {
-		return
+		return nil
 	}
-	// Use a fresh, short context so a request context that already
-	// expired (45s timeout upstream) does not abort the DEL itself.
-	ctxUse, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+	b.stopRenewal()
+	ctxUse, cancel := context.WithTimeout(context.WithoutCancel(ctx), handshakeTimeout)
 	defer cancel()
-	if _, err := b.rdb.Eval(ctxUse, releaseScript,
-		[]string{b.key, b.key + releaseChannelSuffix},
-		b.token).Result(); err != nil {
-		slog.Debug("distlock: leader release EVAL failed",
-			"key", b.key, "error", err.Error())
+	deleted, err := b.rdb.Eval(ctxUse, releaseScript, []string{b.key}, b.token).Int()
+	if err != nil {
+		distlockReleaseTotal.WithLabelValues(b.scope, "error").Inc()
+		slog.Warn("distlock: leader release EVAL failed", "key", b.key, "error", err)
+		return err
 	}
+	if deleted == 0 {
+		distlockReleaseTotal.WithLabelValues(b.scope, "not_owner").Inc()
+		return ErrLeaseLost
+	}
+	distlockReleaseTotal.WithLabelValues(b.scope, "success").Inc()
+	return nil
 }
 
-// followerClose closes the pub/sub subscription. Called from
-// Handle.Release for followers.
-func (b *redisBackend) followerClose() {
-	if b == nil {
-		return
+func (b *redisBackend) check(ctx context.Context) error {
+	if b != nil && b.local != nil {
+		return b.local.check(ctx)
 	}
-	// pubsub is owned by the Handle, not the backend; see Handle.Release.
+	if b == nil || b.rdb == nil || b.token == "" || b.lost.Load() {
+		return ErrLeaseLost
+	}
+	value, err := b.rdb.Get(ctx, b.key).Result()
+	if err != nil {
+		if errors.Is(err, redis.Nil) {
+			b.lost.Store(true)
+			return ErrLeaseLost
+		}
+		return fmt.Errorf("distlock: check %q: %w", b.key, err)
+	}
+	if value != b.token {
+		b.lost.Store(true)
+		return ErrLeaseLost
+	}
+	return nil
 }
 
-// Handle is what Acquire returns. It is safe to call IsLeader/Wait/Release
-// from any goroutine. The Handle is single-use: after Release is called
-// the Handle is invalid.
 type Handle struct {
 	leader  bool
 	key     string
@@ -242,138 +283,172 @@ type Handle struct {
 	scope   string
 	backend handleBackend
 
-	// Follower-only transport state. Exactly one of {channel, localWait}
-	// is non-nil depending on which manager issued the handle.
-	channel   <-chan *redis.Message // Redis pub/sub channel (RedisManager follower)
-	localWait <-chan struct{}       // leader's release chan (LocalManager follower)
-	pubsub    *redis.PubSub         // Redis pub/sub handle (RedisManager follower)
+	expectedToken string
+	channel       <-chan *redis.Message
+	localWait     <-chan struct{}
+	pubsub        *redis.PubSub
 
-	mu          sync.Mutex
-	releaseOnce sync.Once
+	terminalDone chan struct{}
+	terminalOnce sync.Once
+	terminalErr  error
+	stateMu      sync.RWMutex
+	waitMetric   sync.Once
+	releaseOnce  sync.Once
+	leaseLost    atomic.Bool
 }
 
-// handleBackend is the small surface Handle.Release / Wait use to
-// dispatch to the right transport. Each implementation lives in the
-// file that owns the Manager.
 type handleBackend interface {
-	leaderRelease(ctx context.Context)
-	followerClose()
+	leaderRelease(ctx context.Context) error
+	check(ctx context.Context) error
 }
 
-// IsLeader reports whether this handle is the leader (i.e. the only
-// goroutine that should run the protected operation). Always returns
-// false on a nil Handle so defer h.Release(...) never panics.
-func (h *Handle) IsLeader() bool {
-	return h != nil && h.leader
+func newLeaderHandle(key string, ttl time.Duration, scope string, backend handleBackend) *Handle {
+	return &Handle{leader: true, key: key, ttl: ttl, scope: scope, backend: backend}
 }
 
-// Wait blocks until the leader releases, the lock TTL expires, or ctx is
-// cancelled. Returns:
-//
-//   - nil: the leader released normally. The follower's caller should
-//     re-check the persisted state to decide whether to skip or to
-//     retry as the new leader.
-//   - ctx.Err(): the waiter's context expired first.
-//   - ErrTTLExpired: the lock TTL elapsed without a release event.
-//   - ErrPubSubClosed: the pub/sub channel closed unexpectedly (Redis
-//     disconnect, server restart).
-//
-// No-op on a leader handle (returns nil immediately).
+func newFollowerHandle(key string, ttl time.Duration, scope, expectedToken string, pubsub *redis.PubSub) *Handle {
+	return &Handle{key: key, ttl: ttl, scope: scope, expectedToken: expectedToken, channel: pubsub.Channel(), pubsub: pubsub, terminalDone: make(chan struct{})}
+}
+
+func newLocalFollowerHandle(key, scope string, wait <-chan struct{}, backend handleBackend) *Handle {
+	h := &Handle{key: key, scope: scope, localWait: wait, terminalDone: make(chan struct{}), backend: backend}
+	go func() {
+		select {
+		case <-wait:
+			h.finish(nil)
+		case <-h.terminalDone:
+		}
+	}()
+	return h
+}
+
+func newTerminalFollower(key, scope string, err error) *Handle {
+	h := &Handle{key: key, scope: scope, terminalDone: make(chan struct{})}
+	h.finish(err)
+	return h
+}
+
+func (h *Handle) startRedisWatcher(rdb *redis.Client) {
+	go func() {
+		timer := time.NewTimer(h.ttl)
+		defer timer.Stop()
+		for {
+			select {
+			case <-h.terminalDone:
+				return
+			case <-timer.C:
+				h.finish(ErrTTLExpired)
+				return
+			case msg, ok := <-h.channel:
+				if !ok {
+					h.finish(ErrPubSubClosed)
+					return
+				}
+				if msg == nil || msg.Payload != h.expectedToken {
+					continue
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), handshakeTimeout)
+				value, err := rdb.Get(ctx, h.key).Result()
+				cancel()
+				if errors.Is(err, redis.Nil) {
+					h.finish(nil)
+					return
+				}
+				if err != nil {
+					h.finish(fmt.Errorf("distlock: follower release recheck %q: %w", h.key, err))
+					return
+				}
+				if value != h.expectedToken {
+					h.finish(ErrLockReplaced)
+					return
+				}
+			}
+		}
+	}()
+}
+
+func (h *Handle) finish(err error) {
+	if h == nil || h.terminalDone == nil {
+		return
+	}
+	h.terminalOnce.Do(func() {
+		h.stateMu.Lock()
+		h.terminalErr = err
+		h.stateMu.Unlock()
+		close(h.terminalDone)
+	})
+}
+
+func (h *Handle) terminalResult() error {
+	h.stateMu.RLock()
+	defer h.stateMu.RUnlock()
+	return h.terminalErr
+}
+
+func (h *Handle) markLeaseLost() {
+	if h != nil {
+		h.leaseLost.Store(true)
+	}
+}
+
+func (h *Handle) IsLeader() bool { return h != nil && h.leader }
+
+// Check verifies that a leader still owns its lease before a durable side effect.
+func (h *Handle) Check(ctx context.Context) error {
+	if h == nil || !h.leader || h.leaseLost.Load() {
+		return ErrLeaseLost
+	}
+	if h.backend == nil {
+		return nil
+	}
+	if err := h.backend.check(ctx); err != nil {
+		h.markLeaseLost()
+		return err
+	}
+	return nil
+}
+
 func (h *Handle) Wait(ctx context.Context) error {
 	if h == nil || h.leader {
 		return nil
 	}
 	start := time.Now()
-	defer func() {
+	defer h.waitMetric.Do(func() {
 		distlockWaitSeconds.WithLabelValues(normalizeLockScope(h.scope)).Observe(time.Since(start).Seconds())
-	}()
-	h.mu.Lock()
-	channel := h.channel
-	localWait := h.localWait
-	ttl := h.ttl
-	h.mu.Unlock()
-	ttlTimer := time.NewTimer(ttl)
-	defer ttlTimer.Stop()
-	switch {
-	case channel != nil:
-		for {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-ttlTimer.C:
-				return ErrTTLExpired
-			case msg, ok := <-channel:
-				if !ok {
-					return ErrPubSubClosed
-				}
-				if msg != nil {
-					_ = msg // payload is the leader's token; we don't need it
-				}
-				return nil
-			}
-		}
-	case localWait != nil:
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-ttlTimer.C:
-			return ErrTTLExpired
-		case <-localWait:
-			return nil
-		}
-	default:
-		return nil
+	})
+	if h.terminalDone == nil {
+		return ErrHandleReleased
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-h.terminalDone:
+		return h.terminalResult()
 	}
 }
 
-// ErrTTLExpired is returned by Handle.Wait when the lock TTL elapses
-// without a leader release. The follower's caller is expected to
-// re-check persisted state.
-var ErrTTLExpired = errors.New("distlock: leader TTL expired")
-
-// ErrPubSubClosed is returned by Handle.Wait when the pub/sub channel
-// closes without a release message (Redis disconnect, server restart).
-var ErrPubSubClosed = errors.New("distlock: pubsub channel closed unexpectedly")
-
-// Release releases the lock. Safe to call on a nil Handle (no-op). For
-// leaders this issues the Lua compare-and-delete that wakes followers +
-// removes the key. For followers this closes the pub/sub subscription
-// (RedisManager) or is a no-op (LocalManager — the channel is owned by
-// the leader and is closed by the leader's Release).
-//
-// Idempotent: subsequent calls are no-ops.
 func (h *Handle) Release(ctx context.Context) {
 	if h == nil {
 		return
 	}
 	h.releaseOnce.Do(func() {
-		h.mu.Lock()
-		leader := h.leader
-		backend := h.backend
-		pubsub := h.pubsub
-		h.backend = nil
-		h.pubsub = nil
-		h.channel = nil
-		h.localWait = nil
-		h.mu.Unlock()
-
-		if leader {
-			if backend != nil {
-				backend.leaderRelease(ctx)
+		if h.leader {
+			if h.backend != nil {
+				if err := h.backend.leaderRelease(ctx); err != nil {
+					h.markLeaseLost()
+				}
 			}
 			return
 		}
+		h.finish(ErrHandleReleased)
+		pubsub := h.pubsub
+		h.pubsub = nil
 		if pubsub != nil {
 			_ = pubsub.Close()
-		}
-		if backend != nil {
-			backend.followerClose()
 		}
 	})
 }
 
-// newToken returns a 128-bit random hex string used to make the leader's
-// Release safe against accidental key ownership transfer.
 func newToken() (string, error) {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {

@@ -33,6 +33,7 @@
 //   - Auto title generation uses key llmgw:distlock:title:auto:<taskID>:<sid>
 //   - Manual title regenerate/PUT/DELETE use
 //     llmgw:distlock:title:manual:<taskID>:<sid>
+//
 // The two prefixes are independent so the user can hit "regenerate" while
 // the auto pipeline is mid-run without blocking it (and vice-versa).
 package distlock
