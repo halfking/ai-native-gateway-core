@@ -87,24 +87,22 @@ func (h *Handler) handleSessionSummarizeTitle(w http.ResponseWriter, r *http.Req
 			defer lockHandle.Release(context.Background())
 			if !lockHandle.IsLeader() {
 				waitErr := lockHandle.Wait(ctx)
-				if waitErr == nil {
-					if title, ok := h.loadStoredSessionTitle(ctx, taskID, scopedKey); ok {
-						meta := sessionTitleMeta{
-							TaskID:          taskID,
-							ScopedSessionID: sc.SessionID,
-							GeneratedAt:     time.Now().UTC().Format(time.RFC3339),
-							Model:           "manual-follower",
-						}
-						writeJSON(w, http.StatusOK, sessionTitleResponse{Title: title, Meta: meta})
-						return
-					}
+				if waitErr != nil {
+					writeError(w, http.StatusConflict, "标题生成仍在进行，请稍后重试")
+					return
 				}
-				// Leader didn't write a title (either failed, or
-				// the wait errored before leader finished). Fall
-				// through so this caller can retry rather than
-				// silently returning 200.
-				slog.Info("session_title: follower retrying after leader release without title",
-					"task_id", taskID, "session_id", scopedKey, "wait_err", waitErr)
+				if title, ok := h.loadStoredSessionTitle(ctx, taskID, scopedKey); ok {
+					meta := sessionTitleMeta{
+						TaskID:          taskID,
+						ScopedSessionID: sc.SessionID,
+						GeneratedAt:     time.Now().UTC().Format(time.RFC3339),
+						Model:           "manual-follower",
+					}
+					writeJSON(w, http.StatusOK, sessionTitleResponse{Title: title, Meta: meta})
+					return
+				}
+				writeError(w, http.StatusConflict, "标题生成未完成，请稍后重试")
+				return
 			}
 		}
 	}
@@ -150,6 +148,12 @@ func (h *Handler) handleSessionSummarizeTitle(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	if lockHandle != nil && lockHandle.IsLeader() {
+		if err := lockHandle.Check(ctx); err != nil {
+			writeError(w, http.StatusConflict, "标题租约已失效，请稍后重试")
+			return
+		}
+	}
 	if err := h.upsertSessionTitle(ctx, taskID, scopedKey, title, model, keyID); err != nil {
 		writeError(w, http.StatusInternalServerError, "保存标题失败")
 		return
@@ -429,29 +433,36 @@ func (h *Handler) handleSessionTitleUpdate(w http.ResponseWriter, r *http.Reques
 			defer lockHandle.Release(context.Background())
 			if !lockHandle.IsLeader() {
 				waitErr := lockHandle.Wait(ctx)
-				if waitErr == nil {
-					if title, ok := h.loadStoredSessionTitle(ctx, taskID, scopedKey); ok {
-						writeJSON(w, http.StatusOK, map[string]any{
-							"task_id":           taskID,
-							"scoped_session_id": scopedKey,
-							"title":             title,
-							"model":             "manual-follower",
-							"updated_at":        time.Now().UTC().Format(time.RFC3339),
-						})
-						return
-					}
+				if waitErr != nil {
+					writeError(w, http.StatusConflict, "标题生成仍在进行，请稍后重试")
+					return
 				}
-				// Leader failed — fall through and let this caller
-				// attempt the write again.
-				slog.Info("session_title_update: follower falling through after leader failure",
-					"task_id", taskID, "session_id", scopedKey, "wait_err", waitErr)
+				if title, ok := h.loadStoredSessionTitle(ctx, taskID, scopedKey); ok {
+					writeJSON(w, http.StatusOK, map[string]any{
+						"task_id":           taskID,
+						"scoped_session_id": scopedKey,
+						"title":             title,
+						"model":             "manual-follower",
+						"updated_at":        time.Now().UTC().Format(time.RFC3339),
+					})
+					return
+				}
+				writeError(w, http.StatusConflict, "标题生成未完成，请稍后重试")
+				return
 			}
+
 		}
 	}
 
 	// Manual overrides are stamped with model="manual" so future
 	// summarize-title calls can preserve the human intent (caller can
 	// re-run summarize-title to refresh; the next LLM call will win).
+	if lockHandle != nil && lockHandle.IsLeader() {
+		if err := lockHandle.Check(ctx); err != nil {
+			writeError(w, http.StatusConflict, "标题租约已失效，请稍后重试")
+			return
+		}
+	}
 	_, err := h.db.Exec(ctx, `
 		INSERT INTO session_titles (task_id, scoped_session_id, title, generated_at, model, api_key_id)
 		VALUES ($1, $2, $3, NOW(), 'manual', NULL)
@@ -521,25 +532,31 @@ func (h *Handler) handleSessionTitleDelete(w http.ResponseWriter, r *http.Reques
 			defer lockHandle.Release(context.Background())
 			if !lockHandle.IsLeader() {
 				waitErr := lockHandle.Wait(ctx)
-				if waitErr == nil {
-					if _, ok := h.loadStoredSessionTitle(ctx, taskID, scopedKey); !ok {
-						// Leader already deleted the row.
-						writeJSON(w, http.StatusOK, map[string]any{
-							"task_id":           taskID,
-							"scoped_session_id": scopedKey,
-							"deleted":           false,
-						})
-						return
-					}
+				if waitErr != nil {
+					writeError(w, http.StatusConflict, "标题删除仍在进行，请稍后重试")
+					return
 				}
-				// Row still exists (or wait errored) — fall through
-				// and retry the delete.
-				slog.Info("session_title_delete: follower falling through after leader release",
-					"task_id", taskID, "session_id", scopedKey, "wait_err", waitErr)
+				if _, ok := h.loadStoredSessionTitle(ctx, taskID, scopedKey); !ok {
+					writeJSON(w, http.StatusOK, map[string]any{
+						"task_id":           taskID,
+						"scoped_session_id": scopedKey,
+						"deleted":           false,
+					})
+					return
+				}
+				writeError(w, http.StatusConflict, "标题状态已变化，请稍后重试")
+				return
 			}
+
 		}
 	}
 
+	if lockHandle != nil && lockHandle.IsLeader() {
+		if err := lockHandle.Check(ctx); err != nil {
+			writeError(w, http.StatusConflict, "标题租约已失效，请稍后重试")
+			return
+		}
+	}
 	tag, err := h.db.Exec(ctx, `
 		DELETE FROM session_titles
 		WHERE task_id = $1 AND scoped_session_id = $2

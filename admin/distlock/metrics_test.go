@@ -41,10 +41,24 @@ func waitHistogram(t *testing.T, scope string) prometheus.Observer {
 	return metric
 }
 
+func TestNormalizeLockScopeBoundsLabels(t *testing.T) {
+	for _, tc := range []struct {
+		in, want string
+	}{
+		{"auto", lockScopeAuto},
+		{"manual", lockScopeManual},
+		{"", lockScopeUnknown},
+		{"other", lockScopeUnknown},
+	} {
+		if got := normalizeLockScope(tc.in); got != tc.want {
+			t.Fatalf("normalizeLockScope(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
 func TestMetrics_LocalAcquireAndWait(t *testing.T) {
 	m := NewLocalManager()
-	leaderBefore := metricCounterValue(t, distlockAcquireTotal.WithLabelValues("leader"))
-	followerBefore := metricCounterValue(t, distlockAcquireTotal.WithLabelValues("follower"))
+	leaderBefore := metricCounterValue(t, distlockAcquireTotal.WithLabelValues(lockScopeAuto, "leader"))
+	followerBefore := metricCounterValue(t, distlockAcquireTotal.WithLabelValues(lockScopeAuto, "follower"))
 	waitBefore := metricHistogramCount(t, waitHistogram(t, lockScopeAuto))
 
 	leader, err := m.Acquire(context.Background(), AcquireOpts{Key: "metrics-local", Scope: lockScopeAuto})
@@ -65,10 +79,10 @@ func TestMetrics_LocalAcquireAndWait(t *testing.T) {
 	}
 	follower.Release(context.Background())
 
-	if got := metricCounterValue(t, distlockAcquireTotal.WithLabelValues("leader")); got != leaderBefore+1 {
+	if got := metricCounterValue(t, distlockAcquireTotal.WithLabelValues(lockScopeAuto, "leader")); got != leaderBefore+1 {
 		t.Fatalf("leader acquire delta = %v, want 1", got-leaderBefore)
 	}
-	if got := metricCounterValue(t, distlockAcquireTotal.WithLabelValues("follower")); got != followerBefore+1 {
+	if got := metricCounterValue(t, distlockAcquireTotal.WithLabelValues(lockScopeAuto, "follower")); got != followerBefore+1 {
 		t.Fatalf("follower acquire delta = %v, want 1", got-followerBefore)
 	}
 	if got := metricHistogramCount(t, waitHistogram(t, lockScopeAuto)); got != waitBefore+1 {
@@ -78,12 +92,12 @@ func TestMetrics_LocalAcquireAndWait(t *testing.T) {
 
 func TestMetrics_RedisAcquireError(t *testing.T) {
 	m := NewRedisManager(nil)
-	before := metricCounterValue(t, distlockAcquireTotal.WithLabelValues("error"))
+	before := metricCounterValue(t, distlockAcquireTotal.WithLabelValues(lockScopeUnknown, "disabled"))
 	_, err := m.Acquire(context.Background(), AcquireOpts{Key: "metrics-error"})
 	if !errors.Is(err, ErrNotEnabled) {
 		t.Fatalf("Acquire: want ErrNotEnabled, got %v", err)
 	}
-	if got := metricCounterValue(t, distlockAcquireTotal.WithLabelValues("error")); got != before+1 {
+	if got := metricCounterValue(t, distlockAcquireTotal.WithLabelValues(lockScopeUnknown, "disabled")); got != before+1 {
 		t.Fatalf("error acquire delta = %v, want 1", got-before)
 	}
 }

@@ -201,8 +201,8 @@ func TestLocalManager_ProtectedWorkRunsOnce(t *testing.T) {
 func TestLocalManager_EmptyKeyRejected(t *testing.T) {
 	m := NewLocalManager()
 	_, err := m.Acquire(context.Background(), AcquireOpts{})
-	if !errors.Is(err, ErrNotEnabled) {
-		t.Fatalf("empty Key: want ErrNotEnabled, got %v", err)
+	if !errors.Is(err, ErrInvalidKey) {
+		t.Fatalf("empty Key: want ErrInvalidKey, got %v", err)
 	}
 }
 
