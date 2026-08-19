@@ -2,18 +2,23 @@ package executors
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/kaixuan/llm-gateway-go/autoroute"
 	"github.com/kaixuan/llm-gateway-go/domains/dispatch"
 	"github.com/kaixuan/llm-gateway-go/domains/nodehealth"
 	"github.com/kaixuan/llm-gateway-go/domains/requestjourney"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
+	"github.com/kaixuan/llm-gateway-go/pool"
 	"github.com/kaixuan/llm-gateway-go/provider"
 )
 
@@ -47,6 +52,126 @@ func TestDispatchErrMapping(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestExecuteDispatchStopsAtExactly100UpstreamAttempts(t *testing.T) {
+	var (
+		upstreamCalls atomic.Int64
+		callsByNode   = map[string]int{}
+		callsMu       sync.Mutex
+	)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Model string `json:"model"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode upstream request: %v", err)
+		}
+		call := upstreamCalls.Add(1)
+		if call > int64(DefaultUpstreamAttemptLimit) {
+			t.Errorf("upstream call %d exceeded attempt limit", call)
+		}
+		callsMu.Lock()
+		callsByNode[body.Model+"/"+r.Header.Get("Authorization")]++
+		callsMu.Unlock()
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte(`{"error":{"message":"persistent upstream failure"}}`))
+	}))
+	defer upstream.Close()
+
+	limiter := newLimiterForTest()
+	defer limiter.Stop()
+	exec := NewExecutor(
+		NewRouter(NewStickyCache(), limiter), newCircuitManagerForTest(), limiter,
+		pool.NewPoolManager(nil), nil, nil, nil, nil,
+	)
+	wireDispatchPipelineForTest(t, exec)
+
+	const initialModel = "attempt-cap-model"
+	exec.Provider = &attemptCapProvider{baseURL: upstream.URL}
+	exec.SetDispatchModelRecommender(attemptCapRecommender{})
+	dispatch.SetModelChangeEnabled(true)
+	defer dispatch.SetModelChangeEnabled(false)
+	candidates := attemptCapCandidates(upstream.URL, initialModel, 0)
+
+	budget := NewUpstreamAttemptBudget(DefaultUpstreamAttemptLimit)
+	_, err := exec.Execute(&ExecParams{
+		W:                           httptest.NewRecorder(),
+		R:                           httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
+		BodyBytes:                   []byte(`{"model":"attempt-cap-model","messages":[{"role":"user","content":"fail"} ]}`),
+		ClientProtocol:              "openai-completions",
+		ClientModel:                 initialModel,
+		Model:                       initialModel,
+		RequestID:                   "dispatch-attempt-cap",
+		Candidates:                  candidates,
+		Policy:                      &provider.Policy{TierFallbackMax: DefaultUpstreamAttemptLimit, RetryPerCredential: dispatch.MaxNodeFailures - 1},
+		DispatchAllowProviderChange: true,
+		DispatchAllowModelChange:    true,
+		DispatchModelAlternatives: []string{
+			"attempt-cap-model-b", "attempt-cap-model-c", "attempt-cap-model-d",
+			"attempt-cap-model-e", "attempt-cap-model-f", "attempt-cap-model-g",
+			"attempt-cap-model-h", "attempt-cap-model-i", "attempt-cap-model-j",
+		},
+		UpstreamAttempts: budget,
+	})
+	if err == nil {
+		t.Fatal("expected dispatch to terminate after upstream failures")
+	}
+	if got := upstreamCalls.Load(); got != int64(DefaultUpstreamAttemptLimit) {
+		t.Fatalf("upstream calls = %d, want exactly %d", got, DefaultUpstreamAttemptLimit)
+	}
+	if got := budget.Used(); got != DefaultUpstreamAttemptLimit {
+		t.Fatalf("consumed upstream attempts = %d, want exactly %d", got, DefaultUpstreamAttemptLimit)
+	}
+
+	callsMu.Lock()
+	defer callsMu.Unlock()
+	for credentialID := 1; credentialID <= 12; credentialID++ {
+		key := initialModel + "/Bearer key-" + strconv.Itoa(credentialID)
+		if got := callsByNode[key]; got != dispatch.MaxNodeFailures {
+			t.Fatalf("upstream calls for %s = %d, want %d", key, got, dispatch.MaxNodeFailures)
+		}
+	}
+	for credentialID := 1001; credentialID <= 1012; credentialID++ {
+		key := "attempt-cap-model-b/Bearer key-" + strconv.Itoa(credentialID)
+		if got := callsByNode[key]; got != dispatch.MaxNodeFailures {
+			t.Fatalf("upstream calls for %s = %d, want %d", key, got, dispatch.MaxNodeFailures)
+		}
+	}
+}
+
+type attemptCapProvider struct {
+	baseURL string
+}
+
+func (p *attemptCapProvider) Enabled() bool { return true }
+
+func (p *attemptCapProvider) ModelKnown(context.Context, string) bool { return true }
+
+func (p *attemptCapProvider) GetCandidates(_ context.Context, model, _, _ string) ([]provider.Candidate, *provider.Policy, error) {
+	return attemptCapCandidates(p.baseURL, model, 1000), &provider.Policy{TierFallbackMax: DefaultUpstreamAttemptLimit, RetryPerCredential: dispatch.MaxNodeFailures - 1}, nil
+}
+
+func attemptCapCandidates(baseURL, model string, offset int) []provider.Candidate {
+	candidates := make([]provider.Candidate, 0, 12)
+	for i := 0; i < 12; i++ {
+		id := offset + i + 1
+		candidate := overloadTestCandidate(baseURL)
+		candidate.ProviderID = id
+		candidate.CredentialID = id
+		candidate.RawModel = model
+		candidate.OfferRawModel = model
+		candidate.StandardizedName = model
+		candidate.APIKey = "key-" + strconv.Itoa(id)
+		candidates = append(candidates, candidate)
+	}
+	return candidates
+}
+
+type attemptCapRecommender struct{}
+
+func (attemptCapRecommender) RecommendModelAlternatives(_ context.Context, req autoroute.ModelAlternativeRequest) ([]string, error) {
+	return append([]string(nil), req.PreferredModels...), nil
 }
 
 func TestDispatchFailureIsCredentialHealthy(t *testing.T) {
