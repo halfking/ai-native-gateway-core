@@ -72,7 +72,12 @@ func TestMonitorSummaryCoreModeSQLShape(t *testing.T) {
 // TestMonitorSummaryRowsIterationFailure guards the audit fix: when the
 // driver reports rows.Err() (network drop, server-side cancellation, etc.)
 // the handler must surface 5xx instead of returning an incomplete payload.
-// Each query-bearing handler must check rows.Err() before returning results.
+//
+// 2026-08-19: the iteration now lives in pgxQueryer-parameterized helpers
+// (runMonitorSummary / runModelHistory / runCredentialDecisions) so a
+// pgxmock pool can drive them. The audit guarantee — that the SQL
+// execution path checks rows.Err() before returning — must hold inside the
+// helpers, which the HTTP handler then maps to 5xx via the returned error.
 func TestMonitorSummaryRowsIterationFailurePropagates(t *testing.T) {
 	src, err := os.ReadFile("credential_monitor.go")
 	if err != nil {
@@ -80,17 +85,19 @@ func TestMonitorSummaryRowsIterationFailurePropagates(t *testing.T) {
 	}
 	body := string(src)
 	if !strings.Contains(body, "rows iteration failed") {
-		t.Fatal("monitor summary handler must call rows.Err() and emit a 5xx when iteration failed")
+		t.Fatal("credential monitor SQL helpers must surface a wrapped rows.Err() (the file no longer logs a rows iteration failure)")
 	}
-	requiredHandlers := []string{"handleMonitorSummary", "handleModelHistory", "handleCredentialDecisions"}
+	// Each helper owns its own rows.Next() loop and must check rows.Err()
+	// before returning. Anchor on the helper signature so the snippet search
+	// window is scoped to *that* helper rather than to a sibling handler or
+	// free-floating doc-comment that mentions the same name.
+	requiredHelpers := []string{"runMonitorSummary", "runModelHistory", "runCredentialDecisions"}
 	requiredSnippet := "if rows.Err() != nil"
-	for _, h := range requiredHandlers {
-		// Anchor on the function signature so the snippet search window is
-		// scoped to *this* handler rather than to a sibling HandleFunc or
-		// free-floating doc-comment that mentions the same name.
-		sig := "func (m *CredentialMonitorHandlers) " + h + "(w http.ResponseWriter"
+	for _, h := range requiredHelpers {
+		sig := "func " + h + "("
 		idx := strings.Index(body, sig)
 		if idx < 0 {
+			t.Errorf("helper %s not found in credential_monitor.go", h)
 			continue
 		}
 		tail := strings.Index(body[idx+len(sig):], "\nfunc ")
