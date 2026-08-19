@@ -1885,12 +1885,21 @@ func main() {
 		// tile to reach the dashboard before GET /api/logs/{id} could see it.
 		// The provider_id→catalog_code resolution is bounded by the hub's
 		// short lookup context, and Publish remains non-blocking for clients.
-		if telemetryClient.Enabled() {
+		// Live stream hub hook: register regardless of telemetryClient.Enabled()
+		// (sessionv2mirror/attachment hooks don't gate on Enabled()).
+		// If telemetry is disabled, log a clear warning so operators know
+		// the hub runs but receives no data.
+		if telemetryClient != nil {
 			hub := liveStreamHub
 			telemetryClient.AddOnRequestLogPersisted(func(entry *telemetry.RequestLogEntry) {
 				hub.Publish(adminLiveRequestFromEntry(entry, hub))
 			})
 			slog.Info("telemetry onPersisted wired → live stream SSE hub")
+		} else {
+			slog.Warn("live stream hub created but telemetryClient is nil; no data will flow to swim lanes")
+		}
+		if telemetryClient != nil && !telemetryClient.Enabled() {
+			slog.Warn("telemetryClient.Enabled() == false; live stream hub will receive no onPersisted callbacks")
 		}
 
 		slog.Info("live request stream hub enabled (sse /api/admin/live-stream)",
@@ -3744,11 +3753,11 @@ func main() {
 			telemetryClient.AddOnRequestLogPersisted(statsEventWriter.Record)
 			statsDailyMonthlyRollup = stats.NewDailyMonthlyRollup(dbConn.Pool(), time.Hour)
 			statsDailyMonthlyRollup.Start(context.Background())
-			
+
 			// Start reconciliation worker to compare usage_facts with projections
 			statsReconciliationWorker = stats.NewReconciliationWorker(dbConn.Pool(), 6*time.Hour)
 			statsReconciliationWorker.Start(context.Background())
-			
+
 			slog.Info("stats event writer started", "queue_size", 4096)
 		}
 
