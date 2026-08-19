@@ -3,6 +3,7 @@ package streaming
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -625,8 +626,11 @@ func isPartialTerminalFrame(protocol ClientProtocol, partial string) bool {
 // ErrAttemptAlreadyCommitted.
 func (g *AttemptCommitGate) Discard() error {
 	g.mu.Lock()
-	defer g.mu.Unlock()
+	bufferBytes := g.bufferLen
+	holdbackHeld := g.holdbackHeld
+	gateState := g.state
 	if g.committed || g.state >= CommitStateContent {
+		g.mu.Unlock()
 		return ErrAttemptAlreadyCommitted
 	}
 	g.buffer = nil
@@ -636,5 +640,27 @@ func (g *AttemptCommitGate) Discard() error {
 	// attempt/gate can be reasoned about uniformly.
 	g.state = CommitStateNone
 	g.discarded = true
+	g.mu.Unlock()
+	// 2026-08-19 observability: the discard path was previously silent, so
+	// post-mortem could not tell how many buffered bytes were thrown away on
+	// a transparent retry. The slog is at debug to keep production logs
+	// quiet on the common (no-op, zero-byte) case.
+	slog.Debug("attempt_buffer_discarded",
+		"protocol", g.protocol.String(),
+		"state", gateState.String(),
+		"buffer_bytes", bufferBytes,
+		"holdback_held", holdbackHeld,
+	)
 	return nil
+}
+
+// Snapshot returns the gate's current buffer size, holdback chunk count and
+// commit state without mutating anything. Used by the survival coordinator
+// to log a structured decision line BEFORE Discard zeroes the fields so
+// the buffer_bytes reported to slog/audit is the bytes that were actually
+// discarded (not zero).
+func (g *AttemptCommitGate) Snapshot() (bufferBytes, holdbackHeld int, state CommitState) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.bufferLen, g.holdbackHeld, g.state
 }

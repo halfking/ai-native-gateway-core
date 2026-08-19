@@ -3,8 +3,10 @@ package streaming
 import (
 	"context"
 	"math/rand"
+	"strings"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
 )
 
@@ -216,6 +218,14 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 	// instant the task saw its first recoverable failure.
 	var recoveryStart time.Time
 
+	// 2026-08-19 observability: every decision in this loop is now
+	// greppable by request_id via the streamLogger; surviving supervisors
+	// can reconstruct the full attempt history (committed?, kinds?,
+	// buffer_bytes at discard) without an audit table round-trip.
+	log := streamLogFromContext(ctx, nil).With(
+		"protocol", c.Protocol.String(),
+	)
+
 	for {
 		gate := NewAttemptCommitGate(c.Protocol, sw, GateOptions{Mode: GateModeBuffered, BeforeSemanticCommit: func(state CommitState) error {
 			if c.BeforeSemanticCommit == nil {
@@ -232,12 +242,69 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 		recordSurvivalAttempt(res.FinalAttempt)
 		res.Decision = AggregateTaskOutcome(res.FinalAttempt)
 
+		// 2026-08-19: log the per-attempt verdict right after aggregation so
+		// the committed/resume-blocked transition is visible regardless of
+		// which branch we take next. Keep kinds as a comma-joined string to
+		// keep structured-log keys stable across Prometheus label values.
+		attemptKinds := make([]string, 0, len(res.FinalAttempt.CandidateOutcomes))
+		lastProviderID := 0
+		lastRawModel := ""
+		for _, co := range res.FinalAttempt.CandidateOutcomes {
+			if co.Kind != "" {
+				attemptKinds = append(attemptKinds, string(co.Kind))
+			}
+			if co.ProviderID != 0 {
+				lastProviderID = co.ProviderID
+			}
+		}
+		// ExecResult carries the success-path candidate; CandidateOutcome
+		// carries the failure-path provider/model attributes. Prefer
+		// whichever is non-empty so the log line always has *something*
+		// to attribute the failure to.
+		if res.FinalAttempt.ExecResult != nil {
+			c := res.FinalAttempt.ExecResult.Candidate
+			if c.RawModel != "" || c.ProviderID != 0 {
+				lastRawModel = c.RawModel
+			}
+		}
+		if lastRawModel == "" {
+			for _, co := range res.FinalAttempt.CandidateOutcomes {
+				if co.CandidateID != "" {
+					// CandidateID is set by foldCandidateOutcomes as
+					// "provider:N/model:M"; pull the model suffix when
+					// it's the only attribution we have.
+					if idx := strings.Index(co.CandidateID, "/model:"); idx >= 0 {
+						lastRawModel = co.CandidateID[idx+len("/model:"):]
+						break
+					}
+				}
+			}
+		}
+		log.Info("survival_attempt_outcome",
+			"attempt", res.Attempts,
+			"committed", res.FinalAttempt.CommitState >= CommitStateContent,
+			"commit_state", res.FinalAttempt.CommitState.String(),
+			"kinds", strings.Join(attemptKinds, ","),
+			"candidate_count", len(res.FinalAttempt.CandidateOutcomes),
+			"action", res.Decision.Action.String(),
+			"reason", res.Decision.Reason,
+			"provider_id", lastProviderID,
+			"raw_model", lastRawModel,
+		)
+
 		switch res.Decision.Action {
 		case TaskActionSucceed:
 			if err := finishGateWriter(gw, gate); err != nil {
 				res.Decision = TaskDecision{Action: TaskActionFailClosed, Reason: "client_disconnected"}
 				recordSurvivalTransition(survivalStateRunning, survivalTerminalToState(res.Decision), res.Decision.Reason)
 				recordSurvivalRequestTerminal(c.Protocol, res.Decision)
+				log.Warn("survival_task_ended",
+					"attempt", res.Attempts,
+					"action", res.Decision.Action.String(),
+					"reason", res.Decision.Reason,
+					"committed", res.FinalAttempt.CommitState >= CommitStateContent,
+					"succeed", false,
+				)
 				return res
 			}
 			res.Succeed = true
@@ -246,6 +313,13 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 			if !recoveryStart.IsZero() {
 				observeSurvivalRecoveryLatency(c.Protocol, c.now().Sub(recoveryStart))
 			}
+			log.Info("survival_task_ended",
+				"attempt", res.Attempts,
+				"action", res.Decision.Action.String(),
+				"reason", res.Decision.Reason,
+				"committed", res.FinalAttempt.CommitState >= CommitStateContent,
+				"succeed", true,
+			)
 			return res
 
 		case TaskActionRetryNow, TaskActionWaitRecovery:
@@ -253,6 +327,15 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 				res.Decision = TaskDecision{Action: TaskActionFailClosed, Reason: "attempt_limit_exceeded"}
 				c.renderTerminal(res.Decision, gate)
 				recordSurvivalRequestTerminal(c.Protocol, res.Decision)
+				log.Warn("survival_task_ended",
+					"attempt", res.Attempts,
+					"action", res.Decision.Action.String(),
+					"reason", res.Decision.Reason,
+					"committed", res.FinalAttempt.CommitState >= CommitStateContent,
+					"succeed", false,
+					"provider_id", lastProviderID,
+					"raw_model", lastRawModel,
+				)
 				return res
 			}
 			if res.Attempts-1 >= opts.MaxRetries {
@@ -260,23 +343,77 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 				c.renderTerminal(res.Decision, gate)
 				recordSurvivalTransition(survivalStateRunning, survivalTerminalToState(res.Decision), res.Decision.Reason)
 				recordSurvivalRequestTerminal(c.Protocol, res.Decision)
+				log.Warn("survival_task_ended",
+					"attempt", res.Attempts,
+					"action", res.Decision.Action.String(),
+					"reason", res.Decision.Reason,
+					"committed", res.FinalAttempt.CommitState >= CommitStateContent,
+					"succeed", false,
+					"provider_id", lastProviderID,
+					"raw_model", lastRawModel,
+				)
 				return res
 			}
 			// Uncommitted by construction (the aggregator upgrades
 			// committed+recoverable to ResumeBlocked); Discard defensively
 			// and treat any surprise as terminal.
+			bufferBytes, holdbackHeld, gateState := gate.Snapshot()
+			gateStateStr := gateState.String()
 			if err := gate.Discard(); err != nil {
 				res.Decision = TaskDecision{Action: TaskActionFailClosed, Reason: "discard_refused"}
 				c.renderTerminal(res.Decision, gate)
 				recordSurvivalTransition(survivalStateRunning, survivalTerminalToState(res.Decision), res.Decision.Reason)
 				recordSurvivalRequestTerminal(c.Protocol, res.Decision)
+				log.Error("survival_discard_refused",
+					"attempt", res.Attempts,
+					"buffer_bytes", bufferBytes,
+						"holdback_held", holdbackHeld,
+						"state", gateState,
+						"provider_id", lastProviderID,
+						"raw_model", lastRawModel,
+					)
 				return res
+			}
+			log.Info("survival_attempt_discarded",
+				"attempt", res.Attempts,
+				"buffer_bytes", bufferBytes,
+				"holdback_held", holdbackHeld,
+				"state", gateState,
+				"provider_id", lastProviderID,
+				"raw_model", lastRawModel,
+				"action", res.Decision.Action.String(),
+				"reason", res.Decision.Reason,
+			)
+			// Record the discard into the audit capture so request_logs_hot
+			// .discard_events JSONB column carries the buffer size and
+			// decision context for offline post-mortem.
+			if params.Capture != nil {
+				params.Capture.MarkDiscarded(audit.DiscardEvent{
+					Reason:         "survival_attempt_discarded",
+					BufferBytes:    bufferBytes,
+					HoldbackHeld:   holdbackHeld,
+					State:          gateStateStr,
+					AttemptNumber:  res.Attempts,
+					ProviderID:     lastProviderID,
+					RawModel:       lastRawModel,
+					DecisionAction: res.Decision.Action.String(),
+					DecisionReason: res.Decision.Reason,
+				})
 			}
 			if c.now().After(deadline) {
 				res.Decision = TaskDecision{Action: TaskActionFailClosed, Reason: "deadline_exceeded"}
 				c.renderTerminal(res.Decision, gate)
 				recordSurvivalTransition(survivalStateRunning, survivalTerminalToState(res.Decision), res.Decision.Reason)
 				recordSurvivalRequestTerminal(c.Protocol, res.Decision)
+				log.Warn("survival_task_ended",
+					"attempt", res.Attempts,
+					"action", res.Decision.Action.String(),
+					"reason", res.Decision.Reason,
+					"committed", res.FinalAttempt.CommitState >= CommitStateContent,
+					"succeed", false,
+					"provider_id", lastProviderID,
+					"raw_model", lastRawModel,
+				)
 				return res
 			}
 			wait := backoff
@@ -300,6 +437,15 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 					c.renderTerminal(res.Decision, gate)
 					recordSurvivalTransition(survivalStateRunning, survivalTerminalToState(res.Decision), res.Decision.Reason)
 					recordSurvivalRequestTerminal(c.Protocol, res.Decision)
+					log.Error("survival_task_ended",
+						"attempt", res.Attempts,
+						"action", res.Decision.Action.String(),
+						"reason", res.Decision.Reason,
+						"committed", res.FinalAttempt.CommitState >= CommitStateContent,
+						"succeed", false,
+						"provider_id", lastProviderID,
+						"raw_model", lastRawModel,
+					)
 					return res
 				}
 			}
@@ -308,6 +454,13 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 				res.Decision = TaskDecision{Action: TaskActionFailClosed, Reason: "client_disconnected"}
 				recordSurvivalTransition(waitState, survivalTerminalToState(res.Decision), res.Decision.Reason)
 				recordSurvivalRequestTerminal(c.Protocol, res.Decision)
+				log.Warn("survival_task_ended",
+					"attempt", res.Attempts,
+					"action", res.Decision.Action.String(),
+					"reason", res.Decision.Reason,
+					"committed", res.FinalAttempt.CommitState >= CommitStateContent,
+					"succeed", false,
+				)
 				return res
 			}
 			if res.Decision.Action == TaskActionWaitRecovery && res.FinalAttempt != nil {
@@ -321,6 +474,12 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 			if backoff > opts.RetryMax {
 				backoff = opts.RetryMax
 			}
+			log.Debug("survival_attempt_recovery_resumed",
+				"attempt", res.Attempts,
+				"wait_ms", wait.Milliseconds(),
+				"action", res.Decision.Action.String(),
+				"reason", res.Decision.Reason,
+			)
 			continue
 
 		default: // ResumeBlocked / FailTerminal / FailClosed
@@ -329,6 +488,22 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 			recordSurvivalTransition(survivalStateRunning, survivalTerminalToState(res.Decision), res.Decision.Reason)
 			recordSurvivalResumeSafetyBlocked(res.Decision, res.FinalAttempt)
 			recordSurvivalRequestTerminal(c.Protocol, res.Decision)
+			// 2026-08-19: structured log alongside the SSE frame the client
+			// receives. This is the single line operators should grep for
+			// the "gateway_survival_resume_blocked / gateway request
+			// survival ended: committed_output" failure class — it carries
+			// the same fields the SSE envelope does plus the
+			// request-correlation context the envelope cannot.
+			log.Warn("survival_resume_blocked",
+				"attempt", res.Attempts,
+				"action", res.Decision.Action.String(),
+				"reason", res.Decision.Reason,
+				"committed", res.FinalAttempt.CommitState >= CommitStateContent,
+				"commit_state", res.FinalAttempt.CommitState.String(),
+				"kinds", strings.Join(attemptKinds, ","),
+				"provider_id", lastProviderID,
+				"raw_model", lastRawModel,
+			)
 			return res
 		}
 	}

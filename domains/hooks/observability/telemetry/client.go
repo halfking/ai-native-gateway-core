@@ -351,6 +351,16 @@ type RequestLogEntry struct {
 	//   main / title_gen / summary / sensitive_check / compression / other
 	// Persisted to request_logs.request_type (migration 510).
 	RequestType *string `json:"request_type,omitempty"`
+
+	// DiscardEvents (2026-08-19) is the JSONB array of attempt-discard
+	// events the survival / stream-recovery / empty-gate paths pushed into
+	// the audit StreamCapture. The audit StreamCapture also exposes it via
+	// SummaryAsMap under "discard_events", and the per-request log path
+	// (request_log_pipeline.go) copies it onto this field. The current
+	// upsert SQL does not yet include the column — operators read the
+	// gateway application log line "survival_attempt_discarded" for
+	// production debugging until the column lands in a follow-up migration.
+	DiscardEvents json.RawMessage `json:"discard_events,omitempty"`
 }
 
 func NewClient() *Client {
@@ -1003,7 +1013,10 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		$80::text::jsonb, $81,
 		-- 2026-07-27: 客户端感知字段(主表 INSERT 必填).
 		$82, $83, $84, $85,
-		-- V3.1 queue timestamps (migration 491).
+		-- V3.1 queue timestamps (migration 491): 4 client-side fields
+		-- above + 10 timestamps occupy $82-$95. 2026-08-19 hotfix:
+		-- previous diff landed $91-$95 only, which pgx rejected
+		-- with the diagnostic "unused argument: 95".
 		$86, $87, $88, $89, $90, $91, $92, $93, $94, $95
 	)
 				-- 2026-08-06 fix: INSERT targets request_logs_hot (NOT the partitioned parent).
@@ -2477,6 +2490,13 @@ func sanitizeRequestLogEntry(e *RequestLogEntry) {
 	sanitizeJSONField("response_body", &e.ResponseBody)
 	sanitizeRawJSONField("compression_meta", &e.CompressionMeta)
 	sanitizeRawJSONField("outbound_body", &e.OutboundBody)
+	// 2026-08-19: e.DiscardEvents is intentionally NOT yet wired into
+	// the request_logs_hot INSERT (would need a column N+1 + $N+1 entry
+	// that we cannot safely add in this pass — the audit upsert path
+	// would have to be re-numbered in lockstep). The JSONB column on
+	// request_logs_hot already exists (migration 543), so a follow-up
+	// pass that adds the bind arg will start writing the data with no
+	// schema change.
 	sanitizeRawJSONField("outbound_msg_hashes", &e.OutboundMsgHashes)
 	sanitizeRawJSONField("quality_fix_actions", &e.QualityFixActions)
 	sanitizeRawJSONField("tool_calls", &e.ToolCalls)
@@ -2630,6 +2650,10 @@ func mergeRequestLogEntry(dst, src *RequestLogEntry) {
 	mergeStringPtr(&dst.OriginActor, src.OriginActor)
 	mergeRawJSON(&dst.RoutingAttempts, src.RoutingAttempts)
 	mergeStringPtr(&dst.RoutingSummary, src.RoutingSummary)
+	// DiscardEvents is NOT yet merged because the INSERT column is not
+	// wired in this pass — see the matching comment on SanitizeEntry
+	// above. Once the bind arg lands, uncomment the line below.
+	// mergeRawJSON(&dst.DiscardEvents, src.DiscardEvents)
 	mergeStringPtr(&dst.AgentName, src.AgentName)
 	mergeStringPtr(&dst.AgentType, src.AgentType)
 	mergeStringPtr(&dst.ClientProtocol, src.ClientProtocol)
