@@ -16,7 +16,7 @@
 | Indexes ready | `psql -c "SELECT indexname FROM pg_indexes WHERE tablename='stats_event_inbox';"` | `idx_stats_event_inbox_claimable`, `idx_stats_event_inbox_dead_letter` |
 | `usage_facts` table present | `psql -c "\dt usage_facts"` | exists |
 | `stats_reconciliation_runs/diffs` present | `psql -c "\dt stats_reconciliation_*"` | exists |
-| `stats_adjustments` schema parity | `psql -c "\d stats_adjustments"` | **must** contain `adjustment_id` (unique), `metric` columns — see §6 |
+| `stats_adjustments` schema parity | `psql -c "\d stats_adjustments"` | **must** contain `adjustment_id` (unique), `metric` columns. After migration 544 also has `adjustment_type` (default `'reconciliation'`) and `metric_name` (backfilled from `metric`) — see §6 |
 
 > Migration **540** sets `lock_timeout='5s'` and runs `ALTER TABLE` on
 > `stats_event_inbox`. Apply during the lowest write window (typically
@@ -173,45 +173,36 @@ worker.ReconcilePeriod(ctx, mid, end, "manual_split")
 ## 6. Approval / Adjustment
 
 `POST /api/admin/stats/reconciliation/approve` runs in a single
-transaction. Currently **migration 536's `stats_adjustments` table
-defines `adjustment_id`/`metric`** while the handler writes
-`adjustment_type`/`metric_name` and omits `adjustment_id`. This
-mismatch causes the INSERT to fail and rolls back the whole batch
-unless every diff was already resolved.
+transaction. As of 2026-08-20 the handler INSERT is schema-aligned:
+it writes `adjustment_id` (via `gen_random_uuid()`), `metric`,
+`dimension_type`, `dimension_key`, `delta`, `currency`, `reason`,
+`source_event_id`, `approved_by`, `approved_at`, `created_by`,
+`created_at`. Migration **544** (`544_stats_adjustments_alignment.sql`)
+adds `adjustment_type` (default `'reconciliation'`) and `metric_name`
+(backfilled from `metric`) for future use; the handler currently
+prefixes the `reason` with `"[reconciliation] "` so the audit trail
+keeps the type information without depending on the new columns.
 
-What this looks like in metrics:
+**`month_start` is anchored to the diff's originating run period.**
+The handler now JOINs `stats_reconciliation_runs` and uses
+`date_trunc('month', r.period_start)::date` so cross-month approvals
+land in the bucket that matches the reconciliation run window, not
+`now()`. This was a latent bug that surfaced when reconciliations
+spanned month boundaries.
 
-```
-llm_gateway_stats_adjustments_total{action="approve",result="failed"} > 0
-llm_gateway_stats_adjustments_total{action="approve",result="committed"} == 0
-```
+Post-deploy verification:
 
-Until a follow-up migration aligns the schema, treat the approval
-endpoint as read-only: either reject at the router layer or keep
-`super_admin` callers informed via the runbook.
+- `llm_gateway_stats_adjustments_total{action="approve",result="committed"}` increments on the first approval batch (within minutes).
+- `llm_gateway_stats_adjustments_total{result="failed"}` does NOT increment on the happy path; only on real DB errors.
+- `psql -c "SELECT month_start, COUNT(*) FROM stats_adjustments WHERE created_at > now() - interval '1 hour' GROUP BY 1;"` shows the right month bucket (compare to `stats_reconciliation_runs.period_start`).
 
-The follow-up migration must add (or rename) at minimum:
+Recovery if `result="committed"` does not move after the migration +
+code roll:
 
-```sql
-ALTER TABLE stats_adjustments
-    ADD COLUMN IF NOT EXISTS adjustment_id text NOT NULL DEFAULT gen_random_uuid()::text UNIQUE,
-    ADD COLUMN IF NOT EXISTS adjustment_type text NOT NULL DEFAULT 'reconciliation',
-    ADD COLUMN IF NOT EXISTS metric_name text;
-
--- Backfill existing rows so legacy `metric` rows are still valid
-UPDATE stats_adjustments
-SET metric_name = metric
-WHERE metric_name IS NULL AND metric IS NOT NULL;
-```
-
-After the migration ships:
-
-- Restart gateway. Existing scheduled diffs remain valid.
-- Replay by issuing approvals; expect
-  `llm_gateway_stats_adjustments_total{action="approve",result="committed"}` > 0 within minutes.
-- If you see `result="failed"` post-migration, check the
-  `stats_adjustments` constraint catalog (the unique constraint on
-  `adjustment_id` will fail on duplicate UUIDs).
+1. Check `psql -c "\d stats_adjustments"` — `adjustment_id` must be `text NOT NULL UNIQUE` (migration 536 baseline) and 544 columns should be present.
+2. Search gateway logs for `failed to create adjustment`; the failure message indicates the SQL state (most likely a constraint or type mismatch).
+3. Roll back the gateway image (pre-2026-08-20 binary is still compatible because the new columns are additive, but it will revert `month_start` to `now()` semantics).
+4. If 544 added columns but the handler was deployed first, the handler INSERT will succeed because the extra columns default; verify by checking `psql -c "SELECT count(*) FROM stats_adjustments WHERE adjustment_type IS NULL"` — should be 0 after 544 applies.
 
 ## 7. Rollback matrix
 

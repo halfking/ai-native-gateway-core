@@ -1013,7 +1013,7 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		$80::text::jsonb, $81,
 		-- 2026-07-27: 客户端感知字段(主表 INSERT 必填).
 		$82, $83, $84, $85,
-		-- V3.1 queue timestamps (migration 491): 4 client-side fields
+		-- V3.1 queue timestamps (migration 491): 9-stage dispatch queue timestamps.
 		-- above + 10 timestamps occupy $82-$95. 2026-08-19 hotfix:
 		-- previous diff landed $91-$95 only, which pgx rejected
 		-- with the diagnostic "unused argument: 95".

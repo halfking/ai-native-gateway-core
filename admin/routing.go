@@ -99,11 +99,18 @@ func (h *Handler) logAudit(r *http.Request, action string, details map[string]an
 // running inside a transaction can keep their audit row tied to the same
 // commit boundary as the data change.
 func logAuditExec(ctx context.Context, exec pgxAuditExecutor, actor, action string, details map[string]any) error {
-	detailsJSON, _ := json.Marshal(details)
-	_, err := exec.Exec(ctx, `
+	detailsJSON, err := json.Marshal(details)
+	if err != nil {
+		return fmt.Errorf("marshal audit details: %w", err)
+	}
+	// Pass the payload as text and cast to jsonb. Passing a []byte would make
+	// pgx encode it as the bytea type, which Postgres cannot assign to the
+	// jsonb after_json column and rejects with "invalid input syntax for type
+	// json" (SQLSTATE 22P02). This mirrors the insert in admin/users.go.
+	_, err = exec.Exec(ctx, `
 		INSERT INTO routing_audit_log (actor, action, target_type, after_json)
-		VALUES ($1, $2, $3, $4)
-	`, actor, action, action, detailsJSON)
+		VALUES ($1, $2, $3, $4::text::jsonb)
+	`, actor, action, action, string(detailsJSON))
 	return err
 }
 

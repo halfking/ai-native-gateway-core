@@ -83,3 +83,53 @@ func TestEventFromTelemetryClassifiesProbeAndRateLimit(t *testing.T) {
 }
 
 func strptr(v string) *string { return &v }
+
+func TestPersonHash(t *testing.T) {
+	t.Run("cross-tenant same end_user produces different hashes", func(t *testing.T) {
+		a := personHash("tenant_a", "owner", "alice")
+		b := personHash("tenant_b", "owner", "alice")
+		if a == "" || b == "" {
+			t.Fatalf("expected non-empty hashes, got a=%q b=%q", a, b)
+		}
+		if a == b {
+			t.Fatalf("cross-tenant same end_user produced identical hash %q", a)
+		}
+		if len(a) != 16 || len(b) != 16 {
+			t.Fatalf("hash length must be 16 hex chars (8 bytes): a=%d b=%d", len(a), len(b))
+		}
+	})
+	t.Run("same tenant same end_user is deterministic", func(t *testing.T) {
+		first := personHash("tenant_a", "owner", "alice")
+		second := personHash("tenant_a", "owner", "alice")
+		if first == "" {
+			t.Fatalf("expected non-empty hash")
+		}
+		if first != second {
+			t.Fatalf("hash not deterministic: %q vs %q", first, second)
+		}
+	})
+	t.Run("fallback path uses owner value but still tenant-prefixed", func(t *testing.T) {
+		viaOwner := personHash("tenant_a", "owner", "")
+		explicitOwner := personHash("tenant_a", "owner", "owner")
+		if viaOwner == "" || explicitOwner == "" {
+			t.Fatalf("expected non-empty hashes, got viaOwner=%q explicitOwner=%q", viaOwner, explicitOwner)
+		}
+		if viaOwner != explicitOwner {
+			t.Fatalf("empty endUser should fall back to owner with same tenant: %q vs %q", viaOwner, explicitOwner)
+		}
+		crossTenant := personHash("tenant_b", "owner", "owner")
+		if viaOwner == crossTenant {
+			t.Fatalf("fallback path still must be tenant-prefixed: %q", viaOwner)
+		}
+	})
+	t.Run("empty tenant returns empty string", func(t *testing.T) {
+		if got := personHash("", "owner", "alice"); got != "" {
+			t.Fatalf("empty tenant must short-circuit, got %q", got)
+		}
+	})
+	t.Run("empty everything returns empty string", func(t *testing.T) {
+		if got := personHash("", "", ""); got != "" {
+			t.Fatalf("all-empty must short-circuit, got %q", got)
+		}
+	})
+}
