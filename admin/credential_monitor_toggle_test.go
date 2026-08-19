@@ -9,7 +9,36 @@ import (
 	"testing"
 )
 
-// newReq builds a minimal *http.Request. body may be nil.
+// TestMonitorSummaryCoreModeSkipsHeavyAggregates pins the lightweight query
+// contract used by the dashboard settings preload.
+func TestMonitorSummaryCoreModeSkipsHeavyAggregates(t *testing.T) {
+	src, err := os.ReadFile("credential_monitor.go")
+	if err != nil {
+		t.Fatalf("read source: %v", err)
+	}
+	body := string(src)
+	coreStart := strings.Index(body, "if coreMode {")
+	elseStart := strings.Index(body[coreStart:], "} else {")
+	if coreStart < 0 || elseStart < 0 {
+		t.Fatal("monitor summary core branch not found")
+	}
+	coreBody := body[coreStart : coreStart+elseStart]
+	for _, heavy := range []string{
+		"request_logs_with_current_month",
+		"recent_success_rate",
+		"credential_model_index_with_current_month",
+		"credential_model_call_history",
+		"percentile_cont",
+	} {
+		if strings.Contains(coreBody, heavy) {
+			t.Errorf("core mode must not use heavy aggregate %q", heavy)
+		}
+	}
+	if !strings.Contains(coreBody, "model_probe_state") || !strings.Contains(coreBody, "model_offers") {
+		t.Error("core mode must include model offer and probe state")
+	}
+}
+
 func newReq(method, path string, body *strings.Reader) *http.Request {
 	if body == nil {
 		return httptest.NewRequest(method, path, nil)
