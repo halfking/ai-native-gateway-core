@@ -78,6 +78,11 @@ func wrapAttemptWriter(w http.ResponseWriter, protocol ClientProtocol) (http.Res
 		mode = GateModeImmediate
 	}
 	sw := NewSerializedStreamWriter(w)
-	gate := NewAttemptCommitGate(protocol, sw, GateOptions{Mode: mode, FirstSemanticByte: firstSemanticByte})
+	// 2026-08-19 observability: the handler sets X-Request-Id on w before
+	// invoking the bridge, so it is already present here and correlates the
+	// gate's commit/discard log lines with the owning request (mirrors the
+	// survival path which passes params.RequestID explicitly).
+	reqID := w.Header().Get("X-Request-Id")
+	gate := NewAttemptCommitGate(protocol, sw, GateOptions{Mode: mode, RequestID: reqID, FirstSemanticByte: firstSemanticByte})
 	return NewGateWriterWithResponse(gate, w), gate
 }
