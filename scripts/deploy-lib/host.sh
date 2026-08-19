@@ -203,12 +203,36 @@ host_verify_bundle() {
 
 # Restart the tracked service on the target host. Slice 1-4 only knows
 # systemd; the k3s and launchd paths come with their respective slices.
+#
+# 2026-08-19 (rule 11 §1 plan-first, follow-up §3.5 候选 C 验证):
+#   原实现 "$ssh_cmd \"systemctl restart '$service_name'\" 是 fire-and-forget:
+#   systemd stop 阶段旧 Go srv.Shutdown 最长阻塞 30s 让 :8781 端口,
+#   期间 systemd 拉起新 binary → bind :8781 失败 → exit 1 → RestartSec=5 循环.
+#   现改为显式 stop → 同步等端口释放 (healthz 不可达) → start 三段式,
+#   复用 host_drain_and_stop (下 328-351) 的 drain 模式避免重复代码.
+#   drain 超时 30s; 失败时函数返回 1 让上层 _seamless_auto_rollback 兜底.
 host_restart_service() {
   local ssh_cmd=$1 target=$2
-  local service_name
+  local service_name health_url deadline_port_release
   service_name=$(target_field "$target" service_name)
+  health_url=$(target_field "$target" health_url)
   [[ -n "$service_name" ]] || { echo "service_name missing for $target" >&2; return 1; }
-  "$ssh_cmd" "systemctl restart '$service_name'"
+  [[ -n "$health_url" ]] || { echo "health_url missing for $target" >&2; return 1; }
+
+  # Step 1: stop (旧 binary srv.Shutdown 开始 drain)
+  "$ssh_cmd" "systemctl stop '$service_name'" || true
+
+  # Step 2: 等 :8781 端口真释放 (healthz 不可达 = port freed)
+  deadline_port_release=$(( $(date +%s) + 30 ))
+  while (( $(date +%s) < deadline_port_release )); do
+    if ! "$ssh_cmd" "curl -fsS --max-time 1 '$health_url' >/dev/null 2>&1"; then
+      break
+    fi
+    sleep 1
+  done
+
+  # Step 3: 此时端口必已释放,启新 binary (systemd 接管后续 RestartSec 兜底)
+  "$ssh_cmd" "systemctl start '$service_name'"
 }
 
 # Wait for /healthz on the target host to answer 2xx. Slice 1-4 uses a
