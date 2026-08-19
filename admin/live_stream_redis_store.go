@@ -302,6 +302,9 @@ func NewLiveStreamRedisStore(rdb *redis.Client) *LiveStreamRedisStore {
 // that are not a live-stream hub pass "".
 func (s *LiveStreamRedisStore) Record(ctx context.Context, req LiveRequest, instanceID string) error {
 	if s == nil || s.rdb == nil {
+		slog.Warn("live stream record: store or Redis client is nil, skipping write",
+			"store_nil", s == nil, "rdb_nil", s != nil && s.rdb == nil,
+			"request_id", req.RequestID)
 		return nil
 	}
 	if req.RequestID == "" {
@@ -341,6 +344,8 @@ func (s *LiveStreamRedisStore) Record(ctx context.Context, req LiveRequest, inst
 	// still lives in request_logs and arrives via the next snapshot refresh.
 	release, locked := s.acquireLiveStreamRecordLock(ctx, req.RequestID)
 	if !locked {
+		slog.Warn("live stream record: lock not acquired, dropping request to preserve dedup",
+			"request_id", req.RequestID, "tenant_id", tenantID)
 		return nil
 	}
 	defer release()
@@ -687,12 +692,21 @@ func liveRequestQueueKeys(tenantID string, req LiveRequest) []string {
 			liveStreamDimPrefix+"vendor:"+vendor,
 			tenantLiveStreamKey(tenantID, "dim:vendor:"+vendor),
 		)
+	} else {
+		slog.Debug("live stream: vendor dimension skipped",
+			"request_id", req.RequestID, "tenant_id", tenantID,
+			"vendor", vendor, "model_category", req.ModelCategory,
+			"provider_code", req.ProviderCode, "model", req.Model)
 	}
 	if req.ProviderCode != "" && req.ProviderCode != "unknown" {
 		keys = append(keys,
 			liveStreamDimPrefix+"provider:"+req.ProviderCode,
 			tenantLiveStreamKey(tenantID, "dim:provider:"+req.ProviderCode),
 		)
+	} else {
+		slog.Debug("live stream: provider dimension skipped",
+			"request_id", req.RequestID, "tenant_id", tenantID,
+			"provider_code", req.ProviderCode)
 	}
 	// Use CanonicalName for model dimension queue keys when available,
 	// matching the aggregation logic in liveStreamDimensionKey. This ensures
@@ -710,6 +724,11 @@ func liveRequestQueueKeys(tenantID string, req LiveRequest) []string {
 			liveStreamDimPrefix+"model:"+modelKey,
 			tenantLiveStreamKey(tenantID, "dim:model:"+modelKey),
 		)
+	} else {
+		slog.Debug("live stream: model dimension skipped",
+			"request_id", req.RequestID, "tenant_id", tenantID,
+			"canonical_name", req.CanonicalName, "model", req.Model,
+			"model_key", modelKey)
 	}
 	return keys
 }
