@@ -66,6 +66,7 @@ let loadController: AbortController | null = null
 let requestsController: AbortController | null = null
 let coreController: AbortController | null = null
 let coreTask: Promise<boolean> | null = null
+let coreCandidateTask: Promise<boolean> | null = null
 
 function isAbortError(error: unknown): boolean {
   return error instanceof DOMException && error.name === 'AbortError'
@@ -79,6 +80,7 @@ function resetDrawerData() {
   requestsController = null
   coreController = null
   coreTask = null
+  coreCandidateTask = null
   sequence++
   loading.value = false
   coreLoaded.value = false
@@ -136,14 +138,19 @@ function startCorePreload(): Promise<boolean> | null {
     return false
   })
   const candidateTask = initialModel ? loadCandidate(initialModel, requestSequence, controller.signal) : Promise.resolve(true)
-  coreTask = Promise.all([monitorTask, candidateTask]).then(([monitorReady]) => {
+  coreCandidateTask = candidateTask
+  coreTask = monitorTask.then(monitorReady => {
     if (isCurrent()) {
       coreLoaded.value = monitorReady
       coreLoading.value = false
-      coreController = null
     }
     return monitorReady
-  }).catch(() => false)
+  }).catch(() => false).finally(() => {
+    if (coreController === controller) coreController = null
+  })
+  void candidateTask.finally(() => {
+    if (coreCandidateTask === candidateTask) coreCandidateTask = null
+  })
   return coreTask
 }
 
@@ -298,7 +305,7 @@ async function loadDecisionsOnly() {
 async function loadNode(target: 'detail'): Promise<boolean> {
   const node = currentNode.value
   if (!node || !visible.value) return false
-  const pendingCoreTask = coreTask
+  const pendingCoreCandidateTask = coreCandidateTask
   loadController?.abort()
   const controller = new AbortController()
   loadController = controller
@@ -326,7 +333,9 @@ async function loadNode(target: 'detail'): Promise<boolean> {
     selectedModel.value = preferred
     const candidateTask = candidate.value || !preferred
       ? Promise.resolve(true)
-      : pendingCoreTask ?? loadCandidate(preferred, requestSequence, controller.signal)
+      : pendingCoreCandidateTask
+        ? pendingCoreCandidateTask
+        : loadCandidate(preferred, requestSequence, controller.signal)
     const [detailsLoaded, candidateLoaded] = await Promise.all([
       preferred ? loadModelDetails(preferred, requestSequence, controller.signal) : Promise.resolve(true),
       candidateTask,

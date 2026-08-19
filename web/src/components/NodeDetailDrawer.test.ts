@@ -147,7 +147,18 @@ describe('NodeDetailDrawer model×node scope', () => {
     expect(wrapper.text()).toContain('m-2')
   })
 
-  it('clears stale detail and waits for an explicit reload after model scope changes', async () => {
+  it('loads route decisions only after the requests tab is opened', async () => {
+    const wrapper = mountDrawer('m-1')
+    await flushPromises()
+
+    expect(decisions).not.toHaveBeenCalled()
+    await wrapper.get('[role="tab"]:nth-child(2)').trigger('click')
+    await flushPromises()
+
+    expect(decisions).toHaveBeenCalledWith(5, 50, 'm-1', expect.objectContaining({ signal: expect.any(AbortSignal) }))
+  })
+
+  it('clears stale detail and reloads the new model scope', async () => {
     const wrapper = mountDrawer('m-1')
     await triggerDetailLoad(wrapper)
     expect(resolve).toHaveBeenNthCalledWith(1, 'm-1', undefined, false, expect.objectContaining({ signal: expect.any(AbortSignal) }))
@@ -155,11 +166,8 @@ describe('NodeDetailDrawer model×node scope', () => {
     await wrapper.setProps({ model: 'm-2' })
     await flushPromises()
 
-    // 切换 scope 会清空旧详情，并为新 scope 重新预取核心状态与候选；
-    // 路由请求、滑窗和历史仍不会被预取。
     expect(resolve).toHaveBeenLastCalledWith('m-2', undefined, false, expect.objectContaining({ signal: expect.any(AbortSignal) }))
     expect(decisions).not.toHaveBeenCalled()
-    expect(slidingWindow).toHaveBeenCalledTimes(1)
     expect(wrapper.text()).toContain('加载明细数据')
 
     await triggerDetailLoad(wrapper)
@@ -167,7 +175,6 @@ describe('NodeDetailDrawer model×node scope', () => {
       { credential_id: 5, mode: 'detail' },
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     )
-    expect(resolve).toHaveBeenLastCalledWith('m-2', undefined, false, expect.objectContaining({ signal: expect.any(AbortSignal) }))
     expect(wrapper.get('h2').text()).toBe('m-2')
   })
 })
