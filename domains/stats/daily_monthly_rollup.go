@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/kaixuan/llm-gateway-go/metrics"
 )
 
 const (
@@ -174,8 +176,16 @@ func (r *DailyMonthlyRollup) Refresh(ctx context.Context, since, until time.Time
 		  AND status <> 'closed'`, monthStart, monthEnd); err != nil {
 		return fmt.Errorf("clear open monthly buckets: %w", err)
 	}
-	if _, err := tx.Exec(ctx, monthlyInsertSQL, monthStart, monthEnd); err != nil {
+	var upsertedCount, skippedClosedCount int64
+	if err := tx.QueryRow(ctx, monthlyInsertSQL, monthStart, monthEnd).Scan(&upsertedCount, &skippedClosedCount); err != nil {
 		return fmt.Errorf("rebuild monthly buckets: %w", err)
+	}
+	if skippedClosedCount > 0 {
+		slog.Warn("stats monthly rollup suppressed by closed rows",
+			"skipped_closed_count", skippedClosedCount,
+			"month_start", monthStart,
+			"month_end", monthEnd)
+		metrics.RecordStatsMonthlyClosedSkipped(skippedClosedCount)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit stats rollup: %w", err)
@@ -250,43 +260,54 @@ DO UPDATE SET
 	source_max_occurred_at = EXCLUDED.source_max_occurred_at, updated_at = now()`
 
 const monthlyInsertSQL = `
-INSERT INTO stats_usage_monthly (
-	month_start, tenant_id, provider_id, credential_id, canonical_id, raw_model_name,
-	dimension_type, dimension_key, traffic_class, request_count, success_count,
-	failure_count, timeout_count, rate_limited_count, attempt_count, retry_count,
-	probe_count, switch_count, prompt_tokens, completion_tokens, cache_read_tokens,
-	cache_write_tokens, reasoning_tokens, image_tokens, audio_tokens, video_tokens,
-	provider_tokens, total_tokens, credits_charged, cost_usd, latency_count,
-	latency_sum_ms, ttft_count, ttft_sum_ms, source_day_count, source_high_watermark,
-	updated_at
+WITH upserted AS (
+  INSERT INTO stats_usage_monthly (
+    month_start, tenant_id, provider_id, credential_id, canonical_id, raw_model_name,
+    dimension_type, dimension_key, traffic_class, request_count, success_count,
+    failure_count, timeout_count, rate_limited_count, attempt_count, retry_count,
+    probe_count, switch_count, prompt_tokens, completion_tokens, cache_read_tokens,
+    cache_write_tokens, reasoning_tokens, image_tokens, audio_tokens, video_tokens,
+    provider_tokens, total_tokens, credits_charged, cost_usd, latency_count,
+    latency_sum_ms, ttft_count, ttft_sum_ms, source_day_count, source_high_watermark,
+    updated_at
+  )
+  SELECT
+    date_trunc('month', day_utc)::date, tenant_id, provider_id, credential_id, canonical_id,
+    raw_model_name, dimension_type, dimension_key, traffic_class,
+    SUM(request_count), SUM(success_count), SUM(failure_count), SUM(timeout_count),
+    SUM(rate_limited_count), SUM(attempt_count), SUM(retry_count), SUM(probe_count),
+    SUM(switch_count), SUM(prompt_tokens), SUM(completion_tokens), SUM(cache_read_tokens),
+    SUM(cache_write_tokens), SUM(reasoning_tokens), SUM(image_tokens), SUM(audio_tokens),
+    SUM(video_tokens), SUM(provider_tokens), SUM(total_tokens), SUM(credits_charged), SUM(cost_usd),
+    SUM(latency_count), SUM(latency_sum_ms), SUM(ttft_count), SUM(ttft_sum_ms), COUNT(DISTINCT day_utc),
+    MAX(source_max_occurred_at), now()
+  FROM stats_usage_daily
+  WHERE day_utc >= $1::date AND day_utc < $2::date
+  GROUP BY 1,2,3,4,5,6,7,8,9
+  ON CONFLICT (month_start, tenant_id, provider_id, credential_id, canonical_id, raw_model_name, dimension_type, dimension_key, traffic_class)
+  DO UPDATE SET
+    request_count = EXCLUDED.request_count, success_count = EXCLUDED.success_count,
+    failure_count = EXCLUDED.failure_count, timeout_count = EXCLUDED.timeout_count,
+    rate_limited_count = EXCLUDED.rate_limited_count, attempt_count = EXCLUDED.attempt_count,
+    retry_count = EXCLUDED.retry_count, probe_count = EXCLUDED.probe_count,
+    switch_count = EXCLUDED.switch_count, prompt_tokens = EXCLUDED.prompt_tokens,
+    completion_tokens = EXCLUDED.completion_tokens, cache_read_tokens = EXCLUDED.cache_read_tokens,
+    cache_write_tokens = EXCLUDED.cache_write_tokens, reasoning_tokens = EXCLUDED.reasoning_tokens,
+    image_tokens = EXCLUDED.image_tokens, audio_tokens = EXCLUDED.audio_tokens,
+    video_tokens = EXCLUDED.video_tokens, provider_tokens = EXCLUDED.provider_tokens,
+    total_tokens = EXCLUDED.total_tokens, credits_charged = EXCLUDED.credits_charged,
+    cost_usd = EXCLUDED.cost_usd, latency_count = EXCLUDED.latency_count,
+    latency_sum_ms = EXCLUDED.latency_sum_ms, ttft_count = EXCLUDED.ttft_count,
+    ttft_sum_ms = EXCLUDED.ttft_sum_ms, source_day_count = EXCLUDED.source_day_count,
+    source_high_watermark = EXCLUDED.source_high_watermark, updated_at = now()
+  WHERE stats_usage_monthly.status <> 'closed'
+  RETURNING month_start
+), skipped AS (
+  SELECT count(*)::bigint AS skipped_count
+  FROM stats_usage_monthly
+  WHERE month_start >= $1::date AND month_start < $2::date AND status = 'closed'
 )
 SELECT
-	date_trunc('month', day_utc)::date, tenant_id, provider_id, credential_id, canonical_id,
-	raw_model_name, dimension_type, dimension_key, traffic_class,
-	SUM(request_count), SUM(success_count), SUM(failure_count), SUM(timeout_count),
-	SUM(rate_limited_count), SUM(attempt_count), SUM(retry_count), SUM(probe_count),
-	SUM(switch_count), SUM(prompt_tokens), SUM(completion_tokens), SUM(cache_read_tokens),
-	SUM(cache_write_tokens), SUM(reasoning_tokens), SUM(image_tokens), SUM(audio_tokens),
-	SUM(video_tokens), SUM(provider_tokens), SUM(total_tokens), SUM(credits_charged), SUM(cost_usd),
-	SUM(latency_count), SUM(latency_sum_ms), SUM(ttft_count), SUM(ttft_sum_ms), COUNT(DISTINCT day_utc),
-	MAX(source_max_occurred_at), now()
-FROM stats_usage_daily
-WHERE day_utc >= $1::date AND day_utc < $2::date
-GROUP BY 1,2,3,4,5,6,7,8,9
-ON CONFLICT (month_start, tenant_id, provider_id, credential_id, canonical_id, raw_model_name, dimension_type, dimension_key, traffic_class)
-DO UPDATE SET
-	request_count = EXCLUDED.request_count, success_count = EXCLUDED.success_count,
-	failure_count = EXCLUDED.failure_count, timeout_count = EXCLUDED.timeout_count,
-	rate_limited_count = EXCLUDED.rate_limited_count, attempt_count = EXCLUDED.attempt_count,
-	retry_count = EXCLUDED.retry_count, probe_count = EXCLUDED.probe_count,
-	switch_count = EXCLUDED.switch_count, prompt_tokens = EXCLUDED.prompt_tokens,
-	completion_tokens = EXCLUDED.completion_tokens, cache_read_tokens = EXCLUDED.cache_read_tokens,
-	cache_write_tokens = EXCLUDED.cache_write_tokens, reasoning_tokens = EXCLUDED.reasoning_tokens,
-	image_tokens = EXCLUDED.image_tokens, audio_tokens = EXCLUDED.audio_tokens,
-	video_tokens = EXCLUDED.video_tokens, provider_tokens = EXCLUDED.provider_tokens,
-	total_tokens = EXCLUDED.total_tokens, credits_charged = EXCLUDED.credits_charged,
-	cost_usd = EXCLUDED.cost_usd, latency_count = EXCLUDED.latency_count,
-	latency_sum_ms = EXCLUDED.latency_sum_ms, ttft_count = EXCLUDED.ttft_count,
-	ttft_sum_ms = EXCLUDED.ttft_sum_ms, source_day_count = EXCLUDED.source_day_count,
-	source_high_watermark = EXCLUDED.source_high_watermark, updated_at = now()
-WHERE stats_usage_monthly.status <> 'closed'`
+  (SELECT count(*) FROM upserted) AS upserted_count,
+  (SELECT skipped_count FROM skipped) AS skipped_closed_count
+`
