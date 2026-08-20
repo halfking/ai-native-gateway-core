@@ -1,9 +1,6 @@
 package pluginruntime
 
-import (
-	"fmt"
-	"sort"
-)
+import "fmt"
 
 // SandboxEnforcer applies Workflow B (execution sandbox and isolation) to plugin
 // bindings and execution requests. It is the runtime counterpart to the
@@ -34,15 +31,21 @@ func NewSandboxEnforcer(policy *SandboxPolicy) *SandboxEnforcer {
 // Policy returns the effective policy.
 func (e *SandboxEnforcer) Policy() SandboxPolicy { return e.policy }
 
-// AllowExecution validates that a ready, handshake-passing binding may execute
-// under the current sandbox. It returns an error if the binding requires any
-// write capability but no real sandbox is available.
+// AllowExecution is the runtime gate that decides whether a registered binding
+// may invoke. It does NOT re-validate binding shape (that happens at
+// registration via ValidateBinding). Disabled bindings short-circuit to nil
+// since they are never invoked; enabled bindings must have an available sandbox
+// when they declare any write capability.
 func (e *SandboxEnforcer) AllowExecution(b PluginBinding) error {
-	if err := ValidateBinding(b.PluginID, b, BindingValidationOptions{SandboxAvailable: e.policy.Available}); err != nil {
-		return err
+	if !b.Enabled {
+		return nil
 	}
-	if !e.policy.Available && requiresWriteCapability(b.Capabilities) {
-		return fmt.Errorf("sandbox: binding %q requires write capability %v but no sandbox is available", b.BindingID, b.Capabilities)
+	if e.policy.Available {
+		return nil
+	}
+	if requiresWriteCapability(b.Capabilities) {
+		return fmt.Errorf("allow plugin execution failed: write capability requires sandbox (binding_id=%s, plugin_id=%s, capabilities=%v)",
+			b.BindingID, b.PluginID, b.Capabilities)
 	}
 	return nil
 }
@@ -52,10 +55,12 @@ func (e *SandboxEnforcer) AllowExecution(b PluginBinding) error {
 // any binding that would let a plugin mutate, block or execute before sandbox.
 func (e *SandboxEnforcer) AllowDataPlaneWrite(b PluginBinding) error {
 	if !e.policy.Available {
-		return fmt.Errorf("sandbox: data-plane write capability requires an available sandbox (binding %q)", b.BindingID)
+		return fmt.Errorf("allow data-plane write failed: sandbox unavailable (binding_id=%s, plugin_id=%s)",
+			b.BindingID, b.PluginID)
 	}
 	if !requiresWriteCapability(b.Capabilities) {
-		return fmt.Errorf("sandbox: binding %q has no data-plane write capability", b.BindingID)
+		return fmt.Errorf("allow data-plane write failed: binding has no write capability (binding_id=%s, plugin_id=%s)",
+			b.BindingID, b.PluginID)
 	}
 	return nil
 }
@@ -66,9 +71,7 @@ func (e *SandboxEnforcer) AllowDataPlaneWrite(b PluginBinding) error {
 // result never contains the full gateway environment.
 func (e *SandboxEnforcer) BuildControlledEnv(base map[string]string) map[string]string {
 	out := make(map[string]string, len(e.policy.EnvAllowlist))
-	allow := append([]string(nil), e.policy.EnvAllowlist...)
-	sort.Strings(allow)
-	for _, name := range allow {
+	for _, name := range e.policy.EnvAllowlist {
 		if sensitiveEnvKey(name) {
 			continue
 		}
@@ -81,20 +84,17 @@ func (e *SandboxEnforcer) BuildControlledEnv(base map[string]string) map[string]
 
 // DTOExposure decides the maximum request data a plugin may receive, honoring
 // the binding's declared DTOProfile. Before a sandbox exists, redaction is
-// forced: a plugin may at most receive a redacted/summary view, never the raw
-// gateway request or environment.
+// forced: a plugin may at most receive a redacted view (the explicit "none"
+// profile means no DTO at all and is honored verbatim).
 func (e *SandboxEnforcer) DTOExposure(b PluginBinding) (DTOProfile, error) {
 	switch b.DTOProfile {
 	case DTOProfileNone, DTOProfileSummary, DTOProfileRedacted:
 		// accepted profiles
 	default:
-		return "", fmt.Errorf("sandbox: binding %q has unsupported dto_profile %q", b.BindingID, b.DTOProfile)
+		return "", fmt.Errorf("resolve DTO exposure failed: unsupported dto_profile (binding_id=%s, dto_profile=%q)",
+			b.BindingID, b.DTOProfile)
 	}
 	if !e.policy.Available {
-		// Fail-closed: without a sandbox a plugin only ever receives a redacted
-		// view. The explicit "none" profile (no DTO at all) stays none; every
-		// other profile is clamped down to redacted so no full/summary request
-		// data reaches an unsandboxed process.
 		if b.DTOProfile == DTOProfileNone {
 			return DTOProfileNone, nil
 		}
