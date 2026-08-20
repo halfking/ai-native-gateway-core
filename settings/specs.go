@@ -45,6 +45,8 @@ func PlatformSpecs() []*Spec {
 	// no-op knob lets operators believe enforcement is "shadow"-on when nothing
 	// is recorded. Re-register when the dispatch path is actually wired.
 	// out = append(out, CredentialClientQuotaSpecs()...)
+	// 2026-08-20: 项目归属（LLM 推断）平台级主开关，默认关闭。
+	out = append(out, ProjectAttributionSpecs()...)
 	return out
 }
 

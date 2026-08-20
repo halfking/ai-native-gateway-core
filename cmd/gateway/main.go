@@ -4390,6 +4390,21 @@ func main() {
 			return admin.SyncWorkTypesFromACCForBG(ctx, dbConn.Pool())
 		})
 
+		// 2026-08-20: 项目归属 ACC 同步 worker。
+		//
+		// 默认关闭（env 缺省时 StartProjectACCSync 立即返回，不挂 goroutine）。
+		// 与 StartWorkTypeACCSync 的差异：
+		//   - env 缺省 = 默认关闭（work_type 是默认启动）
+		//   - 多一个 tenant 维度：env LLM_GATEWAY_ACC_PROJECT_TENANT 控制
+		//     本次同步的租户范围；为空 = 同步公共项目。
+		//
+		// 注意：StartProjectACCSync 不会因为 ACC 不可达而阻塞启动；任何失败
+		// 只记 slog.Warn。这是 fail-soft 行为——数据可稍后补偿。
+		bg.StartProjectACCSync(context.Background(), dbConn.Pool(),
+			func(ctx context.Context, db *pgxpool.Pool, tenantID string) error {
+				return admin.SyncProjectsFromACCForBG(ctx, db, tenantID)
+			})
+
 		// ── APIHub AssetWatcher (Track A A1-1 / A1-2) ──────────────────
 		// Periodically syncs model_offers + tool_registry.tools into the
 		// unified assets table. RLS is enforced via PGStore per-query.
