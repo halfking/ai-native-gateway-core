@@ -416,10 +416,14 @@ var budgetExceededRe = regexp.MustCompile(
 		// {"code":"INSUFFICIENT_BALANCE","message":"..."} with HTTP 403.
 		`"code"\s*:\s*"INSUFFICIENT_BALANCE"|` +
 		`"code"\s*:\s*"insufficient_balance"|` +
-		// Chinese quota exhaustion patterns (智谱AI, 智码, apigpt 等).
+		// Chinese quota exhaustion patterns (智谱AI, 智码, apigpt, MiniMax).
 		// 2026-08-20 扩展: 加入 `费用` 名词变体（用户原文："节点费用已用完"），
 		// 加入 `用完` 动词变体（"用完"是口语"已耗尽"的标准说法，原 regex 仅含
 		// 用尽/耗尽/不足/超限，会漏掉"费用用完"这一 apigpt 最常见的中文报错形式）。
+		//
+		// 2026-08-21 merge: MiniMax Token Plan 在 "达到" 和 "用量上限" 之间插入了
+		// 产品名（"Token Plan"），原 0-10 字符窗口不够；同时把 noun 列表扩到
+		// 包含 `用量`、把动词列表扩到包含 `上限`。
 		//
 		// 2026-08-20 备注: 时间周期词仍保持 optional `(每周|每月|每日|使用)?`，
 		// 因为以下两类都属配额信号——
@@ -429,8 +433,8 @@ var budgetExceededRe = regexp.MustCompile(
 		// 唯一会误吞的非配额信号是"并发过大，达到上限"，但 ClassifyErrorWithBody
 		// / ClassifyResponseBody 已把 concurrentOverloadCJKRe 提到 budgetExceededRe
 		// 之前（见上方注释），"并发过大"先被 CJK 负载分支吞掉，不会到这一行。
-		`达到.{0,10}(每周|每月|每日|使用)?上限|` +
-		`(配额|额度|余额|费用|账户).{0,10}(用尽|用完|耗尽|不足|超限|已用尽|已用完)|` +
+		`达到.{0,40}(每周|每月|每日|使用|用量)?上限|` +
+		`(配额|额度|余额|费用|账户|用量).{0,10}(用尽|用完|耗尽|不足|超限|已用尽|已用完|上限)|` +
 		`(限额|使用量).{0,10}重置|` +
 		`"code"\s*:\s*"1310"|` + // 智谱AI specific code
 		// OmniRoute-derived provider-specific quota signals (classify429.ts).
