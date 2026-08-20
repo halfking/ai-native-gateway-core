@@ -464,8 +464,13 @@ func (e JourneyEvent) Validate() error {
 			return errors.New("observation_degraded event requires degraded observation status")
 		}
 	}
-	if e.RetryAt != nil && e.RetryAt.IsZero() {
-		return errors.New("retry_at, when present, must not be zero")
+	if e.RetryAt != nil {
+		if e.RetryAt.IsZero() {
+			return errors.New("retry_at, when present, must not be zero")
+		}
+		if e.Type != EventRetryScheduled {
+			return errors.New("retry_at is only valid on retry_scheduled events")
+		}
 	}
 	if e.OccurredAt.IsZero() {
 		return errors.New("occurred_at is required")

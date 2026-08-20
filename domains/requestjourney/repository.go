@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -32,7 +33,7 @@ const journeyEventColumns = `
 	credential_id, from_model, to_model, from_credential_id,
 	to_credential_id, attempt_id, attempt_no, outcome, error_kind,
 	http_status, retry_reason, switch_reason, node_health_status,
-	observation_status, occurred_at`
+		observation_status, retry_at, occurred_at`
 
 func (r *PostgresRepository) Apply(ctx context.Context, event JourneyEvent) error {
 	if r == nil || r.db == nil {
@@ -67,7 +68,8 @@ func (r *PostgresRepository) Apply(ctx context.Context, event JourneyEvent) erro
 		INSERT INTO request_state_transitions (`+journeyEventColumns+`)
 		VALUES (
 			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,
-			$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26
+				$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27
+
 		)
 		ON CONFLICT (tenant_id, request_id, seq)
 		WHERE event_type IS NOT NULL DO NOTHING`,
@@ -81,7 +83,7 @@ func (r *PostgresRepository) Apply(ctx context.Context, event JourneyEvent) erro
 		nullableString(string(event.Outcome)), nullableString(event.ErrorKind),
 		nullableInt(event.HTTPStatus), nullableString(event.RetryReason),
 		nullableString(event.SwitchReason), nullableString(string(event.NodeHealthStatus)),
-		event.ObservationStatus, event.OccurredAt,
+		event.ObservationStatus, nullableTime(event.RetryAt), event.OccurredAt,
 	)
 	return err
 }
@@ -262,6 +264,7 @@ func scanJourneyEvents(rows pgx.Rows) ([]JourneyEvent, error) {
 		var requestedModel, resolvedModel, model, provider sql.NullString
 		var fromModel, toModel, attemptID, outcome, errorKind sql.NullString
 		var retryReason, switchReason, nodeHealthStatus sql.NullString
+		var retryAt sql.NullTime
 		var providerID, credentialID, fromCredentialID, toCredentialID sql.NullInt64
 		var attemptNo, httpStatus sql.NullInt64
 		if err := rows.Scan(
@@ -270,7 +273,7 @@ func scanJourneyEvents(rows pgx.Rows) ([]JourneyEvent, error) {
 			&providerID, &provider, &credentialID, &fromModel, &toModel,
 			&fromCredentialID, &toCredentialID, &attemptID, &attemptNo,
 			&outcome, &errorKind, &httpStatus, &retryReason, &switchReason,
-			&nodeHealthStatus, &observationStatus, &event.OccurredAt,
+			&nodeHealthStatus, &observationStatus, &retryAt, &event.OccurredAt,
 		); err != nil {
 			return nil, err
 		}
@@ -293,6 +296,10 @@ func scanJourneyEvents(rows pgx.Rows) ([]JourneyEvent, error) {
 		event.SwitchReason = switchReason.String
 		event.NodeHealthStatus = NodeHealthStatus(nodeHealthStatus.String)
 		event.ObservationStatus = ObservationStatus(observationStatus)
+		if retryAt.Valid {
+			t := retryAt.Time.UTC()
+			event.RetryAt = &t
+		}
 		if attemptID.Valid {
 			event.Attempt = &AttemptRef{
 				AttemptID: attemptID.String, AttemptNo: int(attemptNo.Int64),
@@ -331,6 +338,13 @@ func nullableInt(value int) any {
 		return nil
 	}
 	return value
+}
+
+func nullableTime(value *time.Time) any {
+	if value == nil {
+		return nil
+	}
+	return value.UTC()
 }
 
 func reverse[T any](values []T) {

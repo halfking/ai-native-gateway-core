@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -297,6 +298,7 @@ type Recorder struct {
 	memory      *Projection
 	pumps       []*storePump
 	ingressPump *storePump
+	outbox      *ObservationOutbox
 
 	applyMu sync.Mutex
 	stateMu sync.RWMutex
@@ -316,10 +318,28 @@ func NewRecorder(memory *Projection, redisStore *RedisStore, pg *PostgresReposit
 		ingressRedisWriter = redisStore
 	}
 	var pgWriter journeyEventWriter
+	var durableDB observationOutboxDB
 	if pg != nil && pg.db != nil {
 		pgWriter = pg
+		durableDB, _ = pg.db.(observationOutboxDB)
+	}
+	if durableDB != nil {
+		r := newRecorderWithIngress(memory, nil, ingressRedisWriter, nil, recorderOptions{})
+		r.outbox = newObservationOutbox(durableDB, pgWriter, redisWriter, observationOutboxOwner())
+		r.outbox.start()
+		return r
 	}
 	return newRecorderWithIngress(memory, redisWriter, ingressRedisWriter, pgWriter, recorderOptions{})
+}
+
+func observationOutboxOwner() string {
+	if value := strings.TrimSpace(os.Getenv("LLM_GATEWAY_INSTANCE_ID")); value != "" {
+		return value
+	}
+	if value := strings.TrimSpace(os.Getenv("HOSTNAME")); value != "" {
+		return value
+	}
+	return fmt.Sprintf("request-journey-%d", time.Now().UnixNano())
 }
 
 func newRecorder(memory *Projection, redisWriter, pgWriter journeyEventWriter, options recorderOptions) *Recorder {
@@ -422,15 +442,41 @@ func (r *Recorder) SetErrorHandler(handler func(error)) {
 // conflicts are immediate. Accepted events fan out into each store's bounded
 // queue without waiting for Redis or PostgreSQL; a store that is slow or full
 // degrades only its own observation stream.
-func (r *Recorder) Apply(_ context.Context, event JourneyEvent) error {
+func (r *Recorder) Apply(ctx context.Context, event JourneyEvent) error {
 	if r == nil {
 		return errors.New("request journey recorder is nil")
 	}
 	if err := event.Validate(); err != nil {
 		return err
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 
 	r.applyMu.Lock()
+	if r.outbox != nil {
+		r.stateMu.RLock()
+		closed := r.closed
+		r.stateMu.RUnlock()
+		if closed {
+			r.applyMu.Unlock()
+			return ErrRecorderClosed
+		}
+		if r.memory != nil {
+			if err := r.memory.Apply(event); err != nil {
+				r.applyMu.Unlock()
+				return err
+			}
+		}
+		if err := r.outbox.Enqueue(context.WithoutCancel(ctx), event); err != nil {
+			r.markObservationDegraded(event)
+			r.applyMu.Unlock()
+			return err
+		}
+		r.applyMu.Unlock()
+		return nil
+	}
+
 	if r.memory != nil {
 		if err := r.memory.Apply(event); err != nil {
 			r.applyMu.Unlock()
@@ -529,6 +575,11 @@ func (r *Recorder) Close(ctx context.Context) error {
 	}
 	r.stateMu.Unlock()
 
+	if r.outbox != nil {
+		if err := r.outbox.Close(ctx); err != nil {
+			return err
+		}
+	}
 	for _, pump := range r.pumps {
 		select {
 		case <-pump.done:
