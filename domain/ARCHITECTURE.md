@@ -1,307 +1,131 @@
-# domain/ 架构设计文档
+# `domain/` 内核架构
 
-> **版本**: 1.0  
-> **日期**: 2026-06-25  
-> **状态**: ✅ Phase 0.6 完成（SOLID 评分 9.2/10）  
-> **目的**: 阐述 domain/ 包在 llm-gateway-go 弹性架构中的核心地位
+> **事实快照：** 2026-08-21  
+> **范围：** 仅描述 `domain/` 共享内核及其与 `domains/`、Pipeline 的边界，不代表整个 Gateway 已经完全按六边形架构落地。
 
----
+## 1. 定位
 
-## 0 · 快速理解
+`domain/` 是请求生命周期使用的共享类型和端口层，目标是让业务上下文依赖稳定的领域结构，而不是直接依赖 HTTP、PostgreSQL、Redis 或某个 Provider。
 
-**domain/ 是什么**：llm-gateway-go 的**领域核心**，实现了请求生命周期的横切关注点聚合。
+当前代码中它提供：
 
-**核心职责**：
-- 定义 `RequestEnvelope`（请求聚合根）+ 9 个独立 Context
-- 提供 `TransportLayer` 接口（六边形架构的 Inbound Port）
-- 提供 `Hook Pipeline`（事件驱动的扩展点）
-- **零外部依赖**（叶子包，只依赖标准库）
+- `RequestEnvelope`：请求上下文聚合载体；
+- `PipelineRequest`：Pipeline 阶段间的可变生命周期载体；
+- `TransportLayer`：协议入口端口；
+- Tenant、Security、Route、Session、Compression、Cost、Summary、Audit 等 Context；
+- governance/tool 状态和协议扩展字段。
 
-**设计模式应用**：
-- ✅ Builder Pattern（EnvelopeBuilder）
-- ✅ Adapter Pattern（TransportLayer 接口）
-- ✅ Observer Pattern（Hook Pipeline）
-- ✅ Aggregate Pattern（RequestEnvelope 聚合 9 Context）
-- ✅ Value Object（ClientIdentity 不可变）
+**重要事实：** 当前实现仍有导出的指针字段、`map[string]any` 扩展和跨层引用。因此本文将“目标设计”和“当前保证”分开描述，不把 `domain/` 声称为不可变、零依赖且完全封闭的聚合根。
 
----
+## 2. 当前模型
 
-## 1 · 六边形架构映射
+### 2.1 `RequestEnvelope`
 
-domain/ 是 llm-gateway-go **六边形架构的核心**：
+当前聚合包含 10 个可选 Context：
 
-```
-┌─────────────────────────────────────────────────────┐
-│  Driving Side (Inbound — 外部驱动)                   │
-│                                                       │
-│  HTTP Adapter  │  gRPC Adapter  │  A2A Adapter      │
-│  (middleware)  │  (future)      │  (a2a/)           │
-│       │              │                 │             │
-│       └──────────────┴─────────────────┘             │
-│                      ↓                                │
-│          ┌───────────────────────┐                   │
-│          │  TransportLayer       │ ← Inbound Port   │
-│          │  (domain/transport.go)│   (接口定义)     │
-│          └───────────┬───────────┘                   │
-└──────────────────────┼─────────────────────────────┘
-                       ↓
-        ┌──────────────────────────────────┐
-        │      RequestEnvelope             │ ← 领域核心
-        │  (domain/envelope.go)            │   (聚合根)
-        │                                  │
-        │  - TransportContext              │
-        │  - SecurityContext               │
-        │  - TenantContext                 │
-        │  - TaskRouteContext              │
-        │  - CredRouteContext              │
-        │  - SessionContext                │
-        │  - CompressionContext            │
-        │  - CostContext                   │
-        │  - SummaryContext                │
-        │  - AuditContext                  │
-        └──────────────┬───────────────────┘
-                       ↓
-┌──────────────────────┼─────────────────────────────┐
-│  Driven Side (Outbound — 基础设施依赖)              │
-│                      ↓                               │
-│  LLMProvider  │  DB  │  Cache  │  Audit            │
-│  (upstream/)  │ (db/)│ (cache/)│ (observability/)  │
-│       ↑            ↑        ↑          ↑            │
-│       └────────────┴────────┴──────────┘            │
-│                Outbound Ports                        │
-│     (各领域定义接口, platform/ 实现)                │
-└─────────────────────────────────────────────────────┘
+```text
+Transport
+Security
+Tenant
+TaskRoute
+CredRoute
+Session
+Compression
+Cost
+Summary
+Audit
 ```
 
-**Ports（接口）定义位置**：
-- **Inbound Port**: `domain.TransportLayer` (domain/transport.go)
-- **Outbound Ports**: 各领域自己定义（如 `routing.RoutingRepo` / `armor.Judge` / `observability.AuditSink`）
+此外还有 request ID、创建时间、Go context 等核心字段。实际定义以 `domain/envelope.go` 和 `domain/request_envelope.go` 为准。
 
----
+Context 以导出指针暴露，调用方可以直接修改其内容；Builder 主要提供构造便利，并没有在编译期阻止外部修改。因此当前聚合边界是**约定式边界**，不是不可变对象保证。后续若需要强化，应优先引入阶段所有权、校验函数和受控 mutation API，而不是只修改文档措辞。
 
-## 2 · 领域驱动设计（DDD）战术模式
+### 2.2 `PipelineRequest`
 
-### 2.1 聚合根（Aggregate Root）
+`PipelineRequest` 是面向 Pipeline 的运行时对象。它在 Envelope 之上携带或引用：
 
-**RequestEnvelope 是核心聚合根**：
+- tenant/session/authentication 状态；
+- selected provider/credential；
+- transformed request、upstream response、final response；
+- metadata、governance、tool state；
+- Hook 阶段执行所需的错误和可观测性信息。
 
-```go
-type RequestEnvelope struct {
-    RequestID string
-    CreatedAt time.Time
-    GoContext context.Context
-    
-    // 9 个领域上下文（指针可为 nil，按需加载）
-    Transport   *TransportContext
-    Security    *SecurityContext
-    Tenant      *TenantContext
-    TaskRoute   *TaskRouteContext
-    CredRoute   *CredRouteContext
-    Session     *SessionContext
-    Compression *CompressionContext
-    Cost        *CostContext
-    Summary     *SummaryContext
-    Audit       *AuditContext
-}
+两者职责不同：
+
+| 对象 | 责任 | 生命周期 |
+|---|---|---|
+| `RequestEnvelope` | 领域上下文聚合和跨组件共享的请求事实 | 请求级，按需构造 Context |
+| `PipelineRequest` | Pipeline 阶段之间的输入/输出和可变执行状态 | Pipeline 执行期间 |
+| streaming/executor 状态 | 流、首字节、attempt、上游连接和响应转换 | 单次 provider attempt 或流生命周期 |
+
+当前生产 v1 Handler 仍拥有部分自己的请求状态；v1 wrapper 和 `/v2/*` Pipeline 不是唯一执行主链。统一请求载体是后续架构波次的目标，不应在未完成迁移前假设已经成立。
+
+## 3. 六边形映射（当前/目标）
+
+```text
+Inbound adapters
+  HTTP / SSE / Admin / future A2A
+        |
+        v
+TransportLayer + RequestEnvelope + PipelineRequest
+        |
+        +--> domains/streaming      request execution
+        +--> domains/routing        model/candidate decision
+        +--> domains/session        session/cache/body semantics
+        +--> domains/governance     policy/security/tool state
+        |
+Outbound ports (target boundary)
+  Provider / Repository / Cache / Audit / Event / Storage
+        |
+Concrete infrastructure
+  provider, upstream, db, Redis, telemetry, object storage
 ```
 
-**聚合边界**：RequestEnvelope 控制所有 Context 的生命周期，外部不能直接修改 Context。
+当前并非所有 `domains/` 都只依赖端口；`ADR-0002` 记录了 `domains` 与 `internal`、`provider`、`upstream`、`autoroute` 的历史双向引用。因此端口化是分阶段目标。
 
-### 2.2 值对象（Value Object）
+## 4. Hook、Pipeline 与 EventBus 状态
 
-```go
-type ClientIdentity struct {
-    ClientID   string
-    APIKeyHash string
-    Method     string
-}
+- `domain` Hook 类型和 Pipeline 概念：`CURRENT`。
+- `domains/pipeline` 执行引擎：`CURRENT/PARTIAL`。
+- `cmd/gateway-v2`：`CURRENT/PARTIAL` 的验证/演示入口，使用简化依赖，不等价于生产。
+- v1 Pipeline wrapper：`SHADOW`，可由 feature flag 覆盖部分 v1 endpoint，真实 Provider 调用仍由现有 Handler/Executor 完成。
+- 独立跨服务 EventBus：`TARGET`。当前有进程内 bus、PG polling/outbox 等不同机制，不能统称为 exactly-once 消息平台。
+
+Hook 适合请求内同步扩展；跨服务事实应使用带 event_id、schema version、tenant、correlation、重试、DLQ 和回放语义的 durable envelope。
+
+## 5. 依赖事实
+
+`domain/` 主体依赖标准库和自己的子包，但当前不应再写成“绝对零外部依赖”：
+
+- `domain/governance`、`domain/analysis` 等属于自身子包；
+- `PipelineRequest` 和部分 Context 与当前业务演进类型存在耦合；
+- `domains/` 反向引用 `internal/`、`provider` 等历史包，详见 `docs/adr/ADR-0002-target-go-package-layout.md`。
+
+推荐的依赖方向是：
+
+```text
+domain -> no infrastructure
+application/domains -> domain ports
+adapter/platform -> implement ports
+cmd -> compose concrete dependencies
 ```
 
-**不可变**：创建后不能修改，通过 Builder 构造。
+但每次迁移必须以编译、单测、集成测试和独立可回滚 commit 为边界，不能一次移动全部包。
 
-### 2.3 领域服务（Domain Service）
+## 6. 已知设计问题
 
-```go
-type EnvelopeBuilder struct {
-    env *RequestEnvelope
-}
+1. 导出指针字段使 Envelope 可变；需要阶段所有权和 mutation contract。
+2. `ExtensionsBag map[string]any` 保留协议字段灵活，但类型安全和 schema version 不足。
+3. `Metadata map[string]any` 容易变成跨阶段弱类型总线；新增字段应优先进入强类型 Context 或 versioned DTO。
+4. `RequestEnvelope`、`PipelineRequest`、streaming executor state、session state 存在重复表达；需要 request/attempt/turn/charge 关联契约。
+5. Hook error policy 在不同路径可能是 fail-open 或 fail-closed；每个安全/治理 Hook 必须显式声明。
 
-func (b *EnvelopeBuilder) WithTransport(ctx *TransportContext) *EnvelopeBuilder {
-    b.env.Transport = ctx
-    return b
-}
+## 7. 后续波次
 
-func (b *EnvelopeBuilder) Build() *RequestEnvelope {
-    return b.env
-}
-```
+1. 冻结 `RequestEnvelope` / `PipelineRequest` 的字段和 mutation owner。
+2. 把 Provider、Repository、Cache、Audit、Event 定义为应用级窄接口。
+3. 用 adapter 将生产 v1 Handler 纳入统一 Pipeline，而不是增加第三套执行路径。
+4. 将 `Metadata` 中高频字段迁入强类型结构，并为未知扩展保留 versioned bag。
+5. 按 ADR-0002 先拆无环基础件，再拆 telemetry/control/credential/route，保持每波次可回滚。
 
-**职责**：封装 Envelope 的复杂构造逻辑。
-
-### 2.4 领域事件（Domain Event）
-
-通过 **Hook Pipeline** 实现轻量级事件：
-
-```go
-// Hook 点（观察者模式）
-BeforeTransportParse(ctx, env) → AfterAuth(ctx, env) → BeforeRoute(ctx, env) 
-    → AfterProviderCall(ctx, env) → BeforeAudit(ctx, env)
-```
-
-外部可注册 Hook 响应领域事件。
-
----
-
-## 3 · 事件驱动架构（EDA）
-
-### 3.1 Hook Pipeline（已实现）
-
-domain/ 的 Hook Pipeline 是**轻量级事件总线**：
-
-**现有 Hook 点**：
-- `BeforeTransportParse` — 协议解析前
-- `AfterAuth` — 认证后
-- `BeforeRoute` — 路由前
-- `AfterProviderCall` — 上游调用后
-- `BeforeAudit` — 审计前
-
-**扩展方式**：
-```go
-// 外部注册 Hook（插件化）
-type HookPlugin interface {
-    Name() string
-    OnRequest(ctx context.Context, env *RequestEnvelope) error
-}
-
-func RegisterHook(plugin HookPlugin) {
-    globalHookRegistry.Add(plugin)
-}
-```
-
-### 3.2 未来演进：EventBus
-
-Phase 3 计划引入独立 EventBus（替代部分 Hook Pipeline）：
-
-```go
-type EventBus interface {
-    Publish(event DomainEvent) error
-    Subscribe(eventType string, handler EventHandler) error
-}
-```
-
----
-
-## 4 · SOLID 原则应用评估
-
-| SOLID 原则 | domain/ 实现 | 评分 |
-|-----------|-------------|------|
-| **S** 单一职责 | 每个 Context 只负责一个领域（Security/Tenant/Route...） | ✅ 10/10 |
-| **O** 开闭原则 | TransportLayer 接口开放扩展（HTTP/gRPC/A2A），Envelope 封闭修改 | ✅ 9/10 |
-| **L** 里氏替换 | TransportLayer 的任何实现都可替换 | ✅ 10/10 |
-| **I** 接口隔离 | TransportLayer 只定义必需方法（ParseRequest/WriteResponse） | ✅ 9/10 |
-| **D** 依赖倒置 | domain/ 是叶子包，零外部依赖；其他包依赖 domain 的接口 | ✅ 10/10 |
-
-**总评**：**9.2/10**（2026-06-25 审计）
-
-**扣分项**：
-- O 原则：ExtensionsBag 使用 `map[string]any`，类型不安全（扣 1 分）
-
----
-
-## 5 · 依赖关系与边界
-
-### 5.1 零依赖原则
-
-**domain/ 只依赖**：
-- Go 标准库（`context` / `time` / `net/http`）
-- 自己的子包（`domain/governance` / `domain/analysis`）
-
-**domain/ 不依赖**：
-- ❌ 任何业务包（routing / maas / admin）
-- ❌ 任何基础设施包（db / cache / upstream）
-- ❌ 第三方库（除标准库）
-
-### 5.2 被依赖统计
-
-**domain/ 被 100+ 包引用**（2026-06-25 调研）：
-- middleware/ → domain.RequestEnvelope
-- routing/ → domain.CredRouteContext
-- autoroute/ → domain.TaskRouteContext
-- armor/ → domain.SecurityContext
-- observability/ → domain.AuditContext
-- ...
-
-**设计意图**：domain/ 是**稳定基础**，其他包依赖它，但它不依赖其他包。
-
----
-
-## 6 · 性能与可扩展性
-
-### 6.1 按需加载（Lazy Loading）
-
-所有 Context 都是**指针可为 nil**：
-
-```go
-if env.HasSecurity() {
-    apiKey := env.Security.APIKeyHash
-}
-```
-
-**优势**：不需要的 Context 不占用内存。
-
-### 6.2 ExtensionsBag（协议无损往返）
-
-```go
-type TransportContext struct {
-    ExtensionsBag map[string]any  // 协议特定字段
-}
-```
-
-**用途**：存储 Anthropic `system` / OpenAI `logit_bias` 等协议特定字段，支持无损往返。
-
-**权衡**：`map[string]any` 类型不安全，但换来灵活性。
-
-### 6.3 测试覆盖率
-
-- **domain/ 核心**：91.4%
-- **transport/**：58.6%
-
----
-
-## 7 · 与旧架构对比
-
-| 维度 | 旧架构（ExecParams） | domain/ Envelope |
-|------|---------------------|-----------------|
-| 字段数量 | 18 个混杂字段 | 9 个独立 Context + 3 核心字段 |
-| 职责边界 | 无边界（God Object） | 清晰领域隔离 |
-| 扩展性 | 修改 struct 定义 | 新增 Context / 注册 Hook |
-| 测试性 | 难以 mock | Context 可独立 mock |
-| SOLID 评分 | ~4.0 | **9.2** |
-
----
-
-## 8 · 未来演进方向
-
-### Phase 1（已完成 2026-06-24）
-- ✅ RequestEnvelope + 9 Context
-- ✅ TransportLayer 接口
-- ✅ Hook Pipeline
-
-### Phase 2（2026 Q3-Q4，弹性架构方案）
-- ⏳ 显式 Outbound Ports 接口（Repository / AuditSink / PolicyResolver）
-- ⏳ EventBus 替代部分 Hook Pipeline
-- ⏳ domain/ 独立为 Go module
-
-### Phase 3（2027 Q1）
-- ⏳ gRPC TransportLayer Adapter
-- ⏳ Hook Plugin 动态加载（Go plugin）
-
----
-
-## 9 · 参考
-
-- **设计文档**: `domain/README.md`（Phase 0.6 完成记录）
-- **弹性架构方案**: `docs/产品方案/2026-06-25-llmgw-elastic-architecture-v2.md`
-- **审计报告**: `docs/产品方案/2026-06-25-llmgw-audit-report.md`
-- **DDD 书籍**: Eric Evans《领域驱动设计》/ Vaughn Vernon《实现领域驱动设计》
-- **六边形架构**: Alistair Cockburn《Hexagonal Architecture》
+历史 SOLID 评分和 Phase 0.6 结论仅表示当时审计，不作为当前全仓完成度或生产安全证明。

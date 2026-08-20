@@ -1,296 +1,285 @@
-# LLM Gateway Go — 系统架构（当前态）
+# LLM Gateway Go — 当前系统架构
 
-> 适用版本：**v2.4.8+**（48h 审计：2026-07-22 ~ 2026-07-25 期间合并）
->
-> 上一版 V3 提案（Python 控制面 + Go 数据面）是早期路线图，现行代码已演进为
-> 单 Go 数据面 + Admin Web (Vue) + 离线 Installer 三件套；本文档按现行实现重写。
-
----
-
-## 0. 执行摘要
-
-网关是一个 Go 1.25 单进程数据面：
-- **`cmd/gateway`**：进程入口，负责装配 200+ 业务包、启动 HTTP/SSE、信号处理。
-- **数据面**：`domains/streaming/*` + `domains/streaming/executors/*`，处理 OpenAI / Anthropic / Responses 协议的请求转流，含路由、重试、限流、审计、凭据健康。
-- **后台 workers**：`bg/*` 约 50 个常驻 goroutine；探测、打标、数据治理、计费聚合、TTL 清理等。
-- **Admin API**：`admin/` 提供 ~163 个 handler，覆盖仪表盘、路由配置、审计、SSE 实时流。
-- **管理面板**：`web/` Vue 3 + TS，双主题 + 实时请求流多维过滤器 + Resolve 页行级管理。
-- **离线安装 / 升级**：`installer/`（独立 go.mod）提供 CLI 工具与版本管理 API。
-
-提交 252 的主控端 `llm.kxpms.cn` 依然负责 license / 实例心跳 / 更新分发
-（在 README「双仓库策略 / 部署」一节），但本仓库不再有 Python 控制面组件。
+> **事实快照：** 2026-08-21  
+> **适用对象：** 当前 `main` 工作树中的 `cmd/gateway` 生产入口及其已装配依赖。  
+> **证据优先级：** 运行时 wiring / Go 代码 / SQL migration / 自动化测试 > 本文档 > 历史审计和路线图。  
+> **不在本文断言的内容：** 未验证的生产流量、外部 Provider E2E、未启用的 feature flag、规划中的 MCP/A2A/Fusion 能力。
 
 ---
 
-## 0.5 路由与状态管理演进（2026-07-22 ~ 2026-07-25）
+## 1. 阅读方式与状态标记
 
-最近一周完成的 3 个优化阶段：
-
-### Phase 1: 路由状态判断简化（2026-07-24）
-- **目标**：消除 router/executor 中散落的 URSM v2 模式判断
-- **成果**：
-  - 引入 `StateBackend` 统一接口
-  - 3 种实现：URSMv2Backend、LegacyStateBackend、DBOnlyBackend
-  - `selectStateBackend()` 一次性决定后端
-- **收益**：`Ready()` 调用从 4 次 → 1 次
-- **文档**：`docs/2026-07-24-routing-state-optimization.md`
-
-### Phase 2: 压力感知路由（2026-07-24 ~ 2026-07-25）
-- **目标**：让路由感知 FpSlots/Limiter 的资源压力
-- **成果**：
-  - 压力查询接口（`GetPressure()`），FpSlots 5 秒缓存
-  - 压力惩罚函数（分段策略 0-70%）
-  - Router 集成（Feature flag: `PRESSURE_AWARE_ROUTING`）
-  - Prometheus 指标支持
-- **监控**：可通过 `scripts/ab-test-pressure.sh` 启用/查看
-- **文档**：`docs/2026-07-25-phase2-final-delivery.md`
-
-### Phase 3: 旧系统 Deprecated 标记（2026-07-25）
-- **目标**：明确系统演进方向，保留回退能力
-- **状态**：
-  - `credentialstate` 标记为 LEGACY，回退路径保留
-  - `routingstate/shadow_observer` 标记为 LEGACY，仅用于影子模式
-  - 回退机制：`URSM_V2_MODE=off` 一键切换
-
-### 当前架构决策
-
-```
-生产路径（推荐）:
-  Router → URSM v2 authoritative → Redis Lua 脚本
-                                           (单一权威源)
-
-回退路径（保留）:
-  Router → StateBackend → LegacyStateBackend → credentialstate
-                                                    (内存 + Redis 双层缓存)
-
-影子路径（仅观察）:
-  Router → ShadowObserver (routingstate)
-                               (仅记录，不影响决策)
-```
-
-防封锁机制（保持独立）:
-- FpSlots（指纹槽） → credentialfpslot.Manager
-- Limiter（并发控制） → credential.Limiter
-- RPM（每分钟请求） → credential.RPMLimiter
-- DisguisePool（UA伪装） → DisguisePool
-- EgressIdentity（虚拟IP） → identity.EgressIdentity
-
-**职责分离原则**：健康判断（URSM v2）vs 资源分配（防封锁层）
-
----
-
-## 1. 请求生命周期（数据面）
-
-```
-                            Client
-                              │
-                              ▼
-┌──────────── /v1/chat /v1/messages /v1/responses ────────────┐
-│  HTTP handler（adapter/unified + domains/streaming）        │
-└──────────┬─────────────────────────────────────┬────────────┘
-           │                                     │
-           │ pre-hook 链（domains/hooks/*）       │
-           ▼                                     │
-  Tenant / Key / Profile 解析                    │
-           │                                     │
-           ▼                                     │
-   ┌── 路由评分（composite） ──┐                 │
-   │  P2C 选 best-of-2 候选   │                 │
-   └────────────────────────┘                  │
-           │                                     │
-           ▼                                     │
-   ┌── 凭据 / 连接池 / 健康 ──┐                 │
-   │  adaptive probe + RPS    │                 │
-   └────────────────────────┘                  │
-           │                                     │
-           ▼                                     │
-   流式中继（SSE transform + 错误分类）         │
-           │                                     │
-           ▼                                     │
-   Goal 重试（cost-mode preset + EffectiveMaxRetries）
-           │                                     │
-           ▼                                     │
-  post-hook 链 → 审计 DLQ → OTel → Prometheus  │
-           │                                     │
-           └─────────────── 实时流 ──────────────▼──► /admin/live-stream SSE
-```
-
----
-
-## 2. 路由：延迟感知 + P2C 评分
-
-### 2.1 Composite 方向不变性
-
-`domains/streaming/executors/router_scoring.go:calculateLoadScore` 是复合评分：
-
-```
-composite =
-    concurrencyScore * w_concurrency   // pressure, 0~1，越大越差
-  + identityScore    * w_identity      // pressure, 0~1，越大越差
-  + latencyPenalty   * w_latency       // 1 - latencyScore（health）
-  + qualityScore     * w_quality       // 1 - successRate
-  + headroomPenalty  * w_headroom      // 1 - headroom（health）
-```
-
-P2C 在 `router.go` 取 **min**，故每一项都是 **penalty**（越大越差）。
-
-> **审计修正（2026-07-24）**：提交 60809965 把 `latencyScore` 重写为「健康度
->」（< 800ms → 1.0），但仍以正向相加；与 P2C min 方向相反，等于「快/有
-> headroom 的凭据反而被 P2C 惩罚」。修复 = 用 `1-x` 转 penalty。
-
-### 2.2 延迟评分（health-table）
-
-| amplified p95 (ms) | latency_score |
+| 标记 | 含义 |
 |---|---|
-| < 800 | 1.00（feels instant） |
-| [800, 1500) | 1.00 → 0.85 |
-| [1500, 3000) | 0.85 → 0.65 |
-| [3000, 10000) | 0.65 → 0.30 |
-| [10000, 30000) | 0.30 → 0.05 |
-| ≥ 30000 | 0（hard block） |
+| `CURRENT` | 当前代码、SQL 或主入口 wiring 已证实。 |
+| `CURRENT/PARTIAL` | 能力已接入，但范围、测试或可靠性仍有缺口。 |
+| `SHADOW` | 已实现并可灰度/观测，但不应当作 canonical 或默认生产路径。 |
+| `NOT-WIRED` | 类型、迁移或目录存在，但没有生产写入/读取 wiring 证据。 |
+| `TARGET` | 已批准或待批准的设计目标，不代表当前行为。 |
+| `MIGRATION-GATE` | 在切换 owner、删除旧路径或扩大流量前必须完成的门禁。 |
+| `UNKNOWN` | 缺少真实环境、外部依赖或回放证据；不得写成通过。 |
 
-并发压力放大：`observed = p95 × (1 + α · max(0, pressure − knee)^β)`
-（α=1.2 / β=1.8 / knee=0.6，可由 `LLM_GATEWAY_PRESSURE_*` 覆盖。）
-
-详见 `docs/design/2026-07-20-latency-aware-routing.md` §2.1.
-
-### 2.3 Goal 重试不变量
-
-`GoalRetryPolicy.EffectiveMaxRetries()` 在一处收敛：
-`Enabled=false ⇒ 0`（仅一次执行）；handler 统一通过 helper 取值，避免
-下游直接读 `MaxRetries` 绕过关闭开关。
+本文只描述当前 Gateway；三服务 ownership、会话切换和 Maintain 门禁见父仓 [`docs/拆分/README.md`](../../../../../../../docs/拆分/README.md)。
 
 ---
 
-## 3. 系统监测（bg/systemmonitor）
+## 2. 系统上下文
 
-### 3.1 Redis FIFO 队列
+```text
+Client / Agent / Admin browser
+          |
+          | OpenAI / Anthropic / Responses / Gemini-compatible HTTP + SSE
+          v
++------------------------------------------------------------------+
+| llm-gateway-go: cmd/gateway                                     |
+|                                                                  |
+|  Data plane: auth -> protocol/IR -> auto route -> candidate     |
+|              route -> resource gate -> upstream stream relay    |
+|                                                                  |
+|  Control plane: Admin API + embedded Vue SPA + background       |
+|                 workers + plugin/runtime compatibility           |
+|                                                                  |
+|  Durable facts: request logs, usage, routing/session metadata    |
++-------------+------------------------+---------------------------+
+              |                        | 
+              v                        v
+       PostgreSQL                  Redis
+  tenant/provider/credential       URSM state, limits, session/cache,
+  request/usage/audit/session      queues, locks, short-lived state
+              |                        |
+              +-----------+------------+
+                          |
+          +---------------+-----------------+
+          |                                 |
+          v                                 v
+ ai-session-manager                 ai-native-maintain
+ projection, analytics,              license, artifact, activation,
+ task/audit governance               distribution and upgrade control plane
+          |
+          +-- Gateway canonical facts are consumed through signed/API contracts
 
-```
-llmgw:monitor:queue          LIST   FIFO
-llmgw:monitor:inflight:{cred}:{model}  STRING  (30s dedup)
-llmgw:monitor:running        SET    inflight + claimed task 的 worker_id 视图
-llmgw:monitor:tasks:{id}     HASH   任务完整定义
-llmgw:monitor:tasks:counter  STRING INCR 自增任务 id
-llmgw:monitor:workers        SET    在线 worker
-llmgw:monitor:events         PUB    SSE 推送事件
-```
-
-### 3.2 原子抢占（lua/claim.lua）
-
-- **入 KEYS**：`queue`；**ARGV**：`worker_id`, `inflight_ttl_seconds`。
-- **inflight key 在脚本内从任务 JSON 的 `credential_id`/`raw_model` 构造**，
-  解码前无需（也无法）由调用方提供。
-- 任务字段缺失 → LPOP 丢弃，避免队头卡死。
-- EXPIRE 兜底：30s 后自动过期，允许多实例 worker 不会因单实例崩溃而饿死。
-
-> **审计修正（2026-07-24）**：早期版本调用方传 `(0, "")`，被守卫拒绝 → 队列
-> 永不消费 → fallback 抖动。修复后脚本内构造 inflight key，不再折叠为全局单一 token。
-
-### 3.3 降级路径
-
-`fallbackCh`（in-memory）接管 Redis 不可用时期；通过 `markFallback` / `clearFallback`
-健康探针每 15s 切换。`scripts` 用 `atomic.Pointer[LoadedScripts]` 规避
-Submit 重载路径与 worker 读路径之间的数据竞争。
-
----
-
-## 4. 凭据健康（7 类错误分级）
-
-详见 `docs/architecture/ARCHITECTURE.md` 旧版 §1.1；现行实现集中在
-`domains/credential/` (Redis+memory dual-layer) 与 `domains/health/`：
-
-| 类别 | 示例 | 恢复类型 | 重试 | 熔断 | 客户端响应 |
-|---|---|---|---|---|---|
-| TRANSIENT | 5xx 无明确错误 | 临时 | ✓ 退避 | cooling 60s | 503 |
-| TIMEOUT | 连接/读超时 | 临时 | ✓ | cooling 60s | 504 |
-| NETWORK | DNS/连接拒绝 | 临时 | ✓ | cooling 60s | 502 |
-| RATE_LIMIT | 429 | 周期性 | ✓ | cooling 30s + shrink(0.7) | 429 |
-| AUTH | 401/403 | 永久 | ✗ | quarantine | 502 |
-| QUOTA | 402/余额不足 | 永久 | ✗ | quarantine | 402 |
-| UPSTREAM_DOWN | 502/503/504 | 周期性 | ✓ | open 指数退避 | 503 |
-
-### 4.1 Node Probe backoff ladder（2026-07-24 调整）
-
-- 最大 backoff 24h → **6h**（commit `7bf35f19`），契合 SLA 与恢复期望。
-- 恢复时不再叠加 backoff 检查，加快恢复路径。
-- 配置入口：`bg/probe_backoff.go` + `bg/systemmonitor/monitor.go` 中 `computeBackoff`。
-
----
-
-## 5. 分发与升级
-
-### 5.1 Maintain /distribution API
-
-- `GET /maintain-api/distribution/version-check?channel=&current=&platform=&arch=`
-  返回 `{latest_version, mandatory, target_artifacts:[{platform,arch,filename,sha256,storage_uri}]}`
-- 客户端必须按 `platform`/`arch` 选择 artifact（commit `f345c130` + 审计修正
-  `client.go:CheckUpdateDistribution`）。
-
-### 5.2 离线升级包
-
-```
-scripts/build-upgrade-package.sh        一次性打包（upgrade-pkg-{tag}.tar.gz）
-installer/internal/upgrader             apply/rollback API
-installer/cmd/llm-launcher              蓝绿 / 重启恢复（e2e 测试已覆盖）
+Gateway also integrates with Provider APIs, object/file storage, Prometheus,
+OpenTelemetry collectors, and the installer/launcher delivery tooling.
 ```
 
-### 5.3 install / launch 一体化
+### 2.1 当前运行单元
 
-`installer` 是独立的 Go 1.22 模块，独立 vet/test 链：
-```
-cd installer
-go vet ./... && go test -short ./...
-```
-
----
-
-## 6. Admin API 与 Vue 管理面板
-
-### 6.1 Admin handlers
-
-~163 个 handler 分布在 `admin/`：
-- 仪表盘（路由 / 请求 / 数据生命周期 / 成本）
-- 路由 Resolve 配置（含候选行级抽屉 + 行级管理）
-- 实时请求流（多维过滤器、6 语言 i18n）
-- 系统监测（推流 SSE + Vue 仪表盘切流进度）
-
-### 6.2 /internal/release 路由的安全护栏
-
-`internal/release/handler.go` 中管理 API（`/admin/releases/*`）必须在
-`NewHandler(service, gin.HandlerFunc)` 中显式传入 admin 中间件；传 nil
-→ fail-close，不挂载任何管理端点，避免「写下注释忘开认证」。
-公开 API 仅做只读元数据查询 + 下载计数（`RecordDownload`）。
-
----
-
-## 7. 部署与双仓库
-
-| Remote | URL | 用途 |
+| 单元 | 状态 | 责任 |
 |---|---|---|
-| `codeup` (origin) | `https://codeup.aliyun.com/kaixuan/official-deploy/llm-gateway-go.git` | 日常开发 |
-| `github` | `git@github.com:halfking/SI-LLM-Gateway.git` | 公开镜像，自动扫描 |
-
-部署模式 M1-M4 详见 `docs/DEPLOYMENT.md`；48h 内新增的 M4 蓝绿由 `installer/cmd/llm-launcher` 守护。
+| `cmd/gateway` | `CURRENT` | 当前生产 composition root；装配 HTTP/SSE、DB、Redis、数据面、Admin、worker 和 shutdown。 |
+| `domains/streaming` + `executors` | `CURRENT` | 主请求处理、协议中继、候选执行、流式响应和错误映射。 |
+| `domains/dispatch` | `CURRENT` | 有界 model/credential 队列、forwarder、failover、retry scheduler 与生命周期观测。 |
+| `admin/` + `web/` | `CURRENT` | 同进程控制面和 Vue 管理台。 |
+| `bg/` | `CURRENT/PARTIAL` | 探测、清理、统计、分区、质量和状态 worker；启动条件与停机语义仍需持续收口。 |
+| `cmd/gateway-v2` | `CURRENT/PARTIAL` | Pipeline 验证入口，使用简化/内存依赖；不是生产入口替代。 |
+| `/v2/*` | `SHADOW` | 可选旁路 Pipeline 路由，默认不代表主流量。 |
+| v1 Pipeline wrapper | `SHADOW` | 可通过 feature flag 包装 v1 endpoint，实际 LLM 调用仍委托现有 v1 handler。 |
+| `installer/` | `CURRENT` | 独立 Go module；安装、升级、回滚和 launcher 相关能力。 |
 
 ---
 
-## 8. 测试与质量保障
+## 3. 默认生产请求路径
 
-| 维度 | 落点 |
+默认生产请求由 `cmd/gateway` 注册的 v1 handler 处理。主要端点为：
+
+```text
+/v1/chat/completions   /v1/completions
+/v1/messages           /v1/responses
+/v1/embeddings         /v1/models
+/v1beta/models/*       /v1/models/*  (Gemini native)
+```
+
+完整步骤、状态写入时机和实验路径见 [`runtime-request-flow.md`](runtime-request-flow.md)。概览如下：
+
+```text
+HTTP/SSE
+  -> request middleware / API key verification / tenant resolution
+  -> request parsing, policy and security hooks
+  -> optional model=auto decision
+  -> candidate discovery and route planning
+  -> health/state filtering, tier/billing/sticky constraints
+  -> FP slot / concurrency / RPM resource gates
+  -> dispatch queue and provider forward
+  -> protocol conversion and SSE/non-stream response relay
+  -> retry/failover while retry policy allows and before safe boundary
+  -> request WAL + telemetry + usage/ledger + audit + metrics/trace
+  -> optional session-v2 shadow persistence and Gateway->ASM outbox
+```
+
+### 3.1 协议与 IR
+
+- OpenAI、Anthropic、Responses 和 Gemini native handler 已注册为 `CURRENT`。
+- `adapter/unified` 与 `internal/ir` 是协议归一化基础；并非所有请求都由同一 Pipeline 执行器完成。
+- protocol-specific extension 字段必须在转换前后保留或明确记录为不可保真，不能因统一模型而静默丢弃。
+
+### 3.2 路由和资源治理
+
+当前候选路由遵循：
+
+```text
+availability / tenant / protocol / model filters
+  -> URSM or compatible state backend
+  -> tier + billing round + sticky constraints
+  -> P2C or Bandit ordering
+  -> dispatch candidate execution and failover
+```
+
+`cost-optimized`、`cache-optimized`、`context-aware`、`headroom` 评分器已经存在，但当前主要用于 shadow comparison；不能描述为默认 active routing mode。详见 [`routing-and-state.md`](routing-and-state.md)。
+
+### 3.3 重试、流式和安全边界
+
+- Dispatch failover、executor 协议重试、Goal retry、request survival 与可选 stream retry 共同存在。
+- stream retry 只应处理首字节前可安全重试的故障；首字节后要遵循流一致性和客户端可见性规则。
+- 当前存在多层 retry budget/backoff；统一 request-level retry contract 是 `TARGET`，在此之前必须用集成测试约束最大上游尝试和计费语义。
+
+---
+
+## 4. 路由状态、健康和资源分配
+
+当前推荐状态路径：
+
+```text
+Router -> URSM v2 authoritative -> Redis/Lua state -> PostgreSQL persistence/audit
+```
+
+兼容路径：
+
+```text
+Router -> StateBackend -> LegacyStateBackend / DBOnlyBackend -> legacy credential state
+```
+
+影子路径只记录比较结果，不影响选择。URSM、Legacy、shadow/canary/off、SystemMonitor ready gate、FP slot、Limiter、RPM 与 Egress identity 的关系见 [`routing-and-state.md`](routing-and-state.md)。
+
+**关键原则：** 健康判断与资源分配不是同一问题。
+
+| 关注点 | 例子 |
 |---|---|
-| 路由单元 / 压力测试 | `domains/routing/{routing_benchmark,stress}_test.go` |
-| 流式端到端 | `domains/streaming/goal_retry_{integration,stress}_test.go` |
-| Goal 重试回归 | `domains/streaming/goal_retry_policy_test.go` (含 `TestEffectiveMaxRetriesHonorsDisabledFlag`) |
-| SystemMonitor | `bg/systemmonitor/{metrics_collector,types}_test.go` |
-| 凭据健康 | `domains/credential/{redis_health_store,writer}_test.go` |
-| Installer / Launcher | `installer/internal/{launcher,upgrader}/**/*_test.go` |
+| 健康判断 | credential auth/quota/error state、probe、circuit、URSM availability。 |
+| 资源分配 | concurrent slot、RPM/TPM、fingerprint slot、egress identity、queue pressure。 |
 
-gofmt 必须在 48h 内任何变更中保持一致（CI：`gofmt -l` 必须空）。
+当前已知边界：
+
+- RPM 已在主请求 admission 路径中使用；TPM limiter 存在但需按实际入口核实完整接线。 
+- FP slot 和 concurrency 仍可能是分步 acquire/release；原子联合 lease 为 `TARGET`。
+- Redis 失效时部分组件会降级到进程内状态；对严格配额/跨实例正确性应明确 fail-open 或 fail-closed 策略。
 
 ---
 
-## 9. 48h 审计与变更（2026-07-22 ~ 2026-07-24）
+## 5. 数据、审计和会话
 
-详见 [`docs/2026-07-24-48h-audit-report.md`](../2026-07-24-48h-audit-report.md)：
-6 处真实 bug 修复 + 1 处功能一致化 + 1 处 fail-close 安全护栏 + 5 处 gofmt 对齐。
+### 5.1 当前事实源
+
+| 对象 | 当前状态 | 说明 |
+|---|---|---|
+| `request_logs_hot` / usage ledger | `CURRENT` | 请求元数据、用量、审计和多项派生链路的主要 durable 入口。 |
+| request WAL | `CURRENT/PARTIAL` | 早期同步记录与阶段更新；不是完整不可变事件历史。 |
+| telemetry queue/fallback | `CURRENT/PARTIAL` | 队列满可同步落库；内存 fallback 不能替代 durable outbox，且可能不触发 persisted hooks。 |
+| `gateway.session_*` / V2 writer | `SHADOW` | schema、writer、cache 和 persisted hook 已存在；默认关闭或灰度，best-effort，不是 canonical writer。 |
+| `request_logs` legacy session/summary paths | `CURRENT` | 仍是 canonical session/message/body 事实和兼容读取的核心来源。 |
+| Gateway -> ASM outbox | `CURRENT/PARTIAL` | 依赖 endpoint 与 event secret 配置；缺配置时不派发，需 readiness/lag/DLQ 观测。 |
+
+### 5.2 Session V2 的准确边界
+
+V2 不应再被描述为“完全不存在”，也不能描述为“ownership 已切换”。准确状态为：
+
+```text
+schema + writer + cache + shadow persistence: CURRENT/SHADOW
+primary read + canonical ownership + old fact retirement: MIGRATION-GATE
+```
+
+切换前至少需要：body/turn 完整率、hash/tenant 对账、backfill、dual-read、replay、attachment authorization、真实 RLS、跨仓 E2E、观察期和 rollback drill。父仓的会话和 ASM ownership 门禁继续有效。
+
+---
+
+## 6. 控制面、worker 与交付
+
+### 6.1 Admin 与管理面
+
+- `admin/` 是同进程控制面，管理路由、凭据、会话、审计、数据生命周期、质量、成本、系统监测等。
+- `/api/*` 的认证不得依赖“开发者记得手动包裹 middleware”；公开端点应形成显式 allowlist。
+- 当前需优先验证质量 API 的 auth、tenant scope、RLS 与数据源一致性。
+
+### 6.2 Background runtime
+
+`bg/` 与相关 service 会启动 probe、health、partition、retention、aggregation、quality、outbox、session 等任务。当前的重点不是再增加 worker，而是：
+
+- 为所有 worker 建立明确 owner、Start/Stop、context、timeout、drain 与指标；
+- 将 quality collector、profile updater、session lifecycle 和成本对账等生命周期纳入统一 supervisor；
+- 使 systemd timeout 与 Gateway 真实 HTTP + worker shutdown budget 一致；
+- 将 PostgreSQL event trigger/cron 依赖写入部署契约，而不是假设 Go 进程会自动修复所有数据不变量。
+
+### 6.3 Maintain、Installer 与部署
+
+- Maintain 负责 license、distribution、activation、instance、upgrade 等控制面；Gateway 目前保留 compatibility proxy 和回退路径。
+- h2c/HTTP 最终 handler 必须覆盖 Maintain proxy 包装；这是需要回归测试保护的 wiring 约束。
+- installer 为独立 module；M1-M4、artifact selection、upgrade/rollback、数据库初始化与健康检查统一见 [`../../../../06-deployment/README.md`](../../../../06-deployment/README.md)。
+
+---
+
+## 7. 已知生产门禁与优化优先级
+
+以下为代码和迁移审计中需要进入发布门禁的事项；状态表示需要验证或修复，不等同于已在生产被利用。
+
+### P0 — 切流或扩面前处理
+
+1. `/api/quality/*`、独立 quality service 的认证、tenant scope、RLS 与 canonical data source。
+2. legacy admin 默认密码、DB 不可用时 data-plane auth 降级、长期 query-token JWT 的 fail-closed 边界。
+3. Maintain 的 tenant policy、FORCE RLS、least-privilege role、资源 ownership 与真实 PostgreSQL negative tests。
+4. Session V2 shadow persistence 的 durable compensation、reconciliation、backfill、replay 与 rollback 门禁。
+5. ASM 候选 migration、context secret、DLQ unique constraint、body fetch failure 的可靠性审查。
+6. h2c 最终 handler 必须包装包含 Maintain proxy/static 的 final handler。
+
+### P1 — 数据正确性与可运维性
+
+1. tenant GUC 缺失时默认 tenant 回退是否应改为 fail-closed。
+2. session rotation tenant 归属、multimodal charge、TPM admission、FP/concurrency union lease。
+3. 统一 retry budget、Retry-After 优先级和跨层最大尝试数。
+4. request fallback 与 onPersisted/V2/outbox 派生链的补偿语义。
+5. worker lifecycle、shutdown budget、Compose/systemd/health/env 合约漂移。
+
+### P2 — 架构演进
+
+1. 逐波次按 ADR-0002 收敛 `cmd/gateway` composition root 与包依赖方向。
+2. Provider catalog 导入、active request-aware routing、受保护的 Lite/Caveman/RTK compression stage。
+3. MCP、A2A、Fusion 仅在 Gateway 保持唯一 provider executor、tenant/limiter/audit owner 的前提下演进。
+4. 清理过期链接、历史数字、secret hygiene、测试报告时效和部署文档漂移。
+
+具体代码落点、测试、回滚和阶段出口见 [`optimization-roadmap.md`](optimization-roadmap.md)。
+
+---
+
+## 8. 三服务和 OmniRoute 边界
+
+| 能力 | Gateway | ASM | Maintain |
+|---|---|---|---|
+| Provider 调用、流式执行、路由、限流、成本执行 | Owner | 仅消费事实 | 不实现 |
+| Canonical request/session/body | Owner，切换前保持旧事实源 | 投影/分析，不保存完整正文 | 不实现 |
+| 会话分析、审批、任务、审计投影 | 产生事件/兼容读取 | Owner | 不实现 |
+| License、artifact、activation、upgrade | compatibility/consumer | 插件消费者 | Owner |
+| MCP/A2A/Fusion transport/execution | 未来 Owner | 只消费 metadata/task facts | 不实现 |
+
+OmniRoute 的公开能力与本项目 ADOPT / CONSUME / REJECT 边界见 [`omniroute-integration-boundary.md`](omniroute-integration-boundary.md)。任何 provider 数量、工具数量、Token 节省比例都必须标为上游声明或验收目标，不能写成当前 Gateway 事实。
+
+---
+
+## 9. 文档与验证入口
+
+- [运行时请求流](runtime-request-flow.md)
+- [路由与状态管理](routing-and-state.md)
+- [优化路线图与代码指导](optimization-roadmap.md)
+- [OmniRoute 集成边界](omniroute-integration-boundary.md)
+- [仓库布局](REPO_LAYOUT.md)
+- [包布局 ADR](../../../../../adr/ADR-0002-target-go-package-layout.md)
+- [测试矩阵](../../../../../05-testing/01-strategy/test-matrix.md)
+- [部署入口](../../../../../06-deployment/README.md)
+- [父仓拆分与 ownership 门禁](../../../../../../../docs/拆分/README.md)
+
+---
+
+## 10. 变更纪律
+
+- 代码变更先补对应 regression/integration test，再进入灰度。
+- 每个安全、session、RLS、migration、retry、worker 或 routing wave 必须独立可回滚。
+- 不以 feature flag、migration 文件、目录存在、HTTP 200 或“页面可打开”作为 ownership/cutover 通过证据。
+- 不将未跟踪 checkout、历史 archive 或实验入口当作当前生产事实。
+- 所有部署和文档示例必须引用 secret，不得出现可用凭据；发现历史泄露时走脱敏、轮换和审计专项。

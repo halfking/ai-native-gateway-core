@@ -1,272 +1,161 @@
-# LLM Gateway Go — 企业级 LLM 网关
+# LLM Gateway Go
 
-> **让企业安全、合规、低成本地使用全球各类大模型与 AI 工具** —— 一套网关，统一管控、智能整合、自动升级。
+> 企业级 LLM Gateway：在多租户、多个 Provider、长流式 Agent 请求、成本和审计约束下，统一完成协议适配、候选路由、凭据治理、请求执行、可观测性与交付运维。
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![Go Report](https://img.shields.io/badge/Go-1.21+-00ADD8.svg)](https://golang.org)
-[![Multi-Tenant](https://img.shields.io/badge/Multi--Tenant-RLS%20enabled-brightgreen.svg)]()
-[![Version](https://img.shields.io/badge/Version-v2.4.8-green.svg)](VERSION)
+[![Go](https://img.shields.io/badge/Go-1.25+-00ADD8.svg)](https://go.dev/)
 
----
+> **当前版本：** 以 [`version.json`](version.json) 和 [`VERSION`](VERSION) 为准。  
+> **事实规则：** 代码、SQL、runtime wiring 和已执行测试优先于 README、路线图和历史报告；feature flag、migration 或目录存在不等于已上线。
 
-## ✨ 核心功能
+## 定位
 
-### License 管理与分发
-- **在线激活**：通过主控端 `llm.kxpms.cn` 实时激活
-- **离线激活**：支持完全断网环境的 license 授权
-- **试用模式**：7 天免费试用（1 租户 / 基础 API）
-- **设备绑定**：基于硬件指纹的设备管理
+Gateway 不是简单的模型反向代理。当前生产入口 [`cmd/gateway`](cmd/gateway) 将以下能力组合在同一运行单元中：
 
-### 实例注册与心跳
-- **自动注册**：实例启动时自动向主控端注册
-- **实时心跳**：60s 心跳上报 + 状态监控（online/degraded/offline）
-- **健康检查**：自动探测实例健康状态，支持 30s/2min 离线判定
-- **Token 续期**：24h JWT 自动续期
+- OpenAI、Anthropic、Responses、Gemini native 等协议与 SSE 中继；
+- `model=auto` 任务识别、候选模型选择、tier/billing/sticky、P2C/Bandit、URSM 状态和故障转移；
+- 多凭据健康、限流、fingerprint slot、egress identity、连接与资源压力治理；
+- request WAL、request/usage 日志、审计、Prometheus、OpenTelemetry 和 Admin live stream；
+- 会话缓存/压缩、Session V2 shadow persistence、Gateway → ASM 事件投递；
+- Admin API、Vue 管理台、后台探针/清理/聚合 worker；
+- Installer、License、分发、升级和回滚兼容能力。
 
-### 自动升级与回滚
-- **在线升级**：自动检查更新 + 一键升级（6h 检查周期）
-- **离线升级**：U 盘携带升级包 + 本地安装
-- **备份保护**：升级前自动备份 + 失败自动回退
-- **健康验证**：升级后 5s 健康检查，失败自动回退
+当前主路径是 `cmd/gateway` 的 v1 handler。`cmd/gateway-v2`、`/v2/*` 和 v1 Pipeline wrapper 是验证或灰度路径，不能直接当作默认生产执行路径。
 
-### 四种部署模式
-- **M1 单机部署**：二进制 + systemd（离线模式）
-- **M2 单机 Docker**：docker-compose 快速部署
-- **M3 K8s Sidecar**：kustomize 模板 + sidecar 心跳
-- **M4 K8s Operator**：CRD + 声明式管理（规划中）
+## 架构入口
 
----
+| 主题 | 权威入口 |
+|---|---|
+| 当前系统架构 | [`docs/03-design/01-architecture/architecture/ARCHITECTURE.md`](docs/03-design/01-architecture/architecture/ARCHITECTURE.md) |
+| 运行时请求流 | [`runtime-request-flow.md`](docs/03-design/01-architecture/architecture/runtime-request-flow.md) |
+| 路由、URSM 与资源状态 | [`routing-and-state.md`](docs/03-design/01-architecture/architecture/routing-and-state.md) |
+| 优化路线和代码指导 | [`optimization-roadmap.md`](docs/03-design/01-architecture/architecture/optimization-roadmap.md) |
+| OmniRoute 集成边界 | [`omniroute-integration-boundary.md`](docs/03-design/01-architecture/architecture/omniroute-integration-boundary.md) |
+| 仓库布局 | [`REPO_LAYOUT.md`](docs/03-design/01-architecture/architecture/REPO_LAYOUT.md) |
+| 包布局 ADR | [`ADR-0002`](docs/adr/ADR-0002-target-go-package-layout.md) |
+| 测试矩阵 | [`docs/05-testing/01-strategy/test-matrix.md`](docs/05-testing/01-strategy/test-matrix.md) |
+| 部署入口 | [`docs/06-deployment/README.md`](docs/06-deployment/README.md) |
+| 安全报告与政策 | [`SECURITY.md`](SECURITY.md) / [`docs/03-design/05-security-design/`](docs/03-design/05-security-design/) |
+| 三服务拆分与 ownership 门禁 | [`../docs/拆分/README.md`](../docs/拆分/README.md) |
 
-## 🎯 核心能力
+## 当前架构概览
 
-| 能力维度 | 实现 |
-|----------|------|
-| **协议层** | OpenAI / Anthropic / Responses 兼容 + SSE 流式中继 + 请求体归档 |
-| **Agent 任务稳定性** | 全协议 pre-stream 心跳 + stall-only 超时(无 wall-clock cap)+ anthropic header 透传 + incremental integrity 掐流 |
-| **路由层** | 智能候选路由 + 粘性会话 + 自动路由（cost/quality 策略） |
-| **延迟感知** | p95 + 并发压力感知打分（design §2.1） + tier-plane SWRR |
-| **多租户** | 身份隧道（virtual IP/MAC/ClientID）+ 凭据池 + 38+ 表 RLS |
-| **流量治理** | Token 限流 + 语义缓存 + 提示词压缩 + 滑窗算法 |
-| **请求级重试** | Goal RetryPolicy（cost-mode preset + 租户覆盖，Enabled 可关闭）|
-| **系统监测** | Redis FIFO 队列 + 30s dedup + 旧 worker 打标 + Vue Dashboard |
-| **审计** | 全链路审计 + DLQ + 磁盘回退 + OTel + Prometheus |
-| **License** | 在线/离线激活 + 设备管理 + CRL 撤销 + 过期续期 |
-| **升级** | 在线/离线升级 + 多平台 artifact 选择 + 自动回滚 |
-| **分发** | 自动化打包（upgrade-package builder + Cloudreve + version-check API） |
-| **部署** | M1-M4 四种模式 + systemd + Docker + K8s |
+```text
+Client / Agent / Admin
+          |
+          v
++---------------------------------------------------------+
+| cmd/gateway                                             |
+|  protocol -> auth/tenant -> route -> resource -> stream |
+|  request/usage/audit -> metrics/trace -> admin/workers  |
++-------------+---------------------+---------------------+
+              |                     |
+              v                     v
+        PostgreSQL                Redis
+        durable facts             hot state / queues
+              |                     |
+              +----------+----------+
+                         |
+        +----------------+----------------+
+        v                                 v
+ai-session-manager                 ai-native-maintain
+projection / analysis / governance license / distribution / upgrade
+```
 
-详细架构见 [`docs/architecture/ARCHITECTURE.md`](docs/architecture/ARCHITECTURE.md)。
+### 当前状态摘要
 
-### 模块导航
+| 能力 | 状态 | 说明 |
+|---|---|---|
+| v1 多协议数据面 | `CURRENT` | 主生产 handler 处理 OpenAI、Anthropic、Responses、Gemini 等请求。 |
+| 路由与凭据治理 | `CURRENT/PARTIAL` | URSM、P2C/Bandit、tier、sticky、health、failover 已有；TPM、统一 retry/lease 仍需收口。 |
+| Pipeline | `CURRENT/PARTIAL` | 引擎、v2 demo、旁路和 v1 wrapper 已有；不是唯一生产主链。 |
+| Session V2 | `SHADOW` | schema/writer/cache/persisted hook 已有，默认关闭或灰度，不是 canonical owner。 |
+| Gateway → ASM | `CURRENT/PARTIAL` | 依赖 endpoint/secret 配置和 durable event 契约；必须监控 lag/DLQ/replay。 |
+| Maintain | `CURRENT/PARTIAL` | 已有控制面和 Gateway proxy 回退；生产 tenant/RLS/ownership 门禁另见拆分文档。 |
+| MCP / A2A / Fusion | `TARGET/PARTIAL` | registry/policy、任务投影等基础存在；完整 transport/execution 不应写为已上线。 |
 
-| 模块 | 关键文件 | 职责 |
-|------|----------|------|
-| 网关入口 | `cmd/gateway/main.go`, `cmd/gateway/main_v2_pipeline.go` | 装配所有依赖、启动 HTTP/SSE |
-| 数据面 | `domains/streaming/`, `domains/streaming/executors/` | 流式中继 + 候选路由 + 重试 |
-| 流式完整性 | `domains/streaming/integrity/`, `domains/hooks/audit/stream_integrity.go` | 增量重复内容检测 + 异常事件审计(默认 record,abortable) |
-| 路由评分 | `domains/streaming/executors/router_scoring.go` | composite = penalties；P2C 取 min |
-| Goal 重试 | `domains/streaming/goal_retry_policy.go` | 租户策略 + `EffectiveMaxRetries()` |
-| 系统监测 | `bg/systemmonitor/{monitor,redis_queue,lua/claim}.go` | Redis 队列 + Lua 原子操作 |
-| 后台 worker | `bg/*` (~50 个 worker) | 主动探针 / 自适应 / 数据治理 |
-| 凭据健康 | `domains/credential/`, `domains/health/` | 内存 + Redis 双层 + 7 类错误分级 |
-| Admin API | `admin/` (163 个 handler) | 仪表盘 / 路由配置 / 审计 / 监控 |
-| 管理面板 | `web/` (Vue 3 + TS) | 双主题 + 实时请求流多维过滤器 |
-| 分发与升级 | `installer/`, `scripts/build-upgrade-package.sh` | M1-M4 + 离线升级包 + Maintain API |
-| 版本检查 | `internal/release/`, `installer/internal/upgrader/client.go` | /distribution/version-check |
-
----
-
-## 🚦 快速开始
+## 快速开始
 
 ### 编译
 
 ```bash
-# 克隆仓库
 git clone https://codeup.aliyun.com/kaixuan/official-deploy/llm-gateway-go.git
 cd llm-gateway-go
-
-# 编译网关
 go build -o gateway ./cmd/gateway
 
-# 编译安装器
 cd installer
 go build -o llm-gw-installer ./cmd/llm-gw-installer
 cd ..
 ```
 
-### 激活
+### 本地启动前提
 
-```bash
-# 方式 1: 试用模式（7 天免费）
-./installer/llm-gw-installer activate --mode trial --email your@email.com
+生产/接近生产环境至少需要：
 
-# 方式 2: License Key 激活
-./installer/llm-gw-installer activate --mode online --license-key LIC-xxx
-
-# 方式 3: 离线激活（完全断网）
-./installer/llm-gw-installer activate --mode offline --request-file activation.req
-# ... 拷贝 activation.req 到联网电脑，上传到 llm.kxpms.cn/offline，获取 license.dat
-./installer/llm-gw-installer activate --mode offline --import-file license.dat
+```text
+PostgreSQL URL
+Redis URL 与明确降级策略
+credential encryption key
+API/Admin/JWT/Cursor 等认证密钥
+Provider credentials 和 tenant/API key 数据
 ```
 
-### 启动
+不得把缺少 DB、认证密钥、tenant context 或 Redis 的降级行为默认视为安全。部署前请阅读 [部署入口](docs/06-deployment/README.md) 和 [测试矩阵](docs/05-testing/01-strategy/test-matrix.md)。
+
+### 健康检查
+
+默认端口、实际 health/readiness 和 deployment contract 以当前 compose/systemd/K8s 配置及主入口为准。典型本地检查：
 
 ```bash
-# 启动网关（默认监听 :8781）
-./gateway --listen :8781
-
-# 健康检查
 curl http://localhost:8781/healthz
-# 返回: {"status":"ok","version":"v2.4.8"}
 ```
 
-### 升级
+## 核心模块导航
 
-```bash
-# 检查更新
-./installer/llm-gw-installer upgrade check
+| 模块 | 主要位置 | 职责 |
+|---|---|---|
+| 生产入口 | `cmd/gateway/` | composition root、HTTP/SSE、DB/Redis、worker、shutdown。 |
+| 数据面 | `domains/streaming/`, `domains/streaming/executors/` | Handler、候选执行、流式中继、错误映射。 |
+| 调度 | `domains/dispatch/` | model/credential queues、forwarder、failover、retry scheduler。 |
+| 路由 | `autoroute/`, `domains/routing/`, `domains/ursm/v2/` | auto route、状态、候选排序和约束。 |
+| 凭据/资源 | `domains/credential/`, `credentialfpslot/`, `ratelimit/`, `pool/` | 健康、slot、限流、连接与资源压力。 |
+| 协议/IR | `adapter/`, `internal/ir/`, `domains/transformation/`, `upstream/` | 协议转换、Provider 请求和响应。 |
+| 会话/审计 | `domains/session/`, `telemetry/`, `domains/requestjourney/` | cache、shadow writer、WAL、request/usage/audit。 |
+| 控制面 | `admin/`, `bg/`, `web/`, `settings/` | Admin API、worker、Vue UI、运行时设置。 |
+| 交付 | `installer/`, `deploy/`, `packaging/` | 安装、升级、回滚、部署物料。 |
 
-# 在线升级
-./installer/llm-gw-installer upgrade apply --to v2.5.0
+## 当前生产门禁
 
-# 回滚
-./installer/llm-gw-installer upgrade rollback --to v2.4.2
-```
+以下事项是扩流、ownership 切换或删除旧路径前必须解决/验证的工作，不是已完成能力：
 
----
+1. `/api/quality/*` 和独立 quality-service 的 auth、tenant scope、RLS 与数据源一致性；
+2. legacy admin fallback、DB 不可用时数据面 auth、`?token=` JWT 的 fail-closed 边界；
+3. Maintain tenant policy、FORCE RLS、least-privilege role 与资源 ownership；
+4. Session V2 shadow 的 durable compensation、reconciliation、backfill、dual-read、replay 和 rollback；
+5. h2c 最终 handler 对 Maintain proxy/static 的 wiring；
+6. TPM、FP/concurrency union lease、统一 retry budget、多模态 billing 和 worker shutdown；
+7. Compose/systemd/K8s 的端口、环境变量、healthcheck 和 timeout 契约。
 
-## 🏛️ 架构简图
+完整任务、代码落点、测试和退出条件见 [`optimization-roadmap.md`](docs/03-design/01-architecture/architecture/optimization-roadmap.md)。
 
-```
-┌─────────────────────── 客户机器 ───────────────────────┐
-│  ~/llm-gateway/                                         │
-│   ├── gateway                    (主进程，:8781)        │
-│   ├── llm-gw-installer           (CLI 工具)            │
-│   ├── license.dat                (RSA 签名的 License)   │
-│   ├── VERSION                    (当前版本)            │
-│   └── compose.yml / systemd      (部署配置)            │
-└──────────────────────┬─────────────────────────────────┘
-                       │ HTTPS (TLS 1.3, Ed25519 签名)
-┌──────────────────────▼─────────────────────────────────┐
-│  主控端 llm.kxpms.cn:8443                               │
-│   ├─ /api/v1/license/*   (激活/续期/CRL)                │
-│   ├─ /api/v1/instances/* (注册/心跳/状态)               │
-│   └─ /api/v1/updates/*   (检查/下载/上报)               │
-└─────────────────────────────────────────────────────────┘
-```
+## 三服务边界
 
----
+- **Gateway**：唯一 Provider executor、流式执行 owner、routing/limiter/cost enforcement point，以及切换前的 canonical request/session/body producer。
+- **Session Manager**：消费 Gateway 事实，负责 projection、analysis、approval、task、audit 与治理 UI；不保存完整 prompt/response，不重建 Provider/router/MCP execution。
+- **Maintain**：负责 artifact、License、activation、install、upgrade 和控制面运维；不承载 Gateway 数据面执行。
 
-## 🎛️ 产品功能预览
+详细迁移状态和 Gate 见 [`../docs/拆分/README.md`](../docs/拆分/README.md)。
 
-> 以下功能模块均已上线，部署在 184 k3s 节点生产环境。
+## OmniRoute 参考
 
-### 1. 凭据监控 — 多源模型 × 多凭据 的实时健康仪表盘
+Gateway 会选择性吸收 Provider catalog、request-aware strategy、compression stage、MCP/A2A/Fusion 的协议与治理语义；不会直接复制 Node/SQLite/JS VM/provider executor。上游 provider/tool/节省率数字仅视为声明或验收目标。详见 [`omniroute-integration-boundary.md`](docs/03-design/01-architecture/architecture/omniroute-integration-boundary.md)。
 
+## 安全与贡献
 
-- **19 凭据 × 18 模型** 二维可用性矩阵，一眼看出哪个凭据下哪个模型出问题
-- 每个凭据的 **P95 延迟**、滑动窗口成功率（最近 1 小时）、**并发槽位占用**
-- **指纹池 + 自适应探测** 自动避开被上游风控的 IP / UA，失败熔断无需人工介入
+- 漏洞报告和支持版本：[`SECURITY.md`](SECURITY.md)
+- 贡献规范：[`CONTRIBUTING.md`](CONTRIBUTING.md)
+- 文档和部署示例不得包含真实 API key、token、密码或第三方 App Secret；历史泄露应走脱敏、轮换和审计专项。
 
-### 2. 路由全景 — 双层路由 + 实时决策可观测
-
-
-- **L1 选模型**：Prompt → 8 类任务分类 → 6 维评分 → Profile 锁定
-- **L2 选凭据**：模型解吸 → Tier 回退 → 计费轮次 → P2C 评分 → 执行 / 熔断
-- **任务 × 模型热力图** 直观告诉你"什么任务该用什么模型"
-- **Sankey 路由流向** 实时展示 14,000+ 请求的最终去向（任务 → 模型 → 供应商）
-
-### 3. 请求日志 — 全链路可检索的会话级审计
-
-
-- 13,000+ 请求会话，**system prompt + 响应内容** 完整留存可逐条回放
-- 字段覆盖：任务类型、客户端模型、出站模型、供应商、Token、延迟、结束原因
-- 对接 **OTel + Prometheus**，可按 Key / 租户 / 时间段切片，便于排查与合规审计
-
-### 4. 数据生命周期 — 4 档热温冷分层 + 归档治理
-
-
-- **热数据 (0-7 天) / 温数据 (7-30 天) / 冷数据 (30-90 天) / 过期 (>90 天)** 自动分层
-- **归档预览** 先告知"执行后会动多少条记录"，再执行 — 防止误删
-- 增长趋势 + 租户分布，存储治理成本可视化
-
-### 5. 租户管理 — 多租户 + MaaS 计费一体化
-
-
-- 单租户维度下：**13 用户 / 38 密钥 / 7 天 14,208 请求 / 7.26 亿 Token / $295.50 成本**
-- **套餐 + 积分 + 加油包** 三段式计费模型，适合中国 SMB
-- MaaS 子菜单：标准模型 / 套餐与充值 / 消耗统计 / 钱包管理 / 账本流水
-
-### 6. 成本价格 — 1000+ 模型 Offer 覆盖可视化
-
-
-- **1045 个 Offer、410 个模型 100% 覆盖**，**CNY + USD 双币种**
-- 按凭据 × 模型 树形视图，一眼看出某个凭据下哪些模型还没定价
-- 状态维度：已定价（输入 / 输出）/ 免费 / 缺价 — 定价审计自动化
-
----
-
-## 🔀 双仓库策略
-
-| Remote | URL | 用途 |
-|--------|-----|------|
-| `codeup` (origin) | `https://codeup.aliyun.com/kaixuan/official-deploy/llm-gateway-go.git` | **默认**（日常开发） |
-| `github` | `git@github.com:halfking/SI-LLM-Gateway.git` | **公开镜像**（阶段发布） |
-
-```bash
-git push              # → codeup（无附加检查）
-git push github       # → github（自动严格扫描，命中即阻断）
-```
-
-敏感信息保护：`.githooks/pre-push` 推送 github 时自动运行 `scripts/scan-secrets.sh` 严格模式（49 规则）。
-详见 [`docs/REPO-MIRROR-POLICY.md`](docs/REPO-MIRROR-POLICY.md)。
-
----
-
-## 📚 文档索引
-
-| 类别 | 文档 |
-|------|------|
-| **部署** | [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) — M1-M4 四种部署模式 |
-| **API** | [`docs/API.md`](docs/API.md) — 主控端 8 个 API 端点 |
-| **升级** | [`docs/UPGRADE.md`](docs/UPGRADE.md) — 在线/离线升级流程 |
-| **架构** | [`docs/architecture/ARCHITECTURE.md`](docs/architecture/ARCHITECTURE.md) — V3 架构方案 |
-| **会话优化V2** | [`docs/会话优化v2/配置说明.md`](docs/会话优化v2/配置说明.md) — Sessions V2 Feature Flag 配置与灰度发布 |
-| **双仓库** | [`docs/REPO-MIRROR-POLICY.md`](docs/REPO-MIRROR-POLICY.md) — codeup ⇄ github 工作流 |
-| **安全** | [`SECURITY.md`](SECURITY.md) — 漏洞报告 + 扫描器用法 |
-| **贡献** | [`CONTRIBUTING.md`](CONTRIBUTING.md) — 开发规范 + 提交规范 |
-
----
-
-## 📐 差异化定位
-
-| 维度 | 通用 AI Gateway | **SI-LLM-Gateway** |
-|------|-----------------|---------------------|
-| 部署 | SaaS / On-Prem | **完全私有部署**（已 184 k3s 生产） |
-| 数据合规 | 出域 | **数据全在企业内** |
-| 计费 | 用量计费（USD） | **套餐 + 积分 + 加油包**（适合中国 SMB） |
-| 上游模型 | 主打少数厂商 | **全模型 + 国产 + 本地** |
-| 多凭据指纹池 | 基础 | **50+ UA + 35 Accept-Language + 11 utls profile** |
-| MCP 工具网关 | 部分 | **Q3 2026 全量上线** |
-| 中文友好 | 一般 | **全中文 UI + 国内模型 + 支付宝接入** |
-| 多租户审计 | 标准 | **38+ 表 RLS + 43 轮审计 L1=0** |
-
----
-
-## 🤝 贡献
-
-参见 [`CONTRIBUTING.md`](CONTRIBUTING.md)。多租户改动必跑 `lint-tenant-scope-llmgw` / `lint-pg-rls` / `lint-otel-tenant` 三条 linter。
-
----
-
-## 🔐 安全
-
-- 漏洞报告：见 [`SECURITY.md`](SECURITY.md)
-- 公开仓库敏感信息保护：见 [`docs/REPO-MIRROR-POLICY.md`](docs/REPO-MIRROR-POLICY.md)
-- 法务白名单：见 [`docs/legal/disguise-compliance.md`](docs/legal/disguise-compliance.md)
-
----
-
-## 📄 License
+## License
 
 [Apache License 2.0](LICENSE)
