@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- Classify apigpt/apiclaude.cc credit-exhaustion responses as permanent quota failures so dispatch ejects the depleted node and fails over to another credential supporting the requested model.
+- Cover English and Chinese balance variants including `insufficient credit`, `quota exhausted`, `no available accounts`, `out of quota`, and `节点费用已用完`.
+
 ## [2.5.0] - 2026-08-19
 
 ### Security
