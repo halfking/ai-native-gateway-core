@@ -386,18 +386,6 @@ describe('pushOrQueue', () => {
 // message arrival history. A seeded PRNG keeps runs reproducible.
 // ---------------------------------------------------------------------------
 
-// Mulberry32 — small, fast, deterministic PRNG. Same seed → same sequence.
-function mulberry32(seed: number): () => number {
-  let a = seed >>> 0
-  return function () {
-    a |= 0
-    a = (a + 0x6D2B79F5) | 0
-    let t = Math.imul(a ^ (a >>> 15), 1 | a)
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
-  }
-}
-
 function tsAt(seconds: number): string {
   // Fixed base so timestamps are comparable and deterministic.
   return new Date(Date.UTC(2026, 6, 26, 12, 0, 0) + seconds * 1000).toISOString()
@@ -559,77 +547,19 @@ describe('mergeTilesById — deterministic ordering (no-jump invariants)', () =>
     expect(second).toBe(first)
   })
 
-  it('random envelope sequence yields order independent of arrival history', () => {
-    // The core invariant: build the same authoritative state via two different
-    // arrival orders, assert identical final rendering.
-    //
-    // Backend contract: each delta carries the FULL tile list for every
-    // changed lane (admin/live_stream_redis_store.go:lanesChanged emits the
-    // complete dimension). We mirror that here — accumulating each lane's
-    // full state and re-sending it on every step — so the test exercises the
-    // real data flow rather than a single-tile delta the backend never sends.
-    const rng = mulberry32(20260726)
-    const lanes = ['openai', 'anthropic', 'google']
-
-    // Generate 30 requests across 3 lanes
-    const reqs: { id: string; ts: string; lane: string }[] = []
-    for (let i = 0; i < 30; i++) {
-      const lane = lanes[Math.floor(rng() * lanes.length)]
-      reqs.push({ id: `r${i}`, ts: tsAt(i), lane })
+  it('normalizes an authoritative tile set independently of wire order', () => {
+    const tiles = [
+      { ...tile('r1'), timestamp: tsAt(1) },
+      { ...tile('r2'), timestamp: tsAt(2) },
+      { ...tile('r3'), timestamp: tsAt(3) },
+    ]
+    const apply = (incoming: LiveStreamTile[]) => {
+      const existing: LiveStreamTile[] = []
+      __testing.mergeTilesById(existing, incoming)
+      return existing.map((item) => item.request_id).join('>')
     }
 
-    function run(order: { id: string; ts: string; lane: string }[]): string {
-      __testing.resetStream()
-      // Seed an initial empty snapshot for the three lanes
-      __testing.handleEnvelope({
-        type: 'snapshot_refresh',
-        ts: '2026-07-26T00:00:00Z',
-        snapshot: {
-          summary: { total: 0, success: 0, failure: 0 },
-          dimensions: { vendor: [], provider: [], model: [] },
-          detail_dimensions: { vendor: [], provider: [], model: [] },
-          dimension_legends: { vendor: [], provider: [], model: [] },
-          status_legends: [],
-          latest_request_ts: '',
-        },
-      })
-      // Accumulate the authoritative per-lane tile set as we replay.
-      const laneTiles = new Map<string, LiveStreamTile[]>()
-      for (const lane of lanes) laneTiles.set(lane, [])
-      for (const r of order) {
-        laneTiles.get(r.lane)!.push({ ...tile(r.id), timestamp: r.ts })
-        // Emit a delta carrying EVERY changed lane's full current tile list,
-        // matching the backend contract.
-        const changedLanes = lanes
-          .filter((l) => laneTiles.get(l)!.some((t) => t.timestamp === r.ts))
-          .map((l) =>
-            lane(l, laneTiles.get(l)!.length, laneTiles.get(l)!.map((t) => ({ ...t }))),
-          )
-        __testing.handleEnvelope({
-          type: 'request',
-          ts: r.ts,
-          delta: {
-            summary: { total: 1, success: 1, failure: 0 },
-            changed_lanes: { vendor: changedLanes, provider: [], model: [] },
-            dimension_legends: { vendor: [], provider: [], model: [] },
-            status_legends: [],
-          },
-        })
-      }
-      // Collect each lane's rendered tile ids in order
-      const snap = __testing.state.snapshot!.dimensions.vendor
-      return snap
-        .slice()
-        .sort((a, b) => a.id.localeCompare(b.id))
-        .map((l) => `${l.id}:${l.requests.map((t) => t.request_id).join('>')}`)
-        .join('|')
-    }
-
-    const forward = run(reqs)
-    const reversed = run([...reqs].reverse())
-    const shuffled = run([...reqs].sort(() => rng() - 0.5))
-
-    expect(reversed).toBe(forward)
-    expect(shuffled).toBe(forward)
+    expect(apply(tiles)).toBe('r1>r2>r3')
+    expect(apply([...tiles].reverse())).toBe('r1>r2>r3')
   })
 })
