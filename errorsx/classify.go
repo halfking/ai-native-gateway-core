@@ -355,9 +355,11 @@ var budgetExceededRe = regexp.MustCompile(
 		// {"code":"INSUFFICIENT_BALANCE","message":"..."} with HTTP 403.
 		`"code"\s*:\s*"INSUFFICIENT_BALANCE"|` +
 		`"code"\s*:\s*"insufficient_balance"|` +
-		// Chinese quota exhaustion patterns (智谱AI, etc.)
-		`达到.{0,10}(每周|每月|每日|使用)?上限|` +
-		`(配额|额度|余额).{0,10}(用尽|耗尽|不足|超限)|` +
+		// Chinese quota exhaustion patterns (智谱AI, MiniMax, etc.).
+		// MiniMax Token Plan inserts the product name between "达到" and
+		// "用量上限", so the short legacy window missed its 429 quota body.
+		`达到.{0,40}(每周|每月|每日|使用|用量)?上限|` +
+		`(配额|额度|余额|用量).{0,10}(用尽|用完|耗尽|不足|超限|上限)|` +
 		`(限额|使用量).{0,10}重置|` +
 		`"code"\s*:\s*"1310"|` + // 智谱AI specific code
 		// OmniRoute-derived provider-specific quota signals (classify429.ts).

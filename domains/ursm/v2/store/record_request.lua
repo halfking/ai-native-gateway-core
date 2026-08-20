@@ -246,6 +246,20 @@ if success == "1" then
   redis.call("HSET", node_key, "fail_streak", "0")
 else
   redis.call("HINCRBY", node_key, "failure_count", 1)
+  -- Auth/quota failures are credential-fatal. In authoritative URSM mode the
+  -- legacy credentialstate manager is intentionally absent, so waiting for
+  -- the generic three-failure threshold would route the dead node again.
+  local fatal = string.match(err_kind, "^auth") or string.match(err_kind, "^quota")
+  if fatal then
+    redis.call("HSET", node_key,
+      "disabled", "1",
+      "available", "0",
+      "cool_until_ms", tostring(now_ms + (cool_seconds * 1000)),
+      "disable_count", tostring(disable_count + 1),
+      "disabled_reason", err_kind)
+    redis.call("EXPIRE", node_key, node_ttl)
+    return {"applied", "0", "0"}
+  end
   local new_streak = tonumber(redis.call("HINCRBY", node_key, "fail_streak", 1))
   if new_streak >= fail_streak_limit and not free_transient then
     redis.call("HSET", node_key,
