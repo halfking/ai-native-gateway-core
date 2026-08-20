@@ -64,6 +64,9 @@ const (
 	CategoryCircuitBreaker Category = "circuit_breaker"
 	CategoryGeneral        Category = "general"
 	CategoryIntegration    Category = "integration"
+	// 2026-08-20: 项目归属（LLM 推断层）的归类。属于辅助分析类，不是
+	// 计费/路由类，不参与 hot path 控制。
+	CategoryAttribution Category = "attribution"
 )
 
 // DangerLevel gates the required role for PUT operations.
