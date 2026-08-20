@@ -56,6 +56,47 @@ server {
     access_log /var/log/nginx/llmgo.kxpms.cn-access.log;
     error_log  /var/log/nginx/llmgo.kxpms.cn-error.log;
 
+    # maintain reverse proxy (2026-07-21, 31 §3.4) — single-origin integration
+    location /maintain-api/ {
+        proxy_pass http://127.0.0.1:8082;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Instance-Id $http_x_instance_id;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_connect_timeout 30s;
+        proxy_read_timeout 1800s;
+        proxy_send_timeout 1800s;
+        proxy_buffering off;
+        proxy_cache off;
+    }
+    # Artifact downloads (ticket-gated) — proxied to maintain (8082)
+    # Maintain registers GET /artifacts/{version}/{filename}?ticket=<token>
+    location /artifacts/ {
+        proxy_pass http://127.0.0.1:8082;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_connect_timeout 60s;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+        proxy_buffering off;
+        proxy_cache off;
+    }
+
+    location /maintain {
+        alias /opt/ai-native-maintain/web/maintain;
+        try_files $uri $uri/ /maintain/index.html;
+        index index.html;
+        expires -1;
+        add_header Cache-Control "no-cache";
+    }
+
     location = /api/admin/live-stream {
         proxy_pass http://llmgo_local_245;
         proxy_http_version 1.1;
@@ -101,102 +142,29 @@ server {
         proxy_cache off;
     }
 
-    # Backend endpoints must bypass the SPA fallback below.
-    location = /healthz {
-        proxy_pass http://llmgo_local_245;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_connect_timeout 30s;
-        proxy_read_timeout 30s;
-        proxy_send_timeout 30s;
+    # Product intro → Maintain home. Gateway login entry: /?login=*
+    location = / {
+        error_page 418 = @llm_gateway_root;
+        if ($arg_login != "") { return 418; }
+        return 302 /maintain/home;
     }
-    location = /readyz {
-        proxy_pass http://llmgo_local_245;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_connect_timeout 30s;
-        proxy_read_timeout 30s;
-        proxy_send_timeout 30s;
+    location = /maintain {
+        return 302 /maintain/home;
     }
-    location ^~ /api/ {
+    location @llm_gateway_root {
         proxy_pass http://llmgo_local_245;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
         proxy_connect_timeout 60s;
         proxy_read_timeout 1200s;
         proxy_send_timeout 1200s;
         proxy_buffering off;
         proxy_cache off;
-    }
-    location ^~ /v1/ {
-        proxy_pass http://llmgo_local_245;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_connect_timeout 60s;
-        proxy_read_timeout 3600s;
-        proxy_send_timeout 1200s;
-        proxy_buffering off;
-        proxy_cache off;
-    }
-    location ^~ /v1beta/ {
-        proxy_pass http://llmgo_local_245;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_connect_timeout 60s;
-        proxy_read_timeout 1200s;
-        proxy_send_timeout 1200s;
-        proxy_buffering off;
-        proxy_cache off;
-    }
-    location ^~ /v2/ {
-        proxy_pass http://llmgo_local_245;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_connect_timeout 60s;
-        proxy_read_timeout 3600s;
-        proxy_send_timeout 1200s;
-        proxy_buffering off;
-        proxy_cache off;
-    }
-    location = /metrics {
-        proxy_pass http://llmgo_local_245;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_connect_timeout 30s;
-        proxy_read_timeout 30s;
-        proxy_send_timeout 30s;
-    }
-    location ^~ /admin/ {
-        proxy_pass http://llmgo_local_245;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_connect_timeout 30s;
-        proxy_read_timeout 120s;
-        proxy_send_timeout 120s;
     }
 
     location / {
