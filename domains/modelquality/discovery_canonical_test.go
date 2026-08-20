@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -62,5 +63,25 @@ func TestStaticModelDiscovery_NoOp(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].Provider != "x" {
 		t.Fatalf("got = %+v", got)
+	}
+}
+
+func TestCanonicalCatalogDiscovery_WithTimeout(t *testing.T) {
+	d := NewCanonicalCatalogDiscovery(nil)
+	if d.WithTimeout(250*time.Millisecond) != d {
+		t.Fatal("WithTimeout should return the receiver")
+	}
+	if d.timeout != 250*time.Millisecond {
+		t.Fatalf("timeout = %v, want 250ms", d.timeout)
+	}
+	if d.WithTimeout(0) != d {
+		t.Fatal("WithTimeout should return the receiver when resetting")
+	}
+	if d.timeout != time.Second {
+		t.Fatalf("timeout = %v, want 1s after reset", d.timeout)
+	}
+	var nilDiscovery *CanonicalCatalogDiscovery
+	if nilDiscovery.WithTimeout(time.Second) != nil {
+		t.Fatal("nil receiver should remain nil")
 	}
 }

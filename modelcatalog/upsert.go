@@ -62,13 +62,15 @@ upsert_pm AS (
         canonical_id,
         standardized_name,
         available,
+        source,
         last_seen_at
     )
-    SELECT cred.provider_id, $2, $3, $5, $4, TRUE, NOW() FROM cred
+    SELECT cred.provider_id, $2, $3, $5, $4, TRUE, 'discovery', NOW() FROM cred
     ON CONFLICT (provider_id, raw_model_name) DO UPDATE SET
         canonical_raw_name = COALESCE(EXCLUDED.canonical_raw_name, provider_models.canonical_raw_name),
         canonical_id = COALESCE(EXCLUDED.canonical_id, provider_models.canonical_id),
         standardized_name = COALESCE(EXCLUDED.standardized_name, provider_models.standardized_name),
+        source = 'discovery',
         last_seen_at = NOW(),
         available = TRUE,
         updated_at = NOW()

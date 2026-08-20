@@ -84,7 +84,7 @@ func (d *ConfigFileModelDiscovery) DiscoverModels(ctx context.Context) ([]ModelT
 }
 
 // CanonicalCatalogDiscovery 从数据库目录（models_canonical × provider_models × providers）
-// 发现活跃模型列表，按 canonical_name 去重，作为 ModelTarget 返回。
+// 发现可实际路由的活跃模型列表，按 provider model 行返回，作为 ModelTarget 返回。
 //
 // 引入于 2026-08-20（feat/standard-models-rollout）：取代 GetDefaultMonitorModels 的静态回退
 // —— 后者不再覆盖 grok-4.6 / kimi-k* / gemini-3.*。数据库行由 sql/migrations/domain/352-355
@@ -92,9 +92,9 @@ func (d *ConfigFileModelDiscovery) DiscoverModels(ctx context.Context) ([]ModelT
 //
 // 设计要点：
 //   - 只返回 status='active' 的 canonical 行（DB 是 single source of truth）
-//   - 同时存在 provider_models 行才返回（意味着该 provider 已发现 / 已预填 361）
-//   - 一个 canonical 可能挂在多个 provider 上（如 gpt-4o 在 openai/azure-openai），
-//     DiscoverModels 会按 (provider, canonical) 返回多个 target，由调用方去重或展开
+//   - 同时存在可用 credential binding 才返回；credential_id=0 的占位行不参与
+//   - 一个 canonical 可能挂在多个 provider/raw model 行上（如 gpt-4o 在多个 provider），
+//     DiscoverModels 按 provider model 行返回，保留 provider-facing raw 名称
 //   - 短超时（默认 1s），DB 慢不应阻塞监控循环
 type CanonicalCatalogDiscovery struct {
 	pool    *pgxpool.Pool
@@ -130,21 +130,34 @@ func (d *CanonicalCatalogDiscovery) DiscoverModels(ctx context.Context) ([]Model
 	defer cancel()
 
 	const q = `
-		SELECT p.code           AS provider,
+		SELECT DISTINCT p.code       AS provider,
 		       pm.raw_model_name AS model_name,
 		       mc.canonical_name AS canonical_model,
 		       COALESCE(mc.display_name, mc.canonical_name) AS display_name
 		FROM provider_models pm
 		JOIN providers p
 		  ON p.id = pm.provider_id AND p.tenant_id = pm.tenant_id
-		JOIN models_canonical mc
-		  ON mc.id = pm.canonical_id
-		WHERE pm.tenant_id = 'default'
-		  AND pm.available = TRUE
-		  AND mc.status = 'active'
-		  AND p.enabled = TRUE
-		  AND COALESCE(p.manual_disabled, FALSE) = FALSE
-		ORDER BY p.code, mc.canonical_name`
+			JOIN models_canonical mc
+			  ON mc.id = pm.canonical_id
+			JOIN credential_model_bindings cmb
+			  ON cmb.provider_model_id = pm.id
+			JOIN credentials c
+			  ON c.id = cmb.credential_id
+			WHERE pm.tenant_id = 'default'
+			  AND c.tenant_id = pm.tenant_id
+			  AND pm.available = TRUE
+			  AND cmb.available = TRUE
+			  AND cmb.credential_id > 0
+			  AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
+			  AND COALESCE(c.status, 'active') = 'active'
+			  AND COALESCE(c.lifecycle_status, 'active') = 'active'
+			  AND COALESCE(c.manual_disabled, FALSE) = FALSE
+			  AND COALESCE(c.availability_state, 'ready') = 'ready'
+			  AND COALESCE(c.quota_state, 'ok') NOT IN ('permanently_exhausted', 'balance_exhausted', 'periodic_exhausted')
+			  AND mc.status = 'active'
+			  AND p.enabled = TRUE
+			  AND COALESCE(p.manual_disabled, FALSE) = FALSE
+			ORDER BY p.code, mc.canonical_name, pm.raw_model_name`
 
 	rows, err := d.pool.Query(ctx, q)
 	if err != nil {

@@ -677,14 +677,14 @@ func (s *Service) upsertModel(ctx context.Context, cred credential, rawName stri
 			continue
 		}
 		_, err := s.db.Exec(ctx, `
-			INSERT INTO model_aliases (raw_name, canonical_id, status)
-			VALUES ($1, $2, 'active')
-			ON CONFLICT (raw_name) DO UPDATE SET
-				canonical_id = EXCLUDED.canonical_id,
-				status = 'active'
-		`, normalizedAlias, canonicalID)
+				INSERT INTO model_aliases (canonical_id, raw_name, status)
+				VALUES ($1, $2, 'active')
+				ON CONFLICT (canonical_id, raw_name) DO UPDATE SET
+					status = 'active',
+					updated_at = NOW()
+			`, canonicalID, normalizedAlias)
 		if err != nil {
-			slog.Debug("failed to upsert alias", "alias", normalizedAlias, "error", err)
+			return fmt.Errorf("upsert model alias %q: %w", normalizedAlias, err)
 		}
 	}
 
