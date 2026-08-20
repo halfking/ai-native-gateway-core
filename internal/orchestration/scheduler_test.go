@@ -29,6 +29,16 @@ func TestSchedulerEnforcesSingleActiveSuccessor(t *testing.T) {
 	}
 }
 
+func TestSchedulerRejectsNonIncreasingSuccessorSequence(t *testing.T) {
+	scheduler := NewScheduler(SchedulerConfig{LeaseTTL: time.Minute})
+	if err := scheduler.Enqueue(Action{ID: "a1", RunID: "run-1", Sequence: 2, BindingID: "b1"}); err != nil {
+		t.Fatalf("first Enqueue() error = %v", err)
+	}
+	if err := scheduler.Enqueue(Action{ID: "a2", RunID: "run-1", Sequence: 2, BindingID: "b1"}); !errors.Is(err, ErrSequenceRegression) {
+		t.Fatalf("same-sequence Enqueue() error = %v, want ErrSequenceRegression", err)
+	}
+}
+
 func TestSchedulerLeaseExpiryMakesActionClaimableAgain(t *testing.T) {
 	now := time.Unix(100, 0)
 	scheduler := NewScheduler(SchedulerConfig{LeaseTTL: time.Second, Now: func() time.Time { return now }})
@@ -94,6 +104,22 @@ func TestSchedulerRejectsStaleLeaseCompletion(t *testing.T) {
 	}
 	if err := scheduler.Complete(claim.LeaseID, nil); err != nil {
 		t.Fatalf("valid Complete() error = %v", err)
+	}
+}
+
+func TestSchedulerRejectsCompletionAfterLeaseExpiry(t *testing.T) {
+	now := time.Unix(100, 0)
+	scheduler := NewScheduler(SchedulerConfig{LeaseTTL: time.Second, Now: func() time.Time { return now }})
+	if err := scheduler.Enqueue(Action{ID: "a1", RunID: "run-1", Sequence: 1, BindingID: "b1"}); err != nil {
+		t.Fatalf("Enqueue() error = %v", err)
+	}
+	claim, err := scheduler.Claim("run-1", "worker-1")
+	if err != nil {
+		t.Fatalf("Claim() error = %v", err)
+	}
+	now = now.Add(2 * time.Second)
+	if err := scheduler.Complete(claim.LeaseID, nil); !errors.Is(err, ErrLeaseLost) {
+		t.Fatalf("expired Complete() error = %v, want ErrLeaseLost", err)
 	}
 }
 
