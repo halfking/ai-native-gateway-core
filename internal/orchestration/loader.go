@@ -3,6 +3,8 @@ package orchestration
 import (
 	"context"
 	"fmt"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 
@@ -28,6 +30,7 @@ type PluginLoader struct {
 	bindings         *pluginruntime.BindingRegistry
 	manifests        map[string]*pluginruntime.Manifest
 	ready            map[string]bool
+	bindingOwners    map[string]string
 }
 
 func NewPluginLoader(cfg PluginLoaderConfig) *PluginLoader {
@@ -37,6 +40,7 @@ func NewPluginLoader(cfg PluginLoaderConfig) *PluginLoader {
 		bindings:         pluginruntime.NewBindingRegistry(),
 		manifests:        make(map[string]*pluginruntime.Manifest),
 		ready:            make(map[string]bool),
+		bindingOwners:    make(map[string]string),
 	}
 }
 
@@ -50,6 +54,9 @@ func (l *PluginLoader) Load(ctx context.Context, manifest *pluginruntime.Manifes
 		return fmt.Errorf("load plugin failed: manifest is nil (plugin_id=unknown)")
 	}
 	if err := validateManifest(manifest); err != nil {
+		return fmt.Errorf("load plugin failed: %w (plugin_id=%s)", err, manifest.PluginID)
+	}
+	if err := l.validateBindingOwners(manifest); err != nil {
 		return fmt.Errorf("load plugin failed: %w (plugin_id=%s)", err, manifest.PluginID)
 	}
 	l.mu.Lock()
@@ -71,6 +78,9 @@ func (l *PluginLoader) Load(ctx context.Context, manifest *pluginruntime.Manifes
 	l.mu.Lock()
 	l.manifests[manifest.PluginID] = clone
 	l.ready[manifest.PluginID] = true
+	for _, binding := range manifest.Bindings {
+		l.bindingOwners[binding.BindingID] = manifest.PluginID
+	}
 	l.mu.Unlock()
 	return nil
 }
@@ -109,6 +119,9 @@ func (l *PluginLoader) Authorize(bindingID, capability, tenantID, model string) 
 }
 
 func validateManifest(m *pluginruntime.Manifest) error {
+	if !regexp.MustCompile(`^[a-z0-9][a-z0-9._-]*$`).MatchString(m.PluginID) {
+		return fmt.Errorf("invalid plugin_id %q", m.PluginID)
+	}
 	if strings.TrimSpace(m.PluginID) == "" || strings.TrimSpace(m.PluginVersion) == "" {
 		return fmt.Errorf("plugin_id and plugin_version are required")
 	}
@@ -117,6 +130,29 @@ func validateManifest(m *pluginruntime.Manifest) error {
 	}
 	if strings.TrimSpace(m.Runtime.Entrypoint) == "" {
 		return fmt.Errorf("runtime entrypoint is required")
+	}
+	if filepath.IsAbs(m.Runtime.Entrypoint) || filepath.Clean(m.Runtime.Entrypoint) == ".." || strings.HasPrefix(filepath.Clean(m.Runtime.Entrypoint), ".."+string(filepath.Separator)) {
+		return fmt.Errorf("runtime entrypoint must remain inside plugin directory")
+	}
+	if m.Runtime.Protocol != "" && m.Runtime.Protocol != "http-unix-socket" {
+		return fmt.Errorf("unsupported runtime protocol %q", m.Runtime.Protocol)
+	}
+	if m.Runtime.HandshakePath == "" || m.Runtime.HealthPath == "" || !strings.HasPrefix(m.Runtime.HandshakePath, "/") || !strings.HasPrefix(m.Runtime.HealthPath, "/") {
+		return fmt.Errorf("runtime handshake/health path required and must be absolute")
+	}
+	if m.Runtime.ShutdownGraceSecs < 0 || m.Runtime.ShutdownGraceSecs > 300 {
+		return fmt.Errorf("runtime shutdown_grace_seconds must be between 0 and 300")
+	}
+	return nil
+}
+
+func (l *PluginLoader) validateBindingOwners(manifest *pluginruntime.Manifest) error {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	for _, binding := range manifest.Bindings {
+		if owner := l.bindingOwners[binding.BindingID]; owner != "" && owner != manifest.PluginID {
+			return fmt.Errorf("binding_id already owned by another plugin (binding_id=%s, owner=%s)", binding.BindingID, owner)
+		}
 	}
 	return nil
 }

@@ -32,7 +32,12 @@ func testManifest() *pluginruntime.Manifest {
 		GatewayCompatibility: pluginruntime.GatewayCompatibility{
 			APIContract: pluginruntime.SupportedAPIContract,
 		},
-		Runtime: pluginruntime.Runtime{Entrypoint: "bin/planner"},
+		Runtime: pluginruntime.Runtime{
+			Entrypoint:    "bin/planner",
+			Protocol:      "http-unix-socket",
+			HandshakePath: "/handshake",
+			HealthPath:    "/healthz",
+		},
 		Bindings: []pluginruntime.PluginBinding{{
 			BindingID:        "planner.request",
 			Phase:            pluginruntime.PhaseRequest,
@@ -115,5 +120,27 @@ func TestPluginLoaderAuthorizeChecksReadyCapabilityAndScope(t *testing.T) {
 	}
 	if err := loader.Authorize("planner.request", pluginruntime.CapabilityRequestObserve, "tenant-b", ""); err == nil {
 		t.Fatal("Authorize() should reject tenant outside scope")
+	}
+}
+
+func TestPluginLoaderRejectsBindingIDCollisionAcrossPlugins(t *testing.T) {
+	loader := NewPluginLoader(PluginLoaderConfig{Probe: &fakeProbe{}})
+	first := testManifest()
+	if err := loader.Load(context.Background(), first); err != nil {
+		t.Fatalf("first Load() error = %v", err)
+	}
+	second := testManifest()
+	second.PluginID = "other-planner"
+	if err := loader.Load(context.Background(), second); err == nil {
+		t.Fatal("Load() should reject binding ID collision")
+	}
+}
+
+func TestPluginLoaderRejectsUnsafeRuntimeManifest(t *testing.T) {
+	manifest := testManifest()
+	manifest.Runtime.Entrypoint = "../planner"
+	loader := NewPluginLoader(PluginLoaderConfig{Probe: &fakeProbe{}})
+	if err := loader.Load(context.Background(), manifest); err == nil {
+		t.Fatal("Load() should reject unsafe runtime entrypoint")
 	}
 }

@@ -25,6 +25,7 @@ var (
 	ErrLeaseLost          = fmt.Errorf("action lease lost")
 	ErrActionNotFound     = fmt.Errorf("action not found")
 	ErrNoActionAvailable  = fmt.Errorf("no action available")
+	ErrSequenceRegression = fmt.Errorf("action sequence must increase")
 )
 
 type Action struct {
@@ -87,6 +88,9 @@ func (s *Scheduler) Enqueue(action Action) error {
 	}
 	if currentID := s.activeRun[action.RunID]; currentID != "" {
 		current := s.actions[currentID]
+		if current != nil && action.Sequence <= current.Sequence {
+			return ErrSequenceRegression
+		}
 		if current != nil && current.State != ActionCompleted && current.State != ActionFailed && current.State != ActionSuspended && current.State != ActionDeadLetter {
 			return ErrRunHasActiveAction
 		}
@@ -138,6 +142,9 @@ func (s *Scheduler) Complete(leaseID string, cause error) error {
 		}
 	}
 	if action == nil || action.State != ActionRunning {
+		return ErrLeaseLost
+	}
+	if !s.cfg.Now().Before(action.LeaseUntil) {
 		return ErrLeaseLost
 	}
 	if s.activeBinding[action.BindingID] > 0 {
