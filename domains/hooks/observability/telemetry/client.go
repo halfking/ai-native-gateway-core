@@ -991,35 +991,33 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		$49, $50,
 		$51, $52, $53,
 		$54, $55, $56, $57::text::jsonb, $58,
+		$59, $60,
+		$61, $62, $63, $64::text::jsonb,
 		-- 2026-08-19: token-band observability.
-		$59,
+		$65,
 		-- v3 (2026-06-19) T23: session-level outbound body.
-		$60::text::jsonb, $61, $62, $63::text::jsonb,
+		$66::text::jsonb, $67, $68, $69::text::jsonb,
 		-- 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
-		$64::text[], $65::text::jsonb, $66,
+		$70::text[], $71::text::jsonb, $72,
 		-- 2026-06-19 T-NEW-7: split the semantic overload of failure_detail_code.
-		$67,
+		$73,
 		-- 2026-06-23: structured tool_calls (042_tool_calls_column.sql).
-		$68::text::jsonb,
+		$74::text::jsonb,
 		-- 2026-06-26: client-supplied X-Request-Id.
-		$69,
+		$75,
 		-- 2026-06-30: upstream diagnostics (migration 320).
-		$70, $71, $72,
-		$73, $74,
+		$76, $77, $78,
+		$79, $80,
 		-- 2026-07-01: 附件元数据 (migration 325).
-		$75::text::jsonb,
+		$81::text::jsonb,
 		-- 2026-07-14 (migration 341): client-side origin.
-		$76, $77, $78, $79,
-		-- 2026-07-19 (migration 350): routing attempts tracking.
-		$80::text::jsonb, $81,
-		-- 2026-07-27: 客户端感知字段(主表 INSERT 必填).
 		$82, $83, $84, $85,
+		-- 2026-07-19 (migration 350): routing attempts tracking.
+		$86::text::jsonb, $87,
+		-- 2026-07-27: 客户端感知字段(主表 INSERT 必填).
+		$88, $89, $90, $91,
 		-- V3.1 queue timestamps (migration 491): 9-stage dispatch queue timestamps.
-		-- above + 10 timestamps occupy $82-$95. 2026-08-19 hotfix:
-		-- previous diff landed $91-$95 only, which pgx rejected
-		-- with the diagnostic "unused argument: 95".
-		$86, $87, $88, $89, $90, $91, $92, $93, $94, $95,
-		$96, $97, $98, $99, $100, $101
+		$92, $93, $94, $95, $96, $97, $98, $99, $100, $101
 	)
 				-- 2026-08-06 fix: INSERT targets request_logs_hot (NOT the partitioned parent).
 				-- Migration 455 (2026-07-23) gave request_logs_hot PRIMARY KEY (request_id),
@@ -1240,8 +1238,8 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		entry.OutboundTokenEst,
 		jsonOrNull(entry.OutboundMsgHashes),
 		// 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
-		// quality_flags is bound as text[]; we cast nil to NULL so the
-		// column DEFAULT '{}' kicks in. quality_fix_actions is JSONB.
+		// quality_flags is always encoded as a PostgreSQL text array;
+		// quality_fix_actions is JSONB.
 		qualityFlagsArg(entry.QualityFlags),
 		qualityActionsArgStr(entry.QualityFixActions),
 		entry.QualityScore,
@@ -1786,8 +1784,8 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		entry.OutboundTokenEst,
 		string(jsonOrNull(entry.OutboundMsgHashes)),
 		// 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
-		// quality_flags is bound as text[]; we cast nil to NULL so the
-		// column DEFAULT '{}' kicks in. quality_fix_actions is JSONB.
+		// quality_flags is always encoded as a PostgreSQL text array;
+		// quality_fix_actions is JSONB.
 		qualityFlagsArg(entry.QualityFlags),
 		string(qualityActionsArgStr(entry.QualityFixActions)),
 		entry.QualityScore,
@@ -2048,22 +2046,13 @@ func nonEmptyPtr(p *string, fallback string) string {
 // OVERRIDES the default and applies whatever the bind value is.
 //
 // qualityFlagsArg returns a pgx-friendly text array value for the text[] column.
-// pgtype.Array wraps the Go slice so pgx's binary protocol encodes it as a
-// proper PostgreSQL text array. A nil Go slice is encoded as NULL (which the
-// DEFAULT '{}'::text[] on the column handles), and a non-nil empty slice is
-// encoded as the text[] literal "{}".
+// An explicit INSERT value bypasses the column default, so empty flags must be
+// encoded as PostgreSQL's empty-array literal rather than a nil array value.
 func qualityFlagsArg(flags []string) any {
-	arr := &pgtype.Array[string]{}
-	if len(flags) > 0 {
-		if err := arr.SetDimensions([]pgtype.ArrayDimension{{
-			Length:     int32(len(flags)),
-			LowerBound: 1,
-		}}); err != nil {
-			return []string{}
-		}
-		copy(arr.Elements, flags)
+	if len(flags) == 0 {
+		return "{}"
 	}
-	return arr
+	return pgtype.FlatArray[string](flags)
 }
 
 // qualityActionsArg turns the JSONB payload into a value safe to bind
