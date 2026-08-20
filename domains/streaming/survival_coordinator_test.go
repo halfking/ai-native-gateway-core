@@ -399,7 +399,40 @@ func (e *holdbackWriteExecutor) Execute(params *executors.ExecParams) (*executor
 	return &executors.ExecuteResult{}, nil
 }
 
-// TestSurvivalCoordinatorFlushHeldFramesOnSuccessUnderHoldback is the
+type holdbackRetryExecutor struct {
+	contents []string
+	calls    int
+}
+
+func (e *holdbackRetryExecutor) Execute(params *executors.ExecParams) (*executors.ExecuteResult, error) {
+	index := e.calls
+	e.calls++
+	if gw, ok := params.W.(*GateWriter); ok && index < len(e.contents) {
+		_, _ = gw.Write([]byte(e.contents[index]))
+	}
+	if index == 0 {
+		return nil, transientFailure()
+	}
+	return &executors.ExecuteResult{}, nil
+}
+
+type committedMetadataRetryExecutor struct{ calls int }
+
+func (e *committedMetadataRetryExecutor) Execute(params *executors.ExecParams) (*executors.ExecuteResult, error) {
+	e.calls++
+	gw, ok := params.W.(*GateWriter)
+	if !ok {
+		return nil, errors.New("survival coordinator did not supply a gate writer")
+	}
+	if _, err := gw.Write([]byte("event: message_start\ndata: {\"type\":\"message_start\"}\n\n")); err != nil {
+		return nil, err
+	}
+	if err := gw.UnderlyingAttemptGate().Commit(); err != nil {
+		return nil, err
+	}
+	return nil, transientFailure()
+}
+
 // coordinator-level regression for the success-path holdback flush fix
 // (FR-12 L1). An attempt that finishes successfully while the L1 window still
 // holds its semantic frames (gate uncommitted) must release those held frames
@@ -433,7 +466,80 @@ func TestSurvivalCoordinatorFlushHeldFramesOnSuccessUnderHoldback(t *testing.T) 
 	}
 }
 
-// TestSurvivalCoordinatorDiscardsHeldFramesOnTerminalFailureUnderHoldback is
+func TestSurvivalCoordinatorDiscardsHeldFramesBeforeRetry(t *testing.T) {
+	t.Setenv("LLM_GATEWAY_RECOVERY_HOLDBACK_WINDOW_MS", "5000")
+	t.Setenv("LLM_GATEWAY_RECOVERY_HOLDBACK_MAX_CHUNKS", "5")
+
+	const discarded = "held-from-failed-attempt"
+	const recovered = "held-from-successful-retry"
+	frame := func(marker string) string {
+		return "event: content_block_delta\ndata: {\"delta\":{\"type\":\"text_delta\",\"text\":\"" + marker + "\"}}\n\n"
+	}
+	exec := &holdbackRetryExecutor{contents: []string{frame(discarded), frame(recovered)}}
+	h := newCoordHarness(nil)
+	h.exec = nil
+	c := h.coordinator()
+	c.Exec = exec
+
+	res := c.Run(context.Background(), h.sw, &executors.ExecParams{IsStream: true})
+
+	if !res.Succeed {
+		t.Fatalf("expected retry success, decision=%v reason=%v", res.Decision.Action, res.Decision.Reason)
+	}
+	if res.Attempts != 2 || exec.calls != 2 {
+		t.Fatalf("attempts = %d, executor calls = %d, want two attempts", res.Attempts, exec.calls)
+	}
+	if h.refreshes != 1 {
+		t.Fatalf("retry must refresh candidates once, got %d", h.refreshes)
+	}
+	if len(h.terminals) != 0 {
+		t.Fatalf("transparent recovery must not render terminal output: %v", h.terminals)
+	}
+	wire := h.flusher.buf.String()
+	if strings.Contains(wire, discarded) {
+		t.Fatalf("discarded held output leaked to the client: %q", wire)
+	}
+	if !strings.Contains(wire, recovered) {
+		t.Fatalf("successful retry held output did not reach the client: %q", wire)
+	}
+}
+
+func TestSurvivalCoordinatorDiscardRefusedFailsClosed(t *testing.T) {
+	t.Setenv("LLM_GATEWAY_RECOVERY_HOLDBACK_WINDOW_MS", "")
+	exec := &committedMetadataRetryExecutor{}
+	h := newCoordHarness(nil)
+	h.exec = nil
+	c := h.coordinator()
+	c.Exec = exec
+
+	res := c.Run(context.Background(), h.sw, &executors.ExecParams{})
+
+	if res.Succeed {
+		t.Fatal("discard refusal must not succeed")
+	}
+	if res.Decision.Action != TaskActionFailClosed || res.Decision.Reason != "discard_refused" {
+		t.Fatalf("decision = %+v, want fail_closed/discard_refused", res.Decision)
+	}
+	if res.Attempts != 1 || exec.calls != 1 {
+		t.Fatalf("attempts = %d, executor calls = %d, want one attempt", res.Attempts, exec.calls)
+	}
+	if res.FinalAttempt == nil || res.FinalAttempt.CommitState != CommitStateMetadata || res.FinalAttempt.SafeRetry {
+		t.Fatalf("final attempt = %+v, want committed metadata with SafeRetry=false", res.FinalAttempt)
+	}
+	if h.refreshes != 0 || len(h.sleeps) != 0 {
+		t.Fatalf("discard refusal must stop before retry, refreshes=%d sleeps=%v", h.refreshes, h.sleeps)
+	}
+	if len(h.terminals) != 1 || h.terminals[0].Action != TaskActionFailClosed || h.terminals[0].Reason != "discard_refused" {
+		t.Fatalf("terminal renders = %v, want one discard_refused terminal", h.terminals)
+	}
+	if len(h.committeds) != 1 || !h.committeds[0] {
+		t.Fatalf("terminal committed flag = %v, want [true]", h.committeds)
+	}
+	if !strings.Contains(h.flusher.buf.String(), "message_start") {
+		t.Fatalf("committed metadata should remain visible on the wire: %q", h.flusher.buf.String())
+	}
+}
+
 // the complementary check: a terminal failure while the L1 window holds
 // uncommitted semantic frames must NOT leak those frames to the client. The
 // terminal branch uses finishGateWriter, whose committed-guard (gate not
