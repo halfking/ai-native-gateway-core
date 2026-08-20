@@ -11,7 +11,7 @@ import (
 // 同一 secret 可签发多种 issuer（共享对称密钥场景），
 // 或每个 issuer 配独立 secret（隔离场景）。VerifyMultiIssuer 接受混搭。
 type Issuer struct {
-	Name   string // iss claim 期望值，如 "redclaw.auth-agent"
+	Name   string // iss claim 期望值，如 "redclaw"
 	Secret []byte // HS256 共享密钥
 }
 
@@ -24,7 +24,7 @@ func (i Issuer) String() string {
 //
 // env 格式（逗号分隔）：
 //
-//	"redclaw.auth-agent,memora,llm-gateway,pocket,acc"
+//	"redclaw,memora,llm-gateway,pocket,acc"
 //
 // ai-session-manager 不在此列表中：它与 llm-gateway-go 共用用户 issuer、tenant
 // 和 scope，不拥有独立的用户身份 issuer。
