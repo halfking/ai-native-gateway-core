@@ -62,11 +62,11 @@ func parkedRequest(id string) *QueuedRequest {
 	return NewQueuedRequest(id, "t", "m", context.Background(), nil)
 }
 
-// TestNextRetryDelayLadder pins the R2.4 backoff ladder: 2s base, ×2 growth,
+// TestNextRetryDelayLadder pins the R2.4 backoff ladder: 5s base, ×2 growth,
 // 120s cap; upstream Retry-After wins but is clamped into the same window.
 func TestNextRetryDelayLadder(t *testing.T) {
-	want := []time.Duration{2 * time.Second, 4 * time.Second, 8 * time.Second,
-		16 * time.Second, 32 * time.Second, 64 * time.Second, 120 * time.Second}
+	want := []time.Duration{5 * time.Second, 10 * time.Second, 20 * time.Second,
+		40 * time.Second, 80 * time.Second, 120 * time.Second, 120 * time.Second}
 	for i, d := range want {
 		if got := NextRetryDelay(i+1, 0); got != d {
 			t.Fatalf("NextRetryDelay(%d) = %v, want %v", i+1, got, d)
@@ -78,13 +78,13 @@ func TestNextRetryDelayLadder(t *testing.T) {
 	if got := NextRetryDelay(1, 30*time.Second); got != 30*time.Second {
 		t.Fatalf("upstream Retry-After must take priority, got %v", got)
 	}
-	if got := NextRetryDelay(9, 500*time.Millisecond); got != 2*time.Second {
-		t.Fatalf("Retry-After below base must clamp to 2s, got %v", got)
+	if got := NextRetryDelay(9, 500*time.Millisecond); got != 5*time.Second {
+		t.Fatalf("Retry-After below base must clamp to 5s, got %v", got)
 	}
 	if got := NextRetryDelay(1, time.Hour); got != 120*time.Second {
 		t.Fatalf("Retry-After above cap must clamp to 120s, got %v", got)
 	}
-	if got := NextRetryDelay(0, 0); got != 2*time.Second {
+	if got := NextRetryDelay(0, 0); got != 5*time.Second {
 		t.Fatalf("seq 0 must fall back to the base delay, got %v", got)
 	}
 }

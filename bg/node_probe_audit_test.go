@@ -47,3 +47,13 @@ func TestEmitSyncAuditReturnsInsertFailure(t *testing.T) {
 		t.Fatalf("unmet expectations: %v", err)
 	}
 }
+
+func TestProbeHeadersJSONReturnsJSONText(t *testing.T) {
+	if got := probeHeadersJSON(nil); got != "{}" {
+		t.Fatalf("probeHeadersJSON(nil) = %q, want {}", got)
+	}
+	got := probeHeadersJSON(map[string]string{"X-Test": "allowed"})
+	if got != `{"X-Test":"allowed"}` {
+		t.Fatalf("probeHeadersJSON() = %q", got)
+	}
+}
