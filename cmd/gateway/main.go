@@ -3465,7 +3465,9 @@ func main() {
 					LatencyThreshold:     5000,
 					AlertOnQualityDrop:   true,
 					QualityDropThreshold: mqAlertThreshold,
-					TargetModels:         modelquality.GetDefaultMonitorModels(),
+					// An empty target list lets the worker discover active catalog
+					// models from models_canonical when a DB is available. The
+					// worker retains the static list as an outage fallback.
 				}
 
 				// 2026-08-10: 按凭据节点测试（直连节点，绕过网关）。默认关闭。

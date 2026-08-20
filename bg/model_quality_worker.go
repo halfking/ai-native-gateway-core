@@ -117,8 +117,8 @@ func (w *ModelQualityWorker) SetDBStorage(dbStorage *modelquality.DBStorage) {
 }
 
 // SetDiscovery 注入 DB-backed ModelDiscovery（feat/standard-models-rollout）。
-// 在 Start 之前调用。当 caller 没有显式传 config 且 worker.config == nil 时，
-// Start 会用 discovery.DiscoverModels 取目标模型列表；DB 不可达则回退静态兜底。
+// 在 Start 之前调用。当 caller 未提供显式目标模型时，Start 会用
+// discovery.DiscoverModels 取目标模型列表；DB 不可达则回退静态兜底。
 // 传入 nil 表示显式关闭 DB 发现（强制使用静态回退）。
 func (w *ModelQualityWorker) SetDiscovery(d modelquality.ModelDiscovery) {
 	w.mu.Lock()
@@ -126,17 +126,10 @@ func (w *ModelQualityWorker) SetDiscovery(d modelquality.ModelDiscovery) {
 	w.mu.Unlock()
 }
 
-// resolveDefaultTargetsLocked 在 worker.config == nil 时选取目标模型列表。
-// **调用者必须持有 w.mu 写锁**；内部直接读 w.discovery 字段，不再加锁。
-// 优先用注入的 discovery（DB-backed models_canonical × provider_models）；
-// DB 不可达或未注入则回退到静态 GetDefaultMonitorModels（Deprecated 兜底）。
-//
-// 注意：调用 disc.DiscoverModels 时持写锁，最坏情况阻塞所有并发注入 / Stop 整个
-// discovery 超时窗口（默认 1s）。当前唯一的 discovery 实现
-// (CanonicalCatalogDiscovery) 不回调 w，所以死锁风险为零；如未来新增回调型
-// discovery，需要把"取 discovery 引用"挪到锁外、调用挪到锁外。
-func (w *ModelQualityWorker) resolveDefaultTargetsLocked(ctx context.Context) []modelquality.ModelTarget {
-	disc := w.discovery
+// resolveDefaultTargets resolves the default target list without holding the
+// worker lifecycle lock. Discovery is bounded by its own context timeout, but
+// a slow database must not block Stop or SetDiscovery.
+func resolveDefaultTargets(ctx context.Context, disc modelquality.ModelDiscovery) []modelquality.ModelTarget {
 	if disc != nil {
 		targets, err := disc.DiscoverModels(ctx)
 		if err == nil && len(targets) > 0 {
@@ -148,6 +141,34 @@ func (w *ModelQualityWorker) resolveDefaultTargetsLocked(ctx context.Context) []
 			"err", err)
 	}
 	return modelquality.GetDefaultMonitorModels()
+}
+
+// resolveMonitorConfig preserves explicit target lists while filling an empty
+// list from the catalog. It is kept separate from Start so target selection can
+// be tested without starting a real benchmark monitor.
+func resolveMonitorConfig(ctx context.Context, config *modelquality.MonitorConfig, disc modelquality.ModelDiscovery) *modelquality.MonitorConfig {
+	if config != nil && len(config.TargetModels) > 0 {
+		return config
+	}
+
+	targets := resolveDefaultTargets(ctx, disc)
+	if config == nil {
+		return &modelquality.MonitorConfig{
+			EnableScheduled:      true,
+			ScheduleInterval:     24 * time.Hour,
+			UseLiteBenchmark:     true,
+			EnableAnomalyTrigger: true,
+			ErrorRateThreshold:   0.3,
+			LatencyThreshold:     5000,
+			AlertOnQualityDrop:   true,
+			QualityDropThreshold: 5.0,
+			TargetModels:         targets,
+		}
+	}
+
+	copyConfig := *config
+	copyConfig.TargetModels = targets
+	return &copyConfig
 }
 
 // TestSingleNode 对单个 (credentialID, rawModel) 节点同步跑一次精简智商测试，
@@ -302,6 +323,19 @@ func (w *ModelQualityWorker) RunPerNodeCheck(ctx context.Context, storage modelq
 // 遵循统一worker模式：接收context，异步运行，通过Stop()停止
 // config: 监控配置（读取自settings），nil时使用默认配置
 func (w *ModelQualityWorker) Start(ctx context.Context, config *modelquality.MonitorConfig) {
+	// Resolve catalog targets before taking the lifecycle lock. A database
+	// timeout must not prevent Stop or configuration updates from proceeding.
+	w.mu.RLock()
+	disc := w.discovery
+	alreadyRunning := w.running
+	w.mu.RUnlock()
+	if alreadyRunning {
+		slog.Warn("model quality worker already running, skipping duplicate start")
+		return
+	}
+
+	resolvedConfig := resolveMonitorConfig(ctx, config, disc)
+
 	w.mu.Lock()
 	if w.running {
 		w.mu.Unlock()
@@ -363,28 +397,8 @@ func (w *ModelQualityWorker) Start(ctx context.Context, config *modelquality.Mon
 	}
 	executor := modelquality.NewBenchmarkExecutor(invoker, w.timeout)
 
-	// 使用传入的配置，或默认配置
-	w.config = config
-	if w.config == nil {
-		// 2026-08-20 (feat/standard-models-rollout): 优先用注入的 DB-backed discovery；
-		// DB 不可达 / discovery 为 nil 时回退静态 GetDefaultMonitorModels。
-		//
-		// 在持锁状态下调用 discovery 会阻塞所有并发注入（SetDiscovery 等）整个
-		// discovery 超时窗口（默认 1s）。改为：先在锁外快照 discovery，调用完
-		// 再回到锁内赋值。
-		targetModels := w.resolveDefaultTargetsLocked(ctx) // must hold w.mu
-		w.config = &modelquality.MonitorConfig{
-			EnableScheduled:      true,
-			ScheduleInterval:     24 * time.Hour,
-			UseLiteBenchmark:     true,
-			EnableAnomalyTrigger: true,
-			ErrorRateThreshold:   0.3,
-			LatencyThreshold:     5000,
-			AlertOnQualityDrop:   true,
-			QualityDropThreshold: 5.0,
-			TargetModels:         targetModels,
-		}
-	}
+	// 使用已在锁外解析过的配置；显式目标不会被 discovery 覆盖。
+	w.config = resolvedConfig
 
 	// 创建监控器
 	w.monitor = modelquality.NewQualityMonitor(w.config, executor, storage, alerter)

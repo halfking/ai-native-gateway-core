@@ -6,7 +6,28 @@ Adds canonical metadata sync, vendor-prefix aliases, provider_models pre-fill,
 binding placeholders, featured_models extension, and a DB-backed catalog
 discovery. Replaces the static fallback in `domains/modelquality/discovery.go`.
 
-## Audit Round 1 — Findings & Fixes (commit de0f1e91d)
+## Audit Round 2 — Standard-model rollout hardening (2026-08-21)
+
+### Addressed
+
+1. **Gateway discovery is now active by default.** `cmd/gateway/main.go` no longer pre-populates `TargetModels`; `ModelQualityWorker` resolves an empty target list through `CanonicalCatalogDiscovery` and preserves explicitly configured targets. Discovery runs outside the worker lifecycle lock and falls back to the static list on DB error/empty results.
+2. **Catalog targets are route-eligible.** `CanonicalCatalogDiscovery` now requires a real credential, an available binding, active credential lifecycle/state, non-exhausted quota, and enabled/non-manually-disabled provider. `credential_id=0` placeholders are excluded.
+3. **Migration 362 is provider-ID independent.** Placeholder rows resolve `providers` by `(tenant_id, code)` and carry `plan_meta.source='migration-362'`. The down migration removes only matching, still-pending rollout placeholders; the previous time-based deletion was removed.
+4. **Discovery persistence contracts are aligned.** Alias upserts use the existing `(canonical_id, raw_name)` uniqueness constraint and propagate errors. Provider-model refreshes set `source='discovery'`, so 361 rollback cannot remove rows already refreshed by discovery.
+5. **Fresh-install seed parity is restored.** The three canonical `02-seed.sql` files now have identical `routing_policy.featured_models` content and byte parity.
+
+### Added verification
+
+- Worker target-selection tests cover DB discovery for empty targets, explicit-target preservation, and static fallback.
+- Canonical discovery timeout behavior is covered.
+- Migration/seed contract tests guard provider-code lookup, provenance-based rollback, and three-file seed parity.
+
+### Verification status
+
+- Focused packages: `go test ./domains/modelquality ./bg ./modelcatalog ./discovery ./sql/migrations/domain` — pass.
+- `bash ~/.agents/skills/llm-gateway-deploy-test/test.sh --env local --dry-run` — pass.
+- Full `go test ./...` / `make test` reached the full suite but reported pre-existing environment/flaky failures in Redis-backed routing, streaming timestamp assertions, plugin-runtime Go build-cache setup, and integration ticker timing. No model-rollout package failed.
+
 
 Audited by parallel sub-agents against the comprehensive-code-audit skill
 (data flow, closure, state machine, concurrency, compatibility).
@@ -55,17 +76,17 @@ Audited by parallel sub-agents against the comprehensive-code-audit skill
    (`canonical_id`, `modality`, `source`, `updated_at`).
 
 7. **362.down DELETE could clobber upgraded bindings.** If an onboarding
-   script forgot to NULL `unavailable_reason`, the down would delete a real
-   binding. **Fix:** Added a 30-day `created_at` age guard.
+   script forgot to NULL `unavailable_reason`, the down could delete a real
+   binding. **Superseded by Audit Round 2:** placeholders now carry an
+   explicit `plan_meta.source='migration-362'` marker and down deletes only
+   still-pending rows with that provenance; no age window is used.
 
-8. **`CanonicalCatalogDiscovery` was dead code.** No production caller used
-   it; both `cmd/gateway/main.go:3423` and `bg/model_quality_worker.go:330`
-   hard-coded `GetDefaultMonitorModels()`. **Fix:** Added
-   `ModelQualityWorker.SetDiscovery(d)` + `resolveDefaultTargetsLocked(ctx)`
-   (held under `w.mu` write lock; concurrency-safe because the only current
-   discovery impl `CanonicalCatalogDiscovery` does not re-enter `w`). main.go
-   now calls `modelQualityWorker.SetDiscovery(modelquality.NewCanonicalCatalogDiscovery(dbConn.Pool()))`
-   alongside `SetDBStorage`.
+8. **`CanonicalCatalogDiscovery` was dead code in the original rollout.** The
+   original implementation added `ModelQualityWorker.SetDiscovery(d)` and
+   `resolveDefaultTargetsLocked(ctx)` while holding the worker lock.
+   **Superseded by Audit Round 2:** gateway startup now leaves targets empty,
+   worker discovery is selected for empty configs, and the DB query runs
+   outside the lifecycle lock.
 
 ### P1 — Design improvements
 
@@ -93,17 +114,15 @@ Audited by parallel sub-agents against the comprehensive-code-audit skill
 
 ## Verification
 
-- `go build ./...` — clean.
-- `go test ./domains/modelquality/ -run
-  "TestCanonicalCatalogDiscovery|TestStaticModelDiscovery"` — pass.
-- `go test ./bg/ -run TestModelQualityWorker` — pass (previously deadlocked
-  on `RLock` self-deadlock when `Start` called the discovery helper under
-  write lock; fixed by `resolveDefaultTargetsLocked` naming + lock-held
-  invariant).
-- `go test ./cmd/...` — pass.
-- `make test` — full suite passes; only intermittent
-  `TestTCPChecker_RealWorldScenario/Cloudflare_DNS` flake (pre-existing DNS
-  flake, unrelated; passes in isolation).
+- Focused packages `./domains/modelquality ./bg ./modelcatalog ./discovery
+  ./sql/migrations/domain` — pass.
+- `go test ./cmd/gateway` — pass during the full-suite run.
+- `go test ./...` and `make test` reached the full suite but failed in
+  pre-existing/environment-sensitive tests: Redis-backed routing, a streaming
+  timestamp assertion, plugin-runtime Go build-cache setup, and integration
+  ticker timing. No model-rollout package failed.
+- `bash ~/.agents/skills/llm-gateway-deploy-test/test.sh --env local --dry-run`
+  — pass (`VERIFY_RESULT=dry-run`).
 
 ## Audit Round 1 — Original Scope (unchanged from initial commit)
 
@@ -195,16 +214,22 @@ migrations are applied.
   (`available=false`). When real xAI / Moonshot / Gemini credentials are
   provisioned, run:
   ```sql
-  UPDATE credential_model_bindings
-  SET credential_id = $new_cred_id,
-      available = true,
-      unavailable_reason = NULL,
-      unavailable_at = NULL
-  WHERE credential_id = 0
-    AND unavailable_reason = 'placeholder_pending_credential'
-    AND provider_model_id IN (
-      SELECT id FROM provider_models WHERE provider_id IN (10, 17, 30)
-    );
+   2) UPDATE credential_model_bindings
+      SET credential_id = $new_cred_id,
+          available = true,
+          unavailable_reason = NULL,
+          unavailable_at = NULL,
+          plan_meta = plan_meta - 'source'
+      WHERE credential_id = 0
+        AND unavailable_reason = 'placeholder_pending_credential'
+        AND provider_model_id IN (
+          SELECT pm.id
+          FROM provider_models pm
+          JOIN providers p ON p.id = pm.provider_id
+                             AND p.tenant_id = pm.tenant_id
+          WHERE p.tenant_id = 'default'
+            AND p.code IN ('xai', 'moonshot', 'google-gemini')
+        );
   ```
 
 - **Seed files are sensitive to row order**: the appended section uses

@@ -54,6 +54,7 @@ func TestUpsertSQL_LowercaseContract(t *testing.T) {
 		"canonical_raw_name,",
 		"canonical_id,",
 		"standardized_name,",
+		"source,",
 		"SELECT cred.provider_id, $2, $3,",
 		"canonical_raw_name = COALESCE(EXCLUDED.canonical_raw_name",
 	}
