@@ -44,11 +44,14 @@ const EnvShadowDSN = "IDENTITY_SHADOW_DSN"
 // this verifier. Default is "llm-gateway-api".
 const EnvExpectedAudience = "LLM_GATEWAY_EXPECTED_AUDIENCE"
 
-// DefaultIssuerAllowlist matches the identity_shadow provider contract.
+// DefaultIssuerAllowlist returns the immutable list of trusted token
+// issuers shared across the 6 projects.
 //
-// `asm` is intentionally absent.
-var DefaultIssuerAllowlist = []string{
-	"redclaw", "memora", "llm-gateway", "pocket", "acc",
+// Each invocation returns a fresh slice so callers cannot mutate shared
+// state. `asm` is intentionally absent — ai-session-manager is a pure
+// consumer of upstream user tokens.
+func DefaultIssuerAllowlist() []string {
+	return []string{"redclaw", "memora", "llm-gateway", "pocket", "acc"}
 }
 
 // DefaultAudience is the resource-server audience this gateway enforces.
@@ -239,7 +242,7 @@ func loadMultiIssuerConfig() ([]token.Issuer, bool) {
 
 	allowlist := strings.TrimSpace(os.Getenv(EnvIssuerAllowlist))
 	if allowlist == "" {
-		allowlist = strings.Join(DefaultIssuerAllowlist, ",")
+		allowlist = strings.Join(DefaultIssuerAllowlist(), ",")
 	}
 
 	parsed, err := token.Allowlist(allowlist, secret)
