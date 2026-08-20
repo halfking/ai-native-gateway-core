@@ -19,6 +19,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/domains/dbdegradation"
 	"github.com/kaixuan/llm-gateway-go/internal/outbox"
+	"github.com/lib/pq"
 )
 
 var errNoTelemetryDB = errors.New("telemetry database not configured")
@@ -2046,17 +2047,17 @@ func nonEmptyPtr(p *string, fallback string) string {
 // INSERT (which the gateway must, since it has 60+ other columns)
 // OVERRIDES the default and applies whatever the bind value is.
 //
-// qualityFlagsArg returns a non-nil []string for the text[] column bind.
-// pgx v5's binary protocol encodes a Go []string as a proper PostgreSQL
-// text array. A nil Go slice is encoded as NULL, and an empty []string{}
-// is encoded as an empty text array ({}). Using $64::text[] cast (instead
-// of CAST($64 AS text[])) avoids the previous "malformed array literal"
-// error where pgx v5 encoded the empty slice as the JSON literal "null".
+// qualityFlagsArg returns a pq.Array-wrapped []string for the text[] column bind.
+// pgx v5's binary protocol encodes a Go []string as a proper PostgreSQL text
+// array, but a nil slice is encoded as NULL. Using pq.Array ensures the
+// empty array is always encoded as the text[] literal "{}" rather than NULL
+// or the JSON literal "null" (which triggers "malformed array literal" 22P02
+// when the SQL does $64::text[]).
 func qualityFlagsArg(flags []string) any {
 	if flags == nil {
-		return []string{}
+		flags = []string{}
 	}
-	return flags
+	return pq.Array(flags)
 }
 
 // qualityActionsArg turns the JSONB payload into a value safe to bind
