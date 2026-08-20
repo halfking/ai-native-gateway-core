@@ -248,7 +248,9 @@ type monitorSummarySQLParams struct {
 // and the tenant guard without standing up a request.
 //
 // coreMode:  lightweight preload — drops request_logs/percentile_cont/credential_model_index
-//            joins so the dashboard settings path returns fast.
+//
+//	joins so the dashboard settings path returns fast.
+//
 // detailMode: per-(credential, model) breakdown with P95/success rate.
 // default:  list-only — no models[], per-credential MIN(success_rate) only.
 func buildMonitorSummarySQL(p monitorSummarySQLParams) string {
@@ -455,8 +457,11 @@ func buildMonitorSummarySQL(p monitorSummarySQLParams) string {
 				) t
 				), '[]'::json) AS models`
 	}
-	// coreMode has no %s placeholders, so fmt.Sprintf on it is a no-op;
-	// the conditional branch above only fires in the else branch.
+	// coreMode has no %s placeholders, so return query directly.
+	// For detail/summary modes, use fmt.Sprintf with the three %s placeholders.
+	if coreMode {
+		return query
+	}
 	return fmt.Sprintf(query, modelsSelect, aggregatedSuccessSelect, aggregatedSuccessJoin)
 }
 
@@ -1383,11 +1388,11 @@ type credentialDecisionRow struct {
 // runCredentialDecisions. Extracted so the SQL builder is testable without
 // standing up a request and the helper is reusable from admin tooling.
 type credentialDecisionParams struct {
-	CredentialID    int
-	Limit           int
-	IsTenantAdmin   bool   // when true, the WHERE clause adds tenant_id = $2
-	TenantID        string // required when IsTenantAdmin is true
-	ModelFilter     string // empty → no model filter; otherwise case-insensitive match
+	CredentialID  int
+	Limit         int
+	IsTenantAdmin bool   // when true, the WHERE clause adds tenant_id = $2
+	TenantID      string // required when IsTenantAdmin is true
+	ModelFilter   string // empty → no model filter; otherwise case-insensitive match
 }
 
 // runCredentialDecisions returns recent routing decisions for the given

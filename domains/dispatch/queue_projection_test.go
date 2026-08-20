@@ -18,11 +18,16 @@ func TestQueueProjectionAppliesOutOfOrderDeltasAndReturnsSortedDetachedSnapshot(
 	if view.Pipeline == nil || view.Pipeline.Depth != 1 || view.Pipeline.InFlight != 1 {
 		t.Fatalf("projection stats = %+v", view.Pipeline)
 	}
-	if len(view.Credentials) != 1 || view.Credentials[0].Mode != ModeConcurrency {
-		t.Fatalf("modeless delta must preserve the credential lane mode: %+v", view.Credentials)
+	if len(view.Credentials) != 0 {
+		t.Fatalf("zero-depth credential lane must be removed: %+v", view.Credentials)
 	}
-	if len(view.Models) != 2 || view.Models[0].Model != "a-model" || view.Models[1].Model != "z-model" {
-		t.Fatalf("models not sorted: %+v", view.Models)
+	if len(view.Models) != 1 || view.Models[0].Model != "a-model" {
+		t.Fatalf("zero-depth model lane must be removed and remaining models sorted: %+v", view.Models)
+	}
+	projection.ObserveQueue(QueueObservation{Kind: QueueCredentialDepth, CredentialID: 22, Mode: ModeConcurrency, Delta: 1})
+	view = projection.Snapshot()
+	if len(view.Credentials) != 1 || view.Credentials[0].Mode != ModeConcurrency {
+		t.Fatalf("re-enqueued credential lane must restore its mode: %+v", view.Credentials)
 	}
 	view.Models[0].Depth = 99
 	if got := projection.Snapshot().Models[0].Depth; got == 99 {
@@ -50,6 +55,36 @@ func TestQueueProjectionConcurrentObserveSnapshotAndClose(t *testing.T) {
 	projection.Close()
 	if snapshot := projection.Snapshot(); snapshot.Wired {
 		t.Fatalf("closed projection reported wired: %+v", snapshot)
+	}
+}
+
+func TestQueueProjectionWaterfallIsDetachedAndCloseStopsObservations(t *testing.T) {
+	projection := NewQueueProjection()
+	completed := WaterfallRequest{
+		RequestID: "request-1",
+		Model:     "model-a",
+		Attempts: []WaterfallAttempt{{
+			AttemptID: "attempt-1",
+			AttemptNo: 1,
+		}},
+	}
+	projection.ObserveQueue(QueueObservation{Kind: QueueRequestCompleted, Completed: &completed})
+
+	snapshot := projection.SnapshotWaterfall(1, "", 0)
+	if !snapshot.Wired || len(snapshot.Requests) != 1 {
+		t.Fatalf("waterfall snapshot = %+v", snapshot)
+	}
+	snapshot.Requests[0].Attempts[0].AttemptID = "mutated"
+	again := projection.SnapshotWaterfall(1, "", 0)
+	if got := again.Requests[0].Attempts[0].AttemptID; got != "attempt-1" {
+		t.Fatalf("waterfall attempts were not detached: %q", got)
+	}
+
+	projection.Close()
+	projection.ObserveQueue(QueueObservation{Kind: QueueRequestCompleted, Completed: &WaterfallRequest{RequestID: "request-2"}})
+	closed := projection.SnapshotWaterfall(10, "", 0)
+	if closed.Wired || len(closed.Requests) != 0 {
+		t.Fatalf("closed projection waterfall = %+v", closed)
 	}
 }
 

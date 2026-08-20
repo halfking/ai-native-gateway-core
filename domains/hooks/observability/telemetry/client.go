@@ -16,6 +16,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/domains/dbdegradation"
 	"github.com/kaixuan/llm-gateway-go/internal/outbox"
@@ -995,7 +996,7 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		-- v3 (2026-06-19) T23: session-level outbound body.
 		$60::text::jsonb, $61, $62, $63::text::jsonb,
 		-- 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
-		CAST($64 AS text[]), $65::text::jsonb, $66,
+		$64::text[], $65::text::jsonb, $66,
 		-- 2026-06-19 T-NEW-7: split the semantic overload of failure_detail_code.
 		$67,
 		-- 2026-06-23: structured tool_calls (042_tool_calls_column.sql).
@@ -1017,7 +1018,8 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		-- above + 10 timestamps occupy $82-$95. 2026-08-19 hotfix:
 		-- previous diff landed $91-$95 only, which pgx rejected
 		-- with the diagnostic "unused argument: 95".
-		$86, $87, $88, $89, $90, $91, $92, $93, $94, $95
+		$86, $87, $88, $89, $90, $91, $92, $93, $94, $95,
+		$96, $97, $98, $99, $100, $101
 	)
 				-- 2026-08-06 fix: INSERT targets request_logs_hot (NOT the partitioned parent).
 				-- Migration 455 (2026-07-23) gave request_logs_hot PRIMARY KEY (request_id),
@@ -1666,7 +1668,7 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 			       outbound_token_est = COALESCE($62, outbound_token_est),
 			       outbound_msg_hashes = COALESCE($63::text::jsonb, outbound_msg_hashes),
 			       -- 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
-			       quality_flags        = COALESCE(CAST($64 AS text[]), quality_flags),
+			       quality_flags        = COALESCE($64::text[], quality_flags),
 			       quality_fix_actions  = COALESCE($65::text::jsonb, quality_fix_actions),
 			       quality_score        = COALESCE($66, quality_score),
 		   -- 2026-06-19 T-NEW-7: split the semantic overload of failure_detail_code
@@ -2044,15 +2046,24 @@ func nonEmptyPtr(p *string, fallback string) string {
 // DEFAULT '{}'::text[] — but specifying a column explicitly in the
 // INSERT (which the gateway must, since it has 60+ other columns)
 // OVERRIDES the default and applies whatever the bind value is.
-// Passing nil would then trip `null value in column "quality_flags"
-// violates not-null constraint` at runtime, so we coerce empty
-// slices into a non-nil `[]string{}` so the bind produces a real
-// empty array.  When the slice has elements we return it as-is.
+//
+// qualityFlagsArg returns a pgx-friendly text array value for the text[] column.
+// pgtype.Array wraps the Go slice so pgx's binary protocol encodes it as a
+// proper PostgreSQL text array. A nil Go slice is encoded as NULL (which the
+// DEFAULT '{}'::text[] on the column handles), and a non-nil empty slice is
+// encoded as the text[] literal "{}".
 func qualityFlagsArg(flags []string) any {
-	if flags == nil {
-		return []string{}
+	arr := &pgtype.Array[string]{}
+	if len(flags) > 0 {
+		if err := arr.SetDimensions([]pgtype.ArrayDimension{{
+			Length:     int32(len(flags)),
+			LowerBound: 1,
+		}}); err != nil {
+			return []string{}
+		}
+		copy(arr.Elements, flags)
 	}
-	return flags
+	return arr
 }
 
 // qualityActionsArg turns the JSONB payload into a value safe to bind
