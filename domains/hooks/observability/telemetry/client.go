@@ -1240,6 +1240,20 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		// 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
 		// quality_flags is always encoded as a PostgreSQL text array;
 		// quality_fix_actions is JSONB.
+		//
+		// 2026-08-20 nil-语义约定（与 UPSERT 路径共用）：
+		//
+		//   entry.QualityFlags == nil     → qualityFlagsArg 返回 "{}" 字面量
+		//   entry.QualityFlags == []string{} → qualityFlagsArg 返回 "{}" 字面量
+		//   两者在 SQL 列上结果相同；区别仅在 SQL 日志 / audit 表里看到的
+		//   文本是否带 array 维度。这是"未提供"与"显式清空"在 INSERT
+		//   路径上唯一的语义差异，由 qualityFlagsArg 集中处理。
+		//
+		//   entry.QualityFixActions == nil     → "{}" （与 DEFAULT 一致）
+		//   entry.QualityFixActions == []byte("{}") → "{}"
+		//   两者在 SQL 列上结果完全相同；qualityActionsArgStr 不区分"未提供"
+		//   与"显式清空"——这是 NOT NULL DEFAULT 的设计选择：调用方若需要
+		//   区分，要么修改 schema 为 NULLABLE，要么改为单独字段承载。
 		qualityFlagsArg(entry.QualityFlags),
 		qualityActionsArgStr(entry.QualityFixActions),
 		entry.QualityScore,
@@ -2055,21 +2069,12 @@ func qualityFlagsArg(flags []string) any {
 	return pgtype.FlatArray[string](flags)
 }
 
-// qualityActionsArg turns the JSONB payload into a value safe to bind
-// with pgx.  The column is NOT NULL with a DEFAULT '{}'::jsonb —
-// the same DEFAULT-override caveat as qualityFlagsArg applies: an
-// explicit nil bind in the INSERT would trip the not-null check.
-// We therefore always return a non-nil byte slice; empty/missing
-// inputs become a literal "{}" which the SQL CAST($63 AS jsonb)
-// turns into a JSONB empty object, identical to the column DEFAULT.
-func qualityActionsArg(raw json.RawMessage) any {
-	if len(raw) == 0 {
-		return []byte("{}")
-	}
-	return []byte(raw)
-}
-
 // qualityActionsArgStr returns string for $N::text::jsonb binding (pgx binary protocol fix).
+//
+// 2026-08-20: 之前还有一个返回 `any` 的 qualityActionsArg helper，2026-07-05
+// 切到 $N::text::jsonb 路径时已无 caller，故删除。bind 时一律走
+// $N::text::jsonb（字符串形式）而不是 $N::jsonb（pgx 二进制形式），避
+// 免 pgx 把 Go []byte 当成 bytea 而不是 jsonb。
 func qualityActionsArgStr(raw json.RawMessage) string {
 	if len(raw) == 0 {
 		return "{}"
