@@ -93,7 +93,7 @@ func TestDispatchForwardUsesPipelineContextAndAttemptNumber(t *testing.T) {
 		W: httptest.NewRecorder(), R: req,
 		BodyBytes:   []byte(`{"model":"glm-5.2","messages":[{"role":"user","content":"hello"}]}`),
 		ClientModel: "glm-5.2", Model: "glm-5.2", RequestID: "req-dispatch", TenantID: "default",
-		IsStream: true, SurvivalAttempt: true, Audit: &AuditContext{RequestID: "req-dispatch"},
+		IsStream: true, SurvivalAttempt: true, StreamSurvivesClientCancel: true, Audit: &AuditContext{RequestID: "req-dispatch"},
 		UpstreamAttempts: NewUpstreamAttemptBudget(DefaultUpstreamAttemptLimit),
 	}
 	candidate := provider.Candidate{

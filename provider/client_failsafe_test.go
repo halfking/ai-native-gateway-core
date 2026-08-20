@@ -325,6 +325,12 @@ func TestStaleCandidateCacheAgeIsBounded(t *testing.T) {
 	}
 }
 
+func TestCandidateResponseNonEmptyRejectsEmptyPlan(t *testing.T) {
+	if candidateResponseNonEmpty(&resolveResponse{}) {
+		t.Fatal("empty candidate response must not be considered usable")
+	}
+}
+
 func TestCanServeStaleCandidateCacheRequiresRetryableLiveContext(t *testing.T) {
 	now := time.Unix(1000, 0)
 	entry := cacheEntry[*resolveResponse]{value: nonEmptyResolveResponse(), expires: now}

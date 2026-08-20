@@ -224,14 +224,15 @@ func candidateToRef(c provider.Candidate) dispatch.CredentialRef {
 
 // dispatchExecutionContext keeps the dispatch wait lifecycle aligned with the
 // upstream request. Ordinary streams inherit client cancellation. Only an
-// explicit session or survival owner detaches so pending/durable capture can
-// finish after disconnect. Non-streaming requests keep the client context even
-// when they carry a session id: there is no stream capture to drain.
+// explicit session owner detaches so pending/durable capture can finish after
+// disconnect. SurvivalAttempt only identifies retry ownership; ordinary
+// survival requests must still release dispatch and upstream resources when
+// the client leaves. Non-streaming requests always keep the client context.
 func dispatchExecutionContext(params *ExecParams) (context.Context, context.CancelFunc) {
 	if params == nil || params.R == nil {
 		return context.WithCancel(context.Background())
 	}
-	if params.IsStream && (params.StreamSurvivesClientCancel || params.SurvivalAttempt) {
+	if params.IsStream && params.StreamSurvivesClientCancel {
 		return context.WithCancel(context.WithoutCancel(params.R.Context()))
 	}
 	return context.WithCancel(params.R.Context())
@@ -595,6 +596,8 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 		if errors.As(execErr, &sie) && sie != nil {
 			extra["stream_reason"] = sie.reason
 			extra["stream_resumable"] = sie.resumable
+			extra["upstream_status_code"] = sie.statusCode
+			extra["upstream_raw_error"] = sie.rawError
 			e.FailureLogger.LogFailureWithKind(
 				params.R.Header.Get("X-Request-Id"),
 				tenantFromCtx(params.R),

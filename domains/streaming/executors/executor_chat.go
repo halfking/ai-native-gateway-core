@@ -429,7 +429,7 @@ func (e *Executor) executeOpenAI(
 	var lastErr error // 2026-07-03 (Bug #N extension): preserve last error for "exhausted retries"
 	for attempt := 0; attempt <= effectiveMaxRetries+mnfBonus; attempt++ {
 		if attempt > 0 {
-			delay := time.Duration(500*(1<<(attempt-1))) * time.Millisecond
+			delay := time.Duration(5*(1<<(attempt-1))) * time.Second
 			if isUpstreamOverloaded(lastErr) {
 				delay = errorsx.DefaultOverloadRetryDelay
 			}
@@ -842,12 +842,12 @@ func (e *Executor) executeOpenAI(
 							"upstream_latency_ms", upstreamLatency.Milliseconds(),
 							"body_preview", string(body[:min(n, 120)]),
 						)
-						// Brief delay before retry (150ms) to give upstream time to
+						// Give the upstream time to recover before retrying.
 						// recover. Abort early if the client disconnects.
 						select {
 						case <-params.R.Context().Done():
 							return nil, params.R.Context().Err()
-						case <-time.After(150 * time.Millisecond):
+						case <-time.After(5 * time.Second):
 						}
 						// Mark as retried and return a retryable error to trigger
 						// retry on same credential. mnfBonus grants the extra
@@ -1201,18 +1201,22 @@ func (e *Executor) executeOpenAI(
 					}
 
 					return &ExecuteResult{
-						Response:    resp,
-						Candidate:   cand,
-						LatencyMs:   latencyMs,
-						RequestBody: append([]byte(nil), bodyBytes...),
-						// Phase D (2026-06-22): inbound body for audit logging
-						InboundBody: sourceBody,
-						// 2026-06-19 quality fix mode: capture any flags the
-						// stream reader observed before the interrupt fired.
-						QualityFlags:   streamQualityFlags,
-						QualityScore:   streamQualityScore,
-						RoutingTracker: params.RoutingTracker,
-					}, &streamInterruptedError{reason: streamOutcome.Reason, credentialID: cand.CredentialID, resumable: isResumable, kind: streamKind}
+							Response:    resp,
+							Candidate:   cand,
+							LatencyMs:   latencyMs,
+							RequestBody: append([]byte(nil), bodyBytes...),
+							// Phase D (2026-06-22): inbound body for audit logging
+							InboundBody: sourceBody,
+							// 2026-06-19 quality fix mode: capture any flags the
+							// stream reader observed before the interrupt fired.
+							QualityFlags:   streamQualityFlags,
+							QualityScore:   streamQualityScore,
+							RoutingTracker: params.RoutingTracker,
+						}, &streamInterruptedError{
+							reason: streamOutcome.Reason, credentialID: cand.CredentialID,
+							resumable: isResumable, kind: streamKind,
+							statusCode: resp.StatusCode, rawError: streamOutcome.Reason,
+						}
 				}
 				recordAttemptSuccess(streamOutcome.ChunkCount)
 				return &ExecuteResult{
@@ -1893,10 +1897,10 @@ func strPtrCompat(s string) *string {
 // Streaming requests carry no wall-clock deadline. A stuck vendor is bounded
 // by ResponseHeaderTimeout and the bridge's per-read streamChunkTimeout. An
 // ordinary stream still derives from the request context, so client disconnect
-// cancels promptly; only session/survival ownership uses WithoutCancel so its
-// pending or durable result can finish.
+// cancels promptly. Only an explicit session/durable owner uses WithoutCancel;
+// SurvivalAttempt by itself only identifies retry ownership.
 func (e *Executor) upstreamContext(params *ExecParams, timeout time.Duration) (context.Context, context.CancelFunc) {
-	if params.IsStream && (params.StreamSurvivesClientCancel || params.SurvivalAttempt) {
+	if params.IsStream && params.StreamSurvivesClientCancel {
 		return context.WithCancel(context.WithoutCancel(params.R.Context()))
 	}
 	if params.IsStream {
