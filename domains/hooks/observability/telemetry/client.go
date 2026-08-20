@@ -1017,7 +1017,8 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		-- above + 10 timestamps occupy $82-$95. 2026-08-19 hotfix:
 		-- previous diff landed $91-$95 only, which pgx rejected
 		-- with the diagnostic "unused argument: 95".
-		$86, $87, $88, $89, $90, $91, $92, $93, $94, $95
+		$86, $87, $88, $89, $90, $91, $92, $93, $94, $95,
+		$96
 	)
 				-- 2026-08-06 fix: INSERT targets request_logs_hot (NOT the partitioned parent).
 				-- Migration 455 (2026-07-23) gave request_logs_hot PRIMARY KEY (request_id),
