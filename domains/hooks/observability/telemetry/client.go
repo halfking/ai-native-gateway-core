@@ -2051,7 +2051,7 @@ func nonEmptyPtr(p *string, fallback string) string {
 // with CAST($N AS text[]).  We therefore return a string literal — "{}" for
 // empty/nil, "{a,b,c}" for populated slices — which the SQL CAST consumes as
 // a valid PostgreSQL text array literal.
-func qualityFlagsArg(flags []string) any {
+func qualityFlagsArg(flags []string) string {
 	if len(flags) == 0 {
 		return "{}"
 	}
