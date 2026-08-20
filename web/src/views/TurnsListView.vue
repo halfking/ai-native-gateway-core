@@ -19,6 +19,7 @@ const items = ref<TurnsSessionGroup[]>([])
 const hasMore = ref(false)
 const nextCursor = ref('')
 const error = ref('')
+const loadMoreError = ref('')
 const expandedSessions = ref<Set<string>>(new Set())
 const viewMode = ref<'flat' | 'tree'>('flat')
 const collapsedProjects = ref<Set<string>>(new Set())
@@ -118,6 +119,7 @@ function buildParams(cursor?: string): Parameters<typeof listTurnsSessions>[0] |
 }
 
 async function load(reset = true) {
+  if (!reset && (loadingMore.value || loading.value || !hasMore.value)) return
   const params = buildParams(reset ? undefined : nextCursor.value || undefined)
   if (!params) return
   const version = ++requestVersion.value
@@ -125,6 +127,8 @@ async function load(reset = true) {
     controller?.abort()
     controller = new AbortController()
     loading.value = true
+    loaded.value = false
+    loadMoreError.value = ''
     error.value = ''
     items.value = []
     nextCursor.value = ''
@@ -134,9 +138,11 @@ async function load(reset = true) {
     collapsedTasks.value = new Set()
   } else {
     loadingMore.value = true
+    loadMoreError.value = ''
   }
+  const requestController = reset ? controller : new AbortController()
   try {
-    const response = await listTurnsSessions(params, { signal: controller?.signal })
+    const response = await listTurnsSessions(params, { signal: requestController?.signal })
     if (version !== requestVersion.value) return
     items.value = reset ? response.items : [...items.value, ...response.items]
     hasMore.value = response.has_more
@@ -144,8 +150,12 @@ async function load(reset = true) {
     loaded.value = true
   } catch (cause: unknown) {
     if (version !== requestVersion.value || (cause instanceof DOMException && cause.name === 'AbortError')) return
-    error.value = cause instanceof Error ? cause.message : String(cause)
-    if (reset) items.value = []
+    if (reset) {
+      error.value = cause instanceof Error ? cause.message : String(cause)
+      items.value = []
+    } else {
+      loadMoreError.value = cause instanceof Error ? cause.message : String(cause)
+    }
   } finally {
     if (version === requestVersion.value) {
       loading.value = false
@@ -176,7 +186,7 @@ function hiddenModelCount(session: TurnsSessionGroup) { return Math.max(0, (sess
 function formatMs(value: number) { if (!value || value <= 0) return '—'; if (value < 1000) return `${value}ms`; const seconds = Math.round(value / 1000); return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s` }
 function formatTokens(value: number) { return value >= 1000 ? `${(value / 1000).toFixed(1)}k` : String(value) }
 function resetAndLoad() { load(true) }
-function onPresetChange(event: Event) { const value = (event.target as HTMLSelectElement).value; timePreset.value = value; const preset = timePresets.find(item => item.value === value); if (!preset) return; dateFromFilter.value = value === 'all' ? '' : localDatetime(new Date(Date.now() - preset.hours * 3600 * 1000)); dateToFilter.value = ''; load(true) }
+function onPresetChange(event: Event) { const value = (event.target as HTMLSelectElement).value; timePreset.value = value; const preset = timePresets.find(item => item.value === value); if (!preset) return; dateFromFilter.value = value === 'all' ? '' : localDatetime(new Date(Date.now() - preset.hours * 3600 * 1000)); dateToFilter.value = '' }
 function onDatetimeManualChange() { timePreset.value = 'custom' }
 function localDatetime(date: Date) { const pad = (value: number) => String(value).padStart(2, '0'); return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}` }
 function advancedActiveCount() { return [providerFilter.value, statusCodeFilter.value, projectFilter.value, taskFilter.value, clientFilter.value, ownerUserFilter.value].filter(Boolean).length + (tagsFilter.value.length ? 1 : 0) }
@@ -196,7 +206,7 @@ onBeforeUnmount(() => controller?.abort())
     <div class="filter-section">
       <div class="filter-bar">
         <input v-model="searchFilter" type="text" placeholder="搜索标题 / 主题 / 摘要" class="filter-input filter-search" @keyup.enter="resetAndLoad" />
-        <el-select v-model="modelFilter" filterable allow-create default-first-option clearable placeholder="模型" class="filter-select"><el-option v-for="value in filterOptions.models" :key="value" :label="value" :value="value" /></el-select>
+        <el-select v-model="modelFilter" filterable allow-create default-first-option clearable placeholder="模型" class="filter-select" aria-label="模型筛选"><el-option v-for="value in filterOptions.models" :key="value" :label="value" :value="value" /></el-select>
         <select :value="timePreset" class="filter-input filter-preset" @change="onPresetChange"><option v-for="preset in timePresets" :key="preset.value" :value="preset.value">{{ preset.label }}</option><option v-if="timePreset === 'custom'" value="custom">自定义时间段</option></select>
         <input v-model="dateFromFilter" type="datetime-local" class="filter-input filter-dt" title="会话开始时间起" @change="onDatetimeManualChange" /><span class="dt-sep">~</span><input v-model="dateToFilter" type="datetime-local" class="filter-input filter-dt" title="会话开始时间止" @change="onDatetimeManualChange" />
         <button class="btn btn-primary" type="button" @click="resetAndLoad">查询</button><button class="btn btn-secondary" type="button" @click="resetAll">清空</button><button class="btn btn-secondary" type="button" @click="advancedExpanded = !advancedExpanded">更多筛选 <span v-if="advancedActiveCount()" class="adv-count">{{ advancedActiveCount() }}</span> <span class="caret" :class="{ open: advancedExpanded }" aria-hidden="true">▸</span></button>
@@ -214,7 +224,7 @@ onBeforeUnmount(() => controller?.abort())
 
     <div v-if="error" class="error-banner" role="alert"><span>{{ error }}</span><button class="btn btn-secondary" type="button" @click="resetAndLoad">重试</button></div>
     <div class="list">
-      <div class="view-toggle" aria-label="会话列表视图"><button class="toggle-btn" :class="{ active: viewMode === 'flat' }" type="button" @click="viewMode = 'flat'">会话列表</button><button class="toggle-btn" :class="{ active: viewMode === 'tree' }" type="button" @click="viewMode = 'tree'">按项目分组</button></div>
+      <div class="view-toggle" aria-label="会话列表视图"><button class="toggle-btn" :class="{ active: viewMode === 'flat' }" type="button" :aria-pressed="viewMode === 'flat'" @click="viewMode = 'flat'">会话列表</button><button class="toggle-btn" :class="{ active: viewMode === 'tree' }" type="button" :aria-pressed="viewMode === 'tree'" @click="viewMode = 'tree'">按项目分组</button></div>
       <div v-if="loading && !loaded" class="session-skeleton" data-testid="turns-skeleton" aria-label="正在加载会话"><div v-for="n in 4" :key="n" class="skeleton-card" /></div>
       <div v-else-if="error" class="empty" data-testid="turns-error-state">加载会话失败，请重试</div>
       <div v-else-if="loaded && items.length === 0" class="empty" data-testid="turns-empty">暂无符合条件的会话</div>
@@ -239,6 +249,10 @@ onBeforeUnmount(() => controller?.abort())
             </div>
           </div>
         </div>
+      </div>
+      <div v-if="loadMoreError" class="error-banner load-more-error" role="alert">
+        <span>{{ loadMoreError }}</span>
+        <button class="btn btn-secondary" type="button" @click="load(false)">重试加载更多</button>
       </div>
       <div v-if="hasMore" class="load-more"><button class="btn btn-secondary" type="button" :disabled="loadingMore" @click="load(false)">{{ loadingMore ? '加载中...' : '加载更早的会话' }}</button></div>
     </div>

@@ -282,6 +282,15 @@ func TestShouldEmitDisconnectProbe_AliveContext(t *testing.T) {
 	}
 }
 
+func TestShouldTraceRequest_SkipsGetCompatibilityProbe(t *testing.T) {
+	if shouldTraceRequest(http.MethodGet) {
+		t.Fatal("GET compatibility probes must not create Redis trace events")
+	}
+	if !shouldTraceRequest(http.MethodPost) {
+		t.Fatal("POST requests must retain request tracing")
+	}
+}
+
 // TestBuildClientDisconnectProbeEntry_NilRequest: defensive — a nil request
 // must not panic.
 func TestBuildClientDisconnectProbeEntry_NilRequest(t *testing.T) {
