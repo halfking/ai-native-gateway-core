@@ -150,8 +150,12 @@ async function load(reset = true) {
     loaded.value = true
   } catch (cause: unknown) {
     if (version !== requestVersion.value || (cause instanceof DOMException && cause.name === 'AbortError')) return
-    error.value = cause instanceof Error ? cause.message : String(cause)
-    if (reset) items.value = []
+    if (reset) {
+      error.value = cause instanceof Error ? cause.message : String(cause)
+      items.value = []
+    } else {
+      loadMoreError.value = cause instanceof Error ? cause.message : String(cause)
+    }
   } finally {
     if (version === requestVersion.value) {
       loading.value = false
