@@ -65,6 +65,9 @@ func TestReconciliation_PostgreSQL(t *testing.T) {
 		"../../sql/migrations/startup/536_stats_analytics_foundation.sql",
 		"../../sql/migrations/startup/537_usage_facts.sql",
 		"../../sql/migrations/startup/539_stats_reconciliation_tenant.sql",
+		"../../sql/migrations/startup/544_stats_adjustments_alignment.sql",
+		"../../sql/migrations/startup/545_stats_reconciliation_phantom_resolution.sql",
+		"../../sql/migrations/startup/546_stats_reconciliation_diffs_unique.sql",
 	} {
 		body, err := os.ReadFile(name)
 		if err != nil {
@@ -237,6 +240,9 @@ func TestReconciliation_MissingProjection(t *testing.T) {
 		"../../sql/migrations/startup/536_stats_analytics_foundation.sql",
 		"../../sql/migrations/startup/537_usage_facts.sql",
 		"../../sql/migrations/startup/539_stats_reconciliation_tenant.sql",
+		"../../sql/migrations/startup/544_stats_adjustments_alignment.sql",
+		"../../sql/migrations/startup/545_stats_reconciliation_phantom_resolution.sql",
+		"../../sql/migrations/startup/546_stats_reconciliation_diffs_unique.sql",
 	} {
 		body, err := os.ReadFile(name)
 		if err != nil {
@@ -392,6 +398,9 @@ func TestReconciliation_Metrics_CompletedAndAutoRepaired(t *testing.T) {
 		"../../sql/migrations/startup/536_stats_analytics_foundation.sql",
 		"../../sql/migrations/startup/537_usage_facts.sql",
 		"../../sql/migrations/startup/539_stats_reconciliation_tenant.sql",
+		"../../sql/migrations/startup/544_stats_adjustments_alignment.sql",
+		"../../sql/migrations/startup/545_stats_reconciliation_phantom_resolution.sql",
+		"../../sql/migrations/startup/546_stats_reconciliation_diffs_unique.sql",
 	} {
 		body, err := os.ReadFile(name)
 		if err != nil {

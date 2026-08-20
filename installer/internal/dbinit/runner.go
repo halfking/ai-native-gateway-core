@@ -32,6 +32,11 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			"537_usage_facts.sql",
 			"539_stats_reconciliation_tenant.sql",
 			"540_stats_event_inbox_consumer.sql",
+			"544_stats_adjustments_alignment.sql",
+			"545_stats_reconciliation_phantom_resolution.sql",
+			"546_stats_reconciliation_diffs_unique.sql",
+			"547_session_project_attribution.sql",
+			"548_stats_reconciliation_diffs_identity.sql",
 		},
 	}
 }

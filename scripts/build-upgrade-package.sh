@@ -71,10 +71,15 @@ docker save "$IMAGE_TAG" -o "$WORK/images.tar"
 echo "[3/5] Copying stats startup migration bundle..."
 mkdir -p "$WORK/migrations/startup"
 stats_migrations=(
-  536_stats_analytics_foundation.sql
-  537_usage_facts.sql
-  539_stats_reconciliation_tenant.sql
-  540_stats_event_inbox_consumer.sql
+	536_stats_analytics_foundation.sql
+	537_usage_facts.sql
+	539_stats_reconciliation_tenant.sql
+	540_stats_event_inbox_consumer.sql
+	544_stats_adjustments_alignment.sql
+	545_stats_reconciliation_phantom_resolution.sql
+	546_stats_reconciliation_diffs_unique.sql
+	547_session_project_attribution.sql
+	548_stats_reconciliation_diffs_identity.sql
 )
 for name in "${stats_migrations[@]}"; do
   source="sql/migrations/startup/$name"

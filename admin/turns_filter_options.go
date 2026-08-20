@@ -81,9 +81,10 @@ func (h *Handler) handleTurnsFilterOptions(w http.ResponseWriter, r *http.Reques
 		&resp.Projects, &resp.Tasks, &resp.Owners, &resp.Clients, &resp.Tags,
 	}
 	ssQueries := []string{
-		// projects
+		// projects：与会话列表展示/筛选使用同一回退口径
 		h.lastActiveQuery(h.lastActiveSource(
-			"ss.gw_project_id", "", "ss.gw_project_id IS NOT NULL AND ss.gw_project_id != ''", tenantWhere)),
+			"COALESCE(NULLIF(ss.gw_project_id, ''), sd.project_id)", joinDim,
+			"COALESCE(NULLIF(ss.gw_project_id, ''), sd.project_id) IS NOT NULL AND COALESCE(NULLIF(ss.gw_project_id, ''), sd.project_id) != ''", tenantWhere)),
 		// tasks
 		h.lastActiveQuery(h.lastActiveSource(
 			"sd.task_id", joinDim, "sd.task_id IS NOT NULL AND sd.task_id != ''", tenantWhere)),
