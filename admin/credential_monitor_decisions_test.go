@@ -34,8 +34,8 @@ func TestHandleCredentialDecisions(t *testing.T) {
 
 		m.handleCredentialDecisions(w, req)
 
-		if w.Code != http.StatusBadRequest {
-			t.Errorf("expected 400, got %d", w.Code)
+		if w.Code != http.StatusServiceUnavailable {
+			t.Errorf("expected 503, got %d", w.Code)
 		}
 	})
 }
