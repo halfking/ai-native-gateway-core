@@ -357,10 +357,8 @@ type RequestLogEntry struct {
 	// events the survival / stream-recovery / empty-gate paths pushed into
 	// the audit StreamCapture. The audit StreamCapture also exposes it via
 	// SummaryAsMap under "discard_events", and the per-request log path
-	// (request_log_pipeline.go) copies it onto this field. The current
-	// upsert SQL does not yet include the column — operators read the
-	// The streaming survival/recovery path appends structured discard events;
-	// the telemetry upsert persists them in request_logs_hot.discard_events.
+	// (request_log_pipeline.go) copies it onto this field. The telemetry upsert
+	// persists it in request_logs_hot.discard_events.
 	DiscardEvents json.RawMessage `json:"discard_events,omitempty"`
 }
 
