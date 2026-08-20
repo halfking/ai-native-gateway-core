@@ -1,6 +1,7 @@
 package pluginruntime
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -41,6 +42,7 @@ func TestSandboxPolicy_ValidateRequiresRealSandbox(t *testing.T) {
 	}{
 		{"available without os user", SandboxPolicy{Available: true, MemoryBytes: 1 << 30, MaxConcurrent: 1}, true},
 		{"available without memory", SandboxPolicy{Available: true, OSUser: "plugin", MaxConcurrent: 1}, true},
+		{"available without concurrency", SandboxPolicy{Available: true, OSUser: "plugin", MemoryBytes: 1 << 30, MaxConcurrent: 0}, true},
 		{"available valid", SandboxPolicy{Available: true, OSUser: "plugin", MemoryBytes: 1 << 30, MaxConcurrent: 2}, false},
 		{"unavailable always valid", SandboxPolicy{Available: false}, false},
 	}
@@ -81,12 +83,23 @@ func TestSandboxEnforcer_AllowExecutionWithoutSandbox(t *testing.T) {
 		t.Fatalf("observe binding should be allowed without sandbox: %v", err)
 	}
 
-	// write capability must be refused without sandbox
+	// write capability must be refused without sandbox (VibeCoding error shape)
 	write := sandboxBinding("b2", []string{CapabilityRequestMutate})
-	if err := e.AllowExecution(write); err == nil {
+	err := e.AllowExecution(write)
+	if err == nil {
 		t.Fatalf("write binding MUST be refused without sandbox")
-	} else if !contains(err.Error(), "requires sandbox") {
-		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(err.Error(), "allow plugin execution failed") ||
+		!strings.Contains(err.Error(), "binding_id=b2") ||
+		!strings.Contains(err.Error(), "requires sandbox") {
+		t.Fatalf("error must follow VibeCoding shape and carry context: %v", err)
+	}
+
+	// disabled binding short-circuits to nil regardless of capabilities
+	disabled := sandboxBinding("b3", []string{CapabilityRequestMutate})
+	disabled.Enabled = false
+	if err := e.AllowExecution(disabled); err != nil {
+		t.Fatalf("disabled binding must not invoke AllowExecution gate: %v", err)
 	}
 }
 
@@ -103,6 +116,12 @@ func TestSandboxEnforcer_AllowExecutionWithSandbox(t *testing.T) {
 	write := sandboxBinding("b1", []string{CapabilityRequestMutate, CapabilityRequestObserve})
 	if err := e.AllowExecution(write); err != nil {
 		t.Fatalf("write binding should be allowed with sandbox: %v", err)
+	}
+
+	// empty capabilities with sandbox: trivially allowed
+	none := sandboxBinding("b2", nil)
+	if err := e.AllowExecution(none); err != nil {
+		t.Fatalf("empty capabilities should be allowed with sandbox: %v", err)
 	}
 }
 
@@ -122,6 +141,12 @@ func TestSandboxEnforcer_AllowDataPlaneWrite(t *testing.T) {
 	observe := sandboxBinding("b2", []string{CapabilityRequestObserve})
 	if err := se.AllowDataPlaneWrite(observe); err == nil {
 		t.Fatalf("non-write binding must not satisfy AllowDataPlaneWrite")
+	}
+
+	// empty capabilities: never a write
+	empty := sandboxBinding("b3", nil)
+	if err := se.AllowDataPlaneWrite(empty); err == nil {
+		t.Fatalf("empty capabilities must not satisfy AllowDataPlaneWrite")
 	}
 }
 
@@ -159,6 +184,29 @@ func TestSandboxEnforcer_BuildControlledEnv(t *testing.T) {
 	}
 }
 
+func TestSandboxEnforcer_BuildControlledEnv_EmptyAllowlist(t *testing.T) {
+	policy := SandboxPolicy{Available: true, OSUser: "plugin", MemoryBytes: 1 << 30}
+	e := NewSandboxEnforcer(&policy)
+	out := e.BuildControlledEnv(map[string]string{"PATH": "/usr/bin", "DB_PASSWORD": "x"})
+	if len(out) != 0 {
+		t.Fatalf("empty allowlist must produce empty env, got %v", out)
+	}
+}
+
+func TestSandboxEnforcer_BuildControlledEnv_NilBase(t *testing.T) {
+	policy := SandboxPolicy{
+		Available:    true,
+		OSUser:       "plugin",
+		MemoryBytes:  1 << 30,
+		EnvAllowlist: []string{"PATH"},
+	}
+	e := NewSandboxEnforcer(&policy)
+	out := e.BuildControlledEnv(nil)
+	if len(out) != 0 {
+		t.Fatalf("nil base with non-empty allowlist must produce empty env, got %v", out)
+	}
+}
+
 func TestSandboxEnforcer_DTOExposureDowngrade(t *testing.T) {
 	// Without sandbox, any stronger profile is forced to redacted.
 	e := NewSandboxEnforcer(nil)
@@ -175,7 +223,7 @@ func TestSandboxEnforcer_DTOExposureDowngrade(t *testing.T) {
 		t.Fatalf("redacted must stay redacted: p=%v err=%v", p, err)
 	}
 
-	// A binding requesting full data must be downgraded when no sandbox.
+	// A binding requesting summary must be downgraded when no sandbox.
 	full := sandboxBinding("b3", []string{CapabilityRequestObserve})
 	full.DTOProfile = DTOProfileSummary
 	if p, err := e.DTOExposure(full); err != nil || p != DTOProfileRedacted {
@@ -190,11 +238,30 @@ func TestSandboxEnforcer_DTOExposureDowngrade(t *testing.T) {
 	}
 }
 
-func contains(s, sub string) bool {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return true
-		}
+func TestSandboxEnforcer_DTOExposureUnsupported(t *testing.T) {
+	policy := SandboxPolicy{Available: true, OSUser: "plugin", MemoryBytes: 1 << 30, MaxConcurrent: 1}
+	e := NewSandboxEnforcer(&policy)
+	b := sandboxBinding("b1", []string{CapabilityRequestObserve})
+	b.DTOProfile = DTOProfile("bogus")
+	if _, err := e.DTOExposure(b); err == nil {
+		t.Fatalf("unsupported DTOProfile must error")
+	} else if !strings.Contains(err.Error(), "resolve DTO exposure failed") ||
+		!strings.Contains(err.Error(), `dto_profile="bogus"`) {
+		t.Fatalf("error must follow VibeCoding shape: %v", err)
 	}
-	return false
+}
+
+func TestRequiresWriteCapability_EmptyCaps(t *testing.T) {
+	if requiresWriteCapability(nil) {
+		t.Fatalf("nil capabilities must not be write")
+	}
+	if requiresWriteCapability([]string{}) {
+		t.Fatalf("empty capabilities must not be write")
+	}
+	if requiresWriteCapability([]string{CapabilityResponseObserve}) {
+		t.Fatalf("observe-only must not be write")
+	}
+	if !requiresWriteCapability([]string{CapabilityToolExecute}) {
+		t.Fatalf("tool.execute must be write")
+	}
 }
