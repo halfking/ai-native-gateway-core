@@ -60,7 +60,17 @@ func TestReconciliation_PostgreSQL(t *testing.T) {
 	}
 	defer conn.Close(ctx)
 
-	// Apply schema migrations
+	// Apply schema migrations. The production migration runner creates
+	// schema_migrations before feature migrations; this fixture must do the
+	// same so 544/545 can record their applied versions.
+	if _, err := conn.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS schema_migrations (
+			version text PRIMARY KEY,
+			description text NOT NULL DEFAULT '',
+			applied_at timestamptz NOT NULL DEFAULT now()
+		)`); err != nil {
+		t.Fatal(err)
+	}
 	for _, name := range []string{
 		"../../sql/migrations/startup/536_stats_analytics_foundation.sql",
 		"../../sql/migrations/startup/537_usage_facts.sql",
@@ -68,6 +78,7 @@ func TestReconciliation_PostgreSQL(t *testing.T) {
 		"../../sql/migrations/startup/544_stats_adjustments_alignment.sql",
 		"../../sql/migrations/startup/545_stats_reconciliation_phantom_resolution.sql",
 		"../../sql/migrations/startup/546_stats_reconciliation_diffs_unique.sql",
+		"../../sql/migrations/startup/548_stats_reconciliation_diffs_identity.sql",
 	} {
 		body, err := os.ReadFile(name)
 		if err != nil {
@@ -235,7 +246,17 @@ func TestReconciliation_MissingProjection(t *testing.T) {
 	}
 	defer conn.Close(ctx)
 
-	// Apply schema migrations
+	// Apply schema migrations. The production migration runner creates
+	// schema_migrations before feature migrations; this fixture must do the
+	// same so 544/545 can record their applied versions.
+	if _, err := conn.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS schema_migrations (
+			version text PRIMARY KEY,
+			description text NOT NULL DEFAULT '',
+			applied_at timestamptz NOT NULL DEFAULT now()
+		)`); err != nil {
+		t.Fatal(err)
+	}
 	for _, name := range []string{
 		"../../sql/migrations/startup/536_stats_analytics_foundation.sql",
 		"../../sql/migrations/startup/537_usage_facts.sql",
@@ -243,6 +264,7 @@ func TestReconciliation_MissingProjection(t *testing.T) {
 		"../../sql/migrations/startup/544_stats_adjustments_alignment.sql",
 		"../../sql/migrations/startup/545_stats_reconciliation_phantom_resolution.sql",
 		"../../sql/migrations/startup/546_stats_reconciliation_diffs_unique.sql",
+		"../../sql/migrations/startup/548_stats_reconciliation_diffs_identity.sql",
 	} {
 		body, err := os.ReadFile(name)
 		if err != nil {
@@ -394,6 +416,14 @@ func TestReconciliation_Metrics_CompletedAndAutoRepaired(t *testing.T) {
 	}
 	defer conn.Close(ctx)
 
+	if _, err := conn.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS schema_migrations (
+			version text PRIMARY KEY,
+			description text NOT NULL DEFAULT '',
+			applied_at timestamptz NOT NULL DEFAULT now()
+		)`); err != nil {
+		t.Fatal(err)
+	}
 	for _, name := range []string{
 		"../../sql/migrations/startup/536_stats_analytics_foundation.sql",
 		"../../sql/migrations/startup/537_usage_facts.sql",
@@ -401,6 +431,7 @@ func TestReconciliation_Metrics_CompletedAndAutoRepaired(t *testing.T) {
 		"../../sql/migrations/startup/544_stats_adjustments_alignment.sql",
 		"../../sql/migrations/startup/545_stats_reconciliation_phantom_resolution.sql",
 		"../../sql/migrations/startup/546_stats_reconciliation_diffs_unique.sql",
+		"../../sql/migrations/startup/548_stats_reconciliation_diffs_identity.sql",
 	} {
 		body, err := os.ReadFile(name)
 		if err != nil {

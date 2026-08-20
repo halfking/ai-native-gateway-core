@@ -168,7 +168,7 @@ func TestReconciliationWorker_PanicMarksRunFailed(t *testing.T) {
 		WithArgs(pgxmock.AnyArg(), "failed", pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
-	reconcileDailyOverride = func(ctx context.Context, w *ReconciliationWorker, runID string, start, end time.Time) (int64, int64, error) {
+	reconcileDailyOverride = func(ctx context.Context, w *ReconciliationWorker, runID string, start, end time.Time) (int64, int64, int64, error) {
 		panic("synthetic reconcile panic for unit test")
 	}
 
@@ -199,28 +199,35 @@ func TestReconciliationWorker_TickPanicDoesNotStopFutureTicks(t *testing.T) {
 
 func TestReconciliationWorker_RunSurvivesTickPanic(t *testing.T) {
 	db := &pgxpool.Pool{} // mock pool; worker uses the injected function seam
-	worker := NewReconciliationWorker(db, time.Hour)
+	worker := NewReconciliationWorker(db, time.Millisecond)
 	require.NotNil(t, worker)
 
+	secondTick := make(chan struct{}, 1)
 	calls := 0
 	worker.reconcileRecentFn = func(context.Context) {
 		calls++
 		if calls == 1 {
 			panic("synthetic first-tick panic")
 		}
+		select {
+		case secondTick <- struct{}{}:
+		default:
+		}
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	worker.Start(ctx)
-	// Wait until the first tick has panicked and recovered (worker stays alive).
-	require.Eventually(t, func() bool { return calls >= 1 }, 2*time.Second, 5*time.Millisecond,
-		"worker should fire the first tick")
-	// Give the recovered tick time to return to the select loop before stopping.
-	require.Eventually(t, func() bool { return worker.started }, 2*time.Second, 5*time.Millisecond,
-		"worker should still be started after a recovered panic")
+	require.Eventually(t, func() bool {
+		select {
+		case <-secondTick:
+			return true
+		default:
+			return false
+		}
+	}, 2*time.Second, 5*time.Millisecond, "worker should execute a second tick after recovering from the first panic")
 	cancel()
 	worker.Stop()
-	require.GreaterOrEqual(t, calls, 1, "the panic must not terminate the worker goroutine")
+	require.GreaterOrEqual(t, calls, 2, "the panic must not terminate the worker goroutine")
 }
 
 func TestReconciliationWorker_NilSafety(t *testing.T) {
@@ -245,18 +252,18 @@ func TestReconciliationWorker_BinaryShardOnRowCap(t *testing.T) {
 	})
 
 	calls := 0
-	reconcileDailyOverride = func(ctx context.Context, w *ReconciliationWorker, runID string, start, end time.Time) (int64, int64, error) {
+	reconcileDailyOverride = func(ctx context.Context, w *ReconciliationWorker, runID string, start, end time.Time) (int64, int64, int64, error) {
 		calls++
 		if end.Sub(start) > 2*time.Minute {
 			mid := start.Add(end.Sub(start) / 2)
-			d1, r1, err := w.reconcileDaily(ctx, runID, start, mid)
+			d1, r1, p1, err := w.reconcileDaily(ctx, runID, start, mid)
 			if err != nil {
-				return d1, r1, err
+				return d1, r1, p1, err
 			}
-			d2, r2, err := w.reconcileDaily(ctx, runID, mid, end)
-			return d1 + d2 + 1, r1 + r2, err
+			d2, r2, p2, err := w.reconcileDaily(ctx, runID, mid, end)
+			return d1 + d2 + 1, r1 + r2, p1 + p2, err
 		}
-		return 3, 0, nil
+		return 3, 0, 0, nil
 	}
 
 	worker := newReconciliationWorkerWithDB(newUnusedMock(t), time.Minute)
@@ -264,7 +271,7 @@ func TestReconciliationWorker_BinaryShardOnRowCap(t *testing.T) {
 	start := time.Now().UTC()
 	end := start.Add(8 * time.Minute)
 
-	diffs, repaired, err := worker.reconcileDaily(context.Background(), "recon_test", start, end)
+	diffs, repaired, _, err := worker.reconcileDaily(context.Background(), "recon_test", start, end)
 	require.NoError(t, err, "binary shard must not surface an error when splits succeed")
 	// 8m -> 2x4m -> 4x2m leaves; total reconcileDaily invocations: 1+2+4 = 7.
 	require.Equal(t, 7, calls, "expected 1 + 2 + 4 reconcileDaily invocations across the split tree")
@@ -282,17 +289,17 @@ func TestReconciliationWorker_BinaryShardCapFinalFallback(t *testing.T) {
 		reconcileDailyOverride = nil
 	})
 
-	reconcileDailyOverride = func(ctx context.Context, w *ReconciliationWorker, runID string, start, end time.Time) (int64, int64, error) {
+	reconcileDailyOverride = func(ctx context.Context, w *ReconciliationWorker, runID string, start, end time.Time) (int64, int64, int64, error) {
 		if end.Sub(start) <= time.Second {
-			return 0, 0, fmt.Errorf("reconciliation row limit still exceeded after min-granularity split: %d rows", maxReconciliationRows)
+			return 0, 0, 0, fmt.Errorf("reconciliation row limit still exceeded after min-granularity split: %d rows", maxReconciliationRows)
 		}
 		mid := start.Add(end.Sub(start) / 2)
-		d1, r1, err := w.reconcileDaily(ctx, runID, start, mid)
-		d2, r2, err2 := w.reconcileDaily(ctx, runID, mid, end)
+		d1, r1, p1, err := w.reconcileDaily(ctx, runID, start, mid)
+		d2, r2, p2, err2 := w.reconcileDaily(ctx, runID, mid, end)
 		if err != nil {
-			return d1, r1, err
+			return d1, r1, p1, err
 		}
-		return d1 + d2, r1 + r2, err2
+		return d1 + d2, r1 + r2, p1 + p2, err2
 	}
 
 	worker := newReconciliationWorkerWithDB(newUnusedMock(t), time.Minute)
@@ -300,7 +307,7 @@ func TestReconciliationWorker_BinaryShardCapFinalFallback(t *testing.T) {
 	start := time.Now().UTC()
 	end := start.Add(4 * time.Second)
 
-	diffs, repaired, err := worker.reconcileDaily(context.Background(), "recon_test", start, end)
+	diffs, repaired, _, err := worker.reconcileDaily(context.Background(), "recon_test", start, end)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "row limit still exceeded after min-granularity split",
 		"wrapper must surface the safety-net error when 1s boundary still hits cap")
@@ -321,8 +328,8 @@ func TestReconciliationWorker_FinishRunUpdateFailureNonFatal(t *testing.T) {
 		WithArgs(pgxmock.AnyArg(), "completed", pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnError(fmt.Errorf("simulated finishRun UPDATE failure"))
 
-	reconcileDailyOverride = func(ctx context.Context, w *ReconciliationWorker, runID string, start, end time.Time) (int64, int64, error) {
-		return 7, 3, nil
+	reconcileDailyOverride = func(ctx context.Context, w *ReconciliationWorker, runID string, start, end time.Time) (int64, int64, int64, error) {
+		return 7, 3, 0, nil
 	}
 
 	worker := newReconciliationWorkerWithDB(mock, time.Minute)

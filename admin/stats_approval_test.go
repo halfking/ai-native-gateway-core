@@ -102,7 +102,7 @@ func queueDiffSelect(mock pgxmock.PgxPoolIface, diffID int64, runID, tenantID, d
 		runID, tenantID, dimensionType, dimensionKey, metric,
 		float64(difference+10), float64(10), difference, resolution, periodStart,
 	)
-	mock.ExpectQuery("FROM stats_reconciliation_diffs d").
+	mock.ExpectQuery("FROM stats_reconciliation_diffs d[\\s\\S]*FOR UPDATE OF d").
 		WithArgs(diffID).
 		WillReturnRows(rows)
 }

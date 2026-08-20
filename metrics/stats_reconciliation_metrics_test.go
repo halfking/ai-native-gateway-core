@@ -18,12 +18,15 @@ func readCounterVec(t *testing.T, counter interface{ Write(*dto.Metric) error })
 func TestStatsReconciliationMetrics_Runs(t *testing.T) {
 	runCompleted := statsReconciliationRuns.WithLabelValues("completed")
 	runFailed := statsReconciliationRuns.WithLabelValues("failed")
+	runPanicked := statsReconciliationRuns.WithLabelValues("panicked")
 
 	beforeCompleted := readCounterVec(t, runCompleted)
 	beforeFailed := readCounterVec(t, runFailed)
+	beforePanicked := readCounterVec(t, runPanicked)
 
 	RecordStatsReconciliationRun("completed", 1)
 	RecordStatsReconciliationRun("failed", 2)
+	RecordStatsReconciliationRun("panicked", 1)
 
 	if got := readCounterVec(t, runCompleted); got != beforeCompleted+1 {
 		t.Fatalf("completed count = %v, want %v", got, beforeCompleted+1)
@@ -31,20 +34,29 @@ func TestStatsReconciliationMetrics_Runs(t *testing.T) {
 	if got := readCounterVec(t, runFailed); got != beforeFailed+2 {
 		t.Fatalf("failed count = %v, want %v", got, beforeFailed+2)
 	}
+	if got := readCounterVec(t, runPanicked); got != beforePanicked+1 {
+		t.Fatalf("panicked count = %v, want %v", got, beforePanicked+1)
+	}
 }
 
 func TestStatsReconciliationMetrics_Diffs(t *testing.T) {
 	open := statsReconciliationDiffs.WithLabelValues("open")
+	phantom := statsReconciliationDiffs.WithLabelValues("phantom_open")
 	repaired := statsReconciliationDiffs.WithLabelValues("auto_repaired")
 
 	beforeOpen := readCounterVec(t, open)
+	beforePhantom := readCounterVec(t, phantom)
 	beforeRepaired := readCounterVec(t, repaired)
 
 	ObserveStatsReconciliationDiffs("open", 5)
+	ObserveStatsReconciliationDiffs("phantom_open", 2)
 	ObserveStatsReconciliationDiffs("auto_repaired", 3)
 
 	if got := readCounterVec(t, open); got != beforeOpen+5 {
 		t.Fatalf("open count = %v, want %v", got, beforeOpen+5)
+	}
+	if got := readCounterVec(t, phantom); got != beforePhantom+2 {
+		t.Fatalf("phantom_open count = %v, want %v", got, beforePhantom+2)
 	}
 	if got := readCounterVec(t, repaired); got != beforeRepaired+3 {
 		t.Fatalf("auto_repaired count = %v, want %v", got, beforeRepaired+3)
