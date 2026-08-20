@@ -28,7 +28,6 @@ package bg
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -742,10 +741,7 @@ func (w *NodeProbeWorker) insertNodeProbeRun(ctx context.Context, credID int, mo
 	if w.db == nil {
 		return nil
 	}
-	var requestHeadersJSON []byte
-	if len(direct.requestHeaders) > 0 {
-		requestHeadersJSON, _ = json.Marshal(direct.requestHeaders)
-	}
+	requestHeadersJSON := probeHeadersJSON(direct.requestHeaders)
 	timeoutAtMs := 0
 	if direct.errCode == "network_error" && direct.latencyMs >= 14900 {
 		timeoutAtMs = direct.latencyMs
@@ -765,7 +761,7 @@ func (w *NodeProbeWorker) insertNodeProbeRun(ctx context.Context, credID int, mo
 			$11, $12, $13, $14, $15,
 			$16, $17, $18, $19,
 			$20, $21, $22,
-			$23, $24, $25, $26,
+			$23, $24::text::jsonb, $25, $26,
 			$27, $28
 		)`,
 		credID, model, triggerKind, attempt, nextSec,

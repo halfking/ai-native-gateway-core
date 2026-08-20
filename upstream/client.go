@@ -22,7 +22,7 @@ import (
 
 const (
 	maxRetries     = 2
-	retryBaseDelay = 500 * time.Millisecond
+	retryBaseDelay = 5 * time.Second
 	connectTimeout = 10 * time.Second
 	// The stream executor owns the 30s first-byte product policy. The transport
 	// must allow slower reasoning models to reach their headers first.
