@@ -20,10 +20,17 @@ func SerializeOpenAI(req *InternalRequest) ([]byte, error) {
 		out["max_tokens"] = req.MaxTokens
 	}
 
-	// Streaming
-	if req.Stream {
-		out["stream"] = true
-	}
+	// Streaming — ALWAYS serialize the stream flag (including when false).
+	//
+	// 2026-08-21 fix (glm-5.2 / minimax-m3 stability A/B): the prior `if true`
+	// gate silently dropped the field for `stream:false` requests. OpenAI
+	// Chat Completions spec defaults to non-streaming when the field is
+	// absent, but several proxy layers we route through (NVIDIA NIM, the
+	// aliyun-backed oneapi endpoint at 129.146.135.219:3000) interpret the
+	// absent field as streaming-by-default and respond with `text/event-stream`
+	// containing only a boilerplate `{"choices":[],"usage":{...}}` chunk.
+	// Explicit `stream:false` in the outgoing body fixes the round-trip.
+	out["stream"] = req.Stream
 
 	// Sampling parameters
 	if req.Temperature != nil {
