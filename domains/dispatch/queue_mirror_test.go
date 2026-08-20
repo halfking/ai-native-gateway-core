@@ -8,6 +8,7 @@ package dispatch
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -23,7 +24,23 @@ func newTestMirror(t *testing.T) (*QueueMirror, *miniredis.Miniredis) {
 	return NewQueueMirror(client), mr
 }
 
-// TestQueueMirrorProjectsVersionedKeys (UT-DQ-09): lane depths, in-flight
+func TestQueueMirrorConcurrentObserveAndClose(t *testing.T) {
+	m, _ := newTestMirror(t)
+	var wg sync.WaitGroup
+	for i := 0; i < 16; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 100; j++ {
+				m.ObserveQueue(QueueObservation{Kind: QueueModelDepth, Model: "model", Depth: int64(j)})
+			}
+		}()
+	}
+	m.Close()
+	wg.Wait()
+	m.Close()
+}
+
 // and retry_at land in the documented versioned keys and read back through
 // RebuildMetadata.
 func TestQueueMirrorProjectsVersionedKeys(t *testing.T) {

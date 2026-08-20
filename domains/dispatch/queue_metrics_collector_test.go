@@ -75,6 +75,7 @@ func TestQueueMetricsCollector_WiredMode(t *testing.T) {
 // TestQueueMetricsCollector_SnapshotReflectsPipelineState verifies that
 // Snapshot() reads live depths from Pipeline.Snapshot().
 func TestQueueMetricsCollector_SnapshotReflectsPipelineState(t *testing.T) {
+	releaseForward := make(chan struct{})
 	p := NewPipeline(Deps{
 		RouteFunc: func(ctx context.Context, qr *QueuedRequest) ([]CredentialRef, error) {
 			return []CredentialRef{{CredentialID: 42, ConcurrencyMode: "concurrency"}}, nil
@@ -83,14 +84,14 @@ func TestQueueMetricsCollector_SnapshotReflectsPipelineState(t *testing.T) {
 			return "gpt-4", nil, nil
 		},
 		ForwardFunc: func(ctx context.Context, qr *QueuedRequest, cred CredentialRef) ForwardOutcome {
-			// Simulate slow forward to keep request in queue
-			time.Sleep(100 * time.Millisecond)
+			<-releaseForward
 			return ForwardOutcome{}
 		},
 		AllowModelChange: false,
 	})
 	p.Start()
 	defer p.Stop()
+	defer close(releaseForward)
 
 	c := newQueueCollectorForPipeline(p)
 
@@ -113,9 +114,8 @@ func TestQueueMetricsCollector_SnapshotReflectsPipelineState(t *testing.T) {
 		t.Fatal("Snapshot() returned nil")
 	}
 
-	// Should have at least one model lane (gpt-4) or credential lane (42)
-	if len(snap.Models) == 0 && len(snap.Credentials) == 0 {
-		t.Errorf("expected non-empty model or credential lanes, got empty snapshot")
+	if snap.Pipeline == nil || snap.Pipeline.InFlight < 1 {
+		t.Errorf("expected an in-flight request while forward is blocked, got %+v", snap.Pipeline)
 	}
 }
 
