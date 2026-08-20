@@ -250,6 +250,10 @@ onBeforeUnmount(() => controller?.abort())
           </div>
         </div>
       </div>
+      <div v-if="loadMoreError" class="error-banner load-more-error" role="alert">
+        <span>{{ loadMoreError }}</span>
+        <button class="btn btn-secondary" type="button" @click="load(false)">重试加载更多</button>
+      </div>
       <div v-if="hasMore" class="load-more"><button class="btn btn-secondary" type="button" :disabled="loadingMore" @click="load(false)">{{ loadingMore ? '加载中...' : '加载更早的会话' }}</button></div>
     </div>
   </div>
