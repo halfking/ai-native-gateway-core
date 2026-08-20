@@ -204,6 +204,37 @@ describe('NodeDetailDrawer model×node scope', () => {
     expect(wrapper.get('h2').text()).not.toBe('5')
   })
 
+  it('discards stale model history after the scoped model changes', async () => {
+    let resolveHistory!: (value: unknown) => void
+    modelHistory.mockImplementationOnce(() => new Promise(resolve => { resolveHistory = resolve }))
+    const wrapper = mountDrawer('m-1')
+    await triggerDetailLoad(wrapper)
+
+    await wrapper.setProps({ model: 'm-2' })
+    await flushPromises()
+    resolveHistory({ events: [{ event: 'broke', source: 'auto', ts: '2026-08-20T00:00:00Z', error_message: 'stale-history' }] })
+    await flushPromises()
+
+    expect(wrapper.text()).not.toContain('stale-history')
+    expect(wrapper.get('h2').text()).toBe('m-2')
+  })
+
+  it('discards stale decisions after the scoped model changes', async () => {
+    let resolveDecisions!: (value: unknown) => void
+    decisions.mockImplementationOnce(() => new Promise(resolve => { resolveDecisions = resolve }))
+    const wrapper = mountDrawer('m-1')
+    await wrapper.get('[role="tab"]:nth-child(2)').trigger('click')
+    await flushPromises()
+
+    await wrapper.setProps({ model: 'm-2' })
+    await flushPromises()
+    resolveDecisions({ decisions: [{ request_id: 'stale-decision', model: 'm-1', ts: '2026-08-20T00:00:00Z', success: false }] })
+    await flushPromises()
+
+    expect(wrapper.text()).not.toContain('stale-decision')
+    expect(wrapper.get('h2').text()).toBe('m-2')
+  })
+
   it('clears stale detail and reloads the new model scope', async () => {
     const wrapper = mountDrawer('m-1')
     await triggerDetailLoad(wrapper)
