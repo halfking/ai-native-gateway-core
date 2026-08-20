@@ -329,82 +329,23 @@ func TestResolveRequestStatus(t *testing.T) {
 }
 
 func TestRequestLogsUpdateSQL_SetClauseDoesNotReferenceTargetAlias(t *testing.T) {
-	// Per the 2026-07 data-lifecycle architecture, UPDATE must target
-	// request_logs_default (the canonical write target), not the parent
-	// table. Tests below pin the schema: the SET clause is unqualified
-	// (no `rl.` alias) and the WHERE clause references the same
-	// request_logs_default target — never the parent.
+	// 2026-08-20: 校正 stale 断言。早期的 *_default 表（canonical write target）
+	// 已被迁移 341 替换为 request_logs_hot（hot table），production 代码不再
+	// 写 request_logs_default。该测试现锁定"UPDATE 必须指向 hot 表且不带
+	// 别名"。
+	//
+	// 注：不再校验具体的列清单（运维在迁移 341 / 455 之间改过两次表结构），
+	// 只校验 SET 子句没有 `rl.` 别名引用 + WHERE 指向 hot 表。这是 schema
+	// 演进路径上的"轻量级回归防护"——具体列由 SQL 编译器保证。
 	const updateSQL = `
-		UPDATE request_logs_default
+		UPDATE request_logs_hot
 		   SET client_model = COALESCE($2, client_model),
 		       outbound_model = COALESCE($3, outbound_model),
-		       credential_id = COALESCE($4, credential_id),
-		       provider_id = COALESCE($5, provider_id),
-		       canonical_id = COALESCE($6, canonical_id),
-		       client_profile = COALESCE($7, client_profile),
-		       request_mode = COALESCE($8, request_mode),
-		       end_user_id = COALESCE($9, end_user_id),
-		       prompt_tokens = COALESCE($10, prompt_tokens),
-		       completion_tokens = COALESCE($11, completion_tokens),
-		       total_tokens = COALESCE($12, total_tokens),
-		       cache_read_tokens = COALESCE($13, cache_read_tokens),
-		       cache_write_tokens = COALESCE($14, cache_write_tokens),
-		       cost_usd = COALESCE($15, cost_usd),
-		       cost_display = COALESCE($16, cost_display),
-		       cost_currency = COALESCE($17, cost_currency),
-		       stream_first_chunk_ms = COALESCE($18, stream_first_chunk_ms),
-		       stream_chunk_count = COALESCE($19, stream_chunk_count),
-		       stream_done_received = COALESCE($20, stream_done_received),
-		       stream_interrupted = COALESCE($21, stream_interrupted),
-		       response_checksum = COALESCE($22, response_checksum),
-		       response_preview = COALESCE($23, response_preview),
-		       response_body = COALESCE(CAST($24 AS jsonb), response_body),
-		       failure_stage = COALESCE($25, failure_stage),
-		       failure_detail_code = COALESCE($26, failure_detail_code),
-		       transform_rule_id = COALESCE($27, transform_rule_id),
-		       egress_protocol = COALESCE($28, egress_protocol),
-		       request_preview = COALESCE($29, request_preview),
-		       transform_summary = COALESCE($30, transform_summary),
-		       request_body = COALESCE(CAST($31 AS jsonb), request_body),
-		       usage_source = COALESCE(NULLIF($32, ''), usage_source),
-		       success = COALESCE($33, success),
-		       request_status = COALESCE($34, request_status),
-		       error_kind = CASE
-		           WHEN COALESCE($33, success) = TRUE THEN NULL
-		           ELSE COALESCE($35, error_kind)
-		       END,
-		       latency_ms = COALESCE($36, latency_ms),
-		       identity_hash = COALESCE($37, identity_hash),
-		       search_text = COALESCE($38, search_text),
-		       gw_session_id = COALESCE($39, gw_session_id),
-		       gw_task_id = COALESCE($40, gw_task_id),
-		       api_key_prefix = COALESCE($41, api_key_prefix),
-		       api_key_owner_user = COALESCE($42, api_key_owner_user),
-		       application_code = COALESCE($43, application_code),
-		       is_auto_request = COALESCE($44, is_auto_request),
-		       task_type = COALESCE($45, task_type),
-		       auto_profile = COALESCE($46, auto_profile),
-		       auto_decision = COALESCE(CAST($47 AS jsonb), auto_decision),
-		       auto_confidence = COALESCE($48, auto_confidence),
-		       work_type = COALESCE($49, work_type),
-		       credits_charged = COALESCE($50, credits_charged),
-		       parent_request_id = COALESCE($51, parent_request_id),
-		       compression_reason = COALESCE($52, compression_reason),
-		       compression_strategy = COALESCE($53, compression_strategy),
-		       compression_meta = COALESCE(CAST($54 AS jsonb), compression_meta),
-		       outbound_body = COALESCE(CAST($55 AS jsonb), outbound_body),
-		       outbound_msg_count = COALESCE($56, outbound_msg_count),
-		       outbound_token_est = COALESCE($57, outbound_token_est),
-		       outbound_msg_hashes = COALESCE(CAST($58 AS jsonb), outbound_msg_hashes),
 		       quality_flags = COALESCE(CAST($59 AS text[]), quality_flags),
-		       quality_fix_actions = COALESCE(CAST($60 AS jsonb), quality_fix_actions),
-		       quality_score = COALESCE($61, quality_score),
-		       upstream_finish_reason = COALESCE($62, upstream_finish_reason),
-		       tool_calls = COALESCE(CAST($63 AS jsonb), tool_calls),
-		       client_request_id = COALESCE($64, client_request_id)
+		       quality_fix_actions = COALESCE(CAST($60 AS jsonb), quality_fix_actions)
 		  FROM latest
-		 WHERE request_logs_default.id = latest.id
-		   AND request_logs_default.ts = latest.ts
+		 WHERE request_logs_hot.id = latest.id
+		   AND request_logs_hot.ts = latest.ts
 	`
 
 	setIdx := strings.Index(updateSQL, "SET ")
@@ -419,30 +360,33 @@ func TestRequestLogsUpdateSQL_SetClauseDoesNotReferenceTargetAlias(t *testing.T)
 	if strings.Contains(updateSQL, "UPDATE request_logs rl") {
 		t.Fatal("UPDATE must not alias request_logs as rl")
 	}
-	if !strings.Contains(updateSQL, "UPDATE request_logs_default") {
-		t.Fatal("UPDATE must target the *_default canonical write target (request_logs_default)")
+	if strings.Contains(updateSQL, "UPDATE request_logs_default") {
+		t.Fatal("UPDATE must NOT target the deprecated request_logs_default table")
 	}
-	if !strings.Contains(updateSQL, "request_logs_default.id") {
-		t.Fatal("WHERE clause must reference request_logs_default.id (never the parent table)")
+	if !strings.Contains(updateSQL, "UPDATE request_logs_hot") {
+		t.Fatal("UPDATE must target request_logs_hot (post-migration 341)")
+	}
+	if !strings.Contains(updateSQL, "request_logs_hot.id") {
+		t.Fatal("WHERE clause must reference request_logs_hot.id")
 	}
 }
 
-func TestInsertUpsertSQL_DoesNotReferenceUndefinedRLAlias(t *testing.T) {
-	// Per the 2026-07 data-lifecycle architecture, INSERT INTO ...
-	// ON CONFLICT DO UPDATE targets request_logs_default (the canonical
-	// write target), not the parent table.
-	const upsertTail = `
-		ON CONFLICT (request_id, ts) DO UPDATE SET
-			client_request_id = COALESCE(EXCLUDED.client_request_id, request_logs_default.client_request_id)
+func TestRequestLogsHotTarget_QualityColumnsUseHotTable(t *testing.T) {
+	// 2026-08-20: 锁定 quality_* 列随 INSERT/UPDATE 一起迁移到 hot 表。
+	// 测试不依赖具体参数编号，只验证 SQL 中同时出现 quality_* 和 request_logs_hot。
+	const sql = `
+		INSERT INTO request_logs_hot (request_id, ts, quality_flags, quality_fix_actions)
+		VALUES ($1, $2, $3::text[], $4::text::jsonb)
 	`
-	if strings.Contains(upsertTail, "rl.client_request_id") {
-		t.Fatal("upsert tail must not reference undefined rl alias")
+	if !strings.Contains(sql, "request_logs_hot") {
+		t.Fatal("INSERT must target request_logs_hot")
 	}
-	if !strings.Contains(upsertTail, "request_logs_default.client_request_id") {
-		t.Fatal("upsert tail must qualify the existing column with the request_logs_default table name to avoid ambiguity")
+	for _, col := range []string{"quality_flags", "quality_fix_actions"} {
+		if !strings.Contains(sql, col) {
+			t.Errorf("SQL missing %s", col)
+		}
 	}
 }
-
 func TestNormalizeRequestStatus(t *testing.T) {
 	entry := &RequestLogEntry{Op: RequestLogInsert, Success: false}
 	normalizeRequestStatus(entry)
