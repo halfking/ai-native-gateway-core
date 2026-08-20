@@ -42,8 +42,8 @@ checksums, textContent, etc. End-to-end flow:
    the next candidate.
 3. Attempt 1's `Reset()` wipes `finalFinish` to `""`.
 4. Attempt 2 (credential B): succeeds quickly, stream completes normally.
-   - Successful `ObservePayload` does NOT write to `finalFinish` again
-     (it only sets `doneReceived=true`). `finalFinish` stays empty.
+   - Successful `ObservePayload(..., "stop", ...)` overwrites
+     `finalFinish`, so preserving that field alone still loses the timeout.
 5. But the client already disconnected during step 1's wait → the
    deferred `emitClientDisconnectProbe` in `serveHTTPInner` runs with
    `r.Context().Err() == context.Canceled`.
@@ -59,16 +59,16 @@ first-byte timeout.
 
 ## 3. Fix
 
-Two minimal changes to `domains/hooks/audit/audit.go`:
+The completed fix separates the current finish reason from cross-attempt
+failure evidence:
 
 ### 3.1 `StreamCapture.Reset()` — preserve `finalFinish`
 
-Removed `sc.finalFinish = ""` from the Reset body. `finalFinish` is the
-single most important diagnostic signal for the deferred
-client-disconnect probe; without it, the retry-then-cancel pattern
-silently loses the supplier-side failure reason. All other counters
-(chunkCount, checksums, textContent, etc.) are still cleared so the new
-attempt's metrics remain consistent.
+Removed `sc.finalFinish = ""` from the Reset body and added a dedicated
+`supplierTimeoutReason` latch. `MarkInterruptedWithReason` writes the current
+finish field and latches the first supplier timeout;
+normal finish events may update `finalFinish`, but do not erase the latched
+failure. All per-attempt counters remain reset.
 
 The reason is documented inline with a `// KEEP:` marker per the team's
 dead-code/value-retention rules.
@@ -81,14 +81,21 @@ these, so even when `finalFinish = "first_byte_timeout"` was correctly
 written to `upstream_finish_reason`, `failure_detail_code` was left
 NULL. Now they map to each other consistently.
 
-### 3.3 New test — `TestStreamCapture_Reset_PreservesFinalFinish`
+### 3.3 Probe classification reads failure evidence first
+
+`buildClientDisconnectProbeEntry` now checks `failure_detail_code` before
+falling back to `upstream_finish_reason`. A successful retry can therefore
+record `stop` without hiding the earlier supplier timeout.
+
+### 3.4 Regression tests
 
 Pins the cross-retry contract: `MarkInterruptedWithReason(...)` +
 `Reset()` still leaves `upstream_finish_reason` (and `failure_detail_code`)
-populated. Also verifies that counters ARE cleared (so the next
-attempt's metrics are not merged), and that a subsequent successful
-`ObservePayload` can still overwrite `finalFinish` to a normal
-`stop` / `length` / etc.
+populated. It also verifies that counters are cleared and a subsequent
+successful `ObservePayload` records `upstream_finish_reason=stop` while
+`failure_detail_code=first_byte_timeout` remains latched. The handler-level
+`TestBuildClientDisconnectProbeEntry_FirstByteTimeoutAfterSuccessfulRetry`
+reproduces the full classification path.
 
 ## 4. Behavior after fix
 
@@ -97,7 +104,7 @@ client cancel):
 
 - `probe-client_cancel-cred<N>-...` row is now written with
   `error_kind = "probe_timeout"` (was: `client_cancel`).
-- `upstream_finish_reason = "first_byte_timeout"` (was: `null`).
+- `upstream_finish_reason = "stop"` when the retry completed normally.
 - `failure_detail_code = "first_byte_timeout"` (was: `null`).
 
 Sibling credentials get the proper failure signal via the executor's
@@ -122,10 +129,8 @@ already correct.
 
 ## 6. Risks / out of scope
 
-- `Reset()` keeping `finalFinish` only matters when subsequent
-  attempts actually modify it (success path resets via
-  `ObservePayload`'s terminal write). The new test covers both
-  branches.
+- The supplier-timeout latch is request-scoped and intentionally survives credential
+  retries; a new request receives a new `StreamCapture`.
 - No change to the executor's retry policy or to credential
   health bookkeeping.
 - The pre-existing `fix(streaming): improve error classification` and

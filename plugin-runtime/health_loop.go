@@ -100,6 +100,10 @@ func (h *HealthLoop) tick(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
+		status := h.currentStatus(id)
+		if status != "ready" && status != "degraded" {
+			continue
+		}
 		err := h.check(id)
 		h.mu.Lock()
 		if err != nil {
@@ -119,7 +123,7 @@ func (h *HealthLoop) tick(ctx context.Context) {
 			h.fail[id] = 0
 			h.restartAttempts[id] = 0
 			h.mu.Unlock()
-			if prevFail > 0 || prevRestarts > 0 || h.currentStatus(id) != "ready" {
+			if status == "degraded" || prevFail > 0 || prevRestarts > 0 {
 				h.reg.SetPluginStatus(id, "ready")
 			}
 			continue

@@ -217,11 +217,7 @@ func envHas(env []string, name, value string) bool {
 	return false
 }
 
-// TestSupervisor_StartForwardsDatabaseURL verifies the supervisor explicitly
-// injects AI_SESSION_MANAGER_DATABASE_URL into the plugin child env when it is
-// set in the gateway process env. This is how the ASM plugin receives the shared
-// PG17 DSN for its taskapi/local-projection/shadow paths.
-func TestSupervisor_StartForwardsDatabaseURL(t *testing.T) {
+func TestSupervisor_StartDoesNotForwardDatabaseURL(t *testing.T) {
 	const dsn = "postgres://asm_dev:x@127.0.0.1:5432/session_manager_dev?sslmode=disable"
 	t.Setenv("AI_SESSION_MANAGER_DATABASE_URL", dsn)
 
@@ -231,48 +227,16 @@ func TestSupervisor_StartForwardsDatabaseURL(t *testing.T) {
 		capturedEnv = env
 		return &fakeProc{}
 	}
-	m := &Manifest{
-		PluginID:      "asm",
-		PluginVersion: "1",
-		Runtime:       Runtime{Entrypoint: "/bin/x"},
-		ManifestPath:  "/abs/plugin-manifest.json",
-	}
-	if _, err := s.Start(context.Background(), m); err != nil {
-		t.Fatalf("start: %v", err)
-	}
-	if !envHas(capturedEnv, "AI_SESSION_MANAGER_DATABASE_URL", dsn) {
-		t.Fatalf("AI_SESSION_MANAGER_DATABASE_URL not forwarded to plugin env: %v", capturedEnv)
-	}
-}
-
-// TestSupervisor_StartOmitsDatabaseURLWhenUnset verifies the env is NOT
-// present when the gateway process itself doesn't set it. Plugins that need a
-// DB are responsible for surfacing a clear error in that case.
-func TestSupervisor_StartOmitsDatabaseURLWhenUnset(t *testing.T) {
-	t.Setenv("AI_SESSION_MANAGER_DATABASE_URL", "")
-
-	var capturedEnv []string
-	s := NewSupervisor(SupervisorConfig{SocketDir: t.TempDir()})
-	s.commandFactory = func(socketPath, entrypoint string, env []string) command {
-		capturedEnv = env
-		return &fakeProc{}
-	}
-	m := &Manifest{
-		PluginID:      "asm",
-		PluginVersion: "1",
-		Runtime:       Runtime{Entrypoint: "/bin/x"},
-		ManifestPath:  "/abs/plugin-manifest.json",
-	}
+	m := &Manifest{PluginID: "asm", PluginVersion: "1", Runtime: Runtime{Entrypoint: "/bin/x"}, ManifestPath: "/abs/plugin-manifest.json"}
 	if _, err := s.Start(context.Background(), m); err != nil {
 		t.Fatalf("start: %v", err)
 	}
 	for _, e := range capturedEnv {
-		if strings.HasPrefix(e, "AI_SESSION_MANAGER_DATABASE_URL=") {
-			t.Fatalf("DATABASE_URL should be omitted when unset, but found: %q", e)
+		if strings.HasPrefix(e, "AI_SESSION_MANAGER_DATABASE_URL=") || strings.Contains(e, dsn) {
+			t.Fatalf("database URL must not be forwarded: %q", e)
 		}
 	}
 }
-
 func TestSupervisor_RestartStopsOldAndStartsNew(t *testing.T) {
 	s := NewSupervisor(SupervisorConfig{SocketDir: t.TempDir()})
 	var events []string

@@ -1180,7 +1180,7 @@ func (w *NodeProbeWorker) emitSyncAudit(
 		}
 		cleaned[k] = v
 	}
-	requestHeadersJSON, _ := json.Marshal(cleaned)
+	requestHeadersJSON := probeHeadersJSON(cleaned)
 
 	_, err := auditDB.Exec(ctx, `
 		INSERT INTO node_probe_runs (
@@ -1198,7 +1198,7 @@ func (w *NodeProbeWorker) emitSyncAudit(
 			$8, $9, $10, $11, $12,
 			$13, $14, $15, $16,
 			$17, $18, $19,
-			$20, $21, $22, $23,
+			$20, $21::text::jsonb, $22, $23,
 			$24, $25,
 			$26
 		)
@@ -1550,9 +1550,9 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 	nextSec := int(ChainBackoffIndex(attempt, NodeProbeBackoffChain).Seconds())
 
 	// 准备新字段数据
-	var requestHeadersJSON []byte
+	var requestHeadersJSON string
 	if len(direct.requestHeaders) > 0 {
-		requestHeadersJSON, _ = json.Marshal(direct.requestHeaders)
+		requestHeadersJSON = probeHeadersJSON(direct.requestHeaders)
 	}
 
 	timeoutAtMs := 0
@@ -1575,7 +1575,7 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 			$11, $12, $13, $14, $15,
 			$16, $17, $18, $19,
 			$20, $21, $22,
-			$23, $24, $25, $26,
+			$23, $24::text::jsonb, $25, $26,
 			$27, $28
 		)`,
 		credID, model, triggerKind, attempt, nextSec,
@@ -1659,6 +1659,17 @@ type nodeProbeRoundResult struct {
 	requestBody    string
 	responseBody   string // 前512字节
 	viaProxy       bool   // probeDirect是否通过代理
+}
+
+func probeHeadersJSON(headers map[string]string) string {
+	if len(headers) == 0 {
+		return "{}"
+	}
+	encoded, err := json.Marshal(headers)
+	if err != nil {
+		return "{}"
+	}
+	return string(encoded)
 }
 
 // probeDirect issues a chat-completion ping directly to the upstream

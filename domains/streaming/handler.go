@@ -1754,7 +1754,7 @@ func (h *ChatHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request) {
 			if h.telemetryClient != nil {
 				if pool := h.telemetryClient.DBPool(); pool != nil {
 					go func(rid string) {
-						for attempt, delay := range []time.Duration{0, 100 * time.Millisecond, 500 * time.Millisecond, 2 * time.Second} {
+						for attempt, delay := range []time.Duration{0, 5 * time.Second, 5 * time.Second, 5 * time.Second} {
 							if delay > 0 {
 								time.Sleep(delay)
 							}
@@ -5304,13 +5304,9 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 				reqLog.ToolCalls = b
 			}
 		}
-		// 2026-08-19: discard_events from the audit StreamCapture. The
-		// column itself is not yet on request_logs_hot (follow-up
-		// migration), but the in-process RequestLogEntry now carries the
-		// JSONB so the structured record is available to anything that
-		// reads it (e.g. the gateway admin/audit pipeline). The
-		// application-log "survival_attempt_discarded" line remains the
-		// primary observability handle until the column lands.
+		// The survival coordinator records retry-discard context on the
+		// capture; persist the JSONB on the terminal request-log update.
+
 		if v, ok := m["discard_events"]; ok && v != nil {
 			switch t := v.(type) {
 			case []audit.DiscardEvent:
@@ -5914,7 +5910,11 @@ func buildClientDisconnectProbeEntry(originalRequestID string, r *http.Request, 
 	errorKind := "client_cancel"
 	if logCtx != nil && logCtx.StreamCapture != nil {
 		summary := logCtx.StreamCapture.SummaryAsMap()
-		if reason, ok := summary["upstream_finish_reason"].(string); ok {
+		reason, _ := summary["failure_detail_code"].(string)
+		if reason == "" {
+			reason, _ = summary["upstream_finish_reason"].(string)
+		}
+		if reason != "" {
 			// first_byte_timeout / stream_timeout / stream_chunk_timeout /
 			// chunk_timeout 都是供应商端超时，应归类为 probe_timeout。
 			// 这些 reason 会触发 KindStreamTimeout / KindTimeout 降级。
@@ -6352,16 +6352,16 @@ func (h *ChatHandler) recordInitialRequestLog(
 		CredentialID:    credentialID,
 		CanonicalID:     canonicalID,
 		// 2026-07-27: 标准模型名 (canonical_name),见 migration 458。
-		CanonicalModel:    strPtr(canonicalName),
-		ClientProfile:     strPtr(clientProfile),
-		IdentityHash:      strPtr(identityHash),
-		RequestMode:       strPtr(requestMode),
-		GwSessionID:       strPtr(gwSessionID),
-		GwTaskID:          strPtr(gwTaskID),
-		Success:           false,
-		RequestStatus:     strPtr(telemetry.RequestStatusInProgress),
-		PromptTokens:      promptTokensEstimateFromContext(autoCtx, requestBody),
-		UsageSource:       usageSourceForEstimate(autoCtx, requestBody),
+		CanonicalModel: strPtr(canonicalName),
+		ClientProfile:  strPtr(clientProfile),
+		IdentityHash:   strPtr(identityHash),
+		RequestMode:    strPtr(requestMode),
+		GwSessionID:    strPtr(gwSessionID),
+		GwTaskID:       strPtr(gwTaskID),
+		Success:        false,
+		RequestStatus:  strPtr(telemetry.RequestStatusInProgress),
+		PromptTokens:   promptTokensEstimateFromContext(autoCtx, requestBody),
+		UsageSource:    usageSourceForEstimate(autoCtx, requestBody),
 		// 2026-08-19: copy token_band from the SessionCompressor result so the
 		// initial in_progress row carries the same classification as the eventual
 		// success UPDATE. The success path's emitTelemetry will overwrite this
@@ -7137,7 +7137,7 @@ func streamErrorKindForDetailCode(outcome *StreamOutcome, detailCode string) str
 		return "client_cancel"
 	case "concurrent_overload", "concurrent":
 		return "concurrent_overload"
-	case "empty_stream_no_content":
+	case "empty_stream_no_content", "early_empty_detection":
 		return "empty_response"
 	case "eof_without_done":
 		return "eof_without_done"

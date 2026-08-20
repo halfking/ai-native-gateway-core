@@ -349,6 +349,7 @@ func (p *Pipeline) Stop() {
 	}
 	p.observationChMu.Unlock()
 	p.observationWg.Wait()
+	p.queueMirror.Close()
 }
 
 // Submit enqueues a request into the Tier-1 model queue and blocks until the

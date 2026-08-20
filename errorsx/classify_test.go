@@ -609,6 +609,7 @@ func TestClassifyErrorWithBody_Protocol4xx(t *testing.T) {
 		{"403_bare_no_body_still_auth", 403, `forbidden`, KindAuth},
 		{"500_still_upstream_down", 500, `internal server error`, KindUpstreamDown},
 		{"502_still_upstream_down", 502, `bad gateway`, KindUpstreamDown},
+		{"nvidia_degraded_function_is_upstream_down", 400, `{"status":400,"detail":"Function id 'x': DEGRADED function cannot be invoked"}`, KindUpstreamDown},
 		{"503_still_concurrent", 503, `service unavailable`, KindConcurrent},
 		// 2026-08-08: a 5xx whose BODY reports transient load is not the
 		// same failure as a dead upstream. Observed on 154 against the
@@ -647,6 +648,20 @@ func TestClassifyErrorWithBody_Protocol4xx(t *testing.T) {
 					got, retryable, retryableWant)
 			}
 		})
+	}
+}
+
+func TestClassifyNVIDIADegradedFunctionAsUpstreamDown(t *testing.T) {
+	body := []byte(`{"status":400,"detail":"Function id 'endpoint-1': DEGRADED function cannot be invoked"}`)
+
+	if got := ClassifyErrorWithBody(http.StatusBadRequest, body); got != KindUpstreamDown {
+		t.Fatalf("ClassifyErrorWithBody() = %q, want %q", got, KindUpstreamDown)
+	}
+	if got := ClassifyResponseBody(http.StatusBadRequest, body); got != KindUpstreamDown {
+		t.Fatalf("ClassifyResponseBody() = %q, want %q", got, KindUpstreamDown)
+	}
+	if got := ClassifyError(fmt.Errorf("upstream 400: %s", body), nil); got != KindUpstreamDown {
+		t.Fatalf("ClassifyError() = %q, want %q", got, KindUpstreamDown)
 	}
 }
 

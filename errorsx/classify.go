@@ -337,6 +337,51 @@ var modelDeprecatedRe = regexp.MustCompile(
 //   - `"code"\s*:\s*"INSUFFICIENT_BALANCE"` / `"code"\s*:\s*"insufficient_balance"`:
 //     explicit OpenAI-style codes (apiclaude.cc, 智码, OneAPI-family relays)
 //   - `account.{0,20}(exhausted|depleted|low)`: "Account exhausted", etc.
+//
+// budgetExceededRe matches upstream error bodies that signal permanent
+// quota exhaustion (balance insufficient, budget exceeded, credits
+// depleted). These are KindQuotaPermanent, not KindRateLimit, because
+// they won't resolve until the user tops up their account — retrying
+// or waiting is futile.
+//
+// 2026-07-16 P0 fix: Anthropic 429 with "Organization balance insufficient" +
+// "budget_exceeded" was misclassified as KindRateLimit (transient), causing
+// the executor to retry and trigger false-positive credential degradation.
+// Direct API calls worked (different key with balance), but gateway kept
+// trying the exhausted credential.
+//
+// 2026-07-19 P0 fix: 智谱AI 429 with "您已达到每周/每月使用上限" (code: 1310)
+// was misclassified as KindRateLimit because Chinese quota messages weren't
+// matched. Extended regex to support Chinese patterns.
+//
+// 2026-08-08 P0 fix: extend to also match "Insufficient account balance" (apiclaude.cc /
+// 智码转发 / OpenAI-compatible balance-exhaustion responses that report on HTTP 403
+// instead of 429). Previous patterns required the noun to immediately precede "balance"
+// (`balance insufficient` / `insufficient balance`), but the upstream body is:
+//
+//	{"code":"INSUFFICIENT_BALANCE","message":"Insufficient account balance"}
+//
+// which has "account" between "Insufficient" and "balance". Without the
+// `(?:.{0,20}balance.{0,20}insufficient|insufficient.{0,20}balance)` window, the
+// body-pattern check at the 403/402/429 status gates fell through to KindAuth.
+// That misclassification produced the user-facing error "Upstream credential API
+// key invalid" for what was actually a balance/budget exhaustion event — and
+// because KindAuth opens the circuit breaker with exponential backoff (5min → 24h
+// cap), it also took the bad credential out of the rotation with no recovery
+// signal for the OTHER sibling credentials.
+//
+// 2026-08-20 P0 fix (apigpt/apiclaude.cc node-credit-exhaustion regression):
+// added the `费用` noun variant for Chinese ("费用用完" / "费用已用完",
+// the user's exact phrasing: "节点费用已用完"); added `用完` to the
+// exhaustion-verb alternation (existing regex used 用尽/耗尽/不足/超限 but
+// missed 用完, which is the colloquial "used up" form); added English
+// fallback "no available credits?" / "out of quota" / "quota exhausted"
+// (which were previously caught by concurrentOverloadRe's overly-broad
+// trailing group, producing KindConcurrent → same-cred retry against
+// a permanently-dead node → eventual attempt-cap exhaustion → 5xx to
+// the client). The concurrentOverloadRe fix below removes the
+// conflicting patterns so these bodies fall through to this regex
+// instead.
 var budgetExceededRe = regexp.MustCompile(
 	`(?i)(budget[_ -]?exceeded|` +
 		`balance[_ -]?insufficient|` +
@@ -345,19 +390,51 @@ var budgetExceededRe = regexp.MustCompile(
 		// ("Insufficient account balance", "Your balance is currently insufficient").
 		`insufficient.{0,20}balance|` +
 		`balance.{0,20}insufficient|` +
-		`account.{0,20}(exhausted|depleted|low)|` +
+		`account.{0,20}(exhausted|depleted|low|unavailable|disabled)|` +
 		`credit[s]?[_ -]?(exhausted|depleted|insufficient)|` +
 		`account[_ -]?balance[_ -]?(low|insufficient|exhausted)|` +
 		`quota[_ -]?exceeded|` +
+		`quota.{0,15}exhausted|` + // 2026-08-20 P0 fix: OneAPI / apigpt "quota exhausted" variant
+		// 2026-08-20 P0 fix: apigpt / OneAPI distributor relays return
+		// "No available credits" / "no available credit" / "no available
+		// accounts" when the account behind the relay has been exhausted.
+		// Was previously mis-routed to KindConcurrent via concurrentOverloadRe's
+		// trailing group ("available accounts"). Now caught here.
+		`\bno\s+available\s+(credits?|accounts?)\b|` +
+		// 2026-08-20 P0 fix: generic "account unavailable" / "account disabled"
+		// signals (apigpt / OneAPI variants). The previous pattern lived in
+		// concurrentOverloadRe as `account (not|un)available` but should be
+		// a quota signal — the relay's account is unreachable until reset.
+		`\baccount\s+(unavailable|disabled|suspended)\b|` +
 		`usage[_ -]?limit[_ -]?exceeded|` +
+		// 2026-08-20 P0 fix: apigpt / OpenAI-style "out of quota" signal.
+		// Different from "out of credits" (which the existing `out of credits`
+		// pattern already catches); both are quota exhaustion, both permanent.
+		`\bout\s+of\s+quota\b|` +
 		// 2026-08-08 P0 fix: explicit OpenAI-style balance code from
 		// apiclaude.cc / 智码 / OneAPI-family relays that report
 		// {"code":"INSUFFICIENT_BALANCE","message":"..."} with HTTP 403.
 		`"code"\s*:\s*"INSUFFICIENT_BALANCE"|` +
 		`"code"\s*:\s*"insufficient_balance"|` +
-		// Chinese quota exhaustion patterns (智谱AI, etc.)
-		`达到.{0,10}(每周|每月|每日|使用)?上限|` +
-		`(配额|额度|余额).{0,10}(用尽|耗尽|不足|超限)|` +
+		// Chinese quota exhaustion patterns (智谱AI, 智码, apigpt, MiniMax).
+		// 2026-08-20 扩展: 加入 `费用` 名词变体（用户原文："节点费用已用完"），
+		// 加入 `用完` 动词变体（"用完"是口语"已耗尽"的标准说法，原 regex 仅含
+		// 用尽/耗尽/不足/超限，会漏掉"费用用完"这一 apigpt 最常见的中文报错形式）。
+		//
+		// 2026-08-21 merge: MiniMax Token Plan 在 "达到" 和 "用量上限" 之间插入了
+		// 产品名（"Token Plan"），原 0-10 字符窗口不够；同时把 noun 列表扩到
+		// 包含 `用量`、把动词列表扩到包含 `上限`。
+		//
+		// 2026-08-20 备注: 时间周期词仍保持 optional `(每周|每月|每日|使用)?`，
+		// 因为以下两类都属配额信号——
+		//   (a) 智谱AI/智码的 "您已达到每周/每月使用上限"（周期限额）
+		//   (b) apigpt/OneAPI 的 "您已达到 5 小时用量上限"（5h 窗口；该 5h 信号由
+		//       quotaResetsRe 兜底，二者必须同时命中才会落到 KindQuotaPeriodic）
+		// 唯一会误吞的非配额信号是"并发过大，达到上限"，但 ClassifyErrorWithBody
+		// / ClassifyResponseBody 已把 concurrentOverloadCJKRe 提到 budgetExceededRe
+		// 之前（见上方注释），"并发过大"先被 CJK 负载分支吞掉，不会到这一行。
+		`达到.{0,40}(每周|每月|每日|使用|用量)?上限|` +
+		`(配额|额度|余额|费用|账户|用量).{0,10}(用尽|用完|耗尽|不足|超限|已用尽|已用完|上限)|` +
 		`(限额|使用量).{0,10}重置|` +
 		`"code"\s*:\s*"1310"|` + // 智谱AI specific code
 		// OmniRoute-derived provider-specific quota signals (classify429.ts).
@@ -438,6 +515,20 @@ var quotaResetsRe = regexp.MustCompile(
 // Both patterns must be classified as KindConcurrent so the breaker can
 // apply the 5-minute cooling policy and immediately route to the next
 // candidate credential instead of retrying the same overloaded one.
+//
+// 2026-08-20 P0 fix (apigpt/apiclaude.cc node-credit-exhaustion regression):
+// the trailing group `available accounts|account (not|un)available|
+// quota exhausted|insufficient credit` was removed. Those bodies are
+// PERMANENT quota/balance exhaustion (the relay has no accounts/credits
+// left), not transient overload, and routing them through KindConcurrent
+// caused the executor to same-cred retry against a dead node until the
+// attempt-cap was hit and the client received a 5xx. They now fall
+// through to budgetExceededRe (which has matching patterns for all
+// four) and classify as KindQuotaPermanent so the failover dispatcher
+// (failover.go move() + PlanCandidatesPinned) immediately ejects the
+// dead credential and switches to a sibling node that supports the
+// same model. The reordering in ClassifyErrorWithBody puts the budget
+// check first for 402/403/429 statuses (where these signals are typical).
 var concurrentOverloadRe = regexp.MustCompile(
 	`(?i)(concurrent.{0,30}(limit|exceed|over|too many|reach|max)|` +
 		`too many (concurrent|requests|connections)|` +
@@ -445,8 +536,7 @@ var concurrentOverloadRe = regexp.MustCompile(
 		`(server|service|upstream) (is )?(overload|under pressure)|` +
 		`(rpm|tpm).{0,20}(limit|exceed|reach|over)|` +
 		`request(ed|s)? too (fast|frequent|many)|` +
-		`slow down|try again later|backoff|` +
-		`available accounts|account (not|un)available|quota exhausted|insufficient credit)`,
+		`slow down|try again later|backoff)`,
 )
 var concurrentOverloadCJKRe = regexp.MustCompile(
 	`并发.{0,15}(超限|过大|过高|达到上限|超过限制)|` +
@@ -454,6 +544,11 @@ var concurrentOverloadCJKRe = regexp.MustCompile(
 		`服务.{0,10}(繁忙|过载|压力|降级)|` +
 		`稍后重试|限流`,
 )
+
+// degradedFunctionRe matches NVIDIA NIM's explicit "DEGRADED function cannot
+// be invoked" response. The model may be available through another credential
+// or provider, so this is a transient upstream failure, not a client 400.
+var degradedFunctionRe = regexp.MustCompile(`(?i)degraded function cannot be invoked`)
 
 // overloadKindForStatus splits an overload-shaped body into the two
 // distinct kinds by HTTP status. Both body classifiers must agree, so
@@ -563,8 +658,23 @@ func ClassifyError(err error, resp *http.Response) ErrorKind {
 		// before generic timeouts because upstream-reported overload
 		// messages often include words like "timeout" or "connection"
 		// that would otherwise be mis-classified.
-		if concurrentOverloadRe.MatchString(msg) || concurrentOverloadCJKRe.MatchString(msg) {
+		//
+		// 2026-08-20 P0 fix: preserve the CJK overload precedence used by
+		// the body classifier. "并发过大，达到上限" is an overload signal,
+		// while "达到每周上限" is a quota signal; both contain "达到上限".
+		if concurrentOverloadCJKRe.MatchString(msg) {
 			return KindConcurrent
+		}
+		// Credit/balance exhaustion must beat the English overload classifier
+		// so wrapped apigpt errors switch away from the dead credential.
+		if budgetExceededRe.MatchString(msg) {
+			return KindQuotaPermanent
+		}
+		if concurrentOverloadRe.MatchString(msg) {
+			return KindConcurrent
+		}
+		if degradedFunctionRe.MatchString(msg) {
+			return KindUpstreamDown
 		}
 		if eofWithoutDoneRe.MatchString(msg) {
 			// EOF without [DONE] is most often a benign provider quirk
@@ -625,20 +735,9 @@ func ClassifyError(err error, resp *http.Response) ErrorKind {
 			return KindContentFilter
 		}
 
-		// 2026-08-08 P0 fix (defense in depth): budget_exceeded / balance
-		// insufficient / account-low can also appear in the wrapped
-		// error.Error() string when an upstream.Error is re-wrapped via
-		// fmt.Errorf. Without this check, those calls fall through to
-		// KindTransient and the executor treats a balance-exhaustion
-		// signal as a recoverable retry. Since this path has no status
-		// code, the periodic/permanent split is unavailable — we route
-		// any budget pattern to KindQuotaPermanent so writeCredentialStateOnError
-		// sets availability_state='suspended' instead of cascading
-		// retries. Periodic recovery (quotaResetsRe) is handled by the
-		// typed *upstream.Error path with full body access.
-		if budgetExceededRe.MatchString(msg) {
-			return KindQuotaPermanent
-		}
+		// The budget check above is intentionally the only fallback here;
+		// keeping one ordering point prevents wrapped-error classification
+		// from diverging from ClassifyErrorWithBody.
 		return KindTransient
 	}
 	if resp == nil {
@@ -718,8 +817,40 @@ func ClassifyErrorWithBody(status int, body []byte) ErrorKind {
 		if status >= 500 && noAvailableChannelRe.Match(body) {
 			return KindNoAvailableChannel
 		}
+		if degradedFunctionRe.Match(body) {
+			return KindUpstreamDown
+		}
 
-		if concurrentOverloadRe.Match(body) || concurrentOverloadCJKRe.Match(body) {
+		// 2026-08-20 P0 fix (apigpt/apiclaude.cc node-credit-exhaustion regression):
+		// the CJK concurrent-overload check MUST run before budgetExceededRe
+		// below. budgetExceededRe's "达到.{0,10}(每周|每月|每日|使用)?上限"
+		// branch is permissive by design (it catches both "您已达到每周上限"
+		// quota signals AND the bare "达到上限" tail of "并发过大，达到上限"
+		// overload signals). The differentiator is the leading "并发" —
+		// concurrentOverloadCJKRe's "并发.{0,15}(...达到上限...)" captures
+		// the overload signal exactly, so we route those bodies to
+		// KindConcurrent here and let non-"并发" quota bodies (with the
+		// optional time-period word) reach the budget check below.
+		if concurrentOverloadCJKRe.Match(body) {
+			return overloadKindForStatus(status)
+		}
+
+		// 2026-08-20 P0 fix: budget check (402/403/429 only) precedes the
+		// English concurrent-overload check so quota bodies are not
+		// shadowed by the overload path. The four patterns removed from
+		// concurrentOverloadRe's trailing group ("insufficient credit",
+		// "quota exhausted", "available accounts", "account (not|un)available")
+		// plus the new patterns added to budgetExceededRe (Chinese "费用/用完",
+		// English "no available credits?", "out of quota", "quota exhausted")
+		// close the apigpt/apiclaude.cc node-credit-exhaustion gap.
+		if (status == 402 || status == 403 || status == 429) && budgetExceededRe.Match(body) {
+			if quotaResetsRe.Match(body) {
+				return KindQuotaPeriodic
+			}
+			return KindQuotaPermanent
+		}
+
+		if concurrentOverloadRe.Match(body) {
 			return overloadKindForStatus(status)
 		}
 		// KindModelDeprecated (2026-08-05 P0): upstream permanently removed /
@@ -769,44 +900,18 @@ func ClassifyErrorWithBody(status int, body []byte) ErrorKind {
 		if (status == 400 || status == 422) && invalidRequestFormatRe.Match(body) {
 			return KindClientBug
 		}
-		// 2026-07-16 P0 fix: budget_exceeded / balance insufficient on 429.
-		// These are permanent quota exhaustion (KindQuotaPermanent), not
-		// transient rate limits. Anthropic returns:
-		//   429 {"error":{"message":"Organization balance insufficient",
-		//        "type":"rate_limit_error","code":"budget_exceeded"}}
-		// Without this check, such errors are classified as KindRateLimit
-		// (transient), causing retries, probes, and false-positive degradation
-		// even though the credential is permanently unusable until top-up.
-		// 2026-07-21 P0 fix: when the body carries a reset timestamp, route
-		// to KindQuotaPeriodic instead so the credential can recover.
-		// 智谱AI 1310 returns "...限额将在 YYYY-MM-DD HH:MM:SS 重置" which
-		// signals "wait for the quota window to reset" — periodic, not
-		// permanent.
-		//
-		// 2026-08-08 P0 fix: extend the status gate to include 402 (Payment
-		// Required — explicit semantic match) and 403 (apiclaude.cc / 智码 /
-		// OneAPI-family relays that return HTTP 403 {"code":"INSUFFICIENT_BALANCE",
-		// "message":"Insufficient account balance"} when the user's account
-		// balance is exhausted). Without this gate, the body-pattern match
-		// is skipped for 403 → falls through to ClassifyResponseStatus →
-		// KindAuth → user-facing error "Upstream credential API key invalid"
-		// (which is misleading; the upstream is saying the account is out of
-		// credit, not that the API key was rejected) → circuit breaker
-		// exponential backoff 5min→24h cap, removing the credential from
-		// rotation with no clear recovery signal. Status codes 402 and 403
-		// were selected because:
-		//   - 402 is the canonical "payment required / balance exhausted" code.
-		//   - 403 is what most 智码 / apiclaude.cc / OneAPI-family relays use
-		//     when balance runs out (instead of the canonical 402).
-		// Both cases are body-driven, so we still require the budget pattern
-		// to match — a 403 with no body or unrelated body text falls through
-		// to KindAuth as before.
-		if (status == 402 || status == 403 || status == 429) && budgetExceededRe.Match(body) {
-			if quotaResetsRe.Match(body) {
-				return KindQuotaPeriodic
-			}
-			return KindQuotaPermanent
-		}
+		// 2026-08-20 P0 fix (apigpt/apiclaude.cc node-credit-exhaustion regression):
+		// the budgetExhaustion check has been moved ABOVE the concurrentOverload
+		// check in this function (right after the noAvailableChannel/degraded
+		// checks, before the overload classification). For 402/403/429 statuses,
+		// the budget check wins so a "insufficient credit" / "quota exhausted"
+		// body produces KindQuotaPermanent (credential ejected, sibling failover
+		// triggered) rather than KindConcurrent (same-cred retry against a
+		// dead node). The earlier position in this file had this same check
+		// AFTER concurrentOverloadRe, which meant the old overlapping patterns
+		// in concurrentOverloadRe's trailing group intercepted the signal first.
+		// See the comments at the new position and at budgetExceededRe /
+		// concurrentOverloadRe definitions for the full rationale.
 	}
 	// 2026-06-13: protocol/shape 4xx codes (e.g. 405 Method Not Allowed,
 	// 406 Not Acceptable, 415 Unsupported Media Type) are NOT transient —
@@ -986,7 +1091,37 @@ func ClassifyResponseBody(status int, body []byte) ErrorKind {
 		if status >= 500 && noAvailableChannelRe.Match(body) {
 			return KindNoAvailableChannel
 		}
-		if concurrentOverloadRe.Match(body) || concurrentOverloadCJKRe.Match(body) {
+		if degradedFunctionRe.Match(body) {
+			return KindUpstreamDown
+		}
+		// 2026-08-20 P0 fix (apigpt/apiclaude.cc node-credit-exhaustion regression):
+		// the CJK concurrent-overload check MUST run before budgetExceededRe
+		// below. budgetExceededRe's "达到.{0,10}(每周|每月|每日|使用)?上限"
+		// branch is permissive by design (it catches both "您已达到每周上限"
+		// quota signals AND the bare "达到上限" tail of "并发过大，达到上限"
+		// overload signals). The differentiator is the leading "并发" —
+		// concurrentOverloadCJKRe's "并发.{0,15}(...达到上限...)" captures
+		// the overload signal exactly, so we route those bodies to
+		// KindConcurrent here and let non-"并发" quota bodies (with the
+		// optional time-period word) reach the budget check below.
+		if concurrentOverloadCJKRe.Match(body) {
+			return overloadKindForStatus(status)
+		}
+		// 2026-08-20 P0 fix: budget check (402/403/429 only) precedes the
+		// English concurrent-overload check so quota bodies are not
+		// shadowed by the overload path. The four patterns removed from
+		// concurrentOverloadRe's trailing group ("insufficient credit",
+		// "quota exhausted", "available accounts", "account (not|un)available")
+		// plus the new patterns added to budgetExceededRe (Chinese "费用/用完",
+		// English "no available credits?", "out of quota", "quota exhausted")
+		// close the apigpt/apiclaude.cc node-credit-exhaustion gap.
+		if (status == 402 || status == 403 || status == 429) && budgetExceededRe.Match(body) {
+			if quotaResetsRe.Match(body) {
+				return KindQuotaPeriodic
+			}
+			return KindQuotaPermanent
+		}
+		if concurrentOverloadRe.Match(body) {
 			return overloadKindForStatus(status)
 		}
 		// KindModelDeprecated: see ClassifyErrorWithBody. Checked before
@@ -1019,25 +1154,16 @@ func ClassifyResponseBody(status int, body []byte) ErrorKind {
 		if contextLengthRe.Match(body) || contextLengthCJKRe.Match(body) {
 			return KindContextLength
 		}
-		// 2026-07-16 P0 fix: budget_exceeded on 429 → KindQuotaPermanent.
-		// 2026-07-21 P0 fix: when the body carries a reset timestamp, route
-		// to KindQuotaPeriodic instead so the credential can recover.
-		//
-		// 2026-08-08 P0 fix: extend status gate to 402 (Payment Required) and
-		// 403 (apiclaude.cc / 智码 / OneAPI-family relays that return
-		// HTTP 403 {"code":"INSUFFICIENT_BALANCE", "message":"Insufficient account balance"}
-		// when the user's account balance is exhausted). Without this gate,
-		// the body-pattern match is skipped for 403 → falls through to
-		// ClassifyResponseStatus → KindAuth, which misleads users into
-		// thinking the API key is invalid when it's actually a balance
-		// issue. See the matching comment in ClassifyErrorWithBody for the
-		// full rationale.
-		if (status == 402 || status == 403 || status == 429) && budgetExceededRe.Match(body) {
-			if quotaResetsRe.Match(body) {
-				return KindQuotaPeriodic
-			}
-			return KindQuotaPermanent
-		}
+		// 2026-08-20 P0 fix: the budgetExhaustion check has been moved to the
+		// top of this function (right after degradedFunctionRe, before
+		// concurrentOverloadRe) so it runs first against SSE error-chunk
+		// bodies. The bottom-of-function placement (post 2026-08-08 P0
+		// fix) had the same ordering bug as ClassifyErrorWithBody —
+		// concurrentOverloadRe's now-removed trailing group intercepted
+		// "insufficient credit" / "quota exhausted" / "No available
+		// accounts" first and produced KindConcurrent. See full rationale
+		// at the up-front position above and at budgetExceededRe /
+		// concurrentOverloadRe definitions.
 	}
 	return ""
 }

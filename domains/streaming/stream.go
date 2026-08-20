@@ -107,6 +107,41 @@ func chunkHasContent(payload string) bool {
 	return false
 }
 
+// isEmptySemanticDelta reports whether payload is a valid OpenAI delta frame
+// with at least one choice but no semantic output. It deliberately excludes
+// usage, keepalive, malformed payloads, and empty/missing choices so those
+// protocol-control frames cannot trigger early-empty failover.
+func isEmptySemanticDelta(payload string) bool {
+	if payload == "" || payload == "[DONE]" {
+		return false
+	}
+	var envelope struct {
+		Choices json.RawMessage `json:"choices"`
+	}
+	if err := json.Unmarshal([]byte(payload), &envelope); err != nil || len(envelope.Choices) == 0 {
+		return false
+	}
+	var choices []json.RawMessage
+	if err := json.Unmarshal(envelope.Choices, &choices); err != nil || len(choices) == 0 {
+		return false
+	}
+	chunk, err := ir.ParseOpenAIStreamChunk("data: " + payload + "\n\n")
+	return err == nil && chunk != nil && chunk.Type == ir.ChunkTypeDelta && chunk.Delta != nil && !chunkHasContent(payload)
+}
+
+func earlyEmptyOutcome(capture *audit.StreamCapture) *StreamOutcome {
+	if capture != nil {
+		capture.MarkInterruptedWithReason("early_empty_detection")
+	}
+	return &StreamOutcome{
+		Interrupted: true,
+		Reason:      "early_empty_detection",
+		Kind:        errorsx.KindEmptyResponse,
+		Resumable:   true,
+		ChunkCount:  0,
+	}
+}
+
 // runEmptyStreamGate buffers upstream chunks BEFORE writing them to the
 // client, so an empty stream (notably the NIM (Provider 18) ~13% failure
 // mode: stream opens, sends 1-3 chunks with empty choices, then [DONE])
@@ -160,6 +195,29 @@ func runEmptyStreamGate(
 ) (flushedLines []string, outcome *StreamOutcome) {
 	buffered := make([]string, 0, emptyGateMaxChunks)
 	bufferedBytes := 0
+	earlyEmptyChunks := currentStreamRuntimeConfig().emptyStreamEarlyEmptyChunks
+	consecutiveEmptyDeltas := 0
+	observeEarlyEmptyDelta := func(payload string) *StreamOutcome {
+		if earlyEmptyChunks == 0 {
+			return nil
+		}
+		if chunkHasContent(payload) {
+			consecutiveEmptyDeltas = 0
+			return nil
+		}
+		if payload == "" || strings.HasPrefix(strings.TrimSpace(payload), ":") {
+			return nil
+		}
+		if !isEmptySemanticDelta(payload) {
+			consecutiveEmptyDeltas = 0
+			return nil
+		}
+		consecutiveEmptyDeltas++
+		if consecutiveEmptyDeltas >= earlyEmptyChunks {
+			return earlyEmptyOutcome(capture)
+		}
+		return nil
+	}
 	if startingLine != "" {
 		buffered = append(buffered, startingLine)
 		bufferedBytes += len(startingLine)
@@ -176,6 +234,9 @@ func runEmptyStreamGate(
 		}
 		if chunkHasContent(startingPayload) {
 			return buffered, nil
+		}
+		if outcome := observeEarlyEmptyDelta(startingPayload); outcome != nil {
+			return nil, outcome
 		}
 	}
 
@@ -263,6 +324,9 @@ func runEmptyStreamGate(
 		// caller writes flushed lines and continues write-through.
 		if chunkHasContent(payload) {
 			return buffered, nil
+		}
+		if outcome := observeEarlyEmptyDelta(payload); outcome != nil {
+			return nil, outcome
 		}
 
 		// Buffer cap: too many chunks / bytes without content. Likely a

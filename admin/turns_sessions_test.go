@@ -53,6 +53,9 @@ func TestComputeSessionAggs(t *testing.T) {
 	}
 	computeSessionAggs(g)
 
+	if g.TotalTurns != 3 || g.TotalTokens != 0 || g.TotalCostUSD != 0 {
+		t.Fatalf("aggregate totals mismatch: turns=%d tokens=%d cost=%v", g.TotalTurns, g.TotalTokens, g.TotalCostUSD)
+	}
 	if g.DurationMs != 2*60*1000 {
 		t.Fatalf("expected duration 120000ms, got %d", g.DurationMs)
 	}
@@ -117,15 +120,15 @@ func TestBuildTurnsSessionWhere(t *testing.T) {
 		"COALESCE(ss.first_request_at, s.created_at) >= $1",
 		"COALESCE(ss.first_request_at, s.created_at) <= $2",
 		"s.tenant_id = $3",
-		"ss.gw_project_id = $4",
+		"COALESCE(NULLIF(ss.gw_project_id, ''), sd.project_id) = $4",
 		"sd.task_id = $5",
 		"sd.owner_user = $6",
 		"(sd.client_id = $7 OR sd.application_code = $8 OR s.client_type = $9)",
 		"ss.user_tags && $10",
 		// search now matches title/topic/intent/summary → 4 placeholders $11..$14,
 		// cursor follows at $15/$16 (was $14/$15 before intent was added).
-		"COALESCE(s.title, st.title, ss.title) ILIKE '%'||$11||'%'",
-		"COALESCE(s.summary, ss.summary) ILIKE '%'||$14||'%'",
+		"COALESCE(NULLIF(s.title, ''), st.title, ss.title, '') ILIKE '%'||$11||'%'",
+		"COALESCE(NULLIF(s.summary, ''), ss.summary, '') ILIKE '%'||$14||'%'",
 		"(s.updated_at, s.session_id) < ($15, $16)",
 	}
 	for _, c := range checks {
@@ -238,7 +241,8 @@ func TestBuildTurnsSessionWhere_NoTimeWindowStillCursor(t *testing.T) {
 	now := time.Now().UTC()
 	req := httptest.NewRequest(http.MethodGet, "/api/admin/turns/sessions?project_id=p1", nil)
 	where, args, nextArg := buildTurnsSessionWhere(req, "", time.Time{}, time.Time{}, now.Add(-time.Minute), "gw_s1", 1)
-	if !strings.Contains(where, "ss.gw_project_id = $1") {
+	if !strings.Contains(where, "COALESCE(NULLIF(ss.gw_project_id, ''), sd.project_id) = $1") {
+
 		t.Fatalf("project clause should be $1 when no time window: %s", where)
 	}
 	if !strings.Contains(where, "(s.updated_at, s.session_id) < ($2, $3)") {

@@ -171,6 +171,28 @@ func TestRecordRequestThreeFailuresDisableNode(t *testing.T) {
 	}
 }
 
+func TestRecordRequestFatalQuotaDisablesImmediately(t *testing.T) {
+	s, mr := newTestStore(t)
+	defer mr.Close()
+
+	_, err := s.RecordRequest(context.Background(), "ursm:v2:node:fatal-quota",
+		"ursm:v2:win:1m:fatal-quota", "ursm:v2:win:5m:fatal-quota", "ursm:v2:win:30m:fatal-quota",
+		RecordOutcome{
+			ErrorKind: "quota_permanent", NowMs: time.Now().UnixMilli(), LatencyMs: 100,
+			RequestID: "fatal-quota-1", NodeTTL: time.Hour, Window5mTTL: 6 * time.Minute,
+			Window30mTTL: 35 * time.Minute, CoolSeconds: 300,
+		})
+	if err != nil {
+		t.Fatalf("record fatal quota: %v", err)
+	}
+	if got := mr.HGet("ursm:v2:node:fatal-quota", "disabled"); got != "1" {
+		t.Fatalf("disabled=%q, want 1 after one fatal quota failure", got)
+	}
+	if got := mr.HGet("ursm:v2:node:fatal-quota", "available"); got != "0" {
+		t.Fatalf("available=%q, want 0 after one fatal quota failure", got)
+	}
+}
+
 func TestRecordRequestDuplicateRequestDoesNotIncrementFailureState(t *testing.T) {
 	s, mr := newTestStore(t)
 	defer mr.Close()

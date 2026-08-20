@@ -131,8 +131,9 @@ func (r *waterfallRing) snapshot(limit int, model string, credentialID int) []Wa
 		if idx < 0 {
 			idx += len(r.buf)
 		}
-		item := r.buf[idx]
+		item := cloneWaterfallRequest(r.buf[idx])
 		if model != "" && item.Model != model {
+
 			continue
 		}
 		if credentialID > 0 && item.Credential != credentialID {

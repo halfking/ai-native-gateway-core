@@ -20,6 +20,12 @@ type CloseHook struct {
 	attributor *Attributor
 	logger     *slog.Logger
 
+	// AttributorFor 是可选的"按 tenant 现取 Attributor"工厂。
+	// 当注入时（Stage 5 装配路径），每次 hook 触发都调用一次拿到当前
+	// tenant 的 Attributor；attributor 字段被忽略。
+	// 未注入时回落到 attributor（Stage 4 之前的旧用法，单一静态快照）。
+	AttributorFor func(ctx context.Context, tenantID, gwSessionID string) (*Attributor, error)
+
 	// 可观测计数：便于运维评估规则层覆盖率，进而判断 LLM 层是否值得开。
 	skippedAuthoritative atomic.Int64
 	skippedExisting      atomic.Int64
@@ -38,11 +44,32 @@ func NewCloseHook(store Store, attributor *Attributor, logger *slog.Logger) *Clo
 
 // OnSessionClosed 实现 workers.SessionCloseHook。
 func (h *CloseHook) OnSessionClosed(ctx context.Context, tenantID, gwSessionID string) error {
-	if h == nil || h.store == nil || h.attributor == nil {
+	if h == nil || h.store == nil {
+		return nil
+	}
+	if h.attributor == nil && h.AttributorFor == nil {
 		return nil
 	}
 	if tenantID == "" || gwSessionID == "" {
 		return nil
+	}
+
+	// 优先使用 AttributorFor 工厂（resolver 路径）；不存在时回落静态 attributor。
+	attr := h.attributor
+	if h.AttributorFor != nil {
+		built, err := h.AttributorFor(ctx, tenantID, gwSessionID)
+		if err != nil {
+			h.failed.Add(1)
+			h.logger.Warn("projectattr: build attributor failed",
+				"tenant_id", tenantID, "session_id", gwSessionID, "error", err)
+			return nil
+		}
+		if built == nil {
+			// resolver 显式禁用：当作未命中。
+			h.unresolved.Add(1)
+			return nil
+		}
+		attr = built
 	}
 
 	// 闸门一：ACC 认领路径已给出权威 project_id，推断必须让路。
@@ -77,7 +104,7 @@ func (h *CloseHook) OnSessionClosed(ctx context.Context, tenantID, gwSessionID s
 		return nil
 	}
 
-	res := h.attributor.Attribute(ctx, signals)
+	res := attr.Attribute(ctx, signals)
 	if !res.Found() {
 		// 判不出来就留空——这是符合预期的正确结果，不是错误。
 		h.unresolved.Add(1)

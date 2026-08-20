@@ -11,7 +11,7 @@
 
 | Check | Command | Expected |
 |---|---|---|
-| Migrations 536 / 537 / 539 / 540 applied on 252 | `psql -c "SELECT version FROM schema_migrations WHERE version LIKE '5%' ORDER BY version;"` | all four listed |
+| Migrations 536 / 537 / 539 / 540 / 544 / 545 / 546 / 548 applied | `psql -c "SELECT version FROM schema_migrations WHERE version LIKE '5%' ORDER BY version;"` | 536–546 must be present; apply 548 before deploying the five-column conflict-target gateway build |
 | `stats_event_inbox` column set complete | `psql -c "\d stats_event_inbox"` | `processing_status`, `next_attempt_at`, `fencing_token`, `dead_lettered_at`, `dead_letter_reason`, `processing_owner`, `lease_until`, `retryable` |
 | Indexes ready | `psql -c "SELECT indexname FROM pg_indexes WHERE tablename='stats_event_inbox';"` | `idx_stats_event_inbox_claimable`, `idx_stats_event_inbox_dead_letter` |
 | `usage_facts` table present | `psql -c "\dt usage_facts"` | exists |
@@ -144,6 +144,8 @@ every 6h and runs `ReconcilePeriod` for the last 7 days.
 |---|---|---|
 | `llm_gateway_stats_reconciliation_runs_total{status="failed"}` rate | > 5% of total runs in last 24h | Page on-call |
 | `llm_gateway_stats_reconciliation_diffs_total{resolution="open"}` rate | > 2× historical p95 over 6h | Page on-call |
+| `llm_gateway_stats_reconciliation_diffs_total{resolution="phantom_open"}` rate | > 0 outside an approved data cleanup window | Page on-call; investigate projection/source mismatch, never approve |
+| `llm_gateway_stats_reconciliation_runs_total{status="panicked"}` rate | any sustained non-zero rate | Page on-call; inspect worker panic logs |
 | `runs_total{status="completed"}` rate | 4 / day baseline (one per 6h tick) | none |
 
 Recovery:

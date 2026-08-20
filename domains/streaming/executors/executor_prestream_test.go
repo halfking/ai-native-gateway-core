@@ -78,7 +78,7 @@ func TestUpstreamContext_OrdinaryStreamFollowsClientCancellationWithoutDeadline(
 	}
 }
 
-func TestUpstreamContext_SurvivalStreamDetachesCancellationWithoutDeadline(t *testing.T) {
+func TestUpstreamContext_SurvivalStreamKeepsClientCancellationWithoutDeadline(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil).WithContext(ctx)
 	params := &ExecParams{R: req, IsStream: true, SurvivalAttempt: true}
@@ -87,8 +87,8 @@ func TestUpstreamContext_SurvivalStreamDetachesCancellationWithoutDeadline(t *te
 	defer upstreamCancel()
 	cancel()
 
-	if err := upstreamCtx.Err(); err != nil {
-		t.Fatalf("survival stream upstream context cancelled with client: %v", err)
+	if !errors.Is(upstreamCtx.Err(), context.Canceled) {
+		t.Fatalf("survival stream upstream context error = %v, want context.Canceled", upstreamCtx.Err())
 	}
 	if _, ok := upstreamCtx.Deadline(); ok {
 		t.Fatal("survival stream upstream context must not carry a wall-clock deadline")

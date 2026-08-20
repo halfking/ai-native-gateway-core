@@ -34,7 +34,7 @@ type FailoverDecision struct {
 const (
 	DefaultRateLimitCooldown  = 30 * time.Second
 	DefaultTransientCooldown  = 2 * time.Second
-	DefaultOverloadRetryDelay = 3 * time.Second
+	DefaultOverloadRetryDelay = 5 * time.Second
 	DefaultFrontendWait       = 100 * time.Millisecond
 	DefaultProbeFanout        = 3
 )

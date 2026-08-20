@@ -155,9 +155,8 @@ func (m *QueueMirror) enqueue(op QueueMirrorOperation) {
 		return
 	}
 	m.mu.Lock()
-	closed := m.closed
-	m.mu.Unlock()
-	if closed {
+	defer m.mu.Unlock()
+	if m.closed {
 		if op.done != nil {
 			close(op.done)
 		}

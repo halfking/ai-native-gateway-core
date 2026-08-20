@@ -874,10 +874,10 @@ func TestTitleDistLockKey_AutoVsManualIndependent(t *testing.T) {
 	if auto == manual {
 		t.Fatalf("auto/manual keys collide: %q", auto)
 	}
-	if !strings.HasPrefix(auto, "llmgw:distlock:title:auto:") {
+	if !strings.Contains(auto, "{title:auto:default\x00sess-1}") || !strings.HasSuffix(auto, ":lock") {
 		t.Fatalf("auto key shape wrong: %q", auto)
 	}
-	if !strings.HasPrefix(manual, "llmgw:distlock:title:manual:") {
+	if !strings.Contains(manual, "{title:manual:default\x00sess-1}") || !strings.HasSuffix(manual, ":lock") {
 		t.Fatalf("manual key shape wrong: %q", manual)
 	}
 }
