@@ -1,8 +1,8 @@
 # LLM Gateway Go — 当前系统架构
 
-> **事实快照：** 2026-08-21  
-> **适用对象：** 当前 `main` 工作树中的 `cmd/gateway` 生产入口及其已装配依赖。  
-> **证据优先级：** 运行时 wiring / Go 代码 / SQL migration / 自动化测试 > 本文档 > 历史审计和路线图。  
+> **事实快照：** 2026-08-21
+> **适用对象：** 当前 `main` 工作树中的 `cmd/gateway` 生产入口及其已装配依赖。
+> **证据优先级：** 运行时 wiring / Go 代码 / SQL migration / 自动化测试 > 本文档 > 历史审计和路线图。
 > **不在本文断言的内容：** 未验证的生产流量、外部 Provider E2E、未启用的 feature flag、规划中的 MCP/A2A/Fusion 能力。
 
 ---
@@ -41,7 +41,7 @@ Client / Agent / Admin browser
 |                                                                  |
 |  Durable facts: request logs, usage, routing/session metadata    |
 +-------------+------------------------+---------------------------+
-              |                        | 
+              |                        |
               v                        v
        PostgreSQL                  Redis
   tenant/provider/credential       URSM state, limits, session/cache,
