@@ -5914,7 +5914,11 @@ func buildClientDisconnectProbeEntry(originalRequestID string, r *http.Request, 
 	errorKind := "client_cancel"
 	if logCtx != nil && logCtx.StreamCapture != nil {
 		summary := logCtx.StreamCapture.SummaryAsMap()
-		if reason, ok := summary["upstream_finish_reason"].(string); ok {
+		reason, _ := summary["failure_detail_code"].(string)
+		if reason == "" {
+			reason, _ = summary["upstream_finish_reason"].(string)
+		}
+		if reason != "" {
 			// first_byte_timeout / stream_timeout / stream_chunk_timeout /
 			// chunk_timeout 都是供应商端超时，应归类为 probe_timeout。
 			// 这些 reason 会触发 KindStreamTimeout / KindTimeout 降级。
