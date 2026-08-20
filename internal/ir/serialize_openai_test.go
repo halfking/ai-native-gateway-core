@@ -44,6 +44,40 @@ func TestSerializeOpenAI_SimpleMessage(t *testing.T) {
 	}
 }
 
+// TestSerializeOpenAI_StreamFalseExplicit guards the 2026-08-21 fix:
+// `stream:false` MUST be emitted into the outgoing body. Several proxy
+// suppliers (NVIDIA NIM, the aliyun-backed oneapi at 129.146.135.219:3000)
+// default to SSE when the field is absent; missing it round-trips as an
+// empty-choices SSE boilerplate instead of the JSON content the client
+// expects.
+func TestSerializeOpenAI_StreamFalseExplicit(t *testing.T) {
+	ir := &InternalRequest{
+		Model:  "glm-5.2",
+		Stream: false,
+		Messages: []Message{
+			{Role: "user", Content: []ContentBlock{{Type: "text", Text: "Reply with OK"}}},
+		},
+	}
+
+	body, err := SerializeOpenAI(ir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal(body, &result); err != nil {
+		t.Fatal(err)
+	}
+
+	streamVal, present := result["stream"]
+	if !present {
+		t.Fatalf("stream field missing in outgoing body: %s", string(body))
+	}
+	if streamVal != false {
+		t.Errorf("stream = %v, want false (explicit non-stream signal)", streamVal)
+	}
+}
+
 func TestSerializeOpenAI_AllSamplingFields(t *testing.T) {
 	ir := &InternalRequest{
 		Model:       "gpt-4o",
