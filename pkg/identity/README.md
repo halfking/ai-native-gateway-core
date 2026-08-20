@@ -41,7 +41,7 @@ replace github.com/kaixuan/identity-go => ../pkg/identity-go
 
 ```bash
 IDENTITY_SHARED_SECRET=<32+ bytes, 与其他项目完全一致>
-IDENTITY_ISSUER_ALLOWLIST=redclaw.auth-agent,memora,llm-gateway,pocket,acc
+IDENTITY_ISSUER_ALLOWLIST=redclaw,memora,llm-gateway,pocket,acc
 IDENTITY_SHADOW_DSN=postgres://kxuser:kxpass@host.docker.internal:5432/identity_shadow?sslmode=verify-full
 ```
 
@@ -99,7 +99,7 @@ go run ./cmd/identity-migrate --cmd ensure-from-postgres \
 
 | Project | iss 字符串 |
 |---|---|
-| RedClaw (services/platform-go) | `redclaw.auth-agent` |
+| RedClaw (services/platform-go) | `redclaw` |
 | openpocket (backend) | `pocket` |
 | agent-control-center (acc-go) | `acc` |
 | memora (kxmemory-go) | `memora` |
