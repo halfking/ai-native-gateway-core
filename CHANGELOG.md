@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Classify apigpt/apiclaude.cc credit-exhaustion responses as permanent quota failures so dispatch ejects the depleted node and fails over to another credential supporting the requested model.
 - Cover English and Chinese balance variants including `insufficient credit`, `quota exhausted`, `no available accounts`, `out of quota`, and `节点费用已用完`.
+- `internal/ir.SerializeOpenAI` now always emits the `stream` field (including `false`) instead of dropping it when the client requested non-streaming. Several proxy suppliers (NVIDIA NIM, the aliyun-backed oneapi endpoint at 129.146.135.219:3000) interpret an absent `stream` field as streaming-by-default and respond with `text/event-stream` containing only an empty-choices boilerplate chunk, leaving the client with no content. Explicit `stream:false` in the outgoing body fixes the round-trip (diagnostic A/B on 245 confirmed `glm-5.2` / `minimax-m3` 245→client `stream:false` requests returned empty SSE instead of JSON content). IR golden fixtures (`anthropic_to_openai`, `gemini_to_openai`) updated to include the new `stream:false` field; the existing `TestIRConverter_LegacyPath` now exercises the field-preservation contract explicitly.
 
 ## [2.5.0] - 2026-08-19
 
