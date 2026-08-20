@@ -25,6 +25,7 @@ const (
 const (
 	releaseChannelSuffix = ":release"
 	defaultTTL           = 60 * time.Second
+	minimumTTL           = 30 * time.Millisecond
 	handshakeTimeout     = 3 * time.Second
 )
 
@@ -78,6 +79,9 @@ func (m *RedisManager) Enabled() bool                 { return m != nil && m.rdb
 func normalizeTTL(ttl time.Duration) time.Duration {
 	if ttl <= 0 {
 		return defaultTTL
+	}
+	if ttl < minimumTTL {
+		return minimumTTL
 	}
 	return ttl
 }
@@ -330,15 +334,57 @@ func newTerminalFollower(key, scope string, err error) *Handle {
 
 func (h *Handle) startRedisWatcher(rdb *redis.Client) {
 	go func() {
-		timer := time.NewTimer(h.ttl)
+		remaining := h.ttl
+		timer := time.NewTimer(remaining)
 		defer timer.Stop()
+		resetTimer := func(next time.Duration) {
+			if next <= 0 {
+				next = time.Millisecond
+			}
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			timer.Reset(next)
+		}
+		checkState := func() (time.Duration, error) {
+			ctx, cancel := context.WithTimeout(context.Background(), handshakeTimeout)
+			defer cancel()
+			value, err := rdb.Get(ctx, h.key).Result()
+			if errors.Is(err, redis.Nil) {
+				return 0, ErrTTLExpired
+			}
+			if err != nil {
+				return 0, fmt.Errorf("distlock: follower expiry recheck %q: %w", h.key, err)
+			}
+			if value != h.expectedToken {
+				return 0, ErrLockReplaced
+			}
+			pttl, err := rdb.PTTL(ctx, h.key).Result()
+			if err != nil {
+				return 0, fmt.Errorf("distlock: follower expiry PTTL %q: %w", h.key, err)
+			}
+			if pttl == -1*time.Millisecond {
+				return 0, ErrPTTLInvalid
+			}
+			if pttl == -2*time.Millisecond || pttl <= 0 {
+				return 0, ErrTTLExpired
+			}
+			return pttl, nil
+		}
 		for {
 			select {
 			case <-h.terminalDone:
 				return
 			case <-timer.C:
-				h.finish(ErrTTLExpired)
-				return
+				next, err := checkState()
+				if err != nil {
+					h.finish(err)
+					return
+				}
+				resetTimer(next)
 			case msg, ok := <-h.channel:
 				if !ok {
 					h.finish(ErrPubSubClosed)

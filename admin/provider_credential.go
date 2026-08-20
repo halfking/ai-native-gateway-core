@@ -864,9 +864,9 @@ func (h *Handler) lookupSessionTitles(ctx context.Context, holders []string) map
 		return result
 	}
 	rows, err := h.db.Query(ctx, `
-		SELECT session_id, title
+		SELECT scoped_session_id, title
 		FROM session_titles
-		WHERE session_id = ANY($1)
+		WHERE scoped_session_id = ANY($1)
 	`, holders)
 	if err != nil {
 		slog.Debug("lookupSessionTitles query failed", "error", err)
