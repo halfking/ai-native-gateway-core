@@ -586,6 +586,9 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	journeyInstanceID, journeySeq, journeyTerminal := requestJourneyExecState(r)
+	dispatchAllowProviderChange, dispatchAllowModelChange, dispatchModelAlternatives := responsesDispatchOptions(
+		logCtx, hasMultipleProviders(candidates),
+	)
 	buildExecParams := func(streamWriter http.ResponseWriter) *executors.ExecParams {
 		return &executors.ExecParams{
 			W:                          streamWriter,
@@ -612,14 +615,18 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			// executor resolves the upstream model per candidate, so we
 			// pass clientModel here to avoid leaking the FIRST candidate's
 			// outbound id into retry/failover attempts.
-			OutboundModel:  clientModel,
-			ClientID:       clientID,
-			Transform:      txResult,
-			Resolution:     modelResolution,
-			Candidates:     candidates,
-			Policy:         policy,
-			AuditBuilder:   auditBuilder,
-			Capture:        streamCapture,
+			OutboundModel:               clientModel,
+			ClientID:                    clientID,
+			Transform:                   txResult,
+			Resolution:                  modelResolution,
+			Candidates:                  candidates,
+			Policy:                      policy,
+			DispatchAllowProviderChange: dispatchAllowProviderChange,
+			DispatchAllowModelChange:    dispatchAllowModelChange,
+			DispatchModelAlternatives:   dispatchModelAlternatives,
+			AuditBuilder:                auditBuilder,
+			Capture:                     streamCapture,
+
 			ToolsRequested: responsesHasTools(&reqBody),
 			// StreamWrapper intentionally unset. The executor routes via
 			// AnthropicToResponsesStream / OpenAIToResponsesStream based on
@@ -752,9 +759,18 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	*attemptLogged = true
 }
 
+func responsesDispatchOptions(logCtx *RequestLogContext, allowProviderChange bool) (bool, bool, []string) {
+	allowModelChange := logCtx != nil && logCtx.IsAutoRequest && dispatchAllowModelChangeEnabled()
+	if !allowModelChange {
+		return allowProviderChange, false, nil
+	}
+	return allowProviderChange, true, append([]string(nil), logCtx.AutoFallbackModels...)
+}
+
 func convertResponsesToChatBody(req *responsesRequestBody) map[string]any {
 	chatBody := map[string]any{
-		"model":  req.Model,
+		"model": req.Model,
+
 		"stream": req.Stream,
 	}
 
