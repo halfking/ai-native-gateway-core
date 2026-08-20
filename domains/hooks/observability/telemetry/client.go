@@ -359,8 +359,8 @@ type RequestLogEntry struct {
 	// SummaryAsMap under "discard_events", and the per-request log path
 	// (request_log_pipeline.go) copies it onto this field. The current
 	// upsert SQL does not yet include the column — operators read the
-	// gateway application log line "survival_attempt_discarded" for
-	// production debugging until the column lands in a follow-up migration.
+	// The streaming survival/recovery path appends structured discard events;
+	// the telemetry upsert persists them in request_logs_hot.discard_events.
 	DiscardEvents json.RawMessage `json:"discard_events,omitempty"`
 }
 
@@ -963,12 +963,14 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 			-- virtual_client_id 来自 identity.BuildIdentityFromRequest.
 			-- 之前这些字段只在侧表 request_context_attrs 写入,主表永远 NULL.
 			agent_name, agent_type, client_protocol, virtual_client_id,
--- V3.1 (migration 491): 9-stage dispatch queue timestamps.
-		t0_arrived_at, t1_total_enqueued_at, t2_total_dequeued_at,
-		t3_model_enqueued_at, t4_model_dequeued_at,
-		t5_cred_enqueued_at, t6_cred_dequeued_at,
-		t7_forward_start_at, t8_response_start_at, t9_response_end_at
-	) VALUES (
+	-- V3.1 (migration 491): 9-stage dispatch queue timestamps.
+			t0_arrived_at, t1_total_enqueued_at, t2_total_dequeued_at,
+			t3_model_enqueued_at, t4_model_dequeued_at,
+			t5_cred_enqueued_at, t6_cred_dequeued_at,
+			t7_forward_start_at, t8_response_start_at, t9_response_end_at,
+			-- 2026-08-19: streaming discard audit events.
+			discard_events
+		) VALUES (
 		$1, now(), $2, $3, $4,
 		$5, $6, $7,
 		$8, $9, $10,
@@ -1018,9 +1020,11 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		-- above + 10 timestamps occupy $82-$95. 2026-08-19 hotfix:
 		-- previous diff landed $91-$95 only, which pgx rejected
 		-- with the diagnostic "unused argument: 95".
-		$86, $87, $88, $89, $90, $91, $92, $93, $94, $95,
-		$96, $97, $98, $99, $100, $101
-	)
+			$86, $87, $88, $89, $90, $91, $92, $93, $94, $95,
+			$96, $97, $98, $99, $100, $101,
+			$102::text::jsonb
+		)
+
 				-- 2026-08-06 fix: INSERT targets request_logs_hot (NOT the partitioned parent).
 				-- Migration 455 (2026-07-23) gave request_logs_hot PRIMARY KEY (request_id),
 				-- so ON CONFLICT must be (request_id). Using (request_id, ts) here triggers
@@ -1134,8 +1138,10 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		t6_cred_dequeued_at  = COALESCE(EXCLUDED.t6_cred_dequeued_at, request_logs_hot.t6_cred_dequeued_at),
 		t7_forward_start_at  = COALESCE(EXCLUDED.t7_forward_start_at, request_logs_hot.t7_forward_start_at),
 		t8_response_start_at = COALESCE(EXCLUDED.t8_response_start_at, request_logs_hot.t8_response_start_at),
-		t9_response_end_at   = COALESCE(EXCLUDED.t9_response_end_at, request_logs_hot.t9_response_end_at)
+			t9_response_end_at   = COALESCE(EXCLUDED.t9_response_end_at, request_logs_hot.t9_response_end_at),
+			discard_events       = COALESCE(EXCLUDED.discard_events, request_logs_hot.discard_events)
 		-- 2026-07-27 (L-2): terminal-state guard, mirroring the WAL guard in
+
 		-- request_logger.go Update(). Without this, the deferred client-
 		-- disconnect safety net could regress a row that already reached a
 		-- terminal state: the handler writes success=TRUE / request_status=
@@ -1294,7 +1300,10 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		entry.T7ForwardStartAt,
 		entry.T8ResponseStartAt,
 		entry.T9ResponseEndAt,
+		// 2026-08-19: discard audit events are JSONB and nullable.
+		nullableJSONArg(entry.DiscardEvents),
 	)
+
 	if err != nil {
 		return err
 	}
@@ -1700,7 +1709,8 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 			   agent_name           = COALESCE(agent_name, $79),
 			   agent_type           = COALESCE(agent_type, $80),
 			   client_protocol      = COALESCE(client_protocol, $81),
-			   virtual_client_id    = COALESCE(virtual_client_id, $82)
+			   virtual_client_id    = COALESCE(virtual_client_id, $82),
+			   discard_events       = COALESCE($83::text::jsonb, discard_events)
 		   WHERE request_id = $1
 
 		     AND NOT (
@@ -1814,6 +1824,7 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		entry.AgentType,
 		entry.ClientProtocol,
 		entry.VirtualClientID,
+		nullableJSONArg(entry.DiscardEvents),
 	)
 
 	if err != nil {
@@ -2115,6 +2126,16 @@ func attachmentsArgStr(raw json.RawMessage) string {
 func jsonOrNull(raw json.RawMessage) string {
 	if len(raw) == 0 {
 		return "null"
+	}
+	return string(raw)
+}
+
+// nullableJSONArg preserves SQL NULL for an absent JSONB value. JSONB `null`
+// is a real value and would otherwise overwrite a prior discard-events array
+// during an upsert or terminal stream update.
+func nullableJSONArg(raw json.RawMessage) any {
+	if len(raw) == 0 {
+		return nil
 	}
 	return string(raw)
 }
@@ -2501,13 +2522,7 @@ func sanitizeRequestLogEntry(e *RequestLogEntry) {
 	sanitizeJSONField("response_body", &e.ResponseBody)
 	sanitizeRawJSONField("compression_meta", &e.CompressionMeta)
 	sanitizeRawJSONField("outbound_body", &e.OutboundBody)
-	// 2026-08-19: e.DiscardEvents is intentionally NOT yet wired into
-	// the request_logs_hot INSERT (would need a column N+1 + $N+1 entry
-	// that we cannot safely add in this pass — the audit upsert path
-	// would have to be re-numbered in lockstep). The JSONB column on
-	// request_logs_hot already exists (migration 543), so a follow-up
-	// pass that adds the bind arg will start writing the data with no
-	// schema change.
+	sanitizeRawJSONField("discard_events", &e.DiscardEvents)
 	sanitizeRawJSONField("outbound_msg_hashes", &e.OutboundMsgHashes)
 	sanitizeRawJSONField("quality_fix_actions", &e.QualityFixActions)
 	sanitizeRawJSONField("tool_calls", &e.ToolCalls)
@@ -2661,10 +2676,7 @@ func mergeRequestLogEntry(dst, src *RequestLogEntry) {
 	mergeStringPtr(&dst.OriginActor, src.OriginActor)
 	mergeRawJSON(&dst.RoutingAttempts, src.RoutingAttempts)
 	mergeStringPtr(&dst.RoutingSummary, src.RoutingSummary)
-	// DiscardEvents is NOT yet merged because the INSERT column is not
-	// wired in this pass — see the matching comment on SanitizeEntry
-	// above. Once the bind arg lands, uncomment the line below.
-	// mergeRawJSON(&dst.DiscardEvents, src.DiscardEvents)
+	mergeRawJSON(&dst.DiscardEvents, src.DiscardEvents)
 	mergeStringPtr(&dst.AgentName, src.AgentName)
 	mergeStringPtr(&dst.AgentType, src.AgentType)
 	mergeStringPtr(&dst.ClientProtocol, src.ClientProtocol)
