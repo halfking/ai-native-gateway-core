@@ -122,9 +122,26 @@ func TestPersonHash(t *testing.T) {
 			t.Fatalf("fallback path still must be tenant-prefixed: %q", viaOwner)
 		}
 	})
+	t.Run("length-prefix framing distinguishes colon-containing inputs", func(t *testing.T) {
+		left := personHash("a", "", "b:c")
+		right := personHash("a:b", "", "c")
+		if left == right {
+			t.Fatalf("length-prefix framing must distinguish ambiguous delimiter inputs: %q", left)
+		}
+	})
+	t.Run("tenant whitespace is normalized", func(t *testing.T) {
+		trimmed := personHash("tenant_a", "owner", "alice")
+		spaced := personHash(" tenant_a ", "owner", "alice")
+		if trimmed != spaced {
+			t.Fatalf("tenant whitespace must not change person hash: %q vs %q", trimmed, spaced)
+		}
+	})
 	t.Run("empty tenant returns empty string", func(t *testing.T) {
 		if got := personHash("", "owner", "alice"); got != "" {
 			t.Fatalf("empty tenant must short-circuit, got %q", got)
+		}
+		if got := personHash("   ", "owner", "alice"); got != "" {
+			t.Fatalf("whitespace tenant must short-circuit, got %q", got)
 		}
 	})
 	t.Run("empty everything returns empty string", func(t *testing.T) {

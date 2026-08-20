@@ -44,7 +44,7 @@ Query reconciliation runs and diffs.
       "run_id": "recon_20260818_abc123",
       "tenant_id": "tenant1",
       "dimension_type": "daily_rollup",
-      "dimension_key": "provider:1:cred:5:model:10:gpt-4",
+      "dimension_key": "tenant:tenant1:day:2026-08-18:provider:1:cred:5:model:10:gpt-4",
       "metric": "total_tokens",
       "source_value": 150500,
       "projected_value": 148200,
@@ -57,10 +57,13 @@ Query reconciliation runs and diffs.
 ```
 
 **Resolution values:**
-- `open`: Requires manual review (exceeds auto-repair threshold)
+- `open`: Requires manual review (a source-backed mismatch exceeds the auto-repair threshold)
+- `auto_repair_pending`: A source-backed missing projection or small mismatch waiting for rebuild
+- `phantom_open`: A projection row has no matching source fact; investigate out of band and do not approve
 - `auto_repaired`: Automatically fixed by rebuild
 - `approved`: Manually approved, adjustment created
 - `rejected`: Manually rejected, no action taken
+- `adjusted`: Legacy terminal value retained for compatibility
 
 ### POST /api/admin/stats/reconciliation/approve
 
@@ -94,12 +97,12 @@ Approve or reject reconciliation diffs. Only `super_admin` or `admin_key` can ap
 **Effects of approval:**
 1. Diff `resolution` updated to `"approved"`
 2. `stats_adjustments` record created with:
-   - `tenant_id`, `dimension_type`, `dimension_key`, `metric_name`
+   - `adjustment_id`, `tenant_id`, `month_start`, `dimension_type`, `dimension_key`, `metric`
    - `delta` = difference value
-   - `reason` = provided reason
+   - `reason` = provided reason prefixed with `[reconciliation]`
    - `source_event_id` = reconciliation `run_id`
-   - `approved_by` = operator
-   - `approved_at` = current timestamp
+   - `approved_by` / `created_by` = operator; `approved_at` / `created_at` = current timestamp
+   - migration 544 also supplies `adjustment_type='reconciliation'` and `metric_name` for compatibility
 
 ## Workflow
 
@@ -108,7 +111,7 @@ Approve or reject reconciliation diffs. Only `super_admin` or `admin_key` can ap
 1. Worker runs every 6 hours
 2. Compares `usage_facts` aggregation vs `stats_usage_daily` for last 7 days
 3. Small diffs (≤2% or <1000 absolute) → `auto_repaired`, trigger rebuild
-4. Large diffs → `open`, requires manual approval
+	4. Large source-backed diffs → `open`, requires manual review; projection-only rows → `phantom_open` and are never approved
 
 ### Manual Approval
 
@@ -182,12 +185,12 @@ Approved adjustments for closed periods (created by migration 536).
 ```sql
 CREATE TABLE stats_adjustments (
     id              bigserial PRIMARY KEY,
-    tenant_id       text NOT NULL DEFAULT 'default',
+    adjustment_id   text NOT NULL UNIQUE,
+    tenant_id       text NOT NULL,
     month_start     date NOT NULL,
-    adjustment_type text NOT NULL,
-    dimension_type  text NOT NULL DEFAULT 'provider_model',
+    dimension_type  text NOT NULL,
     dimension_key   text NOT NULL,
-    metric_name     text NOT NULL,
+    metric          text NOT NULL,
     delta           numeric(30,8) NOT NULL,
     currency        text,
     reason          text NOT NULL,
@@ -195,7 +198,10 @@ CREATE TABLE stats_adjustments (
     approved_by     text,
     approved_at     timestamptz,
     created_by      text NOT NULL,
-    created_at      timestamptz NOT NULL DEFAULT now()
+    created_at      timestamptz NOT NULL DEFAULT now(),
+    -- Added by migration 544, preserving baseline compatibility:
+    adjustment_type text NOT NULL DEFAULT 'reconciliation',
+    metric_name     text
 );
 ```
 
@@ -207,9 +213,18 @@ CREATE TABLE stats_adjustments (
 
 ## Migration Dependencies
 
+Apply forward migrations in numeric order before enabling the matching gateway code:
+
 - **536**: `stats_reconciliation_runs`, `stats_reconciliation_diffs`, `stats_adjustments` tables
 - **537**: `usage_facts` table (source of truth)
 - **539**: `tenant_id` column and index on `stats_reconciliation_diffs`
+- **544**: additive `stats_adjustments.adjustment_type` and `metric_name`
+- **545**: `phantom_open` / `adjusted` resolution constraint
+- **546**: initial reconciliation diff uniqueness protection
+- **547**: session project attribution tables and indexes
+- **548**: tenant-aware reconciliation diff uniqueness; required by the current five-column `ON CONFLICT` writer
+
+The reconciliation worker currently compares only `stats_usage_daily.dimension_type='provider_model'`, because its source aggregation is provider-model granularity. Other dimensions remain available for reporting but are not independently reconciled by this worker.
 
 ## Testing
 
@@ -279,25 +294,23 @@ restricted to fixed enums; never add `run_id`, `diff_id`, `tenant_id`,
 or raw error text.
 
 - `llm_gateway_stats_reconciliation_runs_total{status}` —
-  `completed` is incremented after a successful `ReconcilePeriod`
-  finishes the `finishRun` UPDATE; `failed` is incremented when any
-  early-exit branch (watermark, event-count, daily reconcile) fires.
-  The counter reflects the logical Go-level outcome — pair with
-  `stats_reconciliation_runs.status` from the database when
-  investigating drift because `finishRun` swallows UPDATE errors.
+  `completed` and `failed` describe `ReconcilePeriod` logical outcomes.
+  `panicked` records a worker tick recovered by `runTick`; it does not
+  necessarily map to a persisted run row. Pair all labels with
+  `stats_reconciliation_runs.status` when investigating drift because
+  `finishRun` intentionally swallows UPDATE errors.
 - `llm_gateway_stats_reconciliation_diffs_total{resolution}` —
   `auto_repaired` is the persisted `RowsAffected()` after
-  `DailyMonthlyRollup.Refresh` plus the resolution UPDATE succeed;
-  `open` is the diff count that remained unresolved after the run.
+  `DailyMonthlyRollup.Refresh` plus the resolution UPDATE succeeds;
+  `open` is an unresolved source-backed mismatch; `phantom_open` is a
+  projection-only row that requires investigation and is never approved.
 - `llm_gateway_stats_adjustments_total{action,result}` —
   `action ∈ {approve, reject}`, `result ∈ {committed, failed}`.
-  `committed` is only incremented after `tx.Commit` succeeds; any
-  pre-commit failure (loop error, commit error, schema mismatch)
-  emits `failed` instead. While migration 536's `stats_adjustments`
-  schema lags the handler's INSERT (it lacks `adjustment_id` /
-  `adjustment_type` / `metric_name`), this counter will surface
-  `result="failed"` for every approve batch — treat that as a
-  release-blocker until the schema is aligned (see the runbook §6).
+  `committed` is incremented only after `tx.Commit` succeeds; any
+  pre-commit failure (loop error, commit error, schema mismatch) emits
+  `failed`. The handler uses the schema-aligned baseline columns
+  `adjustment_id` and `metric`; migration 544's additive columns remain
+  compatible with the same INSERT path.
 
 ## Future work
 

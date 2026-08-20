@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -348,6 +349,11 @@ func (h *Handler) handleStatsReconciliationApprove(w http.ResponseWriter, r *htt
 	approved := 0
 	rejected := 0
 
+	// Lock diffs in a stable order so overlapping approval batches do not
+	// deadlock by acquiring the same rows in opposite request order.
+	diffIDs := append([]int64(nil), req.DiffIDs...)
+	sort.Slice(diffIDs, func(i, j int) bool { return diffIDs[i] < diffIDs[j] })
+
 	// recordFailedAccounting emits metrics for diffs that were processed
 	// in-memory but never reached a durable commit. Called from every
 	// pre-commit return path so the committed/failed split reflects
@@ -361,7 +367,7 @@ func (h *Handler) handleStatsReconciliationApprove(w http.ResponseWriter, r *htt
 		}
 	}
 
-	for _, diffID := range req.DiffIDs {
+	for _, diffID := range diffIDs {
 		// Fetch the diff together with the originating run's period, so the
 		// resulting adjustment month_start is anchored to the run window
 		// rather than now() (P2 follow-up: cross-month approvals used to land
@@ -377,6 +383,7 @@ func (h *Handler) handleStatsReconciliationApprove(w http.ResponseWriter, r *htt
 			FROM stats_reconciliation_diffs d
 			JOIN stats_reconciliation_runs r ON r.run_id = d.run_id
 			WHERE d.id = $1
+			FOR UPDATE OF d
 		`, diffID).Scan(&runID, &tenantID, &dimensionType, &dimensionKey, &metric,
 			&sourceValue, &projectedValue, &difference, &resolution, &periodMonthStart)
 		if err != nil {

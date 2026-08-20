@@ -195,6 +195,7 @@ func valueFloat(v *float64) float64 {
 }
 
 func personHash(tenant, owner, endUser string) string {
+	tenant = strings.TrimSpace(tenant)
 	value := strings.TrimSpace(endUser)
 	if value == "" {
 		value = strings.TrimSpace(owner)
@@ -202,7 +203,11 @@ func personHash(tenant, owner, endUser string) string {
 	if value == "" || tenant == "" {
 		return ""
 	}
-	sum := sha256.Sum256([]byte(tenant + ":" + value))
+
+	// Length-prefix the fields so tenant="a", value="b:c" cannot collide
+	// with tenant="a:b", value="c" before the SHA-256 is computed.
+	input := fmt.Sprintf("v2:%d:%s%d:%s", len(tenant), tenant, len(value), value)
+	sum := sha256.Sum256([]byte(input))
 	return hex.EncodeToString(sum[:8])
 }
 
