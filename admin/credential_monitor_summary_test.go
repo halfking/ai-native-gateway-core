@@ -3,6 +3,8 @@ package admin
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -229,6 +231,21 @@ func summaryMockRow() *pgxmock.Rows {
 // The cache-key dimension is asserted in TestMonitorSummarySchemaVersion_NotZero
 // (and built in the HTTP handler).
 
+func TestBuildMonitorSummarySQLModes(t *testing.T) {
+	core := buildMonitorSummarySQL(monitorSummarySQLParams{Mode: "core", TenantID: "tenant-a"})
+	if strings.Contains(core, "%!(EXTRA") || strings.Contains(core, "request_logs_with_current_month") {
+		t.Fatalf("core SQL must be lightweight and fully formatted: %s", core)
+	}
+	if !strings.Contains(core, "model_offers") || !strings.Contains(core, "c.tenant_id") {
+		t.Fatalf("core SQL omitted model state or tenant filter: %s", core)
+	}
+
+	detail := buildMonitorSummarySQL(monitorSummarySQLParams{CredentialID: 1, Mode: "detail", TenantID: "tenant-a"})
+	if strings.Contains(detail, "%!") || !strings.Contains(detail, "request_logs_with_current_month") || !strings.Contains(detail, "percentile_cont") {
+		t.Fatalf("detail SQL must include formatted detail aggregates: %s", detail)
+	}
+}
+
 func TestRunMonitorSummary_TenantIsolation(t *testing.T) {
 	mock, err := pgxmock.NewPool()
 	if err != nil {
@@ -255,32 +272,25 @@ func TestRunMonitorSummary_TenantIsolation(t *testing.T) {
 	}
 }
 
-func TestRunMonitorSummary_CacheKeyDimensions(t *testing.T) {
-	// Validate runMonitorSummary executes without error for a distinct tenant.
-	// The cache key itself is built in the HTTP handler (handleMonitorSummary)
-	// and its uniqueness is enforced by monitorSummarySchemaVersion.
-	tenant := "tenant-A"
-
-	mock, err := pgxmock.NewPool()
-	if err != nil {
-		t.Fatalf("pgxmock.NewPool: %v", err)
+func TestMonitorSummaryCacheKeyDimensions(t *testing.T) {
+	base := monitorSummarySQLParams{ProviderID: 7, CredentialID: 11, Mode: "detail", TenantID: "tenant-a"}
+	baseKey := monitorSummaryCacheKey(base)
+	for name, changed := range map[string]monitorSummarySQLParams{
+		"provider":   {ProviderID: 8, CredentialID: 11, Mode: "detail", TenantID: "tenant-a"},
+		"credential": {ProviderID: 7, CredentialID: 12, Mode: "detail", TenantID: "tenant-a"},
+		"mode":       {ProviderID: 7, CredentialID: 11, Mode: "core", TenantID: "tenant-a"},
+		"tenant":     {ProviderID: 7, CredentialID: 11, Mode: "detail", TenantID: "tenant-b"},
+	} {
+		if got := monitorSummaryCacheKey(changed); got == baseKey {
+			t.Errorf("%s did not change cache key %q", name, baseKey)
+		}
 	}
-	defer mock.Close()
-
-	mock.ExpectQuery(`SELECT[\s\S]*FROM[\s\S]*credentials[\s\S]*`).
-		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), tenant).
-		WillReturnRows(summaryMockRow())
-
-	q := queryLogger(mock)
-	if _, _, err := runMonitorSummary(context.Background(), q, monitorSummarySQLParams{TenantID: tenant}); err != nil {
-		t.Fatalf("tenant-A call: %v", err)
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("tenant-A expectations: %v", err)
+	if !strings.Contains(baseKey, fmt.Sprintf("v%d", monitorSummarySchemaVersion)) {
+		t.Fatalf("cache key %q omits schema version", baseKey)
 	}
 }
 
-func TestRunMonitorSummary_RowsErrPropagates(t *testing.T) {
+func TestRunMonitorSummary_QueryErrorPropagates(t *testing.T) {
 	mock, err := pgxmock.NewPool()
 	if err != nil {
 		t.Fatalf("pgxmock.NewPool: %v", err)
@@ -298,5 +308,30 @@ func TestRunMonitorSummary_RowsErrPropagates(t *testing.T) {
 	q := queryLogger(mock)
 	if _, _, err := runMonitorSummary(context.Background(), q, monitorSummarySQLParams{TenantID: tenant}); err == nil {
 		t.Fatalf("expected query error to propagate, got nil")
+	}
+}
+
+func TestRunMonitorSummary_RowsErrPropagates(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool: %v", err)
+	}
+	defer mock.Close()
+
+	tenant := "tenant-iteration-error"
+	rows := summaryMockRow().CloseError(errors.New("simulated iteration failure"))
+	mock.ExpectQuery(`SELECT[\s\S]*FROM[\s\S]*credentials[\s\S]*`).
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), tenant).
+		WillReturnRows(rows)
+
+	_, summaries, err := runMonitorSummary(context.Background(), mock, monitorSummarySQLParams{TenantID: tenant})
+	if err == nil || !strings.Contains(err.Error(), "rows iteration failed") {
+		t.Fatalf("expected rows iteration error, got %v", err)
+	}
+	if len(summaries) != 1 {
+		t.Fatalf("expected row before iteration failure, got %d summaries", len(summaries))
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("mock expectations: %v", err)
 	}
 }
