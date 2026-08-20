@@ -118,63 +118,77 @@ func (p *QueueProjection) Close() {
 	p.models = nil
 	p.credentials = nil
 	p.degraded = nil
+	p.waterfall = nil
 	p.mu.Unlock()
 }
 
 // ObserveQueue applies one immutable dispatch transition.
 func (p *QueueProjection) ObserveQueue(observation QueueObservation) {
-	if p == nil || !p.wired.Load() {
-		return
-	}
-	switch observation.Kind {
-	case QueueOverflow:
-		p.overflowUntil.Store(time.Now().Add(5 * time.Second).UnixNano())
-		return
-	case QueueRequestCompleted:
-		if observation.Completed != nil {
-			p.waterfall.push(cloneWaterfallRequest(*observation.Completed))
-		}
+	if p == nil {
 		return
 	}
 
 	p.mu.Lock()
+	defer p.mu.Unlock()
 	if !p.wired.Load() {
-		p.mu.Unlock()
 		return
 	}
+
 	switch observation.Kind {
+	case QueueOverflow:
+		p.overflowUntil.Store(time.Now().Add(5 * time.Second).UnixNano())
+	case QueueRequestCompleted:
+		if observation.Completed != nil && p.waterfall != nil {
+			p.waterfall.push(cloneWaterfallRequest(*observation.Completed))
+		}
 	case QueueModelDepth:
-		if observation.Model != "" {
-			depth := observation.Depth
-			if observation.Delta != 0 {
-				depth = p.models[observation.Model] + observation.Delta
-			}
-			p.models[observation.Model] = depth
+		if observation.Model == "" {
+			return
 		}
+		depth := observation.Depth
+		if observation.Delta != 0 {
+			depth = p.models[observation.Model] + observation.Delta
+		}
+		depth = nonNegative(depth)
+		if depth == 0 {
+			delete(p.models, observation.Model)
+			return
+		}
+		p.models[observation.Model] = depth
 	case QueueCredentialDepth:
-		if observation.CredentialID > 0 {
-			lane := p.credentials[observation.CredentialID]
-			mode := observation.Mode
-			if mode == "" {
-				mode = lane.mode
-			}
-			depth := observation.Depth
-			if observation.Delta != 0 {
-				depth = lane.depth + observation.Delta
-			}
-			p.credentials[observation.CredentialID] = projectedCredential{mode: mode, depth: depth}
+		if observation.CredentialID <= 0 {
+			return
 		}
+		lane := p.credentials[observation.CredentialID]
+		mode := observation.Mode
+		if mode == "" {
+			mode = lane.mode
+		}
+		depth := observation.Depth
+		if observation.Delta != 0 {
+			depth = lane.depth + observation.Delta
+		}
+		depth = nonNegative(depth)
+		if depth == 0 {
+			delete(p.credentials, observation.CredentialID)
+			return
+		}
+		p.credentials[observation.CredentialID] = projectedCredential{mode: mode, depth: depth}
 	case QueueInFlight:
 		if observation.Delta != 0 {
 			observation.InFlight = p.inFlight + observation.Delta
 		}
 		p.inFlight = nonNegative(observation.InFlight)
 	case QueueGovernorDegraded:
-		if observation.CredentialID > 0 {
-			p.degraded[observation.CredentialID] = observation.Degraded
+		if observation.CredentialID <= 0 {
+			return
 		}
+		if observation.Degraded {
+			p.degraded[observation.CredentialID] = true
+			return
+		}
+		delete(p.degraded, observation.CredentialID)
 	}
-	p.mu.Unlock()
 }
 
 func nonNegative(value int64) int64 {
@@ -191,10 +205,11 @@ func (p *QueueProjection) Snapshot() *SnapshotView {
 	}
 	enabled := true // AUDIT_24H B2b: dispatch is the only path
 	p.mu.RLock()
-	if !p.wired.Load() {
-		p.mu.RUnlock()
+	defer p.mu.RUnlock()
+	if !p.wired.Load() || p.waterfall == nil {
 		return &SnapshotView{Enabled: enabled, Wired: false, Models: []LaneView{}, Credentials: []LaneView{}}
 	}
+
 	models := make([]LaneView, 0, len(p.models))
 	credentials := make([]LaneView, 0, len(p.credentials))
 	var depth int64
@@ -216,16 +231,10 @@ func (p *QueueProjection) Snapshot() *SnapshotView {
 			break
 		}
 	}
-	p.mu.RUnlock()
-
+	p50, p95 := waitingPercentilesFromRequests(p.waterfall.snapshot(waterfallRingCap, "", 0))
 	sort.Slice(models, func(i, j int) bool { return models[i].Model < models[j].Model })
 	sort.Slice(credentials, func(i, j int) bool { return credentials[i].Credential < credentials[j].Credential })
 	view := &SnapshotView{Enabled: enabled, Wired: true, Models: models, Credentials: credentials}
-	if !enabled {
-		return view
-	}
-
-	p50, p95 := waitingPercentilesFromRequests(p.waterfall.snapshot(waterfallRingCap, "", 0))
 	view.SourceVersion = p.sourceVersion.Add(1)
 	view.Pipeline = &PipelineQueueStats{
 		Depth:        depth,
@@ -240,19 +249,26 @@ func (p *QueueProjection) Snapshot() *SnapshotView {
 // SnapshotWaterfall returns the admin timeline from projection-owned state.
 func (p *QueueProjection) SnapshotWaterfall(limit int, model string, credentialID int) WaterfallSnapshot {
 	snapshot := WaterfallSnapshot{
-		Requests: []WaterfallRequest{},
-		Enabled:  true, // AUDIT_24H B2b: dispatch is the only path
-		Wired:    p != nil && p.wired.Load(),
-		BottleneckDiagnosis: BottleneckDiagnosis{
-			Bottleneck: "none",
-			Message:    "队列正常",
-		},
+		Requests: []WaterfallRequest{}, Enabled: true,
+		BottleneckDiagnosis: BottleneckDiagnosis{Bottleneck: "none", Message: "队列正常"},
 	}
-	if p == nil || !p.wired.Load() {
+	if p == nil {
+		snapshot.Wired = false
+		snapshot.BottleneckDiagnosis.Message = "dispatch queue projection not wired"
+		return snapshot
+	}
+
+	p.mu.RLock()
+	if !p.wired.Load() || p.waterfall == nil {
+		p.mu.RUnlock()
+		snapshot.Wired = false
 		snapshot.BottleneckDiagnosis.Message = "dispatch queue projection not wired"
 		return snapshot
 	}
 	requests := p.waterfall.snapshot(limit, model, credentialID)
+	p.mu.RUnlock()
+
+	snapshot.Wired = true
 	snapshot.Requests = requests
 	if len(requests) > 0 {
 		end := requests[0].ResponseEndAt
@@ -261,7 +277,15 @@ func (p *QueueProjection) SnapshotWaterfall(limit int, model string, credentialI
 		}
 		snapshot.TimeRange = &WaterfallTimeRange{Start: requests[len(requests)-1].ArrivedAt, End: end}
 	}
+
 	view := p.Snapshot()
+	if !view.Wired {
+		snapshot.Wired = false
+		snapshot.Requests = []WaterfallRequest{}
+		snapshot.TimeRange = nil
+		snapshot.BottleneckDiagnosis.Message = "dispatch queue projection not wired"
+		return snapshot
+	}
 	models := make([]QueueSnapshot, 0, len(view.Models))
 	credentials := make([]QueueSnapshot, 0, len(view.Credentials))
 	for _, lane := range view.Models {
