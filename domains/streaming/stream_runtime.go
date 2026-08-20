@@ -19,7 +19,8 @@ type streamRuntimeConfig struct {
 	// 2026-07-15: content-gate buffers the first few chunks before writing
 	// to the client, so the executor can transparently failover an empty
 	// upstream stream (notably NIM) before the client sees [DONE].
-	enableEmptyStreamGate bool
+	enableEmptyStreamGate       bool
+	emptyStreamEarlyEmptyChunks int
 }
 
 var streamConfigStore atomic.Pointer[config.Store]
@@ -37,28 +38,37 @@ func currentStreamRuntimeConfig() streamRuntimeConfig {
 	envEmptyGateEnabled := envBool("LLM_GATEWAY_ENABLE_EMPTY_STREAM_GATE", true)
 	if store := streamConfigStore.Load(); store != nil {
 		if cfg := store.Get(); cfg != nil {
+			earlyEmptyChunks := cfg.EmptyStreamEarlyEmptyChunks
+			if raw := os.Getenv("LLM_GATEWAY_EMPTY_STREAM_EARLY_EMPTY_CHUNKS"); raw != "" {
+				earlyEmptyChunks = envNonNegativeInt("LLM_GATEWAY_EMPTY_STREAM_EARLY_EMPTY_CHUNKS", 3)
+			} else if earlyEmptyChunks <= 0 {
+				earlyEmptyChunks = 3
+			}
 			return streamRuntimeConfig{
 				upstreamTimeout:    durationSecondsOrDefault(cfg.UpstreamTimeout, 120*time.Second),
 				streamTimeout:      durationSecondsOrDefault(cfg.StreamTimeout, 900*time.Second),
 				streamChunkTimeout: durationSecondsOrDefault(cfg.StreamChunkTimeout, 300*time.Second),
 				// 2026-08-04: 120→180s default. Reasoning models with large
 				// tool-call contexts often exceed 120s to first byte.
-				firstByteTimeout:         durationSecondsOrDefault(cfg.FirstByteTimeout, 180*time.Second),
-				keepaliveInterval:        durationSecondsOrDefault(cfg.KeepaliveInterval, 15*time.Second),
-				enablePreStreamKeepalive: cfg.EnablePreStreamKeepalive || envKeepaliveEnabled,
-				enableEmptyStreamGate:    cfg.EnableEmptyStreamGate && envEmptyGateEnabled,
+				firstByteTimeout:            durationSecondsOrDefault(cfg.FirstByteTimeout, 180*time.Second),
+				keepaliveInterval:           durationSecondsOrDefault(cfg.KeepaliveInterval, 15*time.Second),
+				enablePreStreamKeepalive:    cfg.EnablePreStreamKeepalive || envKeepaliveEnabled,
+				enableEmptyStreamGate:       cfg.EnableEmptyStreamGate && envEmptyGateEnabled,
+				emptyStreamEarlyEmptyChunks: earlyEmptyChunks,
 			}
 		}
 	}
+	earlyEmptyChunks := envNonNegativeInt("LLM_GATEWAY_EMPTY_STREAM_EARLY_EMPTY_CHUNKS", 3)
 	return streamRuntimeConfig{
 		upstreamTimeout:    envDurationSeconds("LLM_GATEWAY_UPSTREAM_TIMEOUT", 120*time.Second),
 		streamTimeout:      envDurationSeconds("LLM_GATEWAY_STREAM_TIMEOUT", 900*time.Second),
 		streamChunkTimeout: envDurationSeconds("LLM_GATEWAY_STREAM_CHUNK_TIMEOUT", 300*time.Second),
 		// 2026-08-04: 120→180s default for thinking/long-running models.
-		firstByteTimeout:         envDurationSeconds("LLM_GATEWAY_FIRST_BYTE_TIMEOUT", 180*time.Second),
-		keepaliveInterval:        envDurationSeconds("LLM_GATEWAY_KEEPALIVE_INTERVAL", 15*time.Second),
-		enablePreStreamKeepalive: envKeepaliveEnabled,
-		enableEmptyStreamGate:    envEmptyGateEnabled,
+		firstByteTimeout:            envDurationSeconds("LLM_GATEWAY_FIRST_BYTE_TIMEOUT", 180*time.Second),
+		keepaliveInterval:           envDurationSeconds("LLM_GATEWAY_KEEPALIVE_INTERVAL", 15*time.Second),
+		enablePreStreamKeepalive:    envKeepaliveEnabled,
+		enableEmptyStreamGate:       envEmptyGateEnabled,
+		emptyStreamEarlyEmptyChunks: earlyEmptyChunks,
 	}
 }
 
@@ -79,6 +89,18 @@ func envDurationSeconds(key string, def time.Duration) time.Duration {
 		return def
 	}
 	return time.Duration(s) * time.Second
+}
+
+func envNonNegativeInt(key string, def int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		return def
+	}
+	return n
 }
 
 func envBool(key string, def bool) bool {

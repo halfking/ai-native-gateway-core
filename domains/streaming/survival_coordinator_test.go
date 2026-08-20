@@ -373,6 +373,101 @@ func (e *alwaysTransientExecutor) Execute(params *executors.ExecParams) (*execut
 	return nil, transientFailure()
 }
 
+// holdbackWriteExecutor writes a fixed semantic frame into the attempt gate
+// (via params.W, the GateWriter) and then either succeeds or fails with the
+// configured kind. With the FR-12 L1 holdback window open the frame is held
+// in the gate's uncommitted buffer, never advancing commit state — exactly
+// the pre-finish condition the coordinator's flush logic must handle.
+type holdbackWriteExecutor struct {
+	content  string
+	fail     bool
+	failKind errorsx.ErrorKind
+	calls    int
+}
+
+func (e *holdbackWriteExecutor) Execute(params *executors.ExecParams) (*executors.ExecuteResult, error) {
+	e.calls++
+	if gw, ok := params.W.(*GateWriter); ok {
+		_, _ = gw.Write([]byte(e.content))
+	}
+	if e.fail {
+		return nil, &executors.ExecuteError{
+			LastKind: e.failKind,
+			Attempts: []executors.AttemptRecord{{ProviderID: 1, CredentialID: 1, Kind: e.failKind}},
+		}
+	}
+	return &executors.ExecuteResult{}, nil
+}
+
+// TestSurvivalCoordinatorFlushHeldFramesOnSuccessUnderHoldback is the
+// coordinator-level regression for the success-path holdback flush fix
+// (FR-12 L1). An attempt that finishes successfully while the L1 window still
+// holds its semantic frames (gate uncommitted) must release those held frames
+// to the client via GateWriter.Finish → FinishAttempt. The buggy path reused
+// finishGateWriter's committed-guard on success, which swallowed the held
+// buffer and left the client with an empty body.
+func TestSurvivalCoordinatorFlushHeldFramesOnSuccessUnderHoldback(t *testing.T) {
+	t.Setenv("LLM_GATEWAY_RECOVERY_HOLDBACK_WINDOW_MS", "5000")
+	t.Setenv("LLM_GATEWAY_RECOVERY_HOLDBACK_MAX_CHUNKS", "5")
+
+	const marker = "held-but-flushed-on-success"
+	content := "event: content_block_delta\ndata: {\"delta\":{\"type\":\"text_delta\",\"text\":\"" + marker + "\"}}\n\n"
+	exec := &holdbackWriteExecutor{content: content}
+	h := newCoordHarness(nil)
+	h.exec = nil
+	c := h.coordinator()
+	c.Exec = exec
+
+	res := c.Run(context.Background(), h.sw, &executors.ExecParams{IsStream: true})
+
+	if !res.Succeed {
+		t.Fatalf("expected success, decision=%v reason=%v", res.Decision.Action, res.Decision.Reason)
+	}
+	if exec.calls != 1 {
+		t.Fatalf("clean success must run one attempt, got %d", exec.calls)
+	}
+	// The marker only reaches the wire if the success branch flushed the
+	// uncommitted held buffer. With the regression this body is empty.
+	if got := h.flusher.buf.String(); !strings.Contains(got, marker) {
+		t.Fatalf("success path must flush held semantic frames to the client; wire=%q", got)
+	}
+}
+
+// TestSurvivalCoordinatorDiscardsHeldFramesOnTerminalFailureUnderHoldback is
+// the complementary check: a terminal failure while the L1 window holds
+// uncommitted semantic frames must NOT leak those frames to the client. The
+// terminal branch uses finishGateWriter, whose committed-guard (gate not
+// committed) skips the flush, so the held buffer is dropped.
+func TestSurvivalCoordinatorDiscardsHeldFramesOnTerminalFailureUnderHoldback(t *testing.T) {
+	t.Setenv("LLM_GATEWAY_RECOVERY_HOLDBACK_WINDOW_MS", "5000")
+	t.Setenv("LLM_GATEWAY_RECOVERY_HOLDBACK_MAX_CHUNKS", "5")
+
+	const marker = "must-not-leak-on-failure"
+	content := "event: content_block_delta\ndata: {\"delta\":{\"type\":\"text_delta\",\"text\":\"" + marker + "\"}}\n\n"
+	exec := &holdbackWriteExecutor{content: content, fail: true, failKind: errorsx.KindContentFilter}
+	h := newCoordHarness(nil)
+	h.exec = nil
+	c := h.coordinator()
+	c.Exec = exec
+
+	res := c.Run(context.Background(), h.sw, &executors.ExecParams{})
+
+	if res.Succeed {
+		t.Fatal("content-filter failure must not succeed")
+	}
+	if res.Decision.Action != TaskActionFailTerminal {
+		t.Fatalf("decision = %v, want fail_terminal", res.Decision.Action)
+	}
+	if exec.calls != 1 {
+		t.Fatalf("terminal failure must not retry, got %d attempts", exec.calls)
+	}
+	// The held frames were never committed, so finishGateWriter's guard skips
+	// the flush and the marker must not reach the wire.
+	if got := h.flusher.buf.String(); strings.Contains(got, marker) {
+		t.Fatalf("terminal failure must not leak held semantic frames; wire=%q", got)
+	}
+}
+
 func TestSurvivalCoordinatorStopsWhenSharedUpstreamBudgetIsExhausted(t *testing.T) {
 	exec := &alwaysTransientExecutor{}
 	h := newCoordHarness(nil)

@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"strings"
+
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 )
@@ -36,7 +38,13 @@ func TestRedisManager_NotEnabledNilClient(t *testing.T) {
 	}
 }
 
-// TestRedisManager_LeaderThenFollower pins the happy path against real
+func TestRedisManager_BuildKeyUsesOneHashTag(t *testing.T) {
+	key := BuildKey("title:auto", "default\x00sess-1")
+	if !strings.Contains(key, "{title:auto:default\x00sess-1}") || !strings.HasSuffix(key, ":lock") {
+		t.Fatalf("unexpected key: %q", key)
+	}
+}
+
 // (in-memory) Redis. First acquire is leader; second is follower.
 func TestRedisManager_LeaderThenFollower(t *testing.T) {
 	m, mr, rdb := newRedisManagerForTest(t)
@@ -290,6 +298,9 @@ func TestRedisManager_EmptyKeyRejected(t *testing.T) {
 	_, err := m.Acquire(context.Background(), AcquireOpts{})
 	if err == nil {
 		t.Fatal("empty Key should error")
+	}
+	if !errors.Is(err, ErrInvalidKey) {
+		t.Fatalf("empty Key: want ErrInvalidKey, got %v", err)
 	}
 }
 

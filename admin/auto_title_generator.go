@@ -195,6 +195,7 @@ func (g *AutoTitleGenerator) generateTitleAsync(sessionID, tenantID, taskID, req
 	//   - Redis errors fall through to "proceed without lock" so a
 	//     Redis outage cannot stop title generation — the DB ON CONFLICT
 	//     guard is the final correctness guarantee.
+	var leaderHandle *distlock.Handle
 	mgr := g.handler.titleDistLock
 	if mgr != nil {
 		key := titleDistLockKey("auto", taskID, sessionID)
@@ -210,6 +211,9 @@ func (g *AutoTitleGenerator) generateTitleAsync(sessionID, tenantID, taskID, req
 				"key", key, "error", lerr)
 		} else if h != nil {
 			defer h.Release(context.Background())
+			if h.IsLeader() {
+				leaderHandle = h
+			}
 			if !h.IsLeader() {
 				// Follower: wait for leader to release, then re-check.
 				// Re-check covers two cases:
@@ -264,6 +268,12 @@ func (g *AutoTitleGenerator) generateTitleAsync(sessionID, tenantID, taskID, req
 	// Step 2: Save title to database (with conflict handling).
 	// ON CONFLICT DO NOTHING: if another goroutine already saved a title for
 	// this session, we keep theirs and discard ours (first writer wins).
+	if leaderHandle != nil {
+		if err := leaderHandle.Check(ctx); err != nil {
+			logger.Warn("auto_title: lease lost before save", "error", err)
+			return
+		}
+	}
 	if err := g.saveSessionTitle(ctx, sessionID, taskID, title, model, keyID); err != nil {
 		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
 			logger.Debug("title already saved by another goroutine")

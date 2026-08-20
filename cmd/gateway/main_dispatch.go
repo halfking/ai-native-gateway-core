@@ -18,7 +18,7 @@ import (
 // gatewayDispatchPipeline is retained by the executor wiring only. Admin and
 // SSE reads use the independent projection below and never call Pipeline locks.
 var gatewayDispatchPipeline *dispatch.Pipeline
-var gatewayQueueProjection *dispatch.QueueProjection
+var gatewayQueueProjection queueProjectionHolder
 
 // gatewayLiveActionsEmitter (2026-08-15, V3.3-OBS OBS-B1) is the shared
 // request-lifecycle action-event emitter, constructed in main.go next to the
@@ -50,8 +50,9 @@ func wireDispatchPipeline(routingExec *executors.Executor) *dispatch.Pipeline {
 	}
 	p := routingExec.NewDispatchPipeline()
 	p.SetObservationSink(gatewayRequestJourneySink)
-	gatewayQueueProjection = dispatch.NewQueueProjection()
-	p.SetQueueObservationSink(gatewayQueueProjection)
+	projection := dispatch.NewQueueProjection()
+	gatewayQueueProjection.Store(projection)
+	p.SetQueueObservationSink(projection)
 	// V3.3-OBS OBS-B1 (2026-08-15): 动作事件发射器注入 dispatch pipeline。
 	// nil 安全（发射点全部 no-op），发射器本身旁路异步、满即丢。
 	p.SetLiveActions(gatewayLiveActionsEmitter)
@@ -111,8 +112,8 @@ func handleDispatchWaterfall(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var snap dispatch.WaterfallSnapshot
-	if gatewayQueueProjection != nil {
-		snap = gatewayQueueProjection.SnapshotWaterfall(limit, model, credID)
+	if projection := gatewayQueueProjection.Load(); projection != nil {
+		snap = projection.SnapshotWaterfall(limit, model, credID)
 	} else {
 		snap = dispatch.WaterfallSnapshot{Requests: []dispatch.WaterfallRequest{}, Enabled: true, Wired: false,
 			BottleneckDiagnosis: dispatch.BottleneckDiagnosis{Bottleneck: "none", Message: "dispatch queue projection not wired"}}

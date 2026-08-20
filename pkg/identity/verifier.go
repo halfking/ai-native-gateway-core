@@ -27,6 +27,7 @@ import (
 
 	_ "github.com/lib/pq"
 
+	"github.com/kaixuan/llm-gateway-go/pkg/identity/shadow"
 	"github.com/kaixuan/llm-gateway-go/pkg/identity/token"
 )
 
@@ -302,15 +303,26 @@ func RecordShadow(provider string, userID int, tenantID, displayName, primaryEma
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	const upsertSQL = `
-INSERT INTO identity_shadow.shadow_users (provider, subject, tenant_id, display_name, primary_email, last_seen_at)
-VALUES ($1, $2, $3, NULLIF($4, ''), NULLIF($5, ''), now())
-ON CONFLICT (provider, subject, tenant_id) DO UPDATE
-    SET display_name  = COALESCE(EXCLUDED.display_name, identity_shadow.shadow_users.display_name),
-        primary_email = COALESCE(EXCLUDED.primary_email, identity_shadow.shadow_users.primary_email),
-        last_seen_at  = now()`
-	if _, err := db.ExecContext(ctx, upsertSQL, provider, subject, tenantID, displayName, primaryEmail); err != nil {
-		shadowLog.Warn("shadow upsert failed", "provider", provider, "subject", subject, "err", err)
+	// Use the canonical identity-go shadow DAO. The previous hand-rolled
+	// upsert targeted identity_shadow.shadow_users with the
+	// (provider, subject, tenant_id) PK that actually belongs to
+	// shadow_user_providers, so it always failed at runtime and shadow
+	// recording was silently dead. Record() writes both tables correctly.
+	d := shadow.NewDAO(db)
+	sp := shadow.ShadowProvider{
+		Provider: provider,
+		Subject:  subject,
+		TenantID: tenantID,
+		Metadata: `{"src":"llm-gateway"}`,
+	}
+	if _, _, _, err := d.Record(ctx, sp); err != nil {
+		shadowLog.Warn("shadow Record failed", "provider", provider, "subject", subject, "err", err)
+		return
+	}
+	if displayName != "" || primaryEmail != "" {
+		if su, err := d.GetByProvider(ctx, provider, subject, tenantID); err == nil && su != nil {
+			_ = d.UpdateProfile(ctx, su.ShadowUserID, displayName, primaryEmail, "")
+		}
 	}
 }
 

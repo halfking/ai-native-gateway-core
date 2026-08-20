@@ -107,6 +107,22 @@ func TestLoad_InvalidPendingTTLFallsBackToDefault(t *testing.T) {
 		})
 	}
 }
+func TestLoad_EmptyStreamEarlyEmptyChunksEnvironmentOverride(t *testing.T) {
+	t.Setenv("LLM_GATEWAY_EMPTY_STREAM_EARLY_EMPTY_CHUNKS", "5")
+	if got := Load().EmptyStreamEarlyEmptyChunks; got != 5 {
+		t.Fatalf("EmptyStreamEarlyEmptyChunks = %d, want 5", got)
+	}
+
+	t.Setenv("LLM_GATEWAY_EMPTY_STREAM_EARLY_EMPTY_CHUNKS", "0")
+	if got := Load().EmptyStreamEarlyEmptyChunks; got != 0 {
+		t.Fatalf("EmptyStreamEarlyEmptyChunks = %d, want explicit disable 0", got)
+	}
+
+	t.Setenv("LLM_GATEWAY_EMPTY_STREAM_EARLY_EMPTY_CHUNKS", "invalid")
+	if got := Load().EmptyStreamEarlyEmptyChunks; got != 3 {
+		t.Fatalf("invalid EmptyStreamEarlyEmptyChunks = %d, want default 3", got)
+	}
+}
 func TestParseCommaList(t *testing.T) {
 	got := parseCommaList("workspaceId, room_session_key , ,chatRoomId")
 	want := []string{"workspaceId", "room_session_key", "chatRoomId"}
