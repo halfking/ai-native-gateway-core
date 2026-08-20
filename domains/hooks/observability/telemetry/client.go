@@ -2045,15 +2045,29 @@ func nonEmptyPtr(p *string, fallback string) string {
 // DEFAULT '{}'::text[] — but specifying a column explicitly in the
 // INSERT (which the gateway must, since it has 60+ other columns)
 // OVERRIDES the default and applies whatever the bind value is.
-// Passing nil would then trip `null value in column "quality_flags"
-// violates not-null constraint` at runtime, so we coerce empty
-// slices into a non-nil `[]string{}` so the bind produces a real
-// empty array.  When the slice has elements we return it as-is.
+// qualityFlagsArg returns a text-array literal string safe to bind with pgx.
+// pgx v5 binary protocol encodes an empty []string as NULL for text[] columns,
+// which trips SQLSTATE 22P02 ("malformed array literal: 'null'") when used
+// with CAST($N AS text[]).  We therefore return a string literal — "{}" for
+// empty/nil, "{a,b,c}" for populated slices — which the SQL CAST consumes as
+// a valid PostgreSQL text array literal.
 func qualityFlagsArg(flags []string) any {
-	if flags == nil {
-		return []string{}
+	if len(flags) == 0 {
+		return "{}"
 	}
-	return flags
+	parts := make([]string, 0, len(flags))
+	for _, f := range flags {
+		// escape double quotes and backslashes per PostgreSQL array literal rules
+		s := ""
+		for _, r := range f {
+			if r == '"' || r == '\\' {
+				s += "\\"
+			}
+			s += string(r)
+		}
+		parts = append(parts, "\""+s+"\"")
+	}
+	return "{" + strings.Join(parts, ",") + "}"
 }
 
 // qualityActionsArg turns the JSONB payload into a value safe to bind
