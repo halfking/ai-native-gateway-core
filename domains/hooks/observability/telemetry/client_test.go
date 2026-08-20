@@ -2,6 +2,7 @@ package telemetry
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -37,7 +38,7 @@ func (m stringPointerMatcher) Match(value interface{}) bool {
 }
 
 func requestLogUpdateArgs(entry RequestLogEntry) []interface{} {
-	args := make([]interface{}, 82)
+	args := make([]interface{}, 83)
 	for index := range args {
 		args[index] = pgxmock.AnyArg()
 	}
@@ -50,6 +51,7 @@ func requestLogUpdateArgs(entry RequestLogEntry) []interface{} {
 	args[79] = stringPointerMatcher{want: entry.AgentType}
 	args[80] = stringPointerMatcher{want: entry.ClientProtocol}
 	args[81] = stringPointerMatcher{want: entry.VirtualClientID}
+	args[82] = nullableJSONArg(entry.DiscardEvents)
 	return args
 }
 
@@ -213,7 +215,7 @@ func TestUpdateRequestLog_MissingRequestFallsBackToInsert(t *testing.T) {
 	mockDB.ExpectExec(`INSERT INTO usage_ledger_hot`).
 		WithArgs(usageInsertArgs...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
-	requestInsertArgs := make([]interface{}, 101)
+	requestInsertArgs := make([]interface{}, 102)
 	for index := range requestInsertArgs {
 		requestInsertArgs[index] = pgxmock.AnyArg()
 	}
@@ -392,6 +394,15 @@ func TestNormalizeRequestStatus(t *testing.T) {
 	normalizeRequestStatus(entry)
 	if entry.RequestStatus == nil || *entry.RequestStatus != RequestStatusInProgress {
 		t.Fatalf("expected in_progress, got %#v", entry.RequestStatus)
+	}
+}
+
+func TestMergeRequestLogEntry_PreservesDiscardEventsOnEmptyUpdate(t *testing.T) {
+	events := json.RawMessage(`[{"reason":"survival_attempt_discarded","attempt_number":1}]`)
+	dst := &RequestLogEntry{RequestID: "req-discard-preserve", DiscardEvents: events}
+	mergeRequestLogEntry(dst, &RequestLogEntry{RequestID: dst.RequestID})
+	if string(dst.DiscardEvents) != string(events) {
+		t.Fatalf("DiscardEvents = %s, want %s", dst.DiscardEvents, events)
 	}
 }
 

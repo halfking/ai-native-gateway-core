@@ -5304,13 +5304,9 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 				reqLog.ToolCalls = b
 			}
 		}
-		// 2026-08-19: discard_events from the audit StreamCapture. The
-		// column itself is not yet on request_logs_hot (follow-up
-		// migration), but the in-process RequestLogEntry now carries the
-		// JSONB so the structured record is available to anything that
-		// reads it (e.g. the gateway admin/audit pipeline). The
-		// application-log "survival_attempt_discarded" line remains the
-		// primary observability handle until the column lands.
+		// The survival coordinator records retry-discard context on the
+		// capture; persist the JSONB on the terminal request-log update.
+
 		if v, ok := m["discard_events"]; ok && v != nil {
 			switch t := v.(type) {
 			case []audit.DiscardEvent:
