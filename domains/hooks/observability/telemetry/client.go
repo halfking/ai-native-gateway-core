@@ -16,10 +16,10 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/domains/dbdegradation"
 	"github.com/kaixuan/llm-gateway-go/internal/outbox"
-	"github.com/lib/pq"
 )
 
 var errNoTelemetryDB = errors.New("telemetry database not configured")
@@ -2047,17 +2047,23 @@ func nonEmptyPtr(p *string, fallback string) string {
 // INSERT (which the gateway must, since it has 60+ other columns)
 // OVERRIDES the default and applies whatever the bind value is.
 //
-// qualityFlagsArg returns a pq.Array-wrapped []string for the text[] column bind.
-// pgx v5's binary protocol encodes a Go []string as a proper PostgreSQL text
-// array, but a nil slice is encoded as NULL. Using pq.Array ensures the
-// empty array is always encoded as the text[] literal "{}" rather than NULL
-// or the JSON literal "null" (which triggers "malformed array literal" 22P02
-// when the SQL does $64::text[]).
+// qualityFlagsArg returns a pgx-friendly text array value for the text[] column.
+// pgtype.Array wraps the Go slice so pgx's binary protocol encodes it as a
+// proper PostgreSQL text array. A nil Go slice is encoded as NULL (which the
+// DEFAULT '{}'::text[] on the column handles), and a non-nil empty slice is
+// encoded as the text[] literal "{}".
 func qualityFlagsArg(flags []string) any {
-	if flags == nil {
-		flags = []string{}
+	arr := &pgtype.Array[string]{}
+	if len(flags) > 0 {
+		if err := arr.SetDimensions([]pgtype.ArrayDimension{{
+			Length:     int32(len(flags)),
+			LowerBound: 1,
+		}}); err != nil {
+			return []string{}
+		}
+		copy(arr.Elements, flags)
 	}
-	return pq.Array(flags)
+	return arr
 }
 
 // qualityActionsArg turns the JSONB payload into a value safe to bind
