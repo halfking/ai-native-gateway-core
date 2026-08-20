@@ -156,7 +156,7 @@ func TestDispatchExecutionContext_ProvisionalSessionDoesNotDetach(t *testing.T) 
 	}
 }
 
-func TestDispatchExecutionContext_SurvivalAttemptDetaches(t *testing.T) {
+func TestDispatchExecutionContext_SurvivalAttemptKeepsClientCancel(t *testing.T) {
 	r := httptest.NewRequest("POST", "/v1/messages", nil)
 	clientCtx, cancelClient := context.WithCancel(r.Context())
 	defer cancelClient()
@@ -166,8 +166,8 @@ func TestDispatchExecutionContext_SurvivalAttemptDetaches(t *testing.T) {
 	defer cancelDispatch()
 
 	cancelClient()
-	if errors.Is(got.Err(), context.Canceled) {
-		t.Fatal("survival-owned stream dispatch wait must remain alive after client disconnect")
+	if !errors.Is(got.Err(), context.Canceled) {
+		t.Fatalf("ordinary survival dispatch context error = %v, want context.Canceled", got.Err())
 	}
 }
 

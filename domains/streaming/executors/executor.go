@@ -2942,6 +2942,8 @@ type streamInterruptedError struct {
 	credentialID int
 	resumable    bool              // Whether the stream can be resumed with a different credential
 	kind         errorsx.ErrorKind // Errorsx kind to record on the circuit (defaults to KindStreamTimeout)
+	statusCode   int
+	rawError     string
 }
 
 func (e *streamInterruptedError) Error() string {

@@ -41,3 +41,9 @@
 |-----------|------|---------|--------|
 | 547 | `547_session_project_attribution.sql` | `359353c4155d1c4331ef56356d1cae8e408b7ece01c9e1ef95b8adb9dbda16a2` | applied+verified |
 
+## 2026-08-20T07:56:44Z — deploy 245 build_seq 1639 (0185b5d8)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 548 | `548_stats_reconciliation_diffs_identity.sql` | `163003022c8b81c61a4f9da270d6a479e641a90ea683aa16fb9225e7be350b9a` | applied+verified |
+

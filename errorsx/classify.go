@@ -455,6 +455,11 @@ var concurrentOverloadCJKRe = regexp.MustCompile(
 		`稍后重试|限流`,
 )
 
+// degradedFunctionRe matches NVIDIA NIM's explicit "DEGRADED function cannot
+// be invoked" response. The model may be available through another credential
+// or provider, so this is a transient upstream failure, not a client 400.
+var degradedFunctionRe = regexp.MustCompile(`(?i)degraded function cannot be invoked`)
+
 // overloadKindForStatus splits an overload-shaped body into the two
 // distinct kinds by HTTP status. Both body classifiers must agree, so
 // the rule lives here rather than being duplicated.
@@ -565,6 +570,9 @@ func ClassifyError(err error, resp *http.Response) ErrorKind {
 		// that would otherwise be mis-classified.
 		if concurrentOverloadRe.MatchString(msg) || concurrentOverloadCJKRe.MatchString(msg) {
 			return KindConcurrent
+		}
+		if degradedFunctionRe.MatchString(msg) {
+			return KindUpstreamDown
 		}
 		if eofWithoutDoneRe.MatchString(msg) {
 			// EOF without [DONE] is most often a benign provider quirk
@@ -717,6 +725,9 @@ func ClassifyErrorWithBody(status int, body []byte) ErrorKind {
 		// the same broken credential).
 		if status >= 500 && noAvailableChannelRe.Match(body) {
 			return KindNoAvailableChannel
+		}
+		if degradedFunctionRe.Match(body) {
+			return KindUpstreamDown
 		}
 
 		if concurrentOverloadRe.Match(body) || concurrentOverloadCJKRe.Match(body) {
@@ -985,6 +996,9 @@ func ClassifyResponseBody(status int, body []byte) ErrorKind {
 		// the two classifiers cannot diverge on the same body.
 		if status >= 500 && noAvailableChannelRe.Match(body) {
 			return KindNoAvailableChannel
+		}
+		if degradedFunctionRe.Match(body) {
+			return KindUpstreamDown
 		}
 		if concurrentOverloadRe.Match(body) || concurrentOverloadCJKRe.Match(body) {
 			return overloadKindForStatus(status)
