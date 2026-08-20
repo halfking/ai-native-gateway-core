@@ -115,24 +115,36 @@ func isInterruptionCode(s string) bool {
 	return false
 }
 
+func isSupplierTimeoutCode(s string) bool {
+	switch s {
+	case "first_byte_timeout", "stream_timeout", "stream_chunk_timeout", "chunk_timeout":
+		return true
+	}
+	return false
+}
+
 type StreamCapture struct {
-	mu               sync.Mutex
-	startTime        time.Time
-	chunkCount       int
-	chunksSent       int // Chunks successfully sent to client (vs chunkCount = chunks received from upstream)
-	chunkErrors      int // 2026-07-28 §5.5: chunks the bridge or executor failed to emit
-	firstChunkMs     int
-	doneReceived     bool
-	interrupted      bool
-	finalized        bool // 2026-07-28 §5.5: pinned at MarkDone / MarkInterrupted
-	checksum         [32]byte
-	finalFinish      string
-	preview          []byte
-	textContent      []byte
-	promptTokens     *int
-	completionTokens *int
-	cacheReadTokens  *int
-	cacheWriteTokens *int
+	mu           sync.Mutex
+	startTime    time.Time
+	chunkCount   int
+	chunksSent   int // Chunks successfully sent to client (vs chunkCount = chunks received from upstream)
+	chunkErrors  int // 2026-07-28 §5.5: chunks the bridge or executor failed to emit
+	firstChunkMs int
+	doneReceived bool
+	interrupted  bool
+	finalized    bool // 2026-07-28 §5.5: pinned at MarkDone / MarkInterrupted
+	checksum     [32]byte
+	finalFinish  string // Finish reason for the current attempt.
+	// supplierTimeoutReason is request-scoped evidence that survives credential
+	// retries. It remains separate because a later successful attempt may set
+	// finalFinish to a normal reason such as "stop".
+	supplierTimeoutReason string
+	preview               []byte
+	textContent           []byte
+	promptTokens          *int
+	completionTokens      *int
+	cacheReadTokens       *int
+	cacheWriteTokens      *int
 	// HasThinking is set when the stream contained at least one
 	// Anthropic-style thinking content block. Detected in the
 	// side-channel audit of the Q4 passthrough path.
@@ -345,9 +357,9 @@ func (sc *StreamCapture) Reset() {
 	sc.interrupted = false
 	sc.finalized = false
 	sc.checksum = [32]byte{}
-	// KEEP: finalFinish — diagnostic terminal reason that must survive
-	// executor retries so buildClientDisconnectProbeEntry can still
-	// see "first_byte_timeout" on the cancel path (see 2026-08-10 fix).
+	// KEEP: supplierTimeoutReason must survive executor retries so
+	// buildClientDisconnectProbeEntry can classify a final cancel correctly;
+	// finalFinish is intentionally reset only by a new request, not by retry.
 	sc.preview = sc.preview[:0]
 	sc.textContent = sc.textContent[:0]
 	sc.promptTokens = nil
@@ -580,6 +592,9 @@ func (sc *StreamCapture) MarkInterruptedWithReason(finishReason string) {
 	sc.finalized = true
 	if finishReason != "" {
 		sc.finalFinish = finishReason
+		if sc.supplierTimeoutReason == "" && isSupplierTimeoutCode(finishReason) {
+			sc.supplierTimeoutReason = finishReason
+		}
 	}
 }
 
@@ -711,7 +726,9 @@ func (sc *StreamCapture) SummaryAsMap() map[string]any {
 		//     "successful stream ended with stop/tool_calls/length" case,
 		//     failure_detail_code is intentionally left absent.
 		m["upstream_finish_reason"] = sc.finalFinish
-		if isInterruptionCode(sc.finalFinish) {
+		if sc.supplierTimeoutReason != "" {
+			m["failure_detail_code"] = sc.supplierTimeoutReason
+		} else if isInterruptionCode(sc.finalFinish) {
 			m["failure_detail_code"] = sc.finalFinish
 		}
 	}
