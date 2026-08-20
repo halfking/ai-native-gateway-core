@@ -995,7 +995,7 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		-- v3 (2026-06-19) T23: session-level outbound body.
 		$60::text::jsonb, $61, $62, $63::text::jsonb,
 		-- 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
-		CAST($64 AS text[]), $65::text::jsonb, $66,
+		$64::text[], $65::text::jsonb, $66,
 		-- 2026-06-19 T-NEW-7: split the semantic overload of failure_detail_code.
 		$67,
 		-- 2026-06-23: structured tool_calls (042_tool_calls_column.sql).
@@ -1667,7 +1667,7 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 			       outbound_token_est = COALESCE($62, outbound_token_est),
 			       outbound_msg_hashes = COALESCE($63::text::jsonb, outbound_msg_hashes),
 			       -- 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
-			       quality_flags        = COALESCE(CAST($64 AS text[]), quality_flags),
+			       quality_flags        = COALESCE($64::text[], quality_flags),
 			       quality_fix_actions  = COALESCE($65::text::jsonb, quality_fix_actions),
 			       quality_score        = COALESCE($66, quality_score),
 		   -- 2026-06-19 T-NEW-7: split the semantic overload of failure_detail_code
@@ -2045,29 +2045,18 @@ func nonEmptyPtr(p *string, fallback string) string {
 // DEFAULT '{}'::text[] — but specifying a column explicitly in the
 // INSERT (which the gateway must, since it has 60+ other columns)
 // OVERRIDES the default and applies whatever the bind value is.
-// qualityFlagsArg returns a text-array literal string safe to bind with pgx.
-// pgx v5 binary protocol encodes an empty []string as NULL for text[] columns,
-// which trips SQLSTATE 22P02 ("malformed array literal: 'null'") when used
-// with CAST($N AS text[]).  We therefore return a string literal — "{}" for
-// empty/nil, "{a,b,c}" for populated slices — which the SQL CAST consumes as
-// a valid PostgreSQL text array literal.
-func qualityFlagsArg(flags []string) string {
-	if len(flags) == 0 {
-		return "{}"
+//
+// qualityFlagsArg returns a non-nil []string for the text[] column bind.
+// pgx v5's binary protocol encodes a Go []string as a proper PostgreSQL
+// text array. A nil Go slice is encoded as NULL, and an empty []string{}
+// is encoded as an empty text array ({}). Using $64::text[] cast (instead
+// of CAST($64 AS text[])) avoids the previous "malformed array literal"
+// error where pgx v5 encoded the empty slice as the JSON literal "null".
+func qualityFlagsArg(flags []string) any {
+	if flags == nil {
+		return []string{}
 	}
-	parts := make([]string, 0, len(flags))
-	for _, f := range flags {
-		// escape double quotes and backslashes per PostgreSQL array literal rules
-		s := ""
-		for _, r := range f {
-			if r == '"' || r == '\\' {
-				s += "\\"
-			}
-			s += string(r)
-		}
-		parts = append(parts, "\""+s+"\"")
-	}
-	return "{" + strings.Join(parts, ",") + "}"
+	return flags
 }
 
 // qualityActionsArg turns the JSONB payload into a value safe to bind
