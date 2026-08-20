@@ -5,7 +5,7 @@
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Go](https://img.shields.io/badge/Go-1.25+-00ADD8.svg)](https://go.dev/)
 
-> **当前版本：** 以 [`version.json`](version.json) 和 [`VERSION`](VERSION) 为准。  
+> **当前版本：** 以 [`version.json`](version.json) 和 [`VERSION`](VERSION) 为准。
 > **事实规则：** 代码、SQL、runtime wiring 和已执行测试优先于 README、路线图和历史报告；feature flag、migration 或目录存在不等于已上线。
 
 ## 定位
