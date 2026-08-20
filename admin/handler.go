@@ -1147,6 +1147,12 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 		wtH := NewWorkTypeHandlers(h.db)
 		wtH.RegisterWorkTypeRoutes(mux, h.superAdmin)
 
+		// 2026-08-20: 项目归属 admin 端点（POST sync-from-acc / GET list）。
+		// 与 work_type 一样的 superAdmin 保护：同步动作会写 project_dim，
+		// 列表会泄漏租户项目清单。
+		pH := NewProjectHandlers(h.db)
+		pH.RegisterProjectAdminRoutes(mux, h.superAdmin)
+
 		// Credential monitor (2026-06-22): sliding window + manual promote/demote.
 		// Redis is optional: monitor-summary works from DB alone; sliding window
 		// degrades to request_logs fallback when Redis is unavailable.

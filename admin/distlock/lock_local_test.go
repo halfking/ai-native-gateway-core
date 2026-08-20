@@ -200,9 +200,11 @@ func TestLocalManager_ProtectedWorkRunsOnce(t *testing.T) {
 // RedisManager.
 func TestLocalManager_EmptyKeyRejected(t *testing.T) {
 	m := NewLocalManager()
-	_, err := m.Acquire(context.Background(), AcquireOpts{})
-	if !errors.Is(err, ErrNotEnabled) {
-		t.Fatalf("empty Key: want ErrNotEnabled, got %v", err)
+	for _, key := range []string{"", "   "} {
+		_, err := m.Acquire(context.Background(), AcquireOpts{Key: key})
+		if !errors.Is(err, ErrInvalidKey) {
+			t.Fatalf("key %q: want ErrInvalidKey, got %v", key, err)
+		}
 	}
 }
 

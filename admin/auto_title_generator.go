@@ -35,16 +35,11 @@ const (
 	autoSourceActorHeader     = "X-Gw-Source-Actor"
 )
 
-// titleDistLockKey builds the distributed-lock key for a (kind, taskID,
-// sessionID) tuple. The kind ("auto" or "manual") keeps the two trigger
-// pipelines from blocking each other, matching the operator requirement
-// that auto-title and manual-title are independently concurrency-gated.
-//
-// Key shape: llmgw:distlock:title:<kind>:<taskID>\x00<sessionID>
-// The \x00 separator matches sessionTitleMapKey so cross-pipeline key
-// lookups are stable.
+// Key shape uses the shared Cluster-safe builder and a stable logical key.
+// The kind keeps auto-title and manual-title independently concurrency-gated.
 func titleDistLockKey(kind, taskID, sessionID string) string {
-	return "llmgw:distlock:title:" + kind + ":" + strings.TrimSpace(taskID) + "\x00" + strings.TrimSpace(sessionID)
+	logicalKey := strings.TrimSpace(taskID) + "\x00" + strings.TrimSpace(sessionID)
+	return distlock.BuildKey("title:"+strings.TrimSpace(kind), logicalKey)
 }
 
 // AutoTitleGenerator handles automatic session title generation.
@@ -195,6 +190,7 @@ func (g *AutoTitleGenerator) generateTitleAsync(sessionID, tenantID, taskID, req
 	//   - Redis errors fall through to "proceed without lock" so a
 	//     Redis outage cannot stop title generation — the DB ON CONFLICT
 	//     guard is the final correctness guarantee.
+	var leaderHandle *distlock.Handle
 	mgr := g.handler.titleDistLock
 	if mgr != nil {
 		key := titleDistLockKey("auto", taskID, sessionID)
@@ -210,6 +206,9 @@ func (g *AutoTitleGenerator) generateTitleAsync(sessionID, tenantID, taskID, req
 				"key", key, "error", lerr)
 		} else if h != nil {
 			defer h.Release(context.Background())
+			if h.IsLeader() {
+				leaderHandle = h
+			}
 			if !h.IsLeader() {
 				// Follower: wait for leader to release, then re-check.
 				// Re-check covers two cases:
@@ -217,7 +216,8 @@ func (g *AutoTitleGenerator) generateTitleAsync(sessionID, tenantID, taskID, req
 				//   - Leader failed → skip this round; the next
 				//     first-turn request will retry.
 				waitErr := h.Wait(ctx)
-				hasTitle, terr := g.checkSessionHasTitle(ctx, sessionID)
+				hasTitle, terr := g.checkSessionHasTitle(ctx, taskID, sessionID)
+
 				if terr != nil {
 					logger.Warn("auto_title: follower re-check failed; skipping round",
 						"wait_err", waitErr, "check_err", terr)
@@ -240,7 +240,7 @@ func (g *AutoTitleGenerator) generateTitleAsync(sessionID, tenantID, taskID, req
 	}
 
 	// Step 1: Check if title already exists (avoid duplicate work)
-	hasTitle, err := g.checkSessionHasTitle(ctx, sessionID)
+	hasTitle, err := g.checkSessionHasTitle(ctx, taskID, sessionID)
 	if err != nil {
 		logger.Warn("failed to check existing title", "error", err)
 		return
@@ -264,6 +264,12 @@ func (g *AutoTitleGenerator) generateTitleAsync(sessionID, tenantID, taskID, req
 	// Step 2: Save title to database (with conflict handling).
 	// ON CONFLICT DO NOTHING: if another goroutine already saved a title for
 	// this session, we keep theirs and discard ours (first writer wins).
+	if leaderHandle != nil {
+		if err := leaderHandle.Check(ctx); err != nil {
+			logger.Warn("auto_title: lease lost before save", "error", err)
+			return
+		}
+	}
 	if err := g.saveSessionTitle(ctx, sessionID, taskID, title, model, keyID); err != nil {
 		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
 			logger.Debug("title already saved by another goroutine")
@@ -276,15 +282,17 @@ func (g *AutoTitleGenerator) generateTitleAsync(sessionID, tenantID, taskID, req
 	logger.Info("auto title saved successfully", "title", title, "length", len(title), "model", model)
 }
 
-// checkSessionHasTitle checks if a session already has a title.
-func (g *AutoTitleGenerator) checkSessionHasTitle(ctx context.Context, sessionID string) (bool, error) {
+func (g *AutoTitleGenerator) checkSessionHasTitle(ctx context.Context, taskID, sessionID string) (bool, error) {
+	if strings.TrimSpace(taskID) == "" {
+		taskID = "auto"
+	}
 	var exists bool
 	err := g.handler.db.QueryRow(ctx, `
 		SELECT EXISTS(
-			SELECT 1 FROM session_titles 
-			WHERE scoped_session_id = $1
+			SELECT 1 FROM session_titles
+			WHERE task_id = $1 AND scoped_session_id = $2
 		)
-	`, sessionID).Scan(&exists)
+	`, taskID, sessionID).Scan(&exists)
 	return exists, err
 }
 

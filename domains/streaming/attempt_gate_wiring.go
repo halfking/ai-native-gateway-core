@@ -83,6 +83,11 @@ func wrapAttemptWriter(w http.ResponseWriter, protocol ClientProtocol) (http.Res
 	// gate's commit/discard log lines with the owning request (mirrors the
 	// survival path which passes params.RequestID explicitly).
 	reqID := w.Header().Get("X-Request-Id")
+	// Holdback is deliberately not wired here. This path serves standalone
+	// bridges that do not have the SurvivalCoordinator's discard/retry owner;
+	// enabling L1 here can strand successful output in the gate or flush an
+	// interrupted attempt to the client. The coordinator is the sole owner of
+	// the opt-in recovery window.
 	gate := NewAttemptCommitGate(protocol, sw, GateOptions{Mode: mode, RequestID: reqID, FirstSemanticByte: firstSemanticByte})
 	return NewGateWriterWithResponse(gate, w), gate
 }

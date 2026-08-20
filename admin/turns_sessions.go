@@ -43,6 +43,7 @@ import (
 const (
 	defaultTurnsSessionsLimit = 20
 	maxTurnsSessionsLimit     = 50
+	turnsSessionProjectExpr   = "COALESCE(NULLIF(ss.gw_project_id, ''), sd.project_id)"
 )
 
 // TurnsCompressionAgg 是会话内压缩操作的汇总。
@@ -192,18 +193,19 @@ func (h *Handler) handleTurnsSessions(w http.ResponseWriter, r *http.Request) {
 	}
 	query := fmt.Sprintf(`
 		SELECT s.session_id, s.tenant_id,
-			COALESCE(NULLIF(s.title, ''), st.title, ss.title) AS title,
-			s.topic,
-			COALESCE(NULLIF(s.intent, ''), ss.user_intent) AS intent,
-			COALESCE(NULLIF(s.summary, ''), ss.summary) AS summary,
-			s.summary_model, s.summary_generated_at,
-			s.status, s.task_type, s.client_type,
-			s.created_at, s.updated_at, s.closed_at,
-			s.total_turns, s.total_tokens, s.total_cost_usd,
-			s.last_turn_no, s.last_model, s.last_provider,
-			COALESCE(ss.gw_project_id, sd.project_id), sd.task_id, sd.owner_user,
-			sd.client_id, sd.application_code, sd.end_user_id,
-			COALESCE(ss.user_tags, '{}') AS user_tags,
+				COALESCE(NULLIF(s.title, ''), st.title, ss.title) AS title,
+				s.topic,
+				COALESCE(NULLIF(s.intent, ''), ss.user_intent) AS intent,
+				COALESCE(NULLIF(s.summary, ''), ss.summary) AS summary,
+				s.summary_model, s.summary_generated_at,
+				s.status, s.task_type, s.client_type,
+				s.created_at, s.updated_at, s.closed_at,
+				s.total_turns, s.total_tokens, s.total_cost_usd,
+				s.last_turn_no, s.last_model, s.last_provider,
+				%s, sd.task_id, sd.owner_user,
+				sd.client_id, sd.application_code, sd.end_user_id,
+				COALESCE(ss.user_tags, '{}') AS user_tags,
+
 			ss.first_request_at AS start_time,
 			ho.parent_session_id, ho.trigger_reason
 		FROM public.sessions s
@@ -228,7 +230,7 @@ func (h *Handler) handleTurnsSessions(w http.ResponseWriter, r *http.Request) {
 		%s
 		ORDER BY s.updated_at DESC, s.session_id DESC
 		LIMIT $%d
-	`, sessionTitleFallbackJoinSQL("s.session_id", "sd.task_id"), queryClause, argIdx)
+		`, turnsSessionProjectExpr, sessionTitleFallbackJoinSQL("s.session_id", "sd.task_id"), queryClause, argIdx)
 	args = append(args, limit+1)
 
 	rows, err := h.db.Query(ctx, query, args...)
@@ -260,8 +262,11 @@ func (h *Handler) handleTurnsSessions(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		g.ModelsUsed = []string{}
-		g.UserTags = []string{}
+		if g.UserTags == nil {
+			g.UserTags = []string{}
+		}
 		g.Compression = TurnsCompressionAgg{Strategies: []string{}}
+
 		applySessionParent(&g)
 		sessions = append(sessions, &g)
 	}
@@ -357,7 +362,7 @@ func buildTurnsSessionWhere(r *http.Request, tenantID string, tsFrom, tsTo time.
 	}
 
 	if v := strings.TrimSpace(r.URL.Query().Get("project_id")); v != "" {
-		clauses = append(clauses, fmt.Sprintf("ss.gw_project_id = $%d", argIdx))
+		clauses = append(clauses, fmt.Sprintf("%s = $%d", turnsSessionProjectExpr, argIdx))
 		args = append(args, v)
 		argIdx++
 	}
@@ -388,10 +393,10 @@ func buildTurnsSessionWhere(r *http.Request, tenantID string, tsFrom, tsTo time.
 		// topic、user_intent、摘要（含 session_summaries fallback），让自动生成
 		// 的标题/摘要也能被搜到。
 		clauses = append(clauses, fmt.Sprintf(
-			"(COALESCE(s.title, st.title, ss.title) ILIKE '%%'||$%d||'%%'"+
-				" OR COALESCE(s.topic, '') ILIKE '%%'||$%d||'%%'"+
-				" OR COALESCE(s.intent, ss.user_intent, '') ILIKE '%%'||$%d||'%%'"+
-				" OR COALESCE(s.summary, ss.summary) ILIKE '%%'||$%d||'%%')",
+			"(COALESCE(NULLIF(s.title, ''), st.title, ss.title, '') ILIKE '%%'||$%d||'%%'"+
+				" OR COALESCE(NULLIF(s.topic, ''), '') ILIKE '%%'||$%d||'%%'"+
+				" OR COALESCE(NULLIF(s.intent, ''), ss.user_intent, '') ILIKE '%%'||$%d||'%%'"+
+				" OR COALESCE(NULLIF(s.summary, ''), ss.summary, '') ILIKE '%%'||$%d||'%%')",
 			argIdx, argIdx+1, argIdx+2, argIdx+3))
 		args = append(args, v, v, v, v)
 		argIdx += 4
@@ -421,6 +426,7 @@ func (h *Handler) loadTurnsForSessions(ctx context.Context, sessions []*TurnsSes
 	turnClauses := []string{"t.session_id = ANY($1)"}
 	turnArgs := []any{sessionIDs}
 	argIdx := 2
+	turnFilterActive := false
 
 	if tenantID != "" {
 		turnClauses = append(turnClauses, fmt.Sprintf("t.tenant_id = $%d", argIdx))
@@ -429,18 +435,24 @@ func (h *Handler) loadTurnsForSessions(ctx context.Context, sessions []*TurnsSes
 	}
 
 	if v := strings.TrimSpace(r.URL.Query().Get("model")); v != "" {
+		turnFilterActive = true
 		turnClauses = append(turnClauses, fmt.Sprintf("t.model = $%d", argIdx))
+
 		turnArgs = append(turnArgs, v)
 		argIdx++
 	}
 	if v := strings.TrimSpace(r.URL.Query().Get("provider")); v != "" {
+		turnFilterActive = true
 		turnClauses = append(turnClauses, fmt.Sprintf("t.provider = $%d", argIdx))
+
 		turnArgs = append(turnArgs, v)
 		argIdx++
 	}
 	if v := r.URL.Query().Get("status_code"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
+			turnFilterActive = true
 			turnClauses = append(turnClauses, fmt.Sprintf("t.status_code = $%d", argIdx))
+
 			turnArgs = append(turnArgs, n)
 			argIdx++
 		}
@@ -515,11 +527,34 @@ func (h *Handler) loadTurnsForSessions(ctx context.Context, sessions []*TurnsSes
 		return fmt.Errorf("iterate turns failed: %w", err)
 	}
 
-	// 计算会话级聚合
+	// 计算会话级聚合。轮次筛选时 totals 以匹配轮次为准；无轮次筛选时保留 sessions 表的全会话累计值。
+	type storedTotals struct {
+		turns      int
+		tokens     int
+		cost       float64
+		lastTurnNo *int
+		lastModel  *string
+		lastProv   *string
+	}
+	fullTotals := make(map[string]storedTotals, len(sessions))
 	for _, g := range sessions {
+		fullTotals[g.SessionID] = storedTotals{
+			turns: g.TotalTurns, tokens: g.TotalTokens, cost: g.TotalCostUSD,
+			lastTurnNo: g.LastTurnNo, lastModel: g.LastModel, lastProv: g.LastProvider,
+		}
 		ensureTurnsNonNil(g)
 		computeSessionAggs(g)
+		if !turnFilterActive {
+			full := fullTotals[g.SessionID]
+			g.TotalTurns = full.turns
+			g.TotalTokens = full.tokens
+			g.TotalCostUSD = full.cost
+			g.LastTurnNo = full.lastTurnNo
+			g.LastModel = full.lastModel
+			g.LastProvider = full.lastProv
+		}
 	}
+
 	return nil
 }
 
@@ -568,10 +603,32 @@ func computeSessionAggs(g *TurnsSessionGroup) {
 	if g == nil {
 		return
 	}
+	g.TotalTurns = len(g.Turns)
+	g.TotalTokens = 0
+	g.TotalCostUSD = 0
+	g.LastTurnNo = nil
+	g.LastModel = nil
+	g.LastProvider = nil
+	g.ModelsUsed = []string{}
+	g.FailoverCount = 0
+	g.ErrorCount = 0
+	g.DurationMs = 0
+	g.Compression = TurnsCompressionAgg{Strategies: []string{}}
+
 	modelSeen := map[string]bool{}
 	strategySeen := map[string]bool{}
 	var firstTS, lastTS time.Time
 	for _, t := range g.Turns {
+		g.TotalTokens += t.RequestTokens + t.ResponseTokens
+		g.TotalCostUSD += t.CostUSD
+		if g.LastTurnNo == nil || t.TurnNo > *g.LastTurnNo {
+			turnNo := t.TurnNo
+			g.LastTurnNo = &turnNo
+			model := t.Model
+			provider := t.Provider
+			g.LastModel = &model
+			g.LastProvider = &provider
+		}
 		if t.Model != "" && !modelSeen[t.Model] {
 			modelSeen[t.Model] = true
 			g.ModelsUsed = append(g.ModelsUsed, t.Model)

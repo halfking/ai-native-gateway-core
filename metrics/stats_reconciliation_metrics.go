@@ -17,18 +17,18 @@ import (
 var (
 	// statsReconciliationRuns counts reconciliation runs by terminal status.
 	//
-	// status is fixed: completed | failed. The counter reflects the Go-level
-	// outcome (i.e. after ReconcilePeriod decided which branch to take);
-	// it does NOT distinguish a logical "completed" from a persisted
-	// "completed" because finishRun swallows UPDATE errors. Operators
-	// should pair this metric with stats_reconciliation_runs.status from
-	// the database when investigating drift.
+	// status is completed | failed | panicked. completed and failed reflect
+	// ReconcilePeriod's Go-level outcome; panicked is a worker tick recovered
+	// by runTick and does not necessarily correspond to a persisted run row.
+	// The metric does NOT distinguish a logical "completed" from a persisted
+	// "completed" because finishRun swallows UPDATE errors. Operators should
+	// pair it with stats_reconciliation_runs.status when investigating drift.
 	statsReconciliationRuns = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "llm_gateway_stats_reconciliation_runs_total",
 			Help: "Stats reconciliation runs by terminal status (logical outcome).",
 		},
-		[]string{"status"}, // completed | failed
+		[]string{"status"}, // completed | failed | panicked
 	)
 
 	// statsReconciliationDiffs counts reconciliation diffs by terminal
@@ -40,7 +40,7 @@ var (
 			Name: "llm_gateway_stats_reconciliation_diffs_total",
 			Help: "Stats reconciliation diffs by terminal resolution.",
 		},
-		[]string{"resolution"}, // open | auto_repaired
+		[]string{"resolution"}, // open | phantom_open | auto_repaired
 	)
 
 	// statsAdjustments counts admin approval/rejection outcomes. The

@@ -110,9 +110,10 @@ func (in *Installer) Install(ctx context.Context, pluginID, version string) erro
 		return fmt.Errorf("upgrade: %w", err)
 	}
 
-	// refresh registry nav/state from new manifest
+	// Installation only stages the manifest and process. Readiness is granted
+	// by the gateway startup gate after handshake, health, and binding checks.
 	in.cfg.Registry.SetPlugin(&PluginState{
-		PluginID: m.PluginID, PluginVersion: m.PluginVersion, Status: "ready",
+		PluginID: m.PluginID, PluginVersion: m.PluginVersion, Status: "starting",
 	})
 	in.cfg.Registry.SetNav(m.PluginID, m.PluginVersion, m.Pages)
 	return nil

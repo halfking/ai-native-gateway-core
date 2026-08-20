@@ -842,4 +842,13 @@ func TestStreamCapture_Reset_PreservesFinalFinish(t *testing.T) {
 	if got := m2["upstream_finish_reason"]; got != "stop" {
 		t.Errorf("after successful retry: upstream_finish_reason must be stop, got %v", got)
 	}
+	if got := m2["failure_detail_code"]; got != "first_byte_timeout" {
+		t.Errorf("after successful retry: failure_detail_code must remain first_byte_timeout, got %v", got)
+	}
+
+	sc.MarkInterruptedWithReason("client_cancel")
+	m3 := sc.SummaryAsMap()
+	if got := m3["failure_detail_code"]; got != "first_byte_timeout" {
+		t.Errorf("after later client cancel: first failure must remain first_byte_timeout, got %v", got)
+	}
 }

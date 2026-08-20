@@ -16,6 +16,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/domains/dbdegradation"
 	"github.com/kaixuan/llm-gateway-go/internal/outbox"
@@ -358,8 +359,8 @@ type RequestLogEntry struct {
 	// SummaryAsMap under "discard_events", and the per-request log path
 	// (request_log_pipeline.go) copies it onto this field. The current
 	// upsert SQL does not yet include the column — operators read the
-	// gateway application log line "survival_attempt_discarded" for
-	// production debugging until the column lands in a follow-up migration.
+	// The streaming survival/recovery path appends structured discard events;
+	// the telemetry upsert persists them in request_logs_hot.discard_events.
 	DiscardEvents json.RawMessage `json:"discard_events,omitempty"`
 }
 
@@ -962,12 +963,14 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 			-- virtual_client_id 来自 identity.BuildIdentityFromRequest.
 			-- 之前这些字段只在侧表 request_context_attrs 写入,主表永远 NULL.
 			agent_name, agent_type, client_protocol, virtual_client_id,
--- V3.1 (migration 491): 9-stage dispatch queue timestamps.
-		t0_arrived_at, t1_total_enqueued_at, t2_total_dequeued_at,
-		t3_model_enqueued_at, t4_model_dequeued_at,
-		t5_cred_enqueued_at, t6_cred_dequeued_at,
-		t7_forward_start_at, t8_response_start_at, t9_response_end_at
-	) VALUES (
+	-- V3.1 (migration 491): 9-stage dispatch queue timestamps.
+			t0_arrived_at, t1_total_enqueued_at, t2_total_dequeued_at,
+			t3_model_enqueued_at, t4_model_dequeued_at,
+			t5_cred_enqueued_at, t6_cred_dequeued_at,
+			t7_forward_start_at, t8_response_start_at, t9_response_end_at,
+			-- 2026-08-19: streaming discard audit events.
+			discard_events
+		) VALUES (
 		$1, now(), $2, $3, $4,
 		$5, $6, $7,
 		$8, $9, $10,
@@ -990,35 +993,37 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		$49, $50,
 		$51, $52, $53,
 		$54, $55, $56, $57::text::jsonb, $58,
+		$59, $60,
+		$61, $62, $63, $64::text::jsonb,
 		-- 2026-08-19: token-band observability.
-		$59,
+		$65,
 		-- v3 (2026-06-19) T23: session-level outbound body.
-		$60::text::jsonb, $61, $62, $63::text::jsonb,
+		$66::text::jsonb, $67, $68, $69::text::jsonb,
 		-- 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
-		CAST($64 AS text[]), $65::text::jsonb, $66,
+		$70::text[], $71::text::jsonb, $72,
 		-- 2026-06-19 T-NEW-7: split the semantic overload of failure_detail_code.
-		$67,
+		$73,
 		-- 2026-06-23: structured tool_calls (042_tool_calls_column.sql).
-		$68::text::jsonb,
+		$74::text::jsonb,
 		-- 2026-06-26: client-supplied X-Request-Id.
-		$69,
+		$75,
 		-- 2026-06-30: upstream diagnostics (migration 320).
-		$70, $71, $72,
-		$73, $74,
+		$76, $77, $78,
+		$79, $80,
 		-- 2026-07-01: 附件元数据 (migration 325).
-		$75::text::jsonb,
+		$81::text::jsonb,
 		-- 2026-07-14 (migration 341): client-side origin.
-		$76, $77, $78, $79,
-		-- 2026-07-19 (migration 350): routing attempts tracking.
-		$80::text::jsonb, $81,
-		-- 2026-07-27: 客户端感知字段(主表 INSERT 必填).
 		$82, $83, $84, $85,
-		-- V3.1 queue timestamps (migration 491): 9-stage dispatch queue timestamps.
-		-- above + 10 timestamps occupy $82-$95. 2026-08-19 hotfix:
-		-- previous diff landed $91-$95 only, which pgx rejected
-		-- with the diagnostic "unused argument: 95".
-		$86, $87, $88, $89, $90, $91, $92, $93, $94, $95
-	)
+		-- 2026-07-19 (migration 350): routing attempts tracking.
+		$86::text::jsonb, $87,
+		-- 2026-07-27: 客户端感知字段(主表 INSERT 必填).
+		$88, $89, $90, $91,
+			-- V3.1 queue timestamps (migration 491): 9-stage dispatch queue timestamps.
+			$92, $93, $94, $95, $96, $97, $98, $99, $100, $101,
+			-- 2026-08-19: streaming discard audit events.
+			$102::text::jsonb
+		)
+
 				-- 2026-08-06 fix: INSERT targets request_logs_hot (NOT the partitioned parent).
 				-- Migration 455 (2026-07-23) gave request_logs_hot PRIMARY KEY (request_id),
 				-- so ON CONFLICT must be (request_id). Using (request_id, ts) here triggers
@@ -1132,8 +1137,10 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		t6_cred_dequeued_at  = COALESCE(EXCLUDED.t6_cred_dequeued_at, request_logs_hot.t6_cred_dequeued_at),
 		t7_forward_start_at  = COALESCE(EXCLUDED.t7_forward_start_at, request_logs_hot.t7_forward_start_at),
 		t8_response_start_at = COALESCE(EXCLUDED.t8_response_start_at, request_logs_hot.t8_response_start_at),
-		t9_response_end_at   = COALESCE(EXCLUDED.t9_response_end_at, request_logs_hot.t9_response_end_at)
+			t9_response_end_at   = COALESCE(EXCLUDED.t9_response_end_at, request_logs_hot.t9_response_end_at),
+			discard_events       = COALESCE(EXCLUDED.discard_events, request_logs_hot.discard_events)
 		-- 2026-07-27 (L-2): terminal-state guard, mirroring the WAL guard in
+
 		-- request_logger.go Update(). Without this, the deferred client-
 		-- disconnect safety net could regress a row that already reached a
 		-- terminal state: the handler writes success=TRUE / request_status=
@@ -1238,8 +1245,22 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		entry.OutboundTokenEst,
 		jsonOrNull(entry.OutboundMsgHashes),
 		// 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
-		// quality_flags is bound as text[]; we cast nil to NULL so the
-		// column DEFAULT '{}' kicks in. quality_fix_actions is JSONB.
+		// quality_flags is always encoded as a PostgreSQL text array;
+		// quality_fix_actions is JSONB.
+		//
+		// 2026-08-20 nil-语义约定（与 UPSERT 路径共用）：
+		//
+		//   entry.QualityFlags == nil     → qualityFlagsArg 返回 "{}" 字面量
+		//   entry.QualityFlags == []string{} → qualityFlagsArg 返回 "{}" 字面量
+		//   两者在 SQL 列上结果相同；区别仅在 SQL 日志 / audit 表里看到的
+		//   文本是否带 array 维度。这是"未提供"与"显式清空"在 INSERT
+		//   路径上唯一的语义差异，由 qualityFlagsArg 集中处理。
+		//
+		//   entry.QualityFixActions == nil     → "{}" （与 DEFAULT 一致）
+		//   entry.QualityFixActions == []byte("{}") → "{}"
+		//   两者在 SQL 列上结果完全相同；qualityActionsArgStr 不区分"未提供"
+		//   与"显式清空"——这是 NOT NULL DEFAULT 的设计选择：调用方若需要
+		//   区分，要么修改 schema 为 NULLABLE，要么改为单独字段承载。
 		qualityFlagsArg(entry.QualityFlags),
 		qualityActionsArgStr(entry.QualityFixActions),
 		entry.QualityScore,
@@ -1292,7 +1313,10 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		entry.T7ForwardStartAt,
 		entry.T8ResponseStartAt,
 		entry.T9ResponseEndAt,
+		// 2026-08-19: discard audit events are JSONB and nullable.
+		nullableJSONArg(entry.DiscardEvents),
 	)
+
 	if err != nil {
 		return err
 	}
@@ -1666,7 +1690,7 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 			       outbound_token_est = COALESCE($62, outbound_token_est),
 			       outbound_msg_hashes = COALESCE($63::text::jsonb, outbound_msg_hashes),
 			       -- 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
-			       quality_flags        = COALESCE(CAST($64 AS text[]), quality_flags),
+			       quality_flags        = COALESCE($64::text[], quality_flags),
 			       quality_fix_actions  = COALESCE($65::text::jsonb, quality_fix_actions),
 			       quality_score        = COALESCE($66, quality_score),
 		   -- 2026-06-19 T-NEW-7: split the semantic overload of failure_detail_code
@@ -1698,7 +1722,8 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 			   agent_name           = COALESCE(agent_name, $79),
 			   agent_type           = COALESCE(agent_type, $80),
 			   client_protocol      = COALESCE(client_protocol, $81),
-			   virtual_client_id    = COALESCE(virtual_client_id, $82)
+			   virtual_client_id    = COALESCE(virtual_client_id, $82),
+			   discard_events       = COALESCE($83::text::jsonb, discard_events)
 		   WHERE request_id = $1
 
 		     AND NOT (
@@ -1784,8 +1809,8 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		entry.OutboundTokenEst,
 		string(jsonOrNull(entry.OutboundMsgHashes)),
 		// 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
-		// quality_flags is bound as text[]; we cast nil to NULL so the
-		// column DEFAULT '{}' kicks in. quality_fix_actions is JSONB.
+		// quality_flags is always encoded as a PostgreSQL text array;
+		// quality_fix_actions is JSONB.
 		qualityFlagsArg(entry.QualityFlags),
 		string(qualityActionsArgStr(entry.QualityFixActions)),
 		entry.QualityScore,
@@ -1812,6 +1837,7 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		entry.AgentType,
 		entry.ClientProtocol,
 		entry.VirtualClientID,
+		nullableJSONArg(entry.DiscardEvents),
 	)
 
 	if err != nil {
@@ -2044,32 +2070,23 @@ func nonEmptyPtr(p *string, fallback string) string {
 // DEFAULT '{}'::text[] — but specifying a column explicitly in the
 // INSERT (which the gateway must, since it has 60+ other columns)
 // OVERRIDES the default and applies whatever the bind value is.
-// Passing nil would then trip `null value in column "quality_flags"
-// violates not-null constraint` at runtime, so we coerce empty
-// slices into a non-nil `[]string{}` so the bind produces a real
-// empty array.  When the slice has elements we return it as-is.
+//
+// qualityFlagsArg returns a pgx-friendly text array value for the text[] column.
+// An explicit INSERT value bypasses the column default, so empty flags must be
+// encoded as PostgreSQL's empty-array literal rather than a nil array value.
 func qualityFlagsArg(flags []string) any {
-	if flags == nil {
-		return []string{}
+	if len(flags) == 0 {
+		return "{}"
 	}
-	return flags
-}
-
-// qualityActionsArg turns the JSONB payload into a value safe to bind
-// with pgx.  The column is NOT NULL with a DEFAULT '{}'::jsonb —
-// the same DEFAULT-override caveat as qualityFlagsArg applies: an
-// explicit nil bind in the INSERT would trip the not-null check.
-// We therefore always return a non-nil byte slice; empty/missing
-// inputs become a literal "{}" which the SQL CAST($63 AS jsonb)
-// turns into a JSONB empty object, identical to the column DEFAULT.
-func qualityActionsArg(raw json.RawMessage) any {
-	if len(raw) == 0 {
-		return []byte("{}")
-	}
-	return []byte(raw)
+	return pgtype.FlatArray[string](flags)
 }
 
 // qualityActionsArgStr returns string for $N::text::jsonb binding (pgx binary protocol fix).
+//
+// 2026-08-20: 之前还有一个返回 `any` 的 qualityActionsArg helper，2026-07-05
+// 切到 $N::text::jsonb 路径时已无 caller，故删除。bind 时一律走
+// $N::text::jsonb（字符串形式）而不是 $N::jsonb（pgx 二进制形式），避
+// 免 pgx 把 Go []byte 当成 bytea 而不是 jsonb。
 func qualityActionsArgStr(raw json.RawMessage) string {
 	if len(raw) == 0 {
 		return "{}"
@@ -2104,6 +2121,16 @@ func attachmentsArgStr(raw json.RawMessage) string {
 func jsonOrNull(raw json.RawMessage) string {
 	if len(raw) == 0 {
 		return "null"
+	}
+	return string(raw)
+}
+
+// nullableJSONArg preserves SQL NULL for an absent JSONB value. JSONB `null`
+// is a real value and would otherwise overwrite a prior discard-events array
+// during an upsert or terminal stream update.
+func nullableJSONArg(raw json.RawMessage) any {
+	if len(raw) == 0 {
+		return nil
 	}
 	return string(raw)
 }
@@ -2490,13 +2517,7 @@ func sanitizeRequestLogEntry(e *RequestLogEntry) {
 	sanitizeJSONField("response_body", &e.ResponseBody)
 	sanitizeRawJSONField("compression_meta", &e.CompressionMeta)
 	sanitizeRawJSONField("outbound_body", &e.OutboundBody)
-	// 2026-08-19: e.DiscardEvents is intentionally NOT yet wired into
-	// the request_logs_hot INSERT (would need a column N+1 + $N+1 entry
-	// that we cannot safely add in this pass — the audit upsert path
-	// would have to be re-numbered in lockstep). The JSONB column on
-	// request_logs_hot already exists (migration 543), so a follow-up
-	// pass that adds the bind arg will start writing the data with no
-	// schema change.
+	sanitizeRawJSONField("discard_events", &e.DiscardEvents)
 	sanitizeRawJSONField("outbound_msg_hashes", &e.OutboundMsgHashes)
 	sanitizeRawJSONField("quality_fix_actions", &e.QualityFixActions)
 	sanitizeRawJSONField("tool_calls", &e.ToolCalls)
@@ -2650,10 +2671,7 @@ func mergeRequestLogEntry(dst, src *RequestLogEntry) {
 	mergeStringPtr(&dst.OriginActor, src.OriginActor)
 	mergeRawJSON(&dst.RoutingAttempts, src.RoutingAttempts)
 	mergeStringPtr(&dst.RoutingSummary, src.RoutingSummary)
-	// DiscardEvents is NOT yet merged because the INSERT column is not
-	// wired in this pass — see the matching comment on SanitizeEntry
-	// above. Once the bind arg lands, uncomment the line below.
-	// mergeRawJSON(&dst.DiscardEvents, src.DiscardEvents)
+	mergeRawJSON(&dst.DiscardEvents, src.DiscardEvents)
 	mergeStringPtr(&dst.AgentName, src.AgentName)
 	mergeStringPtr(&dst.AgentType, src.AgentType)
 	mergeStringPtr(&dst.ClientProtocol, src.ClientProtocol)

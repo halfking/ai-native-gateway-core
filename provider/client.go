@@ -320,6 +320,7 @@ const decryptFailureCacheMax = 1024
 
 const (
 	candidateCacheTTL        = 30 * time.Second
+	candidateEmptyCacheTTL   = 5 * time.Second
 	candidateCacheStaleGrace = 30 * time.Second
 	candidateGenerationTries = 3
 )
@@ -691,9 +692,13 @@ func (c *Client) fetchCandidateGeneration(key string, queryGeneration uint64, fe
 			return candidateFlightResult{response: current.value, generation: queryGeneration}, nil
 		}
 
+		cacheTTL := candidateCacheTTL
+		if !candidateResponseNonEmpty(resp) {
+			cacheTTL = candidateEmptyCacheTTL
+		}
 		c.candCache[key] = cacheEntry[*resolveResponse]{
 			value:   resp,
-			expires: now.Add(candidateCacheTTL),
+			expires: now.Add(cacheTTL),
 		}
 		return candidateFlightResult{response: resp, generation: queryGeneration}, nil
 	})

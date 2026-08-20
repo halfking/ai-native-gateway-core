@@ -25,10 +25,10 @@ const (
 	// gateway and turn a queue spike into a retry avalanche.
 	DefaultOverflowRetryAfter = 1 * time.Second
 
-	// Retry scheduling backoff ladder (R2.4 / T3-8), aligned with survival's
-	// 2s→120s hard clamp. Upstream Retry-After hints, when supplied via
+	// Retry scheduling backoff ladder (R2.4 / T3-8), aligned with the
+	// five-second minimum retry policy. Upstream Retry-After hints, when supplied via
 	// ForwardOutcome.RetryAfter, take priority over the ladder.
-	retryBaseDelay = 2 * time.Second
+	retryBaseDelay = 5 * time.Second
 	retryMaxDelay  = 120 * time.Second
 )
 

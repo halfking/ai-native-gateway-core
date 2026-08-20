@@ -213,6 +213,18 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 	deadline := c.now().Add(opts.Deadline)
 	backoff := opts.RetryBase
 
+	// FR-12 L1 revocable window: hold the first HoldbackMaxChunks semantic
+	// frames (or HoldbackWindow after the first frame, whichever first) in the
+	// attempt-local buffer WITHOUT committing to the client. While the window is
+	// open, an upstream interruption discards the buffer and fails over
+	// transparently (client sees zero partial output) instead of escalating to
+	// resume_blocked/committed_output. Unstable models (glm-5.2, minimax-m3)
+	// drop the connection a few chunks in far more often than they fail after a
+	// full response, so a real window converts most of those into invisible
+	// retries. Defaults match StreamRecoveryConfig; tunable via
+	// LLM_GATEWAY_RECOVERY_HOLDBACK_* env (window 0 disables).
+	hbWindow, hbChunks := RecoveryHoldbackFromEnv()
+
 	res := SurvivalResult{}
 	// recoveryStart anchors gateway_survival_recovery_latency_seconds: the
 	// instant the task saw its first recoverable failure.
@@ -227,7 +239,7 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 	)
 
 	for {
-		gate := NewAttemptCommitGate(c.Protocol, sw, GateOptions{Mode: GateModeBuffered, RequestID: params.RequestID, BeforeSemanticCommit: func(state CommitState) error {
+		gate := NewAttemptCommitGate(c.Protocol, sw, GateOptions{Mode: GateModeBuffered, RequestID: params.RequestID, HoldbackWindow: hbWindow, HoldbackMaxChunks: hbChunks, BeforeSemanticCommit: func(state CommitState) error {
 			if c.BeforeSemanticCommit == nil {
 				return nil
 			}
@@ -294,7 +306,13 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 
 		switch res.Decision.Action {
 		case TaskActionSucceed:
-			if err := finishGateWriter(gw, gate); err != nil {
+			// Flush unconditionally. With the FR-12 L1 holdback window enabled
+			// the gate may still be uncommitted (first N chunks buffered) when
+			// the stream ends; GateWriter.Finish → FinishAttempt releases those
+			// held frames to the client. finishGateWriter's committed-guard
+			// would wrongly swallow them and the client would see an empty
+			// body. FinishAttempt refuses a discarded gate, so this stays safe.
+			if err := gw.Finish(); err != nil {
 				res.Decision = TaskDecision{Action: TaskActionFailClosed, Reason: "client_disconnected"}
 				recordSurvivalTransition(survivalStateRunning, survivalTerminalToState(res.Decision), res.Decision.Reason)
 				recordSurvivalRequestTerminal(c.Protocol, res.Decision)
@@ -367,11 +385,11 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 				log.Error("survival_discard_refused",
 					"attempt", res.Attempts,
 					"buffer_bytes", bufferBytes,
-						"holdback_held", holdbackHeld,
-						"state", gateState,
-						"provider_id", lastProviderID,
-						"raw_model", lastRawModel,
-					)
+					"holdback_held", holdbackHeld,
+					"state", gateState,
+					"provider_id", lastProviderID,
+					"raw_model", lastRawModel,
+				)
 				return res
 			}
 			log.Info("survival_attempt_discarded",

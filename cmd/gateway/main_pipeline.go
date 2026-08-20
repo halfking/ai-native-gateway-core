@@ -95,6 +95,7 @@ import (
 	agentecosystem "github.com/kaixuan/llm-gateway-go/domains/agent-ecosystem"               //nolint:depguard
 	sessionanalytics "github.com/kaixuan/llm-gateway-go/domains/analysis"                    //nolint:depguard // Phase 4 会话全景分析引擎
 	"github.com/kaixuan/llm-gateway-go/domains/analysis/bus"                                 //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/analysis/projectattr"                        //nolint:depguard // 2026-08-20 项目归属 resolver 装配点
 	"github.com/kaixuan/llm-gateway-go/domains/analysis/workers"                             //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/assets"                                       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/authentication"                               //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -253,6 +254,12 @@ type v2DispatchDeps struct {
 	PromptInjectionDetector promptinjectionhooks.Detector
 	OutputComplianceChecker outputcompliancehooks.Checker
 	SessionSummarizer       workers.SessionSummarizer
+
+	// ── 2026-08-20: 项目归属 resolver ────────────────────────────
+	// 在 settings flag 打开、pg pool 可用且 resolver 非 nil 时由
+	// startAnalysisLoopIfConfigured 装配 CloseHook。resolver=nil 表示
+	// "运维还没启用项目同步链路"，hook 静默跳过，避免误触发。
+	ProjectAttrResolver *projectattr.ProjectResolver
 
 	// ── 增强版提示词注入检测插件 ────────────────────────────────
 	// EnhancedPIPlugin 在 buildV2DispatchPipeline 中创建并注册到 secRegistry，
@@ -1061,6 +1068,37 @@ func startAnalysisLoopIfConfigured(deps *v2DispatchDeps) {
 	// deps.SessionSummarizer 为 nil 时跳过（避免空跑）。
 	if deps.SessionSummarizer != nil {
 		sumWorker := workers.NewSessionSummaryWorker(deps.SessionSummarizer, slog.Default())
+
+		// 2026-08-20: 项目归属（LLM 推断）hook 装配。
+		//
+		// 三个前置条件同时满足才挂载：
+		//   1. settings.GetPlatformBool("project_attribution.enabled")=true（默认 false）
+		//   2. PG pool 可用（推断需要查 session_dim / project_dim / request_logs）
+		//   3. resolver 非 nil（依赖 deps.ProjectAttrResolver；由 main.go 装配）
+		//
+		// 任一条件不满足都静默跳过——本轮目标是默认关闭、显式开启，而不是
+		// "悄悄挂载"。这避免 "settings flag 打开但 resolver 未配置" 这种
+		// 隐性失败。
+		if settings.GetPlatformBool("project_attribution.enabled", false) &&
+			deps.PGDBPool != nil &&
+			deps.ProjectAttrResolver != nil {
+			store := projectattr.NewPGStoreFromPool(deps.PGDBPool)
+			hook := projectattr.NewCloseHook(store, nil, slog.Default())
+			// 注入一个 BuildAttributor 工厂：每次 hook 触发时按 tenant
+			// 现取快照。Attributor 在 BuildAttributor 内组装（带 inherit，
+			// 不带 LLM——计划要求本轮不启用模型兜底）。
+			hook.AttributorFor = func(ctx context.Context, tenantID, gwSessionID string) (*projectattr.Attributor, error) {
+				return deps.ProjectAttrResolver.BuildAttributor(ctx, tenantID)
+			}
+			sumWorker.AddCloseHook(hook)
+			slog.Info("v2 pipeline: project attribution hook enabled")
+		} else {
+			slog.Info("v2 pipeline: project attribution hook disabled",
+				"flag_on", settings.GetPlatformBool("project_attribution.enabled", false),
+				"pg_ready", deps.PGDBPool != nil,
+				"resolver_ready", deps.ProjectAttrResolver != nil)
+		}
+
 		sumPoll := bus.NewPGPollFunc(bus.AsPGDB(deps.PGDBPool), sumWorker.SubscribedTypes(), deps.Config.AnalysisBatchSize)
 		sumMark := bus.NewPGMarkFunc(bus.AsPGDB(deps.PGDBPool), slog.Default())
 		go bus.RunLoop(ctx, sumWorker, sumPoll, sumMark, bus.LoopConfig{

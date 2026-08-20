@@ -231,6 +231,12 @@ func monitorSummaryMeta(created, expires time.Time, cacheHit bool, serverDuratio
 	}
 }
 
+func monitorSummaryCacheKey(p monitorSummarySQLParams) string {
+	detailMode := p.CredentialID > 0 && p.Mode != "core"
+	return fmt.Sprintf("p%d:c%d:d%t:m%s:t=%s:v%d",
+		p.ProviderID, p.CredentialID, detailMode, p.Mode, p.TenantID, monitorSummarySchemaVersion)
+}
+
 // monitorSummarySQLParams captures the request-derived parameters the SQL
 // builder / executor consume. Extracted so buildMonitorSummarySQL is a pure
 // function tests can pin (mode branch, tenant filter, detail join) without
@@ -248,7 +254,9 @@ type monitorSummarySQLParams struct {
 // and the tenant guard without standing up a request.
 //
 // coreMode:  lightweight preload — drops request_logs/percentile_cont/credential_model_index
-//            joins so the dashboard settings path returns fast.
+//
+//	joins so the dashboard settings path returns fast.
+//
 // detailMode: per-(credential, model) breakdown with P95/success rate.
 // default:  list-only — no models[], per-credential MIN(success_rate) only.
 func buildMonitorSummarySQL(p monitorSummarySQLParams) string {
@@ -455,8 +463,11 @@ func buildMonitorSummarySQL(p monitorSummarySQLParams) string {
 				) t
 				), '[]'::json) AS models`
 	}
-	// coreMode has no %s placeholders, so fmt.Sprintf on it is a no-op;
-	// the conditional branch above only fires in the else branch.
+	// coreMode has no %s placeholders, so return query directly.
+	// For detail/summary modes, use fmt.Sprintf with the three %s placeholders.
+	if coreMode {
+		return query
+	}
 	return fmt.Sprintf(query, modelsSelect, aggregatedSuccessSelect, aggregatedSuccessJoin)
 }
 
@@ -596,16 +607,14 @@ func (m *CredentialMonitorHandlers) handleMonitorSummary(w http.ResponseWriter, 
 	if IsTenantAdmin(r) {
 		params.TenantID = GetTenantID(r)
 	}
-	coreMode := params.Mode == "core"
-	detailMode := params.CredentialID > 0 && !coreMode
 	startedAt := time.Now()
 
 	// 30s cache: the page auto-refreshes every 10-60s and the per-model
 	// LATERAL success-rate join is the heaviest part. Cache key includes the
 	// caller's tenant scope so concurrent super_admin and tenant_admin
 	// callers do not share a cached payload that leaks cross-tenant rows.
-	cacheKey := fmt.Sprintf("p%d:c%d:d%t:m%s:t=%s:v%d",
-		params.ProviderID, params.CredentialID, detailMode, params.Mode, params.TenantID, monitorSummarySchemaVersion)
+	cacheKey := monitorSummaryCacheKey(params)
+
 	for {
 		if cached, created, expires, ok := monitorSummaryCache.get(cacheKey); ok {
 			cached["meta"] = monitorSummaryMeta(created, expires, true, 0)
@@ -1214,7 +1223,7 @@ type ModelHistoryEvent struct {
 //
 // pgxQueryer-parameterized so admin tests can drive this against a pgxmock
 // pool without exporting the *pgxpool.Pool-typed h.db field.
-func runModelHistory(ctx context.Context, db pgxQueryer, credentialID int, rawModel string, limit int) ([]ModelHistoryEvent, error) {
+func runModelHistory(ctx context.Context, db pgxQueryer, credentialID int, rawModel string, limit int, tenantID string) ([]ModelHistoryEvent, error) {
 	rows, err := db.Query(ctx, `
 		WITH auto_events AS (
 			SELECT
@@ -1231,6 +1240,7 @@ func runModelHistory(ctx context.Context, db pgxQueryer, credentialID int, rawMo
 			FROM model_probe_runs_with_current_month mpr
 			WHERE mpr.credential_id = $1
 			  AND mpr.raw_model_name = $2
+			  AND ($4 = '' OR mpr.tenant_id = $4)
 			  AND mpr.state_change IN ('recovered', 'broke')
 		),
 		manual_events AS (
@@ -1253,6 +1263,7 @@ func runModelHistory(ctx context.Context, db pgxQueryer, credentialID int, rawMo
 			  AND al.action IN ('credential.model_toggle_online', 'credential.model_toggle_offline')
 			  AND (al.after_json->>'credential_id')::int = $1
 			  AND al.after_json->>'raw_model_name' = $2
+			  AND ($4 = '' OR al.tenant_id = $4)
 		)
 		SELECT ts, source, triggered_by, event,
 		       probe_status, http_status, error_code, error_message,
@@ -1264,7 +1275,8 @@ func runModelHistory(ctx context.Context, db pgxQueryer, credentialID int, rawMo
 		) u
 		ORDER BY ts DESC
 		LIMIT $3
-	`, credentialID, rawModel, limit)
+		`, credentialID, rawModel, limit, tenantID)
+
 	if err != nil {
 		return nil, fmt.Errorf("query failed: %w", err)
 	}
@@ -1275,15 +1287,16 @@ func runModelHistory(ctx context.Context, db pgxQueryer, credentialID int, rawMo
 	for rows.Next() {
 		var (
 			ev          ModelHistoryEvent
-			probeStatus *string
-			httpStatus  *int
-			errCode     *string
-			errMsg      *string
-			actor       *string
-			reason      *string
+			triggeredBy sql.NullString
+			probeStatus sql.NullString
+			httpStatus  sql.NullInt64
+			errCode     sql.NullString
+			errMsg      sql.NullString
+			actor       sql.NullString
+			reason      sql.NullString
 		)
 		var ts time.Time
-		if scanErr := rows.Scan(&ts, &ev.Source, &ev.TriggeredBy, &ev.Event,
+		if scanErr := rows.Scan(&ts, &ev.Source, &triggeredBy, &ev.Event,
 			&probeStatus, &httpStatus, &errCode, &errMsg,
 			&actor, &reason); scanErr != nil {
 			scanFailures++
@@ -1291,15 +1304,14 @@ func runModelHistory(ctx context.Context, db pgxQueryer, credentialID int, rawMo
 			continue
 		}
 		ev.TS = ts.UTC().Format(time.RFC3339)
-		ev.ProbeStatus = probeStatus
-		ev.HTTPStatus = httpStatus
-		ev.ErrorCode = errCode
-		ev.ErrorMessage = errMsg
-		ev.Actor = actor
-		if reason != nil && *reason != "" {
-			ev.Reason = reason
-		} else {
-			ev.Reason = nil
+		ev.TriggeredBy = nullableString(triggeredBy)
+		ev.ProbeStatus = nullableString(probeStatus)
+		ev.HTTPStatus = nullableInt(httpStatus)
+		ev.ErrorCode = nullableString(errCode)
+		ev.ErrorMessage = nullableString(errMsg)
+		ev.Actor = nullableString(actor)
+		if reason.Valid && reason.String != "" {
+			ev.Reason = &reason.String
 		}
 		events = append(events, ev)
 	}
@@ -1324,7 +1336,7 @@ func (m *CredentialMonitorHandlers) handleModelHistory(w http.ResponseWriter, r 
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	if m.h.db == nil {
+	if m.h == nil || m.h.db == nil {
 		writeError(w, http.StatusServiceUnavailable, "database not configured")
 		return
 	}
@@ -1348,7 +1360,11 @@ func (m *CredentialMonitorHandlers) handleModelHistory(w http.ResponseWriter, r 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	events, err := runModelHistory(ctx, m.h.db, credentialID, rawModel, limit)
+	tenantID := ""
+	if IsTenantAdmin(r) {
+		tenantID = GetTenantID(r)
+	}
+	events, err := runModelHistory(ctx, m.h.db, credentialID, rawModel, limit, tenantID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1365,6 +1381,21 @@ func (m *CredentialMonitorHandlers) handleModelHistory(w http.ResponseWriter, r 
 // credentialDecisionRow is one row in the response of /api/credentials/decisions.
 // Lifted from inside handleCredentialDecisions so runCredentialDecisions can
 // return a typed slice; the JSON tags are unchanged.
+func nullableString(value sql.NullString) *string {
+	if !value.Valid {
+		return nil
+	}
+	return &value.String
+}
+
+func nullableInt(value sql.NullInt64) *int {
+	if !value.Valid {
+		return nil
+	}
+	integer := int(value.Int64)
+	return &integer
+}
+
 type credentialDecisionRow struct {
 	TS               string  `json:"ts"`
 	RequestID        string  `json:"request_id"`
@@ -1383,11 +1414,11 @@ type credentialDecisionRow struct {
 // runCredentialDecisions. Extracted so the SQL builder is testable without
 // standing up a request and the helper is reusable from admin tooling.
 type credentialDecisionParams struct {
-	CredentialID    int
-	Limit           int
-	IsTenantAdmin   bool   // when true, the WHERE clause adds tenant_id = $2
-	TenantID        string // required when IsTenantAdmin is true
-	ModelFilter     string // empty → no model filter; otherwise case-insensitive match
+	CredentialID  int
+	Limit         int
+	IsTenantAdmin bool   // when true, the WHERE clause adds tenant_id = $2
+	TenantID      string // required when IsTenantAdmin is true
+	ModelFilter   string // empty → no model filter; otherwise case-insensitive match
 }
 
 // runCredentialDecisions returns recent routing decisions for the given
@@ -1430,16 +1461,34 @@ func runCredentialDecisions(ctx context.Context, db pgxQueryer, p credentialDeci
 	decisions := make([]credentialDecisionRow, 0)
 	scanFailures := 0
 	for rows.Next() {
-		var d credentialDecisionRow
+		var (
+			d                credentialDecisionRow
+			tier             sql.NullInt64
+			latencyMs        sql.NullInt64
+			errorClass       sql.NullString
+			chosenProviderID sql.NullInt64
+			clientModel      sql.NullString
+			outboundModel    sql.NullString
+			stickyHit        sql.NullBool
+		)
 		var ts time.Time
-		if scanErr := rows.Scan(&ts, &d.RequestID, &d.Model, &d.Tier, &d.Success,
-			&d.LatencyMs, &d.ErrorClass, &d.ChosenProviderID,
-			&d.ClientModel, &d.OutboundModel, &d.StickyHit); scanErr != nil {
+		if scanErr := rows.Scan(&ts, &d.RequestID, &d.Model, &tier, &d.Success,
+			&latencyMs, &errorClass, &chosenProviderID,
+			&clientModel, &outboundModel, &stickyHit); scanErr != nil {
 			scanFailures++
 			slog.Warn("credential decisions scan failed", "credential_id", p.CredentialID, "error", scanErr.Error())
 			continue
 		}
 		d.TS = ts.UTC().Format(time.RFC3339)
+		d.Tier = nullableInt(tier)
+		d.LatencyMs = nullableInt(latencyMs)
+		d.ErrorClass = nullableString(errorClass)
+		d.ChosenProviderID = nullableInt(chosenProviderID)
+		d.ClientModel = nullableString(clientModel)
+		d.OutboundModel = nullableString(outboundModel)
+		if stickyHit.Valid {
+			d.StickyHit = &stickyHit.Bool
+		}
 		decisions = append(decisions, d)
 	}
 	if rows.Err() != nil {
@@ -1465,6 +1514,10 @@ func runCredentialDecisions(ctx context.Context, db pgxQueryer, p credentialDeci
 func (m *CredentialMonitorHandlers) handleCredentialDecisions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if m.h == nil || m.h.db == nil {
+		writeError(w, http.StatusServiceUnavailable, "database not configured")
 		return
 	}
 
@@ -1588,8 +1641,8 @@ func (m *CredentialMonitorHandlers) handleClearManualDisabled(w http.ResponseWri
 	//nolint:errcheck
 	m.h.db.Exec(ctx, `
 		INSERT INTO routing_audit_log (actor, action, target_type, target_id, after_json)
-		VALUES ($1, $2, $3, $4, $5)
-	`, actor, "credential.clear_manual_disabled", "credential", req.CredentialID, detailsJSON)
+		VALUES ($1, $2, $3, $4, $5::text::jsonb)
+	`, actor, "credential.clear_manual_disabled", "credential", req.CredentialID, string(detailsJSON))
 
 	monitorSummaryCache.invalidateCredential(req.CredentialID)
 
@@ -1693,8 +1746,8 @@ func (m *CredentialMonitorHandlers) handleSetManualDisabled(w http.ResponseWrite
 	//nolint:errcheck
 	m.h.db.Exec(ctx, `
 		INSERT INTO routing_audit_log (actor, action, target_type, target_id, after_json)
-		VALUES ($1, $2, $3, $4, $5)
-	`, actor, action, "credential", req.CredentialID, detailsJSON)
+		VALUES ($1, $2, $3, $4, $5::text::jsonb)
+	`, actor, action, "credential", req.CredentialID, string(detailsJSON))
 
 	monitorSummaryCache.invalidateCredential(req.CredentialID)
 

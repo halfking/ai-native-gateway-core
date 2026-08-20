@@ -83,13 +83,21 @@ func TestIsProbeCtxCancel_UnrelatedError(t *testing.T) {
 func TestProbeRetryDelays_Schedule(t *testing.T) {
 	// Lock the schedule: 0s, 2s, 5s. Any change to this slice is a
 	// deliberate policy change and must be reflected in CHANGELOG.
-	want := []time.Duration{0, 2 * time.Second, 5 * time.Second}
+	want := []time.Duration{0, 5 * time.Second, 5 * time.Second}
 	if len(ProbeRetryDelays) != len(want) {
 		t.Fatalf("ProbeRetryDelays length: got %d want %d", len(ProbeRetryDelays), len(want))
 	}
 	for i := range want {
 		if ProbeRetryDelays[i] != want[i] {
 			t.Errorf("ProbeRetryDelays[%d]: got %v want %v", i, ProbeRetryDelays[i], want[i])
+		}
+	}
+}
+
+func TestProbeRetryDelaysNeverRetryBeforeFiveSeconds(t *testing.T) {
+	for attempt, delay := range ProbeRetryDelays {
+		if attempt > 0 && delay < 5*time.Second {
+			t.Fatalf("retry attempt %d delay = %s, want at least 5s", attempt, delay)
 		}
 	}
 }

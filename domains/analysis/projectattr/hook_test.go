@@ -170,3 +170,77 @@ func TestCloseHook_IgnoresEmptyIdentifiers(t *testing.T) {
 		t.Fatalf("must skip when tenant or session id is empty")
 	}
 }
+
+// TestCloseHook_AttributorForFactory_OnSessionClosed 验证：注入
+// AttributorFor 工厂后，每次 hook 触发都按 (tenant, session) 现取
+// Attributor。这是 Stage 5 main_pipeline.go 装配路径；不注入时回落到
+// 静态 attributor（向后兼容）。
+func TestCloseHook_AttributorForFactory_OnSessionClosed(t *testing.T) {
+	st := &fakeStore{signals: Signals{UserText: "pms"}}
+	h := NewCloseHook(st, nil, nil)
+	var calls int
+	h.AttributorFor = func(_ context.Context, tenantID, _ string) (*Attributor, error) {
+		calls++
+		return New(testProjects(), WithInherit(nil)), nil
+	}
+
+	if err := h.OnSessionClosed(context.Background(), "t1", "gw_1"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if calls != 1 {
+		t.Errorf("AttributorFor called %d times, want 1", calls)
+	}
+	if len(st.saved) != 1 {
+		t.Errorf("saved = %d, want 1", len(st.saved))
+	}
+}
+
+func TestCloseHook_AttributorForReturnsNilIsUnresolved(t *testing.T) {
+	st := &fakeStore{signals: Signals{UserText: "pms"}}
+	h := NewCloseHook(st, nil, nil)
+	h.AttributorFor = func(_ context.Context, _, _ string) (*Attributor, error) {
+		return nil, nil // resolver 显式禁用
+	}
+	_ = h.OnSessionClosed(context.Background(), "t1", "gw_1")
+	if len(st.saved) != 0 {
+		t.Errorf("nil attributor must not persist: saved=%d", len(st.saved))
+	}
+	if h.Stats()["unresolved"] != 1 {
+		t.Errorf("stats = %v", h.Stats())
+	}
+}
+
+func TestCloseHook_AttributorForErrorIsFailed(t *testing.T) {
+	st := &fakeStore{signals: Signals{UserText: "pms"}}
+	h := NewCloseHook(st, nil, nil)
+	h.AttributorFor = func(_ context.Context, _, _ string) (*Attributor, error) {
+		return nil, errors.New("resolver db down")
+	}
+	_ = h.OnSessionClosed(context.Background(), "t1", "gw_1")
+	if len(st.saved) != 0 {
+		t.Errorf("failed factory must not persist: saved=%d", len(st.saved))
+	}
+	if h.Stats()["failed"] != 1 {
+		t.Errorf("failed = %d, want 1; stats=%v", h.Stats()["failed"], h.Stats())
+	}
+}
+
+// TestCloseHook_DefaultOffDoesNotQueryProjectDim 验证：默认关闭场景下
+// （attributor=nil 且 AttributorFor=nil）hook 不会触发任何 DB 操作。
+// 这是 Stage 5 "默认 false 不提交启用" 的核心保障：任何配置错误都不会
+// 让 hook 偷偷运行。
+func TestCloseHook_DefaultOffDoesNotQueryProjectDim(t *testing.T) {
+	st := &fakeStore{}
+	h := NewCloseHook(st, nil, nil) // 没注入 attributor，没注入 AttributorFor
+
+	if err := h.OnSessionClosed(context.Background(), "t1", "gw_1"); err != nil {
+		t.Fatalf("default-off hook must not error, got %v", err)
+	}
+	// 所有 DB 调用都不应发生。
+	if st.loadHits != 0 {
+		t.Errorf("LoadSignals called %d times, want 0", st.loadHits)
+	}
+	if len(st.saved) != 0 {
+		t.Errorf("Save called %d times, want 0", len(st.saved))
+	}
+}

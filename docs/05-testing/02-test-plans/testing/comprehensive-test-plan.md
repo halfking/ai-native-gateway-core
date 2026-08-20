@@ -653,6 +653,96 @@ go test ./integration/... -v -count=1
 
 ## 第十部分：文档与交付
 
+## 第十一部分：真实供应商与网关稳定性对照测试
+
+### 11.1 目的
+
+验证网关是否把供应商的偶发失败、慢响应、空响应和断流隔离在供应商侧，
+而不是把等待时间、重试风暴、错误健康反馈和内存增长转嫁给客户端。
+该部分是 154/245 发布前的强制门禁，不能用单次 HTTP 200 代替。
+
+### 11.2 固定测试矩阵
+
+| 维度 | 必测场景 | 记录指标 |
+|---|---|---|
+| 模型 | `glm-5.2`、`minimax-m3` | provider、credential、raw model |
+| 链路 | 直连供应商、154 网关、245 网关 | status、错误类型、fallback |
+| 协议 | non-stream、SSE stream | TTFB、首语义帧、总耗时、`[DONE]` |
+| 输入 | 短 prompt、工具调用、长上下文 | request bytes、context trim、响应完整性 |
+| 故障 | 400 degraded、429、5xx、空响应、EOF、客户端断开 | 切换耗时、候选数、最终结果 |
+| 资源 | 低并发、断连、服务停止 | RSS、goroutine、连接数、恢复时间 |
+
+### 11.3 执行顺序
+
+必须按以下顺序执行，禁止 245 未通过时继续放大流量：
+
+```text
+本地单测/竞态测试
+  -> 154 低并发验证（当前主力流量环境，先确认版本可用）
+  -> 245 低并发验证
+  -> 245 30 分钟稳定性观察
+  -> 245 压力与故障注入
+```
+
+154 和 245 的远程测试必须先执行 `env-injector inject`，只使用 SSOT 中的凭据。
+测试默认低并发，每个模型每种协议最多 2 次基线请求；压力测试必须在 245 执行。
+
+### 11.4 结果判定
+
+每个请求必须满足：
+
+- HTTP 状态为 2xx；
+- non-stream 响应是合法 JSON 且有非空语义内容；
+- stream 至少收到首语义帧并收到 `[DONE]`；
+- 失败供应商被记录为明确的 `error_kind`，并切换到健康候选；
+- 不得出现 `malformed array literal`、JSONB `22P02`、probe audit 写入失败；
+- 普通客户端断开后 5 秒内释放 dispatch、upstream 和 survival attempt；
+- 不得出现新的 `closed pool`、`connection refused`、`panic` 或 `OOM`。
+
+发布门禁建议：成功率 `>=99%`，错误请求不能静默返回 200，stream 完整率 `100%`，
+P95 与直连基线差值 `<=5s`，并且 30 分钟观察期间 RSS 不持续单调增长。
+
+### 11.5 必查日志和资源证据
+
+```bash
+# 154
+journalctl -u llm-gateway-go.service --since "10 minutes ago" --no-pager
+
+# 245
+tail -n 500 /var/log/llm-gateway-go/gateway.stdout.log
+tail -n 200 /var/log/llm-gateway-go/gateway.stderr.log
+
+# 两个环境都要查
+grep -Ei "glm-5.2|minimax-m3|upstream_http_attempt|executor failed|candidate|fallback|22P02|OOM|panic" <log>
+curl http://127.0.0.1:6060/debug/pprof/heap?debug=1
+curl http://127.0.0.1:6060/debug/pprof/goroutine?debug=1
+```
+
+必须区分真实用户请求和内部 `probe-direct-*` 请求。probe 的 30 秒超时不能直接
+作为用户请求稳定性结论，但 probe 失败也必须进入独立告警，不得污染主路由成功率。
+
+### 11.6 故障注入清单
+
+| 注入 | 预期行为 |
+|---|---|
+| NVIDIA 返回 `DEGRADED function cannot be invoked` | 归类为上游故障，跳过当前节点，尝试健康候选 |
+| 上游 429/503/502 | 记录 Retry-After，限制重试，切换候选 |
+| HTTP 200 空响应或 SSE 无 `[DONE]` | 不向客户端返回伪成功，切换或返回结构化错误 |
+| 客户端在首语义帧前断开 | 普通请求取消并释放资源；显式 durable session 才可脱离连接继续 |
+| systemd stop/restart | 退出完成时间小于 `TimeoutStopSec`，不得被 SIGKILL |
+| Redis/PG 不可用 | 进入明确降级状态，不得后台无限重试或泄漏 goroutine |
+
+### 11.7 测试报告要求
+
+每次 154/245 测试必须保存以下脱敏证据：
+
+- commit、部署版本和目标环境；
+- 每个模型/协议的原始统计结果；
+- 网关与直连的 P50/P95/P99、TTFB、完整率；
+- 候选切换和错误分类明细；
+- OOM、RSS、goroutine、服务重启记录；
+- 明确的 `PASS`、`FAIL` 或 `BLOCKED`，不得以“基本正常”代替。
+
 ### 10.1 代码交付
 
 **新增模块**:
@@ -684,6 +774,6 @@ integration/
 
 ---
 
-**文档版本**: v1.0
-**最后更新**: 2026-07-22 08:00 UTC+8
+**文档版本**: v1.1
+**最后更新**: 2026-08-20 16:30 UTC+8
 **下次审查**: 实现Phase 1后更新

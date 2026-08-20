@@ -2,7 +2,7 @@
 // 调用 GET /api/admin/turns，返回所有会话的轮次记录，按时间倒序分页。
 // 与 sessions_v2.ts 不同，该端点不限定单一会话，而是跨会话查询。
 
-import { req } from './_core'
+import { req, type RequestOptions } from './_core'
 
 export interface TurnInList {
   session_id: string
@@ -154,7 +154,7 @@ export async function listTurnsSessions(params: {
   tags?: string
   client?: string
   owner_user?: string
-}): Promise<TurnsSessionsResponse> {
+}, options?: RequestOptions): Promise<TurnsSessionsResponse> {
   const qs = new URLSearchParams()
   if (params.cursor) qs.set('cursor', params.cursor)
   if (params.limit) qs.set('limit', String(params.limit))
@@ -172,7 +172,7 @@ export async function listTurnsSessions(params: {
   if (params.owner_user) qs.set('owner_user', params.owner_user)
 
   const path = `/api/admin/turns/sessions${qs.toString() ? '?' + qs.toString() : ''}`
-  return req<TurnsSessionsResponse>('GET', path)
+  return req<TurnsSessionsResponse>('GET', path, undefined, options)
 }
 
 // =============================================================================
