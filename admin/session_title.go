@@ -327,25 +327,32 @@ func (h *Handler) loadSessionTitlesBatch(ctx context.Context, keys [][2]string) 
 		return out
 	}
 	taskIDs := make([]string, 0, len(keys))
+	scopedIDs := make([]string, 0, len(keys))
 	seen := make(map[string]struct{}, len(keys))
 	for _, k := range keys {
-		if k[0] == "" {
+		taskID := strings.TrimSpace(k[0])
+		if taskID == "" {
 			continue
 		}
-		if _, ok := seen[k[0]]; ok {
+		scopedID := scopedSessionIDKey(k[1])
+		pair := sessionTitleMapKey(taskID, scopedID)
+		if _, ok := seen[pair]; ok {
 			continue
 		}
-		seen[k[0]] = struct{}{}
-		taskIDs = append(taskIDs, k[0])
+		seen[pair] = struct{}{}
+		taskIDs = append(taskIDs, taskID)
+		scopedIDs = append(scopedIDs, scopedID)
 	}
 	if len(taskIDs) == 0 {
 		return out
 	}
 	rows, err := h.db.Query(ctx, `
-		SELECT task_id, scoped_session_id, title
-		FROM session_titles
-		WHERE task_id = ANY($1)
-	`, taskIDs)
+		SELECT st.task_id, st.scoped_session_id, st.title
+		FROM session_titles st
+		JOIN unnest($1::text[], $2::text[]) AS requested(task_id, scoped_session_id)
+		  ON requested.task_id = st.task_id
+		 AND requested.scoped_session_id = st.scoped_session_id
+	`, taskIDs, scopedIDs)
 	if err != nil {
 		return out
 	}
