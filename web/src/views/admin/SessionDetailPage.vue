@@ -7,7 +7,7 @@
 //     governance/attachments) when a row is clicked
 //   - `?turn=N&focus=1` deep-link support for cross-page handoff
 
-import { onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   listSessionTurns,
@@ -20,14 +20,14 @@ import SessionTurnDrawer from '../../components/SessionTurnDrawer.vue'
 
 const route = useRoute()
 const router = useRouter()
-const sessionId = String(route.params.id)
-const focusTurn = Number(route.query.turn || 0)
+const sessionId = computed(() => String(route.params.id || ''))
+const focusTurn = computed(() => Number(route.query.turn || 0))
 
 const turns = ref<TurnListItem[]>([])
 const hasMore = ref(false)
 const nextCursor = ref('')
 const loading = ref(false)
-const drawerTurnNo = ref<number | null>(focusTurn || null)
+const drawerTurnNo = ref<number | null>(focusTurn.value || null)
 const snapshot = ref<Record<string, unknown> | null>(null)
 
 async function load(reset = true) {
@@ -39,7 +39,7 @@ async function load(reset = true) {
     }
     const params: { cursor?: string; limit: number } = { limit: 50 }
     if (nextCursor.value) params.cursor = nextCursor.value
-    const r = await listSessionTurns(sessionId, params)
+    const r = await listSessionTurns(sessionId.value, params)
     turns.value = [...turns.value, ...r.turns]
     hasMore.value = r.has_more
     nextCursor.value = r.next_cursor
@@ -52,7 +52,7 @@ async function load(reset = true) {
 
 async function loadSnapshot() {
   try {
-    snapshot.value = (await getSessionSnapshot(sessionId)) as Record<
+    snapshot.value = (await getSessionSnapshot(sessionId.value)) as Record<
       string,
       unknown
     >
@@ -80,11 +80,19 @@ onMounted(() => {
 })
 
 watch(
-  () => route.params.id,
-  () => {
-    drawerTurnNo.value = null
+  () => String(route.params.id || ''),
+  (id, previousId) => {
+    if (id === previousId) return
+    drawerTurnNo.value = focusTurn.value || null
     load(true)
     loadSnapshot()
+  }
+)
+
+watch(
+  () => route.query.turn,
+  turn => {
+    drawerTurnNo.value = Number(turn || 0) || null
   }
 )
 </script>

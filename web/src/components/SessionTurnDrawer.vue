@@ -5,10 +5,15 @@
 // signed URL (admin endpoint, short-lived).
 
 import { ref, watch } from 'vue'
-import {
-  getSessionTurn,
-  getAttachmentSignedUrl,
-} from '../api/sessions_v2'
+import { getSessionTurn } from '../api/sessions_v2'
+
+interface Attachment {
+  att_id: string
+  name: string
+  size: number
+  mime?: string
+  object?: string
+}
 
 interface TurnDetail {
   request?: unknown
@@ -16,7 +21,7 @@ interface TurnDetail {
   compression?: unknown
   meta?: unknown
   governance?: unknown
-  attachments?: Array<{ att_id: string; name: string; size: number }>
+  attachments?: Attachment[]
   model?: string
   cost_usd?: number
 }
@@ -31,18 +36,15 @@ const tab = ref<'request' | 'response' | 'compression' | 'meta' | 'governance' |
 )
 
 watch(
-  () => props.turnNo,
-  async (n) => {
+  () => [props.sessionId, props.turnNo] as const,
+  async ([sessionId, n]) => {
     if (n == null) {
       turn.value = null
       return
     }
     loading.value = true
     try {
-      turn.value = (await getSessionTurn(
-        props.sessionId,
-        n
-      )) as TurnDetail
+      turn.value = (await getSessionTurn(sessionId, n)) as TurnDetail
     } catch (e) {
       console.error('load turn failed', e)
       turn.value = null
@@ -53,18 +55,15 @@ watch(
   { immediate: true }
 )
 
-async function openAttachment(att: { att_id: string; name: string }) {
-  if (props.turnNo == null) return
-  try {
-    const { url } = await getAttachmentSignedUrl(
-      props.sessionId,
-      props.turnNo,
-      att.att_id
-    )
-    window.open(url, '_blank', 'noopener,noreferrer')
-  } catch (e) {
-    console.error('attachment sign failed', e)
-  }
+function attachmentURL(att: Attachment): string {
+  if (!att.object) return ''
+  return `/api/attachments/${att.object.split('/').map(encodeURIComponent).join('/')}`
+}
+
+function openAttachment(att: Attachment) {
+  const url = attachmentURL(att)
+  if (!url) return
+  window.open(url, '_blank', 'noopener,noreferrer')
 }
 
 function stringify(v: unknown): string {
@@ -114,7 +113,8 @@ function stringify(v: unknown): string {
         />
         <ul v-else class="att-list">
           <li v-for="att in turn.attachments" :key="att.att_id">
-            <a href="#" @click.prevent="openAttachment(att)">{{ att.name }}</a>
+            <a v-if="attachmentURL(att)" :href="attachmentURL(att)" target="_blank" rel="noopener noreferrer">{{ att.name }}</a>
+            <span v-else class="muted">{{ att.name }}（暂无下载路径）</span>
             <span class="muted">
               &middot; {{ (att.size / 1024).toFixed(1) }} KB
             </span>

@@ -61,6 +61,21 @@ var statsMigration539 []byte
 //go:embed embeddata/startup/540_stats_event_inbox_consumer.sql
 var statsMigration540 []byte
 
+//go:embed embeddata/startup/544_stats_adjustments_alignment.sql
+var statsMigration544 []byte
+
+//go:embed embeddata/startup/545_stats_reconciliation_phantom_resolution.sql
+var statsMigration545 []byte
+
+//go:embed embeddata/startup/546_stats_reconciliation_diffs_unique.sql
+var statsMigration546 []byte
+
+//go:embed embeddata/startup/547_session_project_attribution.sql
+var statsMigration547 []byte
+
+//go:embed embeddata/startup/548_stats_reconciliation_diffs_identity.sql
+var statsMigration548 []byte
+
 // 临时存放 embed SQL 的目录（运行时写入）
 
 // ── Cobra 入口 ──────────────────────────────────────────────────
@@ -728,10 +743,15 @@ func copySQLBackup(root string) error {
 		"00-prereqs.sql": sqlPrereqs,
 		"01-schema.sql":  sqlSchema,
 		"02-seed.sql":    sqlSeed,
-		"startup/536_stats_analytics_foundation.sql":  statsMigration536,
-		"startup/537_usage_facts.sql":                 statsMigration537,
-		"startup/539_stats_reconciliation_tenant.sql": statsMigration539,
-		"startup/540_stats_event_inbox_consumer.sql":  statsMigration540,
+		"startup/536_stats_analytics_foundation.sql":              statsMigration536,
+		"startup/537_usage_facts.sql":                             statsMigration537,
+		"startup/539_stats_reconciliation_tenant.sql":             statsMigration539,
+		"startup/540_stats_event_inbox_consumer.sql":              statsMigration540,
+		"startup/544_stats_adjustments_alignment.sql":             statsMigration544,
+		"startup/545_stats_reconciliation_phantom_resolution.sql": statsMigration545,
+		"startup/546_stats_reconciliation_diffs_unique.sql":       statsMigration546,
+		"startup/547_session_project_attribution.sql":             statsMigration547,
+		"startup/548_stats_reconciliation_diffs_identity.sql":     statsMigration548,
 	}
 	for name, content := range files {
 		path := filepath.Join(initDir, name)
@@ -803,10 +823,15 @@ func setupSQLDir() (string, func(), error) {
 		"00-prereqs.sql": sqlPrereqs,
 		"01-schema.sql":  sqlSchema,
 		"02-seed.sql":    sqlSeed,
-		"startup/536_stats_analytics_foundation.sql":  statsMigration536,
-		"startup/537_usage_facts.sql":                 statsMigration537,
-		"startup/539_stats_reconciliation_tenant.sql": statsMigration539,
-		"startup/540_stats_event_inbox_consumer.sql":  statsMigration540,
+		"startup/536_stats_analytics_foundation.sql":              statsMigration536,
+		"startup/537_usage_facts.sql":                             statsMigration537,
+		"startup/539_stats_reconciliation_tenant.sql":             statsMigration539,
+		"startup/540_stats_event_inbox_consumer.sql":              statsMigration540,
+		"startup/544_stats_adjustments_alignment.sql":             statsMigration544,
+		"startup/545_stats_reconciliation_phantom_resolution.sql": statsMigration545,
+		"startup/546_stats_reconciliation_diffs_unique.sql":       statsMigration546,
+		"startup/547_session_project_attribution.sql":             statsMigration547,
+		"startup/548_stats_reconciliation_diffs_identity.sql":     statsMigration548,
 	}
 	for name, content := range files {
 		path := filepath.Join(tmp, name)
