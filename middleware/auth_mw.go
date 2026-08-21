@@ -28,13 +28,19 @@ func NewAuthMiddleware(apiKey string) *AuthMiddleware {
 			// wrapped admin handlers without sending the global API key
 			// (rule 20 §6.1 cookie compliance).
 			//
+			// /admin/* is the Vue SPA path prefix (e.g. /admin/turns). Nginx
+			// often proxies location /admin to the Go process (for
+			// /admin/config/reload), so SPA navigations would otherwise be
+			// rejected as missing_key. /admin/config/reload still has its
+			// own AdminTokenMiddleware after this bypass.
+			//
 			// SAFETY: every registered /api/* endpoint is wrapped by
 			// wrapAdmin/superAdmin in cmd/gateway/main.go and
 			// admin/handler.go. Verified 2026-06-30 via grep — see
 			// docs/audit/2026-06-30-weekly-audit-report.md P0-3.
 			bypass: BypassRule{
 				ExactPaths:   []string{"/healthz", "/metrics", "/"},
-				PathPrefixes: []string{"/api/"},
+				PathPrefixes: []string{"/api/", "/admin/", "/assets/", "/maintain/", "/plugins/"},
 			},
 		},
 		expectedKey: apiKey,

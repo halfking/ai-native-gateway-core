@@ -65,6 +65,9 @@ type WaterfallSnapshot struct {
 	BottleneckDiagnosis BottleneckDiagnosis `json:"bottleneck_diagnosis"`
 	Enabled             bool                `json:"enabled"`
 	Wired               bool                `json:"wired"`
+	// Source describes where Requests came from for the admin UI.
+	// memory | memory+db | db | none
+	Source string `json:"source,omitempty"`
 }
 
 // WaterfallTimeRange bounds the returned request sample.

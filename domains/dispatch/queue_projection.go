@@ -271,11 +271,14 @@ func (p *QueueProjection) SnapshotWaterfall(limit int, model string, credentialI
 	snapshot.Wired = true
 	snapshot.Requests = requests
 	if len(requests) > 0 {
+		snapshot.Source = "memory"
 		end := requests[0].ResponseEndAt
 		if end == "" {
 			end = requests[0].ArrivedAt
 		}
 		snapshot.TimeRange = &WaterfallTimeRange{Start: requests[len(requests)-1].ArrivedAt, End: end}
+	} else {
+		snapshot.Source = "none"
 	}
 
 	view := p.Snapshot()

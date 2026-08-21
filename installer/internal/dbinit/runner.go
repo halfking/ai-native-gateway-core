@@ -28,6 +28,11 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 		DBName:         dbName,
 		SQLDir:         sqlDir,
 		StartupFiles: []string{
+			"511_state_transitions_table.sql",
+			"515_state_transitions_seq_unique.sql",
+			"521_repair_state_transitions_tenant.sql",
+			"530_request_journey_contract.sql",
+			"531_request_journey_tenant_uniqueness.sql",
 			"536_stats_analytics_foundation.sql",
 			"537_usage_facts.sql",
 			"539_stats_reconciliation_tenant.sql",

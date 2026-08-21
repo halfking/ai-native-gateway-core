@@ -12,6 +12,11 @@ func TestStatsStartupMigrationsMatchCanonicalSources(t *testing.T) {
 
 	canonicalDir := filepath.Join("..", "..", "..", "sql", "migrations", "startup")
 	expected := map[string][]byte{
+		"511_state_transitions_table.sql":                 requestJourneyMigration511,
+		"515_state_transitions_seq_unique.sql":            requestJourneyMigration515,
+		"521_repair_state_transitions_tenant.sql":         requestJourneyMigration521,
+		"530_request_journey_contract.sql":                requestJourneyMigration530,
+		"531_request_journey_tenant_uniqueness.sql":       requestJourneyMigration531,
 		"536_stats_analytics_foundation.sql":              statsMigration536,
 		"537_usage_facts.sql":                             statsMigration537,
 		"539_stats_reconciliation_tenant.sql":             statsMigration539,
@@ -21,6 +26,7 @@ func TestStatsStartupMigrationsMatchCanonicalSources(t *testing.T) {
 		"546_stats_reconciliation_diffs_unique.sql":       statsMigration546,
 		"547_session_project_attribution.sql":             statsMigration547,
 		"548_stats_reconciliation_diffs_identity.sql":     statsMigration548,
+		"549_request_journey_durable_outbox.sql":          requestJourneyMigration549,
 	}
 
 	for name, embedded := range expected {
@@ -36,6 +42,11 @@ func TestStatsStartupMigrationsMatchCanonicalSources(t *testing.T) {
 
 func TestStatsStartupMigrationsAreWrittenToInstallerDirectories(t *testing.T) {
 	expected := []string{
+		"511_state_transitions_table.sql",
+		"515_state_transitions_seq_unique.sql",
+		"521_repair_state_transitions_tenant.sql",
+		"530_request_journey_contract.sql",
+		"531_request_journey_tenant_uniqueness.sql",
 		"536_stats_analytics_foundation.sql",
 		"537_usage_facts.sql",
 		"539_stats_reconciliation_tenant.sql",
@@ -45,6 +56,7 @@ func TestStatsStartupMigrationsAreWrittenToInstallerDirectories(t *testing.T) {
 		"546_stats_reconciliation_diffs_unique.sql",
 		"547_session_project_attribution.sql",
 		"548_stats_reconciliation_diffs_identity.sql",
+		"549_request_journey_durable_outbox.sql",
 	}
 
 	tmp := t.TempDir()

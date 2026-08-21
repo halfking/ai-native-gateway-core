@@ -49,6 +49,21 @@ var sqlSchema []byte
 //go:embed embeddata/02-seed.sql
 var sqlSeed []byte
 
+//go:embed embeddata/startup/511_state_transitions_table.sql
+var requestJourneyMigration511 []byte
+
+//go:embed embeddata/startup/515_state_transitions_seq_unique.sql
+var requestJourneyMigration515 []byte
+
+//go:embed embeddata/startup/521_repair_state_transitions_tenant.sql
+var requestJourneyMigration521 []byte
+
+//go:embed embeddata/startup/530_request_journey_contract.sql
+var requestJourneyMigration530 []byte
+
+//go:embed embeddata/startup/531_request_journey_tenant_uniqueness.sql
+var requestJourneyMigration531 []byte
+
 //go:embed embeddata/startup/536_stats_analytics_foundation.sql
 var statsMigration536 []byte
 
@@ -746,6 +761,11 @@ func copySQLBackup(root string) error {
 		"00-prereqs.sql": sqlPrereqs,
 		"01-schema.sql":  sqlSchema,
 		"02-seed.sql":    sqlSeed,
+		"startup/511_state_transitions_table.sql":                 requestJourneyMigration511,
+		"startup/515_state_transitions_seq_unique.sql":            requestJourneyMigration515,
+		"startup/521_repair_state_transitions_tenant.sql":         requestJourneyMigration521,
+		"startup/530_request_journey_contract.sql":                requestJourneyMigration530,
+		"startup/531_request_journey_tenant_uniqueness.sql":       requestJourneyMigration531,
 		"startup/536_stats_analytics_foundation.sql":              statsMigration536,
 		"startup/537_usage_facts.sql":                             statsMigration537,
 		"startup/539_stats_reconciliation_tenant.sql":             statsMigration539,
@@ -827,6 +847,11 @@ func setupSQLDir() (string, func(), error) {
 		"00-prereqs.sql": sqlPrereqs,
 		"01-schema.sql":  sqlSchema,
 		"02-seed.sql":    sqlSeed,
+		"startup/511_state_transitions_table.sql":                 requestJourneyMigration511,
+		"startup/515_state_transitions_seq_unique.sql":            requestJourneyMigration515,
+		"startup/521_repair_state_transitions_tenant.sql":         requestJourneyMigration521,
+		"startup/530_request_journey_contract.sql":                requestJourneyMigration530,
+		"startup/531_request_journey_tenant_uniqueness.sql":       requestJourneyMigration531,
 		"startup/536_stats_analytics_foundation.sql":              statsMigration536,
 		"startup/537_usage_facts.sql":                             statsMigration537,
 		"startup/539_stats_reconciliation_tenant.sql":             statsMigration539,

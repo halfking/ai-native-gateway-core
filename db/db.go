@@ -114,6 +114,9 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	if err := db.ensureRequestLogSchema(migCtx); err != nil {
 		return err
 	}
+	if err := db.ensureRequestJourneyObservationSchema(migCtx); err != nil {
+		return err
+	}
 	if err := db.ensureQualityFixModeSchema(migCtx); err != nil {
 		return err
 	}
@@ -295,6 +298,131 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	// A failure here logs a warning but does NOT block startup — the gateway
 	// must still serve traffic even if /probe-health renders empty.
 	db.ensureProbeHealthDashboardViews(migCtx)
+	return nil
+}
+
+func (d *DB) ensureRequestJourneyObservationSchema(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	statements := []string{
+		`CREATE TABLE IF NOT EXISTS request_state_transitions (
+			id BIGSERIAL PRIMARY KEY,
+			request_id TEXT NOT NULL,
+			tenant_id TEXT NOT NULL DEFAULT 'default',
+			transition_type TEXT,
+			from_state TEXT,
+			to_state TEXT,
+			metadata JSONB,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`ALTER TABLE request_state_transitions
+			ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'default',
+			ALTER COLUMN transition_type DROP NOT NULL,
+			ADD COLUMN IF NOT EXISTS seq BIGINT,
+			ADD COLUMN IF NOT EXISTS gateway_instance_id TEXT,
+			ADD COLUMN IF NOT EXISTS event_type TEXT,
+			ADD COLUMN IF NOT EXISTS stage TEXT,
+			ADD COLUMN IF NOT EXISTS requested_model TEXT,
+			ADD COLUMN IF NOT EXISTS resolved_model TEXT,
+			ADD COLUMN IF NOT EXISTS model TEXT,
+			ADD COLUMN IF NOT EXISTS provider_id BIGINT,
+			ADD COLUMN IF NOT EXISTS provider TEXT,
+			ADD COLUMN IF NOT EXISTS credential_id BIGINT,
+			ADD COLUMN IF NOT EXISTS from_model TEXT,
+			ADD COLUMN IF NOT EXISTS to_model TEXT,
+			ADD COLUMN IF NOT EXISTS from_credential_id BIGINT,
+			ADD COLUMN IF NOT EXISTS to_credential_id BIGINT,
+			ADD COLUMN IF NOT EXISTS attempt_id TEXT,
+			ADD COLUMN IF NOT EXISTS attempt_no INTEGER,
+			ADD COLUMN IF NOT EXISTS outcome TEXT,
+			ADD COLUMN IF NOT EXISTS error_kind TEXT,
+			ADD COLUMN IF NOT EXISTS http_status INTEGER,
+			ADD COLUMN IF NOT EXISTS retry_reason TEXT,
+			ADD COLUMN IF NOT EXISTS switch_reason TEXT,
+			ADD COLUMN IF NOT EXISTS observation_status TEXT,
+			ADD COLUMN IF NOT EXISTS node_health_status TEXT,
+			ADD COLUMN IF NOT EXISTS retry_at TIMESTAMPTZ,
+			ADD COLUMN IF NOT EXISTS occurred_at TIMESTAMPTZ`,
+		`DROP INDEX IF EXISTS uq_state_transitions_request_seq`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS uq_state_transitions_legacy_request_seq
+			ON request_state_transitions (request_id, seq)
+			WHERE event_type IS NULL`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS uq_state_transitions_tenant_request_seq
+			ON request_state_transitions (tenant_id, request_id, seq)
+			WHERE event_type IS NOT NULL`,
+		`CREATE INDEX IF NOT EXISTS idx_state_transitions_journey_retry_at
+			ON request_state_transitions (tenant_id, retry_at)
+			WHERE event_type = 'retry_scheduled' AND retry_at IS NOT NULL`,
+		`ALTER TABLE request_state_transitions
+			DROP CONSTRAINT IF EXISTS request_state_transitions_retry_at_event_chk,
+			ADD CONSTRAINT request_state_transitions_retry_at_event_chk CHECK (
+				retry_at IS NULL OR event_type = 'retry_scheduled'
+			)`,
+		`CREATE TABLE IF NOT EXISTS request_journey_observation_outbox (
+			id BIGSERIAL PRIMARY KEY,
+			tenant_id TEXT NOT NULL,
+			request_id TEXT NOT NULL,
+			seq BIGINT NOT NULL,
+			payload JSONB NOT NULL,
+			payload_hash TEXT NOT NULL,
+			status TEXT NOT NULL DEFAULT 'pending',
+			attempts INTEGER NOT NULL DEFAULT 0,
+			next_retry_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			claim_owner TEXT,
+			claim_until TIMESTAMPTZ,
+			claim_fencing_token BIGINT NOT NULL DEFAULT 0,
+			last_error TEXT NOT NULL DEFAULT '',
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			CONSTRAINT request_journey_observation_outbox_identity_uq UNIQUE (tenant_id, request_id, seq),
+			CONSTRAINT request_journey_observation_outbox_seq_chk CHECK (seq > 0),
+			CONSTRAINT request_journey_observation_outbox_attempts_chk CHECK (attempts >= 0),
+			CONSTRAINT request_journey_observation_outbox_claim_fence_chk CHECK (claim_fencing_token >= 0),
+			CONSTRAINT request_journey_observation_outbox_status_chk CHECK (status IN ('pending', 'processing', 'failed')),
+			CONSTRAINT request_journey_observation_outbox_processing_lease_chk CHECK (
+				status <> 'processing' OR (claim_owner IS NOT NULL AND claim_until IS NOT NULL)
+			)
+		)`,
+		`ALTER TABLE request_journey_observation_outbox
+			ADD COLUMN IF NOT EXISTS claim_fencing_token BIGINT NOT NULL DEFAULT 0`,
+		`ALTER TABLE request_journey_observation_outbox
+			DROP CONSTRAINT IF EXISTS request_journey_observation_outbox_claim_fence_chk,
+			ADD CONSTRAINT request_journey_observation_outbox_claim_fence_chk CHECK (claim_fencing_token >= 0),
+			DROP CONSTRAINT IF EXISTS request_journey_observation_outbox_processing_lease_chk,
+			ADD CONSTRAINT request_journey_observation_outbox_processing_lease_chk CHECK (
+				status <> 'processing' OR (claim_owner IS NOT NULL AND claim_until IS NOT NULL)
+			)`,
+		`CREATE INDEX IF NOT EXISTS idx_request_journey_observation_outbox_due
+			ON request_journey_observation_outbox (next_retry_at, created_at)
+			WHERE status IN ('pending', 'failed')`,
+		`CREATE INDEX IF NOT EXISTS idx_request_journey_observation_outbox_lease
+			ON request_journey_observation_outbox (claim_until, created_at)
+			WHERE status = 'processing'`,
+		`CREATE INDEX IF NOT EXISTS idx_request_journey_observation_outbox_tenant
+			ON request_journey_observation_outbox (tenant_id, created_at)`,
+		`ALTER TABLE request_journey_observation_outbox ENABLE ROW LEVEL SECURITY`,
+		`ALTER TABLE request_journey_observation_outbox FORCE ROW LEVEL SECURITY`,
+		`DROP POLICY IF EXISTS request_journey_observation_outbox_tenant_isolation
+			ON request_journey_observation_outbox`,
+		`CREATE POLICY request_journey_observation_outbox_tenant_isolation
+			ON request_journey_observation_outbox
+			USING (tenant_id = current_setting('app.current_tenant', true)::TEXT)
+			WITH CHECK (tenant_id = current_setting('app.current_tenant', true)::TEXT)`,
+		`DROP POLICY IF EXISTS request_journey_observation_outbox_super_admin_bypass
+			ON request_journey_observation_outbox`,
+		`CREATE POLICY request_journey_observation_outbox_super_admin_bypass
+			ON request_journey_observation_outbox
+			USING (current_setting('app.current_role', true) = 'super_admin'
+				OR current_setting('app.bypass_rls', true) = 'true')
+			WITH CHECK (current_setting('app.current_role', true) = 'super_admin'
+				OR current_setting('app.bypass_rls', true) = 'true')`,
+	}
+	for _, statement := range statements {
+		if _, err := d.pool.Exec(ctx, statement); err != nil {
+			return fmt.Errorf("ensure request journey observation schema: %w", err)
+		}
+	}
 	return nil
 }
 
