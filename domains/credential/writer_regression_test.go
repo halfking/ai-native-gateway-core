@@ -221,6 +221,30 @@ func TestWriteOnError_CredentialWideKind_OnlyUpdatesCredentials(t *testing.T) {
 	}
 }
 
+func TestSetCredentialUnavailable_ClosesCredentialAndAllBindings(t *testing.T) {
+	mockDB := newSQLOnlyMock()
+	defer mockDB.Close()
+
+	mockDB.ExpectBegin()
+	mockDB.ExpectExec(`UPDATE credentials`).
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), 42).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	mockDB.ExpectExec(`UPDATE credential_model_bindings`).
+		WithArgs(string(errorsx.KindConcurrent), pgxmock.AnyArg(), 42).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 3))
+	mockDB.ExpectCommit()
+
+	w := &Writer{dbPool: mockDB}
+	if err := w.SetCredentialUnavailable(context.Background(), 42, Failure{
+		Kind: errorsx.KindConcurrent, Detail: "credential-wide concurrent ceiling",
+	}); err != nil {
+		t.Fatalf("SetCredentialUnavailable: %v", err)
+	}
+	if err := mockDB.ExpectationsWereMet(); err != nil {
+		t.Fatalf("credential-wide closure must update credentials and all bindings: %v", err)
+	}
+}
+
 // TestWriteOnError_PerModelKind_EmptyRawModel_AllBindings pins the
 // legacy fallback path: when rawModel is empty (test path), the cmb
 // write targets every binding on the credential. This keeps the
