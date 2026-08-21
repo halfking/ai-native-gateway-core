@@ -114,6 +114,34 @@ func (s JourneyStage) Valid() bool {
 	return false
 }
 
+// StageCategory groups journey stages for real-time request visualization.
+type StageCategory string
+
+const (
+	StageCategoryRouting  StageCategory = "routing"
+	StageCategoryLLM      StageCategory = "llm"
+	StageCategoryRetrying StageCategory = "retrying"
+	StageCategoryTerminal StageCategory = "terminal"
+)
+
+// ClassifyStage maps a lifecycle stage to its high-level UI category.
+func ClassifyStage(stage JourneyStage) StageCategory {
+	switch stage {
+	case StageReceived, StageRouting, StageModelQueue, StageCredentialQueue, StageNodeSelection:
+		return StageCategoryRouting
+	case StageUpstream, StageStreaming:
+		return StageCategoryLLM
+	case StageRetrying:
+		return StageCategoryRetrying
+	case StageTerminal:
+		return StageCategoryTerminal
+	default:
+		return StageCategoryRouting
+	}
+}
+
+func (s JourneyStage) Category() StageCategory { return ClassifyStage(s) }
+
 // LifecycleState is the closed three-state request lifecycle of the request
 // registry (会话优化 v4 R1.1/T2). It is DERIVED from journey stages (spec §6):
 //

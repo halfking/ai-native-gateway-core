@@ -780,6 +780,12 @@ func (p *Pipeline) getOrCreateForwarder(cred CredentialRef) *credForwarder {
 	return cf
 }
 
+func (p *Pipeline) getForwarderIfExists(credentialID int) *credForwarder {
+	p.credMu.Lock()
+	defer p.credMu.Unlock()
+	return p.forwarders[credentialID]
+}
+
 // queueWaitBudget returns the max pacing wait for a request on its selected
 // cred. Since v4 (R1.3) a non-positive budget means ZERO wait: a saturated
 // governor fails over immediately instead of parking the request. The old

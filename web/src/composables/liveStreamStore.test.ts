@@ -146,7 +146,7 @@ describe('mergeDelta', () => {
   // asserts the contract on both sides: backend sends full
   // dimension, frontend reuses unchanged objects so the DOM stays
   // stable.
-  it('appends a new lane at the tail without reordering existing lanes', () => {
+  it('follows the server-provided lane order and preserves lane identity', () => {
     const openaiBefore = __testing.state.snapshot!.dimensions.vendor[1]
     const delta: LiveStreamDelta = {
       summary: { total: 4, success: 3, failure: 0 },
@@ -164,8 +164,8 @@ describe('mergeDelta', () => {
     }
     __testing.mergeDelta(delta)
     const after = __testing.state.snapshot!.dimensions.vendor
-    expect(after.map((l) => l.id)).toEqual(['anthropic', 'openai', 'google'])
-    expect(after[1]).toBe(openaiBefore)
+    expect(after.map((l) => l.id)).toEqual(['google', 'anthropic', 'openai'])
+    expect(after[2]).toBe(openaiBefore)
   })
 })
 
@@ -185,7 +185,7 @@ describe('mergeSnapshotFromServer', () => {
     }
   })
 
-  it('keeps existing lanes when incoming snapshot omits them', () => {
+  it('removes lanes omitted by an authoritative snapshot', () => {
     __testing.mergeSnapshotFromServer({
       summary: { total: 0, success: 0, failure: 0 },
       detail_dimensions: { vendor: [], provider: [], model: [] },
@@ -193,7 +193,7 @@ describe('mergeSnapshotFromServer', () => {
       dimension_legends: { vendor: [], provider: [], model: [] },
       status_legends: [],
     })
-    expect(__testing.state.snapshot!.dimensions.vendor.map((l) => l.id)).toEqual(['openai'])
+    expect(__testing.state.snapshot!.dimensions.vendor.map((l) => l.id)).toEqual([])
   })
 
   it('updates summary from incoming without dropping lanes', () => {
