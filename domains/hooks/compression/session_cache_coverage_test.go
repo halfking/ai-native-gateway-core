@@ -707,17 +707,16 @@ func TestInvalidate_DeletesSanitizeKeysWithTenantHash(t *testing.T) {
 
 	c.Invalidate(context.Background(), tenantID, sessID)
 
-	// Drain the L2 session-key delete (expected first) plus the two sanitize
-	// deletes. We just need to confirm the sanitize keys were deleted.
+	// Drain all deletes (L2 session-key + sanitize map + sanitize offsets = 3
+	// total). We confirm the two sanitize keys land among them.
 	deleted := map[string]bool{}
 	timeout := time.After(200 * time.Millisecond)
-	for len(deleted) < 2 {
+	for len(deleted) < 3 {
 		select {
 		case k := <-redis.delCh:
 			deleted[k] = true
 		case <-timeout:
-			t.Fatalf("Invalidate: expected deletes for sanitize keys %q and %q; got %v",
-				sanitizeKey, offsetKey, deleted)
+			t.Fatalf("Invalidate: expected 3 deletes (L2 + sanitize map + offsets); got %v", deleted)
 		}
 	}
 	if !deleted[sanitizeKey] {
