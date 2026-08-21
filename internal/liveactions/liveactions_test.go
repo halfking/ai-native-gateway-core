@@ -242,8 +242,9 @@ func TestNormalizeStageCategory(t *testing.T) {
 // live_actions_stage_normalization_failures_total exactly once, with no
 // stage / stage_category populated on the event.
 func TestNormalizeStageFailureCounter(t *testing.T) {
+	ResetMetricsForTest()
+
 	const unknown = Action("__test_unknown__")
-	before := StageNormalizationFailuresTotal()
 
 	ev := ActionEvent{Action: unknown}
 	normalizeStage(&ev)
@@ -251,8 +252,8 @@ func TestNormalizeStageFailureCounter(t *testing.T) {
 	if ev.Stage != "" || ev.StageCategory != "" {
 		t.Fatalf("unknown action should leave stage fields empty, got %q/%q", ev.Stage, ev.StageCategory)
 	}
-	if got := StageNormalizationFailuresTotal() - before; got != 1 {
-		t.Fatalf("stage_normalization_failures delta = %d, want 1", got)
+	if got := StageNormalizationFailuresTotal(); got != 1 {
+		t.Fatalf("stage_normalization_failures = %d, want 1", got)
 	}
 }
 
