@@ -7,12 +7,15 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domain" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 )
 
-func TestFactory_DisabledByDefault(t *testing.T) {
+func TestFactory_EnabledByDefault(t *testing.T) {
+	t.Setenv("TRANSPORT_LAYER_IR_ENABLED", "")
+	t.Setenv("TRANSPORT_IR_ROLLOUT_PERCENT", "")
+
 	f := NewTransportFactory()
 	f.Reload()
 
-	if f.Enabled() {
-		t.Fatal("Enabled() = true, want false (env not set)")
+	if !f.Enabled() {
+		t.Fatal("Enabled() = false, want true (env not set)")
 	}
 
 	env := domain.NewEnvelopeBuilder("r1").
@@ -20,8 +23,8 @@ func TestFactory_DisabledByDefault(t *testing.T) {
 		WithTransport(&domain.TransportContext{ClientModel: "gpt-4o"}).
 		Build()
 
-	if got := f.Pick(context.Background(), env).Implementation(); got != "legacy" {
-		t.Fatalf("Pick() = %s, want legacy", got)
+	if got := f.Pick(context.Background(), env).Implementation(); got != "ir" {
+		t.Fatalf("Pick() = %s, want ir", got)
 	}
 }
 

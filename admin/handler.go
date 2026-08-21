@@ -1177,6 +1177,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 		// 2026-07-24: 供应商级路由阻塞诊断 — "凭据正常但路由不到"场景
 		mux.HandleFunc("/api/admin/diagnostics/routing-blocked", h.superAdmin(h.handleRoutingBlockedDiagnostic))
 		mux.HandleFunc("/api/admin/diagnostics/routing-blocked/fix", h.superAdmin(h.handleRoutingBlockedFix))
+		mux.HandleFunc("/api/admin/diagnostics/model-routing", h.superAdmin(h.handleModelRoutingDiagnostic))
 
 		// 2026-08-11: 模型智商（Model IQ）— 标准智商 / 节点智商历史 / 立即测试。
 		// catalog/node-latest/history 只读 DB；trigger 调用 modelQualityBackend。
