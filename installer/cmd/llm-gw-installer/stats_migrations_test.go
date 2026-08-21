@@ -26,7 +26,7 @@ func TestStatsStartupMigrationsMatchCanonicalSources(t *testing.T) {
 		"546_stats_reconciliation_diffs_unique.sql":       statsMigration546,
 		"547_session_project_attribution.sql":             statsMigration547,
 		"548_stats_reconciliation_diffs_identity.sql":     statsMigration548,
-		"549_request_journey_durable_outbox.sql":          requestJourneyMigration549,
+		"550_request_journey_durable_outbox.sql":          requestJourneyMigration550,
 	}
 
 	for name, embedded := range expected {
@@ -56,7 +56,7 @@ func TestStatsStartupMigrationsAreWrittenToInstallerDirectories(t *testing.T) {
 		"546_stats_reconciliation_diffs_unique.sql",
 		"547_session_project_attribution.sql",
 		"548_stats_reconciliation_diffs_identity.sql",
-		"549_request_journey_durable_outbox.sql",
+		"550_request_journey_durable_outbox.sql",
 	}
 
 	tmp := t.TempDir()
