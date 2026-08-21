@@ -19,10 +19,10 @@ func TestResolveGovernorBackendTableDriven(t *testing.T) {
 	t.Cleanup(func() { _ = client.Close() })
 
 	cases := []struct {
-		name       string
-		mode       string
-		client     *redis.Client
-		wantKind   string
+		name     string
+		mode     string
+		client   *redis.Client
+		wantKind string
 	}{
 		{
 			name:     "empty env → LocalBackend",

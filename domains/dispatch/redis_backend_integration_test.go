@@ -153,43 +153,109 @@ func TestRedisEnforceLongStreamRenewal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	rg := g.(*redisEnforceGovernor)
 
 	qr := &QueuedRequest{}
 	giveUp := time.Now().Add(5 * time.Second)
 
-	if err := g.Acquire(context.Background(), qr, giveUp); err != nil {
+	if err := rg.Acquire(context.Background(), qr, giveUp); err != nil {
 		t.Fatalf("initial Acquire: %v", err)
 	}
 
-	// Past TTL — slot would expire if we had no keepalive. We don't
-	// surface Renew yet on redisEnforceGovernor (Stage B leaves
-	// keepalive knobs to Stage E), so we instead re-Acquire from the
-	// same governor instance by waiting FastForward and asserting
-	// that an independent Redis-side check (ZCARD) sees 1 token
-	// during the lease.
-	mr.FastForward(100 * time.Millisecond) // half of TTL, not expired yet
+	// FastForward partway through the lease — still inside the
+	// sliding window (cutoff = now - ttl = issued_at + ttl/2).
+	mr.FastForward(100 * time.Millisecond)
 
-	// The key still contains the token; check ZCARD via the backend
-	// script — count is 1.
+	// Renew should succeed (token still in ZSET) and re-arm the TTL.
+	if err := rg.Renew(context.Background(), qr); err != nil {
+		t.Fatalf("Renew after partial TTL: %v", err)
+	}
+
+	// FastForward again, well past the original 200ms TTL but inside
+	// the renewed 200ms TTL window (since Renew at t=100ms set
+	// PEXPIRE=200ms ⇒ expiry at t=300ms; we advance to t=250ms).
+	mr.FastForward(150 * time.Millisecond)
+
+	// A probe with a different token is denied (window full).
 	raw, err := a.acquireS.Run(context.Background(), a.client,
 		[]string{redisGovernorKey(spec.ProviderID, spec.CredentialID, ModeConcurrency)},
-		spec.Limit, spec.LeaseTTL.Milliseconds(), "probe-token-different").Slice()
+		spec.Limit, spec.Limit, "probe-token-different").Slice()
 	if err != nil {
 		t.Fatalf("probe acquire: %v", err)
 	}
 	if code, _ := raw[0].(int64); code != 0 {
-		t.Fatalf("window should be full during lease: code=%d want 0", code)
+		t.Fatalf("window should be full after Renew: code=%d want 0", code)
 	}
 
-	// Release the lease and confirm the slot is reusable.
-	g.Release(qr)
+	// Release and confirm slot is reusable.
+	rg.Release(qr)
 	raw, err = a.acquireS.Run(context.Background(), a.client,
 		[]string{redisGovernorKey(spec.ProviderID, spec.CredentialID, ModeConcurrency)},
-		spec.Limit, spec.LeaseTTL.Milliseconds(), "probe-token-after").Slice()
+		spec.Limit, spec.Limit, "probe-token-after").Slice()
 	if err != nil {
 		t.Fatalf("post-release acquire: %v", err)
 	}
 	if code, _ := raw[0].(int64); code != 1 {
 		t.Fatalf("after Release the slot must be reusable, got code=%d", code)
+	}
+}
+
+// TestRedisEnforceRenewAfterExpiry pins the contract that Renew on an
+// already-expired lease returns wrapped ErrGovernorUnavailable — i.e.
+// the keepalive loop must observe the failure and re-Acquire rather
+// than silently carrying on with a phantom lease.
+func TestRedisEnforceRenewAfterExpiry(t *testing.T) {
+	a, _, mr := makeBackendPair(t)
+
+	spec := GovernorSpec{
+		CredentialID: 7, ProviderID: 42, Mode: ModeConcurrency, Limit: 1,
+		Backend: BackendRedisEnforce, LeaseTTL: 100 * time.Millisecond, Revision: 1,
+	}
+	g, err := a.New(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	rg := g.(*redisEnforceGovernor)
+	qr := &QueuedRequest{}
+	if err := rg.Acquire(context.Background(), qr, time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+
+	// FastForward well past TTL — the token's score is now below the
+	// sliding-window cutoff, so ZSCORE inside the Renew Lua returns
+	// false and the script returns 0.
+	mr.FastForward(time.Second)
+
+	err = rg.Renew(context.Background(), qr)
+	if err == nil {
+		t.Fatalf("Renew after expiry must fail, got nil")
+	}
+	if !errors.Is(err, ErrGovernorUnavailable) {
+		t.Fatalf("Renew error must wrap ErrGovernorUnavailable, got %v", err)
+	}
+}
+
+// TestRedisEnforceRenewUnregistered pins that calling Renew without a
+// prior Acquire returns wrapped ErrGovernorUnavailable rather than
+// silently succeeding against an empty lease map.
+func TestRedisEnforceRenewUnregistered(t *testing.T) {
+	a, _ := newRedisBackendTestClient(t)
+	b := NewRedisEnforceBackend(a, "test-renew-unregistered")
+	spec := GovernorSpec{
+		CredentialID: 7, ProviderID: 42, Mode: ModeConcurrency, Limit: 1,
+		Backend: BackendRedisEnforce, LeaseTTL: time.Second, Revision: 1,
+	}
+	g, err := b.New(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	rg := g.(*redisEnforceGovernor)
+
+	err = rg.Renew(context.Background(), &QueuedRequest{})
+	if err == nil {
+		t.Fatalf("Renew without prior Acquire must fail, got nil")
+	}
+	if !errors.Is(err, ErrGovernorUnavailable) {
+		t.Fatalf("Renew error must wrap ErrGovernorUnavailable, got %v", err)
 	}
 }
