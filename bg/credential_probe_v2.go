@@ -486,6 +486,64 @@ type probeResult struct {
 	BindingOnly bool
 }
 
+// loadBoundRawModels returns distinct available raw models bound to a credential.
+// A probe-time lookup failure is non-fatal: callers retain the default probe model.
+func (c *CredentialProbeV2) loadBoundRawModels(ctx context.Context, credID int) []string {
+	queryCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+
+	rows, err := c.db.Query(queryCtx, `
+		SELECT DISTINCT pm.raw_model_name
+		FROM credential_model_bindings cmb
+		JOIN provider_models pm ON pm.id = cmb.provider_model_id
+		WHERE cmb.credential_id = $1
+		  AND COALESCE(cmb.available, TRUE) = TRUE
+		  AND COALESCE(pm.available, TRUE) = TRUE
+		  AND pm.raw_model_name <> ''
+	`, credID)
+	if err != nil {
+		slog.Warn("credential probe v2: loadBoundRawModels query failed",
+			"credential_id", credID, "error", err)
+		return nil
+	}
+	defer rows.Close()
+
+	models := make([]string, 0)
+	for rows.Next() {
+		var model string
+		if err := rows.Scan(&model); err != nil {
+			slog.Warn("credential probe v2: loadBoundRawModels scan failed",
+				"credential_id", credID, "error", err)
+			return nil
+		}
+		models = append(models, model)
+	}
+	if err := rows.Err(); err != nil {
+		slog.Warn("credential probe v2: loadBoundRawModels rows failed",
+			"credential_id", credID, "error", err)
+		return nil
+	}
+	return models
+}
+
+func uniqueStringSet(values ...[]string) []string {
+	seen := make(map[string]struct{})
+	out := make([]string, 0)
+	for _, group := range values {
+		for _, value := range group {
+			if value == "" {
+				continue
+			}
+			if _, ok := seen[value]; ok {
+				continue
+			}
+			seen[value] = struct{}{}
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
 // probeCredential runs the 2-step probe (GET /v1/models + mini chat "hi").
 //
 // 2026-06-29 audit: a single failed probe must not declare a credential
@@ -954,6 +1012,10 @@ func (c *CredentialProbeV2) writeHealth(ctx context.Context, credID int, pr prob
 		c.restoreBindingOnProbeSuccess(execCtx, credID, pr.HealthProbeModel)
 	}
 
+	writeModels := uniqueStringSet([]string{pr.HealthProbeModel}, c.loadBoundRawModels(execCtx, credID))
+	if len(writeModels) == 0 {
+		writeModels = []string{pr.HealthProbeModel}
+	}
 	if c.cache != nil && c.cache.Enabled() && pr.HealthProbeModel != "" {
 		available := pr.AvailabilityState == "ready" && !pr.BindingOnly
 		state := pr.HealthStatus
@@ -966,46 +1028,40 @@ func (c *CredentialProbeV2) writeHealth(ctx context.Context, credID int, pr prob
 		if pr.BindingOnly {
 			state = "model_binding"
 		}
-		if err := c.cache.Set(execCtx, credID, pr.HealthProbeModel, modelAvailabilityFields(
-			credID,
-			pr.HealthProbeModel,
-			state,
-			available,
-			pr.HealthStatus,
-			0,
-			0,
-			recoverAt,
-			pr.HealthSource,
-		)); err != nil {
-			slog.Warn("credential probe v2: cache write failed",
-				"credential_id", credID,
-				"probe_model", pr.HealthProbeModel,
-				"error", err)
+		for _, model := range writeModels {
+			if err := c.cache.Set(execCtx, credID, model, modelAvailabilityFields(
+				credID, model, state, available, pr.HealthStatus, 0, 0,
+				recoverAt, pr.HealthSource,
+			)); err != nil {
+				slog.Warn("credential probe v2: cache write failed",
+					"credential_id", credID, "probe_model", model, "error", err)
+			}
 		}
 	}
 
 	// 新增：同步到状态管理器
 	if c.stateManager != nil && pr.HealthProbeModel != "" {
 		now := time.Now()
-		state := &credentialstate.State{
-			CredentialID:  credID,
-			Model:         pr.HealthProbeModel,
-			Available:     pr.AvailabilityState == "ready" && !pr.BindingOnly,
-			HealthStatus:  pr.HealthStatus,
-			AvgLatencyMs:  pr.HealthLatencyMs,
-			LastUpdatedAt: now,
-			LastSuccessAt: func() *time.Time {
-				if pr.AvailabilityState != "ready" {
-					return nil
-				}
-				return &now
-			}(),
-			LastError: pr.HealthError,
-
-			RecoverAt: recoverAt,
-			Source:    "probe_v2",
+		for _, model := range writeModels {
+			state := &credentialstate.State{
+				CredentialID:  credID,
+				Model:         model,
+				Available:     pr.AvailabilityState == "ready" && !pr.BindingOnly,
+				HealthStatus:  pr.HealthStatus,
+				AvgLatencyMs:  pr.HealthLatencyMs,
+				LastUpdatedAt: now,
+				LastSuccessAt: func() *time.Time {
+					if pr.AvailabilityState != "ready" {
+						return nil
+					}
+					return &now
+				}(),
+				LastError: pr.HealthError,
+				RecoverAt: recoverAt,
+				Source:    "probe_v2",
+			}
+			c.stateManager.UpdateFromProbe(execCtx, state)
 		}
-		c.stateManager.UpdateFromProbe(execCtx, state)
 	}
 }
 
