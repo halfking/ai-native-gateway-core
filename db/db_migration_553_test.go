@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestApplyMigrationsIncludesMigration551Ensure(t *testing.T) {
+func TestApplyMigrationsIncludesMigration553Ensure(t *testing.T) {
 	source, err := os.ReadFile("db.go")
 	if err != nil {
 		t.Fatal(err)
@@ -26,7 +26,7 @@ func TestApplyMigrationsIncludesMigration551Ensure(t *testing.T) {
 		"tx, err := d.pool.BeginTx(ctx, pgx.TxOptions{})",
 	} {
 		if !strings.Contains(text, want) {
-			t.Errorf("db.go missing migration 551 contract %q", want)
+			t.Errorf("db.go missing migration 553 contract %q", want)
 		}
 	}
 }

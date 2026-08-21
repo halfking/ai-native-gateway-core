@@ -26,7 +26,7 @@ func TestStatsStartupMigrationsMatchCanonicalSources(t *testing.T) {
 		"546_stats_reconciliation_diffs_unique.sql":       statsMigration546,
 		"547_session_project_attribution.sql":             statsMigration547,
 		"548_stats_reconciliation_diffs_identity.sql":     statsMigration548,
-		"551_approval_resume_claim.sql":                   approvalResumeMigration551,
+		"553_approval_resume_claim.sql":                   approvalResumeMigration553,
 		"552_request_journey_durable_outbox.sql":          requestJourneyMigration552,
 	}
 
@@ -57,7 +57,7 @@ func TestStatsStartupMigrationsAreWrittenToInstallerDirectories(t *testing.T) {
 		"546_stats_reconciliation_diffs_unique.sql",
 		"547_session_project_attribution.sql",
 		"548_stats_reconciliation_diffs_identity.sql",
-		"551_approval_resume_claim.sql",
+		"553_approval_resume_claim.sql",
 		"552_request_journey_durable_outbox.sql",
 	}
 
