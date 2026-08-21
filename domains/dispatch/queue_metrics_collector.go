@@ -65,4 +65,6 @@ type LaneView struct {
 	Credential int    `json:"credential,omitempty"`
 	Mode       string `json:"mode,omitempty"`
 	Depth      int64  `json:"depth"`
+	Limit      int64  `json:"limit,omitempty"`
+	Full       bool   `json:"full,omitempty"`
 }

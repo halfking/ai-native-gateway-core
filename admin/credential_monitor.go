@@ -103,7 +103,7 @@ func (c *summaryCache) invalidateCredential(credentialID int) {
 		return
 	}
 	for key := range c.entries {
-		if strings.Contains(key, fmt.Sprintf(":c%d:", credentialID)) {
+		if strings.Contains(key, fmt.Sprintf(":c%d:", credentialID)) || strings.Contains(key, ":c0:") {
 			delete(c.entries, key)
 		}
 	}
@@ -507,7 +507,7 @@ func runMonitorSummary(ctx context.Context, db pgxQueryer, p monitorSummarySQLPa
 		); scanErr != nil {
 			scanFailures++
 			slog.Warn("monitor summary scan failed",
-				"credential_id", p.ProviderID, "error", scanErr.Error())
+				"credential_id", p.CredentialID, "provider_id", p.ProviderID, "error", scanErr.Error())
 			continue
 		}
 
@@ -528,7 +528,9 @@ func runMonitorSummary(ctx context.Context, db pgxQueryer, p monitorSummarySQLPa
 			models := make([]CredentialModelStatus, 0)
 
 			if len(modelsJSON) > 0 && string(modelsJSON) != "null" {
-				_ = json.Unmarshal(modelsJSON, &models)
+				if err := json.Unmarshal(modelsJSON, &models); err != nil {
+					return startedAt, summaries, fmt.Errorf("models JSON decode failed for credential %d: %w", s.ID, err)
+				}
 			}
 			s.Models = models
 			for i := range models {
@@ -585,6 +587,10 @@ type WindowStats struct {
 func (m *CredentialMonitorHandlers) handleMonitorSummary(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if m == nil || m.h == nil || m.h.db == nil {
+		writeError(w, http.StatusServiceUnavailable, "database not configured")
 		return
 	}
 
@@ -782,6 +788,9 @@ func (m *CredentialMonitorHandlers) slidingWindowFromRequestLogs(ctx context.Con
 		}
 		out = append(out, e)
 	}
+	if err := rows.Err(); err != nil {
+		return out, fmt.Errorf("rows iteration failed: %w", err)
+	}
 	return out, nil
 }
 
@@ -791,6 +800,13 @@ func (m *CredentialMonitorHandlers) slidingWindowFromRequestLogs(ctx context.Con
 func (m *CredentialMonitorHandlers) handlePromote(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if RequireSuperAdminForWrite(w, r) {
+		return
+	}
+	if m == nil || m.h == nil || m.h.db == nil {
+		writeError(w, http.StatusServiceUnavailable, "database not configured")
 		return
 	}
 
@@ -844,6 +860,13 @@ func (m *CredentialMonitorHandlers) handlePromote(w http.ResponseWriter, r *http
 func (m *CredentialMonitorHandlers) handleDemote(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if RequireSuperAdminForWrite(w, r) {
+		return
+	}
+	if m == nil || m.h == nil || m.h.db == nil {
+		writeError(w, http.StatusServiceUnavailable, "database not configured")
 		return
 	}
 
@@ -905,6 +928,13 @@ func (m *CredentialMonitorHandlers) handleDemote(w http.ResponseWriter, r *http.
 func (m *CredentialMonitorHandlers) handleSetConcurrencyAuto(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if RequireSuperAdminForWrite(w, r) {
+		return
+	}
+	if m == nil || m.h == nil || m.h.db == nil {
+		writeError(w, http.StatusServiceUnavailable, "database not configured")
 		return
 	}
 
@@ -1028,7 +1058,10 @@ func (m *CredentialMonitorHandlers) handleModelToggle(w http.ResponseWriter, r *
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	if m.h.db == nil {
+	if RequireSuperAdminForWrite(w, r) {
+		return
+	}
+	if m == nil || m.h == nil || m.h.db == nil {
 		writeError(w, http.StatusServiceUnavailable, "database not configured")
 		return
 	}
@@ -1259,11 +1292,13 @@ func runModelHistory(ctx context.Context, db pgxQueryer, credentialID int, rawMo
 				al.actor            AS actor,
 				COALESCE(al.after_json->>'reason', '') AS reason
 			FROM routing_audit_log al
+			JOIN credentials c ON c.id = (al.after_json->>'credential_id')::int
 			WHERE al.target_type = 'credential_model'
 			  AND al.action IN ('credential.model_toggle_online', 'credential.model_toggle_offline')
 			  AND (al.after_json->>'credential_id')::int = $1
 			  AND al.after_json->>'raw_model_name' = $2
-			  AND ($4 = '' OR al.tenant_id = $4)
+			  AND ($4 = '' OR c.tenant_id = $4)
+			  AND ($4 = '' OR al.tenant_id = $4 OR al.tenant_id IS NULL)
 		)
 		SELECT ts, source, triggered_by, event,
 		       probe_status, http_status, error_code, error_message,
@@ -1434,7 +1469,8 @@ func runCredentialDecisions(ctx context.Context, db pgxQueryer, p credentialDeci
 	clauses := ""
 	if p.IsTenantAdmin {
 		args = append(args, p.TenantID)
-		clauses += fmt.Sprintf(" AND rdl.tenant_id = $%d", len(args))
+		tenantArg := len(args)
+		clauses += fmt.Sprintf(" AND rdl.tenant_id = $%d AND EXISTS (SELECT 1 FROM credentials c WHERE c.id = rdl.chosen_credential_id AND c.tenant_id = $%d)", tenantArg, tenantArg)
 	}
 	if p.ModelFilter != "" {
 		args = append(args, p.ModelFilter)
@@ -1446,7 +1482,7 @@ func runCredentialDecisions(ctx context.Context, db pgxQueryer, p credentialDeci
 		SELECT rdl.ts, rdl.request_id::text, rdl.model, rdl.tier, rdl.success,
 		       rdl.latency_ms, rdl.error_class, rdl.chosen_provider_id,
 		       rdl.client_model, rdl.outbound_model, rdl.sticky_hit
-		FROM routing_decision_log rdl
+		FROM routing_decision_log_with_current_month rdl
 		WHERE rdl.chosen_credential_id = $1%s
 		ORDER BY rdl.ts DESC
 		LIMIT $%d
@@ -1516,14 +1552,14 @@ func (m *CredentialMonitorHandlers) handleCredentialDecisions(w http.ResponseWri
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	if m.h == nil || m.h.db == nil {
-		writeError(w, http.StatusServiceUnavailable, "database not configured")
-		return
-	}
 
 	credentialID := queryInt(r, "credential_id", 0)
 	if credentialID == 0 {
 		writeError(w, http.StatusBadRequest, "credential_id required")
+		return
+	}
+	if m == nil || m.h == nil || m.h.db == nil {
+		writeError(w, http.StatusServiceUnavailable, "database not configured")
 		return
 	}
 
@@ -1568,6 +1604,13 @@ func (m *CredentialMonitorHandlers) handleCredentialDecisions(w http.ResponseWri
 func (m *CredentialMonitorHandlers) handleClearManualDisabled(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if RequireSuperAdminForWrite(w, r) {
+		return
+	}
+	if m == nil || m.h == nil || m.h.db == nil {
+		writeError(w, http.StatusServiceUnavailable, "database not configured")
 		return
 	}
 
@@ -1667,6 +1710,13 @@ func (m *CredentialMonitorHandlers) handleClearManualDisabled(w http.ResponseWri
 func (m *CredentialMonitorHandlers) handleSetManualDisabled(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if RequireSuperAdminForWrite(w, r) {
+		return
+	}
+	if m == nil || m.h == nil || m.h.db == nil {
+		writeError(w, http.StatusServiceUnavailable, "database not configured")
 		return
 	}
 

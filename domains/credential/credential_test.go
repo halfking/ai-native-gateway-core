@@ -453,6 +453,9 @@ func TestWriter_NewWriter_EnabledAndErrors(t *testing.T) {
 	if err := w.WriteOnError(context.Background(), 1, "m", Failure{Kind: errorsx.KindNetwork}); err != ErrNoDatabase {
 		t.Errorf("nil WriteOnError: want ErrNoDatabase, got %v", err)
 	}
+	if err := w.SetCredentialUnavailable(context.Background(), 1, Failure{Kind: errorsx.KindConcurrent}); err != ErrNoDatabase {
+		t.Errorf("nil SetCredentialUnavailable: want ErrNoDatabase, got %v", err)
+	}
 }
 
 // ---------------------------------------------------------------------------

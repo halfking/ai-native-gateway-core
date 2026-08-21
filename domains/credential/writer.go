@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
+	"github.com/kaixuan/llm-gateway-go/modelbinding"
 )
 
 var ErrNoDatabase = errors.New("credential state database not configured")
@@ -22,6 +23,7 @@ var ErrNoDatabase = errors.New("credential state database not configured")
 type DBQuerier interface {
 	Exec(ctx context.Context, sql string, args ...interface{}) (pgconn.CommandTag, error)
 	Begin(ctx context.Context) (pgx.Tx, error)
+	QueryRow(ctx context.Context, sql string, args ...interface{}) pgx.Row
 }
 
 type Writer struct {
@@ -112,6 +114,10 @@ func (w *Writer) RestoreOnSuccess(ctx context.Context, credentialID int, rawMode
 		// model_offers is a VIEW over credential_model_bindings, so it
 		// automatically reflects the update above. No separate UPDATE needed.
 	} else {
+		rawModel, err = modelbinding.ResolveRawBinding(ctx, tx, credentialID, rawModel)
+		if err != nil {
+			return err
+		}
 		if _, err = tx.Exec(ctx, `
 			UPDATE credential_model_bindings cmb
 			SET available          = TRUE,
@@ -122,7 +128,7 @@ func (w *Writer) RestoreOnSuccess(ctx context.Context, credentialID int, rawMode
 			FROM provider_models pm
 			WHERE pm.id = cmb.provider_model_id
 			  AND cmb.credential_id = $1
-			  AND pm.canonical_raw_name = $2
+			  AND pm.raw_model_name = $2
 			  AND cmb.available = FALSE
 			  AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
 			  AND COALESCE(cmb.admin_protected, FALSE) = FALSE
@@ -131,6 +137,55 @@ func (w *Writer) RestoreOnSuccess(ctx context.Context, credentialID int, rawMode
 		}
 		// model_offers is a VIEW over credential_model_bindings, so it
 		// automatically reflects the update above. No separate UPDATE needed.
+	}
+	return tx.Commit(ctx)
+}
+
+// SetCredentialUnavailable applies a credential-wide failure only after the
+// caller has established that the credential itself is at fault. It updates
+// every non-manual binding so the credential and binding routing gates cannot
+// disagree.
+func (w *Writer) SetCredentialUnavailable(ctx context.Context, credentialID int, failure Failure) error {
+	if !w.Enabled() {
+		return ErrNoDatabase
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	recoverAt := time.Now().UTC().Add(coolingDuration(failure.Kind, failure.RetryAfter))
+	detail := trimDetail(failure.Detail)
+	tx, err := w.dbPool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	//nolint:errcheck // deferred rollback, best-effort
+	defer tx.Rollback(ctx)
+	if _, err = tx.Exec(ctx, `
+		UPDATE credentials
+		SET availability_state      = 'cooling',
+		    availability_recover_at = $1,
+		    state_reason_code       = $2,
+		    state_reason_detail     = $3,
+		    state_updated_at        = now()
+		WHERE id = $4
+		  AND lifecycle_status = 'active'
+		  AND COALESCE(manual_disabled, FALSE) = FALSE
+		  AND availability_state NOT IN ('suspended', 'auth_failed')
+	`, recoverAt, string(failure.Kind), detail, credentialID); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `
+		UPDATE credential_model_bindings cmb
+		SET available              = FALSE,
+		    unavailable_reason     = 'auto_credential_' || $1,
+		    unavailable_at         = now(),
+		    unavailable_recover_at = $2,
+		    updated_at             = now()
+		WHERE cmb.credential_id = $3
+		  AND cmb.available = TRUE
+		  AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
+		  AND COALESCE(cmb.admin_protected, FALSE) = FALSE
+	`, string(failure.Kind), recoverAt, credentialID); err != nil {
+		return err
 	}
 	return tx.Commit(ctx)
 }
@@ -376,6 +431,10 @@ func (w *Writer) writeModelLevelFailureOnly(
 			return err
 		}
 	} else {
+		resolvedRawModel, err := modelbinding.ResolveRawBinding(ctx, w.dbPool, credentialID, rawModel)
+		if err != nil {
+			return err
+		}
 		if _, err := w.dbPool.Exec(ctx, `
 			UPDATE credential_model_bindings cmb
 			SET available          = FALSE,
@@ -386,11 +445,11 @@ func (w *Writer) writeModelLevelFailureOnly(
 			FROM provider_models pm
 			WHERE pm.id = cmb.provider_model_id
 			  AND cmb.credential_id = $3
-			  AND pm.canonical_raw_name = $4
+			  AND pm.raw_model_name = $4
 			  AND cmb.available = TRUE
 			  AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
 			  AND COALESCE(cmb.admin_protected, FALSE) = FALSE
-		`, reason, recoverAt, credentialID, rawModel); err != nil {
+		`, reason, recoverAt, credentialID, resolvedRawModel); err != nil {
 			return err
 		}
 	}

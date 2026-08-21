@@ -55,12 +55,23 @@ func ConvertChatRequestToAnthropic(in []byte) ([]byte, error) {
 			msgMap, _ := msg.(map[string]any)
 			role, _ := msgMap["role"].(string)
 			if role == "system" {
-				if system, ok := msgMap["content"].(string); ok {
-					systemContent = system
+				system, err := convertChatSystemContent(msgMap["content"])
+				if err != nil {
+					return nil, err
+				}
+				if system != "" {
+					if systemContent != "" {
+						systemContent += "\n"
+					}
+					systemContent += system
 				}
 				continue
 			}
-			anthropicMsgs = append(anthropicMsgs, convertChatMessageToAnthropic(msgMap))
+			anthropicMsg, err := convertChatMessageToAnthropic(msgMap)
+			if err != nil {
+				return nil, err
+			}
+			anthropicMsgs = append(anthropicMsgs, anthropicMsg)
 		}
 	}
 	if systemContent != "" {
@@ -98,7 +109,33 @@ func ConvertChatRequestToAnthropic(in []byte) ([]byte, error) {
 	return json.Marshal(out)
 }
 
-func convertChatMessageToAnthropic(msg map[string]any) map[string]any {
+func convertChatSystemContent(content any) (string, error) {
+	switch typed := content.(type) {
+	case string:
+		return typed, nil
+	case []any:
+		parts := make([]string, 0, len(typed))
+		for _, block := range typed {
+			blockMap, ok := block.(map[string]any)
+			if !ok {
+				return "", fmt.Errorf("unsupported OpenAI system content block: expected object")
+			}
+			blockType, _ := blockMap["type"].(string)
+			text, _ := blockMap["text"].(string)
+			if blockType != "text" || text == "" {
+				return "", fmt.Errorf("unsupported OpenAI system content block: type=%q", blockType)
+			}
+			parts = append(parts, text)
+		}
+		return strings.Join(parts, "\n"), nil
+	case nil:
+		return "", nil
+	default:
+		return "", fmt.Errorf("unsupported OpenAI system content: type=%T", content)
+	}
+}
+
+func convertChatMessageToAnthropic(msg map[string]any) (map[string]any, error) {
 	role, _ := msg["role"].(string)
 	out := map[string]any{"role": role}
 	content := msg["content"]
@@ -109,7 +146,8 @@ func convertChatMessageToAnthropic(msg map[string]any) map[string]any {
 		blocks := make([]any, 0, len(typed))
 		for _, block := range typed {
 			blockMap, _ := block.(map[string]any)
-			switch blockMap["type"] {
+			blockType, _ := blockMap["type"].(string)
+			switch blockType {
 			case "text":
 				blocks = append(blocks, map[string]any{"type": "text", "text": blockMap["text"]})
 			case "image_url":
@@ -127,27 +165,37 @@ func convertChatMessageToAnthropic(msg map[string]any) map[string]any {
 							"type":   "image",
 							"source": source,
 						})
+					} else {
+						return nil, fmt.Errorf("invalid image_url content block: url is required")
 					}
+				} else {
+					return nil, fmt.Errorf("invalid image_url content block: image_url is required")
 				}
+			default:
+				return nil, fmt.Errorf("unsupported OpenAI content block: type=%q", blockType)
 			}
 		}
 		out["content"] = blocks
 	}
 	if role == "tool" {
-		if toolCallID, ok := msg["tool_call_id"].(string); ok {
-			toolContent, _ := msg["content"].(string)
-			out = map[string]any{
-				"role": "user",
-				"content": []any{
-					map[string]any{
-						"type":        "tool_result",
-						"tool_use_id": toolCallID,
-						"content":     toolContent,
-					},
-				},
-			}
+		toolCallID, ok := msg["tool_call_id"].(string)
+		if !ok || toolCallID == "" {
+			return nil, fmt.Errorf("invalid tool result: tool_call_id is required")
 		}
-		return out
+		toolContent, ok := msg["content"].(string)
+		if !ok {
+			return nil, fmt.Errorf("unsupported tool result content: expected string")
+		}
+		return map[string]any{
+			"role": "user",
+			"content": []any{
+				map[string]any{
+					"type":        "tool_result",
+					"tool_use_id": toolCallID,
+					"content":     toolContent,
+				},
+			},
+		}, nil
 	}
 	if toolCalls, ok := msg["tool_calls"].([]any); ok {
 		var existing []any
@@ -162,8 +210,8 @@ func convertChatMessageToAnthropic(msg map[string]any) map[string]any {
 			function, _ := toolCallMap["function"].(map[string]any)
 			argsStr, _ := function["arguments"].(string)
 			var args any
-			if json.Unmarshal([]byte(argsStr), &args) != nil {
-				args = map[string]any{}
+			if err := json.Unmarshal([]byte(argsStr), &args); err != nil {
+				return nil, fmt.Errorf("invalid tool arguments: tool=%q: %w", function["name"], err)
 			}
 			existing = append(existing, map[string]any{
 				"type":  "tool_use",
@@ -174,7 +222,7 @@ func convertChatMessageToAnthropic(msg map[string]any) map[string]any {
 		}
 		out["content"] = existing
 	}
-	return out
+	return out, nil
 }
 
 func parseImageDataURI(value string) (mediaType, data string, ok bool) {

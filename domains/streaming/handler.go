@@ -1594,19 +1594,22 @@ func (h *ChatHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request) {
 	if clientIP == "" {
 		clientIP = r.RemoteAddr
 	}
-	h.emitTrace(r.Context(), requestID,
-		gwtrace.ReceiveRequest(r.Method, r.URL.Path, clientIP).
-			WithDetails(
-				"client_request_id", clientRequestID,
-				"user_agent", r.Header.Get("User-Agent"),
-			))
-	// ── 2026-08-15 (V3.3-OBS OBS-B1): arrive 动作事件（S1，24 号 §2）──────
-	// 客户端请求到达网关。client_protocol 按路径推断；model(原始) 在 body
-	// 解析之后才可知，route_resolved 事件会带上解析结果，此处不重复。
-	h.emitAction(r.Context(), requestID, liveactions.ActionArrive, map[string]string{
-		"client_protocol": clientProtocolFromPath(r.URL.Path),
-		"method":          r.Method,
-	})
+	if shouldTraceRequest(r.Method) {
+		h.emitTrace(r.Context(), requestID,
+			gwtrace.ReceiveRequest(r.Method, r.URL.Path, clientIP).
+				WithDetails(
+					"client_request_id", clientRequestID,
+					"user_agent", r.Header.Get("User-Agent"),
+				))
+		// ── 2026-08-15 (V3.3-OBS OBS-B1): arrive 动作事件（S1，24 号 §2）──────
+		// 客户端请求到达网关。client_protocol 按路径推断；model(原始) 在 body
+		// 解析之后才可知，route_resolved 事件会带上解析结果，此处不重复。
+		h.emitAction(r.Context(), requestID, liveactions.ActionArrive, map[string]string{
+			"client_protocol": clientProtocolFromPath(r.URL.Path),
+			"method":          r.Method,
+		})
+	}
+
 	// ── Ensure every request has a gw_session_id (2026-06-26) ────────────
 	// Even pre-keyInfo failures (missing_key, invalid_key, auth_unavailable)
 	// emit a request_log row via the safety net. Without a session_id here
@@ -5858,6 +5861,10 @@ func shouldEmitDisconnectProbe(rctx context.Context, logCtx *RequestLogContext) 
 		return false
 	}
 	return true
+}
+
+func shouldTraceRequest(method string) bool {
+	return method != http.MethodGet
 }
 
 func (h *ChatHandler) emitClientDisconnectProbe(originalRequestID string, r *http.Request, logCtx *RequestLogContext) {

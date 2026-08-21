@@ -266,9 +266,9 @@ func (c *ProfileCleaner) cleanup(ctx context.Context) {
 	slog.Info("provider profile cleanup completed", "deleted_rows", deleted)
 }
 
-// ProfileAlertWorker runs alert evaluation + auto disable/enable daily,
-// after the aggregator. It evaluates both active credentials (for disable
-// conditions) and currently auto-disabled credentials (for recovery conditions).
+// ProfileAlertWorker runs daily profile alert evaluation after the aggregator.
+// Profile alerts are advisory only; model-level probe state owns automatic
+// binding degradation and recovery.
 type ProfileAlertWorker struct {
 	engine   *providerprofile.AlertEngine
 	lister   *providerprofile.GatewayCredentialLister
@@ -378,9 +378,9 @@ func (w *ProfileAlertWorker) evaluate(ctx context.Context) {
 		"credentials_evaluated", len(activeIDs), "disabled", disabled, "enabled", enabled, "alerts_emitted", alerted)
 }
 
-// listAutoDisabledCredentials returns credential ids that were auto-disabled
-// (lifecycle_status='disabled' AND manual_disabled=false AND auto_disabled_at IS NOT NULL),
-// so the alert engine can evaluate them for recovery.
+// listAutoDisabledCredentials returns legacy credential ids that were disabled
+// by the retired credential-level profile action. They remain visible for
+// advisory reporting, but this worker no longer changes their lifecycle.
 func (w *ProfileAlertWorker) listAutoDisabledCredentials(ctx context.Context) ([]int64, error) {
 	rows, err := w.db.Query(ctx, `
 		SELECT id FROM credentials

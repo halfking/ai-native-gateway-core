@@ -23,10 +23,10 @@ const (
 	QueueGovernorDegraded QueueObservationKind = "governor_degraded"
 	// QueueRequestCompleted appends one immutable waterfall sample.
 	QueueRequestCompleted QueueObservationKind = "request_completed"
-	// QueueLifecycleEviction records lifecycle-registry completed-entry
-	// eviction (v4 R1.8: 淘汰必须发事件). Observation-only — eviction never
-	// affects execution.
+	// QueueLifecycleEviction records lifecycle-registry completed-entry eviction.
 	QueueLifecycleEviction QueueObservationKind = "lifecycle_eviction"
+	// QueueCredentialFull records an early routing skip because the Tier-2 queue is full.
+	QueueCredentialFull QueueObservationKind = "credential_full"
 )
 
 // QueueObservation carries one immutable queue transition. Delta is used for
@@ -42,6 +42,8 @@ type QueueObservation struct {
 	Mode string
 	// Depth is the absolute diagnostic depth (ignored when Delta != 0).
 	Depth int64
+	// Limit is the bounded Tier-2 capacity for QueueCredentialFull.
+	Limit int64
 	// Delta accumulates into the lane counter when non-zero.
 	Delta int64
 	// InFlight is the absolute in-flight diagnostic value.
@@ -93,6 +95,8 @@ type QueueProjection struct {
 type projectedCredential struct {
 	mode  string
 	depth int64
+	limit int64
+	full  bool
 }
 
 // NewQueueProjection constructs a wired projection. A nil projection is the
@@ -173,12 +177,30 @@ func (p *QueueProjection) ObserveQueue(observation QueueObservation) {
 			delete(p.credentials, observation.CredentialID)
 			return
 		}
-		p.credentials[observation.CredentialID] = projectedCredential{mode: mode, depth: depth}
+		full := lane.full && (lane.limit <= 0 || depth >= lane.limit)
+		p.credentials[observation.CredentialID] = projectedCredential{mode: mode, depth: depth, limit: lane.limit, full: full}
+	case QueueCredentialFull:
+		if observation.CredentialID <= 0 {
+			return
+		}
+		lane := p.credentials[observation.CredentialID]
+		mode := observation.Mode
+		if mode == "" {
+			mode = lane.mode
+		}
+		limit := observation.Limit
+		if limit <= 0 {
+			limit = lane.limit
+		}
+		p.credentials[observation.CredentialID] = projectedCredential{
+			mode: mode, depth: nonNegative(observation.Depth), limit: limit, full: true,
+		}
 	case QueueInFlight:
 		if observation.Delta != 0 {
 			observation.InFlight = p.inFlight + observation.Delta
 		}
 		p.inFlight = nonNegative(observation.InFlight)
+
 	case QueueGovernorDegraded:
 		if observation.CredentialID <= 0 {
 			return
@@ -220,7 +242,7 @@ func (p *QueueProjection) Snapshot() *SnapshotView {
 	}
 	for credentialID, lane := range p.credentials {
 		laneDepth := nonNegative(lane.depth)
-		credentials = append(credentials, LaneView{Credential: credentialID, Mode: lane.mode, Depth: laneDepth})
+		credentials = append(credentials, LaneView{Credential: credentialID, Mode: lane.mode, Depth: laneDepth, Limit: lane.limit, Full: lane.full})
 		depth += laneDepth
 	}
 	inFlight := p.inFlight
