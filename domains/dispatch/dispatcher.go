@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"time"
 
 	"github.com/kaixuan/llm-gateway-go/internal/liveactions"
 )
@@ -52,19 +53,26 @@ func (p *Pipeline) dispatch(qr *QueuedRequest) {
 	}
 
 	// Pick an available credential (routeFunc excludes tried creds).
-	if !p.selectAndEnqueue(qr) {
+	refs, hasCredentials := p.selectAndEnqueue(qr)
+	if !hasCredentials {
 		// No routable credential under this model → model-change or reject.
 		p.tryModelChange(qr, ErrNoRoute)
+	} else if len(refs) > 0 {
+		// Has credentials but all queues full → capacity wait
+		p.scheduleCapacityRetry(qr)
 	}
+	// else: successfully enqueued (refs == nil && hasCredentials == true)
 }
 
 // selectAndEnqueue routes, picks the first non-tried credential whose Tier-2
-// queue can accept the request, and enqueues it. Returns false if no
-// credential is available or all queues are full.
-func (p *Pipeline) selectAndEnqueue(qr *QueuedRequest) bool {
+// queue can accept the request, and enqueues it. Returns (refs, hasCredentials):
+// - (nil, true): successfully enqueued
+// - (refs, true): has credentials but all queues full
+// - (nil/refs, false): no routable credentials (error or empty)
+func (p *Pipeline) selectAndEnqueue(qr *QueuedRequest) ([]CredentialRef, bool) {
 	refs, err := p.routeFunc(qr.Ctx, qr)
 	if err != nil || len(refs) == 0 {
-		return false
+		return refs, false
 	}
 	for _, ref := range refs {
 		if qr.hasTriedCredential(ref.CredentialID) {
@@ -82,19 +90,18 @@ func (p *Pipeline) selectAndEnqueue(qr *QueuedRequest) bool {
 				Depth:        forwarder.CurrentDepth(),
 				Limit:        forwarder.Limit(),
 			})
-			qr.markTriedCredential(ref.CredentialID)
+			// Queue full is temporary, don't mark as tried - continue polling
 			continue
 		}
 
 		p.selectCredential(qr, ref)
 		if p.tryEnqueueCred(ref, qr) {
-			return true
+			return nil, true // Successfully enqueued
 		}
-		// Queue full → mark tried and try the next credential.
-		qr.markTriedCredential(ref.CredentialID)
+		// Queue full after selection → don't mark tried, continue polling
 	}
-	// All candidate queues full. Leave them as tried so the mover escalates.
-	return false
+	// All candidate queues full, but credentials are not marked as tried
+	return refs, true // Has credentials but all queues full
 }
 
 // tryModelChange is the Tier-1 escape hatch: when all credentials under the
@@ -254,4 +261,45 @@ func (p *Pipeline) emitNoRouteIfCause(qr *QueuedRequest, cause error) {
 	if cause == ErrNoRoute || errors.Is(cause, ErrNoRoute) {
 		p.emitNoRoute(qr, qr.ResolvedModel, "all_credentials_exhausted")
 	}
+}
+
+// scheduleCapacityRetry schedules a request for capacity retry after 5 seconds.
+// Called when all credentials under the current model have full queues.
+func (p *Pipeline) scheduleCapacityRetry(qr *QueuedRequest) {
+	const capacityRetryDelay = 5 * time.Second
+	const maxCapacityRetries = 12 // 5s × 12 = 60s max wait
+
+	// Check retry limit to prevent infinite loops
+	if qr.CapacityRetryCount >= maxCapacityRetries {
+		// Exceeded max capacity wait time → escalate to model-change
+		p.tryModelChange(qr, errCapacitySaturated)
+		return
+	}
+
+	qr.CapacityRetryCount++
+	retryAt := time.Now().Add(capacityRetryDelay)
+
+	// Use existing HeapRetryScheduler infrastructure
+	if p.retryScheduler != nil && ctxOf(qr).Err() == nil {
+		observation := Observation{
+			Type:          ObservationRetryScheduled,
+			Stage:         StageRetrying,
+			ResolvedModel: qr.ResolvedModel,
+			Model:         qr.ResolvedModel,
+			RetryReason:   "capacity_saturated",
+		}
+		at := retryAt
+		observation.RetryAt = &at
+		qr.emitObservation(observation)
+
+		p.registry.MarkRetryScheduled(qr.ID, retryAt)
+		p.queueMirror.MirrorRetryAt(qr.ID, retryAt)
+
+		if p.retryScheduler.Schedule(qr, retryAt) {
+			return
+		}
+	}
+
+	// Scheduling failed → escalate to model-change (avoid infinite loop)
+	p.tryModelChange(qr, errCapacitySaturated)
 }

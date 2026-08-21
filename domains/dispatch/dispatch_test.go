@@ -860,8 +860,14 @@ func TestTier2QueueBoundIncludesGovernorWait(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 	_, err := p.Submit(ctx, NewQueuedRequest("overflow", "t", "m", ctx, nil))
-	if !errors.Is(err, ErrNoRoute) {
-		t.Fatalf("expected queue overflow to reject through no-route, got %v", err)
+	// With capacity-retry mechanism, when all queues are full the request enters
+	// capacity wait (5s retry). Since the context times out after 200ms, we expect
+	// context.DeadlineExceeded or errCapacitySaturated (if it escalates before timeout).
+	if err == nil {
+		t.Fatal("expected error when queue is full, got nil")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) && !IsCapacitySaturated(err) && !errors.Is(err, ErrNoRoute) {
+		t.Fatalf("expected context deadline exceeded, capacity saturated, or no-route when queue is full, got %v", err)
 	}
 }
 

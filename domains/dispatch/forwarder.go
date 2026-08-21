@@ -154,6 +154,8 @@ func (cf *credForwarder) acquire(qr *QueuedRequest) bool {
 			return false
 		}
 		if IsPaceTimeout(err) {
+			// Mark credential as tried to prevent retry on same credential (P1 fix)
+			qr.markTriedCredential(cf.cred.CredentialID)
 			qr.CredRetryCount = maxRetryBudget
 		}
 		metricOverflow.WithLabelValues("pace_timeout").Inc()
@@ -259,20 +261,30 @@ func (cf *credForwarder) attempt(qr *QueuedRequest) {
 	defer releaseResources()
 
 	out := cf.pipe.forwardFunc(ctxOf(qr), qr, cf.cred)
-	releaseResources()
+	
+	// P1 fix: Release capacity based on first-byte boundary
+	// - Pre-first-byte failure → release immediately (allow fast retry)
+	// - Post-first-byte or success → delay release until after complete
+	if !out.BytesSent && out.Err != nil {
+		releaseResources() // Early release for pre-first-byte failures
+	}
+	
 	cf.pipe.emitAttemptFinished(qr, attempt.AttemptID, out)
 
 	if out.Err == nil {
 		metricForwarded.WithLabelValues(itoa(cf.cred.CredentialID), "success").Inc()
 		cf.pipe.complete(qr, out)
+		releaseResources() // Release after completion for success
 		return
 	}
 	if out.BytesSent {
 		// Bytes already left the client: do NOT switch nodes (ADR-Disp-003).
 		metricForwarded.WithLabelValues(itoa(cf.cred.CredentialID), "fail_postfirstbyte").Inc()
 		cf.pipe.complete(qr, out)
+		releaseResources() // Release after completion for post-first-byte failure
 		return
 	}
+	// Pre-first-byte failure: capacity already released above
 	metricForwarded.WithLabelValues(itoa(cf.cred.CredentialID), "fail_prefirstbyte").Inc()
 	cf.pipe.routeFailover(qr, out)
 }

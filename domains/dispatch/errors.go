@@ -40,6 +40,12 @@ const (
 // failover mover (try another credential / model).
 var errPaceTimeout = errors.New("dispatch: pacing wait exceeded queue budget")
 
+// errCapacitySaturated is returned when all credentials under the current model
+// are temporarily at capacity (all queues full). Different from errPaceTimeout
+// (single credential queue wait timeout) — this triggers fixed 5s capacity retry
+// without marking credentials as tried.
+var errCapacitySaturated = errors.New("dispatch: all credentials under model temporarily saturated")
+
 // ErrNoRoute is returned to the Submit caller when no model/credential path
 // is available (all tried, or no candidates and model-change disabled).
 var ErrNoRoute = errors.New("dispatch: no routable credential/model available")
@@ -53,6 +59,9 @@ var ErrShutdown = errors.New("dispatch: pipeline shut down")
 
 // IsPaceTimeout reports whether err is the governor pacing-timeout sentinel.
 func IsPaceTimeout(err error) bool { return errors.Is(err, errPaceTimeout) }
+
+// IsCapacitySaturated reports whether err is the capacity-saturation sentinel.
+func IsCapacitySaturated(err error) bool { return errors.Is(err, errCapacitySaturated) }
 
 // IsShutdown reports whether err is the pipeline-shutdown sentinel.
 func IsShutdown(err error) bool { return errors.Is(err, ErrShutdown) }
