@@ -1,0 +1,115 @@
+{
+  "schema_version": 1,
+  "unknown_version": "reject",
+  "fixture_purpose": "pin lifecycle three-state vocabulary + retry_at field + StageTerminal + Outcome",
+  "exact_bytes": true,
+  "lifecycle_states": [
+    {
+      "lifecycle_state": "pending",
+      "derived_from_stages": [
+        "received",
+        "routing",
+        "model_queue",
+        "credential_queue",
+        "node_selection"
+      ],
+      "description": "Waiting for execution (incl. timed retry parked with retry_at)",
+      "snapshot_retry_at_required": false,
+      "outcome_required": false,
+      "stage_terminal": false
+    },
+    {
+      "lifecycle_state": "in_flight",
+      "derived_from_stages": [
+        "upstream",
+        "streaming",
+        "retrying"
+      ],
+      "description": "Executing (retrying event carrying retry_at MUST NOT downgrade to pending; parked state is pending)",
+      "snapshot_retry_at_required": false,
+      "outcome_required": false,
+      "stage_terminal": false
+    },
+    {
+      "lifecycle_state": "completed",
+      "derived_from_stages": [
+        "terminal"
+      ],
+      "description": "Terminal (success OR terminal failure); lifecycle projection no longer changes",
+      "snapshot_retry_at_required": false,
+      "outcome_required": true,
+      "stage_terminal": true,
+      "allowed_outcomes": [
+        "success",
+        "failure",
+        "canceled"
+      ]
+    }
+  ],
+  "retry_at_rules": {
+    "field_name": "retry_at",
+    "type": "RFC3339 UTC timestamp (nullable)",
+    "applies_to_event_types": [
+      "retry_scheduled"
+    ],
+    "applies_to_lifecycle_states": [
+      "pending"
+    ],
+    "validation": "retry_at, when present, MUST NOT be zero; retry_at is only valid on retry_scheduled events (contract.go:495-501)",
+    "nullable_on_snapshot": true,
+    "additive_backward_compatible": true
+  },
+  "stage_terminal": {
+    "stage_name": "terminal",
+    "stage_value": "terminal",
+    "category": "terminal",
+    "description": "Single terminal stage; JourneyEvent.Stage == StageTerminal marks lifecycle=completed"
+  },
+  "outcome_vocabulary": {
+    "success": {
+      "value": "success",
+      "meaning": "Terminal success: client received a complete response"
+    },
+    "failure": {
+      "value": "failure",
+      "meaning": "Terminal failure: retry budget exhausted OR unrecoverable upstream error"
+    },
+    "canceled": {
+      "value": "canceled",
+      "meaning": "Terminal cancellation: request_canceled event MUST carry outcome=canceled"
+    }
+  },
+  "transition_table": [
+    {
+      "from": "pending",
+      "to": "in_flight",
+      "trigger_event": "attempt_started"
+    },
+    {
+      "from": "in_flight",
+      "to": "pending",
+      "trigger_event": "retry_scheduled (with retry_at)"
+    },
+    {
+      "from": "in_flight",
+      "to": "completed",
+      "trigger_event": "request_succeeded | request_failed | request_canceled"
+    },
+    {
+      "from": "pending",
+      "to": "completed",
+      "trigger_event": "no_route (terminal) | overflow (terminal)"
+    }
+  ],
+  "consumers": [
+    "domains/requestjourney.LifecycleState",
+    "domains/requestjourney.RequestSnapshot.LifecycleState",
+    "internal/admin live snapshot projection"
+  ],
+  "validation_rules": [
+    "lifecycle_state MUST be one of: pending, in_flight, completed",
+    "retry_at, when present, MUST be on retry_scheduled event with non-zero value",
+    "Outcome MUST be one of: success, failure, canceled (empty means no terminal yet)",
+    "request_canceled event MUST carry outcome=canceled"
+  ]
+}

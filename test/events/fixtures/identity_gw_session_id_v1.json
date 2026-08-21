@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "identity_kind": "gw_session_id",
+  "fixture_purpose": "pin exact-bytes JSON shape for gw_session_id (client logical session text)",
+  "exact_bytes": true,
+  "tenant_id": "tenant_freeze_gws_001",
+  "gw_session_id": "gws_freeze_20260822_abc123",
+  "session_id": "sess_freeze_20260822_def456",
+  "produced_at": "2026-08-22T00:00:00Z",
+  "shape": {
+    "gw_session_id": "string (client-supplied logical session text; gateway-pass-through)",
+    "tenant_id": "string (resolver-derived)",
+    "produced_at": "RFC3339 UTC timestamp"
+  },
+  "semantics": "gateway_logical_session_text",
+  "notes": [
+    "gw_session_id is NOT a database PK",
+    "gw_session_id is client-supplied; gateway MUST treat as opaque text",
+    "gw_session_id MUST be paired with session_id for Sessions V2 identity",
+    "Distinct from session_id: session_id is server-allocated (Sessions V2 text surrogate)"
+  ],
+  "consumers": [
+    "domains/session (logical grouping key)",
+    "client correlation header (pass-through)"
+  ],
+  "validation_rules": [
+    "gw_session_id SHOULD be non-empty for multi-turn sessions",
+    "gw_session_id MAY be empty for stateless single-turn requests",
+    "gw_session_id MUST NOT be persisted as a unique constraint on its own"
+  ]
+}
