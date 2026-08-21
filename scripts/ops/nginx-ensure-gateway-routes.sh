@@ -1,24 +1,108 @@
 #!/usr/bin/env bash
-# Ensure a Gateway vhost does not send backend routes to an SPA fallback.
+# ---------------------------------------------------------------------------
+# File:          scripts/ops/nginx-ensure-gateway-routes.sh
+# Purpose:       Ensure a Gateway vhost does not send backend routes to an
+#                SPA fallback. Idempotent: safe to re-run.
+#
+# Status:        active
+# Idempotent:    YES
+# Changelog:
+#   2026-08-21  v1.0  Initial version
+#                   - HTTP server block detection (listen 443 ssl)
+#                   - Backup, nginx -t, reload with rollback
+#                   - Pre/post HTTP sanity probes
+#   2026-08-21  v1.1  Add upstream reachability pre-check
+# ---------------------------------------------------------------------------
+# Usage:
+#   NGINX_CONF=/etc/nginx/conf.d/llmgo.kxpms.cn.conf \
+#   NGINX_GATEWAY_UPSTREAM=llmgo_local_245 \
+#   bash scripts/ops/nginx-ensure-gateway-routes.sh
+#
+# Optional:
+#   PROBE_BASE_URL="https://llmgo.kxpms.cn"
+#   PROBE_COOKIE_JAR="/tmp/llmgo.jar"
+# ---------------------------------------------------------------------------
 set -euo pipefail
 
 CONF="${NGINX_CONF:?NGINX_CONF is required}"
 UPSTREAM="${NGINX_GATEWAY_UPSTREAM:?NGINX_GATEWAY_UPSTREAM is required}"
 NGINX_BIN="${NGINX_BIN:-nginx}"
 SYSTEMCTL_BIN="${SYSTEMCTL_BIN:-systemctl}"
+CURL_BIN="${CURL_BIN:-curl}"
+PROBE_BASE_URL="${PROBE_BASE_URL:-}"
 
 [[ -f "$CONF" ]] || { echo "ensure gateway routes failed: config not found (path=$CONF)" >&2; exit 1; }
+
+# Pre-check: upstream reachability. Extract host:port from upstream name if it
+# looks like host:port; otherwise assume a name resolvable in nginx config.
+if [[ "$UPSTREAM" == *:* ]]; then
+  up_host="${UPSTREAM%:*}"
+  up_port="${UPSTREAM##*:}"
+  if ! bash -c "</dev/tcp/${up_host}/${up_port}" 2>/dev/null; then
+    echo "ensure gateway routes failed: upstream ${up_host}:${up_port} unreachable" >&2
+    exit 1
+  fi
+fi
+
+if [[ -n "${UPSTREAM_PROBE_HOST:-}" && -n "${UPSTREAM_PROBE_PORT:-}" ]]; then
+  if ! bash -c "exec 3<> /dev/tcp/${UPSTREAM_PROBE_HOST}/${UPSTREAM_PROBE_PORT}" 2>/dev/null; then
+    echo "ensure gateway routes failed: upstream unreachable (${UPSTREAM_PROBE_HOST}:${UPSTREAM_PROBE_PORT})" >&2
+    exit 1
+  fi
+  exec 3>&-
+  echo "Upstream reachable: ${UPSTREAM_PROBE_HOST}:${UPSTREAM_PROBE_PORT}"
+fi
+
+
+# Pre-check 1: upstream reachability
+upstream_addr="$(awk -v u="$UPSTREAM" '
+    BEGIN { found = 0 }
+    $0 ~ "^[[:space:]]*upstream[[:space:]]+" u "[[:space:]]*\\{" { found = 1; next }
+    found && /server[[:space:]]/ { print; exit }
+' /etc/nginx/nginx.conf "$CONF" 2>/dev/null || true)"
+if [[ -n "$upstream_addr" ]]; then
+  host_port="$(printf '%s\n' "$upstream_addr" | awk '{for (i=1;i<=NF;i++) if ($i=="server") print $(i+1)}' | head -n1 | cut -d: -f1-2)"
+  if [[ "$host_port" =~ ^([0-9A-Za-z._-]+):([0-9]+)$ ]]; then
+    host="${BASH_REMATCH[1]}"
+    port="${BASH_REMATCH[2]}"
+    if ! "$CURL_BIN" --max-time 3 -sS -o /dev/null "http://${host}:${port}/healthz"; then
+      echo "ensure gateway routes failed: upstream $host:$port/healthz unreachable" >&2
+      exit 1
+    fi
+  fi
+fi
+
+probe_paths=(/healthz /readyz /api/auth/token /v1/models /metrics)
+probe_unexpected=""
+if [[ -n "$PROBE_BASE_URL" ]]; then
+  for path in "${probe_paths[@]}"; do
+    code_ct="$("$CURL_BIN" -skS -o /dev/null -w '%{http_code} %{content_type}' \
+        -X POST -H 'Content-Type: application/json' \
+        --data '{"username":"invalid","password":"invalid"}' \
+        "${PROBE_BASE_URL}${path}" 2>/dev/null || echo '000 unknown')"
+    if [[ "$code_ct" == *text/html* ]]; then
+      probe_unexpected+="${PROBE_BASE_URL}${path} -> ${code_ct}\n"
+    fi
+  done
+fi
+if [[ -n "$probe_unexpected" ]]; then
+  echo "ensure gateway routes notice: some probes still return text/html before fix:"
+  printf '%b' "$probe_unexpected"
+fi
 
 if grep -Eq '^[[:space:]]*location[[:space:]]+\^~[[:space:]]+/api/[[:space:]]*\{' "$CONF" \
   && grep -Eq '^[[:space:]]*location[[:space:]]+\^~[[:space:]]+/v1/[[:space:]]*\{' "$CONF"; then
   echo "Gateway route boundaries already configured (path=$CONF)"
-  exit 0
+  configured=true
+else
+  configured=false
 fi
 
-backup="${CONF}.bak-gateway-routes-$(date +%Y%m%d_%H%M%S)"
-tmp="${CONF}.tmp-gateway-routes-$$"
-cleanup() { rm -f "$tmp"; }
-trap cleanup EXIT
+if [[ "$configured" == false ]]; then
+  backup="${CONF}.bak-gateway-routes-$(date +%Y%m%d_%H%M%S)"
+  tmp="${CONF}.tmp-gateway-routes-$$"
+  cleanup() { rm -f "$tmp"; }
+  trap cleanup EXIT
 
 python3 - "$CONF" "$tmp" "$UPSTREAM" <<'PY'
 from pathlib import Path
@@ -149,3 +233,35 @@ if ! "$SYSTEMCTL_BIN" reload nginx; then
   exit 1
 fi
 echo "Gateway route boundaries enabled; backup=$backup"
+
+fi
+
+if [[ -n "${PROBE_BASE_URL:-}" ]]; then
+  echo "Running post-reload HTTP probes (base=$PROBE_BASE_URL)..."
+  declare -a probes=(
+    "GET|${PROBE_BASE_URL}/healthz|200"
+    "OPTIONS|${PROBE_BASE_URL}/api/auth/token|204"
+    "POST|${PROBE_BASE_URL}/api/auth/token|401"
+    "GET|${PROBE_BASE_URL}/v1/models|401"
+    "GET|${PROBE_BASE_URL}/metrics|401"
+  )
+  for entry in "${probes[@]}"; do
+    IFS='|' read -r method url expected <<<"$entry"
+    if [[ "$method" == "POST" ]]; then
+      code=$(curl -skS -o /dev/null -w '%{http_code}' \
+        -X POST -H 'Content-Type: application/json' \
+        --data '{"username":"invalid","password":"invalid"}' "$url" || true)
+    elif [[ "$method" == "OPTIONS" ]]; then
+      code=$(curl -skS -o /dev/null -w '%{http_code}' \
+        -X OPTIONS -H 'Origin: '"$PROBE_BASE_URL" \
+        -H 'Access-Control-Request-Method: POST' "$url" || true)
+    else
+      code=$(curl -skS -o /dev/null -w '%{http_code}' "$url" || true)
+    fi
+    if [[ "$code" != "$expected" ]]; then
+      echo "  WARN probe=$method $url expected=$expected actual=$code"
+    else
+      echo "  OK   probe=$method $url code=$code"
+    fi
+  done
+fi
