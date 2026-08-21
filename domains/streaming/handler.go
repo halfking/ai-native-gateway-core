@@ -2476,6 +2476,12 @@ func (h *ChatHandler) serveWithExecutor(
 			hookTenant = keyInfo.TenantID
 		}
 		res := h.sessionAuditHook.CheckV1(ctx, sessionID, hookTenant, clientModel, hookContent, r.Header.Get("User-Agent"), r.RemoteAddr)
+		if sessionaudithook.IsApprovedResume(ctx) && res.StatusCode == http.StatusAccepted {
+			slog.Info("session-audit approval gate bypassed for approved resume",
+				"session_id", sessionID,
+				"tenant_id", hookTenant)
+			res.StatusCode = 0
+		}
 		switch res.StatusCode {
 		case 403:
 			captureAndEmitFailure("session_audit_block", res.Reason, nil, nil)

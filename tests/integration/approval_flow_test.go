@@ -290,7 +290,7 @@ type capturingLLMCaller struct {
 	pending *capturingPendingWriter
 }
 
-func (c *capturingLLMCaller) CallFromSnapshot(ctx context.Context, snap *sessionaudit.RequestSnapshot) error {
+func (c *capturingLLMCaller) CallFromSnapshot(ctx context.Context, snap *sessionaudit.RequestSnapshot, execution session.ResumeExecution) error {
 	c.mu.Lock()
 	c.calls++
 	c.lastSnapshot = snap
@@ -298,13 +298,16 @@ func (c *capturingLLMCaller) CallFromSnapshot(ctx context.Context, snap *session
 
 	if c.pending != nil && snap != nil {
 		_ = c.pending.Save(ctx, &session.PendingResumeEntry{
-			SessionID:   snap.SessionID,
-			TenantID:    snap.TenantID,
-			RequestID:   snap.RequestID,
-			Status:      "completed",
-			Body:        `{"choices":[{"message":{"content":"stub-e2e-response"}}]}`,
-			ContentType: "application/json",
-			CompletedAt: time.Now().Unix(),
+			SessionID:     snap.SessionID,
+			TenantID:      snap.TenantID,
+			RequestID:     snap.RequestID,
+			Status:        "completed",
+			Body:          `{"choices":[{"message":{"content":"stub-e2e-response"}}]}`,
+			ContentType:   "application/json",
+			CompletedAt:   time.Now().Unix(),
+			TaskID:        execution.ApprovalID,
+			FencingToken:  execution.FencingToken,
+			ResultVersion: execution.FencingToken,
 		})
 	}
 	return nil

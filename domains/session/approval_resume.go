@@ -57,7 +57,10 @@ var ErrResumeInProgress = errors.New("session: approval resume already in progre
 // safely publish its result.
 var ErrResumeLeaseLost = errors.New("session: approval resume lease lost")
 
-const approvalResumeLease = 45 * time.Second
+const (
+	approvalResumeLease              = 45 * time.Second
+	approvalResumePersistenceTimeout = 5 * time.Second
+)
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Public interfaces (DI)
@@ -73,7 +76,15 @@ const approvalResumeLease = 45 * time.Second
 //   - 副作用：直接写 http.ResponseWriter
 //   - 返回：成功或失败；调用方在 approved 路径不需要再处理 ResponseWriter
 type LLMCaller interface {
-	CallFromSnapshot(ctx context.Context, snapshot *sessionaudit.RequestSnapshot) error
+	CallFromSnapshot(ctx context.Context, snapshot *sessionaudit.RequestSnapshot, execution ResumeExecution) error
+}
+
+// ResumeExecution carries the durable claim identity into result projection.
+// Pending projections must use this fencing token so a reclaimed approval cannot
+// be overwritten by a stale worker after a newer owner has started.
+type ResumeExecution struct {
+	ApprovalID   string
+	FencingToken int64
 }
 
 // ClientResponder 抽象"向客户端写一条异步响应"。
@@ -94,6 +105,7 @@ type ClientResponder interface {
 type ApprovalResumer interface {
 	GetForTenant(ctx context.Context, approvalID, expectedTenantID string) (*sessionaudit.ApprovalRecord, error)
 	ClaimResume(ctx context.Context, approvalID, tenantID, owner string, leaseUntil time.Time) (*sessionaudit.ResumeClaim, error)
+	RenewResumeLease(ctx context.Context, approvalID, tenantID, owner string, fencingToken int64, leaseUntil time.Time) error
 	CompleteResume(ctx context.Context, approvalID, tenantID, owner string, fencingToken int64) error
 	FailResume(ctx context.Context, approvalID, tenantID, owner string, fencingToken int64, resumeErr string) error
 }
@@ -110,14 +122,17 @@ type ApprovalPendingWriter interface {
 
 // PendingResumeEntry resume 写入的 pending entry（最小字段）。
 type PendingResumeEntry struct {
-	SessionID    string
-	TenantID     string
-	RequestID    string
-	Status       string // "completed" | "failed"
-	Body         string
-	ContentType  string
-	CompletedAt  int64
-	ErrorMessage string
+	SessionID     string
+	TenantID      string
+	RequestID     string
+	Status        string // "completed" | "failed"
+	Body          string
+	ContentType   string
+	CompletedAt   int64
+	ErrorMessage  string
+	TaskID        string
+	FencingToken  int64
+	ResultVersion int64
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -228,17 +243,19 @@ func (h *ApprovalResumeHandler) ResumeRejected(ctx context.Context, approvalID, 
 // continueToLLM 批准后调用 LLM under an owner/token fenced claim.
 func (h *ApprovalResumeHandler) continueToLLM(ctx context.Context, claim *sessionaudit.ResumeClaim) error {
 	record := claim.Record
-	if record == nil || record.Snapshot == nil {
+	if record == nil {
 		return ErrResumeSnapshotMissing
 	}
 	finish := func(resumeErr error) error {
+		persistenceCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), approvalResumePersistenceTimeout)
+		defer cancel()
 		if resumeErr == nil {
-			if err := h.approvalMgr.CompleteResume(ctx, record.ID, record.TenantID, claim.Owner, claim.FencingToken); err != nil {
+			if err := h.approvalMgr.CompleteResume(persistenceCtx, record.ID, record.TenantID, claim.Owner, claim.FencingToken); err != nil {
 				return fmt.Errorf("complete approval resume: %w", err)
 			}
 			return nil
 		}
-		if err := h.approvalMgr.FailResume(ctx, record.ID, record.TenantID, claim.Owner, claim.FencingToken, resumeErr.Error()); err != nil {
+		if err := h.approvalMgr.FailResume(persistenceCtx, record.ID, record.TenantID, claim.Owner, claim.FencingToken, resumeErr.Error()); err != nil {
 			return fmt.Errorf("fail approval resume: %w", err)
 		}
 		return resumeErr
@@ -251,26 +268,94 @@ func (h *ApprovalResumeHandler) continueToLLM(ctx context.Context, claim *sessio
 	h.markSessionState(record, compression.ApprovalStateApproved)
 
 	// 2. 把 approval 事件落到 pending-response（让正在轮询的客户端停止 202 等待）
-	if err := h.respondApprovalPending(record); err != nil {
+	if err := h.respondApprovalPending(record, claim); err != nil {
 		// 写 pending 失败不阻断 LLM 调用（pending 只是辅助通道）
 		slog.Warn("approval_resume: pending notify failed",
 			"approval_id", record.ID, "error", err)
 	}
 
-	// 3. 调用 LLM
+	// 3. 调用 LLM while renewing the durable lease. A lease loss cancels the
+	// caller context; the stale owner cannot publish a terminal result.
 	if h.llmCaller == nil {
 		return finish(errors.New("session: llm caller not configured"))
 	}
-	if err := h.llmCaller.CallFromSnapshot(ctx, record.Snapshot); err != nil {
-		// LLM 调用失败 → 写一条 failed pending 让客户端拿到错误
+	callCtx, cancelCall := context.WithCancel(ctx)
+	defer cancelCall()
+	leaseLost := make(chan struct{})
+	stopRenew := make(chan struct{})
+	renewDone := make(chan struct{})
+	go func() {
+		defer close(renewDone)
+		ticker := time.NewTicker(approvalResumeLease / 2)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stopRenew:
+				return
+			case <-callCtx.Done():
+				return
+			case <-ticker.C:
+				select {
+				case <-stopRenew:
+					return
+				default:
+				}
+				renewCtx, cancelRenew := context.WithTimeout(context.WithoutCancel(ctx), approvalResumePersistenceTimeout)
+				err := h.approvalMgr.RenewResumeLease(renewCtx, record.ID, record.TenantID, claim.Owner, claim.FencingToken, h.now().Add(approvalResumeLease))
+				cancelRenew()
+				if err == nil {
+					continue
+				}
+				select {
+				case <-stopRenew:
+					return
+				default:
+					close(leaseLost)
+					cancelCall()
+					return
+				}
+			}
+		}
+	}()
+	callErr := h.llmCaller.CallFromSnapshot(callCtx, record.Snapshot, ResumeExecution{
+		ApprovalID:   record.ID,
+		FencingToken: claim.FencingToken,
+	})
+	close(stopRenew)
+	<-renewDone
+
+	if callErr != nil {
+		select {
+		case <-leaseLost:
+			return ErrResumeLeaseLost
+		default:
+		}
+		// LLM 调用失败 → only publish a failed pending response after the
+		// owner/token-fenced terminal transition succeeded.
 		slog.Error("approval_resume: llm call failed",
-			"approval_id", record.ID, "session_id", record.SessionID, "error", err)
-		_ = h.respondLLMFailure(ctx, record, err)
-		return finish(fmt.Errorf("llm call from snapshot: %w", err))
+			"approval_id", record.ID, "session_id", record.SessionID, "error", callErr)
+		resumeErr := fmt.Errorf("llm call from snapshot: %w", callErr)
+		persistenceCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), approvalResumePersistenceTimeout)
+		defer cancel()
+		if err := h.approvalMgr.FailResume(persistenceCtx, record.ID, record.TenantID, claim.Owner, claim.FencingToken, resumeErr.Error()); err != nil {
+			if errors.Is(err, sessionaudit.ErrResumeLeaseLost) {
+				return errors.Join(ErrResumeLeaseLost, err)
+			}
+			return fmt.Errorf("fail approval resume: %w", err)
+		}
+		if err := h.respondLLMFailure(ctx, record, claim, callErr); err != nil {
+			return errors.Join(resumeErr, fmt.Errorf("project failed approval response: %w", err))
+		}
+		return resumeErr
 	}
 
+	// The terminal UPDATE is the final fence. A concurrent renewal failure after
+	// the LLM has returned cannot turn a successful call into a failed retry.
 	if err := finish(nil); err != nil {
-		return errors.Join(ErrResumeLeaseLost, err)
+		if errors.Is(err, sessionaudit.ErrResumeLeaseLost) {
+			return errors.Join(ErrResumeLeaseLost, err)
+		}
+		return err
 	}
 	slog.Info("approval_resume: llm call completed",
 		"approval_id", record.ID,
@@ -354,7 +439,7 @@ func (h *ApprovalResumeHandler) markSessionState(record *sessionaudit.ApprovalRe
 //
 // 实际 LLM 响应会在 CallFromSnapshot 期间到达。pending 只承担"我开始处理了"
 // 这个语义，避免客户端轮询空转。
-func (h *ApprovalResumeHandler) respondApprovalPending(record *sessionaudit.ApprovalRecord) error {
+func (h *ApprovalResumeHandler) respondApprovalPending(record *sessionaudit.ApprovalRecord, claim *sessionaudit.ResumeClaim) error {
 	if h.pendingStore == nil || record.Snapshot == nil {
 		return nil
 	}
@@ -367,13 +452,16 @@ func (h *ApprovalResumeHandler) respondApprovalPending(record *sessionaudit.Appr
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	return h.pendingStore.Save(ctx, &PendingResumeEntry{
-		SessionID:   record.SessionID,
-		TenantID:    record.TenantID,
-		RequestID:   record.RequestID,
-		Status:      "in_progress",
-		Body:        string(bodyJSON),
-		ContentType: "application/json",
-		CompletedAt: h.now().Unix(),
+		SessionID:     record.SessionID,
+		TenantID:      record.TenantID,
+		RequestID:     record.RequestID,
+		Status:        "in_progress",
+		Body:          string(bodyJSON),
+		ContentType:   "application/json",
+		CompletedAt:   h.now().Unix(),
+		TaskID:        record.ID,
+		FencingToken:  claim.FencingToken,
+		ResultVersion: claim.FencingToken,
 	})
 }
 
@@ -408,7 +496,7 @@ func (h *ApprovalResumeHandler) writeRejectionPending(record *sessionaudit.Appro
 }
 
 // respondLLMFailure approved 但 LLM 失败：写 failed pending。
-func (h *ApprovalResumeHandler) respondLLMFailure(ctx context.Context, record *sessionaudit.ApprovalRecord, llmErr error) error {
+func (h *ApprovalResumeHandler) respondLLMFailure(ctx context.Context, record *sessionaudit.ApprovalRecord, claim *sessionaudit.ResumeClaim, llmErr error) error {
 	if h.pendingStore == nil || record.Snapshot == nil {
 		return nil
 	}
@@ -418,17 +506,20 @@ func (h *ApprovalResumeHandler) respondLLMFailure(ctx context.Context, record *s
 		"error_message": llmErr.Error(),
 	}
 	bodyJSON, _ := json.Marshal(body)
-	saveCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	saveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), approvalResumePersistenceTimeout)
 	defer cancel()
 	return h.pendingStore.Save(saveCtx, &PendingResumeEntry{
-		SessionID:    record.SessionID,
-		TenantID:     record.TenantID,
-		RequestID:    record.RequestID,
-		Status:       "failed",
-		Body:         string(bodyJSON),
-		ContentType:  "application/json",
-		CompletedAt:  h.now().Unix(),
-		ErrorMessage: llmErr.Error(),
+		SessionID:     record.SessionID,
+		TenantID:      record.TenantID,
+		RequestID:     record.RequestID,
+		Status:        "failed",
+		Body:          string(bodyJSON),
+		ContentType:   "application/json",
+		CompletedAt:   h.now().Unix(),
+		ErrorMessage:  llmErr.Error(),
+		TaskID:        record.ID,
+		FencingToken:  claim.FencingToken,
+		ResultVersion: claim.FencingToken,
 	})
 }
 

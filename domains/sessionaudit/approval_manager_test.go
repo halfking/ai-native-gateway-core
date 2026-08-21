@@ -43,8 +43,8 @@ func TestCreate_Success(t *testing.T) {
 			"sess-1",
 			"tenant-1",
 			"req-1",
-			pgxmock.AnyArg(), // detect_result jsonb
-			pgxmock.AnyArg(), // snapshot jsonb
+			pgxmock.AnyArg(), // detect_result jsonb text
+			pgxmock.AnyArg(), // snapshot jsonb text
 			ApprovalPending,
 			pgxmock.AnyArg(), // created_at
 			pgxmock.AnyArg(), // expires_at
@@ -75,6 +75,75 @@ func TestCreate_Success(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet mock expectations: %v", err)
+	}
+}
+
+func TestCreate_RejectsNilPayloads(t *testing.T) {
+	mock, _ := pgxmock.NewPool()
+	defer mock.Close()
+	m := NewApprovalManager(mock, 15*time.Minute)
+	if _, err := m.Create(context.Background(), &ApprovalRequest{
+		SessionID: "s", TenantID: "t", RequestID: "r",
+	}); err == nil {
+		t.Fatal("expected nil payload validation error")
+	}
+}
+
+func TestCreate_RejectsSnapshotIdentityMismatch(t *testing.T) {
+	mock, _ := pgxmock.NewPool()
+	defer mock.Close()
+	m := NewApprovalManager(mock, 15*time.Minute)
+	if _, err := m.Create(context.Background(), &ApprovalRequest{
+		SessionID: "s", TenantID: "t", RequestID: "r",
+		DetectResult: &DetectResult{},
+		Snapshot:     &RequestSnapshot{SessionID: "other", TenantID: "t", RequestID: "r"},
+	}); err == nil {
+		t.Fatal("expected snapshot identity mismatch")
+	}
+}
+
+func TestClaimResume_RejectsPastLeaseBeforeDB(t *testing.T) {
+	mock, _ := pgxmock.NewPool()
+	defer mock.Close()
+	m := NewApprovalManager(mock, 15*time.Minute)
+	if _, err := m.ClaimResume(context.Background(), "a", "t", "owner", time.Now().Add(-time.Second)); err == nil {
+		t.Fatal("expected past lease rejection")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unexpected database calls: %v", err)
+	}
+}
+
+func TestRenewResumeLease_RejectsPastLeaseBeforeDB(t *testing.T) {
+	mock, _ := pgxmock.NewPool()
+	defer mock.Close()
+	m := NewApprovalManager(mock, 15*time.Minute)
+	if err := m.RenewResumeLease(context.Background(), "a", "t", "owner", 1, time.Now().Add(-time.Second)); err == nil {
+		t.Fatal("expected past lease rejection")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unexpected database calls: %v", err)
+	}
+}
+
+func TestCompleteResume_LeaseLossWhenFencedUpdateAffectsNoRows(t *testing.T) {
+	mock, _ := pgxmock.NewPool()
+	defer mock.Close()
+	mock.ExpectBeginTx(pgx.TxOptions{})
+	mock.ExpectExec(`SET LOCAL app.current_tenant`).
+		WillReturnResult(pgxmock.NewResult("SET", 0))
+	mock.ExpectExec(`UPDATE approval_queue`).
+		WithArgs("approval-1", "owner-1", int64(2), "completed", "", "tenant-1").
+		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
+	mock.ExpectRollback()
+
+	m := NewApprovalManager(mock, 15*time.Minute)
+	err := m.CompleteResume(context.Background(), "approval-1", "tenant-1", "owner-1", 2)
+	if !errors.Is(err, ErrResumeLeaseLost) {
+		t.Fatalf("CompleteResume error = %v, want ErrResumeLeaseLost", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
 	}
 }
 
@@ -465,9 +534,13 @@ func TestMarkTimeout(t *testing.T) {
 	mock, _ := pgxmock.NewPool()
 	defer mock.Close()
 
+	mock.ExpectBeginTx(pgx.TxOptions{})
+	mock.ExpectExec(`SET LOCAL app.current_role`).
+		WillReturnResult(pgxmock.NewResult("SET", 0))
 	mock.ExpectExec(`UPDATE approval_queue`).
 		WithArgs(ApprovalTimeout, ApprovalPending).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 3))
+	mock.ExpectCommit()
 
 	m := NewApprovalManager(mock, 15*time.Minute)
 	n, err := m.MarkTimeout(context.Background())
@@ -476,6 +549,9 @@ func TestMarkTimeout(t *testing.T) {
 	}
 	if n != 3 {
 		t.Errorf("expected 3 updated, got %d", n)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet MarkTimeout expectations: %v", err)
 	}
 }
 

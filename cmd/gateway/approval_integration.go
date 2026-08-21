@@ -175,13 +175,14 @@ func InitializeApprovalIntegration(deps *ApprovalIntegrationDeps) (*ApprovalInte
 // 从 RequestSnapshot 重建 HTTP 请求，调用 ChatHandler.ServeHTTP，
 // 将响应写入 pending.Store。
 func createLLMCaller(chatHandler *streaming.ChatHandler, pendingStore *pending.Store) session.LLMCaller {
-	return session.LLMCallerFunc(func(ctx context.Context, snap *sessionaudit.RequestSnapshot) error {
+	return session.LLMCallerFunc(func(ctx context.Context, snap *sessionaudit.RequestSnapshot, execution session.ResumeExecution) error {
 		if snap == nil {
 			return fmt.Errorf("llm caller: snapshot is nil")
 		}
 
 		body := bytes.NewReader(snap.BodyBytes)
-		req, err := http.NewRequestWithContext(ctx, "POST", "/v1/chat/completions", body)
+		resumeCtx := sessionaudithook.WithApprovedResume(ctx, execution.ApprovalID)
+		req, err := http.NewRequestWithContext(resumeCtx, "POST", "/v1/chat/completions", body)
 		if err != nil {
 			return fmt.Errorf("llm caller: create request: %w", err)
 		}
@@ -228,9 +229,20 @@ func createLLMCaller(chatHandler *streaming.ChatHandler, pendingStore *pending.S
 			CompletedAt:   now,
 			BytesBuffered: rec.Body.Len(),
 			IsStream:      isStream,
+			TaskID:        execution.ApprovalID,
+			FencingToken:  execution.FencingToken,
+			ResultVersion: execution.FencingToken,
 		}
 
-		if err := pendingStore.Save(ctx, resp); err != nil {
+		if resp.TaskID != "" && resp.ResultVersion > 0 {
+			result, err := pendingStore.SaveDurableCAS(ctx, resp, time.Now().Add(pendingStore.TTL()))
+			if err != nil {
+				return fmt.Errorf("llm caller: save durable pending response: %w", err)
+			}
+			if result == pending.DurableCASStale {
+				return session.ErrResumeLeaseLost
+			}
+		} else if err := pendingStore.Save(ctx, resp); err != nil {
 			return fmt.Errorf("llm caller: save to pending store: %w", err)
 		}
 
