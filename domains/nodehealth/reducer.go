@@ -72,7 +72,6 @@ const (
 	EffectSetBindingUnavailable    EffectKind = "set_binding_unavailable"
 	EffectRestoreBinding           EffectKind = "restore_binding"
 	EffectSetCredentialUnavailable EffectKind = "set_credential_unavailable"
-	EffectRestoreCredential        EffectKind = "restore_credential"
 	EffectUpdateURSM               EffectKind = "update_ursm"
 	EffectInvalidateCandidateCache EffectKind = "invalidate_candidate_cache"
 	EffectScheduleProbe            EffectKind = "schedule_probe"
@@ -370,7 +369,6 @@ func effectsFor(observation Observation, decision Decision) []Effect {
 		return append(effects,
 			Effect{Kind: EffectRecoverCircuit},
 			Effect{Kind: EffectRestoreBinding},
-			Effect{Kind: EffectRestoreCredential},
 			Effect{Kind: EffectUpdateURSM},
 			Effect{Kind: EffectInvalidateCandidateCache},
 			Effect{Kind: EffectCancelProbeBackoff},
