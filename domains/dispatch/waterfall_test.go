@@ -11,7 +11,7 @@ func TestWaterfallRingNewestFirstAndCap(t *testing.T) {
 	for i := 1; i <= 5; i++ {
 		r.push(WaterfallRequest{RequestID: itoa(i), Model: "m"})
 	}
-	got := r.snapshot(10, "", 0)
+	got := r.snapshot(10, "", 0, "")
 	if len(got) != 3 {
 		t.Fatalf("len=%d want 3", len(got))
 	}
@@ -27,17 +27,38 @@ func TestWaterfallRingFilter(t *testing.T) {
 	r.push(WaterfallRequest{RequestID: "b", Model: "gpt", Credential: 2})
 	r.push(WaterfallRequest{RequestID: "c", Model: "claude", Credential: 2})
 
-	byModel := r.snapshot(50, "claude", 0)
+	byModel := r.snapshot(50, "claude", 0, "")
 	if len(byModel) != 2 {
 		t.Fatalf("model filter len=%d", len(byModel))
 	}
-	byCred := r.snapshot(50, "", 2)
+	byCred := r.snapshot(50, "", 2, "")
 	if len(byCred) != 2 {
 		t.Fatalf("cred filter len=%d", len(byCred))
 	}
-	both := r.snapshot(50, "claude", 2)
+	both := r.snapshot(50, "claude", 2, "")
 	if len(both) != 1 || both[0].RequestID != "c" {
 		t.Fatalf("both filter=%+v", both)
+	}
+}
+
+func TestWaterfallRingTenantFilter(t *testing.T) {
+	r := newWaterfallRing(10)
+	r.push(WaterfallRequest{RequestID: "a", TenantID: "t1", Model: "m"})
+	r.push(WaterfallRequest{RequestID: "b", TenantID: "t2", Model: "m"})
+	r.push(WaterfallRequest{RequestID: "c", TenantID: "t1", Model: "m"})
+
+	scoped := r.snapshot(50, "", 0, "t1")
+	if len(scoped) != 2 {
+		t.Fatalf("tenant t1 len=%d want 2", len(scoped))
+	}
+	for _, item := range scoped {
+		if item.TenantID != "t1" {
+			t.Fatalf("leaked tenant %q in %+v", item.TenantID, item)
+		}
+	}
+	all := r.snapshot(50, "", 0, "")
+	if len(all) != 3 {
+		t.Fatalf("all tenants len=%d want 3", len(all))
 	}
 }
 
@@ -101,7 +122,7 @@ func TestPipelineSnapshotWaterfall(t *testing.T) {
 	qr.T9_ResponseEndAt = &end
 	p.recordWaterfall(qr, ForwardOutcome{})
 
-	snap := p.SnapshotWaterfall(10, "", 0)
+	snap := p.SnapshotWaterfall(10, "", 0, "")
 	if !snap.Wired {
 		t.Fatal("wired=false")
 	}
