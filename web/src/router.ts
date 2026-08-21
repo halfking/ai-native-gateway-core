@@ -64,6 +64,12 @@ const TaskAnalyticsView = () => import('./views/TaskAnalyticsView.vue')
 const UserProfileListView = () => import('./views/UserProfileListView.vue')
 const UserProfileView = () => import('./views/UserProfileView.vue')
 
+// T9 — 请求注册表 / Journey 详情 / 连接注册台 / 节点恢复时间线（mock stage）
+const RequestRegistryView = () => import('./views/RequestRegistryView.vue')
+const RequestJourneyDetailView = () => import('./views/RequestJourneyDetailView.vue')
+const ConnectionRegistryView = () => import('./views/ConnectionRegistryView.vue')
+const NodeHealthTimelineView = () => import('./views/NodeHealthTimelineView.vue')
+
 // Customer lifecycle — merged「更新与激活」+ offline fallback
 const CustomerUpdateActivateView = () => import('./views/lifecycle/UpdateActivateView.vue')
 const CustomerOfflineActivationView = () => import('./views/lifecycle/OfflineActivationView.vue')
@@ -213,6 +219,11 @@ export const router = createRouter({
     { path: '/admin/usage',        component: UsageCostView }, // 用量成本视图 (T2.4)
     { path: '/admin/sessions/:id', component: SessionDetailView, meta: { requiresSuper: true } }, // 2026-07-24: V2-P4 session detail
     { path: '/admin/turns',        component: TurnsListView, meta: { requiresSuper: true } }, // 2026-08-09: 跨会话轮次列表
+    // T9 — 请求注册表 / Journey 详情 / 连接注册台 / 节点恢复时间线
+    { path: '/admin/request-registry', component: RequestRegistryView, meta: { requiresSuper: true } },
+    { path: '/admin/request-registry/journey/:requestId', name: 'request-journey-detail', component: RequestJourneyDetailView, meta: { requiresSuper: true } },
+    { path: '/admin/connection-registry', component: ConnectionRegistryView, meta: { requiresSuper: true } },
+    { path: '/admin/connection-registry/:credentialId/recovery', name: 'node-health-timeline', component: NodeHealthTimelineView, meta: { requiresSuper: true } },
     { path: '/examples',           component: ExamplesView },
     { path: '/chat',               component: ChatView },
 

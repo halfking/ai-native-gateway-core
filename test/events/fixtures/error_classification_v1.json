@@ -1,0 +1,127 @@
+{
+  "schema_version": 1,
+  "unknown_version": "reject",
+  "fixture_purpose": "pin frozen error classification subset (T0 contract freeze)",
+  "exact_bytes": true,
+  "policy": "open_with_frozen_dispatch_subset",
+  "frozen_subset_size": 11,
+  "error_kinds": [
+    {
+      "value": "network",
+      "category": "transport",
+      "description": "Generic TCP / DNS / TLS network error before HTTP response",
+      "retryable": true,
+      "producers": [
+        "dispatch",
+        "handler"
+      ]
+    },
+    {
+      "value": "eof_without_done",
+      "category": "transport",
+      "description": "Upstream connection closed before stream terminator (no done event)",
+      "retryable": true,
+      "producers": [
+        "dispatch"
+      ]
+    },
+    {
+      "value": "empty_response",
+      "category": "upstream",
+      "description": "Upstream returned 2xx but with empty body / zero tokens",
+      "retryable": true,
+      "producers": [
+        "dispatch",
+        "handler"
+      ]
+    },
+    {
+      "value": "route_transient",
+      "category": "routing",
+      "description": "Routing decision unstable (credential cooling / probing) — candidate may become available",
+      "retryable": true,
+      "producers": [
+        "ursm",
+        "dispatch"
+      ]
+    },
+    {
+      "value": "state_transient",
+      "category": "node_state",
+      "description": "Node in transient state (probing / recovering) — not admissible yet",
+      "retryable": true,
+      "producers": [
+        "ursm",
+        "credentialhealth"
+      ]
+    },
+    {
+      "value": "queue_overflow",
+      "category": "admission",
+      "description": "Queue admission refusal at full scheduling queue; immediate rejection, retryable (503 + Retry-After)",
+      "retryable": true,
+      "producers": [
+        "dispatch"
+      ]
+    },
+    {
+      "value": "no_candidate",
+      "category": "routing",
+      "description": "No routable credential/model at all for this tenant + model (terminal for this attempt)",
+      "retryable": false,
+      "producers": [
+        "ursm",
+        "dispatch"
+      ]
+    },
+    {
+      "value": "invalid_model",
+      "category": "client_error",
+      "description": "Requested model does not exist or is not bindable to any credential",
+      "retryable": false,
+      "producers": [
+        "handler"
+      ]
+    },
+    {
+      "value": "auth_failed",
+      "category": "credential",
+      "description": "Upstream authentication / authorization rejected (401/403)",
+      "retryable": false,
+      "producers": [
+        "dispatch",
+        "credentialhealth"
+      ]
+    },
+    {
+      "value": "rate_limit",
+      "category": "throttle",
+      "description": "Upstream rate-limit hit (HTTP 429); retryable after backoff",
+      "retryable": true,
+      "producers": [
+        "dispatch",
+        "ratelimit"
+      ]
+    },
+    {
+      "value": "quota",
+      "category": "throttle",
+      "description": "Tenant quota exhausted; retryable only after quota reset",
+      "retryable": false,
+      "producers": [
+        "ratelimit"
+      ]
+    }
+  ],
+  "extension_policy": "Adding a new error_kind requires updating this fixture + requestjourney contract; the dispatch-sourced subset is open-but-frozen-as-pinned.",
+  "consumers": [
+    "domains/requestjourney.JourneyEvent.ErrorKind",
+    "internal/liveactions.ActionEvent.ErrorKind",
+    "internal/admin live timeline error classification"
+  ],
+  "validation_rules": [
+    "error_kind values MUST be drawn from this subset (or be open-vocabulary extensions deliberately added)",
+    "error_kind MUST be a snake_case lowercase string",
+    "error_kind MUST NOT leak request body, prompt, response, or API key"
+  ]
+}

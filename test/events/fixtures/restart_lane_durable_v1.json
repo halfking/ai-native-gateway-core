@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "unknown_version": "reject",
+  "lane": "durable",
+  "exact_bytes": true,
+  "semantics": {
+    "execution_recovery": true,
+    "result_replay": true,
+    "lease_required": true,
+    "fencing_required": true,
+    "metadata_rebuild": false,
+    "lease_live_upstream_calls": 0,
+    "lease_expired_upstream_calls": 1,
+    "takeover_requires_fencing": true,
+    "expected_projection": "recovered_terminal"
+  },
+  "rules": [
+    "After restart, durable requests (durable lane: URSM-mediated, leased) MUST be recovered by the new gateway instance.",
+    "Lease-based takeover is mandatory; without the lease, the new instance MUST NOT act on the durable row.",
+    "Fencing token is required and verified before any upstream retry.",
+    "If the prior lease expired before restart, the new gateway MUST re-issue exactly one upstream call (lease_expired_upstream_calls=1) to confirm terminal state.",
+    "If the prior lease was still live at restart time, no new upstream call is made (lease_live_upstream_calls=0)."
+  ],
+  "consumers": [
+    "domains/ursm/v2 lease/fencing takeover",
+    "domains/durable lane recovery on restart",
+    "domains/requestjourney observation continuity"
+  ],
+  "validation_rules": [
+    "durable lane MUST enforce lease on takeover",
+    "durable lane MUST issue exactly 1 upstream call when lease was expired at restart",
+    "durable lane MUST issue 0 upstream calls when lease was live at restart"
+  ]
+}

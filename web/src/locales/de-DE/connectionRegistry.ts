@@ -1,0 +1,40 @@
+// connectionRegistry.ts — T9 connection registry view (English)
+export default {
+  title: 'Connection Registry',
+  subtitle: 'Connection tri-state: connected / connecting / disconnected (SSE + REST)',
+  sseConnected: 'Live stream connected',
+  sseReconnecting: 'SSE reconnecting…',
+  apiDegraded: 'Connection registry API failed, falling back to SSE live data',
+  sections: {
+    connected: 'Connected',
+    connecting: 'Connecting',
+    disconnected: 'Disconnected',
+  },
+  state: {
+    connected: 'Connected',
+    connecting: 'Connecting',
+    disconnected: 'Disconnected',
+  },
+  inFlight: 'In-flight {count}',
+  recoverAt: 'Recover at {time} ({delta})',
+  recoverReady: 'Ready',
+  viewTimeline: 'View recovery timeline',
+  unknownProvider: 'Unknown provider',
+  credential: 'Credential #{id}',
+  lastChange: 'Last change {time}',
+  detail: {
+    lastError: 'Last error',
+    lastErrorAt: 'Last error at',
+    recoverAt: 'Recover at',
+    fpDisabled: 'FP disabled',
+    manualDisabled: 'Manual disabled',
+    models: 'Bound models',
+  },
+  yes: 'Yes',
+  no: 'No',
+  empty: {
+    connected: 'No connected credentials',
+    connecting: 'No connecting credentials',
+    disconnected: 'No disconnected credentials',
+  },
+}
