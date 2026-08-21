@@ -2492,24 +2492,23 @@ func (e *Executor) recordModelNotFound(ctx context.Context, credentialID int, ra
 			"error", err)
 	}
 
-	// Self-healing: temporarily exclude this (credential, raw_model) pair
-	// from routing so the gateway stops sending requests to a model the
-	// upstream no longer serves. We write node_probe_state with
-	// last_direct_ok=FALSE and a 5-minute next_retry_at window.
-	//
-	// Both refreshIndexSQL (autoroute/index.go) and filterCurrentlyAvailable
-	// (autoroute/recommend_v2.go) filter on:
-	//   nps.last_direct_ok = false AND nps.next_retry_at > now()
-	// so the pair disappears from the candidate pool for 5 minutes. After
-	// the window expires the pair is eligible again; if it still 404s,
-	// this function re-arms the exclusion. The bg node-probe worker owns
-	// the long-term retry ladder and will eventually set last_direct_ok=TRUE
-	// when an upstream probe confirms the model is back.
-	//
-	// This is scoped to the specific (credential, model) pair — it does
-	// NOT cool the entire credential, so other models on the same
-	// credential remain routable.
-	const mnfCoolWindow = 5 * time.Minute
+		// Self-healing: temporarily exclude this (credential, raw_model) pair
+		// from routing so the gateway stops sending requests to a model the
+		// upstream no longer serves. The pair is suppressed for five minutes;
+		// after seven consecutive failures the streak is cleared and direct
+		// routing is re-armed while the next targeted probe waits one hour.
+		//
+		// Both refreshIndexSQL (autoroute/index.go) and filterCurrentlyAvailable
+		// (autoroute/recommend_v2.go) honor last_direct_ok and next_retry_at.
+		// This is scoped to the specific (credential, model) pair — it does
+		// NOT cool the entire credential, so other models on the same
+		// credential remain routable.
+
+	const (
+		mnfCoolWindow     = 5 * time.Minute
+		mnfResetThreshold = 7
+		mnfResetBackoff   = 1 * time.Hour
+	)
 	_, mnfErr := e.DB.Pool().Exec(ctx, `
 		INSERT INTO node_probe_state (
 			credential_id, raw_model_name,
@@ -2528,17 +2527,31 @@ func (e *Executor) recordModelNotFound(ctx context.Context, credentialID int, ra
 			$4, NULL,
 			now()
 		)
-		ON CONFLICT (credential_id, raw_model_name) DO UPDATE
-		SET last_direct_ok = FALSE,
-		    last_gateway_ok = FALSE,
-		    last_attempt_at = now(),
-		    next_retry_at = now() + $3::interval,
-		    next_retry_seconds = EXTRACT(EPOCH FROM $3::interval)::int,
-		    consecutive_failures = node_probe_state.consecutive_failures + 1,
-		    last_err_code = $4,
-		    in_flight_until = NULL,
-		    updated_at = now()
-	`, credentialID, rawModel, mnfCoolWindow.String(), errorCode)
+			ON CONFLICT (credential_id, raw_model_name) DO UPDATE
+			SET last_direct_ok = CASE
+			        WHEN node_probe_state.consecutive_failures + 1 >= $5 THEN TRUE
+			        ELSE FALSE
+			    END,
+			    last_gateway_ok = FALSE,
+			    last_attempt_at = now(),
+			    next_retry_at = CASE
+			        WHEN node_probe_state.consecutive_failures + 1 >= $5
+			            THEN now() + $6::interval
+			        ELSE now() + $3::interval
+			    END,
+			    next_retry_seconds = CASE
+			        WHEN node_probe_state.consecutive_failures + 1 >= $5
+			            THEN EXTRACT(EPOCH FROM $6::interval)::int
+			        ELSE EXTRACT(EPOCH FROM $3::interval)::int
+			    END,
+			    consecutive_failures = CASE
+			        WHEN node_probe_state.consecutive_failures + 1 >= $5 THEN 0
+			        ELSE node_probe_state.consecutive_failures + 1
+			    END,
+			    last_err_code = $4,
+			    in_flight_until = NULL,
+			    updated_at = now()
+		`, credentialID, rawModel, mnfCoolWindow.String(), errorCode, mnfResetThreshold, mnfResetBackoff.String())
 	if mnfErr != nil {
 		slog.Warn("record_model_not_found: node_probe_state UPSERT failed",
 			"credential_id", credentialID,

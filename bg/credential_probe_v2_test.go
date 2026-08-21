@@ -165,3 +165,41 @@ func TestWriteHealth_ClosesBindingFailuresWithoutCredentialWideWrite(t *testing.
 		}
 	}
 }
+
+func TestWriteHealth_FansOutBoundRawModels(t *testing.T) {
+	src, err := os.ReadFile("credential_probe_v2.go")
+	if err != nil {
+		t.Fatalf("read source: %v", err)
+	}
+	body := string(src)
+	for _, want := range []string{
+		"func (c *CredentialProbeV2) loadBoundRawModels(",
+		"COALESCE(cmb.available, TRUE) = TRUE",
+		"COALESCE(pm.available, TRUE) = TRUE",
+		"if err := rows.Err(); err != nil",
+		"writeModels := uniqueStringSet([]string{pr.HealthProbeModel}, c.loadBoundRawModels(execCtx, credID))",
+		"for _, model := range writeModels",
+		"c.cache.Set(execCtx, credID, model",
+		"Model:         model",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("raw-model fan-out is missing %q", want)
+		}
+	}
+	if strings.Contains(body, "cm.archived") || strings.Contains(body, "pm.archived") {
+		t.Fatal("raw-model fan-out must not reference nonexistent archived columns")
+	}
+}
+
+func TestUniqueStringSet(t *testing.T) {
+	got := uniqueStringSet([]string{"default", "a", "a"}, []string{"b", "default", ""})
+	want := []string{"default", "a", "b"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+	}
+}
