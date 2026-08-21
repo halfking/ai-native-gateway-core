@@ -178,10 +178,11 @@ describe('NodeDetailDrawer model×node scope', () => {
   })
 
   it('discards a stale core response when the node changes before the promise settles', async () => {
-    const wrapper = mountDrawer('m-1')
-
     let resolveFirst!: (value: unknown) => void
-    monitorSummary.mockImplementationOnce(() => new Promise(resolve => { resolveFirst = resolve }))
+    monitorSummary
+      .mockImplementationOnce(() => new Promise(resolve => { resolveFirst = resolve }))
+      .mockImplementation(() => Promise.resolve({ credentials: [{ id: 99, models: [modelStatus('x-1')] }] }))
+    const wrapper = mountDrawer('m-1')
 
     await flushPromises()
 
@@ -198,41 +199,67 @@ describe('NodeDetailDrawer model×node scope', () => {
     await flushPromises()
 
     // Late response from the original credential must not overwrite the new node state.
-    resolveFirst({ credentials: [{ id: 5, models: [] }] })
+    resolveFirst({ credentials: [{ id: 5, models: [modelStatus('stale-old-model')] }] })
     await flushPromises()
 
-    expect(wrapper.get('h2').text()).not.toBe('5')
+    expect(wrapper.text()).not.toContain('stale-old-model')
+    expect(monitorSummary).toHaveBeenCalledTimes(2)
   })
 
   it('discards stale model history after the scoped model changes', async () => {
-    let resolveHistory!: (value: unknown) => void
-    modelHistory.mockImplementationOnce(() => new Promise(resolve => { resolveHistory = resolve }))
+    let resolveOld!: (value: unknown) => void
+    modelHistory.mockImplementation((credentialID: number, model: string) => {
+      if (model === 'm-1') return new Promise(resolve => { resolveOld = resolve })
+      return Promise.resolve({ events: [{ event: 'recovered', source: 'auto', ts: '2026-08-20T01:00:00Z', reason: 'new-history' }] })
+    })
     const wrapper = mountDrawer('m-1')
-    await triggerDetailLoad(wrapper)
+    await wrapper.get('button.btn-primary').trigger('click')
+    await flushPromises()
 
     await wrapper.setProps({ model: 'm-2' })
+    await wrapper.get('button.btn-primary').trigger('click')
     await flushPromises()
-    resolveHistory({ events: [{ event: 'broke', source: 'auto', ts: '2026-08-20T00:00:00Z', error_message: 'stale-history' }] })
+    if (modelHistory.mock.calls.length < 2) {
+      throw new Error('expected new model history request after scope switch')
+    }
+
+    resolveOld({ events: [{ event: 'broke', source: 'auto', ts: '2026-08-20T00:00:00Z', reason: 'old-history' }] })
     await flushPromises()
 
-    expect(wrapper.text()).not.toContain('stale-history')
-    expect(wrapper.get('h2').text()).toBe('m-2')
+    expect(wrapper.text()).not.toContain('old-history')
+    expect(modelHistory.mock.calls.some((call: unknown[]) => call[1] === 'm-2')).toBe(true)
   })
 
-  it('discards stale decisions after the scoped model changes', async () => {
-    let resolveDecisions!: (value: unknown) => void
-    decisions.mockImplementationOnce(() => new Promise(resolve => { resolveDecisions = resolve }))
+  it('discards stale decisions after the node scope changes', async () => {
+    let resolveOld!: (value: unknown) => void
+    decisions.mockImplementation((credentialID: number) => {
+      if (credentialID === 5) return new Promise(resolve => { resolveOld = resolve })
+      return Promise.resolve({ decisions: [{ request_id: 'new-decision', model: 'm-2', ts: '2026-08-20T01:00:00Z', success: true }] })
+    })
     const wrapper = mountDrawer('m-1')
     await wrapper.get('[role="tab"]:nth-child(2)').trigger('click')
     await flushPromises()
 
-    await wrapper.setProps({ model: 'm-2' })
+    liveStreamState.nodes = [{
+      credential_id: 99,
+      provider_id: 1,
+      provider_code: 'p',
+      manual_disabled: false,
+      circuit_state: 'closed',
+      raw_models: ['m-2'],
+    }]
+    await wrapper.setProps({ node: liveStreamState.nodes[0], model: 'm-2' })
+    await wrapper.get('[role="tab"]:nth-child(2)').trigger('click')
     await flushPromises()
-    resolveDecisions({ decisions: [{ request_id: 'stale-decision', model: 'm-1', ts: '2026-08-20T00:00:00Z', success: false }] })
+    if (decisions.mock.calls.length < 2) {
+      throw new Error('expected new decisions request after scope switch')
+    }
+
+    resolveOld({ decisions: [{ request_id: 'old-decision', model: 'm-1', ts: '2026-08-20T00:00:00Z', success: false }] })
     await flushPromises()
 
-    expect(wrapper.text()).not.toContain('stale-decision')
-    expect(wrapper.get('h2').text()).toBe('m-2')
+    expect(wrapper.text()).not.toContain('old-decision')
+    expect(decisions.mock.calls.some((call: unknown[]) => call[0] === 99)).toBe(true)
   })
 
   it('clears stale detail and reloads the new model scope', async () => {

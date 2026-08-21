@@ -119,6 +119,18 @@ type ApprovalRecord struct {
 	ExpiresAt    time.Time        `json:"expires_at"` // 超时时间
 }
 
+// ResumeClaim is the durable ownership returned before an approved request is
+// resumed. The fencing token makes a reclaimed lease unable to publish stale
+// state after a newer owner takes over.
+type ResumeClaim struct {
+	Record         *ApprovalRecord
+	Owner          string
+	FencingToken   int64
+	ResumeState    string
+	AlreadyDone    bool
+	AlreadyRunning bool
+}
+
 // AuditRecord 审计记录（数据库持久化）
 type AuditRecord struct {
 	ID        int64  `json:"id"`
