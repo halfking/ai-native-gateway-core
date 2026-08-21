@@ -712,6 +712,103 @@ func (s *Service) updateCredentialHealth(ctx context.Context, credentialID int, 
 	}
 }
 
+// EnsureCanonicalAndAliases is the shared "seed the standard-model row +
+// alias rows" path used by both the periodic discovery worker and the manual
+// POST /api/providers/{id}/refresh-models handler.
+//
+// It mirrors Service.upsertModel so refresh and discovery agree on what a
+// freshly observed model name produces in models_canonical and
+// model_aliases:
+//
+//   - models_canonical is upserted with the same family/modality/tags
+//     logic as the periodic worker (modality upgrade-only; admin-edited
+//     families preserved; split-family tokens normalized to canonical).
+//   - model_aliases rows are seeded for every variant produced by
+//     GenerateAliases, ensuring ResolveRawBinding can find the binding
+//     from the client-side model name the first time it is requested.
+//
+// The source tag distinguishes callers: pass "discovery" for the periodic
+// worker, "provider_refresh" for the manual admin handler.
+//
+// 2026-08-22: takes a modelcatalog.Querier (small interface) so refresh-time
+// tests can drive the upsert path via pgxmock without a real database.
+// Production callers pass *pgxpool.Pool, which already satisfies the
+// interface.
+func EnsureCanonicalAndAliases(ctx context.Context, db modelcatalog.Querier, rawName, source string) (canonicalID int, canonicalName string, err error) {
+	if db == nil {
+		return 0, "", fmt.Errorf("database not configured")
+	}
+	canonicalName = NormalizeModelName(rawName)
+	family := InferFamily(canonicalName)
+	inferredModality := modelname.InferModality(rawName)
+	if source == "" {
+		source = "discovery"
+	}
+
+	err = db.QueryRow(ctx, `
+		INSERT INTO models_canonical (canonical_name, family, tags, source, status, modality)
+		VALUES ($1, $2, ARRAY['family:' || $2]::text[], $4, 'active', $5)
+		ON CONFLICT (canonical_name) DO UPDATE SET
+			family = CASE
+				WHEN models_canonical.family = $2
+				THEN models_canonical.family
+				WHEN models_canonical.family = ANY($3::text[])
+				THEN $2
+				ELSE models_canonical.family
+			END,
+			tags = CASE
+				WHEN models_canonical.family = $2
+				THEN (
+					SELECT array_agg(DISTINCT t)
+					FROM unnest(models_canonical.tags || ARRAY['family:' || $2]) AS t
+				)
+				WHEN models_canonical.family = ANY($3)
+				THEN (
+					SELECT array_agg(DISTINCT t)
+					FROM unnest(
+						array_remove(
+							array_remove(
+								models_canonical.tags,
+								'family:' || models_canonical.family
+							),
+							'family:' || $2
+						) || ARRAY['family:' || $2]
+					) AS t
+				)
+				ELSE models_canonical.tags
+			END,
+			status = 'active',
+			modality = CASE
+				WHEN models_canonical.modality = 'text' AND $5 <> 'text'
+				THEN $5
+				ELSE models_canonical.modality
+			END
+		RETURNING id
+	`, canonicalName, family, splitFamilyIDs, source, inferredModality).Scan(&canonicalID)
+	if err != nil {
+		return 0, "", fmt.Errorf("upsert models_canonical for %q: %w", canonicalName, err)
+	}
+
+	aliases := GenerateAliases(rawName, canonicalName)
+	for _, alias := range aliases {
+		normalizedAlias := modelname.CanonicalizeClientModel(alias)
+		if normalizedAlias == "" {
+			continue
+		}
+		if _, execErr := db.Exec(ctx, `
+			INSERT INTO model_aliases (canonical_id, raw_name, status)
+			VALUES ($1, $2, 'active')
+			ON CONFLICT (canonical_id, raw_name) DO UPDATE SET
+				status = 'active',
+				updated_at = NOW()
+		`, canonicalID, normalizedAlias); execErr != nil {
+			return 0, "", fmt.Errorf("upsert model_alias %q: %w", normalizedAlias, execErr)
+		}
+	}
+
+	return canonicalID, canonicalName, nil
+}
+
 // expireStaleModels marks any model_offers row that wasn't returned by the
 // upstream /v1/models call (or the manifest) as unavailable. The previous
 // implementation only wrote to model_offers, which caused data drift:
