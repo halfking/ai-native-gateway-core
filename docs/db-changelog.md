@@ -47,3 +47,18 @@
 |-----------|------|---------|--------|
 | 548 | `548_stats_reconciliation_diffs_identity.sql` | `163003022c8b81c61a4f9da270d6a479e641a90ea683aa16fb9225e7be350b9a` | applied+verified |
 
+## 2026-08-21T15:05:52Z — deploy 154 build_seq 1648 (07e7df62)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 553 | `553_approval_resume_claim.sql` | `3fe7a9c9274b6f1c00d45e03caeee71c4e42dc9eeb9184d4d942326b82ac2a82` | applied+verified |
+
+
+## 2026-08-21T14:00:00Z — local dev build_seq 1650+ (Wave 2-A)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 554 | `554_goal_runs.sql` | fdf2a5a4900fbae3559fbb86cfe21d8e1fbbfa18f56d205c73fcd1b31073ca21 | not_deployed |
+
+Note: Migration 554 implements Wave 2-A GoalRun durable ledger (goal_runs + goal_run_steps + goal_run_actions tables with RLS).
+Requires isolated PG validation before production deployment.
