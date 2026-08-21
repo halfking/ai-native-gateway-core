@@ -10,7 +10,7 @@ func TestStartupFilesIncludeRequestJourneyOutboxPrerequisites(t *testing.T) {
 		"521_repair_state_transitions_tenant.sql",
 		"530_request_journey_contract.sql",
 		"531_request_journey_tenant_uniqueness.sql",
-		"549_request_journey_durable_outbox.sql",
+		"550_request_journey_durable_outbox.sql",
 	}
 	positions := make(map[string]int, len(runner.StartupFiles))
 	for i, name := range runner.StartupFiles {

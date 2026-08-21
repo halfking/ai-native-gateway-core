@@ -1,4 +1,4 @@
--- Migration 549: durable RequestJourney observation outbox and retry_at parity.
+-- Migration 550: durable RequestJourney observation outbox and retry_at parity.
 -- The outbox persists content-free observation events before asynchronous
 -- PostgreSQL/Redis projection. It is distinct from durable task execution and
 -- Gateway-to-ASM delivery.
