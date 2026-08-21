@@ -8,8 +8,18 @@ import (
 	"log/slog"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// Querier is the minimum database surface used by this package. Both
+// *pgxpool.Pool and pgxmock.PgxPoolIface satisfy it, which lets the admin
+// refresh tests drive the upsert path without a real database.
+type Querier interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
 
 // UpsertCredentialModel inserts or updates one credential→model binding.
 //
@@ -29,7 +39,7 @@ import (
 //     and enforced UNIQUE per provider (migration 395).
 //   - standardizedName is the historical provider-canonical column, also
 //     stored lowercase; kept for back-compat with /models listings.
-func UpsertCredentialModel(ctx context.Context, db *pgxpool.Pool, credentialID int, rawName, canonicalRawName, standardizedName string, canonicalID *int) error {
+func UpsertCredentialModel(ctx context.Context, db Querier, credentialID int, rawName, canonicalRawName, standardizedName string, canonicalID *int) error {
 	if db == nil {
 		return fmt.Errorf("database not configured")
 	}
