@@ -24,6 +24,8 @@
 //       &tags=...          按 user_tags（逗号分隔，任一命中即保留，&& 数组重叠语义）过滤
 //       &client=...        按客户端（sd.client_id / sd.application_code / s.client_type）过滤
 //       &owner_user=...    按会话属主用户（sd.owner_user）过滤
+//       &api_key_id=...    按会话内轮次关联的 API Key（request_logs.api_key_id）过滤
+//       &status=...        按会话状态（active/closed/archived/deleted）过滤
 //
 // 鉴权：admin() 中间件。tenant_admin 只能看到自己的租户数据。
 // 返回：{ items: TurnsSessionGroup[], has_more: bool, next_cursor: string }
@@ -91,6 +93,9 @@ type TurnsSessionGroup struct {
 	EndUserID       *string    `json:"end_user_id,omitempty"`
 	UserTags        []string   `json:"user_tags"`
 	StartTime       *time.Time `json:"start_time,omitempty"`
+	// API Key：取会话最近一轮关联 request_logs.api_key_id；label 仅前缀/别名。
+	APIKeyID    *int64  `json:"api_key_id,omitempty"`
+	APIKeyLabel *string `json:"api_key_label,omitempty"`
 
 	// 会话间父子/附属关系：本会话由哪个会话创建/派生。
 	// handoff_logs（透明轮换，持久化）优先；gt_/gs_ 前缀（auto title/summary
@@ -103,6 +108,7 @@ type TurnsSessionGroup struct {
 type TurnGroupItem struct {
 	TurnNo                 int       `json:"turn_no"`
 	Ts                     time.Time `json:"ts"`
+	RequestID              string    `json:"request_id,omitempty"`
 	Title                  string    `json:"title,omitempty"`
 	Summary                string    `json:"summary,omitempty"`
 	RequestTokens          int       `json:"request_tokens"`
@@ -125,6 +131,20 @@ type TurnGroupItem struct {
 	AttemptNo              int       `json:"attempt_no"`
 	LatencyMs              *int      `json:"latency_ms,omitempty"`
 }
+
+// turnsSessionAPIKeyJoinSQL 取会话最近一轮对应的 api_key（仅 id + 前缀/别名）。
+const turnsSessionAPIKeyJoinSQL = `LEFT JOIN LATERAL (
+			SELECT rl.api_key_id,
+				COALESCE(NULLIF(ak.key_alias, ''), ak.key_prefix, 'key#' || rl.api_key_id::text) AS api_key_label
+			FROM public.session_turns_with_current_month t
+			JOIN public.request_logs_with_current_month rl ON rl.request_id = t.request_id
+			LEFT JOIN public.api_keys ak ON ak.id = rl.api_key_id
+			WHERE t.session_id = s.session_id
+			  AND t.tenant_id = s.tenant_id
+			  AND rl.api_key_id IS NOT NULL
+			ORDER BY t.turn_no DESC
+			LIMIT 1
+		) akinfo ON TRUE`
 
 // handleTurnsSessions 处理 GET /api/admin/turns/sessions。
 func (h *Handler) handleTurnsSessions(w http.ResponseWriter, r *http.Request) {
@@ -205,16 +225,14 @@ func (h *Handler) handleTurnsSessions(w http.ResponseWriter, r *http.Request) {
 				%s, sd.task_id, sd.owner_user,
 				sd.client_id, sd.application_code, sd.end_user_id,
 				COALESCE(ss.user_tags, '{}') AS user_tags,
-
-			ss.first_request_at AS start_time,
-			ho.parent_session_id, ho.trigger_reason
+				ss.first_request_at AS start_time,
+				akinfo.api_key_id, akinfo.api_key_label,
+				ho.parent_session_id, ho.trigger_reason
 		FROM public.sessions s
 		LEFT JOIN session_dim sd
-			ON sd.gw_session_id = s.session_id AND sd.tenant_id = s.tenant_id		LEFT JOIN session_summaries ss
+			ON sd.gw_session_id = s.session_id AND sd.tenant_id = s.tenant_id
+		LEFT JOIN session_summaries ss
 			ON ss.session_key = s.session_id AND ss.tenant_id = s.tenant_id
-		-- 会话父子关系：本会话若是 handoff（透明轮换）创建的新会话，
-		-- handoff_logs 里 new_session_id = 本会话 的记录给出父会话。
-		-- LATERAL LIMIT 1 防止多次轮换记录导致行扩展。
 		LEFT JOIN LATERAL (
 			SELECT hl.session_id AS parent_session_id, hl.trigger_reason
 			FROM public.handoff_logs_with_current_month hl
@@ -222,15 +240,15 @@ func (h *Handler) handleTurnsSessions(w http.ResponseWriter, r *http.Request) {
 			ORDER BY hl.created_at DESC
 			LIMIT 1
 		) ho ON TRUE
-		-- session_titles: auto_title_generator 写入的标题（V1 表），
-		-- 取最新一条作为 s.title 的 fallback。用 LATERAL 避免一个会话多行导致行扩展。
-		-- task_id 过滤防止跨任务/租户泄漏：优先匹配真实 task_id（sd.task_id），
-		-- 其次接受 'auto'（auto_title_generator 旧版默认值）。
+		%s
 		%s
 		%s
 		ORDER BY s.updated_at DESC, s.session_id DESC
 		LIMIT $%d
-		`, turnsSessionProjectExpr, sessionTitleFallbackJoinSQL("s.session_id", "sd.task_id"), queryClause, argIdx)
+		`, turnsSessionProjectExpr,
+		sessionTitleFallbackJoinSQL("s.session_id", "sd.task_id"),
+		turnsSessionAPIKeyJoinSQL,
+		queryClause, argIdx)
 	args = append(args, limit+1)
 
 	rows, err := h.db.Query(ctx, query, args...)
@@ -255,6 +273,7 @@ func (h *Handler) handleTurnsSessions(w http.ResponseWriter, r *http.Request) {
 			&g.ProjectID, &g.TaskID, &g.OwnerUser,
 			&g.ClientID, &g.ApplicationCode, &g.EndUserID,
 			&g.UserTags, &g.StartTime,
+			&g.APIKeyID, &g.APIKeyLabel,
 			&g.ParentSessionID, &handoffReason,
 		); err != nil {
 			slog.Warn("admin handleTurnsSessions scan failed", "err", err.Error())
@@ -383,6 +402,24 @@ func buildTurnsSessionWhere(r *http.Request, tenantID string, tsFrom, tsTo time.
 		args = append(args, v, v, v)
 		argIdx += 3
 	}
+	if v := strings.TrimSpace(r.URL.Query().Get("api_key_id")); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+			clauses = append(clauses, fmt.Sprintf(
+				`EXISTS (
+					SELECT 1 FROM public.session_turns_with_current_month ft
+					JOIN public.request_logs_with_current_month rl ON rl.request_id = ft.request_id
+					WHERE ft.session_id = s.session_id AND ft.tenant_id = s.tenant_id
+					  AND rl.api_key_id = $%d
+				)`, argIdx))
+			args = append(args, n)
+			argIdx++
+		}
+	}
+	if v := strings.TrimSpace(r.URL.Query().Get("status")); v != "" {
+		clauses = append(clauses, fmt.Sprintf("s.status = $%d", argIdx))
+		args = append(args, v)
+		argIdx++
+	}
 	if v := strings.TrimSpace(r.URL.Query().Get("tags")); v != "" {
 		clauses = append(clauses, fmt.Sprintf("ss.user_tags && $%d", argIdx))
 		args = append(args, strings.Split(v, ","))
@@ -462,6 +499,7 @@ func (h *Handler) loadTurnsForSessions(ctx context.Context, sessions []*TurnsSes
 
 	query := fmt.Sprintf(`
 		SELECT t.session_id, t.turn_no, t.ts,
+			COALESCE(t.request_id, '') AS request_id,
 			COALESCE(t.title, '') AS title,
 			COALESCE(t.summary, '') AS summary,
 			COALESCE(t.prompt_tokens, 0) AS prompt_tokens,
@@ -503,7 +541,7 @@ func (h *Handler) loadTurnsForSessions(ctx context.Context, sessions []*TurnsSes
 		var it TurnGroupItem
 		var sessionID string
 		if err := rows.Scan(
-			&sessionID, &it.TurnNo, &it.Ts,
+			&sessionID, &it.TurnNo, &it.Ts, &it.RequestID,
 			&it.Title, &it.Summary,
 			&it.RequestTokens, &it.ResponseTokens,
 			&it.CacheReadTokens, &it.CacheWriteTokens,
