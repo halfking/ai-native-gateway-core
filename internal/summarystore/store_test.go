@@ -2,6 +2,8 @@ package summarystore
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -16,7 +18,7 @@ import (
 // dereference nil fields.
 func TestUpsert_NilPoolIsError(t *testing.T) {
 	var s *Store
-	res, err := s.Upsert(context.Background(), Summary{SessionKey: "gw_x"})
+	res, err := s.Upsert(context.Background(), Summary{SessionKey: "gw_x", TenantID: "tA"})
 	if err == nil {
 		t.Fatal("expected error from nil Store")
 	}
@@ -24,7 +26,7 @@ func TestUpsert_NilPoolIsError(t *testing.T) {
 		t.Fatalf("nil Store Upsert returned %+v, want zero UpsertResult", res)
 	}
 	s2 := &Store{}
-	res2, err2 := s2.Upsert(context.Background(), Summary{SessionKey: "gw_x"})
+	res2, err2 := s2.Upsert(context.Background(), Summary{SessionKey: "gw_x", TenantID: "tA"})
 	if err2 == nil {
 		t.Fatal("expected error from Store with nil pool")
 	}
@@ -49,7 +51,7 @@ func TestUpsertResult_ZeroValueValid(t *testing.T) {
 // covered by manual deployment verification on 252.
 func TestLastSummarized_NilPoolIsError(t *testing.T) {
 	s := &Store{}
-	if _, err := s.LastSummarized(context.Background(), "gw_x"); err == nil {
+	if _, err := s.LastSummarized(context.Background(), "tA", "gw_x"); err == nil {
 		t.Fatal("expected error from nil-pool LastSummarized")
 	}
 }
@@ -57,9 +59,62 @@ func TestLastSummarized_NilPoolIsError(t *testing.T) {
 // TestCountNewTurns_NilPoolIsError — same nil-safety for the rolling gate.
 func TestCountNewTurns_NilPoolIsError(t *testing.T) {
 	s := &Store{}
-	if _, err := s.CountNewTurns(context.Background(), "gw_x", time.Now()); err == nil {
+	if _, err := s.CountNewTurns(context.Background(), "tA", "gw_x", time.Now()); err == nil {
 		t.Fatal("expected error from nil-pool CountNewTurns")
 	}
+}
+
+// TestCountTotalTurns_NilPoolIsError — same nil-safety for the rolling gate.
+func TestCountTotalTurns_NilPoolIsError(t *testing.T) {
+	s := &Store{}
+	if _, err := s.CountTotalTurns(context.Background(), "tA", "gw_x"); err == nil {
+		t.Fatal("expected error from nil-pool CountTotalTurns")
+	}
+}
+
+// TestUpsertCAS_NilPoolIsError — strict CAS 接口的 nil-safety 与 Upsert 对齐。
+func TestUpsertCAS_NilPoolIsError(t *testing.T) {
+	s := &Store{}
+	_, err := s.UpsertCAS(context.Background(), Summary{SessionKey: "gw_x", TenantID: "tA"}, 0)
+	if err == nil {
+		t.Fatal("expected error from nil-pool UpsertCAS")
+	}
+	_, err = s.UpsertCAS(context.Background(), Summary{SessionKey: "gw_x", TenantID: "tA"}, 5)
+	if err == nil {
+		t.Fatal("expected error from nil-pool UpsertCAS (expectedVersion>0)")
+	}
+}
+
+// TestUpsertCAS_NegativeVersionRejected — expectedVersion 必须 >= 0。
+func TestUpsertCAS_NegativeVersionRejected(t *testing.T) {
+	s := &Store{}
+	_, err := s.UpsertCAS(context.Background(), Summary{SessionKey: "gw_x", TenantID: "tA"}, -1)
+	if err == nil {
+		t.Fatal("expected error for negative expectedVersion")
+	}
+}
+
+// TestErrStaleVersion_Is_Error — errors.Is 必须能识别 ErrStaleVersion，
+// caller 用 errors.Is 判断走「重读 / 重试 / 放弃」分支。
+func TestErrStaleVersion_Is_Error(t *testing.T) {
+	// 直接 errors.Is(ErrStaleVersion, ErrStaleVersion) 必须为 true（self）
+	if !errors.Is(ErrStaleVersion, ErrStaleVersion) {
+		t.Fatal("errors.Is(ErrStaleVersion, ErrStaleVersion) must be true")
+	}
+	// 包成 fmt.Errorf("%w", ErrStaleVersion) 后仍可识别
+	wrapped := fmtErrorf("%w", ErrStaleVersion)
+	if !errors.Is(wrapped, ErrStaleVersion) {
+		t.Fatal("errors.Is(wrapped, ErrStaleVersion) must be true")
+	}
+	// 与无关 error 必须区分
+	if errors.Is(errors.New("other"), ErrStaleVersion) {
+		t.Fatal("errors.Is(other, ErrStaleVersion) must be false")
+	}
+}
+
+// fmtErrorf 是 fmt.Errorf 的本地别名（让测试代码读起来更短）。
+func fmtErrorf(format string, args ...any) error {
+	return fmt.Errorf(format, args...)
 }
 
 // TestSummary_ZeroValueValid — Summary{} should be a usable zero value so
@@ -70,6 +125,7 @@ func TestSummary_ZeroValueValid(t *testing.T) {
 		t.Fatalf("zero Summary should be all-empty, got %+v", s)
 	}
 }
+
 // TestSanitiseUTF8_InvalidBytesReplaced verifies that invalid UTF-8 byte
 // sequences (truncated CJK multibyte, as observed in production error
 // 0xe5 0xe2 0x80) are replaced with U+FFFD so PostgreSQL accepts the row.

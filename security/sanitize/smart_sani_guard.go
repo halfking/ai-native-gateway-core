@@ -20,11 +20,14 @@ package sanitize
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -33,6 +36,24 @@ import (
 	"github.com/kaixuan/llm-gateway-go/metrics"
 	"github.com/redis/go-redis/v9"
 )
+
+// HashTenant returns the first 16 hex chars (8 bytes) of sha256(tenantID),
+// matching the format used by domains/session/preprocess.hash16 so the same
+// tenant_id always produces the same key segment in Redis regardless of which
+// package derived it. Keeping a local copy avoids a new cross-tree import
+// (security/sanitize → domains/session/preprocess); any drift must be caught
+// by the cross-package test in domains/session/preprocess.
+//
+// T11-P0: required so sanitize Redis keys can be scoped per-tenant
+// (session:{tenantHash}:{sessionID}:sanitize) and prevent cross-tenant
+// placeholder leakage.
+func HashTenant(tenantID string) string {
+	if tenantID == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(tenantID))
+	return hex.EncodeToString(sum[:8])
+}
 
 // RestoreInterceptorName 是还原拦截器在链中的名字（日志/观测）
 const RestoreInterceptorName = "sanitize_restore"
@@ -51,6 +72,10 @@ const RestoreInterceptorName = "sanitize_restore"
 //
 // 占位符索引使用会话级偏移量（Redis 里记录每类已用最大值），
 // 避免跨轮次撞号。
+//
+// T11-P0: 写入 Redis 时同时按 tenant 隔离（session:{tenantHash}:{sid}:sanitize），
+// 防止跨租户共享 sessionID 时互相读到对方的占位符映射表；getTenantID 由调用方
+// 注入（与 getSessionID 同风格），生产侧从 request.Context 取真实 tenantID。
 type SanitizeInputMiddleware struct {
 	sanitizer *Sanitizer
 	redis     *redis.Client
@@ -58,16 +83,33 @@ type SanitizeInputMiddleware struct {
 	logger    *slog.Logger
 	// getSessionID 从请求头提取会话ID（由调用方注入，便于测试）
 	getSessionID func(r *http.Request) string
+	// getTenantID 从请求/上下文提取 tenantID（由调用方注入）。nil 时退化为
+	// "_unknown" — 所有没显式注入 tenant 的测试/旧调用点都走这个 sentinel
+	// bucket，Redis key 上仍带 hash 段（用于将来按桶清理）。
+	getTenantID func(r *http.Request) string
 }
 
 // NewSanitizeInputMiddleware 创建输入脱敏中间件。
 // redis 为 nil 时退化为仅内存脱敏（不持久化，单轮可用）。
+//
+// 兼容旧签名：getTenantID 留空，使用 header 默认值（X-Gw-Tenant-Id 优先）；
+// 若 header 也为空，落到 "_unknown" bucket 并打 WARN 日志。
 func NewSanitizeInputMiddleware(s *Sanitizer, redis *redis.Client, ttl time.Duration) (*SanitizeInputMiddleware, error) {
+	return NewSanitizeInputMiddlewareWithTenant(s, redis, ttl, nil)
+}
+
+// NewSanitizeInputMiddlewareWithTenant 与 NewSanitizeInputMiddleware 等价，
+// 但允许调用方显式注入 tenantID 提取函数（生产侧用 request.Context 取真实值）。
+// getTenantID 为 nil 时与旧行为一致：按 header 取，无值则用 "_unknown"。
+func NewSanitizeInputMiddlewareWithTenant(s *Sanitizer, redis *redis.Client, ttl time.Duration, getTenantID func(r *http.Request) string) (*SanitizeInputMiddleware, error) {
 	if s == nil {
 		return nil, fmt.Errorf("sanitize middleware: %w", ErrNilSanitizer)
 	}
 	if ttl <= 0 {
 		ttl = 30 * time.Minute
+	}
+	if getTenantID == nil {
+		getTenantID = defaultTenantIDFromHeader
 	}
 	return &SanitizeInputMiddleware{
 		sanitizer: s,
@@ -88,7 +130,20 @@ func NewSanitizeInputMiddleware(s *Sanitizer, redis *redis.Client, ttl time.Dura
 			}
 			return ""
 		},
+		getTenantID: getTenantID,
 	}, nil
+}
+
+// defaultTenantIDFromHeader 从 header 提取 tenantID（兼容旧行为）。
+// 顺序：X-Gw-Tenant-Id > X-Tenant-Id > X-Tenant。无值时返回 "_unknown"
+// 并由 caller 负责打 WARN。
+func defaultTenantIDFromHeader(r *http.Request) string {
+	for _, header := range tenantIDHeaderPriority {
+		if v := strings.TrimSpace(r.Header.Get(header)); v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // sessionIDHeaderPriority 与 chatHandler 一致的会话 ID header 候选。
@@ -101,6 +156,24 @@ var sessionIDHeaderPriority = []string{
 	"X-Chat-Session-Id",
 	"X-Thread-Id",
 }
+
+// tenantIDHeaderPriority 与 sessionID 风格保持一致：X-Gw-Tenant-Id 优先。
+// 生产侧推荐用 NewSanitizeInputMiddlewareWithTenant 注入真实取数函数
+// （从 ctx 取经鉴权后的 tenantID），header 兜底仅用于测试/未鉴权路径。
+var tenantIDHeaderPriority = []string{
+	"X-Gw-Tenant-Id",
+	"X-Tenant-Id",
+	"X-Tenant",
+}
+
+// unknownTenantSentinel 是 getTenantID 返回空值时的占位桶。
+//
+// 2026-08-22（T11-P0）：当 caller 没注入 tenant getter、且 header 也为空，
+// 中间件会落到这个 bucket。所有走这个 bucket 的请求共享同一组 Redis key，
+// 等于把"无 tenant"流量合并到一个伪 tenant 下 — 比"完全不区分 tenant"
+// （旧行为，等于全部 session 共享同一组 key）严格得多。WARN 日志用于让运维
+// 知道有租户上下文缺失的生产流量。
+const unknownTenantSentinel = "_unknown"
 
 // Wrap 返回一个 http.Handler 包装器。
 // 在真实 handler 之前执行脱敏；脱敏失败时降级放行（不阻断请求）。
@@ -116,21 +189,30 @@ func (m *SanitizeInputMiddleware) Wrap(next http.Handler) http.Handler {
 		}
 
 		sessionID := m.getSessionID(r)
+		tenantID := m.getTenantID(r)
+		if tenantID == "" {
+			tenantID = unknownTenantSentinel
+			m.logger.WarnContext(r.Context(), "sanitize_middleware: tenant context missing, falling back to sentinel bucket",
+				"session_id", sessionID,
+				"sentinel", unknownTenantSentinel,
+			)
+		}
+		tenantHash := HashTenant(tenantID)
 		// readBody 恢复 r.Body，因此下面每条 passthrough 路径都安全：
 		// 无脱敏、脱敏失败、读取失败都会把原始 body 交给下游。
 		body, err := readBody(r)
 		if err != nil {
 			m.logger.Warn("sanitize_middleware: read body failed, passthrough",
-				"error", err, "session_id", sessionID)
+				"error", err, "session_id", sessionID, "tenant_id", tenantID)
 			next.ServeHTTP(w, r)
 			return
 		}
 
 		// 解析并脱敏
-		sanitizedBody, sm, err := m.sanitizeRequestBody(r.Context(), body, sessionID)
+		sanitizedBody, sm, err := m.sanitizeRequestBody(r.Context(), body, tenantHash, sessionID)
 		if err != nil {
 			m.logger.Warn("sanitize_middleware: sanitize failed, passthrough",
-				"error", err, "session_id", sessionID)
+				"error", err, "session_id", sessionID, "tenant_id", tenantID)
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -148,7 +230,8 @@ func (m *SanitizeInputMiddleware) Wrap(next http.Handler) http.Handler {
 			// SC-1 (docs/修订0811/19): 同时把脱敏桥接信息放入 ctx，供
 			// session compressor 写入 SessionState v8 的 SanitizeMapRef /
 			// SanitizeStats，使三层缓存的 L3 脱敏字段不再悬空。
-			*r = *r.WithContext(compression.WithSanitizeInfo(r.Context(), buildSanitizeInfoForSession(sessionID, sm)))
+			*r = *r.WithContext(compression.WithSanitizeInfo(r.Context(),
+				buildSanitizeInfoForSession(tenantHash, sessionID, sm)))
 		}
 
 		next.ServeHTTP(w, r)
@@ -157,7 +240,11 @@ func (m *SanitizeInputMiddleware) Wrap(next http.Handler) http.Handler {
 
 // sanitizeRequestBody 解析 OpenAI 请求体并脱敏 messages。
 // 返回 (脱敏后的请求体, SanitizeMap)。无敏感信息时返回 (nil, 空map)。
-func (m *SanitizeInputMiddleware) sanitizeRequestBody(ctx context.Context, body []byte, sessionID string) ([]byte, SanitizeMap, error) {
+//
+// T11-P0: tenantHash 进入 Redis key（allocateOffsets / saveMapAndOffsets 都用它），
+// 确保每个租户的会话偏移量和映射表互不可见。占位符 index 的预占走 Lua/HINCRBY
+// 原子分配（详见 allocateOffsets），不再有 read-modify-write race。
+func (m *SanitizeInputMiddleware) sanitizeRequestBody(ctx context.Context, body []byte, tenantHash, sessionID string) ([]byte, SanitizeMap, error) {
 	// 解析请求体为通用结构
 	var raw map[string]any
 	if err := json.Unmarshal(body, &raw); err != nil {
@@ -173,11 +260,9 @@ func (m *SanitizeInputMiddleware) sanitizeRequestBody(ctx context.Context, body 
 		return nil, nil, nil
 	}
 
-	// 会话级偏移量（记录每类已用最大编号，保证跨轮次不撞号）
-	offset := m.loadOffsets(ctx, sessionID)
-	changed := false
-	sm := make(SanitizeMap)
-	usedCount := make(map[string]int) // 每类本轮新用计数（用于更新 offset）
+	// === Pass 1：只检测、不分配 index。统计每类需要多少个新编号 ===
+	typeIndexBase := make(map[SensitiveType]int) // 每类本轮新占的数量（用于 Lua 预占）
+	preScan := make([]sanitizeMessage, 0, len(messages))
 
 	for i, msgAny := range messages {
 		msg, ok := msgAny.(map[string]any)
@@ -188,30 +273,59 @@ func (m *SanitizeInputMiddleware) sanitizeRequestBody(ctx context.Context, body 
 		if !ok {
 			continue
 		}
-		// 只脱敏 user 和 system 消息（assistant 消息是上游生成，不应改动）
 		role, _ := msg["role"].(string)
 		if role != "user" && role != "system" {
-			continue
+			continue // 只脱敏 user 和 system；assistant 是上游生成，不应改动
 		}
 
-		result, err := m.sanitizer.sanitizeInput(ctx, content, offset)
+		// offset 传 nil — 第一遍只数 fragment，不产生 placeholder
+		result, err := m.sanitizer.sanitizeInput(ctx, content, nil)
 		if err != nil {
 			return nil, nil, err
 		}
 		if len(result.SanitizeMap) == 0 {
 			continue
 		}
+		for _, frag := range result.Fragments {
+			typeIndexBase[frag.Type]++
+		}
+		preScan = append(preScan, sanitizeMessage{Index: i, Msg: msg, First: result})
+	}
 
-		msg["content"] = result.SanitizedText
-		messages[i] = msg
+	if len(preScan) == 0 {
+		return nil, nil, nil
+	}
+
+	// === 原子预占：Lua/HINCRBY 一次性为本请求每类预留 N 个编号 ===
+	var startByType map[SensitiveType]int
+	if m.redis != nil && sessionID != "" {
+		allocated, allocErr := m.allocateOffsets(ctx, tenantHash, sessionID, typeIndexBase)
+		if allocErr != nil {
+			// 预占失败：降级为单轮（不用会话级 offset，但仍要写 map 供本次响应还原）
+			m.logger.Warn("sanitize_middleware: allocate offsets failed, single-turn fallback",
+				"error", allocErr, "session_id", sessionID, "tenant_hash", tenantHash)
+			startByType = nil
+		} else {
+			startByType = allocated
+		}
+	}
+
+	// === Pass 2：用预占到的 start offset 真正生成 placeholder，写入 body ===
+	finalSM := make(SanitizeMap)
+	changed := false
+	for _, entry := range preScan {
+		result, err := m.sanitizer.sanitizeInput(ctx, entry.Msg["content"].(string), startByType)
+		if err != nil {
+			return nil, nil, err
+		}
+		if len(result.SanitizeMap) == 0 {
+			continue
+		}
+		entry.Msg["content"] = result.SanitizedText
+		messages[entry.Index] = entry.Msg
 		changed = true
-
-		// 合并映射表 + 更新每类计数
 		for ph, val := range result.SanitizeMap {
-			sm[ph] = val
-			if p, ok := ParsePlaceholder(ph); ok {
-				usedCount[string(p.Type)] = p.Index
-			}
+			finalSM[ph] = val
 		}
 	}
 
@@ -219,11 +333,11 @@ func (m *SanitizeInputMiddleware) sanitizeRequestBody(ctx context.Context, body 
 		return nil, nil, nil
 	}
 
-	// 持久化映射表到 Redis（同时把每类本轮最大编号刷回 offset key）
+	// 持久化映射表到 Redis（offset 已被 Lua 预占，此处只写 map + TTL）
 	if m.redis != nil && sessionID != "" {
-		if err := m.saveMapAndOffsets(ctx, sessionID, sm, usedCount); err != nil {
+		if err := m.saveMapAndOffsets(ctx, tenantHash, sessionID, finalSM); err != nil {
 			m.logger.Warn("sanitize_middleware: save map failed (restore degraded to single-turn)",
-				"error", err, "session_id", sessionID)
+				"error", err, "session_id", sessionID, "tenant_hash", tenantHash)
 		}
 	}
 
@@ -233,19 +347,114 @@ func (m *SanitizeInputMiddleware) sanitizeRequestBody(ctx context.Context, body 
 		return nil, nil, err
 	}
 
-	return newBody, sm, nil
+	return newBody, finalSM, nil
 }
 
-// loadOffsets 从 Redis 加载每类已用最大编号作为偏移量。
+// sanitizeMessage 缓存第一遍 sanitize 的输入（不持有第一遍结果中的 placeholder，
+// 因为第二遍会用 startByType 重新生成；只保留原始 msg 与 fragments 用于排版）。
+type sanitizeMessage struct {
+	Index int
+	Msg   map[string]any
+	First *SanitizeResult
+}
+
+// allocateOffsets 用一条 Lua 脚本对 offset key 做原子 HINCRBY，预留每类 N 个编号，
+// 返回每类的「起始 base」index（即 HINCRBY 之前的旧值，旧值为 0 时起始 base = 0）。
 //
-// 偏移量单独存于 session:{sid}:sanitize:offsets（Redis Hash，
-// field=类型字符串, value=本类型已用最大编号）。每次请求只读一个
-// 紧凑 hash，不再扫描整个 sanitize map。
-func (m *SanitizeInputMiddleware) loadOffsets(ctx context.Context, sessionID string) map[SensitiveType]int {
+// 设计要点（T11-P0）：
+//   - 单条 Lua 内：先读旧值（作为起始 base），再 HINCRBY 增加 delta，最后 EXPIRE。
+//     整段脚本在 Redis 单线程内执行，没有 read-modify-write race。
+//   - 「起始 base」是 sanitizer.sanitizeInput 的 offset 参数语义：sanitizer 用
+//     offset[t] 作为 base，本轮每个 fragment 的 index = 内部累加 + base。所以
+//     想要第一个新 placeholder 是 base+1 时，offset = base；想要它是 base+0
+//     时，offset = base-1。SanitizeInputWithOffset 的 doc 明确：「下一编号
+//     从 offset+1 起」，因此本函数返回 prev（旧值）即可。
+//   - EXPIRE 在脚本末尾一次性刷新，避免单独一次 round-trip。
+//   - ARGV 顺序：[type, delta, type, delta, ..., ttlSec]；首参数数对由 caller 拼装。
+//
+// 输入 needByType 是本请求每类需要新增的 placeholder 数；返回 startByType 是每类的
+// 起始 base（用于 sanitizeInput 的 offset 参数）。
+func (m *SanitizeInputMiddleware) allocateOffsets(ctx context.Context, tenantHash, sessionID string, needByType map[SensitiveType]int) (map[SensitiveType]int, error) {
+	if len(needByType) == 0 {
+		return map[SensitiveType]int{}, nil
+	}
+	// 排序：让 ARGV 顺序稳定（便于测试 + 调试可读性；Redis Lua 不依赖顺序）
+	types := make([]SensitiveType, 0, len(needByType))
+	for t := range needByType {
+		types = append(types, t)
+	}
+	sort.Slice(types, func(i, j int) bool { return string(types[i]) < string(types[j]) })
+
+	args := make([]any, 0, 2*len(types)+1)
+	for _, t := range types {
+		args = append(args, string(t), needByType[t])
+	}
+	ttlSec := int(m.ttl.Seconds())
+	if ttlSec <= 0 {
+		ttlSec = 1800
+	}
+	args = append(args, ttlSec)
+
+	key := SanitizeOffsetRedisKey(tenantHash, sessionID)
+	res, err := allocateOffsetsScript.Run(ctx, m.redis, []string{key}, args...).Result()
+	if err != nil {
+		return nil, fmt.Errorf("allocate offsets: %w", err)
+	}
+
+	// res 是 []interface{}，每个元素是 int64（旧值，即 sanitizeInput 用的 base）。
+	arr, ok := res.([]any)
+	if !ok {
+		return nil, fmt.Errorf("allocate offsets: unexpected reply type %T", res)
+	}
+	if len(arr) != len(types) {
+		return nil, fmt.Errorf("allocate offsets: reply length %d != types %d", len(arr), len(types))
+	}
+	startByType := make(map[SensitiveType]int, len(types))
+	for i, t := range types {
+		v, ok := arr[i].(int64)
+		if !ok {
+			return nil, fmt.Errorf("allocate offsets: type %s reply not int64 (%T)", t, arr[i])
+		}
+		startByType[t] = int(v)
+	}
+	return startByType, nil
+}
+
+// allocateOffsetsScript: 单脚本里读取 prev、原子 HINCRBY、刷新 EXPIRE。
+//
+// KEYS[1] = offset key
+// ARGV    = [type1, delta1, type2, delta2, ..., ttlSec]
+//
+// 返回值：每个 type 对应的「起始 base」（prev，旧值；字段不存在时 prev = 0）。
+//
+// 顺序不依赖 ARGV 配对的相对次序，但调用方（allocateOffsets）传入时按 type 名字典序
+// 排序，保证脚本输出顺序与 caller 期望一致。
+var allocateOffsetsScript = redis.NewScript(`
+local n = (#ARGV - 1) / 2
+local ttl = ARGV[#ARGV]
+local result = {}
+for i = 1, n do
+  local t = ARGV[i*2 - 1]
+  local inc = tonumber(ARGV[i*2])
+  local prev = tonumber(redis.call('HGET', KEYS[1], t) or '0')
+  redis.call('HINCRBY', KEYS[1], t, inc)
+  result[i] = prev
+end
+if ttl ~= '' then
+  redis.call('EXPIRE', KEYS[1], ttl)
+end
+return result
+`)
+
+// loadOffsets 仅用于诊断/兼容旧测试代码：读 offset key 返回每类当前最大编号。
+//
+// T11-P0 之后生产路径不再使用本函数（占位 index 由 allocateOffsets 原子预占）。
+// 保留它是为了让诊断工具 / 测试代码能以更轻量的方式观察 session 级偏移量。
+func (m *SanitizeInputMiddleware) loadOffsets(ctx context.Context, tenantHash, sessionID string) map[SensitiveType]int {
 	if m.redis == nil || sessionID == "" {
 		return nil
 	}
-	vals, err := m.redis.HGetAll(ctx, SanitizeOffsetRedisKey(sessionID)).Result()
+	vals, err := m.redis.HGetAll(ctx, SanitizeOffsetRedisKey(tenantHash, sessionID)).Result()
 	if err != nil || len(vals) == 0 {
 		return nil
 	}
@@ -260,9 +469,13 @@ func (m *SanitizeInputMiddleware) loadOffsets(ctx context.Context, sessionID str
 	return maxIdx
 }
 
-// saveMapAndOffsets 把映射表写入 Redis，并刷新每类最大编号到 offset key。
-func (m *SanitizeInputMiddleware) saveMapAndOffsets(ctx context.Context, sessionID string, sm SanitizeMap, usedCount map[string]int) error {
-	mapKey := SanitizeRedisKey(sessionID)
+// saveMapAndOffsets 把映射表写入 Redis。offset 已在 allocateOffsets 中原子预占，
+// 此处只负责 HSET 主 map + EXPIRE（两个 key 都需要刷新 TTL）。
+//
+// T11-P0 之前此函数同时写 offset key（read-modify-write race）；新版 offset 由 Lua
+// 一次性预占，调用方无需再传 usedCount。
+func (m *SanitizeInputMiddleware) saveMapAndOffsets(ctx context.Context, tenantHash, sessionID string, sm SanitizeMap) error {
+	mapKey := SanitizeRedisKey(tenantHash, sessionID)
 
 	// 写占位符→原始值
 	if len(sm) > 0 {
@@ -275,21 +488,16 @@ func (m *SanitizeInputMiddleware) saveMapAndOffsets(ctx context.Context, session
 		}
 	}
 
-	// 刷新每类最大编号到 offset key（仅写入用过的类型，未用类型保留）
-	if len(usedCount) > 0 {
-		offsetFields := make(map[string]any, len(usedCount))
-		for tStr, idx := range usedCount {
-			offsetFields[tStr] = idx
-		}
-		offsetKey := SanitizeOffsetRedisKey(sessionID)
-		if err := m.redis.HSet(ctx, offsetKey, offsetFields).Err(); err != nil {
-			return err
-		}
-		_ = m.redis.Expire(ctx, offsetKey, m.ttl).Err()
+	// 刷新主 hash 的 TTL
+	if err := m.redis.Expire(ctx, mapKey, m.ttl).Err(); err != nil {
+		return err
 	}
 
-	// 刷新主 hash 的 TTL
-	return m.redis.Expire(ctx, mapKey, m.ttl).Err()
+	// offset key 也刷新 TTL（allocateOffsets 已设过，这里冗余刷新以确保 map 与 offset
+	// 的 expire 时刻接近 — 否则 map 先 expire 时 offset key 还在，后续请求会从「幽灵」
+	// offset 起点开始编号；只要二者同步 expire 就能避免这个不一致）。
+	offsetKey := SanitizeOffsetRedisKey(tenantHash, sessionID)
+	return m.redis.Expire(ctx, offsetKey, m.ttl).Err()
 }
 
 // injectPlaceholderProtection 向 messages 数组注入 System Prompt 占位符保护指令
@@ -361,6 +569,11 @@ func (m *SanitizeInputMiddleware) injectPlaceholderProtection(messages []any) {
 //
 //	降级：chain 为 nil / Redis 不可用 / chunk JSON 解析失败时均返回 nil，
 //	原样透传 chunk 到客户端。
+//
+// T11-P0：loadMap 需要 tenantHash（与输入中间件对齐），让还原走与写入同一条
+// session:{tenantHash}:{sid}:sanitize key。tenant 从 InterceptRequest.TenantID /
+// StreamMeta.TenantID 取（调用方在 dispatcher 处已经灌入）；若为空则落到
+// unknownTenantSentinel 桶并打 WARN。
 type SanitizeRestoreInterceptor struct {
 	sanitizer *Sanitizer
 	redis     *redis.Client
@@ -384,6 +597,19 @@ func NewSanitizeRestoreInterceptor(s *Sanitizer, redis *redis.Client, ttl time.D
 	}, nil
 }
 
+// tenantHashFor 把 request/stream meta 上的 TenantID 转成 hash。
+// 空值时落到 unknownTenantSentinel 桶，并打 WARN 日志（与输入中间件对齐）。
+func (it *SanitizeRestoreInterceptor) tenantHashFor(ctx context.Context, tenantID, sessionID string) string {
+	if tenantID == "" {
+		tenantID = unknownTenantSentinel
+		it.logger.WarnContext(ctx, "sanitize_restore: tenant context missing, falling back to sentinel bucket",
+			"session_id", sessionID,
+			"sentinel", unknownTenantSentinel,
+		)
+	}
+	return HashTenant(tenantID)
+}
+
 // Name 返回拦截器名称（日志用）。
 func (it *SanitizeRestoreInterceptor) Name() string { return RestoreInterceptorName }
 
@@ -396,10 +622,11 @@ func (it *SanitizeRestoreInterceptor) InterceptNonStream(ctx context.Context, re
 		return nil, nil
 	}
 
-	sm, err := it.loadMap(ctx, req.SessionID)
+	tenantHash := it.tenantHashFor(ctx, req.TenantID, req.SessionID)
+	sm, err := it.loadMap(ctx, tenantHash, req.SessionID)
 	if err != nil {
 		it.logger.Warn("sanitize_restore: load map failed, skip restore",
-			"error", err, "session_id", req.SessionID)
+			"error", err, "session_id", req.SessionID, "tenant_id", req.TenantID)
 		return nil, nil
 	}
 	if len(sm) == 0 {
@@ -452,10 +679,11 @@ func (it *SanitizeRestoreInterceptor) InterceptStreamChunk(ctx context.Context, 
 		return nil, nil
 	}
 
-	sm, err := it.loadMap(ctx, meta.SessionID)
+	tenantHash := it.tenantHashFor(ctx, meta.TenantID, meta.SessionID)
+	sm, err := it.loadMap(ctx, tenantHash, meta.SessionID)
 	if err != nil {
 		it.logger.Warn("sanitize_restore: stream chunk load map failed, passthrough",
-			"error", err, "session_id", meta.SessionID)
+			"error", err, "session_id", meta.SessionID, "tenant_id", meta.TenantID)
 		return nil, nil
 	}
 	if len(sm) == 0 {
@@ -480,7 +708,8 @@ func (it *SanitizeRestoreInterceptor) InterceptStreamEnd(ctx context.Context, me
 		return nil, nil
 	}
 
-	sm, err := it.loadMap(ctx, meta.SessionID)
+	tenantHash := it.tenantHashFor(ctx, meta.TenantID, meta.SessionID)
+	sm, err := it.loadMap(ctx, tenantHash, meta.SessionID)
 	if err != nil || len(sm) == 0 {
 		return nil, nil
 	}
@@ -665,11 +894,14 @@ func restoreStringField(ctx context.Context, s *Sanitizer, m map[string]any, fie
 }
 
 // loadMap 从 Redis 读取会话级映射表。
-func (it *SanitizeRestoreInterceptor) loadMap(ctx context.Context, sessionID string) (SanitizeMap, error) {
+//
+// T11-P0: tenantHash 与写入侧（SanitizeRedisKey）严格对齐；缺 tenant 的请求
+// 由 caller（tenantHashFor）负责落到 unknownTenantSentinel 桶。
+func (it *SanitizeRestoreInterceptor) loadMap(ctx context.Context, tenantHash, sessionID string) (SanitizeMap, error) {
 	if it.redis == nil {
 		return nil, nil
 	}
-	key := SanitizeRedisKey(sessionID)
+	key := SanitizeRedisKey(tenantHash, sessionID)
 	vals, err := it.redis.HGetAll(ctx, key).Result()
 	if err != nil {
 		return nil, err
@@ -762,21 +994,29 @@ func (it *SanitizeRestoreInterceptor) restoreResponseBody(ctx context.Context, b
 }
 
 // SanitizeRedisKey 生成会话级映射表的 Redis key。
-// 与 domains/session/sanitize.go 保持一致的命名空间。
-func SanitizeRedisKey(sessionID string) string {
-	return fmt.Sprintf("session:%s:sanitize", sessionID)
+//
+// T11-P0 v2: key 增加 tenantHash 段（session:{tenantHash}:{sessionID}:sanitize），
+// 防止跨租户共享 sessionID 时互相读到对方的占位符映射表。tenantHash 由 caller
+// 通过 HashTenant(tenantID) 派生；空值时 caller（中间件 Wrap）已经负责落到
+// unknownTenantSentinel 并打过 WARN 日志，所以本函数不再做二次 fallback。
+// 压缩层（domains/hooks/compression.SessionSanitizeRedisKey）必须镜像同一
+// 格式，由 TestSessionSanitizeRedisKeyMatches 锁定。
+func SanitizeRedisKey(tenantHash, sessionID string) string {
+	return fmt.Sprintf("session:%s:%s:sanitize", tenantHash, sessionID)
 }
 
 // buildSanitizeInfoForSession derives the compression.SanitizeInfo bridge
 // payload from the merged placeholder map (SC-1). Counts are classified by
 // parsing the placeholder token, so the merged map (no per-message
 // Fragments) is enough.
-func buildSanitizeInfoForSession(sessionID string, sm SanitizeMap) compression.SanitizeInfo {
+//
+// T11-P0: tenantHash 进入 MapRef（与写入侧 Redis key 对齐）。
+func buildSanitizeInfoForSession(tenantHash, sessionID string, sm SanitizeMap) compression.SanitizeInfo {
 	keys := make(map[string]struct{}, len(sm))
 	for ph := range sm {
 		keys[ph] = struct{}{}
 	}
-	return compression.BuildSanitizeInfo(sessionID, func(placeholder string) (string, bool) {
+	return compression.BuildSanitizeInfo(tenantHash, sessionID, func(placeholder string) (string, bool) {
 		p, ok := ParsePlaceholder(placeholder)
 		if !ok {
 			return "", false
@@ -789,8 +1029,10 @@ func buildSanitizeInfoForSession(sessionID string, sm SanitizeMap) compression.S
 //
 // 独立于主 sanitize map：loadOffsets 时只读这个紧凑 hash，避免扫描整个 map。
 // TTL 与主 hash 同步刷新。
-func SanitizeOffsetRedisKey(sessionID string) string {
-	return fmt.Sprintf("session:%s:sanitize:offsets", sessionID)
+//
+// T11-P0 v2: 与 SanitizeRedisKey 同形态（session:{tenantHash}:{sid}:sanitize:offsets）。
+func SanitizeOffsetRedisKey(tenantHash, sessionID string) string {
+	return fmt.Sprintf("session:%s:%s:sanitize:offsets", tenantHash, sessionID)
 }
 
 // WithSanitizeMap 把 SanitizeMap 放入 Context（供同请求内下游读取）。
