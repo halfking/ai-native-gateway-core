@@ -38,12 +38,6 @@ spec:
               value: ":8781"
             - name: LLM_GATEWAY_LOG_LEVEL
               value: info
-            - name: LLM_GATEWAY_IR_CONVERTER
-              value: "true"
-            - name: LLM_GATEWAY_TRANSPORT_IR
-              value: "true"
-            - name: TRANSPORT_LAYER_IR_ENABLED
-              value: "true"
             - name: LLM_GATEWAY_STATIC_DIR
               value: /opt/llm-gateway-go/web/dist
             - name: LLM_GATEWAY_CORS_ORIGINS

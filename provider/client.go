@@ -1354,76 +1354,12 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 		        AND mps.raw_model_name = mo.raw_model_name
 		        AND mps.state = 'broken_confirmed'
 		  )
-		  -- 2026-06-22 defect (3) hard gate: exclude pairs whose real recent
-		  -- success rate is below 0.5 once we have at least 20 samples. The
-		  -- min-sample threshold avoids cold-start false positives (a brand-new
-		  -- credential with 1 unlucky failure). Pairs in the 0.5-0.9 band are
-		  -- kept but soft-de-prioritized via RecentSuccessRate in the router.
-		  -- 2026-07-15: restored to 0.5. The 2026-06-23 temporary 0.3 was
-		  -- lowered to absorb the 54% failure spike from a resource leak;
-		  -- the leak is fixed and the rolling 50-request window has long
-		  -- since rotated past it.
-			  AND NOT (
-			      -- Free/token-plan credentials intentionally stay routable after
-			      -- transient failures; the executor and state manager soft-demote
-			      -- them instead of hard-excluding the only route.
-			      COALESCE(mo.billing_mode, 'per_token') <> 'free'
-			      AND rsr.samples >= 20
-			      AND COALESCE(rsr.rate, 1.0) < 0.5
-			      -- A single-candidate model needs a recovery chance. Circuit,
-			      -- model-probe and permanent-state guards still apply; the
-			      -- rolling-rate gate is a failover preference only when a
-			      -- sibling offer can actually take traffic.
-			      AND EXISTS (
-			          SELECT 1
-			          FROM model_offers mo_sibling
-			                  JOIN credentials c_sibling ON c_sibling.id = mo_sibling.credential_id
-			                  JOIN providers p_sibling ON p_sibling.id = c_sibling.provider_id
-			                  LEFT JOIN v_routable_credential_models v_sibling
-			                         ON v_sibling.credential_id = mo_sibling.credential_id
-			                        AND (v_sibling.raw_model_name = mo_sibling.raw_model_name
-			                             OR v_sibling.raw_model_name = mo_sibling.standardized_name)
-			          WHERE mo_sibling.credential_id <> mo.credential_id
-			            AND mo_sibling.available = TRUE
-			            AND COALESCE(v_sibling.is_routable, FALSE) = TRUE
-			            AND COALESCE(c_sibling.status, 'active') = 'active'
-			            AND COALESCE(c_sibling.lifecycle_status, 'active') = 'active'
-			            AND COALESCE(c_sibling.manual_disabled, FALSE) = FALSE
-			            /* 2026-08-08 audit note: this c_sibling.quota_state predicate
-			               deliberately does NOT exclude periodic_exhausted, while
-			               GetProbeCandidates (line ~578) DOES exclude it. Intentional:
-			               this subquery asks "does ANY sibling binding exist that COULD
-			               take traffic" (the sibling EXISTS gate for the lone-candidate
-			               fail-open path), not "which sibling should we route to". A
-			               periodic-exhausted sibling is still a potential failover
-			               target because its window resets in minutes/hours;
-			               routing-time selection is filtered separately above. */
-			            AND COALESCE(c_sibling.quota_state, 'ok') NOT IN ('permanently_exhausted', 'balance_exhausted')
-			            AND COALESCE(p_sibling.enabled, FALSE) = TRUE
-			            AND COALESCE(p_sibling.manual_disabled, FALSE) = FALSE
-			            AND (
-			                mo_sibling.standardized_name = mo.standardized_name
-			                OR mo_sibling.canonical_raw_name = mo.canonical_raw_name
-			            )
-			            /* 2026-08-08 P0 Fix: a sibling that admin has explicitly
-			               disabled via the binding-level unavailable_reason='manual'
-			               (or via credentials.manual_disabled / providers.manual_disabled)
-			               must NOT count as a live failover. Without this guard, the
-			               sibling EXISTS subquery returns TRUE while no real sibling
-			               can take traffic — the lone routable candidate gets hard-
-			               excluded by the recent_success_rate gate below, producing
-			               candidates_count=0 and 503 for every Claude/GPT request. */
-			            AND COALESCE(mo_sibling.unavailable_reason, '') NOT LIKE 'manual%'
-			            AND COALESCE(c_sibling.manual_disabled, FALSE) = FALSE
-			            AND COALESCE(p_sibling.manual_disabled, FALSE) = FALSE
-			            AND NOT EXISTS (
-			                SELECT 1 FROM model_probe_state mps_sibling
-			                WHERE mps_sibling.credential_id = mo_sibling.credential_id
-			                  AND mps_sibling.raw_model_name = mo_sibling.raw_model_name
-			                  AND mps_sibling.state = 'broken_confirmed'
-			            )
-			      )
-			  )
+		  -- Recent success rate is a preference signal, not an availability
+		  -- signal. Hard-excluding a degraded sibling leaves a failing primary
+		  -- with no failover path, even when that sibling is still serviceable.
+		  -- Authoritative permanent/manual/probe state remains enforced by
+		  -- v_routable_credential_models above; ORDER BY below demotes lower
+		  -- recent success rates while preserving them for automatic failover.
 
 		  AND (
 		      -- (1) exact match on the offer's canonical_raw_name (lowercase)
