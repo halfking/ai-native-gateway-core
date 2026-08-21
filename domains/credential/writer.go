@@ -135,6 +135,55 @@ func (w *Writer) RestoreOnSuccess(ctx context.Context, credentialID int, rawMode
 	return tx.Commit(ctx)
 }
 
+// SetCredentialUnavailable applies a credential-wide failure only after the
+// caller has established that the credential itself is at fault. It updates
+// every non-manual binding so the credential and binding routing gates cannot
+// disagree.
+func (w *Writer) SetCredentialUnavailable(ctx context.Context, credentialID int, failure Failure) error {
+	if !w.Enabled() {
+		return ErrNoDatabase
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	recoverAt := time.Now().UTC().Add(coolingDuration(failure.Kind, failure.RetryAfter))
+	detail := trimDetail(failure.Detail)
+	tx, err := w.dbPool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	//nolint:errcheck // deferred rollback, best-effort
+	defer tx.Rollback(ctx)
+	if _, err = tx.Exec(ctx, `
+		UPDATE credentials
+		SET availability_state      = 'cooling',
+		    availability_recover_at = $1,
+		    state_reason_code       = $2,
+		    state_reason_detail     = $3,
+		    state_updated_at        = now()
+		WHERE id = $4
+		  AND lifecycle_status = 'active'
+		  AND COALESCE(manual_disabled, FALSE) = FALSE
+		  AND availability_state NOT IN ('suspended', 'auth_failed')
+	`, recoverAt, string(failure.Kind), detail, credentialID); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `
+		UPDATE credential_model_bindings cmb
+		SET available              = FALSE,
+		    unavailable_reason     = 'auto_credential_' || $1,
+		    unavailable_at         = now(),
+		    unavailable_recover_at = $2,
+		    updated_at             = now()
+		WHERE cmb.credential_id = $3
+		  AND cmb.available = TRUE
+		  AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
+		  AND COALESCE(cmb.admin_protected, FALSE) = FALSE
+	`, string(failure.Kind), recoverAt, credentialID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
 // WriteOnError records a (credential, model) failure and updates the
 // per-binding availability. rawModel is the model that failed — leaving
 // it empty falls back to the legacy credential-wide update path used
