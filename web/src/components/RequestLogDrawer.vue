@@ -51,6 +51,7 @@ const emit = defineEmits<{
 }>()
 
 const loading = ref(false)
+const bodyLoading = ref(false)
 const detail = ref<RequestLogDetail | null>(null)
 const error = ref('')
 const tab = ref<'request' | 'outbound' | 'response' | 'attachments' | 'routing'>('request')
@@ -89,6 +90,7 @@ watch(
     detail.value = null
     error.value = ''
     loading.value = false
+    bodyLoading.value = false
     tab.value = 'request'
     showTrace.value = props.initialTraceOpen
     closeLightbox()
@@ -96,15 +98,13 @@ watch(
     if (!id) return
     loading.value = true
     try {
-      // 2026-07-04: live-stream requests may arrive before DB persistence.
-      // Retry once after 100ms if first attempt is 404/not-found.
-      // 2026-07-20: increased to 3 retries with 200/500/1500ms exponential
-      // backoff — probe tiles and async telemetry writes may take longer.
+      // 2026-07-04 / 2026-07-20: live-stream 落库延迟 → 404 指数退避重试。
+      // 2026-08-21: 分阶段加载 — 先 omit_body 出 meta，再全量补 body。
       const retryMs = [200, 500, 1500]
-      let loadedDetail: RequestLogDetail | null = null
+      let metaDetail: RequestLogDetail | null = null
       for (let i = 0; i <= retryMs.length; i++) {
         try {
-          loadedDetail = await getRequestLogDetail(id)
+          metaDetail = await getRequestLogDetail(id, { omitBody: true })
           break
         } catch (err: unknown) {
           const isNotFound = err instanceof Error &&
@@ -117,16 +117,40 @@ watch(
         }
       }
       if (loadSeq !== detailLoadSeq || props.requestId !== id) return
-      detail.value = loadedDetail
-      if (props.mode === 'request-logs' && loadedDetail?.gw_session_id) {
-        void loadSessionTags(loadedDetail.gw_session_id)
+      detail.value = metaDetail
+      loading.value = false
+      if (props.mode === 'request-logs' && metaDetail?.gw_session_id) {
+        void loadSessionTags(metaDetail.gw_session_id)
+      }
+      bodyLoading.value = true
+      try {
+        const fullDetail = await getRequestLogDetail(id)
+        if (loadSeq !== detailLoadSeq || props.requestId !== id) return
+        detail.value = {
+          ...metaDetail!,
+          ...fullDetail,
+          request_body: fullDetail.request_body ?? metaDetail?.request_body ?? null,
+          response_body: fullDetail.response_body ?? metaDetail?.response_body ?? null,
+          outbound_body: fullDetail.outbound_body ?? metaDetail?.outbound_body,
+          attachments: fullDetail.attachments ?? metaDetail?.attachments,
+          routing_attempts: fullDetail.routing_attempts ?? metaDetail?.routing_attempts,
+          routing_summary: fullDetail.routing_summary ?? metaDetail?.routing_summary,
+        }
+      } catch (bodyErr: unknown) {
+        if (loadSeq === detailLoadSeq && props.requestId === id) {
+          // meta 已可用；body 失败不盖掉整页，仅提示。
+          error.value = bodyErr instanceof Error
+            ? `元数据已加载，正文加载失败：${bodyErr.message}`
+            : '元数据已加载，正文加载失败'
+        }
+      } finally {
+        if (loadSeq === detailLoadSeq && props.requestId === id) {
+          bodyLoading.value = false
+        }
       }
     } catch (e: unknown) {
       if (loadSeq === detailLoadSeq && props.requestId === id) {
         error.value = e instanceof Error ? e.message : '加载失败'
-      }
-    } finally {
-      if (loadSeq === detailLoadSeq && props.requestId === id) {
         loading.value = false
       }
     }
@@ -613,10 +637,14 @@ function routingAttempts(): RequestLogDetail['routing_attempts'] {
         <button class="btn btn-sm" type="button" @click="emit('close')">关闭</button>
       </div>
 
-      <div v-if="loading" class="drawer-loading">加载中…</div>
-      <div v-else-if="error" class="drawer-error">{{ error }}</div>
+      <div v-if="loading" class="drawer-loading">
+        <div class="drawer-skel" aria-hidden="true" />
+        <p>正在加载请求元数据…</p>
+      </div>
+      <div v-else-if="error && !detail" class="drawer-error">{{ error }}</div>
 
       <template v-else-if="detail">
+        <div v-if="error" class="drawer-error drawer-error-inline">{{ error }}</div>
         <div class="drawer-section">
           <div class="meta-line">
             <span><strong>请求ID:</strong> <code>{{ detail.request_id }}</code></span>
@@ -638,13 +666,11 @@ function routingAttempts(): RequestLogDetail['routing_attempts'] {
             <span><strong>Token:</strong> {{ detail.prompt_tokens ?? '—' }} / {{ detail.completion_tokens ?? '—' }}</span>
             <span v-if="detail.gw_session_id"><strong>Session:</strong> {{ detail.gw_session_id }}</span>
             <span v-if="detail.gw_task_id"><strong>Task:</strong> {{ detail.gw_task_id }}</span>
-            <template v-if="props.mode === 'request-logs'">
-              <span><strong>供应商:</strong> {{ detail.provider_name ?? '—' }}</span>
-              <span><strong>Key:</strong> {{ detail.api_key_prefix ?? (detail.api_key_id != null ? `key#${detail.api_key_id}` : '—') }}</span>
-              <span v-if="detail.application_code"><strong>应用:</strong> {{ detail.application_code }}</span>
-              <span v-if="detail.upstream_finish_reason"><strong>结束原因:</strong> {{ detail.upstream_finish_reason }}</span>
-              <span v-if="!isDefaultTenant()"><strong>积分消耗:</strong> {{ detail.credits_charged ?? '—' }}</span>
-            </template>
+            <span><strong>供应商:</strong> {{ detail.provider_name ?? '—' }}</span>
+            <span><strong>Key:</strong> {{ detail.api_key_prefix ?? (detail.api_key_id != null ? `key#${detail.api_key_id}` : '—') }}</span>
+            <span v-if="detail.application_code"><strong>应用:</strong> {{ detail.application_code }}</span>
+            <span v-if="detail.upstream_finish_reason"><strong>结束原因:</strong> {{ detail.upstream_finish_reason }}</span>
+            <span v-if="!isDefaultTenant()"><strong>积分消耗:</strong> {{ detail.credits_charged ?? '—' }}</span>
           </div>
         </div>
 
@@ -778,6 +804,7 @@ function routingAttempts(): RequestLogDetail['routing_attempts'] {
         </div>
 
         <div class="drawer-body-scroll">
+          <p v-if="bodyLoading" class="body-loading-hint" role="status">正文与响应异步加载中…</p>
           <template v-if="tab === 'request'">
             <template v-if="extractMessagesFromBody(detail.request_body).length">
               <div v-for="(msg, i) in extractMessagesFromBody(detail.request_body)" :key="i" class="msg-block">
@@ -929,6 +956,32 @@ function routingAttempts(): RequestLogDetail['routing_attempts'] {
   font-size: 13px;
 }
 .drawer-error { color: var(--danger); }
+.drawer-error-inline {
+  padding: 10px 16px;
+  margin: 0 0 8px;
+  text-align: left;
+  font-size: 12px;
+  color: var(--warning);
+  background: color-mix(in srgb, var(--warning) 10%, transparent);
+}
+.drawer-skel {
+  width: min(420px, 80%);
+  height: 10px;
+  margin: 0 auto 14px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--kx-border), color-mix(in srgb, var(--kx-muted) 25%, transparent), var(--kx-border));
+  background-size: 200% 100%;
+  animation: drawer-skel 1.2s ease-in-out infinite;
+}
+@keyframes drawer-skel {
+  0% { background-position: 100% 0; }
+  100% { background-position: -100% 0; }
+}
+.body-loading-hint {
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: var(--kx-muted);
+}
 .meta-line {
   display: flex;
   flex-wrap: wrap;

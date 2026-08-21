@@ -932,6 +932,22 @@ func (h *Handler) getLog(w http.ResponseWriter, r *http.Request) {
 			"request_id", requestID, "elapsed_ms", metaElapsed.Milliseconds())
 	}
 
+	// 2026-08-21: omit_body=1 用于抽屉分阶段首包（先出 meta，再二次拉全量 body）。
+	omitBody := r.URL.Query().Get("omit_body") == "1" || r.URL.Query().Get("omit_body") == "true"
+	if omitBody {
+		if len(detail.OutboundBody) > 0 {
+			detail.OutboundBody = normalizeJSONForAPI(detail.OutboundBody)
+		}
+		if len(detail.OutboundMsgHashes) > 0 {
+			detail.OutboundMsgHashes = normalizeJSONForAPI(detail.OutboundMsgHashes)
+		}
+		if len(detail.CompressionMeta) > 0 {
+			detail.CompressionMeta = normalizeJSONForAPI(detail.CompressionMeta)
+		}
+		writeJSON(w, http.StatusOK, detail)
+		return
+	}
+
 	// 2026-08-17 BUGFIX: 二阶段 body 读取，避开 columnar 扫描（见上方长注释）。
 	// 优先 cache（<1ms）；miss → hot（idx 命中 <1ms）；找不到再查 columnar 视图
 	// （慢路径，给独立 20s ctx）。
