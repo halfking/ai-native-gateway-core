@@ -115,6 +115,16 @@ type Pipeline struct {
 	queueObservationMu   sync.RWMutex
 	queueObservationSink QueueObservationSink
 	inFlight             atomic.Int64
+
+	// governorBackend (Stage B): the optional management-layer backend
+	// the credForwarder construction can read in Stage D/E. Stage B
+	// itself does NOT alter how credForwarder.gov is built — the field
+	// is wired here so future stages can flip the read path without
+	// touching the constructor signature again. The setter is
+	// SetGovernorBackend below; Stage B.4 composes the production
+	// value.
+	backendMu       sync.RWMutex
+	governorBackend GovernorBackend
 }
 
 type observationItem struct {
@@ -227,6 +237,41 @@ func (p *Pipeline) SetQueueMirror(m *QueueMirror) {
 		return
 	}
 	p.queueMirror = m
+}
+
+// SetGovernorBackend wires the optional management-layer GovernorBackend.
+// Stage B.3 ships this seam; Stage D/E is responsible for consuming the
+// backend inside credForwarder.gov construction. Nil disables backend-
+// backed admission (LocalBackend-equivalent behavior) — the existing
+// newGovernor(cred) in forwarder.go is the default until the read path
+// is rewritten.
+//
+// Lifecycle: safe to call before OR after Start; safe to swap on a
+// running pipeline (idempotent). The mutex is the canonical sync
+// strategy — Stage B.3 deliberately diverges from SetQueueMirror's
+// bare-assignment pattern because credForwarder.gov is expected to
+// read this field at construction time in a future stage, and a
+// post-Start swap there needs race-safety against an in-flight
+// getOrCreateForwarder.
+func (p *Pipeline) SetGovernorBackend(b GovernorBackend) {
+	if p == nil {
+		return
+	}
+	p.backendMu.Lock()
+	p.governorBackend = b
+	p.backendMu.Unlock()
+}
+
+// GovernorBackend returns the currently-wired backend (nil if none).
+// Stage B.3: only consumed by tests; Stage D/E will read this from
+// credForwarder construction.
+func (p *Pipeline) GovernorBackend() GovernorBackend {
+	if p == nil {
+		return nil
+	}
+	p.backendMu.RLock()
+	defer p.backendMu.RUnlock()
+	return p.governorBackend
 }
 
 // LifecycleSnapshot exposes the request registry view (admin/tests). The
