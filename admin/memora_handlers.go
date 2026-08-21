@@ -669,7 +669,7 @@ func (h *Handler) handleMemoraContext(w http.ResponseWriter, r *http.Request) {
 	`, taskID).Scan(&writtenFromLog, &extractedAt)
 
 	var title string
-	if stored, ok := h.loadStoredSessionTitle(ctx, taskID, sc.SessionID); ok {
+	if stored, ok := h.loadStoredSessionTitleForRequest(ctx, r, taskID, sc.SessionID); ok {
 		title = stored
 	} else if len(facts) > 0 {
 		if mem, ok := facts[0]["memory"].(string); ok && len(mem) > 0 {

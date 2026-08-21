@@ -18,6 +18,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/domains/secretmask"
 	"github.com/kaixuan/llm-gateway-go/internal/summarystore"
+	"github.com/kaixuan/llm-gateway-go/internal/titlestore"
 )
 
 // Summarizer 会话总结器
@@ -30,6 +31,7 @@ import (
 // stdlib.OpenDB（仅 EnhancedPIPlugin 仍需要 *sql.DB）。
 type Summarizer struct {
 	store         *summarystore.Store
+	titleStore    *titlestore.Store
 	redisClient   *redis.Client
 	llmClient     LLMClient
 	model         string
@@ -103,6 +105,7 @@ type SessionMessage struct {
 func NewSummarizer(pool *pgxpool.Pool, redisClient *redis.Client, llmClient LLMClient) *Summarizer {
 	s := &Summarizer{
 		store:       summarystore.NewStore(pool),
+		titleStore:  titlestore.New(pool),
 		redisClient: redisClient,
 		llmClient:   llmClient,
 		model:       "summary-fast",
@@ -610,15 +613,16 @@ func (s *Summarizer) syncCanonicalSessionTitle(ctx context.Context, tenantID, se
 		return fmt.Errorf("resolve title task: %w", err)
 	}
 
-	_, err := pool.Exec(ctx, `
-		INSERT INTO session_titles (task_id, scoped_session_id, title, generated_at, model, api_key_id)
-		VALUES ($1, $2, $3, NOW(), 'session-summary', NULL)
-		ON CONFLICT (task_id, scoped_session_id) DO UPDATE SET
-			title = EXCLUDED.title,
-			generated_at = EXCLUDED.generated_at,
-			model = EXCLUDED.model,
-			api_key_id = EXCLUDED.api_key_id
-	`, taskID, sessionKey, title)
+	owner := fmt.Sprintf("session-summary:%s:%d", sessionKey, time.Now().UnixNano())
+	claim, err := s.titleStore.BeginMutation(ctx, titlestore.Claim{
+		TenantID: tenantID, SessionID: sessionKey, Owner: owner,
+		TTL: 60 * time.Second, Source: titlestore.SourceSessionSummary,
+		SourcePriority: titlestore.SourcePrioritySummary, Explicit: true, TaskID: taskID,
+	})
+	if err != nil {
+		return err
+	}
+	_, err = s.titleStore.CommitTitle(ctx, claim, tenantID, sessionKey, title, taskID)
 	return err
 }
 

@@ -18,6 +18,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/kaixuan/llm-gateway-go/admin/distlock"
+	"github.com/kaixuan/llm-gateway-go/internal/titlestore"
 	"github.com/kaixuan/llm-gateway-go/metrics"
 )
 
@@ -216,7 +217,7 @@ func (g *AutoTitleGenerator) generateTitleAsync(sessionID, tenantID, taskID, req
 				//   - Leader failed → skip this round; the next
 				//     first-turn request will retry.
 				waitErr := h.Wait(ctx)
-				hasTitle, terr := g.checkSessionHasTitle(ctx, taskID, sessionID)
+				hasTitle, terr := g.checkSessionHasTitle(ctx, tenantID, taskID, sessionID)
 
 				if terr != nil {
 					logger.Warn("auto_title: follower re-check failed; skipping round",
@@ -240,7 +241,7 @@ func (g *AutoTitleGenerator) generateTitleAsync(sessionID, tenantID, taskID, req
 	}
 
 	// Step 1: Check if title already exists (avoid duplicate work)
-	hasTitle, err := g.checkSessionHasTitle(ctx, taskID, sessionID)
+	hasTitle, err := g.checkSessionHasTitle(ctx, tenantID, taskID, sessionID)
 	if err != nil {
 		logger.Warn("failed to check existing title", "error", err)
 		return
@@ -270,7 +271,22 @@ func (g *AutoTitleGenerator) generateTitleAsync(sessionID, tenantID, taskID, req
 			return
 		}
 	}
-	if err := g.saveSessionTitle(ctx, sessionID, taskID, title, model, keyID); err != nil {
+	if g.handler.titleStore != nil {
+		owner := fmt.Sprintf("auto-title:%s:%d", sessionID, time.Now().UnixNano())
+		claim, claimErr := g.handler.titleStore.BeginMutation(ctx, titlestore.Claim{
+			TenantID: tenantID, SessionID: sessionID, Owner: owner,
+			TTL: 60 * time.Second, Source: titlestore.SourceAutoTitle,
+			SourcePriority: titlestore.SourcePriorityAuto, TaskID: taskID,
+		})
+		if claimErr != nil {
+			logger.Info("auto_title: canonical mutation blocked", "error", claimErr)
+			return
+		}
+		if _, commitErr := g.handler.titleStore.CommitTitle(ctx, claim, tenantID, sessionID, title, taskID); commitErr != nil {
+			logger.Info("auto_title: canonical commit blocked", "error", commitErr)
+			return
+		}
+	} else if err := g.saveSessionTitle(ctx, sessionID, taskID, title, model, keyID); err != nil {
 		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
 			logger.Debug("title already saved by another goroutine")
 			return
@@ -282,7 +298,13 @@ func (g *AutoTitleGenerator) generateTitleAsync(sessionID, tenantID, taskID, req
 	logger.Info("auto title saved successfully", "title", title, "length", len(title), "model", model)
 }
 
-func (g *AutoTitleGenerator) checkSessionHasTitle(ctx context.Context, taskID, sessionID string) (bool, error) {
+func (g *AutoTitleGenerator) checkSessionHasTitle(ctx context.Context, tenantID, taskID, sessionID string) (bool, error) {
+	if g.handler.titleStore != nil {
+		st, err := g.handler.titleStore.Get(ctx, tenantID, sessionID)
+		if err == nil {
+			return st.Deleted || strings.TrimSpace(st.Title) != "", nil
+		}
+	}
 	if strings.TrimSpace(taskID) == "" {
 		taskID = "auto"
 	}

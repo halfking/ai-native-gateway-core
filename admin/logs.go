@@ -263,8 +263,11 @@ const requestLogsJoins = `
 	-- list/detail. LATERAL + LIMIT 1 picks exactly one title per row,
 	-- preferring the real-task title over the legacy 'auto' marker.
 	LEFT JOIN LATERAL (
-		SELECT st.title
+		SELECT CASE WHEN tstate.tenant_id IS NOT NULL THEN COALESCE(tstate.title, '')
+		            ELSE st.title END AS title
 		FROM session_titles st
+		LEFT JOIN public.session_title_states tstate
+			ON tstate.tenant_id = rl.tenant_id AND tstate.scoped_session_id = COALESCE(NULLIF(rl.gw_session_id, ''), '')
 		WHERE st.scoped_session_id = COALESCE(NULLIF(rl.gw_session_id, ''), '')
 		  AND st.scoped_session_id <> ''
 		  AND (st.task_id = rl.gw_task_id OR st.task_id = 'auto')

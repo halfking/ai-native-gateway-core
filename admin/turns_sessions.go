@@ -193,7 +193,8 @@ func (h *Handler) handleTurnsSessions(w http.ResponseWriter, r *http.Request) {
 	}
 	query := fmt.Sprintf(`
 		SELECT s.session_id, s.tenant_id,
-				COALESCE(NULLIF(s.title, ''), st.title, ss.title) AS title,
+				CASE WHEN tstate.tenant_id IS NOT NULL THEN COALESCE(tstate.title, '')
+				     ELSE COALESCE(NULLIF(s.title, ''), st.title, ss.title) END AS title,
 				s.topic,
 				COALESCE(NULLIF(s.intent, ''), ss.user_intent) AS intent,
 				COALESCE(NULLIF(s.summary, ''), ss.summary) AS summary,
@@ -209,9 +210,13 @@ func (h *Handler) handleTurnsSessions(w http.ResponseWriter, r *http.Request) {
 			ss.first_request_at AS start_time,
 			ho.parent_session_id, ho.trigger_reason
 		FROM public.sessions s
-		LEFT JOIN session_dim sd
-			ON sd.gw_session_id = s.session_id AND sd.tenant_id = s.tenant_id		LEFT JOIN session_summaries ss
-			ON ss.session_key = s.session_id AND ss.tenant_id = s.tenant_id
+			LEFT JOIN session_dim sd
+				ON sd.gw_session_id = s.session_id AND sd.tenant_id = s.tenant_id
+			LEFT JOIN session_summaries ss
+				ON ss.session_key = s.session_id AND ss.tenant_id = s.tenant_id
+			LEFT JOIN public.session_title_states tstate
+				ON tstate.tenant_id = s.tenant_id AND tstate.scoped_session_id = s.session_id
+
 		-- 会话父子关系：本会话若是 handoff（透明轮换）创建的新会话，
 		-- handoff_logs 里 new_session_id = 本会话 的记录给出父会话。
 		-- LATERAL LIMIT 1 防止多次轮换记录导致行扩展。
@@ -393,7 +398,7 @@ func buildTurnsSessionWhere(r *http.Request, tenantID string, tsFrom, tsTo time.
 		// topic、user_intent、摘要（含 session_summaries fallback），让自动生成
 		// 的标题/摘要也能被搜到。
 		clauses = append(clauses, fmt.Sprintf(
-			"(COALESCE(NULLIF(s.title, ''), st.title, ss.title, '') ILIKE '%%'||$%d||'%%'"+
+			"(CASE WHEN tstate.tenant_id IS NOT NULL THEN COALESCE(tstate.title, '') ELSE COALESCE(NULLIF(s.title, ''), st.title, ss.title, '') END ILIKE '%%'||$%d||'%%'"+
 				" OR COALESCE(NULLIF(s.topic, ''), '') ILIKE '%%'||$%d||'%%'"+
 				" OR COALESCE(NULLIF(s.intent, ''), ss.user_intent, '') ILIKE '%%'||$%d||'%%'"+
 				" OR COALESCE(NULLIF(s.summary, ''), ss.summary, '') ILIKE '%%'||$%d||'%%')",
