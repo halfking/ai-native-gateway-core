@@ -1723,7 +1723,20 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 			   agent_type           = COALESCE(agent_type, $80),
 			   client_protocol      = COALESCE(client_protocol, $81),
 			   virtual_client_id    = COALESCE(virtual_client_id, $82),
-			   discard_events       = COALESCE($83::text::jsonb, discard_events)
+			   -- V3.1 queue timestamps (migration 491): success path uses
+			   -- EmitRequestLogUpdate; without these columns t0..t9 stayed NULL
+			   -- forever after the in_progress INSERT (2026-08-22 diagnose).
+			   t0_arrived_at        = COALESCE($83, t0_arrived_at),
+			   t1_total_enqueued_at = COALESCE($84, t1_total_enqueued_at),
+			   t2_total_dequeued_at = COALESCE($85, t2_total_dequeued_at),
+			   t3_model_enqueued_at = COALESCE($86, t3_model_enqueued_at),
+			   t4_model_dequeued_at = COALESCE($87, t4_model_dequeued_at),
+			   t5_cred_enqueued_at  = COALESCE($88, t5_cred_enqueued_at),
+			   t6_cred_dequeued_at  = COALESCE($89, t6_cred_dequeued_at),
+			   t7_forward_start_at  = COALESCE($90, t7_forward_start_at),
+			   t8_response_start_at = COALESCE($91, t8_response_start_at),
+			   t9_response_end_at   = COALESCE($92, t9_response_end_at),
+			   discard_events       = COALESCE($93::text::jsonb, discard_events)
 		   WHERE request_id = $1
 
 		     AND NOT (
@@ -1837,6 +1850,16 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		entry.AgentType,
 		entry.ClientProtocol,
 		entry.VirtualClientID,
+		entry.T0ArrivedAt,
+		entry.T1TotalEnqueuedAt,
+		entry.T2TotalDequeuedAt,
+		entry.T3ModelEnqueuedAt,
+		entry.T4ModelDequeuedAt,
+		entry.T5CredEnqueuedAt,
+		entry.T6CredDequeuedAt,
+		entry.T7ForwardStartAt,
+		entry.T8ResponseStartAt,
+		entry.T9ResponseEndAt,
 		nullableJSONArg(entry.DiscardEvents),
 	)
 
