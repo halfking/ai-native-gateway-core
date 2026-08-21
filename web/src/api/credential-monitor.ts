@@ -133,6 +133,14 @@ export function sessionPingCredential(credentialId: number, model: string) {
   )
 }
 
+/** 异步入队单模型探活（202 Accepted）；结果经 probe/history 可见。 */
+export function testCredentialModel(credentialId: number, model: string) {
+  return req<{ message: string; credential_id: number; model: string; status: string }>(
+    'POST',
+    `/api/credentials/${credentialId}/models/${encodeURIComponent(model)}/test`,
+  )
+}
+
 export function getSlidingWindow(credentialId: number, model: string, minutes = 60, requestOptions?: RequestOptions) {
   const params = new URLSearchParams()
   params.set('credential_id', String(credentialId))

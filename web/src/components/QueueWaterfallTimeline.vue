@@ -1,16 +1,18 @@
 <script setup lang="ts">
 /**
  * QueueWaterfallTimeline — 9-stage dispatch lifecycle waterfall (ECharts custom series).
- * Stages: total queue / model queue / cred queue / upstream TTFB / streaming.
  */
 import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import * as echarts from 'echarts'
 import type { WaterfallRequest } from '../api/dispatch'
+import { WATERFALL_STAGES, resolveStageBars, emptyStateMessage } from '../utils/waterfallTimeline'
 
 const props = defineProps<{
   requests: WaterfallRequest[]
   loading?: boolean
   height?: number
+  wired?: boolean
+  source?: string
 }>()
 
 const emit = defineEmits<{
@@ -21,34 +23,19 @@ const chartRef = ref<HTMLDivElement>()
 let chart: echarts.ECharts | null = null
 const destroyed = ref(false)
 
-const STAGES = [
-  { key: 'total', start: 'total_enqueued_at', end: 'total_dequeued_at', color: '#409EFF', label: '总队列', msKey: 'waiting_in_total_ms' },
-  { key: 'model', start: 'model_enqueued_at', end: 'model_dequeued_at', color: '#67C23A', label: '模型队列', msKey: 'waiting_in_model_ms' },
-  { key: 'cred', start: 'cred_enqueued_at', end: 'cred_dequeued_at', color: '#E6A23C', label: '凭据队列', msKey: 'waiting_in_node_ms' },
-  { key: 'upstream', start: 'forward_start_at', end: 'response_start_at', color: '#F56C6C', label: '上游TTFB', msKey: 'upstream_latency_ms' },
-  { key: 'stream', start: 'response_start_at', end: 'response_end_at', color: '#909399', label: '流式传输', msKey: 'streaming_duration_ms' },
-] as const
-
-function parseTS(s?: string): number | null {
-  if (!s) return null
-  const t = Date.parse(s)
-  return Number.isFinite(t) ? t : null
-}
-
 function msColor(ms: number): string {
   if (ms < 1000) return 'var(--kx-success)'
   if (ms < 3000) return 'var(--kx-warning)'
   return 'var(--kx-danger)'
 }
 
-function fieldTS(r: WaterfallRequest, key: string): number | null {
-  return parseTS((r as unknown as Record<string, unknown>)[key] as string | undefined)
-}
+const emptyText = computed(() =>
+  emptyStateMessage({ wired: props.wired, source: props.source, count: props.requests.length }),
+)
 
-function fieldMS(r: WaterfallRequest, key: string, fallback: number): number {
-  const v = (r as unknown as Record<string, unknown>)[key]
-  return typeof v === 'number' ? Math.max(0, v) : Math.max(0, fallback)
-}
+const resolved = computed(() =>
+  props.requests.map((r) => ({ request: r, bars: resolveStageBars(r) })),
+)
 
 const yLabels = computed(() =>
   props.requests.map((r) => {
@@ -61,12 +48,11 @@ const yLabels = computed(() =>
 const timeBounds = computed(() => {
   let min = Number.POSITIVE_INFINITY
   let max = Number.NEGATIVE_INFINITY
-  for (const r of props.requests) {
-    const a = parseTS(r.arrived_at) ?? parseTS(r.total_enqueued_at)
-    const b = parseTS(r.response_end_at) ?? parseTS(r.response_start_at) ?? parseTS(r.forward_start_at)
-    if (a != null && a < min) min = a
-    if (b != null && b > max) max = b
-    if (a != null && a > max) max = a
+  for (const row of resolved.value) {
+    for (const b of row.bars) {
+      if (b.start < min) min = b.start
+      if (b.end > max) max = b.end
+    }
   }
   if (!Number.isFinite(min) || !Number.isFinite(max)) {
     const now = Date.now()
@@ -85,16 +71,12 @@ type BarDatum = {
 
 const seriesData = computed(() => {
   const data: BarDatum[] = []
-  props.requests.forEach((r, yIdx) => {
-    for (const st of STAGES) {
-      const start = fieldTS(r, st.start)
-      const end = fieldTS(r, st.end)
-      if (start == null || end == null || end < start) continue
-      const ms = fieldMS(r, st.msKey, end - start)
+  resolved.value.forEach((row, yIdx) => {
+    for (const b of row.bars) {
       data.push({
-        name: st.label,
-        value: [yIdx, start, end, end - start, st.color, st.label, ms],
-        request: r,
+        name: b.label,
+        value: [yIdx, b.start, b.end, b.end - b.start, b.color, b.label, b.ms],
+        request: row.request,
       })
     }
   })
@@ -134,20 +116,19 @@ const chartOption = computed(() => {
         const label = v[5] ?? p.name
         const ms = v[6] ?? 0
         const req: WaterfallRequest | undefined = p?.data?.request
-        const lines = [
+        return [
           `<b>${label}</b>: ${ms} ms`,
           req ? `req: ${req.request_id}` : '',
           req?.model ? `model: ${req.model}` : '',
           req?.result ? `result: ${req.result}` : '',
           req ? `queue: ${req.queue_wait_ms} ms · total: ${req.total_ms} ms` : '',
-        ].filter(Boolean)
-        return lines.join('<br/>')
+        ].filter(Boolean).join('<br/>')
       },
     },
     grid: { left: 160, right: 24, top: 28, bottom: 40 },
     legend: {
       top: 0,
-      data: STAGES.map((s) => s.label),
+      data: WATERFALL_STAGES.map((s) => s.label),
       textStyle: { color: 'var(--kx-muted)', fontSize: 11 },
     },
     xAxis: {
@@ -178,7 +159,7 @@ const chartOption = computed(() => {
       { type: 'inside' as const, xAxisIndex: 0, filterMode: 'none' as const },
       { type: 'slider' as const, xAxisIndex: 0, height: 18, bottom: 8, borderColor: 'var(--kx-border)', fillerColor: 'rgba(64,158,255,0.15)' },
     ],
-    series: STAGES.map((st) => ({
+    series: WATERFALL_STAGES.map((st) => ({
       name: st.label,
       type: 'custom' as const,
       renderItem,
@@ -234,17 +215,17 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="qwt">
-    <div v-if="!requests.length && !loading" class="qwt-empty">暂无已完成请求的时间戳样本</div>
+    <div v-if="!requests.length && !loading" class="qwt-empty">{{ emptyText }}</div>
     <div
       ref="chartRef"
       class="qwt-chart"
-      :style="{ height: (height || Math.max(280, requests.length * 36 + 80)) + 'px' }"
+      :style="{ height: (height || Math.max(280, requests.length * 36 + 80)) + 'px', display: requests.length ? 'block' : 'none' }"
     />
     <div class="qwt-legend-hint">
-      <span v-for="st in STAGES" :key="st.key" class="qwt-chip">
+      <span v-for="st in WATERFALL_STAGES" :key="st.key" class="qwt-chip">
         <i :style="{ background: st.color }" />{{ st.label }}
       </span>
-      <span class="qwt-hint">颜色阈值：&lt;1s 绿 · 1–3s 黄 · &gt;3s 红（总耗时标签）</span>
+      <span class="qwt-hint">缺时间戳时按 ms 合成条带 · 颜色：&lt;1s 绿 · 1–3s 黄 · &gt;3s 红</span>
     </div>
     <ul v-if="requests.length" class="qwt-summary">
       <li v-for="r in requests.slice(0, 8)" :key="r.request_id" @click="emit('select', r)">
