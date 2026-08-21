@@ -1,5 +1,7 @@
 package dispatch
 
+import "fmt"
+
 // SnapshotState is the closed enum for GovernorSnapshot.State. Used as a
 // Prometheus label in Stage C; keep the set tightly bounded and
 // append-only. Renaming or removing an existing value is a coordinate
@@ -60,4 +62,27 @@ type GovernorSnapshot struct {
 	State        SnapshotState
 	AgeMS        int64
 	BackendErr   error
+}
+
+// Validate enforces the bidirectional invariant:
+//
+//	State == SnapshotStateUnknown ⇔ BackendErr != nil
+//
+// Stage C metrics consumers rely on this to drop unknown rows and to
+// trust that State=Ready/QueueFull/GovernorSaturated never masks a
+// backend fault. Production call sites that fill a GovernorSnapshot MUST
+// call Validate() before returning the snapshot, so a backend bug
+// surfaces immediately rather than silently feeding wrong state to
+// dashboards and to the Stage D capacity-aware sort.
+//
+// On violation Validate panics — there is no graceful path because a
+// contradictory snapshot has no safe consumer behavior.
+func (s GovernorSnapshot) Validate() error {
+	if s.State == SnapshotStateUnknown && s.BackendErr == nil {
+		panic("dispatch: GovernorSnapshot.State=SnapshotStateUnknown without BackendErr")
+	}
+	if s.State != SnapshotStateUnknown && s.BackendErr != nil {
+		panic(fmt.Sprintf("dispatch: GovernorSnapshot.State=%q with non-nil BackendErr=%v", s.State, s.BackendErr))
+	}
+	return nil
 }

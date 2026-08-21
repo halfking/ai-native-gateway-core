@@ -46,9 +46,11 @@ func TestLeaseJSONShape(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	// IssuedAt / ExpiresAt are zero — they must be omitted in JSON output
-	// because they are time.Time (omitempty via the zero-value check on
-	// marshalling). When Stage B populates them they will appear.
+	// IssuedAt / ExpiresAt are zero — they ARE present in JSON output as
+	// "0001-01-01T00:00:00Z" because encoding/json does NOT omit time.Time
+	// zero values without an explicit `omitempty` tag (Lease has none).
+	// When Stage B populates them they will replace the zero string with
+	// the actual timestamp; the field set itself is stable.
 	got := string(data)
 	want := `{"Token":"tok","CredentialID":1,"Backend":"redis_enforce","IssuedAt":"0001-01-01T00:00:00Z","ExpiresAt":"0001-01-01T00:00:00Z","SpecRevision":2}`
 	if got != want {
@@ -64,7 +66,7 @@ func TestLeaseZeroExpiresAtPassesThrough(t *testing.T) {
 	if !in.ExpiresAt.IsZero() {
 		t.Fatalf("zero Lease.ExpiresAt should pass through: got %v", in.ExpiresAt)
 	}
-	if in.IssuedAt.IsZero() == false {
+	if !in.IssuedAt.IsZero() {
 		t.Fatalf("zero Lease.IssuedAt should pass through: got %v", in.IssuedAt)
 	}
 }
