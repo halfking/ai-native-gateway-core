@@ -762,7 +762,7 @@ func EnsureCanonicalAndAliases(ctx context.Context, db modelcatalog.Querier, raw
 					SELECT array_agg(DISTINCT t)
 					FROM unnest(models_canonical.tags || ARRAY['family:' || $2]) AS t
 				)
-				WHEN models_canonical.family = ANY($3)
+				WHEN models_canonical.family = ANY($3::text[])
 				THEN (
 					SELECT array_agg(DISTINCT t)
 					FROM unnest(
