@@ -86,3 +86,21 @@ func (b *LocalBackend) Close(_ context.Context) error {
 func (b *LocalBackend) NotifyRevisions(_ context.Context, _ uint64) error {
 	return nil
 }
+
+// New builds the per-spec in-process Governor by mapping GovernorSpec to
+// the existing CredentialRef shape and calling newGovernor. Stage B: this
+// is the load-bearing entry point that lets the management layer wire a
+// LocalBackend uniformly alongside the Redis backends. Behaviour is
+// byte-identical to the in-prod newGovernor factory because the wiring
+// passes through it unchanged.
+func (b *LocalBackend) New(_ context.Context, spec GovernorSpec) (Governor, error) {
+	ref := CredentialRef{
+		CredentialID:     spec.CredentialID,
+		ProviderID:       spec.ProviderID,
+		ConcurrencyMode:  spec.Mode,
+		ConcurrencyLimit: spec.Limit,
+		RPMLimit:         spec.RPMLimit,
+		TPMLimit:         spec.TPMLimit,
+	}
+	return newGovernor(ref), nil
+}

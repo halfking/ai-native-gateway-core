@@ -91,3 +91,55 @@ func TestLocalBackendConcurrentLifecycle(t *testing.T) {
 	_ = b.Open(context.Background())
 	_ = b.Close(context.Background())
 }
+
+// Stage B.2 — LocalBackend.New(spec) wraps the existing newGovernor
+// factory by mapping GovernorSpec to CredentialRef. The mapping must
+// preserve every field that governs factory routing, and the resulting
+// Governor must report Mode() consistent with spec.Mode.
+func TestLocalBackendNewReturnsExistingGovernors(t *testing.T) {
+	b := NewLocalBackend("process-A")
+	ctx := context.Background()
+
+	cases := []struct {
+		name string
+		spec GovernorSpec
+		want string
+	}{
+		{
+			name: "concurrency → concurrencyGovernor",
+			spec: GovernorSpec{Mode: ModeConcurrency, Limit: 8},
+			want: ModeConcurrency,
+		},
+		{
+			name: "rpm → rpmGovernor",
+			spec: GovernorSpec{Mode: ModeRPM, RPMLimit: 60},
+			want: ModeRPM,
+		},
+		{
+			name: "tpm → tpmGovernor",
+			spec: GovernorSpec{Mode: ModeTPM, TPMLimit: 120000},
+			want: ModeTPM,
+		},
+		{
+			name: "disabled → noopGovernor",
+			spec: GovernorSpec{Mode: ModeDisabled},
+			want: ModeDisabled,
+		},
+		{
+			name: "rpm with zero RPMLimit → noopGovernor (degraded)",
+			spec: GovernorSpec{Mode: ModeRPM, RPMLimit: 0},
+			want: ModeDisabled,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g, err := b.New(ctx, tc.spec)
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			if m := g.Mode(); m != tc.want {
+				t.Fatalf("Mode() = %q, want %q", m, tc.want)
+			}
+		})
+	}
+}

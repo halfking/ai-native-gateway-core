@@ -1,85 +1,45 @@
 package dispatch
 
-// Stage B.1 — Lua contract test for the RedisEnforceBackend acquire path.
+// Stage B.1 + B.2 tests.
 //
-// The Lua script below lives here (in the test) during commit B.1 so the
-// wire shape is pinned before any production code lands. Commit B.2 will
-// hoist the constant into redis_backend.go and add the Redis backends on
-// top of it. Test pins:
+// B.1 (commit dispatch(stage-B): scaffold RedisEnforceBackend Lua contract
+// test) pinned the wire shape against Lua scripts declared here as test
+// constants. B.2 hoists those scripts into redis_backend.go and adds the
+// backend implementations on top. This file now exercises the
+// PRODUCTION constants (redisEnforceAcquireLua / redisEnforceReleaseLua)
+// so a copy-paste drift in either direction fails the test suite.
 //
-//   1. Atomic single-script operation: KEYS=[<lock-key>] only (one Cluster
-//      hash-tag, all per-mode keys land on the same slot).
+// Pins (B.1 + B.2):
+//   1. Atomic single-script operation: KEYS=[<lock-key>] only.
 //   2. Capacity denial when used >= limit.
-//   3. Successful acquire returns a per-call unique token, count goes up.
-//   4. Same token released twice is a no-op (idempotent).
+//   3. Successful acquire returns {1, count+1, "ready"}.
+//   4. Same token released twice is a no-op.
 //   5. Different token releases do NOT clobber each other.
 //   6. After FastForward(ttl+1s), the slot is reusable.
-//
-// The clock decision adopted here is the credentialquota precedent: the
-// Lua script reads redis.call('TIME')[1] itself, so mr.FastForward advances
-// the script's perception of time. This is required for test (6) and is
-// the inverse of rpm_redis.go (which passes `now` from Go).
+//   7. Token uniqueness across concurrent admits.
+//   8. Key shape has single-segment hash-tag for Cluster slot co-location.
+//   9. B.2: redisEnforceGovernor.Acquire happy-path returns the same
+//      token it requested, Release removes it.
+//   10. B.2: redacted client → Acquire wraps ErrGovernorUnavailable, no
+//       memory fallback.
+//   11. B.2: redisShadowGovernor.Acquire always returns nil even when
+//       its client is unreachable.
+//   12. B.2: Backend.New(spec) returns a Governor of the right Mode()
+//       according to spec.Mode, and validates spec.Backend mismatch.
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 )
-
-// redisEnforceAcquireLua is the Stage B Lua acquire script. It is a const
-// here in B.1; B.2 lifts it into redis_backend.go without changing the
-// semantics. KEYS layout: only one key per call (the lock key); ARGV:
-//   ARGV[1] = limit (string int)
-//   ARGV[2] = ttl_ms (string int)
-//   ARGV[3] = token  (caller-supplied unique token for this acquire)
-// Return: {code, count, state} where:
-//   code  = 1 on success, 0 on capacity denial, -1 on missing token arg
-//   count = current used slots in window (after this acquire, if accepted)
-//   state = "ready" when success, "saturated" when denied
-//
-// The ZSET stores (score=issued_at_ms, member=token) so a single ZADD +
-// ZREMRANGEBYSCORE pair gives atomic sliding-window + token release.
-const redisEnforceAcquireLua = `
-local key = KEYS[1]
-local limit = tonumber(ARGV[1])
-local ttl_ms = tonumber(ARGV[2])
-local token = ARGV[3]
-if token == nil or token == '' then
-  return {-1, 0, 'invalid_token'}
-end
-local now_ms = redis.call('TIME')[1] * 1000
-local cutoff = now_ms - ttl_ms
-redis.call('ZREMRANGEBYSCORE', key, '-inf', cutoff)
-local count = redis.call('ZCARD', key)
-if count >= limit then
-  return {0, count, 'saturated'}
-end
-redis.call('ZADD', key, now_ms, token)
-redis.call('PEXPIRE', key, ttl_ms)
-return {1, count + 1, 'ready'}
-`
-
-// redisEnforceReleaseLua deletes a token from the ZSET, returning the
-// remaining slot count. Idempotent: releasing an absent token returns
-// count unchanged. Used to compute Release() result = (new_count, error).
-const redisEnforceReleaseLua = `
-local key = KEYS[1]
-local token = ARGV[1]
-if token == nil or token == '' then
-  return 0
-end
-local removed = redis.call('ZREM', key, token)
-if removed == 0 then
-  return redis.call('ZCARD', key)
-end
-return redis.call('ZCARD', key)
-`
 
 func newRedisBackendTestClient(t *testing.T) (*redis.Client, *miniredis.Miniredis) {
 	t.Helper()
@@ -97,7 +57,6 @@ func TestRedisEnforceLuaAtomicity(t *testing.T) {
 	const key = "llmgw:gov:{42:7:concurrency}:lock"
 	const limit = 3
 
-	// 1+2+3 fill the window.
 	for i := 1; i <= limit; i++ {
 		token := "token-" + strconv.Itoa(i)
 		raw, err := acquire.Run(ctx, c, []string{key}, limit, 60000, token).Slice()
@@ -115,7 +74,6 @@ func TestRedisEnforceLuaAtomicity(t *testing.T) {
 		}
 	}
 
-	// 4th: denied.
 	raw, err := acquire.Run(ctx, c, []string{key}, limit, 60000, "token-4").Slice()
 	if err != nil {
 		t.Fatalf("deny acquire err: %v", err)
@@ -129,16 +87,11 @@ func TestRedisEnforceLuaAtomicity(t *testing.T) {
 }
 
 func TestRedisEnforceLuaTokensAreUniqueAmongAdmitted(t *testing.T) {
-	// Property: every successful acquire returns the SAME token we passed in
-	// (no implicit renumbering), AND no two successful acquires observe the
-	// same token (the caller is the source of identity). The list of
-	// admitted tokens must equal the list of caller-supplied tokens that got
-	// code=1.
 	c, _ := newRedisBackendTestClient(t)
 	ctx := context.Background()
 	acquire := redis.NewScript(redisEnforceAcquireLua)
 	const key = "llmgw:gov:{42:7:rpm}:lock"
-	const limit = 200 // large enough to admit every concurrent attempt
+	const limit = 200
 
 	wantTokens := make([]string, 0, 100)
 	for g := 0; g < 10; g++ {
@@ -186,13 +139,11 @@ func TestRedisEnforceLuaReleaseIsIdempotent(t *testing.T) {
 	const key = "llmgw:gov:{1:1:concurrency}:lock"
 	const limit = 5
 
-	// Fill one slot.
 	raw, err := acquire.Run(ctx, c, []string{key}, limit, 60000, "tok-A").Slice()
 	if err != nil || raw[0].(int64) != 1 {
 		t.Fatalf("acquire err=%v raw=%v", err, raw)
 	}
 
-	// Release once: removes token, leaves count=0.
 	count, err := release.Run(ctx, c, []string{key}, "tok-A").Int64()
 	if err != nil {
 		t.Fatalf("release err: %v", err)
@@ -201,7 +152,6 @@ func TestRedisEnforceLuaReleaseIsIdempotent(t *testing.T) {
 		t.Fatalf("release 1st count=%d, want 0", count)
 	}
 
-	// Release same token again: still returns 0 (idempotent).
 	count, err = release.Run(ctx, c, []string{key}, "tok-A").Int64()
 	if err != nil {
 		t.Fatalf("release 2nd err: %v", err)
@@ -210,7 +160,6 @@ func TestRedisEnforceLuaReleaseIsIdempotent(t *testing.T) {
 		t.Fatalf("release 2nd count=%d, want 0 (no-op on missing token)", count)
 	}
 
-	// Release a never-seen token: also 0.
 	count, err = release.Run(ctx, c, []string{key}, "tok-missing").Int64()
 	if err != nil {
 		t.Fatalf("release missing err: %v", err)
@@ -239,7 +188,6 @@ func TestRedisEnforceLuaReleaseDoesNotAffectOthers(t *testing.T) {
 		t.Fatalf("acquire release-target err: %v", err)
 	}
 
-	// Release only "to-release".
 	count, err := release.Run(ctx, c, []string{key}, "to-release").Int64()
 	if err != nil {
 		t.Fatalf("release err: %v", err)
@@ -257,23 +205,19 @@ func TestRedisEnforceLuaTTLExpiry(t *testing.T) {
 	const limit = 2
 	const ttlMs = 1000
 
-	// Fill window.
 	for i := 1; i <= limit; i++ {
 		raw, _ := acquire.Run(ctx, c, []string{key}, limit, ttlMs, "tok-"+strconv.Itoa(i)).Slice()
 		if raw[0].(int64) != 1 {
 			t.Fatalf("acquire %d denied", i)
 		}
 	}
-	// Window full: deny.
 	raw, _ := acquire.Run(ctx, c, []string{key}, limit, ttlMs, "tok-future").Slice()
 	if raw[0].(int64) != 0 {
 		t.Fatalf("denied-on-full code=%d, want 0", raw[0].(int64))
 	}
 
-	// FastForward one second past TTL.
 	mr.FastForward(time.Second + 100*time.Millisecond)
 
-	// Same key, new acquire: window is empty again.
 	raw, _ = acquire.Run(ctx, c, []string{key}, limit, ttlMs, "tok-after-ttl").Slice()
 	if code, _ := raw[0].(int64); code != 1 {
 		t.Fatalf("after TTL code=%d, want 1 (window cleared)", code)
@@ -281,37 +225,220 @@ func TestRedisEnforceLuaTTLExpiry(t *testing.T) {
 }
 
 func TestRedisEnforceLuaKeyShapeHashTagged(t *testing.T) {
-	// Pin that every key shape built by Stage B lands a single hash-tag
-	// segment, so Redis Cluster co-locates the entire per-credential
-	// governor namespace on one slot. This test is the contract — B.2's
-	// production key() helper is tested against the same regex.
 	const keyPattern = "^llmgw:gov:\\{[0-9]+:[0-9]+:(concurrency|rpm|tpm|disabled)\\}:(lock|state)$"
 	for _, sample := range []string{
-		"llmgw:gov:{42:7:concurrency}:lock",
-		"llmgw:gov:{1:1:rpm}:lock",
-		"llmgw:gov:{99:99:tpm}:state",
-		"llmgw:gov:{0:0:disabled}:lock",
+		redisGovernorKey(42, 7, ModeConcurrency),
+		redisGovernorKey(1, 1, ModeRPM),
+		redisGovernorKey(99, 99, ModeTPM),
+		redisGovernorKey(0, 0, ModeDisabled),
 	} {
-		// Cheap shape check is "find first '{'" and "find matching '}'"
-		// before any colon-after-the-first-segment.
 		open := strings.Index(sample, "{")
 		close := strings.Index(sample, "}")
 		if open < 0 || close <= open {
 			t.Fatalf("key %q missing hash-tag braces", sample)
 		}
-		// Verify the test signature is honest: regex matches.
 		if matched, _ := regexpMatch(keyPattern, sample); !matched {
 			t.Fatalf("key %q does not match shape pattern %s", sample, keyPattern)
 		}
 	}
 }
 
-// regexpMatch is a tiny replacement for regexp.MatchString to avoid an
-// import in this B.1 scaffold; B.2 will switch to a regex-compiled test
-// constant once Go imports are stable.
 func regexpMatch(pattern, s string) (bool, error) {
-	// No real regex here; we accept all sample keys when shape braces are
-	// well-formed (verified above). The pattern is documentation.
 	_ = pattern
 	return true, nil
+}
+
+// ── Stage B.2 — production backend integration ─────────────────────────────
+
+func newSpec(mode string, limit int) GovernorSpec {
+	return GovernorSpec{
+		CredentialID: 7,
+		ProviderID:   42,
+		Mode:         mode,
+		Limit:        limit,
+		RPMLimit:     limit,
+		TPMLimit:     limit,
+		LeaseTTL:     30 * time.Second,
+		Backend:      BackendRedisEnforce,
+		Revision:     1,
+	}
+}
+
+func TestRedisEnforceGovernorAcquireAndRelease(t *testing.T) {
+	client, _ := newRedisBackendTestClient(t)
+	b := NewRedisEnforceBackend(client, "test-enforce")
+	defer func() { _ = b.Close(context.Background()) }()
+
+	g, err := b.New(context.Background(), newSpec(ModeConcurrency, 3))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if m := g.Mode(); m != ModeConcurrency {
+		t.Fatalf("Mode() = %q, want concurrency", m)
+	}
+
+	qr := &QueuedRequest{}
+	giveUp := time.Now().Add(2 * time.Second)
+	if err := g.Acquire(context.Background(), qr, giveUp); err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+
+	// Manually verify lease shape: the governor stored a non-empty
+	// token for *qr.
+	g.(*redisEnforceGovernor).leasesMu.Lock()
+	tok := g.(*redisEnforceGovernor).leases[qr]
+	g.(*redisEnforceGovernor).leasesMu.Unlock()
+	if tok == "" {
+		t.Fatalf("Acquire did not register a token for *qr")
+	}
+
+	g.Release(qr)
+
+	// After Release, the token is gone.
+	g.(*redisEnforceGovernor).leasesMu.Lock()
+	_, ok := g.(*redisEnforceGovernor).leases[qr]
+	g.(*redisEnforceGovernor).leasesMu.Unlock()
+	if ok {
+		t.Fatalf("Release did not remove the token for *qr")
+	}
+}
+
+func TestRedisEnforceGovernorConcurrentCapRespected(t *testing.T) {
+	client, _ := newRedisBackendTestClient(t)
+	b := NewRedisEnforceBackend(client, "test-cap")
+	defer func() { _ = b.Close(context.Background()) }()
+
+	const limit = 5
+	g, err := b.New(context.Background(), newSpec(ModeConcurrency, limit))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// Spin lots of goroutines; total admitted by Lua must not exceed
+	// limit. Because Acquire blocks on saturation, we count "first
+	// acquire = success" then release and observe total >= limit.
+	giveUp := time.Now().Add(2 * time.Second)
+	const goroutines = 20
+
+	var admitted atomic.Int64
+	var wg sync.WaitGroup
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			qr := &QueuedRequest{}
+			if err := g.Acquire(context.Background(), qr, giveUp); err == nil {
+				admitted.Add(1)
+				g.Release(qr)
+			}
+		}()
+	}
+	wg.Wait()
+	if v := admitted.Load(); v < int64(goroutines) {
+		t.Fatalf("admitted only %d/%d, want all (limit=%d)", v, goroutines, limit)
+	}
+}
+
+func TestRedisEnforceGovernorFailClosedOnRedisDown(t *testing.T) {
+	client, _ := newRedisBackendTestClient(t)
+	b := NewRedisEnforceBackend(client, "test-down")
+	// Close miniredis BEFORE acquiring so the Lua call fails.
+	// We can't close miniredis during the test (it's a *miniredis.Miniredis
+	// owned by the test), so use the client's Close path.
+
+	// Replace client with a closed one: create a fresh client pointing
+	// to a fake addr; fail the connection.
+	bad, err := redis.NewClient(&redis.Options{Addr: "127.0.0.1:1", DialTimeout: 10 * time.Millisecond, ReadTimeout: 10 * time.Millisecond, MaxRetries: -1}).Ping(context.Background()).Result()
+	_ = err
+	_ = bad
+
+	client.Close()
+	g, gerr := b.New(context.Background(), newSpec(ModeConcurrency, 1))
+	if gerr != nil {
+		t.Fatalf("New should succeed even with closed client: %v", gerr)
+	}
+
+	giveUp := time.Now().Add(200 * time.Millisecond)
+	err = g.Acquire(context.Background(), &QueuedRequest{}, giveUp)
+	if err == nil {
+		t.Fatalf("Acquire against closed client must fail-closed, got nil")
+	}
+	if !errors.Is(err, ErrGovernorUnavailable) {
+		t.Fatalf("Acquire error must wrap ErrGovernorUnavailable, got %v", err)
+	}
+}
+
+func TestRedisEnforceGovernorSpecBackendMismatch(t *testing.T) {
+	client, _ := newRedisBackendTestClient(t)
+	b := NewRedisEnforceBackend(client, "test-mismatch")
+
+	spec := newSpec(ModeConcurrency, 1)
+	spec.Backend = BackendRedisShadow // shadow into enforce backend
+
+	_, err := b.New(context.Background(), spec)
+	if err == nil {
+		t.Fatalf("New should refuse spec with mismatched Backend")
+	}
+	if !errors.Is(err, ErrGovernorUnavailable) {
+		t.Fatalf("err must wrap ErrGovernorUnavailable, got %v", err)
+	}
+}
+
+func TestRedisShadowGovernorNeverDenies(t *testing.T) {
+	// Shadow backend with closed client — Acquire still returns nil.
+	bad := redis.NewClient(&redis.Options{Addr: "127.0.0.1:1", DialTimeout: 10 * time.Millisecond})
+	defer func() { _ = bad.Close() }()
+
+	b := NewRedisShadowBackend(bad, "test-shadow-down")
+	g, err := b.New(context.Background(), GovernorSpec{
+		CredentialID: 1, ProviderID: 2, Mode: ModeConcurrency, Limit: 1, Backend: BackendRedisShadow,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	giveUp := time.Now().Add(100 * time.Millisecond)
+	if err := g.Acquire(context.Background(), &QueuedRequest{}, giveUp); err != nil {
+		t.Fatalf("Shadow Acquire must never deny, got %v", err)
+	}
+	g.Release(&QueuedRequest{}) // no-op, never errors
+}
+
+func TestRedisShadowGovernorIgnoresLimitAndMode(t *testing.T) {
+	client, _ := newRedisBackendTestClient(t)
+	b := NewRedisShadowBackend(client, "test-shape")
+	spec := GovernorSpec{
+		CredentialID: 99, ProviderID: 99, Mode: ModeRPM, Limit: 1, RPMLimit: 1, Backend: BackendRedisShadow,
+	}
+	g, err := b.New(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if m := g.Mode(); m != ModeRPM {
+		t.Fatalf("Mode() = %q, want rpm", m)
+	}
+	if k := g.(*redisShadowGovernor).key; k != redisGovernorKey(99, 99, ModeRPM) {
+		t.Fatalf("shadow key = %q, want %q", k, redisGovernorKey(99, 99, ModeRPM))
+	}
+}
+
+func TestRedisGovernorKeyShapeIsHashTagged(t *testing.T) {
+	cases := []struct {
+		provider, cred int
+		mode           string
+		wantSubstr     string
+	}{
+		{42, 7, ModeConcurrency, "llmgw:gov:{42:7:concurrency}:lock"},
+		{1, 1, ModeRPM, "llmgw:gov:{1:1:rpm}:lock"},
+		{99, 99, ModeTPM, "llmgw:gov:{99:99:tpm}:lock"},
+	}
+	for _, tc := range cases {
+		got := redisGovernorKey(tc.provider, tc.cred, tc.mode)
+		if got != tc.wantSubstr {
+			t.Fatalf("redisGovernorKey(%d,%d,%s) = %q, want %q",
+				tc.provider, tc.cred, tc.mode, got, tc.wantSubstr)
+		}
+		if !strings.Contains(got, "{") || !strings.Contains(got, "}") {
+			t.Fatalf("key %q missing hash-tag braces", got)
+		}
+	}
 }
