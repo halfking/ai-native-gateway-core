@@ -5644,6 +5644,13 @@ func main() {
 		if redisClientForCache != nil {
 			pipeline.SetQueueMirror(dispatch.NewQueueMirror(redisClientForCache.Client()))
 		}
+		// 分布式容量治理 Stage B (dispatch governance, 2026-08-22): 通过
+		// LLM_GATEWAY_DISPATCH_GOVERNOR_BACKEND 选择 governor backend;
+		// 默认 "local" (现有 newGovernor 行为零变化)。redis_shadow 仅
+		// 观测不门控，redis_enforce 严格共享集群限流 — Redis 故障返回
+		// wrapped ErrGovernorUnavailable, 严禁静默回退内存版。
+		// Stage D/E 才会让 credForwarder.gov 真正读这个 backend。
+		wireDispatchGovernorBackend(pipeline, redisClientForCache.Client(), instanceIDForRedisBackend())
 	}
 	if liveStreamHub != nil {
 		projection := gatewayQueueProjection.Load()
