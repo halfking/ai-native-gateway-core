@@ -11,6 +11,7 @@ const {
   modelHistory,
   resolve,
   superAdmin,
+  defaultTenant,
   fpSlotStats,
   setConcurrencyAuto,
   updateCredential,
@@ -22,13 +23,14 @@ const {
   modelHistory: vi.fn(),
   resolve: vi.fn(),
   superAdmin: vi.fn(() => false),
+  defaultTenant: vi.fn(() => true),
   fpSlotStats: vi.fn(),
   setConcurrencyAuto: vi.fn(),
   updateCredential: vi.fn(),
   getRequestLogDetail: vi.fn(),
 }))
 
-vi.mock('../store', () => ({ authBearer: () => 'test-token', isSuperAdmin: superAdmin }))
+vi.mock('../store', () => ({ authBearer: () => 'test-token', isSuperAdmin: superAdmin, isDefaultTenant: defaultTenant }))
 vi.mock('../api/routing', () => ({
   resolveRouting: resolve,
   emergencyRepair: vi.fn(),
@@ -48,6 +50,7 @@ vi.mock('../api/credential-monitor', () => ({
   setManualDisabled: vi.fn(),
   sessionPingCredential: vi.fn(),
   toggleModelAvailability: vi.fn(),
+  testCredentialModel: vi.fn(),
   setConcurrencyAuto,
 }))
 vi.mock('../api/logs', () => ({
@@ -94,6 +97,12 @@ function mountDrawer(model?: string) {
           props: ['credentialId', 'providerId', 'monitor', 'monitorLoading', 'canEdit'],
           template: '<div class="stub-concurrency">并发与指纹槽位</div>',
         },
+        NodeDetailOtherModelsPanel: {
+          name: 'NodeDetailOtherModelsPanel',
+          props: ['credentialId', 'currentModel', 'models', 'canEdit', 'needsRefresh'],
+          template: '<div class="stub-other-models">其它模型面板</div>',
+        },
+        NodeDetailAccessErrorsPanel: false,
         FpSlotVisualizer: true,
       },
     },
@@ -151,6 +160,7 @@ describe('NodeDetailDrawer model×node scope', () => {
     updateCredential.mockReset().mockResolvedValue({ message: 'ok' })
     getRequestLogDetail.mockReset().mockResolvedValue({ request_id: 'req-abc' })
     superAdmin.mockReturnValue(false)
+    defaultTenant.mockReturnValue(true)
   })
 
   it('auto-loads all three tabs in parallel when the drawer opens', async () => {
@@ -221,7 +231,57 @@ describe('NodeDetailDrawer model×node scope', () => {
 
     expect(wrapper.text()).toContain('连通性与紧急维护')
     expect(wrapper.text()).toContain('并发与指纹槽位')
+    expect(wrapper.text()).toContain('其它模型')
     expect(wrapper.text()).not.toContain('加载设置面板')
+  })
+
+  it('shows other-models panel when settings sub-tab is selected', async () => {
+    const wrapper = mountDrawer('m-1')
+    await flushPromises()
+    await wrapper.get('[role="tab"]:nth-child(3)').trigger('click')
+    await flushPromises()
+    const subTabs = wrapper.findAll('.nd-subtabs button')
+    expect(subTabs.length).toBeGreaterThanOrEqual(2)
+    await subTabs[1].trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.stub-other-models').exists()).toBe(true)
+  })
+
+  it('lists failed window entries in 最近访问与异常', async () => {
+    slidingWindow.mockResolvedValue({
+      entries: [
+        { rid: 'req-ok', ts: Date.now(), ok: true, lat: 100 },
+        { rid: 'req-fail', ts: Date.now(), ok: false, lat: 50, err: 'timeout' },
+      ],
+      stats: { total: 2, success: 1, failed: 1, failure_rate: 0.5, error_kinds: { timeout: 1 } },
+      source: 'redis',
+    })
+    decisions.mockResolvedValue({
+      decisions: [{
+        request_id: 'dec-fail',
+        model: 'm-1',
+        ts: '2026-08-21T00:00:00Z',
+        success: false,
+        latency_ms: 30,
+        error_class: 'upstream_5xx',
+      }],
+    })
+    const wrapper = mountDrawer('m-1')
+    await flushPromises()
+    expect(wrapper.text()).toContain('最近访问与异常')
+    expect(wrapper.text()).toContain('timeout')
+    expect(wrapper.text()).toContain('upstream_5xx')
+  })
+
+  it('disables maintain actions for non-default tenant', async () => {
+    defaultTenant.mockReturnValue(false)
+    const wrapper = mountDrawer('m-1')
+    await flushPromises()
+    await wrapper.get('[role="tab"]:nth-child(3)').trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('仅 default 租户可以维护节点')
+    const ping = wrapper.findAll('button').find(b => b.text().includes('会话 Ping'))
+    expect(ping?.attributes('disabled')).toBeDefined()
   })
 
   it('aborts in-flight core and detail requests when the drawer is closed', async () => {

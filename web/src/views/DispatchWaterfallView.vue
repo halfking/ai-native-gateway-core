@@ -3,6 +3,7 @@
  * DispatchWaterfallView — admin page for 9-stage queue waterfall.
  */
 import { ref, onMounted, onBeforeUnmount, computed } from 'vue'
+import { useRouter } from 'vue-router'
 import {
   fetchDispatchWaterfall,
   fetchDispatchQueues,
@@ -12,11 +13,13 @@ import {
 } from '../api/dispatch'
 import QueueWaterfallTimeline from '../components/QueueWaterfallTimeline.vue'
 
+const router = useRouter()
 const loading = ref(false)
 const error = ref<string | null>(null)
 const snap = ref<WaterfallSnapshot | null>(null)
 const queues = ref<DispatchQueuesSnapshot | null>(null)
 const selected = ref<WaterfallRequest | null>(null)
+const selectedId = ref<string | null>(null)
 
 const limit = ref(50)
 const modelFilter = ref('')
@@ -31,8 +34,18 @@ const diagnosisTone = computed(() => {
   return 'danger'
 })
 
-async function load() {
-  loading.value = true
+const sourceLabel = computed(() => {
+  switch (snap.value?.source) {
+    case 'memory': return '内存 ring'
+    case 'memory+db': return '内存 + DB'
+    case 'db': return 'DB 回填'
+    case 'none': return '无样本'
+    default: return snap.value?.source || '—'
+  }
+})
+
+async function load(opts: { silent?: boolean } = {}) {
+  if (!opts.silent) loading.value = true
   error.value = null
   try {
     const [wf, q] = await Promise.all([
@@ -44,21 +57,32 @@ async function load() {
     ])
     snap.value = wf
     if (q) queues.value = q
+    if (selectedId.value) {
+      const again = wf.requests.find((r) => r.request_id === selectedId.value)
+      selected.value = again ?? selected.value
+    }
   } catch (e) {
     error.value = (e as Error).message || String(e)
   } finally {
-    loading.value = false
+    if (!opts.silent) loading.value = false
   }
 }
 
 function onSelect(r: WaterfallRequest) {
   selected.value = r
+  selectedId.value = r.request_id
+}
+
+function openSession() {
+  const sid = selected.value?.session_id
+  if (!sid) return
+  void router.push(`/admin/sessions/${encodeURIComponent(sid)}`)
 }
 
 function startPoll() {
   stopPoll()
   if (!autoRefresh.value) return
-  timer = window.setInterval(() => { void load() }, 5000)
+  timer = window.setInterval(() => { void load({ silent: true }) }, 5000)
 }
 
 function stopPoll() {
@@ -81,12 +105,12 @@ onBeforeUnmount(stopPoll)
     <header class="dw-header">
       <div>
         <h1>队列瀑布图</h1>
-        <p class="sub">9 阶段调度时间线（T0–T9）· 最近完成请求内存样本</p>
+        <p class="sub">9 阶段调度时间线（T0–T9）· 内存 ring 优先，不足时从 request_logs_hot 回填</p>
       </div>
       <div class="dw-actions">
         <label class="field">
           <span>Limit</span>
-          <select v-model.number="limit" @change="load">
+          <select v-model.number="limit" @change="load()">
             <option :value="20">20</option>
             <option :value="50">50</option>
             <option :value="100">100</option>
@@ -95,13 +119,13 @@ onBeforeUnmount(stopPoll)
         </label>
         <label class="field">
           <span>Model</span>
-          <input v-model="modelFilter" placeholder="可选筛选" @keyup.enter="load" />
+          <input v-model="modelFilter" placeholder="可选筛选" @keyup.enter="load()" />
         </label>
         <label class="check">
           <input v-model="autoRefresh" type="checkbox" @change="startPoll" />
           自动刷新 5s
         </label>
-        <button class="btn" :disabled="loading" @click="load">刷新</button>
+        <button class="btn" :disabled="loading" @click="load()">刷新</button>
       </div>
     </header>
 
@@ -116,6 +140,10 @@ onBeforeUnmount(stopPoll)
         </div>
       </div>
       <div class="card">
+        <div class="k">样本来源</div>
+        <div class="v num" style="font-size:14px">{{ sourceLabel }}</div>
+      </div>
+      <div class="card">
         <div class="k">样本数</div>
         <div class="v num">{{ snap?.requests?.length ?? 0 }}</div>
       </div>
@@ -123,12 +151,8 @@ onBeforeUnmount(stopPoll)
         <div class="k">模型队列</div>
         <div class="v num">{{ queues?.models?.reduce((s, m) => s + (m.depth || 0), 0) ?? '—' }}</div>
       </div>
-      <div class="card">
-        <div class="k">凭据队列</div>
-        <div class="v num">{{ queues?.credentials?.reduce((s, c) => s + (c.depth || 0), 0) ?? '—' }}</div>
-      </div>
       <div class="card grow" :class="'tone-' + diagnosisTone">
-        <div class="k">瓶颈诊断</div>
+        <div class="k">瓶颈诊断 · 凭据队列深度 {{ queues?.credentials?.reduce((s, c) => s + (c.depth || 0), 0) ?? '—' }}</div>
         <div class="v diag">
           <strong>{{ diagnosis?.bottleneck || 'none' }}</strong>
           <span>{{ diagnosis?.message || '—' }}</span>
@@ -140,19 +164,31 @@ onBeforeUnmount(stopPoll)
     <QueueWaterfallTimeline
       :requests="snap?.requests || []"
       :loading="loading"
+      :wired="snap?.wired"
+      :source="snap?.source"
       @select="onSelect"
     />
 
     <aside v-if="selected" class="dw-detail">
       <header>
         <h3>请求详情</h3>
-        <button class="btn ghost" @click="selected = null">关闭</button>
+        <div class="dw-detail-actions">
+          <button
+            v-if="selected.session_id"
+            class="btn ghost"
+            type="button"
+            @click="openSession"
+          >打开会话</button>
+          <button class="btn ghost" type="button" @click="selected = null; selectedId = null">关闭</button>
+        </div>
       </header>
       <dl>
         <div><dt>request_id</dt><dd><code>{{ selected.request_id }}</code></dd></div>
+        <div><dt>session_id</dt><dd><code>{{ selected.session_id || '—' }}</code></dd></div>
         <div><dt>model</dt><dd>{{ selected.model || '—' }}</dd></div>
         <div><dt>credential</dt><dd>{{ selected.credential_id ?? '—' }}</dd></div>
         <div><dt>result</dt><dd>{{ selected.result }}</dd></div>
+        <div><dt>arrived_at</dt><dd>{{ selected.arrived_at || '—' }}</dd></div>
         <div><dt>queue wait</dt><dd>{{ selected.queue_wait_ms }} ms</dd></div>
         <div><dt>total queue</dt><dd>{{ selected.waiting_in_total_ms }} ms</dd></div>
         <div><dt>model queue</dt><dd>{{ selected.waiting_in_model_ms }} ms</dd></div>
@@ -162,6 +198,18 @@ onBeforeUnmount(stopPoll)
         <div><dt>streaming</dt><dd>{{ selected.streaming_duration_ms }} ms</dd></div>
         <div><dt>total</dt><dd>{{ selected.total_ms }} ms</dd></div>
       </dl>
+      <div v-if="selected.attempts?.length" class="dw-attempts">
+        <h4>Attempts ({{ selected.attempts.length }})</h4>
+        <ul>
+          <li v-for="a in selected.attempts" :key="a.attempt_id || a.attempt_no">
+            <span>#{{ a.attempt_no }}</span>
+            <span>{{ a.model || '—' }}</span>
+            <span>cred {{ a.credential_id }}</span>
+            <span>{{ a.outcome || '—' }}</span>
+            <span v-if="a.error_kind" class="err">{{ a.error_kind }}</span>
+          </li>
+        </ul>
+      </div>
     </aside>
   </div>
 </template>
@@ -306,6 +354,7 @@ onBeforeUnmount(stopPoll)
   align-items: center;
   margin-bottom: 10px;
 }
+.dw-detail-actions { display: flex; gap: 8px; }
 .dw-detail h3 { margin: 0; font-size: 14px; }
 .dw-detail dl {
   display: grid;
@@ -325,4 +374,30 @@ onBeforeUnmount(stopPoll)
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
 }
+.dw-attempts {
+  margin-top: 14px;
+  border-top: 1px dashed var(--kx-border);
+  padding-top: 10px;
+}
+.dw-attempts h4 {
+  margin: 0 0 8px;
+  font-size: 13px;
+}
+.dw-attempts ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+}
+.dw-attempts li {
+  display: grid;
+  grid-template-columns: 40px 1fr 90px 100px auto;
+  gap: 10px;
+  font-size: 12px;
+  padding: 4px 6px;
+  border-radius: 4px;
+  background: var(--kx-bg);
+}
+.dw-attempts .err { color: var(--kx-danger); }
 </style>

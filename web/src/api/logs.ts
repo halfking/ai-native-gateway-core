@@ -262,8 +262,10 @@ export function getRequestLogs(params: {
   return req<RequestLogsResponse>('GET', `/api/logs${s ? '?' + s : ''}`)
 }
 
-export function getRequestLogDetail(requestId: string) {
-  return req<RequestLogDetail>('GET', `/api/logs/${encodeURIComponent(requestId)}`)
+/** 请求详情。omitBody=true 时跳过后端 body 抓取，用于抽屉分阶段首包。 */
+export function getRequestLogDetail(requestId: string, opts?: { omitBody?: boolean }) {
+  const qs = opts?.omitBody ? '?omit_body=1' : ''
+  return req<RequestLogDetail>('GET', `/api/logs/${encodeURIComponent(requestId)}${qs}`)
 }
 
 // 2026-08-17: getRequestLogDetail 的 body 抓取（fetchRequestBodies）走进程内
