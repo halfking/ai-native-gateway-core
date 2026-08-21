@@ -72,15 +72,26 @@ func (p *PeriodicQuotaProbe) probePeriodicExhausted(ctx context.Context) error {
 	timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
+	// Periodic quota recovery is an upstream self-check, not a profile-quality
+	// check. An automatically profile-disabled credential may therefore be
+	// probed after its quota window expires; manual disables remain excluded.
 	rows, err := p.db.Query(timeoutCtx, `
 		SELECT c.id
 		FROM credentials c
 		JOIN providers p ON p.id = c.provider_id
 		WHERE c.quota_state = 'periodic_exhausted'
-		  AND c.lifecycle_status = 'active'
+		  AND c.status = 'active'
+		  AND (
+		      c.lifecycle_status = 'active'
+		      OR (
+		          c.lifecycle_status = 'disabled'
+		          AND c.auto_disabled_at IS NOT NULL
+		      )
+		  )
 		  AND COALESCE(c.manual_disabled, FALSE) = FALSE
 		  AND COALESCE(p.manual_disabled, FALSE) = FALSE
 		  AND p.enabled = TRUE
+		  AND (c.quota_recover_at IS NULL OR c.quota_recover_at <= now())
 		  AND COALESCE(c.default_probe_model, '') <> ''
 		LIMIT 100
 	`)
