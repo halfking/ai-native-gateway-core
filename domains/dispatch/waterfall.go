@@ -13,6 +13,7 @@ const waterfallRingCap = 200
 // admin waterfall UI. Timestamps are RFC3339Nano when present.
 type WaterfallRequest struct {
 	RequestID  string             `json:"request_id"`
+	TenantID   string             `json:"tenant_id,omitempty"`
 	SessionID  string             `json:"session_id,omitempty"`
 	Model      string             `json:"model,omitempty"`
 	Credential int                `json:"credential_id,omitempty"`
@@ -109,7 +110,8 @@ func (r *waterfallRing) push(item WaterfallRequest) {
 }
 
 // snapshot returns the newest-first slice, optionally filtered.
-func (r *waterfallRing) snapshot(limit int, model string, credentialID int) []WaterfallRequest {
+// tenantID empty means all tenants (platform ops); non-empty enforces isolation.
+func (r *waterfallRing) snapshot(limit int, model string, credentialID int, tenantID string) []WaterfallRequest {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -135,8 +137,10 @@ func (r *waterfallRing) snapshot(limit int, model string, credentialID int) []Wa
 			idx += len(r.buf)
 		}
 		item := cloneWaterfallRequest(r.buf[idx])
+		if tenantID != "" && item.TenantID != tenantID {
+			continue
+		}
 		if model != "" && item.Model != model {
-
 			continue
 		}
 		if credentialID > 0 && item.Credential != credentialID {
@@ -166,7 +170,8 @@ func (p *Pipeline) recordWaterfall(qr *QueuedRequest, out ForwardOutcome) {
 }
 
 // SnapshotWaterfall returns recent timelines + live bottleneck diagnosis.
-func (p *Pipeline) SnapshotWaterfall(limit int, model string, credentialID int) WaterfallSnapshot {
+// tenantID empty = all tenants (platform ops).
+func (p *Pipeline) SnapshotWaterfall(limit int, model string, credentialID int, tenantID string) WaterfallSnapshot {
 	snap := WaterfallSnapshot{
 		Requests: []WaterfallRequest{},
 		Enabled:  true, // AUDIT_24H B2b: dispatch is the only path
@@ -177,12 +182,14 @@ func (p *Pipeline) SnapshotWaterfall(limit int, model string, credentialID int) 
 		},
 	}
 	if p == nil {
+		snap.Source = "none"
 		return snap
 	}
 	ring := p.ensureWaterfallRing()
-	reqs := ring.snapshot(limit, model, credentialID)
+	reqs := ring.snapshot(limit, model, credentialID, tenantID)
 	snap.Requests = reqs
 	if len(reqs) > 0 {
+		snap.Source = "memory"
 		// requests are newest-first; time range is oldest→newest among sample.
 		end := reqs[0].ResponseEndAt
 		if end == "" {
@@ -190,6 +197,8 @@ func (p *Pipeline) SnapshotWaterfall(limit int, model string, credentialID int) 
 		}
 		start := reqs[len(reqs)-1].ArrivedAt
 		snap.TimeRange = &WaterfallTimeRange{Start: start, End: end}
+	} else {
+		snap.Source = "none"
 	}
 	models, creds := p.Snapshot()
 	snap.BottleneckDiagnosis = diagnoseBottleneck(models, creds)
@@ -199,6 +208,7 @@ func (p *Pipeline) SnapshotWaterfall(limit int, model string, credentialID int) 
 func buildWaterfallRequest(qr *QueuedRequest, out ForwardOutcome) WaterfallRequest {
 	item := WaterfallRequest{
 		RequestID:  qr.ID,
+		TenantID:   qr.TenantID,
 		SessionID:  qr.SessionID,
 		Model:      firstNonEmpty(qr.ResolvedModel, qr.RequestedModel),
 		Credential: qr.SelectedCred.CredentialID,

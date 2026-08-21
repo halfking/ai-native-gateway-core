@@ -113,13 +113,14 @@ func handleDispatchWaterfall(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var snap dispatch.WaterfallSnapshot
+	tenantID := admin.EffectiveTenantIDAll(r)
 	if projection := gatewayQueueProjection.Load(); projection != nil {
-		snap = projection.SnapshotWaterfall(limit, model, credID)
+		snap = projection.SnapshotWaterfall(limit, model, credID, tenantID)
 	} else {
 		snap = dispatch.WaterfallSnapshot{Requests: []dispatch.WaterfallRequest{}, Enabled: true, Wired: false,
 			BottleneckDiagnosis: dispatch.BottleneckDiagnosis{Bottleneck: "none", Message: "dispatch queue projection not wired"}}
 	}
-	snap = mergeWaterfallWithDB(r.Context(), snap, limit, model, credID, admin.EffectiveTenantIDAll(r))
+	snap = mergeWaterfallWithDB(r.Context(), snap, limit, model, credID, tenantID)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(snap)
 }

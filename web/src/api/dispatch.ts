@@ -16,6 +16,7 @@ export interface WaterfallAttempt {
 
 export interface WaterfallRequest {
   request_id: string
+  tenant_id?: string
   session_id?: string
   model?: string
   credential_id?: number

@@ -70,19 +70,19 @@ func TestQueueProjectionWaterfallIsDetachedAndCloseStopsObservations(t *testing.
 	}
 	projection.ObserveQueue(QueueObservation{Kind: QueueRequestCompleted, Completed: &completed})
 
-	snapshot := projection.SnapshotWaterfall(1, "", 0)
+	snapshot := projection.SnapshotWaterfall(1, "", 0, "")
 	if !snapshot.Wired || len(snapshot.Requests) != 1 {
 		t.Fatalf("waterfall snapshot = %+v", snapshot)
 	}
 	snapshot.Requests[0].Attempts[0].AttemptID = "mutated"
-	again := projection.SnapshotWaterfall(1, "", 0)
+	again := projection.SnapshotWaterfall(1, "", 0, "")
 	if got := again.Requests[0].Attempts[0].AttemptID; got != "attempt-1" {
 		t.Fatalf("waterfall attempts were not detached: %q", got)
 	}
 
 	projection.Close()
 	projection.ObserveQueue(QueueObservation{Kind: QueueRequestCompleted, Completed: &WaterfallRequest{RequestID: "request-2"}})
-	closed := projection.SnapshotWaterfall(10, "", 0)
+	closed := projection.SnapshotWaterfall(10, "", 0, "")
 	if closed.Wired || len(closed.Requests) != 0 {
 		t.Fatalf("closed projection waterfall = %+v", closed)
 	}
