@@ -208,7 +208,9 @@ backend = f"""    location = /healthz {{
         proxy_read_timeout 30s;
         proxy_send_timeout 30s;
     }}
-    location ^~ /admin/ {{
+    # Vue SPA lives under /admin/* — only config hot-reload is a Go endpoint.
+    # Never use location ^~ /admin/ (causes SPA 401 missing_key).
+    location = /admin/config/reload {{
 {proxy_common}        proxy_connect_timeout 30s;
         proxy_read_timeout 120s;
         proxy_send_timeout 120s;
