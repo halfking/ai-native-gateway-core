@@ -2,10 +2,12 @@ package admin
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // ── parseVendorModelsBody — covers all four recognised shapes ──────────────
@@ -322,7 +324,48 @@ func TestStartRefreshProviderModels_NoDatabase(t *testing.T) {
 	}
 }
 
-// ── fetchVendorModels — HTTP layer against a stub upstream ────────────────
+func TestCompleteProviderRefreshRun_QueryError(t *testing.T) {
+	run := &providerRefreshRun{Status: providerRefreshRunning}
+	queryErr := errors.New("connection refused")
+
+	completeProviderRefreshRun(run, 0, queryErr, 0, 0, nil, time.Unix(1, 0))
+
+	if run.Status != providerRefreshFailed {
+		t.Fatalf("status = %q, want failed", run.Status)
+	}
+	if run.Message != "刷新失败：读取凭据列表失败" {
+		t.Fatalf("message = %q", run.Message)
+	}
+	if len(run.Errors) != 1 || !strings.Contains(run.Errors[0], "connection refused") {
+		t.Fatalf("errors = %v", run.Errors)
+	}
+}
+
+func TestCompleteProviderRefreshRun_NoEligibleCredentials(t *testing.T) {
+	run := &providerRefreshRun{Status: providerRefreshRunning}
+
+	completeProviderRefreshRun(run, 0, nil, 0, 0, nil, time.Unix(1, 0))
+
+	if run.Status != providerRefreshSucceed {
+		t.Fatalf("status = %q, want succeeded", run.Status)
+	}
+	if !strings.Contains(run.Message, "未找到符合条件") {
+		t.Fatalf("message = %q", run.Message)
+	}
+}
+
+func TestCompleteProviderRefreshRun_CredentialFailures(t *testing.T) {
+	run := &providerRefreshRun{Status: providerRefreshRunning}
+
+	completeProviderRefreshRun(run, 1, nil, 0, 1, []string{"credential #6 failed"}, time.Unix(1, 0))
+
+	if run.Status != providerRefreshFailed {
+		t.Fatalf("status = %q, want failed", run.Status)
+	}
+	if len(run.Errors) != 1 {
+		t.Fatalf("errors = %v", run.Errors)
+	}
+}
 
 func testOpenAICred() credentialRowLite {
 	return credentialRowLite{protocol: "openai-completions", catalogCode: "test"}

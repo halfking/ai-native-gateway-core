@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import { isSuperAdmin } from '../store'
+import { isDefaultTenant } from '../store'
 import { emergencyRepair, patchCandidateBinding, resolveRouting, type RoutingCandidate } from '../api/routing'
 import { updateCredentialLifecycle, type CredentialLifecycleStatus } from '../api/providers'
 import {
@@ -20,6 +20,8 @@ import {
 import { nodesRef, type LiveNodeStatus } from '../composables/liveStreamStore'
 import RequestLogDrawer from './RequestLogDrawer.vue'
 import NodeDetailConcurrencyPanel from './NodeDetailConcurrencyPanel.vue'
+import NodeDetailOtherModelsPanel from './NodeDetailOtherModelsPanel.vue'
+import NodeDetailAccessErrorsPanel from './NodeDetailAccessErrorsPanel.vue'
 
 const props = defineProps<{
   modelValue: boolean
@@ -34,7 +36,9 @@ const emit = defineEmits<{
 }>()
 
 type Tab = 'detail' | 'requests' | 'settings'
+type SettingsSubTab = 'maintain' | 'other-models'
 const activeTab = ref<Tab>('detail')
+const settingsSubTab = ref<SettingsSubTab>('maintain')
 const loading = ref(false)
 const detailLoaded = ref(false)
 const detailLoading = ref(false)
@@ -109,6 +113,7 @@ function resetDrawerData() {
   actionMessage.value = ''
   actionError.value = ''
   detailRequestId.value = null
+  settingsSubTab.value = 'maintain'
 }
 
 function detailEntriesReset() {
@@ -204,7 +209,7 @@ const visible = computed({
   get: () => props.modelValue,
   set: (value: boolean) => emit('update:modelValue', value),
 })
-const canEdit = computed(() => isSuperAdmin())
+const canEdit = computed(() => isDefaultTenant())
 const currentNode = computed<LiveNodeStatus | null>(() => {
   if (!props.node) return null
   return nodesRef.value.find(node => node.credential_id === props.node?.credential_id) ?? props.node
@@ -212,13 +217,14 @@ const currentNode = computed<LiveNodeStatus | null>(() => {
 const node = currentNode
 // 模型×节点 scope：有 scope 时模型状态区只显示该模型，不展示无关模型。
 const scopedModel = computed(() => props.model?.trim() || '')
+const allModels = computed<CredentialModelStatus[]>(() => monitor.value?.models ?? [])
 const models = computed<CredentialModelStatus[]>(() => {
-  const all = monitor.value?.models ?? []
+  const all = allModels.value
   const scope = scopedModel.value.toLowerCase()
   if (!scope) return all
   return all.filter(model => model.raw_model_name.toLowerCase() === scope)
 })
-const selectedModelStatus = computed(() => models.value.find(model => model.raw_model_name === selectedModel.value) ?? null)
+const selectedModelStatus = computed(() => allModels.value.find(model => model.raw_model_name === selectedModel.value) ?? null)
 const resolvedProviderId = computed(() => currentNode.value?.provider_id ?? candidate.value?.provider_id ?? monitor.value?.provider_id ?? null)
 const headlineState = computed(() => {
   const node = currentNode.value
@@ -230,6 +236,9 @@ const headlineState = computed(() => {
   return '可用'
 })
 const errorKinds = computed(() => Object.entries(windowStats.value?.error_kinds ?? {}))
+const failedWindowEntries = computed(() => windowEntries.value.filter(entry => !entry.ok).slice(0, 40))
+const failedDecisions = computed(() => decisions.value.filter(d => !d.success).slice(0, 40))
+const otherModelsNeedRefresh = computed(() => (monitor.value?.models?.length ?? 0) <= 1)
 
 function fmtTime(value: string | number | null | undefined): string {
   if (value == null || value === '') return '—'
@@ -251,6 +260,37 @@ function openRequestDetail(rid: string | undefined) {
 }
 function closeRequestDetail() {
   detailRequestId.value = null
+}
+
+function mergeMonitorModels(incoming: CredentialModelStatus[]) {
+  if (!monitor.value) {
+    monitor.value = {
+      id: currentNode.value?.credential_id ?? 0,
+      provider_id: currentNode.value?.provider_id ?? 0,
+      provider_name: '',
+      label: '',
+      status: '',
+      availability_state: '',
+      health_status: '',
+      quota_state: '',
+      concurrency_limit: null,
+      concurrency_limit_auto: null,
+      effective_concurrency: 0,
+      manual_disabled: false,
+      consecutive_failures: 0,
+      availability_recover_at: null,
+      state_reason_code: null,
+      state_reason_detail: null,
+      health_checked_at: null,
+      total_requests: 0,
+      model_total: incoming.length,
+      model_available: incoming.filter(m => m.effective_state === 'available').length,
+      broken_model_count: incoming.filter(m => m.effective_state === 'probe_broken').length,
+      models: incoming,
+    }
+    return
+  }
+  monitor.value = { ...monitor.value, models: incoming }
 }
 
 async function loadModelDetails(model: string, requestSequence: number, signal: AbortSignal) {
@@ -646,6 +686,13 @@ onBeforeUnmount(() => {
               <div v-if="errorKinds.length" class="nd-error-kinds"><span v-for="[kind, count] in errorKinds" :key="kind">{{ kind }} × {{ count }}</span></div>
             </section>
 
+            <NodeDetailAccessErrorsPanel
+              :failed-window-entries="failedWindowEntries"
+              :failed-decisions="failedDecisions"
+              :fmt-time="fmtTime"
+              @open="openRequestDetail"
+            />
+
             <section class="nd-section">
               <h3>模型状态变化</h3>
               <p v-if="!history.length" class="nd-muted">暂无状态变化记录。</p>
@@ -666,34 +713,51 @@ onBeforeUnmount(() => {
         <template v-else-if="activeTab === 'settings'">
           <div v-if="settingsLoading && !coreLoaded && !candidate" class="nd-seg-loading" role="status">设置与维护加载中…</div>
           <template v-else>
-            <p v-if="!canEdit" class="nd-notice nd-notice--warn">仅系统管理员可以维护节点；当前以只读方式展示。</p>
-            <section class="nd-section">
-              <h3>连通性与紧急维护 <small v-if="coreLoading">核心状态加载中…</small></h3>
-              <div class="nd-actions"><button class="btn btn-primary btn-sm" :disabled="saving || !canEdit || !selectedModel" @click="testNow">{{ saving ? '处理中…' : '会话 Ping' }}</button><span v-if="pingResult" class="nd-muted">{{ pingResult.status }} · {{ pingResult.latency_ms }}ms · {{ fmtTime(pingResult.tested_at) }}</span><button class="btn btn-success btn-sm" :disabled="saving || !canEdit" @click="repair('force_enable')">强制启用</button><button class="btn btn-danger btn-sm" :disabled="saving || !canEdit" @click="repair('force_disable')">强制禁用</button><button class="btn btn-warning btn-sm" :disabled="saving || !canEdit" @click="repair('clear_circuit')">清除熔断</button><button class="btn btn-sm" :disabled="saving || !canEdit" @click="repair('reset_errors')">重置错误</button></div>
-            </section>
-            <section v-if="candidateLoading && !candidate" class="nd-section">
-              <h3>路由排序与生命周期</h3>
-              <div class="nd-seg-loading" role="status">候选排序加载中…</div>
-            </section>
-            <section v-else-if="candidate" class="nd-section">
-              <h3>路由排序与生命周期 <small>{{ selectedModel }}</small></h3>
-              <div class="nd-form-grid"><label>人工优先级<input v-model.number="manualPriority" type="number" min="0" max="99" :disabled="!canEdit" /></label><label>Routing Tier<input v-model.number="routingTier" type="number" min="0" max="9" :disabled="!canEdit" /></label><label>权重<input v-model.number="weight" type="number" min="0" max="10000" :disabled="!canEdit" /></label><label>生命周期<select v-model="lifecycle" :disabled="!canEdit"><option value="active">active（在用）</option><option value="disabled">disabled（停用）</option><option value="suspended">suspended（暂停）</option><option value="retired">retired（退役）</option></select></label></div><button class="btn btn-primary btn-sm" :disabled="saving || !canEdit" @click="saveSettings">保存设置</button>
-            </section>
-            <NodeDetailConcurrencyPanel
-              v-if="node"
+            <div class="nd-subtabs" role="tablist" aria-label="设置与维护子页">
+              <button type="button" role="tab" :class="{ active: settingsSubTab === 'maintain' }" @click="settingsSubTab = 'maintain'">当前维护</button>
+              <button type="button" role="tab" :class="{ active: settingsSubTab === 'other-models' }" @click="settingsSubTab = 'other-models'">其它模型</button>
+            </div>
+            <p v-if="!canEdit" class="nd-notice nd-notice--warn">仅 default 租户可以维护节点；当前以只读方式展示。</p>
+            <template v-if="settingsSubTab === 'maintain'">
+              <section class="nd-section">
+                <h3>连通性与紧急维护 <small v-if="coreLoading">核心状态加载中…</small></h3>
+                <div class="nd-actions"><button class="btn btn-primary btn-sm" :disabled="saving || !canEdit || !selectedModel" @click="testNow">{{ saving ? '处理中…' : '会话 Ping' }}</button><span v-if="pingResult" class="nd-muted">{{ pingResult.status }} · {{ pingResult.latency_ms }}ms · {{ fmtTime(pingResult.tested_at) }}</span><button class="btn btn-success btn-sm" :disabled="saving || !canEdit" @click="repair('force_enable')">强制启用</button><button class="btn btn-danger btn-sm" :disabled="saving || !canEdit" @click="repair('force_disable')">强制禁用</button><button class="btn btn-warning btn-sm" :disabled="saving || !canEdit" @click="repair('clear_circuit')">清除熔断</button><button class="btn btn-sm" :disabled="saving || !canEdit" @click="repair('reset_errors')">重置错误</button></div>
+              </section>
+              <section v-if="candidateLoading && !candidate" class="nd-section">
+                <h3>路由排序与生命周期</h3>
+                <div class="nd-seg-loading" role="status">候选排序加载中…</div>
+              </section>
+              <section v-else-if="candidate" class="nd-section">
+                <h3>路由排序与生命周期 <small>{{ selectedModel }}</small></h3>
+                <div class="nd-form-grid"><label>人工优先级<input v-model.number="manualPriority" type="number" min="0" max="99" :disabled="!canEdit" /></label><label>Routing Tier<input v-model.number="routingTier" type="number" min="0" max="9" :disabled="!canEdit" /></label><label>权重<input v-model.number="weight" type="number" min="0" max="10000" :disabled="!canEdit" /></label><label>生命周期<select v-model="lifecycle" :disabled="!canEdit"><option value="active">active（在用）</option><option value="disabled">disabled（停用）</option><option value="suspended">suspended（暂停）</option><option value="retired">retired（退役）</option></select></label></div><button class="btn btn-primary btn-sm" :disabled="saving || !canEdit" @click="saveSettings">保存设置</button>
+              </section>
+              <NodeDetailConcurrencyPanel
+                v-if="node"
+                :credential-id="node.credential_id"
+                :provider-id="resolvedProviderId"
+                :monitor="monitor"
+                :monitor-loading="coreLoading && !monitor"
+                :can-edit="canEdit"
+                @saved="actionMessage = '并发/指纹槽位已保存。'; emit('applied')"
+                @error="actionError = $event"
+              />
+              <section class="nd-section">
+                <h3>凭据与模型维护</h3>
+                <label class="nd-reason">维护原因（必填）<input v-model="modelActionReason" :disabled="!canEdit" placeholder="说明本次状态修改原因" /></label>
+                <div class="nd-actions"><button class="btn btn-danger btn-sm" :disabled="saving || !canEdit" @click="setCredentialDisabled(true)">禁用凭据</button><button class="btn btn-success btn-sm" :disabled="saving || !canEdit" @click="setCredentialDisabled(false)">恢复凭据</button><button v-if="selectedModelStatus" class="btn btn-sm" :disabled="saving || !canEdit" @click="toggleSelectedModel">{{ selectedModelStatus.binding_unavailable_reason === 'manual_offline' ? '恢复当前模型' : '下线当前模型' }}</button></div>
+              </section>
+            </template>
+            <NodeDetailOtherModelsPanel
+              v-else-if="node"
               :credential-id="node.credential_id"
-              :provider-id="resolvedProviderId"
-              :monitor="monitor"
-              :monitor-loading="coreLoading && !monitor"
+              :current-model="selectedModel"
+              :models="allModels"
               :can-edit="canEdit"
-              @saved="actionMessage = '并发/指纹槽位已保存。'; emit('applied')"
+              :needs-refresh="otherModelsNeedRefresh"
+              @refreshed="mergeMonitorModels"
+              @message="actionMessage = $event"
               @error="actionError = $event"
             />
-            <section class="nd-section">
-              <h3>凭据与模型维护</h3>
-              <label class="nd-reason">维护原因（必填）<input v-model="modelActionReason" :disabled="!canEdit" placeholder="说明本次状态修改原因" /></label>
-              <div class="nd-actions"><button class="btn btn-danger btn-sm" :disabled="saving || !canEdit" @click="setCredentialDisabled(true)">禁用凭据</button><button class="btn btn-success btn-sm" :disabled="saving || !canEdit" @click="setCredentialDisabled(false)">恢复凭据</button><button v-if="selectedModelStatus" class="btn btn-sm" :disabled="saving || !canEdit" @click="toggleSelectedModel">{{ selectedModelStatus.binding_unavailable_reason === 'manual_offline' ? '恢复当前模型' : '下线当前模型' }}</button></div>
-            </section>
           </template>
         </template>
       </div>
@@ -706,6 +770,6 @@ onBeforeUnmount(() => {
 .nd-mask { position: fixed; inset: 0; z-index: 3000; background: color-mix(in srgb, #000 38%, transparent); }
 .nd-drawer { position: fixed; z-index: 3001; top: 0; right: 0; width: min(940px, 94vw); height: 100vh; display: flex; flex-direction: column; background: var(--kx-surface); box-shadow: -12px 0 32px rgba(0,0,0,.24); color: var(--kx-text); }
 .nd-header { padding: 18px 22px 14px; border-bottom: 1px solid var(--kx-border); display:flex; justify-content:space-between; gap:16px; }
-.nd-eyebrow,.nd-muted,small { color: var(--kx-muted); font-size:12px; }.nd-header h2 { margin:4px 0 7px; font-size:18px; overflow-wrap:anywhere; }.nd-header-actions,.nd-state-row,.nd-actions,.nd-error-kinds { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }.nd-tabs { display:flex; gap:4px; padding:10px 22px 0; border-bottom:1px solid var(--kx-border); }.nd-tabs button { border:0; background:transparent; color:var(--kx-muted); padding:8px 12px; cursor:pointer; border-bottom:2px solid transparent; }.nd-tabs button.active { color:var(--kx-primary); border-bottom-color:var(--kx-primary); font-weight:600; }.nd-body { overflow:auto; padding:16px 22px 34px; }.nd-section { border:1px solid var(--kx-border); border-radius:8px; padding:14px; margin-bottom:12px; }.nd-section h3 { margin:0 0 12px; font-size:14px; }.nd-grid { display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:12px; margin:0; }.nd-grid div { min-width:0; }.nd-grid dt { color:var(--kx-muted); font-size:11px; margin-bottom:3px; }.nd-grid dd { margin:0; font-size:12px; overflow-wrap:anywhere; }.is-ok { color:var(--kx-success); }.is-warn { color:var(--kx-warning); }.is-bad { color:var(--kx-danger); }.nd-state { border-radius:999px; padding:2px 8px; border:1px solid currentColor; font-size:12px; }.nd-models { display:flex; gap:6px; flex-wrap:wrap; }.nd-model { display:grid; gap:3px; text-align:left; padding:8px; border:1px solid var(--kx-border); border-radius:6px; background:transparent; color:inherit; cursor:pointer; max-width:250px; }.nd-model.active { border-color:var(--kx-primary); background:color-mix(in srgb, var(--kx-primary) 8%, transparent); }.nd-model span { font-size:11px; }.nd-window { display:flex; align-items:stretch; height:26px; gap:2px; overflow:hidden; }.nd-window-cell { width:5px; min-width:3px; border:0; padding:0; border-radius:2px; background:var(--kx-danger); }.nd-window-cell.ok { background:var(--kx-success); }.nd-window-cell.is-clickable { cursor:pointer; }.nd-window-cell:disabled { cursor:default; opacity:.7; }.nd-link { border:0; background:transparent; color:var(--kx-primary); cursor:pointer; padding:0; font:inherit; text-decoration:underline; }.nd-seg-loading { padding:28px; text-align:center; color:var(--kx-muted); font-size:12px; }.nd-stat-line { font-size:12px; margin-top:8px; }.nd-error-kinds span { font-size:11px; border:1px solid var(--kx-border); border-radius:999px; padding:2px 7px; }.nd-history { padding:0; list-style:none; margin:0; }.nd-history li { display:grid; grid-template-columns:140px 100px 1fr; gap:8px; border-bottom:1px solid var(--kx-border); padding:7px 0; font-size:11px; }.nd-history time { color:var(--kx-muted); }.nd-table-wrap { overflow:auto; }.nd-table { border-collapse:collapse; width:100%; font-size:11px; }.nd-table th,.nd-table td { text-align:left; padding:6px; border-bottom:1px solid var(--kx-border); white-space:nowrap; }.nd-notice { padding:8px 10px; border-radius:6px; margin:0 0 12px; font-size:12px; }.nd-notice--warn { background:color-mix(in srgb, var(--kx-warning) 12%, transparent); color:var(--kx-warning); }.nd-notice--ok { background:color-mix(in srgb, var(--kx-success) 12%, transparent); color:var(--kx-success); }.nd-notice--error { background:color-mix(in srgb, var(--kx-danger) 12%, transparent); color:var(--kx-danger); }.nd-loading { padding:36px; text-align:center; color:var(--kx-muted); }.nd-form-grid { display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:12px; margin-bottom:12px; }.nd-form-grid label,.nd-reason { display:grid; gap:5px; font-size:12px; }.nd-form-grid input,.nd-form-grid select,.nd-reason input { box-sizing:border-box; width:100%; padding:7px; border:1px solid var(--kx-border); border-radius:5px; background:var(--kx-bg); color:inherit; }.nd-reason { margin-bottom:10px; max-width:560px; }
+.nd-eyebrow,.nd-muted,small { color: var(--kx-muted); font-size:12px; }.nd-header h2 { margin:4px 0 7px; font-size:18px; overflow-wrap:anywhere; }.nd-header-actions,.nd-state-row,.nd-actions,.nd-error-kinds { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }.nd-tabs { display:flex; gap:4px; padding:10px 22px 0; border-bottom:1px solid var(--kx-border); }.nd-tabs button { border:0; background:transparent; color:var(--kx-muted); padding:8px 12px; cursor:pointer; border-bottom:2px solid transparent; }.nd-tabs button.active { color:var(--kx-primary); border-bottom-color:var(--kx-primary); font-weight:600; }.nd-subtabs { display:flex; gap:6px; margin:0 0 12px; }.nd-subtabs button { border:1px solid var(--kx-border); background:transparent; color:var(--kx-muted); padding:6px 10px; border-radius:6px; cursor:pointer; font-size:12px; }.nd-subtabs button.active { color:var(--kx-primary); border-color:var(--kx-primary); background:color-mix(in srgb, var(--kx-primary) 8%, transparent); font-weight:600; }.nd-body { overflow:auto; padding:16px 22px 34px; }.nd-section { border:1px solid var(--kx-border); border-radius:8px; padding:14px; margin-bottom:12px; }.nd-section h3 { margin:0 0 12px; font-size:14px; }.nd-grid { display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:12px; margin:0; }.nd-grid div { min-width:0; }.nd-grid dt { color:var(--kx-muted); font-size:11px; margin-bottom:3px; }.nd-grid dd { margin:0; font-size:12px; overflow-wrap:anywhere; }.is-ok { color:var(--kx-success); }.is-warn { color:var(--kx-warning); }.is-bad { color:var(--kx-danger); }.nd-state { border-radius:999px; padding:2px 8px; border:1px solid currentColor; font-size:12px; }.nd-models { display:flex; gap:6px; flex-wrap:wrap; }.nd-model { display:grid; gap:3px; text-align:left; padding:8px; border:1px solid var(--kx-border); border-radius:6px; background:transparent; color:inherit; cursor:pointer; max-width:250px; }.nd-model.active { border-color:var(--kx-primary); background:color-mix(in srgb, var(--kx-primary) 8%, transparent); }.nd-model span { font-size:11px; }.nd-window { display:flex; align-items:stretch; height:26px; gap:2px; overflow:hidden; }.nd-window-cell { width:5px; min-width:3px; border:0; padding:0; border-radius:2px; background:var(--kx-danger); }.nd-window-cell.ok { background:var(--kx-success); }.nd-window-cell.is-clickable { cursor:pointer; }.nd-window-cell:disabled { cursor:default; opacity:.7; }.nd-link { border:0; background:transparent; color:var(--kx-primary); cursor:pointer; padding:0; font:inherit; text-decoration:underline; }.nd-seg-loading { padding:28px; text-align:center; color:var(--kx-muted); font-size:12px; }.nd-stat-line { font-size:12px; margin-top:8px; }.nd-error-kinds span { font-size:11px; border:1px solid var(--kx-border); border-radius:999px; padding:2px 7px; }.nd-history { padding:0; list-style:none; margin:0; }.nd-history li { display:grid; grid-template-columns:140px 100px 1fr; gap:8px; border-bottom:1px solid var(--kx-border); padding:7px 0; font-size:11px; }.nd-history time { color:var(--kx-muted); }.nd-table-wrap { overflow:auto; }.nd-table { border-collapse:collapse; width:100%; font-size:11px; }.nd-table th,.nd-table td { text-align:left; padding:6px; border-bottom:1px solid var(--kx-border); white-space:nowrap; }.nd-notice { padding:8px 10px; border-radius:6px; margin:0 0 12px; font-size:12px; }.nd-notice--warn { background:color-mix(in srgb, var(--kx-warning) 12%, transparent); color:var(--kx-warning); }.nd-notice--ok { background:color-mix(in srgb, var(--kx-success) 12%, transparent); color:var(--kx-success); }.nd-notice--error { background:color-mix(in srgb, var(--kx-danger) 12%, transparent); color:var(--kx-danger); }.nd-loading { padding:36px; text-align:center; color:var(--kx-muted); }.nd-form-grid { display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:12px; margin-bottom:12px; }.nd-form-grid label,.nd-reason { display:grid; gap:5px; font-size:12px; }.nd-form-grid input,.nd-form-grid select,.nd-reason input { box-sizing:border-box; width:100%; padding:7px; border:1px solid var(--kx-border); border-radius:5px; background:var(--kx-bg); color:inherit; }.nd-reason { margin-bottom:10px; max-width:560px; }
 @media (max-width:700px) { .nd-drawer { width:100vw; }.nd-header { padding:14px; }.nd-body { padding:12px; }.nd-grid,.nd-form-grid { grid-template-columns:1fr; }.nd-history li { grid-template-columns:1fr; gap:2px; }.nd-header { flex-direction:column; }.nd-header-actions { justify-content:flex-end; } }
 </style>

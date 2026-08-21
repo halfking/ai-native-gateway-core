@@ -252,3 +252,6 @@ test-history-demo.sh
 docs/全方面测试/results/runs/
 docs/全方面测试/results/*.jsonl
 gui-test-screenshots/
+# 2026-08-21: 本地 migration apply evidence 目录（按日期 / target 记录 staging apply
+# 过程，不入库）。保留 deploy/r-*/ 类似策略。
+records/
