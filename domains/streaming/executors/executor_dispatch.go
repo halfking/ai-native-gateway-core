@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strconv"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/runctx"
 	"github.com/kaixuan/llm-gateway-go/provider"
 	"github.com/kaixuan/llm-gateway-go/settings"
+	upstreampkg "github.com/kaixuan/llm-gateway-go/upstream"
 )
 
 // executor_dispatch.go implements the multi-tier dispatch pipeline
@@ -491,6 +493,11 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 
 	var result *ExecuteResult
 	var execErr error
+	// resolvedKeyIdx carries the key-rotator index used for THIS attempt so the
+	// success/error branches below can feed RecordKey{Success,Failure}.
+	// -1 means "single-key / no rotator / unresolved" — those paths skip the
+	// rotator bookkeeping entirely.
+	resolvedKeyIdx := -1
 	func() {
 		releasePeak := e.PeakCollector != nil
 		if releasePeak {
@@ -508,11 +515,27 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 		if cand.KeyRotator != nil {
 			idx := cand.KeyRotator.ResolveKey(cand.CredentialID, -1)
 			if idx < 0 {
-				execErr = errDispatchKeysExhausted
+				// ResolveKey exhausted the rotator. Distinguish "no key
+				// registered yet" (false alarm) from "ALL keys dead" (real
+				// credential-level fatal). Only the latter is propagated as a
+				// typed upstream error so the credential-level breaker opens;
+				// the former stays a plain dispatch error and falls back to
+				// failover. Mirrors OmniRoute A3 guard semantics.
+				if cand.KeyRotator.AllKeysInvalid(cand.CredentialID) {
+					execErr = &upstreampkg.Error{
+						Kind:       upstreampkg.KindQuota,
+						StatusCode: http.StatusTooManyRequests,
+						Message:    "all credential keys exhausted (terminal)",
+					}
+					resolvedKeyIdx = -1
+				} else {
+					execErr = errDispatchKeysExhausted
+				}
 				return
 			} else if idx >= 1 && idx-1 < len(cand.APIKeys) {
 				cand.APIKey = cand.APIKeys[idx-1]
 			}
+			resolvedKeyIdx = idx
 		}
 
 		// ── MM-1/MM-2 outbound attachment transforms ─────────────────
@@ -566,6 +589,11 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 	}()
 
 	if execErr == nil {
+		// Feed the key-rotator success path before the side-effect recorder so
+		// the next dispatch attempt's ResolveKey sees fresh state.
+		if cand.KeyRotator != nil && resolvedKeyIdx >= 0 {
+			cand.KeyRotator.RecordKeySuccess(cand.CredentialID, resolvedKeyIdx)
+		}
 		e.recordDispatchSuccess(params, cand, result)
 		return dispatch.ForwardOutcome{Result: result}
 	}
@@ -577,6 +605,14 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 		}
 	}
 	kind := e.recordDispatchError(params, cand, execErr)
+
+	// Per-key health: feed the rotator the failure kind so terminal kinds
+	// (KindQuotaPermanent / KindQuotaBalance / KindAuthRevoked) mark the key
+	// immediately and non-terminal kinds accumulate toward the threshold.
+	// Only meaningful when this attempt actually used a rotator-managed key.
+	if cand.KeyRotator != nil && resolvedKeyIdx >= 0 && !errors.Is(execErr, errDispatchKeysExhausted) {
+		cand.KeyRotator.RecordKeyFailure(cand.CredentialID, resolvedKeyIdx, kind)
+	}
 
 	// candidate_failure_logs (migration 300 + V358 session_id): one row per
 	// failed dispatch attempt. Ported from the retired legacy sync loop —
