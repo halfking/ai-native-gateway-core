@@ -498,31 +498,46 @@ describe('QueuePerspectivePanel', () => {
     expect(wrapper.text()).toContain('排序已过期')
   })
 
-  it('disables reordering when a status filter hides part of the candidate list', async () => {
+  it('reorders visible nodes while preserving hidden candidates in the full set', async () => {
     superAdmin.mockReturnValue(true)
     resolveRouting.mockImplementation(async (model: string) => ({
       raw_models: [model],
+      reorder_revision: `rev-${model}`,
       candidates: model === 'm-1'
         ? [
             { credential_id: 1, model_name: 'm-1', manual_priority: 1 },
             { credential_id: 2, model_name: 'm-1', manual_priority: 2 },
+            { credential_id: 3, model_name: 'm-1', manual_priority: 3 },
           ]
         : [],
     }))
     liveStreamState.nodes = [
-      { credential_id: 1, provider_id: 1, manual_disabled: false, circuit_state: 'closed', raw_models: ['m-1'] },
-      { credential_id: 2, provider_id: 1, manual_disabled: true, circuit_state: 'closed', raw_models: ['m-1'] },
+      { credential_id: 1, provider_id: 1, provider_code: 'p', manual_disabled: false, circuit_state: 'closed', raw_models: ['m-1'] },
+      { credential_id: 2, provider_id: 1, provider_code: 'p', manual_disabled: true, circuit_state: 'closed', raw_models: ['m-1'] },
+      { credential_id: 3, provider_id: 1, provider_code: 'p', manual_disabled: false, circuit_state: 'closed', raw_models: ['m-1'] },
     ]
 
     const wrapper = mountPanel()
     await flushPromises()
-    const manualDisabledFilter = wrapper.findAll('.qp-status-filter input')[2]
-    expect(manualDisabledFilter.exists()).toBe(true)
-    await manualDisabledFilter.setValue(false)
-
+    // Default filter is active-only: cards 1 and 3 visible; card 2 hidden.
     const cards = wrapper.findAll('.qp-node-card')
-    expect(cards).toHaveLength(1)
-    expect(cards[0].attributes('draggable')).toBe('false')
-    expect(wrapper.text()).toContain('优先级排序不可用')
+    expect(cards).toHaveLength(2)
+    expect(cards.every(card => card.attributes('draggable') === 'true')).toBe(true)
+
+    const transfer = { effectAllowed: '', dropEffect: '', setData: vi.fn() }
+    await cards[0].trigger('dragstart', { dataTransfer: transfer })
+    await cards[1].trigger('dragover', { dataTransfer: transfer })
+    await cards[1].trigger('drop', { dataTransfer: transfer })
+    await flushPromises()
+
+    // Visible order becomes [3, 1]; hidden #2 keeps its relative slot → [3, 2, 1].
+    expect(reorderCandidateBindings).toHaveBeenCalledWith(
+      [
+        { credential_id: 3, raw_model: 'm-1', manual_priority: 1 },
+        { credential_id: 2, raw_model: 'm-1', manual_priority: 2 },
+        { credential_id: 1, raw_model: 'm-1', manual_priority: 3 },
+      ],
+      { rawModel: 'm-1', expectedRevision: 'rev-m-1' },
+    )
   })
 })

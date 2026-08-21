@@ -1,9 +1,10 @@
 # 总览页「按模型分组的可用节点」优化方案与执行计划
 
-**状态**：Draft（待审计）；实施前必须完成评审确认，任何波次均不得将设计当作已上线事实。  
-**日期**：2026-08-20  
+**状态**：Implemented（D1–D4 已确认并实现，2026-08-21）；达 `LOCAL_VERIFIED`（vitest 36/36 + vite build）。待真实后端交互达 `REAL_DEPENDENCY_VERIFIED`。  
+**日期**：2026-08-20（2026-08-21 对照代码复审补记；同日开工并完成 P1–P5 本地验证）  
 **范围**：llm-gateway-go 前端（`web/src`，Vue 3 + Element Plus + Vite）。后端 API 全部已存在，**本次为纯前端改造，不涉及 DB 迁移 / 部署 / 重启**。  
-**目标页面**：`https://llm.kxpms.cn/dashboard` → 「实时流」tab 下的「按模型分组的可用节点」区块，以及点击节点后弹出的「节点详情抽屉」。
+**目标页面**：`https://llm.kxpms.cn/dashboard` → 「实时流」tab 下的「按模型分组的可用节点」区块，以及点击节点后弹出的「节点详情抽屉」。  
+**代码复审结论（2026-08-21）**：§1 数据流表、§2 差距、§3 方案与当前源码一致；D1 的 `onDrop` 完整集映射、R5 的 z-index 已核验并写入本文。
 
 ---
 
@@ -120,12 +121,17 @@ IMPLEMENTED != LOCAL_VERIFIED != REAL_DEPENDENCY_VERIFIED != RELEASE_READY
 **设计决策 D1（待审计确认，建议采纳）**：将 `canReorder` 从「必须四个状态全开」**解耦**为「单一 raw_model 候选集完整且拿到 `reorder_revision`」：
 
 - 新判定：`canReorder(group) = isSuperAdmin() && !dragSaving && group.reorderRawModel != null && group.reorderRevision != null`。
-- 原理：面板已持有 `modelCandidatesByRawModel`（完整候选列表，见 `QueuePerspectivePanel.vue:153/296`）。显示的是 `group.nodes`（过滤后子集，是完整候选列表的子序列）。拖拽时把「可见位置」映射回「完整候选列表位置」，在**完整列表**上 splice，再提交完整 `items`（含全部 credential 的连续 `manual_priority`）+ `expectedRevision`。后端 reorder 端点仍是原子写，行为不变。
+- 原理：面板已持有 `modelCandidatesByRawModel`（完整候选列表，见 `QueuePerspectivePanel.vue:153/296`）。显示的是 `filteredModelGroups[].nodes`（过滤后子集，是完整候选列表的子序列）。
+- **实现硬约束（代码审计补记，2026-08-21）**：当前 `onDrop`（约 L427–445）直接对 `group.nodes` splice 并提交 `items`。在「四个状态全开」前提下这恰好等于完整集；**一旦解耦过滤，必须改写**，否则会提交不完整集合，触发后端原子重排 409 / 数据错误：
+  1. 取完整候选：`full = modelCandidatesByRawModel.get(rawModel)`（credential_id 有序）。
+  2. 在**可见子集**上计算 from/to（用户拖的是过滤后的卡片）。
+  3. 把可见子集的相对顺序写回完整列表：仅调整可见 credential 在 `full` 中的相对次序，**不可见节点保持原相对位置不变**（典型算法：从 `full` 抽出可见 ids 按新顺序，再按原索引位回填）。
+  4. 提交 `items` = 完整 `full` 的 `1..N` 连续 `manual_priority` + `expectedRevision`。
 - 效果：即便默认仅显示「在用」节点，只要该模型是单一 raw_model 且后端返回了 `reorder_revision`，即可拖动重排；其他合并模型 / 别名聚合 / 未拿全候选集的组仍禁用（tooltip 说明原因）。
 - `dragDisabledHint` 文案同步更新（去掉「请显示全部状态」那条）。
-- 其它逻辑（`onDragStart/Over/Drop`、`reorderCandidateBindings`、409 过期刷新）保持不变。
+- `onDragStart/Over`、`reorderCandidateBindings`、409 过期刷新保持不变；**仅 `canReorder` + `onDrop` 映射逻辑变更**。
 
-> 备选（不推荐）：保留「必须全开」——但那样 R1 默认仅「在用」会让拖动默认不可用时，违背 R2 直观预期。故建议采纳 D1。
+> 备选（不推荐）：保留「必须全开」——但那样 R1 默认仅「在用」会让拖动默认不可用，违背 R2 直观预期。故建议采纳 D1。
 
 ### 3.3 R3：节点详情三 tab 异步自动加载 + 每 tab 加载动画
 
@@ -153,7 +159,8 @@ IMPLEMENTED != LOCAL_VERIFIED != REAL_DEPENDENCY_VERIFIED != RELEASE_READY
 ### 3.5 R5：滑动窗口点击请求 → 原始请求详情
 
 - `NodeDetailDrawer.vue` 滑动窗口区（`windowEntries` 渲染，约 `NodeDetailDrawer.vue:613`）单元格当前为纯展示 `<span class="nd-window-cell">`。
-- 改造：单元格带 `@click`，传 `entry.rid`；抽屉内置一个 `RequestLogDrawer` 实例（teleport 到 body，z-index 需高于 `nd-drawer` 的 3001，例如 4000），由 `requestId` 驱动显示 `getRequestLogDetail` 的原始详情（request/response body、routing_attempts、附件等）。
+- 改造：单元格带 `@click`，传 `entry.rid`；抽屉内置一个 `RequestLogDrawer` 实例，由 `requestId` 驱动显示 `getRequestLogDetail` 的原始详情（与 `https://llmgo.kxpms.cn/request-logs` 同一套原始详情 API）。
+- **z-index 审计补记（2026-08-21）**：`nd-drawer` = 3001；`RequestLogDrawer` 已有 `z-index: 9999 / 10000`，**无需再改 z-index**，仅需在 `NodeDetailDrawer` 内挂载并接线。
 - 不另起事件链：`NodeDetailDrawer` 自己托管子 `RequestLogDrawer`，自包含，避免 `QueuePerspectivePanel → LiveRequestStreamV2 → DashboardViewV2` 三级事件透传。
 - `rid` 可能为空的样本跳过点击（无详情可展示）。
 
@@ -188,7 +195,7 @@ IMPLEMENTED != LOCAL_VERIFIED != REAL_DEPENDENCY_VERIFIED != RELEASE_READY
 | `web/src/composables/liveStreamPreferences.ts` | D2：默认 `statusFilter` 种子改为仅 `active` |
 | `web/src/components/QueuePerspectivePanel.vue` | D1：`canReorder` 解耦全状态勾选；`dragDisabledHint` 文案；默认仅「在用」自动生效（渲染逻辑不变） |
 | `web/src/components/NodeDetailDrawer.vue` | R3 自动并行加载三 tab + 骨架；R4 设置 tab 多段异步；R5 滑动窗口点击 + 内置 `RequestLogDrawer`；R6 并发/指纹 slot 段（展示+编辑） |
-| `web/src/components/RequestLogDrawer.vue` | R5：确认/提升 teleport 容器 z-index > 3001，使其可覆盖 `nd-drawer`（若已满足则仅注释说明） |
+| `web/src/components/RequestLogDrawer.vue` | R5：z-index 已满足（9999>3001），原则上无改动；仅在 `NodeDetailDrawer` 内挂载复用 |
 | `web/src/components/FpSlotVisualizer.vue` | R6：复用，无改动（或按需微调尺寸以适配抽屉宽度） |
 | 单测 | `QueuePerspectivePanel.test.ts` 增：默认仅 active、D1 解耦后拖拽可启用；`NodeDetailDrawer.test.ts` 增：自动三 tab 加载、设置 tab 多段、滑动窗口点击触发 request 详情、fp slot 编辑保存 |
 
@@ -213,11 +220,14 @@ IMPLEMENTED != LOCAL_VERIFIED != REAL_DEPENDENCY_VERIFIED != RELEASE_READY
 
 ## 5. 审计清单 / 待确认项
 
-- [ ] **D1** 拖拽是否解耦「全状态勾选」（建议：是）。
-- [ ] **D2** 默认仅「在用」是否覆盖已保存偏好（建议：仅作首次种子，保留显式持久化）。
-- [ ] **D3** 滑动窗口详情是否用抽屉内置 `RequestLogDrawer`（建议：是，z>3001）。
-- [ ] **D4** 并发/指纹 slot 是否置于「设置与维护」tab（建议：是）。
+- [x] **D1** 拖拽是否解耦「全状态勾选」（已采纳并实现：完整候选集映射）。
+- [x] **D2** 默认仅「在用」是否覆盖已保存偏好（已采纳：仅作首次种子，保留显式持久化）。
+- [x] **D3** 滑动窗口详情是否用抽屉内置 `RequestLogDrawer`（已采纳，z-index 9999 已够）。
+- [x] **D4** 并发/指纹 slot 是否置于「设置与维护」tab（已采纳，抽出 `NodeDetailConcurrencyPanel`）。
 - [ ] 是否存在尚不可见的后端约束（如 fp slot 写需要特定 role/tenant）需在真实环境验证。
-- [ ] 三 tab 自动并行加载是否会对高频点击节点造成请求风暴（建议：沿用现有 `sequence`/Abort 机制 + 节流，必要时加并发上限）。
+- [x] 三 tab 自动并行加载是否会对高频点击节点造成请求风暴（沿用 `sequence`/Abort；core/detail monitor 合并防覆盖）。
 
-> 本文为方案文档，须经上述评审确认并达成 `LOCAL_VERIFIED` 后，方可进入 P1 实施。
+### 本地验证证据（2026-08-21）
+
+- `pnpm exec vitest run`（liveStreamPreferences + QueuePerspectivePanel + NodeDetailDrawer）→ **36/36 passed**
+- `pnpm exec vue-tsc --noEmit` + `pnpm exec vite build` → **通过**

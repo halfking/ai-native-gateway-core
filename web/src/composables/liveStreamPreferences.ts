@@ -75,11 +75,12 @@ function defaultFilters(): LiveStreamFilterPreferences {
 function defaultQueuePreferences(): QueuePerspectivePreferences {
   return {
     expandedModels: [],
+    // 2026-08-21: default to "in use" only; user can opt into the other three.
     statusFilter: {
       active: true,
-      degraded: true,
-      manualDisabled: true,
-      exhausted: true,
+      degraded: false,
+      manualDisabled: false,
+      exhausted: false,
     },
   }
 }
