@@ -288,13 +288,13 @@ func TestTCPChecker_RealWorldScenario(t *testing.T) {
 		{
 			name:          "Google DNS",
 			addr:          "8.8.8.8:53",
-			timeout:       2 * time.Second,
+			timeout:       5 * time.Second,
 			shouldSucceed: true,
 		},
 		{
 			name:          "Cloudflare DNS",
 			addr:          "1.1.1.1:53",
-			timeout:       2 * time.Second,
+			timeout:       5 * time.Second,
 			shouldSucceed: true,
 		},
 		{
