@@ -430,7 +430,7 @@ func buildTurnsSessionWhere(r *http.Request, tenantID string, tsFrom, tsTo time.
 		// topic、user_intent、摘要（含 session_summaries fallback），让自动生成
 		// 的标题/摘要也能被搜到。
 		clauses = append(clauses, fmt.Sprintf(
-			"(COALESCE(NULLIF(s.title, ''), st.title, ss.title, '') ILIKE '%%'||$%d||'%%'"+
+			"(CASE WHEN tstate.tenant_id IS NOT NULL THEN COALESCE(tstate.title, '') ELSE COALESCE(NULLIF(s.title, ''), st.title, ss.title, '') END ILIKE '%%'||$%d||'%%'"+
 				" OR COALESCE(NULLIF(s.topic, ''), '') ILIKE '%%'||$%d||'%%'"+
 				" OR COALESCE(NULLIF(s.intent, ''), ss.user_intent, '') ILIKE '%%'||$%d||'%%'"+
 				" OR COALESCE(NULLIF(s.summary, ''), ss.summary, '') ILIKE '%%'||$%d||'%%')",

@@ -7,7 +7,7 @@ import (
 )
 
 func TestDurableObservationOutboxMigrationContract(t *testing.T) {
-	body := readMigration(t, "../../sql/migrations/startup/550_request_journey_durable_outbox.sql")
+	body := readMigration(t, "../../sql/migrations/startup/552_request_journey_durable_outbox.sql")
 	for _, required := range []string{
 		"ADD COLUMN IF NOT EXISTS retry_at TIMESTAMPTZ",
 		"request_state_transitions_retry_at_event_chk",
@@ -36,7 +36,7 @@ func TestDurableObservationOutboxMigrationContract(t *testing.T) {
 }
 
 func TestDurableObservationOutboxDownMigrationContract(t *testing.T) {
-	body, err := os.ReadFile("../../sql/migrations/startup/550_request_journey_durable_outbox.down.sql")
+	body, err := os.ReadFile("../../sql/migrations/startup/552_request_journey_durable_outbox.down.sql")
 	if err != nil {
 		t.Fatal(err)
 	}

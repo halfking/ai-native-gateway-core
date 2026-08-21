@@ -171,9 +171,17 @@ func (p *Pipeline) onRetryDue(qr *QueuedRequest, retryAt time.Time) {
 	}
 	p.registry.MarkInFlight(qr.ID, time.Now())
 	p.queueMirror.ClearRetryAt(qr.ID)
-	if !p.tryEnqueueCred(qr.SelectedCred, qr) {
-		// R1.3: admission refused at re-enqueue → immediate overflow.
-		p.complete(qr, ForwardOutcome{Err: &OverflowError{Reason: "cred_queue_full", RetryAfter: DefaultOverflowRetryAfter}})
+
+	// Distinguish capacity retry from error retry
+	if qr.CapacityRetryCount > 0 {
+		// Capacity retry → re-route to all credentials (don't fix to one credential)
+		p.dispatch(qr)
+	} else {
+		// Error retry → re-enqueue to the same credential
+		if !p.tryEnqueueCred(qr.SelectedCred, qr) {
+			// R1.3: admission refused at re-enqueue → immediate overflow.
+			p.complete(qr, ForwardOutcome{Err: &OverflowError{Reason: "cred_queue_full", RetryAfter: DefaultOverflowRetryAfter}})
+		}
 	}
 }
 

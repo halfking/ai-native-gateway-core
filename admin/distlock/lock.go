@@ -71,10 +71,10 @@ const renewScript = `if redis.call('GET', KEYS[1]) == ARGV[1] then
 end
 return 0`
 
-type RedisManager struct{ rdb *redis.Client }
+type RedisManager struct{ rdb redis.UniversalClient }
 
-func NewRedisManager(rdb *redis.Client) *RedisManager { return &RedisManager{rdb: rdb} }
-func (m *RedisManager) Enabled() bool                 { return m != nil && m.rdb != nil }
+func NewRedisManager(rdb redis.UniversalClient) *RedisManager { return &RedisManager{rdb: rdb} }
+func (m *RedisManager) Enabled() bool                         { return m != nil && m.rdb != nil }
 
 func normalizeTTL(ttl time.Duration) time.Duration {
 	if ttl <= 0 {
@@ -175,7 +175,7 @@ func (m *RedisManager) Acquire(ctx context.Context, opts AcquireOpts) (h *Handle
 }
 
 type redisBackend struct {
-	rdb   *redis.Client
+	rdb   redis.UniversalClient
 	key   string
 	token string
 	ttl   time.Duration
@@ -332,7 +332,7 @@ func newTerminalFollower(key, scope string, err error) *Handle {
 	return h
 }
 
-func (h *Handle) startRedisWatcher(rdb *redis.Client) {
+func (h *Handle) startRedisWatcher(rdb redis.UniversalClient) {
 	go func() {
 		remaining := h.ttl
 		timer := time.NewTimer(remaining)
