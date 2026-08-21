@@ -95,8 +95,11 @@ func TestGoalHandoff_RestoreFailureIsFailOpenAndTenantScoped(t *testing.T) {
 		NewSessionID: "gw_new", TargetCreatedAt: time.Now().UTC(), IdempotencyKey: "0123456789abcdef",
 	}
 	first, err := hook.ConfirmRequest(context.Background(), input)
-	if err != nil || first == nil || !first.FirstConfirmation {
-		t.Fatalf("confirmation must remain successful after fail-open restore: result=%+v err=%v", first, err)
+	// Accounting commits (result returned, FirstConfirmation=true) but the
+	// retryable restore failure is now propagated so the HTTP layer can map it
+	// to 503 and the client can retry the idempotent confirmation.
+	if !errors.Is(err, ErrGoalRestoreRetryable) || first == nil || !first.FirstConfirmation {
+		t.Fatalf("confirmation must commit accounting and surface retryable restore error: result=%+v err=%v", first, err)
 	}
 	if trigger.Peek(proposal.ID, "tenant-a") == nil || trigger.Peek(proposal.ID, "tenant-b") != nil {
 		t.Fatal("failed restore must retain tenant-scoped state")
