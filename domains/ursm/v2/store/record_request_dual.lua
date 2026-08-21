@@ -305,13 +305,10 @@ local function apply_set(node_key, w1, w5, w30)
     redis.call("HINCRBY", node_key, "success_count", 1)
     redis.call("HSET", node_key, "fail_streak", "0")
   else
+    -- Empty responses short-circuit earlier via is_empty_response(); we only
+    -- reach this branch for non-empty failures. Keep behavior aligned with
+    -- record_request.lua so the dual and single writers stay in lockstep.
     redis.call("HINCRBY", node_key, "failure_count", 1)
-    -- Empty responses are recorded for binding-scoped routing penalties but
-    -- must never advance hard-disable state for this credential/model node.
-    if err_kind == "empty_response" then
-      redis.call("HSET", node_key, "disabled_reason", "empty_response_soft_penalty")
-      return
-    end
     local fatal = string.match(err_kind, "^auth") or string.match(err_kind, "^quota")
     if fatal then
       redis.call("HSET", node_key,
