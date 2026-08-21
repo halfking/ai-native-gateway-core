@@ -92,7 +92,7 @@ func mkEngineProfile(date time.Time, total float64) providerprofile.DailyProfile
 	return providerprofile.DailyProfile{ProfileDate: date, TotalScore: total, AvailabilityScore: 90}
 }
 
-func TestAlertEngine_DisablesLowScore(t *testing.T) {
+func TestAlertEngine_ReportsLowScoreWithoutDisablingCredential(t *testing.T) {
 	actor := newStubActor()
 	store := &stubAlertStore{}
 	now := time.Date(2026, 7, 26, 0, 0, 0, 0, time.UTC)
@@ -107,8 +107,8 @@ func TestAlertEngine_DisablesLowScore(t *testing.T) {
 	got, err := eng.EvaluateCredential(context.Background(), 42)
 	require.NoError(t, err)
 
-	assert.Equal(t, "disabled", got.Action, "should auto-disable")
-	assert.Contains(t, actor.disabled, int64(42), "Disable called")
+	assert.Equal(t, "none", got.Action, "profile alerts must not disable the whole credential")
+	assert.NotContains(t, actor.disabled, int64(42), "Disable must not be called by profile alerts")
 	assert.NotEmpty(t, store.saved, "alert saved")
 }
 
@@ -137,7 +137,7 @@ func TestAlertEngine_WhitelistBlocksDisable(t *testing.T) {
 	assert.NotContains(t, actor.disabled, int64(42), "Disable NOT called for whitelisted provider")
 }
 
-func TestAlertEngine_EnablesOnlyIfCurrentlyDisabled(t *testing.T) {
+func TestAlertEngine_ReportsRecoveryWithoutEnablingCredential(t *testing.T) {
 	actor := newStubActor()
 	actor.lifecycle[42] = "disabled" // currently disabled → eligible for recovery
 	store := &stubAlertStore{}
@@ -152,8 +152,8 @@ func TestAlertEngine_EnablesOnlyIfCurrentlyDisabled(t *testing.T) {
 
 	got, err := eng.EvaluateCredential(context.Background(), 42)
 	require.NoError(t, err)
-	assert.Equal(t, "enabled", got.Action)
-	assert.Contains(t, actor.enabled, int64(42))
+	assert.Equal(t, "none", got.Action, "profile alerts must not enable the whole credential")
+	assert.NotContains(t, actor.enabled, int64(42), "Enable must not be called by profile alerts")
 }
 
 func TestAlertEngine_DoesNotEnableIfAlreadyActive(t *testing.T) {
@@ -187,10 +187,10 @@ func TestAlertEngine_SaveFailureIsReturned(t *testing.T) {
 
 	_, err := eng.EvaluateCredential(context.Background(), 42)
 	require.Error(t, err)
-	assert.ErrorContains(t, err, "save auto-disabled alert")
+	assert.ErrorContains(t, err, "save auto-disable advisory")
 }
 
-func TestAlertEngine_EventFailureIsReturned(t *testing.T) {
+func TestAlertEngine_AdvisoryEventFailureIsReturned(t *testing.T) {
 	actor := newStubActor()
 	actor.eventErr = errors.New("event store unavailable")
 	store := &stubAlertStore{}
@@ -203,14 +203,13 @@ func TestAlertEngine_EventFailureIsReturned(t *testing.T) {
 
 	got, err := eng.EvaluateCredential(context.Background(), 42)
 	require.Error(t, err)
-	assert.ErrorContains(t, err, "record auto-disabled event")
+	assert.ErrorContains(t, err, "record auto-disable advisory")
 	assert.Equal(t, "none", got.Action)
 }
 
-func TestAlertEngine_EnableFailureIsReturned(t *testing.T) {
+func TestAlertEngine_DoesNotCallEnableForRecoveryAlert(t *testing.T) {
 	actor := newStubActor()
 	actor.lifecycle[42] = "disabled"
-	actor.enableErr = errors.New("credential update failed")
 	store := &stubAlertStore{}
 	now := time.Date(2026, 7, 26, 0, 0, 0, 0, time.UTC)
 	src := &stubProfileSource{profiles: map[int64][]providerprofile.DailyProfile{
@@ -219,9 +218,10 @@ func TestAlertEngine_EnableFailureIsReturned(t *testing.T) {
 	eng := providerprofile.NewAlertEngine(src, store, actor, providerprofile.DefaultAlertConfig())
 	eng.SetClock(func() time.Time { return now })
 
-	_, err := eng.EvaluateCredential(context.Background(), 42)
-	require.Error(t, err)
-	assert.ErrorContains(t, err, "enable credential")
+	got, err := eng.EvaluateCredential(context.Background(), 42)
+	require.NoError(t, err)
+	assert.Equal(t, "none", got.Action)
+	assert.NotContains(t, actor.enabled, int64(42))
 }
 
 func TestAlertEngine_NoDataNoAction(t *testing.T) {
