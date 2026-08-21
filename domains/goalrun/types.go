@@ -172,35 +172,35 @@ const (
 
 // GoalRun 是持久编排账本的投影（设计 13 §6.2）。
 type GoalRun struct {
-	ID                       string
-	TenantID                 string
-	APIKeyID                 string
-	RootGoalID               string
-	RootSessionID            string
-	CurrentSessionID         string
-	RootRequestID            string
-	LastRequestID            string
-	LastDurableTaskID        string
-	Status                   Status
-	PolicyVersion            int
-	PolicySnapshot           []byte
-	InstructionHash          string
+	ID                         string
+	TenantID                   string
+	APIKeyID                   string
+	RootGoalID                 string
+	RootSessionID              string
+	CurrentSessionID           string
+	RootRequestID              string
+	LastRequestID              string
+	LastDurableTaskID          string
+	Status                     Status
+	PolicyVersion              int
+	PolicySnapshot             []byte
+	InstructionHash            string
 	RedactedInstructionSummary string
-	TurnCount                int
-	FollowUpCount            int
-	RetryCount               int
-	ModelSwitchCount         int
-	HandoffCount             int
-	TokensUsed               int64
-	LastProgressHash         string
-	DeadlineAt               time.Time
-	LeaseOwner               string
-	LeaseUntil               time.Time
-	Version                  int64
-	TerminalReason           string
-	CreatedAt                time.Time
-	UpdatedAt                time.Time
-	CompletedAt              time.Time
+	TurnCount                  int
+	FollowUpCount              int
+	RetryCount                 int
+	ModelSwitchCount           int
+	HandoffCount               int
+	TokensUsed                 int64
+	LastProgressHash           string
+	DeadlineAt                 time.Time
+	LeaseOwner                 string
+	LeaseUntil                 time.Time
+	Version                    int64
+	TerminalReason             string
+	CreatedAt                  time.Time
+	UpdatedAt                  time.Time
+	CompletedAt                time.Time
 }
 
 // GoalRunStep 是 GoalRun 内一次单调序号的请求/恢复/审计/handoff 动作（设计 13 §6.2）。
@@ -231,6 +231,10 @@ type GoalRunAction struct {
 	RetryAt         time.Time
 	Attempts        int
 	LastError       string
+	LeaseOwner      string
+	LeaseUntil      time.Time
+	FencingToken    int64
+	ClaimedAt       time.Time
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
 }
