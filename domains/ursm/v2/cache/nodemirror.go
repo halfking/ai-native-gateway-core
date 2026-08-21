@@ -30,8 +30,11 @@ type NodeView struct {
 	CoolUntil      time.Time
 	// Scoring fields (M2): mirror what FilterAndScore reads so a cache hit
 	// can produce the same Score as a fresh Redis read.
-	LatEWMA int
-	SR5m    float64
+	LatEWMA             int
+	SR5m                float64
+	Samples5m           int
+	EmptyResponses5m    int
+	EmptyResponseRate5m float64
 	// HealthStatus (会话优化 v4 T5 / P1-5, UT-UR-12) carries the rich
 	// node-health enum (api.HealthStatus*) from the Redis "health" field so
 	// a mirror hit surfaces the same value a fresh read would. DISPLAY-ONLY:
@@ -231,18 +234,21 @@ func (m *NodeMirror) ApplyFromAPI(v api.NodeView) {
 		return
 	}
 	m.applyToLRU(NodeView{
-		TenantID:       v.TenantID,
-		CredentialID:   v.CredentialID,
-		RawModel:       v.RawModel,
-		Available:      v.Available,
-		Reason:         v.Reason,
-		Generation:     v.Generation,
-		SourcePriority: v.SrcPriority,
-		FailStreak:     v.FailStreak,
-		CoolUntil:      v.CoolUntil,
-		LatEWMA:        v.LatEWMA,
-		SR5m:           v.SR5m,
-		HealthStatus:   v.HealthStatus,
-		CachedAt:       time.Now(),
+		TenantID:            v.TenantID,
+		CredentialID:        v.CredentialID,
+		RawModel:            v.RawModel,
+		Available:           v.Available,
+		Reason:              v.Reason,
+		Generation:          v.Generation,
+		SourcePriority:      v.SrcPriority,
+		FailStreak:          v.FailStreak,
+		CoolUntil:           v.CoolUntil,
+		LatEWMA:             v.LatEWMA,
+		SR5m:                v.SR5m,
+		Samples5m:           v.Samples5m,
+		EmptyResponses5m:    v.EmptyResponses5m,
+		EmptyResponseRate5m: v.EmptyResponseRate5m,
+		HealthStatus:        v.HealthStatus,
+		CachedAt:            time.Now(),
 	})
 }

@@ -93,6 +93,47 @@ func TestOutcomeReducerModelBindingFailureIsolatesCredentialScope(t *testing.T) 
 	}
 }
 
+func TestOutcomeReducerEmptyResponseIsURSMOnlyAndDoesNotPolluteSibling(t *testing.T) {
+	r := nodehealth.NewOutcomeReducer()
+	modelA := nodehealth.NodeKey{TenantID: "tenant-a", CredentialID: 42, Model: "model-a"}
+	modelB := nodehealth.NodeKey{TenantID: "tenant-a", CredentialID: 42, Model: "model-b"}
+
+	for i := 0; i < 3; i++ {
+		decision, err := r.Reduce(nodehealth.Observation{
+			Node: modelA, AttemptID: fmt.Sprintf("empty-%d", i), Phase: nodehealth.PhaseRequest,
+			Outcome: requestjourney.OutcomeFailure, ErrorKind: nodehealth.ErrorKindEmptyResponse,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if decision.Status != requestjourney.NodeHealthHealthy || decision.ConsecutiveFailures != 0 {
+			t.Fatalf("empty response %d changed node health: %+v", i, decision)
+		}
+		assertEffect(t, decision, nodehealth.EffectUpdateURSM)
+		for _, forbidden := range []nodehealth.EffectKind{
+			nodehealth.EffectPersistNodeStatus,
+			nodehealth.EffectRecordCircuitFailure,
+			nodehealth.EffectSetBindingUnavailable,
+			nodehealth.EffectSetCredentialUnavailable,
+			nodehealth.EffectInvalidateCandidateCache,
+			nodehealth.EffectScheduleProbe,
+		} {
+			assertNoEffect(t, decision, forbidden)
+		}
+	}
+
+	sibling, err := r.Reduce(nodehealth.Observation{
+		Node: modelB, AttemptID: "sibling", Phase: nodehealth.PhaseRequest,
+		Outcome: requestjourney.OutcomeFailure, ErrorKind: nodehealth.ErrorKindNetwork,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sibling.PreviousStatus != requestjourney.NodeHealthHealthy || sibling.ConsecutiveFailures != 1 {
+		t.Fatalf("model-b was polluted by model-a empty responses: %+v", sibling)
+	}
+}
+
 func TestOutcomeReducerSiblingModelKeepsServingAfterBindingFailure(t *testing.T) {
 	r := nodehealth.NewOutcomeReducer()
 	modelA := nodehealth.NodeKey{CredentialID: 42, Model: "model-a"}
@@ -554,5 +595,35 @@ func TestOutcomeReducerEvictsOldDedupEntriesWithoutResettingNodeState(t *testing
 	}
 	if replayed.Status != requestjourney.NodeHealthHealthy || replayed.ConsecutiveFailures != 0 {
 		t.Fatalf("success after eviction did not recover node: %+v", replayed)
+	}
+}
+
+type failOnceAdapter struct{ calls atomic.Int64 }
+
+func (a *failOnceAdapter) ApplyNodeHealthDecision(context.Context, nodehealth.Decision) error {
+	if a.calls.Add(1) == 1 {
+		return fmt.Errorf("temporary URSM write failure")
+	}
+	return nil
+}
+
+func TestOutcomeReducerEmptyResponseRetriesAfterAdapterFailure(t *testing.T) {
+	r := nodehealth.NewOutcomeReducer()
+	adapter := &failOnceAdapter{}
+	observation := nodehealth.Observation{
+		Node:      nodehealth.NodeKey{TenantID: "tenant-a", CredentialID: 42, Model: "model-a"},
+		AttemptID: "empty-attempt", Phase: nodehealth.PhaseRequest,
+		Outcome: requestjourney.OutcomeFailure, ErrorKind: nodehealth.ErrorKindEmptyResponse,
+	}
+	first, err := r.ReduceAndApply(context.Background(), observation, adapter)
+	if err == nil || !first.Accepted {
+		t.Fatalf("first result = %+v, %v; want accepted adapter failure", first, err)
+	}
+	second, err := r.ReduceAndApply(context.Background(), observation, adapter)
+	if err != nil || !second.Accepted || second.Duplicate {
+		t.Fatalf("retry result = %+v, %v; want accepted successful replay", second, err)
+	}
+	if got := adapter.calls.Load(); got != 2 {
+		t.Fatalf("adapter calls=%d, want 2", got)
 	}
 }

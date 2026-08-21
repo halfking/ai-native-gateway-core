@@ -303,7 +303,7 @@ func (r *Router) planCandidates(
 			seeds = append(seeds, ursmv2.CandidateSeed{
 				ProviderID:   c.ProviderID,
 				CredentialID: c.CredentialID,
-				RawModel:     c.RawModel,
+				RawModel:     c.BindingRawModel(),
 				Canonical:    firstNonEmpty(c.StandardizedName, canonical),
 				TenantID:     tenantID,
 				PriceIn:      derefPrice(c.PriceInPer1M),
@@ -336,7 +336,7 @@ func (r *Router) planCandidates(
 		}
 		filtered := make([]provider.Candidate, 0, len(candidates))
 		for i, c := range candidates {
-			if allow[seedLookupKey(seeds[i].ProviderID, c.CredentialID, c.RawModel)] ||
+			if allow[seedLookupKey(seeds[i].ProviderID, c.CredentialID, c.BindingRawModel())] ||
 				(probePin != nil && c.CredentialID == *probePin) {
 				filtered = append(filtered, c)
 			}
@@ -589,7 +589,7 @@ func splitStrictCanaryCandidates(manager *ursmv2.Manager, tenant string, candida
 		return candidates, nil
 	}
 	for _, candidate := range candidates {
-		if manager.AllowsIdentity(tenant, candidate.CredentialID, candidate.RawModel) {
+		if manager.AllowsIdentity(tenant, candidate.CredentialID, candidate.BindingRawModel()) {
 			scoped = append(scoped, candidate)
 		} else {
 			legacy = append(legacy, candidate)
@@ -600,7 +600,7 @@ func splitStrictCanaryCandidates(manager *ursmv2.Manager, tenant string, candida
 
 func candidateSeed(c provider.Candidate, tenant, canonical string) ursmv2.CandidateSeed {
 	return ursmv2.CandidateSeed{
-		ProviderID: c.ProviderID, CredentialID: c.CredentialID, RawModel: c.RawModel,
+		ProviderID: c.ProviderID, CredentialID: c.CredentialID, RawModel: c.BindingRawModel(),
 		Canonical: firstNonEmpty(c.StandardizedName, canonical), TenantID: tenant,
 		PriceIn: derefPrice(c.PriceInPer1M), PriceOut: derefPrice(c.PriceOutPer1M),
 		BillingMode: c.BillingMode, BaseURLMs: c.P50LatencyMs,
@@ -661,10 +661,10 @@ func (r *Router) planWithURSMv2Context(fallback []provider.Candidate, requestCtx
 	seeds := make([]ursmv2.CandidateSeed, 0, len(fallback))
 	lookup := make(map[string]provider.Candidate, len(fallback))
 	for _, c := range fallback {
-		key := seedLookupKey(c.ProviderID, c.CredentialID, c.RawModel)
+		key := seedLookupKey(c.ProviderID, c.CredentialID, c.BindingRawModel())
 		lookup[key] = c
 		seeds = append(seeds, ursmv2.CandidateSeed{
-			ProviderID: c.ProviderID, CredentialID: c.CredentialID, RawModel: c.RawModel,
+			ProviderID: c.ProviderID, CredentialID: c.CredentialID, RawModel: c.BindingRawModel(),
 			Canonical: firstNonEmpty(c.StandardizedName, canonical), TenantID: tenant,
 			PriceIn: derefPrice(c.PriceInPer1M), PriceOut: derefPrice(c.PriceOutPer1M),
 			BillingMode: c.BillingMode, BaseURLMs: c.P50LatencyMs,
@@ -716,12 +716,12 @@ func (r *Router) planWithURSMv2(fallback []provider.Candidate) []provider.Candid
 	seeds := make([]ursmv2.CandidateSeed, 0, len(fallback))
 	lookup := make(map[string]provider.Candidate, len(fallback))
 	for _, c := range fallback {
-		key := seedLookupKey(c.ProviderID, c.CredentialID, c.RawModel)
+		key := seedLookupKey(c.ProviderID, c.CredentialID, c.BindingRawModel())
 		lookup[key] = c
 		seeds = append(seeds, ursmv2.CandidateSeed{
 			ProviderID:   c.ProviderID,
 			CredentialID: c.CredentialID,
-			RawModel:     c.RawModel,
+			RawModel:     c.BindingRawModel(),
 			Canonical:    c.StandardizedName,
 			TenantID:     "", // TODO(T20): plumb tenant through PlanCandidates.
 			PriceIn:      derefPrice(c.PriceInPer1M),

@@ -87,6 +87,16 @@ func recordSuspiciousExitDBDuration(seconds float64) {
 	suspiciousExitDBDuration.Observe(seconds)
 }
 
+// BindingRawModel returns the model_offers identity used for routing state.
+// RawModel is the outbound request name and can be shared by several bindings.
+// State keyed by RawModel would merge their independent health telemetry.
+func (c Candidate) BindingRawModel() string {
+	if strings.TrimSpace(c.OfferRawModel) != "" {
+		return strings.TrimSpace(c.OfferRawModel)
+	}
+	return strings.TrimSpace(c.RawModel)
+}
+
 type Candidate struct {
 	CredentialID     int     `json:"credential_id"`
 	ProviderID       int     `json:"provider_id"`

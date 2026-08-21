@@ -308,3 +308,32 @@ func TestOmniFreeInfraFailureMetricContract(t *testing.T) {
 
 	t.Fatal("omnifree_infra_failure_total was not registered")
 }
+
+func TestEmptyResponseMetricsUseFixedReasonLabels(t *testing.T) {
+	readCounter := func(counter interface{ Write(*dto.Metric) error }) float64 {
+		m := &dto.Metric{}
+		if err := counter.Write(m); err != nil {
+			t.Fatalf("counter.Write: %v", err)
+		}
+		return m.GetCounter().GetValue()
+	}
+
+	for input, label := range map[string]string{
+		"empty_stream_no_content": "done_no_content",
+		"early_empty_detection":   "early_empty",
+		"arbitrary-upstream-text": "other",
+	} {
+		counter := emptyResponseAttempts.WithLabelValues(label)
+		before := readCounter(counter)
+		RecordEmptyResponseAttempt(input)
+		if got := readCounter(counter); got != before+1 {
+			t.Fatalf("emptyResponseAttempts{%s}=%v, want %v", label, got, before+1)
+		}
+	}
+
+	before := readCounter(emptyResponsePenaltyApplied)
+	RecordURSMSoftEmptyResponsePenalty()
+	if got := readCounter(emptyResponsePenaltyApplied); got != before+1 {
+		t.Fatalf("emptyResponsePenaltyApplied=%v, want %v", got, before+1)
+	}
+}

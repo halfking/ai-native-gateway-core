@@ -34,6 +34,10 @@ const (
 	ErrorKindAuth         ErrorKind = "auth"
 	ErrorKindQuota        ErrorKind = "quota"
 	ErrorKindModelBinding ErrorKind = "model_binding"
+	// ErrorKindEmptyResponse is a binding-scoped quality signal. It is recorded
+	// in URSM for routing penalties but cannot escalate a credential-wide circuit
+	// or availability state.
+	ErrorKindEmptyResponse ErrorKind = "empty_response"
 	// ErrorKindRequest is a terminal attempt failure caused by request shape,
 	// context, or content policy. It is observable but not node-health evidence.
 	ErrorKindRequest ErrorKind = "request"
@@ -147,8 +151,9 @@ type eventKey struct {
 
 // seenEntry is one slot of the insertion-ordered deduplication ring.
 type seenEntry struct {
-	key eventKey
-	at  time.Time
+	key    eventKey
+	at     time.Time
+	active bool
 }
 
 // ReducerConfig tunes the outcome reducer. Zero values select production
@@ -248,7 +253,7 @@ func (r *OutcomeReducer) Reduce(observation Observation) (Decision, error) {
 		state.consecutiveFailures = 0
 		state.status = requestjourney.NodeHealthHealthy
 	case requestjourney.OutcomeFailure:
-		if observation.ErrorKind == ErrorKindRequest {
+		if observation.ErrorKind == ErrorKindRequest || observation.ErrorKind == ErrorKindEmptyResponse {
 			break
 		}
 		state.consecutiveFailures++
@@ -301,7 +306,7 @@ func (r *OutcomeReducer) rememberLocked(key eventKey, decision Decision, now tim
 		r.seenHead++
 		recordSeenEviction(evictionReasonCapacity)
 	}
-	r.seenRing = append(r.seenRing, seenEntry{key: key, at: now})
+	r.seenRing = append(r.seenRing, seenEntry{key: key, at: now, active: true})
 	r.seen[key] = decision
 	r.compactSeenLocked()
 }
@@ -313,9 +318,12 @@ func (r *OutcomeReducer) rememberLocked(key eventKey, decision Decision, now tim
 func (r *OutcomeReducer) reclaimSeenLocked(now time.Time) {
 	deadline := now.Add(-r.seenTTL)
 	for r.seenHead < len(r.seenRing) && r.seenRing[r.seenHead].at.Before(deadline) {
-		delete(r.seen, r.seenRing[r.seenHead].key)
+		entry := r.seenRing[r.seenHead]
+		if entry.active {
+			delete(r.seen, entry.key)
+			recordSeenEviction(evictionReasonTTL)
+		}
 		r.seenHead++
-		recordSeenEviction(evictionReasonTTL)
 	}
 	r.compactSeenLocked()
 }
@@ -345,9 +353,34 @@ func (r *OutcomeReducer) ReduceAndApply(ctx context.Context, observation Observa
 		return decision, err
 	}
 	if err := adapter.ApplyNodeHealthDecision(ctx, decision); err != nil {
+		// Empty responses are intentionally URSM-only and do not mutate reducer
+		// health state. If their sole side effect fails, allow the same attempt to
+		// replay instead of suppressing its routing penalty for the seen TTL.
+		if decision.ErrorKind == ErrorKindEmptyResponse {
+			r.forgetSeen(observation)
+		}
 		return decision, fmt.Errorf("nodehealth: apply decision: %w", err)
 	}
 	return decision, nil
+}
+
+func (r *OutcomeReducer) forgetSeen(observation Observation) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	key := eventKey{node: observation.Node, attemptID: observation.AttemptID, phase: observation.Phase}
+	delete(r.seen, key)
+	// Keep the ring and map coherent: a later successful replay may use the
+	// same key, so the failed entry must not delete that newer mapping at TTL
+	// reclamation time.
+	for i := len(r.seenRing) - 1; i >= r.seenHead; i-- {
+		if r.seenRing[i].active && r.seenRing[i].key == key {
+			r.seenRing[i].active = false
+			break
+		}
+	}
 }
 
 func (r *OutcomeReducer) directProbeSucceeded(observation Observation) bool {
@@ -360,6 +393,12 @@ func (r *OutcomeReducer) directProbeSucceeded(observation Observation) bool {
 func effectsFor(observation Observation, decision Decision) []Effect {
 	if observation.Outcome == requestjourney.OutcomeCanceled || observation.ErrorKind == ErrorKindRequest {
 		return nil
+	}
+	if observation.Outcome == requestjourney.OutcomeFailure && observation.ErrorKind == ErrorKindEmptyResponse {
+		// Empty responses are already failover-eligible at the executor. Keep
+		// their only durable routing effect on the exact tenant/credential/model
+		// node in URSM; do not let a short burst poison sibling models.
+		return []Effect{{Kind: EffectUpdateURSM}}
 	}
 	effects := []Effect{{Kind: EffectPersistNodeStatus}}
 	if observation.Outcome == requestjourney.OutcomeSuccess {
