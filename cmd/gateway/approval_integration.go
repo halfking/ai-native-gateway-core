@@ -242,6 +242,9 @@ func createLLMCaller(chatHandler *streaming.ChatHandler, pendingStore *pending.S
 			if result == pending.DurableCASStale {
 				return session.ErrResumeLeaseLost
 			}
+			if result != pending.DurableCASApplied {
+				return fmt.Errorf("llm caller: durable pending response rejected: %d", result)
+			}
 		} else if err := pendingStore.Save(ctx, resp); err != nil {
 			return fmt.Errorf("llm caller: save to pending store: %w", err)
 		}
