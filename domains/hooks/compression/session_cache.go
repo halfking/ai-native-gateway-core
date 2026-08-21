@@ -458,8 +458,12 @@ func (c *SessionCache) Invalidate(ctx context.Context, tenantID, gwSessionID str
 		// as the L2 state (both written per session), so deleting them here
 		// closes the lifecycle gap without a new dependency on the sanitize
 		// package (which imports this one).
-		_ = c.redis.Del(ctx, SessionSanitizeRedisKey(gwSessionID))
-		_ = c.redis.Del(ctx, SessionSanitizeOffsetRedisKey(gwSessionID))
+		//
+		// T11-P0 v2: sanitize key 现在带 tenantHash 段；tenantID 由 caller 在
+		// Invalidate() 入参传入，落到与 L2 redisKey 同一 tenant。空 tenant 时
+		// mirror 函数会落到 "_unknown" 桶 — 与输入中间件降级路径一致。
+		_ = c.redis.Del(ctx, SessionSanitizeRedisKey(tenantID, gwSessionID))
+		_ = c.redis.Del(ctx, SessionSanitizeOffsetRedisKey(tenantID, gwSessionID))
 	}
 }
 
