@@ -4,13 +4,17 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import RequestJourneyQueues from './RequestJourneyQueues.vue'
 import requestJourneys from '../locales/en-US/requestJourneys'
 
-const { getQueues, getJourney, superAdmin } = vi.hoisted(() => ({
+const { getQueues, getJourney, superAdmin, storeMock } = vi.hoisted(() => ({
   getQueues: vi.fn(),
   getJourney: vi.fn(),
   superAdmin: vi.fn(() => false),
+  storeMock: { userInfo: null as { tenant_id?: string } | null },
 }))
 
-vi.mock('../store', () => ({ isSuperAdmin: superAdmin }))
+vi.mock('../store', () => ({
+  isSuperAdmin: superAdmin,
+  store: storeMock,
+}))
 
 vi.mock('../api/request-journeys', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/request-journeys')>()
@@ -52,6 +56,7 @@ describe('RequestJourneyQueues', () => {
     getQueues.mockReset()
     getJourney.mockReset()
     superAdmin.mockReturnValue(false)
+    storeMock.userInfo = null
   })
 
   it('loads the total queue and preserves the server FIFO order', async () => {
@@ -112,6 +117,51 @@ describe('RequestJourneyQueues', () => {
     expect(row.attributes('disabled')).toBeDefined()
     await row.trigger('click')
     expect(getJourney).not.toHaveBeenCalled()
+  })
+
+  it('allows detail navigation for own-tenant rows under scope=all', async () => {
+    superAdmin.mockReturnValue(true)
+    storeMock.userInfo = { tenant_id: 'tenant-a' }
+    getQueues.mockResolvedValue({
+      view: 'total',
+      scope: 'all',
+      observation_status: 'complete',
+      observation_scope: 'shared_redis',
+      total_snapshot: {
+        capacity: 100,
+        requests: [{
+          request_id: 'own-tenant-request',
+          tenant_id: 'tenant-a',
+          gateway_instance_id: 'gateway-1',
+          protocol: 'chat',
+          path_class: 'chat_completions',
+          arrived_at: '2026-08-17T10:00:00Z',
+          updated_at: '2026-08-17T10:00:01Z',
+          status: 'failed',
+          error_kind: 'missing_key',
+          http_status: 401,
+        }],
+      },
+    })
+    getJourney.mockResolvedValue({
+      tenant_id: 'tenant-a',
+      gateway_instance_id: 'gateway-1',
+      request_id: 'own-tenant-request',
+      observation_status: 'complete',
+      started_at: '2026-08-17T10:00:00Z',
+      updated_at: '2026-08-17T10:00:01Z',
+      events: [],
+    })
+
+    const wrapper = mountPanel()
+    await openPanel(wrapper)
+
+    const row = wrapper.get('[data-testid="journey-queue-row"]')
+    expect(row.attributes('disabled')).toBeUndefined()
+    expect((row.element as HTMLButtonElement).disabled).toBe(false)
+    await row.trigger('click')
+    await flushPromises()
+    expect(getJourney).toHaveBeenCalledWith('own-tenant-request')
   })
 
   it('shows degraded observation even when the FIFO window is empty', async () => {

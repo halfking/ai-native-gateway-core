@@ -76,3 +76,55 @@ URSM_V2_MODE=off
 ```
 
 154 仅在 245 记录完整且 local、dev、245 全部通过后才可开始；252 不在任何阶段部署 gateway。
+
+## 8. 双指标语义（outcome 旁写 vs 候选 diff）
+
+shadow / canary 阶段必须分开看待以下两个 metric，不可混淆：
+
+| 指标 | 含义 | 增加路径 | 失败语义 |
+|---|---|---|---|
+| `llm_gateway_ursm_v2_shadow_records_total{result=recorded\|skipped\|failed}` | URSM v2 sidecar outcome 旁写（写入尝试 / 实际写入 / 失败）。`recorded` 增加即证明 Redis 写入路径活着；`failed` 增量为零是硬门禁。 | 每次 `RecordURSMv2ShadowResult()` 调用 | `failed` 增量 > 0 → Redis 不可达 / Lua 异常 / coverage 缺失 |
+| `ursm_shadow_diff_total{type=identical\|availability\|order\|top1\|not_ready\|error\|sampled_out\|dropped}` | 候选排序 diff（v2 vs legacy 双算比较）。`identical` 增长说明两侧决策一致；其它 type 增量为零是硬门禁。 | 每次 `shadow.Diff()` 调用 | 任何 non-`identical`/`sampled_out`/`dropped` type 增量 > 0 → 路由决策分歧，必须立刻 fail-closed 回 `off` |
+
+代码真实 label 集合：
+
+- outcome：`recorded`、`skipped`、`failed`（注意：不是 `success` / `ok`）。
+- diff：`identical`、`availability`、`order`、`top1`、`not_ready`、`error`、`sampled_out`、`dropped`（注意：不是 `availability_mismatch` / `order_mismatch` 等历史错误名）。
+
+PromQL 模板（7 天观察窗口）：
+
+```text
+# outcome 旁写健康度（recorded 必须大于 0，failed 必须等于 0）
+sum(increase(llm_gateway_ursm_v2_shadow_records_total{result="recorded"}[7d]))
+sum(increase(llm_gateway_ursm_v2_shadow_records_total{result="failed"}[7d]))
+
+# 候选 diff 一致率（identical 至少 10000，其它 diff 类型必须为 0）
+sum(increase(ursm_shadow_diff_total{type="identical"}[7d]))
+sum(increase(ursm_shadow_diff_total{type=~"availability|order|top1|not_ready|error"}[7d]))
+```
+
+## 9. Authoritative 本地闭环门禁（M5-4）
+
+P0-Z1 authoritative 启动必须满足以下硬条件，缺一即 fail-closed：
+
+1. `URSM_V2_MODE=authoritative`（默认值；可显式写入便于审计）。
+2. `LLM_GATEWAY_SYSTEM_MONITOR_ENABLED=true`（缺失即 `slog.Error` 并退出，不监听端口）。
+3. Redis 可达（`redisClientForCache != nil`）；缺失即 `slog.Error` 并退出。
+4. PostgreSQL 可达（`dbConn != nil && dbConn.Enabled()`）；缺失即 `slog.Error` 并退出。
+5. `public.node_probe_state` 有行（`bootstrap.Apply` 读到 0 行 → 退出）。
+6. coverage 校验（`WarmupFromCoverage`）完整 → `SetReady(true)` 才允许后续 router 调用 v2。
+
+启动日志必须按顺序显示：
+
+```text
+ursm.v2 manager constructed (mode=authoritative ready=false shadow_double_write=false)
+ursm.v2: authoritative startup refused; legacy bootstrap failed           (失败时)
+ursm.v2: authoritative startup refused; coverage validation failed       (失败时)
+ursm.v2: authoritative gate opened after bootstrap and coverage validation
+```
+
+任一阶段失败必须拒绝服务监听，不得手工编辑 `ursm:v2:meta:ready=1` 绕过。
+
+off / shadow / canary 仅作为诊断 / 回退模式：router 永远为这些模式打 `routing_state_source_total{source="off"|"canary"}`，绝不增加 `source="authoritative"`。`shadow_double_write` 仅控制 `llm_gateway_ursm_v2_shadow_records_total` 计数，不影响 gate / 路由决策。
+
+详细本地集成证据见 `reports/AUTHORITATIVE_LOCAL_2026-08-22.md`。
