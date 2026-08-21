@@ -36,6 +36,7 @@ import NodeDetailDrawer from '../components/NodeDetailDrawer.vue'
 import { nodesRef, type LiveNodeStatus } from '../composables/liveStreamStore'
 import { isSuperAdmin } from '../store'
 import { ApiError } from '../api/_core'
+import { assignSpacedPriorities } from '../utils/queueNodeCards'
 
 const { t } = useI18n()
 
@@ -562,10 +563,19 @@ async function onCandidateDrop(target: RoutingCandidate, event: DragEvent) {
   const next = [...previous]
   const [moved] = next.splice(sourceIndex, 1)
   next.splice(targetIndex, 0, moved)
+  // Align with queue-perspective cards: spaced priorities (5,10,15…) so
+  // resolve drag and dashboard drag share one assignment contract.
+  let priorities: number[]
+  try {
+    priorities = assignSpacedPriorities(next.length)
+  } catch (error) {
+    reorderErr.value = error instanceof Error ? error.message : '候选数量超过优先级上限，无法排序'
+    return
+  }
   resolveCandidates.value = next.map((candidate, index) => ({
     ...candidate,
     rank: index + 1,
-    manual_priority: index + 1,
+    manual_priority: priorities[index],
   }))
   // All candidates share one raw_model at this point (resolveReorderRevision
   // is only populated for single-model resolves), so reuse candidate.model_name
@@ -579,7 +589,7 @@ async function onCandidateDrop(target: RoutingCandidate, event: DragEvent) {
   const items: CandidateBindingReorderItem[] = next.map((candidate, index) => ({
     credential_id: candidate.credential_id,
     raw_model: rawModel,
-    manual_priority: index + 1,
+    manual_priority: priorities[index],
   }))
   reorderSaving.value = true
   reorderErr.value = ''
