@@ -186,12 +186,6 @@ func (a executorNodeHealthAdapter) ApplyNodeHealthDecision(ctx context.Context, 
 					errs = append(errs, err)
 				}
 			}
-		case nodehealth.EffectRestoreCredential:
-			if e.State != nil && e.State.Enabled() {
-				if err := e.State.RestoreOnSuccess(ctx, int(decision.Node.CredentialID), ""); err != nil {
-					errs = append(errs, err)
-				}
-			}
 		case nodehealth.EffectUpdateURSM:
 			if e.URSMv2 != nil {
 				err := e.URSMv2.RecordRequest(ctx, ursmv2api.RequestOutcome{

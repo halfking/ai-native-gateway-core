@@ -124,8 +124,8 @@ func TestOutcomeReducerSiblingModelKeepsServingAfterBindingFailure(t *testing.T)
 	assertEffect(t, bFailure, nodehealth.EffectUpdateURSM)
 	assertNoEffect(t, bFailure, nodehealth.EffectRecordCircuitFailure)
 
-	// A model-b success still performs the full credential recovery —
-	// model-a's quarantine never fenced it.
+	// A model-b success may recover its own binding, but must not restore
+	// model-a's quarantined binding through a credential-wide side effect.
 	bSuccess, err := r.Reduce(nodehealth.Observation{
 		Node: modelB, AttemptID: "attempt-b2", Phase: nodehealth.PhaseRequest,
 		Outcome: requestjourney.OutcomeSuccess,
@@ -139,7 +139,6 @@ func TestOutcomeReducerSiblingModelKeepsServingAfterBindingFailure(t *testing.T)
 	for _, effect := range []nodehealth.EffectKind{
 		nodehealth.EffectRecoverCircuit,
 		nodehealth.EffectRestoreBinding,
-		nodehealth.EffectRestoreCredential,
 	} {
 		assertEffect(t, bSuccess, effect)
 	}
@@ -212,7 +211,6 @@ func TestOutcomeReducerSuccessResetsFailures(t *testing.T) {
 	for _, effect := range []nodehealth.EffectKind{
 		nodehealth.EffectRecoverCircuit,
 		nodehealth.EffectRestoreBinding,
-		nodehealth.EffectRestoreCredential,
 		nodehealth.EffectUpdateURSM,
 		nodehealth.EffectInvalidateCandidateCache,
 		nodehealth.EffectCancelProbeBackoff,
@@ -254,7 +252,6 @@ func TestOutcomeReducerProbeRecoveryRequiresBothPhases(t *testing.T) {
 		t.Fatalf("gateway decision = %+v, want healthy reset", gateway)
 	}
 	assertEffect(t, gateway, nodehealth.EffectRestoreBinding)
-	assertEffect(t, gateway, nodehealth.EffectRestoreCredential)
 	assertEffect(t, gateway, nodehealth.EffectRecoverCircuit)
 }
 
