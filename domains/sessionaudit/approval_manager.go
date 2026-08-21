@@ -34,6 +34,10 @@ var ErrNotFound = errors.New("sessionaudit: approval not found")
 // ErrAlreadyDecided 重复审批请求被拒绝。
 var ErrAlreadyDecided = errors.New("sessionaudit: approval already decided")
 
+// ErrResumeLeaseLost indicates that a resume owner was superseded or its
+// lease expired before it could persist a result.
+var ErrResumeLeaseLost = errors.New("sessionaudit: approval resume lease lost")
+
 // ApprovalDBTX 是 ApprovalManager 所依赖的最小 DB 接口。
 //
 // 同时被 *pgxpool.Pool 和 pgxmock.PgxPoolIface 实现（pgxmock 是
@@ -198,6 +202,182 @@ func (m *ApprovalManager) getWithTx(ctx context.Context, approvalID, expectedTen
 		return nil, fmt.Errorf("commit read tx: %w", err)
 	}
 	return &record, nil
+}
+
+// ClaimResume atomically claims an approved approval for one resume worker.
+// A running claim can be taken over only after its lease expires. The claim
+// transaction returns the snapshot needed by the caller, so no unlocked
+// read-to-call window remains.
+func (m *ApprovalManager) ClaimResume(ctx context.Context, approvalID, tenantID, owner string, leaseUntil time.Time) (*ResumeClaim, error) {
+	if approvalID == "" || owner == "" {
+		return nil, errors.New("sessionaudit: approval resume id and owner required")
+	}
+	if leaseUntil.IsZero() {
+		return nil, errors.New("sessionaudit: approval resume lease required")
+	}
+
+	tx, err := beginTenantWriteTx(ctx, m.pool, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var record ApprovalRecord
+	var detectJSON, snapshotJSON []byte
+	var approvedBy, reason *string
+	var approvedAt *time.Time
+	var resumeState string
+	var currentOwner *string
+	var currentLease *time.Time
+	var fencingToken int64
+	row := tx.QueryRow(ctx, `
+		SELECT id, session_id, tenant_id, request_id,
+		       detect_result, snapshot, status, approved_by, approved_at, reason,
+		       created_at, expires_at, resume_state, resume_owner,
+		       resume_lease_until, resume_fencing_token
+		FROM approval_queue
+		WHERE id = $1
+		FOR UPDATE
+	`, approvalID)
+	if err := row.Scan(
+		&record.ID, &record.SessionID, &record.TenantID, &record.RequestID,
+		&detectJSON, &snapshotJSON, &record.Status, &approvedBy, &approvedAt,
+		&reason, &record.CreatedAt, &record.ExpiresAt, &resumeState,
+		&currentOwner, &currentLease, &fencingToken,
+	); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("lock approval resume row: %w", err)
+	}
+	if tenantID != "" && record.TenantID != tenantID {
+		return nil, ErrTenantMismatch
+	}
+	if approvedBy != nil {
+		record.ApprovedBy = *approvedBy
+	}
+	if approvedAt != nil {
+		record.ApprovedAt = approvedAt
+	}
+	if reason != nil {
+		record.Reason = *reason
+	}
+	if err := json.Unmarshal(detectJSON, &record.DetectResult); err != nil {
+		return nil, fmt.Errorf("unmarshal resume detect result: %w", err)
+	}
+	if err := json.Unmarshal(snapshotJSON, &record.Snapshot); err != nil {
+		return nil, fmt.Errorf("unmarshal resume snapshot: %w", err)
+	}
+
+	if record.Status != ApprovalApproved {
+		return &ResumeClaim{Record: &record, ResumeState: string(resumeState)}, nil
+	}
+	if resumeState == "completed" {
+		return &ResumeClaim{Record: &record, ResumeState: resumeState, AlreadyDone: true}, nil
+	}
+	if resumeState == "running" && currentLease != nil && currentLease.After(time.Now()) {
+		return &ResumeClaim{Record: &record, Owner: derefString(currentOwner), FencingToken: fencingToken, ResumeState: resumeState, AlreadyRunning: true}, nil
+	}
+
+	newToken := fencingToken + 1
+	tag, err := tx.Exec(ctx, `
+		UPDATE approval_queue
+		SET resume_state = 'running',
+		    resume_owner = $2,
+		    resume_lease_until = $3,
+		    resume_fencing_token = $4,
+		    resume_started_at = COALESCE(resume_started_at, NOW()),
+		    resume_error = NULL
+		WHERE id = $1
+		  AND status = 'approved'
+		  AND (resume_state IN ('idle', 'failed')
+		       OR (resume_state = 'running' AND resume_lease_until < NOW()))
+	`, approvalID, owner, leaseUntil, newToken)
+	if err != nil {
+		return nil, fmt.Errorf("claim approval resume: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return nil, ErrResumeLeaseLost
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit approval resume claim: %w", err)
+	}
+	return &ResumeClaim{Record: &record, Owner: owner, FencingToken: newToken, ResumeState: "running"}, nil
+}
+
+func derefString(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}
+
+// RenewResumeLease extends a live claim and rejects stale owners.
+func (m *ApprovalManager) RenewResumeLease(ctx context.Context, approvalID, tenantID, owner string, fencingToken int64, leaseUntil time.Time) error {
+	return m.updateResumeLease(ctx, approvalID, tenantID, owner, fencingToken, leaseUntil)
+}
+
+func (m *ApprovalManager) updateResumeLease(ctx context.Context, approvalID, tenantID, owner string, fencingToken int64, leaseUntil time.Time) error {
+	tx, err := beginTenantWriteTx(ctx, m.pool, tenantID)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	tag, err := tx.Exec(ctx, `
+		UPDATE approval_queue
+		SET resume_lease_until = $5
+		WHERE id = $1 AND status = 'approved' AND resume_state = 'running'
+		  AND resume_owner = $2 AND resume_fencing_token = $3
+		  AND resume_lease_until >= NOW()
+	`, approvalID, owner, fencingToken, time.Now(), leaseUntil)
+	if err != nil {
+		return fmt.Errorf("renew approval resume lease: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return ErrResumeLeaseLost
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit approval resume lease: %w", err)
+	}
+	return nil
+}
+
+// CompleteResume records successful execution only for the current owner.
+func (m *ApprovalManager) CompleteResume(ctx context.Context, approvalID, tenantID, owner string, fencingToken int64) error {
+	return m.finishResume(ctx, approvalID, tenantID, owner, fencingToken, "completed", "")
+}
+
+// FailResume records a retryable failed execution only for the current owner.
+func (m *ApprovalManager) FailResume(ctx context.Context, approvalID, tenantID, owner string, fencingToken int64, resumeErr string) error {
+	return m.finishResume(ctx, approvalID, tenantID, owner, fencingToken, "failed", resumeErr)
+}
+
+func (m *ApprovalManager) finishResume(ctx context.Context, approvalID, tenantID, owner string, fencingToken int64, state, resumeErr string) error {
+	tx, err := beginTenantWriteTx(ctx, m.pool, tenantID)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	tag, err := tx.Exec(ctx, `
+		UPDATE approval_queue
+		SET resume_state = $5,
+		    resume_owner = NULL,
+		    resume_lease_until = NULL,
+		    resume_completed_at = CASE WHEN $5 = 'completed' THEN NOW() ELSE resume_completed_at END,
+		    resume_error = NULLIF($6, '')
+		WHERE id = $1 AND status = 'approved' AND resume_state = 'running'
+		  AND resume_owner = $2 AND resume_fencing_token = $3
+	`, approvalID, owner, fencingToken, time.Now(), state, resumeErr)
+	if err != nil {
+		return fmt.Errorf("finish approval resume: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return ErrResumeLeaseLost
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit approval resume result: %w", err)
+	}
+	return nil
 }
 
 // List 查询审批列表（带租户过滤）。
