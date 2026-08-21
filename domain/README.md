@@ -118,11 +118,11 @@ type TransportLayer interface {
 
 **TransportFactory** 按优先级选择实现：
 
-1. **全局开关** `TRANSPORT_LAYER_IR_ENABLED`（默认 false）
+1. **全局开关** `TRANSPORT_LAYER_IR_ENABLED`（默认 true；设为 `false` 回退）
 2. **租户白名单** `TRANSPORT_IR_TENANT_WHITELIST`（逗号分隔）
 3. **模型白名单** `TRANSPORT_IR_MODEL_WHITELIST`（逗号分隔）
-4. **百分比灰度** `TRANSPORT_IR_ROLLOUT_PERCENT`（0-100，基于 tenant+model 哈希稳定分配）
-5. **默认 Legacy**
+4. **百分比灰度** `TRANSPORT_IR_ROLLOUT_PERCENT`（默认 100；0-99 基于 tenant+model 哈希稳定分配）
+5. **默认 IR**；显式 `false` 或流式熔断时回退 Legacy
 
 ---
 

@@ -223,6 +223,20 @@ func TestEmitConcurrentNeverBlocks(t *testing.T) {
 	}
 }
 
+func TestNormalizeStageCategory(t *testing.T) {
+	ev := ActionEvent{Action: ActionModelEnqueued}
+	normalizeStage(&ev)
+	if ev.Stage != "model_queue" || ev.StageCategory != "routing" {
+		t.Fatalf("normalized stage = %q/%q, want model_queue/routing", ev.Stage, ev.StageCategory)
+	}
+
+	ev = ActionEvent{Action: ActionFirstByte}
+	normalizeStage(&ev)
+	if ev.Stage != "streaming" || ev.StageCategory != "llm" {
+		t.Fatalf("normalized stage = %q/%q, want streaming/llm", ev.Stage, ev.StageCategory)
+	}
+}
+
 // TestNilEmitterIsNoOp: nil emitter 上 Emit 必须 no-op 不 panic。
 func TestNilEmitterIsNoOp(t *testing.T) {
 	var e *Emitter

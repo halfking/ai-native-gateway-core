@@ -4,8 +4,9 @@
 // response, compression diagnostics, meta, governance, attachments. Attachment links open via
 // signed URL (admin endpoint, short-lived).
 
-import { ref, watch } from 'vue'
+import { onBeforeUnmount, ref, watch } from 'vue'
 import { getSessionTurn } from '../api/sessions_v2'
+import { headers } from '../api/_core'
 
 interface Attachment {
   att_id: string
@@ -30,40 +31,68 @@ const props = defineProps<{ sessionId: string; turnNo: number | null }>()
 const emit = defineEmits<{ (e: 'close'): void }>()
 
 const loading = ref(false)
+const error = ref('')
 const turn = ref<TurnDetail | null>(null)
 const tab = ref<'request' | 'response' | 'compression' | 'meta' | 'governance' | 'attachments'>(
   'request'
 )
+let requestSeq = 0
+let controller: AbortController | null = null
 
 watch(
   () => [props.sessionId, props.turnNo] as const,
   async ([sessionId, n]) => {
-    if (n == null) {
-      turn.value = null
-      return
-    }
+    const seq = ++requestSeq
+    controller?.abort()
+    controller = null
+    turn.value = null
+    tab.value = 'request'
+    error.value = ''
+    if (n == null) return
+    controller = new AbortController()
     loading.value = true
     try {
-      turn.value = (await getSessionTurn(sessionId, n)) as TurnDetail
+      const value = (await getSessionTurn(sessionId, n, { signal: controller.signal })) as TurnDetail
+      if (seq !== requestSeq) return
+      turn.value = value
     } catch (e) {
-      console.error('load turn failed', e)
-      turn.value = null
+      if (seq !== requestSeq || (e instanceof DOMException && e.name === 'AbortError')) return
+      error.value = e instanceof Error ? e.message : String(e)
     } finally {
-      loading.value = false
+      if (seq === requestSeq) loading.value = false
     }
   },
   { immediate: true }
 )
+
+onBeforeUnmount(() => {
+  requestSeq++
+  controller?.abort()
+})
 
 function attachmentURL(att: Attachment): string {
   if (!att.object) return ''
   return `/api/attachments/${att.object.split('/').map(encodeURIComponent).join('/')}`
 }
 
-function openAttachment(att: Attachment) {
+async function openAttachment(att: Attachment) {
   const url = attachmentURL(att)
   if (!url) return
-  window.open(url, '_blank', 'noopener,noreferrer')
+  try {
+    const response = await fetch(url, { headers: headers('GET'), credentials: 'same-origin' })
+    if (!response.ok) throw new Error(`附件下载失败（${response.status}）`)
+    const blob = await response.blob()
+    const objectURL = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = objectURL
+    link.download = att.name || 'attachment'
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    URL.revokeObjectURL(objectURL)
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e)
+  }
 }
 
 function stringify(v: unknown): string {
@@ -90,6 +119,7 @@ function stringify(v: unknown): string {
       </span>
     </template>
     <div v-if="loading" class="loading">加载中&hellip;</div>
+    <div v-else-if="error" class="error" role="alert">{{ error }}</div>
     <el-tabs v-else-if="turn" v-model="tab">
       <el-tab-pane label="请求" name="request">
         <pre>{{ stringify(turn.request) }}</pre>
@@ -113,7 +143,7 @@ function stringify(v: unknown): string {
         />
         <ul v-else class="att-list">
           <li v-for="att in turn.attachments" :key="att.att_id">
-            <a v-if="attachmentURL(att)" :href="attachmentURL(att)" target="_blank" rel="noopener noreferrer">{{ att.name }}</a>
+            <button v-if="attachmentURL(att)" type="button" class="attachment-link" @click="openAttachment(att)">{{ att.name }}</button>
             <span v-else class="muted">{{ att.name }}（暂无下载路径）</span>
             <span class="muted">
               &middot; {{ (att.size / 1024).toFixed(1) }} KB
@@ -136,7 +166,8 @@ pre {
   font-size: 12px;
 }
 .loading { color: #6b7280; padding: 24px; }
+.error { color: #b42318; background: #fff1f0; border: 1px solid #f3b4b0; padding: 10px 12px; border-radius: 6px; margin: 12px; }
 .muted { color: #6b7280; font-size: 12px; }
 .att-list { list-style: none; padding: 0; }
-.att-list li { padding: 6px 0; }
+.attachment-link { color: #2563eb; background: transparent; border: 0; padding: 0; cursor: pointer; text-decoration: underline; }
 </style>

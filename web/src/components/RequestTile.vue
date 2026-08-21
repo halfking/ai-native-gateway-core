@@ -17,13 +17,16 @@ import ActionTimeline from './ActionTimeline.vue'
 
 const { t, locale } = useI18n()
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   tile: RequestTileType
   groupBy: GroupByDimension
   isHighlighted: boolean
   isDimmed: boolean
   mode?: SwimLaneMode
-}>()
+  showTimelineBadge?: boolean
+}>(), {
+  showTimelineBadge: true,
+})
 
 const mode = computed<SwimLaneMode>(() => props.mode || 'small')
 const isSmall = computed(() => mode.value === 'small')
@@ -256,6 +259,11 @@ const childBadgeTitle = computed(() =>
     : '子请求（暂无推送，点击查看）',
 )
 
+const stageCategory = computed(() => props.tile.stage_category || null)
+const isRouting = computed(() => stageCategory.value === 'routing' && isInProgress.value)
+const isWaitingLLM = computed(() => stageCategory.value === 'llm' && isInProgress.value)
+const isRetrying = computed(() => stageCategory.value === 'retrying')
+
 // 子请求类型缩写（26号 §3：title/summary/sensitive_word）。
 const CHILD_TYPE_SHORT: Record<string, string> = {
   title: 'T',
@@ -432,7 +440,7 @@ function closeTimelinePanel() {
     <!-- OBS-FE2 (26号 §6): 动作轨迹按钮（仅大形态，位于子请求徽标下方）。
          点击弹出 ActionTimeline 面板；计数 0（事件未推送）时置灰仍可点击。 -->
     <button
-      v-if="!isIdle"
+      v-if="!isIdle && showTimelineBadge"
       ref="timelineBadgeRef"
       type="button"
       class="request-tile__timeline-badge"
@@ -464,6 +472,9 @@ function closeTimelinePanel() {
         <span class="request-tile__provider">{{ line3Content }}</span>
         <span v-if="latencyLabel && !isIdle" class="request-tile__latency">{{ latencyLabel }}</span>
       </div>
+      <span v-if="isRouting" class="request-tile__stage-indicator request-tile__stage-indicator--routing" title="路由排队中" aria-label="路由排队中">⏳</span>
+      <span v-if="isWaitingLLM" class="request-tile__stage-indicator request-tile__stage-indicator--llm" title="等待大模型响应" aria-label="等待大模型响应">🔄</span>
+      <span v-if="isRetrying" class="request-tile__stage-indicator request-tile__stage-indicator--retrying" title="重试调度中" aria-label="重试调度中">🔁</span>
     </div>
 
     <!-- OBS-FE3 (26号 §3): 子请求列表面板 — Teleport 到 body，
@@ -1205,6 +1216,49 @@ function closeTimelinePanel() {
   .request-tile__timeline-panel {
     animation: none;
     transition: none;
+  }
+}
+
+.request-tile__stage-indicator {
+  position: absolute;
+  bottom: 4px;
+  left: 6px;
+  z-index: 2;
+  font-size: 10px;
+  line-height: 1;
+  pointer-events: none;
+}
+
+.request-tile__stage-indicator--routing {
+  animation: request-tile-queue-pulse 2s ease-in-out infinite;
+}
+
+.request-tile__stage-indicator--llm {
+  animation: request-tile-llm-spin 1.5s linear infinite;
+}
+
+.request-tile__stage-indicator--retrying {
+  animation: request-tile-retry-pulse 1s ease-in-out infinite;
+}
+
+@keyframes request-tile-queue-pulse {
+  0%, 100% { opacity: 0.5; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.1); }
+}
+
+@keyframes request-tile-llm-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes request-tile-retry-pulse {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .request-tile__stage-indicator {
+    animation: none;
   }
 }
 </style>

@@ -2,11 +2,13 @@ package credential
 
 import (
 	"context"
+	"errors"
 	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/kaixuan/llm-gateway-go/errorsx"
+	"github.com/kaixuan/llm-gateway-go/modelbinding"
 	"github.com/pashagolub/pgxmock/v4"
 )
 
@@ -42,6 +44,12 @@ func normalize(s string) string {
 func newSQLOnlyMock() pgxmock.PgxPoolIface {
 	p, _ := pgxmock.NewPool(pgxmock.QueryMatcherOption(sqlOnlyMatcher{}))
 	return p
+}
+
+func expectRawBindingResolution(mockDB pgxmock.PgxPoolIface, credentialID int, requestedModel, rawModel string) {
+	mockDB.ExpectQuery(`SELECT COALESCE`).
+		WithArgs(credentialID, requestedModel).
+		WillReturnRows(pgxmock.NewRows([]string{"raw_models"}).AddRow(rawModel))
 }
 
 // TestWriteOnError_PerModelKind_UpdatesCMBNotCredentials pins the fix
@@ -88,6 +96,7 @@ func TestWriteOnError_PerModelKind_UpdatesCMBNotCredentials(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			mockDB := newSQLOnlyMock()
 			defer mockDB.Close()
+			expectRawBindingResolution(mockDB, 42, "minimax-m3", "minimax-m3")
 
 			mockDB.ExpectExec(`UPDATE credential_model_bindings`).
 				WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
@@ -221,6 +230,30 @@ func TestWriteOnError_CredentialWideKind_OnlyUpdatesCredentials(t *testing.T) {
 	}
 }
 
+func TestSetCredentialUnavailable_ClosesCredentialAndAllBindings(t *testing.T) {
+	mockDB := newSQLOnlyMock()
+	defer mockDB.Close()
+
+	mockDB.ExpectBegin()
+	mockDB.ExpectExec(`UPDATE credentials`).
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), 42).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	mockDB.ExpectExec(`UPDATE credential_model_bindings`).
+		WithArgs(string(errorsx.KindConcurrent), pgxmock.AnyArg(), 42).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 3))
+	mockDB.ExpectCommit()
+
+	w := &Writer{dbPool: mockDB}
+	if err := w.SetCredentialUnavailable(context.Background(), 42, Failure{
+		Kind: errorsx.KindConcurrent, Detail: "credential-wide concurrent ceiling",
+	}); err != nil {
+		t.Fatalf("SetCredentialUnavailable: %v", err)
+	}
+	if err := mockDB.ExpectationsWereMet(); err != nil {
+		t.Fatalf("credential-wide closure must update credentials and all bindings: %v", err)
+	}
+}
+
 // TestWriteOnError_PerModelKind_EmptyRawModel_AllBindings pins the
 // legacy fallback path: when rawModel is empty (test path), the cmb
 // write targets every binding on the credential. This keeps the
@@ -257,6 +290,27 @@ func TestWriteOnError_PerModelKind_EmptyRawModel_AllBindings(t *testing.T) {
 	}
 	if err := mockDB.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+func TestWriteOnError_PerModelKind_AmbiguousAliasDoesNotUpdateBinding(t *testing.T) {
+	mockDB := newSQLOnlyMock()
+	defer mockDB.Close()
+
+	mockDB.ExpectQuery(`SELECT COALESCE`).
+		WithArgs(42, "deepseek-flash").
+		WillReturnRows(pgxmock.NewRows([]string{"raw_models"}).AddRow(""))
+	mockDB.ExpectQuery(`SELECT COALESCE`).
+		WithArgs(42, pgxmock.AnyArg()).
+		WillReturnRows(pgxmock.NewRows([]string{"raw_models"}).AddRow("deepseek-v4-flash\x1fdeepseek-v4-flash-260425"))
+
+	w := &Writer{dbPool: mockDB}
+	err := w.WriteOnError(context.Background(), 42, "deepseek-flash", Failure{Kind: errorsx.KindRateLimit})
+	if !errors.Is(err, modelbinding.ErrAmbiguousModelBinding) {
+		t.Fatalf("WriteOnError() error = %v, want ambiguous binding error", err)
+	}
+	if err := mockDB.ExpectationsWereMet(); err != nil {
+		t.Fatalf("ambiguous alias must not update a binding: %v", err)
 	}
 }
 

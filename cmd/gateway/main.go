@@ -1186,11 +1186,12 @@ func main() {
 		routingExec.ChatToAnthropic = streaming.ConvertChatRequestToAnthropic
 		routingExec.AnthropicToOpenAI = streaming.ConvertAnthropicBodyToOpenAI
 
-		// Phase B (2026-06-22): IR-based protocol converter.
-		if os.Getenv("LLM_GATEWAY_IR_CONVERTER") == "true" {
+		// IR is the default protocol-conversion path. Set either switch to
+		// "false" only for an explicit emergency rollback to the legacy path.
+		if os.Getenv("LLM_GATEWAY_IR_CONVERTER") != "false" {
 			routingExec.IR = &irAdapter{}
 			slog.Info("ir_converter", "enabled", true)
-			if os.Getenv("LLM_GATEWAY_TRANSPORT_IR") == "true" {
+			if os.Getenv("LLM_GATEWAY_TRANSPORT_IR") != "false" {
 				routingExec.IR = transformation.NewTransportIRConverter(&irAdapter{})
 				slog.Info("transport_ir", "enabled", true, "features", "extensions-roundtrip,circuit-breaker")
 			}

@@ -44,11 +44,12 @@ function handleTileClick(requestId: string) {
 
 <template>
   <div class="swim-lane-track">
-    <TransitionGroup 
-      name="swim-tile" 
-      tag="div" 
+    <TransitionGroup
+      name="swim-tile"
+      tag="div"
       class="swim-lane-track__tiles"
       :class="{ 'swim-lane-track__tiles--small': mode === 'small' }"
+      move-class="swim-tile-move"
     >
       <RequestTileComponent
         v-for="tile in visibleTiles"
@@ -58,6 +59,7 @@ function handleTileClick(requestId: string) {
         :mode="mode"
         :is-highlighted="isTileHighlighted(tile)"
         :is-dimmed="isTileDimmed(tile)"
+        :show-timeline-badge="false"
         @click="handleTileClick"
       />
     </TransitionGroup>
@@ -69,6 +71,7 @@ function handleTileClick(requestId: string) {
   display: flex;
   overflow-x: hidden;
   min-width: 0;
+  position: relative;
 }
 
 .swim-lane-track__tiles {
@@ -85,7 +88,7 @@ function handleTileClick(requestId: string) {
 /* 2026-07-26: Animation direction reversed. New tiles enter from RIGHT,
    old tiles exit to LEFT. Existing tiles shift left when new tile arrives. */
 .swim-tile-enter-active {
-  transition: all 0.3s ease;
+  transition: opacity 0.3s ease, transform 0.3s ease;
 }
 
 .swim-tile-enter-from {
@@ -94,7 +97,7 @@ function handleTileClick(requestId: string) {
 }
 
 .swim-tile-leave-active {
-  transition: all 0.3s ease;
+  transition: opacity 0.3s ease, transform 0.3s ease;
   position: absolute;
 }
 

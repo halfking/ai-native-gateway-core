@@ -28,6 +28,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"
 	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit" //nolint:depguard // domain linkage intentional
 )
@@ -47,6 +48,16 @@ var ErrResumeRejected = errors.New("session: approval rejected")
 
 // ErrResumeTimeout 审批超时。
 var ErrResumeTimeout = errors.New("session: approval timed out")
+
+// ErrResumeInProgress indicates that another request currently owns the
+// approval resume lease. Callers may retry after the lease expires.
+var ErrResumeInProgress = errors.New("session: approval resume already in progress")
+
+// ErrResumeLeaseLost indicates this resumer was superseded before it could
+// safely publish its result.
+var ErrResumeLeaseLost = errors.New("session: approval resume lease lost")
+
+const approvalResumeLease = 45 * time.Second
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Public interfaces (DI)
@@ -77,12 +88,14 @@ type ClientResponder interface {
 	RespondRejection(ctx context.Context, snapshot *sessionaudit.RequestSnapshot, reason string) error
 }
 
-// ApprovalGetter 抽象"按 ID 获取审批记录"。
-//
-// 真实实现是 *sessionaudit.ApprovalManager.GetForTenant。
-// 接口化便于测试 mock。
-type ApprovalGetter interface {
+// ApprovalResumer owns the durable approval resume lifecycle. Claiming happens
+// before the LLM call, so concurrent HTTP requests cannot all execute the same
+// approved snapshot.
+type ApprovalResumer interface {
 	GetForTenant(ctx context.Context, approvalID, expectedTenantID string) (*sessionaudit.ApprovalRecord, error)
+	ClaimResume(ctx context.Context, approvalID, tenantID, owner string, leaseUntil time.Time) (*sessionaudit.ResumeClaim, error)
+	CompleteResume(ctx context.Context, approvalID, tenantID, owner string, fencingToken int64) error
+	FailResume(ctx context.Context, approvalID, tenantID, owner string, fencingToken int64, resumeErr string) error
 }
 
 // ApprovalPendingWriter 抽象"写入 pending response 供客户端轮询"。
@@ -114,7 +127,7 @@ type PendingResumeEntry struct {
 // ApprovalResumeHandler 审批恢复处理器。
 type ApprovalResumeHandler struct {
 	sessionCache *compression.SessionCache
-	approvalMgr  ApprovalGetter
+	approvalMgr  ApprovalResumer
 	llmCaller    LLMCaller
 	responder    ClientResponder
 	pendingStore ApprovalPendingWriter
@@ -124,7 +137,7 @@ type ApprovalResumeHandler struct {
 // NewApprovalResumeHandler 构造处理器。
 func NewApprovalResumeHandler(
 	sc *compression.SessionCache,
-	mgr ApprovalGetter,
+	mgr ApprovalResumer,
 	llm LLMCaller,
 	resp ClientResponder,
 	pending ApprovalPendingWriter,
@@ -171,16 +184,33 @@ func (h *ApprovalResumeHandler) ResumeAfterApproval(ctx context.Context, approva
 		return errors.New("session: approval record nil")
 	}
 
-	// 2. 根据终态分发
+	// 2. 根据审批决策分发。approved execution must be claimed before
+	// invoking the external LLM; rejected and timeout remain delivery-only.
 	switch record.Status {
 	case sessionaudit.ApprovalApproved:
-		return h.continueToLLM(ctx, record)
+		owner := uuid.NewString()
+		claim, err := h.approvalMgr.ClaimResume(ctx, approvalID, expectedTenantID, owner, h.now().Add(approvalResumeLease))
+		if err != nil {
+			return fmt.Errorf("claim approval resume: %w", err)
+		}
+		if claim == nil || claim.Record == nil {
+			return errors.New("session: approval resume claim nil")
+		}
+		if claim.AlreadyDone {
+			return nil
+		}
+		if claim.AlreadyRunning {
+			return ErrResumeInProgress
+		}
+		if claim.Record.Status != sessionaudit.ApprovalApproved {
+			return ErrResumeNotPending
+		}
+		return h.continueToLLM(ctx, claim)
 	case sessionaudit.ApprovalRejected:
 		return h.respondRejection(ctx, record)
 	case sessionaudit.ApprovalTimeout:
 		return h.respondTimeout(ctx, record)
 	default:
-		// pending：尚未终态，不应 resume
 		return ErrResumeNotPending
 	}
 }
@@ -195,10 +225,26 @@ func (h *ApprovalResumeHandler) ResumeRejected(ctx context.Context, approvalID, 
 	return h.ResumeAfterApproval(ctx, approvalID, tenantID)
 }
 
-// continueToLLM 批准后调用 LLM。
-func (h *ApprovalResumeHandler) continueToLLM(ctx context.Context, record *sessionaudit.ApprovalRecord) error {
-	if record.Snapshot == nil {
+// continueToLLM 批准后调用 LLM under an owner/token fenced claim.
+func (h *ApprovalResumeHandler) continueToLLM(ctx context.Context, claim *sessionaudit.ResumeClaim) error {
+	record := claim.Record
+	if record == nil || record.Snapshot == nil {
 		return ErrResumeSnapshotMissing
+	}
+	finish := func(resumeErr error) error {
+		if resumeErr == nil {
+			if err := h.approvalMgr.CompleteResume(ctx, record.ID, record.TenantID, claim.Owner, claim.FencingToken); err != nil {
+				return fmt.Errorf("complete approval resume: %w", err)
+			}
+			return nil
+		}
+		if err := h.approvalMgr.FailResume(ctx, record.ID, record.TenantID, claim.Owner, claim.FencingToken, resumeErr.Error()); err != nil {
+			return fmt.Errorf("fail approval resume: %w", err)
+		}
+		return resumeErr
+	}
+	if record.Snapshot == nil {
+		return finish(ErrResumeSnapshotMissing)
 	}
 
 	// 1. 先把 SessionState 标记为 approved（业务态）
@@ -213,16 +259,19 @@ func (h *ApprovalResumeHandler) continueToLLM(ctx context.Context, record *sessi
 
 	// 3. 调用 LLM
 	if h.llmCaller == nil {
-		return errors.New("session: llm caller not configured")
+		return finish(errors.New("session: llm caller not configured"))
 	}
 	if err := h.llmCaller.CallFromSnapshot(ctx, record.Snapshot); err != nil {
 		// LLM 调用失败 → 写一条 failed pending 让客户端拿到错误
 		slog.Error("approval_resume: llm call failed",
 			"approval_id", record.ID, "session_id", record.SessionID, "error", err)
 		_ = h.respondLLMFailure(ctx, record, err)
-		return fmt.Errorf("llm call from snapshot: %w", err)
+		return finish(fmt.Errorf("llm call from snapshot: %w", err))
 	}
 
+	if err := finish(nil); err != nil {
+		return errors.Join(ErrResumeLeaseLost, err)
+	}
 	slog.Info("approval_resume: llm call completed",
 		"approval_id", record.ID,
 		"session_id", record.SessionID,

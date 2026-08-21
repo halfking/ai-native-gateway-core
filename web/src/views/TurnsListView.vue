@@ -33,6 +33,7 @@ const items = ref<TurnsSessionGroup[]>([])
 const hasMore = ref(false)
 const nextCursor = ref('')
 const error = ref('')
+const loadMoreError = ref('')
 const expandedSessions = ref<Set<string>>(new Set())
 const collapsedGroups = ref<Set<string>>(new Set())
 const collapsedTasks = ref<Set<string>>(new Set())
@@ -66,6 +67,7 @@ const displayGroups = computed(() => buildDisplayGroups(items.value, groupBy.val
 const selectedCount = computed(() => selectedIds.value.size)
 
 async function load(reset = true) {
+  if (!reset && (loadingMore.value || loading.value || !hasMore.value)) return
   const { params, error: paramError } = buildTurnsParams(
     filterState,
     reset ? undefined : nextCursor.value || undefined,
@@ -79,7 +81,9 @@ async function load(reset = true) {
     controller?.abort()
     controller = new AbortController()
     loading.value = true
+    loaded.value = false
     error.value = ''
+    loadMoreError.value = ''
     items.value = []
     nextCursor.value = ''
     hasMore.value = false
@@ -89,9 +93,11 @@ async function load(reset = true) {
     selectedIds.value = new Set()
   } else {
     loadingMore.value = true
+    loadMoreError.value = ''
   }
+  const requestController = reset ? controller : new AbortController()
   try {
-    const response = await listTurnsSessions(params, { signal: controller?.signal })
+    const response = await listTurnsSessions(params, { signal: requestController?.signal })
     if (version !== requestVersion.value) return
     items.value = reset ? response.items : [...items.value, ...response.items]
     hasMore.value = response.has_more
@@ -99,8 +105,12 @@ async function load(reset = true) {
     loaded.value = true
   } catch (cause: unknown) {
     if (version !== requestVersion.value || (cause instanceof DOMException && cause.name === 'AbortError')) return
-    error.value = cause instanceof Error ? cause.message : String(cause)
-    if (reset) items.value = []
+    if (reset) {
+      error.value = cause instanceof Error ? cause.message : String(cause)
+      items.value = []
+    } else {
+      loadMoreError.value = cause instanceof Error ? cause.message : String(cause)
+    }
   } finally {
     if (version === requestVersion.value) {
       loading.value = false
@@ -370,6 +380,10 @@ onBeforeUnmount(() => controller?.abort())
             </div>
           </div>
         </div>
+      </div>
+      <div v-if="loadMoreError" class="error-banner load-more-error" role="alert">
+        <span>{{ loadMoreError }}</span>
+        <button class="btn btn-secondary" type="button" @click="load(false)">重试加载更多</button>
       </div>
       <div v-if="hasMore" class="load-more">
         <button class="btn btn-secondary" type="button" :disabled="loadingMore" @click="load(false)">

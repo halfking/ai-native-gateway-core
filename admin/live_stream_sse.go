@@ -146,6 +146,8 @@ type LiveQueueLaneSnapshot struct {
 	Credential int    `json:"credential,omitempty"`
 	Mode       string `json:"mode,omitempty"`
 	Depth      int64  `json:"depth"`
+	Limit      int64  `json:"limit,omitempty"`
+	Full       bool   `json:"full,omitempty"`
 }
 
 // LiveNodeStatus is the wire shape of one supplier node's status for the

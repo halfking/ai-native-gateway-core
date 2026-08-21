@@ -59,6 +59,21 @@ func (cf *credForwarder) tryReserve() bool {
 	}
 }
 
+func (cf *credForwarder) CurrentDepth() int64 {
+	return cf.depth.Load()
+}
+
+// Limit returns the configured bounded queue capacity.
+func (cf *credForwarder) Limit() int64 {
+	return cf.limit
+}
+
+// HasCapacity reports whether another item can be reserved. tryReserve remains
+// the atomic admission gate; this helper is only an early routing hint.
+func (cf *credForwarder) HasCapacity() bool {
+	return cf.limit <= 0 || cf.depth.Load() < cf.limit
+}
+
 // loop drains the Tier-2 queue. Governor admission happens in this owner
 // goroutine, so requests waiting for a credential slot remain visible in the
 // bounded queue instead of escaping into unbounded goroutines.

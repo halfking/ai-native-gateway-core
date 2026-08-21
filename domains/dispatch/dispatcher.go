@@ -74,7 +74,18 @@ func (p *Pipeline) selectAndEnqueue(qr *QueuedRequest) bool {
 			qr.markTriedCredential(ref.CredentialID)
 			continue
 		}
-		// Set selected cred BEFORE enqueue so the forwarder knows the governor.
+		if forwarder := p.getForwarderIfExists(ref.CredentialID); forwarder != nil && !forwarder.HasCapacity() {
+			p.observeQueue(QueueObservation{
+				Kind:         QueueCredentialFull,
+				CredentialID: ref.CredentialID,
+				Mode:         ref.ConcurrencyMode,
+				Depth:        forwarder.CurrentDepth(),
+				Limit:        forwarder.Limit(),
+			})
+			qr.markTriedCredential(ref.CredentialID)
+			continue
+		}
+
 		p.selectCredential(qr, ref)
 		if p.tryEnqueueCred(ref, qr) {
 			return true
