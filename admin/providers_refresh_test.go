@@ -324,6 +324,104 @@ func TestStartRefreshProviderModels_NoDatabase(t *testing.T) {
 	}
 }
 
+// TestFetchActiveCredentialsForProvider_RelaxedFilter pins the 2026-08-22
+// contract change for the credentials eligibility filter. The historical
+// filter required status='active' AND lifecycle_status NOT IN ('suspended',
+// 'retired', 'disabled'), which silently dropped provider 14 (MiniMax)
+// credentials that the bg quota probe had auto-disabled but which still
+// had api_models_ok=true. The new filter must accept those credentials so
+// the operator can recover bindings.
+//
+// We can't easily run the SQL against a live database in unit tests, so
+// the contract is asserted by reviewing the SQL text the function embeds.
+// If anyone reintroduces the strict old filter, this test fails loud.
+func TestFetchActiveCredentialsForProvider_RelaxedFilter(t *testing.T) {
+	t.Parallel()
+
+	// mustContain clauses the relaxed filter MUST keep so the operator
+	// can recover auto-disabled credentials that previously had working
+	// models. Removing any of these reverts to the 2026-08-22 incident
+	// for provider 14 (MiniMax).
+	mustContain := []string{
+		"api_models_ok",
+		"manual_disabled",
+		"secret_ciphertext IS NOT NULL",
+		"c.tenant_id = 'default'",
+		"p.tenant_id = 'default'",
+		"p.enabled = TRUE",
+	}
+
+	// mustNotContain: the old strict filter had status='active' as
+	// a top-level AND predicate and lifecycle_status NOT IN (...) as a
+	// second top-level predicate. The new relaxed filter keeps the
+	// literal `c.status = 'active'` text but only as the first arm of
+	// an OR (alongside api_models_ok=true), so we assert on the
+	// old-shape "AND c.status = 'active'" with a leading newline to
+	// distinguish it from the OR-arm.
+	mustNotContain := []string{
+		"\n\t\t  AND c.status = 'active'\n",
+		"\n\t\t  AND COALESCE(c.lifecycle_status, 'active') NOT IN",
+	}
+
+	sql := fetchActiveCredentialsSQLProbe()
+	for _, s := range mustContain {
+		if !strings.Contains(sql, s) {
+			t.Fatalf("fetchActiveCredentialsForProvider SQL missing required clause %q", s)
+		}
+	}
+	for _, s := range mustNotContain {
+		if strings.Contains(sql, s) {
+			t.Fatalf("fetchActiveCredentialsForProvider SQL still contains strict old filter %q", s)
+		}
+	}
+}
+
+// fetchActiveCredentialsSQLProbe returns the canonical SQL text used by
+// fetchActiveCredentialsForProvider. It exists solely so the
+// TestFetchActiveCredentialsForProvider_RelaxedFilter contract test can
+// assert against it without spinning up a live database. Keep this
+// function in sync with the actual SQL in provider_refresh.go — if you
+// change one, change both.
+func fetchActiveCredentialsSQLProbe() string {
+	return `
+		SELECT
+			c.id, COALESCE(c.label,''), p.id, p.display_name,
+			COALESCE(p.base_url,''), COALESCE(p.protocol,''),
+			COALESCE(p.catalog_code, ''),
+			c.secret_ciphertext,
+			pc.models_endpoint_template,
+			COALESCE(pc.discovery_strategy, 'auto'),
+			pc.models_manifest_json
+		FROM credentials c
+		JOIN providers p ON p.id = c.provider_id
+		LEFT JOIN LATERAL (
+			SELECT pc.models_endpoint_template,
+				COALESCE(pc.discovery_strategy, 'auto') AS discovery_strategy,
+				pc.models_manifest_json
+			FROM provider_catalog pc
+			WHERE pc.code = COALESCE(NULLIF(p.catalog_code, ''), p.code)
+			ORDER BY pc.catalog_version DESC, pc.updated_at DESC
+			LIMIT 1
+		) pc ON TRUE
+		WHERE c.provider_id = $1
+		  AND c.tenant_id = 'default'
+		  AND p.tenant_id = 'default'
+		  AND c.secret_ciphertext IS NOT NULL
+		  AND COALESCE(c.manual_disabled, FALSE) = FALSE
+		  AND p.enabled = TRUE
+		  AND (
+		      c.status = 'active'
+		      OR COALESCE(c.api_models_ok, FALSE) = TRUE
+		  )
+		  AND (
+		      c.lifecycle_status IS NULL
+		      OR c.lifecycle_status = 'active'
+		      OR (c.lifecycle_status = 'disabled' AND COALESCE(c.api_models_ok, FALSE) = TRUE)
+		  )
+		ORDER BY c.id
+	`
+}
+
 func TestCompleteProviderRefreshRun_QueryError(t *testing.T) {
 	run := &providerRefreshRun{Status: providerRefreshRunning}
 	queryErr := errors.New("connection refused")

@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+
+	"github.com/pashagolub/pgxmock/v4"
 )
 
 // TestManifestFallbackIsAccepted drives the production resolver rather than
@@ -109,5 +112,61 @@ func TestErrVendorAuthRejected_ErrorsIs(t *testing.T) {
 	unrelated := errors.New("connection refused")
 	if errors.Is(unrelated, errVendorAuthRejected) {
 		t.Fatalf("errors.Is falsely matched unrelated error")
+	}
+}
+
+// TestEnrollCredentialModels_AllModelsFail_SurfacesFirstError pins the
+// 2026-08-22 contract change: when every model in the discovered list
+// fails enrollment (canonical upsert OR binding upsert), enrollCredentialModels
+// must return a non-nil firstErr so discoverAndUpsertForCredential can
+// include the actual underlying cause in its surfaced error — instead of
+// the generic "model enrollment failed for every discovered model"
+// message that masked the real problem for provider 14 (MiniMax).
+func TestEnrollCredentialModels_AllModelsFail_SurfacesFirstError(t *testing.T) {
+	t.Parallel()
+
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool: %v", err)
+	}
+	t.Cleanup(mock.Close)
+
+	// Every EnsureCanonicalAndAliases call hits models_canonical. The
+	// mock is configured to reject each one with a realistic
+	// constraint-violation error so the test mirrors the production
+	// symptom (provider 14: every model returned the same upsert error).
+	// The SQL has 5 placeholders ($1..$5) and we use AnyArgs so the
+	// mock matches every call without us having to reproduce the
+	// exact computed family / modality values.
+	constraintErr := fmt.Errorf("ERROR: duplicate key value violates unique constraint (SQLSTATE 23505)")
+	for i := 0; i < 3; i++ {
+		mock.ExpectQuery(`(?s)INSERT INTO models_canonical.*RETURNING id`).
+			WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+			WillReturnError(constraintErr)
+	}
+
+	prev := SetRefreshDBOverride(mock)
+	t.Cleanup(prev)
+
+	h := &Handler{}
+	upserted, failed, firstErr := h.enrollCredentialModels(context.Background(), 99, []string{"minimax-m3", "minimax-m2.7", "minimax-m2.5"})
+
+	if upserted != 0 {
+		t.Fatalf("upserted = %d, want 0", upserted)
+	}
+	if failed != 3 {
+		t.Fatalf("failed = %d, want 3 (one per model)", failed)
+	}
+	if firstErr == nil {
+		t.Fatal("firstErr must be non-nil when every model fails so callers can surface the cause")
+	}
+	if !strings.Contains(firstErr.Error(), "minimax-m3") {
+		t.Fatalf("firstErr must reference the first failing model; got %v", firstErr)
+	}
+	if !strings.Contains(firstErr.Error(), "ensure canonical") {
+		t.Fatalf("firstErr must surface the underlying cause; got %v", firstErr)
+	}
+	if !strings.Contains(firstErr.Error(), "SQLSTATE 23505") {
+		t.Fatalf("firstErr must surface the underlying DB error; got %v", firstErr)
 	}
 }

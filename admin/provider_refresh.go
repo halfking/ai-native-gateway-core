@@ -307,9 +307,20 @@ func (h *Handler) fetchActiveCredentialsForProvider(ctx context.Context, provide
 			LIMIT 1
 		) pc ON TRUE
 		WHERE c.provider_id = $1
-		  AND c.status = 'active'
-		  AND COALESCE(c.lifecycle_status, 'active') NOT IN ('suspended', 'retired', 'disabled')
+		  AND c.tenant_id = 'default'
+		  AND p.tenant_id = 'default'
+		  AND c.secret_ciphertext IS NOT NULL
+		  AND COALESCE(c.manual_disabled, FALSE) = FALSE
 		  AND p.enabled = TRUE
+		  AND (
+		      c.status = 'active'
+		      OR COALESCE(c.api_models_ok, FALSE) = TRUE
+		  )
+		  AND (
+		      c.lifecycle_status IS NULL
+		      OR c.lifecycle_status = 'active'
+		      OR (c.lifecycle_status = 'disabled' AND COALESCE(c.api_models_ok, FALSE) = TRUE)
+		  )
 		ORDER BY c.id
 	`, providerID)
 	if err != nil {
