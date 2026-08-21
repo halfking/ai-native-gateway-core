@@ -252,3 +252,34 @@ func TestBuildTurnsSessionWhere_NoTimeWindowStillCursor(t *testing.T) {
 		t.Fatalf("expected nextArg=4 args=3, got %d %d", nextArg, len(args))
 	}
 }
+
+func TestBuildTurnsSessionWhere_APIKeyAndStatus(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/turns/sessions?api_key_id=42&status=active", nil)
+	where, args, nextArg := buildTurnsSessionWhere(req, "t1", time.Time{}, time.Time{}, time.Time{}, "", 1)
+	if !strings.Contains(where, "rl.api_key_id = $2") {
+		t.Fatalf("missing api_key_id EXISTS clause: %s", where)
+	}
+	if !strings.Contains(where, "s.status = $3") {
+		t.Fatalf("missing status clause: %s", where)
+	}
+	if !strings.Contains(where, "request_logs_with_current_month") {
+		t.Fatalf("api_key filter must join request_logs view: %s", where)
+	}
+	if len(args) != 3 || nextArg != 4 {
+		t.Fatalf("expected 3 args / nextArg=4, got %d / %d", len(args), nextArg)
+	}
+	if args[1] != int64(42) {
+		t.Fatalf("api_key_id arg want 42, got %v (%T)", args[1], args[1])
+	}
+	if args[2] != "active" {
+		t.Fatalf("status arg want active, got %v", args[2])
+	}
+}
+
+func TestLastActiveSource_WindowUsedByFilterOptions(t *testing.T) {
+	src := (&Handler{}).lastActiveSource("sd.task_id", " JOIN session_dim sd ON true",
+		"ss.first_request_at > NOW() - INTERVAL '30 days' AND sd.task_id != ''", "")
+	if !strings.Contains(src, "INTERVAL '30 days'") {
+		t.Fatalf("session filter options must constrain 30d window: %s", src)
+	}
+}
