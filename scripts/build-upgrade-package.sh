@@ -80,6 +80,7 @@ stats_migrations=(
 	546_stats_reconciliation_diffs_unique.sql
 	547_session_project_attribution.sql
 	548_stats_reconciliation_diffs_identity.sql
+	549_request_journey_durable_outbox.sql
 )
 for name in "${stats_migrations[@]}"; do
   source="sql/migrations/startup/$name"
