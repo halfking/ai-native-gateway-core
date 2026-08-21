@@ -131,7 +131,12 @@ func TestValidateRoutingCandidateReorder(t *testing.T) {
 			r.Items[1].RawModel = r.Items[0].RawModel
 		}, wantSubstr: "credential_id and raw_model must be unique"},
 		{name: "duplicate priority", mutate: func(r *routingCandidateReorderRequest) { r.Items[1].ManualPriority = 1 }, wantSubstr: "manual_priority must be unique"},
-		{name: "non-contiguous priority", mutate: func(r *routingCandidateReorderRequest) { r.Items[1].ManualPriority = 3 }, wantSubstr: "manual_priority must be contiguous"},
+		{name: "priority below range", mutate: func(r *routingCandidateReorderRequest) { r.Items[0].ManualPriority = 0 }, wantSubstr: "manual_priority must be in"},
+		{name: "priority above range", mutate: func(r *routingCandidateReorderRequest) { r.Items[1].ManualPriority = 100 }, wantSubstr: "manual_priority must be in"},
+		{name: "spaced priorities allowed", mutate: func(r *routingCandidateReorderRequest) {
+			r.Items[0].ManualPriority = 5
+			r.Items[1].ManualPriority = 10
+		}, wantSubstr: ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

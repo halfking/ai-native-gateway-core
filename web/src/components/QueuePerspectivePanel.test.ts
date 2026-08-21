@@ -350,9 +350,10 @@ describe('QueuePerspectivePanel', () => {
 
     // 节点以 供应商+凭据 小卡片呈现（标题 + 四态点 + 状态摘要）
     const gptCards = groups[0].findAll('.qp-node-card')
-    expect(gptCards.map(card => card.get('.qp-node-card-title').text()).sort()).toEqual(['a #1', 'b #2'])
+    expect(gptCards.map(card => card.get('.qp-node-card-title').text()).sort()).toEqual(['a · #1', 'b · #2'])
     expect(gptCards[0].findAll('.qp-dot')).toHaveLength(4)
-    expect(gptCards[0].text()).toContain('可用')
+    expect(gptCards[0].text()).toMatch(/✓/)
+    expect(gptCards[0].text()).toMatch(/5m/)
 
     // 折叠态下不展开请求列表
     expect(groups[0].findAll('.qp-model-group-requests')).toHaveLength(0)
@@ -383,8 +384,8 @@ describe('QueuePerspectivePanel', () => {
     expect(body.exists()).toBe(true)
     const reqList = body.find('.qp-model-group-requests')
     expect(reqList.exists()).toBe(true)
-    // 请求行的节点标示同样使用 供应商+凭据
-    expect(reqList.text()).toContain('p #5')
+    // 请求行的节点标示同样使用 供应商 · #凭据
+    expect(reqList.text()).toContain('p · #5')
     expect(reqList.text()).toContain('m-1')
     expect(reqList.text()).toContain('success')
     expect(reqList.text()).toContain('410ms')
@@ -405,15 +406,15 @@ describe('QueuePerspectivePanel', () => {
     expect(drawer.props('model')).toBe('m-1')
   })
 
-  it('reorders a complete raw-model candidate list with contiguous priorities and echoes the server revision', async () => {
+  it('reorders with spaced priorities (step 5) and echoes the server revision', async () => {
     superAdmin.mockReturnValue(true)
     resolveRouting.mockImplementation(async (model: string) => ({
       raw_models: [model],
       reorder_revision: `rev-${model}`,
       candidates: model === 'm-1'
         ? [
-            { credential_id: 1, model_name: 'm-1', manual_priority: 1 },
-            { credential_id: 2, model_name: 'm-1', manual_priority: 2 },
+            { credential_id: 1, model_name: 'm-1', manual_priority: 5, credential_label: 'alpha-key', effective_concurrency: 2 },
+            { credential_id: 2, model_name: 'm-1', manual_priority: 10, credential_label: 'beta-key', effective_concurrency: 8 },
           ]
         : [],
     }))
@@ -426,7 +427,14 @@ describe('QueuePerspectivePanel', () => {
     await flushPromises()
     const cards = wrapper.findAll('.qp-node-card')
     expect(cards).toHaveLength(2)
+    expect(wrapper.text()).toContain('alpha-key')
+    expect(wrapper.text()).toContain('beta-key')
+    expect(wrapper.text()).toContain('✓')
     expect(cards.every(card => card.attributes('draggable') === 'true')).toBe(true)
+    const wraps = wrapper.findAll('.qp-node-card-wrap')
+    expect(Number.parseInt(wraps[0].attributes('style')?.match(/width:\s*(\d+)px/)?.[1] || '0', 10)).toBeLessThan(
+      Number.parseInt(wraps[1].attributes('style')?.match(/width:\s*(\d+)px/)?.[1] || '0', 10),
+    )
 
     const transfer = { effectAllowed: '', dropEffect: '', setData: vi.fn() }
     await cards[0].trigger('dragstart', { dataTransfer: transfer })
@@ -436,8 +444,8 @@ describe('QueuePerspectivePanel', () => {
 
     expect(reorderCandidateBindings).toHaveBeenCalledWith(
       [
-        { credential_id: 2, raw_model: 'm-1', manual_priority: 1 },
-        { credential_id: 1, raw_model: 'm-1', manual_priority: 2 },
+        { credential_id: 2, raw_model: 'm-1', manual_priority: 5 },
+        { credential_id: 1, raw_model: 'm-1', manual_priority: 10 },
       ],
       { rawModel: 'm-1', expectedRevision: 'rev-m-1' },
     )
@@ -533,9 +541,9 @@ describe('QueuePerspectivePanel', () => {
     // Visible order becomes [3, 1]; hidden #2 keeps its relative slot → [3, 2, 1].
     expect(reorderCandidateBindings).toHaveBeenCalledWith(
       [
-        { credential_id: 3, raw_model: 'm-1', manual_priority: 1 },
-        { credential_id: 2, raw_model: 'm-1', manual_priority: 2 },
-        { credential_id: 1, raw_model: 'm-1', manual_priority: 3 },
+        { credential_id: 3, raw_model: 'm-1', manual_priority: 5 },
+        { credential_id: 2, raw_model: 'm-1', manual_priority: 10 },
+        { credential_id: 1, raw_model: 'm-1', manual_priority: 15 },
       ],
       { rawModel: 'm-1', expectedRevision: 'rev-m-1' },
     )
