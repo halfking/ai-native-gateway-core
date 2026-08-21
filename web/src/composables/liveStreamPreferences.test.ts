@@ -46,8 +46,17 @@ describe('liveStreamPreferences', () => {
       },
       queue: {
         depthOpen: true,
-        statusFilter: { active: false, exhausted: true },
+        statusFilter: { active: false, exhausted: false },
       },
+    })
+  })
+
+  it('defaults queue status filter to in-use only', () => {
+    expect(defaultLiveStreamPreferences().queue.statusFilter).toEqual({
+      active: true,
+      degraded: false,
+      manualDisabled: false,
+      exhausted: false,
     })
   })
 

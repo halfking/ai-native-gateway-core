@@ -361,20 +361,17 @@ const filteredModelGroups = computed<ModelGroup[]>(() => {
 const hasFilteredGroups = computed(() => filteredModelGroups.value.length > 0)
 
 // ── 节点拖拽调整优先级（HTML5 dnd） ───────────────────────────────────────
-// 只在显示完整的单 raw-model 候选集且四个状态均显示时允许重排：后端排序
-// API 以该完整集合为原子单位，提交 `1..N` 的连续 manual_priority。
+// 单一 raw-model + 完整候选集 + reorder_revision 即可重排（与状态过滤解耦）。
+// 可见子集上拖动时，把相对顺序写回完整候选列表再提交（后端要求完整集原子写）。
 const dragScopeKey = ref<string | null>(null)
 const dragSourceCredentialId = ref<number | null>(null)
 const dragOverCredentialId = ref<number | null>(null)
 const dragSaving = ref(false)
 const dragError = ref('')
 
-const filtersAreAllEnabled = computed(() => Object.values(statusFilter.value).every(Boolean))
-
 function canReorder(group: ModelGroup): boolean {
   return isSuperAdmin()
     && !dragSaving.value
-    && filtersAreAllEnabled.value
     && Boolean(group.reorderRawModel)
     && Boolean(group.reorderRevision)
 }
@@ -382,10 +379,19 @@ function canReorder(group: ModelGroup): boolean {
 function dragDisabledHint(group: ModelGroup): string {
   if (!isSuperAdmin()) return '仅超级管理员可以调整优先级。'
   if (dragSaving.value) return '正在保存优先级调整。'
-  if (!filtersAreAllEnabled.value) return '请显示全部状态后再调整完整候选列表的优先级。'
   if (!group.reorderRawModel) return '该模型分组合并了多个原始模型或实时节点不完整，无法安全调整优先级。'
   if (!group.reorderRevision) return '尚未拿到后端修订版本，请等待数据加载完成后再试。'
-  return '拖动节点以调整优先级，越靠前优先级越高。'
+  return '拖动节点以调整优先级，越靠前优先级越高。隐藏状态的节点会保持原有相对位置。'
+}
+
+/** Map a reordered visible subset back onto the full candidate list. */
+function mergeVisibleOrderIntoFull(
+  fullCredentialIds: number[],
+  visibleOrderedIds: number[],
+): number[] {
+  const visibleSet = new Set(visibleOrderedIds)
+  const nextVisible = [...visibleOrderedIds]
+  return fullCredentialIds.map(id => (visibleSet.has(id) ? nextVisible.shift()! : id))
 }
 
 function onDragStart(event: DragEvent, group: ModelGroup, credentialId: number) {
@@ -438,8 +444,14 @@ async function onDrop(event: DragEvent, group: ModelGroup, targetCredentialId: n
   ordered.splice(toIndex, 0, moved)
   const rawModel = group.reorderRawModel
   const expectedRevision = group.reorderRevision
-  const items: CandidateBindingReorderItem[] = ordered.map((node, index) => ({
-    credential_id: node.credential_id,
+  const candidates = modelCandidatesByRawModel.value.get(modelKey(rawModel)) ?? []
+  const fullIds = candidates.map(c => c.credential_id)
+  // Prefer full candidate list; if somehow empty, fall back to visible order only.
+  const mergedIds = fullIds.length > 0
+    ? mergeVisibleOrderIntoFull(fullIds, ordered.map(n => n.credential_id))
+    : ordered.map(n => n.credential_id)
+  const items: CandidateBindingReorderItem[] = mergedIds.map((credentialId, index) => ({
+    credential_id: credentialId,
     raw_model: rawModel,
     manual_priority: index + 1,
   }))
