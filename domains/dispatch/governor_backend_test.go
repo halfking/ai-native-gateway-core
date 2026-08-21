@@ -22,10 +22,10 @@ type fakeBackend struct {
 	newCalls int
 }
 
-func (f *fakeBackend) Kind() GovernorBackendKind       { return f.kind }
-func (f *fakeBackend) Name() string                    { return f.name }
-func (f *fakeBackend) Open(_ context.Context) error    { return f.openErr }
-func (f *fakeBackend) Close(_ context.Context) error   { return f.closeErr }
+func (f *fakeBackend) Kind() GovernorBackendKind     { return f.kind }
+func (f *fakeBackend) Name() string                  { return f.name }
+func (f *fakeBackend) Open(_ context.Context) error  { return f.openErr }
+func (f *fakeBackend) Close(_ context.Context) error { return f.closeErr }
 func (f *fakeBackend) NotifyRevisions(_ context.Context, rev uint64) error {
 	f.notifs = append(f.notifs, rev)
 	return nil
