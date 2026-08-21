@@ -671,6 +671,63 @@ func TestInvalidate_RemovesFromAllTiers(t *testing.T) {
 	}
 }
 
+// TestInvalidate_DeletesSanitizeKeysWithTenantHash is the T11-P0 v2 regression
+// test. The sanitize Redis keys (SessionSanitizeRedisKey /
+// SessionSanitizeOffsetRedisKey) take a tenantHash (sha256[:8]) as their first
+// segment, not the raw tenantID. The write side (smart_sani_guard.go) hashes
+// before building the key; Invalidate must do the same, or the cascade delete
+// silently no-ops and stale sanitize maps leak until TTL.
+//
+// Without the fix, the deleted sanitize keys would be
+//   session:t:s1:sanitize / session:t:s1:sanitize:offsets
+// (raw tenant "t"), but the writer stores them under
+//   session:<sha256("t")[:8]>:s1:sanitize / ...:offsets
+// so the deletes never hit and the test fails.
+func TestInvalidate_DeletesSanitizeKeysWithTenantHash(t *testing.T) {
+	redis := newFakeRedis()
+	c := NewSessionCache(redis, nil)
+
+	tenantID := "tenant-A"
+	tenantHash := hashTenantForSanitizeKey(tenantID)
+	sessID := "sess-hash-regression"
+
+	// Simulate the writer: persist sanitize keys under the hashed segment.
+	sanitizeKey := SessionSanitizeRedisKey(tenantHash, sessID)
+	offsetKey := SessionSanitizeOffsetRedisKey(tenantHash, sessID)
+	redis.HSet(context.Background(), sanitizeKey, "ph", "v")
+	redis.HSet(context.Background(), offsetKey, "ph", "v")
+
+	// Sanity: the keys exist before Invalidate.
+	if _, ok := redis.store[sanitizeKey]; !ok {
+		t.Fatalf("precondition: sanitize key %q missing", sanitizeKey)
+	}
+	if _, ok := redis.store[offsetKey]; !ok {
+		t.Fatalf("precondition: offset key %q missing", offsetKey)
+	}
+
+	c.Invalidate(context.Background(), tenantID, sessID)
+
+	// Drain the L2 session-key delete (expected first) plus the two sanitize
+	// deletes. We just need to confirm the sanitize keys were deleted.
+	deleted := map[string]bool{}
+	timeout := time.After(200 * time.Millisecond)
+	for len(deleted) < 2 {
+		select {
+		case k := <-redis.delCh:
+			deleted[k] = true
+		case <-timeout:
+			t.Fatalf("Invalidate: expected deletes for sanitize keys %q and %q; got %v",
+				sanitizeKey, offsetKey, deleted)
+		}
+	}
+	if !deleted[sanitizeKey] {
+		t.Errorf("Invalidate: sanitize key %q was not deleted; deleted=%v", sanitizeKey, deleted)
+	}
+	if !deleted[offsetKey] {
+		t.Errorf("Invalidate: offset key %q was not deleted; deleted=%v", offsetKey, deleted)
+	}
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Set — guard for nil state / empty session id
 // ─────────────────────────────────────────────────────────────────────────────
