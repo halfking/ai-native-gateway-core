@@ -10,12 +10,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestIntegration_AlertEngineAutoDisableEnable exercises the full alert engine
-// against the real DB-backed stores (PGProfileSource + PGAlertStore +
-// PGCredentialActor): seed a credential + 3 low-score daily profiles, verify
-// the engine auto-disables it and writes an alert; then flip to 3 high-score
-// days and verify recovery (auto-enable).
-func TestIntegration_AlertEngineAutoDisableEnable(t *testing.T) {
+// TestIntegration_AlertEngineReportsWithoutChangingCredentialLifecycle verifies
+// profile alerts are advisory. Model-level probe state is responsible for
+// changing individual credential_model_bindings; profile scoring must not take
+// the whole credential offline.
+func TestIntegration_AlertEngineReportsWithoutChangingCredentialLifecycle(t *testing.T) {
 	skipIfNoDB(t)
 	pool := dbPoolFromTestURL(t)
 	ctx := context.Background()
@@ -49,15 +48,15 @@ func TestIntegration_AlertEngineAutoDisableEnable(t *testing.T) {
 	actor := providerprofile.NewPGCredentialActor(pool)
 	eng := providerprofile.NewAlertEngine(src, alertStore, actor, providerprofile.DefaultAlertConfig())
 
-	// --- Phase 1: 3 low-score days → auto-disable ---
+	// --- Phase 1: 3 low-score days → alert only ---
 	seedDaily(30)
 	res, err := eng.EvaluateCredential(ctx, credID)
 	require.NoError(t, err)
-	assert.Equal(t, "disabled", res.Action, "should auto-disable on 3 consecutive low-score days")
+	assert.Equal(t, "none", res.Action, "low-score profile must not disable the credential")
 
 	lc, err := actor.CurrentLifecycle(ctx, credID)
 	require.NoError(t, err)
-	assert.Equal(t, "disabled", lc.Lifecycle, "credential lifecycle flipped to disabled")
+	assert.Equal(t, "active", lc.Lifecycle, "credential lifecycle must stay active")
 
 	// an auto_disabled alert must have been persisted
 	var alertCount int
@@ -67,15 +66,15 @@ func TestIntegration_AlertEngineAutoDisableEnable(t *testing.T) {
 	require.NoError(t, err)
 	assert.GreaterOrEqual(t, alertCount, 1, "auto_disabled alert persisted")
 
-	// --- Phase 2: 3 high-score days → auto-enable (recovery) ---
+	// --- Phase 2: 3 high-score days → alert only ---
 	seedDaily(75)
 	res, err = eng.EvaluateCredential(ctx, credID)
 	require.NoError(t, err)
-	assert.Equal(t, "enabled", res.Action, "should auto-enable on 3 consecutive high-score days")
+	assert.Equal(t, "none", res.Action, "recovery profile must not enable the credential")
 
 	lc, err = actor.CurrentLifecycle(ctx, credID)
 	require.NoError(t, err)
-	assert.Equal(t, "active", lc.Lifecycle, "credential lifecycle restored to active")
+	assert.Equal(t, "active", lc.Lifecycle, "credential lifecycle must remain active")
 
 	// an auto_enabled alert must have been persisted
 	err = pool.QueryRow(ctx,
