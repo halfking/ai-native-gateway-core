@@ -139,6 +139,15 @@ func (h *Handler) addCredential(w http.ResponseWriter, r *http.Request, provider
 			// non-fatal: credential 已建, extra keys 可后续补.
 		}
 	}
+	// audit round 2 L1: new keys on a brand-new credential don't have a cached
+	// candidate entry yet, but a parallel GetCandidates call that ran between
+	// the INSERT and now might have cached a no-extra-keys version. Invalidate
+	// both candidate cache and key rotator so the first enrichment re-reads
+	// the new credential_keys rows.
+	if len(extraEncrypted) > 0 {
+		provider.InvalidateCandidateCacheForCredential(id)
+		provider.ResetKeyRotatorForCredential(id)
+	}
 
 	// ── Auto probe: fire-and-forget health check after credential creation ──
 	// Runs asynchronously in a goroutine so the API returns immediately.
