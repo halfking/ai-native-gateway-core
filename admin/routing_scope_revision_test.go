@@ -97,6 +97,66 @@ func TestFormatScopeRevision(t *testing.T) {
 	}
 }
 
+func TestSingleRawModelForRevision(t *testing.T) {
+	cases := []struct {
+		name   string
+		models []string
+		want   string
+		ok     bool
+	}{
+		{name: "empty", models: nil, ok: false},
+		{name: "single", models: []string{"gpt-5.6-terra"}, want: "gpt-5.6-terra", ok: true},
+		{name: "same raw", models: []string{"gpt-5.6-terra", "gpt-5.6-terra"}, want: "gpt-5.6-terra", ok: true},
+		{name: "mixed", models: []string{"gpt-5.6-terra", "gpt-5.6"}, want: "", ok: false},
+		{name: "blank first", models: []string{"", "gpt-5.6-terra"}, want: "", ok: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := singleRawModelForRevision(tc.models)
+			if ok != tc.ok || got != tc.want {
+				t.Fatalf("singleRawModelForRevision(%v) = (%q, %v), want (%q, %v)", tc.models, got, ok, tc.want, tc.ok)
+			}
+		})
+	}
+}
+
+// TestEnsureScopeRevision_SeedsMissingRow deletes the revision row then
+// confirms ensureScopeRevision recreates version=1 without bumping an
+// existing revision on a second call.
+func TestEnsureScopeRevision_SeedsMissingRow(t *testing.T) {
+	pool := reorderTestPool(t)
+	f := newReorderTestFixture(t, pool, 2)
+	ctx := context.Background()
+
+	_, err := pool.Exec(ctx, `DELETE FROM public.candidate_binding_scope_revision WHERE raw_model = $1`, f.rawModel)
+	if err != nil {
+		t.Fatalf("delete revision: %v", err)
+	}
+	before, err := loadScopeRevision(ctx, pool, f.rawModel)
+	if err != nil {
+		t.Fatalf("load after delete: %v", err)
+	}
+	if before.Raw != "" {
+		t.Fatalf("expected empty revision after delete, got %q", before.Raw)
+	}
+
+	seeded, err := ensureScopeRevision(ctx, pool, f.rawModel)
+	if err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	if !strings.HasPrefix(seeded.Raw, "1:") {
+		t.Fatalf("seeded revision = %q, want prefix 1:", seeded.Raw)
+	}
+
+	again, err := ensureScopeRevision(ctx, pool, f.rawModel)
+	if err != nil {
+		t.Fatalf("ensure again: %v", err)
+	}
+	if again.Raw != seeded.Raw {
+		t.Fatalf("second ensure changed revision: %q -> %q", seeded.Raw, again.Raw)
+	}
+}
+
 // Integration tests — require LLM_GATEWAY_PG_URL. They use the same pool
 // and fixture helpers as routing_candidate_binding_test.go so a missing PG
 // cleanly SKIPs via reorderTestPool's t.Skip path.

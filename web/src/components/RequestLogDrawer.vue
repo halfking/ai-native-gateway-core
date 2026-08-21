@@ -65,6 +65,7 @@ const draftTitle = ref('')
 const titleSaving = ref(false)
 const titleError = ref<string | null>(null)
 const regeneratingTitle = ref(false)
+const titleDetailsOpen = ref(false)
 const addingTag = ref(false)
 const newTagKey = ref('')
 const newTagValue = ref('')
@@ -168,6 +169,7 @@ function resetSessionMetaState() {
   titleSaving.value = false
   titleError.value = null
   regeneratingTitle.value = false
+  titleDetailsOpen.value = false
   addingTag.value = false
   newTagKey.value = ''
   newTagValue.value = ''
@@ -678,10 +680,26 @@ function routingAttempts(): RequestLogDetail['routing_attempts'] {
           <div class="session-meta-title">
             <strong>会话标题:</strong>
             <template v-if="!editingTitle">
-              <span class="title-value" :class="{ 'title-missing': !detail.session_title }">{{ detail.session_title || '尚无标题' }}</span>
-              <button v-if="detail.gw_task_id" class="btn btn-sm" :disabled="titleSaving || regeneratingTitle" @click="startEditTitle">编辑</button>
-              <button v-if="detail.gw_task_id && detail.session_title" class="btn btn-sm" :disabled="titleSaving || regeneratingTitle" @click="regenerateTitle">{{ regeneratingTitle ? '重新生成中…' : '重新生成' }}</button>
-              <button v-if="detail.gw_task_id && detail.session_title" class="btn btn-sm btn-danger-ghost" :disabled="titleSaving || regeneratingTitle" @click="clearTitle">清空</button>
+              <span class="title-value" :class="{ 'title-missing': !detail.session_title }">{{ detail.session_title || '无标题' }}</span>
+              <button
+                v-if="detail.gw_task_id"
+                class="btn btn-sm"
+                type="button"
+                :aria-expanded="titleDetailsOpen"
+                @click="titleDetailsOpen = !titleDetailsOpen"
+              >
+                {{ titleDetailsOpen ? '收起标题详情' : '标题详情' }}
+              </button>
+              <button
+                v-if="detail.gw_session_id"
+                class="btn btn-sm"
+                type="button"
+                :aria-label="t('requests.list.trace.drawerSummaryAria')"
+                :title="t('requests.list.trace.drawerSummaryTitle')"
+                @click="$emit('generateSessionSummary', detail.gw_session_id)"
+              >
+                {{ t('requests.list.trace.drawerSummaryButton') }}
+              </button>
             </template>
             <template v-else>
               <input v-model="draftTitle" class="title-input" maxlength="80" placeholder="2-80 字符，不含 XML 标签" @keydown.enter="saveEditTitle" @keydown.esc="cancelEditTitle" />
@@ -689,6 +707,11 @@ function routingAttempts(): RequestLogDetail['routing_attempts'] {
               <button class="btn btn-sm" :disabled="titleSaving" @click="cancelEditTitle">取消</button>
             </template>
             <span v-if="titleError" class="meta-error">{{ titleError }}</span>
+          </div>
+          <div v-if="titleDetailsOpen && !editingTitle && detail.gw_task_id" class="session-meta-title-actions">
+            <button class="btn btn-sm" :disabled="titleSaving || regeneratingTitle" @click="startEditTitle">编辑</button>
+            <button class="btn btn-sm" :disabled="titleSaving || regeneratingTitle" @click="regenerateTitle">{{ regeneratingTitle ? '重新生成中…' : (detail.session_title ? '重新生成' : '生成标题') }}</button>
+            <button v-if="detail.session_title" class="btn btn-sm btn-danger-ghost" :disabled="titleSaving || regeneratingTitle" @click="clearTitle">清空</button>
           </div>
 
           <div class="session-meta-tags">
@@ -786,19 +809,6 @@ function routingAttempts(): RequestLogDetail['routing_attempts'] {
               :title="t('trace.modal.tooltip')"
             >
               {{ showTrace ? '✕ ' + t('trace.modal.close') : t('trace.modal.openButton') }}
-            </button>
-            <!-- 2026-08-06: 会话总结按钮 — 仅在有 session_id 时显示，
-                 用于跳转到 RequestLogsView 并预填会话筛选。
-                 文案走 t() 键，避免硬编码。 -->
-            <button
-              v-if="detail.gw_session_id"
-              class="btn btn-sm"
-              type="button"
-              :aria-label="t('requests.list.trace.drawerSummaryAria')"
-              :title="t('requests.list.trace.drawerSummaryTitle')"
-              @click="$emit('generateSessionSummary', detail.gw_session_id)"
-            >
-              {{ t('requests.list.trace.drawerSummaryButton') }}
             </button>
           </div>
         </div>
@@ -1183,6 +1193,12 @@ function routingAttempts(): RequestLogDetail['routing_attempts'] {
   font-size: 12px;
 }
 .session-meta-title { margin-bottom: 8px; }
+.session-meta-title-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: -2px 0 8px;
+}
 .session-meta-tags { border-top: 1px dashed var(--border); padding-top: 8px; }
 .tags-list { display: flex; flex-direction: column; gap: 4px; }
 .tag-row { padding: 4px 8px; border: 1px solid var(--border); border-radius: 4px; }
