@@ -803,7 +803,7 @@ func singleRawModelForRevision(modelNames []string) (raw string, ok bool) {
 		return "", false
 	}
 	for _, name := range modelNames[1:] {
-		if name != modelNames[0] {
+		if strings.TrimSpace(name) != first {
 			return "", false
 		}
 	}
@@ -849,22 +849,25 @@ func ensureScopeRevision(ctx context.Context, q pgxExecRower, rawModel string) (
 	}
 	_, err = q.Exec(ctx, `
 INSERT INTO public.candidate_binding_scope_revision (raw_model, scope_version, scope_hash)
-SELECT
+VALUES (
     $1::text,
     1,
     COALESCE(
-        encode(digest(string_agg(
-            b.id::text || '|' ||
-            b.credential_id::text || '|' ||
-            b.manual_priority::text || '|' ||
-            extract(epoch from b.updated_at)::text,
-            '|' ORDER BY b.id
-        ), 'sha256'), 'hex'),
+        (
+            SELECT encode(digest(string_agg(
+                b.id::text || '|' ||
+                b.credential_id::text || '|' ||
+                b.manual_priority::text || '|' ||
+                extract(epoch from b.updated_at)::text,
+                '|' ORDER BY b.id
+            ), 'sha256'), 'hex')
+            FROM public.provider_models pm
+            LEFT JOIN public.credential_model_bindings b ON b.provider_model_id = pm.id
+            WHERE pm.raw_model_name = $1
+        ),
         ''
     )
-FROM public.provider_models pm
-LEFT JOIN public.credential_model_bindings b ON b.provider_model_id = pm.id
-WHERE pm.raw_model_name = $1
+)
 ON CONFLICT (raw_model) DO NOTHING
 `, rawModel)
 	if err != nil {
@@ -1031,8 +1034,8 @@ func validateRoutingCandidateReorder(req routingCandidateReorderRequest) string 
 		}
 		// Spaced priorities (5,10,15…) are allowed so clients can insert
 		// mid-rank values without rewriting the whole ladder every time.
-		// Final order is the items array order; values must stay unique
-		// within [1, 99] (same ceiling as single-binding PATCH).
+		// Resolve order is ascending manual_priority (not items array order);
+		// values must stay unique within [1, 99] (same ceiling as single-binding PATCH).
 		if item.ManualPriority < 1 || item.ManualPriority > 99 {
 			return "manual_priority must be in [1, 99]"
 		}

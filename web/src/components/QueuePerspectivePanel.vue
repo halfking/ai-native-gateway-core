@@ -465,7 +465,16 @@ async function onDrop(event: DragEvent, group: ModelGroup, targetCredentialId: n
   const mergedIds = fullIds.length > 0
     ? mergeVisibleOrderIntoFull(fullIds, ordered.map(n => n.credential_id))
     : ordered.map(n => n.credential_id)
-  const priorities = assignSpacedPriorities(mergedIds.length)
+  const priorities = (() => {
+    try {
+      return assignSpacedPriorities(mergedIds.length)
+    } catch (error) {
+      clearDragState()
+      dragError.value = error instanceof Error ? error.message : '候选数量超过优先级上限，无法排序'
+      return null
+    }
+  })()
+  if (!priorities) return
   const items: CandidateBindingReorderItem[] = mergedIds.map((credentialId, index) => ({
     credential_id: credentialId,
     raw_model: rawModel,
@@ -491,7 +500,6 @@ async function onDrop(event: DragEvent, group: ModelGroup, targetCredentialId: n
   modelCandidatesByRawModel.value = new Map(modelCandidatesByRawModel.value).set(modelKey(rawModel), optimistic)
   try {
     await reorderCandidateBindings(items, { rawModel, expectedRevision })
-    await loadModelScope()
   } catch (error) {
     modelCandidatesByRawModel.value = new Map(modelCandidatesByRawModel.value).set(modelKey(rawModel), prevCandidates)
     const fallback = error instanceof Error ? error.message : '调整优先级失败'
@@ -503,6 +511,16 @@ async function onDrop(event: DragEvent, group: ModelGroup, targetCredentialId: n
     } else {
       dragError.value = fallback
     }
+    dragSaving.value = false
+    return
+  }
+  try {
+    await loadModelScope()
+  } catch (error) {
+    // Server already accepted the new order — keep optimistic UI, do not roll back.
+    dragError.value = error instanceof Error
+      ? `已保存排序，但刷新候选列表失败：${error.message}`
+      : '已保存排序，但刷新候选列表失败，请手动刷新。'
   } finally {
     dragSaving.value = false
   }
@@ -620,7 +638,23 @@ function stopStatsPoll() {
   statsAbort = null
 }
 
-watch(filteredModelGroups, () => { void refreshWindowStats() }, { deep: false })
+// Fingerprint only credential×model targets — ignore live node heartbeat churn.
+const statsTargetFingerprint = computed(() => {
+  const keys: string[] = []
+  const seen = new Set<string>()
+  for (const group of filteredModelGroups.value) {
+    if (!group.reorderRawModel) continue
+    for (const node of group.nodes) {
+      const key = statsKey(node.credential_id, group.reorderRawModel)
+      if (seen.has(key)) continue
+      seen.add(key)
+      keys.push(key)
+    }
+  }
+  return keys.sort().join('|')
+})
+
+watch(statsTargetFingerprint, () => { void refreshWindowStats() })
 
 // null = 字段未上报，按"未知"灰点展示（不冒充健康）。
 function circuitOk(n: LiveNodeStatus): boolean | null {

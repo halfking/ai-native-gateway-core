@@ -109,6 +109,7 @@ func TestSingleRawModelForRevision(t *testing.T) {
 		{name: "same raw", models: []string{"gpt-5.6-terra", "gpt-5.6-terra"}, want: "gpt-5.6-terra", ok: true},
 		{name: "mixed", models: []string{"gpt-5.6-terra", "gpt-5.6"}, want: "", ok: false},
 		{name: "blank first", models: []string{"", "gpt-5.6-terra"}, want: "", ok: false},
+		{name: "trim-equal", models: []string{" gpt-5.6-terra ", "gpt-5.6-terra"}, want: "gpt-5.6-terra", ok: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

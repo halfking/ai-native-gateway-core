@@ -18,6 +18,16 @@ describe('assignSpacedPriorities', () => {
     expect(Math.max(...got)).toBeLessThanOrEqual(99)
     expect(Math.min(...got)).toBeGreaterThanOrEqual(1)
   })
+
+  it('fills [1,99] uniquely at max capacity', () => {
+    const got = assignSpacedPriorities(99)
+    expect(got).toHaveLength(99)
+    expect(new Set(got).size).toBe(99)
+  })
+
+  it('rejects count above max', () => {
+    expect(() => assignSpacedPriorities(100)).toThrow(/unique priorities/)
+  })
 })
 
 describe('cardWidthFromCapacity', () => {

@@ -10,6 +10,9 @@ export const CARD_MAX_W = 280
 /** Assign unique priorities with preferred step=5 (5,10,15…). Compresses when n*step > 99. */
 export function assignSpacedPriorities(count: number, step = PRIORITY_STEP, max = PRIORITY_MAX): number[] {
   if (count <= 0) return []
+  if (count > max) {
+    throw new Error(`cannot assign unique priorities for ${count} items within [1, ${max}]`)
+  }
   let useStep = Math.max(1, step)
   if (count * useStep > max) {
     useStep = Math.max(1, Math.floor(max / count))
@@ -24,6 +27,9 @@ export function assignSpacedPriorities(count: number, step = PRIORITY_STEP, max 
     let p = out[i]
     while (seen.has(p) && p > 1) p -= 1
     while (seen.has(p) && p < max) p += 1
+    if (seen.has(p)) {
+      throw new Error(`cannot assign unique priorities for ${count} items within [1, ${max}]`)
+    }
     seen.add(p)
     out[i] = p
   }
