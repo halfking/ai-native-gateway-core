@@ -32,8 +32,8 @@ import DecisionDetail from '../components/analytics/DecisionDetail.vue'
 import CredentialFunnel from '../components/analytics/CredentialFunnel.vue'
 import SmartRoutingConfigPanel from '../components/routing/SmartRoutingConfigPanel.vue'
 import SmartRoutingConfigDrawer from '../components/routing/SmartRoutingConfigDrawer.vue'
-import CandidateDetailDrawer from '../components/routing/CandidateDetailDrawer.vue'
-import CandidateSettingsDialog from '../components/routing/CandidateSettingsDialog.vue'
+import NodeDetailDrawer from '../components/NodeDetailDrawer.vue'
+import { nodesRef, type LiveNodeStatus } from '../composables/liveStreamStore'
 import { isSuperAdmin } from '../store'
 import { ApiError } from '../api/_core'
 
@@ -394,7 +394,7 @@ function startPoll() {
     // 2026-08-13: silently re-resolve on the resolve tab so node-status changes
     // (auto-recovery flipping availability_state back to ready, a new circuit
     // open, or another admin's force_enable) appear without a manual re-pick.
-    if (activeTab.value === 'resolve' && resolved.value) refreshResolveSilent()
+    if (activeTab.value === 'resolve' && resolved.value && draggingCredentialId.value === null) refreshResolveSilent()
   }, 5000)
 }
 function stopPoll() {
@@ -417,22 +417,46 @@ const reorderErr = ref('')
 // /api/routing/candidate-bindings/reorder. Backend refuses mixed-model
 // reorders and stale revisions; the UI keeps both cases disabled.
 const resolveReorderRevision = ref<string>('')
-// 2026-07-24: routing-v2 resolve 页「候选明细 / 设置」状态。
-const detailCandidate = ref<RoutingCandidate | null>(null)
-const settingsCandidate = ref<RoutingCandidate | null>(null)
+// 统一节点详情抽屉（明细 / 设置共用 NodeDetailDrawer）
+const nodeDrawerOpen = ref(false)
+const nodeDrawerNode = ref<LiveNodeStatus | null>(null)
+const nodeDrawerModel = ref('')
+const nodeDrawerTab = ref<'detail' | 'availability' | 'requests' | 'settings'>('availability')
+const nodeDrawerSeed = ref<RoutingCandidate | null>(null)
 const superAdmin = isSuperAdmin()
 
+function candidateToNode(c: RoutingCandidate): LiveNodeStatus {
+  const live = nodesRef.value.find(n => n.credential_id === c.credential_id)
+  if (live) return live
+  return {
+    credential_id: c.credential_id,
+    provider_id: c.provider_id,
+    provider_code: c.catalog_code || c.provider_name,
+    circuit_state: c.circuit_state,
+    availability_state: c.availability_state,
+    quota_state: c.quota_state,
+    health_status: c.availability_state === 'unreachable' ? 'unreachable' : undefined,
+    manual_disabled: false,
+    raw_models: c.model_name ? [c.model_name] : undefined,
+  }
+}
+
 function openCandidateDetail(c: RoutingCandidate) {
-  detailCandidate.value = c
+  nodeDrawerSeed.value = c
+  nodeDrawerNode.value = candidateToNode(c)
+  nodeDrawerModel.value = c.model_name
+  nodeDrawerTab.value = 'availability'
+  nodeDrawerOpen.value = true
 }
 function openCandidateSettings(c: RoutingCandidate) {
   if (!superAdmin) return
-  settingsCandidate.value = c
+  nodeDrawerSeed.value = c
+  nodeDrawerNode.value = candidateToNode(c)
+  nodeDrawerModel.value = c.model_name
+  nodeDrawerTab.value = 'settings'
+  nodeDrawerOpen.value = true
 }
 async function onCandidateSettingsApplied() {
-  // 写完直接重查当前模型，让 admin 看到新排序生效。
-  // 同时通知当前页面上所有 ModelPicker/ChatView 实例丢弃目录缓存，
-  // 否则 force_enable 后 resolve 已更新，模型下拉列表仍可能长期使用旧快照。
   await doResolve()
   window.dispatchEvent(new CustomEvent('llm-gateway:models-updated'))
 }
@@ -452,6 +476,17 @@ const filteredResolveCandidates = computed(() => resolveCandidates.value)
 const resolveUnavailableCount = computed(() =>
   resolveCandidates.value.filter(c => !c.routable).length,
 )
+const canReorderResolve = computed(() =>
+  superAdmin && !reorderSaving.value && Boolean(resolveReorderRevision.value),
+)
+function resolveReorderDisabledHint(): string {
+  if (!superAdmin) return '仅超级管理员可以调整优先级。'
+  if (reorderSaving.value) return '正在保存优先级调整。'
+  if (!resolveReorderRevision.value) {
+    return '尚未拿到后端修订版本（可能合并了多个原始模型），无法安全调整优先级。'
+  }
+  return '拖动以调整优先级'
+}
 
 function candidateBlockReason(c: RoutingCandidate): string {
   return c.block_reason || c.runtime_block_reason || 'unavailable'
@@ -493,7 +528,7 @@ function resolveStateHint(c: RoutingCandidate): string {
 }
 
 function onCandidateDragStart(c: RoutingCandidate, event: DragEvent) {
-  if (!superAdmin || reorderSaving.value || !resolveReorderRevision.value) {
+  if (!canReorderResolve.value) {
     event.preventDefault()
     return
   }
@@ -503,7 +538,7 @@ function onCandidateDragStart(c: RoutingCandidate, event: DragEvent) {
 }
 
 function onCandidateDragOver(event: DragEvent) {
-  if (!superAdmin || draggingCredentialId.value === null || !resolveReorderRevision.value) return
+  if (!canReorderResolve.value || draggingCredentialId.value === null) return
   event.preventDefault()
   if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'
 }
@@ -1251,6 +1286,10 @@ onUnmounted(() => stopPoll())
             <span class="toolbar-title">路由候选 — {{ modelInput }}</span>
             <span v-if="resolveUnavailableCount > 0" class="text-muted">不可用 {{ resolveUnavailableCount }}</span>
             <span v-if="reorderSaving" class="text-muted">保存排序中…</span>
+            <span
+              v-else-if="superAdmin && resolveCandidates.length > 0 && !canReorderResolve"
+              class="text-muted"
+            >{{ resolveReorderDisabledHint() }}</span>
           </div>
           <div v-if="reorderErr" class="text-danger reorder-error">{{ reorderErr }}</div>
         </div>
@@ -1281,14 +1320,14 @@ onUnmounted(() => stopPoll())
               <tr
                 v-for="(c, i) in filteredResolveCandidates"
                 :key="c.credential_id"
-                :draggable="superAdmin && !reorderSaving"
+                :draggable="canReorderResolve"
                 :class="['resolve-row', c.routable ? 'is-routable' : 'is-unroutable', { dragging: draggingCredentialId === c.credential_id }]"
                 @dragstart="onCandidateDragStart(c, $event)"
                 @dragover="onCandidateDragOver"
                 @drop="onCandidateDrop(c, $event)"
                 @dragend="onCandidateDragEnd"
               >
-                <td v-if="superAdmin" class="drag-cell" title="拖动以调整优先级" aria-label="拖动以调整优先级">⠿</td>
+                <td v-if="superAdmin" class="drag-cell" :title="resolveReorderDisabledHint()" aria-label="拖动以调整优先级">⠿</td>
                 <td class="rank-cell">{{ i + 1 }}</td>
                 <td>
                   <span class="badge" :class="resolveStateBadge(c).cls">
@@ -1460,15 +1499,12 @@ onUnmounted(() => stopPoll())
       @close="showSmartConfigDrawer = false"
     />
 
-    <CandidateDetailDrawer
-      v-if="detailCandidate"
-      :candidate="detailCandidate"
-      @close="detailCandidate = null"
-    />
-    <CandidateSettingsDialog
-      v-if="settingsCandidate && superAdmin"
-      :candidate="settingsCandidate"
-      @close="settingsCandidate = null"
+    <NodeDetailDrawer
+      v-model="nodeDrawerOpen"
+      :node="nodeDrawerNode"
+      :model="nodeDrawerModel"
+      :initial-tab="nodeDrawerTab"
+      :seed-candidate="nodeDrawerSeed"
       @applied="onCandidateSettingsApplied"
     />
   </div>

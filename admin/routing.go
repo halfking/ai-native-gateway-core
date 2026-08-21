@@ -514,22 +514,18 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 	//
 	// Errors loading the revision are not fatal: the dashboard still works,
 	// just without drag-and-drop, so we log and continue with an empty
-	// token. An empty scope (no rows yet) also yields an empty token —
-	// loadScopeRevision returns the zero value when the row is absent.
+	// token. When the scope row is missing (new raw_model or backfill gap),
+	// ensureScopeRevision seeds version=1 so drag-and-drop stays available.
 	var reorderRevision string
 	if len(candidates) > 0 {
-		firstRaw := strings.TrimSpace(candidates[0].ModelName)
-		singleRaw := firstRaw != ""
-		for _, c := range candidates[1:] {
-			if c.ModelName != candidates[0].ModelName {
-				singleRaw = false
-				break
-			}
+		names := make([]string, len(candidates))
+		for i, c := range candidates {
+			names[i] = c.ModelName
 		}
-		if singleRaw {
-			_, rev, revErr := fetchReorderScope(ctx, h.db, firstRaw, false)
+		if firstRaw, ok := singleRawModelForRevision(names); ok {
+			rev, revErr := ensureScopeRevision(ctx, h.db, firstRaw)
 			if revErr != nil {
-				slog.Warn("routing resolve: reorder scope fetch failed; revision omitted",
+				slog.Warn("routing resolve: reorder scope ensure failed; revision omitted",
 					"raw_model", firstRaw, "error", revErr.Error())
 			} else {
 				reorderRevision = rev.Raw
@@ -743,6 +739,12 @@ type pgxQueryRower interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
+// pgxExecRower adds Exec for ensure-on-read paths (resolve revision seed).
+type pgxExecRower interface {
+	pgxQueryRower
+	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
+}
+
 // fetchReorderScope returns every binding row for rawModel in id order.
 // PROBE-MARKER-2026-08-19-0338: file should have loadScopeRevision helper below.
 func fetchReorderScope(ctx context.Context, q pgxQueryRower, rawModel string, lock bool) ([]reorderScopeRow, scopeRevision, error) {
@@ -789,6 +791,25 @@ func formatScopeRevision(version int64, hash string) string {
 	return fmt.Sprintf("%d:%s", version, hash)
 }
 
+// singleRawModelForRevision returns the shared raw_model when every candidate
+// name matches. Mixed aliases intentionally yield ok=false so resolve omits
+// reorder_revision and the UI keeps drag-and-drop disabled.
+func singleRawModelForRevision(modelNames []string) (raw string, ok bool) {
+	if len(modelNames) == 0 {
+		return "", false
+	}
+	first := strings.TrimSpace(modelNames[0])
+	if first == "" {
+		return "", false
+	}
+	for _, name := range modelNames[1:] {
+		if name != modelNames[0] {
+			return "", false
+		}
+	}
+	return first, true
+}
+
 // loadScopeRevision reads the persistent scope revision row. Missing rows
 // are NOT errors — a scope that has never been bumped returns the zero value
 // and a nil error so the caller can decide whether the empty token is
@@ -812,6 +833,44 @@ func loadScopeRevision(ctx context.Context, q pgxQueryRower, rawModel string) (s
 		Hash:    hash,
 		Raw:     formatScopeRevision(version, hash),
 	}, nil
+}
+
+// ensureScopeRevision returns the persistent revision for rawModel, seeding
+// version=1 (same hash formula as migration 541 backfill) when the row is
+// absent. Concurrent ensures are safe via ON CONFLICT DO NOTHING.
+func ensureScopeRevision(ctx context.Context, q pgxExecRower, rawModel string) (scopeRevision, error) {
+	rawModel = strings.TrimSpace(rawModel)
+	if rawModel == "" {
+		return scopeRevision{}, nil
+	}
+	rev, err := loadScopeRevision(ctx, q, rawModel)
+	if err != nil || rev.Raw != "" {
+		return rev, err
+	}
+	_, err = q.Exec(ctx, `
+INSERT INTO public.candidate_binding_scope_revision (raw_model, scope_version, scope_hash)
+SELECT
+    $1::text,
+    1,
+    COALESCE(
+        encode(digest(string_agg(
+            b.id::text || '|' ||
+            b.credential_id::text || '|' ||
+            b.manual_priority::text || '|' ||
+            extract(epoch from b.updated_at)::text,
+            '|' ORDER BY b.id
+        ), 'sha256'), 'hex'),
+        ''
+    )
+FROM public.provider_models pm
+LEFT JOIN public.credential_model_bindings b ON b.provider_model_id = pm.id
+WHERE pm.raw_model_name = $1
+ON CONFLICT (raw_model) DO NOTHING
+`, rawModel)
+	if err != nil {
+		return scopeRevision{}, err
+	}
+	return loadScopeRevision(ctx, q, rawModel)
 }
 
 // parseScopeRevision parses the wire form "<version>:<hash>" back into a

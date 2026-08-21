@@ -24,7 +24,25 @@ vi.mock('../api/sessionAnalytics', () => ({
   deleteSessionTag: vi.fn(),
 }))
 
-const i18n = createI18n({ legacy: false, locale: 'zh-CN', messages: { 'zh-CN': { requests: { detail_extra: { attachmentsTab: '附件' } }, trace: { modal: { tooltip: '', close: '关闭', openButton: '流程' } } } } })
+const i18n = createI18n({
+  legacy: false,
+  locale: 'zh-CN',
+  messages: {
+    'zh-CN': {
+      requests: {
+        detail_extra: { attachmentsTab: '附件' },
+        list: {
+          trace: {
+            drawerSummaryAria: '会话摘要',
+            drawerSummaryTitle: '生成会话摘要',
+            drawerSummaryButton: '摘要',
+          },
+        },
+      },
+      trace: { modal: { tooltip: '', close: '关闭', openButton: '流程' } },
+    },
+  },
+})
 
 describe('RequestLogDrawer staged load', () => {
   beforeEach(() => {
@@ -73,5 +91,54 @@ describe('RequestLogDrawer staged load', () => {
     await flushPromises()
     expect(wrapper.text()).not.toContain('正文与响应异步加载中')
     expect(getRequestLogDetail).toHaveBeenCalledWith('req-1')
+  })
+})
+
+describe('RequestLogDrawer title/summary compact row', () => {
+  beforeEach(() => {
+    getRequestLogDetail.mockReset()
+    getRequestLogDetail.mockResolvedValue({
+      request_id: 'req-2',
+      ts: '2026-08-21T00:00:00Z',
+      success: true,
+      client_model: 'm-1',
+      provider_name: 'prov',
+      gw_task_id: 'task-1',
+      gw_session_id: 'sess-1',
+      session_title: null,
+      request_body: null,
+      response_body: null,
+    })
+  })
+
+  it('defaults to collapsed title ops and shows 无标题 + 摘要', async () => {
+    const wrapper = mount(RequestLogDrawer, {
+      props: { requestId: 'req-2', mode: 'request-logs' },
+      global: {
+        plugins: [i18n],
+        stubs: { Teleport: true, RequestTracePanel: true, RoutingAttemptsTimeline: true },
+      },
+    })
+    await flushPromises()
+    expect(wrapper.text()).toContain('无标题')
+    expect(wrapper.text()).toContain('摘要')
+    expect(wrapper.text()).toContain('标题详情')
+    expect(wrapper.text()).not.toContain('重新生成')
+    expect(wrapper.text()).not.toContain('生成标题')
+  })
+
+  it('expands title actions and emits summary', async () => {
+    const wrapper = mount(RequestLogDrawer, {
+      props: { requestId: 'req-2', mode: 'request-logs' },
+      global: {
+        plugins: [i18n],
+        stubs: { Teleport: true, RequestTracePanel: true, RoutingAttemptsTimeline: true },
+      },
+    })
+    await flushPromises()
+    await wrapper.get('button[aria-expanded="false"]').trigger('click')
+    expect(wrapper.text()).toContain('生成标题')
+    await wrapper.get('button[aria-label="会话摘要"]').trigger('click')
+    expect(wrapper.emitted('generateSessionSummary')?.[0]).toEqual(['sess-1'])
   })
 })

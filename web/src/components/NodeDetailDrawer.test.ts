@@ -103,10 +103,27 @@ function mountDrawer(model?: string) {
           template: '<div class="stub-other-models">其它模型面板</div>',
         },
         NodeDetailAccessErrorsPanel: false,
+        NodeDetailAvailabilityPanel: {
+          name: 'NodeDetailAvailabilityPanel',
+          props: ['candidate', 'loading'],
+          template: '<div class="stub-availability">可用性面板</div>',
+        },
+        NodeDetailEmergencyPanel: {
+          name: 'NodeDetailEmergencyPanel',
+          props: ['candidate', 'rawModel', 'canEdit'],
+          template: '<div class="stub-emergency">紧急维护面板</div>',
+        },
         FpSlotVisualizer: true,
       },
     },
   })
+}
+
+async function clickMainTab(wrapper: ReturnType<typeof mountDrawer>, label: string) {
+  const tab = wrapper.findAll('[role="tab"]').find(btn => btn.text().includes(label))
+  expect(tab).toBeTruthy()
+  await tab!.trigger('click')
+  await flushPromises()
 }
 
 describe('NodeDetailDrawer model×node scope', () => {
@@ -185,6 +202,54 @@ describe('NodeDetailDrawer model×node scope', () => {
     expect(wrapper.find('.nd-window-cell').exists()).toBe(true)
   })
 
+  it('opens availability tab with seedCandidate and shows emergency panel in settings', async () => {
+    const seed = {
+      credential_id: 5,
+      provider_id: 1,
+      model_name: 'm-1',
+      available: true,
+      runtime_routable: true,
+      routable: true,
+      tier: 1,
+      weight: 100,
+    }
+    const wrapper = mount(NodeDetailDrawer, {
+      props: {
+        modelValue: true,
+        node: liveStreamState.nodes[0],
+        model: 'm-1',
+        initialTab: 'availability',
+        seedCandidate: seed,
+      },
+      global: {
+        plugins: [i18n],
+        stubs: {
+          Teleport: true,
+          RequestLogDrawer: true,
+          NodeDetailConcurrencyPanel: true,
+          NodeDetailOtherModelsPanel: true,
+          NodeDetailAccessErrorsPanel: true,
+          NodeDetailAvailabilityPanel: {
+            name: 'NodeDetailAvailabilityPanel',
+            props: ['candidate', 'loading'],
+            template: '<div class="stub-availability">可用性面板</div>',
+          },
+          NodeDetailEmergencyPanel: {
+            name: 'NodeDetailEmergencyPanel',
+            props: ['candidate', 'rawModel', 'canEdit'],
+            template: '<div class="stub-emergency">紧急维护面板</div>',
+          },
+        },
+      },
+    })
+    await flushPromises()
+    expect(wrapper.find('.stub-availability').exists()).toBe(true)
+    const tabs = wrapper.findAll('[role="tab"]')
+    await tabs.find(btn => btn.text().includes('设置与维护'))!.trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.stub-emergency').exists()).toBe(true)
+  })
+
   it('locks the drawer to the scoped model and filters model buttons', async () => {
     const wrapper = mountDrawer('m-1')
     await flushPromises()
@@ -226,10 +291,10 @@ describe('NodeDetailDrawer model×node scope', () => {
   it('shows settings sections with concurrency panel without a manual load button', async () => {
     const wrapper = mountDrawer('m-1')
     await flushPromises()
-    await wrapper.get('[role="tab"]:nth-child(3)').trigger('click')
-    await flushPromises()
+    await clickMainTab(wrapper, '设置与维护')
 
-    expect(wrapper.text()).toContain('连通性与紧急维护')
+    expect(wrapper.text()).toContain('连通性')
+    expect(wrapper.text()).toContain('紧急维护')
     expect(wrapper.text()).toContain('并发与指纹槽位')
     expect(wrapper.text()).toContain('其它模型')
     expect(wrapper.text()).not.toContain('加载设置面板')
@@ -238,8 +303,7 @@ describe('NodeDetailDrawer model×node scope', () => {
   it('shows other-models panel when settings sub-tab is selected', async () => {
     const wrapper = mountDrawer('m-1')
     await flushPromises()
-    await wrapper.get('[role="tab"]:nth-child(3)').trigger('click')
-    await flushPromises()
+    await clickMainTab(wrapper, '设置与维护')
     const subTabs = wrapper.findAll('.nd-subtabs button')
     expect(subTabs.length).toBeGreaterThanOrEqual(2)
     await subTabs[1].trigger('click')
@@ -277,8 +341,7 @@ describe('NodeDetailDrawer model×node scope', () => {
     defaultTenant.mockReturnValue(false)
     const wrapper = mountDrawer('m-1')
     await flushPromises()
-    await wrapper.get('[role="tab"]:nth-child(3)').trigger('click')
-    await flushPromises()
+    await clickMainTab(wrapper, '设置与维护')
     expect(wrapper.text()).toContain('仅 default 租户可以维护节点')
     const ping = wrapper.findAll('button').find(b => b.text().includes('会话 Ping'))
     expect(ping?.attributes('disabled')).toBeDefined()
