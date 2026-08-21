@@ -83,6 +83,7 @@ func (p *Pipeline) selectAndEnqueue(qr *QueuedRequest) ([]CredentialRef, bool) {
 			continue
 		}
 		if forwarder := p.getForwarderIfExists(ref.CredentialID); forwarder != nil && !forwarder.HasCapacity() {
+			metricCredentialFull.WithLabelValues(itoa(ref.CredentialID), ref.ConcurrencyMode).Inc()
 			p.observeQueue(QueueObservation{
 				Kind:         QueueCredentialFull,
 				CredentialID: ref.CredentialID,

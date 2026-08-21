@@ -1252,3 +1252,53 @@ func TestCredEnqueuedAtSetBeforeSend(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// credentialFullCounterValue mirrors counterValue but for the credential-full
+// counter. Reads the value via dto.Metric.Write (matches the repo's existing
+// style — testutil is not vendored).
+func credentialFullCounterValue(t *testing.T, credentialID int, mode string) float64 {
+	t.Helper()
+	metric := &dto.Metric{}
+	if err := metricCredentialFull.WithLabelValues(itoa(credentialID), mode).Write(metric); err != nil {
+		t.Fatalf("read credential_full metric: %v", err)
+	}
+	return metric.GetCounter().GetValue()
+}
+
+// TestCredentialFullCounter: when selectAndEnqueue walks a single credential
+// whose Tier-2 forwarder is already saturated, dispatch_credential_full_total
+// must tick exactly once. Locks down the metric wiring introduced for
+// observability of the pre-reserve routing-skip path.
+func TestCredentialFullCounter(t *testing.T) {
+	ref := cred(42, ModeConcurrency, 1)
+
+	p := NewPipeline(Deps{
+		RouteFunc: func(context.Context, *QueuedRequest) ([]CredentialRef, error) {
+			return []CredentialRef{ref}, nil
+		},
+		ModelResolveFunc: func(context.Context, string, []string) (string, []string, error) {
+			return "m", nil, nil
+		},
+		ForwardFunc: func(context.Context, *QueuedRequest, CredentialRef) ForwardOutcome {
+			return ForwardOutcome{}
+		},
+	})
+	// Inject a saturated forwarder directly into the map so HasCapacity()=false.
+	// We do not Start() the pipeline — selectAndEnqueue only reads the
+	// forwarder reference; the goroutine loop never runs.
+	cf := newCredForwarder(ref, ref.ConcurrencyLimit, p)
+	cf.depth.Store(int64(ref.ConcurrencyLimit)) // depth == limit → HasCapacity() == false
+	p.credMu.Lock()
+	p.forwarders[ref.CredentialID] = cf
+	p.credMu.Unlock()
+
+	before := credentialFullCounterValue(t, ref.CredentialID, ref.ConcurrencyMode)
+
+	qr := NewQueuedRequest("r-full", "t", "m", context.Background(), nil)
+	p.selectAndEnqueue(qr)
+
+	after := credentialFullCounterValue(t, ref.CredentialID, ref.ConcurrencyMode)
+	if got := after - before; got != 1 {
+		t.Fatalf("credential_full counter delta = %v, want 1 (before=%v after=%v)", got, before, after)
+	}
+}

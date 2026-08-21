@@ -53,6 +53,16 @@ var (
 		Help: "Requests that could not be enqueued and were redirected/rejected.",
 	}, []string{"reason"}) // reason: cred_queue_full|model_queue_full|pace_timeout|no_route
 
+	// metricCredentialFull counts pre-reserve routing skips: dispatch skipped a
+	// credential because its Tier-2 queue was already at capacity. Distinct
+	// from metricOverflow{reason="cred_queue_full"} (post-reserve overflow).
+	// Labels match metricDequeued / metricInFlight so Grafana panels can
+	// correlate skip rate with throughput per (credential, mode).
+	metricCredentialFull = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "dispatch_credential_full_total",
+		Help: "Pre-reserve routing skips caused by a Tier-2 credential queue being at capacity.",
+	}, []string{"credential", "mode"})
+
 	metricFailover = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "dispatch_failover_total",
 		Help: "Failover transitions by kind.",

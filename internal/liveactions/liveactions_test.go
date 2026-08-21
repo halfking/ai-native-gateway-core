@@ -237,6 +237,25 @@ func TestNormalizeStageCategory(t *testing.T) {
 	}
 }
 
+// TestNormalizeStageFailureCounter: an Action outside the closed enum
+// (stageForAction returns "") must increment
+// live_actions_stage_normalization_failures_total exactly once, with no
+// stage / stage_category populated on the event.
+func TestNormalizeStageFailureCounter(t *testing.T) {
+	const unknown = Action("__test_unknown__")
+	before := StageNormalizationFailuresTotal()
+
+	ev := ActionEvent{Action: unknown}
+	normalizeStage(&ev)
+
+	if ev.Stage != "" || ev.StageCategory != "" {
+		t.Fatalf("unknown action should leave stage fields empty, got %q/%q", ev.Stage, ev.StageCategory)
+	}
+	if got := StageNormalizationFailuresTotal() - before; got != 1 {
+		t.Fatalf("stage_normalization_failures delta = %d, want 1", got)
+	}
+}
+
 // TestNilEmitterIsNoOp: nil emitter 上 Emit 必须 no-op 不 panic。
 func TestNilEmitterIsNoOp(t *testing.T) {
 	var e *Emitter
