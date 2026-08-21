@@ -60,3 +60,9 @@
 |-----------|------|---------|--------|
 | 554 | `554_goal_runs.sql` | `fdf2a5a4900fbae3559fbb86cfe21d8e1fbbfa18f56d205c73fcd1b31073ca21` | applied+verified |
 
+## 2026-08-21T17:41:16Z — deploy 154 build_seq 1654 (cbca3593)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 555 | `555_goal_run_actions_lease_fencing.sql` | `1e2af70f5b0ee66c58ab54b7515e359e140b6425cd76488086982f289b10d6fe` | applied+verified |
+

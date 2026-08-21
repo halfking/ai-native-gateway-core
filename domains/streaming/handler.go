@@ -27,6 +27,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/autocombo"
 	"github.com/kaixuan/llm-gateway-go/domains/credential"                          //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/freeresource"                        //nolint:depguard // OmniFree quota tracker
+	"github.com/kaixuan/llm-gateway-go/domains/goalintegration"                    //nolint:depguard // Wave 2-D: HTTP API integration
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"                         //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"                   //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/goal"                          //nolint:depguard // Goal retry outcome observer
@@ -529,6 +530,10 @@ type chatRequestBody struct {
 	// Format: ["filesystem.*", "network.http_get"]
 	// Expands to full tool definitions via toolRegistry.
 	ToolIDs []string `json:"tool_ids,omitempty"`
+	// Goal (Wave 2-D, 2026-08-22) is the optional unified orchestration
+	// goal object. Backward compatible: absent/null/empty is allowed.
+	// GoalIntegration.ParseAndCreate decides whether to create a GoalRun.
+	Goal json.RawMessage `json:"goal,omitempty"`
 }
 
 //-----------------------------------------------------------------------------
@@ -887,6 +892,14 @@ type ChatHandler struct {
 	goalRetryRecorder   GoalRetryRecorder
 	goalOutcomeObserver goal.OutcomeObserver
 
+	// goalIntegrator (Wave 2-D, 2026-08-22) parses the optional `goal` field
+	// in the request body and creates a durable GoalRun ledger row before
+	// the durable snapshot cut point. Nil means the feature is disabled
+	// (no-op); explicit goal requests will return ErrNoGoal (treated as
+	// "no goal" and continue). Configured store + missing migration 554
+	// returns ErrInvalidGoal (fail-closed, 400).
+	goalIntegrator *goalintegration.Integrator
+
 	// formatDetector (2026-07-26) automatically detects client request format patterns.
 	// When non-nil, handler identifies format (OpenAI, OpenCode, etc.) and applies
 	// known fixes before validation. nil disables format detection (strict validation only).
@@ -1081,6 +1094,15 @@ func (h *ChatHandler) SetSessionCompressor(sc *compression.SessionCompressor) {
 // before session compression sends the request upstream.
 func (h *ChatHandler) SetHandoffHook(hook *handoff.TriggerHook) {
 	h.handoffHook = hook
+}
+
+// SetGoalIntegrator (Wave 2-D, 2026-08-22) wires the optional GoalRun
+// integration. Pass nil to disable. When enabled with a configured store,
+// explicit `goal` fields in /v1/chat/completions bodies will create a
+// GoalRun row before the durable snapshot cut point and the response will
+// include X-Goal-Run-Id + status_url headers.
+func (h *ChatHandler) SetGoalIntegrator(integrator *goalintegration.Integrator) {
+	h.goalIntegrator = integrator
 }
 
 // SetSanitizeInputMiddleware wires the SmartSaniGuard input-side sanitizer.
@@ -2782,6 +2804,70 @@ func (h *ChatHandler) serveWithExecutor(
 	tenantID := ""
 	if keyInfo != nil {
 		tenantID = keyInfo.TenantID
+	}
+
+	// ── Wave 2-D: unified orchestration — GoalRun integration cut point ─────
+	// 在 body 规范化、session ownership 校验、tenant 解析都已就绪、durable
+	// snapshot 之前执行。规则：
+	//   - 字段缺失 / 显式 null  → 不创建 GoalRun，向后兼容；
+	//   - 字段存在但解析失败   → 400 fail-closed（goal=request 时不能降级）；
+	//   - 成功                  → GoalRun 落库，goal_run_id 写入 ctx，并在
+	//     最终响应头中返回 goal_run_id + status_url。
+	if h.goalIntegrator != nil && h.goalIntegrator.IsConfigured() && sessionID != "" && tenantID != "" {
+		apiKeyID := apiKeyIDValue(keyInfo)
+		resolved, goalErr := h.goalIntegrator.ParseAndCreate(ctx, bodyBytes, tenantID, apiKeyID, sessionID, requestID)
+		switch {
+		case goalErr == nil:
+			ctx = WithGoalRun(ctx, resolved)
+			// 把 goal_run_id / status_url 写入响应头，无论后续响应路径
+			// （同步 / 流式 / 202 durable）都会带上。Wave 2-D 契约要求：
+			// 客户端拿到这两个值即可轮询 /v1/goal-runs/{id}。
+			w.Header().Set("X-Goal-Run-Id", resolved.GoalRunID)
+			w.Header().Set("X-Goal-Status-Url", resolved.StatusURL)
+			w.Header().Set("X-Goal-Status", resolved.Status)
+			h.emitAction(ctx, requestID, liveactions.ActionArrive, map[string]string{
+				"goal_run_id": resolved.GoalRunID,
+				"goal_status": resolved.Status,
+			})
+			slog.InfoContext(ctx, "goal: GoalRun created",
+				"request_id", requestID,
+				"goal_run_id", resolved.GoalRunID,
+				"status_url", resolved.StatusURL,
+				"policy_version", resolved.PolicySnapshot != nil,
+			)
+		case errors.Is(goalErr, goalintegration.ErrNoGoal):
+			// backward compatible: no explicit goal request
+		case errors.Is(goalErr, goalintegration.ErrInvalidGoal):
+			logCtx.SetError("invalid_goal", goalErr.Error())
+			logCtx.EmitFailure("invalid_goal", goalErr.Error(), nil, nil)
+			logCtx.MarkLogged()
+			writeJSON(w, http.StatusBadRequest, map[string]any{
+				"error": map[string]string{
+					"message": "goal request invalid: " + goalErr.Error(),
+					"type":    "invalid_request",
+					"code":    "invalid_goal",
+				},
+			})
+			return
+		default:
+			// DB / 其他错误：fail-closed（落库失败不让请求走完，避免后续
+			// 产生孤儿 step / action）
+			logCtx.SetError("goal_create_failed", goalErr.Error())
+			logCtx.EmitFailure("goal_create_failed", goalErr.Error(), nil, nil)
+			logCtx.MarkLogged()
+			slog.ErrorContext(ctx, "goal: CreateGoalRun failed",
+				"request_id", requestID,
+				"error", goalErr,
+			)
+			writeJSON(w, http.StatusInternalServerError, map[string]any{
+				"error": map[string]string{
+					"message": "failed to create GoalRun",
+					"type":    "server_error",
+					"code":    "goal_create_failed",
+				},
+			})
+			return
+		}
 	}
 
 	// ── SR-12 durable snapshot cut point (doc 18 §11.2) ────────────────

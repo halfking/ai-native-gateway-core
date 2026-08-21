@@ -52,3 +52,43 @@ func TestGovernorSnapshotBackendErrCarriesGoError(t *testing.T) {
 		t.Fatalf("BackendErr not preserved: got %v want %v", snap.BackendErr, want)
 	}
 }
+
+// ADR contract: State == SnapshotStateUnknown ⇔ BackendErr != nil.
+// Both directions must hold so Stage C metrics can drop a row whose
+// State is Unknown (it carries a backend fault, not a real state) and
+// so a non-Unknown State can never mask a backend fault by accident.
+func TestGovernorSnapshotInvariantUnknownImpliesBackendErr(t *testing.T) {
+	// State=Unknown without BackendErr is a contract violation.
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatalf("State=SnapshotStateUnknown without BackendErr should panic; it did not")
+		}
+	}()
+	_ = GovernorSnapshot{State: SnapshotStateUnknown, BackendErr: nil}.Validate()
+}
+
+func TestGovernorSnapshotInvariantBackendErrImpliesUnknown(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatalf("BackendErr != nil without State=SnapshotStateUnknown should panic; it did not")
+		}
+	}()
+	_ = GovernorSnapshot{
+		State:      SnapshotStateReady,
+		BackendErr: errors.New("redis: down"),
+	}.Validate()
+}
+
+func TestGovernorSnapshotValidStatesPassValidate(t *testing.T) {
+	cases := []GovernorSnapshot{
+		{State: SnapshotStateReady},
+		{State: SnapshotStateQueueFull},
+		{State: SnapshotStateGovernorSaturated},
+		{State: SnapshotStateUnknown, BackendErr: errors.New("backend fault")},
+	}
+	for i, snap := range cases {
+		if err := snap.Validate(); err != nil {
+			t.Fatalf("case %d: unexpected Validate failure: %v", i, err)
+		}
+	}
+}

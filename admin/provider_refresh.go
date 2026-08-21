@@ -301,8 +301,6 @@ func (h *Handler) fetchActiveCredentialsForProvider(ctx context.Context, provide
 		WHERE c.provider_id = $1
 		  AND c.status = 'active'
 		  AND COALESCE(c.lifecycle_status, 'active') NOT IN ('suspended', 'retired', 'disabled')
-		  AND COALESCE(c.availability_state, 'ready') = 'ready'
-		  AND (c.quota_state IS NULL OR c.quota_state NOT IN ('permanently_exhausted', 'balance_exhausted'))
 		  AND p.enabled = TRUE
 		ORDER BY c.id
 	`, providerID)

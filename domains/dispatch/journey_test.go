@@ -181,7 +181,7 @@ func TestJourneySameNodeRetryFailureThenSuccess(t *testing.T) {
 		t.Fatalf("retry reason = %q, want upstream_503", events[6].RetryReason)
 	}
 
-	snapshot := p.SnapshotWaterfall(1, "", 0)
+	snapshot := p.SnapshotWaterfall(1, "", 0, "")
 	if len(snapshot.Requests) != 1 || len(snapshot.Requests[0].Attempts) != 2 {
 		t.Fatalf("waterfall attempts = %+v", snapshot.Requests)
 	}
@@ -224,7 +224,7 @@ func TestJourneyDoesNotInferOrMisattributeFirstByte(t *testing.T) {
 			t.Fatalf("unexpected first_byte from outcome or stale callback: %+v", event)
 		}
 	}
-	attempts := p.SnapshotWaterfall(1, "", 0).Requests[0].Attempts
+	attempts := p.SnapshotWaterfall(1, "", 0, "").Requests[0].Attempts
 	if len(attempts) != 2 || attempts[0].FirstByteAt != "" || attempts[1].FirstByteAt != "" {
 		t.Fatalf("fabricated waterfall first byte: %+v", attempts)
 	}
@@ -291,7 +291,7 @@ func TestJourneyNodeAndModelSwitches(t *testing.T) {
 		if switched == nil || switched.FromModel != "m1" || switched.ToModel != "m2" || switched.SwitchReason != "no_node" {
 			t.Fatalf("model switch event = %+v", switched)
 		}
-		attempts := p.SnapshotWaterfall(1, "", 0).Requests[0].Attempts
+		attempts := p.SnapshotWaterfall(1, "", 0, "").Requests[0].Attempts
 		if len(attempts) != 2 || attempts[0].Model != "m1" || attempts[1].Model != "m2" {
 			t.Fatalf("model attempt waterfall = %+v", attempts)
 		}

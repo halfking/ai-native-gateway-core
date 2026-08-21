@@ -253,7 +253,7 @@ func (p *QueueProjection) Snapshot() *SnapshotView {
 			break
 		}
 	}
-	p50, p95 := waitingPercentilesFromRequests(p.waterfall.snapshot(waterfallRingCap, "", 0))
+	p50, p95 := waitingPercentilesFromRequests(p.waterfall.snapshot(waterfallRingCap, "", 0, ""))
 	sort.Slice(models, func(i, j int) bool { return models[i].Model < models[j].Model })
 	sort.Slice(credentials, func(i, j int) bool { return credentials[i].Credential < credentials[j].Credential })
 	view := &SnapshotView{Enabled: enabled, Wired: true, Models: models, Credentials: credentials}
@@ -269,7 +269,8 @@ func (p *QueueProjection) Snapshot() *SnapshotView {
 }
 
 // SnapshotWaterfall returns the admin timeline from projection-owned state.
-func (p *QueueProjection) SnapshotWaterfall(limit int, model string, credentialID int) WaterfallSnapshot {
+// tenantID empty = all tenants (platform ops).
+func (p *QueueProjection) SnapshotWaterfall(limit int, model string, credentialID int, tenantID string) WaterfallSnapshot {
 	snapshot := WaterfallSnapshot{
 		Requests: []WaterfallRequest{}, Enabled: true,
 		BottleneckDiagnosis: BottleneckDiagnosis{Bottleneck: "none", Message: "队列正常"},
@@ -287,7 +288,7 @@ func (p *QueueProjection) SnapshotWaterfall(limit int, model string, credentialI
 		snapshot.BottleneckDiagnosis.Message = "dispatch queue projection not wired"
 		return snapshot
 	}
-	requests := p.waterfall.snapshot(limit, model, credentialID)
+	requests := p.waterfall.snapshot(limit, model, credentialID, tenantID)
 	p.mu.RUnlock()
 
 	snapshot.Wired = true

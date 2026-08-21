@@ -117,6 +117,7 @@ func queryWaterfallFromDB(ctx context.Context, pool *pgxpool.Pool, limit int, mo
 	const sql = `
 SELECT
   request_id,
+  COALESCE(tenant_id, ''),
   COALESCE(gw_session_id, ''),
   COALESCE(NULLIF(outbound_model, ''), NULLIF(client_model, ''), NULLIF(canonical_model, ''), ''),
   COALESCE(credential_id, 0),
@@ -148,18 +149,19 @@ FROM request_logs_hot
 	out := make([]dispatch.WaterfallRequest, 0, limit)
 	for rows.Next() {
 		var (
-			reqID, sessionID, mdl, result          string
+			reqID, tenant, sessionID, mdl, result  string
 			cred                                   int64
 			t0, t1, t2, t3, t4, t5, t6, t7, t8, t9 *time.Time
 		)
 		if err := rows.Scan(
-			&reqID, &sessionID, &mdl, &cred, &result,
+			&reqID, &tenant, &sessionID, &mdl, &cred, &result,
 			&t0, &t1, &t2, &t3, &t4, &t5, &t6, &t7, &t8, &t9,
 		); err != nil {
 			return nil, err
 		}
 		item := dispatch.WaterfallRequest{
 			RequestID:       reqID,
+			TenantID:        tenant,
 			SessionID:       sessionID,
 			Model:           mdl,
 			Credential:      int(cred),
