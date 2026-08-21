@@ -1,4 +1,4 @@
--- 551_approval_resume_claim.sql
+-- 553_approval_resume_claim.sql
 --
 -- Keep the human approval decision separate from the execution that resumes
 -- the request. An approved row can be claimed by one resumer at a time. A

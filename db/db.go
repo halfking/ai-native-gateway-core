@@ -4304,7 +4304,7 @@ from_checkpoint IN ('preflight','copy','coverage','dual','observe','cleanup')
 	return nil
 }
 
-// ensureApprovalResumeClaimSchema mirrors startup migration 551 for gateway
+// ensureApprovalResumeClaimSchema mirrors startup migration 553 for gateway
 // databases that are upgraded through db.Open rather than the installer.
 func (d *DB) ensureApprovalResumeClaimSchema(ctx context.Context) error {
 	if d == nil || d.pool == nil {

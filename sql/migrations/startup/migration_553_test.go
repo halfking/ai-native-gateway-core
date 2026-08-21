@@ -7,8 +7,8 @@ import (
 	"testing"
 )
 
-func TestMigration551ApprovalResumeClaimContract(t *testing.T) {
-	up := string(migrationFile(t, "551_approval_resume_claim.sql"))
+func TestMigration553ApprovalResumeClaimContract(t *testing.T) {
+	up := string(migrationFile(t, "553_approval_resume_claim.sql"))
 	for _, want := range []string{
 		"BEGIN;",
 		"ADD COLUMN IF NOT EXISTS resume_state TEXT NOT NULL DEFAULT 'idle'",
@@ -30,7 +30,7 @@ func TestMigration551ApprovalResumeClaimContract(t *testing.T) {
 		"COMMIT;",
 	} {
 		if !strings.Contains(up, want) {
-			t.Errorf("migration 551 up missing %q", want)
+			t.Errorf("migration 553 up missing %q", want)
 		}
 	}
 	mustAppearBefore(t, up, "BEGIN;", "ADD COLUMN IF NOT EXISTS resume_state")
@@ -41,7 +41,7 @@ func TestMigration551ApprovalResumeClaimContract(t *testing.T) {
 	mustAppearBefore(t, up, "CREATE INDEX IF NOT EXISTS idx_approval_queue_resume_claimable", "COMMIT;")
 }
 
-func TestMigration551ApprovalResumeClaimSchemaMirrors(t *testing.T) {
+func TestMigration553ApprovalResumeClaimSchemaMirrors(t *testing.T) {
 	root := filepath.Join("..", "..", "..")
 	for _, name := range []string{
 		"sql/schema/01-schema.sql",
@@ -66,8 +66,8 @@ func TestMigration551ApprovalResumeClaimSchemaMirrors(t *testing.T) {
 	}
 }
 
-func TestMigration551ApprovalResumeClaimDownContract(t *testing.T) {
-	down := string(migrationFile(t, "551_approval_resume_claim.down.sql"))
+func TestMigration553ApprovalResumeClaimDownContract(t *testing.T) {
+	down := string(migrationFile(t, "553_approval_resume_claim.down.sql"))
 	for _, want := range []string{
 		"BEGIN;",
 		"RAISE EXCEPTION",
@@ -87,11 +87,11 @@ func TestMigration551ApprovalResumeClaimDownContract(t *testing.T) {
 		"COMMIT;",
 	} {
 		if !strings.Contains(down, want) {
-			t.Errorf("migration 551 down missing %q", want)
+			t.Errorf("migration 553 down missing %q", want)
 		}
 	}
 	if strings.Contains(down, "DROP TABLE") {
-		t.Error("migration 551 down must not drop approval_queue")
+		t.Error("migration 553 down must not drop approval_queue")
 	}
 	mustAppearBefore(t, down, "RAISE EXCEPTION", "DROP INDEX IF EXISTS public.idx_approval_queue_resume_claimable")
 	mustAppearBefore(t, down, "DROP INDEX IF EXISTS public.idx_approval_queue_resume_claimable", "DROP COLUMN IF EXISTS resume_error")
