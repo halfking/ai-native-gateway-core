@@ -39,6 +39,22 @@ func (r *PostgresRepository) Apply(ctx context.Context, event JourneyEvent) erro
 	if r == nil || r.db == nil {
 		return errors.New("request journey PostgreSQL is unavailable")
 	}
+	return applyJourneyEvent(ctx, r.db, event)
+}
+
+// ApplyTx persists an observation using the caller-owned PostgreSQL transaction.
+// ObservationOutbox uses it so projection writes share its transaction-local RLS bypass.
+func (r *PostgresRepository) ApplyTx(ctx context.Context, tx pgx.Tx, event JourneyEvent) error {
+	if r == nil || tx == nil {
+		return errors.New("request journey PostgreSQL transaction is unavailable")
+	}
+	return applyJourneyEvent(ctx, tx, event)
+}
+
+func applyJourneyEvent(ctx context.Context, db interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}, event JourneyEvent) error {
 	if err := event.Validate(); err != nil {
 		return err
 	}
@@ -64,7 +80,7 @@ func (r *PostgresRepository) Apply(ctx context.Context, event JourneyEvent) erro
 			credentialID = event.Attempt.CredentialID
 		}
 	}
-	_, err := r.db.Exec(ctx, `
+	_, err := db.Exec(ctx, `
 		INSERT INTO request_state_transitions (`+journeyEventColumns+`)
 		VALUES (
 			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,

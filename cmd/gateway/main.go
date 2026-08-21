@@ -5606,6 +5606,9 @@ func main() {
 	// 因此只要在 srv 接受请求前注入即可。dispatch_v2.enabled 的 atomic 缓存
 	// 已在 syncDispatchGateFromSettings 同步；此处仅构造与启动 worker 池。
 	pipeline := wireDispatchPipeline(routingExec)
+	if dbConn != nil && dbConn.Enabled() {
+		setGatewayDispatchPool(dbConn.Pool())
+	}
 	// 会话优化 v4 (T2): 定时重试调度器（retry_at 到点拾取再入队）与调度
 	// 队列状态 Redis 镜像（仅观测/元数据重建，不赋予重启执行能力，R1.3）。
 	if pipeline != nil {

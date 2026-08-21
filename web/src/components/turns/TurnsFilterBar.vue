@@ -128,7 +128,7 @@ function onPresetChange(value: string) {
       <button class="btn btn-secondary" type="button" @click="emit('update:advancedExpanded', !advancedExpanded)">
         更多筛选
         <span v-if="advancedCount" class="adv-count">{{ advancedCount }}</span>
-        <span class="caret" :class="{ open: advancedExpanded }">▸</span>
+        <span class="filter-caret" :class="{ open: advancedExpanded }">▸</span>
       </button>
     </div>
 
@@ -185,30 +185,49 @@ function onPresetChange(value: string) {
 <style scoped>
 .filter-section { margin-bottom: 16px; }
 .view-toggle { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
-.toggle-btn { height: 30px; padding: 0 14px; border: 1px solid var(--border); border-radius: 15px; background: var(--surface-primary); color: var(--text-secondary); cursor: pointer; }
+.toggle-btn { height: 30px; padding: 0 14px; border: 1px solid var(--border); border-radius: 15px; background: var(--surface-primary); color: var(--text-secondary); cursor: pointer; font-size: 13px; }
 .toggle-btn.active { background: var(--accent); border-color: var(--accent); color: white; }
 .filter-bar { display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; align-items: center; }
 .filter-advanced { padding: 8px; border: 1px dashed var(--border); border-radius: 6px; background: var(--surface-secondary); }
-.filter-input { height: 36px; padding: 4px 12px; background: var(--surface-primary); border: 1px solid var(--border); border-radius: 6px; font-size: 14px; min-width: 140px; }
-.filter-search { min-width: 220px; }
+.filter-input { height: 36px; padding: 4px 12px; background: var(--surface-primary); border: 1px solid var(--border); border-radius: 6px; font-size: 14px; min-width: 140px; box-sizing: border-box; }
+.filter-search { min-width: 220px; flex: 1 1 220px; }
 .filter-preset { min-width: 130px; }
 .filter-dt { min-width: 180px; }
 .dt-sep { color: var(--text-muted); }
-.filter-select { width: 170px; flex: 0 0 170px; }
-.filter-select-short { width: 130px; flex-basis: 130px; }
-.filter-select-tags { width: 180px; flex-basis: 180px; }
-.filter-select :deep(.el-select__wrapper) { min-height: 36px; }
+.filter-select { width: 170px; max-width: 170px; flex: 0 0 auto; }
+.filter-select-short { width: 130px; max-width: 130px; }
+.filter-select-tags { width: 180px; max-width: 180px; }
+.filter-select :deep(.el-select__wrapper) {
+  min-height: 36px;
+  height: 36px;
+  box-sizing: border-box;
+}
+.filter-select :deep(.el-select__selection) { overflow: hidden; }
+.filter-select :deep(.el-select__suffix),
+.filter-select :deep(.el-select__caret),
+.filter-select :deep(.el-icon) {
+  width: 14px !important;
+  height: 14px !important;
+  font-size: 14px !important;
+  line-height: 14px !important;
+}
+.filter-select :deep(svg) {
+  width: 14px !important;
+  height: 14px !important;
+  max-width: 14px !important;
+  max-height: 14px !important;
+}
 .btn { height: 36px; padding: 0 16px; border-radius: 6px; font-size: 14px; font-weight: 500; cursor: pointer; }
 .btn-primary { background: var(--accent); color: white; border: 0; }
 .btn-secondary { background: var(--surface-primary); color: var(--text-primary); border: 1px solid var(--border); }
 .adv-count { display: inline-block; min-width: 16px; padding: 0 4px; border-radius: 8px; background: var(--accent); color: white; font-size: 11px; line-height: 16px; }
-.caret { display: inline-block; transition: transform .15s; }
-.caret.open { transform: rotate(90deg); }
+.filter-caret { display: inline-block; transition: transform .15s; font-size: 12px; }
+.filter-caret.open { transform: rotate(90deg); }
 .chip-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
 .chip { border: 1px solid var(--border); background: var(--surface-secondary); color: var(--text-secondary); border-radius: 12px; padding: 2px 10px; font-size: 12px; cursor: pointer; }
 .chip:hover { border-color: var(--accent); color: var(--accent); }
 @media (max-width: 760px) {
-  .filter-search, .filter-preset, .filter-dt, .filter-select, .filter-select-short, .filter-select-tags { width: 100%; min-width: 0; flex-basis: 100%; }
+  .filter-search, .filter-preset, .filter-dt, .filter-select, .filter-select-short, .filter-select-tags { width: 100%; max-width: none; min-width: 0; flex-basis: 100%; }
   .dt-sep { display: none; }
 }
 </style>

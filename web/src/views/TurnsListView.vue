@@ -201,8 +201,8 @@ async function extractAsset(session: TurnsSessionGroup) {
   try {
     const taskId = session.task_id && !session.task_id.startsWith('auto') ? session.task_id : ''
     const result = taskId
-      ? await extractSessionToMemora(taskId)
-      : await extractNoTopicSessionToMemora({ prefix: session.session_id })
+      ? await extractSessionToMemora(taskId, { session_id: session.session_id })
+      : await extractNoTopicSessionToMemora({ prefix: session.session_id, hours: 168 })
     assetMsg.value = {
       ...assetMsg.value,
       [session.session_id]: result.error

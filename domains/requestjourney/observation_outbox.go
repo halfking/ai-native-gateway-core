@@ -25,13 +25,18 @@ type observationOutboxDB interface {
 	Begin(context.Context) (pgx.Tx, error)
 }
 
+type journeyEventTxWriter interface {
+	ApplyTx(context.Context, pgx.Tx, JourneyEvent) error
+}
+
 type claimedObservation struct {
-	ID          int64
-	Event       JourneyEvent
-	Owner       string
-	ClaimUntil  time.Time
-	Attempts    int
-	PayloadHash string
+	ID                int64
+	Event             JourneyEvent
+	Owner             string
+	ClaimUntil        time.Time
+	ClaimFencingToken int64
+	Attempts          int
+	PayloadHash       string
 }
 
 // ObservationOutbox is a PostgreSQL-backed write-ahead queue for journey
@@ -48,9 +53,13 @@ type ObservationOutbox struct {
 	pollInterval time.Duration
 	batch        int
 
-	stopOnce sync.Once
-	stop     chan struct{}
-	done     chan struct{}
+	lifecycleMu sync.Mutex
+	started     bool
+	stopped     bool
+	stop        chan struct{}
+	done        chan struct{}
+	workerCtx   context.Context
+	cancel      context.CancelFunc
 }
 
 func newObservationOutbox(db observationOutboxDB, pg, redis journeyEventWriter, owner string) *ObservationOutbox {
@@ -60,10 +69,12 @@ func newObservationOutbox(db observationOutboxDB, pg, redis journeyEventWriter, 
 	if owner == "" {
 		owner = "request-journey-observer"
 	}
+	workerCtx, cancel := context.WithCancel(context.Background())
 	return &ObservationOutbox{
 		db: db, pg: pg, redis: redis, owner: owner, clock: time.Now,
 		lease: defaultObservationOutboxLease, pollInterval: defaultObservationOutboxPollInterval,
 		batch: defaultObservationOutboxBatch, stop: make(chan struct{}), done: make(chan struct{}),
+		workerCtx: workerCtx, cancel: cancel,
 	}
 }
 
@@ -71,20 +82,35 @@ func (o *ObservationOutbox) start() {
 	if o == nil {
 		return
 	}
+	o.lifecycleMu.Lock()
+	if o.started || o.stopped {
+		o.lifecycleMu.Unlock()
+		return
+	}
+	o.started = true
+	o.lifecycleMu.Unlock()
+
 	go func() {
 		defer close(o.done)
-		o.RunOnce(context.Background())
+		o.RunOnce(o.workerCtx)
 		ticker := time.NewTicker(o.pollInterval)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-o.stop:
 				return
+			case <-o.workerCtx.Done():
+				return
 			case <-ticker.C:
-				o.RunOnce(context.Background())
+				o.RunOnce(o.workerCtx)
 			}
 		}
 	}()
+}
+
+func setObservationOutboxBypass(ctx context.Context, tx pgx.Tx) error {
+	_, err := tx.Exec(ctx, `SELECT set_config('app.bypass_rls', 'true', true)`)
+	return err
 }
 
 // Enqueue commits the durable event before it is reported as accepted. Exact
@@ -110,6 +136,9 @@ func (o *ObservationOutbox) Enqueue(ctx context.Context, event JourneyEvent) err
 		return fmt.Errorf("begin request journey observation enqueue: %w", err)
 	}
 	defer tx.Rollback(context.WithoutCancel(ctx)) //nolint:errcheck
+	if err := setObservationOutboxBypass(ctx, tx); err != nil {
+		return fmt.Errorf("set request journey observation RLS bypass: %w", err)
+	}
 
 	tag, err := tx.Exec(ctx, `
 		INSERT INTO request_journey_observation_outbox (
@@ -144,10 +173,10 @@ func (o *ObservationOutbox) Enqueue(ctx context.Context, event JourneyEvent) err
 // drives their PostgreSQL then Redis projections. Errors leave a durable row
 // with backoff for a later process to retry.
 func (o *ObservationOutbox) RunOnce(ctx context.Context) {
-	if o == nil {
+	if o == nil || ctx == nil || ctx.Err() != nil {
 		return
 	}
-	claims, err := o.claim(ctx, "", "", 0)
+	claims, err := o.claim(ctx, "", "", 0, false)
 	if err != nil {
 		return
 	}
@@ -165,7 +194,7 @@ func (o *ObservationOutbox) Replay(ctx context.Context, tenantID, requestID stri
 	if tenantID == "" || requestID == "" || seq <= 0 {
 		return errors.New("request journey observation replay requires tenant_id, request_id, and positive seq")
 	}
-	claims, err := o.claim(ctx, tenantID, requestID, seq)
+	claims, err := o.claim(ctx, tenantID, requestID, seq, true)
 	if err != nil {
 		return err
 	}
@@ -179,24 +208,27 @@ func (o *ObservationOutbox) Replay(ctx context.Context, tenantID, requestID stri
 	return nil
 }
 
-func (o *ObservationOutbox) claim(ctx context.Context, tenantID, requestID string, seq int64) ([]claimedObservation, error) {
+func (o *ObservationOutbox) claim(ctx context.Context, tenantID, requestID string, seq int64, force bool) ([]claimedObservation, error) {
 	now := o.clock()
 	tx, err := o.db.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("begin request journey observation claim: %w", err)
 	}
 	defer tx.Rollback(context.WithoutCancel(ctx)) //nolint:errcheck
+	if err := setObservationOutboxBypass(ctx, tx); err != nil {
+		return nil, fmt.Errorf("set request journey observation RLS bypass: %w", err)
+	}
 
 	query := `
-		SELECT id, payload, payload_hash, attempts
+		SELECT id, payload, payload_hash, attempts, claim_fencing_token
 		FROM request_journey_observation_outbox
 		WHERE (
-			(status IN ('pending', 'failed') AND next_retry_at <= $1)
-			OR (status = 'processing' AND claim_until < $1)
+			(status IN ('pending', 'failed') AND (next_retry_at <= $1 OR $2))
+			OR (status = 'processing' AND (claim_until IS NULL OR claim_until < $1))
 		)`
-	args := []any{now}
+	args := []any{now, force}
 	if tenantID != "" {
-		query += " AND tenant_id=$2 AND request_id=$3 AND seq=$4"
+		query += " AND tenant_id=$3 AND request_id=$4 AND seq=$5"
 		args = append(args, tenantID, requestID, seq)
 	}
 	query += " ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT " + fmt.Sprint(o.batch)
@@ -204,39 +236,49 @@ func (o *ObservationOutbox) claim(ctx context.Context, tenantID, requestID strin
 	if err != nil {
 		return nil, fmt.Errorf("select request journey observation outbox: %w", err)
 	}
-	defer rows.Close()
 
 	var claims []claimedObservation
 	for rows.Next() {
 		var claim claimedObservation
 		var payload []byte
-		if err := rows.Scan(&claim.ID, &payload, &claim.PayloadHash, &claim.Attempts); err != nil {
+		if err := rows.Scan(&claim.ID, &payload, &claim.PayloadHash, &claim.Attempts, &claim.ClaimFencingToken); err != nil {
+			rows.Close()
 			return nil, fmt.Errorf("scan request journey observation outbox: %w", err)
 		}
 		if err := json.Unmarshal(payload, &claim.Event); err != nil {
+			rows.Close()
 			return nil, fmt.Errorf("decode request journey observation outbox: %w", err)
 		}
 		if err := claim.Event.Validate(); err != nil {
+			rows.Close()
 			return nil, fmt.Errorf("validate request journey observation outbox: %w", err)
 		}
-		claim.Owner = o.owner
-		claim.ClaimUntil = now.Add(o.lease)
-		tag, err := tx.Exec(ctx, `
-			UPDATE request_journey_observation_outbox
-			SET status='processing', claim_owner=$2, claim_until=$3,
-				attempts=attempts+1, updated_at=$4
-			WHERE id=$1`, claim.ID, claim.Owner, claim.ClaimUntil, now)
-		if err != nil {
-			return nil, fmt.Errorf("claim request journey observation outbox: %w", err)
-		}
-		if tag.RowsAffected() != 1 {
-			return nil, fmt.Errorf("request journey observation claim lost for id %d", claim.ID)
-		}
-		claim.Attempts++
 		claims = append(claims, claim)
 	}
 	if err := rows.Err(); err != nil {
+		rows.Close()
 		return nil, fmt.Errorf("iterate request journey observation outbox: %w", err)
+	}
+	rows.Close()
+
+	for i := range claims {
+		claim := &claims[i]
+		claim.Owner = o.owner
+		claim.ClaimUntil = now.Add(o.lease)
+		previousToken := claim.ClaimFencingToken
+		if err := tx.QueryRow(ctx, `
+			UPDATE request_journey_observation_outbox
+			SET status='processing', claim_owner=$2, claim_until=$3,
+				claim_fencing_token=claim_fencing_token+1, attempts=attempts+1, updated_at=$4
+			WHERE id=$1 AND claim_fencing_token=$5
+			RETURNING claim_fencing_token, attempts`,
+			claim.ID, claim.Owner, claim.ClaimUntil, now, previousToken,
+		).Scan(&claim.ClaimFencingToken, &claim.Attempts); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil, fmt.Errorf("request journey observation claim lost for id %d", claim.ID)
+			}
+			return nil, fmt.Errorf("claim request journey observation outbox: %w", err)
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("commit request journey observation claim: %w", err)
@@ -245,22 +287,45 @@ func (o *ObservationOutbox) claim(ctx context.Context, tenantID, requestID strin
 }
 
 func (o *ObservationOutbox) deliver(ctx context.Context, claim claimedObservation) error {
-	if err := o.pg.Apply(ctx, claim.Event); err != nil {
+	pgTxWriter, ok := o.pg.(journeyEventTxWriter)
+	if !ok {
+		return errors.New("request journey PostgreSQL transaction writer is unavailable")
+	}
+
+	tx, err := o.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin request journey observation projection: %w", err)
+	}
+	defer tx.Rollback(context.WithoutCancel(ctx)) //nolint:errcheck
+	if err := setObservationOutboxBypass(ctx, tx); err != nil {
+		return fmt.Errorf("set request journey observation RLS bypass: %w", err)
+	}
+	if err := pgTxWriter.ApplyTx(ctx, tx, claim.Event); err != nil {
 		return fmt.Errorf("persist request journey observation: %w", err)
 	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit request journey observation projection: %w", err)
+	}
+
 	if o.redis != nil {
 		if err := o.redis.Apply(ctx, claim.Event); err != nil {
 			return fmt.Errorf("project request journey observation to redis: %w", err)
 		}
 	}
-	tx, err := o.db.Begin(ctx)
+
+	tx, err = o.db.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin request journey observation ack: %w", err)
 	}
 	defer tx.Rollback(context.WithoutCancel(ctx)) //nolint:errcheck
+	if err := setObservationOutboxBypass(ctx, tx); err != nil {
+		return fmt.Errorf("set request journey observation RLS bypass: %w", err)
+	}
 	tag, err := tx.Exec(ctx, `
 		DELETE FROM request_journey_observation_outbox
-		WHERE id=$1 AND claim_owner=$2 AND status='processing'`, claim.ID, claim.Owner)
+		WHERE id=$1 AND claim_owner=$2 AND claim_fencing_token=$3
+			AND status='processing' AND claim_until > now()`,
+		claim.ID, claim.Owner, claim.ClaimFencingToken)
 	if err != nil {
 		return fmt.Errorf("ack request journey observation: %w", err)
 	}
@@ -284,12 +349,16 @@ func (o *ObservationOutbox) release(ctx context.Context, claim claimedObservatio
 		return fmt.Errorf("begin request journey observation retry: %w", err)
 	}
 	defer tx.Rollback(context.WithoutCancel(ctx)) //nolint:errcheck
+	if err := setObservationOutboxBypass(ctx, tx); err != nil {
+		return fmt.Errorf("set request journey observation RLS bypass: %w", err)
+	}
 	tag, err := tx.Exec(ctx, `
 		UPDATE request_journey_observation_outbox
 		SET status='failed', claim_owner=NULL, claim_until=NULL,
-			last_error=$3, next_retry_at=$4, updated_at=$5
-		WHERE id=$1 AND claim_owner=$2 AND status='processing'`,
-		claim.ID, claim.Owner, fmt.Sprint(cause), now.Add(delay), now)
+			last_error=$4, next_retry_at=$5, updated_at=$6
+		WHERE id=$1 AND claim_owner=$2 AND claim_fencing_token=$3
+			AND status='processing' AND claim_until > now()`,
+		claim.ID, claim.Owner, claim.ClaimFencingToken, fmt.Sprint(cause), now.Add(delay), now)
 	if err != nil {
 		return fmt.Errorf("release request journey observation retry: %w", err)
 	}
@@ -306,11 +375,26 @@ func (o *ObservationOutbox) Close(ctx context.Context) error {
 	if o == nil {
 		return nil
 	}
-	o.stopOnce.Do(func() { close(o.stop) })
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	o.lifecycleMu.Lock()
+	if !o.stopped {
+		o.stopped = true
+		close(o.stop)
+	}
+	started := o.started
+	o.lifecycleMu.Unlock()
+	if !started {
+		o.cancel()
+		return nil
+	}
 	select {
 	case <-o.done:
+		o.cancel()
 		return nil
 	case <-ctx.Done():
+		o.cancel()
 		return ctx.Err()
 	}
 }

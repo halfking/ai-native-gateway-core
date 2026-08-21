@@ -6,6 +6,27 @@ import (
 	"testing"
 )
 
+func TestAuthMiddleware_BypassesAdminSPAPaths(t *testing.T) {
+	// Nginx often proxies /admin/* to Go (for /admin/config/reload). Vue SPA
+	// routes under the same prefix must not require the global API key.
+	called := false
+	mw := NewAuthMiddleware("secret-key")
+	handler := mw.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	for _, path := range []string{"/admin/turns", "/admin/sessions", "/admin/dashboard", "/admin/config/reload"} {
+		called = false
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+		if !called || rr.Code == http.StatusUnauthorized {
+			t.Errorf("%s: SPA/admin path must bypass global API key, status=%d", path, rr.Code)
+		}
+	}
+}
+
 func TestAuthMiddleware_BypassesAPIAdminPaths(t *testing.T) {
 	// PR-3 (2026-06-30): /api/* must bypass global API-key auth so
 	// cookie-authenticated browser sessions reach admin.AdminMiddleware
