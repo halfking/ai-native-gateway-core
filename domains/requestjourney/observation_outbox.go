@@ -224,7 +224,7 @@ func (o *ObservationOutbox) claim(ctx context.Context, tenantID, requestID strin
 		FROM request_journey_observation_outbox
 		WHERE (
 			(status IN ('pending', 'failed') AND (next_retry_at <= $1 OR $2))
-			OR (status = 'processing' AND (claim_until IS NULL OR claim_until < $1))
+			OR (status = 'processing' AND ($2 OR claim_until IS NULL OR claim_until < $1))
 		)`
 	args := []any{now, force}
 	if tenantID != "" {
