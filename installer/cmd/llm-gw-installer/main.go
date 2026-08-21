@@ -49,6 +49,18 @@ var sqlSchema []byte
 //go:embed embeddata/02-seed.sql
 var sqlSeed []byte
 
+//go:embed embeddata/startup/511_state_transitions_table.sql
+var requestJourneyMigration511 []byte
+
+//go:embed embeddata/startup/515_state_transitions_seq_unique.sql
+var requestJourneyMigration515 []byte
+
+//go:embed embeddata/startup/530_request_journey_contract.sql
+var requestJourneyMigration530 []byte
+
+//go:embed embeddata/startup/531_request_journey_tenant_uniqueness.sql
+var requestJourneyMigration531 []byte
+
 //go:embed embeddata/startup/536_stats_analytics_foundation.sql
 var statsMigration536 []byte
 
@@ -75,6 +87,9 @@ var statsMigration547 []byte
 
 //go:embed embeddata/startup/548_stats_reconciliation_diffs_identity.sql
 var statsMigration548 []byte
+
+//go:embed embeddata/startup/549_request_journey_durable_outbox.sql
+var requestJourneyMigration549 []byte
 
 // 临时存放 embed SQL 的目录（运行时写入）
 
@@ -743,6 +758,10 @@ func copySQLBackup(root string) error {
 		"00-prereqs.sql": sqlPrereqs,
 		"01-schema.sql":  sqlSchema,
 		"02-seed.sql":    sqlSeed,
+		"startup/511_state_transitions_table.sql":                 requestJourneyMigration511,
+		"startup/515_state_transitions_seq_unique.sql":            requestJourneyMigration515,
+		"startup/530_request_journey_contract.sql":                requestJourneyMigration530,
+		"startup/531_request_journey_tenant_uniqueness.sql":       requestJourneyMigration531,
 		"startup/536_stats_analytics_foundation.sql":              statsMigration536,
 		"startup/537_usage_facts.sql":                             statsMigration537,
 		"startup/539_stats_reconciliation_tenant.sql":             statsMigration539,
@@ -752,6 +771,7 @@ func copySQLBackup(root string) error {
 		"startup/546_stats_reconciliation_diffs_unique.sql":       statsMigration546,
 		"startup/547_session_project_attribution.sql":             statsMigration547,
 		"startup/548_stats_reconciliation_diffs_identity.sql":     statsMigration548,
+		"startup/549_request_journey_durable_outbox.sql":          requestJourneyMigration549,
 	}
 	for name, content := range files {
 		path := filepath.Join(initDir, name)
@@ -823,6 +843,10 @@ func setupSQLDir() (string, func(), error) {
 		"00-prereqs.sql": sqlPrereqs,
 		"01-schema.sql":  sqlSchema,
 		"02-seed.sql":    sqlSeed,
+		"startup/511_state_transitions_table.sql":                 requestJourneyMigration511,
+		"startup/515_state_transitions_seq_unique.sql":            requestJourneyMigration515,
+		"startup/530_request_journey_contract.sql":                requestJourneyMigration530,
+		"startup/531_request_journey_tenant_uniqueness.sql":       requestJourneyMigration531,
 		"startup/536_stats_analytics_foundation.sql":              statsMigration536,
 		"startup/537_usage_facts.sql":                             statsMigration537,
 		"startup/539_stats_reconciliation_tenant.sql":             statsMigration539,
@@ -832,6 +856,7 @@ func setupSQLDir() (string, func(), error) {
 		"startup/546_stats_reconciliation_diffs_unique.sql":       statsMigration546,
 		"startup/547_session_project_attribution.sql":             statsMigration547,
 		"startup/548_stats_reconciliation_diffs_identity.sql":     statsMigration548,
+		"startup/549_request_journey_durable_outbox.sql":          requestJourneyMigration549,
 	}
 	for name, content := range files {
 		path := filepath.Join(tmp, name)
