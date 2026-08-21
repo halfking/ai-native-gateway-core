@@ -7,10 +7,12 @@ import { __testing, liveStreamState } from '../composables/liveStreamStore'
 import { ApiError } from '../api/_core'
 import { readLiveStreamPreferences, liveStreamPreferencesStorageKey } from '../composables/liveStreamPreferences'
 
-const { getFeatured, resolveRouting, reorderCandidateBindings, superAdmin, mockedStore } = vi.hoisted(() => ({
+const { getFeatured, resolveRouting, reorderCandidateBindings, getSlidingWindow, getSlidingWindowBatch, superAdmin, mockedStore } = vi.hoisted(() => ({
   getFeatured: vi.fn(),
   resolveRouting: vi.fn(),
   reorderCandidateBindings: vi.fn(),
+  getSlidingWindow: vi.fn().mockResolvedValue({ entries: [], stats: { total: 0, success: 0, failed: 0, failure_rate: 0, error_kinds: {} }, source: 'redis' }),
+  getSlidingWindowBatch: vi.fn().mockResolvedValue({ window_minutes: 5, count: 0, results: [] }),
   superAdmin: vi.fn(() => false),
   mockedStore: {
     userInfo: null,
@@ -43,7 +45,8 @@ vi.mock('../api/logs', () => ({
 vi.mock('../api/credential-monitor', () => ({
   getCredentialMonitorSummary: vi.fn().mockResolvedValue({ credentials: [] }),
   getCredentialDecisions: vi.fn().mockResolvedValue({ decisions: [] }),
-  getSlidingWindow: vi.fn().mockResolvedValue({ entries: [], stats: { total: 0, success: 0, failed: 0, failure_rate: 0, error_kinds: {} }, source: 'redis' }),
+  getSlidingWindow,
+  getSlidingWindowBatch,
   getModelHistory: vi.fn().mockResolvedValue({ events: [] }),
   setManualDisabled: vi.fn(),
   toggleModelAvailability: vi.fn(),
@@ -552,5 +555,40 @@ describe('QueuePerspectivePanel', () => {
       ],
       { rawModel: 'm-1', expectedRevision: 'rev-m-1' },
     )
+  })
+
+  it('loads window stats via batch API instead of N-way GET', async () => {
+    getSlidingWindowBatch.mockReset().mockResolvedValue({
+      window_minutes: 5,
+      count: 2,
+      results: [
+        { credential_id: 1, model: 'm-1', source: 'redis', stats: { total: 3, success: 2, failed: 1, failure_rate: 0.33 } },
+        { credential_id: 2, model: 'm-1', source: 'redis', stats: { total: 1, success: 1, failed: 0, failure_rate: 0 } },
+      ],
+    })
+    getSlidingWindow.mockClear()
+    resolveRouting.mockImplementation(async (model: string) => ({
+      raw_models: [model],
+      reorder_revision: `rev-${model}`,
+      candidates: model === 'm-1'
+        ? [
+            { credential_id: 1, model_name: 'm-1', manual_priority: 5, credential_label: 'a' },
+            { credential_id: 2, model_name: 'm-1', manual_priority: 10, credential_label: 'b' },
+          ]
+        : [],
+    }))
+    liveStreamState.nodes = [
+      { credential_id: 1, provider_id: 1, provider_code: 'p', manual_disabled: false, circuit_state: 'closed', raw_models: ['m-1'] },
+      { credential_id: 2, provider_id: 1, provider_code: 'p', manual_disabled: false, circuit_state: 'closed', raw_models: ['m-1'] },
+    ]
+
+    const wrapper = mountPanel()
+    await flushPromises()
+    await flushPromises()
+
+    expect(getSlidingWindowBatch).toHaveBeenCalled()
+    expect(getSlidingWindow).not.toHaveBeenCalled()
+    expect(wrapper.text()).toMatch(/✓2/)
+    expect(wrapper.text()).toMatch(/✗1/)
   })
 })
