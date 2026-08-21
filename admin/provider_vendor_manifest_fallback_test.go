@@ -4,58 +4,64 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 )
 
-// TestManifestFallbackIsAccepted verifies that when a vendor API fails but
-// manifest provides a valid model list, the refresh succeeds instead of
-// being rejected.
-//
-// Regression guard for:智谱AI provider refresh returns "15 models found"
-// but writes zero to the database because source="manifest" was rejected
-// by the validation logic in discoverAndUpsertForCredential.
-//
-// Background:
-//   - resolveModelsForCredential tries vendor API first (forceAPI=true)
-//   - If API fails, it falls back to manifest and returns source="manifest"
-//   - Prior bug: discoverAndUpsertForCredential rejected source="manifest"
-//   - Fix: Accept source="manifest" as a valid fallback when models are present
+// TestManifestFallbackIsAccepted drives the production resolver rather than
+// copying its source predicate. A real 401 response plus a non-empty manifest
+// must return the manifest models with source="manifest" while preserving the
+// auth sentinel for discoverAndUpsertForCredential.
 func TestManifestFallbackIsAccepted(t *testing.T) {
-	// This test documents the expected behavior: when vendor API is
-	// unavailable but manifest contains models, the refresh should succeed
-	// and insert those models into the database.
-	//
-	// The actual integration test would require:
-	//  1. A mock HTTP server that returns 401/500 for /models
-	//  2. A credential with models_manifest_json populated
-	//  3. Calling discoverAndUpsertForCredential and verifying upserted > 0
-	//
-	// For now, we validate the logic paths:
+	h := &Handler{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"invalid api key"}`))
+	}))
+	defer srv.Close()
 
-	ctx := context.Background()
-	_ = ctx
-
-	// Validate that source="manifest" is accepted
-	validSources := []string{"api", "api+manifest", "manifest_only", "manifest"}
-	for _, source := range validSources {
-		if !isValidRefreshSource(source) {
-			t.Errorf("Expected source=%q to be valid for refresh, but it was rejected", source)
-		}
+	tpl := "/models"
+	manifest := `{"models":[{"id":"MiniMax-Text-01"},{"id":"abab6.5s-chat"}]}`
+	cred := credentialRowLite{
+		baseURL:            srv.URL,
+		protocol:           "openai-completions",
+		discoveryStrategy:  "manifest",
+		modelsEndpointTpl:  &tpl,
+		modelsManifestJSON: &manifest,
 	}
 
-	// Validate that other sources are still rejected
-	invalidSources := []string{"none", "error", ""}
-	for _, source := range invalidSources {
-		if isValidRefreshSource(source) {
-			t.Errorf("Expected source=%q to be rejected, but it was accepted", source)
-		}
+	models, source, err := h.resolveModelsForCredential(context.Background(), cred, "bad-key", true)
+	if len(models) != 2 || models[0] != "MiniMax-Text-01" || models[1] != "abab6.5s-chat" {
+		t.Fatalf("models=%v, want manifest models", models)
+	}
+	if source != "manifest" {
+		t.Fatalf("source=%q, want manifest", source)
+	}
+	if !errors.Is(err, errVendorAuthRejected) {
+		t.Fatalf("errors.Is(err, errVendorAuthRejected)=false; err=%v", err)
 	}
 }
 
-// isValidRefreshSource extracts the validation logic from
-// discoverAndUpsertForCredential so we can test it independently.
-func isValidRefreshSource(source string) bool {
-	return source == "api" || source == "api+manifest" || source == "manifest_only" || source == "manifest"
+// TestManifestFallbackWithoutManifestFails verifies that auth failure with no
+// catalog manifest remains an error; it must not create an empty success.
+func TestManifestFallbackWithoutManifestFails(t *testing.T) {
+	h := &Handler{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"error":"forbidden"}`))
+	}))
+	defer srv.Close()
+
+	tpl := "/models"
+	cred := credentialRowLite{baseURL: srv.URL, protocol: "openai-completions", modelsEndpointTpl: &tpl}
+	models, source, err := h.resolveModelsForCredential(context.Background(), cred, "bad-key", true)
+	if len(models) != 0 || source != "api" {
+		t.Fatalf("models=%v source=%q, want empty/api", models, source)
+	}
+	if !errors.Is(err, errVendorAuthRejected) {
+		t.Fatalf("errors.Is(err, errVendorAuthRejected)=false; err=%v", err)
+	}
 }
 
 // TestClassifyVendorAuthReason pins the short status-code extractor used by
