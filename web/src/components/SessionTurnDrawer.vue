@@ -52,7 +52,9 @@ watch(
     controller = new AbortController()
     loading.value = true
     try {
-      turn.value = (await getSessionTurn(sessionId, n, { signal: controller.signal })) as TurnDetail
+      const value = (await getSessionTurn(sessionId, n, { signal: controller.signal })) as TurnDetail
+      if (seq !== requestSeq) return
+      turn.value = value
     } catch (e) {
       if (seq !== requestSeq || (e instanceof DOMException && e.name === 'AbortError')) return
       error.value = e instanceof Error ? e.message : String(e)

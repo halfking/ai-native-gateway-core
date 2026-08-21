@@ -844,10 +844,53 @@ func (c *CredentialProbeV2) writeHealth(ctx context.Context, credID int, pr prob
 		        WHEN COALESCE($8, quota_state) = 'ok' THEN NULL 
 		        ELSE quota_recover_at 
 		    END,
+		    lifecycle_status = CASE
+		        WHEN COALESCE($8, '') = 'ok'
+		          AND lifecycle_status = 'disabled'
+		          AND auto_disabled_at IS NOT NULL
+		        THEN 'active'
+		        ELSE lifecycle_status
+		    END,
+		    auto_enabled_at = CASE
+		        WHEN COALESCE($8, '') = 'ok'
+		          AND lifecycle_status = 'disabled'
+		          AND auto_disabled_at IS NOT NULL
+		        THEN NOW()
+		        ELSE auto_enabled_at
+		    END,
+		    auto_enabled_reason = CASE
+		        WHEN COALESCE($8, '') = 'ok'
+		          AND lifecycle_status = 'disabled'
+		          AND auto_disabled_at IS NOT NULL
+		        THEN 'periodic_quota_probe_recovered'
+		        ELSE auto_enabled_reason
+		    END,
+		    auto_disabled_at = CASE
+		        WHEN COALESCE($8, '') = 'ok'
+		          AND lifecycle_status = 'disabled'
+		          AND auto_disabled_at IS NOT NULL
+		        THEN NULL
+		        ELSE auto_disabled_at
+		    END,
+		    auto_disabled_reason = CASE
+		        WHEN COALESCE($8, '') = 'ok'
+		          AND lifecycle_status = 'disabled'
+		          AND auto_disabled_at IS NOT NULL
+		        THEN NULL
+		        ELSE auto_disabled_reason
+		    END,
 		    state_reason_code = $9,
 		    state_updated_at = NOW()
 		WHERE id = $10
-		  AND lifecycle_status = 'active'
+		  AND (
+		      lifecycle_status = 'active'
+		      OR (
+		          lifecycle_status = 'disabled'
+		          AND auto_disabled_at IS NOT NULL
+		          AND COALESCE(quota_state, 'ok') = 'periodic_exhausted'
+		          AND (quota_recover_at IS NULL OR quota_recover_at <= now())
+		      )
+		  )
 		  AND COALESCE(manual_disabled, FALSE) = FALSE
 		  -- 2026-08-07 P0 死锁修复：硬配额守卫必须让"探活实测成功"通过。
 		  --
@@ -968,7 +1011,16 @@ func (c *CredentialProbeV2) ProbeNow(ctx context.Context, credID int) {
 		FROM credentials c
 		JOIN providers p ON p.id = c.provider_id
 		WHERE c.id = $1
-		  AND c.lifecycle_status = 'active'
+		  AND c.status = 'active'
+		  AND (
+		      c.lifecycle_status = 'active'
+		      OR (
+		          c.lifecycle_status = 'disabled'
+		          AND c.auto_disabled_at IS NOT NULL
+		          AND COALESCE(c.quota_state, 'ok') = 'periodic_exhausted'
+		          AND (c.quota_recover_at IS NULL OR c.quota_recover_at <= now())
+		      )
+		  )
 		  AND COALESCE(c.manual_disabled, FALSE) = FALSE
 		  AND COALESCE(c.default_probe_model, '') <> ''
 	`, credID).Scan(
