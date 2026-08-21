@@ -57,6 +57,20 @@ var ErrOverflow = errors.New("dispatch: entry queue full")
 // ErrShutdown is returned when Submit is called after the pipeline stopped.
 var ErrShutdown = errors.New("dispatch: pipeline shut down")
 
+// ErrGovernorUnavailable is the strict fail-closed sentinel returned by
+// GovernorBackend / Governor implementations when the backend cannot
+// honor the admission decision (Redis DOWN, lease renewal failed,
+// snapshot stale beyond budget). Forwarders map it to the existing
+// capacity-wait ladder (errCapacitySaturated path) so the rest of the
+// pipeline — failover movers, snapshot metrics, executor error envelopes —
+// stays unchanged.
+//
+// Errors.Is(err, ErrGovernorUnavailable) is the contract; concrete
+// causes wrap it via fmt.Errorf("%w: %w", ErrGovernorUnavailable, cause)
+// so root-cause debugging is preserved in logs while the strict-closed
+// classification stays machine-readable.
+var ErrGovernorUnavailable = errors.New("dispatch: governor backend unavailable")
+
 // IsPaceTimeout reports whether err is the governor pacing-timeout sentinel.
 func IsPaceTimeout(err error) bool { return errors.Is(err, errPaceTimeout) }
 
@@ -68,6 +82,12 @@ func IsShutdown(err error) bool { return errors.Is(err, ErrShutdown) }
 
 // IsOverflow reports whether err is a queue-admission overflow (R1.3).
 func IsOverflow(err error) bool { return errors.Is(err, ErrOverflow) }
+
+// IsGovernorUnavailable reports whether err wraps ErrGovernorUnavailable.
+// Stage B RedisEnforce / Stage C snapshot / Stage E applier paths use
+// this to short-circuit to the fail-closed classification without
+// inspecting concrete cause types.
+func IsGovernorUnavailable(err error) bool { return errors.Is(err, ErrGovernorUnavailable) }
 
 // OverflowError is the R1.3 admission-refusal error: a dispatch queue (or the
 // registry's unfinished watermark, R1.8) is full and the request is rejected
