@@ -160,13 +160,14 @@ func TestPGStore_Confirm_FirstConfirmation_Success(t *testing.T) {
 	mock.ExpectExec(regexp.QuoteMeta(`UPDATE session_summaries SET handoff_count=COALESCE(handoff_count,0)+1`)).
 		WithArgs(p.PreviousSessionID, p.TenantID, sqlmock.AnyArg(), p.Record.TokensAtTrigger, p.Record.MessagesAtTrigger, p.Record.TriggerReason).
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	// 5. UPDATE proposal -> accounting_confirmed. In Confirm, the proposal's
-	// GoalState field is only populated by GetGoalRestoreState (unmarshal), so
-	// Confirm sees p.GoalState=nil here even when the column has bytes — the
-	// restore_status arg is therefore nil in the WHERE update.
+	// 5. UPDATE proposal -> accounting_confirmed. Confirm now unmarshals the
+	// persisted goal_state bytes into p.GoalState before computing
+	// newRestoreStatus, so restore_status is accounting_confirmed whenever
+	// goal_state is present (not NULL as it was when Confirm skipped the
+	// unmarshal).
 	mock.ExpectExec(regexp.QuoteMeta(`UPDATE handoff_pending_confirmations SET status=$2,confirmed_at=$3,new_session_id=$4,idempotency_hash=$5,handoff_log_id=$6,restore_status=$7,updated_at=NOW() WHERE id=$1 AND tenant_id=$8 AND status='pending'`)).
 		WithArgs(p.ID, confirmationStatusAccountingConfirmed, sqlmock.AnyArg(), input.NewSessionID,
-			hashConfirmationValue(input.IdempotencyKey), int64(99), nil, p.TenantID).
+			hashConfirmationValue(input.IdempotencyKey), int64(99), confirmationStatusAccountingConfirmed, p.TenantID).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
@@ -179,6 +180,9 @@ func TestPGStore_Confirm_FirstConfirmation_Success(t *testing.T) {
 	}
 	if res.NewSessionID != input.NewSessionID {
 		t.Fatalf("NewSessionID = %q, want %q", res.NewSessionID, input.NewSessionID)
+	}
+	if res.RestoreStatus != confirmationStatusAccountingConfirmed {
+		t.Fatalf("RestoreStatus = %q, want %q", res.RestoreStatus, confirmationStatusAccountingConfirmed)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet expectations: %v", err)

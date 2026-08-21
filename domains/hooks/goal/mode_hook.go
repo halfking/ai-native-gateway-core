@@ -252,7 +252,9 @@ func (h *ModeHook) InterceptNonStream(ctx context.Context, req *response.Interce
 		// CompareAndSetState guards against the loop-exhaustion / provider-retry
 		// paths racing in to overwrite "completed" with "failed". A concurrent
 		// failure write simply no-ops; the task stays marked completed.
-		if won, _ := h.db.CompareAndSetState(ctx, req.TenantID, req.SessionID, allowedNonTerminalStates(), StateCompleted); !won {
+		if won, err := h.db.CompareAndSetState(ctx, req.TenantID, req.SessionID, allowedNonTerminalStates(), StateCompleted); err != nil {
+			slog.Warn("goal_completion_state_persist_failed", "session_id", req.SessionID, "tenant_id", req.TenantID, "error", err)
+		} else if !won {
 			slog.Info("goal_completion_state_already_terminal", "session_id", req.SessionID, "tenant_id", req.TenantID)
 		}
 		h.observeOutcome(ctx, Outcome{
