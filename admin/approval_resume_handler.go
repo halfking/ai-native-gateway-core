@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"github.com/kaixuan/llm-gateway-go/domains/session"
+	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit"
 )
 
 // HandleApprovalResume 处理 POST /api/admin/approvals/:id/resume
@@ -58,13 +59,28 @@ func (h *Handler) HandleApprovalResume(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"error":"approval not in pending state"}`, http.StatusBadRequest)
 			return
 		}
-		if errors.Is(err, session.ErrResumeSnapshotMissing) {
-			slog.Error("approval resume failed: snapshot missing",
+		if errors.Is(err, session.ErrResumeInProgress) {
+			slog.Warn("approval resume already in progress",
 				"approval_id", approvalID,
 				"error", err)
-			http.Error(w, `{"error":"snapshot missing (cache expired?)"}`, http.StatusInternalServerError)
+			http.Error(w, `{"error":"approval resume already in progress"}`, http.StatusConflict)
 			return
 		}
+		if errors.Is(err, session.ErrResumeLeaseLost) {
+			slog.Warn("approval resume lease lost",
+				"approval_id", approvalID,
+				"error", err)
+			http.Error(w, `{"error":"approval resume lease lost; retry"}`, http.StatusConflict)
+			return
+		}
+		if errors.Is(err, sessionaudit.ErrResumeLeaseLost) {
+			slog.Warn("approval resume persistence lease lost",
+				"approval_id", approvalID,
+				"error", err)
+			http.Error(w, `{"error":"approval resume lease lost; retry"}`, http.StatusConflict)
+			return
+		}
+
 		if errors.Is(err, session.ErrResumeRejected) {
 			slog.Warn("approval resume failed: rejected",
 				"approval_id", approvalID,
