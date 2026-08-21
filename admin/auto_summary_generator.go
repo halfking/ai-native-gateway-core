@@ -268,7 +268,7 @@ func (g *AutoSummaryGenerator) runSummaryAsync(sessionID, tenantID, requestBody,
 	// Rolling gate: skip if fewer than autoSummaryRollingTurnGate new turns
 	// have happened since the last summary. Best-effort; on any DB error we
 	// fall back to "always run" so a transient outage doesn't freeze summaries.
-	shouldRun, reason, lastSum, err := g.shouldTriggerSummary(ctx, sessionID)
+	shouldRun, reason, lastSum, err := g.shouldTriggerSummary(ctx, tenantID, sessionID)
 	if err != nil {
 		logger.Warn("summary trigger gate error; falling back to always-run", "error", err)
 	}
@@ -398,9 +398,9 @@ func (g *AutoSummaryGenerator) runSummaryAsync(sessionID, tenantID, requestBody,
 //     | "db_error"
 //   - lastSum   time.Time
 //   - err       error
-func (g *AutoSummaryGenerator) shouldTriggerSummary(ctx context.Context, sessionID string) (bool, string, time.Time, error) {
+func (g *AutoSummaryGenerator) shouldTriggerSummary(ctx context.Context, tenantID, sessionID string) (bool, string, time.Time, error) {
 	// Rule 1: Check minimum session length (total turns across all time)
-	totalTurns, err := g.store.CountTotalTurns(ctx, sessionID)
+	totalTurns, err := g.store.CountTotalTurns(ctx, tenantID, sessionID)
 	if err != nil {
 		return true, "db_error", time.Time{}, err
 	}
@@ -410,7 +410,7 @@ func (g *AutoSummaryGenerator) shouldTriggerSummary(ctx context.Context, session
 	}
 
 	// Rule 2 & 3: Check rolling gate (incremental turns since last summary)
-	last, err := g.store.LastSummarized(ctx, sessionID)
+	last, err := g.store.LastSummarized(ctx, tenantID, sessionID)
 	if err != nil && !isPgxNoRows(err) {
 		return true, "db_error", time.Time{}, err
 	}
@@ -418,7 +418,7 @@ func (g *AutoSummaryGenerator) shouldTriggerSummary(ctx context.Context, session
 		// Never summarized before, and we have >= minTurns — allow
 		return true, "never_summarized", time.Time{}, nil
 	}
-	n, err := g.store.CountNewTurns(ctx, sessionID, last)
+	n, err := g.store.CountNewTurns(ctx, tenantID, sessionID, last)
 	if err != nil {
 		return true, "db_error", last, err
 	}
