@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "unknown_version": "reject",
+  "lane": "pending",
+  "exact_bytes": true,
+  "semantics": {
+    "execution_recovery": false,
+    "result_replay": true,
+    "lease_required": false,
+    "fencing_required": false,
+    "metadata_rebuild": false,
+    "lease_live_upstream_calls": 0,
+    "lease_expired_upstream_calls": 0,
+    "takeover_requires_fencing": false,
+    "expected_projection": "replayed_result"
+  },
+  "rules": [
+    "After restart, pending requests (parked in dispatch queue, no execution started) MUST be replayed.",
+    "Replay re-issues the prior result if upstream had already completed but the response was lost.",
+    "No upstream work is initiated post-restart (upstream already executed).",
+    "No lease / fencing is required: pending work has not crossed the boundary into upstream execution."
+  ],
+  "consumers": [
+    "domains/dispatch pending queue replay on restart",
+    "domains/requestjourney snapshot replay"
+  ],
+  "validation_rules": [
+    "pending lane MUST NOT issue new upstream calls",
+    "pending lane MUST emit a terminal event with the prior outcome"
+  ]
+}

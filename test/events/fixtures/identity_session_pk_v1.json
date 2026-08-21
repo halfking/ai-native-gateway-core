@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "identity_kind": "session_pk",
+  "fixture_purpose": "pin exact-bytes JSON shape for SessionPK (sessions.id numeric PK)",
+  "exact_bytes": true,
+  "tenant_id": "tenant_freeze_spk_001",
+  "session_id": "sess_freeze_20260822_xyz789",
+  "session_pk": 100042,
+  "shape": {
+    "session_pk": "int64 positive (BIGINT, sessions.id)",
+    "session_id": "string (paired text surrogate, non-empty)",
+    "tenant_id": "string (resolver-derived)"
+  },
+  "semantics": "public_sessions_numeric_surrogate",
+  "notes": [
+    "SessionPK is internal only: never exposed to clients as identity",
+    "Used for efficient DB joins on sessions table",
+    "Must be paired with session_id at every emit point"
+  ],
+  "consumers": [
+    "domains/session.SessionV2.Id",
+    "admin/Sessions V2 lookup (numeric index)"
+  ],
+  "validation_rules": [
+    "session_pk MUST be > 0",
+    "session_pk MUST NOT drift from the paired session_id record",
+    "session_pk MUST be stable for the lifetime of the session row"
+  ]
+}

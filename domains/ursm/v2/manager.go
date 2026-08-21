@@ -371,6 +371,13 @@ func (m *Manager) FilterAndScore(ctx context.Context, seeds []CandidateSeed) ([]
 // caller. Routers use this to keep backend selection and URSM filtering on the
 // same recovery snapshot; a Ready flip cannot split one request between v2 and
 // the legacy state manager.
+//
+// ModeOff short-circuits before the ready check (off is a rollback/diagnostic
+// mode, never a path that returns authoritative v2 views). For every other
+// mode the captured ready flag is the single source of truth: filterAndScore
+// rejects with "ursm.v2: not ready" on ready==false regardless of mirror
+// contents, so the ready-gate bypass that the original naive shape allowed
+// (mirror-only answer on a closed gate) cannot reoccur here.
 func (m *Manager) FilterAndScoreReady(ctx context.Context, seeds []CandidateSeed, ready bool) ([]api.NodeView, error) {
 	if m == nil {
 		return nil, fmt.Errorf("ursm.v2: nil manager")
@@ -380,7 +387,6 @@ func (m *Manager) FilterAndScoreReady(ctx context.Context, seeds []CandidateSeed
 	}
 	views, _, err := m.filterAndScore(ctx, seeds, ready)
 	return views, err
-
 }
 
 // FilterAndScoreReadyWithSource is the S-3 (routing_state_source)

@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "unknown_version": "reject",
+  "lane": "ordinary_dispatch",
+  "exact_bytes": true,
+  "semantics": {
+    "execution_recovery": false,
+    "result_replay": false,
+    "lease_required": false,
+    "fencing_required": false,
+    "metadata_rebuild": false,
+    "lease_live_upstream_calls": 0,
+    "lease_expired_upstream_calls": 0,
+    "takeover_requires_fencing": false,
+    "expected_projection": "dropped"
+  },
+  "rules": [
+    "After restart, ordinary (non-pending, non-durable) requests are not recovered.",
+    "No upstream work is performed post-restart.",
+    "Projection views (TotalRequestFIFO / ModelFIFO / NodeFIFO) drop the orphaned entries on next snapshot rebuild.",
+    "No lease is acquired; no fencing token is issued."
+  ],
+  "consumers": [
+    "domains/dispatch recovery on gateway restart",
+    "domains/requestjourney snapshot rebuild path"
+  ],
+  "validation_rules": [
+    "lane MUST be one of: ordinary_dispatch, pending, durable, queue_mirror",
+    "ordinary_dispatch MUST have lease_live_upstream_calls == 0",
+    "ordinary_dispatch MUST have lease_expired_upstream_calls == 0"
+  ]
+}

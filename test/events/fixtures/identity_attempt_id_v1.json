@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "identity_kind": "attempt_id",
+  "fixture_purpose": "pin exact-bytes JSON shape for attempt_id (one model×node attempt)",
+  "exact_bytes": true,
+  "tenant_id": "tenant_freeze_att_001",
+  "gateway_instance_id": "gw_freeze_instance_a1b2c3d4",
+  "request_id": "req_freeze_20260822_0001",
+  "attempt_id": "att_freeze_20260822_0001_001",
+  "attempt_no": 1,
+  "produced_at": "2026-08-22T00:00:00.250Z",
+  "shape": {
+    "attempt_id": "string (UUID-like; unique across gateway_instance_id)",
+    "attempt_no": "int >=1 (1-based sequence within request_id)",
+    "request_id": "string (parent identity, required)",
+    "tenant_id": "string (resolver-derived)",
+    "gateway_instance_id": "string (host fingerprint)",
+    "produced_at": "RFC3339 UTC timestamp with millisecond precision"
+  },
+  "forbidden_fields": [
+    "request_body",
+    "prompt_content",
+    "response_content",
+    "api_key"
+  ],
+  "consumers": [
+    "domains/requestjourney.AttemptRef.AttemptID",
+    "domains/dispatch.AttemptRef.AttemptID"
+  ],
+  "validation_rules": [
+    "attempt_id MUST be non-empty",
+    "attempt_no MUST be positive",
+    "attempt_id MUST be unique within (request_id, attempt_no) scope",
+    "attempt_no MUST reset to 1 on each new request_id"
+  ]
+}

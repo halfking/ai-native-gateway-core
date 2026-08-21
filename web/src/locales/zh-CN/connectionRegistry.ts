@@ -1,0 +1,40 @@
+// connectionRegistry.ts — T9 连接注册台视图文案
+export default {
+  title: '连接注册台',
+  subtitle: '节点连接三态：connected / connecting / disconnected（实时 SSE + REST 校准）',
+  sseConnected: '实时连接正常',
+  sseReconnecting: 'SSE 重连中…',
+  apiDegraded: '连接注册表 API 拉取失败，正在以 SSE 实时数据降级展示',
+  sections: {
+    connected: '已建连',
+    connecting: '建连中',
+    disconnected: '断开 / 未上线',
+  },
+  state: {
+    connected: '已建连',
+    connecting: '建连中',
+    disconnected: '已断开',
+  },
+  inFlight: '在途 {count}',
+  recoverAt: '预计恢复 {time}（{delta}）',
+  recoverReady: '已到',
+  viewTimeline: '查看节点恢复时间线',
+  unknownProvider: '未知供应商',
+  credential: '节点 #{id}',
+  lastChange: '最近变化 {time}',
+  detail: {
+    lastError: '最近错误',
+    lastErrorAt: '最近错误时间',
+    recoverAt: '预计恢复时间',
+    fpDisabled: 'FP 降级',
+    manualDisabled: '人工禁用',
+    models: '绑定模型',
+  },
+  yes: '是',
+  no: '否',
+  empty: {
+    connected: '暂无已建连节点',
+    connecting: '暂无建连中节点',
+    disconnected: '暂无断开节点',
+  },
+}

@@ -15,7 +15,7 @@ import {
   type RequestJourneySnapshot,
   type TotalRequestFIFOSnapshot,
 } from '../api/request-journeys'
-import { isSuperAdmin } from '../store'
+import { isSuperAdmin, store } from '../store'
 import RoutingAttemptsTimeline from './RoutingAttemptsTimeline.vue'
 
 const { t, locale } = useI18n()
@@ -46,9 +46,13 @@ function isEnvelope(payload: RequestJourneyQueuesPayload): payload is RequestJou
 
 function ingressAsJourneySnapshot(snapshot: RequestIngressSnapshot): RequestJourneySnapshot {
   const terminal = snapshot.status !== 'arrived'
+  // 保留入站快照上的 tenant_id（如有），便于 scope=all 视图下按租户过滤可跳详情。
+  // IngressSnapshot 接口未声明 tenant_id（匿名入站常见），因此可选携带。
+  const ingressTenant = (snapshot as RequestIngressSnapshot & { tenant_id?: string }).tenant_id
   return {
     request_id: snapshot.request_id,
     gateway_instance_id: snapshot.gateway_instance_id,
+    tenant_id: ingressTenant,
     current_stage: terminal ? 'terminal' : 'received',
     outcome: snapshot.status === 'succeeded'
       ? 'success'
@@ -134,10 +138,16 @@ const queueObservationDegraded = computed(() => {
   )
 })
 
-const canOpenDetails = computed(() => {
+function canOpenDetailForRequest(request: RequestJourneySnapshot | RequestIngressSnapshot): boolean {
   const payload = payloads.value[activeView.value]
-  return !(payload && isEnvelope(payload) && payload.scope === 'all')
-})
+  if (!payload || !isEnvelope(payload) || payload.scope !== 'all') return true
+  // request-journeys 携带 tenant_id；scope=all 视图下仅匹配自身租户允许跳详情。
+  // 缺 tenant_id 的入站快照（匿名）按不可跳处理，避免跨租户细节泄露。
+  const userTenant = store.userInfo?.tenant_id
+  if (!userTenant) return false
+  const reqTenant = (request as { tenant_id?: string }).tenant_id
+  return Boolean(reqTenant) && reqTenant === userTenant
+}
 
 async function loadView(view: RequestJourneyQueueView, force = false) {
   if (!force && payloads.value[view]) return
@@ -270,9 +280,9 @@ function closeDialog() {
               type="button"
               class="queue-row"
               data-testid="journey-queue-row"
-              :aria-label="canOpenDetails ? t('requestJourneys.openDetail', { requestId: request.request_id }) : request.request_id"
-              :disabled="!canOpenDetails"
-              @click="canOpenDetails && openJourney(request.request_id)"
+              :aria-label="canOpenDetailForRequest(request) ? t('requestJourneys.openDetail', { requestId: request.request_id }) : request.request_id"
+              :disabled="!canOpenDetailForRequest(request)"
+              @click="canOpenDetailForRequest(request) && openJourney(request.request_id)"
             >
               <span class="queue-position">{{ t('requestJourneys.position', { position: index + 1 }) }}</span>
               <span class="queue-request">
