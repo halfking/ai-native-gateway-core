@@ -19,8 +19,13 @@ const { getFeatured, resolveRouting, reorderCandidateBindings, superAdmin, mocke
 
 vi.mock('../store', () => ({
   isSuperAdmin: superAdmin,
+  isDefaultTenant: () => true,
   store: mockedStore,
   getCurrentTenantId: () => 'default',
+}))
+
+vi.mock('vue-router', () => ({
+  useRouter: () => ({ push: vi.fn() }),
 }))
 
 vi.mock('../api/routing', () => ({

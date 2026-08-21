@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import { isDefaultTenant } from '../store'
+import { isDefaultTenant, isSuperAdmin } from '../store'
 import { patchCandidateBinding, resolveRouting, type RoutingCandidate } from '../api/routing'
 import { updateCredentialLifecycle, type CredentialLifecycleStatus } from '../api/providers'
 import {
@@ -18,6 +18,7 @@ import {
   type WindowStats,
 } from '../api/credential-monitor'
 import { nodesRef, type LiveNodeStatus } from '../composables/liveStreamStore'
+import { useSessionSummaryJump } from '../composables/useSessionSummaryJump'
 import RequestLogDrawer from './RequestLogDrawer.vue'
 import NodeDetailConcurrencyPanel from './NodeDetailConcurrencyPanel.vue'
 import NodeDetailOtherModelsPanel from './NodeDetailOtherModelsPanel.vue'
@@ -37,6 +38,8 @@ const props = defineProps<{
   initialTab?: Tab
   /** resolve 入口预填候选，减少首屏等待。 */
   seedCandidate?: RoutingCandidate | null
+  /** resolve 场景写操作需超管；Dashboard 默认仅要求 default 租户。 */
+  requireSuperAdminEdit?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -241,7 +244,23 @@ const visible = computed({
   get: () => props.modelValue,
   set: (value: boolean) => emit('update:modelValue', value),
 })
-const canEdit = computed(() => isDefaultTenant())
+const canEdit = computed(() => {
+  if (!isDefaultTenant()) return false
+  if (props.requireSuperAdminEdit) return isSuperAdmin()
+  return true
+})
+const editGateHint = computed(() => {
+  if (props.requireSuperAdminEdit && !isSuperAdmin()) {
+    return '仅超级管理员可以维护节点；当前以只读方式展示。'
+  }
+  if (!isDefaultTenant()) {
+    return '仅 default 租户可以维护节点；当前以只读方式展示。'
+  }
+  return ''
+})
+const { jumpToSessionSummary } = useSessionSummaryJump({
+  onBeforeJump: () => { detailRequestId.value = null },
+})
 const currentNode = computed<LiveNodeStatus | null>(() => {
   if (!props.node) return null
   return nodesRef.value.find(node => node.credential_id === props.node?.credential_id) ?? props.node
@@ -582,20 +601,26 @@ async function toggleSelectedModel() {
 }
 
 // 节点或模型范围变化：清空会话并并行自动加载 tabs。
+// initialTab 故意不进 key：同节点内从「明细」切「设置」或抽屉内改 tab 后再点入口按钮时，仍要同步 activeTab。
 let lastWatchKey = ''
-watch(() => [props.modelValue, props.node?.credential_id, props.model, props.initialTab] as const, ([open, credentialId, model, tab]) => {
+watch(() => [props.modelValue, props.node?.credential_id, props.model] as const, ([open, credentialId, model]) => {
   if (!open) {
     lastWatchKey = ''
     resetDrawerData()
     return
   }
-  const key = `${credentialId ?? ''}|${model ?? ''}|${tab ?? 'detail'}`
-  if (key === lastWatchKey) return
-  lastWatchKey = key
-  resetDrawerData()
-  activeTab.value = tab ?? 'detail'
-  bootstrapAllTabs()
+  const key = `${credentialId ?? ''}|${model ?? ''}`
+  if (key !== lastWatchKey) {
+    lastWatchKey = key
+    resetDrawerData()
+    bootstrapAllTabs()
+  }
+  activeTab.value = props.initialTab ?? 'detail'
 }, { immediate: true })
+
+watch(() => props.initialTab, (tab) => {
+  if (props.modelValue && tab) activeTab.value = tab
+})
 
 watch(activeTab, (tab) => {
   if (visible.value) void ensureTabLoaded(tab)
@@ -739,7 +764,7 @@ onBeforeUnmount(() => {
               <button type="button" role="tab" :class="{ active: settingsSubTab === 'maintain' }" @click="settingsSubTab = 'maintain'">当前维护</button>
               <button type="button" role="tab" :class="{ active: settingsSubTab === 'other-models' }" @click="settingsSubTab = 'other-models'">其它模型</button>
             </div>
-            <p v-if="!canEdit" class="nd-notice nd-notice--warn">仅 default 租户可以维护节点；当前以只读方式展示。</p>
+            <p v-if="editGateHint" class="nd-notice nd-notice--warn">{{ editGateHint }}</p>
             <template v-if="settingsSubTab === 'maintain'">
               <section class="nd-section">
                 <h3>连通性 <small v-if="coreLoading">核心状态加载中…</small></h3>
@@ -795,7 +820,11 @@ onBeforeUnmount(() => {
         </template>
       </div>
     </aside>
-    <RequestLogDrawer :request-id="detailRequestId" @close="closeRequestDetail" />
+    <RequestLogDrawer
+      :request-id="detailRequestId"
+      @close="closeRequestDetail"
+      @generate-session-summary="jumpToSessionSummary"
+    />
   </Teleport>
 </template>
 

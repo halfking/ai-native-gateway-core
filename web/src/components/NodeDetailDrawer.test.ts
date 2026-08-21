@@ -31,6 +31,9 @@ const {
 }))
 
 vi.mock('../store', () => ({ authBearer: () => 'test-token', isSuperAdmin: superAdmin, isDefaultTenant: defaultTenant }))
+vi.mock('vue-router', () => ({
+  useRouter: () => ({ push: vi.fn() }),
+}))
 vi.mock('../api/routing', () => ({
   resolveRouting: resolve,
   emergencyRepair: vi.fn(),
