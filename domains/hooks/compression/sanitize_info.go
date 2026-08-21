@@ -2,9 +2,31 @@ package compression
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"time"
 )
+
+// hashTenantForSanitizeKey mirrors security/sanitize.HashTenant. It is
+// duplicated here because security/sanitize imports compression (via
+// SanitizeStats), so compression cannot import it back without a cycle.
+// The cross-layer consistency is pinned by TestSessionSanitizeRedisKeyMatches
+// in security/sanitize, which exercises both builders with identical inputs.
+//
+// T11-P0 v2 fix: the cascade delete in SessionCache.Invalidate previously
+// passed the raw tenantID into SessionSanitizeRedisKey, whose parameter is
+// the tenantHash. The write side (smart_sani_guard.go) hashes first, so the
+// keys never matched and the deletes were silent no-ops — leaking stale
+// sanitize maps/offsets until TTL expiry. Mirror HashTenant here so Invalidate
+// can derive the same hash as the writer.
+func hashTenantForSanitizeKey(tenantID string) string {
+	if tenantID == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(tenantID))
+	return hex.EncodeToString(sum[:8])
+}
 
 // SanitizeInfo is the per-request bridge between the HTTP sanitize
 // middleware (security/sanitize) and the three-tier session cache (SC-1,

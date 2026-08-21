@@ -4154,9 +4154,15 @@ goalRetryLoopDone:
 		}
 	}
 
-	// Persist retry count if recorder is available (fail-open)
+	// Persist retry count if recorder is available (fail-open).
+	// Use a detached 2s-timeout context: r.Context() is already canceled when
+	// the client disconnects mid-flight (or when the request-level timeout
+	// fires), and AddRetryCount would otherwise return context.Canceled
+	// immediately and silently undercount retry_count for that session.
+	persistCtx, persistCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer persistCancel()
 	if retriesPerformed > 0 && gwSessionID != "" && h.goalRetryRecorder != nil {
-		if err := h.goalRetryRecorder.AddRetryCount(r.Context(), tenantID, gwSessionID, retriesPerformed); err != nil {
+		if err := h.goalRetryRecorder.AddRetryCount(persistCtx, tenantID, gwSessionID, retriesPerformed); err != nil {
 			slog.Warn("goal_retry_count_persist_failed",
 				"request_id", requestID,
 				"session_id", gwSessionID,

@@ -61,6 +61,15 @@ func (s *PGStore) Confirm(ctx context.Context, in ConfirmationInput) (*Confirmat
 	p.GoalStateVersion = int(goalVersion.Int64)
 	p.RestoreStatus = restoreStatus.String
 	p.RestoreError = restoreError.String
+	// Materialise the persisted goal state so the accounting-confirm UPDATE
+	// writes a real restore_status when goal_state bytes are present. The
+	// in-row GoalState is only otherwise unmarshalled by GetGoalRestoreState,
+	// so Confirm saw p.GoalState==nil and wrote NULL on the first confirm.
+	if goalState, err := unmarshalPersistedGoalState(goalPayload, int(goalVersion.Int64)); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrGoalRestoreStateInvalid, err)
+	} else {
+		p.GoalState = goalState
+	}
 	if p.APIKeyID != in.APIKeyID || !p.MatchesToken(in.Token) {
 		return nil, ErrConfirmationInvalid
 	}
