@@ -137,6 +137,14 @@ func (h *Handler) resolveModelsForCredential(ctx context.Context, cred credentia
 	// Fallback to manifest when API fails or returns empty.
 	fallback, _ := extractManifestModels(cred.modelsManifestJSON)
 	if len(fallback) > 0 {
+		// 2026-08-22: when the API rejected our credentials (401/403),
+		// don't silently swallow the error in the manifest fallback path
+		// — discoverAndUpsertForCredential uses errors.Is(err,
+		// errVendorAuthRejected) to decide whether to record a
+		// health=unreachable reason that helps the operator debug.
+		if errors.Is(fetchErr, errVendorAuthRejected) {
+			return fallback, "manifest", fetchErr
+		}
 		return fallback, "manifest", nil
 	}
 	if fetchErr != nil {
@@ -408,26 +416,26 @@ func (h *Handler) discoverAndUpsertForCredential(ctx context.Context, cred crede
 	}
 
 	models, source, fErr := h.resolveModelsForCredential(ctx, cred, apiKey, true)
-	if len(models) == 0 {
-		// 2026-08-22: vendor /models returned 401/403 (errVendorAuthRejected)
-		// and the catalog manifest has known-good models. Fall back to the
-		// manifest so the credential still produces a usable binding set;
-		// mark health as unreachable with a reason explaining the API auth
-		// failure so the operator can fix the key separately.
-		if errors.Is(fErr, errVendorAuthRejected) {
-			manifest, mErr := extractManifestModels(cred.modelsManifestJSON)
-			if mErr == nil && len(manifest) > 0 {
-				slog.Warn("discoverAndUpsertForCredential: vendor auth rejected, falling back to catalog manifest",
-					"credential_id", cred.id,
-					"provider_id", cred.providerID,
-					"manifest_count", len(manifest),
-				)
-				h.updateCredHealth(ctx, cred.id, "unreachable",
-					fmt.Sprintf("vendor /models returned %s; using catalog manifest as fallback", classifyVendorAuthReason(fErr)))
-				upserted, failed = h.enrollCredentialModels(ctx, cred.id, manifest)
-				return upserted, failed, nil
-			}
+	// 2026-08-22: vendor /models returned 401/403 (errVendorAuthRejected)
+	// and the catalog manifest has known-good models. Fall back to the
+	// manifest so the credential still produces a usable binding set;
+	// mark health as unreachable with a reason explaining the API auth
+	// failure so the operator can fix the key separately.
+	if errors.Is(fErr, errVendorAuthRejected) {
+		manifest, mErr := extractManifestModels(cred.modelsManifestJSON)
+		if mErr == nil && len(manifest) > 0 {
+			slog.Warn("discoverAndUpsertForCredential: vendor auth rejected, falling back to catalog manifest",
+				"credential_id", cred.id,
+				"provider_id", cred.providerID,
+				"manifest_count", len(manifest),
+			)
+			h.updateCredHealth(ctx, cred.id, "unreachable",
+				fmt.Sprintf("vendor /models returned %s; using catalog manifest as fallback", classifyVendorAuthReason(fErr)))
+			upserted, failed = h.enrollCredentialModels(ctx, cred.id, manifest)
+			return upserted, failed, nil
 		}
+	}
+	if len(models) == 0 {
 		var msg string
 		if fErr != nil {
 			msg = fErr.Error()
