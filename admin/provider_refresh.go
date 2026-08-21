@@ -297,7 +297,15 @@ func (h *Handler) fetchActiveCredentialsForProvider(ctx context.Context, provide
 			pc.models_manifest_json
 		FROM credentials c
 		JOIN providers p ON p.id = c.provider_id
-		LEFT JOIN provider_catalog pc ON pc.code = COALESCE(NULLIF(p.catalog_code, ''), p.code)
+		LEFT JOIN LATERAL (
+			SELECT pc.models_endpoint_template,
+				COALESCE(pc.discovery_strategy, 'auto') AS discovery_strategy,
+				pc.models_manifest_json
+			FROM provider_catalog pc
+			WHERE pc.code = COALESCE(NULLIF(p.catalog_code, ''), p.code)
+			ORDER BY pc.catalog_version DESC, pc.updated_at DESC
+			LIMIT 1
+		) pc ON TRUE
 		WHERE c.provider_id = $1
 		  AND c.status = 'active'
 		  AND COALESCE(c.lifecycle_status, 'active') NOT IN ('suspended', 'retired', 'disabled')
