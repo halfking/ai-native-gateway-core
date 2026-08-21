@@ -60,6 +60,8 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/dbdegradation"                       //nolint:depguard // 数据库降级模块
 	"github.com/kaixuan/llm-gateway-go/domains/dispatch"                            //nolint:depguard // v4 T2: queue mirror wiring at pipeline assembly
 	"github.com/kaixuan/llm-gateway-go/domains/freeresource"                        //nolint:depguard // OmniFree quota tracker
+	"github.com/kaixuan/llm-gateway-go/domains/goalintegration"                    //nolint:depguard // Wave 2-D: HTTP API integration
+	"github.com/kaixuan/llm-gateway-go/domains/goalrun"                            //nolint:depguard // Wave 2-A: durable ledger
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"                         //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"                   //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -548,6 +550,24 @@ func main() {
 	if len(cfg.SessionIDBodyKeys) > 0 {
 		streaming.SetSessionIDBodyKeys(cfg.SessionIDBodyKeys)
 	}
+
+	// ── Wave 2-D: unified orchestration plugin — GoalRun store + status handler ──
+	// Migration 554 must be deployed before this path can persist GoalRun rows;
+	// without a configured store, the goalintegration layer returns
+	// ErrInvalidGoal (fail-closed) and clients get 400 on explicit goal requests.
+	var goalrunStore *goalrun.Store
+	if dbConn != nil && dbConn.Enabled() && dbConn.Pool() != nil {
+		goalrunStore = goalrun.NewStore(dbConn.Pool())
+	}
+	goalRunHandler := handlers.NewGoalRunHandler(goalrunStore, slog.Default())
+	goalIntegrator := goalintegration.New(goalintegration.Config{
+		Store:      goalrunStore,
+		LeaseOwner: "gateway-" + cfg.Listen,
+	})
+	chatHandler.SetGoalIntegrator(goalIntegrator)
+	slog.Info("goal integration initialised",
+		"store_configured", goalIntegrator.IsConfigured(),
+	)
 
 	// Health handler with database and Redis status checking (2026-07-08)
 	// Pass db and redis connections for health checks (will be updated with redis later)
@@ -4793,6 +4813,10 @@ func main() {
 	mux.Handle("/v1/messages", messagesRouteHandler)
 	mux.Handle("/v1/responses", responsesRouteHandler)
 	mux.HandleFunc("/v1/handoffs/confirm", chatHandler.HandleHandoffConfirmation)
+	// Wave 2-D: GoalRun status endpoint (GET /v1/goal-runs/{id}).
+	// Tenant ownership enforced inside the handler; no extra middleware needed
+	// because the gateway admin token middleware does not cover this path.
+	mux.Handle("/v1/goal-runs/", goalRunHandler)
 	if embeddingsHandler != nil {
 		mux.Handle("/v1/embeddings", embeddingsHandler)
 	}

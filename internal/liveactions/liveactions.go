@@ -218,6 +218,16 @@ func ResetSeqForTest() {
 	})
 }
 
+// ResetMetricsForTest zeros the three package-level metric atomics so a test
+// can assert the value introduced by its own action (droppedTotal /
+// redisFailureTot / stageNormFailureTot). Tests only — never call from
+// production code.
+func ResetMetricsForTest() {
+	droppedTotal.Store(0)
+	redisFailureTot.Store(0)
+	stageNormFailureTot.Store(0)
+}
+
 // ── metrics ────────────────────────────────────────────────────────────────
 //
 // Flat package-level atomics surfaced through one custom Prometheus collector

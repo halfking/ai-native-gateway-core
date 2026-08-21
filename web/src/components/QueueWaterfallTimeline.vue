@@ -225,7 +225,7 @@ onBeforeUnmount(() => {
       <span v-for="st in WATERFALL_STAGES" :key="st.key" class="qwt-chip">
         <i :style="{ background: st.color }" />{{ st.label }}
       </span>
-      <span class="qwt-hint">缺时间戳时按 ms 合成条带 · 颜色：&lt;1s 绿 · 1–3s 黄 · &gt;3s 红</span>
+      <span class="qwt-hint">缺时间戳时按 ms 合成条带 · 列表数字：&lt;1s 绿 · 1–3s 黄 · &gt;3s 红</span>
     </div>
     <ul v-if="requests.length" class="qwt-summary">
       <li v-for="r in requests.slice(0, 8)" :key="r.request_id" @click="emit('select', r)">
