@@ -31,6 +31,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/stats/boardcache"
 	v2 "github.com/kaixuan/llm-gateway-go/domains/ursm/v2"
 	"github.com/kaixuan/llm-gateway-go/internal/summarystore" //nolint:depguard // 2026-08-06 auto summary persistence
+	"github.com/kaixuan/llm-gateway-go/internal/titlestore"   //nolint:depguard // durable title fencing/tombstone state
 	"github.com/kaixuan/llm-gateway-go/pending"
 	"github.com/kaixuan/llm-gateway-go/secret"
 	"github.com/kaixuan/llm-gateway-go/security/ipblocklist"
@@ -196,6 +197,7 @@ type Handler struct {
 	}
 	redisClient            interface{}                   // Redis client for sliding window access
 	titleDistLock          distlock.Manager              // 2026-08-19 per-session title-gen distributed lock; defaults to in-process LocalManager
+	titleStore             *titlestore.Store             // durable title fencing/tombstone state
 	availabilityReader     *bg.ModelAvailabilityReader   // 2026-06-29 mirror of unified probe state to Redis
 	availabilityBackfill   *bg.AvailabilityCacheBackfill // 2026-06-29 on-demand DB→Redis cache rebuild
 	availabilityKeyCounter *bg.AvailabilityKeyCounter    // 2026-06-29 on-demand SCAN-based key count
@@ -320,7 +322,9 @@ func NewHandler(db *pgxpool.Pool, secretKey string, encKey []byte) *Handler {
 		// code in cmd/gateway/main.go upgrades this to a Redis-backed
 		// manager once the cluster Redis client is healthy.
 		titleDistLock: distlock.NewLocalManager(),
+		titleStore:    titlestore.New(db),
 	}
+
 	// Initialize auto title generator
 	h.autoTitleGen = NewAutoTitleGenerator(h)
 	// 2026-08-06: initialize incremental-rolling session summary generator.
