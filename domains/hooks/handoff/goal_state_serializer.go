@@ -106,7 +106,7 @@ func (s *MemoryGoalStateSerializer) Restore(ctx context.Context, newSessionID st
 		return fmt.Errorf("goal restore requires target session and state")
 	}
 	if state.Version != GoalStateVersion {
-		return fmt.Errorf("unsupported goal state version %d", state.Version)
+		return fmt.Errorf("%w: %d", ErrGoalRestoreVersionMismatch, state.Version)
 	}
 	if existing, err := s.store.GetSession(ctx, state.TenantID, newSessionID); err != nil {
 		return fmt.Errorf("get target goal session %q: %w", newSessionID, err)
@@ -116,7 +116,7 @@ func (s *MemoryGoalStateSerializer) Restore(ctx context.Context, newSessionID st
 			existing.RepeatCount == 0 && existing.ModelSwitchCount == 0 && existing.CurrentModel == state.CurrentModel {
 			return nil
 		}
-		return fmt.Errorf("target goal session %q conflicts with handoff state", newSessionID)
+		return fmt.Errorf("target goal session %q %w", newSessionID, ErrGoalRestoreConflict)
 	}
 	now := s.now().UTC()
 	return s.store.CreateSession(ctx, &goal.Session{

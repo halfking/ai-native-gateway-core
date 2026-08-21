@@ -58,7 +58,12 @@ func (h *TriggerHook) PrepareConfirmation(ctx context.Context, result *RequestRe
 
 // ConfirmRequest commits an already authenticated and ownership-checked
 // proposal. Accounting is always fail-closed and exactly once; Goal restore is
-// fail-open after accounting and remains durably retryable.
+// attempted after accounting commits and remains durably retryable. When Goal
+// restore fails with a retryable or manual-required error, the accounting
+// result is still returned together with the error so the caller (HTTP layer)
+// can map it (e.g. ErrGoalRestoreRetryable -> 503) while the client retries the
+// idempotent confirmation to complete restore. Non-restore errors remain
+// fail-closed.
 func (h *TriggerHook) ConfirmRequest(ctx context.Context, input ConfirmationInput) (*ConfirmationResult, error) {
 	if h == nil {
 		return nil, fmt.Errorf("handoff hook is unavailable")
@@ -76,8 +81,15 @@ func (h *TriggerHook) ConfirmRequest(ctx context.Context, input ConfirmationInpu
 	if result.Record.TenantID != input.TenantID {
 		return result, fmt.Errorf("handoff confirmation tenant mismatch")
 	}
-	if err := h.restoreGoalState(ctx, input, result); err != nil {
-		slog.Warn("handoff_goal_restore_failed", "session_id", result.NewSessionID, "error", err)
+	// Propagate retryable / manual-required restore failures so the HTTP
+	// layer can surface them (503 for retryable). Accounting has already
+	// committed, so the result is valid; the client retries the idempotent
+	// confirmation to drive restore to completion.
+	if restoreErr := h.restoreGoalState(ctx, input, result); restoreErr != nil {
+		slog.Warn("handoff_goal_restore_failed", "session_id", result.NewSessionID, "error", restoreErr)
+		if errors.Is(restoreErr, ErrGoalRestoreRetryable) || errors.Is(restoreErr, ErrGoalRestoreManualRequired) {
+			return result, restoreErr
+		}
 	}
 	if result.FirstConfirmation {
 		level := NotifyLevel(h.loadString(result.Record.TenantID, "handoff.notify_level", string(h.config.NotifyLevel)))
@@ -141,6 +153,12 @@ func (h *TriggerHook) restoreGoalState(ctx context.Context, input ConfirmationIn
 				_ = durable.MarkGoalRestoreAttempt(ctx, input.ProposalID, input.TenantID, err.Error())
 			}
 		}
+		// Map manual-required restore failures (conflict / version mismatch)
+		// onto ErrGoalRestoreManualRequired so the HTTP layer can distinguish
+		// them from transient retryable failures.
+		if isManualGoalRestoreError(err) {
+			return fmt.Errorf("%w: %v", ErrGoalRestoreManualRequired, err)
+		}
 		return fmt.Errorf("%w: %v", ErrGoalRestoreRetryable, err)
 	}
 	if durable != nil {
@@ -158,23 +176,9 @@ func isManualGoalRestoreError(err error) bool {
 	if err == nil {
 		return false
 	}
-	message := err.Error()
-	return len(message) > 0 && (containsRestoreConflict(message) || containsRestoreVersionError(message))
-}
-
-func containsRestoreConflict(message string) bool {
-	return stringContains(message, "conflicts with handoff state") || stringContains(message, "tenant mismatch")
-}
-
-func containsRestoreVersionError(message string) bool {
-	return stringContains(message, "unsupported goal state version") || stringContains(message, "invalid goal state snapshot")
-}
-
-func stringContains(value, part string) bool {
-	for i := 0; i+len(part) <= len(value); i++ {
-		if value[i:i+len(part)] == part {
-			return true
-		}
-	}
-	return false
+	// Classify via errors.Is against typed sentinels rather than substring
+	// matching, so callers that wrap the error (with %w) are still detected
+	// and unrelated errors that happen to contain a phrase are not misrouted
+	// to manual_required.
+	return errors.Is(err, ErrGoalRestoreConflict) || errors.Is(err, ErrGoalRestoreVersionMismatch)
 }
