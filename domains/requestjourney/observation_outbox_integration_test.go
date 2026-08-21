@@ -1,3 +1,5 @@
+//go:build integration
+
 package requestjourney
 
 import (
@@ -85,10 +87,10 @@ func refreshLease(t *testing.T, pool *pgxpool.Pool, id int64, lease time.Duratio
 	}
 }
 
-// TestIntegrationOutbox_TenantRLSIsolation proves that the
+// TestObservationOutbox_TenantRLSIsolation proves that the
 // request_journey_observation_outbox RLS policy hides rows from non-bypass
 // callers without the matching app.current_tenant GUC set.
-func TestIntegrationOutbox_TenantRLSIsolation(t *testing.T) {
+func TestObservationOutbox_TenantRLSIsolation(t *testing.T) {
 	pool, _, tenantDSN, cleanup := setupIntegrationOutboxEnv(t)
 	defer cleanup()
 	if tenantDSN == "" {
@@ -156,10 +158,10 @@ func TestIntegrationOutbox_TenantRLSIsolation(t *testing.T) {
 	}
 }
 
-// TestIntegrationOutbox_WorkerClaimAndAckDrainsOutbox uses real-PG RLS bypass
+// TestObservationOutbox_WorkerClaimAndAckDrainsOutbox uses real-PG RLS bypass
 // (the outbox itself sets app.bypass_rls=true per-transaction) and confirms a
 // single worker drains both tenants' pending rows.
-func TestIntegrationOutbox_WorkerClaimAndAckDrainsOutbox(t *testing.T) {
+func TestObservationOutbox_WorkerClaimAndAckDrainsOutbox(t *testing.T) {
 	pool, _, _, cleanup := setupIntegrationOutboxEnv(t)
 	defer cleanup()
 
@@ -187,10 +189,10 @@ func TestIntegrationOutbox_WorkerClaimAndAckDrainsOutbox(t *testing.T) {
 	}
 }
 
-// TestIntegrationOutbox_StaleFencingRejectsAckRelease forces a row into the
+// TestObservationOutbox_StaleFencingRejectsAckRelease forces a row into the
 // 'processing' state, then issues the ack/release UPDATE directly with the
 // PREVIOUS claim_fencing_token. Both must affect 0 rows.
-func TestIntegrationOutbox_StaleFencingRejectsAckRelease(t *testing.T) {
+func TestObservationOutbox_StaleFencingRejectsAckRelease(t *testing.T) {
 	pool, _, _, cleanup := setupIntegrationOutboxEnv(t)
 	defer cleanup()
 
@@ -262,11 +264,11 @@ func TestIntegrationOutbox_StaleFencingRejectsAckRelease(t *testing.T) {
 	}
 }
 
-// TestIntegrationOutbox_RedisFailureReplay proves that when the post-pg
+// TestObservationOutbox_RedisFailureReplay proves that when the post-pg
 // Redis projection fails, release() re-queues the row; the next worker
 // reclaims it and the eventual projection is idempotent (single row in
 // request_state_transitions).
-func TestIntegrationOutbox_RedisFailureReplay(t *testing.T) {
+func TestObservationOutbox_RedisFailureReplay(t *testing.T) {
 	pool, redisClient, _, cleanup := setupIntegrationOutboxEnv(t)
 	defer cleanup()
 	if redisClient == nil {
@@ -346,10 +348,10 @@ func TestIntegrationOutbox_RedisFailureReplay(t *testing.T) {
 	_ = redisClient.Close()
 }
 
-// TestIntegrationOutbox_LeaseExpiryReclaim asserts that an expired lease can
+// TestObservationOutbox_LeaseExpiryReclaim asserts that an expired lease can
 // be reclaimed by a new worker process even when the original owner is still
 // recorded.
-func TestIntegrationOutbox_LeaseExpiryReclaim(t *testing.T) {
+func TestObservationOutbox_LeaseExpiryReclaim(t *testing.T) {
 	pool, _, _, cleanup := setupIntegrationOutboxEnv(t)
 	defer cleanup()
 
@@ -393,9 +395,9 @@ func TestIntegrationOutbox_LeaseExpiryReclaim(t *testing.T) {
 	}
 }
 
-// TestIntegrationOutbox_DownMigrationShape verifies that the 552 down SQL
+// TestObservationOutbox_DownMigrationShape verifies that the 552 down SQL
 // does NOT silently drain the outbox. Operators must drain first.
-func TestIntegrationOutbox_DownMigrationShape(t *testing.T) {
+func TestObservationOutbox_DownMigrationShape(t *testing.T) {
 	_, _, _, cleanup := setupIntegrationOutboxEnv(t)
 	defer cleanup()
 	downPath := os.Getenv("RJ_PGVAL_DOWN_SQL")
@@ -420,9 +422,9 @@ func TestIntegrationOutbox_DownMigrationShape(t *testing.T) {
 	}
 }
 
-// TestIntegrationOutbox_RetryAtRoundTripParity writes retry_at on a
+// TestObservationOutbox_RetryAtRoundTripParity writes retry_at on a
 // retry_scheduled event (allowed) and rejects it on a non-retry event.
-func TestIntegrationOutbox_RetryAtRoundTripParity(t *testing.T) {
+func TestObservationOutbox_RetryAtRoundTripParity(t *testing.T) {
 	pool, _, _, cleanup := setupIntegrationOutboxEnv(t)
 	defer cleanup()
 
