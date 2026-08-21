@@ -17,7 +17,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { getFeatured, resolveRouting, reorderCandidateBindings, type CandidateBindingReorderItem, type RoutingCandidate } from '../api/routing'
 import { getRequestLogTopModels, type TopRequestModel } from '../api/logs'
-import { getSlidingWindow } from '../api/credential-monitor'
+import { getSlidingWindow, getSlidingWindowBatch } from '../api/credential-monitor'
 import {
   queueRef,
   nodesRef,
@@ -607,22 +607,38 @@ async function refreshWindowStats() {
   const controller = new AbortController()
   statsAbort = controller
   const next = new Map(windowStatsByKey.value)
-  const concurrency = 6
-  for (let i = 0; i < targets.length; i += concurrency) {
-    const batch = targets.slice(i, i + concurrency)
-    await Promise.all(batch.map(async ({ credentialId, model }) => {
-      try {
-        const result = await getSlidingWindow(credentialId, model, WINDOW_MINUTES, { signal: controller.signal })
-        if (controller.signal.aborted) return
-        next.set(statsKey(credentialId, model), {
-          success: result.stats?.success ?? 0,
-          failed: result.stats?.failed ?? 0,
-          total: result.stats?.total ?? 0,
-        })
-      } catch {
-        // keep previous / leave missing — card shows em dash
-      }
-    }))
+
+  const applyStats = (credentialId: number, model: string, success: number, failed: number, total: number) => {
+    next.set(statsKey(credentialId, model), { success, failed, total })
+  }
+
+  try {
+    const batch = await getSlidingWindowBatch(
+      targets.map(t => ({ credential_id: t.credentialId, model: t.model })),
+      WINDOW_MINUTES,
+      { signal: controller.signal },
+    )
+    if (controller.signal.aborted) return
+    for (const row of batch.results || []) {
+      if (!row || row.error || !row.stats) continue
+      applyStats(row.credential_id, row.model, row.stats.success ?? 0, row.stats.failed ?? 0, row.stats.total ?? 0)
+    }
+  } catch {
+    // Whole-batch failure → fall back to legacy N-way GET polling.
+    if (controller.signal.aborted) return
+    const concurrency = 6
+    for (let i = 0; i < targets.length; i += concurrency) {
+      const slice = targets.slice(i, i + concurrency)
+      await Promise.all(slice.map(async ({ credentialId, model }) => {
+        try {
+          const result = await getSlidingWindow(credentialId, model, WINDOW_MINUTES, { signal: controller.signal })
+          if (controller.signal.aborted) return
+          applyStats(credentialId, model, result.stats?.success ?? 0, result.stats?.failed ?? 0, result.stats?.total ?? 0)
+        } catch {
+          // keep previous / leave missing — card shows em dash
+        }
+      }))
+    }
   }
   if (!controller.signal.aborted) windowStatsByKey.value = next
 }
