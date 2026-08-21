@@ -225,7 +225,7 @@ func (h *Handler) doHealthCheck(ctx context.Context, providerID, credID int, mod
 			}
 			modelsStatus = 1
 			if probeModelsEligibleForRouting(source, models) {
-				upserted, failed := h.enrollCredentialModels(ctx, cred.id, models)
+				upserted, failed, _ := h.enrollCredentialModels(ctx, cred.id, models)
 				routingModelsUpserted = upserted
 				if upserted > 0 {
 					provider.InvalidateAllCandidateCache()

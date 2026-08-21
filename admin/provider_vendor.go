@@ -431,7 +431,7 @@ func (h *Handler) discoverAndUpsertForCredential(ctx context.Context, cred crede
 			)
 			h.updateCredHealth(ctx, cred.id, "unreachable",
 				fmt.Sprintf("vendor /models returned %s; using catalog manifest as fallback", classifyVendorAuthReason(fErr)))
-			upserted, failed = h.enrollCredentialModels(ctx, cred.id, manifest)
+			upserted, failed, _ = h.enrollCredentialModels(ctx, cred.id, manifest)
 			return upserted, failed, nil
 		}
 	}
@@ -459,10 +459,23 @@ func (h *Handler) discoverAndUpsertForCredential(ctx context.Context, cred crede
 		return 0, 0, fmt.Errorf("vendor API failed; only manifest fallback available (%d models)", len(models))
 	}
 
-	upserted, failed = h.enrollCredentialModels(ctx, cred.id, models)
+	upserted, failed, enrollErr := h.enrollCredentialModels(ctx, cred.id, models)
 	if upserted == 0 && failed > 0 {
-		h.updateCredHealth(ctx, cred.id, "unreachable", "model enrollment failed for every discovered model")
-		return upserted, failed, fmt.Errorf("model enrollment failed for every discovered model")
+		// 2026-08-22: surface the actual underlying error (canonical
+		// upsert vs. binding upsert) so the operator can tell whether
+		// the failure was a constraint violation, a connectivity issue,
+		// or a logic bug — instead of the generic "model enrollment
+		// failed for every discovered model" message that masked the
+		// real problem for provider 14 (MiniMax).
+		var detail string
+		if enrollErr != nil {
+			detail = enrollErr.Error()
+		} else {
+			detail = fmt.Sprintf("%d models failed, no first error captured", failed)
+		}
+		h.updateCredHealth(ctx, cred.id, "unreachable",
+			"model enrollment failed for every discovered model: "+detail)
+		return upserted, failed, fmt.Errorf("model enrollment failed for every discovered model: %s", detail)
 	}
 	if source == "manifest" {
 		h.updateCredHealth(ctx, cred.id, "unreachable", "vendor API unavailable; catalog manifest used")
@@ -482,7 +495,7 @@ func (h *Handler) discoverAndUpsertForCredential(ctx context.Context, cred crede
 // provider_models.canonical_id=NULL. It now delegates to
 // discovery.EnsureCanonicalAndAliases (the same path the periodic worker
 // uses) and passes the returned canonicalID through to the binding upsert.
-func (h *Handler) enrollCredentialModels(ctx context.Context, credentialID int, models []string) (upserted, failed int) {
+func (h *Handler) enrollCredentialModels(ctx context.Context, credentialID int, models []string) (upserted, failed int, firstErr error) {
 	db := h.refreshDB()
 	for _, m := range models {
 		canonicalID, _, ensureErr := discovery.EnsureCanonicalAndAliases(ctx, db, m, "provider_refresh")
@@ -493,6 +506,9 @@ func (h *Handler) enrollCredentialModels(ctx context.Context, credentialID int, 
 				"error", ensureErr,
 			)
 			failed++
+			if firstErr == nil {
+				firstErr = fmt.Errorf("ensure canonical for %q: %w", m, ensureErr)
+			}
 			continue
 		}
 		if uErr := h.upsertModelForProvider(ctx, db, credentialID, m, &canonicalID); uErr != nil {
@@ -502,11 +518,14 @@ func (h *Handler) enrollCredentialModels(ctx context.Context, credentialID int, 
 				"error", uErr,
 			)
 			failed++
+			if firstErr == nil {
+				firstErr = fmt.Errorf("upsert binding for %q: %w", m, uErr)
+			}
 			continue
 		}
 		upserted++
 	}
-	return upserted, failed
+	return upserted, failed, firstErr
 }
 
 // isProviderRefreshSourceUsable reports whether model discovery returned a
