@@ -94,6 +94,9 @@ var statsMigration548 []byte
 //go:embed embeddata/startup/552_request_journey_durable_outbox.sql
 var requestJourneyMigration552 []byte
 
+//go:embed embeddata/startup/551_approval_resume_claim.sql
+var approvalResumeMigration551 []byte
+
 // 临时存放 embed SQL 的目录（运行时写入）
 
 // ── Cobra 入口 ──────────────────────────────────────────────────
@@ -775,6 +778,7 @@ func copySQLBackup(root string) error {
 		"startup/546_stats_reconciliation_diffs_unique.sql":       statsMigration546,
 		"startup/547_session_project_attribution.sql":             statsMigration547,
 		"startup/548_stats_reconciliation_diffs_identity.sql":     statsMigration548,
+		"startup/551_approval_resume_claim.sql":                   approvalResumeMigration551,
 		"startup/552_request_journey_durable_outbox.sql":          requestJourneyMigration552,
 	}
 	for name, content := range files {
@@ -861,6 +865,7 @@ func setupSQLDir() (string, func(), error) {
 		"startup/546_stats_reconciliation_diffs_unique.sql":       statsMigration546,
 		"startup/547_session_project_attribution.sql":             statsMigration547,
 		"startup/548_stats_reconciliation_diffs_identity.sql":     statsMigration548,
+		"startup/551_approval_resume_claim.sql":                   approvalResumeMigration551,
 		"startup/552_request_journey_durable_outbox.sql":          requestJourneyMigration552,
 	}
 	for name, content := range files {

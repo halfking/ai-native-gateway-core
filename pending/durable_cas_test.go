@@ -68,6 +68,31 @@ func TestStore_SaveDurableCAS(t *testing.T) {
 	}
 }
 
+func TestStore_SaveDurableCAS_DoesNotDowngradeTerminalEntry(t *testing.T) {
+	ctx := context.Background()
+	mr := miniredis.RunT(t)
+	store := NewStore(redis.NewClient(&redis.Options{Addr: mr.Addr()}), time.Hour)
+	expiresAt := time.Now().Add(time.Hour)
+	terminal := &Response{
+		SessionID: "sess-1", TenantID: "tenant-1", RequestID: "req-1",
+		TaskID: "approval-1", ResultVersion: 2, Status: StatusCompleted, Body: "done",
+	}
+	if result, err := store.SaveDurableCAS(ctx, terminal, expiresAt); err != nil || result != DurableCASApplied {
+		t.Fatalf("save terminal: result=%v err=%v", result, err)
+	}
+	inProgress := *terminal
+	inProgress.Status = StatusInProgress
+	inProgress.Body = "resuming"
+	inProgress.ResultVersion = 3
+	if result, err := store.SaveDurableCAS(ctx, &inProgress, expiresAt); err != nil || result != DurableCASStale {
+		t.Fatalf("save in-progress after terminal: result=%v err=%v", result, err)
+	}
+	got, found, err := store.Get(ctx, "sess-1", "req-1")
+	if err != nil || !found || got.Status != StatusCompleted || got.Body != "done" {
+		t.Fatalf("terminal entry was downgraded: got=%+v found=%v err=%v", got, found, err)
+	}
+}
+
 func TestStore_SaveDurableCAS_BindsLegacyInProgressEntry(t *testing.T) {
 	ctx := context.Background()
 	mr := miniredis.RunT(t)

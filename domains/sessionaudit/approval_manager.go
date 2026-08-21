@@ -93,6 +93,12 @@ func (m *ApprovalManager) Create(ctx context.Context, req *ApprovalRequest) (str
 	if req.SessionID == "" || req.RequestID == "" {
 		return "", errors.New("sessionaudit: session_id and request_id required")
 	}
+	if req.DetectResult == nil || req.Snapshot == nil {
+		return "", errors.New("sessionaudit: detect result and snapshot required")
+	}
+	if req.Snapshot.TenantID != req.TenantID || req.Snapshot.SessionID != req.SessionID || req.Snapshot.RequestID != req.RequestID {
+		return "", errors.New("sessionaudit: snapshot identity mismatch")
+	}
 
 	detectResultJSON, err := json.Marshal(req.DetectResult)
 	if err != nil {
@@ -120,9 +126,9 @@ func (m *ApprovalManager) Create(ctx context.Context, req *ApprovalRequest) (str
 			id, session_id, tenant_id, request_id,
 			detect_result, snapshot,
 			status, created_at, expires_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		) VALUES ($1, $2, $3, $4, $5::text::jsonb, $6::text::jsonb, $7, $8, $9)
 	`, approvalID, req.SessionID, req.TenantID, req.RequestID,
-		detectResultJSON, snapshotJSON,
+		string(detectResultJSON), string(snapshotJSON),
 		ApprovalPending, time.Now(), expiresAt)
 	if err != nil {
 		return "", fmt.Errorf("insert approval queue: %w", err)
@@ -212,15 +218,15 @@ func (m *ApprovalManager) ClaimResume(ctx context.Context, approvalID, tenantID,
 	if approvalID == "" || owner == "" {
 		return nil, errors.New("sessionaudit: approval resume id and owner required")
 	}
-	if leaseUntil.IsZero() {
-		return nil, errors.New("sessionaudit: approval resume lease required")
+	if !leaseUntil.After(time.Now()) {
+		return nil, errors.New("sessionaudit: approval resume lease must be future")
 	}
 
 	tx, err := beginTenantWriteTx(ctx, m.pool, tenantID)
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
 
 	var record ApprovalRecord
 	var detectJSON, snapshotJSON []byte
@@ -291,8 +297,9 @@ func (m *ApprovalManager) ClaimResume(ctx context.Context, approvalID, tenantID,
 		WHERE id = $1
 		  AND status = 'approved'
 		  AND (resume_state IN ('idle', 'failed')
-		       OR (resume_state = 'running' AND resume_lease_until < NOW()))
-	`, approvalID, owner, leaseUntil, newToken)
+		       OR (resume_state = 'running' AND (resume_lease_until IS NULL OR resume_lease_until < NOW())))
+		  AND ($5 = '' OR tenant_id = $5)
+	`, approvalID, owner, leaseUntil, newToken, tenantID)
 	if err != nil {
 		return nil, fmt.Errorf("claim approval resume: %w", err)
 	}
@@ -318,18 +325,22 @@ func (m *ApprovalManager) RenewResumeLease(ctx context.Context, approvalID, tena
 }
 
 func (m *ApprovalManager) updateResumeLease(ctx context.Context, approvalID, tenantID, owner string, fencingToken int64, leaseUntil time.Time) error {
+	if !leaseUntil.After(time.Now()) {
+		return errors.New("sessionaudit: approval resume lease must be future")
+	}
 	tx, err := beginTenantWriteTx(ctx, m.pool, tenantID)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
 	tag, err := tx.Exec(ctx, `
 		UPDATE approval_queue
-		SET resume_lease_until = $5
+		SET resume_lease_until = $4
 		WHERE id = $1 AND status = 'approved' AND resume_state = 'running'
 		  AND resume_owner = $2 AND resume_fencing_token = $3
 		  AND resume_lease_until >= NOW()
-	`, approvalID, owner, fencingToken, time.Now(), leaseUntil)
+		  AND ($5 = '' OR tenant_id = $5)
+	`, approvalID, owner, fencingToken, leaseUntil, tenantID)
 	if err != nil {
 		return fmt.Errorf("renew approval resume lease: %w", err)
 	}
@@ -357,17 +368,19 @@ func (m *ApprovalManager) finishResume(ctx context.Context, approvalID, tenantID
 	if err != nil {
 		return err
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
 	tag, err := tx.Exec(ctx, `
 		UPDATE approval_queue
-		SET resume_state = $5,
+		SET resume_state = $4,
 		    resume_owner = NULL,
 		    resume_lease_until = NULL,
-		    resume_completed_at = CASE WHEN $5 = 'completed' THEN NOW() ELSE resume_completed_at END,
-		    resume_error = NULLIF($6, '')
+		    resume_completed_at = CASE WHEN $4 = 'completed' THEN NOW() ELSE resume_completed_at END,
+		    resume_error = NULLIF($5, '')
 		WHERE id = $1 AND status = 'approved' AND resume_state = 'running'
 		  AND resume_owner = $2 AND resume_fencing_token = $3
-	`, approvalID, owner, fencingToken, time.Now(), state, resumeErr)
+		  AND resume_lease_until >= NOW()
+		  AND ($6 = '' OR tenant_id = $6)
+	`, approvalID, owner, fencingToken, state, resumeErr, tenantID)
 	if err != nil {
 		return fmt.Errorf("finish approval resume: %w", err)
 	}
@@ -549,7 +562,7 @@ func (m *ApprovalManager) decide(ctx context.Context, approvalID, callerTenantID
 //   - TimeoutActionReject (默认): 标记为 timeout（自动拒绝）
 //   - TimeoutActionApprove: 自动批准，approved_by 设为 "system:timeout"
 //
-// 仅由后台 worker 调用，因此不上 RLS（worker 在 superadmin 上下文）。
+// 仅由可信后台 worker 调用；它在 super_admin 事务中执行，因此可跨租户处理超时行。
 func (m *ApprovalManager) MarkTimeout(ctx context.Context) (int, error) {
 	var sql string
 	switch m.timeoutAction {
@@ -574,9 +587,17 @@ func (m *ApprovalManager) MarkTimeout(ctx context.Context) (int, error) {
 	if m.timeoutAction != TimeoutActionApprove {
 		target = ApprovalTimeout
 	}
-	tag, err := m.pool.Exec(ctx, sql, target, ApprovalPending)
+	tx, err := beginTenantWriteTx(ctx, m.pool, "")
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	tag, err := tx.Exec(ctx, sql, target, ApprovalPending)
 	if err != nil {
 		return 0, fmt.Errorf("mark timeout: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("commit timeout sweep: %w", err)
 	}
 	return int(tag.RowsAffected()), nil
 }

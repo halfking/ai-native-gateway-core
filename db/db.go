@@ -300,6 +300,9 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	// Dashboard views are derived data for the admin UI, not critical-path.
 	// A failure here logs a warning but does NOT block startup — the gateway
 	// must still serve traffic even if /probe-health renders empty.
+	if err := db.ensureApprovalResumeClaimSchema(migCtx); err != nil {
+		return err
+	}
 	db.ensureProbeHealthDashboardViews(migCtx)
 	return nil
 }
@@ -4298,5 +4301,58 @@ from_checkpoint IN ('preflight','copy','coverage','dual','observe','cleanup')
 		return err
 	}
 	slog.Info("ursm_key_migration ledger schema ensured")
+	return nil
+}
+
+// ensureApprovalResumeClaimSchema mirrors startup migration 551 for gateway
+// databases that are upgraded through db.Open rather than the installer.
+func (d *DB) ensureApprovalResumeClaimSchema(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+
+	var exists bool
+	if err := d.pool.QueryRow(ctx, `SELECT to_regclass('public.approval_queue') IS NOT NULL`).Scan(&exists); err != nil {
+		return fmt.Errorf("check approval resume table: %w", err)
+	}
+	if !exists {
+		return nil
+	}
+
+	tx, err := d.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return fmt.Errorf("begin approval resume schema: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	if _, err := tx.Exec(ctx, `
+		ALTER TABLE public.approval_queue
+		    ADD COLUMN IF NOT EXISTS resume_state TEXT NOT NULL DEFAULT 'idle',
+		    ADD COLUMN IF NOT EXISTS resume_owner TEXT,
+		    ADD COLUMN IF NOT EXISTS resume_lease_until TIMESTAMPTZ,
+		    ADD COLUMN IF NOT EXISTS resume_fencing_token BIGINT NOT NULL DEFAULT 0,
+		    ADD COLUMN IF NOT EXISTS resume_started_at TIMESTAMPTZ,
+		    ADD COLUMN IF NOT EXISTS resume_completed_at TIMESTAMPTZ,
+		    ADD COLUMN IF NOT EXISTS resume_error TEXT;
+		ALTER TABLE public.approval_queue
+		    DROP CONSTRAINT IF EXISTS approval_queue_resume_state_chk;
+		ALTER TABLE public.approval_queue
+		    ADD CONSTRAINT approval_queue_resume_state_chk CHECK (
+		        resume_state IN ('idle', 'running', 'completed', 'failed')
+		    );
+		ALTER TABLE public.approval_queue
+		    DROP CONSTRAINT IF EXISTS approval_queue_resume_fencing_token_chk;
+		ALTER TABLE public.approval_queue
+		    ADD CONSTRAINT approval_queue_resume_fencing_token_chk CHECK (
+		        resume_fencing_token >= 0
+		    );
+		CREATE INDEX IF NOT EXISTS idx_approval_queue_resume_claimable
+		    ON public.approval_queue (resume_lease_until, created_at)
+		    WHERE status = 'approved' AND resume_state IN ('idle', 'running', 'failed');
+	`); err != nil {
+		return fmt.Errorf("ensure approval resume schema: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit approval resume schema: %w", err)
+	}
 	return nil
 }

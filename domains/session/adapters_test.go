@@ -86,7 +86,7 @@ func TestLLMCallerFunc(t *testing.T) {
 	called := false
 	var capturedSnap *sessionaudit.RequestSnapshot
 
-	caller := LLMCallerFunc(func(_ context.Context, snap *sessionaudit.RequestSnapshot) error {
+	caller := LLMCallerFunc(func(_ context.Context, snap *sessionaudit.RequestSnapshot, _ ResumeExecution) error {
 		called = true
 		capturedSnap = snap
 		return nil
@@ -98,7 +98,7 @@ func TestLLMCallerFunc(t *testing.T) {
 		RequestID: "test-request",
 	}
 
-	if err := caller.CallFromSnapshot(context.Background(), snap); err != nil {
+	if err := caller.CallFromSnapshot(context.Background(), snap, ResumeExecution{}); err != nil {
 		t.Fatalf("CallFromSnapshot: %v", err)
 	}
 
