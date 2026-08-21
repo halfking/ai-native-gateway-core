@@ -17,6 +17,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { getFeatured, resolveRouting, reorderCandidateBindings, type CandidateBindingReorderItem, type RoutingCandidate } from '../api/routing'
 import { getRequestLogTopModels, type TopRequestModel } from '../api/logs'
+import { getSlidingWindow } from '../api/credential-monitor'
 import {
   queueRef,
   nodesRef,
@@ -29,6 +30,14 @@ import {
 import { isSuperAdmin } from '../store'
 import { ApiError } from '../api/_core'
 import { readLiveStreamPreferences, writeLiveStreamPreferences, type QueueStatusBucket } from '../composables/liveStreamPreferences'
+import {
+  WINDOW_MINUTES,
+  STATS_REFRESH_MS,
+  assignSpacedPriorities,
+  cardWidthFromCapacity,
+  credentialDisplayName,
+  nodeCapacity,
+} from '../utils/queueNodeCards'
 import RequestProcessingTrail from './RequestProcessingTrail.vue'
 import NodeDetailDrawer from './NodeDetailDrawer.vue'
 
@@ -260,8 +269,14 @@ async function loadModelScope() {
   modelScopeLoading.value = false
 }
 
-onMounted(() => { void loadModelScope() })
-onUnmounted(() => { modelScopeAbort?.abort() })
+onMounted(() => {
+  void loadModelScope()
+  startStatsPoll()
+})
+onUnmounted(() => {
+  modelScopeAbort?.abort()
+  stopStatsPoll()
+})
 
 function toggleModel(model: string) {
   const next = new Set(expandedModels.value)
@@ -450,18 +465,35 @@ async function onDrop(event: DragEvent, group: ModelGroup, targetCredentialId: n
   const mergedIds = fullIds.length > 0
     ? mergeVisibleOrderIntoFull(fullIds, ordered.map(n => n.credential_id))
     : ordered.map(n => n.credential_id)
+  const priorities = assignSpacedPriorities(mergedIds.length)
   const items: CandidateBindingReorderItem[] = mergedIds.map((credentialId, index) => ({
     credential_id: credentialId,
     raw_model: rawModel,
-    manual_priority: index + 1,
+    manual_priority: priorities[index],
   }))
   clearDragState()
   dragSaving.value = true
   dragError.value = ''
+  // Optimistic local order so the next drag sees spaced priorities immediately.
+  const prevCandidates = modelCandidatesByRawModel.value.get(modelKey(rawModel)) ?? []
+  const byId = new Map(prevCandidates.map(c => [c.credential_id, c]))
+  const optimistic = mergedIds.map((credentialId, index) => {
+    const base = byId.get(credentialId)
+    return base
+      ? { ...base, manual_priority: priorities[index], rank: index + 1 }
+      : {
+          credential_id: credentialId,
+          model_name: rawModel,
+          manual_priority: priorities[index],
+          rank: index + 1,
+        } as RoutingCandidate
+  })
+  modelCandidatesByRawModel.value = new Map(modelCandidatesByRawModel.value).set(modelKey(rawModel), optimistic)
   try {
     await reorderCandidateBindings(items, { rawModel, expectedRevision })
     await loadModelScope()
   } catch (error) {
+    modelCandidatesByRawModel.value = new Map(modelCandidatesByRawModel.value).set(modelKey(rawModel), prevCandidates)
     const fallback = error instanceof Error ? error.message : '调整优先级失败'
     // 409 stale / incomplete / transient ordering conflict — surface a
     // user-friendly hint and refetch so the UI catches up with the server.
@@ -492,14 +524,103 @@ function nodeStatusSummary(n: LiveNodeStatus): string {
   return parts.join(' / ')
 }
 
-// ── 节点小卡片：标题用 供应商 + 凭据，状态用四态点 ─────────────────────────
+function candidateForNode(group: ModelGroup, credentialId: number): RoutingCandidate | undefined {
+  const raw = group.reorderRawModel
+  if (!raw) return undefined
+  return (modelCandidatesByRawModel.value.get(modelKey(raw)) ?? []).find(c => c.credential_id === credentialId)
+}
+
 function providerLabel(n: LiveNodeStatus): string {
   return n.provider_code || (n.provider_id ? `P${n.provider_id}` : '—')
 }
 
-function nodeTitle(n: LiveNodeStatus): string {
-  return `${providerLabel(n)} #${n.credential_id}`
+function nodeTitle(n: LiveNodeStatus, group?: ModelGroup): string {
+  const candidate = group ? candidateForNode(group, n.credential_id) : undefined
+  return credentialDisplayName(candidate, providerLabel(n), n.credential_id)
 }
+
+function nodePriorityLabel(group: ModelGroup, n: LiveNodeStatus, index: number): string {
+  const candidate = candidateForNode(group, n.credential_id)
+  const priority = candidate?.manual_priority
+  const rank = index + 1
+  return typeof priority === 'number' ? `#${rank} · p${priority}` : `#${rank}`
+}
+
+function groupMaxCapacity(group: ModelGroup): number {
+  let max = 1
+  for (const node of group.nodes) {
+    max = Math.max(max, nodeCapacity(candidateForNode(group, node.credential_id)))
+  }
+  return max
+}
+
+function nodeCardWidth(group: ModelGroup, n: LiveNodeStatus): number {
+  return cardWidthFromCapacity(nodeCapacity(candidateForNode(group, n.credential_id)), groupMaxCapacity(group))
+}
+
+type WindowStatsLite = { success: number; failed: number; total: number }
+const windowStatsByKey = ref<Map<string, WindowStatsLite>>(new Map())
+let statsTimer: ReturnType<typeof setInterval> | null = null
+let statsAbort: AbortController | null = null
+
+function statsKey(credentialId: number, model: string): string {
+  return `${credentialId}:${modelKey(model)}`
+}
+
+function windowStatsFor(group: ModelGroup, credentialId: number): WindowStatsLite | null {
+  if (!group.reorderRawModel) return null
+  return windowStatsByKey.value.get(statsKey(credentialId, group.reorderRawModel)) ?? null
+}
+
+async function refreshWindowStats() {
+  const targets: Array<{ credentialId: number; model: string }> = []
+  const seen = new Set<string>()
+  for (const group of filteredModelGroups.value) {
+    if (!group.reorderRawModel) continue
+    for (const node of group.nodes) {
+      const key = statsKey(node.credential_id, group.reorderRawModel)
+      if (seen.has(key)) continue
+      seen.add(key)
+      targets.push({ credentialId: node.credential_id, model: group.reorderRawModel })
+    }
+  }
+  if (!targets.length) return
+  statsAbort?.abort()
+  const controller = new AbortController()
+  statsAbort = controller
+  const next = new Map(windowStatsByKey.value)
+  const concurrency = 6
+  for (let i = 0; i < targets.length; i += concurrency) {
+    const batch = targets.slice(i, i + concurrency)
+    await Promise.all(batch.map(async ({ credentialId, model }) => {
+      try {
+        const result = await getSlidingWindow(credentialId, model, WINDOW_MINUTES, { signal: controller.signal })
+        if (controller.signal.aborted) return
+        next.set(statsKey(credentialId, model), {
+          success: result.stats?.success ?? 0,
+          failed: result.stats?.failed ?? 0,
+          total: result.stats?.total ?? 0,
+        })
+      } catch {
+        // keep previous / leave missing — card shows em dash
+      }
+    }))
+  }
+  if (!controller.signal.aborted) windowStatsByKey.value = next
+}
+
+function startStatsPoll() {
+  stopStatsPoll()
+  void refreshWindowStats()
+  statsTimer = setInterval(() => { void refreshWindowStats() }, STATS_REFRESH_MS)
+}
+function stopStatsPoll() {
+  if (statsTimer) { clearInterval(statsTimer); statsTimer = null }
+  statsAbort?.abort()
+  statsAbort = null
+}
+
+watch(filteredModelGroups, () => { void refreshWindowStats() }, { deep: false })
 
 // null = 字段未上报，按"未知"灰点展示（不冒充健康）。
 function circuitOk(n: LiveNodeStatus): boolean | null {
@@ -685,10 +806,11 @@ function formatTs(ts: string | undefined): string {
             <span class="qp-pill qp-pill--hint" :title="dragDisabledHint(group)">{{ canReorder(group) ? '拖动调整优先级' : '优先级排序不可用' }}</span>
             <div class="qp-model-nodes">
               <div
-                v-for="node in group.nodes"
+                v-for="(node, nodeIndex) in group.nodes"
                 :key="node.credential_id"
                 class="qp-node-card-wrap"
                 :class="{ 'is-drag-over': isDragTarget(group.model, node.credential_id) }"
+                :style="{ width: `${nodeCardWidth(group, node)}px` }"
                 @dragover="onDragOver($event, group, node.credential_id)"
                 @dragleave="onDragLeave(group, node.credential_id)"
                 @drop="onDrop($event, group, node.credential_id)"
@@ -697,19 +819,30 @@ function formatTs(ts: string | undefined): string {
                   type="button"
                   class="qp-node-card"
                   :class="nodeCardTone(node)"
-                  :title="`${nodeTitle(node)}：${nodeStatusSummary(node)}${node.last_error ? `；${node.last_error}` : ''}`"
+                  :title="`${nodeTitle(node, group)}：${nodeStatusSummary(node)}${node.last_error ? `；${node.last_error}` : ''}`"
                   :draggable="canReorder(group)"
                   @click="openNode(node, group.aliases)"
                   @dragstart="onDragStart($event, group, node.credential_id)"
                   @dragend="clearDragState"
                 >
                   <span class="qp-node-card-drag-handle" aria-hidden="true">⋮⋮</span>
-                  <span class="qp-node-card-title">{{ nodeTitle(node) }}</span>
+                  <span class="qp-node-card-title">{{ nodeTitle(node, group) }}</span>
                   <span class="qp-node-card-dots" :title="`熔断 ${node.circuit_state || '未知'} · 可用性 ${node.availability_state || '未知'} · 配额 ${node.quota_state || '未知'} · 健康 ${node.health_status || '未知'}`">
                     <i class="qp-dot" :class="dotClass(circuitOk(node))" /><i class="qp-dot" :class="dotClass(availabilityOk(node))" /><i class="qp-dot" :class="dotClass(quotaOk(node))" /><i class="qp-dot" :class="dotClass(healthOk(node))" />
+                    <span class="qp-node-rank">{{ nodePriorityLabel(group, node, nodeIndex) }}</span>
                   </span>
                   <span class="qp-node-card-meta">
-                    {{ nodeStatusSummary(node) }}<template v-if="node.in_flight"> · 在途 {{ node.in_flight }}</template><template v-if="node.last_latency_ms != null"> · {{ formatLatency(node.last_latency_ms) }}</template>
+                    <template v-if="windowStatsFor(group, node.credential_id)">
+                      <span class="qp-stat-ok">✓{{ windowStatsFor(group, node.credential_id)!.success }}</span>
+                      <span class="qp-stat-fail">✗{{ windowStatsFor(group, node.credential_id)!.failed }}</span>
+                      <span class="qp-stat-window">· {{ WINDOW_MINUTES }}m</span>
+                    </template>
+                    <template v-else>
+                      <span class="qp-stat-ok">✓—</span>
+                      <span class="qp-stat-fail">✗—</span>
+                      <span class="qp-stat-window">· {{ WINDOW_MINUTES }}m</span>
+                    </template>
+                    <template v-if="node.in_flight"> · 在途 {{ node.in_flight }}</template>
                   </span>
                 </button>
               </div>
@@ -720,7 +853,7 @@ function formatTs(ts: string | undefined): string {
             <ul v-if="group.nodes.some(node => requestsForNode(node, group.aliases).length)" class="qp-model-group-requests">
               <template v-for="node in group.nodes" :key="node.credential_id">
                 <li v-for="request in requestsForNode(node, group.aliases)" :key="request.request_id" class="qp-model-group-request">
-                  <span class="qp-rq-node">{{ nodeTitle(node) }}</span><span class="qp-rq-model">{{ request.model || '—' }}</span><span class="qp-rq-status" :class="`qp-rq-status--${request.status}`">{{ request.status || '—' }}</span><span v-if="typeof request.latency_ms === 'number'" class="qp-rq-latency">{{ formatLatency(request.latency_ms) }}</span><span v-if="request.error_kind" class="qp-rq-err">{{ request.error_kind }}</span><span class="qp-rq-ts">{{ formatTs(request.ts) }}</span>
+                  <span class="qp-rq-node">{{ nodeTitle(node, group) }}</span><span class="qp-rq-model">{{ request.model || '—' }}</span><span class="qp-rq-status" :class="`qp-rq-status--${request.status}`">{{ request.status || '—' }}</span><span v-if="typeof request.latency_ms === 'number'" class="qp-rq-latency">{{ formatLatency(request.latency_ms) }}</span><span v-if="request.error_kind" class="qp-rq-err">{{ request.error_kind }}</span><span class="qp-rq-ts">{{ formatTs(request.ts) }}</span>
                 </li>
               </template>
             </ul>
@@ -948,9 +1081,14 @@ function formatTs(ts: string | undefined): string {
 .qp-model-tag { font-size:10px; padding:2px 6px; border-radius:999px; color:var(--kx-accent); background:color-mix(in srgb, var(--kx-accent) 12%, transparent); }
 .qp-model-tag--hot { color:var(--kx-warning); background:color-mix(in srgb, var(--kx-warning) 12%, transparent); }
 .qp-model-nodes { display:flex; gap:6px; flex-wrap:wrap; flex:1 1 100%; padding-left:18px; }
-.qp-node-card-wrap { border-radius:6px; transition: background 120ms ease, outline-color 120ms ease; outline: 2px dashed transparent; outline-offset: 1px; }
+.qp-node-card-wrap { border-radius:6px; transition: background 120ms ease, outline-color 120ms ease, width 160ms ease; outline: 2px dashed transparent; outline-offset: 1px; flex: 0 0 auto; }
 .qp-node-card-wrap.is-drag-over { background: color-mix(in srgb, var(--kx-accent) 14%, transparent); outline-color: var(--kx-accent); }
-.qp-node-card { display:grid; gap:4px; text-align:left; min-width:150px; max-width:230px; padding:7px 9px; border:1px solid var(--kx-border); border-left-width:3px; border-radius:6px; background:var(--kx-surface); cursor:pointer; color:var(--kx-text); position:relative; }
+.qp-node-card { display:grid; gap:4px; text-align:left; width:100%; box-sizing:border-box; padding:7px 9px; border:1px solid var(--kx-border); border-left-width:3px; border-radius:6px; background:var(--kx-surface); cursor:pointer; color:var(--kx-text); position:relative; }
+.qp-node-rank { margin-left:6px; font-size:10px; color:var(--kx-muted); font-variant-numeric: tabular-nums; }
+.qp-node-card-meta { display:flex; flex-wrap:wrap; gap:4px; align-items:baseline; font-size:11px; color:var(--kx-muted); overflow:hidden; }
+.qp-stat-ok { color: var(--kx-success); font-variant-numeric: tabular-nums; }
+.qp-stat-fail { color: var(--kx-danger); font-variant-numeric: tabular-nums; }
+.qp-stat-window { color: var(--kx-muted); }
 .qp-node-card:hover { border-color:var(--kx-accent); }
 .qp-node-card-drag-handle { position:absolute; top:3px; right:5px; font-size:10px; color:var(--kx-text-secondary); opacity:.6; line-height:1; user-select:none; }
 .qp-node-card[draggable="true"] { cursor: grab; }
@@ -961,7 +1099,6 @@ function formatTs(ts: string | undefined): string {
 .qp-dot--ok { background:var(--kx-success); opacity:1; }
 .qp-dot--bad { background:var(--kx-danger); opacity:1; }
 .qp-dot--unknown { background:var(--kx-text-secondary); opacity:.4; }
-.qp-node-card-meta { font-size:11px; color:var(--kx-text-secondary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .qp-node-card--ok { border-left-color:var(--kx-success); }
 .qp-node-card--warn { border-left-color:var(--kx-warning); }
 .qp-node-card--danger { border-left-color:var(--kx-danger); }

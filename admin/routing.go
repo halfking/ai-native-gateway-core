@@ -1029,8 +1029,12 @@ func validateRoutingCandidateReorder(req routingCandidateReorderRequest) string 
 		if item.CredentialID <= 0 {
 			return "credential_id must be positive"
 		}
-		if item.ManualPriority < 1 || item.ManualPriority > len(req.Items) {
-			return "manual_priority must be contiguous starting at 1"
+		// Spaced priorities (5,10,15…) are allowed so clients can insert
+		// mid-rank values without rewriting the whole ladder every time.
+		// Final order is the items array order; values must stay unique
+		// within [1, 99] (same ceiling as single-binding PATCH).
+		if item.ManualPriority < 1 || item.ManualPriority > 99 {
+			return "manual_priority must be in [1, 99]"
 		}
 		bindingKey := fmt.Sprintf("%d:%s", item.CredentialID, strings.TrimSpace(item.RawModel))
 		if _, ok := seenBindings[bindingKey]; ok {
@@ -1041,11 +1045,6 @@ func validateRoutingCandidateReorder(req routingCandidateReorderRequest) string 
 		}
 		seenBindings[bindingKey] = struct{}{}
 		seenPriorities[item.ManualPriority] = struct{}{}
-	}
-	for priority := 1; priority <= len(req.Items); priority++ {
-		if _, ok := seenPriorities[priority]; !ok {
-			return "manual_priority must be contiguous starting at 1"
-		}
 	}
 	return ""
 }
