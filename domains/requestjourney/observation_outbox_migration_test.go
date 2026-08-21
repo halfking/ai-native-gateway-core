@@ -41,9 +41,14 @@ func TestDurableObservationOutboxDownMigrationContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, required := range []string{
+		"BEGIN;",
+		"LOCK TABLE public.request_journey_observation_outbox IN ACCESS EXCLUSIVE MODE",
+		"SELECT count(*) INTO v_outbox_rows FROM public.request_journey_observation_outbox",
+		"Migration 552 down refused",
 		"DROP TABLE IF EXISTS request_journey_observation_outbox",
 		"DROP INDEX IF EXISTS idx_state_transitions_journey_retry_at",
 		"DROP COLUMN IF EXISTS retry_at",
+		"COMMIT;",
 	} {
 		if !strings.Contains(string(body), required) {
 			t.Errorf("durable observation down migration missing %q", required)
