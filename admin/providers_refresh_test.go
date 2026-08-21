@@ -452,6 +452,8 @@ func TestFetchVendorModelsFromURLs_FirstCandidateFailsSecondSucceeds(t *testing.
 	}
 }
 
+func strPtr(s string) *string { return &s } //nolint:unused
+
 func TestFetchVendorModelsFromURLs_AuthErrorPreservedAcrossCandidates(t *testing.T) {
 	h := &Handler{}
 	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
