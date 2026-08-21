@@ -49,6 +49,8 @@ local err_kind = ARGV[2]
 local now_ms = tonumber(ARGV[3]) or 0
 local lat = tonumber(ARGV[4]) or 0
 local req_id = ARGV[5]
+local is_empty_response = success == "0" and err_kind == "empty_response"
+local empty_marker = is_empty_response and "e1" or "e0"
 local node_ttl = tonumber(ARGV[6]) or 3600
 local w5_ttl = tonumber(ARGV[7]) or 360
 local w30_ttl = tonumber(ARGV[8]) or 2100
@@ -99,13 +101,14 @@ end
 -- applied to both inside this one script.
 local function apply_set(node_key, w1, w5, w30)
   local event_seq = redis.call("HINCRBY", node_key, "event_seq", 1)
-  local member = success .. ":" .. tostring(now_ms) .. ":" .. tostring(event_seq) .. ":" .. req_id
+  local member = success .. ":" .. empty_marker .. ":" .. tostring(now_ms) .. ":" .. tostring(event_seq) .. ":" .. req_id
 
   local function update_window(window_key, suffix, ttl, cutoff_ms)
     local existed = redis.call("EXISTS", window_key) == 1
     local counters_exist = existed and
       redis.call("HEXISTS", node_key, "samples_" .. suffix) == 1 and
-      redis.call("HEXISTS", node_key, "successes_" .. suffix) == 1
+      redis.call("HEXISTS", node_key, "successes_" .. suffix) == 1 and
+      redis.call("HEXISTS", node_key, "empty_responses_" .. suffix) == 1
 
     redis.call("ZADD", window_key, now_ms, member)
     local removed = redis.call("ZRANGEBYSCORE", window_key, "-inf", tostring(cutoff_ms))
@@ -116,6 +119,10 @@ local function apply_set(node_key, w1, w5, w30)
       local second_colon = first_colon and string.find(member_value, ":", first_colon + 1, true)
       local third_colon = second_colon and string.find(member_value, ":", second_colon + 1, true)
       if first_colon == 2 and third_colon ~= nil then
+        local marker = string.sub(member_value, first_colon + 1, second_colon - 1)
+        if marker == "e0" or marker == "e1" then
+          return string.sub(member_value, 1, 1) == "1"
+        end
         local timestamp = tonumber(string.sub(member_value, first_colon + 1, second_colon - 1))
         local sequence = tonumber(string.sub(member_value, second_colon + 1, third_colon - 1))
         if timestamp ~= nil and sequence ~= nil then
@@ -125,13 +132,24 @@ local function apply_set(node_key, w1, w5, w30)
       return first_colon ~= nil and string.sub(member_value, first_colon + 1, first_colon + 1) == "1"
     end
 
+    local function member_empty_response(member_value)
+      local first_colon = string.find(member_value, ":", 1, true)
+      local second_colon = first_colon and string.find(member_value, ":", first_colon + 1, true)
+      if first_colon == 2 and second_colon ~= nil then
+        return string.sub(member_value, first_colon + 1, second_colon - 1) == "e1"
+      end
+      return false
+    end
+
     local current_retained = now_ms > cutoff_ms
 
     local samples = 0
     local successes = 0
+    local empty_responses = 0
     if counters_exist then
       samples = tonumber(redis.call("HGET", node_key, "samples_" .. suffix) or "0") or 0
       successes = tonumber(redis.call("HGET", node_key, "successes_" .. suffix) or "0") or 0
+      empty_responses = tonumber(redis.call("HGET", node_key, "empty_responses_" .. suffix) or "0") or 0
       samples = samples - #removed
       if current_retained then
         samples = samples + 1
@@ -140,18 +158,28 @@ local function apply_set(node_key, w1, w5, w30)
         if member_success(old_member) then
           successes = successes - 1
         end
+        if member_empty_response(old_member) then
+          empty_responses = empty_responses - 1
+        end
       end
       if current_retained and success == "1" then
         successes = successes + 1
       end
+      if current_retained and empty_marker == "e1" then
+        empty_responses = empty_responses + 1
+      end
       if samples < 0 then samples = 0 end
       if successes < 0 then successes = 0 end
+      if empty_responses < 0 then empty_responses = 0 end
     else
       local current = redis.call("ZRANGE", window_key, 0, -1)
       samples = #current
       for _, current_member in ipairs(current) do
         if member_success(current_member) then
           successes = successes + 1
+        end
+        if member_empty_response(current_member) then
+          empty_responses = empty_responses + 1
         end
       end
     end
@@ -160,9 +188,15 @@ local function apply_set(node_key, w1, w5, w30)
     if samples > 0 then
       rate = successes / samples
     end
+    local empty_rate = 0
+    if samples > 0 then
+      empty_rate = empty_responses / samples
+    end
     redis.call("HSET", node_key,
       "samples_" .. suffix, tostring(samples),
       "successes_" .. suffix, tostring(successes),
+      "empty_responses_" .. suffix, tostring(empty_responses),
+      "empty_response_rate_" .. suffix, tostring(empty_rate),
       "sr_" .. suffix, tostring(rate))
     redis.call("EXPIRE", window_key, ttl)
   end
@@ -193,6 +227,27 @@ local function apply_set(node_key, w1, w5, w30)
 
   local current_priority = tonumber(redis.call("HGET", node_key, "source_priority") or "0") or 0
   if current_priority > 10 then
+    redis.call("EXPIRE", node_key, node_ttl)
+    return
+  end
+
+  -- Empty responses are binding-scoped quality telemetry. Their windows above
+  -- are authoritative for routing penalties, but they must never mutate cooldown
+  -- or fail-streak state because that state would hard-exclude this node.
+  if is_empty_response then
+    redis.call("HINCRBY", node_key, "failure_count", 1)
+    -- A first-ever observation needs the normal routable baseline; without it
+    -- the read path treats an otherwise healthy node as unavailable forever.
+    -- Once any writer has established availability, do not touch routing state:
+    -- a cooldown, probe, or admin decision remains authoritative.
+    if redis.call("HEXISTS", node_key, "available") == 0 then
+      redis.call("HINCRBY", node_key, "generation", 1)
+      redis.call("HSET", node_key,
+        "available", "1",
+        "source_priority", "10",
+        "updated_at_ms", tostring(now_ms))
+    end
+    redis.call("HSET", node_key, "last_empty_response_at_ms", tostring(now_ms))
     redis.call("EXPIRE", node_key, node_ttl)
     return
   end
@@ -251,6 +306,12 @@ local function apply_set(node_key, w1, w5, w30)
     redis.call("HSET", node_key, "fail_streak", "0")
   else
     redis.call("HINCRBY", node_key, "failure_count", 1)
+    -- Empty responses are recorded for binding-scoped routing penalties but
+    -- must never advance hard-disable state for this credential/model node.
+    if err_kind == "empty_response" then
+      redis.call("HSET", node_key, "disabled_reason", "empty_response_soft_penalty")
+      return
+    end
     local fatal = string.match(err_kind, "^auth") or string.match(err_kind, "^quota")
     if fatal then
       redis.call("HSET", node_key,

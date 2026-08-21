@@ -2,6 +2,7 @@ package v2
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -17,16 +18,18 @@ import (
 // behaviour. Tweak these in DefaultScoringWeights() rather than at
 // call sites.
 type ScoringWeights struct {
-	Price     float64
-	Latency   float64
-	Stability float64
+	Price        float64
+	Latency      float64
+	Stability    float64
+	EmptyPenalty float64
 }
 
 func DefaultScoringWeights() ScoringWeights {
 	return ScoringWeights{
-		Price:     0.4,
-		Latency:   0.4,
-		Stability: 0.2,
+		Price:        0.4,
+		Latency:      0.4,
+		Stability:    0.2,
+		EmptyPenalty: 0.2,
 	}
 }
 
@@ -51,6 +54,12 @@ type Config struct {
 	Window30mTTL        time.Duration
 	NodeTTL             time.Duration
 	ScoringWeights      ScoringWeights
+	// EmptyResponseMinSamples and EmptyResponseRateThreshold control a
+	// binding-scoped soft routing penalty. The state key remains tenant +
+	// credential + raw model; no provider-wide or canonical-model action is
+	// derived from this telemetry.
+	EmptyResponseMinSamples    int
+	EmptyResponseRateThreshold float64
 	// LRUMirrorSize is the capacity of the process-local NodeMirror LRU
 	// (M2, spec Decision 2). Default 100000. 0 disables the mirror (every
 	// FilterAndScore reads Redis). The mirror is a read accelerator only;
@@ -116,8 +125,10 @@ func DefaultConfig() Config {
 		// Spec §5 参数总表 / §14.5 “快恢复” — degraded nodes return to the
 		// pool within 15min of the last probe/record touch. Hot-configurable
 		// via settings_kv (see LoadHot).
-		NodeTTL:        15 * time.Minute,
-		ScoringWeights: DefaultScoringWeights(),
+		NodeTTL:                    15 * time.Minute,
+		ScoringWeights:             DefaultScoringWeights(),
+		EmptyResponseMinSamples:    10,
+		EmptyResponseRateThreshold: 0.20,
 		// 2026-07-27 (M2): process LRU mirror defaults (spec Decision 2).
 		LRUMirrorSize:    100000,
 		LRUMirrorSoftTTL: 30 * time.Second,
@@ -208,6 +219,22 @@ func LoadFromEnv() Config {
 		}
 	}
 	// 2026-07-24: 支持通过环境变量配置 URSM v2 冷却时间
+	if v := strings.TrimSpace(os.Getenv("URSM_V2_EMPTY_RESPONSE_MIN_SAMPLES")); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			c.loadErr = fmt.Errorf("URSM_V2_EMPTY_RESPONSE_MIN_SAMPLES must be a positive integer")
+		} else {
+			c.EmptyResponseMinSamples = n
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("URSM_V2_EMPTY_RESPONSE_RATE_THRESHOLD")); v != "" {
+		n, err := strconv.ParseFloat(v, 64)
+		if err != nil || math.IsNaN(n) || math.IsInf(n, 0) || n < 0 || n > 1 {
+			c.loadErr = fmt.Errorf("URSM_V2_EMPTY_RESPONSE_RATE_THRESHOLD must be a number from 0 to 1")
+		} else {
+			c.EmptyResponseRateThreshold = n
+		}
+	}
 	if v := os.Getenv("URSM_V2_COOL_SECONDS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			c.CoolSeconds = n
@@ -261,6 +288,12 @@ func (c Config) Validate() error {
 	}
 	if err := validateStrictCanaryScope(c); err != nil {
 		return err
+	}
+	if c.EmptyResponseMinSamples < 1 {
+		return fmt.Errorf("URSM_V2_EMPTY_RESPONSE_MIN_SAMPLES must be positive")
+	}
+	if c.EmptyResponseRateThreshold < 0 || c.EmptyResponseRateThreshold > 1 {
+		return fmt.Errorf("URSM_V2_EMPTY_RESPONSE_RATE_THRESHOLD must be between 0 and 1")
 	}
 	return nil
 }

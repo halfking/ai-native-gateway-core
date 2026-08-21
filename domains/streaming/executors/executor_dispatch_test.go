@@ -297,7 +297,7 @@ func TestDispatchUsesJourneyAttemptIDForNodeHealthReduction(t *testing.T) {
 	if decision.AttemptID != journeyAttemptID {
 		t.Fatalf("reducer attempt ID = %q, journey UUID = %q", decision.AttemptID, journeyAttemptID)
 	}
-	if decision.Node != (nodehealth.NodeKey{TenantID: "tenant-a", ProviderID: 7, CredentialID: 22, Model: "model-a"}) {
+	if decision.Node != (nodehealth.NodeKey{TenantID: "tenant-a", ProviderID: 7, CredentialID: 22, Model: "vendor-model-a"}) {
 		t.Fatalf("node = %+v", decision.Node)
 	}
 	if decision.RequestID != params.RequestID || decision.BillingMode != candidate.BillingMode || string(decision.Outcome) != "success" {
@@ -425,5 +425,24 @@ func TestCopyQueueTimestampsToError(t *testing.T) {
 	}
 	if ee.T9ResponseEndAt == nil || !ee.T9ResponseEndAt.Equal(t9) {
 		t.Fatalf("T9=%v", ee.T9ResponseEndAt)
+	}
+}
+
+func TestDispatchNodeHealthUsesOfferRawModelForBindingIdentity(t *testing.T) {
+	capture := &dispatchHealthCapture{}
+	exec := &Executor{NodeOutcomeReducer: nodehealth.NewOutcomeReducer(), NodeHealthAdapter: capture}
+	params := &ExecParams{RequestID: "binding-model", TenantID: "tenant-a", Model: "client-model"}
+	candidate := provider.Candidate{
+		ProviderID: 7, CredentialID: 22,
+		RawModel: "shared-outbound-alias", OfferRawModel: "binding-model-a", StandardizedName: "client-model",
+	}
+	_, applied := exec.reduceDispatchForwardOutcome(context.Background(), params, candidate, "binding-attempt",
+		dispatch.ForwardOutcome{}, time.Now(), true)
+	if !applied {
+		t.Fatal("expected node-health reduction to apply")
+	}
+	decisions := capture.snapshot()
+	if len(decisions) != 1 || decisions[0].Node.Model != "binding-model-a" {
+		t.Fatalf("node health identity = %+v, want offer raw binding model", decisions)
 	}
 }
