@@ -452,7 +452,30 @@ func TestFetchVendorModelsFromURLs_FirstCandidateFailsSecondSucceeds(t *testing.
 	}
 }
 
-func strPtr(s string) *string { return &s } //nolint:unused
+func TestFetchVendorModelsFromURLs_AuthErrorPreservedAcrossCandidates(t *testing.T) {
+	h := &Handler{}
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
+	}))
+	defer first.Close()
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":"not found"}`))
+	}))
+	defer second.Close()
+
+	_, err := h.fetchVendorModelsFromURLs(context.Background(), []string{first.URL, second.URL}, testOpenAICred(), "bad-key")
+	if err == nil {
+		t.Fatal("expected aggregated error")
+	}
+	if !errors.Is(err, errVendorAuthRejected) {
+		t.Fatalf("errors.Is(err, errVendorAuthRejected)=false; err=%v", err)
+	}
+	if !strings.Contains(err.Error(), "401") || !strings.Contains(err.Error(), "404") {
+		t.Fatalf("aggregated error=%q, want both statuses", err)
+	}
+}
 
 // MiniMax catalog uses discovery_strategy=manifest with models_endpoint_template=/models.
 // Manual refresh (forceAPI=true) must call the live API, not the stale manifest seed —

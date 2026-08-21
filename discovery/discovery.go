@@ -790,11 +790,16 @@ func EnsureCanonicalAndAliases(ctx context.Context, db modelcatalog.Querier, raw
 	}
 
 	aliases := GenerateAliases(rawName, canonicalName)
+	seenAliases := make(map[string]struct{}, len(aliases))
 	for _, alias := range aliases {
 		normalizedAlias := modelname.CanonicalizeClientModel(alias)
 		if normalizedAlias == "" {
 			continue
 		}
+		if _, seen := seenAliases[normalizedAlias]; seen {
+			continue
+		}
+		seenAliases[normalizedAlias] = struct{}{}
 		if _, execErr := db.Exec(ctx, `
 			INSERT INTO model_aliases (canonical_id, raw_name, status)
 			VALUES ($1, $2, 'active')

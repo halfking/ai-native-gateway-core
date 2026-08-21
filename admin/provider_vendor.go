@@ -460,7 +460,15 @@ func (h *Handler) discoverAndUpsertForCredential(ctx context.Context, cred crede
 	}
 
 	upserted, failed = h.enrollCredentialModels(ctx, cred.id, models)
-	h.updateCredHealth(ctx, cred.id, "healthy", "")
+	if upserted == 0 && failed > 0 {
+		h.updateCredHealth(ctx, cred.id, "unreachable", "model enrollment failed for every discovered model")
+		return upserted, failed, fmt.Errorf("model enrollment failed for every discovered model")
+	}
+	if source == "manifest" {
+		h.updateCredHealth(ctx, cred.id, "unreachable", "vendor API unavailable; catalog manifest used")
+	} else {
+		h.updateCredHealth(ctx, cred.id, "healthy", "")
+	}
 	return upserted, failed, nil
 }
 
@@ -484,12 +492,10 @@ func (h *Handler) enrollCredentialModels(ctx context.Context, credentialID int, 
 				"raw_model", m,
 				"error", ensureErr,
 			)
+			failed++
+			continue
 		}
-		var cidArg *int
-		if ensureErr == nil {
-			cidArg = &canonicalID
-		}
-		if uErr := h.upsertModelForProvider(ctx, db, credentialID, m, cidArg); uErr != nil {
+		if uErr := h.upsertModelForProvider(ctx, db, credentialID, m, &canonicalID); uErr != nil {
 			slog.Warn("enrollCredentialModels: upsert binding failed",
 				"credential_id", credentialID,
 				"raw_model", m,
@@ -653,18 +659,18 @@ func (h *Handler) DebugChatProbe(ctx context.Context, credID int, model string) 
 // fetchVendorModelsFromURLs tries catalog-resolved candidate URLs in order;
 // requires HTTP 200 with a parseable model list (used by refresh + health probe).
 func (h *Handler) fetchVendorModelsFromURLs(ctx context.Context, urls []string, cred credentialRowLite, apiKey string) ([]string, error) {
-	var lastErr error
+	var errs []error
 	for _, u := range urls {
 		models, err := h.fetchVendorModels(ctx, u, cred, apiKey)
 		if err == nil && len(models) > 0 {
 			return models, nil
 		}
 		if err != nil {
-			lastErr = err
+			errs = append(errs, fmt.Errorf("%s: %w", u, err))
 		}
 	}
-	if lastErr != nil {
-		return nil, lastErr
+	if len(errs) > 0 {
+		return nil, errors.Join(errs...)
 	}
 	return nil, fmt.Errorf("no models found from any candidate URL")
 }
