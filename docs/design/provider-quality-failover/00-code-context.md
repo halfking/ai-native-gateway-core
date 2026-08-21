@@ -6,7 +6,8 @@
 - Stream failover: `domains/streaming/executors/executor_chat.go`.
 - Error taxonomy: `errorsx/classify.go`.
 - Node probes: `bg/node_probe.go:ProbeSync`.
-- Routing diagnostics: `admin/diagnostics_routing.go`.
+- Routing diagnostics: `admin/diagnostics_routing.go` and
+  `admin/model_routing_diagnostic.go`.
 
 ## Runtime Facts (245, 2026-08-21)
 

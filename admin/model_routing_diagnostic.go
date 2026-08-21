@@ -9,6 +9,7 @@ import (
 )
 
 type modelRoutingDiagnosticNode struct {
+	BindingID          int      `json:"binding_id"`
 	CredentialID       int      `json:"credential_id"`
 	ProviderID         int      `json:"provider_id"`
 	ProviderName       string   `json:"provider_name"`
@@ -65,6 +66,23 @@ func (h *Handler) handleModelRoutingDiagnostic(w http.ResponseWriter, r *http.Re
 			JOIN v_routable_credential_models v ON v.binding_id = cmb.id
 			CROSS JOIN LATERAL recent_success_rate(cmb.credential_id, pm.raw_model_name, 50) rsr
 			WHERE lower(pm.raw_model_name) = lower($1)
+			   OR lower(COALESCE(pm.standardized_name, '')) = lower($1)
+			   OR EXISTS (
+					SELECT 1 FROM model_name_mapping mnm
+					WHERE lower(mnm.raw_model_name) = lower(pm.raw_model_name)
+					  AND lower(mnm.standardized_name) = lower($1)
+				)
+			   OR EXISTS (
+					SELECT 1 FROM model_aliases ma
+					WHERE ma.canonical_id = pm.canonical_id
+					  AND lower(ma.raw_name) = lower($1)
+					  AND COALESCE(ma.status, 'active') = 'active'
+				)
+			   OR EXISTS (
+					SELECT 1 FROM models_canonical mc
+					WHERE mc.id = pm.canonical_id
+					  AND lower(mc.canonical_name) = lower($1)
+				)
 		), request_stats AS (
 			SELECT credential_id,
 				COUNT(*)::int AS requests_24h,
@@ -74,11 +92,16 @@ func (h *Handler) handleModelRoutingDiagnostic(w http.ResponseWriter, r *http.Re
 				COUNT(*) FILTER (WHERE error_kind IN ('timeout', 'stream_timeout', 'network'))::int AS timeout_count,
 				COUNT(*) FILTER (WHERE error_kind = 'empty_response')::int AS empty_response_count,
 				COUNT(*) FILTER (WHERE error_kind IN ('quota', 'quota_balance', 'quota_periodic', 'quota_permanent'))::int AS quota_failure_count
-			FROM request_logs
-			WHERE lower(raw_model_name) = lower($1) AND ts > now() - interval '24 hours'
+			FROM request_logs_with_current_month
+			WHERE (
+					lower(COALESCE(NULLIF(outbound_model, ''), '')) = lower($1)
+				 OR lower(COALESCE(NULLIF(client_model, ''), '')) = lower($1)
+				 OR lower(COALESCE(NULLIF(canonical_model, ''), '')) = lower($1)
+				)
+			  AND ts > $2
 			GROUP BY credential_id
 		)
-		SELECT t.credential_id, t.provider_id, t.provider_name, t.credential_label,
+		SELECT t.binding_id, t.credential_id, t.provider_id, t.provider_name, t.credential_label,
 			t.raw_model_name, t.is_routable, t.unavailable_reason, t.manual_priority,
 			t.recent_samples, t.recent_success_rate, COALESCE(rs.requests_24h, 0),
 			rs.success_rate_24h, rs.p95_latency_ms, rs.p95_first_chunk_ms,
@@ -93,7 +116,7 @@ func (h *Handler) handleModelRoutingDiagnostic(w http.ResponseWriter, r *http.Re
 			WHERE credential_id = t.credential_id AND lower(raw_model_name) = lower(t.raw_model_name)
 			ORDER BY started_at DESC LIMIT 1
 		) npr ON TRUE
-		ORDER BY t.manual_priority, t.credential_id`, model)
+		ORDER BY t.manual_priority, t.credential_id`, model, time.Now().Add(-24*time.Hour))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("model routing diagnostic failed: %v", err))
 		return
@@ -105,7 +128,7 @@ func (h *Handler) handleModelRoutingDiagnostic(w http.ResponseWriter, r *http.Re
 		var node modelRoutingDiagnosticNode
 		var latestProbeAt *time.Time
 		if err := rows.Scan(
-			&node.CredentialID, &node.ProviderID, &node.ProviderName, &node.CredentialLabel,
+			&node.BindingID, &node.CredentialID, &node.ProviderID, &node.ProviderName, &node.CredentialLabel,
 			&node.RawModelName, &node.Routable, &node.BlockReason, &node.ManualPriority,
 			&node.RecentSamples, &node.RecentSuccessRate, &node.Requests24h,
 			&node.SuccessRate24h, &node.P95LatencyMS, &node.P95FirstChunkMS,
