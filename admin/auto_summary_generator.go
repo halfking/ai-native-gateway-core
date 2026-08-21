@@ -18,6 +18,7 @@ import (
 	"golang.org/x/time/rate"
 
 	"github.com/kaixuan/llm-gateway-go/internal/summarystore"
+	"github.com/kaixuan/llm-gateway-go/internal/titlestore"
 	"github.com/kaixuan/llm-gateway-go/metrics"
 	"github.com/kaixuan/llm-gateway-go/settings"
 )
@@ -352,7 +353,21 @@ func (g *AutoSummaryGenerator) runSummaryAsync(sessionID, tenantID, requestBody,
 		logger.Error("auto_summary: summary persisted but title task lookup failed", "error", err)
 		return
 	}
-	if err := g.handler.upsertSessionTitle(ctx, taskID, sessionID, canonicalTitle, "auto-summary:"+model, 0); err != nil {
+	if g.handler.titleStore == nil {
+		metrics.AutoSummaryTrigger.WithLabelValues("title_sync_error").Inc()
+		logger.Error("auto_summary: title store unavailable")
+		return
+	}
+	owner := fmt.Sprintf("auto-summary:%s:%d", sessionID, time.Now().UnixNano())
+	claim, err := g.handler.titleStore.BeginMutation(ctx, titlestore.Claim{
+		TenantID: tenantID, SessionID: sessionID, Owner: owner,
+		TTL: 60 * time.Second, Source: titlestore.SourceAutoSummary,
+		SourcePriority: titlestore.SourcePrioritySummary, TaskID: taskID,
+	})
+	if err == nil {
+		_, err = g.handler.titleStore.CommitTitle(ctx, claim, tenantID, sessionID, canonicalTitle, taskID)
+	}
+	if err != nil {
 		metrics.AutoSummaryTrigger.WithLabelValues("title_sync_error").Inc()
 		logger.Error("auto_summary: summary persisted but canonical title sync failed", "error", err)
 		return

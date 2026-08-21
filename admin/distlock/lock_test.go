@@ -38,6 +38,22 @@ func TestRedisManager_NotEnabledNilClient(t *testing.T) {
 	}
 }
 
+func TestRedisManager_AcceptsUniversalClient(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewUniversalClient(&redis.UniversalOptions{Addrs: []string{mr.Addr()}})
+	t.Cleanup(func() { _ = rdb.Close() })
+
+	m := NewRedisManager(rdb)
+	leader, err := m.Acquire(context.Background(), AcquireOpts{Key: "universal-client", TTL: time.Second})
+	if err != nil {
+		t.Fatalf("Acquire with universal client: %v", err)
+	}
+	if !leader.IsLeader() {
+		t.Fatal("first acquire with universal client must be leader")
+	}
+	leader.Release(context.Background())
+}
+
 func TestRedisManager_BuildKeyUsesOneHashTag(t *testing.T) {
 	key := BuildKey("title:auto", "default\x00sess-1")
 	if !strings.Contains(key, "{title:auto:default\x00sess-1}") || !strings.HasSuffix(key, ":lock") {

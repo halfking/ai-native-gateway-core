@@ -428,6 +428,11 @@ func (p *Pipeline) Submit(ctx context.Context, qr *QueuedRequest) (any, error) {
 		default:
 		}
 		qr.abandoned.Store(true)
+		// Clean up Registry to prevent unfinishedCount leak (P0 fix)
+		if !qr.completed.CompareAndSwap(false, true) {
+			return nil, ctx.Err()
+		}
+		p.registry.MarkCompleted(qr.ID, time.Now())
 		return nil, ctx.Err()
 	}
 }

@@ -127,7 +127,7 @@ func TestBuildTurnsSessionWhere(t *testing.T) {
 		"ss.user_tags && $10",
 		// search now matches title/topic/intent/summary → 4 placeholders $11..$14,
 		// cursor follows at $15/$16 (was $14/$15 before intent was added).
-		"COALESCE(NULLIF(s.title, ''), st.title, ss.title, '') ILIKE '%'||$11||'%'",
+		"CASE WHEN tstate.tenant_id IS NOT NULL THEN COALESCE(tstate.title, '') ELSE COALESCE(NULLIF(s.title, ''), st.title, ss.title, '') END ILIKE '%'||$11||'%'",
 		"COALESCE(NULLIF(s.summary, ''), ss.summary, '') ILIKE '%'||$14||'%'",
 		"(s.updated_at, s.session_id) < ($15, $16)",
 	}

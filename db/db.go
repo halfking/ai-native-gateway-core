@@ -153,6 +153,9 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	if err := db.ensureSessionTitles(migCtx); err != nil {
 		return err
 	}
+	if err := db.ensureSessionTitleStates(migCtx); err != nil {
+		return err
+	}
 	if err := db.ensureTuningSignalsViews(migCtx); err != nil {
 		return err
 	}
@@ -1052,6 +1055,62 @@ func (d *DB) ensureSessionTitles(ctx context.Context) error {
 // Both are regular (not materialised) views. The bg worker
 // (bg/tuning_view_refresher.go) refreshes them every 5 minutes.
 // The refresh cost is bounded (~50ms) and runs out of band.
+func (d *DB) ensureSessionTitleStates(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS public.session_title_states (
+		    tenant_id         text NOT NULL,
+		    scoped_session_id text NOT NULL,
+		    title             text,
+		    deleted           boolean NOT NULL DEFAULT false,
+		    deleted_at        timestamptz,
+		    fencing_token     bigint NOT NULL DEFAULT 0,
+		    lease_owner       text,
+		    lease_expires_at  timestamptz,
+		    source            text NOT NULL DEFAULT 'unknown',
+		    source_priority   integer NOT NULL DEFAULT 0,
+		    source_task_id    text,
+		    created_at        timestamptz NOT NULL DEFAULT now(),
+		    updated_at        timestamptz NOT NULL DEFAULT now(),
+		    PRIMARY KEY (tenant_id, scoped_session_id)
+		);
+		ALTER TABLE public.session_title_states
+		    ADD COLUMN IF NOT EXISTS title text,
+		    ADD COLUMN IF NOT EXISTS deleted boolean NOT NULL DEFAULT false,
+		    ADD COLUMN IF NOT EXISTS deleted_at timestamptz,
+		    ADD COLUMN IF NOT EXISTS fencing_token bigint NOT NULL DEFAULT 0,
+		    ADD COLUMN IF NOT EXISTS lease_owner text,
+		    ADD COLUMN IF NOT EXISTS lease_expires_at timestamptz,
+		    ADD COLUMN IF NOT EXISTS source text NOT NULL DEFAULT 'unknown',
+		    ADD COLUMN IF NOT EXISTS source_priority integer NOT NULL DEFAULT 0,
+		    ADD COLUMN IF NOT EXISTS source_task_id text,
+		    ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now(),
+		    ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
+		DO $$
+		BEGIN
+		    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'public.session_title_states'::regclass AND conname = 'session_title_states_token_nonnegative') THEN
+		        ALTER TABLE public.session_title_states ADD CONSTRAINT session_title_states_token_nonnegative CHECK (fencing_token >= 0);
+		    END IF;
+		    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'public.session_title_states'::regclass AND conname = 'session_title_states_priority_nonnegative') THEN
+		        ALTER TABLE public.session_title_states ADD CONSTRAINT session_title_states_priority_nonnegative CHECK (source_priority >= 0);
+		    END IF;
+		    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'public.session_title_states'::regclass AND conname = 'session_title_states_deleted_consistency') THEN
+		        ALTER TABLE public.session_title_states ADD CONSTRAINT session_title_states_deleted_consistency CHECK ((deleted AND deleted_at IS NOT NULL) OR NOT deleted);
+		    END IF;
+		END $$;
+		CREATE INDEX IF NOT EXISTS idx_session_title_states_active ON public.session_title_states (tenant_id, scoped_session_id) WHERE deleted = false AND title IS NOT NULL AND title <> '';
+		CREATE INDEX IF NOT EXISTS idx_session_title_states_tombstone ON public.session_title_states (tenant_id, updated_at DESC) WHERE deleted = true;
+		CREATE INDEX IF NOT EXISTS idx_session_title_states_lease ON public.session_title_states (lease_expires_at) WHERE lease_expires_at IS NOT NULL;
+	`)
+	if err != nil {
+		return err
+	}
+	slog.Info("session_title_states schema ensured")
+	return nil
+}
+
 func (d *DB) ensureTuningSignalsViews(ctx context.Context) error {
 	if d == nil || d.pool == nil {
 		return nil

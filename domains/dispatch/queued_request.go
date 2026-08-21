@@ -118,7 +118,12 @@ type QueuedRequest struct {
 	// Failover tracking — single-owner mutation.
 	TriedCredentials map[int]struct{}
 	TriedModels      map[string]struct{}
+	// CredRetryCount is the same-credential error retry count (upstream 5xx/timeout).
+	// Used for exponential backoff on actual failures.
 	CredRetryCount   int
+	// CapacityRetryCount is the same-model capacity wait count.
+	// Used for capacity exhaustion fixed 5s retry, does not trigger exponential backoff.
+	CapacityRetryCount int
 	// AttemptCount is the total number of forward attempts across all
 	// credentials. Bounded by maxAttempts to prevent a request from looping
 	// through an unbounded candidate set under pathological conditions.

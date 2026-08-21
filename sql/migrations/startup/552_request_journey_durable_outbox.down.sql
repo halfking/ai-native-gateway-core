@@ -1,4 +1,4 @@
--- Down migration 550: remove durable RequestJourney observation persistence.
+-- Down migration 552: remove durable RequestJourney observation persistence.
 BEGIN;
 
 DROP POLICY IF EXISTS request_journey_observation_outbox_super_admin_bypass

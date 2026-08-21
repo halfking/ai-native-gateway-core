@@ -19,6 +19,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/kaixuan/llm-gateway-go/admin/distlock"
+	"github.com/kaixuan/llm-gateway-go/internal/titlestore"
 )
 
 const (
@@ -91,7 +92,7 @@ func (h *Handler) handleSessionSummarizeTitle(w http.ResponseWriter, r *http.Req
 					writeError(w, http.StatusConflict, "标题生成仍在进行，请稍后重试")
 					return
 				}
-				if title, ok := h.loadStoredSessionTitle(ctx, taskID, scopedKey); ok {
+				if title, found, deleted := h.loadCanonicalSessionTitle(ctx, GetTenantID(r), scopedKey); found && !deleted && title != "" {
 					meta := sessionTitleMeta{
 						TaskID:          taskID,
 						ScopedSessionID: sc.SessionID,
@@ -154,7 +155,12 @@ func (h *Handler) handleSessionSummarizeTitle(w http.ResponseWriter, r *http.Req
 			return
 		}
 	}
-	if err := h.upsertSessionTitle(ctx, taskID, scopedKey, title, model, keyID); err != nil {
+	if scopedKey != "" {
+		if err := h.commitCanonicalTitle(ctx, GetTenantID(r), scopedKey, taskID, title, titlestore.SourceUserSummarize, true, titlestore.SourcePriorityUser); err != nil {
+			writeError(w, http.StatusInternalServerError, "保存标题失败")
+			return
+		}
+	} else if err := h.upsertSessionTitle(ctx, taskID, scopedKey, title, model, keyID); err != nil {
 		writeError(w, http.StatusInternalServerError, "保存标题失败")
 		return
 	}
@@ -266,6 +272,33 @@ func scopedSessionIDKey(sessionID string) string {
 	return strings.TrimSpace(sessionID)
 }
 
+func (h *Handler) loadCanonicalSessionTitle(ctx context.Context, tenantID, sessionID string) (string, bool, bool) {
+	if h.titleStore == nil || strings.TrimSpace(tenantID) == "" || strings.TrimSpace(sessionID) == "" {
+		return "", false, false
+	}
+	st, err := h.titleStore.Get(ctx, tenantID, sessionID)
+	if err != nil {
+		return "", false, false
+	}
+	if st.Deleted {
+		return "", true, true
+	}
+	if strings.TrimSpace(st.Title) == "" {
+		return "", true, false
+	}
+	return st.Title, true, false
+}
+
+func (h *Handler) loadStoredSessionTitleForRequest(ctx context.Context, r *http.Request, taskID, scopedSessionID string) (string, bool) {
+	if title, found, deleted := h.loadCanonicalSessionTitle(ctx, GetTenantID(r), scopedSessionID); found {
+		if deleted {
+			return "", false
+		}
+		return title, title != ""
+	}
+	return h.loadStoredSessionTitle(ctx, taskID, scopedSessionID)
+}
+
 func (h *Handler) loadStoredSessionTitle(ctx context.Context, taskID, scopedSessionID string) (string, bool) {
 	if h.db == nil {
 		return "", false
@@ -279,6 +312,32 @@ func (h *Handler) loadStoredSessionTitle(ctx context.Context, taskID, scopedSess
 		return "", false
 	}
 	return title, true
+}
+
+func (h *Handler) commitCanonicalTitle(ctx context.Context, tenantID, sessionID, taskID, title, source string, explicit bool, priority int) error {
+	if h.titleStore == nil || strings.TrimSpace(tenantID) == "" || strings.TrimSpace(sessionID) == "" {
+		return fmt.Errorf("canonical title state unavailable")
+	}
+	owner := fmt.Sprintf("%s:%s:%d", source, sessionID, time.Now().UnixNano())
+	claim, err := h.titleStore.BeginMutation(ctx, titlestore.Claim{
+		TenantID: tenantID, SessionID: sessionID, Owner: owner,
+		TTL: 30 * time.Second, Source: source, SourcePriority: priority,
+		Explicit: explicit, TaskID: taskID,
+	})
+	if err != nil {
+		return err
+	}
+	_, err = h.titleStore.CommitTitle(ctx, claim, tenantID, sessionID, title, taskID)
+	return err
+}
+
+func (h *Handler) deleteCanonicalTitle(ctx context.Context, tenantID, sessionID, taskID string) error {
+	if h.titleStore == nil || strings.TrimSpace(tenantID) == "" || strings.TrimSpace(sessionID) == "" {
+		return fmt.Errorf("canonical title state unavailable")
+	}
+	owner := fmt.Sprintf("manual-delete:%s:%d", sessionID, time.Now().UnixNano())
+	_, err := h.titleStore.DeleteTitle(ctx, tenantID, sessionID, taskID, owner)
+	return err
 }
 
 func (h *Handler) upsertSessionTitle(ctx context.Context, taskID, scopedSessionID, title, model string, apiKeyID int) error {
@@ -444,7 +503,7 @@ func (h *Handler) handleSessionTitleUpdate(w http.ResponseWriter, r *http.Reques
 					writeError(w, http.StatusConflict, "标题生成仍在进行，请稍后重试")
 					return
 				}
-				if title, ok := h.loadStoredSessionTitle(ctx, taskID, scopedKey); ok {
+				if title, ok := h.loadStoredSessionTitleForRequest(ctx, r, taskID, scopedKey); ok {
 					writeJSON(w, http.StatusOK, map[string]any{
 						"task_id":           taskID,
 						"scoped_session_id": scopedKey,
@@ -470,17 +529,24 @@ func (h *Handler) handleSessionTitleUpdate(w http.ResponseWriter, r *http.Reques
 			return
 		}
 	}
-	_, err := h.db.Exec(ctx, `
-		INSERT INTO session_titles (task_id, scoped_session_id, title, generated_at, model, api_key_id)
-		VALUES ($1, $2, $3, NOW(), 'manual', NULL)
-		ON CONFLICT (task_id, scoped_session_id) DO UPDATE SET
-			title = EXCLUDED.title,
-			generated_at = EXCLUDED.generated_at,
-			model = EXCLUDED.model
-	`, taskID, scopedKey, cleaned)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "save title: "+err.Error())
-		return
+	if scopedKey != "" {
+		if err := h.commitCanonicalTitle(ctx, GetTenantID(r), scopedKey, taskID, cleaned, titlestore.SourceManual, true, titlestore.SourcePriorityManual); err != nil {
+			writeError(w, http.StatusInternalServerError, "save title: "+err.Error())
+			return
+		}
+	} else {
+		_, err := h.db.Exec(ctx, `
+			INSERT INTO session_titles (task_id, scoped_session_id, title, generated_at, model, api_key_id)
+			VALUES ($1, $2, $3, NOW(), 'manual', NULL)
+			ON CONFLICT (task_id, scoped_session_id) DO UPDATE SET
+				title = EXCLUDED.title,
+				generated_at = EXCLUDED.generated_at,
+				model = EXCLUDED.model
+		`, taskID, scopedKey, cleaned)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "save title: "+err.Error())
+			return
+		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -563,6 +629,16 @@ func (h *Handler) handleSessionTitleDelete(w http.ResponseWriter, r *http.Reques
 			writeError(w, http.StatusConflict, "标题租约已失效，请稍后重试")
 			return
 		}
+	}
+	if scopedKey != "" {
+		if err := h.deleteCanonicalTitle(ctx, GetTenantID(r), scopedKey, taskID); err != nil {
+			writeError(w, http.StatusInternalServerError, "delete title: "+err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"task_id": taskID, "scoped_session_id": scopedKey, "deleted": true,
+		})
+		return
 	}
 	tag, err := h.db.Exec(ctx, `
 		DELETE FROM session_titles
