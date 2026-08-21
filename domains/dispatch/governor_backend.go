@@ -52,4 +52,12 @@ type GovernorBackend interface {
 	// their in-memory lease pools. Stage A: signature only — no backend
 	// is wired into the production runtime yet.
 	NotifyRevisions(ctx context.Context, rev uint64) error
+	// New constructs a per-spec Governor. Stage B extension: the local
+	// factory wraps newGovernor(CredentialRef); the Redis factories
+	// wrap a Lua-backed sliding window. Errors returned here are
+	// wrapped as ErrGovernorUnavailable so the management layer can
+	// distinguish "backend misconfigured" from "backend up but the
+	// admission call returned capacity-saturated" (the latter is
+	// returned from the Governor's own Acquire method, not from New).
+	New(ctx context.Context, spec GovernorSpec) (Governor, error)
 }

@@ -15,6 +15,11 @@ type fakeBackend struct {
 	openErr  error
 	closeErr error
 	notifs   []uint64
+
+	// newResult controls what New returns in tests that exercise it.
+	newGov   Governor
+	newErr   error
+	newCalls int
 }
 
 func (f *fakeBackend) Kind() GovernorBackendKind       { return f.kind }
@@ -24,6 +29,16 @@ func (f *fakeBackend) Close(_ context.Context) error   { return f.closeErr }
 func (f *fakeBackend) NotifyRevisions(_ context.Context, rev uint64) error {
 	f.notifs = append(f.notifs, rev)
 	return nil
+}
+func (f *fakeBackend) New(_ context.Context, _ GovernorSpec) (Governor, error) {
+	f.newCalls++
+	if f.newErr != nil {
+		return nil, f.newErr
+	}
+	if f.newGov != nil {
+		return f.newGov, nil
+	}
+	return newNoopGovernor(), nil
 }
 
 // Compile-time guarantee that fakeBackend satisfies the contract; a future
