@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/errorsx"
+	"github.com/kaixuan/llm-gateway-go/modelbinding"
 )
 
 // Checker detects continuous failures and marks credentials as degraded.
@@ -221,6 +222,10 @@ func (c *Checker) CheckAndUpdate(ctx context.Context, credentialID int, model st
 func (c *Checker) markDegraded(ctx context.Context, credentialID int, model string, rate float64, kinds map[string]int, sampleSize int) error {
 	now := time.Now()
 	recoverAt := now.Add(c.degradedCooldown)
+	rawModel, err := modelbinding.ResolveRawBinding(ctx, c.db, credentialID, model)
+	if err != nil {
+		return err
+	}
 
 	tag, err := c.db.Exec(ctx, `
 		UPDATE credential_model_bindings cmb
@@ -232,11 +237,11 @@ func (c *Checker) markDegraded(ctx context.Context, credentialID int, model stri
 		FROM provider_models pm
 		WHERE pm.id = cmb.provider_model_id
 		  AND cmb.credential_id = $1
-		  AND pm.canonical_raw_name = $2
+		  AND pm.raw_model_name = $2
 		  AND cmb.available = TRUE
 		  AND COALESCE(cmb.admin_protected, FALSE) = FALSE
 		  AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
-	`, credentialID, model, recoverAt, now)
+	`, credentialID, rawModel, recoverAt, now)
 	if err != nil {
 		return fmt.Errorf("update credential_model_bindings: %w", err)
 	}
@@ -273,7 +278,7 @@ func (c *Checker) markDegraded(ctx context.Context, credentialID int, model stri
 			    unavailable_reason = 'continuous_failure',
 			    unavailable_at     = $3
 			FROM provider_models pm
-			WHERE pm.canonical_raw_name = $2
+			WHERE pm.raw_model_name = $2
 			  AND pm.id = (
 			      SELECT cmb.provider_model_id
 			      FROM credential_model_bindings cmb
@@ -283,10 +288,10 @@ func (c *Checker) markDegraded(ctx context.Context, credentialID int, model stri
 			        AND cmb.unavailable_at = $3
 			  )
 			  AND mo.credential_id = $1
-			  AND mo.canonical_raw_name = $2
+			  AND mo.raw_model_name = $2
 			  AND mo.available = TRUE
 			  AND COALESCE(mo.admin_protected, FALSE) = FALSE
-		`, credentialID, model, now); moErr != nil {
+		`, credentialID, rawModel, now); moErr != nil {
 			slog.Warn("checker: model_offers mirror write failed",
 				"credential_id", credentialID, "model", model, "error", moErr)
 		}
