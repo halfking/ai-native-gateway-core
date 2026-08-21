@@ -169,3 +169,36 @@ func labelKeys(m map[string][]string) []string {
 	}
 	return keys
 }
+
+// TestDispatchGovernorLabelAllowlist_StageCScaffold
+//
+// ADR-0003 §Stage A commit #9: a non-enforcing scaffold for the Stage C
+// cardinality-guard tightening. This block is gated until Stage C
+// flips the t.Skip, at which point the allowlist below becomes the
+// authoritative list of label VALUES permitted for the governor metric
+// set (backend / mode / result / state).
+//
+// Stage A only verifies the closed-enum strings compile and that the
+// values listed here match the dispatch package constants so a future
+// silent rename in either package fails this test (Stage C will tighten
+// it further to enforce on real Descs).
+func TestDispatchGovernorLabelAllowlist_StageCScaffold(t *testing.T) {
+	t.Skip("stage C enforcement — flip when Stage C lands governor metrics")
+
+	// Closed-enum label VALUES allowed on the governor metric set.
+	// Must match the constants in domains/dispatch (governor_backend.go,
+	// queued_request.go, governor_snapshot.go). Any drift is a coordinate
+	// break for downstream dashboards/alerts that key on these strings.
+	wantBackends := []string{"local", "redis_enforce", "redis_shadow"}
+	wantModes := []string{"concurrency", "rpm", "tpm", "disabled"}
+	wantSnapshotStates := []string{"ready", "queue_full", "governor_saturated", "unknown"}
+
+	// Pin a non-empty slice; Stage C will replace this placeholder body
+	// with the real enforcement loop (collectDeclaredDescs → filter to
+	// governor-prefixed fqNames → assert variable labels are restricted
+	// to {backend, mode, result, state} and their values match these
+	// allowlists).
+	if len(wantBackends) == 0 || len(wantModes) == 0 || len(wantSnapshotStates) == 0 {
+		t.Fatalf("stage C scaffold: closed-enum allowlists must be non-empty")
+	}
+}
