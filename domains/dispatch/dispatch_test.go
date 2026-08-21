@@ -1291,6 +1291,10 @@ func TestCredentialFullCounter(t *testing.T) {
 	p.credMu.Lock()
 	p.forwarders[ref.CredentialID] = cf
 	p.credMu.Unlock()
+	// Stop() cancels each forwarder in p.forwarders and waits on p.wg, so the
+	// loop goroutine spawned by newCredForwarder is reaped (otherwise it
+	// parks on cf.ctx.Done() for the rest of the test process).
+	defer p.Stop()
 
 	before := credentialFullCounterValue(t, ref.CredentialID, ref.ConcurrencyMode)
 
