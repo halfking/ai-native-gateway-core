@@ -144,6 +144,13 @@ func normalizeStage(ev *ActionEvent) {
 		stage = stageForAction(ev.Action)
 		if stage != "" {
 			ev.Stage = string(stage)
+		} else {
+			// No caller-supplied Stage and no mapping for this Action.
+			// Surface as a metric so future Action additions missing from
+			// stageForAction are caught instead of silently emitting events
+			// with empty stage / stage_category.
+			stageNormFailureTot.Add(1)
+			return
 		}
 	}
 	if ev.StageCategory == "" && stage != "" {
@@ -218,9 +225,10 @@ func ResetSeqForTest() {
 // readable from unit tests without the prometheus testutil dependency, which
 // is not vendored in this repo).
 var (
-	droppedTotal      atomic.Uint64
-	redisFailureTot   atomic.Uint64
-	metricsRegistered sync.Once
+	droppedTotal         atomic.Uint64
+	redisFailureTot      atomic.Uint64
+	stageNormFailureTot  atomic.Uint64
+	metricsRegistered    sync.Once
 )
 
 // DroppedTotal returns how many events this process dropped because the emit
@@ -241,6 +249,13 @@ func (e *Emitter) RedisFailuresTotal() uint64 {
 	return e.redisFailures.Load()
 }
 
+// StageNormalizationFailuresTotal returns how many ActionEvents fell out of
+// the stageForAction mapping (catch-all for any future Action added without
+// updating the switch). Should stay at zero in production.
+func StageNormalizationFailuresTotal() uint64 {
+	return stageNormFailureTot.Load()
+}
+
 type liveActionsCollector struct{}
 
 func (liveActionsCollector) Describe(ch chan<- *prometheus.Desc) {
@@ -254,6 +269,9 @@ func (liveActionsCollector) Collect(ch chan<- prometheus.Metric) {
 	ch <- prometheus.MustNewConstMetric(
 		prometheus.NewDesc("live_actions_redis_failures_total", "Action-event Redis writes that failed (silent degradation).", nil, nil),
 		prometheus.CounterValue, float64(redisFailureTot.Load()))
+	ch <- prometheus.MustNewConstMetric(
+		prometheus.NewDesc("live_actions_stage_normalization_failures_total", "ActionEvents whose stageForAction mapping returned empty (should stay at zero; surfaces a missing switch arm).", nil, nil),
+		prometheus.CounterValue, float64(stageNormFailureTot.Load()))
 }
 
 // ── emitter ────────────────────────────────────────────────────────────────
