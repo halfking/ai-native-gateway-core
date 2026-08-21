@@ -2,11 +2,13 @@ package credential
 
 import (
 	"context"
+	"errors"
 	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/kaixuan/llm-gateway-go/errorsx"
+	"github.com/kaixuan/llm-gateway-go/modelbinding"
 	"github.com/pashagolub/pgxmock/v4"
 )
 
@@ -42,6 +44,12 @@ func normalize(s string) string {
 func newSQLOnlyMock() pgxmock.PgxPoolIface {
 	p, _ := pgxmock.NewPool(pgxmock.QueryMatcherOption(sqlOnlyMatcher{}))
 	return p
+}
+
+func expectRawBindingResolution(mockDB pgxmock.PgxPoolIface, credentialID int, requestedModel, rawModel string) {
+	mockDB.ExpectQuery(`SELECT COALESCE`).
+		WithArgs(credentialID, requestedModel).
+		WillReturnRows(pgxmock.NewRows([]string{"raw_models"}).AddRow(rawModel))
 }
 
 // TestWriteOnError_PerModelKind_UpdatesCMBNotCredentials pins the fix
@@ -88,6 +96,7 @@ func TestWriteOnError_PerModelKind_UpdatesCMBNotCredentials(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			mockDB := newSQLOnlyMock()
 			defer mockDB.Close()
+			expectRawBindingResolution(mockDB, 42, "minimax-m3", "minimax-m3")
 
 			mockDB.ExpectExec(`UPDATE credential_model_bindings`).
 				WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
@@ -281,6 +290,27 @@ func TestWriteOnError_PerModelKind_EmptyRawModel_AllBindings(t *testing.T) {
 	}
 	if err := mockDB.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+func TestWriteOnError_PerModelKind_AmbiguousAliasDoesNotUpdateBinding(t *testing.T) {
+	mockDB := newSQLOnlyMock()
+	defer mockDB.Close()
+
+	mockDB.ExpectQuery(`SELECT COALESCE`).
+		WithArgs(42, "deepseek-flash").
+		WillReturnRows(pgxmock.NewRows([]string{"raw_models"}).AddRow(""))
+	mockDB.ExpectQuery(`SELECT COALESCE`).
+		WithArgs(42, pgxmock.AnyArg()).
+		WillReturnRows(pgxmock.NewRows([]string{"raw_models"}).AddRow("deepseek-v4-flash\x1fdeepseek-v4-flash-260425"))
+
+	w := &Writer{dbPool: mockDB}
+	err := w.WriteOnError(context.Background(), 42, "deepseek-flash", Failure{Kind: errorsx.KindRateLimit})
+	if !errors.Is(err, modelbinding.ErrAmbiguousModelBinding) {
+		t.Fatalf("WriteOnError() error = %v, want ambiguous binding error", err)
+	}
+	if err := mockDB.ExpectationsWereMet(); err != nil {
+		t.Fatalf("ambiguous alias must not update a binding: %v", err)
 	}
 }
 
