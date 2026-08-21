@@ -33,6 +33,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/domains/requestjourney"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/redis/go-redis/v9"
 )
@@ -95,16 +96,59 @@ var Actions = []Action{
 // 原则). Detail values must never contain body content, API keys or system
 // prompts (安全红线).
 type ActionEvent struct {
-	RequestID    string            `json:"request_id"`
-	Seq          int64             `json:"seq"`
-	Action       Action            `json:"action"`
-	Ts           time.Time         `json:"ts"`
-	Model        string            `json:"model,omitempty"`
-	CredentialID int               `json:"credential_id,omitempty"`
-	ErrorKind    string            `json:"error_kind,omitempty"`
-	RetrySeq     int               `json:"retry_seq,omitempty"`
-	Retry        bool              `json:"retry,omitempty"`
-	Detail       map[string]string `json:"detail,omitempty"`
+	RequestID     string            `json:"request_id"`
+	Seq           int64             `json:"seq"`
+	Action        Action            `json:"action"`
+	Ts            time.Time         `json:"ts"`
+	Model         string            `json:"model,omitempty"`
+	CredentialID  int               `json:"credential_id,omitempty"`
+	ErrorKind     string            `json:"error_kind,omitempty"`
+	RetrySeq      int               `json:"retry_seq,omitempty"`
+	Retry         bool              `json:"retry,omitempty"`
+	Stage         string            `json:"stage,omitempty"`
+	StageCategory string            `json:"stage_category,omitempty"`
+	Detail        map[string]string `json:"detail,omitempty"`
+}
+
+func stageForAction(action Action) requestjourney.JourneyStage {
+	switch action {
+	case ActionArrive:
+		return requestjourney.StageReceived
+	case ActionRouteResolved:
+		return requestjourney.StageRouting
+	case ActionModelEnqueued:
+		return requestjourney.StageModelQueue
+	case ActionCredentialSelected, ActionNodeSelected:
+		return requestjourney.StageNodeSelection
+	case ActionNodeEnqueued:
+		return requestjourney.StageCredentialQueue
+	case ActionUpstreamRequest:
+		return requestjourney.StageUpstream
+	case ActionFirstByte:
+		return requestjourney.StageStreaming
+	case ActionNodeSwitch, ActionModelSwitch:
+		return requestjourney.StageRetrying
+	case ActionReply, ActionNoRoute:
+		return requestjourney.StageTerminal
+	default:
+		return ""
+	}
+}
+
+func normalizeStage(ev *ActionEvent) {
+	if ev == nil {
+		return
+	}
+	stage := requestjourney.JourneyStage(ev.Stage)
+	if stage == "" {
+		stage = stageForAction(ev.Action)
+		if stage != "" {
+			ev.Stage = string(stage)
+		}
+	}
+	if ev.StageCategory == "" && stage != "" {
+		ev.StageCategory = string(stage.Category())
+	}
 }
 
 // Redis contract (24 号 §4).
@@ -226,6 +270,7 @@ type Emitter struct {
 	redisFailures atomic.Uint64
 	closed        atomic.Bool
 	closeOnce     sync.Once
+	sendMu        sync.Mutex
 }
 
 // NewEmitter builds an emitter writing to the bounded Redis action queue.
@@ -266,6 +311,9 @@ func (e *Emitter) Emit(_ context.Context, ev ActionEvent) {
 	if ev.Ts.IsZero() {
 		ev.Ts = time.Now().UTC()
 	}
+	normalizeStage(&ev)
+	e.sendMu.Lock()
+	defer e.sendMu.Unlock()
 	if e.closed.Load() {
 		// Post-Close emit (shutdown race): count as dropped instead of
 		// panicking on the closed channel.
@@ -294,8 +342,10 @@ func (e *Emitter) Close() {
 		return
 	}
 	e.closeOnce.Do(func() {
+		e.sendMu.Lock()
 		e.closed.Store(true)
 		close(e.ch)
+		e.sendMu.Unlock()
 	})
 	e.wg.Wait()
 }

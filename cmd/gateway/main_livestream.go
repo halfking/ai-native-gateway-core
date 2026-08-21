@@ -258,7 +258,7 @@ func liveQueueSnapshotProvider(projection *dispatch.QueueProjection) *admin.Live
 		out.Models = append(out.Models, admin.LiveQueueLaneSnapshot{Model: lane.Model, Depth: lane.Depth})
 	}
 	for _, lane := range view.Credentials {
-		out.Credentials = append(out.Credentials, admin.LiveQueueLaneSnapshot{Credential: lane.Credential, Mode: lane.Mode, Depth: lane.Depth})
+		out.Credentials = append(out.Credentials, admin.LiveQueueLaneSnapshot{Credential: lane.Credential, Mode: lane.Mode, Depth: lane.Depth, Limit: lane.Limit, Full: lane.Full})
 	}
 	return out
 }
@@ -277,6 +277,8 @@ func liveQueueSnapshotFromLanes(models, credentials []dispatch.QueueSnapshot, en
 			Credential: lane.Credential,
 			Mode:       lane.Mode,
 			Depth:      lane.Depth,
+			Limit:      lane.Limit,
+			Full:       lane.Full,
 		})
 	}
 	return &admin.LiveQueueSnapshot{

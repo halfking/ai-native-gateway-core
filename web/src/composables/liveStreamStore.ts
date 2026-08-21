@@ -75,6 +75,8 @@ export interface ActionEvent {
   error_kind?: string | null
   retry_seq?: number
   retry?: boolean
+  stage?: string
+  stage_category?: 'routing' | 'llm' | 'retrying' | 'terminal'
   // §2 per-action detail fields (only present on the actions that use them)
   client_protocol?: string
   auto_decision?: string
@@ -116,6 +118,8 @@ export interface LiveStreamTile {
   is_probe?: boolean
   probe_origin?: string
   probe_attempt?: number
+  stage?: string
+  stage_category?: 'routing' | 'llm' | 'retrying' | 'terminal'
 }
 
 export interface LiveStreamLane {
@@ -159,6 +163,8 @@ export interface LiveQueueLaneSnapshot {
   credential?: number
   mode?: string
   depth: number
+  limit?: number
+  full?: boolean
 }
 
 // OBS-BE3 (V3.3-OBS, 2026-08-15, 13号 §4 pipeline 层): 全链路 pipeline 聚合
@@ -516,6 +522,28 @@ export function clearRequestCredentialIndex() {
   requestCredential.clear()
 }
 
+function applyStageToRequest(requestId: string, action: ActionEvent) {
+  if (!requestId || (!action.stage && !action.stage_category)) return
+  const patch: Partial<LiveStreamTile> = {}
+  if (action.stage) patch.stage = action.stage
+  if (action.stage_category) patch.stage_category = action.stage_category
+  for (const request of liveStreamState.requests) {
+    if (request.request_id === requestId) Object.assign(request, patch)
+  }
+  const snapshot = liveStreamState.snapshot
+  if (!snapshot) return
+  for (const dim of ['vendor', 'provider', 'model'] as const) {
+    for (const lane of snapshot.dimensions[dim] || []) {
+      const tile = lane.requests.find((item) => item.request_id === requestId)
+      if (tile) Object.assign(tile, patch)
+    }
+    for (const lane of snapshot.detail_dimensions[dim] || []) {
+      const tile = lane.requests.find((item) => item.request_id === requestId)
+      if (tile) Object.assign(tile, patch)
+    }
+  }
+}
+
 /** Insert one action into its request's timeline, kept sorted by seq ASC.
  *  Re-delivering an existing seq (Redis replay dedupe) replaces in place. */
 function recordAction(action: ActionEvent) {
@@ -585,6 +613,7 @@ function applyLifecycleActions(payload: ActionEvent | ActionEvent[] | undefined)
   for (const action of batch) {
     if (!action || typeof action !== 'object') continue
     recordAction(action)
+    applyStageToRequest(action.request_id || '', action)
   }
 }
 
@@ -916,7 +945,6 @@ function normalizeLaneTiles(lane: LiveStreamLane) {
   mergeTilesById(lane.requests, tiles)
 }
 
-/** Merge server snapshot without dropping lanes that disappeared from Redis. */
 function mergeSnapshotFromServer(incoming: LiveStreamSnapshot) {
   if (!liveStreamState.snapshot) {
     // The backend serializes lane tiles newest-first for its own replay/cap
@@ -1070,65 +1098,49 @@ function mergeDelta(delta: LiveStreamDelta) {
 // NOT change rank stay where they are. This is what the operator
 // wants: "no flicker" + "newest lane visible".
 function mergeLanesById(existing: LiveStreamLane[], incoming: LiveStreamLane[]) {
-  const byId = new Map<string, number>()
-  for (let i = 0; i < existing.length; i++) {
-    byId.set(existing[i].id, i)
-  }
+  const byId = new Map(existing.filter((lane) => lane.id).map((lane) => [lane.id, lane]))
+  const next: LiveStreamLane[] = []
+  const seen = new Set<string>()
   for (const lane of incoming) {
-    const idx = byId.get(lane.id)
-    if (idx === undefined) {
-      // New lane — normalize its tiles before appending. The backend sends
-      // lane requests newest-first, while the UI renders FIFO left-to-right.
-      const normalizedLane = {
-        ...lane,
-        requests: [...lane.requests],
-      }
-      normalizeLaneTiles(normalizedLane)
-      byId.set(lane.id, existing.length)
-      existing.push(normalizedLane)
-    } else {
-      // Existing lane — mutate in place. Don't touch .id (it's the
-      // merge key) or .dimension (it's structural).
-      const target = existing[idx]
+    if (!lane.id || seen.has(lane.id)) continue
+    seen.add(lane.id)
+    const target = byId.get(lane.id)
+    if (target) {
       target.name = lane.name
+      target.dimension = lane.dimension
       target.isOthers = lane.isOthers
       target.stats = lane.stats
-      // Diff tiles by request_id (TransitionGroup's `:key`). Replace
-      // per-id so unchanged tiles keep their Vue component identity and
-      // Vue does not run the leave/enter animation for tiles whose only
-      // change is the backend re-serialising them with new pointers.
-      // The backend guarantees DESC order (newest first), so a stable id
-      // match also preserves the on-screen position.
       mergeTilesById(target.requests, lane.requests)
+      next.push(target)
+    } else {
+      const normalized = { ...lane, requests: [...lane.requests] }
+      normalizeLaneTiles(normalized)
+      next.push(normalized)
     }
   }
+  existing.splice(0, existing.length, ...next)
 }
 
-// mergeTilesById replaces the existing tile array with the incoming one,
-// then sorts deterministically by (timestamp ASC, request_id ASC) and truncates
-// to the lane limit. This ensures rendering order depends only on server state,
-// not on message arrival history — eliminating drift and sudden "page flip" jumps.
-//
-// Vue TransitionGroup reuses components by `:key="tile.request_id"`, so swapping
-// object references does NOT re-trigger enter/leave animations as long as the key
-// set remains stable. Only actual additions/removals animate.
 function mergeTilesById(existing: LiveStreamTile[], incoming: LiveStreamTile[]) {
-  // Replace entire array
-  existing.length = 0
-  existing.push(...incoming)
-  
-  // Sort deterministically: oldest first (ASC), tie-break by request_id
-  existing.sort((a, b) => {
-    const tsCmp = (a.timestamp || '').localeCompare(b.timestamp || '')
-    if (tsCmp !== 0) return tsCmp
-    return (a.request_id || '').localeCompare(b.request_id || '')
-  })
-  
-  // Truncate to backend lane limit (20) to match server authority
-  const limit = 20
-  if (existing.length > limit) {
-    existing.splice(0, existing.length - limit)
+  const byId = new Map(existing.filter((tile) => tile.request_id).map((tile) => [tile.request_id, tile]))
+  const seen = new Set<string>()
+  const next: LiveStreamTile[] = []
+  for (const tile of incoming) {
+    if (!tile.request_id || seen.has(tile.request_id)) continue
+    seen.add(tile.request_id)
+    const target = byId.get(tile.request_id)
+    if (target) {
+      Object.assign(target, tile)
+      next.push(target)
+    } else {
+      next.push({ ...tile })
+    }
   }
+  next.sort((a, b) => {
+    const timestamp = (a.timestamp || '').localeCompare(b.timestamp || '')
+    return timestamp || (a.request_id || '').localeCompare(b.request_id || '')
+  })
+  existing.splice(0, existing.length, ...next.slice(-20))
 }
 
 // mergeLegendsByKey is the same idea but for the legend strips —
