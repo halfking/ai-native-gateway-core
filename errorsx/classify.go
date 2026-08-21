@@ -1020,27 +1020,55 @@ func NextQuotaReset(body string, now time.Time) time.Time {
 // the same logic as domains/credential/writer.parseQuotaResetTimestamp but
 // lives here so errorsx.NextQuotaReset has no dependency on the credential
 // domain. Kept in sync; prefer editing both together when patterns change.
+//
+// Supports both naive (UTC) and RFC3339-aware (`Z` / numeric offset) formats
+// so upstream bodies that emit ISO-8601 timestamps with timezones
+// (Google Gemini `RESOURCE_EXHAUSTED` reset messages, OpenAI proxies, Zhipu)
+// are honored instead of silently falling through to next-UTC-midnight.
 func scanQuotaResetTimestamp(detail string, now time.Time) (time.Time, bool) {
+	now = now.UTC()
+	// Layouts that include timezone require time.Parse (which honors Z/offset);
+	// naive layouts use ParseInLocation with explicit UTC so a server running
+	// in a non-UTC zone doesn't drift the parsed value.
+	//
+	// Order matters: try offset-aware layouts FIRST so a body like
+	// `2026-08-10T20:34:56+08:00` is parsed correctly to 12:34:56 UTC instead of
+	// greedily matching the naive `2026-08-10T20:34:56` (20:34:56 UTC) and
+	// returning a wrong reset time.
 	for _, layout := range []string{
+		time.RFC3339Nano,
+		time.RFC3339,
 		"2006-01-02 15:04:05",
 		"2006-01-02T15:04:05",
 		"2006/01/02 15:04:05",
 		"2006/01/02T15:04:05",
 	} {
-		const window = 19
+		window := len(layout)
+		if window < 19 {
+			window = 19
+		}
 		if len(detail) < window {
 			continue
 		}
 		for i := 0; i+window <= len(detail); i++ {
 			candidate := detail[i : i+window]
-			t, err := time.ParseInLocation(layout, candidate, time.UTC)
+			var (
+				t   time.Time
+				err error
+			)
+			switch layout {
+			case time.RFC3339, time.RFC3339Nano:
+				t, err = time.Parse(layout, candidate)
+			default:
+				t, err = time.ParseInLocation(layout, candidate, time.UTC)
+			}
 			if err != nil {
 				continue
 			}
-			if t.Before(now.UTC().Add(-1 * time.Minute)) {
+			if t.Before(now.Add(-1 * time.Minute)) {
 				continue
 			}
-			return t, true
+			return t.UTC(), true
 		}
 	}
 	return time.Time{}, false
