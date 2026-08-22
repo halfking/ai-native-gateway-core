@@ -140,6 +140,9 @@ type v2DispatchConfig struct {
 	EnableAnalysis    bool // PR-V4-09: 异步分析 Loop 默认 off
 	AnalysisInterval  time.Duration
 	AnalysisBatchSize int
+	// AdminAPIKey gates the X-LLMGW-Preferred-Credential routing override.
+	// 2026-08-23.
+	AdminAPIKey string
 }
 
 // v2UsePipeline reports whether the v2 Pipeline wrapper should be used
@@ -173,6 +176,7 @@ func loadV2DispatchConfig() v2DispatchConfig {
 		EnableAnalysis:    envBool("LLM_GATEWAY_V2_ANALYSIS", false),
 		AnalysisInterval:  envDuration("LLM_GATEWAY_V2_ANALYSIS_INTERVAL", 5*time.Second),
 		AnalysisBatchSize: envInt("LLM_GATEWAY_V2_ANALYSIS_BATCH", 10),
+		AdminAPIKey:       os.Getenv("LLM_GATEWAY_ADMIN_API_KEY"),
 	}
 }
 
@@ -218,6 +222,13 @@ type v2DispatchDeps struct {
 	CredentialLimit  *credential.Limiter
 	ProviderStore    *provider.InMemoryStore
 	ProviderProber   *provider.Prober
+
+	// AdminAPIKey is the static admin token (cfg.AdminAPIKey, env
+	// LLM_GATEWAY_ADMIN_API_KEY). It is used to gate the
+	// X-LLMGW-Preferred-Credential routing override so that only
+	// authenticated admins can force a credential on a request.
+	// 2026-08-23.
+	AdminAPIKey string
 
 	// ── v1 references (the actual data plane) ──────────────────────
 	// ChatHandler is the production v1 chat dispatcher. The Pipeline
@@ -624,6 +635,7 @@ func newV2DispatchDepsFromMain(cfg v2DispatchConfig, chatHandler *streaming.Chat
 		EventBus:         eventbus.NewMemoryBus(100),
 		ChatHandler:      chatHandler,
 		KeyVerifier:      keyVerifier,
+		AdminAPIKey:      cfg.AdminAPIKey,
 	}
 	deps.Pipeline = buildV2DispatchPipeline(deps)
 	return deps
@@ -748,6 +760,24 @@ func v2DispatchHandler(deps *v2DispatchDeps, fallback http.Handler) http.Handler
 		rawKey := pipelineAPIKey(r)
 		if rawKey != "" {
 			env.Metadata["api_key"] = rawKey
+		}
+
+		// 2026-08-23: read the X-LLMGW-Preferred-Credential routing
+		// override. The header is gated on the admin token so only
+		// authenticated operators can pin a credential on a request. The
+		// body metadata field (OpenAI metadata / Anthropic
+		// messages.metadata / Responses Extra) is extracted inside the
+		// handler decoders and merged into the same key. Either source
+		// populates env.Metadata["preferred_credential"], which the v2
+		// routing StickyRouter already consumes.
+		if pref := streaming.ExtractPreferredCredential(
+			r.Header.Get(streaming.PreferredCredentialHeader),
+			rawBody,
+			rawKey,
+			deps.AdminAPIKey,
+		); pref != "" {
+			env.Metadata["preferred_credential"] = pref
+			env.Metadata["preferred_credential_source"] = "admin"
 		}
 		if deps.KeyVerifier != nil && deps.KeyVerifier.Enabled() {
 			if rawKey == "" {
