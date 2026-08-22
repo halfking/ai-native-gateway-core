@@ -188,6 +188,8 @@ type CredentialMonitorSummary struct {
 // uses to admit/exclude a binding.
 type CredentialModelStatus struct {
 	RawModelName             string  `json:"raw_model_name"`
+	StandardizedName         *string `json:"standardized_name,omitempty"`
+	CanonicalName            *string `json:"canonical_name,omitempty"`
 	OfferAvailable           bool    `json:"offer_available"`
 	OfferUnavailableReason   *string `json:"offer_unavailable_reason,omitempty"`
 	BindingAvailable         bool    `json:"binding_available"`
@@ -220,7 +222,7 @@ type CredentialModelStatus struct {
 // shape changes. The in-memory cache uses the version as part of the key, so
 // older cached responses (with the previous schema) are automatically
 // ignored after a redeploy — no manual flush needed.
-const monitorSummarySchemaVersion = 7
+const monitorSummarySchemaVersion = 8
 
 func monitorSummaryMeta(created, expires time.Time, cacheHit bool, serverDuration time.Duration) map[string]any {
 	return map[string]any{
@@ -304,6 +306,8 @@ func buildMonitorSummarySQL(p monitorSummarySQLParams) string {
 					COUNT(*) FILTER (WHERE COALESCE(mps.state, 'unknown') = 'broken_confirmed') AS broken_model_count,
 					json_agg(json_build_object(
 						'raw_model_name', mo.raw_model_name,
+						'standardized_name', mo.standardized_name,
+						'canonical_name', (SELECT mc.canonical_name FROM models_canonical mc WHERE mc.id = mo.canonical_id),
 						'offer_available', COALESCE(mo.available, TRUE),
 						'offer_unavailable_reason', mo.unavailable_reason,
 						'binding_available', COALESCE(cmb.available, TRUE),
@@ -393,6 +397,8 @@ func buildMonitorSummarySQL(p monitorSummarySQLParams) string {
 				FROM (
 					SELECT
 						mo.raw_model_name,
+						mo.standardized_name,
+						(SELECT mc.canonical_name FROM models_canonical mc WHERE mc.id = mo.canonical_id) AS canonical_name,
 						COALESCE(mo.available, TRUE) AS offer_available,
 						mo.unavailable_reason AS offer_unavailable_reason,
 						COALESCE(cmb.available, TRUE) AS binding_available,
