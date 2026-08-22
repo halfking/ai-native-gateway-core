@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { CredentialRoutingDecision } from '../api/credential-monitor'
 import { fmtTime } from '../utils/nodeDetailFormat'
+import ModelIdentityChip from './model/ModelIdentityChip.vue'
 
 defineProps<{
   requestsLoading: boolean
@@ -31,7 +32,13 @@ const emit = defineEmits<{
                 {{ decision.request_id.slice(0, 8) }}
               </button>
             </td>
-            <td>{{ decision.client_model || decision.model }}</td>
+            <td>
+              <ModelIdentityChip
+                compact
+                :client-model="decision.client_model || decision.model"
+                :outbound-model="decision.outbound_model"
+              />
+            </td>
             <td :class="decision.success ? 'is-ok' : 'is-bad'">{{ decision.success ? '成功' : '失败' }}</td>
             <td>{{ decision.latency_ms == null ? '—' : `${decision.latency_ms}ms` }}</td>
             <td>{{ decision.error_class || '—' }}</td>

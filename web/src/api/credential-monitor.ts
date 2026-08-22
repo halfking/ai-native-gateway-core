@@ -36,6 +36,9 @@ export interface CredentialMonitorSummary {
 // Per-(credential, model) availability row for the credential monitor drawer.
 export interface CredentialModelStatus {
   raw_model_name: string
+  /** Optional catalog mapping fields when monitor payload includes them. */
+  standardized_name?: string | null
+  canonical_name?: string | null
   offer_available: boolean
   offer_unavailable_reason?: string | null
   binding_available: boolean
