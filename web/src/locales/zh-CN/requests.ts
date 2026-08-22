@@ -131,9 +131,9 @@ export default {
       sessionSummary: '会话总结',
       sessionSummaryHint: '仅在会话 ID 筛选下可用',
       // 2026-08-06: 详情抽屉里「会话总结」按钮的标题与跳转提示。
-      drawerSummaryButton: '📝 会话总结',
-      drawerSummaryTitle: '跳到「请求日志」并按该会话预填筛选',
-      drawerSummaryAria: '打开会话总结视图',
+      drawerSummaryButton: '摘要',
+      drawerSummaryTitle: '查看或生成会话摘要',
+      drawerSummaryAria: '会话摘要',
       generating: '总结中…',
       generate: '生成总结',
       exportMd: '导出 Markdown',

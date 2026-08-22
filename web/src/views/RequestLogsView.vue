@@ -686,13 +686,6 @@ async function generateSessionSummary() {
   }
 }
 
-function onDrawerGenerateSessionSummary(sessionId: string) {
-  const sid = (sessionId || '').trim()
-  if (!sid) return
-  filterBySession(sid)
-  void generateSessionSummary()
-}
-
 function summaryExportContent(data: SessionSummaryResponse): string {
   const lines: string[] = []
   lines.push(t('requests.title'))
@@ -1696,7 +1689,6 @@ onMounted(async () => {
       :initial-trace-open="openDetailWithTrace"
       @close="closeDetail"
       @session-title-changed="syncSessionTitle"
-      @generate-session-summary="onDrawerGenerateSessionSummary"
     />
   </div>
 </template>
