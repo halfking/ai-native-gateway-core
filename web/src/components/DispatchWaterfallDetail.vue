@@ -23,8 +23,9 @@ const heroBars = computed(() => laid.value.rows[0]?.bars ?? [])
 </script>
 
 <template>
-  <div class="drawer-backdrop" @click="emit('close')">
-    <div class="drawer-panel card drawer-panel-wide dwf-detail" @click.stop>
+  <Teleport to="body">
+    <div class="drawer-backdrop" @click="emit('close')">
+      <div class="drawer-panel card drawer-panel-wide dwf-detail" @click.stop>
       <div class="drawer-header">
         <div>
           <h3 style="margin: 0">请求详情</h3>
@@ -97,8 +98,9 @@ const heroBars = computed(() => laid.value.rows[0]?.bars ?? [])
           </li>
         </ul>
       </div>
+      </div>
     </div>
-  </div>
+  </Teleport>
 </template>
 
 <style scoped>

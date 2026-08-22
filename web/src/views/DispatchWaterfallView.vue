@@ -78,8 +78,10 @@ function onSelect(r: WaterfallRequest) {
 }
 
 function openSession() {
-  const sid = selected.value?.session_id
+  const sid = selected.value?.session_id?.trim()
   if (!sid) return
+  selected.value = null
+  selectedId.value = null
   void router.push(`/admin/sessions/${encodeURIComponent(sid)}`)
 }
 
