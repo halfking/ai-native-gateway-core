@@ -69,6 +69,8 @@ const expandedKeys = ref(new Set<string>())
 const nowMs = ref(Date.now())
 const sseReconnecting = ref(false)
 const isSuperAdminView = ref(false)
+const searchId = ref('')
+const filterText = ref('')
 
 let pollTimer: number | undefined
 let tickTimer: number | undefined
@@ -134,7 +136,20 @@ function sortTs(c: RegistryCard): number {
   return c.started_ms ?? 0
 }
 
+function matchesFilter(c: RegistryCard): boolean {
+  const q = filterText.value.trim().toLowerCase()
+  if (!q) return true
+  return (
+    c.request_id.toLowerCase().includes(q) ||
+    (c.requested_model ?? '').toLowerCase().includes(q) ||
+    (c.resolved_model ?? '').toLowerCase().includes(q)
+  )
+}
+
 function inferStatus(snap: RequestJourneySnapshot): CardStatus {
+  if (snap.lifecycle_state === 'pending' || snap.lifecycle_state === 'in_flight' || snap.lifecycle_state === 'completed') {
+    return snap.lifecycle_state
+  }
   if (snap.outcome === 'success' || snap.outcome === 'failure' || snap.outcome === 'canceled') return 'completed'
   if (snap.current_stage === 'terminal') return 'completed'
   // 用 last_event_type 兜底（前端 caps：first_byte/attempt_started 视为 in_flight）
@@ -168,6 +183,7 @@ function snapshotToCard(snap: RequestJourneySnapshot): RegistryCard {
     error_kind: snap.error_kind,
     http_status: snap.http_status,
     started_ms: status === 'in_flight' && snap.updated_at ? new Date(snap.updated_at).getTime() : undefined,
+    retry_at_ms: snap.retry_at ? new Date(snap.retry_at).getTime() : undefined,
     finished_at: status === 'completed' && snap.updated_at ? snap.updated_at : undefined,
     updated_at: snap.updated_at,
   }
@@ -332,19 +348,19 @@ watch(() => liveStreamState.actions, () => {
 // ── 视图投影 ─────────────────────────────────────────────────
 const pendingCards = computed(() =>
   [...cards.value.values()]
-    .filter((c) => c.status === 'pending')
+    .filter((c) => c.status === 'pending' && matchesFilter(c))
     .sort((a, b) => (a.retry_at_ms ?? Number.MAX_SAFE_INTEGER) - (b.retry_at_ms ?? Number.MAX_SAFE_INTEGER)),
 )
 
 const inFlightCards = computed(() =>
   [...cards.value.values()]
-    .filter((c) => c.status === 'in_flight')
+    .filter((c) => c.status === 'in_flight' && matchesFilter(c))
     .sort((a, b) => (a.started_ms ?? sortTs(a)) - (b.started_ms ?? sortTs(b))),
 )
 
 const completedCards = computed(() =>
   [...cards.value.values()]
-    .filter((c) => c.status === 'completed')
+    .filter((c) => c.status === 'completed' && matchesFilter(c))
     .sort((a, b) => sortTs(b) - sortTs(a)),
 )
 
@@ -365,6 +381,12 @@ function openDetail(card: RegistryCard) {
   if (!canOpen(card)) return
   router.push({ name: 'request-journey-detail', params: { requestId: card.request_id } })
 }
+
+function openSearchJourney() {
+  const id = searchId.value.trim()
+  if (!id) return
+  router.push({ name: 'request-journey-detail', params: { requestId: id } })
+}
 </script>
 
 <template>
@@ -373,6 +395,33 @@ function openDetail(card: RegistryCard) {
       <h2>{{ t('requestRegistry.title') }}</h2>
       <p class="registry-sub">{{ t('requestRegistry.subtitle') }}</p>
     </header>
+
+    <div class="registry-search-row" data-testid="reg-search-row">
+      <input
+        v-model="searchId"
+        type="search"
+        class="registry-search-input"
+        :placeholder="t('requestRegistry.searchPlaceholder')"
+        data-testid="reg-search-input"
+        @keydown.enter.prevent="openSearchJourney()"
+      />
+      <button
+        type="button"
+        class="registry-search-btn"
+        :disabled="!searchId.trim()"
+        data-testid="reg-search-btn"
+        @click="openSearchJourney()"
+      >
+        {{ t('requestRegistry.search') }}
+      </button>
+      <input
+        v-model="filterText"
+        type="search"
+        class="registry-filter-input"
+        :placeholder="t('requestRegistry.filterPlaceholder')"
+        data-testid="reg-filter-input"
+      />
+    </div>
 
     <div class="registry-status-row">
       <span class="reg-chip" :class="sseReconnecting ? 'is-warning' : 'is-success'" data-testid="sse-state">
@@ -384,6 +433,7 @@ function openDetail(card: RegistryCard) {
       <span v-if="isSuperAdminView" class="reg-chip is-muted" data-testid="super-admin-scope">
         {{ t('requestRegistry.scopeAll') }}
       </span>
+      <span class="reg-chip is-muted">{{ t('requestRegistry.historyNote') }}</span>
     </div>
 
     <template v-if="!pageHidden">
@@ -504,6 +554,40 @@ function openDetail(card: RegistryCard) {
   margin: 4px 0 0;
   color: var(--kx-muted);
   font-size: 12px;
+}
+
+.registry-search-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.registry-search-input,
+.registry-filter-input {
+  flex: 1;
+  min-width: 180px;
+  padding: 6px 10px;
+  border: 1px solid var(--kx-border);
+  border-radius: 6px;
+  font-size: 12px;
+  background: var(--kx-surface);
+  color: var(--kx-text);
+}
+
+.registry-search-btn {
+  padding: 6px 12px;
+  border: 1px solid var(--kx-border);
+  border-radius: 6px;
+  background: var(--kx-primary);
+  color: #fff;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.registry-search-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .registry-status-row {

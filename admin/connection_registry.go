@@ -73,7 +73,7 @@ func (h *Handler) handleConnectionRegistryGet(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusBadRequest, "missing request_id")
 		return
 	}
-	snap, ok := reg.Lookup(requestID)
+	snap, ok := reg.LookupAny(requestID)
 	if !ok {
 		writeError(w, http.StatusNotFound, "request not registered")
 		return
