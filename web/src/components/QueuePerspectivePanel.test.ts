@@ -438,16 +438,19 @@ describe('QueuePerspectivePanel', () => {
     expect(wrapper.text()).toContain('alpha-key')
     expect(wrapper.text()).toContain('beta-key')
     expect(wrapper.text()).toContain('✓')
-    expect(cards.every(card => card.attributes('draggable') === 'true')).toBe(true)
+    expect(cards.every(card => !card.attributes('draggable'))).toBe(true)
+    const handles = wrapper.findAll('.qp-node-card-drag-handle')
+    expect(handles.every(h => h.attributes('draggable') === 'true')).toBe(true)
+    expect(handles.every(h => h.classes().includes('is-enabled'))).toBe(true)
     const wraps = wrapper.findAll('.qp-node-card-wrap')
     expect(Number.parseInt(wraps[0].attributes('style')?.match(/width:\s*(\d+)px/)?.[1] || '0', 10)).toBeLessThan(
       Number.parseInt(wraps[1].attributes('style')?.match(/width:\s*(\d+)px/)?.[1] || '0', 10),
     )
 
     const transfer = { effectAllowed: '', dropEffect: '', setData: vi.fn() }
-    await cards[0].trigger('dragstart', { dataTransfer: transfer })
-    await cards[1].trigger('dragover', { dataTransfer: transfer })
-    await cards[1].trigger('drop', { dataTransfer: transfer })
+    await handles[0].trigger('dragstart', { dataTransfer: transfer })
+    await wraps[1].trigger('dragover', { dataTransfer: transfer })
+    await wraps[1].trigger('drop', { dataTransfer: transfer })
     await flushPromises()
 
     expect(reorderCandidateBindings).toHaveBeenCalledWith(
@@ -479,7 +482,10 @@ describe('QueuePerspectivePanel', () => {
     await flushPromises()
     const cards = wrapper.findAll('.qp-node-card')
     expect(cards).toHaveLength(2)
-    expect(cards.every(card => card.attributes('draggable') === 'false')).toBe(true)
+    expect(cards.every(card => !card.attributes('draggable'))).toBe(true)
+    const handles = wrapper.findAll('.qp-node-card-drag-handle')
+    expect(handles.every(h => h.attributes('draggable') === 'false')).toBe(true)
+    expect(handles.every(h => !h.classes().includes('is-enabled'))).toBe(true)
     expect(wrapper.html()).toContain('尚未拿到后端修订版本')
   })
 
@@ -503,11 +509,12 @@ describe('QueuePerspectivePanel', () => {
 
     const wrapper = mountPanel()
     await flushPromises()
-    const cards = wrapper.findAll('.qp-node-card')
+    const handles = wrapper.findAll('.qp-node-card-drag-handle')
+    const wraps = wrapper.findAll('.qp-node-card-wrap')
     const transfer = { effectAllowed: '', dropEffect: '', setData: vi.fn() }
-    await cards[0].trigger('dragstart', { dataTransfer: transfer })
-    await cards[1].trigger('dragover', { dataTransfer: transfer })
-    await cards[1].trigger('drop', { dataTransfer: transfer })
+    await handles[0].trigger('dragstart', { dataTransfer: transfer })
+    await wraps[1].trigger('dragover', { dataTransfer: transfer })
+    await wraps[1].trigger('drop', { dataTransfer: transfer })
     await flushPromises()
     await flushPromises()
 
@@ -539,16 +546,18 @@ describe('QueuePerspectivePanel', () => {
     expect(cards).toHaveLength(2)
     expect(wrapper.text()).toContain('live-a')
     expect(wrapper.text()).toContain('live-c')
-    expect(cards.every(card => card.attributes('draggable') === 'true')).toBe(true)
+    expect(cards.every(card => !card.attributes('draggable'))).toBe(true)
+    const handles = wrapper.findAll('.qp-node-card-drag-handle')
+    expect(handles.every(h => h.attributes('draggable') === 'true')).toBe(true)
     const wraps = wrapper.findAll('.qp-node-card-wrap')
     expect(Number.parseInt(wraps[0].attributes('style')?.match(/width:\s*(\d+)px/)?.[1] || '0', 10)).toBeLessThan(
       Number.parseInt(wraps[1].attributes('style')?.match(/width:\s*(\d+)px/)?.[1] || '0', 10),
     )
 
     const transfer = { effectAllowed: '', dropEffect: '', setData: vi.fn() }
-    await cards[0].trigger('dragstart', { dataTransfer: transfer })
-    await cards[1].trigger('dragover', { dataTransfer: transfer })
-    await cards[1].trigger('drop', { dataTransfer: transfer })
+    await handles[0].trigger('dragstart', { dataTransfer: transfer })
+    await wraps[1].trigger('dragover', { dataTransfer: transfer })
+    await wraps[1].trigger('drop', { dataTransfer: transfer })
     await flushPromises()
 
     // Visible order becomes [3, 1]; offline #2 keeps its relative slot → [3, 2, 1].
@@ -586,12 +595,15 @@ describe('QueuePerspectivePanel', () => {
     // Default filter is active-only: cards 1 and 3 visible; card 2 hidden.
     const cards = wrapper.findAll('.qp-node-card')
     expect(cards).toHaveLength(2)
-    expect(cards.every(card => card.attributes('draggable') === 'true')).toBe(true)
+    expect(cards.every(card => !card.attributes('draggable'))).toBe(true)
+    const handles = wrapper.findAll('.qp-node-card-drag-handle')
+    expect(handles.every(h => h.attributes('draggable') === 'true')).toBe(true)
+    const wraps = wrapper.findAll('.qp-node-card-wrap')
 
     const transfer = { effectAllowed: '', dropEffect: '', setData: vi.fn() }
-    await cards[0].trigger('dragstart', { dataTransfer: transfer })
-    await cards[1].trigger('dragover', { dataTransfer: transfer })
-    await cards[1].trigger('drop', { dataTransfer: transfer })
+    await handles[0].trigger('dragstart', { dataTransfer: transfer })
+    await wraps[1].trigger('dragover', { dataTransfer: transfer })
+    await wraps[1].trigger('drop', { dataTransfer: transfer })
     await flushPromises()
 
     // Visible order becomes [3, 1]; hidden #2 keeps its relative slot → [3, 2, 1].
@@ -610,8 +622,24 @@ describe('QueuePerspectivePanel', () => {
       window_minutes: 5,
       count: 2,
       results: [
-        { credential_id: 1, model: 'm-1', source: 'redis', stats: { total: 3, success: 2, failed: 1, failure_rate: 0.33 } },
-        { credential_id: 2, model: 'm-1', source: 'redis', stats: { total: 1, success: 1, failed: 0, failure_rate: 0 } },
+        {
+          credential_id: 1,
+          model: 'm-1',
+          source: 'redis',
+          stats: { total: 3, success: 2, failed: 1, failure_rate: 0.33 },
+          entries: [
+            { rid: 'a', ts: 1, ok: true, lat: 10 },
+            { rid: 'b', ts: 2, ok: false, lat: 20 },
+            { rid: 'c', ts: 3, ok: true, lat: 30 },
+          ],
+        },
+        {
+          credential_id: 2,
+          model: 'm-1',
+          source: 'redis',
+          stats: { total: 1, success: 1, failed: 0, failure_rate: 0 },
+          entries: [{ rid: 'd', ts: 4, ok: true, lat: 40 }],
+        },
       ],
     })
     getSlidingWindow.mockClear()
@@ -634,9 +662,16 @@ describe('QueuePerspectivePanel', () => {
     await flushPromises()
     await flushPromises()
 
-    expect(getSlidingWindowBatch).toHaveBeenCalled()
+    expect(getSlidingWindowBatch).toHaveBeenCalledWith(
+      expect.any(Array),
+      expect.objectContaining({ includeEntries: true, entryLimit: 24 }),
+      expect.anything(),
+    )
     expect(getSlidingWindow).not.toHaveBeenCalled()
     expect(wrapper.text()).toMatch(/✓2/)
     expect(wrapper.text()).toMatch(/✗1/)
+    expect(wrapper.findAll('.qp-node-window-cell')).toHaveLength(4)
+    expect(wrapper.findAll('.qp-node-window-cell.ok')).toHaveLength(3)
+    expect(wrapper.findAll('.qp-node-window-cell.bad')).toHaveLength(1)
   })
 })
