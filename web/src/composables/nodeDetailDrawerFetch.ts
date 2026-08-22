@@ -147,11 +147,18 @@ export function createNodeDetailFetchers(ctx: FetchCtx) {
   async function loadNode(): Promise<boolean> {
     const node = ctx.currentNode.value
     if (!node || !ctx.visible.value) return false
-    const pendingCoreCandidateTask = ctx.coreCandidateTask.p
     ctx.loadController.c?.abort()
     const controller = new AbortController()
     ctx.loadController.c = controller
     const reqSeq = ctx.sequence.n
+    // Only reuse the in-flight candidate task if it belongs to the SAME
+    // sequence (i.e. the SAME open cycle). Without this guard, closing and
+    // reopening the drawer on a different credential could await a stale
+    // task from the previous credential, blocking the new request until it
+    // times out. The candidate write inside `loadCandidate` is still
+    // gated by `currentNode.credential_id`, but the await would otherwise
+    // keep us from showing the new detail until the previous task settles.
+    const pendingCoreCandidateTask = ctx.coreCandidateTask.p
     ctx.loading.value = true
     ctx.loadError.value = ''
     const scope = ctx.scopedModel.value
@@ -178,7 +185,9 @@ export function createNodeDetailFetchers(ctx: FetchCtx) {
       ctx.selectedModel.value = preferred
       const candidateTask = ctx.candidate.value || !preferred
         ? Promise.resolve(true)
-        : pendingCoreCandidateTask ?? loadCandidate(preferred, reqSeq, controller.signal)
+        : (pendingCoreCandidateTask && pendingCoreCandidateTask !== ctx.coreCandidateTask.p
+            ? pendingCoreCandidateTask
+            : loadCandidate(preferred, reqSeq, controller.signal))
       const [detailsLoaded, candidateLoaded] = await Promise.all([
         preferred ? loadModelDetails(preferred, reqSeq, controller.signal) : Promise.resolve(true),
         candidateTask,
