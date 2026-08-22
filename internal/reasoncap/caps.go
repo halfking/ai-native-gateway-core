@@ -23,22 +23,22 @@ import (
 type Dialect string
 
 const (
-	DialectNone       Dialect = ""           // no reasoning capability
-	DialectOpenAI     Dialect = "openai"     // reasoning_effort enum
-	DialectAnthropic  Dialect = "anthropic"  // thinking{type,budget_tokens}
-	DialectGemini25   Dialect = "gemini25"   // thinkingConfig{thinkingBudget,includeThoughts}
-	DialectGemini3    Dialect = "gemini3"    // thinkingConfig{thinkingLevel}
-	DialectDeepSeek   Dialect = "deepseek"   // thinking{type:enabled|disabled}
-	DialectGLM        Dialect = "glm"        // thinking{type} + reasoning_effort 7-tier
-	DialectQwen       Dialect = "qwen"       // enable_thinking + thinking_budget
-	DialectKimiThink  Dialect = "kimi_think" // thinking{keep}
+	DialectNone       Dialect = ""            // no reasoning capability
+	DialectOpenAI     Dialect = "openai"      // reasoning_effort enum
+	DialectAnthropic  Dialect = "anthropic"   // thinking{type,budget_tokens}
+	DialectGemini25   Dialect = "gemini25"    // thinkingConfig{thinkingBudget,includeThoughts}
+	DialectGemini3    Dialect = "gemini3"     // thinkingConfig{thinkingLevel}
+	DialectDeepSeek   Dialect = "deepseek"    // thinking{type:enabled|disabled}
+	DialectGLM        Dialect = "glm"         // thinking{type} + reasoning_effort 7-tier
+	DialectQwen       Dialect = "qwen"        // enable_thinking + thinking_budget
+	DialectKimiThink  Dialect = "kimi_think"  // thinking{keep}
 	DialectKimiEffort Dialect = "kimi_effort" // reasoning_effort low|high|max
-	DialectMiniMax    Dialect = "minimax"    // thinking{type:disabled|adaptive}
-	DialectArk        Dialect = "ark"        // thinking{type:enabled|disabled|auto}
-	DialectGrok       Dialect = "grok"       // reasoning_effort none|low|medium|high
-	DialectMistral    Dialect = "mistral"    // reasoning_effort + prompt_mode:reasoning
-	DialectVLLM       Dialect = "vllm"       // thinking_token_budget or chat_template_kwargs
-	DialectOllama     Dialect = "ollama"     // think: bool
+	DialectMiniMax    Dialect = "minimax"     // thinking{type:disabled|adaptive}
+	DialectArk        Dialect = "ark"         // thinking{type:enabled|disabled|auto}
+	DialectGrok       Dialect = "grok"        // reasoning_effort none|low|medium|high
+	DialectMistral    Dialect = "mistral"     // reasoning_effort + prompt_mode:reasoning
+	DialectVLLM       Dialect = "vllm"        // thinking_token_budget or chat_template_kwargs
+	DialectOllama     Dialect = "ollama"      // think: bool
 )
 
 // Caps describes a model's thinking/reasoning capability.

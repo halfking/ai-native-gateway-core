@@ -20,7 +20,7 @@ type ApprovalRequest struct {
 	RiskLevel     RiskLevel           `json:"risk_level"`
 
 	// Session context
-	SessionSummary SessionSummary          `json:"session_summary"`
+	SessionSummary SessionSummary         `json:"session_summary"`
 	SensitiveInfo  []SensitiveItemSummary `json:"sensitive_info,omitempty"`
 
 	// Request content

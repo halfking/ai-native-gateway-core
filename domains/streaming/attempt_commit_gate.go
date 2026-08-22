@@ -104,7 +104,7 @@ const DefaultMaxMetadataBufferAge = 30 * time.Second
 
 // GateOptions configures an AttemptCommitGate.
 type GateOptions struct {
-	Mode                   GateMode
+	Mode GateMode
 	// RequestID correlates every commit/discard log line from this gate with
 	// the owning request (2026-08-19 observability pass — reconstruct any
 	// failure from `request_id` alone). Empty when the caller has no

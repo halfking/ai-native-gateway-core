@@ -6,10 +6,10 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/kaixuan/llm-gateway-go/domain"               //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/domains/moduleexec"    // 模块执行记录器
+	"github.com/kaixuan/llm-gateway-go/domain"                 //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/moduleexec"     // 模块执行记录器
 	"github.com/kaixuan/llm-gateway-go/domains/moduleregistry" // 模块标识注册表
-	"github.com/kaixuan/llm-gateway-go/domains/pipeline"     //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/pipeline"       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/eventbus"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
@@ -430,49 +430,49 @@ func mapToFindings(summary, detail map[string]interface{}) ([]*Finding, error) {
 	if detail == nil {
 		return []*Finding{}, nil
 	}
-	
+
 	findingsRaw, ok := detail["findings"]
 	if !ok || findingsRaw == nil {
 		return []*Finding{}, nil
 	}
-	
+
 	items, ok := findingsRaw.([]interface{})
 	if !ok {
 		return nil, fmt.Errorf("findings is not an array, got %T", findingsRaw)
 	}
-	
+
 	findings := make([]*Finding, 0, len(items))
 	for i, item := range items {
 		m, ok := item.(map[string]interface{})
 		if !ok {
 			return nil, fmt.Errorf("finding[%d] is not a map, got %T", i, item)
 		}
-		
+
 		f := &Finding{}
-		
+
 		// 安全的类型转换
 		if v, ok := m["code"].(string); ok {
 			f.Code = v
 		} else if m["code"] != nil {
 			return nil, fmt.Errorf("finding[%d].code is not string, got %T", i, m["code"])
 		}
-		
+
 		if v, ok := m["severity"].(string); ok {
 			f.Severity = Severity(v)
 		}
-		
+
 		if v, ok := m["message"].(string); ok {
 			f.Message = v
 		}
-		
+
 		if v, ok := m["suggestion"].(string); ok {
 			f.Suggestion = v
 		}
-		
+
 		if v, ok := m["inspector_name"].(string); ok {
 			f.InspectorName = v
 		}
-		
+
 		findings = append(findings, f)
 	}
 	return findings, nil

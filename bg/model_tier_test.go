@@ -15,11 +15,11 @@ import (
 
 func TestNormalizeModelKey(t *testing.T) {
 	cases := map[string]string{
-		"GPT-5.4":      "gpt-5.4",
-		" glm-5.2 ":    "glm-5.2",
+		"GPT-5.4":       "gpt-5.4",
+		" glm-5.2 ":     "glm-5.2",
 		"Claude-Sonnet": "claude-sonnet",
-		"":             "",
-		"   ":          "",
+		"":              "",
+		"   ":           "",
 	}
 	for in, want := range cases {
 		assert.Equal(t, want, normalizeModelKey(in), "input=%q", in)
@@ -48,12 +48,12 @@ func newTierWithSet(static, usage []string) *ModelTier {
 func TestIsFeaturedModel_StaticAndUsage(t *testing.T) {
 	m := newTierWithSet([]string{"gpt-5.4", "Claude-Sonnet"}, []string{"glm-5.2"})
 
-	assert.True(t, m.IsFeaturedModel("gpt-5.4", ""))          // static hit (raw)
-	assert.True(t, m.IsFeaturedModel("GPT-5.4", ""))          // case-insensitive
-	assert.True(t, m.IsFeaturedModel("claude-sonnet", ""))    // static normalized
-	assert.True(t, m.IsFeaturedModel("glm-5.2", ""))          // usage hit
-	assert.False(t, m.IsFeaturedModel("deepseek-chat", ""))   // neither
-	assert.False(t, m.IsFeaturedModel("", ""))                // empty
+	assert.True(t, m.IsFeaturedModel("gpt-5.4", ""))        // static hit (raw)
+	assert.True(t, m.IsFeaturedModel("GPT-5.4", ""))        // case-insensitive
+	assert.True(t, m.IsFeaturedModel("claude-sonnet", ""))  // static normalized
+	assert.True(t, m.IsFeaturedModel("glm-5.2", ""))        // usage hit
+	assert.False(t, m.IsFeaturedModel("deepseek-chat", "")) // neither
+	assert.False(t, m.IsFeaturedModel("", ""))              // empty
 
 	// Canonical fallback: raw not in set but canonical is static.
 	m2 := newTierWithSet([]string{"claude-sonnet-5"}, nil)
@@ -65,7 +65,7 @@ func TestIsFeaturedModel_NilSafe(t *testing.T) {
 	var m *ModelTier
 	assert.False(t, m.IsFeaturedModel("gpt-5.4", "")) // nil receiver
 
-	m2 := NewModelTier(nil, ModelTierConfig{}) // no snapshot stored
+	m2 := NewModelTier(nil, ModelTierConfig{})         // no snapshot stored
 	assert.False(t, m2.IsFeaturedModel("gpt-5.4", "")) // empty snapshot
 }
 
@@ -109,10 +109,10 @@ func TestModelTier_SQLReferencesActualColumns(t *testing.T) {
 	// The test fails if the developer accidentally references a missing column.
 	mustContain := []string{
 		"COALESCE(rl.outbound_model, rl.client_model)", // real model-name column
-		"FROM request_logs_hot rl",                    // table exists
-		"WHERE rl.success",                            // column exists
-		"WHERE tenant_id = $1",                        // tenant scope (audit #3)
-		"GROUP BY raw_model",                          // dedup (audit #11)
+		"FROM request_logs_hot rl",                     // table exists
+		"WHERE rl.success",                             // column exists
+		"WHERE tenant_id = $1",                         // tenant scope (audit #3)
+		"GROUP BY raw_model",                           // dedup (audit #11)
 	}
 	src := sourceFromFile(t, "model_tier.go")
 	for _, fragment := range mustContain {

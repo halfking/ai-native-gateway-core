@@ -235,10 +235,10 @@ func ResetMetricsForTest() {
 // readable from unit tests without the prometheus testutil dependency, which
 // is not vendored in this repo).
 var (
-	droppedTotal         atomic.Uint64
-	redisFailureTot      atomic.Uint64
-	stageNormFailureTot  atomic.Uint64
-	metricsRegistered    sync.Once
+	droppedTotal        atomic.Uint64
+	redisFailureTot     atomic.Uint64
+	stageNormFailureTot atomic.Uint64
+	metricsRegistered   sync.Once
 )
 
 // DroppedTotal returns how many events this process dropped because the emit

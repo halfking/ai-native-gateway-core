@@ -311,11 +311,11 @@ func TestListLogsResponseShape(t *testing.T) {
 func TestShouldRunByModel(t *testing.T) {
 	maxWindow := 32 * 24 * time.Hour
 	tests := []struct {
-		name               string
+		name                 string
 		modelFilterSpecified bool
-		count              int
-		timeSpan           time.Duration
-		want               bool
+		count                int
+		timeSpan             time.Duration
+		want                 bool
 	}{
 		{"empty window, no filter, has rows", false, 5, time.Hour, true},
 		{"model filter set blocks aggregate", true, 5, time.Hour, false},

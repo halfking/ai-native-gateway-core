@@ -182,4 +182,3 @@ func TestNextQuotaReset_RFC3339Timestamps(t *testing.T) {
 		})
 	}
 }
-

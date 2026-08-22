@@ -1012,8 +1012,8 @@ type routingCandidateReorderRequest struct {
 	// ExpectedRevision is the opaque token the client received from
 	// /api/routing/resolve. The handler locks the scope, recomputes the
 	// revision, and rejects stale clients with HTTP 409.
-	ExpectedRevision string                          `json:"expected_revision"`
-	Items            []routingCandidateReorderItem   `json:"items"`
+	ExpectedRevision string                        `json:"expected_revision"`
+	Items            []routingCandidateReorderItem `json:"items"`
 }
 
 func validateRoutingCandidateReorder(req routingCandidateReorderRequest) string {

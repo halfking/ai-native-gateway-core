@@ -120,9 +120,9 @@ func TestStore_CreateGoalRun_UniqueViolation(t *testing.T) {
 func TestStore_CreateGoalRun_Validation(t *testing.T) {
 	store, _ := newMockStore(t)
 	tests := []struct {
-		name      string
-		mutate    func(*NewGoalRunInput)
-		wantErr   error
+		name    string
+		mutate  func(*NewGoalRunInput)
+		wantErr error
 	}{
 		{"missing tenant", func(i *NewGoalRunInput) { i.TenantID = "" }, ErrTenantIDRequired},
 		{"missing api_key", func(i *NewGoalRunInput) { i.APIKeyID = "" }, ErrAPIKeyIDRequired},

@@ -118,10 +118,10 @@ func readAll(files []string) (string, error) {
 //
 // We exercise the synchronous logger (not the Async wrapper) so the offset
 // is observable immediately after each write. Two assertions matter:
-//   1. After a successful write the offset monotonically increases and the
-//      path matches the rotated file.
-//   2. Rotating to a new file changes the returned path (i.e. operators
-//      see the most recent file when the report lands).
+//  1. After a successful write the offset monotonically increases and the
+//     path matches the rotated file.
+//  2. Rotating to a new file changes the returned path (i.e. operators
+//     see the most recent file when the report lands).
 func TestRawDataLogger_CurrentLocation(t *testing.T) {
 	dir := t.TempDir()
 	logger, err := NewRawDataLogger(dir, 1024*1024, true)

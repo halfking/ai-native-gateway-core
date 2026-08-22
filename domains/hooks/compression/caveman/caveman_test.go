@@ -184,13 +184,13 @@ func TestValidateCompression_LengthWarning(t *testing.T) {
 // TestDetectLanguage 各语言检测。
 func TestDetectLanguage(t *testing.T) {
 	cases := map[string]string{
-		"please help me with this function":           "en",
-		"你好，请帮我写一个函数":                                 "zh",
-		"por favor me ajude com esta função":          "pt-BR",
-		"por favor ayúdame con esta función":          "es",
-		"bitte hilf mir mit dieser Funktion":          "de",
+		"please help me with this function":             "en",
+		"你好，请帮我写一个函数":                                   "zh",
+		"por favor me ajude com esta função":            "pt-BR",
+		"por favor ayúdame con esta función":            "es",
+		"bitte hilf mir mit dieser Funktion":            "de",
 		"s'il vous plaît aidez-moi avec cette fonction": "fr",
-		"tolong bantu saya dengan fungsi ini":         "id",
+		"tolong bantu saya dengan fungsi ini":           "id",
 	}
 	for text, want := range cases {
 		got := detectLanguage(text)

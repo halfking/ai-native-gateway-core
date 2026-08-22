@@ -14,11 +14,11 @@ import (
 // 软警告触发后是否阻断取决于 cfg.IsBlockAction()。
 // 当 max_total <= 0 时禁用此 inspector。
 type TokenLimitInspector struct {
-	maxTotal       int
-	softThreshold  int
-	warnAction     string
-	includeOutput  bool
-	resetCycle     string
+	maxTotal      int
+	softThreshold int
+	warnAction    string
+	includeOutput bool
+	resetCycle    string
 }
 
 // NewTokenLimitInspector 构造检查器（兼容旧 API：仅传硬上限）。
@@ -71,9 +71,9 @@ func (i *TokenLimitInspector) Inspect(snap *SessionSnapshot) ([]*Finding, error)
 			Message:       fmt.Sprintf("session token count %d exceeds hard limit %d", snap.TokenCount, i.maxTotal),
 			Suggestion:    "consider starting a new session or enabling compression",
 			Metadata: map[string]any{
-				"current":     snap.TokenCount,
-				"max":         i.maxTotal,
-				"over_pct":    (snap.TokenCount - i.maxTotal) * 100 / i.maxTotal,
+				"current":        snap.TokenCount,
+				"max":            i.maxTotal,
+				"over_pct":       (snap.TokenCount - i.maxTotal) * 100 / i.maxTotal,
 				"include_output": i.includeOutput,
 			},
 			DetectedAt: time.Now(),
@@ -86,9 +86,9 @@ func (i *TokenLimitInspector) Inspect(snap *SessionSnapshot) ([]*Finding, error)
 			InspectorName: i.Name(),
 			Severity:      SeverityWarning,
 			Code:          "TOKEN_SOFT_WARNING",
-			Message:       fmt.Sprintf("session token count %d reached soft threshold %d (%d%%)",
+			Message: fmt.Sprintf("session token count %d reached soft threshold %d (%d%%)",
 				snap.TokenCount, i.softThreshold, i.softThreshold*100/i.maxTotal),
-			Suggestion:    "monitor usage; consider proactive compression",
+			Suggestion: "monitor usage; consider proactive compression",
 			Metadata: map[string]any{
 				"current":    snap.TokenCount,
 				"threshold":  i.softThreshold,
@@ -163,8 +163,8 @@ func (i *InactiveInspector) Inspect(snap *SessionSnapshot) ([]*Finding, error) {
 				Message:       fmt.Sprintf("session age %s exceeds absolute max lifetime %s", age, i.absoluteLimit),
 				Suggestion:    "session exceeded max lifetime; must be closed",
 				Metadata: map[string]any{
-					"age_seconds":  int64(age.Seconds()),
-					"max_seconds":  int64(i.absoluteLimit.Seconds()),
+					"age_seconds":    int64(age.Seconds()),
+					"max_seconds":    int64(i.absoluteLimit.Seconds()),
 					"recycle_action": i.recycleAction,
 				},
 				DetectedAt: time.Now(),
@@ -188,10 +188,10 @@ func (i *InactiveInspector) Inspect(snap *SessionSnapshot) ([]*Finding, error) {
 			Message:       fmt.Sprintf("session has been idle for %s (max %s)", idle, i.maxIdle),
 			Suggestion:    "consider reclaiming session resources",
 			Metadata: map[string]any{
-				"idle_seconds":    int64(idle.Seconds()),
+				"idle_seconds":     int64(idle.Seconds()),
 				"max_idle_seconds": int64(i.maxIdle.Seconds()),
-				"auto_extend":     i.autoExtend,
-				"recycle_action":  i.recycleAction,
+				"auto_extend":      i.autoExtend,
+				"recycle_action":   i.recycleAction,
 			},
 			DetectedAt: time.Now(),
 		}}, nil
@@ -263,15 +263,15 @@ func (i *HighFrequencyInspector) Inspect(snap *SessionSnapshot) ([]*Finding, err
 			InspectorName: i.Name(),
 			Severity:      SeverityCritical,
 			Code:          "BURST_EXCEEDED",
-			Message:       fmt.Sprintf("burst request count %d in %ds window exceeds limit %d",
+			Message: fmt.Sprintf("burst request count %d in %ds window exceeds limit %d",
 				snap.BurstCount, i.burstWindowS, i.burstLimit),
 			Suggestion: "apply rate limiting or cooldown",
 			Metadata: map[string]any{
-				"burst_count":   snap.BurstCount,
-				"burst_window":  i.burstWindowS,
-				"burst_limit":   i.burstLimit,
-				"strategy":      i.strategy,
-				"observe_only":  i.observeOnly,
+				"burst_count":  snap.BurstCount,
+				"burst_window": i.burstWindowS,
+				"burst_limit":  i.burstLimit,
+				"strategy":     i.strategy,
+				"observe_only": i.observeOnly,
 			},
 			DetectedAt: time.Now(),
 		})
@@ -305,7 +305,7 @@ func (i *HighFrequencyInspector) Inspect(snap *SessionSnapshot) ([]*Finding, err
 			InspectorName: i.Name(),
 			Severity:      SeverityError,
 			Code:          "CONCURRENT_EXCEEDED",
-			Message:       fmt.Sprintf("concurrent request count %d exceeds max %d",
+			Message: fmt.Sprintf("concurrent request count %d exceeds max %d",
 				snap.ConcurrentCount, i.maxConcurrent),
 			Suggestion: "queue or reject new requests for this session",
 			Metadata: map[string]any{
@@ -369,9 +369,9 @@ func (i *SessionLifecycleInspector) Inspect(snap *SessionSnapshot) ([]*Finding, 
 		InspectorName: i.Name(),
 		Severity:      SeverityWarning,
 		Code:          "TENANT_SESSION_LIMIT",
-		Message:       fmt.Sprintf("tenant has %d active sessions, exceeds limit %d",
+		Message: fmt.Sprintf("tenant has %d active sessions, exceeds limit %d",
 			snap.TenantActiveCount, i.maxPerTenant),
-		Suggestion:    suggestion,
+		Suggestion: suggestion,
 		Metadata: map[string]any{
 			"active_count":   snap.TenantActiveCount,
 			"max_per_tenant": i.maxPerTenant,
@@ -414,13 +414,13 @@ func (i *ErrorRateInspector) Inspect(snap *SessionSnapshot) ([]*Finding, error) 
 			InspectorName: i.Name(),
 			Severity:      SeverityError,
 			Code:          "HIGH_ERROR_RATE",
-			Message:       fmt.Sprintf("session error rate %.1f%% exceeds critical threshold %.1f%%",
+			Message: fmt.Sprintf("session error rate %.1f%% exceeds critical threshold %.1f%%",
 				snap.ErrorRate*100, i.blockThresh*100),
 			Suggestion: "investigate upstream errors; consider session replacement",
 			Metadata: map[string]any{
-				"error_rate":     snap.ErrorRate,
+				"error_rate":      snap.ErrorRate,
 				"block_threshold": i.blockThresh,
-				"request_count":  snap.RequestCount,
+				"request_count":   snap.RequestCount,
 			},
 			DetectedAt: time.Now(),
 		}}, nil
@@ -430,13 +430,13 @@ func (i *ErrorRateInspector) Inspect(snap *SessionSnapshot) ([]*Finding, error) 
 			InspectorName: i.Name(),
 			Severity:      SeverityWarning,
 			Code:          "ELEVATED_ERROR_RATE",
-			Message:       fmt.Sprintf("session error rate %.1f%% exceeds warn threshold %.1f%%",
+			Message: fmt.Sprintf("session error rate %.1f%% exceeds warn threshold %.1f%%",
 				snap.ErrorRate*100, i.warnThreshold*100),
 			Suggestion: "monitor error patterns",
 			Metadata: map[string]any{
-				"error_rate":      snap.ErrorRate,
-				"warn_threshold":  i.warnThreshold,
-				"request_count":   snap.RequestCount,
+				"error_rate":     snap.ErrorRate,
+				"warn_threshold": i.warnThreshold,
+				"request_count":  snap.RequestCount,
 			},
 			DetectedAt: time.Now(),
 		}}, nil

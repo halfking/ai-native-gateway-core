@@ -33,21 +33,21 @@ var ErrInvalidGoal = errors.New("goalintegration: invalid goal request")
 
 // Resolved 是 GoalRun 解析+创建后的结果，供 v1 ChatHandler 注入 response。
 type Resolved struct {
-	GoalRunID        string
-	StatusURL        string
-	Status           string
-	PolicySnapshot   []byte
-	EffectiveLimits  goal.GoalLimits
-	RootGoalID       string
-	InstructionHash  string
+	GoalRunID       string
+	StatusURL       string
+	Status          string
+	PolicySnapshot  []byte
+	EffectiveLimits goal.GoalLimits
+	RootGoalID      string
+	InstructionHash string
 }
 
 // Integrator 持有 store 与可选的目标服务器 base URL，用于拼装 status_url。
 type Integrator struct {
-	store       *goalrun.Store
-	statusBase  string
-	leaseOwner  string
-	leaseTTL    time.Duration
+	store      *goalrun.Store
+	statusBase string
+	leaseOwner string
+	leaseTTL   time.Duration
 }
 
 // Config 装配参数。

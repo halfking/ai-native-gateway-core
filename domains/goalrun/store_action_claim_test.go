@@ -20,7 +20,7 @@ var actionRowCols = []string{
 }
 
 // TestStore_ClaimRunnableActions_Success：单事务批量 claim 多个 action
-//（设计 13 §6.2，Wave 3-A）。
+// （设计 13 §6.2，Wave 3-A）。
 func TestStore_ClaimRunnableActions_Success(t *testing.T) {
 	store, mock := newMockStore(t)
 	now := time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)

@@ -206,10 +206,10 @@ func ParseAnthropicResponse(body []byte) (*InternalResponse, error) {
 				}
 			}
 			ir.ToolCalls = append(ir.ToolCalls, ResponseToolCall{
-				ID:       c.ID,
-				Name:     c.Name,
+				ID:        c.ID,
+				Name:      c.Name,
 				Arguments: arguments,
-				InputRaw: append(json.RawMessage(nil), c.Input...),
+				InputRaw:  append(json.RawMessage(nil), c.Input...),
 			})
 		case "thinking":
 			if c.Thinking != "" {

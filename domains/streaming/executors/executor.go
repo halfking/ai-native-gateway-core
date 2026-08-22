@@ -2492,17 +2492,17 @@ func (e *Executor) recordModelNotFound(ctx context.Context, credentialID int, ra
 			"error", err)
 	}
 
-		// Self-healing: temporarily exclude this (credential, raw_model) pair
-		// from routing so the gateway stops sending requests to a model the
-		// upstream no longer serves. The pair is suppressed for five minutes;
-		// after seven consecutive failures the streak is cleared and direct
-		// routing is re-armed while the next targeted probe waits one hour.
-		//
-		// Both refreshIndexSQL (autoroute/index.go) and filterCurrentlyAvailable
-		// (autoroute/recommend_v2.go) honor last_direct_ok and next_retry_at.
-		// This is scoped to the specific (credential, model) pair — it does
-		// NOT cool the entire credential, so other models on the same
-		// credential remain routable.
+	// Self-healing: temporarily exclude this (credential, raw_model) pair
+	// from routing so the gateway stops sending requests to a model the
+	// upstream no longer serves. The pair is suppressed for five minutes;
+	// after seven consecutive failures the streak is cleared and direct
+	// routing is re-armed while the next targeted probe waits one hour.
+	//
+	// Both refreshIndexSQL (autoroute/index.go) and filterCurrentlyAvailable
+	// (autoroute/recommend_v2.go) honor last_direct_ok and next_retry_at.
+	// This is scoped to the specific (credential, model) pair — it does
+	// NOT cool the entire credential, so other models on the same
+	// credential remain routable.
 
 	const (
 		mnfCoolWindow     = 5 * time.Minute

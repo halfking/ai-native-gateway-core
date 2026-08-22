@@ -20,8 +20,9 @@ import (
 // 验证 5 个主线场景端到端可走通，确保跨模块联动正确
 //
 // 环境要求:
-//   export LLM_GATEWAY_PG_URL=postgresql://user:pass@host/db
-//   go test -tags=e2e ./tests/e2e -v -run TestSessionManagement
+//
+//	export LLM_GATEWAY_PG_URL=postgresql://user:pass@host/db
+//	go test -tags=e2e ./tests/e2e -v -run TestSessionManagement
 func TestSessionManagement_E2E_Scenarios(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping e2e test in short mode")
@@ -118,10 +119,10 @@ func testScenario1_HighCostAnomaly(t *testing.T, pool *pgxpool.Pool, tenantID st
 	// 计算健康分
 	config := admin.DefaultHealthScoreConfig()
 	health := admin.ComputeHealth(summary, config)
-	
+
 	t.Logf("✓ 健康评分计算: 分数=%d, 等级=%s, 结果=%s",
 		health.HealthScore, health.HealthGrade, health.Outcome)
-	
+
 	// 验证扣分项
 	assert.NotEmpty(t, health.Penalties, "应该有扣分项")
 	for _, p := range health.Penalties {
@@ -194,15 +195,15 @@ func testScenario2_ComplianceViolation(t *testing.T, pool *pgxpool.Pool, tenantI
 
 	config := admin.DefaultHealthScoreConfig()
 	health := admin.ComputeHealth(summary, config)
-	
+
 	t.Logf("✓ 健康评分: 分数=%d, 等级=%s", health.HealthScore, health.HealthGrade)
 
 	// 验证有合规相关扣分
 	hasCompliancePenalty := false
 	for _, p := range health.Penalties {
-		if strings.Contains(p.Reason, "compliance") || 
-		   strings.Contains(p.Reason, "injection") || 
-		   strings.Contains(p.Reason, "pii") {
+		if strings.Contains(p.Reason, "compliance") ||
+			strings.Contains(p.Reason, "injection") ||
+			strings.Contains(p.Reason, "pii") {
 			hasCompliancePenalty = true
 			t.Logf("  - 合规扣分: %s (-%d) %s", p.Reason, p.Deduction, p.Detail)
 		}
@@ -258,14 +259,14 @@ func testScenario3_OptimizationSuggestion(t *testing.T, pool *pgxpool.Pool, tena
 
 	config := admin.DefaultHealthScoreConfig()
 	health := admin.ComputeHealth(summary, config)
-	
+
 	t.Logf("✓ 健康评分: 分数=%d, 等级=%s, 结果=%s",
 		health.HealthScore, health.HealthGrade, health.Outcome)
 
 	// 优化建议通常针对健康分较低但非致命错误的会话
 	// 验证会话状态正常（无致命错误）
 	assert.Equal(t, summary.ErrorCount, 0, "可优化会话应该没有错误")
-	
+
 	t.Log("✓ 场景 3 完成：优化建议闭环流程验证通过")
 }
 
@@ -430,7 +431,7 @@ func testScenario5_UsageCostReconciliation(t *testing.T, pool *pgxpool.Pool, ten
 func setupTestTenant(t *testing.T, pool *pgxpool.Pool) string {
 	ctx := context.Background()
 	tenantID := fmt.Sprintf("test_tenant_%d", time.Now().Unix())
-	
+
 	// 创建测试租户（如果需要）
 	_, err := pool.Exec(ctx,
 		`INSERT INTO tenants (tenant_id, name, enabled) 
@@ -438,13 +439,13 @@ func setupTestTenant(t *testing.T, pool *pgxpool.Pool) string {
 		 ON CONFLICT (tenant_id) DO NOTHING`,
 		tenantID, "Test Tenant")
 	require.NoError(t, err)
-	
+
 	return tenantID
 }
 
 func cleanupTestTenant(t *testing.T, pool *pgxpool.Pool, tenantID string) {
 	ctx := context.Background()
-	
+
 	// 清理测试数据
 	tables := []string{
 		"request_logs",
@@ -453,7 +454,7 @@ func cleanupTestTenant(t *testing.T, pool *pgxpool.Pool, tenantID string) {
 		"session_audit_records",
 		"approval_queue",
 	}
-	
+
 	for _, table := range tables {
 		_, err := pool.Exec(ctx, fmt.Sprintf("DELETE FROM %s WHERE tenant_id = $1", table), tenantID)
 		if err != nil {
@@ -465,7 +466,7 @@ func cleanupTestTenant(t *testing.T, pool *pgxpool.Pool, tenantID string) {
 func createHighCostSession(t *testing.T, pool *pgxpool.Pool, tenantID string) string {
 	ctx := context.Background()
 	sessionID := fmt.Sprintf("gw_high_cost_%d", time.Now().Unix())
-	
+
 	// 创建会话摘要
 	_, err := pool.Exec(ctx,
 		`INSERT INTO session_summaries (
@@ -493,7 +494,7 @@ func createHighCostSession(t *testing.T, pool *pgxpool.Pool, tenantID string) st
 			total_cost_usd = EXCLUDED.total_cost_usd`,
 		sessionID, tenantID)
 	require.NoError(t, err)
-	
+
 	// 创建一些请求日志
 	for i := 0; i < 5; i++ {
 		_, err = pool.Exec(ctx,
@@ -513,14 +514,14 @@ func createHighCostSession(t *testing.T, pool *pgxpool.Pool, tenantID string) st
 			t.Logf("创建请求日志失败: %v", err)
 		}
 	}
-	
+
 	return sessionID
 }
 
 func createComplianceViolationSession(t *testing.T, pool *pgxpool.Pool, tenantID string) string {
 	ctx := context.Background()
 	sessionID := fmt.Sprintf("gw_compliance_violation_%d", time.Now().Unix())
-	
+
 	_, err := pool.Exec(ctx,
 		`INSERT INTO session_summaries (
 			session_key, tenant_id, request_count, success_count, error_count,
@@ -541,14 +542,14 @@ func createComplianceViolationSession(t *testing.T, pool *pgxpool.Pool, tenantID
 		) ON CONFLICT (session_key) DO NOTHING`,
 		sessionID, tenantID)
 	require.NoError(t, err)
-	
+
 	return sessionID
 }
 
 func createOptimizableSession(t *testing.T, pool *pgxpool.Pool, tenantID string) string {
 	ctx := context.Background()
 	sessionID := fmt.Sprintf("gw_optimizable_%d", time.Now().Unix())
-	
+
 	_, err := pool.Exec(ctx,
 		`INSERT INTO session_summaries (
 			session_key, tenant_id, request_count, success_count,
@@ -571,14 +572,14 @@ func createOptimizableSession(t *testing.T, pool *pgxpool.Pool, tenantID string)
 		) ON CONFLICT (session_key) DO NOTHING`,
 		sessionID, tenantID)
 	require.NoError(t, err)
-	
+
 	return sessionID
 }
 
 func createActiveSession(t *testing.T, pool *pgxpool.Pool, tenantID string) string {
 	ctx := context.Background()
 	sessionID := fmt.Sprintf("gw_active_%d", time.Now().Unix())
-	
+
 	// 创建会话摘要
 	_, err := pool.Exec(ctx,
 		`INSERT INTO session_summaries (
@@ -602,7 +603,7 @@ func createActiveSession(t *testing.T, pool *pgxpool.Pool, tenantID string) stri
 		) ON CONFLICT (session_key) DO NOTHING`,
 		sessionID, tenantID)
 	require.NoError(t, err)
-	
+
 	// 创建活跃状态快照
 	_, err = pool.Exec(ctx,
 		`INSERT INTO session_state_snapshots (
@@ -618,19 +619,19 @@ func createActiveSession(t *testing.T, pool *pgxpool.Pool, tenantID string) stri
 	if err != nil {
 		t.Logf("创建活跃状态: %v", err)
 	}
-	
+
 	return sessionID
 }
 
 func createMonthlyTestData(t *testing.T, pool *pgxpool.Pool, tenantID string) {
 	ctx := context.Background()
-	
+
 	// 创建本月和上月的测试数据
 	for month := 0; month < 2; month++ {
 		for day := 1; day <= 5; day++ {
 			sessionID := fmt.Sprintf("gw_monthly_%d_%d_%d", month, day, time.Now().Unix())
 			ts := time.Now().AddDate(0, -month, -day)
-			
+
 			_, err := pool.Exec(ctx,
 				`INSERT INTO session_summaries (
 					session_key, tenant_id, request_count, success_count,
@@ -651,8 +652,8 @@ func createMonthlyTestData(t *testing.T, pool *pgxpool.Pool, tenantID string) {
 					$6, $6,
 					$6, $6
 				) ON CONFLICT (session_key) DO NOTHING`,
-				sessionID, tenantID, 10+day, 
-				float64(day)*0.5, 
+				sessionID, tenantID, 10+day,
+				float64(day)*0.5,
 				(10+day)*1000,
 				ts)
 			if err != nil {

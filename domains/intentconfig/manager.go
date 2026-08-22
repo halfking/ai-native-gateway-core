@@ -210,8 +210,8 @@ func (m *Manager) reload(ctx context.Context) error {
 	}
 	m.mu.Unlock()
 
-	m.logger.Debug("intentconfig: reloaded", 
-		"tenant_count", len(newCache), 
+	m.logger.Debug("intentconfig: reloaded",
+		"tenant_count", len(newCache),
 		"has_platform_config", newPlatformConfig != nil)
 
 	return nil

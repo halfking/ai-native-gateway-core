@@ -109,11 +109,11 @@ type RedisEnforceBackend struct {
 	client     redis.UniversalClient
 	instanceID string
 
-	mu        sync.Mutex
-	opened    bool
-	closed    bool
-	revision  uint64
-	closedCh  chan struct{}
+	mu       sync.Mutex
+	opened   bool
+	closed   bool
+	revision uint64
+	closedCh chan struct{}
 
 	// acquireS / releaseS are the *redis.Script handles; the go-redis
 	// package transparently handles EVALSHA-with-EVAL-fallback.

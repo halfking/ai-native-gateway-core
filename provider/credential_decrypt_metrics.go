@@ -32,15 +32,15 @@ var (
 // Closed reason vocabulary for credential_reveal_failure_total.
 //
 //   - unknown_format : DecryptAny returned "cannot decrypt: unknown format";
-//                      includes the 2026-08-18 incident signature.
+//     includes the 2026-08-18 incident signature.
 //   - decrypt_error  : other decryption failure (AES-GCM auth fail, Fernet
-//                      signature, etc.).
+//     signature, etc.).
 //   - cached         : reveal hit the negative cache from an earlier fresh
-//                      failure within decryptFailureCacheTTL. Recorded once
-//                      per cache lookup to make cache amplification visible.
+//     failure within decryptFailureCacheTTL. Recorded once
+//     per cache lookup to make cache amplification visible.
 //   - not_found      : credential row missing or disabled.
 //   - not_configured : credential reveal not configured (no DB / keyring /
-//                      fernet key).
+//     fernet key).
 //   - rotation       : cache generation invalidated reveal.
 //   - other          : unclassified error (DB connectivity, etc.).
 const (
