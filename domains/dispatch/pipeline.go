@@ -3,6 +3,7 @@ package dispatch
 import (
 	"context"
 	"errors"
+	"math"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -125,6 +126,27 @@ type Pipeline struct {
 	// value.
 	backendMu       sync.RWMutex
 	governorBackend GovernorBackend
+
+	// snapshotObserver (Stage C.2): optional 100ms tick that walks the
+	// credForwarders map under credMu and emits a GovernorSnapshot per
+	// cred into the C.1 closed-enum metric set. Nil = observer inactive
+	// (no goroutine spawned, no metric emission). Wired via
+	// SetGovernorSnapshotObserver before Pipeline.Start.
+	snapshotObserver *governorSnapshotObserver
+
+	// activePolicyRevision (Stage C.2 reader, Stage E writer). The
+	// observer reads it to stamp snap.SpecRevision; Stage E's
+	// ApplyPolicySnapshot writes it via Pipeline.SetActivePolicyRevision.
+	activePolicyRevision atomic.Uint64
+
+	// snapshotAgeMS tracks the wall-clock millisecond timestamp of the
+	// last ForEachCredSnapshot visit per credForwarder, so the observer
+	// can compute a per-cred AgeMS for the snapshot it just built. The
+	// map is only touched under credMu in the read path; no contention
+	// with the tick goroutine because ForEachCredSnapshot takes credMu
+	// for the duration of the walk.
+	snapshotAgeMu sync.Mutex
+	snapshotAgeMS map[int]int64
 }
 
 type observationItem struct {
@@ -197,6 +219,7 @@ func NewPipeline(deps Deps) *Pipeline {
 		retryScheduler:       deps.RetryScheduler,
 		models:               make(map[string]*modelQueue),
 		forwarders:           make(map[int]*credForwarder),
+		snapshotAgeMS:        make(map[int]int64),
 		stopCh:               make(chan struct{}),
 	}
 	cfg := DefaultConfig()
@@ -274,6 +297,130 @@ func (p *Pipeline) GovernorBackend() GovernorBackend {
 	return p.governorBackend
 }
 
+// SetGovernorSnapshotObserver wires the optional C.2 snapshot observer.
+// Must be called before Start; calling after Start panics (the observer
+// would race with the in-flight walk). Composition-root order:
+//
+//	NewPipeline → SetGovernorBackend → SetGovernorSnapshotObserver → Start
+//
+// Passing nil disables the observer.
+func (p *Pipeline) SetGovernorSnapshotObserver(o *governorSnapshotObserver) {
+	if p == nil {
+		return
+	}
+	if p.started.Load() {
+		panic("dispatch: SetGovernorSnapshotObserver must be called before Pipeline.Start")
+	}
+	if o != nil {
+		// Wire the read-side dependencies now so the observer doesn't
+		// need its own pipeline pointer. Provider/ActiveRevision are
+		// methods on *Pipeline; backendFn is a closure over GovernorBackend()
+		// so a swap on backendMu is observed at the next tick.
+		o.SetProvider(p, p.GovernorBackend, p.ActiveRevision)
+	}
+	p.snapshotObserver = o
+}
+
+// SetActivePolicyRevision stamps the currently applied GovernorPolicy
+// revision. Stage E's policy_publisher calls this after a successful
+// ApplyPolicySnapshot; Stage C.2's observer reads it via
+// Pipeline.ActiveRevision. Safe before/after Start.
+func (p *Pipeline) SetActivePolicyRevision(rev uint64) {
+	if p == nil {
+		return
+	}
+	p.activePolicyRevision.Store(rev)
+}
+
+// ActiveRevision satisfies SnapshotProvider; returns the current
+// GovernorPolicy revision (0 = no policy applied yet).
+func (p *Pipeline) ActiveRevision() uint64 {
+	if p == nil {
+		return 0
+	}
+	return p.activePolicyRevision.Load()
+}
+
+// ForEachCredSnapshot satisfies SnapshotProvider. Walks the live
+// credForwarders under credMu (read lock) and yields one
+// GovernorSnapshot per forwarder. The pipeline-level state is read
+// directly (no extra synchronization beyond credMu).
+func (p *Pipeline) ForEachCredSnapshot(fn func(snap GovernorSnapshot) error) error {
+	if p == nil || fn == nil {
+		return nil
+	}
+	p.credMu.Lock()
+	defer p.credMu.Unlock()
+	if len(p.forwarders) == 0 {
+		return nil
+	}
+	nowMS := time.Now().UnixMilli()
+	for _, cf := range p.forwarders {
+		snap := p.snapshotForCredForwarderLocked(cf)
+		// AgeMS = delta from previous visit; 0 on the first visit.
+		p.snapshotAgeMu.Lock()
+		prev, seen := p.snapshotAgeMS[cf.cred.CredentialID]
+		p.snapshotAgeMS[cf.cred.CredentialID] = nowMS
+		p.snapshotAgeMu.Unlock()
+		if seen {
+			snap.AgeMS = nowMS - prev
+			if snap.AgeMS < 0 {
+				snap.AgeMS = 0
+			}
+		}
+		if err := fn(snap); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// snapshotForCredForwarderLocked builds a GovernorSnapshot for one
+// credForwarder. The caller MUST hold credMu (the credForwarder fields
+// can be inspected without further locking — depth is atomic, gov.Mode
+// is pure, the four governor impls have internal locks for used/tokens).
+func (p *Pipeline) snapshotForCredForwarderLocked(cf *credForwarder) GovernorSnapshot {
+	backendKind := string(BackendLocal)
+	p.backendMu.RLock()
+	if p.governorBackend != nil {
+		backendKind = string(p.governorBackend.Kind())
+	}
+	p.backendMu.RUnlock()
+
+	snap := GovernorSnapshot{
+		SpecRevision: p.activePolicyRevision.Load(),
+		Backend:      backendKind,
+		Mode:         cf.gov.Mode(),
+		Limit:        int(cf.limit),
+		InFlight:     int(cf.depth.Load()),
+		QueueDepth:   int(cf.depth.Load()),
+		State:        SnapshotStateReady,
+	}
+	if !cf.HasCapacity() {
+		snap.State = SnapshotStateQueueFull
+	}
+	// Pull governor-specific "Used" counters without changing the
+	// Governor interface — type-assert on the four impls.
+	switch g := cf.gov.(type) {
+	case *concurrencyGovernor:
+		snap.Used = int(g.used.Load())
+		if snap.Limit > 0 && snap.Used >= snap.Limit && snap.State == SnapshotStateReady {
+			snap.State = SnapshotStateGovernorSaturated
+		}
+	case *rpmGovernor:
+		g.mu.Lock()
+		snap.Used = int(math.Floor(g.tokens))
+		g.mu.Unlock()
+	case *tpmGovernor:
+		g.mu.Lock()
+		snap.Used = int(math.Floor(g.tokens))
+		g.mu.Unlock()
+	case *noopGovernor:
+		// 0
+	}
+	return snap
+}
+
 // LifecycleSnapshot exposes the request registry view (admin/tests). The
 // optional states filter narrows the result; empty returns every entry.
 func (p *Pipeline) LifecycleSnapshot(states ...LifecycleState) RegistrySnapshot {
@@ -343,6 +490,13 @@ func (p *Pipeline) Start() {
 	p.observationCh = make(chan observationItem, maxInt(1024, cfg.StatsBuffer*16))
 	p.observationWg.Add(1)
 	go p.runObservations()
+
+	// Stage C.2: start the optional snapshot observer. Its lifecycle is
+	// independent of the Pipeline's wg — Stop() drains it explicitly so
+	// no in-flight walk races with the credForwarder cancel loop below.
+	if p.snapshotObserver != nil {
+		p.snapshotObserver.Start(context.Background())
+	}
 }
 
 func maxInt(a, b int) int {
@@ -380,6 +534,11 @@ func (p *Pipeline) Stop() {
 	p.modelMu.Lock()
 	p.models = map[string]*modelQueue{}
 	p.modelMu.Unlock()
+	// Stage C.2: stop the snapshot observer FIRST so it doesn't try to
+	// walk forwarders we are about to clear.
+	if p.snapshotObserver != nil {
+		p.snapshotObserver.Stop()
+	}
 	p.credMu.Lock()
 	for _, cf := range p.forwarders {
 		cf.cancel()
