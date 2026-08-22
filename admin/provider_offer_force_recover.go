@@ -39,6 +39,10 @@ import (
 
 func (h *Handler) handleProviderModelOffer(w http.ResponseWriter, r *http.Request, providerID int, offerPath string) {
 	if offerPath == "" {
+		if r.Method == http.MethodPost {
+			h.createProviderOffer(w, r, providerID)
+			return
+		}
 		writeError(w, http.StatusBadRequest, "offer_id required")
 		return
 	}

@@ -1233,6 +1233,7 @@ watch(activeTab, async (tab) => {
                     <th>供应商</th>
                     <th>凭据</th>
                     <th>原始模型名</th>
+                    <th>标准名</th>
                     <th>输入价格</th>
                     <th>输出价格</th>
                     <th>成功率</th>
@@ -1256,7 +1257,7 @@ watch(activeTab, async (tab) => {
                       </div>
                     </td>
                     <td><code>{{ offer.raw_model_name }}</code></td>
-                    <td v-if="offer.standardized_name"><code style="color:var(--accent)">{{ offer.standardized_name }}</code></td>
+                    <td><code v-if="offer.standardized_name" style="color:var(--accent)">{{ offer.standardized_name }}</code><span v-else class="muted">—</span></td>
                     <td>{{ offer.input_price ? `¥${offer.input_price}/M` : '-' }}</td>
                     <td>{{ offer.output_price ? `¥${offer.output_price}/M` : '-' }}</td>
                     <td>
