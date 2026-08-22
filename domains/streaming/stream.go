@@ -615,7 +615,10 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 		outcome.Interrupted = true
 		outcome.Reason = "client_write_failed"
 		outcome.Kind = errorsx.KindCanceled
-		outcome.Resumable = true
+		// Client disconnect is permanent: a transparent retry cannot
+		// write headers to a dead connection. The retry would be a pure
+		// wasted upstream call.
+		outcome.Resumable = false
 		outcome.ChunkCount = 0
 		if capture != nil {
 			capture.MarkInterruptedWithReason("client_write_failed")
@@ -941,7 +944,12 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 				outcome.Interrupted = true
 				outcome.Reason = "stream_timeout"
 				outcome.Kind = errorsx.KindStreamTimeout
-				outcome.Resumable = true // Timeout is resumable
+				// Gate-aware: a chunk-timeout after the client already saw
+				// semantic output must NOT be transparently retried —
+				// duplicating committed bytes on another supplier would
+				// violate "client connection is preserved across supplier
+				// node switches".
+				outcome.Resumable = !attemptHasClientSemanticOutput(gate, chunkCount)
 				outcome.ChunkCount = chunkCount
 			default:
 				failure := streamReadFailureOutcome(readResult.err, chunkCount)
