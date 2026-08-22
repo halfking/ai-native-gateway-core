@@ -315,10 +315,13 @@ const modelGroups = computed<ModelGroup[]>(() => {
       ? modelCandidatesByRawModel.value.get(modelKey(rawModel)) ?? []
       : []
     const candidateOrder = new Map(candidates.map((candidate, index) => [candidate.credential_id, index]))
-    const candidatesMatchNodes = rawModel != null
-      && candidates.length === modelNodes.length
-      && candidates.every(candidate => candidateOrder.has(candidate.credential_id) && credentialIds.has(candidate.credential_id))
-    const orderedNodes = candidatesMatchNodes
+    // Live nodes are often a subset of resolve candidates (offline / filtered-out
+    // credentials still exist in the binding set). Require live ⊆ candidates so
+    // we can order, label, size cards, and submit a full-set reorder safely.
+    const liveCoveredByCandidates = rawModel != null
+      && candidates.length > 0
+      && modelNodes.every(node => candidateOrder.has(node.credential_id))
+    const orderedNodes = liveCoveredByCandidates
       ? [...modelNodes].sort((left, right) => (candidateOrder.get(left.credential_id) ?? Number.MAX_SAFE_INTEGER) - (candidateOrder.get(right.credential_id) ?? Number.MAX_SAFE_INTEGER))
       : modelNodes
     const requestIds = new Set<string>()
@@ -334,8 +337,8 @@ const modelGroups = computed<ModelGroup[]>(() => {
       featured: meta.featured,
       hotRequests: meta.hotRequests,
       aliases,
-      reorderRawModel: candidatesMatchNodes ? rawModel : undefined,
-      reorderRevision: candidatesMatchNodes && rawModel
+      reorderRawModel: liveCoveredByCandidates ? rawModel : undefined,
+      reorderRevision: liveCoveredByCandidates && rawModel
         ? reorderRevisionsByRawModel.value.get(modelKey(rawModel))
         : undefined,
     })
@@ -376,7 +379,7 @@ const filteredModelGroups = computed<ModelGroup[]>(() => {
 const hasFilteredGroups = computed(() => filteredModelGroups.value.length > 0)
 
 // ── 节点拖拽调整优先级（HTML5 dnd） ───────────────────────────────────────
-// 单一 raw-model + 完整候选集 + reorder_revision 即可重排（与状态过滤解耦）。
+// 单一 raw-model + live ⊆ candidates + reorder_revision 即可重排（与状态过滤解耦）。
 // 可见子集上拖动时，把相对顺序写回完整候选列表再提交（后端要求完整集原子写）。
 const dragScopeKey = ref<string | null>(null)
 const dragSourceCredentialId = ref<number | null>(null)
@@ -394,7 +397,7 @@ function canReorder(group: ModelGroup): boolean {
 function dragDisabledHint(group: ModelGroup): string {
   if (!isSuperAdmin()) return '仅超级管理员可以调整优先级。'
   if (dragSaving.value) return '正在保存优先级调整。'
-  if (!group.reorderRawModel) return '该模型分组合并了多个原始模型或实时节点不完整，无法安全调整优先级。'
+  if (!group.reorderRawModel) return '该模型分组合并了多个原始模型，或存在不在候选集中的实时节点，无法安全调整优先级。'
   if (!group.reorderRevision) return '尚未拿到后端修订版本，请等待数据加载完成后再试。'
   return '拖动节点以调整优先级，越靠前优先级越高。隐藏状态的节点会保持原有相对位置。'
 }
