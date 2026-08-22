@@ -57,7 +57,7 @@ func TestFileWriter_Basic(t *testing.T) {
 func TestFileWriter_Rotation(t *testing.T) {
 	tmpDir := t.TempDir()
 	fw := NewFileWriter(tmpDir)
-	fw.maxFileSize = 500 // 设置为 500 字节方便测试
+	fw.maxFileSize = 500  // 设置为 500 字节方便测试
 	fw.maxDailyFiles = 20 // 增加限制避免超出
 	defer fw.Close()
 
@@ -80,7 +80,7 @@ func TestFileWriter_Rotation(t *testing.T) {
 
 		err := fw.WriteSnapshot(ctx, sess, stats, args)
 		require.NoError(t, err)
-		
+
 		// 强制刷新以更新文件大小
 		fw.Flush()
 	}
@@ -107,8 +107,8 @@ func TestFileWriter_Rotation(t *testing.T) {
 func TestFileWriter_MaxDailyFiles(t *testing.T) {
 	tmpDir := t.TempDir()
 	fw := NewFileWriter(tmpDir)
-	fw.maxFileSize = 10    // 很小的文件大小
-	fw.maxDailyFiles = 3   // 最多 3 个文件
+	fw.maxFileSize = 10  // 很小的文件大小
+	fw.maxDailyFiles = 3 // 最多 3 个文件
 	defer fw.Close()
 
 	ctx := context.Background()
@@ -117,10 +117,10 @@ func TestFileWriter_MaxDailyFiles(t *testing.T) {
 	var lastErr error
 	for i := 0; i < 100; i++ {
 		sess := &session.Session{
-			SessionID: "test-session-" + string(rune(i)),
-			TenantID:  "default",
-			APIKeyID:  1,
-			CreatedAt: time.Now(),
+			SessionID:  "test-session-" + string(rune(i)),
+			TenantID:   "default",
+			APIKeyID:   1,
+			CreatedAt:  time.Now(),
 			Annotation: string(make([]byte, 50)),
 		}
 		stats := &session.SessionStats{TotalTurns: 1}
@@ -148,10 +148,10 @@ func TestFileWriter_Compression(t *testing.T) {
 	// 写入大量重复数据（压缩效果好）
 	for i := 0; i < 10; i++ {
 		sess := &session.Session{
-			SessionID: "test-session-" + string(rune(i)),
-			TenantID:  "default",
-			APIKeyID:  1,
-			CreatedAt: time.Now(),
+			SessionID:  "test-session-" + string(rune(i)),
+			TenantID:   "default",
+			APIKeyID:   1,
+			CreatedAt:  time.Now(),
 			Annotation: string(make([]byte, 1000)), // 1KB 空字符（压缩效果好）
 		}
 		stats := &session.SessionStats{TotalTurns: 1}
@@ -196,7 +196,7 @@ func TestFileWriter_Retry(t *testing.T) {
 
 	// 关闭文件后再写入，会触发重试
 	fw.Close()
-	
+
 	// 创建只读目录模拟失败
 	backupDir := filepath.Join(tmpDir, "backups")
 	os.Chmod(backupDir, 0400)

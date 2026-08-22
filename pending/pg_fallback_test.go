@@ -12,11 +12,11 @@ import (
 
 // fakeSource 是 FallbackSource 的测试替身：返回预置条目并记录调用。
 type fakeSource struct {
-	entries    map[string]*Response // key: sessionID + "\x00" + requestID
-	latest     map[string]*Response // key: sessionID；requestID 固定 latest-rid
-	calls      int
+	entries     map[string]*Response // key: sessionID + "\x00" + requestID
+	latest      map[string]*Response // key: sessionID；requestID 固定 latest-rid
+	calls       int
 	latestCalls int
-	err        error
+	err         error
 }
 
 func (f *fakeSource) Get(ctx context.Context, sessionID, requestID string) (*Response, bool, error) {

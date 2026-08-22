@@ -78,11 +78,11 @@ func newScheduler(store *goalrun.Store, disp Dispatcher, cfg SchedulerConfig) *G
 //
 // 「NoData」表示 SELECT 返回 0 行（空 batch）。
 type expectedProcessOnceExpectations struct {
-	updates       int                  // UPDATE 命中数
-	actionIDs     []string             // 期望的 action_id 序列
-	tokenSequence []int64              // 期望 fencing_token 序列（递增）
-	now           time.Time            // 提供给 SELECT 的 now 参数
-	noData        bool                 // SELECT 是否返回空
+	updates       int       // UPDATE 命中数
+	actionIDs     []string  // 期望的 action_id 序列
+	tokenSequence []int64   // 期望 fencing_token 序列（递增）
+	now           time.Time // 提供给 SELECT 的 now 参数
+	noData        bool      // SELECT 是否返回空
 }
 
 // expectProcessOnce 让 mock 准备好一次 ProcessOnce 调用所需的全部期望。

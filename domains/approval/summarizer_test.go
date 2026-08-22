@@ -258,10 +258,10 @@ func TestSessionSummarizer_Fallback_WithoutLLMClient(t *testing.T) {
 
 func TestSessionSummarizer_RiskAssessment(t *testing.T) {
 	tests := []struct {
-		name           string
-		messageText    string
-		expectedRisk   string
-		description    string
+		name         string
+		messageText  string
+		expectedRisk string
+		description  string
 	}{
 		{
 			name:         "low_risk_general",

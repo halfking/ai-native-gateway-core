@@ -63,9 +63,9 @@ func (s *ProbeRedisStore) Enabled() bool { return s != nil && s.rdb != nil }
 // Mirrors LiveStreamTileSlim's role in live_stream_redis_store.go.
 type ProbeStreamTileSlim struct {
 	ID     string `json:"id"`
-	Ts     int64  `json:"ts"`     // unix milliseconds
-	Status string `json:"st"`     // pending|in-flight|ok|fail
-	Source string `json:"src"`    // integrity|node_probe|selfcheck
+	Ts     int64  `json:"ts"`  // unix milliseconds
+	Status string `json:"st"`  // pending|in-flight|ok|fail
+	Source string `json:"src"` // integrity|node_probe|selfcheck
 }
 
 // recordTransitionSrc is the Lua source for recordTransitionScript, kept as a

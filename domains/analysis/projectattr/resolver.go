@@ -38,12 +38,12 @@ type ProjectResolver struct {
 	clock     func() time.Time
 	invalFunc func(string) // optional post-invalidation hook (e.g. metrics)
 
-	mu      sync.RWMutex
-	cache   map[string]resolverEntry
-	flight  map[string]*resolverCall
+	mu     sync.RWMutex
+	cache  map[string]resolverEntry
+	flight map[string]*resolverCall
 
-	hits         atomic.Int64
-	misses       atomic.Int64
+	hits          atomic.Int64
+	misses        atomic.Int64
 	invalidations atomic.Int64
 }
 

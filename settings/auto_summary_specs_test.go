@@ -95,7 +95,7 @@ func TestAutoSummarySpecs_DefaultsMatchCodeConstants(t *testing.T) {
 // through map-reduce.
 func TestAutoSummarySpecs_RangesAreOperational(t *testing.T) {
 	cases := []struct {
-		key           string
+		key              string
 		wantMin, wantMax float64
 	}{
 		{"auto_summary.rolling_turn_gate", 1, 100},
@@ -141,11 +141,11 @@ func TestAutoSummarySpecs_RangesAreOperational(t *testing.T) {
 func TestAutoSummarySpecs_RegisteredInPlatformSpecs(t *testing.T) {
 	platform := PlatformSpecs()
 	want := map[string]bool{
-		"auto_summary.rolling_turn_gate":     false,
-		"auto_summary.map_reduce_threshold":   false,
-		"auto_summary.chunk_approx_chars":     false,
-		"auto_summary.default_rate_per_min":   false,
-		"auto_summary.default_worker_slots":    false,
+		"auto_summary.rolling_turn_gate":    false,
+		"auto_summary.map_reduce_threshold": false,
+		"auto_summary.chunk_approx_chars":   false,
+		"auto_summary.default_rate_per_min": false,
+		"auto_summary.default_worker_slots": false,
 	}
 	for _, sp := range platform {
 		if _, ok := want[sp.Key]; ok {

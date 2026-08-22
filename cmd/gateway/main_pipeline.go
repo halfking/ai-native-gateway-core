@@ -95,7 +95,7 @@ import (
 	agentecosystem "github.com/kaixuan/llm-gateway-go/domains/agent-ecosystem"               //nolint:depguard
 	sessionanalytics "github.com/kaixuan/llm-gateway-go/domains/analysis"                    //nolint:depguard // Phase 4 会话全景分析引擎
 	"github.com/kaixuan/llm-gateway-go/domains/analysis/bus"                                 //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/domains/analysis/projectattr"                        //nolint:depguard // 2026-08-20 项目归属 resolver 装配点
+	"github.com/kaixuan/llm-gateway-go/domains/analysis/projectattr"                         //nolint:depguard // 2026-08-20 项目归属 resolver 装配点
 	"github.com/kaixuan/llm-gateway-go/domains/analysis/workers"                             //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/assets"                                       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/authentication"                               //nolint:depguard // historical violation, B1 routing.go CQRS will fix

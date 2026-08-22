@@ -9,9 +9,9 @@ import "testing"
 //   - 两文本相等 → true（明文）
 func TestOwnerAllowsSensitive(t *testing.T) {
 	cases := []struct {
-		name                          string
-		callerOwner, dataOwner        string
-		want                          bool
+		name                   string
+		callerOwner, dataOwner string
+		want                   bool
 	}{
 		{"both same", "alice", "alice", true},
 		{"mismatch", "alice", "bob", false},
@@ -34,18 +34,18 @@ func TestOwnerAllowsSensitive(t *testing.T) {
 // TestShouldRedact 覆盖三种 redaction_mode 与 owner 判定的组合。
 func TestShouldRedact(t *testing.T) {
 	cases := []struct {
-		mode                                   RedactionMode
-		callerOwner, dataOwner                 string
-		want                                   bool
+		mode                   RedactionMode
+		callerOwner, dataOwner string
+		want                   bool
 	}{
-		{RedactOff, "alice", "alice", false},       // off 永不脱敏
+		{RedactOff, "alice", "alice", false}, // off 永不脱敏
 		{RedactOff, "alice", "bob", false},
-		{RedactAlways, "alice", "alice", true},     // always 永远脱敏
+		{RedactAlways, "alice", "alice", true}, // always 永远脱敏
 		{RedactAlways, "", "", true},
-		{RedactOwnerMismatch, "alice", "alice", false}, // 同 owner → 放行
-		{RedactOwnerMismatch, "alice", "bob", true},   // 不同 → 脱敏
-		{RedactOwnerMismatch, "", "alice", true},      // 调用方无身份 → 脱敏
-		{RedactOwnerMismatch, "alice", "", true},      // 数据无主 → 脱敏
+		{RedactOwnerMismatch, "alice", "alice", false},     // 同 owner → 放行
+		{RedactOwnerMismatch, "alice", "bob", true},        // 不同 → 脱敏
+		{RedactOwnerMismatch, "", "alice", true},           // 调用方无身份 → 脱敏
+		{RedactOwnerMismatch, "alice", "", true},           // 数据无主 → 脱敏
 		{RedactionMode("unknown"), "alice", "alice", true}, // 未知模式保守脱敏
 	}
 	for _, c := range cases {
@@ -60,9 +60,9 @@ func TestShouldRedact(t *testing.T) {
 // TestParseCharLocation 覆盖位置解析。
 func TestParseCharLocation(t *testing.T) {
 	cases := []struct {
-		loc       string
-		s, e      int
-		ok        bool
+		loc  string
+		s, e int
+		ok   bool
 	}{
 		{"char:0-5", 0, 5, true},
 		{"char:120-145", 120, 145, true},

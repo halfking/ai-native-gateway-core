@@ -87,15 +87,15 @@ func (s *CredentialNodeSource) DiscoverActiveNodes(ctx context.Context) ([]model
 		if outModel != "" {
 			useModel = outModel
 		}
-			nodes = append(nodes, modelquality.CredentialNode{
-				CredentialID: credID,
-				Provider:     providerName,
-				Label:        label,
-				BaseURL:      baseURL,
-				APIKey:       apiKey,
-				RawModel:     useModel,
-				RawModelName: rawModel,
-			})
+		nodes = append(nodes, modelquality.CredentialNode{
+			CredentialID: credID,
+			Provider:     providerName,
+			Label:        label,
+			BaseURL:      baseURL,
+			APIKey:       apiKey,
+			RawModel:     useModel,
+			RawModelName: rawModel,
+		})
 	}
 	return nodes, rows.Err()
 }

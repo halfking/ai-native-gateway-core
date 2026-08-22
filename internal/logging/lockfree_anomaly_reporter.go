@@ -58,11 +58,11 @@ type AnomalyReport struct {
 // constants so producers can switch on the typed value rather than
 // a stringly-typed `anomaly_type` field.
 const (
-	AnomalyTypeToolCallsMissing    = "tool_calls_missing"
-	AnomalyTypeConversionError     = "conversion_error"
-	AnomalyTypeSemanticIncomplete  = "semantic_incomplete"
-	AnomalyTypeRawLogOverflow      = "raw_log_overflow"
-	AnomalyTypeRawLogCloseDrained  = "raw_log_close_drained"
+	AnomalyTypeToolCallsMissing   = "tool_calls_missing"
+	AnomalyTypeConversionError    = "conversion_error"
+	AnomalyTypeSemanticIncomplete = "semantic_incomplete"
+	AnomalyTypeRawLogOverflow     = "raw_log_overflow"
+	AnomalyTypeRawLogCloseDrained = "raw_log_close_drained"
 )
 
 // LockFreeAnomalyReporter 无锁异常报告器

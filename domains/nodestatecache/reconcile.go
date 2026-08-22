@@ -75,7 +75,7 @@ func (c *Cache) Reconcile(ctx context.Context, snapshot AuthoritativeSnapshot) R
 				FPUsed: rec.FPUsed, FPLimit: rec.FPLimit,
 				RPMUsed: rec.RPMUsed, RPMLimit: rec.RPMLimit,
 				WindowID: cur.WindowID,
-				Flags:   cur.Flags, // 保留缓存侧满载标志，由 Override 内重算联动 Full 位图
+				Flags:    cur.Flags, // 保留缓存侧满载标志，由 Override 内重算联动 Full 位图
 			}
 			c.res.Override(id, want, now)
 			rep.CorrectedResource++
