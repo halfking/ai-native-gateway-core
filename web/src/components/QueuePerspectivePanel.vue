@@ -17,7 +17,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { getFeatured, resolveRouting, reorderCandidateBindings, type CandidateBindingReorderItem, type RoutingCandidate } from '../api/routing'
 import { getRequestLogTopModels, type TopRequestModel } from '../api/logs'
-import { getSlidingWindow, getSlidingWindowBatch } from '../api/credential-monitor'
+import { getSlidingWindow, getSlidingWindowBatch, type CallEntry } from '../api/credential-monitor'
 import {
   queueRef,
   nodesRef,
@@ -33,6 +33,7 @@ import { readLiveStreamPreferences, writeLiveStreamPreferences, type QueueStatus
 import {
   WINDOW_MINUTES,
   STATS_REFRESH_MS,
+  CARD_ENTRY_LIMIT,
   assignSpacedPriorities,
   cardWidthFromCapacity,
   credentialDisplayName,
@@ -581,6 +582,7 @@ function nodeCardWidth(group: ModelGroup, n: LiveNodeStatus): number {
 
 type WindowStatsLite = { success: number; failed: number; total: number }
 const windowStatsByKey = ref<Map<string, WindowStatsLite>>(new Map())
+const windowEntriesByKey = ref<Map<string, CallEntry[]>>(new Map())
 let statsTimer: ReturnType<typeof setInterval> | null = null
 let statsAbort: AbortController | null = null
 
@@ -591,6 +593,11 @@ function statsKey(credentialId: number, model: string): string {
 function windowStatsFor(group: ModelGroup, credentialId: number): WindowStatsLite | null {
   if (!group.reorderRawModel) return null
   return windowStatsByKey.value.get(statsKey(credentialId, group.reorderRawModel)) ?? null
+}
+
+function windowEntriesFor(group: ModelGroup, credentialId: number): CallEntry[] {
+  if (!group.reorderRawModel) return []
+  return windowEntriesByKey.value.get(statsKey(credentialId, group.reorderRawModel)) ?? []
 }
 
 async function refreshWindowStats() {
@@ -610,21 +617,27 @@ async function refreshWindowStats() {
   const controller = new AbortController()
   statsAbort = controller
   const next = new Map(windowStatsByKey.value)
+  const nextEntries = new Map(windowEntriesByKey.value)
 
   const applyStats = (credentialId: number, model: string, success: number, failed: number, total: number) => {
     next.set(statsKey(credentialId, model), { success, failed, total })
+  }
+  const applyEntries = (credentialId: number, model: string, entries: CallEntry[] | undefined) => {
+    if (!entries) return
+    nextEntries.set(statsKey(credentialId, model), entries.slice(0, CARD_ENTRY_LIMIT))
   }
 
   try {
     const batch = await getSlidingWindowBatch(
       targets.map(t => ({ credential_id: t.credentialId, model: t.model })),
-      WINDOW_MINUTES,
+      { minutes: WINDOW_MINUTES, includeEntries: true, entryLimit: CARD_ENTRY_LIMIT },
       { signal: controller.signal },
     )
     if (controller.signal.aborted) return
     for (const row of batch.results || []) {
       if (!row || row.error || !row.stats) continue
       applyStats(row.credential_id, row.model, row.stats.success ?? 0, row.stats.failed ?? 0, row.stats.total ?? 0)
+      applyEntries(row.credential_id, row.model, row.entries)
     }
   } catch {
     // Whole-batch failure → fall back to legacy N-way GET polling.
@@ -637,13 +650,17 @@ async function refreshWindowStats() {
           const result = await getSlidingWindow(credentialId, model, WINDOW_MINUTES, { signal: controller.signal })
           if (controller.signal.aborted) return
           applyStats(credentialId, model, result.stats?.success ?? 0, result.stats?.failed ?? 0, result.stats?.total ?? 0)
+          applyEntries(credentialId, model, result.entries)
         } catch {
           // keep previous / leave missing — card shows em dash
         }
       }))
     }
   }
-  if (!controller.signal.aborted) windowStatsByKey.value = next
+  if (!controller.signal.aborted) {
+    windowStatsByKey.value = next
+    windowEntriesByKey.value = nextEntries
+  }
 }
 
 function startStatsPoll() {
@@ -873,12 +890,17 @@ function formatTs(ts: string | undefined): string {
                   class="qp-node-card"
                   :class="nodeCardTone(node)"
                   :title="`${nodeTitle(node, group)}：${nodeStatusSummary(node)}${node.last_error ? `；${node.last_error}` : ''}`"
-                  :draggable="canReorder(group)"
                   @click="openNode(node, group.aliases)"
-                  @dragstart="onDragStart($event, group, node.credential_id)"
-                  @dragend="clearDragState"
                 >
-                  <span class="qp-node-card-drag-handle" aria-hidden="true">⋮⋮</span>
+                  <span
+                    class="qp-node-card-drag-handle"
+                    :class="{ 'is-enabled': canReorder(group) }"
+                    :draggable="canReorder(group)"
+                    aria-hidden="true"
+                    @click.stop.prevent
+                    @dragstart.stop="onDragStart($event, group, node.credential_id)"
+                    @dragend.stop="clearDragState"
+                  >⋮⋮</span>
                   <span class="qp-node-card-title">{{ nodeTitle(node, group) }}</span>
                   <span class="qp-node-card-dots" :title="`熔断 ${node.circuit_state || '未知'} · 可用性 ${node.availability_state || '未知'} · 配额 ${node.quota_state || '未知'} · 健康 ${node.health_status || '未知'}`">
                     <i class="qp-dot" :class="dotClass(circuitOk(node))" /><i class="qp-dot" :class="dotClass(availabilityOk(node))" /><i class="qp-dot" :class="dotClass(quotaOk(node))" /><i class="qp-dot" :class="dotClass(healthOk(node))" />
@@ -897,6 +919,18 @@ function formatTs(ts: string | undefined): string {
                     </template>
                     <template v-if="node.in_flight"> · 在途 {{ node.in_flight }}</template>
                   </span>
+                  <div
+                    v-if="windowEntriesFor(group, node.credential_id).length"
+                    class="qp-node-window"
+                    aria-hidden="true"
+                  >
+                    <span
+                      v-for="(entry, idx) in windowEntriesFor(group, node.credential_id)"
+                      :key="`${entry.rid || 'e'}-${entry.ts}-${idx}`"
+                      class="qp-node-window-cell"
+                      :class="entry.ok ? 'ok' : 'bad'"
+                    />
+                  </div>
                 </button>
               </div>
             </div>
@@ -1143,9 +1177,13 @@ function formatTs(ts: string | undefined): string {
 .qp-stat-fail { color: var(--kx-danger); font-variant-numeric: tabular-nums; }
 .qp-stat-window { color: var(--kx-muted); }
 .qp-node-card:hover { border-color:var(--kx-accent); }
-.qp-node-card-drag-handle { position:absolute; top:3px; right:5px; font-size:10px; color:var(--kx-text-secondary); opacity:.6; line-height:1; user-select:none; }
-.qp-node-card[draggable="true"] { cursor: grab; }
-.qp-node-card[draggable="true"]:active { cursor: grabbing; }
+.qp-node-card-drag-handle { position:absolute; top:3px; right:5px; font-size:10px; color:var(--kx-text-secondary); opacity:.45; line-height:1; user-select:none; cursor:default; }
+.qp-node-card-drag-handle.is-enabled { opacity:.85; cursor:grab; }
+.qp-node-card-drag-handle.is-enabled:active { cursor:grabbing; }
+.qp-node-window { display:flex; align-items:stretch; height:8px; gap:1px; overflow:hidden; margin-top:2px; }
+.qp-node-window-cell { flex:0 0 3px; width:3px; min-width:2px; border-radius:1px; background:var(--kx-danger); }
+.qp-node-window-cell.ok { background:var(--kx-success); }
+.qp-node-window-cell.bad { background:var(--kx-danger); }
 .qp-node-card-title { font-size:12px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; padding-right:14px; }
 .qp-node-card-dots { display:inline-flex; gap:4px; align-items:center; }
 .qp-dot { width:7px; height:7px; border-radius:50%; background:var(--kx-text-secondary); opacity:.5; }

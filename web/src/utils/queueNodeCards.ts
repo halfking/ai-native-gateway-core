@@ -6,6 +6,8 @@ export const WINDOW_MINUTES = 5
 export const STATS_REFRESH_MS = 30_000
 export const CARD_MIN_W = 120
 export const CARD_MAX_W = 280
+/** Mini window cells on queue node cards (batch include_entries cap). */
+export const CARD_ENTRY_LIMIT = 24
 
 /** Assign unique priorities with preferred step=5 (5,10,15…). Compresses when n*step > 99. */
 export function assignSpacedPriorities(count: number, step = PRIORITY_STEP, max = PRIORITY_MAX): number[] {

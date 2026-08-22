@@ -11,9 +11,10 @@ import (
 )
 
 const (
-	slidingWindowBatchMaxItems = 100
-	slidingWindowBatchWorkers  = 8
-	slidingWindowBatchLimit    = 50 // entries fetched per pair; stats only returned
+	slidingWindowBatchMaxItems    = 100
+	slidingWindowBatchWorkers     = 8
+	slidingWindowBatchLimit       = 50 // entries fetched per pair for stats
+	slidingWindowBatchMaxEntryRet = 48 // hard cap when include_entries is true
 )
 
 // loadSlidingWindowEntries loads call entries for one credential×model pair.
@@ -66,9 +67,9 @@ func slidingWindowStatsMap(stats credentialhealth.Stats) map[string]any {
 	}
 }
 
-// handleSlidingWindowBatch returns per-pair window stats without entries.
+// handleSlidingWindowBatch returns per-pair window stats; optionally entries.
 // POST /api/credentials/sliding-window/batch
-// Body: {"minutes":5,"items":[{"credential_id":17,"model":"claude-sonnet-5"}]}
+// Body: {"minutes":5,"include_entries":true,"entry_limit":24,"items":[...]}
 func (m *CredentialMonitorHandlers) handleSlidingWindowBatch(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -76,8 +77,10 @@ func (m *CredentialMonitorHandlers) handleSlidingWindowBatch(w http.ResponseWrit
 	}
 
 	var req struct {
-		Minutes int `json:"minutes"`
-		Items   []struct {
+		Minutes        int  `json:"minutes"`
+		IncludeEntries bool `json:"include_entries"`
+		EntryLimit     int  `json:"entry_limit"`
+		Items          []struct {
 			CredentialID int    `json:"credential_id"`
 			Model        string `json:"model"`
 		} `json:"items"`
@@ -112,6 +115,17 @@ func (m *CredentialMonitorHandlers) handleSlidingWindowBatch(w http.ResponseWrit
 		return
 	}
 
+	entryLimit := 0
+	if req.IncludeEntries {
+		entryLimit = req.EntryLimit
+		if entryLimit <= 0 {
+			entryLimit = 24
+		}
+		if entryLimit > slidingWindowBatchMaxEntryRet {
+			entryLimit = slidingWindowBatchMaxEntryRet
+		}
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
@@ -121,11 +135,12 @@ func (m *CredentialMonitorHandlers) handleSlidingWindowBatch(w http.ResponseWrit
 		model        string
 	}
 	type itemResult struct {
-		CredentialID int            `json:"credential_id"`
-		Model        string         `json:"model"`
-		Source       string         `json:"source,omitempty"`
-		Stats        map[string]any `json:"stats,omitempty"`
-		Error        string         `json:"error,omitempty"`
+		CredentialID int                          `json:"credential_id"`
+		Model        string                       `json:"model"`
+		Source       string                       `json:"source,omitempty"`
+		Stats        map[string]any               `json:"stats,omitempty"`
+		Entries      []credentialhealth.CallEntry `json:"entries,omitempty"`
+		Error        string                       `json:"error,omitempty"`
 	}
 
 	work := make([]pair, 0, len(req.Items))
@@ -166,6 +181,13 @@ func (m *CredentialMonitorHandlers) handleSlidingWindowBatch(w http.ResponseWrit
 				stats := credentialhealth.ComputeStats(entries)
 				results[job.idx].Source = source
 				results[job.idx].Stats = slidingWindowStatsMap(stats)
+				if req.IncludeEntries {
+					ret := entries
+					if len(ret) > entryLimit {
+						ret = ret[:entryLimit]
+					}
+					results[job.idx].Entries = ret
+				}
 			}
 		}()
 	}

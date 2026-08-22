@@ -92,8 +92,8 @@ function mountDrawer(model?: string) {
         Teleport: true,
         RequestLogDrawer: {
           name: 'RequestLogDrawer',
-          props: ['requestId'],
-          template: '<div class="stub-request-log" :data-id="requestId || \'\'" />',
+          props: ['requestId', 'stackLevel'],
+          template: '<div class="stub-request-log" :data-id="requestId || \'\'" :data-stack="stackLevel || \'\'" />',
         },
         NodeDetailConcurrencyPanel: {
           name: 'NodeDetailConcurrencyPanel',
@@ -288,7 +288,9 @@ describe('NodeDetailDrawer model×node scope', () => {
     await flushPromises()
 
     await wrapper.get('.nd-window-cell').trigger('click')
-    expect(wrapper.find('.stub-request-log').attributes('data-id')).toBe('req-abc')
+    const stub = wrapper.find('.stub-request-log')
+    expect(stub.attributes('data-id')).toBe('req-abc')
+    expect(stub.attributes('data-stack')).toBe('nested')
   })
 
   it('shows settings sections with concurrency panel without a manual load button', async () => {

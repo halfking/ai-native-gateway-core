@@ -185,6 +185,7 @@ const node = currentNode
     </aside>
     <RequestLogDrawer
       :request-id="detailRequestId"
+      stack-level="nested"
       @close="closeRequestDetail"
       @generate-session-summary="jumpToSessionSummary"
     />
