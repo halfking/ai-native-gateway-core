@@ -20,11 +20,6 @@ import {
   type AttachmentInfo,
 } from '../api'
 import {
-  updateSessionTitle,
-  deleteSessionTitle,
-  summarizeSessionTitle,
-} from '../api/memora'
-import {
   getSessionTags,
   addSessionTag,
   updateSessionTag,
@@ -35,6 +30,7 @@ import { isDefaultTenant } from '../store'
 import RequestTracePanel from './RequestTracePanel.vue'
 import RoutingAttemptsTimeline from './RoutingAttemptsTimeline.vue'
 import ModelIdentityChip from './model/ModelIdentityChip.vue'
+import SessionMetaTitleRow from './SessionMetaTitleRow.vue'
 import { useRouter } from 'vue-router'
 
 const props = withDefaults(defineProps<{
@@ -48,6 +44,7 @@ const props = withDefaults(defineProps<{
 
 const emit = defineEmits<{
   close: []
+  /** @deprecated request-logs 模式已在抽屉内联摘要；保留供 Dashboard 跳转兼容 */
   generateSessionSummary: [sessionId: string]
   sessionTitleChanged: [{ taskId: string; sessionId: string | null; title: string | null }]
 }>()
@@ -64,12 +61,6 @@ const showTrace = ref(false)
 const sessionTags = ref<SessionTag[]>([])
 const sessionTagsLoading = ref(false)
 const sessionTagsError = ref<string | null>(null)
-const editingTitle = ref(false)
-const draftTitle = ref('')
-const titleSaving = ref(false)
-const titleError = ref<string | null>(null)
-const regeneratingTitle = ref(false)
-const titleDetailsOpen = ref(false)
 const addingTag = ref(false)
 const newTagKey = ref('')
 const newTagValue = ref('')
@@ -168,12 +159,6 @@ function resetSessionMetaState() {
   sessionTags.value = []
   sessionTagsLoading.value = false
   sessionTagsError.value = null
-  editingTitle.value = false
-  draftTitle.value = ''
-  titleSaving.value = false
-  titleError.value = null
-  regeneratingTitle.value = false
-  titleDetailsOpen.value = false
   addingTag.value = false
   newTagKey.value = ''
   newTagValue.value = ''
@@ -202,99 +187,18 @@ async function loadSessionTags(sessionId: string) {
   }
 }
 
-function startEditTitle() {
-  if (!detail.value) return
-  draftTitle.value = detail.value.session_title ?? ''
-  editingTitle.value = true
-  titleError.value = null
-}
-
-function cancelEditTitle() {
-  editingTitle.value = false
-  draftTitle.value = ''
-  titleError.value = null
-}
-
 function isCurrentDetail(requestId: string, loadSeq: number): boolean {
   return detailLoadSeq === loadSeq && detail.value?.request_id === requestId
 }
 
-function publishSessionTitle(taskId: string, sessionId: string | null, title: string | null) {
-  emit('sessionTitleChanged', { taskId, sessionId, title })
-}
-
-async function saveEditTitle() {
+function onSessionTitleChanged(title: string | null) {
   if (!detail.value?.gw_task_id) return
-  const requestId = detail.value.request_id
-  const loadSeq = detailLoadSeq
-  const taskId = detail.value.gw_task_id
-  const sessionId = detail.value.gw_session_id
-  const title = draftTitle.value.trim()
-  if (!title) {
-    titleError.value = '标题不能为空'
-    return
-  }
-  titleSaving.value = true
-  titleError.value = null
-  try {
-    await updateSessionTitle(taskId, { title, scoped_session_id: sessionId ?? '' })
-    publishSessionTitle(taskId, sessionId, title)
-    if (isCurrentDetail(requestId, loadSeq)) {
-      detail.value!.session_title = title
-      editingTitle.value = false
-    }
-  } catch (e: unknown) {
-    if (isCurrentDetail(requestId, loadSeq)) {
-      titleError.value = e instanceof Error ? e.message : String(e)
-    }
-  } finally {
-    if (isCurrentDetail(requestId, loadSeq)) titleSaving.value = false
-  }
-}
-
-async function regenerateTitle() {
-  if (!detail.value?.gw_task_id) return
-  const requestId = detail.value.request_id
-  const loadSeq = detailLoadSeq
-  const taskId = detail.value.gw_task_id
-  const sessionId = detail.value.gw_session_id
-  regeneratingTitle.value = true
-  titleError.value = null
-  try {
-    const response = await summarizeSessionTitle(taskId, { session_id: sessionId ?? undefined })
-    publishSessionTitle(taskId, sessionId, response.title)
-    if (isCurrentDetail(requestId, loadSeq)) detail.value!.session_title = response.title
-  } catch (e: unknown) {
-    if (isCurrentDetail(requestId, loadSeq)) {
-      titleError.value = e instanceof Error ? e.message : String(e)
-    }
-  } finally {
-    if (isCurrentDetail(requestId, loadSeq)) regeneratingTitle.value = false
-  }
-}
-
-async function clearTitle() {
-  if (!detail.value?.gw_task_id || !confirm('确认清空此会话的标题？')) return
-  const requestId = detail.value.request_id
-  const loadSeq = detailLoadSeq
-  const taskId = detail.value.gw_task_id
-  const sessionId = detail.value.gw_session_id
-  titleSaving.value = true
-  titleError.value = null
-  try {
-    await deleteSessionTitle(taskId, sessionId ?? '')
-    publishSessionTitle(taskId, sessionId, null)
-    if (isCurrentDetail(requestId, loadSeq)) {
-      detail.value!.session_title = null
-      editingTitle.value = false
-    }
-  } catch (e: unknown) {
-    if (isCurrentDetail(requestId, loadSeq)) {
-      titleError.value = e instanceof Error ? e.message : String(e)
-    }
-  } finally {
-    if (isCurrentDetail(requestId, loadSeq)) titleSaving.value = false
-  }
+  detail.value.session_title = title
+  emit('sessionTitleChanged', {
+    taskId: detail.value.gw_task_id,
+    sessionId: detail.value.gw_session_id,
+    title,
+  })
 }
 
 function startAddTag() {
@@ -690,42 +594,12 @@ function routingAttempts(): RequestLogDetail['routing_attempts'] {
         </div>
 
         <section v-if="props.mode === 'request-logs'" class="drawer-section session-meta-section">
-          <div class="session-meta-title">
-            <strong>会话标题:</strong>
-            <template v-if="!editingTitle">
-              <span class="title-value" :class="{ 'title-missing': !detail.session_title }">{{ detail.session_title || '无标题' }}</span>
-              <button
-                v-if="detail.gw_task_id"
-                class="btn btn-sm"
-                type="button"
-                :aria-expanded="titleDetailsOpen"
-                @click="titleDetailsOpen = !titleDetailsOpen"
-              >
-                {{ titleDetailsOpen ? '收起标题详情' : '标题详情' }}
-              </button>
-              <button
-                v-if="detail.gw_session_id"
-                class="btn btn-sm"
-                type="button"
-                :aria-label="t('requests.list.trace.drawerSummaryAria')"
-                :title="t('requests.list.trace.drawerSummaryTitle')"
-                @click="$emit('generateSessionSummary', detail.gw_session_id)"
-              >
-                {{ t('requests.list.trace.drawerSummaryButton') }}
-              </button>
-            </template>
-            <template v-else>
-              <input v-model="draftTitle" class="title-input" maxlength="80" placeholder="2-80 字符，不含 XML 标签" @keydown.enter="saveEditTitle" @keydown.esc="cancelEditTitle" />
-              <button class="btn btn-sm btn-primary" :disabled="titleSaving" @click="saveEditTitle">{{ titleSaving ? '保存中…' : '保存' }}</button>
-              <button class="btn btn-sm" :disabled="titleSaving" @click="cancelEditTitle">取消</button>
-            </template>
-            <span v-if="titleError" class="meta-error">{{ titleError }}</span>
-          </div>
-          <div v-if="titleDetailsOpen && !editingTitle && detail.gw_task_id" class="session-meta-title-actions">
-            <button class="btn btn-sm" :disabled="titleSaving || regeneratingTitle" @click="startEditTitle">编辑</button>
-            <button class="btn btn-sm" :disabled="titleSaving || regeneratingTitle" @click="regenerateTitle">{{ regeneratingTitle ? '重新生成中…' : (detail.session_title ? '重新生成' : '生成标题') }}</button>
-            <button v-if="detail.session_title" class="btn btn-sm btn-danger-ghost" :disabled="titleSaving || regeneratingTitle" @click="clearTitle">清空</button>
-          </div>
+          <SessionMetaTitleRow
+            :task-id="detail.gw_task_id"
+            :session-id="detail.gw_session_id"
+            :title="detail.session_title"
+            @title-changed="onSessionTitleChanged"
+          />
 
           <div class="session-meta-tags">
             <div class="tags-header">
@@ -1195,7 +1069,6 @@ function routingAttempts(): RequestLogDetail['routing_attempts'] {
   padding: 8px 12px;
   margin-top: 8px;
 }
-.session-meta-title,
 .tags-header,
 .tag-row,
 .outbound-summary {
@@ -1204,13 +1077,6 @@ function routingAttempts(): RequestLogDetail['routing_attempts'] {
   align-items: center;
   gap: 8px;
   font-size: 12px;
-}
-.session-meta-title { margin-bottom: 8px; }
-.session-meta-title-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin: -2px 0 8px;
 }
 .session-meta-tags { border-top: 1px dashed var(--border); padding-top: 8px; }
 .tags-list { display: flex; flex-direction: column; gap: 4px; }

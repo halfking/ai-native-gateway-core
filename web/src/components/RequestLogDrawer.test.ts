@@ -3,14 +3,16 @@ import { createI18n } from 'vue-i18n'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import RequestLogDrawer from './RequestLogDrawer.vue'
 
-const { getRequestLogDetail } = vi.hoisted(() => ({
+const { getRequestLogDetail, getSessionSummary } = vi.hoisted(() => ({
   getRequestLogDetail: vi.fn(),
+  getSessionSummary: vi.fn(),
 }))
 
 vi.mock('../api', () => ({
   getRequestLogDetail,
   attachmentURL: (path: string) => path,
 }))
+vi.mock('../api/logs', () => ({ getSessionSummary }))
 vi.mock('../store', () => ({ isDefaultTenant: () => true }))
 vi.mock('../api/memora', () => ({
   updateSessionTitle: vi.fn(),
@@ -34,8 +36,11 @@ const i18n = createI18n({
         list: {
           trace: {
             drawerSummaryAria: '会话摘要',
-            drawerSummaryTitle: '生成会话摘要',
+            drawerSummaryTitle: '查看或生成会话摘要',
             drawerSummaryButton: '摘要',
+            generating: '总结中…',
+            generate: '生成总结',
+            summaryRange: '范围：{from} ~ {to} · {n} 条',
           },
         },
       },
@@ -97,6 +102,7 @@ describe('RequestLogDrawer staged load', () => {
 describe('RequestLogDrawer title/summary compact row', () => {
   beforeEach(() => {
     getRequestLogDetail.mockReset()
+    getSessionSummary.mockReset()
     getRequestLogDetail.mockResolvedValue({
       request_id: 'req-2',
       ts: '2026-08-21T00:00:00Z',
@@ -108,6 +114,19 @@ describe('RequestLogDrawer title/summary compact row', () => {
       session_title: null,
       request_body: null,
       response_body: null,
+    })
+    getSessionSummary.mockResolvedValue({
+      summary: '抽屉内摘要正文',
+      key_points: [],
+      meta: {
+        session_id: 'sess-1',
+        log_count: 1,
+        data_from: '2026-08-21T00:00:00Z',
+        data_to: '2026-08-21T00:01:00Z',
+        generated_at: '2026-08-21T00:02:00Z',
+        api_key_id: 1,
+        model: 'm',
+      },
     })
   })
 
@@ -127,7 +146,7 @@ describe('RequestLogDrawer title/summary compact row', () => {
     expect(wrapper.text()).not.toContain('生成标题')
   })
 
-  it('expands title actions and emits summary', async () => {
+  it('expands title actions and loads summary without emitting jump', async () => {
     const wrapper = mount(RequestLogDrawer, {
       props: { requestId: 'req-2', mode: 'request-logs' },
       global: {
@@ -139,6 +158,9 @@ describe('RequestLogDrawer title/summary compact row', () => {
     await wrapper.get('button[aria-expanded="false"]').trigger('click')
     expect(wrapper.text()).toContain('生成标题')
     await wrapper.get('button[aria-label="会话摘要"]').trigger('click')
-    expect(wrapper.emitted('generateSessionSummary')?.[0]).toEqual(['sess-1'])
+    await flushPromises()
+    expect(getSessionSummary).toHaveBeenCalledWith('sess-1')
+    expect(wrapper.text()).toContain('抽屉内摘要正文')
+    expect(wrapper.emitted('generateSessionSummary')).toBeUndefined()
   })
 })
