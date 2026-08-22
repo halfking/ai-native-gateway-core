@@ -42,10 +42,11 @@ const (
 	// defaultRedisEnforceTTL is the default lease duration used when
 	// GovernorSpec.LeaseTTL is zero.
 	defaultRedisEnforceTTL = 30 * time.Second
-	// defaultRedisDialTimeout bounds the Stage B Lua scripts at 100ms
-	// to match the rpm_redis precedent. Production wiring is responsible
-	// for setting a real per-call deadline via ctx.
-	defaultRedisDialTimeout = 100 * time.Millisecond
+	// defaultRedisReleaseTimeout bounds the Release and Renew Lua scripts
+	// at 100ms to match the rpm_redis precedent. Production wiring is
+	// responsible for setting a real per-call deadline on Acquire via
+	// the caller's ctx.
+	defaultRedisReleaseTimeout = 100 * time.Millisecond
 )
 
 // ── Lua scripts ────────────────────────────────────────────────────────────
@@ -96,6 +97,28 @@ end
 return redis.call('ZCARD', key)
 `
 
+// redisEnforceRenewLua refreshes the TTL for an existing lease token
+// without re-running the capacity check (the slot is already held). The
+// caller is responsible for ensuring the token is still in the ZSET —
+// ZADD-score-without-create lets us atomically confirm presence + bump
+// expiry in a single script. Returns 1 on success, 0 when the token has
+// already expired or never existed.
+const redisEnforceRenewLua = `
+local key = KEYS[1]
+local token = ARGV[1]
+local ttl_ms = tonumber(ARGV[2])
+if token == nil or token == '' or ttl_ms == nil or ttl_ms <= 0 then
+  return 0
+end
+local score = redis.call('ZSCORE', key, token)
+if score == false then
+  return 0
+end
+redis.call('ZADD', key, score, token)
+redis.call('PEXPIRE', key, ttl_ms)
+return 1
+`
+
 // ── RedisEnforceBackend ──────────────────────────────────────────────────
 
 // RedisEnforceBackend is the strict cluster-wide backend. Constructed via
@@ -115,10 +138,11 @@ type RedisEnforceBackend struct {
 	revision uint64
 	closedCh chan struct{}
 
-	// acquireS / releaseS are the *redis.Script handles; the go-redis
-	// package transparently handles EVALSHA-with-EVAL-fallback.
+	// acquireS / releaseS / renewS are the *redis.Script handles; the
+	// go-redis package transparently handles EVALSHA-with-EVAL-fallback.
 	acquireS *redis.Script
 	releaseS *redis.Script
+	renewS   *redis.Script
 }
 
 // NewRedisEnforceBackend constructs the cluster-wide enforcement backend
@@ -138,6 +162,7 @@ func NewRedisEnforceBackend(client redis.UniversalClient, instanceID string) *Re
 		closedCh:   make(chan struct{}),
 		acquireS:   redis.NewScript(redisEnforceAcquireLua),
 		releaseS:   redis.NewScript(redisEnforceReleaseLua),
+		renewS:     redis.NewScript(redisEnforceRenewLua),
 	}
 }
 
@@ -440,13 +465,54 @@ func (g *redisEnforceGovernor) Release(qr *QueuedRequest) {
 	delete(g.leases, qr)
 	g.leasesMu.Unlock()
 
-	ctx, cancel := context.WithTimeout(context.Background(), defaultRedisDialTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), defaultRedisReleaseTimeout)
 	defer cancel()
 	// Errors here are intentionally silent: Release is best-effort and
 	// runs on the defer-path. The lease will expire by TTL anyway, and
 	// the unavailability path is observable from Acquire.
 	_, _ = g.backend.releaseS.Run(ctx, g.backend.client,
 		[]string{g.key}, token).Int64()
+}
+
+// Renew refreshes the TTL of the lease previously acquired by *qr. It
+// exists so long-running streams can keep their slot beyond the initial
+// lease window without re-running the capacity check. The Lua script
+// returns 1 when the token still exists in the ZSET (renewed) and 0
+// when it has expired or was never there. Renew is best-effort: if
+// Redis is unreachable or the lease already expired, the call returns
+// an error wrapping ErrGovernorUnavailable so the caller can fall back
+// to Acquire's fail-closed path on the next iteration.
+//
+// The default policy is "renew when residual TTL drops below 50%". The
+// caller passes the governor's own ttl — the script unconditionally
+// sets PEXPIRE to that value, so a sub-threshold residual is irrelevant;
+// the operator knob for the 50% threshold is policy that lives in the
+// Stage E forwarder keepalive scheduler, not here. Stage B exposes the
+// primitive; Stage E composes the cadence.
+func (g *redisEnforceGovernor) Renew(ctx context.Context, qr *QueuedRequest) error {
+	g.leasesMu.Lock()
+	token := g.leases[qr]
+	g.leasesMu.Unlock()
+	if token == "" {
+		return fmt.Errorf("%w: no lease registered for request", ErrGovernorUnavailable)
+	}
+
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("%w: %w", ErrGovernorUnavailable, err)
+	}
+
+	rctx, cancel := context.WithTimeout(ctx, defaultRedisReleaseTimeout)
+	defer cancel()
+
+	n, err := g.backend.renewS.Run(rctx, g.backend.client,
+		[]string{g.key}, token, g.ttl.Milliseconds()).Int64()
+	if err != nil {
+		return fmt.Errorf("%w: %w", ErrGovernorUnavailable, err)
+	}
+	if n != 1 {
+		return fmt.Errorf("%w: lease already expired or evicted", ErrGovernorUnavailable)
+	}
+	return nil
 }
 
 // nextToken returns a per-call unique token. Format is opaque to callers

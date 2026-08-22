@@ -134,6 +134,7 @@ func NewCredentialMonitorHandlers(h *Handler, recorder *credentialhealth.Recorde
 func (m *CredentialMonitorHandlers) RegisterMonitorRoutes(mux *http.ServeMux, wrap func(http.HandlerFunc) http.HandlerFunc) {
 	mux.HandleFunc("/api/credentials/monitor-summary", wrap(m.handleMonitorSummary))
 	mux.HandleFunc("/api/credentials/sliding-window", wrap(m.handleSlidingWindow))
+	mux.HandleFunc("/api/credentials/sliding-window/batch", wrap(m.handleSlidingWindowBatch))
 	mux.HandleFunc("/api/credentials/promote", wrap(m.handlePromote))
 	mux.HandleFunc("/api/credentials/demote", wrap(m.handleDemote))
 	mux.HandleFunc("/api/credentials/set-concurrency-auto", wrap(m.handleSetConcurrencyAuto))
@@ -670,11 +671,6 @@ func (m *CredentialMonitorHandlers) handleSlidingWindow(w http.ResponseWriter, r
 		return
 	}
 
-	// Lazy init recorder if redis is available
-	if m.recorder == nil && m.redisClient != nil {
-		m.recorder = credentialhealth.NewRecorder(m.redisClient, 2*time.Hour, 100)
-	}
-
 	credentialID := queryInt(r, "credential_id", 0)
 	model := queryString(r, "model")
 	minutes := queryInt(r, "minutes", 60)
@@ -696,40 +692,11 @@ func (m *CredentialMonitorHandlers) handleSlidingWindow(w http.ResponseWriter, r
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	// ── Primary: Redis recorder (per-call granularity) ──────────────────
-	source := "redis"
-	// Initialize as a non-nil slice so the JSON response serializes to [] (not
-	// null) when there are no entries — otherwise the frontend's
-	// windowEntries.length throws "Cannot read properties of null".
-	entries := make([]credentialhealth.CallEntry, 0)
-	if m.recorder != nil && m.recorder.Enabled() {
-		since := time.Now().Add(-time.Duration(minutes) * time.Minute)
-		entries, _ = m.recorder.GetRecent(ctx, credentialID, model, since)
+	entries, source, err := m.loadSlidingWindowEntries(ctx, credentialID, model, minutes, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to get window: %v", err))
+		return
 	}
-
-	// ── Fallback: request_logs (when Redis is down or empty) ────────────
-	if len(entries) == 0 {
-		source = "request_logs"
-		rlEntries, err := m.slidingWindowFromRequestLogs(ctx, credentialID, model, minutes, limit)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to get window: %v", err))
-			return
-		}
-		entries = rlEntries
-	}
-
-	// Guard against nil (Redis GetRecent + the fallback both return nil when
-	// empty). A nil slice serializes to JSON null, which crashes the frontend
-	// (windowEntries.length). Force a non-nil empty slice.
-	if entries == nil {
-		entries = make([]credentialhealth.CallEntry, 0)
-	}
-
-	// Limit to requested count (entries are already newest-first from Redis)
-	if len(entries) > limit {
-		entries = entries[:limit]
-	}
-
 	stats := credentialhealth.ComputeStats(entries)
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -740,13 +707,7 @@ func (m *CredentialMonitorHandlers) handleSlidingWindow(w http.ResponseWriter, r
 		"source":         source,
 		"total_returned": len(entries),
 		"entries":        entries,
-		"stats": map[string]any{
-			"total":        stats.Total,
-			"success":      stats.Success,
-			"failed":       stats.Failed,
-			"failure_rate": stats.FailureRate,
-			"error_kinds":  stats.ErrorKinds,
-		},
+		"stats":          slidingWindowStatsMap(stats),
 	})
 }
 

@@ -7,10 +7,12 @@ import { __testing, liveStreamState } from '../composables/liveStreamStore'
 import { ApiError } from '../api/_core'
 import { readLiveStreamPreferences, liveStreamPreferencesStorageKey } from '../composables/liveStreamPreferences'
 
-const { getFeatured, resolveRouting, reorderCandidateBindings, superAdmin, mockedStore } = vi.hoisted(() => ({
+const { getFeatured, resolveRouting, reorderCandidateBindings, getSlidingWindow, getSlidingWindowBatch, superAdmin, mockedStore } = vi.hoisted(() => ({
   getFeatured: vi.fn(),
   resolveRouting: vi.fn(),
   reorderCandidateBindings: vi.fn(),
+  getSlidingWindow: vi.fn().mockResolvedValue({ entries: [], stats: { total: 0, success: 0, failed: 0, failure_rate: 0, error_kinds: {} }, source: 'redis' }),
+  getSlidingWindowBatch: vi.fn().mockResolvedValue({ window_minutes: 5, count: 0, results: [] }),
   superAdmin: vi.fn(() => false),
   mockedStore: {
     userInfo: null,
@@ -43,7 +45,8 @@ vi.mock('../api/logs', () => ({
 vi.mock('../api/credential-monitor', () => ({
   getCredentialMonitorSummary: vi.fn().mockResolvedValue({ credentials: [] }),
   getCredentialDecisions: vi.fn().mockResolvedValue({ decisions: [] }),
-  getSlidingWindow: vi.fn().mockResolvedValue({ entries: [], stats: { total: 0, success: 0, failed: 0, failure_rate: 0, error_kinds: {} }, source: 'redis' }),
+  getSlidingWindow,
+  getSlidingWindowBatch,
   getModelHistory: vi.fn().mockResolvedValue({ events: [] }),
   setManualDisabled: vi.fn(),
   toggleModelAvailability: vi.fn(),
@@ -511,6 +514,54 @@ describe('QueuePerspectivePanel', () => {
     expect(wrapper.text()).toContain('排序已过期')
   })
 
+  it('enables reorder when live nodes are a subset of a larger candidate set', async () => {
+    superAdmin.mockReturnValue(true)
+    resolveRouting.mockImplementation(async (model: string) => ({
+      raw_models: [model],
+      reorder_revision: `rev-${model}`,
+      candidates: model === 'm-1'
+        ? [
+            { credential_id: 1, model_name: 'm-1', manual_priority: 5, credential_label: 'live-a', effective_concurrency: 2 },
+            { credential_id: 2, model_name: 'm-1', manual_priority: 10, credential_label: 'offline-b', effective_concurrency: 4 },
+            { credential_id: 3, model_name: 'm-1', manual_priority: 15, credential_label: 'live-c', effective_concurrency: 8 },
+          ]
+        : [],
+    }))
+    // Only credentials 1 and 3 are currently live; #2 is still in the binding set.
+    liveStreamState.nodes = [
+      { credential_id: 1, provider_id: 1, provider_code: 'p', manual_disabled: false, circuit_state: 'closed', raw_models: ['m-1'] },
+      { credential_id: 3, provider_id: 1, provider_code: 'p', manual_disabled: false, circuit_state: 'closed', raw_models: ['m-1'] },
+    ]
+
+    const wrapper = mountPanel()
+    await flushPromises()
+    const cards = wrapper.findAll('.qp-node-card')
+    expect(cards).toHaveLength(2)
+    expect(wrapper.text()).toContain('live-a')
+    expect(wrapper.text()).toContain('live-c')
+    expect(cards.every(card => card.attributes('draggable') === 'true')).toBe(true)
+    const wraps = wrapper.findAll('.qp-node-card-wrap')
+    expect(Number.parseInt(wraps[0].attributes('style')?.match(/width:\s*(\d+)px/)?.[1] || '0', 10)).toBeLessThan(
+      Number.parseInt(wraps[1].attributes('style')?.match(/width:\s*(\d+)px/)?.[1] || '0', 10),
+    )
+
+    const transfer = { effectAllowed: '', dropEffect: '', setData: vi.fn() }
+    await cards[0].trigger('dragstart', { dataTransfer: transfer })
+    await cards[1].trigger('dragover', { dataTransfer: transfer })
+    await cards[1].trigger('drop', { dataTransfer: transfer })
+    await flushPromises()
+
+    // Visible order becomes [3, 1]; offline #2 keeps its relative slot → [3, 2, 1].
+    expect(reorderCandidateBindings).toHaveBeenCalledWith(
+      [
+        { credential_id: 3, raw_model: 'm-1', manual_priority: 5 },
+        { credential_id: 2, raw_model: 'm-1', manual_priority: 10 },
+        { credential_id: 1, raw_model: 'm-1', manual_priority: 15 },
+      ],
+      { rawModel: 'm-1', expectedRevision: 'rev-m-1' },
+    )
+  })
+
   it('reorders visible nodes while preserving hidden candidates in the full set', async () => {
     superAdmin.mockReturnValue(true)
     resolveRouting.mockImplementation(async (model: string) => ({
@@ -552,5 +603,40 @@ describe('QueuePerspectivePanel', () => {
       ],
       { rawModel: 'm-1', expectedRevision: 'rev-m-1' },
     )
+  })
+
+  it('loads window stats via batch API instead of N-way GET', async () => {
+    getSlidingWindowBatch.mockReset().mockResolvedValue({
+      window_minutes: 5,
+      count: 2,
+      results: [
+        { credential_id: 1, model: 'm-1', source: 'redis', stats: { total: 3, success: 2, failed: 1, failure_rate: 0.33 } },
+        { credential_id: 2, model: 'm-1', source: 'redis', stats: { total: 1, success: 1, failed: 0, failure_rate: 0 } },
+      ],
+    })
+    getSlidingWindow.mockClear()
+    resolveRouting.mockImplementation(async (model: string) => ({
+      raw_models: [model],
+      reorder_revision: `rev-${model}`,
+      candidates: model === 'm-1'
+        ? [
+            { credential_id: 1, model_name: 'm-1', manual_priority: 5, credential_label: 'a' },
+            { credential_id: 2, model_name: 'm-1', manual_priority: 10, credential_label: 'b' },
+          ]
+        : [],
+    }))
+    liveStreamState.nodes = [
+      { credential_id: 1, provider_id: 1, provider_code: 'p', manual_disabled: false, circuit_state: 'closed', raw_models: ['m-1'] },
+      { credential_id: 2, provider_id: 1, provider_code: 'p', manual_disabled: false, circuit_state: 'closed', raw_models: ['m-1'] },
+    ]
+
+    const wrapper = mountPanel()
+    await flushPromises()
+    await flushPromises()
+
+    expect(getSlidingWindowBatch).toHaveBeenCalled()
+    expect(getSlidingWindow).not.toHaveBeenCalled()
+    expect(wrapper.text()).toMatch(/✓2/)
+    expect(wrapper.text()).toMatch(/✗1/)
   })
 })

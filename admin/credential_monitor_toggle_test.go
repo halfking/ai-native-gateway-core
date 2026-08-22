@@ -284,6 +284,7 @@ func TestModelToggleHandler_RoutesRegistered(t *testing.T) {
 	for _, path := range []string{
 		"/api/credentials/monitor-summary",
 		"/api/credentials/sliding-window",
+		"/api/credentials/sliding-window/batch",
 		"/api/credentials/promote",
 		"/api/credentials/demote",
 		"/api/credentials/set-concurrency-auto",
