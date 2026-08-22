@@ -93,8 +93,16 @@ func (h *Handler) handleTopProblems(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	now := time.Now().UTC()
-	start := parseQueryTime(r, "from", now.Add(-24*time.Hour))
-	end := parseQueryTime(r, "to", now)
+	start, ok := parseQueryTimeStrict(r, "from", now.Add(-24*time.Hour))
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid 'from' timestamp")
+		return
+	}
+	end, ok := parseQueryTimeStrict(r, "to", now)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid 'to' timestamp")
+		return
+	}
 	if !end.After(start) {
 		writeError(w, http.StatusBadRequest, "to must be after from")
 		return

@@ -15,6 +15,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/internal/textsplit"
+	"github.com/kaixuan/llm-gateway-go/metrics"
 )
 
 // StreamOpenAIToAnthropicSSE converts OpenAI-format SSE (from upstream)
@@ -487,13 +488,28 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 						finalFinish = capture.FinalFinishReason()
 					}
 					if finalFinish != "" {
-						safeWriteSSE(w, "data: [DONE]\n\n")
-						safeFlush(flusher)
+						// 2026-08-23 audit fix: the client speaks the
+						// Anthropic Messages protocol, so synthesize the
+						// correct `message_stop` terminator (not the OpenAI
+						// `[DONE]` sentinel). An Anthropic client does not
+						// recognize `data: [DONE]` and would hang / treat the
+						// response as incomplete.
+						if gate.MayWriteTerminal() || pc != nil {
+							writeAnthropicTail(w, flusher, pc, msgID, clientModel, finalFinish, outputTokens, inputTokens, capture)
+						}
+						metrics.Global().RecordStreamSynthesizedDone()
 						outcome.Interrupted = false
 						outcome.Reason = ""
 						outcome.Kind = ""
 						outcome.Resumable = false
-						slog.Info("anthropic EOF after finish_reason — synthesized [DONE]",
+						if capture != nil {
+							capture.ObserveChunk(&ir.StreamChunk{
+								Type:           ir.ChunkTypeDone,
+								FinishReason:   finalFinish,
+								SourceProtocol: ir.ProtocolAnthropicMessages,
+							})
+						}
+						slog.Info("anthropic EOF after finish_reason — synthesized message_stop",
 							"client_model", clientModel,
 							"finish_reason", finalFinish,
 							"chunk_count", chunkCount,
