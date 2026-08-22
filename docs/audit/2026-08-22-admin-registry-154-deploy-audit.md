@@ -26,12 +26,12 @@
 | A3 | 信息 | 连接注册表仅进程内；154 当前无 live 流式连接时列表为空属正常 | 文档已说明 |
 | A4 | 信息 | 节点恢复时间线仍为 mock（node-health API 未落地） | handoff 后续 |
 
-## 验证（修正后待二次部署）
+## 验证（修正后二次部署 build 1674）
 
-- [ ] `go test ./admin/... -run ConnectionRegistry`
-- [ ] 154 redeploy build_seq+1
-- [ ] `closed` 字段为 `[]` 非 null
-- [ ] 浏览器实测 `/admin/connection-registry` 与 `/admin/request-registry`（需 super_admin 登录）
+- [x] `go test ./admin/... -run ConnectionRegistry`
+- [x] 154 redeploy build_seq=1674（**未部署 245**）
+- [x] `closed` 字段为 `[]` 非 null（curl 已验证）
+- [ ] 浏览器实测 `/admin/connection-registry` 与 `/admin/request-registry`（需 super_admin 登录；browser MCP 不可用）
 
 ## 关联文档
 
