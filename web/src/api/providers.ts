@@ -804,6 +804,9 @@ export interface ProviderLogEntry {
   credential_label?: string | null
   client_model: string | null
   outbound_model: string | null
+  canonical_name?: string | null
+  canonical_model?: string | null
+  provider_model?: string | null
   success: boolean
   error_kind: string | null
   prompt_tokens: number | null
