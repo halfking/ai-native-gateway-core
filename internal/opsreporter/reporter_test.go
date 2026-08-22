@@ -19,18 +19,18 @@ func newTestReporter(t *testing.T, srvURL string) *Reporter {
 	t.Helper()
 	dir := t.TempDir()
 	return &Reporter{
-		baseURL:      srvURL,
-		region:       "test",
-		version:      "test",
-		buildSeq:     1,
-		instanceID:   "test-instance",
-		dataDir:      dir,
-		licenseKey:   "LIC-test",
-		adminUser:    "admin",
-		adminEmail:   "admin@test",
-		startedAt:    time.Now(),
-		interval:     60 * time.Second,
-		client:       &http.Client{Timeout: 5 * time.Second},
+		baseURL:       srvURL,
+		region:        "test",
+		version:       "test",
+		buildSeq:      1,
+		instanceID:    "test-instance",
+		dataDir:       dir,
+		licenseKey:    "LIC-test",
+		adminUser:     "admin",
+		adminEmail:    "admin@test",
+		startedAt:     time.Now(),
+		interval:      60 * time.Second,
+		client:        &http.Client{Timeout: 5 * time.Second},
 		instanceToken: "",
 	}
 }
@@ -38,7 +38,7 @@ func newTestReporter(t *testing.T, srvURL string) *Reporter {
 // fakeServer records request counts and lets each handler return canned responses.
 type fakeServer struct {
 	*httptest.Server
-	registerCalls int32
+	registerCalls  int32
 	heartbeatCalls int32
 	// what to return on the next register
 	nextRegisterStatus int

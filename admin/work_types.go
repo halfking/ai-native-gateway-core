@@ -204,7 +204,7 @@ func (h *WorkTypeHandlers) fetchL1Counts(ctx context.Context) (map[string]int, e
 // default label/icon). Pure function — testable without a DB.
 //
 // Defensive: filters out empty-string keys from dbCounts. The SQL
-// already enforces `l1_task_type <> ''` but this is a safety net for any
+// already enforces `l1_task_type <> ”` but this is a safety net for any
 // future caller that constructs the map in-process.
 func mergeL1TaskTypes(dbCounts map[string]int) []L1TaskTypeMeta {
 	merged := make([]L1TaskTypeMeta, 0, len(canonicalL1TaskTypes)+len(dbCounts))

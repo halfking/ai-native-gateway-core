@@ -119,12 +119,12 @@ func secretLikely(s string) bool {
 	}
 	low := strings.ToLower(s)
 	for _, pat := range []string{
-		"sk-",          // OpenAI key 前缀
-		"bearer ",      // Authorization header
-		"api_key=",     // query/字面量
-		"apikey=",      // 同上变体
-		"secret=",      // oauth secret
-		"password=",    // 明文密码
+		"sk-",            // OpenAI key 前缀
+		"bearer ",        // Authorization header
+		"api_key=",       // query/字面量
+		"apikey=",        // 同上变体
+		"secret=",        // oauth secret
+		"password=",      // 明文密码
 		"client_secret=", // oauth
 	} {
 		if strings.Contains(low, pat) {

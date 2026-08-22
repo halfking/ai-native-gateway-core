@@ -49,18 +49,18 @@ type Finding struct {
 //   - TenantActiveCount: 当前租户 active 态会话数（用于 lifecycle 检查）
 //   - ModelSwitchCount: 累计模型切换次数
 type SessionSnapshot struct {
-	SessionID    string         `json:"session_id"`
-	TenantID     string         `json:"tenant_id"`
-	RequestCount int            `json:"request_count"`
-	TokenCount   int            `json:"token_count"`
-	StartedAt    time.Time      `json:"started_at"`
-	LastActiveAt time.Time      `json:"last_active_at"`
-	ErrorRate    float64        `json:"error_rate"`
-	BurstCount   int            `json:"burst_count"`
-	ConcurrentCount int         `json:"concurrent_count"`
-	TenantActiveCount int       `json:"tenant_active_count"`
-	ModelSwitchCount int        `json:"model_switch_count"`
-	Metadata     map[string]any `json:"metadata,omitempty"`
+	SessionID         string         `json:"session_id"`
+	TenantID          string         `json:"tenant_id"`
+	RequestCount      int            `json:"request_count"`
+	TokenCount        int            `json:"token_count"`
+	StartedAt         time.Time      `json:"started_at"`
+	LastActiveAt      time.Time      `json:"last_active_at"`
+	ErrorRate         float64        `json:"error_rate"`
+	BurstCount        int            `json:"burst_count"`
+	ConcurrentCount   int            `json:"concurrent_count"`
+	TenantActiveCount int            `json:"tenant_active_count"`
+	ModelSwitchCount  int            `json:"model_switch_count"`
+	Metadata          map[string]any `json:"metadata,omitempty"`
 }
 
 // Inspector 检查器接口。

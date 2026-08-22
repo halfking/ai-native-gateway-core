@@ -15,21 +15,21 @@ func TestNewSensitiveDetector(t *testing.T) {
 		EnableFinancial: true,
 		EnableMedical:   true,
 	}
-	
+
 	detector := NewSensitiveDetector(config)
-	
+
 	if detector == nil {
 		t.Fatal("detector should not be nil")
 	}
-	
+
 	if detector.config.MinConfidence != 0.7 {
 		t.Errorf("expected MinConfidence 0.7, got %f", detector.config.MinConfidence)
 	}
-	
+
 	if len(detector.patterns) == 0 {
 		t.Error("patterns should not be empty")
 	}
-	
+
 	if len(detector.keywords) == 0 {
 		t.Error("keywords should not be empty")
 	}
@@ -40,7 +40,7 @@ func TestDetectIDCard(t *testing.T) {
 		MinConfidence: 0.7,
 		EnablePII:     true,
 	})
-	
+
 	tests := []struct {
 		name      string
 		content   string
@@ -65,7 +65,7 @@ func TestDetectIDCard(t *testing.T) {
 			wantCount: 0,
 		},
 	}
-	
+
 	ctx := context.Background()
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -73,7 +73,7 @@ func TestDetectIDCard(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Detect failed: %v", err)
 			}
-			
+
 			idCardCount := 0
 			for _, item := range result.RawItems {
 				if item.Category == "id_card" {
@@ -83,7 +83,7 @@ func TestDetectIDCard(t *testing.T) {
 					}
 				}
 			}
-			
+
 			if idCardCount != tt.wantCount {
 				t.Errorf("expected %d id cards, got %d", tt.wantCount, idCardCount)
 			}
@@ -96,7 +96,7 @@ func TestDetectPhone(t *testing.T) {
 		MinConfidence: 0.7,
 		EnablePII:     true,
 	})
-	
+
 	tests := []struct {
 		name      string
 		content   string
@@ -118,7 +118,7 @@ func TestDetectPhone(t *testing.T) {
 			wantCount: 0,
 		},
 	}
-	
+
 	ctx := context.Background()
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -126,14 +126,14 @@ func TestDetectPhone(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Detect failed: %v", err)
 			}
-			
+
 			phoneCount := 0
 			for _, item := range result.RawItems {
 				if item.Category == "phone" {
 					phoneCount++
 				}
 			}
-			
+
 			if phoneCount != tt.wantCount {
 				t.Errorf("expected %d phones, got %d", tt.wantCount, phoneCount)
 			}
@@ -146,7 +146,7 @@ func TestDetectEmail(t *testing.T) {
 		MinConfidence: 0.7,
 		EnablePII:     true,
 	})
-	
+
 	tests := []struct {
 		name      string
 		content   string
@@ -168,7 +168,7 @@ func TestDetectEmail(t *testing.T) {
 			wantCount: 0,
 		},
 	}
-	
+
 	ctx := context.Background()
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -176,14 +176,14 @@ func TestDetectEmail(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Detect failed: %v", err)
 			}
-			
+
 			emailCount := 0
 			for _, item := range result.RawItems {
 				if item.Category == "email" {
 					emailCount++
 				}
 			}
-			
+
 			if emailCount != tt.wantCount {
 				t.Errorf("expected %d emails, got %d", tt.wantCount, emailCount)
 			}
@@ -196,7 +196,7 @@ func TestDetectAPIKey(t *testing.T) {
 		MinConfidence: 0.7,
 		EnableSecret:  true,
 	})
-	
+
 	tests := []struct {
 		name      string
 		content   string
@@ -218,7 +218,7 @@ func TestDetectAPIKey(t *testing.T) {
 			wantCount: 2,
 		},
 	}
-	
+
 	ctx := context.Background()
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -226,7 +226,7 @@ func TestDetectAPIKey(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Detect failed: %v", err)
 			}
-			
+
 			keyCount := 0
 			for _, item := range result.RawItems {
 				if item.Category == "api_key" {
@@ -236,7 +236,7 @@ func TestDetectAPIKey(t *testing.T) {
 					}
 				}
 			}
-			
+
 			if keyCount != tt.wantCount {
 				t.Errorf("expected %d api keys, got %d", tt.wantCount, keyCount)
 			}
@@ -249,7 +249,7 @@ func TestDetectBankCard(t *testing.T) {
 		MinConfidence:   0.7,
 		EnableFinancial: true,
 	})
-	
+
 	tests := []struct {
 		name      string
 		content   string
@@ -271,7 +271,7 @@ func TestDetectBankCard(t *testing.T) {
 			wantCount: 2,
 		},
 	}
-	
+
 	ctx := context.Background()
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -279,7 +279,7 @@ func TestDetectBankCard(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Detect failed: %v", err)
 			}
-			
+
 			cardCount := 0
 			for _, item := range result.RawItems {
 				if item.Category == "bank_card" {
@@ -289,7 +289,7 @@ func TestDetectBankCard(t *testing.T) {
 					}
 				}
 			}
-			
+
 			if cardCount != tt.wantCount {
 				t.Errorf("expected %d bank cards, got %d", tt.wantCount, cardCount)
 			}
@@ -302,21 +302,21 @@ func TestRedactIDCard(t *testing.T) {
 		MinConfidence: 0.7,
 		EnablePII:     true,
 	})
-	
+
 	content := "我的身份证号是 110101199001011234"
 	ctx := context.Background()
-	
+
 	result, err := detector.Detect(ctx, content)
 	if err != nil {
 		t.Fatalf("Detect failed: %v", err)
 	}
-	
+
 	redacted := detector.Redact(content, result)
-	
+
 	if !strings.Contains(redacted, "110***********1234") {
 		t.Errorf("expected redacted format 110***********1234, got: %s", redacted)
 	}
-	
+
 	if strings.Contains(redacted, "110101199001011234") {
 		t.Error("redacted content should not contain full ID card number")
 	}
@@ -327,21 +327,21 @@ func TestRedactPhone(t *testing.T) {
 		MinConfidence: 0.7,
 		EnablePII:     true,
 	})
-	
+
 	content := "手机号: 13812345678"
 	ctx := context.Background()
-	
+
 	result, err := detector.Detect(ctx, content)
 	if err != nil {
 		t.Fatalf("Detect failed: %v", err)
 	}
-	
+
 	redacted := detector.Redact(content, result)
-	
+
 	if !strings.Contains(redacted, "****5678") {
 		t.Errorf("expected redacted format ****5678, got: %s", redacted)
 	}
-	
+
 	if strings.Contains(redacted, "13812345678") {
 		t.Error("redacted content should not contain full phone number")
 	}
@@ -352,21 +352,21 @@ func TestRedactEmail(t *testing.T) {
 		MinConfidence: 0.7,
 		EnablePII:     true,
 	})
-	
+
 	content := "邮箱: user@example.com"
 	ctx := context.Background()
-	
+
 	result, err := detector.Detect(ctx, content)
 	if err != nil {
 		t.Fatalf("Detect failed: %v", err)
 	}
-	
+
 	redacted := detector.Redact(content, result)
-	
+
 	if !strings.Contains(redacted, "u***@example.com") {
 		t.Errorf("expected redacted format u***@example.com, got: %s", redacted)
 	}
-	
+
 	if strings.Contains(redacted, "user@example.com") {
 		t.Error("redacted content should not contain full email")
 	}
@@ -379,25 +379,25 @@ func TestMultipleSensitiveItems(t *testing.T) {
 		EnableSecret:    true,
 		EnableFinancial: true,
 	})
-	
+
 	content := "身份证：110101199001011234 手机号：13812345678 邮箱：zhangsan@example.com 银行卡：6222001234567890 API Key: sk-abcdef1234567890"
-	
+
 	ctx := context.Background()
 	result, err := detector.Detect(ctx, content)
 	if err != nil {
 		t.Fatalf("Detect failed: %v", err)
 	}
-	
+
 	if !result.HasSensitive {
 		t.Error("should detect sensitive information")
 	}
-	
+
 	if len(result.TypeCounts) < 2 {
 		t.Errorf("expected at least 2 types, got %d", len(result.TypeCounts))
 	}
-	
+
 	redacted := detector.Redact(content, result)
-	
+
 	sensitiveValues := []string{
 		"110101199001011234",
 		"13812345678",
@@ -405,7 +405,7 @@ func TestMultipleSensitiveItems(t *testing.T) {
 		"6222001234567890",
 		"sk-abcdef1234567890",
 	}
-	
+
 	for _, value := range sensitiveValues {
 		if strings.Contains(redacted, value) {
 			t.Errorf("redacted content should not contain %s", value)
@@ -421,24 +421,24 @@ func TestPerformance(t *testing.T) {
 		EnableFinancial: true,
 		EnableMedical:   true,
 	})
-	
+
 	messages := make([]string, 100)
 	for i := 0; i < 100; i++ {
 		messages[i] = "用户信息：身份证 110101199001011234，手机 13812345678，邮箱 user@test.com"
 	}
-	
+
 	ctx := context.Background()
 	start := time.Now()
-	
+
 	for _, msg := range messages {
 		_, err := detector.Detect(ctx, msg)
 		if err != nil {
 			t.Fatalf("Detect failed: %v", err)
 		}
 	}
-	
+
 	elapsed := time.Since(start)
-	
+
 	if elapsed > 100*time.Millisecond {
 		t.Errorf("performance test failed: took %v, expected < 100ms", elapsed)
 	} else {
@@ -454,19 +454,19 @@ func TestNoSensitiveContent(t *testing.T) {
 		EnableFinancial: true,
 		EnableMedical:   true,
 	})
-	
+
 	content := "这是一段普通的文本，没有任何敏感信息。"
 	ctx := context.Background()
-	
+
 	result, err := detector.Detect(ctx, content)
 	if err != nil {
 		t.Fatalf("Detect failed: %v", err)
 	}
-	
+
 	if result.HasSensitive {
 		t.Error("should not detect sensitive information")
 	}
-	
+
 	if result.TotalCount != 0 {
 		t.Errorf("expected 0 items, got %d", result.TotalCount)
 	}
@@ -478,18 +478,18 @@ func TestDisableCategories(t *testing.T) {
 		EnablePII:     true,
 		EnableSecret:  false,
 	})
-	
+
 	content := "手机号: 13812345678, API Key: sk-1234567890abcdef"
 	ctx := context.Background()
-	
+
 	result, err := detector.Detect(ctx, content)
 	if err != nil {
 		t.Fatalf("Detect failed: %v", err)
 	}
-	
+
 	hasPhone := false
 	hasAPIKey := false
-	
+
 	for _, item := range result.RawItems {
 		if item.Category == "phone" {
 			hasPhone = true
@@ -498,11 +498,11 @@ func TestDisableCategories(t *testing.T) {
 			hasAPIKey = true
 		}
 	}
-	
+
 	if !hasPhone {
 		t.Error("should detect phone number")
 	}
-	
+
 	if hasAPIKey {
 		t.Error("should not detect API key when secret detection is disabled")
 	}
@@ -516,10 +516,10 @@ func BenchmarkDetect(b *testing.B) {
 		EnableFinancial: true,
 		EnableMedical:   true,
 	})
-	
+
 	content := "身份证: 110101199001011234, 手机: 13812345678, 邮箱: user@test.com"
 	ctx := context.Background()
-	
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_, _ = detector.Detect(ctx, content)
@@ -531,11 +531,11 @@ func BenchmarkRedact(b *testing.B) {
 		MinConfidence: 0.7,
 		EnablePII:     true,
 	})
-	
+
 	content := "身份证: 110101199001011234, 手机: 13812345678"
 	ctx := context.Background()
 	result, _ := detector.Detect(ctx, content)
-	
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = detector.Redact(content, result)

@@ -29,13 +29,13 @@ const DecisionVersionV1 = "v1"
 //
 // 禁止字段：API key、Bearer、完整 credential token、上游 BaseURL、绝对路径。
 type ProviderRef struct {
-	CatalogCode     string  `json:"catalog_code"`
-	ProviderID      *int64  `json:"provider_id,omitempty"`
-	Protocol        string  `json:"protocol"`
-	Tier            string  `json:"tier,omitempty"`
-	VendorName      string  `json:"vendor_name,omitempty"`
-	CredentialID    *int64  `json:"credential_id,omitempty"`     // 数据库主键引用，非 secret
-	CredentialLabel string  `json:"credential_label,omitempty"`  // 公开 label，非 secret
+	CatalogCode     string `json:"catalog_code"`
+	ProviderID      *int64 `json:"provider_id,omitempty"`
+	Protocol        string `json:"protocol"`
+	Tier            string `json:"tier,omitempty"`
+	VendorName      string `json:"vendor_name,omitempty"`
+	CredentialID    *int64 `json:"credential_id,omitempty"`    // 数据库主键引用，非 secret
+	CredentialLabel string `json:"credential_label,omitempty"` // 公开 label，非 secret
 }
 
 // RoutingDecision 是路由决策的 canonical 解释，低敏、可审计。
@@ -46,10 +46,10 @@ type ProviderRef struct {
 //
 // 禁止字段：prompt、内部 SQL 错误、credential secret。
 type RoutingDecision struct {
-	Strategy        string      `json:"strategy"`          // p2c|bandit|cost-optimized|cache-optimized|context-aware|headroom
-	DecisionVersion string      `json:"decision_version"`  // DecisionVersionV1
+	Strategy        string      `json:"strategy"`         // p2c|bandit|cost-optimized|cache-optimized|context-aware|headroom
+	DecisionVersion string      `json:"decision_version"` // DecisionVersionV1
 	Provider        ProviderRef `json:"provider"`
-	ExplanationCode string      `json:"explanation_code"`  // p2c_low_penalty|bandit_sample|...
+	ExplanationCode string      `json:"explanation_code"` // p2c_low_penalty|bandit_sample|...
 	Timestamp       time.Time   `json:"timestamp"`
 }
 
@@ -62,11 +62,11 @@ type RoutingDecision struct {
 //
 // 禁止字段：prompt 正文、response 正文、system prompt、tool arguments。
 type CompressionEvent struct {
-	Mode        string   `json:"mode"`         // lite|mechanical_trim|llm_summary|memora_l1_inject|noop
-	Stages      []string `json:"stages"`       // whitespace|system-dedup|tool-compress|redundant-remove|image-placeholder
-	InputChars  int      `json:"input_chars"`
-	OutputChars int      `json:"output_chars"`
-	SavedChars  int      `json:"saved_chars"`
-	ReasonCode  string   `json:"reason_code"`  // context_headroom|mode_1_auto_threshold|mode_2_on_4xx
+	Mode        string    `json:"mode"`   // lite|mechanical_trim|llm_summary|memora_l1_inject|noop
+	Stages      []string  `json:"stages"` // whitespace|system-dedup|tool-compress|redundant-remove|image-placeholder
+	InputChars  int       `json:"input_chars"`
+	OutputChars int       `json:"output_chars"`
+	SavedChars  int       `json:"saved_chars"`
+	ReasonCode  string    `json:"reason_code"` // context_headroom|mode_1_auto_threshold|mode_2_on_4xx
 	Timestamp   time.Time `json:"timestamp"`
 }

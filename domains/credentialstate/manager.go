@@ -26,7 +26,8 @@
 //   - domains/ursm/v2.Manager.Plan() // canary 模式
 //
 // 回退测试:
-//   URSM_V2_MODE=off 确保此包路径正常工作
+//
+//	URSM_V2_MODE=off 确保此包路径正常工作
 //
 // Deprecated: credentialstate is superseded by URSM v2 (domains/ursm/v2).
 // It remains for legacy/off/canary modes only. Do not add new callers.

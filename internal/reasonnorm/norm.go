@@ -70,7 +70,7 @@ type Intent struct {
 // (litellm/constants.py:83-192 + transformation.py:1174-1229).
 
 var effortToBudget = map[string]int{
-	"none":    0,     // 0 = disable thinking entirely
+	"none":    0, // 0 = disable thinking entirely
 	"minimal": 1024,
 	"low":     1024,
 	"medium":  2048,

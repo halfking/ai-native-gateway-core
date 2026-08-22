@@ -36,8 +36,8 @@ import (
 	"strings"
 	"time"
 
-	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/jackc/pgx/v5"
+	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 // Config from flags
@@ -234,9 +234,9 @@ func runChatRounds(cfg *Config) (succ, fail int, err error) {
 		})
 
 		body, _ := json.Marshal(map[string]interface{}{
-			"model":       "loadtest-mini-alpha",
-			"messages":    messages,
-			"max_tokens":  10,
+			"model":      "loadtest-mini-alpha",
+			"messages":   messages,
+			"max_tokens": 10,
 		})
 
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

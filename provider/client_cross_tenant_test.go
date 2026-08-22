@@ -198,9 +198,9 @@ func TestLoadCandidatesDB_CrossTenantProviderSharing(t *testing.T) {
 	cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_, _ = pool.Exec(cleanupCtx, `DELETE FROM model_offers WHERE raw_model_name = $1`, testModel)
-	_, _ = pool.Exec(cleanupCtx, `DELETE FROM credentials WHERE provider_id IN ($1, $2, $3)`, 
+	_, _ = pool.Exec(cleanupCtx, `DELETE FROM credentials WHERE provider_id IN ($1, $2, $3)`,
 		defaultProviderID, hansiProviderID, otherProviderID)
-	_, _ = pool.Exec(cleanupCtx, `DELETE FROM providers WHERE id IN ($1, $2, $3)`, 
+	_, _ = pool.Exec(cleanupCtx, `DELETE FROM providers WHERE id IN ($1, $2, $3)`,
 		defaultProviderID, hansiProviderID, otherProviderID)
 }
 

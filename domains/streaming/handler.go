@@ -27,7 +27,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/autocombo"
 	"github.com/kaixuan/llm-gateway-go/domains/credential"                          //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/freeresource"                        //nolint:depguard // OmniFree quota tracker
-	"github.com/kaixuan/llm-gateway-go/domains/goalintegration"                    //nolint:depguard // Wave 2-D: HTTP API integration
+	"github.com/kaixuan/llm-gateway-go/domains/goalintegration"                     //nolint:depguard // Wave 2-D: HTTP API integration
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"                         //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"                   //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/goal"                          //nolint:depguard // Goal retry outcome observer

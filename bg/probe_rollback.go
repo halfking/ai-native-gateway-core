@@ -30,10 +30,10 @@ type ProbeRollbackConfig struct {
 
 // ProbeRollback reverts tentative probe restores whose revert window elapsed.
 type ProbeRollback struct {
-	db        *pgxpool.Pool
-	cfg       ProbeRollbackConfig
-	cancel    context.CancelFunc
-	done      chan struct{}
+	db     *pgxpool.Pool
+	cfg    ProbeRollbackConfig
+	cancel context.CancelFunc
+	done   chan struct{}
 }
 
 // NewProbeRollback constructs the worker. Interval<=0 defaults to 10s.

@@ -59,19 +59,19 @@ type EntryStatus = ItemStatus
 // stable for the lifetime of a migration run; checksum + pttl_ms are
 // snapshotted at classification time so resume/copy are deterministic.
 type Item struct {
-	SourceKey        string        `json:"source_key"`
-	KeyType          string        `json:"key_type,omitempty"`
-	CanonicalKey     string        `json:"canonical_key,omitempty"`
-	SchemaSource     string        `json:"schema_source,omitempty"`
-	Classification   Classification `json:"classification"`
-	Reason           string        `json:"reason,omitempty"`
-	PTTLMs           int64         `json:"pttl_ms,omitempty"`
-	FieldChecksum    string        `json:"field_checksum,omitempty"`
-	Generation       int64         `json:"generation,omitempty"`
-	ScanRunID        string        `json:"scan_run_id,omitempty"`
-	Status           ItemStatus    `json:"status"`
-	CopiedAtUnixMs   int64         `json:"copied_at_unix_ms,omitempty"`
-	CleanedAtUnixMs  int64         `json:"cleaned_at_unix_ms,omitempty"`
+	SourceKey       string         `json:"source_key"`
+	KeyType         string         `json:"key_type,omitempty"`
+	CanonicalKey    string         `json:"canonical_key,omitempty"`
+	SchemaSource    string         `json:"schema_source,omitempty"`
+	Classification  Classification `json:"classification"`
+	Reason          string         `json:"reason,omitempty"`
+	PTTLMs          int64          `json:"pttl_ms,omitempty"`
+	FieldChecksum   string         `json:"field_checksum,omitempty"`
+	Generation      int64          `json:"generation,omitempty"`
+	ScanRunID       string         `json:"scan_run_id,omitempty"`
+	Status          ItemStatus     `json:"status"`
+	CopiedAtUnixMs  int64          `json:"copied_at_unix_ms,omitempty"`
+	CleanedAtUnixMs int64          `json:"cleaned_at_unix_ms,omitempty"`
 }
 
 // Ledger is an append-only NDJSON stream on disk. The on-disk file is the

@@ -140,3 +140,45 @@ func TestNextQuotaReset_UsesInjectedNowForTimestampStaleness(t *testing.T) {
 		t.Fatalf("NextQuotaReset uses wall clock? got %v, want %v", got, want)
 	}
 }
+
+// TestNextQuotaReset_RFC3339Timestamps covers ISO-8601 with timezone suffixes
+// (Google Gemini, OpenAI proxies, Zhipu). Without these layouts the scanner
+// falls through to next-UTC-midnight and the credential is parked for hours
+// after the real reset.
+func TestNextQuotaReset_RFC3339Timestamps(t *testing.T) {
+	now := time.Date(2026, 8, 10, 12, 30, 0, 0, time.UTC)
+	tests := []struct {
+		name string
+		body string
+		want time.Time
+	}{
+		{
+			name: "Gemini-style Z suffix",
+			body: `{"error":"quota will reset after 2026-08-10T12:34:56Z"}`,
+			want: time.Date(2026, 8, 10, 12, 34, 56, 0, time.UTC),
+		},
+		{
+			name: "numeric offset (+08:00)",
+			body: `{"error":"reset at 2026-08-10T20:34:56+08:00"}`,
+			want: time.Date(2026, 8, 10, 12, 34, 56, 0, time.UTC),
+		},
+		{
+			name: "negative offset",
+			body: `{"error":"reset at 2026-08-10T04:34:56-08:00"}`,
+			want: time.Date(2026, 8, 10, 12, 34, 56, 0, time.UTC),
+		},
+		{
+			name: "naive layout still works",
+			body: `{"error":"reset at 2026-08-10 13:00:00"}`,
+			want: time.Date(2026, 8, 10, 13, 0, 0, 0, time.UTC),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := NextQuotaReset(tt.body, now)
+			if !got.Equal(tt.want) {
+				t.Fatalf("NextQuotaReset(%q) = %v, want %v", tt.body, got, tt.want)
+			}
+		})
+	}
+}

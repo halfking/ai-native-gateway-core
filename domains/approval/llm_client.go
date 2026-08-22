@@ -104,7 +104,7 @@ func (c *OpenAIClient) GenerateSummary(ctx context.Context, messages []ir.Messag
 
 	// Parse the JSON response from LLM
 	content := apiResp.Choices[0].Message.Content
-	
+
 	// Try to extract JSON from the response (it might be wrapped in markdown code blocks)
 	content = extractJSON(content)
 
@@ -168,7 +168,7 @@ func extractMessageContentForPrompt(msg ir.Message) string {
 func extractJSON(content string) string {
 	// Remove markdown code block markers if present
 	content = strings.TrimSpace(content)
-	
+
 	// Check for ```json ... ``` or ``` ... ```
 	if strings.HasPrefix(content, "```json") {
 		content = strings.TrimPrefix(content, "```json")
@@ -177,11 +177,11 @@ func extractJSON(content string) string {
 		content = strings.TrimPrefix(content, "```")
 		content = strings.TrimSpace(content)
 	}
-	
+
 	if strings.HasSuffix(content, "```") {
 		content = strings.TrimSuffix(content, "```")
 		content = strings.TrimSpace(content)
 	}
-	
+
 	return content
 }

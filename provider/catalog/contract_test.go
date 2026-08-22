@@ -12,7 +12,9 @@ import (
 //
 //	grep -rhoE 'Protocol == "[a-z-]+"' domains/streaming/executors/*.go
 //	→ anthropic-messages, openai-completions
+//
 // 以及 ClientProtocol 分支: anthropic-messages, openai-responses
+//
 //	openai-completions / openai-responses / anthropic-messages 都有 executor 分支。
 //	gemini-generate / ollama-native 由 IR converter（domains/transformation）处理，
 //	无独立 executor 文件但能路由。
@@ -52,11 +54,11 @@ func TestProtocolConstantsAlignWithDBCheck(t *testing.T) {
 	// DB CHECK: protocol IN ('openai-completions','openai-responses',
 	//   'anthropic-messages','gemini-generate','ollama-native')
 	dbProtocols := map[string]bool{
-		"openai-completions":  true,
-		"openai-responses":    true,
-		"anthropic-messages":  true,
-		"gemini-generate":     true,
-		"ollama-native":       true,
+		"openai-completions": true,
+		"openai-responses":   true,
+		"anthropic-messages": true,
+		"gemini-generate":    true,
+		"ollama-native":      true,
 	}
 	for _, p := range Protocols {
 		if !dbProtocols[p] {

@@ -159,14 +159,14 @@ func (r *Resolver) getBuiltinTemplate(modelID, tenantID string) (*AutoComboSpec,
 		"auto/creative:free":  {VariantCreative, "free"},
 
 		// round 3 M8 新增变体.
-		"auto/coding":         {VariantCoding, ""},
-		"auto/coding:cheap":   {VariantCoding, "cheap"},
-		"auto/coding:pro":     {VariantCoding, "pro"},
-		"auto/reasoning":      {VariantReasoning, ""},
-		"auto/reasoning:pro":  {VariantReasoning, "pro"},
-		"auto/fast":           {VariantFast, ""},
-		"auto/vision":         {VariantSmart, ""},
-		"auto/multimodal":     {VariantSmart, ""},
+		"auto/coding":        {VariantCoding, ""},
+		"auto/coding:cheap":  {VariantCoding, "cheap"},
+		"auto/coding:pro":    {VariantCoding, "pro"},
+		"auto/reasoning":     {VariantReasoning, ""},
+		"auto/reasoning:pro": {VariantReasoning, "pro"},
+		"auto/fast":          {VariantFast, ""},
+		"auto/vision":        {VariantSmart, ""},
+		"auto/multimodal":    {VariantSmart, ""},
 	}
 
 	entry, ok := builtinMap[modelID]
@@ -226,9 +226,9 @@ func (r *Resolver) getBuiltinTemplate(modelID, tenantID string) (*AutoComboSpec,
 		tierFilter = []string{} // any
 	}
 
-// pro / cheap tier 启用 Cost 维度: 在 variant 默认权重基础上重新分配
-// 0.15 给 Cost, 把剩余 0.85 按 variant 原始 (非 Cost) 比例归一化.
-// 严格保持 NewEngine 校验通过 (sum ∈ [0.99, 1.01]).
+	// pro / cheap tier 启用 Cost 维度: 在 variant 默认权重基础上重新分配
+	// 0.15 给 Cost, 把剩余 0.85 按 variant 原始 (非 Cost) 比例归一化.
+	// 严格保持 NewEngine 校验通过 (sum ∈ [0.99, 1.01]).
 	if entry.tier == "pro" || entry.tier == "cheap" {
 		const costShare = 0.15
 		nonCost := weights.HealthScore + weights.LatencyP95 +
