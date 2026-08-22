@@ -108,8 +108,9 @@ func (h *Handler) handleSessionSummarizeTitle(w http.ResponseWriter, r *http.Req
 		}
 	}
 
-	logs, err := h.loadTaskLogsForTitle(ctx, taskID, sc, r)
+	logs, err := h.loadLogsForSessionTitle(ctx, r, taskID, sc)
 	if err != nil {
+		slog.Warn("session_title: load logs failed", "task_id", taskID, "session_id", sc.SessionID, "error", err)
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
 	}
@@ -174,6 +175,23 @@ func (h *Handler) handleSessionSummarizeTitle(w http.ResponseWriter, r *http.Req
 		Model:           model,
 	}
 	writeJSON(w, http.StatusOK, sessionTitleResponse{Title: title, Meta: meta})
+}
+
+// loadLogsForSessionTitle prefers gw_session_id scoped logs (same path as
+// session-summary) when the caller passes session_id — request-logs drawer
+// always does. Falls back to task_id + hours window when session lookup is
+// empty (legacy memora-context callers).
+func (h *Handler) loadLogsForSessionTitle(ctx context.Context, r *http.Request, taskID string, sc sessionScope) ([]sessionLogForSummary, error) {
+	if sid := strings.TrimSpace(sc.SessionID); sid != "" {
+		logs, err := h.loadSessionLogsForSummary(ctx, r, sid)
+		if err != nil {
+			return nil, err
+		}
+		if len(logs) > 0 {
+			return logs, nil
+		}
+	}
+	return h.loadTaskLogsForTitle(ctx, taskID, sc, r)
 }
 
 func (h *Handler) loadTaskLogsForTitle(ctx context.Context, taskID string, sc sessionScope, r *http.Request) ([]sessionLogForSummary, error) {

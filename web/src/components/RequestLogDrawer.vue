@@ -595,6 +595,7 @@ function routingAttempts(): RequestLogDetail['routing_attempts'] {
 
         <section v-if="props.mode === 'request-logs'" class="drawer-section session-meta-section">
           <SessionMetaTitleRow
+            :key="`${detail.gw_session_id ?? ''}:${detail.gw_task_id ?? ''}`"
             :task-id="detail.gw_task_id"
             :session-id="detail.gw_session_id"
             :title="detail.session_title"
@@ -1068,6 +1069,7 @@ function routingAttempts(): RequestLogDetail['routing_attempts'] {
   border-radius: 6px;
   padding: 8px 12px;
   margin-top: 8px;
+  overflow: visible;
 }
 .tags-header,
 .tag-row,
