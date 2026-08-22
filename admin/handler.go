@@ -856,6 +856,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/connection-registry", admin(h.handleConnectionRegistryList))
 	mux.HandleFunc("/api/admin/connection-registry/{request_id}", admin(h.handleConnectionRegistryGet))
 	mux.HandleFunc("/api/admin/requests/{id}/actions", admin(h.handleRequestActions))
+	// 2026-08-23: 节点恢复时间线（node_probe_runs → SPA NodeRecoveryEvent）。
+	mux.HandleFunc("/api/admin/node-health/{credential_id}/timeline", admin(h.handleNodeHealthTimeline))
 
 	// 2026-07-13: read-only route-incident diagnosis API (Phase 1).
 	// Super-admin only. nil handler means the diagnose entry is

@@ -1,10 +1,8 @@
 <script setup lang="ts">
-// NodeHealthTimelineView.vue — T9 mock-stage 节点恢复时间线视图
+// NodeHealthTimelineView.vue — 节点恢复时间线（node-health timeline API）
 //
-// 单凭据视角：列出过去一段时间的关键恢复事件（failed → probing → recovered
-// → degraded → reconnected → quarantined）。数据来自
-// connection-registry mock API（fetchNodeRecoveryTimeline），真实接入时
-// 替换为 /api/admin/connections/:id/recovery。
+// 单凭据视角：列出过去一段时间的关键恢复事件。数据来自
+// GET /api/admin/node-health/{credential_id}/timeline（node_probe_runs）。
 import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
@@ -12,7 +10,7 @@ import {
   fetchNodeRecoveryTimeline,
   type NodeRecoveryEvent,
   type NodeRecoveryTimelineResponse,
-} from '../api/connection-registry'
+} from '../api/node-health'
 
 const route = useRoute()
 const { t, locale } = useI18n()
