@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // SessionMetaTitleRow — request-logs 抽屉内「标题 + 摘要」紧凑行。
 // 默认只显示标题/无标题；标题详情折叠；摘要在抽屉内展开并拉取/生成。
-import { ref, watch } from 'vue'
+import { nextTick, ref, useTemplateRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { localeRef } from '../i18n'
 import {
@@ -37,10 +37,12 @@ const summaryOpen = ref(false)
 const summaryLoading = ref(false)
 const summaryError = ref<string | null>(null)
 const summaryResult = ref<SessionSummaryResponse | null>(null)
+const summaryPanelRef = useTemplateRef<HTMLElement>('summaryPanelRef')
 let summaryLoadSeq = 0
 
+// 勿 watch getter 返回的新数组 —— 每次 render 引用变，会误触 reset 并立刻收起摘要面板。
 watch(
-  () => [props.taskId, props.sessionId] as const,
+  [() => props.taskId, () => props.sessionId],
   () => resetLocalState(),
 )
 
@@ -107,7 +109,10 @@ async function regenerateTitle() {
   regeneratingTitle.value = true
   titleError.value = null
   try {
-    const response = await summarizeSessionTitle(taskId, { session_id: sessionId ?? undefined })
+    const response = await summarizeSessionTitle(taskId, {
+      session_id: sessionId ?? undefined,
+      hours: 168,
+    })
     if (props.taskId === taskId) emit('titleChanged', response.title)
   } catch (e: unknown) {
     if (props.taskId === taskId) {
@@ -160,7 +165,10 @@ async function fetchSummary(force = false) {
 
 async function toggleSummary() {
   summaryOpen.value = !summaryOpen.value
-  if (summaryOpen.value) await fetchSummary(false)
+  if (!summaryOpen.value) return
+  await nextTick()
+  summaryPanelRef.value?.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' })
+  await fetchSummary(false)
 }
 </script>
 
@@ -223,7 +231,13 @@ async function toggleSummary() {
       </button>
     </div>
 
-    <div v-if="summaryOpen && sessionId" class="session-summary-panel" role="region" aria-label="会话摘要">
+    <div
+      v-show="summaryOpen && sessionId"
+      ref="summaryPanelRef"
+      class="session-summary-panel"
+      role="region"
+      aria-label="会话摘要"
+    >
       <div class="session-summary-toolbar">
         <strong>会话摘要</strong>
         <button
@@ -282,12 +296,16 @@ async function toggleSummary() {
 .meta-error { color: var(--danger); font-size: 12px; }
 .text-muted { color: var(--muted); font-size: 12px; margin: 0; }
 .session-summary-panel {
+  display: block;
+  width: 100%;
+  flex: 0 0 100%;
   margin-top: 6px;
   padding: 8px 10px;
   border: 1px dashed var(--border);
   border-radius: 6px;
   background: color-mix(in srgb, var(--accent) 4%, transparent);
   font-size: 12px;
+  overflow: visible;
 }
 .session-summary-toolbar { margin-bottom: 6px; }
 .session-summary-meta { color: var(--muted); margin-bottom: 6px; }
