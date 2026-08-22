@@ -106,8 +106,8 @@ go test -v ./domains/dispatch/
 
 ### Prometheus Metrics
 
-- `dispatch_model_queue_depth` - Tier-1 模型队列深度
-- `dispatch_model_queue_wait_seconds` - Tier-1 等待时长
+- `dispatch_model_queue_depth` - Tier-1 全模型聚合队列深度（Stage C.3 起移除了 `model` label；per-model 分布见 `dispatch: model enqueue` Debug 日志）
+- `dispatch_model_queue_wait_seconds` - Tier-1 等待时长（Stage C.3 起聚合；per-model 分布见 `dispatch: model dequeue wait` Debug 日志）
 - `dispatch_cred_queue_depth` - Tier-2 凭据队列深度
 - `dispatch_in_flight` - 正在转发的请求数
 - `dispatch_dequeued_total` - 出队计数
