@@ -1,18 +1,20 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { createI18n } from 'vue-i18n'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import RequestLogDrawer from './RequestLogDrawer.vue'
+import SessionSummaryDrawer from './SessionSummaryDrawer.vue'
 
-const { getRequestLogDetail, getSessionSummary } = vi.hoisted(() => ({
+const { getRequestLogDetail, getSessionSummary, getRequestLogs } = vi.hoisted(() => ({
   getRequestLogDetail: vi.fn(),
   getSessionSummary: vi.fn(),
+  getRequestLogs: vi.fn(),
 }))
 
 vi.mock('../api', () => ({
   getRequestLogDetail,
   attachmentURL: (path: string) => path,
 }))
-vi.mock('../api/logs', () => ({ getSessionSummary }))
+vi.mock('../api/logs', () => ({ getSessionSummary, getRequestLogs }))
 vi.mock('../store', () => ({ isDefaultTenant: () => true }))
 vi.mock('../api/memora', () => ({
   updateSessionTitle: vi.fn(),
@@ -101,8 +103,11 @@ describe('RequestLogDrawer staged load', () => {
 
 describe('RequestLogDrawer title/summary compact row', () => {
   beforeEach(() => {
+    vi.useFakeTimers()
     getRequestLogDetail.mockReset()
     getSessionSummary.mockReset()
+    getRequestLogs.mockReset()
+    getRequestLogs.mockResolvedValue({ items: [], total: 0 })
     getRequestLogDetail.mockResolvedValue({
       request_id: 'req-2',
       ts: '2026-08-21T00:00:00Z',
@@ -130,6 +135,10 @@ describe('RequestLogDrawer title/summary compact row', () => {
     })
   })
 
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
   it('defaults to collapsed title ops and shows 无标题 + 摘要', async () => {
     const wrapper = mount(RequestLogDrawer, {
       props: { requestId: 'req-2', mode: 'request-logs' },
@@ -146,7 +155,7 @@ describe('RequestLogDrawer title/summary compact row', () => {
     expect(wrapper.text()).not.toContain('生成标题')
   })
 
-  it('expands title actions and loads summary without emitting jump', async () => {
+  it('opens SessionSummaryDrawer instead of inline summary', async () => {
     const wrapper = mount(RequestLogDrawer, {
       props: { requestId: 'req-2', mode: 'request-logs' },
       global: {
@@ -159,8 +168,12 @@ describe('RequestLogDrawer title/summary compact row', () => {
     expect(wrapper.text()).toContain('生成标题')
     await wrapper.get('button[aria-label="会话摘要"]').trigger('click')
     await flushPromises()
+    await vi.advanceTimersByTimeAsync(150)
+    await flushPromises()
+    const drawer = wrapper.findComponent(SessionSummaryDrawer)
+    expect(drawer.props('open')).toBe(true)
+    expect(drawer.props('sessionId')).toBe('sess-1')
     expect(getSessionSummary).toHaveBeenCalledWith('sess-1')
-    expect(wrapper.text()).toContain('抽屉内摘要正文')
     expect(wrapper.emitted('generateSessionSummary')).toBeUndefined()
   })
 })
