@@ -148,6 +148,15 @@ type Pipeline struct {
 	// for the duration of the walk.
 	snapshotAgeMu sync.Mutex
 	snapshotAgeMS map[int]int64
+
+	// credStateCache (Stage D): per-cred latest SnapshotState populated
+	// by ForEachCredSnapshot under credMu; read on the per-request hot
+	// path via SnapshotForCred under credStateCacheMu.RLock() — does
+	// NOT block forwarder construction. The observer tick writes
+	// (State != Unknown only); a closed observer leaves the cache empty
+	// and SnapshotForCred fails open (ok=false).
+	credStateCacheMu sync.RWMutex
+	credStateCache   map[int]SnapshotState
 }
 
 type observationItem struct {
@@ -221,6 +230,7 @@ func NewPipeline(deps Deps) *Pipeline {
 		models:               make(map[string]*modelQueue),
 		forwarders:           make(map[int]*credForwarder),
 		snapshotAgeMS:        make(map[int]int64),
+		credStateCache:       make(map[int]SnapshotState),
 		stopCh:               make(chan struct{}),
 	}
 	cfg := DefaultConfig()
@@ -342,6 +352,30 @@ func (p *Pipeline) ActiveRevision() uint64 {
 	return p.activePolicyRevision.Load()
 }
 
+// SnapshotForCred satisfies SnapshotProvider. Reads from the
+// per-cred cache populated by ForEachCredSnapshot (and consumed by
+// Stage D's capacity-aware soft sort). Returns (_, false) on cache
+// miss — callers must treat this as Ready (fail-open) so an
+// un-initialized cache does not penalize candidates.
+//
+// O(1) read under credStateCacheMu.RLock(). Does NOT touch credMu, so
+// it never blocks getOrCreateForwarder.
+func (p *Pipeline) SnapshotForCred(credID int) (SnapshotState, bool) {
+	if p == nil {
+		return SnapshotStateUnknown, false
+	}
+	p.credStateCacheMu.RLock()
+	state, ok := p.credStateCache[credID]
+	p.credStateCacheMu.RUnlock()
+	if !ok {
+		// Map zero value is empty string; callers must not see "" as
+		// a valid state. Return SnapshotStateUnknown explicitly so
+		// shouldKeep's default branch treats it as Ready (fail-open).
+		return SnapshotStateUnknown, false
+	}
+	return state, true
+}
+
 // ForEachCredSnapshot satisfies SnapshotProvider. Walks the live
 // credForwarders under credMu (read lock) and yields one
 // GovernorSnapshot per forwarder. The pipeline-level state is read
@@ -356,6 +390,13 @@ func (p *Pipeline) ForEachCredSnapshot(fn func(snap GovernorSnapshot) error) err
 		return nil
 	}
 	nowMS := time.Now().UnixMilli()
+	// Stage D: collect (credID, state) writes to apply under the
+	// dedicated cache lock after we drop credMu. Doing the cache write
+	// inside credMu would briefly couple the per-request SnapshotForCred
+	// reader (which uses credStateCacheMu) to forwarder construction
+	// under high contention; the deferred batch write keeps the two
+	// mutexes decoupled.
+	stateWrites := make(map[int]SnapshotState, len(p.forwarders))
 	for _, cf := range p.forwarders {
 		snap := p.snapshotForCredForwarderLocked(cf)
 		// AgeMS = delta from previous visit; 0 on the first visit.
@@ -369,11 +410,35 @@ func (p *Pipeline) ForEachCredSnapshot(fn func(snap GovernorSnapshot) error) err
 				snap.AgeMS = 0
 			}
 		}
+		// Unknown states carry BackendErr (Validate invariant); we
+		// don't cache those — the per-request lookup should fall back
+		// to "no snapshot" rather than appear as a stable Ready.
+		if snap.State != SnapshotStateUnknown {
+			stateWrites[cf.cred.CredentialID] = snap.State
+		}
 		if err := fn(snap); err != nil {
+			// Drain whatever writes we collected so far before
+			// returning, then propagate the error. Future snapshots
+			// remain stale-but-still-readable from the previous cache.
+			p.applyStateWrites(stateWrites)
 			return err
 		}
 	}
+	p.applyStateWrites(stateWrites)
 	return nil
+}
+
+// applyStateWrites performs the credStateCacheMu.Lock() batch write.
+// Called once per ForEachCredSnapshot tick (after credMu is dropped).
+func (p *Pipeline) applyStateWrites(writes map[int]SnapshotState) {
+	if len(writes) == 0 || p == nil {
+		return
+	}
+	p.credStateCacheMu.Lock()
+	for id, st := range writes {
+		p.credStateCache[id] = st
+	}
+	p.credStateCacheMu.Unlock()
 }
 
 // snapshotForCredForwarderLocked builds a GovernorSnapshot for one
