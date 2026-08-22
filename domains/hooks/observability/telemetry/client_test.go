@@ -38,12 +38,13 @@ func (m stringPointerMatcher) Match(value interface{}) bool {
 }
 
 func requestLogUpdateArgs(entry RequestLogEntry) []interface{} {
-	args := make([]interface{}, 93)
+	args := make([]interface{}, 97)
 	for index := range args {
 		args[index] = pgxmock.AnyArg()
 	}
 	// SQL $N → args[N-1]. SQL position 37=success, 38=request_status;
-	// client-perception fields at $79-$82; t0..t9 at $83-$92; discard $93.
+	// client-perception fields at $79-$82; t0..t9 at $83-$92; discard $93;
+	// canonical/routing/attachments at $94-$97.
 	// UsageSource is nonEmptyPtr-wrapped
 	// by nonEmptyPtr() and is nil-safe so we leave it as a generic matcher.
 	args[36] = boolPointerMatcher{want: entry.Success}
@@ -52,7 +53,7 @@ func requestLogUpdateArgs(entry RequestLogEntry) []interface{} {
 	args[79] = stringPointerMatcher{want: entry.AgentType}
 	args[80] = stringPointerMatcher{want: entry.ClientProtocol}
 	args[81] = stringPointerMatcher{want: entry.VirtualClientID}
-	// $83-$92 t0..t9 stay AnyArg; $93 discard_events
+	// $83-$92 t0..t9 stay AnyArg; $93 discard; $94-$97 canonical/routing/attachments
 	args[92] = nullableJSONArg(entry.DiscardEvents)
 	return args
 }
