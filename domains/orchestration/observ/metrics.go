@@ -31,7 +31,6 @@ type Metrics interface {
 	IncLeaseConflict()
 	IncResumeSafetyBlock()
 	IncActionDuplicate()
-	IncHandoffRestoreFailure(reason string)
 	IncAuditDegraded()
 	IncFallbackRejection(reason string)
 	IncPendingProjectionError(reason string)
@@ -51,7 +50,6 @@ func (*NoopMetrics) IncBudgetStop()                     {}
 func (*NoopMetrics) IncLeaseConflict()                  {}
 func (*NoopMetrics) IncResumeSafetyBlock()              {}
 func (*NoopMetrics) IncActionDuplicate()                {}
-func (*NoopMetrics) IncHandoffRestoreFailure(_ string)  {}
 func (*NoopMetrics) IncAuditDegraded()                  {}
 func (*NoopMetrics) IncFallbackRejection(_ string)      {}
 func (*NoopMetrics) IncPendingProjectionError(_ string) {}
@@ -72,7 +70,6 @@ type PrometheusMetrics struct {
 	leaseConflict          prometheus.Counter
 	resumeSafetyBlock      prometheus.Counter
 	actionDuplicate        prometheus.Counter
-	handoffRestoreFailure  *prometheus.CounterVec // labels: reason
 	auditDegraded          prometheus.Counter
 	fallbackRejection      *prometheus.CounterVec // labels: reason
 	pendingProjectionError *prometheus.CounterVec // labels: reason
@@ -119,11 +116,6 @@ func NewPrometheusMetrics(reg prometheus.Registerer) *PrometheusMetrics {
 			Name:      "action_duplicate_total",
 			Help:      "Duplicate action detections (idempotency key reused or sequence out-of-order).",
 		}),
-		handoffRestoreFailure: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Namespace: "orchestration",
-			Name:      "handoff_restore_failure_total",
-			Help:      "Handoff reservation/restore failures by reason (lease_lost, conflict, …).",
-		}, []string{"reason"}),
 		auditDegraded: prometheus.NewCounter(prometheus.CounterOpts{
 			Namespace: "orchestration",
 			Name:      "audit_degraded_total",
@@ -148,7 +140,6 @@ func NewPrometheusMetrics(reg prometheus.Registerer) *PrometheusMetrics {
 		m.leaseConflict,
 		m.resumeSafetyBlock,
 		m.actionDuplicate,
-		m.handoffRestoreFailure,
 		m.auditDegraded,
 		m.fallbackRejection,
 		m.pendingProjectionError,
@@ -192,12 +183,6 @@ func (m *PrometheusMetrics) IncResumeSafetyBlock() {
 // IncActionDuplicate increments the action_duplicate counter.
 func (m *PrometheusMetrics) IncActionDuplicate() {
 	m.actionDuplicate.Inc()
-}
-
-// IncHandoffRestoreFailure increments the handoff_restore_failure counter
-// for the given reason (lease_lost, conflict, …).
-func (m *PrometheusMetrics) IncHandoffRestoreFailure(reason string) {
-	m.handoffRestoreFailure.WithLabelValues(reason).Inc()
 }
 
 // IncAuditDegraded increments the audit_degraded counter — called when an
