@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Credential model drawer extras: IQ history chart + cross-credential check restored into `ModelOfferExtrasPanel`; identity chips deep-link to `/models?q=`.
 
 ### Changed
+- **队列瀑布图 154 UI 抛光（build 1666）**：相对 T0 CSS 瀑布图例分两行（排队/执行）、轨内 25/50/75% 参考线、去掉独立 queue/ttfb 列；详情改右侧抽屉（放大条 + T0–T9 阶段表）。已部署 `llm.kxpms.cn/dispatch/waterfall`。
 - Provider logs and credential-monitor summary now expose `canonical_model` / `standardized_name` / `canonical_name` (monitor schema v8). Saving a node offer omits `context_window` unless the override field actually changed.
 
 ### Fixed
