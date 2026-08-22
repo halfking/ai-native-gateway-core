@@ -14,8 +14,8 @@
 //
 // 热路径投影（SessionStateProjector 负责，见 state_projector.go）：
 //   - security / compliance / pii / approval / optimization
-//   两个 projector 共写同一张 session_tags，tag_key 词汇表正交。
-//   统一打标层设计见 docs/2026-07-09-session-tagging-redaction-architecture.md §2.2。
+//     两个 projector 共写同一张 session_tags，tag_key 词汇表正交。
+//     统一打标层设计见 docs/2026-07-09-session-tagging-redaction-architecture.md §2.2。
 package analysis
 
 import (
@@ -44,16 +44,16 @@ func NewSessionTagger(db DB, config *LLMStageConfig, logger *slog.Logger) *Sessi
 
 // sessionSummaryForTags 是 tagger 需要的 session_summaries 字段投影。
 type sessionSummaryForTags struct {
-	GwSessionID   string
-	TenantID      string
-	WorkTypes     []string
-	ClientModels  []string
-	ModelsUsed    []string
-	PrimaryModel  *string
-	KeyTopics     []string
-	UserIntent    *string
-	Providers     []string
-	QualityScore  *int
+	GwSessionID  string
+	TenantID     string
+	WorkTypes    []string
+	ClientModels []string
+	ModelsUsed   []string
+	PrimaryModel *string
+	KeyTopics    []string
+	UserIntent   *string
+	Providers    []string
+	QualityScore *int
 }
 
 // TagSession 为指定会话生成并持久化标签。
@@ -139,9 +139,9 @@ func qualityLevel(score int) string {
 }
 
 type tagEntry struct {
-	Key       string
-	Value     string
-	Source    string
+	Key        string
+	Value      string
+	Source     string
 	Confidence float32
 }
 
@@ -183,7 +183,7 @@ func (t *SessionTagger) saveTags(ctx context.Context, tenantID, gwSessionID stri
 		INSERT INTO session_tags (gw_session_id, tenant_id, tag_key, tag_value, tag_source, confidence)
 		VALUES ($1, $2, $3, $4, $5, $6)
 		ON CONFLICT (gw_session_id, tag_key, tag_value) DO NOTHING`
-	
+
 	var errors []error
 	for _, tag := range tags {
 		if _, err := t.db.Exec(ctx, upsertSQL, gwSessionID, tenantID, tag.Key, tag.Value, tag.Source, tag.Confidence); err != nil {
@@ -192,7 +192,7 @@ func (t *SessionTagger) saveTags(ctx context.Context, tenantID, gwSessionID stri
 			errors = append(errors, err)
 		}
 	}
-	
+
 	if len(errors) > 0 {
 		return fmt.Errorf("failed to save %d/%d tags", len(errors), len(tags))
 	}

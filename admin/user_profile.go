@@ -32,19 +32,19 @@ type UserProfileSummary struct {
 // UserProfileDetailResponse 用户画像详情
 type UserProfileDetailResponse struct {
 	UserProfileSummary
-	DailyCostTrend    []DailyCostPoint       `json:"daily_cost_trend"`
-	TopTasks          []TaskRankItem         `json:"top_tasks"`
-	TopEndUsers       []EndUserRankItem      `json:"top_end_users"`
-	RecentSessions    []RecentSessionItem    `json:"recent_sessions"`
-	HealthDist        HealthDistribution     `json:"health_distribution"`
+	DailyCostTrend []DailyCostPoint    `json:"daily_cost_trend"`
+	TopTasks       []TaskRankItem      `json:"top_tasks"`
+	TopEndUsers    []EndUserRankItem   `json:"top_end_users"`
+	RecentSessions []RecentSessionItem `json:"recent_sessions"`
+	HealthDist     HealthDistribution  `json:"health_distribution"`
 }
 
 // EndUserRankItem 终端用户排行项
 type EndUserRankItem struct {
-	EndUserID    string  `json:"end_user_id"`
-	SessionCount int     `json:"session_count"`
-	TotalCost    float64 `json:"total_cost_usd"`
-	AvgHealth    *int    `json:"avg_health,omitempty"`
+	EndUserID    string    `json:"end_user_id"`
+	SessionCount int       `json:"session_count"`
+	TotalCost    float64   `json:"total_cost_usd"`
+	AvgHealth    *int      `json:"avg_health,omitempty"`
 	LastActivity time.Time `json:"last_activity"`
 }
 
@@ -53,9 +53,10 @@ type EndUserRankItem struct {
 // handleUserAnalyticsList GET /api/admin/session-analytics/users
 // 返回当前租户（或调用者可见范围）内的 owner_user 列表。
 // 三层隔离：
-//   super_admin/admin_key → 全部 owner（可指定 tenant_id 参数）
-//   tenant_admin          → 本租户全部 owner
-//   普通用户              → 仅自己（返回单条）
+//
+//	super_admin/admin_key → 全部 owner（可指定 tenant_id 参数）
+//	tenant_admin          → 本租户全部 owner
+//	普通用户              → 仅自己（返回单条）
 func (h *Handler) handleUserAnalyticsList(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")

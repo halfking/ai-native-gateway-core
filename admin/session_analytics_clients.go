@@ -11,45 +11,45 @@ import (
 
 // ClientAnalyticsListResponse 客户端分析列表响应
 type ClientAnalyticsListResponse struct {
-	Clients    []ClientAnalyticsSummary `json:"clients"`
-	Total      int                      `json:"total"`
-	Limit      int                      `json:"limit"`
-	Offset     int                      `json:"offset"`
-	RefreshedAt time.Time               `json:"refreshed_at"`
+	Clients     []ClientAnalyticsSummary `json:"clients"`
+	Total       int                      `json:"total"`
+	Limit       int                      `json:"limit"`
+	Offset      int                      `json:"offset"`
+	RefreshedAt time.Time                `json:"refreshed_at"`
 }
 
 // ClientAnalyticsSummary 客户端分析摘要
 type ClientAnalyticsSummary struct {
-	ClientID           string    `json:"client_id"`
-	SessionCount       int       `json:"session_count"`
-	ActiveSessions24h  int       `json:"active_sessions_24h"`
-	TotalRequests      int64     `json:"total_requests"`
-	TotalCost          float64   `json:"total_cost_usd"`
-	AvgCostPerSession  float64   `json:"avg_cost_per_session"`
-	AvgHealthScore     *int      `json:"avg_health_score,omitempty"`
+	ClientID           string             `json:"client_id"`
+	SessionCount       int                `json:"session_count"`
+	ActiveSessions24h  int                `json:"active_sessions_24h"`
+	TotalRequests      int64              `json:"total_requests"`
+	TotalCost          float64            `json:"total_cost_usd"`
+	AvgCostPerSession  float64            `json:"avg_cost_per_session"`
+	AvgHealthScore     *int               `json:"avg_health_score,omitempty"`
 	HealthDistribution HealthDistribution `json:"health_distribution"`
-	TotalSuccess       int64     `json:"total_success"`
-	TotalErrors        int64     `json:"total_errors"`
-	AvgLatencyMs       *int      `json:"avg_latency_ms,omitempty"`
-	FirstSeenAt        time.Time `json:"first_seen_at"`
-	LastSeenAt         time.Time `json:"last_seen_at"`
-	ModelsUsed         []string  `json:"models_used"`
+	TotalSuccess       int64              `json:"total_success"`
+	TotalErrors        int64              `json:"total_errors"`
+	AvgLatencyMs       *int               `json:"avg_latency_ms,omitempty"`
+	FirstSeenAt        time.Time          `json:"first_seen_at"`
+	LastSeenAt         time.Time          `json:"last_seen_at"`
+	ModelsUsed         []string           `json:"models_used"`
 }
 
 // ClientAnalyticsDetailResponse 客户端详情响应
 type ClientAnalyticsDetailResponse struct {
 	ClientAnalyticsSummary
-	RelatedTasks    []RelatedTaskItem     `json:"related_tasks"`
-	DailyCostTrend  []DailyCostPoint      `json:"daily_cost_trend"`
-	RecentSessions  []RecentSessionItem   `json:"recent_sessions"`
+	RelatedTasks   []RelatedTaskItem   `json:"related_tasks"`
+	DailyCostTrend []DailyCostPoint    `json:"daily_cost_trend"`
+	RecentSessions []RecentSessionItem `json:"recent_sessions"`
 }
 
 // RelatedTaskItem 关联任务项
 type RelatedTaskItem struct {
-	TaskID       string  `json:"task_id"`
-	SessionCount int     `json:"session_count"`
-	TotalCost    float64 `json:"total_cost_usd"`
-	AvgHealth    *int    `json:"avg_health,omitempty"`
+	TaskID       string    `json:"task_id"`
+	SessionCount int       `json:"session_count"`
+	TotalCost    float64   `json:"total_cost_usd"`
+	AvgHealth    *int      `json:"avg_health,omitempty"`
 	LastActivity time.Time `json:"last_activity"`
 }
 
@@ -62,12 +62,12 @@ type DailyCostPoint struct {
 
 // RecentSessionItem 最近会话项
 type RecentSessionItem struct {
-	SessionID   string    `json:"session_id"`
-	RequestCount int      `json:"request_count"`
-	Cost        float64   `json:"cost_usd"`
-	HealthScore *int      `json:"health_score,omitempty"`
-	HealthGrade *string   `json:"health_grade,omitempty"`
-	CreatedAt   time.Time `json:"created_at"`
+	SessionID    string    `json:"session_id"`
+	RequestCount int       `json:"request_count"`
+	Cost         float64   `json:"cost_usd"`
+	HealthScore  *int      `json:"health_score,omitempty"`
+	HealthGrade  *string   `json:"health_grade,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
 }
 
 // handleClientAnalyticsList 客户端分析列表
@@ -221,20 +221,20 @@ func (h *Handler) handleClientAnalyticsDetail(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-		days := queryInt(r, "days", 30)
-		if days < 1 || days > 90 {
-			days = 30
-		}
+	days := queryInt(r, "days", 30)
+	if days < 1 || days > 90 {
+		days = 30
+	}
 
-		// 普通用户暂不可见
-		if IsRegularUser(r) {
-			writeError(w, http.StatusForbidden, "client analytics requires admin access")
-			return
-		}
+	// 普通用户暂不可见
+	if IsRegularUser(r) {
+		writeError(w, http.StatusForbidden, "client analytics requires admin access")
+		return
+	}
 
-		tenantID := queryString(r, "tenant_id")
-		callerTenant := GetTenantID(r)
-		isSuper := IsSuperAdminOrLegacy(r)
+	tenantID := queryString(r, "tenant_id")
+	callerTenant := GetTenantID(r)
+	isSuper := IsSuperAdminOrLegacy(r)
 
 	if !isSuper && tenantID != "" && tenantID != callerTenant {
 		writeError(w, http.StatusForbidden, "cross-tenant access denied")

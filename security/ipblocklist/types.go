@@ -22,17 +22,17 @@ const (
 
 // Entry is a blocked IP or CIDR.
 type Entry struct {
-	ID         int64      `json:"id"`
-	IPOrCIDR   string     `json:"ip_or_cidr"`
-	Reason     string     `json:"reason"`
-	Scope      string     `json:"scope"`
-	Source     string     `json:"source"`
-	Enabled    bool       `json:"enabled"`
-	ExpiresAt  *time.Time `json:"expires_at,omitempty"`
-	HitCount   int64      `json:"hit_count"`
-	CreatedBy  string     `json:"created_by,omitempty"`
-	CreatedAt  time.Time  `json:"created_at"`
-	UpdatedAt  time.Time  `json:"updated_at"`
+	ID        int64      `json:"id"`
+	IPOrCIDR  string     `json:"ip_or_cidr"`
+	Reason    string     `json:"reason"`
+	Scope     string     `json:"scope"`
+	Source    string     `json:"source"`
+	Enabled   bool       `json:"enabled"`
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	HitCount  int64      `json:"hit_count"`
+	CreatedBy string     `json:"created_by,omitempty"`
+	CreatedAt time.Time  `json:"created_at"`
+	UpdatedAt time.Time  `json:"updated_at"`
 }
 
 // CreateInput for new blocklist rows.

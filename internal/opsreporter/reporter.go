@@ -25,18 +25,18 @@ const (
 
 // Config wires HTTP-based ops telemetry to the central collector (llm.kxpms.cn).
 type Config struct {
-	CollectURL   string
-	Region       string
-	Version      string
-	BuildSeq     int
-	InstanceID   string
-	DataDir      string
-	LicenseKey   string
-	AdminUser    string
-	AdminEmail   string
-	StartTime    time.Time
-	Interval     time.Duration
-	HTTPClient   *http.Client
+	CollectURL string
+	Region     string
+	Version    string
+	BuildSeq   int
+	InstanceID string
+	DataDir    string
+	LicenseKey string
+	AdminUser  string
+	AdminEmail string
+	StartTime  time.Time
+	Interval   time.Duration
+	HTTPClient *http.Client
 }
 
 // MaybeStart registers this node via central API and emits periodic heartbeats.
@@ -115,18 +115,18 @@ func MaybeStart(ctx context.Context, cfg Config) {
 
 // Reporter sends register + heartbeat to central API.
 type Reporter struct {
-	baseURL      string
-	region       string
-	version      string
-	buildSeq     int
-	instanceID   string
-	dataDir      string
-	licenseKey   string
-	adminUser    string
-	adminEmail   string
-	startedAt    time.Time
-	interval     time.Duration
-	client       *http.Client
+	baseURL       string
+	region        string
+	version       string
+	buildSeq      int
+	instanceID    string
+	dataDir       string
+	licenseKey    string
+	adminUser     string
+	adminEmail    string
+	startedAt     time.Time
+	interval      time.Duration
+	client        *http.Client
 	instanceToken string
 }
 

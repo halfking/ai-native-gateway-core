@@ -48,10 +48,10 @@ type probeRequestInfo struct {
 //
 // 2026-07-17 (audit): 当前实现覆盖三条探测请求识别路径：
 //
-//	1. task_type='probe_triggered'        (legacy ActiveProbeWorker)
-//	2. origin_stage 是已知探测阶段           (NodeProbeWorker / SelfCheck /
-//	                                         SystemHealth / ProbeV2 等)
-//	3. quality_flags 包含 'probe'          (backfill / 老数据兜底)
+//  1. task_type='probe_triggered'        (legacy ActiveProbeWorker)
+//  2. origin_stage 是已知探测阶段           (NodeProbeWorker / SelfCheck /
+//     SystemHealth / ProbeV2 等)
+//  3. quality_flags 包含 'probe'          (backfill / 老数据兜底)
 //
 // single source of truth: origin_stage 列表必须与
 // domains/streaming/context_attrs.go 的 isProbeOriginStage 保持同步，

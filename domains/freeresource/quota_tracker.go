@@ -159,8 +159,10 @@ func (qt *QuotaTracker) Record(ctx context.Context, req RecordRequest) error {
 //   - 新实现: 若 req.Body 非空, 调 errorsx.ClassifyQuota429Body 区分:
 //   - KindQuotaPeriodic  → 周期性耗尽, 用 errorsx.NextQuotaReset(body)
 //     算出 next UTC midnight / next month (除非 header 有更准的 reset).
-//   - KindQuotaPermanent → 永久耗尽 (余额不足), auto_reset_at 设为远未来
-//     (now + 365 天) 避免被自动解除, 需人工介入.
+//   - KindQuotaPermanent → 永久耗尽 (余额不足), auto_reset_at 写入 NULL,
+//     永不被 Preflight 自动解除, 必须靠人工/CredentialRecovery 显式恢复.
+//     (旧实现曾把 now+365 天当作"远未来"伪装重置时间; 与"永久"语义矛盾,
+//     也让 Preflight 在 ~1 年后意外放行, 改用 NULL 终结状态.)
 //   - KindRateLimit      → 瞬时限流, 保持原有短退避行为.
 //     优先级: 真实 upstream reset header > body 推断的周期重置 > 默认 now.
 //

@@ -51,16 +51,16 @@ func NewSensitiveDetector(config DetectorConfig) *SensitiveDetector {
 	if config.MinConfidence == 0 {
 		config.MinConfidence = 0.7
 	}
-	
+
 	d := &SensitiveDetector{
 		patterns: make(map[string]*regexp.Regexp),
 		keywords: make(map[string][]string),
 		config:   config,
 	}
-	
+
 	d.initPatterns()
 	d.initKeywords()
-	
+
 	return d
 }
 
@@ -72,21 +72,21 @@ func (d *SensitiveDetector) initPatterns() {
 		d.patterns["email"] = regexp.MustCompile(`\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b`)
 		d.patterns["address"] = regexp.MustCompile(`[^\s]{2,}[省市区县镇乡村路街道巷弄号栋单元室]\s*[\d\-号栋单元室]+`)
 	}
-	
+
 	if d.config.EnableSecret {
 		d.patterns["api_key"] = regexp.MustCompile(`\b(sk|key|token|api|bearer)[-_]?[A-Za-z0-9]{16,}\b`)
 		d.patterns["password"] = regexp.MustCompile(`(password|passwd|pwd|secret)\s*[:=]\s*[^\s]{6,}`)
 		d.patterns["jwt"] = regexp.MustCompile(`\beyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b`)
 		d.patterns["aws_key"] = regexp.MustCompile(`\b(AKIA|ASIA)[A-Z0-9]{16}\b`)
 	}
-	
+
 	if d.config.EnableFinancial {
 		d.patterns["bank_card"] = regexp.MustCompile(`\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4,7}\b`)
 		d.patterns["cvv"] = regexp.MustCompile(`\b(cvv|安全码)\s*[:=]?\s*\d{3,4}\b`)
 		d.patterns["alipay"] = regexp.MustCompile(`(支付宝|alipay)\s*[:：]\s*([1]\d{10}|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,})`)
 		d.patterns["wechat"] = regexp.MustCompile(`(微信|wechat|wx)\s*[:：]\s*[A-Za-z0-9_-]{6,20}`)
 	}
-	
+
 	if d.config.EnableMedical {
 		d.patterns["medical_record"] = regexp.MustCompile(`(病历号|就诊号|住院号)\s*[:：]?\s*[A-Z0-9]{6,20}`)
 		d.patterns["diagnosis"] = regexp.MustCompile(`(诊断|确诊|患有|病情)\s*[:：]?\s*[\p{Han}]{2,20}`)
@@ -113,15 +113,15 @@ func (d *SensitiveDetector) initKeywords() {
 func (d *SensitiveDetector) Detect(ctx context.Context, content string) (*DetectionResult, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
-	
+
 	rawItems := make([]detectionItem, 0)
-	
+
 	for category, pattern := range d.patterns {
 		matches := pattern.FindAllStringIndex(content, -1)
 		for _, match := range matches {
 			startPos, endPos := match[0], match[1]
 			value := content[startPos:endPos]
-			
+
 			item := detectionItem{
 				Type:       d.getCategoryType(category),
 				Category:   category,
@@ -131,18 +131,18 @@ func (d *SensitiveDetector) Detect(ctx context.Context, content string) (*Detect
 				Confidence: d.calculateConfidence(category, value),
 				Location:   fmt.Sprintf("pos_%d_%d", startPos, endPos),
 			}
-			
+
 			if item.Confidence >= d.config.MinConfidence {
 				rawItems = append(rawItems, item)
 			}
 		}
 	}
-	
+
 	rawItems = append(rawItems, d.detectByKeywords(content)...)
-	
+
 	items := make([]SensitiveItemSummary, 0, len(rawItems))
 	typeCounts := make(map[string]int)
-	
+
 	for _, raw := range rawItems {
 		item := SensitiveItemSummary{
 			Type:       raw.Type,
@@ -153,7 +153,7 @@ func (d *SensitiveDetector) Detect(ctx context.Context, content string) (*Detect
 		items = append(items, item)
 		typeCounts[raw.Type]++
 	}
-	
+
 	result := &DetectionResult{
 		Items:        items,
 		RawItems:     rawItems,
@@ -161,14 +161,14 @@ func (d *SensitiveDetector) Detect(ctx context.Context, content string) (*Detect
 		TotalCount:   len(items),
 		TypeCounts:   typeCounts,
 	}
-	
+
 	return result, nil
 }
 
 // detectByKeywords 基于关键词检测
 func (d *SensitiveDetector) detectByKeywords(content string) []detectionItem {
 	items := make([]detectionItem, 0)
-	
+
 	for category, keywords := range d.keywords {
 		for _, keyword := range keywords {
 			if strings.Contains(strings.ToLower(content), strings.ToLower(keyword)) {
@@ -183,7 +183,7 @@ func (d *SensitiveDetector) detectByKeywords(content string) []detectionItem {
 						Confidence: 0.6,
 						Location:   fmt.Sprintf("keyword_pos_%d_%d", idx, idx+len(keyword)),
 					}
-					
+
 					if item.Confidence >= d.config.MinConfidence {
 						items = append(items, item)
 					}
@@ -191,7 +191,7 @@ func (d *SensitiveDetector) detectByKeywords(content string) []detectionItem {
 			}
 		}
 	}
-	
+
 	return items
 }
 
@@ -252,25 +252,25 @@ func (d *SensitiveDetector) validateIDCard(idCard string) float64 {
 	if len(idCard) != 18 {
 		return 0.5
 	}
-	
+
 	weights := []int{7, 9, 10, 5, 8, 4, 2, 1, 6, 3, 7, 9, 10, 5, 8, 4, 2}
 	checkCodes := []byte{'1', '0', 'X', '9', '8', '7', '6', '5', '4', '3', '2'}
-	
+
 	sum := 0
 	for i := 0; i < 17; i++ {
 		digit := int(idCard[i] - '0')
 		sum += digit * weights[i]
 	}
-	
+
 	checkBit := idCard[17]
 	if checkBit >= 'a' && checkBit <= 'z' {
 		checkBit = checkBit - 'a' + 'A'
 	}
-	
+
 	if checkCodes[sum%11] == checkBit {
 		return 0.95
 	}
-	
+
 	return 0.7
 }
 
@@ -278,32 +278,32 @@ func (d *SensitiveDetector) validateIDCard(idCard string) float64 {
 func (d *SensitiveDetector) validateBankCard(cardNum string) float64 {
 	cardNum = strings.ReplaceAll(cardNum, " ", "")
 	cardNum = strings.ReplaceAll(cardNum, "-", "")
-	
+
 	if len(cardNum) < 16 || len(cardNum) > 19 {
 		return 0.6
 	}
-	
+
 	sum := 0
 	isSecond := false
-	
+
 	for i := len(cardNum) - 1; i >= 0; i-- {
 		digit := int(cardNum[i] - '0')
-		
+
 		if isSecond {
 			digit *= 2
 			if digit > 9 {
 				digit -= 9
 			}
 		}
-		
+
 		sum += digit
 		isSecond = !isSecond
 	}
-	
+
 	if sum%10 == 0 {
 		return 0.9
 	}
-	
+
 	return 0.7
 }
 
@@ -312,10 +312,10 @@ func (d *SensitiveDetector) Redact(content string, result *DetectionResult) stri
 	if result == nil || len(result.RawItems) == 0 {
 		return content
 	}
-	
+
 	sortedItems := make([]detectionItem, len(result.RawItems))
 	copy(sortedItems, result.RawItems)
-	
+
 	for i := 0; i < len(sortedItems)-1; i++ {
 		for j := i + 1; j < len(sortedItems); j++ {
 			if sortedItems[i].StartPos < sortedItems[j].StartPos {
@@ -323,13 +323,13 @@ func (d *SensitiveDetector) Redact(content string, result *DetectionResult) stri
 			}
 		}
 	}
-	
+
 	redacted := content
 	for _, item := range sortedItems {
 		replacement := d.redactSingleValue(item.Category, item.Value)
 		redacted = redacted[:item.StartPos] + replacement + redacted[item.EndPos:]
 	}
-	
+
 	return redacted
 }
 

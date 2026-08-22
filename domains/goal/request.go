@@ -10,15 +10,15 @@ import (
 // It is parsed after authentication and tenant/session ownership validation,
 // before durable snapshot cut point.
 type GoalRequest struct {
-	Version         int              `json:"version"`
-	Enabled         bool             `json:"enabled"`
-	RootGoalID      string           `json:"root_goal_id,omitempty"`
-	Instruction     string           `json:"instruction"`
-	ExecutionMode   ExecutionMode    `json:"execution_mode"`
-	Durability      DurabilityMode   `json:"durability"`
+	Version          int              `json:"version"`
+	Enabled          bool             `json:"enabled"`
+	RootGoalID       string           `json:"root_goal_id,omitempty"`
+	Instruction      string           `json:"instruction"`
+	ExecutionMode    ExecutionMode    `json:"execution_mode"`
+	Durability       DurabilityMode   `json:"durability"`
 	CompletionPolicy CompletionPolicy `json:"completion_policy"`
-	Limits          GoalLimits       `json:"limits"`
-	Delivery        DeliveryConfig   `json:"delivery"`
+	Limits           GoalLimits       `json:"limits"`
+	Delivery         DeliveryConfig   `json:"delivery"`
 }
 
 type ExecutionMode string
@@ -31,13 +31,13 @@ const (
 type DurabilityMode string
 
 const (
-	DurabilityDurable    DurabilityMode = "durable"
-	DurabilityEphemeral  DurabilityMode = "ephemeral"
+	DurabilityDurable   DurabilityMode = "durable"
+	DurabilityEphemeral DurabilityMode = "ephemeral"
 )
 
 type CompletionPolicy struct {
-	Detector               string  `json:"detector"`
-	MinConfidence          float64 `json:"min_confidence"`
+	Detector                string  `json:"detector"`
+	MinConfidence           float64 `json:"min_confidence"`
 	RequireTerminalEvidence bool    `json:"require_terminal_evidence"`
 }
 
@@ -55,11 +55,11 @@ type DeliveryConfig struct {
 
 // PolicySnapshot represents server-tightened policy returned to client
 type PolicySnapshot struct {
-	Version        int        `json:"version"`
+	Version         int        `json:"version"`
 	EffectiveLimits GoalLimits `json:"effective_limits"`
-	TenantID       string     `json:"tenant_id"`
-	APIKeyID       string     `json:"api_key_id"`
-	CreatedAt      time.Time  `json:"created_at"`
+	TenantID        string     `json:"tenant_id"`
+	APIKeyID        string     `json:"api_key_id"`
+	CreatedAt       time.Time  `json:"created_at"`
 }
 
 // ParseGoalRequest parses and validates a goal request from JSON body.

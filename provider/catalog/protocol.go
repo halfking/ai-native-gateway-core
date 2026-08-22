@@ -37,10 +37,10 @@ var Protocols = []string{
 
 // Tier 合法取值（provider_catalog.sql:35 tier CHECK）。
 const (
-	Tier1       = "tier1"
-	Tier2       = "tier2"
-	TierLocal   = "local"
-	TierRestr   = "restricted"
+	Tier1     = "tier1"
+	Tier2     = "tier2"
+	TierLocal = "local"
+	TierRestr = "restricted"
 )
 
 var Tiers = []string{Tier1, Tier2, TierLocal, TierRestr}

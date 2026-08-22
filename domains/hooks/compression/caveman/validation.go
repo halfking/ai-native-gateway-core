@@ -7,9 +7,9 @@ import (
 
 // ValidationResult 是压缩后校验结果。对齐 validation.ts:3-8。
 type ValidationResult struct {
-	Valid          bool
-	Errors         []string
-	Warnings       []string
+	Valid           bool
+	Errors          []string
+	Warnings        []string
 	FallbackApplied bool
 }
 

@@ -9,7 +9,7 @@ import (
 
 func TestTokenLimitInspector_ConfigSoftWarning(t *testing.T) {
 	cfg := &Config{
-		TokenMaxTotal:      1000,
+		TokenMaxTotal:       1000,
 		TokenSoftWarningPct: 80,
 	}
 	i := NewTokenLimitInspectorWithConfig(cfg)
@@ -68,8 +68,8 @@ func TestInactiveInspector_ConfigAbsoluteMaxLifetime(t *testing.T) {
 	}
 	i := NewInactiveInspectorWithConfig(cfg)
 	snap := &SessionSnapshot{
-		StartedAt:     time.Now().Add(-2 * time.Hour), // 2h 前
-		LastActiveAt:  time.Now(),                       // 刚活跃（不会触发 idle）
+		StartedAt:    time.Now().Add(-2 * time.Hour), // 2h 前
+		LastActiveAt: time.Now(),                     // 刚活跃（不会触发 idle）
 	}
 	findings, _ := i.Inspect(snap)
 	if len(findings) != 1 {
@@ -111,7 +111,7 @@ func TestHighFrequencyInspector_ConfigBurstExceeded(t *testing.T) {
 
 func TestHighFrequencyInspector_ConfigConcurrent(t *testing.T) {
 	cfg := &Config{
-		RateRPM:          60,
+		RateRPM:           60,
 		RateMaxConcurrent: 4,
 	}
 	i := NewHighFrequencyInspectorWithConfig(cfg)
@@ -256,12 +256,12 @@ func TestBuildInspectorsFromConfig(t *testing.T) {
 		t.Fatalf("expected 6 inspectors, got %d", len(inspectors))
 	}
 	expectedNames := map[string]bool{
-		"token_limit":      false,
-		"inactive":         false,
-		"high_frequency":   false,
+		"token_limit":       false,
+		"inactive":          false,
+		"high_frequency":    false,
 		"session_lifecycle": false,
-		"error_rate":       false,
-		"model_switch":     false,
+		"error_rate":        false,
+		"model_switch":      false,
 	}
 	for _, ins := range inspectors {
 		if _, ok := expectedNames[ins.Name()]; !ok {

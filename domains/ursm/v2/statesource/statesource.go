@@ -52,14 +52,14 @@ import (
 type RoutingStateSource string
 
 const (
-	StateSourceNodeMirrorHit  RoutingStateSource = "node_mirror_hit"
-	StateSourceNodeMirrorMiss RoutingStateSource = "node_mirror_miss"
+	StateSourceNodeMirrorHit   RoutingStateSource = "node_mirror_hit"
+	StateSourceNodeMirrorMiss  RoutingStateSource = "node_mirror_miss"
 	StateSourceNodeMirrorStale RoutingStateSource = "node_mirror_stale"
-	StateSourceFallback       RoutingStateSource = "fallback"
-	StateSourceOff            RoutingStateSource = "off"
-	StateSourceCanary         RoutingStateSource = "canary"
-	StateSourceAuthoritative  RoutingStateSource = "authoritative"
-	StateSourceSkipped        RoutingStateSource = "skipped"
+	StateSourceFallback        RoutingStateSource = "fallback"
+	StateSourceOff             RoutingStateSource = "off"
+	StateSourceCanary          RoutingStateSource = "canary"
+	StateSourceAuthoritative   RoutingStateSource = "authoritative"
+	StateSourceSkipped         RoutingStateSource = "skipped"
 )
 
 // allSources is the exhaustive set of RoutingStateSource values the

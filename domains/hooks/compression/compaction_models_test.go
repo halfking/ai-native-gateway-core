@@ -41,10 +41,10 @@ func TestCompactionModelsFromSettings(t *testing.T) {
 	})
 	registry.RegisterBackend(settings.EnvBackendScope, settings.NewStoreEnv())
 	registry.MustRegisterSpec(&settings.Spec{
-		Key:      "compression.llm_model",
-		Type:     settings.TypeString,
-		Scope:    settings.ScopePlatform,
-		Default:  "minimax-text-01,gemini-2.5-flash",
+		Key:     "compression.llm_model",
+		Type:    settings.TypeString,
+		Scope:   settings.ScopePlatform,
+		Default: "minimax-text-01,gemini-2.5-flash",
 	})
 	settings.Global = registry
 
