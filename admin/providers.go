@@ -1216,6 +1216,10 @@ func (h *Handler) handleProviderCredentials(w http.ResponseWriter, r *http.Reque
 		} else {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
+	case "models":
+		h.handleCredentialModels(w, r, providerID, credID)
+	case "refresh-models":
+		h.refreshCredentialModels(w, r, providerID, credID)
 	default:
 		http.NotFound(w, r)
 	}

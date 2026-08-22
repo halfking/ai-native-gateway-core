@@ -34,6 +34,8 @@ import {
 import { isDefaultTenant } from '../store'
 import RequestTracePanel from './RequestTracePanel.vue'
 import RoutingAttemptsTimeline from './RoutingAttemptsTimeline.vue'
+import ModelIdentityChip from './model/ModelIdentityChip.vue'
+import { useRouter } from 'vue-router'
 
 const props = withDefaults(defineProps<{
   requestId: string | null
@@ -49,6 +51,8 @@ const emit = defineEmits<{
   generateSessionSummary: [sessionId: string]
   sessionTitleChanged: [{ taskId: string; sessionId: string | null; title: string | null }]
 }>()
+
+const router = useRouter()
 
 const loading = ref(false)
 const bodyLoading = ref(false)
@@ -651,8 +655,17 @@ function routingAttempts(): RequestLogDetail['routing_attempts'] {
           <div class="meta-line">
             <span><strong>请求ID:</strong> <code>{{ detail.request_id }}</code></span>
             <span><strong>时间:</strong> {{ fmtTs(detail.ts) }}</span>
-            <span><strong>模型:</strong> {{ detail.client_model ?? '—' }}</span>
-            <span><strong>出站:</strong> {{ outboundModelDisplay(detail) }}</span>
+            <span class="meta-model">
+              <strong>模型:</strong>
+              <ModelIdentityChip
+                compact
+                :client-model="detail.client_model"
+                :canonical-name="detail.canonical_name || detail.canonical_model"
+                :outbound-model="detail.provider_model || detail.outbound_model"
+                :raw-model="detail.provider_model"
+                @click-canonical="detail.canonical_name && router.push({ path: '/models', query: { q: detail.canonical_name } })"
+              />
+            </span>
             <span><strong>状态:</strong>
               <span :style="{ color: detail.request_status === 'rate_limited' ? 'var(--warning)' : detail.success ? 'var(--success)' : 'var(--danger)' }">
                 {{ detail.success ? '成功' : statusLabel(detail) }}
