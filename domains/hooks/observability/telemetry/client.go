@@ -1112,8 +1112,26 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		-- INSERT never trips SQLSTATE 23502 even when the caller does
 		-- not set the field (e.g. /api/telemetry/request-log HTTP path).
 		stream_chunks_sent = COALESCE(EXCLUDED.stream_chunks_sent, 0),
-		-- 2026-07-01: 附件元数据 (migration 325)。为空时写入 NULL。
-		attachments = COALESCE(request_logs_hot.attachments, EXCLUDED.attachments),
+		-- 2026-07-01 / 2026-08-22: attachments — prefer a real JSON value from
+		-- EXCLUDED. First-write-wins against SQL NULL is correct, but an early
+		-- in_progress INSERT that bound JSON null ('null'::jsonb) must not
+		-- permanently block the completion path's real attachment metadata.
+		attachments = CASE
+			WHEN EXCLUDED.attachments IS NOT NULL
+				AND jsonb_typeof(EXCLUDED.attachments) <> 'null'
+			THEN EXCLUDED.attachments
+			ELSE request_logs_hot.attachments
+		END,
+		-- 2026-08-22: routing_attempts / routing_summary were INSERT-only and
+		-- missing from DO UPDATE SET, so EmitRequestLogUpdate success rows
+		-- never persisted tracker output (same class as t0..t9 gap).
+		routing_attempts = CASE
+			WHEN EXCLUDED.routing_attempts IS NOT NULL
+				AND jsonb_typeof(EXCLUDED.routing_attempts) <> 'null'
+			THEN EXCLUDED.routing_attempts
+			ELSE request_logs_hot.routing_attempts
+		END,
+		routing_summary = COALESCE(EXCLUDED.routing_summary, request_logs_hot.routing_summary),
 		-- 2026-07-14 (migration 341): origin metadata. First-write-wins:
 		-- the first writer (usually the origin middleware) keeps its value;
 		-- later replays must not overwrite the real client IP / origin label.
@@ -1295,7 +1313,9 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		entry.OriginStage,
 		entry.OriginActor,
 		// 2026-07-19 (migration 350): routing attempts tracking
-		jsonOrNull(entry.RoutingAttempts),
+		// 2026-08-22: use nullableJSONArg so an empty in_progress INSERT stores
+		// SQL NULL (not JSON null); completion UPDATE can then COALESCE/CASE-fill.
+		nullableJSONArg(entry.RoutingAttempts),
 		entry.RoutingSummary,
 		// 2026-07-27: 客户端感知字段 ($86-$89,与上面 INSERT 列表对齐)
 		entry.AgentName,
@@ -1736,7 +1756,22 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 			   t7_forward_start_at  = COALESCE($90, t7_forward_start_at),
 			   t8_response_start_at = COALESCE($91, t8_response_start_at),
 			   t9_response_end_at   = COALESCE($92, t9_response_end_at),
-			   discard_events       = COALESCE($93::text::jsonb, discard_events)
+			   discard_events       = COALESCE($93::text::jsonb, discard_events),
+			   -- 2026-08-22: completion UPDATE must carry routing + attachments
+			   -- (+ canonical refresh). Same class as t0..t9 gap — emitTelemetry
+			   -- sets these on reqLog then EmitRequestLogUpdate.
+			   canonical_model      = COALESCE($94, canonical_model),
+			   routing_attempts     = CASE
+			       WHEN $95::text IS NOT NULL AND $95::text <> '' AND $95::text <> 'null'
+			       THEN $95::text::jsonb
+			       ELSE routing_attempts
+			   END,
+			   routing_summary      = COALESCE($96, routing_summary),
+			   attachments          = CASE
+			       WHEN $97::text IS NOT NULL AND $97::text <> '' AND $97::text <> 'null'
+			       THEN $97::text::jsonb
+			       ELSE attachments
+			   END
 		   WHERE request_id = $1
 
 		     AND NOT (
@@ -1861,6 +1896,10 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		entry.T8ResponseStartAt,
 		entry.T9ResponseEndAt,
 		nullableJSONArg(entry.DiscardEvents),
+		entry.CanonicalModel,
+		nullableJSONArg(entry.RoutingAttempts),
+		entry.RoutingSummary,
+		attachmentsArgStr(entry.Attachments),
 	)
 
 	if err != nil {
