@@ -299,19 +299,15 @@ describe('NodeDetailDrawer model×node scope', () => {
     expect(wrapper.text()).toContain('连通性')
     expect(wrapper.text()).toContain('紧急维护')
     expect(wrapper.text()).toContain('并发与指纹槽位')
-    expect(wrapper.text()).toContain('其它模型')
     expect(wrapper.text()).not.toContain('加载设置面板')
   })
 
-  it('shows other-models panel when settings sub-tab is selected', async () => {
+  it('shows other-models panel on top-level tab', async () => {
     const wrapper = mountDrawer('m-1')
     await flushPromises()
-    await clickMainTab(wrapper, '设置与维护')
-    const subTabs = wrapper.findAll('.nd-subtabs button')
-    expect(subTabs.length).toBeGreaterThanOrEqual(2)
-    await subTabs[1].trigger('click')
-    await flushPromises()
+    await clickMainTab(wrapper, '其它模型')
     expect(wrapper.find('.stub-other-models').exists()).toBe(true)
+    expect(wrapper.find('.nd-subtabs').exists()).toBe(false)
   })
 
   it('lists failed window entries in 最近访问与异常', async () => {

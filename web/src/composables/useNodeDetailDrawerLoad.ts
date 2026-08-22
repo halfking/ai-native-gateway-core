@@ -9,8 +9,7 @@ import type {
 import { nodesRef, type LiveNodeStatus } from '../composables/liveStreamStore'
 import { createNodeDetailFetchers } from './nodeDetailDrawerFetch'
 
-export type NodeDetailTab = 'detail' | 'availability' | 'requests' | 'settings'
-export type SettingsSubTab = 'maintain' | 'other-models'
+export type NodeDetailTab = 'detail' | 'availability' | 'requests' | 'other-models' | 'settings'
 export type NodeDetailDrawerProps = {
   modelValue: boolean
   node: LiveNodeStatus | null
@@ -25,7 +24,8 @@ export function useNodeDetailDrawerLoad(
   emit: { (e: 'update:modelValue', value: boolean): void },
 ) {
   const activeTab = ref<NodeDetailTab>('detail')
-  const settingsSubTab = ref<SettingsSubTab>('maintain')
+  const otherModelsLoaded = ref(false)
+  const otherModelsLoading = ref(false)
   const loading = ref(false)
   const detailLoaded = ref(false); const detailLoading = ref(false)
   const requestsLoaded = ref(false); const requestsLoading = ref(false)
@@ -115,7 +115,7 @@ export function useNodeDetailDrawerLoad(
     windowEntries.value = []; windowStats.value = null; windowSource.value = ''
     history.value = []; decisions.value = []; pingResult.value = null
     actionMessage.value = ''; actionError.value = ''; detailRequestId.value = null
-    settingsSubTab.value = 'maintain'
+    otherModelsLoaded.value = false; otherModelsLoading.value = false
   }
   function detailEntriesReset() {
     windowEntries.value = []; windowStats.value = null; windowSource.value = ''; history.value = []
@@ -154,6 +154,22 @@ export function useNodeDetailDrawerLoad(
     } else if (tab === 'requests' && !requestsLoaded.value && !requestsLoading.value) {
       decisions.value = []; requestsLoading.value = true
       requestsLoaded.value = await loadDecisionsOnly(); requestsLoading.value = false
+    } else if (tab === 'other-models' && !otherModelsLoaded.value && !otherModelsLoading.value) {
+      otherModelsLoading.value = true
+      if (!detailLoaded.value) {
+        if (!detailLoading.value) {
+          detailEntriesReset(); detailLoading.value = true
+          detailLoaded.value = await loadNode(); detailLoading.value = false
+        } else {
+          await new Promise<void>(resolve => {
+            const timer = setInterval(() => {
+              if (!detailLoading.value) { clearInterval(timer); resolve() }
+            }, 20)
+          })
+        }
+      }
+      otherModelsLoaded.value = true
+      otherModelsLoading.value = false
     } else if (tab === 'settings' && !settingsLoaded.value && !settingsLoading.value) {
       settingsLoading.value = true
       const loaded = await startCorePreload()
@@ -182,6 +198,7 @@ export function useNodeDetailDrawerLoad(
 
   async function refreshCurrentTab() {
     if (activeTab.value === 'requests') { requestsLoaded.value = false; await ensureTabLoaded('requests'); return }
+    if (activeTab.value === 'other-models') { otherModelsLoaded.value = false; await ensureTabLoaded('other-models'); return }
     if (activeTab.value === 'settings') {
       settingsLoaded.value = false; coreLoaded.value = false; coreLoading.value = false; coreTask.p = null
       await ensureTabLoaded('settings'); return
@@ -201,7 +218,7 @@ export function useNodeDetailDrawerLoad(
   onBeforeUnmount(() => { loadController.c?.abort(); requestsController.c?.abort(); coreController.c?.abort() })
 
   return {
-    activeTab, settingsSubTab, loading, detailLoaded, detailLoading, requestsLoaded, requestsLoading,
+    activeTab, otherModelsLoaded, otherModelsLoading, loading, detailLoaded, detailLoading, requestsLoaded, requestsLoading,
     settingsLoaded, settingsLoading, loadError, candidate, candidateLoading, monitor, selectedModel,
     windowEntries, windowStats, windowSource, history, decisions, saving, actionMessage, actionError,
     pingResult, lifecycle, manualPriority, routingTier, weight, modelActionReason, coreLoaded, coreLoading,
