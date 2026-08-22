@@ -162,6 +162,35 @@ export function getSlidingWindow(credentialId: number, model: string, minutes = 
   }>('GET', `/api/credentials/sliding-window?${params.toString()}`, undefined, requestOptions)
 }
 
+export type SlidingWindowBatchItem = { credential_id: number; model: string }
+
+export type SlidingWindowBatchResult = {
+  credential_id: number
+  model: string
+  source?: 'redis' | 'request_logs'
+  stats?: {
+    total: number
+    success: number
+    failed: number
+    failure_rate: number
+    error_kinds?: Record<string, number>
+  }
+  error?: string
+}
+
+/** Queue-perspective stats: one POST for many credential×model pairs (no entries). */
+export function getSlidingWindowBatch(
+  items: SlidingWindowBatchItem[],
+  minutes = 5,
+  requestOptions?: RequestOptions,
+) {
+  return req<{
+    window_minutes: number
+    count: number
+    results: SlidingWindowBatchResult[]
+  }>('POST', '/api/credentials/sliding-window/batch', { minutes, items }, requestOptions)
+}
+
 export function promoteCredential(credentialId: number, reason: string) {
   return req<{ success: boolean; message: string }>(
     'POST',

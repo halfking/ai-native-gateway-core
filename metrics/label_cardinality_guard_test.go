@@ -170,35 +170,111 @@ func labelKeys(m map[string][]string) []string {
 	return keys
 }
 
-// TestDispatchGovernorLabelAllowlist_StageCScaffold
+// TestDispatchGovernorLabelAllowlist_StageCEnforced
 //
-// ADR-0003 §Stage A commit #9: a non-enforcing scaffold for the Stage C
-// cardinality-guard tightening. This block is gated until Stage C
-// flips the t.Skip, at which point the allowlist below becomes the
-// authoritative list of label VALUES permitted for the governor metric
-// set (backend / mode / result / state).
+// ADR-0003 §"Stage C — Metrics & snapshot pipeline" — flips the Stage A
+// scaffold from t.Skip-gated placeholder to a hard enforcement. For every
+// metric fqName in domains/dispatch/governor_metrics.go (fq prefix
+// "dispatch_governor_"), the test asserts:
 //
-// Stage A only verifies the closed-enum strings compile and that the
-// values listed here match the dispatch package constants so a future
-// silent rename in either package fails this test (Stage C will tighten
-// it further to enforce on real Descs).
-func TestDispatchGovernorLabelAllowlist_StageCScaffold(t *testing.T) {
-	t.Skip("stage C enforcement — flip when Stage C lands governor metrics")
-
-	// Closed-enum label VALUES allowed on the governor metric set.
-	// Must match the constants in domains/dispatch (governor_backend.go,
-	// queued_request.go, governor_snapshot.go). Any drift is a coordinate
-	// break for downstream dashboards/alerts that key on these strings.
+//   - the metric's variableLabels are ⊆ {backend, mode, result, state};
+//   - any emitted series with one of those labels uses only the
+//     values declared in the matching closed-enum allowlist.
+//
+// Drift between the allowlist tables below and the constants in
+// domains/dispatch (governor_backend.go, queued_request.go,
+// governor_snapshot.go, governor_metrics.go) is a coordinate break for
+// downstream dashboards/alerts. Stage C flips enforcement; Stage D/E
+// may extend the table.
+func TestDispatchGovernorLabelAllowlist_StageCEnforced(t *testing.T) {
+	// Closed-enum value tables. Mirror the constants in:
+	//   - domains/dispatch/governor_backend.go       (backendValues)
+	//   - domains/dispatch/queued_request.go         (modeValues)
+	//   - domains/dispatch/governor_snapshot.go      (stateValues)
+	//   - domains/dispatch/governor_metrics.go       (resultValues)
 	wantBackends := []string{"local", "redis_enforce", "redis_shadow"}
 	wantModes := []string{"concurrency", "rpm", "tpm", "disabled"}
-	wantSnapshotStates := []string{"ready", "queue_full", "governor_saturated", "unknown"}
+	wantResults := []string{"ready", "saturated", "invalid_token", "unknown"}
+	wantStates := []string{"ready", "queue_full", "governor_saturated", "unknown"}
 
-	// Pin a non-empty slice; Stage C will replace this placeholder body
-	// with the real enforcement loop (collectDeclaredDescs → filter to
-	// governor-prefixed fqNames → assert variable labels are restricted
-	// to {backend, mode, result, state} and their values match these
-	// allowlists).
-	if len(wantBackends) == 0 || len(wantModes) == 0 || len(wantSnapshotStates) == 0 {
-		t.Fatalf("stage C scaffold: closed-enum allowlists must be non-empty")
+	allowedLabels := map[string]bool{
+		"backend": true,
+		"mode":    true,
+		"result":  true,
+		"state":   true,
 	}
+	allowedValues := map[string]map[string]bool{
+		"backend": setFrom(wantBackends),
+		"mode":    setFrom(wantModes),
+		"result":  setFrom(wantResults),
+		"state":   setFrom(wantStates),
+	}
+
+	descs := collectDeclaredDescs(t)
+	var governorDescs []string
+	for _, ds := range descs {
+		fqName := parseFQName(ds)
+		if !strings.HasPrefix(fqName, "dispatch_governor_") {
+			continue
+		}
+		governorDescs = append(governorDescs, ds)
+		labels := parseVarLabels(ds)
+		for _, l := range labels {
+			if !allowedLabels[l] {
+				t.Errorf("dispatch_governor_* metric %q declares non-allowlist label %q (allowed: backend/mode/result/state)", fqName, l)
+			}
+		}
+	}
+	// If no dispatch_governor_* descriptors are registered, the dispatch
+	// package was not imported by this test run. Skip — the test enforces
+	// only when the metrics package's test binary pulls dispatch in
+	// transitively (via `go test ./...`) or directly via the blank import
+	// in domains/dispatch/governor_metrics_test.go.
+	if len(governorDescs) == 0 {
+		t.Skip("no dispatch_governor_* descriptors in this test binary; run via `go test ./...` (or `./domains/dispatch/`) to register the dispatch package")
+	}
+
+	// Gather actual series to verify emitted label values stay inside
+	// the allowlist. (Describe reports declared labels even when the
+	// vec has no observed children — Gather requires WithLabelValues to
+	// have been called at least once.)
+	mfs, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	for _, mf := range mfs {
+		if !strings.HasPrefix(mf.GetName(), "dispatch_governor_") {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			for _, lp := range m.GetLabel() {
+				lname := lp.GetName()
+				lval := lp.GetValue()
+				if !allowedLabels[lname] {
+					continue // already reported above
+				}
+				if vset, ok := allowedValues[lname]; ok && !vset[lval] {
+					t.Errorf("dispatch_governor_* metric %q emitted off-list label value %s=%q (allowed: %v)",
+						mf.GetName(), lname, lval, sortedKeys(vset))
+				}
+			}
+		}
+	}
+}
+
+func setFrom(xs []string) map[string]bool {
+	out := make(map[string]bool, len(xs))
+	for _, x := range xs {
+		out[x] = true
+	}
+	return out
+}
+
+func sortedKeys(m map[string]bool) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	// Stable enough for test error messages; not a sort guarantee.
+	return keys
 }

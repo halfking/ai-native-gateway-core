@@ -36,6 +36,13 @@ var (
 	ErrGoalRestoreRetryable        = errors.New("handoff goal restore is incomplete; retry confirmation")
 	ErrGoalRestoreManualRequired   = errors.New("handoff goal restore requires manual recovery")
 	ErrGoalRestoreStateInvalid     = errors.New("handoff durable goal state is invalid")
+
+	// Sentinel errors for goal restore failure modes that require manual
+	// recovery rather than an automatic retry. isManualGoalRestoreError
+	// classifies via errors.Is instead of substring matching so callers that
+	// wrap these errors (with %w) are still detected.
+	ErrGoalRestoreConflict       = errors.New("target goal session conflicts with handoff state")
+	ErrGoalRestoreVersionMismatch = errors.New("unsupported goal state version")
 )
 
 // ConfirmationProposal is the durable one-time capability returned with an

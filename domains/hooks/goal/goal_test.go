@@ -969,3 +969,146 @@ func TestCompareAndSetState_ConcurrentRace(t *testing.T) {
 		t.Fatalf("final state must be terminal, got %q", sess.State)
 	}
 }
+
+// ── Preset-driven budget exhaustion (Finding 8) ───────────────────────────────
+//
+// The cost_mode presets (balanced/aggressive) drive MaxAutoContinueCount,
+// MaxModelSwitchCount, etc. through GetPreset. These integration tests prove
+// that the loop detector's budgetExhausted branch actually fires — and a
+// model-switch follow-up is emitted — when a session is seeded at the
+// preset's continue budget and the hook runs with those preset-driven values.
+//
+// We do NOT hardcode MaxAutoContinueCount:3 — we read it from the preset, seed
+// the session's AutoContinueCount to exactly that value, and assert the switch.
+
+// modeConfigFromPreset builds a ModeConfig from a cost-mode preset, mirroring
+// how buildGoalConfig wires preset values into the hook at boot.
+func modeConfigFromPreset(preset ModePreset) ModeConfig {
+	return ModeConfig{
+		Enabled:                true,
+		DetectionMode:          ModeKeyword,
+		AutoContinueOnPause:    preset.AutoContinue,
+		MaxAutoContinueCount:   preset.MaxContinueCount,
+		ModelSwitchOnLoop:      preset.LoopDetectionEnabled,
+		MaxModelSwitchCount:    preset.MaxModelSwitch,
+		RepeatThreshold:        preset.LoopThreshold,
+		CompletionConfidence:   preset.CompletionConfidence,
+		FallbackModels:         []string{"gpt-4o", "claude-3-5-sonnet"},
+		// MaxFollowUpDepth is left at zero (engine default) — this test
+		// exercises the hook directly, not the follow-up engine, so the
+		// boot-time invariant lifting that value is irrelevant here.
+	}
+}
+
+func TestIntercept_BudgetExhausted_UnderBalancedPreset(t *testing.T) {
+	preset := GetPreset("balanced")
+	store := newFakeStore()
+	store.seed(&Session{
+		SessionID:         "bp1",
+		TenantID:          "t1",
+		State:             StateActive,
+		AutoContinueCount: preset.MaxContinueCount, // budget exhausted per preset
+		CurrentModel:      "gpt-4o",
+	})
+
+	hook := &ModeHook{
+		config:    modeConfigFromPreset(preset),
+		db:        store,
+		llmCaller: nil, // keyword-only completion detection
+		detector:  NewCompletionDetector(store, nil),
+		history:   NoopHistoryStore(),
+	}
+
+	body := `{"choices":[{"message":{"role":"assistant","content":"still working on step 5"},"finish_reason":"stop"}]}`
+	req := &response.InterceptRequest{
+		SessionID: "bp1", TenantID: "t1",
+		ResponseBody: []byte(body), FinishReason: "stop",
+	}
+
+	res, _ := hook.InterceptNonStream(context.Background(), req)
+	if res == nil {
+		t.Fatal("expected a model-switched continue follow-up under balanced preset, got nil")
+	}
+	if res.Action != "goal_model_switch" {
+		t.Fatalf("Action = %q, want goal_model_switch", res.Action)
+	}
+
+	var parsed struct {
+		Model string `json:"model"`
+	}
+	if err := jsonParse(res.InjectFollowUp, &parsed); err != nil {
+		t.Fatalf("parse follow-up: %v", err)
+	}
+	if parsed.Model == "gpt-4o" {
+		t.Fatalf("model not switched, still %q", parsed.Model)
+	}
+
+	sess, _ := store.GetSession(context.Background(), "t1", "bp1")
+	if sess.ModelSwitchCount != 1 {
+		t.Fatalf("ModelSwitchCount = %d, want 1", sess.ModelSwitchCount)
+	}
+	if sess.AutoContinueCount != 0 {
+		t.Fatalf("AutoContinueCount = %d, want 0 (rotation should not consume budget)", sess.AutoContinueCount)
+	}
+	if sess.CurrentModel == "gpt-4o" {
+		t.Fatalf("CurrentModel not updated, still gpt-4o")
+	}
+}
+
+func TestIntercept_BudgetExhausted_UnderAggressivePreset(t *testing.T) {
+	preset := GetPreset("aggressive")
+	store := newFakeStore()
+	store.seed(&Session{
+		SessionID:         "ap1",
+		TenantID:          "t1",
+		State:             StateActive,
+		AutoContinueCount: preset.MaxContinueCount, // budget exhausted per preset
+		CurrentModel:      "gpt-4o",
+	})
+
+	hook := &ModeHook{
+		config:    modeConfigFromPreset(preset),
+		db:        store,
+		llmCaller: nil, // keyword-only completion detection
+		detector:  NewCompletionDetector(store, nil),
+		history:   NoopHistoryStore(),
+	}
+	// Aggressive preset enables audit; disable it so the budget-exhausted
+	// model-switch path is the one that fires (not the audit path).
+	hook.config.UseAudit = false
+
+	body := `{"choices":[{"message":{"role":"assistant","content":"still working on step 9"},"finish_reason":"stop"}]}`
+	req := &response.InterceptRequest{
+		SessionID: "ap1", TenantID: "t1",
+		ResponseBody: []byte(body), FinishReason: "stop",
+	}
+
+	res, _ := hook.InterceptNonStream(context.Background(), req)
+	if res == nil {
+		t.Fatal("expected a model-switched continue follow-up under aggressive preset, got nil")
+	}
+	if res.Action != "goal_model_switch" {
+		t.Fatalf("Action = %q, want goal_model_switch", res.Action)
+	}
+
+	var parsed struct {
+		Model string `json:"model"`
+	}
+	if err := jsonParse(res.InjectFollowUp, &parsed); err != nil {
+		t.Fatalf("parse follow-up: %v", err)
+	}
+	if parsed.Model == "gpt-4o" {
+		t.Fatalf("model not switched, still %q", parsed.Model)
+	}
+
+	sess, _ := store.GetSession(context.Background(), "t1", "ap1")
+	if sess.ModelSwitchCount != 1 {
+		t.Fatalf("ModelSwitchCount = %d, want 1", sess.ModelSwitchCount)
+	}
+	if sess.AutoContinueCount != 0 {
+		t.Fatalf("AutoContinueCount = %d, want 0 (rotation should not consume budget)", sess.AutoContinueCount)
+	}
+	if sess.CurrentModel == "gpt-4o" {
+		t.Fatalf("CurrentModel not updated, still gpt-4o")
+	}
+}
