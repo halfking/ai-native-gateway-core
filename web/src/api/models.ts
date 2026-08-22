@@ -248,6 +248,8 @@ export function updateModel(id: number, data: Partial<{
   notes: string | null
   status: 'active' | 'disabled' | 'deprecated' | 'hidden'
   disabled_reason: string | null
+  reasoning_caps: Record<string, unknown> | null
+  multimodal_caps: string[]
 }>) {
   return req<ModelCanonical>('PATCH', `/api/models/${id}`, data)
 }

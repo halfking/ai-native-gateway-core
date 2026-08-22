@@ -1194,6 +1194,9 @@ onUnmounted(() => {
                           @click="selectModel(m.raw_model_name)">
                         <td>
                           <code class="mono-sm">{{ m.raw_model_name }}</code>
+                          <div v-if="m.standardized_name || m.canonical_name" class="cell-muted" style="font-size:11px">
+                            标准: {{ m.canonical_name || m.standardized_name }}
+                          </div>
                           <span v-if="!m.offer_available || !m.binding_available" class="badge badge-gray" style="margin-left:4px">unavail</span>
                         </td>
                         <td>

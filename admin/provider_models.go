@@ -20,29 +20,7 @@ func (h *Handler) getProviderModels(w http.ResponseWriter, r *http.Request, prov
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	rows, err := h.db.Query(ctx, `
-		SELECT mo.id, mo.credential_id, COALESCE(c.label,'') AS credential_label,
-		       COALESCE(mo.raw_model_name,''), COALESCE(mo.standardized_name,''),
-		       mo.canonical_id, COALESCE(mo.outbound_model_name,'') AS display_name,
-		       mo.available, mo.unavailable_reason, mo.unavailable_at,
-		       mo.p95_latency_ms, mo.success_rate::float8,
-		       mo.unit_price_in_per_1m::float8 AS input_price,
-		       mo.unit_price_out_per_1m::float8 AS output_price,
-		       mo.last_seen_at, COALESCE(mo.routing_tier::text,''),
-		       mc.standard_iq::float8,
-		       niq.overall_score::float8, niq.avg_score::float8,
-		       COALESCE(niq.sample_count, 0), niq.tested_at,
-		       COALESCE(NULLIF(mc.canonical_name,''), mo.standardized_name),
-		       -- 522: 凭据×模型级上下文窗口。effective 为三级覆盖链结果，override
-		       -- 即本 binding 上手工/发现的覆盖值（NULL=未覆盖，回落到标准目录）。
-		       COALESCE(mo.context_window_override, mc.context_window_override, mc.context_window) AS context_window,
-		       mo.context_window_override
-		FROM model_offers mo
-		JOIN credentials c ON c.id = mo.credential_id
-		LEFT JOIN models_canonical mc ON mc.id = mo.canonical_id
-		LEFT JOIN node_iq_latest niq
-		       ON niq.credential_id = mo.credential_id
-		      AND lower(niq.raw_model_name) = lower(mo.raw_model_name)
+	rows, err := h.db.Query(ctx, offerListSQL+`
 		WHERE c.provider_id = $1
 		ORDER BY mo.raw_model_name
 	`, providerID)
@@ -52,68 +30,14 @@ func (h *Handler) getProviderModels(w http.ResponseWriter, r *http.Request, prov
 	}
 	defer rows.Close()
 
-	type modelOffer struct {
-		ID                 int        `json:"id"`
-		CredentialID       int        `json:"credential_id"`
-		CredentialLabel    string     `json:"credential_label"`
-		RawModelName       string     `json:"raw_model_name"`
-		StandardizedName   string     `json:"standardized_name"`
-		CanonicalID        *int       `json:"canonical_id"`
-		DisplayName        string     `json:"display_name"`
-		Available          bool       `json:"available"`
-		UnavailableReason  *string    `json:"unavailable_reason"`
-		UnavailableAt      *time.Time `json:"unavailable_at"`
-		P95LatencyMs       *int       `json:"p95_latency_ms"`
-		SuccessRate        *float64   `json:"success_rate"`
-		InputPrice         *float64   `json:"input_price"`
-		OutputPrice        *float64   `json:"output_price"`
-		LastSeenAt         *time.Time `json:"last_seen_at"`
-		RoutingTier        string     `json:"routing_tier"`
-		AvailabilitySource string     `json:"availability_source"`
-		// 2026-08-11: 模型智商字段。
-		//   CanonicalStandardIQ — 来自 models_canonical.standard_iq（评测站点基准值）
-		//   CanonicalName       — canonical_name，用于前端跳转到目录页
-		//   NodeIQ              — 该节点最新一次智商（node_iq_latest.overall_score）
-		//   NodeIQAvg           — 该节点历史平均智商
-		//   NodeIQSampleCount   — 历史样本数
-		//   NodeIQTestedAt      — 最新测试时间
-		CanonicalStandardIQ *float64   `json:"canonical_standard_iq"`
-		CanonicalName       string     `json:"canonical_name"`
-		NodeIQ              *float64   `json:"node_iq"`
-		NodeIQAvg           *float64   `json:"node_iq_avg"`
-		NodeIQSampleCount   int        `json:"node_iq_sample_count"`
-		NodeIQTestedAt      *time.Time `json:"node_iq_tested_at"`
-		// 522: 凭据×模型级上下文窗口。ContextWindow 为生效值（三级覆盖链），
-		// ContextWindowOverride 为本 binding 的覆盖值（nil=未覆盖）。
-		ContextWindow         *int `json:"context_window"`
-		ContextWindowOverride *int `json:"context_window_override"`
-	}
-
-	var offers []modelOffer
+	offers := make([]modelOfferDTO, 0)
 	for rows.Next() {
-		var o modelOffer
-		if err := rows.Scan(
-			&o.ID, &o.CredentialID, &o.CredentialLabel,
-			&o.RawModelName, &o.StandardizedName,
-			&o.CanonicalID, &o.DisplayName,
-			&o.Available, &o.UnavailableReason, &o.UnavailableAt,
-			&o.P95LatencyMs, &o.SuccessRate,
-			&o.InputPrice, &o.OutputPrice,
-			&o.LastSeenAt, &o.RoutingTier,
-			&o.CanonicalStandardIQ,
-			&o.NodeIQ, &o.NodeIQAvg,
-			&o.NodeIQSampleCount, &o.NodeIQTestedAt,
-			&o.CanonicalName,
-			&o.ContextWindow, &o.ContextWindowOverride,
-		); err != nil {
-			slog.Warn("getProviderModels scan failed", "error", err)
+		o, scanErr := scanModelOfferDTO(rows.Scan)
+		if scanErr != nil {
+			slog.Warn("getProviderModels scan failed", "error", scanErr)
 			continue
 		}
-		o.AvailabilitySource = classifyAvailability(o.Available, o.UnavailableReason)
 		offers = append(offers, o)
-	}
-	if offers == nil {
-		offers = []modelOffer{}
 	}
 	writeJSON(w, http.StatusOK, offers)
 }
@@ -240,27 +164,7 @@ func (h *Handler) queryProviderModels(w http.ResponseWriter, r *http.Request, pr
 	}
 
 	offset := (req.Page - 1) * req.PageSize
-	dataSQL := fmt.Sprintf(`
-		SELECT mo.id, mo.credential_id, COALESCE(c.label,'') AS credential_label,
-		       COALESCE(mo.raw_model_name,''), COALESCE(mo.standardized_name,''),
-		       mo.canonical_id, COALESCE(mo.outbound_model_name,'') AS display_name,
-		       mo.available, mo.unavailable_reason, mo.unavailable_at,
-		       mo.p95_latency_ms, mo.success_rate::float8,
-		       mo.unit_price_in_per_1m::float8 AS input_price,
-		       mo.unit_price_out_per_1m::float8 AS output_price,
-		       mo.last_seen_at, COALESCE(mo.routing_tier::text,''),
-		       mc.standard_iq::float8,
-		       niq.overall_score::float8, niq.avg_score::float8,
-		       COALESCE(niq.sample_count, 0), niq.tested_at,
-		       COALESCE(NULLIF(mc.canonical_name,''), mo.standardized_name),
-		       COALESCE(mo.context_window_override, mc.context_window_override, mc.context_window) AS context_window,
-		       mo.context_window_override
-		FROM model_offers mo
-		JOIN credentials c ON c.id = mo.credential_id
-		LEFT JOIN models_canonical mc ON mc.id = mo.canonical_id
-		LEFT JOIN node_iq_latest niq
-		       ON niq.credential_id = mo.credential_id
-		      AND lower(niq.raw_model_name) = lower(mo.raw_model_name)
+	dataSQL := fmt.Sprintf(offerListSQL+`
 		WHERE %s
 		ORDER BY mo.raw_model_name
 		LIMIT $%d OFFSET $%d
@@ -274,55 +178,13 @@ func (h *Handler) queryProviderModels(w http.ResponseWriter, r *http.Request, pr
 	}
 	defer rows.Close()
 
-	type modelOffer struct {
-		ID                    int        `json:"id"`
-		CredentialID          int        `json:"credential_id"`
-		CredentialLabel       string     `json:"credential_label"`
-		RawModelName          string     `json:"raw_model_name"`
-		StandardizedName      string     `json:"standardized_name"`
-		CanonicalID           *int       `json:"canonical_id"`
-		DisplayName           string     `json:"display_name"`
-		Available             bool       `json:"available"`
-		UnavailableReason     *string    `json:"unavailable_reason"`
-		UnavailableAt         *time.Time `json:"unavailable_at"`
-		P95LatencyMs          *int       `json:"p95_latency_ms"`
-		SuccessRate           *float64   `json:"success_rate"`
-		InputPrice            *float64   `json:"input_price"`
-		OutputPrice           *float64   `json:"output_price"`
-		LastSeenAt            *time.Time `json:"last_seen_at"`
-		RoutingTier           string     `json:"routing_tier"`
-		AvailabilitySource    string     `json:"availability_source"`
-		CanonicalStandardIQ   *float64   `json:"canonical_standard_iq"`
-		CanonicalName         string     `json:"canonical_name"`
-		NodeIQ                *float64   `json:"node_iq"`
-		NodeIQAvg             *float64   `json:"node_iq_avg"`
-		NodeIQSampleCount     int        `json:"node_iq_sample_count"`
-		NodeIQTestedAt        *time.Time `json:"node_iq_tested_at"`
-		ContextWindow         *int       `json:"context_window"`
-		ContextWindowOverride *int       `json:"context_window_override"`
-	}
-
-	offers := make([]modelOffer, 0)
+	offers := make([]modelOfferDTO, 0)
 	for rows.Next() {
-		var o modelOffer
-		if err := rows.Scan(
-			&o.ID, &o.CredentialID, &o.CredentialLabel,
-			&o.RawModelName, &o.StandardizedName,
-			&o.CanonicalID, &o.DisplayName,
-			&o.Available, &o.UnavailableReason, &o.UnavailableAt,
-			&o.P95LatencyMs, &o.SuccessRate,
-			&o.InputPrice, &o.OutputPrice,
-			&o.LastSeenAt, &o.RoutingTier,
-			&o.CanonicalStandardIQ,
-			&o.NodeIQ, &o.NodeIQAvg,
-			&o.NodeIQSampleCount, &o.NodeIQTestedAt,
-			&o.CanonicalName,
-			&o.ContextWindow, &o.ContextWindowOverride,
-		); err != nil {
-			slog.Warn("queryProviderModels scan failed", "error", err)
+		o, scanErr := scanModelOfferDTO(rows.Scan)
+		if scanErr != nil {
+			slog.Warn("queryProviderModels scan failed", "error", scanErr)
 			continue
 		}
-		o.AvailabilitySource = classifyAvailability(o.Available, o.UnavailableReason)
 		offers = append(offers, o)
 	}
 
