@@ -78,6 +78,17 @@ func TestAdminConnectionRegistryListAndGet(t *testing.T) {
 	assert.Equal(t, "stream_end", snap.CloseReason)
 }
 
+func TestAdminConnectionRegistryEmptyClosedArray(t *testing.T) {
+	reg := streaming.NewConnectionRegistry(4, time.Second)
+	SetConnectionRegistry(reg)
+	h := &Handler{}
+	rec := httptest.NewRecorder()
+	h.handleConnectionRegistryList(rec, httptest.NewRequest(http.MethodGet, "/api/admin/connection-registry", nil))
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.NotContains(t, rec.Body.String(), `"closed":null`)
+	assert.Contains(t, rec.Body.String(), `"closed":[]`)
+}
+
 func TestAdminConnectionRegistryNotWired(t *testing.T) {
 	// A fresh registry-less handler keeps the endpoints at 503 — wiring is
 	// the integrator's route-registration step.
