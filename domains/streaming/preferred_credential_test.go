@@ -11,19 +11,24 @@ func TestExtractPreferredCredential_Header(t *testing.T) {
 	}
 }
 
-func TestExtractPreferredCredential_NonAdminHeaderIgnored(t *testing.T) {
+func TestExtractPreferredCredential_NonAdminTokenIgnored(t *testing.T) {
 	adminKey := "ops-admin-token"
-	// header from a non-admin caller → silently dropped (must not leak
+	// admin token header missing / wrong → silently dropped (must not leak
 	// routing control to ordinary client keys).
-	got := ExtractPreferredCredential("42", nil, "client-api-key", adminKey)
+	got := ExtractPreferredCredential("42", nil, "wrong-token", adminKey)
 	if got != "" {
-		t.Errorf("non-admin header: expected empty, got %q", got)
+		t.Errorf("non-admin token: expected empty, got %q", got)
+	}
+	// Missing token header entirely.
+	got = ExtractPreferredCredential("42", nil, "", adminKey)
+	if got != "" {
+		t.Errorf("missing admin token: expected empty, got %q", got)
 	}
 }
 
 func TestExtractPreferredCredential_EmptyAdminKeyDisabled(t *testing.T) {
 	// No admin token configured → feature disabled entirely.
-	got := ExtractPreferredCredential("42", nil, "client", "")
+	got := ExtractPreferredCredential("42", nil, "whatever", "")
 	if got != "" {
 		t.Errorf("empty admin key: expected empty, got %q", got)
 	}

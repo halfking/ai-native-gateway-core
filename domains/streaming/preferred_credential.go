@@ -42,6 +42,13 @@ import (
 // pipeline preflight wrapper.
 const PreferredCredentialHeader = "X-LLMGW-Preferred-Credential"
 
+// PreferredCredentialAdminTokenHeader carries the admin token that gates the
+// override. Kept as a separate header (not the Authorization bearer) so the
+// caller can authenticate the chat request with a normal client key while
+// proving operator privilege out-of-band. The chat path still requires a
+// valid client key in Authorization; this header only unlocks the pin.
+const PreferredCredentialAdminTokenHeader = "X-LLMGW-Admin-Token"
+
 // ExtractPreferredCredential inspects the request for the override and
 // returns the credential id as a string (kept as a string because the
 // routing layer's metadata map uses any->any and the StickyRouter does a
@@ -56,12 +63,12 @@ const PreferredCredentialHeader = "X-LLMGW-Preferred-Credential"
 //     v2 pipeline reads it once and exposes it via rawBody), so re-reading
 //     is safe and offline.
 //   - Admin gate: if any of (header, body) yields a non-empty value, the
-//     admin bearer token must match adminAPIKey. Mismatch returns "" and
-//     the caller should log the rejection.
+//     admin token (X-LLMGW-Admin-Token header) must match adminAPIKey.
+//     Mismatch returns "" and the caller should log the rejection.
 //
 // The function never errors — the worst case is "no override", which the
 // caller treats as the existing default routing path.
-func ExtractPreferredCredential(headerValue string, body []byte, adminBearer, adminAPIKey string) string {
+func ExtractPreferredCredential(headerValue string, body []byte, adminToken, adminAPIKey string) string {
 	want := strings.TrimSpace(headerValue)
 	if want == "" && len(body) > 0 {
 		want = preferredCredentialFromBody(body)
@@ -69,7 +76,7 @@ func ExtractPreferredCredential(headerValue string, body []byte, adminBearer, ad
 	if want == "" {
 		return ""
 	}
-	if !adminAuthorized(adminBearer, adminAPIKey) {
+	if !adminAuthorized(adminToken, adminAPIKey) {
 		return ""
 	}
 	want = strings.TrimPrefix(want, "#")

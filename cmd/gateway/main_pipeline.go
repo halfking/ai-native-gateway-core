@@ -763,17 +763,19 @@ func v2DispatchHandler(deps *v2DispatchDeps, fallback http.Handler) http.Handler
 		}
 
 		// 2026-08-23: read the X-LLMGW-Preferred-Credential routing
-		// override. The header is gated on the admin token so only
-		// authenticated operators can pin a credential on a request. The
-		// body metadata field (OpenAI metadata / Anthropic
-		// messages.metadata / Responses Extra) is extracted inside the
-		// handler decoders and merged into the same key. Either source
-		// populates env.Metadata["preferred_credential"], which the v2
-		// routing StickyRouter already consumes.
+		// override. The header is gated on the admin token (carried in a
+		// separate X-LLMGW-Admin-Token header) so only authenticated
+		// operators can pin a credential on a request. The chat request
+		// itself still authenticates with a normal client key; the admin
+		// token only unlocks the pin. The body metadata field (OpenAI
+		// metadata / Anthropic messages.metadata / Responses Extra) is
+		// extracted from rawBody and merged into the same key. Either
+		// source populates env.Metadata["preferred_credential"], which the
+		// v2 routing StickyRouter already consumes.
 		if pref := streaming.ExtractPreferredCredential(
 			r.Header.Get(streaming.PreferredCredentialHeader),
 			rawBody,
-			rawKey,
+			r.Header.Get(streaming.PreferredCredentialAdminTokenHeader),
 			deps.AdminAPIKey,
 		); pref != "" {
 			env.Metadata["preferred_credential"] = pref
