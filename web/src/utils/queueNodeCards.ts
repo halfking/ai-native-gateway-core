@@ -9,6 +9,16 @@ export const CARD_MAX_W = 280
 /** Mini window cells on queue node cards (batch include_entries cap). */
 export const CARD_ENTRY_LIMIT = 24
 
+/** Replace one card's window cells. Missing entries (JSON omitempty) means empty, not "keep stale". */
+export function mergeCardWindowEntries<T>(
+  dest: Map<string, T[]>,
+  key: string,
+  entries: T[] | undefined,
+  limit = CARD_ENTRY_LIMIT,
+): void {
+  dest.set(key, (entries ?? []).slice(0, limit))
+}
+
 /** Assign unique priorities with preferred step=5 (5,10,15…). Compresses when n*step > 99. */
 export function assignSpacedPriorities(count: number, step = PRIORITY_STEP, max = PRIORITY_MAX): number[] {
   if (count <= 0) return []

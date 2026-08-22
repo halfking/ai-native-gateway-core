@@ -674,4 +674,56 @@ describe('QueuePerspectivePanel', () => {
     expect(wrapper.findAll('.qp-node-window-cell.ok')).toHaveLength(3)
     expect(wrapper.findAll('.qp-node-window-cell.bad')).toHaveLength(1)
   })
+
+  it('clears mini-window cells when a later batch omits empty entries', async () => {
+    vi.useFakeTimers()
+    try {
+      getSlidingWindowBatch.mockReset().mockResolvedValue({
+        window_minutes: 5,
+        count: 1,
+        results: [{
+          credential_id: 1,
+          model: 'm-1',
+          source: 'redis',
+          stats: { total: 2, success: 2, failed: 0, failure_rate: 0 },
+          entries: [
+            { rid: 'a', ts: 1, ok: true, lat: 10 },
+            { rid: 'b', ts: 2, ok: true, lat: 20 },
+          ],
+        }],
+      })
+      resolveRouting.mockImplementation(async (model: string) => ({
+        raw_models: [model],
+        reorder_revision: `rev-${model}`,
+        candidates: model === 'm-1'
+          ? [{ credential_id: 1, model_name: 'm-1', manual_priority: 5, credential_label: 'a' }]
+          : [],
+      }))
+      liveStreamState.nodes = [
+        { credential_id: 1, provider_id: 1, provider_code: 'p', manual_disabled: false, circuit_state: 'closed', raw_models: ['m-1'] },
+      ]
+
+      const wrapper = mountPanel()
+      await flushPromises()
+      await flushPromises()
+      expect(wrapper.findAll('.qp-node-window-cell')).toHaveLength(2)
+
+      getSlidingWindowBatch.mockResolvedValue({
+        window_minutes: 5,
+        count: 1,
+        results: [{
+          credential_id: 1,
+          model: 'm-1',
+          source: 'redis',
+          stats: { total: 0, success: 0, failed: 0, failure_rate: 0 },
+        }],
+      })
+      await vi.advanceTimersByTimeAsync(30_000)
+      await flushPromises()
+      expect(wrapper.text()).toMatch(/✓0/)
+      expect(wrapper.findAll('.qp-node-window-cell')).toHaveLength(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
