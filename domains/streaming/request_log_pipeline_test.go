@@ -483,3 +483,44 @@ func intStrPtr(v *int) *string {
 	s := strconv.Itoa(*v)
 	return &s
 }
+
+// TestSynthesizeStreamBodyFromText documents the helper that packages the
+// StreamCapture.textContent reconstructed assistant text into a minimal
+// OpenAI-style chat completion envelope, so the failure-row writer can
+// persist partial upstream output even when c.ResponseBody is empty
+// (which is the streaming case).
+func TestSynthesizeStreamBodyFromText(t *testing.T) {
+	if got := synthesizeStreamBodyFromText(""); got != "" {
+		t.Errorf("empty input: expected empty string, got %q", got)
+	}
+	if got := synthesizeStreamBodyFromText("   \n\t  "); got != "" {
+		t.Errorf("whitespace input: expected empty string, got %q", got)
+	}
+
+	got := synthesizeStreamBodyFromText("partial model output")
+	var parsed struct {
+		ID      string `json:"id"`
+		Object  string `json:"object"`
+		Choices []struct {
+			Message struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal([]byte(got), &parsed); err != nil {
+		t.Fatalf("not valid JSON: %v\nraw: %q", err, got)
+	}
+	if parsed.ID != "partial-stream" || parsed.Object != "chat.completion.partial" {
+		t.Errorf("unexpected envelope shape: id=%q object=%q", parsed.ID, parsed.Object)
+	}
+	if len(parsed.Choices) != 1 {
+		t.Fatalf("expected 1 choice, got %d", len(parsed.Choices))
+	}
+	if parsed.Choices[0].Message.Content != "partial model output" {
+		t.Errorf("content lost: got %q", parsed.Choices[0].Message.Content)
+	}
+	if parsed.Choices[0].Message.Role != "assistant" {
+		t.Errorf("expected role=assistant, got %q", parsed.Choices[0].Message.Role)
+	}
+}

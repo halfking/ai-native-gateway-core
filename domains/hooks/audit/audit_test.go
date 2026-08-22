@@ -356,6 +356,77 @@ func TestStreamCapture_MarkInterruptedWithReason(t *testing.T) {
 	}
 }
 
+// TestStreamCapture_FinalFinishReason documents the getter that stream.go,
+// anthropic_stream.go, responses_stream.go, and responses_bridge.go use to
+// distinguish a minimax-style "EOF without [DONE] after finish_reason" from
+// a true stream interruption. Without this signal, every long-context chat
+// on upstreams that drop the terminal sentinel triggers survival retries
+// that burn the full upstream_timeout budget.
+func TestStreamCapture_FinalFinishReason(t *testing.T) {
+	sc := NewStreamCapture()
+
+	if got := sc.FinalFinishReason(); got != "" {
+		t.Errorf("fresh capture: expected empty FinalFinishReason, got %q", got)
+	}
+
+	sc.ObserveChunk(&ir.StreamChunk{Type: ir.ChunkTypeDelta})
+	if got := sc.FinalFinishReason(); got != "" {
+		t.Errorf("after non-finish chunk: expected empty, got %q", got)
+	}
+
+	sc.ObserveChunk(&ir.StreamChunk{Type: ir.ChunkTypeDelta, FinishReason: "stop"})
+	if got := sc.FinalFinishReason(); got != "stop" {
+		t.Errorf("after finish_reason=stop: expected \"stop\", got %q", got)
+	}
+
+	sc.ObserveChunk(&ir.StreamChunk{Type: ir.ChunkTypeDone, FinishReason: "stop"})
+	if got := sc.FinalFinishReason(); got != "stop" {
+		t.Errorf("after Done chunk: expected \"stop\" preserved, got %q", got)
+	}
+
+	var nilSC *StreamCapture
+	if got := nilSC.FinalFinishReason(); got != "" {
+		t.Errorf("nil receiver: expected empty, got %q", got)
+	}
+}
+
+// TestStreamCapture_TextContentSnapshot documents the getter that the
+// failure-row writer uses to persist partial upstream text when a
+// streaming request is interrupted mid-flight (eof_without_done,
+// stream_timeout, client_disconnected, …). Without this getter, the
+// failure row's response_body column is always NULL for streaming
+// failures and post-mortem analysis loses the model output that was
+// already received.
+func TestStreamCapture_TextContentSnapshot(t *testing.T) {
+	sc := NewStreamCapture()
+
+	if got := sc.TextContentSnapshot(); got != "" {
+		t.Errorf("fresh capture: expected empty, got %q", got)
+	}
+	if got := sc.PreviewSnapshot(); got != "" {
+		t.Errorf("fresh capture preview: expected empty, got %q", got)
+	}
+
+	sc.ObserveChunk(&ir.StreamChunk{Type: ir.ChunkTypeDelta, Delta: &ir.StreamDelta{Content: "hello "}})
+	sc.ObserveChunk(&ir.StreamChunk{Type: ir.ChunkTypeDelta, Delta: &ir.StreamDelta{Content: "world"}})
+	sc.MarkInterruptedWithReason("stream_timeout")
+
+	if got := sc.TextContentSnapshot(); got != "hello world" {
+		t.Errorf("after two deltas + interrupted: expected \"hello world\", got %q", got)
+	}
+	if !strings.Contains(sc.PreviewSnapshot(), "hello") {
+		t.Errorf("preview should contain partial wire bytes, got %q", sc.PreviewSnapshot())
+	}
+
+	var nilSC *StreamCapture
+	if got := nilSC.TextContentSnapshot(); got != "" {
+		t.Errorf("nil TextContentSnapshot: expected empty, got %q", got)
+	}
+	if got := nilSC.PreviewSnapshot(); got != "" {
+		t.Errorf("nil PreviewSnapshot: expected empty, got %q", got)
+	}
+}
+
 func TestStreamCapture_PreviewTruncation(t *testing.T) {
 	sc := NewStreamCapture()
 	longPayload := ""

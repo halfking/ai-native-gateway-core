@@ -889,20 +889,48 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 			switch readResult.state {
 			case streamReadEOF:
 				if !upstreamDoneReceived {
-					slog.Warn("upstream EOF without [DONE]", "client_model", clientModel)
+					// 2026-08-23: some upstreams (notably minimax) emit the
+					// terminal `choices[0].finish_reason` chunk and then close
+					// the TCP stream without sending the SSE-spec `data:
+					// [DONE]` sentinel. If we already observed a finish_reason,
+					// the model has declared the response complete — synthesize
+					// [DONE] for the client and DO NOT mark this as an
+					// interruption that would trigger survival retries
+					// (each retry waits a fresh upstream_timeout_seconds, so
+					// 6 attempts burn ~11 minutes before failing closed).
+					finalFinish := ""
 					if capture != nil {
-						capture.MarkInterruptedWithReason("eof_without_done")
+						finalFinish = capture.FinalFinishReason()
 					}
-					terminalVisible := attemptHasClientSemanticOutput(gate, chunkCount)
-					if terminalVisible {
+					if finalFinish != "" {
 						safeWriteSSE(w, "data: [DONE]\n\n")
 						safeFlush(flusher)
 						metrics.Global().RecordStreamSynthesizedDone()
+						outcome.Interrupted = false
+						outcome.Reason = ""
+						outcome.Kind = ""
+						outcome.Resumable = false
+						slog.Info("upstream EOF after finish_reason — synthesized [DONE]",
+							"client_model", clientModel,
+							"finish_reason", finalFinish,
+							"chunk_count", chunkCount,
+						)
+					} else {
+						slog.Warn("upstream EOF without [DONE]", "client_model", clientModel)
+						if capture != nil {
+							capture.MarkInterruptedWithReason("eof_without_done")
+						}
+						terminalVisible := attemptHasClientSemanticOutput(gate, chunkCount)
+						if terminalVisible {
+							safeWriteSSE(w, "data: [DONE]\n\n")
+							safeFlush(flusher)
+							metrics.Global().RecordStreamSynthesizedDone()
+						}
+						outcome.Interrupted = true
+						outcome.Reason = "eof_without_done"
+						outcome.Kind = errorsx.KindUpstreamDown
+						outcome.Resumable = !terminalVisible
 					}
-					outcome.Interrupted = true
-					outcome.Reason = "eof_without_done"
-					outcome.Kind = errorsx.KindUpstreamDown
-					outcome.Resumable = !terminalVisible
 				}
 				// When the client has gone away but the capturer is
 				// still alive and the upstream DID send [DONE], do NOT

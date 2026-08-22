@@ -447,6 +447,16 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				if !messageStopReceived {
+					// 2026-08-23: same recovery as stream.go / anthropic_stream.go —
+					// if a finish_reason has already been accumulated, treat
+					// the missing message_stop as benign (some upstreams —
+					// notably minimax via the Anthropic bridge — close the
+					// stream right after the finish_reason chunk instead of
+					// emitting a terminal event).
+					if finishReason != "" {
+						scaffold.finishAttempt(gate, fullText.String(), finishReason, inputTokens, outputTokens, inputTokens+outputTokens)
+						return StreamOutcome{ChunkCount: chunkCount}
+					}
 					outcome = StreamOutcome{
 						Interrupted: true,
 						Reason:      "eof_without_done",

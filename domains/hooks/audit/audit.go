@@ -444,6 +444,61 @@ func (sc *StreamCapture) Finalized() bool {
 	return sc.finalized
 }
 
+// FinalFinishReason returns the most recent non-empty finish_reason
+// observed for the current attempt ("stop", "length", "tool_calls",
+// "end_turn", "max_tokens", …). Returns "" if no finish_reason has
+// been observed yet or if no capture exists.
+//
+// 2026-08-23: introduced for the eof_without_done recovery path in
+// domains/streaming/stream.go. Some upstreams (e.g. minimax) emit a
+// terminal `choices[0].finish_reason` chunk and then close the TCP
+// stream without sending the SSE-spec `data: [DONE]` sentinel. The
+// bridge must NOT classify such an EOF as a stream interruption
+// when finish_reason is already set, because the model has already
+// declared the response complete. Without this signal, every minimax
+// long-context chat request triggers survival retries that burn the
+// 11-minute upstream-timeout budget.
+func (sc *StreamCapture) FinalFinishReason() string {
+	if sc == nil {
+		return ""
+	}
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	return sc.finalFinish
+}
+
+// TextContentSnapshot returns the assistant text reconstructed from the
+// deltas observed so far. Safe to call concurrently with the streaming
+// goroutine — the read is guarded by sc.mu. Returns "" if the capture is
+// nil or no delta text has been received yet.
+//
+// 2026-08-23: exposed so that the failure-row writer in
+// domains/streaming/request_log_pipeline.go can persist the partial
+// upstream output when a streaming request is interrupted mid-flight
+// (eof_without_done, stream_timeout, client_disconnected, …). Without
+// this getter, the failure row's response_body column is always NULL
+// for streaming failures, which makes post-mortem analysis impossible.
+func (sc *StreamCapture) TextContentSnapshot() string {
+	if sc == nil {
+		return ""
+	}
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	return string(sc.textContent)
+}
+
+// PreviewSnapshot returns the first ~2 KiB of the raw SSE wire observed
+// so far. Safe to call concurrently with the streaming goroutine.
+// Returns "" if the capture is nil or no payload has been recorded.
+func (sc *StreamCapture) PreviewSnapshot() string {
+	if sc == nil {
+		return ""
+	}
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	return string(sc.preview)
+}
+
 // RecordChunkError increments the chunks-failed counter. Called by
 // streaming bridges when a chunk cannot be serialised or written
 // to the client (e.g. broken pipe, conversion_error, EOF mid-frame).

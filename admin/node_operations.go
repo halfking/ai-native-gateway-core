@@ -29,6 +29,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/internal/providercap"
+	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/provider"
 )
 
@@ -211,13 +213,34 @@ func (h *Handler) handleCredentialSessionPing(w http.ResponseWriter, r *http.Req
 }
 
 func (h *Handler) runCredentialSessionPing(ctx context.Context, baseURL, protocol, catalogCode, apiKey, model string) (status, errorCode, message string) {
-	endpoint := strings.TrimRight(baseURL, "/") + "/chat/completions"
-	payload, err := json.Marshal(map[string]any{
-		"model":      model,
-		"max_tokens": 1,
-		"stream":     false,
-		"messages":   []map[string]string{{"role": "user", "content": "ping"}},
-	})
+	// 2026-08-23: protocol-aware session ping. Previously this hard-coded
+	// OpenAI chat-completions shape regardless of provider.protocol, which
+	// broke the admin UI for anthropic-messages providers (the body would
+	// be sent to /v1/messages in anthropic format but received by a chat
+	// endpoint, or vice versa — body and auth headers would not match).
+	desc := providercap.Resolve(protocol, catalogCode)
+	endpoint := upstreamurl.Build(baseURL, desc.ChatProbeEndpoint)
+
+	// Build the request body in the protocol-native shape. Anthropic Messages
+	// uses `max_tokens` (mandatory) and a separate `system` field is optional;
+	// we keep the body minimal and compatible with all known upstreams.
+	var payload []byte
+	var err error
+	switch desc.ChatProbeEndpoint {
+	case upstreamurl.EpMessages:
+		payload, err = json.Marshal(map[string]any{
+			"model":      model,
+			"max_tokens": 20,
+			"messages":   []map[string]string{{"role": "user", "content": "ping"}},
+		})
+	default:
+		payload, err = json.Marshal(map[string]any{
+			"model":      model,
+			"max_tokens": 1,
+			"stream":     false,
+			"messages":   []map[string]string{{"role": "user", "content": "ping"}},
+		})
+	}
 	if err != nil {
 		return "error", "encode_error", "could not encode ping request"
 	}
@@ -237,7 +260,7 @@ func (h *Handler) runCredentialSessionPing(ctx context.Context, baseURL, protoco
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-	if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices && isChatPingResponse(body) {
+	if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices && isProbeResponse(body, desc.ChatProbeEndpoint) {
 		return "healthy", "", ""
 	}
 	message = strings.TrimSpace(string(body))
@@ -252,17 +275,34 @@ func (h *Handler) runCredentialSessionPing(ctx context.Context, baseURL, protoco
 	case resp.StatusCode >= http.StatusInternalServerError:
 		return "upstream_error", "upstream_5xx", message
 	case resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices:
-		return "error", "invalid_response", "provider returned an invalid chat response"
+		return "error", "invalid_response", "provider returned an invalid response for the probe"
 	default:
 		return "error", fmt.Sprintf("http_%d", resp.StatusCode), message
 	}
 }
 
-func isChatPingResponse(body []byte) bool {
+// isProbeResponse reports whether the response body looks like a healthy
+// completion for the given endpoint. For OpenAI Chat Completions the
+// canonical field is `choices`; for Anthropic Messages it is `content`;
+// for OpenAI Responses it is `output`. A 2xx with any of these markers
+// is treated as healthy.
+func isProbeResponse(body []byte, ep upstreamurl.Endpoint) bool {
 	var response struct {
 		Choices json.RawMessage `json:"choices"`
+		Content json.RawMessage `json:"content"`
+		Output  json.RawMessage `json:"output"`
 	}
-	return json.Unmarshal(body, &response) == nil && len(response.Choices) > 0
+	if json.Unmarshal(body, &response) != nil {
+		return false
+	}
+	switch ep {
+	case upstreamurl.EpMessages:
+		return len(response.Content) > 0
+	case upstreamurl.EpResponses:
+		return len(response.Output) > 0
+	default:
+		return len(response.Choices) > 0
+	}
 }
 
 func (h *Handler) nodeProbeTargets(ctx context.Context, providerID int) ([]string, string, error) {

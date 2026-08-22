@@ -29,6 +29,49 @@ func jsonMarshal(v any) ([]byte, error) {
 	return json.Marshal(v)
 }
 
+// synthesizeStreamBodyFromText packages a raw streamed assistant message
+// into a minimal OpenAI-style chat completion JSON envelope. This is the
+// last-resort fallback used by the failure-row writer when the upstream
+// bytes were streamed straight to the client wire (and so c.ResponseBody
+// is empty) but StreamCapture.textContent still holds the partial text.
+// The shape is intentionally generic: it does NOT pretend the response was
+// non-streaming — the JSON envelope just makes the text queryable in
+// request_logs.response_body alongside the streaming metadata columns
+// (upstream_finish_reason, stream_chunks_sent, …).
+//
+// 2026-08-23: introduced so that eof_without_done / stream_timeout /
+// first_byte_timeout / client_disconnected failures keep their partial
+// upstream output for post-mortem analysis.
+func synthesizeStreamBodyFromText(text string) string {
+	if strings.TrimSpace(text) == "" {
+		return ""
+	}
+	if len(text) > maxStreamBodyTextBytes {
+		text = text[:maxStreamBodyTextBytes]
+	}
+	envelope := map[string]any{
+		"id":      "partial-stream",
+		"object":  "chat.completion.partial",
+		"model":   "unknown",
+		"choices": []map[string]any{{
+			"index":         0,
+			"finish_reason": nil,
+			"message":       map[string]any{"role": "assistant", "content": text},
+		}},
+	}
+	b, err := json.Marshal(envelope)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+// maxStreamBodyTextBytes caps the persisted partial text so a runaway
+// upstream (or a misconfigured client that doesn't read the stream) does
+// not blow up request_logs_bodies with multi-megabyte rows. 2 MiB
+// matches the existing maxTextContentBytes cap in audit.go.
+const maxStreamBodyTextBytes = 2 * 1024 * 1024
+
 // RequestLogContext caches request facts across handler lifecycle stages
 // (auth, body read, routing, upstream, response) so every exit path emits
 // a complete request_logs row with user/application correlation.
@@ -851,6 +894,29 @@ func (c *RequestLogContext) buildEntry(errCode, errMessage string, providerID, c
 	var responsePreviewPtr *string
 	if preview := responsePreview(c.ResponseBody); preview != "" {
 		responsePreviewPtr = strPtr(preview)
+	}
+
+	// 2026-08-23: streaming requests flush bytes to the client wire and
+	// never buffer them back into c.ResponseBody. When the stream is
+	// interrupted mid-flight (eof_without_done, stream_timeout,
+	// client_disconnected, network_error, first_byte_timeout, …) the
+	// partial text the gateway already received from upstream lives only
+	// in c.StreamCapture.textContent / .preview. Persist that partial
+	// payload onto the failure row so post-mortem analysis can see what
+	// the model had produced before the interruption — without this,
+	// every failed streaming request shows NULL response_body, which
+	// makes upstream diagnostics (chunk_count, finish_reason, partial
+	// text) impossible to reconstruct.
+	if responseBodyText == nil && c.StreamCapture != nil {
+		if text := c.StreamCapture.TextContentSnapshot(); strings.TrimSpace(text) != "" {
+			synth := synthesizeStreamBodyFromText(text)
+			responseBodyText = &synth
+		}
+		if responsePreviewPtr == nil {
+			if prev := c.StreamCapture.PreviewSnapshot(); prev != "" {
+				responsePreviewPtr = strPtr(prev)
+			}
+		}
 	}
 
 	detailCode := mapGatewayErrorToDetail(errCode)
