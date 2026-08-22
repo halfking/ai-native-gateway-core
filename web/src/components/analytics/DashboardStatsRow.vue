@@ -205,13 +205,15 @@ export interface DashboardStats {
 
 const { t } = useI18n()
 
-withDefaults(defineProps<{
+const props = withDefaults(defineProps<{
   stats: DashboardStats
   loading?: boolean
   showTokens?: boolean
 }>(), {
   showTokens: true,
 })
+
+const { stats, showTokens } = props
 
 // 格式化数字
 const formatNumber = (value: number): string => {
