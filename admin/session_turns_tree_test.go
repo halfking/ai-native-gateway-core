@@ -80,11 +80,11 @@ func TestQuerySessionTurnsTree_Normal(t *testing.T) {
 	mock.ExpectQuery("SELECT t.turn_number").
 		WithArgs("gw_s1", "acme", int64(0), "", 3).
 		WillReturnRows(mainRows)
-	// 子请求：一条 510 列 title_gen，一条回退 origin_actor（sensitive_check 暂无写入方）
-	childRows := pgxmock.NewRows([]string{"parent_request_id", "request_id", "request_status", "latency_ms", "request_type", "origin_actor"}).
-		AddRow("req_main_1", "req_title_1", "success", &l80, "title_gen", "auto-title-generator").
-		AddRow("req_main_1", "req_sens_1", "success", &l30, "main", "").
-		AddRow("req_main_2", "req_sum_2", "failed", nil, "main", "auto-summary-generator")
+	// 子请求：一条 510 列 title_gen，一条 main（无 request_type 分类）
+	childRows := pgxmock.NewRows([]string{"parent_request_id", "request_id", "request_status", "latency_ms", "request_type"}).
+		AddRow("req_main_1", "req_title_1", "success", &l80, "title_gen").
+		AddRow("req_main_1", "req_sens_1", "success", &l30, "main").
+		AddRow("req_main_2", "req_sum_2", "failed", nil, "summary")
 	mock.ExpectQuery("SELECT parent_request_id").
 		WithArgs(pgxmock.AnyArg(), "acme").
 		WillReturnRows(childRows)
