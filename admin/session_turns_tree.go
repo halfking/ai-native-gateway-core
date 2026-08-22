@@ -271,7 +271,7 @@ func querySessionTurnsTree(ctx context.Context, db sessionTurnsTreeDB, p session
 		}
 		childSQL := `
 			SELECT parent_request_id, request_id, COALESCE(request_status, ''),
-			       latency_ms, COALESCE(request_type, 'main'), COALESCE(origin_actor, '')
+			       latency_ms, COALESCE(request_type, 'main')
 			FROM request_logs_with_current_month
 			WHERE parent_request_id = ANY($1)`
 		childArgs := []any{ids}
@@ -289,11 +289,11 @@ func querySessionTurnsTree(ctx context.Context, db sessionTurnsTreeDB, p session
 		for crows.Next() {
 			var parentID string
 			c := &SessionChildRequest{}
-			var requestType, originActor string
-			if err := crows.Scan(&parentID, &c.RequestID, &c.Status, &c.LatencyMs, &requestType, &originActor); err != nil {
+			var requestType string
+			if err := crows.Scan(&parentID, &c.RequestID, &c.Status, &c.LatencyMs, &requestType); err != nil {
 				return nil, fmt.Errorf("read child requests failed: %w", err)
 			}
-			c.RequestType = normalizeChildRequestType(requestType, originActor)
+			c.RequestType = normalizeChildRequestType(requestType, "")
 			if parent, ok := index[parentID]; ok {
 				parent.ChildRequests = append(parent.ChildRequests, c)
 			}
