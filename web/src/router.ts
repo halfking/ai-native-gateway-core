@@ -246,6 +246,9 @@ export const router = createRouter({
     externalMaintainRedirect('/ops', '/maintain/ops/overview'),
     { path: '/ops/vibecoding', component: VibeCodingView, meta: { requiresSuper: true, requiresOpsPlatform: true } },
 
+    ...(import.meta.env.DEV
+      ? [{ path: '/dev/waterfall-preview', component: () => import('./views/DispatchWaterfallPreview.vue'), meta: { public: true } }]
+      : []),
     { path: '/:pathMatch(.*)*', redirect: '/' },
   ],
 })
@@ -257,6 +260,7 @@ const BOOTSTRAP_GATE_TTL_MS = 15_000
 async function shouldRedirectToBootstrap(toPath: string): Promise<boolean> {
   if (toPath === '/bootstrap' || toPath === '/forbidden' || toPath === '/login') return false
   if (toPath.startsWith('/customer/')) return false
+  if (import.meta.env.DEV && toPath.startsWith('/dev/')) return false
   try {
     if (localStorage.getItem('llmgw_require_bootstrap') === '0') return false
     if (localStorage.getItem('llmgw_activated') === '1') return false

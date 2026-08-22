@@ -109,7 +109,7 @@ onBeforeUnmount(stopPoll)
     <header class="dw-header">
       <div>
         <h1>队列瀑布图</h1>
-        <p class="sub">9 阶段调度时间线（T0–T9）· 内存 ring 优先，不足时从 request_logs_hot 回填</p>
+        <p class="sub">相对 T0 的 9 段耗时构成 · 内存 ring 优先，不足时从 request_logs_hot 回填</p>
       </div>
       <DispatchWaterfallToolbar
         v-model:limit="limit"
@@ -135,6 +135,7 @@ onBeforeUnmount(stopPoll)
       :loading="loading"
       :wired="snap?.wired"
       :source="snap?.source"
+      :selected-id="selectedId"
       @select="onSelect"
     />
 
