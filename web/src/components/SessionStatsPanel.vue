@@ -95,6 +95,10 @@ function formatPct(value: number) {
   const sign = value > 0 ? '+' : ''
   return `${sign}${value.toFixed(1)}%`
 }
+
+function hasRow(row: unknown): row is Record<string, unknown> {
+  return row != null && typeof row === 'object'
+}
 </script>
 
 <template>
@@ -235,34 +239,42 @@ function formatPct(value: number) {
           <el-table-column prop="session_count" :label="t('sessions.stats.sessionCount')" width="90" align="right" />
           <el-table-column prop="request_count" :label="t('sessions.stats.requestCount')" width="90" align="right" />
           <el-table-column :label="t('sessions.stats.totalCost')" width="100" align="right">
-            <template #default="{ row }">{{ formatUsd(row.total_cost ?? 0) }}</template>
+            <template #default="scope">
+              <span v-if="hasRow(scope?.row)">{{ formatUsd(Number(scope.row.total_cost ?? 0)) }}</span>
+            </template>
           </el-table-column>
           <el-table-column :label="t('sessions.stats.successRate')" width="90" align="right">
-            <template #default="{ row }">{{ ((row.success_rate ?? 0) * 100).toFixed(1) }}%</template>
+            <template #default="scope">
+              <span v-if="hasRow(scope?.row)">{{ ((Number(scope.row.success_rate ?? 0)) * 100).toFixed(1) }}%</span>
+            </template>
           </el-table-column>
           <el-table-column :label="t('sessions.stats.avgLatency')" width="90" align="right">
-            <template #default="{ row }">{{ Math.round(row.avg_latency_ms ?? 0) }}ms</template>
+            <template #default="scope">
+              <span v-if="hasRow(scope?.row)">{{ Math.round(Number(scope.row.avg_latency_ms ?? 0)) }}ms</span>
+            </template>
           </el-table-column>
         </el-table>
       </el-card>
 
-      <el-row :gutter="16" class="rankings-row">
+      <el-row v-if="overview" :gutter="16" class="rankings-row">
         <el-col :span="12">
           <el-card shadow="hover">
             <template #header><span>{{ t('sessions.stats.topClients') }}</span></template>
-            <el-table :data="overview?.top_clients || []" max-height="300">
+            <el-table :data="overview.top_clients || []" max-height="300">
               <el-table-column prop="client_id" :label="t('sessions.stats.clientId')" min-width="120">
-                <template #default="{ row }">
-                  <el-link type="primary" @click="handleClientClick(row.client_id)">{{ row.client_id }}</el-link>
+                <template #default="scope">
+                  <el-link v-if="hasRow(scope?.row)" type="primary" @click="handleClientClick(String(scope.row.client_id))">{{ scope.row.client_id }}</el-link>
                 </template>
               </el-table-column>
               <el-table-column prop="session_count" :label="t('sessions.stats.sessionCount')" width="90" align="right" />
               <el-table-column :label="t('sessions.stats.totalCost')" width="100" align="right">
-                <template #default="{ row }">{{ formatUsd(row.total_cost ?? 0) }}</template>
+                <template #default="scope">
+                  <span v-if="hasRow(scope?.row)">{{ formatUsd(Number(scope.row.total_cost ?? 0)) }}</span>
+                </template>
               </el-table-column>
               <el-table-column :label="t('sessions.stats.avgHealth')" width="80" align="center">
-                <template #default="{ row }">
-                  <el-tag v-if="row.avg_health != null" size="small">{{ row.avg_health }}</el-tag>
+                <template #default="scope">
+                  <el-tag v-if="hasRow(scope?.row) && scope.row.avg_health != null" size="small">{{ scope.row.avg_health }}</el-tag>
                   <span v-else>—</span>
                 </template>
               </el-table-column>
@@ -272,21 +284,25 @@ function formatPct(value: number) {
         <el-col :span="12">
           <el-card shadow="hover">
             <template #header><span>{{ t('sessions.stats.topTasks') }}</span></template>
-            <el-table :data="overview?.top_tasks || []" max-height="300">
+            <el-table :data="overview.top_tasks || []" max-height="300">
               <el-table-column prop="task_id" :label="t('sessions.stats.taskId')" min-width="120">
-                <template #default="{ row }">
-                  <el-link type="primary" @click="handleTaskClick(row.task_id)">{{ row.task_id }}</el-link>
+                <template #default="scope">
+                  <el-link v-if="hasRow(scope?.row)" type="primary" @click="handleTaskClick(String(scope.row.task_id))">{{ scope.row.task_id }}</el-link>
                 </template>
               </el-table-column>
               <el-table-column prop="session_count" :label="t('sessions.stats.sessionCount')" width="90" align="right" />
               <el-table-column :label="t('sessions.stats.totalCost')" width="100" align="right">
-                <template #default="{ row }">{{ formatUsd(row.total_cost ?? 0) }}</template>
+                <template #default="scope">
+                  <span v-if="hasRow(scope?.row)">{{ formatUsd(Number(scope.row.total_cost ?? 0)) }}</span>
+                </template>
               </el-table-column>
               <el-table-column :label="t('sessions.stats.avgHealth')" width="90" align="center">
-                <template #default="{ row }">
-                  <el-tag v-if="row.avg_health != null" :type="healthTagType(row.avg_health >= 75 ? 'A' : row.avg_health >= 60 ? 'C' : 'F')" size="small">
-                    {{ row.avg_health }}/100
-                  </el-tag>
+                <template #default="scope">
+                  <template v-if="hasRow(scope?.row) && scope.row.avg_health != null">
+                    <el-tag :type="healthTagType(Number(scope.row.avg_health) >= 75 ? 'A' : Number(scope.row.avg_health) >= 60 ? 'C' : 'F')" size="small">
+                      {{ scope.row.avg_health }}/100
+                    </el-tag>
+                  </template>
                   <span v-else>—</span>
                 </template>
               </el-table-column>
