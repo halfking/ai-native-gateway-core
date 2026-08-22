@@ -15,11 +15,10 @@ import (
 // the legacy three-state model.
 //
 // These tests read the SQL files directly and assert structural invariants.
-// They do NOT execute the migrations against a real database — that would
-// require either a TEST_DATABASE_URL or testcontainers, which is out of scope
-// for the current CI surface. The sqlmock tests in confirmation_pg_test.go
-// cover the runtime SQL; these tests catch regressions in the schema
-// definition itself.
+// They do NOT execute the migrations against a real database — see
+// migration_527_testcontainers_integration_test.go for the DDL-execution
+// coverage. The sqlmock tests in confirmation_pg_test.go cover the runtime
+// SQL; these tests catch regressions in the schema definition itself.
 
 // repoRoot walks up from this test file's directory until it finds a sibling
 // go.mod. The result is the absolute path of the repository root, regardless
