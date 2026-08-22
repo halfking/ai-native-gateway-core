@@ -142,3 +142,42 @@ describe('RequestLogDrawer title/summary compact row', () => {
     expect(wrapper.emitted('generateSessionSummary')?.[0]).toEqual(['sess-1'])
   })
 })
+
+describe('RequestLogDrawer stackLevel', () => {
+  beforeEach(() => {
+    getRequestLogDetail.mockReset()
+    getRequestLogDetail.mockResolvedValue({
+      request_id: 'req-stack',
+      ts: '2026-08-21T00:00:00Z',
+      success: true,
+      client_model: 'm-1',
+      provider_name: 'prov',
+      request_body: null,
+      response_body: null,
+    })
+  })
+
+  it('does not add nested class by default', async () => {
+    const wrapper = mount(RequestLogDrawer, {
+      props: { requestId: 'req-stack' },
+      global: {
+        plugins: [i18n],
+        stubs: { Teleport: true, RequestTracePanel: true, RoutingAttemptsTimeline: true },
+      },
+    })
+    await flushPromises()
+    expect(wrapper.get('.drawer-backdrop').classes()).not.toContain('drawer-backdrop--nested')
+  })
+
+  it('adds nested class when stackLevel is nested', async () => {
+    const wrapper = mount(RequestLogDrawer, {
+      props: { requestId: 'req-stack', stackLevel: 'nested' },
+      global: {
+        plugins: [i18n],
+        stubs: { Teleport: true, RequestTracePanel: true, RoutingAttemptsTimeline: true },
+      },
+    })
+    await flushPromises()
+    expect(wrapper.get('.drawer-backdrop').classes()).toContain('drawer-backdrop--nested')
+  })
+})
