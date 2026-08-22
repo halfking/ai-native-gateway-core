@@ -127,7 +127,10 @@ async function onAdd() {
 function onUpdated(o: ModelOffer) {
   const i = offers.value.findIndex(x => x.id === o.id)
   if (i >= 0) offers.value[i] = { ...offers.value[i], ...o }
-  selected.value = { ...offers.value[i >= 0 ? i : 0], ...o }
+  // After a delete-then-update race the row may be gone from the offers
+  // list. Avoid spreading `undefined` into `selected`; just clear it.
+  const base = i >= 0 ? offers.value[i] : null
+  selected.value = base ? { ...base, ...o } : null
 }
 
 function thinkingLabel(o: ModelOffer) {

@@ -179,15 +179,26 @@ export function useNodeDetailDrawerLoad(
   }
 
   function bootstrapAllTabs() {
-    if (props.seedCandidate) {
+    // Only consume `seedCandidate` when the user hasn't yet touched the
+    // form fields. Otherwise we'd overwrite live edits with stale values
+    // from a previous open cycle (the parent may pass a snapshot that
+    // has not been refreshed).
+    const formIsPristine =
+      lifecycle.value === 'active'
+      && manualPriority.value === 99
+      && routingTier.value === 2
+      && weight.value === 100
+    if (props.seedCandidate && formIsPristine) {
       candidate.value = props.seedCandidate
       lifecycle.value = (props.seedCandidate.lifecycle_status ?? 'active') as CredentialLifecycleStatus
       manualPriority.value = props.seedCandidate.manual_priority ?? 99
       routingTier.value = props.seedCandidate.tier ?? 2
       weight.value = props.seedCandidate.weight ?? 100
     }
-    void ensureTabLoaded('detail'); void ensureTabLoaded('availability')
-    void ensureTabLoaded('requests'); void ensureTabLoaded('settings')
+    void ensureTabLoaded('detail')
+    void ensureTabLoaded('availability')
+    void ensureTabLoaded('requests')
+    void ensureTabLoaded('settings')
   }
 
   function chooseModel(model: string) {
@@ -208,9 +219,23 @@ export function useNodeDetailDrawerLoad(
 
   let lastWatchKey = ''
   watch(() => [props.modelValue, props.node?.credential_id, props.model] as const, ([open, credentialId, model]) => {
-    if (!open) { lastWatchKey = ''; resetDrawerData(); return }
+    if (!open) {
+      lastWatchKey = ''
+      resetDrawerData()
+      return
+    }
     const key = `${credentialId ?? ''}|${model ?? ''}`
-    if (key !== lastWatchKey) { lastWatchKey = key; resetDrawerData(); bootstrapAllTabs() }
+    // Even when the key hasn't changed (same credential re-opened after
+    // the parent briefly flipped modelValue), reset state so cached
+    // settings/edits don't leak across open cycles.
+    if (key !== lastWatchKey) {
+      lastWatchKey = key
+      resetDrawerData()
+      bootstrapAllTabs()
+    } else {
+      resetDrawerData()
+      bootstrapAllTabs()
+    }
     activeTab.value = props.initialTab ?? 'detail'
   }, { immediate: true })
   watch(() => props.initialTab, (tab) => { if (props.modelValue && tab) activeTab.value = tab })
