@@ -31,6 +31,7 @@ import RequestTracePanel from './RequestTracePanel.vue'
 import RoutingAttemptsTimeline from './RoutingAttemptsTimeline.vue'
 import ModelIdentityChip from './model/ModelIdentityChip.vue'
 import SessionMetaTitleRow from './SessionMetaTitleRow.vue'
+import SessionSummaryDrawer from './SessionSummaryDrawer.vue'
 import { useRouter } from 'vue-router'
 
 const props = withDefaults(defineProps<{
@@ -47,8 +48,10 @@ const props = withDefaults(defineProps<{
 
 const emit = defineEmits<{
   close: []
-  /** @deprecated request-logs 模式已在抽屉内联摘要；保留供 Dashboard 跳转兼容 */
+  /** @deprecated 使用 filterSession */
   generateSessionSummary: [sessionId: string]
+  filterSession: [sessionId: string]
+  openRequest: [requestId: string]
   sessionTitleChanged: [{ taskId: string; sessionId: string | null; title: string | null }]
 }>()
 
@@ -78,6 +81,9 @@ let sessionTagsLoadSeq = 0
 // 2026-07-02: 附件 lightbox 状态。Teleport 到 body 后由 handleKeydown 全局监听 ESC。
 const attachmentsLightbox = ref(false)
 const attachmentsLightboxSrc = ref('')
+
+const summaryDrawerOpen = ref(false)
+const summaryDrawerSessionId = ref<string | null>(null)
 
 // 2026-07-02: i18n 接入；附件文案走 t() 键（键定义见 web/src/locales/*.ts）。
 const { t } = useI18n()
@@ -202,6 +208,25 @@ function onSessionTitleChanged(title: string | null) {
     sessionId: detail.value.gw_session_id,
     title,
   })
+}
+
+function openSessionSummaryDrawer(sessionId: string) {
+  summaryDrawerSessionId.value = sessionId
+  summaryDrawerOpen.value = true
+}
+
+function closeSessionSummaryDrawer() {
+  summaryDrawerOpen.value = false
+}
+
+function onSummaryFilterSession(sessionId: string) {
+  emit('filterSession', sessionId)
+  closeSessionSummaryDrawer()
+}
+
+function onSummaryOpenRequest(requestId: string) {
+  closeSessionSummaryDrawer()
+  emit('openRequest', requestId)
 }
 
 function startAddTag() {
@@ -608,6 +633,7 @@ function routingAttempts(): RequestLogDetail['routing_attempts'] {
             :session-id="detail.gw_session_id"
             :title="detail.session_title"
             @title-changed="onSessionTitleChanged"
+            @open-summary="openSessionSummaryDrawer"
           />
 
           <div class="session-meta-tags">
@@ -852,6 +878,16 @@ function routingAttempts(): RequestLogDetail['routing_attempts'] {
       <!-- 2026-07-17: 流程详情面板改为内嵌, 不再使用 Teleport modal。
            RequestTracePanel 已在抽屉「请求详情」与「Tabs」之间展开。 -->
     </div>
+
+    <SessionSummaryDrawer
+      :open="summaryDrawerOpen"
+      :session-id="summaryDrawerSessionId"
+      :session-title="detail?.session_title"
+      :task-id="detail?.gw_task_id ?? null"
+      @close="closeSessionSummaryDrawer"
+      @filter-session="onSummaryFilterSession"
+      @open-request="onSummaryOpenRequest"
+    />
   </div>
 </template>
 

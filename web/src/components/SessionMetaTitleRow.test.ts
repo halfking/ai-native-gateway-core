@@ -3,12 +3,10 @@ import { createI18n } from 'vue-i18n'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import SessionMetaTitleRow from './SessionMetaTitleRow.vue'
 
-const { getSessionSummary, summarizeSessionTitle } = vi.hoisted(() => ({
-  getSessionSummary: vi.fn(),
+const { summarizeSessionTitle } = vi.hoisted(() => ({
   summarizeSessionTitle: vi.fn(),
 }))
 
-vi.mock('../api/logs', () => ({ getSessionSummary }))
 vi.mock('../api/memora', () => ({
   updateSessionTitle: vi.fn(),
   deleteSessionTitle: vi.fn(),
@@ -26,9 +24,6 @@ const i18n = createI18n({
             drawerSummaryAria: '会话摘要',
             drawerSummaryTitle: '查看或生成会话摘要',
             drawerSummaryButton: '摘要',
-            generating: '总结中…',
-            generate: '生成总结',
-            summaryRange: '范围：{from} ~ {to} · {n} 条',
           },
         },
       },
@@ -38,7 +33,6 @@ const i18n = createI18n({
 
 describe('SessionMetaTitleRow', () => {
   beforeEach(() => {
-    getSessionSummary.mockReset()
     summarizeSessionTitle.mockReset()
   })
 
@@ -54,60 +48,21 @@ describe('SessionMetaTitleRow', () => {
     expect(wrapper.text()).not.toContain('重新生成')
   })
 
-  it('expands title actions and loads summary inline', async () => {
-    getSessionSummary.mockResolvedValue({
-      summary: '整段会话摘要正文',
-      key_points: ['要点A'],
-      meta: {
-        session_id: 'sess-1',
-        log_count: 3,
-        data_from: '2026-08-21T00:00:00Z',
-        data_to: '2026-08-21T01:00:00Z',
-        generated_at: '2026-08-21T02:00:00Z',
-        api_key_id: 1,
-        model: 'm',
-      },
-    })
+  it('emits openSummary when clicking 摘要 button', async () => {
     const wrapper = mount(SessionMetaTitleRow, {
       props: { taskId: 'task-1', sessionId: 'sess-1', title: null },
       global: { plugins: [i18n] },
     })
-    await wrapper.get('button[aria-expanded="false"]').trigger('click')
-    expect(wrapper.text()).toContain('生成标题')
-
     await wrapper.get('button[aria-label="会话摘要"]').trigger('click')
-    await flushPromises()
-    expect(getSessionSummary).toHaveBeenCalledWith('sess-1')
-    expect(wrapper.text()).toContain('整段会话摘要正文')
-    expect(wrapper.text()).toContain('要点A')
+    expect(wrapper.emitted('openSummary')).toEqual([['sess-1']])
   })
 
-  it('keeps summary panel open when title prop updates', async () => {
-    getSessionSummary.mockResolvedValue({
-      summary: '摘要保持可见',
-      key_points: [],
-      meta: {
-        session_id: 'sess-1',
-        log_count: 1,
-        data_from: '2026-08-21T00:00:00Z',
-        data_to: '2026-08-21T01:00:00Z',
-        generated_at: '2026-08-21T02:00:00Z',
-        api_key_id: 1,
-        model: 'm',
-      },
-    })
+  it('does not emit openSummary without sessionId', async () => {
     const wrapper = mount(SessionMetaTitleRow, {
-      props: { taskId: 'task-1', sessionId: 'sess-1', title: null },
+      props: { taskId: 'task-1', sessionId: null, title: null },
       global: { plugins: [i18n] },
     })
-    await wrapper.get('button[aria-label="会话摘要"]').trigger('click')
-    await flushPromises()
-    expect(wrapper.text()).toContain('摘要保持可见')
-
-    await wrapper.setProps({ title: '更新后的标题' })
-    await flushPromises()
-    expect(wrapper.text()).toContain('摘要保持可见')
-    expect(wrapper.find('.session-summary-panel').isVisible()).toBe(true)
+    expect(wrapper.find('button[aria-label="会话摘要"]').exists()).toBe(false)
   })
 
   it('passes extended hours when generating title', async () => {
