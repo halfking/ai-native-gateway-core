@@ -1,73 +1,37 @@
 <script setup lang="ts">
-// ConnectionRegistryView.vue — T9 mock-stage 连接注册台视图
+// ConnectionRegistryView.vue — 流式客户端连接注册表（live + closed 审计）
 //
-// 三态视图（沿用 ProbeTriStateQueue 三列 + SSE 主 / REST 校准 模式）：
-//   connected / connecting / disconnected（来自 connection-registry mock API）
-//
-// 复用：
-//   - connection-registry.ts fetchConnectionRegistry mock
-//   - liveStreamStore 单例（liveStreamState.nodes）作为 SSE 通道更新 in_flight
-//
-// 可见性门控沿用三态模式：页面 hidden 时不渲染、不轮询；恢复可见时立即刷新。
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+// REST：GET /api/admin/connection-registry（15s 轮询）
+// 按 request_id 查询：GET /api/admin/connection-registry/{id}（含近期 closed）
+// 点击 request_id → 请求旅程详情
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import {
   fetchConnectionRegistry,
-  type ConnectionRecord,
-  type ConnectionRegistryResponse,
-  type ConnectionState,
+  fetchConnectionByRequestId,
+  type ConnectionSnapshot,
 } from '../api/connection-registry'
-import { acquireLiveStream, liveStreamState, type LiveNodeStatus } from '../composables/liveStreamStore'
 
 const router = useRouter()
 const { t, locale } = useI18n()
 const POLL_MS = 15_000
 
-interface ViewCard {
-  key: string
-  record: ConnectionRecord
-  state: ConnectionState
-  in_flight: number
-  updated_at_ms: number
-}
-
-const records = ref<ConnectionRecord[]>([])
+const live = ref<ConnectionSnapshot[]>([])
+const closed = ref<ConnectionSnapshot[]>([])
+const capacity = ref(0)
+const liveCount = ref(0)
 const firstLoading = ref(true)
 const apiDegraded = ref(false)
 const pageHidden = ref(typeof document !== 'undefined' ? document.hidden : false)
-const expandedKeys = ref(new Set<string>())
 const nowMs = ref(Date.now())
+const searchId = ref('')
+const searchError = ref('')
+const searchLoading = ref(false)
+const filterText = ref('')
 
 let pollTimer: number | undefined
 let tickTimer: number | undefined
-let releaseStream: (() => void) | null = null
-
-function stateClass(s: ConnectionState): string {
-  return s === 'connected' ? 'is-success' :
-         s === 'connecting' ? 'is-warning' :
-         'is-danger'
-}
-
-function stateLabel(s: ConnectionState): string {
-  return s === 'connected' ? t('connectionRegistry.state.connected') :
-         s === 'connecting' ? t('connectionRegistry.state.connecting') :
-         t('connectionRegistry.state.disconnected')
-}
-
-function fmtClock(ms?: number): string {
-  if (!ms) return '—'
-  return new Date(ms).toLocaleTimeString(locale.value, { hour12: false })
-}
-
-function fmtCountdown(targetMs?: number): string {
-  if (!targetMs) return ''
-  const delta = targetMs - nowMs.value
-  if (delta <= 0) return '已到'
-  if (delta < 60_000) return Math.ceil(delta / 1000) + 's 后'
-  if (delta < 3_600_000) return Math.ceil(delta / 60_000) + 'm 后'
-  return Math.ceil(delta / 3_600_000) + 'h 后'
-}
 
 function fmtDateTime(iso?: string): string {
   if (!iso) return '—'
@@ -76,36 +40,71 @@ function fmtDateTime(iso?: string): string {
   return d.toLocaleString(locale.value, { hour12: false })
 }
 
-function elapsedOf(c: ConnectionRecord): string {
-  if (!c.updated_at_ms) return '—'
-  const v = Math.max(0, nowMs.value - c.updated_at_ms)
-  if (v < 60_000) return Math.floor(v / 1000) + 's 前'
-  if (v < 3_600_000) return Math.floor(v / 60_000) + 'm 前'
-  return Math.floor(v / 3_600_000) + 'h 前'
+function elapsedOf(iso?: string): string {
+  if (!iso) return '—'
+  const base = new Date(iso).getTime()
+  if (Number.isNaN(base)) return '—'
+  const v = Math.max(0, nowMs.value - base)
+  if (v < 60_000) return Math.floor(v / 1000) + 's'
+  if (v < 3_600_000) return Math.floor(v / 60_000) + 'm'
+  return Math.floor(v / 3_600_000) + 'h'
 }
 
-const cards = computed<ViewCard[]>(() => records.value.map((r) => ({
-  key: r.connection_id,
-  record: r,
-  state: r.state,
-  in_flight: r.in_flight,
-  updated_at_ms: r.updated_at_ms,
-})))
+function matchesFilter(snap: ConnectionSnapshot): boolean {
+  const q = filterText.value.trim().toLowerCase()
+  if (!q) return true
+  return (
+    snap.request_id.toLowerCase().includes(q) ||
+    (snap.protocol ?? '').toLowerCase().includes(q) ||
+    (snap.client_type ?? '').toLowerCase().includes(q) ||
+    (snap.tenant_id ?? '').toLowerCase().includes(q)
+  )
+}
 
-const connectedCards = computed(() => cards.value.filter((c) => c.state === 'connected'))
-const connectingCards = computed(() => cards.value.filter((c) => c.state === 'connecting'))
-const disconnectedCards = computed(() => cards.value.filter((c) => c.state === 'disconnected'))
+const filteredLive = computed(() => live.value.filter(matchesFilter))
+const filteredClosed = computed(() => closed.value.filter(matchesFilter))
 
 async function refreshFromApi() {
   try {
-    const payload: ConnectionRegistryResponse = await fetchConnectionRegistry()
+    const payload = await fetchConnectionRegistry()
     apiDegraded.value = false
-    records.value = payload.records
+    live.value = payload.live ?? []
+    closed.value = payload.closed ?? []
+    capacity.value = payload.capacity ?? 0
+    liveCount.value = payload.live_count ?? live.value.length
   } catch {
     apiDegraded.value = true
   } finally {
     firstLoading.value = false
   }
+}
+
+async function searchByRequestId() {
+  const id = searchId.value.trim()
+  if (!id) return
+  searchError.value = ''
+  searchLoading.value = true
+  try {
+    const snap = await fetchConnectionByRequestId(id)
+    if (snap.closed) {
+      const idx = closed.value.findIndex((c) => c.request_id === id)
+      if (idx >= 0) closed.value[idx] = snap
+      else closed.value = [snap, ...closed.value]
+    } else {
+      const idx = live.value.findIndex((c) => c.request_id === id)
+      if (idx >= 0) live.value[idx] = snap
+      else live.value = [snap, ...live.value]
+    }
+    filterText.value = id
+  } catch (e) {
+    searchError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    searchLoading.value = false
+  }
+}
+
+function openJourney(requestId: string) {
+  router.push({ name: 'request-journey-detail', params: { requestId } })
 }
 
 function startPoll() {
@@ -148,45 +147,13 @@ onMounted(() => {
   startPoll()
   startTick()
   document.addEventListener('visibilitychange', onVisibilityChange)
-  releaseStream = acquireLiveStream()
 })
 
 onUnmounted(() => {
   stopPoll()
   stopTick()
   document.removeEventListener('visibilitychange', onVisibilityChange)
-  if (releaseStream) { releaseStream(); releaseStream = null }
-  expandedKeys.value.clear()
 })
-
-// SSE 增量：liveStreamStore.nodes 携带每个凭据的最新 in_flight，按 credential_id 折叠。
-watch(() => liveStreamState.nodes, (nodes: LiveNodeStatus[]) => {
-  const byCred = new Map<number, LiveNodeStatus>()
-  for (const n of nodes) {
-    if (n && Number.isFinite(n.credential_id)) byCred.set(n.credential_id, n)
-  }
-  records.value = records.value.map((r) => {
-    const n = byCred.get(r.credential_id)
-    if (!n) return r
-    return {
-      ...r,
-      in_flight: typeof n.in_flight === 'number' ? n.in_flight : r.in_flight,
-      fp_disabled: typeof n.fp_disabled === 'boolean' ? n.fp_disabled : r.fp_disabled,
-      manual_disabled: n.manual_disabled,
-      updated_at_ms: Date.now(),
-    }
-  })
-}, { deep: true })
-
-function toggleExpand(key: string) {
-  const s = expandedKeys.value
-  if (s.has(key)) s.delete(key)
-  else s.add(key)
-}
-
-function openRecovery(credentialId: number) {
-  router.push({ name: 'node-health-timeline', params: { credentialId: String(credentialId) } })
-}
 </script>
 
 <template>
@@ -196,103 +163,123 @@ function openRecovery(credentialId: number) {
       <p class="cr-sub">{{ t('connectionRegistry.subtitle') }}</p>
     </header>
 
+    <div class="cr-search-row" data-testid="cr-search-row">
+      <input
+        v-model="searchId"
+        type="search"
+        class="cr-search-input"
+        :placeholder="t('connectionRegistry.searchPlaceholder')"
+        data-testid="cr-search-input"
+        @keydown.enter.prevent="searchByRequestId()"
+      />
+      <button
+        type="button"
+        class="cr-search-btn"
+        :disabled="searchLoading || !searchId.trim()"
+        data-testid="cr-search-btn"
+        @click="searchByRequestId()"
+      >
+        {{ t('connectionRegistry.search') }}
+      </button>
+      <button
+        type="button"
+        class="cr-search-btn cr-search-btn--secondary"
+        :disabled="!searchId.trim()"
+        data-testid="cr-journey-btn"
+        @click="openJourney(searchId.trim())"
+      >
+        {{ t('connectionRegistry.openJourney') }}
+      </button>
+    </div>
+    <p v-if="searchError" class="cr-search-error" data-testid="cr-search-error">{{ searchError }}</p>
+
+    <div class="cr-filter-row">
+      <input
+        v-model="filterText"
+        type="search"
+        class="cr-filter-input"
+        :placeholder="t('connectionRegistry.filterPlaceholder')"
+        data-testid="cr-filter-input"
+      />
+    </div>
+
     <div class="cr-status-row">
+      <span class="cr-chip is-muted" data-testid="cr-capacity">
+        {{ t('connectionRegistry.liveCount', { count: liveCount, capacity }) }}
+      </span>
       <span v-if="apiDegraded" class="cr-chip is-danger" data-testid="api-degraded">
         {{ t('connectionRegistry.apiDegraded') }}
       </span>
+      <span class="cr-chip is-muted">{{ t('connectionRegistry.historyNote') }}</span>
     </div>
 
     <template v-if="!pageHidden">
-      <div v-if="firstLoading && records.length === 0" class="cr-skeleton" data-testid="cr-skeleton">
+      <div v-if="firstLoading && live.length === 0 && closed.length === 0" class="cr-skeleton" data-testid="cr-skeleton">
         <div v-for="i in 3" :key="i" class="cr-skeleton-card"></div>
       </div>
       <template v-else>
-        <section class="cr-section" data-testid="cr-connected">
+        <section class="cr-section" data-testid="cr-live">
           <header class="cr-section-head">
-            <h3>{{ t('connectionRegistry.sections.connected') }}</h3>
-            <span class="cr-count">{{ connectedCards.length }}</span>
+            <h3>{{ t('connectionRegistry.sections.live') }}</h3>
+            <span class="cr-count">{{ filteredLive.length }}</span>
           </header>
-          <div v-if="connectedCards.length" class="cr-cards">
-            <article v-for="c in connectedCards" :key="c.key" class="cr-card" :class="stateClass(c.state)" data-testid="cr-connected-card">
-              <div class="cr-card__head">
-                <span class="cr-badge" :class="stateClass(c.state)">{{ stateLabel(c.state) }}</span>
-                <span class="cr-card__provider">{{ c.record.provider_name || c.record.provider_code || '—' }}</span>
-                <span class="cr-card__cred">#{{ c.record.credential_id }}</span>
-              </div>
-              <div class="cr-card__models">
-                <span v-for="m in c.record.raw_models" :key="m" class="cr-card__model">{{ m }}</span>
-              </div>
-              <div class="cr-card__meta">
-                <span class="cr-card__inflight">{{ t('connectionRegistry.inFlight', { count: c.in_flight }) }}</span>
-                <button type="button" class="cr-link" @click="openRecovery(c.record.credential_id)">
-                  {{ t('connectionRegistry.viewTimeline') }}
-                </button>
-              </div>
-            </article>
+          <div v-if="filteredLive.length" class="cr-table-wrap">
+            <table class="cr-table">
+              <thead>
+                <tr>
+                  <th>{{ t('connectionRegistry.columns.requestId') }}</th>
+                  <th>{{ t('connectionRegistry.columns.protocol') }}</th>
+                  <th>{{ t('connectionRegistry.columns.client') }}</th>
+                  <th>{{ t('connectionRegistry.columns.frames') }}</th>
+                  <th>{{ t('connectionRegistry.columns.lastFrame') }}</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="c in filteredLive" :key="c.request_id" data-testid="cr-live-row">
+                  <td>
+                    <button type="button" class="cr-link" @click="openJourney(c.request_id)">{{ c.request_id }}</button>
+                  </td>
+                  <td>{{ c.protocol || '—' }}</td>
+                  <td>{{ c.client_type || '—' }}</td>
+                  <td>{{ c.frames_written ?? 0 }}</td>
+                  <td>{{ elapsedOf(c.last_frame_at) }}</td>
+                </tr>
+              </tbody>
+            </table>
           </div>
-          <div v-else class="cr-empty">{{ t('connectionRegistry.empty.connected') }}</div>
+          <div v-else class="cr-empty">{{ t('connectionRegistry.empty.live') }}</div>
         </section>
 
-        <section class="cr-section" data-testid="cr-connecting">
+        <section class="cr-section" data-testid="cr-closed">
           <header class="cr-section-head">
-            <h3>{{ t('connectionRegistry.sections.connecting') }}</h3>
-            <span class="cr-count">{{ connectingCards.length }}</span>
+            <h3>{{ t('connectionRegistry.sections.closed') }}</h3>
+            <span class="cr-count">{{ filteredClosed.length }}</span>
           </header>
-          <div v-if="connectingCards.length" class="cr-cards">
-            <article v-for="c in connectingCards" :key="c.key" class="cr-card" :class="stateClass(c.state)" data-testid="cr-connecting-card">
-              <div class="cr-card__head">
-                <span class="cr-badge" :class="stateClass(c.state)">{{ stateLabel(c.state) }}</span>
-                <span class="cr-card__provider">{{ c.record.provider_name || c.record.provider_code || '—' }}</span>
-                <span class="cr-card__cred">#{{ c.record.credential_id }}</span>
-              </div>
-              <div class="cr-card__models">
-                <span v-for="m in c.record.raw_models" :key="m" class="cr-card__model">{{ m }}</span>
-              </div>
-              <div class="cr-card__meta">
-                <span class="cr-card__elapsed">{{ elapsedOf(c.record) }}</span>
-              </div>
-            </article>
+          <div v-if="filteredClosed.length" class="cr-table-wrap">
+            <table class="cr-table">
+              <thead>
+                <tr>
+                  <th>{{ t('connectionRegistry.columns.requestId') }}</th>
+                  <th>{{ t('connectionRegistry.columns.protocol') }}</th>
+                  <th>{{ t('connectionRegistry.columns.closeReason') }}</th>
+                  <th>{{ t('connectionRegistry.columns.frames') }}</th>
+                  <th>{{ t('connectionRegistry.columns.registeredAt') }}</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="c in filteredClosed" :key="'closed-' + c.request_id" data-testid="cr-closed-row">
+                  <td>
+                    <button type="button" class="cr-link" @click="openJourney(c.request_id)">{{ c.request_id }}</button>
+                  </td>
+                  <td>{{ c.protocol || '—' }}</td>
+                  <td>{{ c.close_reason || '—' }}</td>
+                  <td>{{ c.frames_written ?? 0 }}</td>
+                  <td>{{ fmtDateTime(c.registered_at) }}</td>
+                </tr>
+              </tbody>
+            </table>
           </div>
-          <div v-else class="cr-empty">{{ t('connectionRegistry.empty.connecting') }}</div>
-        </section>
-
-        <section class="cr-section" data-testid="cr-disconnected">
-          <header class="cr-section-head">
-            <h3>{{ t('connectionRegistry.sections.disconnected') }}</h3>
-            <span class="cr-count">{{ disconnectedCards.length }}</span>
-          </header>
-          <div v-if="disconnectedCards.length" class="cr-cards cr-cards--large">
-            <article
-              v-for="c in disconnectedCards"
-              :key="c.key"
-              class="cr-card cr-card--disconnected"
-              :class="stateClass(c.state)"
-              :data-expanded="expandedKeys.has(c.key) ? 'true' : 'false'"
-              data-testid="cr-disconnected-card"
-            >
-              <div class="cr-card__summary" @click="toggleExpand(c.key)">
-                <span class="cr-badge" :class="stateClass(c.state)">{{ stateLabel(c.state) }}</span>
-                <span class="cr-card__provider">{{ c.record.provider_name || c.record.provider_code || '—' }}</span>
-                <span class="cr-card__cred">#{{ c.record.credential_id }}</span>
-                <span v-if="c.record.last_error_kind" class="cr-card__err">{{ c.record.last_error_kind }}</span>
-                <span class="cr-card__expand">{{ expandedKeys.has(c.key) ? '▾' : '▸' }}</span>
-              </div>
-              <div v-if="c.record.recover_at" class="cr-card__meta">
-                {{ t('connectionRegistry.recoverAt', { time: fmtClock(new Date(c.record.recover_at).getTime()), delta: fmtCountdown(new Date(c.record.recover_at).getTime()) }) }}
-              </div>
-              <div v-if="expandedKeys.has(c.key)" class="cr-card__detail">
-                <div class="cr-detail-row"><span class="cr-detail-label">{{ t('connectionRegistry.detail.lastError') }}</span><span>{{ c.record.last_error_kind || '—' }}</span></div>
-                <div v-if="c.record.last_error_at_ms" class="cr-detail-row"><span class="cr-detail-label">{{ t('connectionRegistry.detail.lastErrorAt') }}</span><span>{{ fmtDateTime(new Date(c.record.last_error_at_ms).toISOString()) }}</span></div>
-                <div v-if="c.record.recover_at" class="cr-detail-row"><span class="cr-detail-label">{{ t('connectionRegistry.detail.recoverAt') }}</span><span>{{ fmtDateTime(c.record.recover_at) }}</span></div>
-                <div class="cr-detail-row">
-                  <button type="button" class="cr-link" @click="openRecovery(c.record.credential_id)">
-                    {{ t('connectionRegistry.viewTimeline') }}
-                  </button>
-                </div>
-              </div>
-            </article>
-          </div>
-          <div v-else class="cr-empty">{{ t('connectionRegistry.empty.disconnected') }}</div>
+          <div v-else class="cr-empty">{{ t('connectionRegistry.empty.closed') }}</div>
         </section>
       </template>
     </template>
@@ -318,7 +305,57 @@ function openRecovery(credentialId: number) {
   font-size: 12px;
 }
 
-.cr-status-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.cr-search-row,
+.cr-filter-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.cr-search-input,
+.cr-filter-input {
+  flex: 1;
+  min-width: 200px;
+  padding: 6px 10px;
+  border: 1px solid var(--kx-border);
+  border-radius: 6px;
+  font-size: 12px;
+  background: var(--kx-surface);
+  color: var(--kx-text);
+}
+
+.cr-search-btn {
+  padding: 6px 12px;
+  border: 1px solid var(--kx-border);
+  border-radius: 6px;
+  background: var(--kx-primary);
+  color: #fff;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.cr-search-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.cr-search-btn--secondary {
+  background: var(--kx-surface);
+  color: var(--kx-primary);
+}
+
+.cr-search-error {
+  margin: 0;
+  font-size: 12px;
+  color: var(--kx-danger);
+}
+
+.cr-status-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
 
 .cr-chip {
   display: inline-flex;
@@ -329,6 +366,7 @@ function openRecovery(credentialId: number) {
 }
 
 .cr-chip.is-danger { color: var(--kx-danger); background: var(--kx-danger-soft); }
+.cr-chip.is-muted { color: var(--kx-muted); background: var(--kx-bg-accent); }
 
 .cr-section {
   border: 1px solid var(--kx-border);
@@ -356,65 +394,25 @@ function openRecovery(credentialId: number) {
   font-variant-numeric: tabular-nums;
 }
 
-.cr-cards {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
+.cr-table-wrap { overflow-x: auto; }
 
-.cr-cards--large { flex-direction: column; }
-
-.cr-card {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  min-width: 240px;
-  padding: 8px 10px;
-  border: 1px solid var(--kx-border);
-  border-radius: 6px;
-  background: var(--kx-surface);
+.cr-table {
+  width: 100%;
+  border-collapse: collapse;
   font-size: 12px;
-  color: var(--kx-text);
 }
 
-.cr-card.is-success { border-color: var(--kx-success); }
-.cr-card.is-warning { border-color: var(--kx-warning); }
-.cr-card.is-danger { border-color: var(--kx-danger); }
-
-.cr-card__head,
-.cr-card__summary {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
+.cr-table th,
+.cr-table td {
+  padding: 6px 8px;
+  text-align: left;
+  border-bottom: 1px solid var(--kx-border);
 }
 
-.cr-card__summary { cursor: pointer; }
-
-.cr-card__provider { font-weight: 600; }
-.cr-card__cred { color: var(--kx-muted); font-family: var(--kx-mono, ui-monospace, monospace); }
-.cr-card__err { color: var(--kx-danger); }
-.cr-card__expand { margin-left: auto; color: var(--kx-muted); }
-
-.cr-card__models { display: flex; flex-wrap: wrap; gap: 4px; }
-.cr-card__model {
-  padding: 1px 6px;
-  border-radius: 4px;
-  font-size: 11px;
-  background: var(--kx-bg-accent);
-  color: var(--kx-text-secondary);
+.cr-table th {
+  color: var(--kx-muted);
+  font-weight: 500;
 }
-
-.cr-card__meta {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  color: var(--kx-text-secondary);
-  font-size: 11px;
-}
-
-.cr-card__inflight { font-weight: 600; color: var(--kx-primary); }
-.cr-card__elapsed { color: var(--kx-warning); font-variant-numeric: tabular-nums; }
 
 .cr-link {
   border: 0;
@@ -423,29 +421,8 @@ function openRecovery(credentialId: number) {
   cursor: pointer;
   font: inherit;
   font-size: 12px;
+  font-family: var(--kx-mono, ui-monospace, monospace);
 }
-
-.cr-card__detail {
-  border-top: 1px solid var(--kx-border);
-  padding-top: 6px;
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-  gap: 4px 16px;
-}
-
-.cr-detail-row { display: flex; gap: 8px; font-size: 12px; }
-.cr-detail-label { color: var(--kx-muted); min-width: 5em; }
-
-.cr-badge {
-  padding: 1px 8px;
-  border-radius: 4px;
-  font-size: 11px;
-  white-space: nowrap;
-}
-
-.cr-badge.is-success { color: var(--kx-success); background: var(--kx-success-soft); }
-.cr-badge.is-warning { color: var(--kx-warning); background: var(--kx-warning-soft); }
-.cr-badge.is-danger { color: var(--kx-danger); background: var(--kx-danger-soft); }
 
 .cr-empty {
   padding: 12px;

@@ -52,7 +52,7 @@ func (h *Handler) handleCredentialModels(w http.ResponseWriter, r *http.Request,
 }
 
 func (h *Handler) listCredentialModels(w http.ResponseWriter, ctx context.Context, credentialID int) {
-	rows, err := h.db.Query(ctx, offerListSQL+`
+	rows, err := h.db.Query(ctx, offerListSQLFor(ctx, h.db)+`
 		WHERE mo.credential_id = $1
 		ORDER BY mo.raw_model_name
 	`, credentialID)

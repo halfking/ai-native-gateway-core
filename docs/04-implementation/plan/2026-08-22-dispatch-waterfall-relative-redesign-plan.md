@@ -1,8 +1,19 @@
 # 队列瀑布图相对时间重设计（2026-08-22）
 
-**状态**：Implemented（前端相对瀑布已落地；本地 vitest 14/14；DEV 预览 `/dev/waterfall-preview` 已目视）  
+**状态**：Deployed 154（build **1666** / git `f687be4e`）  
+**验收 URL**：https://llm.kxpms.cn/dispatch/waterfall  
 **范围**：前端 `web/src` 调度瀑布页。不改 API / DB / ring。  
 **决策**：问卷选定 Chrome 网络面板式相对瀑布；绝对时钟 Gantt 本轮不做。
+
+## 154 部署验收（2026-08-22）
+
+| 项 | 结果 |
+|---|---|
+| `version.json` | `2.5.0-f687be4e-20260822-1666` build_seq **1666** |
+| lazy chunk | `assets/DispatchWaterfallView-DuZXTxgZ.js` |
+| `renderItem` | **无**（旧 ECharts Gantt 已移除） |
+| 新指纹 | `样本中位构成` · `qwt-legend` · `minmax(140px, 200px)` 网格 |
+| 浏览器实测 | 登录后 50 样本；两行图例（排队/执行）；点行开右侧抽屉 + T0–T9 阶段表 |
 
 ## 核心表达
 
@@ -17,10 +28,11 @@
 ## UI
 
 - CSS 网格，不用 ECharts  
-- 图例在表格正上方单独一行；列头只留 `0 — max`  
+- 图例分两行（排队 / 执行），对齐瀑布列宽；列头 `0 — max`  
+- 瀑布轨 25/50/75% 参考线；去掉独立 queue/ttfb 列（次要行展示）  
 - 空态不挂图例  
 - 顶部：样本各阶段中位耗时占比  
-- 一行一请求，点行打开已有详情  
+- 一行一请求，点行打开右侧抽屉（放大条 + T0–T9 阶段表；routing 仅数字）  
 
 ## 验证
 

@@ -323,6 +323,10 @@ func (h *Handler) handleLogs(w http.ResponseWriter, r *http.Request) {
 		h.listTopModels(w, r)
 		return
 	}
+	if remaining == "top-problems" {
+		h.handleTopProblems(w, r)
+		return
+	}
 	if remaining == "session-summary" {
 		h.handleSessionSummary(w, r)
 		return

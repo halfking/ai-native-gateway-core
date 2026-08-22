@@ -11,9 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Credential model drawer extras: IQ history chart + cross-credential check restored into `ModelOfferExtrasPanel`; identity chips deep-link to `/models?q=`.
 
 ### Changed
+- **队列瀑布图 154 UI 抛光（build 1666）**：相对 T0 CSS 瀑布图例分两行（排队/执行）、轨内 25/50/75% 参考线、去掉独立 queue/ttfb 列；详情改右侧抽屉（放大条 + T0–T9 阶段表）。已部署 `llm.kxpms.cn/dispatch/waterfall`。
 - Provider logs and credential-monitor summary now expose `canonical_model` / `standardized_name` / `canonical_name` (monitor schema v8). Saving a node offer omits `context_window` unless the override field actually changed.
 
 ### Fixed
+- **GET /api/providers/{id}/models 154 build 1674 500 (2026-08-22)**: `offerListSQL` was referencing `provider_models.source` (`pm.source`) directly, but that column was added by domain migration 361 (2026-08-22) and had not yet been applied on the 154 environment. The query failed with `column pm.source does not exist`, which surfaced as 500. `admin/credential_models_dto.go` now probes `information_schema.columns` once per process (sync.Once + atomic.Value) and picks `COALESCE(pm.source, '')` when the column exists or a `''::text` constant when it does not. Both `getProviderModels` and `queryProviderModels` (plus `listCredentialModels`) now go through `offerListSQLFor(ctx, h.db)`. New unit tests in `credential_models_dto_test.go` lock the placeholder format and the no-`pm.source` contract.
+- **Session turns tree API（154 build 1668）**：修复 `GET /api/admin/sessions/{id}/turns` 分页 SQL 占位符 off-by-one（pgx insufficient arguments）；migration **561** 将 `origin_actor` 暴露到 `request_logs_with_current_month` 视图，恢复子请求 `request_type` 回退分类。
 - Queue node-card mini windows now clear when a later sliding-window batch returns empty `entries` (JSON omitempty no longer leaves stale cells).
 - Restore automatically profile-disabled periodic-quota credentials after an upstream recovery probe succeeds, while preserving manual-disable and recovery-deadline guards.
 - Classify apigpt/apiclaude.cc credit-exhaustion responses as permanent quota failures so dispatch ejects the depleted node and fails over to another credential supporting the requested model.

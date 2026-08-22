@@ -1,5 +1,6 @@
 // requestJourneyDetail.ts — T9 请求 Journey 详情整合视图文案
 export default {
+  backToList: '← 返回列表',
   title: '请求 Journey 详情',
   loading: '正在加载 Journey...',
   error: 'Journey 详情加载失败',
