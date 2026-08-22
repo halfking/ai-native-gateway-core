@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Provider logs and credential-monitor summary now expose `canonical_model` / `standardized_name` / `canonical_name` (monitor schema v8). Saving a node offer omits `context_window` unless the override field actually changed.
 
 ### Fixed
+- **Session turns tree API（154 build 1668）**：修复 `GET /api/admin/sessions/{id}/turns` 分页 SQL 占位符 off-by-one（pgx insufficient arguments）；migration **561** 将 `origin_actor` 暴露到 `request_logs_with_current_month` 视图，恢复子请求 `request_type` 回退分类。
 - Queue node-card mini windows now clear when a later sliding-window batch returns empty `entries` (JSON omitempty no longer leaves stale cells).
 - Restore automatically profile-disabled periodic-quota credentials after an upstream recovery probe succeeds, while preserving manual-disable and recovery-deadline guards.
 - Classify apigpt/apiclaude.cc credit-exhaustion responses as permanent quota failures so dispatch ejects the depleted node and fails over to another credential supporting the requested model.
