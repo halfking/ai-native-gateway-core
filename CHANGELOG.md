@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Provider logs and credential-monitor summary now expose `canonical_model` / `standardized_name` / `canonical_name` (monitor schema v8). Saving a node offer omits `context_window` unless the override field actually changed.
 
 ### Fixed
+- Queue node-card mini windows now clear when a later sliding-window batch returns empty `entries` (JSON omitempty no longer leaves stale cells).
 - Restore automatically profile-disabled periodic-quota credentials after an upstream recovery probe succeeds, while preserving manual-disable and recovery-deadline guards.
 - Classify apigpt/apiclaude.cc credit-exhaustion responses as permanent quota failures so dispatch ejects the depleted node and fails over to another credential supporting the requested model.
 - Cover English and Chinese balance variants including `insufficient credit`, `quota exhausted`, `no available accounts`, `out of quota`, and `节点费用已用完`.
