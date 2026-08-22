@@ -18,6 +18,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 // DB 是 Store 的最小依赖接口：*pgxpool.Pool 与 pgxmock.PgxPoolIface 均满足。
@@ -167,7 +168,11 @@ func (s *Store) GetGoalRun(ctx context.Context, goalRunID string) (*GoalRun, err
 	run := &GoalRun{}
 	var policySnapshot []byte
 	var lastDurableTaskID, lastProgressHash, leaseOwner, terminalReason string
-	var leaseUntil, completedAt time.Time
+	// lease_until / completed_at are nullable TIMESTAMPTZ; scanning into a
+	// plain time.Time errors on NULL for every non-terminal run. Use
+	// pgtype.Timestamptz and read .Time (zero-value when NULL), matching
+	// durable/scanTask.
+	var leaseUntil, completedAt pgtype.Timestamptz
 
 	err := row.Scan(
 		&run.ID, &run.TenantID, &run.APIKeyID, &run.RootGoalID,
@@ -192,9 +197,9 @@ func (s *Store) GetGoalRun(ctx context.Context, goalRunID string) (*GoalRun, err
 	run.LastDurableTaskID = lastDurableTaskID
 	run.LastProgressHash = lastProgressHash
 	run.LeaseOwner = leaseOwner
-	run.LeaseUntil = leaseUntil
+	run.LeaseUntil = leaseUntil.Time
 	run.TerminalReason = terminalReason
-	run.CompletedAt = completedAt
+	run.CompletedAt = completedAt.Time
 
 	return run, nil
 }

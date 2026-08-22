@@ -39,14 +39,18 @@ func (h *TriggerHook) PrepareConfirmation(ctx context.Context, result *RequestRe
 		return nil, "", err
 	}
 	proposal.GoalState = cloneGoalState(result.GoalState)
-	if _, _, err := marshalPersistedGoalState(proposal.GoalState); err != nil {
+	if snapshot, _, err := marshalPersistedGoalState(proposal.GoalState); err != nil {
 		abortReservation()
 		return nil, "", err
+	} else if len(snapshot) > 0 {
+		RecordPayload("snapshot", len(snapshot))
 	}
 	if err := store.SavePending(ctx, proposal); err != nil {
 		abortReservation()
+		RecordProposal(result.Reason, "save_failed")
 		return nil, "", err
 	}
+	RecordProposal(result.Reason, "prepared")
 	if h.config.GoalTrigger != nil {
 		if result.GoalState != nil {
 			h.config.GoalTrigger.Bind(proposal.ID, result.GoalState)
@@ -76,10 +80,21 @@ func (h *TriggerHook) ConfirmRequest(ctx context.Context, input ConfirmationInpu
 	input.CooldownSeconds = h.loadInt(input.TenantID, "handoff.cooldown_seconds", h.config.CooldownSeconds)
 	result, err := store.Confirm(ctx, input)
 	if err != nil || result == nil {
+		RecordConfirmation(confirmationResultLabel(err))
 		return result, err
 	}
 	if result.Record.TenantID != input.TenantID {
+		RecordConfirmation("invalid")
 		return result, fmt.Errorf("handoff confirmation tenant mismatch")
+	}
+	// First confirmation is the only accounting commit; a subsequent call
+	// with the same idempotency key is an idempotent replay of the already
+	// confirmed proposal (both return 200, but only the first counts as
+	// "first").
+	if result.FirstConfirmation {
+		RecordConfirmation("first")
+	} else {
+		RecordConfirmation("idempotent")
 	}
 	// Propagate retryable / manual-required restore failures so the HTTP
 	// layer can surface them (503 for retryable). Accounting has already
@@ -88,6 +103,7 @@ func (h *TriggerHook) ConfirmRequest(ctx context.Context, input ConfirmationInpu
 	if restoreErr := h.restoreGoalState(ctx, input, result); restoreErr != nil {
 		slog.Warn("handoff_goal_restore_failed", "session_id", result.NewSessionID, "error", restoreErr)
 		if errors.Is(restoreErr, ErrGoalRestoreRetryable) || errors.Is(restoreErr, ErrGoalRestoreManualRequired) {
+			// restore metrics already recorded inside restoreGoalState.
 			return result, restoreErr
 		}
 	}
@@ -98,9 +114,28 @@ func (h *TriggerHook) ConfirmRequest(ctx context.Context, input ConfirmationInpu
 	return result, nil
 }
 
+// confirmationResultLabel maps a store.Confirm error onto a low-cardinality
+// result label for handoff_confirmation_total.
+func confirmationResultLabel(err error) string {
+	switch {
+	case err == nil:
+		return "first"
+	case errors.Is(err, ErrConfirmationExpired):
+		return "expired"
+	case errors.Is(err, ErrConfirmationReplay):
+		return "replay"
+	default:
+		return "invalid"
+	}
+}
+
 func (h *TriggerHook) restoreGoalState(ctx context.Context, input ConfirmationInput, result *ConfirmationResult) error {
 	if h.config.GoalStateSerializer == nil {
 		return nil
+	}
+	start := time.Now()
+	recordResult := func(result string) {
+		RecordRestore(result, time.Since(start).Seconds())
 	}
 	var durable GoalRestoreStore
 	if store, ok := h.db.(GoalRestoreStore); ok {
@@ -113,20 +148,28 @@ func (h *TriggerHook) restoreGoalState(ctx context.Context, input ConfirmationIn
 		if err != nil {
 			if errors.Is(err, ErrGoalRestoreStateInvalid) {
 				_ = durable.MarkGoalRestoreManualRequired(ctx, input.ProposalID, input.TenantID, err.Error())
+				reason := classifyRestoreError(err)
+				IncRestoreFailure(reason)
+				recordResult(reason)
 				return fmt.Errorf("%w: %v", ErrGoalRestoreManualRequired, err)
 			}
+			recordResult("retryable")
+			IncRestoreFailure("retryable")
 			return fmt.Errorf("%w: load durable goal restore state: %v", ErrGoalRestoreRetryable, err)
 		}
 		if durableState == nil {
+			recordResult("no_snapshot")
 			return nil
 		}
 		state = durableState.GoalState
 		restoreStatus = durableState.Status
 		if restoreStatus == confirmationStatusRestored || restoreStatus == confirmationStatusManualRequired {
+			recordResult("no_snapshot")
 			return nil
 		}
 	} else {
 		if h.config.GoalTrigger != nil && h.config.GoalTrigger.IsAcknowledged(input.ProposalID, input.TenantID) {
+			recordResult("no_snapshot")
 			return nil
 		}
 		if h.config.GoalTrigger != nil {
@@ -134,12 +177,15 @@ func (h *TriggerHook) restoreGoalState(ctx context.Context, input ConfirmationIn
 		}
 	}
 	if state == nil {
+		recordResult("no_snapshot")
 		return nil
 	}
 	if state.TenantID == "" || state.TenantID != input.TenantID {
 		if durable != nil {
 			_ = durable.MarkGoalRestoreManualRequired(ctx, input.ProposalID, input.TenantID, "goal state tenant mismatch")
 		}
+		IncRestoreFailure("tenant_mismatch")
+		recordResult("manual_required")
 		return fmt.Errorf("%w: goal restore tenant mismatch", ErrGoalRestoreManualRequired)
 	}
 	if durable != nil {
@@ -156,6 +202,9 @@ func (h *TriggerHook) restoreGoalState(ctx context.Context, input ConfirmationIn
 		// Map manual-required restore failures (conflict / version mismatch)
 		// onto ErrGoalRestoreManualRequired so the HTTP layer can distinguish
 		// them from transient retryable failures.
+		reason := classifyRestoreError(err)
+		IncRestoreFailure(reason)
+		recordResult(reason)
 		if isManualGoalRestoreError(err) {
 			return fmt.Errorf("%w: %v", ErrGoalRestoreManualRequired, err)
 		}
@@ -163,13 +212,35 @@ func (h *TriggerHook) restoreGoalState(ctx context.Context, input ConfirmationIn
 	}
 	if durable != nil {
 		if err := durable.MarkGoalRestored(ctx, input.ProposalID, input.TenantID); err != nil {
+			recordResult("restored")
 			return fmt.Errorf("mark goal restore complete: %w", err)
 		}
 	}
 	if h.config.GoalTrigger != nil {
 		h.config.GoalTrigger.Ack(input.ProposalID, input.TenantID)
 	}
+	recordResult("restored")
 	return nil
+}
+
+// classifyRestoreError maps a goal-restore error onto a low-cardinality reason
+// label for handoff_restore_failure_total. Unknown errors are bucketed as
+// retryable so operators can alert on non-manual failures.
+func classifyRestoreError(err error) string {
+	switch {
+	case errors.Is(err, ErrGoalRestoreConflict):
+		return "conflict"
+	case errors.Is(err, ErrGoalRestoreVersionMismatch):
+		return "version_mismatch"
+	case errors.Is(err, ErrGoalRestoreManualRequired):
+		return "manual_required"
+	case errors.Is(err, ErrGoalRestoreStateInvalid):
+		return "manual_required"
+	case errors.Is(err, ErrGoalRestoreRetryable):
+		return "retryable"
+	default:
+		return "retryable"
+	}
 }
 
 func isManualGoalRestoreError(err error) bool {

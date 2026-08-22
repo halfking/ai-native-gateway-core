@@ -238,7 +238,9 @@ func (s *GoalRunActionScheduler) Stop() {
 		if s.cancel != nil {
 			s.cancel()
 		}
-		close(s.jobCh) // 通知 workers drain 完毕
+		// NOTE: 不 close(s.jobCh) —— scannerLoop 的 select 在 ctx.Done() 与
+		// jobCh<- 之间随机选择，ctx 已取消但 jobCh 有缓冲时仍可能命中发送分支，
+		// 向已关闭 channel 发送会 panic。workers 改由 ctx.Done() 退出即可。
 	})
 	s.wg.Wait()
 	close(s.done)
@@ -398,24 +400,27 @@ func (s *GoalRunActionScheduler) workerLoop(ctx context.Context, workerID int) {
 //
 // 续租：每 RenewInterval 重置 lease_until，直到 processAction 结束。
 func (s *GoalRunActionScheduler) processAction(ctx context.Context, a *goalrun.GoalRunAction, workerID int) {
-	// 启动续租循环
+	// 启动续租循环。renewDone 在 renewLoop 退出时关闭，确保 CAS 之前续租
+	// goroutine 已停止（避免晚到 renew 越过 complete CAS）。
 	renewCtx, cancelRenew := context.WithCancel(ctx)
-	defer cancelRenew()
+	renewDone := make(chan struct{})
 	s.wg.Add(1)
-	go s.renewLoop(renewCtx, a)
-
-	defer func() {
-		// 续租退出
-		cancelRenew()
+	go func() {
+		defer close(renewDone)
+		s.renewLoop(renewCtx, a)
 	}()
+
+	defer cancelRenew()
 
 	// 调用 dispatcher
 	succ, dispatchErr := s.dispatch(ctx, a)
 
-	// 续租在 CAS 完成前必须已停止（避免晚到 renew 越过 complete CAS）
+	// 续租在 CAS 完成前必须已停止（避免晚到 renew 越过 complete CAS）。
+	// cancelRenew 让 renewLoop 的下一轮 select 命中 ctx.Done 退出；但一个
+	// 正在 in-flight 的 RenewActionLease DB 调用不会被 cancelRenew 同步回收，
+	// 所以必须等 renewDone 关闭（goroutine 真正退出）才继续。
 	cancelRenew()
-	<-renewCtx.Done()
-	_ = renewCtx
+	<-renewDone
 
 	if dispatchErr != nil {
 		s.m.dispatchFails.Add(1)

@@ -1172,6 +1172,23 @@ func parseQueryTime(r *http.Request, key string, def time.Time) time.Time {
 	return def.UTC()
 }
 
+// parseQueryTimeStrict is like parseQueryTime but returns ok=false when a
+// non-empty value fails to parse, so callers can reject malformed timestamps
+// with a 400 instead of silently falling back to the default (which would
+// answer a different time range than the client requested).
+func parseQueryTimeStrict(r *http.Request, key string, def time.Time) (time.Time, bool) {
+	raw := strings.TrimSpace(r.URL.Query().Get(key))
+	if raw == "" {
+		return def.UTC(), true
+	}
+	for _, layout := range []string{time.RFC3339, time.RFC3339Nano, "2006-01-02T15:04:05", "2006-01-02 15:04:05"} {
+		if ts, err := time.Parse(layout, raw); err == nil {
+			return ts.UTC(), true
+		}
+	}
+	return def.UTC(), false
+}
+
 func decodeStoredBodyForAdmin(raw []byte) any {
 	if len(raw) == 0 {
 		return nil

@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/kaixuan/llm-gateway-go/autoroute"
 	"github.com/kaixuan/llm-gateway-go/domains/attachments"                   //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -47,7 +48,10 @@ func synthesizeStreamBodyFromText(text string) string {
 		return ""
 	}
 	if len(text) > maxStreamBodyTextBytes {
-		text = text[:maxStreamBodyTextBytes]
+		// Rune-aware truncation: a raw byte slice could cut a multi-byte
+		// UTF-8 sequence (Chinese / emoji) and produce invalid bytes that
+		// PostgreSQL rejects with SQLSTATE 22021, dropping the whole row.
+		text = truncateUTF8(text, maxStreamBodyTextBytes)
 	}
 	envelope := map[string]any{
 		"id":      "partial-stream",
@@ -71,6 +75,29 @@ func synthesizeStreamBodyFromText(text string) string {
 // not blow up request_logs_bodies with multi-megabyte rows. 2 MiB
 // matches the existing maxTextContentBytes cap in audit.go.
 const maxStreamBodyTextBytes = 2 * 1024 * 1024
+
+// truncateUTF8 truncates s to at most limit bytes without splitting a
+// multi-byte UTF-8 rune. A raw byte slice (s[:limit]) could cut a multi-byte
+// sequence and produce invalid bytes that PostgreSQL rejects with SQLSTATE
+// 22021, dropping the whole request_logs row.
+func truncateUTF8(s string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	if len(s) <= limit {
+		return s
+	}
+	cut := 0
+	for i, r := range s {
+		next := i + utf8.RuneLen(r)
+		if next > limit {
+			cut = i
+			break
+		}
+		cut = next
+	}
+	return s[:cut]
+}
 
 // RequestLogContext caches request facts across handler lifecycle stages
 // (auth, body read, routing, upstream, response) so every exit path emits
