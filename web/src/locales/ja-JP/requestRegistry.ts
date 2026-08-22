@@ -1,11 +1,15 @@
-// requestRegistry.ts — T9 request registry view
+// requestRegistry.ts — request registry view
 export default {
   title: 'Request Registry',
-  subtitle: 'Three-state registry (pending / in_flight / completed): real-time request lifecycle + historical snapshots',
+  subtitle: 'Three-state registry (pending / in_flight / completed): live lifecycle + hot window',
   sseConnected: 'Live stream connected',
   sseReconnecting: 'SSE reconnecting…',
-  apiDegraded: 'Queue API failed — falling back to SSE real-time data',
-  scopeAll: 'Super-admin global ingress view',
+  apiDegraded: 'Queue API fetch failed; showing SSE fallback',
+  scopeAll: 'Super admin global ingress view',
+  historyNote: 'List is hot window (~100); lookup by ID falls back to PostgreSQL detail',
+  search: 'Lookup journey',
+  searchPlaceholder: 'Enter request_id for full journey…',
+  filterPlaceholder: 'Filter current list…',
   sections: {
     pending: 'Pending',
     inFlight: 'In flight',
@@ -18,7 +22,7 @@ export default {
   },
   outcome: {
     success: 'Success',
-    failure: 'Failed',
+    failure: 'Failure',
     canceled: 'Canceled',
   },
   retryAt: 'Retry at {time} ({delta})',

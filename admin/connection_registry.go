@@ -51,11 +51,18 @@ func (h *Handler) handleConnectionRegistryList(w http.ResponseWriter, r *http.Re
 		return
 	}
 	live := reg.List()
+	if live == nil {
+		live = []streaming.ConnectionSnapshot{}
+	}
+	closed := reg.ClosedHistory(50)
+	if closed == nil {
+		closed = []streaming.ConnectionSnapshot{}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"live":       live,
 		"live_count": len(live),
 		"capacity":   reg.Capacity(),
-		"closed":     reg.ClosedHistory(50),
+		"closed":     closed,
 	})
 }
 
@@ -73,7 +80,7 @@ func (h *Handler) handleConnectionRegistryGet(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusBadRequest, "missing request_id")
 		return
 	}
-	snap, ok := reg.Lookup(requestID)
+	snap, ok := reg.LookupAny(requestID)
 	if !ok {
 		writeError(w, http.StatusNotFound, "request not registered")
 		return

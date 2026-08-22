@@ -5,12 +5,13 @@
 import { computed } from 'vue'
 import type { WaterfallRequest } from '../api/dispatch'
 import {
-  WATERFALL_STAGES,
   emptyStateMessage,
   formatAxisMs,
   layoutRows,
   medianComposition,
+  WATERFALL_GRID_COLUMNS,
 } from '../utils/waterfallTimeline'
+import DispatchWaterfallLegend from './DispatchWaterfallLegend.vue'
 import DispatchWaterfallRow from './DispatchWaterfallRow.vue'
 
 const props = defineProps<{
@@ -35,7 +36,12 @@ const hasData = computed(() => props.requests.length > 0)
 </script>
 
 <template>
-  <div class="qwt" :class="{ loading: props.loading }" data-testid="qwt">
+  <div
+    class="qwt"
+    :class="{ loading: props.loading }"
+    :style="{ '--qwt-grid-cols': WATERFALL_GRID_COLUMNS }"
+    data-testid="qwt"
+  >
     <div v-if="!hasData && !props.loading" class="qwt-empty" data-testid="qwt-empty">{{ emptyText }}</div>
     <template v-else-if="hasData">
       <div v-if="composition.length" class="qwt-comp" data-testid="qwt-composition">
@@ -49,18 +55,17 @@ const hasData = computed(() => props.requests.length > 0)
           />
         </div>
       </div>
-      <div class="qwt-legend" data-testid="qwt-legend">
-        <span v-for="st in WATERFALL_STAGES" :key="st.key" class="chip">
-          <i :style="{ background: st.color }" />{{ st.label }}
-        </span>
-      </div>
       <div class="qwt-head">
         <span>请求</span>
         <span>结果</span>
+        <div class="qwt-track-col">
+          <DispatchWaterfallLegend />
+          <div class="qwt-axis">
+            <span>0</span>
+            <span>{{ formatAxisMs(laid.axisMax) }}</span>
+          </div>
+        </div>
         <span class="num">总耗时</span>
-        <span class="axis"><span>0</span><span>{{ formatAxisMs(laid.axisMax) }}</span></span>
-        <span class="num">queue</span>
-        <span class="num">ttfb</span>
       </div>
       <div class="qwt-body">
         <DispatchWaterfallRow
@@ -109,31 +114,10 @@ const hasData = computed(() => props.requests.length > 0)
   background: var(--kx-bg);
 }
 .qwt-comp-bar span { display: block; min-width: 2px; height: 100%; }
-.qwt-legend {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 12px;
-  align-items: center;
-  margin: 0 0 8px;
-  padding: 0 8px;
-}
-.chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  color: var(--kx-text);
-  font-size: 11px;
-}
-.chip i {
-  width: 8px;
-  height: 8px;
-  border-radius: 2px;
-  display: inline-block;
-}
 .qwt-head,
 .qwt-body :deep(.qwt-row) {
   display: grid;
-  grid-template-columns: minmax(140px, 180px) 78px 72px minmax(220px, 1fr) 72px 72px;
+  grid-template-columns: var(--qwt-grid-cols);
   gap: 8px;
   align-items: center;
 }
@@ -148,10 +132,14 @@ const hasData = computed(() => props.requests.length > 0)
   z-index: 1;
 }
 .qwt-head .num { text-align: right; font-variant-numeric: tabular-nums; }
-.qwt-head .axis {
+.qwt-track-col { min-width: 0; }
+.qwt-axis {
   display: flex;
   justify-content: space-between;
   font-variant-numeric: tabular-nums;
+  font-size: 10px;
+  color: var(--kx-muted);
+  margin-top: 2px;
 }
 .qwt-body { max-height: calc(100vh - 320px); overflow: auto; }
 </style>

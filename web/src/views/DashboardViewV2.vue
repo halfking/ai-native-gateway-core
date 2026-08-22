@@ -194,8 +194,8 @@ async function onRefresh() {
     <!-- V3.3-OBS (OBS-FE5, 26 号 §5): 会话与统计 tab 下钻链路
          在线会话列表 → 轮次时间线（内联子请求树），手动加载、无轮询。 -->
     <template v-if="activeTab === 'stats'">
-      <SessionDrilldownPanel />
       <SessionStatsPanel style="margin-bottom: 20px;" />
+      <SessionDrilldownPanel />
     </template>
 
     <SelfCheckPanel v-if="activeTab === 'selfcheck'" />

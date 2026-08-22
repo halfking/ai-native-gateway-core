@@ -99,4 +99,23 @@ describe('dashboard board tab contract', () => {
     expect(logs).not.toContain('<RequestTraceModal')
     expect(logs).not.toContain('/admin/request-trace')
   })
+
+  it('stats tab shows overview panel before drilldown and uses KPI row', async () => {
+    const v2 = await readViewSource('DashboardViewV2.vue')
+    const statsPanel = await readFile(
+      resolve(process.cwd(), 'web/src/components/SessionStatsPanel.vue'),
+      'utf8',
+    ).catch(() => readFile(resolve(process.cwd(), 'src/components/SessionStatsPanel.vue'), 'utf8'))
+
+    const statsIdx = v2.indexOf('SessionStatsPanel')
+    const drillIdx = v2.indexOf('SessionDrilldownPanel')
+    expect(statsIdx).toBeGreaterThan(-1)
+    expect(drillIdx).toBeGreaterThan(-1)
+    expect(statsIdx).toBeLessThan(drillIdx)
+
+    expect(statsPanel).toContain('DashboardStatsRow')
+    expect(statsPanel).toContain('cost_stats')
+    expect(statsPanel).toContain('compliance_stats')
+    expect(statsPanel).toContain('model_usage')
+  })
 })

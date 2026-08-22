@@ -18,6 +18,16 @@ export interface WaterfallStageDef {
 }
 
 /** Sequential T0–T9 gaps. routing_ms (T2–T5) is omitted — it overlaps model queue. */
+/** Shared grid columns: identity · result · track · total */
+export const WATERFALL_GRID_COLUMNS =
+  'minmax(140px, 200px) 78px minmax(240px, 1fr) 72px'
+
+export const QUEUE_STAGE_KEYS: WaterfallStageKey[] = [
+  'arrive', 'total', 'admit', 'model', 'select', 'cred',
+]
+
+export const EXEC_STAGE_KEYS: WaterfallStageKey[] = ['acquire', 'upstream', 'stream']
+
 export const WATERFALL_STAGES: WaterfallStageDef[] = [
   { key: 'arrive', start: 'arrived_at', end: 'total_enqueued_at', color: '#94a3b8', label: '到达' },
   { key: 'total', start: 'total_enqueued_at', end: 'total_dequeued_at', color: '#409EFF', label: '总队列', msKey: 'waiting_in_total_ms' },
@@ -180,6 +190,41 @@ export function formatAxisMs(ms: number): string {
   if (ms < 1000) return `${Math.round(ms)}ms`
   const s = ms / 1000
   return Number.isInteger(s) ? `${s}s` : `${s.toFixed(1)}s`
+}
+
+export interface StageDetailRow {
+  key: WaterfallStageKey | 'routing'
+  label: string
+  color: string
+  ms: number
+  synthesized: boolean
+  /** false for routing_ms — number only, no bar */
+  showBar: boolean
+}
+
+export function stageDetailRows(r: WaterfallRequest, now = Date.now()): StageDetailRow[] {
+  const bars = resolveStageBars(r, now)
+  const rows: StageDetailRow[] = WATERFALL_STAGES.map((st) => {
+    const bar = bars.find((b) => b.key === st.key)
+    const ms = bar?.ms ?? fieldMS(r, st.msKey)
+    return {
+      key: st.key,
+      label: st.label,
+      color: st.color,
+      ms,
+      synthesized: bar?.synthesized ?? (ms > 0 && bar == null),
+      showBar: true,
+    }
+  })
+  rows.push({
+    key: 'routing',
+    label: 'routing',
+    color: 'transparent',
+    ms: fieldMS(r, 'routing_ms'),
+    synthesized: false,
+    showBar: false,
+  })
+  return rows
 }
 
 export function emptyStateMessage(opts: {

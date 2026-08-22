@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { LaidOutRow } from '../utils/waterfallTimeline'
+import DispatchWaterfallTrack from './DispatchWaterfallTrack.vue'
 
 const props = defineProps<{
   row: LaidOutRow
@@ -32,33 +33,20 @@ function resultClass(result: string): string {
     <div class="id">
       <span class="model">{{ row.request.model || '—' }}</span>
       <code>{{ shortId(row.request.request_id) }}</code>
+      <span class="metrics">
+        queue {{ row.request.queue_wait_ms }}ms · ttfb {{ row.request.upstream_latency_ms }}ms
+      </span>
     </div>
     <span class="result" :class="resultClass(row.request.result)">{{ row.request.result }}</span>
+    <DispatchWaterfallTrack :bars="row.bars" />
     <span class="num">{{ row.request.total_ms }}ms</span>
-    <div class="track" data-testid="qwt-track">
-      <div
-        v-for="b in row.bars"
-        :key="b.key + String(b.start)"
-        class="seg"
-        data-testid="qwt-seg"
-        :data-stage="b.key"
-        :title="`${b.label}: ${b.ms} ms${b.synthesized ? ' · 合成' : ''}`"
-        :style="{
-          left: b.leftPct + '%',
-          width: b.widthPct + '%',
-          background: b.color,
-        }"
-      />
-    </div>
-    <span class="num muted">{{ row.request.queue_wait_ms }}ms</span>
-    <span class="num muted">{{ row.request.upstream_latency_ms }}ms</span>
   </button>
 </template>
 
 <style scoped>
 .qwt-row {
   display: grid;
-  grid-template-columns: minmax(140px, 180px) 78px 72px minmax(220px, 1fr) 72px 72px;
+  grid-template-columns: var(--qwt-grid-cols, minmax(140px, 200px) 78px minmax(240px, 1fr) 72px);
   gap: 8px;
   align-items: center;
   width: 100%;
@@ -90,6 +78,11 @@ code {
   font-size: 11px;
   color: var(--kx-muted);
 }
+.metrics {
+  font-size: 10px;
+  color: var(--kx-muted);
+  font-variant-numeric: tabular-nums;
+}
 .result {
   font-size: 11px;
   text-transform: lowercase;
@@ -113,20 +106,5 @@ code {
   font-variant-numeric: tabular-nums;
   font-size: 12px;
   text-align: right;
-}
-.num.muted { color: var(--kx-muted); }
-.track {
-  position: relative;
-  height: 16px;
-  background: var(--kx-bg);
-  border-radius: 4px;
-  overflow: hidden;
-}
-.seg {
-  position: absolute;
-  top: 3px;
-  height: 10px;
-  border-radius: 2px;
-  min-width: 2px;
 }
 </style>

@@ -462,7 +462,6 @@ func (c *SessionCache) Invalidate(ctx context.Context, tenantID, gwSessionID str
 		// T11-P0 v2: sanitize key 现在带 tenantHash 段；tenantID 由 caller 在
 		// Invalidate() 入参传入，落到与 L2 redisKey 同一 tenant。空 tenant 时
 		// mirror 函数会落到 "_unknown" 桶 — 与输入中间件降级路径一致。
-		//
 		// T11-P0 v2 fix: 之前直接把 raw tenantID 传给 SessionSanitizeRedisKey，
 		// 但该函数的第一个参数应是 tenantHash (sha256[:8])。写入侧
 		// (smart_sani_guard.go) 用 HashTenant 派生 hash，所以 key 永远匹配不上，
