@@ -503,6 +503,16 @@ type Executor struct {
 	// synchronous candidate loop. See executor_dispatch.go.
 	dispatchPipeline         *dispatch.Pipeline
 	dispatchModelRecommender DispatchModelRecommender
+
+	// Stage D: capacity-aware soft-sort hook. When capacityAwareSortOn
+	// is true AND capacityAwareSnapFn is non-nil, dispatchRoute
+	// re-ranks the candidate list so credentials reporting
+	// SnapshotStateQueueFull / SnapshotStateGovernorSaturated move to
+	// the tail while preserving relative order. Default (zero value)
+	// is a strict no-op so existing call sites stay green.
+	capacityAwareSortOn bool
+	capacityAwareSnapFn func(int) (dispatch.SnapshotState, bool)
+
 	// traceRecorder (2026-07-17) 注入请求链路追踪器,记录 upstream_request /
 	// stream_start 事件。nil 时降级为 NoopRecorder 等价。
 	traceRecorder gwtrace.Recorder
@@ -1374,6 +1384,30 @@ func (e *Executor) SetLiveActions(em *liveactions.Emitter) {
 	if e != nil {
 		e.liveActions = em
 	}
+}
+
+// SetCapacityAwareSort (Stage D) wires the optional capacity-aware
+// soft-sort hook consumed by dispatchRoute. When on=true AND snapFn
+// != nil, dispatchRoute re-ranks the candidate list using ApplySoftPenalty
+// so credentials reporting QueueFull / GovernorSaturated move to the
+// tail while preserving relative order.
+//
+// snapFn must satisfy the signature produced by
+// dispatch.SnapshotFnFromProvider; nil snapFn disables the sort
+// regardless of the on flag (fail-open).
+//
+// Composition-root order (mirrors Stage B/C):
+//
+//	NewExecutor → SetDispatchPipeline → SetCapacityAwareSort → Start
+//
+// Callers that don't want the feature should leave this unset — the
+// zero-value (on=false, snapFn=nil) is a strict no-op.
+func (e *Executor) SetCapacityAwareSort(on bool, snapFn func(int) (dispatch.SnapshotState, bool)) {
+	if e == nil {
+		return
+	}
+	e.capacityAwareSortOn = on
+	e.capacityAwareSnapFn = snapFn
 }
 
 // legacyWritersEnabled 返回"是否应执行旧的状态写入路径"（FpSlots Recorder /
