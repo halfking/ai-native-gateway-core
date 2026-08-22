@@ -1,6 +1,7 @@
 package dispatch
 
 import (
+	"fmt"
 	"reflect"
 	"testing"
 )
@@ -196,23 +197,122 @@ func TestPipelineSnapshotForCredNilReceiver(t *testing.T) {
 }
 
 // TestPipelineForEachCredSnapshotPopulatesCache verifies the
-// credStateCache is written under credMu but read on the per-request
-// path via credStateCacheMu — so a subsequent SnapshotForCred returns
-// the same state the observer just emitted (modulo the
-// State != Unknown filter).
+// credStateCache is written by ForEachCredSnapshot under credMu and
+// read on the per-request path via credStateCacheMu — so a subsequent
+// SnapshotForCred returns the same state the observer just emitted
+// (modulo the State != Unknown filter).
+//
+// The test seeds credForwarder entries directly (skipping the
+// goroutine-spawning newCredForwarder path) so we can inject a
+// known-state gov and observe the cache write without involving
+// the dispatch loop / queue-mirroring / observer goroutine.
 func TestPipelineForEachCredSnapshotPopulatesCache(t *testing.T) {
-	// Build a Pipeline and seed a credForwarder manually by triggering
-	// its construction through a Submit-then-cancel path. Easier: use
-	// getOrCreateForwarder via a Submit with a stub credential. We
-	// can't easily inject here, so test the ForEachCredSnapshot → cache
-	// contract by observing that SnapshotForCred is initially miss,
-	// and trust the unit test of the SnapshotProvider wiring
-	// elsewhere.
 	p := newTestPipelineForObserver(t)
-	defer p.Stop()
+	// No defer p.Stop() — we never called Start(), and Stop() with no
+	// forwarders of its own is a no-op; teardown below manually clears
+	// the seeded credForwarder to keep the field hygiene predictable.
 
-	// No forwarders → cache stays empty.
+	// Pre-condition: empty forwarders → empty cache (fail-open miss).
 	if _, ok := p.SnapshotForCred(1); ok {
-		t.Fatal("cache should be empty when forwarders map is empty")
+		t.Fatal("cache must be empty when forwarders map is empty")
 	}
+
+	// Seed a credForwarder with a saturated governor: cap=2, used=2 →
+	// snapshotForCredForwarderLocked sees snap.Used (2) >= snap.Limit
+	// (cf.limit=2) → State = GovernorSaturated.
+	cf := &credForwarder{
+		cred:  CredentialRef{CredentialID: 7, ProviderID: 1, ConcurrencyMode: ModeConcurrency, ConcurrencyLimit: 2},
+		limit: 2,
+		gov:   newConcurrencyGovernor(2),
+		pipe:  p,
+	}
+	cf.gov.(*concurrencyGovernor).used.Store(2) // saturate: Used=Limit
+
+	p.credMu.Lock()
+	p.forwarders[cf.cred.CredentialID] = cf
+	p.credMu.Unlock()
+
+	// Drive ForEachCredSnapshot — no observer goroutine, no queue
+	// mirror, just the read-side walk + cache write.
+	var walkErr error
+	if err := p.ForEachCredSnapshot(func(snap GovernorSnapshot) error {
+		if snap.State != SnapshotStateGovernorSaturated {
+			walkErr = fmt.Errorf("seeded governor must produce GovernorSaturated; got %q", snap.State)
+		}
+		return walkErr
+	}); walkErr != nil {
+		t.Fatal(walkErr)
+	} else if err != nil {
+		t.Fatalf("ForEachCredSnapshot: %v", err)
+	}
+
+	// After the walk, SnapshotForCred must return the cached state.
+	state, ok := p.SnapshotForCred(7)
+	if !ok {
+		t.Fatal("SnapshotForCred(7) must hit after ForEachCredSnapshot populates cache")
+	}
+	if state != SnapshotStateGovernorSaturated {
+		t.Fatalf("cached state: got %q want %q", state, SnapshotStateGovernorSaturated)
+	}
+
+	// Clear the seeded forwarder to avoid leaking state to other tests.
+	p.credMu.Lock()
+	delete(p.forwarders, 7)
+	p.credMu.Unlock()
+	p.credStateCacheMu.Lock()
+	delete(p.credStateCache, 7)
+	p.credStateCacheMu.Unlock()
+}
+
+// TestPipelineForEachCredSnapshotAppliesCacheOutsideCredMu verifies
+// the post-fix invariant: the credStateCacheMu.Lock acquisition for
+// the batch write happens AFTER credMu.Unlock. The audit found a
+// regression where applyStateWrites ran inside the credMu section,
+// defeating the design intent of decoupling the two mutexes.
+//
+// We assert this structurally by injecting a credForwarder whose walk
+// fn checks the cache during the walk — the cache must NOT yet be
+// populated (the write happens after credMu.Unlock, by design).
+func TestPipelineForEachCredSnapshotAppliesCacheOutsideCredMu(t *testing.T) {
+	p := newTestPipelineForObserver(t)
+
+	cf := &credForwarder{
+		cred:  CredentialRef{CredentialID: 11, ProviderID: 1, ConcurrencyMode: ModeConcurrency, ConcurrencyLimit: 2},
+		limit: 2,
+		gov:   newConcurrencyGovernor(2),
+		pipe:  p,
+	}
+	cf.gov.(*concurrencyGovernor).used.Store(2) // saturate
+	p.credMu.Lock()
+	p.forwarders[cf.cred.CredentialID] = cf
+	p.credMu.Unlock()
+
+	// During the walk, the cache write has not happened yet (we're
+	// still inside the credMu section). A peek from the walk fn MUST
+	// see a miss — if it sees a hit, applyStateWrites ran too early.
+	walkSawHit := false
+	if err := p.ForEachCredSnapshot(func(snap GovernorSnapshot) error {
+		_, ok := p.SnapshotForCred(11)
+		walkSawHit = ok
+		return nil
+	}); err != nil {
+		t.Fatalf("ForEachCredSnapshot: %v", err)
+	}
+	if walkSawHit {
+		t.Fatal("applyStateWrites must run AFTER credMu.Unlock(); walk saw a cache hit, implying the write happened before the walk returned")
+	}
+
+	// After the walk returns, the cache MUST be populated.
+	state, ok := p.SnapshotForCred(11)
+	if !ok || state != SnapshotStateGovernorSaturated {
+		t.Fatalf("post-walk cache: got (%q, %v) want (%q, true)", state, ok, SnapshotStateGovernorSaturated)
+	}
+
+	// Cleanup seeded state.
+	p.credMu.Lock()
+	delete(p.forwarders, 11)
+	p.credMu.Unlock()
+	p.credStateCacheMu.Lock()
+	delete(p.credStateCache, 11)
+	p.credStateCacheMu.Unlock()
 }
