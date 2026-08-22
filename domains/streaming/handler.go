@@ -3254,22 +3254,29 @@ func (h *ChatHandler) serveWithExecutor(
 			slog.Warn("handoff_prepare_failed", "session_id", gwSessionID, "error", handoffErr)
 		} else if handoffResult != nil && handoffResult.Triggered {
 			if keyInfo == nil || keyInfo.ID <= 0 {
+				handoff.RecordProposal(handoffResult.Reason, "prepare_failed")
 				writeErrorJSON(w, http.StatusServiceUnavailable, requestID, "handoff confirmation is unavailable", "handoff_error", "handoff_confirmation_unavailable")
 				return
 			}
 			proposal, token, proposalErr := h.handoffHook.PrepareConfirmation(ctx, handoffResult, keyInfo.ID)
 			if proposalErr != nil {
+				handoff.RecordProposal(handoffResult.Reason, "prepare_failed")
 				slog.Warn("handoff_confirmation_prepare_failed", "session_id", gwSessionID, "error", proposalErr)
 				writeErrorJSON(w, http.StatusServiceUnavailable, requestID, "handoff confirmation is unavailable", "handoff_error", "handoff_confirmation_unavailable")
 				return
 			}
-			w.Header().Set("X-Gw-Handoff", "explicit")
-			w.Header().Set("X-Gw-Handoff-Reason", handoffResult.Reason)
-			writeJSON(w, http.StatusAccepted, map[string]any{
+			handoff.RecordProposal(handoffResult.Reason, "triggered")
+			body := map[string]any{
 				"status": "handoff_required", "resume_packet": handoffResult.ResumePacket,
 				"handoff_id": proposal.ID, "confirmation_token": token,
 				"confirmation_expires_at": proposal.ExpiresAt,
-			})
+			}
+			if jsonBytes, err := json.Marshal(body); err == nil {
+				handoff.RecordPayload("message", len(jsonBytes))
+			}
+			w.Header().Set("X-Gw-Handoff", "explicit")
+			w.Header().Set("X-Gw-Handoff-Reason", handoffResult.Reason)
+			writeJSON(w, http.StatusAccepted, body)
 			return
 		}
 	}
