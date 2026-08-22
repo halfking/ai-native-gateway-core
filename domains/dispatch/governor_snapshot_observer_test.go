@@ -34,6 +34,12 @@ func (s *stubProvider) ActiveRevision() uint64 {
 	return s.rev.Load()
 }
 
+// SnapshotForCred implements SnapshotProvider. Returns (SnapshotStateReady,
+// true) so existing observer tests don't need to think about the cache.
+func (s *stubProvider) SnapshotForCred(credID int) (SnapshotState, bool) {
+	return SnapshotStateReady, true
+}
+
 // TestObserverProducesSnapshotsAtConfiguredCadence verifies the tick
 // goroutine fires approximately every tickInterval. We use a 20ms tick
 // over a 200ms window; expect ~10 calls ±3 (allow for timer slack).
