@@ -267,3 +267,33 @@ func TestSlidingWindowBatch_IncludeEntriesTruncates(t *testing.T) {
 		t.Fatalf("hard-capped entries=%d want %d", len(resp.Results[0].Entries), slidingWindowBatchMaxEntryRet)
 	}
 }
+
+func TestSlidingWindowJSONEntries_EmptyArrayWhenIncluded(t *testing.T) {
+	raw, err := json.Marshal(struct {
+		Entries *[]credentialhealth.CallEntry `json:"entries,omitempty"`
+	}{Entries: slidingWindowJSONEntries(true, nil, 24)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != `{"entries":[]}` {
+		t.Fatalf("include empty: %s", raw)
+	}
+
+	raw, err = json.Marshal(struct {
+		Entries *[]credentialhealth.CallEntry `json:"entries,omitempty"`
+	}{Entries: slidingWindowJSONEntries(false, nil, 24)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != `{}` {
+		t.Fatalf("omit when not included: %s", raw)
+	}
+
+	entries := []credentialhealth.CallEntry{
+		{RequestID: "r0"}, {RequestID: "r1"}, {RequestID: "r2"},
+	}
+	got := slidingWindowJSONEntries(true, entries, 2)
+	if got == nil || len(*got) != 2 || (*got)[0].RequestID != "r0" {
+		t.Fatalf("newest-first truncate: %+v", got)
+	}
+}

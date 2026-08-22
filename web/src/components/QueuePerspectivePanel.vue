@@ -34,6 +34,7 @@ import {
   WINDOW_MINUTES,
   STATS_REFRESH_MS,
   CARD_ENTRY_LIMIT,
+  mergeCardWindowEntries,
   assignSpacedPriorities,
   cardWidthFromCapacity,
   credentialDisplayName,
@@ -623,8 +624,7 @@ async function refreshWindowStats() {
     next.set(statsKey(credentialId, model), { success, failed, total })
   }
   const applyEntries = (credentialId: number, model: string, entries: CallEntry[] | undefined) => {
-    if (!entries) return
-    nextEntries.set(statsKey(credentialId, model), entries.slice(0, CARD_ENTRY_LIMIT))
+    mergeCardWindowEntries(nextEntries, statsKey(credentialId, model), entries)
   }
 
   try {

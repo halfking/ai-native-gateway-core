@@ -139,7 +139,7 @@ func (m *CredentialMonitorHandlers) handleSlidingWindowBatch(w http.ResponseWrit
 		Model        string                       `json:"model"`
 		Source       string                       `json:"source,omitempty"`
 		Stats        map[string]any               `json:"stats,omitempty"`
-		Entries      []credentialhealth.CallEntry `json:"entries,omitempty"`
+		Entries      *[]credentialhealth.CallEntry `json:"entries,omitempty"`
 		Error        string                       `json:"error,omitempty"`
 	}
 
@@ -181,13 +181,7 @@ func (m *CredentialMonitorHandlers) handleSlidingWindowBatch(w http.ResponseWrit
 				stats := credentialhealth.ComputeStats(entries)
 				results[job.idx].Source = source
 				results[job.idx].Stats = slidingWindowStatsMap(stats)
-				if req.IncludeEntries {
-					ret := entries
-					if len(ret) > entryLimit {
-						ret = ret[:entryLimit]
-					}
-					results[job.idx].Entries = ret
-				}
+				results[job.idx].Entries = slidingWindowJSONEntries(req.IncludeEntries, entries, entryLimit)
 			}
 		}()
 	}
@@ -198,4 +192,20 @@ func (m *CredentialMonitorHandlers) handleSlidingWindowBatch(w http.ResponseWrit
 		"count":          len(results),
 		"results":        results,
 	})
+}
+
+// slidingWindowJSONEntries keeps include_entries=false omitted, while empty
+// windows still serialize as "entries":[] so clients can clear stale cells.
+func slidingWindowJSONEntries(include bool, entries []credentialhealth.CallEntry, limit int) *[]credentialhealth.CallEntry {
+	if !include {
+		return nil
+	}
+	out := entries
+	if out == nil {
+		out = []credentialhealth.CallEntry{}
+	}
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return &out
 }
