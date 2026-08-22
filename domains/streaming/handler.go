@@ -534,6 +534,12 @@ type chatRequestBody struct {
 	// goal object. Backward compatible: absent/null/empty is allowed.
 	// GoalIntegration.ParseAndCreate decides whether to create a GoalRun.
 	Goal json.RawMessage `json:"goal,omitempty"`
+	// 2026-08-23: gateway-private routing override. Mirrors the
+	// X-LLMGW-Preferred-Credential HTTP header so clients that cannot set
+	// custom headers (e.g. SDK defaults) can still pin a credential via
+	// the OpenAI-compatible metadata extension slot. The admin token gate
+	// is applied by ExtractPreferredCredential at the v2 preflight layer.
+	Metadata json.RawMessage `json:"metadata,omitempty"`
 }
 
 //-----------------------------------------------------------------------------
