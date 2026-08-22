@@ -11,16 +11,23 @@ import (
 // guard in metrics/label_cardinality_guard_test.go.
 
 var (
+	// metricModelQueueDepth (Stage C.3) — labels dropped from {model}.
+	// The Tier-1 model queue is now aggregated across all models. Per-model
+	// depth moved to slog.Debug ("dispatch: model enqueue/dequeue",
+	// "model", name) so SREs investigating a hot model can still see
+	// individual series by toggling log-level=debug on the gateway.
+	// The metric name is preserved so existing dashboards keep working
+	// (sum across all models).
 	metricModelQueueDepth = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "dispatch_model_queue_depth",
-		Help: "Current depth of the Tier-1 model queue.",
-	}, []string{"model"})
+		Help: "Aggregate depth of the Tier-1 model queue across all models.",
+	}, []string{})
 
 	metricModelQueueWait = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "dispatch_model_queue_wait_seconds",
 		Help:    "Time a request spent in the Tier-1 model queue before dispatch.",
 		Buckets: prometheus.ExponentialBuckets(0.005, 2, 12), // 5ms .. ~20s
-	}, []string{"model"})
+	}, []string{})
 
 	metricCredQueueDepth = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "dispatch_cred_queue_depth",
