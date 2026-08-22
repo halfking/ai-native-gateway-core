@@ -158,8 +158,8 @@ watch(() => props.providerId, () => { loadCredentials(); resetFilters() })
               <ModelIdentityChip
                 compact
                 :client-model="l.client_model"
-                :canonical-name="(l as any).canonical_name || (l as any).canonical_model"
-                :outbound-model="l.outbound_model || (l as any).provider_model"
+                :canonical-name="l.canonical_name || l.canonical_model"
+                :outbound-model="l.outbound_model || l.provider_model"
               />
             </td>
             <td>
