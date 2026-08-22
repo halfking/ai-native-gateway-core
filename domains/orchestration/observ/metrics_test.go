@@ -67,7 +67,6 @@ func TestNoopMetrics_NoPanic(t *testing.T) {
 	n.IncLeaseConflict()
 	n.IncResumeSafetyBlock()
 	n.IncActionDuplicate()
-	n.IncHandoffRestoreFailure("lease_lost")
 	n.IncAuditDegraded()
 	n.IncFallbackRejection("model_unavailable")
 	n.IncPendingProjectionError("decrypt")
@@ -124,9 +123,6 @@ func TestPrometheusMetrics_LabeledCounters(t *testing.T) {
 	m.IncTerminalReason("manual_required")
 	m.IncTerminalReason("budget_exhausted")
 
-	m.IncHandoffRestoreFailure("lease_lost")
-	m.IncHandoffRestoreFailure("conflict")
-
 	m.IncFallbackRejection("model_unavailable")
 
 	m.IncPendingProjectionError("decrypt")
@@ -137,9 +133,6 @@ func TestPrometheusMetrics_LabeledCounters(t *testing.T) {
 	}
 	if got := readCounterLabel(t, m.terminalReason, "budget_exhausted"); got != 1 {
 		t.Errorf("terminal_reason{budget_exhausted}=%v want 1", got)
-	}
-	if got := readCounterLabel(t, m.handoffRestoreFailure, "lease_lost"); got != 1 {
-		t.Errorf("handoff_restore_failure{lease_lost}=%v want 1", got)
 	}
 	if got := readCounterLabel(t, m.fallbackRejection, "model_unavailable"); got != 1 {
 		t.Errorf("fallback_rejection{model_unavailable}=%v want 1", got)
@@ -165,7 +158,6 @@ func TestPrometheusMetrics_NoIDLabels(t *testing.T) {
 		m.leaseConflict,
 		m.resumeSafetyBlock,
 		m.actionDuplicate,
-		m.handoffRestoreFailure,
 		m.auditDegraded,
 		m.fallbackRejection,
 		m.pendingProjectionError,
