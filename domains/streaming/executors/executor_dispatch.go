@@ -115,6 +115,13 @@ func (e *Executor) dispatchRoute(ctx context.Context, qr *dispatch.QueuedRequest
 		}
 		return filtered, nil
 	}
+	// Stage D: capacity-aware soft-rank. Applied BEFORE the liveActions
+	// emit so the credential_selected event reports the post-penalty best
+	// candidate. The pin filter path above short-circuits with a 0-1
+	// element list (single-cred probe must not soft-skip), so this hook
+	// fires only on the multi-candidate route.
+	refs = e.dispatchRouteSoftRank(refs)
+
 	// V3.3-OBS OBS-B1 (2026-08-15): dispatch_v2 路径的 credential_selected
 	// 动作事件（S5，Router.PlanCandidates 输出，best-first 首个 ref）。
 	if len(refs) > 0 {
@@ -129,6 +136,20 @@ func (e *Executor) dispatchRoute(ctx context.Context, qr *dispatch.QueuedRequest
 		})
 	}
 	return refs, nil
+}
+
+// dispatchRouteSoftRank applies the Stage D capacity-aware soft penalty
+// when both the on flag and the snapFn are set. Lifted out of
+// dispatchRoute so the hot-path branch is single-line and the test
+// surface stays isolated.
+//
+// No-op when either is unset; a nil snapFn OR on=false both fall
+// through to the unchanged behavior.
+func (e *Executor) dispatchRouteSoftRank(refs []dispatch.CredentialRef) []dispatch.CredentialRef {
+	if !e.capacityAwareSortOn || e.capacityAwareSnapFn == nil {
+		return refs
+	}
+	return dispatch.ApplySoftPenalty(refs, e.capacityAwareSnapFn)
 }
 
 // dispatchCandidateAllowed preserves a trusted probe pin that the router has

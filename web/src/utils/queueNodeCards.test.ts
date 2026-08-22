@@ -3,6 +3,7 @@ import {
   assignSpacedPriorities,
   cardWidthFromCapacity,
   credentialDisplayName,
+  mergeCardWindowEntries,
   nodeCapacity,
 } from './queueNodeCards'
 
@@ -48,5 +49,21 @@ describe('nodeCapacity / credentialDisplayName', () => {
   it('prefers credential label', () => {
     expect(credentialDisplayName({ credential_label: 'terra-prod' }, 'p', 9)).toBe('terra-prod')
     expect(credentialDisplayName({ credential_label: '  ' }, 'anthropic', 9)).toBe('anthropic · #9')
+  })
+})
+
+describe('mergeCardWindowEntries', () => {
+  it('replaces previous cells when the next payload omits entries', () => {
+    const dest = new Map<string, number[]>([['1:m', [1, 2, 3]]])
+    mergeCardWindowEntries(dest, '1:m', undefined)
+    expect(dest.get('1:m')).toEqual([])
+  })
+
+  it('writes an empty window and truncates to the card limit', () => {
+    const dest = new Map<string, number[]>()
+    mergeCardWindowEntries(dest, '1:m', [])
+    expect(dest.get('1:m')).toEqual([])
+    mergeCardWindowEntries(dest, '1:m', [1, 2, 3, 4], 2)
+    expect(dest.get('1:m')).toEqual([1, 2])
   })
 })
