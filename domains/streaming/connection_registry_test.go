@@ -48,6 +48,12 @@ func TestConnectionRegistryRegisterLookupUnregister(t *testing.T) {
 	require.Len(t, hist, 1)
 	assert.Equal(t, "req-1", hist[0].RequestID)
 	assert.True(t, hist[0].Closed)
+
+	// LookupAny finds closed entries after unregister.
+	snap, ok = reg.LookupAny("req-1")
+	require.True(t, ok)
+	assert.True(t, snap.Closed)
+	assert.Equal(t, "stream_end", snap.CloseReason)
 	assert.Equal(t, "stream_end", hist[0].CloseReason)
 }
 

@@ -385,6 +385,24 @@ func (r *ConnectionRegistry) Lookup(requestID string) (ConnectionSnapshot, bool)
 	return entry.snapshot(false, ""), true
 }
 
+// LookupAny returns a snapshot for requestID from live entries first, then
+// the bounded closed audit ring (newest match wins). Used by admin GET
+// /connection-registry/{request_id} so recently closed streams remain
+// queryable within the process-local history window.
+func (r *ConnectionRegistry) LookupAny(requestID string) (ConnectionSnapshot, bool) {
+	if snap, ok := r.Lookup(requestID); ok {
+		return snap, true
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for i := len(r.closed) - 1; i >= 0; i-- {
+		if r.closed[i].RequestID == requestID {
+			return r.closed[i], true
+		}
+	}
+	return ConnectionSnapshot{}, false
+}
+
 // List returns snapshots of all live entries (read-only metadata; no body
 // content) ordered for stable admin projection (map walk is unordered, so
 // callers sort as needed — the snapshot set is what matters).
