@@ -47,12 +47,7 @@ func (h *Handler) handleTurnsFilterOptions(w http.ResponseWriter, r *http.Reques
 	ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
 	defer cancel()
 
-	tenantID := ""
-	if IsTenantAdmin(r) {
-		tenantID = GetTenantID(r)
-	} else {
-		tenantID = tenantFromQueryOrContext(r)
-	}
+	tenantID := resolveTurnsSessionsTenant(r)
 
 	tenantWhere := ""
 	tenantArgs := []any{}

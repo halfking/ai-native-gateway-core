@@ -45,6 +45,13 @@ pnpm exec vite build
 
 **LOCAL_VERIFIED（2026-08-22）**
 - Go `SlidingWindowBatch`：pass
-- vitest 上述 3 文件：**40/40** pass
+- vitest 上述 3 文件：**40/40** pass（后续 empty-window 修复后 QueuePerspective **22** + queueNodeCards **9**）
 - `vite build`：pass
-- **REAL_DEPENDENCY_VERIFIED**：待部署后在 `llmgo`/`llm` 验证嵌套浮层与拖拽
+
+**REAL_DEPENDENCY_VERIFIED（2026-08-22）**
+- 分支：`feature/dashboard-node-card-window-dnd-overlay`（`08ce38af5`）
+- 245 / `https://llmgo.kxpms.cn`：promote 门禁 pass；healthz `2.5.0-08ce38af-20260822-1664`
+- 154 / `https://llm.kxpms.cn`：二进制+web 已部署；healthz `2.5.0-08ce38af-20260822-1665`
+- `/dashboard` SPA 资源含 `drawer-backdrop--nested` / `qp-node-window` / `include_entries` / `stackLevel`
+- 注：`/` 与裸 `/index.html` 在 252 边缘可能落到 maintain/其它入口；验收路径用 `/dashboard`
+- 注：154 对 `glm-4.7` 认证 chat 曾返回 `model_not_found`（503），属路由/目录问题，与本次 UI 改动无关；245 chat smoke 为 200
