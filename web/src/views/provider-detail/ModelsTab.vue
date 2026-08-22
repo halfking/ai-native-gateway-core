@@ -1,31 +1,22 @@
 <script setup lang="ts">
-import { ref, reactive, computed, onBeforeUnmount, watch, onMounted, nextTick } from 'vue'
+import { ref, computed, onBeforeUnmount, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useFormat } from '../../i18n/useFormat'
-import { useChart, createTimeSeriesConfig } from '../../composables/useChart'
 import {
   getProviderModels,
   refreshProviderModels,
   clearProviderModels,
   getProviderRefreshStatus,
-  toggleModelOfferState,
-  getModelOfferSuggestions,
-  updateModelOffer,
   getRoutableSummary,
   getRoutingBlockedDiagnostic,
   fixRoutingBlocked,
   triggerProviderProbeAll,
   resetNodeProbeState,
-  getProviderCredentials,
-  checkCredential,
-  diagnoseProvider,
   type ModelOffer,
-  type ModelOfferSuggestion,
   type ProbeAllResult,
   type ProviderRefreshRun,
   type RoutingBlockedDiagnostic,
 } from '../../api'
-import { getModelIQHistory, triggerModelIQTest, type IQHistoryPoint } from '../../api/model-iq'
 import ModelOfferDetailDrawer from '../../components/model/ModelOfferDetailDrawer.vue'
 
 const { t: td } = useI18n()
@@ -75,115 +66,6 @@ const probeAllSummary = ref<{ ok: number; model_unavailable: number; provider_er
 
 const selected = ref<ModelOffer | null>(null)
 
-// Phase 3.2: Model check across credentials
-const checkingModel = ref(false)
-const modelCheckResults = ref<Array<{
-  credential_id: number
-  credential_label: string
-  phase1_status?: 'ok' | 'warning' | 'error' | 'unavailable'
-  phase1_message?: string
-  phase2_status?: 'ok' | 'warning' | 'error' | null
-  phase2_message?: string | null
-  status: 'ok' | 'unavailable' | 'error' | 'warning'
-  error: string | null
-}> | null>(null)
-
-interface EditDraft {
-  standardized_name: string
-  canonical_id: number | null
-  /**
-   * Upstream-side model identifier.  For Volcano Ark and similar providers
-   * this is the deployment endpoint ID (e.g. "ep-20241227XXXX") that the
-   * gateway must send in the request body instead of raw_model_name.
-   * Empty string == use raw_model_name.
-   */
-  outbound_model_name: string
-  /**
-   * 2026-08-17: context window override for this credential-model binding.
-   *
-   * Runtime type widens beyond `number | null` because `<input type="number">`
-   * with `v-model.number` yields `''` (empty string) when the user clears
-   * the field — Vue only falls back to `null` if the input is removed
-   * entirely.  We accept all three and normalize at dispatch time.
-   *
-   * Backend contract: JSON `null` is treated by Go as "field omitted" (no-op
-   * write); `0` or any non-positive number clears the override; a positive
-   * number sets the override.  We therefore never send JSON `null` for
-   * intent-to-clear — we send `0`.  And we only include the field in the
-   * PATCH body when the draft differs from the initial value, so that
-   * editing other fields (e.g. `standardized_name`) does not silently
-   * clobber an existing override.
-   */
-  context_window: number | '' | null
-  saving: boolean
-  toggling: boolean
-  loadingSuggest: boolean
-  suggest: ModelOfferSuggestion | null
-  suggestErr: string
-  saveErr: string
-}
-const draft = reactive<Partial<EditDraft>>({})
-
-// 2026-08-17: snapshot of the binding's initial context-window override
-// captured when the drawer opens.  Used by saveEdit() to detect whether
-// the user actually edited the field, so we can omit the field from the
-// PATCH body (preserving an existing override) when the user only edits
-// unrelated fields like standardized_name.
-const initialContextWindow = ref<number | null>(null)
-
-// 2026-08-11: node IQ history for the drawer (time-series chart) + on-demand test.
-const iqHistory = ref<IQHistoryPoint[]>([])
-const iqHistoryLoading = ref(false)
-const iqTestLoading = ref(false)
-const iqTestError = ref('')
-
-// IQ history trend chart (chart.js via useChart). History arrives newest-first;
-// reverse for left-to-right time order.
-const iqChartRef = ref<HTMLCanvasElement | null>(null)
-const iqChartLabels = computed(() =>
-  [...iqHistory.value].reverse().map(h => {
-    const d = new Date(h.tested_at)
-    return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
-  }),
-)
-const iqChartConfig = computed(() =>
-  createTimeSeriesConfig('line', iqChartLabels.value, [
-    {
-      label: pm('iqColScore'),
-      data: [...iqHistory.value].reverse().map(h => h.overall_score),
-      borderColor: '#58a6ff',
-      backgroundColor: 'rgba(88,166,255,0.12)',
-      tension: 0.3,
-    },
-    {
-      label: pm('iqColAccuracy'),
-      data: [...iqHistory.value].reverse().map(h => h.accuracy),
-      borderColor: '#3fb950',
-      backgroundColor: 'rgba(63,185,80,0.12)',
-      tension: 0.3,
-    },
-  ], {
-    scales: { y: { beginAtZero: true, max: 100 } },
-    plugins: { legend: { display: true, labels: { boxWidth: 12, font: { size: 11 } } } },
-  }),
-)
-const { initChart: iqInitChart, destroyChart: iqDestroyChart, isDisposed: iqChartDisposed } = useChart(iqChartRef, iqChartConfig)
-let iqChartAlive = true
-async function iqRefreshChart() {
-  if (!iqChartAlive || iqChartDisposed()) return
-  if (!iqHistory.value.length) {
-    iqDestroyChart()
-    return
-  }
-  await nextTick()
-  if (!iqChartAlive || iqChartDisposed()) return
-  iqInitChart()
-}
-watch(iqChartConfig, () => void iqRefreshChart(), { deep: true })
-watch(() => iqHistory.value.length, () => void iqRefreshChart())
-onMounted(() => void iqRefreshChart())
-onBeforeUnmount(() => { iqChartAlive = false; iqDestroyChart() })
-
 function iqBadgeClass(iq: number): string {
   if (iq >= 80) return 'iq-good'
   if (iq >= 60) return 'iq-ok'
@@ -197,39 +79,6 @@ function nodeIqTitle(o: ModelOffer): string {
   if (o.node_iq_sample_count) parts.push(pm('iqSamples', { n: o.node_iq_sample_count }))
   if (o.node_iq_tested_at) parts.push(pm('iqTestedAt', { t: timeText(o.node_iq_tested_at) }))
   return parts.join(' · ')
-}
-
-async function loadIQHistory() {
-  const o = selected.value
-  if (!o) return
-  iqHistoryLoading.value = true
-  iqTestError.value = ''
-  try {
-    iqHistory.value = await getModelIQHistory(o.credential_id, o.raw_model_name, 50)
-  } catch (e: unknown) {
-    iqHistory.value = []
-  } finally {
-    iqHistoryLoading.value = false
-  }
-}
-
-async function runIQTest() {
-  const o = selected.value
-  if (!o || iqTestLoading.value) return
-  iqTestLoading.value = true
-  iqTestError.value = ''
-  try {
-    await triggerModelIQTest(o.credential_id, o.raw_model_name)
-    await loadIQHistory()
-    // Refresh the offers list so the new node_iq reflects in the table.
-    await load()
-    const refreshed = offers.value.find(x => x.id === o.id)
-    if (refreshed) selected.value = refreshed
-  } catch (e: unknown) {
-    iqTestError.value = e instanceof Error ? e.message : pm('iqTestFailed')
-  } finally {
-    iqTestLoading.value = false
-  }
 }
 
 async function load() {
@@ -476,290 +325,18 @@ function statusBadge(status: string): string {
   return 'badge-red'
 }
 
-function resetDraft(o: ModelOffer) {
-  draft.standardized_name = o.standardized_name ?? ''
-  draft.canonical_id = o.canonical_id ?? null
-  draft.outbound_model_name = o.outbound_model_name ?? ''
-  // 2026-08-17: initialize the override input from the binding-level
-  // override if set, otherwise leave it null/empty so the operator can
-  // type a fresh value.  We deliberately do NOT pre-fill from the
-  // effective (COALESCE'd) value — the read-only "effective" line below
-  // already shows it, so pre-filling the input would invite accidental
-  // "set as binding override" submissions that match the catalog value
-  // and shadow any future catalog changes.  `initialContextWindow` is
-  // captured for delta-detection at save time.
-  draft.context_window = o.context_window_override ?? null
-  initialContextWindow.value = o.context_window_override ?? null
-  draft.saving = false
-  draft.toggling = false
-  draft.loadingSuggest = false
-  draft.suggest = null
-  draft.suggestErr = ''
-  draft.saveErr = ''
-}
-
-async function openDrawer(o: ModelOffer) {
+function openDrawer(o: ModelOffer) {
   selected.value = o
-  resetDraft(o)
-  iqHistory.value = []
-  iqTestError.value = ''
-  loadIQHistory()  // fire-and-forget; chart fills in when ready
-  draft.loadingSuggest = true
-  try {
-    draft.suggest = await getModelOfferSuggestions(props.providerId, o.id)
-  } catch (e: unknown) {
-    draft.suggestErr = e instanceof Error ? e.message : pm('suggestionFailed')
-  } finally {
-    draft.loadingSuggest = false
-  }
 }
 
 function closeDrawer() {
   selected.value = null
-  modelCheckResults.value = null  // Clear check results when closing
-  iqHistory.value = []
-  iqTestError.value = ''
 }
 
 function onOfferUpdated(o: ModelOffer) {
   selected.value = o
   const i = offers.value.findIndex(x => x.id === o.id)
   if (i >= 0) offers.value[i] = { ...offers.value[i], ...o }
-}
-
-// Phase 3.2: Check model availability across all credentials with 2-phase validation
-async function checkModelAcrossCredentials() {
-  if (!selected.value) return
-
-  checkingModel.value = true
-  modelCheckResults.value = null
-
-  try {
-    const credentials = await getProviderCredentials(props.providerId)
-    const modelName = selected.value.raw_model_name
-
-    // Check each credential with 2-phase validation
-    const results = await Promise.all(
-      credentials.map(async (cred) => {
-        // Phase 1: Static check - does the credential have this model in offers?
-        const offerMatch = offers.value.find(
-          offer => offer.credential_id === cred.id &&
-                   offer.raw_model_name.toLowerCase() === modelName.toLowerCase()
-        )
-
-        if (!offerMatch) {
-          // Phase 1 failed: Not in offers list
-          return {
-            credential_id: cred.id,
-            credential_label: cred.label || cred.name || pm('creds.labelFallback', { id: cred.id }),
-            phase1_status: 'unavailable' as const,
-            phase1_message: pm('phase1Missing'),
-            phase2_status: null,
-            phase2_message: null,
-            status: 'unavailable' as const,
-            error: pm('offerNotInList')
-          }
-        }
-
-        // Phase 1 passed: Model exists in offers
-        // Phase 2: Dynamic check - run checkCredential for health check
-        try {
-          const result = await checkCredential(props.providerId, cred.id, modelName)
-
-          // Analyze Phase 1: models_ok (ability to fetch model list)
-          let phase1Status: 'ok' | 'warning' | 'error'
-          let phase1Message: string
-
-          if (result.models_ok) {
-            phase1Status = 'ok'
-            phase1Message = pm('phase1ModelsOk')
-          } else if (result.effective_source === 'manifest' || result.effective_source === 'manifest_only') {
-            phase1Status = 'warning'
-            phase1Message = pm('phase1ManifestFallback')
-          } else {
-            phase1Status = 'error'
-            const reason = result.models_failure_reason || result.models_error || ''
-            phase1Message = pm('phase1Failed', { reason })
-          }
-
-          // Analyze Phase 2: probe_ok (actual chat test)
-          let phase2Status: 'ok' | 'error' | null = null
-          let phase2Message: string | null = null
-          let finalStatus: 'ok' | 'error' | 'warning'
-          let finalError: string | null = null
-
-          if (result.probe_ok) {
-            phase2Status = 'ok'
-            phase2Message = pm('phase2ChatOk')
-            finalStatus = 'ok'
-          } else if (result.probe_error) {
-            phase2Status = 'error'
-
-            // Classify error types
-            const error = result.probe_error.toLowerCase()
-            const statusCode = result.probe_http_status
-
-            if (statusCode === 401 || error.includes('unauthorized') || error.includes('invalid') || error.includes('api key')) {
-              phase2Message = pm('phase2Auth', { msg: result.probe_error })
-            } else if (statusCode === 402 || statusCode === 429 || error.includes('quota') || error.includes('insufficient') || error.includes('balance')) {
-              phase2Message = pm('phase2Quota', { msg: result.probe_error })
-            } else if (statusCode === 404 || error.includes('not found') || error.includes('does not exist')) {
-              phase2Message = pm('phase2NotFound', { msg: result.probe_error })
-            } else if (statusCode && statusCode >= 500) {
-              phase2Message = pm('phase2Server', { msg: result.probe_error })
-            } else if (error.includes('timeout') || error.includes('network')) {
-              phase2Message = pm('phase2Network', { msg: result.probe_error })
-            } else {
-              phase2Message = pm('phase2Generic', { msg: result.probe_error })
-            }
-
-            if (statusCode) {
-              phase2Message += ` (HTTP ${statusCode})`
-            }
-
-            finalStatus = 'error'
-            finalError = phase2Message
-          } else {
-            // No probe result
-            phase2Status = null
-            phase2Message = pm('phase2Skipped')
-            finalStatus = 'warning'
-            finalError = pm('phase2Skipped')
-          }
-
-          return {
-            credential_id: cred.id,
-            credential_label: cred.label || cred.name || pm('creds.labelFallback', { id: cred.id }),
-            phase1_status: phase1Status,
-            phase1_message: phase1Message,
-            phase2_status: phase2Status,
-            phase2_message: phase2Message,
-            status: finalStatus,
-            error: finalError
-          }
-        } catch (e: unknown) {
-          return {
-            credential_id: cred.id,
-            credential_label: cred.label || cred.name || pm('creds.labelFallback', { id: cred.id }),
-            phase1_status: 'ok' as const,
-            phase1_message: pm('phase2InOfferOnly'),
-            phase2_status: 'error' as const,
-            phase2_message: pm('phase2Generic', { msg: e instanceof Error ? e.message : String(e) }),
-            status: 'error' as const,
-            error: pm('checkFailedPrefix', { msg: e instanceof Error ? e.message : String(e) })
-          }
-        }
-      })
-    )
-
-    modelCheckResults.value = results
-  } catch (e: unknown) {
-    alert(pm('checkFailedPrefix', { msg: e instanceof Error ? e.message : String(e) }))
-  } finally {
-    checkingModel.value = false
-  }
-}
-
-function applyRuleBased() {
-  if (!draft.suggest) return
-  draft.standardized_name = draft.suggest.rule_based || draft.standardized_name || ''
-  const match = draft.suggest.canonical_options.find(
-    c => (c.canonical_name || '').toLowerCase() === (draft.standardized_name || '').toLowerCase()
-  )
-  draft.canonical_id = match ? match.id : null
-}
-
-function applyCanonical(canonicalId: number | null) {
-  draft.canonical_id = canonicalId
-  if (canonicalId != null && draft.suggest) {
-    const match = draft.suggest.canonical_options.find(c => c.id === canonicalId)
-    if (match) draft.standardized_name = match.canonical_name
-  }
-}
-
-async function saveEdit() {
-  const o = selected.value
-  if (!o) return
-  draft.saving = true
-  draft.saveErr = ''
-  // 2026-08-17: context window override payload.
-  //
-  // The Go backend uses a `*int` pointer to distinguish three states:
-  //   1. field omitted (JSON null OR not present) → no-op (no DB write)
-  //   2. present, value <= 0                     → clear override
-  //   3. present, value > 0                      → set override
-  //
-  // Frontend behavior must match:
-  //   • user untouched the field          → OMIT (preserve existing value)
-  //   • user typed a positive integer      → SEND positive (set override)
-  //   • user cleared / typed 0 / typed ""  → SEND 0 (clear override)
-  //
-  // We detect "untouched" by comparing draft.context_window to the
-  // snapshot captured in resetDraft (initialContextWindow).  This is
-  // critical: without it, editing only standardized_name would silently
-  // clobber an existing override.
-  //
-  // We normalize "" to 0 because `<input type="number">` with
-  // `v-model.number` yields "" when the user clears it — sending ""
-  // would cause Go's json decoder to reject with HTTP400 "cannot
-  // unmarshal string into int".
-  const rawCw = draft.context_window
-  const isTouched = rawCw !== initialContextWindow.value
-  const body: {
-    standardized_name?: string | null
-    canonical_id?: number | null
-    outbound_model_name?: string | null
-    context_window?: number | null
-  } = {
-    standardized_name: (draft.standardized_name ?? '').trim() || null,
-    canonical_id: draft.canonical_id ?? null,
-    outbound_model_name: (draft.outbound_model_name ?? '').trim() || null,
-  }
-  if (isTouched) {
-    const cw: number =
-      rawCw == null || rawCw === '' || (typeof rawCw === 'number' && rawCw <= 0)
-        ? 0
-        : (rawCw as number)
-    body.context_window = cw
-  }
-  try {
-    const updated = await updateModelOffer(props.providerId, o.id, body)
-    const idx = offers.value.findIndex(x => x.id === o.id)
-    if (idx >= 0) {
-      offers.value[idx] = {
-        ...offers.value[idx],
-        standardized_name: updated.standardized_name ?? '',
-        canonical_id: updated.canonical_id,
-        outbound_model_name: updated.outbound_model_name ?? null,
-        context_window: updated.context_window,
-        context_window_override: updated.context_window_override,
-      }
-      selected.value = offers.value[idx]
-      // Re-sync the initial snapshot so a subsequent re-edit of the drawer
-      // uses the post-save value as its baseline.
-      initialContextWindow.value = updated.context_window_override ?? null
-    }
-  } catch (e: unknown) {
-    draft.saveErr = e instanceof Error ? e.message : pm('saveFailed')
-  } finally {
-    draft.saving = false
-  }
-}
-
-async function toggleAvailable() {
-  const o = selected.value
-  if (!o) return
-  draft.toggling = true
-  try {
-    await toggleModelOfferState(props.providerId, o.id, { available: !o.available })
-    await load()
-    const refreshed = offers.value.find(x => x.id === o.id)
-    if (refreshed) selected.value = refreshed
-  } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : pm('operationFailed')
-  } finally {
-    draft.toggling = false
-  }
 }
 
 function maybeOpenFocusedOffer() {
@@ -1058,8 +635,10 @@ load()
       v-if="selected"
       :provider-id="providerId"
       :offer="selected"
+      :sibling-offers="offers"
       @close="closeDrawer"
       @updated="onOfferUpdated"
+      @iq-tested="load"
     />
   </div>
 </template>

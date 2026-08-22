@@ -79,7 +79,7 @@ async function onClear() {
   try {
     const res = await clearCredentialModels(props.providerId, props.credentialId, includeProtected.value)
     await load()
-    msg.value = `已删除 ${res.deleted} 条`
+    msg.value = `已删除 ${res.deleted} 条` + (res.protected_kept ? `，保留保护 ${res.protected_kept}` : '')
     msgKind.value = 'ok'
   } catch (e: any) {
     msg.value = e?.message || String(e)
@@ -209,6 +209,7 @@ function thinkingLabel(o: ModelOffer) {
       v-if="selected"
       :provider-id="providerId"
       :offer="selected"
+      :sibling-offers="offers"
       @close="selected = null"
       @updated="onUpdated"
     />

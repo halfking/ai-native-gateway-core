@@ -2,12 +2,18 @@ package admin
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/alicebob/miniredis/v2"
+	"github.com/kaixuan/llm-gateway-go/credentialhealth"
+	"github.com/redis/go-redis/v9"
 )
 
 func TestSlidingWindowBatch_RoutesRegistered(t *testing.T) {
@@ -161,5 +167,133 @@ func TestSlidingWindowBatch_MaxItemsBoundary(t *testing.T) {
 	}
 	if resp["count"] != float64(slidingWindowBatchMaxItems) {
 		t.Fatalf("count=%v", resp["count"])
+	}
+}
+
+func seedSlidingWindowRecorder(t *testing.T, count int) *CredentialMonitorHandlers {
+	t.Helper()
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+	recorder := credentialhealth.NewRecorder(client, 2*time.Hour, 100)
+	ctx := context.Background()
+	now := time.Now()
+	for i := 0; i < count; i++ {
+		entry := credentialhealth.CallEntry{
+			RequestID: fmt.Sprintf("req-%d", i),
+			Timestamp: now.Add(-time.Duration(i) * time.Second).UnixMilli(),
+			Success:   i%2 == 0,
+			LatencyMs: 10 + i,
+		}
+		if err := recorder.Append(ctx, 17, "claude-sonnet-5", entry); err != nil {
+			t.Fatalf("append: %v", err)
+		}
+	}
+	return &CredentialMonitorHandlers{h: &Handler{}, recorder: recorder, redisClient: client}
+}
+
+func TestSlidingWindowBatch_DefaultOmitsEntries(t *testing.T) {
+	m := seedSlidingWindowRecorder(t, 10)
+	body := `{"minutes":5,"items":[{"credential_id":17,"model":"claude-sonnet-5"}]}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/credentials/sliding-window/batch", strings.NewReader(body))
+	m.handleSlidingWindowBatch(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d want 200 body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Results []struct {
+			Stats   map[string]any               `json:"stats"`
+			Entries []credentialhealth.CallEntry `json:"entries"`
+			Error   string                       `json:"error"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Results) != 1 {
+		t.Fatalf("results=%d", len(resp.Results))
+	}
+	if resp.Results[0].Error != "" {
+		t.Fatalf("unexpected error: %s", resp.Results[0].Error)
+	}
+	if resp.Results[0].Stats == nil {
+		t.Fatal("expected stats")
+	}
+	if resp.Results[0].Entries != nil {
+		t.Fatalf("default batch must omit entries, got %d", len(resp.Results[0].Entries))
+	}
+}
+
+func TestSlidingWindowBatch_IncludeEntriesTruncates(t *testing.T) {
+	m := seedSlidingWindowRecorder(t, 40)
+	body := `{"minutes":5,"include_entries":true,"entry_limit":24,"items":[{"credential_id":17,"model":"claude-sonnet-5"}]}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/credentials/sliding-window/batch", strings.NewReader(body))
+	m.handleSlidingWindowBatch(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d want 200 body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Results []struct {
+			Stats   map[string]any               `json:"stats"`
+			Entries []credentialhealth.CallEntry `json:"entries"`
+			Error   string                       `json:"error"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Results) != 1 || resp.Results[0].Error != "" {
+		t.Fatalf("unexpected result: %+v", resp.Results)
+	}
+	if len(resp.Results[0].Entries) != 24 {
+		t.Fatalf("entries=%d want 24", len(resp.Results[0].Entries))
+	}
+
+	// Hard cap: entry_limit above MaxEntryRet is clamped (need enough seed rows).
+	mCap := seedSlidingWindowRecorder(t, slidingWindowBatchLimit)
+	bodyCap := `{"minutes":5,"include_entries":true,"entry_limit":99,"items":[{"credential_id":17,"model":"claude-sonnet-5"}]}`
+	rec2 := httptest.NewRecorder()
+	req2 := httptest.NewRequest(http.MethodPost, "/api/credentials/sliding-window/batch", strings.NewReader(bodyCap))
+	mCap.handleSlidingWindowBatch(rec2, req2)
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("cap got %d want 200 body=%s", rec2.Code, rec2.Body.String())
+	}
+	if err := json.Unmarshal(rec2.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Results[0].Entries) != slidingWindowBatchMaxEntryRet {
+		t.Fatalf("hard-capped entries=%d want %d", len(resp.Results[0].Entries), slidingWindowBatchMaxEntryRet)
+	}
+}
+
+func TestSlidingWindowJSONEntries_EmptyArrayWhenIncluded(t *testing.T) {
+	raw, err := json.Marshal(struct {
+		Entries *[]credentialhealth.CallEntry `json:"entries,omitempty"`
+	}{Entries: slidingWindowJSONEntries(true, nil, 24)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != `{"entries":[]}` {
+		t.Fatalf("include empty: %s", raw)
+	}
+
+	raw, err = json.Marshal(struct {
+		Entries *[]credentialhealth.CallEntry `json:"entries,omitempty"`
+	}{Entries: slidingWindowJSONEntries(false, nil, 24)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != `{}` {
+		t.Fatalf("omit when not included: %s", raw)
+	}
+
+	entries := []credentialhealth.CallEntry{
+		{RequestID: "r0"}, {RequestID: "r1"}, {RequestID: "r2"},
+	}
+	got := slidingWindowJSONEntries(true, entries, 2)
+	if got == nil || len(*got) != 2 || (*got)[0].RequestID != "r0" {
+		t.Fatalf("newest-first truncate: %+v", got)
 	}
 }

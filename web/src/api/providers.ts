@@ -546,7 +546,7 @@ export function createCredentialModel(providerId: number, credentialId: number, 
 
 export function clearCredentialModels(providerId: number, credentialId: number, includeProtected = false) {
   const q = includeProtected ? '?include_protected=1' : '?include_protected=0'
-  return req<{ message: string; deleted: number; include_protected: boolean }>(
+  return req<{ message: string; deleted: number; include_protected: boolean; protected_kept?: number }>(
     'DELETE', `/api/providers/${providerId}/credentials/${credentialId}/models${q}`
   )
 }

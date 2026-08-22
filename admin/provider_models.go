@@ -285,6 +285,7 @@ func (h *Handler) providerLogs(w http.ResponseWriter, r *http.Request, providerI
 	dataSQL := fmt.Sprintf(`
 		SELECT rl.ts, rl.request_id, rl.credential_id,
 		       rl.client_model, rl.outbound_model,
+		       rl.canonical_model, rl.provider_model,
 		       rl.success, rl.error_kind,
 		       rl.prompt_tokens, rl.completion_tokens, rl.total_tokens,
 		       rl.cost_usd::float8, rl.latency_ms
@@ -308,6 +309,11 @@ func (h *Handler) providerLogs(w http.ResponseWriter, r *http.Request, providerI
 		CredentialID     *int       `json:"credential_id"`
 		ClientModel      *string    `json:"client_model"`
 		OutboundModel    *string    `json:"outbound_model"`
+		CanonicalModel   *string    `json:"canonical_model"`
+		// CanonicalName aliases CanonicalModel for the identity chip
+		// (frontend reads canonical_name || canonical_model).
+		CanonicalName    *string    `json:"canonical_name"`
+		ProviderModel    *string    `json:"provider_model"`
 		Success          bool       `json:"success"`
 		ErrorKind        *string    `json:"error_kind"`
 		PromptTokens     *int       `json:"prompt_tokens"`
@@ -323,6 +329,7 @@ func (h *Handler) providerLogs(w http.ResponseWriter, r *http.Request, providerI
 		if err := rows.Scan(
 			&l.Ts, &l.RequestID, &l.CredentialID,
 			&l.ClientModel, &l.OutboundModel,
+			&l.CanonicalModel, &l.ProviderModel,
 			&l.Success, &l.ErrorKind,
 			&l.PromptTokens, &l.CompletionTokens, &l.TotalTokens,
 			&l.CostUSD, &l.LatencyMs,
@@ -330,6 +337,7 @@ func (h *Handler) providerLogs(w http.ResponseWriter, r *http.Request, providerI
 			slog.Warn("providerLogs scan failed", "error", err)
 			continue
 		}
+		l.CanonicalName = l.CanonicalModel
 		items = append(items, l)
 	}
 
