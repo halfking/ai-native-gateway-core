@@ -1,26 +1,33 @@
 /**
- * Pure helpers for dispatch waterfall chart bars.
- * When stage timestamps are missing, synthesize from arrived_at + duration ms.
+ * Relative T0–T9 dispatch waterfall: sequential gaps, not overlapping routing.
+ * Prefer timestamps; otherwise chain dedicated ms from arrived_at.
  */
 import type { WaterfallRequest } from '../api/dispatch'
 
-export type WaterfallStageKey = 'total' | 'model' | 'cred' | 'upstream' | 'stream'
+export type WaterfallStageKey =
+  | 'arrive' | 'total' | 'admit' | 'model' | 'select'
+  | 'cred' | 'acquire' | 'upstream' | 'stream'
 
 export interface WaterfallStageDef {
   key: WaterfallStageKey
-  start: keyof WaterfallRequest | string
-  end: keyof WaterfallRequest | string
+  start: keyof WaterfallRequest
+  end: keyof WaterfallRequest
   color: string
   label: string
-  msKey: keyof WaterfallRequest | string
+  msKey?: keyof WaterfallRequest
 }
 
+/** Sequential T0–T9 gaps. routing_ms (T2–T5) is omitted — it overlaps model queue. */
 export const WATERFALL_STAGES: WaterfallStageDef[] = [
+  { key: 'arrive', start: 'arrived_at', end: 'total_enqueued_at', color: '#94a3b8', label: '到达' },
   { key: 'total', start: 'total_enqueued_at', end: 'total_dequeued_at', color: '#409EFF', label: '总队列', msKey: 'waiting_in_total_ms' },
+  { key: 'admit', start: 'total_dequeued_at', end: 'model_enqueued_at', color: '#7dd3fc', label: '入模' },
   { key: 'model', start: 'model_enqueued_at', end: 'model_dequeued_at', color: '#67C23A', label: '模型队列', msKey: 'waiting_in_model_ms' },
+  { key: 'select', start: 'model_dequeued_at', end: 'cred_enqueued_at', color: '#a78bfa', label: '选凭据' },
   { key: 'cred', start: 'cred_enqueued_at', end: 'cred_dequeued_at', color: '#E6A23C', label: '凭据队列', msKey: 'waiting_in_node_ms' },
+  { key: 'acquire', start: 'cred_dequeued_at', end: 'forward_start_at', color: '#2dd4bf', label: '获取', msKey: 'acquire_ms' },
   { key: 'upstream', start: 'forward_start_at', end: 'response_start_at', color: '#F56C6C', label: '上游TTFB', msKey: 'upstream_latency_ms' },
-  { key: 'stream', start: 'response_start_at', end: 'response_end_at', color: '#909399', label: '流式传输', msKey: 'streaming_duration_ms' },
+  { key: 'stream', start: 'response_start_at', end: 'response_end_at', color: '#64748b', label: '流式', msKey: 'streaming_duration_ms' },
 ]
 
 export function parseTS(s?: string): number | null {
@@ -29,12 +36,17 @@ export function parseTS(s?: string): number | null {
   return Number.isFinite(t) ? t : null
 }
 
-function fieldMS(r: WaterfallRequest, key: string): number {
-  const v = (r as unknown as Record<string, unknown>)[key]
+function fieldMS(r: WaterfallRequest, key?: keyof WaterfallRequest): number {
+  if (!key) return 0
+  const v = r[key]
   return typeof v === 'number' && Number.isFinite(v) ? Math.max(0, v) : 0
 }
 
-/** Anchor for synthetic timeline: arrived_at, else first known TS, else now. */
+function strField(r: WaterfallRequest, key: keyof WaterfallRequest): string | undefined {
+  const v = r[key]
+  return typeof v === 'string' ? v : undefined
+}
+
 export function waterfallAnchorMs(r: WaterfallRequest, fallbackNow = Date.now()): number {
   return (
     parseTS(r.arrived_at) ??
@@ -55,26 +67,31 @@ export interface StageBar {
   synthesized: boolean
 }
 
-/**
- * Resolve absolute [start,end] for each stage. Prefer real timestamps;
- * otherwise place contiguous bars from the anchor using duration ms.
- */
+export interface LaidOutBar extends StageBar {
+  leftPct: number
+  widthPct: number
+}
+
+export interface LaidOutRow {
+  request: WaterfallRequest
+  bars: LaidOutBar[]
+  origin: number
+  spanMs: number
+}
+
 export function resolveStageBars(r: WaterfallRequest, now = Date.now()): StageBar[] {
   const bars: StageBar[] = []
   let cursor = waterfallAnchorMs(r, now)
 
   for (const st of WATERFALL_STAGES) {
-    const startTS = parseTS((r as unknown as Record<string, string | undefined>)[st.start as string])
-    const endTS = parseTS((r as unknown as Record<string, string | undefined>)[st.end as string])
-    const ms = fieldMS(r, st.msKey as string)
+    const startTS = parseTS(strField(r, st.start))
+    const endTS = parseTS(strField(r, st.end))
+    const ms = fieldMS(r, st.msKey)
 
-    if (startTS != null && endTS != null && endTS >= startTS) {
+    if (startTS != null && endTS != null && endTS > startTS) {
       bars.push({
-        key: st.key,
-        label: st.label,
-        color: st.color,
-        start: startTS,
-        end: endTS,
+        key: st.key, label: st.label, color: st.color,
+        start: startTS, end: endTS,
         ms: ms > 0 ? ms : endTS - startTS,
         synthesized: false,
       })
@@ -86,17 +103,83 @@ export function resolveStageBars(r: WaterfallRequest, now = Date.now()): StageBa
     const start = cursor
     const end = start + ms
     bars.push({
-      key: st.key,
-      label: st.label,
-      color: st.color,
-      start,
-      end,
-      ms,
-      synthesized: true,
+      key: st.key, label: st.label, color: st.color,
+      start, end, ms, synthesized: true,
     })
     cursor = end
   }
   return bars
+}
+
+export function rowSpanMs(bars: StageBar[], origin: number, totalMs: number): number {
+  const fromBars = bars.length ? Math.max(...bars.map((b) => b.end)) - origin : 0
+  return Math.max(fromBars, totalMs, 0)
+}
+
+export function layoutBar(bar: StageBar, origin: number, axisMax: number): LaidOutBar {
+  const span = Math.max(axisMax, 1)
+  let leftPct = ((bar.start - origin) / span) * 100
+  let widthPct = (bar.ms / span) * 100
+  if (bar.ms > 0 && widthPct < 0.4) widthPct = 0.4
+  if (leftPct < 0) leftPct = 0
+  if (leftPct > 100) leftPct = 100
+  if (leftPct + widthPct > 100) widthPct = Math.max(0, 100 - leftPct)
+  return { ...bar, leftPct, widthPct }
+}
+
+export function layoutRows(requests: WaterfallRequest[], now = Date.now()): {
+  rows: LaidOutRow[]
+  axisMax: number
+} {
+  const prepared = requests.map((request) => {
+    const bars = resolveStageBars(request, now)
+    const origin = waterfallAnchorMs(request, now)
+    const spanMs = rowSpanMs(bars, origin, request.total_ms)
+    return { request, bars, origin, spanMs }
+  })
+  const axisMax = Math.max(1, ...prepared.map((p) => p.spanMs))
+  return {
+    axisMax,
+    rows: prepared.map((p) => ({
+      ...p,
+      bars: p.bars.map((b) => layoutBar(b, p.origin, axisMax)),
+    })),
+  }
+}
+
+function median(nums: number[]): number {
+  if (!nums.length) return 0
+  const s = [...nums].sort((a, b) => a - b)
+  const mid = Math.floor(s.length / 2)
+  return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2
+}
+
+export interface CompositionSlice {
+  key: WaterfallStageKey
+  label: string
+  color: string
+  ms: number
+  pct: number
+}
+
+export function medianComposition(rows: StageBar[][]): CompositionSlice[] {
+  const slices: CompositionSlice[] = []
+  for (const st of WATERFALL_STAGES) {
+    const values = rows
+      .map((bars) => bars.find((b) => b.key === st.key)?.ms)
+      .filter((n): n is number => typeof n === 'number' && n > 0)
+    const ms = median(values)
+    if (ms > 0) slices.push({ key: st.key, label: st.label, color: st.color, ms, pct: 0 })
+  }
+  const sum = slices.reduce((s, x) => s + x.ms, 0)
+  if (sum <= 0) return []
+  return slices.map((x) => ({ ...x, pct: (x.ms / sum) * 100 }))
+}
+
+export function formatAxisMs(ms: number): string {
+  if (ms < 1000) return `${Math.round(ms)}ms`
+  const s = ms / 1000
+  return Number.isInteger(s) ? `${s}s` : `${s.toFixed(1)}s`
 }
 
 export function emptyStateMessage(opts: {
