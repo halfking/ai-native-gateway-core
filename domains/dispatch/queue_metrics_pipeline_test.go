@@ -75,7 +75,12 @@ func TestPipelineQueueStats_RealPipelineTraffic(t *testing.T) {
 		submitAndWait(t, p, 8)
 		close(done)
 	}()
-	time.Sleep(60 * time.Millisecond)
+	// Wait long enough for at least one request to enter the forwarder
+	// (ForwardFunc sleeps 200ms to hold in-flight + backlog). 60ms was
+	// flaky under full-repo `go test ./...` parallelism when the GOMAXPROCS
+	// scheduler delayed the first forwarder pick-up; 150ms leaves headroom
+	// well under the 200ms forwarder hold.
+	time.Sleep(150 * time.Millisecond)
 
 	snapMid := c.Snapshot()
 	if !snapMid.Wired || !snapMid.Enabled {
@@ -99,7 +104,12 @@ func TestPipelineQueueStats_RealPipelineTraffic(t *testing.T) {
 
 	// Drain: waiting percentiles must come from real ring samples.
 	<-done
-	time.Sleep(20 * time.Millisecond) // let recordStageMetrics/waterfall land
+	// 8 submissions × 200ms forwarder hold × concurrency=1 = up to ~1.6s total
+	// drain. The test relies on the percentile ring filling and the depth
+	// counter settling to zero; give the queue + ring time to fully drain
+	// under full-repo `go test ./...` parallelism where the scheduler can
+	// stretch drain beyond the theoretical minimum.
+	time.Sleep(300 * time.Millisecond) // let recordStageMetrics/waterfall land
 
 	snapIdle := c.Snapshot()
 	if snapIdle.Pipeline == nil {
