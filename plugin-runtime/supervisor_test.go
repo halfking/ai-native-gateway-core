@@ -95,8 +95,11 @@ func main(){ _=os.WriteFile(os.Getenv("PID_FILE"), []byte("alive"), 0644); time.
 	}
 	defer c.Stop()
 
-	if !waitForFile(pidFile, 15*time.Second) {
-		t.Fatal("helper process did not start (no pid file)")
+	// 全仓 `go test ./...` 并发场景下，子进程 `go build` 会被 GOCACHE/toolchain 锁阻塞，
+	// helper 落盘有时超过原 15s 阈值。保留较长超时（即便 30s 仍远低于 helper 内 30s sleep，
+	// 不会让测试自身变成 flaky 等待），并在失败时打印诊断信息便于回归。
+	if !waitForFile(pidFile, 30*time.Second) {
+		t.Fatalf("helper process did not start (no pid file at %s)", pidFile)
 	}
 	if c.Pid() == 0 {
 		t.Fatal("Pid should be set after Start")
