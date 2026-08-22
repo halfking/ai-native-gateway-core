@@ -11,7 +11,7 @@
               </el-icon>
             </div>
             <div class="stat-info">
-              <div class="stat-label">会话总数</div>
+              <div class="stat-label">{{ t('dashboard.statsRow.totalSessions') }}</div>
               <div class="stat-value">{{ formatNumber(stats.totalSessions) }}</div>
               <div v-if="stats.totalSessionsChange !== null" :class="['stat-change', changeClass(stats.totalSessionsChange, false)]">
                 <el-icon><component :is="changeIcon(stats.totalSessionsChange)" /></el-icon>
@@ -32,9 +32,9 @@
               </el-icon>
             </div>
             <div class="stat-info">
-              <div class="stat-label">活跃会话</div>
+              <div class="stat-label">{{ t('dashboard.statsRow.activeSessions') }}</div>
               <div class="stat-value">{{ formatNumber(stats.activeSessions) }}</div>
-              <div class="stat-subtext">实时在线</div>
+              <div class="stat-subtext">{{ t('dashboard.statsRow.activeHint') }}</div>
             </div>
           </div>
         </el-card>
@@ -50,7 +50,7 @@
               </el-icon>
             </div>
             <div class="stat-info">
-              <div class="stat-label">总成本</div>
+              <div class="stat-label">{{ t('dashboard.statsRow.totalCost') }}</div>
               <div class="stat-value">${{ formatCost(stats.totalCost) }}</div>
               <div v-if="stats.totalCostChange !== null" :class="['stat-change', changeClass(stats.totalCostChange, true)]">
                 <el-icon><component :is="changeIcon(stats.totalCostChange)" /></el-icon>
@@ -71,7 +71,7 @@
               </el-icon>
             </div>
             <div class="stat-info">
-              <div class="stat-label">合规率</div>
+              <div class="stat-label">{{ t('dashboard.statsRow.complianceRate') }}</div>
               <div class="stat-value">{{ stats.complianceRate.toFixed(1) }}%</div>
               <div v-if="stats.complianceRateChange !== null" :class="['stat-change', changeClass(stats.complianceRateChange, false)]">
                 <el-icon><component :is="changeIcon(stats.complianceRateChange)" /></el-icon>
@@ -92,13 +92,13 @@
               </el-icon>
             </div>
             <div class="stat-info">
-              <div class="stat-label">平均健康分</div>
-              <div class="stat-value">{{ stats.avgHealthScore ? stats.avgHealthScore.toFixed(1) : '-' }}</div>
-              <div v-if="stats.avgHealthScore && stats.avgHealthScoreChange !== null" :class="['stat-change', changeClass(stats.avgHealthScoreChange, false)]">
+              <div class="stat-label">{{ t('dashboard.statsRow.avgHealthScore') }}</div>
+              <div class="stat-value">{{ stats.avgHealthScore != null ? stats.avgHealthScore.toFixed(1) : '—' }}</div>
+              <div v-if="stats.avgHealthScore != null && stats.avgHealthScoreChange !== null" :class="['stat-change', changeClass(stats.avgHealthScoreChange, false)]">
                 <el-icon><component :is="changeIcon(stats.avgHealthScoreChange)" /></el-icon>
                 {{ Math.abs(stats.avgHealthScoreChange).toFixed(1) }}%
               </div>
-              <div v-else class="stat-subtext">建设中</div>
+              <div v-else class="stat-subtext">{{ t('dashboard.statsRow.healthHint') }}</div>
             </div>
           </div>
         </el-card>
@@ -114,7 +114,7 @@
               </el-icon>
             </div>
             <div class="stat-info">
-              <div class="stat-label">平均延迟</div>
+              <div class="stat-label">{{ t('dashboard.statsRow.avgLatency') }}</div>
               <div class="stat-value">{{ formatLatency(stats.avgLatency) }}</div>
               <div v-if="stats.avgLatencyChange !== null" :class="['stat-change', changeClass(stats.avgLatencyChange, true)]">
                 <el-icon><component :is="changeIcon(stats.avgLatencyChange)" /></el-icon>
@@ -135,7 +135,7 @@
               </el-icon>
             </div>
             <div class="stat-info">
-              <div class="stat-label">总请求数</div>
+              <div class="stat-label">{{ t('dashboard.statsRow.totalRequests') }}</div>
               <div class="stat-value">{{ formatNumber(stats.totalRequests) }}</div>
               <div v-if="stats.totalRequestsChange !== null" :class="['stat-change', changeClass(stats.totalRequestsChange, false)]">
                 <el-icon><component :is="changeIcon(stats.totalRequestsChange)" /></el-icon>
@@ -146,8 +146,8 @@
         </el-card>
       </el-col>
 
-      <!-- 总 Token 数 -->
-      <el-col :xs="24" :sm="12" :md="8" :lg="6" :xl="3">
+      <!-- 总 Token 数（可选） -->
+      <el-col v-if="showTokens" :xs="24" :sm="12" :md="8" :lg="6" :xl="3">
         <el-card shadow="hover" class="stat-card">
           <div class="stat-content">
             <div class="stat-icon icon-accent">
@@ -156,7 +156,7 @@
               </el-icon>
             </div>
             <div class="stat-info">
-              <div class="stat-label">总 Token</div>
+              <div class="stat-label">{{ t('dashboard.statsRow.totalTokens') }}</div>
               <div class="stat-value">{{ formatNumber(stats.totalTokens) }}</div>
               <div v-if="stats.totalTokensChange !== null" :class="['stat-change', changeClass(stats.totalTokensChange, false)]">
                 <el-icon><component :is="changeIcon(stats.totalTokensChange)" /></el-icon>
@@ -171,7 +171,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import {
   ChatDotRound,
   Connection,
@@ -203,10 +203,15 @@ export interface DashboardStats {
   totalTokensChange: number | null
 }
 
-const props = defineProps<{
+const { t } = useI18n()
+
+withDefaults(defineProps<{
   stats: DashboardStats
   loading?: boolean
-}>()
+  showTokens?: boolean
+}>(), {
+  showTokens: true,
+})
 
 // 格式化数字
 const formatNumber = (value: number): string => {
