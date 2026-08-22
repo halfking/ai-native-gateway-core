@@ -83,11 +83,17 @@ func (h *Handler) clearCredentialModels(w http.ResponseWriter, r *http.Request, 
 		writeError(w, http.StatusInternalServerError, "clear failed: "+err.Error())
 		return
 	}
+	var protectedKept int
+	_ = h.db.QueryRow(ctx, `
+		SELECT COUNT(*) FROM credential_model_bindings
+		WHERE credential_id = $1 AND admin_protected = TRUE
+	`, credentialID).Scan(&protectedKept)
 	InvalidateAvailableModelsCache()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"message":           "ok",
 		"deleted":           int(deleted),
 		"include_protected": includeProtected,
+		"protected_kept":    protectedKept,
 	})
 }
 

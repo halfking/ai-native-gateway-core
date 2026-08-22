@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useRouter } from 'vue-router'
 import type { CredentialRoutingDecision } from '../api/credential-monitor'
 import { fmtTime } from '../utils/nodeDetailFormat'
 import ModelIdentityChip from './model/ModelIdentityChip.vue'
@@ -12,6 +13,7 @@ defineProps<{
 const emit = defineEmits<{
   openRequest: [requestId: string]
 }>()
+const router = useRouter()
 </script>
 
 <template>
@@ -36,7 +38,9 @@ const emit = defineEmits<{
               <ModelIdentityChip
                 compact
                 :client-model="decision.client_model || decision.model"
+                :canonical-name="decision.client_model || decision.model"
                 :outbound-model="decision.outbound_model"
+                @click-canonical="router.push({ path: '/models', query: { q: decision.client_model || decision.model || '' } })"
               />
             </td>
             <td :class="decision.success ? 'is-ok' : 'is-bad'">{{ decision.success ? '成功' : '失败' }}</td>
