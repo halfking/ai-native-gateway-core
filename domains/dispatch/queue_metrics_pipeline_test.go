@@ -109,7 +109,7 @@ func TestPipelineQueueStats_RealPipelineTraffic(t *testing.T) {
 	// counter settling to zero; poll instead of a fixed sleep so the
 	// drain window survives full-repo `go test ./...` parallelism where
 	// the scheduler can stretch drain beyond the theoretical minimum.
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(15 * time.Second)
 	for {
 		s := c.Snapshot()
 		if s.Pipeline != nil && s.Pipeline.Depth == 0 && s.Pipeline.InFlight == 0 {
@@ -120,6 +120,10 @@ func TestPipelineQueueStats_RealPipelineTraffic(t *testing.T) {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
+	// Give the ticker-driven waterfall/percentile ring one more tick to
+	// land (100ms cadence in recordStageMetrics). Polling for percentile
+	// presence separately would couple to too many internal cadences.
+	time.Sleep(150 * time.Millisecond)
 
 	snapIdle := c.Snapshot()
 	if snapIdle.Pipeline == nil {
