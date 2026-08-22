@@ -35,7 +35,7 @@ type TrendSummary struct {
 	TotalActive   int     `json:"total_active"`
 	TotalClosed   int     `json:"total_closed"`
 	AvgDailyNew   float64 `json:"avg_daily_new"`
-	GrowthRatePct float64 `json:"growth_rate_pct"`
+	GrowthRatePct float64 `json:"growth_rate"` // DASHBOARD_API.md §4.2
 }
 
 // HandleSessionTrend 处理会话趋势请求

@@ -373,7 +373,7 @@ export default {
     totalCost: '总成本',
     complianceRate: '合规率',
     avgHealthScore: '平均健康分',
-    healthHint: '基于 health_score',
+    healthHint: '基于会话健康分',
     avgLatency: '平均延迟',
     totalRequests: '总请求数',
     totalTokens: '总 Token',

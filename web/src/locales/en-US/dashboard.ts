@@ -371,7 +371,7 @@ export default {
     totalCost: 'Total Cost',
     complianceRate: 'Compliance Rate',
     avgHealthScore: 'Avg Health Score',
-    healthHint: 'From health_score',
+    healthHint: 'From session health score',
     avgLatency: 'Avg Latency',
     totalRequests: 'Total Requests',
     totalTokens: 'Total Tokens',
