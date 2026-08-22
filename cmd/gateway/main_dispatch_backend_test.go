@@ -190,3 +190,68 @@ func TestResolveGovernorObserverCaseInsensitive(t *testing.T) {
 		t.Fatal("OBSERVE (uppercase) must enable observer (case-insensitive)")
 	}
 }
+
+// ── Stage D: capacity-aware soft-sort env-flag tests ─────────────────────
+
+// TestResolveCapacityAwareSortDefaults verifies the default (unset env)
+// disables the soft sort, matching the Stage B / C env-flag pattern.
+func TestResolveCapacityAwareSortDefaults(t *testing.T) {
+	t.Setenv("LLM_GATEWAY_DISPATCH_CAPACITY_AWARE_SORT", "")
+	enabled, err := resolveCapacityAwareSort()
+	if err != nil {
+		t.Fatalf("empty env: unexpected error %v", err)
+	}
+	if enabled {
+		t.Fatal("empty env must disable capacity-aware sort")
+	}
+}
+
+// TestResolveCapacityAwareSortOff verifies the explicit "off" value.
+func TestResolveCapacityAwareSortOff(t *testing.T) {
+	t.Setenv("LLM_GATEWAY_DISPATCH_CAPACITY_AWARE_SORT", "off")
+	enabled, err := resolveCapacityAwareSort()
+	if err != nil {
+		t.Fatalf("off: unexpected error %v", err)
+	}
+	if enabled {
+		t.Fatal("explicit off must disable")
+	}
+}
+
+// TestResolveCapacityAwareSortOn verifies the "on" value enables the sort.
+func TestResolveCapacityAwareSortOn(t *testing.T) {
+	t.Setenv("LLM_GATEWAY_DISPATCH_CAPACITY_AWARE_SORT", "on")
+	enabled, err := resolveCapacityAwareSort()
+	if err != nil {
+		t.Fatalf("on: unexpected error %v", err)
+	}
+	if !enabled {
+		t.Fatal("on must enable capacity-aware sort")
+	}
+}
+
+// TestResolveCapacityAwareSortBogus verifies an unknown value returns
+// an error and falls back to disabled (caller slog-warns).
+func TestResolveCapacityAwareSortBogus(t *testing.T) {
+	t.Setenv("LLM_GATEWAY_DISPATCH_CAPACITY_AWARE_SORT", "banana")
+	enabled, err := resolveCapacityAwareSort()
+	if err == nil {
+		t.Fatal("bogus value must return error")
+	}
+	if enabled {
+		t.Fatal("bogus value must disable sort (with error)")
+	}
+}
+
+// TestResolveCapacityAwareSortCaseInsensitive verifies the env reader
+// lowercases so "ON" / "On" are accepted.
+func TestResolveCapacityAwareSortCaseInsensitive(t *testing.T) {
+	t.Setenv("LLM_GATEWAY_DISPATCH_CAPACITY_AWARE_SORT", "ON")
+	enabled, err := resolveCapacityAwareSort()
+	if err != nil {
+		t.Fatalf("ON (uppercase): unexpected error %v", err)
+	}
+	if !enabled {
+		t.Fatal("ON (uppercase) must enable (case-insensitive)")
+	}
+}

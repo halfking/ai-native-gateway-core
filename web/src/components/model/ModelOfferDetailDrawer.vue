@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { reactive, watch, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import type { ModelOffer } from '../../api/providers'
 import {
   updateModelOffer, toggleModelOfferState, getModelOfferSuggestions,
@@ -7,24 +8,28 @@ import {
 } from '../../api/providers'
 import { updateModel } from '../../api/models'
 import ModelIdentityChip from './ModelIdentityChip.vue'
+import ModelOfferExtrasPanel from './ModelOfferExtrasPanel.vue'
 
 const props = defineProps<{
   providerId: number
   offer: ModelOffer | null
+  siblingOffers?: ModelOffer[]
 }>()
 
-const emit = defineEmits<{ close: []; updated: [ModelOffer] }>()
+const emit = defineEmits<{ close: []; updated: [ModelOffer]; iqTested: [] }>()
+const router = useRouter()
 
 const saving = ref(false)
 const saveErr = ref('')
 const toggling = ref(false)
 const suggest = ref<ModelOfferSuggestion | null>(null)
+const initialContextWindow = ref<number | null>(null)
 
 const draft = reactive({
   standardized_name: '',
   canonical_id: null as number | null,
   outbound_model_name: '',
-  context_window: '' as number | '' | null,
+  context_window: null as number | '' | null,
   modality: 'text',
   thinking_supported: false,
   thinking_dialect: '',
@@ -35,7 +40,8 @@ watch(() => props.offer, (o) => {
   draft.standardized_name = o.standardized_name ?? ''
   draft.canonical_id = o.canonical_id
   draft.outbound_model_name = o.outbound_model_name ?? ''
-  draft.context_window = o.context_window_override ?? o.context_window ?? ''
+  draft.context_window = o.context_window_override ?? null
+  initialContextWindow.value = o.context_window_override ?? null
   draft.modality = o.modality || 'text'
   const caps = o.reasoning_caps as { supported?: boolean; dialect?: string } | null | undefined
   draft.thinking_supported = !!caps?.supported
@@ -53,6 +59,15 @@ async function loadSuggest() {
   }
 }
 
+function applyRuleBased() {
+  if (!suggest.value?.rule_based) return
+  draft.standardized_name = suggest.value.rule_based
+  const match = suggest.value.canonical_options.find(
+    c => (c.canonical_name || '').toLowerCase() === draft.standardized_name.toLowerCase(),
+  )
+  draft.canonical_id = match ? match.id : null
+}
+
 async function saveNode() {
   if (!props.offer) return
   saving.value = true
@@ -63,10 +78,13 @@ async function saveNode() {
       canonical_id: draft.canonical_id,
       outbound_model_name: draft.outbound_model_name.trim(),
     }
-    const cw = draft.context_window
-    if (cw === '' || cw == null) body.context_window = 0
-    else body.context_window = Number(cw)
+    const rawCw = draft.context_window
+    if (rawCw !== initialContextWindow.value) {
+      body.context_window =
+        rawCw == null || rawCw === '' || (typeof rawCw === 'number' && rawCw <= 0) ? 0 : Number(rawCw)
+    }
     const updated = await updateModelOffer(props.providerId, props.offer.id, body)
+    initialContextWindow.value = updated.context_window_override ?? null
     emit('updated', {
       ...props.offer,
       standardized_name: updated.standardized_name,
@@ -75,8 +93,8 @@ async function saveNode() {
       context_window: updated.context_window,
       context_window_override: updated.context_window_override,
     })
-  } catch (e: any) {
-    saveErr.value = e?.message || String(e)
+  } catch (e: unknown) {
+    saveErr.value = e instanceof Error ? e.message : String(e)
   } finally {
     saving.value = false
   }
@@ -96,14 +114,14 @@ async function saveCanonical() {
     await updateModel(props.offer.canonical_id, {
       modality: draft.modality,
       reasoning_caps,
-    } as any)
+    })
     emit('updated', {
       ...props.offer,
       modality: draft.modality,
       reasoning_caps,
     })
-  } catch (e: any) {
-    saveErr.value = e?.message || String(e)
+  } catch (e: unknown) {
+    saveErr.value = e instanceof Error ? e.message : String(e)
   } finally {
     saving.value = false
   }
@@ -117,11 +135,16 @@ async function toggleAvail() {
       available: !props.offer.available,
     })
     emit('updated', { ...props.offer, available: res.available })
-  } catch (e: any) {
-    saveErr.value = e?.message || String(e)
+  } catch (e: unknown) {
+    saveErr.value = e instanceof Error ? e.message : String(e)
   } finally {
     toggling.value = false
   }
+}
+
+function goCanonical() {
+  const name = props.offer?.canonical_name || props.offer?.standardized_name
+  if (name) router.push({ path: '/models', query: { q: name } })
 }
 </script>
 
@@ -137,6 +160,7 @@ async function toggleAvail() {
             :canonical-name="offer.canonical_name || offer.standardized_name"
             :outbound-model="offer.outbound_model_name"
             :raw-model="offer.raw_model_name"
+            @click-canonical="goCanonical"
           />
         </div>
         <button type="button" class="btn btn-ghost btn-sm" @click="emit('close')">关闭</button>
@@ -191,6 +215,10 @@ async function toggleAvail() {
           </div>
           <label class="field-label">标准化名</label>
           <input v-model="draft.standardized_name" class="field-input" />
+          <div v-if="suggest?.rule_based" class="cell-sub" style="margin-top:4px">
+            规则建议
+            <button type="button" class="btn btn-sm btn-ghost" @click="applyRuleBased">{{ suggest.rule_based }}</button>
+          </div>
           <label class="field-label">关联 canonical</label>
           <select
             class="field-input"
@@ -222,6 +250,14 @@ async function toggleAvail() {
         </section>
       </div>
 
+      <div class="drawer-body" style="padding-top:0">
+        <ModelOfferExtrasPanel
+          :provider-id="providerId"
+          :offer="offer"
+          :sibling-offers="siblingOffers ?? []"
+          @iq-tested="emit('iqTested')"
+        />
+      </div>
       <div v-if="saveErr" class="drawer-footer cell-sub cell-sub--danger">{{ saveErr }}</div>
     </div>
   </div>

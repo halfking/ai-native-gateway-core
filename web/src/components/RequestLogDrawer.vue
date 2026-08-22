@@ -37,9 +37,12 @@ const props = withDefaults(defineProps<{
   requestId: string | null
   mode?: 'default' | 'request-logs'
   initialTraceOpen?: boolean
+  /** Nested under NodeDetailDrawer (z-index 3001); raises backdrop above it. */
+  stackLevel?: 'default' | 'nested'
 }>(), {
   mode: 'default',
   initialTraceOpen: false,
+  stackLevel: 'default',
 })
 
 const emit = defineEmits<{
@@ -540,7 +543,12 @@ function routingAttempts(): RequestLogDetail['routing_attempts'] {
 </script>
 
 <template>
-  <div v-if="requestId" class="drawer-backdrop" @click="emit('close')">
+  <div
+    v-if="requestId"
+    class="drawer-backdrop"
+    :class="{ 'drawer-backdrop--nested': stackLevel === 'nested' }"
+    @click="emit('close')"
+  >
     <div class="drawer-panel card drawer-panel-wide" @click.stop>
       <div class="drawer-header">
         <h3 style="margin:0">原始请求详情</h3>
@@ -1115,5 +1123,9 @@ function routingAttempts(): RequestLogDetail['routing_attempts'] {
   top: 16px;
   right: 16px;
   z-index: 10000;
+}
+/* Above NodeDetailDrawer (3000/3001); global .drawer-backdrop is only 100. */
+.drawer-backdrop--nested {
+  z-index: 3200;
 }
 </style>

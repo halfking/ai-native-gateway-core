@@ -1,0 +1,114 @@
+name: integration-testcontainers-ci
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "domains/**"
+      - "tests/integration/**"
+      - "internal/**"
+      - "durable/**"
+      - "db/**"
+      - "bg/**"
+      - "autoupdate/**"
+      - "center/**"
+      - "fault/**"
+      - "licensing/**"
+      - "vibecoding/**"
+      - "sql/migrations/**"
+      - "go.mod"
+      - "go.sum"
+      - ".github/workflows/integration-testcontainers-ci.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "domains/**"
+      - "tests/integration/**"
+      - "internal/**"
+      - "durable/**"
+      - "db/**"
+      - "bg/**"
+      - "autoupdate/**"
+      - "center/**"
+      - "fault/**"
+      - "licensing/**"
+      - "vibecoding/**"
+      - "sql/migrations/**"
+      - "go.mod"
+      - "go.sum"
+      - ".github/workflows/integration-testcontainers-ci.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: integration-testcontainers-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.23"
+
+jobs:
+  build:
+    name: build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: go build ./...
+        run: go build ./...
+
+      - name: go vet ./...
+        run: go vet ./...
+
+  integration-testcontainers:
+    name: integration (testcontainers, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+    services:
+      docker:
+        image: docker:24-dind
+        options: >-
+          --privileged
+    env:
+      TESTCONTAINERS_RYUK_DISABLED: "true"
+      TESTCONTAINERS_HOST_OVERRIDE: "host.docker.internal"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Run testcontainers-backed integration tests
+        run: go test -tags=integration -timeout 30m -count=1 ./...
+
+      - name: Upload go test logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-testcontainers-logs
+          path: |
+            **/test-output.log
+            **/*.test.log
+          if-no-files-found: ignore
+          retention-days: 7
