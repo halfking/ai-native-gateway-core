@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/metrics"
 )
 
 func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture) (outcome StreamOutcome) {
@@ -257,6 +258,24 @@ func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 						completed = capture.FinalFinishReason() != ""
 					}
 					if completed {
+						// 2026-08-23 audit fix: when a finish_reason /
+						// response.completed was already observed upstream,
+						// mirror the normal completion path and emit the
+						// terminal `response.completed` events so the client
+						// sees a finished response (otherwise it hangs waiting
+						// for the terminal event) and mark the capture done.
+						if gate.MayWriteTerminal() {
+							renderResponsesCompleted(w, flusher, respID, msgID, createdAt, clientModel, fullText, finalFinishReason)
+						}
+						metrics.Global().RecordStreamSynthesizedDone()
+						if capture != nil {
+							capture.ObservePayload(`{"type":"response.completed"}`, finalFinishReason, true)
+						}
+						slog.Info("responses EOF after finish_reason — synthesized response.completed",
+							"client_model", clientModel,
+							"finish_reason", finalFinishReason,
+							"chunk_count", chunkCount,
+						)
 						outcome = StreamOutcome{
 							ChunkCount: chunkCount,
 						}
@@ -336,6 +355,19 @@ func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 	if !gate.MayWriteTerminal() {
 		return outcome
 	}
+	renderResponsesCompleted(w, flusher, respID, msgID, createdAt, clientModel, fullText, finalFinishReason)
+
+	if capture != nil {
+		capture.ObservePayload(`{"type":"response.completed"}`, finalFinishReason, true)
+	}
+	return outcome
+}
+
+// renderResponsesCompleted emits the terminal Responses-API tail
+// (output_text.done → output_item.done → response.completed). It is shared by
+// the normal completion path and the EOF-after-finish-reason recovery path so
+// both produce byte-identical terminal output for the client.
+func renderResponsesCompleted(w http.ResponseWriter, flusher http.Flusher, respID, msgID string, createdAt int, clientModel, fullText, finishReason string) {
 	textDone := map[string]any{
 		"type":          "response.output_text.done",
 		"item_id":       msgID,
@@ -346,7 +378,7 @@ func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 	writeSSE(w, "response.output_text.done", textDone)
 
 	itemStatus := "completed"
-	if finalFinishReason == "length" {
+	if finishReason == "length" {
 		itemStatus = "incomplete"
 	}
 
@@ -388,11 +420,6 @@ func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 	}
 	writeSSE(w, "response.completed", completedResp)
 	flusher.Flush()
-
-	if capture != nil {
-		capture.ObservePayload(`{"type":"response.completed"}`, finalFinishReason, true)
-	}
-	return outcome
 }
 
 func writeResponsesIncomplete(w http.ResponseWriter, flusher http.Flusher, respID, msgID string, createdAt int, clientModel, fullText, reason string) {

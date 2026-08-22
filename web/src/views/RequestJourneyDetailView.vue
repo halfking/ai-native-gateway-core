@@ -100,6 +100,9 @@ onUnmounted(() => {
     <div v-if="loading" class="jdv-state">{{ t('requestJourneyDetail.loading') }}</div>
     <div v-else-if="error" class="jdv-state jdv-state--error" data-testid="journey-error" role="alert">
       {{ t('requestJourneyDetail.error') }}: {{ error }}
+      <button type="button" class="jdv-retry" :disabled="loading" @click="loadJourney(requestId)">
+        {{ t('requestJourneyDetail.retry') }}
+      </button>
     </div>
 
     <template v-else-if="journey">
@@ -214,4 +217,7 @@ onUnmounted(() => {
 }
 
 .jdv-state--error { color: var(--kx-danger); }
+.jdv-retry { margin-left: 8px; padding: 2px 10px; border: 1px solid currentColor; background: transparent; color: var(--kx-danger); border-radius: 4px; cursor: pointer; font-size: 12px; }
+.jdv-retry:hover { background: rgba(220, 53, 69, 0.08); }
+.jdv-retry:disabled { opacity: .5; cursor: not-allowed; }
 </style>

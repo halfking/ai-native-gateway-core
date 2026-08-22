@@ -175,7 +175,7 @@ watch(() => props.providerId, () => { loadCredentials(); resetFilters() })
             </td>
             <td class="cell-muted">{{ l.error_kind || '—' }}</td>
             <td>{{ token(l.prompt_tokens) }} / {{ token(l.completion_tokens) }}</td>
-            <td>{{ l.cost_usd != null ? '$' + Number(l.cost_usd).toFixed(6) : '—' }}</td>
+            <td>{{ l.cost_usd != null ? '$' + Number(l.cost_usd).toFixed(4) : '—' }}</td>
             <td>{{ l.latency_ms != null ? l.latency_ms + 'ms' : '—' }}</td>
           </tr>
         </tbody>

@@ -489,10 +489,23 @@ func (p *Pipeline) snapshotForCredForwarderLocked(cf *credForwarder) GovernorSna
 	case *rpmGovernor:
 		g.mu.Lock()
 		snap.Used = int(math.Floor(g.tokens))
+		// Saturated when fewer than 1 token remains: the next Acquire would
+		// have to wait, so surface the governor as saturated for Stage D
+		// capacity-aware soft-sort to demote the credential.
+		if snap.State == SnapshotStateReady && g.tokens < 1 {
+			snap.State = SnapshotStateGovernorSaturated
+		}
 		g.mu.Unlock()
 	case *tpmGovernor:
 		g.mu.Lock()
 		snap.Used = int(math.Floor(g.tokens))
+		// Saturated when fewer than one default-cost request remains
+		// (defaultTokenEstimate). Using the default cost keeps the
+		// saturation signal stable across requests whose real cost is
+		// unknown at snapshot time.
+		if snap.State == SnapshotStateReady && g.tokens < defaultTokenEstimate {
+			snap.State = SnapshotStateGovernorSaturated
+		}
 		g.mu.Unlock()
 	case *noopGovernor:
 		// 0
@@ -624,6 +637,15 @@ func (p *Pipeline) Stop() {
 	}
 	p.forwarders = map[int]*credForwarder{}
 	p.credMu.Unlock()
+	// Clear the Stage D caches so a Stop→Start cycle (or credential churn)
+	// does not surface stale state for forwarders that no longer exist.
+	// They repopulate on the next observer tick / SnapshotForCred call.
+	p.snapshotAgeMu.Lock()
+	p.snapshotAgeMS = make(map[int]int64)
+	p.snapshotAgeMu.Unlock()
+	p.credStateCacheMu.Lock()
+	p.credStateCache = make(map[int]SnapshotState)
+	p.credStateCacheMu.Unlock()
 	p.wg.Wait()
 	p.observationChMu.Lock()
 	if p.observationCh != nil && !p.observationClosed {
