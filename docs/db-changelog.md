@@ -66,3 +66,9 @@
 |-----------|------|---------|--------|
 | 555 | `555_goal_run_actions_lease_fencing.sql` | `1e2af70f5b0ee66c58ab54b7515e359e140b6425cd76488086982f289b10d6fe` | applied+verified |
 
+## 2026-08-22T13:39:45Z — deploy 154 build_seq 1671 (c9ceea30)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 561 | `561_request_logs_view_origin_actor.sql` | `ef139bf1a895c53e93c1c495d1891d2bbb64b4d4e953ee3c93f920750babd36a` | applied+verified |
+
