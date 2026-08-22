@@ -245,6 +245,23 @@ func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 				return outcome
 			case streamReadEOF:
 				if !upstreamDoneReceived {
+					// 2026-08-23: same recovery as stream.go / anthropic_stream.go —
+					// if a finish_reason (or response.completed) was already
+					// observed, the upstream has declared the response complete
+					// and the missing `[DONE]`/terminal event is benign. Without
+					// this guard, minimax (and similar upstreams that drop the
+					// terminal event) trigger survival retries that burn the
+					// full upstream_timeout budget on every chat.
+					completed := finalFinishReason != ""
+					if !completed && capture != nil {
+						completed = capture.FinalFinishReason() != ""
+					}
+					if completed {
+						outcome = StreamOutcome{
+							ChunkCount: chunkCount,
+						}
+						return outcome
+					}
 					if capture != nil {
 						capture.MarkInterruptedWithReason("eof_without_done")
 					}

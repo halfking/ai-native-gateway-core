@@ -475,14 +475,39 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 				outcome.Kind = errorsx.KindCanceled
 			case streamReadEOF:
 				if !upstreamDoneReceived {
+					// 2026-08-23: same recovery as stream.go — if a
+					// finish_reason was already observed, the upstream
+					// has declared the response complete; do NOT mark this
+					// as an interruption (avoids 11-minute survival
+					// retries on minimax and similar upstreams that close
+					// the TCP stream after the terminal chunk without
+					// sending a separate `[DONE]` sentinel).
+					finalFinish := ""
 					if capture != nil {
-						capture.MarkInterruptedWithReason("eof_without_done")
+						finalFinish = capture.FinalFinishReason()
 					}
-					outcome.Interrupted = true
-					outcome.Reason = "eof_without_done"
-					outcome.Kind = errorsx.KindUpstreamDown
-					outcome.Resumable = !attemptHasClientSemanticOutput(gate, chunkCount)
-					outcome.ChunkCount = chunkCount
+					if finalFinish != "" {
+						safeWriteSSE(w, "data: [DONE]\n\n")
+						safeFlush(flusher)
+						outcome.Interrupted = false
+						outcome.Reason = ""
+						outcome.Kind = ""
+						outcome.Resumable = false
+						slog.Info("anthropic EOF after finish_reason — synthesized [DONE]",
+							"client_model", clientModel,
+							"finish_reason", finalFinish,
+							"chunk_count", chunkCount,
+						)
+					} else {
+						if capture != nil {
+							capture.MarkInterruptedWithReason("eof_without_done")
+						}
+						outcome.Interrupted = true
+						outcome.Reason = "eof_without_done"
+						outcome.Kind = errorsx.KindUpstreamDown
+						outcome.Resumable = !attemptHasClientSemanticOutput(gate, chunkCount)
+						outcome.ChunkCount = chunkCount
+					}
 				}
 			case streamReadTimeout:
 				slog.Warn("anthropic stream read timeout", "error", readResult.err)
