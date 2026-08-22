@@ -527,7 +527,6 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 						StatusCode: http.StatusTooManyRequests,
 						Message:    "all credential keys exhausted (terminal)",
 					}
-					resolvedKeyIdx = -1
 				} else {
 					execErr = errDispatchKeysExhausted
 				}
@@ -610,7 +609,11 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 	// (KindQuotaPermanent / KindQuotaBalance / KindAuthRevoked) mark the key
 	// immediately and non-terminal kinds accumulate toward the threshold.
 	// Only meaningful when this attempt actually used a rotator-managed key.
-	if cand.KeyRotator != nil && resolvedKeyIdx >= 0 && !errors.Is(execErr, errDispatchKeysExhausted) {
+	// The resolvedKeyIdx >= 0 gate is the load-bearing condition: it correctly
+	// excludes both single-key creds and the two keys-exhausted branches above
+	// (where idx stays -1 by construction). The errDispatchKeysExhausted
+	// sentinel comparison alone would miss the typed *upstream.Error branch.
+	if cand.KeyRotator != nil && resolvedKeyIdx >= 0 {
 		cand.KeyRotator.RecordKeyFailure(cand.CredentialID, resolvedKeyIdx, kind)
 	}
 

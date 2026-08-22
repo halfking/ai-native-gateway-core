@@ -211,20 +211,20 @@ func (h *Handler) deleteCredentialKey(w http.ResponseWriter, r *http.Request, pr
 	defer tx.Rollback(ctx) //nolint:errcheck // harmless after successful Commit
 
 	// Lock the parent credential row so concurrent add/list/status flips on the
-	// same credential serialize. Mirrors addCredentialKey's pattern.
-	var ownerExists bool
+	// same credential serialize. Mirrors addCredentialKey's pattern. The actual
+	// FOR UPDATE here is what serializes against addCredentialKey's own
+	// FOR UPDATE; without this lock a concurrent POST /keys could insert a
+	// new kid_index between our ownership check and our DELETE.
+	var credTenant string
 	if err := tx.QueryRow(ctx, `
-		SELECT EXISTS(SELECT 1 FROM credentials WHERE id = $1 AND provider_id = $2)
-	`, credID, providerID).Scan(&ownerExists); err != nil {
-		writeError(w, http.StatusInternalServerError, "ownership check failed")
-		return
-	}
-	if !ownerExists {
+		SELECT tenant_id
+		FROM credentials
+		WHERE id = $1 AND provider_id = $2
+		FOR UPDATE
+	`, credID, providerID).Scan(&credTenant); err != nil {
 		writeError(w, http.StatusNotFound, "credential not found")
 		return
 	}
-	// FOR UPDATE on the child row prevents two concurrent deletes of the same
-	// key from both reporting success.
 	tag, err := tx.Exec(ctx, `
 		DELETE FROM credential_keys
 		WHERE credential_id = $1 AND kid_index = $2
@@ -278,14 +278,13 @@ func (h *Handler) resetCredentialKey(w http.ResponseWriter, r *http.Request, pro
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 
-	var ownerExists bool
+	var credTenant string
 	if err := tx.QueryRow(ctx, `
-		SELECT EXISTS(SELECT 1 FROM credentials WHERE id = $1 AND provider_id = $2)
-	`, credID, providerID).Scan(&ownerExists); err != nil {
-		writeError(w, http.StatusInternalServerError, "ownership check failed")
-		return
-	}
-	if !ownerExists {
+		SELECT tenant_id
+		FROM credentials
+		WHERE id = $1 AND provider_id = $2
+		FOR UPDATE
+	`, credID, providerID).Scan(&credTenant); err != nil {
 		writeError(w, http.StatusNotFound, "credential not found")
 		return
 	}

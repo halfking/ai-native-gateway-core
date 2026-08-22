@@ -478,8 +478,8 @@ func ResetKeyRotatorForCredential(credentialID int) {
 // ResetKeyRotatorKey clears in-memory health for a single key on a credential.
 // Use when only one key's status changed (admin PATCH /keys/{kid} status, or
 // operator re-activates a single key) so sibling keys' round-robin health is
-// preserved. Falls back to the per-credential reset if no finer-grained
-// accessor is registered (single-key mode).
+// preserved. No-op when the rotator is in single-key mode (the per-credential
+// states map has no entry for credentialID, so there is nothing to reset).
 func ResetKeyRotatorKey(credentialID, kid int) {
 	if defaultClient == nil || credentialID == 0 || defaultClient.keyRotator == nil {
 		return
