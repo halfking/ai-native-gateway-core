@@ -106,10 +106,20 @@ func TestPipelineQueueStats_RealPipelineTraffic(t *testing.T) {
 	<-done
 	// 8 submissions × 200ms forwarder hold × concurrency=1 = up to ~1.6s total
 	// drain. The test relies on the percentile ring filling and the depth
-	// counter settling to zero; give the queue + ring time to fully drain
-	// under full-repo `go test ./...` parallelism where the scheduler can
-	// stretch drain beyond the theoretical minimum.
-	time.Sleep(300 * time.Millisecond) // let recordStageMetrics/waterfall land
+	// counter settling to zero; poll instead of a fixed sleep so the
+	// drain window survives full-repo `go test ./...` parallelism where
+	// the scheduler can stretch drain beyond the theoretical minimum.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		s := c.Snapshot()
+		if s.Pipeline != nil && s.Pipeline.Depth == 0 && s.Pipeline.InFlight == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 
 	snapIdle := c.Snapshot()
 	if snapIdle.Pipeline == nil {
