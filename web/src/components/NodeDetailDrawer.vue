@@ -1,44 +1,24 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import { isDefaultTenant, isSuperAdmin } from '../store'
-import { patchCandidateBinding, resolveRouting, type RoutingCandidate } from '../api/routing'
-import { updateCredentialLifecycle, type CredentialLifecycleStatus } from '../api/providers'
-import {
-  getCredentialDecisions,
-  getCredentialMonitorSummary,
-  getModelHistory,
-  getSlidingWindow,
-  setManualDisabled,
-  sessionPingCredential,
-  toggleModelAvailability,
-  type CredentialModelStatus,
-  type CredentialMonitorSummary,
-  type CredentialRoutingDecision,
-  type ModelHistoryEvent,
-  type WindowStats,
-} from '../api/credential-monitor'
-import { nodesRef, type LiveNodeStatus } from '../composables/liveStreamStore'
-import { useSessionSummaryJump } from '../composables/useSessionSummaryJump'
+import type { RoutingCandidate } from '../api/routing'
+import type { LiveNodeStatus } from '../composables/liveStreamStore'
+import { statusClass } from '../utils/nodeDetailFormat'
+import { useNodeDetailDrawerLoad, type NodeDetailTab } from '../composables/useNodeDetailDrawerLoad'
+import { useNodeDetailDrawerActions } from '../composables/useNodeDetailDrawerActions'
 import RequestLogDrawer from './RequestLogDrawer.vue'
 import NodeDetailConcurrencyPanel from './NodeDetailConcurrencyPanel.vue'
 import NodeDetailOtherModelsPanel from './NodeDetailOtherModelsPanel.vue'
-import NodeDetailAccessErrorsPanel from './NodeDetailAccessErrorsPanel.vue'
 import NodeDetailAvailabilityPanel from './NodeDetailAvailabilityPanel.vue'
 import NodeDetailEmergencyPanel from './NodeDetailEmergencyPanel.vue'
-
-type Tab = 'detail' | 'availability' | 'requests' | 'settings'
-type SettingsSubTab = 'maintain' | 'other-models'
+import NodeDetailOverviewPanel from './NodeDetailOverviewPanel.vue'
+import NodeDetailRequestsPanel from './NodeDetailRequestsPanel.vue'
+import NodeDetailMaintainPanel from './NodeDetailMaintainPanel.vue'
 
 const props = defineProps<{
   modelValue: boolean
   node: LiveNodeStatus | null
-  /** 模型×节点 scope：来自模型分组的 raw 模型名。传入后抽屉锁定该模型，不展示/切换其他模型。 */
   model?: string
-  /** 打开时默认 tab；resolve 明细→availability，设置→settings。 */
-  initialTab?: Tab
-  /** resolve 入口预填候选，减少首屏等待。 */
+  initialTab?: NodeDetailTab
   seedCandidate?: RoutingCandidate | null
-  /** resolve 场景写操作需超管；Dashboard 默认仅要求 default 租户。 */
   requireSuperAdminEdit?: boolean
 }>()
 
@@ -47,590 +27,27 @@ const emit = defineEmits<{
   applied: []
 }>()
 
-const activeTab = ref<Tab>('detail')
-const settingsSubTab = ref<SettingsSubTab>('maintain')
-const loading = ref(false)
-const detailLoaded = ref(false)
-const detailLoading = ref(false)
-const requestsLoaded = ref(false)
-const requestsLoading = ref(false)
-const settingsLoaded = ref(false)
-const settingsLoading = ref(false)
-const loadError = ref('')
-const candidate = ref<RoutingCandidate | null>(null)
-const candidateLoading = ref(false)
-const monitor = ref<CredentialMonitorSummary | null>(null)
-const selectedModel = ref('')
-const windowEntries = ref<Array<{ rid: string; ts: number; ok: boolean; lat: number; err?: string }>>([])
-const windowStats = ref<WindowStats | null>(null)
-const windowSource = ref('')
-const history = ref<ModelHistoryEvent[]>([])
-const decisions = ref<CredentialRoutingDecision[]>([])
-const saving = ref(false)
-const actionMessage = ref('')
-const actionError = ref('')
-const pingResult = ref<{ status: string; latency_ms: number; tested_at: string; error?: string } | null>(null)
-const lifecycle = ref<CredentialLifecycleStatus>('active')
-const manualPriority = ref(99)
-const routingTier = ref(2)
-const weight = ref(100)
-const modelActionReason = ref('')
-const coreLoaded = ref(false)
-const coreLoading = ref(false)
-/** 滑动窗口点击 → 请求原始详情（RequestLogDrawer） */
-const detailRequestId = ref<string | null>(null)
-let sequence = 0
-let loadController: AbortController | null = null
-let requestsController: AbortController | null = null
-let coreController: AbortController | null = null
-let coreTask: Promise<boolean> | null = null
-let coreCandidateTask: Promise<boolean> | null = null
+const load = useNodeDetailDrawerLoad(props, emit)
+const {
+  activeTab, settingsSubTab, loading, detailLoaded, detailLoading, requestsLoaded, requestsLoading,
+  settingsLoaded, settingsLoading, loadError, candidate, candidateLoading, monitor, selectedModel,
+  windowEntries, windowStats, windowSource, history, decisions, saving, actionMessage, actionError,
+  pingResult, lifecycle, manualPriority, routingTier, weight, modelActionReason, coreLoaded, coreLoading,
+  detailRequestId, visible, canEdit, editGateHint, currentNode, allModels, models, selectedModelStatus,
+  resolvedProviderId, headlineState, errorKinds, failedWindowEntries, failedDecisions, otherModelsNeedRefresh,
+  mergeMonitorModels, chooseModel, refreshCurrentTab,
+} = load
 
-function isAbortError(error: unknown): boolean {
-  return error instanceof DOMException && error.name === 'AbortError'
-}
-
-function resetDrawerData() {
-  loadController?.abort()
-  requestsController?.abort()
-  coreController?.abort()
-  loadController = null
-  requestsController = null
-  coreController = null
-  coreTask = null
-  coreCandidateTask = null
-  sequence++
-  loading.value = false
-  coreLoaded.value = false
-  coreLoading.value = false
-  detailLoaded.value = false
-  detailLoading.value = false
-  requestsLoaded.value = false
-  requestsLoading.value = false
-  settingsLoaded.value = false
-  settingsLoading.value = false
-  loadError.value = ''
-  candidate.value = null
-  candidateLoading.value = false
-  monitor.value = null
-  selectedModel.value = ''
-  windowEntries.value = []
-  windowStats.value = null
-  windowSource.value = ''
-  history.value = []
-  decisions.value = []
-  pingResult.value = null
-  actionMessage.value = ''
-  actionError.value = ''
-  detailRequestId.value = null
-  settingsSubTab.value = 'maintain'
-}
-
-function detailEntriesReset() {
-  windowEntries.value = []
-  windowStats.value = null
-  windowSource.value = ''
-  history.value = []
-}
-
-function startCorePreload(): Promise<boolean> | null {
-  const node = currentNode.value
-  if (!visible.value || !node || coreLoading.value || coreLoaded.value) return coreTask
-  const controller = new AbortController()
-  const requestSequence = sequence
-  coreController = controller
-  coreLoading.value = true
-  const scope = scopedModel.value
-  const initialModel = scope || node.raw_models?.[0] || ''
-  selectedModel.value = initialModel
-  const isCurrent = () => !controller.signal.aborted
-    && requestSequence === sequence
-    && currentNode.value?.credential_id === node.credential_id
-  const monitorTask = getCredentialMonitorSummary(
-    { credential_id: node.credential_id, mode: 'core' },
-    { signal: controller.signal },
-  ).then(result => {
-    if (!isCurrent()) return false
-    const incoming = result.credentials?.[0] ?? null
-    if (!incoming) {
-      if (!monitor.value) monitor.value = null
-      return true
-    }
-    // core 与 detail 并行时，避免用精简 core 覆盖已拿到的完整 models。
-    const existing = monitor.value
-    const keepModels = (existing?.models?.length ?? 0) >= (incoming.models?.length ?? 0)
-      ? existing?.models
-      : incoming.models
-    monitor.value = { ...incoming, models: keepModels ?? incoming.models }
-    return true
-  }).catch(error => {
-    if (!isAbortError(error) && isCurrent()) loadError.value = '节点核心状态加载失败，仍展示实时状态。'
-    return false
-  })
-  // 段 2：候选与 core 并行，不阻塞核心段收尾。
-  const candidateTask = initialModel ? loadCandidate(initialModel, requestSequence, controller.signal) : Promise.resolve(true)
-  coreCandidateTask = candidateTask
-  coreTask = monitorTask.then(monitorReady => {
-    if (isCurrent()) {
-      coreLoaded.value = monitorReady
-      coreLoading.value = false
-    }
-    return monitorReady
-  }).catch(() => false).finally(() => {
-    if (coreController === controller) coreController = null
-  })
-  void candidateTask.finally(() => {
-    if (coreCandidateTask === candidateTask) coreCandidateTask = null
-  })
-  return coreTask
-}
-
-async function ensureTabLoaded(tab: Tab) {
-  if (!visible.value || !currentNode.value) return
-  if (tab === 'detail' && !detailLoaded.value && !detailLoading.value) {
-    detailEntriesReset()
-    detailLoading.value = true
-    const loaded = await loadNode('detail')
-    detailLoading.value = false
-    detailLoaded.value = loaded
-  } else if (tab === 'availability') {
-    if (!candidate.value && props.seedCandidate) {
-      candidate.value = props.seedCandidate
-    }
-    if (!detailLoaded.value && !detailLoading.value) {
-      detailEntriesReset()
-      detailLoading.value = true
-      const loaded = await loadNode('detail')
-      detailLoading.value = false
-      detailLoaded.value = loaded
-    } else if (!candidate.value && !candidateLoading.value) {
-      const model = scopedModel.value || selectedModel.value
-      if (model) {
-        const controller = new AbortController()
-        await loadCandidate(model, sequence, controller.signal)
-      }
-    }
-  } else if (tab === 'requests' && !requestsLoaded.value && !requestsLoading.value) {
-    decisions.value = []
-    requestsLoading.value = true
-    const loaded = await loadDecisionsOnly()
-    requestsLoading.value = false
-    requestsLoaded.value = loaded
-  } else if (tab === 'settings' && !settingsLoaded.value && !settingsLoading.value) {
-    settingsLoading.value = true
-    // 段 1+2：core monitor + candidate；段 3（fp slot）由子组件自行拉取。
-    const loaded = await startCorePreload()
-    settingsLoading.value = false
-    settingsLoaded.value = loaded === true || coreLoaded.value || candidate.value != null
-  }
-}
-
-/** 打开抽屉后并行预热三个 tab（各自独立 loading）。 */
-function bootstrapAllTabs() {
-  if (props.seedCandidate) {
-    candidate.value = props.seedCandidate
-    lifecycle.value = (props.seedCandidate.lifecycle_status ?? 'active') as CredentialLifecycleStatus
-    manualPriority.value = props.seedCandidate.manual_priority ?? 99
-    routingTier.value = props.seedCandidate.tier ?? 2
-    weight.value = props.seedCandidate.weight ?? 100
-  }
-  void ensureTabLoaded('detail')
-  void ensureTabLoaded('availability')
-  void ensureTabLoaded('requests')
-  void ensureTabLoaded('settings')
-}
-
-const visible = computed({
-  get: () => props.modelValue,
-  set: (value: boolean) => emit('update:modelValue', value),
+const {
+  jumpToSessionSummary, openRequestDetail, closeRequestDetail,
+  testNow, saveSettings, onEmergencyApplied, setCredentialDisabled, toggleSelectedModel,
+} = useNodeDetailDrawerActions({
+  emit, canEdit, currentNode, candidate, selectedModel, selectedModelStatus,
+  saving, actionMessage, actionError, pingResult, lifecycle, manualPriority, routingTier, weight,
+  modelActionReason, detailRequestId, refreshCurrentTab,
 })
-const canEdit = computed(() => {
-  if (!isDefaultTenant()) return false
-  if (props.requireSuperAdminEdit) return isSuperAdmin()
-  return true
-})
-const editGateHint = computed(() => {
-  if (props.requireSuperAdminEdit && !isSuperAdmin()) {
-    return '仅超级管理员可以维护节点；当前以只读方式展示。'
-  }
-  if (!isDefaultTenant()) {
-    return '仅 default 租户可以维护节点；当前以只读方式展示。'
-  }
-  return ''
-})
-const { jumpToSessionSummary } = useSessionSummaryJump({
-  onBeforeJump: () => { detailRequestId.value = null },
-})
-const currentNode = computed<LiveNodeStatus | null>(() => {
-  if (!props.node) return null
-  return nodesRef.value.find(node => node.credential_id === props.node?.credential_id) ?? props.node
-})
+
 const node = currentNode
-// 模型×节点 scope：有 scope 时模型状态区只显示该模型，不展示无关模型。
-const scopedModel = computed(() => props.model?.trim() || '')
-const allModels = computed<CredentialModelStatus[]>(() => monitor.value?.models ?? [])
-const models = computed<CredentialModelStatus[]>(() => {
-  const all = allModels.value
-  const scope = scopedModel.value.toLowerCase()
-  if (!scope) return all
-  return all.filter(model => model.raw_model_name.toLowerCase() === scope)
-})
-const selectedModelStatus = computed(() => allModels.value.find(model => model.raw_model_name === selectedModel.value) ?? null)
-const resolvedProviderId = computed(() => currentNode.value?.provider_id ?? candidate.value?.provider_id ?? monitor.value?.provider_id ?? null)
-const headlineState = computed(() => {
-  const node = currentNode.value
-  if (!node) return '未知'
-  if (node.manual_disabled || node.disable_kind === 'manual') return '手工禁用'
-  if (node.circuit_state === 'open') return '熔断'
-  if (node.health_status === 'unreachable' || node.availability_state === 'unreachable') return '不可达'
-  if (node.availability_state === 'cooling' || node.circuit_state === 'half_open') return '恢复中'
-  return '可用'
-})
-const errorKinds = computed(() => Object.entries(windowStats.value?.error_kinds ?? {}))
-const failedWindowEntries = computed(() => windowEntries.value.filter(entry => !entry.ok).slice(0, 40))
-const failedDecisions = computed(() => decisions.value.filter(d => !d.success).slice(0, 40))
-const otherModelsNeedRefresh = computed(() => (monitor.value?.models?.length ?? 0) <= 1)
-
-function fmtTime(value: string | number | null | undefined): string {
-  if (value == null || value === '') return '—'
-  const date = new Date(typeof value === 'number' ? value : value)
-  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString()
-}
-function pct(value: number | null | undefined): string {
-  return value == null ? '—' : `${(value * 100).toFixed(1)}%`
-}
-function statusClass(value: string | null | undefined): string {
-  if (['ready', 'healthy', 'active', 'closed', 'ok', 'available'].includes(value || '')) return 'is-ok'
-  if (['cooling', 'half_open', 'low', 'warning', 'degraded'].includes(value || '')) return 'is-warn'
-  return 'is-bad'
-}
-
-function openRequestDetail(rid: string | undefined) {
-  if (!rid) return
-  detailRequestId.value = rid
-}
-function closeRequestDetail() {
-  detailRequestId.value = null
-}
-
-function mergeMonitorModels(incoming: CredentialModelStatus[]) {
-  if (!monitor.value) {
-    monitor.value = {
-      id: currentNode.value?.credential_id ?? 0,
-      provider_id: currentNode.value?.provider_id ?? 0,
-      provider_name: '',
-      label: '',
-      status: '',
-      availability_state: '',
-      health_status: '',
-      quota_state: '',
-      concurrency_limit: null,
-      concurrency_limit_auto: null,
-      effective_concurrency: 0,
-      manual_disabled: false,
-      consecutive_failures: 0,
-      availability_recover_at: null,
-      state_reason_code: null,
-      state_reason_detail: null,
-      health_checked_at: null,
-      total_requests: 0,
-      model_total: incoming.length,
-      model_available: incoming.filter(m => m.effective_state === 'available').length,
-      broken_model_count: incoming.filter(m => m.effective_state === 'probe_broken').length,
-      models: incoming,
-    }
-    return
-  }
-  monitor.value = { ...monitor.value, models: incoming }
-}
-
-async function loadModelDetails(model: string, requestSequence: number, signal: AbortSignal) {
-  const node = currentNode.value
-  if (!node || !model) return false
-  const [windowResult, historyResult] = await Promise.allSettled([
-    getSlidingWindow(node.credential_id, model, 60, { signal }),
-    getModelHistory(node.credential_id, model, 30, { signal }),
-  ])
-  if (signal.aborted || requestSequence !== sequence || currentNode.value?.credential_id !== node.credential_id || selectedModel.value !== model) return false
-  if (windowResult.status === 'fulfilled') {
-    windowEntries.value = windowResult.value.entries
-    windowStats.value = windowResult.value.stats
-    windowSource.value = windowResult.value.source
-  } else if (!isAbortError(windowResult.reason)) {
-    windowEntries.value = []
-    windowStats.value = null
-    windowSource.value = ''
-  }
-  if (historyResult.status === 'fulfilled') {
-    history.value = historyResult.value.events
-  } else if (!isAbortError(historyResult.reason)) {
-    history.value = []
-  }
-  const failed = [windowResult, historyResult].some(result => result.status === 'rejected' && !isAbortError(result.reason))
-  if (failed) loadError.value = '部分近期统计数据未能加载，请重试。'
-  return !failed
-}
-
-async function loadCandidate(model: string, requestSequence: number, signal: AbortSignal) {
-  const node = currentNode.value
-  if (!node || !model) {
-    candidate.value = null
-    return false
-  }
-  candidateLoading.value = true
-  try {
-    const result = await resolveRouting(model, undefined, false, { signal })
-    if (signal.aborted || requestSequence !== sequence || currentNode.value?.credential_id !== node.credential_id || selectedModel.value !== model) return false
-    candidate.value = result.candidates.find(item => item.credential_id === node.credential_id && item.model_name === model) ?? null
-    lifecycle.value = (candidate.value?.lifecycle_status ?? 'active') as CredentialLifecycleStatus
-    manualPriority.value = candidate.value?.manual_priority ?? 99
-    routingTier.value = candidate.value?.tier ?? 2
-    weight.value = candidate.value?.weight ?? 100
-    return true
-  } catch (error) {
-    if (!isAbortError(error) && requestSequence === sequence && currentNode.value?.credential_id === node.credential_id) {
-      candidate.value = null
-      loadError.value = '未能加载路由候选设置，请重试。'
-    }
-    return false
-  } finally {
-    if (requestSequence === sequence) candidateLoading.value = false
-  }
-}
-
-async function loadDecisionsOnly() {
-  const node = currentNode.value
-  if (!node || !visible.value) return false
-  requestsController?.abort()
-  const controller = new AbortController()
-  requestsController = controller
-  const requestSequence = sequence
-  const scope = scopedModel.value
-  try {
-    const result = scope
-      ? await getCredentialDecisions(node.credential_id, 50, scope, { signal: controller.signal })
-      : await getCredentialDecisions(node.credential_id, 30, undefined, { signal: controller.signal })
-    if (controller.signal.aborted || requestSequence !== sequence || currentNode.value?.credential_id !== node.credential_id) return false
-    decisions.value = result.decisions ?? []
-    return true
-  } catch (error) {
-    if (!isAbortError(error) && requestSequence === sequence) loadError.value = '未能加载路由决策记录，请重试。'
-    return false
-  } finally {
-    if (requestsController === controller) requestsController = null
-  }
-}
-
-async function loadNode(target: 'detail'): Promise<boolean> {
-  const node = currentNode.value
-  if (!node || !visible.value) return false
-  const pendingCoreCandidateTask = coreCandidateTask
-  loadController?.abort()
-  const controller = new AbortController()
-  loadController = controller
-  const requestSequence = sequence
-  loading.value = true
-  loadError.value = ''
-  const scope = scopedModel.value
-  const initialModel = scope || selectedModel.value || node.raw_models?.[0] || ''
-  const isCurrent = () => !controller.signal.aborted
-    && requestSequence === sequence
-    && currentNode.value?.credential_id === node.credential_id
-  try {
-  const monitorResult = await getCredentialMonitorSummary(
-      { credential_id: node.credential_id, mode: 'detail' },
-      { signal: controller.signal },
-    )
-    if (!isCurrent()) return false
-    const incoming = monitorResult.credentials?.[0] ?? null
-    if (incoming) {
-      const existing = monitor.value
-      const keepModels = (existing?.models?.length ?? 0) > (incoming.models?.length ?? 0)
-        ? existing?.models
-        : incoming.models
-      monitor.value = { ...incoming, models: keepModels ?? incoming.models }
-    }
-    const preferred = scope
-      ? initialModel
-      : monitor.value?.models?.find(model => model.raw_model_name === initialModel)?.raw_model_name
-        ?? monitor.value?.models?.find(model => model.probe_state === 'broken_confirmed')?.raw_model_name
-        ?? monitor.value?.models?.[0]?.raw_model_name
-        ?? initialModel
-    selectedModel.value = preferred
-    const candidateTask = candidate.value || !preferred
-      ? Promise.resolve(true)
-      : pendingCoreCandidateTask
-        ? pendingCoreCandidateTask
-        : loadCandidate(preferred, requestSequence, controller.signal)
-    const [detailsLoaded, candidateLoaded] = await Promise.all([
-      preferred ? loadModelDetails(preferred, requestSequence, controller.signal) : Promise.resolve(true),
-      candidateTask,
-    ])
-    return isCurrent() && detailsLoaded && candidateLoaded
-  } catch (error) {
-    if (!isAbortError(error) && isCurrent()) loadError.value = '未能加载节点明细；核心实时状态仍可用。'
-    return false
-  } finally {
-    if (loadController === controller) loadController = null
-    if (isCurrent()) loading.value = false
-  }
-}
-
-function chooseModel(model: string) {
-  if (model === selectedModel.value || !detailLoaded.value) return
-  selectedModel.value = model
-  detailLoaded.value = false
-  void ensureTabLoaded('detail')
-}
-
-async function refreshCurrentTab() {
-  if (activeTab.value === 'requests') {
-    requestsLoaded.value = false
-    await ensureTabLoaded('requests')
-    return
-  }
-  if (activeTab.value === 'settings') {
-    settingsLoaded.value = false
-    coreLoaded.value = false
-    coreLoading.value = false
-    coreTask = null
-    await ensureTabLoaded('settings')
-    return
-  }
-  detailLoaded.value = false
-  await ensureTabLoaded('detail')
-}
-
-async function testNow() {
-  const node = currentNode.value
-  if (!node || !selectedModel.value || !canEdit.value || saving.value) return
-  saving.value = true
-  actionMessage.value = ''
-  actionError.value = ''
-  pingResult.value = null
-  try {
-    const result = await sessionPingCredential(node.credential_id, selectedModel.value)
-    pingResult.value = result
-    if (result.status === 'healthy') {
-      actionMessage.value = `会话 Ping 成功：${result.latency_ms}ms`
-    } else {
-      actionError.value = result.error || `会话 Ping 失败：${result.status}`
-    }
-  } catch (error) {
-    actionError.value = error instanceof Error ? error.message : '会话 Ping 失败'
-  } finally {
-    saving.value = false
-  }
-}
-
-async function saveSettings() {
-  const node = currentNode.value
-  const row = candidate.value
-  if (!node || !row || !canEdit.value || saving.value) return
-  saving.value = true
-  actionMessage.value = ''
-  actionError.value = ''
-  try {
-    const patch: { manual_priority?: number; routing_tier?: number; weight?: number } = {}
-    if (manualPriority.value !== (row.manual_priority ?? 99)) patch.manual_priority = manualPriority.value
-    if (routingTier.value !== row.tier) patch.routing_tier = routingTier.value
-    if (weight.value !== row.weight) patch.weight = weight.value
-    if (Object.keys(patch).length) await patchCandidateBinding(row.credential_id, row.model_name, patch)
-    if (lifecycle.value !== (row.lifecycle_status ?? 'active')) {
-      await updateCredentialLifecycle(node.provider_id!, node.credential_id, lifecycle.value)
-    }
-    actionMessage.value = '设置已保存，正在等待实时状态对账。'
-    emit('applied')
-    await refreshCurrentTab()
-  } catch (error) {
-    actionError.value = error instanceof Error ? error.message : '保存设置失败'
-  } finally {
-    saving.value = false
-  }
-}
-
-async function onEmergencyApplied() {
-  emit('applied')
-  await refreshCurrentTab()
-}
-
-async function setCredentialDisabled(disabled: boolean) {
-  const node = currentNode.value
-  if (!node || saving.value || !canEdit.value) return
-  const reason = modelActionReason.value.trim()
-  if (!reason) {
-    actionError.value = '请输入维护原因。'
-    return
-  }
-  saving.value = true
-  try {
-    await setManualDisabled(node.credential_id, disabled, reason)
-    actionMessage.value = disabled ? '凭据已手工禁用。' : '凭据已恢复。'
-    modelActionReason.value = ''
-    emit('applied')
-    await refreshCurrentTab()
-  } catch (error) {
-    actionError.value = error instanceof Error ? error.message : '维护失败'
-  } finally {
-    saving.value = false
-  }
-}
-
-async function toggleSelectedModel() {
-  const node = currentNode.value
-  const model = selectedModelStatus.value
-  if (!node || !model || saving.value || !canEdit.value) return
-  const reason = modelActionReason.value.trim()
-  if (!reason) {
-    actionError.value = '请输入维护原因。'
-    return
-  }
-  const action = model.binding_unavailable_reason === 'manual_offline' ? 'online' : 'offline'
-  saving.value = true
-  try {
-    await toggleModelAvailability(node.credential_id, model.raw_model_name, action, reason)
-    actionMessage.value = action === 'online' ? '模型已恢复上线。' : '模型已手工下线。'
-    modelActionReason.value = ''
-    emit('applied')
-    await refreshCurrentTab()
-  } catch (error) {
-    actionError.value = error instanceof Error ? error.message : '模型维护失败'
-  } finally {
-    saving.value = false
-  }
-}
-
-// 节点或模型范围变化：清空会话并并行自动加载 tabs。
-// initialTab 故意不进 key：同节点内从「明细」切「设置」或抽屉内改 tab 后再点入口按钮时，仍要同步 activeTab。
-let lastWatchKey = ''
-watch(() => [props.modelValue, props.node?.credential_id, props.model] as const, ([open, credentialId, model]) => {
-  if (!open) {
-    lastWatchKey = ''
-    resetDrawerData()
-    return
-  }
-  const key = `${credentialId ?? ''}|${model ?? ''}`
-  if (key !== lastWatchKey) {
-    lastWatchKey = key
-    resetDrawerData()
-    bootstrapAllTabs()
-  }
-  activeTab.value = props.initialTab ?? 'detail'
-}, { immediate: true })
-
-watch(() => props.initialTab, (tab) => {
-  if (props.modelValue && tab) activeTab.value = tab
-})
-
-watch(activeTab, (tab) => {
-  if (visible.value) void ensureTabLoaded(tab)
-})
-
-onBeforeUnmount(() => {
-  loadController?.abort()
-  requestsController?.abort()
-  coreController?.abort()
-})
 </script>
 
 <template>
@@ -665,97 +82,39 @@ onBeforeUnmount(() => {
         <p v-if="actionMessage" class="nd-notice nd-notice--ok">{{ actionMessage }}</p>
         <p v-if="actionError" class="nd-notice nd-notice--error">{{ actionError }}</p>
 
-        <template v-if="activeTab === 'detail'">
-          <section class="nd-section">
-            <h3>实时状态</h3>
-            <dl class="nd-grid">
-              <div><dt>熔断</dt><dd :class="statusClass(node.circuit_state)">{{ node.circuit_state || '未知' }}</dd></div>
-              <div><dt>可用性</dt><dd :class="statusClass(node.availability_state)">{{ node.availability_state || '未知' }}</dd></div>
-              <div><dt>配额</dt><dd :class="statusClass(node.quota_state)">{{ node.quota_state || '未知' }}</dd></div>
-              <div><dt>健康</dt><dd :class="statusClass(node.health_status)">{{ node.health_status || '未知' }}</dd></div>
-              <div><dt>手工禁用</dt><dd>{{ node.manual_disabled ? '是' : '否' }}</dd></div>
-              <div><dt>最近错误</dt><dd class="nd-wrap">{{ node.last_error || '—' }}<small v-if="node.last_error_at"> · {{ fmtTime(node.last_error_at) }}</small></dd></div>
-            </dl>
-          </section>
+        <NodeDetailOverviewPanel
+          v-if="activeTab === 'detail'"
+          :node="node"
+          :detail-loading="detailLoading"
+          :detail-loaded="detailLoaded"
+          :candidate="candidate"
+          :candidate-loading="candidateLoading"
+          :models="models"
+          :selected-model="selectedModel"
+          :window-entries="windowEntries"
+          :window-stats="windowStats"
+          :window-source="windowSource"
+          :error-kinds="errorKinds"
+          :history="history"
+          :failed-window-entries="failedWindowEntries"
+          :failed-decisions="failedDecisions"
+          @choose-model="chooseModel"
+          @open-request="openRequestDetail"
+        />
 
-          <div v-if="detailLoading && !detailLoaded" class="nd-seg-loading" role="status">明细与近期情况加载中…</div>
+        <NodeDetailAvailabilityPanel
+          v-else-if="activeTab === 'availability'"
+          :candidate="candidate"
+          :loading="candidateLoading || detailLoading"
+        />
 
-          <template v-else-if="detailLoaded">
-            <section v-if="candidate" class="nd-section">
-              <h3>路由候选明细 <small v-if="candidateLoading">加载中…</small></h3>
-              <dl class="nd-grid">
-                <div><dt>凭据</dt><dd>#{{ candidate.credential_id }} · {{ candidate.credential_label }}</dd></div>
-                <div><dt>Provider</dt><dd>{{ candidate.provider_name }}</dd></div>
-                <div><dt>是否可路由</dt><dd :class="candidate.routable ? 'is-ok' : 'is-bad'">{{ candidate.routable ? '是' : '否' }}</dd></div>
-                <div><dt>阻断原因</dt><dd class="nd-wrap">{{ candidate.runtime_block_reason || candidate.block_reason || '—' }}</dd></div>
-                <div><dt>生命周期</dt><dd>{{ candidate.lifecycle_status || '—' }}</dd></div>
-                <div><dt>配额 / 余额</dt><dd>{{ candidate.quota_state || '—' }} / {{ candidate.balance_usd ?? '—' }} USD</dd></div>
-                <div><dt>熔断 / 冷却</dt><dd>{{ candidate.circuit_state || 'closed' }} / {{ fmtTime(candidate.cooling_until) }}</dd></div>
-                <div><dt>并发 / 会话</dt><dd>{{ candidate.effective_concurrency ?? '—' }} / {{ candidate.active_sessions ?? 0 }}</dd></div>
-                <div><dt>Tier / 权重 / 优先级</dt><dd>T{{ candidate.tier }} / {{ candidate.weight }} / {{ candidate.manual_priority ?? 99 }}</dd></div>
-                <div><dt>成功率 / P95</dt><dd>{{ pct(candidate.success_rate) }} / {{ candidate.p95_latency_ms ? `${candidate.p95_latency_ms}ms` : '—' }}</dd></div>
-                <div><dt>连续失败</dt><dd :class="(candidate.credential_consecutive_failures ?? candidate.consecutive_failures ?? 0) ? 'is-warn' : 'is-ok'">{{ candidate.credential_consecutive_failures ?? candidate.consecutive_failures ?? 0 }}</dd></div>
-                <div><dt>生效窗口</dt><dd>{{ fmtTime(candidate.effective_at) }} ～ {{ fmtTime(candidate.expires_at) }}</dd></div>
-              </dl>
-            </section>
-
-            <section v-if="models.length" class="nd-section">
-              <h3>模型状态</h3>
-              <div class="nd-models">
-                <button v-for="model in models" :key="model.raw_model_name" class="nd-model" :class="{ active: selectedModel === model.raw_model_name }" @click="chooseModel(model.raw_model_name)">
-                  <strong>{{ model.raw_model_name }}</strong>
-                  <span :class="statusClass(model.effective_state === 'available' ? 'ready' : model.effective_state)">{{ model.effective_state }}</span>
-                  <span>{{ pct(model.recent_success_rate) }} · {{ model.p95_latency_ms ?? '—' }}ms</span>
-                </button>
-              </div>
-            </section>
-
-            <section v-if="selectedModel" class="nd-section">
-              <h3>滑动窗口 <small>最近 1 小时{{ windowSource ? ` · ${windowSource}` : '' }} · 点击查看请求详情</small></h3>
-              <div v-if="windowEntries.length" class="nd-window" :aria-label="`${selectedModel} 最近调用结果`">
-                <button
-                  v-for="entry in windowEntries.slice(0, 100)"
-                  :key="`${entry.rid}-${entry.ts}`"
-                  type="button"
-                  class="nd-window-cell"
-                  :class="[entry.ok ? 'ok' : 'bad', entry.rid ? 'is-clickable' : '']"
-                  :disabled="!entry.rid"
-                  :title="`${entry.ok ? '成功' : '失败'} · ${entry.lat}ms ${entry.err || ''}${entry.rid ? ' · 点击查看详情' : ''}`"
-                  @click="openRequestDetail(entry.rid)"
-                />
-              </div>
-              <p v-else class="nd-muted">该模型在窗口内没有调用样本。</p>
-              <div v-if="windowStats" class="nd-stat-line">总计 {{ windowStats.total }} · 成功 {{ windowStats.success }} · 失败 {{ windowStats.failed }} · 失败率 {{ (windowStats.failure_rate * 100).toFixed(1) }}%</div>
-              <div v-if="errorKinds.length" class="nd-error-kinds"><span v-for="[kind, count] in errorKinds" :key="kind">{{ kind }} × {{ count }}</span></div>
-            </section>
-
-            <NodeDetailAccessErrorsPanel
-              :failed-window-entries="failedWindowEntries"
-              :failed-decisions="failedDecisions"
-              :fmt-time="fmtTime"
-              @open="openRequestDetail"
-            />
-
-            <section class="nd-section">
-              <h3>模型状态变化</h3>
-              <p v-if="!history.length" class="nd-muted">暂无状态变化记录。</p>
-              <ol v-else class="nd-history"><li v-for="(event, index) in history" :key="index"><time>{{ fmtTime(event.ts) }}</time><strong>{{ event.source === 'manual' ? '手动' : '自动' }} · {{ event.event }}</strong><span>{{ event.reason || event.error_code || event.error_message || '—' }}</span></li></ol>
-            </section>
-          </template>
-        </template>
-
-        <template v-else-if="activeTab === 'availability'">
-          <NodeDetailAvailabilityPanel :candidate="candidate" :loading="candidateLoading || detailLoading" />
-        </template>
-
-        <template v-else-if="activeTab === 'requests'">
-          <div v-if="requestsLoading && !requestsLoaded" class="nd-seg-loading" role="status">最近路由请求加载中…</div>
-          <section v-else class="nd-section">
-            <h3>最近路由请求 <small v-if="decisions.length">({{ decisions.length }})</small></h3>
-            <p v-if="!decisions.length" class="nd-muted">暂无路由请求记录。</p>
-            <div v-else class="nd-table-wrap"><table class="nd-table"><thead><tr><th>时间</th><th>请求</th><th>模型</th><th>结果</th><th>延迟</th><th>错误</th></tr></thead><tbody><tr v-for="decision in decisions" :key="decision.request_id"><td>{{ fmtTime(decision.ts) }}</td><td><button type="button" class="nd-link" @click="openRequestDetail(decision.request_id)">{{ decision.request_id.slice(0, 8) }}</button></td><td>{{ decision.client_model || decision.model }}</td><td :class="decision.success ? 'is-ok' : 'is-bad'">{{ decision.success ? '成功' : '失败' }}</td><td>{{ decision.latency_ms == null ? '—' : `${decision.latency_ms}ms` }}</td><td>{{ decision.error_class || '—' }}</td></tr></tbody></table></div>
-          </section>
-        </template>
+        <NodeDetailRequestsPanel
+          v-else-if="activeTab === 'requests'"
+          :requests-loading="requestsLoading"
+          :requests-loaded="requestsLoaded"
+          :decisions="decisions"
+          @open-request="openRequestDetail"
+        />
 
         <template v-else-if="activeTab === 'settings'">
           <div v-if="settingsLoading && !coreLoaded && !candidate" class="nd-seg-loading" role="status">设置与维护加载中…</div>
@@ -766,44 +125,48 @@ onBeforeUnmount(() => {
             </div>
             <p v-if="editGateHint" class="nd-notice nd-notice--warn">{{ editGateHint }}</p>
             <template v-if="settingsSubTab === 'maintain'">
-              <section class="nd-section">
-                <h3>连通性 <small v-if="coreLoading">核心状态加载中…</small></h3>
-                <div class="nd-actions">
-                  <button class="btn btn-primary btn-sm" :disabled="saving || !canEdit || !selectedModel" @click="testNow">{{ saving ? '处理中…' : '会话 Ping' }}</button>
-                  <span v-if="pingResult" class="nd-muted">{{ pingResult.status }} · {{ pingResult.latency_ms }}ms · {{ fmtTime(pingResult.tested_at) }}</span>
-                </div>
-              </section>
-              <NodeDetailEmergencyPanel
+              <NodeDetailMaintainPanel
+                :can-edit="canEdit"
+                :saving="saving"
+                :core-loading="coreLoading"
+                :selected-model="selectedModel"
+                :ping-result="pingResult"
                 :candidate="candidate"
-                :raw-model="selectedModel"
-                :can-edit="canEdit"
-                @applied="onEmergencyApplied"
-                @message="actionMessage = $event"
-                @error="actionError = $event"
-              />
-              <section v-if="candidateLoading && !candidate" class="nd-section">
-                <h3>路由排序与生命周期</h3>
-                <div class="nd-seg-loading" role="status">候选排序加载中…</div>
-              </section>
-              <section v-else-if="candidate" class="nd-section">
-                <h3>路由排序与生命周期 <small>{{ selectedModel }}</small></h3>
-                <div class="nd-form-grid"><label>人工优先级<input v-model.number="manualPriority" type="number" min="0" max="99" :disabled="!canEdit" /></label><label>Routing Tier<input v-model.number="routingTier" type="number" min="0" max="9" :disabled="!canEdit" /></label><label>权重<input v-model.number="weight" type="number" min="0" max="10000" :disabled="!canEdit" /></label><label>生命周期<select v-model="lifecycle" :disabled="!canEdit"><option value="active">active（在用）</option><option value="disabled">disabled（停用）</option><option value="suspended">suspended（暂停）</option><option value="retired">retired（退役）</option></select></label></div><button class="btn btn-primary btn-sm" :disabled="saving || !canEdit" @click="saveSettings">保存设置</button>
-              </section>
-              <NodeDetailConcurrencyPanel
-                v-if="node"
-                :credential-id="node.credential_id"
-                :provider-id="resolvedProviderId"
-                :monitor="monitor"
-                :monitor-loading="coreLoading && !monitor"
-                :can-edit="canEdit"
-                @saved="actionMessage = '并发/指纹槽位已保存。'; emit('applied')"
-                @error="actionError = $event"
-              />
-              <section class="nd-section">
-                <h3>凭据与模型维护</h3>
-                <label class="nd-reason">维护原因（必填）<input v-model="modelActionReason" :disabled="!canEdit" placeholder="说明本次状态修改原因" /></label>
-                <div class="nd-actions"><button class="btn btn-danger btn-sm" :disabled="saving || !canEdit" @click="setCredentialDisabled(true)">禁用凭据</button><button class="btn btn-success btn-sm" :disabled="saving || !canEdit" @click="setCredentialDisabled(false)">恢复凭据</button><button v-if="selectedModelStatus" class="btn btn-sm" :disabled="saving || !canEdit" @click="toggleSelectedModel">{{ selectedModelStatus.binding_unavailable_reason === 'manual_offline' ? '恢复当前模型' : '下线当前模型' }}</button></div>
-              </section>
+                :candidate-loading="candidateLoading"
+                v-model:lifecycle="lifecycle"
+                v-model:manual-priority="manualPriority"
+                v-model:routing-tier="routingTier"
+                v-model:weight="weight"
+                v-model:model-action-reason="modelActionReason"
+                :selected-model-status="selectedModelStatus"
+                @test-now="testNow"
+                @save-settings="saveSettings"
+                @set-credential-disabled="setCredentialDisabled"
+                @toggle-selected-model="toggleSelectedModel"
+              >
+                <template #emergency>
+                  <NodeDetailEmergencyPanel
+                    :candidate="candidate"
+                    :raw-model="selectedModel"
+                    :can-edit="canEdit"
+                    @applied="onEmergencyApplied"
+                    @message="actionMessage = $event"
+                    @error="actionError = $event"
+                  />
+                </template>
+                <template #concurrency>
+                  <NodeDetailConcurrencyPanel
+                    v-if="node"
+                    :credential-id="node.credential_id"
+                    :provider-id="resolvedProviderId"
+                    :monitor="monitor"
+                    :monitor-loading="coreLoading && !monitor"
+                    :can-edit="canEdit"
+                    @saved="actionMessage = '并发/指纹槽位已保存。'; emit('applied')"
+                    @error="actionError = $event"
+                  />
+                </template>
+              </NodeDetailMaintainPanel>
             </template>
             <NodeDetailOtherModelsPanel
               v-else-if="node"
