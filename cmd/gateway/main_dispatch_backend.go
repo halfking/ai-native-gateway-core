@@ -28,6 +28,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"strconv"
@@ -37,6 +38,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/kaixuan/llm-gateway-go/domains/dispatch"
+	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
 )
 
 // instanceIDForRedisBackend returns the free-form diagnostic identifier
@@ -156,4 +158,54 @@ func resolveGovernorObserver() (time.Duration, bool) {
 			"supported", []string{"off", "observe"})
 		return 0, false
 	}
+}
+
+// envCapacityAwareSort returns the trimmed, lowercased value of
+// LLM_GATEWAY_DISPATCH_CAPACITY_AWARE_SORT (empty string when unset).
+// Stage D: capacity-aware soft-rank in dispatchRoute.
+func envCapacityAwareSort() string {
+	return strings.ToLower(strings.TrimSpace(os.Getenv("LLM_GATEWAY_DISPATCH_CAPACITY_AWARE_SORT")))
+}
+
+// resolveCapacityAwareSort returns (enabled, error). Enabled=true when
+// the env flag is explicitly "on". Default off; bogus value returns an
+// error and falls back to off (with the caller slog-warn).
+func resolveCapacityAwareSort() (bool, error) {
+	mode := envCapacityAwareSort()
+	switch mode {
+	case "", "off":
+		return false, nil
+	case "on":
+		return true, nil
+	default:
+		return false, fmt.Errorf("dispatch: unknown LLM_GATEWAY_DISPATCH_CAPACITY_AWARE_SORT value %q", mode)
+	}
+}
+
+// wireDispatchCapacityAwareSort (Stage D) is the composition-root entry
+// for the capacity-aware soft-rank hook. Reads
+// LLM_GATEWAY_DISPATCH_CAPACITY_AWARE_SORT and, when "on", wires
+// Executor.SetCapacityAwareSort with a snapFn closure that defers to
+// Pipeline.SnapshotForCred (the per-cred cache populated by the
+// Stage C.2 observer tick). Default off → strict no-op, matches
+// B.4 / C.2 env-flag style.
+//
+// The Executor is the wiring target (not Deps) because the field
+// pair capacityAwareSortOn + capacityAwareSnapFn is owned by Executor
+// and toggled at composition-root time, while Deps is constructed
+// per-request in NewPipeline.
+func wireDispatchCapacityAwareSort(e *executors.Executor, p *dispatch.Pipeline) {
+	if e == nil || p == nil {
+		return
+	}
+	enabled, err := resolveCapacityAwareSort()
+	if err != nil {
+		slog.Warn("dispatch: capacity-aware sort disabled", "error", err)
+		return
+	}
+	if !enabled {
+		return
+	}
+	e.SetCapacityAwareSort(true, dispatch.SnapshotFnFromProvider(p))
+	slog.Info("dispatch: capacity-aware soft sort wired")
 }

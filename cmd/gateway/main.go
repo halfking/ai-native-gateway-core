@@ -5651,6 +5651,13 @@ func main() {
 		// wrapped ErrGovernorUnavailable, 严禁静默回退内存版。
 		// Stage D/E 才会让 credForwarder.gov 真正读这个 backend。
 		wireDispatchGovernorBackend(pipeline, redisClientForCache.Client(), instanceIDForRedisBackend())
+		// 分布式容量治理 Stage D (2026-08-22): 通过
+		// LLM_GATEWAY_DISPATCH_CAPACITY_AWARE_SORT 软路由开关。默认 off —
+		// dispatchRoute 维持原始 Router.PlanCandidatesPinned 排序,零行为
+		// 变化;开启后 SnapshotProvider.SnapshotForCred per-cred 查表 +
+		// dispatch.ApplySoftPenalty 把 QueueFull / GovernorSaturated 候选
+		// 移到列表尾 (不剔除)。Stage C.2 observer 需要单独开启才会填 cache。
+		wireDispatchCapacityAwareSort(routingExec, pipeline)
 	}
 	if liveStreamHub != nil {
 		projection := gatewayQueueProjection.Load()

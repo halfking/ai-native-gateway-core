@@ -40,6 +40,18 @@ type SnapshotProvider interface {
 	// revision (0 = no policy applied yet). Used to populate
 	// snap.SpecRevision so observers can drop stale observations.
 	ActiveRevision() uint64
+	// SnapshotForCred returns the latest cached SnapshotState for the
+	// given credential. Returns (SnapshotStateUnknown, false) when the
+	// cred is unknown to the pipeline. Safe to call concurrently with
+	// ForEachCredSnapshot — the implementation reads from a dedicated
+	// cache populated by the observer tick, NOT from credMu, so it
+	// does not block forwarder construction.
+	//
+	// Stage D's capacity-aware soft sort consumes this API on the per-
+	// request hot path; closing observer (off) leaves the cache empty
+	// and the lookup fails open (ok=false → treated as Ready), so the
+	// sort degenerates to a no-op.
+	SnapshotForCred(credID int) (SnapshotState, bool)
 }
 
 // governorSnapshotObserver is the periodic collector. Construct via
