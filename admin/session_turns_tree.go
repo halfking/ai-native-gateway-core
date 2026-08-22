@@ -209,7 +209,7 @@ func querySessionTurnsTree(ctx context.Context, db sessionTurnsTreeDB, p session
 		WHERE (t.turn_number > $%d OR (t.turn_number = $%d AND t.request_id > $%d))
 		ORDER BY t.turn_number ASC, t.request_id ASC
 		LIMIT $%d`,
-		len(args)+1, len(args)+2, len(args)+3, len(args)+4)
+		len(args)+1, len(args)+1, len(args)+2, len(args)+3)
 	args = append(args, p.Cursor.TurnNumber, p.Cursor.RequestID, p.Limit+1)
 
 	rows, err := db.Query(ctx, mainSQL, args...)
