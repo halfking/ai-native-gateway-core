@@ -20,7 +20,7 @@ func (h *Handler) getProviderModels(w http.ResponseWriter, r *http.Request, prov
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	rows, err := h.db.Query(ctx, offerListSQL+`
+	rows, err := h.db.Query(ctx, offerListSQLFor(ctx, h.db)+`
 		WHERE c.provider_id = $1
 		ORDER BY mo.raw_model_name
 	`, providerID)
@@ -164,7 +164,7 @@ func (h *Handler) queryProviderModels(w http.ResponseWriter, r *http.Request, pr
 	}
 
 	offset := (req.Page - 1) * req.PageSize
-	dataSQL := fmt.Sprintf(offerListSQL+`
+	dataSQL := fmt.Sprintf(offerListSQLFor(ctx, h.db)+`
 		WHERE %s
 		ORDER BY mo.raw_model_name
 		LIMIT $%d OFFSET $%d
