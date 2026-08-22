@@ -380,23 +380,35 @@ func (p *Pipeline) SnapshotForCred(credID int) (SnapshotState, bool) {
 // credForwarders under credMu (read lock) and yields one
 // GovernorSnapshot per forwarder. The pipeline-level state is read
 // directly (no extra synchronization beyond credMu).
+//
+// State cache writes (Stage D) happen AFTER credMu is dropped — see
+// runForEachCredSnapshot. Keeping the credStateCacheMu.Lock acquisition
+// outside the credMu section is what decouples the per-request
+// SnapshotForCred reader from forwarder construction under contention.
 func (p *Pipeline) ForEachCredSnapshot(fn func(snap GovernorSnapshot) error) error {
 	if p == nil || fn == nil {
 		return nil
 	}
+	return p.runForEachCredSnapshot(fn)
+}
+
+// runForEachCredSnapshot does the actual walk. It is split from
+// ForEachCredSnapshot so the credMu critical region can end before
+// applyStateWrites takes credStateCacheMu.Lock. The two-mutex dance
+// would otherwise hold credMu across the cache write, which would
+// stall getOrCreateForwarder behind every observer tick.
+func (p *Pipeline) runForEachCredSnapshot(fn func(snap GovernorSnapshot) error) error {
+	nowMS := time.Now().UnixMilli()
+	// stateWrites collected under credMu; flushed after credMu.Unlock().
+	stateWrites := make(map[int]SnapshotState)
+	var walkErr error
+
 	p.credMu.Lock()
-	defer p.credMu.Unlock()
 	if len(p.forwarders) == 0 {
+		p.credMu.Unlock()
+		// No-op: nothing to apply.
 		return nil
 	}
-	nowMS := time.Now().UnixMilli()
-	// Stage D: collect (credID, state) writes to apply under the
-	// dedicated cache lock after we drop credMu. Doing the cache write
-	// inside credMu would briefly couple the per-request SnapshotForCred
-	// reader (which uses credStateCacheMu) to forwarder construction
-	// under high contention; the deferred batch write keeps the two
-	// mutexes decoupled.
-	stateWrites := make(map[int]SnapshotState, len(p.forwarders))
 	for _, cf := range p.forwarders {
 		snap := p.snapshotForCredForwarderLocked(cf)
 		// AgeMS = delta from previous visit; 0 on the first visit.
@@ -417,15 +429,16 @@ func (p *Pipeline) ForEachCredSnapshot(fn func(snap GovernorSnapshot) error) err
 			stateWrites[cf.cred.CredentialID] = snap.State
 		}
 		if err := fn(snap); err != nil {
-			// Drain whatever writes we collected so far before
-			// returning, then propagate the error. Future snapshots
-			// remain stale-but-still-readable from the previous cache.
-			p.applyStateWrites(stateWrites)
-			return err
+			walkErr = err
+			break
 		}
 	}
+	p.credMu.Unlock()
+
+	// Cache write happens OUTSIDE credMu — the whole point of the
+	// split. SnapshotForCred readers take credStateCacheMu.RLock() only.
 	p.applyStateWrites(stateWrites)
-	return nil
+	return walkErr
 }
 
 // applyStateWrites performs the credStateCacheMu.Lock() batch write.

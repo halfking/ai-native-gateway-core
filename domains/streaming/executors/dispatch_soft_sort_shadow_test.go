@@ -18,14 +18,13 @@ type stubProviderSoftSort struct {
 }
 
 func (s *stubProviderSoftSort) ForEachCredSnapshot(fn func(snap dispatch.GovernorSnapshot) error) error {
-	for id, st := range s.states {
+	for _, st := range s.states {
 		if err := fn(dispatch.GovernorSnapshot{
 			Backend:    string(dispatch.BackendLocal),
 			Mode:       dispatch.ModeConcurrency,
 			State:      st,
 			BackendErr: nil,
 		}); err != nil {
-			_ = id
 			return err
 		}
 	}
