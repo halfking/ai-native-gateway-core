@@ -1,5 +1,5 @@
 <template>
-  <div class="dashboard-stats-row">
+  <div class="dashboard-stats-row" :class="{ 'dashboard-stats-row--loading': props.loading }">
     <el-row :gutter="16">
       <el-col :xs="24" :sm="12" :md="8" :lg="6" :xl="3">
         <el-card shadow="hover" class="stat-card">
@@ -230,4 +230,6 @@ const changeClass = (change: number, isNegative: boolean) => {
   .stat-icon { width: 40px; height: 40px; }
   .stat-value { font-size: 18px; }
 }
+
+.dashboard-stats-row--loading { opacity: .5; transition: opacity .2s ease; pointer-events: none; }
 </style>
