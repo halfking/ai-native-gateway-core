@@ -100,7 +100,20 @@ CREATE VIEW public.request_logs_with_current_month AS
     request_logs_hot.agent_name,
     request_logs_hot.agent_type,
     request_logs_hot.client_protocol,
-    request_logs_hot.canonical_model
+    request_logs_hot.canonical_model,
+    request_logs_hot.t0_arrived_at,
+    request_logs_hot.t1_total_enqueued_at,
+    request_logs_hot.t2_total_dequeued_at,
+    request_logs_hot.t3_model_enqueued_at,
+    request_logs_hot.t4_model_dequeued_at,
+    request_logs_hot.t5_cred_enqueued_at,
+    request_logs_hot.t6_cred_dequeued_at,
+    request_logs_hot.t7_forward_start_at,
+    request_logs_hot.t8_response_start_at,
+    request_logs_hot.t9_response_end_at,
+    request_logs_hot.request_type,
+    request_logs_hot.is_final_success,
+    request_logs_hot.origin_actor
    FROM public.request_logs_hot
 UNION ALL
  SELECT request_logs.id,
@@ -200,7 +213,20 @@ UNION ALL
     request_logs.agent_name,
     request_logs.agent_type,
     request_logs.client_protocol,
-    request_logs.canonical_model
+    request_logs.canonical_model,
+    request_logs.t0_arrived_at,
+    request_logs.t1_total_enqueued_at,
+    request_logs.t2_total_dequeued_at,
+    request_logs.t3_model_enqueued_at,
+    request_logs.t4_model_dequeued_at,
+    request_logs.t5_cred_enqueued_at,
+    request_logs.t6_cred_dequeued_at,
+    request_logs.t7_forward_start_at,
+    request_logs.t8_response_start_at,
+    request_logs.t9_response_end_at,
+    request_logs.request_type,
+    request_logs.is_final_success,
+    request_logs.origin_actor
    FROM public.request_logs;
 
 
@@ -208,5 +234,5 @@ UNION ALL
 -- Name: VIEW request_logs_with_current_month; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON VIEW public.request_logs_with_current_month IS 'Hot + monthly partitions UNION. Recreated by migration 459 (2026-07-27) to expose agent_name / agent_type / client_protocol / canonical_model after ADD COLUMN via migrations 443 + 458. Preserves prior VIEW column set to avoid hot/parent type drift (see 448).';
+COMMENT ON VIEW public.request_logs_with_current_month IS 'Hot + monthly partitions UNION. SSOT synced 2026-08-22: queue timestamps (491), request_type (510), is_final_success (532), origin_actor (561).';
 
