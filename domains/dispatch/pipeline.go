@@ -3,6 +3,7 @@ package dispatch
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"math"
 	"strconv"
 	"sync"
@@ -679,7 +680,8 @@ func (p *Pipeline) enqueueModel(name string, qr *QueuedRequest) bool {
 	select {
 	case mq.ch <- qr:
 		depth := mq.depth.Add(1)
-		metricModelQueueDepth.WithLabelValues(name).Inc()
+		metricModelQueueDepth.WithLabelValues().Inc()
+		slog.Debug("dispatch: model enqueue", "model", name, "depth", depth)
 		p.observeQueue(QueueObservation{Kind: QueueModelDepth, Model: name, Depth: depth, Delta: 1})
 		// V3.3-OBS OBS-B1 (2026-08-15): model_enqueued 动作事件（S4）。
 		p.liveActions.Emit(ctxOf(qr), liveactions.ActionEvent{
@@ -745,14 +747,16 @@ func (p *Pipeline) runModelDrainer(mq *modelQueue) {
 		select {
 		case qr := <-mq.ch:
 			depth := mq.depth.Add(-1)
-			metricModelQueueDepth.WithLabelValues(mq.name).Dec()
+			metricModelQueueDepth.WithLabelValues().Dec()
+			slog.Debug("dispatch: model dequeue", "model", mq.name, "depth", depth)
 			p.observeQueue(QueueObservation{Kind: QueueModelDepth, Model: mq.name, Depth: depth, Delta: -1})
 
 			// V3.1: Record T2 timestamp (model queue dequeue, routing start)
 			qr.SetT2_TotalDequeued()
 
 			wait := time.Since(qr.EnqueuedAt).Seconds()
-			metricModelQueueWait.WithLabelValues(mq.name).Observe(wait)
+			metricModelQueueWait.WithLabelValues().Observe(wait)
+			slog.Debug("dispatch: model dequeue wait", "model", mq.name, "wait_ms", int(wait*1000))
 
 			// V3.1: Record T3 timestamp (enqueue to dispatcher - model resolution queue)
 			qr.SetT3_ModelEnqueued()
