@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
 // TestRoutingCandidateBindingUpdate_InputValidation covers the input-side
 // guards added in 2026-07-24 for the candidate-binding PATCH endpoint:
 // - wrong method
@@ -629,4 +630,3 @@ func TestRoutingCandidateBindingReorder_ConcurrentConflict(t *testing.T) {
 		t.Fatalf("final priorities should sum to 3, got %+v", priorities)
 	}
 }
-

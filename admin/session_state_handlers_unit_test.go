@@ -19,7 +19,7 @@ func testFilterByHealthGrade(items []sessionListItem, gradeFilter string) []sess
 			grades = append(grades, string(g))
 		}
 	}
-	
+
 	gradeSet := make(map[string]bool)
 	for _, g := range grades {
 		gradeSet[g] = true
@@ -199,7 +199,7 @@ func TestStatusPriority(t *testing.T) {
 	}
 
 	testSortSessionList(items, "")
-	
+
 	if items[0].Status != "error" {
 		t.Errorf("Expected error status first, got %s", items[0].Status)
 	}

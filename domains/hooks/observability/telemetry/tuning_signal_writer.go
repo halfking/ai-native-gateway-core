@@ -60,12 +60,12 @@ type TuningSignal struct {
 
 // tuningWriter manages the batching worker for tuning_signals.
 type tuningWriter struct {
-	queue   chan TuningSignal
-	wg      sync.WaitGroup
-	stop    chan struct{}
-	once    sync.Once // guards StartTuningWriter
+	queue    chan TuningSignal
+	wg       sync.WaitGroup
+	stop     chan struct{}
+	once     sync.Once // guards StartTuningWriter
 	stopOnce sync.Once // guards StopTuningWriter (close(stop) exactly once)
-	pool    poolExec
+	pool     poolExec
 }
 
 // poolExec is the minimal interface from Client we depend on, so the

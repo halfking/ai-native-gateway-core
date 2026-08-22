@@ -444,12 +444,12 @@ func TestRetryManager_calculateBackoff(t *testing.T) {
 		attempt  int
 		expected time.Duration
 	}{
-		{0, 1 * time.Second},     // 1 * 2^0 = 1
-		{1, 2 * time.Second},     // 1 * 2^1 = 2
-		{2, 4 * time.Second},     // 1 * 2^2 = 4
-		{3, 8 * time.Second},     // 1 * 2^3 = 8
-		{4, 16 * time.Second},    // 1 * 2^4 = 16
-		{5, 30 * time.Second},    // 1 * 2^5 = 32, 但限制在 maxBackoff=30
+		{0, 1 * time.Second},  // 1 * 2^0 = 1
+		{1, 2 * time.Second},  // 1 * 2^1 = 2
+		{2, 4 * time.Second},  // 1 * 2^2 = 4
+		{3, 8 * time.Second},  // 1 * 2^3 = 8
+		{4, 16 * time.Second}, // 1 * 2^4 = 16
+		{5, 30 * time.Second}, // 1 * 2^5 = 32, 但限制在 maxBackoff=30
 	}
 
 	for _, tt := range tests {

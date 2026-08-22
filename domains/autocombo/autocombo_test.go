@@ -154,9 +154,9 @@ func TestResolver_BuiltinTemplates(t *testing.T) {
 	resolver := &Resolver{}
 
 	testCases := []struct {
-		modelID   string
-		variant   Variant
-		wantTier  string // expected TierFilter's first item ("" if any)
+		modelID  string
+		variant  Variant
+		wantTier string // expected TierFilter's first item ("" if any)
 	}{
 		// round 2 已有的 free tier 家族.
 		{"auto/free", VariantCheap, "free"},
@@ -167,7 +167,7 @@ func TestResolver_BuiltinTemplates(t *testing.T) {
 		{"auto/creative:free", VariantCreative, "free"},
 
 		// round 3 M8 新增.
-		{"auto/coding", VariantCoding, ""},     // 任意 tier
+		{"auto/coding", VariantCoding, ""}, // 任意 tier
 		{"auto/coding:cheap", VariantCoding, "cheap"},
 		{"auto/coding:pro", VariantCoding, ""}, // pro 表示允许 paid
 		{"auto/reasoning", VariantReasoning, ""},
@@ -233,8 +233,8 @@ func TestResolver_UnknownCombo(t *testing.T) {
 // TestNewEngine_RejectsBadWeights 验证 round 3 M2 权重和校验.
 func TestNewEngine_RejectsBadWeights(t *testing.T) {
 	badCases := []ScoringWeights{
-		{HealthScore: 0.5, LatencyP95: 0.3},                   // 0.8 < 0.99
-		{HealthScore: 0.5, LatencyP95: 0.7},                   // 1.2 > 1.01
+		{HealthScore: 0.5, LatencyP95: 0.3},                      // 0.8 < 0.99
+		{HealthScore: 0.5, LatencyP95: 0.7},                      // 1.2 > 1.01
 		{HealthScore: 0.0, LatencyP95: 0.0, QuotaRemaining: 0.0}, // 0
 	}
 	for _, w := range badCases {

@@ -275,31 +275,31 @@ func (h *Handler) queryProviderModels(w http.ResponseWriter, r *http.Request, pr
 	defer rows.Close()
 
 	type modelOffer struct {
-		ID                  int        `json:"id"`
-		CredentialID        int        `json:"credential_id"`
-		CredentialLabel     string     `json:"credential_label"`
-		RawModelName        string     `json:"raw_model_name"`
-		StandardizedName    string     `json:"standardized_name"`
-		CanonicalID         *int       `json:"canonical_id"`
-		DisplayName         string     `json:"display_name"`
-		Available           bool       `json:"available"`
-		UnavailableReason   *string    `json:"unavailable_reason"`
-		UnavailableAt       *time.Time `json:"unavailable_at"`
-		P95LatencyMs        *int       `json:"p95_latency_ms"`
-		SuccessRate         *float64   `json:"success_rate"`
-		InputPrice          *float64   `json:"input_price"`
-		OutputPrice         *float64   `json:"output_price"`
-		LastSeenAt          *time.Time `json:"last_seen_at"`
-		RoutingTier         string     `json:"routing_tier"`
-		AvailabilitySource  string     `json:"availability_source"`
-		CanonicalStandardIQ *float64   `json:"canonical_standard_iq"`
-		CanonicalName       string     `json:"canonical_name"`
-		NodeIQ              *float64   `json:"node_iq"`
-		NodeIQAvg           *float64   `json:"node_iq_avg"`
-		NodeIQSampleCount   int        `json:"node_iq_sample_count"`
-		NodeIQTestedAt      *time.Time `json:"node_iq_tested_at"`
-		ContextWindow         *int `json:"context_window"`
-		ContextWindowOverride *int `json:"context_window_override"`
+		ID                    int        `json:"id"`
+		CredentialID          int        `json:"credential_id"`
+		CredentialLabel       string     `json:"credential_label"`
+		RawModelName          string     `json:"raw_model_name"`
+		StandardizedName      string     `json:"standardized_name"`
+		CanonicalID           *int       `json:"canonical_id"`
+		DisplayName           string     `json:"display_name"`
+		Available             bool       `json:"available"`
+		UnavailableReason     *string    `json:"unavailable_reason"`
+		UnavailableAt         *time.Time `json:"unavailable_at"`
+		P95LatencyMs          *int       `json:"p95_latency_ms"`
+		SuccessRate           *float64   `json:"success_rate"`
+		InputPrice            *float64   `json:"input_price"`
+		OutputPrice           *float64   `json:"output_price"`
+		LastSeenAt            *time.Time `json:"last_seen_at"`
+		RoutingTier           string     `json:"routing_tier"`
+		AvailabilitySource    string     `json:"availability_source"`
+		CanonicalStandardIQ   *float64   `json:"canonical_standard_iq"`
+		CanonicalName         string     `json:"canonical_name"`
+		NodeIQ                *float64   `json:"node_iq"`
+		NodeIQAvg             *float64   `json:"node_iq_avg"`
+		NodeIQSampleCount     int        `json:"node_iq_sample_count"`
+		NodeIQTestedAt        *time.Time `json:"node_iq_tested_at"`
+		ContextWindow         *int       `json:"context_window"`
+		ContextWindowOverride *int       `json:"context_window_override"`
 	}
 
 	offers := make([]modelOffer, 0)

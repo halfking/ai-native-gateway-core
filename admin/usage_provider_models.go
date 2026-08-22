@@ -21,11 +21,11 @@ type providerModelUsage struct {
 }
 
 type providerDailyModelUsage struct {
-	Date             string  `json:"date"`
-	Model            string  `json:"model"`
-	RequestCount     int     `json:"request_count"`
-	TotalTokens      int     `json:"total_tokens"`
-	CostUSD          float64 `json:"cost_usd"`
+	Date         string  `json:"date"`
+	Model        string  `json:"model"`
+	RequestCount int     `json:"request_count"`
+	TotalTokens  int     `json:"total_tokens"`
+	CostUSD      float64 `json:"cost_usd"`
 }
 
 func (h *Handler) usageProviderModels(w http.ResponseWriter, r *http.Request, providerID int) {

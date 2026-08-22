@@ -80,7 +80,7 @@ func TestContextAttrsEntry_ApplyAttrsFromContext(t *testing.T) {
 	t.Run("first-write-wins: pre-set fields are not overwritten", func(t *testing.T) {
 		preExisting := "pre-existing-id"
 		e := &ContextAttrsEntry{
-			RequestID:   "test-3",
+			RequestID:    "test-3",
 			IdentityHash: &preExisting,
 		}
 		ctx := context.Background()
@@ -94,7 +94,7 @@ func TestContextAttrsEntry_ApplyAttrsFromContext(t *testing.T) {
 	t.Run("empty string ctx values do not overwrite", func(t *testing.T) {
 		preExisting := "kept"
 		e := &ContextAttrsEntry{
-			RequestID:   "test-4",
+			RequestID:    "test-4",
 			IdentityHash: &preExisting,
 		}
 		ctx := context.WithValue(context.Background(), AttrsCtxKey("attrs.identity_hash"), "")
@@ -108,7 +108,7 @@ func TestContextAttrsEntry_ApplyAttrsFromContext(t *testing.T) {
 func TestContextAttrsEntry_FingerprintRawJSON(t *testing.T) {
 	raw := json.RawMessage(`{"device_seed":"abc","user_agent":"claude-code/1.0"}`)
 	e := &ContextAttrsEntry{
-		RequestID:     "test-5",
+		RequestID:      "test-5",
 		FingerprintRaw: raw,
 	}
 	if string(e.FingerprintRaw) != string(raw) {

@@ -14,9 +14,9 @@ import (
 //   - 支持最大重试次数限制
 //   - 上下文取消支持
 type RetryManager struct {
-	maxRetries   int
-	baseBackoff  time.Duration
-	maxBackoff   time.Duration
+	maxRetries  int
+	baseBackoff time.Duration
+	maxBackoff  time.Duration
 }
 
 // NewRetryManager 创建重试管理器

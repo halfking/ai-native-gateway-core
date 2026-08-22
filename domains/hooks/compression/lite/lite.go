@@ -33,8 +33,8 @@ type Options struct {
 
 // Result 是 Apply 返回的 stage 应用结果。
 type Result struct {
-	Techniques []string // 应用的 stage 名（whitespace|system-dedup|...），有序
-	InputChars int
+	Techniques  []string // 应用的 stage 名（whitespace|system-dedup|...），有序
+	InputChars  int
 	OutputChars int
 }
 

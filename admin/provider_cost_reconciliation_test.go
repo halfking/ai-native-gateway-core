@@ -21,13 +21,13 @@ type fakeCostReconciliationService struct {
 func (s *fakeCostReconciliationService) ImportBill(ctx context.Context, bill providerprofile.ProviderBill) (*providerprofile.ReconciliationRecord, error) {
 	s.imported = append(s.imported, bill)
 	rec := &providerprofile.ReconciliationRecord{
-		ProviderID:         bill.ProviderID,
-		Month:              bill.Month,
-		ProviderTotalCost:  bill.TotalCost,
+		ProviderID:          bill.ProviderID,
+		Month:               bill.Month,
+		ProviderTotalCost:   bill.TotalCost,
 		ProviderTotalTokens: bill.TotalTokens,
-		CostDiffRate:       0.2,
-		TokenDiffRate:      0,
-		DataSource:         bill.DataSource,
+		CostDiffRate:        0.2,
+		TokenDiffRate:       0,
+		DataSource:          bill.DataSource,
 	}
 	return rec, nil
 }

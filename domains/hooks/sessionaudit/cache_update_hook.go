@@ -39,7 +39,7 @@ import (
 // 失败仅记录日志，不阻断主流程。
 type CacheUpdateHook struct {
 	sessionCache   *compression.SessionCache
-	now            func() time.Time // 可注入测试时钟
+	now            func() time.Time                // 可注入测试时钟
 	stateProjector *analysis.SessionStateProjector // 可选：把 v6 投影到 session_tags
 }
 

@@ -24,31 +24,31 @@ func NewAdminService(db DBTX, executor *Executor) *AdminService {
 
 // ModuleExecutionStats 模块执行统计
 type ModuleExecutionStats struct {
-	ModuleName        string  `json:"module_name"`
-	Status            string  `json:"status"`
-	ExecutionCount    int64   `json:"execution_count"`
-	UniqueSessions    int64   `json:"unique_sessions"`
-	AvgDurationMs     float64 `json:"avg_duration_ms"`
-	P50DurationMs     float64 `json:"p50_duration_ms"`
-	P95DurationMs     float64 `json:"p95_duration_ms"`
-	P99DurationMs     float64 `json:"p99_duration_ms"`
-	ExecutionsLastHour int64  `json:"executions_last_hour"`
+	ModuleName         string  `json:"module_name"`
+	Status             string  `json:"status"`
+	ExecutionCount     int64   `json:"execution_count"`
+	UniqueSessions     int64   `json:"unique_sessions"`
+	AvgDurationMs      float64 `json:"avg_duration_ms"`
+	P50DurationMs      float64 `json:"p50_duration_ms"`
+	P95DurationMs      float64 `json:"p95_duration_ms"`
+	P99DurationMs      float64 `json:"p99_duration_ms"`
+	ExecutionsLastHour int64   `json:"executions_last_hour"`
 }
 
 // ModuleCacheHitRate 模块缓存命中率
 type ModuleCacheHitRate struct {
-	ModuleName    string  `json:"module_name"`
-	TotalExecutions int64 `json:"total_executions"`
-	CacheSkips    int64   `json:"cache_skips"`
-	SkipRatePct   float64 `json:"skip_rate_pct"`
+	ModuleName      string  `json:"module_name"`
+	TotalExecutions int64   `json:"total_executions"`
+	CacheSkips      int64   `json:"cache_skips"`
+	SkipRatePct     float64 `json:"skip_rate_pct"`
 }
 
 // SessionExecutionSummary 会话执行汇总
 type SessionExecutionSummary struct {
-	GwSessionID    string                  `json:"gw_session_id"`
-	TenantID       string                  `json:"tenant_id"`
-	ModuleStatuses map[string]string       `json:"module_statuses"`
-	LastUpdated    time.Time               `json:"last_updated"`
+	GwSessionID    string            `json:"gw_session_id"`
+	TenantID       string            `json:"tenant_id"`
+	ModuleStatuses map[string]string `json:"module_statuses"`
+	LastUpdated    time.Time         `json:"last_updated"`
 }
 
 // GetModuleStats 获取模块执行统计

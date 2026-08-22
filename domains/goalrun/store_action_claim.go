@@ -89,7 +89,7 @@ const actionColumns = `action_id, goal_run_id, causation_id, action_type,
 func scanAction(scan interface{ Scan(dest ...any) error }) (*GoalRunAction, error) {
 	var a GoalRunAction
 	var (
-		lastError                                        string
+		lastError                                            string
 		retryAt, leaseUntil, claimedAt, createdAt, updatedAt pgtype.Timestamptz
 	)
 	err := scan.Scan(

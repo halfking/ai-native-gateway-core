@@ -34,8 +34,8 @@ func (e *CostEstimator) loadDefaultPricing() {
 	// OpenAI GPT-4 系列
 	e.pricingTable["gpt-4"] = ModelPricing{
 		ModelName:   "gpt-4",
-		InputPrice:  0.03,  // $0.03 / 1K tokens
-		OutputPrice: 0.06,  // $0.06 / 1K tokens
+		InputPrice:  0.03, // $0.03 / 1K tokens
+		OutputPrice: 0.06, // $0.06 / 1K tokens
 	}
 	e.pricingTable["gpt-4-32k"] = ModelPricing{
 		ModelName:   "gpt-4-32k",
@@ -53,16 +53,16 @@ func (e *CostEstimator) loadDefaultPricing() {
 		OutputPrice: 0.03,
 	}
 	e.pricingTable["gpt-4o"] = ModelPricing{
-		ModelName:    "gpt-4o",
-		InputPrice:   0.005,  // $0.005 / 1K tokens
-		OutputPrice:  0.015,  // $0.015 / 1K tokens
-		CachedPrice:  0.0025, // 缓存读取价格
+		ModelName:   "gpt-4o",
+		InputPrice:  0.005,  // $0.005 / 1K tokens
+		OutputPrice: 0.015,  // $0.015 / 1K tokens
+		CachedPrice: 0.0025, // 缓存读取价格
 	}
 	e.pricingTable["gpt-4o-mini"] = ModelPricing{
-		ModelName:    "gpt-4o-mini",
-		InputPrice:   0.00015,
-		OutputPrice:  0.0006,
-		CachedPrice:  0.000075,
+		ModelName:   "gpt-4o-mini",
+		InputPrice:  0.00015,
+		OutputPrice: 0.0006,
+		CachedPrice: 0.000075,
 	}
 
 	// OpenAI GPT-3.5 系列

@@ -37,21 +37,21 @@ func NewOptimizationAdviser(db DB, config *LLMStageConfig, logger *slog.Logger) 
 
 // sessionStatsForOpt 是 adviser 需要的统计字段。
 type sessionStatsForOpt struct {
-	GwSessionID       string
-	TenantID          string
-	RequestCount      int
-	ErrorCount        int
-	TotalPromptTokens int64
+	GwSessionID           string
+	TenantID              string
+	RequestCount          int
+	ErrorCount            int
+	TotalPromptTokens     int64
 	TotalCompletionTokens int64
-	TotalCostUSD      float64
-	InputCostUSD      float64
-	UserIntent        *string
-	PrimaryModel      *string
-	ModelSwitchCount  int
+	TotalCostUSD          float64
+	InputCostUSD          float64
+	UserIntent            *string
+	PrimaryModel          *string
+	ModelSwitchCount      int
 	// 聚合的 cache/compression 统计
-	CacheReadTokens   int64
-	CompressedCount   int
-	OutboundTokenEst  int64
+	CacheReadTokens  int64
+	CompressedCount  int
+	OutboundTokenEst int64
 }
 
 // suggestion 计算结果（内部，写入前构造）。

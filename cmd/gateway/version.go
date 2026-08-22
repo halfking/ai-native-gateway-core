@@ -94,7 +94,8 @@ func BuildSeqInt() int {
 }
 
 // FullVersion 返回人类可读版本字符串:
-//   "v2.4.1-e0e9e1e2e-20260714-1001"
+//
+//	"v2.4.1-e0e9e1e2e-20260714-1001"
 func FullVersion() string {
 	loadVersionOnce()
 	return vInfo.Version + "-" + vInfo.GitSHA + "-" + vInfo.BuildDate + "-" + strconv.Itoa(vInfo.BuildSeq)

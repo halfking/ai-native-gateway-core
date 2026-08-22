@@ -419,9 +419,9 @@ func TestParseAnalyticsFilters_DefaultValues(t *testing.T) {
 
 func TestMergeLongTail(t *testing.T) {
 	tests := []struct {
-		name      string
-		input     []ModelStats
-		threshold float64
+		name       string
+		input      []ModelStats
+		threshold  float64
 		wantOthers bool
 	}{
 		{
@@ -542,10 +542,10 @@ func setupSessionShapeTestData(t *testing.T, db *pgxpool.Pool) {
 		requestCount int
 		duration     int
 	}{
-		{3, 60},      // quick, <1min
-		{10, 300},    // standard, 1-5min
-		{25, 1000},   // deep, 5-30min
-		{60, 4000},   // marathon, >1h
+		{3, 60},    // quick, <1min
+		{10, 300},  // standard, 1-5min
+		{25, 1000}, // deep, 5-30min
+		{60, 4000}, // marathon, >1h
 	}
 
 	for i, tc := range testCases {
