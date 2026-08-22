@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import ModelIdentityChip from '../../components/model/ModelIdentityChip.vue'
 import { ref, onMounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { getProviderLogs, getProviderCredentials, type ProviderLogEntry, type ProviderCredential } from '../../api'
@@ -141,8 +142,7 @@ watch(() => props.providerId, () => { loadCredentials(); resetFilters() })
           <tr>
             <th>{{ pl('table.time') }}</th>
             <th>{{ pl('table.credential') }}</th>
-            <th>{{ pl('table.clientModel') }}</th>
-            <th>{{ pl('table.outboundModel') }}</th>
+            <th>{{ pl('table.clientModel') }} / 标准 / 出站</th>
             <th>{{ pl('table.result') }}</th>
             <th>{{ pl('table.errorKind') }}</th>
             <th>{{ pl('table.tokens') }}</th>
@@ -154,8 +154,14 @@ watch(() => props.providerId, () => { loadCredentials(); resetFilters() })
           <tr v-for="(l, i) in logs" :key="l.request_id || i">
             <td>{{ fmtTs(l.ts) }}</td>
             <td class="cell-muted" :title="l.credential_id != null ? pl('credentialTitleAttr', { id: l.credential_id }) : ''">{{ credLabel(l) }}</td>
-            <td><code>{{ l.client_model || '—' }}</code></td>
-            <td><code>{{ l.outbound_model || '—' }}</code></td>
+            <td>
+              <ModelIdentityChip
+                compact
+                :client-model="l.client_model"
+                :canonical-name="(l as any).canonical_name || (l as any).canonical_model"
+                :outbound-model="l.outbound_model || (l as any).provider_model"
+              />
+            </td>
             <td>
               <span class="badge" :class="l.success ? 'badge-green' : 'badge-red'">{{ l.success ? pl('resultOk') : pl('resultFail') }}</span>
             </td>

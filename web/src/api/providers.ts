@@ -411,6 +411,12 @@ export interface ModelOffer {
   last_seen_at: string | null
   routing_tier: string
   availability_source: string
+  modality?: string
+  multimodal_caps?: string[]
+  reasoning_caps?: Record<string, unknown> | null
+  canonical_status?: string
+  admin_protected?: boolean
+  source?: string
   /**
    * Upstream-side model identifier — for providers like Volcano Ark this is
    * the deployment endpoint ID (e.g. "ep-20241227XXXX") that must be sent
@@ -502,6 +508,52 @@ export function getProviderRefreshStatus(providerId: number) {
 export function clearProviderModels(providerId: number) {
   return req<{ message: string; deleted: number }>(
     'DELETE', `/api/providers/${providerId}/models`
+  )
+}
+
+export interface CredentialModelCreateBody {
+  raw_model_name: string
+  standardized_name?: string | null
+  canonical_id?: number | null
+  outbound_model_name?: string | null
+  available?: boolean
+  context_window?: number | null
+  modality?: string
+  multimodal_caps?: string[]
+  reasoning_caps?: Record<string, unknown> | null
+  canonical_status?: string
+}
+
+export interface CredentialRefreshResult {
+  message: string
+  models_upserted: number
+  models_failed: number
+  skipped_protected: number
+  protected_bindings: number
+  credential_id: number
+  provider_id: number
+}
+
+export function getCredentialModels(providerId: number, credentialId: number) {
+  return req<ModelOffer[]>('GET', `/api/providers/${providerId}/credentials/${credentialId}/models`)
+}
+
+export function createCredentialModel(providerId: number, credentialId: number, body: CredentialModelCreateBody) {
+  return req<{ id: number; credential_id: number; raw_model_name: string; canonical_id: number }>(
+    'POST', `/api/providers/${providerId}/credentials/${credentialId}/models`, body
+  )
+}
+
+export function clearCredentialModels(providerId: number, credentialId: number, includeProtected = false) {
+  const q = includeProtected ? '?include_protected=1' : '?include_protected=0'
+  return req<{ message: string; deleted: number; include_protected: boolean }>(
+    'DELETE', `/api/providers/${providerId}/credentials/${credentialId}/models${q}`
+  )
+}
+
+export function refreshCredentialModels(providerId: number, credentialId: number) {
+  return req<CredentialRefreshResult>(
+    'POST', `/api/providers/${providerId}/credentials/${credentialId}/refresh-models`, {}
   )
 }
 
