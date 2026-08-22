@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * 设置与维护 · 其它模型：当前凭据下非当前模型的可用性与探活/上下线。
+ * 其它模型：当前凭据下非当前模型的可用性与探活/上下线（顶级 tab）。
  */
 import { computed, ref, watch } from 'vue'
 import {

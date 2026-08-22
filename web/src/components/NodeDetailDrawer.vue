@@ -29,7 +29,7 @@ const emit = defineEmits<{
 
 const load = useNodeDetailDrawerLoad(props, emit)
 const {
-  activeTab, settingsSubTab, loading, detailLoaded, detailLoading, requestsLoaded, requestsLoading,
+  activeTab, otherModelsLoaded, otherModelsLoading, loading, detailLoaded, detailLoading, requestsLoaded, requestsLoading,
   settingsLoaded, settingsLoading, loadError, candidate, candidateLoading, monitor, selectedModel,
   windowEntries, windowStats, windowSource, history, decisions, saving, actionMessage, actionError,
   pingResult, lifecycle, manualPriority, routingTier, weight, modelActionReason, coreLoaded, coreLoading,
@@ -74,6 +74,7 @@ const node = currentNode
         <button :class="{ active: activeTab === 'detail' }" role="tab" @click="activeTab = 'detail'">明细与近期情况<small v-if="detailLoading"> · 加载中</small><small v-else-if="!detailLoaded"> · 未加载</small></button>
         <button :class="{ active: activeTab === 'availability' }" role="tab" @click="activeTab = 'availability'">可用性<small v-if="candidateLoading"> · 加载中</small></button>
         <button :class="{ active: activeTab === 'requests' }" role="tab" @click="activeTab = 'requests'">最近路由请求<small v-if="requestsLoading"> · 加载中</small><small v-else-if="!requestsLoaded"> · 未加载</small></button>
+        <button :class="{ active: activeTab === 'other-models' }" role="tab" @click="activeTab = 'other-models'">其它模型<small v-if="otherModelsLoading || (otherModelsNeedRefresh && detailLoading)"> · 加载中</small><small v-else-if="!otherModelsLoaded"> · 未加载</small></button>
         <button :class="{ active: activeTab === 'settings' }" role="tab" @click="activeTab = 'settings'">设置与维护<small v-if="settingsLoading || coreLoading || candidateLoading"> · 加载中</small><small v-else-if="!settingsLoaded"> · 未加载</small></button>
       </div>
 
@@ -116,60 +117,11 @@ const node = currentNode
           @open-request="openRequestDetail"
         />
 
-        <template v-else-if="activeTab === 'settings'">
-          <div v-if="settingsLoading && !coreLoaded && !candidate" class="nd-seg-loading" role="status">设置与维护加载中…</div>
-          <template v-else>
-            <div class="nd-subtabs" role="tablist" aria-label="设置与维护子页">
-              <button type="button" role="tab" :class="{ active: settingsSubTab === 'maintain' }" @click="settingsSubTab = 'maintain'">当前维护</button>
-              <button type="button" role="tab" :class="{ active: settingsSubTab === 'other-models' }" @click="settingsSubTab = 'other-models'">其它模型</button>
-            </div>
+        <template v-else-if="activeTab === 'other-models'">
+          <div v-if="otherModelsLoading && !otherModelsLoaded" class="nd-seg-loading" role="status">其它模型加载中…</div>
+          <template v-else-if="node">
             <p v-if="editGateHint" class="nd-notice nd-notice--warn">{{ editGateHint }}</p>
-            <template v-if="settingsSubTab === 'maintain'">
-              <NodeDetailMaintainPanel
-                :can-edit="canEdit"
-                :saving="saving"
-                :core-loading="coreLoading"
-                :selected-model="selectedModel"
-                :ping-result="pingResult"
-                :candidate="candidate"
-                :candidate-loading="candidateLoading"
-                v-model:lifecycle="lifecycle"
-                v-model:manual-priority="manualPriority"
-                v-model:routing-tier="routingTier"
-                v-model:weight="weight"
-                v-model:model-action-reason="modelActionReason"
-                :selected-model-status="selectedModelStatus"
-                @test-now="testNow"
-                @save-settings="saveSettings"
-                @set-credential-disabled="setCredentialDisabled"
-                @toggle-selected-model="toggleSelectedModel"
-              >
-                <template #emergency>
-                  <NodeDetailEmergencyPanel
-                    :candidate="candidate"
-                    :raw-model="selectedModel"
-                    :can-edit="canEdit"
-                    @applied="onEmergencyApplied"
-                    @message="actionMessage = $event"
-                    @error="actionError = $event"
-                  />
-                </template>
-                <template #concurrency>
-                  <NodeDetailConcurrencyPanel
-                    v-if="node"
-                    :credential-id="node.credential_id"
-                    :provider-id="resolvedProviderId"
-                    :monitor="monitor"
-                    :monitor-loading="coreLoading && !monitor"
-                    :can-edit="canEdit"
-                    @saved="actionMessage = '并发/指纹槽位已保存。'; emit('applied')"
-                    @error="actionError = $event"
-                  />
-                </template>
-              </NodeDetailMaintainPanel>
-            </template>
             <NodeDetailOtherModelsPanel
-              v-else-if="node"
               :credential-id="node.credential_id"
               :current-model="selectedModel"
               :models="allModels"
@@ -179,6 +131,55 @@ const node = currentNode
               @message="actionMessage = $event"
               @error="actionError = $event"
             />
+          </template>
+        </template>
+
+        <template v-else-if="activeTab === 'settings'">
+          <div v-if="settingsLoading && !coreLoaded && !candidate" class="nd-seg-loading" role="status">设置与维护加载中…</div>
+          <template v-else>
+            <p v-if="editGateHint" class="nd-notice nd-notice--warn">{{ editGateHint }}</p>
+            <NodeDetailMaintainPanel
+              :can-edit="canEdit"
+              :saving="saving"
+              :core-loading="coreLoading"
+              :selected-model="selectedModel"
+              :ping-result="pingResult"
+              :candidate="candidate"
+              :candidate-loading="candidateLoading"
+              v-model:lifecycle="lifecycle"
+              v-model:manual-priority="manualPriority"
+              v-model:routing-tier="routingTier"
+              v-model:weight="weight"
+              v-model:model-action-reason="modelActionReason"
+              :selected-model-status="selectedModelStatus"
+              @test-now="testNow"
+              @save-settings="saveSettings"
+              @set-credential-disabled="setCredentialDisabled"
+              @toggle-selected-model="toggleSelectedModel"
+            >
+              <template #emergency>
+                <NodeDetailEmergencyPanel
+                  :candidate="candidate"
+                  :raw-model="selectedModel"
+                  :can-edit="canEdit"
+                  @applied="onEmergencyApplied"
+                  @message="actionMessage = $event"
+                  @error="actionError = $event"
+                />
+              </template>
+              <template #concurrency>
+                <NodeDetailConcurrencyPanel
+                  v-if="node"
+                  :credential-id="node.credential_id"
+                  :provider-id="resolvedProviderId"
+                  :monitor="monitor"
+                  :monitor-loading="coreLoading && !monitor"
+                  :can-edit="canEdit"
+                  @saved="actionMessage = '并发/指纹槽位已保存。'; emit('applied')"
+                  @error="actionError = $event"
+                />
+              </template>
+            </NodeDetailMaintainPanel>
           </template>
         </template>
       </div>
@@ -195,6 +196,18 @@ const node = currentNode
 .nd-mask { position: fixed; inset: 0; z-index: 3000; background: color-mix(in srgb, #000 38%, transparent); }
 .nd-drawer { position: fixed; z-index: 3001; top: 0; right: 0; width: min(940px, 94vw); height: 100vh; display: flex; flex-direction: column; background: var(--kx-surface); box-shadow: -12px 0 32px rgba(0,0,0,.24); color: var(--kx-text); }
 .nd-header { padding: 18px 22px 14px; border-bottom: 1px solid var(--kx-border); display:flex; justify-content:space-between; gap:16px; }
-.nd-eyebrow,.nd-muted,small { color: var(--kx-muted); font-size:12px; }.nd-header h2 { margin:4px 0 7px; font-size:18px; overflow-wrap:anywhere; }.nd-header-actions,.nd-state-row,.nd-actions,.nd-error-kinds { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }.nd-tabs { display:flex; gap:4px; padding:10px 22px 0; border-bottom:1px solid var(--kx-border); }.nd-tabs button { border:0; background:transparent; color:var(--kx-muted); padding:8px 12px; cursor:pointer; border-bottom:2px solid transparent; }.nd-tabs button.active { color:var(--kx-primary); border-bottom-color:var(--kx-primary); font-weight:600; }.nd-subtabs { display:flex; gap:6px; margin:0 0 12px; }.nd-subtabs button { border:1px solid var(--kx-border); background:transparent; color:var(--kx-muted); padding:6px 10px; border-radius:6px; cursor:pointer; font-size:12px; }.nd-subtabs button.active { color:var(--kx-primary); border-color:var(--kx-primary); background:color-mix(in srgb, var(--kx-primary) 8%, transparent); font-weight:600; }.nd-body { overflow:auto; padding:16px 22px 34px; }.nd-section { border:1px solid var(--kx-border); border-radius:8px; padding:14px; margin-bottom:12px; }.nd-section h3 { margin:0 0 12px; font-size:14px; }.nd-grid { display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:12px; margin:0; }.nd-grid div { min-width:0; }.nd-grid dt { color:var(--kx-muted); font-size:11px; margin-bottom:3px; }.nd-grid dd { margin:0; font-size:12px; overflow-wrap:anywhere; }.is-ok { color:var(--kx-success); }.is-warn { color:var(--kx-warning); }.is-bad { color:var(--kx-danger); }.nd-state { border-radius:999px; padding:2px 8px; border:1px solid currentColor; font-size:12px; }.nd-models { display:flex; gap:6px; flex-wrap:wrap; }.nd-model { display:grid; gap:3px; text-align:left; padding:8px; border:1px solid var(--kx-border); border-radius:6px; background:transparent; color:inherit; cursor:pointer; max-width:250px; }.nd-model.active { border-color:var(--kx-primary); background:color-mix(in srgb, var(--kx-primary) 8%, transparent); }.nd-model span { font-size:11px; }.nd-window { display:flex; align-items:stretch; height:26px; gap:2px; overflow:hidden; }.nd-window-cell { width:5px; min-width:3px; border:0; padding:0; border-radius:2px; background:var(--kx-danger); }.nd-window-cell.ok { background:var(--kx-success); }.nd-window-cell.is-clickable { cursor:pointer; }.nd-window-cell:disabled { cursor:default; opacity:.7; }.nd-link { border:0; background:transparent; color:var(--kx-primary); cursor:pointer; padding:0; font:inherit; text-decoration:underline; }.nd-seg-loading { padding:28px; text-align:center; color:var(--kx-muted); font-size:12px; }.nd-stat-line { font-size:12px; margin-top:8px; }.nd-error-kinds span { font-size:11px; border:1px solid var(--kx-border); border-radius:999px; padding:2px 7px; }.nd-history { padding:0; list-style:none; margin:0; }.nd-history li { display:grid; grid-template-columns:140px 100px 1fr; gap:8px; border-bottom:1px solid var(--kx-border); padding:7px 0; font-size:11px; }.nd-history time { color:var(--kx-muted); }.nd-table-wrap { overflow:auto; }.nd-table { border-collapse:collapse; width:100%; font-size:11px; }.nd-table th,.nd-table td { text-align:left; padding:6px; border-bottom:1px solid var(--kx-border); white-space:nowrap; }.nd-notice { padding:8px 10px; border-radius:6px; margin:0 0 12px; font-size:12px; }.nd-notice--warn { background:color-mix(in srgb, var(--kx-warning) 12%, transparent); color:var(--kx-warning); }.nd-notice--ok { background:color-mix(in srgb, var(--kx-success) 12%, transparent); color:var(--kx-success); }.nd-notice--error { background:color-mix(in srgb, var(--kx-danger) 12%, transparent); color:var(--kx-danger); }.nd-loading { padding:36px; text-align:center; color:var(--kx-muted); }.nd-form-grid { display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:12px; margin-bottom:12px; }.nd-form-grid label,.nd-reason { display:grid; gap:5px; font-size:12px; }.nd-form-grid input,.nd-form-grid select,.nd-reason input { box-sizing:border-box; width:100%; padding:7px; border:1px solid var(--kx-border); border-radius:5px; background:var(--kx-bg); color:inherit; }.nd-reason { margin-bottom:10px; max-width:560px; }
-@media (max-width:700px) { .nd-drawer { width:100vw; }.nd-header { padding:14px; }.nd-body { padding:12px; }.nd-grid,.nd-form-grid { grid-template-columns:1fr; }.nd-history li { grid-template-columns:1fr; gap:2px; }.nd-header { flex-direction:column; }.nd-header-actions { justify-content:flex-end; } }
+.nd-eyebrow,.nd-muted,small { color: var(--kx-muted); font-size:12px; }
+.nd-header h2 { margin:4px 0 7px; font-size:18px; overflow-wrap:anywhere; }
+.nd-header-actions,.nd-state-row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+.nd-tabs { display:flex; gap:4px; padding:10px 22px 0; border-bottom:1px solid var(--kx-border); flex-wrap:wrap; }
+.nd-tabs button { border:0; background:transparent; color:var(--kx-muted); padding:8px 12px; cursor:pointer; border-bottom:2px solid transparent; }
+.nd-tabs button.active { color:var(--kx-primary); border-bottom-color:var(--kx-primary); font-weight:600; }
+.nd-body { overflow:auto; padding:16px 22px 34px; }
+.nd-seg-loading { padding:28px; text-align:center; color:var(--kx-muted); font-size:12px; }
+.nd-notice { padding:8px 10px; border-radius:6px; margin:0 0 12px; font-size:12px; }
+.nd-notice--warn { background:color-mix(in srgb, var(--kx-warning) 12%, transparent); color:var(--kx-warning); }
+.nd-notice--ok { background:color-mix(in srgb, var(--kx-success) 12%, transparent); color:var(--kx-success); }
+.nd-notice--error { background:color-mix(in srgb, var(--kx-danger) 12%, transparent); color:var(--kx-danger); }
+@media (max-width:700px) { .nd-drawer { width:100vw; }.nd-header { padding:14px; flex-direction:column; }.nd-body { padding:12px; }.nd-header-actions { justify-content:flex-end; } }
 </style>
+<style src="../styles/node-detail-drawer.css"></style>

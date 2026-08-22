@@ -1,0 +1,192 @@
+/**
+ * 节点详情抽屉内子面板共享样式。
+ * 必须非 scoped：Overview/Maintain/Requests 等子组件 DOM 不在父 scoped 作用域内。
+ */
+.nd-drawer .nd-section {
+  border: 1px solid var(--kx-border);
+  border-radius: 8px;
+  padding: 14px;
+  margin-bottom: 12px;
+}
+.nd-drawer .nd-section h3 {
+  margin: 0 0 12px;
+  font-size: 14px;
+}
+.nd-drawer .nd-muted,
+.nd-drawer small {
+  color: var(--kx-muted);
+  font-size: 12px;
+}
+.nd-drawer .nd-wrap {
+  overflow-wrap: anywhere;
+}
+.nd-drawer .nd-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin: 0;
+}
+.nd-drawer .nd-grid div {
+  min-width: 0;
+}
+.nd-drawer .nd-grid dt {
+  color: var(--kx-muted);
+  font-size: 11px;
+  margin-bottom: 3px;
+}
+.nd-drawer .nd-grid dd {
+  margin: 0;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.nd-drawer .is-ok { color: var(--kx-success); }
+.nd-drawer .is-warn { color: var(--kx-warning); }
+.nd-drawer .is-bad { color: var(--kx-danger); }
+.nd-drawer .nd-state {
+  border-radius: 999px;
+  padding: 2px 8px;
+  border: 1px solid currentColor;
+  font-size: 12px;
+}
+.nd-drawer .nd-models {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.nd-drawer .nd-model {
+  display: grid;
+  gap: 3px;
+  text-align: left;
+  padding: 8px;
+  border: 1px solid var(--kx-border);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  max-width: 250px;
+}
+.nd-drawer .nd-model.active {
+  border-color: var(--kx-primary);
+  background: color-mix(in srgb, var(--kx-primary) 8%, transparent);
+}
+.nd-drawer .nd-model span {
+  font-size: 11px;
+}
+.nd-drawer .nd-window {
+  display: flex;
+  align-items: stretch;
+  height: 26px;
+  gap: 2px;
+  overflow: hidden;
+}
+.nd-drawer .nd-window-cell {
+  width: 5px;
+  min-width: 3px;
+  border: 0;
+  padding: 0;
+  border-radius: 2px;
+  background: var(--kx-danger);
+}
+.nd-drawer .nd-window-cell.ok { background: var(--kx-success); }
+.nd-drawer .nd-window-cell.is-clickable { cursor: pointer; }
+.nd-drawer .nd-window-cell:disabled { cursor: default; opacity: 0.7; }
+.nd-drawer .nd-link {
+  border: 0;
+  background: transparent;
+  color: var(--kx-primary);
+  cursor: pointer;
+  padding: 0;
+  font: inherit;
+  text-decoration: underline;
+}
+.nd-drawer .nd-stat-line {
+  font-size: 12px;
+  margin-top: 8px;
+}
+.nd-drawer .nd-error-kinds {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.nd-drawer .nd-error-kinds span {
+  font-size: 11px;
+  border: 1px solid var(--kx-border);
+  border-radius: 999px;
+  padding: 2px 7px;
+}
+.nd-drawer .nd-history {
+  padding: 0;
+  list-style: none;
+  margin: 0;
+}
+.nd-drawer .nd-history li {
+  display: grid;
+  grid-template-columns: 140px 100px 1fr;
+  gap: 8px;
+  border-bottom: 1px solid var(--kx-border);
+  padding: 7px 0;
+  font-size: 11px;
+}
+.nd-drawer .nd-history time {
+  color: var(--kx-muted);
+}
+.nd-drawer .nd-table-wrap {
+  overflow: auto;
+}
+.nd-drawer .nd-table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 11px;
+}
+.nd-drawer .nd-table th,
+.nd-drawer .nd-table td {
+  text-align: left;
+  padding: 6px;
+  border-bottom: 1px solid var(--kx-border);
+  white-space: nowrap;
+}
+.nd-drawer .nd-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.nd-drawer .nd-form-grid label,
+.nd-drawer .nd-reason {
+  display: grid;
+  gap: 5px;
+  font-size: 12px;
+}
+.nd-drawer .nd-form-grid input,
+.nd-drawer .nd-form-grid select,
+.nd-drawer .nd-reason input {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 7px;
+  border: 1px solid var(--kx-border);
+  border-radius: 5px;
+  background: var(--kx-bg);
+  color: inherit;
+}
+.nd-drawer .nd-reason {
+  margin-bottom: 10px;
+  max-width: 560px;
+}
+.nd-drawer .nd-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+@media (max-width: 700px) {
+  .nd-drawer .nd-grid,
+  .nd-drawer .nd-form-grid {
+    grid-template-columns: 1fr;
+  }
+  .nd-drawer .nd-history li {
+    grid-template-columns: 1fr;
+    gap: 2px;
+  }
+}

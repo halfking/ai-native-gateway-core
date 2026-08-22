@@ -50,14 +50,3 @@ const emit = defineEmits<{
     </div>
   </section>
 </template>
-
-<style scoped>
-.nd-section { border: 1px solid var(--kx-border); border-radius: 8px; padding: 14px; margin-bottom: 12px; }
-.nd-section h3 { margin: 0 0 12px; font-size: 14px; }
-.nd-muted, small { color: var(--kx-muted); font-size: 12px; }
-.nd-table-wrap { overflow: auto; }
-.nd-table { border-collapse: collapse; width: 100%; font-size: 11px; }
-.nd-table th, .nd-table td { text-align: left; padding: 6px; border-bottom: 1px solid var(--kx-border); white-space: nowrap; }
-.nd-link { border: 0; background: transparent; color: var(--kx-primary); cursor: pointer; padding: 0; font: inherit; text-decoration: underline; }
-.is-bad { color: var(--kx-danger); }
-</style>
