@@ -439,14 +439,14 @@ func (m *ConfigManager) GetConfigStats(ctx context.Context, tenantID string) (*C
 	}
 
 	stats := &ConfigStats{
-		TenantID:          tenantID,
-		Enabled:           config.Enabled,
-		Mode:              string(config.Mode),
-		ApproverCount:     len(config.Approvers),
-		RuleCount:         len(config.Rules),
-		ChannelCount:      len(config.Channels),
-		TimeoutSeconds:    config.TimeoutSeconds,
-		LastUpdated:       config.UpdatedAt,
+		TenantID:       tenantID,
+		Enabled:        config.Enabled,
+		Mode:           string(config.Mode),
+		ApproverCount:  len(config.Approvers),
+		RuleCount:      len(config.Rules),
+		ChannelCount:   len(config.Channels),
+		TimeoutSeconds: config.TimeoutSeconds,
+		LastUpdated:    config.UpdatedAt,
 	}
 
 	// Count enabled items

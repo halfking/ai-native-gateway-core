@@ -926,7 +926,7 @@ type CanaryDetector struct {
 }
 
 type CanaryDetectionResult struct {
-	TokenValue  string
+	TokenValue   string
 	MatchedRules []MatchedRule
 }
 

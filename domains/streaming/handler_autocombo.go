@@ -325,9 +325,53 @@ func (h *ChatHandler) recordOmniFreeQuota(
 	if tracker == nil || !accepting || queue == nil {
 		return
 	}
-	if result == nil {
+
+	// 拷贝必要字段避免 result 指针在主路径释放后 race.
+	captured := struct {
+		CredentialID int
+		CatalogCode  string
+		StdName      string
+		StatusCode   int
+		HasResponse  bool
+		Header       http.Header
+		Body         []byte // 429 响应体, 用于 body 关键词甄别
+	}{}
+	if result != nil {
+		captured.CredentialID = result.Candidate.CredentialID
+		captured.CatalogCode = result.Candidate.CatalogCode
+		captured.StdName = result.Candidate.StandardizedName
+		captured.HasResponse = result.Response != nil
+	}
+	// 优先从 *upstream.Error 提取状态码 + body; 只有当 result 直接可访问
+	// 且无上游错误时, 才用 result.Response.  (之前的 early-return on result==nil
+	// 让 streaming 路径下的 dispatch-failure (result=nil, execErr 是 *ExecuteError)
+	// 完全跳过 quota 校准 — Gemini / Cloudflare / 智谱 这种把 quota 信号写进 body
+	// 的上游在 5h/daily 窗口被锁死时不会被记账.)
+	var upstreamErr *upstreampkg.Error
+	if execErr != nil && errors.As(execErr, &upstreamErr) {
+		if upstreamErr.StatusCode != 0 {
+			captured.StatusCode = upstreamErr.StatusCode
+			captured.HasResponse = true
+		}
+		if len(upstreamErr.Body) > 0 {
+			captured.Body = append([]byte(nil), upstreamErr.Body...)
+		}
+	}
+	if result != nil && captured.HasResponse && captured.StatusCode == 0 {
+		captured.StatusCode = result.Response.StatusCode
+		if captured.Header == nil {
+			captured.Header = result.Response.Header.Clone()
+		}
+	}
+	if len(captured.Body) == 0 && result != nil && len(result.ResponseBody) > 0 {
+		captured.Body = append([]byte(nil), result.ResponseBody...)
+	}
+
+	// 没有 credential id / catalog code → 无法归因, 安全跳过.
+	if captured.CredentialID == 0 || captured.CatalogCode == "" {
 		return
 	}
+
 	windowTypes := []freeresource.WindowType{
 		freeresource.WindowTypeDay1,
 		freeresource.WindowTypeMonth1,
@@ -340,36 +384,6 @@ func (h *ChatHandler) recordOmniFreeQuota(
 	}
 	for _, wt := range windowTypes {
 		metrics.OmniFreeQuotaRecordsTotal.WithLabelValues(string(wt), strconv.FormatBool(success)).Inc()
-	}
-
-	// 拷贝必要字段避免 result 指针在主路径释放后 race.
-	captured := struct {
-		CredentialID int
-		CatalogCode  string
-		StdName      string
-		StatusCode   int
-		HasResponse  bool
-		Header       http.Header
-		Body         []byte // 429 响应体, 用于 body 关键词甄别
-	}{
-		CredentialID: result.Candidate.CredentialID,
-		CatalogCode:  result.Candidate.CatalogCode,
-		StdName:      result.Candidate.StandardizedName,
-		HasResponse:  result.Response != nil,
-	}
-	if captured.HasResponse {
-		captured.StatusCode = result.Response.StatusCode
-		captured.Header = result.Response.Header.Clone()
-	}
-	// 从 execErr 提取上游 429 响应体 (errorsx/executor 已捕获, 4KB cap).
-	// 与 handler.go:3035 gwtrace.UpstreamFailureWithBody 同一模式.
-	if execErr != nil {
-		var upstreamErr *upstreampkg.Error
-		if errors.As(execErr, &upstreamErr) && upstreamErr.Body != nil {
-			captured.Body = upstreamErr.Body
-		} else if len(result.ResponseBody) > 0 {
-			captured.Body = append([]byte(nil), result.ResponseBody...)
-		}
 	}
 
 	// 构造 Record 任务并投递到 bounded queue. 5s context timeout 防止

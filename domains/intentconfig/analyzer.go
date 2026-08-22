@@ -22,9 +22,9 @@ func NewAnalyzer(configMgr *Manager, store EvolutionStore, logger *slog.Logger) 
 	}
 
 	return &Analyzer{
-		configMgr:  configMgr,
-		store:      store,
-		logger:     logger,
+		configMgr: configMgr,
+		store:     store,
+		logger:    logger,
 	}
 }
 
@@ -60,8 +60,8 @@ type AnalysisResult struct {
 	PredictedConfidence float64
 
 	// 元数据
-	TurnNumber          int
-	ClassifierVersion   string
+	TurnNumber            int
+	ClassifierVersion     string
 	ClassificationLatency time.Duration
 
 	// 推荐
@@ -132,23 +132,23 @@ func (a *Analyzer) Analyze(ctx context.Context, req AnalysisRequest) (*AnalysisR
 	}
 
 	evolution := &IntentEvolution{
-		SessionID:              req.SessionID,
-		TenantID:               req.TenantID,
-		RequestID:              req.RequestID,
-		TurnNumber:             turnNumber,
-		IntentCandidates:       candidates,
-		PrimaryIntent:          string(primary.Kind),
-		PrimaryConfidence:      primary.Confidence,
-		PreviousPrimaryIntent:  previousIntent,
-		IntentDriftScore:       &driftScore,
-		IsIntentChanged:        isIntentChanged,
-		ClassifierVersion:      string(cfg.Strategy),
+		SessionID:               req.SessionID,
+		TenantID:                req.TenantID,
+		RequestID:               req.RequestID,
+		TurnNumber:              turnNumber,
+		IntentCandidates:        candidates,
+		PrimaryIntent:           string(primary.Kind),
+		PrimaryConfidence:       primary.Confidence,
+		PreviousPrimaryIntent:   previousIntent,
+		IntentDriftScore:        &driftScore,
+		IsIntentChanged:         isIntentChanged,
+		ClassifierVersion:       string(cfg.Strategy),
 		ClassificationLatencyMs: int(time.Since(startTime).Milliseconds()),
-		UserContent:            userContentPtr,
-		ContextLength:          req.ContextLength,
-		HasImages:              req.HasImages,
-		ToolCount:              req.ToolCount,
-		ClassifiedAt:           time.Now(),
+		UserContent:             userContentPtr,
+		ContextLength:           req.ContextLength,
+		HasImages:               req.HasImages,
+		ToolCount:               req.ToolCount,
+		ClassifiedAt:            time.Now(),
 	}
 
 	if err := a.store.Save(ctx, evolution); err != nil {
@@ -328,14 +328,14 @@ func (a *Analyzer) GetSessionSummary(ctx context.Context, sessionID string, tena
 	stability := calculateIntentStability(history, len(history))
 
 	return &SessionSummary{
-		SessionID:       sessionID,
-		TotalTurns:      len(history),
-		DominantIntent:  dominantIntent,
+		SessionID:          sessionID,
+		TotalTurns:         len(history),
+		DominantIntent:     dominantIntent,
 		IntentDistribution: intentDist,
-		AvgConfidence:   avgConfidence,
-		Stability:       stability,
-		SwitchCount:     switchCount,
-		LatestIntent:    history[0].PrimaryIntent,
+		AvgConfidence:      avgConfidence,
+		Stability:          stability,
+		SwitchCount:        switchCount,
+		LatestIntent:       history[0].PrimaryIntent,
 	}, nil
 }
 

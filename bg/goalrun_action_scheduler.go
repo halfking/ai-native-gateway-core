@@ -1,7 +1,7 @@
 // bg/goalrun_action_scheduler.go — Durable Continuation Scheduler（设计 13 §6.2，Wave 3-A）
 //
 // 替代进程内 `go injectFollowUpRequest`：周期性扫描 goal_run_actions 表
-//（status='pending' AND retry_at <= NOW()），CAS claim 后分发到相应执行器。
+// （status='pending' AND retry_at <= NOW()），CAS claim 后分发到相应执行器。
 //
 // 关键不变量：
 //   - 一个 GoalRun 同时只有一个有效 successor（store.UpdateStatus 的 CAS 保证 +
@@ -10,30 +10,31 @@
 //   - 终态 sticky：cancel/terminal 优先于迟到 worker。
 //
 // 架构（与 durable.ClaimRunnable 一致）：
-//   ┌─ Scan (every ScanInterval) ─────────────────────────┐
-//   │ pgx: SELECT FOR UPDATE SKIP LOCKED, batch=Concurrency│
-//   └──────────────────────────────────────────────────────┘
-//              │
-//              ▼
-//   ┌─ Claim (per action) ────────────────────────────────┐
-//   │ pgx: UPDATE status='running' + lease + token+1     │
-//   │ 0 rows → ErrActionLeaseLost（其它 worker 抢占）      │
-//   └──────────────────────────────────────────────────────┘
-//              │
-//              ▼
-//   ┌─ Execute (actionType 路由) ──────────────────────────┐
-//   │ continue    → Dispatcher.ContinueGoal(parent)       │
-//   │ handoff     → HandoffProposer.Propose(...)          │
-//   │ model_switch→ ModelSwitcher.Switch(...)             │
-//   └──────────────────────────────────────────────────────┘
-//              │
-//              ▼
-//   ┌─ Complete / Requeue ─────────────────────────────────┐
-//   │ success → CompleteAction(status='completed')        │
-//   │ err retryable → RequeueAction(retry_at=now+backoff)  │
-//   │ err fatal → CompleteAction(status='failed')          │
-//   │ ErrActionLeaseLost → 丢弃；勿再做副作用             │
-//   └──────────────────────────────────────────────────────┘
+//
+//	┌─ Scan (every ScanInterval) ─────────────────────────┐
+//	│ pgx: SELECT FOR UPDATE SKIP LOCKED, batch=Concurrency│
+//	└──────────────────────────────────────────────────────┘
+//	           │
+//	           ▼
+//	┌─ Claim (per action) ────────────────────────────────┐
+//	│ pgx: UPDATE status='running' + lease + token+1     │
+//	│ 0 rows → ErrActionLeaseLost（其它 worker 抢占）      │
+//	└──────────────────────────────────────────────────────┘
+//	           │
+//	           ▼
+//	┌─ Execute (actionType 路由) ──────────────────────────┐
+//	│ continue    → Dispatcher.ContinueGoal(parent)       │
+//	│ handoff     → HandoffProposer.Propose(...)          │
+//	│ model_switch→ ModelSwitcher.Switch(...)             │
+//	└──────────────────────────────────────────────────────┘
+//	           │
+//	           ▼
+//	┌─ Complete / Requeue ─────────────────────────────────┐
+//	│ success → CompleteAction(status='completed')        │
+//	│ err retryable → RequeueAction(retry_at=now+backoff)  │
+//	│ err fatal → CompleteAction(status='failed')          │
+//	│ ErrActionLeaseLost → 丢弃；勿再做副作用             │
+//	└──────────────────────────────────────────────────────┘
 package bg
 
 import (

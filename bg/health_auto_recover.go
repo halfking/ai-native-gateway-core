@@ -27,8 +27,8 @@ type HealthAutoRecover struct {
 	// (LLM_GATEWAY_AUTO_RECOVER_INTERVAL_SECONDS) at any point in the worker
 	// lifecycle. tickIntervalEverSet distinguishes "no override yet, use the
 	// boot-time default" from "operator just disabled us with SetTickInterval(0)".
-	tickMu             sync.RWMutex
-	tickInterval       time.Duration
+	tickMu              sync.RWMutex
+	tickInterval        time.Duration
 	tickIntervalEverSet bool
 }
 
@@ -50,10 +50,10 @@ func NewHealthAutoRecover(
 	}
 
 	return &HealthAutoRecover{
-		db:          db,
-		interval:    interval,
+		db:           db,
+		interval:     interval,
 		tickInterval: interval,
-		stopCh:      make(chan struct{}),
+		stopCh:       make(chan struct{}),
 	}
 }
 

@@ -12,11 +12,11 @@ func TestNewIntentAnalysisHook(t *testing.T) {
 	if hook == nil {
 		t.Fatal("Expected hook to be created")
 	}
-	
+
 	if hook.Name() != "intent_analysis" {
 		t.Errorf("Expected name 'intent_analysis', got %s", hook.Name())
 	}
-	
+
 	if hook.enabled {
 		t.Error("Expected hook to be disabled when analyzer is nil")
 	}
@@ -24,9 +24,9 @@ func TestNewIntentAnalysisHook(t *testing.T) {
 
 func TestExtractUserContent(t *testing.T) {
 	tests := []struct {
-		name    string
-		req     *domain.PipelineRequest
-		want    string
+		name string
+		req  *domain.PipelineRequest
+		want string
 	}{
 		{
 			name: "从metadata提取",

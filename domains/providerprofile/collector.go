@@ -17,12 +17,12 @@ type Collector interface {
 // LightweightCollector 轻量级采集器
 // 职责：收集网络延迟、可用性、稳定性、规模指标
 type LightweightCollector struct {
-	metricsStore    MetricsStore
-	networkProber   NetworkProber
-	requestAnalyzer RequestAnalyzer
-	scaleProvider   ScaleProvider
+	metricsStore     MetricsStore
+	networkProber    NetworkProber
+	requestAnalyzer  RequestAnalyzer
+	scaleProvider    ScaleProvider
 	credentialLister CredentialLister
-	concurrency     int
+	concurrency      int
 }
 
 // NetworkProber 网络探测器接口

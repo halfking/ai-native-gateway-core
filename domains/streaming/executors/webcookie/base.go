@@ -29,13 +29,18 @@ import (
 
 // Session holds an authenticated browser session for a web-cookie provider:
 // the cookies, refresh timestamp, and a lazily-initialized http.Client with a
-// cookie jar. One Session per (provider, account).
+// cookie jar. One Session per (provider, account, tenant).
 type Session struct {
 	ProviderCode string
 	AccountLabel string
-	Cookies      []*http.Cookie
-	RefreshedAt  time.Time
-	ExpiresAt    time.Time // zero = no expiry
+	// TenantID scopes the session to a tenant. SessionManager keys include this
+	// field so two tenants sharing the same providerCode+accountLabel never
+	// accidentally share cookies (C1, audit round 2). Required on Put; Get
+	// returns nil when the caller supplies a different tenant.
+	TenantID    string
+	Cookies     []*http.Cookie
+	RefreshedAt time.Time
+	ExpiresAt   time.Time // zero = no expiry
 
 	mu     sync.Mutex
 	client *http.Client
@@ -209,11 +214,16 @@ func (r *Registry) Codes() []string {
 var DefaultRegistry = NewRegistry()
 
 // SessionManager owns the pool of authenticated sessions per
-// (provider, account). Sessions are loaded from the webcookie_sessions DB
-// table (migration 077) and refreshed lazily when they expire.
+// (provider, account, tenant). Sessions are loaded from the webcookie_sessions
+// DB table (migration 077) and refreshed lazily when they expire.
+//
+// TenantID MUST be supplied on Get/Put. Tenant collisions are explicit: two
+// tenants sharing providerCode+accountLabel are kept in separate Session
+// objects so cookies never leak across tenants. Pre-existing single-tenant
+// callers passing "" continue to work (their sessions share the same "" bucket).
 type SessionManager struct {
 	mu       sync.Mutex
-	sessions map[string]*Session // key: providerCode + "\x00" + accountLabel
+	sessions map[string]*Session // key: tenantID + "\x00" + providerCode + "\x00" + accountLabel
 }
 
 // NewSessionManager creates an empty session manager.
@@ -221,29 +231,36 @@ func NewSessionManager() *SessionManager {
 	return &SessionManager{sessions: make(map[string]*Session)}
 }
 
-// Get returns an existing non-expired session, or nil if none.
-func (m *SessionManager) Get(providerCode, accountLabel string) *Session {
+func sessionKey(tenantID, providerCode, accountLabel string) string {
+	return tenantID + "\x00" + providerCode + "\x00" + accountLabel
+}
+
+// Get returns an existing non-expired session for the given tenant/provider/
+// account tuple, or nil if none.
+func (m *SessionManager) Get(providerCode, accountLabel, tenantID string) *Session {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	s, ok := m.sessions[providerCode+"\x00"+accountLabel]
+	s, ok := m.sessions[sessionKey(tenantID, providerCode, accountLabel)]
 	if !ok || s == nil {
 		return nil
 	}
 	if !s.ExpiresAt.IsZero() && time.Now().After(s.ExpiresAt) {
-		delete(m.sessions, providerCode+"\x00"+accountLabel)
+		delete(m.sessions, sessionKey(tenantID, providerCode, accountLabel))
 		return nil
 	}
 	return s
 }
 
-// Put stores a session, replacing any prior session for the same key.
+// Put stores a session, replacing any prior session for the same
+// (tenant, provider, account) tuple. s.TenantID is the authoritative tenant
+// key — empty string puts into the shared "" bucket.
 func (m *SessionManager) Put(s *Session) {
 	if s == nil {
 		return
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.sessions[s.ProviderCode+"\x00"+s.AccountLabel] = s
+	m.sessions[sessionKey(s.TenantID, s.ProviderCode, s.AccountLabel)] = s
 }
 
 // DefaultSessionManager is the package-level session pool.

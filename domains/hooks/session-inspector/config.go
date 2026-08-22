@@ -23,8 +23,8 @@ type Config struct {
 	Enabled bool // session_inspector.enabled
 
 	// A. Token 使用量监控
-	TokenMaxTotal      int    // token.max_total
-	TokenSoftWarningPct int   // token.soft_warning_pct
+	TokenMaxTotal       int    // token.max_total
+	TokenSoftWarningPct int    // token.soft_warning_pct
 	TokenWarnAction     string // token.warn_action: log|metadata|block
 	TokenIncludeOutput  bool   // token.include_output
 	TokenResetCycle     string // token.reset_cycle: never|hourly|daily|weekly
@@ -45,9 +45,9 @@ type Config struct {
 	RateObserveOnly   bool   // rate.observe_only
 
 	// D. 会话生命周期管理
-	LifecycleAutoExtend      bool // lifecycle.auto_extend_on_activity
-	LifecycleMaxPerTenant    int  // lifecycle.max_sessions_per_tenant
-	LifecycleEvictionPolicy  string // lifecycle.eviction_policy: lru|fifo|none
+	LifecycleAutoExtend     bool   // lifecycle.auto_extend_on_activity
+	LifecycleMaxPerTenant   int    // lifecycle.max_sessions_per_tenant
+	LifecycleEvictionPolicy string // lifecycle.eviction_policy: lru|fifo|none
 
 	// E. 告警与可观测性
 	AlertEnabled           bool     // alert.enabled

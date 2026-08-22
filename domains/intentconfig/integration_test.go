@@ -156,8 +156,8 @@ func TestIntegrationAnalyzer(t *testing.T) {
 			t.Error("Expected intent change detection")
 		}
 
-		t.Logf("✓ 第3轮: %s (漂移: %.2f, 切换: %s)", 
-			result.PrimaryIntent.Kind, 
+		t.Logf("✓ 第3轮: %s (漂移: %.2f, 切换: %s)",
+			result.PrimaryIntent.Kind,
 			result.IntentDriftScore,
 			result.IntentShiftType)
 	})
@@ -180,7 +180,7 @@ func TestIntegrationAnalyzer(t *testing.T) {
 			t.Errorf("Expected latest intent Reasoning, got %s", summary.LatestIntent)
 		}
 
-		t.Logf("✓ 会话摘要: %d轮, 主导意图=%s, 切换=%d次", 
+		t.Logf("✓ 会话摘要: %d轮, 主导意图=%s, 切换=%d次",
 			summary.TotalTurns,
 			summary.DominantIntent,
 			summary.SwitchCount)

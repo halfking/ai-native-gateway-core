@@ -29,15 +29,15 @@ type LLMCompleteClient interface {
 
 // requestLogRow 是 summarizer 需要的 request_logs 字段投影。
 type requestLogRow struct {
-	RequestID         string
-	PromptTokens      int
-	CompletionTokens  int
-	CostUSD           float64
-	LatencyMs         int
-	RequestPreview    *string
-	ResponsePreview   *string
-	TransformSummary  *string
-	ToolCallsJSON     *[]byte // jsonb
+	RequestID           string
+	PromptTokens        int
+	CompletionTokens    int
+	CostUSD             float64
+	LatencyMs           int
+	RequestPreview      *string
+	ResponsePreview     *string
+	TransformSummary    *string
+	ToolCallsJSON       *[]byte // jsonb
 	CompressionStrategy *string
 }
 

@@ -7,8 +7,9 @@
 //   - 配置热加载（30秒轮询）
 //
 // 集成位置：
-//   Pipeline Phase: PreRouting (在路由决策前分析意图)
-//   Priority: 50 (在安全检测后、路由决策前)
+//
+//	Pipeline Phase: PreRouting (在路由决策前分析意图)
+//	Priority: 50 (在安全检测后、路由决策前)
 package intentanalysis
 
 import (
@@ -17,7 +18,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/kaixuan/llm-gateway-go/domain"           //nolint:depguard
+	"github.com/kaixuan/llm-gateway-go/domain"               //nolint:depguard
 	"github.com/kaixuan/llm-gateway-go/domains/intentconfig" //nolint:depguard
 )
 
@@ -116,17 +117,17 @@ func (h *IntentAnalysisHook) Execute(ctx context.Context, req *domain.PipelineRe
 	}
 
 	req.Metadata["intent_analysis"] = map[string]any{
-		"primary_intent":       string(result.PrimaryIntent.Kind),
-		"primary_confidence":   result.PrimaryConfidence,
-		"confidence_level":     result.ConfidenceLevel,
-		"intent_drift_score":   result.IntentDriftScore,
-		"is_intent_changed":    result.IsIntentChanged,
-		"intent_shift_type":    result.IntentShiftType,
-		"intent_stability":     result.IntentStability,
-		"turn_number":          result.TurnNumber,
-		"recommendation":       result.Recommendation,
-		"classifier_version":   result.ClassifierVersion,
-		"analysis_latency_ms":  result.ClassificationLatency.Milliseconds(),
+		"primary_intent":      string(result.PrimaryIntent.Kind),
+		"primary_confidence":  result.PrimaryConfidence,
+		"confidence_level":    result.ConfidenceLevel,
+		"intent_drift_score":  result.IntentDriftScore,
+		"is_intent_changed":   result.IsIntentChanged,
+		"intent_shift_type":   result.IntentShiftType,
+		"intent_stability":    result.IntentStability,
+		"turn_number":         result.TurnNumber,
+		"recommendation":      result.Recommendation,
+		"classifier_version":  result.ClassifierVersion,
+		"analysis_latency_ms": result.ClassificationLatency.Milliseconds(),
 	}
 
 	// 8. 如果有候选意图，也记录（最多前3个）
@@ -176,12 +177,12 @@ func extractUserContent(req *domain.PipelineRequest) string {
 		if content, ok := req.Metadata["user_content"].(string); ok && content != "" {
 			return content
 		}
-		
+
 		// 尝试从 prompt 获取
 		if prompt, ok := req.Metadata["prompt"].(string); ok && prompt != "" {
 			return prompt
 		}
-		
+
 		// 尝试从 messages 获取
 		if messages, ok := req.Metadata["messages"].([]any); ok && len(messages) > 0 {
 			// 获取最后一条 user 消息
@@ -219,7 +220,7 @@ func estimateContextLength(req *domain.PipelineRequest) int {
 		if prompt, ok := req.Metadata["prompt"].(string); ok {
 			totalChars += len(prompt)
 		}
-		
+
 		if content, ok := req.Metadata["user_content"].(string); ok {
 			totalChars += len(content)
 		}

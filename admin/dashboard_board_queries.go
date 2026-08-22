@@ -73,17 +73,17 @@ func (h *Handler) queryBoardSummary(ctx context.Context, tenantID string, tr boa
 	}
 
 	return map[string]any{
-		"total_requests":            totalReq,
-		"total_prompt_tokens":       promptTok,
-		"total_completion_tokens":   compTok,
-		"total_tokens":              totalTok,
-		"total_cost_usd":            costUSD,
-		"total_credits_charged":     credits,
-		"success_rate":              successRate,
-		"avg_latency_ms":            avgLatency,
-		"active_api_keys":           activeKeys,
-		"active_models":             activeModels,
-		"providers":                 providers,
+		"total_requests":          totalReq,
+		"total_prompt_tokens":     promptTok,
+		"total_completion_tokens": compTok,
+		"total_tokens":            totalTok,
+		"total_cost_usd":          costUSD,
+		"total_credits_charged":   credits,
+		"success_rate":            successRate,
+		"avg_latency_ms":          avgLatency,
+		"active_api_keys":         activeKeys,
+		"active_models":           activeModels,
+		"providers":               providers,
 	}, true
 }
 
@@ -113,17 +113,17 @@ func (h *Handler) fallbackBoardSummary(ctx context.Context, tenantID string, tr 
 	_ = h.queryOverviewCounts(ctx, tenantID, tr, &activeKeys, &activeModels, &providers)
 
 	return map[string]any{
-		"total_requests":            totalReq,
-		"total_prompt_tokens":       promptTok.Int64,
-		"total_completion_tokens":   compTok.Int64,
-		"total_tokens":              promptTok.Int64 + compTok.Int64,
-		"total_cost_usd":            costUSD.Float64,
-		"total_credits_charged":     credits,
-		"success_rate":              successRate.Float64,
-		"avg_latency_ms":            avgLatency.Float64,
-		"active_api_keys":           activeKeys,
-		"active_models":             activeModels,
-		"providers":                 providers,
+		"total_requests":          totalReq,
+		"total_prompt_tokens":     promptTok.Int64,
+		"total_completion_tokens": compTok.Int64,
+		"total_tokens":            promptTok.Int64 + compTok.Int64,
+		"total_cost_usd":          costUSD.Float64,
+		"total_credits_charged":   credits,
+		"success_rate":            successRate.Float64,
+		"avg_latency_ms":          avgLatency.Float64,
+		"active_api_keys":         activeKeys,
+		"active_models":           activeModels,
+		"providers":               providers,
 	}
 }
 

@@ -21,10 +21,10 @@ import (
 
 // WebhookConfig Webhook 渠道配置。
 type WebhookConfig struct {
-	URL         string // 目标 URL
-	Secret      string // HMAC 签名密钥（空则不签名）
-	MaxRetries  int    // 最大重试次数（默认 3）
-	TimeoutSec  int    // 单次请求超时秒数（默认 30）
+	URL        string // 目标 URL
+	Secret     string // HMAC 签名密钥（空则不签名）
+	MaxRetries int    // 最大重试次数（默认 3）
+	TimeoutSec int    // 单次请求超时秒数（默认 30）
 }
 
 // WebhookChannel HTTP Webhook 通知渠道。

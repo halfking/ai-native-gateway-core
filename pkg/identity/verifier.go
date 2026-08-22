@@ -195,10 +195,10 @@ func usernameFromExtra(extra map[string]any) string {
 }
 
 var (
-	mu        sync.Mutex
-	issuers   []token.Issuer
-	loaded    bool
-	disabled  bool
+	mu       sync.Mutex
+	issuers  []token.Issuer
+	loaded   bool
+	disabled bool
 )
 
 // ResetForTest clears the cached allowlist + disabled flag so a test that

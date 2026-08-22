@@ -11,19 +11,19 @@ const unknownDim = "__unknown__"
 
 // MinuteRow is a per-minute aggregate keyed by tenant + provider + model.
 type MinuteRow struct {
-	Bucket            time.Time
-	TenantID          string
-	ProviderID        int64
-	CanonicalID       int64
-	Requests          int64
-	SuccessCount      int64
-	FailureCount      int64
-	PromptTokens      int64
-	CompletionTokens  int64
-	TotalTokens       int64
-	CreditsCharged    int64
-	CostUSD           float64
-	LatencyMsSum      int64
+	Bucket           time.Time
+	TenantID         string
+	ProviderID       int64
+	CanonicalID      int64
+	Requests         int64
+	SuccessCount     int64
+	FailureCount     int64
+	PromptTokens     int64
+	CompletionTokens int64
+	TotalTokens      int64
+	CreditsCharged   int64
+	CostUSD          float64
+	LatencyMsSum     int64
 }
 
 // DimRow is a per-minute breakdown for pie charts.
@@ -42,13 +42,13 @@ type DimRow struct {
 
 // ErrorDrillRow supports error pie chart drill-down.
 type ErrorDrillRow struct {
-	Bucket         time.Time
-	TenantID       string
-	ErrorKind      string
-	ModelName      string
-	ProviderID     int64
-	ClientProfile  string
-	Requests       int64
+	Bucket        time.Time
+	TenantID      string
+	ErrorKind     string
+	ModelName     string
+	ProviderID    int64
+	ClientProfile string
+	Requests      int64
 }
 
 // FromTelemetryEntry builds rollup rows from a completed request log entry.
