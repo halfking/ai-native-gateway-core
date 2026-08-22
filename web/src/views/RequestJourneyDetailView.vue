@@ -15,7 +15,7 @@
 // 入站快照只回 minimal fields——这里检测 journey.events 为空时退化为仅动作面板
 // + 路由面板隐藏 + 追踪面板降级提示，避免误报"无事件"。
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { getRequestJourney } from '../api/request-journeys'
 import type { RequestJourney } from '../api/request-journeys'
@@ -25,7 +25,12 @@ import ActionTimeline from '../components/ActionTimeline.vue'
 import RequestTracePanel from '../components/RequestTracePanel.vue'
 
 const route = useRoute()
+const router = useRouter()
 const { t } = useI18n()
+
+function goBack() {
+  router.push({ path: '/admin/request-registry' })
+}
 
 const requestId = computed(() => String(route.params.requestId || ''))
 const journey = ref<RequestJourney | null>(null)
@@ -72,6 +77,14 @@ onUnmounted(() => {
 <template>
   <section class="journey-detail-view" data-testid="journey-detail-view">
     <header class="jdv-head">
+      <button
+        type="button"
+        class="btn btn-sm btn-ghost jdv-back"
+        data-testid="back-to-list"
+        @click="goBack"
+      >
+        {{ t('requestJourneyDetail.backToList') }}
+      </button>
       <h2>{{ t('requestJourneyDetail.title') }}</h2>
       <p class="jdv-sub">
         <span class="jdv-id">{{ requestId }}</span>
@@ -120,6 +133,17 @@ onUnmounted(() => {
   flex-direction: column;
   gap: 14px;
   min-width: 0;
+}
+
+.jdv-head {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.jdv-back {
+  padding-left: 0;
 }
 
 .jdv-head h2 {
