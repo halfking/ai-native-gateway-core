@@ -528,10 +528,12 @@ func TestRecoverExpiredBindingsIgnoresBackoffState(t *testing.T) {
 func TestFreshDegradedCmbSQLGuards(t *testing.T) {
 	sql := freshDegradedCmbSQL()
 	mustContain := []string{
-		// cmb 谓词：只挑 continuous_failure + cooldown 内 + 已被踢至少 60s
+		// cmb 谓词：只挑 continuous_failure + cooldown 内 + 已被踢至少 30s
+		// 2026-08-23 hzx-2 audit: 30s guard (was 60s) to match the
+		// credential_recovery 30s tick and cut worst-case detection lag.
 		"cmb.available = FALSE",
 		"cmb.unavailable_reason = 'continuous_failure'",
-		"cmb.unavailable_at <= now() - INTERVAL '60 seconds'",
+		"cmb.unavailable_at <= now() - INTERVAL '30 seconds'",
 		"cmb.unavailable_recover_at IS NOT NULL",
 		"cmb.unavailable_recover_at > now()",
 		// 硬保护：manual / admin_protected / lifecycle 一律不动

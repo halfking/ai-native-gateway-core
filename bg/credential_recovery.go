@@ -912,10 +912,19 @@ func (r *CredentialRecovery) recoverExpiredBindings(ctx context.Context) error {
 //   - 'auto_*'   : written by domains/credential/writer.go for transient
 //     per-model failures; out of scope for this branch.
 //   - unavailable_recover_at IS NOT NULL AND > now() (i.e., still in cooldown).
-//   - unavailable_at <= now() - 60 seconds. Don't re-probe a row that was
+//   - unavailable_at <= now() - 30 seconds. Don't re-probe a row that was
 //     just marked unavailable seconds ago — give the original failure burst
-//     a chance to settle. 60s matches the original 60s tick so the first
-//     re-check happens on the second tick after degradation.
+//     a chance to settle.
+//
+//     2026-08-23 hzx-2 audit: tightened from 60s to 30s. The original 60s
+//     matched the legacy 60s tick; the credential_recovery loop now runs
+//     at 30s (defaultCredentialRecoveryInterval), and the credential can
+//     enter a sustained-failure cycle that takes ~3 minutes to recover
+//     once the upstream clears. Halving the guard reduces the worst-case
+//     detection lag from "next 60s tick after 60s settle = 120s" to
+//     "next 30s tick after 30s settle = 60s" — still enough headroom
+//     for the failure burst to settle, twice as quick to react when it
+//     has.
 //   - Same hard guards as the expired branch (manual, lifecycle, provider,
 //     admin_protected, availability_state, paused).
 //   - Skip rows whose node_probe_state already has a future next_retry_at
@@ -933,7 +942,7 @@ func freshDegradedCmbSQL() string {
 		WHERE cmb.available = FALSE
 		  AND cmb.unavailable_reason = 'continuous_failure'
 		  AND cmb.unavailable_at IS NOT NULL
-		  AND cmb.unavailable_at <= now() - INTERVAL '60 seconds'
+		  AND cmb.unavailable_at <= now() - INTERVAL '30 seconds'
 		  AND cmb.unavailable_recover_at IS NOT NULL
 		  AND cmb.unavailable_recover_at > now()
 		  AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'

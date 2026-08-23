@@ -22,16 +22,21 @@ var (
 )
 
 const (
-	SourceAutoTitle       = "auto-title"
-	SourceAutoSummary     = "auto-summary"
-	SourceUserSummarize   = "user-summarize"
-	SourceManual          = "manual"
-	SourceNoTopic         = "no-topic"
-	SourceSessionSummary  = "session-summary"
-	SourcePriorityAuto    = 10
-	SourcePrioritySummary = 20
-	SourcePriorityUser    = 30
-	SourcePriorityManual  = 40
+	SourceAutoTitle        = "auto-title"
+	SourceProvisionalTitle = "provisional-title"
+	SourceAutoSummary      = "auto-summary"
+	SourceUserSummarize    = "user-summarize"
+	SourceManual           = "manual"
+	SourceNoTopic          = "no-topic"
+	SourceSessionSummary   = "session-summary"
+	// SourcePriorityProvisional sits below auto-title so the arrival-time
+	// provisional title can never replace the refined LLM title; the refined
+	// writer replaces it because its priority is strictly higher.
+	SourcePriorityProvisional = 5
+	SourcePriorityAuto        = 10
+	SourcePrioritySummary     = 20
+	SourcePriorityUser        = 30
+	SourcePriorityManual      = 40
 )
 
 type sourceInfo struct {
@@ -58,6 +63,8 @@ func Source(name string) sourceInfo {
 		return source(SourceAutoSummary, SourcePrioritySummary, false)
 	case SourceAutoTitle:
 		return source(SourceAutoTitle, SourcePriorityAuto, false)
+	case SourceProvisionalTitle:
+		return source(SourceProvisionalTitle, SourcePriorityProvisional, false)
 	case SourceNoTopic:
 		return source(SourceNoTopic, SourcePriorityAuto, false)
 	default:
@@ -87,7 +94,11 @@ type Claim struct {
 	Source         string
 	SourcePriority int
 	Explicit       bool
-	TaskID         string
+	// OnlyIfEmpty rejects the claim when the locked row already has a title.
+	// It makes arrival-time provisional writes first-writer-wins without a
+	// separate non-atomic Get before BeginMutation.
+	OnlyIfEmpty bool
+	TaskID      string
 }
 
 type ClaimResult struct {
@@ -178,6 +189,9 @@ func (s *Store) BeginMutation(ctx context.Context, req Claim) (ClaimResult, erro
 	current.DeletedAt, current.LeaseExpiresAt = deletedAt, leaseExpires
 	if current.Deleted && !info.explicit {
 		return ClaimResult{}, ErrDeleted
+	}
+	if req.OnlyIfEmpty && !current.Deleted && strings.TrimSpace(current.Title) != "" {
+		return ClaimResult{}, ErrPriority
 	}
 	// Explicit writers may clear a tombstone, but they still cannot replace an
 	// active title written by a higher-priority source.
