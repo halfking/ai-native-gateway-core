@@ -16,6 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Credential model drawer extras: IQ history chart + cross-credential check restored into `ModelOfferExtrasPanel`; identity chips deep-link to `/models?q=`.
 
 ### Fixed
+- **245 shared data-plane key RPM rejections (2026-08-24)**: the static
+  data-plane admission key was also resolved as database API key 105 with an
+  explicit 30 RPM limit, so all frontend traffic shared one gateway RPM window
+  and received `rate_limit_exceeded` despite available upstream capacity. The
+  server-authenticated static key now bypasses only this shared gateway RPM
+  quota; database-key budgets, upstream rate limits, and credential concurrency
+  governors remain enforced.
 - **245 local gateway probe authentication (2026-08-24)**: loopback probes now retain the configured data-plane API key accepted by `AuthMiddleware`; the legacy node-probe worker no longer replaces it with a database system key that the static gateway auth gate rejects as `401 invalid_key`.
 - **245 long-context telemetry overflow (migration 571, 2026-08-24)**: `update_session_summary()` cast million-token request counts to `DECIMAL(10,6)` before division, whose four-digit integer capacity raised SQLSTATE `22003` and rolled back the complete `request_logs_hot` transaction. Token-ratio inputs now use unbounded `numeric`; the persisted six-decimal ratio and session cost schema remain unchanged.
 - **245 streaming terminal-state and probe attribution (2026-08-24)**: discarded stream attempts now reset their per-attempt capture state before replay, preventing an `early_empty_detection` from a failed candidate from marking a later successful stream as interrupted. The request-log terminal guard now permits an explicit success terminal update to replace an intermediate failure while continuing to reject late failures after success. Probe error kinds now encode the actual origin (`probe_gateway_*` versus `probe_direct_*`), so a local gateway self-check 401 is no longer reported as an upstream credential authentication failure. Reused system self-check keys are verified against the current data-plane HMAC before use; a stale hash causes controlled regeneration.
