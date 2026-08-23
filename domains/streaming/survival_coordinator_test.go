@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 )
@@ -135,6 +136,27 @@ func TestSurvivalCoordinatorRetryNowRecoversOnSecondAttempt(t *testing.T) {
 	}
 	if len(h.terminals) != 0 {
 		t.Fatalf("recovered request must not render terminal, got %v", h.terminals)
+	}
+}
+
+func TestSurvivalCoordinatorRetryResetsDiscardedCapture(t *testing.T) {
+	capture := audit.NewStreamCapture()
+	capture.MarkInterruptedWithReason("early_empty_detection")
+	h := newCoordHarness(&scriptedExecutor{
+		errs:    []error{transientFailure(), nil},
+		results: []*executors.ExecuteResult{nil, {}},
+	})
+
+	res := h.coordinator().Run(context.Background(), h.sw, &executors.ExecParams{Capture: capture})
+	if !res.Succeed {
+		t.Fatalf("expected recovery, decision=%v", res.Decision.Action)
+	}
+	_, _, _, interrupted, _ := capture.Snapshot()
+	if interrupted {
+		t.Fatal("discarded attempt interruption leaked into recovered stream capture")
+	}
+	if events := capture.DiscardEventsCopy(); len(events) != 1 || events[0].Reason != "survival_attempt_discarded" {
+		t.Fatalf("discard event missing after capture reset: %+v", events)
 	}
 }
 

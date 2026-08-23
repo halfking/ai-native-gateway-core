@@ -1814,7 +1814,9 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		   WHERE request_id = $1
 
 		     AND NOT (
-				request_logs_hot.request_status = 'failure'
+				(request_logs_hot.request_status = 'failure' AND NOT (
+					COALESCE($37, FALSE) = TRUE AND $38 = 'success'
+				))
 				OR (
 					(request_logs_hot.success = TRUE
 					 OR request_logs_hot.request_status = 'success')
