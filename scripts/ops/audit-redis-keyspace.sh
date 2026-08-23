@@ -24,7 +24,6 @@ import socket
 address = os.environ["REDIS_AUDIT_ADDR"]
 password = os.environ["REDIS_AUDIT_PASSWORD"]
 db = os.environ["REDIS_AUDIT_DB"]
-<<<<<<< HEAD
 sample_limit = int(os.environ["REDIS_AUDIT_SAMPLE_LIMIT"])
 host, port = address.rsplit(":", 1)
 
