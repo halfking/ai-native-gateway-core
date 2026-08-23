@@ -4,6 +4,7 @@ export default {
   title: 'Request Journey Detail',
   loading: 'Loading journey…',
   error: 'Failed to load journey detail',
+  retry: 'Retry',
   routingTitle: 'Routing attempts timeline',
   actionTitle: 'Action timeline (SSE)',
   traceTitle: 'Failure trace & AI prompt',

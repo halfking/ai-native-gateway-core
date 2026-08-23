@@ -117,6 +117,11 @@ func NewSummarizer(pool *pgxpool.Pool, redisClient *redis.Client, llmClient LLMC
 	return s
 }
 
+// NewRequestLogsMessageSource returns the V1 request_logs MessageSource.
+func NewRequestLogsMessageSource(pool *pgxpool.Pool) MessageSource {
+	return &pgRequestLogsSource{pool: pool}
+}
+
 // SetMessageSource overrides where the summarizer reads conversation messages
 // from. Intended for registering a V2 session_bodies-backed MessageSource; nil
 // is ignored to avoid a nil-dereference on the read path.
