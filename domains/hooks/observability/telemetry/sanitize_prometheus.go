@@ -14,20 +14,18 @@ import (
 // UI relies on. Until now the only signal was a slog.Warn, which never
 // reached Prometheus and so could not be alerted on.
 //
-// The three counters below mirror the three discard/truncation log lines
-// at client.go:2604 / 2610 / 2630 / 2637, plus an additional
-// `missing_required_field` counter for the new guard added at
-// EmitRequestLogUpdate (see client.go:EmitRequestLogUpdate and the
-// required-field guard in handler.go:5732).
+// The counters below mirror the discard/rescue log lines at
+// client.go:2604 / 2630, plus an additional `required_field_guard` series
+// for the EmitRequestLogUpdate best-effort write guard.
 //
 // Label cardinality is bounded:
-//   - outcome ∈ {discarded, repaired}              (two outcomes, fixed set)
-//   - field   ∈ {request_body, response_body,      (eight fields sanitized
-//                 outbound_body, compression_meta, by client.go:2578-2587;
-//                 discard_events, outbound_msg_hashes,
+//   - outcome ∈ {discarded, rescued}              (two outcomes, fixed set)
+//   - field   ∈ {request_body, response_body,      (eleven fields sanitized
+//                 outbound_body, compression_meta, by client.go:2578-2587
+//                 discard_events, outbound_msg_hashes,  + auto_decision)
 //                 quality_fix_actions, tool_calls,
 //                 attachments, routing_attempts,
-//                 auto_decision}                   + auto_decision)
+//                 auto_decision}
 //   - source  ∈ {string_field, json_field,         (three sanitize helpers)
 //                raw_json_field}
 //   - stage   ∈ {sanitize, required_field_guard}   (two stages)
@@ -36,7 +34,7 @@ import (
 // stable surface from process start.
 var sanitizeEventsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 	Name: "telemetry_sanitize_events_total",
-	Help: "Telemetry request_log sanitisation events (outcome × field × source × stage). outcome=discarded means the field was NULLed out — for the JSONB columns that drive /request-logs this is the actual loss signal. Mirrors slog.Warn calls in client.go:sanitizeJSONField / sanitizeRawJSONField.",
+	Help: "Telemetry request_log sanitisation events (outcome × field × source × stage). outcome=discarded means the field was NULLed out — for the JSONB columns that drive /request-logs this is the actual loss signal; outcome=rescued means the field was truncated but a usable prefix is retained. Mirrors slog.Warn calls in client.go:sanitizeJSONField / sanitizeRawJSONField.",
 },
 	[]string{"outcome", "field", "source", "stage"},
 )
@@ -59,8 +57,19 @@ var sanitizeFieldLabels = []string{
 }
 
 // sanitizeOutcomeLabels / sanitizeStageLabels / sanitizeSourceLabels.
+//
+// outcome:
+//
+//	discarded — sanitizeUTF8JSON returned ""; the JSONB column was NULLed
+//	            out. This is the SEVERE signal — for request_body / outbound_body
+//	            it means /request-logs UI sees nothing. alertable.
+//
+//	rescued   — sanitizeUTF8JSON returned a non-empty truncated string; the
+//	            truncated prefix is KEPT in the column so auditors still see
+//	            something. Non-alerting by itself, but worth tracking per
+//	            (model, field) to spot upstream regressions.
 var (
-	sanitizeOutcomeLabels = []string{"discarded", "repaired"}
+	sanitizeOutcomeLabels = []string{"discarded", "rescued"}
 	sanitizeStageLabels   = []string{"sanitize", "required_field_guard"}
 	sanitizeSourceLabels  = []string{"string_field", "json_field", "raw_json_field"}
 )
