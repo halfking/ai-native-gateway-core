@@ -124,37 +124,66 @@ func TestSingleRawModelForRevision(t *testing.T) {
 // TestEnsureScopeRevision_SeedsMissingRow deletes the revision row then
 // confirms ensureScopeRevision recreates version=1 without bumping an
 // existing revision on a second call.
-func TestEnsureScopeRevision_SeedsMissingRow(t *testing.T) {
+func TestSingleCanonicalForRevision(t *testing.T) {
+	idPtr := func(v int64) *int64 { return &v }
+	cases := []struct {
+		name string
+		ids  []*int64
+		want int64
+		ok   bool
+	}{
+		{name: "empty", ids: nil, ok: false},
+		{name: "single", ids: []*int64{idPtr(173264)}, want: 173264, ok: true},
+		{name: "same canonical", ids: []*int64{idPtr(173264), idPtr(173264)}, want: 173264, ok: true},
+		{name: "mixed canonical", ids: []*int64{idPtr(173264), idPtr(192049)}, ok: false},
+		{name: "zero canonical", ids: []*int64{idPtr(0)}, ok: false},
+		{name: "nil canonical", ids: []*int64{nil}, ok: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			candidates := make([]resolveCandidate, len(tc.ids))
+			for i, id := range tc.ids {
+				candidates[i].CanonicalID = id
+			}
+			got, ok := singleCanonicalForRevision(candidates)
+			if ok != tc.ok || got != tc.want {
+				t.Fatalf("singleCanonicalForRevision(%v) = (%d, %v), want (%d, %v)", tc.ids, got, ok, tc.want, tc.ok)
+			}
+		})
+	}
+}
+
+func TestEnsureCanonicalScopeRevision_SeedsMissingRow(t *testing.T) {
 	pool := reorderTestPool(t)
 	f := newReorderTestFixture(t, pool, 2)
 	ctx := context.Background()
 
-	_, err := pool.Exec(ctx, `DELETE FROM public.candidate_binding_scope_revision WHERE raw_model = $1`, f.rawModel)
+	_, err := pool.Exec(ctx, `DELETE FROM public.candidate_binding_scope_revision_canonical WHERE canonical_id = $1`, f.canonicalID)
 	if err != nil {
-		t.Fatalf("delete revision: %v", err)
+		t.Fatalf("delete canonical revision: %v", err)
 	}
-	before, err := loadScopeRevision(ctx, pool, f.rawModel)
+	before, err := loadCanonicalScopeRevision(ctx, pool, f.canonicalID)
 	if err != nil {
-		t.Fatalf("load after delete: %v", err)
+		t.Fatalf("load canonical after delete: %v", err)
 	}
 	if before.Raw != "" {
-		t.Fatalf("expected empty revision after delete, got %q", before.Raw)
+		t.Fatalf("expected empty canonical revision after delete, got %q", before.Raw)
 	}
 
-	seeded, err := ensureScopeRevision(ctx, pool, f.rawModel)
+	seeded, err := ensureCanonicalScopeRevision(ctx, pool, f.canonicalID)
 	if err != nil {
-		t.Fatalf("ensure: %v", err)
+		t.Fatalf("ensure canonical: %v", err)
 	}
 	if !strings.HasPrefix(seeded.Raw, "1:") {
-		t.Fatalf("seeded revision = %q, want prefix 1:", seeded.Raw)
+		t.Fatalf("seeded canonical revision = %q, want prefix 1:", seeded.Raw)
 	}
 
-	again, err := ensureScopeRevision(ctx, pool, f.rawModel)
+	again, err := ensureCanonicalScopeRevision(ctx, pool, f.canonicalID)
 	if err != nil {
-		t.Fatalf("ensure again: %v", err)
+		t.Fatalf("ensure canonical again: %v", err)
 	}
 	if again.Raw != seeded.Raw {
-		t.Fatalf("second ensure changed revision: %q -> %q", seeded.Raw, again.Raw)
+		t.Fatalf("second canonical ensure changed revision: %q -> %q", seeded.Raw, again.Raw)
 	}
 }
 
@@ -164,8 +193,8 @@ func TestEnsureScopeRevision_SeedsMissingRow(t *testing.T) {
 
 // TestRoutingCandidateBindingReorder_IntegrationBumpMonotonic drives two
 // consecutive reorders and asserts scope_version advances from 1 to 2 to 3.
-// This proves the migration 541 trigger fires per write and the wire token
-// advances monotonically.
+// This proves the migration 566 canonical trigger fires per write and the
+// wire token advances monotonically.
 func TestRoutingCandidateBindingReorder_IntegrationBumpMonotonic(t *testing.T) {
 	pool := reorderTestPool(t)
 	h := &Handler{db: pool}
@@ -177,7 +206,7 @@ func TestRoutingCandidateBindingReorder_IntegrationBumpMonotonic(t *testing.T) {
 	}
 
 	first := doReorder(t, h, routingCandidateReorderRequest{
-		RawModel:         f.rawModel,
+		CanonicalID:      f.canonicalID,
 		ExpectedRevision: revV1,
 		Items: []routingCandidateReorderItem{
 			{CredentialID: int(f.credIDs[1]), ManualPriority: 1},
@@ -193,7 +222,7 @@ func TestRoutingCandidateBindingReorder_IntegrationBumpMonotonic(t *testing.T) {
 	}
 
 	second := doReorder(t, h, routingCandidateReorderRequest{
-		RawModel:         f.rawModel,
+		CanonicalID:      f.canonicalID,
 		ExpectedRevision: revV2,
 		Items: []routingCandidateReorderItem{
 			{CredentialID: int(f.credIDs[0]), ManualPriority: 1},
@@ -226,7 +255,7 @@ func TestRoutingCandidateBindingReorder_IntegrationResolveEcho(t *testing.T) {
 
 	// Drive one reorder through the handler.
 	rec := doReorder(t, h, routingCandidateReorderRequest{
-		RawModel:         f.rawModel,
+		CanonicalID:      f.canonicalID,
 		ExpectedRevision: revV1,
 		Items: []routingCandidateReorderItem{
 			{CredentialID: int(f.credIDs[1]), ManualPriority: 1},

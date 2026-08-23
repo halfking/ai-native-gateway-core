@@ -305,3 +305,40 @@ stash@{0} 存在第三方 team 的 WIP（halfking/halfking-other-team changes, p
 ### 关于"是否需要再 deploy"
 
 如果本地 main HEAD = origin/main HEAD，并且 origin/main 已包含 §10 列出的 1b8911573 + 3e30967b9，**不要再 deploy 245/154** — 它们已经跑的是最新代码，且本次新增的两个 commit 都是 telemetry 域 refactor + 文档脚本，**对运行行为零影响**。只需跑一次 prefcred smoke 确认 admin-pin 仍生效即可（§10 已记录）。
+---
+
+## §11. Migration 562 audit + fix（commit `d7dc0d195`，已 push origin/main）
+
+### 触发
+审计 `sql/migrations/startup/562_fix_request_logs_bodies_partitions_heap{,_down}.sql` 时发现 3 个潜在 bug。
+
+### 发现的问题
+
+1. **(P1)** `request_logs_bodies_2026_08` 在 up/down 重建时使用 `('2026-08-01')` 的 session-TZ-relative 字面量，与 canonical schema（`sql/schema/01-schema.sql:18401`）的 `('2026-08-01 00:00:00+08')` 不一致。在非 `+08` 的 session timezone 下，partition range 解释不同，可能与相邻月份产生 gap 或 overlap。
+2. **(P2)** 重建 partition 时漏掉了 autovacuum reloptions（`autovacuum_enabled='true'`, `vacuum_scale_factor='0.05'`, `vacuum_threshold='10'`, `analyze_scale_factor='0.02'`, `analyze_threshold='50'`），与 canonical schema（`sql/schema/01-schema.sql:12322-12336`）不一致。columnar body partition 是 jsonb/TOAST-heavy，autovacuum 行为变化会影响日常维护。
+3. **(P3)** down migration 重建 `ensure_request_logs_bodies_partition()` 时漏掉了 328a 的 orphan-reattach `ELSIF` 分支，回滚后已 detach 的月度表无法被自动重新 attach。
+
+附加发现：`domains/credential/weight_nudge_integration_test.go::TestBanditScorer_WeightNudgeIsNoOpWhenDisabled` 中 `var anyAffected bool` / `_ = anyAffected` 是 dead code。
+
+### 修复（commit `d7dc0d195`）
+
+- `562_*.sql`（up + down）：硬编码 `('2026-08-01 00:00:00+08')` 和 `('2026-09-01 00:00:00+08')` 作为 partition bound；重建时附上完整 autovacuum reloptions；down migration 的 `ensure_request_logs_bodies_partition()` body 恢复 328a 的 ELSIF orphan-reattach 分支。
+- 清理 up migration 中未使用的 `bound` 和 `parent_name` 声明。
+- 清理 `weight_nudge_integration_test.go` 中的 dead code。
+
+### 验证
+
+- `go vet ./domains/credential/...` ✅
+- `go build ./...` ✅
+- `go test ./domains/credential/...` ✅（16.7s）
+- `go test ./domains/stats/...` ✅
+
+### 范围控制
+
+本次 commit **只触碰 3 个文件**（两个 SQL 文件 + 一个测试文件）。其余工作树上的脏文件（telemetry client.go、sanitize_prometheus、diag script、其他团队 stash 的 WIP）保持原状、留在工作树中不丢失——等待各自 owner 自行提交。
+
+### 后续会话交接
+
+- 修复已合入 `d7dc0d195` 并 push origin/main。本节为记录当时的会话快照，**HEAD sha 可能已变化**，请以当前 `git log origin/main` 为准。
+- 工作树上的脏文件属于其他团队 / 其他任务的 WIP，**不要覆盖**。
+- 下次会话接手时先跑 `git status` 核对 HEAD；如果其他推送已落到 main，需要先 rebase 再继续。

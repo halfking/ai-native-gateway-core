@@ -75,7 +75,8 @@ var sanitizeFieldLabels = []string{
 //	rescued   — sanitizeUTF8JSON returned a non-empty truncated string; the
 //	            truncated prefix is KEPT in the column so auditors still see
 //	            something. Non-alerting by itself, but worth tracking per
-//	            (model, field) to spot upstream regressions.
+//	            (field, source, stage); model-level comparisons come from
+//	            request_logs_hot/request_wal_hot because this metric has no model label.
 var (
 	sanitizeOutcomeLabels = []string{"discarded", "rescued"}
 	sanitizeStageLabels   = []string{"sanitize", "required_field_guard"}
