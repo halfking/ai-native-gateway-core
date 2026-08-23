@@ -2812,6 +2812,7 @@ func main() {
 	var healthAutoRecover *bg.HealthAutoRecover
 	var autoHealWorker *bg.CredentialAutoHealWorker
 	var autoRouteListener *bg.AutoRouteRealtimeListener
+	var dispatchPolicyPublisher *dispatch.PolicyPublisher
 	// v7 (2026-06-28): Unified probe scheduler replaces modelProbe + suspiciousProbe
 	var unifiedProbe *bg.UnifiedProbeScheduler
 	var modelProbe *bg.ModelProbeRunner           // TODO: remove after unifiedProbe validation
@@ -5703,6 +5704,10 @@ func main() {
 		// dispatch.ApplySoftPenalty 把 QueueFull / GovernorSaturated 候选
 		// 移到列表尾 (不剔除)。Stage C.2 observer 需要单独开启才会填 cache。
 		wireDispatchCapacityAwareSort(routingExec, pipeline)
+		if dbConn != nil && dbConn.Enabled() {
+			dispatchPolicyPublisher = dispatch.NewPolicyPublisher(dbConn.Pool(), pipeline)
+			dispatchPolicyPublisher.Start(context.Background())
+		}
 	}
 	if liveStreamHub != nil {
 		projection := gatewayQueueProjection.Load()
@@ -5843,6 +5848,10 @@ func main() {
 	stopDone := make(chan struct{}, 1)
 
 	go func() {
+		// Stop dispatch policy publication before the pipeline/backend and DB.
+		if dispatchPolicyPublisher != nil {
+			dispatchPolicyPublisher.Stop()
+		}
 		// Stop dispatch before its RequestJourney Redis/PostgreSQL dependencies.
 		if pipeline != nil {
 			pipeline.Stop()
