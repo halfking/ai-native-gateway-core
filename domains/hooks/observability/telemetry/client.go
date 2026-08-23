@@ -2629,12 +2629,18 @@ func sanitizeJSONField(field string, p **string) {
 		*p = nil
 		return
 	}
+	// 2026-08-23 (Step 6 / 245 incident): keep the truncated prefix when
+	// sanitizeUTF8JSON managed to rescue a valid JSON prefix. The previous
+	// behaviour still set *p to the truncated value here, but the side
+	// effect was a "repaired" label that conflated two semantics. The
+	// outcome label is now `rescued` — auditors see partial JSON instead of
+	// NULL, and dashboards can rate() rescued vs discarded independently.
 	if len(v) < len(original) {
-		slog.Warn("telemetry JSON field repaired by truncation",
+		slog.Warn("telemetry JSON field rescued by truncation",
 			"field", field,
 			"original_bytes", len(original),
 			"kept_bytes", len(v))
-		incSanitizeEvent("repaired", field, "json_field", "sanitize")
+		incSanitizeEvent("rescued", field, "json_field", "sanitize")
 	}
 	*p = &v
 }
@@ -2657,12 +2663,14 @@ func sanitizeRawJSONField(field string, raw *json.RawMessage) {
 		*raw = nil
 		return
 	}
+	// 2026-08-23 (Step 6): see sanitizeJSONField — keep truncated prefix,
+	// log + count as `rescued` instead of the older `repaired` label.
 	if len(cleaned) < len(*raw) {
-		slog.Warn("telemetry JSONB field repaired by truncation",
+		slog.Warn("telemetry JSONB field rescued by truncation",
 			"field", field,
 			"original_bytes", len(*raw),
 			"kept_bytes", len(cleaned))
-		incSanitizeEvent("repaired", field, "raw_json_field", "sanitize")
+		incSanitizeEvent("rescued", field, "raw_json_field", "sanitize")
 	}
 	*raw = json.RawMessage(cleaned)
 }
