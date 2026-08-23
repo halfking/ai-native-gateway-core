@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Credential model drawer extras: IQ history chart + cross-credential check restored into `ModelOfferExtrasPanel`; identity chips deep-link to `/models?q=`.
 
+### Fixed
+- **session_summaries.request_count / cost 写路径（migration 563）**：实时写入落 `request_logs_hot` 后聚合触发器缺失，且 `update_session_summary()` 仍是 310 错误列名体，导致 SessionStats KPI 会话有数但请求/成本全 0。563 用 `gw_session_id`/`ts`/`cost_usd` 重写函数、触发器仅挂 hot（避免 promote 双计）、幂等回填 hot 聚合；同步修正 `sql/objects/functions/update_session_summary.sql`。已知 follow-up：hot 行 `cost_usd` 仍大多为 NULL（计费写入另切片）。
+
 ### Changed
 - **队列瀑布图 154 UI 抛光（build 1666）**：相对 T0 CSS 瀑布图例分两行（排队/执行）、轨内 25/50/75% 参考线、去掉独立 queue/ttfb 列；详情改右侧抽屉（放大条 + T0–T9 阶段表）。已部署 `llm.kxpms.cn/dispatch/waterfall`。
 - Provider logs and credential-monitor summary now expose `canonical_model` / `standardized_name` / `canonical_name` (monitor schema v8). Saving a node offer omits `context_window` unless the override field actually changed.
