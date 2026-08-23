@@ -136,7 +136,9 @@ func Extract(in Input) Result {
 	r.Project, r.Evidence = extractProject(in, corpus)
 	r.Title = provisionalTitle(user, r.Agent.Name, r.WorkTypes)
 	if r.Title != "" {
-		r.Features = append(r.Features, Feature{Key: "title_source", Value: "first_user_message", Source: "rule", Confidence: 1})
+		// corpusParts/lastUser keep the LAST user message; the feature label
+		// must describe what actually produced the title.
+		r.Features = append(r.Features, Feature{Key: "title_source", Value: "last_user_message", Source: "rule", Confidence: 1})
 	}
 	return r
 }

@@ -11,27 +11,6 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/titlestore"
 )
 
-func TestProvisionalTitleCommitBlocked(t *testing.T) {
-	tests := []struct {
-		name string
-		st   titlestore.State
-		err  error
-		want bool
-	}{
-		{name: "existing title blocks commit", st: titlestore.State{Title: "已有标题"}, err: nil, want: true},
-		{name: "deleted tombstone allows commit", st: titlestore.State{Title: "old", Deleted: true}, err: nil, want: false},
-		{name: "empty title allows commit", st: titlestore.State{Title: "  "}, err: nil, want: false},
-		{name: "get error allows commit attempt", st: titlestore.State{}, err: titlestore.ErrNotConfigured, want: false},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := provisionalTitleCommitBlocked(tc.st, tc.err); got != tc.want {
-				t.Fatalf("provisionalTitleCommitBlocked() = %v, want %v", got, tc.want)
-			}
-		})
-	}
-}
-
 func TestMaybeGenerateProvisionalMetadata_RespectsEnabledGate(t *testing.T) {
 	gen := &AutoTitleGenerator{
 		enabled: false,
@@ -63,13 +42,16 @@ func TestCommitProvisionalArrival_SkipsTitleWhenAlreadyExists(t *testing.T) {
 		WithArgs("tenant-a", "gw_existing_title", sessionmeta.SchemaVersion, sessionmeta.StatusProvisional, result.InputHash, pgxmock.AnyArg(), "task-new").
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 
+	// commitProvisionalTitle: Begin → INSERT state → SELECT FOR UPDATE finds
+	// an existing manual title; OnlyIfEmpty rejects inside the transaction.
 	rows := pgxmock.NewRows([]string{
-		"tenant_id", "scoped_session_id", "title", "deleted", "deleted_at",
-		"fencing_token", "lease_owner", "lease_expires_at", "source", "source_priority", "source_task_id",
-	}).AddRow("tenant-a", "gw_existing_title", "已有标题", false, nil, int64(1), "", nil, "manual", 40, "task-old")
-	mock.ExpectQuery(`FROM public\.session_title_states`).
-		WithArgs("tenant-a", "gw_existing_title").
-		WillReturnRows(rows)
+		"title", "deleted", "deleted_at", "fencing_token", "lease_owner", "lease_expires_at", "source", "source_priority", "source_task_id",
+	}).AddRow("已有标题", false, nil, int64(1), "", nil, "manual", 40, "task-old")
+	mock.ExpectBegin()
+	mock.ExpectExec(`INSERT INTO public\.session_title_states`).
+		WithArgs("tenant-a", "gw_existing_title", titlestore.SourceProvisionalTitle, titlestore.SourcePriorityProvisional, "task-new").
+		WillReturnResult(pgxmock.NewResult("INSERT", 0))
+	mock.ExpectQuery(`FOR UPDATE`).WithArgs("tenant-a", "gw_existing_title").WillReturnRows(rows)
 
 	gen := &AutoTitleGenerator{
 		enabled: true,
@@ -116,30 +98,34 @@ func TestCommitProvisionalArrival_WritesMetadataWithoutTitle(t *testing.T) {
 	}
 }
 
-func TestCommitProvisionalTitle_SkipsWhenTitleAlreadyExists(t *testing.T) {
+// TestCheckSessionHasTitle_IgnoresProvisionalSource pins the lifecycle rule:
+// a provisional arrival title must not short-circuit the refined LLM title.
+func TestCheckSessionHasTitle_IgnoresProvisionalSource(t *testing.T) {
 	mock, err := pgxmock.NewPool()
 	if err != nil {
 		t.Fatalf("pgxmock.NewPool: %v", err)
 	}
 	defer mock.Close()
 
-	rows := pgxmock.NewRows([]string{
+	provisionalRow := pgxmock.NewRows([]string{
 		"tenant_id", "scoped_session_id", "title", "deleted", "deleted_at",
 		"fencing_token", "lease_owner", "lease_expires_at", "source", "source_priority", "source_task_id",
-	}).AddRow("tenant-a", "gw_existing_title", "已有标题", false, nil, int64(1), "", nil, "manual", 40, "task-old")
+	}).AddRow("tenant-a", "gw_p", "临时标题", false, nil, int64(3), "", nil, titlestore.SourceProvisionalTitle, titlestore.SourcePriorityProvisional, "task-1")
 	mock.ExpectQuery(`FROM public\.session_title_states`).
-		WithArgs("tenant-a", "gw_existing_title").
-		WillReturnRows(rows)
+		WithArgs("tenant-a", "gw_p").
+		WillReturnRows(provisionalRow)
 
-	gen := &AutoTitleGenerator{
-		enabled: true,
-		handler: &Handler{titleStore: titlestore.New(mock)},
-	}
+	gen := &AutoTitleGenerator{enabled: true, handler: &Handler{titleStore: titlestore.New(mock)}}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	gen.commitProvisionalTitle(ctx, "tenant-a", "gw_existing_title", "task-new", "新标题不应写入")
-
+	has, err := gen.checkSessionHasTitle(ctx, "tenant-a", "task-1", "gw_p")
+	if err != nil {
+		t.Fatalf("checkSessionHasTitle: %v", err)
+	}
+	if has {
+		t.Fatal("provisional title must not count as an existing title")
+	}
 	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("unexpected DB calls after existing title: %v", err)
+		t.Fatalf("unexpected DB calls: %v", err)
 	}
 }
