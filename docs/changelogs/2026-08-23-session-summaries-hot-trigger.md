@@ -10,7 +10,8 @@ SessionStats KPI showed session counts but `request_count` / cost were always 0 
 - `summarystore` only writes title/summary text (counters default to 0).
 
 ## Fix
-- Migration `563_session_summary_trigger_on_hot.sql`: correct function body, trigger on hot only, idempotent REPLACE backfill from hot.
+- Migration `563_session_summary_trigger_on_hot.sql`: correct function body, trigger on hot only, **one-shot zero-count** backfill from hot (do not re-run REPLACE after live+promote).
+- Migration `564_session_summary_backfill_safe.sql`: audit fix — GREATEST / insert-missing only (safe to re-run).
 - Synced `sql/objects/functions/update_session_summary.sql` to the same body.
 
 ## Follow-up
