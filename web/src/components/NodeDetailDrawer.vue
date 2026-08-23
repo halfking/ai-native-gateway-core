@@ -57,7 +57,7 @@ const node = currentNode
     <aside v-if="visible && node" class="nd-drawer" role="dialog" aria-modal="true" :aria-label="`${credentialDisplayName(node.credential_id)} 详情`">
       <header class="nd-header">
         <div>
-          <div class="nd-eyebrow">{{ credentialDisplayName(node.credential_id) }} · {{ node.provider_code || `Provider ${node.provider_id ?? '—'}` }}</div>
+          <div class="nd-eyebrow">{{ (node.credential_label?.trim() || credentialDisplayName(node.credential_id)) }} · {{ node.provider_code || `Provider ${node.provider_id ?? '—'}` }}</div>
           <h2>{{ selectedModel || '未上报模型绑定' }}</h2>
           <div class="nd-state-row">
             <span class="nd-state" :class="statusClass(headlineState === '可用' ? 'ready' : headlineState)">{{ headlineState }}</span>

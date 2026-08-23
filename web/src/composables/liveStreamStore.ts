@@ -191,6 +191,7 @@ export interface LiveQueueSnapshot {
 
 export interface LiveNodeStatus {
   credential_id: number
+  credential_label?: string
   provider_id?: number
   provider_code?: string
   circuit_state?: string

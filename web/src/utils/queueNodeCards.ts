@@ -63,12 +63,19 @@ export function nodeCapacity(candidate: { effective_concurrency?: number | null;
   return 1
 }
 
+/** Matches provider resolve SQL: COALESCE(quota_state, 'ok') = 'ok'. */
+export function quotaAllowsPriority(quota: string | null | undefined): boolean {
+  const q = (quota ?? 'ok').trim().toLowerCase()
+  return q === '' || q === 'ok'
+}
+
 export function credentialDisplayName(
   candidate: { credential_label?: string | null; provider_name?: string | null } | null | undefined,
   fallbackProvider: string,
   credentialId: number,
+  nodeLabel?: string | null,
 ): string {
-  const label = (candidate?.credential_label || '').trim()
+  const label = (candidate?.credential_label || nodeLabel || '').trim()
   if (label) return label
   return `${fallbackProvider} · #${credentialId}`
 }

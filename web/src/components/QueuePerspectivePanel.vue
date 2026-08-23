@@ -39,6 +39,7 @@ import {
   cardWidthFromCapacity,
   credentialDisplayName,
   nodeCapacity,
+  quotaAllowsPriority,
 } from '../utils/queueNodeCards'
 import { credentialDisplayName as credentialLabelById } from '../composables/useCredentialLabels'
 import RequestProcessingTrail from './RequestProcessingTrail.vue'
@@ -317,6 +318,7 @@ const modelGroups = computed<ModelGroup[]>(() => {
     const candidates = rawModel
       ? modelCandidatesByRawModel.value.get(modelKey(rawModel)) ?? []
       : []
+    // Resolve candidates are already sorted server-side (priority → manual_priority → tier).
     const candidateOrder = new Map(candidates.map((candidate, index) => [candidate.credential_id, index]))
     // Live nodes are often a subset of resolve candidates (offline / filtered-out
     // credentials still exist in the binding set). Require live ⊆ candidates so
@@ -325,8 +327,13 @@ const modelGroups = computed<ModelGroup[]>(() => {
       && candidates.length > 0
       && modelNodes.every(node => candidateOrder.has(node.credential_id))
     const orderedNodes = liveCoveredByCandidates
-      ? [...modelNodes].sort((left, right) => (candidateOrder.get(left.credential_id) ?? Number.MAX_SAFE_INTEGER) - (candidateOrder.get(right.credential_id) ?? Number.MAX_SAFE_INTEGER))
-      : modelNodes
+      ? [...modelNodes].sort((left, right) => {
+        const leftRank = candidateOrder.get(left.credential_id) ?? Number.MAX_SAFE_INTEGER
+        const rightRank = candidateOrder.get(right.credential_id) ?? Number.MAX_SAFE_INTEGER
+        if (leftRank !== rightRank) return leftRank - rightRank
+        return left.credential_id - right.credential_id
+      })
+      : [...modelNodes].sort((left, right) => left.credential_id - right.credential_id)
     const requestIds = new Set<string>()
     for (const credentialId of credentialIds) {
       for (const request of getRequestsForCredential(credentialId)) {
@@ -560,13 +567,20 @@ function providerLabel(n: LiveNodeStatus): string {
 
 function nodeTitle(n: LiveNodeStatus, group?: ModelGroup): string {
   const candidate = group ? candidateForNode(group, n.credential_id) : undefined
-  return credentialDisplayName(candidate, providerLabel(n), n.credential_id)
+  return credentialDisplayName(candidate, providerLabel(n), n.credential_id, n.credential_label)
+}
+
+function isPriorityNode(group: ModelGroup, n: LiveNodeStatus): boolean {
+  const candidate = candidateForNode(group, n.credential_id)
+  if (!candidate?.priority) return false
+  const quota = n.quota_state ?? candidate.quota_state
+  return quotaAllowsPriority(quota)
 }
 
 function nodePriorityLabel(group: ModelGroup, n: LiveNodeStatus, index: number): string {
   const candidate = candidateForNode(group, n.credential_id)
   const priority = candidate?.manual_priority
-  const rank = index + 1
+  const rank = typeof priority === 'number' ? priority : index + 1
   return typeof priority === 'number' ? `#${rank} · p${priority}` : `#${rank}`
 }
 
@@ -902,7 +916,10 @@ function formatTs(ts: string | undefined): string {
                     @dragstart.stop="onDragStart($event, group, node.credential_id)"
                     @dragend.stop="clearDragState"
                   >⋮⋮</span>
-                  <span class="qp-node-card-title">{{ nodeTitle(node, group) }}</span>
+                  <span class="qp-node-card-title">
+                    <span v-if="isPriorityNode(group, node)" class="qp-node-priority-flag" title="优先节点：额度用完前优先路由">★</span>
+                    {{ nodeTitle(node, group) }}
+                  </span>
                   <span class="qp-node-card-dots" :title="`熔断 ${node.circuit_state || '未知'} · 可用性 ${node.availability_state || '未知'} · 配额 ${node.quota_state || '未知'} · 健康 ${node.health_status || '未知'}`">
                     <i class="qp-dot" :class="dotClass(circuitOk(node))" /><i class="qp-dot" :class="dotClass(availabilityOk(node))" /><i class="qp-dot" :class="dotClass(quotaOk(node))" /><i class="qp-dot" :class="dotClass(healthOk(node))" />
                     <span class="qp-node-rank">{{ nodePriorityLabel(group, node, nodeIndex) }}</span>
@@ -1185,7 +1202,8 @@ function formatTs(ts: string | undefined): string {
 .qp-node-window-cell { flex:0 0 3px; width:3px; min-width:2px; border-radius:1px; background:var(--kx-danger); }
 .qp-node-window-cell.ok { background:var(--kx-success); }
 .qp-node-window-cell.bad { background:var(--kx-danger); }
-.qp-node-card-title { font-size:12px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; padding-right:14px; }
+.qp-node-card-title { font-size:12px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; padding-right:14px; display:inline-flex; align-items:center; gap:4px; max-width:100%; }
+.qp-node-priority-flag { color:var(--kx-warning); font-size:11px; line-height:1; flex:0 0 auto; }
 .qp-node-card-dots { display:inline-flex; gap:4px; align-items:center; }
 .qp-dot { width:7px; height:7px; border-radius:50%; background:var(--kx-text-secondary); opacity:.5; }
 .qp-dot--ok { background:var(--kx-success); opacity:1; }

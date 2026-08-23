@@ -156,6 +156,7 @@ type LiveQueueLaneSnapshot struct {
 // of truth — this struct only carries what the UI needs).
 type LiveNodeStatus struct {
 	CredentialID      int    `json:"credential_id"`
+	CredentialLabel   string `json:"credential_label,omitempty"`
 	ProviderID        int    `json:"provider_id,omitempty"`
 	ProviderCode      string `json:"provider_code,omitempty"`
 	CircuitState      string `json:"circuit_state,omitempty"`

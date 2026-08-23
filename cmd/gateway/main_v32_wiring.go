@@ -95,11 +95,12 @@ func wireNodeStatusProvider(db *pgxpool.Pool, peak *bg.ConcurrencyPeakCollector)
 		rows, err := db.Query(ctx, `
 			SELECT
 				c.id            AS credential_id,
+				COALESCE(c.label, '') AS credential_label,
 				c.provider_id   AS provider_id,
 				COALESCE(p.display_name, p.catalog_code, p.code, '') AS provider_code,
 				COALESCE(c.circuit_state, 'closed')  AS circuit_state,
 				COALESCE(c.availability_state, 'unknown') AS availability_state,
-				COALESCE(c.quota_state, 'unknown')  AS quota_state,
+				COALESCE(c.quota_state, 'ok')  AS quota_state,
 				COALESCE(c.health_status, 'unknown') AS health_status,
 				COALESCE(c.manual_disabled, false) AS manual_disabled,
 				c.last_latency_ms,
@@ -121,7 +122,7 @@ func wireNodeStatusProvider(db *pgxpool.Pool, peak *bg.ConcurrencyPeakCollector)
 			var lastLatency *int
 			var lastError *string
 			if err := rows.Scan(
-				&n.CredentialID, &n.ProviderID, &n.ProviderCode,
+				&n.CredentialID, &n.CredentialLabel, &n.ProviderID, &n.ProviderCode,
 				&n.CircuitState, &n.AvailabilityState, &n.QuotaState, &n.HealthStatus,
 				&n.ManualDisabled, &lastLatency, &lastError,
 			); err != nil {
