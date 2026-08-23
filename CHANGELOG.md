@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Credential model drawer extras: IQ history chart + cross-credential check restored into `ModelOfferExtrasPanel`; identity chips deep-link to `/models?q=`.
 
 ### Fixed
+- **Dashboard queue audit fixes（2026-08-23）**：`#rank` 恢复视觉序号；main 队列 selective trim 补 pipeline 错误日志 + 集成测试；移除 no-op `trimLiveStreamQueue` 调用。
 - **实时流 selective trim（2026-08-23）**：lane 驱逐改为 post-exec selective trim，保护 fresh `in_progress` 不被 ZRemRangeByRank 误删；main/status 队列同步接入。
 - **队列透视 priority 排序对齐（2026-08-23）**：resolve 候选排序与 provider `COALESCE(quota_state,'ok')` 一致；队列卡片恢复按 resolve 序 index 排序，避免仅用 `manual_priority` 导致 priority 凭据错位。
 - **154 migration 561 schema drift（2026-08-23）**：`schema_migrations` 已记 561 但 `credential_model_bindings.priority` / `model_offers.priority` 未落地，候选 SQL 报 `column mo.priority does not exist` → chat 500。154 PG 重跑 idempotent `561_credential_priority_flag.sql`；SSOT `sql/objects/views/model_offers.sql` 补 `cmb.priority`。

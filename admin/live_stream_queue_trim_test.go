@@ -89,3 +89,39 @@ func TestSelectiveTrimLiveStreamQueue_ProtectsFreshInProgressWhenAllProtected(t 
 	require.NoError(t, err)
 	require.Equal(t, int64(3), count)
 }
+
+func TestSelectiveTrimLiveStreamQueue_MainQueueUsesDetailStatus(t *testing.T) {
+	mr, err := miniredis.Run()
+	require.NoError(t, err)
+	defer mr.Close()
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	ctx := context.Background()
+	now := time.Now().UTC()
+	liveStreamInflightProtectDuration = 2 * time.Hour
+	t.Cleanup(func() { liveStreamInflightProtectDuration = 2 * time.Hour })
+
+	writeDetail := func(id, status string, ts time.Time) {
+		payload, err := marshalLiveRequestRedisPayload(LiveRequest{
+			RequestID: id,
+			Ts:        ts.UTC().Format(time.RFC3339),
+			Status:    status,
+		})
+		require.NoError(t, err)
+		require.NoError(t, rdb.Set(ctx, liveStreamGlobalRequestDetailKey(id), payload, liveStreamTTL).Err())
+	}
+
+	writeDetail("done-main", "success", now.Add(-40*time.Minute))
+	writeDetail("fresh-main", "in_progress", now.Add(-3*time.Minute))
+
+	key := liveStreamMainKey
+	require.NoError(t, rdb.ZAdd(ctx, key,
+		redis.Z{Score: float64(now.Add(-40 * time.Minute).UnixMilli()), Member: "done-main"},
+		redis.Z{Score: float64(now.Add(-3 * time.Minute).UnixMilli()), Member: "fresh-main"},
+	).Err())
+
+	require.NoError(t, selectiveTrimLiveStreamQueue(ctx, rdb, key, 1))
+
+	remaining, err := rdb.ZRange(ctx, key, 0, -1).Result()
+	require.NoError(t, err)
+	require.Equal(t, []string{"fresh-main"}, remaining)
+}

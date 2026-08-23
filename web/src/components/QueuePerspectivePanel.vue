@@ -577,10 +577,10 @@ function isPriorityNode(group: ModelGroup, n: LiveNodeStatus): boolean {
   return quotaAllowsPriority(quota)
 }
 
-function nodePriorityLabel(group: ModelGroup, n: LiveNodeStatus, index: number): string {
-  const candidate = candidateForNode(group, n.credential_id)
+function nodePriorityLabel(_group: ModelGroup, n: LiveNodeStatus, index: number): string {
+  const candidate = candidateForNode(_group, n.credential_id)
   const priority = candidate?.manual_priority
-  const rank = typeof priority === 'number' ? priority : index + 1
+  const rank = index + 1
   return typeof priority === 'number' ? `#${rank} · p${priority}` : `#${rank}`
 }
 
