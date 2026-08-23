@@ -8,11 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Dashboard SessionStats 空状态兜底**：`SessionStatsRankings` 在 `modelUsage` 为空数组时显示 `topModelsEmpty`；`SessionStatsSignals` 在错误计数/错误率均为 0 时显示 `errorsEmpty`；中英文 i18n 同步。
+- **dashboard-trend-normalize 测试扩展**：`dashboard-trend-normalize.test.ts` 从 3 用例扩至 10 用例，覆盖 trend 断点、空窗口、数值回填、命名兼容、period 优先级、null trend 防御。
 - **sessionmeta provisional 集成测试**：`handler_provisional_metadata_test.go`（arrival wiring）、`auto_title_provisional_test.go`（enabled gate / 已有 title 跳过）；`titlestore` 收窄为 `dbPool` 接口以支持 pgxmock。
 - **sessionmeta 到达态 provisional 抽取（session-analysis/v1）**：规则引擎 `Extract` + 契约文档；handler 到达时投影 provisional title（尊重 auto-title enabled / 已有 title 不覆盖）；与 `AssignRequestCost` 并存。
+- **session_analysis_metadata 持久化（migration 567）**：arrival UPSERT `status=provisional` 完整 Result JSON；`input_hash` 不变跳过；无 title 时仍写 metadata。
 - Credential model drawer extras: IQ history chart + cross-credential check restored into `ModelOfferExtrasPanel`; identity chips deep-link to `/models?q=`.
 
 ### Fixed
+- **泳道 FIFO 方向（2026-08-23）**：后端 lane builder 改 ASC + `lastTiles`；`SwimLaneTrack` 改 `flex-start` 左起右进。生产 #1692 复现 `flex-end` 右锚导致 tile 挤在右侧。
 - **Dashboard queue audit fixes（2026-08-23）**：`#rank` 恢复视觉序号；main 队列 selective trim 补 pipeline 错误日志 + 集成测试；移除 no-op `trimLiveStreamQueue` 调用。
 - **实时流 selective trim（2026-08-23）**：lane 驱逐改为 post-exec selective trim，保护 fresh `in_progress` 不被 ZRemRangeByRank 误删；main/status 队列同步接入。
 - **队列透视 priority 排序对齐（2026-08-23）**：resolve 候选排序与 provider `COALESCE(quota_state,'ok')` 一致；队列卡片恢复按 resolve 序 index 排序，避免仅用 `manual_priority` 导致 priority 凭据错位。

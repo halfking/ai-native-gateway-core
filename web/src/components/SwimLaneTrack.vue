@@ -69,7 +69,7 @@ function handleTileClick(requestId: string) {
 <style scoped>
 .swim-lane-track {
   display: flex;
-  justify-content: flex-end; /* right-anchored: new tiles appear on the right without shifting neighbors */
+  justify-content: flex-start; /* left-anchored: oldest on the left, new tiles grow to the right */
   overflow-x: hidden;
   min-width: 0;
   position: relative;
@@ -78,11 +78,10 @@ function handleTileClick(requestId: string) {
 
 .swim-lane-track__tiles {
   display: flex;
-  justify-content: flex-end;
+  justify-content: flex-start;
   gap: var(--tile-gap, 6px);
   flex-direction: row;
   min-width: 0;
-  margin-left: auto;
 }
 
 .swim-lane-track__tiles--small {

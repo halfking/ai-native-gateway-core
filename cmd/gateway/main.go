@@ -1045,6 +1045,10 @@ func main() {
 		stickyCache.SetRedisStore(stickyStore)
 		router := executors.NewRouter(stickyCache, lim)
 		routingRouter = router
+		if envBoolOff("LLM_GATEWAY_PRIORITY_ROUTING_ENABLED") {
+			router.PriorityRoutingEnabled = false
+			slog.Warn("priority routing disabled by environment gate")
+		}
 
 		// Connect FpSlots to Router for load-aware P2C selection
 		router.FpSlots = fpSlots
@@ -1891,6 +1895,7 @@ func main() {
 	// Cleanup follows TTL unless explicitly overridden.
 	// 2026-07-16: snapshot refresh interval (30 min default) — env LLM_GATEWAY_LIVE_STREAM_SNAPSHOT_REFRESH_INTERVAL.
 	liveStreamCachedTTL, liveStreamCachedCleanup := liveStreamCachedDurationsFromEnv()
+	admin.ConfigureLiveStreamInflightProtectFromEnv()
 	liveStreamSnapshotRefresh := positiveDurationEnv(
 		"LLM_GATEWAY_LIVE_STREAM_SNAPSHOT_REFRESH_INTERVAL",
 		30*time.Minute,
@@ -2808,6 +2813,7 @@ func main() {
 	var healthAutoRecover *bg.HealthAutoRecover
 	var autoHealWorker *bg.CredentialAutoHealWorker
 	var autoRouteListener *bg.AutoRouteRealtimeListener
+	var dispatchPolicyPublisher *dispatch.PolicyPublisher
 	// v7 (2026-06-28): Unified probe scheduler replaces modelProbe + suspiciousProbe
 	var unifiedProbe *bg.UnifiedProbeScheduler
 	var modelProbe *bg.ModelProbeRunner           // TODO: remove after unifiedProbe validation
@@ -5699,6 +5705,10 @@ func main() {
 		// dispatch.ApplySoftPenalty 把 QueueFull / GovernorSaturated 候选
 		// 移到列表尾 (不剔除)。Stage C.2 observer 需要单独开启才会填 cache。
 		wireDispatchCapacityAwareSort(routingExec, pipeline)
+		if dbConn != nil && dbConn.Enabled() {
+			dispatchPolicyPublisher = dispatch.NewPolicyPublisher(dbConn.Pool(), pipeline)
+			dispatchPolicyPublisher.Start(context.Background())
+		}
 	}
 	if liveStreamHub != nil {
 		projection := gatewayQueueProjection.Load()
@@ -5839,6 +5849,10 @@ func main() {
 	stopDone := make(chan struct{}, 1)
 
 	go func() {
+		// Stop dispatch policy publication before the pipeline/backend and DB.
+		if dispatchPolicyPublisher != nil {
+			dispatchPolicyPublisher.Stop()
+		}
 		// Stop dispatch before its RequestJourney Redis/PostgreSQL dependencies.
 		if pipeline != nil {
 			pipeline.Stop()

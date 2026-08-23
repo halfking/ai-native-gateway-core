@@ -21,6 +21,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/discovery"
 	"github.com/kaixuan/llm-gateway-go/domains/attachments"     //nolint:depguard // attachment download/list routes live in the admin mux
+	"github.com/kaixuan/llm-gateway-go/domains/analysis/sessionmeta"
 	"github.com/kaixuan/llm-gateway-go/domains/credentialstate" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/dbdegradation"   //nolint:depguard // 数据库降级模块
 	"github.com/kaixuan/llm-gateway-go/domains/memory"          //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -197,7 +198,8 @@ type Handler struct {
 	}
 	redisClient            interface{}                   // Redis client for sliding window access
 	titleDistLock          distlock.Manager              // 2026-08-19 per-session title-gen distributed lock; defaults to in-process LocalManager
-	titleStore             *titlestore.Store             // durable title fencing/tombstone state
+	titleStore              *titlestore.Store             // durable title fencing/tombstone state
+	analysisMetadataStore   *sessionmeta.MetadataStore    // arrival/final session analysis metadata
 	availabilityReader     *bg.ModelAvailabilityReader   // 2026-06-29 mirror of unified probe state to Redis
 	availabilityBackfill   *bg.AvailabilityCacheBackfill // 2026-06-29 on-demand DB→Redis cache rebuild
 	availabilityKeyCounter *bg.AvailabilityKeyCounter    // 2026-06-29 on-demand SCAN-based key count
@@ -341,7 +343,8 @@ func NewHandler(db *pgxpool.Pool, secretKey string, encKey []byte) *Handler {
 		// code in cmd/gateway/main.go upgrades this to a Redis-backed
 		// manager once the cluster Redis client is healthy.
 		titleDistLock: distlock.NewLocalManager(),
-		titleStore:    titlestore.New(db),
+		titleStore:            titlestore.New(db),
+		analysisMetadataStore: sessionmeta.NewMetadataStore(db),
 	}
 
 	// Initialize auto title generator

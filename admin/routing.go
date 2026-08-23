@@ -633,13 +633,13 @@ func blockReason(c interface{}) string { //nolint:unused
 }
 
 // handleRoutingCandidateBindingUpdate updates credential_model_bindings fields
-// that influence routing order (manual_priority / routing_tier / weight).
-// It is intentionally narrow: only those three fields can be PATCHed here,
+// that influence routing order (manual_priority / routing_tier / weight / priority).
+// It is intentionally narrow: only those four fields can be PATCHed here,
 // so admin mistakes stay inside the routing-sorted surface area and don't
 // silently flip a credential's lifecycle / availability / circuit flags.
 //
 // Path: PATCH /api/routing/candidate-binding/{credential_id}?raw_model=...
-// Body: { manual_priority?: int, routing_tier?: int, weight?: int }
+// Body: { manual_priority?: int, routing_tier?: int, weight?: int, priority?: bool }
 //
 // Authorization: super_admin only (registered via h.superAdmin).
 // Audit: every successful write appends a row to routing_audit_log.
@@ -661,16 +661,17 @@ func (h *Handler) handleRoutingCandidateBindingUpdate(w http.ResponseWriter, r *
 	}
 
 	var req struct {
-		ManualPriority *int `json:"manual_priority"`
-		RoutingTier    *int `json:"routing_tier"`
-		Weight         *int `json:"weight"`
+		ManualPriority *int  `json:"manual_priority"`
+		RoutingTier    *int  `json:"routing_tier"`
+		Weight         *int  `json:"weight"`
+		Priority       *bool `json:"priority"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
 		return
 	}
-	if req.ManualPriority == nil && req.RoutingTier == nil && req.Weight == nil {
-		writeError(w, http.StatusBadRequest, "at least one of manual_priority / routing_tier / weight required")
+	if req.ManualPriority == nil && req.RoutingTier == nil && req.Weight == nil && req.Priority == nil {
+		writeError(w, http.StatusBadRequest, "at least one of manual_priority / routing_tier / weight / priority required")
 		return
 	}
 	if req.RoutingTier != nil && (*req.RoutingTier < 0 || *req.RoutingTier > 9) {
@@ -714,12 +715,20 @@ func (h *Handler) handleRoutingCandidateBindingUpdate(w http.ResponseWriter, r *
 			manual_priority = COALESCE($1::int, manual_priority),
 			routing_tier    = COALESCE($2::int, routing_tier),
 			weight          = COALESCE($3::int, weight),
+			priority        = COALESCE($4::boolean, priority),
 			updated_at      = NOW()
-		WHERE id = $4
-	`, req.ManualPriority, req.RoutingTier, req.Weight, bindingID); err != nil {
+		WHERE id = $5
+	`, req.ManualPriority, req.RoutingTier, req.Weight, req.Priority, bindingID); err != nil {
 		writeError(w, http.StatusInternalServerError, "update failed: "+err.Error())
 		return
 	}
+
+	// Flush the in-process candidate cache so the new routing inputs (incl.
+	// cmb.priority) apply to the next request instead of after the 30s
+	// candCache TTL. The PG notify trigger only refreshes the auto-route
+	// index — provider.candCache has no LISTEN/NOTIFY path. Mirrors the
+	// other credential-mutating admin handlers (credential_keys.go etc.).
+	provider.InvalidateCandidateCacheForCredential(credID)
 
 	// Audit log: keep before/after so the routing_audit_log table holds
 	// enough context for post-mortem diffs (rule 36 alignment).
@@ -734,6 +743,7 @@ func (h *Handler) handleRoutingCandidateBindingUpdate(w http.ResponseWriter, r *
 		"manual_priority": req.ManualPriority,
 		"routing_tier":    req.RoutingTier,
 		"weight":          req.Weight,
+		"priority":        req.Priority,
 	}
 	h.logAudit(r, "routing_candidate_binding_update", beforeAfter)
 
@@ -5010,8 +5020,13 @@ func (h *Handler) applyForceEnable(ctx context.Context, credentialID int, rawMod
 	).Scan(&currentDisabled, &availState, &providerID)
 	if err != nil {
 		if err == pgx.ErrNoRows {
+			// Surface the 404 distinctly from a 500 so operators can tell
+			// "wrong credential id" apart from "reset chain broke" in the
+			// llmgw_routing_credential_reset_total counter.
+			met.RoutingCredentialResetTotal.WithLabelValues("lookup", "not_found").Inc()
 			return errForceEnableCredNotFound
 		}
+		met.RoutingCredentialResetTotal.WithLabelValues("lookup", "error").Inc()
 		return fmt.Errorf("force_enable: query failed: %w", err)
 	}
 

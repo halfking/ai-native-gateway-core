@@ -977,14 +977,10 @@ func buildLiveStreamLanes(dimension string, items []LiveRequest) ([]LiveStreamLa
 		grouped[key] = append(grouped[key], idleTile)
 	}
 
-	// 2026-07-26: the lane owns its ordering contract instead of trusting
-	// the caller's order. SwimLaneTrack.vue paints index 0 leftmost and
-	// firstTiles() caps a lane with items[:N], so both only mean "newest
-	// on the left, oldest truncated" when tiles are DESC by ts. Sorting
-	// here also makes the two producers agree: SnapshotFromDimensionQueues
-	// (dimension ZSETs) and Replay (main queue) previously fed ASC input,
-	// which silently capped busy lanes to their OLDEST 20 tiles and hid
-	// every newer request.
+	// Product FIFO: oldest left → newest right. SwimLaneTrack paints index
+	// 0 leftmost and lastTiles() keeps the tail (newest N). Sorting here
+	// makes SnapshotFromDimensionQueues and Replay agree regardless of
+	// caller order.
 	for key := range grouped {
 		tiles := grouped[key]
 		sort.SliceStable(tiles, func(i, j int) bool {
@@ -992,10 +988,11 @@ func buildLiveStreamLanes(dimension string, items []LiveRequest) ([]LiveStreamLa
 			// order. Tie-break on RequestID so equal timestamps stay stable
 			// across snapshots and don't trip lanesChanged.
 			if tiles[i].Timestamp != tiles[j].Timestamp {
-				return tiles[i].Timestamp > tiles[j].Timestamp
+				return tiles[i].Timestamp < tiles[j].Timestamp
 			}
 			return tiles[i].RequestID < tiles[j].RequestID
 		})
+		grouped[key] = tiles
 	}
 
 	keys := make([]string, 0, len(stats))
@@ -1021,7 +1018,7 @@ func buildLiveStreamLanes(dimension string, items []LiveRequest) ([]LiveStreamLa
 			ID:        key,
 			Name:      key,
 			Dimension: dimension,
-			Requests:  firstTiles(grouped[key], liveStreamLaneLimit),
+			Requests:  lastTiles(grouped[key], liveStreamLaneLimit),
 			Stats:     stats[key],
 			IsOthers:  false,
 		})
@@ -1250,15 +1247,14 @@ func countStatus(stats *LiveStreamStats, status string) {
 	}
 }
 
-// firstTiles caps a lane at limit tiles by keeping the head of items.
-// buildLiveStreamLanes sorts each lane DESC (newest first) before calling
-// this, so the head is the newest N and the truncated tail is the oldest.
-func firstTiles(items []LiveStreamTile, limit int) []LiveStreamTile {
+// lastTiles caps a lane at limit tiles by keeping the tail of items.
+// buildLiveStreamLanes sorts each lane ASC (oldest first) before calling
+// this, so the tail is the newest N and the truncated head is the oldest.
+func lastTiles(items []LiveStreamTile, limit int) []LiveStreamTile {
 	if limit <= 0 || len(items) <= limit {
 		return items
 	}
-	// Return first N instead of last N
-	return items[:limit]
+	return items[len(items)-limit:]
 }
 
 func tenantLiveStreamKey(tenantID, suffix string) string {

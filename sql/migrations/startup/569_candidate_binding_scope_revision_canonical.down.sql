@@ -1,4 +1,4 @@
--- 566_candidate_binding_scope_revision_canonical.down.sql
+-- 569_candidate_binding_scope_revision_canonical.down.sql
 
 BEGIN;
 

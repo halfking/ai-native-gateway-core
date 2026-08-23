@@ -1,4 +1,4 @@
--- 566_candidate_binding_scope_revision_canonical.sql
+-- 569_candidate_binding_scope_revision_canonical.sql
 -- Persistent monotonic version per canonical_id scope for the reorder
 -- endpoint's optimistic concurrency control.
 --
@@ -28,7 +28,7 @@ DO $$
 BEGIN
     IF to_regclass('public.credential_model_bindings') IS NULL
        OR to_regclass('public.provider_models') IS NULL THEN
-        RAISE EXCEPTION '566_candidate_binding_scope_revision_canonical requires credential_model_bindings and provider_models';
+        RAISE EXCEPTION '569_candidate_binding_scope_revision_canonical requires credential_model_bindings and provider_models';
     END IF;
 END $$;
 
