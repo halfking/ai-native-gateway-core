@@ -1,4 +1,4 @@
--- 561_credential_priority_flag.down.sql
+-- 567_credential_priority_flag.down.sql
 -- Restore the 560 schema and routing invalidation semantics.
 
 BEGIN;
