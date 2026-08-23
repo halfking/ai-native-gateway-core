@@ -125,7 +125,14 @@ func TestValidateRoutingCandidateReorder(t *testing.T) {
 		wantSubstr string
 	}{
 		{name: "valid", mutate: func(*routingCandidateReorderRequest) {}, wantSubstr: ""},
-		{name: "missing canonical", mutate: func(r *routingCandidateReorderRequest) { r.CanonicalID = 0 }, wantSubstr: "canonical_id is required"},
+		{name: "missing canonical", mutate: func(r *routingCandidateReorderRequest) {
+			r.CanonicalID = 0
+			r.RawModel = ""
+		}, wantSubstr: "canonical_id or raw_model is required"},
+		{name: "raw_model fallback valid", mutate: func(r *routingCandidateReorderRequest) {
+			r.CanonicalID = 0
+			r.RawModel = "gpt-4"
+		}, wantSubstr: ""},
 		{name: "empty items", mutate: func(r *routingCandidateReorderRequest) { r.Items = nil }, wantSubstr: "items must not be empty"},
 		{name: "non-positive credential", mutate: func(r *routingCandidateReorderRequest) { r.Items[0].CredentialID = 0 }, wantSubstr: "credential_id must be positive"},
 		{name: "duplicate binding", mutate: func(r *routingCandidateReorderRequest) {
@@ -189,11 +196,11 @@ func TestHandleRoutingCandidateBindingReorder_InputValidation(t *testing.T) {
 			wantSubstr: "invalid body",
 		},
 		{
-			name:       "missing canonical_id",
+			name:       "missing canonical_id and raw_model",
 			method:     http.MethodPatch,
 			body:       `{"expected_revision":"abc","items":[{"credential_id":1,"manual_priority":1}]}`,
 			wantStatus: http.StatusBadRequest,
-			wantSubstr: "canonical_id is required",
+			wantSubstr: "canonical_id or raw_model is required",
 		},
 		{
 			name:       "missing expected_revision",

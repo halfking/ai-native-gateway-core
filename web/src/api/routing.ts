@@ -126,13 +126,18 @@ export interface RoutingResolveResponse {
   plan_order: Array<{ credential_id: number; provider_id: number; raw_model: string; tier: number }>
   candidates: RoutingCandidate[]
   // Opaque token the frontend must echo back to
-  // /api/routing/candidate-bindings/reorder. Present only when the
-  // resolve hits exactly one canonical_id — mixed canonical hits leave it
-  // undefined so the UI keeps reordering disabled.
+  // /api/routing/candidate-bindings/reorder. Present only when the resolve
+  // hits exactly one canonical_id OR one raw_model_name (legacy fallback for
+  // bindings whose provider rows have NULL canonical_id). Mixed-canonical or
+  // mixed-raw-model hits leave it undefined so the UI keeps reordering disabled.
   reorder_revision?: string
   // Canonical scope used with reorder_revision. Present when every candidate
   // belongs to one canonical model, even if raw_model_name aliases differ.
   reorder_canonical_id?: number
+  // Raw_model scope used with reorder_revision when canonical_id is unavailable.
+  // Exactly one of reorder_canonical_id / reorder_raw_model is set whenever
+  // reorder_revision is set; the client echoes the matching field back on PATCH.
+  reorder_raw_model?: string
 }
 
 export function resolveRouting(model: string, clientProfile?: string, persistProbe = false, options?: RequestOptions) {
@@ -172,9 +177,12 @@ export interface CandidateBindingReorderItem {
 }
 
 export interface CandidateBindingReorderRequest {
-  // Single canonical model scope the reorder targets. Raw-model aliases
-  // sharing this canonical_id are all included atomically.
-  canonical_id: number
+  // Scope the reorder targets. canonical_id is preferred (migration 566 covers
+  // bindings across all raw_model_name aliases of one canonical model); when
+  // every candidate has NULL canonical_id the server falls back to the legacy
+  // raw_model scope (migration 541) and the client echoes raw_model instead.
+  canonical_id?: number
+  raw_model?: string
   // Opaque token echoed from RoutingResolveResponse.reorder_revision.
   // The handler rejects mismatches with HTTP 409 so stale views refetch
   // before retrying.
@@ -183,14 +191,17 @@ export interface CandidateBindingReorderRequest {
 }
 
 export interface CandidateBindingReorderOptions {
-  canonicalId: number
+  canonicalId?: number
+  rawModel?: string
   expectedRevision: string
   signal?: AbortSignal
 }
 
 export interface CandidateBindingReorderResponse {
   message: string
-  canonical_id: number
+  scope: 'canonical_id' | 'raw_model'
+  canonical_id?: number
+  raw_model?: string
   expected_revision: string
   items: CandidateBindingReorderItem[]
 }
@@ -203,8 +214,9 @@ export function reorderCandidateBindings(
     'PATCH',
     '/api/routing/candidate-bindings/reorder',
     {
-			canonical_id: options.canonicalId,
-			expected_revision: options.expectedRevision,
+      ...(options.canonicalId != null ? { canonical_id: options.canonicalId } : {}),
+      ...(options.rawModel ? { raw_model: options.rawModel } : {}),
+      expected_revision: options.expectedRevision,
       items,
     },
     options.signal ? { signal: options.signal } : undefined,

@@ -426,6 +426,7 @@ const priorityErr = ref('')
 // reorders and stale revisions; the UI keeps both cases disabled.
 const resolveReorderRevision = ref<string>('')
 const resolveReorderCanonicalID = ref<number | null>(null)
+const resolveReorderRawModel = ref<string | null>(null)
 // 统一节点详情抽屉（明细 / 设置共用 NodeDetailDrawer）
 const nodeDrawerOpen = ref(false)
 const nodeDrawerNode = ref<LiveNodeStatus | null>(null)
@@ -488,7 +489,7 @@ const resolveUnavailableCount = computed(() =>
 const canReorderResolve = computed(() =>
   superAdmin
   && !reorderSaving.value
-  && resolveReorderCanonicalID.value !== null
+  && (resolveReorderCanonicalID.value !== null || resolveReorderRawModel.value !== null)
   && Boolean(resolveReorderRevision.value),
 )
 function resolveReorderDisabledHint(): string {
@@ -576,8 +577,9 @@ async function onCandidateDrop(target: RoutingCandidate, event: DragEvent) {
   if (!superAdmin || sourceID === null || sourceID === target.credential_id || reorderSaving.value) return
   const expectedRevision = resolveReorderRevision.value
   const canonicalID = resolveReorderCanonicalID.value
-  if (!expectedRevision || canonicalID === null) {
-    reorderErr.value = '该模型分组合并了多个原始模型，无法安全调整优先级。'
+  const rawModel = resolveReorderRawModel.value
+  if (!expectedRevision || (canonicalID === null && rawModel === null)) {
+    reorderErr.value = '该模型分组合并了多个规范模型或多个原始模型，无法安全调整优先级。'
     return
   }
 
@@ -615,7 +617,11 @@ async function onCandidateDrop(target: RoutingCandidate, event: DragEvent) {
   reorderSaving.value = true
   reorderErr.value = ''
   try {
-    await reorderCandidateBindings(items, { canonicalId: canonicalID, expectedRevision })
+    await reorderCandidateBindings(items, {
+      canonicalId: canonicalID ?? undefined,
+      rawModel: rawModel ?? undefined,
+      expectedRevision,
+    })
     await doResolve()
   } catch (e: unknown) {
     resolveCandidates.value = previous
@@ -726,6 +732,7 @@ async function doResolve() {
     const reorderScope = singleCanonicalRevision(res)
     resolveReorderRevision.value = reorderScope.revision
     resolveReorderCanonicalID.value = reorderScope.canonicalID
+    resolveReorderRawModel.value = reorderScope.rawModel
     appendResolveLog(res, profile)
   } catch (e: unknown) {
     resolveErr.value = e instanceof Error ? e.message : t('routing.queryFailed')
@@ -748,28 +755,34 @@ async function refreshResolveSilent() {
     const reorderScope = singleCanonicalRevision(res)
     resolveReorderRevision.value = reorderScope.revision
     resolveReorderCanonicalID.value = reorderScope.canonicalID
+    resolveReorderRawModel.value = reorderScope.rawModel
   } catch {
     // swallow — keep stale list; next tick retries
   }
 }
 
 // singleCanonicalRevision returns the server's reorder revision only when
-// every candidate shares the exact same canonical_id. Raw model aliases may
-// differ inside that scope; genuinely mixed canonical models stay disabled.
-function singleCanonicalRevision(res: RoutingResolveResponse): { revision: string; canonicalID: number | null } {
+// every candidate shares the exact same canonical_id (canonical scope) or
+// every candidate shares the exact same raw_model_name (legacy fallback for
+// bindings whose provider rows have NULL canonical_id). Genuinely mixed
+// canonical models or mixed raw_model names stay disabled.
+function singleCanonicalRevision(res: RoutingResolveResponse): { revision: string; canonicalID: number | null; rawModel: string | null } {
   if (!res.reorder_revision || res.candidates.length === 0) {
-    return { revision: '', canonicalID: null }
+    return { revision: '', canonicalID: null, rawModel: null }
   }
   const canonicalID = res.candidates[0].canonical_id
-  if (!canonicalID || res.reorder_canonical_id !== canonicalID) {
-    return { revision: '', canonicalID: null }
-  }
-  for (const c of res.candidates) {
-    if (c.canonical_id !== canonicalID) {
-      return { revision: '', canonicalID: null }
+  if (canonicalID && res.reorder_canonical_id === canonicalID) {
+    if (res.candidates.every(c => c.canonical_id === canonicalID)) {
+      return { revision: res.reorder_revision, canonicalID, rawModel: null }
     }
   }
-  return { revision: res.reorder_revision, canonicalID }
+  const rawModel = res.candidates[0].model_name
+  if (rawModel && res.reorder_raw_model === rawModel) {
+    if (res.candidates.every(c => c.model_name === rawModel)) {
+      return { revision: res.reorder_revision, canonicalID: null, rawModel }
+    }
+  }
+  return { revision: '', canonicalID: null, rawModel: null }
 }
 
 function replayFromLog(entry: ResolveLogEntry) {
