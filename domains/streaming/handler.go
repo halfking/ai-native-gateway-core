@@ -679,15 +679,16 @@ type requestKeyVerifier interface {
 
 // ChatHandler handles chat completions with circuit breaker and concurrency control.
 type ChatHandler struct {
-	circuit    *credential.Manager
-	limiter    *credential.Limiter
-	matrix     *transformation.Matrix
-	pools      *pool.PoolManager
-	resolver   *resolve.Resolver
-	auditor    audit.Sink
-	client     *upstreampkg.Client
-	normalizer *Normalizer
-	executor   *executors.Executor
+	circuit     *credential.Manager
+	limiter     *credential.Limiter
+	matrix      *transformation.Matrix
+	pools       *pool.PoolManager
+	resolver    *resolve.Resolver
+	auditor     audit.Sink
+	client      *upstreampkg.Client
+	normalizer  *Normalizer
+	executor    *executors.Executor
+	adminAPIKey string
 	// SR-W2 request survival (doc 18 §6): nil gate keeps the survival branch
 	// inert; armed via SetRequestSurvival from main.go.
 	survivalTenantAllowed func(tenantID string) bool
@@ -1195,6 +1196,12 @@ func (h *ChatHandler) expandToolIDs(ctx context.Context, tenantID string, toolID
 func (h *ChatHandler) SetAuth(kv *authentication.KeyVerifier, rl ratelimit.RPMLimiter) {
 	h.keyVerifier = kv
 	h.rateLimiter = rl
+}
+
+// SetAdminAPIKey configures the operator token used to gate the
+// X-LLMGW-Preferred-Credential routing override.
+func (h *ChatHandler) SetAdminAPIKey(key string) {
+	h.adminAPIKey = key
 }
 
 func (h *ChatHandler) AuthKeyVerifier() *authentication.KeyVerifier {
@@ -3890,13 +3897,31 @@ func (h *ChatHandler) serveWithExecutor(
 			DispatchAutoWorkType:        autoWorkTypeFromLogContext(logCtx),
 			DispatchAutoSignals:         autoSignalsFromLogContext(logCtx),
 			DispatchAllowProviderChange: dispatchAllowProviderChange,
-			PinCredentialID:             parsePinCredentialHeader(r),
-			DispatchRequestModality:     requestModality,
-			AuditBuilder:                auditBuilder,
-			Capture:                     streamCapture,
-			ToolsRequested:              requestHasTools(bodyBytes),
-			SessionKey:                  sessionKey,
-			StickyKey:                   stickyKey,
+			PinCredentialID: func() *int {
+				if pinned := parsePinCredentialHeader(r); pinned != nil {
+					return pinned
+				}
+				if h.adminAPIKey == "" {
+					return nil
+				}
+				pref := ExtractPreferredCredential(
+					r.Header.Get(PreferredCredentialHeader),
+					bodyBytes,
+					r.Header.Get(PreferredCredentialAdminTokenHeader),
+					h.adminAPIKey,
+				)
+				id, err := strconv.Atoi(pref)
+				if err != nil || id <= 0 {
+					return nil
+				}
+				return &id
+			}(),
+			DispatchRequestModality: requestModality,
+			AuditBuilder:            auditBuilder,
+			Capture:                 streamCapture,
+			ToolsRequested:          requestHasTools(bodyBytes),
+			SessionKey:              sessionKey,
+			StickyKey:               stickyKey,
 			KeyID: func() int {
 				if keyInfo != nil {
 					return keyInfo.ID
