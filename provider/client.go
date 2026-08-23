@@ -1301,8 +1301,8 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 			COALESCE(c.availability_state, 'ready') AS availability_state,
 			COALESCE(c.quota_state, 'ok') AS quota_state,
 			COALESCE(c.lifecycle_status, 'active') AS lifecycle_status,
-			COALESCE(mo.unit_price_in_per_1m, 0)::float8 AS unit_price_in_per_1m,
-			COALESCE(mo.unit_price_out_per_1m, 0)::float8 AS unit_price_out_per_1m,
+			COALESCE(mo.unit_price_in_per_1m, pp_fb.plan_in)::float8 AS unit_price_in_per_1m,
+			COALESCE(mo.unit_price_out_per_1m, pp_fb.plan_out)::float8 AS unit_price_out_per_1m,
 			COALESCE(mo.cache_read_price_per_1m, 0)::float8 AS cache_read_price_per_1m,
 			COALESCE(mo.cache_write_price_per_1m, 0)::float8 AS cache_write_price_per_1m,
 			-- is_routable comes from the unified VIEW (manual > auto priority).
@@ -1348,6 +1348,20 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 		-- LEFT JOIN model_name_mapping for standardized name lookup fallback
 		LEFT JOIN model_name_mapping mnm
 		       ON mnm.raw_model_name = mo.canonical_raw_name
+		-- pricing_plans fallback when credential_model_bindings prices are NULL.
+		LEFT JOIN LATERAL (
+			SELECT
+				NULLIF(pp.plan_json->>'input_per_1m', '')::float8 AS plan_in,
+				NULLIF(pp.plan_json->>'output_per_1m', '')::float8 AS plan_out
+			FROM pricing_plans pp
+			WHERE pp.model_canonical_id = mo.canonical_id
+			  AND pp.effective_to IS NULL
+			  AND (pp.credential_id = mo.credential_id OR pp.credential_id IS NULL)
+			ORDER BY
+				CASE WHEN pp.credential_id = mo.credential_id THEN 0 ELSE 1 END,
+				pp.effective_from DESC NULLS LAST
+			LIMIT 1
+		) pp_fb ON TRUE
 		-- Last-N success rate over request_logs. LATERAL so each candidate
 		-- row carries its own recent (rate, samples). STABLE function, hits
 		-- idx_request_logs_credential_ts (credential_id, ts DESC) so the

@@ -5624,34 +5624,17 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 	}
 
 	if reqLog.PromptTokens != nil || reqLog.CompletionTokens != nil {
-		cost := CalcCost(CostInput{
-			PromptTokens:     floatPtrFromInt(reqLog.PromptTokens),
-			CompletionTokens: floatPtrFromInt(reqLog.CompletionTokens),
-			CacheReadTokens:  floatPtrFromInt(reqLog.CacheReadTokens),
-			CacheWriteTokens: floatPtrFromInt(reqLog.CacheWriteTokens),
+		reqLog.CostUSD, reqLog.CostDisplay, reqLog.CostCurrency = AssignRequestCost(CostPriceInput{
+			PromptTokens:     reqLog.PromptTokens,
+			CompletionTokens: reqLog.CompletionTokens,
+			CacheReadTokens:  reqLog.CacheReadTokens,
+			CacheWriteTokens: reqLog.CacheWriteTokens,
 			PriceIn:          result.Candidate.PriceInPer1M,
 			PriceOut:         result.Candidate.PriceOutPer1M,
 			CacheReadPrice:   result.Candidate.CacheReadPricePer1M,
 			CacheWritePrice:  result.Candidate.CacheWritePricePer1M,
+			Currency:         result.Candidate.Currency,
 		})
-		reqLog.CostUSD = cost
-		// For CNY-priced providers (cost_usd is intentionally nil) record the
-		// native-currency value in cost_display so /request-logs can show it.
-		if cost == nil && result.Candidate.Currency != "" && result.Candidate.Currency != "USD" {
-			cnyCost := CalcCost(CostInput{
-				PromptTokens:     floatPtrFromInt(reqLog.PromptTokens),
-				CompletionTokens: floatPtrFromInt(reqLog.CompletionTokens),
-				CacheReadTokens:  floatPtrFromInt(reqLog.CacheReadTokens),
-				CacheWriteTokens: floatPtrFromInt(reqLog.CacheWriteTokens),
-				PriceIn:          result.Candidate.PriceInPer1M,
-				PriceOut:         result.Candidate.PriceOutPer1M,
-				CacheReadPrice:   result.Candidate.CacheReadPricePer1M,
-				CacheWritePrice:  result.Candidate.CacheWritePricePer1M,
-			})
-			reqLog.CostDisplay = cnyCost
-			curr := result.Candidate.Currency
-			reqLog.CostCurrency = &curr
-		}
 	}
 
 	if h.maasSvc != nil && keyInfo != nil && keyInfo.TenantID != "" && keyInfo.TenantID != "default" {
