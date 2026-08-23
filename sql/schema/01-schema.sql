@@ -2811,6 +2811,8 @@ BEGIN
        OR OLD.max_queue_depth IS DISTINCT FROM NEW.max_queue_depth
        OR OLD.max_queue_wait_ms IS DISTINCT FROM NEW.max_queue_wait_ms THEN
         NEW.revision := nextval('public.credentials_governor_revision_seq');
+    ELSE
+        NEW.revision := OLD.revision;
     END IF;
     RETURN NEW;
 END;
@@ -6084,6 +6086,19 @@ CREATE SEQUENCE public.credentials_id_seq
 --
 
 ALTER SEQUENCE public.credentials_id_seq OWNED BY public.credentials.id;
+
+
+--
+-- Name: credentials_governor_revision_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.credentials_governor_revision_seq
+    AS bigint
+    START WITH 1
+    INCREMENT BY 1
+    MINVALUE 1
+    NO MAXVALUE
+    CACHE 1;
 
 
 --
@@ -22314,6 +22329,12 @@ CREATE INDEX idx_credentials_auto_limit ON public.credentials USING btree (concu
 --
 
 CREATE INDEX idx_credentials_plan_type ON public.credentials USING btree (plan_type);
+
+--
+-- Name: credentials_revision_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX credentials_revision_idx ON public.credentials USING btree (revision);
 
 
 --
