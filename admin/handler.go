@@ -294,6 +294,25 @@ type Handler struct {
 		UpdateFromProbe(ctx context.Context, state *credentialstate.State)
 	}
 
+	// probeSubmitter (2026-08-23, hzx-2 audit) lets the focused
+	// /api/routing/credentials/{id}/reset-state endpoint trigger an
+	// immediate self-check probe so the operator doesn't have to wait for
+	// the next 5-min tick to learn whether the upstream is back.
+	// nil → trigger_probe=true is silently ignored.
+	//
+	// Stored as a function value (not an interface) so cmd/gateway/main.go
+	// can wire a closure around the late-constructed NodeProbeWorker
+	// without needing a named adapter type.
+	probeSubmitter func(credentialID int, rawModel, tenantID, parentReqID string)
+
+	// autoHealOneShot (2026-08-23, hzx-2 audit) is the bg.CredentialAutoHealWorker.OneShot
+	// method bound to the credentialAutoHealWorker instance. The reset-state
+	// endpoint calls it synchronously after a successful reset so the
+	// self-heal probes start within the same request instead of waiting
+	// for the next 5-min tick. Returns the number of (cred, model) pairs
+	// submitted. nil → the endpoint silently skips this step.
+	autoHealOneShot func(ctx context.Context, credentialID int) int
+
 	// rateLimiter (V3.2-LP5, 2026-08-14) 节点操作限流器：test-now 1req/s per-cred + 10req/min per-operator。
 	rateLimiter *nodeOperationsRateLimiter
 	// statsShadowExecutor runs bounded, read-only legacy/canonical comparisons.
@@ -673,6 +692,22 @@ func (h *Handler) SetCredStateRecoverer(r interface {
 	h.credStateRecoverer = r
 }
 
+// SetProbeSubmitter (2026-08-23, hzx-2 audit) wires the focused
+// /api/routing/credentials/{id}/reset-state endpoint to a probe-submitting
+// function. Optional — when nil the reset endpoint still works but
+// trigger_probe=true is silently ignored.
+func (h *Handler) SetProbeSubmitter(s func(credentialID int, rawModel, tenantID, parentReqID string)) {
+	h.probeSubmitter = s
+}
+
+// SetAutoHealOneShot (2026-08-23, hzx-2 audit) wires the bg.CredentialAutoHealWorker.OneShot
+// method into the focused reset-state endpoint so a successful reset kicks
+// off self-heal probes immediately. Optional — when nil the endpoint skips
+// the immediate self-heal submission.
+func (h *Handler) SetAutoHealOneShot(f func(ctx context.Context, credentialID int) int) {
+	h.autoHealOneShot = f
+}
+
 // SetSettingsStore (settings-management, 2026-06-20) injects the
 // DB-backed settings backend so /api/admin/settings/* endpoints
 // can read/write settings_kv / tenant_settings_kv.
@@ -769,13 +804,19 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/routing/recent-model-failures", admin(h.handleRoutingRecentModelFailures))
 	// 2026-07-24: routing-v2 resolve 页"候选设置"写入端点（仅 super_admin）。
 	// 仅允许改 credential_model_bindings 的 manual_priority / routing_tier /
-	// weight 三个排序相关字段；状态/熔断/可用性等硬规则必须走原有监控路径。
+	// weight / priority 四个排序相关字段；状态/熔断/可用性等硬规则必须走原有监控路径。
 	mux.HandleFunc("/api/routing/candidate-binding/", h.superAdmin(h.handleRoutingCandidateBindingUpdate))
 	mux.HandleFunc("/api/routing/candidate-bindings/reorder", h.superAdmin(h.handleRoutingCandidateBindingReorder))
 	// 2026-07-24: emergency repair endpoint for routing-v2 resolve page.
 	// Supports: force_enable, force_disable, clear_circuit, reset_errors.
 	// Only super_admin can access. All actions are audited.
 	mux.HandleFunc("/api/routing/emergency-repair", h.superAdmin(h.handleEmergencyRepair))
+
+	// 2026-08-23 (hzx-2 audit): focused credential state reset. Body
+	// {reason, raw_model?, trigger_probe?}; runs the same DB + in-memory
+	// + URSM v2 chain as emergency-repair force_enable, with optional
+	// immediate self-check probe. super_admin only.
+	mux.HandleFunc("POST /api/routing/credentials/{id}/reset-state", h.superAdmin(h.handleResetCredentialState))
 
 	// NOTE: /api/credentials/monitor-summary is registered later in
 	// RegisterMonitorRoutes (line ~460) via NewCredentialMonitorHandlers.

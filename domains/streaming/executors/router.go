@@ -20,6 +20,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/shadow"
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/statesource"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
+	met "github.com/kaixuan/llm-gateway-go/metrics" //nolint:depguard // routing credential observability (2026-08-23 hzx-2 audit)
 	"github.com/kaixuan/llm-gateway-go/provider"
 )
 
@@ -133,6 +134,9 @@ type Router struct {
 	}
 	// weightCounters isolates deterministic weighted selection by candidate set.
 	weightCounters sync.Map
+	// PriorityRoutingEnabled controls the priority candidate bucket. It defaults
+	// to true and can be disabled at process start for an emergency rollback.
+	PriorityRoutingEnabled bool
 
 	shadowMu      sync.Mutex
 	shadowWorker  *ursmShadowWorker
@@ -451,6 +455,33 @@ func (r *Router) planCandidates(
 		available = r.filterHealthyNodes(available)
 		if probePin != nil {
 			available = rescuePinnedCandidate(candidates, available, *probePin)
+		}
+
+		// 2026-08-23 (hzx-2 audit): all-candidates-cooling fallback.
+		//
+		// When filterHealthyNodes removes every candidate (typical when a
+		// pool-wide outage tripped every node's Disabled=true), the original
+		// code returned nil and the request got 503. Periodic-quota nodes
+		// like hzx-2 would never recover because they couldn't even get a
+		// single request through to validate the upstream.
+		//
+		// We relax only in the non-authoritative path (URSM v2 authoritative
+		// still gates on its single source of truth) and only when there is
+		// no probePin (the probe-pin path is a strict, intentional
+		// override). The fallback picks the candidate with the smallest
+		// DisabledUntil so the "freshest" cooldown goes first. A future
+		// real request through that candidate triggers the Lua cooldown-
+		// expired + success branch and the natural recovery resumes.
+		if len(available) == 0 && probePin == nil && r.FpSlots != nil {
+			fallback := r.chooseLeastCooledCandidate(candidates)
+			if fallback != nil {
+				slog.Warn("router: all candidates in cooldown, falling back to least-cooled",
+					"credential_id", fallback.CredentialID,
+					"model", fallback.RawModel,
+					"provider_id", fallback.ProviderID)
+				met.RoutingCoolingFallbackTotal.WithLabelValues("all_unusable").Inc()
+				available = []provider.Candidate{*fallback}
+			}
 		}
 	}
 
@@ -1067,6 +1098,53 @@ func (r *Router) filterHealthyNodes(candidates []provider.Candidate) []provider.
 		return candidates
 	}
 	return healthy
+}
+
+// chooseLeastCooledCandidate returns the candidate whose NodeState has the
+// smallest DisabledUntil (or no cooldown at all). nil when none of the
+// candidates have a NodeState with DisabledUntil set.
+//
+// 2026-08-23 (hzx-2 audit): used by the all-candidates-cooling fallback
+// to pick the "freshest" cooldown so the recovery probe lands on the node
+// most likely to have recovered. Candidates with no NodeState (never seen
+// in this Redis instance) are treated as DisabledUntil=0 — first in line.
+func (r *Router) chooseLeastCooledCandidate(candidates []provider.Candidate) *provider.Candidate {
+	if len(candidates) == 0 {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	keys := make([]credentialfpslot.NodeStateKey, len(candidates))
+	for i, cand := range candidates {
+		keys[i] = credentialfpslot.NodeStateKey{CredentialID: cand.CredentialID, Model: cand.RawModel}
+	}
+	states, err := r.FpSlots.GetNodeStatesBatch(ctx, keys)
+	if err != nil {
+		slog.Warn("router: chooseLeastCooledCandidate node-state read failed",
+			"error", err)
+		// Fail-open: return the first candidate so the request still
+		// has a path; the natural cooldown-expired branch in Lua will
+		// re-clear Disabled if the upstream has actually recovered.
+		return &candidates[0]
+	}
+	bestIdx := 0
+	bestUntil := int64(1<<62 - 1)
+	now := time.Now().Unix()
+	for i, s := range states {
+		if s == nil {
+			// No node state ⇒ never disabled ⇒ most eligible.
+			return &candidates[i]
+		}
+		until := s.DisabledUntil
+		if until <= now {
+			return &candidates[i]
+		}
+		if until < bestUntil {
+			bestUntil = until
+			bestIdx = i
+		}
+	}
+	return &candidates[bestIdx]
 }
 
 func p2cOrder(cands []provider.Candidate, r *Router) []provider.Candidate {

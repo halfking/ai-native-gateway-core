@@ -1,0 +1,85 @@
+# 架构优化 v6 — 文档总览
+
+> **版本**：v6.0（2026-08-22 起草，对照代码基线 `cmd/gateway` 当前工作树）
+> **读者**：架构组 / 后端 Owner / DevOps / SRE / 安全 / 数据 / 前端
+> **范围**：在 [`docs/03-design/01-architecture/architecture/ARCHITECTURE.md`](../../03-design/01-architecture/architecture/ARCHITECTURE.md)、[`optimization-roadmap.md`](../../03-design/01-architecture/architecture/optimization-roadmap.md)、[`runtime-request-flow.md`](../../03-design/01-architecture/architecture/runtime-request-flow.md)、[`routing-and-state.md`](../../03-design/01-architecture/architecture/routing-and-state.md)、[`omniroute-integration-boundary.md`](../../03-design/01-architecture/architecture/omniroute-integration-boundary.md)、[`REPO_LAYOUT.md`](../../03-design/01-architecture/architecture/REPO_LAYOUT.md)、[`armor-sdp-feasibility.md`](../../03-design/01-architecture/architecture/armor-sdp-feasibility.md) 与 [`会话优化v4/CONTRACT_FREEZE_2026-08-22.md`](../../会话优化v4/CONTRACT_FREEZE_2026-08-22.md) 的基础上，重新整理"事实→方案→门禁→发散"。
+> **不在范围**：不重写已存在的顶层架构 ADR；不替换 [`docs/会话优化v4/`](../../会话优化v4/) 已冻结的契约；不修改 `cmd/gateway` 源码或 SQL 迁移。
+> **证据等级**：`DESIGN` + `LOCAL_REVIEWED`（基于工作树只读勘察，未在生产复跑）。
+
+---
+
+## 0. TL;DR
+
+`llm-gateway-go` 是一个 **Go 单二进制 + 进程内 Vue3 控制面**的企业级 LLM 网关，承载 6 大协议适配、URSM 候选路由、P2C/Bandit 凭据调度、node probe、telemetry/audit、Maintain/ASM 投影。代码体量 ~75 万行 Go，56 个 `domains/` 子包、62 个 `internal/` 子包、200+ 后台 worker、两套并行 migration 系统、双 routing 实现。
+
+**v6 的目的不是重画系统，而是解决三类长期债务**：
+
+1. **结构债**：`cmd/gateway/main.go` 6076 行 + `domains/streaming/handler.go` 8266 行 + `domains/streaming/executors/executor.go` 3308 行单点超大文件；`domains/credential*` 与顶层 `credentialhealth/`、`credentialfpslot/` 重叠职责；`autoroute/` 三套并行 scoring（`scoring.go` / `scoring_new.go` / `scoring_simplified.go`）。
+2. **正确性债**：retry budget 多层叠加（TPM/RPM 资源 acquire/release 分步、stream retry 与 survival 与 dispatch 重复累积 attempts）、session V2 仍是 shadow owner、Maintain/ASM RLS 仅声明、未实证 tenant GUC 缺省 fail-closed。
+3. **能力债**：MCP/A2A/Fusion 三个 "TARGET/PARTIAL" 协议在仓库里有目录但无完整 transport 与生产接线；OpenTelemetry GenAI semantic conventions、eBPF L7 观测、prompt 语义缓存、模型级联路由等 2024-2026 行业基线尚未落地。
+
+**v6 的策略**：分 6 波次（V6-W0 → V6-W5）从"门禁→拆分→契约→编排→协议→智能"逐层推进；每波次独立 commit、独立可回滚、独立证据；不动 v4 已冻结契约与生产 wiring。
+
+---
+
+## 1. 文档结构
+
+| # | 文档 | 主题 | 一句话目标 |
+|---|---|---|---|
+| 01 | [`01-core-value-and-positioning.md`](01-core-value-and-positioning.md) | 核心价值与定位 | 把"为什么这是企业级网关，不是另一个 LiteLLM"讲清楚，并给出对外不可替代的 6 项能力。 |
+| 02 | [`02-code-vs-design-deltas.md`](02-code-vs-design-deltas.md) | 设计 vs 代码对照 | 列出 18 处文档承诺但代码未到位的差距，给出每个差距的状态标记与回归证据要求。 |
+| 03 | [`03-roadmap-v6-waves.md`](03-roadmap-v6-waves.md) | v6 路线图 | V6-W0 ~ V6-W5 六波次拆分，每波次目标 / 允许文件 / 退出条件 / 风险等级。 |
+| 04 | [`04-hot-ideas-and-divergent-suggestions.md`](04-hot-ideas-and-divergent-suggestions.md) | 网上热门思路 + 发散 | 引入 MCP/A2A fusion、eBPF L7、OTel GenAI semantic conventions、semantic cache、cascade router 等行业基线；并列出 8 项发散型尝试。 |
+| 05 | [`05-self-check-and-metrics.md`](05-self-check-and-metrics.md) | 自检与指标 | 把"完成"定义成可观测事实：HTTP 200 不算完成，给出 12 个 SLO 与对应面板/告警。 |
+| 06 | [`06-risks-and-rollback.md`](06-risks-and-rollback.md) | 风险与回滚 | 不在文档里写"我们有信心"，写"在 X 场景下怎么退"。 |
+
+---
+
+## 2. 与既有文档的关系
+
+| 既有 | 关系 |
+|---|---|
+| [`ARCHITECTURE.md`](../../03-design/01-architecture/architecture/ARCHITECTURE.md)（2026-08-21 快照） | v6 的事实基线；本目录所有"现状"引用其状态标记 (`CURRENT`/`SHADOW`/`TARGET`)。 |
+| [`optimization-roadmap.md`](../../03-design/01-architecture/architecture/optimization-roadmap.md)（P0-P2） | v6 把 P0/P1 重新映射到 V6-W0~V6-W3 的"门禁+契约"层，P2 拆为 V6-W4 架构演进与 V6-W5 智能层。 |
+| [`runtime-request-flow.md`](../../03-design/01-architecture/architecture/runtime-request-flow.md) | v6 不修改主路径，仅在 V6-W2 引入"边界明确的可插拔观察"层。 |
+| [`routing-and-state.md`](../../03-design/01-architecture/architecture/routing-and-state.md) | v6 在 V6-W1 收口 URSM 单一 owner + 联合 lease。 |
+| [`omniroute-integration-boundary.md`](../../03-design/01-architecture/architecture/omniroute-integration-boundary.md) | v6 在 V6-W4 严格遵守其"ADOPT / CONSUME / REJECT"决策表。 |
+| [`REPO_LAYOUT.md`](../../03-design/01-architecture/architecture/REPO_LAYOUT.md) | v6 把"目录该不该存在"作为 V6-W0 自检项的输入。 |
+| [`armor-sdp-feasibility.md`](../../03-design/01-architecture/architecture/armor-sdp-feasibility.md) | v6 把 Presidio sidecar + 中文 PII 规则包并入 V6-W3 安全观测层。 |
+| [`会话优化v4/CONTRACT_FREEZE_2026-08-22.md`](../../会话优化v4/CONTRACT_FREEZE_2026-08-22.md) | **不修改**，v6 不进入 v4 已冻结的 5 identities / 4 lanes / 3 lifecycle / 11 error_kinds。 |
+| [`ADR-0001-handoff-goal-state-at-rest-encryption.md`](../../adr/ADR-0001-handoff-goal-state-at-rest-encryption.md) | v6 在 V6-W3 引用其 KMS/Vault 假设，不重新定义。 |
+| [`ADR-0002-target-go-package-layout.md`](../../adr/ADR-0002-target-go-package-layout.md) | v6 的 V6-W0/W4 拆分波次对齐其波次划分。 |
+
+---
+
+## 3. 阅读路径建议
+
+- **新成员**：先读 §0 TL;DR → `01-core-value-and-positioning.md` → `02-code-vs-design-deltas.md` 中标 ✅ 的项 → `03-roadmap-v6-waves.md` 中"我在哪一波"。
+- **架构 Owner**：跳读 `02` 的所有 `⚠️` / `❌` 行 → `03` 的每个波次出口条件 → `06` 的回滚矩阵。
+- **DevOps / SRE**：先读 `05-self-check-and-metrics.md` → `03-roadmap-v6-waves.md` 的运维影响列 → `06` 的"在故障时的退路"。
+- **安全 / 合规**：`01` 的"数据与合规"段 → `02` 的 §3 / §7 → `04` 的 §6 提示词安全 → `05` 的 SLO §10。
+- **前端 / Vue Owner**：`01` 的 §6 仪表盘 → `02` 的 §10 前端接口稳定性 → `03` 的 V6-W2 前端契约。
+
+---
+
+## 4. v6 不做的事
+
+- ❌ 重新做架构顶层 ADR（仅在 v6 范围内引用既有 ADR，不新增 ADR 编号）。
+- ❌ 修改 v4 冻结的契约表面（5 identities / 4 lanes / 3 lifecycle / 11 error_kinds / snapshot codec v1）。
+- ❌ 修改 `cmd/gateway` 生产路径的执行语义（仅拆分文件边界、不改行为）。
+- ❌ 修改 SQL 迁移内容（仅诊断与补强门禁，不动 schema）。
+- ❌ 把任何 `SHADOW` 标记的能力直接写成生产能力。
+- ❌ 引入新的协议独占执行器（v6 强调 Gateway 是 provider executor 唯一 owner）。
+
+---
+
+## 5. v6 的"完成"标准
+
+任何波次只要满足下列 4 项之一才能标记为完成：
+
+1. **代码可回归**：`go test ./...` 通过、`golangci-lint run` 通过、对应包的 `_test.go` 新增或增强。
+2. **生产可观测**：对应 SLO 在 Prometheus 暴露，告警规则落 `deploy/prometheus/rules/`，看板落 `deploy/grafana/dashboards/`。
+3. **文档可追溯**：`docs/04-implementation/changes/YYYY-MM-DD-<topic>.md` 记录 commit / migration / flag / scenario / rows / hash / P50/P95/P99 / 负向测试 / 回滚动作。
+4. **回滚可演练**：对应回滚脚本存在于 `scripts/rollback/` 或 `docs/06-deployment/04-runbooks/`，并在 staging 复演过一次。
+
+详见 [`05-self-check-and-metrics.md`](05-self-check-and-metrics.md) 与 [`06-risks-and-rollback.md`](06-risks-and-rollback.md)。

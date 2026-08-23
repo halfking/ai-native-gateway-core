@@ -7,7 +7,9 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/domains/autocombo"
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
+	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/provider"
+	upstreampkg "github.com/kaixuan/llm-gateway-go/upstream"
 )
 
 func TestChatHandler_ShouldTryOmniFree(t *testing.T) {
@@ -300,5 +302,122 @@ func TestRecordOmniFreeQuota_CorrectOn429(t *testing.T) {
 	}
 	if c.Headers["X-RateLimit-Limit"] != "1000" {
 		t.Errorf("expected X-RateLimit-Limit=1000, got %q", c.Headers["X-RateLimit-Limit"])
+	}
+}
+
+// TestRecordOmniFreeQuota_ResultNilUpstreamErrorBody covers the audit round-2
+// §5.4 contract: when streaming dispatch returns (result=nil, execErr=*upstream.Error
+// {Kind: KindRateLimit, StatusCode: 429, Body: "..."}), the quota tracker
+// must still fire CorrectFromHeaders so the body-level quota signal (Gemini /
+// Cloudflare / 智谱 — they put the 5h/daily reset hint in the body) lands in
+// the free_quota_tracker table.
+//
+// Pre-fix, the handler returned early on result==nil, dropping the entire
+// 429-correct signal for streaming paths that lose the result pointer.
+// The fix extracts status + body from the wrapped *upstream.Error so
+// CorrectFromHeaders still fires whenever the execErr carries it.
+//
+// The test injects a result with a populated Candidate (so CredentialID +
+// CatalogCode are available for attribution) but a nil Response — the
+// execErr carries the 429 body. We assert:
+//   - Record() fires exactly once (failed-request accounting)
+//   - CorrectFromHeaders() fires exactly once with the body bytes from
+//     the *upstream.Error, NOT from a nil result.Response
+//   - Body classification tag is propagated via ClassifyQuota429Body
+func TestRecordOmniFreeQuota_ResultNilUpstreamErrorBody(t *testing.T) {
+	fake := &fakeQuotaRecorder{}
+	h := &ChatHandler{}
+	h.SetOmniFree(nil, nil, fake)
+	defer h.ShutdownOmniFree()
+
+	body := []byte(`{"error":{"code":429,"message":"Quota exceeded. The quota will reset after 2026-08-10T12:34:56Z.","status":"RESOURCE_EXHAUSTED"}}`)
+
+	result := &executors.ExecuteResult{
+		Candidate: provider.Candidate{
+			CredentialID:     11,
+			CatalogCode:      "openrouter",
+			StandardizedName: "openai/gpt-3.5-turbo:free",
+		},
+		// Response deliberately nil — execErr is the only source of body+status.
+	}
+	execErr := &upstreampkg.Error{
+		Kind:       upstreampkg.KindRateLimit,
+		Message:    "upstream 429",
+		Body:       body,
+		StatusCode: http.StatusTooManyRequests,
+	}
+	h.recordOmniFreeQuota(context.Background(), "auto/free", "tenant-q", result, execErr)
+	h.ShutdownOmniFree()
+
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(fake.records) != 1 {
+		t.Fatalf("expected 1 Record call (failure accounting), got %d", len(fake.records))
+	}
+	r := fake.records[0]
+	if r.Success {
+		t.Errorf("expected Success=false (execErr is non-nil), got true")
+	}
+	if r.CredentialID != 11 {
+		t.Errorf("expected CredentialID=11, got %d", r.CredentialID)
+	}
+	if r.ProviderCode != "openrouter" {
+		t.Errorf("expected ProviderCode=openrouter, got %q", r.ProviderCode)
+	}
+	if r.TenantID != "tenant-q" {
+		t.Errorf("expected TenantID=tenant-q, got %q", r.TenantID)
+	}
+	if len(fake.correct) != 1 {
+		t.Fatalf("expected 1 CorrectFromHeaders call (body carries 5h reset hint), got %d", len(fake.correct))
+	}
+	c := fake.correct[0]
+	if c.CredentialID != 11 {
+		t.Errorf("expected CredentialID=11 on correct, got %d", c.CredentialID)
+	}
+	if string(c.Body) != string(body) {
+		t.Errorf("CorrectFromHeaders body mismatch:\n got=%q\nwant=%q",
+			string(c.Body), string(body))
+	}
+	// Body classification: this body matches budgetExceededRe (quota exceeded)
+	// AND quotaResetsRe (reset after), so it should classify as KindQuotaPeriodic.
+	wantKind := errorsx.KindQuotaPeriodic
+	if got := errorsx.ClassifyQuota429Body(body); got != wantKind {
+		t.Fatalf("ClassifyQuota429Body mismatch: got %q, want %q", got, wantKind)
+	}
+}
+
+// TestRecordOmniFreeQuota_ResultNilNoAttribution covers the audit round-2
+// §5.4 safety contract: when result==nil AND execErr is *upstream.Error,
+// the function still has no CredentialID/CatalogCode to attribute against,
+// so it must be a no-op (no panic, no Record, no CorrectFromHeaders). This
+// guards the "captured.CredentialID == 0 || captured.CatalogCode == '' →
+// return" path so a future refactor doesn't accidentally start attributing
+// upstream errors to a random credential.
+func TestRecordOmniFreeQuota_ResultNilNoAttribution(t *testing.T) {
+	fake := &fakeQuotaRecorder{}
+	h := &ChatHandler{}
+	h.SetOmniFree(nil, nil, fake)
+	defer h.ShutdownOmniFree()
+
+	execErr := &upstreampkg.Error{
+		Kind:       upstreampkg.KindRateLimit,
+		Message:    "upstream 429",
+		Body:       []byte(`{"error":{"message":"rate limited"}}`),
+		StatusCode: http.StatusTooManyRequests,
+	}
+	// result=nil, execErr has 429 — but without result.Candidate we have no
+	// way to attribute the failure to a credential. The function must skip
+	// both Record and CorrectFromHeaders rather than panic or attribute to
+	// an arbitrary credential.
+	h.recordOmniFreeQuota(context.Background(), "auto/free", "tenant-q", nil, execErr)
+	h.ShutdownOmniFree()
+
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(fake.records) != 0 {
+		t.Fatalf("expected 0 Record calls (no attribution), got %d", len(fake.records))
+	}
+	if len(fake.correct) != 0 {
+		t.Fatalf("expected 0 CorrectFromHeaders calls (no attribution), got %d", len(fake.correct))
 	}
 }
