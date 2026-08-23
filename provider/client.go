@@ -2064,12 +2064,18 @@ func (c *Client) defaultAsyncExitSuspicious(credentialID int, rawModel string) {
 			return
 		}
 		nextRetryAt := time.Now().Add(30 * time.Second).UTC().Format(time.RFC3339Nano)
-		if cacheErr := c.redis.HSet(bgCtx, fmt.Sprintf("llmgw:avail:%d:%s", credentialID, rawModel), map[string]any{
+		key := fmt.Sprintf("llmgw:avail:%d:%s", credentialID, rawModel)
+		pipe := c.redis.Pipeline()
+		pipe.HSet(bgCtx, key, map[string]any{
 			"state":         "recovering",
 			"updated_at":    time.Now().UTC().Format(time.RFC3339Nano),
 			"next_retry_at": nextRetryAt,
 			"source":        "call_exit",
-		}).Err(); cacheErr != nil {
+		})
+		pipe.SAdd(bgCtx, "llmgw:avail:index", key)
+		pipe.Expire(bgCtx, "llmgw:avail:index", 4*time.Hour)
+		pipe.Set(bgCtx, "llmgw:avail:index:ready", "1", 4*time.Hour)
+		if _, cacheErr := pipe.Exec(bgCtx); cacheErr != nil {
 			slog.Warn("provider: maybeExitSuspicious cache update failed",
 				"credential_id", credentialID,
 				"raw_model", rawModel,
