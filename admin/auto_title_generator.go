@@ -18,6 +18,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/kaixuan/llm-gateway-go/admin/distlock"
+	"github.com/kaixuan/llm-gateway-go/domains/analysis/sessionmeta"
 	"github.com/kaixuan/llm-gateway-go/internal/titlestore"
 	"github.com/kaixuan/llm-gateway-go/metrics"
 )
@@ -123,6 +124,47 @@ func (g *AutoTitleGenerator) MaybeGenerateTitle(sessionID, tenantID, taskID, req
 
 	// Run in a separate goroutine to avoid blocking
 	go g.generateTitleAsync(sessionID, tenantID, taskID, requestBody, requestPreview, parentRequestID)
+}
+
+// MaybeGenerateProvisionalMetadata implements the streaming arrival hook. The
+// extraction itself is synchronous; the canonical title projection is queued in
+// a short-lived goroutine so database latency never extends the request path.
+// Writes only when auto-title is enabled and the session has no title yet, so
+// multi-turn traffic cannot thrash an existing auto/user title.
+func (g *AutoTitleGenerator) MaybeGenerateProvisionalMetadata(tenantID, sessionID, taskID string, in sessionmeta.Input) {
+	if g == nil || !g.enabled || g.handler == nil || g.handler.titleStore == nil {
+		return
+	}
+	if strings.TrimSpace(tenantID) == "" || strings.TrimSpace(sessionID) == "" {
+		return
+	}
+	result := sessionmeta.Extract(in)
+	if strings.TrimSpace(result.Title) == "" {
+		return
+	}
+	go g.commitProvisionalTitle(tenantID, sessionID, taskID, result.Title)
+}
+
+func (g *AutoTitleGenerator) commitProvisionalTitle(tenantID, sessionID, taskID, title string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if st, err := g.handler.titleStore.Get(ctx, tenantID, sessionID); err == nil {
+		if !st.Deleted && strings.TrimSpace(st.Title) != "" {
+			return
+		}
+	}
+	owner := fmt.Sprintf("arrival-title:%s:%d", sessionID, time.Now().UnixNano())
+	claim, err := g.handler.titleStore.BeginMutation(ctx, titlestore.Claim{
+		TenantID: tenantID, SessionID: sessionID, Owner: owner,
+		TTL: 5 * time.Second, Source: titlestore.SourceAutoTitle,
+		SourcePriority: titlestore.SourcePriorityAuto, TaskID: taskID,
+	})
+	if err != nil {
+		return
+	}
+	if _, err := g.handler.titleStore.CommitTitle(ctx, claim, tenantID, sessionID, title, taskID); err != nil {
+		slog.Debug("provisional session title commit skipped", "session_id", sessionID, "error", err)
+	}
 }
 
 // isFirstSuccessfulUserTurn determines title eligibility from persisted
