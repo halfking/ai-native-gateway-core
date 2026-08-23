@@ -1,55 +1,15 @@
--- 567_credential_priority_flag.sql
--- Add per credential x model priority routing and include it in routing cache invalidation.
---
--- Idempotent: the column is guarded by information_schema and all dependent
--- objects are recreated with CREATE OR REPLACE or DROP + CREATE.
+-- 568_credential_priority_flag.down.sql
+-- Restore the pre-priority-flag schema and routing invalidation semantics.
 
 BEGIN;
 
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1
-          FROM information_schema.columns
-         WHERE table_schema = 'public'
-           AND table_name = 'credential_model_bindings'
-           AND column_name = 'priority'
-    ) THEN
-        ALTER TABLE public.credential_model_bindings
-            ADD COLUMN priority boolean NOT NULL DEFAULT false;
-    END IF;
-END $$;
+-- Remove the priority-aware trigger predicate before removing the column.
+DROP TRIGGER IF EXISTS trg_notify_auto_route_cmb_update ON public.credential_model_bindings;
 
-COMMENT ON COLUMN public.credential_model_bindings.priority IS
-    'Per credential x model routing priority. When quota_state is ok, priority bindings receive traffic first.';
+-- A view cannot be replaced with fewer columns, so recreate it without priority.
+DROP VIEW IF EXISTS public.model_offers CASCADE;
 
--- Recompute existing hashes without bumping scope versions so the persisted
--- revision state uses the same complete-row format as the trigger functions.
-WITH hashes AS (
-    SELECT r.raw_model,
-           COALESCE(
-               encode(digest(string_agg(
-                   b.id::text || '|' ||
-                   b.credential_id::text || '|' ||
-                   b.manual_priority::text || '|' ||
-                   b.priority::text || '|' ||
-                   extract(epoch from b.updated_at)::text,
-                   '|' ORDER BY b.id
-               ), 'sha256'), 'hex'),
-               ''
-           ) AS scope_hash
-      FROM public.candidate_binding_scope_revision r
-      LEFT JOIN public.provider_models pm ON pm.raw_model_name = r.raw_model
-      LEFT JOIN public.credential_model_bindings b ON b.provider_model_id = pm.id
-     GROUP BY r.raw_model
-)
-UPDATE public.candidate_binding_scope_revision r
-   SET scope_hash = h.scope_hash
-  FROM hashes h
- WHERE h.raw_model = r.raw_model;
-
--- Expose the per-binding priority to routing reads and view updates.
-CREATE OR REPLACE VIEW public.model_offers AS
+CREATE VIEW public.model_offers AS
  SELECT cmb.id,
     cmb.credential_id,
     pm.canonical_id,
@@ -81,12 +41,10 @@ CREATE OR REPLACE VIEW public.model_offers AS
     cmb.created_at,
     cmb.updated_at,
     pm.modality AS provider_modality,
-    cmb.context_window_override,
-    cmb.priority
+    cmb.context_window_override
    FROM (public.credential_model_bindings cmb
      JOIN public.provider_models pm ON ((pm.id = cmb.provider_model_id)));
 
--- Let INSTEAD OF UPDATE on model_offers persist the new binding flag.
 CREATE OR REPLACE FUNCTION public.model_offers_update_trigger() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -138,7 +96,6 @@ BEGIN
         pricing_source = COALESCE(NEW.pricing_source, credential_model_bindings.pricing_source),
         pricing_updated_at = COALESCE(NEW.pricing_updated_at, credential_model_bindings.pricing_updated_at),
         context_window_override = COALESCE(NEW.context_window_override, credential_model_bindings.context_window_override),
-        priority = COALESCE(NEW.priority, credential_model_bindings.priority),
         updated_at = now()
     WHERE id = OLD.id;
 
@@ -146,9 +103,7 @@ BEGIN
 END;
 $$;
 
--- Refresh routing caches when this per-binding routing input changes.
-DROP TRIGGER IF EXISTS trg_notify_auto_route_cmb_update ON public.credential_model_bindings;
-
+-- Restore the pre-566 notification predicate, including the 524 context field.
 CREATE TRIGGER trg_notify_auto_route_cmb_update
     AFTER UPDATE ON public.credential_model_bindings
     FOR EACH ROW
@@ -162,12 +117,10 @@ CREATE TRIGGER trg_notify_auto_route_cmb_update
         OR old.active_sessions IS DISTINCT FROM new.active_sessions
         OR old.consecutive_failures IS DISTINCT FROM new.consecutive_failures
         OR old.context_window_override IS DISTINCT FROM new.context_window_override
-        OR old.priority IS DISTINCT FROM new.priority
     )
     EXECUTE FUNCTION public.notify_auto_route_refresh();
 
--- Include priority in every complete-scope hash and treat changes to it as
--- scope-affecting updates.
+-- Restore the 541 scope hash and update predicates without priority.
 CREATE OR REPLACE FUNCTION public.bump_candidate_binding_scope_revision_insert()
 RETURNS TRIGGER AS $$
 DECLARE
@@ -193,7 +146,6 @@ BEGIN
                        b.id::text || '|' ||
                        b.credential_id::text || '|' ||
                        b.manual_priority::text || '|' ||
-                       b.priority::text || '|' ||
                        extract(epoch from b.updated_at)::text,
                        '|' ORDER BY b.id
                    ), 'sha256'), 'hex'),
@@ -242,7 +194,6 @@ BEGIN
                        b.id::text || '|' ||
                        b.credential_id::text || '|' ||
                        b.manual_priority::text || '|' ||
-                       b.priority::text || '|' ||
                        extract(epoch from b.updated_at)::text,
                        '|' ORDER BY b.id
                    ), 'sha256'), 'hex'),
@@ -278,7 +229,6 @@ BEGIN
            JOIN old_rows o USING (id)
            JOIN public.provider_models pm ON pm.id = n.provider_model_id
           WHERE o.manual_priority IS DISTINCT FROM n.manual_priority
-             OR o.priority        IS DISTINCT FROM n.priority
              OR o.provider_model_id IS DISTINCT FROM n.provider_model_id
              OR o.credential_id     IS DISTINCT FROM n.credential_id
          UNION
@@ -287,7 +237,6 @@ BEGIN
            JOIN old_rows o USING (id)
            JOIN public.provider_models pm ON pm.id = o.provider_model_id
           WHERE o.manual_priority IS DISTINCT FROM n.manual_priority
-             OR o.priority        IS DISTINCT FROM n.priority
              OR o.provider_model_id IS DISTINCT FROM n.provider_model_id
              OR o.credential_id     IS DISTINCT FROM n.credential_id
           ORDER BY raw_model
@@ -300,7 +249,6 @@ BEGIN
           JOIN old_rows o USING (id)
           JOIN public.provider_models pm ON pm.id = n.provider_model_id
          WHERE o.manual_priority IS DISTINCT FROM n.manual_priority
-            OR o.priority        IS DISTINCT FROM n.priority
             OR o.provider_model_id IS DISTINCT FROM n.provider_model_id
             OR o.credential_id     IS DISTINCT FROM n.credential_id
         UNION
@@ -309,7 +257,6 @@ BEGIN
           JOIN old_rows o USING (id)
           JOIN public.provider_models pm ON pm.id = o.provider_model_id
          WHERE o.manual_priority IS DISTINCT FROM n.manual_priority
-            OR o.priority        IS DISTINCT FROM n.priority
             OR o.provider_model_id IS DISTINCT FROM n.provider_model_id
             OR o.credential_id     IS DISTINCT FROM n.credential_id
     ), hashes AS (
@@ -319,7 +266,6 @@ BEGIN
                        b.id::text || '|' ||
                        b.credential_id::text || '|' ||
                        b.manual_priority::text || '|' ||
-                       b.priority::text || '|' ||
                        extract(epoch from b.updated_at)::text,
                        '|' ORDER BY b.id
                    ), 'sha256'), 'hex'),
@@ -342,5 +288,39 @@ BEGIN
     RETURN NULL;
 END;
 $$ LANGUAGE plpgsql;
+
+ALTER TABLE public.credential_model_bindings
+    DROP COLUMN IF EXISTS priority;
+
+-- Restore persisted hashes to the pre-566 row format without bumping versions.
+WITH hashes AS (
+    SELECT r.raw_model,
+           COALESCE(
+               encode(digest(string_agg(
+                   b.id::text || '|' ||
+                   b.credential_id::text || '|' ||
+                   b.manual_priority::text || '|' ||
+                   extract(epoch from b.updated_at)::text,
+                   '|' ORDER BY b.id
+               ), 'sha256'), 'hex'),
+               ''
+           ) AS scope_hash
+      FROM public.candidate_binding_scope_revision r
+      LEFT JOIN public.provider_models pm ON pm.raw_model_name = r.raw_model
+      LEFT JOIN public.credential_model_bindings b ON b.provider_model_id = pm.id
+     GROUP BY r.raw_model
+)
+UPDATE public.candidate_binding_scope_revision r
+   SET scope_hash = h.scope_hash
+  FROM hashes h
+ WHERE h.raw_model = r.raw_model;
+
+-- Recreate view triggers after DROP VIEW ... CASCADE.
+DROP TRIGGER IF EXISTS model_offers_insert ON public.model_offers;
+DROP TRIGGER IF EXISTS model_offers_update ON public.model_offers;
+DROP TRIGGER IF EXISTS model_offers_delete ON public.model_offers;
+CREATE TRIGGER model_offers_insert INSTEAD OF INSERT ON public.model_offers FOR EACH ROW EXECUTE FUNCTION public.model_offers_insert_trigger();
+CREATE TRIGGER model_offers_update INSTEAD OF UPDATE ON public.model_offers FOR EACH ROW EXECUTE FUNCTION public.model_offers_update_trigger();
+CREATE TRIGGER model_offers_delete INSTEAD OF DELETE ON public.model_offers FOR EACH ROW EXECUTE FUNCTION public.model_offers_delete_trigger();
 
 COMMIT;

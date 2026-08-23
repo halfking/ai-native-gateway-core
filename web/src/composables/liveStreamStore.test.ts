@@ -400,7 +400,7 @@ describe('mergeTilesById — deterministic ordering (no-jump invariants)', () =>
       { ...tile('a'), timestamp: tsAt(10) },
       { ...tile('b'), timestamp: tsAt(20) },
     ]
-    // incoming from backend is DESC (newest first) — exactly what Record emits
+    // incoming from backend is ASC (oldest first) after lane builder normalization
     const incoming: LiveStreamTile[] = [
       { ...tile('c'), timestamp: tsAt(30) },
       { ...tile('a'), timestamp: tsAt(10) },
@@ -488,7 +488,7 @@ describe('mergeTilesById — deterministic ordering (no-jump invariants)', () =>
     const incoming: LiveStreamTile[] = []
     // 25 tiles, oldest first in the authoritative sense
     for (let i = 0; i < 25; i++) incoming.push({ ...tile(`r${i}`), timestamp: tsAt(i) })
-    // backend delivers DESC
+    // backend delivers ASC (oldest first); reverse simulates legacy DESC wire order
     incoming.reverse()
     const existing: LiveStreamTile[] = []
     __testing.mergeTilesById(existing, incoming)
@@ -504,7 +504,7 @@ describe('mergeTilesById — deterministic ordering (no-jump invariants)', () =>
       ...tile(`old${i}`),
       timestamp: tsAt(i),
     }))
-    // backend delta arrives DESC: new tile first
+    // backend delta may arrive out of order; mergeTilesById normalizes ASC
     const incoming: LiveStreamTile[] = [
       { ...tile('NEW'), timestamp: tsAt(100) },
       ...existing
