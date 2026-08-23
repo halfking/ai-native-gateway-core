@@ -39,7 +39,7 @@ var sanitizeEventsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 	[]string{"outcome", "field", "source", "stage"},
 )
 
-// sanitizeEventsLabels is the exhaustive pre-init list. Keep in sync
+// sanitizeFieldLabels is the exhaustive pre-init list. Keep in sync
 // with the call sites in client.go:sanitizeRequestLogEntry and the new
 // required-field guard.
 var sanitizeFieldLabels = []string{
