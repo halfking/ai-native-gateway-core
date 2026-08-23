@@ -705,6 +705,13 @@ func (h *Handler) handleRoutingCandidateBindingUpdate(w http.ResponseWriter, r *
 		return
 	}
 
+	// Flush the in-process candidate cache so the new routing inputs (incl.
+	// cmb.priority) apply to the next request instead of after the 30s
+	// candCache TTL. The PG notify trigger only refreshes the auto-route
+	// index — provider.candCache has no LISTEN/NOTIFY path. Mirrors the
+	// other credential-mutating admin handlers (credential_keys.go etc.).
+	provider.InvalidateCandidateCacheForCredential(credID)
+
 	// Audit log: keep before/after so the routing_audit_log table holds
 	// enough context for post-mortem diffs (rule 36 alignment).
 	actor := r.Header.Get("X-Admin-User")
@@ -4854,8 +4861,13 @@ func (h *Handler) applyForceEnable(ctx context.Context, credentialID int, rawMod
 	).Scan(&currentDisabled, &availState, &providerID)
 	if err != nil {
 		if err == pgx.ErrNoRows {
+			// Surface the 404 distinctly from a 500 so operators can tell
+			// "wrong credential id" apart from "reset chain broke" in the
+			// llmgw_routing_credential_reset_total counter.
+			met.RoutingCredentialResetTotal.WithLabelValues("lookup", "not_found").Inc()
 			return errForceEnableCredNotFound
 		}
+		met.RoutingCredentialResetTotal.WithLabelValues("lookup", "error").Inc()
 		return fmt.Errorf("force_enable: query failed: %w", err)
 	}
 

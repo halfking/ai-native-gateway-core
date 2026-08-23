@@ -1,0 +1,168 @@
+openapi: 3.0.3
+info:
+  title: LLM Gateway Routing Admin API
+  description: |
+    llm-gateway-go 管理面中路由/凭据状态机相关端点的 OpenAPI 规范。
+
+    本文件是 routing-admin 子集的规范种子（hzx-2 round-3 起步），
+    后续按端点族逐步补全（candidate-binding / reorder / policy 等）。
+
+    鉴权：所有端点要求 JWT（`/api/auth/token` 换取）或 admin key，
+    且角色必须为 super_admin；tenant_admin 收到 403。
+  version: 0.1.0
+  contact:
+    name: LLM Gateway Team
+
+servers:
+  - url: http://localhost:8080
+    description: Local Development
+
+security:
+  - BearerAuth: []
+
+tags:
+  - name: Routing Credentials
+    description: 凭据路由状态复位（hzx-2 审计产物）
+
+paths:
+  /api/routing/credentials/{id}/reset-state:
+    post:
+      tags: [Routing Credentials]
+      operationId: resetCredentialState
+      summary: 复位单个凭据的路由状态（聚焦版 force_enable）
+      description: |
+        运行与 `PATCH /api/routing/emergency-repair` action=force_enable
+        完全相同的 DB + 内存 + URSM v2 复位链路，但接口面更小：
+
+        - 只做 force_enable 一件事（无 4-action 混杂）
+        - `reason` 必填（审计要求）
+        - 可选 `trigger_probe=true` 在复位后立即提交 NodeProbeWorker 自检
+        - 无论是否传 trigger_probe，都会触发一次 autoheal OneShot，
+          让下一个探针周期有新鲜的触发源
+
+        复位内容：credentials 行（manual_disabled/availability/circuit/
+        failures）、credential_model_bindings 行（available/
+        unavailable_*）、node_probe_state 退避清除、内存态
+        （in-memory circuit / credstate / Redis fpslot）、URSM v2 状态。
+
+        成功后写入 routing_audit_log（action=routing_credential_reset_state），
+        并按环节递增 `llmgw_routing_credential_reset_total{surface,result}`。
+        凭据 id 不存在时计数器走 `surface=lookup,result=not_found`（404），
+        链路内部失败走 `result=error`（500）。
+
+        Requires super_admin.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: 凭据 id（credentials.id）
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason:
+                  type: string
+                  minLength: 1
+                  description: 复位原因（必填，写入审计日志）
+                  example: "glm-5.2 outage 2026-08-23, node stuck in node_probe_failed"
+                raw_model:
+                  type: string
+                  description: |
+                    可选。指定时只复位该 credential×model binding；
+                    省略时复位整个凭据（覆盖其所有 binding model）。
+                  example: "glm-5.2"
+                trigger_probe:
+                  type: boolean
+                  default: false
+                  description: |
+                    可选。true 时在复位成功后对每个 (credential, raw_model)
+                    对提交一次 NodeProbeWorker 自检，无需等待下一个 5 分钟
+                    周期。raw_model 为空时此开关无效（whole-cred 探测交给
+                    autoheal worker）。
+      responses:
+        "200":
+          description: 复位成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "credential state reset"
+                  credential_id:
+                    type: integer
+                    format: int64
+                  raw_model:
+                    type: string
+                  actor:
+                    type: string
+                    description: 操作者（AuthContext 用户名，回退 RemoteAddr）
+                  probe_triggered:
+                    type: boolean
+                  details:
+                    type: object
+                    description: 复位链路的 before/after 明细（审计同款数据）
+        "400":
+          description: id 非正整数 / body 非法 / reason 缺失
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: 未认证（缺 JWT / admin key）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: 已认证但角色不是 super_admin
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: credential id 不存在（对应指标 lookup/not_found）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "405":
+          description: 非 POST 方法
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: 复位链路内部失败（对应指标 result=error，按 surface 定位）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        `/api/auth/token` 登录换取的 JWT；亦可使用 admin key。
+        所有 routing-admin 端点额外要求 super_admin 角色。
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+          description: 人类可读的错误描述
+          example: "credential not found"
