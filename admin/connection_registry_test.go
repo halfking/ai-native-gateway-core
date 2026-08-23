@@ -125,7 +125,7 @@ func TestRequestActionsDedupAndOrdering(t *testing.T) {
 			continue
 		}
 		seen[ev.Seq] = struct{}{}
-		actions = append(actions, flattenActionEvent(ev))
+		actions = append(actions, flattenActionEvent(ev, nil))
 	}
 	assert.Len(t, actions, 3, "duplicates by (request_id, seq) collapse")
 

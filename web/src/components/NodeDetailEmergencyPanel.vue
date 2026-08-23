@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { emergencyRepair, type EmergencyRepairAction, type RoutingCandidate } from '../api/routing'
+import { useCredentialLabels } from '../composables/useCredentialLabels'
 
 const props = defineProps<{
   candidate: RoutingCandidate | null
@@ -13,6 +14,10 @@ const emit = defineEmits<{
   message: [text: string]
   error: [text: string]
 }>()
+// credentialDisplayName resolves credential id → human label; the composable
+// keeps a Map<id,label> refreshed via loadCredentialLabels(), and falls back
+// to "凭据 #ID" if the label is missing.
+const { credentialDisplayName, loadCredentialLabels } = useCredentialLabels()
 
 const repairing = ref<EmergencyRepairAction | null>(null)
 const pending = ref<{ action: EmergencyRepairAction; label: string } | null>(null)
@@ -48,6 +53,13 @@ const canClearCircuit = computed(() => {
 const canResetErrors = computed(() =>
   (props.candidate?.credential_consecutive_failures ?? props.candidate?.consecutive_failures ?? 0) > 0,
 )
+
+// Refresh the label cache whenever the candidate changes so the confirmation
+// modal always shows the current label (best-effort, no-op when the cache is
+// already fresh within the 60s TTL).
+watch(() => props.candidate?.credential_id, (id) => {
+  if (id) void loadCredentialLabels()
+})
 
 function request(action: EmergencyRepairAction, label: string) {
   if (!props.canEdit || repairing.value) return
@@ -103,7 +115,7 @@ async function confirm() {
       <p class="nd-em-intro">以下操作会立即改写运行态；执行前请确认影响范围。</p>
       <div v-if="pending" class="nd-em-confirm" role="alertdialog">
         <p class="nd-em-confirm-title">确认执行「{{ pending.label }}」？</p>
-        <p class="nd-em-confirm-body">将对凭据 #{{ candidate.credential_id }} / {{ rawModel }} 生效。</p>
+        <p class="nd-em-confirm-body">将对 {{ credentialDisplayName(candidate.credential_id) }} / {{ rawModel }} 生效。</p>
         <div class="nd-em-confirm-actions">
           <button type="button" class="btn btn-ghost btn-sm" :disabled="repairing !== null" @click="cancel">取消</button>
           <button type="button" class="btn btn-danger btn-sm" :disabled="repairing !== null" @click="confirm">

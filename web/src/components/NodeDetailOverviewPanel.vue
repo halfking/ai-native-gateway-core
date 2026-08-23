@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { watch } from 'vue'
 import type { RoutingCandidate } from '../api/routing'
 import type {
   CredentialModelStatus,
@@ -8,9 +9,10 @@ import type {
 } from '../api/credential-monitor'
 import type { LiveNodeStatus } from '../composables/liveStreamStore'
 import { fmtTime, pct, statusClass } from '../utils/nodeDetailFormat'
+import { useCredentialLabels } from '../composables/useCredentialLabels'
 import NodeDetailAccessErrorsPanel from './NodeDetailAccessErrorsPanel.vue'
 
-defineProps<{
+const props = defineProps<{
   node: LiveNodeStatus
   detailLoading: boolean
   detailLoaded: boolean
@@ -31,6 +33,17 @@ const emit = defineEmits<{
   chooseModel: [model: string]
   openRequest: [requestId: string]
 }>()
+
+// credentialDisplayName resolves credential id → human label; the composable
+// keeps a Map<id,label> refreshed via loadCredentialLabels(), and falls back
+// to "凭据 #ID" if the label is missing.
+const { credentialDisplayName, loadCredentialLabels } = useCredentialLabels()
+
+// Refresh the label cache whenever the candidate changes so the overview
+// shows the current label (best-effort, no-op when fresh within TTL).
+watch(() => props.candidate?.credential_id, (id) => {
+  if (id) void loadCredentialLabels()
+})
 </script>
 
 <template>
@@ -52,7 +65,7 @@ const emit = defineEmits<{
     <section v-if="candidate" class="nd-section">
       <h3>路由候选明细 <small v-if="candidateLoading">加载中…</small></h3>
       <dl class="nd-grid">
-        <div><dt>凭据</dt><dd>#{{ candidate.credential_id }} · {{ candidate.credential_label }}</dd></div>
+        <div><dt>凭据</dt><dd>{{ credentialDisplayName(candidate.credential_id) }} · {{ candidate.credential_label }}</dd></div>
         <div><dt>Provider</dt><dd>{{ candidate.provider_name }}</dd></div>
         <div><dt>是否可路由</dt><dd :class="candidate.routable ? 'is-ok' : 'is-bad'">{{ candidate.routable ? '是' : '否' }}</dd></div>
         <div><dt>阻断原因</dt><dd class="nd-wrap">{{ candidate.runtime_block_reason || candidate.block_reason || '—' }}</dd></div>
