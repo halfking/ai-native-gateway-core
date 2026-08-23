@@ -614,6 +614,27 @@ func (c *Client) EmitRequestLogInsert(entry *RequestLogEntry) {
 
 func (c *Client) EmitRequestLogUpdate(entry *RequestLogEntry) {
 	entry.Op = RequestLogUpdate
+
+	// 2026-08-23 (245 incident, minimax-m3): guard against silently writing
+	// a useless UPDATE. The persistRequestLog → updateRequestLog path UPSERTs
+	// on request_id; if it is empty the row becomes orphan and the WAL has
+	// no key to reconcile against. TenantID defaulting to "default" is the
+	// same fallback insertRequestLog applies at line ~1191 — keep the
+	// semantics aligned so the required-field guard matches INSERT too.
+	// Success/RequestStatus are not strictly nullable on UPDATE (a late
+	// enrichment may legitimately omit them), so this guard intentionally
+	// only blocks the truly useless writes.
+	if entry.RequestID == "" {
+		slog.Error("telemetry EmitRequestLogUpdate dropped: missing request_id",
+			"client_model", stringValue(entry.ClientModel),
+			"outbound_model", stringValue(entry.OutboundModel))
+		incSanitizeEvent("discarded", "request_id", "string_field", "required_field_guard")
+		return
+	}
+	if entry.TenantID == "" {
+		entry.TenantID = "default"
+	}
+
 	c.EmitRequestLog(entry)
 }
 
@@ -2604,6 +2625,7 @@ func sanitizeJSONField(field string, p **string) {
 		slog.Warn("telemetry JSON field discarded, storing NULL",
 			"field", field,
 			"bytes", len(original))
+		incSanitizeEvent("discarded", field, "json_field", "sanitize")
 		*p = nil
 		return
 	}
@@ -2612,6 +2634,7 @@ func sanitizeJSONField(field string, p **string) {
 			"field", field,
 			"original_bytes", len(original),
 			"kept_bytes", len(v))
+		incSanitizeEvent("repaired", field, "json_field", "sanitize")
 	}
 	*p = &v
 }
@@ -2630,6 +2653,7 @@ func sanitizeRawJSONField(field string, raw *json.RawMessage) {
 		slog.Warn("telemetry JSONB field discarded",
 			"field", field,
 			"bytes", len(*raw))
+		incSanitizeEvent("discarded", field, "raw_json_field", "sanitize")
 		*raw = nil
 		return
 	}
@@ -2638,6 +2662,7 @@ func sanitizeRawJSONField(field string, raw *json.RawMessage) {
 			"field", field,
 			"original_bytes", len(*raw),
 			"kept_bytes", len(cleaned))
+		incSanitizeEvent("repaired", field, "raw_json_field", "sanitize")
 	}
 	*raw = json.RawMessage(cleaned)
 }
