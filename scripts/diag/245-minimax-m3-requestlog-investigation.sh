@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # 245 minimax-m3 request_logs_hot 写入缺失诊断脚本
-# 2026-08-23 — 配套新增的 telemetry_sanitize_events_total Prometheus counter
-# 与 EmitRequestLogUpdate 必填字段守卫。
+# 2026-08-23 — Step 6: 配套 telemetry_sanitize_events_total{outcome=discarded|rescued}
+# Prometheus counter、EmitRequestLogUpdate 必填字段守卫、sanitize 后保留 truncated
+# prefix 的新行为。
 #
 # 用法（在 245 网关主机上）：
 #   sudo ./245-minimax-m3-requestlog-investigation.sh
@@ -46,8 +47,8 @@ log "Step 1: grep 网关日志中的 telemetry 失败/丢弃线索"
 declare -a SIGNATURES=(
   '"telemetry JSON field discarded, storing NULL"'
   '"telemetry JSONB field discarded"'
-  '"telemetry JSON field repaired by truncation"'
-  '"telemetry JSONB field repaired by truncation"'
+  '"telemetry JSON field rescued by truncation"'
+  '"telemetry JSONB field rescued by truncation"'
   '"telemetry request sync persist failed"'
   '"telemetry request db persist failed'
   '"telemetry EmitRequestLogUpdate dropped: missing request_id"'
@@ -179,6 +180,30 @@ SQL
   echo
   echo "  [3d] minimax-m3 非成功行的错误分布："
   column -t -s'|' "$OUT_DIR/sql-failure-detail.txt" | sed 's/^/    /'
+
+  # 3e) Step 6 抽样：request_body 非空但非常短（<200B）的行 —— 强烈暗示
+  #     sanitize 走 truncate 路径救回了 prefix。如果这种行数量明显高于
+  #     gpt-5.6-terra，说明上游字节有问题，Step 6 在救场。
+  # 注意：request_body 是 JSONB 列，PostgreSQL 对 JSONB 没有 length()，
+  # 必须先 cast 成 text 或用 octet_length()。这里用 octet_length() 取
+  # 字节数，与 sanitizeJSONField 里 `bytes` 字段口径一致。
+  psql -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d "$PGDATABASE" -At -F'|' <<SQL > "$OUT_DIR/sql-rescued-candidates.txt"
+SELECT
+  model,
+  count(*) FILTER (WHERE request_body IS NOT NULL AND octet_length(request_body) < 200) AS short_body,
+  count(*) FILTER (WHERE request_body IS NOT NULL AND octet_length(request_body) BETWEEN 200 AND 2000) AS mid_body,
+  count(*) FILTER (WHERE request_body IS NOT NULL AND octet_length(request_body) > 2000) AS long_body,
+  count(*) AS total
+FROM request_logs_hot
+WHERE ts > now() - interval '$LOOKBACK_HOURS hour'
+  AND model IN ('minimax-m3','gpt-5.6-terra')
+GROUP BY model
+ORDER BY model;
+SQL
+
+  echo
+  echo "  [3e] request_body 长度分布（短 = 可能是 sanitize truncate 救回）："
+  column -t -s'|' "$OUT_DIR/sql-rescued-candidates.txt" | sed 's/^/    /'
 fi
 
 # ----------------------------------------------------------------------------
@@ -209,13 +234,18 @@ echo
 echo "================ 诊断结论 ================"
 echo
 echo "1) 若 [3b] 显示 minimax-m3 在 WAL > logs_hot："
-echo "   → DB 写入路径有真丢失。检查 client.go:2604 / 2630 的 slog.Warn 与"
+echo "   → DB 写入路径有真丢失。检查 client.go 的 sanitizeJSONField /"
+echo "     sanitizeRawJSONField 函数中 discarded 路径的 slog.Warn 与"
 echo "     新指标 telemetry_sanitize_events_total{outcome=\"discarded\"}。"
 echo
 echo "2) 若 [3c] 显示 minimax-m3 在 request_body / outbound_body / t9_… 的"
 echo "   NULL 占比远高于 gpt-5.6-terra："
-echo "   → 是 sanitizeRequestLogEntry 的 NULL 化（client.go:2535-2588）。"
+echo "   → 是 sanitizeRequestLogEntry 的 NULL 化（client.go 函数"
+echo "     sanitizeRequestLogEntry）。"
 echo "     JSONB 列被丢弃 = /request-logs UI 看不到完整审计信息。"
+echo "     Step 6 起，部分场景（truncate 救回 JSON prefix）会改为 rescued，"
+echo "     而不是 discarded，所以 NULL 占比下降；rescued 的累积计数见"
+echo "     telemetry_sanitize_events_total{outcome=\"rescued\"}。"
 echo
 echo "3) 若 [3d] 全是 success 但 [3b] 行数对得上："
 echo "   → 数据库没问题，前端查询或缓存问题；转 UI 排查。"
@@ -223,6 +253,12 @@ echo
 echo "4) 若 [3a] minimax-m3 出现 client_disconnect / stream_interrupted："
 echo "   → MiniMax API 不发 [DONE] 引起的虚惊失败（已被 c77a7d671 修复）。"
 echo "     升级到包含 c77a7d671 的版本可消除此分支。"
+echo
+echo "5) 新指标告警建议（Prometheus alerting rules）："
+echo "     - rate(telemetry_sanitize_events_total{outcome=\"discarded\"}"
+echo "         ,field=~\"request_body|outbound_body|attachments\"}[5m]) > 0"
+echo "     - rate(telemetry_sanitize_events_total{outcome=\"rescued\"}[5m])"
+echo "         > 1  # 持续 rescue 说明上游在发坏字节"
 echo
 echo "原始输出文件位于：$OUT_DIR/"
 echo "完成。"
