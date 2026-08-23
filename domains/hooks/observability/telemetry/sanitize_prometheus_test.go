@@ -58,10 +58,10 @@ func TestSanitizeRawJSONField_DiscardsAndIncrementsMetric(t *testing.T) {
 
 func TestSanitizeJSONField_ValidInputDoesNotIncrement(t *testing.T) {
 	// Valid JSON should pass through untouched — neither "discarded" nor
-	// "repaired" should bump. Asserting the negative prevents an
-	// over-eager repair path from masking actual discards.
+	// "rescued" should bump. Asserting the negative prevents an over-eager
+	// rescue path from masking actual discards.
 	discardBefore := counterValue(t, "discarded", "request_body", "json_field", "sanitize")
-	repairedBefore := counterValue(t, "repaired", "request_body", "json_field", "sanitize")
+	rescuedBefore := counterValue(t, "rescued", "request_body", "json_field", "sanitize")
 
 	good := `{"model":"minimax-m3","messages":[{"role":"user","content":"hello 世界"}]}`
 	ptr := &good
@@ -77,8 +77,77 @@ func TestSanitizeJSONField_ValidInputDoesNotIncrement(t *testing.T) {
 	if got := counterValue(t, "discarded", "request_body", "json_field", "sanitize") - discardBefore; got != 0 {
 		t.Fatalf("discarded delta = %v, want 0", got)
 	}
-	if got := counterValue(t, "repaired", "request_body", "json_field", "sanitize") - repairedBefore; got != 0 {
-		t.Fatalf("repaired delta = %v, want 0", got)
+	if got := counterValue(t, "rescued", "request_body", "json_field", "sanitize") - rescuedBefore; got != 0 {
+		t.Fatalf("rescued delta = %v, want 0", got)
+	}
+}
+
+// TestSanitizeJSONField_RescuedKeepsTruncatedPrefix is the Step 6 / 245
+// incident regression test: when sanitizeUTF8JSON can rescue a valid JSON
+// prefix (e.g. a streamed body that ended with garbage bytes after the
+// closing brace) we now KEEP the truncated prefix and label the event
+// `rescued` — previously the same input was treated as binary discard in
+// some call paths, hiding the body from the /request-logs UI.
+func TestSanitizeJSONField_RescuedKeepsTruncatedPrefix(t *testing.T) {
+	// A valid JSON object followed by stray "garbage" + invalid UTF-8.
+	// truncateToValidJSON walks the string from the end looking for '}'
+	// and ']' candidates; the closing brace of the object is the first
+	// candidate that parses as valid JSON, so the rescued result is the
+	// object minus the trailing garbage.
+	input := `{"a":"v"}garbage` + "\xff\xfe"
+	before := counterValue(t, "rescued", "request_body", "json_field", "sanitize")
+
+	ptr := &input
+	sanitizeJSONField("request_body", &ptr)
+
+	if ptr == nil {
+		t.Fatal("expected rescued (non-nil) result, got nil")
+	}
+	if *ptr == input {
+		t.Fatalf("expected truncated output, got unchanged %q", *ptr)
+	}
+	// Truncated prefix must be valid JSON and start with '{'.
+	if (*ptr)[0] != '{' {
+		t.Fatalf("expected rescued prefix to start with '{', got %q", *ptr)
+	}
+
+	after := counterValue(t, "rescued", "request_body", "json_field", "sanitize")
+	if got := after - before; got != 1 {
+		t.Fatalf("expected delta=1, got %v", got)
+	}
+
+	// Sanity: discarded counter must NOT bump on a rescueable input.
+	discardBefore := counterValue(t, "discarded", "request_body", "json_field", "sanitize")
+	ptr2 := &input
+	sanitizeJSONField("request_body", &ptr2)
+	if got := counterValue(t, "discarded", "request_body", "json_field", "sanitize") - discardBefore; got != 0 {
+		t.Fatalf("discarded delta = %v on rescueable input, want 0", got)
+	}
+}
+
+// TestSanitizeRawJSONField_RescuedKeepsTruncatedPrefix mirrors the json
+// variant for json.RawMessage columns (outbound_body / tool_calls /
+// attachments / routing_attempts / …). Same expectation: truncated JSON
+// prefix is retained and labelled `rescued`.
+func TestSanitizeRawJSONField_RescuedKeepsTruncatedPrefix(t *testing.T) {
+	input := json.RawMessage(`[1,2,3]garbage` + "\xff")
+	before := counterValue(t, "rescued", "outbound_body", "raw_json_field", "sanitize")
+
+	sanitizeRawJSONField("outbound_body", &input)
+
+	if input == nil {
+		t.Fatal("expected rescued (non-nil) result, got nil")
+	}
+	if string(input) == string(`[1,2,3]garbage`+"\xff") {
+		t.Fatalf("expected truncated output, got unchanged %q", string(input))
+	}
+	if string(input)[0] != '[' {
+		t.Fatalf("expected rescued prefix to start with '[', got %q", string(input))
+	}
+
+	after := counterValue(t, "rescued", "outbound_body", "raw_json_field", "sanitize")
+	if got := after - before; got != 1 {
+		t.Fatalf("expected delta=1, got %v", got)
 	}
 }
 
