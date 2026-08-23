@@ -316,15 +316,22 @@ export function revealCredentialKey(providerId: number, credId: number) {
   return req<{ credential_id: number; api_key: string }>('POST', `/api/providers/${providerId}/credentials/${credId}/reveal`)
 }
 
-// ── GET/POST dual-mode utility ─────────────────────────────────────────────
-
-export async function getOrPost<T>(path: string, getParams?: Record<string, string>, postBody?: any): Promise<T> {
-  try {
-    const qs = getParams && Object.keys(getParams).length > 0 ? '?' + new URLSearchParams(getParams).toString() : ''
-    return await req<T>('GET', path + qs)
-  } catch {
-    return req<T>('POST', path, postBody)
-  }
+// ── GET helper (was: GET with POST fallback) ─────────────────────────────
+// 2026-08-23: the prior GET-then-POST fallback masked 500s as POST requests
+// (e.g. /api/providers/14/models when migration 361 was missing — GET 500
+// surfaced as "POST /api/providers/14/models 500" in the browser and tools).
+// Both methods ran the same SELECT path, so the fallback never recovered.
+// Drop the fallback; callers wanting POST behaviour should call `req('POST', …)`
+// directly. The unused `postBody` parameter is preserved on the signature
+// so existing call sites (`getOrPost(path, getParams, body)`) keep compiling
+// while we route everyone to the GET-only contract.
+export async function getOrPost<T>(
+  path: string,
+  getParams?: Record<string, string>,
+  _postBody?: any
+): Promise<T> {
+  const qs = getParams && Object.keys(getParams).length > 0 ? '?' + new URLSearchParams(getParams).toString() : ''
+  return req<T>('GET', path + qs)
 }
 
 // ── Background task API ───────────────────────────────────────────────────
