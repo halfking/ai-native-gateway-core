@@ -2,6 +2,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { createI18n } from 'vue-i18n'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import NodeDetailDrawer from './NodeDetailDrawer.vue'
+import type { RoutingCandidate } from '../api/routing'
 import { liveStreamState } from '../composables/liveStreamStore'
 
 const {
@@ -206,6 +207,8 @@ describe('NodeDetailDrawer model×node scope', () => {
   })
 
   it('opens availability tab with seedCandidate and shows emergency panel in settings', async () => {
+    // Partial seed: the drawer tolerates missing fields via ?? defaults,
+    // but the prop type is the full RoutingCandidate — cast the literal.
     const seed = {
       credential_id: 5,
       provider_id: 1,
@@ -215,7 +218,7 @@ describe('NodeDetailDrawer model×node scope', () => {
       routable: true,
       tier: 1,
       weight: 100,
-    }
+    } as RoutingCandidate
     const wrapper = mount(NodeDetailDrawer, {
       props: {
         modelValue: true,

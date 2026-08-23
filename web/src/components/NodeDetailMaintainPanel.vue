@@ -14,6 +14,7 @@ defineProps<{
   candidateLoading: boolean
   lifecycle: CredentialLifecycleStatus
   manualPriority: number
+  priorityFlag: boolean
   routingTier: number
   weight: number
   modelActionReason: string
@@ -23,6 +24,7 @@ defineProps<{
 const emit = defineEmits<{
   'update:lifecycle': [value: CredentialLifecycleStatus]
   'update:manualPriority': [value: number]
+  'update:priorityFlag': [value: boolean]
   'update:routingTier': [value: number]
   'update:weight': [value: number]
   'update:modelActionReason': [value: string]
@@ -53,12 +55,25 @@ const emit = defineEmits<{
   <section v-else-if="candidate" class="nd-section">
     <h3>路由排序与生命周期 <small>{{ selectedModel }}</small></h3>
     <div class="nd-form-grid">
-      <label>人工优先级
+      <label title="排序序号：数字越小越靠前，只决定同组候选的先后顺序，不保证独占流量。">
+        排序序号
         <input
           type="number" min="0" max="99" :disabled="!canEdit"
           :value="manualPriority"
           @input="emit('update:manualPriority', Number(($event.target as HTMLInputElement).value))"
         />
+      </label>
+      <label
+        class="nd-priority-flag"
+        title="优先凭据：额度（quota）充足时优先承接全部流量，额度耗尽自动让位给其它凭据。是布尔标志，与上方「排序序号」无关。"
+      >
+        优先凭据
+        <input
+          type="checkbox" :disabled="!canEdit"
+          :checked="priorityFlag"
+          @change="emit('update:priorityFlag', ($event.target as HTMLInputElement).checked)"
+        />
+        <small>额度充足时优先承接 · 与排序序号无关</small>
       </label>
       <label>Routing Tier
         <input
@@ -116,3 +131,9 @@ const emit = defineEmits<{
     </div>
   </section>
 </template>
+
+<style scoped>
+.nd-priority-flag { display: flex; flex-direction: column; gap: 2px; }
+.nd-priority-flag small { color: var(--kx-muted, #888); font-size: 11px; }
+.nd-priority-flag input[type='checkbox'] { width: 16px; height: 16px; margin: 4px 0 0; }
+</style>

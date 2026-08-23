@@ -1,8 +1,20 @@
+-- 570_model_offers_insert_priority_passthrough.sql
+-- Complete the model_offers view INSERT contract for credential priority.
 --
--- Name: model_offers_insert_trigger(); Type: FUNCTION; Schema: public; Owner: -
+-- 568 exposed cmb.priority on the view and persisted it through the
+-- INSTEAD OF UPDATE trigger, but model_offers_insert_trigger() still
+-- dropped NEW.priority (and NEW.context_window_override, same gap from
+-- 523) on both the INSERT and the ON CONFLICT upsert path. Any caller
+-- rebuilding an offer through the view silently reset the binding to
+-- priority=false. This migration replaces the function with the
+-- passthrough version; sql/objects/functions/model_offers_insert_trigger.sql
+-- carries the same definition.
 --
+-- Idempotent: CREATE OR REPLACE only.
 
-CREATE FUNCTION public.model_offers_insert_trigger() RETURNS trigger
+BEGIN;
+
+CREATE OR REPLACE FUNCTION public.model_offers_insert_trigger() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 BEGIN
@@ -67,3 +79,4 @@ BEGIN
 END;
 $$;
 
+COMMIT;

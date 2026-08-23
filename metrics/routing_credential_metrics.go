@@ -76,7 +76,8 @@ var (
 
 	// RoutingCoolingFallbackTotal router "全员冷却降级" 的触发计数。
 	//
-	// reason ∈ {all_unusable, none_healthy} 区分原因
+	// 当前唯一 reason 为 all_unusable（router.go planCandidates 中所有候选
+	// 均冷却时选最浅冷却候选兜底）。
 	RoutingCoolingFallbackTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "llmgw_routing_cooling_fallback_total",
 		Help: "All-candidates-cooling fallback triggers in router.go planCandidates.",

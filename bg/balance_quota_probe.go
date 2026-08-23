@@ -2,12 +2,14 @@ package bg
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"strconv"
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -139,7 +141,10 @@ func (p *BalanceQuotaProbe) Stop() {
 //     probe would no-op anyway).
 //
 // The function is safe to call concurrently — internal state is guarded
-// by forceMu.
+// by forceMu. The cooldown mark is released on every non-dispatch path
+// so an operator who clicks during a transient state (eligibility
+// changes mid-flight, DB error, worker un-wired) isn't locked out for
+// the next forceCooldown seconds.
 func (p *BalanceQuotaProbe) ForceProbe(credID int) bool {
 	if credID <= 0 {
 		return false
@@ -156,16 +161,42 @@ func (p *BalanceQuotaProbe) ForceProbe(credID int) bool {
 		return false
 	}
 	p.forceLastSeen[credID] = now
+	mapLen := len(p.forceLastSeen)
+	// Garbage-collect stale entries while holding the lock to avoid a
+	// data race on the map (len() + iterate are both racy vs concurrent
+	// writers otherwise). GC fires once the map exceeds 100 entries —
+	// more than enough for any realistic operator session.
+	if mapLen > 100 {
+		for id, ts := range p.forceLastSeen {
+			if now.Sub(ts) > p.forceCooldown*10 {
+				delete(p.forceLastSeen, id)
+			}
+		}
+	}
 	p.forceMu.Unlock()
 
-	// Garbage-collect stale entries so the map doesn't grow unbounded
-	// across a long-running gateway. 100 entries is more than enough
-	// for any realistic operator session.
-	if len(p.forceLastSeen) > 100 {
-		p.gcForceHistory(now)
+	// releaseCooldown removes the cooldown mark for credID. Called on
+	// every path that doesn't dispatch a probe so an operator isn't
+	// locked out for 30s after a transient-state click.
+	releaseCooldown := func() {
+		p.forceMu.Lock()
+		delete(p.forceLastSeen, credID)
+		p.forceMu.Unlock()
 	}
 
-	if !p.credentialEligibleForForceProbe(credID) {
+	eligible, stateCheckErr := p.credentialEligibleForForceProbe(credID)
+	if stateCheckErr != nil {
+		slog.Warn("balance_quota_probe: force probe eligibility check failed",
+			"credential_id", credID, "error", stateCheckErr)
+		releaseCooldown()
+		return false
+	}
+	if !eligible {
+		// Credential isn't in a balance/permanent state; either it
+		// recovered already or the operator clicked the wrong one.
+		// Release the cooldown so the next click is honoured immediately
+		// if state flips.
+		releaseCooldown()
 		return false
 	}
 
@@ -186,9 +217,7 @@ func (p *BalanceQuotaProbe) ForceProbe(credID int) bool {
 	} else {
 		// Worker not wired — release the cooldown mark so the operator
 		// can retry once the wiring is fixed.
-		p.forceMu.Lock()
-		delete(p.forceLastSeen, credID)
-		p.forceMu.Unlock()
+		releaseCooldown()
 		return false
 	}
 
@@ -196,24 +225,21 @@ func (p *BalanceQuotaProbe) ForceProbe(credID int) bool {
 	return true
 }
 
-func (p *BalanceQuotaProbe) gcForceHistory(now time.Time) {
-	p.forceMu.Lock()
-	defer p.forceMu.Unlock()
-	for id, ts := range p.forceLastSeen {
-		if now.Sub(ts) > p.forceCooldown*10 {
-			delete(p.forceLastSeen, id)
-		}
-	}
-}
-
 // credentialEligibleForForceProbe returns true when the credential is
-// currently in a balance/permanent exhausted state. The check is best-
-// effort — between the SELECT and the probe submission the state may
-// have flipped (e.g. another instance's tick already recovered it), in
-// which case the probe just no-ops inside credential_probe_v2.
-func (p *BalanceQuotaProbe) credentialEligibleForForceProbe(credID int) bool {
+// currently in a balance/permanent exhausted state, OR when no row was
+// found (the credential already recovered between the operator's click
+// and this check — treat as success so the admin endpoint returns a
+// clean "already healthy" message).
+//
+// The second return value is the DB error from QueryRow.Scan if any
+// other error occurred (timeout, connection failure, schema mismatch).
+// Callers must distinguish "no rows = recovered" from "error = unknown"
+// — silently conflating them with "eligible" would let the probe path
+// be dispatched even during a DB outage, returning 202 Accepted while
+// the upstream is unreachable.
+func (p *BalanceQuotaProbe) credentialEligibleForForceProbe(credID int) (bool, error) {
 	if p.db == nil {
-		return false
+		return false, errors.New("balance_quota_probe: db pool is nil")
 	}
 	probeCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -225,12 +251,15 @@ func (p *BalanceQuotaProbe) credentialEligibleForForceProbe(credID int) bool {
 		  AND quota_state IN ('balance_exhausted', 'permanently_exhausted')
 	`, credID).Scan(&state)
 	if err != nil {
-		// no rows → state already recovered; treat as success so the
-		// admin endpoint returns a clean "already healthy" message
-		// rather than 503.
-		return true
+		if errors.Is(err, pgx.ErrNoRows) {
+			// No matching row — credential already recovered. The
+			// admin endpoint returns 200 with status="no_op"; the
+			// probe path is not entered.
+			return true, nil
+		}
+		return false, err
 	}
-	return state == "balance_exhausted" || state == "permanently_exhausted"
+	return state == "balance_exhausted" || state == "permanently_exhausted", nil
 }
 
 // probeBalanceExhausted 探测 balance_exhausted 和 permanently_exhausted 状态的凭据。

@@ -71,3 +71,39 @@ func TestCheckerGradientTableContainsCriticalKinds(t *testing.T) {
 		}
 	}
 }
+
+// TestCheckerMinSampleIsStricterWins pins BUG 1 from the 2026-08-23
+// hzx-2 audit follow-up: the per-kind MinSampleSize must be the
+// STRICTER (higher) of the two values, not the looser. The original
+// implementation silently dropped the rate_limit 8-sample floor by
+// picking the minimum of (perKind=8, global=5).
+func TestCheckerMinSampleIsStricterWins(t *testing.T) {
+	src, err := os.ReadFile("checker.go")
+	if err != nil {
+		t.Fatalf("read checker source failed: %v", err)
+	}
+	body := string(src)
+	// The minSamples assignment must use the STRICTER (higher) value.
+	// The bug was: `if effectiveMinSample > c.minSampleSize { minSamples = c.minSampleSize }`
+	// (silently dropped per-kind stricter floor). The fix flips the
+	// assignment target so the per-kind wins when it is higher.
+	for _, anti := range []string{
+		// Old buggy pattern: per-kind stricter floor is dropped.
+		`if effectiveMinSample > c.minSampleSize {
+			minSamples = c.minSampleSize
+		}`,
+	} {
+		// Whitespace-tolerant match: strip leading whitespace from
+		// each line of the anti-pattern before searching the source.
+		compact := strings.Join(strings.Fields(anti), "")
+		// Also build a stripped version of the source for the search.
+		srcCompact := strings.Join(strings.Fields(body), "")
+		if strings.Contains(srcCompact, compact) {
+			t.Fatalf("checker.go still contains the inverted min-sample pattern: %q", anti)
+		}
+	}
+	// And it must contain the fixed pattern.
+	if !strings.Contains(body, "minSamples = effectiveMinSample") {
+		t.Fatalf("checker.go missing the fixed min-sample assignment (per-kind stricter should win)")
+	}
+}
