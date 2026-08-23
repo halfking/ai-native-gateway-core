@@ -1,5 +1,5 @@
--- 561_credential_priority_flag.down.sql
--- Restore the 560 schema and routing invalidation semantics.
+-- 566_credential_priority_flag.down.sql
+-- Restore the pre-priority-flag schema and routing invalidation semantics.
 
 BEGIN;
 
@@ -103,7 +103,7 @@ BEGIN
 END;
 $$;
 
--- Restore the pre-561 notification predicate, including the 524 context field.
+-- Restore the pre-566 notification predicate, including the 524 context field.
 CREATE TRIGGER trg_notify_auto_route_cmb_update
     AFTER UPDATE ON public.credential_model_bindings
     FOR EACH ROW
@@ -292,7 +292,7 @@ $$ LANGUAGE plpgsql;
 ALTER TABLE public.credential_model_bindings
     DROP COLUMN IF EXISTS priority;
 
--- Restore persisted hashes to the pre-561 row format without bumping versions.
+-- Restore persisted hashes to the pre-566 row format without bumping versions.
 WITH hashes AS (
     SELECT r.raw_model,
            COALESCE(
