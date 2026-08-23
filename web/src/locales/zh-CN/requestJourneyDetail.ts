@@ -4,6 +4,7 @@ export default {
   title: '请求 Journey 详情',
   loading: '正在加载 Journey...',
   error: 'Journey 详情加载失败',
+  retry: '重试',
   scopeAll: '全局入站',
   observationDegraded: '观测已降级',
   routingTitle: '路由尝试时间线',
