@@ -6,6 +6,7 @@ import {
   layoutRows,
   stageDetailRows,
 } from '../utils/waterfallTimeline'
+import { credentialDisplayName, useCredentialLabels } from '../composables/useCredentialLabels'
 import DispatchWaterfallTrack from './DispatchWaterfallTrack.vue'
 
 const props = defineProps<{
@@ -20,6 +21,13 @@ const emit = defineEmits<{
 const laid = computed(() => layoutRows([props.selected]))
 const stageRows = computed(() => stageDetailRows(props.selected))
 const heroBars = computed(() => laid.value.rows[0]?.bars ?? [])
+
+// 凭据显示：订阅标签缓存 revision，标签异步加载完成后自动刷新。
+const { labelRevision } = useCredentialLabels()
+function credentialLabel(id: number): string {
+  void labelRevision.value
+  return credentialDisplayName(id)
+}
 </script>
 
 <template>
@@ -92,7 +100,7 @@ const heroBars = computed(() => laid.value.rows[0]?.bars ?? [])
           <li v-for="a in selected.attempts" :key="a.attempt_id || a.attempt_no">
             <span>#{{ a.attempt_no }}</span>
             <span>{{ a.model || '—' }}</span>
-            <span>cred {{ a.credential_id }}</span>
+            <span :title="`credential_id: ${a.credential_id}`">{{ credentialLabel(a.credential_id) }}</span>
             <span>{{ a.outcome || '—' }}</span>
             <span v-if="a.error_kind" class="err">{{ a.error_kind }}</span>
           </li>

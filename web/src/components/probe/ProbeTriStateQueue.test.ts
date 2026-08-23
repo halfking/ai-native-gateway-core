@@ -146,7 +146,7 @@ describe('ProbeTriStateQueue — 三段渲染', () => {
   it('共享凭据名称加载后渲染 label 而非 #ID', async () => {
     // mock 延迟 resolve：保证「凭证接口先于 refreshFromApi 返回」
     // 的真实时序，验证 revision 后模板重新渲染。
-    let resolveCreds: ((value: { credentials: Array<{ id: number; label: string; provider_id?: number; provider_name?: string }> }) => void) | null = null
+    let resolveCreds: (() => void) | null = null
     const inFlight = new Promise<{ credentials: Array<{ id: number; label: string; provider_id?: number; provider_name?: string }> }>((resolve) => {
       resolveCreds = () => resolve({
         credentials: [{ id: 11, label: 'key-prod-001', provider_id: 7, provider_name: 'openai' }],
@@ -160,7 +160,9 @@ describe('ProbeTriStateQueue — 三段渲染', () => {
     const w = mountQueue()
     await flushPromises()
     expect(w.find('[data-testid="tri-pending"]').text()).toContain('凭据 #11')
-    resolveCreds?.()
+    // 非空断言：赋值发生在上面的 Promise 构造器回调里，TS 控制流分析
+    // 看不到，会把 resolveCreds 收窄为 null。
+    resolveCreds!()
     await flushPromises()
     await flushPromises()
     expect(w.find('[data-testid="tri-pending"]').text()).toContain('key-prod-001')

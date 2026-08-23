@@ -97,7 +97,7 @@ async function loadSessionLogs(sid: string, seq: number) {
     })
     if (seq !== loadSeq) return
     logRows.value = resp.items ?? []
-    logTotal.value = resp.total ?? logRows.value.length
+    logTotal.value = resp.count ?? logRows.value.length
   } catch (e: unknown) {
     if (seq !== loadSeq) return
     logsError.value = e instanceof Error ? e.message : String(e)

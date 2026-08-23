@@ -1560,7 +1560,7 @@ onUnmounted(() => {
           确认{{ toggleTarget?.action === 'offline' ? '下线' : '上线' }}
         </h3>
         <div class="cell-sub" style="margin-bottom:12px">
-          <code class="mono-sm">{{ toggleTarget?.rawModel }}</code> · 凭据 #{{ toggleTarget?.credId }}
+          <code class="mono-sm">{{ toggleTarget?.rawModel }}</code> · 凭据 {{ selectedCred?.label || `#${toggleTarget?.credId}` }}
         </div>
         <div v-if="toggleTarget?.action === 'offline'" class="cell-sub" style="margin-bottom:12px">
           下线后自动探测将不再触碰该模型（原因 = <code>manual_offline</code>），需你手动恢复。

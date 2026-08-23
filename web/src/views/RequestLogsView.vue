@@ -676,7 +676,7 @@ function onDrawerFilterSession(sessionId: string) {
 }
 
 function onDrawerOpenRequest(requestId: string) {
-  openDetail(requestId)
+  showDetail(requestId)
 }
 
 function routeProviderLine(r: RequestLogRow): string {

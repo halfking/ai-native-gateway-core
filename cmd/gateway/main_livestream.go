@@ -313,7 +313,7 @@ func liveNodeStatusProvider(ctx context.Context, pool *pgxpool.Pool, fps *creden
 	queryCtx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
 	defer cancel()
 	rows, err := pool.Query(queryCtx, `
-		SELECT c.id, c.provider_id,
+		SELECT c.id, COALESCE(c.label, ''), c.provider_id,
 		       COALESCE(NULLIF(p.display_name, ''), NULLIF(p.catalog_code, ''), p.code, ''),
 		       COALESCE(c.circuit_state, ''),
 		       COALESCE(c.availability_state, ''),
@@ -337,6 +337,7 @@ func liveNodeStatusProvider(ctx context.Context, pool *pgxpool.Pool, fps *creden
 		var availRecoverAt, quotaRecoverAt, coolingUntil *time.Time
 		if err := rows.Scan(
 			&status.CredentialID,
+			&status.CredentialLabel,
 			&status.ProviderID,
 			&status.ProviderCode,
 			&status.CircuitState,
