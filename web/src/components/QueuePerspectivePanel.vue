@@ -51,7 +51,7 @@ const nodes = nodesRef
 // 2026-08-23 凭据显示：订阅标签缓存 revision，让异步加载完成后
 // 队列深度行的凭据名称自动刷新。
 const { labelRevision } = useCredentialLabels()
-function credLabelById(id: number): string {
+function credLabelById(id: number | null | undefined): string {
   void labelRevision.value
   return credentialLabelById(id)
 }
