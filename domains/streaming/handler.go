@@ -1300,6 +1300,23 @@ func (h *ChatHandler) SetProvisionalMetadataExtractor(extractor interface {
 	h.provisionalMetadataExtractor = extractor
 }
 
+func (h *ChatHandler) invokeProvisionalMetadataOnArrival(r *http.Request, sessionID string, keyInfo *authentication.KeyInfo, logCtx *RequestLogContext, bodyBytes []byte) {
+	if h == nil || h.provisionalMetadataExtractor == nil || sessionID == "" || isBranchSessionID(sessionID) || keyInfo == nil || logCtx == nil {
+		return
+	}
+	taskID := sanitizeRequestCorrelationID(r.Header.Get("X-Gw-Task-Id"))
+	h.provisionalMetadataExtractor.MaybeGenerateProvisionalMetadata(keyInfo.TenantID, sessionID, taskID, sessionmeta.Input{
+		RequestBody:    append([]byte(nil), bodyBytes...),
+		AgentName:      logCtx.meta.AgentName,
+		AgentType:      logCtx.meta.AgentType,
+		ClientType:     r.Header.Get("X-Gw-Client-Type"),
+		ClientProtocol: logCtx.meta.ClientProtocol,
+		WorkType:       logCtx.WorkType,
+		ProjectRef:     logCtx.meta.ProjectID,
+		TaskRef:        taskID,
+	})
+}
+
 // 2026-08-06: signature extended with parentRequestID for request_logs_hot.parent_request_id linkage.
 // 2026-08-06: signature extended with taskID so the stored title row matches
 // request_logs on (task_id, scoped_session_id).
@@ -2494,19 +2511,7 @@ func (h *ChatHandler) serveWithExecutor(
 		applyProvisionalGatewaySessionHeader(r, logCtx.ProvisionalSessionID)
 	}
 	r = applyResolvedGatewaySession(r, sessionID, sessionInfo)
-	if h.provisionalMetadataExtractor != nil && sessionID != "" && !isBranchSessionID(sessionID) && keyInfo != nil {
-		taskID := sanitizeRequestCorrelationID(r.Header.Get("X-Gw-Task-Id"))
-		h.provisionalMetadataExtractor.MaybeGenerateProvisionalMetadata(keyInfo.TenantID, sessionID, taskID, sessionmeta.Input{
-			RequestBody:    append([]byte(nil), bodyBytes...),
-			AgentName:      logCtx.meta.AgentName,
-			AgentType:      logCtx.meta.AgentType,
-			ClientType:     r.Header.Get("X-Gw-Client-Type"),
-			ClientProtocol: logCtx.meta.ClientProtocol,
-			WorkType:       logCtx.WorkType,
-			ProjectRef:     logCtx.meta.ProjectID,
-			TaskRef:        taskID,
-		})
-	}
+	h.invokeProvisionalMetadataOnArrival(r, sessionID, keyInfo, logCtx, bodyBytes)
 	if sessionID != "" && h.sessionPref != nil {
 		modelChanged, prevModel := detectAndHandleModelSwitch(ctx, h.sessionPref, sessionID, clientModel)
 		if modelChanged {
