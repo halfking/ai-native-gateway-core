@@ -63,8 +63,9 @@ type Handler struct {
 	probePicker          *bg.DefaultProbePicker // 900-series: default probe model (spec §4)
 	modelProbe           *bg.ModelProbeRunner   // 2026-06-18: per-model re-probe of failing bindings (spec 2026-06-18-model-probe-rounds)
 	// balanceQuotaProbe (2026-08-23 hzx-2 audit) backs the admin
-	// "force re-check after recharge" endpoint. nil-safe; the route is
-	// unregistered when nil.
+	// "force re-check after recharge" endpoint. nil → the route is
+	// still registered (URL stays stable across deployments); the
+	// handler returns 503 when this is nil.
 	balanceQuotaProbe *bg.BalanceQuotaProbe
 	// 2026-07-23: 系统监测模块 — 所有探测任务的唯一入口 (design §1.2 #1).
 	// nil 时 /api/admin/system-monitor/* 端点 503；探测仍可能由旧 worker 跑。
