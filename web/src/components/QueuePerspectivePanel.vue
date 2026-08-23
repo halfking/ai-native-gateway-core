@@ -162,11 +162,13 @@ interface ModelGroup {
   featured: boolean
   hotRequests: number
   aliases: string[]
-  /** 仅当所有节点都属于同一个完整 raw binding 列表时可安全重排。 */
+  /** 仅当所有节点都属于同一个完整 canonical binding 列表时可安全重排。 */
+  reorderCanonicalId?: number
+  /** Raw model retained for node stats and display context. */
   reorderRawModel?: string
   /**
    * 服务端 reorder_revision 透传，缺失时表示当前分组不接受重排
-   * （别名聚合 / 多 raw-model / 未在 resolve 列表中）。
+   * （多 canonical / 未在 resolve 列表中）。
    */
   reorderRevision?: string
 }
@@ -174,7 +176,7 @@ interface ModelGroup {
 const modelScopeMeta = ref<Map<string, ModelScopeMeta>>(new Map())
 const modelScopeAliasIndex = ref<Map<string, string>>(new Map())
 const modelCandidatesByRawModel = ref<Map<string, RoutingCandidate[]>>(new Map())
-const reorderRevisionsByRawModel = ref<Map<string, string>>(new Map())
+const reorderRevisionsByCanonical = ref<Map<number, string>>(new Map())
 const modelScopeLoading = ref(true)
 const modelScopeError = ref('')
 const selectedNode = ref<LiveNodeStatus | null>(null)
@@ -228,7 +230,7 @@ async function loadModelScope() {
   if (hot.status === 'fulfilled') hot.value.items.forEach((model: TopRequestModel) => addScope(model.canonical_name || model.display_name, false, model.request_count))
   const aliases = new Map<string, string>()
   const candidatesByRawModel = new Map<string, RoutingCandidate[]>()
-  const revisionsByRawModel = new Map<string, string>()
+  const revisionsByCanonical = new Map<number, string>()
   const resolveOne = async (meta: ModelScopeMeta) => {
     const name = [...meta.aliases][0]
     try {
@@ -249,12 +251,17 @@ async function loadModelScope() {
         candidates.push(candidate)
         candidatesByRawModel.set(key, candidates)
       }
-      // Only record a revision when the resolve hit a single raw_model so the
-      // panel can safely submit a complete-set reorder against it.
-      if (resolved.reorder_revision) {
-        const firstName = resolved.candidates[0]?.model_name
-        if (firstName && resolved.candidates.every(c => c.model_name === firstName)) {
-          revisionsByRawModel.set(modelKey(firstName), resolved.reorder_revision)
+      // Record a revision only when every resolved candidate shares one
+      // canonical_id. Raw model aliases inside that canonical scope are all
+      // safe to reorder atomically.
+      if (resolved.reorder_revision && resolved.reorder_canonical_id) {
+        const canonicalID = resolved.candidates[0]?.canonical_id
+        if (
+          canonicalID
+          && canonicalID === resolved.reorder_canonical_id
+          && resolved.candidates.every(c => c.canonical_id === canonicalID)
+        ) {
+          revisionsByCanonical.set(canonicalID, resolved.reorder_revision)
         }
       }
     } catch {
@@ -275,7 +282,7 @@ async function loadModelScope() {
   modelScopeMeta.value = scope
   modelScopeAliasIndex.value = aliases
   modelCandidatesByRawModel.value = candidatesByRawModel
-  reorderRevisionsByRawModel.value = revisionsByRawModel
+  reorderRevisionsByCanonical.value = revisionsByCanonical
   if (featured.status === 'rejected' && hot.status === 'rejected') modelScopeError.value = '模型范围暂不可用，未展示模型节点。'
   modelScopeLoading.value = false
 }
@@ -321,16 +328,27 @@ const modelGroups = computed<ModelGroup[]>(() => {
     const modelNodes = nodes.value.filter(node => credentialIds.has(node.credential_id))
     const aliases = [scopeKey, ...rawModels].map(modelKey)
     const rawModelList = [...rawModels]
-    const rawModel = rawModelList.length === 1 ? rawModelList[0] : undefined
-    const candidates = rawModel
-      ? modelCandidatesByRawModel.value.get(modelKey(rawModel)) ?? []
-      : []
-    // Resolve candidates are already sorted server-side (priority → manual_priority → tier).
+    // Aggregate resolve candidates across every raw_model alias that shares
+    // the canonical scope, deduping by credential_id. Each per-alias slice is
+    // already sorted server-side (priority → manual_priority → tier); we
+    // preserve that order within an alias and append newly-seen credentials
+    // in alias order, so the combined list stays stable across renders.
+    const candidatesByCredential = new Map<number, RoutingCandidate>()
+    for (const rawModel of rawModelList) {
+      for (const candidate of modelCandidatesByRawModel.value.get(modelKey(rawModel)) ?? []) {
+        candidatesByCredential.set(candidate.credential_id, candidate)
+      }
+    }
+    const candidates = [...candidatesByCredential.values()]
+    const canonicalIDs = new Set(
+      candidates.map(candidate => candidate.canonical_id).filter((id): id is number => id != null && id > 0),
+    )
+    const canonicalID = canonicalIDs.size === 1 ? [...canonicalIDs][0] : undefined
     const candidateOrder = new Map(candidates.map((candidate, index) => [candidate.credential_id, index]))
     // Live nodes are often a subset of resolve candidates (offline / filtered-out
     // credentials still exist in the binding set). Require live ⊆ candidates so
     // we can order, label, size cards, and submit a full-set reorder safely.
-    const liveCoveredByCandidates = rawModel != null
+    const liveCoveredByCandidates = canonicalID != null
       && candidates.length > 0
       && modelNodes.every(node => candidateOrder.has(node.credential_id))
     const orderedNodes = liveCoveredByCandidates
@@ -354,9 +372,10 @@ const modelGroups = computed<ModelGroup[]>(() => {
       featured: meta.featured,
       hotRequests: meta.hotRequests,
       aliases,
-      reorderRawModel: liveCoveredByCandidates ? rawModel : undefined,
-      reorderRevision: liveCoveredByCandidates && rawModel
-        ? reorderRevisionsByRawModel.value.get(modelKey(rawModel))
+      reorderCanonicalId: liveCoveredByCandidates ? canonicalID : undefined,
+      reorderRawModel: liveCoveredByCandidates ? rawModelList[0] : undefined,
+      reorderRevision: liveCoveredByCandidates && canonicalID != null
+        ? reorderRevisionsByCanonical.value.get(canonicalID)
         : undefined,
     })
   }
@@ -396,8 +415,9 @@ const filteredModelGroups = computed<ModelGroup[]>(() => {
 const hasFilteredGroups = computed(() => filteredModelGroups.value.length > 0)
 
 // ── 节点拖拽调整优先级（HTML5 dnd） ───────────────────────────────────────
-// 单一 raw-model + live ⊆ candidates + reorder_revision 即可重排（与状态过滤解耦）。
-// 可见子集上拖动时，把相对顺序写回完整候选列表再提交（后端要求完整集原子写）。
+// 单一 canonical scope + live ⊆ candidates + reorder_revision 即可重排
+//（与状态过滤解耦）。可见子集上拖动时，把相对顺序写回完整候选
+//列表再提交（后端要求完整集原子写）。
 const dragScopeKey = ref<string | null>(null)
 const dragSourceCredentialId = ref<number | null>(null)
 const dragOverCredentialId = ref<number | null>(null)
@@ -407,14 +427,14 @@ const dragError = ref('')
 function canReorder(group: ModelGroup): boolean {
   return isSuperAdmin()
     && !dragSaving.value
-    && Boolean(group.reorderRawModel)
+    && group.reorderCanonicalId != null
     && Boolean(group.reorderRevision)
 }
 
 function dragDisabledHint(group: ModelGroup): string {
   if (!isSuperAdmin()) return '仅超级管理员可以调整优先级。'
   if (dragSaving.value) return '正在保存优先级调整。'
-  if (!group.reorderRawModel) return '该模型分组合并了多个原始模型，或存在不在候选集中的实时节点，无法安全调整优先级。'
+  if (group.reorderCanonicalId == null) return '该模型分组合并了多个规范模型，或存在不在候选集中的实时节点，无法安全调整优先级。'
   if (!group.reorderRevision) return '尚未拿到后端修订版本，请等待数据加载完成后再试。'
   return '拖动节点以调整优先级，越靠前优先级越高。隐藏状态的节点会保持原有相对位置。'
 }
@@ -466,7 +486,7 @@ function clearDragState() {
 }
 
 async function onDrop(event: DragEvent, group: ModelGroup, targetCredentialId: number) {
-  if (!canReorder(group) || dragScopeKey.value !== group.model || !group.reorderRawModel || !group.reorderRevision) return
+  if (!canReorder(group) || dragScopeKey.value !== group.model || group.reorderCanonicalId == null || !group.reorderRevision) return
   event.preventDefault()
   const ordered = [...group.nodes]
   const fromIndex = ordered.findIndex(n => n.credential_id === dragSourceCredentialId.value)
@@ -477,10 +497,17 @@ async function onDrop(event: DragEvent, group: ModelGroup, targetCredentialId: n
   }
   const [moved] = ordered.splice(fromIndex, 1)
   ordered.splice(toIndex, 0, moved)
-  const rawModel = group.reorderRawModel
-  const expectedRevision = group.reorderRevision
-  const candidates = modelCandidatesByRawModel.value.get(modelKey(rawModel)) ?? []
-  const fullIds = candidates.map(c => c.credential_id)
+  const canonicalId = group.reorderCanonicalId as number
+  const expectedRevision = group.reorderRevision as string
+  // Build the full candidate set for this canonical scope (dedup by credential_id),
+  // using the union of resolve results across all raw aliases in the group.
+  const fullCandidatesById = new Map<number, RoutingCandidate>()
+  for (const rawModel of group.aliases) {
+    for (const candidate of modelCandidatesByRawModel.value.get(modelKey(rawModel)) ?? []) {
+      fullCandidatesById.set(candidate.credential_id, candidate)
+    }
+  }
+  const fullIds = [...fullCandidatesById.keys()]
   // Prefer full candidate list; if somehow empty, fall back to visible order only.
   const mergedIds = fullIds.length > 0
     ? mergeVisibleOrderIntoFull(fullIds, ordered.map(n => n.credential_id))
@@ -495,33 +522,48 @@ async function onDrop(event: DragEvent, group: ModelGroup, targetCredentialId: n
     }
   })()
   if (!priorities) return
+  // Each item keeps its own raw alias (from the unioned candidates) so
+  // backend validation sees every credential's actual provider_model binding.
   const items: CandidateBindingReorderItem[] = mergedIds.map((credentialId, index) => ({
     credential_id: credentialId,
-    raw_model: rawModel,
+    raw_model: fullCandidatesById.get(credentialId)?.model_name ?? group.reorderRawModel ?? '',
     manual_priority: priorities[index],
   }))
   clearDragState()
   dragSaving.value = true
   dragError.value = ''
-  // Optimistic local order so the next drag sees spaced priorities immediately.
-  const prevCandidates = modelCandidatesByRawModel.value.get(modelKey(rawModel)) ?? []
-  const byId = new Map(prevCandidates.map(c => [c.credential_id, c]))
-  const optimistic = mergedIds.map((credentialId, index) => {
-    const base = byId.get(credentialId)
-    return base
-      ? { ...base, manual_priority: priorities[index], rank: index + 1 }
-      : {
-          credential_id: credentialId,
-          model_name: rawModel,
-          manual_priority: priorities[index],
-          rank: index + 1,
-        } as RoutingCandidate
-  })
-  modelCandidatesByRawModel.value = new Map(modelCandidatesByRawModel.value).set(modelKey(rawModel), optimistic)
+  // Optimistic local order: update the per-raw-alias candidate map so the
+  // next drag sees spaced priorities immediately. Iterate by raw alias to
+  // match each candidate's own model_name.
+  const optimisticByRaw = new Map<string, RoutingCandidate[]>()
+  for (const rawModel of group.aliases) {
+    optimisticByRaw.set(rawModel, [])
+  }
+  for (let i = 0; i < mergedIds.length; i++) {
+    const credentialId = mergedIds[i]
+    const candidate = fullCandidatesById.get(credentialId)
+    if (!candidate) continue
+    const optimistic = {
+      ...candidate,
+      manual_priority: priorities[i],
+      rank: i + 1,
+    }
+    const list = optimisticByRaw.get(candidate.model_name)
+    if (list) list.push(optimistic)
+  }
+  const prevByRaw = new Map<string, RoutingCandidate[]>()
+  for (const rawModel of group.aliases) {
+    prevByRaw.set(rawModel, modelCandidatesByRawModel.value.get(rawModel) ?? [])
+  }
+  for (const [rawModel, list] of optimisticByRaw.entries()) {
+    modelCandidatesByRawModel.value = new Map(modelCandidatesByRawModel.value).set(rawModel, list)
+  }
   try {
-    await reorderCandidateBindings(items, { rawModel, expectedRevision })
+    await reorderCandidateBindings(items, { canonicalId, expectedRevision })
   } catch (error) {
-    modelCandidatesByRawModel.value = new Map(modelCandidatesByRawModel.value).set(modelKey(rawModel), prevCandidates)
+    for (const [rawModel, prev] of prevByRaw.entries()) {
+      modelCandidatesByRawModel.value = new Map(modelCandidatesByRawModel.value).set(rawModel, prev)
+    }
     const fallback = error instanceof Error ? error.message : '调整优先级失败'
     // 409 stale / incomplete / transient ordering conflict — surface a
     // user-friendly hint and refetch so the UI catches up with the server.

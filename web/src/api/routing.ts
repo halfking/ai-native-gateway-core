@@ -45,6 +45,7 @@ export interface RoutingCandidate {
   quota_cap_usd: number | string | null
   quota_used_usd: number | string | null
   model_name: string
+  canonical_id: number | null
   routable: boolean
   runtime_routable: boolean
   block_reason?: string | null
@@ -126,9 +127,12 @@ export interface RoutingResolveResponse {
   candidates: RoutingCandidate[]
   // Opaque token the frontend must echo back to
   // /api/routing/candidate-bindings/reorder. Present only when the
-  // resolve hits exactly one raw_model — mixed alias / canonical hits
-  // leave it undefined so the UI keeps reordering disabled.
+  // resolve hits exactly one canonical_id — mixed canonical hits leave it
+  // undefined so the UI keeps reordering disabled.
   reorder_revision?: string
+  // Canonical scope used with reorder_revision. Present when every candidate
+  // belongs to one canonical model, even if raw_model_name aliases differ.
+  reorder_canonical_id?: number
 }
 
 export function resolveRouting(model: string, clientProfile?: string, persistProbe = false, options?: RequestOptions) {
@@ -165,9 +169,9 @@ export interface CandidateBindingReorderItem {
 }
 
 export interface CandidateBindingReorderRequest {
-  // Single exact raw_model the reorder targets. Mixed-model submissions
-  // are rejected by the backend so the write path stays atomic.
-  raw_model: string
+  // Single canonical model scope the reorder targets. Raw-model aliases
+  // sharing this canonical_id are all included atomically.
+  canonical_id: number
   // Opaque token echoed from RoutingResolveResponse.reorder_revision.
   // The handler rejects mismatches with HTTP 409 so stale views refetch
   // before retrying.
@@ -176,14 +180,14 @@ export interface CandidateBindingReorderRequest {
 }
 
 export interface CandidateBindingReorderOptions {
-  rawModel: string
+  canonicalId: number
   expectedRevision: string
   signal?: AbortSignal
 }
 
 export interface CandidateBindingReorderResponse {
   message: string
-  raw_model: string
+  canonical_id: number
   expected_revision: string
   items: CandidateBindingReorderItem[]
 }
@@ -196,8 +200,8 @@ export function reorderCandidateBindings(
     'PATCH',
     '/api/routing/candidate-bindings/reorder',
     {
-      raw_model: options.rawModel,
-      expected_revision: options.expectedRevision,
+			canonical_id: options.canonicalId,
+			expected_revision: options.expectedRevision,
       items,
     },
     options.signal ? { signal: options.signal } : undefined,
