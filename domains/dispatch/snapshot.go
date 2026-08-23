@@ -1,12 +1,16 @@
 package dispatch
 
-import "sync/atomic"
+import (
+	"sync"
+	"sync/atomic"
+)
 
 // modelQueue is the Tier-1 per-model FIFO buffer with a drainer goroutine
 // (runModelDrainer) forwarding into the shared dispatchIn.
 type modelQueue struct {
 	name  string
 	ch    chan *QueuedRequest
+	mu    sync.Mutex
 	depth atomic.Int64
 }
 
