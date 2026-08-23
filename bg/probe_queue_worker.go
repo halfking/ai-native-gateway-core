@@ -48,11 +48,9 @@ func (w *ProbeQueueWorker) SetProbeService(ps *ProbeService) {
 }
 
 func NewProbeQueueWorker(cfg ProbeQueueWorkerConfig) *ProbeQueueWorker {
-	if cfg.BatchSize <= 0 {
-		// A worker claims one task at a time. Claiming a batch then executing it
-		// serially lets later tasks lose their leases before they start.
-		cfg.BatchSize = 1
-	}
+	// A worker claims and executes exactly one task. Workers provide parallelism;
+	// serially processing a claimed batch can let later leases expire.
+	cfg.BatchSize = 1
 	if cfg.Workers <= 0 {
 		cfg.Workers = 1
 	}
@@ -111,7 +109,7 @@ func (w *ProbeQueueWorker) processBatch(ctx context.Context) error {
 		return err
 	}
 	w.maybeReviveExpiredReady(ctx)
-	tasks, err := w.cfg.Queue.Claim(ctx, 1, w.cfg.Lease)
+	tasks, err := w.cfg.Queue.Claim(ctx, w.cfg.BatchSize, w.cfg.Lease)
 	if err != nil {
 		return err
 	}
