@@ -886,8 +886,8 @@ func (h *Handler) handleProbeSystemHealth(w http.ResponseWriter, r *http.Request
 		}
 		legacyHealth.TotalRealSuccess24h = nullInt(totalRealSuccess24h)
 		legacyHealth.TotalRealFailure24h = nullInt(totalRealFailure24h)
-		if rc, ok := h.redisClient.(*redis.Client); ok {
-			keys, cacheErr := rc.Keys(r.Context(), "llmgw:avail:*:*").Result()
+		if rc, ok := h.redisClient.(*redis.Client); ok && h.availabilityReader != nil {
+			keys, cacheErr := h.availabilityReader.ScanKeys(r.Context(), 0)
 			if cacheErr == nil && len(keys) > 0 {
 				legacyHealth.TotalNodes = len(keys)
 				legacyHealth.HealthyNodes = 0
