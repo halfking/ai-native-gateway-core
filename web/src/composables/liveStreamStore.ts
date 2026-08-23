@@ -684,7 +684,17 @@ function trimOldest() {
   }
 }
 
+function ensureDefaultStageCategory(item: LiveRequest) {
+  // In-flight tiles without a lifecycle patch yet default to "routing"
+  // so operators can tell "received / routing" from "waiting on LLM".
+  if (item.type === 'idle_marker') return
+  if (item.status === 'in_progress' && !item.stage_category) {
+    item.stage_category = 'routing'
+  }
+}
+
 function pushOrQueue(item: LiveRequest) {
+  ensureDefaultStageCategory(item)
   if (liveStreamState.paused) {
     pending.push(item)
     if (pending.length > PENDING_CAP) {
@@ -1110,7 +1120,12 @@ function mergeLanesById(existing: LiveStreamLane[], incoming: LiveStreamLane[]) 
       target.dimension = lane.dimension
       target.isOthers = lane.isOthers
       target.stats = lane.stats
-      mergeTilesById(target.requests, lane.requests)
+      const laneTotal = lane.stats?.total
+      const authoritativeTrim =
+        laneTotal != null
+        && laneTotal === lane.requests.length
+        && lane.requests.length < target.requests.length
+      mergeTilesById(target.requests, lane.requests, { dropAbsent: authoritativeTrim })
       next.push(target)
     } else {
       const normalized = { ...lane, requests: [...lane.requests] }
@@ -1121,20 +1136,43 @@ function mergeLanesById(existing: LiveStreamLane[], incoming: LiveStreamLane[]) 
   existing.splice(0, existing.length, ...next)
 }
 
-function mergeTilesById(existing: LiveStreamTile[], incoming: LiveStreamTile[]) {
-  const byId = new Map(existing.filter((tile) => tile.request_id).map((tile) => [tile.request_id, tile]))
-  const seen = new Set<string>()
+function mergeTilesById(
+  existing: LiveStreamTile[],
+  incoming: LiveStreamTile[],
+  opts?: { dropAbsent?: boolean },
+) {
+  const dropAbsent = opts?.dropAbsent === true
+  // Retain existing tiles absent from a partial delta so a single-tile
+  // push cannot briefly wipe the lane. Authoritative trims (stats.total
+  // matches incoming count and is smaller than local) drop extras.
+  const incomingById = new Map(
+    incoming.filter((tile) => tile.request_id).map((tile) => [tile.request_id, tile]),
+  )
   const next: LiveStreamTile[] = []
-  for (const tile of incoming) {
+  const seen = new Set<string>()
+  for (const tile of existing) {
     if (!tile.request_id || seen.has(tile.request_id)) continue
     seen.add(tile.request_id)
-    const target = byId.get(tile.request_id)
-    if (target) {
-      Object.assign(target, tile)
-      next.push(target)
-    } else {
-      next.push({ ...tile })
+    const update = incomingById.get(tile.request_id)
+    if (update) {
+      // Preserve locally-derived stage_category when the wire omitempty
+      // field is absent on the update payload.
+      const prevCategory = tile.stage_category
+      Object.assign(tile, update)
+      if (!tile.stage_category && prevCategory) tile.stage_category = prevCategory
+      if (tile.status === 'in_progress' && !tile.stage_category) tile.stage_category = 'routing'
+      next.push(tile)
+      incomingById.delete(tile.request_id)
+    } else if (!dropAbsent) {
+      next.push(tile)
     }
+  }
+  for (const tile of incomingById.values()) {
+    if (!tile.request_id || seen.has(tile.request_id)) continue
+    seen.add(tile.request_id)
+    const copy = { ...tile }
+    if (copy.status === 'in_progress' && !copy.stage_category) copy.stage_category = 'routing'
+    next.push(copy)
   }
   next.sort((a, b) => {
     const timestamp = (a.timestamp || '').localeCompare(b.timestamp || '')

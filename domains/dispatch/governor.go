@@ -63,6 +63,10 @@ func newConcurrencyGovernor(capacity int) *concurrencyGovernor {
 }
 func (g *concurrencyGovernor) Mode() string { return g.mode }
 func (g *concurrencyGovernor) Acquire(ctx context.Context, _ *QueuedRequest, giveUp time.Time) error {
+	// giveUp.IsZero() means "no pace deadline": wait until a slot frees or
+	// ctx cancels. Forwarder uses this when MaxQueueWaitMS=0 so a request
+	// already admitted to the Tier-2 queue parks for a concurrency slot
+	// instead of instantly pace_timeout → failover (v4 wait-room semantics).
 	for {
 		used := g.used.Load()
 		if used < g.cap && g.used.CompareAndSwap(used, used+1) {
@@ -71,7 +75,7 @@ func (g *concurrencyGovernor) Acquire(ctx context.Context, _ *QueuedRequest, giv
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if time.Now().After(giveUp) {
+		if !giveUp.IsZero() && !time.Now().Before(giveUp) {
 			return errPaceTimeout
 		}
 		// Brief sleep; the ctx/giveUp checks bound the wait.
@@ -95,6 +99,14 @@ func (g *concurrencyGovernor) Release(_ *QueuedRequest) {
 }
 
 func waitWithinBudget(now time.Time, wait time.Duration, giveUp time.Time) (time.Duration, bool) {
+	// giveUp.IsZero() means "no pace deadline": allow the full sleep.
+	// Callers that want zero-wait must pass giveUp=now, not time.Time{}.
+	if giveUp.IsZero() {
+		if wait <= 0 {
+			return 0, false
+		}
+		return wait, true
+	}
 	if !now.Before(giveUp) {
 		return 0, false
 	}

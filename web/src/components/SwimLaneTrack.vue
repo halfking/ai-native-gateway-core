@@ -69,59 +69,46 @@ function handleTileClick(requestId: string) {
 <style scoped>
 .swim-lane-track {
   display: flex;
+  justify-content: flex-end; /* right-anchored: new tiles appear on the right without shifting neighbors */
   overflow-x: hidden;
   min-width: 0;
   position: relative;
+  width: 100%;
 }
 
 .swim-lane-track__tiles {
   display: flex;
+  justify-content: flex-end;
   gap: var(--tile-gap, 6px);
   flex-direction: row;
   min-width: 0;
+  margin-left: auto;
 }
 
 .swim-lane-track__tiles--small {
   gap: var(--tile-gap, 4px);
 }
 
-/* 2026-07-26: Animation direction reversed. New tiles enter from RIGHT,
-   old tiles exit to LEFT. Existing tiles shift left when new tile arrives. */
-.swim-tile-enter-active {
-  transition: opacity 0.3s ease, transform 0.3s ease;
-}
-
-.swim-tile-enter-from {
-  opacity: 0;
-  transform: translateX(20px); /* New tiles enter from RIGHT */
-}
-
+/* Right-anchored + no move/absolute-leave: prevents whole-lane shake on insert */
+.swim-tile-enter-active,
 .swim-tile-leave-active {
-  transition: opacity 0.3s ease, transform 0.3s ease;
-  position: absolute;
+  transition: opacity 0.2s ease;
 }
 
+.swim-tile-enter-from,
 .swim-tile-leave-to {
   opacity: 0;
-  transform: translateX(-20px); /* Old tiles slide out LEFT */
 }
 
-/* Existing tiles shift LEFT when new tile arrives on RIGHT */
+/* Disable FLIP move; absolute leave was collapsing then restoring layout */
 .swim-tile-move {
-  transition: transform 0.3s ease;
+  transition: none;
 }
 
 @media (prefers-reduced-motion: reduce) {
   .swim-tile-enter-active,
   .swim-tile-leave-active {
-    transition: opacity 0.15s linear;
-  }
-  .swim-tile-enter-from,
-  .swim-tile-leave-to {
-    transform: none;
-  }
-  .swim-tile-move {
-    transition: none;
+    transition: opacity 0.1s linear;
   }
 }
 </style>

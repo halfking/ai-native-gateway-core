@@ -482,6 +482,10 @@ func (p *Pipeline) snapshotForCredForwarderLocked(cf *credForwarder) GovernorSna
 	// Governor interface — type-assert on the four impls.
 	switch g := cf.gov.(type) {
 	case *concurrencyGovernor:
+		// Limit must be the concurrency cap (g.cap), NOT the Tier-2 queue
+		// depth (cf.limit, default 300). Comparing used vs queue depth made
+		// GovernorSaturated almost never light up.
+		snap.Limit = int(g.cap)
 		snap.Used = int(g.used.Load())
 		if snap.Limit > 0 && snap.Used >= snap.Limit && snap.State == SnapshotStateReady {
 			snap.State = SnapshotStateGovernorSaturated

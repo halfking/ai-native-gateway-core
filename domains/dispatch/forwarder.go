@@ -127,9 +127,29 @@ func (cf *credForwarder) drainAndComplete() {
 	}
 }
 
+// acquireGiveUp computes the governor pace deadline for a request already in
+// this credential's Tier-2 queue.
+//
+//   - budget > 0: hard deadline = now + budget (RPM/TPM and concurrency).
+//   - budget == 0 + concurrency mode: zero time.Time → "wait until ctx done"
+//     so queued requests park for an in-flight slot instead of instantly
+//     pace_timeout → failover (plan A / v4 wait-room semantics).
+//   - budget == 0 + RPM/TPM: giveUp = now → immediate pace timeout if saturated
+//     (keeps v4 zero-wait rate-bucket behaviour).
+func (cf *credForwarder) acquireGiveUp(qr *QueuedRequest) time.Time {
+	budget := cf.pipe.queueWaitBudget(qr)
+	if budget > 0 {
+		return time.Now().Add(budget)
+	}
+	if cf.gov.Mode() == ModeConcurrency {
+		return time.Time{}
+	}
+	return time.Now()
+}
+
 func (cf *credForwarder) acquire(qr *QueuedRequest) bool {
 	attempt := qr.reserveAttempt(cf.cred)
-	giveUp := time.Now().Add(cf.pipe.queueWaitBudget(qr))
+	giveUp := cf.acquireGiveUp(qr)
 	ctx, cancel := context.WithCancel(ctxOf(qr))
 	defer cancel()
 	go func() {

@@ -562,4 +562,62 @@ describe('mergeTilesById — deterministic ordering (no-jump invariants)', () =>
     expect(apply(tiles)).toBe('r1>r2>r3')
     expect(apply([...tiles].reverse())).toBe('r1>r2>r3')
   })
+
+  it('retains existing tiles absent from a partial delta (no whole-lane wipe)', () => {
+    const existing: LiveStreamTile[] = [
+      { ...tile('keep-a'), timestamp: tsAt(10) },
+      { ...tile('keep-b'), timestamp: tsAt(20) },
+    ]
+    // Partial delta: only the new tile — must not briefly collapse the lane.
+    __testing.mergeTilesById(existing, [{ ...tile('new-c'), timestamp: tsAt(30) }])
+    expect(existing.map((t) => t.request_id)).toEqual(['keep-a', 'keep-b', 'new-c'])
+  })
+
+  it('defaults in_progress tiles without stage_category to routing on merge', () => {
+    const existing: LiveStreamTile[] = []
+    __testing.mergeTilesById(existing, [{
+      ...tile('inflight'),
+      status: 'in_progress',
+      timestamp: tsAt(1),
+    }])
+    expect(existing[0].stage_category).toBe('routing')
+  })
+})
+
+describe('request_lifecycle stage_category patch', () => {
+  it('updates lane tile stage_category when upstream_request arrives', () => {
+    __testing.resetStream()
+    const inflight: LiveStreamTile = {
+      ...tile('req-up'),
+      status: 'in_progress',
+      stage_category: 'routing',
+      timestamp: tsAt(1),
+    }
+    __testing.handleEnvelope({
+      type: 'snapshot_refresh',
+      ts: tsAt(1),
+      snapshot: {
+        summary: { total: 1, success: 0, failure: 0, in_progress: 1 },
+        dimensions: { vendor: [lane('openai', 1, [inflight])], provider: [], model: [] },
+        detail_dimensions: { vendor: [lane('openai', 1, [inflight])], provider: [], model: [] },
+        dimension_legends: { vendor: [], provider: [], model: [] },
+        status_legends: [],
+        latest_request_ts: tsAt(1),
+      },
+    })
+    __testing.handleEnvelope({
+      type: 'request_lifecycle',
+      ts: tsAt(2),
+      action: [{
+        request_id: 'req-up',
+        seq: 1,
+        action: 'upstream_request',
+        ts: tsAt(2),
+        stage: 'upstream',
+        stage_category: 'llm',
+      }],
+    } as LiveStreamEnvelope)
+    const patched = __testing.state.snapshot!.dimensions.vendor[0].requests[0]
+    expect(patched.stage_category).toBe('llm')
+  })
 })

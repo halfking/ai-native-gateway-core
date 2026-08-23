@@ -25,7 +25,8 @@ const props = withDefaults(defineProps<{
   mode?: SwimLaneMode
   showTimelineBadge?: boolean
 }>(), {
-  showTimelineBadge: true,
+  // Live stream cards never show ≈N; detail drawer / ActionTimeline keep it.
+  showTimelineBadge: false,
 })
 
 const mode = computed<SwimLaneMode>(() => props.mode || 'small')
@@ -355,6 +356,8 @@ function closeTimelinePanel() {
       'request-bar--idle': isIdle,
       'request-bar--in-progress': isInProgress,
       'request-bar--failure': isFailure,
+      'request-bar--routing': isRouting,
+      'request-bar--llm': isWaitingLLM,
     }"
     :style="{ '--bar-color': barColor }"
     :title="tooltipText"
@@ -365,6 +368,8 @@ function closeTimelinePanel() {
     @keydown.enter="handleClick"
   >
     <span v-if="tile.is_probe" class="request-bar__probe-mark" aria-hidden="true" />
+    <span v-if="isRouting" class="request-bar__stage-mark request-bar__stage-mark--routing" aria-hidden="true" />
+    <span v-if="isWaitingLLM" class="request-bar__stage-mark request-bar__stage-mark--llm" aria-hidden="true" />
   </div>
 
   <div
@@ -377,6 +382,8 @@ function closeTimelinePanel() {
       'request-tile--idle': isIdle,
       'request-tile--in-progress': isInProgress,
       'request-tile--failure': isFailure,
+      'request-tile--routing': isRouting,
+      'request-tile--llm': isWaitingLLM,
     }"
     :style="{
       '--accent-color': accentColor,
@@ -617,6 +624,44 @@ function closeTimelinePanel() {
   50% { opacity: 1; }
 }
 
+/* Dual-stage: routing = cold dashed stripe; llm = solid pulse top mark */
+.request-bar--routing {
+  border-style: dashed;
+  border-color: color-mix(in srgb, #60a5fa 55%, transparent);
+  background:
+    repeating-linear-gradient(
+      -45deg,
+      color-mix(in srgb, #60a5fa 14%, transparent) 0 3px,
+      transparent 3px 7px
+    ),
+    var(--kx-surface, #fff);
+}
+.request-bar--routing::after {
+  animation: none;
+  opacity: 0.35;
+  background: linear-gradient(180deg, color-mix(in srgb, #60a5fa 18%, transparent) 0%, transparent 70%);
+}
+.request-bar--llm {
+  border-style: solid;
+  border-color: color-mix(in srgb, var(--accent) 60%, transparent);
+}
+.request-bar__stage-mark {
+  position: absolute;
+  left: 1px;
+  right: 1px;
+  top: 0;
+  height: 3px;
+  border-radius: 2px 2px 0 0;
+  pointer-events: none;
+}
+.request-bar__stage-mark--routing {
+  background: color-mix(in srgb, #60a5fa 75%, transparent);
+}
+.request-bar__stage-mark--llm {
+  background: color-mix(in srgb, var(--accent) 85%, transparent);
+  animation: bar-pulse 1.2s ease-in-out infinite;
+}
+
 /* 探测请求左侧青色标记条 */
 .request-bar__probe-mark {
   position: absolute;
@@ -703,6 +748,31 @@ function closeTimelinePanel() {
 
 .request-tile--failure {
   border-color: color-mix(in srgb, #ef4444 45%, var(--accent-color));
+}
+
+/* Dual-stage large cards: routing = cold dashed; llm = solid pulse border */
+.request-tile--routing {
+  border-style: dashed;
+  border-color: color-mix(in srgb, #60a5fa 55%, transparent);
+  background:
+    linear-gradient(
+      145deg,
+      color-mix(in srgb, #60a5fa 14%, var(--kx-surface)) 0%,
+      color-mix(in srgb, #60a5fa 5%, var(--kx-bg)) 100%
+    );
+  box-shadow: none;
+}
+.request-tile--llm {
+  border-style: solid;
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--accent-color));
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent),
+    0 0 10px color-mix(in srgb, var(--accent) 12%, transparent);
+  animation: request-tile-llm-glow 1.8s ease-in-out infinite;
+}
+@keyframes request-tile-llm-glow {
+  0%, 100% { box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 18%, transparent); }
+  50% { box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent), 0 0 12px color-mix(in srgb, var(--accent) 18%, transparent); }
 }
 
 .request-tile--probe {
