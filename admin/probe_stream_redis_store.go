@@ -160,12 +160,17 @@ func (s *ProbeRedisStore) RecordWithOrigin(ctx context.Context, task ProbeStream
 	statusKey := probeStatusKey(task.Status)
 
 	// Atomic lane transition (status/source evict+add+trim in one EVAL).
-	_, _ = recordTransitionScript.Run(ctx, s.rdb, []string{},
+	if _, err := recordTransitionScript.Run(ctx, s.rdb, []string{},
 		task.ID, tsMs, statusKey, task.Source,
 		int64(probeQueueTTL.Seconds()), probeMainKey, int64(probeMainTTL.Seconds()),
 		probeTaskStatusKey, probeTaskSourceKey, probeDimIndexKey,
 		probeDetailKey(task.ID), int64(probeDetailTTL.Seconds()), probeQueueKeepLimit,
-	).Result()
+	).Result(); err != nil {
+		if !isRedisCancelErr(err) {
+			slog.Warn("probe_stream redis record transition failed", "error", err, "task_id", task.ID, "status", task.Status)
+		}
+		return err
+	}
 
 	// Detail payload + notify (best-effort, separate from the atomic core so
 	// a marshal/Publish failure never blocks the lane transition).

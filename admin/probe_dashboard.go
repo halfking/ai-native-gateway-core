@@ -1586,6 +1586,21 @@ func (h *Handler) handleProbeTaskCreate(w http.ResponseWriter, r *http.Request) 
 	if req.Source == "" {
 		req.Source = "admin"
 	}
+	if !isProbeTaskCommand(req.Command) {
+		writeError(w, http.StatusBadRequest, "unsupported probe command")
+		return
+	}
+	if !isProbeTaskSource(req.Source) {
+		writeError(w, http.StatusBadRequest, "unsupported probe source")
+		return
+	}
+	if req.Priority == 0 {
+		req.Priority = 60
+	}
+	if req.RunAfterSec < 0 || req.RunAfterSec > 24*60*60 {
+		writeError(w, http.StatusBadRequest, "run_after_seconds must be between 0 and 86400")
+		return
+	}
 	if req.MaxAttempts <= 0 {
 		req.MaxAttempts = 7
 	}
@@ -1618,6 +1633,19 @@ func (h *Handler) handleProbeTaskCreate(w http.ResponseWriter, r *http.Request) 
 		"dedup_key": task.DedupKey,
 		"message":   ternary(inserted, "task enqueued", "a task for this dedup key is already active"),
 	})
+}
+
+func isProbeTaskCommand(command string) bool {
+	return command == "node_probe" || command == "integrity_verify" || command == "selfcheck"
+}
+
+func isProbeTaskSource(source string) bool {
+	switch source {
+	case "request_failure", "no_candidates", "periodic", "external_async", "admin", "integrity_probe_planner", "selfcheck":
+		return true
+	default:
+		return false
+	}
 }
 
 // handleProbeTaskCancel is the public "remove self-check task" API (需求 6
