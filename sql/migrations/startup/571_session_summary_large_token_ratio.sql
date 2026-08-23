@@ -1,9 +1,19 @@
+-- 571_session_summary_large_token_ratio.sql
+-- Purpose: Prevent session summary aggregation from rejecting long-context requests.
 --
--- Name: update_session_summary(); Type: FUNCTION; Schema: public; Owner: -
+-- request_logs_hot accepts integer token counts. update_session_summary() used
+-- DECIMAL(10,6) casts before division, which can only hold four integer digits.
+-- A long-context request with more than 9,999 tokens caused SQLSTATE 22003 in
+-- the trigger and rolled back the whole request-log transaction.
 --
--- Canonical body aligned with migration 563 (hot-path columns: gw_session_id,
--- ts, cost_usd, outbound_model, success). Do NOT revert to the 310 shape
--- (session_key/created_at/total_cost) — that breaks live aggregation.
+-- Status: active
+-- Idempotent: YES (CREATE OR REPLACE)
+-- Rollback: Keep this safe function body; restoring the bounded casts reopens
+--           the request-log write failure for long-context traffic.
+-- Changelog:
+--   2026-08-24 v1.0 Prevent token-ratio cast overflow in session aggregation.
+
+BEGIN;
 
 CREATE OR REPLACE FUNCTION public.update_session_summary() RETURNS trigger
     LANGUAGE plpgsql
@@ -57,19 +67,15 @@ BEGIN
     END;
 
     INSERT INTO session_summaries (
-        session_key, tenant_id,
-        first_request_at, last_request_at,
+        session_key, tenant_id, first_request_at, last_request_at,
         request_count, success_count, error_count,
         total_cost_usd, input_cost_usd, output_cost_usd,
         total_prompt_tokens, total_completion_tokens,
         avg_latency_ms, min_latency_ms, max_latency_ms,
-        models_used, work_types, providers, client_models,
-        updated_at
+        models_used, work_types, providers, client_models, updated_at
     ) VALUES (
-        v_gw_session_id, NEW.tenant_id,
-        NEW.ts, NEW.ts,
-        1,
-        CASE WHEN v_is_success THEN 1 ELSE 0 END,
+        v_gw_session_id, NEW.tenant_id, NEW.ts, NEW.ts,
+        1, CASE WHEN v_is_success THEN 1 ELSE 0 END,
         CASE WHEN v_is_success THEN 0 ELSE 1 END,
         v_cost, v_input_cost, v_output_cost,
         v_prompt_tokens, v_completion_tokens,
@@ -79,23 +85,18 @@ BEGIN
         CASE WHEN v_provider_code IS NOT NULL THEN ARRAY[v_provider_code]::TEXT[] ELSE '{}'::TEXT[] END,
         CASE WHEN v_client_model IS NOT NULL THEN ARRAY[v_client_model]::TEXT[] ELSE '{}'::TEXT[] END,
         NOW()
-    )
-    ON CONFLICT (session_key) DO UPDATE SET
+    ) ON CONFLICT (session_key) DO UPDATE SET
         last_request_at = GREATEST(session_summaries.last_request_at, NEW.ts),
         request_count = session_summaries.request_count + 1,
-        success_count = session_summaries.success_count
-            + CASE WHEN v_is_success THEN 1 ELSE 0 END,
-        error_count = session_summaries.error_count
-            + CASE WHEN v_is_success THEN 0 ELSE 1 END,
+        success_count = session_summaries.success_count + CASE WHEN v_is_success THEN 1 ELSE 0 END,
+        error_count = session_summaries.error_count + CASE WHEN v_is_success THEN 0 ELSE 1 END,
         total_cost_usd = session_summaries.total_cost_usd + v_cost,
         input_cost_usd = session_summaries.input_cost_usd + v_input_cost,
         output_cost_usd = session_summaries.output_cost_usd + v_output_cost,
         total_prompt_tokens = session_summaries.total_prompt_tokens + v_prompt_tokens,
         total_completion_tokens = session_summaries.total_completion_tokens + v_completion_tokens,
-        avg_latency_ms = (
-            (session_summaries.avg_latency_ms * session_summaries.request_count + v_latency_ms)
-            / (session_summaries.request_count + 1)
-        )::INT,
+        avg_latency_ms = ((session_summaries.avg_latency_ms * session_summaries.request_count + v_latency_ms)
+            / (session_summaries.request_count + 1))::INT,
         min_latency_ms = LEAST(session_summaries.min_latency_ms, v_latency_ms),
         max_latency_ms = GREATEST(session_summaries.max_latency_ms, v_latency_ms),
         models_used = array_unique_append(session_summaries.models_used, v_upstream_model),
@@ -108,3 +109,5 @@ BEGIN
     RETURN NEW;
 END;
 $$;
+
+COMMIT;
