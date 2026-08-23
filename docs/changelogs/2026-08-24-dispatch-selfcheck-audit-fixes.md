@@ -5,6 +5,7 @@
 - Persisted `ProbeQueueTask.NextRunAt` when inserting a durable self-check task.
 - Normalized zero schedule times to the current time without changing future schedules.
 - Validated self-check command and source values at the admin API boundary.
+- Kept the API source allowlist aligned with the deployed queue constraint; `no_candidates` remains an event reason, not a persisted queue source.
 - Applied the documented default priority of `60` and bounded manual delays to 24 hours.
 - Returned Redis probe-lane transition errors to callers while retaining structured warning logs for non-shutdown failures.
 
