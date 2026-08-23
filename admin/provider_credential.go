@@ -376,6 +376,19 @@ func parseTags(ns sql.NullString) []string {
 	return result
 }
 
+// marshalCredentialTags renders PATCH tags into the JSON document stored in
+// credentials.tags. The column is jsonb, so the value must be a JSON array
+// (`[]` for empty); the pre-2026-08-23 comma-join wrote ""/"a,b" and PG rejected
+// every tags-bearing PATCH with 22P02 invalid input syntax for type json.
+// parseTags on the read side already decodes the array form.
+func marshalCredentialTags(tags []string) (string, error) {
+	b, err := json.Marshal(tags)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
 type updateCredentialRequest struct {
 	Label            *string  `json:"label"`
 	Status           *string  `json:"status"`
@@ -501,7 +514,12 @@ func (h *Handler) updateCredential(w http.ResponseWriter, r *http.Request, provi
 		sets = append(sets, "expires_at = "+arg(*req.ExpiresAt))
 	}
 	if req.Tags != nil {
-		sets = append(sets, "tags = "+arg(strings.Join(req.Tags, ",")))
+		tagsJSON, mErr := marshalCredentialTags(req.Tags)
+		if mErr != nil {
+			writeError(w, http.StatusBadRequest, "invalid tags")
+			return
+		}
+		sets = append(sets, "tags = "+arg(tagsJSON)+"::jsonb")
 	}
 	if req.Notes != nil {
 		sets = append(sets, "notes = "+arg(*req.Notes))
