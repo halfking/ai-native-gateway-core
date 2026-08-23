@@ -7,6 +7,7 @@
 - Kept RPM and TPM on their existing local token buckets because the Redis lease backend does not yet implement token-cost accounting.
 - Normalized an unset credential mode to concurrency for parity with the previous local governor factory.
 - Made probe workers explicitly claim one task each; worker count remains the concurrency control and prevents serial processing from losing later task leases.
+- Linearized model lane depth updates with their queue observations, preventing stale Redis and SSE depths after a completed request.
 
 ## Verification
 
@@ -14,6 +15,7 @@
 - Probe worker batch-size contract test.
 - `go test ./domains/dispatch ./bg`
 - `go vet ./domains/dispatch ./bg`
+- `go test ./domains/dispatch -run 'TestPipelineWiresQueueMirror|TestPipelineQueueStats_RealPipelineTraffic' -count=10`
 
 ## Follow-up
 
