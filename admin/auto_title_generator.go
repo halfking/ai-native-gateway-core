@@ -1172,8 +1172,13 @@ func (g *AutoTitleGenerator) getGatewayEndpoint() string {
 	return "http://127.0.0.1:8781"
 }
 
-// pickFirstAvailableAPIKeyForAuto picks the first available API key for auto title generation.
+// pickFirstAvailableAPIKeyForAuto picks credentials for internal loopback calls.
+// When the data-plane static gate is enabled, loopbacks must use that key rather
+// than an arbitrary tenant key from api_keys. Those credential domains differ.
 func (h *Handler) pickFirstAvailableAPIKeyForAuto(ctx context.Context, tenantID string) (id int, apiKey string, err error) {
+	if apiKey = strings.TrimSpace(os.Getenv(EnvAPIKey)); apiKey != "" {
+		return 0, apiKey, nil
+	}
 	if h == nil || h.db == nil {
 		return 0, "", fmt.Errorf("database not configured")
 	}
