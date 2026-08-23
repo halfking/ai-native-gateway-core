@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Credential model drawer extras: IQ history chart + cross-credential check restored into `ModelOfferExtrasPanel`; identity chips deep-link to `/models?q=`.
 
 ### Fixed
+- **泳道 FIFO 方向（2026-08-23）**：后端 lane builder 改 ASC + `lastTiles`；`SwimLaneTrack` 改 `flex-start` 左起右进。生产 #1692 复现 `flex-end` 右锚导致 tile 挤在右侧。
 - **Dashboard queue audit fixes（2026-08-23）**：`#rank` 恢复视觉序号；main 队列 selective trim 补 pipeline 错误日志 + 集成测试；移除 no-op `trimLiveStreamQueue` 调用。
 - **实时流 selective trim（2026-08-23）**：lane 驱逐改为 post-exec selective trim，保护 fresh `in_progress` 不被 ZRemRangeByRank 误删；main/status 队列同步接入。
 - **队列透视 priority 排序对齐（2026-08-23）**：resolve 候选排序与 provider `COALESCE(quota_state,'ok')` 一致；队列卡片恢复按 resolve 序 index 排序，避免仅用 `manual_priority` 导致 priority 凭据错位。
