@@ -11,10 +11,13 @@
 --
 -- Behaviour:
 --   1. Recreate ensure_request_logs_bodies_partition() with USING columnar
---      (the pre-562 body).
+--      (the pre-562 body) and the 328a orphan-reattach ELSIF branch.
 --   2. DETACH + DROP + RECREATE request_logs_bodies_2026_08 as columnar.
 --      If the partition holds rows (it should not — 562 verified zero rows
 --      on the way up), refuse to rollback to avoid data loss.
+--   3. Match canonical schema exactly: explicit `+08` bound literal so the
+--      rollback is timezone-independent, and full autovacuum storage
+--      options so daily autovacuum behavior is preserved.
 
 BEGIN;
 
@@ -67,11 +70,19 @@ BEGIN
             DROP TABLE public.request_logs_bodies_2026_08 CASCADE;
             RAISE NOTICE '562 down: DROPPED request_logs_bodies_2026_08';
 
+            -- Match canonical schema (sql/schema/01-schema.sql:18401):
+            -- explicit +08 bound so the partition range is timezone-stable,
+            -- and full autovacuum reloptions so daily maintenance is unchanged.
             CREATE TABLE public.request_logs_bodies_2026_08
                 PARTITION OF public.request_logs_bodies
-                FOR VALUES FROM ('2026-08-01') TO ('2026-09-01')
+                FOR VALUES FROM ('2026-08-01 00:00:00+08') TO ('2026-09-01 00:00:00+08')
+                WITH (autovacuum_enabled='true',
+                      autovacuum_vacuum_scale_factor='0.05',
+                      autovacuum_vacuum_threshold='10',
+                      autovacuum_analyze_scale_factor='0.02',
+                      autovacuum_analyze_threshold='50')
                 USING columnar;
-            RAISE NOTICE '562 down: RECREATED request_logs_bodies_2026_08 as columnar';
+            RAISE NOTICE '562 down: RECREATED request_logs_bodies_2026_08 as columnar with canonical autovacuum options';
 
             IF NOT EXISTS (
                 SELECT 1 FROM pg_constraint
@@ -87,7 +98,8 @@ BEGIN
 END $$;
 
 -- Restore the pre-562 columnar ensure function (NOT RECOMMENDED —
--- columnar bodies blocks the hot→monthly promote path).
+-- columnar bodies blocks the hot→monthly promote path). Body mirrors
+-- 328a exactly so the 328a orphan-reattach ELSIF branch is preserved.
 CREATE OR REPLACE FUNCTION public.ensure_request_logs_bodies_partition(
     target_ts timestamp with time zone DEFAULT now()
 ) RETURNS void
@@ -107,6 +119,19 @@ BEGIN
             partition_name, month_start, month_end
         );
         RAISE NOTICE '562 down: ensure_request_logs_bodies_partition restored to columnar';
+    ELSIF NOT EXISTS (
+        SELECT 1
+        FROM pg_inherits i
+        JOIN pg_class c ON c.oid = i.inhrelid
+        JOIN pg_class p ON p.oid = i.inhparent
+        WHERE c.relname = partition_name
+          AND p.relname = 'request_logs_bodies'
+    ) THEN
+        EXECUTE format(
+            'ALTER TABLE request_logs_bodies ATTACH PARTITION %I FOR VALUES FROM (%L) TO (%L)',
+            partition_name, month_start, month_end
+        );
+        RAISE NOTICE '562 down: ensure_request_logs_bodies_partition re-attached orphan %', partition_name;
     END IF;
 END;
 $$;

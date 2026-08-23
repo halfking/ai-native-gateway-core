@@ -50,15 +50,14 @@ func TestBanditScorer_WeightNudgeIsNoOpWhenDisabled(t *testing.T) {
 	// Observe a 401 — without SetWeightNudge this should NOT affect Sample.
 	b.ObserveError("cred-1", errorsx.KindAuth)
 
-	// Run a bunch of samples; auth kind alone doesn't change combined.
-	var anyAffected bool
+	// Sample is stochastic but the [0,1] invariant must hold even
+	// when an observation is recorded against a default-off scorer.
 	for i := 0; i < 50; i++ {
 		s := b.Sample("cred-1")
 		if s <= 0 || s > 1 {
 			t.Fatalf("sample %d out of [0,1]: %f", i, s)
 		}
 	}
-	_ = anyAffected
 }
 
 // TestBanditScorer_WeightNudgeBounds prove that with WeightNudge enabled,

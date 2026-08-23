@@ -106,9 +106,7 @@ DECLARE
     storage_type text;
     row_count    bigint;
     is_attached  boolean;
-    bound        text;
     partition_oid oid;
-    parent_name  text;
 BEGIN
     SELECT c.oid, am.amname
       INTO partition_oid, storage_type
@@ -159,14 +157,19 @@ BEGIN
         RAISE EXCEPTION '562: ABORT — partition is detached; manual investigation needed';
     END IF;
 
-    -- Capture the original partition bound so we can reattach with the
-    -- exact same range (DDL uses FOR VALUES FROM ... TO ...).
-    SELECT pg_get_expr(c.relpartbound, c.oid)
-      INTO bound
-      FROM pg_class c
-     WHERE c.oid = partition_oid;
-
-    RAISE NOTICE '562: bound=%', bound;
+    -- Capture the original partition bound so we can confirm the range
+    -- we're recreating. We hardcode the canonical `+08` literal below
+    -- (matches sql/schema/01-schema.sql:18401) rather than reusing the
+    -- session-TZ-relative bound; this keeps the up/down migration
+    -- round-trip timezone-stable.
+    DECLARE captured_bound text;
+    BEGIN
+        SELECT pg_get_expr(c.relpartbound, c.oid)
+          INTO captured_bound
+          FROM pg_class c
+         WHERE c.oid = partition_oid;
+        RAISE NOTICE '562: existing bound=% (will re-create at canonical +08 range)', captured_bound;
+    END;
 
     ALTER TABLE public.request_logs_bodies
         DETACH PARTITION public.request_logs_bodies_2026_08;
@@ -175,17 +178,21 @@ BEGIN
     DROP TABLE public.request_logs_bodies_2026_08 CASCADE;
     RAISE NOTICE '562: DROPPED request_logs_bodies_2026_08';
 
-    -- Recreate as heap, attached to request_logs_bodies for 2026-08-01..2026-09-01.
-    -- Hardcoded bound matches what the previous pg_dump recorded
-    -- ('2026-08-01 00:00:00+08' → '2026-09-01 00:00:00+08' in the original
-    -- install, but the ensure path uses date_trunc boundaries which fall
-    -- back to '2026-08-01' → '2026-09-01' in the default session TZ).
-    -- We use the date form so the partition matches the canonical range
-    -- produced by ensure_<...>_partition() calls from bg.PartitionManager.
+    -- Recreate as heap, attached to request_logs_bodies for the canonical
+    -- Aug 2026 range. Bound literal matches sql/schema/01-schema.sql:18401
+    -- ('2026-08-01 00:00:00+08' → '2026-09-01 00:00:00+08') so the up/down
+    -- pair is timezone-stable and round-trips correctly. Autovacuum
+    -- reloptions match sql/schema/01-schema.sql:12322-12336 so daily
+    -- maintenance behavior is preserved across the heap swap.
     CREATE TABLE public.request_logs_bodies_2026_08
         PARTITION OF public.request_logs_bodies
-        FOR VALUES FROM ('2026-08-01') TO ('2026-09-01');
-    RAISE NOTICE '562: RECREATED request_logs_bodies_2026_08 as heap';
+        FOR VALUES FROM ('2026-08-01 00:00:00+08') TO ('2026-09-01 00:00:00+08')
+        WITH (autovacuum_enabled='true',
+              autovacuum_vacuum_scale_factor='0.05',
+              autovacuum_vacuum_threshold='10',
+              autovacuum_analyze_scale_factor='0.02',
+              autovacuum_analyze_threshold='50');
+    RAISE NOTICE '562: RECREATED request_logs_bodies_2026_08 as heap with canonical autovacuum options';
 
     -- Reattach primary key constraint that the original partition had.
     -- request_logs_bodies PK is (request_id, ts) (see
