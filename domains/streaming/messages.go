@@ -215,7 +215,7 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if rlOutcome := checkGatewayRateLimit(keyInfo, h.chatHandler.rateLimiter); !rlOutcome.Skipped {
+	if rlOutcome := checkGatewayRateLimit(r.Context(), keyInfo, h.chatHandler.rateLimiter); !rlOutcome.Skipped {
 		writeRateLimitHeaders(w, rlOutcome)
 		if rlOutcome.Blocked {
 			attemptErrCode = "rate_limit_exceeded"
