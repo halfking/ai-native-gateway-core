@@ -258,3 +258,16 @@ func newNoopGovernor() *noopGovernor                                            
 func (g *noopGovernor) Mode() string                                             { return ModeDisabled }
 func (g *noopGovernor) Acquire(context.Context, *QueuedRequest, time.Time) error { return nil }
 func (g *noopGovernor) Release(*QueuedRequest)                                   {}
+
+// unavailableGovernor preserves fail-closed admission when a strict backend
+// cannot construct a credential governor.
+type unavailableGovernor struct {
+	mode string
+	err  error
+}
+
+func (g unavailableGovernor) Mode() string { return g.mode }
+func (g unavailableGovernor) Acquire(context.Context, *QueuedRequest, time.Time) error {
+	return g.err
+}
+func (unavailableGovernor) Release(*QueuedRequest) {}

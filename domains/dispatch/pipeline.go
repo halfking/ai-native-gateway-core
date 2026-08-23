@@ -3,6 +3,7 @@ package dispatch
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"math"
 	"strconv"
@@ -306,6 +307,43 @@ func (p *Pipeline) GovernorBackend() GovernorBackend {
 	p.backendMu.RLock()
 	defer p.backendMu.RUnlock()
 	return p.governorBackend
+}
+
+// governorForCredential uses Redis enforcement only for concurrency slots.
+// RPM and TPM remain local until distributed token accounting is implemented.
+func (p *Pipeline) governorForCredential(cred CredentialRef) Governor {
+	backend := p.GovernorBackend()
+	mode := cred.ConcurrencyMode
+	if mode == "" {
+		mode = ModeConcurrency
+	}
+	if backend == nil || backend.Kind() != BackendRedisEnforce ||
+		mode != ModeConcurrency || cred.ConcurrencyLimit <= 0 {
+		return newGovernor(cred)
+	}
+
+	gov, err := backend.New(context.Background(), GovernorSpec{
+		CredentialID: cred.CredentialID,
+		ProviderID:   cred.ProviderID,
+		Mode:         ModeConcurrency,
+		Limit:        cred.ConcurrencyLimit,
+		RPMLimit:     cred.RPMLimit,
+		TPMLimit:     cred.TPMLimit,
+		Backend:      BackendRedisEnforce,
+		Revision:     p.ActiveRevision(),
+	})
+	if err == nil && gov != nil {
+		return gov
+	}
+	if err == nil {
+		err = errors.New("governor backend returned nil governor")
+	}
+	slog.Error("dispatch: credential governor initialization failed",
+		"credential_id", cred.CredentialID,
+		"provider_id", cred.ProviderID,
+		"backend", backend.Kind(),
+		"error", err)
+	return unavailableGovernor{mode: mode, err: fmt.Errorf("%w: %w", ErrGovernorUnavailable, err)}
 }
 
 // SetGovernorSnapshotObserver wires the optional C.2 snapshot observer.
