@@ -112,6 +112,15 @@ func TestPickFirstAvailableAPIKeyForAutoRequiresDatabaseWithoutStaticKey(t *test
 	}
 }
 
+func TestLoopbackKeySource(t *testing.T) {
+	if got := loopbackKeySource(0); got != "static" {
+		t.Fatalf("loopbackKeySource(0) = %q, want static", got)
+	}
+	if got := loopbackKeySource(17); got != "tenant_api_key" {
+		t.Fatalf("loopbackKeySource(17) = %q, want tenant_api_key", got)
+	}
+}
+
 func TestDetectIDESource(t *testing.T) {
 	gen := &AutoTitleGenerator{}
 
@@ -480,6 +489,7 @@ func TestCallAutoTitleLLM_EmitsParentHeaders(t *testing.T) {
 	res, err := gen.callAutoTitleLLM(
 		t.Context(),
 		"sk-fake-test-key",
+		0,
 		"gw_parent_session_abc",
 		"08aa2a8af42ef05eb87c97973f467519", // parent request id (user's request)
 		"实际请求内容",
@@ -561,6 +571,7 @@ func TestCallAutoTitleLLM_RetriesOn503(t *testing.T) {
 	res, err := gen.callAutoTitleLLM(
 		t.Context(),
 		"sk-fake",
+		0,
 		"gw_s",
 		"parent-req-1",
 		"content",
@@ -589,7 +600,7 @@ func TestCallAutoTitleLLM_NoRetryOn400(t *testing.T) {
 	t.Setenv("LLM_GATEWAY_ENDPOINT", srv.URL)
 
 	gen := &AutoTitleGenerator{handler: &Handler{}}
-	_, err := gen.callAutoTitleLLM(t.Context(), "sk-fake", "gw_s", "p", "c")
+	_, err := gen.callAutoTitleLLM(t.Context(), "sk-fake", 0, "gw_s", "p", "c")
 	if err == nil {
 		t.Fatal("expected error for 400")
 	}

@@ -462,7 +462,7 @@ func (g *AutoTitleGenerator) generateTitleFromFirstRequest(ctx context.Context, 
 	// gets its own gw_session_id and does NOT pollute the user's conversation).
 	// The parent_request_id is forwarded so request_logs_hot.parent_request_id
 	// makes the loopback linkable back to its parent user request.
-	llmRes, err := g.callAutoTitleLLM(ctx, apiKey, sessionID, parentRequestID, userContent)
+	llmRes, err := g.callAutoTitleLLM(ctx, apiKey, keyID, sessionID, parentRequestID, userContent)
 	if err != nil {
 		// Fallback: simple extraction from in-memory preview
 		if requestPreview != "" {
@@ -918,7 +918,7 @@ func (g *AutoTitleGenerator) resolveAutoTitleModel(ctx context.Context) string {
 //     This is the answer to the operator question "did the LLM actually
 //     receive the request?" — if status_code >= 200 and < 300 the LLM did;
 //     otherwise the body_excerpt reveals what the upstream said.
-func (g *AutoTitleGenerator) callAutoTitleLLM(ctx context.Context, apiKey, sessionID, parentRequestID, userContent string) (adminLLMChatResult, error) {
+func (g *AutoTitleGenerator) callAutoTitleLLM(ctx context.Context, apiKey string, apiKeyID int, sessionID, parentRequestID, userContent string) (adminLLMChatResult, error) {
 	if g.handler == nil {
 		return adminLLMChatResult{}, fmt.Errorf("handler not configured")
 	}
@@ -1012,10 +1012,18 @@ func (g *AutoTitleGenerator) callAutoTitleLLM(ctx context.Context, apiKey, sessi
 		"model", model,
 		"status_code", lastStatus,
 		"body_excerpt", lastBodyExcerpt,
+		"loopback_key_source", loopbackKeySource(apiKeyID),
 		"retries", maxRetries,
 		"error", errString(lastErr),
 	)
 	return adminLLMChatResult{}, lastErr
+}
+
+func loopbackKeySource(apiKeyID int) string {
+	if apiKeyID == 0 {
+		return "static"
+	}
+	return "tenant_api_key"
 }
 
 // doCallAutoTitleOnce performs one HTTP attempt and returns either a parsed
