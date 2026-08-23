@@ -210,7 +210,7 @@ func (w *EventWriter) persist(ctx context.Context, events []Event) error {
 			}
 			if _, err := tx.Exec(ctx, `
 					UPDATE stats_event_inbox
-					SET processed_at = now(), processing_owner = 'telemetry-writer',
+					SET processing_status = 'processed', processed_at = now(), processing_owner = 'telemetry-writer',
 					    process_attempts = process_attempts + 1, last_error = NULL
 					WHERE event_id = $1 AND occurred_at = $2`, e.EventID, e.OccurredAt); err != nil {
 				return err
