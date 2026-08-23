@@ -1783,6 +1783,7 @@ func main() {
 	if keyVerifier.Enabled() {
 		slidingRL := ratelimit.NewRedisLimiterFromEnv()
 		chatHandler.SetAuth(keyVerifier, slidingRL)
+		chatHandler.SetAdminAPIKey(cfg.AdminAPIKey)
 		// /v1/embeddings handler (22 章 §22.2). providerClient + upClient
 		// are both ready by this point.
 		embeddingsHandler = streaming.NewEmbeddingsHandler(providerClient, upClient)
