@@ -28,8 +28,13 @@ import {
   type SignupHubResponse,
   type SignupPlatformEntry,
 } from '../api'
+import { useCredentialLabels } from '../composables/useCredentialLabels'
 
 const { t } = useI18n()
+// credentialDisplayName resolves credential id → human label; the composable
+// keeps a Map<id,label> refreshed via loadCredentialLabels(), and falls back
+// to "凭据 #ID" if the label is missing.
+const { credentialDisplayName, loadCredentialLabels } = useCredentialLabels()
 
 
 const poolData  = ref<FreePoolStatusResponse | null>(null)
@@ -338,7 +343,7 @@ async function runQuickSave(probeFirst = true) {
     })
     probeResult.value = res.probe ?? null
     if (res.status === 'ok') {
-      message.value = `凭据已入库 · catalog=${res.catalog_code} · credential #${res.credential_id ?? t('freePool.credentialSavedPlaceholder')}`
+      message.value = `凭据已入库 · catalog=${res.catalog_code} · credential ${res.credential_id ? credentialDisplayName(res.credential_id) : t('freePool.credentialSavedPlaceholder')}`
       quickEntry.value.api_key = ''
       await load()
     } else {
@@ -644,6 +649,9 @@ function latencyLabel(m: FreePoolModelEntry): string {
 }
 
 onMounted(() => {
+  // Populate the label cache so credentialDisplayName() resolves to real
+  // labels on first render (the composable is best-effort and self-caches).
+  void loadCredentialLabels()
   load()
 
   // Auto-poll every 15s so the page reflects upstream changes (429 cooldowns,
@@ -1279,7 +1287,7 @@ onUnmounted(() => {
               </td>
               <td>
                 <div class="cell-muted">{{ m.credential_label }}</div>
-                <div class="cell-muted">#{{ m.credential_id }}</div>
+                <div class="cell-muted">{{ credentialDisplayName(m.credential_id) }}</div>
               </td>
             </tr>
           </tbody>
@@ -1314,7 +1322,7 @@ onUnmounted(() => {
                     :title="`多 Key 池化：${entry.key_count} 个 Key 轮转（放大配额）`"
                   >🔑 ×{{ entry.key_count }}</span>
                 </div>
-                <div class="cell-muted">#{{ entry.credential_id }} · {{ entry.availability_state || t('freePool.ready') }}</div>
+                <div class="cell-muted">{{ credentialDisplayName(entry.credential_id) }} · {{ entry.availability_state || t('freePool.ready') }}</div>
               </td>
               <td>
                 <span class="badge" :class="statusBadgeClass(entry)">{{ statusLabel(entry) }}</span>
@@ -1415,7 +1423,7 @@ onUnmounted(() => {
               <td>
                 <div>{{ k.provider_name }}</div>
                 <code style="font-size:11px">{{ k.catalog_code }}</code>
-                <div class="cell-muted">#{{ k.credential_id }} · {{ k.credential_label }}</div>
+                <div class="cell-muted">{{ credentialDisplayName(k.credential_id) }} · {{ k.credential_label }}</div>
               </td>
               <td><code class="model-code">{{ k.key_masked || (k.has_secret ? '***' : t('freePool.noKey')) }}</code></td>
               <td><span class="acq-pill">{{ acquisitionLabel(k.acquisition_source || 'manual') }}</span></td>

@@ -34,6 +34,7 @@ import SmartRoutingConfigPanel from '../components/routing/SmartRoutingConfigPan
 import SmartRoutingConfigDrawer from '../components/routing/SmartRoutingConfigDrawer.vue'
 import NodeDetailDrawer from '../components/NodeDetailDrawer.vue'
 import { nodesRef, type LiveNodeStatus } from '../composables/liveStreamStore'
+import { useCredentialLabels } from '../composables/useCredentialLabels'
 import { isSuperAdmin } from '../store'
 import { ApiError } from '../api/_core'
 import { assignSpacedPriorities } from '../utils/queueNodeCards'
@@ -834,6 +835,15 @@ function distMax(d: Record<string, number>): number {
 // L1 task types come from useL1TaskTypes composable (DB-backed; canonical 8
 // seeded immediately, then live list replaces it after fetch).
 const { l1TaskTypes, l1Label: taskLabel, refreshL1TaskTypes } = useL1TaskTypes()
+// credentialDisplayName resolves credential id → human label; the composable
+// keeps a Map<id,label> refreshed via loadCredentialLabels(), and falls back
+// to "凭据 #ID" if the label is missing.
+const { credentialDisplayName } = useCredentialLabels()
+
+function asCredentialId(value: unknown): number | null {
+  const n = Number(value)
+  return Number.isSafeInteger(n) && n > 0 ? n : null
+}
 
 const L1_STEPS = computed(() => ['Prompt', '8类分类', t('routing.sixDimScore'), 'Profile', t('routing.chooseModel')])
 const L2_STEPS = computed(() => [t('routing.modelParse'), t('routing.tierFallback'), '计费轮次', 'P2C得分', '执行/熔断'])
@@ -1350,7 +1360,7 @@ onUnmounted(() => stopPoll())
         <div v-if="resolution.plan_order.length" class="plan-order">
           执行顺序（P2C+粘性）：
           <span v-for="(p, i) in resolution.plan_order" :key="p.credential_id">
-            {{ i > 0 ? ' → ' : '' }}#{{ p.credential_id }} ({{ p.raw_model }})
+            {{ i > 0 ? ' → ' : '' }}{{ credentialDisplayName(p.credential_id) }} ({{ p.raw_model }})
           </span>
         </div>
       </div>
@@ -1419,7 +1429,7 @@ onUnmounted(() => stopPoll())
                 </td>
                 <td>
                   <div class="provider-name">{{ c.provider_name }}</div>
-                  <div class="text-muted">#{{ c.credential_id }} · {{ c.credential_label }}</div>
+                  <div class="text-muted">{{ credentialDisplayName(c.credential_id) }} · {{ c.credential_label }}</div>
                 </td>
                 <td><code class="mono-sm">{{ c.model_name }}</code></td>
                 <td>
@@ -1502,7 +1512,7 @@ onUnmounted(() => stopPoll())
                 <span class="sim-step">{{ fmt(Number((simResult.decision as Record<string, unknown>).confidence) * 100, 0) }}%</span>
                 <span class="pipe-dot">→</span>
                 <span class="sim-step l2 win">{{ (simResult.decision as Record<string, unknown>).chosen_model }}</span>
-                <span class="text-muted">cred #{{ (simResult.decision as Record<string, unknown>).chosen_credential_id }}</span>
+                <span class="text-muted">{{ credentialDisplayName(asCredentialId((simResult.decision as Record<string, unknown>).chosen_credential_id)) }}</span>
               </div>
             </div>
           </div>

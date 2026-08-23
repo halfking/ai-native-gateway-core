@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ref, computed, onBeforeUnmount, watch } from 'vue'
+import { ref, computed, onBeforeUnmount, onMounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useFormat } from '../../i18n/useFormat'
+import { useCredentialLabels } from '../../composables/useCredentialLabels'
 import {
   getProviderModels,
   refreshProviderModels,
@@ -23,6 +24,9 @@ const { t: td } = useI18n()
 const pm = (k: string, params?: Record<string, unknown>): string =>
   td(`providerDetail.models.${k}` as never, params as never)
 const { fmtDateTime } = useFormat()
+
+const { credentialDisplayName, loadCredentialLabels } = useCredentialLabels()
+onMounted(() => { void loadCredentialLabels() })
 
 const props = defineProps<{
   providerId: number
@@ -452,7 +456,7 @@ load()
             </thead>
             <tbody>
               <tr v-for="r in probeAllResults" :key="`${r.credential_id}-${r.raw_model_name}`">
-                <td>#{{ r.credential_id }}</td>
+                <td>{{ credentialDisplayName(r.credential_id) }}</td>
                 <td><code>{{ r.raw_model_name }}</code></td>
                 <td><span class="badge" :class="probeResultBadge(r.category)">{{ r.status }}</span></td>
                 <td><span class="badge" :class="probeResultBadge(r.category)">{{ probeResultLabel(r.category) }}</span></td>
@@ -536,7 +540,7 @@ load()
         <div v-for="cred in routingDiag.credentials" :key="cred.credential_id" style="margin-bottom:6px;padding:6px 8px;border:1px solid var(--border);border-radius:4px">
           <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:4px">
             <div>
-              <strong>#{{ cred.credential_id }} {{ cred.credential_label }}</strong>
+              <strong>{{ credentialDisplayName(cred.credential_id) }} {{ cred.credential_label }}</strong>
               <span class="badge" :class="statusBadge(cred.status)" style="margin-left:6px">{{ cred.status }}</span>
             </div>
             <div style="font-size:12px">
@@ -589,7 +593,7 @@ load()
               <code v-if="o.standardized_name">{{ o.standardized_name }}</code>
               <span v-else class="cell-muted">—</span>
             </td>
-            <td>#{{ o.credential_id }} {{ o.credential_label }}</td>
+            <td>{{ credentialDisplayName(o.credential_id) }} {{ o.credential_label }}</td>
             <td>
               <span class="avail-badge" :class="o.available ? 'on' : 'off'">
                 {{ o.available ? pm('overview.chipAvailable') : pm('overview.chipUnavailable') }}

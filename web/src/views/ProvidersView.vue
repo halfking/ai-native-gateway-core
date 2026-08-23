@@ -21,6 +21,7 @@ import {
   QUALITY_GRADE_LABELS,
   type QualityGrade,
 } from '../types/quality-api'
+import { useCredentialLabels } from '../composables/useCredentialLabels'
 
 const { t } = useI18n()
 const pm = (k: string, params?: Record<string, unknown>): string =>
@@ -48,6 +49,10 @@ const credentialsByProvider = ref<Record<number, ProviderCredential[]>>({})
 const credentialLoading = ref<Record<number, boolean>>({})
 const credentialSaving = ref<Record<number, boolean>>({})
 const credentialErrors = ref<Record<number, string>>({})
+// credentialDisplayName resolves credential id → human label; the composable
+// keeps a Map<id,label> refreshed via loadCredentialLabels(), and falls back
+// to "凭据 #ID" if the label is missing.
+const { credentialDisplayName, loadCredentialLabels } = useCredentialLabels()
 
 // ── Filter & sort state ──────────────────────────────────────────────────────
 // 2026-07-08: filter selections are persisted to localStorage so each
@@ -764,6 +769,9 @@ async function loadBgStatus() {
 }
 
 onMounted(() => {
+  // Populate the label cache so credentialDisplayName() resolves to real
+  // labels on first render (the composable is best-effort and self-caches).
+  void loadCredentialLabels()
   load()
   loadBgStatus()
   _bgPollTimer = setInterval(loadBgStatus, 15000)
@@ -1330,7 +1338,7 @@ onUnmounted(() => {
               <template v-for="r in diagnoseResult.results" :key="r.credential_id">
                 <tr>
                   <td>
-                    <div>#{{ r.credential_id }}</div>
+                    <div>{{ credentialDisplayName(r.credential_id) }}</div>
                     <div class="muted" v-if="r.effective_source === 'manifest_only'">{{ pm('diagnose.manifestOnly') }}</div>
                   </td>
                   <td>

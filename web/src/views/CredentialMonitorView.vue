@@ -4,12 +4,15 @@ import { useI18n } from 'vue-i18n'
 import { getCredentialMonitorSummary, getSlidingWindow, promoteCredential, demoteCredential, setConcurrencyAuto, toggleModelAvailability, getModelHistory, getCredentialFpSlotStats, getCredentialDecisions, clearManualDisabled, setManualDisabled, type CredentialMonitorSummary, type CredentialModelStatus, type CallEntry, type ModelHistoryEvent, type ModelToggleAction, type FpSlotStats, type CredentialRoutingDecision, type CredentialMonitorMeta } from '../api'
 import { Chart, registerables } from 'chart.js'
 import FpSlotVisualizer from '../components/FpSlotVisualizer.vue'
+import { useCredentialLabels } from '../composables/useCredentialLabels'
 import SegTabs, { type SegTab } from '../components/SegTabs.vue'
 import StatusBadge from '../components/StatusBadge.vue'
 
 Chart.register(...registerables)
 
 const { t } = useI18n()
+
+const { credentialDisplayName, loadCredentialLabels } = useCredentialLabels()
 
 const loading = ref(false)
 const detailLoading = ref(false)
@@ -820,7 +823,10 @@ function p95Class(ms: number | null | undefined) {
   return 'p95-bad'
 }
 
-onMounted(() => load())
+onMounted(() => {
+  void loadCredentialLabels()
+  load()
+})
 
 onUnmounted(() => {
   stopAutoRefresh()
@@ -976,7 +982,7 @@ onUnmounted(() => {
       <div class="drawer-panel card drawer-panel-wide" @click.stop>
         <div class="drawer-header">
           <div>
-            <h3 style="margin:0">{{ selectedCred.label || `凭据 #${selectedCred.id}` }}</h3>
+            <h3 style="margin:0">{{ credentialDisplayName(selectedCred.id, selectedCred.label || '凭据') }}</h3>
             <div class="drawer-sub">{{ selectedCred.provider_name }}</div>
           </div>
           <div style="display:flex;gap:8px;align-items:center">

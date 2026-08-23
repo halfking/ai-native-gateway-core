@@ -9,6 +9,7 @@ import {
 import { updateModel } from '../../api/models'
 import ModelIdentityChip from './ModelIdentityChip.vue'
 import ModelOfferExtrasPanel from './ModelOfferExtrasPanel.vue'
+import { useCredentialLabels } from '../../composables/useCredentialLabels'
 
 const props = defineProps<{
   providerId: number
@@ -18,6 +19,10 @@ const props = defineProps<{
 
 const emit = defineEmits<{ close: []; updated: [ModelOffer]; iqTested: [] }>()
 const router = useRouter()
+// credentialDisplayName resolves credential id → human label; the composable
+// keeps a Map<id,label> refreshed via loadCredentialLabels(), and falls back
+// to "凭据 #ID" if the label is missing.
+const { credentialDisplayName, loadCredentialLabels } = useCredentialLabels()
 
 const saving = ref(false)
 const saveErr = ref('')
@@ -37,6 +42,9 @@ const draft = reactive({
 
 watch(() => props.offer, (o) => {
   if (!o) return
+  // Refresh the label cache so credentialDisplayName() resolves to the latest
+  // label when the drawer opens against a freshly edited offer.
+  void loadCredentialLabels()
   draft.standardized_name = o.standardized_name ?? ''
   draft.canonical_id = o.canonical_id
   draft.outbound_model_name = o.outbound_model_name ?? ''
@@ -154,7 +162,7 @@ function goCanonical() {
       <div class="drawer-header">
         <div>
           <h3 style="margin:0"><code>{{ offer.raw_model_name }}</code></h3>
-          <div class="drawer-sub">#{{ offer.id }} · 凭据 #{{ offer.credential_id }} {{ offer.credential_label }}</div>
+          <div class="drawer-sub">#{{ offer.id }} · {{ credentialDisplayName(offer.credential_id) }} {{ offer.credential_label }}</div>
           <ModelIdentityChip
             style="margin-top:8px"
             :canonical-name="offer.canonical_name || offer.standardized_name"

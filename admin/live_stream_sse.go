@@ -273,6 +273,22 @@ const providerCodeForCredentialSQL = `
 		WHERE c.id = $1
 	`
 
+// 2026-08-23 (Agent C): credential label lookup for the request_lifecycle
+// SSE channel. The dashboard tiles render "供应商+凭据" so each action's
+// credential_label needs to be on the wire — the front-end store keeps a
+// per-tenant cache populated from /api/credentials/monitor-summary, but
+// the SSE path can race the cache fill on a fresh page load. Resolving
+// here, server-side, makes the first frame self-sufficient.
+//
+// COALESCE keeps the column non-NULL so pgx can scan into a plain string
+// without a sql.NullString dance. Empty labels stay empty (the frontend
+// then falls back to "凭据 #ID").
+const credentialLabelForSQL = `
+		SELECT id, COALESCE(label, '')
+		FROM credentials
+		WHERE id = ANY($1)
+	`
+
 // providerCodeForSQLBody / providerCodeForCredentialSQLBody are plain
 // copies used only by regression tests; the live code path uses the
 // unindented constants above. The test asserts the SQL still references
@@ -429,6 +445,15 @@ type LiveStreamSSEHub struct {
 	// Populated lazily on first miss by ProviderCodeFor() so the
 	// telemetry hot path can resolve a provider_id cheaply.
 	providerCache sync.Map
+
+	// 2026-08-23 (Agent C): credential label cache for the SSE
+	// request_lifecycle channel. Populated lazily by CredentialLabelsFor()
+	// (batched) / CredentialLabelFor() (single-id convenience). Values are
+	// the raw credentials.label (no fallback chain — an empty string means
+	// "no label configured" and the frontend keeps its "凭据 #ID"
+	// fallback). Same sync.Map shape as providerCache so the access pattern
+	// is consistent.
+	credentialLabelCache sync.Map
 
 	// modelFamilyCache is a sync.Map of model → vendor.
 	// Populated lazily by ModelVendorFor() to resolve model vendor from
@@ -1052,6 +1077,105 @@ func (h *LiveStreamSSEHub) ProviderCodeForCredential(ctx context.Context, creden
 	}
 	h.providerCache.Store(cacheKey, display)
 	return display
+}
+
+// 2026-08-23 (Agent C): CredentialLabelFor resolves a single credential
+// id to its label. Returns the empty string when the lookup is unavailable
+// (no DB / row missing / label blank) — flattenActionEvent treats empty as
+// "no projection" and the frontend falls back to "凭据 #ID".
+func (h *LiveStreamSSEHub) CredentialLabelFor(ctx context.Context, credentialID int) string {
+	if credentialID <= 0 || h == nil || h.db == nil {
+		return ""
+	}
+	if cached, ok := h.credentialLabelCache.Load(credentialID); ok {
+		return cached.(string)
+	}
+	var label string
+	row := h.db.QueryRow(ctx, credentialLabelForSQL, []int{credentialID})
+	if err := row.Scan(&credentialID, &label); err != nil {
+		// No row → cache "" so the next call doesn't retry for this id.
+		h.credentialLabelCache.Store(credentialID, "")
+		slog.Debug("live stream credential label lookup failed", "credential_id", credentialID, "err", err.Error())
+		return ""
+	}
+	h.credentialLabelCache.Store(credentialID, label)
+	return label
+}
+
+// 2026-08-23 (Agent C): CredentialLabelsFor resolves many credential ids
+// in one round-trip. Returns a map that flattenActionEvent consumes; ids
+// missing from the response (or whose label is blank) are omitted so the
+// map can be passed straight through. nil on lookup failure or empty
+// input — flattenActionEvent treats nil as a no-op so the wire contract
+// stays intact.
+//
+// Best-effort: a slow / unavailable DB never blocks the broadcast path.
+// The whole lookup runs inside the existing 2s actionReadTimeout window so
+// a degraded DB cannot push request_lifecycle delivery beyond the ≤500ms
+// contract budget.
+func (h *LiveStreamSSEHub) CredentialLabelsFor(ctx context.Context, ids []int) map[int]string {
+	if h == nil || h.db == nil || len(ids) == 0 {
+		return nil
+	}
+	out := make(map[int]string, len(ids))
+	missing := make([]int, 0, len(ids))
+	for _, id := range ids {
+		if id <= 0 {
+			continue
+		}
+		if cached, ok := h.credentialLabelCache.Load(id); ok {
+			if label := cached.(string); label != "" {
+				out[id] = label
+			}
+			continue
+		}
+		missing = append(missing, id)
+	}
+	if len(missing) == 0 {
+		if len(out) == 0 {
+			return nil
+		}
+		return out
+	}
+	queryCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	defer cancel()
+	rows, err := h.db.Query(queryCtx, credentialLabelForSQL, missing)
+	if err != nil {
+		slog.Debug("live stream credential labels batch lookup failed", "count", len(missing), "err", err.Error())
+		// Cache the miss so we don't retry every tick for the same ids.
+		for _, id := range missing {
+			h.credentialLabelCache.Store(id, "")
+		}
+		return nil
+	}
+	defer rows.Close()
+	found := make(map[int]struct{}, len(missing))
+	for rows.Next() {
+		var id int
+		var label string
+		if err := rows.Scan(&id, &label); err != nil {
+			continue
+		}
+		found[id] = struct{}{}
+		h.credentialLabelCache.Store(id, label)
+		if label != "" {
+			out[id] = label
+		}
+	}
+	if rows.Err() != nil {
+		slog.Debug("live stream credential labels batch scan failed", "err", rows.Err().Error())
+	}
+	// Negative-cache ids the query did not return so we don't re-query them
+	// on every tick (the row genuinely doesn't exist).
+	for _, id := range missing {
+		if _, ok := found[id]; !ok {
+			h.credentialLabelCache.Store(id, "")
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // ModelVendorFor resolves a model name to its vendor via models_canonical.family → model_families.vendor.
