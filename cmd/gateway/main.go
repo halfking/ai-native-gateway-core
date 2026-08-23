@@ -1895,6 +1895,7 @@ func main() {
 	// Cleanup follows TTL unless explicitly overridden.
 	// 2026-07-16: snapshot refresh interval (30 min default) — env LLM_GATEWAY_LIVE_STREAM_SNAPSHOT_REFRESH_INTERVAL.
 	liveStreamCachedTTL, liveStreamCachedCleanup := liveStreamCachedDurationsFromEnv()
+	admin.ConfigureLiveStreamInflightProtectFromEnv()
 	liveStreamSnapshotRefresh := positiveDurationEnv(
 		"LLM_GATEWAY_LIVE_STREAM_SNAPSHOT_REFRESH_INTERVAL",
 		30*time.Minute,
