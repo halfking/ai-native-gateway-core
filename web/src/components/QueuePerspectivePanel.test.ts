@@ -421,10 +421,11 @@ describe('QueuePerspectivePanel', () => {
     resolveRouting.mockImplementation(async (model: string) => ({
       raw_models: [model],
       reorder_revision: `rev-${model}`,
+      reorder_canonical_id: 100,
       candidates: model === 'm-1'
         ? [
-            { credential_id: 1, model_name: 'm-1', manual_priority: 5, credential_label: 'alpha-key', effective_concurrency: 2 },
-            { credential_id: 2, model_name: 'm-1', manual_priority: 10, credential_label: 'beta-key', effective_concurrency: 8 },
+            { credential_id: 1, model_name: 'm-1', canonical_id: 100, manual_priority: 5, credential_label: 'alpha-key', effective_concurrency: 2 },
+            { credential_id: 2, model_name: 'm-1', canonical_id: 100, manual_priority: 10, credential_label: 'beta-key', effective_concurrency: 8 },
           ]
         : [],
     }))
@@ -460,7 +461,7 @@ describe('QueuePerspectivePanel', () => {
         { credential_id: 2, raw_model: 'm-1', manual_priority: 5 },
         { credential_id: 1, raw_model: 'm-1', manual_priority: 10 },
       ],
-      { rawModel: 'm-1', expectedRevision: 'rev-m-1' },
+      { canonicalId: 100, expectedRevision: 'rev-m-1' },
     )
   })
 
@@ -468,10 +469,11 @@ describe('QueuePerspectivePanel', () => {
     superAdmin.mockReturnValue(true)
     resolveRouting.mockImplementation(async (model: string) => ({
       raw_models: [model],
+      reorder_canonical_id: 300,
       candidates: model === 'm-1'
         ? [
-            { credential_id: 1, model_name: 'm-1', manual_priority: 1 },
-            { credential_id: 2, model_name: 'm-1', manual_priority: 2 },
+            { credential_id: 1, model_name: 'm-1', canonical_id: 300, manual_priority: 1 },
+            { credential_id: 2, model_name: 'm-1', canonical_id: 300, manual_priority: 2 },
           ]
         : [],
     }))
@@ -488,7 +490,7 @@ describe('QueuePerspectivePanel', () => {
     const handles = wrapper.findAll('.qp-node-card-drag-handle')
     expect(handles.every(h => h.attributes('draggable') === 'false')).toBe(true)
     expect(handles.every(h => !h.classes().includes('is-enabled'))).toBe(true)
-    expect(wrapper.html()).toContain('尚未拿到后端修订版本')
+    expect(wrapper.html()).toContain('尚未拿到后端修订版本，请等待数据加载完成后再试')
   })
 
   it('surfaces a stale-revision hint and refetches when the backend rejects the reorder with 409', async () => {
@@ -496,10 +498,11 @@ describe('QueuePerspectivePanel', () => {
     resolveRouting.mockImplementation(async (model: string) => ({
       raw_models: [model],
       reorder_revision: `rev-${model}`,
+      reorder_canonical_id: 200,
       candidates: model === 'm-1'
         ? [
-            { credential_id: 1, model_name: 'm-1', manual_priority: 1 },
-            { credential_id: 2, model_name: 'm-1', manual_priority: 2 },
+            { credential_id: 1, model_name: 'm-1', canonical_id: 200, manual_priority: 1 },
+            { credential_id: 2, model_name: 'm-1', canonical_id: 200, manual_priority: 2 },
           ]
         : [],
     }))
@@ -528,11 +531,12 @@ describe('QueuePerspectivePanel', () => {
     resolveRouting.mockImplementation(async (model: string) => ({
       raw_models: [model],
       reorder_revision: `rev-${model}`,
+      reorder_canonical_id: 200,
       candidates: model === 'm-1'
         ? [
-            { credential_id: 1, model_name: 'm-1', manual_priority: 5, credential_label: 'live-a', effective_concurrency: 2 },
-            { credential_id: 2, model_name: 'm-1', manual_priority: 10, credential_label: 'offline-b', effective_concurrency: 4 },
-            { credential_id: 3, model_name: 'm-1', manual_priority: 15, credential_label: 'live-c', effective_concurrency: 8 },
+            { credential_id: 1, model_name: 'm-1', canonical_id: 200, manual_priority: 5, credential_label: 'live-a', effective_concurrency: 2 },
+            { credential_id: 2, model_name: 'm-1', canonical_id: 200, manual_priority: 10, credential_label: 'offline-b', effective_concurrency: 4 },
+            { credential_id: 3, model_name: 'm-1', canonical_id: 200, manual_priority: 15, credential_label: 'live-c', effective_concurrency: 8 },
           ]
         : [],
     }))
@@ -569,7 +573,7 @@ describe('QueuePerspectivePanel', () => {
         { credential_id: 2, raw_model: 'm-1', manual_priority: 10 },
         { credential_id: 1, raw_model: 'm-1', manual_priority: 15 },
       ],
-      { rawModel: 'm-1', expectedRevision: 'rev-m-1' },
+      { canonicalId: 200, expectedRevision: 'rev-m-1' },
     )
   })
 
@@ -578,11 +582,12 @@ describe('QueuePerspectivePanel', () => {
     resolveRouting.mockImplementation(async (model: string) => ({
       raw_models: [model],
       reorder_revision: `rev-${model}`,
+      reorder_canonical_id: 200,
       candidates: model === 'm-1'
         ? [
-            { credential_id: 1, model_name: 'm-1', manual_priority: 1 },
-            { credential_id: 2, model_name: 'm-1', manual_priority: 2 },
-            { credential_id: 3, model_name: 'm-1', manual_priority: 3 },
+            { credential_id: 1, model_name: 'm-1', canonical_id: 200, manual_priority: 1 },
+            { credential_id: 2, model_name: 'm-1', canonical_id: 200, manual_priority: 2 },
+            { credential_id: 3, model_name: 'm-1', canonical_id: 200, manual_priority: 3 },
           ]
         : [],
     }))
@@ -615,8 +620,36 @@ describe('QueuePerspectivePanel', () => {
         { credential_id: 2, raw_model: 'm-1', manual_priority: 10 },
         { credential_id: 1, raw_model: 'm-1', manual_priority: 15 },
       ],
-      { rawModel: 'm-1', expectedRevision: 'rev-m-1' },
+      { canonicalId: 200, expectedRevision: 'rev-m-1' },
     )
+  })
+
+  it('disables reorder when candidates span multiple canonical models', async () => {
+    superAdmin.mockReturnValue(true)
+    resolveRouting.mockImplementation(async (model: string) => ({
+      raw_models: [model],
+      // Server intentionally omits reorder_revision because candidates span
+      // distinct canonical models.
+      candidates: model === 'm-1'
+        ? [
+            { credential_id: 1, model_name: 'm-1', canonical_id: 100, manual_priority: 1 },
+            { credential_id: 2, model_name: 'm-1', canonical_id: 101, manual_priority: 2 },
+          ]
+        : [],
+    }))
+    liveStreamState.nodes = [
+      { credential_id: 1, provider_id: 1, provider_code: 'p', manual_disabled: false, circuit_state: 'closed', raw_models: ['m-1'] },
+      { credential_id: 2, provider_id: 1, provider_code: 'p', manual_disabled: false, circuit_state: 'closed', raw_models: ['m-1'] },
+    ]
+
+    const wrapper = mountPanel()
+    await flushPromises()
+    const handles = wrapper.findAll('.qp-node-card-drag-handle')
+    expect(handles.every(h => h.attributes('draggable') === 'false')).toBe(true)
+    // Mixed canonical disables the row by setting reorderCanonicalId=null;
+    // the rendered hint pill reads 该模型分组合并了多个规范模型…
+    expect(wrapper.html()).toContain('该模型分组合并了多个规范模型')
+    expect(reorderCandidateBindings).not.toHaveBeenCalled()
   })
 
   it('loads window stats via batch API instead of N-way GET', async () => {
@@ -648,10 +681,11 @@ describe('QueuePerspectivePanel', () => {
     resolveRouting.mockImplementation(async (model: string) => ({
       raw_models: [model],
       reorder_revision: `rev-${model}`,
+      reorder_canonical_id: 200,
       candidates: model === 'm-1'
         ? [
-            { credential_id: 1, model_name: 'm-1', manual_priority: 5, credential_label: 'a' },
-            { credential_id: 2, model_name: 'm-1', manual_priority: 10, credential_label: 'b' },
+            { credential_id: 1, model_name: 'm-1', canonical_id: 200, manual_priority: 5, credential_label: 'a' },
+            { credential_id: 2, model_name: 'm-1', canonical_id: 200, manual_priority: 10, credential_label: 'b' },
           ]
         : [],
     }))
@@ -697,8 +731,9 @@ describe('QueuePerspectivePanel', () => {
       resolveRouting.mockImplementation(async (model: string) => ({
         raw_models: [model],
         reorder_revision: `rev-${model}`,
+        reorder_canonical_id: 200,
         candidates: model === 'm-1'
-          ? [{ credential_id: 1, model_name: 'm-1', manual_priority: 5, credential_label: 'a' }]
+          ? [{ credential_id: 1, model_name: 'm-1', canonical_id: 200, manual_priority: 5, credential_label: 'a' }]
           : [],
       }))
       liveStreamState.nodes = [

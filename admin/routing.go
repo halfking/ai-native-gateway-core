@@ -189,6 +189,7 @@ type resolveCandidate struct {
 	P95LatencyMs          int      `json:"p95_latency_ms"`
 	ModelName             string   `json:"model_name"`
 	StandardizedName      string   `json:"standardized_name"`
+	CanonicalID           *int64   `json:"canonical_id,omitempty"`
 	QuotaCapUSD           float64  `json:"quota_cap_usd"`
 	QuotaUsedUSD          float64  `json:"quota_used_usd"`
 	RuntimeRoutable       bool     `json:"runtime_routable"`
@@ -321,6 +322,7 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 				COALESCE(cmb.currency, 'USD') AS currency,
 				v.raw_model_name AS model_name,
 				COALESCE(mo.standardized_name, v.raw_model_name) AS standardized_name,
+				v.canonical_id AS canonical_id,
 				COALESCE(mo.unit_price_in_per_1m, 0) AS quota_cap_usd,
 				COALESCE(mo.unit_price_out_per_1m, 0) AS quota_used_usd,
 				v.is_routable,
@@ -394,7 +396,7 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 			&c.Tier, &c.Weight,
 			&c.ManualPriority, &c.Priority, &c.ActiveSessions, &c.BillingMode,
 			&c.UnitPriceInPer1M, &c.UnitPriceOutPer1M, &c.Currency,
-			&c.ModelName, &c.StandardizedName,
+			&c.ModelName, &c.StandardizedName, &c.CanonicalID,
 			&c.QuotaCapUSD, &c.QuotaUsedUSD,
 			&isRoutable, &unavailableReason,
 		); err != nil {
@@ -524,42 +526,58 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 			resolutionPath = "canonical:variant"
 		}
 	}
-	// Reorder revision: only meaningful when the resolve hits exactly one
-	// raw_model — mixed aliases or canonical hits intentionally leave the
-	// field empty so the UI keeps reordering disabled. We use the
-	// persistent scope revision (migration 541) so the value is monotonic
-	// across concurrent writers; the dashboard's drag-and-drop relies on
-	// the integer in front of the colon for 409 detection.
+	// Reorder revision: keyed by canonical_id so a drag operation can reorder
+	// every candidate of a model even when those candidates are registered
+	// under several raw_model_name aliases that share one canonical_id (e.g.
+	// glm-5.2 + z-ai/glm-5.2, or kimi-k2-250711 + kimi-k2-250905). Mixed
+	// canonical_id hits (genuinely different models, e.g. the dot↔dash
+	// bridge pulling glm-5-2-260617 into the glm-5.2 resolve) or NULL
+	// canonical_id intentionally leave the field empty so the UI keeps
+	// reordering disabled.
+	//
+	// We use the persistent canonical scope revision (migration 566) so the
+	// value is monotonic across concurrent writers; the dashboard's
+	// drag-and-drop relies on the integer in front of the colon for 409
+	// detection.
 	//
 	// Errors loading the revision are not fatal: the dashboard still works,
 	// just without drag-and-drop, so we log and continue with an empty
-	// token. When the scope row is missing (new raw_model or backfill gap),
-	// ensureScopeRevision seeds version=1 so drag-and-drop stays available.
-	var reorderRevision string
+	// token. When the scope row is missing (new canonical or backfill gap),
+	// ensureCanonicalScopeRevision seeds version=1 so drag-and-drop stays
+	// available.
+	var (
+		reorderRevision       string
+		reorderCanonicalID    int64
+		respCanonicalIDValue  *int64
+	)
 	if len(candidates) > 0 {
-		names := make([]string, len(candidates))
-		for i, c := range candidates {
-			names[i] = c.ModelName
-		}
-		if firstRaw, ok := singleRawModelForRevision(names); ok {
-			rev, revErr := ensureScopeRevision(ctx, h.db, firstRaw)
+		if firstCanonical, ok := singleCanonicalForRevision(candidates); ok {
+			rev, revErr := ensureCanonicalScopeRevision(ctx, h.db, firstCanonical)
 			if revErr != nil {
-				slog.Warn("routing resolve: reorder scope ensure failed; revision omitted",
-					"raw_model", firstRaw, "error", revErr.Error())
+				slog.Warn("routing resolve: canonical reorder scope ensure failed; revision omitted",
+					"canonical_id", firstCanonical, "error", revErr.Error())
 			} else {
 				reorderRevision = rev.Raw
+				reorderCanonicalID = firstCanonical
 			}
+			id := firstCanonical
+			respCanonicalIDValue = &id
 		}
 	}
+	var respCanonicalID any
+	if respCanonicalIDValue != nil {
+		respCanonicalID = *respCanonicalIDValue
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"client_model":     model,
-		"canonical_name":   rawModels[0],
-		"canonical_id":     nil,
-		"resolution_path":  resolutionPath,
-		"raw_models":       rawModels,
-		"plan_order":       []any{},
-		"candidates":       candidates,
-		"reorder_revision": reorderRevision,
+		"client_model":         model,
+		"canonical_name":       rawModels[0],
+		"canonical_id":         respCanonicalID,
+		"resolution_path":      resolutionPath,
+		"raw_models":           rawModels,
+		"plan_order":           []any{},
+		"candidates":           candidates,
+		"reorder_revision":     reorderRevision,
+		"reorder_canonical_id": reorderCanonicalID,
 	})
 }
 
@@ -804,6 +822,61 @@ func fetchReorderScope(ctx context.Context, q pgxQueryRower, rawModel string, lo
 	return out, rev, nil
 }
 
+// reorderScopeByCanonicalSQL selects every binding row whose provider_model
+// shares canonical_id, in deterministic id order. The same SQL backs the
+// resolve endpoint's reorder_revision helper, so the revision hash stays
+// aligned with the scope the writer will mutate. Keying by canonical_id lets
+// one reorder span all raw_model_name aliases of a model (e.g. glm-5.2 +
+// z-ai/glm-5.2) under a single atomic revision.
+const reorderScopeByCanonicalSQL = `
+SELECT cmb.id,
+       cmb.credential_id,
+       cmb.manual_priority,
+       cmb.updated_at
+FROM credential_model_bindings cmb
+JOIN provider_models pm ON pm.id = cmb.provider_model_id
+WHERE pm.canonical_id = $1
+ORDER BY cmb.id
+`
+
+// fetchReorderScopeByCanonical returns every binding row for canonicalID in id
+// order, plus the current canonical scope revision. Identical contract to
+// fetchReorderScope (the raw_model variant) but keyed by canonical_id.
+//
+// The caller MUST pass a positive canonical_id (singleCanonicalForRevision
+// already enforces that every candidate in the resolve scope shares one).
+// Non-positive values are rejected here as a defence in depth.
+func fetchReorderScopeByCanonical(ctx context.Context, q pgxQueryRower, canonicalID int64, lock bool) ([]reorderScopeRow, scopeRevision, error) {
+	if canonicalID <= 0 {
+		return nil, scopeRevision{}, fmt.Errorf("canonical scope reorder requires canonical_id > 0, got %d", canonicalID)
+	}
+	sqlText := reorderScopeByCanonicalSQL
+	if lock {
+		sqlText = sqlText + "\nFOR UPDATE OF cmb"
+	}
+	rows, err := q.Query(ctx, sqlText, canonicalID)
+	if err != nil {
+		return nil, scopeRevision{}, err
+	}
+	defer rows.Close()
+	out := make([]reorderScopeRow, 0)
+	for rows.Next() {
+		var r reorderScopeRow
+		if err := rows.Scan(&r.ID, &r.CredentialID, &r.ManualPriority, &r.UpdatedAt); err != nil {
+			return nil, scopeRevision{}, err
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, scopeRevision{}, err
+	}
+	rev, err := loadCanonicalScopeRevision(ctx, q, canonicalID)
+	if err != nil {
+		return nil, scopeRevision{}, err
+	}
+	return out, rev, nil
+}
+
 // scopeRevision is the persistent, monotonic version of a candidate-binding
 // scope. The Raw form is the wire payload sent to clients; Version is the
 // integer used for 409 detection.
@@ -837,6 +910,33 @@ func singleRawModelForRevision(modelNames []string) (raw string, ok bool) {
 		}
 	}
 	return first, true
+}
+
+// singleCanonicalForRevision returns the shared canonical_id when every
+// candidate maps to one canonical model. This is the scope key the reorder
+// endpoint now uses, so a drag operation can reorder all candidates of a
+// model even when they are registered under several raw_model_name aliases
+// that share one canonical_id (e.g. glm-5.2 + z-ai/glm-5.2). Genuinely
+// distinct canonical models (e.g. the dot↔dash bridge pulling
+// glm-5-2-260617 into a glm-5.2 resolve) yield ok=false, which keeps
+// drag-and-drop disabled — correct, because reordering across real models
+// would be unsafe. NULL canonical_id on any candidate also yields ok=false,
+// since a candidate without a canonical parent cannot participate in a
+// canonical-keyed reorder.
+func singleCanonicalForRevision(candidates []resolveCandidate) (canonicalID int64, ok bool) {
+	if len(candidates) == 0 {
+		return 0, false
+	}
+	first := candidates[0].CanonicalID
+	if first == nil || *first <= 0 {
+		return 0, false
+	}
+	for _, c := range candidates[1:] {
+		if c.CanonicalID == nil || *c.CanonicalID != *first {
+			return 0, false
+		}
+	}
+	return *first, true
 }
 
 // loadScopeRevision reads the persistent scope revision row. Missing rows
@@ -903,6 +1003,72 @@ ON CONFLICT (raw_model) DO NOTHING
 		return scopeRevision{}, err
 	}
 	return loadScopeRevision(ctx, q, rawModel)
+}
+
+// loadCanonicalScopeRevision reads the persistent canonical scope revision
+// row (migration 566). Missing rows are NOT errors — a scope that has never
+// been bumped returns the zero value and a nil error so the caller can decide
+// whether the empty token is acceptable (resolve) or fatal (reorder).
+func loadCanonicalScopeRevision(ctx context.Context, q pgxQueryRower, canonicalID int64) (scopeRevision, error) {
+	var version int64
+	var hash string
+	err := q.QueryRow(ctx, `
+		SELECT scope_version, scope_hash
+		  FROM public.candidate_binding_scope_revision_canonical
+		 WHERE canonical_id = $1
+	`, canonicalID).Scan(&version, &hash)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return scopeRevision{}, nil
+	}
+	if err != nil {
+		return scopeRevision{}, err
+	}
+	return scopeRevision{
+		Version: version,
+		Hash:    hash,
+		Raw:     formatScopeRevision(version, hash),
+	}, nil
+}
+
+// ensureCanonicalScopeRevision returns the persistent revision for
+// canonicalID, seeding version=1 (same hash formula as migration 566
+// backfill, keyed by canonical_id) when the row is absent. Concurrent
+// ensures are safe via ON CONFLICT DO NOTHING.
+func ensureCanonicalScopeRevision(ctx context.Context, q pgxExecRower, canonicalID int64) (scopeRevision, error) {
+	if canonicalID <= 0 {
+		return scopeRevision{}, nil
+	}
+	rev, err := loadCanonicalScopeRevision(ctx, q, canonicalID)
+	if err != nil || rev.Raw != "" {
+		return rev, err
+	}
+	_, err = q.Exec(ctx, `
+INSERT INTO public.candidate_binding_scope_revision_canonical (canonical_id, scope_version, scope_hash)
+VALUES (
+    $1::bigint,
+    1,
+    COALESCE(
+        (
+            SELECT encode(digest(string_agg(
+                b.id::text || '|' ||
+                b.credential_id::text || '|' ||
+                b.manual_priority::text || '|' ||
+                extract(epoch from b.updated_at)::text,
+                '|' ORDER BY b.id
+            ), 'sha256'), 'hex')
+            FROM public.provider_models pm
+            LEFT JOIN public.credential_model_bindings b ON b.provider_model_id = pm.id
+            WHERE pm.canonical_id = $1
+        ),
+        ''
+    )
+)
+ON CONFLICT (canonical_id) DO NOTHING
+`, canonicalID)
+	if err != nil {
+		return scopeRevision{}, err
+	}
+	return loadCanonicalScopeRevision(ctx, q, canonicalID)
 }
 
 // parseScopeRevision parses the wire form "<version>:<hash>" back into a
@@ -1030,14 +1196,17 @@ func applyReorderUpdate(ctx context.Context, tx pgx.Tx, scope []reorderScopeRow,
 
 type routingCandidateReorderItem struct {
 	CredentialID   int    `json:"credential_id"`
-	RawModel       string `json:"raw_model"`
+	RawModel       string `json:"raw_model,omitempty"`
 	ManualPriority int    `json:"manual_priority"`
 }
 
 type routingCandidateReorderRequest struct {
-	// RawModel scopes the entire reorder to one exact provider_models.raw_model_name.
-	// Mixed-model submissions are rejected to keep the write path atomic.
-	RawModel string `json:"raw_model"`
+	// CanonicalID scopes the entire reorder to one canonical model
+	// (models_canonical.id). Bindings registered under any raw_model_name
+	// alias of that canonical are all in scope, so a drag operation can
+	// reorder every candidate of a model that spans several raw_model names.
+	// Mixed-canonical submissions are rejected to keep the write path atomic.
+	CanonicalID int64 `json:"canonical_id"`
 	// ExpectedRevision is the opaque token the client received from
 	// /api/routing/resolve. The handler locks the scope, recomputes the
 	// revision, and rejects stale clients with HTTP 409.
@@ -1046,18 +1215,18 @@ type routingCandidateReorderRequest struct {
 }
 
 func validateRoutingCandidateReorder(req routingCandidateReorderRequest) string {
+	if req.CanonicalID <= 0 {
+		return "canonical_id is required"
+	}
 	if len(req.Items) == 0 {
 		return "items must not be empty"
 	}
 	if len(req.Items) > maxRoutingCandidateReorderItems {
 		return "too many items"
 	}
-	seenBindings := make(map[string]struct{}, len(req.Items))
+	seenBindings := make(map[int64]struct{}, len(req.Items))
 	seenPriorities := make(map[int]struct{}, len(req.Items))
 	for _, item := range req.Items {
-		if strings.TrimSpace(item.RawModel) == "" {
-			return "raw_model is required for every item"
-		}
 		if item.CredentialID <= 0 {
 			return "credential_id must be positive"
 		}
@@ -1068,14 +1237,13 @@ func validateRoutingCandidateReorder(req routingCandidateReorderRequest) string 
 		if item.ManualPriority < 1 || item.ManualPriority > 99 {
 			return "manual_priority must be in [1, 99]"
 		}
-		bindingKey := fmt.Sprintf("%d:%s", item.CredentialID, strings.TrimSpace(item.RawModel))
-		if _, ok := seenBindings[bindingKey]; ok {
-			return "credential_id and raw_model must be unique"
+		if _, ok := seenBindings[int64(item.CredentialID)]; ok {
+			return "credential_id must be unique"
 		}
 		if _, ok := seenPriorities[item.ManualPriority]; ok {
 			return "manual_priority must be unique"
 		}
-		seenBindings[bindingKey] = struct{}{}
+		seenBindings[int64(item.CredentialID)] = struct{}{}
 		seenPriorities[item.ManualPriority] = struct{}{}
 	}
 	return ""
@@ -1084,10 +1252,13 @@ func validateRoutingCandidateReorder(req routingCandidateReorderRequest) string 
 // handleRoutingCandidateBindingReorder persists the complete resolve-list order
 // in one transaction. The write path enforces three invariants:
 //
-//  1. The reorder targets exactly one raw_model (the top-level RawModel field).
-//     Mixed-model submissions are rejected at validation time.
-//  2. The submission covers every credential currently bound to that raw_model.
-//     A subset write would silently orphan sibling rows.
+//  1. The reorder targets exactly one canonical model (the top-level
+//     CanonicalID field). Bindings registered under any raw_model_name alias
+//     of that canonical are all in scope, so a drag can reorder every
+//     candidate of a model that spans several raw_model names. Mixed-canonical
+//     submissions are rejected at validation time.
+//  2. The submission covers every credential currently bound to that
+//     canonical. A subset write would silently orphan sibling rows.
 //  3. The client's ExpectedRevision matches the locked current scope state.
 //     Mismatches indicate a stale view and surface as HTTP 409 so the UI can
 //     refetch before retrying.
@@ -1108,27 +1279,14 @@ func (h *Handler) handleRoutingCandidateBindingReorder(w http.ResponseWriter, r 
 		writeError(w, http.StatusBadRequest, "invalid body")
 		return
 	}
-	req.RawModel = strings.TrimSpace(req.RawModel)
-	if req.RawModel == "" {
-		writeError(w, http.StatusBadRequest, "raw_model is required")
+	if req.CanonicalID <= 0 {
+		writeError(w, http.StatusBadRequest, "canonical_id is required")
 		return
 	}
 	req.ExpectedRevision = strings.TrimSpace(req.ExpectedRevision)
 	if req.ExpectedRevision == "" {
 		writeError(w, http.StatusBadRequest, "expected_revision is required")
 		return
-	}
-	for i := range req.Items {
-		itemRaw := strings.TrimSpace(req.Items[i].RawModel)
-		switch {
-		case itemRaw == "":
-			req.Items[i].RawModel = req.RawModel
-		case !strings.EqualFold(itemRaw, req.RawModel):
-			writeError(w, http.StatusBadRequest, "raw_model mismatch between request and item")
-			return
-		default:
-			req.Items[i].RawModel = itemRaw
-		}
 	}
 	if validationErr := validateRoutingCandidateReorder(req); validationErr != "" {
 		writeError(w, http.StatusBadRequest, validationErr)
@@ -1145,16 +1303,17 @@ func (h *Handler) handleRoutingCandidateBindingReorder(w http.ResponseWriter, r 
 	defer tx.Rollback(ctx)
 
 	// Plumb the audit-attributable actor into the session GUC so the
-	// migration 541 trigger records it on candidate_binding_scope_revision.
-	// We do this BEFORE the first SELECT so the revision row written by
-	// our own UPDATE is attributed to this actor rather than NULL.
+	// migration 566 trigger records it on
+	// candidate_binding_scope_revision_canonical. We do this BEFORE the first
+	// SELECT so the revision row written by our own UPDATE is attributed to
+	// this actor rather than NULL.
 	actor := requestActor(r)
 	if _, setErr := tx.Exec(ctx, "SELECT set_config('app.actor', $1, true)", actor); setErr != nil {
 		writeError(w, http.StatusInternalServerError, "set app.actor guc failed: "+setErr.Error())
 		return
 	}
 
-	scope, currentRev, err := fetchReorderScope(ctx, tx, req.RawModel, true)
+	scope, currentRev, err := fetchReorderScopeByCanonical(ctx, tx, req.CanonicalID, true)
 	if err != nil {
 		if isPgSerializationFailure(err) || isPgDeadlock(err) {
 			writeError(w, http.StatusConflict, "transient ordering conflict, retry")
@@ -1164,10 +1323,10 @@ func (h *Handler) handleRoutingCandidateBindingReorder(w http.ResponseWriter, r 
 		return
 	}
 	if len(scope) == 0 {
-		writeError(w, http.StatusNotFound, "no candidate bindings found for raw_model")
+		writeError(w, http.StatusNotFound, "no candidate bindings found for canonical_id")
 		return
 	}
-	// The persistent scope revision (migration 541) is the source of truth
+	// The persistent scope revision (migration 566) is the source of truth
 	// for 409 detection. We parse the client token once and compare on
 	// the integer version (primary) plus the hash (defence-in-depth: catches
 	// scope contents drifting without a version bump, which would indicate
@@ -1189,14 +1348,14 @@ func (h *Handler) handleRoutingCandidateBindingReorder(w http.ResponseWriter, r 
 	// scope_version inside the same statement; we re-read the row so the
 	// response carries the fresh token the client must echo on its next
 	// PATCH. We deliberately do NOT cache the pre-write currentRev here.
-	nextRev, err := loadScopeRevision(ctx, tx, req.RawModel)
+	nextRev, err := loadCanonicalScopeRevision(ctx, tx, req.CanonicalID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "reload revision failed: "+err.Error())
 		return
 	}
 	if err := logAuditExec(ctx, tx, actor,
 		"routing_candidate_binding_reorder", map[string]any{
-			"raw_model":         req.RawModel,
+			"canonical_id":      req.CanonicalID,
 			"expected_revision": req.ExpectedRevision,
 			"scope_version":     nextRev.Version,
 			"items":             req.Items,
@@ -1215,7 +1374,7 @@ func (h *Handler) handleRoutingCandidateBindingReorder(w http.ResponseWriter, r 
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"message":           "updated",
-		"raw_model":         req.RawModel,
+		"canonical_id":      req.CanonicalID,
 		"expected_revision": nextRev.Raw,
 		"items":             req.Items,
 	})

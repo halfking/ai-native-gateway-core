@@ -17,7 +17,7 @@ import { useL1TaskTypes } from '../composables/useL1TaskTypes'
 import { getWorkTypeStats, type WorkTypeSyncMeta } from '../api-work-types'
 import {
   getPolicy, patchPolicy, getScoringWeights, updateScoringWeights,
-  resolveRouting, reorderCandidateBindings,
+  resolveRouting, reorderCandidateBindings, patchCandidateBinding,
   type RoutingPolicy, type ScoringWeights, type RoutingResolveResponse,
   type RoutingCandidate, type CandidateBindingReorderItem,
 } from '../api'
@@ -414,10 +414,17 @@ const resolveLog = ref<ResolveLogEntry[]>([])
 const draggingCredentialId = ref<number | null>(null)
 const reorderSaving = ref(false)
 const reorderErr = ref('')
+// 2026-08-23: priority toggle per-candidate. Tracks which credential_id is
+// mid-flight and the latest pending value so the row disables the toggle
+// while PATCH is in flight, avoiding duplicate submissions.
+const prioritySaving = ref<number | null>(null)
+const priorityPendingValue = ref<Record<number, boolean>>({})
+const priorityErr = ref('')
 // 2026-08-19: opaque token echoed back to
-// /api/routing/candidate-bindings/reorder. Backend refuses mixed-model
+// /api/routing/candidate-bindings/reorder. Backend refuses mixed-canonical
 // reorders and stale revisions; the UI keeps both cases disabled.
 const resolveReorderRevision = ref<string>('')
+const resolveReorderCanonicalID = ref<number | null>(null)
 // 统一节点详情抽屉（明细 / 设置共用 NodeDetailDrawer）
 const nodeDrawerOpen = ref(false)
 const nodeDrawerNode = ref<LiveNodeStatus | null>(null)
@@ -433,9 +440,9 @@ function candidateToNode(c: RoutingCandidate): LiveNodeStatus {
     credential_id: c.credential_id,
     provider_id: c.provider_id,
     provider_code: c.catalog_code || c.provider_name,
-    circuit_state: c.circuit_state,
-    availability_state: c.availability_state,
-    quota_state: c.quota_state,
+    circuit_state: c.circuit_state ?? undefined,
+    availability_state: c.availability_state ?? undefined,
+    quota_state: c.quota_state ?? undefined,
     health_status: c.availability_state === 'unreachable' ? 'unreachable' : undefined,
     manual_disabled: false,
     raw_models: c.model_name ? [c.model_name] : undefined,
@@ -478,7 +485,10 @@ const resolveUnavailableCount = computed(() =>
   resolveCandidates.value.filter(c => !c.routable).length,
 )
 const canReorderResolve = computed(() =>
-  superAdmin && !reorderSaving.value && Boolean(resolveReorderRevision.value),
+  superAdmin
+  && !reorderSaving.value
+  && resolveReorderCanonicalID.value !== null
+  && Boolean(resolveReorderRevision.value),
 )
 function resolveReorderDisabledHint(): string {
   if (!superAdmin) return '仅超级管理员可以调整优先级。'
@@ -528,6 +538,20 @@ function resolveStateHint(c: RoutingCandidate): string {
   return parts.join(' · ')
 }
 
+// isCandidatePrioritySaving — whether a row's priority toggle is in flight.
+// Other rows see "false" so they stay interactive. Tested by the unit spec.
+function isCandidatePrioritySaving(c: RoutingCandidate): boolean {
+  return prioritySaving.value === c.credential_id
+}
+
+function candidatePriorityDisabled(c: RoutingCandidate): boolean {
+  // Per-row lock during save, plus a global gate when another row is saving.
+  if (!superAdmin) return true
+  if (prioritySaving.value !== null) return true
+  if (!c.model_name) return true
+  return false
+}
+
 function onCandidateDragStart(c: RoutingCandidate, event: DragEvent) {
   if (!canReorderResolve.value) {
     event.preventDefault()
@@ -550,7 +574,8 @@ async function onCandidateDrop(target: RoutingCandidate, event: DragEvent) {
   draggingCredentialId.value = null
   if (!superAdmin || sourceID === null || sourceID === target.credential_id || reorderSaving.value) return
   const expectedRevision = resolveReorderRevision.value
-  if (!expectedRevision) {
+  const canonicalID = resolveReorderCanonicalID.value
+  if (!expectedRevision || canonicalID === null) {
     reorderErr.value = '该模型分组合并了多个原始模型，无法安全调整优先级。'
     return
   }
@@ -577,24 +602,19 @@ async function onCandidateDrop(target: RoutingCandidate, event: DragEvent) {
     rank: index + 1,
     manual_priority: priorities[index],
   }))
-  // All candidates share one raw_model at this point (resolveReorderRevision
-  // is only populated for single-model resolves), so reuse candidate.model_name
-  // for every item. The backend re-validates the contract and rejects drift.
-  const rawModel = next[0]?.model_name ?? ''
-  if (!rawModel) {
-    reorderErr.value = '无法确定原始模型名，请重新查询后再试。'
-    resolveCandidates.value = previous
-    return
-  }
+  // Candidates may use several raw_model_name aliases, but they all share
+  // the one canonical scope carried by resolveReorderCanonicalID. Preserve
+  // each candidate's raw name for audit context; the backend validates every
+  // credential belongs to the canonical scope and applies the set atomically.
   const items: CandidateBindingReorderItem[] = next.map((candidate, index) => ({
     credential_id: candidate.credential_id,
-    raw_model: rawModel,
+    raw_model: candidate.model_name,
     manual_priority: priorities[index],
   }))
   reorderSaving.value = true
   reorderErr.value = ''
   try {
-    await reorderCandidateBindings(items, { rawModel, expectedRevision })
+    await reorderCandidateBindings(items, { canonicalId: canonicalID, expectedRevision })
     await doResolve()
   } catch (e: unknown) {
     resolveCandidates.value = previous
@@ -612,6 +632,43 @@ async function onCandidateDrop(target: RoutingCandidate, event: DragEvent) {
 
 function onCandidateDragEnd() {
   draggingCredentialId.value = null
+}
+
+// 2026-08-23: persist priority toggle on a single candidate. PATCH
+// /api/routing/candidate-binding/{cred_id}?raw_model=... body {priority: bool},
+// then re-resolve so the badge reflects the fresh server value.
+async function saveCandidatePriority(c: RoutingCandidate, value: boolean) {
+  if (!superAdmin) return
+  if (prioritySaving.value !== null) return
+  const credId = c.credential_id
+  const rawModel = c.model_name
+  if (!rawModel) return
+  const previous = resolveCandidates.value
+  priorityPendingValue.value = { ...priorityPendingValue.value, [credId]: value }
+  prioritySaving.value = credId
+  priorityErr.value = ''
+  // Optimistic update so the toggle feels instant.
+  resolveCandidates.value = previous.map(row =>
+    row.credential_id === credId ? { ...row, priority: value } : row,
+  )
+  try {
+    await patchCandidateBinding(credId, rawModel, { priority: value })
+    await doResolve()
+  } catch (e: unknown) {
+    // Roll back to server truth on error.
+    resolveCandidates.value = previous
+    const fallback = e instanceof Error ? e.message : '保存失败'
+    if (e instanceof ApiError && e.status === 403) {
+      priorityErr.value = '仅超级管理员可以切换优先凭据。'
+    } else {
+      priorityErr.value = fallback
+    }
+  } finally {
+    prioritySaving.value = null
+    const next = { ...priorityPendingValue.value }
+    delete next[credId]
+    priorityPendingValue.value = next
+  }
 }
 
 function loadResolveLog() {
@@ -665,7 +722,9 @@ async function doResolve() {
     resolution.value = res
     resolveCandidates.value = res.candidates
     resolved.value = true
-    resolveReorderRevision.value = singleRawModelRevision(res)
+    const reorderScope = singleCanonicalRevision(res)
+    resolveReorderRevision.value = reorderScope.revision
+    resolveReorderCanonicalID.value = reorderScope.canonicalID
     appendResolveLog(res, profile)
   } catch (e: unknown) {
     resolveErr.value = e instanceof Error ? e.message : t('routing.queryFailed')
@@ -685,24 +744,31 @@ async function refreshResolveSilent() {
     const res = await resolveRouting(modelInput.value.trim(), profile || undefined, true)
     resolution.value = res
     resolveCandidates.value = res.candidates
-    resolveReorderRevision.value = singleRawModelRevision(res)
+    const reorderScope = singleCanonicalRevision(res)
+    resolveReorderRevision.value = reorderScope.revision
+    resolveReorderCanonicalID.value = reorderScope.canonicalID
   } catch {
     // swallow — keep stale list; next tick retries
   }
 }
 
-// singleRawModelRevision returns the server's reorder revision only when
-// every candidate shares the exact same raw_model. Mixed aliases /
-// canonical hits intentionally produce an empty string so the reorder
-// path stays disabled.
-function singleRawModelRevision(res: RoutingResolveResponse): string {
-  if (!res.reorder_revision || res.candidates.length === 0) return ''
-  const first = res.candidates[0].model_name
-  if (!first) return ''
-  for (const c of res.candidates) {
-    if (c.model_name !== first) return ''
+// singleCanonicalRevision returns the server's reorder revision only when
+// every candidate shares the exact same canonical_id. Raw model aliases may
+// differ inside that scope; genuinely mixed canonical models stay disabled.
+function singleCanonicalRevision(res: RoutingResolveResponse): { revision: string; canonicalID: number | null } {
+  if (!res.reorder_revision || res.candidates.length === 0) {
+    return { revision: '', canonicalID: null }
   }
-  return res.reorder_revision
+  const canonicalID = res.candidates[0].canonical_id
+  if (!canonicalID || res.reorder_canonical_id !== canonicalID) {
+    return { revision: '', canonicalID: null }
+  }
+  for (const c of res.candidates) {
+    if (c.canonical_id !== canonicalID) {
+      return { revision: '', canonicalID: null }
+    }
+  }
+  return { revision: res.reorder_revision, canonicalID }
 }
 
 function replayFromLog(entry: ResolveLogEntry) {
@@ -1313,6 +1379,7 @@ onUnmounted(() => stopPoll())
               <col class="col-provider">
               <col class="col-upstream">
               <col class="col-tier">
+              <col class="col-priority">
               <col class="col-actions">
             </colgroup>
             <thead>
@@ -1323,6 +1390,9 @@ onUnmounted(() => stopPoll())
                 <th>供应商 / 凭据</th>
                 <th style="width: 220px">上游</th>
                 <th style="width: 120px">Tier · 权重</th>
+                <th style="width: 92px" :title="t('routing.dashboard.resolve.priorityTooltip')">
+                  {{ t('routing.dashboard.resolve.colPriority') }}
+                </th>
                 <th style="width: 120px"></th>
               </tr>
             </thead>

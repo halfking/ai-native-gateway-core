@@ -3084,6 +3084,10 @@ func main() {
 			balanceQuotaProbe = bg.NewBalanceQuotaProbe(dbConn.Pool())
 			if credProbeV2 != nil {
 				balanceQuotaProbe.SetProbeSubmitter(credProbeV2.SubmitFastProbe)
+				// 2026-08-23 hzx-2 audit: wire ProbeNowAsync so the admin
+				// force-probe endpoint can bypass the 2-min tick for
+				// post-recharge recovery checks.
+				balanceQuotaProbe.SetProbeNowAsync(credProbeV2.ProbeNowAsync)
 			}
 			balanceQuotaProbe.Start(context.Background())
 			slog.Info("CHECKPOINT: balanceQuotaProbe started")
@@ -4220,6 +4224,13 @@ func main() {
 				adminHandler.SetModelProbeRunner(modelProbe)
 			}
 			slog.Info("CHECKPOINT: after SetModelProbeRunner")
+			// 2026-08-23 hzx-2 audit: wire the dedicated force-probe
+			// endpoint for balance/permanent exhausted credentials so
+			// operators can dispatch an immediate re-check after a
+			// user manually topped up.
+			if balanceQuotaProbe != nil {
+				adminHandler.SetBalanceQuotaProbe(balanceQuotaProbe)
+			}
 			// 2026-06-30: wire state manager for /api/credentials/*/state
 			// and /api/credentials/*/test endpoints.
 			if stateManager != nil {

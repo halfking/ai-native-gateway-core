@@ -10,17 +10,46 @@ import (
 	"github.com/kaixuan/llm-gateway-go/modelbinding"
 )
 
+// ColdNodeActiveProber issues a real upstream probe when the
+// historical DBProber sees zero recent calls (the "cold node" case).
+// The signature matches CredentialProber so any existing active-probe
+// worker can plug in. nil → cold nodes still probe-fail (legacy
+// behaviour); wired → cold nodes get a real request that records into
+// the recorder and either succeeds (degradation skipped) or fails
+// (degradation proceeds as usual).
+type ColdNodeActiveProber interface {
+	ProbeCredential(ctx context.Context, credentialID int, model string) ProbeResult
+}
+
 // Checker detects continuous failures and marks credentials as degraded.
 type Checker struct {
 	recorder         *Recorder
 	db               DBQuerier
 	prober           CredentialProber       // optional: probe before marking degraded
+	coldProber       ColdNodeActiveProber   // 2026-08-23: probe cold nodes (no recent calls) via real request
 	windowDuration   time.Duration          // default 1 hour
 	failureThreshold float64                // default 0.80 (80%)
 	minSampleSize    int                    // default 5
 	degradedCooldown time.Duration          // default 15 minutes
 	enableCheck      bool                   // feature flag
 	invalidateCache  func(credentialID int) // candidate-cache invalidator (nil → no-op)
+
+	// 2026-08-23 hzx-2 audit: error-kind gradient thresholds. A single
+	// 80% threshold collapses transient 5xx noise, 429s that resolve in
+	// seconds, and permanent auth failures into one bucket. Each kind
+	// gets its own threshold + cooldown so the gateway degrades fast on
+	// real outages but tolerates expected error patterns. Empty maps
+	// fall back to the legacy single-threshold behaviour.
+	kindThresholds map[string]KindThreshold
+}
+
+// KindThreshold is the per-error-kind failure threshold + cooldown.
+// Zero values are ignored — the Checker falls back to failureThreshold /
+// degradedCooldown in that case.
+type KindThreshold struct {
+	FailureThreshold float64       // 0..1, e.g. 0.90 for 5xx
+	MinSampleSize    int           // override the global min sample size
+	DegradedCooldown time.Duration // override the global cooldown
 }
 
 // CheckerConfig holds checker configuration.
@@ -33,10 +62,22 @@ type CheckerConfig struct {
 	// Prober (optional) probes credential before marking degraded.
 	// If probe succeeds, degradation is skipped (prevents false positives).
 	Prober CredentialProber
+	// ColdProber (optional, 2026-08-23 hzx-2): probes credentials that
+	// have ZERO recent calls in the recorder window. The legacy
+	// behaviour is to treat "no data" as "degrade" — which means a
+	// never-used credential gets degraded the first time a request
+	// lands. With ColdProber wired, the checker fires a real probe
+	// instead and only degrades if the upstream actually fails. nil
+	// preserves the legacy "no data = probe fail" path.
+	ColdProber ColdNodeActiveProber
 	// InvalidateCandidateCache (optional) is invoked synchronously with the
 	// affected credential after a successful state change so unrelated cached
 	// candidate lists stay warm. nil → no-op.
 	InvalidateCandidateCache func(credentialID int)
+	// KindThresholds (2026-08-23 hzx-2): per-error-kind overrides for
+	// FailureThreshold / MinSampleSize / DegradedCooldown. Empty map
+	// keeps the legacy single-threshold behaviour for that kind.
+	KindThresholds map[string]KindThreshold
 }
 
 // DefaultCheckerConfig returns sensible defaults.
@@ -47,6 +88,47 @@ func DefaultCheckerConfig() CheckerConfig {
 		MinSampleSize:    5,
 		DegradedCooldown: 15 * time.Minute,
 		EnableCheck:      true,
+		// 2026-08-23 hzx-2 audit: error-kind gradient. Each row is
+		// calibrated against the observed noise floor of that kind
+		// across 2026-Q2/Q3 production incidents.
+		KindThresholds: defaultKindThresholds(),
+	}
+}
+
+// defaultKindThresholds encodes the post-2026-08-23 error-kind policy.
+//
+//   - timeout / stream_timeout: gateway-level signal that the upstream
+//     is genuinely unresponsive. Tighten the threshold to 70% and use
+//     a long cooldown so failover routes around the dead node quickly.
+//   - rate_limit: expected on healthy credentials during burst spikes;
+//     the threshold should be near 100% (only sustained rate-limit
+//     floods indicate a stuck node) and the cooldown should be short
+//     (1 minute) so recovery is fast once the upstream clears the
+//     burst.
+//   - upstream_context_loss: silent body-stripping — must be caught
+//     aggressively (50% threshold, 30 minute cooldown) because the
+//     user perceives this as a correct but useless reply.
+//   - upstream_down / upstream_overloaded: 5xx blips are tolerated;
+//     only sustained outages (90%) trigger degradation, and the
+//     cooldown stays at the global 15min default.
+//   - model_not_found / model_deprecated / unsupported_feature:
+//     permanent for that model. Threshold 100% (any single sample
+//     suffices; minSampleSize 1), 24-hour cooldown so the operator
+//     notices via the dashboard and re-binds to a different model.
+//
+// Errors not listed fall back to the global failureThreshold /
+// degradedCooldown (the legacy behaviour).
+func defaultKindThresholds() map[string]KindThreshold {
+	return map[string]KindThreshold{
+		"timeout":            {FailureThreshold: 0.70, MinSampleSize: 5, DegradedCooldown: 20 * time.Minute},
+		"stream_timeout":     {FailureThreshold: 0.70, MinSampleSize: 5, DegradedCooldown: 20 * time.Minute},
+		"rate_limit":         {FailureThreshold: 0.95, MinSampleSize: 8, DegradedCooldown: 1 * time.Minute},
+		"upstream_context_loss": {FailureThreshold: 0.50, MinSampleSize: 3, DegradedCooldown: 30 * time.Minute},
+		"upstream_down":      {FailureThreshold: 0.90, MinSampleSize: 8, DegradedCooldown: 15 * time.Minute},
+		"upstream_overloaded": {FailureThreshold: 0.90, MinSampleSize: 8, DegradedCooldown: 15 * time.Minute},
+		"model_not_found":    {FailureThreshold: 1.0, MinSampleSize: 1, DegradedCooldown: 24 * time.Hour},
+		"model_deprecated":   {FailureThreshold: 1.0, MinSampleSize: 1, DegradedCooldown: 24 * time.Hour},
+		"unsupported_feature": {FailureThreshold: 1.0, MinSampleSize: 1, DegradedCooldown: 24 * time.Hour},
 	}
 }
 
@@ -56,13 +138,42 @@ func NewChecker(recorder *Recorder, db DBQuerier, cfg CheckerConfig) *Checker {
 		recorder:         recorder,
 		db:               db,
 		prober:           cfg.Prober,
+		coldProber:       cfg.ColdProber,
 		windowDuration:   cfg.WindowDuration,
 		failureThreshold: cfg.FailureThreshold,
 		minSampleSize:    cfg.MinSampleSize,
 		degradedCooldown: cfg.DegradedCooldown,
 		enableCheck:      cfg.EnableCheck,
 		invalidateCache:  cfg.InvalidateCandidateCache,
+		kindThresholds:   cfg.KindThresholds,
 	}
+}
+
+// resolveKindThreshold returns the effective threshold / min-sample /
+// cooldown for the dominant failure kind. Zero / missing entries fall
+// back to the global Checker fields. The dominant kind is the one
+// with the largest count in the recent window; ties broken by
+// alphabetical order for determinism.
+func (c *Checker) resolveKindThreshold(errorKinds map[string]int) (KindThreshold, string) {
+	if len(c.kindThresholds) == 0 || len(errorKinds) == 0 {
+		return KindThreshold{}, ""
+	}
+	dominant := ""
+	maxCount := 0
+	for k, n := range errorKinds {
+		if n > maxCount || (n == maxCount && k < dominant) {
+			dominant = k
+			maxCount = n
+		}
+	}
+	if dominant == "" {
+		return KindThreshold{}, ""
+	}
+	t, ok := c.kindThresholds[dominant]
+	if !ok {
+		return KindThreshold{}, ""
+	}
+	return t, dominant
 }
 
 // Enabled returns true if checking is enabled.
@@ -85,7 +196,43 @@ func (c *Checker) CheckAndUpdate(ctx context.Context, credentialID int, model st
 
 	// Check sample size
 	if len(entries) < c.minSampleSize {
-		return nil // not enough data
+		// 2026-08-23 hzx-2 audit: cold-node handling. The legacy behaviour
+		// was "no samples → return nil", which means cold credentials
+		// (no recent traffic) never get marked degraded but ALSO never
+		// get probed. Combined with the DBProber cold-fail, the first
+		// real request that lands on a cold credential during a
+		// sustained outage cascades through the 80% threshold with no
+		// chance to recover.
+		//
+		// With ColdProber wired, "no samples" becomes an opportunity to
+		// probe via a real upstream request. The probe result drives
+		// the decision: success → return nil; failure → degrade. nil
+		// ColdProber preserves the legacy "no data → no action" path so
+		// existing tests and older call sites are unaffected.
+		if c.coldProber != nil {
+			coldCtx, coldCancel := context.WithTimeout(ctx, 5*time.Second)
+			defer coldCancel()
+			result := c.coldProber.ProbeCredential(coldCtx, credentialID, model)
+			if result.Success {
+				slog.Info("checker: cold-node probe succeeded, skipping degradation",
+					"credential_id", credentialID,
+					"model", model,
+					"probe_latency_ms", result.Latency.Milliseconds())
+				return nil
+			}
+			slog.Info("checker: cold-node probe failed, proceeding with degradation",
+				"credential_id", credentialID,
+				"model", model,
+				"probe_detail", result.Detail)
+			// Synthesise a single failure sample so markDegraded has
+			// something to log. failureRate=1.0 guarantees the global
+			// threshold trips; we don't apply the per-kind gradient
+			// here because we only have ONE sample.
+			return c.markDegraded(ctx, credentialID, model, 1.0,
+				map[string]int{string(result.ErrorKind): 1}, 1,
+				string(result.ErrorKind), KindThreshold{})
+		}
+		return nil // not enough data, no cold prober wired
 	}
 
 	// Compute stats (exclude network errors, client problems, and transient issues)
@@ -171,10 +318,37 @@ func (c *Checker) CheckAndUpdate(ctx context.Context, credentialID int, model st
 		return nil // not enough non-network samples
 	}
 
+	// 2026-08-23 hzx-2 audit: pick the dominant failure kind's
+	// threshold BEFORE the global check. The gradient lets transient
+	// 5xx noise (e.g. upstream_down) avoid degrading a healthy node
+	// while still reacting fast to a sustained rate_limit flood.
+	threshold, dominantKind := c.resolveKindThreshold(errorKinds)
+	effectiveThreshold := c.failureThreshold
+	effectiveMinSample := c.minSampleSize
+	if threshold.FailureThreshold > 0 {
+		effectiveThreshold = threshold.FailureThreshold
+	}
+	if threshold.MinSampleSize > 0 {
+		effectiveMinSample = threshold.MinSampleSize
+	}
+
+	// The dominant-kind min sample size is stricter than the global
+	// one only for high-volume errors (e.g. rate_limit needs ≥8
+	// samples to fire). For low-frequency kinds (e.g. model_not_found
+	// wants 1) we want the lower of the two so a single auth failure
+	// can still trip the degradation.
+	minSamples := effectiveMinSample
+	if effectiveMinSample > c.minSampleSize {
+		minSamples = c.minSampleSize
+	}
+	if total < minSamples {
+		return nil // not enough samples for the dominant kind
+	}
+
 	failureRate := float64(failed) / float64(total)
 
 	// Check threshold
-	if failureRate < c.failureThreshold {
+	if failureRate < effectiveThreshold {
 		return nil // below threshold, credential is healthy
 	}
 
@@ -206,7 +380,7 @@ func (c *Checker) CheckAndUpdate(ctx context.Context, credentialID int, model st
 	}
 
 	// Mark as degraded
-	return c.markDegraded(ctx, credentialID, model, failureRate, errorKinds, total)
+	return c.markDegraded(ctx, credentialID, model, failureRate, errorKinds, total, dominantKind, threshold)
 }
 
 // markDegraded updates the (credential, model) binding to unavailable.
@@ -219,9 +393,18 @@ func (c *Checker) CheckAndUpdate(ctx context.Context, credentialID int, model st
 // Updating the specific (credential_id, raw_model_name) row keeps sibling
 // models on the same credential routable (per the 2026-06-22 audit on
 // cross-model collateral damage).
-func (c *Checker) markDegraded(ctx context.Context, credentialID int, model string, rate float64, kinds map[string]int, sampleSize int) error {
+//
+// 2026-08-23 hzx-2 audit: dominantKind + threshold flow through from
+// CheckAndUpdate so per-kind cooldown (rate_limit=1min vs auth=24h)
+// reaches the cmb write. dominantKind is also logged so dashboards
+// can group degradations by root cause without re-querying request_logs.
+func (c *Checker) markDegraded(ctx context.Context, credentialID int, model string, rate float64, kinds map[string]int, sampleSize int, dominantKind string, threshold KindThreshold) error {
 	now := time.Now()
-	recoverAt := now.Add(c.degradedCooldown)
+	cooldown := c.degradedCooldown
+	if threshold.DegradedCooldown > 0 {
+		cooldown = threshold.DegradedCooldown
+	}
+	recoverAt := now.Add(cooldown)
 	rawModel, err := modelbinding.ResolveRawBinding(ctx, c.db, credentialID, model)
 	if err != nil {
 		return err
@@ -307,6 +490,8 @@ func (c *Checker) markDegraded(ctx context.Context, credentialID int, model stri
 		"failure_rate", rate,
 		"sample_size", sampleSize,
 		"error_kinds", kinds,
+		"dominant_kind", dominantKind,
+		"cooldown", cooldown.String(),
 		"recover_at", recoverAt,
 		"window", c.windowDuration,
 		"rows_affected", tag.RowsAffected())
