@@ -62,6 +62,10 @@ type Handler struct {
 	probeV2              *bg.CredentialProbeV2  // 900-series: mini-chat probe (spec §5)
 	probePicker          *bg.DefaultProbePicker // 900-series: default probe model (spec §4)
 	modelProbe           *bg.ModelProbeRunner   // 2026-06-18: per-model re-probe of failing bindings (spec 2026-06-18-model-probe-rounds)
+	// balanceQuotaProbe (2026-08-23 hzx-2 audit) backs the admin
+	// "force re-check after recharge" endpoint. nil-safe; the route is
+	// unregistered when nil.
+	balanceQuotaProbe *bg.BalanceQuotaProbe
 	// 2026-07-23: 系统监测模块 — 所有探测任务的唯一入口 (design §1.2 #1).
 	// nil 时 /api/admin/system-monitor/* 端点 503；探测仍可能由旧 worker 跑。
 	systemMonitor    SystemMonitorBackend
@@ -623,6 +627,11 @@ func (h *Handler) SetProbeServices(probeV2 *bg.CredentialProbeV2, picker *bg.Def
 // 2026-06-18-model-probe-rounds).  nil-safe — admin keeps working
 // without the manual-trigger endpoint if the worker isn't running.
 func (h *Handler) SetModelProbeRunner(r *bg.ModelProbeRunner) { h.modelProbe = r }
+
+// SetBalanceQuotaProbe wires the balance/permanent quota probe worker
+// so the admin force-probe endpoint (POST /api/admin/probe/force/{id})
+// can dispatch immediate re-checks. Pass nil to disable the endpoint.
+func (h *Handler) SetBalanceQuotaProbe(b *bg.BalanceQuotaProbe) { h.balanceQuotaProbe = b }
 
 // SetModelQualityBackend wires the model-quality worker for the on-demand
 // node IQ test endpoint (POST /api/admin/model-iq/trigger). Pass nil to

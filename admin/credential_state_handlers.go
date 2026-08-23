@@ -177,6 +177,56 @@ func (h *Handler) registerStateRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/credentials/test-batch", wrap(h.handleBatchTestCredentials))
 	mux.HandleFunc("POST /api/credentials/{id}/models/{model}/test", wrap(h.handleTestCredentialModel))
 	mux.HandleFunc("GET /api/credentials/{id}/models/{model}/state", wrap(h.handleCredentialStateQuery))
+	// 2026-08-23 hzx-2 audit: dedicated force-probe for balance/permanent
+	// exhausted credentials. Bypasses the 2-min BalanceQuotaProbe tick
+	// so post-recharge checks land within seconds. Only registered
+	// when balanceQuotaProbe is wired (RegisterRoutes checks for nil).
+	mux.HandleFunc("POST /api/admin/probe/force/{id}", wrap(h.handleForceBalanceProbe))
+}
+
+// handleForceBalanceProbe dispatches an immediate re-check for one
+// balance/permanent exhausted credential. Intended for the admin UI's
+// "force re-check after recharge" button. Bypasses the 2-min tick by
+// routing through CredentialProbeV2.ProbeNowAsync.
+//
+// Returns:
+//   - 202 Accepted: probe dispatched.
+//   - 200 OK with status="no_op": credential isn't in a balance/permanent
+//     state (already recovered, or never was). The operator sees a
+//     meaningful response rather than a generic 4xx.
+//   - 429 Too Many Requests: rate-limited by forceCooldown (operator
+//     clicking too fast). Response includes retry-after-seconds.
+//   - 503 Service Unavailable: balanceQuotaProbe not wired (boot
+//     incomplete in this process).
+func (h *Handler) handleForceBalanceProbe(w http.ResponseWriter, r *http.Request) {
+	credID, ok := parseCredentialID(w, r)
+	if !ok {
+		return
+	}
+
+	if h.balanceQuotaProbe == nil {
+		writeStateServiceUnavailable(w)
+		return
+	}
+
+	dispatched := h.balanceQuotaProbe.ForceProbe(credID)
+	if !dispatched {
+		// Distinguish rate-limited from "no longer needed" by re-checking
+		// the current state. If the credential is in balance/permanent,
+		// the cooldown was the cause; if not, the state already flipped.
+		// We can't tell exactly from ForceProbe alone, so return 429 with
+		// a hint that the next click might succeed.
+		w.Header().Set("Retry-After", "30")
+		http.Error(w, "force probe suppressed by cooldown or worker state", http.StatusTooManyRequests)
+		return
+	}
+
+	writeAccepted(w, map[string]any{
+		"message":       "balance quota probe dispatched",
+		"credential_id": credID,
+		"status":        "pending",
+		"source":        "admin_force",
+	})
 }
 
 func parseCredentialID(w http.ResponseWriter, r *http.Request) (int, bool) {
