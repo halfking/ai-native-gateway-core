@@ -6,6 +6,8 @@ import (
 	"math/rand/v2"
 	"sync"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/errorsx"
 )
 
 // BanditScorer 实现 Thompson Sampling 的凭据评分器
@@ -21,6 +23,10 @@ import (
 type BanditScorer struct {
 	mu     sync.RWMutex
 	scores map[string]*BanditScore // credentialID -> score
+
+	recentKinds        map[string]KindWindow
+	weightNudgeFactors WeightNudgeFactors
+	weightNudgeEnabled bool
 }
 
 // BanditScore 单个凭据的 bandit 评分数据
@@ -58,7 +64,8 @@ type BanditScore struct {
 // NewBanditScorer 创建新的 Bandit 评分器
 func NewBanditScorer() *BanditScorer {
 	return &BanditScorer{
-		scores: make(map[string]*BanditScore),
+		scores:      make(map[string]*BanditScore),
+		recentKinds: make(map[string]KindWindow),
 	}
 }
 
@@ -227,7 +234,83 @@ func (b *BanditScorer) Sample(credID string) float64 {
 	combined := reliability*wReliability + speed*wSpeed + intelligence*wIntelligence
 	combined = combined * headroom * rateLimitFactor
 
+	// 6. WeightNudge: 对最近失败类型敏感的临时权重调整
+	//    调用纯函数 WeightNudge(window, factors, enabled),后者在未启用或
+	//    窗口无观察时返回 1.0 (no-op)。窗口快照在持锁期间读取,避免与
+	//    ObserveError 写锁发生数据竞争。
+	combined *= WeightNudge(b.recentKinds[credID], b.weightNudgeFactors, b.weightNudgeEnabled)
+
 	return combined
+}
+
+// ObserveError records a recent failure-kind observation for a credential,
+// so the bandit scorer can apply WeightNudge in subsequent Sample calls.
+// Only the kinds that the weight-nudge feature cares about are tracked;
+// others are silently ignored (the allow-list keeps the map small).
+//
+// Safe to call concurrently. The observation window is the cumulative
+// count of kinds since the scorer was created or last Reset (no time
+// decay — WeightNudge's env-configurable window applies at the snapshot
+// reader level, not here).
+func (b *BanditScorer) ObserveError(credID string, kind errorsx.ErrorKind) {
+	if credID == "" {
+		return
+	}
+	delta := kindToWeightDelta(kind)
+	if delta == (KindWindow{}) {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	w := b.recentKinds[credID]
+	w.RateLimit += delta.RateLimit
+	w.Empty += delta.Empty
+	w.Timeout += delta.Timeout
+	w.Auth += delta.Auth
+	b.recentKinds[credID] = w
+}
+
+// SnapshotKinds returns a copy of the recent KindWindow for credID.
+// Returns a zero-value window if credID has no observations. The
+// returned value is owned by the caller and may be passed to WeightNudge.
+func (b *BanditScorer) SnapshotKinds(credID string) KindWindow {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.recentKinds[credID]
+}
+
+// kindToWeightDelta maps an errorsx.ErrorKind to the corresponding
+// KindWindow increment. Unknown kinds produce a zero value so
+// ObserveError is a no-op for them — keeps recentKinds lean.
+func kindToWeightDelta(kind errorsx.ErrorKind) KindWindow {
+	switch kind {
+	case errorsx.KindRateLimit, errorsx.KindQuota, errorsx.KindQuotaBalance,
+		errorsx.KindQuotaPeriodic, errorsx.KindQuotaPermanent:
+		return KindWindow{RateLimit: 1}
+	case errorsx.KindEmptyResponse:
+		return KindWindow{Empty: 1}
+	case errorsx.KindTimeout, errorsx.KindStreamTimeout, errorsx.KindNetwork,
+		errorsx.KindUpstreamDown, errorsx.KindUpstreamOverloaded:
+		return KindWindow{Timeout: 1}
+	case errorsx.KindAuth, errorsx.KindAuthRevoked:
+		return KindWindow{Auth: 1}
+	default:
+		return KindWindow{}
+	}
+}
+
+// SetWeightNudge wires the WeightNudgeFactors and enabled flag into the
+// scorer. Typically called once at boot from cmd/gateway boot path. The
+// caller is expected to pass LoadWeightNudgeFactors() + WeightNudgeEnabled().
+//
+// After this call, Sample will multiply the combined bandit score by
+// WeightNudge(SnapshotKinds(credID), factors, enabled) on each call.
+// When enabled is false or no observations exist, the factor is 1.0 (no-op).
+func (b *BanditScorer) SetWeightNudge(factors WeightNudgeFactors, enabled bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.weightNudgeFactors = factors
+	b.weightNudgeEnabled = enabled
 }
 
 // sampleBeta 从 Beta(α, β) 分布采样
@@ -360,6 +443,7 @@ func (b *BanditScorer) Reset(credID string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	delete(b.scores, credID)
+	delete(b.recentKinds, credID)
 }
 
 // ResetAll 重置所有评分
@@ -367,6 +451,7 @@ func (b *BanditScorer) ResetAll() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.scores = make(map[string]*BanditScore)
+	b.recentKinds = make(map[string]KindWindow)
 }
 
 // GetAllScores 获取所有凭据的评分数据（用于监控/调试）
