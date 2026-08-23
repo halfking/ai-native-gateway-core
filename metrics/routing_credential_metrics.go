@@ -19,8 +19,12 @@ import (
 var (
 	// RoutingCredentialResetTotal 统计 admin 端点触发的凭据状态 reset。
 	//
-	// surface ∈ {db, in_memory_circuit, in_memory_credstate, redis_fpslot, ursmv2}
-	// result ∈ {ok, skipped, error}
+	// surface ∈ {lookup, db, in_memory_circuit, in_memory_credstate, redis_fpslot, ursmv2}
+	// result ∈ {ok, skipped, error, not_found}
+	//
+	// surface=lookup/result=not_found 区分 404（credential id 不存在，操作员
+	// 敲错 ID）与 500（reset 链路内部错误）；两者在 HTTP 层返回不同状态码，
+	// 指标层也应可区分（hzx-2 round-3 follow-up）。
 	//
 	// 运维可通过 "result=error" 的趋势判断 resetter 注入是否完整；
 	// 通过 "result=ok" 的总量判断节点被反复救活的频率（过高表示状态机有 bug）。
@@ -79,7 +83,14 @@ var (
 	}, []string{"reason"})
 
 	// RoutingPriorityCandidatesSelectedTotal records the selected routing
-	// bucket. outcome ∈ {priority_only, spillover_to_non_priority}.
+	// bucket at the end of planCandidates, classified by the first-attempt
+	// candidate. outcome ∈ {priority_only, spillover_to_non_priority,
+	// no_priority_candidates}:
+	//   - priority_only: ordered[0] is priority-eligible (priority bucket won)
+	//   - spillover_to_non_priority: a priority candidate existed in the pool
+	//     but a standard candidate is attempted first
+	//   - no_priority_candidates: no priority-eligible candidate in the pool
+	//     (baseline; expected when the feature flag is unused)
 	RoutingPriorityCandidatesSelectedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "llmgw_routing_priority_candidates_selected_total",
 		Help: "Routing selections by priority candidate outcome.",

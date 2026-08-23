@@ -556,7 +556,37 @@ func (r *Router) planCandidates(
 		recordOuterSource(statesource.StateSourceOff)
 	}
 
+	// Priority routing observability: classify the first-attempt candidate
+	// after every reordering pass (tier/billing, sticky, affinity, canary)
+	// has settled. ordered[0] is what the executor will try first, so this
+	// is the point where "did the priority bucket actually absorb traffic"
+	// becomes measurable. Only recorded when the feature flag is on so the
+	// no_priority_candidates baseline doesn't mask flag-off deployments.
+	if r.PriorityRoutingEnabled && len(ordered) > 0 {
+		met.RoutingPriorityCandidatesSelectedTotal.WithLabelValues(classifyPrioritySelection(ordered)).Inc()
+	}
+
 	return ordered
+}
+
+// classifyPrioritySelection maps the final ordered candidate list to the
+// outcome label of llmgw_routing_priority_candidates_selected_total:
+// priority_only (first attempt is priority-eligible),
+// spillover_to_non_priority (priority candidates exist but a standard
+// candidate is attempted first), or no_priority_candidates (baseline).
+func classifyPrioritySelection(ordered []provider.Candidate) string {
+	if len(ordered) == 0 {
+		return "no_priority_candidates"
+	}
+	if isPriorityBucketEligible(ordered[0]) {
+		return "priority_only"
+	}
+	for _, c := range ordered {
+		if isPriorityBucketEligible(c) {
+			return "spillover_to_non_priority"
+		}
+	}
+	return "no_priority_candidates"
 }
 
 func (r *Router) enqueueURSMv2Shadow(candidates, legacyOrder []provider.Candidate, tenant, canonical, requestID string) {
