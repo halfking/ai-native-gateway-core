@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Credential model drawer extras: IQ history chart + cross-credential check restored into `ModelOfferExtrasPanel`; identity chips deep-link to `/models?q=`.
 
 ### Fixed
+- **request_logs_hot.cost_usd / SessionStats 成本 KPI（migration 565）**：hot 近 7d 行 `cost_usd` 几乎全 NULL（多数 binding 无单价 + Candidate SQL COALESCE 0 + CNY display 死代码）。`AssignRequestCost` 写 USD/CNY display+FX 7.2；Candidate 从 `pricing_plans` 回退单价；565 补价/inherit/catalog_estimate（gpt-5.6-* KPI 估价）并重算 hot cost；564 GREATEST 抬升 summaries。
 - **session_summaries.request_count / cost 写路径（migration 563 + 564）**：实时写入落 `request_logs_hot` 后聚合触发器缺失，且 `update_session_summary()` 仍是 310 错误列名体，导致 SessionStats KPI 会话有数但请求/成本全 0。563 用 `gw_session_id`/`ts`/`cost_usd` 重写函数、触发器仅挂 hot（避免 promote 双计）、零计数回填；564 审计修正回填为 GREATEST/零计数安全语义（禁止 REPLACE 压扁累计）。同步修正 `sql/objects/functions/update_session_summary.sql`。已知 follow-up：hot 行 `cost_usd` 仍大多为 NULL（计费写入另切片）。
 
 ### Changed
