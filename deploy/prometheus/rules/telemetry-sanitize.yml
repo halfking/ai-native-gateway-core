@@ -28,6 +28,7 @@ groups:
           severity: critical
           component: telemetry
         annotations:
+          runbook: "docs/runbooks/telemetry-sanitize-discarded.md — 先跑 scripts/diag/245-minimax-m3-requestlog-investigation.sh：3b=真丢失（WAL 有/logs_hot 无），3c/3e=side-table 缺失；指标为 0 但 3b 有缺口时查 persist failed (SQLSTATE 22003)"
           summary: "Telemetry sanitize 丢弃事件 (field={{ $labels.field }}, source={{ $labels.source }}, stage={{ $labels.stage }})"
           description: |
             field={{ $labels.field }} source={{ $labels.source }}
@@ -44,6 +45,7 @@ groups:
           severity: warning
           component: telemetry
         annotations:
+          runbook: "docs/runbooks/telemetry-sanitize-discarded.md — 先跑 scripts/diag/245-minimax-m3-requestlog-investigation.sh：3b=真丢失（WAL 有/logs_hot 无），3c/3e=side-table 缺失；指标为 0 但 3b 有缺口时查 persist failed (SQLSTATE 22003)"
           summary: "Telemetry sanitize 持续 rescue (field={{ $labels.field }})"
           description: |
             持续 rescue 说明上游在发坏字节 —— sanitizeUTF8JSON 反复命中
@@ -70,6 +72,7 @@ groups:
           severity: critical
           component: telemetry
         annotations:
+          runbook: "docs/runbooks/telemetry-sanitize-discarded.md — 先跑 scripts/diag/245-minimax-m3-requestlog-investigation.sh：3b=真丢失（WAL 有/logs_hot 无），3c/3e=side-table 缺失；指标为 0 但 3b 有缺口时查 persist failed (SQLSTATE 22003)"
           summary: "关键 telemetry 字段被丢弃 ({{ $labels.field }})"
           description: |
             关键字段 {{ $labels.field }}（source={{ $labels.source }},
@@ -92,6 +95,7 @@ groups:
           severity: warning
           component: telemetry
         annotations:
+          runbook: "docs/runbooks/telemetry-sanitize-discarded.md — 先跑 scripts/diag/245-minimax-m3-requestlog-investigation.sh：3b=真丢失（WAL 有/logs_hot 无），3c/3e=side-table 缺失；指标为 0 但 3b 有缺口时查 persist failed (SQLSTATE 22003)"
           summary: "required_field_guard 持续丢弃 telemetry 事件"
           description: |
             required_field_guard 阶段在持续丢弃 telemetry 事件
