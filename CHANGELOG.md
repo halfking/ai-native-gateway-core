@@ -8,8 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Dashboard SessionStats 空状态兜底**：`SessionStatsRankings` 在 `modelUsage` 为空数组时显示 `topModelsEmpty`；`SessionStatsSignals` 在错误计数/错误率均为 0 时显示 `errorsEmpty`；中英文 i18n 同步。
+- **dashboard-trend-normalize 测试扩展**：`dashboard-trend-normalize.test.ts` 从 3 用例扩至 10 用例，覆盖 trend 断点、空窗口、数值回填、命名兼容、period 优先级、null trend 防御。
 - **sessionmeta provisional 集成测试**：`handler_provisional_metadata_test.go`（arrival wiring）、`auto_title_provisional_test.go`（enabled gate / 已有 title 跳过）；`titlestore` 收窄为 `dbPool` 接口以支持 pgxmock。
 - **sessionmeta 到达态 provisional 抽取（session-analysis/v1）**：规则引擎 `Extract` + 契约文档；handler 到达时投影 provisional title（尊重 auto-title enabled / 已有 title 不覆盖）；与 `AssignRequestCost` 并存。
+- **session_analysis_metadata 持久化（migration 567）**：arrival UPSERT `status=provisional` 完整 Result JSON；`input_hash` 不变跳过；无 title 时仍写 metadata。
 - Credential model drawer extras: IQ history chart + cross-credential check restored into `ModelOfferExtrasPanel`; identity chips deep-link to `/models?q=`.
 
 ### Fixed
