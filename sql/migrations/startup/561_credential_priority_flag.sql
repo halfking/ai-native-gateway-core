@@ -49,7 +49,9 @@ UPDATE public.candidate_binding_scope_revision r
  WHERE h.raw_model = r.raw_model;
 
 -- Expose the per-binding priority to routing reads and view updates.
-CREATE OR REPLACE VIEW public.model_offers AS
+DROP VIEW IF EXISTS public.model_offers CASCADE;
+
+CREATE VIEW public.model_offers AS
  SELECT cmb.id,
     cmb.credential_id,
     pm.canonical_id,
@@ -145,6 +147,14 @@ BEGIN
     RETURN NEW;
 END;
 $$;
+
+-- Recreate the view triggers after the update trigger function exists.
+DROP TRIGGER IF EXISTS model_offers_insert ON public.model_offers;
+DROP TRIGGER IF EXISTS model_offers_update ON public.model_offers;
+DROP TRIGGER IF EXISTS model_offers_delete ON public.model_offers;
+CREATE TRIGGER model_offers_insert INSTEAD OF INSERT ON public.model_offers FOR EACH ROW EXECUTE FUNCTION public.model_offers_insert_trigger();
+CREATE TRIGGER model_offers_update INSTEAD OF UPDATE ON public.model_offers FOR EACH ROW EXECUTE FUNCTION public.model_offers_update_trigger();
+CREATE TRIGGER model_offers_delete INSTEAD OF DELETE ON public.model_offers FOR EACH ROW EXECUTE FUNCTION public.model_offers_delete_trigger();
 
 -- Refresh routing caches when this per-binding routing input changes.
 DROP TRIGGER IF EXISTS trg_notify_auto_route_cmb_update ON public.credential_model_bindings;
