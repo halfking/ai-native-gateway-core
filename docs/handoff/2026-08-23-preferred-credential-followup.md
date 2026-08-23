@@ -257,3 +257,51 @@ curl -fsS https://llm.kxpms.cn/healthz   # 期望 200 + version=v2.4.7-87fa9814-
 ```
 
 如果上面任何一项不通过，**先停下来**，不要重做已 ship 的改动。
+
+---
+
+## 10. Post-refactor 状态 (2026-08-23 14:50 CST) — 第二轮 ship
+
+### 增量 commit (在 §0 列出的 fast-forward chain 之后又追加了 2 个)
+
+```
+1b8911573 fix(telemetry): align EmitRequestLogUpdate TenantID fallback with nonEmpty helper
+3e30967b9 scripts(diag): 245 minimax-m3 request_logs 调查脚本 — Step 6 版
+```
+
+- `1b8911573`：纯 refactor，把 `EmitRequestLogUpdate` 里硬编码的 `entry.TenantID = "default"` 改成 `entry.TenantID = nonEmpty(entry.TenantID, "default")`（与第 776/888/1211/1418/1510 行保持一致，避免两条 INSERT/UPDATE 路径 TenantID fallback drift）。同时修正了 `sanitize_prometheus.go` 注释里 `sanitizeEventsLabels` → `sanitizeFieldLabels` 标识符名错别字。
+- `3e30967b9`：diag 脚本 Step 6 版 — 把 `grep repaired by truncation` 改为 `grep rescued by truncation`，与 `client.go:2621/2655` 的 slog.Warn 文本一致。
+
+### 当前 ship 状态
+
+| 环境 | build_seq | git_sha | release path | status |
+|---|---|---|---|---|
+| 245 (pre-prod) | **1689** | `3e30967b` | `releases/1689-3e30967b/gateway` | active |
+| 154 (prod) | **1688** | `3e30967b` | `releases/1688-3e30967b/llm-gateway-go` | active |
+
+### Post-refactor 验证（重新跑了 prefcred smoke，确认 nonEmpty 重构没破坏 admin-pin）
+
+- **245 build 1689** request_id `d3b06124f05029da435fb338cc88da61`：routing_resolve → `top_provider_id=14, top_credential_id=42, top_raw_model=MiniMax-M3` → upstream_call_starting `https://api.minimaxi.com/v1/chat/completions` → upstream_status=200 ✅
+- **154 build 1688** request_id `0d9c5ba125afc0b78ebdba693bc3e624`：routing_resolve → `top_provider_id=14, top_credential_id=42, top_raw_model=MiniMax-M3` → upstream_call_starting `https://api.minimaxi.com/v1/chat/completions` → upstream_status=200 ✅
+
+`strings /opt/llm-gateway-go/{gateway,llm-gateway-go}` 双机都包含 `X-LLMGW-Preferred-Credential`、`X-LLMGW-Admin-Token`、`domains/streaming.ExtractPreferredCredential`、`domains/streaming.preferredCredentialFromBody` 四个标记。
+
+### §0 状态索引需要更新
+
+下次会话接手时把 §0 的 build_seq 改为：
+
+```
+- 154 prod: build 1688 (commit 3e30967b, /opt/llm-gateway-go/llm-gateway-go → releases/1688-3e30967b/llm-gateway-go)
+- 245 pre-prod: build 1689 (commit 3e30967b, /opt/llm-gateway-go/gateway → releases/1689-3e30967b/gateway)
+- HEAD: 3e30967b9
+```
+
+### 已知 working tree 噪音
+
+stash@{0} 存在第三方 team 的 WIP（halfking/halfking-other-team changes, preserve for audit），**不要触碰**。
+
+偶尔会出现 `VERSION / version.json / web/public/version.json` 的脏 diff（1687→1689 等），那是上一次部署/会话留下的版本号残留 — 不是有意的代码改动。如出现，`git checkout -- VERSION version.json web/public/version.json` 即可还原。
+
+### 关于"是否需要再 deploy"
+
+如果本地 main HEAD = origin/main HEAD，并且 origin/main 已包含 §10 列出的 1b8911573 + 3e30967b9，**不要再 deploy 245/154** — 它们已经跑的是最新代码，且本次新增的两个 commit 都是 telemetry 域 refactor + 文档脚本，**对运行行为零影响**。只需跑一次 prefcred smoke 确认 admin-pin 仍生效即可（§10 已记录）。
