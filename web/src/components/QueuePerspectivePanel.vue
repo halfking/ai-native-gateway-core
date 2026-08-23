@@ -41,13 +41,20 @@ import {
   nodeCapacity,
   quotaAllowsPriority,
 } from '../utils/queueNodeCards'
-import { credentialDisplayName as credentialLabelById } from '../composables/useCredentialLabels'
+import { credentialDisplayName as credentialLabelById, useCredentialLabels } from '../composables/useCredentialLabels'
 import RequestProcessingTrail from './RequestProcessingTrail.vue'
 import NodeDetailDrawer from './NodeDetailDrawer.vue'
 
 const { t } = useI18n()
 const queue = queueRef
 const nodes = nodesRef
+// 2026-08-23 凭据显示：订阅标签缓存 revision，让异步加载完成后
+// 队列深度行的凭据名称自动刷新。
+const { labelRevision } = useCredentialLabels()
+function credLabelById(id: number): string {
+  void labelRevision.value
+  return credentialLabelById(id)
+}
 
 // OBS-BE3 pipeline 总览：字段缺省（dispatch 未启用/未接线）时整层隐藏。
 const pipeline = computed(() => queue.value?.pipeline ?? null)
@@ -826,7 +833,7 @@ function formatTs(ts: string | undefined): string {
             </span>
           </div>
           <div v-for="c in topCredentials" :key="c.credential" class="qp-row">
-            <span class="qp-row-label">{{ credentialLabelById(c.credential) }}</span>
+            <span class="qp-row-label">{{ credLabelById(c.credential) }}</span>
             <div class="qp-bar qp-bar--sm">
               <div
                 class="qp-bar-fill qp-bar-fill--cred"

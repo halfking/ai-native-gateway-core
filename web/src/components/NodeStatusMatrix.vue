@@ -14,10 +14,17 @@ import { ref, computed, watch, onBeforeUnmount } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { nodesRef, type LiveNodeStatus } from '../composables/liveStreamStore'
 import NodeDetailDrawer from './NodeDetailDrawer.vue'
-import { credentialDisplayName } from '../composables/useCredentialLabels'
+import { credentialDisplayName, useCredentialLabels } from '../composables/useCredentialLabels'
 
 const { t } = useI18n()
 const nodes = nodesRef
+// 2026-08-23 凭据显示：订阅标签缓存 revision，让异步加载完成后
+// 节点矩阵的 credentialDisplayName 结果自动刷新。
+const { labelRevision } = useCredentialLabels()
+function nodeLabel(id: number): string {
+  void labelRevision.value
+  return credentialDisplayName(id)
+}
 
 // 弹窗默认不显示：内容 v-if 挂载，关闭即销毁，不做任何默认渲染/交互
 const showDialog = ref(false)
@@ -197,7 +204,7 @@ const hasNodes = computed(() => nodes.value.length > 0)
                     @keydown.space.prevent="openNode(n)"
                   >
                     <div class="nm-card-header">
-                      <span class="nm-card-id">{{ credentialDisplayName(n.credential_id) }}</span>
+                      <span class="nm-card-id">{{ nodeLabel(n.credential_id) }}</span>
                       <span class="nm-card-provider">{{ n.provider_code || `P${n.provider_id}` }}</span>
                     </div>
                     <div class="nm-card-states">
