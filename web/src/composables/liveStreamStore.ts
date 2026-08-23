@@ -52,6 +52,10 @@ export interface LiveRequest {
   retryReasonClass?: string
   parentRequestId?: string
   requestType?: 'chat' | 'title' | 'summary' | 'sensitive_word' | 'probe' | 'unknown'
+  // 2026-08-15 (24号 §4): stage 的呈现分类（routing/llm/retrying/terminal）。
+  // lifecycle patch 落到请求 tile 时写入；in-flight 且尚无分类的请求在
+  // 渲染前默认补 'routing'（见 normalizeRequests）。
+  stage_category?: 'routing' | 'llm' | 'retrying' | 'terminal'
 }
 
 /**

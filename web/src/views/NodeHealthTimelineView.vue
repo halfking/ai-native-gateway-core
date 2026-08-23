@@ -11,11 +11,20 @@ import {
   type NodeRecoveryEvent,
   type NodeRecoveryTimelineResponse,
 } from '../api/node-health'
+import { credentialDisplayName, useCredentialLabels } from '../composables/useCredentialLabels'
 
 const route = useRoute()
 const { t, locale } = useI18n()
 
 const credentialId = computed(() => String(route.params.credentialId || ''))
+
+// 凭据显示：订阅标签缓存 revision，标签异步加载完成后自动刷新。
+const { labelRevision } = useCredentialLabels()
+const credentialName = computed(() => {
+  void labelRevision.value
+  const id = Number(credentialId.value)
+  return Number.isFinite(id) && id > 0 ? credentialDisplayName(id) : credentialId.value
+})
 const events = ref<NodeRecoveryEvent[]>([])
 const loading = ref(false)
 const error = ref('')
@@ -88,7 +97,7 @@ onMounted(() => {
       <h2>{{ t('nodeHealthTimeline.title') }}</h2>
       <p class="nht-sub">
         <span>{{ t('nodeHealthTimeline.subtitle') }}</span>
-        <span class="nht-cred">{{ credentialId }}</span>
+        <span class="nht-cred" :title="`#${credentialId}`">{{ credentialName }}</span>
         <span v-if="observationDegraded" class="nht-chip is-warning">
           {{ t('nodeHealthTimeline.observationDegraded') }}
         </span>

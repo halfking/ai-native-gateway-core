@@ -11,6 +11,7 @@ import { __testing } from './liveStreamStore'
 import type {
   LiveRequest,
   LiveStreamDelta,
+  LiveStreamEnvelope,
   LiveStreamLane,
   LiveStreamTile,
 } from './liveStreamStore'
