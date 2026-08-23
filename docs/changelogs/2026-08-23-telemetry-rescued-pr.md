@@ -20,8 +20,8 @@
   - `field` ∈ `{request_body, response_body, outbound_body, compression_meta, discard_events, outbound_msg_hashes, quality_fix_actions, tool_calls, attachments, routing_attempts, auto_decision}` — 11 个
   - `source` ∈ `{string_field, json_field, raw_json_field}` — 3 个
   - `stage` ∈ `{sanitize, required_field_guard}` — 2 个
-  - 总共 11 × 2 × 3 × 2 = 132 个 series，PromQL 维度完全可枚举
-- `init()` 用 `Add(0)` 把 132 个组合全部 pre-init，避免首次 inc 时新增 series。
+  - 总共 12 × 2 × 3 × 2 = 144 个 series（含 required-field guard 的 `request_id`），PromQL 维度完全可枚举
+- `init()` 用 `Add(0)` 把 144 个组合全部 pre-init，避免首次 inc 时新增 series。
 - `incSanitizeEvent(outcome, field, source, stage)` 是单一 Inc seam。
 
 ### Layer 2 — 串接到所有 slog.Warn 处（Step 5）
