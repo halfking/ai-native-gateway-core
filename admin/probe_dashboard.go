@@ -1641,7 +1641,7 @@ func isProbeTaskCommand(command string) bool {
 
 func isProbeTaskSource(source string) bool {
 	switch source {
-	case "request_failure", "no_candidates", "periodic", "external_async", "admin", "integrity_probe_planner", "selfcheck":
+	case "request_failure", "periodic", "external_async", "admin", "integrity_probe_planner", "selfcheck":
 		return true
 	default:
 		return false

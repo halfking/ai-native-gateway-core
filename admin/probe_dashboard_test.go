@@ -20,8 +20,10 @@ func TestProbeTaskValidationDefaultsAndEnums(t *testing.T) {
 	if !isProbeTaskSource("admin") || !isProbeTaskSource("request_failure") || !isProbeTaskSource("periodic") {
 		t.Fatal("expected supported probe sources")
 	}
-	if isProbeTaskSource("unknown") {
-		t.Fatal("unknown probe source must be rejected")
+	for _, source := range []string{"unknown", "no_candidates"} {
+		if isProbeTaskSource(source) {
+			t.Fatalf("source %q must be rejected at the queue API boundary", source)
+		}
 	}
 }
 
