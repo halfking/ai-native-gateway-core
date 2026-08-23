@@ -19,10 +19,21 @@ type SessionPrefValue struct {
 
 type SessionPreference struct {
 	redis *RedisClient
+	ttl   time.Duration
 }
 
 func NewSessionPreference(redisClient *RedisClient) *SessionPreference {
-	return &SessionPreference{redis: redisClient}
+	return NewSessionPreferenceWithTTL(redisClient, SessionPreferenceTTL)
+}
+
+// NewSessionPreferenceWithTTL keeps the preference cache aligned with the
+// owning session lifetime. The legacy constructor remains available for tests
+// and callers that intentionally use the seven-day default.
+func NewSessionPreferenceWithTTL(redisClient *RedisClient, ttl time.Duration) *SessionPreference {
+	if ttl <= 0 {
+		ttl = SessionPreferenceTTL
+	}
+	return &SessionPreference{redis: redisClient, ttl: ttl}
 }
 
 func (sp *SessionPreference) redisKey(sessionID string) string {
@@ -64,7 +75,7 @@ func (sp *SessionPreference) Set(ctx context.Context, sessionID string, credenti
 	if err != nil {
 		return fmt.Errorf("json marshal session pref failed: %w", err)
 	}
-	return sp.redis.client.Set(ctx, sp.redisKey(sessionID), data, SessionPreferenceTTL).Err()
+	return sp.redis.client.Set(ctx, sp.redisKey(sessionID), data, sp.ttl).Err()
 }
 
 func (sp *SessionPreference) Delete(ctx context.Context, sessionID string) error {
