@@ -6079,17 +6079,19 @@ func main() {
 		if slotSuggester != nil {
 			slotSuggester.Stop()
 		}
+		// Stop the realtime listener before the refresher it drives, so no
+		// NOTIFY-scheduled refresh can start against a stopping refresher.
+		if autoRouteListener != nil {
+			autoRouteListener.Stop()
+		}
 		if autoIndexRefresher != nil {
 			autoIndexRefresher.Stop()
-			if autoRouteListener != nil {
-				autoRouteListener.Stop()
-			}
-			if healthAutoRecover != nil {
-				healthAutoRecover.Stop()
-			}
-			if autoHealWorker != nil {
-				autoHealWorker.Stop()
-			}
+		}
+		if healthAutoRecover != nil {
+			healthAutoRecover.Stop()
+		}
+		if autoHealWorker != nil {
+			autoHealWorker.Stop()
 		}
 		// Provider Profile System shutdown (Phase 1, 2026-07-26)
 		stopProviderProfile(profileWorkers)
