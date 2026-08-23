@@ -50,6 +50,7 @@ export interface RoutingCandidate {
   block_reason?: string | null
   runtime_block_reason?: string | null
   manual_priority?: number
+  priority?: boolean
   active_sessions?: number
   consecutive_failures?: number
   // R7: credential-level consecutive_failures (separate from cmb).

@@ -395,6 +395,7 @@ func (s *LiveStreamRedisStore) recordLocked(ctx context.Context, req LiveRequest
 	score := float64(ts.UnixMilli())
 
 	pipe := s.rdb.Pipeline()
+	trimKeys := make([]string, 0, 16)
 	if hasOldReq {
 		removeLiveRequestFromQueues(ctx, pipe, normalizeLiveStreamTenant(oldReq.TenantID), oldReq)
 	}
@@ -477,6 +478,7 @@ func (s *LiveStreamRedisStore) recordLocked(ctx context.Context, req LiveRequest
 		// 2026-07-23: 维度队列 24h TTL（泳道存在不超过 1 天）
 		pipe.Expire(ctx, key, liveStreamLaneQueueTTL)
 		trimLiveStreamQueue(pipe, ctx, key, liveStreamQueueKeepLimit(key))
+		trimKeys = append(trimKeys, key)
 	}
 	// 2026-07-23: 请求详情 4h TTL（一般请求不会跨 4 小时）
 	pipe.Set(ctx, liveStreamRequestDetailKey(tenantID, req.RequestID), data, liveStreamTTL)
@@ -503,6 +505,11 @@ func (s *LiveStreamRedisStore) recordLocked(ctx context.Context, req LiveRequest
 	_, err = pipe.Exec(ctx)
 	if err != nil {
 		return fmt.Errorf("redis pipeline exec failed: request_id=%s tenant_id=%s model=%s provider=%s category=%s queue_count=%d: %w", req.RequestID, tenantID, req.Model, req.ProviderCode, req.ModelCategory, len(queueKeys), err)
+	}
+	for _, key := range trimKeys {
+		if trimErr := selectiveTrimLiveStreamQueue(ctx, s.rdb, key, liveStreamQueueKeepLimit(key)); trimErr != nil {
+			slog.Debug("live stream selective trim failed", "key", key, "err", trimErr.Error())
+		}
 	}
 	if err := s.NotifyChange(ctx, tenantID, req.RequestID, instanceID); err != nil {
 		slog.Debug("live stream redis notify failed", "request_id", req.RequestID, "tenant_id", tenantID, "err", err.Error())
@@ -671,13 +678,11 @@ func liveStreamQueueKeepLimit(key string) int {
 	return LiveStreamLaneVisibleLimit
 }
 
-// trimLiveStreamQueue removes the oldest members so at most keep entries
-// remain (highest scores / newest requests). Called after every ZADD.
-func trimLiveStreamQueue(pipe redis.Pipeliner, ctx context.Context, key string, keep int) {
-	if keep <= 0 {
-		return
-	}
-	pipe.ZRemRangeByRank(ctx, key, 0, int64(-keep-1))
+// trimLiveStreamQueue is the pipeline-safe no-op placeholder kept for call
+// sites that batch ZADD inside a pipeline. Actual lifecycle-aware trimming
+// runs post-exec via selectiveTrimLiveStreamQueue.
+func trimLiveStreamQueue(pipe redis.Pipeliner, _ context.Context, _ string, _ int) {
+	_ = pipe
 }
 
 func liveRequestQueueKeys(tenantID string, req LiveRequest) []string {
@@ -1470,6 +1475,7 @@ func (s *LiveStreamRedisStore) ScanAndRecordIdleMarkers(ctx context.Context, ts 
 
 	// 3) Build + persist idle markers, writing only to the relevant lane(s).
 	writePipe := s.rdb.Pipeline()
+	idleTrimKeys := make([]string, 0, len(idle)*2)
 	for _, p := range idle {
 		// 2026-07-28 fix: use scan time (ts) for BOTH the marker Ts and
 		// the ZSet score. The previous implementation anchored both at
@@ -1507,6 +1513,7 @@ func (s *LiveStreamRedisStore) ScanAndRecordIdleMarkers(ctx context.Context, ts 
 			// 2026-07-23: idle marker 写入泳道队列，队列 TTL 用 24h（泳道存在 ≤ 1 天）
 			writePipe.Expire(ctx, qkey, liveStreamLaneQueueTTL)
 			trimLiveStreamQueue(writePipe, ctx, qkey, liveStreamQueueKeepLimit(qkey))
+			idleTrimKeys = append(idleTrimKeys, qkey)
 			// 2026-08-04 (方案C): keep the dim index SET in sync when an idle
 			// marker creates a dim queue (idle-only lane). Routes the key to the
 			// global vs tenant index, matching the Record() path.
@@ -1520,6 +1527,11 @@ func (s *LiveStreamRedisStore) ScanAndRecordIdleMarkers(ctx context.Context, ts 
 
 	if _, err := writePipe.Exec(ctx); err != nil && err != redis.Nil {
 		return fmt.Errorf("write idle markers failed: %w", err)
+	}
+	for _, qkey := range idleTrimKeys {
+		if trimErr := selectiveTrimLiveStreamQueue(ctx, s.rdb, qkey, liveStreamQueueKeepLimit(qkey)); trimErr != nil {
+			slog.Debug("live stream idle selective trim failed", "key", qkey, "err", trimErr.Error())
+		}
 	}
 	return nil
 }

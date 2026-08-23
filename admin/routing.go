@@ -121,6 +121,13 @@ type pgxAuditExecutor interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 }
 
+// quotaAllowsPriorityRouting mirrors provider candidate SQL:
+// COALESCE(c.quota_state, 'ok') = 'ok'.
+func quotaAllowsPriorityRouting(quotaState string) bool {
+	q := strings.ToLower(strings.TrimSpace(quotaState))
+	return q == "" || q == "ok"
+}
+
 func requestActor(r *http.Request) string {
 	// Prefer the verified AuthContext subject (super_admin / tenant_admin
 	// username) over the network address so audit rows stay attributable
@@ -191,6 +198,7 @@ type resolveCandidate struct {
 	RuntimeState          string   `json:"runtime_state"`
 	BlockReason           string   `json:"block_reason,omitempty"`
 	ManualPriority        int      `json:"manual_priority"`
+	Priority              bool     `json:"priority"`
 	ActiveSessions        int      `json:"active_sessions"`
 	// R7 fix: 前端将基于这个字段判断 show 重置计数按钮，
 	// 而 resolve 操作的是 credentials.consecutive_failures。
@@ -200,6 +208,42 @@ type resolveCandidate struct {
 	CompositeScore                float64 `json:"composite_score"`
 	BillingMode                   string  `json:"billing_mode"`
 	BillingRound                  int     `json:"billing_round"`
+}
+
+func sortResolveCandidatesStable(candidates []resolveCandidate) {
+	sort.SliceStable(candidates, func(i, j int) bool {
+		a, b := candidates[i], candidates[j]
+		aPriority := a.Priority && quotaAllowsPriorityRouting(a.QuotaState)
+		bPriority := b.Priority && quotaAllowsPriorityRouting(b.QuotaState)
+		if aPriority != bPriority {
+			return aPriority
+		}
+		if a.ManualPriority != b.ManualPriority {
+			return a.ManualPriority < b.ManualPriority
+		}
+		if a.Tier != b.Tier {
+			return a.Tier < b.Tier
+		}
+		if a.Weight != b.Weight {
+			return a.Weight > b.Weight
+		}
+		toProviderCandidate := func(c resolveCandidate) provider.Candidate {
+			return provider.Candidate{
+				CredentialID:        c.CredentialID,
+				Tier:                c.Tier,
+				ManualPriority:      c.ManualPriority,
+				PriceInPer1M:        c.UnitPriceInPer1M,
+				PriceOutPer1M:       c.UnitPriceOutPer1M,
+				Currency:            c.Currency,
+				ConcurrencyLimit:    c.ConcurrencyLimit,
+				ActiveSessions:      c.ActiveSessions,
+				ConsecutiveFailures: c.ConsecutiveFailures,
+				CompositeScore:      c.CompositeScore,
+				BillingMode:         c.BillingMode,
+			}
+		}
+		return executors.CompareCandidatePriority(toProviderCandidate(a), toProviderCandidate(b))
+	})
 }
 
 func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
@@ -269,6 +313,7 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 				COALESCE(cmb.routing_tier, 2) AS tier,
 				COALESCE(cmb.weight, 100) AS weight,
 				COALESCE(cmb.manual_priority, 99) AS manual_priority,
+				COALESCE(cmb.priority, FALSE) AS priority,
 				COALESCE(cmb.active_sessions, 0) AS active_sessions,
 				COALESCE(cmb.billing_mode, 'per_token') AS billing_mode,
 				mo.unit_price_in_per_1m,
@@ -347,7 +392,7 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 			&c.QuotaState, &c.QuotaRecoverAt, &c.ConcurrencyLimit, &c.EffectiveConcurrency,
 			&c.EffectiveAt, &c.ExpiresAt, &c.CredentialInEffect, &c.BalanceUSD,
 			&c.Tier, &c.Weight,
-			&c.ManualPriority, &c.ActiveSessions, &c.BillingMode,
+			&c.ManualPriority, &c.Priority, &c.ActiveSessions, &c.BillingMode,
 			&c.UnitPriceInPer1M, &c.UnitPriceOutPer1M, &c.Currency,
 			&c.ModelName, &c.StandardizedName,
 			&c.QuotaCapUSD, &c.QuotaUsedUSD,
@@ -444,37 +489,10 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	toProviderCandidate := func(c resolveCandidate) provider.Candidate {
-		return provider.Candidate{
-			CredentialID:        c.CredentialID,
-			Tier:                c.Tier,
-			ManualPriority:      c.ManualPriority,
-			PriceInPer1M:        c.UnitPriceInPer1M,
-			PriceOutPer1M:       c.UnitPriceOutPer1M,
-			Currency:            c.Currency,
-			ConcurrencyLimit:    c.ConcurrencyLimit,
-			ActiveSessions:      c.ActiveSessions,
-			ConsecutiveFailures: c.ConsecutiveFailures,
-			CompositeScore:      c.CompositeScore,
-			BillingMode:         c.BillingMode,
-		}
-	}
 	// Keep the persisted manual order authoritative on this page. Composite
 	// score remains a deterministic tie-breaker for candidates that share a
 	// priority, while unavailable candidates stay in the same ordered list.
-	sort.SliceStable(candidates, func(i, j int) bool {
-		a, b := candidates[i], candidates[j]
-		if a.ManualPriority != b.ManualPriority {
-			return a.ManualPriority < b.ManualPriority
-		}
-		if a.Tier != b.Tier {
-			return a.Tier < b.Tier
-		}
-		if a.Weight != b.Weight {
-			return a.Weight > b.Weight
-		}
-		return executors.CompareCandidatePriority(toProviderCandidate(a), toProviderCandidate(b))
-	})
+	sortResolveCandidatesStable(candidates)
 
 	for i := range candidates {
 		candidates[i].Rank = i + 1
