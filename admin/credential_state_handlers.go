@@ -179,8 +179,10 @@ func (h *Handler) registerStateRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/credentials/{id}/models/{model}/state", wrap(h.handleCredentialStateQuery))
 	// 2026-08-23 hzx-2 audit: dedicated force-probe for balance/permanent
 	// exhausted credentials. Bypasses the 2-min BalanceQuotaProbe tick
-	// so post-recharge checks land within seconds. Only registered
-	// when balanceQuotaProbe is wired (RegisterRoutes checks for nil).
+	// so post-recharge checks land within seconds. Always registered
+	// (so the URL is stable across deployments); the handler self-guards
+	// on h.balanceQuotaProbe == nil and returns 503 when the worker
+	// hasn't been wired in this process.
 	mux.HandleFunc("POST /api/admin/probe/force/{id}", wrap(h.handleForceBalanceProbe))
 }
 

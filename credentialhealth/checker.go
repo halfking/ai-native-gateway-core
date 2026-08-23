@@ -332,14 +332,14 @@ func (c *Checker) CheckAndUpdate(ctx context.Context, credentialID int, model st
 		effectiveMinSample = threshold.MinSampleSize
 	}
 
-	// The dominant-kind min sample size is stricter than the global
-	// one only for high-volume errors (e.g. rate_limit needs ≥8
-	// samples to fire). For low-frequency kinds (e.g. model_not_found
-	// wants 1) we want the lower of the two so a single auth failure
-	// can still trip the degradation.
-	minSamples := effectiveMinSample
+	// The dominant-kind min sample size is the STRICTER of the two:
+	// high-volume kinds (e.g. rate_limit with perKind=8 vs global=5)
+	// need more evidence before degrading; low-frequency kinds
+	// (e.g. model_not_found with perKind=1) already have a strict
+	// 100% threshold so they fall back to the global min.
+	minSamples := c.minSampleSize
 	if effectiveMinSample > c.minSampleSize {
-		minSamples = c.minSampleSize
+		minSamples = effectiveMinSample
 	}
 	if total < minSamples {
 		return nil // not enough samples for the dominant kind

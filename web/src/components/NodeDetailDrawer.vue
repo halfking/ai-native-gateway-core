@@ -40,7 +40,7 @@ const {
   activeTab, otherModelsLoaded, otherModelsLoading, loading, detailLoaded, detailLoading, requestsLoaded, requestsLoading,
   settingsLoaded, settingsLoading, loadError, candidate, candidateLoading, monitor, selectedModel,
   windowEntries, windowStats, windowSource, history, decisions, saving, actionMessage, actionError,
-  pingResult, lifecycle, manualPriority, routingTier, weight, modelActionReason, coreLoaded, coreLoading,
+  pingResult, lifecycle, manualPriority, priorityFlag, routingTier, weight, modelActionReason, coreLoaded, coreLoading,
   detailRequestId, visible, canEdit, editGateHint, currentNode, allModels, models, selectedModelStatus,
   resolvedProviderId, headlineState, errorKinds, failedWindowEntries, failedDecisions, otherModelsNeedRefresh,
   mergeMonitorModels, chooseModel, refreshCurrentTab,
@@ -51,7 +51,7 @@ const {
   testNow, saveSettings, onEmergencyApplied, setCredentialDisabled, toggleSelectedModel,
 } = useNodeDetailDrawerActions({
   emit, canEdit, currentNode, candidate, selectedModel, selectedModelStatus,
-  saving, actionMessage, actionError, pingResult, lifecycle, manualPriority, routingTier, weight,
+  saving, actionMessage, actionError, pingResult, lifecycle, manualPriority, priorityFlag, routingTier, weight,
   modelActionReason, detailRequestId, refreshCurrentTab,
 })
 
@@ -156,6 +156,7 @@ const node = currentNode
               :candidate-loading="candidateLoading"
               v-model:lifecycle="lifecycle"
               v-model:manual-priority="manualPriority"
+              v-model:priority-flag="priorityFlag"
               v-model:routing-tier="routingTier"
               v-model:weight="weight"
               v-model:model-action-reason="modelActionReason"

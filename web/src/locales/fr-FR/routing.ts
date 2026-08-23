@@ -228,6 +228,8 @@ export default {
       colRoutable: 'Routable',
       colTopCred: 'Top identifiant',
       replay: 'Réinterroger',
+      colPriority: 'Priorité',
+      priorityTooltip: 'Identifiant prioritaire : tant que le quota le permet, il prend le trafic en priorité ; une fois épuisé, le trafic bascule automatiquement. Indépendant du numéro d\'ordre.',
     },
     live: {
       simulatorTitle: 'Simulateur de routage',

@@ -426,6 +426,7 @@ const priorityErr = ref('')
 // reorders and stale revisions; the UI keeps both cases disabled.
 const resolveReorderRevision = ref<string>('')
 const resolveReorderCanonicalID = ref<number | null>(null)
+const resolveReorderRawModel = ref<string | null>(null)
 // 统一节点详情抽屉（明细 / 设置共用 NodeDetailDrawer）
 const nodeDrawerOpen = ref(false)
 const nodeDrawerNode = ref<LiveNodeStatus | null>(null)
@@ -488,16 +489,16 @@ const resolveUnavailableCount = computed(() =>
 const canReorderResolve = computed(() =>
   superAdmin
   && !reorderSaving.value
-  && resolveReorderCanonicalID.value !== null
+  && (resolveReorderCanonicalID.value !== null || resolveReorderRawModel.value !== null)
   && Boolean(resolveReorderRevision.value),
 )
 function resolveReorderDisabledHint(): string {
-  if (!superAdmin) return '仅超级管理员可以调整优先级。'
-  if (reorderSaving.value) return '正在保存优先级调整。'
+  if (!superAdmin) return '仅超级管理员可以调整排序。'
+  if (reorderSaving.value) return '正在保存排序调整。'
   if (!resolveReorderRevision.value) {
-    return '尚未拿到后端修订版本（可能合并了多个原始模型），无法安全调整优先级。'
+    return '尚未拿到后端修订版本（可能合并了多个原始模型），无法安全调整排序。'
   }
-  return '拖动以调整优先级'
+  return '拖动以调整排序'
 }
 
 function candidateBlockReason(c: RoutingCandidate): string {
@@ -576,8 +577,9 @@ async function onCandidateDrop(target: RoutingCandidate, event: DragEvent) {
   if (!superAdmin || sourceID === null || sourceID === target.credential_id || reorderSaving.value) return
   const expectedRevision = resolveReorderRevision.value
   const canonicalID = resolveReorderCanonicalID.value
-  if (!expectedRevision || canonicalID === null) {
-    reorderErr.value = '该模型分组合并了多个原始模型，无法安全调整优先级。'
+  const rawModel = resolveReorderRawModel.value
+  if (!expectedRevision || (canonicalID === null && rawModel === null)) {
+    reorderErr.value = '该模型分组合并了多个规范模型或多个原始模型，无法安全调整优先级。'
     return
   }
 
@@ -615,7 +617,11 @@ async function onCandidateDrop(target: RoutingCandidate, event: DragEvent) {
   reorderSaving.value = true
   reorderErr.value = ''
   try {
-    await reorderCandidateBindings(items, { canonicalId: canonicalID, expectedRevision })
+    await reorderCandidateBindings(items, {
+      canonicalId: canonicalID ?? undefined,
+      rawModel: rawModel ?? undefined,
+      expectedRevision,
+    })
     await doResolve()
   } catch (e: unknown) {
     resolveCandidates.value = previous
@@ -726,6 +732,7 @@ async function doResolve() {
     const reorderScope = singleCanonicalRevision(res)
     resolveReorderRevision.value = reorderScope.revision
     resolveReorderCanonicalID.value = reorderScope.canonicalID
+    resolveReorderRawModel.value = reorderScope.rawModel
     appendResolveLog(res, profile)
   } catch (e: unknown) {
     resolveErr.value = e instanceof Error ? e.message : t('routing.queryFailed')
@@ -748,28 +755,34 @@ async function refreshResolveSilent() {
     const reorderScope = singleCanonicalRevision(res)
     resolveReorderRevision.value = reorderScope.revision
     resolveReorderCanonicalID.value = reorderScope.canonicalID
+    resolveReorderRawModel.value = reorderScope.rawModel
   } catch {
     // swallow — keep stale list; next tick retries
   }
 }
 
 // singleCanonicalRevision returns the server's reorder revision only when
-// every candidate shares the exact same canonical_id. Raw model aliases may
-// differ inside that scope; genuinely mixed canonical models stay disabled.
-function singleCanonicalRevision(res: RoutingResolveResponse): { revision: string; canonicalID: number | null } {
+// every candidate shares the exact same canonical_id (canonical scope) or
+// every candidate shares the exact same raw_model_name (legacy fallback for
+// bindings whose provider rows have NULL canonical_id). Genuinely mixed
+// canonical models or mixed raw_model names stay disabled.
+function singleCanonicalRevision(res: RoutingResolveResponse): { revision: string; canonicalID: number | null; rawModel: string | null } {
   if (!res.reorder_revision || res.candidates.length === 0) {
-    return { revision: '', canonicalID: null }
+    return { revision: '', canonicalID: null, rawModel: null }
   }
   const canonicalID = res.candidates[0].canonical_id
-  if (!canonicalID || res.reorder_canonical_id !== canonicalID) {
-    return { revision: '', canonicalID: null }
-  }
-  for (const c of res.candidates) {
-    if (c.canonical_id !== canonicalID) {
-      return { revision: '', canonicalID: null }
+  if (canonicalID && res.reorder_canonical_id === canonicalID) {
+    if (res.candidates.every(c => c.canonical_id === canonicalID)) {
+      return { revision: res.reorder_revision, canonicalID, rawModel: null }
     }
   }
-  return { revision: res.reorder_revision, canonicalID }
+  const rawModel = res.candidates[0].model_name
+  if (rawModel && res.reorder_raw_model === rawModel) {
+    if (res.candidates.every(c => c.model_name === rawModel)) {
+      return { revision: res.reorder_revision, canonicalID: null, rawModel }
+    }
+  }
+  return { revision: '', canonicalID: null, rawModel: null }
 }
 
 function replayFromLog(entry: ResolveLogEntry) {
@@ -1378,6 +1391,7 @@ onUnmounted(() => stopPoll())
             >{{ resolveReorderDisabledHint() }}</span>
           </div>
           <div v-if="reorderErr" class="text-danger reorder-error">{{ reorderErr }}</div>
+          <div v-else-if="priorityErr" class="text-danger reorder-error">{{ priorityErr }}</div>
         </div>
         <div v-if="resolveCandidates.length === 0" class="empty-hint">该模型暂无凭据配置</div>
         <div v-else class="table-wrap">
@@ -1417,7 +1431,7 @@ onUnmounted(() => stopPoll())
                 @drop="onCandidateDrop(c, $event)"
                 @dragend="onCandidateDragEnd"
               >
-                <td v-if="superAdmin" class="drag-cell" :title="resolveReorderDisabledHint()" aria-label="拖动以调整优先级">⠿</td>
+                <td v-if="superAdmin" class="drag-cell" :title="resolveReorderDisabledHint()" aria-label="拖动以调整排序">⠿</td>
                 <td class="rank-cell">{{ i + 1 }}</td>
                 <td>
                   <span class="badge" :class="resolveStateBadge(c).cls">
@@ -1434,9 +1448,38 @@ onUnmounted(() => stopPoll())
                 <td><code class="mono-sm">{{ c.model_name }}</code></td>
                 <td>
                   T{{ c.tier }} · w{{ c.weight }}
-                  <span v-if="c.manual_priority != null && c.manual_priority !== 99" class="text-muted">
+                  <span
+                    v-if="c.manual_priority != null && c.manual_priority !== 99"
+                    class="text-muted"
+                    title="排序序号：数字越小越靠前，只决定顺序，不保证独占流量"
+                  >
                     · p{{ c.manual_priority }}
                   </span>
+                </td>
+                <td class="priority-cell" :class="{ 'is-saving': isCandidatePrioritySaving(c) }">
+                  <label
+                    v-if="superAdmin"
+                    class="priority-toggle"
+                    :title="t('routing.dashboard.resolve.priorityTooltip')"
+                  >
+                    <input
+                      type="checkbox"
+                      :checked="!!c.priority"
+                      :disabled="candidatePriorityDisabled(c)"
+                      :aria-label="`优先凭据 ${credentialDisplayName(c.credential_id)}`"
+                      @change="saveCandidatePriority(c, ($event.target as HTMLInputElement).checked)"
+                    />
+                    <span v-if="c.priority" class="priority-star" aria-hidden="true">★</span>
+                  </label>
+                  <template v-else>
+                    <span
+                      v-if="c.priority"
+                      class="priority-star"
+                      :title="t('routing.dashboard.resolve.priorityTooltip')"
+                      :aria-label="t('routing.dashboard.resolve.priorityTooltip')"
+                    >★</span>
+                    <span v-else class="text-muted">—</span>
+                  </template>
                 </td>
                 <td class="row-actions">
                   <button class="btn btn-ghost btn-sm" type="button" @click="openCandidateDetail(c)">
@@ -2081,6 +2124,29 @@ onUnmounted(() => stopPoll())
   font-variant-numeric: tabular-nums;
   text-align: right;
 }
+.resolve-row .priority-cell {
+  text-align: center;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+.resolve-row .priority-cell .priority-star {
+  color: #fbbf24;
+  font-size: 14px;
+  line-height: 1;
+}
+.resolve-row .priority-cell .priority-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  margin: 0;
+}
+.resolve-row .priority-cell .priority-toggle input[type='checkbox'] {
+  width: 14px;
+  height: 14px;
+  accent-color: #fbbf24;
+}
+.resolve-row .priority-cell.is-saving { opacity: .55; }
 .reorder-error { color: var(--kx-danger); font-size: 10px; }
 .resolve-picker { min-width: 200px; }
 .resolve-profile { font-size: 11px; padding: 3px 6px; }
