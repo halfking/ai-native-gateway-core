@@ -30,6 +30,7 @@ export type FetchCtx = {
   decisions: Ref<CredentialRoutingDecision[]>
   lifecycle: Ref<CredentialLifecycleStatus>
   manualPriority: Ref<number>
+  priorityFlag: Ref<boolean>
   routingTier: Ref<number>
   weight: Ref<number>
   coreLoaded: Ref<boolean>
@@ -71,6 +72,7 @@ export function createNodeDetailFetchers(ctx: FetchCtx) {
       ctx.candidate.value = result.candidates.find(i => i.credential_id === node.credential_id && i.model_name === model) ?? null
       ctx.lifecycle.value = (ctx.candidate.value?.lifecycle_status ?? 'active') as CredentialLifecycleStatus
       ctx.manualPriority.value = ctx.candidate.value?.manual_priority ?? 99
+      ctx.priorityFlag.value = ctx.candidate.value?.priority ?? false
       ctx.routingTier.value = ctx.candidate.value?.tier ?? 2
       ctx.weight.value = ctx.candidate.value?.weight ?? 100
       return true

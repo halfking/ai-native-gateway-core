@@ -945,7 +945,25 @@ func (r *Router) planByTier(ctx context.Context, candidates []provider.Candidate
 		// health-aware order produced above for failover.
 		if len(sorted) > 1 {
 			counter := r.nextWeightCounter(sorted)
-			sorted = promoteWeightedCandidate(sorted, counter)
+			// Priority gate: the weighted lottery must stay inside the
+			// leading priority bucket, otherwise a high-weight standard
+			// candidate gets promoted to index 0 and receives the first
+			// attempt over priority-eligible ones. The partition above
+			// guarantees eligible candidates form a prefix; when the bucket
+			// is all-priority or all-standard the promotion is unchanged.
+			if r.PriorityRoutingEnabled {
+				if head := priorityPrefixLen(sorted); head > 0 && head < len(sorted) {
+					promoted := promoteWeightedCandidate(sorted[:head], counter)
+					merged := make([]provider.Candidate, 0, len(sorted))
+					merged = append(merged, promoted...)
+					merged = append(merged, sorted[head:]...)
+					sorted = merged
+				} else {
+					sorted = promoteWeightedCandidate(sorted, counter)
+				}
+			} else {
+				sorted = promoteWeightedCandidate(sorted, counter)
+			}
 		}
 
 		ordered = append(ordered, sorted...)
@@ -1372,7 +1390,13 @@ func applyProtocolAffinity(ordered []provider.Candidate, pref []string) []provid
 		if ri != rj {
 			return ri < rj
 		}
-		return ordered[i].SuccessRate > ordered[j].SuccessRate
+		// Same protocol rank: preserve the incoming order. Affinity's
+		// job is to group preferred protocols first, never to re-rank
+		// within a group — the earlier SuccessRate fallback silently
+		// erased the priority bucket, sticky pin, weighted first
+		// attempt, and tier/billing ordering in the single-protocol
+		// common case (the default egress preference is one protocol).
+		return false
 	})
 	return ordered
 }
@@ -1463,6 +1487,21 @@ func stablePartitionPriority(cands []provider.Candidate) []provider.Candidate {
 		}
 	}
 	return append(prio, rest...)
+}
+
+// priorityPrefixLen returns the length of the leading run of
+// priority-eligible candidates. Callers feed it a stable-partitioned
+// slice (see stablePartitionPriority), so eligibility is contiguous
+// from index 0.
+func priorityPrefixLen(cands []provider.Candidate) int {
+	n := 0
+	for _, c := range cands {
+		if !isPriorityBucketEligible(c) {
+			break
+		}
+		n++
+	}
+	return n
 }
 
 // CompareCandidatePriority returns true when a should sort before b.
