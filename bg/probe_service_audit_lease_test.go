@@ -264,6 +264,13 @@ func TestProbeQueueDefaultLeaseIsProbeQueueLeaseDefault(t *testing.T) {
 	}
 }
 
+func TestProbeQueueWorkerAlwaysClaimsOneTaskPerWorker(t *testing.T) {
+	worker := NewProbeQueueWorker(ProbeQueueWorkerConfig{BatchSize: 10})
+	if worker.cfg.BatchSize != 1 {
+		t.Fatalf("BatchSize = %d, want 1 to avoid serial lease loss", worker.cfg.BatchSize)
+	}
+}
+
 // silence unused import warning when this file is the only one in the package
 // referencing these — Go's compiler is happy, this is documentation.
 var _ = sync.Mutex{}

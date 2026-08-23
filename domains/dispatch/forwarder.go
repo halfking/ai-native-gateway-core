@@ -32,7 +32,7 @@ func newCredForwarder(cred CredentialRef, queueDepth int, pipe *Pipeline) *credF
 		cred:   cred,
 		queue:  make(chan *QueuedRequest, queueDepth),
 		limit:  int64(queueDepth),
-		gov:    newGovernor(cred),
+		gov:    pipe.governorForCredential(cred),
 		pipe:   pipe,
 		ctx:    ctx,
 		cancel: cancel,

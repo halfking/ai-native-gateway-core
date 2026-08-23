@@ -8,9 +8,12 @@ package dispatch
 // the container-level contract only.
 
 import (
+	"context"
+	"errors"
 	"strconv"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestSetGovernorBackendNilReceiverIsNoOp(t *testing.T) {
@@ -111,5 +114,63 @@ func TestPipelineWiresGovernorBackend(t *testing.T) {
 	p.Start()
 	if got := p.GovernorBackend(); got != backend {
 		t.Fatalf("GovernorBackend() after Start: got %v want %v", got, backend)
+	}
+}
+
+func TestPipelineUsesRedisEnforceBackendForConcurrencyForwarder(t *testing.T) {
+	ref := cred(7, ModeConcurrency, 3)
+	backendGovernor := newNoopGovernor()
+	backend := &fakeBackend{kind: BackendRedisEnforce, name: "redis", newGov: backendGovernor}
+	p := NewPipeline(Deps{})
+	defer p.Stop()
+	p.SetGovernorBackend(backend)
+
+	forwarder := p.getOrCreateForwarder(ref)
+	if forwarder.gov != backendGovernor {
+		t.Fatalf("forwarder governor = %T, want backend governor", forwarder.gov)
+	}
+	if backend.newCalls != 1 {
+		t.Fatalf("backend New calls = %d, want 1", backend.newCalls)
+	}
+}
+
+func TestPipelineUsesRedisEnforceForDefaultConcurrencyMode(t *testing.T) {
+	backendGovernor := newNoopGovernor()
+	backend := &fakeBackend{kind: BackendRedisEnforce, name: "redis", newGov: backendGovernor}
+	p := NewPipeline(Deps{})
+	defer p.Stop()
+	p.SetGovernorBackend(backend)
+
+	forwarder := p.getOrCreateForwarder(CredentialRef{CredentialID: 10, ConcurrencyLimit: 2})
+	if forwarder.gov != backendGovernor {
+		t.Fatalf("forwarder governor = %T, want backend governor for default concurrency mode", forwarder.gov)
+	}
+}
+
+func TestPipelineKeepsLocalGovernorForRateModes(t *testing.T) {
+	backend := &fakeBackend{kind: BackendRedisEnforce, name: "redis", newGov: newNoopGovernor()}
+	p := NewPipeline(Deps{})
+	defer p.Stop()
+	p.SetGovernorBackend(backend)
+
+	forwarder := p.getOrCreateForwarder(CredentialRef{CredentialID: 8, ConcurrencyMode: ModeRPM, RPMLimit: 10})
+	if forwarder.gov.Mode() != ModeRPM {
+		t.Fatalf("rate governor mode = %q, want %q", forwarder.gov.Mode(), ModeRPM)
+	}
+	if backend.newCalls != 0 {
+		t.Fatalf("backend New calls = %d, want 0 for RPM", backend.newCalls)
+	}
+}
+
+func TestPipelineFailsClosedWhenRedisGovernorConstructionFails(t *testing.T) {
+	backend := &fakeBackend{kind: BackendRedisEnforce, name: "redis", newErr: errors.New("redis unavailable")}
+	p := NewPipeline(Deps{})
+	defer p.Stop()
+	p.SetGovernorBackend(backend)
+
+	forwarder := p.getOrCreateForwarder(cred(9, ModeConcurrency, 1))
+	err := forwarder.gov.Acquire(context.Background(), NewQueuedRequest("r", "t", "m", context.Background(), nil), time.Now())
+	if !IsGovernorUnavailable(err) {
+		t.Fatalf("Acquire error = %v, want ErrGovernorUnavailable", err)
 	}
 }
