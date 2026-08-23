@@ -15,7 +15,7 @@ import { detectTheme, logoSrc } from './theme'
 import { SITE_LOGO_SIZE, SITE_TITLE, SITE_TITLE_LINE_ONE, SITE_TITLE_LINE_TWO } from './config/brand'
 import { useLoginModal } from './composables/useLoginModal'
 import { onMaintainAvailabilityChange, probeMaintainAvailable } from './config/edition'
-import { loadCredentialLabels } from './composables/useCredentialLabels'
+import { loadCredentialLabels, clearCredentialLabels } from './composables/useCredentialLabels'
 
 const { t } = useI18n()
 const route = useRoute()
@@ -119,9 +119,13 @@ watch(
 
 // 2026-08-23 (凭据显示) : 全局加载凭据名称缓存。selfcheck/stream/节点矩阵
 // 等视图通过 useCredentialLabels 共享这份缓存，避免子组件各自拉取。
+// 登出时必须清空，否则下一位用户（尤其跨租户）会在 TTL 内看到上一
+// 用户的凭据标签——这是跨租户信息泄露。
 watch(isLoggedIn, (loggedIn) => {
   if (loggedIn) {
     void loadCredentialLabels()
+  } else {
+    clearCredentialLabels()
   }
 }, { immediate: true })
 

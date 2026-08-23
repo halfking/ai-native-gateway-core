@@ -2,7 +2,7 @@
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Close, RefreshRight } from '@element-plus/icons-vue'
-import { credentialDisplayName as credentialLabelById } from '../composables/useCredentialLabels'
+import { credentialDisplayName as credentialLabelById, useCredentialLabels } from '../composables/useCredentialLabels'
 import {
   getRequestJourney,
   getRequestJourneyQueues,
@@ -20,6 +20,13 @@ import { isSuperAdmin, store } from '../store'
 import RoutingAttemptsTimeline from './RoutingAttemptsTimeline.vue'
 
 const { t, locale } = useI18n()
+// 2026-08-23 凭据显示：订阅标签缓存 revision，让异步加载完成后
+// 节点分组标题的 credentialLabelById 结果自动刷新。
+const { labelRevision } = useCredentialLabels()
+function nodeLabel(id: number): string {
+  void labelRevision.value
+  return credentialLabelById(id)
+}
 const DEFAULT_CAPACITY = 100
 
 interface QueueGroup {
@@ -123,7 +130,7 @@ const groups = computed<QueueGroup[]>(() => {
     label: t('requestJourneys.nodeGroup', {
       model: snapshot.model,
       provider: snapshot.provider_id ?? '—',
-      node: credentialLabelById(snapshot.credential_id),
+      node: nodeLabel(snapshot.credential_id),
     }),
     capacity: snapshot.capacity || DEFAULT_CAPACITY,
     requests: snapshot.requests ?? [],
