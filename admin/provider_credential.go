@@ -22,13 +22,16 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/provider"
 )
@@ -439,7 +442,7 @@ func (h *Handler) updateCredential(w http.ResponseWriter, r *http.Request, provi
 		FROM credentials
 		WHERE id = $1 AND provider_id = $2
 		FOR UPDATE`, credID, providerID).Scan(&currentConcurrency, &currentFpSlot, &previousPlan, &currentRevision); err != nil {
-		if err.Error() == "no rows in result set" {
+		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "credential not found")
 		} else {
 			writeError(w, http.StatusInternalServerError, "load credential failed: "+err.Error())
@@ -532,6 +535,7 @@ func (h *Handler) updateCredential(w http.ResponseWriter, r *http.Request, provi
 			writeError(w, http.StatusInternalServerError, "commit: "+err.Error())
 			return
 		}
+		provider.InvalidateAllCandidateCache()
 		writeJSON(w, http.StatusOK, map[string]any{"credential_id": credID, "revision": currentRevision, "message": "updated"})
 		return
 	}
@@ -551,6 +555,28 @@ func (h *Handler) updateCredential(w http.ResponseWriter, r *http.Request, provi
 			WHERE cmb.credential_id = $2 AND cmb.plan_type_origin = 'auto'`, *req.PlanType, credID); err != nil {
 			writeError(w, http.StatusInternalServerError, "cascade credential model bindings failed: "+err.Error())
 			return
+		}
+	}
+	if req.FpSlotLimit != nil {
+		// Audit log (best-effort, no PII) — restored from the pre-Stage E
+		// handler and moved inside the same transaction as the value
+		// change so the history row cannot diverge from the new limit.
+		actor := "admin"
+		if v := r.Header.Get("X-Admin-User"); v != "" {
+			actor = v
+		}
+		oldVal := "null"
+		if currentFpSlot.Valid {
+			oldVal = strconv.Itoa(int(currentFpSlot.Int32))
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO settings_history (key, old_value, new_value, changed_by, source)
+			VALUES ($1, $2, $3, $4, 'api')`,
+			fmt.Sprintf("credential:%d:fp_slot_limit", credID),
+			oldVal,
+			strconv.Itoa(*req.FpSlotLimit),
+			actor); err != nil {
+			slog.Warn("fp_slot_limit audit insert failed", "credential_id", credID, "error", err)
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {

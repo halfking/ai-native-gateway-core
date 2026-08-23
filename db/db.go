@@ -2485,8 +2485,13 @@ func (d *DB) ensureCredentialGovernorRevision(ctx context.Context) error {
 			AS BIGINT START WITH 1 MINVALUE 1;
 		SELECT setval(
 			'public.credentials_governor_revision_seq',
-			GREATEST(COALESCE((SELECT MAX(revision) FROM public.credentials), 0), 1),
+			GREATEST(
+				COALESCE((SELECT MAX(revision) FROM public.credentials), 0),
+				COALESCE(pg_sequence_last_value('public.credentials_governor_revision_seq'), 0),
+				1
+			),
 			COALESCE((SELECT MAX(revision) FROM public.credentials), 0) > 0
+				OR pg_sequence_last_value('public.credentials_governor_revision_seq') IS NOT NULL
 		);
 		CREATE INDEX IF NOT EXISTS credentials_revision_idx ON public.credentials (revision);
 		COMMENT ON COLUMN public.credentials.revision IS
@@ -2505,6 +2510,8 @@ func (d *DB) ensureCredentialGovernorRevision(ctx context.Context) error {
 			   OR OLD.max_queue_depth IS DISTINCT FROM NEW.max_queue_depth
 			   OR OLD.max_queue_wait_ms IS DISTINCT FROM NEW.max_queue_wait_ms THEN
 				NEW.revision := nextval('public.credentials_governor_revision_seq');
+			ELSE
+				NEW.revision := OLD.revision;
 			END IF;
 			RETURN NEW;
 		END;

@@ -16,6 +16,8 @@ BEGIN
        OR OLD.max_queue_depth IS DISTINCT FROM NEW.max_queue_depth
        OR OLD.max_queue_wait_ms IS DISTINCT FROM NEW.max_queue_wait_ms THEN
         NEW.revision := nextval('public.credentials_governor_revision_seq');
+    ELSE
+        NEW.revision := OLD.revision;
     END IF;
     RETURN NEW;
 END;

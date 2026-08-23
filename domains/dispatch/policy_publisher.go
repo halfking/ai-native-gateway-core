@@ -16,12 +16,12 @@ import (
 const credentialsRevisionChannel = "credentials_revision"
 
 // PolicyPublisher listens for globally ordered credential governor revisions,
-// materializes an immutable GovernorPolicy from PostgreSQL, and applies it
-// through the production ApplyPolicySnapshot on every credForwarder.
+// materializes GovernorPolicy metadata from PostgreSQL, and publishes the
+// active revision to the selected backend.
 //
-// Phase scope: rebuild/replace of live credForwarder governors is explicitly
-// Stage D's forward path. Stage E ends at policy publication; existing
-// forwarders keep their local governor until Phase 2 swaps them.
+// Stage E scope: publication only. No production ApplyPolicySnapshot is
+// wired onto the Pipeline yet, and live credForwarder governors keep their
+// local construction — the forward-path swap is the follow-up stage.
 type PolicyPublisher struct {
 	pool     *pgxpool.Pool
 	pipeline *Pipeline
@@ -31,7 +31,7 @@ type PolicyPublisher struct {
 	startMu      sync.Mutex
 	started      bool
 	stopped      bool
-	stopCh       chan struct{}
+	cancel       context.CancelFunc
 	wg           sync.WaitGroup
 }
 
@@ -39,11 +39,11 @@ func NewPolicyPublisher(pool *pgxpool.Pool, pipeline *Pipeline) *PolicyPublisher
 	return &PolicyPublisher{
 		pool:     pool,
 		pipeline: pipeline,
-		stopCh:   make(chan struct{}),
 	}
 }
 
-// Start is idempotent and does not block. LISTEN is registered before the
+// Start is idempotent and does not block. Cancelling the parent context
+// stops the publisher, as does Stop. LISTEN is registered before the
 // first catch-up so a revision committed during catch-up cannot be missed.
 func (p *PolicyPublisher) Start(parent context.Context) {
 	if p == nil || p.pool == nil || p.pipeline == nil {
@@ -57,9 +57,11 @@ func (p *PolicyPublisher) Start(parent context.Context) {
 	if p.started || p.stopped {
 		return
 	}
+	ctx, cancel := context.WithCancel(parent)
+	p.cancel = cancel
 	p.started = true
 	p.wg.Add(1)
-	go p.run()
+	go p.run(ctx)
 }
 
 // Stop is safe before Start and on repeated calls.
@@ -73,28 +75,18 @@ func (p *PolicyPublisher) Stop() {
 		return
 	}
 	p.stopped = true
-	close(p.stopCh)
-	if p.started {
-		p.startMu.Unlock()
-		p.wg.Wait()
-		return
+	if p.cancel != nil {
+		p.cancel()
 	}
+	started := p.started
 	p.startMu.Unlock()
+	if started {
+		p.wg.Wait()
+	}
 }
 
-func (p *PolicyPublisher) run() {
+func (p *PolicyPublisher) run(ctx context.Context) {
 	defer p.wg.Done()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	ctx, stopFromSignal := context.WithCancel(ctx)
-	go func() {
-		select {
-		case <-p.stopCh:
-			stopFromSignal()
-		case <-ctx.Done():
-		}
-	}()
 
 	// Acquire the dedicated LISTEN connection first so notifications fired
 	// during the initial catch-up are buffered by PostgreSQL and applied
@@ -123,9 +115,9 @@ func (p *PolicyPublisher) run() {
 				return
 			}
 			slog.Warn("dispatch policy publisher notification wait failed", "error", waitErr)
-			// Reconnect and retry. Catch-up is invoked after LISTEN so any
-			// notifications that fired while we were disconnected are
-			// recovered via the revision-bounded DB catch-up query.
+			// Reconnect and retry. Catch-up runs after LISTEN so any
+			// notifications that fired while disconnected are recovered
+			// via the revision-bounded DB catch-up query.
 			newConn, retryErr := p.acquireListenConn(ctx)
 			if retryErr != nil {
 				if ctx.Err() != nil {
@@ -144,13 +136,16 @@ func (p *PolicyPublisher) run() {
 			}
 			continue
 		}
-		if rev, parseErr := parseCredentialsRevision(notification.Payload); parseErr != nil {
+		rev, parseErr := parseCredentialsRevision(notification.Payload)
+		if parseErr != nil {
 			slog.Warn("dispatch policy publisher ignored invalid revision", "payload", notification.Payload, "error", parseErr)
 			continue
-		} else if rev > p.lastRevision.Load() {
-			if err := p.publishCatchUpWithRetry(ctx); err != nil {
-				slog.Warn("dispatch policy publisher catch-up exhausted retries", "revision", rev, "error", err)
-			}
+		}
+		if rev <= p.lastRevision.Load() {
+			continue
+		}
+		if err := p.publishCatchUpWithRetry(ctx); err != nil {
+			slog.Warn("dispatch policy publisher catch-up exhausted retries", "revision", rev, "error", err)
 		}
 	}
 }
@@ -190,15 +185,19 @@ func (p *PolicyPublisher) publishCatchUpWithRetry(ctx context.Context) error {
 	return lastErr
 }
 
+// publishCatchUp loads every credential whose revision is at or above the
+// last published revision. On the initial catch-up (lastRevision == 0)
+// this is the complete credential set; afterwards it is the delta since
+// the last publication. Because Stage E has no live policy applier, the
+// resulting GovernorPolicy is publication metadata: the backend is
+// notified and the pipeline's active revision stamp is advanced.
 func (p *PolicyPublisher) publishCatchUp(ctx context.Context) error {
 	p.publishMu.Lock()
 	defer p.publishMu.Unlock()
 	last := p.lastRevision.Load()
 
-	// Pull the full snapshot, not just the delta, because ApplyPolicySnapshot
-	// expects to atomically replace the active policy.
 	rows, err := p.pool.Query(ctx, `
-		SELECT id, provider_id, concurrency_mode,
+		SELECT id, provider_id, COALESCE(concurrency_mode, 'concurrency'),
 		       COALESCE(concurrency_limit, 0), COALESCE(rpm_limit, 0),
 		       COALESCE(tpm_limit, 0), revision
 		FROM public.credentials
@@ -210,14 +209,13 @@ func (p *PolicyPublisher) publishCatchUp(ctx context.Context) error {
 	defer rows.Close()
 
 	var specs []GovernorSpec
-	var maxRevision = last
+	maxRevision := last
 	for rows.Next() {
 		var spec GovernorSpec
 		var revision int64
 		var mode string
 		if err := rows.Scan(&spec.CredentialID, &spec.ProviderID, &mode,
-			&spec.Limit, &spec.RPMLimit, &spec.TPMLimit,
-			&revision); err != nil {
+			&spec.RPMLimit, &spec.Limit, &spec.TPMLimit, &revision); err != nil {
 			return err
 		}
 		spec.Mode = normalizeConcurrencyMode(mode)
@@ -247,17 +245,17 @@ func (p *PolicyPublisher) publishCatchUp(ctx context.Context) error {
 		Source:      "pg_notify",
 	}
 
-	// Stage E ends at policy publication: the backend is notified and the
-	// active revision is recorded. The live forwarder governor swap is
-	// Phase 2's forward path, so there is no ApplyPolicySnapshot wired onto
-	// the production Pipeline yet.
-	slog.Debug("dispatch policy publisher applied revision",
-		"revision", policy.Revision, "specs", len(policy.Specs), "source", policy.Source)
-	if backend := p.pipeline.GovernorBackend(); backend != nil {
+	// Backend notification is fail-closed: a NotifyRevisions failure keeps
+	// lastRevision where it was, so publishCatchUpWithRetry (or the next
+	// notification) replays the same delta instead of skipping it.
+	backend := p.pipeline.GovernorBackend()
+	if backend != nil {
 		if err := backend.NotifyRevisions(ctx, maxRevision); err != nil {
-			slog.Warn("dispatch policy publisher backend NotifyRevisions failed", "revision", maxRevision, "error", err)
+			return fmt.Errorf("notify backend revision %d: %w", maxRevision, err)
 		}
 	}
+	slog.Debug("dispatch policy publisher applied revision",
+		"revision", policy.Revision, "specs", len(policy.Specs), "source", policy.Source)
 	p.pipeline.SetActivePolicyRevision(maxRevision)
 	p.lastRevision.Store(maxRevision)
 	return nil
