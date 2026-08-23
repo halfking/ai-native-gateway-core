@@ -993,8 +993,9 @@ func loadScopeRevision(ctx context.Context, q pgxQueryRower, rawModel string) (s
 }
 
 // ensureScopeRevision returns the persistent revision for rawModel, seeding
-// version=1 (same hash formula as migration 541 backfill) when the row is
-// absent. Concurrent ensures are safe via ON CONFLICT DO NOTHING.
+// version=1 (same hash formula as migration 541 backfill, extended in 568 to
+// include b.priority and mirrored in the canonical bump functions by 571) when
+// the row is absent. Concurrent ensures are safe via ON CONFLICT DO NOTHING.
 func ensureScopeRevision(ctx context.Context, q pgxExecRower, rawModel string) (scopeRevision, error) {
 	rawModel = strings.TrimSpace(rawModel)
 	if rawModel == "" {
@@ -1015,6 +1016,7 @@ VALUES (
                 b.id::text || '|' ||
                 b.credential_id::text || '|' ||
                 b.manual_priority::text || '|' ||
+                b.priority::text || '|' ||
                 extract(epoch from b.updated_at)::text,
                 '|' ORDER BY b.id
             ), 'sha256'), 'hex')
@@ -1060,8 +1062,9 @@ func loadCanonicalScopeRevision(ctx context.Context, q pgxQueryRower, canonicalI
 
 // ensureCanonicalScopeRevision returns the persistent revision for
 // canonicalID, seeding version=1 (same hash formula as migration 566
-// backfill, keyed by canonical_id) when the row is absent. Concurrent
-// ensures are safe via ON CONFLICT DO NOTHING.
+// backfill, keyed by canonical_id; the b.priority term was added by 571
+// alongside the four canonical bump functions) when the row is absent.
+// Concurrent ensures are safe via ON CONFLICT DO NOTHING.
 func ensureCanonicalScopeRevision(ctx context.Context, q pgxExecRower, canonicalID int64) (scopeRevision, error) {
 	if canonicalID <= 0 {
 		return scopeRevision{}, nil
@@ -1081,6 +1084,7 @@ VALUES (
                 b.id::text || '|' ||
                 b.credential_id::text || '|' ||
                 b.manual_priority::text || '|' ||
+                b.priority::text || '|' ||
                 extract(epoch from b.updated_at)::text,
                 '|' ORDER BY b.id
             ), 'sha256'), 'hex')
