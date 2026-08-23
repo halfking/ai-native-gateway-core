@@ -90,7 +90,7 @@ type ComplianceStats struct {
 	ComplianceRate  float64 `json:"compliance_rate"`
 }
 
-// CostStats 成本统计
+// CostStats 成本统计（与 days 窗口对齐的会话汇总）
 type CostStats struct {
 	TotalCostUSD      float64 `json:"total_cost_usd"`
 	AvgCostPerSession float64 `json:"avg_cost_per_session"`
@@ -99,6 +99,8 @@ type CostStats struct {
 	InputCostUSD      float64 `json:"input_cost_usd"`
 	OutputCostUSD     float64 `json:"output_cost_usd"`
 	CostGrowthPct     float64 `json:"cost_growth_pct"` // 相比上一周期
+	TotalRequests     int64   `json:"total_requests"`  // SUM(request_count) in period
+	AvgLatencyMs      float64 `json:"avg_latency_ms"`  // AVG(avg_latency_ms) in period
 }
 
 // ModelUsageItem 模型使用项
@@ -164,7 +166,10 @@ func (h *SessionOverviewHandler) HandleSessionOverview(w http.ResponseWriter, r 
 	defer func() {
 		recordAPIRequest("session-overview", apiStatus, time.Since(startTime))
 	}()
-	params := ParseQueryParams(r)
+	params, _, ok := prepareDashboardRequest(w, r, h.db)
+	if !ok {
+		return
+	}
 
 	ctx, cancel := GetRequestContext(r, 30*time.Second)
 	defer cancel()
@@ -288,7 +293,7 @@ type totalStatsInternal struct {
 func (h *SessionOverviewHandler) queryTotalStats(ctx context.Context, params QueryParams) (*totalStatsInternal, error) {
 	stats := &totalStatsInternal{}
 
-	// 构建查询条件
+	// 构建查询条件（与 cost/trend 同一 days 窗口，避免 KPI 与趋势对不上）
 	where := []string{}
 	args := []interface{}{}
 	argIdx := 1
@@ -298,11 +303,9 @@ func (h *SessionOverviewHandler) queryTotalStats(ctx context.Context, params Que
 		args = append(args, params.TenantID)
 		argIdx++
 	}
+	where = append(where, fmt.Sprintf("first_request_at >= NOW() - INTERVAL '%d days'", params.Days))
 
-	whereClause := ""
-	if len(where) > 0 {
-		whereClause = "WHERE " + joinStrings(where, " AND ")
-	}
+	whereClause := "WHERE " + joinStrings(where, " AND ")
 
 	query := fmt.Sprintf(`
 		SELECT
@@ -335,11 +338,9 @@ func (h *SessionOverviewHandler) queryHealthDistribution(ctx context.Context, pa
 		args = append(args, params.TenantID)
 		argIdx++
 	}
+	where = append(where, fmt.Sprintf("first_request_at >= NOW() - INTERVAL '%d days'", params.Days))
 
-	whereClause := ""
-	if len(where) > 0 {
-		whereClause = "WHERE " + joinStrings(where, " AND ")
-	}
+	whereClause := "WHERE " + joinStrings(where, " AND ")
 
 	query := fmt.Sprintf(`
 		SELECT
@@ -387,11 +388,9 @@ func (h *SessionOverviewHandler) queryComplianceStats(ctx context.Context, param
 		args = append(args, params.TenantID)
 		argIdx++
 	}
+	where = append(where, fmt.Sprintf("first_request_at >= NOW() - INTERVAL '%d days'", params.Days))
 
-	whereClause := ""
-	if len(where) > 0 {
-		whereClause = "WHERE " + joinStrings(where, " AND ")
-	}
+	whereClause := "WHERE " + joinStrings(where, " AND ")
 
 	query := fmt.Sprintf(`
 		SELECT
@@ -450,26 +449,27 @@ func (h *SessionOverviewHandler) queryCostStats(ctx context.Context, params Quer
 			COALESCE(MAX(total_cost_usd), 0) as max_cost,
 			COALESCE(SUM(input_cost_usd), 0) as input_cost,
 			COALESCE(SUM(output_cost_usd), 0) as output_cost,
-			COALESCE(SUM(request_count), 0) as total_requests
+			COALESCE(SUM(request_count), 0) as total_requests,
+			COALESCE(AVG(avg_latency_ms), 0) as avg_latency
 		FROM session_summaries
 		%s
 	`, whereClause)
 
-	var totalRequests int64
 	err := h.db.QueryRow(ctx, query, args...).Scan(
 		&stats.TotalCostUSD,
 		&stats.AvgCostPerSession,
 		&stats.MaxCostSession,
 		&stats.InputCostUSD,
 		&stats.OutputCostUSD,
-		&totalRequests,
+		&stats.TotalRequests,
+		&stats.AvgLatencyMs,
 	)
 	if err != nil {
 		return nil, err
 	}
 
-	if totalRequests > 0 {
-		stats.AvgCostPerRequest = stats.TotalCostUSD / float64(totalRequests)
+	if stats.TotalRequests > 0 {
+		stats.AvgCostPerRequest = stats.TotalCostUSD / float64(stats.TotalRequests)
 	}
 
 	// 计算成本增长率（与上一周期对比）
