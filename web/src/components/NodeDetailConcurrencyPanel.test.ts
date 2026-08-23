@@ -2,7 +2,17 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { createI18n } from 'vue-i18n'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import NodeDetailConcurrencyPanel from './NodeDetailConcurrencyPanel.vue'
-import type { CredentialMonitorSummary, FpSlotStats } from '../api/credential-monitor'
+import type { CredentialMonitorSummary } from '../api/credential-monitor'
+
+type FpSlotStats = {
+  unlimited: boolean
+  slot_limit: number | null
+  healthy_slots: number
+  occupied_slots: number
+  free_slots: number
+  details: unknown[]
+  message: string
+}
 
 const {
   updateCredential,
