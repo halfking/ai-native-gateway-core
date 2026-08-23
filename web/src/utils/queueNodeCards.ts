@@ -69,6 +69,69 @@ export function quotaAllowsPriority(quota: string | null | undefined): boolean {
   return q === '' || q === 'ok'
 }
 
+/** Minimal resolve candidate fields for stable queue ordering. */
+export interface RoutingCandidateOrderKey {
+  credential_id: number
+  manual_priority?: number | null
+  priority?: boolean | null
+  quota_state?: string | null
+  tier?: number | null
+  weight?: number | null
+  composite_score?: number | null
+}
+
+/** Mirror admin sortResolveCandidatesStable: priority flag → manual_priority ASC → tier → weight DESC → score DESC → credential_id. */
+export function compareRoutingCandidates(
+  left: RoutingCandidateOrderKey,
+  right: RoutingCandidateOrderKey,
+): number {
+  const leftPriority = Boolean(left.priority) && quotaAllowsPriority(left.quota_state)
+  const rightPriority = Boolean(right.priority) && quotaAllowsPriority(right.quota_state)
+  if (leftPriority !== rightPriority) return leftPriority ? -1 : 1
+
+  const leftManual = left.manual_priority ?? 99
+  const rightManual = right.manual_priority ?? 99
+  if (leftManual !== rightManual) return leftManual - rightManual
+
+  const leftTier = left.tier ?? 2
+  const rightTier = right.tier ?? 2
+  if (leftTier !== rightTier) return leftTier - rightTier
+
+  const leftWeight = left.weight ?? 100
+  const rightWeight = right.weight ?? 100
+  if (leftWeight !== rightWeight) return rightWeight - leftWeight
+
+  const leftScore = left.composite_score ?? 0
+  const rightScore = right.composite_score ?? 0
+  if (leftScore !== rightScore) return rightScore - leftScore
+
+  return left.credential_id - right.credential_id
+}
+
+export function sortRoutingCandidates<T extends RoutingCandidateOrderKey>(candidates: T[]): T[] {
+  return [...candidates].sort(compareRoutingCandidates)
+}
+
+/** Order live nodes by resolve candidate rank; unknown candidates trail, tie-break credential_id. */
+export function orderNodesByRoutingCandidates<T extends { credential_id: number }>(
+  nodes: T[],
+  candidatesByCredential: Map<number, RoutingCandidateOrderKey>,
+): T[] {
+  const ranked = sortRoutingCandidates([...candidatesByCredential.values()])
+  const rankByCredential = new Map(ranked.map((candidate, index) => [candidate.credential_id, index]))
+  return [...nodes].sort((left, right) => {
+    const leftRank = rankByCredential.get(left.credential_id)
+    const rightRank = rankByCredential.get(right.credential_id)
+    if (leftRank != null && rightRank != null) {
+      if (leftRank !== rightRank) return leftRank - rightRank
+      return left.credential_id - right.credential_id
+    }
+    if (leftRank != null) return -1
+    if (rightRank != null) return 1
+    return left.credential_id - right.credential_id
+  })
+}
+
 export function credentialDisplayName(
   candidate: { credential_label?: string | null; provider_name?: string | null } | null | undefined,
   fallbackProvider: string,

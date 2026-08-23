@@ -2,10 +2,13 @@ import { describe, expect, it } from 'vitest'
 import {
   assignSpacedPriorities,
   cardWidthFromCapacity,
+  compareRoutingCandidates,
   credentialDisplayName,
   mergeCardWindowEntries,
   nodeCapacity,
+  orderNodesByRoutingCandidates,
   quotaAllowsPriority,
+  sortRoutingCandidates,
 } from './queueNodeCards'
 
 describe('assignSpacedPriorities', () => {
@@ -54,6 +57,35 @@ describe('nodeCapacity / credentialDisplayName', () => {
   })
 })
 
+describe('compareRoutingCandidates / orderNodesByRoutingCandidates', () => {
+  it('sorts by manual_priority ASC, not credential_id', () => {
+    const candidates = sortRoutingCandidates([
+      { credential_id: 10, manual_priority: 15 },
+      { credential_id: 5, manual_priority: 5 },
+      { credential_id: 7, manual_priority: 10 },
+    ])
+    expect(candidates.map(c => c.credential_id)).toEqual([5, 7, 10])
+  })
+
+  it('orders live nodes using resolve rank even when credential_id is inverted', () => {
+    const byId = new Map([
+      [10, { credential_id: 10, manual_priority: 15 }],
+      [5, { credential_id: 5, manual_priority: 5 }],
+    ])
+    const ordered = orderNodesByRoutingCandidates(
+      [{ credential_id: 10 }, { credential_id: 5 }],
+      byId,
+    )
+    expect(ordered.map(n => n.credential_id)).toEqual([5, 10])
+  })
+
+  it('prefers priority flag when quota allows routing', () => {
+    expect(compareRoutingCandidates(
+      { credential_id: 1, manual_priority: 99, priority: true, quota_state: 'ok' },
+      { credential_id: 2, manual_priority: 1, priority: false, quota_state: 'ok' },
+    )).toBeLessThan(0)
+  })
+})
 describe('quotaAllowsPriority', () => {
   it('allows ok and empty quota', () => {
     expect(quotaAllowsPriority(null)).toBe(true)
