@@ -603,33 +603,38 @@ func (r *ProbeResult) Log(credID int, model string, attempt int) {
 	)
 }
 
-// classifyProbeErrorKind maps a ProbeResult.Status into an error_kind
-// string suitable for request_logs.error_kind. Kept in this file (rather
-// than emitter.go) so the executor + emitter share the same vocabulary.
-func classifyProbeErrorKind(r *ProbeResult) string {
+// classifyProbeErrorKind maps a ProbeResult.Status and probe origin into an
+// error_kind suitable for request_logs.error_kind. Gateway round failures
+// must not be labelled direct failures because a successful direct round
+// already proves the credential can authenticate with the provider.
+func classifyProbeErrorKind(r *ProbeResult, origin string) string {
+	prefix := "probe_direct"
+	if origin == "gateway" {
+		prefix = "probe_gateway"
+	}
 	switch r.Status {
 	case ProbeStatusSuccess:
 		return ""
 	case ProbeStatusTimeout:
-		return "probe_direct_timeout"
+		return prefix + "_timeout"
 	case ProbeStatusNetwork:
-		return "probe_direct_network_error"
+		return prefix + "_network_error"
 	case ProbeStatusAuth:
-		return "probe_direct_auth_failed"
+		return prefix + "_auth_failed"
 	case ProbeStatusRate:
-		return "probe_direct_rate_limited"
+		return prefix + "_rate_limited"
 	case ProbeStatusHTTP5xx:
 		if r.HTTPStatus > 0 {
-			return fmt.Sprintf("probe_direct_http_%d", r.HTTPStatus)
+			return fmt.Sprintf("%s_http_%d", prefix, r.HTTPStatus)
 		}
-		return "probe_direct_http_5xx"
+		return prefix + "_http_5xx"
 	case ProbeStatusHTTP4xx:
 		if r.HTTPStatus > 0 {
-			return fmt.Sprintf("probe_direct_http_%d", r.HTTPStatus)
+			return fmt.Sprintf("%s_http_%d", prefix, r.HTTPStatus)
 		}
-		return "probe_direct_http_4xx"
+		return prefix + "_http_4xx"
 	case ProbeStatusCanceled:
-		return "probe_direct_canceled"
+		return prefix + "_canceled"
 	case ProbeStatusFailed:
 		// Failed happens before the HTTP request reaches the wire:
 		// endpoint decryption/resolution, body marshalling, etc. Split
@@ -637,16 +642,16 @@ func classifyProbeErrorKind(r *ProbeResult) string {
 		// broke (these are gateway-side, NOT upstream, faults).
 		switch r.ErrCode {
 		case "endpoint_build":
-			return "probe_direct_endpoint_build"
+			return prefix + "_endpoint_build"
 		case "body_build":
-			return "probe_direct_body_build"
+			return prefix + "_body_build"
 		default:
-			return "probe_direct_internal_error"
+			return prefix + "_internal_error"
 		}
 	case ProbeStatusSkipped:
-		return "probe_direct_skipped"
+		return prefix + "_skipped"
 	default:
-		return "probe_direct_unknown"
+		return prefix + "_unknown"
 	}
 }
 
