@@ -1,0 +1,2 @@
+-- 565 down: pricing/cost backfill is data-only; no schema to revert.
+-- catalog_estimate rows are left in place (safe, idempotent re-run of 565 up).
