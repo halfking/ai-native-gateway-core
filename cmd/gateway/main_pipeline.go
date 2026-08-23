@@ -96,6 +96,7 @@ import (
 	sessionanalytics "github.com/kaixuan/llm-gateway-go/domains/analysis"                    //nolint:depguard // Phase 4 会话全景分析引擎
 	"github.com/kaixuan/llm-gateway-go/domains/analysis/bus"                                 //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/analysis/projectattr"                         //nolint:depguard // 2026-08-20 项目归属 resolver 装配点
+	"github.com/kaixuan/llm-gateway-go/domains/analysis/sessionmeta"                         //nolint:depguard // session analysis metadata final UPSERT
 	"github.com/kaixuan/llm-gateway-go/domains/analysis/workers"                             //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/assets"                                       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/authentication"                               //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -1129,6 +1130,23 @@ func startAnalysisLoopIfConfigured(deps *v2DispatchDeps) {
 				"flag_on", settings.GetPlatformBool("project_attribution.enabled", false),
 				"pg_ready", deps.PGDBPool != nil,
 				"resolver_ready", deps.ProjectAttrResolver != nil)
+		}
+
+		// Session analysis metadata final UPSERT (migration 567 §7).
+		if deps.PGDBPool != nil {
+			var msgSource sessionsummary.MessageSource
+			if settings.GetPlatformBool("sessions_v2_compression_read", true) {
+				msgSource = sessionsummary.NewV2SessionBodiesSource(deps.PGDBPool)
+			} else {
+				msgSource = sessionsummary.NewRequestLogsMessageSource(deps.PGDBPool)
+			}
+			metaHook := workers.NewSessionMetadataCloseHook(
+				sessionmeta.NewMetadataStore(deps.PGDBPool),
+				msgSource,
+				slog.Default(),
+			)
+			sumWorker.AddCloseHook(metaHook)
+			slog.Info("v2 pipeline: session metadata final close hook enabled")
 		}
 
 		sumPoll := bus.NewPGPollFunc(bus.AsPGDB(deps.PGDBPool), sumWorker.SubscribedTypes(), deps.Config.AnalysisBatchSize)

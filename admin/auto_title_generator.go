@@ -150,7 +150,7 @@ func (g *AutoTitleGenerator) commitProvisionalArrival(tenantID, sessionID, taskI
 	defer cancel()
 	if g.handler.analysisMetadataStore != nil {
 		if err := g.handler.analysisMetadataStore.UpsertProvisional(ctx, tenantID, sessionID, taskID, result); err != nil {
-			slog.Debug("provisional session metadata upsert skipped",
+			slog.Warn("provisional session metadata upsert failed",
 				"session_id", sessionID, "tenant_id", tenantID, "error", err)
 		}
 	}
