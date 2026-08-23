@@ -1347,7 +1347,9 @@ export function resetStream() {
   liveStreamState.snapshot = null
   liveStreamState.actions.clear()
   liveStreamState.children.clear()
-  requestCredential.clear()
+  // 复用 clearRequestCredentialIndex，让依赖于 requestCredentialRevision 的
+  // 组件（RequestTile、LiveRequestBlock）在重连/重建流时立即刷新凭据显示。
+  clearRequestCredentialIndex()
   actionsTotal = 0
   childrenTotal = 0
   idIndex.clear()
@@ -1386,6 +1388,7 @@ export const __testing = {
   actionsTotal: () => actionsTotal,
   childrenTotal: () => childrenTotal,
   requestCredential,
+  requestCredentialRevision,
   getRequestCredentialId,
   getRequestsForCredential,
   getNodesForModel,
