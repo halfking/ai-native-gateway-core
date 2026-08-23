@@ -416,6 +416,29 @@ describe('QueuePerspectivePanel', () => {
     expect(drawer.props('model')).toBe('m-1')
   })
 
+  it('orders model-group node cards by manual_priority, not credential_id', async () => {
+    resolveRouting.mockImplementation(async (model: string) => ({
+      raw_models: [model],
+      reorder_canonical_id: 400,
+      candidates: model === 'm-1'
+        ? [
+            { credential_id: 10, model_name: 'm-1', canonical_id: 400, manual_priority: 15, credential_label: 'later-priority' },
+            { credential_id: 5, model_name: 'm-1', canonical_id: 400, manual_priority: 5, credential_label: 'first-priority' },
+          ]
+        : [],
+    }))
+    liveStreamState.nodes = [
+      { credential_id: 10, provider_id: 1, provider_code: 'p', manual_disabled: false, circuit_state: 'closed', raw_models: ['m-1'] },
+      { credential_id: 5, provider_id: 1, provider_code: 'p', manual_disabled: false, circuit_state: 'closed', raw_models: ['m-1'] },
+    ]
+
+    const wrapper = mountPanel()
+    await flushPromises()
+    const titles = wrapper.findAll('.qp-node-card-title').map(el => el.text())
+    expect(titles[0]).toContain('first-priority')
+    expect(titles[1]).toContain('later-priority')
+  })
+
   it('reorders with spaced priorities (step 5) and echoes the server revision', async () => {
     superAdmin.mockReturnValue(true)
     resolveRouting.mockImplementation(async (model: string) => ({

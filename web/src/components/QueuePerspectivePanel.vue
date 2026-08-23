@@ -39,7 +39,9 @@ import {
   cardWidthFromCapacity,
   credentialDisplayName,
   nodeCapacity,
+  orderNodesByRoutingCandidates,
   quotaAllowsPriority,
+  sortRoutingCandidates,
 } from '../utils/queueNodeCards'
 import { credentialDisplayName as credentialLabelById, useCredentialLabels } from '../composables/useCredentialLabels'
 import RequestProcessingTrail from './RequestProcessingTrail.vue'
@@ -363,7 +365,8 @@ const modelGroups = computed<ModelGroup[]>(() => {
         candidatesByCredential.set(candidate.credential_id, candidate)
       }
     }
-    const candidates = [...candidatesByCredential.values()]
+    const candidates = sortRoutingCandidates([...candidatesByCredential.values()])
+    const candidatesByCredentialSorted = new Map(candidates.map(candidate => [candidate.credential_id, candidate]))
     const canonicalIDs = new Set(
       candidates.map(candidate => candidate.canonical_id).filter((id): id is number => id != null && id > 0),
     )
@@ -375,14 +378,7 @@ const modelGroups = computed<ModelGroup[]>(() => {
     const liveCoveredByCandidates = canonicalID != null
       && candidates.length > 0
       && modelNodes.every(node => candidateOrder.has(node.credential_id))
-    const orderedNodes = liveCoveredByCandidates
-      ? [...modelNodes].sort((left, right) => {
-        const leftRank = candidateOrder.get(left.credential_id) ?? Number.MAX_SAFE_INTEGER
-        const rightRank = candidateOrder.get(right.credential_id) ?? Number.MAX_SAFE_INTEGER
-        if (leftRank !== rightRank) return leftRank - rightRank
-        return left.credential_id - right.credential_id
-      })
-      : [...modelNodes].sort((left, right) => left.credential_id - right.credential_id)
+    const orderedNodes = orderNodesByRoutingCandidates(modelNodes, candidatesByCredentialSorted)
     const requestIds = new Set<string>()
     for (const credentialId of credentialIds) {
       for (const request of getRequestsForCredential(credentialId)) {
