@@ -13,10 +13,19 @@ CREATE SEQUENCE IF NOT EXISTS public.credentials_governor_revision_seq
     START WITH 1
     MINVALUE 1;
 
+-- Align the sequence with any existing revisions WITHOUT ever rewinding
+-- it: if the sequence already handed out a higher value (rolled-back tx,
+-- deleted top-revision row), keep that value so revisions stay globally
+-- unique and monotonic across reruns.
 SELECT setval(
     'public.credentials_governor_revision_seq',
-    GREATEST(COALESCE((SELECT MAX(revision) FROM public.credentials), 0), 1),
+    GREATEST(
+        COALESCE((SELECT MAX(revision) FROM public.credentials), 0),
+        COALESCE(pg_sequence_last_value('public.credentials_governor_revision_seq'), 0),
+        1
+    ),
     COALESCE((SELECT MAX(revision) FROM public.credentials), 0) > 0
+        OR pg_sequence_last_value('public.credentials_governor_revision_seq') IS NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS credentials_revision_idx
@@ -40,6 +49,10 @@ BEGIN
        OR OLD.max_queue_depth IS DISTINCT FROM NEW.max_queue_depth
        OR OLD.max_queue_wait_ms IS DISTINCT FROM NEW.max_queue_wait_ms THEN
         NEW.revision := nextval('public.credentials_governor_revision_seq');
+    ELSE
+        -- No governor-relevant change: keep the stored revision so a
+        -- caller-supplied revision cannot rewind or reorder history.
+        NEW.revision := OLD.revision;
     END IF;
     RETURN NEW;
 END;

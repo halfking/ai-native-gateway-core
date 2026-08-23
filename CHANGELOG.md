@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - **按模型分组节点排序（2026-08-24）**：队列透视卡片按 resolve `manual_priority` 正序排列，消除 fallback 按 `credential_id` 排序导致的序号错位。
+- **Stage E audit 修复（2026-08-24）**：`AutoRouteRealtimeListener` 生命周期加固 — Start 幂等（atomic CAS）、Stop 前 Start 不再死锁、重试睡眠可取消（Stop 秒回而非等 5s）、防抖改为真正的 trailing-edge 单循环（burst 合并为一次刷新、失败保脏标下窗重试）、`RefreshOnce` 派生自 listener ctx（关闭时挂起刷新被取消，不再越过 DB 池关闭）；`PolicyPublisher` 尊重 parent ctx（原 `run` 内自建 Background 忽略调用方取消）且 backend `NotifyRevisions` 失败改为 fail-closed（不推进 lastRevision，重试或下次通知重放同一增量）；migration 566 `setval` 改为 `GREATEST(MAX(revision), pg_sequence_last_value)` 单调对齐（rerun 不回卷序列、revision 不复用），bump trigger 非 governor 更新显式 `NEW.revision := OLD.revision`（防手工回写），down 迁移注释纠正为 7 列基线；`01-schema.sql`/objects 目录补齐缺失的 `credentials_governor_revision_seq` 序列与 `credentials_revision_idx` 索引；`updateCredential` 空补丁也失效缓存、`pgx.ErrNoRows` 判定、`fp_slot_limit` 变更恢复 `settings_history` 审计（同事务）；网关关闭顺序改为 listener 先于 refresher。新增 `auto_route_realtime_listener_test.go`（lifecycle/debounce/race）与 migration 566 契约/镜像一致性测试。
 - **泳道 FIFO 方向（2026-08-23）**：后端 lane builder 改 ASC + `lastTiles`；`SwimLaneTrack` 改 `flex-start` 左起右进。生产 #1692 复现 `flex-end` 右锚导致 tile 挤在右侧。
 - **Dashboard queue audit fixes（2026-08-23）**：`#rank` 恢复视觉序号；main 队列 selective trim 补 pipeline 错误日志 + 集成测试；移除 no-op `trimLiveStreamQueue` 调用。
 - **实时流 selective trim（2026-08-23）**：lane 驱逐改为 post-exec selective trim，保护 fresh `in_progress` 不被 ZRemRangeByRank 误删；main/status 队列同步接入。
