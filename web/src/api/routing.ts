@@ -143,12 +143,15 @@ export function resolveRouting(model: string, clientProfile?: string, persistPro
 }
 
 // 2026-07-24: routing-v2 resolve 页管理员设置端点。
-// 仅允许改 cmb 上的 manual_priority / routing_tier / weight（影响路由排序），
+// 仅允许改 cmb 上的 manual_priority / routing_tier / weight / priority（影响路由排序），
 // 不绕过熔断 / 可用性 / 凭据启用等硬规则。需要 super_admin 角色。
+// 2026-08-23: 新增 priority?: boolean — true 表示「优先凭据·额度耗尽前优先使用」，
+// 后端已在 PATCH /api/routing/candidate-binding 上支持。
 export interface CandidateBindingPatch {
   manual_priority?: number
   routing_tier?: number
   weight?: number
+  priority?: boolean
 }
 export function patchCandidateBinding(
   credentialId: number,

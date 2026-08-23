@@ -4,11 +4,29 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
 )
+
+// ConfigureLiveStreamInflightProtectFromEnv reads
+// LLM_GATEWAY_LIVE_STREAM_INFLIGHT_PROTECT_SECONDS (default 7200 / 2h).
+func ConfigureLiveStreamInflightProtectFromEnv() {
+	const key = "LLM_GATEWAY_LIVE_STREAM_INFLIGHT_PROTECT_SECONDS"
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return
+	}
+	secs, err := strconv.Atoi(raw)
+	if err != nil || secs <= 0 {
+		slog.Warn("live stream inflight protect env ignored", "key", key, "value", raw)
+		return
+	}
+	liveStreamInflightProtectDuration = time.Duration(secs) * time.Second
+}
 
 // liveStreamInflightProtectDuration is how long an in_progress tile remains
 // protected from lane eviction. Defaults to 2h (aligned with request-survival

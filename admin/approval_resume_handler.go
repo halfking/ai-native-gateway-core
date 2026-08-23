@@ -5,44 +5,39 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/kaixuan/llm-gateway-go/domains/session"
 	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit"
 )
 
-// HandleApprovalResume 处理 POST /api/admin/approvals/:id/resume
+// HandleApprovalResume 处理 POST /api/v1/approvals/{id}/resume。
 //
-// 触发审批通过后的 LLM 调用恢复。
-//
-// 请求：POST /api/admin/approvals/{approval_id}/resume
-// 响应：
-//   - 200: {"status": "resumed", "approval_id": "..."}
-//   - 400: {"error": "approval not in pending state"}
-//   - 404: {"error": "approval not found"}
-//   - 500: {"error": "..."}
-//
-// 认证：需要 super_admin 权限
+// 触发审批通过后的 LLM 调用恢复。该操作只允许 super_admin 或 legacy
+// admin_key；全局管理员的空 tenant_id 由 ApprovalCallerTenantID 保留为
+// 跨租户语义，不能由客户端 header 或 query 参数指定。
 func (h *Handler) HandleApprovalResume(w http.ResponseWriter, r *http.Request) {
 	if h.approvalResumeHandler == nil {
 		http.Error(w, `{"error":"approval resume not configured"}`, http.StatusServiceUnavailable)
 		return
 	}
 
-	// 提取 approval_id
+	if GetAuthContext(r) == nil {
+		http.Error(w, `{"error":"authentication required"}`, http.StatusUnauthorized)
+		return
+	}
+	if !IsSuperAdminOrLegacy(r) {
+		http.Error(w, `{"error":"super_admin role required for this endpoint"}`, http.StatusForbidden)
+		return
+	}
+
 	approvalID := extractApprovalID(r)
 	if approvalID == "" {
 		http.Error(w, `{"error":"missing approval_id"}`, http.StatusBadRequest)
 		return
 	}
 
-	// 获取 tenant_id（从认证上下文）
-	tenantID := getTenantIDFromRequest(r)
-	if tenantID == "" {
-		http.Error(w, `{"error":"missing tenant_id"}`, http.StatusUnauthorized)
-		return
-	}
-
-	// 调用 ResumeAfterApproval
+	tenantID := ApprovalCallerTenantID(r)
 	ctx := r.Context()
 	slog.Info("approval resume requested",
 		"approval_id", approvalID,
@@ -125,54 +120,22 @@ func (h *Handler) HandleApprovalResume(w http.ResponseWriter, r *http.Request) {
 
 // extractApprovalID 从请求路径中提取 approval_id。
 //
-// 支持以下路径格式：
-//   - /api/admin/approvals/{id}/resume
-//   - /api/admin/approvals/:id/resume
+// 支持当前 API 路径和历史 admin 路径；query 中的 id 仅作为兼容回退。
 func extractApprovalID(r *http.Request) string {
-	// 尝试从路径参数提取（gorilla/mux 或类似的路由器）
-	// 如果使用标准库 http.ServeMux，需要手动解析路径
-
-	// 方式 1: 从 URL path 提取（假设路径格式为 /api/admin/approvals/{id}/resume）
-	path := r.URL.Path
-	// 移除前缀 /api/admin/approvals/
-	prefix := "/api/admin/approvals/"
-	if len(path) > len(prefix) {
-		remaining := path[len(prefix):]
-		// 提取到 /resume 之前的部分
-		for i := 0; i < len(remaining); i++ {
-			if remaining[i] == '/' {
-				return remaining[:i]
-			}
+	for _, prefix := range []string{
+		"/api/v1/approvals/",
+		"/api/admin/approvals/",
+	} {
+		remaining, ok := strings.CutPrefix(r.URL.Path, prefix)
+		if !ok || remaining == "" {
+			continue
 		}
-		return remaining
-	}
-
-	// 方式 2: 从 query 参数提取（备用）
-	if id := r.URL.Query().Get("id"); id != "" {
+		id, ok := strings.CutSuffix(remaining, "/resume")
+		if !ok || id == "" || strings.Contains(id, "/") {
+			continue
+		}
 		return id
 	}
 
-	return ""
-}
-
-// getTenantIDFromRequest 从请求上下文中提取 tenant_id。
-//
-// 假设认证中间件已将 tenant_id 写入上下文或 header。
-func getTenantIDFromRequest(r *http.Request) string {
-	// 方式 1: 从上下文提取（如果有认证中间件）
-	if tenantID, ok := r.Context().Value("tenant_id").(string); ok && tenantID != "" {
-		return tenantID
-	}
-
-	// 方式 2: 从 header 提取
-	if tenantID := r.Header.Get("X-Tenant-ID"); tenantID != "" {
-		return tenantID
-	}
-
-	// 方式 3: 从 query 参数提取（不推荐，仅用于测试）
-	if tenantID := r.URL.Query().Get("tenant_id"); tenantID != "" {
-		return tenantID
-	}
-
-	return ""
+	return r.URL.Query().Get("id")
 }

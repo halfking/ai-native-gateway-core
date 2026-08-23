@@ -176,9 +176,10 @@ type Router struct {
 
 func NewRouter(sticky *StickyCache, lim *credential.Limiter) *Router {
 	return &Router{
-		Sticky:           sticky,
-		Limiter:          lim,
-		LoadScoreWeights: DefaultLoadScoreWeights(), // Phase 1: 使用默认权重
+		Sticky:                 sticky,
+		Limiter:                lim,
+		LoadScoreWeights:       DefaultLoadScoreWeights(), // Phase 1: 使用默认权重
+		PriorityRoutingEnabled: true,
 	}
 }
 
@@ -555,7 +556,37 @@ func (r *Router) planCandidates(
 		recordOuterSource(statesource.StateSourceOff)
 	}
 
+	// Priority routing observability: classify the first-attempt candidate
+	// after every reordering pass (tier/billing, sticky, affinity, canary)
+	// has settled. ordered[0] is what the executor will try first, so this
+	// is the point where "did the priority bucket actually absorb traffic"
+	// becomes measurable. Only recorded when the feature flag is on so the
+	// no_priority_candidates baseline doesn't mask flag-off deployments.
+	if r.PriorityRoutingEnabled && len(ordered) > 0 {
+		met.RoutingPriorityCandidatesSelectedTotal.WithLabelValues(classifyPrioritySelection(ordered)).Inc()
+	}
+
 	return ordered
+}
+
+// classifyPrioritySelection maps the final ordered candidate list to the
+// outcome label of llmgw_routing_priority_candidates_selected_total:
+// priority_only (first attempt is priority-eligible),
+// spillover_to_non_priority (priority candidates exist but a standard
+// candidate is attempted first), or no_priority_candidates (baseline).
+func classifyPrioritySelection(ordered []provider.Candidate) string {
+	if len(ordered) == 0 {
+		return "no_priority_candidates"
+	}
+	if isPriorityBucketEligible(ordered[0]) {
+		return "priority_only"
+	}
+	for _, c := range ordered {
+		if isPriorityBucketEligible(c) {
+			return "spillover_to_non_priority"
+		}
+	}
+	return "no_priority_candidates"
 }
 
 func (r *Router) enqueueURSMv2Shadow(candidates, legacyOrder []provider.Candidate, tenant, canonical, requestID string) {
@@ -892,6 +923,16 @@ func (r *Router) planByTier(ctx context.Context, candidates []provider.Candidate
 		} else {
 			// Legacy P2C ordering (load-aware)
 			sorted = p2cOrder(bucket, r)
+		}
+
+		// Priority routing: when enabled, stable-partition the bandit/P2C
+		// order so priority candidates with ok quota_state sort before
+		// standard ones, preserving the relative order within each group.
+		// This mirrors the SQL ORDER BY bucket
+		// (CASE WHEN priority AND quota_state='ok' THEN 0 ELSE 1 END)
+		// so the Go-side re-sort inside planByTier doesn't erase it.
+		if r.PriorityRoutingEnabled {
+			sorted = stablePartitionPriority(sorted)
 		}
 
 		// GW-03: shadow strategy diff（仅观测，不改顺序）。
@@ -1395,9 +1436,43 @@ func CalculateCompositeScore(c provider.Candidate, weights ScoringWeights) float
 	return score
 }
 
+// isPriorityBucketEligible mirrors the SQL ORDER BY predicate
+// CASE WHEN COALESCE(mo.priority, FALSE) AND COALESCE(c.quota_state,'ok')='ok'
+// THEN 0 ELSE 1 END — a candidate sorts into the priority bucket only when
+// its priority flag is set AND its quota_state is ok (or absent).
+func isPriorityBucketEligible(c provider.Candidate) bool {
+	return c.Priority && (c.QuotaState == "" || c.QuotaState == "ok")
+}
+
+// stablePartitionPriority reorders candidates so that priority-bucket
+// candidates come before standard ones, preserving the relative order
+// within each group. This keeps the bandit/P2C ordering intact inside
+// each sub-group while lifting priority candidates to the front — the
+// same semantics as the SQL ORDER BY priority bucket.
+func stablePartitionPriority(cands []provider.Candidate) []provider.Candidate {
+	if len(cands) <= 1 {
+		return cands
+	}
+	prio := make([]provider.Candidate, 0, len(cands))
+	rest := make([]provider.Candidate, 0, len(cands))
+	for _, c := range cands {
+		if isPriorityBucketEligible(c) {
+			prio = append(prio, c)
+		} else {
+			rest = append(rest, c)
+		}
+	}
+	return append(prio, rest...)
+}
+
 // CompareCandidatePriority returns true when a should sort before b.
-// Billing round (plan/free before PAYG) takes precedence over composite score.
+// Priority bucket takes precedence over billing round, mirroring the
+// SQL ORDER BY: priority AND quota_state='ok' ⇒ 0, else 1.
 func CompareCandidatePriority(a, b provider.Candidate) bool {
+	pa, pb := isPriorityBucketEligible(a), isPriorityBucketEligible(b)
+	if pa != pb {
+		return pa
+	}
 	ra, rb := provider.BillingRound(a.BillingMode), provider.BillingRound(b.BillingMode)
 	if ra != rb {
 		return ra < rb

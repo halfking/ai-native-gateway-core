@@ -17,7 +17,7 @@ import { useL1TaskTypes } from '../composables/useL1TaskTypes'
 import { getWorkTypeStats, type WorkTypeSyncMeta } from '../api-work-types'
 import {
   getPolicy, patchPolicy, getScoringWeights, updateScoringWeights,
-  resolveRouting, reorderCandidateBindings,
+  resolveRouting, reorderCandidateBindings, patchCandidateBinding,
   type RoutingPolicy, type ScoringWeights, type RoutingResolveResponse,
   type RoutingCandidate, type CandidateBindingReorderItem,
 } from '../api'
@@ -414,6 +414,12 @@ const resolveLog = ref<ResolveLogEntry[]>([])
 const draggingCredentialId = ref<number | null>(null)
 const reorderSaving = ref(false)
 const reorderErr = ref('')
+// 2026-08-23: priority toggle per-candidate. Tracks which credential_id is
+// mid-flight and the latest pending value so the row disables the toggle
+// while PATCH is in flight, avoiding duplicate submissions.
+const prioritySaving = ref<number | null>(null)
+const priorityPendingValue = ref<Record<number, boolean>>({})
+const priorityErr = ref('')
 // 2026-08-19: opaque token echoed back to
 // /api/routing/candidate-bindings/reorder. Backend refuses mixed-canonical
 // reorders and stale revisions; the UI keeps both cases disabled.
@@ -532,6 +538,20 @@ function resolveStateHint(c: RoutingCandidate): string {
   return parts.join(' · ')
 }
 
+// isCandidatePrioritySaving — whether a row's priority toggle is in flight.
+// Other rows see "false" so they stay interactive. Tested by the unit spec.
+function isCandidatePrioritySaving(c: RoutingCandidate): boolean {
+  return prioritySaving.value === c.credential_id
+}
+
+function candidatePriorityDisabled(c: RoutingCandidate): boolean {
+  // Per-row lock during save, plus a global gate when another row is saving.
+  if (!superAdmin) return true
+  if (prioritySaving.value !== null) return true
+  if (!c.model_name) return true
+  return false
+}
+
 function onCandidateDragStart(c: RoutingCandidate, event: DragEvent) {
   if (!canReorderResolve.value) {
     event.preventDefault()
@@ -612,6 +632,43 @@ async function onCandidateDrop(target: RoutingCandidate, event: DragEvent) {
 
 function onCandidateDragEnd() {
   draggingCredentialId.value = null
+}
+
+// 2026-08-23: persist priority toggle on a single candidate. PATCH
+// /api/routing/candidate-binding/{cred_id}?raw_model=... body {priority: bool},
+// then re-resolve so the badge reflects the fresh server value.
+async function saveCandidatePriority(c: RoutingCandidate, value: boolean) {
+  if (!superAdmin) return
+  if (prioritySaving.value !== null) return
+  const credId = c.credential_id
+  const rawModel = c.model_name
+  if (!rawModel) return
+  const previous = resolveCandidates.value
+  priorityPendingValue.value = { ...priorityPendingValue.value, [credId]: value }
+  prioritySaving.value = credId
+  priorityErr.value = ''
+  // Optimistic update so the toggle feels instant.
+  resolveCandidates.value = previous.map(row =>
+    row.credential_id === credId ? { ...row, priority: value } : row,
+  )
+  try {
+    await patchCandidateBinding(credId, rawModel, { priority: value })
+    await doResolve()
+  } catch (e: unknown) {
+    // Roll back to server truth on error.
+    resolveCandidates.value = previous
+    const fallback = e instanceof Error ? e.message : '保存失败'
+    if (e instanceof ApiError && e.status === 403) {
+      priorityErr.value = '仅超级管理员可以切换优先凭据。'
+    } else {
+      priorityErr.value = fallback
+    }
+  } finally {
+    prioritySaving.value = null
+    const next = { ...priorityPendingValue.value }
+    delete next[credId]
+    priorityPendingValue.value = next
+  }
 }
 
 function loadResolveLog() {
@@ -1322,6 +1379,7 @@ onUnmounted(() => stopPoll())
               <col class="col-provider">
               <col class="col-upstream">
               <col class="col-tier">
+              <col class="col-priority">
               <col class="col-actions">
             </colgroup>
             <thead>
@@ -1332,6 +1390,9 @@ onUnmounted(() => stopPoll())
                 <th>供应商 / 凭据</th>
                 <th style="width: 220px">上游</th>
                 <th style="width: 120px">Tier · 权重</th>
+                <th style="width: 92px" :title="t('routing.dashboard.resolve.priorityTooltip')">
+                  {{ t('routing.dashboard.resolve.colPriority') }}
+                </th>
                 <th style="width: 120px"></th>
               </tr>
             </thead>

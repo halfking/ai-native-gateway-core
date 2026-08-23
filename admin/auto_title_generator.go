@@ -127,31 +127,45 @@ func (g *AutoTitleGenerator) MaybeGenerateTitle(sessionID, tenantID, taskID, req
 }
 
 // MaybeGenerateProvisionalMetadata implements the streaming arrival hook. The
-// extraction itself is synchronous; the canonical title projection is queued in
-// a short-lived goroutine so database latency never extends the request path.
-// Writes only when auto-title is enabled and the session has no title yet, so
-// multi-turn traffic cannot thrash an existing auto/user title.
+// extraction itself is synchronous; metadata UPSERT and title projection are
+// queued in a short-lived goroutine so database latency never extends the
+// request path. Metadata is written even when title is empty; title projection
+// only runs when auto-title is enabled and the session has no title yet.
 func (g *AutoTitleGenerator) MaybeGenerateProvisionalMetadata(tenantID, sessionID, taskID string, in sessionmeta.Input) {
-	if g == nil || !g.enabled || g.handler == nil || g.handler.titleStore == nil {
+	if g == nil || !g.enabled || g.handler == nil {
+		return
+	}
+	if g.handler.analysisMetadataStore == nil && g.handler.titleStore == nil {
 		return
 	}
 	if strings.TrimSpace(tenantID) == "" || strings.TrimSpace(sessionID) == "" {
 		return
 	}
 	result := sessionmeta.Extract(in)
-	if strings.TrimSpace(result.Title) == "" {
+	go g.commitProvisionalArrival(tenantID, sessionID, taskID, result)
+}
+
+func (g *AutoTitleGenerator) commitProvisionalArrival(tenantID, sessionID, taskID string, result sessionmeta.Result) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if g.handler.analysisMetadataStore != nil {
+		if err := g.handler.analysisMetadataStore.UpsertProvisional(ctx, tenantID, sessionID, taskID, result); err != nil {
+			slog.Warn("provisional session metadata upsert failed",
+				"session_id", sessionID, "tenant_id", tenantID, "error", err)
+		}
+	}
+	title := strings.TrimSpace(result.Title)
+	if title == "" || g.handler.titleStore == nil {
 		return
 	}
-	go g.commitProvisionalTitle(tenantID, sessionID, taskID, result.Title)
+	g.commitProvisionalTitle(ctx, tenantID, sessionID, taskID, title)
 }
 
 func provisionalTitleCommitBlocked(st titlestore.State, err error) bool {
 	return err == nil && !st.Deleted && strings.TrimSpace(st.Title) != ""
 }
 
-func (g *AutoTitleGenerator) commitProvisionalTitle(tenantID, sessionID, taskID, title string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+func (g *AutoTitleGenerator) commitProvisionalTitle(ctx context.Context, tenantID, sessionID, taskID, title string) {
 	if st, err := g.handler.titleStore.Get(ctx, tenantID, sessionID); provisionalTitleCommitBlocked(st, err) {
 		return
 	}

@@ -26,7 +26,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -43,6 +42,7 @@ func (h *Handler) addCredential(w http.ResponseWriter, r *http.Request, provider
 		ExtraAPIKeys     []string `json:"extra_api_keys"` // 2026-08-10: multi-key rotation (N 倍放大免费额度)
 		ConcurrencyLimit *int     `json:"concurrency_limit"`
 		FpSlotLimit      *int     `json:"fp_slot_limit"`
+		RPMLimit         *int     `json:"rpm_limit"`
 		PlanType         *string  `json:"plan_type"`
 		// 479: 并发/限流模式与队列参数（见 docs/会话优化v2/57）。
 		ConcurrencyMode *string `json:"concurrency_mode"` // concurrency|rpm|tpm|disabled
@@ -117,11 +117,11 @@ func (h *Handler) addCredential(w http.ResponseWriter, r *http.Request, provider
 	var id int
 	err = h.db.QueryRow(ctx, `
 		INSERT INTO credentials (provider_id, label, secret_ciphertext, status, concurrency_limit, fp_slot_limit, balance_usd, plan_type,
-		                         concurrency_mode, tpm_limit, max_queue_depth, max_queue_wait_ms)
-		VALUES ($1, $2, $3, 'active', $4, $5, 1000.0, $6, $7, $8, $9, $10)
-		RETURNING id
-	`, providerID, label, encrypted, concurrencyLimit, fpSlotLimit, planType,
-		concurrencyMode, req.TPMLimit, req.MaxQueueDepth, req.MaxQueueWaitMS).Scan(&id)
+			                         concurrency_mode, rpm_limit, tpm_limit, max_queue_depth, max_queue_wait_ms)
+			VALUES ($1, $2, $3, 'active', $4, $5, 1000.0, $6, $7, $8, $9, $10, $11)
+			RETURNING id
+		`, providerID, label, encrypted, concurrencyLimit, fpSlotLimit, planType,
+		concurrencyMode, req.RPMLimit, req.TPMLimit, req.MaxQueueDepth, req.MaxQueueWaitMS).Scan(&id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "create failed: "+err.Error())
 		return
@@ -206,9 +206,10 @@ func (h *Handler) listCredentials(w http.ResponseWriter, r *http.Request, provid
 		       COALESCE(c.manual_disabled, false),
 		       c.created_at,
 		       c.updated_at,
-		       COALESCE(c.concurrency_mode,'concurrency'),
-		       c.tpm_limit,
-		       c.max_queue_depth,
+			       COALESCE(c.concurrency_mode,'concurrency'),
+			       c.rpm_limit,
+			       c.tpm_limit,
+			       c.max_queue_depth,
 		       c.max_queue_wait_ms
 		FROM credentials c
 		WHERE c.provider_id = $1
@@ -265,6 +266,7 @@ func (h *Handler) listCredentials(w http.ResponseWriter, r *http.Request, provid
 		CreatedAt              *time.Time `json:"created_at"`
 		UpdatedAt              *time.Time `json:"updated_at"`
 		ConcurrencyMode        string     `json:"concurrency_mode"`
+		RPMLimit               *int       `json:"rpm_limit"`
 		TPMLimit               *int       `json:"tpm_limit"`
 		MaxQueueDepth          *int       `json:"max_queue_depth"`
 		MaxQueueWaitMS         *int       `json:"max_queue_wait_ms"`
@@ -314,6 +316,7 @@ func (h *Handler) listCredentials(w http.ResponseWriter, r *http.Request, provid
 			&c.CreatedAt,
 			&c.UpdatedAt,
 			&c.ConcurrencyMode,
+			&c.RPMLimit,
 			&c.TPMLimit,
 			&c.MaxQueueDepth,
 			&c.MaxQueueWaitMS,
@@ -373,190 +376,189 @@ func parseTags(ns sql.NullString) []string {
 	return result
 }
 
+type updateCredentialRequest struct {
+	Label            *string  `json:"label"`
+	Status           *string  `json:"status"`
+	ConcurrencyLimit *int     `json:"concurrency_limit"`
+	FpSlotLimit      *int     `json:"fp_slot_limit"`
+	EffectiveAt      *string  `json:"effective_at"`
+	ExpiresAt        *string  `json:"expires_at"`
+	Tags             []string `json:"tags"`
+	Notes            *string  `json:"notes"`
+	BalanceUSD       *float64 `json:"balance_usd"`
+	PlanType         *string  `json:"plan_type"`
+	ConcurrencyMode  *string  `json:"concurrency_mode"`
+	RPMLimit         *int     `json:"rpm_limit"`
+	TPMLimit         *int     `json:"tpm_limit"`
+	MaxQueueDepth    *int     `json:"max_queue_depth"`
+	MaxQueueWaitMS   *int     `json:"max_queue_wait_ms"`
+}
+
 func (h *Handler) updateCredential(w http.ResponseWriter, r *http.Request, providerID, credID int) {
-	var req struct {
-		Label            *string  `json:"label"`
-		Status           *string  `json:"status"`
-		ConcurrencyLimit *int     `json:"concurrency_limit"`
-		FpSlotLimit      *int     `json:"fp_slot_limit"`
-		EffectiveAt      *string  `json:"effective_at"`
-		ExpiresAt        *string  `json:"expires_at"`
-		Tags             []string `json:"tags"`
-		Notes            *string  `json:"notes"`
-		BalanceUSD       *float64 `json:"balance_usd"`
-		PlanType         *string  `json:"plan_type"`
-		// 479: 并发/限流模式与队列参数（见 docs/会话优化v2/57）。
-		ConcurrencyMode *string `json:"concurrency_mode"`
-		TPMLimit        *int    `json:"tpm_limit"`
-		MaxQueueDepth   *int    `json:"max_queue_depth"`
-		MaxQueueWaitMS  *int    `json:"max_queue_wait_ms"`
-	}
+	var req updateCredentialRequest
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
 		return
 	}
+	if req.ConcurrencyMode != nil && *req.ConcurrencyMode != "" && !isValidConcurrencyMode(*req.ConcurrencyMode) {
+		writeError(w, http.StatusBadRequest, "invalid concurrency_mode; allowed: concurrency, rpm, tpm, disabled")
+		return
+	}
+	if req.PlanType != nil && !isValidPlanType(*req.PlanType) {
+		writeError(w, http.StatusBadRequest, "invalid plan_type; allowed: token, token_plan, code_plan, agent_plan, monthly, free")
+		return
+	}
+	if req.RPMLimit != nil && *req.RPMLimit < 0 {
+		writeError(w, http.StatusBadRequest, "rpm_limit must be >= 0")
+		return
+	}
+	if req.TPMLimit != nil && *req.TPMLimit < 0 {
+		writeError(w, http.StatusBadRequest, "tpm_limit must be >= 0")
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
+	tx, err := h.db.Begin(ctx)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "begin update failed: "+err.Error())
+		return
+	}
+	defer func() {
+		if rbErr := tx.Rollback(ctx); rbErr != nil && !strings.Contains(rbErr.Error(), "tx is closed") {
+			slog.Warn("credential update rollback failed", "credential_id", credID, "error", rbErr)
+		}
+	}()
 
-	if req.Label != nil {
-		//nolint:errcheck // best-effort exec, non-critical
-		h.db.Exec(ctx, `UPDATE credentials SET label = $1 WHERE id = $2 AND provider_id = $3`, *req.Label, credID, providerID)
+	var currentConcurrency sql.NullInt32
+	var currentFpSlot sql.NullInt32
+	var previousPlan sql.NullString
+	var currentRevision int64
+	if err := tx.QueryRow(ctx, `
+		SELECT concurrency_limit, fp_slot_limit, plan_type, revision
+		FROM credentials
+		WHERE id = $1 AND provider_id = $2
+		FOR UPDATE`, credID, providerID).Scan(&currentConcurrency, &currentFpSlot, &previousPlan, &currentRevision); err != nil {
+		if err.Error() == "no rows in result set" {
+			writeError(w, http.StatusNotFound, "credential not found")
+		} else {
+			writeError(w, http.StatusInternalServerError, "load credential failed: "+err.Error())
+		}
+		return
 	}
-	if req.Status != nil {
-		//nolint:errcheck // best-effort exec, non-critical
-		h.db.Exec(ctx, `UPDATE credentials SET status = $1 WHERE id = $2 AND provider_id = $3`, *req.Status, credID, providerID)
-	}
+
+	finalConcurrency := currentConcurrency
 	if req.ConcurrencyLimit != nil {
-		//nolint:errcheck // best-effort exec, non-critical
-		h.db.Exec(ctx, `UPDATE credentials SET concurrency_limit = $1 WHERE id = $2 AND provider_id = $3`, *req.ConcurrencyLimit, credID, providerID)
+		finalConcurrency = sql.NullInt32{Int32: int32(*req.ConcurrencyLimit), Valid: true}
 	}
-	// 479: 并发模式与队列参数。
-	if req.ConcurrencyMode != nil {
-		if *req.ConcurrencyMode != "" && !isValidConcurrencyMode(*req.ConcurrencyMode) {
-			writeError(w, http.StatusBadRequest, "invalid concurrency_mode; allowed: concurrency, rpm, tpm, disabled")
+	finalFpSlot := currentFpSlot
+	if req.FpSlotLimit != nil {
+		finalFpSlot = sql.NullInt32{Int32: int32(*req.FpSlotLimit), Valid: true}
+		if *req.FpSlotLimit < 1 {
+			writeError(w, http.StatusBadRequest, "fp_slot_limit must be >= 1")
 			return
 		}
-		//nolint:errcheck // best-effort exec, non-critical
-		h.db.Exec(ctx, `UPDATE credentials SET concurrency_mode = $1 WHERE id = $2 AND provider_id = $3`, *req.ConcurrencyMode, credID, providerID)
 	}
-	if req.TPMLimit != nil {
-		//nolint:errcheck // best-effort exec, non-critical
-		h.db.Exec(ctx, `UPDATE credentials SET tpm_limit = $1 WHERE id = $2 AND provider_id = $3`, *req.TPMLimit, credID, providerID)
-	}
-	if req.MaxQueueDepth != nil {
-		//nolint:errcheck // best-effort exec, non-critical
-		h.db.Exec(ctx, `UPDATE credentials SET max_queue_depth = $1 WHERE id = $2 AND provider_id = $3`, *req.MaxQueueDepth, credID, providerID)
-	}
-	if req.MaxQueueWaitMS != nil {
-		//nolint:errcheck // best-effort exec, non-critical
-		h.db.Exec(ctx, `UPDATE credentials SET max_queue_wait_ms = $1 WHERE id = $2 AND provider_id = $3`, *req.MaxQueueWaitMS, credID, providerID)
+	if finalConcurrency.Valid && finalFpSlot.Valid && finalFpSlot.Int32 > finalConcurrency.Int32 {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("fp_slot_limit (%d) cannot exceed concurrency_limit (%d)", finalFpSlot.Int32, finalConcurrency.Int32))
+		return
 	}
 	if req.FpSlotLimit != nil {
-		newLimit := *req.FpSlotLimit
-		// Constraint: 1 <= fp_slot_limit <= concurrency_limit (or 100 if unlimited)
-		var currentConcurrency sql.NullInt32
-		err := h.db.QueryRow(ctx, `SELECT concurrency_limit FROM credentials WHERE id = $1 AND provider_id = $2`, credID, providerID).Scan(&currentConcurrency)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to fetch credential: "+err.Error())
-			return
-		}
-		// System max from settings_kv
 		var sysMax sql.NullInt32
-		_ = h.db.QueryRow(ctx, `SELECT (value #>> '{}')::int4 FROM settings_kv WHERE key = 'llmgw_fp_slot_max_per_credential'`).Scan(&sysMax)
+		_ = tx.QueryRow(ctx, `SELECT (value #>> '{}')::int4 FROM settings_kv WHERE key = 'llmgw_fp_slot_max_per_credential'`).Scan(&sysMax)
 		maxAllowed := 100
 		if sysMax.Valid {
 			maxAllowed = int(sysMax.Int32)
 		}
-		if currentConcurrency.Valid && newLimit > int(currentConcurrency.Int32) {
-			writeError(w, http.StatusBadRequest, fmt.Sprintf("fp_slot_limit (%d) cannot exceed concurrency_limit (%d)", newLimit, currentConcurrency.Int32))
+		if *req.FpSlotLimit > maxAllowed {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("fp_slot_limit (%d) exceeds system max (%d)", *req.FpSlotLimit, maxAllowed))
 			return
 		}
-		if newLimit > maxAllowed {
-			writeError(w, http.StatusBadRequest, fmt.Sprintf("fp_slot_limit (%d) exceeds system max (%d)", newLimit, maxAllowed))
-			return
-		}
-		if newLimit < 1 {
-			writeError(w, http.StatusBadRequest, "fp_slot_limit must be >= 1")
-			return
-		}
-		// Fetch old value for audit
-		var oldLimit sql.NullInt32
-		_ = h.db.QueryRow(ctx, `SELECT fp_slot_limit FROM credentials WHERE id = $1`, credID).Scan(&oldLimit)
-		//nolint:errcheck // best-effort exec, non-critical
-		_, err = h.db.Exec(ctx, `UPDATE credentials SET fp_slot_limit = $1 WHERE id = $2 AND provider_id = $3`, newLimit, credID, providerID)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "update failed: "+err.Error())
-			return
-		}
-		// Audit log (best-effort, no PII)
-		actor := "admin"
-		if v := r.Header.Get("X-Admin-User"); v != "" {
-			actor = v
-		}
-		oldVal := "null"
-		if oldLimit.Valid {
-			oldVal = strconv.Itoa(int(oldLimit.Int32))
-		}
-		//nolint:errcheck // audit log is best-effort
-		h.db.Exec(ctx, `
-			INSERT INTO settings_history (key, old_value, new_value, changed_by, source)
-			VALUES ($1, $2, $3, $4, 'api')`,
-			fmt.Sprintf("credential:%d:fp_slot_limit", credID),
-			oldVal,
-			strconv.Itoa(newLimit),
-			actor)
+	}
+
+	sets := make([]string, 0, 12)
+	args := make([]any, 0, 14)
+	arg := func(v any) string {
+		args = append(args, v)
+		return fmt.Sprintf("$%d", len(args))
+	}
+	if req.Label != nil {
+		sets = append(sets, "label = "+arg(*req.Label))
+	}
+	if req.Status != nil {
+		sets = append(sets, "status = "+arg(*req.Status))
+	}
+	if req.ConcurrencyLimit != nil {
+		sets = append(sets, "concurrency_limit = "+arg(*req.ConcurrencyLimit))
 	}
 	if req.FpSlotLimit != nil {
-		//nolint:errcheck // best-effort exec, non-critical
-		h.db.Exec(ctx, `UPDATE credentials SET fp_slot_limit = $1 WHERE id = $2 AND provider_id = $3`, *req.FpSlotLimit, credID, providerID)
+		sets = append(sets, "fp_slot_limit = "+arg(*req.FpSlotLimit))
 	}
 	if req.EffectiveAt != nil {
-		//nolint:errcheck // best-effort exec, non-critical
-		h.db.Exec(ctx, `UPDATE credentials SET effective_at = $1 WHERE id = $2 AND provider_id = $3`, *req.EffectiveAt, credID, providerID)
+		sets = append(sets, "effective_at = "+arg(*req.EffectiveAt))
 	}
 	if req.ExpiresAt != nil {
-		//nolint:errcheck // best-effort exec, non-critical
-		h.db.Exec(ctx, `UPDATE credentials SET expires_at = $1 WHERE id = $2 AND provider_id = $3`, *req.ExpiresAt, credID, providerID)
+		sets = append(sets, "expires_at = "+arg(*req.ExpiresAt))
 	}
 	if req.Tags != nil {
-		tagsStr := strings.Join(req.Tags, ",")
-		//nolint:errcheck // best-effort exec, non-critical
-		h.db.Exec(ctx, `UPDATE credentials SET tags = $1 WHERE id = $2 AND provider_id = $3`, tagsStr, credID, providerID)
+		sets = append(sets, "tags = "+arg(strings.Join(req.Tags, ",")))
 	}
 	if req.Notes != nil {
-		//nolint:errcheck // best-effort exec, non-critical
-		h.db.Exec(ctx, `UPDATE credentials SET notes = $1 WHERE id = $2 AND provider_id = $3`, *req.Notes, credID, providerID)
+		sets = append(sets, "notes = "+arg(*req.Notes))
 	}
 	if req.BalanceUSD != nil {
-		//nolint:errcheck // best-effort exec, non-critical
-		h.db.Exec(ctx, `UPDATE credentials SET balance_usd = $1 WHERE id = $2 AND provider_id = $3`, *req.BalanceUSD, credID, providerID)
+		sets = append(sets, "balance_usd = "+arg(*req.BalanceUSD))
 	}
 	if req.PlanType != nil {
-		if !isValidPlanType(*req.PlanType) {
-			writeError(w, http.StatusBadRequest, "invalid plan_type; allowed: token, token_plan, code_plan, agent_plan, monthly, free")
+		sets = append(sets, "plan_type = "+arg(*req.PlanType), "plan_type_updated_at = NOW()")
+	}
+	if req.ConcurrencyMode != nil {
+		sets = append(sets, "concurrency_mode = "+arg(*req.ConcurrencyMode))
+	}
+	if req.RPMLimit != nil {
+		sets = append(sets, "rpm_limit = "+arg(*req.RPMLimit))
+	}
+	if req.TPMLimit != nil {
+		sets = append(sets, "tpm_limit = "+arg(*req.TPMLimit))
+	}
+	if req.MaxQueueDepth != nil {
+		sets = append(sets, "max_queue_depth = "+arg(*req.MaxQueueDepth))
+	}
+	if req.MaxQueueWaitMS != nil {
+		sets = append(sets, "max_queue_wait_ms = "+arg(*req.MaxQueueWaitMS))
+	}
+	if len(sets) == 0 {
+		if err := tx.Commit(ctx); err != nil {
+			writeError(w, http.StatusInternalServerError, "commit: "+err.Error())
 			return
 		}
-		// 检查 plan_type 是否变化（避免不必要的级联）
-		var prevPlan sql.NullString
-		_ = h.db.QueryRow(ctx, `SELECT plan_type FROM credentials WHERE id = $1 AND provider_id = $2`, credID, providerID).Scan(&prevPlan)
-		planChanged := !prevPlan.Valid || prevPlan.String != *req.PlanType
-		if planChanged {
-			tx, txErr := h.db.Begin(ctx)
-			if txErr != nil {
-				writeError(w, http.StatusInternalServerError, "begin tx: "+txErr.Error())
-				return
-			}
-			defer func() {
-				if rbErr := tx.Rollback(ctx); rbErr != nil && !strings.Contains(rbErr.Error(), "tx is closed") {
-					slog.Warn("plan_type update rollback failed", "error", rbErr, "credential_id", credID)
-				}
-			}()
-			if _, e := tx.Exec(ctx, `UPDATE credentials SET plan_type = $1, updated_at = NOW() WHERE id = $2 AND provider_id = $3`, *req.PlanType, credID, providerID); e != nil {
-				writeError(w, http.StatusInternalServerError, "update plan_type: "+e.Error())
-				return
-			}
-			// 级联更新 cmb.billing_mode（仅 plan_type_origin='auto' 的行，保护手动覆盖）
-			if _, e := tx.Exec(ctx, `
-				UPDATE credential_model_bindings cmb
-				SET billing_mode = CASE WHEN $1 = 'token' THEN 'per_token' ELSE $1 END,
-				    plan_type_origin = 'auto',
-				    updated_at = NOW()
-				WHERE cmb.credential_id = $2
-				  AND cmb.plan_type_origin = 'auto'
-			`, *req.PlanType, credID); e != nil {
-				writeError(w, http.StatusInternalServerError, "cascade cmb: "+e.Error())
-				return
-			}
-			if e := tx.Commit(ctx); e != nil {
-				writeError(w, http.StatusInternalServerError, "commit: "+e.Error())
-				return
-			}
-			slog.Info("plan_type updated + cmb cascaded",
-				"credential_id", credID, "old", prevPlan.String, "new", *req.PlanType)
+		writeJSON(w, http.StatusOK, map[string]any{"credential_id": credID, "revision": currentRevision, "message": "updated"})
+		return
+	}
+	sets = append(sets, "updated_at = NOW()")
+	args = append(args, credID, providerID)
+	query := "UPDATE credentials SET " + strings.Join(sets, ", ") + fmt.Sprintf(" WHERE id = $%d AND provider_id = $%d RETURNING revision", len(args)-1, len(args))
+	var revision int64
+	if err := tx.QueryRow(ctx, query, args...).Scan(&revision); err != nil {
+		writeError(w, http.StatusInternalServerError, "update credential failed: "+err.Error())
+		return
+	}
+	if req.PlanType != nil && (!previousPlan.Valid || previousPlan.String != *req.PlanType) {
+		if _, err := tx.Exec(ctx, `
+			UPDATE credential_model_bindings cmb
+			SET billing_mode = CASE WHEN $1 = 'token' THEN 'per_token' ELSE $1 END,
+			    plan_type_origin = 'auto', updated_at = NOW()
+			WHERE cmb.credential_id = $2 AND cmb.plan_type_origin = 'auto'`, *req.PlanType, credID); err != nil {
+			writeError(w, http.StatusInternalServerError, "cascade credential model bindings failed: "+err.Error())
+			return
 		}
 	}
+	if err := tx.Commit(ctx); err != nil {
+		writeError(w, http.StatusInternalServerError, "commit: "+err.Error())
+		return
+	}
 	provider.InvalidateAllCandidateCache()
-	writeJSON(w, http.StatusOK, map[string]string{"message": "updated"})
+	writeJSON(w, http.StatusOK, map[string]any{"credential_id": credID, "revision": revision, "message": "updated"})
 }
 
 // rotateCredentialPrimaryKey replaces one credential's primary secret without
