@@ -77,4 +77,11 @@ var (
 		Name: "llmgw_routing_cooling_fallback_total",
 		Help: "All-candidates-cooling fallback triggers in router.go planCandidates.",
 	}, []string{"reason"})
+
+	// RoutingPriorityCandidatesSelectedTotal records the selected routing
+	// bucket. outcome ∈ {priority_only, spillover_to_non_priority}.
+	RoutingPriorityCandidatesSelectedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "llmgw_routing_priority_candidates_selected_total",
+		Help: "Routing selections by priority candidate outcome.",
+	}, []string{"outcome"})
 )

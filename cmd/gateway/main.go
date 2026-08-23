@@ -1045,6 +1045,10 @@ func main() {
 		stickyCache.SetRedisStore(stickyStore)
 		router := executors.NewRouter(stickyCache, lim)
 		routingRouter = router
+		if envBoolOff("LLM_GATEWAY_PRIORITY_ROUTING_ENABLED") {
+			router.PriorityRoutingEnabled = false
+			slog.Warn("priority routing disabled by environment gate")
+		}
 
 		// Connect FpSlots to Router for load-aware P2C selection
 		router.FpSlots = fpSlots

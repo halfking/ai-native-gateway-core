@@ -49,9 +49,7 @@ UPDATE public.candidate_binding_scope_revision r
  WHERE h.raw_model = r.raw_model;
 
 -- Expose the per-binding priority to routing reads and view updates.
-DROP VIEW IF EXISTS public.model_offers CASCADE;
-
-CREATE VIEW public.model_offers AS
+CREATE OR REPLACE VIEW public.model_offers AS
  SELECT cmb.id,
     cmb.credential_id,
     pm.canonical_id,
