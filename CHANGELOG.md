@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **sessionmeta 到达态 provisional 抽取（session-analysis/v1）**：规则引擎 `Extract` + 契约文档；handler 到达时投影 provisional title（尊重 auto-title enabled / 已有 title 不覆盖）；与 `AssignRequestCost` 并存。
 - Credential model drawer extras: IQ history chart + cross-credential check restored into `ModelOfferExtrasPanel`; identity chips deep-link to `/models?q=`.
 
 ### Fixed
