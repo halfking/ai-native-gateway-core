@@ -72,3 +72,9 @@
 |-----------|------|---------|--------|
 | 561 | `561_request_logs_view_origin_actor.sql` | `ef139bf1a895c53e93c1c495d1891d2bbb64b4d4e953ee3c93f920750babd36a` | applied+verified |
 
+
+## 2026-08-23T23:30:00Z — deploy 154 build_seq 1693 (de6c5994)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 569 | `569_candidate_binding_scope_revision_canonical.sql` | `6642ef23b19faeb2c5be376093728cbb4282a938bc92314df1e5297a89565c40` | applied+verified |
