@@ -1399,19 +1399,23 @@ func (s *LiveStreamRedisStore) ScanAndRecordIdleMarkers(ctx context.Context, ts 
 
 	nowUnix := ts.Unix()
 
-	// 1) Collect candidate activity keys via SCAN.
-	//    The shared Redis DB has hundreds of thousands of unrelated keys
-	//    (request details, sessions, etc.), so SCAN must traverse them
-	//    all to find our ~50 activity keys. Use COUNT 5000 to amortise
-	//    round-trips — with COUNT 0 (Redis default 10) we made 40K SCAN
-	//    calls and exceeded any reasonable context deadline.
-	var activityKeys []string
-	iter := s.rdb.Scan(ctx, 0, liveStreamActivityPrefix+"*", 5000).Iterator()
-	for iter.Next(ctx) {
-		activityKeys = append(activityKeys, iter.Val())
+	// 1) Derive activity keys from the dimension indexes. The Redis DB also
+	// contains hundreds of thousands of session/detail keys; scanning the
+	// whole keyspace every 10 seconds starves live request writes and makes
+	// provider lanes appear stale. Indexes are populated by Record().
+	activityKeys, err := s.activityKeysFromDimensionIndexes(ctx)
+	if err != nil {
+		return fmt.Errorf("load activity indexes failed: %w", err)
 	}
-	if err := iter.Err(); err != nil {
-		return fmt.Errorf("scan activity keys failed: %w", err)
+	if len(activityKeys) == 0 {
+		// Preserve cold-start compatibility before the first indexed write.
+		iter := s.rdb.Scan(ctx, 0, liveStreamActivityPrefix+"*", 5000).Iterator()
+		for iter.Next(ctx) {
+			activityKeys = append(activityKeys, iter.Val())
+		}
+		if err := iter.Err(); err != nil {
+			return fmt.Errorf("scan activity keys failed: %w", err)
+		}
 	}
 	if len(activityKeys) == 0 {
 		return nil
@@ -1524,6 +1528,75 @@ func (s *LiveStreamRedisStore) ScanAndRecordIdleMarkers(ctx context.Context, ts 
 		}
 	}
 	return nil
+}
+
+func (s *LiveStreamRedisStore) activityKeysFromDimensionIndexes(ctx context.Context) ([]string, error) {
+	global, err := s.rdb.SMembers(ctx, liveStreamDimIndexKey("", true)).Result()
+	if err != nil && err != redis.Nil {
+		return nil, err
+	}
+	tenants, err := s.rdb.SMembers(ctx, liveStreamTenantSet).Result()
+	if err != nil && err != redis.Nil {
+		return nil, err
+	}
+	keys := make([]string, 0, len(global)+len(tenants)*4)
+	appendQueueKeys := func(queueKeys []string) {
+		for _, queueKey := range queueKeys {
+			if !isDimensionQueueKey(queueKey) {
+				continue
+			}
+			info, ok := dimensionQueueKeyInfo(queueKey)
+			if ok {
+				keys = append(keys, liveStreamActivityKey(info.tenantID, info.dimension, info.dimensionKey))
+			}
+		}
+	}
+	appendQueueKeys(global)
+	for _, tenantID := range tenants {
+		members, memberErr := s.rdb.SMembers(ctx, liveStreamDimIndexKey(tenantID, false)).Result()
+		if memberErr != nil && memberErr != redis.Nil {
+			return nil, memberErr
+		}
+		appendQueueKeys(members)
+	}
+	return uniqueStrings(keys), nil
+}
+
+type dimensionQueueInfo struct {
+	tenantID     string
+	dimension    string
+	dimensionKey string
+}
+
+func dimensionQueueKeyInfo(key string) (dimensionQueueInfo, bool) {
+	marker := ":dim:"
+	idx := strings.Index(key, marker)
+	if idx < 0 {
+		return dimensionQueueInfo{}, false
+	}
+	prefix, suffix := key[:idx], key[idx+len(marker):]
+	parts := strings.SplitN(suffix, ":", 2)
+	if len(parts) != 2 || (parts[0] != "vendor" && parts[0] != "provider" && parts[0] != "model") || parts[1] == "" {
+		return dimensionQueueInfo{}, false
+	}
+	tenantID := ""
+	if strings.HasPrefix(prefix, "llmgw:live:tenant:") {
+		tenantID = strings.TrimPrefix(prefix, "llmgw:live:tenant:")
+	}
+	return dimensionQueueInfo{tenantID: tenantID, dimension: parts[0], dimensionKey: parts[1]}, true
+}
+
+func uniqueStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
 }
 
 // idleMarkerQueueKeys returns the Redis ZSET keys an idle marker should

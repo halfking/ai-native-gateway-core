@@ -644,7 +644,7 @@ func main() {
 			})
 			pendingStore = pending.NewStore(fpSlotRedis, pendingTTL)
 			lastSystemSession = session.NewLastSystemSessionIndex(redisClient)
-			sessionPref = session.NewSessionPreference(redisClient)
+			sessionPref = session.NewSessionPreferenceWithTTL(redisClient, sessionTTL)
 			slog.Info("session manager enabled", "redis", cfg.RedisAddr, "ttl_hours", cfg.SessionTTLHours)
 
 			// Update health handler with Redis connection (2026-07-08)
@@ -4354,7 +4354,7 @@ func main() {
 			sessionRedisClient := session.NewRedisClientFromClient(fpSlotRedis)
 			ttlManager := dbdegradation.NewTTLManager(
 				sessionRedisClient,
-				7*24*time.Hour,  // 正常 TTL
+				time.Duration(cfg.SessionTTLHours)*time.Hour,
 				30*24*time.Hour, // 降级 TTL
 			)
 			defer func() {
