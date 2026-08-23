@@ -34,7 +34,8 @@ CREATE VIEW public.model_offers AS
     cmb.created_at,
     cmb.updated_at,
     pm.modality AS provider_modality,
-    cmb.context_window_override
+    cmb.context_window_override,
+    cmb.priority
    FROM (public.credential_model_bindings cmb
      JOIN public.provider_models pm ON ((pm.id = cmb.provider_model_id)));
 
