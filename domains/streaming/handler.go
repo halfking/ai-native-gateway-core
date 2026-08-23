@@ -22,8 +22,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/kaixuan/llm-gateway-go/autoroute"
 	"github.com/kaixuan/llm-gateway-go/cache/prefix"
-	"github.com/kaixuan/llm-gateway-go/domains/attachments"    //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/domains/authentication" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/analysis/sessionmeta" //nolint:depguard // deterministic arrival metadata extraction
+	"github.com/kaixuan/llm-gateway-go/domains/attachments"          //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/authentication"       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/autocombo"
 	"github.com/kaixuan/llm-gateway-go/domains/credential"                          //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/freeresource"                        //nolint:depguard // OmniFree quota tracker
@@ -810,6 +811,13 @@ type ChatHandler struct {
 	journeyRecorder          *requestjourney.Recorder
 	journeyGatewayInstanceID string
 
+	// provisionalMetadataExtractor performs zero-cost arrival analysis. The
+	// extraction itself is synchronous; persistence is best-effort and must not
+	// delay request routing.
+	provisionalMetadataExtractor interface {
+		MaybeGenerateProvisionalMetadata(tenantID, sessionID, taskID string, in sessionmeta.Input)
+	}
+
 	// autoTitleGenerator (2026-06-22) automatically generates session titles
 	// after the first successful request. nil disables auto-title generation.
 	autoTitleGenerator interface {
@@ -1284,7 +1292,14 @@ func (h *ChatHandler) newStreamCapture() *audit.StreamCapture {
 	return capture
 }
 
-// SetAutoTitleGenerator (2026-06-22) wires the auto title generator from admin package.
+// SetProvisionalMetadataExtractor wires the deterministic session-arrival
+// metadata extractor. Passing nil disables the optional projection.
+func (h *ChatHandler) SetProvisionalMetadataExtractor(extractor interface {
+	MaybeGenerateProvisionalMetadata(tenantID, sessionID, taskID string, in sessionmeta.Input)
+}) {
+	h.provisionalMetadataExtractor = extractor
+}
+
 // 2026-08-06: signature extended with parentRequestID for request_logs_hot.parent_request_id linkage.
 // 2026-08-06: signature extended with taskID so the stored title row matches
 // request_logs on (task_id, scoped_session_id).
@@ -2479,6 +2494,19 @@ func (h *ChatHandler) serveWithExecutor(
 		applyProvisionalGatewaySessionHeader(r, logCtx.ProvisionalSessionID)
 	}
 	r = applyResolvedGatewaySession(r, sessionID, sessionInfo)
+	if h.provisionalMetadataExtractor != nil && sessionID != "" && !isBranchSessionID(sessionID) && keyInfo != nil {
+		taskID := sanitizeRequestCorrelationID(r.Header.Get("X-Gw-Task-Id"))
+		h.provisionalMetadataExtractor.MaybeGenerateProvisionalMetadata(keyInfo.TenantID, sessionID, taskID, sessionmeta.Input{
+			RequestBody:    append([]byte(nil), bodyBytes...),
+			AgentName:      logCtx.meta.AgentName,
+			AgentType:      logCtx.meta.AgentType,
+			ClientType:     r.Header.Get("X-Gw-Client-Type"),
+			ClientProtocol: logCtx.meta.ClientProtocol,
+			WorkType:       logCtx.WorkType,
+			ProjectRef:     logCtx.meta.ProjectID,
+			TaskRef:        taskID,
+		})
+	}
 	if sessionID != "" && h.sessionPref != nil {
 		modelChanged, prevModel := detectAndHandleModelSwitch(ctx, h.sessionPref, sessionID, clientModel)
 		if modelChanged {

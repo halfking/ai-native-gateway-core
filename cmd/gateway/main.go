@@ -2737,9 +2737,11 @@ func main() {
 	if adminHandler != nil {
 		autoTitleGen := adminHandler.GetAutoTitleGenerator()
 		if autoTitleGen != nil {
+			chatHandler.SetProvisionalMetadataExtractor(autoTitleGen)
 			chatHandler.SetAutoTitleGenerator(autoTitleGen)
-			slog.Info("auto session title generator wired (async, fire-and-forget)")
+			slog.Info("session metadata extractor wired (provisional rule + async title refine)")
 		}
+
 		// 2026-08-06: wire the auto summary generator — incremental rolling
 		// map-reduce over the request path. Symmetric to the title wiring.
 		autoSummaryGen := adminHandler.GetAutoSummaryGenerator()
