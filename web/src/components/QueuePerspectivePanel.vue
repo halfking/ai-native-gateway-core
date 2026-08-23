@@ -171,12 +171,23 @@ interface ModelGroup {
    * （多 canonical / 未在 resolve 列表中）。
    */
   reorderRevision?: string
+  /**
+   * Raw model aliases the group covers. Used by sliding-window stats to
+   * pick a model key under canonical-id scopes (where reorderRawModel is
+   * intentionally undefined).
+   */
+  rawModels: string[]
 }
 
 const modelScopeMeta = ref<Map<string, ModelScopeMeta>>(new Map())
 const modelScopeAliasIndex = ref<Map<string, string>>(new Map())
 const modelCandidatesByRawModel = ref<Map<string, RoutingCandidate[]>>(new Map())
 const reorderRevisionsByCanonical = ref<Map<number, string>>(new Map())
+// Legacy raw_model-keyed reorder revisions (migration 541) for bindings whose
+// provider rows still have NULL canonical_id. The server only emits one of
+// reorder_canonical_id / reorder_raw_model per resolve; we keep both maps and
+// modelGroups picks the matching one when assembling the reorder scope.
+const reorderRevisionsByRawModel = ref<Map<string, string>>(new Map())
 const modelScopeLoading = ref(true)
 const modelScopeError = ref('')
 const selectedNode = ref<LiveNodeStatus | null>(null)
@@ -231,6 +242,7 @@ async function loadModelScope() {
   const aliases = new Map<string, string>()
   const candidatesByRawModel = new Map<string, RoutingCandidate[]>()
   const revisionsByCanonical = new Map<number, string>()
+  const revisionsByRawModel = new Map<string, string>()
   const resolveOne = async (meta: ModelScopeMeta) => {
     const name = [...meta.aliases][0]
     try {
@@ -252,16 +264,27 @@ async function loadModelScope() {
         candidatesByRawModel.set(key, candidates)
       }
       // Record a revision only when every resolved candidate shares one
-      // canonical_id. Raw model aliases inside that canonical scope are all
-      // safe to reorder atomically.
-      if (resolved.reorder_revision && resolved.reorder_canonical_id) {
+      // canonical_id OR one raw_model_name. Within a canonical scope, raw
+      // aliases are all safe to reorder atomically. Within a raw_model
+      // scope (legacy fallback when canonical_id is NULL), the candidates
+      // must all map to one raw_model_name. Mixed hits stay disabled.
+      if (resolved.reorder_revision) {
         const canonicalID = resolved.candidates[0]?.canonical_id
         if (
-          canonicalID
-          && canonicalID === resolved.reorder_canonical_id
+          canonicalID != null
+          && resolved.reorder_canonical_id === canonicalID
           && resolved.candidates.every(c => c.canonical_id === canonicalID)
         ) {
           revisionsByCanonical.set(canonicalID, resolved.reorder_revision)
+        } else {
+          const rawModel = resolved.candidates[0]?.model_name
+          if (
+            rawModel
+            && resolved.reorder_raw_model === rawModel
+            && resolved.candidates.every(c => c.model_name === rawModel)
+          ) {
+            revisionsByRawModel.set(rawModel, resolved.reorder_revision)
+          }
         }
       }
     } catch {
@@ -283,6 +306,7 @@ async function loadModelScope() {
   modelScopeAliasIndex.value = aliases
   modelCandidatesByRawModel.value = candidatesByRawModel
   reorderRevisionsByCanonical.value = revisionsByCanonical
+  reorderRevisionsByRawModel.value = revisionsByRawModel
   if (featured.status === 'rejected' && hot.status === 'rejected') modelScopeError.value = '模型范围暂不可用，未展示模型节点。'
   modelScopeLoading.value = false
 }
@@ -372,11 +396,16 @@ const modelGroups = computed<ModelGroup[]>(() => {
       featured: meta.featured,
       hotRequests: meta.hotRequests,
       aliases,
-      reorderCanonicalId: liveCoveredByCandidates ? canonicalID : undefined,
-      reorderRawModel: liveCoveredByCandidates ? rawModelList[0] : undefined,
-      reorderRevision: liveCoveredByCandidates && canonicalID != null
-        ? reorderRevisionsByCanonical.value.get(canonicalID)
+      reorderCanonicalId: liveCoveredByCandidates && canonicalID != null ? canonicalID : undefined,
+      reorderRawModel: liveCoveredByCandidates && canonicalID == null && rawModelList.length > 0
+        ? rawModelList[0]
         : undefined,
+      reorderRevision: liveCoveredByCandidates
+        ? (canonicalID != null
+          ? reorderRevisionsByCanonical.value.get(canonicalID)
+          : (rawModelList[0] ? reorderRevisionsByRawModel.value.get(rawModelList[0]) : undefined))
+        : undefined,
+      rawModels: [...rawModelList],
     })
   }
   return groups.sort((a, b) => Number(b.featured) - Number(a.featured) || b.hotRequests - a.hotRequests || b.nodes.length - a.nodes.length || a.model.localeCompare(b.model))
@@ -427,14 +456,16 @@ const dragError = ref('')
 function canReorder(group: ModelGroup): boolean {
   return isSuperAdmin()
     && !dragSaving.value
-    && group.reorderCanonicalId != null
+    && (group.reorderCanonicalId != null || (group.reorderRawModel != null && group.reorderRawModel !== ''))
     && Boolean(group.reorderRevision)
 }
 
 function dragDisabledHint(group: ModelGroup): string {
   if (!isSuperAdmin()) return '仅超级管理员可以调整优先级。'
   if (dragSaving.value) return '正在保存优先级调整。'
-  if (group.reorderCanonicalId == null) return '该模型分组合并了多个规范模型，或存在不在候选集中的实时节点，无法安全调整优先级。'
+  if (group.reorderCanonicalId == null && (group.reorderRawModel == null || group.reorderRawModel === '')) {
+    return '该模型分组合并了多个规范模型或多个原始模型，或存在不在候选集中的实时节点，无法安全调整优先级。'
+  }
   if (!group.reorderRevision) return '尚未拿到后端修订版本，请等待数据加载完成后再试。'
   return '拖动节点以调整优先级，越靠前优先级越高。隐藏状态的节点会保持原有相对位置。'
 }
@@ -486,7 +517,9 @@ function clearDragState() {
 }
 
 async function onDrop(event: DragEvent, group: ModelGroup, targetCredentialId: number) {
-  if (!canReorder(group) || dragScopeKey.value !== group.model || group.reorderCanonicalId == null || !group.reorderRevision) return
+  const hasCanonical = group.reorderCanonicalId != null
+  const hasRaw = group.reorderRawModel != null && group.reorderRawModel !== ''
+  if (!canReorder(group) || dragScopeKey.value !== group.model || (!hasCanonical && !hasRaw) || !group.reorderRevision) return
   event.preventDefault()
   const ordered = [...group.nodes]
   const fromIndex = ordered.findIndex(n => n.credential_id === dragSourceCredentialId.value)
@@ -497,7 +530,8 @@ async function onDrop(event: DragEvent, group: ModelGroup, targetCredentialId: n
   }
   const [moved] = ordered.splice(fromIndex, 1)
   ordered.splice(toIndex, 0, moved)
-  const canonicalId = group.reorderCanonicalId as number
+  const canonicalId = hasCanonical ? (group.reorderCanonicalId as number) : undefined
+  const rawModel = hasRaw ? (group.reorderRawModel as string) : undefined
   const expectedRevision = group.reorderRevision as string
   // Build the full candidate set for this canonical scope (dedup by credential_id),
   // using the union of resolve results across all raw aliases in the group.
@@ -559,7 +593,11 @@ async function onDrop(event: DragEvent, group: ModelGroup, targetCredentialId: n
     modelCandidatesByRawModel.value = new Map(modelCandidatesByRawModel.value).set(rawModel, list)
   }
   try {
-    await reorderCandidateBindings(items, { canonicalId, expectedRevision })
+    await reorderCandidateBindings(items, {
+      canonicalId: canonicalId ?? undefined,
+      rawModel: rawModel ?? undefined,
+      expectedRevision,
+    })
   } catch (error) {
     for (const [rawModel, prev] of prevByRaw.entries()) {
       modelCandidatesByRawModel.value = new Map(modelCandidatesByRawModel.value).set(rawModel, prev)
@@ -605,9 +643,21 @@ function nodeStatusSummary(n: LiveNodeStatus): string {
 }
 
 function candidateForNode(group: ModelGroup, credentialId: number): RoutingCandidate | undefined {
-  const raw = group.reorderRawModel
-  if (!raw) return undefined
-  return (modelCandidatesByRawModel.value.get(modelKey(raw)) ?? []).find(c => c.credential_id === credentialId)
+  // Look up the candidate across all raw aliases in the group. Either
+  // reorderRawModel (legacy 541 scope) or the canonical-id scope uses the
+  // same unioned candidate map, so iterating group.aliases finds the row in
+  // both cases. We previously keyed off reorderRawModel alone, which left
+  // canonical-scoped groups with no candidate metadata (label, priority, etc).
+  for (const raw of group.aliases) {
+    const match = (modelCandidatesByRawModel.value.get(modelKey(raw)) ?? [])
+      .find(c => c.credential_id === credentialId)
+    if (match) return match
+  }
+  if (group.reorderRawModel) {
+    return (modelCandidatesByRawModel.value.get(modelKey(group.reorderRawModel)) ?? [])
+      .find(c => c.credential_id === credentialId)
+  }
+  return undefined
 }
 
 function providerLabel(n: LiveNodeStatus): string {
@@ -656,25 +706,36 @@ function statsKey(credentialId: number, model: string): string {
 }
 
 function windowStatsFor(group: ModelGroup, credentialId: number): WindowStatsLite | null {
-  if (!group.reorderRawModel) return null
-  return windowStatsByKey.value.get(statsKey(credentialId, group.reorderRawModel)) ?? null
+  const model = group.reorderRawModel
+    ?? (group.rawModels.length > 0 ? group.rawModels[0] : undefined)
+  if (!model) return null
+  return windowStatsByKey.value.get(statsKey(credentialId, model)) ?? null
 }
 
 function windowEntriesFor(group: ModelGroup, credentialId: number): CallEntry[] {
-  if (!group.reorderRawModel) return []
-  return windowEntriesByKey.value.get(statsKey(credentialId, group.reorderRawModel)) ?? []
+  const model = group.reorderRawModel
+    ?? (group.rawModels.length > 0 ? group.rawModels[0] : undefined)
+  if (!model) return []
+  return windowEntriesByKey.value.get(statsKey(credentialId, model)) ?? []
 }
 
 async function refreshWindowStats() {
   const targets: Array<{ credentialId: number; model: string }> = []
   const seen = new Set<string>()
   for (const group of filteredModelGroups.value) {
-    if (!group.reorderRawModel) continue
+    // Pick a model key the sliding-window API can match against. Either
+    // reorderRawModel (legacy 541 scope) or any raw_model under a canonical
+    // scope works — the window store indexes by (credential_id, model).
+    // We pull from rawModelsByGroup (built alongside aliases) so the name
+    // matches what resolve returned, not the lowered alias key.
+    const model = group.reorderRawModel
+      ?? (group.rawModels.length > 0 ? group.rawModels[0] : undefined)
+    if (!model) continue
     for (const node of group.nodes) {
-      const key = statsKey(node.credential_id, group.reorderRawModel)
+      const key = statsKey(node.credential_id, model)
       if (seen.has(key)) continue
       seen.add(key)
-      targets.push({ credentialId: node.credential_id, model: group.reorderRawModel })
+      targets.push({ credentialId: node.credential_id, model })
     }
   }
   if (!targets.length) return
@@ -743,9 +804,11 @@ const statsTargetFingerprint = computed(() => {
   const keys: string[] = []
   const seen = new Set<string>()
   for (const group of filteredModelGroups.value) {
-    if (!group.reorderRawModel) continue
+    const model = group.reorderRawModel
+      ?? (group.rawModels.length > 0 ? group.rawModels[0] : undefined)
+    if (!model) continue
     for (const node of group.nodes) {
-      const key = statsKey(node.credential_id, group.reorderRawModel)
+      const key = statsKey(node.credential_id, model)
       if (seen.has(key)) continue
       seen.add(key)
       keys.push(key)
