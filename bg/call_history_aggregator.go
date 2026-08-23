@@ -250,6 +250,17 @@ func (a *CallHistoryAggregator) pruneStaleWatermarks(liveKeys []string) {
 // to collect all llmgw:callhist:* keys. Returns an empty slice (not nil)
 // when there are no matches.
 func (a *CallHistoryAggregator) scanCallHistKeys(ctx context.Context) ([]string, error) {
+	indexed, err := a.redis.SMembers(ctx, credentialhealth.CallHistoryIndexKey()).Result()
+	if err == nil && len(indexed) > 0 {
+		return a.pruneCallHistoryIndex(ctx, indexed)
+	}
+	if err != nil && err != redis.Nil {
+		return nil, err
+	}
+
+	// Cold-start compatibility: seed the index once from legacy keys. New
+	// call writes maintain it, so subsequent aggregation ticks avoid scanning
+	// the shared Redis keyspace.
 	var allKeys []string
 	var cursor uint64
 	for {
@@ -268,7 +279,49 @@ func (a *CallHistoryAggregator) scanCallHistKeys(ctx context.Context) ([]string,
 			break
 		}
 	}
+	if len(allKeys) > 0 {
+		pipe := a.redis.Pipeline()
+		pipe.SAdd(ctx, credentialhealth.CallHistoryIndexKey(), stringSliceToAny(allKeys)...)
+		pipe.Expire(ctx, credentialhealth.CallHistoryIndexKey(), 2*time.Hour)
+		if _, err := pipe.Exec(ctx); err != nil && err != redis.Nil {
+			return nil, err
+		}
+	}
 	return allKeys, nil
+}
+
+func (a *CallHistoryAggregator) pruneCallHistoryIndex(ctx context.Context, indexed []string) ([]string, error) {
+	pipe := a.redis.Pipeline()
+	exists := make([]*redis.IntCmd, len(indexed))
+	for i, key := range indexed {
+		exists[i] = pipe.Exists(ctx, key)
+	}
+	if _, err := pipe.Exec(ctx); err != nil && err != redis.Nil {
+		return nil, err
+	}
+	keys := make([]string, 0, len(indexed))
+	stale := make([]any, 0)
+	for i, command := range exists {
+		if command.Err() == nil && command.Val() > 0 {
+			keys = append(keys, indexed[i])
+		} else {
+			stale = append(stale, indexed[i])
+		}
+	}
+	if len(stale) > 0 {
+		if err := a.redis.SRem(ctx, credentialhealth.CallHistoryIndexKey(), stale...).Err(); err != nil && err != redis.Nil {
+			return nil, err
+		}
+	}
+	return keys, nil
+}
+
+func stringSliceToAny(values []string) []any {
+	result := make([]any, len(values))
+	for i, value := range values {
+		result[i] = value
+	}
+	return result
 }
 
 // parseCallHistKey parses "llmgw:callhist:{credentialID}:{model}" into its
