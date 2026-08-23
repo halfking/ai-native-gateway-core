@@ -61,6 +61,10 @@ type LiveStreamTile struct {
 	IsProbe          bool     `json:"is_probe,omitempty"`
 	ProbeOrigin      string   `json:"probe_origin,omitempty"`
 	ProbeAttempt     int      `json:"probe_attempt,omitempty"`
+	// StageCategory is the coarse UI phase for in-flight tiles:
+	// routing = received / routing; llm = already sent upstream, waiting.
+	// Empty for terminal / idle tiles.
+	StageCategory string `json:"stage_category,omitempty"`
 }
 
 // LiveStreamTileSlim is a lightweight version of LiveStreamTile for Redis queue storage.
@@ -1182,13 +1186,14 @@ func liveRequestTile(req LiveRequest) LiveStreamTile {
 	if standardModel == "" {
 		standardModel = strings.TrimSpace(req.Model)
 	}
+	status := emptyAs(req.Status, "in_progress")
 	tile := LiveStreamTile{
 		RequestID:        req.RequestID,
 		Timestamp:        req.Ts,
 		Model:            standardModel,
 		Vendor:           resolveVendorForRequest(req),
 		Provider:         req.ProviderCode,
-		Status:           emptyAs(req.Status, "in_progress"),
+		Status:           status,
 		ErrorKind:        req.ErrorKind,
 		LatencyMs:        req.LatencyMs,
 		CostUSD:          req.CostUSD,
@@ -1197,6 +1202,13 @@ func liveRequestTile(req LiveRequest) LiveStreamTile {
 		IsProbe:          req.IsProbe,
 		ProbeOrigin:      req.ProbeOrigin,
 		ProbeAttempt:     req.ProbeAttempt,
+	}
+	// First paint for in-flight tiles defaults to "routing" so the live
+	// stream can distinguish "received / routing" from "waiting on LLM"
+	// before the first lifecycle action arrives. Upstream actions flip
+	// this to "llm" via SSE request_lifecycle patches.
+	if status == "in_progress" {
+		tile.StageCategory = "routing"
 	}
 	// Idle markers carry only their own dimension's identity. Surface a
 	// human-readable "[空闲]" label on whichever field is empty so the

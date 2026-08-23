@@ -413,7 +413,9 @@ func (g *redisEnforceGovernor) Acquire(ctx context.Context, qr *QueuedRequest, g
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("%w: %w", ErrGovernorUnavailable, err)
 		}
-		if !time.Now().Before(giveUp) {
+		// giveUp.IsZero() = no pace deadline (concurrency wait-room). Match
+		// local concurrencyGovernor: only ctx bounds the wait.
+		if !giveUp.IsZero() && !time.Now().Before(giveUp) {
 			return errPaceTimeout
 		}
 		token := g.nextToken()
@@ -528,7 +530,7 @@ func (g *redisEnforceGovernor) nextToken() string {
 // the cadence of concurrencyGovernor (2ms) so the behavior under heavy
 // load is comparable between Local and Redis-enforce backends.
 func (g *redisEnforceGovernor) waitOrGiveUp(ctx context.Context, giveUp time.Time) {
-	if !time.Now().Before(giveUp) {
+	if !giveUp.IsZero() && !time.Now().Before(giveUp) {
 		return
 	}
 	select {

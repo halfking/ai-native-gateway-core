@@ -95,6 +95,15 @@ function handleClick(key: string) {
           </span>
           <span class="legend-label">探测</span>
         </span>
+        <span class="legend-heading legend-heading--stage">阶段</span>
+        <span class="legend-item legend-item--status" title="路由中：已收到请求，正在选路/排队">
+          <span class="legend-stage legend-stage--routing" aria-hidden="true">⏳</span>
+          <span class="legend-label">路由中</span>
+        </span>
+        <span class="legend-item legend-item--status" title="等大模型：已发上游，等待响应">
+          <span class="legend-stage legend-stage--llm" aria-hidden="true">🔄</span>
+          <span class="legend-label">等大模型</span>
+        </span>
       </div>
     </div>
   </div>
@@ -243,6 +252,31 @@ function handleClick(key: string) {
   width: 10px;
   height: 10px;
   display: block;
+}
+
+.legend-heading--stage {
+  margin-left: 8px;
+  padding-left: 8px;
+  border-left: 1px solid var(--border);
+}
+
+.legend-stage {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  font-size: 10px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.legend-stage--routing {
+  color: #60a5fa;
+}
+
+.legend-stage--llm {
+  color: var(--accent);
 }
 
 .legend-label {
