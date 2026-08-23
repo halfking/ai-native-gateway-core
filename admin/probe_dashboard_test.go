@@ -10,6 +10,21 @@ import (
 	"github.com/pashagolub/pgxmock/v4"
 )
 
+func TestProbeTaskValidationDefaultsAndEnums(t *testing.T) {
+	if !isProbeTaskCommand("node_probe") || !isProbeTaskCommand("integrity_verify") || !isProbeTaskCommand("selfcheck") {
+		t.Fatal("expected supported probe commands")
+	}
+	if isProbeTaskCommand("model_switch") {
+		t.Fatal("model switching must not be a self-check command")
+	}
+	if !isProbeTaskSource("admin") || !isProbeTaskSource("request_failure") || !isProbeTaskSource("periodic") {
+		t.Fatal("expected supported probe sources")
+	}
+	if isProbeTaskSource("unknown") {
+		t.Fatal("unknown probe source must be rejected")
+	}
+}
+
 // PR-7 (2026-06-30): buildStateDistribution must flatten a breakdown
 // slice into {state: count}. Frontend ProbeHealthDetailView.vue reads
 // `state_distribution` for the 4 status badges (audit P0-10).
