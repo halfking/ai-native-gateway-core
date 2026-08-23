@@ -40,6 +40,7 @@ import {
   credentialDisplayName,
   nodeCapacity,
 } from '../utils/queueNodeCards'
+import { credentialDisplayName as credentialLabelById } from '../composables/useCredentialLabels'
 import RequestProcessingTrail from './RequestProcessingTrail.vue'
 import NodeDetailDrawer from './NodeDetailDrawer.vue'
 
@@ -811,7 +812,7 @@ function formatTs(ts: string | undefined): string {
             </span>
           </div>
           <div v-for="c in topCredentials" :key="c.credential" class="qp-row">
-            <span class="qp-row-label">节点 {{ c.credential }}</span>
+            <span class="qp-row-label">{{ credentialLabelById(c.credential) }}</span>
             <div class="qp-bar qp-bar--sm">
               <div
                 class="qp-bar-fill qp-bar-fill--cred"

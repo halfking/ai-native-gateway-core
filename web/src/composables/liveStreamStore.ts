@@ -7,7 +7,7 @@
 // ?token=<jwt> to the URL (AdminMiddleware extracts it to Authorization).
 // The HttpOnly cookie is also sent (credentials: 'include').
 
-import { reactive, computed, type ComputedRef } from 'vue'
+import { reactive, computed, ref, type ComputedRef } from 'vue'
 import { authBearer } from '../store'
 import type { RouteIncidentUpdate } from '../types/routeIncident'
 
@@ -72,6 +72,7 @@ export interface ActionEvent {
   ts?: string
   model?: string
   credential_id?: number
+  credential_label?: string
   error_kind?: string | null
   retry_seq?: number
   retry?: boolean
@@ -444,6 +445,7 @@ function seqOf(a: ActionEvent): number {
 // 与"实时请求流"栏目本身的窗口语义一致，不承诺全量历史。
 type RequestCredentialIndex = Map<string, { credentialId: number; seq: number; ts: number }>
 const requestCredential: RequestCredentialIndex = new Map()
+export const requestCredentialRevision = ref(0)
 
 // Carry-credential actions: ActionEvent 中带 credential_id 且表示"请求
 // 绑定到该凭据"的子集。node_switch 携带 from_credential_id +
@@ -476,6 +478,7 @@ function applyRequestCredentialIndex(requestId: string, action: ActionEvent) {
   if (prev && prev.seq > next.seq) return
   if (prev && prev.seq === next.seq && prev.ts > next.ts) return
   requestCredential.set(requestId, next)
+  requestCredentialRevision.value++
 }
 
 function rebuildRequestCredentialIndex(requestId: string, timeline: ActionEvent[]) {
@@ -520,6 +523,7 @@ export function getNodesForModel(model: string): LiveNodeStatus[] {
 
 export function clearRequestCredentialIndex() {
   requestCredential.clear()
+  requestCredentialRevision.value++
 }
 
 function applyStageToRequest(requestId: string, action: ActionEvent) {

@@ -15,6 +15,7 @@ import { detectTheme, logoSrc } from './theme'
 import { SITE_LOGO_SIZE, SITE_TITLE, SITE_TITLE_LINE_ONE, SITE_TITLE_LINE_TWO } from './config/brand'
 import { useLoginModal } from './composables/useLoginModal'
 import { onMaintainAvailabilityChange, probeMaintainAvailable } from './config/edition'
+import { loadCredentialLabels } from './composables/useCredentialLabels'
 
 const { t } = useI18n()
 const route = useRoute()
@@ -115,6 +116,14 @@ watch(
   },
   { immediate: true },
 )
+
+// 2026-08-23 (凭据显示) : 全局加载凭据名称缓存。selfcheck/stream/节点矩阵
+// 等视图通过 useCredentialLabels 共享这份缓存，避免子组件各自拉取。
+watch(isLoggedIn, (loggedIn) => {
+  if (loggedIn) {
+    void loadCredentialLabels()
+  }
+}, { immediate: true })
 
 watch(
   () => route.query.login,

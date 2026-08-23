@@ -24,6 +24,9 @@ import {
 import ProbeTriStateQueue from '../components/probe/ProbeTriStateQueue.vue'
 import { getFeaturedModelsDynamic } from '../api/system'
 import type { FeaturedModel } from '../api/system'
+import {
+  displaySyntheticCredentialModel,
+} from '../composables/useCredentialLabels'
 
 const loading = ref(false)
 const error = ref<string | null>(null)
@@ -287,13 +290,7 @@ const errorColor = (t: string): string => {
 // the suffix indicates which credential's daily check produced the
 // run. Real upstream models (e.g. "gpt-5.6-luna") pass through.
 function formatSelfCheckModelLabel(label: string): string {
-  if (!label) return label
-  if (label.startsWith('cred-')) {
-    const id = label.slice(5)
-    if (/^\d+$/.test(id)) return `凭据 #${id}`
-    return label
-  }
-  return label
+  return label ? displaySyntheticCredentialModel(label) : label
 }
 
 const summaryCards = computed(() => {

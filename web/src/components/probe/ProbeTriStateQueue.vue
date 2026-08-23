@@ -23,6 +23,7 @@ import {
   type ProbeOutcome,
 } from '../../api-selfcheck'
 import { acquireProbeStream, useProbeStream, type ProbeOrigin } from '../../composables/probeStreamStore'
+import { credentialDisplayName, loadCredentialLabels } from '../../composables/useCredentialLabels'
 
 // 前端 cap 与后端 probeCompletedWindow (=200) 同步。
 const MAX_COMPLETED = 200
@@ -327,6 +328,7 @@ function onVisibilityChange() {
 }
 
 onMounted(() => {
+  void loadCredentialLabels()
   void refreshFromApi()
   startPoll()
   startTick()
@@ -413,23 +415,21 @@ function originClass(o: ProbeOrigin): string {
   }
 }
 
-// credentialLabel 渲染 供应商 + 凭据 的主标签（2026-08-20 自检 tab 可读性
-// 修复）：当 provider_name 存在时显示 "<供应商> · 凭据 #<id>"，否则退回
-// "凭据 #<id>" 保持旧形状不变。fallback 用 provider_code，再退回纯 ID。
+// credentialLabel 渲染供应商 + 凭据名称；名称未加载或凭据已删除时，
+// credentialDisplayName 保留“凭据 #ID”作为可追溯 fallback。
 function credentialLabel(c: ProbeCard): string {
-  const cred = `凭据 #${c.credential_id}`
+  const cred = credentialDisplayName(c.credential_id)
   if (c.provider_name) return `${c.provider_name} · ${cred}`
   if (c.provider_code) return `${c.provider_code} · ${cred}`
   return cred
 }
 
-// credentialTitle 在悬停 tooltip 里给出更完整的供应商 + 凭据 + 模型信息，
-// 方便排查时一眼看到 (供应商 code, 凭据 id, 模型)。
+// credentialTitle 在悬停 tooltip 里给出更完整的供应商 + 凭据 + 模型信息。
 function credentialTitle(c: ProbeCard): string {
   const parts: string[] = []
   if (c.provider_name) parts.push(c.provider_name)
   if (c.provider_code && c.provider_code !== c.provider_name) parts.push(`(${c.provider_code})`)
-  parts.push(`凭据 #${c.credential_id}`)
+  parts.push(credentialDisplayName(c.credential_id))
   if (c.raw_model) parts.push(c.raw_model)
   return parts.join(' · ')
 }

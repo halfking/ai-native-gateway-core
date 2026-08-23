@@ -14,6 +14,7 @@ import { ref, computed, watch, onBeforeUnmount } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { nodesRef, type LiveNodeStatus } from '../composables/liveStreamStore'
 import NodeDetailDrawer from './NodeDetailDrawer.vue'
+import { credentialDisplayName } from '../composables/useCredentialLabels'
 
 const { t } = useI18n()
 const nodes = nodesRef
@@ -196,7 +197,7 @@ const hasNodes = computed(() => nodes.value.length > 0)
                     @keydown.space.prevent="openNode(n)"
                   >
                     <div class="nm-card-header">
-                      <span class="nm-card-id">{{ t('requestJourneys.matrix.nodeLabel', { credentialId: n.credential_id }) }}</span>
+                      <span class="nm-card-id">{{ credentialDisplayName(n.credential_id) }}</span>
                       <span class="nm-card-provider">{{ n.provider_code || `P${n.provider_id}` }}</span>
                     </div>
                     <div class="nm-card-states">

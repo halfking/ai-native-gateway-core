@@ -2,6 +2,7 @@
 import type { RoutingCandidate } from '../api/routing'
 import type { LiveNodeStatus } from '../composables/liveStreamStore'
 import { statusClass } from '../utils/nodeDetailFormat'
+import { credentialDisplayName } from '../composables/useCredentialLabels'
 import { useNodeDetailDrawerLoad, type NodeDetailTab } from '../composables/useNodeDetailDrawerLoad'
 import { useNodeDetailDrawerActions } from '../composables/useNodeDetailDrawerActions'
 import RequestLogDrawer from './RequestLogDrawer.vue'
@@ -53,10 +54,10 @@ const node = currentNode
 <template>
   <Teleport to="body">
     <div v-if="visible" class="nd-mask" @click.self="visible = false" />
-    <aside v-if="visible && node" class="nd-drawer" role="dialog" aria-modal="true" :aria-label="`节点 ${node.credential_id} 详情`">
+    <aside v-if="visible && node" class="nd-drawer" role="dialog" aria-modal="true" :aria-label="`${credentialDisplayName(node.credential_id)} 详情`">
       <header class="nd-header">
         <div>
-          <div class="nd-eyebrow">节点 #{{ node.credential_id }} · {{ node.provider_code || `Provider ${node.provider_id ?? '—'}` }}</div>
+          <div class="nd-eyebrow">{{ credentialDisplayName(node.credential_id) }} · {{ node.provider_code || `Provider ${node.provider_id ?? '—'}` }}</div>
           <h2>{{ selectedModel || '未上报模型绑定' }}</h2>
           <div class="nd-state-row">
             <span class="nd-state" :class="statusClass(headlineState === '可用' ? 'ready' : headlineState)">{{ headlineState }}</span>

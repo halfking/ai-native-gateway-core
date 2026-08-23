@@ -225,7 +225,8 @@ describe('QueuePerspectivePanel', () => {
     expect(wrapper.find('.qp-depth-body').exists()).toBe(true)
     expect(wrapper.text()).toContain('总队列')
     expect(wrapper.text()).toContain('glm-5.2')
-    expect(wrapper.text()).toContain('节点 7')
+    // 2026-08-23 凭据显示：共享标签缓存为空，fallback 为「凭据 #ID」。
+    expect(wrapper.text()).toContain('凭据 #7')
   })
 
   it('keeps an explicit collapsed preference during congestion', () => {
@@ -288,7 +289,8 @@ describe('QueuePerspectivePanel', () => {
     expect(wrapper.text()).toContain('anthropic-messages')
     expect(wrapper.text()).toContain('forwarding')
     expect(wrapper.text()).toContain('转发请求')
-    expect(wrapper.text()).toContain('节点 7')
+    // 2026-08-23 凭据显示：标签缓存未命中时显示「凭据 #ID」便于排查。
+    expect(wrapper.text()).toContain('凭据 #7')
   })
 
   it('falls back to snapshot wording when no lifecycle events were pushed', () => {

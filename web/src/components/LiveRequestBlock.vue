@@ -24,6 +24,8 @@
 // operator no longer needs to hover for a tooltip to know
 // whether a red tile was upstream 5xx or a client timeout.
 import { computed } from 'vue'
+import { getRequestCredentialId, requestCredentialRevision } from '../composables/liveStreamStore'
+import { credentialDisplayName } from '../composables/useCredentialLabels'
 import { useI18n } from 'vue-i18n'
 import type { LiveRequest } from '../composables/useLiveStream'
 import {
@@ -120,6 +122,13 @@ const statusBorderWidth = computed(() =>
 )
 
 const isPulsing = computed(() => props.request.status === 'in_progress')
+// 2026-08-23 凭据显示：依赖 requestCredentialRevision 让生命周期事件
+//（如 node_switch）触发后立即重算凭据名称，否则 tooltip 会停留在
+//挂载时的过期 ID。
+const credentialName = computed(() => {
+  void requestCredentialRevision.value
+  return credentialDisplayName(getRequestCredentialId(props.request.request_id || ''))
+})
 
 /**
  * Multi-line native tooltip. Native `title` is chosen over a custom
@@ -142,6 +151,8 @@ const tooltip = computed(() => {
   }
   if (r.model) lines.push(`Model: ${r.model}`)
   if (r.provider_code) lines.push(`Provider: ${r.provider_code}`)
+  const credentialId = getRequestCredentialId(r.request_id || '')
+  if (credentialId != null) lines.push(`Credential: ${credentialName.value}`)
   lines.push(`Status: ${r.status ?? '?'}`)
   if (r.latency_ms != null) {
     lines.push(`Latency: ${latencyText.value}`)
@@ -242,7 +253,7 @@ function onClick() {
       class="live-block__vendor"
       :title="request.model || ''"
     >{{ vendorLabel }}</span>
-    <span v-else class="live-block__provider">{{ providerLabel }}</span>
+    <span v-else class="live-block__provider">{{ credentialName !== '—' ? credentialName : providerLabel }}</span>
     <!-- Latency is always the last line. The corner badge is
          intentionally suppressed in failure mode because the line-2
          label already tells the failure story; keeping the badge
