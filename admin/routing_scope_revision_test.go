@@ -308,7 +308,7 @@ func TestRoutingCandidateBindingReorder_IntegrationNoOpBump(t *testing.T) {
 		t.Fatalf("no-op update bumped scope_revision: before=%q after=%q", revBefore, revAfter)
 	}
 
-	// Sanity: a real priority change DOES still bump the counter.
+	// Sanity: a real manual_priority change DOES still bump the counter.
 	_, err = pool.Exec(context.Background(),
 		`UPDATE credential_model_bindings SET manual_priority = 9, updated_at = NOW() WHERE id = $1`,
 		f.bindingIDs[0])
@@ -318,5 +318,18 @@ func TestRoutingCandidateBindingReorder_IntegrationNoOpBump(t *testing.T) {
 	revBumped := f.reorderRevision(t, h)
 	if !strings.HasPrefix(revBumped, "2:") {
 		t.Fatalf("real update did not bump scope_revision: got %q, want prefix %q", revBumped, "2:")
+	}
+
+	// Sanity: flipping the boolean priority flag also bumps the counter —
+	// the 568 predicate treats priority as a scope-affecting routing input.
+	_, err = pool.Exec(context.Background(),
+		`UPDATE credential_model_bindings SET priority = NOT priority, updated_at = NOW() WHERE id = $1`,
+		f.bindingIDs[0])
+	if err != nil {
+		t.Fatalf("priority flip update: %v", err)
+	}
+	revPriority := f.reorderRevision(t, h)
+	if !strings.HasPrefix(revPriority, "3:") {
+		t.Fatalf("priority flip did not bump scope_revision: got %q, want prefix %q", revPriority, "3:")
 	}
 }
