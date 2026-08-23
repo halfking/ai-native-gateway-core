@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -10,8 +11,33 @@ import (
 
 	"log/slog"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/kaixuan/llm-gateway-go/provider"
 )
+
+// beginCredKeyTx opens the transaction used by deleteCredentialKey and
+// resetCredentialKey. Tests override beginCredKeyTxOverride to plug in
+// pgxmock; production callers fall back to h.db.Begin.
+//
+// This mirrors the beginApprovalTx / beginApprovalTxOverride seam in
+// stats.go: Handler.db is the concrete *pgxpool.Pool type, so tests
+// can't inject a mock pool directly without touching the field. The
+// override lets credential_keys_test.go drive the FOR-UPDATE + DELETE/
+// UPDATE flow against an in-process mock pool.
+func beginCredKeyTx(ctx context.Context, h *Handler) (pgx.Tx, error) {
+	if beginCredKeyTxOverride != nil {
+		return beginCredKeyTxOverride(ctx, h)
+	}
+	if h == nil || h.db == nil {
+		return nil, fmt.Errorf("admin handler: nil database pool")
+	}
+	return h.db.Begin(ctx)
+}
+
+// beginCredKeyTxOverride lets tests inject a fake pgx.Tx source. Nil in
+// production; the variable is package-private to keep the seam from
+// leaking into other packages.
+var beginCredKeyTxOverride func(ctx context.Context, h *Handler) (pgx.Tx, error)
 
 // handleCredentialKeys manages the extra keys on a credential (migration 076).
 //
@@ -203,7 +229,7 @@ func (h *Handler) deleteCredentialKey(w http.ResponseWriter, r *http.Request, pr
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	tx, err := h.db.Begin(ctx)
+	tx, err := beginCredKeyTx(ctx, h)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "begin transaction failed")
 		return
@@ -271,7 +297,7 @@ func (h *Handler) resetCredentialKey(w http.ResponseWriter, r *http.Request, pro
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	tx, err := h.db.Begin(ctx)
+	tx, err := beginCredKeyTx(ctx, h)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "begin transaction failed")
 		return

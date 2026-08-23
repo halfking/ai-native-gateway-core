@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	met "github.com/kaixuan/llm-gateway-go/metrics" //nolint:depguard // routing credential observability (2026-08-23 hzx-2 audit)
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
@@ -238,6 +239,20 @@ func (r *CredentialRecovery) recover(ctx context.Context) {
 	timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
+	// 2026-08-23 (hzx-2 audit): record tick duration and per-block recovery
+	// outcomes so on-call engineers can see whether the 30s tick is actually
+	// recovering nodes, hitting permanent-kind guards, or erroring out. The
+	// tick duration gauge surfaces silent slowdowns (e.g. DB connection
+	// pool exhaustion) that would otherwise only show up after a full
+	// outage. The per-block counters expose the root cause directly.
+	start := time.Now()
+	defer func() {
+		met.RoutingCredentialRecoveryTickDurationSeconds.Set(time.Since(start).Seconds())
+	}()
+	recordOutcome := func(sqlKind, outcome string) {
+		met.RoutingCredentialRecoveryTotal.WithLabelValues(sqlKind, outcome).Inc()
+	}
+
 	// 2026-08-18 fix (glm-5.2 outage): 智谱 GLM Coding Plan 5 小时窗口的 429
 	// 在 44f197505 之前被误标为 quota_permanent / permanently_exhausted（硬配额），
 	// 且 quota_recover_at / availability_recover_at 均为 NULL —— 上游窗口每 5
@@ -329,8 +344,12 @@ func (r *CredentialRecovery) recover(ctx context.Context) {
 	`)
 	if err != nil {
 		slog.Warn("credential availability recovery failed", "error", err)
+		recordOutcome("availability_recover", "error")
 	} else if tag.RowsAffected() > 0 {
 		slog.Info("credential availability recovered", "count", tag.RowsAffected())
+		recordOutcome("availability_recover", "recovered")
+	} else {
+		recordOutcome("availability_recover", "no_row")
 	}
 
 	tag, err = r.db.Exec(timeoutCtx, `
@@ -345,16 +364,29 @@ func (r *CredentialRecovery) recover(ctx context.Context) {
 	`)
 	if err != nil {
 		slog.Warn("credential quota recovery failed", "error", err)
+		recordOutcome("quota_periodic_recover", "error")
 	} else if tag.RowsAffected() > 0 {
 		slog.Info("credential quota recovered", "count", tag.RowsAffected())
+		recordOutcome("quota_periodic_recover", "recovered")
+	} else {
+		// 2026-08-23 (hzx-2 audit): "no_row" likely means quota_recover_at
+		// was NULL (permanent kind was written). Operators reading the
+		// counter trend can spot a permanent-kind buildup that needs
+		// admin force_enable — exactly the failure mode that produced the
+		// hzx-2 outage.
+		recordOutcome("quota_periodic_recover", "no_row")
 	}
 
 	tag, err = r.db.Exec(timeoutCtx, stalePeriodicExhaustedCleanupSQL())
 	if err != nil {
 		slog.Warn("stale periodic_exhausted cleanup failed", "error", err)
+		recordOutcome("stale_periodic_exhausted_cleanup", "error")
 	} else if tag.RowsAffected() > 0 {
 		slog.Info("stale periodic_exhausted cleared (credentials already healthy)",
 			"count", tag.RowsAffected())
+		recordOutcome("stale_periodic_exhausted_cleanup", "recovered")
+	} else {
+		recordOutcome("stale_periodic_exhausted_cleanup", "no_row")
 	}
 
 	tag, err = r.db.Exec(timeoutCtx, `
@@ -369,8 +401,12 @@ func (r *CredentialRecovery) recover(ctx context.Context) {
 	`)
 	if err != nil {
 		slog.Warn("circuit breaker recovery failed", "error", err)
+		recordOutcome("circuit_close", "error")
 	} else if tag.RowsAffected() > 0 {
 		slog.Info("circuit breakers closed", "count", tag.RowsAffected())
+		recordOutcome("circuit_close", "recovered")
+	} else {
+		recordOutcome("circuit_close", "no_row")
 	}
 
 	tag, err = r.db.Exec(timeoutCtx, `
@@ -385,8 +421,12 @@ func (r *CredentialRecovery) recover(ctx context.Context) {
 	`)
 	if err != nil {
 		slog.Warn("failure counter clear failed", "error", err)
+		recordOutcome("consecutive_failures_clear", "error")
 	} else if tag.RowsAffected() > 0 {
 		slog.Info("stale failure counters cleared", "count", tag.RowsAffected())
+		recordOutcome("consecutive_failures_clear", "recovered")
+	} else {
+		recordOutcome("consecutive_failures_clear", "no_row")
 	}
 
 	// Reset stale health_status="unreachable" / "auth_failed" / "error" rows.
@@ -427,8 +467,10 @@ func (r *CredentialRecovery) recover(ctx context.Context) {
 	tag, err = r.db.Exec(timeoutCtx, mnfCoolingRecoverySQL(), mnfCoolingRecoveryMinutes())
 	if err != nil {
 		slog.Warn("mnf_cooling binding recovery failed", "error", err)
+		recordOutcome("mnf_cooling_recover", "error")
 	} else if tag.RowsAffected() > 0 {
 		slog.Info("mnf_cooling bindings recovered", "count", tag.RowsAffected())
+		recordOutcome("mnf_cooling_recover", "recovered")
 		// Mirror the cmb recovery onto model_offers so /api/routing/resolve
 		// ("test route") and the admin UI badges agree with the production
 		// router. Without this, mnf_cooling restores the binding on the
@@ -436,8 +478,12 @@ func (r *CredentialRecovery) recover(ctx context.Context) {
 		// until manual admin intervention.
 		if moTag, moErr := r.db.Exec(timeoutCtx, mnfCoolingRecoveryMirrorSQL(), mnfCoolingRecoveryMinutes()); moErr != nil {
 			slog.Warn("mnf_cooling model_offers mirror recovery failed", "error", moErr)
+			recordOutcome("mnf_cooling_mirror", "error")
 		} else if moTag.RowsAffected() > 0 {
 			slog.Info("mnf_cooling model_offers mirrored", "count", moTag.RowsAffected())
+			recordOutcome("mnf_cooling_mirror", "recovered")
+		} else {
+			recordOutcome("mnf_cooling_mirror", "no_row")
 		}
 	}
 
@@ -536,6 +582,15 @@ func (r *CredentialRecovery) recover(ctx context.Context) {
 	if err := r.recoverFreshDegradedBindings(timeoutCtx); err != nil {
 		slog.Warn("fresh-degraded binding probe recovery failed", "error", err)
 	}
+
+	// 2026-08-23 (hzx-2 audit): a recovered credential is one whose
+	// availability/quota/circuit block flipped at least one row. The other
+	// branches (expired/fresh-degraded) hand work off to NodeProbeWorker and
+	// don't write to cmb.available themselves, so we don't count them here.
+	// Operators read this counter alongside the per-block WithLabelValues
+	// calls below to spot silent recoveries (counter still increasing
+	// means the tick is healthy).
+	recordOutcome("overall", "completed")
 }
 
 // stalePeriodicExhaustedCleanupSQL returns the SQL that clears credentials

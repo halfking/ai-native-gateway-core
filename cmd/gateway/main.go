@@ -2336,6 +2336,11 @@ func main() {
 		adminHandler.SetCredStateRecoverer(stateManager)
 	}
 
+	// 2026-08-23 (hzx-2 audit): NodeProbeWorker.Submit is wired into the
+	// focused /api/routing/credentials/{id}/reset-state endpoint right
+	// after nodeProbeWorker is constructed further down this file (line
+	// ~3309). When unset, trigger_probe=true is silently ignored.
+
 	var approvalMgr *sessionaudit.ApprovalManager // 2026-06-27: outer-scope so the timeout worker can read it
 	if dbConn != nil && dbConn.Enabled() {
 		slog.Info("CHECKPOINT: before admin.SetKeyring etc")
@@ -2801,6 +2806,7 @@ func main() {
 	var callHistoryAggregator *bg.CallHistoryAggregator
 	var concurrencyAutoScaleUp *bg.ConcurrencyAutoScaleUp
 	var healthAutoRecover *bg.HealthAutoRecover
+	var autoHealWorker *bg.CredentialAutoHealWorker
 	var autoRouteListener *bg.AutoRouteRealtimeListener
 	// v7 (2026-06-28): Unified probe scheduler replaces modelProbe + suspiciousProbe
 	var unifiedProbe *bg.UnifiedProbeScheduler
@@ -3320,6 +3326,13 @@ func main() {
 					nodeProbeWorker.SetProbeSink(probeStreamHub)
 				}
 				nodeProbeWorker.SetInvalidateCandidateCache(provider.InvalidateCandidateCacheForCredential)
+				// 2026-08-23 (hzx-2 audit): wire NodeProbeWorker.Submit into the
+				// focused /api/routing/credentials/{id}/reset-state endpoint so
+				// the operator can request an immediate self-check probe.
+				adminHandler.SetProbeSubmitter(func(credentialID int, rawModel, tenantID, parentReqID string) {
+					nodeProbeWorker.Submit(credentialID, rawModel, tenantID, parentReqID)
+				})
+				slog.Info("nodeProbeWorker: probe submitter wired into admin reset-state endpoint")
 				if routingExec != nil && routingExec.Circuit != nil {
 					nodeProbeWorker.SetCircuitRecovery(routingExec.Circuit.RecordSuccess)
 				}
@@ -3743,6 +3756,31 @@ func main() {
 			}
 			healthAutoRecover.Start(context.Background())
 			slog.Info("CHECKPOINT: after healthAutoRecover.Start")
+
+			// 2026-08-23 (hzx-2 audit): start CredentialAutoHealWorker that
+			// submits self-heal probes for (cred, model) pairs that have
+			// been Disabled long enough that the upstream likely recovered.
+			// The probe worker's success path is the authoritative writer
+			// of cmb.available=true so we don't write DB state directly
+			// from this worker — the cycle only Submit()s. Re-uses
+			// NodeProbeWorker so the existing probe-path audit, retry,
+			// and 5s/30s/... backoff ladder apply unchanged.
+			autoHealWorker = bg.NewCredentialAutoHealWorker(dbConn.Pool(), func(credentialID int, rawModel, tenantID, parentReqID string) {
+				if nodeProbeWorker != nil {
+					nodeProbeWorker.Submit(credentialID, rawModel, tenantID, parentReqID)
+				}
+			})
+			autoHealWorker.Start(context.Background())
+			slog.Info("CHECKPOINT: after credential_autoheal_worker.start")
+
+			// Wire the autoheal worker into the focused
+			// /api/routing/credentials/{id}/reset-state endpoint so
+			// operators can fire an immediate self-heal submission
+			// after the reset completes (without waiting for the next
+			// 5-min tick).
+			if adminHandler != nil {
+				adminHandler.SetAutoHealOneShot(autoHealWorker.OneShot)
+			}
 
 			// Wire the Redis availability reader so admin /api/admin/probe/cache-state
 			// can serve cache-only views without touching PostgreSQL.
@@ -6023,6 +6061,9 @@ func main() {
 			}
 			if healthAutoRecover != nil {
 				healthAutoRecover.Stop()
+			}
+			if autoHealWorker != nil {
+				autoHealWorker.Stop()
 			}
 		}
 		// Provider Profile System shutdown (Phase 1, 2026-07-26)

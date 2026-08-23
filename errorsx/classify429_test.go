@@ -182,3 +182,43 @@ func TestNextQuotaReset_RFC3339Timestamps(t *testing.T) {
 		})
 	}
 }
+
+// TestNextQuotaReset_RFC3339NanoFractionalSeconds locks the RFC3339Nano
+// layout (fractional seconds) in classify.go's scanQuotaResetTimestamp.
+// Providers like Google Gemini RESOURCE_EXHAUSTED and OpenAI proxies may
+// emit sub-second precision (e.g. "2026-08-10T12:34:56.789Z"). Without
+// the RFC3339Nano layout the scanner falls back to RFC3339 (whole seconds)
+// or — worse — to the next-UTC-midnight default, parking the credential
+// for hours past the real reset.
+func TestNextQuotaReset_RFC3339NanoFractionalSeconds(t *testing.T) {
+	now := time.Date(2026, 8, 10, 12, 30, 0, 0, time.UTC)
+	tests := []struct {
+		name string
+		body string
+		want time.Time
+	}{
+		{
+			name: "milliseconds with Z suffix",
+			body: `{"error":"quota will reset after 2026-08-10T12:34:56.789Z"}`,
+			want: time.Date(2026, 8, 10, 12, 34, 56, 789_000_000, time.UTC),
+		},
+		{
+			name: "microseconds with +08:00 offset",
+			body: `{"error":"reset at 2026-08-10T20:34:56.123456+08:00"}`,
+			want: time.Date(2026, 8, 10, 12, 34, 56, 123_456_000, time.UTC),
+		},
+		{
+			name: "nanoseconds with -05:00 offset",
+			body: `{"error":"reset at 2026-08-10T07:34:56.000000001-05:00"}`,
+			want: time.Date(2026, 8, 10, 12, 34, 56, 1, time.UTC),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := NextQuotaReset(tt.body, now)
+			if !got.Equal(tt.want) {
+				t.Fatalf("NextQuotaReset(%q) = %v, want %v", tt.body, got, tt.want)
+			}
+		})
+	}
+}

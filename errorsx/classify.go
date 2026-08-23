@@ -1025,16 +1025,68 @@ func NextQuotaReset(body string, now time.Time) time.Time {
 // so upstream bodies that emit ISO-8601 timestamps with timezones
 // (Google Gemini `RESOURCE_EXHAUSTED` reset messages, OpenAI proxies, Zhipu)
 // are honored instead of silently falling through to next-UTC-midnight.
+// timestampCandidateRe matches plausible ISO-8601 / naive timestamps in a
+// 429 body so the scanner can extract them and try each layout. The
+// pattern is permissive enough to catch fractional seconds (RFC3339Nano)
+// and timezone designators (Z, +HH:MM, -HH:MM), but conservative enough
+// to skip JSON tokens like numeric fields. Anchored on the leading
+// 4-digit year so we don't pick up "0123" style false-positives.
+var timestampCandidateRe = regexp.MustCompile(`\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?`)
+
 func scanQuotaResetTimestamp(detail string, now time.Time) (time.Time, bool) {
 	now = now.UTC()
-	// Layouts that include timezone require time.Parse (which honors Z/offset);
-	// naive layouts use ParseInLocation with explicit UTC so a server running
-	// in a non-UTC zone doesn't drift the parsed value.
+	// 2026-08-22 fix (audit round-2 §5.3): extract candidate timestamp
+	// substrings first, then try each layout against each candidate.
 	//
-	// Order matters: try offset-aware layouts FIRST so a body like
-	// `2026-08-10T20:34:56+08:00` is parsed correctly to 12:34:56 UTC instead of
-	// greedily matching the naive `2026-08-10T20:34:56` (20:34:56 UTC) and
-	// returning a wrong reset time.
+	// Previous implementation slid a window of exactly len(layout) over
+	// the body. That fails for short fractional-second timestamps like
+	// "2026-08-10T12:34:56.789Z" (24 chars) against time.RFC3339Nano
+	// (35 chars including ".999999999Z07:00") — the inner loop
+	// `i+window <= len(detail)` produces zero iterations, the layout
+	// is silently skipped, and the scanner falls through to the naive
+	// layout which parses "2026-08-10T12:34:56" (19 chars) and returns
+	// whole seconds (`.789` is dropped). For credentials this means the
+	// reset-at is recorded up to 999ms late, which on a tight 5h/24h
+	// window can hold a credential in cooling past its real recovery.
+	//
+	// Extracting candidate substrings via regex first decouples layout
+	// length from body length: each candidate is a self-contained
+	// timestamp that `time.Parse` can accept with any of the layouts
+	// below (the offset-aware layouts ignore trailing components the
+	// body doesn't carry, and the naive layouts use ParseInLocation).
+	for _, m := range timestampCandidateRe.FindAllString(detail, -1) {
+		for _, layout := range []string{
+			time.RFC3339Nano,
+			time.RFC3339,
+			"2006-01-02 15:04:05",
+			"2006-01-02T15:04:05",
+			"2006/01/02 15:04:05",
+			"2006/01/02T15:04:05",
+		} {
+			var (
+				t   time.Time
+				err error
+			)
+			switch layout {
+			case time.RFC3339, time.RFC3339Nano:
+				t, err = time.Parse(layout, m)
+			default:
+				t, err = time.ParseInLocation(layout, m, time.UTC)
+			}
+			if err != nil {
+				continue
+			}
+			if t.Before(now.Add(-1 * time.Minute)) {
+				continue
+			}
+			return t.UTC(), true
+		}
+	}
+	// Fallback: original sliding-window approach for non-stdout layouts
+	// that the regex might miss (defense in depth — the regex above
+	// covers the common cases; this catches edge cases like a body
+	// containing only a naive timestamp without the 4-digit-year
+	// anchor or with whitespace inside the date).
 	for _, layout := range []string{
 		time.RFC3339Nano,
 		time.RFC3339,
@@ -1046,9 +1098,6 @@ func scanQuotaResetTimestamp(detail string, now time.Time) (time.Time, bool) {
 		window := len(layout)
 		if window < 19 {
 			window = 19
-		}
-		if len(detail) < window {
-			continue
 		}
 		for i := 0; i+window <= len(detail); i++ {
 			candidate := detail[i : i+window]

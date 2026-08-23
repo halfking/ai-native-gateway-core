@@ -29,6 +29,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2"
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/api"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
+	met "github.com/kaixuan/llm-gateway-go/metrics" //nolint:depguard // routing credential observability counters
 	"github.com/kaixuan/llm-gateway-go/modelname"
 	"github.com/kaixuan/llm-gateway-go/provider"
 )
@@ -1298,201 +1299,17 @@ func (h *Handler) handleEmergencyRepair(w http.ResponseWriter, r *http.Request) 
 		// node_probe_failed) stayed red after HTTP 200 — observed on NVIDIA NIM
 		// (cred 8/18/19/23 · minimaxai/minimax-m3) and 普联 (cred 29 · glm-5.2).
 		// Now also: reset availability/circuit/failures + node_probe_state.
-		var currentDisabled bool
-		var availState string
-		var providerID int
-		err := h.db.QueryRow(ctx,
-			`SELECT COALESCE(manual_disabled, false), COALESCE(availability_state, 'ready'),
-			        COALESCE(provider_id, 0)
-			 FROM credentials WHERE id = $1`,
-			req.CredentialID,
-		).Scan(&currentDisabled, &availState, &providerID)
-		if err != nil {
-			if err == pgx.ErrNoRows {
+		//
+		// 2026-08-23: extracted to applyForceEnable so the new
+		// POST /api/routing/credentials/{id}/reset-state endpoint can reuse
+		// the exact same DB + in-memory + URSM v2 reset chain.
+		if err := h.applyForceEnable(ctx, req.CredentialID, req.RawModel, req.Reason, actor, ursmTenantID, beforeAfter); err != nil {
+			if errors.Is(err, errForceEnableCredNotFound) {
 				writeError(w, http.StatusNotFound, "credential not found")
 			} else {
-				writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+				writeError(w, http.StatusInternalServerError, err.Error())
 			}
 			return
-		}
-
-		tx, err := h.db.Begin(ctx)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "begin tx failed: "+err.Error())
-			return
-		}
-		defer tx.Rollback(ctx)
-
-		if _, err := tx.Exec(ctx, forceEnableCredentialSQL,
-			req.CredentialID, "emergency force_enable: "+req.Reason); err != nil {
-			writeError(w, http.StatusInternalServerError, "update credentials failed: "+err.Error())
-			return
-		}
-
-		var cmbRows int64
-		if req.RawModel != "" {
-			tag, err := tx.Exec(ctx, `
-				UPDATE credential_model_bindings cmb
-				SET available = TRUE,
-					unavailable_reason = NULL,
-					unavailable_at = NULL,
-					unavailable_recover_at = NULL,
-					updated_at = NOW()
-				FROM provider_models pm
-				WHERE cmb.credential_id = $1
-				  AND pm.id = cmb.provider_model_id
-				  AND pm.raw_model_name = $2
-			`, req.CredentialID, req.RawModel)
-			if err != nil {
-				writeError(w, http.StatusInternalServerError, "update cmb failed: "+err.Error())
-				return
-			}
-			cmbRows = tag.RowsAffected()
-		}
-
-		// Clear NodeProbeWorker backoff so v_routable_credential_models
-		// drops node_probe_failed immediately (see migration 417).
-		var probeRows int64
-		if req.RawModel != "" {
-			tag, err := tx.Exec(ctx, `
-				UPDATE node_probe_state SET
-					last_direct_ok = TRUE,
-					last_gateway_ok = TRUE,
-					last_err_code = NULL,
-					last_err_detail = NULL,
-					next_retry_at = now(),
-					next_retry_seconds = 0,
-					consecutive_failures = 0,
-					paused = FALSE,
-					in_flight_until = NULL,
-					updated_at = now()
-				WHERE credential_id = $1 AND raw_model_name = $2
-			`, req.CredentialID, req.RawModel)
-			if err != nil {
-				writeError(w, http.StatusInternalServerError, "reset node_probe_state failed: "+err.Error())
-				return
-			}
-			probeRows = tag.RowsAffected()
-		} else {
-			tag, err := tx.Exec(ctx, `
-				UPDATE node_probe_state SET
-					last_direct_ok = TRUE,
-					last_gateway_ok = TRUE,
-					last_err_code = NULL,
-					last_err_detail = NULL,
-					next_retry_at = now(),
-					next_retry_seconds = 0,
-					consecutive_failures = 0,
-					paused = FALSE,
-					in_flight_until = NULL,
-					updated_at = now()
-				WHERE credential_id = $1
-			`, req.CredentialID)
-			if err != nil {
-				writeError(w, http.StatusInternalServerError, "reset node_probe_state failed: "+err.Error())
-				return
-			}
-			probeRows = tag.RowsAffected()
-		}
-
-		// Clear model_probe_state broken_confirmed (2026-08-13): the SQL view
-		// v_routable_credential_models also gates routability on
-		// model_probe_state.state != 'broken_confirmed', and
-		// reconcileBrokenConfirmedBindings re-marks the cmb unavailable every
-		// probe cycle while it stays broken_confirmed. Without this clear,
-		// force_enable leaves a broken_confirmed node non-routable despite the
-		// credential/cmb/node_probe resets above. 'recovering' is immediately
-		// routable (only 'broken_confirmed' is gated) and matches the
-		// BrokenProbeReviver semantics.
-		var modelProbeRows int64
-		if req.RawModel != "" {
-			tag, err := tx.Exec(ctx, `
-				UPDATE model_probe_state SET
-					state = 'recovering',
-					consecutive_failures = 0,
-					next_retry_at = now(),
-					last_state_change_at = now()
-				WHERE credential_id = $1 AND raw_model_name = $2
-				  AND state = 'broken_confirmed'
-			`, req.CredentialID, req.RawModel)
-			if err != nil {
-				writeError(w, http.StatusInternalServerError, "reset model_probe_state failed: "+err.Error())
-				return
-			}
-			modelProbeRows = tag.RowsAffected()
-		} else {
-			tag, err := tx.Exec(ctx, `
-				UPDATE model_probe_state SET
-					state = 'recovering',
-					consecutive_failures = 0,
-					next_retry_at = now(),
-					last_state_change_at = now()
-				WHERE credential_id = $1
-				  AND state = 'broken_confirmed'
-			`, req.CredentialID)
-			if err != nil {
-				writeError(w, http.StatusInternalServerError, "reset model_probe_state failed: "+err.Error())
-				return
-			}
-			modelProbeRows = tag.RowsAffected()
-		}
-
-		if err := tx.Commit(ctx); err != nil {
-			writeError(w, http.StatusInternalServerError, "commit failed: "+err.Error())
-			return
-		}
-		beforeAfter["previous_manual_disabled"] = currentDisabled
-		beforeAfter["previous_availability_state"] = availState
-		beforeAfter["new_manual_disabled"] = false
-		beforeAfter["new_availability_state"] = "ready"
-		beforeAfter["cmb_available"] = cmbRows > 0 || req.RawModel == ""
-		beforeAfter["cmb_rows_updated"] = cmbRows
-		beforeAfter["node_probe_rows_updated"] = probeRows
-		beforeAfter["model_probe_rows_updated"] = modelProbeRows
-
-		// 2026-08-15: the DB transaction above only reaches the persistent
-		// layers. The request hot path also consults in-process / Redis state
-		// (circuit breaker, fpslot NodeState cooldown, legacy credentialstate
-		// cache) that would keep filtering this node out for up to 5 minutes
-		// after force_enable returned 200. Reset them now.
-		resetModels, memOutcome := h.resetInMemoryNodeState(ctx, req.CredentialID, providerID, req.RawModel, true)
-		for k, v := range memOutcome {
-			beforeAfter[k] = v
-		}
-
-		// URSM v2: clear manual_hold via ApplyAdmin, AND wipe any
-		// residual disabled/fail_streak/cool_until_ms via ClearState.
-		// 2026-08-15: when RawModel is empty (whole-credential repair) the
-		// per-model loop below covers every binding model instead of
-		// skipping URSM entirely.
-		if h.ursmV2 != nil {
-			disabled := false
-			applied, cleared := 0, 0
-			for _, m := range resetModels {
-				adminAction := api.AdminAction{
-					Scope:          api.ScopeNode,
-					CredentialID:   req.CredentialID,
-					RawModel:       m,
-					TenantID:       ursmTenantID,
-					ManualDisabled: &disabled,
-					Reason:         req.Reason,
-					Actor:          actor,
-					IssuedAtMs:     time.Now().UnixMilli(),
-				}
-				if err := h.ursmV2.ApplyAdmin(ctx, adminAction); err != nil {
-					slog.Warn("emergency_repair: ursm.v2 apply_admin failed", "error", err, "cred", req.CredentialID, "model", m)
-				} else {
-					applied++
-				}
-				if err := h.ursmV2.ClearStateForTenant(ctx, ursmTenantID, req.CredentialID, m); err != nil {
-					slog.Warn("emergency_repair: ursm.v2 clear_state failed", "error", err, "cred", req.CredentialID, "model", m)
-				} else {
-					cleared++
-				}
-			}
-			beforeAfter["ursm_v2_admin_applied"] = len(resetModels) > 0 && applied == len(resetModels)
-			beforeAfter["ursm_v2_cleared"] = len(resetModels) > 0 && cleared == len(resetModels)
-			beforeAfter["ursm_v2_models_covered"] = len(resetModels)
 		}
 
 	case "force_disable":
@@ -1753,6 +1570,11 @@ func (h *Handler) resetInMemoryNodeState(ctx context.Context, credentialID, prov
 	if h.circuitResetter != nil && providerID > 0 {
 		h.circuitResetter.Reset(providerID, credentialID)
 		outcome["in_memory_circuit_reset"] = true
+		met.RoutingCredentialResetTotal.WithLabelValues("in_memory_circuit", "ok").Inc()
+	} else if h.circuitResetter == nil && providerID > 0 {
+		// Surface missing injection: this is the exact failure mode that
+		// kept hzx-2 locked after a force_enable in the 2026-08-23 audit.
+		met.RoutingCredentialResetTotal.WithLabelValues("in_memory_circuit", "skipped").Inc()
 	}
 
 	models := make([]string, 0, 4)
@@ -1789,9 +1611,11 @@ func (h *Handler) resetInMemoryNodeState(ctx context.Context, credentialID, prov
 				Model:        m,
 			}); err == nil {
 				reset++
+				met.RoutingCredentialResetTotal.WithLabelValues("redis_fpslot", "ok").Inc()
 			} else {
 				slog.Warn("emergency_repair: reset fp node state failed",
 					"error", err, "cred", credentialID, "model", m)
+				met.RoutingCredentialResetTotal.WithLabelValues("redis_fpslot", "error").Inc()
 			}
 		}
 		if reset > 0 {
@@ -1814,8 +1638,11 @@ func (h *Handler) resetInMemoryNodeState(ctx context.Context, credentialID, prov
 				LastUpdatedAt: now,
 				Source:        "manual",
 			})
+			met.RoutingCredentialResetTotal.WithLabelValues("in_memory_credstate", "ok").Inc()
 		}
 		outcome["cred_state_recovered_models"] = len(models)
+	} else if includeCredState && h.credStateRecoverer == nil {
+		met.RoutingCredentialResetTotal.WithLabelValues("in_memory_credstate", "skipped").Inc()
 	}
 
 	return models, outcome
@@ -4977,4 +4804,217 @@ func applyURSMOverlay(candidates []resolveCandidate, views []api.NodeView, now t
 			continue
 		}
 	}
+}
+
+// errForceEnableCredNotFound is returned by applyForceEnable when the credential
+// id has no row in `credentials`. Surfaces as 404 to the caller.
+var errForceEnableCredNotFound = errors.New("credential not found")
+
+// applyForceEnable runs the full DB + in-memory + URSM v2 reset chain that the
+// force_enable emergency-repair action performs. It is shared between:
+//   - PATCH /api/routing/emergency-repair with action=force_enable
+//   - POST  /api/routing/credentials/{id}/reset-state (the new hzx-2 audit endpoint)
+//   - any future operator-driven "make this credential routable again" flow.
+//
+// On success the `beforeAfter` map is populated with the same keys the legacy
+// inline handler used so audit-log consumers keep working unchanged. All
+// non-fatal errors are reported via the metric counter
+// met.met.RoutingCredentialResetTotal{surface=...,result=error}.
+func (h *Handler) applyForceEnable(ctx context.Context, credentialID int, rawModel, reason, actor, ursmTenantID string, beforeAfter map[string]any) error {
+	// Look up current state + provider id (needed by resetInMemoryNodeState).
+	var currentDisabled bool
+	var availState string
+	var providerID int
+	err := h.db.QueryRow(ctx,
+		`SELECT COALESCE(manual_disabled, false), COALESCE(availability_state, 'ready'),
+		        COALESCE(provider_id, 0)
+		 FROM credentials WHERE id = $1`,
+		credentialID,
+	).Scan(&currentDisabled, &availState, &providerID)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return errForceEnableCredNotFound
+		}
+		return fmt.Errorf("force_enable: query failed: %w", err)
+	}
+
+	tx, err := h.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("force_enable: begin tx failed: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx, forceEnableCredentialSQL,
+		credentialID, "force_enable: "+reason); err != nil {
+		met.RoutingCredentialResetTotal.WithLabelValues("db", "error").Inc()
+		return fmt.Errorf("force_enable: update credentials failed: %w", err)
+	}
+
+	var cmbRows int64
+	if rawModel != "" {
+		tag, err := tx.Exec(ctx, `
+			UPDATE credential_model_bindings cmb
+			SET available = TRUE,
+				unavailable_reason = NULL,
+				unavailable_at = NULL,
+				unavailable_recover_at = NULL,
+				updated_at = NOW()
+			FROM provider_models pm
+			WHERE cmb.credential_id = $1
+			  AND pm.id = cmb.provider_model_id
+			  AND pm.raw_model_name = $2
+		`, credentialID, rawModel)
+		if err != nil {
+			met.RoutingCredentialResetTotal.WithLabelValues("db", "error").Inc()
+			return fmt.Errorf("force_enable: update cmb failed: %w", err)
+		}
+		cmbRows = tag.RowsAffected()
+	}
+
+	// Clear NodeProbeWorker backoff so v_routable_credential_models drops
+	// node_probe_failed immediately (see migration 417).
+	var probeRows int64
+	if rawModel != "" {
+		tag, err := tx.Exec(ctx, `
+			UPDATE node_probe_state SET
+				last_direct_ok = TRUE,
+				last_gateway_ok = TRUE,
+				last_err_code = NULL,
+				last_err_detail = NULL,
+				next_retry_at = now(),
+				next_retry_seconds = 0,
+				consecutive_failures = 0,
+				paused = FALSE,
+				in_flight_until = NULL,
+				updated_at = now()
+			WHERE credential_id = $1 AND raw_model_name = $2
+		`, credentialID, rawModel)
+		if err != nil {
+			met.RoutingCredentialResetTotal.WithLabelValues("db", "error").Inc()
+			return fmt.Errorf("force_enable: reset node_probe_state failed: %w", err)
+		}
+		probeRows = tag.RowsAffected()
+	} else {
+		tag, err := tx.Exec(ctx, `
+			UPDATE node_probe_state SET
+				last_direct_ok = TRUE,
+				last_gateway_ok = TRUE,
+				last_err_code = NULL,
+				last_err_detail = NULL,
+				next_retry_at = now(),
+				next_retry_seconds = 0,
+				consecutive_failures = 0,
+				paused = FALSE,
+				in_flight_until = NULL,
+				updated_at = now()
+			WHERE credential_id = $1
+		`, credentialID)
+		if err != nil {
+			met.RoutingCredentialResetTotal.WithLabelValues("db", "error").Inc()
+			return fmt.Errorf("force_enable: reset node_probe_state failed: %w", err)
+		}
+		probeRows = tag.RowsAffected()
+	}
+
+	// Clear model_probe_state broken_confirmed so v_routable_credential_models
+	// stops gating the node.
+	var modelProbeRows int64
+	if rawModel != "" {
+		tag, err := tx.Exec(ctx, `
+			UPDATE model_probe_state SET
+				state = 'recovering',
+				consecutive_failures = 0,
+				next_retry_at = now(),
+				last_state_change_at = now()
+			WHERE credential_id = $1 AND raw_model_name = $2
+			  AND state = 'broken_confirmed'
+		`, credentialID, rawModel)
+		if err != nil {
+			met.RoutingCredentialResetTotal.WithLabelValues("db", "error").Inc()
+			return fmt.Errorf("force_enable: reset model_probe_state failed: %w", err)
+		}
+		modelProbeRows = tag.RowsAffected()
+	} else {
+		tag, err := tx.Exec(ctx, `
+			UPDATE model_probe_state SET
+				state = 'recovering',
+				consecutive_failures = 0,
+				next_retry_at = now(),
+				last_state_change_at = now()
+			WHERE credential_id = $1
+			  AND state = 'broken_confirmed'
+		`, credentialID)
+		if err != nil {
+			met.RoutingCredentialResetTotal.WithLabelValues("db", "error").Inc()
+			return fmt.Errorf("force_enable: reset model_probe_state failed: %w", err)
+		}
+		modelProbeRows = tag.RowsAffected()
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		met.RoutingCredentialResetTotal.WithLabelValues("db", "error").Inc()
+		return fmt.Errorf("force_enable: commit failed: %w", err)
+	}
+	met.RoutingCredentialResetTotal.WithLabelValues("db", "ok").Inc()
+	beforeAfter["previous_manual_disabled"] = currentDisabled
+	beforeAfter["previous_availability_state"] = availState
+	beforeAfter["new_manual_disabled"] = false
+	beforeAfter["new_availability_state"] = "ready"
+	beforeAfter["cmb_available"] = cmbRows > 0 || rawModel == ""
+	beforeAfter["cmb_rows_updated"] = cmbRows
+	beforeAfter["node_probe_rows_updated"] = probeRows
+	beforeAfter["model_probe_rows_updated"] = modelProbeRows
+
+	// 2026-08-15: the DB transaction above only reaches the persistent
+	// layers. The request hot path also consults in-process / Redis state
+	// (circuit breaker, fpslot NodeState cooldown, legacy credentialstate
+	// cache) that would keep filtering this node out for up to 5 minutes
+	// after force_enable returned 200. Reset them now.
+	resetModels, memOutcome := h.resetInMemoryNodeState(ctx, credentialID, providerID, rawModel, true)
+	for k, v := range memOutcome {
+		beforeAfter[k] = v
+	}
+
+	// URSM v2: clear manual_hold via ApplyAdmin, AND wipe any residual
+	// disabled/fail_streak/cool_until_ms via ClearState. When RawModel is
+	// empty (whole-credential repair) the per-model loop covers every
+	// binding model instead of skipping URSM entirely.
+	if h.ursmV2 != nil {
+		disabled := false
+		applied, cleared := 0, 0
+		for _, m := range resetModels {
+			adminAction := api.AdminAction{
+				Scope:          api.ScopeNode,
+				CredentialID:   credentialID,
+				RawModel:       m,
+				TenantID:       ursmTenantID,
+				ManualDisabled: &disabled,
+				Reason:         reason,
+				Actor:          actor,
+				IssuedAtMs:     time.Now().UnixMilli(),
+			}
+			if err := h.ursmV2.ApplyAdmin(ctx, adminAction); err != nil {
+				slog.Warn("force_enable: ursm.v2 apply_admin failed", "error", err, "cred", credentialID, "model", m)
+				met.RoutingCredentialResetTotal.WithLabelValues("ursmv2", "error").Inc()
+			} else {
+				applied++
+				met.RoutingCredentialResetTotal.WithLabelValues("ursmv2", "ok").Inc()
+			}
+			if err := h.ursmV2.ClearStateForTenant(ctx, ursmTenantID, credentialID, m); err != nil {
+				slog.Warn("force_enable: ursm.v2 clear_state failed", "error", err, "cred", credentialID, "model", m)
+				met.RoutingCredentialResetTotal.WithLabelValues("ursmv2", "error").Inc()
+			} else {
+				cleared++
+				met.RoutingCredentialResetTotal.WithLabelValues("ursmv2", "ok").Inc()
+			}
+		}
+		beforeAfter["ursm_v2_admin_applied"] = len(resetModels) > 0 && applied == len(resetModels)
+		beforeAfter["ursm_v2_cleared"] = len(resetModels) > 0 && cleared == len(resetModels)
+		beforeAfter["ursm_v2_models_covered"] = len(resetModels)
+	}
+
+	// Best-effort cache invalidation so the next request picks up the fresh state.
+	invalidateRoutingCaches(ctx, h.db, "credentials", credentialID)
+	InvalidateAvailableModelsCache()
+	return nil
 }

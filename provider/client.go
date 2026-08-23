@@ -145,6 +145,7 @@ type Candidate struct {
 	SupportsPromptCache  bool     `json:"supports_prompt_cache"`
 	CacheMode            string   `json:"cache_mode"`
 	ManualPriority       int      `json:"manual_priority"`
+	Priority             bool     `json:"priority"`
 	ActiveSessions       int      `json:"active_sessions"`
 	ConsecutiveFailures  int      `json:"consecutive_failures"`
 	CompositeScore       float64  `json:"composite_score"`
@@ -1311,8 +1312,9 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 			v.unavailable_reason,
 			CASE WHEN cc.capability = 'prompt_caching' AND cc.supported IS TRUE THEN TRUE ELSE FALSE END AS supports_prompt_cache,
 			COALESCE(cc.evidence_json->>'cache_mode', '') AS cache_mode,
-			COALESCE(mo.manual_priority, 99)::int AS manual_priority,
-			COALESCE(mo.active_sessions, 0)::int AS active_sessions,
+				COALESCE(mo.manual_priority, 99)::int AS manual_priority,
+				COALESCE(mo.priority, FALSE) AS priority,
+				COALESCE(mo.active_sessions, 0)::int AS active_sessions,
 			COALESCE(mo.consecutive_failures, 0)::int AS consecutive_failures,
 			COALESCE(mo.currency, 'USD') AS currency,
 			COALESCE(mo.billing_mode, 'per_token') AS billing_mode,
@@ -1423,8 +1425,9 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 				OR lower(mc.canonical_name) = $1
 			)
 
-		ORDER BY
-			CASE COALESCE(mo.billing_mode, 'per_token')
+			ORDER BY
+				CASE WHEN COALESCE(mo.priority, FALSE) AND COALESCE(c.quota_state, 'ok') = 'ok' THEN 0 ELSE 1 END,
+				CASE COALESCE(mo.billing_mode, 'per_token')
 				WHEN 'free' THEN 1
 				WHEN 'token_plan' THEN 1
 				WHEN 'code_plan' THEN 1
@@ -1517,6 +1520,7 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 			&cand.SupportsPromptCache,
 			&cand.CacheMode,
 			&cand.ManualPriority,
+			&cand.Priority,
 			&cand.ActiveSessions,
 			&cand.ConsecutiveFailures,
 			&cand.Currency,

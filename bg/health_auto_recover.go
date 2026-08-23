@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/credentialhealth"
+	met "github.com/kaixuan/llm-gateway-go/metrics" //nolint:depguard // routing credential observability (2026-08-23 hzx-2 audit)
 )
 
 // HealthAutoRecover checks for credentials with expired availability_recover_at
@@ -149,13 +150,25 @@ func (w *HealthAutoRecover) Stop() {
 
 // recover restores expired credentials to 'ready' state.
 func (w *HealthAutoRecover) recover(ctx context.Context) error {
+	// 2026-08-23 (hzx-2 audit): record tick duration + outcome so operators
+	// can spot silent slowdowns (DB pool exhaustion) and distinguish
+	// successful recoveries from "nothing to do" or "errored out".
+	start := time.Now()
+	defer func() {
+		met.RoutingHealthAutoRecoverTickDurationSeconds.Set(time.Since(start).Seconds())
+	}()
+
 	count, err := credentialhealth.RecoverExpired(ctx, w.db)
 	if err != nil {
+		met.RoutingHealthAutoRecoverTotal.WithLabelValues("error").Inc()
 		return err
 	}
 
 	if count > 0 {
 		slog.Info("health_auto_recover: recovered credentials", "count", count)
+		met.RoutingHealthAutoRecoverTotal.WithLabelValues("recovered").Inc()
+	} else {
+		met.RoutingHealthAutoRecoverTotal.WithLabelValues("no_row").Inc()
 	}
 
 	return nil

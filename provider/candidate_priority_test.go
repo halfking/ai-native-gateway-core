@@ -1,0 +1,55 @@
+package provider
+
+import (
+	"encoding/json"
+	"reflect"
+	"strings"
+	"testing"
+)
+
+func TestCandidatePriorityContract(t *testing.T) {
+	field, ok := reflect.TypeOf(Candidate{}).FieldByName("Priority")
+	if !ok {
+		t.Fatal("Candidate must expose Priority")
+	}
+	if field.Type.Kind() != reflect.Bool {
+		t.Fatalf("Candidate.Priority type = %s, want bool", field.Type)
+	}
+	if got := field.Tag.Get("json"); got != "priority" {
+		t.Fatalf("Candidate.Priority json tag = %q, want priority", got)
+	}
+
+	payload, err := json.Marshal(Candidate{Priority: true})
+	if err != nil {
+		t.Fatalf("marshal candidate: %v", err)
+	}
+	if !strings.Contains(string(payload), `"priority":true`) {
+		t.Fatalf("marshaled candidate does not expose priority: %s", payload)
+	}
+}
+
+func TestCandidatePriorityDBReadAndOrdering(t *testing.T) {
+	src := readProviderFile(t, "client.go")
+
+	selectNeedle := "COALESCE(mo.priority, FALSE) AS priority"
+	if !strings.Contains(src, selectNeedle) {
+		t.Fatalf("candidate query must read %s", selectNeedle)
+	}
+
+	manualAt := strings.Index(src, "&cand.ManualPriority")
+	priorityAt := strings.Index(src, "&cand.Priority")
+	activeAt := strings.Index(src, "&cand.ActiveSessions")
+	if manualAt < 0 || priorityAt < 0 || activeAt < 0 || !(manualAt < priorityAt && priorityAt < activeAt) {
+		t.Fatalf("candidate row scan must bind priority between manual priority and active sessions")
+	}
+
+	orderNeedle := "CASE WHEN COALESCE(mo.priority, FALSE) AND COALESCE(c.quota_state, 'ok') = 'ok' THEN 0 ELSE 1 END"
+	orderAt := strings.Index(src, orderNeedle)
+	if orderAt < 0 {
+		t.Fatalf("candidate query must prioritize priority bindings with quota_state=ok")
+	}
+	billingAt := strings.Index(src[orderAt:], "CASE COALESCE(mo.billing_mode, 'per_token')")
+	if billingAt < 0 {
+		t.Fatalf("candidate query must retain billing-mode ordering after priority ordering")
+	}
+}
