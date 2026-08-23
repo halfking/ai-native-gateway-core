@@ -12,7 +12,14 @@ import {
   truncateText,
 } from '../types/swimlane'
 import { errorKindLabel, statusBarColor, statusSemanticLabel } from '../composables/liveStreamDisplay'
-import { getRequestActions, getRequestChildren, type LiveRequest } from '../composables/liveStreamStore'
+import {
+  getRequestActions,
+  getRequestChildren,
+  getRequestCredentialId,
+  requestCredentialRevision,
+  type LiveRequest,
+} from '../composables/liveStreamStore'
+import { credentialDisplayName } from '../composables/useCredentialLabels'
 import ActionTimeline from './ActionTimeline.vue'
 
 const { t, locale } = useI18n()
@@ -74,6 +81,12 @@ const probeBadgeTooltip = computed(() => {
 const isIdle = computed(() => props.tile.status === 'idle')
 const isInProgress = computed(() => props.tile.status === 'in_progress')
 const isFailure = computed(() => props.tile.status === 'failure')
+
+const credentialId = computed(() => {
+  void requestCredentialRevision.value
+  return getRequestCredentialId(props.tile.request_id)
+})
+const credentialName = computed(() => credentialDisplayName(credentialId.value))
 
 // 2026-07-14: idle markers now arrive with an explicit error_kind
 // ('no_traffic_5min') so we can show "无流量 X 分钟" instead of a
@@ -207,6 +220,7 @@ const tooltipText = computed(() => {
   if (props.tile.model) lines.push(tooltipLine(`${tip}.model`, props.tile.model))
   if (props.tile.vendor) lines.push(tooltipLine(`${tip}.vendor`, props.tile.vendor))
   if (props.tile.provider) lines.push(tooltipLine(`${tip}.provider`, props.tile.provider))
+  if (credentialId.value != null) lines.push(tooltipLine('凭据', credentialName.value))
   if (props.tile.latency_ms != null) {
     const ms = props.tile.latency_ms
     lines.push(tooltipLine(`${tip}.latency`, ms >= 1000 ? (ms / 1000).toFixed(1) + 's' : Math.round(ms) + 'ms'))

@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Close, RefreshRight } from '@element-plus/icons-vue'
+import { credentialDisplayName as credentialLabelById } from '../composables/useCredentialLabels'
 import {
   getRequestJourney,
   getRequestJourneyQueues,
@@ -117,10 +118,12 @@ const groups = computed<QueueGroup[]>(() => {
   }
   return nodeSnapshots(payload).map(snapshot => ({
     key: `node:${snapshot.model}:${snapshot.provider_id ?? 0}:${snapshot.credential_id}`,
+    // 2026-08-23 凭据显示：用共享标签缓存替代原始 ID；缓存未命中时仍显示
+    // 「凭据 #ID」便于排查（credentialLabelById 已包含 fallback）。
     label: t('requestJourneys.nodeGroup', {
       model: snapshot.model,
       provider: snapshot.provider_id ?? '—',
-      node: snapshot.credential_id,
+      node: credentialLabelById(snapshot.credential_id),
     }),
     capacity: snapshot.capacity || DEFAULT_CAPACITY,
     requests: snapshot.requests ?? [],

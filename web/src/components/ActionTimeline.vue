@@ -16,6 +16,7 @@
 import { computed } from 'vue'
 import { getRequestActions, type ActionEvent } from '../composables/liveStreamStore'
 import { actionEventLabel } from '../composables/liveStreamDisplay'
+import { credentialDisplayName } from '../composables/useCredentialLabels'
 
 const props = defineProps<{
   requestId: string
@@ -112,7 +113,7 @@ const hasActions = computed(() => actions.value.length > 0)
         <span class="at-marker" aria-hidden="true" />
         <span class="at-name">{{ actionLabel(ev) }}</span>
         <span v-if="ev.model" class="at-model">{{ ev.model }}</span>
-        <span v-if="ev.credential_id" class="at-cred">节点 {{ ev.credential_id }}</span>
+        <span v-if="ev.credential_id" class="at-cred">{{ credentialDisplayName(ev.credential_id) }}</span>
         <span v-if="ev.retry === true" class="at-retry" :title="`重试第 ${ev.retry_seq ?? '?'} 次`">⭐r{{ ev.retry_seq ?? '?' }}</span>
         <span v-if="ev.error_kind" class="at-error">{{ ev.error_kind }}</span>
         <span v-if="detailChips(ev).length" class="at-chips">
