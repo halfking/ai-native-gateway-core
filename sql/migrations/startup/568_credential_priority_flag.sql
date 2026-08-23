@@ -1,4 +1,4 @@
--- 566_credential_priority_flag.sql
+-- 568_credential_priority_flag.sql
 -- Add per credential x model priority routing and include it in routing cache invalidation.
 --
 -- Idempotent: the column is guarded by information_schema and all dependent
