@@ -161,19 +161,16 @@ func (g *AutoTitleGenerator) commitProvisionalArrival(tenantID, sessionID, taskI
 	g.commitProvisionalTitle(ctx, tenantID, sessionID, taskID, title)
 }
 
-func provisionalTitleCommitBlocked(st titlestore.State, err error) bool {
-	return err == nil && !st.Deleted && strings.TrimSpace(st.Title) != ""
-}
-
+// commitProvisionalTitle writes the arrival title as a dedicated
+// provisional source (priority 5 < auto-title 10) with an atomic
+// only-if-empty claim: first writer wins, later arrivals and refined/final
+// titles can never be overwritten by a stale provisional goroutine.
 func (g *AutoTitleGenerator) commitProvisionalTitle(ctx context.Context, tenantID, sessionID, taskID, title string) {
-	if st, err := g.handler.titleStore.Get(ctx, tenantID, sessionID); provisionalTitleCommitBlocked(st, err) {
-		return
-	}
 	owner := fmt.Sprintf("arrival-title:%s:%d", sessionID, time.Now().UnixNano())
 	claim, err := g.handler.titleStore.BeginMutation(ctx, titlestore.Claim{
 		TenantID: tenantID, SessionID: sessionID, Owner: owner,
-		TTL: 5 * time.Second, Source: titlestore.SourceAutoTitle,
-		SourcePriority: titlestore.SourcePriorityAuto, TaskID: taskID,
+		TTL: 5 * time.Second, Source: titlestore.SourceProvisionalTitle,
+		SourcePriority: titlestore.SourcePriorityProvisional, OnlyIfEmpty: true, TaskID: taskID,
 	})
 	if err != nil {
 		return
@@ -360,7 +357,9 @@ func (g *AutoTitleGenerator) checkSessionHasTitle(ctx context.Context, tenantID,
 	if g.handler.titleStore != nil {
 		st, err := g.handler.titleStore.Get(ctx, tenantID, sessionID)
 		if err == nil {
-			return st.Deleted || strings.TrimSpace(st.Title) != "", nil
+			// A provisional arrival title is not a real title yet — the
+			// refined LLM path must still run and replace it (priority 10 > 5).
+			return st.Deleted || (strings.TrimSpace(st.Title) != "" && st.Source != titlestore.SourceProvisionalTitle), nil
 		}
 	}
 	if strings.TrimSpace(taskID) == "" {
