@@ -38,9 +38,9 @@ function openTask(id: string) {
 
 <template>
   <div>
-    <div v-if="modelUsage?.length" class="detail-card model-card">
+    <div v-if="modelUsage !== undefined" class="detail-card model-card">
       <div class="detail-card__header">{{ t('sessions.stats.topModels') }}</div>
-      <div class="table-wrap">
+      <div v-if="modelUsage.length" class="table-wrap">
         <table class="data-table">
           <thead>
             <tr>
@@ -64,6 +64,7 @@ function openTask(id: string) {
           </tbody>
         </table>
       </div>
+      <p v-else class="empty-hint">{{ t('sessions.stats.topModelsEmpty') }}</p>
     </div>
 
   <div class="rankings-row">

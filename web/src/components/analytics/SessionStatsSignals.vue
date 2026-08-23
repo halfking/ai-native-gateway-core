@@ -34,7 +34,7 @@ function formatMs(ms: number) {
     </div>
     <div class="detail-card">
       <div class="detail-card__header">{{ t('sessions.stats.errorSummary') }}</div>
-      <template v-if="errors">
+      <template v-if="errors && (errors.total_errors > 0 || errors.error_rate > 0)">
         <div class="signal-metrics">
           <div>
             <span class="signal-label">{{ t('sessions.stats.errorRate') }}</span>
@@ -46,7 +46,7 @@ function formatMs(ms: number) {
           </div>
         </div>
       </template>
-      <p v-else class="empty-hint">{{ t('dashboard.noData') }}</p>
+      <p v-else class="empty-hint">{{ errors ? t('sessions.stats.errorsEmpty') : t('dashboard.noData') }}</p>
     </div>
   </div>
 </template>
