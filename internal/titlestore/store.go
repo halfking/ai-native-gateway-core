@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 var (
@@ -110,11 +109,16 @@ type DeleteResult struct {
 	Token   int64
 }
 
-type Store struct {
-	pool *pgxpool.Pool
+type dbPool interface {
+	Begin(ctx context.Context) (pgx.Tx, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
-func New(pool *pgxpool.Pool) *Store { return &Store{pool: pool} }
+type Store struct {
+	pool dbPool
+}
+
+func New(pool dbPool) *Store { return &Store{pool: pool} }
 
 func (s *Store) BeginMutation(ctx context.Context, req Claim) (ClaimResult, error) {
 	if s == nil || s.pool == nil {

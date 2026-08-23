@@ -145,13 +145,15 @@ func (g *AutoTitleGenerator) MaybeGenerateProvisionalMetadata(tenantID, sessionI
 	go g.commitProvisionalTitle(tenantID, sessionID, taskID, result.Title)
 }
 
+func provisionalTitleCommitBlocked(st titlestore.State, err error) bool {
+	return err == nil && !st.Deleted && strings.TrimSpace(st.Title) != ""
+}
+
 func (g *AutoTitleGenerator) commitProvisionalTitle(tenantID, sessionID, taskID, title string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	if st, err := g.handler.titleStore.Get(ctx, tenantID, sessionID); err == nil {
-		if !st.Deleted && strings.TrimSpace(st.Title) != "" {
-			return
-		}
+	if st, err := g.handler.titleStore.Get(ctx, tenantID, sessionID); provisionalTitleCommitBlocked(st, err) {
+		return
 	}
 	owner := fmt.Sprintf("arrival-title:%s:%d", sessionID, time.Now().UnixNano())
 	claim, err := g.handler.titleStore.BeginMutation(ctx, titlestore.Claim{
