@@ -20,11 +20,16 @@ set -o pipefail
 
 LOG_DIR="${LOG_DIR:-/var/log/llm-gateway}"
 OUT_DIR="${OUT_DIR:-./diag-out}"
-PGHOST="${PGHOST:-127.0.0.1}"
+# 2026-08-23 (audit P1-3): 默认值改为 ops 标准主机地址。245 网关主机通常
+# 不是 PG / Prometheus 的本地宿主机，127.0.0.1 会让 Step 3 / Step 4
+# 静默无输出。运维如需直连本地可显式 export PGHOST=127.0.0.1
+# PROM_URL=http://127.0.0.1:9090 覆盖。
+PGHOST="${PGHOST:-pg-primary.ops.internal}"
 PGUSER="${PGUSER:-postgres}"
 PGDATABASE="${PGDATABASE:-llm_gateway}"
 PGPORT="${PGPORT:-5432}"
 LOOKBACK_HOURS="${LOOKBACK_HOURS:-1}"
+PROM_URL="${PROM_URL:-http://prom.ops.internal:9090}"
 
 mkdir -p "$OUT_DIR"
 
@@ -32,6 +37,15 @@ log()  { printf '\033[1;34m[%s]\033[0m %s\n' "$(date +%H:%M:%S)" "$*"; }
 warn() { printf '\033[1;33m[WARN]\033[0m %s\n' "$*"; }
 fail() { printf '\033[1;31m[FAIL]\033[0m %s\n' "$*"; }
 ok()   { printf '\033[1;32m[OK]\033[0m   %s\n'   "$*"; }
+
+# 2026-08-23 (audit P2-4): `column -t` 来自 bsdmainutils / util-linux，
+# 不是 POSIX。在极简容器或 alpine 上可能缺失，回落到 `cat`。
+if command -v column >/dev/null 2>&1; then
+  COLUMN_CMD="column -t -s'|'"
+else
+  warn "column 未安装，输出将以原始 | 分隔展示"
+  COLUMN_CMD="cat"
+fi
 
 echo "================ 245 minimax-m3 request_logs_hot 调查 ================"
 echo "日志目录 : $LOG_DIR"
@@ -112,7 +126,7 @@ ORDER BY model;
 SQL
 
   echo "  [3a] 各模型在 request_logs_hot 的状态分布："
-  column -t -s'|' "$OUT_DIR/sql-model-counts.txt" | sed 's/^/    /'
+  $COLUMN_CMD "$OUT_DIR/sql-model-counts.txt" | sed 's/^/    /'
   echo
 
   # 3b) WAL（总写盘）与 logs_hot 的差 = 真丢失
@@ -139,7 +153,7 @@ ORDER BY w.model;
 SQL
 
   echo "  [3b] WAL 行数 vs request_logs_hot 行数（差额 = 真丢失）："
-  column -t -s'|' "$OUT_DIR/sql-wal-vs-logs.txt" | sed 's/^/    /'
+  $COLUMN_CMD "$OUT_DIR/sql-wal-vs-logs.txt" | sed 's/^/    /'
   echo
 
   # 3c) 关键 JSONB 字段空值率
@@ -162,7 +176,7 @@ ORDER BY model;
 SQL
 
   echo "  [3c] 关键字段 NULL 占比（minimax-m3 vs gpt-5.6-terra）："
-  column -t -s'|' "$OUT_DIR/sql-null-rates.txt" | sed 's/^/    /'
+  $COLUMN_CMD "$OUT_DIR/sql-null-rates.txt" | sed 's/^/    /'
 
   # 3d) 失败 + 断开 的明细（带 error_kind）
   psql -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d "$PGDATABASE" -At -F'|' <<SQL > "$OUT_DIR/sql-failure-detail.txt"
@@ -179,14 +193,15 @@ SQL
 
   echo
   echo "  [3d] minimax-m3 非成功行的错误分布："
-  column -t -s'|' "$OUT_DIR/sql-failure-detail.txt" | sed 's/^/    /'
+  $COLUMN_CMD "$OUT_DIR/sql-failure-detail.txt" | sed 's/^/    /'
 
-  # 3e) Step 6 抽样：request_body 非空但非常短（<200B）的行 —— 强烈暗示
-  #     sanitize 走 truncate 路径救回了 prefix。如果这种行数量明显高于
-  #     gpt-5.6-terra，说明上游字节有问题，Step 6 在救场。
-  # 注意：request_body 是 JSONB 列，PostgreSQL 对 JSONB 没有 length()，
-  # 必须先 cast 成 text 或用 octet_length()。这里用 octet_length() 取
-  # 字节数，与 sanitizeJSONField 里 `bytes` 字段口径一致。
+  # 3e) Step 6 抽样：octet_length(request_body) 是 JSONB 二进制存储字节数，
+  #     与 Go 里 sanitizeJSONField 的 len(original)（文本字节数）不完全一致
+  #     （JSONB 内部有 key/value 长度前缀，所以存储字节数通常比原始文本字节
+  #     数大 ~5-10%）。但量级相当：用 <200B / 200-2000B / >2000B 三个粗粒度
+  #     阈值做对比，short_body 显著高于 gpt-5.6-terra = sanitize truncate
+  #     救回 prefix 的强信号。注意 PostgreSQL JSONB 没有 length() 函数，必须
+  #     cast 成 text 或用 octet_length()。
   psql -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d "$PGDATABASE" -At -F'|' <<SQL > "$OUT_DIR/sql-rescued-candidates.txt"
 SELECT
   model,
@@ -203,7 +218,7 @@ SQL
 
   echo
   echo "  [3e] request_body 长度分布（短 = 可能是 sanitize truncate 救回）："
-  column -t -s'|' "$OUT_DIR/sql-rescued-candidates.txt" | sed 's/^/    /'
+  $COLUMN_CMD "$OUT_DIR/sql-rescued-candidates.txt" | sed 's/^/    /'
 fi
 
 # ----------------------------------------------------------------------------
@@ -212,7 +227,6 @@ fi
 echo
 log "Step 4: 拉取 telemetry_sanitize_events_total 指标（如已升级新版本）"
 
-PROM_URL="${PROM_URL:-http://127.0.0.1:9090}"
 if command -v curl >/dev/null 2>&1; then
   out=$(curl -sf --max-time 5 \
     "${PROM_URL}/api/v1/query?query=telemetry_sanitize_events_total" 2>/dev/null \

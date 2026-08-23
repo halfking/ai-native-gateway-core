@@ -20,12 +20,11 @@ import (
 //
 // Label cardinality is bounded:
 //   - outcome ∈ {discarded, rescued}              (two outcomes, fixed set)
-//   - field   ∈ {request_body, response_body,      (eleven fields sanitized
-//                 outbound_body, compression_meta, by client.go:2578-2587
-//                 discard_events, outbound_msg_hashes,  + auto_decision)
-//                 quality_fix_actions, tool_calls,
-//                 attachments, routing_attempts,
-//                 auto_decision}
+//   - field   ∈ sanitizeFieldLabels                (must stay in sync with
+//                                                   the sanitize* helpers in
+//                                                   client.go:sanitizeRequestLogEntry
+//                                                   and EmitRequestLogUpdate /
+//                                                   EmitRequestLogInsert; audit P2-3)
 //   - source  ∈ {string_field, json_field,         (three sanitize helpers)
 //                raw_json_field}
 //   - stage   ∈ {sanitize, required_field_guard}   (two stages)
@@ -34,14 +33,17 @@ import (
 // stable surface from process start.
 var sanitizeEventsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 	Name: "telemetry_sanitize_events_total",
-	Help: "Telemetry request_log sanitisation events (outcome × field × source × stage). outcome=discarded means the field was NULLed out — for the JSONB columns that drive /request-logs this is the actual loss signal; outcome=rescued means the field was truncated but a usable prefix is retained. Mirrors slog.Warn calls in client.go:sanitizeJSONField / sanitizeRawJSONField.",
+	Help: "Telemetry request_log sanitisation events (outcome × field × source × stage). outcome=discarded covers two distinct paths (audit P1-2): (a) sanitizeUTF8JSON returned \"\" for a JSONB-bound field — the column was NULLed, which is the SEVERE /request-logs UI loss signal (source=json_field|raw_json_field, stage=sanitize); (b) EmitRequestLogUpdate/Insert dropped an entry whose RequestID was empty — orphan UPSERT guard (source=string_field, stage=required_field_guard). Use source/stage labels to disambiguate. outcome=rescued means the field was truncated but a usable JSON prefix is retained. Mirrors slog.Warn calls in client.go:sanitizeJSONField / sanitizeRawJSONField.",
 },
 	[]string{"outcome", "field", "source", "stage"},
 )
 
 // sanitizeFieldLabels is the exhaustive pre-init list. Keep in sync
 // with the call sites in client.go:sanitizeRequestLogEntry and the new
-// required-field guard.
+// required-field guard. Adding a new label value here without a matching
+// call site in client.go creates dead-but-pre-init series (benign waste);
+// adding a new call site without extending this list causes the series
+// to appear lazily on first .Inc() (audit P2-3 — prefer the former).
 var sanitizeFieldLabels = []string{
 	"request_body",
 	"response_body",
@@ -54,15 +56,21 @@ var sanitizeFieldLabels = []string{
 	"attachments",
 	"routing_attempts",
 	"auto_decision",
+	"request_id",
 }
 
 // sanitizeOutcomeLabels / sanitizeStageLabels / sanitizeSourceLabels.
 //
 // outcome:
 //
-//	discarded — sanitizeUTF8JSON returned ""; the JSONB column was NULLed
-//	            out. This is the SEVERE signal — for request_body / outbound_body
-//	            it means /request-logs UI sees nothing. alertable.
+//	discarded — two semantic paths (audit P1-2):
+//	           (1) sanitizeUTF8JSON returned ""; the JSONB column was NULLed
+//	               out (stage=sanitize, source=json_field|raw_json_field).
+//	               For request_body / outbound_body this is the SEVERE
+//	               signal — /request-logs UI sees nothing. alertable.
+//	           (2) EmitRequestLogUpdate/Insert dropped an entry whose
+//	               RequestID was empty (stage=required_field_guard,
+//	               source=string_field). Orphan UPSERT prevention.
 //
 //	rescued   — sanitizeUTF8JSON returned a non-empty truncated string; the
 //	            truncated prefix is KEPT in the column so auditors still see

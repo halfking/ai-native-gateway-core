@@ -608,11 +608,30 @@ func (c *Client) EmitRequestLog(entry *RequestLogEntry) {
 }
 
 func (c *Client) EmitRequestLogInsert(entry *RequestLogEntry) {
+	if entry == nil || entry.RequestID == "" {
+		// 2026-08-23 (audit P1-1): INSERT path UPSERTs on request_id with
+		// ON CONFLICT (client.go:917). An empty RequestID would create a
+		// brand-new orphan row keyed by "" — strictly worse than the
+		// UPDATE path which at least collides with an existing orphan.
+		// Mirror the UPDATE guard so the two paths share one source of
+		// truth. nil entry is defensive — current callers never pass nil
+		// but the cost of one branch is negligible.
+		incSanitizeEvent("discarded", "request_id", "string_field", "required_field_guard")
+		return
+	}
 	entry.Op = RequestLogInsert
+	entry.TenantID = nonEmpty(entry.TenantID, "default")
 	c.EmitRequestLog(entry)
 }
 
 func (c *Client) EmitRequestLogUpdate(entry *RequestLogEntry) {
+	if entry == nil {
+		// 2026-08-23 (audit P2-1): defensive nil guard so a future caller
+		// doesn't panic on entry.RequestID. Counter bump uses the same
+		// tuple as the RequestID guard so dashboards see one signal.
+		incSanitizeEvent("discarded", "request_id", "string_field", "required_field_guard")
+		return
+	}
 	entry.Op = RequestLogUpdate
 
 	// 2026-08-23 (245 incident, minimax-m3): guard against silently writing
@@ -2634,6 +2653,12 @@ func sanitizeJSONField(field string, p **string) {
 	// effect was a "repaired" label that conflated two semantics. The
 	// outcome label is now `rescued` — auditors see partial JSON instead of
 	// NULL, and dashboards can rate() rescued vs discarded independently.
+	// PII note (audit P1-4): the retained prefix may still contain user
+	// PII (prompt fragments, tool-call arguments, attachment metadata).
+	// These columns are by-design PII-bearing so this is not a new
+	// exposure, but downstream UI consumers must apply their own redaction
+	// before rendering. Compliance should review the rescued path before
+	// it is exposed to end-users outside the audit context.
 	if len(v) < len(original) {
 		slog.Warn("telemetry JSON field rescued by truncation",
 			"field", field,
