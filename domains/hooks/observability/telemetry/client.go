@@ -618,9 +618,10 @@ func (c *Client) EmitRequestLogUpdate(entry *RequestLogEntry) {
 	// 2026-08-23 (245 incident, minimax-m3): guard against silently writing
 	// a useless UPDATE. The persistRequestLog → updateRequestLog path UPSERTs
 	// on request_id; if it is empty the row becomes orphan and the WAL has
-	// no key to reconcile against. TenantID defaulting to "default" is the
-	// same fallback insertRequestLog applies at line ~1191 — keep the
-	// semantics aligned so the required-field guard matches INSERT too.
+	// no key to reconcile against. TenantID defaults to the same fallback
+	// insertRequestLog uses via nonEmpty() (currently "default") so the
+	// required-field guard matches INSERT semantics — do NOT hardcode
+	// "default" here or the two paths will drift.
 	// Success/RequestStatus are not strictly nullable on UPDATE (a late
 	// enrichment may legitimately omit them), so this guard intentionally
 	// only blocks the truly useless writes.
@@ -631,9 +632,7 @@ func (c *Client) EmitRequestLogUpdate(entry *RequestLogEntry) {
 		incSanitizeEvent("discarded", "request_id", "string_field", "required_field_guard")
 		return
 	}
-	if entry.TenantID == "" {
-		entry.TenantID = "default"
-	}
+	entry.TenantID = nonEmpty(entry.TenantID, "default")
 
 	c.EmitRequestLog(entry)
 }
