@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -49,7 +50,10 @@ func batchLoadRequestStatus(ctx context.Context, rdb redis.Cmdable, members []re
 	if len(cmds) == 0 {
 		return out
 	}
-	_, _ = pipe.Exec(ctx)
+	if _, err := pipe.Exec(ctx); err != nil && err != redis.Nil {
+		slog.Debug("live stream batchLoadRequestStatus pipeline failed", "err", err.Error())
+		return out
+	}
 	for i, id := range ids {
 		data, err := cmds[i].Result()
 		if err != nil {

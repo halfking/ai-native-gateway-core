@@ -5,6 +5,7 @@ import {
   credentialDisplayName,
   mergeCardWindowEntries,
   nodeCapacity,
+  quotaAllowsPriority,
 } from './queueNodeCards'
 
 describe('assignSpacedPriorities', () => {
@@ -49,6 +50,22 @@ describe('nodeCapacity / credentialDisplayName', () => {
   it('prefers credential label', () => {
     expect(credentialDisplayName({ credential_label: 'terra-prod' }, 'p', 9)).toBe('terra-prod')
     expect(credentialDisplayName({ credential_label: '  ' }, 'anthropic', 9)).toBe('anthropic · #9')
+    expect(credentialDisplayName(null, 'anthropic', 9, 'sse-label')).toBe('sse-label')
+  })
+})
+
+describe('quotaAllowsPriority', () => {
+  it('allows ok and empty quota', () => {
+    expect(quotaAllowsPriority(null)).toBe(true)
+    expect(quotaAllowsPriority(undefined)).toBe(true)
+    expect(quotaAllowsPriority('')).toBe(true)
+    expect(quotaAllowsPriority('ok')).toBe(true)
+    expect(quotaAllowsPriority('OK')).toBe(true)
+  })
+
+  it('blocks exhausted quota states', () => {
+    expect(quotaAllowsPriority('balance_exhausted')).toBe(false)
+    expect(quotaAllowsPriority('unknown')).toBe(false)
   })
 })
 

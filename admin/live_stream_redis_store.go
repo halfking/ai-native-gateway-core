@@ -477,7 +477,6 @@ func (s *LiveStreamRedisStore) recordLocked(ctx context.Context, req LiveRequest
 		}
 		// 2026-07-23: 维度队列 24h TTL（泳道存在不超过 1 天）
 		pipe.Expire(ctx, key, liveStreamLaneQueueTTL)
-		trimLiveStreamQueue(pipe, ctx, key, liveStreamQueueKeepLimit(key))
 		trimKeys = append(trimKeys, key)
 	}
 	// 2026-07-23: 请求详情 4h TTL（一般请求不会跨 4 小时）
@@ -678,12 +677,8 @@ func liveStreamQueueKeepLimit(key string) int {
 	return LiveStreamLaneVisibleLimit
 }
 
-// trimLiveStreamQueue is the pipeline-safe no-op placeholder kept for call
-// sites that batch ZADD inside a pipeline. Actual lifecycle-aware trimming
-// runs post-exec via selectiveTrimLiveStreamQueue.
-func trimLiveStreamQueue(pipe redis.Pipeliner, _ context.Context, _ string, _ int) {
-	_ = pipe
-}
+// selectiveTrimLiveStreamQueue is invoked post-exec after queue writes; see
+// live_stream_queue_trim.go.
 
 func liveRequestQueueKeys(tenantID string, req LiveRequest) []string {
 	tenantID = normalizeLiveStreamTenant(tenantID)
@@ -1512,7 +1507,6 @@ func (s *LiveStreamRedisStore) ScanAndRecordIdleMarkers(ctx context.Context, ts 
 			writePipe.ZAdd(ctx, qkey, redis.Z{Score: score, Member: marker.RequestID})
 			// 2026-07-23: idle marker 写入泳道队列，队列 TTL 用 24h（泳道存在 ≤ 1 天）
 			writePipe.Expire(ctx, qkey, liveStreamLaneQueueTTL)
-			trimLiveStreamQueue(writePipe, ctx, qkey, liveStreamQueueKeepLimit(qkey))
 			idleTrimKeys = append(idleTrimKeys, qkey)
 			// 2026-08-04 (方案C): keep the dim index SET in sync when an idle
 			// marker creates a dim queue (idle-only lane). Routes the key to the
