@@ -23,6 +23,7 @@ export function useNodeDetailDrawerActions(opts: {
   pingResult: Ref<PingResult | null>
   lifecycle: Ref<CredentialLifecycleStatus>
   manualPriority: Ref<number>
+  priorityFlag: Ref<boolean>
   routingTier: Ref<number>
   weight: Ref<number>
   modelActionReason: Ref<string>
@@ -32,7 +33,7 @@ export function useNodeDetailDrawerActions(opts: {
   const {
     emit, canEdit, currentNode, candidate, selectedModel, selectedModelStatus,
     saving, actionMessage, actionError, pingResult, lifecycle, manualPriority,
-    routingTier, weight, modelActionReason, detailRequestId, refreshCurrentTab,
+    priorityFlag, routingTier, weight, modelActionReason, detailRequestId, refreshCurrentTab,
   } = opts
 
   const { jumpToSessionSummary } = useSessionSummaryJump({
@@ -65,8 +66,9 @@ export function useNodeDetailDrawerActions(opts: {
     if (!node || !row || !canEdit.value || saving.value) return
     saving.value = true; actionMessage.value = ''; actionError.value = ''
     try {
-      const patch: { manual_priority?: number; routing_tier?: number; weight?: number } = {}
+      const patch: { manual_priority?: number; priority?: boolean; routing_tier?: number; weight?: number } = {}
       if (manualPriority.value !== (row.manual_priority ?? 99)) patch.manual_priority = manualPriority.value
+      if (priorityFlag.value !== (row.priority ?? false)) patch.priority = priorityFlag.value
       if (routingTier.value !== row.tier) patch.routing_tier = routingTier.value
       if (weight.value !== row.weight) patch.weight = weight.value
       if (Object.keys(patch).length) await patchCandidateBinding(row.credential_id, row.model_name, patch)

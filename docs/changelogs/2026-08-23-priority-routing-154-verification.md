@@ -71,4 +71,4 @@
 ## 下一步
 
 - 真正"429 / periodic_exhausted"需要等 5h 配额窗口或人工注入 `quota_state='periodic_exhausted'`；本次没改 credentials 的 quota_state（生产敏感），但 spillover 路径通过 weight=0 已等价验证（priority 候选仍在列表，被 RR 绕过）。
-- Grafana dashboard 导入（`deploy/prometheus/grafana/dashboard-routing-credentials.json`）未在本次任务范围。
+- Grafana dashboard（`deploy/prometheus/grafana/provisioning/dashboards/routing-credentials.json`，随 compose provisioning 自动加载）在真实 Grafana 实例上的渲染验证未在本次任务范围。

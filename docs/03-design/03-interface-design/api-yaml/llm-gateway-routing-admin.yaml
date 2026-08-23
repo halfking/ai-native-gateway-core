@@ -7,8 +7,10 @@ info:
     本文件是 routing-admin 子集的规范种子（hzx-2 round-3 起步），
     后续按端点族逐步补全（candidate-binding / reorder / policy 等）。
 
-    鉴权：所有端点要求 JWT（`/api/auth/token` 换取）或 admin key，
-    且角色必须为 super_admin；tenant_admin 收到 403。
+    鉴权：所有端点要求 JWT（`/api/auth/token` 换取，Bearer 头或
+    `llmgw_session` cookie），且角色必须为 super_admin；tenant_admin
+    收到 403。注意 super_admin 中间件不支持 admin key（2026-07-10
+    起 sk-* admin 认证已移除）。
   version: 0.1.0
   contact:
     name: LLM Gateway Team
@@ -155,14 +157,21 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: |
-        `/api/auth/token` 登录换取的 JWT；亦可使用 admin key。
-        所有 routing-admin 端点额外要求 super_admin 角色。
+        `/api/auth/token` 登录换取的 JWT（Bearer 头或 `llmgw_session`
+        cookie）。所有 routing-admin 端点额外要求 super_admin 角色；
+        不支持 admin key。
 
   schemas:
     Error:
       type: object
       properties:
         error:
-          type: string
-          description: 人类可读的错误描述
-          example: "credential not found"
+          type: object
+          description: 与 admin writeError 输出一致的对象
+          properties:
+            detail:
+              type: string
+              description: 人类可读的错误描述
+          required: [detail]
+          example:
+            detail: "credential not found"

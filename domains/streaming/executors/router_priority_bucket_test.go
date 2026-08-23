@@ -81,6 +81,83 @@ func TestStablePartitionPriorityEmptyAndSingle(t *testing.T) {
 	}
 }
 
+// TestPlanCandidatesWeightedPromotionStaysInPriorityBucket locks the
+// interaction between stablePartitionPriority and the weighted
+// first-attempt lottery: when the tier bucket mixes a priority-eligible
+// candidate with a much heavier standard one, the lottery must run
+// inside the priority prefix only. Without the gate, position values
+// landing in the standard candidate's weight range would promote it to
+// index 0 and it would receive the first attempt over the priority one.
+func TestPlanCandidatesWeightedPromotionStaysInPriorityBucket(t *testing.T) {
+	router := NewRouter(nil, nil)
+	policy := provider.DefaultPolicy()
+	pool := []provider.Candidate{
+		{CredentialID: 1, ProviderID: 1, RawModel: "model-x", Tier: 1, Routable: true, Priority: true, QuotaState: "ok", Weight: 1},
+		{CredentialID: 2, ProviderID: 2, RawModel: "model-x", Tier: 1, Routable: true, Weight: 999},
+	}
+	// Each PlanCandidates call advances the per-identity rotation counter,
+	// sweeping the weighted position across the full range.
+	for i := 0; i < 64; i++ {
+		planned := router.PlanCandidates(pool, nil, policy, nil)
+		if len(planned) == 0 || planned[0].CredentialID != 1 {
+			t.Fatalf("iteration %d: first choice = %v, want priority credential 1", i, credIDs(planned))
+		}
+	}
+}
+
+// TestPlanCandidatesWeightedPromotionUnchangedWithoutPriority verifies the
+// gate is inert for an all-standard bucket: the classic weight-driven
+// rotation still promotes the heavy candidate most of the time.
+func TestPlanCandidatesWeightedPromotionUnchangedWithoutPriority(t *testing.T) {
+	router := NewRouter(nil, nil)
+	policy := provider.DefaultPolicy()
+	pool := []provider.Candidate{
+		{CredentialID: 1, ProviderID: 1, RawModel: "model-y", Tier: 1, Routable: true, Weight: 1},
+		{CredentialID: 2, ProviderID: 2, RawModel: "model-y", Tier: 1, Routable: true, Weight: 999},
+	}
+	heavyFirst := 0
+	for i := 0; i < 64; i++ {
+		planned := router.PlanCandidates(pool, nil, policy, nil)
+		if len(planned) > 0 && planned[0].CredentialID == 2 {
+			heavyFirst++
+		}
+	}
+	if heavyFirst == 0 {
+		t.Fatal("all-standard bucket: weighted rotation never promoted the heavy candidate — the lottery is broken")
+	}
+}
+
+// TestApplyProtocolAffinityPreservesOrderWithinSameProtocol locks the
+// affinity contract: within one protocol rank the incoming order (priority
+// bucket / sticky pin / weighted first attempt / tier rounds) must survive.
+// The old SuccessRate fallback re-ranked same-protocol candidates and
+// erased those orderings in the default single-protocol case.
+func TestApplyProtocolAffinityPreservesOrderWithinSameProtocol(t *testing.T) {
+	ordered := []provider.Candidate{
+		{CredentialID: 1, Protocol: "openai-completions", Priority: true, QuotaState: "ok", SuccessRate: 0.5},
+		{CredentialID: 2, Protocol: "openai-completions", SuccessRate: 0.99},
+	}
+	got := applyProtocolAffinity(ordered, []string{"openai-completions"})
+	if got[0].CredentialID != 1 {
+		t.Fatalf("incoming first candidate must stay first within same protocol; got %v", credIDs(got))
+	}
+}
+
+func TestApplyProtocolAffinityStillGroupsPreferredProtocolFirst(t *testing.T) {
+	ordered := []provider.Candidate{
+		{CredentialID: 1, Protocol: "anthropic-messages"},
+		{CredentialID: 2, Protocol: "openai-completions"},
+		{CredentialID: 3, Protocol: "anthropic-messages"},
+	}
+	got := applyProtocolAffinity(ordered, []string{"openai-completions"})
+	wantProto := []string{"openai-completions", "anthropic-messages", "anthropic-messages"}
+	for i, w := range wantProto {
+		if got[i].Protocol != w {
+			t.Fatalf("position %d: protocol = %q, want %q", i, got[i].Protocol, w)
+		}
+	}
+}
+
 func TestCompareCandidatePriorityPriorityBucketFirst(t *testing.T) {
 	prio := provider.Candidate{CredentialID: 2, Priority: true, QuotaState: "ok", BillingMode: "per_token"}
 	standard := provider.Candidate{CredentialID: 1, Priority: false, QuotaState: "ok", BillingMode: "free"}

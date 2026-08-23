@@ -1,8 +1,10 @@
---
--- Name: model_offers_insert_trigger(); Type: FUNCTION; Schema: public; Owner: -
---
+-- 570_model_offers_insert_priority_passthrough.down.sql
+-- Restore the pre-570 insert trigger that did not persist
+-- context_window_override / priority through the model_offers view.
 
-CREATE FUNCTION public.model_offers_insert_trigger() RETURNS trigger
+BEGIN;
+
+CREATE OR REPLACE FUNCTION public.model_offers_insert_trigger() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 BEGIN
@@ -30,7 +32,7 @@ BEGIN
         unit_price_in_per_1m, unit_price_out_per_1m,
         cache_read_price_per_1m, cache_write_price_per_1m,
         currency, billing_mode, pricing_source, pricing_updated_at,
-        admin_protected, context_window_override, priority
+        admin_protected
     ) VALUES (
         NEW.credential_id, NEW.id, COALESCE(NEW.available, TRUE),
         COALESCE(NEW.routing_tier, 2), COALESCE(NEW.weight, 100), COALESCE(NEW.manual_priority, 99),
@@ -40,8 +42,7 @@ BEGIN
         COALESCE(NEW.cache_read_price_per_1m, 0), COALESCE(NEW.cache_write_price_per_1m, 0),
         COALESCE(NEW.currency, 'USD'), COALESCE(NEW.billing_mode, 'token'),
         NEW.pricing_source, NEW.pricing_updated_at,
-        COALESCE(NEW.admin_protected, FALSE),
-        NEW.context_window_override, COALESCE(NEW.priority, FALSE)
+        COALESCE(NEW.admin_protected, FALSE)
     )
     ON CONFLICT (credential_id, provider_model_id) DO UPDATE SET
         routing_tier = COALESCE(EXCLUDED.routing_tier, credential_model_bindings.routing_tier),
@@ -59,11 +60,10 @@ BEGIN
         billing_mode = COALESCE(EXCLUDED.billing_mode, credential_model_bindings.billing_mode),
         pricing_source = COALESCE(EXCLUDED.pricing_source, credential_model_bindings.pricing_source),
         pricing_updated_at = COALESCE(EXCLUDED.pricing_updated_at, credential_model_bindings.pricing_updated_at),
-        context_window_override = COALESCE(EXCLUDED.context_window_override, credential_model_bindings.context_window_override),
-        priority = COALESCE(EXCLUDED.priority, credential_model_bindings.priority),
         updated_at = now();
 
     RETURN NEW;
 END;
 $$;
 
+COMMIT;

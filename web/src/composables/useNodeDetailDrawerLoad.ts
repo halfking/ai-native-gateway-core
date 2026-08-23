@@ -44,7 +44,7 @@ export function useNodeDetailDrawerLoad(
   const actionMessage = ref(''); const actionError = ref('')
   const pingResult = ref<{ status: string; latency_ms: number; tested_at: string; error?: string } | null>(null)
   const lifecycle = ref<CredentialLifecycleStatus>('active')
-  const manualPriority = ref(99); const routingTier = ref(2); const weight = ref(100)
+  const manualPriority = ref(99); const priorityFlag = ref(false); const routingTier = ref(2); const weight = ref(100)
   const modelActionReason = ref('')
   const coreLoaded = ref(false); const coreLoading = ref(false)
   const detailRequestId = ref<string | null>(null)
@@ -99,7 +99,7 @@ export function useNodeDetailDrawerLoad(
     sequence, loadController, requestsController, coreController, coreTask, coreCandidateTask,
     visible, currentNode, scopedModel, loading, loadError, candidate, candidateLoading, monitor,
     selectedModel, windowEntries, windowStats, windowSource, history, decisions, lifecycle,
-    manualPriority, routingTier, weight, coreLoaded, coreLoading,
+    manualPriority, priorityFlag, routingTier, weight, coreLoaded, coreLoading,
   })
 
   function resetDrawerData() {
@@ -186,12 +186,14 @@ export function useNodeDetailDrawerLoad(
     const formIsPristine =
       lifecycle.value === 'active'
       && manualPriority.value === 99
+      && priorityFlag.value === false
       && routingTier.value === 2
       && weight.value === 100
     if (props.seedCandidate && formIsPristine) {
       candidate.value = props.seedCandidate
       lifecycle.value = (props.seedCandidate.lifecycle_status ?? 'active') as CredentialLifecycleStatus
       manualPriority.value = props.seedCandidate.manual_priority ?? 99
+      priorityFlag.value = props.seedCandidate.priority ?? false
       routingTier.value = props.seedCandidate.tier ?? 2
       weight.value = props.seedCandidate.weight ?? 100
     }
@@ -246,7 +248,7 @@ export function useNodeDetailDrawerLoad(
     activeTab, otherModelsLoaded, otherModelsLoading, loading, detailLoaded, detailLoading, requestsLoaded, requestsLoading,
     settingsLoaded, settingsLoading, loadError, candidate, candidateLoading, monitor, selectedModel,
     windowEntries, windowStats, windowSource, history, decisions, saving, actionMessage, actionError,
-    pingResult, lifecycle, manualPriority, routingTier, weight, modelActionReason, coreLoaded, coreLoading,
+    pingResult, lifecycle, manualPriority, priorityFlag, routingTier, weight, modelActionReason, coreLoaded, coreLoading,
     detailRequestId, visible, canEdit, editGateHint, currentNode, allModels, models, selectedModelStatus,
     resolvedProviderId, headlineState, errorKinds, failedWindowEntries, failedDecisions, otherModelsNeedRefresh,
     mergeMonitorModels, chooseModel, refreshCurrentTab, ensureTabLoaded,

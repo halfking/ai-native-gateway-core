@@ -9,7 +9,7 @@ hzx-2 round-3 引入 `credential_model_bindings.priority` 列（SQL 候选 ORDER
 验证环境是上一会话为 561 搭建的最小 fixture（cmb + provider_models + scope_revision，已处于 561 迁移后状态）——等价于生产 154 的"schema_migrations 已记 561"状态。结论：**通过**。
 
 1. **幂等重跑干净**：`psql -v ON_ERROR_STOP=1 -f 568_credential_priority_flag.sql` 全语句成功、COMMIT 退出码 0。生产可直接重跑。
-2. **model_offers 视图暴露 priority 列**（DROP...CASCADE + CREATE 路径生效）。
+2. **model_offers 视图暴露 priority 列**（up 迁移用 `CREATE OR REPLACE VIEW`，priority 追加为末列故合法；down 迁移用 `DROP VIEW ... CASCADE` + 重建）。
 3. **候选排序 before/after**（复用 `provider/client.go` ORDER BY 逐字副本，4 凭据矩阵）：
    - priority=true + quota ok 的 per_token 凭据排第一，压过 free 计费凭据（priority 桶在计费轮次之前）✓
    - priority=true + periodic_exhausted 不进优先桶（quota 门禁生效）✓
@@ -24,7 +24,7 @@ hzx-2 round-3 引入 `credential_model_bindings.priority` 列（SQL 候选 ORDER
 
 - **404/500 指标分野**：`applyForceEnable` 凭据查询失败时递增 `llmgw_routing_credential_reset_total{surface=lookup,result=not_found}`（404，操作员敲错 ID）或 `{lookup,error}`（500，链路故障），此前 404 路径完全不可见。
 - **孤儿指标接线**：`llmgw_routing_priority_candidates_selected_total` 补上 Inc() 调用点——`planCandidates` 收尾处按首选候选三态分类（priority_only / spillover_to_non_priority / no_priority_candidates），受 `PriorityRoutingEnabled` 门禁。
-- **Grafana**：新 dashboard `deploy/prometheus/grafana/dashboard-routing-credentials.json`（8 面板覆盖全部 8 个 llmgw_routing 指标，含 404/500 对照 stat 与 priority 分布饼图）。
+- **Grafana**：新 dashboard `deploy/prometheus/grafana/provisioning/dashboards/routing-credentials.json`（8 面板覆盖全部 8 个 llmgw_routing 指标，含 404/500 对照 stat 与 priority 分布饼图；放在 provisioning 目录随 compose 自动加载）。
 - **Alert 规则**：`deploy/prometheus/rules/routing-credential-state.yml` 7 条告警覆盖除 priority 分布（设计上仅面板）外的全部新指标，含 `RoutingRecoveryTickSlow`（tick >10s 预警连接池耗尽）与 `RoutingCoolingFallbackTriggered`（全员冷却降级即报）。配套 `routing_credential_state_test.go` 校验规则与低基数约束（无 model/tenant 选择器）。
 
 ## API 文档
