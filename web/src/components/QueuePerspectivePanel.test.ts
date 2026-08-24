@@ -7,13 +7,14 @@ import { __testing, liveStreamState } from '../composables/liveStreamStore'
 import { ApiError } from '../api/_core'
 import { _resetPersistState, flushPersist, liveStreamPreferencesStorageKey, readLiveStreamPreferences } from '../composables/liveStreamPreferences'
 
-const { getFeatured, resolveRouting, reorderCandidateBindings, getSlidingWindow, getSlidingWindowBatch, superAdmin, mockedStore } = vi.hoisted(() => ({
+const { getFeatured, resolveRouting, reorderCandidateBindings, getSlidingWindow, getSlidingWindowBatch, superAdmin, isAuthenticatedMock, mockedStore } = vi.hoisted(() => ({
   getFeatured: vi.fn(),
   resolveRouting: vi.fn(),
   reorderCandidateBindings: vi.fn(),
   getSlidingWindow: vi.fn().mockResolvedValue({ entries: [], stats: { total: 0, success: 0, failed: 0, failure_rate: 0, error_kinds: {} }, source: 'redis' }),
   getSlidingWindowBatch: vi.fn().mockResolvedValue({ window_minutes: 5, count: 0, results: [] }),
   superAdmin: vi.fn(() => false),
+  isAuthenticatedMock: vi.fn(() => true),
   mockedStore: {
     userInfo: null,
   },
@@ -22,6 +23,10 @@ const { getFeatured, resolveRouting, reorderCandidateBindings, getSlidingWindow,
 vi.mock('../store', () => ({
   isSuperAdmin: superAdmin,
   isDefaultTenant: () => true,
+  // 2026-08-24: refreshWindowStats gates polling on isAuthenticated()
+  // (admin-cookie endpoint; anonymous ticks must be skipped). Default true —
+  // the suite exercises the authed dashboard surface.
+  isAuthenticated: isAuthenticatedMock,
   store: mockedStore,
   getCurrentTenantId: () => 'default',
 }))
@@ -90,6 +95,56 @@ describe('QueuePerspectivePanel', () => {
     resolveRouting.mockReset().mockResolvedValue({ raw_models: [], candidates: [] })
     reorderCandidateBindings.mockReset().mockResolvedValue({ message: 'updated', items: [] })
     superAdmin.mockReturnValue(false)
+    isAuthenticatedMock.mockReturnValue(true)
+  })
+
+  it('skips window-stats polling entirely when unauthenticated (2026-08-24 401-storm fix)', async () => {
+    // Anonymous visitor (e.g. /?login=1): sliding-window is an admin-cookie
+    // endpoint — refreshWindowStats must not fire batch or N-way requests.
+    isAuthenticatedMock.mockReturnValue(false)
+    liveStreamState.nodes = [
+      { credential_id: 1, provider_id: 1, provider_code: 'p', manual_disabled: false, circuit_state: 'closed', raw_models: ['m-1'] },
+    ]
+    resolveRouting.mockImplementation(async () => ({
+      raw_models: ['m-1'],
+      candidates: [
+        { credential_id: 1, model_name: 'm-1', canonical_id: 200, manual_priority: 5, credential_label: 'a' },
+      ],
+    }))
+    getSlidingWindowBatch.mockClear()
+    getSlidingWindow.mockClear()
+
+    mountPanel()
+    await flushPromises()
+    await flushPromises()
+
+    expect(getSlidingWindowBatch).not.toHaveBeenCalled()
+    expect(getSlidingWindow).not.toHaveBeenCalled()
+  })
+
+  it('does not fall back to N-way GET polling when the batch call returns 401', async () => {
+    // Session died mid-page: the central _core handler clears auth and
+    // bounces to login. refreshWindowStats must swallow the 401 without
+    // amplifying it into one request per credential×model pair.
+    getSlidingWindowBatch.mockRejectedValueOnce(new ApiError(401, 'Unauthorized'))
+    resolveRouting.mockImplementation(async () => ({
+      raw_models: ['m-1'],
+      candidates: [
+        { credential_id: 1, model_name: 'm-1', canonical_id: 200, manual_priority: 5, credential_label: 'a' },
+        { credential_id: 2, model_name: 'm-1', canonical_id: 200, manual_priority: 10, credential_label: 'b' },
+      ],
+    }))
+    liveStreamState.nodes = [
+      { credential_id: 1, provider_id: 1, provider_code: 'p', manual_disabled: false, circuit_state: 'closed', raw_models: ['m-1'] },
+      { credential_id: 2, provider_id: 1, provider_code: 'p', manual_disabled: false, circuit_state: 'closed', raw_models: ['m-1'] },
+    ]
+    getSlidingWindow.mockClear()
+
+    mountPanel()
+    await flushPromises()
+    await flushPromises()
+
+    expect(getSlidingWindow).not.toHaveBeenCalled()
   })
 
   it('shows an idle queue instead of reporting that data is not wired', () => {
