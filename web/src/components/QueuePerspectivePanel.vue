@@ -112,7 +112,7 @@ const congestionHint = computed(() => {
   const maxModel = topModels.value[0]
   const maxCred = topCredentials.value[0]
   if (maxCred && (maxCred.depth || 0) >= (maxModel?.depth || 0)) {
-    return `节点队列拥堵：credential ${maxCred.credential} 深度 ${maxCred.depth}`
+    return `节点队列拥堵：${credLabelById(maxCred.credential)} 深度 ${maxCred.depth}`
   }
   if (maxModel) {
     return `模型队列拥堵：${maxModel.model} 深度 ${maxModel.depth}`
