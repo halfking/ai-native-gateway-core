@@ -153,4 +153,3 @@ CREATE TABLE public.request_logs (
 PARTITION BY RANGE (ts);
 
 ALTER TABLE ONLY public.request_logs FORCE ROW LEVEL SECURITY;
-
