@@ -507,6 +507,10 @@ do_deploy() {
   else
     warn "跳过前端 (--no-frontend)，仅更新二进制"
   fi
+  # rule 13 §1: GFW 内网必须走国内镜像；内网无 sumdb 访问
+  export GOPROXY="${GOPROXY:-https://goproxy.cn,direct}"
+  export GOSUMDB="${GOSUMDB:-off}"
+  export GOFLAGS="${GOFLAGS:-}"
   CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" \
     -o "$tmpbin" ./cmd/gateway
   ok "编译完成 ($(du -h "$tmpbin" | cut -f1))"
