@@ -816,6 +816,12 @@ type ChatHandler struct {
 	// 旁路异步、满即丢，不阻塞请求热路径。
 	liveActions *liveactions.Emitter
 
+	// connectionRegistry (会话优化 v4 T4/R1.6) 流式连接注册表：
+	// request_id → 客户端写出流。流式 ingress 在 pre-stream keepalive
+	// 启动后 Register、请求收尾 Unregister；nil 禁用（桥接帧/管理端
+	// 投影均无操作）。Register 满即返回错误，绝不阻塞请求热路径。
+	connectionRegistry *ConnectionRegistry
+
 	journeyRecorder          *requestjourney.Recorder
 	journeyGatewayInstanceID string
 
@@ -1021,6 +1027,14 @@ func (h *ChatHandler) SetTraceRecorder(rec gwtrace.Recorder) {
 // 发射器。传 nil 等价于禁用（Emit 对 nil receiver 是 no-op）。
 func (h *ChatHandler) SetLiveActions(e *liveactions.Emitter) {
 	h.liveActions = e
+}
+
+// SetConnectionRegistry (会话优化 v4 T4/R1.6) 注入进程级流式连接注册表。
+// 必须在服务开始接收流量前调用（ServeHTTP 期间并发读写该指针不安全）；
+// 传 nil 禁用注册（桥接帧与管理端 /api/admin/connection-registry 投影
+// 均退化为空表）。
+func (h *ChatHandler) SetConnectionRegistry(r *ConnectionRegistry) {
+	h.connectionRegistry = r
 }
 
 func (h *ChatHandler) SetRequestJourney(recorder *requestjourney.Recorder, gatewayInstanceID string) {
@@ -2766,6 +2780,10 @@ func (h *ChatHandler) serveWithExecutor(
 	var preStream *preStreamKeepalive
 	preStreamPrepared := false
 	defer func() {
+		// 会话优化 v4 T4/R1.6：连接收尾（见 connection_registry_wiring.go）。
+		// 无论正常完成还是提前 return，都从注册表摘下，使 admin 投影
+		// 进入关闭审计；未注册/已清理是 no-op。
+		h.unregisterStreamConnection(requestID, "request_completed")
 		if preStream != nil {
 			preStream.stop()
 		}
@@ -3355,6 +3373,9 @@ func (h *ChatHandler) serveWithExecutor(
 					"keepalive_interval_ms", cfg.keepaliveInterval.Milliseconds(),
 					"body_bytes", len(bodyBytes),
 				)
+				// 会话优化 v4 T4/R1.6：注册连接供 ActionBridge 回写思考帧
+				// 与 admin 连接投影。旁路能力，失败静默（见 connection_registry_wiring.go）。
+				h.registerStreamConnection(psk, requestID, clientProtocolFromPath(r.URL.Path), extractClientType(r), tenant(keyInfo))
 			}
 		}
 	}
@@ -3704,6 +3725,8 @@ func (h *ChatHandler) serveWithExecutor(
 					"request_id", requestID,
 					"reason", "early_start_missed_should_not_happen",
 				)
+				// 会话优化 v4 T4/R1.6：注册连接（见另一处注释）。
+				h.registerStreamConnection(psk, requestID, clientProtocolFromPath(r.URL.Path), extractClientType(r), tenant(keyInfo))
 			}
 		}
 	}
@@ -4275,6 +4298,7 @@ goalRetryLoopDone:
 
 	if result != nil && result.CachedReplay {
 		if preStream != nil {
+			h.unregisterStreamConnection(requestID, "cached_replay")
 			preStream.stop()
 			preStream = nil
 		}
@@ -4441,6 +4465,7 @@ goalRetryLoopDone:
 
 	if execErr != nil {
 		if preStream != nil {
+			h.unregisterStreamConnection(requestID, "exec_error")
 			preStream.stop()
 			preStream = nil
 		}
@@ -4795,6 +4820,7 @@ goalRetryLoopDone:
 	}
 	logCtx.markAttachmentsSent()
 	if preStream != nil {
+		h.unregisterStreamConnection(requestID, "stream_done")
 		preStream.stop()
 		preStream = nil
 	}

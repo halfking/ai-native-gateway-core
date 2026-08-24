@@ -31,22 +31,50 @@ import (
 // 不添加正文或密钥。
 
 // ActionSource is the subscription seam for request-scoped liveactions
-// events. internal/liveactions currently has NO in-process subscribe API
-// (its Emitter only writes the bounded Redis LIST), so the integrator picks
-// one of the adapters:
-//
-//  1. ChannelActionSource (below): an in-process fanout tap. Existing
-//     liveactions emit sites additionally call tap.Emit(ev) — one line per
-//     site — or a future liveactions Emitter.Subscribe API is adapted onto
-//     ActionSource directly;
-//  2. a Redis-backed source polling the llmgw:live:actions LIST (same read
-//     contract as the admin live-stream hub) when cross-process fanout is
-//     required.
+// events. internal/liveactions.Emitter.Subscribe (2026-08-24, in-process
+// fanout, drop-on-full) adapts onto ActionSource via EmitterActionSource
+// (below); the Redis-backed source remains the cross-process option.
 type ActionSource interface {
 	// Events returns the subscription channel. The channel is closed when
 	// the source shuts down.
 	Events() <-chan liveactions.ActionEvent
 }
+
+// EmitterActionSource adapts *liveactions.Emitter onto ActionSource: each
+// Events() call takes one bounded subscription (bufferSize <= 0 → 256;
+// 满即丢，与 admin 直播集线器同款语义). The emitter's own Close reaps the
+// subscription and closes the channel.
+type EmitterActionSource struct {
+	Emitter    *liveactions.Emitter
+	BufferSize int
+}
+
+// Events implements ActionSource with one bounded subscription.
+func (s EmitterActionSource) Events() <-chan liveactions.ActionEvent {
+	if s.Emitter == nil {
+		ch := make(chan liveactions.ActionEvent)
+		close(ch)
+		return ch
+	}
+	return s.Emitter.Subscribe(s.BufferSize)
+}
+
+// HotConfigSource is the runtime settings_kv read surface for the 运营
+// 开关 (mirrors ursm/v2.HotConfigSource; *hotconfig.Config satisfies it).
+type HotConfigSource interface {
+	GetBool(key string, defaultValue bool) bool
+	GetString(key string, defaultValue string) string
+}
+
+// ActionBridge 热配置键（settings_kv，30s 轮询生效）：
+//
+//	llmgw_action_bridge_enabled          bool    整体开关（默认 false 灰阶）
+//	llmgw_action_bridge_semantic_clients string  语义帧 client type 白名单
+//	                                             （逗号分隔；空 → 仅注释帧）
+const (
+	HotKeyActionBridgeEnabled         = "llmgw_action_bridge_enabled"
+	HotKeyActionBridgeSemanticClients = "llmgw_action_bridge_semantic_clients"
+)
 
 // ChannelActionSource is the in-process liveactions tap: Emit fans an event
 // out to every subscriber through bounded per-subscriber channels; a full
@@ -158,6 +186,15 @@ type ActionBridgeConfig struct {
 	// comments. Empty (default) → comments only for everyone; clienttype
 	// unknown is NEVER eligible (R3.2 注释兜底).
 	SemanticFrameClientTypes []string
+	// Hot (会话优化 v4 T4 运营开关) is the live settings_kv surface; nil →
+	// the boot-time Enabled/SemanticFrameClientTypes values stay fixed.
+	// Hot toggles take effect within one polling interval (30s) WITHOUT a
+	// process restart: Enabled=false pauses the pump loop (events dropped,
+	// counters keep running), Enabled=true resumes it. A bridge built with
+	// boot Enabled=false but a Hot source can therefore be turned on later
+	// at runtime — so NewActionBridge starts the pump whenever Registry is
+	// wired, and the gate is evaluated per event.
+	Hot HotConfigSource
 }
 
 // ActionBridge pumps liveactions events into client thinking frames.
@@ -193,7 +230,14 @@ func NewActionBridge(cfg ActionBridgeConfig) *ActionBridge {
 	for _, ct := range cfg.SemanticFrameClientTypes {
 		b.semantic[strings.ToLower(strings.TrimSpace(ct))] = struct{}{}
 	}
-	if !cfg.Enabled || cfg.Registry == nil {
+	// Pump startup requires a registry (nowhere to route without one). The
+	// boot-time Enabled value only matters when no Hot source is wired —
+	// with Hot, the per-event gate in dispatch honors llmgw_action_bridge_enabled
+	// live, so a bridge booted disabled can be flipped on without restart.
+	if cfg.Registry == nil {
+		return b
+	}
+	if !cfg.Enabled && cfg.Hot == nil {
 		return b
 	}
 	b.events = make(chan liveactions.ActionEvent, cfg.BufferSize)
@@ -252,9 +296,43 @@ func (b *ActionBridge) pump(src <-chan liveactions.ActionEvent) {
 	}
 }
 
+// enabledNow evaluates the 运营开关 for one event: hot settings_kv value
+// when a Hot source is wired (defaulting to the boot value), else the boot
+// value. Evaluated per event so a hot toggle lands within one poll.
+func (b *ActionBridge) enabledNow() bool {
+	if b.cfg.Hot == nil {
+		return b.cfg.Enabled
+	}
+	return b.cfg.Hot.GetBool(HotKeyActionBridgeEnabled, b.cfg.Enabled)
+}
+
+// semanticWhitelistNow renders the live semantic-frame client whitelist.
+// Hot key absent → boot whitelist copy (parsed identically to construction).
+func (b *ActionBridge) semanticWhitelistNow() map[string]struct{} {
+	if b.cfg.Hot == nil {
+		return b.semantic
+	}
+	raw := strings.TrimSpace(b.cfg.Hot.GetString(HotKeyActionBridgeSemanticClients, ""))
+	if raw == "" {
+		return b.semantic
+	}
+	wl := make(map[string]struct{})
+	for _, ct := range strings.Split(raw, ",") {
+		if ct = strings.ToLower(strings.TrimSpace(ct)); ct != "" {
+			wl[ct] = struct{}{}
+		}
+	}
+	return wl
+}
+
 // dispatch filters, renders and writes one event. Errors are counted, never
 // propagated (bypass channel).
 func (b *ActionBridge) dispatch(ev liveactions.ActionEvent) {
+	if !b.enabledNow() {
+		// 运营开关关闭（UT-SK-06 的热更新形态）：事件按丢弃处理。
+		b.droppedTotal.Add(1)
+		return
+	}
 	// Request-scoped filter: node-dimension state_change events and events
 	// without a request id have no client timeline to attach to.
 	if ev.RequestID == "" || ev.Action == liveactions.ActionStateChange {
@@ -266,7 +344,7 @@ func (b *ActionBridge) dispatch(ev liveactions.ActionEvent) {
 		b.notRoutedTotal.Add(1)
 		return
 	}
-	frame, semantic := renderThinkingFrame(snap.Protocol, snap.ClientType, ev, b.semantic)
+	frame, semantic := renderThinkingFrame(snap.Protocol, snap.ClientType, ev, b.semanticWhitelistNow())
 	if frame == "" {
 		return
 	}

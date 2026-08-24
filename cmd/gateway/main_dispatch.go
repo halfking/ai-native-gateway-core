@@ -13,6 +13,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/admin"
 	"github.com/kaixuan/llm-gateway-go/domains/dispatch"
+	streaming "github.com/kaixuan/llm-gateway-go/domains/streaming" //nolint:depguard
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
 	"github.com/kaixuan/llm-gateway-go/internal/liveactions"
 )
@@ -27,6 +28,13 @@ var gatewayQueueProjection queueProjectionHolder
 // trace recorder and injected here into the dispatch pipeline
 // (model_enqueued / node_enqueued / node_switch / model_switch / no_route).
 var gatewayLiveActionsEmitter *liveactions.Emitter
+
+// gatewayActionBridge (会话优化 v4 T4/R3.2, FR-3 操作事件思考帧桥接) 是
+// 共享的 liveactions → 客户端思考帧桥。源 = gatewayLiveActionsEmitter 的
+// 进程内订阅，目标 = 共享 connectionRegistry（在 main.go 顶部构造）。
+// 运营开关 llmgw_action_bridge_enabled 默认 false（灰阶上线），走
+// settings_kv 热更新无需重启即可开启；nil 表示未装配（降级为 no-op）。
+var gatewayActionBridge *streaming.ActionBridge
 
 var gatewayRequestJourneySink dispatch.ObservationSink
 var gatewayMinuteStats *dispatch.MinuteStatsAggregator
