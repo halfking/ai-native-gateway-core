@@ -38,23 +38,28 @@ func (m stringPointerMatcher) Match(value interface{}) bool {
 }
 
 func requestLogUpdateArgs(entry RequestLogEntry) []interface{} {
-	args := make([]interface{}, 97)
+	args := make([]interface{}, 96)
 	for index := range args {
 		args[index] = pgxmock.AnyArg()
 	}
 	// SQL $N → args[N-1]. SQL position 37=success, 38=request_status;
-	// client-perception fields at $79-$82; t0..t9 at $83-$92; discard $93;
-	// canonical/routing/attachments at $94-$97.
+	// client-perception fields at $78-$81; t0..t9 at $82-$91; discard $92;
+	// canonical/routing/attachments at $93-$96.
+	// 2026-08-24 Phase 1: outbound_body (was $60) is removed from the main table
+	// UPDATE bind list. The dedicated request_logs_bodies_hot table is the sole
+	// outbound_body owner; outbound_body is written via upsertRequestLogBodies.
+	// All placeholders $N≥60 are shifted by -1 (so this helper's array shrinks
+	// from 97 to 96).
 	// UsageSource is nonEmptyPtr-wrapped
 	// by nonEmptyPtr() and is nil-safe so we leave it as a generic matcher.
 	args[36] = boolPointerMatcher{want: entry.Success}
 	args[37] = stringPointerMatcher{want: entry.RequestStatus}
-	args[78] = stringPointerMatcher{want: entry.AgentName}
-	args[79] = stringPointerMatcher{want: entry.AgentType}
-	args[80] = stringPointerMatcher{want: entry.ClientProtocol}
-	args[81] = stringPointerMatcher{want: entry.VirtualClientID}
-	// $83-$92 t0..t9 stay AnyArg; $93 discard; $94-$97 canonical/routing/attachments
-	args[92] = nullableJSONArg(entry.DiscardEvents)
+	args[77] = stringPointerMatcher{want: entry.AgentName}
+	args[78] = stringPointerMatcher{want: entry.AgentType}
+	args[79] = stringPointerMatcher{want: entry.ClientProtocol}
+	args[80] = stringPointerMatcher{want: entry.VirtualClientID}
+	// $82-$91 t0..t9 stay AnyArg; $92 discard; $93-$96 canonical/routing/attachments
+	args[91] = nullableJSONArg(entry.DiscardEvents)
 	return args
 }
 
@@ -98,7 +103,7 @@ func TestUpdateRequestLog_AllowsTerminalSuccessToReplaceIntermediateFailure(t *t
 		WithArgs(requestLogArgs...).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	mockDB.ExpectExec(`INSERT INTO request_logs_bodies_hot`).
-		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mockDB.ExpectCommit()
 
@@ -177,7 +182,7 @@ func TestUpdateRequestLog_TerminalGuardDistinguishesNoOpFromMissing(t *testing.T
 			}
 			if tc.wantCommit {
 				mockDB.ExpectExec(`INSERT INTO request_logs_bodies_hot`).
-					WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+					WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 					WillReturnResult(pgxmock.NewResult("INSERT", 1))
 				mockDB.ExpectCommit()
 			}
@@ -224,7 +229,7 @@ func TestUpdateRequestLog_MissingRequestFallsBackToInsert(t *testing.T) {
 		WithArgs(requestInsertArgs...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mockDB.ExpectExec(`INSERT INTO request_logs_bodies_hot`).
-		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mockDB.ExpectCommit()
 

@@ -36,7 +36,9 @@ func NewFileWriter(baseDir string) *FileWriter {
 		baseDir:       baseDir,
 		retryMax:      3,
 		maxFileSize:   100 * 1024 * 1024, // 100MB（压缩后）
-		maxDailyFiles: 10,                // 单日最多 10 个文件
+		maxDailyFiles: 50,                // 2026-08-25: 10→50. 245 网关日 1GB+ WAL, 原 10 文件很快
+		//                                              触发 "daily file limit reached", 阻塞 session
+		//                                              snapshot 落盘 → trace 滞留 Redis → PG WAL 堆积.
 	}
 	fw.stats.Store(Stats{})
 	return fw

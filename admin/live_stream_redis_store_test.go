@@ -2399,6 +2399,10 @@ func TestComputeScopeDelta_DropsDegradedSnapshot(t *testing.T) {
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	defer rdb.Close()
 	hub := NewLiveStreamSSEHub(nil, LiveStreamConfig{RedisClient: rdb, InitialReplayLimit: 200})
+	// 2026-08-25 (merge audit): 同 sse_audit 测试 — 06408163c 的 2s 节流会在
+	// 窗口内重放上一次 delta, 与"degraded snapshot 必须丢弃"的非节流断言冲突。
+	// 关闭节流, 保持对丢弃语义的直接验证。
+	hub.SetSnapshotMinInterval(0)
 	ctx := context.Background()
 
 	// Seed a healthy baseline into Redis: 100 openai requests → snapshot total=100.

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,6 +24,37 @@ import (
 )
 
 var errNoTelemetryDB = errors.New("telemetry database not configured")
+
+// heapPartitionNameRE 白名单: request_logs_<YYYY>_<MM>, 仅允许数字+下划线.
+var heapPartitionNameRE = regexp.MustCompile(`^request_logs_[0-9]{4}_[0-9]{2}$`)
+
+// quoteIdent 是 pgx.Identifier 等价的轻量版, 用于动态拼分区名 (避免注入).
+func quoteIdent(name string) string {
+	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
+}
+
+// claimClientHolder 让 claimSessionFinalSuccess (无 Client 上下文的顶层函数)
+// 能拿到当前 gateway 实例的 Client. cmd/gateway/main.go 在 NewClient 后调用
+// SetClaimClient 一次, 单测无需设置 (holder 为 nil 时走 nil 分区安全路径).
+var (
+	claimClientMu sync.RWMutex
+	claimClient   *Client
+)
+
+// SetClaimClient 注册当前实例的 Client, 给 columnar-safe claim 路径使用.
+// 生产仅调用一次, 单测无需调用 (直接走 DB mock).
+func SetClaimClient(c *Client) {
+	claimClientMu.Lock()
+	claimClient = c
+	claimClientMu.Unlock()
+}
+
+func loadClientForClaim() *Client {
+	claimClientMu.RLock()
+	c := claimClient
+	claimClientMu.RUnlock()
+	return c
+}
 
 // OutboxWriter writes events to outbox_events table for Gateway → ASM delivery.
 // Implemented by internal/outbox.Writer. Nil-safe (checked before use).
@@ -77,6 +109,18 @@ type Client struct {
 	failPermanent uint64
 	failRetried   uint64
 	failFallback  uint64
+
+	// 2026-08-25: heap request_logs 月度分区名缓存 (columnar-safe claim).
+	// request_logs_* 部分月份是 columnar (citus_columnar), 其上 NOT EXISTS 关联
+	// 会触发 SQLSTATE 0A000 ("UPDATE and CTID scans not supported for
+	// ColumnarScan") —— 即使我们只 UPDATE heap 的 request_logs_hot, planner
+	// 对半连接 NOT EXISTS 仍可能生成 ctid-over-columnar 计划, 整事务回滚.
+	// 这里缓存 pg_class.relam='h' 的 request_logs_* 月度分区名, 每 5 分钟
+	// 刷新, claim 时动态拼装 NOT EXISTS 的 FROM 列表, 只查 heap 分区.
+	// 没有 heap 月份分区时退化为跳过 (依赖 hot 表 8h 保留窗口 + 唯一索引兜底).
+	heapPartitionsMu      sync.RWMutex
+	heapPartitions        []string
+	heapPartitionsCachedAt time.Time
 }
 
 type DecisionLogEntry struct {
@@ -1131,7 +1175,10 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 			compression_reason = EXCLUDED.compression_reason,
 			compression_strategy = EXCLUDED.compression_strategy,
 			compression_meta = EXCLUDED.compression_meta,
-			outbound_body = EXCLUDED.outbound_body,
+			-- 2026-08-24 Phase 1: outbound_body routes to request_logs_bodies_hot
+			-- only. The main table keeps its prior value (typically NULL); an
+			-- UPDATE that bound outbound_body here would re-introduce the
+			-- duplicate TOAST/WAL/storage cost we are eliminating.
 			outbound_msg_count = EXCLUDED.outbound_msg_count,
 			outbound_token_est = EXCLUDED.outbound_token_est,
 			outbound_msg_hashes = EXCLUDED.outbound_msg_hashes,
@@ -1296,8 +1343,13 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		jsonOrNull(entry.CompressionMeta),
 		// 2026-08-19: token-band observability.
 		entry.TokenBand,
-		// v3 (2026-06-19) T23: session-level outbound body payload.
-		jsonOrNull(entry.OutboundBody),
+		// 2026-08-24 Phase 1 body storage optimization: outbound_body is no
+		// longer written here. It is the sole responsibility of
+		// request_logs_bodies_hot (see upsertRequestLogBodies). Main table
+		// keeps NULL to avoid duplicated TOAST/WAL/storage across both
+		// write paths. Readers that need the full payload join through
+		// admin/body_resolver.go which falls back to the dedicated body table.
+		nil, // outbound_body (Phase 1: routes to request_logs_bodies_hot)
 		entry.OutboundMsgCount,
 		entry.OutboundTokenEst,
 		jsonOrNull(entry.OutboundMsgHashes),
@@ -1381,15 +1433,20 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 	}
 
 	// 2026-07-22 Ticket #10: Persist full bodies in request_logs_bodies_hot.
-	// The write path must tolerate both historical UNIQUE (request_id, ts)
-	// and migration-455 UNIQUE (request_id) deployments, because some hosts
-	// already recorded schema_migrations=455 but still serve the old index.
-	err = c.upsertRequestLogBodies(ctx, tx, entry.RequestID, strPtrToJSON(entry.RequestBody), strPtrToJSON(entry.ResponseBody))
+	// 2026-08-24 Phase 1 body storage optimization: outbound_body now also
+	// routes to request_logs_bodies_hot (dedup) — main table keeps NULL for
+	// all three body columns. The hot table is the sole full-body write path.
+	err = c.upsertRequestLogBodies(ctx, tx, entry.RequestID, entry.TenantID,
+		strPtrToJSON(entry.RequestBody),
+		strPtrToJSON(entry.ResponseBody),
+		jsonOrNull(entry.OutboundBody),
+	)
 	if err != nil {
 		slog.Error("persist request_logs_bodies_hot failed",
 			"request_id", entry.RequestID,
 			"has_request_body", entry.RequestBody != nil,
 			"has_response_body", entry.ResponseBody != nil,
+			"has_outbound_body", len(entry.OutboundBody) > 0,
 			"error", err,
 		)
 		return err
@@ -1743,72 +1800,77 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 			       compression_meta = COALESCE($58::text::jsonb, compression_meta),
 			       -- 2026-08-19: token-band observability.
 			       token_band = COALESCE($59, token_band),
-			       -- v3 (2026-06-19) T23: session-level outbound body payload.
-			       outbound_body      = COALESCE($60::text::jsonb, outbound_body),
-			       outbound_msg_count = COALESCE($61, outbound_msg_count),
-			       outbound_token_est = COALESCE($62, outbound_token_est),
-			       outbound_msg_hashes = COALESCE($63::text::jsonb, outbound_msg_hashes),
+			       -- 2026-08-24 Phase 1: outbound_body is removed from the main
+			       -- table UPDATE. The dedicated request_logs_bodies_hot
+			       -- table is the sole outbound_body owner; outbound_body is
+			       -- written via upsertRequestLogBodies in the same tx. The
+			       -- previously-bound $60 placeholder is gone; downstream
+			       -- placeholders are shifted by -1 (the column still exists
+			       -- on the table but is no longer assigned here).
+			       outbound_msg_count = COALESCE($60, outbound_msg_count),
+			       outbound_token_est = COALESCE($61, outbound_token_est),
+			       outbound_msg_hashes = COALESCE($62::text::jsonb, outbound_msg_hashes),
 			       -- 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
-			       quality_flags        = COALESCE($64::text[], quality_flags),
-			       quality_fix_actions  = COALESCE($65::text::jsonb, quality_fix_actions),
-			       quality_score        = COALESCE($66, quality_score),
+			       quality_flags        = COALESCE($63::text[], quality_flags),
+			       quality_fix_actions  = COALESCE($64::text::jsonb, quality_fix_actions),
+			       quality_score        = COALESCE($65, quality_score),
 		   -- 2026-06-19 T-NEW-7: split the semantic overload of failure_detail_code
 		   -- (db/migrations/018_upstream_finish_reason.sql). The new column is
 		   -- the SOLE home for the upstream finish_reason.
-		   upstream_finish_reason = COALESCE($67, upstream_finish_reason),
+		   upstream_finish_reason = COALESCE($66, upstream_finish_reason),
 		   -- 2026-06-23: structured tool_calls (042_tool_calls_column.sql).
-		   tool_calls = COALESCE($68::text::jsonb, tool_calls),
+		   tool_calls = COALESCE($67::text::jsonb, tool_calls),
 		   -- 2026-06-26: client-supplied X-Request-Id (debug only). COALESCE so
 		   -- a late success UPDATE does not blank a value set on INSERT.
-		   client_request_id = COALESCE($69, client_request_id),
+		   client_request_id = COALESCE($68, client_request_id),
 		   -- 2026-06-30: upstream diagnostics (migration 320).
-		   upstream_status_code = COALESCE($70, upstream_status_code),
-		   client_timeout = COALESCE($71, client_timeout),
-		   client_endpoint = COALESCE($72, client_endpoint),
-		   stream_chunk_errors = COALESCE($73, stream_chunk_errors),
-		   stream_chunks_sent = COALESCE($74, stream_chunks_sent),
+		   upstream_status_code = COALESCE($69, upstream_status_code),
+		   client_timeout = COALESCE($70, client_timeout),
+		   client_endpoint = COALESCE($71, client_endpoint),
+		   stream_chunk_errors = COALESCE($72, stream_chunk_errors),
+		   stream_chunks_sent = COALESCE($73, stream_chunks_sent),
 		   -- 2026-07-14 (migration 341): origin metadata. First-write-wins
 		   -- (see INSERT path rationale) — middleware/origin_mw.go sets
 		   -- client_ip / client_forwarded_for on the inbound row and the
 		   -- probe workers set origin_stage / origin_actor on probe rows.
-		   client_ip            = COALESCE($75, client_ip),
-		   client_forwarded_for = COALESCE($76, client_forwarded_for),
-			   origin_stage         = COALESCE($77, origin_stage),
-			   origin_actor         = COALESCE($78, origin_actor),
+		   client_ip            = COALESCE($74, client_ip),
+		   client_forwarded_for = COALESCE($75, client_forwarded_for),
+			   origin_stage         = COALESCE($76, origin_stage),
+			   origin_actor         = COALESCE($77, origin_actor),
 			   -- 2026-07-27: client perception fields. First-write-wins keeps
 			   -- values extracted on the inbound row when a later completion,
 			   -- failure, or disconnect update carries only partial metadata.
-			   agent_name           = COALESCE(agent_name, $79),
-			   agent_type           = COALESCE(agent_type, $80),
-			   client_protocol      = COALESCE(client_protocol, $81),
-			   virtual_client_id    = COALESCE(virtual_client_id, $82),
+			   agent_name           = COALESCE(agent_name, $78),
+			   agent_type           = COALESCE(agent_type, $79),
+			   client_protocol      = COALESCE(client_protocol, $80),
+			   virtual_client_id    = COALESCE(virtual_client_id, $81),
 			   -- V3.1 queue timestamps (migration 491): success path uses
 			   -- EmitRequestLogUpdate; without these columns t0..t9 stayed NULL
 			   -- forever after the in_progress INSERT (2026-08-22 diagnose).
-			   t0_arrived_at        = COALESCE($83, t0_arrived_at),
-			   t1_total_enqueued_at = COALESCE($84, t1_total_enqueued_at),
-			   t2_total_dequeued_at = COALESCE($85, t2_total_dequeued_at),
-			   t3_model_enqueued_at = COALESCE($86, t3_model_enqueued_at),
-			   t4_model_dequeued_at = COALESCE($87, t4_model_dequeued_at),
-			   t5_cred_enqueued_at  = COALESCE($88, t5_cred_enqueued_at),
-			   t6_cred_dequeued_at  = COALESCE($89, t6_cred_dequeued_at),
-			   t7_forward_start_at  = COALESCE($90, t7_forward_start_at),
-			   t8_response_start_at = COALESCE($91, t8_response_start_at),
-			   t9_response_end_at   = COALESCE($92, t9_response_end_at),
-			   discard_events       = COALESCE($93::text::jsonb, discard_events),
+			   t0_arrived_at        = COALESCE($82, t0_arrived_at),
+			   t1_total_enqueued_at = COALESCE($83, t1_total_enqueued_at),
+			   t2_total_dequeued_at = COALESCE($84, t2_total_dequeued_at),
+			   t3_model_enqueued_at = COALESCE($85, t3_model_enqueued_at),
+			   t4_model_dequeued_at = COALESCE($86, t4_model_dequeued_at),
+			   t5_cred_enqueued_at  = COALESCE($87, t5_cred_enqueued_at),
+			   t6_cred_dequeued_at  = COALESCE($88, t6_cred_dequeued_at),
+			   t7_forward_start_at  = COALESCE($89, t7_forward_start_at),
+			   t8_response_start_at = COALESCE($90, t8_response_start_at),
+			   t9_response_end_at   = COALESCE($91, t9_response_end_at),
+			   discard_events       = COALESCE($92::text::jsonb, discard_events),
 			   -- 2026-08-22: completion UPDATE must carry routing + attachments
 			   -- (+ canonical refresh). Same class as t0..t9 gap — emitTelemetry
 			   -- sets these on reqLog then EmitRequestLogUpdate.
-			   canonical_model      = COALESCE($94, canonical_model),
+			   canonical_model      = COALESCE($93, canonical_model),
 			   routing_attempts     = CASE
-			       WHEN $95::text IS NOT NULL AND $95::text <> '' AND $95::text <> 'null'
-			       THEN $95::text::jsonb
+			       WHEN $94::text IS NOT NULL AND $94::text <> '' AND $94::text <> 'null'
+			       THEN $94::text::jsonb
 			       ELSE routing_attempts
 			   END,
-			   routing_summary      = COALESCE($96, routing_summary),
+			   routing_summary      = COALESCE($95, routing_summary),
 			   attachments          = CASE
-			       WHEN $97::text IS NOT NULL AND $97::text <> '' AND $97::text <> 'null'
-			       THEN $97::text::jsonb
+			       WHEN $96::text IS NOT NULL AND $96::text <> '' AND $96::text <> 'null'
+			       THEN $96::text::jsonb
 			       ELSE attachments
 			   END
 		   WHERE request_id = $1
@@ -1892,8 +1954,14 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		string(jsonOrNull(entry.CompressionMeta)),
 		// 2026-08-19: token-band observability.
 		entry.TokenBand,
-		// v3 (2026-06-19) T23: session-level outbound body payload.
-		string(jsonOrNull(entry.OutboundBody)),
+		// 2026-08-24 Phase 1: outbound_body is removed from the main table UPDATE
+		// bind list. The dedicated request_logs_bodies_hot table is the sole
+		// outbound_body store; outbound_body is written via
+		// upsertRequestLogBodies below (same transaction). This re-aligns the
+		// placeholders: what was previously $60 (outbound_body) is now removed,
+		// and outbound_msg_count / outbound_token_est / outbound_msg_hashes
+		// (below) shift to $60/$61/$62. Subsequent placeholders (quality_flags
+		// → $63 etc.) are also shifted by -1.
 		entry.OutboundMsgCount,
 		entry.OutboundTokenEst,
 		string(jsonOrNull(entry.OutboundMsgHashes)),
@@ -1966,7 +2034,11 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		return c.insertRequestLog(&fallback)
 	}
 
-	if err = c.upsertRequestLogBodies(ctx, tx, entry.RequestID, strPtrToJSON(entry.RequestBody), strPtrToJSON(entry.ResponseBody)); err != nil {
+	if err = c.upsertRequestLogBodies(ctx, tx, entry.RequestID, entry.TenantID,
+		strPtrToJSON(entry.RequestBody),
+		strPtrToJSON(entry.ResponseBody),
+		jsonOrNull(entry.OutboundBody),
+	); err != nil {
 		return err
 	}
 
@@ -2056,7 +2128,82 @@ func shouldClaimFinalSuccess(entry *RequestLogEntry) bool {
 //     claim skipped with a warning, row degrades to an unmarked success that
 //     sql/scripts/report_duplicate_session_success.sql can report for manual
 //     backfill.
+
+// heapRequestLogsPartitionsCachedTTL — heap 月度分区名缓存有效期. 5 分钟
+// 即可 (月份切换罕见, partition manager 每月触发).
+const heapRequestLogsPartitionsCachedTTL = 5 * time.Minute
+
+// heapRequestLogsPartitions 返回 pg_class.relam='h' 的 request_logs_<YYYY>_<MM>
+// 月度分区名列表. 缓存 5 分钟. 查询失败返回上次缓存 (可能为 nil) + 不报错.
+// 缓存不存在时执行查询; 查询失败返回 (nil, err), 调用方 fallback 跳过守卫.
+func (c *Client) heapRequestLogsPartitions(ctx context.Context, tx pgx.Tx) []string {
+	c.heapPartitionsMu.RLock()
+	cached := c.heapPartitions
+	cachedAt := c.heapPartitionsCachedAt
+	c.heapPartitionsMu.RUnlock()
+	if len(cached) > 0 && time.Since(cachedAt) < heapRequestLogsPartitionsCachedTTL {
+		return cached
+	}
+	// 选用调用者传入的 tx (与 claim 在同一事务内, 读到一致快照);
+	// tx==nil (历史旧 caller) 时退化为不用缓存.
+	var names []string
+	rows, qerr := tx.Query(ctx, `
+		SELECT c.relname
+		  FROM pg_inherits i
+		  JOIN pg_class p ON p.oid = i.inhparent
+		  JOIN pg_class c ON c.oid = i.inhrelid
+		  JOIN pg_am am ON am.oid = c.relam
+		 WHERE p.relname = 'request_logs'
+		   AND am.amname = 'heap'
+		 ORDER BY c.relname`)
+	if qerr != nil {
+		// 查询失败不阻塞 claim: 返回上次缓存 (可能空) + 记 warn.
+		slog.Warn("heap partitions cache query failed, using stale or nil",
+			"error", qerr)
+		return cached
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err == nil {
+			names = append(names, n)
+		}
+	}
+	if err := rows.Err(); err == nil && names != nil {
+		c.heapPartitionsMu.Lock()
+		c.heapPartitions = names
+		c.heapPartitionsCachedAt = time.Now()
+		c.heapPartitionsMu.Unlock()
+		return names
+	}
+	return cached
+}
+
 func claimSessionFinalSuccess(ctx context.Context, tx pgx.Tx, requestID string) {
+	// 2026-08-25: 列存分区安全. 旧实现直接 `FROM request_logs promoted` 半连接,
+	// 在 columnar 分区上会触发 0A000 (CTID scan over columnar). 改为只在
+	// pg_class.relam='h' 的 request_logs_<year>_<month> 月度分区里查, columnar
+	// 月份自动跳过. 没有 heap 月份时降级为跳过 (依赖 hot 唯一索引 + 8h 保留 +
+	// sql/scripts/report_duplicate_session_success.sql 兜底).
+	//
+	// 单调用上下文拿不到 Client 实例, 用一个包级 holder (loadClientForClaim)
+	// 拿到 *Client. 这条路径仅 claim 调用, holder 仅设一次 (cmd/gateway/main.go
+	// 创建 Client 后调用 SetClaimClient); 拿不到时按 0 个 heap 分区处理.
+	c := loadClientForClaim()
+	if c == nil {
+		// 没有 Client (单测 / 无 DB), 用保守 SQL (不含 columnar 关联)
+		claimSessionFinalSuccessExec(ctx, tx, requestID, nil)
+		return
+	}
+	heaps := c.heapRequestLogsPartitions(ctx, tx)
+	claimSessionFinalSuccessExec(ctx, tx, requestID, heaps)
+}
+
+// claimSessionFinalSuccessExec is the actual implementation. heapPartitions
+// is the snapshot of pg_class.relam='h' request_logs_* partitions (already
+// quoted/identified); nil/empty means "skip the promoted-partition guard
+// entirely" (single-test path or transient cache failure).
+func claimSessionFinalSuccessExec(ctx context.Context, tx pgx.Tx, requestID string, heapPartitions []string) {
 	if tx == nil || requestID == "" {
 		return
 	}
@@ -2067,6 +2214,39 @@ func claimSessionFinalSuccess(ctx context.Context, tx pgx.Tx, requestID string) 
 			"request_id", requestID, "error", err)
 		return
 	}
+
+	// 拼装 promoted-partition NOT EXISTS 子查询.
+	// 没有 heap 分区时退化 (依赖 hot 唯一索引 + 8h 保留 + 报告脚本兜底):
+	//   - hot 表唯一索引 uq_request_logs_hot_final_success_session 是硬保证
+	//     (23505 兜底并发双写);
+	//   - hot 保留窗口 8h (lifecycle.hot_retention_hours) + promote 周期 1h;
+	//     超 8h 的 session 早结束, 不可能再被并发 claim.
+	var promotedGuard string
+	if len(heapPartitions) > 0 {
+		// UNION ALL 多个 heap 分区. regclass::text 走类型校验避免注入.
+		parts := make([]string, 0, len(heapPartitions))
+		for _, p := range heapPartitions {
+			// 白名单: request_logs_<4digits>_<2digits>; 不合规直接跳过
+			if !heapPartitionNameRE.MatchString(p) {
+				continue
+			}
+			parts = append(parts,
+				fmt.Sprintf(`SELECT gw_session_id, is_final_success FROM ONLY %s WHERE is_final_success`, quoteIdent(p)))
+		}
+		if len(parts) > 0 {
+			promotedGuard = "  AND NOT EXISTS (\n" +
+				"       SELECT 1 FROM (\n           " +
+				strings.Join(parts, "\n           UNION ALL\n           ") +
+				"\n       ) promoted\n" +
+				"        WHERE promoted.gw_session_id = request_logs_hot.gw_session_id\n" +
+				"  )"
+		}
+	}
+	if promotedGuard == "" {
+		slog.Debug("final-success claim: no heap monthly partitions cached, skipping promoted-partition guard",
+			"request_id", requestID)
+	}
+
 	tag, err := tx.Exec(ctx, `
 		UPDATE request_logs_hot
 		   SET is_final_success = TRUE
@@ -2080,13 +2260,7 @@ func claimSessionFinalSuccess(ctx context.Context, tx pgx.Tx, requestID string) 
 		         WHERE other.gw_session_id = request_logs_hot.gw_session_id
 		           AND other.is_final_success
 		           AND other.request_id <> request_logs_hot.request_id
-		   )
-		   AND NOT EXISTS (
-		        SELECT 1
-		          FROM request_logs promoted
-		         WHERE promoted.gw_session_id = request_logs_hot.gw_session_id
-		           AND promoted.is_final_success
-		   )
+		   )`+promotedGuard+`
 	`, requestID)
 	if err != nil {
 		_, rbErr := tx.Exec(ctx, `ROLLBACK TO SAVEPOINT gw_final_success_claim`)
@@ -2116,17 +2290,23 @@ func claimSessionFinalSuccess(ctx context.Context, tx pgx.Tx, requestID string) 
 	_, _ = tx.Exec(ctx, `RELEASE SAVEPOINT gw_final_success_claim`)
 }
 
-// upsertRequestLogBodies writes request/response body to request_logs_bodies_hot.
-// Uses a single INSERT ... ON CONFLICT DO UPDATE (migration 455 gave the hot table
-// UNIQUE(request_id)). The previous triple-UPDATE/INSERT/UPDATE pattern had two
-// problems:
+// upsertRequestLogBodies writes request/response/outbound bodies to
+// request_logs_bodies_hot. Uses a single INSERT ... ON CONFLICT DO UPDATE
+// (migration 455 gave the hot table UNIQUE(request_id)). The previous
+// triple-UPDATE/INSERT/UPDATE pattern had two problems:
 //  1. First UPDATE was dead code — the row doesn't exist yet in request_logs_bodies_hot.
 //  2. Third UPDATE was redundant — step 2 (INSERT) already created the row.
-func (c *Client) upsertRequestLogBodies(ctx context.Context, tx pgx.Tx, requestID, requestBodyJSON, responseBodyJSON string) error {
+//
+// 2026-08-24 Phase 1: outbound_body is now also written here. The main
+// request_logs_hot row keeps all three body columns NULL; readers that need
+// full bodies join through admin/body_resolver.go which falls back to the
+// dedicated body table.
+func (c *Client) upsertRequestLogBodies(ctx context.Context, tx pgx.Tx, requestID, tenantID, requestBodyJSON, responseBodyJSON, outboundBodyJSON string) error {
 	// Keep missing bodies as NULL so metadata-only updates cannot erase a body
 	// captured by the initial or successful request-log write.
 	reqJSON := requestBodyJSON
 	respJSON := responseBodyJSON
+	outJSON := outboundBodyJSON
 	// CO-5 compatibility: existing digest envelopes remain readable, but new
 	// request and response bodies retain their complete JSON payloads. This
 	// avoids discarding stream evidence before downstream audit consumers read it.
@@ -2138,14 +2318,20 @@ func (c *Client) upsertRequestLogBodies(ctx context.Context, tx pgx.Tx, requestI
 	// unique key to UNIQUE(request_id); ON CONFLICT must be (request_id), NOT
 	// (request_id, ts) — the composite form triggers 42P10 at runtime.
 	// The UPDATE clause only replaces a body when this write supplied one.
+	// 2026-08-24 Phase 1: tenant_id is written here directly so admin/data
+	// lifecycle cleanup can target a tenant's bodies without joining the main
+	// table per row. tenant_id is captured first-write-wins (mirrors the
+	// request_logs_hot.tenant_id contract).
 	_, err := tx.Exec(ctx, `
-		INSERT INTO request_logs_bodies_hot (request_id, ts, request_body, response_body)
-		VALUES ($1, now(), NULLIF($2, 'null')::jsonb, NULLIF($3, 'null')::jsonb)
+		INSERT INTO request_logs_bodies_hot (request_id, ts, tenant_id, request_body, response_body, outbound_body)
+		VALUES ($1, now(), NULLIF($2, ''), NULLIF($3, 'null')::jsonb, NULLIF($4, 'null')::jsonb, NULLIF($5, 'null')::jsonb)
 		ON CONFLICT (request_id) DO UPDATE
-			SET request_body = COALESCE(EXCLUDED.request_body, request_logs_bodies_hot.request_body),
-				    response_body = COALESCE(EXCLUDED.response_body, request_logs_bodies_hot.response_body),
-				    ts = EXCLUDED.ts
-	`, requestID, reqJSON, respJSON)
+			SET tenant_id     = COALESCE(EXCLUDED.tenant_id, request_logs_bodies_hot.tenant_id),
+			    request_body  = COALESCE(EXCLUDED.request_body, request_logs_bodies_hot.request_body),
+			    response_body = COALESCE(EXCLUDED.response_body, request_logs_bodies_hot.response_body),
+			    outbound_body = COALESCE(EXCLUDED.outbound_body, request_logs_bodies_hot.outbound_body),
+			    ts            = EXCLUDED.ts
+	`, requestID, tenantID, reqJSON, respJSON, outJSON)
 	return err
 }
 

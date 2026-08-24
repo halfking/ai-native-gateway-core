@@ -1,8 +1,8 @@
 {
-  "version": "2.4.7-aface2d6-20260824-1727",
+  "version": "2.4.7-halfking-20260825-0031-fixcol",
   "git_tag": "2.4.7",
-  "git_sha": "aface2d6",
-  "build_seq": 1727,
-  "build_date": "20260824",
+  "git_sha": "9f5acc53e",
+  "build_seq": 1731,
+  "build_date": "20260825",
   "module": "llm-gateway-go"
 }
