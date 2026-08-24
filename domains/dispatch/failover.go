@@ -107,6 +107,9 @@ func (p *Pipeline) move(qr *QueuedRequest, out ForwardOutcome) {
 			SwitchReason:     "cred_switch",
 		})
 		if p.tryEnqueueCred(ref, qr) {
+			if qr.OnNodeSwitchSummary != nil && isQuotaErrorKind(out.ErrorKind) {
+				qr.OnNodeSwitchSummary("upstream node quota exhausted; switching to the next available node")
+			}
 			return
 		}
 		qr.markTriedCredential(ref.CredentialID)
@@ -117,6 +120,15 @@ func (p *Pipeline) move(qr *QueuedRequest, out ForwardOutcome) {
 		"request_id", qr.ID, "model", qr.ResolvedModel,
 		"tried_creds", len(qr.TriedCredentials))
 	p.tryModelChangeOutcome(qr, out)
+}
+
+func isQuotaErrorKind(errorKind string) bool {
+	switch errorKind {
+	case "quota", "quota_balance", "quota_periodic", "quota_permanent", "quota_exhausted":
+		return true
+	default:
+		return false
+	}
 }
 
 // scheduleSameCredRetry emits the retry_scheduled journey event and either

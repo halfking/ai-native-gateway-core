@@ -114,6 +114,11 @@ type QueuedRequest struct {
 	// current attempt. Set before enqueueing into a Tier-2 credential queue.
 	SelectedCred CredentialRef
 
+	// OnNodeSwitchSummary reports a provider-neutral failover summary to the
+	// request's transport. It is called only after a sibling credential has
+	// been selected and successfully re-enqueued.
+	OnNodeSwitchSummary func(message string)
+
 	// ResultCh signals completion to the Submit caller. Capacity 1; sent on
 	// exactly once (guarded by the completed atomic).
 	ResultCh chan ForwardOutcome
