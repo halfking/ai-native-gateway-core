@@ -34,7 +34,13 @@ const DefaultPromoteInterval = 1 * time.Hour
 //     partitions on the promote scheduler;
 //   - model_probe_runs_hot is an exception as of 2026-07-14: it no longer
 //     promotes and is cleaned by direct TTL DELETE.
-const DefaultRetentionWindow = 24 * time.Hour
+//
+// 2026-08-25: default hot window tightened 24h → 8h per the v6 storage
+// architecture (docs/架构优化v6/02 D28): hot tables are an 8h mutable
+// landing zone; update/delete only happens there, and the promote scheduler
+// batches rows into monthly columnar partitions. Operators can still
+// override via lifecycle.hot_retention_hours.
+const DefaultRetentionWindow = 8 * time.Hour
 
 // promoteBatchSize is the per-call LIMIT inside each promote_xxx_batch
 // CTE. Keeps per-tx memory bounded so a backlog cannot OOM the gateway.

@@ -11,6 +11,10 @@ import (
 // 数组按 dense id 索引；饱和计数与秒级截断换密度与速度，
 // 精确遥测不在此层重复（URSM 窗口 ZSET + journey 全量）。
 type NodeStatsSlot struct {
+	// LastUsedUnixSec is 32-bit by packed-layout contract (word0). It wraps
+	// in 2038; readers comparing against int64 (e.g. probe_candidates.go)
+	// must sign-extend via int64(slot.LastUsedUnixSec) — widening requires
+	// a word re-layout tracked in docs/架构优化v6/02 (D32).
 	LastUsedUnixSec int32  // 最后请求时间（秒级截断）
 	Succ1h          uint16 // 1h 成功次数（饱和计数）
 	Fail1h          uint16 // 1h 失败次数（饱和计数）

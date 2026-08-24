@@ -270,3 +270,42 @@ V6-W0 ──► V6-W1 ──► V6-W2 ──► V6-W3 ──► V6-W4 ──► 
 | P2.2 Provider catalog + active strategy | V6-W4-W8 |
 | P2.3 Compression stage | V6-W4（带 Lite/Caveman/RTK 阶段） |
 | P2.4 MCP → A2A → Fusion | V6-W4 |
+
+---
+
+## 10. 增补波次任务（2026-08-25 四向审计，D28–D34）
+
+> 来源：四路子代理审计（存储闭环 / 内存 / 上传·溢出·网络 / 前端一致性），证据与现状见 [`02-code-vs-design-deltas.md` §8](02-code-vs-design-deltas.md)。已修复项标注"✅ 已修（本轮）"，其余映射到既有波次执行。
+
+### 10.1 V6-W1 增补（契约 / 正确性）
+
+| # | 任务 | 允许文件 | 验收 |
+|---|---|---|---|
+| W1-9 (D29, LP4) | 删 Pipeline 侧 waterfall ring，projection 收样转移所有权免 clone | `domains/dispatch/pipeline.go`、`waterfall.go`、`queue_projection.go` | 快照基准对比（41.9µs/111KB 基线）不回退；`go test -race ./domains/dispatch` 绿 |
+| W1-10 (D29) | SnapshotWaterfall 去嵌套 Snapshot：锁内直建 lanes，消除读路径 `sourceVersion.Add(1)` 副作用 | `queue_projection.go` | 快照排序测试不变；基准分配数下降 |
+| W1-11 (D29) | V1 会话 L1 缓存降容或加开关（V2 切换期双缓存并存） | `cmd/gateway/main.go` | 内存占用可观测下降；cutover 语义不变 |
+
+### 10.2 V6-W2 增补（编排 / 持久化 / 前端）
+
+| # | 任务 | 允许文件 | 验收 |
+|---|---|---|---|
+| W2-8 (D28) | Apply LP1：drop `request_logs_hot`（及父表）3 个 body jsonb 列 | 新增 startup migration；`scripts/check-body-storage-schema.sh` | 审计脚本 exit 0；写入路径回归；hot 表体积下降 |
+| W2-9 (D28) | `dashboard_access_events_hot`/`session_module_executions_hot` 补 Go promote worker（注册 `promoteSpecs`） | `bg/partition_manager.go`、对应 SQL | 两表数据 8h 内进分区；✅ 已修（本轮）：默认保留 24h→8h |
+| W2-10 (D28) | titlestore 写入迁离分区表 `sessions`；重评 startup/562（更新/删除收敛 hot 后分区恢复 columnar） | `internal/titlestore/store.go`、`sql/migrations/startup/` | 分区表零 UPDATE/DELETE（`columnar_drift_report` 持续绿） |
+| W2-11 (D30) | sessionv2mirror backlog 缩容为 RequestID+错误摘要；live_stream label map 加失效 | `internal/sessionv2mirror/backlog.go`、`admin/live_stream_sse.go` | V2 长故障内存有界；✅ 已修（本轮）：follow-up 计数器惰性清扫 + summaryCache Store 清扫 |
+| W2-12 (D31) | pricing/feishu 导入 dry-run + 审计记录 + 失败清单；孤儿附件/`.tmp-*` 清理接线 bg；删 `GenerateUploadToken` 死代码 | `admin/pricing.go`、`feishu_handlers.go`、`domains/attachments/`、`bg/` | 导入可回滚（快照表）；磁盘占用有界；✅ 已修（本轮）：两导入端点 MaxBytesReader 16MiB |
+| W2-13 (D34, 前端专项) | 抽 `DetailDrawer.vue` 迁 9 个手写抽屉；`usePagination` + 统一空态/分页/徽章；推广 `resolveApiError`；菜单前缀收敛（`/routing-v2` vs `/routing/`） | `web/src/components/`、`views/`、`config/appNav.ts` | vitest + build 绿；组件数净减；**注意与他人 web WIP 协调（NodeDetailAvailabilityPanel.vue 在途）** |
+
+### 10.3 V6-W3 增补（安全 / 合规）
+
+| # | 任务 | 允许文件 | 验收 |
+|---|---|---|---|
+| W3-13 (D32) | nodestatecache word 布局重排：LastUsedUnixSec 相对秒或 64 位；全读者同步 | `domains/nodestatecache/stats.go`、`probe_candidates.go` | ✅ 已修（本轮）：attempt 位移 cap、NaN 判零、2 处契约注释；重排后 2038/45 天回绕消除 |
+| W3-14 (D33) | 通用流读 idle watchdog（chat/gemini 对齐 anthropic）；outbox 超时走配置；webcookie 流式拆 client；非流式 ReadAll 加 deadline+Limit | `upstream/`、`executors/`、`internal/outbox/` | 流式 stall 可检测回收；✅ 已修（本轮）：Gemini 入口 32MiB 上限 |
+| W3-15 (D34) | 前端 web-vitals（FCP/LCP）上报，复用 `errorReporter` 的 `/api/system/client-error` 通道 | `web/src/main.ts`、`utils/` | 看板可见 FCP/LCP P75 |
+
+### 10.4 依赖与顺序
+
+- W2-8（LP1）→ W2-10（562 重评）：先消除双写，再恢复 columnar。
+- W1-9/10（LP4）依赖既有 LP3 基准基准数据（`2026-08-24-session-queue-memory-optimization-plan.md`）。
+- W2-13 前端专项与在途 web WIP 协调后启动。

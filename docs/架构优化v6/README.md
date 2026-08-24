@@ -17,6 +17,7 @@
 1. **结构债**：`cmd/gateway/main.go` 6156 行 + `domains/streaming/handler.go` 8329 行 + `domains/streaming/executors/executor.go` 3342 行单点超大文件（2026-08-24 `wc -l` 快照，起草时为 6076/8266/3308，持续小幅增长）；`domains/credential*` 与顶层 `credentialhealth/`、`credentialfpslot/` 重叠职责；`autoroute/` 三套并行 scoring（`scoring.go` / `scoring_new.go` / `scoring_simplified.go`）。
 2. **正确性债**：retry budget 多层叠加（TPM/RPM 资源 acquire/release 分步、stream retry 与 survival 与 dispatch 重复累积 attempts）、session V2 仍是 shadow owner、Maintain/ASM RLS 仅声明、未实证 tenant GUC 缺省 fail-closed。
 3. **能力债**：MCP/A2A/Fusion 三个 "TARGET/PARTIAL" 协议在仓库里有目录但无完整 transport 与生产接线；OpenTelemetry GenAI semantic conventions、eBPF L7 观测、prompt 语义缓存、模型级联路由等 2024-2026 行业基线尚未落地。
+4. **运行闭环债**（2026-08-25 增补，D28–D34）：hot 表 8h 存储闭环未完全统一（LP1 未 apply、两张表无转移 worker、分区表残留写路径）；同一对象多处存储（双 waterfall 环、V1/V2 双缓存）；上传导入缺版本管理；打包位宽回绕（2038/45 天）；网络流读缺 stall watchdog；前端 9 套手写抽屉/97 处直接 ElMessage 与性能指标上报缺失。
 
 **v6 的策略**：分 6 波次（V6-W0 → V6-W5）从"门禁→拆分→契约→编排→协议→智能"逐层推进；每波次独立 commit、独立可回滚、独立证据；不动 v4 已冻结契约与生产 wiring。
 
@@ -27,7 +28,7 @@
 | # | 文档 | 主题 | 一句话目标 |
 |---|---|---|---|
 | 01 | [`01-core-value-and-positioning.md`](01-core-value-and-positioning.md) | 核心价值与定位 | 把"为什么这是企业级网关，不是另一个 LiteLLM"讲清楚，并给出对外不可替代的 6 项能力。 |
-| 02 | [`02-code-vs-design-deltas.md`](02-code-vs-design-deltas.md) | 设计 vs 代码对照 | 列出 27 处文档承诺但代码未到位的差距（D1–D27；起草时先识别 18 项，复审扩展 9 项），给出每个差距的状态标记与回归证据要求。 |
+| 02 | [`02-code-vs-design-deltas.md`](02-code-vs-design-deltas.md) | 设计 vs 代码对照 | 列出 34 处文档承诺但代码未到位的差距（D1–D27 起草与复审；2026-08-25 四向审计增补 D28–D34：存储闭环/内存/健壮性/前端一致性），给出每个差距的状态标记与回归证据要求。 |
 | 03 | [`03-roadmap-v6-waves.md`](03-roadmap-v6-waves.md) | v6 路线图 | V6-W0 ~ V6-W5 六波次拆分，每波次目标 / 允许文件 / 退出条件 / 风险等级。 |
 | 04 | [`04-hot-ideas-and-divergent-suggestions.md`](04-hot-ideas-and-divergent-suggestions.md) | 网上热门思路 + 发散 | 引入 MCP/A2A fusion、eBPF L7、OTel GenAI semantic conventions、semantic cache、cascade router 等行业基线；并列出 8 项发散型尝试。 |
 | 05 | [`05-self-check-and-metrics.md`](05-self-check-and-metrics.md) | 自检与指标 | 把"完成"定义成可观测事实：HTTP 200 不算完成，给出 12 个 SLO 与对应面板/告警。 |

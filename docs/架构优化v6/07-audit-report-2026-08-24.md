@@ -88,6 +88,8 @@ go test ./domains/streaming/executors -run 'Router|Dispatch|NodeState|Cooling' -
 
 ## 4. 未解决项（移交后续，见 handoff）
 
+> 2026-08-25 增补：四向审计（存储闭环/内存/健壮性/前端）新增差距 D28–D34 与波次任务，见 [`02-code-vs-design-deltas.md` §8](02-code-vs-design-deltas.md) 与 [`03-roadmap-v6-waves.md` §10](03-roadmap-v6-waves.md)；hot 保留默认已改 8h（本轮提交）。
+
 1. **NodeState tenant-aware 迁移**：`llmgw:cred_fp_node:{cred}:{model}` 无租户维度；legacy/canary 回退共享健康状态。需版本化 key（如 v2 带 tenant）+ 双读写 + Router/Recorder/Admin/LiveStream 全调用方同步，独立立项。
 2. **Maintain/ASM 真实 PG RLS 矩阵**（02/D13）：FORCE RLS、NOBYPASSRLS role、`app.current_tenant` GUC、跨租户 negative test 均未实证。
 3. **PII 端到端**（02/D12）：Presidio sidecar、SDPStreamSanitizer、zh_pii_rules、2 周 observe FPR/FNR 未落地。
