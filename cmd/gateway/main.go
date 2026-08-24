@@ -5557,6 +5557,10 @@ func main() {
 		adminHandler.RegisterProbeDashboardRoutes(mux, wrapAdmin)
 		slog.Info("Phase 3.8 probe health dashboard API enabled (/api/admin/probe/*)")
 
+		// 2026-08-24: Model status page — 24h traffic availability (Statuspage-style)
+		adminHandler.RegisterModelStatusRoutes(mux, wrapAdmin)
+		slog.Info("model status API enabled (/api/admin/model-status)")
+
 		// Phase 3.9 (2026-07-02, Task D2): Approval Request Query API
 		// Provides REST API for querying, approving, and rejecting approval requests
 		// with statistics support. Complements the existing admin approval handlers.
