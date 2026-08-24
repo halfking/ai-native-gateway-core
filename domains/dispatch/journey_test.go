@@ -239,12 +239,14 @@ func TestJourneyNodeAndModelSwitches(t *testing.T) {
 		}}
 		p := journeyPipeline(t, recorder, refs, func(_ context.Context, _ *QueuedRequest, cred CredentialRef) ForwardOutcome {
 			if cred.CredentialID == 11 {
-				return ForwardOutcome{Err: errors.New("node unavailable"), ErrorKind: "node_unavailable"}
+				return ForwardOutcome{Err: errors.New("quota exhausted"), ErrorKind: "quota_exhausted"}
 			}
 			return ForwardOutcome{Result: "ok"}
 		}, false)
 		qr := newJourneyRequest("journey-node-switch", "m1")
 		qr.RetryPerCredential = 0
+		var summaries []string
+		qr.OnNodeSwitchSummary = func(message string) { summaries = append(summaries, message) }
 		if _, err := p.Submit(context.Background(), qr); err != nil {
 			t.Fatalf("Submit: %v", err)
 		}
@@ -258,6 +260,9 @@ func TestJourneyNodeAndModelSwitches(t *testing.T) {
 		}
 		if switched == nil || switched.FromCredentialID != 11 || switched.ToCredentialID != 12 || switched.SwitchReason != "cred_switch" {
 			t.Fatalf("node switch event = %+v", switched)
+		}
+		if len(summaries) != 1 || summaries[0] != "upstream node quota exhausted; switching to the next available node" {
+			t.Fatalf("node switch summaries = %v", summaries)
 		}
 	})
 
@@ -296,6 +301,23 @@ func TestJourneyNodeAndModelSwitches(t *testing.T) {
 			t.Fatalf("model attempt waterfall = %+v", attempts)
 		}
 	})
+}
+
+func TestJourneyTerminalQuotaDoesNotEmitSwitchSummary(t *testing.T) {
+	recorder := &journeyRecorder{}
+	p := journeyPipeline(t, recorder, map[string][]CredentialRef{"m1": {journeyCredential(11, 101, "vendor-a")}}, func(context.Context, *QueuedRequest, CredentialRef) ForwardOutcome {
+		return ForwardOutcome{Err: errors.New("quota exhausted"), ErrorKind: "quota_exhausted", HTTPStatus: 429}
+	}, false)
+	qr := newJourneyRequest("journey-terminal-quota", "m1")
+	qr.RetryPerCredential = 0
+	var summaries []string
+	qr.OnNodeSwitchSummary = func(message string) { summaries = append(summaries, message) }
+	if _, err := p.Submit(context.Background(), qr); err == nil {
+		t.Fatal("Submit succeeded, want terminal quota failure")
+	}
+	if len(summaries) != 0 {
+		t.Fatalf("terminal quota failure emitted switch summary: %v", summaries)
+	}
 }
 
 func TestJourneyTerminalFailurePreservesDiagnostics(t *testing.T) {

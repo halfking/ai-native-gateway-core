@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Credential model drawer extras: IQ history chart + cross-credential check restored into `ModelOfferExtrasPanel`; identity chips deep-link to `/models?q=`.
 
 ### Fixed
+- **额度耗尽节点透明切换（2026-08-24）**：MiniMax Token Plan 等供应商额度耗尽时，后端跳过同凭据重试并切换到下一个可用节点；仅通过 `think` 摘要通知流式客户端，所有候选耗尽后才返回错误，不透传供应商额度原文。
 - **Dispatch enqueue lifecycle ordering (2026-08-24)**: credential-forwarder handoff now waits for `node_enqueued` to be published before emitting `node_selected`; this prevents SSE/live-action sequence inversions under immediate channel scheduling while keeping governor waits and upstream I/O outside the handoff lock.
 - **Release metadata alignment (2026-08-24)**: updated `VERSION`, `version.json`, and `web/public/version.json` to the merged `deeea11a` source and build `1718`; deployment builds retain the domestic Go proxy settings without forcing an incompatible local toolchain.
 - **Go vulnerability remediation and dispatch mirror ordering (2026-08-24)**: upgraded `grpc` to 1.82.1, `x/text` to 0.39.0, and `quic-go` to 0.59.1; pinned the Go toolchain to 1.26.6; moved dispatch resource release before terminal result delivery so queue mirror `inflight=0` is observable before `Submit` returns; added the unified GitHub Actions verification workflow.

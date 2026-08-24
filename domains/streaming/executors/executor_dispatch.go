@@ -317,6 +317,7 @@ func (e *Executor) executeViaDispatch(
 	qr.EstimatedTokens = estimatePromptTokens(params)
 	qr.AllowModelChange = params.DispatchAllowModelChange
 	qr.AllowProviderChange = params.DispatchAllowProviderChange
+	qr.OnNodeSwitchSummary = params.OnNodeJump
 	qr.RetryPerCredential = dispatch.MaxNodeFailures - 1
 	qr.ModelAlternatives = append([]string(nil), params.DispatchModelAlternatives...)
 
