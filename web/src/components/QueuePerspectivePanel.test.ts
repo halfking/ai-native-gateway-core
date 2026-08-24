@@ -5,7 +5,7 @@ import QueuePerspectivePanel from './QueuePerspectivePanel.vue'
 import NodeDetailDrawer from './NodeDetailDrawer.vue'
 import { __testing, liveStreamState } from '../composables/liveStreamStore'
 import { ApiError } from '../api/_core'
-import { readLiveStreamPreferences, liveStreamPreferencesStorageKey } from '../composables/liveStreamPreferences'
+import { _resetPersistState, flushPersist, liveStreamPreferencesStorageKey, readLiveStreamPreferences } from '../composables/liveStreamPreferences'
 
 const { getFeatured, resolveRouting, reorderCandidateBindings, getSlidingWindow, getSlidingWindowBatch, superAdmin, mockedStore } = vi.hoisted(() => ({
   getFeatured: vi.fn(),
@@ -77,6 +77,7 @@ function mountPanel() {
 describe('QueuePerspectivePanel', () => {
   beforeEach(() => {
     localStorage.clear()
+    _resetPersistState()
     liveStreamState.queue = {
       enabled: true,
       wired: true,
