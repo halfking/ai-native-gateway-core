@@ -118,8 +118,8 @@ type Client struct {
 	// 这里缓存 pg_class.relam='h' 的 request_logs_* 月度分区名, 每 5 分钟
 	// 刷新, claim 时动态拼装 NOT EXISTS 的 FROM 列表, 只查 heap 分区.
 	// 没有 heap 月份分区时退化为跳过 (依赖 hot 表 8h 保留窗口 + 唯一索引兜底).
-	heapPartitionsMu      sync.RWMutex
-	heapPartitions        []string
+	heapPartitionsMu       sync.RWMutex
+	heapPartitions         []string
 	heapPartitionsCachedAt time.Time
 }
 
@@ -898,8 +898,21 @@ func (c *Client) persistRequestLog(entry *RequestLogEntry) error {
 				h(entry)
 			}(hook)
 		}
+		entry.releaseBodies()
 	}
 	return err
+}
+
+// releaseBodies drops the three largest telemetry payloads only after their
+// transaction committed and every synchronous persisted hook consumed entry.
+// Failed and degraded writes retain bodies so the fallback writer can retry.
+func (entry *RequestLogEntry) releaseBodies() {
+	if entry == nil {
+		return
+	}
+	entry.RequestBody = nil
+	entry.ResponseBody = nil
+	entry.OutboundBody = nil
 }
 
 func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
@@ -1152,8 +1165,6 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 			request_preview = EXCLUDED.request_preview,
 			transform_summary = EXCLUDED.transform_summary,
 			response_preview = EXCLUDED.response_preview,
-			request_body = EXCLUDED.request_body,
-			response_body = EXCLUDED.response_body,
 			stream_first_chunk_ms = EXCLUDED.stream_first_chunk_ms,
 			stream_chunk_count = EXCLUDED.stream_chunk_count,
 			stream_done_received = EXCLUDED.stream_done_received,
@@ -1436,7 +1447,7 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 	// 2026-08-24 Phase 1 body storage optimization: outbound_body now also
 	// routes to request_logs_bodies_hot (dedup) — main table keeps NULL for
 	// all three body columns. The hot table is the sole full-body write path.
-	err = c.upsertRequestLogBodies(ctx, tx, entry.RequestID, entry.TenantID,
+	err = c.upsertRequestLogBodies(ctx, tx, entry.RequestID, entry.TenantID, stringValue(entry.ApplicationCode),
 		strPtrToJSON(entry.RequestBody),
 		strPtrToJSON(entry.ResponseBody),
 		jsonOrNull(entry.OutboundBody),
@@ -2034,7 +2045,7 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		return c.insertRequestLog(&fallback)
 	}
 
-	if err = c.upsertRequestLogBodies(ctx, tx, entry.RequestID, entry.TenantID,
+	if err = c.upsertRequestLogBodies(ctx, tx, entry.RequestID, entry.TenantID, stringValue(entry.ApplicationCode),
 		strPtrToJSON(entry.RequestBody),
 		strPtrToJSON(entry.ResponseBody),
 		jsonOrNull(entry.OutboundBody),
@@ -2301,7 +2312,7 @@ func claimSessionFinalSuccessExec(ctx context.Context, tx pgx.Tx, requestID stri
 // request_logs_hot row keeps all three body columns NULL; readers that need
 // full bodies join through admin/body_resolver.go which falls back to the
 // dedicated body table.
-func (c *Client) upsertRequestLogBodies(ctx context.Context, tx pgx.Tx, requestID, tenantID, requestBodyJSON, responseBodyJSON, outboundBodyJSON string) error {
+func (c *Client) upsertRequestLogBodies(ctx context.Context, tx pgx.Tx, requestID, tenantID, applicationCode, requestBodyJSON, responseBodyJSON, outboundBodyJSON string) error {
 	// Keep missing bodies as NULL so metadata-only updates cannot erase a body
 	// captured by the initial or successful request-log write.
 	reqJSON := requestBodyJSON
@@ -2310,9 +2321,10 @@ func (c *Client) upsertRequestLogBodies(ctx context.Context, tx pgx.Tx, requestI
 	// CO-5 compatibility: existing digest envelopes remain readable, but new
 	// request and response bodies retain their complete JSON payloads. This
 	// avoids discarding stream evidence before downstream audit consumers read it.
-	if requestBodiesSummaryEnabled() {
+	if requestBodiesSummaryEnabled(applicationCode) {
 		reqJSON = summarizeBodyJSON(reqJSON)
 		respJSON = summarizeBodyJSON(respJSON)
+		outJSON = summarizeBodyJSON(outJSON)
 	}
 	// Use now() as ts for the hot table. Migration 455 (2026-07-23) changed the
 	// unique key to UNIQUE(request_id); ON CONFLICT must be (request_id), NOT

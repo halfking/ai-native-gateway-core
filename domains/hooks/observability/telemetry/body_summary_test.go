@@ -88,6 +88,7 @@ func longBodyForSummary(tailMarker string) string {
 
 func withBodiesSummaryMode(t *testing.T, enabled bool) {
 	t.Helper()
+	t.Setenv("LLM_GATEWAY_BODY_DIGEST_CANARY_APPLICATIONS", "")
 	prev, hadPrev := requestBodiesSummaryEnabledFn()
 	setRequestBodiesSummaryEnabledForTest(func() bool { return enabled })
 	t.Cleanup(func() {
@@ -103,6 +104,7 @@ func withBodiesSummaryMode(t *testing.T, enabled bool) {
 // request_logs_bodies_hot instead of the full request/response body.
 func TestUpdateRequestLog_BodiesSummaryModeWritesDigest(t *testing.T) {
 	withBodiesSummaryMode(t, true)
+	t.Setenv("LLM_GATEWAY_BODY_DIGEST_CANARY_APPLICATIONS", "digest-canary")
 
 	requestBody := longBodyForSummary("REQ-TAIL-MARKER")
 	responseBody := longBodyForSummary("RESP-TAIL-MARKER")
@@ -136,12 +138,13 @@ func TestUpdateRequestLog_BodiesSummaryModeWritesDigest(t *testing.T) {
 
 	client := &Client{requestLogDB: mockDB}
 	err = client.updateRequestLog(&RequestLogEntry{
-		RequestID:     "req-summary-update",
-		Op:            RequestLogUpdate,
-		Success:       true,
-		RequestStatus: &status,
-		RequestBody:   &requestBody,
-		ResponseBody:  &responseBody,
+		RequestID:       "req-summary-update",
+		Op:              RequestLogUpdate,
+		Success:         true,
+		RequestStatus:   &status,
+		ApplicationCode: strptr("digest-canary"),
+		RequestBody:     &requestBody,
+		ResponseBody:    &responseBody,
 	})
 	require.NoError(t, err)
 	require.NoError(t, mockDB.ExpectationsWereMet())
@@ -248,6 +251,7 @@ func TestUpdateRequestLog_BodiesFullModeUnchanged(t *testing.T) {
 // body and the digest envelope could never shrink the row.
 func TestInsertRequestLog_BodiesSummaryModeWritesDigest(t *testing.T) {
 	withBodiesSummaryMode(t, true)
+	t.Setenv("LLM_GATEWAY_BODY_DIGEST_CANARY_APPLICATIONS", "digest-canary")
 
 	requestBody := longBodyForSummary("INSERT-REQ-TAIL")
 	responseBody := longBodyForSummary("INSERT-RESP-TAIL")
@@ -284,10 +288,11 @@ func TestInsertRequestLog_BodiesSummaryModeWritesDigest(t *testing.T) {
 
 	client := &Client{requestLogDB: mockDB}
 	err = client.insertRequestLog(&RequestLogEntry{
-		RequestID:    "req-summary-insert",
-		Op:           RequestLogInsert,
-		RequestBody:  &requestBody,
-		ResponseBody: &responseBody,
+		RequestID:       "req-summary-insert",
+		Op:              RequestLogInsert,
+		ApplicationCode: strptr("digest-canary"),
+		RequestBody:     &requestBody,
+		ResponseBody:    &responseBody,
 	})
 	require.NoError(t, err)
 	require.NoError(t, mockDB.ExpectationsWereMet())
@@ -377,6 +382,25 @@ func TestRequestBodiesSummaryEnabled_FlagCombination(t *testing.T) {
 	}
 }
 
+func TestRequestBodiesSummaryEnabled_ApplicationCanary(t *testing.T) {
+	withBodiesSummaryMode(t, true)
+
+	t.Run("empty allowlist keeps application writes full", func(t *testing.T) {
+		t.Setenv("LLM_GATEWAY_BODY_DIGEST_CANARY_APPLICATIONS", "")
+		require.False(t, requestBodiesSummaryEnabled("any-app"))
+	})
+
+	t.Run("non-canary application retains full body", func(t *testing.T) {
+		t.Setenv("LLM_GATEWAY_BODY_DIGEST_CANARY_APPLICATIONS", "canary-a, canary-b")
+		require.False(t, requestBodiesSummaryEnabled("ordinary-app"))
+	})
+
+	t.Run("canary application enables digest", func(t *testing.T) {
+		t.Setenv("LLM_GATEWAY_BODY_DIGEST_CANARY_APPLICATIONS", "canary-a, canary-b")
+		require.True(t, requestBodiesSummaryEnabled("canary-b"))
+	})
+}
+
 // TestUpdateRequestLog_BodiesSummaryModeKeepsEmptySemantics (CO-5): summary
 // mode must not alter the no-payload semantics of the bodies table — a nil
 // body stays "null" (SQL NULL) and an empty/invalid body stays "{}" — and a
@@ -400,6 +424,7 @@ func TestUpdateRequestLog_BodiesSummaryModeKeepsEmptySemantics(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			withBodiesSummaryMode(t, true)
+			t.Setenv("LLM_GATEWAY_BODY_DIGEST_CANARY_APPLICATIONS", "digest-canary")
 
 			mockDB, err := pgxmock.NewPool()
 			require.NoError(t, err)
@@ -430,12 +455,13 @@ func TestUpdateRequestLog_BodiesSummaryModeKeepsEmptySemantics(t *testing.T) {
 
 			client := &Client{requestLogDB: mockDB}
 			err = client.updateRequestLog(&RequestLogEntry{
-				RequestID:     "req-empty-semantics",
-				Op:            RequestLogUpdate,
-				Success:       true,
-				RequestStatus: &status,
-				RequestBody:   tc.requestBody,
-				ResponseBody:  nil,
+				RequestID:       "req-empty-semantics",
+				Op:              RequestLogUpdate,
+				Success:         true,
+				RequestStatus:   &status,
+				ApplicationCode: strptr("digest-canary"),
+				RequestBody:     tc.requestBody,
+				ResponseBody:    nil,
 			})
 			require.NoError(t, err)
 			require.NoError(t, mockDB.ExpectationsWereMet())

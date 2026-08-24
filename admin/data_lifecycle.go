@@ -204,14 +204,20 @@ func (h *Handler) handleDataLifecycleStats(w http.ResponseWriter, r *http.Reques
 	}
 
 	// 4. Growth trend (last 7 days)
+	// 2026-08-25 LP1 follow-up: migration 573 dropped request_logs.body columns.
+	// The "compressed" predicate now lives on the bodies view side (rb.outbound_body);
+	// we LEFT JOIN request_logs_bodies_with_current_month to keep the daily
+	// compressed count accurate without re-reading the dropped columns.
 	trendQuery := `
-		SELECT 
-			DATE(ts) AS day,
+		SELECT
+			DATE(rl.ts) AS day,
 			COUNT(*) AS requests,
-			COUNT(*) FILTER (WHERE outbound_body IS NOT NULL) AS compressed
-		FROM request_logs_with_current_month
-		WHERE ts > NOW() - INTERVAL '7 days'` + tenantFilter + `
-		GROUP BY DATE(ts)
+			COUNT(*) FILTER (WHERE rb.outbound_body IS NOT NULL) AS compressed
+		FROM request_logs_with_current_month rl
+		LEFT JOIN request_logs_bodies_with_current_month rb
+		  ON rb.request_id = rl.request_id
+		WHERE rl.ts > NOW() - INTERVAL '7 days'` + tenantFilter + `
+		GROUP BY DATE(rl.ts)
 		ORDER BY day DESC
 		LIMIT 7
 	`
