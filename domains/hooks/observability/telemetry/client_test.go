@@ -429,6 +429,76 @@ func TestMergeRequestLogEntry_PreservesBodiesOnEmptyUpdate(t *testing.T) {
 	}
 }
 
+func TestPersistRequestLog_ReleasesBodiesAfterPersistedHooks(t *testing.T) {
+	requestBody := `{"messages":[{"role":"user","content":"hello"}]}`
+	responseBody := `{"choices":[{"message":{"content":"hi"}}]}`
+	outboundBody := json.RawMessage(`{"messages":[{"role":"user","content":"hello"}]}`)
+	status := RequestStatusSuccess
+
+	mockDB, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mockDB.Close()
+
+	mockDB.ExpectBegin()
+	mockDB.ExpectExec(`UPDATE usage_ledger_hot`).
+		WithArgs("req-release", pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	mockDB.ExpectExec(`UPDATE request_logs_hot`).
+		WithArgs(requestLogUpdateArgs(RequestLogEntry{Success: true, RequestStatus: &status})...).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	mockDB.ExpectExec(`INSERT INTO request_logs_bodies_hot`).
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mockDB.ExpectCommit()
+
+	entry := &RequestLogEntry{
+		RequestID:     "req-release",
+		Op:            RequestLogUpdate,
+		Success:       true,
+		RequestStatus: &status,
+		RequestBody:   &requestBody,
+		ResponseBody:  &responseBody,
+		OutboundBody:  outboundBody,
+	}
+	client := &Client{requestLogDB: mockDB}
+	client.AddOnRequestLogPersisted(func(got *RequestLogEntry) {
+		require.Equal(t, requestBody, *got.RequestBody)
+		require.Equal(t, responseBody, *got.ResponseBody)
+		require.Equal(t, outboundBody, got.OutboundBody)
+	})
+
+	require.NoError(t, client.persistRequestLog(entry))
+	require.Nil(t, entry.RequestBody)
+	require.Nil(t, entry.ResponseBody)
+	require.Nil(t, entry.OutboundBody)
+	require.NoError(t, mockDB.ExpectationsWereMet())
+}
+
+func TestPersistRequestLog_KeepsBodiesWhenWriteFails(t *testing.T) {
+	requestBody := `{"messages":[{"role":"user","content":"hello"}]}`
+	responseBody := `{"choices":[{"message":{"content":"hi"}}]}`
+	outboundBody := json.RawMessage(`{"messages":[{"role":"user","content":"hello"}]}`)
+
+	mockDB, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mockDB.Close()
+
+	mockDB.ExpectBegin().WillReturnError(pgx.ErrTxClosed)
+	entry := &RequestLogEntry{
+		RequestID:    "req-retain",
+		RequestBody:  &requestBody,
+		ResponseBody: &responseBody,
+		OutboundBody: outboundBody,
+	}
+	client := &Client{requestLogDB: mockDB}
+
+	require.Error(t, client.persistRequestLog(entry))
+	require.Equal(t, requestBody, *entry.RequestBody)
+	require.Equal(t, responseBody, *entry.ResponseBody)
+	require.Equal(t, outboundBody, entry.OutboundBody)
+	require.NoError(t, mockDB.ExpectationsWereMet())
+}
+
 func TestMergeRequestLogEntry_PreservesClientPerceptionFields(t *testing.T) {
 	agentName := "zcode"
 	agentType := "ide-agent"

@@ -36,9 +36,13 @@
 -- ──────────────────────────────────
 -- - DROP COLUMN only on body columns; no other schema change.
 -- - Both request_logs_hot and request_logs (parent + partitions).
--- - view body reconstruction is two CREATE OR REPLACE statements, one
---   per view, atomic with the DROP COLUMN set inside a single
---   transaction (BEGIN; ... COMMIT;).
+-- - view reconstruction: DROP the two views whose definitions reference
+--   the body columns (request_logs_bodies_progress, the backfill
+--   progress view added by 328a, and request_logs_with_current_month),
+--   then CREATE request_logs_with_current_month back without the body
+--   projection. All inside one BEGIN/COMMIT. Rule 49 §9.1: PG's CREATE
+--   OR REPLACE VIEW may only APPEND trailing columns; it cannot REMOVE
+--   existing ones. We must DROP+CREATE to drop the body projection.
 -- - DOWN migration re-adds the columns as NULLABLE jsonb and restores the
 --   view projection. Existing rows that have NULL bodies remain NULL;
 --   this is a structural revert, not a data backfill (we never persisted
@@ -57,7 +61,20 @@
 BEGIN;
 
 -- ─── 1. Rebuild request_logs_with_current_month view (drop body projection) ───
-CREATE OR REPLACE VIEW public.request_logs_with_current_month AS
+-- Rule 49 §9.1: PG's CREATE OR REPLACE VIEW cannot remove columns. We must
+-- DROP + CREATE. We also DROP request_logs_bodies_progress (a 328a
+-- backfill-progress view whose definition reads request_logs.body) —
+-- after 573 its definition becomes a SQLSTATE 42703 at parse time.
+-- Both DROPs + the CREATE below live inside this single BEGIN/COMMIT, so
+-- the views are never absent for concurrent readers (a reader starting
+-- before this txn sees the old views; a reader starting after COMMIT
+-- sees the new view without the body projection). pg_depend + view
+-- definition scan (2026-08-25 audit) confirmed no other view/function
+-- depends on these two.
+DROP VIEW IF EXISTS public.request_logs_bodies_progress;
+DROP VIEW IF EXISTS public.request_logs_with_current_month;
+
+CREATE VIEW public.request_logs_with_current_month AS
  SELECT request_logs_hot.id,
     request_logs_hot.request_id,
     request_logs_hot.ts,

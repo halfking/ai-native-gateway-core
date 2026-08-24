@@ -4,6 +4,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"os"
+	"strings"
 	"sync/atomic"
 	"unicode/utf8"
 )
@@ -66,14 +68,26 @@ func defaultBodiesSummaryEnabled() bool {
 	return false
 }
 
-// requestBodiesSummaryEnabled reports whether request_logs_bodies writes
-// should be downsampled to digest envelopes.
-func requestBodiesSummaryEnabled() bool {
+// requestBodiesSummaryEnabled reports whether a body write should be
+// downsampled to a digest envelope. Calling it without an application code
+// preserves the test seam; production writes pass their application code and
+// additionally require an explicit canary allowlist.
+func requestBodiesSummaryEnabled(applicationCodes ...string) bool {
 	fn, _ := bodySummaryEnabledPtr.Load().(bodySummaryEnabledFn)
-	if fn == nil {
+	if len(applicationCodes) == 0 {
+		return fn != nil && fn()
+	}
+	applicationCode := applicationCodes[0]
+	configuredApplications := strings.TrimSpace(os.Getenv("LLM_GATEWAY_BODY_DIGEST_CANARY_APPLICATIONS"))
+	if configuredApplications == "" {
 		return false
 	}
-	return fn()
+	for _, configured := range strings.Split(configuredApplications, ",") {
+		if applicationCode != "" && applicationCode == strings.TrimSpace(configured) {
+			return true
+		}
+	}
+	return false
 }
 
 // requestBodiesSummaryEnabledFn returns the current seam so tests can
