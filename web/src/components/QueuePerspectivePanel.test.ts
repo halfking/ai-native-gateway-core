@@ -6,6 +6,8 @@ import NodeDetailDrawer from './NodeDetailDrawer.vue'
 import { __testing, liveStreamState } from '../composables/liveStreamStore'
 import { ApiError } from '../api/_core'
 import { _resetPersistState, flushPersist, liveStreamPreferencesStorageKey, readLiveStreamPreferences } from '../composables/liveStreamPreferences'
+import { clearCredentialLabels, loadCredentialLabels } from '../composables/useCredentialLabels'
+import { getCredentialMonitorSummary } from '../api/credential-monitor'
 
 const { getFeatured, resolveRouting, reorderCandidateBindings, getSlidingWindow, getSlidingWindowBatch, superAdmin, mockedStore } = vi.hoisted(() => ({
   getFeatured: vi.fn(),
@@ -78,6 +80,7 @@ describe('QueuePerspectivePanel', () => {
   beforeEach(() => {
     localStorage.clear()
     _resetPersistState()
+    clearCredentialLabels()
     liveStreamState.queue = {
       enabled: true,
       wired: true,
@@ -786,5 +789,27 @@ describe('QueuePerspectivePanel', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('falls back to cached credential label on node cards when SSE and resolve omit it', async () => {
+    vi.mocked(getCredentialMonitorSummary).mockResolvedValue({
+      credentials: [{ id: 5, label: 'hzx-prod' }],
+    })
+    resolveRouting.mockImplementation(async (model: string) => ({
+      raw_models: [model],
+      candidates: model === 'm-1'
+        ? [{ credential_id: 5, model_name: 'm-1', manual_priority: 5 }]
+        : [],
+    }))
+    liveStreamState.nodes = [
+      { credential_id: 5, provider_id: 1, provider_code: 'p', manual_disabled: false, circuit_state: 'closed', raw_models: ['m-1'] },
+    ]
+
+    const wrapper = mountPanel()
+    await loadCredentialLabels()
+    await flushPromises()
+
+    expect(wrapper.get('.qp-node-card-title').text()).toBe('hzx-prod')
+    expect(wrapper.text()).not.toContain('p · #5')
   })
 })
