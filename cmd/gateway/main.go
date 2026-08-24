@@ -546,7 +546,18 @@ func main() {
 
 	pools := pool.NewPoolManager(upClient.Proxy().ProxyFunc())
 
+	// 会话优化 v4 (T4/R1.6): 进程级流式连接注册表 - request_id -> 客户端
+	// 写出流。供 ActionBridge 回写思考帧与 /api/admin/connection-registry
+	// 只读投影共享同一实例（否则 admin 列表恒为空）。Register 满即返回
+	// 错误，绝不阻塞请求热路径；写 deadline 默认 30s（G7：慢/僵死客户端
+	// 按断开处理）。流式 ingress 的 Register/Unregister 挂接在
+	// ChatHandler.serveHTTPInner 内（connection_registry_wiring.go）。
+	connectionRegistry := streaming.NewConnectionRegistry(0, 0)
+
 	chatHandler := streaming.NewChatHandler(cm, lim, matrix, pools, resolver, auditSink)
+	// T4 数据面接线：流式请求开始时把 request_id -> 客户端写出流登记进
+	// 注册表，ActionBridge 依据 request_id 回写 `: thinking:` 注释帧。
+	chatHandler.SetConnectionRegistry(connectionRegistry)
 	if len(cfg.SessionIDBodyKeys) > 0 {
 		streaming.SetSessionIDBodyKeys(cfg.SessionIDBodyKeys)
 	}
@@ -1746,10 +1757,31 @@ func main() {
 		// node_enqueued / node_switch / model_switch / no_route）。
 		gatewayLiveActionsEmitter = liveactions.NewEmitter(redisClientForCache.Client(), 0)
 		defer gatewayLiveActionsEmitter.Close()
+		if gatewayActionBridge != nil {
+			defer gatewayActionBridge.Close()
+		}
 		chatHandler.SetLiveActions(gatewayLiveActionsEmitter)
 		routingExec.SetLiveActions(gatewayLiveActionsEmitter)
 		slog.Info("live_actions_emitter: wired",
 			"redis_connected", redisClientForCache != nil && redisClientForCache.Client() != nil)
+		// ── 会话优化 v4 T4/R3.2 (FR-3 操作事件思考帧桥接) ───────────────
+		// ActionBridge 源 = 上面构造的 gatewayLiveActionsEmitter 的进程内
+		// 订阅（EmitterActionSource，满即丢）；目标 = 共享 connectionRegistry。
+		// 运营开关 llmgw_action_bridge_enabled 默认 false（灰阶上线），
+		// 走 settings_kv 热更新（executorHotConfig，30s 轮询生效），无需
+		// 重启即可开启/关闭；语义帧白名单 llmgw_action_bridge_semantic_clients
+		// 同款热配置。Bridge 订阅 emitter 后随进程退出由 emitter.Close 自然
+		// 回收其订阅 channel。
+		gatewayActionBridge = streaming.NewActionBridge(streaming.ActionBridgeConfig{
+			Enabled:                  false, // 灰阶：运营开关打开前一根思考帧都不发
+			Registry:                connectionRegistry,
+			Source:                  streaming.EmitterActionSource{Emitter: gatewayLiveActionsEmitter, BufferSize: 0},
+			BufferSize:              256,
+			SemanticFrameClientTypes: nil,
+			Hot:                     executorHotConfig,
+		})
+		slog.Info("action_bridge: wired (disabled by default; enable via llmgw_action_bridge_enabled)",
+			"hot_config", executorHotConfig != nil)
 		// 2026-06-26: configurable recent-session reuse window. Default
 		// is 5m (session.LastSystemSessionTTL). Operators can shorten it
 		// to reduce the chance of two unrelated clients being merged.
@@ -2324,11 +2356,12 @@ func main() {
 			adminDB = dbConn.Pool()
 		}
 		adminHandler = admin.NewHandler(adminDB, cfg.SecretKey, fernetKey)
-		// 会话优化 v4 (T4/R1.6): 流式连接注册表 — request_id → 客户端写出
-		// 流，供心跳/思考帧桥接回写与 /api/admin/connection-registry 只读
-		// 投影；写 deadline 默认 30s（G7：慢/僵死客户端按断开处理）。
-		// 流式 ingress 的 Register/Unregister 挂接见 streaming handler 装配。
-		admin.SetConnectionRegistry(streaming.NewConnectionRegistry(0, 0))
+		// 会话优化 v4 (T4/R1.6): 流式连接注册表与 handler 共享同一实例
+		// （在 main 顶部构造），使 /api/admin/connection-registry 投影
+		// 能看到真实在途连接；写 deadline 默认 30s（G7：慢/僵死客户端
+		// 按断开处理）。流式 ingress 的 Register/Unregister 挂接见
+		// streaming handler 装配（connection_registry_wiring.go）。
+		admin.SetConnectionRegistry(connectionRegistry)
 		// 注册 /api/admin/prompt-injection/* 路由(策略、规则、引擎、
 		// Canary、严重度矩阵、检测日志、统计)。修复前端调用 404 的 bug。
 		// 之前 handler 已实现但从未被 wire 到 main mux,导致 SPA 中所有
