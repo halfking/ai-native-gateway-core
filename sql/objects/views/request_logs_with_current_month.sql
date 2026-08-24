@@ -119,7 +119,8 @@ CREATE VIEW public.request_logs_with_current_month AS
     request_logs_hot.t9_response_end_at,
     request_logs_hot.request_type,
     request_logs_hot.is_final_success,
-    request_logs_hot.origin_actor
+     request_logs_hot.origin_actor,
+     request_logs_hot.customer_id
    FROM public.request_logs_hot
 UNION ALL
  SELECT request_logs.id,
@@ -229,7 +230,8 @@ UNION ALL
     request_logs.t9_response_end_at,
     request_logs.request_type,
     request_logs.is_final_success,
-    request_logs.origin_actor
+     request_logs.origin_actor,
+     request_logs.customer_id
    FROM public.request_logs;
 
 
@@ -238,4 +240,3 @@ UNION ALL
 --
 
 COMMENT ON VIEW public.request_logs_with_current_month IS 'Hot + monthly partitions UNION. SSOT synced 2026-08-22: queue timestamps (491), request_type (510), is_final_success (532), origin_actor (561).';
-

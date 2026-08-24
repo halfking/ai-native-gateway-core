@@ -182,6 +182,7 @@ type RequestLogEntry struct {
 	ApplicationID *int         `json:"application_id,omitempty"`
 	APIKeyID      *int         `json:"api_key_id,omitempty"`
 	EndUserID     *string      `json:"end_user_id,omitempty"`
+	CustomerID    *int64       `json:"customer_id,omitempty"`
 	ClientModel   *string      `json:"client_model,omitempty"`
 	OutboundModel *string      `json:"outbound_model,omitempty"`
 	CredentialID  *int         `json:"credential_id,omitempty"`
@@ -1064,7 +1065,8 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 			t5_cred_enqueued_at, t6_cred_dequeued_at,
 			t7_forward_start_at, t8_response_start_at, t9_response_end_at,
 			-- 2026-08-19: streaming discard audit events.
-			discard_events
+			discard_events,
+			customer_id
 		) VALUES (
 		$1, now(), $2, $3, $4,
 		$5, $6, $7,
@@ -1114,7 +1116,7 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 			-- V3.1 queue timestamps (migration 491): 9-stage dispatch queue timestamps.
 			$88, $89, $90, $91, $92, $93, $94, $95, $96, $97,
 			-- 2026-08-19: streaming discard audit events.
-			$98::text::jsonb
+			$98::text::jsonb, $99
 		)
 
 				-- 2026-08-06 fix: INSERT targets request_logs_hot (NOT the partitioned parent).
@@ -1400,6 +1402,7 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		entry.ClientForwardedFor,
 		entry.OriginStage,
 		entry.OriginActor,
+		entry.CustomerID,
 		// 2026-07-19 (migration 350): routing attempts tracking
 		// 2026-08-22: use nullableJSONArg so an empty in_progress INSERT stores
 		// SQL NULL (not JSON null); completion UPDATE can then COALESCE/CASE-fill.
@@ -1865,11 +1868,12 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 			       ELSE routing_attempts
 			   END,
 			   routing_summary      = COALESCE($95, routing_summary),
-			   attachments          = CASE
+			attachments          = CASE
 			       WHEN $96::text IS NOT NULL AND $96::text <> '' AND $96::text <> 'null'
 			       THEN $96::text::jsonb
-			       ELSE attachments
-			   END
+				ELSE attachments
+			END
+			, customer_id = COALESCE($97, customer_id)
 		   WHERE request_id = $1
 
 		     AND NOT (
@@ -2006,6 +2010,7 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		nullableJSONArg(entry.RoutingAttempts),
 		entry.RoutingSummary,
 		attachmentsArgStr(entry.Attachments),
+		entry.CustomerID,
 	)
 
 	if err != nil {
