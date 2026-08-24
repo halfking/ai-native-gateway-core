@@ -2040,7 +2040,7 @@ func (h *ChatHandler) serveWithExecutor(
 	}
 
 	// ── RPM rate limit (unified via checkGatewayRateLimit) ──────────────
-	rlOutcome := checkGatewayRateLimit(keyInfo, h.rateLimiter)
+	rlOutcome := checkGatewayRateLimit(r.Context(), keyInfo, h.rateLimiter)
 	h.emitTrace(r.Context(), requestID,
 		gwtrace.RateLimitCheck(!rlOutcome.Blocked, rateLimitOutcomeKind(rlOutcome), rlOutcome.Remaining).
 			WithDetails("limit", rlOutcome.Limit, "reset_sec", rlOutcome.ResetSec))

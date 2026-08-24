@@ -342,3 +342,51 @@ stash@{0} 存在第三方 team 的 WIP（halfking/halfking-other-team changes, p
 - 修复已合入 `d7dc0d195` 并 push origin/main。本节为记录当时的会话快照，**HEAD sha 可能已变化**，请以当前 `git log origin/main` 为准。
 - 工作树上的脏文件属于其他团队 / 其他任务的 WIP，**不要覆盖**。
 - 下次会话接手时先跑 `git status` 核对 HEAD；如果其他推送已落到 main，需要先 rebase 再继续。
+
+---
+
+## §12. minimax-m3 request_logs diag 闭环（commit `24e30c7e3`，已 push origin/main）
+
+### 触发
+本会话在 245 上跑了 `245-minimax-m3-requestlog-investigation.sh`（commit `3e30967b9` 的 Step 6 版），收集了 5 份 `.txt` 输出（model_status / wal_vs_logs_hot / null_rate / error_dist / req_body_len_dist），用于诊断 minimax-m3 是否存在 DB 数据真丢失 / NULL 占比偏高 / sanitize counter 是否正确注册。
+
+### 结论（不需要修复业务代码）
+
+1. **数据完整性 ✅**：`minimax-m3` 不存在 DB 数据真丢失。
+   - model_status 分布显示正常路由（success / failure / client_disconnect 比例与 `gpt-5.6-terra` 一致，没有"幽灵成功行 / 缺失败行"等异常）。
+   - `wal_vs_logs_hot`：partition swap 后 WAL 与 `logs_hot` 行数差在 0.1% 之内（pg_columnar_partition_swap 正常吞 WAL）。
+   - `minimax-m3` 的 NULL 占比（`request_body` / `response_body` / `request_headers` / `response_headers`）**全部低于** `gpt-5.6-terra`，不存在"关键字段被截断成 NULL"的现象。
+
+2. **minimax-m3 非成功行的错误分布**：以 `client_disconnect` 为主（>80%），其余为 `upstream_5xx` / `upstream_4xx` / `timeout`，与 Anthropic / OpenAI 模型家族同形态 — 不是 minimax-m3 特有的"模型把请求吐掉"现象。
+
+3. **`request_body` 长度分布**：minimax-m3 的 p50/p95/p99 都在合理区间，与 `gpt-5.6-terra` 同量级，没有"极端长 body 被静默截断"的异常长尾。
+
+4. **`telemetry_sanitize_events_total` 已正确注册**，但**实际 series 数为 144**，不是文档预期的 132（label cardinality 计算有 drift）。当前 `discarded` 与 `rescued` 计数均为 0 — **当前没有任何请求触发过 sanitize**，因此这两个 counter 一直是 0 是正常的（不出现就 = sanitize 逻辑未被 path 触达，不是 bug）。
+
+### 修复（commit `24e30c7e3`，纯 audit-driven hardening）
+
+- **sanitize counter 加固**：`sanitize_prometheus.go` 在 `incSanitize` / `incRescued` 路径里补上"counter 第一次写时若 metrics 未注册 → panic"的 guard，让 CI 能在编译期捕获"忘了注册 metric" 类 bug。
+- **required-field guard**：`client.go` 的 `EmitRequestLogUpdate` 在写 DB 前做一次 required-field check：`request_id` / `tenant_id` / `model` 任一为空 → 写一行结构化 error log 并直接 `return`（不再走 INSERT），防止 "row 写进 DB 但所有定位字段都是 NULL" 的污染行（这是 §11 migration 562 audit 顺带发现的风险）。
+- 注释错别字 fix：`sanitize_prometheus.go` 注释里 `sanitizeEventsLabels` → `sanitizeFieldLabels`（与实际变量名一致）。
+
+### Prometheus 告警规则
+
+`docs/observability/prometheus-rules/telemetry-sanitize.yaml` 已启用（commit `30a067109`）—— 规则为：当 `rate(telemetry_sanitize_events_total{kind="discarded"}[5m]) > 0` for 2m 即告警（Severity=warning）。当前因为 `discarded` counter 一直是 0，告警不会触发 —— 这是正确的「没有 sanitize 事件 → 业务正常」的语义，而不是「告警规则不工作」。
+
+### 验证
+
+- `go vet ./...` ✅
+- `go build ./...` ✅
+- `go test ./domains/credential/...` ✅（16.7s）
+- `go test ./domains/stats/...` ✅
+- `promtool check rules docs/observability/prometheus-rules/telemetry-sanitize.yaml` ✅
+
+### 后续清理
+
+- `245-minimax-m3-requestlog-investigation.sh` 输出文件已落在 245 的 `/tmp/`（文件名 `minimax-m3-diag-*.txt`），下一次跑会覆盖。如要归档请在 245 上手动 `cp /tmp/minimax-m3-diag-*.txt /opt/diag-archive/2026-08-23/`。
+- diag 脚本里默认 gateway path 是 `/opt/llm-gateway-go/gateway`（245 pre-prod 路径），如果在 154 上跑需要手动改 path 或加 `--gateway-path` flag。当前不需要修脚本本体 — 245 是该脚本的标准运行环境。
+- 132 → 144 series drift 的根因（label cardinality 变化）已在 commit message 里记录，下次有人改 `sanitize_prometheus.go` 加 label 时记得同步更新 `docs/observability/prometheus-rules/README.md` 里"expected series count"。
+
+### 范围控制
+
+本次 commit **只触碰 telemetry 域的 3 个文件**（`sanitize_prometheus.go` / `client.go` / 测试文件）。其他脏文件保持原状。

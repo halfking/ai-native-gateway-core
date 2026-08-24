@@ -40,7 +40,7 @@ BEGIN
     v_work_type         := NEW.work_type;
 
     IF v_total_tokens > 0 THEN
-        v_token_ratio := v_prompt_tokens::DECIMAL(10,6) / v_total_tokens::DECIMAL(10,6);
+        v_token_ratio := v_prompt_tokens::numeric / v_total_tokens::numeric;
     ELSE
         v_token_ratio := 0.5;
     END IF;

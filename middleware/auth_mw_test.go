@@ -106,6 +106,9 @@ func TestAuthMiddleware_AcceptsValidBearerForDataPaths(t *testing.T) {
 	mw := NewAuthMiddleware("secret-key")
 	handler := mw.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
+		if !IsGlobalAuthPassed(r.Context()) {
+			t.Error("static key verification must mark the request context")
+		}
 		w.WriteHeader(http.StatusOK)
 	}))
 

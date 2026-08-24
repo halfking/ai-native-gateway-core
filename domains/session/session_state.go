@@ -386,6 +386,8 @@ func (sm *Manager) StopSession(ctx context.Context, sessionID, reason string) er
 	// 维护停止索引
 	stoppedKey := fmt.Sprintf("session:stopped:%s", tenantID)
 	pipe.SAdd(ctx, stoppedKey, sessionID)
+	pipe.SAdd(ctx, stoppedSessionIndexKey, stoppedSessionIndexSentinel)
+	pipe.SAdd(ctx, stoppedSessionIndexKey, stoppedKey)
 	// stopped 索引 TTL 由清理 Worker 维护，或使用更长 TTL
 	pipe.Expire(ctx, stoppedKey, 24*time.Hour)
 
