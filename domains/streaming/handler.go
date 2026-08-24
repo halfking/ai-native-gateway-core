@@ -2136,6 +2136,18 @@ func (h *ChatHandler) serveWithExecutor(
 		})
 		return
 	}
+	// ── Prompt budget guard (2026-08-24, 245 memcg OOM) ──────────────────
+	// 拒绝发生在 JSON 解析 / 上游转发之前；见 request_meta.go 注释。
+	if estTokens, over := promptBudgetExceeded(bodyBytes); over {
+		msg := fmt.Sprintf("prompt exceeds gateway budget: estimated %d tokens > %d limit (LLM_GATEWAY_MAX_PROMPT_TOKENS)", estTokens, promptBudgetLimit())
+		logCtx.SetError("prompt_too_large", msg)
+		logCtx.EmitFailure("prompt_too_large", msg, nil, nil)
+		logCtx.MarkLogged()
+		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{
+			"error": map[string]string{"message": msg, "type": "invalid_request", "code": "prompt_too_large"},
+		})
+		return
+	}
 
 	var reqBody chatRequestBody
 	if err := json.Unmarshal(bodyBytes, &reqBody); err != nil {

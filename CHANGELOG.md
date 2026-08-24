@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **smart-fallback 暂定恢复接通 + probe rollback 可观测（2026-08-24）**：`bg/probe_rollback.go` 的 `MarkTentativeRestore` 首次接通真实调用方 —— `ProbeSync`（请求热路径 no_candidates 恢复）成功分支在恢复可用性之后、gateway 轮之前打 `probe_revert_at` 暂定标记；后续确认探测成功（tick/队列/request_failure 驱动，经 `updateBindingAvailability` 成功分支清 timer）转正，窗口内未确认则由 rollback worker 回退（one-shot WHERE guard）。窗口由 `LLM_GATEWAY_PROBE_TENTATIVE_REVERT_AFTER` 配置（Go duration 或秒数，默认 15m，`0/off/false/disabled` 关闭）。新增 `llmgw_probe_rollback_*` metrics：`tentative_marked_total` / `reverted_total` / `scan_failures_total` / `scan_duration_seconds` / `pending`（此前 worker 只有 slog，245 上 8 次 revert scan failed 无指标信号）。
+- **请求入口 prompt 预算拒绝（2026-08-24，245 memcg OOM 根因缓解）**：`LLM_GATEWAY_MAX_PROMPT_TOKENS`（默认 0=关闭）在 `/v1/chat/completions`、`/v1/messages`、`/v1/responses` 三入口于 JSON 解析与上游转发之前按 `estimateTokens` 估算拒绝超预算 prompt（413 `prompt_too_large`），防止单份大 prompt 在解析/转发/审计路径繁殖 GB 级副本（245 观测 max prompt_tokens=920179，anon 1.95G 撑满 2G memcg 53 次 OOM-kill）。估算 ±30% 偏保守；非法/负值 env fail-open 不影响数据面。
+- **245 GOMEMLIMIT GC 背压（deploy/llmgo-245.service）**：unit 注入 `GOMEMLIMIT=1900MiB`，低于服务端 drop-in `MemoryMax`，让 Go GC 在 memcg 击杀前先自我回收；与 prompt 预算、memory-override 上限构成三层防线。
 - **Dashboard SessionStats 空状态兜底**：`SessionStatsRankings` 在 `modelUsage` 为空数组时显示 `topModelsEmpty`；`SessionStatsSignals` 在错误计数/错误率均为 0 时显示 `errorsEmpty`；中英文 i18n 同步。
 - **dashboard-trend-normalize 测试扩展**：`dashboard-trend-normalize.test.ts` 从 3 用例扩至 10 用例，覆盖 trend 断点、空窗口、数值回填、命名兼容、period 优先级、null trend 防御。
 - **sessionmeta provisional 集成测试**：`handler_provisional_metadata_test.go`（arrival wiring）、`auto_title_provisional_test.go`（enabled gate / 已有 title 跳过）；`titlestore` 收窄为 `dbPool` 接口以支持 pgxmock。

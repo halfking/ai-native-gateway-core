@@ -11,6 +11,11 @@ Group=root
 WorkingDirectory=/opt/llm-gateway-go
 EnvironmentFile=/opt/llm-gateway-go/.env
 Environment=TRANSPORT_LAYER_IR_ENABLED=true
+# 2026-08-24: GC 背压 — 245 memcg OOM-kill x53（anon 1.95G 撑满 MemoryMax=2G,
+# failcnt 378 万）。GOMEMLIMIT 略低于 cgroup 上限, 让 Go GC 在 memcg
+# 击杀之前先自我回收。配合 memory-override.conf 的 MemoryHigh/MemoryMax
+# （服务端 drop-in）与 LLM_GATEWAY_MAX_PROMPT_TOKENS 入口拒绝三层防线。
+Environment=GOMEMLIMIT=1900MiB
 ExecStart=/opt/llm-gateway-go/gateway
 Restart=always
 RestartSec=5

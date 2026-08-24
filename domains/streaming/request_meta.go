@@ -21,6 +21,47 @@ import (
 
 var errBodyTooLarge = errors.New("request body too large")
 
+// ── Prompt budget guard (2026-08-24, 245 memcg OOM) ────────────────────────
+//
+// 245 预发环境在长上下文流量下被 memcg OOM-kill 53 次（anon 1.95G 撑满
+// MemoryMax=2G，单请求 max prompt_tokens=920179 —— 一份 ~4MB JSON 在
+// 解析/转发/审计路径上被复制多份，数个并发即可把 2G 堆顶穿）。
+// LLM_GATEWAY_MAX_PROMPT_TOKENS 让网关在入口处拒绝超预算 prompt：
+//
+//	=0 / 未设置  → 不限制（154 等大内存环境默认）
+//	>0           → estimateTokens(body) 超过即 413 prompt_too_large
+//
+// 估算用 auto_route.estimateTokens（±30% 启发式，含 JSON 结构开销，
+// 偏保守方向）。245 设 262144（256k）。拒绝发生在 JSON 解析与上游
+// 转发之前，避免大请求在进程内繁殖副本。
+
+// promptBudgetLimit resolves LLM_GATEWAY_MAX_PROMPT_TOKENS. 0 = off.
+// Negative or unparsable values disable the guard (fail-open: a broken
+// env must not take down legitimate traffic on the data plane).
+func promptBudgetLimit() int {
+	v := strings.TrimSpace(os.Getenv("LLM_GATEWAY_MAX_PROMPT_TOKENS"))
+	if v == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
+}
+
+// promptBudgetExceeded estimates prompt tokens for the buffered body and
+// reports whether the estimate exceeds the configured budget. Always
+// (0, false) when the guard is off or the body is empty.
+func promptBudgetExceeded(body []byte) (est int, over bool) {
+	limit := promptBudgetLimit()
+	if limit <= 0 || len(body) == 0 {
+		return 0, false
+	}
+	est = estimateTokens(body)
+	return est, est > limit
+}
+
 const defaultRequestBodyTimeout = 120 * time.Second
 
 // requestAttemptMeta captures request-side facts as early as possible so

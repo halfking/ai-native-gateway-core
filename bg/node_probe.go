@@ -963,6 +963,24 @@ func (w *NodeProbeWorker) ProbeSync(
 				w.updateBindingAvailability(ctx, j.credID, j.model, true, "")
 				w.updateCredentialHealth(ctx, j.credID)
 				w.updateObservedState(ctx, j.credID, j.model, true, "", time.Now())
+				// 2026-08-24: smart-fallback tentative restore (需求 6
+				// bullet 6). A sync probe "passed in isolation" — stamp a
+				// revert deadline so bg.ProbeRollback reverts the binding
+				// if no confirming probe success (which clears
+				// probe_revert_at via updateBindingAvailability's success
+				// branch) lands within the window. Confirmation arrives
+				// naturally: the tick/queue still probes this (cred,model)
+				// because emitSyncAudit deliberately does NOT touch
+				// node_probe_state (next_retry_at unchanged). Disabled
+				// entirely when the window env is 0/off.
+				if revertAfter := probeTentativeRevertAfter(); revertAfter > 0 {
+					markCtx, markCancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+					if err := MarkTentativeRestore(markCtx, w.db, j.credID, j.model, revertAfter); err != nil {
+						slog.Warn("node_probe_worker: tentative restore stamp failed",
+							"credential_id", j.credID, "model", j.model, "error", err)
+					}
+					markCancel()
+				}
 				res.gateway = w.probeGateway(ctx, j.credID, j.model)
 			} else {
 				w.updateBindingAvailability(ctx, j.credID, j.model, false, res.direct.errCode)
