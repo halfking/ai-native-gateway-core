@@ -21,6 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Dispatch enqueue lifecycle ordering (2026-08-24)**: credential-forwarder handoff now waits for `node_enqueued` to be published before emitting `node_selected`; this prevents SSE/live-action sequence inversions under immediate channel scheduling while keeping governor waits and upstream I/O outside the handoff lock.
 - **Release metadata alignment (2026-08-24)**: updated `VERSION`, `version.json`, and `web/public/version.json` to the merged `deeea11a` source and build `1718`; deployment builds retain the domestic Go proxy settings without forcing an incompatible local toolchain.
 - **Go vulnerability remediation and dispatch mirror ordering (2026-08-24)**: upgraded `grpc` to 1.82.1, `x/text` to 0.39.0, and `quic-go` to 0.59.1; pinned the Go toolchain to 1.26.6; moved dispatch resource release before terminal result delivery so queue mirror `inflight=0` is observable before `Submit` returns; added the unified GitHub Actions verification workflow.
+- **API-key minute-bucket admission queue (2026-08-24)**: gateway RPM
+  enforcement now admits up to `L` requests in the current minute bucket and
+  queues up to `L` additional requests per key. The `(2L)+1` request receives
+  the canonical 429 response; queued requests wait with context cancellation,
+  FIFO release, and streaming wait notifications. Provider and credential
+  concurrency controls remain unchanged.
 - **Dispatch governor and self-check audit fixes (2026-08-24)**: new concurrency-mode credential forwarders now consume `redis_enforce` instead of leaving the configured backend as an unused composition-root seam; Redis governor construction failures remain fail-closed. RPM/TPM retain local token buckets until distributed token-cost accounting is implemented. Probe workers now explicitly claim one task per worker to prevent serial batch processing from expiring later leases.
 - **Dispatch queue projection race (2026-08-24)**: model lane depth reservation/dequeue and their projection events are now linearized per lane. This prevents out-of-order enqueue/dequeue observations from leaving a phantom depth in Redis mirrors and the live queue view after `Submit` has completed.
 - **245 shared data-plane key RPM rejections (2026-08-24)**: the static

@@ -1,6 +1,7 @@
 package ratelimit
 
 import (
+	"context"
 	"sync"
 	"time"
 )
@@ -10,6 +11,14 @@ import (
 type RPMLimiter interface {
 	CheckRPM(keyID int, limit int) bool
 	RPMStatus(keyID int, limit int) (used int, remaining int)
+}
+
+type RPMAdmission interface {
+	AdmitRPM(ctx context.Context, keyID, limit int) (AdmissionResult, error)
+}
+
+type RPMWaitingNotifier interface {
+	AdmitRPMWithWait(ctx context.Context, keyID, limit int, notify func(AdmissionResult)) (AdmissionResult, error)
 }
 
 // rpmShardCount 是 SlidingWindowLimiter 的分片数。每个分片有自己的 mutex,
@@ -30,7 +39,8 @@ type rpmShard struct {
 // 都串行化 —— 在请求热路径上成为瓶颈。分片后不同 key 并行,同一 key 仍互斥
 // (语义不变)。
 type SlidingWindowLimiter struct {
-	shards [rpmShardCount]*rpmShard
+	shards    [rpmShardCount]*rpmShard
+	admission *MinuteBucketAdmission
 }
 
 type rpmWindow struct {
@@ -47,7 +57,7 @@ type tokenEntry struct {
 }
 
 func NewSlidingWindowLimiter() *SlidingWindowLimiter {
-	l := &SlidingWindowLimiter{}
+	l := &SlidingWindowLimiter{admission: NewMinuteBucketAdmission()}
 	for i := range l.shards {
 		l.shards[i] = &rpmShard{
 			windows:   make(map[int]*rpmWindow),
@@ -55,6 +65,14 @@ func NewSlidingWindowLimiter() *SlidingWindowLimiter {
 		}
 	}
 	return l
+}
+
+func (l *SlidingWindowLimiter) AdmitRPM(ctx context.Context, keyID, limit int) (AdmissionResult, error) {
+	return l.admission.AdmitRPM(ctx, keyID, limit)
+}
+
+func (l *SlidingWindowLimiter) AdmitRPMWithWait(ctx context.Context, keyID, limit int, notify func(AdmissionResult)) (AdmissionResult, error) {
+	return l.admission.admit(ctx, keyID, limit, notify)
 }
 
 // shard 返回 keyID 对应的分片。keyID 可能为负 (hash),用位与取非负低 bits。
