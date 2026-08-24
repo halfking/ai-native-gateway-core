@@ -16,10 +16,9 @@ package main
 //                             no memory fallback (the inverse of rpm_redis.go).
 //   - any other value       → log error, fall back to LocalBackend.
 //
-// The per-spec governor factory (LocalBackend.New / RedisEnforce.New /
-// RedisShadow.New) is wired here but NOT consumed yet — credForwarder.gov
-// construction in domains/dispatch/forwarder.go stays on newGovernor(cred).
-// Stage D/E owns the read path.
+// The forwarder consumes RedisEnforce for distributed concurrency slots.
+// RPM and TPM retain their local token buckets until equivalent Redis token
+// accounting is implemented. RedisShadow remains a non-gating observation mode.
 //
 // Stage C.2: LLM_GATEWAY_DISPATCH_GOVERNOR_OBSERVER ∈ {"off", "observe"}
 // (default "off") controls whether the Pipeline's 100ms-tick snapshot

@@ -3,6 +3,7 @@ package dispatch
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"math"
 	"strconv"
@@ -306,6 +307,43 @@ func (p *Pipeline) GovernorBackend() GovernorBackend {
 	p.backendMu.RLock()
 	defer p.backendMu.RUnlock()
 	return p.governorBackend
+}
+
+// governorForCredential uses Redis enforcement only for concurrency slots.
+// RPM and TPM remain local until distributed token accounting is implemented.
+func (p *Pipeline) governorForCredential(cred CredentialRef) Governor {
+	backend := p.GovernorBackend()
+	mode := cred.ConcurrencyMode
+	if mode == "" {
+		mode = ModeConcurrency
+	}
+	if backend == nil || backend.Kind() != BackendRedisEnforce ||
+		mode != ModeConcurrency || cred.ConcurrencyLimit <= 0 {
+		return newGovernor(cred)
+	}
+
+	gov, err := backend.New(context.Background(), GovernorSpec{
+		CredentialID: cred.CredentialID,
+		ProviderID:   cred.ProviderID,
+		Mode:         ModeConcurrency,
+		Limit:        cred.ConcurrencyLimit,
+		RPMLimit:     cred.RPMLimit,
+		TPMLimit:     cred.TPMLimit,
+		Backend:      BackendRedisEnforce,
+		Revision:     p.ActiveRevision(),
+	})
+	if err == nil && gov != nil {
+		return gov
+	}
+	if err == nil {
+		err = errors.New("governor backend returned nil governor")
+	}
+	slog.Error("dispatch: credential governor initialization failed",
+		"credential_id", cred.CredentialID,
+		"provider_id", cred.ProviderID,
+		"backend", backend.Kind(),
+		"error", err)
+	return unavailableGovernor{mode: mode, err: fmt.Errorf("%w: %w", ErrGovernorUnavailable, err)}
 }
 
 // SetGovernorSnapshotObserver wires the optional C.2 snapshot observer.
@@ -781,12 +819,16 @@ func (p *Pipeline) enqueueModel(name string, qr *QueuedRequest) bool {
 	resolvedModel := qr.ResolvedModel
 	qr.journeyMu.Lock()
 	enqueuedAt := time.Now()
+	mq.mu.Lock()
+	// Reserve the observable depth before handing qr to mq.ch. The channel send
+	// can wake the drainer immediately; incrementing after a successful send
+	// races the drainer's decrement and leaves a phantom queue item.
+	depth := mq.depth.Add(1)
+	metricModelQueueDepth.WithLabelValues().Inc()
 	select {
 	case mq.ch <- qr:
-		depth := mq.depth.Add(1)
-		metricModelQueueDepth.WithLabelValues().Inc()
 		slog.Debug("dispatch: model enqueue", "model", name, "depth", depth)
-		p.observeQueue(QueueObservation{Kind: QueueModelDepth, Model: name, Depth: depth, Delta: 1})
+		p.observeQueue(QueueObservation{Kind: QueueModelDepth, Model: name, Depth: depth, Delta: 1, AbsoluteDepth: true})
 		// V3.3-OBS OBS-B1 (2026-08-15): model_enqueued 动作事件（S4）。
 		p.liveActions.Emit(ctxOf(qr), liveactions.ActionEvent{
 			RequestID: qr.ID,
@@ -803,9 +845,13 @@ func (p *Pipeline) enqueueModel(name string, qr *QueuedRequest) bool {
 			ResolvedModel: resolvedModel,
 			OccurredAt:    enqueuedAt,
 		})
+		mq.mu.Unlock()
 		qr.journeyMu.Unlock()
 		return true
 	default:
+		mq.depth.Add(-1)
+		metricModelQueueDepth.WithLabelValues().Dec()
+		mq.mu.Unlock()
 		qr.journeyMu.Unlock()
 		return false
 	}
@@ -850,10 +896,12 @@ func (p *Pipeline) runModelDrainer(mq *modelQueue) {
 	for {
 		select {
 		case qr := <-mq.ch:
+			mq.mu.Lock()
 			depth := mq.depth.Add(-1)
 			metricModelQueueDepth.WithLabelValues().Dec()
 			slog.Debug("dispatch: model dequeue", "model", mq.name, "depth", depth)
-			p.observeQueue(QueueObservation{Kind: QueueModelDepth, Model: mq.name, Depth: depth, Delta: -1})
+			p.observeQueue(QueueObservation{Kind: QueueModelDepth, Model: mq.name, Depth: depth, Delta: -1, AbsoluteDepth: true})
+			mq.mu.Unlock()
 
 			// V3.1: Record T2 timestamp (model queue dequeue, routing start)
 			qr.SetT2_TotalDequeued()
@@ -1041,7 +1089,7 @@ func (p *Pipeline) tryEnqueueCred(cred CredentialRef, qr *QueuedRequest) bool {
 	case cf.queue <- qr:
 		depth := cf.depth.Load()
 		metricCredQueueDepth.WithLabelValues(itoa(cred.CredentialID), cred.ConcurrencyMode).Inc()
-		p.observeQueue(QueueObservation{Kind: QueueCredentialDepth, CredentialID: cred.CredentialID, Mode: cred.ConcurrencyMode, Depth: depth, Delta: 1})
+		p.observeQueue(QueueObservation{Kind: QueueCredentialDepth, CredentialID: cred.CredentialID, Mode: cred.ConcurrencyMode, Depth: depth, Delta: 1, AbsoluteDepth: true})
 		// V3.3-OBS OBS-B1 (2026-08-15): node_enqueued 动作事件（S6，落入
 		// 凭据队列）。
 		p.liveActions.Emit(emitCtx, liveactions.ActionEvent{

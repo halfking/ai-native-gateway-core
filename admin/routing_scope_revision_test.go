@@ -333,3 +333,80 @@ func TestRoutingCandidateBindingReorder_IntegrationNoOpBump(t *testing.T) {
 		t.Fatalf("priority flip did not bump scope_revision: got %q, want prefix %q", revPriority, "3:")
 	}
 }
+
+// TestRoutingCandidateBindingReorder_IntegrationCanonicalPriorityBump
+// locks in the canonical-scope-revision contract introduced by migration
+// 571: a credential_model_bindings UPDATE that flips ONLY cmb.priority
+// (with manual_priority / provider_model_id / credential_id untouched)
+// must advance candidate_binding_scope_revision_canonical.scope_version
+// and change scope_hash. Prior to 571, the canonical update function's
+// predicate excluded priority, so a priority-only flip silently bypassed
+// the trigger and drag-reorder OCC could not detect priority drift.
+func TestRoutingCandidateBindingReorder_IntegrationCanonicalPriorityBump(t *testing.T) {
+	pool := reorderTestPool(t)
+	h := &Handler{db: pool}
+	f := newReorderTestFixture(t, pool, 2)
+	ctx := context.Background()
+
+	revBefore := f.reorderRevision(t, h)
+	if !strings.HasPrefix(revBefore, "1:") {
+		t.Fatalf("initial canonical revision = %q, want prefix %q", revBefore, "1:")
+	}
+	hashBefore := strings.TrimPrefix(revBefore, "1:")
+
+	// Flip only priority on a single binding — no manual_priority /
+	// provider_model_id / credential_id change, so the 569 predicate
+	// (without the priority term) would have short-circuited the
+	// canonical trigger. Migration 571 adds the priority clause to the
+	// predicate and b.priority::text to the hash, so this UPDATE must
+	// bump scope_version AND change scope_hash.
+	_, err := pool.Exec(ctx,
+		`UPDATE credential_model_bindings SET priority = NOT priority, updated_at = NOW() WHERE id = $1`,
+		f.bindingIDs[0])
+	if err != nil {
+		t.Fatalf("priority-only flip: %v", err)
+	}
+
+	revAfter := f.reorderRevision(t, h)
+	if !strings.HasPrefix(revAfter, "2:") {
+		t.Fatalf("canonical revision did not advance after priority flip: got %q, want prefix %q", revAfter, "2:")
+	}
+	hashAfter := strings.TrimPrefix(revAfter, "2:")
+	if hashAfter == hashBefore {
+		t.Fatalf("canonical scope_hash unchanged after priority flip: %q", hashAfter)
+	}
+
+	// Sanity: a no-op (priority unchanged, only updated_at moves) must
+	// still NOT bump the canonical revision. This guards the priority
+	// predicate against accidentally widening to cover any row write.
+	var storedPriority bool
+	if err := pool.QueryRow(ctx,
+		`SELECT priority FROM credential_model_bindings WHERE id = $1`, f.bindingIDs[0],
+	).Scan(&storedPriority); err != nil {
+		t.Fatalf("read priority: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE credential_model_bindings SET priority = $1, updated_at = NOW() WHERE id = $2`,
+		storedPriority, f.bindingIDs[0],
+	); err != nil {
+		t.Fatalf("no-op priority write: %v", err)
+	}
+
+	revNoOp := f.reorderRevision(t, h)
+	if !strings.HasPrefix(revNoOp, "2:") {
+		t.Fatalf("no-op priority write bumped canonical revision: got %q, want prefix %q", revNoOp, "2:")
+	}
+
+	// Another priority flip should advance to 3:, confirming the trigger
+	// keeps firing on every priority transition, not just the first one.
+	if _, err := pool.Exec(ctx,
+		`UPDATE credential_model_bindings SET priority = NOT priority, updated_at = NOW() WHERE id = $1`,
+		f.bindingIDs[0],
+	); err != nil {
+		t.Fatalf("second priority flip: %v", err)
+	}
+	revAgain := f.reorderRevision(t, h)
+	if !strings.HasPrefix(revAgain, "3:") {
+		t.Fatalf("second priority flip did not bump canonical revision: got %q, want prefix %q", revAgain, "3:")
+	}
+}

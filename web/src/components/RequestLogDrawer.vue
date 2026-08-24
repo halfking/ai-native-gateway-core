@@ -528,8 +528,20 @@ function failureStageLabel(stage: string | null | undefined): string {
 }
 
 function outboundModelDisplay(row: RequestLogDetail | null): string {
-  if (!row) return '—'
-  return row.provider_model || row.outbound_model || '—'
+  if (!row) return '-'
+  return row.provider_model || row.outbound_model || '-'
+}
+
+// 供应商/凭据名称合并展示，格式为 {供应商}/{凭据名称}，便于一眼看清路由来源。
+// 与 RequestLogsView.routeProviderLine 对齐：provider_name 缺失时回退 provider_code。
+function providerCredentialLine(row: RequestLogDetail | null): string {
+  if (!row) return '-'
+  const provider = row.provider_name || row.provider_code || ''
+  const label = row.credential_label || ''
+  if (provider && label) return `${provider}/${label}`
+  if (provider) return provider
+  if (label) return label
+  return '-'
 }
 
 // 2026-07-13: 错误触发的主动探测元数据辅助函数
@@ -618,8 +630,7 @@ function routingAttempts(): RequestLogDetail['routing_attempts'] {
             <span><strong>Token:</strong> {{ detail.prompt_tokens ?? '—' }} / {{ detail.completion_tokens ?? '—' }}</span>
             <span v-if="detail.gw_session_id"><strong>Session:</strong> {{ detail.gw_session_id }}</span>
             <span v-if="detail.gw_task_id"><strong>Task:</strong> {{ detail.gw_task_id }}</span>
-            <span><strong>供应商:</strong> {{ detail.provider_name ?? '—' }}</span>
-            <span><strong>Key:</strong> {{ detail.api_key_prefix ?? (detail.api_key_id != null ? `key#${detail.api_key_id}` : '—') }}</span>
+            <span><strong>供应商/凭据:</strong> {{ providerCredentialLine(detail) }}</span>
             <span v-if="detail.application_code"><strong>应用:</strong> {{ detail.application_code }}</span>
             <span v-if="detail.upstream_finish_reason"><strong>结束原因:</strong> {{ detail.upstream_finish_reason }}</span>
             <span v-if="!isDefaultTenant()"><strong>积分消耗:</strong> {{ detail.credits_charged ?? '—' }}</span>

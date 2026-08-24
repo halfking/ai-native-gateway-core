@@ -42,6 +42,10 @@ type QueueObservation struct {
 	Mode string
 	// Depth is the absolute diagnostic depth (ignored when Delta != 0).
 	Depth int64
+	// AbsoluteDepth makes Depth authoritative even when Delta is also present.
+	// Pipeline transition sites set it because independent goroutines can emit
+	// enqueue/dequeue events out of order; read-model counters must not drift.
+	AbsoluteDepth bool
 	// Limit is the bounded Tier-2 capacity for QueueCredentialFull.
 	Limit int64
 	// Delta accumulates into the lane counter when non-zero.
@@ -150,7 +154,7 @@ func (p *QueueProjection) ObserveQueue(observation QueueObservation) {
 			return
 		}
 		depth := observation.Depth
-		if observation.Delta != 0 {
+		if observation.Delta != 0 && !observation.AbsoluteDepth {
 			depth = p.models[observation.Model] + observation.Delta
 		}
 		depth = nonNegative(depth)
@@ -169,7 +173,7 @@ func (p *QueueProjection) ObserveQueue(observation QueueObservation) {
 			mode = lane.mode
 		}
 		depth := observation.Depth
-		if observation.Delta != 0 {
+		if observation.Delta != 0 && !observation.AbsoluteDepth {
 			depth = lane.depth + observation.Delta
 		}
 		depth = nonNegative(depth)
