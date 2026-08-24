@@ -490,7 +490,7 @@ onMounted(async () => {
   border-radius: 10px;
   background: var(--card);
   padding: 12px 14px;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--kx-text) 4%, transparent);
 }
 .stat-card.warning {
   border-left: 4px solid var(--warning);
@@ -596,7 +596,7 @@ textarea {
 .btn-primary {
   background: var(--accent);
   border-color: var(--accent);
-  color: #fff;
+  color: var(--on-primary);
 }
 .btn-primary:hover:not(:disabled) {
   background: var(--accent-h);
@@ -612,9 +612,9 @@ textarea {
   margin-bottom: 12px;
   padding: 10px 12px;
   border-radius: 8px;
-  background: rgba(248, 81, 73, 0.12);
-  color: #ffb4ad;
-  border: 1px solid rgba(248, 81, 73, 0.32);
+  background: var(--danger-bg);
+  color: var(--danger-bd);
+  border: 1px solid var(--danger-bd);
 }
 .table-wrap {
   overflow: auto;
@@ -674,19 +674,19 @@ textarea {
   color: var(--accent-h);
 }
 .badge-medium {
-  background: rgba(210, 153, 34, 0.14);
-  border-color: rgba(210, 153, 34, 0.24);
-  color: #f7d58a;
+  background: var(--warning-bg);
+  border-color: var(--warning-bd);
+  color: var(--warning-bd);
 }
 .badge-high {
-  background: rgba(249, 115, 22, 0.14);
-  border-color: rgba(249, 115, 22, 0.24);
-  color: #fdba74;
+  background: var(--warning-bd);
+  border-color: var(--warning-bd);
+  color: var(--warning-bd);
 }
 .badge-critical {
-  background: rgba(248, 81, 73, 0.14);
-  border-color: rgba(248, 81, 73, 0.26);
-  color: #ffb4ad;
+  background: var(--danger-bg);
+  border-color: var(--danger-bd);
+  color: var(--danger-bd);
 }
 .status-ok {
   color: var(--success);
@@ -728,7 +728,7 @@ code {
   border-radius: 12px;
   padding: 18px;
   color: var(--text);
-  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+  box-shadow: 0 24px 60px var(--overlay-strong);
 }
 .modal-header {
   display: flex;

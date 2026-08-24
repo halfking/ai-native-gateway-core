@@ -149,7 +149,7 @@ const { t } = useI18n()
   border-radius: 8px;
   font-size: 12px;
   font-family: ui-monospace, monospace;
-  color: #cbd5e1;
+  color: var(--border);
   background: rgba(15, 23, 42, 0.75);
   word-break: break-all;
 }

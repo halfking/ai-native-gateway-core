@@ -78,7 +78,7 @@ const emit = defineEmits<{
 .btn {
   border: 1px solid var(--kx-primary);
   background: var(--kx-primary);
-  color: #fff;
+  color: var(--on-primary);
   border-radius: 6px;
   padding: 6px 12px;
   cursor: pointer;

@@ -169,20 +169,20 @@ const pipeline = computed(() =>
 /* Full-bleed guest homepage: edge-to-edge, content left-aligned (no centered column). */
 .kx-landing {
   --landing-bg: #f4f6f9;
-  --landing-surface: rgba(255, 255, 255, 0.88);
-  --landing-text: #152033;
-  --landing-muted: #5b6b82;
-  --landing-border: #dce3ee;
-  --landing-primary: #1e4fd6;
+  --landing-surface: var(--surface-elevated);
+  --landing-text: var(--kx-text);
+  --landing-muted: var(--kx-muted);
+  --landing-border: var(--border);
+  --landing-primary: var(--accent);
   --landing-primary-hover: #1841b3;
-  --landing-primary-soft: #eaf0ff;
+  --landing-primary-soft: var(--info-bg);
   --landing-font: "Noto Sans SC", "PingFang SC", "Hiragino Sans GB", "Segoe UI", sans-serif;
   --landing-display: "Outfit", "Noto Sans SC", "PingFang SC", sans-serif;
   --landing-pad-x: clamp(28px, 5vw, 72px);
   color: var(--landing-text);
   font-family: var(--landing-font);
   background:
-    radial-gradient(ellipse 70% 45% at 100% -10%, rgba(30, 79, 214, 0.07), transparent 55%),
+    radial-gradient(ellipse 70% 45% at 100% -10%, var(--info-bg), transparent 55%),
     radial-gradient(ellipse 50% 40% at 0% 100%, rgba(22, 132, 91, 0.04), transparent 50%),
     var(--landing-bg);
   min-height: 100%;
@@ -223,11 +223,11 @@ const pipeline = computed(() =>
   border-radius: 12px;
   display: grid;
   place-items: center;
-  color: #fff;
+  color: var(--on-primary);
   font-weight: 800;
   font-size: 18px;
   font-family: var(--landing-display);
-  background: linear-gradient(145deg, #1e4fd6, #0f3aad);
+  background: linear-gradient(145deg, var(--accent), #0f3aad);
   box-shadow: 0 8px 20px rgba(30, 79, 214, 0.22);
 }
 .kx-landing__brand-logo {
@@ -236,7 +236,7 @@ const pipeline = computed(() =>
   border-radius: 12px;
   object-fit: contain;
   flex-shrink: 0;
-  background: rgba(255, 255, 255, 0.92);
+  background: var(--surface-elevated);
   box-shadow: 0 8px 20px rgba(30, 45, 75, 0.08);
 }
 .kx-landing__brand-text {
@@ -320,15 +320,15 @@ const pipeline = computed(() =>
 }
 .kx-landing__cta {
   border: 0;
-  color: #fff;
+  color: var(--on-primary);
   background: var(--landing-primary);
-  box-shadow: 0 8px 18px rgba(30, 79, 214, 0.18);
+  box-shadow: 0 8px 18px var(--info-bg);
   cursor: pointer;
 }
 .kx-landing__cta:hover { background: var(--landing-primary-hover); transform: translateY(-1px); }
 .kx-landing__cta-secondary {
   color: var(--landing-text);
-  background: #fff;
+  background: var(--on-primary);
   border: 1px solid var(--landing-border);
 }
 .kx-landing__cta-secondary:hover { transform: translateY(-1px); border-color: #b7c9ef; }
@@ -356,7 +356,7 @@ const pipeline = computed(() =>
   height: 240px;
   top: -50px;
   right: -20px;
-  background: rgba(30, 79, 214, 0.18);
+  background: var(--info-bg);
 }
 .kx-landing__orb--two {
   width: 160px;
@@ -380,7 +380,7 @@ const pipeline = computed(() =>
   align-items: center;
   padding: 12px 14px;
   border-radius: 12px;
-  background: rgba(255, 255, 255, 0.88);
+  background: var(--surface-elevated);
   border: 1px solid rgba(255, 255, 255, 0.95);
   box-shadow: 0 8px 24px rgba(30, 55, 100, 0.06);
 }
@@ -404,11 +404,11 @@ const pipeline = computed(() =>
 }
 .kx-landing__pipeline-step.is-active {
   border-color: #a8c0f5;
-  background: #fff;
+  background: var(--on-primary);
 }
 .kx-landing__pipeline-step.is-active span {
   background: var(--landing-primary);
-  color: #fff;
+  color: var(--on-primary);
 }
 
 .kx-landing__features,
@@ -495,8 +495,8 @@ const pipeline = computed(() =>
   border-radius: 6px;
   font-size: 11px;
   font-weight: 650;
-  color: #92400e;
-  background: #fff7e8;
+  color: var(--warning-dark);
+  background: var(--warning-bg);
 }
 .kx-landing__card p {
   margin: 0;
@@ -521,7 +521,7 @@ const pipeline = computed(() =>
   padding: 18px;
   border: 1px solid var(--landing-border);
   border-radius: 12px;
-  background: #fff;
+  background: var(--on-primary);
   text-align: left;
 }
 .kx-landing__adv-index {
@@ -552,7 +552,7 @@ const pipeline = computed(() =>
 }
 .kx-landing__footer p {
   margin: 0;
-  color: #8a97ab;
+  color: var(--muted);
   font-size: 12px;
   text-align: left;
 }

@@ -1784,12 +1784,12 @@ onMounted(async () => {
   color: var(--text-secondary);
 }
 .tenant-badge--admin {
-  background: rgba(59, 130, 246, 0.1);
-  color: #3b82f6;
+  background: var(--info-bg);
+  color: var(--accent);
 }
 .tenant-badge--default {
-  background: rgba(34, 197, 94, 0.1);
-  color: #22c55e;
+  background: var(--success-bg);
+  color: var(--success);
 }
 
 /* Round 47 compression v7: parent-child chain badge. */
@@ -1809,20 +1809,20 @@ onMounted(async () => {
   color: var(--text-secondary);
 }
 .compression-badge.strategy-mechanical_trim {
-  background: rgba(245, 158, 11, 0.1);
-  color: #b45309;
+  background: var(--warning-bg);
+  color: var(--warning-dark);
 }
 .compression-badge.strategy-memora_l1_inject {
   background: color-mix(in srgb, var(--accent) 10%, transparent);
   color: #6d28d9;
 }
 .compression-badge.strategy-llm_summary {
-  background: rgba(59, 130, 246, 0.1);
-  color: #1d4ed8;
+  background: var(--info-bg);
+  color: var(--accent);
 }
 .compression-badge.strategy-noop {
   background: rgba(107, 114, 128, 0.1);
-  color: #4b5563;
+  color: var(--muted);
 }
 /* v3 (2026-06-19) session-level compression strategies.
    Different color palette from v7 to make them visually distinguishable
@@ -1835,9 +1835,9 @@ onMounted(async () => {
 .compression-badge.strategy-sliding_window_token,
 .compression-badge.strategy-sliding_window_count,
 .compression-badge.strategy-sliding_window_idle {
-  background: color-mix(in srgb, #d946ef 12%, transparent);
+  background: color-mix(in srgb, var(--magenta) 12%, transparent);
   color: #7e22ce;
-  border: 1px solid color-mix(in srgb, #d946ef 30%, transparent);
+  border: 1px solid color-mix(in srgb, var(--magenta) 30%, transparent);
 }
 .col-compress {
   max-width: 180px;
@@ -1854,8 +1854,8 @@ onMounted(async () => {
   border-radius: 8px;
   font-size: 10px;
   font-weight: 600;
-  background: color-mix(in srgb, #d946ef 12%, transparent);
-  color: #c084fc;
+  background: color-mix(in srgb, var(--magenta) 12%, transparent);
+  color: var(--purple);
 }
 .parent-id {
   color: var(--text-secondary);
@@ -1966,7 +1966,7 @@ onMounted(async () => {
 .filter-section .filter-select:focus {
   outline: none;
   border-color: var(--accent);
-  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.1);
+  box-shadow: 0 0 0 2px var(--info-bg);
 }
 .filter-section .filter-input {
   width: 100%;
@@ -1981,7 +1981,7 @@ onMounted(async () => {
 .filter-section .filter-input:focus {
   outline: none;
   border-color: var(--accent);
-  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.1);
+  box-shadow: 0 0 0 2px var(--info-bg);
 }
 .filter-section .filter-input::placeholder {
   color: var(--text-secondary);
@@ -2021,7 +2021,7 @@ onMounted(async () => {
 .preset-chip--active {
   border-color: var(--accent);
   color: var(--accent-h);
-  background: rgba(59, 130, 246, 0.12);
+  background: var(--info-bg);
 }
 .preset-chip--disabled { opacity: 0.45; cursor: not-allowed; }
 .preset-chip--disabled:hover { border-color: var(--border); color: var(--text); }

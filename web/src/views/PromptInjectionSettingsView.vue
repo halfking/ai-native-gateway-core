@@ -1114,9 +1114,9 @@ onMounted(async () => {
     padding: 16px; border-radius: 4px; text-align: center;
     .risk-label { font-size: 14px; margin-bottom: 8px; }
     .risk-count { font-size: 24px; font-weight: bold; }
-    &.risk-critical { background: rgba(248,81,73,.12); color: #f85149; }
-    &.risk-high { background: rgba(248,81,73,.12); color: #f85149; }
-    &.risk-medium { background: rgba(210,153,34,.12); color: #d29922; }
+    &.risk-critical { background: var(--danger-bg); color: var(--danger); }
+    &.risk-high { background: var(--danger-bg); color: var(--danger); }
+    &.risk-medium { background: var(--warning-bg); color: var(--warning); }
     &.risk-low { background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent-h); }
   }
 }

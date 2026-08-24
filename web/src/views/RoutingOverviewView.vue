@@ -464,7 +464,7 @@ onMounted(load)
   border-radius: 3px;
   font-size: 8px; font-weight: 700;
 }
-.layer-tag.l2 { background: rgba(63,185,80,.22); color: var(--success); }
+.layer-tag.l2 { background: var(--success-bd); color: var(--success); }
 
 .search-input {
   flex: 1;

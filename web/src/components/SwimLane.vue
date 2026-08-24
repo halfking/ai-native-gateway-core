@@ -367,7 +367,7 @@ watch(laneMode, async () => {
 }
 
 .swim-lane__diagnose--active {
-  border-color: rgba(248, 81, 73, 0.5);
+  border-color: var(--danger-bd);
   color: var(--danger);
 }
 .swim-lane__diagnose--active .swim-lane__diagnose-dot {
@@ -377,7 +377,7 @@ watch(laneMode, async () => {
 }
 
 .swim-lane__diagnose--recovering {
-  border-color: rgba(210, 153, 34, 0.5);
+  border-color: var(--warning-bd);
   color: var(--warning);
 }
 .swim-lane__diagnose--recovering .swim-lane__diagnose-dot {

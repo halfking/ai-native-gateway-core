@@ -434,7 +434,7 @@ function handleChangePasswordSuccess() {
 }
 
 .nav-group-header:hover {
-  background: rgba(255, 255, 255, 0.05);
+  background: color-mix(in srgb, var(--kx-text) 4%, transparent);
   color: var(--text);
 }
 
@@ -499,7 +499,7 @@ function handleChangePasswordSuccess() {
 }
 
 .nav-item:hover {
-  background: rgba(255, 255, 255, 0.05);
+  background: color-mix(in srgb, var(--kx-text) 4%, transparent);
   color: var(--text);
 }
 
@@ -606,7 +606,7 @@ function handleChangePasswordSuccess() {
 }
 
 .sidebar-toggle:hover {
-  background: rgba(255, 255, 255, 0.05);
+  background: color-mix(in srgb, var(--kx-text) 4%, transparent);
   color: var(--text);
 }
 

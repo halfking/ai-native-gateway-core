@@ -135,23 +135,23 @@ function openTask(id: string) {
 }
 @media (max-width: 900px) { .rankings-row { grid-template-columns: 1fr; } }
 .detail-card {
-  border: 1px solid var(--border, #e5e7eb);
+  border: 1px solid var(--border, var(--surface-secondary));
   border-radius: 10px;
-  background: var(--card, #fff);
+  background: var(--card, var(--on-primary));
   padding: 14px 16px;
   min-width: 0;
 }
 .detail-card__header { font-weight: 600; font-size: 14px; margin-bottom: 12px; }
-.empty-hint { margin: 0; font-size: 13px; color: var(--muted, #909399); }
+.empty-hint { margin: 0; font-size: 13px; color: var(--muted, var(--text-secondary)); }
 .table-wrap { overflow-x: auto; }
 .data-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-.data-table th, .data-table td { padding: 8px 10px; border-bottom: 1px solid var(--border, #f0f0f0); text-align: left; }
-.data-table th { color: var(--muted, #909399); font-weight: 500; }
+.data-table th, .data-table td { padding: 8px 10px; border-bottom: 1px solid var(--border, var(--surface-secondary)); text-align: left; }
+.data-table th { color: var(--muted, var(--text-secondary)); font-weight: 500; }
 .data-table .num { text-align: right; font-variant-numeric: tabular-nums; }
-.link-btn { border: 0; background: none; color: var(--accent, #409eff); cursor: pointer; padding: 0; font: inherit; }
-.health-pill { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 12px; background: #f3f4f6; }
-.health-pill--success { background: #dcfce7; }
-.health-pill--warning { background: #fef3c7; }
-.health-pill--danger { background: #fee2e2; }
+.link-btn { border: 0; background: none; color: var(--accent, var(--accent)); cursor: pointer; padding: 0; font: inherit; }
+.health-pill { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 12px; background: var(--surface-secondary); }
+.health-pill--success { background: var(--success-bg); }
+.health-pill--warning { background: var(--warning-bg); }
+.health-pill--danger { background: var(--danger-bg); }
 .model-card { margin-bottom: 16px; }
 </style>

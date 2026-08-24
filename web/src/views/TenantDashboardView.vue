@@ -683,8 +683,8 @@ onUnmounted(() => {
   border-radius: 12px;
   font-size: 12px;
   font-weight: 500;
-  background: rgba(59, 130, 246, 0.1);
-  color: #3b82f6;
+  background: var(--info-bg);
+  color: var(--accent);
   white-space: nowrap;
 }
 .days-select {
@@ -774,7 +774,7 @@ onUnmounted(() => {
   font-weight: 600;
 }
 .sub-value.highlight {
-  color: #f59e0b;
+  color: var(--warning);
   font-family: 'SF Mono', 'Fira Code', monospace;
 }
 .subscription-empty {
@@ -887,7 +887,7 @@ onUnmounted(() => {
 }
 .bar-track {
   height: 10px;
-  background: rgba(255, 255, 255, 0.06);
+  background: color-mix(in srgb, var(--kx-text) 4%, transparent);
   border-radius: 5px;
   overflow: hidden;
 }
@@ -926,7 +926,7 @@ onUnmounted(() => {
   font-family: 'SF Mono', 'Fira Code', monospace;
 }
 .num.credits {
-  color: #f59e0b;
+  color: var(--warning);
 }
 .trend-grid {
   display: grid;
@@ -975,7 +975,7 @@ onUnmounted(() => {
   opacity: 0.85;
 }
 .trend-bar.credits {
-  background: linear-gradient(180deg, #f59e0b, #d97706);
+  background: linear-gradient(180deg, var(--warning), var(--warning));
 }
 .trend-bar.requests {
   background: linear-gradient(180deg, var(--accent), var(--accent-h));
@@ -1009,8 +1009,8 @@ onUnmounted(() => {
   border-radius: 8px;
   font-size: 11px;
 }
-.badge-green { background: rgba(34,197,94,.15); color: #4ade80; }
-.badge-red { background: rgba(239,68,68,.15); color: #f87171; }
+.badge-green { background: var(--success-bg); color: var(--success); }
+.badge-red { background: var(--danger-bg); color: var(--danger); }
 .detail-footer {
   display: flex;
   gap: 16px;
@@ -1033,7 +1033,7 @@ onUnmounted(() => {
   padding: 8px 12px;
   border-radius: 4px;
   background: rgba(239, 68, 68, 0.1);
-  color: #f87171;
+  color: var(--danger);
   margin-bottom: 12px;
 }
 @media (max-width: 1024px) {

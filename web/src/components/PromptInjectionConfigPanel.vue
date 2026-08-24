@@ -683,7 +683,7 @@ const thresholdInvalid = computed(() => {
 .banner { padding: 8px 10px; border-radius: 6px; font-size: 12px; }
 .banner-error { color: var(--danger); border: 1px solid color-mix(in srgb, var(--danger) 35%, var(--border)); background: color-mix(in srgb, var(--danger) 8%, transparent); }
 .banner-success { color: var(--success); border: 1px solid color-mix(in srgb, var(--success) 35%, var(--border)); background: color-mix(in srgb, var(--success) 8%, transparent); }
-.banner-warn { color: #b8821a; border: 1px solid color-mix(in srgb, #d29922 35%, var(--border)); background: color-mix(in srgb, #d29922 8%, transparent); }
+.banner-warn { color: #b8821a; border: 1px solid color-mix(in srgb, var(--warning) 35%, var(--border)); background: color-mix(in srgb, var(--warning) 8%, transparent); }
 .threshold-error { color: var(--danger); font-size: 11px; margin: 6px 0 0; }
 .state { color: var(--muted); font-size: 12px; padding: 10px 0; }
 

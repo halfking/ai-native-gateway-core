@@ -287,7 +287,7 @@ async function writeMemora() {
   position: fixed;
   inset: 0;
   z-index: 3200;
-  background: rgba(0, 0, 0, 0.5);
+  background: var(--overlay-strong);
   display: flex;
   justify-content: flex-end;
 }

@@ -25,9 +25,9 @@ function getCssVar(name: string, fallback = ''): string {
  * 这些常量被各图表配置生成器引用，避免在暗色背景上出现白色边框/网格/文字。
  */
 export const chartTheme = {
-  text: '#e6edf3',
-  muted: '#8b949e',
-  grid: 'rgba(255, 255, 255, 0.06)',
+  text: 'var(--surface-secondary)',
+  muted: 'var(--muted)',
+  grid: 'color-mix(in srgb, var(--kx-text) 4%, transparent)',
   cardBorder: '#1c2128'
 }
 
@@ -179,7 +179,7 @@ export function createTimeSeriesConfig(
     y: {
       beginAtZero: true,
       grid: {
-        color: 'rgba(255, 255, 255, 0.06)'
+        color: 'color-mix(in srgb, var(--kx-text) 4%, transparent)'
       }
     }
   }
@@ -323,7 +323,7 @@ export function createStackedAreaConfig(
           stacked: true,
           beginAtZero: true,
           grid: {
-            color: 'rgba(255, 255, 255, 0.06)'
+            color: 'color-mix(in srgb, var(--kx-text) 4%, transparent)'
           }
         }
       },
@@ -374,7 +374,7 @@ export function createHistogramConfig(
         y: {
           beginAtZero: true,
           grid: {
-            color: 'rgba(255, 255, 255, 0.06)'
+            color: 'color-mix(in srgb, var(--kx-text) 4%, transparent)'
           }
         }
       },
@@ -387,19 +387,19 @@ export function createHistogramConfig(
  * 常用颜色方案
  */
 export const chartColors = {
-  primary: '#409EFF',
-  success: '#67C23A',
-  warning: '#E6A23C',
-  danger: '#F56C6C',
-  info: '#909399',
-  blue: '#409EFF',
-  green: '#67C23A',
-  orange: '#E6A23C',
-  red: '#F56C6C',
+  primary: 'var(--accent)',
+  success: 'var(--success)',
+  warning: 'var(--warning)',
+  danger: 'var(--danger)',
+  info: 'var(--text-secondary)',
+  blue: 'var(--accent)',
+  green: 'var(--success)',
+  orange: 'var(--warning)',
+  red: 'var(--danger)',
   purple: '#9b59b6',
   cyan: '#3498db',
-  pink: '#e91e63',
-  gray: '#95a5a6'
+  pink: 'var(--pink)',
+  gray: 'var(--muted)'
 }
 
 /**
