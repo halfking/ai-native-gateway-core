@@ -99,14 +99,23 @@ func newWaterfallRing(cap int) *waterfallRing {
 	return &waterfallRing{buf: make([]WaterfallRequest, cap)}
 }
 
-func (r *waterfallRing) push(item WaterfallRequest) {
+// push appends one completion, returning the evicted entry when the ring
+// wraps over an existing sample. Callers maintaining derived read models
+// (e.g. the projection's waiting-percentile window) use the evicted value
+// to keep their aggregates aligned with the ring contents.
+func (r *waterfallRing) push(item WaterfallRequest) (evicted WaterfallRequest, didEvict bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.full {
+		evicted = r.buf[r.next]
+		didEvict = true
+	}
 	r.buf[r.next] = item
 	r.next = (r.next + 1) % len(r.buf)
 	if r.next == 0 {
 		r.full = true
 	}
+	return evicted, didEvict
 }
 
 // snapshot returns the newest-first slice, optionally filtered.

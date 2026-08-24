@@ -91,6 +91,11 @@ type QueueProjection struct {
 	degraded    map[int]bool
 	inFlight    int64
 	waterfall   *waterfallRing
+	// waitsSorted mirrors the qualifying QueueWaitMS values of the
+	// waterfall ring, ascending. Maintained incrementally at push time so
+	// Snapshot computes percentiles without re-snapshotting the ring.
+	// Bounded by the ring capacity; guarded by mu.
+	waitsSorted []int
 
 	sourceVersion atomic.Int64
 	overflowUntil atomic.Int64
@@ -127,6 +132,7 @@ func (p *QueueProjection) Close() {
 	p.credentials = nil
 	p.degraded = nil
 	p.waterfall = nil
+	p.waitsSorted = nil
 	p.mu.Unlock()
 }
 
@@ -147,7 +153,8 @@ func (p *QueueProjection) ObserveQueue(observation QueueObservation) {
 		p.overflowUntil.Store(time.Now().Add(5 * time.Second).UnixNano())
 	case QueueRequestCompleted:
 		if observation.Completed != nil && p.waterfall != nil {
-			p.waterfall.push(cloneWaterfallRequest(*observation.Completed))
+			evicted, didEvict := p.waterfall.push(cloneWaterfallRequest(*observation.Completed))
+			p.observeWaitSample(*observation.Completed, evicted, didEvict)
 		}
 	case QueueModelDepth:
 		if observation.Model == "" {
@@ -224,6 +231,33 @@ func nonNegative(value int64) int64 {
 	return value
 }
 
+// waitSampleQualifies mirrors the sample filter of the former
+// per-snapshot percentile scan: both boundary timestamps must be present
+// and the wait must be positive.
+func waitSampleQualifies(r WaterfallRequest) bool {
+	return r.ArrivedAt != "" && r.CredDequeuedAt != "" && r.QueueWaitMS > 0
+}
+
+// observeWaitSample keeps waitsSorted aligned with the ring window. It runs
+// under the projection write lock at push time: one binary search plus one
+// int memmove insert, and the symmetric removal for the evicted sample.
+func (p *QueueProjection) observeWaitSample(item, evicted WaterfallRequest, didEvict bool) {
+	if didEvict && waitSampleQualifies(evicted) {
+		v := evicted.QueueWaitMS
+		i := sort.SearchInts(p.waitsSorted, v)
+		if i < len(p.waitsSorted) && p.waitsSorted[i] == v {
+			p.waitsSorted = append(p.waitsSorted[:i], p.waitsSorted[i+1:]...)
+		}
+	}
+	if waitSampleQualifies(item) {
+		v := item.QueueWaitMS
+		i := sort.SearchInts(p.waitsSorted, v)
+		p.waitsSorted = append(p.waitsSorted, 0)
+		copy(p.waitsSorted[i+1:], p.waitsSorted[i:])
+		p.waitsSorted[i] = v
+	}
+}
+
 // Snapshot returns a sorted, detached queue read model.
 func (p *QueueProjection) Snapshot() *SnapshotView {
 	if p == nil || !p.wired.Load() {
@@ -257,7 +291,15 @@ func (p *QueueProjection) Snapshot() *SnapshotView {
 			break
 		}
 	}
-	p50, p95 := waitingPercentilesFromRequests(p.waterfall.snapshot(waterfallRingCap, "", 0, ""))
+	// Percentiles read the incrementally maintained window instead of
+	// re-snapshotting the full ring. Fresh boxes per call keep the view
+	// detached from projection state.
+	var p50, p95 *int64
+	if len(p.waitsSorted) > 0 {
+		p50Value := int64(nearestRank(p.waitsSorted, 50))
+		p95Value := int64(nearestRank(p.waitsSorted, 95))
+		p50, p95 = &p50Value, &p95Value
+	}
 	sort.Slice(models, func(i, j int) bool { return models[i].Model < models[j].Model })
 	sort.Slice(credentials, func(i, j int) bool { return credentials[i].Credential < credentials[j].Credential })
 	view := &SnapshotView{Enabled: enabled, Wired: true, Models: models, Credentials: credentials}
@@ -331,21 +373,4 @@ func (p *QueueProjection) SnapshotWaterfall(limit int, model string, credentialI
 func cloneWaterfallRequest(request WaterfallRequest) WaterfallRequest {
 	request.Attempts = append([]WaterfallAttempt(nil), request.Attempts...)
 	return request
-}
-
-func waitingPercentilesFromRequests(requests []WaterfallRequest) (p50, p95 *int64) {
-	waits := make([]int, 0, len(requests))
-	for _, request := range requests {
-		if request.ArrivedAt == "" || request.CredDequeuedAt == "" || request.QueueWaitMS <= 0 {
-			continue
-		}
-		waits = append(waits, request.QueueWaitMS)
-	}
-	if len(waits) == 0 {
-		return nil, nil
-	}
-	sort.Ints(waits)
-	p50Value := int64(nearestRank(waits, 50))
-	p95Value := int64(nearestRank(waits, 95))
-	return &p50Value, &p95Value
 }
