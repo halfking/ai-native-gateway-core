@@ -477,6 +477,16 @@ type LiveStreamSSEHub struct {
 	// stale tenants (prevents unbounded memory growth).
 	cachedSnapshotMu sync.RWMutex
 	cachedSnapshot   map[string]*cachedSnapshotEntry // key = tenantID
+	// 2026-08-25: per-scope snapshot throttle. broadcast 路径里每个 SSE 事件
+	// 都会触发 computeScopeDelta(原设计 bug); 在 154 网关 8k req/min 下每秒
+	// 调用 SnapshotFromDimensionQueues 数百次, 制造 ZRevRange 慢查询风暴.
+	// 改为最小刷新间隔 (默认 2s, env LLM_GATEWAY_LIVE_STREAM_SNAPSHOT_MIN_INTERVAL):
+	// 在窗口内复用上一次成功的 delta (delta 缓存), 不重复跑 Redis pipeline.
+	lastSnapshotAtMu     sync.RWMutex
+	lastSnapshotAt       map[string]time.Time      // key = scope.cacheKey
+	lastDeltaByScope     map[string]*LiveStreamDelta // 上次成功的 delta 缓存 (供节流命中时复用)
+	lastDeltaMu          sync.RWMutex
+	snapshotMinInterval  time.Duration              // 最小刷新间隔; 0 禁用节流
 	// 淘汰阈值统一使用 cfg.CachedSnapshotTTL，不再单独维护字段。
 
 	// Metrics (added 2026-07-03 for monitoring)
@@ -490,6 +500,7 @@ type LiveStreamSSEHub struct {
 	cachedSnapshotEmptySkips      int64 // 读出空 snapshot 触发早返的次数
 	cachedSnapshotDegradedSkips   int64 // 读出残缺 snapshot（total 远低于 cached）触发丢弃的次数
 	cachedSnapshotEvictions       int64 // evictStaleCachedSnapshots 累计清掉的 entry 数
+	cachedSnapshotThrottleHits    int64 // 2026-08-25: 节流命中, 复用 lastDeltaByScope 跳过 Redis pipeline
 
 	// lastHealth tracks the previous Redis health state so we only
 	// broadcast a health_update envelope when the state changes.
@@ -629,10 +640,25 @@ func NewLiveStreamSSEHub(db *pgxpool.Pool, cfg LiveStreamConfig) *LiveStreamSSEH
 		lastActivity:      time.Now(),
 		stopCh:            make(chan struct{}),
 		cachedSnapshot:    make(map[string]*cachedSnapshotEntry),
+		lastSnapshotAt:    make(map[string]time.Time),
+		lastDeltaByScope:  make(map[string]*LiveStreamDelta),
+		snapshotMinInterval: defaultLiveStreamSnapshotMinInterval,
 		actionTenantIndex: make(map[string]string),
 		actionTenantMiss:  make(map[string]time.Time),
 		instanceID:        generateLiveStreamInstanceID(),
 	}
+}
+
+// generateLiveStreamInstanceID returns a short random per-hub tag used to
+// de-duplicate our own Redis pub/sub notifies. Encoded as 8 hex chars from
+// crypto rand to avoid collisions across restarts. Mirrors newFreePoolInstanceID.
+
+// SetSnapshotMinInterval overrides the per-scope snapshot throttle. Set to 0
+// to disable throttling (each broadcast always calls SnapshotFromDimensionQueues).
+// 2026-08-25: 节流, 默认 2s; 调小会更敏感但增加 Redis 压力.
+func (h *LiveStreamSSEHub) SetSnapshotMinInterval(d time.Duration) {
+	h.snapshotMinInterval = d
+	slog.Info("live stream: snapshot min interval set", "interval", d.String())
 }
 
 // generateLiveStreamInstanceID returns a short random per-hub tag used to
@@ -822,6 +848,13 @@ const (
 // being truncated by a context deadline (production logs 2026-08-04).
 const liveStreamSnapshotReadTimeout = 5 * time.Second
 
+// 2026-08-25: broadcast 路径里每个 SSE 事件都会触发 computeScopeDelta, 在高流量
+// 网关 (154, 8k req/min) 下每秒数百次 SnapshotFromDimensionQueues 调用 →
+// Redis ZRevRange 慢查询风暴 + gateway CPU. 最小刷新间隔内复用上次成功的 delta.
+// 0 表示禁用节流 (回滚开关).
+// 可通过 LLM_GATEWAY_LIVE_STREAM_SNAPSHOT_MIN_INTERVAL 覆盖.
+const defaultLiveStreamSnapshotMinInterval = 2 * time.Second
+
 // computeScopeDelta reads a fresh snapshot for the given scope
 // (tenantID="" + isSuper=true for the global view, or tenantID+false
 // for a tenant view) and returns the delta against the cached snapshot
@@ -834,6 +867,29 @@ func (h *LiveStreamSSEHub) computeScopeDelta(ctx context.Context, tenantID strin
 		return nil
 	}
 	scope := newLiveStreamScope(tenantID, isSuper)
+
+	// 2026-08-25: per-scope snapshot throttle. broadcast 路径里每个 SSE 事件
+	// 都会调用本函数, 在 154 网关 8k req/min 下每秒跑数百次
+	// SnapshotFromDimensionQueues → Redis ZRevRange 慢查询风暴.
+	// 节流命中: 复用上次成功的 delta 缓存, 不重复跑 Redis pipeline.
+	// 注意 Summary/Lanes 数据略陈旧 (≤ interval), 这是有意的取舍:
+	// dashboard 接受 sub-second 延迟换 gateway CPU + Redis 压力骤降.
+	if h.snapshotMinInterval > 0 {
+		h.lastSnapshotAtMu.RLock()
+		lastAt, hasLast := h.lastSnapshotAt[scope.cacheKey]
+		h.lastSnapshotAtMu.RUnlock()
+		if hasLast && time.Since(lastAt) < h.snapshotMinInterval {
+			h.lastDeltaMu.RLock()
+			cachedDelta := h.lastDeltaByScope[scope.cacheKey]
+			h.lastDeltaMu.RUnlock()
+			if cachedDelta != nil {
+				atomic.AddInt64(&h.cachedSnapshotThrottleHits, 1)
+				return cachedDelta
+			}
+			// 上次未成功 (cachedDelta==nil) — 仍要走完整路径,
+			// 但不要再延后 lastSnapshotAt, 避免冷启时持续 skip.
+		}
+	}
 
 	// Entering the scope refreshes an existing baseline before any Redis I/O.
 	// This preserves the last known snapshot across a transient empty/error
@@ -908,6 +964,14 @@ func (h *LiveStreamSSEHub) computeScopeDelta(ctx context.Context, tenantID strin
 		snapshot:     snapshot,
 		lastAccessed: time.Now(),
 	}
+	// 2026-08-25: 节流缓存. 把本次成功 delta 写入 lastDeltaByScope,
+	// 并把 lastSnapshotAt 标为 now, 让后续 ≤ interval 的 broadcast 复用之.
+	h.lastDeltaMu.Lock()
+	h.lastDeltaByScope[scope.cacheKey] = delta
+	h.lastDeltaMu.Unlock()
+	h.lastSnapshotAtMu.Lock()
+	h.lastSnapshotAt[scope.cacheKey] = time.Now()
+	h.lastSnapshotAtMu.Unlock()
 	return delta
 }
 

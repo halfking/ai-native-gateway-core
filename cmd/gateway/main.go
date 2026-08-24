@@ -1799,6 +1799,10 @@ func main() {
 
 	// ── Telemetry ─────────────────────────────────────────────────────────
 	telemetryClient := telemetry.NewClient()
+	// 2026-08-25: 注册到 telemetry 包级 holder, 让 columnar-safe claim
+	// 路径 (无 Client 上下文的顶层函数 claimSessionFinalSuccess) 能拿到
+	// 当前实例的 Client, 调用 heapRequestLogsPartitions 取 heap 月度分区列表.
+	telemetry.SetClaimClient(telemetryClient)
 	if dbConn != nil && dbConn.Enabled() {
 		telemetryClient.SetDB(dbConn.Pool())
 
@@ -1900,6 +1904,11 @@ func main() {
 		"LLM_GATEWAY_LIVE_STREAM_SNAPSHOT_REFRESH_INTERVAL",
 		30*time.Minute,
 	)
+	// 2026-08-25: per-scope snapshot 节流间隔. 0 禁用. 默认 2s.
+	liveStreamSnapshotMinInterval := positiveDurationEnv(
+		"LLM_GATEWAY_LIVE_STREAM_SNAPSHOT_MIN_INTERVAL",
+		2*time.Second,
+	)
 	var liveStreamHub *admin.LiveStreamSSEHub
 	// probeStreamHub (2026-08-11) mirrors the live request stream for the
 	// 自检 tab. Declared at this scope so it can be constructed in the
@@ -1929,6 +1938,7 @@ func main() {
 		CachedSnapshotCleanupInterval: liveStreamCachedCleanup,
 		SnapshotRefreshInterval:       liveStreamSnapshotRefresh,
 	})
+	liveStreamHub.SetSnapshotMinInterval(liveStreamSnapshotMinInterval)
 	go liveStreamHub.Run()
 
 	if dbPool != nil {

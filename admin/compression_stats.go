@@ -141,6 +141,8 @@ func (h *Handler) handleCompressionStats(w http.ResponseWriter, r *http.Request)
 			SUM(COALESCE(rl.outbound_token_est, 0))::bigint AS total_tok_after,
 			SUM(CASE WHEN rb.outbound_body IS NOT NULL THEN COALESCE(rl.outbound_token_est, 0) ELSE 0 END)::bigint AS compressed_tok
 		FROM request_logs_with_current_month rl
+		LEFT JOIN request_logs_bodies_with_current_month rb
+		  ON rb.request_id = rl.request_id
 		WHERE rl.ts >= $1 AND rl.ts <= $2
 		  AND ($3 OR rl.success)`+aggWhere+`
 		GROUP BY strategy
@@ -253,6 +255,8 @@ func (h *Handler) handleCompressionStats(w http.ResponseWriter, r *http.Request)
 			COUNT(*) AS total,
 			COUNT(rb.outbound_body)::int AS compressed
 		FROM request_logs_with_current_month rl
+		LEFT JOIN request_logs_bodies_with_current_month rb
+		  ON rb.request_id = rl.request_id
 		WHERE rl.ts >= $1 AND rl.ts <= $2
 		  AND ($3 OR rl.success)`+aggWhere+`
 		GROUP BY bucket

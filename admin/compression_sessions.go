@@ -86,13 +86,11 @@ func (h *Handler) handleCompressionSessions(w http.ResponseWriter, r *http.Reque
 
 	tenantFilter := IsTenantAdmin(r)
 
-	// 2026-08-24 LP1: rl.outbound_body column was dropped (migration 573);
-	// keep the predicate so the WHERE clause still compiles, but the
-	// "outbound_body IS NOT NULL" half now always matches because the
-	// column is gone from the view. Use compression_reason (independent
-	// column still present) as the actual "this session was compressed"
-	// signal. LP7 follow-up will revisit the API surface.
-	whereClause := `rl.ts >= $1 AND rl.ts <= $2 AND rl.compression_reason IS NOT NULL AND rl.gw_session_id IS NOT NULL AND ($3 OR rl.success)`
+	// 2026-08-25 merge: keep the outbound-body presence predicate on the
+	// bodies side (rb.outbound_body) — the actual payload signal, and it
+	// survives migration 573 dropping rl.outbound_body. LP1's temporary
+	// compression_reason proxy is retired.
+	whereClause := `rl.ts >= $1 AND rl.ts <= $2 AND rb.outbound_body IS NOT NULL AND rl.gw_session_id IS NOT NULL AND ($3 OR rl.success)`
 	args := []any{from, to, !tenantFilter}
 	argIdx := 4
 	tenantFrag, tenantArgs, nextArg := tenantLogsClause(r, argIdx)
@@ -109,7 +107,7 @@ func (h *Handler) handleCompressionSessions(w http.ResponseWriter, r *http.Reque
 	}
 
 	// Count distinct sessions
-	countSQL := `SELECT COUNT(DISTINCT rl.gw_session_id) FROM request_logs rl WHERE ` + whereClause
+	countSQL := `SELECT COUNT(DISTINCT rl.gw_session_id) FROM request_logs_with_current_month rl LEFT JOIN request_logs_bodies_with_current_month rb ON rb.request_id = rl.request_id WHERE ` + whereClause
 	var totalCount int
 	if err := h.db.QueryRow(ctx, countSQL, args...).Scan(&totalCount); err != nil {
 		slog.Warn("compression_sessions count query failed", "error", err)
@@ -140,6 +138,8 @@ func (h *Handler) handleCompressionSessions(w http.ResponseWriter, r *http.Reque
 				MAX(rl.outbound_token_est) AS outbound_token_est,
 				MAX(rl.request_id) AS sample_request_id
 			FROM request_logs_with_current_month rl
+			LEFT JOIN request_logs_bodies_with_current_month rb
+			  ON rb.request_id = rl.request_id
 			WHERE ` + whereClause + `
 			GROUP BY rl.gw_session_id
 		) s
@@ -147,9 +147,9 @@ func (h *Handler) handleCompressionSessions(w http.ResponseWriter, r *http.Reque
 			SELECT jsonb_array_length(COALESCE(COALESCE(rb2.request_body, rl2.request_body)::jsonb->'messages', '[]'::jsonb)) AS orig_msg_count
 			FROM request_logs_with_current_month rl2
 			LEFT JOIN request_logs_bodies_with_current_month rb2
-			  ON rb2.request_id = rl2.request_id AND rb2.ts = rl2.ts
+			  ON rb2.request_id = rl2.request_id
 			WHERE rl2.gw_session_id = s.gw_session_id
-			  AND rl2.outbound_body IS NOT NULL
+			  AND rb2.outbound_body IS NOT NULL
 			ORDER BY rl2.ts DESC
 			LIMIT 1
 		) latest ON true

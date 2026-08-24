@@ -58,6 +58,7 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			"569_candidate_binding_scope_revision_canonical.sql",
 			"570_model_offers_insert_priority_passthrough.sql",
 			"571_candidate_binding_scope_revision_canonical_priority_hash.sql",
+			"600_outbound_body_to_bodies_hot.sql",
 		},
 	}
 }
