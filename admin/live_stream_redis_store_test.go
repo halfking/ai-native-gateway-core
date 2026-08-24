@@ -324,6 +324,69 @@ func TestLiveStreamRedisStore_NilClient(t *testing.T) {
 	}
 }
 
+func TestDimensionQueueKeyInfoBuildsActivityKeyScope(t *testing.T) {
+	tests := []struct {
+		name string
+		key  string
+		want string
+		ok   bool
+	}{
+		{name: "global provider", key: liveStreamDimPrefix + "provider:MiniMax", want: liveStreamActivityKey("", "provider", "MiniMax"), ok: true},
+		{name: "tenant model", key: "llmgw:live:tenant:default:dim:model:minimax-m3", want: liveStreamActivityKey("default", "model", "minimax-m3"), ok: true},
+		{name: "invalid dimension", key: liveStreamDimPrefix + "status:success", ok: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			info, ok := dimensionQueueKeyInfo(tt.key)
+			if ok != tt.ok {
+				t.Fatalf("ok=%v want %v (%#v)", ok, tt.ok, info)
+			}
+			if ok {
+				got := liveStreamActivityKey(info.tenantID, info.dimension, info.dimensionKey)
+				if got != tt.want {
+					t.Fatalf("activity key=%q want %q", got, tt.want)
+				}
+			}
+		})
+	}
+}
+
+func TestLiveStreamRedisStore_ActivityKeysUseDimensionIndexes(t *testing.T) {
+	mr := miniredis.RunT(t)
+	defer mr.Close()
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer rdb.Close()
+	store := NewLiveStreamRedisStore(rdb)
+	ctx := context.Background()
+
+	if err := store.Record(ctx, LiveRequest{
+		RequestID: "indexed-1", Ts: time.Now().UTC().Format(time.RFC3339), TenantID: "default",
+		Model: "minimax-m3", ModelCategory: "minimax", ProviderCode: "MiniMax", Status: "success",
+	}, ""); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	keys, err := store.activityKeysFromDimensionIndexes(ctx)
+	if err != nil {
+		t.Fatalf("activityKeysFromDimensionIndexes: %v", err)
+	}
+	want := map[string]bool{
+		liveStreamActivityKey("", "vendor", "minimax"):        false,
+		liveStreamActivityKey("", "provider", "MiniMax"):      false,
+		liveStreamActivityKey("", "model", "minimax-m3"):      false,
+		liveStreamActivityKey("default", "vendor", "minimax"): false,
+	}
+	for _, key := range keys {
+		if _, ok := want[key]; ok {
+			want[key] = true
+		}
+	}
+	for key, found := range want {
+		if !found {
+			t.Errorf("missing indexed activity key %q", key)
+		}
+	}
+}
+
 func TestLiveRequestRedisPayload_OnlyObservationFields(t *testing.T) {
 	errKind := "upstream_5xx"
 	latency := 123

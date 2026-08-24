@@ -80,7 +80,7 @@ func TestInsertSessionOpenedEvent_IsIdempotent(t *testing.T) {
 	require.NoError(t, tx.Rollback(context.Background()))
 	require.NoError(t, mockDB.ExpectationsWereMet())
 }
-func TestUpdateRequestLog_UsesTerminalStateGuard(t *testing.T) {
+func TestUpdateRequestLog_AllowsTerminalSuccessToReplaceIntermediateFailure(t *testing.T) {
 	mockDB, err := pgxmock.NewPool()
 	require.NoError(t, err)
 	defer mockDB.Close()
@@ -89,9 +89,9 @@ func TestUpdateRequestLog_UsesTerminalStateGuard(t *testing.T) {
 	mockDB.ExpectExec(`UPDATE usage_ledger_hot`).
 		WithArgs("req-update", pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
-	status := RequestStatusFailure
+	status := RequestStatusSuccess
 	requestLogArgs := requestLogUpdateArgs(RequestLogEntry{
-		Success:       false,
+		Success:       true,
 		RequestStatus: &status,
 	})
 	mockDB.ExpectExec(`UPDATE request_logs_hot[\s\S]*request_logs_hot\.request_status = 'failure'`).
@@ -106,7 +106,7 @@ func TestUpdateRequestLog_UsesTerminalStateGuard(t *testing.T) {
 	err = client.updateRequestLog(&RequestLogEntry{
 		RequestID:     "req-update",
 		Op:            RequestLogUpdate,
-		Success:       false,
+		Success:       true,
 		RequestStatus: &status,
 	})
 	require.NoError(t, err)
@@ -140,12 +140,10 @@ func TestUpdateRequestLog_TerminalGuardDistinguishesNoOpFromMissing(t *testing.T
 			wantRollback: true,
 		},
 		{
-			name:         "failure to success",
-			entry:        RequestLogEntry{RequestID: "req-failure-success", Success: true, RequestStatus: strptr(RequestStatusSuccess)},
-			updateRows:   0,
-			existing:     true,
-			wantQuery:    true,
-			wantRollback: true,
+			name:       "failure to success",
+			entry:      RequestLogEntry{RequestID: "req-failure-success", Success: true, RequestStatus: strptr(RequestStatusSuccess)},
+			updateRows: 1,
+			wantCommit: true,
 		},
 		{
 			name:       "success enrichment",

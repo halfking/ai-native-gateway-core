@@ -88,6 +88,39 @@ func TestNewAutoTitleGeneratorReadsEnabledEnv(t *testing.T) {
 	}
 }
 
+func TestPickFirstAvailableAPIKeyForAutoPrefersStaticLoopbackKey(t *testing.T) {
+	t.Setenv(EnvAPIKey, "loopback-static-key")
+
+	id, key, err := (&Handler{}).pickFirstAvailableAPIKeyForAuto(t.Context(), "default")
+	if err != nil {
+		t.Fatalf("pickFirstAvailableAPIKeyForAuto() error = %v", err)
+	}
+	if id != 0 {
+		t.Fatalf("key id = %d, want 0 for the static loopback key", id)
+	}
+	if key != "loopback-static-key" {
+		t.Fatalf("key = %q, want static loopback key", key)
+	}
+}
+
+func TestPickFirstAvailableAPIKeyForAutoRequiresDatabaseWithoutStaticKey(t *testing.T) {
+	unsetEnvForTest(t, EnvAPIKey)
+
+	_, _, err := (&Handler{}).pickFirstAvailableAPIKeyForAuto(t.Context(), "default")
+	if err == nil || !strings.Contains(err.Error(), "database not configured") {
+		t.Fatalf("error = %v, want missing database error", err)
+	}
+}
+
+func TestLoopbackKeySource(t *testing.T) {
+	if got := loopbackKeySource(0); got != "static" {
+		t.Fatalf("loopbackKeySource(0) = %q, want static", got)
+	}
+	if got := loopbackKeySource(17); got != "tenant_api_key" {
+		t.Fatalf("loopbackKeySource(17) = %q, want tenant_api_key", got)
+	}
+}
+
 func TestDetectIDESource(t *testing.T) {
 	gen := &AutoTitleGenerator{}
 
@@ -456,6 +489,7 @@ func TestCallAutoTitleLLM_EmitsParentHeaders(t *testing.T) {
 	res, err := gen.callAutoTitleLLM(
 		t.Context(),
 		"sk-fake-test-key",
+		0,
 		"gw_parent_session_abc",
 		"08aa2a8af42ef05eb87c97973f467519", // parent request id (user's request)
 		"实际请求内容",
@@ -537,6 +571,7 @@ func TestCallAutoTitleLLM_RetriesOn503(t *testing.T) {
 	res, err := gen.callAutoTitleLLM(
 		t.Context(),
 		"sk-fake",
+		0,
 		"gw_s",
 		"parent-req-1",
 		"content",
@@ -565,7 +600,7 @@ func TestCallAutoTitleLLM_NoRetryOn400(t *testing.T) {
 	t.Setenv("LLM_GATEWAY_ENDPOINT", srv.URL)
 
 	gen := &AutoTitleGenerator{handler: &Handler{}}
-	_, err := gen.callAutoTitleLLM(t.Context(), "sk-fake", "gw_s", "p", "c")
+	_, err := gen.callAutoTitleLLM(t.Context(), "sk-fake", 0, "gw_s", "p", "c")
 	if err == nil {
 		t.Fatal("expected error for 400")
 	}

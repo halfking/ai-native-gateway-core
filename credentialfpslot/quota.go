@@ -107,6 +107,7 @@ func (m *Manager) AcquireWithQuota(
 		}
 		return nil, status
 	}
+	m.trackSlotForReclaim(ctx, tenantID, credentialID, lease.SlotIndex)
 	recordAcquireSuccess()
 	return lease, Acquired
 }

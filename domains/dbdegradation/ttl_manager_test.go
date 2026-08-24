@@ -26,6 +26,8 @@ func TestTTLManager_DoesNotTouchURSMKeys(t *testing.T) {
 
 	mr.Set("session:foo", "namespace=gw")
 	mr.SetTTL("session:foo", 30*time.Second)
+	mr.Set("session_pref:foo", "credential=21")
+	mr.SetTTL("session_pref:foo", 30*time.Second)
 	originalSession := mr.TTL("session:foo")
 
 	if err := tm.EnterDegradedMode(t.Context()); err != nil {
@@ -38,11 +40,17 @@ func TestTTLManager_DoesNotTouchURSMKeys(t *testing.T) {
 	if got := mr.TTL("session:foo"); got <= originalSession {
 		t.Fatalf("session key TTL not extended: %s -> %s", originalSession, got)
 	}
+	if got := mr.TTL("session_pref:foo"); got <= originalSession {
+		t.Fatalf("session preference TTL not extended: %s -> %s", originalSession, got)
+	}
 	if err := tm.ExitDegradedMode(t.Context()); err != nil {
 		t.Fatalf("ExitDegradedMode: %v", err)
 	}
 	if got := mr.TTL("session:foo"); got > time.Hour+time.Minute {
 		t.Fatalf("session TTL not shrunk on exit: %s", got)
+	}
+	if got := mr.TTL("session_pref:foo"); got > time.Hour+time.Minute {
+		t.Fatalf("session preference TTL not shrunk on exit: %s", got)
 	}
 	if got := mr.TTL("ursm:v2:node:1:m"); got != originalURSM {
 		t.Fatalf("ursm TTL touched on exit: %s -> %s", originalURSM, got)

@@ -24,6 +24,18 @@ ABS_SESSIONS_DIR ?= $(CURDIR)/tests/session_replay/sessions
 # ── Default target ────────────────────────────────────────────────────────
 .DEFAULT_GOAL := help
 
+.PHONY: verify
+verify: ## 统一后端验证门禁（含 govulncheck）
+	./verify.sh
+
+.PHONY: verify-web
+verify-web: ## 统一验证门禁（含前端类型检查与构建）
+	./verify.sh --web
+
+.PHONY: govulncheck
+govulncheck: ## Go 依赖与可达代码漏洞扫描
+	./scripts/govulncheck.sh
+
 .PHONY: help
 help: ## 显示帮助
 	@grep -hE '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \

@@ -196,17 +196,41 @@ func (m *Manager) reclaimLoopRun(ctx context.Context, cfg reclaimConfig) {
 	}
 }
 
-// reclaimIdleSlots walks all slot keys via SCAN and reclaims those
-// whose holder has been silent for at least idleAfter.
+// reclaimIdleSlots reclaims indexed slot keys. Existing deployments are
+// seeded once from the legacy SCAN path, then subsequent ticks avoid walking
+// the shared Redis keyspace.
 func (m *Manager) reclaimIdleSlots(ctx context.Context, cfg reclaimConfig) (int, error) {
 	if m.client == nil {
 		return 0, nil
 	}
 
+	slotKeys, indexed, err := m.indexedSlotKeys(ctx)
+	if err != nil {
+		return 0, err
+	}
+	if !indexed {
+		iter := m.client.Scan(ctx, 0, "llmgw:tenant:*:cred_fp_slot:*:*", 1000).Iterator()
+		for iter.Next(ctx) {
+			slotKeys = append(slotKeys, iter.Val())
+		}
+		if err := iter.Err(); err != nil {
+			return 0, err
+		}
+		pipe := m.client.Pipeline()
+		if len(slotKeys) > 0 {
+			pipe.SAdd(ctx, slotReclaimIndexKey(), stringSliceToAny(slotKeys)...)
+		}
+		// Redis removes empty sets. A sentinel keeps the initialized marker so
+		// an idle system does not repeat a full SCAN every reclaim tick.
+		pipe.SAdd(ctx, slotReclaimIndexKey(), slotIndexSentinel)
+		pipe.Expire(ctx, slotReclaimIndexKey(), time.Duration(slotIndexTTLSeconds)*time.Second)
+		if _, err := pipe.Exec(ctx); err != nil && err != redis.Nil {
+			return 0, err
+		}
+	}
+
 	totalReclaimed := 0
-	iter := m.client.Scan(ctx, 0, "llmgw:tenant:*:cred_fp_slot:*:*", 1000).Iterator()
-	for iter.Next(ctx) {
-		slotKey := iter.Val()
+	for _, slotKey := range slotKeys {
 		// Skip if key disappeared between SCAN and the script call.
 		res, err := reclaimSlotScript.Run(ctx, m.client,
 			[]string{slotKey},
@@ -219,13 +243,68 @@ func (m *Manager) reclaimIdleSlots(ctx context.Context, cfg reclaimConfig) (int,
 		if res == 1 {
 			totalReclaimed++
 			recordReclaim()
+			pipe := m.client.Pipeline()
+			pipe.SRem(ctx, slotReclaimIndexKey(), slotKey)
+			pipe.SAdd(ctx, slotReclaimIndexKey(), slotIndexSentinel)
+			pipe.Expire(ctx, slotReclaimIndexKey(), time.Duration(slotIndexTTLSeconds)*time.Second)
+			_, _ = pipe.Exec(ctx)
 		}
 
 	}
-	if err := iter.Err(); err != nil {
-		return totalReclaimed, err
-	}
 	return totalReclaimed, nil
+}
+
+func (m *Manager) indexedSlotKeys(ctx context.Context) ([]string, bool, error) {
+	exists, err := m.client.Exists(ctx, slotReclaimIndexKey()).Result()
+	if err != nil {
+		return nil, false, err
+	}
+	if exists == 0 {
+		return nil, false, nil
+	}
+	members, err := m.client.SMembers(ctx, slotReclaimIndexKey()).Result()
+	if err != nil {
+		return nil, true, err
+	}
+	if len(members) == 0 {
+		return nil, true, nil
+	}
+	pipe := m.client.Pipeline()
+	commands := make([]*redis.IntCmd, len(members))
+	for i, key := range members {
+		commands[i] = pipe.Exists(ctx, key)
+	}
+	if _, err := pipe.Exec(ctx); err != nil && err != redis.Nil {
+		return nil, true, err
+	}
+	keys := make([]string, 0, len(members))
+	stale := make([]any, 0)
+	for i, command := range commands {
+		if members[i] == slotIndexSentinel {
+			continue
+		}
+		if command.Err() == nil && command.Val() > 0 {
+			keys = append(keys, members[i])
+		} else {
+			stale = append(stale, members[i])
+		}
+	}
+	if len(stale) > 0 {
+		pipe := m.client.Pipeline()
+		pipe.SRem(ctx, slotReclaimIndexKey(), stale...)
+		pipe.SAdd(ctx, slotReclaimIndexKey(), slotIndexSentinel)
+		pipe.Expire(ctx, slotReclaimIndexKey(), time.Duration(slotIndexTTLSeconds)*time.Second)
+		_, _ = pipe.Exec(ctx)
+	}
+	return keys, true, nil
+}
+
+func stringSliceToAny(values []string) []any {
+	out := make([]any, len(values))
+	for i, value := range values {
+		out[i] = value
+	}
+	return out
 }
 
 // parseSlotKey extracts (credentialID, slotIndex) from a key like

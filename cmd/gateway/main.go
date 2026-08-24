@@ -644,7 +644,7 @@ func main() {
 			})
 			pendingStore = pending.NewStore(fpSlotRedis, pendingTTL)
 			lastSystemSession = session.NewLastSystemSessionIndex(redisClient)
-			sessionPref = session.NewSessionPreference(redisClient)
+			sessionPref = session.NewSessionPreferenceWithTTL(redisClient, sessionTTL)
 			slog.Info("session manager enabled", "redis", cfg.RedisAddr, "ttl_hours", cfg.SessionTTLHours)
 
 			// Update health handler with Redis connection (2026-07-08)
@@ -2939,16 +2939,9 @@ func main() {
 		// against key models to verify gateway availability (2026-07-12).
 		slog.Info("CHECKPOINT: before self-check worker init")
 
-		// Try env var first, then generate system key
-		selfCheckAPIKey := os.Getenv("LLM_GATEWAY_SELF_CHECK_API_KEY")
-		if selfCheckAPIKey == "" {
-			var err error
-			selfCheckAPIKey, err = bg.EnsureSystemAPIKey(context.Background(), dbConn.Pool(), fernetKey, keyring, cfg.SecretKey)
-			if err != nil {
-				slog.Warn("self-check worker disabled: cannot get system API key", "error", err)
-				selfCheckAPIKey = ""
-			}
-		}
+		// Local gateway probes traverse AuthMiddleware, which accepts only the
+		// configured data-plane key. A database system key is not valid here.
+		selfCheckAPIKey := localGatewayProbeAPIKey(cfg.APIKey)
 
 		if selfCheckAPIKey != "" {
 			// 2026-07-18: add explicit gate for legacy featured-model self-check.
@@ -4354,7 +4347,7 @@ func main() {
 			sessionRedisClient := session.NewRedisClientFromClient(fpSlotRedis)
 			ttlManager := dbdegradation.NewTTLManager(
 				sessionRedisClient,
-				7*24*time.Hour,  // 正常 TTL
+				time.Duration(cfg.SessionTTLHours)*time.Hour,
 				30*24*time.Hour, // 降级 TTL
 			)
 			defer func() {
