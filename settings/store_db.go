@@ -79,11 +79,13 @@ func (s *StoreDB) Set(scope Scope, key string, value any) (jsonRawMessage, error
 		if err != nil {
 			return nil, fmt.Errorf("insert: %w", err)
 		}
+		InvalidatePlatformInt(key)
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("update: %w", err)
 	}
+	InvalidatePlatformInt(key)
 	return oldVal, nil
 }
 

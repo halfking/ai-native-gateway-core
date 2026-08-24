@@ -28,3 +28,7 @@ Content-Type: application/json
 ## Rollback
 
 通过管理员接口将 `gateway.max_prompt_tokens` 设置为原目标值，或设置为 `0` 关闭限制。无数据库 schema 变更，无需 migration。
+
+## Audit Fixes
+
+提交后的审计补充了按 key 串行的 TTL 刷新、settings 写入后的显式缓存失效、registry 初始化时的缓存清理、DB-enabled 环境变量关闭别名解析，以及整数配置的小数拒绝校验。
