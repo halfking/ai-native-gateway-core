@@ -262,6 +262,15 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeAnthropicError(w, http.StatusRequestEntityTooLarge, "invalid_request", "Request body too large")
 		return
 	}
+	// ── Prompt budget guard (2026-08-24, 245 memcg OOM) ──────────────────
+	// 拒绝发生在 JSON 解析 / 上游转发之前；见 request_meta.go 注释。
+	if estTokens, over := promptBudgetExceeded(bodyBytes); over {
+		attemptErrCode = "prompt_too_large"
+		attemptErrMsg = fmt.Sprintf("prompt exceeds gateway budget: estimated %d tokens > %d limit", estTokens, promptBudgetLimit())
+		writeAnthropicError(w, http.StatusRequestEntityTooLarge, "invalid_request",
+			fmt.Sprintf("Prompt exceeds gateway budget (estimated %d tokens > %d limit)", estTokens, promptBudgetLimit()))
+		return
+	}
 
 	var reqBody messagesRequestBody
 	if err := json.Unmarshal(bodyBytes, &reqBody); err != nil {
