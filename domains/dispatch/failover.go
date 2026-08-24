@@ -72,6 +72,7 @@ func (p *Pipeline) move(qr *QueuedRequest, out ForwardOutcome) {
 
 	// (2/3) Switch credential under the current model, honoring provider scope.
 	qr.markTriedCredential(qr.SelectedCred.CredentialID)
+	p.invalidateSessionAffinity(qr, qr.SelectedCred.CredentialID)
 	qr.CredRetryCount = 0
 	refs, _ := p.routeFunc(ctxOf(qr), qr)
 	for _, ref := range refs {

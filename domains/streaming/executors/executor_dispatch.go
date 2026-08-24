@@ -222,6 +222,11 @@ func candidateToRef(c provider.Candidate) dispatch.CredentialRef {
 		ProviderID:   c.ProviderID,
 		Vendor:       c.CatalogCode,
 	}
+	if c.Priority {
+		r.PriorityCluster = 0
+	} else {
+		r.PriorityCluster = 1
+	}
 	mode := c.ConcurrencyMode
 	if mode == "" {
 		mode = "concurrency"

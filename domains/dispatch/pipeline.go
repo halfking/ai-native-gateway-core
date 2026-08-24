@@ -56,6 +56,8 @@ type Deps struct {
 	RetryScheduler       RetryScheduler
 	ObservationSink      ObservationSink
 	QueueObservationSink QueueObservationSink
+	SessionAffinitySink  SessionAffinitySink
+	MinuteStatsSink      MinuteStatsSink
 }
 
 // Pipeline is the multi-tier dispatch core. Construct once, Start, then Submit.
@@ -69,13 +71,20 @@ type Pipeline struct {
 
 	// lifecycle registry (v4 R1.1/T2): request_id → pending/in-flight/
 	// completed + retry_at. Bookkeeping bypass only — never gates execution
-	// except the R1.8 unfinished admission limit.
+	// except lifecycle projection updates.
 	registry *LifecycleRegistry
+	// totalQueue is the real execution admission bound. A slot is held from
+	// Submit until complete and is independent from registry bookkeeping.
+	totalQueue *totalExecutionQueue
 	// retryScheduler optionally defers failed re-execution until retry_at.
 	// nil ⇒ immediate failover (legacy behavior).
 	retryScheduler RetryScheduler
 	// queueMirror optionally projects queue state to Redis (observation only).
 	queueMirror *QueueMirror
+	// affinitySink persists successful session routes and invalidates a failed
+	// sticky credential. It is best-effort and never gates execution.
+	affinitySink    SessionAffinitySink
+	minuteStatsSink MinuteStatsSink
 
 	cfg atomic.Value // *Config
 
@@ -195,6 +204,28 @@ func (p *Pipeline) SetQueueObservationSink(sink QueueObservationSink) {
 	p.queueObservationMu.Unlock()
 }
 
+// SetSessionAffinitySink replaces the best-effort session affinity writer.
+// It is safe before or after Start because all calls read the interface value
+// atomically under the same mutex used for queue observation wiring.
+func (p *Pipeline) SetSessionAffinitySink(sink SessionAffinitySink) {
+	if p == nil {
+		return
+	}
+	p.queueObservationMu.Lock()
+	p.affinitySink = sink
+	p.queueObservationMu.Unlock()
+}
+
+// SetMinuteStatsSink replaces the optional immediate minute-bucket projection.
+func (p *Pipeline) SetMinuteStatsSink(sink MinuteStatsSink) {
+	if p == nil {
+		return
+	}
+	p.queueObservationMu.Lock()
+	p.minuteStatsSink = sink
+	p.queueObservationMu.Unlock()
+}
+
 func (p *Pipeline) observeQueue(observation QueueObservation) {
 	if p == nil {
 		return
@@ -226,6 +257,8 @@ func NewPipeline(deps Deps) *Pipeline {
 		allowModelChange:     deps.AllowModelChange,
 		observationSink:      deps.ObservationSink,
 		queueObservationSink: deps.QueueObservationSink,
+		affinitySink:         deps.SessionAffinitySink,
+		minuteStatsSink:      deps.MinuteStatsSink,
 		allowModelChangeFunc: deps.AllowModelChangeFunc,
 		retryScheduler:       deps.RetryScheduler,
 		models:               make(map[string]*modelQueue),
@@ -240,7 +273,8 @@ func NewPipeline(deps Deps) *Pipeline {
 			cfg = *v
 		}
 	}
-	p.registry = NewLifecycleRegistry(cfg.RegistryCapacity, cfg.CompletedWatermark, cfg.MaxQueueDepth)
+	p.registry = NewLifecycleRegistry(cfg.RegistryCapacity, cfg.CompletedWatermark, 0)
+	p.totalQueue = newTotalExecutionQueue(cfg.TotalQueueCapacity)
 	p.registry.SetEvictHook(p.emitRegistryEviction)
 	p.cfg.Store(&cfg)
 	return p
@@ -309,16 +343,23 @@ func (p *Pipeline) GovernorBackend() GovernorBackend {
 	return p.governorBackend
 }
 
-// governorForCredential uses Redis enforcement only for concurrency slots.
-// RPM and TPM remain local until distributed token accounting is implemented.
+// governorForCredential uses Redis enforcement for all configured modes.
 func (p *Pipeline) governorForCredential(cred CredentialRef) Governor {
 	backend := p.GovernorBackend()
 	mode := cred.ConcurrencyMode
 	if mode == "" {
 		mode = ModeConcurrency
 	}
-	if backend == nil || backend.Kind() != BackendRedisEnforce ||
-		mode != ModeConcurrency || cred.ConcurrencyLimit <= 0 {
+	if backend == nil || backend.Kind() != BackendRedisEnforce {
+		return newGovernor(cred)
+	}
+	limit := cred.ConcurrencyLimit
+	if mode == ModeRPM {
+		limit = cred.RPMLimit
+	} else if mode == ModeTPM {
+		limit = cred.TPMLimit
+	}
+	if limit <= 0 || mode == ModeDisabled {
 		return newGovernor(cred)
 	}
 
@@ -326,7 +367,7 @@ func (p *Pipeline) governorForCredential(cred CredentialRef) Governor {
 		CredentialID: cred.CredentialID,
 		ProviderID:   cred.ProviderID,
 		Mode:         ModeConcurrency,
-		Limit:        cred.ConcurrencyLimit,
+		Limit:        limit,
 		RPMLimit:     cred.RPMLimit,
 		TPMLimit:     cred.TPMLimit,
 		Backend:      BackendRedisEnforce,
@@ -594,7 +635,7 @@ func (p *Pipeline) modelChangeEnabled() bool {
 func (p *Pipeline) Reload(cfg Config) {
 	p.cfg.Store(&cfg)
 	if p.registry != nil {
-		p.registry.UpdateLimits(cfg.RegistryCapacity, cfg.CompletedWatermark, cfg.MaxQueueDepth)
+		p.registry.UpdateLimits(cfg.RegistryCapacity, cfg.CompletedWatermark, 0)
 	}
 }
 
@@ -613,6 +654,8 @@ func (p *Pipeline) Start() {
 	cfg := p.config()
 	p.dispatchIn = make(chan *QueuedRequest, cfg.DispatcherWorkers*4)
 	p.failoverCh = make(chan failoverItem, cfg.FailoverWorkers*4)
+	p.wg.Add(1)
+	go p.runTotalDrainer()
 	for i := 0; i < cfg.DispatcherWorkers; i++ {
 		p.wg.Add(1)
 		go p.runDispatcher()
@@ -723,48 +766,24 @@ func (p *Pipeline) Submit(ctx context.Context, qr *QueuedRequest) (any, error) {
 		p.emitRequestTerminal(qr, ForwardOutcome{Err: ErrShutdown})
 		return nil, ErrShutdown
 	}
+	// Stamp before the FIFO handoff. After totalQueue accepts the request its
+	// worker may complete it immediately, so later writes would race metrics.
 	if qr.EnqueuedAt.IsZero() {
 		qr.EnqueuedAt = time.Now()
 	}
-
-	// V4 R1.1/R1.8: register the request in the lifecycle registry. The ONLY
-	// refusal here is the unfinished admission limit (pending+in-flight at
-	// the scheduling bound); capacity pressure evicts completed entries
-	// instead of rejecting. Registration failure of any other kind is a
-	// bookkeeping bypass — execution continues regardless (UT-DQ-07).
-	if !p.registry.RegisterPending(qr.ID, qr.RequestedModel, time.Now()) {
-		metricOverflow.WithLabelValues("registry_unfinished_full").Inc()
-		p.observeOverflow("registry_unfinished_full")
-		overflow := &OverflowError{Reason: "registry_unfinished_full", RetryAfter: DefaultOverflowRetryAfter}
-		p.emitRequestTerminal(qr, ForwardOutcome{Err: overflow})
-		return nil, overflow
-	}
-
-	// V3.1: Record T1 timestamp (total queue enqueue)
 	qr.SetT1_TotalEnqueued()
-
-	modelKey := queueKeyFor(qr.RequestedModel)
-	if !p.enqueueModel(modelKey, qr) {
-		// These paths return WITHOUT entering the pipeline (no complete()
-		// call will follow), so the registry entry registered above must be
-		// terminally closed here — otherwise it would leak an unfinished
-		// admission slot forever (R1.8).
-		if p.shutdown.Load() {
-			// Stop raced us between the entry check and admission: report
-			// shutdown, not a misleading queue-full overflow.
-			p.registry.MarkCompleted(qr.ID, time.Now())
-			p.emitRequestTerminal(qr, ForwardOutcome{Err: ErrShutdown})
-			return nil, ErrShutdown
-		}
-		metricOverflow.WithLabelValues("model_queue_full").Inc()
-		p.observeOverflow("model_queue_full")
-		// R1.3: full ⇒ immediate, retryable overflow with a Retry-After
-		// suggestion (G9) — zero queue wait, no parking.
-		overflow := &OverflowError{Reason: "model_queue_full", RetryAfter: DefaultOverflowRetryAfter}
+	// LifecycleRegistry is a projection only. Its admission result must never
+	// reject execution; totalQueue is the sole execution capacity boundary.
+	p.registry.RegisterPending(qr.ID, qr.RequestedModel, time.Now())
+	if !p.totalQueue.tryEnqueue(qr) {
+		metricOverflow.WithLabelValues("total_queue_full").Inc()
+		p.observeOverflow("total_queue_full")
+		overflow := &OverflowError{Reason: "total_queue_full", RetryAfter: DefaultOverflowRetryAfter}
 		p.registry.MarkCompleted(qr.ID, time.Now())
 		p.emitRequestTerminal(qr, ForwardOutcome{Err: overflow})
 		return nil, overflow
 	}
+
 	select {
 	case out := <-qr.ResultCh:
 		return out.Result, out.Err
@@ -779,6 +798,7 @@ func (p *Pipeline) Submit(ctx context.Context, qr *QueuedRequest) (any, error) {
 		if !qr.completed.CompareAndSwap(false, true) {
 			return nil, ctx.Err()
 		}
+		p.totalQueue.release(qr)
 		p.registry.MarkCompleted(qr.ID, time.Now())
 		return nil, ctx.Err()
 	}
@@ -806,6 +826,91 @@ func isAutoModel(m string) bool {
 		(m[1] == 'u' || m[1] == 'U') &&
 		(m[2] == 't' || m[2] == 'T') &&
 		(m[3] == 'o' || m[3] == 'O')
+}
+
+// runTotalDrainer forwards the bounded total FIFO into the model queues.
+func (p *Pipeline) runTotalDrainer() {
+	defer p.wg.Done()
+	for {
+		select {
+		case qr := <-p.totalQueue.ch:
+			if qr == nil {
+				continue
+			}
+			if p.shutdown.Load() {
+				p.totalQueue.release(qr)
+				p.complete(qr, ForwardOutcome{Err: ErrShutdown})
+				return
+			}
+			if !p.enqueueModelFromTotal(queueKeyFor(qr.RequestedModel), qr) {
+				p.totalQueue.release(qr)
+				if p.shutdown.Load() {
+					p.complete(qr, ForwardOutcome{Err: ErrShutdown})
+					return
+				}
+				p.complete(qr, ForwardOutcome{Err: ctxOf(qr).Err()})
+			} else {
+				p.totalQueue.release(qr)
+			}
+		case <-p.stopCh:
+			for {
+				select {
+				case qr := <-p.totalQueue.ch:
+					if qr != nil {
+						p.totalQueue.release(qr)
+						p.complete(qr, ForwardOutcome{Err: ErrShutdown})
+					}
+				default:
+					return
+				}
+			}
+		}
+	}
+}
+
+// enqueueModelFromTotal keeps an already admitted request in the total FIFO
+// until its model lane can receive it. This is deliberately different from
+// Submit's non-blocking external admission path: totalQueue is the bounded
+// waiting room, so a full model lane applies backpressure instead of dropping.
+func (p *Pipeline) enqueueModelFromTotal(name string, qr *QueuedRequest) bool {
+	mq := p.getOrCreateModelQueue(name)
+	if mq == nil {
+		return false
+	}
+	for {
+		if p.shutdown.Load() || ctxOf(qr).Err() != nil {
+			return false
+		}
+		mq.mu.Lock()
+		depth := mq.depth.Add(1)
+		metricModelQueueDepth.WithLabelValues().Inc()
+		select {
+		case mq.ch <- qr:
+			p.observeQueue(QueueObservation{Kind: QueueModelDepth, Model: name, Depth: depth, Delta: 1, AbsoluteDepth: true})
+			p.liveActions.Emit(ctxOf(qr), liveactions.ActionEvent{
+				RequestID: qr.ID,
+				Action:    liveactions.ActionModelEnqueued,
+				Model:     name,
+				Detail: map[string]string{
+					"queue_depth": strconv.FormatInt(mq.depth.Load(), 10),
+				},
+			})
+			qr.emitObservation(Observation{Type: ObservationModelEnqueued, Stage: StageModelQueue, Model: name, ResolvedModel: qr.ResolvedModel})
+			mq.mu.Unlock()
+			return true
+		default:
+			mq.depth.Add(-1)
+			metricModelQueueDepth.WithLabelValues().Dec()
+			mq.mu.Unlock()
+		}
+		select {
+		case <-p.stopCh:
+			return false
+		case <-ctxOf(qr).Done():
+			return false
+		case <-time.After(time.Millisecond):
+		}
+	}
 }
 
 // enqueueModel pushes qr into the named model queue, creating it (and its
@@ -934,7 +1039,6 @@ func (p *Pipeline) complete(qr *QueuedRequest, out ForwardOutcome) {
 	if !qr.completed.CompareAndSwap(false, true) {
 		return
 	}
-
 	// V4 R1.1: registry terminal transition (completed; kept until the
 	// R1.8 watermark evicts it). Bookkeeping bypass — never gates delivery.
 	now := time.Now()
@@ -943,6 +1047,8 @@ func (p *Pipeline) complete(qr *QueuedRequest, out ForwardOutcome) {
 
 	// V3.1: Record T9 timestamp (response end - stream completed)
 	qr.SetT9_ResponseEnd()
+	p.recordSessionAffinity(qr, out)
+	p.recordMinuteStats(qr, out)
 	p.emitRequestTerminal(qr, out)
 
 	// V3.1: Export stage histograms + waterfall/projection samples even if the

@@ -147,8 +147,8 @@ func TestPipelineUsesRedisEnforceForDefaultConcurrencyMode(t *testing.T) {
 	}
 }
 
-func TestPipelineKeepsLocalGovernorForRateModes(t *testing.T) {
-	backend := &fakeBackend{kind: BackendRedisEnforce, name: "redis", newGov: newNoopGovernor()}
+func TestPipelineUsesRedisGovernorForRateModes(t *testing.T) {
+	backend := &fakeBackend{kind: BackendRedisEnforce, name: "redis", newGov: newRPMGovernor(10)}
 	p := NewPipeline(Deps{})
 	defer p.Stop()
 	p.SetGovernorBackend(backend)
@@ -157,8 +157,8 @@ func TestPipelineKeepsLocalGovernorForRateModes(t *testing.T) {
 	if forwarder.gov.Mode() != ModeRPM {
 		t.Fatalf("rate governor mode = %q, want %q", forwarder.gov.Mode(), ModeRPM)
 	}
-	if backend.newCalls != 0 {
-		t.Fatalf("backend New calls = %d, want 0 for RPM", backend.newCalls)
+	if backend.newCalls != 1 {
+		t.Fatalf("backend New calls = %d, want 1 for RPM", backend.newCalls)
 	}
 }
 

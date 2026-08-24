@@ -907,11 +907,16 @@ func (r *CredentialRecovery) recoverExpiredBindings(ctx context.Context) error {
 //
 //   - cmb.available = FALSE + unavailable_reason = 'continuous_failure'.
 //     Other reasons use different code paths:
+//
 //   - 'manual*' : operators chose those; never auto-restore.
+//
 //   - 'probe_*' : already covered by node_probe.go's own re-arm ladder.
+//
 //   - 'auto_*'   : written by domains/credential/writer.go for transient
 //     per-model failures; out of scope for this branch.
+//
 //   - unavailable_recover_at IS NOT NULL AND > now() (i.e., still in cooldown).
+//
 //   - unavailable_at <= now() - 30 seconds. Don't re-probe a row that was
 //     just marked unavailable seconds ago — give the original failure burst
 //     a chance to settle.
@@ -925,12 +930,16 @@ func (r *CredentialRecovery) recoverExpiredBindings(ctx context.Context) error {
 //     "next 30s tick after 30s settle = 60s" — still enough headroom
 //     for the failure burst to settle, twice as quick to react when it
 //     has.
+//
 //   - Same hard guards as the expired branch (manual, lifecycle, provider,
 //     admin_protected, availability_state, paused).
+//
 //   - Skip rows whose node_probe_state already has a future next_retry_at
 //     so we don't pile probes on top of an in-flight backoff ladder.
+//
 //   - ORDER BY oldest unavailable_at first so the most-stale rows (the
 //     ones most likely to have recovered upstream-side) get probed first.
+//
 //   - LIMIT 30/tick to bound fan-out.
 func freshDegradedCmbSQL() string {
 	return `
