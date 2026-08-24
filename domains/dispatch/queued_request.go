@@ -250,6 +250,13 @@ const (
 	reqStageCount
 )
 
+// stageSetBit asserts at compile time that the stage bitmask (uint16) can
+// hold every stage flag; adding an 11th..16th stage stays safe, a 17th
+// fails the build instead of silently wrapping.
+const stageSetBit = 1 << (reqStageCount - 1)
+
+var _ [0]struct{} = [stageSetBit >> 16]struct{}{}
+
 // setStage records t for the stage. Callers must hold the single-owner
 // invariant (ReqStageForwardStart / ReqStageResponseStart are written under
 // attemptMu by journey.go).
