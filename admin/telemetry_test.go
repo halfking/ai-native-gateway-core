@@ -204,10 +204,10 @@ func TestPersistRequestLog_NullBodies(t *testing.T) {
 	cleanupTestRequestLog(t, pool, requestID)
 }
 
-// TestPersistRequestLog_OutboundBodyLocation verifies that outbound_body is NOT
-// written to request_logs_bodies_hot (it should remain in request_logs_hot per design).
-// Note: The current requestLogInput struct doesn't have OutboundBody field, so this
-// test documents the expected behavior when that field is added.
+// TestPersistRequestLog_OutboundBodyLocation is retained as a compatibility
+// placeholder. The current requestLogInput struct does not expose OutboundBody;
+// the production telemetry RequestLogEntry path writes outbound_body to the
+// dedicated request_logs_bodies_hot table.
 func TestPersistRequestLog_OutboundBodyLocation(t *testing.T) {
 	t.Skip("OutboundBody field not yet in requestLogInput struct; test documents expected behavior")
 
@@ -219,9 +219,9 @@ func TestPersistRequestLog_OutboundBodyLocation(t *testing.T) {
 
 	requestID := "test-outbound-body-" + time.Now().Format("20060102-150405.000")
 
-	// When OutboundBody is added to requestLogInput, this test should verify:
-	// 1. outbound_body is written to request_logs_hot
-	// 2. outbound_body is NOT in request_logs_bodies_hot (table doesn't have the column)
+	// When OutboundBody is added to requestLogInput, this test should verify it
+	// is written to request_logs_bodies_hot and remains absent from the metadata
+	// row's newly written payload.
 
 	input := &requestLogInput{
 		RequestID:     requestID,
@@ -239,9 +239,9 @@ func TestPersistRequestLog_OutboundBodyLocation(t *testing.T) {
 	ingester.persistRequestLog(ctx, input)
 
 	// Future verification:
-	// - SELECT outbound_body FROM request_logs_hot WHERE request_id = ?
-	// - Verify it's NOT NULL
-	// - Verify request_logs_bodies_hot doesn't have outbound_body column
+	// - SELECT outbound_body FROM request_logs_bodies_hot WHERE request_id = ?
+	// - Verify it is populated
+	// - Verify request_logs_hot is not populated by the new writer
 
 	cleanupTestRequestLog(t, pool, requestID)
 }

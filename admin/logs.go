@@ -228,7 +228,7 @@ const requestLogsListCols = `
 // needed by the detail drawer (outbound_body / outbound_msg_hashes /
 // compression_meta). Used only by getLog (/api/logs/:id).
 const requestLogsDetailCols = requestLogsListCols + `,
-	rl.outbound_body,
+	 COALESCE(rb.outbound_body, rl.outbound_body),
 	rl.outbound_msg_hashes,
 	rl.compression_meta,
 	-- 2026-07-01: 完整附件元数据 JSONB 数组 (migration 325)，
@@ -240,6 +240,8 @@ const requestLogsDetailCols = requestLogsListCols + `,
 
 const requestLogsJoins = `
 	LEFT JOIN providers p ON p.id = rl.provider_id
+	LEFT JOIN request_logs_bodies_with_current_month rb
+		ON rb.request_id = rl.request_id
 	LEFT JOIN credentials c ON c.id = rl.credential_id
 	LEFT JOIN api_keys ak ON ak.id = rl.api_key_id
 	LEFT JOIN applications app ON app.id = ak.application_id
