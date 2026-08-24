@@ -4,14 +4,14 @@ const CategoryLifecycle Category = "lifecycle"
 
 func LifecycleSpecs() []*Spec {
 	return []*Spec{
-		{Key: "lifecycle.hot_retention_hours", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(720), Default: 24, DangerLevel: Warning, HotReload: true, Description: "热表保留小时数", DescriptionLong: "所有 *_hot 表的默认保留窗口（除 model_probe_runs_hot）。超过此时长的行会在下次 promote 周期被自动迁移到对应的月度分区表。默认 24 小时（1 天）。", Unit: "小时"},
+		{Key: "lifecycle.hot_retention_hours", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(720), Default: 8, DangerLevel: Warning, HotReload: true, Description: "热表保留小时数", DescriptionLong: "所有 *_hot 表的默认保留窗口（除 model_probe_runs_hot）。超过此时长的行会在下次 promote 周期被自动迁移到对应的月度分区表。默认 8 小时（2026-08-25 由 24h 收紧，对齐 v6 存储架构：hot 表为 8 小时可变更落地层，更新/删除只在 hot 进行，promote 批量转入 columnar 分区）。", Unit: "小时"},
 		{Key: "lifecycle.promote_interval_hours", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(168), Default: 1, DangerLevel: Safe, HotReload: true, Description: "Promote 轮询间隔", DescriptionLong: "bg.PartitionManager 每 N 小时执行一次 promote（hot → 月度分区）。默认 1 小时。", Unit: "小时"},
 		{Key: "lifecycle.promote_batch_size", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(100), Max: floatPtr(50000), Default: 5000, DangerLevel: Safe, HotReload: true, Description: "Promote 批大小", DescriptionLong: "每次 promote_*_hot_to_partition 调用迁移的最大行数。", Unit: "行"},
 		{Key: "lifecycle.handoff_logs_hot_retention_hours", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(720), Default: 8, DangerLevel: Warning, HotReload: true, Description: "handoff_logs 热层保留小时数", DescriptionLong: "handoff_logs_hot 超过此窗口后由 PartitionManager 原子迁移到月度 columnar 分区。默认 8 小时。", Unit: "小时"},
 
 		// 2026-07-13: 状态表精简 - per-table retention 设置。
 		// 设计原则：状态/路由类表默认 30 天 DROP PARTITION；
-		// 请求记录类表保持 hot 1d（依赖月度分区长期保留）。
+		// 请求记录类表保持 hot 8h（2026-08-25 起，依赖月度分区长期保留）。
 		// 所有这些设置通过 DROP PARTITION 或 TimescaleDB retention policy 实施。
 		{Key: "lifecycle.routing_decision_log_ttl_days", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(365), Default: 30, DangerLevel: Warning, HotReload: true, Description: "routing_decision_log 保留天数", DescriptionLong: "routing_decision_log 月度分区保留天数。超过此时长的分区会被 archive_routing_decision_log 自动 DROP。默认 30 天。", Unit: "天"},
 		{Key: "lifecycle.candidate_failure_logs_ttl_days", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(365), Default: 30, DangerLevel: Warning, HotReload: true, Description: "candidate_failure_logs 保留天数", DescriptionLong: "candidate_failure_logs 月度分区保留天数。默认 30 天。", Unit: "天"},

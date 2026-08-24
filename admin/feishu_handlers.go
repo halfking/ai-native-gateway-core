@@ -486,7 +486,10 @@ func (h *Handler) handleFeishuRoutingRulesImport(w http.ResponseWriter, r *http.
 	var rules []feishuRouteRuleCSV
 	contentType := r.Header.Get("Content-Type")
 	if strings.HasPrefix(contentType, "multipart/form-data") {
-		// 解析 multipart（10 MB 上限）
+		// 解析 multipart。ParseMultipartForm 的参数只是内存阈值而非总量
+		// 上限；MaxBytesReader 强制 16 MiB 总量，防止超大上传溢盘后被
+		// 无界读回（2026-08-25 审计）。
+		r.Body = http.MaxBytesReader(w, r.Body, 16<<20)
 		if err := r.ParseMultipartForm(10 << 20); err != nil {
 			writeError(w, http.StatusBadRequest, "parse multipart: "+err.Error())
 			return

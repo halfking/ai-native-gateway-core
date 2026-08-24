@@ -638,8 +638,16 @@ func calculateRetryDelay(attempt int, baseDelayMs int, maxDelayMs int) time.Dura
 		maxDelayMs = 5000 // default max 5s
 	}
 
-	// Exponential backoff: 100ms -> 200ms -> 400ms -> 800ms -> ...
-	delayMs := baseDelayMs * (1 << attempt)
+	// Exponential backoff: 100ms -> 200ms -> 400ms -> 800ms ...
+	// Cap the shift: 1<<attempt overflows int once attempt ≥ 31 (63 on
+	// 64-bit for int64, but int is 64-bit here and the multiplication still
+	// overflows for large bases). maxDelayMs clamps the result long before
+	// shift 20, so capping keeps the math safe if retries are ever raised.
+	shift := attempt
+	if shift > 20 {
+		shift = 20
+	}
+	delayMs := baseDelayMs * (1 << shift)
 	if delayMs > maxDelayMs {
 		delayMs = maxDelayMs
 	}

@@ -77,20 +77,65 @@ func FollowUpDepthFromContext(ctx context.Context) int {
 	return 0
 }
 
+// followUpCounter pairs the lock-free invocation counter with the last time
+// it was touched, so idle entries can be reaped without a session-end hook.
+type followUpCounter struct {
+	count      atomic.Int64
+	lastActive atomic.Int64 // unix seconds
+}
+
+const (
+	// followUpIdleGC reaps counters no session has touched for a day. The
+	// per-session limit is a burst guard, so resetting it after a day of
+	// inactivity matches the intended semantics.
+	followUpIdleGCSeconds = 24 * 3600
+	// followUpSweepInterval throttles the opportunistic sweep so the Range
+	// cost stays off the request hot path.
+	followUpSweepIntervalSeconds = 600
+)
+
 // sessionFollowUpCounts tracks per-session follow-up invocations.
-// Stores *atomic.Int64 per sessionID so Add() is lock-free and race-free.
-var sessionFollowUpCounts sync.Map // map[string]*atomic.Int64
+// Stores *followUpCounter per sessionID so Add() is lock-free and race-free.
+var sessionFollowUpCounts sync.Map // map[string]*followUpCounter
+
+var sessionFollowUpLastSweep atomic.Int64 // unix seconds
 
 // recordSessionFollowUp atomically increments the per-session counter.
 // Returns true if the new count is within the effective per-session limit.
 //
-// Race-free: LoadOrStore guarantees the same *atomic.Int64 pointer for a
+// Race-free: LoadOrStore guarantees the same *followUpCounter pointer for a
 // given sessionID, and atomic.Int64.Add is a single atomic RMW.
 func recordSessionFollowUp(sessionID string) bool {
-	actual, _ := sessionFollowUpCounts.LoadOrStore(sessionID, new(atomic.Int64))
-	counter := actual.(*atomic.Int64)
+	now := time.Now().Unix()
+	actual, _ := sessionFollowUpCounts.LoadOrStore(sessionID, &followUpCounter{})
+	counter := actual.(*followUpCounter)
+	counter.lastActive.Store(now)
+	sweepSessionFollowUps(now)
 	limit := effectiveMaxFollowUpsPerSession.Load()
-	return counter.Add(1) <= limit
+	return counter.count.Add(1) <= limit
+}
+
+// sweepSessionFollowUps deletes counters idle past followUpIdleGCSeconds.
+// There is no session-end hook on this path (2026-08-25 audit: the previous
+// "reserved" cleanup was never wired, so every historical sessionID kept a
+// counter forever). This lazy sweep piggybacks on recording; the throttle
+// bounds it to one Range per sweep interval.
+func sweepSessionFollowUps(now int64) {
+	last := sessionFollowUpLastSweep.Load()
+	if now-last < followUpSweepIntervalSeconds {
+		return
+	}
+	if !sessionFollowUpLastSweep.CompareAndSwap(last, now) {
+		return
+	}
+	sessionFollowUpCounts.Range(func(key, value any) bool {
+		if c, ok := value.(*followUpCounter); ok {
+			if now-c.lastActive.Load() > followUpIdleGCSeconds {
+				sessionFollowUpCounts.Delete(key)
+			}
+		}
+		return true
+	})
 }
 
 // cleanupSessionFollowUps removes the counter for a session, freeing memory.

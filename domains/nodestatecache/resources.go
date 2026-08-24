@@ -88,6 +88,12 @@ func satInc16r(v uint16) uint16 {
 	return v + 1
 }
 
+// minuteWindow derives the 16-bit reset-window id from the wall clock.
+// WindowID is 16-bit by packed-layout contract: the id wraps every
+// 65536 minutes (~45 days). On wrap a stored id compares unequal to the
+// current one, so the window is treated as flipped and RPM counters reset —
+// a benign once-per-45-day stats blip. Widening needs a word re-layout,
+// tracked in docs/架构优化v6/02 (D32).
 func minuteWindow(now time.Time) uint16 { return uint16(now.Unix() / 60) }
 
 // computeFull 满载判定：任一资源 Limit>0 且 Used>=Limit。
