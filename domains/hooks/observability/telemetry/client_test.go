@@ -221,7 +221,7 @@ func TestUpdateRequestLog_MissingRequestFallsBackToInsert(t *testing.T) {
 	mockDB.ExpectExec(`INSERT INTO usage_ledger_hot`).
 		WithArgs(usageInsertArgs...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
-	requestInsertArgs := make([]interface{}, 102)
+	requestInsertArgs := make([]interface{}, 99)
 	for index := range requestInsertArgs {
 		requestInsertArgs[index] = pgxmock.AnyArg()
 	}
