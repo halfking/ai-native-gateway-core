@@ -184,6 +184,48 @@ func TestHeapRetrySchedulerCloseDropsPending(t *testing.T) {
 	}
 }
 
+// TestHeapRetrySchedulerCloseCompletesParkedItems: with a close handler
+// wired, Close hands every still-parked request to the handler instead of
+// silently dropping it — Submit callers otherwise wait on ResultCh forever
+// during graceful shutdown. Nil handler keeps the legacy drop behaviour.
+func TestHeapRetrySchedulerCloseCompletesParkedItems(t *testing.T) {
+	clock := &fakeClock{now: time.Now()}
+	var mu sync.Mutex
+	var closed []*QueuedRequest
+	s := NewHeapRetrySchedulerWithCloseHandler(
+		func(*QueuedRequest, time.Time) {},
+		func(qr *QueuedRequest) {
+			mu.Lock()
+			defer mu.Unlock()
+			closed = append(closed, qr)
+		},
+		clock, steppedSleeper(clock, make(chan struct{})))
+
+	if !s.Schedule(parkedRequest("a"), clock.Now().Add(time.Hour)) {
+		t.Fatal("Schedule refused")
+	}
+	if !s.Schedule(parkedRequest("b"), clock.Now().Add(2*time.Hour)) {
+		t.Fatal("Schedule refused")
+	}
+	s.Close()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(closed) != 2 {
+		t.Fatalf("close handler saw %d parked requests, want 2", len(closed))
+	}
+	seen := map[string]bool{}
+	for _, qr := range closed {
+		seen[qr.ID] = true
+	}
+	if !seen["a"] || !seen["b"] {
+		t.Fatalf("close handler saw %v, want both parked requests", seen)
+	}
+	if got := s.Len(); got != 0 {
+		t.Fatalf("heap retained %d items after Close, want 0", got)
+	}
+}
+
 // TestPipelineTimedRetryFlow (UT-DQ-04, pipeline): a pre-firstbyte failure
 // with a RetryScheduler wired parks the request as pending+retry_at, the
 // retry_scheduled observation carries retry_at, and the due pickup re-enters

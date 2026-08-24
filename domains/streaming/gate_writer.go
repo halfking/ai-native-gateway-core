@@ -1,6 +1,7 @@
 package streaming
 
 import (
+	"errors"
 	"io"
 	"net/http"
 )
@@ -18,6 +19,18 @@ import (
 // This lets the survival coordinator (W2) switch a request to
 // GateModeBuffered without touching any bridge code: the same writer, the
 // same call sites, a different gate mode.
+
+// ErrGateWriterFrameOverflow reports that a single SSE frame exceeded the
+// partial-frame byte cap before any blank-line terminator arrived. The
+// overflowing bytes are dropped and the bridge must abort the attempt — such
+// a frame can never complete, so buffering it only grows memory.
+var ErrGateWriterFrameOverflow = errors.New("gate_writer_frame_overflow")
+
+// gateWriterMaxPendingBytes caps the bytes buffered for one incomplete SSE
+// frame. Var (not const) so tests can lower it; 4 MiB matches the attempt
+// gate's metadata-buffer order of magnitude and is far above any legitimate
+// single SSE frame.
+var gateWriterMaxPendingBytes = 4 << 20
 
 // GateWriter assembles SSE frames and forwards them through an
 // AttemptCommitGate. It also implements http.ResponseWriter so it can wrap
@@ -66,8 +79,11 @@ func (gw *GateWriter) WriteHeader(code int) {
 }
 
 // Write buffers p, extracts every complete SSE frame and forwards it to the
-// gate in arrival order. Frames split across Write calls are reassembled.
+// gate in arrival order. Frames split across Write calls are reassembled. A
+// partial frame that outgrows gateWriterMaxPendingBytes aborts the attempt
+// with ErrGateWriterFrameOverflow instead of buffering without bound.
 func (gw *GateWriter) Write(p []byte) (int, error) {
+	previousPending := len(gw.pending)
 	gw.pending = append(gw.pending, p...)
 	consumed := 0
 	for {
@@ -83,6 +99,16 @@ func (gw *GateWriter) Write(p []byte) (int, error) {
 			// through; report the failure so the bridge stops.
 			return consumed, err
 		}
+	}
+	if len(gw.pending) > gateWriterMaxPendingBytes {
+		// Complete frames in this write were already forwarded. Report only
+		// the input bytes consumed before the incomplete frame overflowed.
+		accepted := consumed - previousPending
+		if accepted < 0 {
+			accepted = 0
+		}
+		gw.pending = nil
+		return accepted, ErrGateWriterFrameOverflow
 	}
 	return len(p), nil
 }

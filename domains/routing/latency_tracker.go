@@ -15,6 +15,7 @@ import (
 type LatencyTracker struct {
 	mu       sync.RWMutex
 	samples  []time.Duration  // sorted by insertion time, oldest first
+	times    []int64          // per-sample UnixMilli timestamps, parallel to samples
 	maxSize  int              // max window size (default 100)
 	windowMs int64            // sliding window in ms (default 60s)
 	now      func() time.Time // injectable clock for tests
@@ -24,6 +25,7 @@ type LatencyTracker struct {
 func NewLatencyTracker() *LatencyTracker {
 	return &LatencyTracker{
 		samples:  make([]time.Duration, 0, 128),
+		times:    make([]int64, 0, 128),
 		maxSize:  100,
 		windowMs: 60 * 1000, // 60s sliding window
 		now:      time.Now,
@@ -43,6 +45,7 @@ func NewLatencyTrackerWithClock(maxSize int, window time.Duration, clock func() 
 	}
 	return &LatencyTracker{
 		samples:  make([]time.Duration, 0, maxSize),
+		times:    make([]int64, 0, maxSize),
 		maxSize:  maxSize,
 		windowMs: window.Milliseconds(),
 		now:      clock,
@@ -59,34 +62,43 @@ func (lt *LatencyTracker) Record(latency time.Duration) {
 	defer lt.mu.Unlock()
 
 	lt.samples = append(lt.samples, latency)
+	lt.times = append(lt.times, lt.now().UnixMilli())
 
 	// Trim to max size (keep the most recent maxSize samples)
 	if len(lt.samples) > lt.maxSize {
 		// Drop the oldest extras
 		overflow := len(lt.samples) - lt.maxSize
 		lt.samples = lt.samples[overflow:]
+		lt.times = lt.times[overflow:]
 	}
 }
 
-// evictStale removes samples older than the sliding window. Must be called with mu held.
+// evictStale drops samples whose recorded age reached the sliding window.
+// Must be called with mu held (write). Reads call it so a window that stops
+// receiving samples still converges to empty instead of pinning stale
+// latency forever in the weighted-router penalty.
 func (lt *LatencyTracker) evictStale() {
 	cutoff := lt.now().UnixMilli() - lt.windowMs
-	// samples are append-only, oldest first
+	// samples/times are append-only, oldest first — evict a prefix.
 	idx := 0
-	for idx < len(lt.samples) {
-		// We do not store per-sample timestamps (compactness); approximate using ordering.
-		// For tests where precise eviction matters, use NewLatencyTrackerWithClock.
-		break
+	for idx < len(lt.times) && lt.times[idx] <= cutoff {
+		idx++
 	}
-	// Keep the implementation conservative: simply cap to maxSize.
-	_ = cutoff
+	if idx == 0 {
+		return
+	}
+	n := copy(lt.samples, lt.samples[idx:])
+	lt.samples = lt.samples[:n]
+	n = copy(lt.times, lt.times[idx:])
+	lt.times = lt.times[:n]
 }
 
 // Avg returns the average latency over the window.
 // Returns 0 when no samples have been recorded.
 func (lt *LatencyTracker) Avg() time.Duration {
-	lt.mu.RLock()
-	defer lt.mu.RUnlock()
+	lt.mu.Lock()
+	defer lt.mu.Unlock()
+	lt.evictStale()
 	if len(lt.samples) == 0 {
 		return 0
 	}
@@ -113,8 +125,9 @@ func (lt *LatencyTracker) P99() time.Duration {
 }
 
 func (lt *LatencyTracker) percentile(p float64) time.Duration {
-	lt.mu.RLock()
-	defer lt.mu.RUnlock()
+	lt.mu.Lock()
+	defer lt.mu.Unlock()
+	lt.evictStale()
 	if len(lt.samples) == 0 {
 		return 0
 	}
@@ -128,8 +141,9 @@ func (lt *LatencyTracker) percentile(p float64) time.Duration {
 
 // Count returns the number of samples in the window.
 func (lt *LatencyTracker) Count() int {
-	lt.mu.RLock()
-	defer lt.mu.RUnlock()
+	lt.mu.Lock()
+	defer lt.mu.Unlock()
+	lt.evictStale()
 	return len(lt.samples)
 }
 
@@ -138,6 +152,7 @@ func (lt *LatencyTracker) Reset() {
 	lt.mu.Lock()
 	defer lt.mu.Unlock()
 	lt.samples = lt.samples[:0]
+	lt.times = lt.times[:0]
 }
 
 // simple insertion sort for small slices (avoid importing sort for one call).

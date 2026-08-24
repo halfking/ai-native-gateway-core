@@ -25,9 +25,12 @@ import (
 //     (llmgw_dispatch_registry_capacity). Pressure evicts the oldest
 //     completed entry; CompletedWatermark = 50 (soft, FIFO by completed_at).
 type Config struct {
-	// TotalQueueCapacity is the real execution admission bound. A request
-	// holds one slot from Submit until complete; registry bookkeeping does not
-	// participate in this bound. Default 1000.
+	// TotalQueueCapacity is the Tier-0 total FIFO admission bound — a
+	// bounded waiting room from Submit until the request moves into its
+	// model lane. The slot is released on that hand-off (or client cancel),
+	// NOT held for the request's full lifecycle: model/credential queues and
+	// in-flight forwards are governed by MaxQueueDepth and the governors.
+	// Registry bookkeeping does not participate in this bound. Default 1000.
 	TotalQueueCapacity int
 
 	// MaxQueueDepth is the per-credential Tier-2 (and per-model Tier-1)
