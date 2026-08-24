@@ -320,6 +320,22 @@ func TestJourneyTerminalQuotaDoesNotEmitSwitchSummary(t *testing.T) {
 	}
 }
 
+func TestIsQuotaErrorKindRecognizesCanonicalUpstreamKinds(t *testing.T) {
+	for _, kind := range []string{
+		"quota", "quota_balance", "quota_periodic", "quota_permanent", "quota_exhausted",
+		"upstream_quota_balance", "upstream_quota_periodic", "upstream_quota_permanent",
+	} {
+		if !isQuotaErrorKind(kind) {
+			t.Errorf("isQuotaErrorKind(%q) = false, want true", kind)
+		}
+	}
+	for _, kind := range []string{"rate_limit", "upstream_503", "auth", "capacity", ""} {
+		if isQuotaErrorKind(kind) {
+			t.Errorf("isQuotaErrorKind(%q) = true, want false", kind)
+		}
+	}
+}
+
 func TestJourneyTerminalFailurePreservesDiagnostics(t *testing.T) {
 	recorder := &journeyRecorder{}
 	ref := journeyCredential(11, 101, "vendor-a")

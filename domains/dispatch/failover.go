@@ -124,7 +124,8 @@ func (p *Pipeline) move(qr *QueuedRequest, out ForwardOutcome) {
 
 func isQuotaErrorKind(errorKind string) bool {
 	switch errorKind {
-	case "quota", "quota_balance", "quota_periodic", "quota_permanent", "quota_exhausted":
+	case "quota", "quota_balance", "quota_periodic", "quota_permanent", "quota_exhausted",
+		"upstream_quota_balance", "upstream_quota_periodic", "upstream_quota_permanent":
 		return true
 	default:
 		return false
