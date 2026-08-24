@@ -417,6 +417,10 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 					DecisionAction: res.Decision.Action.String(),
 					DecisionReason: res.Decision.Reason,
 				})
+				// The discarded attempt may have marked the shared capture as
+				// interrupted. Reset per-attempt state before replaying so a later
+				// successful candidate cannot inherit a stale failure terminal.
+				params.Capture.Reset()
 			}
 			if c.now().After(deadline) {
 				res.Decision = TaskDecision{Action: TaskActionFailClosed, Reason: "deadline_exceeded"}

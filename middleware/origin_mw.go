@@ -350,3 +350,10 @@ func RegisterAuthOwnerUser(ctx context.Context, ownerUser string) context.Contex
 	}
 	return context.WithValue(ctx, authOwnerUserCtxKey, ownerUser)
 }
+
+// IsGlobalAuthPassed reports whether AuthMiddleware accepted the static
+// data-plane key for this request. The marker is server-created, so downstream
+// policy can distinguish that shared gateway key from a database API key.
+func IsGlobalAuthPassed(ctx context.Context) bool {
+	return authOwnerUser(ctx) == "global-auth-passed"
+}

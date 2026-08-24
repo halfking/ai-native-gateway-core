@@ -128,7 +128,7 @@ func (e *ActiveProbeEmitter) Emit(
 
 	var errKind *string
 	if !success {
-		k := classifyProbeErrorKind(result)
+		k := classifyProbeErrorKind(result, origin)
 		errKind = &k
 	}
 

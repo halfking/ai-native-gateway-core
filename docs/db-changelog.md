@@ -78,3 +78,14 @@
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
 | 569 | `569_candidate_binding_scope_revision_canonical.sql` | `6642ef23b19faeb2c5be376093728cbb4282a938bc92314df1e5297a89565c40` | applied+verified |
+## 2026-08-23T18:01:08Z — deploy 154 build_seq 1693 (7b51da98)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 570 | `570_model_offers_insert_priority_passthrough.sql` | `bf1b1b335600158cca88be0a9bcf1c3391b43832fd64d4e0c67116cc579478ee` | applied+verified |
+
+## 2026-08-23T20:05:11Z — deploy 245 build_seq 1696 (47add732)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 572 | `572_session_summary_large_token_ratio.sql` | `e60df0b0adc24665da72273a8787d2cb5bec98c3d504da0a6abf0049db4fe56d` | applied+verified |

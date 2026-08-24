@@ -202,10 +202,8 @@ func (tm *TTLManager) extendAllSessionTTLs(ctx context.Context, ttl time.Duratio
 	// 级。把它们无差别抬到 30 天既浪费内存，也掩盖 T4 读路径依赖的 TTL
 	// 语义。DB 降级时 URSM 继续走 Redis（本来就是 Redis-only），无需救援。
 	patterns := []string{
-		"session:*",         // 会话主键
-		"session:key:*",     // 会话密钥映射
-		"session:apiKey:*",  // API 密钥索引
-		"session:stopped:*", // 停止会话索引
+		"session:*",      // 会话主键、索引与轮换记录
+		"session_pref:*", // 供应商偏好必须与会话一同保留
 	}
 
 	totalExtended := 0
@@ -240,10 +238,10 @@ func (tm *TTLManager) shrinkSessionTTLs(ctx context.Context, target time.Duratio
 	if client == nil {
 		return nil
 	}
-	// session:* already covers session:key:*, session:apiKey:* and
-	// session:stopped:*; scanning the sub-patterns again only repeated Redis
-	// work during recovery.
-	patterns := []string{"session:*"}
+	// Session preferences use a separate prefix. Keep their TTL aligned with
+	// the session key so expired sessions cannot leave multi-day preference
+	// orphans behind after a degraded-mode recovery.
+	patterns := []string{"session:*", "session_pref:*"}
 	shrunk := 0
 	for _, pattern := range patterns {
 		var cursor uint64
