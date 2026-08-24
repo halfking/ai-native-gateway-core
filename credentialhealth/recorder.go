@@ -28,6 +28,8 @@ type Recorder struct {
 	maxSize   int           // default 100
 }
 
+const callHistoryIndexKey = "llmgw:callhist:index"
+
 // NewRecorder creates a sliding window recorder.
 func NewRecorder(client *redis.Client, windowTTL time.Duration, maxSize int) *Recorder {
 	if windowTTL == 0 {
@@ -69,6 +71,8 @@ func (r *Recorder) Append(ctx context.Context, credentialID int, model string, e
 	pipe.LPush(ctx, key, jsonBytes)
 	pipe.LTrim(ctx, key, 0, int64(r.maxSize-1)) // keep most recent N
 	pipe.Expire(ctx, key, r.windowTTL)
+	pipe.SAdd(ctx, callHistoryIndexKey, key)
+	pipe.Expire(ctx, callHistoryIndexKey, r.windowTTL)
 	_, err = pipe.Exec(ctx)
 
 	if err != nil {
@@ -87,6 +91,10 @@ func (r *Recorder) Append(ctx context.Context, credentialID int, model string, e
 
 	return nil
 }
+
+// CallHistoryIndexKey exposes the bounded discovery index for background
+// aggregation without requiring a full Redis keyspace scan.
+func CallHistoryIndexKey() string { return callHistoryIndexKey }
 
 // GetRecent retrieves recent call entries within the time window.
 // Returns entries sorted newest-first (same order as Redis LIST).

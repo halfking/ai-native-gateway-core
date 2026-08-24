@@ -87,3 +87,35 @@ func TestReclaim_FreshSlotsNotReclaimed(t *testing.T) {
 	}
 	t.Logf("Fresh slots preserved (reclaimed=0)")
 }
+
+func TestReclaim_UsesSlotIndexAndPrunesMissingMembers(t *testing.T) {
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer func() { _ = client.Close() }()
+
+	m := New(Config{Enabled: true, DefaultLimit: 1}, client)
+	ctx := context.Background()
+	lease, ok := m.Acquire(ctx, 700, intPtr(1), "alice", "tenant-a")
+	if !ok || lease == nil {
+		t.Fatal("Acquire should create an indexed slot")
+	}
+	slotKey := tenantSlotRedisKey("tenant-a", 700, lease.SlotIndex)
+	indexed, err := mr.SIsMember(slotReclaimIndexKey(), slotKey)
+	if err != nil || !indexed {
+		t.Fatalf("slot %q missing from reclaim index", slotKey)
+	}
+
+	mr.Del(slotKey)
+	if _, err := m.reclaimIdleSlots(ctx, defaultReclaimConfig()); err != nil {
+		t.Fatalf("reclaimIdleSlots: %v", err)
+	}
+	indexed, err = mr.SIsMember(slotReclaimIndexKey(), slotKey)
+	if err != nil {
+		t.Fatalf("SIsMember: %v", err)
+	}
+	if indexed {
+		t.Fatalf("missing slot %q remained in reclaim index", slotKey)
+	}
+}
+
+func intPtr(v int) *int { return &v }
