@@ -1,9 +1,16 @@
+// liveStreamPreferences.ts — dashboard /live-stream 偏好持久化
+//
+// 2026-08-24 LP7: 复用 LP6 useChatSessions debounce pattern —
+// 300ms coalesce + lifecycle flush + snapshot short-circuit + cleanup。
+
 import type { GroupByDimension, SwimLaneMode } from '../types/swimlane'
 import { getCurrentTenantId, store } from '../store'
+import { onScopeDispose } from 'vue'
 
 const LIVE_STREAM_PREFERENCES_STORAGE_KEY_PREFIX = 'llmgw_live_stream_preferences_v1'
 const LEGACY_LIVE_STREAM_PREFERENCES_STORAGE_KEY = 'llmgw_live_stream_preferences_v1'
 const LEGACY_SWIM_LANE_MODE_STORAGE_KEY = 'llmgw_swimlane_mode'
+const PERSIST_DEBOUNCE_MS = 300
 
 /** Current user + tenant-scoped key. Browser users never inherit each other's filters. */
 export function liveStreamPreferencesStorageKey(): string {
@@ -49,11 +56,7 @@ export interface LiveStreamPreferences {
 
 export type LiveStreamPreferencesPatch = Partial<Pick<LiveStreamPreferences, 'groupBy' | 'mode' | 'selectedLegends'>> & {
   filters?: Partial<LiveStreamFilterPreferences>
-  queue?: {
-    depthOpen?: boolean
-    expandedModels?: string[]
-    statusFilter?: Partial<Record<QueueStatusBucket, boolean>>
-  }
+  queue?: { depthOpen?: boolean; expandedModels?: string[]; statusFilter?: Partial<Record<QueueStatusBucket, boolean>> }
 }
 
 const GROUP_BY_VALUES: GroupByDimension[] = ['queue', 'vendor', 'provider', 'model']
@@ -170,44 +173,110 @@ function normalize(raw: unknown): LiveStreamPreferences {
   }
 }
 
+// ─── Debounced persistence (LP7, 2026-08-24) ──────────────────────────────
+// 复用 LP6 useChatSessions pattern：300ms debounce + snapshot short-circuit +
+// lifecycle flush + onScopeDispose 清理 + try/catch 错误降级。
+
+let persistTimer: ReturnType<typeof setTimeout> | null = null
+let pendingKey: string | null = null
+let pendingPreferences: LiveStreamPreferences | null = null
+let lastPersistedSnapshot: string | null = null
+// In-memory cache 是真相源（对齐 LP6 pattern）。Key-tracked 防止 user 切换读到旧值。
+let currentPreferences: LiveStreamPreferences | null = null
+let currentPreferencesKey: string | null = null
+function persistLiveStreamPreferencesImmediate(key: string, preferences: LiveStreamPreferences): void {
+  // Best-effort: localStorage 可能抛错（隐私模式/配额），下次 flush 会重试。
+  try {
+    localStorage.setItem(key, JSON.stringify(preferences))
+    localStorage.setItem(LEGACY_SWIM_LANE_MODE_STORAGE_KEY, preferences.mode)
+  } catch { /* preference persistence must never prevent the dashboard from working */ }
+}
+
+/** Test-only hook: reset module-level state. `_` prefix 标志非生产 API。*/
+export function _resetPersistState(): void {
+  if (persistTimer != null) { clearTimeout(persistTimer); persistTimer = null }
+  pendingKey = null
+  pendingPreferences = null
+  lastPersistedSnapshot = null
+  currentPreferences = null
+  currentPreferencesKey = null
+}
+
+export function flushPersist(): boolean {
+  if (persistTimer != null) { clearTimeout(persistTimer); persistTimer = null }
+  if (pendingKey == null || pendingPreferences == null) return true
+  const key = pendingKey
+  const preferences = pendingPreferences
+  pendingKey = null
+  pendingPreferences = null
+  const snapshot = JSON.stringify(preferences)
+  if (snapshot === lastPersistedSnapshot) return true
+  try {
+    persistLiveStreamPreferencesImmediate(key, preferences)
+    lastPersistedSnapshot = snapshot
+    return true
+  } catch { return false }
+}
+
+function schedulePersist(key: string, preferences: LiveStreamPreferences): void {
+  pendingKey = key
+  pendingPreferences = preferences
+  if (persistTimer != null) clearTimeout(persistTimer)
+  persistTimer = setTimeout(() => { persistTimer = null; flushPersist() }, PERSIST_DEBOUNCE_MS)
+}
+
+// Lifecycle flush handlers — visibilitychange 覆盖移动端后台（beforeunload 常不触发）
+function handleVisibilityFlush() {
+  if (typeof document !== 'undefined' && document.visibilityState === 'hidden') flushPersist()
+}
+function handleLifecycleFlush() { flushPersist() }
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('visibilitychange', handleVisibilityFlush)
+  window.addEventListener('pagehide', handleLifecycleFlush)
+  window.addEventListener('beforeunload', handleLifecycleFlush)
+}
+
+try {
+  onScopeDispose(() => {
+    flushPersist()
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('visibilitychange', handleVisibilityFlush)
+      window.removeEventListener('pagehide', handleLifecycleFlush)
+      window.removeEventListener('beforeunload', handleLifecycleFlush)
+    }
+  })
+} catch { /* not inside an effect scope; listeners remain until page unload */ }
+
 /**
  * Reads validated real-time dashboard preferences for the active user + tenant.
  * Malformed storage values degrade field-by-field to defaults and never block page load.
  */
 export function readLiveStreamPreferences(): LiveStreamPreferences {
   const key = liveStreamPreferencesStorageKey()
-  const scopedRaw = readStorage(key)
-  if (scopedRaw) return normalize(scopedRaw)
+  // In-memory cache 是真相源 — 写入失败（隐私模式/配额）时仍返回最新值。
+  // Key mismatch（user/tenant 切换）自动失效并 flush 旧用户的 pending。
+  if (currentPreferences && currentPreferencesKey === key) return currentPreferences
+  if (pendingKey != null && pendingKey !== key) flushPersist()
 
-  // One-time migration from the unscoped v1 key. A valid v1 mode always wins
-  // over the older standalone mode key; explicit small must never be mistaken
-  // for an uninitialized preference.
+  const scopedRaw = readStorage(key)
+  if (scopedRaw) {
+    const normalized = normalize(scopedRaw)
+    currentPreferences = normalized
+    currentPreferencesKey = key
+    return normalized
+  }
+
+  // Migration from unscoped v1 key. Immediate path so write completes before read returns.
   const legacyV1 = readStorage(LEGACY_LIVE_STREAM_PREFERENCES_STORAGE_KEY)
-  const legacyMode = (() => {
-    try {
-      return localStorage.getItem(LEGACY_SWIM_LANE_MODE_STORAGE_KEY)
-    } catch {
-      return null
-    }
-  })()
+  const legacyMode = (() => { try { return localStorage.getItem(LEGACY_SWIM_LANE_MODE_STORAGE_KEY) } catch { return null } })()
   const source = legacyV1 ?? {}
   const preferences = normalize(source)
-  if (!hasValidMode(source) && isOneOf(legacyMode, MODE_VALUES)) {
-    preferences.mode = legacyMode
-  }
-  if (legacyV1 || isOneOf(legacyMode, MODE_VALUES)) {
-    persistLiveStreamPreferences(key, preferences)
-  }
+  if (!hasValidMode(source) && isOneOf(legacyMode, MODE_VALUES)) preferences.mode = legacyMode
+  if (legacyV1 || isOneOf(legacyMode, MODE_VALUES)) persistLiveStreamPreferencesImmediate(key, preferences)
+  currentPreferences = preferences
+  currentPreferencesKey = key
   return preferences
-}
-
-function persistLiveStreamPreferences(key: string, preferences: LiveStreamPreferences) {
-  try {
-    localStorage.setItem(key, JSON.stringify(preferences))
-    localStorage.setItem(LEGACY_SWIM_LANE_MODE_STORAGE_KEY, preferences.mode)
-  } catch {
-    // Preference persistence must never prevent the dashboard from working.
-  }
 }
 
 /** Writes a validated partial update without losing selections owned by other dashboard controls. */
@@ -219,12 +288,13 @@ export function writeLiveStreamPreferences(patch: LiveStreamPreferencesPatch): L
     ...patch,
     filters: { ...current.filters, ...patch.filters },
     queue: {
-      ...current.queue,
-      ...patch.queue,
+      ...current.queue, ...patch.queue,
       expandedModels: patch.queue?.expandedModels ?? current.queue.expandedModels,
       statusFilter: { ...current.queue.statusFilter, ...patch.queue?.statusFilter },
     },
   })
-  persistLiveStreamPreferences(key, next)
+  currentPreferences = next
+  currentPreferencesKey = key
+  schedulePersist(key, next)
   return next
 }
