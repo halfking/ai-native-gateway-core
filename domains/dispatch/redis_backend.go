@@ -119,6 +119,38 @@ redis.call('PEXPIRE', key, ttl_ms)
 return 1
 `
 
+// redisRateAcquireLua atomically refills and charges a shared rate bucket.
+// Redis server time is the clock shared by every gateway instance.
+const redisRateAcquireLua = `
+local key = KEYS[1]
+local capacity = tonumber(ARGV[1])
+local refill_per_ms = tonumber(ARGV[2])
+local cost = tonumber(ARGV[3])
+local ttl_ms = tonumber(ARGV[4])
+if capacity == nil or capacity <= 0 or refill_per_ms == nil or refill_per_ms <= 0 or cost == nil or cost <= 0 then
+  return {-1, 0, 'invalid_cost'}
+end
+local now_parts = redis.call('TIME')
+local now_ms = now_parts[1] * 1000 + math.floor(now_parts[2] / 1000)
+local tokens = tonumber(redis.call('HGET', key, 'tokens'))
+local updated_ms = tonumber(redis.call('HGET', key, 'updated_ms'))
+if tokens == nil then tokens = capacity end
+if updated_ms == nil then updated_ms = now_ms end
+if now_ms > updated_ms then
+  tokens = math.min(capacity, tokens + (now_ms - updated_ms) * refill_per_ms)
+  updated_ms = now_ms
+end
+if tokens < cost then
+  redis.call('HSET', key, 'tokens', tokens, 'updated_ms', updated_ms)
+  redis.call('PEXPIRE', key, ttl_ms)
+  return {0, tokens, 'saturated'}
+end
+tokens = tokens - cost
+redis.call('HSET', key, 'tokens', tokens, 'updated_ms', updated_ms)
+redis.call('PEXPIRE', key, ttl_ms)
+return {1, tokens, 'ready'}
+`
+
 // ── RedisEnforceBackend ──────────────────────────────────────────────────
 
 // RedisEnforceBackend is the strict cluster-wide backend. Constructed via
@@ -143,6 +175,7 @@ type RedisEnforceBackend struct {
 	acquireS *redis.Script
 	releaseS *redis.Script
 	renewS   *redis.Script
+	rateS    *redis.Script
 }
 
 // NewRedisEnforceBackend constructs the cluster-wide enforcement backend
@@ -163,6 +196,7 @@ func NewRedisEnforceBackend(client redis.UniversalClient, instanceID string) *Re
 		acquireS:   redis.NewScript(redisEnforceAcquireLua),
 		releaseS:   redis.NewScript(redisEnforceReleaseLua),
 		renewS:     redis.NewScript(redisEnforceRenewLua),
+		rateS:      redis.NewScript(redisRateAcquireLua),
 	}
 }
 
@@ -225,14 +259,6 @@ func (b *RedisEnforceBackend) New(ctx context.Context, spec GovernorSpec) (Gover
 	if err := ctx.Err(); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrGovernorUnavailable, err)
 	}
-	if spec.Limit <= 0 {
-		// Zero / negative limit is a configuration error — refusing to
-		// admit anything would surprise the operator, so we degrade to
-		// noop rather than silent-overadmission. Wrap with
-		// ErrGovernorUnavailable so callers can classify it.
-		return nil, fmt.Errorf("%w: non-positive limit for spec %d/%d (mode=%s)",
-			ErrGovernorUnavailable, spec.ProviderID, spec.CredentialID, spec.Mode)
-	}
 	if b.specBackendMismatch(spec) {
 		return nil, fmt.Errorf("%w: spec backend=%s, this=%s",
 			ErrGovernorUnavailable, spec.Backend, b.Kind())
@@ -245,11 +271,29 @@ func (b *RedisEnforceBackend) New(ctx context.Context, spec GovernorSpec) (Gover
 	if mode == "" {
 		mode = ModeConcurrency
 	}
+	limit := spec.Limit
+	if mode == ModeRPM {
+		limit = spec.RPMLimit
+	} else if mode == ModeTPM {
+		limit = spec.TPMLimit
+	}
+	if limit <= 0 {
+		return nil, fmt.Errorf("%w: non-positive limit for spec %d/%d (mode=%s)", ErrGovernorUnavailable, spec.ProviderID, spec.CredentialID, mode)
+	}
+	if mode == ModeRPM || mode == ModeTPM {
+		return &redisRateGovernor{
+			backend: b,
+			spec:    spec,
+			key:     redisRateKey(spec.ProviderID, spec.CredentialID, mode),
+			limit:   limit,
+			mode:    mode,
+		}, nil
+	}
 	return &redisEnforceGovernor{
 		backend:      b,
 		spec:         spec,
 		key:          redisGovernorKey(spec.ProviderID, spec.CredentialID, mode),
-		limit:        spec.Limit,
+		limit:        limit,
 		ttl:          ttl,
 		mode:         mode,
 		leases:       map[*QueuedRequest]string{},
@@ -377,6 +421,74 @@ func redisGovernorKey(providerID, credentialID int, mode string) string {
 	return "llmgw:gov:{" + strconv.Itoa(providerID) + ":" +
 		strconv.Itoa(credentialID) + ":" + mode + "}:lock"
 }
+
+func redisRateKey(providerID, credentialID int, mode string) string {
+	return "llmgw:gov:{" + strconv.Itoa(providerID) + ":" + strconv.Itoa(credentialID) + ":" + mode + "}:rate"
+}
+
+type redisRateGovernor struct {
+	backend *RedisEnforceBackend
+	spec    GovernorSpec
+	key     string
+	limit   int
+	mode    string
+}
+
+func (g *redisRateGovernor) Mode() string { return g.mode }
+
+func (g *redisRateGovernor) Acquire(ctx context.Context, qr *QueuedRequest, giveUp time.Time) error {
+	cost := 1
+	if g.mode == ModeTPM {
+		cost = qr.EstimatedTokens
+		if cost <= 0 {
+			cost = defaultTokenEstimate
+		}
+		if cost > g.limit {
+			return fmt.Errorf("%w: token cost=%d exceeds tpm limit=%d", ErrGovernorUnavailable, cost, g.limit)
+		}
+	}
+	for {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("%w: %w", ErrGovernorUnavailable, err)
+		}
+		if !giveUp.IsZero() && !time.Now().Before(giveUp) {
+			return errPaceTimeout
+		}
+		raw, err := g.backend.rateS.Run(ctx, g.backend.client, []string{g.key}, g.limit, float64(g.limit)/60000, cost, rateBucketTTL.Milliseconds()).Slice()
+		if err != nil {
+			return fmt.Errorf("%w: %w", ErrGovernorUnavailable, err)
+		}
+		if len(raw) < 3 {
+			return fmt.Errorf("%w: unexpected rate lua result length=%d", ErrGovernorUnavailable, len(raw))
+		}
+		code, _ := raw[0].(int64)
+		if code == 1 {
+			return nil
+		}
+		if code < 0 {
+			return fmt.Errorf("%w: invalid rate bucket request", ErrGovernorUnavailable)
+		}
+		wait := 2 * time.Millisecond
+		if !giveUp.IsZero() {
+			remaining := time.Until(giveUp)
+			if remaining <= 0 {
+				return errPaceTimeout
+			}
+			if wait > remaining {
+				wait = remaining
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("%w: %w", ErrGovernorUnavailable, ctx.Err())
+		case <-time.After(wait):
+		}
+	}
+}
+
+func (g *redisRateGovernor) Release(*QueuedRequest) {}
+
+const rateBucketTTL = 2 * time.Minute
 
 // ── redisEnforceGovernor ─────────────────────────────────────────────────
 
@@ -575,4 +687,5 @@ var (
 	_ GovernorBackend = (*RedisShadowBackend)(nil)
 	_ Governor        = (*redisEnforceGovernor)(nil)
 	_ Governor        = (*redisShadowGovernor)(nil)
+	_ Governor        = (*redisRateGovernor)(nil)
 )

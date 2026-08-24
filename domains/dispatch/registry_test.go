@@ -335,22 +335,17 @@ func TestQueueWaitBudgetZeroWhenDisabled(t *testing.T) {
 	}
 }
 
-// TestSubmitModelQueueFullImmediateOverflow (UT-DQ-01): once the Tier-1 model
-// queue reaches its depth bound, the next Submit is rejected IMMEDIATELY with
-// a retryable overflow error carrying a Retry-After hint (G9) — zero queue
-// wait (elapsed well under any plausible 5s/30s wait).
-func TestSubmitModelQueueFullImmediateOverflow(t *testing.T) {
+// TestSubmitModelQueueFullWaitsInTotalQueue verifies that model-lane pressure
+// is absorbed by the bounded total FIFO instead of rejecting an already
+// admitted request.
+func TestSubmitModelQueueFullWaitsInTotalQueue(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.MaxQueueDepth = 3
-	// One dispatcher worker parks inside RouteFunc; the drainer then fills
-	// dispatchIn (cap workers*4) and finally the model queue — every stage
-	// is channel-driven, so the chain saturates deterministically.
+	// One dispatcher worker parks inside RouteFunc so the total queue retains
+	// admitted work while the model lane applies backpressure.
 	cfg.DispatcherWorkers = 1
 	hotCfg := &atomic.Value{}
 	hotCfg.Store(&cfg)
-	// The registry's unfinished limit is deliberately bound to
-	// MaxQueueDepth (R1.8); this test isolates the Tier-1 queue-full path,
-	// so re-open the registry admission window via its own knobs.
 	blockRoute := make(chan struct{})
 	p := NewPipeline(Deps{
 		RouteFunc: func(context.Context, *QueuedRequest) ([]CredentialRef, error) {
@@ -365,66 +360,30 @@ func TestSubmitModelQueueFullImmediateOverflow(t *testing.T) {
 		},
 		HotCfg: hotCfg,
 	})
-	p.registry.UpdateLimits(DefaultRegistryCapacity, DefaultCompletedWatermark, DefaultRegistryCapacity)
 	p.Start()
 	defer func() {
 		close(blockRoute)
 		p.Stop()
 	}()
 
-	// Submit fillers one at a time (bounded ctx). Requests the chain can
-	// absorb park inside RouteFunc/dispatchIn until their ctx expires;
-	// once the Tier-1 model queue itself is full the NEXT Submit is
-	// rejected immediately — assert on that submission's own outcome and
-	// latency (no cross-goroutine queue observation, fully deterministic).
-	var (
-		overflowErr error
-		elapsed     time.Duration
-	)
-	deadline := time.Now().Add(5 * time.Second)
-	for i := 0; i < 32 && time.Now().Before(deadline); i++ {
-		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Millisecond)
-		qr := NewQueuedRequest(fmt.Sprintf("fill-%d", i), "t", "m", ctx, nil)
-		start := time.Now()
-		_, err := p.Submit(ctx, qr)
-		elapsed = time.Since(start)
-		cancel()
-		var overflow *OverflowError
-		if errors.As(err, &overflow) && overflow.Reason == "model_queue_full" {
-			overflowErr = err
-			break
-		}
-	}
-	if overflowErr == nil {
-		t.Fatal("model queue never saturated: no filler was overflow-rejected")
-	}
-	if !errors.Is(overflowErr, ErrOverflow) {
-		t.Fatalf("overflow must wrap ErrOverflow, got %v", overflowErr)
-	}
-	var overflow *OverflowError
-	if !errors.As(overflowErr, &overflow) {
-		t.Fatalf("expected *OverflowError, got %T (%v)", overflowErr, overflowErr)
-	}
-	if overflow.Reason != "model_queue_full" || overflow.RetryAfter <= 0 {
-		t.Fatalf("overflow details = %+v (G9 requires a Retry-After hint)", overflow)
-	}
-	if elapsed > 500*time.Millisecond {
-		t.Fatalf("full queue must reject immediately (zero wait), took %v", elapsed)
-	}
-	if classifyError(overflowErr) != "overflow" {
-		t.Fatalf("classifyError(overflow) = %q", classifyError(overflowErr))
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Millisecond)
+	defer cancel()
+	_, err := p.Submit(ctx, NewQueuedRequest("wait-in-total", "t", "m", ctx, nil))
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Submit error = %v, want context deadline while queued", err)
 	}
 }
 
-// TestSubmitRegistryUnfinishedFullImmediateOverflow (UT-DQ-06): pending+
-// in-flight entries at the scheduling bound ⇒ the registry refuses admission
-// and Submit returns the same immediate retryable overflow.
-func TestSubmitRegistryUnfinishedFullImmediateOverflow(t *testing.T) {
-	blockRoute := make(chan struct{})
-	overflowSeen := make(chan QueueObservation, 4)
+// TestPipelineRegistryDoesNotRejectExecution verifies that registry limits
+// remain observation-only; totalQueue is the execution admission boundary.
+func TestPipelineRegistryDoesNotRejectExecution(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.TotalQueueCapacity = 10
+	cfg.MaxQueueDepth = 2
+	var hotCfg atomic.Value
+	hotCfg.Store(&cfg)
 	p := NewPipeline(Deps{
 		RouteFunc: func(context.Context, *QueuedRequest) ([]CredentialRef, error) {
-			<-blockRoute
 			return []CredentialRef{cred(1, ModeConcurrency, 1)}, nil
 		},
 		ModelResolveFunc: func(_ context.Context, requested string, _ []string) (string, []string, error) {
@@ -433,57 +392,16 @@ func TestSubmitRegistryUnfinishedFullImmediateOverflow(t *testing.T) {
 		ForwardFunc: func(context.Context, *QueuedRequest, CredentialRef) ForwardOutcome {
 			return ForwardOutcome{Result: "ok"}
 		},
+		HotCfg: &hotCfg,
 	})
-	p.SetQueueObservationSink(QueueObservationSinkFunc(func(observation QueueObservation) {
-		if observation.Kind == QueueOverflow {
-			overflowSeen <- observation
-		}
-	}))
 	p.Start()
-	defer func() {
-		close(blockRoute)
-		p.Stop()
-	}()
+	defer p.Stop()
 
-	// Tighten the unfinished limit to 2 live (hot-reload path).
-	cfg := DefaultConfig()
-	cfg.MaxQueueDepth = 2
-	p.Reload(cfg)
-
-	for i := 0; i < 2; i++ {
-		go func(i int) {
-			ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
-			defer cancel()
-			qr := NewQueuedRequest(fmt.Sprintf("hold-%d", i), "t", "m", ctx, nil)
-			_, _ = p.Submit(ctx, qr)
-		}(i)
-	}
-	deadline := time.Now().Add(time.Second)
-	for p.registry.UnfinishedCount() < 2 && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
-	}
-
-	qr := NewQueuedRequest("overflow-2", "t", "m", context.Background(), nil)
-	_, err := p.Submit(context.Background(), qr)
-	if err == nil || !errors.Is(err, ErrOverflow) {
-		t.Fatalf("expected registry overflow, got %v", err)
-	}
-	var overflow *OverflowError
-	if !errors.As(err, &overflow) || overflow.Reason != "registry_unfinished_full" || overflow.RetryAfter <= 0 {
-		t.Fatalf("overflow details = %+v", overflow)
-	}
-	select {
-	case observation := <-overflowSeen:
-		if observation.OverflowReason != "registry_unfinished_full" {
-			t.Fatalf("overflow observation reason = %q", observation.OverflowReason)
+	for i := 0; i < 3; i++ {
+		result, err := p.Submit(context.Background(), NewQueuedRequest(fmt.Sprintf("registry-%d", i), "t", "m", context.Background(), nil))
+		if err != nil || result != "ok" {
+			t.Fatalf("request %d = (%v, %v), want (ok, nil)", i, result, err)
 		}
-	case <-time.After(time.Second):
-		t.Fatal("overflow rejection must emit a queue observation (R1.8)")
-	}
-	// The refused request never entered the system: no registry entry may
-	// exist for it (admission refusal ≠ lifecycle registration).
-	if _, ok := p.registry.Get("overflow-2"); ok {
-		t.Fatal("refused request must not be registered")
 	}
 }
 

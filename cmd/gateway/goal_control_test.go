@@ -114,10 +114,10 @@ func TestEnforceFollowUpDepthBudgetInvariant(t *testing.T) {
 			expectedNewDepth:  15,
 		},
 		{
-			name:              "model_switch_disabled_no_op",
-			continueCount:     5,
-			switchCount:       0,
-			startDepth:        1, // 5*1=5 > 1; but switch disabled, invariant does not apply
+			name:          "model_switch_disabled_no_op",
+			continueCount: 5,
+			switchCount:   0,
+			startDepth:    1, // 5*1=5 > 1; but switch disabled, invariant does not apply
 			// Wait: with switchCount=0, required = 5*(0+1)=5, startDepth=1 < 5 → violates.
 			// Actually we treat switchCount=0 as the "still bounded path": a single
 			// model goes through 5 continues, depth=5 is required. Helper should lift.
