@@ -56,10 +56,15 @@ make db-init  # 或 ./scripts/db-init.sh
 2. **编写代码 + 测试**（每个 PR 应有对应测试）
 3. **本地验证**
    ```bash
-   go test ./...
-   go vet ./...
+   ./verify.sh
+   ./verify.sh --web
    ./scripts/scan-secrets.sh --mode=strict --paths=.
+   ./scripts/task-stop-audit.sh verify
    ```
+
+   `verify.sh` 默认包含全量 Go 测试、`go vet`、gateway 编译和
+   `govulncheck ./...`。缺少 `govulncheck` 时门禁失败，请先执行：
+   `go install golang.org/x/vuln/cmd/govulncheck@latest`。
 4. **Commit + Push**（参考 [提交规范](#提交规范)）
 5. **开 PR**（参考 [PR 流程](#pull-request-流程)）
 
