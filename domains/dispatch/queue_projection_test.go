@@ -100,6 +100,84 @@ func TestQueueProjectionOverflowDegradedIsVisibleToConcurrentReaders(t *testing.
 	}
 }
 
+// pushCompleted feeds one qualifying completion with the given wait.
+func pushCompleted(projection *QueueProjection, requestID string, waitMS int) {
+	projection.ObserveQueue(QueueObservation{Kind: QueueRequestCompleted, Completed: &WaterfallRequest{
+		RequestID:      requestID,
+		ArrivedAt:      "2026-08-24T00:00:00Z",
+		CredDequeuedAt: "2026-08-24T00:00:01Z",
+		QueueWaitMS:    waitMS,
+	}})
+}
+
+func TestQueueProjectionPercentilesMatchWindowSemantics(t *testing.T) {
+	projection := NewQueueProjection()
+	// Empty window: percentiles absent, not zero.
+	if view := projection.Snapshot(); view.Pipeline.WaitingMsP50 != nil || view.Pipeline.WaitingMsP95 != nil {
+		t.Fatalf("empty window percentiles = %v/%v, want nil", view.Pipeline.WaitingMsP50, view.Pipeline.WaitingMsP95)
+	}
+
+	// Non-qualifying samples (missing dequeue boundary, zero wait) must be
+	// excluded from the window.
+	projection.ObserveQueue(QueueObservation{Kind: QueueRequestCompleted, Completed: &WaterfallRequest{
+		RequestID: "no-boundary", ArrivedAt: "2026-08-24T00:00:00Z", QueueWaitMS: 9999,
+	}})
+	projection.ObserveQueue(QueueObservation{Kind: QueueRequestCompleted, Completed: &WaterfallRequest{
+		RequestID: "zero-wait", ArrivedAt: "t", CredDequeuedAt: "t", QueueWaitMS: 0,
+	}})
+	if view := projection.Snapshot(); view.Pipeline.WaitingMsP50 != nil {
+		t.Fatalf("non-qualifying samples must not produce percentiles, got p50=%v", view.Pipeline.WaitingMsP50)
+	}
+
+	// 100 qualifying samples with waits 1..100: nearest-rank p50=50, p95=95.
+	for w := 1; w <= 100; w++ {
+		pushCompleted(projection, fmt.Sprintf("req-%03d", w), w)
+	}
+	view := projection.Snapshot()
+	if view.Pipeline.WaitingMsP50 == nil || *view.Pipeline.WaitingMsP50 != 50 {
+		t.Fatalf("p50 = %v, want 50", view.Pipeline.WaitingMsP50)
+	}
+	if view.Pipeline.WaitingMsP95 == nil || *view.Pipeline.WaitingMsP95 != 95 {
+		t.Fatalf("p95 = %v, want 95", view.Pipeline.WaitingMsP95)
+	}
+
+	// Eviction wrap: push 200 more samples (waits 101..300). The ring cap is
+	// 200, so the window becomes exactly waits 101..300: sorted index 99 →
+	// 200 for p50; nearest-rank 95% → index ceil(0.95*200)-1 = 189 → 290.
+	for w := 101; w <= 300; w++ {
+		pushCompleted(projection, fmt.Sprintf("req-%03d", w), w)
+	}
+	view = projection.Snapshot()
+	if *view.Pipeline.WaitingMsP50 != 200 {
+		t.Fatalf("post-eviction p50 = %d, want 200", *view.Pipeline.WaitingMsP50)
+	}
+	if *view.Pipeline.WaitingMsP95 != 290 {
+		t.Fatalf("post-eviction p95 = %d, want 290", *view.Pipeline.WaitingMsP95)
+	}
+
+	// Detached percentile boxes: mutating the returned value must not leak
+	// into the next snapshot.
+	*view.Pipeline.WaitingMsP50 = -1
+	if again := projection.Snapshot(); *again.Pipeline.WaitingMsP50 != 200 {
+		t.Fatalf("percentile boxes are shared, got %d", *again.Pipeline.WaitingMsP50)
+	}
+}
+
+func TestQueueProjectionPercentileWindowSurvivesDuplicateWaits(t *testing.T) {
+	projection := NewQueueProjection()
+	// Duplicated wait values must remove exactly one instance on eviction.
+	for i := 0; i < waterfallRingCap+50; i++ {
+		pushCompleted(projection, fmt.Sprintf("dup-%03d", i), 42)
+	}
+	view := projection.Snapshot()
+	if view.Pipeline.WaitingMsP50 == nil || *view.Pipeline.WaitingMsP50 != 42 {
+		t.Fatalf("duplicate-wait p50 = %v, want 42", view.Pipeline.WaitingMsP50)
+	}
+	if *view.Pipeline.WaitingMsP95 != 42 {
+		t.Fatalf("duplicate-wait p95 = %v, want 42", view.Pipeline.WaitingMsP95)
+	}
+}
+
 func BenchmarkQueueProjectionSnapshot(b *testing.B) {
 	projection := benchmarkQueueProjection()
 	b.ResetTimer()
