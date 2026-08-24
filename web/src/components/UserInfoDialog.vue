@@ -72,7 +72,7 @@ function close() {
   align-items: center;
   justify-content: center;
   padding: 16px;
-  background: rgba(0, 0, 0, 0.45);
+  background: var(--overlay-strong);
 }
 
 .user-info-dialog {
@@ -109,7 +109,7 @@ function close() {
 }
 
 .user-info-dialog__close:hover {
-  background: var(--bg-subtle, rgba(255, 255, 255, 0.05));
+  background: var(--bg-subtle, color-mix(in srgb, var(--kx-text) 4%, transparent));
   color: var(--text);
 }
 

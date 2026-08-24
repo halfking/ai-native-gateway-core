@@ -78,8 +78,8 @@ onUnmounted(() => {
   transition: background-color 0.3s ease;
 }
 .health-dot-ok       { background-color: #2ecc71; }
-.health-dot-degraded { background-color: #e74c3c; }
-.health-dot-suspect  { background-color: #95a5a6; }
+.health-dot-degraded { background-color: var(--danger); }
+.health-dot-suspect  { background-color: var(--muted); }
 .health-dot-err      { background-color: #f39c12; }
 .health-letter {
   font-weight: 600;

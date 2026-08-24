@@ -1145,7 +1145,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
 .route-incident-drawer__backdrop {
   position: absolute;
   inset: 0;
-  background: rgba(0, 0, 0, 0.45);
+  background: var(--overlay-strong);
 }
 
 .route-incident-drawer__panel {
@@ -1523,7 +1523,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
 
 .timeline-bar--ok { background: var(--success); }
 .timeline-bar--warn { background: var(--warning); }
-.timeline-bar--slow { background: #f97316; }
+.timeline-bar--slow { background: var(--warning); }
 .timeline-bar--critical { background: var(--danger); }
 
 .timeline-row__p99 {
@@ -1578,10 +1578,10 @@ function hasRunValues(values: Record<string, unknown>): boolean {
   border: 1px solid var(--border);
 }
 
-.event-row__type--opened { color: var(--danger); border-color: rgba(248, 81, 73, 0.4); }
-.event-row__type--failure_observed { color: var(--danger); border-color: rgba(248, 81, 73, 0.4); }
-.event-row__type--recovery_progress { color: var(--warning); border-color: rgba(210, 153, 34, 0.4); }
-.event-row__type--recovered { color: var(--success); border-color: rgba(63, 185, 80, 0.4); }
+.event-row__type--opened { color: var(--danger); border-color: var(--danger-bd); }
+.event-row__type--failure_observed { color: var(--danger); border-color: var(--danger-bd); }
+.event-row__type--recovery_progress { color: var(--warning); border-color: var(--warning-bd); }
+.event-row__type--recovered { color: var(--success); border-color: var(--success-bd); }
 
 .event-row__kind,
 .event-row__status,
@@ -1621,7 +1621,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
 }
 
 .action-grid__btn--destructive {
-  border-color: rgba(248, 81, 73, 0.5);
+  border-color: var(--danger-bd);
   color: var(--danger);
 }
 
@@ -1631,7 +1631,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
 }
 
 .action-grid__btn--slot {
-  border-color: rgba(210, 153, 34, 0.4);
+  border-color: var(--warning-bd);
   color: var(--warning);
 }
 
@@ -1657,7 +1657,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
 }
 
 .action-result__pill--success {
-  background: rgba(63, 185, 80, 0.18);
+  background: var(--success-bd);
   color: var(--success);
 }
 
@@ -1715,7 +1715,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
 }
 
 .audit-row__pill--success {
-  background: rgba(63, 185, 80, 0.18);
+  background: var(--success-bd);
   color: var(--success);
 }
 
@@ -1761,7 +1761,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
 .action-modal__backdrop {
   position: absolute;
   inset: 0;
-  background: rgba(0, 0, 0, 0.6);
+  background: var(--overlay-strong);
 }
 
 .action-modal__panel {
@@ -1773,7 +1773,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
   color: var(--text);
   border: 1px solid var(--border);
   border-radius: 8px;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 8px 32px var(--overlay-strong);
   display: flex;
   flex-direction: column;
 }
@@ -1815,8 +1815,8 @@ function hasRunValues(values: Record<string, unknown>): boolean {
 
 .action-modal__warning {
   font-size: 12px;
-  background: rgba(248, 81, 73, 0.12);
-  border: 1px solid rgba(248, 81, 73, 0.4);
+  background: var(--danger-bg);
+  border: 1px solid var(--danger-bd);
   color: var(--danger);
   padding: 6px 8px;
   border-radius: 4px;
@@ -1885,7 +1885,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
 }
 
 .route-incident-drawer__btn--primary:hover:not(:disabled) {
-  background: #4f46e5;
+  background: var(--purple);
 }
 
 .route-incident-drawer__btn--destructive {
@@ -1895,7 +1895,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
 }
 
 .route-incident-drawer__btn--destructive:hover:not(:disabled) {
-  background: #dc2626;
+  background: var(--danger);
 }
 
 /* ─── Phase 2: evidence export banner ──────────────────────────── */
@@ -1906,7 +1906,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(0, 0, 0, 0.5);
+  background: var(--overlay-strong);
 }
 
 .export-banner__panel {
@@ -1915,7 +1915,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
   border-radius: 6px;
   padding: 16px;
   width: min(420px, 100vw);
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 8px 32px var(--overlay-strong);
 }
 
 .export-banner__panel h4 {

@@ -276,7 +276,7 @@ function onClick() {
   width: 64px;
   height: 76px;
   border-radius: 4px;
-  border: 2px solid rgba(139, 148, 158, 0.4);
+  border: 2px solid var(--neutral-bd);
   color: var(--text);
   flex-shrink: 0;
   display: flex;
@@ -308,12 +308,12 @@ function onClick() {
 }
 @keyframes live-block-pulse {
   0%, 100% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.0); }
-  50%      { box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.25); }
+  50%      { box-shadow: 0 0 0 4px var(--warning-strong); }
 }
 
 /* Failure: an extra slight scale-up hint + a subtle red glow. */
 .live-block--failure {
-  box-shadow: 0 0 0 1px rgba(239, 68, 68, 0.4) inset;
+  box-shadow: 0 0 0 1px var(--danger-strong) inset;
 }
 
 .live-block__time {
@@ -330,7 +330,7 @@ function onClick() {
   top: 2px;
   left: 3px;
   z-index: 1;
-  color: #fbbf24;
+  color: var(--warning);
   font-weight: 800;
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.75);
 }
@@ -364,7 +364,7 @@ function onClick() {
   line-height: 1.1;
   letter-spacing: 0.3px;
   text-transform: uppercase;
-  color: #fecaca;
+  color: var(--danger-bd);
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7);
   width: 100%;
   text-align: center;

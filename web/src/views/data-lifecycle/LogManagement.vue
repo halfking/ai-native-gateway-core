@@ -426,9 +426,9 @@ function fmtNum(n: number) {
 .card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius, 8px); padding: 16px 20px; margin-bottom: 16px; }
 .card-title { margin: 0 0 12px; font-size: 15px; color: var(--text); border-bottom: 1px solid var(--border); padding-bottom: 8px; display: flex; align-items: center; gap: 8px; }
 .badge { font-size: 11px; padding: 2px 8px; border-radius: 10px; font-weight: normal; }
-.badge.ok { background: rgba(63,185,80,.15); color: var(--success); border: 1px solid rgba(63,185,80,.3); }
-.badge.warn { background: rgba(210,153,34,.15); color: var(--warning); border: 1px solid rgba(210,153,34,.3); }
-.badge.muted { background: rgba(139,148,158,.15); color: var(--muted); }
+.badge.ok { background: var(--success-bg); color: var(--success); border: 1px solid var(--success-bd); }
+.badge.warn { background: var(--warning-bg); color: var(--warning); border: 1px solid var(--warning-bd); }
+.badge.muted { background: var(--neutral-bg); color: var(--muted); }
 .usage-row { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
 .usage-bar-track { flex: 1; height: 20px; background: var(--bg-subtle); border-radius: 10px; overflow: hidden; }
 .usage-bar-fill { height: 100%; border-radius: 10px; }
@@ -451,18 +451,18 @@ function fmtNum(n: number) {
 .switch-label { display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 13px; color: var(--text); }
 .switch-label input { width: 15px; height: 15px; accent-color: var(--accent); }
 .form-actions { margin-top: 12px; }
-.btn-primary { background: var(--accent); color: #fff; border: none; border-radius: 4px; padding: 8px 24px; cursor: pointer; font-size: 14px; transition: opacity .15s; }
+.btn-primary { background: var(--accent); color: var(--on-primary); border: none; border-radius: 4px; padding: 8px 24px; cursor: pointer; font-size: 14px; transition: opacity .15s; }
 .btn-primary:hover:not(:disabled) { opacity: .85; }
 .btn-primary:disabled { opacity: .4; cursor: not-allowed; }
 .btn-secondary { background: var(--card); border: 1px solid var(--accent); color: var(--accent-h); border-radius: 4px; padding: 6px 16px; cursor: pointer; margin-top: 8px; transition: opacity .15s; }
 .btn-secondary:hover:not(:disabled) { opacity: .85; }
 .btn-secondary:disabled { opacity: .4; cursor: not-allowed; }
 .btn-danger { background: var(--card); border: 1px solid var(--danger); color: var(--danger); border-radius: 4px; padding: 6px 16px; cursor: pointer; margin-top: 8px; transition: opacity .15s; }
-.btn-danger:hover:not(:disabled) { background: rgba(248,81,73,.12); }
+.btn-danger:hover:not(:disabled) { background: var(--danger-bg); }
 .btn-danger:disabled { opacity: .4; cursor: not-allowed; }
 .save-msg { margin-top: 10px; font-size: 13px; color: var(--accent-h); }
-.warn-box { padding: 8px 12px; background: rgba(210,153,34,.1); border: 1px solid rgba(210,153,34,.3); border-radius: 4px; color: var(--warning); font-size: 13px; }
-.error-box { padding: 8px 12px; background: rgba(248,81,73,.1); border: 1px solid rgba(248,81,73,.3); border-radius: 4px; color: var(--danger); margin-bottom: 16px; }
+.warn-box { padding: 8px 12px; background: var(--warning-bg); border: 1px solid var(--warning-bd); border-radius: 4px; color: var(--warning); font-size: 13px; }
+.error-box { padding: 8px 12px; background: var(--danger-bg); border: 1px solid var(--danger-bd); border-radius: 4px; color: var(--danger); margin-bottom: 16px; }
 .empty-hint { color: var(--muted); font-size: 13px; padding: 16px 0; text-align: center; }
 .table-wrap { overflow-x: auto; }
 .data-table { width: 100%; border-collapse: collapse; font-size: 13px; }
@@ -473,7 +473,7 @@ function fmtNum(n: number) {
 .op-box h4 { margin: 0 0 4px; font-size: 14px; color: var(--text); }
 .op-desc { margin: 0 0 10px; font-size: 12px; color: var(--muted); }
 .op-desc.danger { color: var(--danger); }
-.op-result { margin-top: 16px; padding: 12px; background: rgba(63,185,80,.08); border: 1px solid rgba(63,185,80,.3); border-radius: 4px; color: var(--text); }
+.op-result { margin-top: 16px; padding: 12px; background: rgba(63,185,80,.08); border: 1px solid var(--success-bd); border-radius: 4px; color: var(--text); }
 .op-result-row { display: flex; gap: 24px; font-size: 13px; flex-wrap: wrap; }
 .op-result-row code { background: var(--bg-subtle); border: 1px solid var(--border); padding: 1px 6px; border-radius: 4px; color: var(--accent-h); font-family: ui-monospace, SFMono-Regular, monospace; }
 .highlight { color: var(--success); }

@@ -444,10 +444,10 @@ h1 {
   text-align: center;
 }
 
-.queue-urgent { background: rgba(248,81,73,.1); }
-.queue-suspicious { background: rgba(210,153,34,.1); }
-.queue-failing { background: rgba(210,153,34,.1); }
-.queue-watchdog { background: rgba(63,185,80,.1); }
+.queue-urgent { background: var(--danger-bg); }
+.queue-suspicious { background: var(--warning-bg); }
+.queue-failing { background: var(--warning-bg); }
+.queue-watchdog { background: var(--success-bg); }
 
 .queue-label {
   font-size: 11px;

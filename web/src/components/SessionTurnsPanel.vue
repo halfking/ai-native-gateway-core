@@ -218,9 +218,9 @@ const loadingText = computed(() => {
   font-size: 10px; font-weight: 500; border: 1px solid var(--border);
 }
 .chip-neutral { background: var(--bg-hover); color: var(--text-secondary); }
-.chip-pii { background: rgba(52,211,153,.12); color: #34d399; border-color: rgba(52,211,153,.3); }
-.chip-warn { background: rgba(251,191,36,.12); color: #fbbf24; border-color: rgba(251,191,36,.3); }
-.chip-danger { background: rgba(248,113,113,.12); color: #f87171; border-color: rgba(248,113,113,.3); }
+.chip-pii { background: var(--success-bg); color: var(--success); border-color: var(--success-bd); }
+.chip-warn { background: var(--warning-bg); color: var(--warning); border-color: var(--warning-bd); }
+.chip-danger { background: rgba(248,113,113,.12); color: var(--danger); border-color: rgba(248,113,113,.3); }
 .stag-olap {
   background: var(--bg-tertiary);
   color: var(--text-muted);

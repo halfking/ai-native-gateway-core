@@ -67,10 +67,10 @@ function topEntry(d: Record<string, number>): string {
   border-radius: 6px;
 }
 .kpi-chip-specified {
-  border-left: 3px solid #6b7280;
+  border-left: 3px solid var(--muted);
 }
 .kpi-chip-specified .kpi-value {
-  color: #6b7280;
+  color: var(--muted);
   font-style: italic;
 }
 .kpi-label {

@@ -386,15 +386,15 @@ function dateWindow(c: RoutingCandidate): string {
   text-align: center;
 }
 .score-free {
-  background: #dcfce7;
-  color: #166534;
+  background: var(--success-bg);
+  color: var(--success-dark);
 }
 .score-good {
-  background: #dbeafe;
-  color: #1e40af;
+  background: var(--info-bg);
+  color: var(--accent-dark);
 }
 .score-normal {
-  background: #f3f4f6;
-  color: #374151;
+  background: var(--surface-secondary);
+  color: var(--muted);
 }
 </style>

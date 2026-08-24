@@ -1282,7 +1282,7 @@ onMounted(() => {
   height: 16px;
   font-size: 10px;
   font-weight: 700;
-  color: color-mix(in srgb, var(--warning) 20%, #000);
+  color: color-mix(in srgb, var(--warning) 20%, var(--kx-text));
   background: var(--warning);
   border-radius: 50%;
   margin-left: 2px;
@@ -1420,7 +1420,7 @@ onMounted(() => {
   font-weight: 500;
   transition: background 0.15s;
 }
-.dep-chip:hover { background: rgba(251, 191, 36, 0.3); }
+.dep-chip:hover { background: var(--warning-bd); }
 .dep-jump {
   font-size: 10px;
   opacity: 0.7;
@@ -1481,7 +1481,7 @@ onMounted(() => {
   line-height: 1.5;
 }
 .cap-check {
-  color: #34d399;
+  color: var(--success);
   font-weight: 700;
   flex-shrink: 0;
 }
@@ -1524,20 +1524,20 @@ onMounted(() => {
   font-weight: 500;
 }
 .level-safe {
-  background: rgba(52, 211, 153, 0.12);
-  color: #34d399;
+  background: var(--success-bg);
+  color: var(--success);
 }
 .level-warn {
-  background: rgba(251, 191, 36, 0.12);
-  color: #fbbf24;
+  background: var(--warning-bg);
+  color: var(--warning);
 }
 .level-danger {
   background: rgba(248, 113, 113, 0.12);
-  color: #f87171;
+  color: var(--danger);
 }
 .level-breaking {
-  background: rgba(239, 68, 68, 0.15);
-  color: #ef4444;
+  background: var(--danger-bg);
+  color: var(--danger);
 }
 
 /* ── Dependencies ── */
@@ -1561,7 +1561,7 @@ onMounted(() => {
 }
 .dep-item.dep-disabled {
   opacity: 0.7;
-  border-color: rgba(251, 191, 36, 0.3);
+  border-color: var(--warning-bd);
 }
 .dep-icon {
   font-size: 20px;
@@ -1591,22 +1591,22 @@ onMounted(() => {
   flex-shrink: 0;
 }
 .dep-badge.required {
-  background: rgba(239, 68, 68, 0.12);
-  color: #f87171;
+  background: var(--danger-bg);
+  color: var(--danger);
 }
 .dep-badge.optional {
-  background: rgba(139, 148, 158, 0.12);
-  color: #8b949e;
+  background: var(--neutral-bg);
+  color: var(--muted);
 }
 .dep-status {
   font-size: 12px;
   flex-shrink: 0;
 }
 .dep-status.ok {
-  color: #34d399;
+  color: var(--success);
 }
 .dep-status.warning {
-  color: #fbbf24;
+  color: var(--warning);
   display: flex;
   align-items: center;
   gap: 4px;
@@ -1631,11 +1631,11 @@ onMounted(() => {
 .btn-action:disabled { opacity: 0.5; cursor: not-allowed; }
 .btn-primary {
   background: var(--accent);
-  color: #fff;
+  color: var(--on-primary);
 }
 .btn-danger {
-  background: rgba(239, 68, 68, 0.85);
-  color: #fff;
+  background: var(--danger-strong);
+  color: var(--on-primary);
 }
 .btn-ghost {
   padding: 8px 16px;
@@ -1660,14 +1660,14 @@ onMounted(() => {
   gap: 4px;
 }
 .test-ok {
-  background: rgba(52, 211, 153, 0.1);
-  border: 1px solid rgba(52, 211, 153, 0.3);
-  color: #34d399;
+  background: var(--success-bg);
+  border: 1px solid var(--success-bd);
+  color: var(--success);
 }
 .test-fail {
   background: rgba(248, 113, 113, 0.1);
   border: 1px solid rgba(248, 113, 113, 0.3);
-  color: #f87171;
+  color: var(--danger);
 }
 .test-detail {
   font-family: ui-monospace, SFMono-Regular, monospace;
@@ -1787,7 +1787,7 @@ onMounted(() => {
   left: 2px;
   width: 14px;
   height: 14px;
-  background: #fff;
+  background: var(--on-primary);
   border-radius: 50%;
   transition: transform 0.2s;
 }
@@ -1807,16 +1807,16 @@ onMounted(() => {
   font-weight: 500;
 }
 .src-badge.src-db {
-  background: rgba(52, 211, 153, 0.15);
-  color: #34d399;
+  background: var(--success-bg);
+  color: var(--success);
 }
 .src-badge.src-env {
   background: color-mix(in srgb, var(--accent) 15%, transparent);
   color: var(--accent-h);
 }
 .src-badge.src-default {
-  background: rgba(139, 148, 158, 0.15);
-  color: #8b949e;
+  background: var(--neutral-bg);
+  color: var(--muted);
 }
 
 /* ── Integration Card ── */
@@ -1886,10 +1886,10 @@ onMounted(() => {
   border-radius: 50%;
 }
 .status-indicator.connected {
-  background: #34d399;
-  box-shadow: 0 0 4px rgba(52, 211, 153, 0.4);
+  background: var(--success);
+  box-shadow: 0 0 4px var(--success-bd);
 }
-.status-indicator.disconnected { background: #6e7681; }
+.status-indicator.disconnected { background: var(--muted); }
 
 /* ── Status Tab (Runtime Summary) ── */
 .status-grid {
@@ -1916,8 +1916,8 @@ onMounted(() => {
   font-weight: 500;
 }
 
-.text-green { color: #34d399; }
-.text-muted { color: #6e7681; }
+.text-green { color: var(--success); }
+.text-muted { color: var(--muted); }
 
 /* ── Dependency Section ── */
 .dependency-section {
@@ -1929,9 +1929,9 @@ onMounted(() => {
 }
 .warning-banner {
   padding: 10px 14px;
-  background: rgba(251, 191, 36, 0.1);
-  border: 1px solid rgba(251, 191, 36, 0.3);
-  color: #fbbf24;
+  background: var(--warning-bg);
+  border: 1px solid var(--warning-bd);
+  color: var(--warning);
   border-radius: 6px;
   margin-bottom: 12px;
   font-size: 12px;
@@ -1951,7 +1951,7 @@ onMounted(() => {
   border: 1px solid var(--border);
 }
 .dependency-item.dep-enabled {
-  border-color: rgba(52, 211, 153, 0.3);
+  border-color: var(--success-bd);
 }
 .dependency-item.dep-disabled.dep-required {
   border-color: rgba(248, 113, 113, 0.3);
@@ -1983,11 +1983,11 @@ onMounted(() => {
 }
 .badge-required {
   background: rgba(248, 113, 113, 0.15);
-  color: #f87171;
+  color: var(--danger);
 }
 .badge-optional {
   background: rgba(107, 114, 128, 0.15);
-  color: #9ca3af;
+  color: var(--muted);
 }
 
 .dep-title-icon {
@@ -2008,10 +2008,10 @@ onMounted(() => {
   margin-top: 12px;
   padding: 10px 12px;
   background: rgba(52, 211, 153, 0.08);
-  border: 1px solid rgba(52, 211, 153, 0.3);
+  border: 1px solid var(--success-bd);
   border-radius: 6px;
   font-size: 12px;
-  color: #34d399;
+  color: var(--success);
 }
 .cascade-log ul {
   margin: 6px 0 0 16px;
@@ -2054,10 +2054,10 @@ onMounted(() => {
 .dependency-warning {
   margin-top: 8px;
   padding: 8px 10px;
-  background: rgba(251, 191, 36, 0.1);
-  border: 1px solid rgba(251, 191, 36, 0.3);
+  background: var(--warning-bg);
+  border: 1px solid var(--warning-bd);
   border-radius: 4px;
-  color: #fbbf24;
+  color: var(--warning);
   font-size: 11px;
   line-height: 1.4;
 }

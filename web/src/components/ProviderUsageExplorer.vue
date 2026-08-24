@@ -377,7 +377,7 @@ watch(() => props.timeQuery, () => {
   position: fixed;
   inset: 0;
   z-index: 1400;
-  background: rgba(0, 0, 0, 0.55);
+  background: var(--overlay-strong);
   display: flex;
   justify-content: flex-end;
   align-items: stretch;
@@ -390,7 +390,7 @@ watch(() => props.timeQuery, () => {
   flex-direction: column;
   background: var(--card);
   border-left: 1px solid var(--border);
-  box-shadow: -8px 0 32px rgba(0, 0, 0, 0.35);
+  box-shadow: -8px 0 32px var(--overlay-medium);
 }
 
 .pue-header {

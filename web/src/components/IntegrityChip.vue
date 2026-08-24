@@ -98,10 +98,10 @@ function color() {
   border: 1px solid currentColor;
   background: transparent;
 }
-.integrity-chip--green { color: #16a34a; }
-.integrity-chip--orange { color: #ea580c; }
-.integrity-chip--red { color: #dc2626; }
-.integrity-chip--grey { color: #6b7280; }
+.integrity-chip--green { color: var(--success); }
+.integrity-chip--orange { color: var(--warning); }
+.integrity-chip--red { color: var(--danger); }
+.integrity-chip--grey { color: var(--muted); }
 .dot {
   width: 8px;
   height: 8px;

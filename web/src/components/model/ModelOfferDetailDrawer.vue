@@ -277,11 +277,11 @@ function goCanonical() {
 .pane h4 { margin: 0 0 10px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .badge { font-size: 10px; padding: 2px 6px; border-radius: 4px; background: color-mix(in srgb, var(--accent) 15%, transparent); }
 .badge.protect { background: color-mix(in srgb, #c97800 20%, transparent); }
-.badge.override { background: color-mix(in srgb, #3b82f6 20%, transparent); }
+.badge.override { background: color-mix(in srgb, var(--accent) 20%, transparent); }
 .avail-row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
 .avail-badge { font-size: 12px; padding: 2px 8px; border-radius: 999px; }
-.avail-badge.on { background: color-mix(in srgb, #16a34a 20%, transparent); }
-.avail-badge.off { background: color-mix(in srgb, #dc2626 20%, transparent); }
+.avail-badge.on { background: color-mix(in srgb, var(--success) 20%, transparent); }
+.avail-badge.off { background: color-mix(in srgb, var(--danger) 20%, transparent); }
 .field-label { display: block; margin-top: 8px; font-size: 12px; color: var(--muted); }
 .field-input { width: 100%; margin-top: 4px; }
 </style>

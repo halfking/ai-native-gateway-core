@@ -1398,7 +1398,7 @@ watch(activeTab, async (tab) => {
 .tab-bar { display: flex; gap: 8px; flex-wrap: wrap; }
 .tab-btn {
   border: 1px solid var(--border);
-  background: rgba(255,255,255,.02);
+  background: var(--row-hover);
   border-radius: 999px;
   padding: 6px 14px;
   font-size: 13px;
@@ -1486,7 +1486,7 @@ watch(activeTab, async (tab) => {
 
 .family-chip {
   border: 1px solid var(--border);
-  background: rgba(139,148,158,.15);
+  background: var(--neutral-bg);
   border-radius: 999px;
   padding: 4px 9px;
   font-size: 12px;
@@ -1530,7 +1530,7 @@ watch(activeTab, async (tab) => {
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 10px;
-  background: rgba(255,255,255,.02);
+  background: var(--row-hover);
 }
 
 .ns-label-row {
@@ -1570,7 +1570,7 @@ watch(activeTab, async (tab) => {
   left: 0;
   right: 0;
   bottom: 0;
-  background: rgba(0, 0, 0, 0.5);
+  background: var(--overlay-strong);
   z-index: 1000;
 }
 
@@ -1613,7 +1613,7 @@ watch(activeTab, async (tab) => {
   left: 0;
   right: 0;
   bottom: 0;
-  background: rgba(0, 0, 0, 0.5);
+  background: var(--overlay-strong);
   display: flex;
   justify-content: center;
   align-items: flex-start;
@@ -1676,7 +1676,7 @@ watch(activeTab, async (tab) => {
 }
 
 .form-group .required {
-  color: #ef4444;
+  color: var(--danger);
 }
 
 .form-group .help-text {
@@ -1776,9 +1776,9 @@ watch(activeTab, async (tab) => {
   gap: 2px;
 }
 
-.text-green { color: #166534; }
-.text-yellow { color: #92400e; }
-.text-red { color: #991b1b; }
+.text-green { color: var(--success-dark); }
+.text-yellow { color: var(--warning-dark); }
+.text-red { color: var(--danger-dark); }
 
 /* Badge 样式 */
 .badge-red { background: color-mix(in srgb, var(--danger) 15%, var(--surface-primary)); color: var(--danger); }

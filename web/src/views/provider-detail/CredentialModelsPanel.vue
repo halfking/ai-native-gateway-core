@@ -271,8 +271,8 @@ function thinkingLabel(o: ModelOffer) {
 .toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }
 .protect-opt { font-size: 12px; color: var(--muted); display: inline-flex; gap: 4px; align-items: center; }
 .banner { margin-bottom: 8px; font-size: 12px; padding: 6px 10px; border-radius: 6px; }
-.banner.ok { background: color-mix(in srgb, #16a34a 12%, transparent); }
-.banner.err { background: color-mix(in srgb, #dc2626 12%, transparent); }
+.banner.ok { background: color-mix(in srgb, var(--success) 12%, transparent); }
+.banner.err { background: color-mix(in srgb, var(--danger) 12%, transparent); }
 .empty { padding: 24px 8px; text-align: center; color: var(--muted); }
 .empty .hint { font-size: 12px; margin-top: 8px; }
 .row-click { cursor: pointer; }
