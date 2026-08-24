@@ -48,7 +48,7 @@ const compressionStatsEstimatedOrigSQL = `
 						WHEN jsonb_typeof(rb.request_body->'_gw_body_summary') = 'object'
 							AND (rb.request_body #>> '{_gw_body_summary,bytes}') ~ '^[0-9]+$'
 						THEN (rb.request_body #>> '{_gw_body_summary,bytes}')::numeric
-					ELSE LENGTH(COALESCE(COALESCE(rb.request_body, rl.request_body)::text, ''))::numeric
+					ELSE LENGTH(COALESCE(rb.request_body::text, ''))::numeric
 				END / 4.0)), 0)::bigint,
 				COALESCE(SUM(CASE WHEN jsonb_typeof(rb.request_body->'_gw_body_summary') = 'object' THEN 1 ELSE 0 END), 0)::bigint
 		FROM request_logs_with_current_month rl
@@ -137,9 +137,9 @@ func (h *Handler) handleCompressionStats(w http.ResponseWriter, r *http.Request)
 		SELECT
 			COALESCE(NULLIF(rl.compression_strategy,''), 'none') AS strategy,
 			COUNT(*) AS cnt,
-			COUNT(rl.outbound_body)::bigint AS with_outbound,
+			COUNT(rb.outbound_body)::bigint AS with_outbound,
 			SUM(COALESCE(rl.outbound_token_est, 0))::bigint AS total_tok_after,
-			SUM(CASE WHEN rl.outbound_body IS NOT NULL THEN COALESCE(rl.outbound_token_est, 0) ELSE 0 END)::bigint AS compressed_tok
+			SUM(CASE WHEN rb.outbound_body IS NOT NULL THEN COALESCE(rl.outbound_token_est, 0) ELSE 0 END)::bigint AS compressed_tok
 		FROM request_logs_with_current_month rl
 		WHERE rl.ts >= $1 AND rl.ts <= $2
 		  AND ($3 OR rl.success)`+aggWhere+`
@@ -251,7 +251,7 @@ func (h *Handler) handleCompressionStats(w http.ResponseWriter, r *http.Request)
 	bucketRows, err := h.db.Query(ctx, `
 		SELECT `+bucketExpr+` AS bucket,
 			COUNT(*) AS total,
-			COUNT(rl.outbound_body)::int AS compressed
+			COUNT(rb.outbound_body)::int AS compressed
 		FROM request_logs_with_current_month rl
 		WHERE rl.ts >= $1 AND rl.ts <= $2
 		  AND ($3 OR rl.success)`+aggWhere+`

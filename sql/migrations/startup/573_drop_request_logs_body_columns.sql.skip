@@ -1,17 +1,63 @@
+-- Migration 573: Drop request body columns from request_logs_hot / request_logs
+-- (parent + all monthly partitions via PG 11+ propagation), and rebuild
+-- request_logs_with_current_month view so it no longer projects the dropped
+-- columns. Body content remains exclusively in request_logs_bodies_hot /
+-- request_logs_bodies (and the bodies UNION view), to which all readers
+-- must join when they need body payloads.
 --
--- Name: request_logs_with_current_month; Type: VIEW; Schema: public; Owner: -
+-- Date: 2026-08-24
 --
+-- Background
+-- ──────────
+-- 1. The historical "everything in request_logs_hot" schema carries three
+--    jsonb body columns (request_body / response_body / outbound_body) on
+--    every row, even though writers always set them to NULL after the
+--    request_logs_bodies_hot decoupling (migration 341 + 328a).
+-- 2. The bodies live in request_logs_bodies_hot / request_logs_bodies.
+--    Every reader that needs bodies already LEFT JOINs the bodies view,
+--    so the duplicate columns on the request_logs side are pure
+--    storage overhead (12-18 KB/row × ~5M rows ≈ 60-90 GB heap).
+-- 3. PostgreSQL 11+ propagates ALTER TABLE ... DROP COLUMN to partitioned
+--    parent tables automatically; all existing monthly partitions
+--    (request_logs_2026_07 / 2026_08 / ...) inherit the change. No per-
+--    partition DDL required.
+-- 4. The view request_logs_with_current_month used to SELECT
+--    request_body / response_body / outbound_body from both
+--    request_logs_hot and request_logs in its projection list. After DROP
+--    those references become SQLSTATE 42703. We must rebuild the view
+--    FIRST (CREATE OR REPLACE) and then drop the columns.
+-- 5. The view request_logs_bodies_with_current_month is the new SSOT for
+--    body content; readers must LEFT JOIN this view to access bodies.
+-- 6. LP5 audit script (scripts/check-body-storage-schema.sh) gates the
+--    rollout: it exits non-zero while any of the 3 columns still exists
+--    on request_logs_hot (or, after LP1, on the live DB).
+--
+-- Scope (hard constraints from plan)
+-- ──────────────────────────────────
+-- - DROP COLUMN only on body columns; no other schema change.
+-- - Both request_logs_hot and request_logs (parent + partitions).
+-- - view body reconstruction is two CREATE OR REPLACE statements, one
+--   per view, atomic with the DROP COLUMN set inside a single
+--   transaction (BEGIN; ... COMMIT;).
+-- - DOWN migration re-adds the columns as NULLABLE jsonb and restores the
+--   view projection. Existing rows that have NULL bodies remain NULL;
+--   this is a structural revert, not a data backfill (we never persisted
+--   full bodies here after migration 341 anyway).
+--
+-- Breaking change
+-- ───────────────
+-- Readers that used to do `SELECT rl.request_body FROM
+-- request_logs_with_current_month rl` will break with SQLSTATE 42703.
+-- All such readers must be migrated to LEFT JOIN
+-- request_logs_bodies_with_current_month rb in the same release. The Go
+-- reader migration lands in the same PR (admin/{body_resolver,
+-- logs_summary, no_topic_session, session_title}.go +
+-- admin/telemetry_test.go).
 
--- NOTE: request_body / response_body / outbound_body were dropped
--- from request_logs_hot and request_logs in migration 573 (LP1).
--- Their authoritative home is now request_logs_bodies_hot /
--- request_logs_bodies (and a future bodies view). This view no
--- longer projects those JSONB blobs. Callers needing full bodies
--- must LEFT JOIN on the bodies view (see request_logs_bodies_with_current_month).
--- 2026-08-24 LP1: 18 reader SQL statements updated to drop COALESCE(rb.X, rl.X)
--- after the column drop.
+BEGIN;
 
-CREATE VIEW public.request_logs_with_current_month AS
+-- ─── 1. Rebuild request_logs_with_current_month view (drop body projection) ───
+CREATE OR REPLACE VIEW public.request_logs_with_current_month AS
  SELECT request_logs_hot.id,
     request_logs_hot.request_id,
     request_logs_hot.ts,
@@ -232,10 +278,40 @@ UNION ALL
     request_logs.origin_actor
    FROM public.request_logs;
 
+-- ─── 2. Drop body columns from request_logs_hot ───
+ALTER TABLE public.request_logs_hot DROP COLUMN IF EXISTS request_body;
+ALTER TABLE public.request_logs_hot DROP COLUMN IF EXISTS response_body;
+ALTER TABLE public.request_logs_hot DROP COLUMN IF EXISTS outbound_body;
 
+-- ─── 3. Drop body columns from request_logs (parent + propagates to all partitions) ───
+ALTER TABLE public.request_logs DROP COLUMN IF EXISTS request_body;
+ALTER TABLE public.request_logs DROP COLUMN IF EXISTS response_body;
+ALTER TABLE public.request_logs DROP COLUMN IF EXISTS outbound_body;
+
+COMMIT;
+
+-- Post-deploy verification (rule 38 §6.5 + LP5 audit):
+--   ./scripts/check-body-storage-schema.sh
+--   expected: exit 0
+-- ============================================================================
+-- 2026-08-24: DEFERRED via .skip rename — blocks every deploy, never applied.
 --
--- Name: VIEW request_logs_with_current_month; Type: COMMENT; Schema: public; Owner: -
+-- Root cause of failure on the shared prod DB (172.16.2.210 llm_gateway):
+--   psql:573: ERROR: cannot drop columns from view
+--   (error line 279 = end of the CREATE OR REPLACE VIEW statement)
 --
-
-COMMENT ON VIEW public.request_logs_with_current_month IS 'Hot + monthly partitions UNION. SSOT synced 2026-08-22: queue timestamps (491), request_type (510), is_final_success (532), origin_actor (561).';
-
+-- PostgreSQL's CREATE OR REPLACE VIEW may only APPEND trailing columns; it
+-- can never REMOVE or reorder existing ones (rule 49 §9.1 view freeze).
+-- This migration rebuilds request_logs_with_current_month WITHOUT the
+-- request_body/response_body/outbound_body projections via CREATE OR
+-- REPLACE, which PG rejects with "cannot drop columns from view".
+--
+-- TO UN-SKIP (LP owner):
+--   1. Replace both CREATE OR REPLACE VIEW statements with
+--      DROP VIEW ... ; CREATE VIEW ... (inside the same txn — atomic).
+--      Check pg_depend for dependent views first; use plain DROP VIEW
+--      (no CASCADE) to surface dependents loudly.
+--   2. Dry-run on prod:  psql --single-transaction -v ON_ERROR_STOP=1 -f <file>
+--      (error before COMMIT → auto rollback, safe).
+--   3. Rename this file back to .sql and deploy; deploy gate applies it.
+-- ============================================================================

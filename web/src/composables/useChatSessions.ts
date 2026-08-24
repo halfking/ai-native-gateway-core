@@ -1,6 +1,12 @@
 import { computed, onScopeDispose, ref, watch } from 'vue'
 import { store } from '../store'
 import { addTokenUsage, emptyTokenUsage, type TokenUsage } from './useChatCompletions'
+import {
+  createDebouncedFlush,
+  installLifecycleFlush,
+  installScopeCleanup,
+  PERSIST_DEBOUNCE_MS,
+} from './persistenceShared'
 
 export interface ChatMessage {
   role: 'user' | 'assistant' | 'system'
@@ -42,11 +48,12 @@ const TITLE_MAX_LEN = 24
 const STORAGE_VERSION = 2
 const STORAGE_VERSION_LEGACY = 1
 // 2026-08-24 LP6: coalesce whole-tree localStorage writes into a single
-// flush 300ms after the last mutation. Long enough to absorb a burst of
-// streaming-token / model-switch updates, short enough that user-initiated
-// actions (close tab, switch session) don't feel laggy. Keep within the
-// 200-500ms band from the LP6 plan.
-const PERSIST_DEBOUNCE_MS = 300
+// flush PERSIST_DEBOUNCE_MS (300ms, defined in persistenceShared.ts) after
+// the last mutation. Long enough to absorb a burst of streaming-token /
+// model-switch updates, short enough that user-initiated actions (close
+// tab, switch session) don't feel laggy. LP9 (2026-08-24) moved the
+// debounce timer / lifecycle listeners / scope-cleanup plumbing into
+// persistenceShared.ts so LP6, LP7 and LP8 share one implementation.
 
 // Pending-cache resume key prefix (2026-06-21, Track C client-side resume).
 // Holds the most-recent gw_session_id used per (user, task) so that after
@@ -253,81 +260,38 @@ export function useChatSessions() {
   // state when they close the tab / background the page / unmount the view.
   // Errors (quota / private mode) are caught and degrade silently: the
   // in-memory `sessions` ref stays authoritative and the next flush retries.
-  let persistTimer: ReturnType<typeof setTimeout> | null = null
-  // Track the last successfully persisted payload to short-circuit when a
-  // burst of mutations converges on the same shape (common for idempotent
-  // updates like repeated `updateActive({ model })` calls).
-  let lastPersistedSnapshot: string | null = null
-
-  function flushPersist(): boolean {
-    if (persistTimer != null) {
-      clearTimeout(persistTimer)
-      persistTimer = null
-    }
-    const snapshot = JSON.stringify(sessions.value)
-    if (snapshot === lastPersistedSnapshot) return true
-    try {
-      saveAll(sessions.value)
-      lastPersistedSnapshot = snapshot
+  //
+  // LP9 (2026-08-24): debounce timer + snapshot short-circuit + lifecycle
+  // listeners + scope-aware cleanup are now provided by persistenceShared.ts.
+  // saveAll() keeps the user-scoped key + legacy migration logic local to
+  // this composable; only the persistence plumbing is shared.
+  const persistHandle = createDebouncedFlush<ChatSession[]>({
+    getSnapshot: () => sessions.value,
+    serialize: (snapshot) => JSON.stringify(snapshot),
+    write: (snapshot) => {
+      saveAll(snapshot)
       return true
-    } catch {
-      // saveAll already swallows individual setItem/removeItem errors; any
-      // remaining throw is unexpected and we keep the in-memory state.
-      return false
-    }
-  }
-
-  function schedulePersist() {
-    if (persistTimer != null) clearTimeout(persistTimer)
-    persistTimer = setTimeout(() => {
-      persistTimer = null
-      flushPersist()
-    }, PERSIST_DEBOUNCE_MS)
-  }
+    },
+    debounceMs: PERSIST_DEBOUNCE_MS,
+  })
 
   // Lifecycle flush handlers — the only way to guarantee a write before the
   // page is torn down (visibilitychange covers mobile backgrounding where
   // beforeunload often doesn't fire).
-  function handleVisibilityFlush() {
-    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
-      flushPersist()
-    }
-  }
-  function handlePageHide() {
-    flushPersist()
-  }
-  function handleBeforeUnload() {
-    flushPersist()
-  }
-
-  if (typeof window !== 'undefined') {
-    window.addEventListener('visibilitychange', handleVisibilityFlush)
-    window.addEventListener('pagehide', handlePageHide)
-    window.addEventListener('beforeunload', handleBeforeUnload)
-  }
-
-  // Best-effort auto-cleanup when called inside a Vue effect scope (i.e.
-  // from a setup() block). When invoked outside a scope we let the caller's
-  // explicit `flushPersist` / disposal handle the lifecycle; the listener
-  // leak is bounded by the page lifetime.
-  try {
-    onScopeDispose(() => {
-      flushPersist()
-      if (typeof window !== 'undefined') {
-        window.removeEventListener('visibilitychange', handleVisibilityFlush)
-        window.removeEventListener('pagehide', handlePageHide)
-        window.removeEventListener('beforeunload', handleBeforeUnload)
-      }
-    })
-  } catch {
-    /* not inside an effect scope; listeners remain until page unload */
-  }
+  const removeListeners = installLifecycleFlush(persistHandle.flush)
+  installScopeCleanup(persistHandle.flush, removeListeners)
 
   // Back-compat alias: every existing call site uses `persist()`. Switching
-  // to `schedulePersist()` keeps behaviour identical (debounced) while
+  // to `persistHandle.schedule()` keeps behaviour identical (debounced) while
   // preserving the local name to minimise the diff and the audit footprint.
   function persist() {
-    schedulePersist()
+    persistHandle.schedule()
+  }
+
+  // Back-compat alias exposed on the returned API: tests and external callers
+  // reach for `api.flushPersist()` to force a synchronous write.
+  function flushPersist(): boolean {
+    return persistHandle.flush()
   }
 
   function createSession(model = 'auto'): ChatSession {

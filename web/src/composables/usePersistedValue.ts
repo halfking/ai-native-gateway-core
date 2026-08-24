@@ -19,15 +19,25 @@
 //   • try/catch error degradation: in-memory value stays authoritative,
 //     next flush retries
 //
+// LP9 (2026-08-24): the debounce + lifecycle + cleanup primitives now live
+// in `persistenceShared.ts` so useChatSessions / liveStreamPreferences can
+// reuse them too. This file keeps the same external API (Ref<T> + flush /
+// remove handles) — only the internals delegate to the shared helper.
+//
 // Returns a Ref<T> + flush()/remove() handle. Writes are scheduled through
 // the debounced path; callers needing immediate persistence can either
 // pass `immediate: true` (every mutation writes synchronously) or call
 // `flush()` themselves (e.g. on a Save button).
 
-import { getCurrentScope, onScopeDispose, ref, watch, type Ref } from 'vue'
+import { getCurrentScope, ref, watch, type Ref } from 'vue'
+import {
+  createDebouncedFlush,
+  installLifecycleFlush,
+  installScopeCleanup,
+  PERSIST_DEBOUNCE_MS,
+} from './persistenceShared'
 
-/** Shared debounce window — kept in sync with useChatSessions / liveStreamPreferences. */
-export const PERSIST_DEBOUNCE_MS = 300
+export { PERSIST_DEBOUNCE_MS }
 
 export interface PersistedValueOptions<T> {
   /**
@@ -60,9 +70,6 @@ export interface PersistedValueHandle<T> {
   /** Drop the key from localStorage and remember the factory default. */
   remove: () => boolean
 }
-
-type Windowish = { addEventListener: (...args: any[]) => void; removeEventListener: (...args: any[]) => void } | undefined
-type Documentish = { visibilityState?: string } | undefined
 
 function defaultSerialize<T>(value: T): string {
   return JSON.stringify(value)
@@ -140,60 +147,34 @@ export function usePersistedValue<T>(
   const initial = readInitial(key, factory, deserialize)
   const valueRef = ref<T>(initial) as Ref<T>
 
-  let persistTimer: ReturnType<typeof setTimeout> | null = null
-  let lastPersistedSnapshot: string | null = (() => {
-    if (typeof localStorage === 'undefined') return null
-    try {
-      return localStorage.getItem(key)
-    } catch {
-      return null
-    }
-  })()
+  // Build the debounce + snapshot-short-circuit pipeline on top of the
+  // shared helper. The write callback owns its own try/catch so quota /
+  // private-mode failures degrade silently and the in-memory ref stays
+  // authoritative (next flush retries).
+  const persist = createDebouncedFlush<T>({
+    getSnapshot: () => valueRef.value,
+    serialize,
+    write: (snapshot) => {
+      if (typeof localStorage === 'undefined') return false
+      try {
+        localStorage.setItem(key, serialize(snapshot))
+        return true
+      } catch {
+        // Quota exceeded / private mode / disabled storage — degrade silently;
+        // the in-memory ref remains authoritative and the next mutation retries.
+        return false
+      }
+    },
+    debounceMs,
+    immediate,
+  })
 
   function flush(): boolean {
-    if (persistTimer != null) {
-      clearTimeout(persistTimer)
-      persistTimer = null
-    }
-    if (typeof localStorage === 'undefined') return false
-    let payload: string
-    try {
-      payload = serialize(valueRef.value)
-    } catch {
-      // Serialisation failure (circular ref etc.) — keep last persisted value,
-      // the in-memory ref stays authoritative until the next valid mutation.
-      return false
-    }
-    if (payload === lastPersistedSnapshot) return true
-    try {
-      localStorage.setItem(key, payload)
-      lastPersistedSnapshot = payload
-      return true
-    } catch {
-      // Quota exceeded / private mode / disabled storage — degrade silently;
-      // the in-memory ref remains authoritative and the next mutation retries.
-      return false
-    }
-  }
-
-  function schedulePersist() {
-    if (immediate) {
-      flush()
-      return
-    }
-    if (persistTimer != null) clearTimeout(persistTimer)
-    persistTimer = setTimeout(() => {
-      persistTimer = null
-      flush()
-    }, debounceMs)
+    return persist.flush()
   }
 
   function remove(): boolean {
-    if (persistTimer != null) {
-      clearTimeout(persistTimer)
-      persistTimer = null
-    }
-    lastPersistedSnapshot = null
+    persist.cancel()
     valueRef.value = factory()
     return tryRemove(key)
   }
@@ -205,46 +186,15 @@ export function usePersistedValue<T>(
   // of mutations lands in the timer queue immediately rather than waiting
   // for the next microtask.
   watch(valueRef, () => {
-    schedulePersist()
+    persist.schedule()
   }, { flush: 'sync' })
 
-  // Lifecycle handlers: only meaningful in a browser environment.
-  const w: Windowish = typeof window !== 'undefined' ? (window as unknown as Windowish) : undefined
-  const d: Documentish = typeof document !== 'undefined' ? (document as unknown as Documentish) : undefined
-
-  function handleVisibilityFlush() {
-    if (d && d.visibilityState === 'hidden') flush()
-  }
-  function handlePageHide() {
-    flush()
-  }
-  function handleBeforeUnload() {
-    flush()
-  }
-
-  if (w) {
-    w.addEventListener('visibilitychange', handleVisibilityFlush)
-    w.addEventListener('pagehide', handlePageHide)
-    w.addEventListener('beforeunload', handleBeforeUnload)
-  }
-
-  // Best-effort auto-cleanup when invoked inside a Vue effect scope
-  // (setup() / composable consumers). Outside a scope (module-init like
-  // i18n.ts) the listeners remain until page unload, which is also fine:
-  // they're cheap and the page lifetime is the actual lifetime. Using
-  // getCurrentScope() avoids the dev-only "onScopeDispose() is called
-  // when there is no active effect scope" warning that the bare call
-  // would produce for module-level callers.
-  if (getCurrentScope()) {
-    onScopeDispose(() => {
-      flush()
-      if (w) {
-        w.removeEventListener('visibilitychange', handleVisibilityFlush)
-        w.removeEventListener('pagehide', handlePageHide)
-        w.removeEventListener('beforeunload', handleBeforeUnload)
-      }
-    })
-  }
+  // Lifecycle handlers + scope-aware cleanup delegate to the shared helper.
+  // installScopeCleanup is a no-op outside an active effect scope (e.g.
+  // i18n.ts module init), so module-level callers get page-lifetime
+  // listeners without the dev-only "no active scope" warning.
+  const removeListeners = installLifecycleFlush(flush)
+  installScopeCleanup(flush, removeListeners)
 
   return {
     value: valueRef,
