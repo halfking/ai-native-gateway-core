@@ -22,3 +22,13 @@
 ?? scripts/task-stop-audit.sh
 ?? verify.sh
 ```
+
+## Update (2026-08-24, later session)
+
+- unresolved 项已闭环：245 的实际管控 unit 是 `llmgo-245.service`
+  （enabled + active，持有 8781 端口，binary `/opt/llm-gateway-go/gateway`，
+  healthz 200）；当时观察到的 `llm-gateway-go.service` inactive 是弃用遗留
+  unit（double-unit drift，详见
+  `docs/session-logs/2026/08/2026-08-19-245-restart-loop-followup.md`）。
+  部署门禁 runner 对 245 的 expected service 已对齐
+  `scripts/deploy.sh plan 245` 声明的 `llmgo-245.service`，不引入第二个服务名。

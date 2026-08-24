@@ -61,3 +61,16 @@ into `main` as commit `e20dd089a merge: integrate distributed dispatch controls`
   once the next release cut happens.
 - Tentative restore confirmation probe gating (`confirmProbe` decision) is
   implemented but should be observed in staging before promoting.
+
+## Follow-up Update (2026-08-24, later session)
+
+- The 245 service-ownership question above is resolved: the controller on 245
+  is `llmgo-245.service` (enabled + active, owning port 8781), and the
+  `llm-gateway-go.service` unit observed as inactive is the deprecated
+  leftover unit — see
+  `docs/session-logs/2026/08/2026-08-19-245-restart-loop-followup.md` for the
+  double-unit drift analysis. Live re-probe (2026-08-24) confirmed
+  `llmgo-245.service` active with `/opt/llm-gateway-go/gateway` (PID 237156)
+  listening on 8781, healthz 200. The deploy-gate runner's 245 expected
+  service has been aligned to `llmgo-245.service` to match
+  `scripts/deploy.sh plan 245`; no second service name is introduced.
