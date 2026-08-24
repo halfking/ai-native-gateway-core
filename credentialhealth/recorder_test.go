@@ -89,6 +89,10 @@ func TestRecorder_AppendAndGetRecent(t *testing.T) {
 	if stats.ErrorKinds["rate_limit"] != 1 {
 		t.Errorf("rate_limit count: expected 1, got %d", stats.ErrorKinds["rate_limit"])
 	}
+	indexed, err := client.SIsMember(ctx, CallHistoryIndexKey(), recorder.redisKey(credID, model)).Result()
+	if err != nil || !indexed {
+		t.Fatalf("call history key missing from index: indexed=%v err=%v", indexed, err)
+	}
 }
 
 func TestRecorder_MaxSize_LTRIM(t *testing.T) {
