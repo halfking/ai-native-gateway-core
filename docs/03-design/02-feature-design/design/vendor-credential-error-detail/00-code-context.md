@@ -132,3 +132,11 @@ admin/handler.go (admin() middleware wraps the new handler)
 | **修改** | `web/src/views/provider-detail/index.vue`（tab 列表，~3 行） | ~3 |
 
 **总新增/修改 ≈ 568 行，4 个 LP 均 ≤ 300 行 ✅**（rule 42 §2.2）
+
+## 8. Failover 客户端提示契约
+
+供应商失败的完整错误仍只写入 `candidate_failure_logs`，不把上游响应 body、URL、凭据标识或 token 发送给客户端。
+
+当请求存在可用备用节点时，`domains/dispatch/failover.go` 通过已有的 `QueuedRequest.OnNodeSwitchSummary` 回调通知传输层；`domains/streaming/handler.go:213-232` 将该提示写成 SSE comment（`: thinking: ...\\n\\n`）。SSE comment 不产生 `data:` 帧，不进入模型上下文，也不会触发客户端协议解析，因此满足“think-like、不中断请求”的要求。
+
+提示仅允许包含：受控 `error_kind` 和可选 HTTP 状态码。quota 场景保留历史兼容文案；其他 retry/switch 场景使用脱敏的“正在重试/切换备用节点”文案。

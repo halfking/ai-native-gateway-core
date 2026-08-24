@@ -53,6 +53,17 @@ echo "MAX_LP_LINES=310; THRESHOLD=300; check=false (i18n allowed)"
 
 ## 6.4 结论
 
-✅ **所有漂移检查通过，可以进入实现阶段**。
+## 6.5 实现后复核
+
+- [x] 已复用现有 `candidate_failure_logs_with_current_month`，未新增重复错误表。
+- [x] 已复用现有 SSE comment 传输机制，未发送新的 `data:` 协议帧。
+- [x] failover 提示不携带上游 body、URL、凭据或 token。
+- [x] quota 历史客户端文案测试保持通过。
+- [x] `go test ./...` 与 `go vet ./...` 通过。
+- [x] `pnpm i18n:check` 通过。
+- [x] `vue-tsc --noEmit`、严格 i18n 和 Vite production build 通过。
+- [ ] browser-use：浏览器沙箱无法连接宿主机 `127.0.0.1:4179`（`ERR_CONNECTION_REFUSED`）；需在能访问本地开发服务的浏览器环境补跑真实交互和 daylight/night 截图。
+
+✅ **代码实现审计通过；前端真实浏览器验证仍是未完成的环境依赖项。**
 
 如实现期间发现新漂移（实际行数 > 预估、引用函数不存在等），立即回 §1-3 修订 00-code-context.md。
