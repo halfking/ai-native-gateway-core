@@ -103,7 +103,7 @@ func TestUpdateRequestLog_AllowsTerminalSuccessToReplaceIntermediateFailure(t *t
 		WithArgs(requestLogArgs...).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	mockDB.ExpectExec(`INSERT INTO request_logs_bodies_hot`).
-		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mockDB.ExpectCommit()
 
@@ -182,7 +182,7 @@ func TestUpdateRequestLog_TerminalGuardDistinguishesNoOpFromMissing(t *testing.T
 			}
 			if tc.wantCommit {
 				mockDB.ExpectExec(`INSERT INTO request_logs_bodies_hot`).
-					WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+					WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 					WillReturnResult(pgxmock.NewResult("INSERT", 1))
 				mockDB.ExpectCommit()
 			}
@@ -225,11 +225,11 @@ func TestUpdateRequestLog_MissingRequestFallsBackToInsert(t *testing.T) {
 	for index := range requestInsertArgs {
 		requestInsertArgs[index] = pgxmock.AnyArg()
 	}
-	mockDB.ExpectExec(`INSERT INTO request_logs_hot`).
+	mockDB.ExpectExec(`INSERT INTO\s+request_logs_hot\s*\(`).
 		WithArgs(requestInsertArgs...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mockDB.ExpectExec(`INSERT INTO request_logs_bodies_hot`).
-		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mockDB.ExpectCommit()
 
@@ -447,7 +447,7 @@ func TestPersistRequestLog_ReleasesBodiesAfterPersistedHooks(t *testing.T) {
 		WithArgs(requestLogUpdateArgs(RequestLogEntry{Success: true, RequestStatus: &status})...).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	mockDB.ExpectExec(`INSERT INTO request_logs_bodies_hot`).
-		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mockDB.ExpectCommit()
 

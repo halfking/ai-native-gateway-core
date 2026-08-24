@@ -165,7 +165,7 @@ func TestUpdateRequestLog_AppendsFinalSuccessClaimOnTerminalSuccess(t *testing.T
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	// bodies 侧表 upsert
 	mock.ExpectExec(`INSERT INTO request_logs_bodies_hot`).
-		WithArgs(anyArgs(5)...).
+		WithArgs(anyArgs(4)...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	// v4 T7 claim（同事务）
 	mock.ExpectExec(`SAVEPOINT gw_final_success_claim`).
@@ -210,7 +210,7 @@ func TestUpdateRequestLog_FailurePathSkipsClaim(t *testing.T) {
 		WithArgs(anyArgs(96)...).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	mock.ExpectExec(`INSERT INTO request_logs_bodies_hot`).
-		WithArgs(anyArgs(5)...).
+		WithArgs(anyArgs(4)...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mock.ExpectCommit()
 
