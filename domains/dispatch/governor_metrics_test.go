@@ -2,8 +2,10 @@ package dispatch
 
 import (
 	"bytes"
+	"fmt"
 	"log/slog"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -83,10 +85,17 @@ func TestGovernorMetricsAllowlistRejectsOpenEnum(t *testing.T) {
 // wrappers accept the closed-enum label set and that every known value
 // is registered (warming succeeds).
 func TestGovernorMetricsAllowlistAcceptsClosedEnum(t *testing.T) {
+	// Append a unique suffix per registration so that `-count=N>1`
+	// re-runs do not panic on promauto duplicate-name registration.
+	// Label set + warming behavior under test is unchanged; only the
+	// metric name carries the run-scope suffix. Counter is package-level
+	// so `-count=N` re-runs do not reset it.
+	unique := func(prefix string) string { return fmt.Sprintf("%s_%d", prefix, globalMetricSeq.next()) }
+
 	// Use unique names per attempt to avoid promauto duplicate-name panics.
 	t.Run("backend", func(t *testing.T) {
 		vec := MustNewBackendCounterVec(prometheus.CounterOpts{
-			Name: "dispatch_test_accept_backend",
+			Name: unique("dispatch_test_accept_backend"),
 			Help: "should register",
 		}, []string{"backend"})
 		if vec == nil {
@@ -95,7 +104,7 @@ func TestGovernorMetricsAllowlistAcceptsClosedEnum(t *testing.T) {
 	})
 	t.Run("mode", func(t *testing.T) {
 		vec := MustNewModeHistogramVec(prometheus.HistogramOpts{
-			Name: "dispatch_test_accept_mode",
+			Name: unique("dispatch_test_accept_mode"),
 			Help: "should register",
 		}, []string{"mode"})
 		if vec == nil {
@@ -104,7 +113,7 @@ func TestGovernorMetricsAllowlistAcceptsClosedEnum(t *testing.T) {
 	})
 	t.Run("state", func(t *testing.T) {
 		vec := MustNewStateGaugeVec(prometheus.GaugeOpts{
-			Name: "dispatch_test_accept_state",
+			Name: unique("dispatch_test_accept_state"),
 			Help: "should register",
 		}, []string{"state"})
 		if vec == nil {
@@ -113,7 +122,7 @@ func TestGovernorMetricsAllowlistAcceptsClosedEnum(t *testing.T) {
 	})
 	t.Run("result", func(t *testing.T) {
 		vec := MustNewResultCounterVec(prometheus.CounterOpts{
-			Name: "dispatch_test_accept_result",
+			Name: unique("dispatch_test_accept_result"),
 			Help: "should register",
 		}, []string{"result"})
 		if vec == nil {
@@ -122,7 +131,7 @@ func TestGovernorMetricsAllowlistAcceptsClosedEnum(t *testing.T) {
 	})
 	t.Run("backend+mode histogram", func(t *testing.T) {
 		vec := MustNewBackendModeHistogramVec(prometheus.HistogramOpts{
-			Name: "dispatch_test_accept_backend_mode_h",
+			Name: unique("dispatch_test_accept_backend_mode_h"),
 			Help: "should register",
 		}, []string{"backend", "mode"})
 		if vec == nil {
@@ -131,7 +140,7 @@ func TestGovernorMetricsAllowlistAcceptsClosedEnum(t *testing.T) {
 	})
 	t.Run("backend+mode+state gauge", func(t *testing.T) {
 		vec := MustNewBackendModeStateGaugeVec(prometheus.GaugeOpts{
-			Name: "dispatch_test_accept_backend_mode_state",
+			Name: unique("dispatch_test_accept_backend_mode_state"),
 			Help: "should register",
 		}, []string{"backend", "mode", "state"})
 		if vec == nil {
@@ -140,7 +149,7 @@ func TestGovernorMetricsAllowlistAcceptsClosedEnum(t *testing.T) {
 	})
 	t.Run("backend+mode+result counter", func(t *testing.T) {
 		vec := MustNewBackendModeResultCounterVec(prometheus.CounterOpts{
-			Name: "dispatch_test_accept_backend_mode_result",
+			Name: unique("dispatch_test_accept_backend_mode_result"),
 			Help: "should register",
 		}, []string{"backend", "mode", "result"})
 		if vec == nil {
@@ -284,3 +293,16 @@ var errTestBackendFault = &testFaultError{}
 type testFaultError struct{}
 
 func (*testFaultError) Error() string { return "test: backend fault" }
+
+// metricSeq produces a monotonic, goroutine-safe counter used to
+// suffix test-only metric names so they survive `go test -count=N>1`
+// re-runs without tripping promauto's duplicate-name registration.
+// Package-level (not test-local) so the counter does not reset between
+// `-count=N` iterations of the same test function.
+type metricSeq struct{ n uint64 }
+
+func (m *metricSeq) next() uint64 { return atomic.AddUint64(&m.n, 1) }
+
+// globalMetricSeq is shared across all `TestGovernor*` runs in this
+// package and across `-count=N` re-runs of the same test.
+var globalMetricSeq = &metricSeq{}
