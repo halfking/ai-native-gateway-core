@@ -1014,7 +1014,6 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 			identity_hash, response_checksum,
 			transform_rule_id, egress_protocol, failure_stage, failure_detail_code,
 			request_preview, transform_summary, response_preview,
-			request_body, response_body,
 			stream_first_chunk_ms, stream_chunk_count, stream_done_received,
 			stream_interrupted,
 			usage_source,
@@ -1027,7 +1026,7 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 			-- 2026-08-19: token-band observability (1 column).
 			token_band,
 			-- v3 (2026-06-19) T23: session-level outbound body (4 columns).
-			outbound_body, outbound_msg_count, outbound_token_est, outbound_msg_hashes,
+			outbound_msg_count, outbound_token_est, outbound_msg_hashes,
 			-- 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
 			quality_flags, quality_fix_actions, quality_score,
 			-- 2026-06-19 T-NEW-7: split the semantic overload of failure_detail_code
@@ -1082,42 +1081,40 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		$33, $34,
 		$35, $36, $37, $38,
 		$39, $40, $41,
-		$42::text::jsonb, $43::text::jsonb,
-		$44, $45, $46,
-		$47,
-		$48,
-		$49, $50,
-		$51, $52, $53,
-		$54, $55, $56, $57::text::jsonb, $58,
-		$59, $60,
-		$61, $62, $63, $64::text::jsonb,
+		$42, $43, $44,
+		$45,
+		$46, $47,
+		$48, $49, $50,
+		$51, $52, $53, $54, $55::text::jsonb, $56,
+		$57, $58,
+		$59, $60, $61::text::jsonb,
 		-- 2026-08-19: token-band observability.
-		$65,
+		$62,
 		-- v3 (2026-06-19) T23: session-level outbound body.
-		$66::text::jsonb, $67, $68, $69::text::jsonb,
+		$63, $64, $65::text::jsonb,
 		-- 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
-		$70::text[], $71::text::jsonb, $72,
+		$66::text[], $67::text::jsonb, $68,
 		-- 2026-06-19 T-NEW-7: split the semantic overload of failure_detail_code.
-		$73,
+		$69,
 		-- 2026-06-23: structured tool_calls (042_tool_calls_column.sql).
-		$74::text::jsonb,
+		$70::text::jsonb,
 		-- 2026-06-26: client-supplied X-Request-Id.
-		$75,
+		$71,
 		-- 2026-06-30: upstream diagnostics (migration 320).
-		$76, $77, $78,
-		$79, $80,
+		$72, $73, $74,
+		$75, $76,
 		-- 2026-07-01: 附件元数据 (migration 325).
-		$81::text::jsonb,
+		$77::text::jsonb,
 		-- 2026-07-14 (migration 341): client-side origin.
-		$82, $83, $84, $85,
+		$78, $79, $80, $81,
 		-- 2026-07-19 (migration 350): routing attempts tracking.
-		$86::text::jsonb, $87,
+		$82::text::jsonb, $83,
 		-- 2026-07-27: 客户端感知字段(主表 INSERT 必填).
-		$88, $89, $90, $91,
+		$84, $85, $86, $87,
 			-- V3.1 queue timestamps (migration 491): 9-stage dispatch queue timestamps.
-			$92, $93, $94, $95, $96, $97, $98, $99, $100, $101,
+			$88, $89, $90, $91, $92, $93, $94, $95, $96, $97,
 			-- 2026-08-19: streaming discard audit events.
-			$102::text::jsonb
+			$98::text::jsonb
 		)
 
 				-- 2026-08-06 fix: INSERT targets request_logs_hot (NOT the partitioned parent).
@@ -1326,10 +1323,6 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		entry.RequestPreview,
 		entry.TransformSummary,
 		entry.ResponsePreview,
-		// 2026-07-22: request_body and response_body are now stored in
-		// request_logs_bodies_hot side table. Main table keeps NULL to avoid bloat.
-		nil, // request_body
-		nil, // response_body
 		entry.StreamFirstChunkMs,
 		entry.StreamChunkCount,
 		entry.StreamDoneReceived,
@@ -1354,13 +1347,6 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		jsonOrNull(entry.CompressionMeta),
 		// 2026-08-19: token-band observability.
 		entry.TokenBand,
-		// 2026-08-24 Phase 1 body storage optimization: outbound_body is no
-		// longer written here. It is the sole responsibility of
-		// request_logs_bodies_hot (see upsertRequestLogBodies). Main table
-		// keeps NULL to avoid duplicated TOAST/WAL/storage across both
-		// write paths. Readers that need the full payload join through
-		// admin/body_resolver.go which falls back to the dedicated body table.
-		nil, // outbound_body (Phase 1: routes to request_logs_bodies_hot)
 		entry.OutboundMsgCount,
 		entry.OutboundTokenEst,
 		jsonOrNull(entry.OutboundMsgHashes),
