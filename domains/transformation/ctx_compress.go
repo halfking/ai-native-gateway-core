@@ -58,13 +58,16 @@ func CompressAnthropicMessagesIfNeeded(bodyBytes []byte, contextWindow int) []by
 	}
 
 	softLimit := int(float64(contextWindow) * defaultSoftLimitFraction)
-	systemTokens := estimateMessageTokens(req.System)
+	fixedTokens := estimateFixedBodyTokens(bodyBytes)
+	targetMessageTokens := softLimit - fixedTokens
+	if targetMessageTokens < 1 {
+		targetMessageTokens = 1
+	}
 	estimated := estimatePromptTokens(bodyBytes)
 	if estimated <= softLimit {
 		return bodyBytes
 	}
-
-	trimmed := trimOldestPairs(req.Messages, softLimit-systemTokens)
+	trimmed := trimMessagesToBodyBudget(req.Messages, fixedTokens, targetMessageTokens)
 	if len(trimmed) == len(req.Messages) {
 		return bodyBytes
 	}
@@ -108,14 +111,15 @@ func CompressMessagesIfNeeded(bodyBytes []byte, contextWindow int) []byte {
 	}
 
 	softLimit := int(float64(contextWindow) * defaultSoftLimitFraction)
+	fixedTokens := estimateFixedBodyTokens(bodyBytes)
+	targetMessageTokens := softLimit - fixedTokens
+	if targetMessageTokens < 1 {
+		targetMessageTokens = 1
+	}
 	estimated := estimatePromptTokens(bodyBytes)
 
-	// 2026-07-13: Force-compress large requests even when within soft limit.
-	// For requests > 1MB, the upstream's per-message processing overhead is
-	// significant and many providers (e.g. MiniMax via apiclaude) have strict
-	// per-request size limits independent of token count. Aggressive trimming
-	// at the 50% soft limit prevents upstream 400 errors like
-	// "Your input exceeds the context window".
+	// Large requests are deliberately compressed below the normal soft limit.
+	// Keep the same fixed-body accounting when calculating the message budget.
 	const largeRequestBytes = 1024 * 1024 // 1MB
 	const aggressiveSoftLimitFraction = 0.50
 	if len(bodyBytes) > largeRequestBytes {
@@ -128,6 +132,10 @@ func CompressMessagesIfNeeded(bodyBytes []byte, contextWindow int) []byte {
 				"original_messages", len(req.Messages),
 			)
 			softLimit = aggressiveLimit
+			targetMessageTokens = softLimit - fixedTokens
+			if targetMessageTokens < 1 {
+				targetMessageTokens = 1
+			}
 		}
 	}
 
@@ -139,7 +147,7 @@ func CompressMessagesIfNeeded(bodyBytes []byte, contextWindow int) []byte {
 	// until the body estimate fits under softLimit. We keep at least one
 	// non-system message (the most recent user turn) so the upstream
 	// doesn't see an empty conversation.
-	trimmed := trimOldestPairs(req.Messages, softLimit)
+	trimmed := trimMessagesToBodyBudget(req.Messages, fixedTokens, targetMessageTokens)
 	if len(trimmed) == len(req.Messages) {
 		return bodyBytes
 	}
@@ -453,7 +461,55 @@ func estimatePromptTokens(bodyBytes []byte) int {
 	return int(float64(len(bodyBytes)) / charsPerToken)
 }
 
-// EstimateTokens is the public version of estimatePromptTokens. Used by
+// trimMessagesToBodyBudget trims messages using the per-message estimate and
+// then verifies the serialized full body estimate, including fixed top-level
+// fields and JSON framing. The final verification closes the gap between the
+// message-only heuristic and provider token accounting.
+func trimMessagesToBodyBudget(messages []json.RawMessage, fixedTokens, targetMessageTokens int) []json.RawMessage {
+	trimmed := trimOldestPairs(messages, targetMessageTokens)
+	for len(trimmed) < len(messages) {
+		if estimateMessagesWithFixedTokens(trimmed, fixedTokens) <= targetMessageTokens+fixedTokens {
+			return trimmed
+		}
+		n := dropExtent(trimmed)
+		if n < 1 || n >= len(trimmed) {
+			break
+		}
+		candidate := trimOldestPairs(trimmed[n:], targetMessageTokens)
+		if len(candidate) >= len(trimmed) {
+			break
+		}
+		trimmed = candidate
+	}
+	return trimmed
+}
+
+func estimateMessagesWithFixedTokens(messages []json.RawMessage, fixedTokens int) int {
+	raw, err := json.Marshal(messages)
+	if err != nil {
+		return fixedTokens
+	}
+	return fixedTokens + estimatePromptTokens(raw)
+}
+
+// messages. Keeping this cost outside the per-message budget prevents large
+// tools/system/metadata fields from consuming the entire context headroom.
+func estimateFixedBodyTokens(bodyBytes []byte) int {
+	var generic map[string]json.RawMessage
+	if err := json.Unmarshal(bodyBytes, &generic); err != nil {
+		return 0
+	}
+	if _, ok := generic["messages"]; !ok {
+		return 0
+	}
+	generic["messages"] = json.RawMessage(`[]`)
+	fixedBody, err := json.Marshal(generic)
+	if err != nil {
+		return 0
+	}
+	return estimatePromptTokens(fixedBody)
+}
+
 // compressor/ (compression v7 Round 47) for the mode=1 auto_threshold
 // pre-request check. Same heuristic (chars/3.5) — calibrated conservative
 // so the threshold is over- rather than under-counted, which is the safe

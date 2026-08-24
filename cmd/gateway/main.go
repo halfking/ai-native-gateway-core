@@ -2082,8 +2082,10 @@ func main() {
 			outboundBuilder = v2.NewOutboundBuilder(turnReader)
 
 			// Initialize SessionCacheV2 with Redis support
-			// Use cfg.RedisAddr from outer scope
-			sessionCacheV2 = v2.NewSessionCacheV2(dbConn.Pool(), cfg.RedisAddr)
+			// Use cfg.RedisAddr + cfg.RedisDB from outer scope (2026-08-25:
+			// session:v2 governance cache must respect db isolation, no longer
+			// hardcoded to db=0).
+			sessionCacheV2 = v2.NewSessionCacheV2(dbConn.Pool(), cfg.RedisAddr, cfg.RedisDB)
 			sessionCacheV2ForShutdown = sessionCacheV2
 
 			slog.Info("v2 session components initialized",

@@ -63,6 +63,37 @@ func TestRebuildOpenAIAfterSummary_BasicLayout(t *testing.T) {
 	}
 }
 
+func TestRebuildOpenAIAfterSummary_PreservesLeadingSystemReminder(t *testing.T) {
+	body := []byte(`{"model":"m","messages":[
+		{"role":"user","content":[{"type":"input_text","text":"<system-reminder>Available skills</system-reminder>"}]},
+		{"role":"user","content":"actual request"},
+		{"role":"assistant","content":"answer"}
+	]}`)
+	ret, err := extractOpenAI(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newBody, ok := RebuildOpenAIAfterSummary(body, "summary", ret, 2)
+	if !ok {
+		t.Fatal("rebuild must succeed")
+	}
+	var got struct {
+		Messages []json.RawMessage `json:"messages"`
+	}
+	if err := json.Unmarshal(newBody, &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Messages) < 4 {
+		t.Fatalf("expected summary, reminder, first user, and tail; got %d messages", len(got.Messages))
+	}
+	if !strings.Contains(string(got.Messages[1]), "system-reminder") {
+		t.Error("leading system reminder must be preserved")
+	}
+	if !strings.Contains(string(got.Messages[2]), "actual request") {
+		t.Error("real first user must remain pinned after reminder")
+	}
+}
+
 func TestRebuildOpenAIAfterSummary_PreservesOtherTopLevelKeys(t *testing.T) {
 	body := []byte(`{"model":"gpt-4","stream":true,"temperature":0.7,"messages":[
 		{"role":"system","content":"S"},
