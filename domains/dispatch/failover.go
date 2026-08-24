@@ -61,6 +61,9 @@ func (p *Pipeline) move(qr *QueuedRequest, out ForwardOutcome) {
 		}
 		qr.CredRetryCount++
 		metricFailover.WithLabelValues("cred_retry").Inc()
+		if qr.OnNodeSwitchSummary != nil {
+			qr.OnNodeSwitchSummary(failoverSummary(out.ErrorKind, out.HTTPStatus, "retry"))
+		}
 		// V3.3-OBS OBS-B1 (2026-08-15): node_switch 动作事件，retry=true、
 		// retry_seq 递增时前端打特别标（24 号 §1）。
 		p.emitNodeSwitch(qr, qr.SelectedCred.CredentialID, qr.SelectedCred.CredentialID, "cred_retry", true, qr.CredRetryCount)
@@ -107,8 +110,8 @@ func (p *Pipeline) move(qr *QueuedRequest, out ForwardOutcome) {
 			SwitchReason:     "cred_switch",
 		})
 		if p.tryEnqueueCred(ref, qr) {
-			if qr.OnNodeSwitchSummary != nil && isQuotaErrorKind(out.ErrorKind) {
-				qr.OnNodeSwitchSummary("upstream node quota exhausted; switching to the next available node")
+			if qr.OnNodeSwitchSummary != nil {
+				qr.OnNodeSwitchSummary(failoverSummary(out.ErrorKind, out.HTTPStatus, "switch"))
 			}
 			return
 		}
@@ -120,6 +123,21 @@ func (p *Pipeline) move(qr *QueuedRequest, out ForwardOutcome) {
 		"request_id", qr.ID, "model", qr.ResolvedModel,
 		"tried_creds", len(qr.TriedCredentials))
 	p.tryModelChangeOutcome(qr, out)
+}
+
+func failoverSummary(errorKind string, status int, action string) string {
+	kind := firstNonEmpty(errorKind, "upstream_error")
+	if action == "switch" && isQuotaErrorKind(kind) {
+		return "upstream node quota exhausted; switching to the next available node"
+	}
+	statusText := ""
+	if status > 0 {
+		statusText = " (HTTP " + strconv.Itoa(status) + ")"
+	}
+	if action == "retry" {
+		return "上游请求暂时失败（" + kind + statusText + "），正在重试..."
+	}
+	return "上游请求失败（" + kind + statusText + "），正在切换到备用节点..."
 }
 
 func isQuotaErrorKind(errorKind string) bool {

@@ -40,6 +40,7 @@ function isAdminProtectedPath(path: string): boolean {
     path.startsWith('/api/auth/logout') ||
     path.startsWith('/api/auth/change-password') ||
     path.startsWith('/api/routing/') ||
+    path.startsWith('/api/vendors/') ||
     path.startsWith('/api/admin') ||
     path.startsWith('/api/auth/me')
   )

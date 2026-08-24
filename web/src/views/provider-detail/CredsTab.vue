@@ -30,7 +30,7 @@ const props = defineProps<{
 // plan type, immediate probe check, manual disable toggle, lifecycle
 // change, default probe model pick — so the operator can keep working
 // without losing context or half-typed fields.
-const emit = defineEmits<{ refresh: []; silentRefresh: [] }>()
+const emit = defineEmits<{ refresh: []; silentRefresh: []; openErrorDetail: [credentialId: number] }>()
 
 const selected = ref<ProviderCredential | null>(null)
 const drawerTab = ref<'info' | 'models'>('info')
@@ -717,6 +717,7 @@ function onTagsInput(ev: Event) {
             <td>
               <span class="badge" :class="healthBadge(c.health_status)">{{ healthLabel(c.health_status) }}</span>
               <div class="cell-sub">{{ timeText(c.health_checked_at) }}</div>
+              <button type="button" class="btn btn-ghost btn-sm" @click.stop="emit('openErrorDetail', c.id)">{{ pd('creds.viewErrorDetail') }}</button>
             </td>
             <td>
               <code v-if="c.default_probe_model" class="mono-sm">{{ c.default_probe_model }}</code>
