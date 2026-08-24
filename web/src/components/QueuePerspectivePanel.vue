@@ -27,7 +27,7 @@ import {
   type LiveNodeStatus,
   type LiveRequest,
 } from '../composables/liveStreamStore'
-import { isSuperAdmin } from '../store'
+import { isSuperAdmin, isAuthenticated } from '../store'
 import { ApiError } from '../api/_core'
 import { readLiveStreamPreferences, writeLiveStreamPreferences, type QueueStatusBucket } from '../composables/liveStreamPreferences'
 import {
@@ -716,6 +716,13 @@ function windowEntriesFor(group: ModelGroup, credentialId: number): CallEntry[] 
 }
 
 async function refreshWindowStats() {
+  // 2026-08-24: sliding-window is an admin-cookie endpoint. When the SPA
+  // knows the visitor is unauthenticated (e.g. sitting on /?login=1), skip
+  // the tick instead of firing guaranteed 401s every interval — this panel
+  // was the largest source of the 96k/day /api 401 storm (batch + N-way
+  // fallback per credential×model). Skipping (not stopping) lets polling
+  // resume automatically after an inline re-login.
+  if (!isAuthenticated()) return
   const targets: Array<{ credentialId: number; model: string }> = []
   const seen = new Set<string>()
   for (const group of filteredModelGroups.value) {
@@ -760,7 +767,12 @@ async function refreshWindowStats() {
       applyStats(row.credential_id, row.model, row.stats.success ?? 0, row.stats.failed ?? 0, row.stats.total ?? 0)
       applyEntries(row.credential_id, row.model, row.entries)
     }
-  } catch {
+  } catch (e) {
+    // 2026-08-24: a 401 means the session died — the central handler in
+    // _core.ts already clears auth and bounces to the inline login. Do NOT
+    // fall back to the legacy N-way GET polling here: that would amplify one
+    // auth failure into one request per credential×model pair.
+    if (e instanceof ApiError && e.status === 401) return
     // Whole-batch failure → fall back to legacy N-way GET polling.
     if (controller.signal.aborted) return
     const concurrency = 6
