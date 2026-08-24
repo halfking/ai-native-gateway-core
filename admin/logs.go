@@ -99,6 +99,7 @@ type requestLogRow struct {
 	// the request-logs list and detail drawer; nil when no title has
 	// been generated or manually set.
 	SessionTitle *string `json:"session_title,omitempty"`
+	CustomerID   *int64  `json:"customer_id,omitempty"`
 }
 
 type requestLogAggregate struct {
@@ -221,7 +222,8 @@ const requestLogsListCols = `
 	-- 2026-08-06: session title. LEFT JOIN session_titles keyed by
 	-- (task_id, scoped_session_id) where scoped_session_id falls back to ''
 	-- when the request has no gw_session_id, matching the upsert path.
-	st.title AS session_title
+	st.title AS session_title,
+	rl.customer_id
 `
 
 // requestLogsDetailCols extends the list columns with JSONB metadata
@@ -403,6 +405,7 @@ func scanRequestListRow(rows interface {
 		&l.AttachmentCount,
 		// 2026-08-06: session_titles.title join (see requestLogsJoins).
 		&l.SessionTitle,
+		&l.CustomerID,
 	}
 	if withTraceSeq {
 		dest = append(dest, &l.TraceSeq)
