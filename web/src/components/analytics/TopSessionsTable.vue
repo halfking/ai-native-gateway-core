@@ -274,7 +274,7 @@ const handleViewPanorama = (sessionId: string) => {
   --el-table-tr-bg-color: transparent;
   --el-table-header-bg-color: var(--bg-subtle);
   --el-table-border-color: var(--border);
-  --el-table-row-hover-bg-color: rgba(255, 255, 255, 0.04);
+  --el-table-row-hover-bg-color: color-mix(in srgb, var(--kx-text) 4%, transparent);
   --el-table-text-color: var(--text);
   --el-table-header-text-color: var(--muted);
 }
@@ -284,7 +284,7 @@ const handleViewPanorama = (sessionId: string) => {
 }
 
 :deep(.el-table__row:hover) {
-  background-color: rgba(255, 255, 255, 0.04) !important;
+  background-color: color-mix(in srgb, var(--kx-text) 4%, transparent) !important;
 }
 
 :deep(.el-table__cell) {

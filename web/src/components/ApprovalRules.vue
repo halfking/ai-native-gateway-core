@@ -431,8 +431,8 @@ function getRiskLevelLabel(level: string): string {
 }
 
 .priority-badge {
-  background: rgba(139, 148, 158, 0.15);
-  color: #8b949e;
+  background: var(--neutral-bg);
+  color: var(--muted);
 }
 
 .rule-description {
@@ -480,8 +480,8 @@ function getRiskLevelLabel(level: string): string {
 }
 
 .condition-item .value {
-  background: rgba(52, 211, 153, 0.1);
-  color: #34d399;
+  background: var(--success-bg);
+  color: var(--success);
 }
 
 .rule-actions {
@@ -506,9 +506,9 @@ function getRiskLevelLabel(level: string): string {
 }
 
 .btn-icon.active {
-  background: rgba(52, 211, 153, 0.15);
-  color: #34d399;
-  border-color: #34d399;
+  background: var(--success-bg);
+  color: var(--success);
+  border-color: var(--success);
 }
 
 .btn-icon:disabled {
@@ -518,7 +518,7 @@ function getRiskLevelLabel(level: string): string {
 
 .btn-icon.btn-danger:hover:not(:disabled) {
   background: rgba(248, 113, 113, 0.1);
-  color: #f87171;
+  color: var(--danger);
   border-color: rgba(248, 113, 113, 0.3);
 }
 
@@ -602,7 +602,7 @@ function getRiskLevelLabel(level: string): string {
 }
 
 .required {
-  color: #f87171;
+  color: var(--danger);
 }
 
 .form-input,
@@ -685,11 +685,11 @@ function getRiskLevelLabel(level: string): string {
 
 .btn-primary {
   background: var(--accent);
-  color: #fff;
+  color: var(--on-primary);
 }
 
 .btn-primary:hover {
-  background: #5558e3;
+  background: var(--accent);
 }
 
 .btn-ghost {

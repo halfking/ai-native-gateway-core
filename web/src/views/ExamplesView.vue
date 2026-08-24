@@ -493,7 +493,7 @@ function toggleGuide(id: ClientGuideId) {
 <style scoped>
 .code-block {
   background: #1a1d23;
-  color: #e2e8f0;
+  color: var(--border);
   border-radius: 8px;
   padding: 16px;
   overflow-x: auto;
@@ -593,7 +593,7 @@ function toggleGuide(id: ClientGuideId) {
 }
 
 .guide-header:hover {
-  background: rgba(255, 255, 255, 0.03);
+  background: color-mix(in srgb, var(--kx-text) 4%, transparent);
 }
 
 .guide-title {

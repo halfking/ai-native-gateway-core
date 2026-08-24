@@ -355,14 +355,14 @@ onUnmounted(() => {
   vertical-align: middle;
 }
 .row-fail td { background: rgba(239,68,68,.05); }
-.badge-ok  { color: #22c55e; font-weight: 600; }
-.badge-err { color: #ef4444; font-weight: 600; }
+.badge-ok  { color: var(--success); font-weight: 600; }
+.badge-err { color: var(--danger); font-weight: 600; }
 .error-banner {
-  background: rgba(239,68,68,.15);
-  border: 1px solid #ef4444;
+  background: var(--danger-bg);
+  border: 1px solid var(--danger);
   border-radius: 8px;
   padding: 12px 16px;
-  color: #ef4444;
+  color: var(--danger);
   margin-bottom: 16px;
 }
 .row-clickable { cursor: pointer; }

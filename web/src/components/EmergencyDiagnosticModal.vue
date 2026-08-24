@@ -368,7 +368,7 @@ watch(() => props.visible, (visible) => {
   max-height: 90vh;
   display: flex;
   flex-direction: column;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 8px 32px var(--overlay-strong);
 }
 
 .modal-header {
@@ -521,7 +521,7 @@ watch(() => props.visible, (visible) => {
 }
 
 .status-warn {
-  color: #d29922 !important;
+  color: var(--warning) !important;
 }
 
 .status-error {
@@ -638,11 +638,11 @@ watch(() => props.visible, (visible) => {
 
 .btn-primary {
   background: var(--accent);
-  color: #ffffff;
+  color: var(--on-primary);
 }
 
 .btn-primary:hover:not(:disabled) {
-  background: #1f6feb;
+  background: var(--accent);
 }
 
 .btn-primary:disabled {

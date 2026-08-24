@@ -63,7 +63,9 @@ watch(
 
 function normalizeInt(v: number | null | undefined | ''): number | null {
   if (v === '' || v == null) return null
-  const n = Number(v)
+  // Truncate toward zero so fractional input (e.g. 1.5) becomes a valid
+  // integer; the backend only accepts whole concurrency counts.
+  const n = Math.trunc(Number(v))
   return Number.isFinite(n) ? n : null
 }
 
@@ -99,16 +101,17 @@ function openUnifiedDialog() {
 
 async function saveUnified() {
   if (!props.canEdit || saving.value) return
-  const reason = reasonDraft.value.trim()
-  if (!reason) {
-    emit('error', '请输入调整原因。')
-    return
-  }
   const manual = normalizeInt(manualDraft.value)
   const auto = normalizeInt(autoDraft.value)
   const fp = normalizeInt(fpDraft.value)
-  // 自动并发后端要求 ≥ 1（不支持清空）
-  if (auto != null && auto < 1) {
+  // 自动并发后端要求 ≥ 1，且不支持清空（原值非空时清空应明确拒绝）
+  if (auto == null) {
+    if (origAuto.value != null) {
+      emit('error', '自动并发不支持清空，请输入 ≥ 1 的值。')
+    }
+    return
+  }
+  if (auto < 1) {
     emit('error', '自动并发必须 ≥ 1。')
     return
   }
@@ -130,19 +133,29 @@ async function saveUnified() {
   const changedManualOrFp = manual !== origManual.value || fp !== origFp.value
   const changedAuto = auto !== origAuto.value
   if (!changedManualOrFp && !changedAuto) {
+    // 无任何变更：填了原因也静默关闭，没填原因则提示需填写原因（防止空提交）
+    if (!reasonDraft.value.trim()) {
+      emit('error', '请填写调整原因，或无需调整请直接关闭。')
+      return
+    }
     unifiedDialogOpen.value = false
+    return
+  }
+  // 自动并发变更（单独或组合）都需要审计原因；手动并发 + 指纹槽位走无 reason 字段的 PATCH。
+  // 三者同时变更时，两个接口都要调用，不能互相覆盖。
+  const reason = reasonDraft.value.trim()
+  if (changedAuto && !reason) {
+    emit('error', '调整自动并发需填写原因。')
     return
   }
   saving.value = true
   try {
-    // 手动并发 + 指纹槽位走同一个 PATCH
     if (changedManualOrFp) {
       await updateCredential(effectiveProviderId.value!, props.credentialId, {
         concurrency_limit: manual,
         fp_slot_limit: fp,
       })
     }
-    // 自动并发走专用接口（带审计原因）
     if (changedAuto && auto != null) {
       await setConcurrencyAuto(props.credentialId, auto, reason)
     }
@@ -237,7 +250,7 @@ defineExpose({ reload: loadFpStats })
 .nd-fp-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
 .nd-notice { padding: 8px 10px; border-radius: 6px; margin: 0 0 12px; font-size: 12px; }
 .nd-notice--warn { background: color-mix(in srgb, var(--kx-warning) 12%, transparent); color: var(--kx-warning); }
-.nd-dialog-mask { position: fixed; inset: 0; z-index: 3100; background: color-mix(in srgb, #000 38%, transparent); display: flex; align-items: flex-start; justify-content: center; padding-top: 80px; }
+.nd-dialog-mask { position: fixed; inset: 0; z-index: 3100; background: color-mix(in srgb, var(--kx-text) 38%, transparent); display: flex; align-items: flex-start; justify-content: center; padding-top: 80px; }
 .nd-dialog { width: min(420px, 92vw); background: var(--kx-surface); color: var(--kx-text); border-radius: 8px; padding: 18px; box-shadow: 0 12px 32px rgba(0, 0, 0, .24); display: grid; gap: 10px; }
 .nd-dialog h4 { margin: 0; font-size: 15px; }
 .nd-dialog label { display: grid; gap: 5px; font-size: 12px; }

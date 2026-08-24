@@ -529,13 +529,13 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
 .message-error {
   background: rgba(248, 113, 113, 0.1);
   border: 1px solid rgba(248, 113, 113, 0.3);
-  color: #f87171;
+  color: var(--danger);
 }
 
 .message-success {
-  background: rgba(52, 211, 153, 0.1);
-  border: 1px solid rgba(52, 211, 153, 0.3);
-  color: #34d399;
+  background: var(--success-bg);
+  border: 1px solid var(--success-bd);
+  color: var(--success);
 }
 
 .stats-grid {
@@ -570,15 +570,15 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
 }
 
 .stat-value.stat-highlight {
-  color: #fbbf24;
+  color: var(--warning);
 }
 
 .stat-value.stat-green {
-  color: #34d399;
+  color: var(--success);
 }
 
 .stat-value.stat-red {
-  color: #f87171;
+  color: var(--danger);
 }
 
 .filters-section {
@@ -694,7 +694,7 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
 }
 
 .link-button:hover {
-  color: #5558e3;
+  color: var(--accent);
 }
 
 .text-mono {
@@ -709,7 +709,7 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
 
 .time-left {
   font-size: 11px;
-  color: #fbbf24;
+  color: var(--warning);
   margin-top: 2px;
 }
 
@@ -728,28 +728,28 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
 }
 
 .badge-green {
-  background: rgba(52, 211, 153, 0.15);
-  color: #34d399;
+  background: var(--success-bg);
+  color: var(--success);
 }
 
 .badge-yellow {
-  background: rgba(251, 191, 36, 0.15);
-  color: #fbbf24;
+  background: var(--warning-bg);
+  color: var(--warning);
 }
 
 .badge-orange {
-  background: rgba(251, 146, 60, 0.15);
-  color: #fb923c;
+  background: var(--warning-bd);
+  color: var(--warning);
 }
 
 .badge-red {
   background: rgba(248, 113, 113, 0.15);
-  color: #f87171;
+  color: var(--danger);
 }
 
 .badge-gray {
-  background: rgba(139, 148, 158, 0.15);
-  color: #8b949e;
+  background: var(--neutral-bg);
+  color: var(--muted);
 }
 
 .actions-column {
@@ -804,12 +804,12 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
 
 .btn-primary {
   background: var(--accent);
-  color: #fff;
+  color: var(--on-primary);
   border-color: var(--accent);
 }
 
 .btn-primary:hover:not(:disabled) {
-  background: #5558e3;
+  background: var(--accent);
 }
 
 .btn-secondary {
@@ -818,19 +818,19 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
 }
 
 .btn-success {
-  background: rgba(52, 211, 153, 0.15);
-  color: #34d399;
-  border-color: #34d399;
+  background: var(--success-bg);
+  color: var(--success);
+  border-color: var(--success);
 }
 
 .btn-success:hover:not(:disabled) {
-  background: rgba(52, 211, 153, 0.25);
+  background: var(--success-bd);
 }
 
 .btn-danger {
   background: rgba(248, 113, 113, 0.15);
-  color: #f87171;
-  border-color: #f87171;
+  color: var(--danger);
+  border-color: var(--danger);
 }
 
 .btn-danger:hover:not(:disabled) {

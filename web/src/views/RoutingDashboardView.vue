@@ -1742,7 +1742,7 @@ onUnmounted(() => stopPoll())
   background: var(--card);
   color: var(--text);
   font-weight: 600;
-  box-shadow: 0 1px 2px rgba(0,0,0,.12);
+  box-shadow: 0 1px 2px var(--overlay-faint);
 }
 
 .tab-content { display: flex; flex-direction: column; gap: 8px; }
@@ -1821,7 +1821,7 @@ onUnmounted(() => stopPoll())
   flex-shrink: 0;
 }
 .layer-tag.l1 { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--accent-h); }
-.layer-tag.l2 { background: rgba(63,185,80,.22); color: var(--success); }
+.layer-tag.l2 { background: var(--success-bd); color: var(--success); }
 .task-hint { font-weight: 400; color: var(--muted); font-size: 10px; }
 
 .task-pill {
@@ -1872,10 +1872,10 @@ onUnmounted(() => stopPoll())
   border-radius: 99px;
   font-size: 10px;
   font-weight: 600;
-  background: rgba(139,148,158,.15);
+  background: var(--neutral-bg);
   color: var(--muted);
 }
-.score-pill.good { background: rgba(63,185,80,.15); color: var(--success); }
+.score-pill.good { background: var(--success-bg); color: var(--success); }
 .score-pill.sm { font-size: 9px; padding: 0 4px; }
 
 /* 2026-07-24: routing-v2 resolve 页候选行（默认全量展示）
@@ -1903,7 +1903,7 @@ onUnmounted(() => stopPoll())
 }
 
 .model-row { cursor: pointer; }
-.model-row:hover { background: rgba(255,255,255,.03); }
+.model-row:hover { background: color-mix(in srgb, var(--kx-text) 4%, transparent); }
 .model-row.expanded { background: color-mix(in srgb, var(--accent) 5%, transparent); }
 .detail-row td { padding: 6px; background: var(--bg-subtle); border-top: none; }
 
@@ -2028,7 +2028,7 @@ onUnmounted(() => stopPoll())
   position: fixed;
   inset: 0;
   z-index: 1000;
-  background: rgba(0, 0, 0, 0.45);
+  background: var(--overlay-strong);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2059,7 +2059,7 @@ onUnmounted(() => stopPoll())
   background: var(--bg-subtle);
 }
 .sim-step.l1 { background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent-h); }
-.sim-step.l2.win { background: rgba(63,185,80,.15); color: var(--success); font-weight: 600; }
+.sim-step.l2.win { background: var(--success-bg); color: var(--success); font-weight: 600; }
 
 .dist-mini { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .dist-col h4 { font-size: 9px; text-transform: uppercase; color: var(--muted); margin: 0 0 4px; letter-spacing: .04em; }
@@ -2130,7 +2130,7 @@ onUnmounted(() => stopPoll())
   white-space: nowrap;
 }
 .resolve-row .priority-cell .priority-star {
-  color: #fbbf24;
+  color: var(--warning);
   font-size: 14px;
   line-height: 1;
 }
@@ -2144,7 +2144,7 @@ onUnmounted(() => stopPoll())
 .resolve-row .priority-cell .priority-toggle input[type='checkbox'] {
   width: 14px;
   height: 14px;
-  accent-color: #fbbf24;
+  accent-color: var(--warning);
 }
 .resolve-row .priority-cell.is-saving { opacity: .55; }
 .reorder-error { color: var(--kx-danger); font-size: 10px; }

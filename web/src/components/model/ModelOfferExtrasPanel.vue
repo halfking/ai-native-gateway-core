@@ -233,7 +233,7 @@ async function checkAcross() {
 .extras h4 { margin: 0; }
 .iq-canvas { width: 100%; height: 140px; }
 .iq-list, .check-list { margin: 8px 0 0; padding-left: 16px; font-size: 12px; }
-.st-ok { color: #16a34a; margin: 0 6px; }
-.st-error, .st-unavailable { color: #dc2626; margin: 0 6px; }
+.st-ok { color: var(--success); margin: 0 6px; }
+.st-error, .st-unavailable { color: var(--danger); margin: 0 6px; }
 .st-warning { color: #c97800; margin: 0 6px; }
 </style>

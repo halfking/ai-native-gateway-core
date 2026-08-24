@@ -61,9 +61,9 @@ function formatMs(ms: number) {
 }
 @media (max-width: 900px) { .signal-row { grid-template-columns: 1fr; } }
 .detail-card {
-  border: 1px solid var(--border, #e5e7eb);
+  border: 1px solid var(--border, var(--surface-secondary));
   border-radius: 10px;
-  background: var(--card, #fff);
+  background: var(--card, var(--on-primary));
   padding: 14px 16px;
   min-width: 0;
 }
@@ -71,9 +71,9 @@ function formatMs(ms: number) {
   font-weight: 600; font-size: 14px; margin-bottom: 12px;
   display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px;
 }
-.detail-card__hint { font-weight: 400; font-size: 12px; color: var(--muted, #909399); }
+.detail-card__hint { font-weight: 400; font-size: 12px; color: var(--muted, var(--text-secondary)); }
 .signal-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap: 12px; }
-.signal-label { display: block; font-size: 12px; color: var(--muted, #909399); }
+.signal-label { display: block; font-size: 12px; color: var(--muted, var(--text-secondary)); }
 .signal-value { font-size: 18px; font-weight: 600; }
-.empty-hint { margin: 0; font-size: 13px; color: var(--muted, #909399); }
+.empty-hint { margin: 0; font-size: 13px; color: var(--muted, var(--text-secondary)); }
 </style>

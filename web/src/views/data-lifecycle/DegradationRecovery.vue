@@ -127,8 +127,8 @@ p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.6; }
 .grid strong { color: var(--text); font-size: 16px; }
 .actions, .file-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .btn { border: 1px solid var(--border); border-radius: 6px; padding: 7px 12px; color: var(--text); background: var(--bg-subtle); cursor: pointer; }
-.btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-.btn-danger { background: var(--danger); border-color: var(--danger); color: #fff; }
+.btn-primary { background: var(--accent); border-color: var(--accent); color: var(--on-primary); }
+.btn-danger { background: var(--danger); border-color: var(--danger); color: var(--on-primary); }
 .btn:disabled { opacity: .45; cursor: not-allowed; }
 .btn-sm { padding: 5px 9px; font-size: 12px; }
 .hint, .empty { color: var(--muted); margin-bottom: 12px; }
