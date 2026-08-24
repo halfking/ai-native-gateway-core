@@ -18,7 +18,7 @@ rolled back the complete telemetry transaction.
 
 ## Change
 
-Migration `571_session_summary_large_token_ratio.sql` replaces the function
+Migration `572_session_summary_large_token_ratio.sql` replaces the function
 body. It calculates the ratio with `v_prompt_tokens::numeric /
 v_total_tokens::numeric`, then stores the result in the existing
 `DECIMAL(10,6)` ratio variable. No table shape or historical data changes.
@@ -36,7 +36,7 @@ All commands passed locally.
 
 ## Deployment Gate
 
-Applying migration 571 replaces a live database function. It requires the
+Applying migration 572 replaces a live database function. It requires the
 separate 245 DDL approval, post-apply function-definition verification, and a
 long-context request-log smoke test before service deployment.
 

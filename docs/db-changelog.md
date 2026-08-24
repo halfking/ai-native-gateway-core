@@ -88,4 +88,4 @@
 
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
-| 571 | `571_session_summary_large_token_ratio.sql` | `e60df0b0adc24665da72273a8787d2cb5bec98c3d504da0a6abf0049db4fe56d` | applied+verified |
+| 572 | `572_session_summary_large_token_ratio.sql` | `e60df0b0adc24665da72273a8787d2cb5bec98c3d504da0a6abf0049db4fe56d` | applied+verified |

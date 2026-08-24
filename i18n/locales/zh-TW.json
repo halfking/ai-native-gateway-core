@@ -41,6 +41,9 @@
   "model_deprecated": {
     "other": "請求的模型已被上游供應商永久下線（停止服務）。"
   },
+  "unsupported_feature": {
+    "other": "所選模型不支援該請求格式或模態。"
+  },
   "meta_tool_error": {
     "other": "元工具處理失敗"
   },

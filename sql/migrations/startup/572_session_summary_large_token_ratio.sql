@@ -1,4 +1,4 @@
--- 571_session_summary_large_token_ratio.sql
+-- 572_session_summary_large_token_ratio.sql
 -- Purpose: Prevent session summary aggregation from rejecting long-context requests.
 --
 -- request_logs_hot accepts integer token counts. update_session_summary() used

@@ -376,6 +376,9 @@ func (q *ProbeQueue) Enqueue(ctx context.Context, task ProbeQueueTask) (int64, b
 	if task.MaxAttempts <= 0 {
 		task.MaxAttempts = 1
 	}
+	if task.NextRunAt.IsZero() {
+		task.NextRunAt = time.Now()
+	}
 	if _, err := q.db.Exec(ctx, `
 		UPDATE credential_probe_queue
 		SET status='expired', updated_at=now()
@@ -383,20 +386,12 @@ func (q *ProbeQueue) Enqueue(ctx context.Context, task ProbeQueueTask) (int64, b
 		return 0, false, fmt.Errorf("enqueue probe failed: expire stale task: %w (dedup_key=%s)", err, task.DedupKey)
 	}
 	var id int64
-	err := q.db.QueryRow(ctx, `
-		INSERT INTO credential_probe_queue (
-			credential_id, provider_id, tenant_id, canonical_model, raw_model,
-			outbound_model, probe_command, probe_mode, priority, reason_code,
-			reason_detail, max_attempts, source, source_event_id, parent_request_id,
-			dedup_key, expires_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,now()+$17)
-		ON CONFLICT DO NOTHING
-		RETURNING id`, task.CredentialID, task.ProviderID, task.TenantID,
+	err := q.db.QueryRow(ctx, probeEnqueueSQL(), task.CredentialID, task.ProviderID, task.TenantID,
 		nilString(task.Canonical), task.RawModel, nilString(task.Outbound),
 		task.Command, task.Mode, task.Priority, nilString(task.ReasonCode),
 		nilString(task.ReasonDetail), task.MaxAttempts, task.Source,
 		nilString(task.SourceEvent), nilString(task.ParentReqID), task.DedupKey,
-		ProbeQueueTTL).Scan(&id)
+		task.NextRunAt, ProbeQueueTTL).Scan(&id)
 	if err == pgx.ErrNoRows {
 		return 0, false, nil
 	}
@@ -409,6 +404,18 @@ func (q *ProbeQueue) Enqueue(ctx context.Context, task ProbeQueueTask) (int64, b
 	task.ID = id
 	q.publishProbeTask(task, "pending")
 	return id, true, nil
+}
+
+func probeEnqueueSQL() string {
+	return `
+		INSERT INTO credential_probe_queue (
+			credential_id, provider_id, tenant_id, canonical_model, raw_model,
+			outbound_model, probe_command, probe_mode, priority, reason_code,
+			reason_detail, max_attempts, source, source_event_id, parent_request_id,
+			dedup_key, next_run_at, expires_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,now()+$18)
+		ON CONFLICT DO NOTHING
+		RETURNING id`
 }
 
 // Cancel marks all active (ready/running) tasks for a dedup key as cancelled.

@@ -32,7 +32,7 @@ func newCredForwarder(cred CredentialRef, queueDepth int, pipe *Pipeline) *credF
 		cred:   cred,
 		queue:  make(chan *QueuedRequest, queueDepth),
 		limit:  int64(queueDepth),
-		gov:    newGovernor(cred),
+		gov:    pipe.governorForCredential(cred),
 		pipe:   pipe,
 		ctx:    ctx,
 		cancel: cancel,
@@ -93,7 +93,7 @@ func (cf *credForwarder) loop() {
 			}
 			depth := cf.depth.Add(-1)
 			metricCredQueueDepth.WithLabelValues(itoa(cf.cred.CredentialID), cf.cred.ConcurrencyMode).Dec()
-			cf.pipe.observeQueue(QueueObservation{Kind: QueueCredentialDepth, CredentialID: cf.cred.CredentialID, Mode: cf.cred.ConcurrencyMode, Depth: depth, Delta: -1})
+			cf.pipe.observeQueue(QueueObservation{Kind: QueueCredentialDepth, CredentialID: cf.cred.CredentialID, Mode: cf.cred.ConcurrencyMode, Depth: depth, Delta: -1, AbsoluteDepth: true})
 			cf.wg.Add(1)
 			go cf.attempt(qr)
 		case <-cf.ctx.Done():
@@ -119,7 +119,7 @@ func (cf *credForwarder) drainAndComplete() {
 			}
 			depth := cf.depth.Add(-1)
 			metricCredQueueDepth.WithLabelValues(itoa(cf.cred.CredentialID), cf.cred.ConcurrencyMode).Dec()
-			cf.pipe.observeQueue(QueueObservation{Kind: QueueCredentialDepth, CredentialID: cf.cred.CredentialID, Mode: cf.cred.ConcurrencyMode, Depth: depth, Delta: -1})
+			cf.pipe.observeQueue(QueueObservation{Kind: QueueCredentialDepth, CredentialID: cf.cred.CredentialID, Mode: cf.cred.ConcurrencyMode, Depth: depth, Delta: -1, AbsoluteDepth: true})
 			cf.pipe.complete(qr, ForwardOutcome{Err: ErrShutdown})
 		default:
 			return
@@ -164,7 +164,7 @@ func (cf *credForwarder) acquire(qr *QueuedRequest) bool {
 		qr.abandonReservedAttempt(attempt.AttemptID)
 		depth := cf.depth.Add(-1)
 		metricCredQueueDepth.WithLabelValues(itoa(cf.cred.CredentialID), cf.cred.ConcurrencyMode).Dec()
-		cf.pipe.observeQueue(QueueObservation{Kind: QueueCredentialDepth, CredentialID: cf.cred.CredentialID, Mode: cf.cred.ConcurrencyMode, Depth: depth, Delta: -1})
+		cf.pipe.observeQueue(QueueObservation{Kind: QueueCredentialDepth, CredentialID: cf.cred.CredentialID, Mode: cf.cred.ConcurrencyMode, Depth: depth, Delta: -1, AbsoluteDepth: true})
 		if ctxOf(qr).Err() != nil {
 			cf.pipe.complete(qr, ForwardOutcome{Err: ctxOf(qr).Err()})
 			return false
@@ -191,7 +191,7 @@ func (cf *credForwarder) acquire(qr *QueuedRequest) bool {
 		cf.gov.Release(qr)
 		depth := cf.depth.Add(-1)
 		metricCredQueueDepth.WithLabelValues(itoa(cf.cred.CredentialID), cf.cred.ConcurrencyMode).Dec()
-		cf.pipe.observeQueue(QueueObservation{Kind: QueueCredentialDepth, CredentialID: cf.cred.CredentialID, Mode: cf.cred.ConcurrencyMode, Depth: depth, Delta: -1})
+		cf.pipe.observeQueue(QueueObservation{Kind: QueueCredentialDepth, CredentialID: cf.cred.CredentialID, Mode: cf.cred.ConcurrencyMode, Depth: depth, Delta: -1, AbsoluteDepth: true})
 		cf.pipe.complete(qr, ForwardOutcome{Err: errors.New("dispatch: missing reserved attempt")})
 		return false
 	}
