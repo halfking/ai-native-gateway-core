@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,6 +24,37 @@ import (
 )
 
 var errNoTelemetryDB = errors.New("telemetry database not configured")
+
+// heapPartitionNameRE 白名单: request_logs_<YYYY>_<MM>, 仅允许数字+下划线.
+var heapPartitionNameRE = regexp.MustCompile(`^request_logs_[0-9]{4}_[0-9]{2}$`)
+
+// quoteIdent 是 pgx.Identifier 等价的轻量版, 用于动态拼分区名 (避免注入).
+func quoteIdent(name string) string {
+	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
+}
+
+// claimClientHolder 让 claimSessionFinalSuccess (无 Client 上下文的顶层函数)
+// 能拿到当前 gateway 实例的 Client. cmd/gateway/main.go 在 NewClient 后调用
+// SetClaimClient 一次, 单测无需设置 (holder 为 nil 时走 nil 分区安全路径).
+var (
+	claimClientMu sync.RWMutex
+	claimClient   *Client
+)
+
+// SetClaimClient 注册当前实例的 Client, 给 columnar-safe claim 路径使用.
+// 生产仅调用一次, 单测无需调用 (直接走 DB mock).
+func SetClaimClient(c *Client) {
+	claimClientMu.Lock()
+	claimClient = c
+	claimClientMu.Unlock()
+}
+
+func loadClientForClaim() *Client {
+	claimClientMu.RLock()
+	c := claimClient
+	claimClientMu.RUnlock()
+	return c
+}
 
 // OutboxWriter writes events to outbox_events table for Gateway → ASM delivery.
 // Implemented by internal/outbox.Writer. Nil-safe (checked before use).
@@ -77,6 +109,18 @@ type Client struct {
 	failPermanent uint64
 	failRetried   uint64
 	failFallback  uint64
+
+	// 2026-08-25: heap request_logs 月度分区名缓存 (columnar-safe claim).
+	// request_logs_* 部分月份是 columnar (citus_columnar), 其上 NOT EXISTS 关联
+	// 会触发 SQLSTATE 0A000 ("UPDATE and CTID scans not supported for
+	// ColumnarScan") —— 即使我们只 UPDATE heap 的 request_logs_hot, planner
+	// 对半连接 NOT EXISTS 仍可能生成 ctid-over-columnar 计划, 整事务回滚.
+	// 这里缓存 pg_class.relam='h' 的 request_logs_* 月度分区名, 每 5 分钟
+	// 刷新, claim 时动态拼装 NOT EXISTS 的 FROM 列表, 只查 heap 分区.
+	// 没有 heap 月份分区时退化为跳过 (依赖 hot 表 8h 保留窗口 + 唯一索引兜底).
+	heapPartitionsMu      sync.RWMutex
+	heapPartitions        []string
+	heapPartitionsCachedAt time.Time
 }
 
 type DecisionLogEntry struct {
@@ -2084,7 +2128,82 @@ func shouldClaimFinalSuccess(entry *RequestLogEntry) bool {
 //     claim skipped with a warning, row degrades to an unmarked success that
 //     sql/scripts/report_duplicate_session_success.sql can report for manual
 //     backfill.
+
+// heapRequestLogsPartitionsCachedTTL — heap 月度分区名缓存有效期. 5 分钟
+// 即可 (月份切换罕见, partition manager 每月触发).
+const heapRequestLogsPartitionsCachedTTL = 5 * time.Minute
+
+// heapRequestLogsPartitions 返回 pg_class.relam='h' 的 request_logs_<YYYY>_<MM>
+// 月度分区名列表. 缓存 5 分钟. 查询失败返回上次缓存 (可能为 nil) + 不报错.
+// 缓存不存在时执行查询; 查询失败返回 (nil, err), 调用方 fallback 跳过守卫.
+func (c *Client) heapRequestLogsPartitions(ctx context.Context, tx pgx.Tx) []string {
+	c.heapPartitionsMu.RLock()
+	cached := c.heapPartitions
+	cachedAt := c.heapPartitionsCachedAt
+	c.heapPartitionsMu.RUnlock()
+	if len(cached) > 0 && time.Since(cachedAt) < heapRequestLogsPartitionsCachedTTL {
+		return cached
+	}
+	// 选用调用者传入的 tx (与 claim 在同一事务内, 读到一致快照);
+	// tx==nil (历史旧 caller) 时退化为不用缓存.
+	var names []string
+	rows, qerr := tx.Query(ctx, `
+		SELECT c.relname
+		  FROM pg_inherits i
+		  JOIN pg_class p ON p.oid = i.inhparent
+		  JOIN pg_class c ON c.oid = i.inhrelid
+		  JOIN pg_am am ON am.oid = c.relam
+		 WHERE p.relname = 'request_logs'
+		   AND am.amname = 'heap'
+		 ORDER BY c.relname`)
+	if qerr != nil {
+		// 查询失败不阻塞 claim: 返回上次缓存 (可能空) + 记 warn.
+		slog.Warn("heap partitions cache query failed, using stale or nil",
+			"error", qerr)
+		return cached
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err == nil {
+			names = append(names, n)
+		}
+	}
+	if err := rows.Err(); err == nil && names != nil {
+		c.heapPartitionsMu.Lock()
+		c.heapPartitions = names
+		c.heapPartitionsCachedAt = time.Now()
+		c.heapPartitionsMu.Unlock()
+		return names
+	}
+	return cached
+}
+
 func claimSessionFinalSuccess(ctx context.Context, tx pgx.Tx, requestID string) {
+	// 2026-08-25: 列存分区安全. 旧实现直接 `FROM request_logs promoted` 半连接,
+	// 在 columnar 分区上会触发 0A000 (CTID scan over columnar). 改为只在
+	// pg_class.relam='h' 的 request_logs_<year>_<month> 月度分区里查, columnar
+	// 月份自动跳过. 没有 heap 月份时降级为跳过 (依赖 hot 唯一索引 + 8h 保留 +
+	// sql/scripts/report_duplicate_session_success.sql 兜底).
+	//
+	// 单调用上下文拿不到 Client 实例, 用一个包级 holder (loadClientForClaim)
+	// 拿到 *Client. 这条路径仅 claim 调用, holder 仅设一次 (cmd/gateway/main.go
+	// 创建 Client 后调用 SetClaimClient); 拿不到时按 0 个 heap 分区处理.
+	c := loadClientForClaim()
+	if c == nil {
+		// 没有 Client (单测 / 无 DB), 用保守 SQL (不含 columnar 关联)
+		claimSessionFinalSuccessExec(ctx, tx, requestID, nil)
+		return
+	}
+	heaps := c.heapRequestLogsPartitions(ctx, tx)
+	claimSessionFinalSuccessExec(ctx, tx, requestID, heaps)
+}
+
+// claimSessionFinalSuccessExec is the actual implementation. heapPartitions
+// is the snapshot of pg_class.relam='h' request_logs_* partitions (already
+// quoted/identified); nil/empty means "skip the promoted-partition guard
+// entirely" (single-test path or transient cache failure).
+func claimSessionFinalSuccessExec(ctx context.Context, tx pgx.Tx, requestID string, heapPartitions []string) {
 	if tx == nil || requestID == "" {
 		return
 	}
@@ -2095,6 +2214,39 @@ func claimSessionFinalSuccess(ctx context.Context, tx pgx.Tx, requestID string) 
 			"request_id", requestID, "error", err)
 		return
 	}
+
+	// 拼装 promoted-partition NOT EXISTS 子查询.
+	// 没有 heap 分区时退化 (依赖 hot 唯一索引 + 8h 保留 + 报告脚本兜底):
+	//   - hot 表唯一索引 uq_request_logs_hot_final_success_session 是硬保证
+	//     (23505 兜底并发双写);
+	//   - hot 保留窗口 8h (lifecycle.hot_retention_hours) + promote 周期 1h;
+	//     超 8h 的 session 早结束, 不可能再被并发 claim.
+	var promotedGuard string
+	if len(heapPartitions) > 0 {
+		// UNION ALL 多个 heap 分区. regclass::text 走类型校验避免注入.
+		parts := make([]string, 0, len(heapPartitions))
+		for _, p := range heapPartitions {
+			// 白名单: request_logs_<4digits>_<2digits>; 不合规直接跳过
+			if !heapPartitionNameRE.MatchString(p) {
+				continue
+			}
+			parts = append(parts,
+				fmt.Sprintf(`SELECT gw_session_id, is_final_success FROM ONLY %s WHERE is_final_success`, quoteIdent(p)))
+		}
+		if len(parts) > 0 {
+			promotedGuard = "  AND NOT EXISTS (\n" +
+				"       SELECT 1 FROM (\n           " +
+				strings.Join(parts, "\n           UNION ALL\n           ") +
+				"\n       ) promoted\n" +
+				"        WHERE promoted.gw_session_id = request_logs_hot.gw_session_id\n" +
+				"  )"
+		}
+	}
+	if promotedGuard == "" {
+		slog.Debug("final-success claim: no heap monthly partitions cached, skipping promoted-partition guard",
+			"request_id", requestID)
+	}
+
 	tag, err := tx.Exec(ctx, `
 		UPDATE request_logs_hot
 		   SET is_final_success = TRUE
@@ -2108,13 +2260,7 @@ func claimSessionFinalSuccess(ctx context.Context, tx pgx.Tx, requestID string) 
 		         WHERE other.gw_session_id = request_logs_hot.gw_session_id
 		           AND other.is_final_success
 		           AND other.request_id <> request_logs_hot.request_id
-		   )
-		   AND NOT EXISTS (
-		        SELECT 1
-		          FROM request_logs promoted
-		         WHERE promoted.gw_session_id = request_logs_hot.gw_session_id
-		           AND promoted.is_final_success
-		   )
+		   )`+promotedGuard+`
 	`, requestID)
 	if err != nil {
 		_, rbErr := tx.Exec(ctx, `ROLLBACK TO SAVEPOINT gw_final_success_claim`)
