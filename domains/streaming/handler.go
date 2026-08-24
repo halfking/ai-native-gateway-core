@@ -2039,21 +2039,6 @@ func (h *ChatHandler) serveWithExecutor(
 		return
 	}
 
-	// ── RPM rate limit (unified via checkGatewayRateLimit) ──────────────
-	rlOutcome := checkGatewayRateLimit(r.Context(), keyInfo, h.rateLimiter)
-	h.emitTrace(r.Context(), requestID,
-		gwtrace.RateLimitCheck(!rlOutcome.Blocked, rateLimitOutcomeKind(rlOutcome), rlOutcome.Remaining).
-			WithDetails("limit", rlOutcome.Limit, "reset_sec", rlOutcome.ResetSec))
-	if !rlOutcome.Skipped {
-		writeRateLimitHeaders(w, rlOutcome)
-		if rlOutcome.Blocked {
-
-			captureAndEmitRateLimited("rate_limit_exceeded", "rate limit exceeded", nil, nil)
-			writeErrorJSONCtx(r.Context(), w, http.StatusTooManyRequests, requestID, "rate_limit_error", i18n.MsgRateLimitExceeded, nil)
-			return
-		}
-	}
-
 	// ── Budget pre-check ─────────────────────────────────────────────────
 	if keyInfo != nil && h.keyVerifier != nil {
 		if budgetErr := h.keyVerifier.CheckBudget(r.Context(), keyInfo.ID); budgetErr != nil {
@@ -2718,6 +2703,18 @@ func (h *ChatHandler) serveWithExecutor(
 	// "v3 Session-level intelligent compression" block after GetCandidates.
 
 	isStream := reqBody.Stream
+	rlOutcome := checkGatewayRateLimit(r.Context(), keyInfo, h.rateLimiter, notifyRateLimitWait(w, isStream))
+	h.emitTrace(r.Context(), requestID,
+		gwtrace.RateLimitCheck(!rlOutcome.Blocked, rateLimitOutcomeKind(rlOutcome), rlOutcome.Remaining).
+			WithDetails("limit", rlOutcome.Limit, "reset_sec", rlOutcome.ResetSec))
+	if !rlOutcome.Skipped {
+		writeRateLimitHeaders(w, rlOutcome)
+		if rlOutcome.Blocked {
+			captureAndEmitRateLimited("rate_limit_exceeded", "rate limit exceeded", nil, nil)
+			writeErrorJSONCtx(r.Context(), w, http.StatusTooManyRequests, requestID, "rate_limit_error", i18n.MsgRateLimitExceeded, nil)
+			return
+		}
+	}
 	endUser := resolveEndUser(reqBody.User, r)
 	// 2026-06-29: Prefer the Pipeline-computed identity (v2 dispatch
 	// path) to avoid recomputing. Fall back to inline computation for
