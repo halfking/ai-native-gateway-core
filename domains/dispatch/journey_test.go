@@ -245,8 +245,15 @@ func TestJourneyNodeAndModelSwitches(t *testing.T) {
 		}, false)
 		qr := newJourneyRequest("journey-node-switch", "m1")
 		qr.RetryPerCredential = 0
-		var summaries []string
-		qr.OnNodeSwitchSummary = func(message string) { summaries = append(summaries, message) }
+		var (
+			summariesMu sync.Mutex
+			summaries   []string
+		)
+		qr.OnNodeSwitchSummary = func(message string) {
+			summariesMu.Lock()
+			defer summariesMu.Unlock()
+			summaries = append(summaries, message)
+		}
 		if _, err := p.Submit(context.Background(), qr); err != nil {
 			t.Fatalf("Submit: %v", err)
 		}
@@ -261,8 +268,11 @@ func TestJourneyNodeAndModelSwitches(t *testing.T) {
 		if switched == nil || switched.FromCredentialID != 11 || switched.ToCredentialID != 12 || switched.SwitchReason != "cred_switch" {
 			t.Fatalf("node switch event = %+v", switched)
 		}
-		if len(summaries) != 1 || summaries[0] != "upstream node quota exhausted; switching to the next available node" {
-			t.Fatalf("node switch summaries = %v", summaries)
+		summariesMu.Lock()
+		gotSummaries := append([]string(nil), summaries...)
+		summariesMu.Unlock()
+		if len(gotSummaries) != 1 || gotSummaries[0] != "upstream node quota exhausted; switching to the next available node" {
+			t.Fatalf("node switch summaries = %v", gotSummaries)
 		}
 	})
 
@@ -310,13 +320,23 @@ func TestJourneyTerminalQuotaDoesNotEmitSwitchSummary(t *testing.T) {
 	}, false)
 	qr := newJourneyRequest("journey-terminal-quota", "m1")
 	qr.RetryPerCredential = 0
-	var summaries []string
-	qr.OnNodeSwitchSummary = func(message string) { summaries = append(summaries, message) }
+	var (
+		summariesMu sync.Mutex
+		summaries   []string
+	)
+	qr.OnNodeSwitchSummary = func(message string) {
+		summariesMu.Lock()
+		defer summariesMu.Unlock()
+		summaries = append(summaries, message)
+	}
 	if _, err := p.Submit(context.Background(), qr); err == nil {
 		t.Fatal("Submit succeeded, want terminal quota failure")
 	}
-	if len(summaries) != 0 {
-		t.Fatalf("terminal quota failure emitted switch summary: %v", summaries)
+	summariesMu.Lock()
+	gotSummaries := append([]string(nil), summaries...)
+	summariesMu.Unlock()
+	if len(gotSummaries) != 0 {
+		t.Fatalf("terminal quota failure emitted switch summary: %v", gotSummaries)
 	}
 }
 
