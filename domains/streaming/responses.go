@@ -415,6 +415,12 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			slog.Warn("request_logger: responses session merge failed", "request_id", requestID, "error", err)
 		}
 	}
+	// 2026-08-23: protocol-coverage for provisional metadata — mirror the
+	// chat-completions hook so /v1/responses arrivals also feed the rule
+	// extractor. The dispatcher's `instructions`/`input` normalization
+	// lets the Responses shape produce the same heuristic signals as
+	// the OpenAI chat shape (see sessionmeta.ParseMessages).
+	h.chatHandler.invokeProvisionalMetadataOnArrival(r, sessionID, keyInfo, logCtx, bodyBytes)
 	// 2026-08-06 audit fix: extractEndUser only checks X-End-User-Id and
 	// r.Body (which is already drained at this point). The original
 	// request body bytes are in bodyBytes — pass them in so we recover
