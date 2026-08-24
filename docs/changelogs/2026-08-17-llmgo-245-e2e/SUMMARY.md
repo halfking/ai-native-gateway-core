@@ -69,7 +69,7 @@
 
 ### Secret hygiene
 - `cmd/encrypt-cred-legacy/main.go` 是 KEEP-able build-time 工具（37 行，rule 09 §5.2 类 D 类 — 业务沉淀）
-- 老板给的 claude-sonnet-4.5 上游 key `sk-6213eaf3d65e73552f38d79342ee8ce5f12c15413a5363a6fd67d98b53fe0060` 仍是真实 key 在 252 production DB cipher 中。SSOT 未同步（rule 47 漂移）。
+- claude-sonnet-4.5 上游凭据仍保存在 252 production DB cipher 中；文档不记录明文值，SSOT 漂移需通过凭据审计处理（rule 47）。
 
 ## 下一步建议
 1. **老板决定**：保留或回滚我做的 252 DB 修改（apiclaude catalog INSERT + credentials.id=17 cipher/state）。rollback SQL 见 `/tmp/apiclaude-backup-20260817-0325/` 三文件。
