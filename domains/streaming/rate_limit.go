@@ -16,6 +16,7 @@ package streaming
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -32,10 +33,11 @@ import (
 //	Otherwise — within cap; caller may proceed (Limit/Remaining populated for telemetry)
 type rateLimitOutcome struct {
 	Skipped   bool
-	Blocked   bool
+	Blocked   bool // queue full or admission failed; caller writes the canonical error
 	Limit     int
 	Remaining int
 	ResetSec  int
+	Queue     ratelimit.AdmissionResult
 }
 
 // checkGatewayRateLimit runs the single-source-of-truth RPM check used by
@@ -52,7 +54,7 @@ type rateLimitOutcome struct {
 // callers. It must not be treated as a tenant API-key quota, or aggregate
 // frontend traffic exhausts one shared RPM window. AuthMiddleware creates the
 // context marker only after constant-time static-key verification.
-func checkGatewayRateLimit(ctx context.Context, keyInfo *authentication.KeyInfo, rl ratelimit.RPMLimiter) rateLimitOutcome {
+func checkGatewayRateLimit(ctx context.Context, keyInfo *authentication.KeyInfo, rl ratelimit.RPMLimiter, notify func(ratelimit.AdmissionResult)) rateLimitOutcome {
 	// AUDIT-2: 限流总开关关闭 → 整个 RPM 检查 no-op。
 	if !ratelimit.IsRateLimitEnabled() {
 		return rateLimitOutcome{Skipped: true}
@@ -67,6 +69,26 @@ func checkGatewayRateLimit(ctx context.Context, keyInfo *authentication.KeyInfo,
 	if limit <= 0 {
 		// Explicit unlimited (DB=0). No headers, no check.
 		return rateLimitOutcome{Limit: 0, Remaining: -1, ResetSec: 0}
+	}
+	if admission, ok := rl.(ratelimit.RPMAdmission); ok {
+		if waiting, ok := rl.(ratelimit.RPMWaitingNotifier); ok {
+			result, err := waiting.AdmitRPMWithWait(ctx, keyInfo.ID, limit, notify)
+			if err == nil {
+				return rateLimitOutcome{Limit: limit, Remaining: result.Remaining, Queue: result}
+			}
+			if !errors.Is(err, ratelimit.ErrMinuteBucketFull) {
+				return rateLimitOutcome{Blocked: true, Limit: limit, ResetSec: 1}
+			}
+			return rateLimitOutcome{Blocked: true, Limit: limit, ResetSec: 60, Queue: result}
+		}
+		result, err := admission.AdmitRPM(ctx, keyInfo.ID, limit)
+		if err == nil {
+			return rateLimitOutcome{Limit: limit, Remaining: result.Remaining, Queue: result}
+		}
+		if !errors.Is(err, ratelimit.ErrMinuteBucketFull) {
+			return rateLimitOutcome{Blocked: true, Limit: limit, ResetSec: 1}
+		}
+		return rateLimitOutcome{Blocked: true, Limit: limit, ResetSec: 60, Queue: result}
 	}
 	if !rl.CheckRPM(keyInfo.ID, limit) {
 		_, remaining := rl.RPMStatus(keyInfo.ID, limit)
@@ -113,5 +135,28 @@ func writeRateLimitHeaders(w http.ResponseWriter, o rateLimitOutcome) {
 	}
 	if o.Blocked && o.ResetSec > 0 {
 		w.Header().Set("Retry-After", fmt.Sprintf("%d", o.ResetSec))
+	}
+	if o.Queue.Limit > 0 {
+		w.Header().Set("X-RateLimit-Queue-Limit", fmt.Sprintf("%d", o.Queue.Limit))
+		w.Header().Set("X-RateLimit-Queue-Remaining", fmt.Sprintf("%d", o.Queue.QueueRemaining))
+		if o.Queue.Position > 0 {
+			w.Header().Set("X-RateLimit-Queue-Position", fmt.Sprintf("%d", o.Queue.Position))
+		}
+	}
+}
+
+func notifyRateLimitWait(w http.ResponseWriter, stream bool) func(ratelimit.AdmissionResult) {
+	if !stream {
+		return nil
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		return nil
+	}
+	return func(result ratelimit.AdmissionResult) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		fmt.Fprintf(w, "event: rate_limit_waiting\ndata: %s\n\n", fmt.Sprintf(`{"type":"rate_limit_waiting","message":"rate limited; waiting for next time bucket","position":%d}`, result.Position))
+		flusher.Flush()
 	}
 }

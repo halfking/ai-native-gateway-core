@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -231,26 +230,6 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		rt.Emit(state.EventAuthed)
 	}
 
-	if rlOutcome := checkGatewayRateLimit(r.Context(), keyInfo, h.chatHandler.rateLimiter); !rlOutcome.Skipped {
-		writeRateLimitHeaders(w, rlOutcome)
-		if rlOutcome.Blocked {
-			attemptErrCode = "rate_limit_exceeded"
-			attemptErrMsg = "rate limit exceeded"
-			peeked, _ := io.ReadAll(io.LimitReader(r.Body, int64(maxBodySize)+1))
-			if len(peeked) > maxBodySize {
-				peeked = peeked[:maxBodySize]
-			}
-			if len(peeked) > 0 {
-				attemptRequestBody = peeked
-				if attemptClientModel == "" {
-					attemptClientModel = extractModelFromBody(peeked)
-				}
-			}
-			writeResponsesError(w, http.StatusTooManyRequests, "Rate limit exceeded", "rate_limit_exceeded", "rate_limit_exceeded")
-			return
-		}
-	}
-
 	bodyBytes, err := readRequestBody(r.Context(), r.Body, maxBodySize)
 	if err != nil {
 		if len(bodyBytes) > 0 {
@@ -355,6 +334,18 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	isStream := reqBody.Stream
+	if rlOutcome := checkGatewayRateLimit(r.Context(), keyInfo, h.chatHandler.rateLimiter, notifyRateLimitWait(w, isStream)); !rlOutcome.Skipped {
+		writeRateLimitHeaders(w, rlOutcome)
+		if rlOutcome.Blocked {
+			attemptErrCode = "rate_limit_exceeded"
+			attemptErrMsg = "rate limit exceeded"
+			if attemptClientModel == "" {
+				attemptClientModel = clientModel
+			}
+			writeResponsesError(w, http.StatusTooManyRequests, "Rate limit exceeded", "rate_limit_exceeded", "rate_limit_exceeded")
+			return
+		}
+	}
 
 	// ── Session resolution (2026-06-29) ────────────────────────────
 	// Priority: body > header > Redis Get > CreateV2 > provisional.

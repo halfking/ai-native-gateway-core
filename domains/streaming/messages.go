@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -215,39 +214,6 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if rlOutcome := checkGatewayRateLimit(r.Context(), keyInfo, h.chatHandler.rateLimiter); !rlOutcome.Skipped {
-		writeRateLimitHeaders(w, rlOutcome)
-		if rlOutcome.Blocked {
-			attemptErrCode = "rate_limit_exceeded"
-			attemptErrMsg = "rate limit exceeded"
-			// Peek the body so the safety-net can recover client_model
-			// and request preview from the rejected request. Body is read
-			// lazily so non-rate-limited requests are not penalised.
-			peeked, _ := io.ReadAll(io.LimitReader(r.Body, int64(maxBodySize)+1))
-			if len(peeked) > maxBodySize {
-				peeked = peeked[:maxBodySize]
-			}
-			if len(peeked) > 0 {
-				attemptRequestBody = peeked
-				if attemptClientModel == "" {
-					attemptClientModel = extractModelFromBody(peeked)
-				}
-			}
-			// 2026-06-20 audit fix v3: even when body is empty,
-			// ensure client_model is set to "<unknown>" so the
-			// request_logs row never has a blank client_model.
-			// Without this, an empty body + rate-limited request
-			// would produce a row with client_model=NULL — same
-			// diagnostic gap closed for captureAttemptBody /
-			// ensureRequestBodyBuffered in v2.
-			if attemptClientModel == "" {
-				attemptClientModel = "<unknown>"
-			}
-			writeAnthropicError(w, 529, "rate_limit_error", "Rate limit exceeded. Please wait and retry.")
-			return
-		}
-	}
-
 	bodyBytes, err := readRequestBody(r.Context(), r.Body, maxBodySize)
 	if err != nil {
 		if len(bodyBytes) > 0 {
@@ -386,6 +352,18 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	isStream := reqBody.Stream
+	if rlOutcome := checkGatewayRateLimit(r.Context(), keyInfo, h.chatHandler.rateLimiter, notifyRateLimitWait(w, isStream)); !rlOutcome.Skipped {
+		writeRateLimitHeaders(w, rlOutcome)
+		if rlOutcome.Blocked {
+			attemptErrCode = "rate_limit_exceeded"
+			attemptErrMsg = "rate limit exceeded"
+			if attemptClientModel == "" {
+				attemptClientModel = clientModel
+			}
+			writeAnthropicError(w, 529, "rate_limit_error", "Rate limit exceeded. Please wait and retry.")
+			return
+		}
+	}
 
 	// ── Session resolution (2026-06-29) ────────────────────────────
 	// Priority: body > header > Redis Get > CreateV2 > provisional.

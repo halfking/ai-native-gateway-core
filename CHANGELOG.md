@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Credential model drawer extras: IQ history chart + cross-credential check restored into `ModelOfferExtrasPanel`; identity chips deep-link to `/models?q=`.
 
 ### Fixed
+- **API-key minute-bucket admission queue (2026-08-24)**: gateway RPM
+  enforcement now admits up to `L` requests in the current minute bucket and
+  queues up to `L` additional requests per key. The `(2L)+1` request receives
+  the canonical 429 response; queued requests wait with context cancellation,
+  FIFO release, and streaming wait notifications. Provider and credential
+  concurrency controls remain unchanged.
 - **Dispatch governor and self-check audit fixes (2026-08-24)**: new concurrency-mode credential forwarders now consume `redis_enforce` instead of leaving the configured backend as an unused composition-root seam; Redis governor construction failures remain fail-closed. RPM/TPM retain local token buckets until distributed token-cost accounting is implemented. Probe workers now explicitly claim one task per worker to prevent serial batch processing from expiring later leases.
 - **Dispatch queue projection race (2026-08-24)**: model lane depth reservation/dequeue and their projection events are now linearized per lane. This prevents out-of-order enqueue/dequeue observations from leaving a phantom depth in Redis mirrors and the live queue view after `Submit` has completed.
 - **245 shared data-plane key RPM rejections (2026-08-24)**: the static
