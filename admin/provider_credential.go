@@ -34,6 +34,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/provider"
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 const maxRotateCredentialPrimaryKeyBodyBytes = 64 << 10
@@ -575,10 +576,14 @@ func (h *Handler) updateCredential(w http.ResponseWriter, r *http.Request, provi
 			return
 		}
 	}
+	// Capture the fp_slot_limit change for the audit log. It is written
+	// AFTER the main transaction commits (see below) so a failure in the
+	// best-effort audit path can never roll back the credential update.
+	// The previous code inserted into a non-existent `settings_history`
+	// table inside the same transaction; that statement error aborted the
+	// transaction and surfaced to the caller as "commit: ... rollback".
+	var fpSlotAudit *settings.AuditEntry
 	if req.FpSlotLimit != nil {
-		// Audit log (best-effort, no PII) — restored from the pre-Stage E
-		// handler and moved inside the same transaction as the value
-		// change so the history row cannot diverge from the new limit.
 		actor := "admin"
 		if v := r.Header.Get("X-Admin-User"); v != "" {
 			actor = v
@@ -587,19 +592,33 @@ func (h *Handler) updateCredential(w http.ResponseWriter, r *http.Request, provi
 		if currentFpSlot.Valid {
 			oldVal = strconv.Itoa(int(currentFpSlot.Int32))
 		}
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO settings_history (key, old_value, new_value, changed_by, source)
-			VALUES ($1, $2, $3, $4, 'api')`,
-			fmt.Sprintf("credential:%d:fp_slot_limit", credID),
-			oldVal,
-			strconv.Itoa(*req.FpSlotLimit),
-			actor); err != nil {
-			slog.Warn("fp_slot_limit audit insert failed", "credential_id", credID, "error", err)
+		role := "admin"
+		tenantID := "default"
+		if ac := GetAuthContext(r); ac != nil {
+			if ac.Role != "" {
+				role = ac.Role
+			}
+			if ac.TenantID != "" {
+				tenantID = ac.TenantID
+			}
+		}
+		fpSlotAudit = &settings.AuditEntry{
+			SettingKey:   fmt.Sprintf("credential:%d:fp_slot_limit", credID),
+			TenantID:     tenantID,
+			Action:       "update",
+			OldValue:     json.RawMessage(fmt.Sprintf("%q", oldVal)),
+			NewValue:     json.RawMessage(fmt.Sprintf("%q", strconv.Itoa(*req.FpSlotLimit))),
+			OperatorUser: actor,
+			OperatorRole: role,
+			ClientIP:     clientIPFromRequest(r),
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		writeError(w, http.StatusInternalServerError, "commit: "+err.Error())
 		return
+	}
+	if fpSlotAudit != nil {
+		settings.WriteAudit(ctx, h.db, *fpSlotAudit)
 	}
 	provider.InvalidateAllCandidateCache()
 	writeJSON(w, http.StatusOK, map[string]any{"credential_id": credID, "revision": revision, "message": "updated"})

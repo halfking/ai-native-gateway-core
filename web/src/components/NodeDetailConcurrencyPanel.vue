@@ -31,13 +31,23 @@ const emit = defineEmits<{
 const fpStats = ref<FpSlotStats | null>(null)
 const fpLoading = ref(false)
 const fpError = ref('')
-const fpLimitDraft = ref<number | null>(null)
-const concurrencyDraft = ref(5)
-const concurrencyReason = ref('')
-const concurrencyDialogOpen = ref(false)
-const fpDialogOpen = ref(false)
-const fpReason = ref('')
 const saving = ref(false)
+
+// ── Unified concurrency + fp-slot editor ──────────────────────────────
+// Replaces the previous two separate dialogs ("调整自动并发" and
+// "修改槽位上限") with a single editor that updates 手动并发
+// (concurrency_limit), 自动并发 (concurrency_limit_auto) and 指纹槽位
+// (fp_slot_limit) in one save. The three values were previously spread
+// across this panel (auto concurrency + fp slot) and the credential
+// drawer (manual concurrency), so operators could not sync them together.
+const unifiedDialogOpen = ref(false)
+const manualDraft = ref<number | null>(null) // 手动并发 = concurrency_limit (null = 未设置)
+const autoDraft = ref<number | null>(null) // 自动并发 = concurrency_limit_auto (null = 未设置)
+const fpDraft = ref<number | null>(null) // 指纹槽位 = fp_slot_limit
+const reasonDraft = ref('')
+const origManual = ref<number | null>(null)
+const origAuto = ref<number | null>(null)
+const origFp = ref<number | null>(null)
 
 const effectiveProviderId = computed(() => props.providerId ?? props.monitor?.provider_id ?? null)
 
@@ -46,22 +56,16 @@ watch(
   ([credentialId, providerId]) => {
     fpStats.value = null
     fpError.value = ''
-    fpLimitDraft.value = null
     if (credentialId && providerId) void loadFpStats()
   },
   { immediate: true },
 )
 
-watch(
-  () => props.monitor,
-  monitor => {
-    if (!monitor) return
-    concurrencyDraft.value = monitor.concurrency_limit_auto || monitor.effective_concurrency || 5
-    if (fpLimitDraft.value == null && fpStats.value?.slot_limit != null) {
-      fpLimitDraft.value = fpStats.value.slot_limit
-    }
-  },
-)
+function normalizeInt(v: number | null | undefined | ''): number | null {
+  if (v === '' || v == null) return null
+  const n = Number(v)
+  return Number.isFinite(n) ? n : null
+}
 
 async function loadFpStats() {
   const providerId = effectiveProviderId.value
@@ -74,7 +78,6 @@ async function loadFpStats() {
   try {
     const stats = await getCredentialFpSlotStats(providerId, props.credentialId)
     fpStats.value = stats
-    fpLimitDraft.value = stats.slot_limit ?? null
   } catch (error) {
     fpStats.value = null
     fpError.value = error instanceof Error ? error.message : '指纹槽位加载失败'
@@ -83,65 +86,71 @@ async function loadFpStats() {
   }
 }
 
-function openConcurrencyDialog() {
-  concurrencyDraft.value = props.monitor?.concurrency_limit_auto || props.monitor?.effective_concurrency || 5
-  concurrencyReason.value = ''
-  concurrencyDialogOpen.value = true
+function openUnifiedDialog() {
+  origManual.value = props.monitor?.concurrency_limit ?? null
+  origAuto.value = props.monitor?.concurrency_limit_auto ?? null
+  origFp.value = fpStats.value?.slot_limit ?? null
+  manualDraft.value = origManual.value
+  autoDraft.value = origAuto.value
+  fpDraft.value = origFp.value
+  reasonDraft.value = ''
+  unifiedDialogOpen.value = true
 }
 
-function openFpDialog() {
-  fpLimitDraft.value = fpStats.value?.slot_limit ?? fpLimitDraft.value
-  fpReason.value = ''
-  fpDialogOpen.value = true
-}
-
-async function saveConcurrency() {
+async function saveUnified() {
   if (!props.canEdit || saving.value) return
-  const reason = concurrencyReason.value.trim()
+  const reason = reasonDraft.value.trim()
   if (!reason) {
-    emit('error', '请输入并发调整原因。')
+    emit('error', '请输入调整原因。')
     return
   }
-  if (!Number.isFinite(concurrencyDraft.value) || concurrencyDraft.value < 1) {
-    emit('error', '并发上限必须 ≥ 1。')
+  const manual = normalizeInt(manualDraft.value)
+  const auto = normalizeInt(autoDraft.value)
+  const fp = normalizeInt(fpDraft.value)
+  // 自动并发后端要求 ≥ 1（不支持清空）
+  if (auto != null && auto < 1) {
+    emit('error', '自动并发必须 ≥ 1。')
     return
   }
-  saving.value = true
-  try {
-    await setConcurrencyAuto(props.credentialId, concurrencyDraft.value, reason)
-    concurrencyDialogOpen.value = false
-    emit('saved')
-  } catch (error) {
-    emit('error', error instanceof Error ? error.message : '保存并发失败')
-  } finally {
-    saving.value = false
-  }
-}
-
-async function saveFpLimit() {
-  if (!props.canEdit || saving.value) return
-  const providerId = effectiveProviderId.value
-  if (!providerId) {
-    emit('error', '缺少 provider_id，无法保存指纹槽位上限。')
-    return
-  }
-  const reason = fpReason.value.trim()
-  if (!reason) {
-    emit('error', '请输入指纹槽位调整原因。')
-    return
-  }
-  if (fpLimitDraft.value == null || !Number.isFinite(fpLimitDraft.value) || fpLimitDraft.value < 0) {
+  // 指纹槽位 NOT NULL，必须 ≥ 0
+  if (fp == null || fp < 0) {
     emit('error', '指纹槽位上限必须 ≥ 0。')
     return
   }
+  // 手动并发若设置，必须 ≥ 0
+  if (manual != null && manual < 0) {
+    emit('error', '手动并发必须 ≥ 0。')
+    return
+  }
+  // 指纹槽位不能超过手动并发（手动未设置时不约束）
+  if (manual != null && fp > manual) {
+    emit('error', `指纹槽位（${fp}）不能超过手动并发（${manual}）。`)
+    return
+  }
+  const changedManualOrFp = manual !== origManual.value || fp !== origFp.value
+  const changedAuto = auto !== origAuto.value
+  if (!changedManualOrFp && !changedAuto) {
+    unifiedDialogOpen.value = false
+    return
+  }
   saving.value = true
   try {
-    await updateCredential(providerId, props.credentialId, { fp_slot_limit: fpLimitDraft.value })
-    fpDialogOpen.value = false
+    // 手动并发 + 指纹槽位走同一个 PATCH
+    if (changedManualOrFp) {
+      await updateCredential(effectiveProviderId.value!, props.credentialId, {
+        concurrency_limit: manual,
+        fp_slot_limit: fp,
+      })
+    }
+    // 自动并发走专用接口（带审计原因）
+    if (changedAuto && auto != null) {
+      await setConcurrencyAuto(props.credentialId, auto, reason)
+    }
+    unifiedDialogOpen.value = false
     await loadFpStats()
     emit('saved')
   } catch (error) {
-    emit('error', error instanceof Error ? error.message : '保存指纹槽位失败')
+    emit('error', error instanceof Error ? error.message : '保存失败')
   } finally {
     saving.value = false
   }
@@ -162,7 +171,7 @@ defineExpose({ reload: loadFpStats })
         <div><dt>生效并发</dt><dd>{{ monitor.effective_concurrency }}</dd></div>
       </dl>
       <div class="nd-actions">
-        <button class="btn btn-sm" :disabled="!canEdit || saving" @click="openConcurrencyDialog">调整自动并发</button>
+        <button class="btn btn-sm" :disabled="!canEdit || saving" @click="openUnifiedDialog">调整并发与槽位</button>
       </div>
     </template>
     <p v-else class="nd-muted">暂无并发摘要。</p>
@@ -188,34 +197,27 @@ defineExpose({ reload: loadFpStats })
           :slot-limit="fpStats.slot_limit"
         />
         <p v-else-if="fpStats.unlimited" class="nd-muted">{{ fpStats.message || '指纹槽位未启用上限。' }}</p>
-        <div class="nd-actions">
-          <button class="btn btn-sm" :disabled="!canEdit || saving || !effectiveProviderId" @click="openFpDialog">
-            修改槽位上限
-          </button>
-        </div>
       </template>
     </div>
 
-    <div v-if="concurrencyDialogOpen" class="nd-dialog-mask" @click.self="concurrencyDialogOpen = false">
-      <div class="nd-dialog" role="dialog" aria-label="调整自动并发">
-        <h4>手动调整并发自动值</h4>
-        <label>并发上限<input v-model.number="concurrencyDraft" type="number" min="1" /></label>
-        <label>调整原因<input v-model="concurrencyReason" placeholder="请输入原因" /></label>
+    <div v-if="unifiedDialogOpen" class="nd-dialog-mask" @click.self="unifiedDialogOpen = false">
+      <div class="nd-dialog" role="dialog" aria-label="调整并发与槽位">
+        <h4>调整并发与槽位</h4>
+        <label>手动并发（留空 = 使用自动并发）
+          <input v-model.number="manualDraft" type="number" min="0" placeholder="未设置" />
+        </label>
+        <label>自动并发（≥ 1）
+          <input v-model.number="autoDraft" type="number" min="1" />
+        </label>
+        <label>指纹槽位上限（≥ 0）
+          <input v-model.number="fpDraft" type="number" min="0" />
+        </label>
+        <label>调整原因
+          <input v-model="reasonDraft" placeholder="请输入原因" />
+        </label>
         <div class="nd-actions">
-          <button class="btn btn-ghost btn-sm" @click="concurrencyDialogOpen = false">取消</button>
-          <button class="btn btn-primary btn-sm" :disabled="saving" @click="saveConcurrency">确认</button>
-        </div>
-      </div>
-    </div>
-
-    <div v-if="fpDialogOpen" class="nd-dialog-mask" @click.self="fpDialogOpen = false">
-      <div class="nd-dialog" role="dialog" aria-label="修改指纹槽位上限">
-        <h4>修改指纹槽位上限</h4>
-        <label>槽位上限<input v-model.number="fpLimitDraft" type="number" min="0" /></label>
-        <label>调整原因<input v-model="fpReason" placeholder="请输入原因" /></label>
-        <div class="nd-actions">
-          <button class="btn btn-ghost btn-sm" @click="fpDialogOpen = false">取消</button>
-          <button class="btn btn-primary btn-sm" :disabled="saving" @click="saveFpLimit">确认</button>
+          <button class="btn btn-ghost btn-sm" @click="unifiedDialogOpen = false">取消</button>
+          <button class="btn btn-primary btn-sm" :disabled="saving" @click="saveUnified">确认</button>
         </div>
       </div>
     </div>

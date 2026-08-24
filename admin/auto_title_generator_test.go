@@ -88,6 +88,30 @@ func TestNewAutoTitleGeneratorReadsEnabledEnv(t *testing.T) {
 	}
 }
 
+func TestPickFirstAvailableAPIKeyForAutoPrefersStaticLoopbackKey(t *testing.T) {
+	t.Setenv(EnvAPIKey, "loopback-static-key")
+
+	id, key, err := (&Handler{}).pickFirstAvailableAPIKeyForAuto(t.Context(), "default")
+	if err != nil {
+		t.Fatalf("pickFirstAvailableAPIKeyForAuto() error = %v", err)
+	}
+	if id != 0 {
+		t.Fatalf("key id = %d, want 0 for the static loopback key", id)
+	}
+	if key != "loopback-static-key" {
+		t.Fatalf("key = %q, want static loopback key", key)
+	}
+}
+
+func TestPickFirstAvailableAPIKeyForAutoRequiresDatabaseWithoutStaticKey(t *testing.T) {
+	unsetEnvForTest(t, EnvAPIKey)
+
+	_, _, err := (&Handler{}).pickFirstAvailableAPIKeyForAuto(t.Context(), "default")
+	if err == nil || !strings.Contains(err.Error(), "database not configured") {
+		t.Fatalf("error = %v, want missing database error", err)
+	}
+}
+
 func TestDetectIDESource(t *testing.T) {
 	gen := &AutoTitleGenerator{}
 

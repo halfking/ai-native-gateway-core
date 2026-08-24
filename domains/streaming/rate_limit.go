@@ -15,11 +15,13 @@
 package streaming
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/authentication" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/middleware"
 	"github.com/kaixuan/llm-gateway-go/ratelimit"
 )
 
@@ -45,9 +47,17 @@ type rateLimitOutcome struct {
 // gateway RPM layer is bypassed (Skipped=true). This matches the user
 // semantic "限流降级模块关闭时不限制 RPM"; only the upstream provider's
 // own rate-limit (which the LLM gateway cannot control) still applies.
-func checkGatewayRateLimit(keyInfo *authentication.KeyInfo, rl ratelimit.RPMLimiter) rateLimitOutcome {
+//
+// The static data-plane key is a gateway admission key shared by frontend
+// callers. It must not be treated as a tenant API-key quota, or aggregate
+// frontend traffic exhausts one shared RPM window. AuthMiddleware creates the
+// context marker only after constant-time static-key verification.
+func checkGatewayRateLimit(ctx context.Context, keyInfo *authentication.KeyInfo, rl ratelimit.RPMLimiter) rateLimitOutcome {
 	// AUDIT-2: 限流总开关关闭 → 整个 RPM 检查 no-op。
 	if !ratelimit.IsRateLimitEnabled() {
+		return rateLimitOutcome{Skipped: true}
+	}
+	if middleware.IsGlobalAuthPassed(ctx) {
 		return rateLimitOutcome{Skipped: true}
 	}
 	if keyInfo == nil || rl == nil || keyInfo.IsInternal {
