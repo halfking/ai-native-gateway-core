@@ -410,9 +410,9 @@ func TestCopyQueueTimestampsToError(t *testing.T) {
 	t1 := time.Now().Add(-100 * time.Millisecond)
 	t6 := time.Now().Add(-10 * time.Millisecond)
 	t9 := time.Now()
-	qr.T1_TotalEnqueuedAt = &t1
-	qr.T6_CredDequeuedAt = &t6
-	qr.T9_ResponseEndAt = &t9
+	qr.SetReqStageTime(dispatch.ReqStageTotalEnqueued, t1)
+	qr.SetReqStageTime(dispatch.ReqStageCredDequeued, t6)
+	qr.SetReqStageTime(dispatch.ReqStageResponseEnd, t9)
 
 	ee := dispatchErrToExecuteError(dispatch.ErrNoRoute)
 	copyQueueTimestampsToError(ee, qr)

@@ -53,3 +53,44 @@
 - `go test -race ./domains/session`
 - `go vet ./domains/session ./domains/dispatch`
 - `go build ./...`、`bash verify.sh`、`go test ./... -count=1` 全部通过。
+
+## 2026-08-24 LP4：QueuedRequest 十阶段时间戳改为内联数组存储
+
+### 改动（domains/dispatch + domains/streaming/executors）
+
+- `QueuedRequest` 的 9 个 `*time.Time` 阶段字段（T1–T9）与 T0 值字段
+  合并为 `stages [10]time.Time` + `stageSet uint16` 位掩码：
+  - 每阶段一次的堆分配（per-attempt 最多 5 次）归零；
+  - failover 重试不再产生额外时间戳分配。
+- 新增导出 API：
+  - `ReqStage` 枚举 + `ReqStageTime` / `SetReqStageTime`（读 / 显式
+    种子，服务 executors 测试与 journey 事件时间写入）；
+  - `StageTimestamps()`：单次盒分配（`*[10]time.Time` 拷贝）返回十个
+    detached 指针，未记录阶段为 nil。替代 executors 原先对请求内部
+    指针的借用——failover 重写不再可能污染已提取的值，也不会因
+    interior pointer 把整个 QueuedRequest 钉在内存里。
+- journey.go 的 T7/T8 直写改走 `setStage`（仍在 attemptMu 临界区内）。
+- `stageSeconds`/`durationMS` 转值语义（`IsZero` 哨兵，等价于原
+  nil 检查，setter 全部来自 `time.Now()`，不存在 set-but-zero）；
+  删除 `stageSecondsFrom` 与无调用方的 `formatTSPtr`。
+- legacy `EnqueuedAt`/`CredEnqueuedAt`/`DequeuedAt` 按计划保留
+  （第一轮不删），`SetT5`/`SetT6` 双写行为不变。
+
+### Benchmark（BenchmarkRequestStageTimestamps，M4 Max）
+
+| 场景 | 改动前 | 改动后 | Δ allocs |
+|---|---|---|---|
+| attempts=1 | 1159 ns / 1487 B / 25 allocs | ~987 ns / 1743 B / 16 allocs | −36% |
+| attempts=3 | 1608 ns / 1727 B / 35 allocs | ~1270 ns / 1743 B / 16 allocs | −54% |
+
+分配数不再随 failover 次数增长；B/op 持平（结构体内联 +146B 与
+单盒拷贝 240B 抵消原 9×24B 散落分配）。
+
+### 验证
+
+- 字段访问零遗漏：删除导出指针字段后由编译器驱动全部 12 处消费点
+  迁移，最终 `rg 'qr\.T[0-9]_'` 零残留。
+- `go build ./...`、`go vet`、`go test ./domains/dispatch -count=1`、
+  `go test -race ./domains/streaming/executors`、触及路径定向
+  `-race` 全部通过；`bash verify.sh` pre-commit 4/4 PASS
+  （govulncheck 的 go1.26.6 stdlib 通报为仓库既有状态，非本次引入）。

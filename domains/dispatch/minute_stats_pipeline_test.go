@@ -15,10 +15,11 @@ func TestPipelineRecordsMinuteStatsAtTerminal(t *testing.T) {
 	qr.EstimatedTokens = 13
 	p.complete(qr, ForwardOutcome{Result: "ok"})
 
-	if qr.T9_ResponseEndAt == nil {
+	t9 := qr.ReqStageTime(ReqStageResponseEnd)
+	if t9.IsZero() {
 		t.Fatal("terminal timestamp was not recorded")
 	}
-	stats, err := aggregator.List(context.Background(), *qr.T9_ResponseEndAt)
+	stats, err := aggregator.List(context.Background(), t9)
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}

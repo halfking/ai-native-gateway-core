@@ -1118,31 +1118,31 @@ func (p *Pipeline) recordStageMetrics(qr *QueuedRequest, out ForwardOutcome) {
 func observeStageMetrics(qr *QueuedRequest, out ForwardOutcome) {
 	result := resultLabel(out)
 
-	if s, ok := stageSecondsFrom(qr.T0_ArrivedAt, qr.T6_CredDequeuedAt); ok {
+	if s, ok := stageSeconds(qr.stages[ReqStageArrived], qr.stages[ReqStageCredDequeued]); ok {
 		metricStageQueueWaitT0T6.WithLabelValues(result).Observe(s)
 	}
-	if s, ok := stageSeconds(qr.T1_TotalEnqueuedAt, qr.T2_TotalDequeuedAt); ok {
+	if s, ok := stageSeconds(qr.stages[ReqStageTotalEnqueued], qr.stages[ReqStageTotalDequeued]); ok {
 		metricStageTotalQueueT1T2.WithLabelValues(result).Observe(s)
 	}
-	if s, ok := stageSeconds(qr.T3_ModelEnqueuedAt, qr.T4_ModelDequeuedAt); ok {
+	if s, ok := stageSeconds(qr.stages[ReqStageModelEnqueued], qr.stages[ReqStageModelDequeued]); ok {
 		metricStageModelQueueT3T4.WithLabelValues(result).Observe(s)
 	}
-	if s, ok := stageSeconds(qr.T5_CredEnqueuedAt, qr.T6_CredDequeuedAt); ok {
+	if s, ok := stageSeconds(qr.stages[ReqStageCredEnqueued], qr.stages[ReqStageCredDequeued]); ok {
 		metricStageCredQueueT5T6.WithLabelValues(result).Observe(s)
 	}
-	if s, ok := stageSeconds(qr.T2_TotalDequeuedAt, qr.T5_CredEnqueuedAt); ok {
+	if s, ok := stageSeconds(qr.stages[ReqStageTotalDequeued], qr.stages[ReqStageCredEnqueued]); ok {
 		metricStageRoutingT2T5.WithLabelValues(result).Observe(s)
 	}
-	if s, ok := stageSeconds(qr.T6_CredDequeuedAt, qr.T7_ForwardStartAt); ok {
+	if s, ok := stageSeconds(qr.stages[ReqStageCredDequeued], qr.stages[ReqStageForwardStart]); ok {
 		metricStageAcquireT6T7.WithLabelValues(result).Observe(s)
 	}
-	if s, ok := stageSeconds(qr.T7_ForwardStartAt, qr.T8_ResponseStartAt); ok {
+	if s, ok := stageSeconds(qr.stages[ReqStageForwardStart], qr.stages[ReqStageResponseStart]); ok {
 		metricStageUpstreamT7T8.WithLabelValues(result).Observe(s)
 	}
-	if s, ok := stageSeconds(qr.T8_ResponseStartAt, qr.T9_ResponseEndAt); ok {
+	if s, ok := stageSeconds(qr.stages[ReqStageResponseStart], qr.stages[ReqStageResponseEnd]); ok {
 		metricStageStreamingT8T9.WithLabelValues(result).Observe(s)
 	}
-	if s, ok := stageSecondsFrom(qr.T0_ArrivedAt, qr.T9_ResponseEndAt); ok {
+	if s, ok := stageSeconds(qr.stages[ReqStageArrived], qr.stages[ReqStageResponseEnd]); ok {
 		metricStageTotalT0T9.WithLabelValues(result).Observe(s)
 	}
 }

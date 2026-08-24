@@ -110,7 +110,7 @@ func (qr *QueuedRequest) startAllocatedAttempt() (AttemptRef, time.Time, bool) {
 	}
 	cur.startedAt = time.Now()
 	startedAt := cur.startedAt
-	qr.T7_ForwardStartAt = &startedAt
+	qr.setStage(ReqStageForwardStart, startedAt)
 	qr.attempts = append(qr.attempts, cur)
 	return cur.ref, startedAt, true
 }
@@ -164,7 +164,7 @@ func (qr *QueuedRequest) markFirstSemanticByte(attemptID string) {
 	}
 	cur.firstByteAt = time.Now()
 	firstByteAt := cur.firstByteAt
-	qr.T8_ResponseStartAt = &firstByteAt
+	qr.setStage(ReqStageResponseStart, firstByteAt)
 	ref := cur.ref
 	qr.emitObservation(Observation{
 		Type:         ObservationFirstByte,

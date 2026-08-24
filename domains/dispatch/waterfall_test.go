@@ -66,7 +66,7 @@ func TestBuildWaterfallRequestDurations(t *testing.T) {
 	qr := NewQueuedRequest("req-1", "t", "claude", nil, nil)
 	qr.ResolvedModel = "claude-sonnet-4"
 	qr.SelectedCred = CredentialRef{CredentialID: 587, Vendor: "anthropic"}
-	t0 := qr.T0_ArrivedAt
+	t0 := qr.ReqStageTime(ReqStageArrived)
 	t1 := t0.Add(10 * time.Millisecond)
 	t2 := t1.Add(40 * time.Millisecond)
 	t3 := t2.Add(2 * time.Millisecond)
@@ -76,15 +76,15 @@ func TestBuildWaterfallRequestDurations(t *testing.T) {
 	t7 := t6.Add(2 * time.Millisecond)
 	t8 := t7.Add(48 * time.Millisecond)
 	t9 := t8.Add(1850 * time.Millisecond)
-	qr.T1_TotalEnqueuedAt = &t1
-	qr.T2_TotalDequeuedAt = &t2
-	qr.T3_ModelEnqueuedAt = &t3
-	qr.T4_ModelDequeuedAt = &t4
-	qr.T5_CredEnqueuedAt = &t5
-	qr.T6_CredDequeuedAt = &t6
-	qr.T7_ForwardStartAt = &t7
-	qr.T8_ResponseStartAt = &t8
-	qr.T9_ResponseEndAt = &t9
+	qr.SetReqStageTime(ReqStageTotalEnqueued, t1)
+	qr.SetReqStageTime(ReqStageTotalDequeued, t2)
+	qr.SetReqStageTime(ReqStageModelEnqueued, t3)
+	qr.SetReqStageTime(ReqStageModelDequeued, t4)
+	qr.SetReqStageTime(ReqStageCredEnqueued, t5)
+	qr.SetReqStageTime(ReqStageCredDequeued, t6)
+	qr.SetReqStageTime(ReqStageForwardStart, t7)
+	qr.SetReqStageTime(ReqStageResponseStart, t8)
+	qr.SetReqStageTime(ReqStageResponseEnd, t9)
 
 	item := buildWaterfallRequest(qr, ForwardOutcome{})
 	if item.RequestID != "req-1" || item.Model != "claude-sonnet-4" || item.Credential != 587 {
@@ -118,8 +118,8 @@ func TestPipelineSnapshotWaterfall(t *testing.T) {
 		},
 	})
 	qr := NewQueuedRequest("wf-1", "t", "m", nil, nil)
-	end := qr.T0_ArrivedAt.Add(100 * time.Millisecond)
-	qr.T9_ResponseEndAt = &end
+	end := qr.ReqStageTime(ReqStageArrived).Add(100 * time.Millisecond)
+	qr.SetReqStageTime(ReqStageResponseEnd, end)
 	p.recordWaterfall(qr, ForwardOutcome{})
 
 	snap := p.SnapshotWaterfall(10, "", 0, "")

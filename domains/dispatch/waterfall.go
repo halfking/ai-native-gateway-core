@@ -215,29 +215,29 @@ func buildWaterfallRequest(qr *QueuedRequest, out ForwardOutcome) WaterfallReque
 		Result:     resultLabel(out),
 		Vendor:     firstNonEmpty(qr.vendor, qr.SelectedCred.Vendor),
 		Attempts:   qr.waterfallAttempts(),
-		ArrivedAt:  formatTS(qr.T0_ArrivedAt),
+		ArrivedAt:  formatTS(qr.stages[ReqStageArrived]),
 	}
-	item.TotalEnqueuedAt = formatTSPtr(qr.T1_TotalEnqueuedAt)
-	item.TotalDequeuedAt = formatTSPtr(qr.T2_TotalDequeuedAt)
-	item.ModelEnqueuedAt = formatTSPtr(qr.T3_ModelEnqueuedAt)
-	item.ModelDequeuedAt = formatTSPtr(qr.T4_ModelDequeuedAt)
-	item.CredEnqueuedAt = formatTSPtr(qr.T5_CredEnqueuedAt)
-	item.CredDequeuedAt = formatTSPtr(qr.T6_CredDequeuedAt)
-	item.ForwardStartAt = formatTSPtr(qr.T7_ForwardStartAt)
-	item.ResponseStartAt = formatTSPtr(qr.T8_ResponseStartAt)
-	item.ResponseEndAt = formatTSPtr(qr.T9_ResponseEndAt)
+	item.TotalEnqueuedAt = formatTS(qr.stages[ReqStageTotalEnqueued])
+	item.TotalDequeuedAt = formatTS(qr.stages[ReqStageTotalDequeued])
+	item.ModelEnqueuedAt = formatTS(qr.stages[ReqStageModelEnqueued])
+	item.ModelDequeuedAt = formatTS(qr.stages[ReqStageModelDequeued])
+	item.CredEnqueuedAt = formatTS(qr.stages[ReqStageCredEnqueued])
+	item.CredDequeuedAt = formatTS(qr.stages[ReqStageCredDequeued])
+	item.ForwardStartAt = formatTS(qr.stages[ReqStageForwardStart])
+	item.ResponseStartAt = formatTS(qr.stages[ReqStageResponseStart])
+	item.ResponseEndAt = formatTS(qr.stages[ReqStageResponseEnd])
 
-	item.WaitingInTotalMS = durationMS(qr.T1_TotalEnqueuedAt, qr.T2_TotalDequeuedAt)
-	item.WaitingInModelMS = durationMS(qr.T3_ModelEnqueuedAt, qr.T4_ModelDequeuedAt)
-	item.WaitingInNodeMS = durationMS(qr.T5_CredEnqueuedAt, qr.T6_CredDequeuedAt)
-	item.RoutingMS = durationMS(qr.T2_TotalDequeuedAt, qr.T5_CredEnqueuedAt)
-	item.AcquireMS = durationMS(qr.T6_CredDequeuedAt, qr.T7_ForwardStartAt)
-	item.UpstreamLatencyMS = durationMS(qr.T7_ForwardStartAt, qr.T8_ResponseStartAt)
-	item.StreamingDurationMS = durationMS(qr.T8_ResponseStartAt, qr.T9_ResponseEndAt)
-	if s, ok := stageSecondsFrom(qr.T0_ArrivedAt, qr.T6_CredDequeuedAt); ok {
+	item.WaitingInTotalMS = durationMS(qr.stages[ReqStageTotalEnqueued], qr.stages[ReqStageTotalDequeued])
+	item.WaitingInModelMS = durationMS(qr.stages[ReqStageModelEnqueued], qr.stages[ReqStageModelDequeued])
+	item.WaitingInNodeMS = durationMS(qr.stages[ReqStageCredEnqueued], qr.stages[ReqStageCredDequeued])
+	item.RoutingMS = durationMS(qr.stages[ReqStageTotalDequeued], qr.stages[ReqStageCredEnqueued])
+	item.AcquireMS = durationMS(qr.stages[ReqStageCredDequeued], qr.stages[ReqStageForwardStart])
+	item.UpstreamLatencyMS = durationMS(qr.stages[ReqStageForwardStart], qr.stages[ReqStageResponseStart])
+	item.StreamingDurationMS = durationMS(qr.stages[ReqStageResponseStart], qr.stages[ReqStageResponseEnd])
+	if s, ok := stageSeconds(qr.stages[ReqStageArrived], qr.stages[ReqStageCredDequeued]); ok {
 		item.QueueWaitMS = int(s * 1000)
 	}
-	if s, ok := stageSecondsFrom(qr.T0_ArrivedAt, qr.T9_ResponseEndAt); ok {
+	if s, ok := stageSeconds(qr.stages[ReqStageArrived], qr.stages[ReqStageResponseEnd]); ok {
 		item.TotalMS = int(s * 1000)
 	}
 	return item
@@ -294,14 +294,7 @@ func formatTS(t time.Time) string {
 	return t.UTC().Format(time.RFC3339Nano)
 }
 
-func formatTSPtr(t *time.Time) string {
-	if t == nil || t.IsZero() {
-		return ""
-	}
-	return t.UTC().Format(time.RFC3339Nano)
-}
-
-func durationMS(start, end *time.Time) int {
+func durationMS(start, end time.Time) int {
 	s, ok := stageSeconds(start, end)
 	if !ok {
 		return 0

@@ -806,20 +806,9 @@ func extractQueueTimestamps(qr *dispatch.QueuedRequest) (
 	if qr == nil {
 		return
 	}
-	if !qr.T0_ArrivedAt.IsZero() {
-		t := qr.T0_ArrivedAt
-		t0 = &t
-	}
-	t1 = qr.T1_TotalEnqueuedAt
-	t2 = qr.T2_TotalDequeuedAt
-	t3 = qr.T3_ModelEnqueuedAt
-	t4 = qr.T4_ModelDequeuedAt
-	t5 = qr.T5_CredEnqueuedAt
-	t6 = qr.T6_CredDequeuedAt
-	t7 = qr.T7_ForwardStartAt
-	t8 = qr.T8_ResponseStartAt
-	t9 = qr.T9_ResponseEndAt
-	return
+	// Detached copies: the request's stage array is rewritten on failover
+	// re-enqueue, so extracted values must never alias request state.
+	return qr.StageTimestamps()
 }
 
 // sentinel errors for the dispatch forward path.
