@@ -289,15 +289,27 @@ local function forget(slotKey)
     end
 end
 
--- 1. prune expired metadata entries.
+-- 1. prune stale metadata entries. A slot mapping is stale when the
+-- physical slot key no longer exists (released, reclaimed, or expired
+-- before the metadata was cleaned) or the metadata exp has passed.
+-- Prune entries of every client type, not just the current one, or the
+-- count stays inflated and enforce could block legitimate acquires.
+-- Auxiliary fields (':exp', ':count') are not slot mappings and are
+-- skipped.
 local entries = redis.call('HGETALL', meta)
 for i = 1, #entries, 2 do
     local slotKey = entries[i]
-    local val = entries[i + 1]
-    if val and val ~= clientType then
-        local exp = tonumber(redis.call('HGET', meta, slotKey .. ':exp') or '0')
-        if exp > 0 and exp <= now then
+    local slotType = entries[i + 1]
+    if slotType and slotType ~= ''
+        and string.sub(slotKey, -4) ~= ':exp'
+        and string.sub(slotKey, -6) ~= ':count' then
+        if redis.call('EXISTS', slotKey) == 0 then
             forget(slotKey)
+        else
+            local exp = tonumber(redis.call('HGET', meta, slotKey .. ':exp') or '0')
+            if exp > 0 and exp <= now then
+                forget(slotKey)
+            end
         end
     end
 end
