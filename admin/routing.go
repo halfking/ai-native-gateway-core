@@ -788,6 +788,12 @@ const maxRoutingCandidateReorderItems = 99
 // deterministic id order. The same SQL backs the resolve endpoint's
 // reorder_revision helper, so the revision hash stays aligned with the
 // scope the writer will mutate.
+//
+// Disabled providers (p.enabled = FALSE) and credentials manually
+// toggled off (c.manual_disabled = TRUE) are excluded so the scope
+// hash matches what the resolver ships today; otherwise a partial
+// drag-submit can pass validation while still mutating rows the
+// operator cannot observe via the credential model binding views.
 const reorderScopeSQL = `
 SELECT cmb.id,
        cmb.credential_id,
@@ -795,6 +801,8 @@ SELECT cmb.id,
        cmb.updated_at
 FROM credential_model_bindings cmb
 JOIN provider_models pm ON pm.id = cmb.provider_model_id
+JOIN providers p ON p.id = pm.provider_id AND p.enabled = TRUE
+JOIN credentials c ON c.id = cmb.credential_id AND COALESCE(c.manual_disabled, FALSE) = FALSE
 WHERE pm.raw_model_name = $1
 ORDER BY cmb.id
 `
@@ -856,6 +864,12 @@ func fetchReorderScope(ctx context.Context, q pgxQueryRower, rawModel string, lo
 // aligned with the scope the writer will mutate. Keying by canonical_id lets
 // one reorder span all raw_model_name aliases of a model (e.g. glm-5.2 +
 // z-ai/glm-5.2) under a single atomic revision.
+//
+// Disabled providers (p.enabled = FALSE) and credentials manually
+// toggled off (c.manual_disabled = TRUE) are excluded so the scope
+// hash matches what the resolver ships today; otherwise a partial
+// drag-submit can pass validation while still mutating rows the
+// operator cannot observe via the credential model binding views.
 const reorderScopeByCanonicalSQL = `
 SELECT cmb.id,
        cmb.credential_id,
@@ -863,6 +877,8 @@ SELECT cmb.id,
        cmb.updated_at
 FROM credential_model_bindings cmb
 JOIN provider_models pm ON pm.id = cmb.provider_model_id
+JOIN providers p ON p.id = pm.provider_id AND p.enabled = TRUE
+JOIN credentials c ON c.id = cmb.credential_id AND COALESCE(c.manual_disabled, FALSE) = FALSE
 WHERE pm.canonical_id = $1
 ORDER BY cmb.id
 `
@@ -996,6 +1012,13 @@ func loadScopeRevision(ctx context.Context, q pgxQueryRower, rawModel string) (s
 // version=1 (same hash formula as migration 541 backfill, extended in 568 to
 // include b.priority and mirrored in the canonical bump functions by 571) when
 // the row is absent. Concurrent ensures are safe via ON CONFLICT DO NOTHING.
+//
+// The seed query mirrors reorderScopeSQL: it must skip bindings under
+// disabled providers and credentials with manual_disabled = TRUE so the
+// resulting hash lines up with what fetchReorderScope returns at write
+// time. Otherwise a client could compute one hash from the resolve
+// payload (which already filters those rows) and watch the server reject
+// its PATCH with a phantom "scope drift" 409.
 func ensureScopeRevision(ctx context.Context, q pgxExecRower, rawModel string) (scopeRevision, error) {
 	rawModel = strings.TrimSpace(rawModel)
 	if rawModel == "" {
@@ -1022,6 +1045,8 @@ VALUES (
             ), 'sha256'), 'hex')
             FROM public.provider_models pm
             LEFT JOIN public.credential_model_bindings b ON b.provider_model_id = pm.id
+            JOIN public.providers p ON p.id = pm.provider_id AND p.enabled = TRUE
+            JOIN public.credentials c ON c.id = b.credential_id AND COALESCE(c.manual_disabled, FALSE) = FALSE
             WHERE pm.raw_model_name = $1
         ),
         ''
@@ -1065,6 +1090,14 @@ func loadCanonicalScopeRevision(ctx context.Context, q pgxQueryRower, canonicalI
 // backfill, keyed by canonical_id; the b.priority term was added by 571
 // alongside the four canonical bump functions) when the row is absent.
 // Concurrent ensures are safe via ON CONFLICT DO NOTHING.
+//
+// The seed query mirrors reorderScopeByCanonicalSQL: it must skip
+// bindings under disabled providers and credentials with manual_disabled
+// = TRUE so the resulting hash lines up with what
+// fetchReorderScopeByCanonical returns at write time. Otherwise a client
+// could compute one hash from the resolve payload (which already filters
+// those rows) and watch the server reject its PATCH with a phantom
+// "scope drift" 409.
 func ensureCanonicalScopeRevision(ctx context.Context, q pgxExecRower, canonicalID int64) (scopeRevision, error) {
 	if canonicalID <= 0 {
 		return scopeRevision{}, nil
@@ -1090,6 +1123,8 @@ VALUES (
             ), 'sha256'), 'hex')
             FROM public.provider_models pm
             LEFT JOIN public.credential_model_bindings b ON b.provider_model_id = pm.id
+            JOIN public.providers p ON p.id = pm.provider_id AND p.enabled = TRUE
+            JOIN public.credentials c ON c.id = b.credential_id AND COALESCE(c.manual_disabled, FALSE) = FALSE
             WHERE pm.canonical_id = $1
         ),
         ''
