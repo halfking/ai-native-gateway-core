@@ -170,6 +170,12 @@ const (
 	DefaultBufferSize = 4096
 	// redisWriteTimeout bounds one worker-side LPUSH+LTRIM pipeline.
 	redisWriteTimeout = 2 * time.Second
+	// redisKeyTTL bounds the *list key itself*: 24h 内无写入则 key 过期.
+	// 2026-08-25 ICR-A5 P0-4: 子代理 B §5.5 发现 llmgw:live:actions 此前
+	// 无 TTL, list 累计可达 487 KB; 现虽 LPUSH+LTRIM 已有 LTRIM 5000 上限,
+	// 但 list key 永久存活意味着 24h+ 业务静默期后 Redis 仍持有废弃数据.
+	// 每次 LPUSH 续约 EXPIRE 24h, 业务有写入则持续保留, 无写入则回收.
+	redisKeyTTL = 24 * time.Hour
 )
 
 // redisMaxLen is the runtime LTRIM bound (defaults to RedisMaxLen; a var so
@@ -475,6 +481,10 @@ func (e *Emitter) write(ev ActionEvent) {
 	pipe.LPush(ctx, RedisKey, string(data))
 	// Keep the newest RedisMaxLen entries at the head (0..redisMaxLen-1).
 	pipe.LTrim(ctx, RedisKey, 0, redisMaxLen-1)
+	// 2026-08-25 ICR-A5 P0-4: 续约 key TTL (默认 24h), 让长时间无业务写入时
+	// Redis 自动回收整个 list key (而非永久持有 5000 条废弃事件).
+	// EXPIRE 在 key 不存在时返回 0 但不报错; 我们刚 LPUSH 过一定存在.
+	pipe.Expire(ctx, RedisKey, redisKeyTTL)
 	if _, err := pipe.Exec(ctx); err != nil {
 		// 静默降级：计数 + debug 日志，不阻塞、不上抛（Redis 不可用时请求路径零感知）。
 		e.redisFailures.Add(1)

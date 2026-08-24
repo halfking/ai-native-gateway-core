@@ -172,7 +172,7 @@ func TestExtractOpenAI_SkipsSystemReminderForFirstUser(t *testing.T) {
 
 func TestExtractOpenAI_SkipsSystemReminderTextBlock(t *testing.T) {
 	body := []byte(`{"model":"m","messages":[
-		{"role":"user","content":[{"type":"text","text":"<system-reminder>Available skills</system-reminder>"}]},
+		{"role":"user","content":[{"type":"input_text","text":"<system-reminder>Available skills</system-reminder>"}]},
 		{"role":"assistant","content":"ack"},
 		{"role":"user","content":"continue the task"}
 	]}`)
@@ -181,6 +181,20 @@ func TestExtractOpenAI_SkipsSystemReminderTextBlock(t *testing.T) {
 		t.Fatal(err)
 	}
 	if ret.FirstUserIndex != 2 || !jsonContains(ret.FirstUser, "continue the task") {
+		t.Fatalf("unexpected first user: index=%d message=%s", ret.FirstUserIndex, stringValue(ret.FirstUser))
+	}
+}
+
+func TestExtractOpenAI_SkipsSystemReminderOutputTextBlock(t *testing.T) {
+	body := []byte(`{"model":"m","messages":[
+		{"role":"user","content":[{"type":"output_text","text":"<system-reminder>Available skills</system-reminder>"}]},
+		{"role":"user","content":"continue the task"}
+	]}`)
+	ret, err := extractOpenAI(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ret.FirstUserIndex != 1 || !jsonContains(ret.FirstUser, "continue the task") {
 		t.Fatalf("unexpected first user: index=%d message=%s", ret.FirstUserIndex, stringValue(ret.FirstUser))
 	}
 }
@@ -220,6 +234,8 @@ func TestIsSystemReminderMessage(t *testing.T) {
 	}{
 		{"string", `{"role":"user","content":"<system-reminder>x</system-reminder>"}`, true},
 		{"text_block", `{"role":"user","content":[{"type":"text","text":" <system-reminder>x</system-reminder> "}]}`, true},
+		{"input_text_block", `{"role":"user","content":[{"type":"input_text","text":"<system-reminder>x</system-reminder>"}]}`, true},
+		{"output_text_block", `{"role":"user","content":[{"type":"output_text","text":"<system-reminder>x</system-reminder>"}]}`, true},
 		{"mixed_text", `{"role":"user","content":"<system-reminder>x</system-reminder> real request"}`, false},
 		{"mixed_blocks", `{"role":"user","content":[{"type":"text","text":"<system-reminder>x</system-reminder>"},{"type":"image_url","image_url":{"url":"x"}}]}`, false},
 		{"missing_close", `{"role":"user","content":"<system-reminder>x"}`, false},
