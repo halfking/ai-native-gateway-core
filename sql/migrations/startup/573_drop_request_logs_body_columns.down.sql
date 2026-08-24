@@ -1,17 +1,29 @@
+-- Migration 573 DOWN: re-add request body columns (NULLABLE jsonb) on
+-- request_logs_hot and request_logs (parent + partitions), and restore
+-- the body projection in request_logs_with_current_month view.
 --
--- Name: request_logs_with_current_month; Type: VIEW; Schema: public; Owner: -
---
+-- This is a structural revert only — no data backfill. Rows that were
+-- NULL on these columns before LP1 remain NULL after the down; the only
+-- source of body content in production is request_logs_bodies_hot /
+-- request_logs_bodies (LP1 moved it there permanently).
 
--- NOTE: request_body / response_body / outbound_body were dropped
--- from request_logs_hot and request_logs in migration 573 (LP1).
--- Their authoritative home is now request_logs_bodies_hot /
--- request_logs_bodies (and a future bodies view). This view no
--- longer projects those JSONB blobs. Callers needing full bodies
--- must LEFT JOIN on the bodies view (see request_logs_bodies_with_current_month).
--- 2026-08-24 LP1: 18 reader SQL statements updated to drop COALESCE(rb.X, rl.X)
--- after the column drop.
+BEGIN;
 
-CREATE VIEW public.request_logs_with_current_month AS
+-- ─── 1. Re-add body columns (NULLABLE — historical rows preserved as NULL) ───
+ALTER TABLE public.request_logs_hot ADD COLUMN IF NOT EXISTS request_body jsonb;
+ALTER TABLE public.request_logs_hot ADD COLUMN IF NOT EXISTS response_body jsonb;
+ALTER TABLE public.request_logs_hot ADD COLUMN IF NOT EXISTS outbound_body jsonb;
+
+ALTER TABLE public.request_logs ADD COLUMN IF NOT EXISTS request_body jsonb;
+ALTER TABLE public.request_logs ADD COLUMN IF NOT EXISTS response_body jsonb;
+ALTER TABLE public.request_logs ADD COLUMN IF NOT EXISTS outbound_body jsonb;
+
+-- ─── 2. Restore view body projection ───
+-- Note: this restores the projection list verbatim from migration 459
+-- (2026-07-27 SSOT). SSOT canonical projection lives in
+-- sql/objects/views/request_logs_with_current_month.sql; keep both
+-- copies in sync (rule 38 §11).
+CREATE OR REPLACE VIEW public.request_logs_with_current_month AS
  SELECT request_logs_hot.id,
     request_logs_hot.request_id,
     request_logs_hot.ts,
@@ -55,6 +67,8 @@ CREATE VIEW public.request_logs_with_current_month AS
     request_logs_hot.transform_summary,
     request_logs_hot.response_preview,
     request_logs_hot.stream_done_received,
+    request_logs_hot.request_body,
+    request_logs_hot.response_body,
     request_logs_hot.cost_display,
     request_logs_hot.cost_currency,
     request_logs_hot.usage_source,
@@ -81,6 +95,7 @@ CREATE VIEW public.request_logs_with_current_month AS
     request_logs_hot.compression_reason,
     request_logs_hot.compression_strategy,
     request_logs_hot.compression_meta,
+    request_logs_hot.outbound_body,
     request_logs_hot.outbound_msg_count,
     request_logs_hot.outbound_token_est,
     request_logs_hot.outbound_msg_hashes,
@@ -165,6 +180,8 @@ UNION ALL
     request_logs.transform_summary,
     request_logs.response_preview,
     request_logs.stream_done_received,
+    request_logs.request_body,
+    request_logs.response_body,
     request_logs.cost_display,
     request_logs.cost_currency,
     request_logs.usage_source,
@@ -191,6 +208,7 @@ UNION ALL
     request_logs.compression_reason,
     request_logs.compression_strategy,
     request_logs.compression_meta,
+    request_logs.outbound_body,
     request_logs.outbound_msg_count,
     request_logs.outbound_token_est,
     request_logs.outbound_msg_hashes,
@@ -232,10 +250,9 @@ UNION ALL
     request_logs.origin_actor
    FROM public.request_logs;
 
+COMMIT;
 
---
--- Name: VIEW request_logs_with_current_month; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON VIEW public.request_logs_with_current_month IS 'Hot + monthly partitions UNION. SSOT synced 2026-08-22: queue timestamps (491), request_type (510), is_final_success (532), origin_actor (561).';
-
+-- Post-revert verification:
+--   ./scripts/check-body-storage-schema.sh
+--   expected: exit 1 (would mean we're back to pre-LP1 state; investigate
+--   before any further action)
