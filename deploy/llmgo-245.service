@@ -10,6 +10,8 @@ User=root
 Group=root
 WorkingDirectory=/opt/llm-gateway-go
 EnvironmentFile=/opt/llm-gateway-go/.env
+# 2026-08-04 (spec §10.4.1): IR as default protocol conversion path.
+# Emergency rollback: change to "false" in /opt/llm-gateway-go/.env.
 Environment=TRANSPORT_LAYER_IR_ENABLED=true
 # 2026-08-24: GC 背压 — 245 memcg OOM-kill x53（anon 1.95G 撑满 MemoryMax=2G,
 # failcnt 378 万）。GOMEMLIMIT 略低于 cgroup 上限, 让 Go GC 在 memcg
