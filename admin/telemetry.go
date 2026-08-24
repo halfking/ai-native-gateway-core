@@ -370,7 +370,7 @@ func (t *telemetryIngester) persistRequestLog(ctx context.Context, e *requestLog
 	// This path must tolerate both historical UNIQUE (request_id, ts) and
 	// migration-455 UNIQUE (request_id) deployments, because live hosts can
 	// report schema_migrations=455 while still serving the old unique index.
-	err = upsertRequestLogBodies(ctx, tx, e.RequestID, e.TenantID, e.RequestBody, e.ResponseBody)
+	err = upsertRequestLogBodies(ctx, tx, e.RequestID, e.RequestBody, e.ResponseBody)
 
 	if err != nil {
 		t.classifyAndCount("request_logs_bodies_hot", e.RequestID, err)
@@ -383,38 +383,36 @@ func (t *telemetryIngester) persistRequestLog(ctx context.Context, e *requestLog
 	}
 }
 
-func upsertRequestLogBodies(ctx context.Context, tx pgx.Tx, requestID, tenantID string, requestBody, responseBody *string) error {
+func upsertRequestLogBodies(ctx context.Context, tx pgx.Tx, requestID string, requestBody, responseBody *string) error {
 	_, err := tx.Exec(ctx, `
 		UPDATE request_logs_bodies_hot
-		   SET tenant_id = COALESCE(NULLIF($2, ''), tenant_id),
-		       request_body = COALESCE($3::jsonb, request_body),
-		       response_body = COALESCE($4::jsonb, response_body)
+		   SET request_body = COALESCE($2::jsonb, request_body),
+		       response_body = COALESCE($3::jsonb, response_body)
 		 WHERE request_id = $1
-	`, requestID, tenantID, requestBody, responseBody)
+	`, requestID, requestBody, responseBody)
 	if err != nil {
 		return err
 	}
 
 	_, err = tx.Exec(ctx, `
 		INSERT INTO request_logs_bodies_hot (
-			request_id, ts, tenant_id, request_body, response_body
+			request_id, ts, request_body, response_body
 		)
-		SELECT $1, rl.ts, NULLIF($2, ''), $3::jsonb, $4::jsonb
+		SELECT $1, rl.ts, $2::jsonb, $3::jsonb
 		  FROM request_logs_hot rl
 		 WHERE rl.request_id = $1
 		ON CONFLICT DO NOTHING
-	`, requestID, tenantID, requestBody, responseBody)
+	`, requestID, requestBody, responseBody)
 	if err != nil {
 		return err
 	}
 
 	_, err = tx.Exec(ctx, `
 		UPDATE request_logs_bodies_hot
-		   SET tenant_id = COALESCE(NULLIF($2, ''), tenant_id),
-		       request_body = COALESCE($3::jsonb, request_body),
-		       response_body = COALESCE($4::jsonb, response_body)
+		   SET request_body = COALESCE($2::jsonb, request_body),
+		       response_body = COALESCE($3::jsonb, response_body)
 		 WHERE request_id = $1
-	`, requestID, tenantID, requestBody, responseBody)
+	`, requestID, requestBody, responseBody)
 	return err
 }
 

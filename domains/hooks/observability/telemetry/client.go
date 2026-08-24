@@ -1433,7 +1433,7 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 	// 2026-08-24 Phase 1 body storage optimization: outbound_body now also
 	// routes to request_logs_bodies_hot (dedup) — main table keeps NULL for
 	// all three body columns. The hot table is the sole full-body write path.
-	err = c.upsertRequestLogBodies(ctx, tx, entry.RequestID, entry.TenantID, stringValue(entry.ApplicationCode),
+	err = c.upsertRequestLogBodies(ctx, tx, entry.RequestID, stringValue(entry.ApplicationCode),
 		strPtrToJSON(entry.RequestBody),
 		strPtrToJSON(entry.ResponseBody),
 		jsonOrNull(entry.OutboundBody),
@@ -2031,7 +2031,7 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		return c.insertRequestLog(&fallback)
 	}
 
-	if err = c.upsertRequestLogBodies(ctx, tx, entry.RequestID, entry.TenantID, stringValue(entry.ApplicationCode),
+	if err = c.upsertRequestLogBodies(ctx, tx, entry.RequestID, stringValue(entry.ApplicationCode),
 		strPtrToJSON(entry.RequestBody),
 		strPtrToJSON(entry.ResponseBody),
 		jsonOrNull(entry.OutboundBody),
@@ -2298,7 +2298,7 @@ func claimSessionFinalSuccessExec(ctx context.Context, tx pgx.Tx, requestID stri
 // request_logs_hot row keeps all three body columns NULL; readers that need
 // full bodies join through admin/body_resolver.go which falls back to the
 // dedicated body table.
-func (c *Client) upsertRequestLogBodies(ctx context.Context, tx pgx.Tx, requestID, tenantID, applicationCode, requestBodyJSON, responseBodyJSON, outboundBodyJSON string) error {
+func (c *Client) upsertRequestLogBodies(ctx context.Context, tx pgx.Tx, requestID, applicationCode, requestBodyJSON, responseBodyJSON, outboundBodyJSON string) error {
 	// Keep missing bodies as NULL so metadata-only updates cannot erase a body
 	// captured by the initial or successful request-log write.
 	reqJSON := requestBodyJSON
@@ -2316,20 +2316,15 @@ func (c *Client) upsertRequestLogBodies(ctx context.Context, tx pgx.Tx, requestI
 	// unique key to UNIQUE(request_id); ON CONFLICT must be (request_id), NOT
 	// (request_id, ts) — the composite form triggers 42P10 at runtime.
 	// The UPDATE clause only replaces a body when this write supplied one.
-	// 2026-08-24 Phase 1: tenant_id is written here directly so admin/data
-	// lifecycle cleanup can target a tenant's bodies without joining the main
-	// table per row. tenant_id is captured first-write-wins (mirrors the
-	// request_logs_hot.tenant_id contract).
 	_, err := tx.Exec(ctx, `
-		INSERT INTO request_logs_bodies_hot (request_id, ts, tenant_id, request_body, response_body, outbound_body)
-		VALUES ($1, now(), NULLIF($2, ''), NULLIF($3, 'null')::jsonb, NULLIF($4, 'null')::jsonb, NULLIF($5, 'null')::jsonb)
+		INSERT INTO request_logs_bodies_hot (request_id, ts, request_body, response_body, outbound_body)
+		VALUES ($1, now(), NULLIF($2, 'null')::jsonb, NULLIF($3, 'null')::jsonb, NULLIF($4, 'null')::jsonb)
 		ON CONFLICT (request_id) DO UPDATE
-			SET tenant_id     = COALESCE(EXCLUDED.tenant_id, request_logs_bodies_hot.tenant_id),
-			    request_body  = COALESCE(EXCLUDED.request_body, request_logs_bodies_hot.request_body),
+			SET request_body  = COALESCE(EXCLUDED.request_body, request_logs_bodies_hot.request_body),
 			    response_body = COALESCE(EXCLUDED.response_body, request_logs_bodies_hot.response_body),
 			    outbound_body = COALESCE(EXCLUDED.outbound_body, request_logs_bodies_hot.outbound_body),
 			    ts            = EXCLUDED.ts
-	`, requestID, tenantID, reqJSON, respJSON, outJSON)
+	`, requestID, reqJSON, respJSON, outJSON)
 	return err
 }
 

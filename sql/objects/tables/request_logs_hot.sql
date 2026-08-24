@@ -101,7 +101,7 @@ CREATE TABLE public.request_logs_hot (
     agent_name text,
     agent_type text,
     api_key_fingerprint text,
-    customer_id text,
+    customer_id bigint,
     upstream_endpoint text,
     session_title text,
     session_summary text,
