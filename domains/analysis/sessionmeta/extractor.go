@@ -1,7 +1,9 @@
 package sessionmeta
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
 	"strings"
 )
 
@@ -13,6 +15,8 @@ const (
 	Unknown           = "unknown"
 	MaxTitleRunes     = 80
 	MaxMessages       = 20
+	MaxSystemRunes    = 8192
+	MaxInputBytes     = 1 << 20
 	MaxProjectHints   = 8
 	MaxWorkTypes      = 3
 )
@@ -108,7 +112,7 @@ type Provenance struct {
 // facts always win over text heuristics; unresolved project signals stay
 // pending and are never treated as billing/accounting identifiers.
 func Extract(in Input) Result {
-	messages := append([]Message(nil), in.Messages...)
+	messages := normalizeMessages(in.Messages)
 	if len(messages) == 0 {
 		messages = ParseMessages(in.RequestBody)
 	}
@@ -143,24 +147,14 @@ func Extract(in Input) Result {
 	return r
 }
 
-// ParseMessages accepts the three wire shapes used by the gateway and
-// returns a flat, role-ordered slice suitable for the rule extractor:
-//
-//   - OpenAI chat:    {"messages":[{"role","content"}, ...]}
-//   - Anthropic:      {"system":string|[{type,text}], "messages":[{"role","content"}, ...]}
-//   - Responses API:  {"instructions":string, "input":string|[{role,content}, ...]}
-//
-// For Responses, input items use the {role,content} contract where content may
-// be a string or a content-block with {type:"input_text",text:...}. The
-// Anthropic top-level "system" is merged as the leading role=system message so
-// downstream rules (firstSystem, lastUser) work unchanged across shapes.
-// Invalid or oversized JSON returns an empty slice without panicking.
+// ParseMessages accepts OpenAI Chat, Anthropic Messages, and OpenAI Responses
+// request bodies. Invalid, oversized, or concatenated JSON returns no messages.
 func ParseMessages(raw []byte) []Message {
-	if len(raw) == 0 {
+	if len(raw) == 0 || len(raw) > MaxInputBytes {
 		return nil
 	}
 	var probe map[string]json.RawMessage
-	if json.Unmarshal(raw, &probe) != nil {
+	if err := decodeSingleJSON(raw, &probe); err != nil || probe == nil {
 		return nil
 	}
 	switch {
@@ -175,160 +169,209 @@ func ParseMessages(raw []byte) []Message {
 	}
 }
 
+func decodeSingleJSON(raw []byte, dst any) error {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	if err := dec.Decode(dst); err != nil {
+		return err
+	}
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return io.ErrUnexpectedEOF
+		}
+		return err
+	}
+	return nil
+}
+
+func normalizeMessages(messages []Message) []Message {
+	out := make([]Message, 0, min(len(messages), MaxMessages))
+	for _, message := range messages {
+		role := strings.ToLower(strings.TrimSpace(message.Role))
+		if role == "developer" {
+			role = "system"
+		}
+		if !isKnownRole(role) {
+			continue
+		}
+		content := cleanText(message.Content)
+		if content == "" {
+			continue
+		}
+		if role == "system" {
+			content = truncateRunes(content, MaxSystemRunes)
+		}
+		out = append(out, Message{Role: role, Content: content})
+	}
+	return retainMessageWindow(out, "")
+}
+
+func retainMessageWindow(messages []Message, instruction string) []Message {
+	instruction = truncateRunes(cleanText(instruction), MaxSystemRunes)
+	if instruction != "" {
+		messages = append([]Message{{Role: "system", Content: instruction}}, messages...)
+	}
+	if len(messages) <= MaxMessages {
+		return messages
+	}
+	if len(messages) > 0 && messages[0].Role == "system" {
+		return append([]Message{messages[0]}, messages[len(messages)-MaxMessages+1:]...)
+	}
+	return messages[len(messages)-MaxMessages:]
+}
+
 func parseOpenAIChat(raw json.RawMessage) []Message {
 	var items []struct {
 		Role    string          `json:"role"`
 		Content json.RawMessage `json:"content"`
 	}
-	if json.Unmarshal(raw, &items) != nil || len(items) == 0 {
+	if err := decodeSingleJSON(raw, &items); err != nil || len(items) == 0 {
 		return nil
 	}
-	out := make([]Message, 0, min(len(items), MaxMessages))
-	for _, m := range items {
-		role := strings.ToLower(strings.TrimSpace(m.Role))
+	messages := make([]Message, 0, len(items))
+	for _, item := range items {
+		role := strings.ToLower(strings.TrimSpace(item.Role))
+		if role == "developer" {
+			role = "system"
+		}
 		if !isKnownRole(role) {
 			continue
 		}
-		content := contentText(m.Content)
+		content := contentText(item.Content)
 		if content == "" {
 			continue
 		}
-		out = append(out, Message{Role: role, Content: content})
-		if len(out) == MaxMessages {
-			break
-		}
+		messages = append(messages, Message{Role: role, Content: content})
 	}
-	return out
+	return normalizeMessages(messages)
 }
 
-// parseAnthropicMessages mirrors the Anthropic /v1/messages wire shape:
-// top-level "system" is either a plain string or an array of content blocks
-// (type=text). The "messages" array uses the same {role,content} contract as
-// OpenAI chat (string or content-block array). The system field, when present,
-// is prepended so firstSystem() resolves it before any user-supplied system
-// turn.
 func parseAnthropicMessages(probe map[string]json.RawMessage) []Message {
-	var sys string
+	var system string
 	if raw, ok := probe["system"]; ok {
-		sys = systemFromAnthropic(raw)
+		system = systemFromAnthropic(raw)
 	}
-	chat := parseOpenAIChat(probe["messages"])
-	if sys == "" {
-		return chat
-	}
-	out := make([]Message, 0, len(chat)+1)
-	out = append(out, Message{Role: "system", Content: sys})
-	out = append(out, chat...)
-	if len(out) > MaxMessages {
-		out = out[:MaxMessages]
-	}
-	return out
+	return retainMessageWindow(parseOpenAIChat(probe["messages"]), system)
 }
 
 func systemFromAnthropic(raw json.RawMessage) string {
-	if len(raw) == 0 {
+	if len(raw) == 0 || string(raw) == "null" {
 		return ""
 	}
-	var s string
-	if json.Unmarshal(raw, &s) == nil {
-		return cleanText(s)
+	var text string
+	if err := decodeSingleJSON(raw, &text); err == nil {
+		return text
 	}
 	var blocks []struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
 	}
-	if json.Unmarshal(raw, &blocks) != nil {
+	if err := decodeSingleJSON(raw, &blocks); err != nil {
 		return ""
 	}
 	parts := make([]string, 0, len(blocks))
-	for _, b := range blocks {
-		if b.Type == "text" || b.Type == "" {
-			if v := cleanText(b.Text); v != "" {
-				parts = append(parts, v)
+	for _, block := range blocks {
+		if block.Type == "text" || block.Type == "" {
+			if text := cleanText(block.Text); text != "" {
+				parts = append(parts, text)
 			}
 		}
 	}
 	return strings.Join(parts, " ")
 }
 
-// parseResponses handles the OpenAI Responses API wire shape:
-// top-level "instructions" is a plain string, "input" is either a string or
-// an array of items with {role,content} where content is either a string or a
-// {type:"input_text",text:...} block. We treat string-form input as a single
-// user message so the heuristic extractor can still pick it up.
 func parseResponses(probe map[string]json.RawMessage) []Message {
-	var instr string
-	if raw, ok := probe["instructions"]; ok && len(raw) > 0 {
-		var s string
-		if json.Unmarshal(raw, &s) == nil {
-			instr = cleanText(s)
+	var instruction string
+	if raw, ok := probe["instructions"]; ok && len(raw) > 0 && string(raw) != "null" {
+		if err := decodeSingleJSON(raw, &instruction); err != nil {
+			return nil
 		}
+		instruction = cleanText(instruction)
 	}
-	out := make([]Message, 0, MaxMessages)
-	if instr != "" {
-		out = append(out, Message{Role: "system", Content: instr})
-	}
-	if raw, ok := probe["input"]; ok && len(raw) > 0 {
-		var asString string
-		if json.Unmarshal(raw, &asString) == nil && asString != "" {
-			out = append(out, Message{Role: "user", Content: cleanText(asString)})
+
+	messages := make([]Message, 0, MaxMessages)
+	if raw, ok := probe["input"]; ok && len(raw) > 0 && string(raw) != "null" {
+		var text string
+		if err := decodeSingleJSON(raw, &text); err == nil {
+			if text = cleanText(text); text != "" {
+				messages = append(messages, Message{Role: "user", Content: text})
+			}
 		} else {
-			out = append(out, parseResponsesInputArray(raw)...)
+			items, valid := parseResponsesInputArray(raw)
+			if !valid {
+				return nil
+			}
+			messages = append(messages, items...)
 		}
 	}
-	if len(out) > MaxMessages {
-		out = out[:MaxMessages]
-	}
-	return out
+	return retainMessageWindow(normalizeMessages(messages), instruction)
 }
 
-func parseResponsesInputArray(raw json.RawMessage) []Message {
-	var items []struct {
-		Role    string          `json:"role"`
-		Content json.RawMessage `json:"content"`
+func parseResponsesInputArray(raw json.RawMessage) ([]Message, bool) {
+	var items []json.RawMessage
+	if err := decodeSingleJSON(raw, &items); err != nil {
+		return nil, false
 	}
-	if json.Unmarshal(raw, &items) != nil || len(items) == 0 {
-		return nil
-	}
-	out := make([]Message, 0, min(len(items), MaxMessages))
-	for _, m := range items {
-		if len(out) >= MaxMessages {
-			break
+	messages := make([]Message, 0, len(items))
+	for _, itemRaw := range items {
+		var item struct {
+			Role    string          `json:"role"`
+			Type    string          `json:"type"`
+			Text    string          `json:"text"`
+			Content json.RawMessage `json:"content"`
 		}
-		role := strings.ToLower(strings.TrimSpace(m.Role))
+		if err := decodeSingleJSON(itemRaw, &item); err != nil {
+			return nil, false
+		}
+		role := strings.ToLower(strings.TrimSpace(item.Role))
+		if role == "developer" || role == "system" {
+			role = "system"
+		}
+		if role == "" && (item.Type == "input_text" || item.Type == "text" || item.Type == "message") {
+			role = "user"
+		}
 		if !isKnownRole(role) {
 			continue
 		}
-		content := responsesContentText(m.Content)
+		content := responsesContentText(item.Content)
+		if content == "" {
+			content = cleanText(item.Text)
+		}
 		if content == "" {
 			continue
 		}
-		out = append(out, Message{Role: role, Content: content})
+		messages = append(messages, Message{Role: role, Content: content})
 	}
-	return out
+	return messages, true
 }
 
-// responsesContentText mirrors contentText() but additionally recognizes the
-// Responses-specific input_text / output_text content-block variants. Pure
-// strings still flow through the same path.
 func responsesContentText(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
 	var text string
-	if json.Unmarshal(raw, &text) == nil {
+	if err := decodeSingleJSON(raw, &text); err == nil {
 		return cleanText(text)
+	}
+	var block struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := decodeSingleJSON(raw, &block); err == nil && (block.Type == "text" || block.Type == "input_text" || block.Type == "output_text" || block.Type == "") {
+		return cleanText(block.Text)
 	}
 	var blocks []struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
 	}
-	if json.Unmarshal(raw, &blocks) != nil {
+	if err := decodeSingleJSON(raw, &blocks); err != nil {
 		return ""
 	}
 	parts := make([]string, 0, len(blocks))
-	for _, b := range blocks {
-		switch b.Type {
-		case "text", "input_text", "output_text", "":
-			if v := cleanText(b.Text); v != "" {
-				parts = append(parts, v)
+	for _, block := range blocks {
+		if block.Type == "text" || block.Type == "input_text" || block.Type == "output_text" || block.Type == "" {
+			if text := cleanText(block.Text); text != "" {
+				parts = append(parts, text)
 			}
 		}
 	}
