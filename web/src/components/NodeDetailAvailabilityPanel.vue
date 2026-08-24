@@ -33,28 +33,38 @@ const groups = computed(() => {
       title: '可用性',
       rows: [
         {
+          // 可用（综合）= handleRoutingModelTree 行 2116 处的 mo.available。
+          // 这是 model_offers 上的原始 binding 可启用位（无任何 URSM/熔断叠加）。
+          // 真正的运行时路由器是 provider/client.go loadCandidatesByModalityDB,
+          // 它读 v_routable_credential_models.is_routable,语义更严格。
+          // 仪表板这一行只是「绑定层 flag」,不要把它误读为运行时权威判定。
           key: 'available',
           label: '可用（综合）',
           value: c.available ? '可用' : '不可用',
           severity: c.available ? 'ok' : 'danger',
-          description: '依据 v_routable_credential_models.is_routable 综合判定',
-          source: 'v_routable_credential_models.is_routable',
+          description: 'model_offers 可启用位（绑定层 flag，未叠加熔断 / URSM）',
+          source: 'model_offers.available',
         },
         {
+          // 运行时可路由 = handleRoutingModelTree 行 2198 处计算:
+          // mo.available && credStatus=='active' && lifecycleStatus=='active'
+          //   && availabilityState=='ready' && quotaState=='ok' && circuitState!='open'
+          // 与运行时 Router (provider/client.go:1311, v.is_routable 投影) 同源,
+          // 但这是 dashboard 端独立计算的副本,用于在面板上即时反馈。
           key: 'runtime_routable',
           label: '运行时可路由',
           value: c.runtime_routable ? '是' : '否',
           severity: c.runtime_routable ? 'ok' : 'danger',
-          description: '凭据维度运行时可达性（粘性 / 并发锁等）',
-          source: 'cmb.runtime_routable',
+          description: 'dashboard 端独立计算的「可用」综合标记（mo.available ∩ 凭据 / 生命周期 / 配额 / 熔断）',
+          source: 'handleRoutingModelTree.runtime_routable',
         },
         {
           key: 'block_reason',
           label: '阻断原因',
           value: c.runtime_block_reason || c.block_reason || '—',
           severity: c.runtime_block_reason || c.block_reason ? 'danger' : 'ok',
-          description: '不可路由根因代码',
-          source: 'v_routable_credential_models.unavailable_reason',
+          description: '不可路由根因代码（routingBlockReason: offer_unavailable / credential_* / lifecycle_* / availability_* / quota_* / circuit_open）',
+          source: 'routingBlockReason',
         },
       ],
     },
