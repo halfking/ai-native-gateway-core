@@ -52,7 +52,7 @@ const queue = queueRef
 const nodes = nodesRef
 // 2026-08-23 凭据显示：订阅标签缓存 revision，让异步加载完成后
 // 队列深度行的凭据名称自动刷新。
-const { labelRevision } = useCredentialLabels()
+const { labelRevision, credentialLabelForId } = useCredentialLabels()
 function credLabelById(id: number | null | undefined): string {
   void labelRevision.value
   return credentialLabelById(id)
@@ -661,8 +661,15 @@ function providerLabel(n: LiveNodeStatus): string {
 }
 
 function nodeTitle(n: LiveNodeStatus, group?: ModelGroup): string {
+  void labelRevision.value
   const candidate = group ? candidateForNode(group, n.credential_id) : undefined
-  return credentialDisplayName(candidate, providerLabel(n), n.credential_id, n.credential_label)
+  const cachedLabel = credentialLabelForId(n.credential_id)
+  return credentialDisplayName(
+    candidate,
+    providerLabel(n),
+    n.credential_id,
+    n.credential_label || cachedLabel,
+  )
 }
 
 function isPriorityNode(group: ModelGroup, n: LiveNodeStatus): boolean {
