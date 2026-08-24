@@ -82,9 +82,14 @@ func (m *AuthMiddleware) Wrap(next http.Handler) http.Handler {
 		}
 
 		if subtle.ConstantTimeCompare([]byte(m.expectedKey), []byte(provided)) != 1 {
+			// 2026-08-24: log a non-sensitive key prefix (same convention as
+			// api_keys.key_prefix) so operators can tell WHICH misconfigured
+			// internal caller is being rejected — the 2026-08-24 incident
+			// needed cross-replica experiments to trace this gate.
 			slog.Warn("auth: invalid API key",
 				"remote", r.RemoteAddr,
 				"path", r.URL.Path,
+				"key_prefix", bearerKeyPrefixForLog(provided),
 			)
 			writeAuthUnauthorized(r.Context(), w, i18n.MsgInvalidKey, "invalid_key")
 			return
@@ -101,6 +106,16 @@ func (m *AuthMiddleware) Wrap(next http.Handler) http.Handler {
 		ctx := RegisterAuthOwnerUser(r.Context(), "global-auth-passed")
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// bearerKeyPrefixForLog returns a redacted prefix of a bearer token safe
+// for structured logs: first 8 chars + "****" (mirrors api_keys.key_prefix).
+// Never log the full token — invalid keys may still be near-valid secrets.
+func bearerKeyPrefixForLog(key string) string {
+	if len(key) <= 8 {
+		return key + "****"
+	}
+	return key[:8] + "****"
 }
 
 // writeAuthUnauthorized emits the canonical 401 authentication-error envelope.
