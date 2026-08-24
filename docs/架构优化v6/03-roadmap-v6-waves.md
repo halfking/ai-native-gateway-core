@@ -1,6 +1,6 @@
 # 03 · v6 路线图（V6-W0 → V6-W5）
 
-> **目的**：把 [`optimization-roadmap.md`](../../03-design/01-architecture/architecture/optimization-roadmap.md) 的 P0/P1/P2 与 [`02-code-vs-design-deltas.md`](02-code-vs-design-deltas.md) 的 18 处差距，重映射为 v6 的 6 波次执行路径。
+> **目的**：把 [`optimization-roadmap.md`](../03-design/01-architecture/architecture/optimization-roadmap.md) 的 P0/P1/P2 与 [`02-code-vs-design-deltas.md`](02-code-vs-design-deltas.md) 的 27 处差距（D1–D27），重映射为 v6 的 6 波次执行路径。
 > **执行原则**：
 > 1. 代码 / SQL / runtime wiring 是事实源；schema、目录、feature flag 不是完成证据。
 > 2. 每个波次先写 regression / integration test，再改代码；独立 commit、独立回滚。
@@ -35,9 +35,9 @@
 
 | # | 任务 | 允许文件 | 验收 |
 |---|---|---|---|
-| W0-1 | `cmd/gateway/main.go` 拆分（6076 行 → < 600 行/文件） | 新增 `cmd/gateway/init/{auth,telemetry,router,admin,workers,storage,middleware,quality,shutdown}.go`；`main.go` 仅留 wiring + signal handling | `go test ./...` + `golangci-lint run` 双绿；行为零变更；冷启动 < 3s 增量 < 5% |
-| W0-2 | `admin/routing.go` 拆分（4980 行） | 按端点族分组：override、tuning、reorder、auto-route、dashboard、stats；保留 URL；标记 `@deprecated` 注释 | 同 W0-1 |
-| W0-3 | `db/db.go` 拆分（4358 行） | 拆为 `conn.go` / `pool.go` / `tx.go` / `health.go` / `tracing.go` | 同 W0-1；事务包装接口保持兼容 |
+| W0-1 | `cmd/gateway/main.go` 拆分（起草快照 6076 行、2026-08-24 复核 6156 行 → < 600 行/文件） | 新增 `cmd/gateway/init/{auth,telemetry,router,admin,workers,storage,middleware,quality,shutdown}.go`；`main.go` 仅留 wiring + signal handling | `go test ./...` + `golangci-lint run` 双绿；行为零变更；冷启动 < 3s 增量 < 5% |
+| W0-2 | `admin/routing.go` 拆分（起草快照 4980 行、复核 5292 行） | 按端点族分组：override、tuning、reorder、auto-route、dashboard、stats；保留 URL；标记 `@deprecated` 注释 | 同 W0-1 |
+| W0-3 | `db/db.go` 拆分（起草快照 4358 行、复核 4451 行） | 拆为 `conn.go` / `pool.go` / `tx.go` / `health.go` / `tracing.go` | 同 W0-1；事务包装接口保持兼容 |
 | W0-4 | 抽出 `bg/supervisor/`（`BackgroundSupervisor`） | 新增 `bg/supervisor/{supervisor.go,worker.go,signal.go}`；现有 worker 接入（node_probe / credential_recovery / model_quality / partition_manager / quality_collector / freequotacleanup / systemmonitor） | supervisor 控制 goroutine 数 + WaitGroup；SIGTERM 时按 worker 优先级反序停止；新增 `bg_supervisor_*` Prometheus 指标 |
 | W0-5 | h2c + Maintain proxy + final handler smoke | 新增 `tests/integration/h2c_final_handler_test.go`；覆盖 `/maintain-api/*`、`/v1/*`、`/api/*` 在 HTTP/1.1 与 HTTP/2 两路径 | integration test PASS；不依赖真实 provider |
 | W0-6 | Migration 单仓策略 | `sql/migrations/archive/2026-Q3/` 冻结非 `startup/` 子目录历史迁移；`db/migrations/` 明确为权威加载源；`deploy/sql/schemas/baseline/` 与 `sql/schema/` 双副本说明文档更新（`docs/03-design/04-data-design/migrations/README.md` 增补） | 加载顺序单元测试；启动时序列号输出到 INFO log |
@@ -73,10 +73,10 @@
 | W1-2 | `domains/streaming/handler.go` 拆分 | 拆为 `{chat,messages,responses,embeddings,gemini}_handler.go` + `lifecycle.go` + `common.go` | 各协议 `_test.go` PASS |
 | W1-3 | URSM 单一 owner | `domains/routing/` 与 `domains/routingstate/` 收敛到 `domains/ursm/v2/`；legacy sticky / weighted / round_robin 移到 `internal/_legacy/routing_legacy.go`（仅 LegacyStateBackend 引用） | 单测 + 集成；URSM authoritative 路径回归 |
 | W1-4 | `autoroute/scoring*` 三套收敛 | 保留单一 `scoring.go`；`scoring_new.go` 与 `scoring_simplified.go` 单元测试迁入 + 加 `@deprecated`；`autoroute/decision_v2.go` 明确为唯一入口；`decision.go` 走 deprecation | 单测覆盖 8 维度 + 集成 |
-| W1-5 | 统一 RetryBudget | 落地 [`routing-and-state.md`](../../03-design/01-architecture/architecture/routing-and-state.md) §6 `RetryBudget` struct；stream retry / dispatch / goal / survival / failover 五层只读写同一 budget；attempts / deadline / first_byte / credential_retries / model_switches / last_reason / retry_at 全字段填齐 | 跨层 attempts 上限不超 MaxAttempts；client cancel / DB 失败正确释放；attempts 对账日志 |
+| W1-5 | 统一 RetryBudget | 落地 [`routing-and-state.md`](../03-design/01-architecture/architecture/routing-and-state.md) §6 `RetryBudget` struct；stream retry / dispatch / goal / survival / failover 五层只读写同一 budget；attempts / deadline / first_byte / credential_retries / model_switches / last_reason / retry_at 全字段填齐 | 跨层 attempts 上限不超 MaxAttempts；client cancel / DB 失败正确释放；attempts 对账日志 |
 | W1-6 | Session V2 shadow validator | `cmd/gateway/dual_read_validator.go` 已存在；增强为按租户事务读 + 7 天 freshness 指标 + body/turn/token/cost/hash 完整率；不切换 ownership | 7 天滚动 P50/P95 freshness；字段完整率 ≥ 99% |
 | W1-7 | Pipeline wrapper 与 v1 handler 等价性测试 | `tests/integration/pipeline_v1_equivalence_test.go`；同入参同出参 | 关键 case 通过 |
-| W1-8 | Candidate lease coordinator（联合 FP slot + concurrency + RPM） | 新增 `domains/ursm/v2/lease/coordinator.go`（参考 [`routing-and-state.md` §5 联合 lease](../../03-design/01-architecture/architecture/routing-and-state.md)）；复用 `bg/probe_queue` lease token / heartbeat / zombie rescue | acquire/release 对称；exactly-once release |
+| W1-8 | Candidate lease coordinator（联合 FP slot + concurrency + RPM） | 新增 `domains/ursm/v2/lease/coordinator.go`（参考 [`routing-and-state.md` §5 联合 lease](../03-design/01-architecture/architecture/routing-and-state.md)）；复用 `bg/probe_queue` lease token / heartbeat / zombie rescue | acquire/release 对称；exactly-once release |
 
 ### 2.3 禁止
 
@@ -104,7 +104,7 @@
 |---|---|---|---|
 | W2-1 | 抽出 `RequestFinalizer` | 新增 `domains/streaming/finalizer.go`；`request_logs_hot` + usage + onPersisted hooks + V2 mirror + ASM outbox 全部走单一入口 | 单一调用链；DB / telemetry fallback 不绕开 finalizer；onPersisted 派生链不断 |
 | W2-2 | plugin-runtime / goalrun binding surface 收敛 | 新增 `plugin-runtime/binding.go` 显式声明 5 类 binding（request / response / tool / audit / session）；goalrun 不再 import plugin-runtime，plugin-runtime 不 import goalrun | import graph 检验；双向 import 报错 |
-| W2-3 | cost reconciliation worker | 把 [`stats-reconciliation.md`](../../stats-reconciliation.md) 对账脚本搬入 `bg/cost_reconciliation_worker.go`；周期（每日 03:30）+ on-demand（`/api/admin/cost/reconcile`） | 对账报告输出到 `request_logs.cost_reconcile_status` 与 admin dashboard |
+| W2-3 | cost reconciliation 扩量与生产启用 | 基线：`bg/cost_reconciliation_worker.go` 已存在，默认关闭（`LLM_GATEWAY_PROVIDER_COST_RECONCILIATION_ENABLED` / settings），interval 默认 86400s，admin 端点 `/api/admin/provider-cost-reconciliation` + `/bill` 手动导入。本任务：扩到 [`stats-reconciliation.md`](../stats-reconciliation.md) 全量口径；生产灰度启用；on-demand 触发复用现有 admin 端点 | 对账报告落 `provider_cost_reconciliation` + 差异事件进 `provider_events`；admin dashboard 展示 diff 率（不新增 `request_logs.cost_reconcile_status` 列） |
 | W2-4 | drain matrix runbook | 新增 `docs/06-deployment/04-runbooks/drain-matrix.md`：systemd / compose / k3s 三模式各自最长 drain 时间 + 回滚判定 | runbook 评审通过；staging 复演 |
 | W2-5 | `/v2/*` 与 `cmd/gateway-v2` banner | W0-9 后续；增加覆盖率统计与告警：v2 路径异常上升 → page | Prometheus 规则落 `deploy/prometheus/rules/v2-path-alert.yml` |
 | W2-6 | 实时流修复回归 | `audit/realtime-flow-fixes-audit-20260821.md` 列出的修复点逐一加 `regression_test.go` | 全绿；fix commit 关联 test commit |
@@ -164,7 +164,7 @@
 
 ### 5.1 目标
 
-按 [`omniroute-integration-boundary.md`](../../03-design/01-architecture/architecture/omniroute-integration-boundary.md) §6–§8 的"ADOPT / CONSUME / REJECT"决策表，落地 MCP stdio→HTTP→SSE 三阶段；A2A 仅做 message/send 试点；Fusion 仅 Opt-in non-stream。
+按 [`omniroute-integration-boundary.md`](../03-design/01-architecture/architecture/omniroute-integration-boundary.md) §6–§8 的"ADOPT / CONSUME / REJECT"决策表，落地 MCP stdio→HTTP→SSE 三阶段；A2A 仅做 message/send 试点；Fusion 仅 Opt-in non-stream。
 
 ### 5.2 必做
 

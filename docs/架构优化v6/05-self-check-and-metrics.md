@@ -2,6 +2,8 @@
 
 > **目的**：把"完成"从"PR 合了 / HTTP 200 / 目录存在"提升为"可在 Grafana 看到，且对账无漂移"。
 > **原则**：每个 SLO 必须有 (1) 定义清晰的指标名；(2) 数据源；(3) 看板；(4) 告警阈值与升级路径；(5) 回归证据要求。
+> **证据等级**：本文件的 12 个 SLO 与 `v6_*` 指标均为 **DESIGN/TARGET**（2026-08-24 审计：尚未在 `deploy/prometheus/rules/` 与 Grafana 落地）；引用时不得当作已存在的监控设施。
+> **标签基数约束**：任何指标不得使用无界基数 label（如 `request_id`、`request_id_hash`、`session_id`）；请求级定位用 trace exemplars 或日志关联，租户维度优先用聚合 tenant class，确需 per-tenant 时必须配合租户总数上限评审。
 > **不在范围**：不修改 Prometheus / Grafana 现存指标命名（必须新增）；不重写 `deploy/prometheus/rules/` 已有规则。
 
 ---
@@ -61,7 +63,8 @@
 
 ### SLO-5 · 重试预算（attempts 上限）
 
-- **指标**：`v6_retry_attempts_total{request_id_hash,layer}` / `v6_retry_exhausted_total{reason}`
+- **指标**：`v6_retry_attempts_total{layer}` counter（按层聚合；**不带请求级 label**） / `v6_retry_exhausted_total{reason}` / `v6_retry_attempts_bucket{layer}` histogram（观测单请求 attempts 分布）
+- **请求级定位**：超限请求通过 OTel trace exemplars / `request_id` 日志字段关联，**禁止**把 `request_id_hash` 作为 Prometheus label（无界基数）
 - **SLO**：单请求 attempts ≤ MaxAttempts（默认 5）；超过率 < 0.1%
 - **看板**：`Retry / Budget`
 - **告警**：超 MaxAttempts 请求数 > 0 → page（critical）
@@ -93,11 +96,11 @@
 
 ### SLO-9 · 成本对账（cost reconciliation）
 
-- **指标**：`v6_cost_reconcile_diff_pct{tenant,model}` gauge / `v6_cost_reconcile_status_total{status}`
+- **指标**：`v6_cost_reconcile_diff_pct{tenant,model}` gauge（tenant 需过基数评审）/ `v6_cost_reconcile_status_total{status}`
 - **SLO**：diff ≤ 0.5% / tenant / day
 - **看板**：`Cost / Reconciliation`
 - **告警**：diff > 0.5% → warn；> 2% → page
-- **数据源**：V6-W2-W3 cost_reconciliation_worker
+- **数据源**：`bg/cost_reconciliation_worker.go` **已存在**（默认关闭，`LLM_GATEWAY_PROVIDER_COST_RECONCILIATION_ENABLED` 开启；结果落 `provider_cost_reconciliation` 表）；V6-W2-W3 负责扩量、生产启用与本 SLO 的指标暴露
 
 ### SLO-10 · Drain time（systemd / compose / k3s）
 

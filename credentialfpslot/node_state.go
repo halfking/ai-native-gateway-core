@@ -120,6 +120,13 @@ func (m *Manager) GetNodeState(ctx context.Context, credentialID int, model stri
 	if state.Model == "" {
 		state.Model = model
 	}
+	// A payload carrying a different non-zero identity than its key is
+	// treated as corruption: fail the single read closed so callers can
+	// observe it, instead of silently routing on another node's health data.
+	if state.CredentialID != credentialID || state.Model != model {
+		return nil, fmt.Errorf("node state identity mismatch: key=(%d,%s) payload=(%d,%s)",
+			credentialID, model, state.CredentialID, state.Model)
+	}
 	return &state, nil
 }
 
@@ -131,7 +138,9 @@ type NodeStateKey struct {
 
 // GetNodeStatesBatch reads several node health states in ONE Redis round
 // trip (MGET) and returns states aligned with keys (entry is never nil; a
-// missing or corrupt key yields a zero — i.e. usable — state).
+// missing, corrupt, or identity-mismatched key yields a zero — i.e.
+// usable — state, so one poisoned entry cannot fail the whole batch and
+// un-filter every node).
 //
 // The router calls this once per candidate list on the request hot path;
 // the previous per-candidate GET loop amplified routing latency by
@@ -173,6 +182,12 @@ func (m *Manager) GetNodeStatesBatch(ctx context.Context, keys []NodeStateKey) (
 		}
 		if state.Model == "" {
 			state.Model = keys[i].Model
+		}
+		// Identity mismatch is corruption for routing purposes; fail open
+		// to a zero state the same way as malformed JSON.
+		if state.CredentialID != keys[i].CredentialID || state.Model != keys[i].Model {
+			out[i] = newZeroNodeState(keys[i].CredentialID, keys[i].Model)
+			continue
 		}
 		out[i] = &state
 	}
@@ -315,23 +330,50 @@ var recordNodeOutcomeScript = redis.NewScript(`
 	local raw = redis.call('GET', key)
 	local state = {}
 	if raw then
-		state = cjson.decode(raw)
+		-- 损坏的 payload 不能永久卡死写入路径：pcall 防御性解码，失败时
+		-- 以全新 state 继续，本次 SET 会覆盖损坏 JSON，key 在下一次真实
+		-- outcome 时自愈。
+		local ok, decoded = pcall(cjson.decode, raw)
+		if ok and type(decoded) == 'table' then
+			state = decoded
+		end
 	end
 
-	if not state.success_count then state.success_count = 0 end
-	if not state.failure_count then state.failure_count = 0 end
-	if not state.slide_window then state.slide_window = {} end
-	if not state.disabled then state.disabled = false end
-	if not state.credential_id then state.credential_id = 0 end
-	if not state.model then state.model = '' end
+	-- 字段级类型收敛：任何不符合 Go NodeState 编码形状的字段都归零，
+	-- 保证写回的 JSON 始终能被 Go 读取路径反序列化。
+	if type(state.success_count) ~= 'number' then state.success_count = 0 end
+	if type(state.failure_count) ~= 'number' then state.failure_count = 0 end
+	if type(state.slide_window) ~= 'table' then state.slide_window = {} end
+	if type(state.disabled) ~= 'boolean' then state.disabled = false end
+	state.credential_id = tonumber(state.credential_id) or 0
+	if type(state.model) ~= 'string' then state.model = '' end
+	if type(state.disabled_reason) ~= 'string' then state.disabled_reason = nil end
+	if type(state.disable_count) ~= 'number' then state.disable_count = 0 end
+	if type(state.disabled_until) ~= 'number' then state.disabled_until = nil end
+	if type(state.last_success_at) ~= 'number' then state.last_success_at = nil end
+	if type(state.last_failure_at) ~= 'number' then state.last_failure_at = nil end
+	if type(state.last_disabled_at) ~= 'number' then state.last_disabled_at = nil end
 	if state.credential_id == 0 then state.credential_id = tonumber(string.match(key, '^llmgw:cred_fp_node:(%d+):')) or 0 end
 	if state.model == '' then state.model = string.match(key, '^llmgw:cred_fp_node:%d+:(.*)$') or '' end
 
 	local cutoff = now - window_sec
 	local pruned = {}
 	for i, rec in ipairs(state.slide_window) do
-		if rec.timestamp >= cutoff then
-			table.insert(pruned, rec)
+		-- 逐条重建记录，丢弃任何无法回写为合法 NodeRecord 的条目。
+		if type(rec) == 'table' and type(rec.timestamp) == 'number' then
+			local clean = {
+				success = (rec.success == true),
+				timestamp = rec.timestamp,
+			}
+			if type(rec.request_id) == 'string' and rec.request_id ~= '' then
+				clean.request_id = rec.request_id
+			end
+			if type(rec.error_kind) == 'string' and rec.error_kind ~= '' then
+				clean.error_kind = rec.error_kind
+			end
+			if clean.timestamp >= cutoff then
+				table.insert(pruned, clean)
+			end
 		end
 	end
 	state.slide_window = pruned

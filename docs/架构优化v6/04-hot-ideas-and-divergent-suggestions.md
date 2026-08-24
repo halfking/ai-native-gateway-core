@@ -33,7 +33,7 @@
   - Kong AI Gateway / Cloudflare AI Gateway：边缘 / L7 网关上的 LLM 治理；多与 WAF、rate limit 集成。
   - Solo.io / Bifrost：gateway-first，envoy-based；与 k8s 集成强。
 - **学到什么**：这些产品验证了 3 件事 ——
-  1. **Provider failover 必须有 backoff + circuit breaker**，否则会放大故障（我们已有 [`node-probe-mechanism.md`](../../03-design/01-architecture/architecture/node-probe-mechanism.md)）；
+  1. **Provider failover 必须有 backoff + circuit breaker**，否则会放大故障（我们已有 [`node-probe-mechanism.md`](../03-design/01-architecture/architecture/node-probe-mechanism.md)）；
   2. **Token-based rate limiting 比 RPM 更合理**，因为不同模型 token 量差异巨大；TPM limiter 已存在但 admission 完整接线需 W1-W8 收口；
   3. **Cost attribution 必须基于"每次请求的 token × 模型价目表"**，而不是聚合日志；我们已有 MaaS + `model_rates` + `usage`，但与 cascade router / semantic cache 联动需 V6-W5。
 - **落到 v6**：W1-W5 retry budget、W1-W8 联合 lease、W5-W1 cascade、W5-W2 semantic cache。
@@ -125,7 +125,7 @@
 
 ### 3.1 X1 · Prompt-Level 成本归因面板（按 model × task × tenant）
 
-- **想法**：把"每次请求"绑定到 `(model_used, task_type, tenant_id)` 三元组，输出"成本 TOP-N 模型 × 任务 × 租户"看板；与 [`stats-reconciliation.md`](../../stats-reconciliation.md) 对账。
+- **想法**：把"每次请求"绑定到 `(model_used, task_type, tenant_id)` 三元组，输出"成本 TOP-N 模型 × 任务 × 租户"看板；与 [`stats-reconciliation.md`](../stats-reconciliation.md) 对账。
 - **投入**：小（2 周）；仅前端 + SQL 视图。
 - **风险**：低。复用 cost reconciliation worker 数据。
 - **证据**：P50/P95 cost 报表上线；周环比 baseline；与 MaaS 订单对账 ≤ 0.5%。
@@ -203,4 +203,4 @@
 
 - V6-W5 立项时挑 ≥ 3 项发散型实验（如 X1 / X5 / X6 / X7）。
 - 其余项进 `docs/07-reporting/lessons-learned/v6-backlog.md`（v6 之后评估）。
-- 任何实验必须满足"5 完成标准"（见 [`README.md` §5](../架构优化v6/README.md)），否则不算成功。
+- 任何实验必须满足 README §5 的证据等级门禁（见 [`README.md`](README.md)），否则不算成功。

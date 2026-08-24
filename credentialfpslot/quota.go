@@ -194,14 +194,17 @@ type identityStub struct {
 var _ = identityStub{}
 
 // ActiveSlotCount returns the credential-global active slot count for one
-// normalized client type. Expired metadata is pruned before counting.
+// client type. The client type is normalized with the same whitelist as the
+// acquire path (splitClientToken), so callers may pass the raw token form.
+// Metadata whose physical slot key no longer exists is pruned before
+// counting.
 func (m *Manager) ActiveSlotCount(ctx context.Context, credentialID int, clientType string) (int64, error) {
 	if m == nil || m.client == nil {
 		return 0, ErrRedisRequired
 	}
 	count, err := activeSlotCountScript.Run(ctx, m.client,
 		[]string{globalMetadataKey(credentialID)},
-		clientType,
+		normalizeMetricClientType(clientType),
 		time.Now().Unix(),
 	).Int64()
 	if err != nil {
@@ -213,11 +216,13 @@ func (m *Manager) ActiveSlotCount(ctx context.Context, credentialID int, clientT
 var activeSlotCountScript = redis.NewScript(`
 local meta = KEYS[1]
 local clientType = ARGV[1]
-local now = tonumber(ARGV[2])
 
+-- Prune on the same condition the acquire script enforces with: a slot
+-- mapping is stale only when its physical slot key is gone. Keeping this
+-- read consistent with the enforce decision means the observed count can
+-- over-report (block) but never under-report (bypass) max_fp_slots.
 local function prune(key)
-    local exp = tonumber(redis.call('HGET', meta, key .. ':exp') or '0')
-    if exp > 0 and exp <= now then
+    if redis.call('EXISTS', key) == 0 then
         local oldType = redis.call('HGET', meta, key)
         if oldType then
             redis.call('HINCRBY', meta, oldType .. ':count', -1)
@@ -289,11 +294,14 @@ local function forget(slotKey)
     end
 end
 
--- 1. prune stale metadata entries. A slot mapping is stale when the
--- physical slot key no longer exists (released, reclaimed, or expired
--- before the metadata was cleaned) or the metadata exp has passed.
--- Prune entries of every client type, not just the current one, or the
--- count stays inflated and enforce could block legitimate acquires.
+-- 1. prune stale metadata entries. A slot mapping is stale only when its
+-- physical slot key no longer exists (released, reclaimed, reset, or
+-- expired). Prune entries of every client type, not just the current one.
+-- A mapping whose physical slot key still lives is kept even when the
+-- recorded exp has passed: dropping it would under-count the client type
+-- and let an enforce acquire bypass max_fp_slots. Over-reporting blocks
+-- conservatively and is self-corrected when the quota path preempts the
+-- idle slot (idle >= gate → forget + remember re-attribute it).
 -- Auxiliary fields (':exp', ':count') are not slot mappings and are
 -- skipped.
 local entries = redis.call('HGETALL', meta)
@@ -302,15 +310,9 @@ for i = 1, #entries, 2 do
     local slotType = entries[i + 1]
     if slotType and slotType ~= ''
         and string.sub(slotKey, -4) ~= ':exp'
-        and string.sub(slotKey, -6) ~= ':count' then
-        if redis.call('EXISTS', slotKey) == 0 then
-            forget(slotKey)
-        else
-            local exp = tonumber(redis.call('HGET', meta, slotKey .. ':exp') or '0')
-            if exp > 0 and exp <= now then
-                forget(slotKey)
-            end
-        end
+        and string.sub(slotKey, -6) ~= ':count'
+        and redis.call('EXISTS', slotKey) == 0 then
+        forget(slotKey)
     end
 end
 
