@@ -2,15 +2,15 @@ package settings
 
 import (
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
 const platformIntCacheTTL = 5 * time.Second
 
 type cachedInt struct {
-	value   atomic.Value
-	expires atomic.Value
+	mu      sync.Mutex
+	value   int
+	expires time.Time
 }
 
 var platformIntCache sync.Map
@@ -20,14 +20,26 @@ var platformIntCache sync.Map
 func CachedPlatformInt(key string, fallback int) int {
 	entryAny, _ := platformIntCache.LoadOrStore(key, &cachedInt{})
 	entry := entryAny.(*cachedInt)
+	entry.mu.Lock()
+	defer entry.mu.Unlock()
 	now := time.Now()
-	if expires, ok := entry.expires.Load().(time.Time); ok && now.Before(expires) {
-		if value, ok := entry.value.Load().(int); ok {
-			return value
-		}
+	if now.Before(entry.expires) {
+		return entry.value
 	}
 	value := getPlatformInt(key, fallback)
-	entry.value.Store(value)
-	entry.expires.Store(now.Add(platformIntCacheTTL))
+	entry.value = value
+	entry.expires = now.Add(platformIntCacheTTL)
 	return value
+}
+
+// InvalidatePlatformInt removes one cached setting immediately after a
+// successful DB write, so admin updates do not wait for the TTL.
+func InvalidatePlatformInt(key string) {
+	platformIntCache.Delete(key)
+}
+
+// InvalidateSettingsCache clears all cached platform integers when the
+// settings backend is replaced during initialization or test setup.
+func InvalidateSettingsCache() {
+	platformIntCache = sync.Map{}
 }

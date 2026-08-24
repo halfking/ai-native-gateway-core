@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Credential model drawer extras: IQ history chart + cross-credential check restored into `ModelOfferExtrasPanel`; identity chips deep-link to `/models?q=`.
 
 ### Fixed
+- **prompt budget settings audit fixes（2026-08-24）**：TTL 刷新改为按 key 串行，避免并发旧查询覆盖新值；settings DB 写入和 registry 初始化显式失效缓存；DB-enabled env 支持 `off/false/disabled` 关闭；整数设置拒绝小数，避免 JSON `float64` 静默截断。
 - **额度耗尽节点透明切换（2026-08-24）**：MiniMax Token Plan 等供应商额度耗尽时，后端跳过同凭据重试并切换到下一个可用节点；仅通过 `think` 摘要通知流式客户端，所有候选耗尽后才返回错误，不透传供应商额度原文。
 - **Dispatch enqueue lifecycle ordering (2026-08-24)**: credential-forwarder handoff now waits for `node_enqueued` to be published before emitting `node_selected`; this prevents SSE/live-action sequence inversions under immediate channel scheduling while keeping governor waits and upstream I/O outside the handoff lock.
 - **Release metadata alignment (2026-08-24)**: updated `VERSION`, `version.json`, and `web/public/version.json` to the merged `deeea11a` source and build `1718`; deployment builds retain the domestic Go proxy settings without forcing an incompatible local toolchain.

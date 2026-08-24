@@ -23,4 +23,7 @@ func TestGatewaySpecsPromptBudget(t *testing.T) {
 	if err := spec.Validate(-1); err == nil {
 		t.Fatal("negative budget should fail validation")
 	}
+	if err := spec.Validate(1.5); err == nil {
+		t.Fatal("fractional budget should fail validation")
+	}
 }
