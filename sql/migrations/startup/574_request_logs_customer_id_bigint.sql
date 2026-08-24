@@ -15,8 +15,20 @@
 
 BEGIN;
 
-ALTER TABLE public.request_logs_hot
-    ALTER COLUMN customer_id TYPE bigint
-    USING NULLIF(BTRIM(customer_id), '')::bigint;
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'request_logs_hot'
+          AND column_name = 'customer_id'
+          AND data_type = 'text'
+    ) THEN
+        ALTER TABLE public.request_logs_hot
+            ALTER COLUMN customer_id TYPE bigint
+            USING NULLIF(BTRIM(customer_id), '')::bigint;
+    END IF;
+END $$;
 
 COMMIT;
