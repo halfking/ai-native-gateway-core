@@ -14,7 +14,8 @@
 | resolve priority ★ + credential_label | ✅ 已合 main | cfedb41b8 推广 credential_label |
 | PATCH candidate-binding `priority` | ✅ 已合 main | 6edd7bd87 |
 | inflight protect env | ✅ 已合 main | d58c7312a |
-| 生产 browser 复测（泳道 + 队列 ★） | ⚠️ 待部署后 | 154 build 需 ≥ 本次 merge |
+| 生产 browser 复测（泳道 + 队列 ★） | ⚠️ 待部署后 | 154 build 需 ≥ 本次 merge（1693+） |
+| 节点抽屉 priority 开关 UI | ✅ 已合 main | 33c834132 |
 
 ---
 
@@ -22,11 +23,7 @@
 
 ### P2 — 队列卡片 label fallback
 
-live SSE 无 `credential_label` 时仍显示 `Provider · #N`；可优先用 resolve candidate label。
-
-### P2 — 前端 priority 开关 UI
-
-PATCH API 已有，节点抽屉「设置与维护」可加 toggle。
+live SSE 无 `credential_label` 时仍显示 `Provider · #N`；可优先用 resolve candidate label **或** `useCredentialLabels` 缓存（`nodeTitle` 已接缓存 fallback，待合）。
 
 ### P3 — 154 license restricted mode
 
