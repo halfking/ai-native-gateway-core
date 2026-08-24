@@ -126,8 +126,10 @@ func TestUpdateRequestLog_BodiesSummaryModeWritesDigest(t *testing.T) {
 	mockDB.ExpectExec(`INSERT INTO request_logs_bodies_hot`).
 		WithArgs(
 			pgxmock.AnyArg(),
+			pgxmock.AnyArg(), // tenant_id
 			bodySummaryMatcher{rawBody: requestBody},
 			bodySummaryMatcher{rawBody: responseBody},
+			pgxmock.AnyArg(), // outbound_body (Phase 1)
 		).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mockDB.ExpectCommit()
@@ -217,8 +219,10 @@ func TestUpdateRequestLog_BodiesFullModeUnchanged(t *testing.T) {
 			mockDB.ExpectExec(`INSERT INTO request_logs_bodies_hot`).
 				WithArgs(
 					pgxmock.AnyArg(),
+					pgxmock.AnyArg(), // tenant_id
 					fullBodyMatcher{want: tc.wantRequestBody},
 					fullBodyMatcher{want: tc.wantResponseBody},
+					pgxmock.AnyArg(), // outbound_body (Phase 1)
 				).
 				WillReturnResult(pgxmock.NewResult("INSERT", 1))
 			mockDB.ExpectCommit()
@@ -270,8 +274,10 @@ func TestInsertRequestLog_BodiesSummaryModeWritesDigest(t *testing.T) {
 	mockDB.ExpectExec(`INSERT INTO request_logs_bodies_hot`).
 		WithArgs(
 			pgxmock.AnyArg(),
+			pgxmock.AnyArg(), // tenant_id
 			bodySummaryMatcher{rawBody: requestBody},
 			bodySummaryMatcher{rawBody: responseBody},
+			pgxmock.AnyArg(), // outbound_body (Phase 1)
 		).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mockDB.ExpectCommit()
@@ -414,8 +420,10 @@ func TestUpdateRequestLog_BodiesSummaryModeKeepsEmptySemantics(t *testing.T) {
 			mockDB.ExpectExec(`INSERT INTO request_logs_bodies_hot`).
 				WithArgs(
 					pgxmock.AnyArg(),
+					pgxmock.AnyArg(), // tenant_id
 					tc.wantRequestBody,
 					fullBodyMatcher{want: "null"},
+					pgxmock.AnyArg(), // outbound_body (Phase 1)
 				).
 				WillReturnResult(pgxmock.NewResult("INSERT", 1))
 			mockDB.ExpectCommit()

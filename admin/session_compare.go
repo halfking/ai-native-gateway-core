@@ -180,7 +180,7 @@ func (api *SessionCompareAPI) loadCompareData(ctx context.Context, q pgx.Tx, ten
 		SELECT 
 			rl.request_id,
 			COALESCE(rb.request_body, rl.request_body) AS request_body,
-			rl.outbound_body, COALESCE(rb.response_body, rl.response_body) AS response_body,
+			COALESCE(rb.outbound_body, rl.outbound_body) AS outbound_body, COALESCE(rb.response_body, rl.response_body) AS response_body,
 			rl.compression_strategy, rl.compression_meta, 
 			rl.outbound_msg_count, rl.outbound_token_est,
 			rl.client_model, rl.outbound_model,

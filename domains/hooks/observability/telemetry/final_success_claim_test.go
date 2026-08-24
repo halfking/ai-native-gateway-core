@@ -158,11 +158,11 @@ func TestUpdateRequestLog_AppendsFinalSuccessClaimOnTerminalSuccess(t *testing.T
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	// request_logs_hot 终态 UPDATE（RETURNING ts，97 个绑定参数；含 t0..t9）
 	mock.ExpectExec(`UPDATE request_logs_hot`).
-		WithArgs(anyArgs(97)...).
+		WithArgs(anyArgs(96)...).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	// bodies 侧表 upsert
 	mock.ExpectExec(`INSERT INTO request_logs_bodies_hot`).
-		WithArgs(anyArgs(3)...).
+		WithArgs(anyArgs(5)...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	// v4 T7 claim（同事务）
 	mock.ExpectExec(`SAVEPOINT gw_final_success_claim`).
@@ -204,10 +204,10 @@ func TestUpdateRequestLog_FailurePathSkipsClaim(t *testing.T) {
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	mock.ExpectExec(`UPDATE request_logs_hot`).
-		WithArgs(anyArgs(97)...).
+		WithArgs(anyArgs(96)...).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	mock.ExpectExec(`INSERT INTO request_logs_bodies_hot`).
-		WithArgs(anyArgs(3)...).
+		WithArgs(anyArgs(5)...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mock.ExpectCommit()
 
