@@ -483,4 +483,32 @@ bash scripts/check-body-storage-schema.sh   # exit 0
 
 签字后 LP1 migration 才可 apply 245 staging。
 
+---
+
+## 9. Plan vs Actuals Drift Appendix
+
+> 本附录记录 2026-08-25 收口时的实际交付顺序，不修改原 plan 的 scope、验收标准或生产人工 gate。`PRODUCTION` 状态仍以 245 staging 证据、老板签字和 rollback readiness 为准。
+
+### 9.1 实际交付顺序
+
+| 原计划 | 实际结果 | 证据 / 说明 |
+|---|---|---|
+| LP5 → LP1 | LP5 schema audit 与 LP1 migration 已落地并收口 | `scripts/check-body-storage-schema.sh` exit 0；573 up/down migration 已提交；down 使用 `DROP VIEW + CREATE VIEW` 适配 rule 49 view freeze |
+| LP2 | telemetry body write path 已统一到 `request_logs_bodies_hot` | `domains/hooks/observability/telemetry/client.go` 的三类 body 写入均走 hot side table；主表 body binding 保持 NULL |
+| LP3 | telemetry 生命周期与 body storage 变更随并行会话合入 | telemetry race/non-race tests 与 `go build ./...`、`go vet ./...` 已通过；完整 memory RSS p99 基准仍需独立 staging 证据 |
+| LP4 | digest canary 已实现且默认关闭 | `LLM_GATEWAY_BODY_DIGEST_CANARY_APPLICATIONS` 控制 application allowlist；默认不启用，关闭变量即可回退 full body |
+| LP1/LP2/LP3/LP4 | 实际合并顺序不是线性 LP1 → LP2 → LP3 → LP4 | LP9 promotion 与 154 release 先合入；LP3/LP4 通过并行 telemetry 变更进入主线，随后由 573/LP5 收口补齐 schema rollback audit |
+
+### 9.2 尚未闭环的计划验收项
+
+- 245 当前版本探针为 `build_seq=1734`, `git_sha=268b62b5`，尚未追平 154 的 `build_seq=1735`, `git_sha=9516c244`。
+- 252 本机 `127.0.0.1:8781` 当前拒绝连接，因此不能把 252 标记为已 rollout 或 production verified。
+- LP3 的“RSS p99 ≤ baseline -30%”和 LP2/LP4 的真实 body presence/digest 查询仍需在 245 staging 完成，并保留可复现证据。
+- 573/LP1 的 154 观察窗口已开始，但本附录不替代 245 → 154 → 252 的部署门禁。
+
+### 9.3 收口决策
+
+- 已完成项按实际 commit 和 task-stop summaries 归档；历史并行 summary 已补齐 `scripts/task-stop-audit.sh verify` 所需字段。
+- 当前分支 `fix/minimax-concurrency-observability` 上的 dispatch/routing/streaming observability 改动属于另一并行工作集，不纳入本计划附录对应的归档 commit。
+- 252 rollout 保持阻塞，直到 245 追平目标 commit、staging smoke/metric 证据齐备，并完成生产人工 gate。
 
