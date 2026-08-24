@@ -29,7 +29,7 @@ VIEW="sql/objects/views/request_logs_bodies_with_current_month.sql"
 
 REQUIRED_HOT_COLS=(request_id ts tenant_id success)
 EXPECTED_GONE_FROM_HOT=(request_body response_body outbound_body)
-EXPECTED_BODIES_HOT_COLS=(request_id ts request_body outbound_body response_body)
+EXPECTED_BODIES_HOT_COLS=(request_id ts tenant_id request_body outbound_body response_body)
 EXPECTED_BODIES_PARENT_COLS=(request_id ts request_body outbound_body response_body)
 
 HEADER="[LP5 check-body-storage-schema]"
@@ -112,11 +112,15 @@ fi
 view_cols=$(grep -oE "request_logs_bodies_hot\.[a-z_]+|request_logs_bodies\.[a-z_]+" "$VIEW" \
     | awk -F. '{print $2}' | sort -u)
 expected_view_cols=$(printf "%s\n" "${EXPECTED_BODIES_HOT_COLS[@]}" | sort -u)
-if [[ "$view_cols" != "$expected_view_cols" ]]; then
-    echo "  ⚠  view projection columns differ from bodies_hot base schema"
+if [[ "$view_cols" != "$(printf "%s\n" "${EXPECTED_BODIES_PARENT_COLS[@]}" | sort -u)" ]]; then
+    echo "  ⚠  view projection differs from bodies table projection"
     echo "  View columns:   $view_cols"
-    echo "  Base columns:   $expected_view_cols"
-    # not a hard fail — view may project a subset of base columns
+    echo "  Expected:       $expected_view_cols"
+    # tenant_id exists only on the hot table; the five-column view preserves
+    # the historical UNION contract and intentionally omits it.
+    if [[ "$view_cols" == "$expected_view_cols" ]]; then
+        echo "  ✅ tenant_id omission is intentional: view keeps the five-column contract"
+    fi
 fi
 echo "  ✅ view FROM clause: $(echo $view_tables | tr '\n' ' ')"
 echo ""

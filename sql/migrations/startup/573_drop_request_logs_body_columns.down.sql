@@ -23,7 +23,9 @@ ALTER TABLE public.request_logs ADD COLUMN IF NOT EXISTS outbound_body jsonb;
 -- (2026-07-27 SSOT). SSOT canonical projection lives in
 -- sql/objects/views/request_logs_with_current_month.sql; keep both
 -- copies in sync (rule 38 §11).
-CREATE OR REPLACE VIEW public.request_logs_with_current_month AS
+DROP VIEW IF EXISTS public.request_logs_with_current_month;
+
+CREATE VIEW public.request_logs_with_current_month AS
  SELECT request_logs_hot.id,
     request_logs_hot.request_id,
     request_logs_hot.ts,
@@ -249,6 +251,20 @@ UNION ALL
     request_logs.is_final_success,
     request_logs.origin_actor
    FROM public.request_logs;
+
+-- Restore the backfill progress view removed by the up migration. The body
+-- columns now exist again, so its original progress semantics are valid.
+CREATE VIEW public.request_logs_bodies_progress AS
+ SELECT ( SELECT count(*) AS count
+            FROM public.request_logs
+           WHERE ((request_logs.request_body IS NOT NULL) OR (request_logs.outbound_body IS NOT NULL) OR (request_logs.response_body IS NOT NULL))) AS source_rows_with_body,
+     ( SELECT count(*) AS count
+            FROM public.request_logs_bodies) AS bodies_rows,
+     ( SELECT count(*) AS count
+            FROM public.request_logs
+           WHERE (((request_logs.request_body IS NOT NULL) OR (request_logs.outbound_body IS NOT NULL) OR (request_logs.response_body IS NOT NULL)) AND (NOT (EXISTS ( SELECT 1
+                    FROM public.request_logs_bodies b
+                   WHERE ((b.request_id = request_logs.request_id) AND (b.ts = request_logs.ts))))))) AS rows_pending_backfill;
 
 COMMIT;
 
