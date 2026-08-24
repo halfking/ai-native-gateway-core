@@ -143,25 +143,50 @@ func Extract(in Input) Result {
 	return r
 }
 
-// ParseMessages accepts OpenAI-style messages and both string and content-block
-// content. Invalid or oversized JSON returns an empty slice without panicking.
+// ParseMessages accepts the three wire shapes used by the gateway and
+// returns a flat, role-ordered slice suitable for the rule extractor:
+//
+//   - OpenAI chat:    {"messages":[{"role","content"}, ...]}
+//   - Anthropic:      {"system":string|[{type,text}], "messages":[{"role","content"}, ...]}
+//   - Responses API:  {"instructions":string, "input":string|[{role,content}, ...]}
+//
+// For Responses, input items use the {role,content} contract where content may
+// be a string or a content-block with {type:"input_text",text:...}. The
+// Anthropic top-level "system" is merged as the leading role=system message so
+// downstream rules (firstSystem, lastUser) work unchanged across shapes.
+// Invalid or oversized JSON returns an empty slice without panicking.
 func ParseMessages(raw []byte) []Message {
 	if len(raw) == 0 {
 		return nil
 	}
-	var wire struct {
-		Messages []struct {
-			Role    string          `json:"role"`
-			Content json.RawMessage `json:"content"`
-		} `json:"messages"`
-	}
-	if json.Unmarshal(raw, &wire) != nil || len(wire.Messages) == 0 {
+	var probe map[string]json.RawMessage
+	if json.Unmarshal(raw, &probe) != nil {
 		return nil
 	}
-	out := make([]Message, 0, min(len(wire.Messages), MaxMessages))
-	for _, m := range wire.Messages {
+	switch {
+	case hasKey(probe, "system") && !hasKey(probe, "instructions") && !hasKey(probe, "input"):
+		return parseAnthropicMessages(probe)
+	case hasKey(probe, "messages"):
+		return parseOpenAIChat(probe["messages"])
+	case hasKey(probe, "instructions") || hasKey(probe, "input"):
+		return parseResponses(probe)
+	default:
+		return nil
+	}
+}
+
+func parseOpenAIChat(raw json.RawMessage) []Message {
+	var items []struct {
+		Role    string          `json:"role"`
+		Content json.RawMessage `json:"content"`
+	}
+	if json.Unmarshal(raw, &items) != nil || len(items) == 0 {
+		return nil
+	}
+	out := make([]Message, 0, min(len(items), MaxMessages))
+	for _, m := range items {
 		role := strings.ToLower(strings.TrimSpace(m.Role))
-		if role != "system" && role != "user" && role != "assistant" && role != "tool" && role != "function" {
+		if !isKnownRole(role) {
 			continue
 		}
 		content := contentText(m.Content)
@@ -174,4 +199,151 @@ func ParseMessages(raw []byte) []Message {
 		}
 	}
 	return out
+}
+
+// parseAnthropicMessages mirrors the Anthropic /v1/messages wire shape:
+// top-level "system" is either a plain string or an array of content blocks
+// (type=text). The "messages" array uses the same {role,content} contract as
+// OpenAI chat (string or content-block array). The system field, when present,
+// is prepended so firstSystem() resolves it before any user-supplied system
+// turn.
+func parseAnthropicMessages(probe map[string]json.RawMessage) []Message {
+	var sys string
+	if raw, ok := probe["system"]; ok {
+		sys = systemFromAnthropic(raw)
+	}
+	chat := parseOpenAIChat(probe["messages"])
+	if sys == "" {
+		return chat
+	}
+	out := make([]Message, 0, len(chat)+1)
+	out = append(out, Message{Role: "system", Content: sys})
+	out = append(out, chat...)
+	if len(out) > MaxMessages {
+		out = out[:MaxMessages]
+	}
+	return out
+}
+
+func systemFromAnthropic(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return cleanText(s)
+	}
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(raw, &blocks) != nil {
+		return ""
+	}
+	parts := make([]string, 0, len(blocks))
+	for _, b := range blocks {
+		if b.Type == "text" || b.Type == "" {
+			if v := cleanText(b.Text); v != "" {
+				parts = append(parts, v)
+			}
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
+// parseResponses handles the OpenAI Responses API wire shape:
+// top-level "instructions" is a plain string, "input" is either a string or
+// an array of items with {role,content} where content is either a string or a
+// {type:"input_text",text:...} block. We treat string-form input as a single
+// user message so the heuristic extractor can still pick it up.
+func parseResponses(probe map[string]json.RawMessage) []Message {
+	var instr string
+	if raw, ok := probe["instructions"]; ok && len(raw) > 0 {
+		var s string
+		if json.Unmarshal(raw, &s) == nil {
+			instr = cleanText(s)
+		}
+	}
+	out := make([]Message, 0, MaxMessages)
+	if instr != "" {
+		out = append(out, Message{Role: "system", Content: instr})
+	}
+	if raw, ok := probe["input"]; ok && len(raw) > 0 {
+		var asString string
+		if json.Unmarshal(raw, &asString) == nil && asString != "" {
+			out = append(out, Message{Role: "user", Content: cleanText(asString)})
+		} else {
+			out = append(out, parseResponsesInputArray(raw)...)
+		}
+	}
+	if len(out) > MaxMessages {
+		out = out[:MaxMessages]
+	}
+	return out
+}
+
+func parseResponsesInputArray(raw json.RawMessage) []Message {
+	var items []struct {
+		Role    string          `json:"role"`
+		Content json.RawMessage `json:"content"`
+	}
+	if json.Unmarshal(raw, &items) != nil || len(items) == 0 {
+		return nil
+	}
+	out := make([]Message, 0, min(len(items), MaxMessages))
+	for _, m := range items {
+		if len(out) >= MaxMessages {
+			break
+		}
+		role := strings.ToLower(strings.TrimSpace(m.Role))
+		if !isKnownRole(role) {
+			continue
+		}
+		content := responsesContentText(m.Content)
+		if content == "" {
+			continue
+		}
+		out = append(out, Message{Role: role, Content: content})
+	}
+	return out
+}
+
+// responsesContentText mirrors contentText() but additionally recognizes the
+// Responses-specific input_text / output_text content-block variants. Pure
+// strings still flow through the same path.
+func responsesContentText(raw json.RawMessage) string {
+	var text string
+	if json.Unmarshal(raw, &text) == nil {
+		return cleanText(text)
+	}
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(raw, &blocks) != nil {
+		return ""
+	}
+	parts := make([]string, 0, len(blocks))
+	for _, b := range blocks {
+		switch b.Type {
+		case "text", "input_text", "output_text", "":
+			if v := cleanText(b.Text); v != "" {
+				parts = append(parts, v)
+			}
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
+func hasKey(m map[string]json.RawMessage, key string) bool {
+	_, ok := m[key]
+	return ok
+}
+
+func isKnownRole(role string) bool {
+	switch role {
+	case "system", "user", "assistant", "tool", "function":
+		return true
+	}
+	return false
 }

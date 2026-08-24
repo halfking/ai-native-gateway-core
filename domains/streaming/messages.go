@@ -441,6 +441,13 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			slog.Warn("request_logger: messages session merge failed", "request_id", requestID, "error", err)
 		}
 	}
+	// 2026-08-23: protocol-coverage for provisional metadata — mirror the
+	// chat-completions hook so /v1/messages arrivals also feed the rule
+	// extractor. The dispatcher's content-block / `system` field
+	// handling lets the Anthropic native shape produce the same
+	// heuristic signals as the OpenAI chat shape (see
+	// sessionmeta.ParseMessages).
+	h.chatHandler.invokeProvisionalMetadataOnArrival(r, sessionID, keyInfo, logCtx, bodyBytes)
 	// 2026-08-06 audit fix: Anthropic Messages native metadata.user_id
 	// remains highest priority; the unified resolver handles the
 	// remaining cases (X-End-User-Id header, OpenAI-style body
