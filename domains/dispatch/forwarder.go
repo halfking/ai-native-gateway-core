@@ -15,15 +15,16 @@ import (
 // credForwarder is the ② Credential Forwarder for one credential. It owns the
 // Tier-2 FIFO queue and the per-credential governor that paces forwarding.
 type credForwarder struct {
-	cred   CredentialRef
-	queue  chan *QueuedRequest
-	depth  atomic.Int64
-	limit  int64
-	gov    Governor
-	pipe   *Pipeline
-	ctx    context.Context
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
+	cred      CredentialRef
+	queue     chan *QueuedRequest
+	handoffMu sync.Mutex
+	depth     atomic.Int64
+	limit     int64
+	gov       Governor
+	pipe      *Pipeline
+	ctx       context.Context
+	cancel    context.CancelFunc
+	wg        sync.WaitGroup
 }
 
 func newCredForwarder(cred CredentialRef, queueDepth int, pipe *Pipeline) *credForwarder {
@@ -88,6 +89,12 @@ func (cf *credForwarder) loop() {
 			if !ok {
 				return
 			}
+			// The producer holds handoffMu while publishing node_enqueued after
+			// the channel send. Wait for that publication before the forwarder
+			// can emit node_selected, preserving lifecycle order without holding
+			// the lock during governor waits or upstream I/O.
+			cf.handoffMu.Lock()
+			cf.handoffMu.Unlock()
 			if !cf.acquire(qr) {
 				continue
 			}

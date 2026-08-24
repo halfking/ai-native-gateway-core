@@ -1191,6 +1191,7 @@ func (p *Pipeline) tryEnqueueCred(cred CredentialRef, qr *QueuedRequest) bool {
 	reqID, model, emitCtx := qr.ID, qr.ResolvedModel, ctxOf(qr)
 
 	qr.journeyMu.Lock()
+	cf.handoffMu.Lock()
 	select {
 	case cf.queue <- qr:
 		depth := cf.depth.Load()
@@ -1217,9 +1218,11 @@ func (p *Pipeline) tryEnqueueCred(cred CredentialRef, qr *QueuedRequest) bool {
 			Provider:      cred.Vendor,
 			CredentialID:  int64(cred.CredentialID),
 		})
+		cf.handoffMu.Unlock()
 		qr.journeyMu.Unlock()
 		return true
 	default:
+		cf.handoffMu.Unlock()
 		qr.journeyMu.Unlock()
 		cf.depth.Add(-1)
 		metricOverflow.WithLabelValues("cred_queue_full").Inc()
