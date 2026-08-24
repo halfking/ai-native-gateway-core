@@ -47,6 +47,8 @@ func PlatformSpecs() []*Spec {
 	// out = append(out, CredentialClientQuotaSpecs()...)
 	// 2026-08-20: 项目归属（LLM 推断）平台级主开关，默认关闭。
 	out = append(out, ProjectAttributionSpecs()...)
+	// 2026-08-24: gateway prompt budget, hot-reloadable through admin settings.
+	out = append(out, GatewaySpecs()...)
 	return out
 }
 

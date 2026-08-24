@@ -15,11 +15,11 @@ func TestPromptBudgetLimit(t *testing.T) {
 		env  string
 		want int
 	}{
-		{"unset is off", "", 0},
+		{"unset defaults to 1M", "", 1048576},
 		{"zero is off", "0", 0},
 		{"plain number", "262144", 262144},
-		{"negative disables (fail-open)", "-5", 0},
-		{"garbage disables (fail-open)", "huge", 0},
+		{"negative defaults to 1M", "-5", 1048576},
+		{"garbage defaults to 1M", "huge", 1048576},
 	}
 	t.Setenv(key, "") // ensure defined for all cases
 	for _, tc := range cases {
