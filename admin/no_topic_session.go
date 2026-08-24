@@ -135,8 +135,8 @@ func (h *Handler) handleNoTopicSessionMessages(w http.ResponseWriter, r *http.Re
 		SELECT
 			rl.ts, rl.request_id, rl.client_model, rl.outbound_model,
 			rl.request_preview, rl.response_preview,
-			COALESCE(rb.request_body::text, rl.request_body::text) AS request_body,
-			COALESCE(rb.response_body::text, rl.response_body::text) AS response_body,
+			rb.request_body::text AS request_body,
+			rb.response_body::text AS response_body,
 			rl.prompt_tokens, rl.completion_tokens, rl.latency_ms,
 			rl.cost_usd, rl.request_status, rl.error_kind,
 			rl.work_type, rl.request_mode, rl.gw_session_id
@@ -299,8 +299,8 @@ func (h *Handler) loadNoTopicTaskLogsForTitle(ctx context.Context, prefix string
 
 	rows, err := h.db.Query(ctx, `
 		SELECT rl.ts, rl.request_preview, rl.response_preview,
-		       COALESCE(rb.request_body::text, rl.request_body::text) AS request_body,
-		       COALESCE(rb.response_body::text, rl.response_body::text) AS response_body,
+		       rb.request_body::text AS request_body,
+		       rb.response_body::text AS response_body,
 		       `+requestLogStatusExpr+` AS request_status,
 		       rl.error_kind, rl.client_model
 		FROM request_logs_with_current_month rl

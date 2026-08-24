@@ -484,8 +484,8 @@ func (m *pgRequestLogsSource) getSessionMessagesQuery() string {
 	return `
 		SELECT
 			rl.request_id,
-			COALESCE(COALESCE(rb.request_body, rl.request_body)->>'role', 'user') as role,
-			COALESCE(COALESCE(rb.request_body, rl.request_body)->'messages'->-1->>'content', '') as content,
+			COALESCE(rb.request_body->>'role', 'user') as role,
+			COALESCE(rb.request_body->'messages'->-1->>'content', '') as content,
 			rl.outbound_model,
 			rl.ts
 		FROM request_logs rl
@@ -527,8 +527,8 @@ func (m *pgRequestLogsSource) GetMessagesSince(ctx context.Context, tenantID, se
 	}
 	query := `
 		SELECT rl.request_id,
-		       COALESCE(COALESCE(rb.request_body, rl.request_body)->>'role', 'user') as role,
-		       COALESCE(COALESCE(rb.request_body, rl.request_body)->'messages'->-1->>'content', '') as content,
+		       COALESCE(rb.request_body->>'role', 'user') as role,
+		       COALESCE(rb.request_body->'messages'->-1->>'content', '') as content,
 		       rl.outbound_model, rl.ts
 		FROM request_logs rl
 		LEFT JOIN request_logs_bodies rb

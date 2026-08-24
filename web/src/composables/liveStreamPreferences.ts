@@ -2,15 +2,25 @@
 //
 // 2026-08-24 LP7: 复用 LP6 useChatSessions debounce pattern —
 // 300ms coalesce + lifecycle flush + snapshot short-circuit + cleanup。
+// LP9 (2026-08-24): 持久化原语（debounce timer / snapshot short-circuit /
+// lifecycle listeners / scope cleanup）抽到 persistenceShared.ts，
+// useChatSessions / usePersistedValue 共享同一份实现。本文件保留
+// user + tenant-scoped key generation + legacy migration + dual-write
+// side-effect + module-level cache 这些 usePersistedValue 容纳不下的
+// 业务逻辑。
 
 import type { GroupByDimension, SwimLaneMode } from '../types/swimlane'
 import { getCurrentTenantId, store } from '../store'
-import { onScopeDispose } from 'vue'
+import {
+  createDebouncedFlush,
+  installLifecycleFlush,
+  installScopeCleanup,
+  PERSIST_DEBOUNCE_MS,
+} from './persistenceShared'
 
 const LIVE_STREAM_PREFERENCES_STORAGE_KEY_PREFIX = 'llmgw_live_stream_preferences_v1'
 const LEGACY_LIVE_STREAM_PREFERENCES_STORAGE_KEY = 'llmgw_live_stream_preferences_v1'
 const LEGACY_SWIM_LANE_MODE_STORAGE_KEY = 'llmgw_swimlane_mode'
-const PERSIST_DEBOUNCE_MS = 300
 
 /** Current user + tenant-scoped key. Browser users never inherit each other's filters. */
 export function liveStreamPreferencesStorageKey(): string {
@@ -176,14 +186,17 @@ function normalize(raw: unknown): LiveStreamPreferences {
 // ─── Debounced persistence (LP7, 2026-08-24) ──────────────────────────────
 // 复用 LP6 useChatSessions pattern：300ms debounce + snapshot short-circuit +
 // lifecycle flush + onScopeDispose 清理 + try/catch 错误降级。
+// LP9 (2026-08-24): debounce / snapshot / lifecycle / cleanup 全部迁到
+// persistenceShared.ts（与 useChatSessions / usePersistedValue 共享实现）。
+// 本文件保留 user+tenant-scoped key generation + legacy migration + dual-write
+// side-effect + module-level cache 这些 usePersistedValue 容纳不下的业务逻辑。
 
-let persistTimer: ReturnType<typeof setTimeout> | null = null
-let pendingKey: string | null = null
-let pendingPreferences: LiveStreamPreferences | null = null
-let lastPersistedSnapshot: string | null = null
 // In-memory cache 是真相源（对齐 LP6 pattern）。Key-tracked 防止 user 切换读到旧值。
 let currentPreferences: LiveStreamPreferences | null = null
 let currentPreferencesKey: string | null = null
+let pendingKey: string | null = null
+let pendingPreferences: LiveStreamPreferences | null = null
+
 function persistLiveStreamPreferencesImmediate(key: string, preferences: LiveStreamPreferences): void {
   // Best-effort: localStorage 可能抛错（隐私模式/配额），下次 flush 会重试。
   try {
@@ -194,59 +207,57 @@ function persistLiveStreamPreferencesImmediate(key: string, preferences: LiveStr
 
 /** Test-only hook: reset module-level state. `_` prefix 标志非生产 API。*/
 export function _resetPersistState(): void {
-  if (persistTimer != null) { clearTimeout(persistTimer); persistTimer = null }
+  persistHandle.cancel()
   pendingKey = null
   pendingPreferences = null
-  lastPersistedSnapshot = null
   currentPreferences = null
   currentPreferencesKey = null
 }
 
 export function flushPersist(): boolean {
-  if (persistTimer != null) { clearTimeout(persistTimer); persistTimer = null }
-  if (pendingKey == null || pendingPreferences == null) return true
+  if (pendingKey == null || pendingPreferences == null) {
+    return persistHandle.flush()
+  }
   const key = pendingKey
   const preferences = pendingPreferences
   pendingKey = null
   pendingPreferences = null
-  const snapshot = JSON.stringify(preferences)
-  if (snapshot === lastPersistedSnapshot) return true
-  try {
-    persistLiveStreamPreferencesImmediate(key, preferences)
-    lastPersistedSnapshot = snapshot
-    return true
-  } catch { return false }
+  // Stage the pending snapshot before delegating so createDebouncedFlush's
+  // snapshot-source closure sees the most recent write.
+  currentPreferencesKey = key
+  currentPreferences = preferences
+  return persistHandle.flush()
 }
+
+// Debounce / snapshot / lifecycle / cleanup are now shared with LP6 + LP8
+// via persistenceShared.ts. The write callback handles the dual-write
+// (main key + legacy swimlane mode) and any localStorage failures.
+const persistHandle = createDebouncedFlush<LiveStreamPreferences>({
+  getSnapshot: () => pendingPreferences ?? currentPreferences,
+  serialize: (prefs) => JSON.stringify(prefs),
+  write: (prefs) => {
+    const key = currentPreferencesKey
+    if (!key) return true
+    persistLiveStreamPreferencesImmediate(key, prefs)
+    return true
+  },
+  debounceMs: PERSIST_DEBOUNCE_MS,
+})
 
 function schedulePersist(key: string, preferences: LiveStreamPreferences): void {
   pendingKey = key
   pendingPreferences = preferences
-  if (persistTimer != null) clearTimeout(persistTimer)
-  persistTimer = setTimeout(() => { persistTimer = null; flushPersist() }, PERSIST_DEBOUNCE_MS)
+  currentPreferencesKey = key
+  currentPreferences = preferences
+  persistHandle.schedule()
 }
 
-// Lifecycle flush handlers — visibilitychange 覆盖移动端后台（beforeunload 常不触发）
-function handleVisibilityFlush() {
-  if (typeof document !== 'undefined' && document.visibilityState === 'hidden') flushPersist()
-}
-function handleLifecycleFlush() { flushPersist() }
-
-if (typeof window !== 'undefined') {
-  window.addEventListener('visibilitychange', handleVisibilityFlush)
-  window.addEventListener('pagehide', handleLifecycleFlush)
-  window.addEventListener('beforeunload', handleLifecycleFlush)
-}
-
-try {
-  onScopeDispose(() => {
-    flushPersist()
-    if (typeof window !== 'undefined') {
-      window.removeEventListener('visibilitychange', handleVisibilityFlush)
-      window.removeEventListener('pagehide', handleLifecycleFlush)
-      window.removeEventListener('beforeunload', handleLifecycleFlush)
-    }
-  })
-} catch { /* not inside an effect scope; listeners remain until page unload */ }
+// Lifecycle flush listeners + scope cleanup delegate to the shared helper.
+// liveStreamPreferences is module-level so installScopeCleanup is a no-op
+// when called outside an active effect scope — the listeners live until
+// page unload, which matches the module's actual lifetime.
+const removeLifecycleListeners = installLifecycleFlush(flushPersist)
+installScopeCleanup(flushPersist, removeLifecycleListeners)
 
 /**
  * Reads validated real-time dashboard preferences for the active user + tenant.

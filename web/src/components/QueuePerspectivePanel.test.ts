@@ -847,8 +847,35 @@ describe('QueuePerspectivePanel', () => {
   })
 
   it('falls back to cached credential label on node cards when SSE and resolve omit it', async () => {
+    // 2026-08-25 audit fix: the mock previously used a bare { id, label }
+    // object, which vue-tsc rejects against CredentialMonitorSummary (20+
+    // required fields). Build a minimal type-correct fixture instead —
+    // useCredentialLabels only reads id + label, so defaults are fine.
     vi.mocked(getCredentialMonitorSummary).mockResolvedValue({
-      credentials: [{ id: 5, label: 'hzx-prod' }],
+      credentials: [{
+        id: 5,
+        provider_id: 1,
+        provider_name: 'p',
+        label: 'hzx-prod',
+        status: 'active',
+        availability_state: 'available',
+        health_status: 'healthy',
+        quota_state: 'ok',
+        concurrency_limit: null,
+        concurrency_limit_auto: null,
+        effective_concurrency: 0,
+        manual_disabled: false,
+        consecutive_failures: 0,
+        availability_recover_at: null,
+        state_reason_code: null,
+        state_reason_detail: null,
+        health_checked_at: null,
+        total_requests: 0,
+        model_total: 0,
+        model_available: 0,
+        broken_model_count: 0,
+      }],
+      count: 1,
     })
     resolveRouting.mockImplementation(async (model: string) => ({
       raw_models: [model],

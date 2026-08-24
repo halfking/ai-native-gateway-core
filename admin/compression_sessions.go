@@ -86,7 +86,13 @@ func (h *Handler) handleCompressionSessions(w http.ResponseWriter, r *http.Reque
 
 	tenantFilter := IsTenantAdmin(r)
 
-	whereClause := `rl.ts >= $1 AND rl.ts <= $2 AND rl.outbound_body IS NOT NULL AND rl.gw_session_id IS NOT NULL AND ($3 OR rl.success)`
+	// 2026-08-24 LP1: rl.outbound_body column was dropped (migration 573);
+	// keep the predicate so the WHERE clause still compiles, but the
+	// "outbound_body IS NOT NULL" half now always matches because the
+	// column is gone from the view. Use compression_reason (independent
+	// column still present) as the actual "this session was compressed"
+	// signal. LP7 follow-up will revisit the API surface.
+	whereClause := `rl.ts >= $1 AND rl.ts <= $2 AND rl.compression_reason IS NOT NULL AND rl.gw_session_id IS NOT NULL AND ($3 OR rl.success)`
 	args := []any{from, to, !tenantFilter}
 	argIdx := 4
 	tenantFrag, tenantArgs, nextArg := tenantLogsClause(r, argIdx)
