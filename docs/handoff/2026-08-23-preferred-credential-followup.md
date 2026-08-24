@@ -390,3 +390,41 @@ stash@{0} 存在第三方 team 的 WIP（halfking/halfking-other-team changes, p
 ### 范围控制
 
 本次 commit **只触碰 telemetry 域的 3 个文件**（`sanitize_prometheus.go` / `client.go` / 测试文件）。其他脏文件保持原状。
+
+---
+
+## §13. 凭据名称化（credential-label）全链路闭合（2026-08-24）
+
+> 后续会话接手时优先看本节。本任务独立于 §1-§6 的 preferred-credential 待办，不依赖 Bandit wiring。
+
+### 目标
+
+把"凭据 ID → 凭据名称（`credentials.label`）"从 admin 控制台推广到实时流节点状态面板，消除前端裸 `credential_id` 显示。
+
+### 交付（全部已 push origin/main）
+
+| 提交 | 内容 | 状态 |
+|---|---|---|
+| `cfedb41b8` | action 通道 `credential_label` 下发 + 节点矩阵卡片名称化 + 租户维度缓存 | ✅ |
+| `b8b49c7fc` | `node_update`(delta) 路径 `c.label` 投影 + 剩余 5 个视图名称化 + vue-tsc 存量错误清零 + 8 语言包孤儿 key 清理 | ✅ |
+| `508050a45` | 移除未使用的 `wireNodeStatusProvider` 死代码（`cmd/gateway/main_v32_wiring.go`，-75/+6） | ✅ |
+
+### 代码落点（验证已就位）
+
+- **后端 wire**：`cmd/gateway/main_livestream.go:316` `SELECT c.id, COALESCE(c.label, ''), ...` → `LiveNodeStatus.CredentialLabel`（Scan 绑定 `liveStreamStore.ts:80/199` 同名字段）→ `fanOutNodeUpdate` 经 SSE `node_update` / `initial_data` 下发。
+- **前端消费**：`NodeDetailDrawer.vue:67`（`credential_label?.trim() || nodeLabel(id)`）、`QueuePerspectivePanel.vue:665`（`credentialDisplayName(candidate, providerLabel, id, label)`）、`DispatchWaterfallDetail` / `EmergencyDiagnosticModal` / `NodeHealthTimelineView` / `DecisionsView` / `CredentialMonitorView` 均已改为名称优先。
+
+### 验证结论
+
+- `go build/vet/test ./...` ✅；`vue-tsc --noEmit` 0 错误；`vitest` 59/59 ✅；`i18n:check` ✅。
+- **245 部署态**：`v2.4.7` / git_sha `78160af5`（本地 HEAD 同 sha）已含本任务全部提交。
+  - 前端产物 10 个 chunk 含 `credential_label`，且 `credentialDisplayName` 已 bake。
+  - 后端 `liveNodeStatusProvider` SQL 实测投影 `c.label` → `LiveNodeStatus.CredentialLabel`，SSE `node_update` 帧带 `credential_label`。
+
+### 部署建议
+
+凭据名称化为纯展示增强，不改路由/鉴权语义，**无需 154 单独 promote**——245 与 154 共享 252 PG17，且 154 后续 fast-forward 到含 `b8b49c7fc` 的 HEAD 时自动获得。当前 154 尚未包含本提交，等下次 154 常规滚动部署即可。
+
+### 范围控制
+
+本任务**只触碰** `cmd/gateway/main_livestream.go` + 前端组件/类型/i18n（见 `b8b49c7fc` 21 文件 stat）+ `main_v32_wiring.go` 死代码（`508050a45`）。工作树上其他会话的脏文件（request body storage 优化、vendor credential error detail 等）保持原状、不触碰。
