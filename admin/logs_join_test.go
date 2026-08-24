@@ -76,8 +76,8 @@ func TestGetLogDetail_TimestampMismatch(t *testing.T) {
 	var requestBodyWithTS, responseBodyWithTS *string
 	err = pool.QueryRow(ctx, `
 		SELECT 
-		  COALESCE(rb.request_body::text, rl.request_body::text) AS request_body,
-		  COALESCE(rb.response_body::text, rl.response_body::text) AS response_body
+		  rb.request_body::text AS request_body,
+		  rb.response_body::text AS response_body
 		FROM request_logs_with_current_month rl
 		LEFT JOIN request_logs_bodies_with_current_month rb 
 		  ON rb.request_id = rl.request_id AND rb.ts = rl.ts
@@ -94,8 +94,8 @@ func TestGetLogDetail_TimestampMismatch(t *testing.T) {
 	var requestBodyWithoutTS, responseBodyWithoutTS *string
 	err = pool.QueryRow(ctx, `
 		SELECT 
-		  COALESCE(rb.request_body::text, rl.request_body::text) AS request_body,
-		  COALESCE(rb.response_body::text, rl.response_body::text) AS response_body
+		  rb.request_body::text AS request_body,
+		  rb.response_body::text AS response_body
 		FROM request_logs_with_current_month rl
 		LEFT JOIN request_logs_bodies_with_current_month rb 
 		  ON rb.request_id = rl.request_id

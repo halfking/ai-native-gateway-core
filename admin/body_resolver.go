@@ -208,8 +208,8 @@ func (h *Handler) lookupControlledBody(ctx context.Context, requestID, tenantID 
 	// never invokes the UNION view over archived/columnar partitions.
 	err := h.bodyDB.QueryRow(ctx, `
 		SELECT rl.ts,
-		       COALESCE(rb.request_body::text, rl.request_body::text),
-		       COALESCE(rb.response_body::text, rl.response_body::text)
+		       rb.request_body::text,
+		       rb.response_body::text
 		  FROM request_logs_hot rl
 		  LEFT JOIN request_logs_bodies_hot rb
 		    ON rb.request_id = rl.request_id AND rb.ts = rl.ts
@@ -227,8 +227,8 @@ func (h *Handler) lookupControlledBody(ctx context.Context, requestID, tenantID 
 
 	err = h.bodyDB.QueryRow(ctx, `
 		SELECT rl.ts,
-		       COALESCE(rb.request_body::text, rl.request_body::text),
-		       COALESCE(rb.response_body::text, rl.response_body::text)
+		       rb.request_body::text,
+		       rb.response_body::text
 		  FROM request_logs_with_current_month rl
 		  LEFT JOIN request_logs_bodies_with_current_month rb
 		    ON rb.request_id = rl.request_id AND rb.ts = rl.ts

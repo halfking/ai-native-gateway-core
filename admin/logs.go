@@ -224,11 +224,12 @@ const requestLogsListCols = `
 	st.title AS session_title
 `
 
-// requestLogsDetailCols extends the list columns with the three JSONB blobs
-// needed by the detail drawer (outbound_body / outbound_msg_hashes /
-// compression_meta). Used only by getLog (/api/logs/:id).
+// requestLogsDetailCols extends the list columns with JSONB metadata
+// needed by the detail drawer (outbound_msg_hashes / compression_meta).
+// outbound_body was dropped in migration 573 (LP1); callers needing the
+// outbound payload now fetch via /api/logs/:id/bodies.
+// Used only by getLog (/api/logs/:id).
 const requestLogsDetailCols = requestLogsListCols + `,
-	rl.outbound_body,
 	rl.outbound_msg_hashes,
 	rl.compression_meta,
 	-- 2026-07-01: 完整附件元数据 JSONB 数组 (migration 325)，
