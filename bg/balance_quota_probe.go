@@ -57,7 +57,7 @@ type BalanceQuotaProbe struct {
 	forceCooldown time.Duration
 
 	// forceMu guards forceLastSeen.
-	forceMu      sync.Mutex
+	forceMu       sync.Mutex
 	forceLastSeen map[int]time.Time
 }
 

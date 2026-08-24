@@ -110,11 +110,11 @@ type CredentialAutoHealWorker struct {
 	maxDisabledDur time.Duration
 	batchSize      int
 
-	stopCh   chan struct{}
-	stopOnce sync.Once
+	stopCh    chan struct{}
+	stopOnce  sync.Once
 	startOnce sync.Once
-	cancel   context.CancelFunc
-	wg       sync.WaitGroup
+	cancel    context.CancelFunc
+	wg        sync.WaitGroup
 }
 
 // NewCredentialAutoHealWorker 构造 worker。submit 可以为 nil（测试场景），

@@ -293,15 +293,15 @@ func (cf *credForwarder) attempt(qr *QueuedRequest) {
 
 	if out.Err == nil {
 		metricForwarded.WithLabelValues(itoa(cf.cred.CredentialID), "success").Inc()
+		releaseResources()
 		cf.pipe.complete(qr, out)
-		releaseResources() // Release after completion for success
 		return
 	}
 	if out.BytesSent {
 		// Bytes already left the client: do NOT switch nodes (ADR-Disp-003).
 		metricForwarded.WithLabelValues(itoa(cf.cred.CredentialID), "fail_postfirstbyte").Inc()
+		releaseResources()
 		cf.pipe.complete(qr, out)
-		releaseResources() // Release after completion for post-first-byte failure
 		return
 	}
 	// Pre-first-byte failure: capacity already released above

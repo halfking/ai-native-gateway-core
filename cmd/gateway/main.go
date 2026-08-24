@@ -5508,6 +5508,7 @@ func main() {
 		// 2026-08-11 (479): V2 多层队列调度实时快照（Tier-3 显示与统计）。
 		mux.HandleFunc("/api/admin/dispatch/queues", wrapAdmin(handleDispatchQueues))
 		mux.HandleFunc("/api/admin/dispatch/waterfall", wrapAdmin(handleDispatchWaterfall))
+		mux.HandleFunc("/api/admin/dispatch/minute-stats", wrapAdmin(handleDispatchMinuteStats))
 		slog.Info("dispatch_v2 queue snapshot enabled (/api/admin/dispatch/queues, /waterfall)")
 
 		// D2 (2026-08-07): Cache Metrics API
@@ -5689,6 +5690,9 @@ func main() {
 	// 因此只要在 srv 接受请求前注入即可。dispatch_v2.enabled 的 atomic 缓存
 	// 已在 syncDispatchGateFromSettings 同步；此处仅构造与启动 worker 池。
 	pipeline := wireDispatchPipeline(routingExec)
+	if pipeline != nil && sessionPref != nil {
+		pipeline.SetSessionAffinitySink(sessionPreferenceAffinitySink{preference: sessionPref})
+	}
 	if dbConn != nil && dbConn.Enabled() {
 		setGatewayDispatchPool(dbConn.Pool())
 	}
@@ -5701,6 +5705,8 @@ func main() {
 		}
 		if redisClientForCache != nil {
 			pipeline.SetQueueMirror(dispatch.NewQueueMirror(redisClientForCache.Client()))
+			gatewayMinuteStats = dispatch.NewMinuteStatsAggregator(redisClientForCache.Client())
+			pipeline.SetMinuteStatsSink(gatewayMinuteStats)
 		}
 		// 分布式容量治理 Stage B (dispatch governance, 2026-08-22): 通过
 		// LLM_GATEWAY_DISPATCH_GOVERNOR_BACKEND 选择 governor backend;

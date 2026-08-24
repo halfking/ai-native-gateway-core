@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/kaixuan/llm-gateway-go/admin"
 	"github.com/kaixuan/llm-gateway-go/domains/dispatch"
@@ -28,6 +29,7 @@ var gatewayQueueProjection queueProjectionHolder
 var gatewayLiveActionsEmitter *liveactions.Emitter
 
 var gatewayRequestJourneySink dispatch.ObservationSink
+var gatewayMinuteStats *dispatch.MinuteStatsAggregator
 
 func stableGatewayInstanceID() string {
 	if configured := strings.TrimSpace(os.Getenv("LLM_GATEWAY_INSTANCE_ID")); configured != "" {
@@ -123,4 +125,33 @@ func handleDispatchWaterfall(w http.ResponseWriter, r *http.Request) {
 	snap = mergeWaterfallWithDB(r.Context(), snap, limit, model, credID, tenantID)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(snap)
+}
+
+// handleDispatchMinuteStats serves the Redis-backed immediate operational
+// projection. Persistent financial reporting remains under /api/admin/stats.
+func handleDispatchMinuteStats(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if gatewayMinuteStats == nil {
+		http.Error(w, "minute stats projection unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	bucket := time.Now().UTC()
+	if raw := strings.TrimSpace(r.URL.Query().Get("bucket")); raw != "" {
+		parsed, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			http.Error(w, "bucket must be RFC3339", http.StatusBadRequest)
+			return
+		}
+		bucket = parsed
+	}
+	stats, err := gatewayMinuteStats.List(r.Context(), bucket)
+	if err != nil {
+		http.Error(w, "minute stats unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"bucket": bucket.UTC().Truncate(time.Minute), "items": stats})
 }

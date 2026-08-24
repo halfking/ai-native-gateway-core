@@ -25,6 +25,11 @@ import (
 //     (llmgw_dispatch_registry_capacity). Pressure evicts the oldest
 //     completed entry; CompletedWatermark = 50 (soft, FIFO by completed_at).
 type Config struct {
+	// TotalQueueCapacity is the real execution admission bound. A request
+	// holds one slot from Submit until complete; registry bookkeeping does not
+	// participate in this bound. Default 1000.
+	TotalQueueCapacity int
+
 	// MaxQueueDepth is the per-credential Tier-2 (and per-model Tier-1)
 	// queue capacity (the "waiting room"). 0 = unlimited (discouraged).
 	// Default 300 since v4 (was 1024): full ⇒ reject immediately with an
@@ -62,6 +67,7 @@ type Config struct {
 // DefaultConfig returns conservative defaults used when hotconfig is absent.
 func DefaultConfig() Config {
 	return Config{
+		TotalQueueCapacity: 1000,
 		MaxQueueDepth:      300,
 		MaxQueueWaitMS:     0,
 		StatsBuffer:        256,
@@ -80,6 +86,7 @@ func LoadConfig(hotCfg *hotconfig.Config) Config {
 		return DefaultConfig()
 	}
 	return Config{
+		TotalQueueCapacity: clampInt(hotCfg.GetInt("llmgw_dispatch_total_queue_capacity", 1000), 1, 100000),
 		MaxQueueDepth:      clampInt(hotCfg.GetInt("llmgw_dispatch_max_queue_depth", 300), 0, 100000),
 		MaxQueueWaitMS:     clampInt(hotCfg.GetInt("llmgw_dispatch_max_queue_wait_ms", 0), 0, 60000),
 		StatsBuffer:        clampInt(hotCfg.GetInt("llmgw_dispatch_stats_buffer", 256), 0, 4096),
