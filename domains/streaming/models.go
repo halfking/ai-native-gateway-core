@@ -7,12 +7,15 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/kaixuan/llm-gateway-go/domains/authentication"
 )
 
 // ModelsHandler serves the /v1/models endpoint.
 // It returns only models that have valid, active credentials.
 type ModelsHandler struct {
-	dbPool *pgxpool.Pool
+	dbPool      *pgxpool.Pool
+	keyVerifier *authentication.KeyVerifier
 }
 
 func NewModelsHandler() *ModelsHandler {
@@ -23,7 +26,35 @@ func (h *ModelsHandler) SetDB(pool *pgxpool.Pool) {
 	h.dbPool = pool
 }
 
+// SetKeyVerifier wires the data-plane key verifier. Once set, /v1/models
+// requires a valid sk-* API key like every other /v1 endpoint (rule 20 §2).
+// Before the 2026-08-24 static-gate fix this handler relied on the global
+// static gate for auth, which only accepted the single key configured in
+// LLM_GATEWAY_API_KEY; sk-* keys now bypass that gate and must be verified
+// here against api_keys.
+func (h *ModelsHandler) SetKeyVerifier(v *authentication.KeyVerifier) {
+	h.keyVerifier = v
+}
+
 func (h *ModelsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if h.keyVerifier != nil && h.keyVerifier.Enabled() {
+		rawKey := extractBearerToken(r)
+		if rawKey == "" {
+			writeErrorJSON(w, http.StatusUnauthorized, "", "Missing API key", "authentication_error", "missing_key")
+			return
+		}
+		keyInfo, err := h.keyVerifier.Verify(r.Context(), rawKey)
+		if err != nil {
+			if _, ok := err.(*authentication.InvalidKeyError); ok {
+				writeErrorJSON(w, http.StatusUnauthorized, "", "Invalid or expired API key", "authentication_error", "invalid_key")
+				return
+			}
+			slog.Warn("models: key verification failed", "error", err)
+			writeErrorJSON(w, http.StatusServiceUnavailable, "", "Authentication service temporarily unavailable", "server_error", "auth_unavailable")
+			return
+		}
+		_ = keyInfo
+	}
 	if h.dbPool == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
 			"error": map[string]string{

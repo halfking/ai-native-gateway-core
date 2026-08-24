@@ -146,6 +146,37 @@ func TestAuthMiddleware_RejectsInvalidBearer(t *testing.T) {
 	}
 }
 
+func TestAuthMiddleware_PassesSkKeysToDBVerifier(t *testing.T) {
+	// 2026-08-24 incident fix: sk-* data-plane keys must bypass the static
+	// gate — they are validated downstream by KeyVerifier against api_keys.
+	// The static gate must never reject a DB-issued key just because it
+	// differs from LLM_GATEWAY_API_KEY (replicas hold different values).
+	called := false
+	mw := NewAuthMiddleware("secret-key")
+	handler := mw.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		if IsGlobalAuthPassed(r.Context()) {
+			t.Error("sk-* pass-through must not mark ctx as global-auth-passed")
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	for _, key := range []string{"sk-anything", "sk-RZ8dm0z-example", "sk-"} {
+		called = false
+		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+		req.Header.Set("Authorization", "Bearer "+key)
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+
+		if !called {
+			t.Errorf("key %q: handler should be called (sk-* goes to DB verifier), got status=%d", key, rr.Code)
+		}
+		if rr.Code != http.StatusOK {
+			t.Errorf("key %q: expected 200, got %d", key, rr.Code)
+		}
+	}
+}
+
 func TestAuthMiddleware_BypassesHealthAndMetrics(t *testing.T) {
 	called := false
 	mw := NewAuthMiddleware("secret-key")
