@@ -2229,6 +2229,9 @@ func main() {
 	var durableWorker *streaming.DurableRecoveryWorker
 	if dbConn != nil && dbConn.Enabled() {
 		modelsHandler.SetDB(dbConn.Pool())
+		// 2026-08-24: /v1/models must verify sk-* keys itself now that the
+		// static gate passes data-plane keys through to the DB verifier.
+		modelsHandler.SetKeyVerifier(keyVerifier)
 
 		// Derive credential decryption keys early so discovery can use them
 		var ferr error

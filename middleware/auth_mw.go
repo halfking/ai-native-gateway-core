@@ -64,6 +64,23 @@ func (m *AuthMiddleware) Wrap(next http.Handler) http.Handler {
 		}
 		provided := auth[7:]
 
+		// Data-plane sk-* keys are NOT validated here. They are verified
+		// per-request by domains/authentication.KeyVerifier against
+		// api_keys (key_hash + enabled + status + expires_at). The static
+		// gate must not shadow that check: with replicas holding different
+		// LLM_GATEWAY_API_KEY values (each accidentally set to a user's
+		// sk-key), the gate rejected every OTHER valid DB key with the
+		// same "Invalid or expired API key" 401 as a real auth failure —
+		// and nginx failover to the backup replica rejected the primary's
+		// key during every deploy/restart window (2026-08-24 incident).
+		// Rule 20 §2: /v1/* accepts sk-* via the DB verifier; the static
+		// key below only covers non-sk- internal callers (health probes,
+		// self-check, deploy scripts).
+		if strings.HasPrefix(provided, "sk-") {
+			next.ServeHTTP(w, r)
+			return
+		}
+
 		if subtle.ConstantTimeCompare([]byte(m.expectedKey), []byte(provided)) != 1 {
 			slog.Warn("auth: invalid API key",
 				"remote", r.RemoteAddr,
