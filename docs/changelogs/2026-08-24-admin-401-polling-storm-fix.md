@@ -48,3 +48,9 @@ psql:573: ERROR: cannot drop columns from view
 ## 事故记录（流程）
 
 23:15 另一会话提交 78160af51 时清空了本会话未提交的工作树改动（auth_mw/_core/两个组件/测试全灭），23:20 的部署因此不带修复。已全部重做并**先提交（43899e219）再部署**。多会话并行务必走 worktree 隔离（rule 26）。
+
+## 追加（00:00-00:30）：全局 key 统一 + 第二次覆盖事故
+
+1. **第二次覆盖**：另一会话 00:00:57 将 245 部署回其分支 496f3cf42（分叉早于 85d9393a4，静态门修复在 245 短暂复活，实测 sk-gwops 新 key 被静态门拒）。origin/main 此后已正确合并双方（aface2d64），本地快进后重部署 245（seq 1726）恢复；154 随后同版部署（seq 1727）消除偏斜。
+2. **全局 key 统一（原遗留项①完成）**：新专用 ops key `sk-gwops-*` 注册进 api_keys（id=113，owner=gateway-ops，is_system=true）；替换四处 envs SSOT 旧值（common/llm-providers 原为第三把 key、project/154 原为用户 key89、server-245 原为用户 key105 —— 三值漂移正是间歇 401 的配置根源）+ sops enc 重加密（recipient 不变）+ envs 仓库提交 3ad22ee；154 `/etc/llm-gateway-go/env` 与 245 `/opt/llm-gateway-go/.env`（注意两台 unit 的 EnvironmentFile 路径不同：llm-gateway-go.service vs llmgo-245.service）均备份后替换并重启。验证：双进程 key sha 一致（eb7e96002b82）；ops key 经 llm.kxpms.cn / llmgo.kxpms.cn / 两台直连均 200；用户 key89 无回归（仍是有效 DB key）；未来部署经 inject_gateway_api_key 从 SSOT 注入同值。
+3. 遗留：两台服务器各保留 `env.bak-gwops-*` 备份（含旧用户 key 值，用户 key 本就有效，风险低）；common 的 `LLM_GATEWAY_API_KEY_LOCAL`（dev 变体）未动。
