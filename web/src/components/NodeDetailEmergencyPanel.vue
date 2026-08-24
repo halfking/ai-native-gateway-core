@@ -164,7 +164,7 @@ async function confirm() {
 .nd-em-card.danger { border-left: 3px solid var(--kx-danger); }
 .nd-em-card.success { border-left: 3px solid var(--kx-success); }
 .nd-em-card.warning { border-left: 3px solid var(--kx-warning); }
-.nd-em-card.info { border-left: 3px solid #2563eb; }
+.nd-em-card.info { border-left: 3px solid var(--accent); }
 .nd-em-card strong { display: block; font-size: 13px; margin-bottom: 4px; }
 .nd-em-card p { margin: 0 0 8px; font-size: 11px; color: var(--kx-muted); }
 @media (max-width: 700px) { .nd-em-grid { grid-template-columns: 1fr; } }

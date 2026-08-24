@@ -949,18 +949,18 @@ function routingAttempts(): RequestLogDetail['routing_attempts'] {
   align-items: center;
   gap: 6px;
   padding: 2px 8px;
-  background: rgba(64, 158, 255, 0.12);
-  border: 1px solid rgba(64, 158, 255, 0.4);
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 20%, transparent);
   border-radius: 4px;
   font-size: 12px;
-  color: #1890ff;
+  color: var(--accent);
 }
 .probe-info .probe-origin {
   font-weight: 500;
 }
 .probe-info .probe-attempt {
   padding: 0 6px;
-  background: rgba(64, 158, 255, 0.2);
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
   border-radius: 3px;
   font-weight: 600;
 }
@@ -989,7 +989,7 @@ function routingAttempts(): RequestLogDetail['routing_attempts'] {
   line-height: 16px;
   border-radius: 8px;
   background: var(--accent);
-  color: #fff;
+  color: var(--on-primary);
   font-size: 10px;
   text-align: center;
   vertical-align: middle;
@@ -1048,12 +1048,12 @@ function routingAttempts(): RequestLogDetail['routing_attempts'] {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #0d1b2a;
+  background: var(--probe-dark-bg);
   cursor: pointer;
   overflow: hidden;
 }
 .attachment-thumb:hover {
-  background: #122438;
+  background: var(--probe-dark-bg);
 }
 .attachment-img {
   max-width: 100%;
@@ -1116,8 +1116,8 @@ function routingAttempts(): RequestLogDetail['routing_attempts'] {
   max-height: 88vh;
   object-fit: contain;
   border-radius: 4px;
-  background: #000;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+  background: var(--kx-text);
+  box-shadow: 0 8px 32px var(--overlay-strong);
 }
 .session-meta-section {
   background: var(--surface-primary);

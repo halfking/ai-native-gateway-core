@@ -105,17 +105,17 @@ watch(
   padding: 1rem;
 }
 .dialog-content {
-  background: #fff;
-  border: 1px solid #dce3ee;
+  background: var(--on-primary);
+  border: 1px solid var(--border);
   border-radius: 12px;
   padding: 1.5rem;
   max-width: 540px;
   width: 100%;
   box-shadow: 0 24px 48px rgba(21, 32, 51, 0.16);
-  color: #152033;
+  color: var(--kx-text);
 }
 .dialog-content h2 { margin: 0 0 1rem; font-size: 1.15rem; }
-.agree-intro, .agree-note { color: #5b6b82; font-size: 13px; line-height: 1.6; }
+.agree-intro, .agree-note { color: var(--kx-muted); font-size: 13px; line-height: 1.6; }
 .agree-list { margin: 0 0 1rem; padding-left: 1.2rem; color: #344258; font-size: 13px; line-height: 1.7; }
 .agree-checkbox { display: flex; gap: 8px; align-items: flex-start; margin: 14px 0; font-size: 13px; }
 .agree-checkbox input { margin-top: 3px; }

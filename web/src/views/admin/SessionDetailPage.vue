@@ -70,7 +70,7 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .session-detail {
-  background: var(--kx-bg, #f3f4f6);
+  background: var(--kx-bg, var(--surface-secondary));
   min-height: 100vh;
 }
 .list {
@@ -80,7 +80,7 @@ onBeforeUnmount(() => {
 }
 .error {
   color: var(--kx-danger, #b42318);
-  background: var(--kx-danger-soft, #fff1f0);
+  background: var(--kx-danger-soft, var(--danger-bg));
   border: 1px solid color-mix(in srgb, var(--kx-danger, #b42318) 40%, var(--kx-border, #f3b4b0));
   padding: 10px 12px;
   border-radius: 6px;

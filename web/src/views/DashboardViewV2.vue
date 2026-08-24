@@ -333,13 +333,13 @@ async function onRefresh() {
 }
 
 .tenant-badge--admin {
-  background: rgba(59, 130, 246, 0.1);
-  color: #3b82f6;
+  background: var(--info-bg);
+  color: var(--accent);
 }
 
 .tenant-badge--default {
-  background: rgba(34, 197, 94, 0.1);
-  color: #22c55e;
+  background: var(--success-bg);
+  color: var(--success);
 }
 
 .days-select {
@@ -394,7 +394,7 @@ async function onRefresh() {
 }
 
 .background-tasks-banner--active {
-  background: rgba(251, 191, 36, 0.10);
+  background: var(--warning-bg);
   border: 1px solid rgba(251, 191, 36, 0.45);
 }
 

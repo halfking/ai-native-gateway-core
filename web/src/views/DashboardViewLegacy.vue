@@ -556,13 +556,13 @@ scheduleStatsRecalibrate()
 }
 
 .tenant-badge--admin {
-  background: rgba(59, 130, 246, 0.1);
-  color: #3b82f6;
+  background: var(--info-bg);
+  color: var(--accent);
 }
 
 .tenant-badge--default {
-  background: rgba(34, 197, 94, 0.1);
-  color: #22c55e;
+  background: var(--success-bg);
+  color: var(--success);
 }
 
 .proxy-warning-banner {
@@ -574,7 +574,7 @@ scheduleStatsRecalibrate()
   margin-bottom: 16px;
   border-radius: var(--radius);
   font-size: 13px;
-  background: rgba(248, 81, 73, 0.10);
+  background: var(--danger-bg);
   border: 1px solid rgba(248, 81, 73, 0.45);
   color: var(--text);
 }

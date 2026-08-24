@@ -333,8 +333,8 @@ function moveDown(index: number) {
 .priority-badge {
   font-size: 11px;
   padding: 2px 6px;
-  background: rgba(139, 148, 158, 0.15);
-  color: #8b949e;
+  background: var(--neutral-bg);
+  color: var(--muted);
   border-radius: 4px;
 }
 
@@ -365,9 +365,9 @@ function moveDown(index: number) {
 }
 
 .btn-icon.active {
-  background: rgba(52, 211, 153, 0.15);
-  color: #34d399;
-  border-color: #34d399;
+  background: var(--success-bg);
+  color: var(--success);
+  border-color: var(--success);
 }
 
 .btn-icon:disabled {
@@ -377,7 +377,7 @@ function moveDown(index: number) {
 
 .btn-icon.btn-danger:hover:not(:disabled) {
   background: rgba(248, 113, 113, 0.1);
-  color: #f87171;
+  color: var(--danger);
   border-color: rgba(248, 113, 113, 0.3);
 }
 
@@ -447,7 +447,7 @@ function moveDown(index: number) {
 }
 
 .required {
-  color: #f87171;
+  color: var(--danger);
 }
 
 .form-input {
@@ -466,14 +466,14 @@ function moveDown(index: number) {
 }
 
 .form-input.error {
-  border-color: #f87171;
+  border-color: var(--danger);
 }
 
 .error-message {
   display: block;
   margin-top: 4px;
   font-size: 12px;
-  color: #f87171;
+  color: var(--danger);
 }
 
 .checkbox-label {
@@ -508,11 +508,11 @@ function moveDown(index: number) {
 
 .btn-primary {
   background: var(--accent);
-  color: #fff;
+  color: var(--on-primary);
 }
 
 .btn-primary:hover {
-  background: #5558e3;
+  background: var(--accent);
 }
 
 .btn-ghost {

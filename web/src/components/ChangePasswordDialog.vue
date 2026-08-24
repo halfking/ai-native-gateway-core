@@ -169,7 +169,7 @@ async function submit() {
   border-radius: 12px;
   padding: 24px;
   width: min(420px, calc(100vw - 32px));
-  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.45);
+  box-shadow: 0 16px 48px var(--overlay-strong);
 }
 
 .password-modal__header {
@@ -218,7 +218,7 @@ async function submit() {
 }
 
 .is-pass {
-  color: #4ade80;
+  color: var(--success);
 }
 
 .is-pending {
@@ -226,7 +226,7 @@ async function submit() {
 }
 
 .is-error {
-  color: #f87171;
+  color: var(--danger);
 }
 
 .password-confirm {
