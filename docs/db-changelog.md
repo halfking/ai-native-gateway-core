@@ -89,3 +89,8 @@
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
 | 572 | `572_session_summary_large_token_ratio.sql` | `e60df0b0adc24665da72273a8787d2cb5bec98c3d504da0a6abf0049db4fe56d` | applied+verified |
+## 2026-08-24T19:27:11Z — deploy 154 build_seq 1736 (d644a267)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 573 | `573_drop_request_logs_body_columns.sql` | `f2bfbe03bf3e838b799a4d5e55a9ee0f8a759a44278c3491b09c7897cf335e9c` | applied+verified |

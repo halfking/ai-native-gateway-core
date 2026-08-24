@@ -4,7 +4,7 @@
 # Purpose:       Schema audit for LP9 (request body storage optimization)
 #                - Pre-LP1 baseline (LP5 gate)
 #                - Validates: 4 body tables/view files via SQL DDL grep
-#                - When PG env present: cross-check with information_schema
+#                - When PG env present: cross-check all body tables/view
 # Status:        active
 # Idempotent:    YES
 # Dependencies:  psql (optional, only for PG cross-check)
@@ -145,11 +145,49 @@ if [[ -n "${PGHOST:-}${PGDATABASE:-}${PGUSER:-}" || -n "${DATABASE_URL:-}" ]]; t
             exit 2
         fi
         echo "$live_cols" | sed 's/^/  /'
-        if echo "$live_cols" | grep -qE "^request_logs_hot\.(request_body|response_body|outbound_body)$"; then
+        live_hot_cols=$(printf '%s\n' "$live_cols" | sed -n 's/^request_logs_hot\.//p')
+        if printf '%s\n' "$live_hot_cols" | grep -Eq '^(request_body|response_body|outbound_body)$'; then
             echo "  ❌ live DB still has body columns on request_logs_hot"
             exit 2
         fi
-        echo "  ✅ live DB cross-check: no body columns on request_logs_hot"
+
+        live_bodies_hot_cols=$(printf '%s\n' "$live_cols" | sed -n 's/^request_logs_bodies_hot\.//p' | sort)
+        if [[ "$live_bodies_hot_cols" != "$expected_bodies_hot" ]]; then
+            echo "  ❌ live DB request_logs_bodies_hot columns mismatch"
+            echo "  Got:      $live_bodies_hot_cols"
+            echo "  Expected: $expected_bodies_hot"
+            exit 2
+        fi
+
+        live_bodies_parent_cols=$(printf '%s\n' "$live_cols" | sed -n 's/^request_logs_bodies\.//p' | sort)
+        if [[ "$live_bodies_parent_cols" != "$expected_bodies_parent" ]]; then
+            echo "  ❌ live DB request_logs_bodies columns mismatch"
+            echo "  Got:      $live_bodies_parent_cols"
+            echo "  Expected: $expected_bodies_parent"
+            exit 2
+        fi
+
+        set +e
+        live_view_cols=$(psql -tA -c "
+            SELECT column_name
+              FROM information_schema.columns
+             WHERE table_schema='public'
+               AND table_name='request_logs_bodies_with_current_month'
+             ORDER BY ordinal_position")
+        rc=$?
+        set -e
+        if [[ $rc -ne 0 ]]; then
+            echo "  ❌ psql view cross-check exit=$rc"
+            exit 2
+        fi
+        expected_live_view_cols=$(printf '%s\n' "${EXPECTED_BODIES_PARENT_COLS[@]}" | sort)
+        if [[ "$(printf '%s\n' "$live_view_cols" | sort)" != "$expected_live_view_cols" ]]; then
+            echo "  ❌ live DB bodies view columns mismatch"
+            echo "  Got:      $(printf '%s\n' "$live_view_cols" | sort)"
+            echo "  Expected: $expected_live_view_cols"
+            exit 2
+        fi
+        echo "  ✅ live DB cross-check: hot/body tables and bodies view match SSOT"
     fi
 else
     echo "$HEADER [optional] Skipped live PG cross-check (no PGHOST/PGDATABASE/PGUSER/DATABASE_URL set)"
