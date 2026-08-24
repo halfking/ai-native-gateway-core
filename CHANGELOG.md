@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **sessionmeta provisional 集成测试**：`handler_provisional_metadata_test.go`（arrival wiring）、`auto_title_provisional_test.go`（enabled gate / 已有 title 跳过）；`titlestore` 收窄为 `dbPool` 接口以支持 pgxmock。
 - **sessionmeta 到达态 provisional 抽取（session-analysis/v1）**：规则引擎 `Extract` + 契约文档；handler 到达时投影 provisional title（尊重 auto-title enabled / 已有 title 不覆盖）；与 `AssignRequestCost` 并存。
 - **session_analysis_metadata 持久化（migration 567）**：arrival UPSERT `status=provisional` 完整 Result JSON；`input_hash` 不变跳过；无 title 时仍写 metadata。
+- **Distributed dispatch controls integration (2026-08-24)**: integrated `feat/dispatch-selfcheck-followup-20260824` into main via `e20dd089a merge: integrate distributed dispatch controls`. Adds the bounded total execution queue (`domains/dispatch/total_queue.go`), priority credential clusters with session affinity preservation (`priority_affinity.go` + `cmd/gateway/dispatch_session_affinity.go`), atomic minute-bucket metrics (`minute_stats.go`), and the distributed RPM/TPM Redis governor (`domains/dispatch/redis_backend.go`). Tentative probe restores are now stamped and reverted by a delayed-rollback worker (`bg/probe_rollback.go`). Mirror-ordering fix from `87ee50f64` is preserved on the merged tree.
 - Credential model drawer extras: IQ history chart + cross-credential check restored into `ModelOfferExtrasPanel`; identity chips deep-link to `/models?q=`.
 
 ### Fixed
