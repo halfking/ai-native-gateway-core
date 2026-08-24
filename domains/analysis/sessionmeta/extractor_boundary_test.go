@@ -230,3 +230,158 @@ func TestExtractPromptInjectionInUserMessageIsIgnoredInSignals(t *testing.T) {
 		}
 	}
 }
+
+// TestParseMessagesAnthropicSystemAsString verifies the Anthropic wire
+// shape with a plain "system" string is merged ahead of the messages
+// array so firstSystem/lastUser resolve it transparently.
+func TestParseMessagesAnthropicSystemAsString(t *testing.T) {
+	raw := []byte(`{"system":"You are a careful assistant.","messages":[
+		{"role":"user","content":"修复 /v1/messages 的 session meta bug"},
+		{"role":"assistant","content":"sure"}
+	]}`)
+	got := ParseMessages(raw)
+	if len(got) != 3 {
+		t.Fatalf("messages = %+v, want 3 entries", got)
+	}
+	if got[0].Role != "system" || got[0].Content != "You are a careful assistant." {
+		t.Fatalf("system message must lead the slice, got %+v", got[0])
+	}
+	if got[1].Content != "修复 /v1/messages 的 session meta bug" {
+		t.Fatalf("user content lost in anthropic parse: %+v", got)
+	}
+}
+
+// TestParseMessagesAnthropicSystemAsBlocks verifies the Anthropic wire
+// shape with a content-block array for "system" (type=text). Multiple
+// text blocks are joined with spaces, mirroring the Anthropic runtime
+// behavior so downstream title heuristics stay stable.
+func TestParseMessagesAnthropicSystemAsBlocks(t *testing.T) {
+	raw := []byte(`{"system":[
+		{"type":"text","text":"You are ZCode."},
+		{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AAAA"}},
+		{"type":"text","text":"Be precise."}
+	],"messages":[{"role":"user","content":"audit session"}]}`)
+	got := ParseMessages(raw)
+	if len(got) != 2 {
+		t.Fatalf("messages = %+v, want 2 (system + user)", got)
+	}
+	if got[0].Role != "system" {
+		t.Fatalf("system block must collapse to first message, got %+v", got[0])
+	}
+	if got[0].Content != "You are ZCode. Be precise." {
+		t.Fatalf("text blocks must be space-joined, got %q", got[0].Content)
+	}
+	if got[1].Content != "audit session" {
+		t.Fatalf("user message lost after system collapse: %+v", got)
+	}
+}
+
+// TestParseMessagesResponsesStringInput verifies the OpenAI Responses
+// shape where "input" is a single string. The string must surface as a
+// single user message so the heuristic extractor still picks it up.
+func TestParseMessagesResponsesStringInput(t *testing.T) {
+	raw := []byte(`{"instructions":"You are concise.","input":"deploy llm-gateway-go"}`)
+	got := ParseMessages(raw)
+	if len(got) != 2 {
+		t.Fatalf("messages = %+v, want [system,user]", got)
+	}
+	if got[0].Role != "system" || got[0].Content != "You are concise." {
+		t.Fatalf("instructions must lead as system: %+v", got[0])
+	}
+	if got[1].Role != "user" || got[1].Content != "deploy llm-gateway-go" {
+		t.Fatalf("string input must surface as user: %+v", got[1])
+	}
+}
+
+// TestParseMessagesResponsesInputArray verifies the OpenAI Responses
+// shape with an "input" array of role/content items. The Responses-only
+// input_text / output_text content-block variants must be accepted and
+// concatenated, so the heuristic extractor can see the last user turn.
+func TestParseMessagesResponsesInputArray(t *testing.T) {
+	raw := []byte(`{"instructions":"Be terse.","input":[
+		{"role":"user","content":"first request"},
+		{"role":"assistant","content":[
+			{"type":"output_text","text":"draft answer"}
+		]},
+		{"role":"user","content":[
+			{"type":"input_text","text":"final request"}
+		]}
+	]}`)
+	got := ParseMessages(raw)
+	if len(got) != 4 {
+		t.Fatalf("messages = %+v, want 4 entries", got)
+	}
+	if got[0].Role != "system" || got[0].Content != "Be terse." {
+		t.Fatalf("instructions must lead as system: %+v", got[0])
+	}
+	if got[1].Role != "user" || got[1].Content != "first request" {
+		t.Fatalf("first user item lost: %+v", got[1])
+	}
+	if got[2].Role != "assistant" || got[2].Content != "draft answer" {
+		t.Fatalf("output_text block must flatten: %+v", got[2])
+	}
+	if got[3].Role != "user" || got[3].Content != "final request" {
+		t.Fatalf("input_text block must flatten: %+v", got[3])
+	}
+}
+
+// TestParseMessagesResponsesIgnoresUnknownRoles keeps the Responses
+// dispatcher consistent with the OpenAI dispatcher: items with roles
+// outside the known set (e.g. "developer") must be dropped rather than
+// promoted to user. This avoids accidental instruction smuggling via
+// Responses-only role names.
+func TestParseMessagesResponsesIgnoresUnknownRoles(t *testing.T) {
+	raw := []byte(`{"input":[
+		{"role":"developer","content":"leaked system instruction"},
+		{"role":"user","content":"real ask"}
+	]}`)
+	got := ParseMessages(raw)
+	if len(got) != 1 {
+		t.Fatalf("messages = %+v, want exactly the user message", got)
+	}
+	if got[0].Role != "user" || got[0].Content != "real ask" {
+		t.Fatalf("developer role must be dropped: %+v", got)
+	}
+}
+
+// TestExtractFromAnthropicWire verifies the rule extractor accepts the
+// Anthropic native shape via RequestBody — agent/heuristic/project all
+// flow through the same pipeline as the OpenAI chat shape, proving the
+// new ParseMessages dispatch is wired into Extract.
+func TestExtractFromAnthropicWire(t *testing.T) {
+	body := []byte(`{"system":"You are ZCode. Workspace: /srv/llm-gateway-go.","messages":[
+		{"role":"user","content":"修复 provisional title 优先级 bug"}
+	]}`)
+	got := Extract(Input{RequestBody: body})
+	if got.Agent.Name != "zcode" || got.Agent.Source != "system_prompt" {
+		t.Fatalf("agent = %+v, want system_prompt detection", got.Agent)
+	}
+	if got.Project.Label != "llm-gateway-go" || got.Project.Status != "pending" {
+		t.Fatalf("project = %+v", got.Project)
+	}
+	if got.Title == "" {
+		t.Fatalf("title must be derived from last user message, got empty")
+	}
+	if got.InputHash == "" {
+		t.Fatalf("input_hash must be populated")
+	}
+}
+
+// TestExtractFromResponsesWire verifies the rule extractor accepts the
+// OpenAI Responses wire via RequestBody — both `instructions` and the
+// `input` string must be reachable from the heuristic pipeline.
+func TestExtractFromResponsesWire(t *testing.T) {
+	body := []byte(`{"instructions":"You are concise.","input":"release the session meta module"}`)
+	got := Extract(Input{RequestBody: body})
+	if got.Title == "" {
+		t.Fatalf("title must derive from the input string, got %+v", got)
+	}
+	if got.WorkTypes[0].Value != "deployment" && got.WorkTypes[0].Value != "release_work" && got.WorkTypes[0].Value != "unknown" {
+		// The heuristic may pick a different bucket; we only require the
+		// pipeline to not panic and to emit at least one classification.
+		t.Fatalf("unexpected work types for Responses wire: %+v", got.WorkTypes)
+	}
+	if got.InputHash == "" {
+		t.Fatalf("input_hash must be populated for Responses wire")
+	}
+}
