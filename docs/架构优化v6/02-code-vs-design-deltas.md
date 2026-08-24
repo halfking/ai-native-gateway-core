@@ -1,6 +1,7 @@
 # 02 · 设计 vs 代码对照（Code-vs-Design Deltas）
 
-> **目的**：把 [`docs/03-design/01-architecture/architecture/ARCHITECTURE.md`](../../03-design/01-architecture/architecture/ARCHITECTURE.md)、[`optimization-roadmap.md`](../../03-design/01-architecture/architecture/optimization-roadmap.md)、[`routing-and-state.md`](../../03-design/01-architecture/architecture/routing-and-state.md)、[`omniroute-integration-boundary.md`](../../03-design/01-architecture/architecture/omniroute-integration-boundary.md)、[`REPO_LAYOUT.md`](../../03-design/01-architecture/architecture/REPO_LAYOUT.md)、[`armor-sdp-feasibility.md`](../../03-design/01-architecture/architecture/armor-sdp-feasibility.md)、[`会话优化v4/CONTRACT_FREEZE_2026-08-22.md`](../../会话优化v4/CONTRACT_FREEZE_2026-08-22.md) 的承诺 / 设计声明 / 状态标记，与实际代码现状对照，列出 18 处差距。
+> **目的**：把 [`docs/03-design/01-architecture/architecture/ARCHITECTURE.md`](../03-design/01-architecture/architecture/ARCHITECTURE.md)、[`optimization-roadmap.md`](../03-design/01-architecture/architecture/optimization-roadmap.md)、[`routing-and-state.md`](../03-design/01-architecture/architecture/routing-and-state.md)、[`omniroute-integration-boundary.md`](../03-design/01-architecture/architecture/omniroute-integration-boundary.md)、[`REPO_LAYOUT.md`](../03-design/01-architecture/architecture/REPO_LAYOUT.md)、[`armor-sdp-feasibility.md`](../03-design/01-architecture/architecture/armor-sdp-feasibility.md)、[`会话优化v4/CONTRACT_FREEZE_2026-08-22.md`](../会话优化v4/CONTRACT_FREEZE_2026-08-22.md) 的承诺 / 设计声明 / 状态标记，与实际代码现状对照，列出 27 处差距（D1–D27；起草时先识别 18 项，复审扩展 D19–D27 共 9 项）。
+> **行数口径**：文中行数为 2026-08-23 起草快照（2026-08-24 复核有小幅增长，见 D1–D5 括注）；不要把快照数字当作长期事实。
 > **标记含义**：
 > - ✅ = 代码已实现、文档已声明、回归测试覆盖；
 > - ⚠️ = 代码局部实现或文档描述为 `CURRENT/PARTIAL`，仍缺独立可回滚证据；
@@ -14,11 +15,11 @@
 
 | # | 差距 | 设计声明 | 代码现状 | 标记 | 回归要求 |
 |---|---|---|---|---|---|
-| D1 | `cmd/gateway/main.go` 单文件超大 | `REPO_LAYOUT.md` 引用 `docs/refactor-plans/main-go-split.md` 指出拆分需求 | 6076 行，35+ 注释段（auth / 路由 / 队列 / Admin API / worker 启动等）共存；阅读与重构门槛极高 | ⚠️ | V6-W0：拆分为 `cmd/gateway/init/{auth,telemetry,router,admin,workers}.go`，每文件 < 600 行；`func main()` 仅做 wiring；现有行为零变更；`go test ./...` 与 `golangci-lint run` 双绿 |
-| D2 | `domains/streaming/handler.go` 8266 行单文件 | `ARCHITECTURE.md` §3 默认生产 v1 handler | 8266 行 Chat/Messages/Responses/Embeddings 共存；`anthropic_bridge.go` 1566 行、`responses_bridge.go` 888 行、`stream.go` 1686 行分别承载 | ⚠️ | V6-W1：以"协议入口 → handler adapter → 公共 lifecycle"三段拆；回归 5 协议等价性 |
-| D3 | `domains/streaming/executors/executor.go` 3308 行 | `ARCHITECTURE.md` §3 Executor | 3308 行 attempt 循环 + 协议分支 + 资源 acquire/release + retry policy + outcome 收敛 | ⚠️ | V6-W1：拆为 `executor_attempt.go` / `executor_outcome.go` / `executor_protocol.go`；attempt 循环骨架抽公共函数 |
-| D4 | `admin/routing.go` 4980 行 | `ARCHITECTURE.md` §6 Admin 控制面 | 4980 行 routing 端点 + override + tuning + 候选重排 + 自动模式 + dashboard 统计 | ⚠️ | V6-W0：以"端点族"分组拆分；不改 URL；保留 deprecation 注释 |
-| D5 | `db/db.go` 4358 行 | `REPO_LAYOUT.md` 列为平台基础件 | 4358 行 DB 连接 + pool + 事务工具 + 健康检查 + tracing 注入 | ⚠️ | V6-W0：拆分为 `conn.go` / `pool.go` / `tx.go` / `health.go` / `tracing.go` |
+| D1 | `cmd/gateway/main.go` 单文件超大 | `REPO_LAYOUT.md` 引用 `docs/refactor-plans/main-go-split.md` 指出拆分需求 | 起草快照 6076 行（2026-08-24 复核 6156 行），35+ 注释段（auth / 路由 / 队列 / Admin API / worker 启动等）共存；阅读与重构门槛极高 | ⚠️ | V6-W0：拆分为 `cmd/gateway/init/{auth,telemetry,router,admin,workers}.go`，每文件 < 600 行；`func main()` 仅做 wiring；现有行为零变更；`go test ./...` 与 `golangci-lint run` 双绿 |
+| D2 | `domains/streaming/handler.go` 8266 行单文件 | `ARCHITECTURE.md` §3 默认生产 v1 handler | 起草快照 8266 行（复核 8329 行）Chat/Messages/Responses/Embeddings 共存；`anthropic_bridge.go` 1566 行、`responses_bridge.go` 888 行、`stream.go` 1686 行分别承载 | ⚠️ | V6-W1：以"协议入口 → handler adapter → 公共 lifecycle"三段拆；回归 5 协议等价性 |
+| D3 | `domains/streaming/executors/executor.go` 3308 行 | `ARCHITECTURE.md` §3 Executor | 起草快照 3308 行（复核 3342 行）attempt 循环 + 协议分支 + 资源 acquire/release + retry policy + outcome 收敛 | ⚠️ | V6-W1：拆为 `executor_attempt.go` / `executor_outcome.go` / `executor_protocol.go`；attempt 循环骨架抽公共函数 |
+| D4 | `admin/routing.go` 4980 行 | `ARCHITECTURE.md` §6 Admin 控制面 | 起草快照 4980 行（复核 5292 行）routing 端点 + override + tuning + 候选重排 + 自动模式 + dashboard 统计 | ⚠️ | V6-W0：以"端点族"分组拆分；不改 URL；保留 deprecation 注释 |
+| D5 | `db/db.go` 4358 行 | `REPO_LAYOUT.md` 列为平台基础件 | 起草快照 4358 行（复核 4451 行）DB 连接 + pool + 事务工具 + 健康检查 + tracing 注入 | ⚠️ | V6-W0：拆分为 `conn.go` / `pool.go` / `tx.go` / `health.go` / `tracing.go` |
 | D6 | `bg/node_probe.go` 2270 行、`bg/credential_recovery.go` 1517 行、`bg/credential_selfcheck.go` 等"巨型 worker" | `optimization-roadmap.md` P1.5 worker lifecycle | 单文件 1000+ 行的 worker 仍然常见；supervisor 未抽离 | ⚠️ | V6-W0：抽出 `bg/supervisor/` 子包（`BackgroundSupervisor` + Start/Stop + ctx + WaitGroup + panic policy）；现 worker 接入；`deploy/llm-gateway-go.service` 与 systemd timeout 对齐 |
 
 ---
@@ -61,7 +62,7 @@
 | # | 差距 | 设计声明 | 代码现状 | 标记 | 回归要求 |
 |---|---|---|---|---|---|
 | D19 | **`request_logs_hot` 与 `request_logs` legacy 双写** | `runtime-request-flow.md` §5 持久化时序 | `request_logs_hot` 为热路径主入口，`request_logs` legacy 仍承担 canonical session/message/body；telemetry fallback 可能不触发 `onPersisted` 派生链 | ⚠️ | V6-W2：定义 `RequestFinalizer` 单一入口；DB/telemetry 失败走 durable outbox；V2/ASM 派生走 `onPersisted` 单一 hook；定义"双写对账"指标 |
-| D20 | **统计对账无自动 reconciliation** | `stats-reconciliation.md` 12 KB | 文档化"对账怎么做"，但未自动周期跑 | ⚠️ | V6-W2：把 `stats-reconciliation.md` 的对账脚本搬进 `bg/cost_reconciliation_worker.go`；周期 + on-demand；输出对账报告到 admin dashboard |
+| D20 | **统计对账 worker 已有但默认关闭、覆盖不全** | `stats-reconciliation.md` 12 KB | `bg/cost_reconciliation_worker.go` 已存在（2026-08-24 复核）：由 `LLM_GATEWAY_PROVIDER_COST_RECONCILIATION_ENABLED`（或 settings `provider_profile.cost_reconciliation.enabled`，默认 **false**）开关，interval 默认 86400s（`LLM_GATEWAY_PROVIDER_COST_RECONCILIATION_INTERVAL`）；admin 端点为 `/api/admin/provider-cost-reconciliation`（月度查询 + `/bill` 手动导入账单）；结果落 `provider_cost_reconciliation` 表，差异超阈值写 `provider_events`。未覆盖 `stats-reconciliation.md` 的全量口径，生产默认未启用 | ⚠️（`LOCAL_VERIFIED`：worker 单测存在；生产启用与 dashboard 未实证） | V6-W2：扩到 stats-reconciliation 全量口径；生产灰度启用；对账报告进 admin dashboard |
 | D21 | **`urgency_message` / `error_classification_v1.json` 维护策略** | `CONTRACT_FREEZE_2026-08-22.md` §4 "dispatch 子集冻结，其他开放" | frozen subset 11 个；open 部分未治理 | ✅ | 不动 v4 契约；V6-W2 在 `_test.go` 加 frozen-subset 回归（已完成） |
 | D22 | **handoff / goal durable at-rest encryption** | `ADR-0001-handoff-goal-state-at-rest-encryption.md` | 文档齐全；`KMS/Vault` 接入与 rotate 流程未明确 | ⚠️ | V6-W3：把 KMS envelope + rotate runbook 写到 `docs/06-deployment/04-runbooks/kms-rotate.md`；不引入新依赖 |
 

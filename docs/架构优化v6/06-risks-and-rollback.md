@@ -2,6 +2,7 @@
 
 > 范围：`docs/架构优化v6/01–05` 已经识别的工作项、热思路与自检指标，本文件负责回答"哪些会坏、坏了怎么定位、怎么回滚、什么信号必须停手"。
 > 不替代 `docs/security/`、`docs/runbooks/`、`docs/会话优化v4/` 中已有的具体 runbook，只做总册与跨域协调。
+> **证据等级（2026-08-24 审计）**：文中部分信号指标（`executor_owner`、`rls_audit`、`secret_scan`）与 feature flag（`orchestration.plugin.enabled` 等）为 **DESIGN 目标，当前代码未实现**（仓库无 `internal/featureflag` 包、无对应 flag wiring）；标注 `[待建]` 的 runbook 尚未落盘。引用前先核对存在性，不要当作已就位的熔断设施。
 
 ## 0. 阅读对象与使用方式
 
@@ -17,14 +18,14 @@
 
 | # | 风险描述 | 概率 | 影响 | 信号 | Owner | 默认响应 |
 |---|---|---|---|---|---|---|
-| R1 | **插件运行时把持编译 executor**（`plugin.Plugin` 误把 `CompilePipeline`/`ExecuteStream` 当自己的接口替换） | 中 | 高 | `executor_owner` 指标不再是 100% gateway；调度日志出现非 gateway 编译事件 | 编排 Owner | 立即回滚到无插件模式；以 `EXEC_OWNER_REQUIRED=gateway` 启动开关校验 |
+| R1 | **插件运行时把持编译 executor**（`plugin.Plugin` 误把 `CompilePipeline`/`ExecuteStream` 当自己的接口替换） | 中 | 高 | `executor_owner` 指标不再是 100% gateway（**[待建]**：指标与开关均未实现，需先落地）；调度日志出现非 gateway 编译事件 | 编排 Owner | 立即回滚到无插件模式；以 `EXEC_OWNER_REQUIRED=gateway` 启动开关校验（**[待建]** 门禁） |
 | R2 | **契约冻结 v4 被破坏**（错误的字段重命名、JSON Schema 调整绕过 review） | 低 | 高 | `conformance` Job 红；`policy_versions` 出现非预期回滚；下游 SDK 投诉 | 平台架构 | 停掉发版；用 v4→v5 兼容层桥接；除非走"freeze exception"工单 |
-| R3 | **PII/RLS 在多租户场景下漏过**（跨租户查询、未带 `tenant_id` 的调度、日志回显租户外 ID） | 中 | 极高 | `rls_audit` Job 红；客户报告"我看到别人数据" | 安全 Owner | 立刻关闭对应租户入口；启动 runbook `docs/security/rls-leak.md`；48h 内客户通告 |
-| R4 | **凭证泄露**（admin token / 客户 API key 出现在日志或 metrics label） | 中 | 极高 | `secret_scan` Job 红；`/admin/audit` 中出现 `redact=false` 命中 | 安全 Owner | 轮换全部受影响凭证；按 `docs/runbooks/secret-rotation.md` 走；定位写入点并加 `redact` |
+| R3 | **PII/RLS 在多租户场景下漏过**（跨租户查询、未带 `tenant_id` 的调度、日志回显租户外 ID） | 中 | 极高 | `rls_audit` Job 红（**[待建]**）；客户报告"我看到别人数据" | 安全 Owner | 立刻关闭对应租户入口；启动 runbook `docs/security/rls-leak.md`（**[待建]**，落地前按 02/D13 的 negative test 矩阵处置）；48h 内客户通告 |
+| R4 | **凭证泄露**（admin token / 客户 API key 出现在日志或 metrics label） | 中 | 极高 | `secret_scan` Job 红（**[待建]**）；`/admin/audit` 中出现 `redact=false` 命中 | 安全 Owner | 轮换全部受影响凭证；按 `docs/runbooks/secret-rotation.md` 走（**[待建]**，落地前按现有 `scripts/` 凭证轮换流程处置）；定位写入点并加 `redact` |
 | R5 | **流式分发在多副本下重放**（streaming disconnect/reconnect 导致上游收到重复请求，账单被双倍计） | 中 | 高 | 上游 provider 报告 duplicate request；账单对账 `delta > 5%` | 编排 Owner | 关闭受影响 provider；按"幂等键 + provider 去重窗口"补救；发退款工单 |
 | R6 | **Postgres 列存/分区漂移**（`pg-columnar-auto-rotate` 周期内未正确切换，导致审计查询扫全表） | 中 | 中 | `pg_stat_statements` 中 `idx scan` 命中率断崖；`partition_lag` 指标超阈值 | DBA Owner | 立即停止 rotate 周期任务；手动 `ANALYZE` 涉及表；回滚到上一分区模板 |
-| R7 | **流式 hot loop / OOM**（dispatch worker 反馈回环、缓冲无限增长） | 中 | 高 | Pod `RSS > 80% limit`；`stream_backpressure_drops` 计数飙升；`p99 TTFT` 翻倍 | 平台架构 | 立即缩容到 1 副本排障；按 `streaming-error-root-cause.md` 抓 `pprof`；上熔断 |
-| R8 | **发散建议落地引入隐性耦合**（例如"工具路由 DAG"和"插件编排"争抢同一中间状态） | 中 | 中 | 同一指标被两套代码改写；集成测试出现 race | 平台架构 | 短期只允许其一上线；后续在 `internal/orchestration/api.md` 上明确边界 |
+| R7 | **流式 hot loop / OOM**（dispatch worker 反馈回环、缓冲无限增长） | 中 | 高 | Pod `RSS > 80% limit`；`stream_backpressure_drops` 计数飙升；`p99 TTFT` 翻倍 | 平台架构 | 立即缩容到 1 副本排障；按 [`docs/2026-08-19-streaming-error-root-cause.md`](../2026-08-19-streaming-error-root-cause.md) 抓 `pprof`；上熔断 |
+| R8 | **发散建议落地引入隐性耦合**（例如"工具路由 DAG"和"插件编排"争抢同一中间状态） | 中 | 中 | 同一指标被两套代码改写；集成测试出现 race | 平台架构 | 短期只允许其一上线；后续在 `internal/orchestration/` 边界文档（**[待建]** `api.md`，包内目前仅有 engine/loader/scheduler 代码）上明确边界 |
 | R9 | **可视化/PII 双写**（dashboard 把 tenant_id 当 label 暴露到前端） | 中 | 高 | 前端抓包出现 `tenant_id`；前端 PR 评审漏过 | 安全 + 前端 | 立即下线 dashboard 对应模块；前端改 `role-scoped fetch`；事后补 UI 自动化扫描 |
 | R10 | **指标/告警噪声**（指标过多、自检 Job 自我触发 → 团队疲劳 → 真告警被忽略） | 中 | 中 | 一周内 OnCall 收到 > 200 条同源告警；首次响应时间 > 30min | SRE | 启动"指标减肥"两周专项；按 05 的"告警降噪自检"清单逐项处理 |
 
@@ -40,10 +41,10 @@
   - 插件运行时把持编译 executor（→ R1）。
   - 插件与现有 `executor_dispatch.go` 的中间状态竞争（→ R8）。
 - 止血点：
-  - `EXEC_OWNER_REQUIRED=gateway` 启动开关；插件编译必须 `passthrough=true`。
+  - `EXEC_OWNER_REQUIRED=gateway` 启动开关与 `executor_owner` 指标（**[待建]**：当前代码均未实现，为 Wave 2-B 前置任务）；插件编译必须 `passthrough=true`。
   - 引入"两阶段编译"：插件只产出 IR，gateway 完成最后编译。
 - 灰度：先 1% 流量、24h 后 10%、72h 后 50%，全程监控 `executor_owner` 与 `compile_latency_p99`。
-- 回滚开关：feature flag `orchestration.plugin.enabled=false`；插件模块单独 build tag。
+- 回滚开关：feature flag `orchestration.plugin.enabled=false`（**[待建]**：仓库当前无 `internal/featureflag` 包，需先落 flag 基建或复用 settings 系统）；插件模块单独 build tag。
 
 ### Wave 2‑C（仪表板 & 可观测性）
 
@@ -110,7 +111,7 @@
 
 ### 3.1 配置级回滚（最快，0–5 分钟）
 
-- 通过 `feature flag`（仓库 `internal/featureflag/`）关闭：
+- 通过 `feature flag` 关闭（**[待建]**：仓库当前无 `internal/featureflag/` 包；落地前复用 settings 平台开关或环境变量）：
   - `orchestration.plugin.enabled`
   - `dashboard.enabled`
   - `streaming.idempotency.required`
@@ -131,7 +132,7 @@
 
 ### 3.3 数据级回滚（30 分钟–24 小时）
 
-- 凭证轮换：按 `docs/runbooks/secret-rotation.md`；受影响的 `api_keys`、`oauth_tokens` 写 `revoked_at=now()`。
+- 凭证轮换：按 `docs/runbooks/secret-rotation.md`（**[待建]**，落地前按现有 `scripts/` 凭证轮换流程）；受影响的 `api_keys`、`oauth_tokens` 写 `revoked_at=now()`。
 - 列存/分区漂移：用上一代模板 + `pg_restore` 把 audit 表回滚；同步通知下游消费方。
 - 双写回退：所有 dual‑read 表保留旧视图 30 天（Wave 3‑A）。
 - 适用场景：R3、R4、R6。
@@ -143,7 +144,7 @@
   1. 立即冻结新发版（GitOps pause）。
   2. 关闭对应租户的入口（`tenant_quota` 调 0，或在 edge 返 503）。
   3. 拉跨域 war room：编排 / 安全 / DBA / SRE 同时在线。
-  4. 沟通模板：`docs/security/incident-comms.md`，包含 24h 内对客户的书面通告。
+  4. 沟通模板：`docs/security/incident-comms.md`（**[待建]**），包含 24h 内对客户的书面通告。
   5. 48h 内交付 RCA（见第 5 节）。
 - 适用场景：R3、R4、R9。
 
@@ -153,7 +154,7 @@
 
 | 触发条件 | 阈值 | 行动 | Owner |
 |---|---|---|---|
-| `executor_owner != gateway` | > 0% | 立即停插件模式；按 R1 回滚 | 编排 |
+| `executor_owner != gateway` | > 0% | 立即停插件模式；按 R1 回滚（**[待建]**：指标落地后才可执行） | 编排 |
 | `rls_audit.fail` | > 0 | 关闭对应租户入口；安全 war room | 安全 |
 | `secret_scan.hit` | > 0 | 凭证轮换；定位写入点 | 安全 |
 | `p99_latency_ms`（流式 TTFT） | > 上一基线 2× | 触发 backpressure；缩容排障 | 平台 |
@@ -183,7 +184,7 @@
 
 - **每周**：风险登记册 review（30 分钟）；聚焦本周末要上的 Wave 子项。
 - **每次灰度升级前**：必须填"准入 checklist"（基于本文件第 2 节）。
-- **每次 P0 之后**：48h 内 RCA；模板见 `docs/runbooks/rca-template.md`；同步更新到本文件。
+- **每次 P0 之后**：48h 内 RCA；模板见 `docs/runbooks/rca-template.md`（**[待建]**）；同步更新到本文件。
 - **每季度**：重做一次 Top‑10 排序；剔除已闭环、纳入新识别风险。
 
 ### 5.3 RCA 必须回答的 5 个问题
@@ -196,10 +197,12 @@
 
 ## 6. 与现有 runbook 的对接
 
-- `docs/runbooks/streaming-error-root-cause.md` → R5、R7。
-- `docs/runbooks/secret-rotation.md` → R4。
-- `docs/runbooks/incident-comms.md` → 第 3.4 节。
-- `docs/security/rls-leak.md` → R3。
+> 2026-08-24 审计核对：`docs/runbooks/` 现有 `empty-response-routing.md`、`stats-reconciliation-rollout.md`、`telemetry-sanitize-discarded.md`；下表中标注 **[待建]** 的文档尚未落盘，引用前先核对。
+
+- [`docs/2026-08-19-streaming-error-root-cause.md`](../2026-08-19-streaming-error-root-cause.md) → R5、R7（仓库根目录，非 `docs/runbooks/` 下）。
+- `docs/runbooks/secret-rotation.md` **[待建]** → R4。
+- `docs/runbooks/incident-comms.md` **[待建]** → 第 3.4 节。
+- `docs/security/rls-leak.md` **[待建]** → R3。
 - `docs/audit/` 最近一次审计的 follow‑ups → 本文件每次更新要 diff 一次。
 - `docs/会话优化v4/` 中的契约冻结清单 → R2 的"freeze exception"工单模板来源。
 
