@@ -244,8 +244,6 @@ const requestLogsDetailCols = requestLogsListCols + `,
 
 const requestLogsJoins = `
 	LEFT JOIN providers p ON p.id = rl.provider_id
-	LEFT JOIN request_logs_bodies_with_current_month rb
-		ON rb.request_id = rl.request_id
 	LEFT JOIN credentials c ON c.id = rl.credential_id
 	LEFT JOIN api_keys ak ON ak.id = rl.api_key_id
 	LEFT JOIN applications app ON app.id = ak.application_id
@@ -314,6 +312,11 @@ const requestLogsJoins = `
 		LIMIT 1
 	) mo_pick ON TRUE
 `
+
+const requestLogsDetailJoins = `
+	LEFT JOIN request_logs_bodies_with_current_month rb
+		ON rb.request_id = rl.request_id
+` + requestLogsJoins
 
 func (h *Handler) handleLogs(w http.ResponseWriter, r *http.Request) {
 	if h.db == nil {
@@ -836,7 +839,7 @@ func (h *Handler) getLog(w http.ResponseWriter, r *http.Request) {
 		   AND ($2 OR rl.tenant_id = $3)
 		 ORDER BY rl.ts DESC
 		 LIMIT 1
-	`, requestLogsDetailCols, requestLogsJoins), requestID, !IsTenantAdmin(r), GetTenantID(r)).Scan(
+	`, requestLogsDetailCols, requestLogsDetailJoins), requestID, !IsTenantAdmin(r), GetTenantID(r)).Scan(
 		&detail.Ts,
 		&detail.RequestID,
 		&detail.APIKeyID,
