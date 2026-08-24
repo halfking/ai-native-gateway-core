@@ -1,6 +1,7 @@
 package dispatch
 
 import (
+	"fmt"
 	"sync"
 	"testing"
 )
@@ -97,4 +98,52 @@ func TestQueueProjectionOverflowDegradedIsVisibleToConcurrentReaders(t *testing.
 			t.Fatalf("reader %d did not observe overflow degradation: %+v", i, view.Pipeline)
 		}
 	}
+}
+
+func BenchmarkQueueProjectionSnapshot(b *testing.B) {
+	projection := benchmarkQueueProjection()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = projection.Snapshot()
+	}
+}
+
+func BenchmarkQueueProjectionSnapshotWaterfall(b *testing.B) {
+	projection := benchmarkQueueProjection()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = projection.SnapshotWaterfall(50, "", 0, "")
+	}
+}
+
+func benchmarkQueueProjection() *QueueProjection {
+	projection := NewQueueProjection()
+	for i := 0; i < 24; i++ {
+		projection.ObserveQueue(QueueObservation{
+			Kind:  QueueModelDepth,
+			Model: fmt.Sprintf("model-%02d", i),
+			Depth: int64(i + 1),
+		})
+		projection.ObserveQueue(QueueObservation{
+			Kind:         QueueCredentialDepth,
+			CredentialID: i + 1,
+			Mode:         ModeConcurrency,
+			Depth:        int64(i + 2),
+			Limit:        32,
+		})
+	}
+	for i := 0; i < waterfallRingCap; i++ {
+		projection.ObserveQueue(QueueObservation{
+			Kind: QueueRequestCompleted,
+			Completed: &WaterfallRequest{
+				RequestID:      fmt.Sprintf("request-%03d", i),
+				Model:          fmt.Sprintf("model-%02d", i%24),
+				ArrivedAt:      "2026-08-24T00:00:00Z",
+				CredDequeuedAt: "2026-08-24T00:00:00Z",
+				QueueWaitMS:    i + 1,
+				Attempts:       []WaterfallAttempt{{AttemptID: "attempt-1"}},
+			},
+		})
+	}
+	return projection
 }
