@@ -10,6 +10,7 @@
 import { reactive, computed, ref, type ComputedRef } from 'vue'
 import { authBearer } from '../store'
 import type { RouteIncidentUpdate } from '../types/routeIncident'
+import { usePersistedValue } from './usePersistedValue'
 
 export type LiveStatus = 'in_progress' | 'success' | 'failure' | 'rate_limited'
 
@@ -364,6 +365,11 @@ export const ENDPOINT = '/api/admin/live-stream'
 
 // localStorage 中允许管理员写入一个自定义 SSE endpoint（reverse proxy / 隧道）
 // 读取时若为空字符串 / 不可达 / 同源默认则走 ENDPOINT。
+//
+// LP8 (2026-08-24): persistence path now goes through usePersistedValue so
+// the SSE endpoint share the lifecycle-flush / error-degrade primitives
+// with the rest of the frontend. Read still happens lazily through the
+// module-level `customEndpoint` cache so module-init order is preserved.
 function readCustomEndpoint(): string {
   try {
     const v = localStorage.getItem('llmgw_sse_endpoint')
@@ -372,6 +378,19 @@ function readCustomEndpoint(): string {
     return ''
   }
 }
+
+const sseEndpointPersisted = usePersistedValue<string>(
+  'llmgw_sse_endpoint',
+  () => '',
+  {
+    immediate: true,
+    // Store the raw URL (no JSON quoting) so existing call sites that
+    // read localStorage.getItem('llmgw_sse_endpoint') and expect a bare
+    // string continue to work unchanged.
+    serialize: (v) => v,
+    deserialize: (r) => r,
+  },
+)
 
 function buildUrl(endpoint: string): string {
   let url = endpoint
@@ -392,11 +411,10 @@ let customEndpoint = readCustomEndpoint()
 
 export function setCustomEndpoint(url: string) {
   customEndpoint = (url || '').trim()
-  try {
-    if (customEndpoint) localStorage.setItem('llmgw_sse_endpoint', customEndpoint)
-    else localStorage.removeItem('llmgw_sse_endpoint')
-  } catch {
-    /* ignore */
+  if (customEndpoint) {
+    sseEndpointPersisted.value.value = customEndpoint
+  } else {
+    sseEndpointPersisted.remove()
   }
 }
 
@@ -405,6 +423,17 @@ export function getCustomEndpoint(): string {
     customEndpoint = readCustomEndpoint()
   }
   return customEndpoint
+}
+
+/**
+ * @internal Test-only: drop the module-level cache so the next
+ * getCustomEndpoint() re-reads localStorage. Production callers should
+ * use setCustomEndpoint() to mutate state. Exposed here (instead of as a
+ * separate test helper module) so beforeEach cleanup in useLiveStreamUrl's
+ * test suite can reset state without spinning up extra mock plumbing.
+ */
+export function __resetCustomEndpointForTest(): void {
+  customEndpoint = ''
 }
 
 const idIndex = new Set<string>()
