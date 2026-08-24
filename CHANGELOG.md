@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **管理面板 401 轮询风暴（2026-08-24，96k/日）**：会话过期后挂在管理页的轮询组件（background-tasks 每 30s、sliding-window batch+N-way）对非 admin 名单的 `/api` 端点 401 永不停止。修复：`_core.ts` 中央会话失效处理（非 admin `/api` 401 且仍处登录态 → clearAll + 跳内联登录）；`SystemStatusIndicator` 匿名跳过受保护端点；`QueuePerspectivePanel` 匿名跳过轮询且 batch 401 不再放大为 N-way。附静态门拒绝日志补 `key_prefix`。401 可观测性审计修正：gateway.log 与 request_logs_hot 实际已有 401（前次盲区结论系日志路径误判）。**另：未跟踪的迁移 573 因 `CREATE OR REPLACE VIEW` 不能移除列而阻塞所有部署，已 `.sql.skip` 延期待 LP owner 改为 DROP+CREATE**。详见 `docs/changelogs/2026-08-24-admin-401-polling-storm-fix.md`。
 - **数据面 sk-key 被全局静态门拦截（2026-08-24，间歇性 "Invalid or expired API key" 根因）**：`/v1/*` 的全局静态门此前对 Bearer 做 constant-time 比对 `LLM_GATEWAY_API_KEY`，154/245 两实例各自复用了不同的用户 sk-key 作为该值，导致"非本机全局 key"的合法 DB key 全部 401（文案与 DB 验证失败相同）；154 每次部署重启的 90s 切换窗口流量落 245 时用户 key 被拒，形成间歇性 401。修复：静态门放行 `sk-*` 前缀交给 `KeyVerifier` DB 校验（rule 20 §2 分层认证）；`/v1/models` 补接 keyVerifier（此前依赖静态门"恰好"保护）。详见 `docs/changelogs/2026-08-24-dataplane-skkey-static-gate-fix.md`。
 
 ### Added
