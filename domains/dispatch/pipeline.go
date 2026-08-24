@@ -290,13 +290,18 @@ func (p *Pipeline) SetRetryScheduler(s RetryScheduler) {
 }
 
 // NewDefaultRetryScheduler builds a started HeapRetryScheduler wired to
-// this pipeline's pickup path. Convenience for composition roots; the
-// caller must Close() it (typically after Pipeline.Stop).
+// this pipeline's pickup path, completing still-parked requests with
+// ErrShutdown on Close so Submit callers cannot block forever during
+// graceful shutdown. Convenience for composition roots; the caller must
+// Close() it (typically after Pipeline.Stop).
 func (p *Pipeline) NewDefaultRetryScheduler() *HeapRetryScheduler {
 	if p == nil {
 		return nil
 	}
-	return NewHeapRetryScheduler(p.onRetryDue, nil, nil)
+	return NewHeapRetrySchedulerWithCloseHandler(
+		p.onRetryDue,
+		func(qr *QueuedRequest) { p.complete(qr, ForwardOutcome{Err: ErrShutdown}) },
+		nil, nil)
 }
 
 // SetQueueMirror wires the optional Redis queue-state mirror. Nil disables

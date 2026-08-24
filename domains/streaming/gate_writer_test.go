@@ -196,6 +196,45 @@ func TestGateWriterEndToEndAnthropicToOpenAIByteIdentity(t *testing.T) {
 	assert.Equal(t, CommitStateTerminal, gate.State())
 }
 
+// TestGateWriterPendingOverflowAbortsAttempt pins the partial-frame byte cap.
+// Regression for the 2026-08-24 concurrency audit: pending used to be
+// unbounded, so an upstream that never emits a frame boundary grew the buffer
+// without limit while the gate's own caps never saw those bytes.
+func TestGateWriterPendingOverflowAbortsAttempt(t *testing.T) {
+	restore := gateWriterMaxPendingBytes
+	gateWriterMaxPendingBytes = 64
+	defer func() { gateWriterMaxPendingBytes = restore }()
+
+	gw, _, f := newImmediateGateWriter(ProtocolOpenAIChat)
+	// Partial frame below the cap buffers normally.
+	_, err := gw.Write([]byte("data: {\"partial\""))
+	require.NoError(t, err)
+	// Crossing the cap with still no frame boundary aborts the attempt.
+	_, err = gw.Write([]byte(strings.Repeat("x", 128)))
+	assert.ErrorIs(t, err, ErrGateWriterFrameOverflow)
+	// The overflowing partial frame is dropped, not retained: a later
+	// complete frame still flows through the gate unchanged.
+	_, err = gw.Write([]byte("data: {}\n\n"))
+	require.NoError(t, err)
+	require.NoError(t, gw.Finish())
+	assert.Equal(t, "data: {}\n\n", f.buf.String(),
+		"overflowed partial must be dropped and the gate stay usable")
+}
+
+func TestGateWriterForwardsCompleteFrameBeforePendingOverflow(t *testing.T) {
+	restore := gateWriterMaxPendingBytes
+	gateWriterMaxPendingBytes = 8
+	defer func() { gateWriterMaxPendingBytes = restore }()
+
+	gw, _, f := newImmediateGateWriter(ProtocolOpenAIChat)
+	input := append([]byte("data: ok\n\n"), strings.Repeat("x", 16)...)
+	n, err := gw.Write(input)
+
+	assert.ErrorIs(t, err, ErrGateWriterFrameOverflow)
+	assert.Equal(t, len("data: ok\n\n"), n)
+	assert.Equal(t, "data: ok\n\n", f.buf.String())
+}
+
 // SR-07 wiring precondition: when the SurvivalCoordinator already gated the
 // writer (per-attempt buffered gate), a bridge's wrapAttemptWriter call must
 // REUSE that gate instead of stacking a second one — double gating would

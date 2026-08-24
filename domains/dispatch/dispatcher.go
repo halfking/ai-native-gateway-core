@@ -97,6 +97,15 @@ func (p *Pipeline) selectAndEnqueue(qr *QueuedRequest) ([]CredentialRef, bool) {
 		}
 
 		p.selectCredential(qr, ref)
+		// Clear the capacity flag BEFORE the cred-queue hand-off (the write
+		// must happen while this goroutine still owns qr — after the hand-off
+		// the failover chain can re-dispatch on another worker and race a
+		// late write). A stale CapacityRetryCount makes onRetryDue treat
+		// every later same-credential error retry as a capacity re-dispatch
+		// (full re-route) instead of re-enqueueing the selected credential.
+		// If the enqueue below still fails, scheduleCapacityRetry re-counts
+		// from zero — benign: HasCapacity was just checked.
+		qr.CapacityRetryCount = 0
 		if p.tryEnqueueCred(ref, qr) {
 			return nil, true // Successfully enqueued
 		}

@@ -132,6 +132,7 @@ func (h *retryHeap) Pop() any {
 // the picker through a notify channel.
 type HeapRetryScheduler struct {
 	pick    func(qr *QueuedRequest, retryAt time.Time)
+	onClose func(qr *QueuedRequest)
 	clock   RetryClock
 	sleeper RetrySleeper
 
@@ -147,8 +148,23 @@ type HeapRetryScheduler struct {
 
 // NewHeapRetryScheduler builds and starts a scheduler. pick runs on the
 // picker goroutine at (or just after) each item's retry_at; it must not
-// block for long. Nil clock/sleeper default to the real ones.
+// block for long. Nil clock/sleeper default to the real ones. Parked items
+// are dropped on Close (legacy behaviour).
 func NewHeapRetryScheduler(pick func(qr *QueuedRequest, retryAt time.Time), clock RetryClock, sleeper RetrySleeper) *HeapRetryScheduler {
+	return NewHeapRetrySchedulerWithCloseHandler(pick, nil, clock, sleeper)
+}
+
+// NewHeapRetrySchedulerWithCloseHandler additionally invokes onClose for
+// every still-parked request when Close runs, letting the pipeline complete
+// those requests (e.g. with ErrShutdown) so their Submit callers do not
+// block forever during graceful shutdown. Nil onClose keeps the drop
+// behaviour.
+func NewHeapRetrySchedulerWithCloseHandler(
+	pick func(qr *QueuedRequest, retryAt time.Time),
+	onClose func(qr *QueuedRequest),
+	clock RetryClock,
+	sleeper RetrySleeper,
+) *HeapRetryScheduler {
 	if clock == nil {
 		clock = RealRetryClock{}
 	}
@@ -158,6 +174,7 @@ func NewHeapRetryScheduler(pick func(qr *QueuedRequest, retryAt time.Time), cloc
 	loopCtx, cancel := context.WithCancel(context.Background())
 	s := &HeapRetryScheduler{
 		pick:       pick,
+		onClose:    onClose,
 		clock:      clock,
 		sleeper:    sleeper,
 		notify:     make(chan struct{}, 1),
@@ -197,7 +214,9 @@ func (s *HeapRetryScheduler) Len() int {
 	return s.items.Len()
 }
 
-// Close stops the picker goroutine exactly once.
+// Close stops the picker goroutine exactly once. When a close handler was
+// supplied, every still-parked request is handed to it (outside the lock)
+// so owners can complete them; without a handler parked items are dropped.
 func (s *HeapRetryScheduler) Close() {
 	if s == nil {
 		return
@@ -205,8 +224,23 @@ func (s *HeapRetryScheduler) Close() {
 	s.closeOnce.Do(func() {
 		s.mu.Lock()
 		s.closed = true
+		pending := make([]*QueuedRequest, 0, s.items.Len())
+		for s.items.Len() > 0 {
+			item := heap.Pop(&s.items).(retryHeapItem)
+			pending = append(pending, item.qr)
+		}
+		onClose := s.onClose
 		s.mu.Unlock()
 		s.loopCancel()
+		if onClose == nil {
+			return
+		}
+		for _, qr := range pending {
+			func() {
+				defer func() { _ = recover() }()
+				onClose(qr)
+			}()
+		}
 	})
 }
 

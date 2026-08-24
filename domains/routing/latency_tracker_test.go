@@ -191,6 +191,82 @@ func TestLatencyTracker_SingleSample(t *testing.T) {
 	t.Logf("✓ 单样本情况下所有统计量都正确")
 }
 
+// manualClock is a mutable clock advanced only by explicit test calls, so
+// window eviction is deterministic without real sleeping.
+type manualClock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func (c *manualClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *manualClock) advance(d time.Duration) {
+	c.mu.Lock()
+	c.now = c.now.Add(d)
+	c.mu.Unlock()
+}
+
+// TestLatencyTracker_WindowEvictsStaleSamples pins the sliding-window
+// contract: every read (Avg/P50/P90/P99/Count) must drop samples older than
+// the window even when no new Record arrives. evictStale previously did
+// nothing, so stale samples kept inflating the weighted-router latency
+// penalty forever.
+func TestLatencyTracker_WindowEvictsStaleSamples(t *testing.T) {
+	clock := &manualClock{now: time.Unix(1700000000, 0)}
+	lt := NewLatencyTrackerWithClock(100, 60*time.Second, clock.Now)
+
+	lt.Record(100 * time.Millisecond)
+	clock.advance(30 * time.Second)
+	lt.Record(900 * time.Millisecond)
+
+	// Both samples are inside the 60s window.
+	assert.Equal(t, 2, lt.Count(), "both samples must stay in-window")
+	assert.Equal(t, 500*time.Millisecond, lt.Avg(), "in-window average = 500ms")
+
+	// Advance so the first sample is 61s old (outside), the second 31s (inside).
+	clock.advance(31 * time.Second)
+	assert.Equal(t, 1, lt.Count(), "stale sample must be evicted on read")
+	assert.Equal(t, 900*time.Millisecond, lt.Avg(), "only the fresh sample remains")
+	assert.Equal(t, 900*time.Millisecond, lt.P50())
+	assert.Equal(t, 900*time.Millisecond, lt.P90())
+	assert.Equal(t, 900*time.Millisecond, lt.P99())
+
+	// Advance past everything: all reads must report empty.
+	clock.advance(61 * time.Second)
+	assert.Equal(t, 0, lt.Count(), "fully stale window must be empty")
+	assert.Equal(t, time.Duration(0), lt.Avg())
+	assert.Equal(t, time.Duration(0), lt.P50())
+	assert.Equal(t, time.Duration(0), lt.P99())
+}
+
+// TestLatencyTracker_MaxSizeAndWindowCoexist pins that the size trim and the
+// time eviction share one consistent sample set.
+func TestLatencyTracker_MaxSizeAndWindowCoexist(t *testing.T) {
+	clock := &manualClock{now: time.Unix(1700000000, 0)}
+	lt := NewLatencyTrackerWithClock(3, 60*time.Second, clock.Now)
+
+	// Fill to the size cap; the first (slow) sample gets trimmed by size.
+	lt.Record(5 * time.Second)
+	clock.advance(time.Second)
+	lt.Record(100 * time.Millisecond)
+	clock.advance(time.Second)
+	lt.Record(200 * time.Millisecond)
+	clock.advance(time.Second)
+	lt.Record(300 * time.Millisecond)
+
+	assert.Equal(t, 3, lt.Count())
+	assert.Equal(t, 200*time.Millisecond, lt.Avg(), "size trim must drop the oldest (5s) sample")
+
+	// Advance beyond the window: time eviction clears the rest.
+	clock.advance(61 * time.Second)
+	assert.Equal(t, 0, lt.Count())
+	assert.Equal(t, time.Duration(0), lt.Avg())
+}
+
 // BenchmarkLatencyTracker_Record benchmarks recording performance.
 func BenchmarkLatencyTracker_Record(b *testing.B) {
 	lt := NewLatencyTracker()
