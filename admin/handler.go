@@ -20,8 +20,8 @@ import (
 	"github.com/kaixuan/llm-gateway-go/bg"
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/discovery"
-	"github.com/kaixuan/llm-gateway-go/domains/attachments"     //nolint:depguard // attachment download/list routes live in the admin mux
 	"github.com/kaixuan/llm-gateway-go/domains/analysis/sessionmeta"
+	"github.com/kaixuan/llm-gateway-go/domains/attachments"     //nolint:depguard // attachment download/list routes live in the admin mux
 	"github.com/kaixuan/llm-gateway-go/domains/credentialstate" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/dbdegradation"   //nolint:depguard // 数据库降级模块
 	"github.com/kaixuan/llm-gateway-go/domains/memory"          //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -87,8 +87,9 @@ type Handler struct {
 	// 2026-06-23 Phase 2/3: backs /api/candidate-failures* endpoints.
 	// Wired from cmd/gateway/main.go via SetCandidateFailureHandlers so
 	// /alerts can read live data from the CandidateFailureMonitor.
-	cfHandlers *candidateFailureHandlers
-	fpSlots    *credentialfpslot.Manager
+	cfHandlers  *candidateFailureHandlers
+	vceHandlers *vendorCredentialErrorHandlers
+	fpSlots     *credentialfpslot.Manager
 	// pendingStore (Track C C7, 2026-06-18) is the durable cache
 	// for client reconnect and vendor async retry. nil disables
 	// the /api/admin/pending-responses* endpoints; the GET
@@ -203,8 +204,8 @@ type Handler struct {
 	}
 	redisClient            interface{}                   // Redis client for sliding window access
 	titleDistLock          distlock.Manager              // 2026-08-19 per-session title-gen distributed lock; defaults to in-process LocalManager
-	titleStore              *titlestore.Store             // durable title fencing/tombstone state
-	analysisMetadataStore   *sessionmeta.MetadataStore    // arrival/final session analysis metadata
+	titleStore             *titlestore.Store             // durable title fencing/tombstone state
+	analysisMetadataStore  *sessionmeta.MetadataStore    // arrival/final session analysis metadata
 	availabilityReader     *bg.ModelAvailabilityReader   // 2026-06-29 mirror of unified probe state to Redis
 	availabilityBackfill   *bg.AvailabilityCacheBackfill // 2026-06-29 on-demand DB→Redis cache rebuild
 	availabilityKeyCounter *bg.AvailabilityKeyCounter    // 2026-06-29 on-demand SCAN-based key count
@@ -347,7 +348,7 @@ func NewHandler(db *pgxpool.Pool, secretKey string, encKey []byte) *Handler {
 		// single-flight semantics within a single replica. The wiring
 		// code in cmd/gateway/main.go upgrades this to a Redis-backed
 		// manager once the cluster Redis client is healthy.
-		titleDistLock: distlock.NewLocalManager(),
+		titleDistLock:         distlock.NewLocalManager(),
 		titleStore:            titlestore.New(db),
 		analysisMetadataStore: sessionmeta.NewMetadataStore(db),
 	}
@@ -1100,10 +1101,14 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	if h.cfHandlers == nil {
 		h.cfHandlers = &candidateFailureHandlers{db: h.db}
 	}
+	if h.vceHandlers == nil {
+		h.vceHandlers = &vendorCredentialErrorHandlers{db: h.db}
+	}
 	mux.HandleFunc("/api/candidate-failures", admin(h.cfHandlers.listCandidateFailures))
 	mux.HandleFunc("/api/candidate-failures/stats", admin(h.cfHandlers.getCandidateFailureStats))
 	mux.HandleFunc("/api/candidate-failures/credential/{id}", admin(h.cfHandlers.getCandidateFailuresByCredential))
 	mux.HandleFunc("/api/candidate-failures/alerts", admin(h.cfHandlers.listRecentAlerts))
+	mux.HandleFunc("/api/vendors/credentials/{id}/error-detail", admin(h.vceHandlers.getVendorCredentialErrorDetail))
 	mux.HandleFunc("/api/keys", admin(h.handleKeysRoot))
 	mux.HandleFunc("/api/keys/", admin(h.handleKeys))
 	mux.HandleFunc("/api/key-applications", admin(h.handleKeyApplicationsList))
