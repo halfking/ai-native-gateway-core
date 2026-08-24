@@ -154,24 +154,23 @@ type QueuedRequest struct {
 	attempts         []*dispatchAttempt
 	currentAttempt   *dispatchAttempt
 
-	// ===== 9-Stage Queue Timestamps (V3.1 Enhancement) =====
+	// ===== 10-Stage Queue Timestamps (V3.1 Enhancement) =====
 	// These timestamps enable precise performance analysis and bottleneck diagnosis.
 	// See: docs/会话优化v3/01-需求分析与架构设计.md §2.2.6
-	T0_ArrivedAt       time.Time  // Stage 1: Request arrival
-	T1_TotalEnqueuedAt *time.Time // Stage 2: Total queue enqueue
-	T2_TotalDequeuedAt *time.Time // Stage 3: Total queue dequeue (model routing start)
-	T3_ModelEnqueuedAt *time.Time // Stage 4: Model queue enqueue
-	T4_ModelDequeuedAt *time.Time // Stage 5: Model queue dequeue (credential selection)
-	T5_CredEnqueuedAt  *time.Time // Stage 6: Credential queue enqueue
-	T6_CredDequeuedAt  *time.Time // Stage 7: Credential queue dequeue (governor acquired)
-	T7_ForwardStartAt  *time.Time // Stage 8: Request forwarding to upstream
-	T8_ResponseStartAt *time.Time // Stage 9: First byte received from upstream
-	T9_ResponseEndAt   *time.Time // Stage 10: Response stream completed
+	//
+	// stages replaces the former T0..T9 pointer fields: one inline array plus
+	// a set bitmask instead of nine per-stage heap allocations. Writes follow
+	// the single-owner invariant; the forward-start and response-start slots
+	// are additionally written under attemptMu (journey.go). Cross-package
+	// consumers must take detached copies via StageTimestamps — never alias
+	// the array, because failover re-enqueue rewrites earlier slots.
+	stages   [reqStageCount]time.Time
+	stageSet uint16
 
 	// Legacy fields (kept for backward compatibility, map to new timestamps)
-	EnqueuedAt     time.Time // Deprecated: use T1_TotalEnqueuedAt
-	CredEnqueuedAt time.Time // Deprecated: use T5_CredEnqueuedAt
-	DequeuedAt     time.Time // Deprecated: use T6_CredDequeuedAt
+	EnqueuedAt     time.Time // Deprecated: use ReqStageTotalEnqueued
+	CredEnqueuedAt time.Time // Deprecated: use ReqStageCredEnqueued
+	DequeuedAt     time.Time // Deprecated: use ReqStageCredDequeued
 
 	// completed guarantees ResultCh is sent on exactly once even if a bug
 	// would otherwise double-complete.
@@ -191,7 +190,7 @@ type QueuedRequest struct {
 // NewQueuedRequest constructs a QueuedRequest ready for Pipeline.Submit.
 func NewQueuedRequest(id, tenantID, model string, ctx context.Context, payload any) *QueuedRequest {
 	now := time.Now()
-	return &QueuedRequest{
+	qr := &QueuedRequest{
 		ID:                 id,
 		TenantID:           tenantID,
 		RequestedModel:     model,
@@ -202,10 +201,11 @@ func NewQueuedRequest(id, tenantID, model string, ctx context.Context, payload a
 		TriedModels:        make(map[string]struct{}),
 		RetryPerCredential: -1,
 
-		// V3.1: Initialize 9-stage timestamps
-		T0_ArrivedAt: now,
-		EnqueuedAt:   now, // Legacy: backward compatibility
+		EnqueuedAt: now, // Legacy: backward compatibility
 	}
+	// V3.1: initialize Stage 1 (arrival)
+	qr.setStage(ReqStageArrived, now)
+	return qr
 }
 
 // markTriedCredential records a credential as exhausted for this request.
@@ -231,51 +231,129 @@ func (qr *QueuedRequest) HasTriedCredential(id int) bool {
 // hasTriedCredential is the internal alias.
 func (qr *QueuedRequest) hasTriedCredential(id int) bool { return qr.HasTriedCredential(id) }
 
+// ===== V3.1: 10-Stage Timestamp Slots =====
+
+// ReqStage identifies one of the ten lifecycle timestamp slots.
+type ReqStage uint8
+
+const (
+	ReqStageArrived       ReqStage = iota // Stage 1: Request arrival
+	ReqStageTotalEnqueued                 // Stage 2: Total queue enqueue
+	ReqStageTotalDequeued                 // Stage 3: Total queue dequeue (model routing start)
+	ReqStageModelEnqueued                 // Stage 4: Model queue enqueue
+	ReqStageModelDequeued                 // Stage 5: Model queue dequeue (credential selection)
+	ReqStageCredEnqueued                  // Stage 6: Credential queue enqueue
+	ReqStageCredDequeued                  // Stage 7: Credential queue dequeue (governor acquired)
+	ReqStageForwardStart                  // Stage 8: Request forwarding to upstream
+	ReqStageResponseStart                 // Stage 9: First byte received from upstream
+	ReqStageResponseEnd                   // Stage 10: Response stream completed
+	reqStageCount
+)
+
+// setStage records t for the stage. Callers must hold the single-owner
+// invariant (ReqStageForwardStart / ReqStageResponseStart are written under
+// attemptMu by journey.go).
+func (qr *QueuedRequest) setStage(s ReqStage, t time.Time) {
+	qr.stages[s] = t
+	qr.stageSet |= 1 << s
+}
+
+// ReqStageTime returns the recorded timestamp for the stage; the zero time
+// when the stage has not been recorded yet.
+func (qr *QueuedRequest) ReqStageTime(s ReqStage) time.Time {
+	return qr.stages[s]
+}
+
+// SetReqStageTime installs an explicit timestamp for the stage. Production
+// code should prefer the stage-specific SetTn_* helpers (time.Now());
+// SetReqStageTime serves journey paths that already hold the event time and
+// tests seeding deterministic values.
+func (qr *QueuedRequest) SetReqStageTime(s ReqStage, t time.Time) {
+	qr.setStage(s, t)
+}
+
+// StageTimestamps returns detached copies of the ten lifecycle timestamps:
+// exactly one heap allocation per call, nil for stages never recorded.
+// Returned pointers never alias request state, so later rewrites (failover
+// re-enqueue) cannot mutate previously extracted values.
+func (qr *QueuedRequest) StageTimestamps() (t0, t1, t2, t3, t4, t5, t6, t7, t8, t9 *time.Time) {
+	if qr.stageSet == 0 {
+		return
+	}
+	box := qr.stages
+	if qr.stageSet&(1<<ReqStageArrived) != 0 {
+		t0 = &box[ReqStageArrived]
+	}
+	if qr.stageSet&(1<<ReqStageTotalEnqueued) != 0 {
+		t1 = &box[ReqStageTotalEnqueued]
+	}
+	if qr.stageSet&(1<<ReqStageTotalDequeued) != 0 {
+		t2 = &box[ReqStageTotalDequeued]
+	}
+	if qr.stageSet&(1<<ReqStageModelEnqueued) != 0 {
+		t3 = &box[ReqStageModelEnqueued]
+	}
+	if qr.stageSet&(1<<ReqStageModelDequeued) != 0 {
+		t4 = &box[ReqStageModelDequeued]
+	}
+	if qr.stageSet&(1<<ReqStageCredEnqueued) != 0 {
+		t5 = &box[ReqStageCredEnqueued]
+	}
+	if qr.stageSet&(1<<ReqStageCredDequeued) != 0 {
+		t6 = &box[ReqStageCredDequeued]
+	}
+	if qr.stageSet&(1<<ReqStageForwardStart) != 0 {
+		t7 = &box[ReqStageForwardStart]
+	}
+	if qr.stageSet&(1<<ReqStageResponseStart) != 0 {
+		t8 = &box[ReqStageResponseStart]
+	}
+	if qr.stageSet&(1<<ReqStageResponseEnd) != 0 {
+		t9 = &box[ReqStageResponseEnd]
+	}
+	return
+}
+
 // ===== V3.1: 9-Stage Timestamp Setters =====
 // These methods are called at each pipeline stage to record timing for performance analysis.
 
 // SetT1_TotalEnqueued records Stage 2: Total queue enqueue
 func (qr *QueuedRequest) SetT1_TotalEnqueued() {
-	now := time.Now()
-	qr.T1_TotalEnqueuedAt = &now
+	qr.setStage(ReqStageTotalEnqueued, time.Now())
 }
 
 // SetT2_TotalDequeued records Stage 3: Total queue dequeue (model routing start)
 func (qr *QueuedRequest) SetT2_TotalDequeued() {
-	now := time.Now()
-	qr.T2_TotalDequeuedAt = &now
+	qr.setStage(ReqStageTotalDequeued, time.Now())
 }
 
 // SetT3_ModelEnqueued records Stage 4: Model queue enqueue
 func (qr *QueuedRequest) SetT3_ModelEnqueued() {
-	now := time.Now()
-	qr.T3_ModelEnqueuedAt = &now
+	qr.setStage(ReqStageModelEnqueued, time.Now())
 }
 
 // SetT4_ModelDequeued records Stage 5: Model queue dequeue (credential selection)
 func (qr *QueuedRequest) SetT4_ModelDequeued() {
-	now := time.Now()
-	qr.T4_ModelDequeuedAt = &now
+	qr.setStage(ReqStageModelDequeued, time.Now())
 }
 
 // SetT5_CredEnqueued records Stage 6: Credential queue enqueue
 func (qr *QueuedRequest) SetT5_CredEnqueued() {
 	now := time.Now()
-	qr.T5_CredEnqueuedAt = &now
+	qr.setStage(ReqStageCredEnqueued, now)
 	qr.CredEnqueuedAt = now // Legacy: backward compatibility
 }
 
 // SetT6_CredDequeued records Stage 7: Credential queue dequeue (governor acquired)
 func (qr *QueuedRequest) SetT6_CredDequeued() {
 	now := time.Now()
-	qr.T6_CredDequeuedAt = &now
+	qr.setStage(ReqStageCredDequeued, now)
 	qr.DequeuedAt = now // Legacy: backward compatibility
 }
 
 // SetT7_ForwardStart records Stage 8: Request forwarding to upstream
 func (qr *QueuedRequest) SetT7_ForwardStart() {
-	now := time.Now()
-	qr.T7_ForwardStartAt = &now
+	qr.setStage(ReqStageForwardStart, time.Now())
 }
 
 // SetT8_ResponseStart is the compatibility alias for MarkFirstSemanticByte.
@@ -286,58 +364,49 @@ func (qr *QueuedRequest) SetT8_ResponseStart() {
 
 // SetT9_ResponseEnd records Stage 10: Response stream completed
 func (qr *QueuedRequest) SetT9_ResponseEnd() {
-	now := time.Now()
-	qr.T9_ResponseEndAt = &now
+	qr.setStage(ReqStageResponseEnd, time.Now())
 }
 
 // GetQueueWaitDuration returns total time spent waiting in queues (T0→T6)
 func (qr *QueuedRequest) GetQueueWaitDuration() time.Duration {
-	if qr.T6_CredDequeuedAt == nil {
+	t6 := qr.stages[ReqStageCredDequeued]
+	if t6.IsZero() {
 		return 0
 	}
-	return qr.T6_CredDequeuedAt.Sub(qr.T0_ArrivedAt)
+	return t6.Sub(qr.stages[ReqStageArrived])
 }
 
 // GetUpstreamLatency returns time from forward start to first byte (T7→T8)
 func (qr *QueuedRequest) GetUpstreamLatency() time.Duration {
-	if qr.T7_ForwardStartAt == nil || qr.T8_ResponseStartAt == nil {
+	t7, t8 := qr.stages[ReqStageForwardStart], qr.stages[ReqStageResponseStart]
+	if t7.IsZero() || t8.IsZero() {
 		return 0
 	}
-	return qr.T8_ResponseStartAt.Sub(*qr.T7_ForwardStartAt)
+	return t8.Sub(t7)
 }
 
 // GetStreamingDuration returns response body transfer time (T8→T9)
 func (qr *QueuedRequest) GetStreamingDuration() time.Duration {
-	if qr.T8_ResponseStartAt == nil || qr.T9_ResponseEndAt == nil {
+	t8, t9 := qr.stages[ReqStageResponseStart], qr.stages[ReqStageResponseEnd]
+	if t8.IsZero() || t9.IsZero() {
 		return 0
 	}
-	return qr.T9_ResponseEndAt.Sub(*qr.T8_ResponseStartAt)
+	return t9.Sub(t8)
 }
 
 // GetTotalDuration returns end-to-end time (T0→T9)
 func (qr *QueuedRequest) GetTotalDuration() time.Duration {
-	if qr.T9_ResponseEndAt == nil {
+	t9 := qr.stages[ReqStageResponseEnd]
+	if t9.IsZero() {
 		return 0
 	}
-	return qr.T9_ResponseEndAt.Sub(qr.T0_ArrivedAt)
+	return t9.Sub(qr.stages[ReqStageArrived])
 }
 
-// stageSeconds returns end.Sub(start) in seconds when both timestamps are set
-// and end >= start. Used by Prometheus stage histograms.
-func stageSeconds(start, end *time.Time) (float64, bool) {
-	if start == nil || end == nil {
-		return 0, false
-	}
-	d := end.Sub(*start)
-	if d < 0 {
-		return 0, false
-	}
-	return d.Seconds(), true
-}
-
-// stageSecondsFrom returns end.Sub(start) when end is set and end >= start.
-func stageSecondsFrom(start time.Time, end *time.Time) (float64, bool) {
-	if end == nil || start.IsZero() {
+// stageSeconds returns end.Sub(start) in seconds when both timestamps are
+// recorded and end >= start. Used by Prometheus stage histograms.
+func stageSeconds(start, end time.Time) (float64, bool) {
+	if start.IsZero() || end.IsZero() {
 		return 0, false
 	}
 	d := end.Sub(start)

@@ -16,29 +16,21 @@ func TestStageSecondsHelpers(t *testing.T) {
 	later := now.Add(150 * time.Millisecond)
 	earlier := now.Add(-10 * time.Millisecond)
 
-	if _, ok := stageSeconds(nil, &later); ok {
-		t.Fatal("nil start should be false")
+	if _, ok := stageSeconds(time.Time{}, later); ok {
+		t.Fatal("zero start should be false")
 	}
-	if _, ok := stageSeconds(&now, nil); ok {
-		t.Fatal("nil end should be false")
+	if _, ok := stageSeconds(now, time.Time{}); ok {
+		t.Fatal("zero end should be false")
 	}
-	if _, ok := stageSeconds(&now, &earlier); ok {
+	if _, ok := stageSeconds(now, earlier); ok {
 		t.Fatal("negative duration should be false")
 	}
-	s, ok := stageSeconds(&now, &later)
+	s, ok := stageSeconds(now, later)
 	if !ok {
 		t.Fatal("expected ok")
 	}
 	if s < 0.1 || s > 0.3 {
 		t.Fatalf("stageSeconds got %v, want ~0.15", s)
-	}
-
-	s, ok = stageSecondsFrom(now, &later)
-	if !ok || s < 0.1 || s > 0.3 {
-		t.Fatalf("stageSecondsFrom got %v ok=%v", s, ok)
-	}
-	if _, ok := stageSecondsFrom(time.Time{}, &later); ok {
-		t.Fatal("zero start should be false")
 	}
 }
 
@@ -73,8 +65,8 @@ func TestGetStreamingDuration(t *testing.T) {
 	}
 	start := time.Now()
 	end := start.Add(2 * time.Second)
-	qr.T8_ResponseStartAt = &start
-	qr.T9_ResponseEndAt = &end
+	qr.SetReqStageTime(ReqStageResponseStart, start)
+	qr.SetReqStageTime(ReqStageResponseEnd, end)
 	if d := qr.GetStreamingDuration(); d < 2*time.Second || d > 2*time.Second+time.Millisecond {
 		t.Fatalf("GetStreamingDuration=%v", d)
 	}
@@ -94,7 +86,7 @@ func TestRecordStageMetricsObservesHistograms(t *testing.T) {
 	beforeTotalQ := histogramSampleCount(t, metricStageTotalQueueT1T2, "success")
 
 	qr := NewQueuedRequest("req-stage", "tenant", "gpt-test", nil, nil)
-	t0 := qr.T0_ArrivedAt
+	t0 := qr.ReqStageTime(ReqStageArrived)
 	t1 := t0.Add(10 * time.Millisecond)
 	t2 := t1.Add(40 * time.Millisecond)
 	t3 := t2.Add(2 * time.Millisecond)
@@ -105,15 +97,15 @@ func TestRecordStageMetricsObservesHistograms(t *testing.T) {
 	t8 := t7.Add(48 * time.Millisecond)
 	t9 := t8.Add(1850 * time.Millisecond)
 
-	qr.T1_TotalEnqueuedAt = &t1
-	qr.T2_TotalDequeuedAt = &t2
-	qr.T3_ModelEnqueuedAt = &t3
-	qr.T4_ModelDequeuedAt = &t4
-	qr.T5_CredEnqueuedAt = &t5
-	qr.T6_CredDequeuedAt = &t6
-	qr.T7_ForwardStartAt = &t7
-	qr.T8_ResponseStartAt = &t8
-	qr.T9_ResponseEndAt = &t9
+	qr.SetReqStageTime(ReqStageTotalEnqueued, t1)
+	qr.SetReqStageTime(ReqStageTotalDequeued, t2)
+	qr.SetReqStageTime(ReqStageModelEnqueued, t3)
+	qr.SetReqStageTime(ReqStageModelDequeued, t4)
+	qr.SetReqStageTime(ReqStageCredEnqueued, t5)
+	qr.SetReqStageTime(ReqStageCredDequeued, t6)
+	qr.SetReqStageTime(ReqStageForwardStart, t7)
+	qr.SetReqStageTime(ReqStageResponseStart, t8)
+	qr.SetReqStageTime(ReqStageResponseEnd, t9)
 
 	observeStageMetrics(qr, ForwardOutcome{})
 
@@ -144,8 +136,8 @@ func TestRecordStageMetricsSkipsMissingTimestamps(t *testing.T) {
 	beforeTotal := histogramSampleCount(t, metricStageTotalT0T9, "shutdown")
 
 	qr := NewQueuedRequest("req-partial", "tenant", "m", nil, nil)
-	end := qr.T0_ArrivedAt.Add(5 * time.Millisecond)
-	qr.T9_ResponseEndAt = &end
+	end := qr.ReqStageTime(ReqStageArrived).Add(5 * time.Millisecond)
+	qr.SetReqStageTime(ReqStageResponseEnd, end)
 
 	observeStageMetrics(qr, ForwardOutcome{Err: ErrShutdown})
 
