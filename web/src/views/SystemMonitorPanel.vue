@@ -768,7 +768,7 @@ watch(() => error.value, (v) => {
   padding: 8px 12px;
   border-radius: 4px;
   font-size: 13px;
-  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+  box-shadow: 0 4px 12px var(--overlay-light);
 }
 /* Phase 3: Migration Progress Styles */
 .sm-migration {

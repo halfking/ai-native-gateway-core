@@ -168,13 +168,13 @@ const pipeline = computed(() =>
 <style scoped>
 /* Full-bleed guest homepage: edge-to-edge, content left-aligned (no centered column). */
 .kx-landing {
-  --landing-bg: #f4f6f9;
+  --landing-bg: var(--kx-bg);
   --landing-surface: var(--surface-elevated);
   --landing-text: var(--kx-text);
   --landing-muted: var(--kx-muted);
   --landing-border: var(--border);
   --landing-primary: var(--accent);
-  --landing-primary-hover: #1841b3;
+  --landing-primary-hover: var(--accent-dark);
   --landing-primary-soft: var(--info-bg);
   --landing-font: "Noto Sans SC", "PingFang SC", "Hiragino Sans GB", "Segoe UI", sans-serif;
   --landing-display: "Outfit", "Noto Sans SC", "PingFang SC", sans-serif;
@@ -183,7 +183,7 @@ const pipeline = computed(() =>
   font-family: var(--landing-font);
   background:
     radial-gradient(ellipse 70% 45% at 100% -10%, var(--info-bg), transparent 55%),
-    radial-gradient(ellipse 50% 40% at 0% 100%, rgba(22, 132, 91, 0.04), transparent 50%),
+    radial-gradient(ellipse 50% 40% at 0% 100%, var(--success-bg), transparent 50%),
     var(--landing-bg);
   min-height: 100%;
   width: 100%;
@@ -227,8 +227,8 @@ const pipeline = computed(() =>
   font-weight: 800;
   font-size: 18px;
   font-family: var(--landing-display);
-  background: linear-gradient(145deg, var(--accent), #0f3aad);
-  box-shadow: 0 8px 20px rgba(30, 79, 214, 0.22);
+  background: linear-gradient(145deg, var(--accent), var(--accent-darker));
+  box-shadow: 0 8px 20px color-mix(in srgb, var(--accent) 18%, transparent);
 }
 .kx-landing__brand-logo {
   width: 60px;
@@ -237,7 +237,7 @@ const pipeline = computed(() =>
   object-fit: contain;
   flex-shrink: 0;
   background: var(--surface-elevated);
-  box-shadow: 0 8px 20px rgba(30, 45, 75, 0.08);
+  box-shadow: 0 8px 20px var(--kx-shadow-md);
 }
 .kx-landing__brand-text {
   min-width: 0;
@@ -331,7 +331,7 @@ const pipeline = computed(() =>
   background: var(--on-primary);
   border: 1px solid var(--landing-border);
 }
-.kx-landing__cta-secondary:hover { transform: translateY(-1px); border-color: #b7c9ef; }
+.kx-landing__cta-secondary:hover { transform: translateY(-1px); border-color: var(--info-bd); }
 
 .kx-landing__hero-art {
   position: relative;
@@ -342,7 +342,7 @@ const pipeline = computed(() =>
   overflow: hidden;
   border-radius: 0;
   border: 0;
-  background: linear-gradient(155deg, #e7eefc 0%, #eef3f8 48%, #e7f3ec 100%);
+  background: linear-gradient(155deg, var(--info-bg) 0%, var(--info-bg) 48%, var(--success-bg) 100%);
   align-self: stretch;
 }
 .kx-landing__orb {
@@ -363,7 +363,7 @@ const pipeline = computed(() =>
   height: 160px;
   bottom: -45px;
   left: 20px;
-  background: rgba(22, 132, 91, 0.14);
+  background: color-mix(in srgb, var(--success) 14%, transparent);
   animation-delay: -3s;
 }
 .kx-landing__pipeline {
@@ -381,8 +381,8 @@ const pipeline = computed(() =>
   padding: 12px 14px;
   border-radius: 12px;
   background: var(--surface-elevated);
-  border: 1px solid rgba(255, 255, 255, 0.95);
-  box-shadow: 0 8px 24px rgba(30, 55, 100, 0.06);
+  border: 1px solid var(--surface-elevated);
+  box-shadow: 0 8px 24px var(--kx-shadow-sm);
 }
 .kx-landing__pipeline-step span {
   width: 28px;
@@ -403,7 +403,7 @@ const pipeline = computed(() =>
   text-align: left;
 }
 .kx-landing__pipeline-step.is-active {
-  border-color: #a8c0f5;
+  border-color: var(--info-bd);
   background: var(--on-primary);
 }
 .kx-landing__pipeline-step.is-active span {
@@ -454,12 +454,12 @@ const pipeline = computed(() =>
   border: 1px solid var(--landing-border);
   border-radius: 12px;
   background: var(--landing-surface);
-  box-shadow: 0 10px 32px rgba(30, 45, 75, 0.04);
+  box-shadow: 0 10px 32px var(--kx-shadow-sm);
   transition: border-color 0.15s ease, transform 0.15s ease;
   text-align: left;
 }
 .kx-landing__card:hover {
-  border-color: #a8c0f5;
+  border-color: var(--info-bd);
   transform: translateY(-2px);
 }
 .kx-landing__card-mark {

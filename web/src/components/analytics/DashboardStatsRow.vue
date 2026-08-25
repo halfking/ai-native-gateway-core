@@ -207,9 +207,9 @@ const changeClass = (change: number, isNegative: boolean) => {
 .stat-content { display: flex; align-items: center; gap: 12px; }
 .stat-icon { width: 48px; height: 48px; border-radius: 8px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
 .icon-accent  { background: color-mix(in srgb, var(--accent, #6366f1) 16%, transparent); }
-.icon-success { background: rgba(63, 185, 80, 0.16); }
-.icon-danger  { background: rgba(248, 81, 73, 0.16); }
-.icon-warning { background: rgba(210, 153, 34, 0.16); }
+.icon-success { background: color-mix(in srgb, var(--success) 16%, transparent); }
+.icon-danger  { background: color-mix(in srgb, var(--danger) 14%, transparent); }
+.icon-warning { background: color-mix(in srgb, var(--warning) 16%, transparent); }
 .icon-muted   { background: var(--neutral-bg); }
 .stat-info { flex: 1; min-width: 0; }
 .stat-label { font-size: 13px; color: var(--muted, var(--text-secondary)); margin-bottom: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

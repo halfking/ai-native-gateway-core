@@ -17,9 +17,15 @@ const EXTS = ['.vue', '.ts', '.css', '.scss']
 // 已知豁免:这些文件允许 hex/rgb
 //   - style.css : token 定义本身,允许 hex
 //   - liveStreamColors.ts : 厂商品牌色映射(数据色,不是主题色)
+//   - useChart.ts : Chart.js 调色板(ECharts 系列色,不是主题色)
+//   - waterfallTimeline.ts : 泳道阶段色,每个阶段一个固定色,不是主题色
+//   - liveStreamDisplay.ts : hex→rgba 工具函数代码里有伪 rgba(...,${alpha}) 字符串
 const SKIP_FILES = new Set([
   'style.css',
   'composables/liveStreamColors.ts',
+  'composables/useChart.ts',
+  'composables/liveStreamDisplay.ts',
+  'utils/waterfallTimeline.ts',
   'types/swimlane.ts',
 ])
 

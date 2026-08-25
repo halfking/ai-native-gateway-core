@@ -1532,7 +1532,7 @@ onMounted(() => {
   color: var(--warning);
 }
 .level-danger {
-  background: rgba(248, 113, 113, 0.12);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
   color: var(--danger);
 }
 .level-breaking {
@@ -1665,8 +1665,8 @@ onMounted(() => {
   color: var(--success);
 }
 .test-fail {
-  background: rgba(248, 113, 113, 0.1);
-  border: 1px solid rgba(248, 113, 113, 0.3);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger) 12%, transparent);
   color: var(--danger);
 }
 .test-detail {
@@ -1954,7 +1954,7 @@ onMounted(() => {
   border-color: var(--success-bd);
 }
 .dependency-item.dep-disabled.dep-required {
-  border-color: rgba(248, 113, 113, 0.3);
+  border-color: color-mix(in srgb, var(--danger) 12%, transparent);
 }
 .dep-status-icon {
   font-size: 16px;
@@ -1982,7 +1982,7 @@ onMounted(() => {
   font-weight: 500;
 }
 .badge-required {
-  background: rgba(248, 113, 113, 0.15);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
   color: var(--danger);
 }
 .badge-optional {

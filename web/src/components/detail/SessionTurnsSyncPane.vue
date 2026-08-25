@@ -1,0 +1,173 @@
+<script setup lang="ts">
+// SessionTurnsSyncPane — left timeline + right facet; syncs turn ↔ request_id.
+import { computed, ref, watch } from 'vue'
+import {
+  fetchSessionTurnsTree,
+  type SessionChildRequest,
+  type SessionTurnTreeItem,
+} from '../../api/sessionTurnsTree'
+import ConversationMessagesPanel from './ConversationMessagesPanel.vue'
+
+const props = defineProps<{
+  sessionId: string
+  activeRequestId: string | null
+  requestBody: unknown
+  responseBody: unknown
+}>()
+
+const emit = defineEmits<{
+  selectRequest: [requestId: string, turnNumber: number]
+  openAsRequest: [requestId: string]
+}>()
+
+type Facet = 'integrated' | 'system' | 'user' | 'tool' | 'assistant' | 'children' | 'compress' | 'security'
+
+const turns = ref<SessionTurnTreeItem[]>([])
+const loading = ref(false)
+const error = ref('')
+const facet = ref<Facet>('integrated')
+const selectedTurn = ref<number | null>(null)
+
+watch(
+  () => props.sessionId,
+  async (id) => {
+    turns.value = []
+    error.value = ''
+    selectedTurn.value = null
+    if (!id) return
+    loading.value = true
+    try {
+      const r = await fetchSessionTurnsTree(id, { limit: 50 })
+      turns.value = r.turns
+      const match = r.turns.find((t) => t.request_id === props.activeRequestId)
+      selectedTurn.value = match?.turn_number ?? r.turns[0]?.turn_number ?? null
+    } catch (e: unknown) {
+      error.value = e instanceof Error ? e.message : String(e)
+    } finally {
+      loading.value = false
+    }
+  },
+  { immediate: true },
+)
+
+const current = computed(() =>
+  turns.value.find((t) => t.turn_number === selectedTurn.value) || null,
+)
+
+function latencyLabel(ms: number | null): string {
+  return ms == null ? '—' : `${ms}ms`
+}
+
+function selectTurn(t: SessionTurnTreeItem) {
+  selectedTurn.value = t.turn_number
+  emit('selectRequest', t.request_id, t.turn_number)
+}
+
+function selectChild(c: SessionChildRequest) {
+  emit('openAsRequest', c.request_id)
+}
+</script>
+
+<template>
+  <div class="sync-pane">
+    <aside class="left">
+      <div v-if="loading" class="muted">加载轮次…</div>
+      <div v-else-if="error" class="err">{{ error }}</div>
+      <button
+        v-for="t in turns"
+        :key="t.turn_number"
+        type="button"
+        class="turn-row"
+        :class="{ active: selectedTurn === t.turn_number }"
+        @click="selectTurn(t)"
+      >
+        <span class="tn">#{{ t.turn_number }}</span>
+        <span class="st">{{ t.status }}</span>
+        <span class="lat">{{ latencyLabel(t.latency) }}</span>
+        <span v-if="t.model" class="mdl">{{ t.model }}</span>
+        <ul v-if="t.child_requests?.length" class="children">
+          <li
+            v-for="c in t.child_requests"
+            :key="c.request_id"
+            @click.stop="selectChild(c)"
+          >
+            {{ c.request_type }} · {{ c.status }} · {{ latencyLabel(c.latency) }}
+          </li>
+        </ul>
+      </button>
+    </aside>
+    <section class="right">
+      <div class="facet-row">
+        <button
+          v-for="f in ([
+            ['integrated', '整合'],
+            ['system', '系统'],
+            ['user', '用户'],
+            ['tool', '工具'],
+            ['assistant', '模型'],
+            ['children', '子请求'],
+            ['compress', '压缩'],
+            ['security', '安全脱敏'],
+          ] as [Facet, string][])"
+          :key="f[0]"
+          type="button"
+          class="btn btn-sm"
+          :class="{ 'btn-primary': facet === f[0] }"
+          @click="facet = f[0]"
+        >
+          {{ f[1] }}
+        </button>
+      </div>
+      <div v-if="current" class="sync-bar">
+        对应 request_logs:
+        <code>{{ current.request_id }}</code>
+        <button type="button" class="btn btn-sm" @click="emit('openAsRequest', current.request_id)">
+          在单请求模式打开
+        </button>
+      </div>
+      <template v-if="facet === 'children'">
+        <ul v-if="current?.child_requests?.length" class="child-list">
+          <li v-for="c in current.child_requests" :key="c.request_id">
+            <button type="button" class="btn btn-sm" @click="selectChild(c)">
+              {{ c.request_type }} · {{ c.request_id }}
+            </button>
+          </li>
+        </ul>
+        <p v-else class="muted">无子请求</p>
+      </template>
+      <template v-else-if="facet === 'compress' || facet === 'security'">
+        <p class="muted">请切换到「单请求」模式的「压缩与脱敏」Tab 查看三阶段对比。</p>
+      </template>
+      <ConversationMessagesPanel
+        v-else
+        :body="facet === 'assistant' ? responseBody : requestBody"
+        :empty-hint="facet === 'integrated' ? '(无对话数据)' : `(无 ${facet} 消息)`"
+      />
+    </section>
+  </div>
+</template>
+
+<style scoped>
+.sync-pane { display: grid; grid-template-columns: minmax(200px, 32%) 1fr; gap: 12px; min-height: 320px; }
+.left { border-right: 1px solid var(--border); padding-right: 8px; overflow: auto; max-height: 60vh; }
+.turn-row {
+  display: block; width: 100%; text-align: left;
+  border: 1px solid var(--border); background: var(--bg-card, transparent);
+  border-radius: 6px; padding: 8px; margin-bottom: 6px; cursor: pointer; color: inherit;
+}
+.turn-row.active { border-color: var(--accent); }
+.tn { font-weight: 600; margin-right: 6px; }
+.st, .lat, .mdl { font-size: 11px; color: var(--muted); margin-right: 6px; }
+.children { margin: 6px 0 0; padding-left: 14px; font-size: 11px; color: var(--muted); }
+.children li { cursor: pointer; }
+.children li:hover { color: var(--accent); }
+.facet-row { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
+.sync-bar { font-size: 12px; margin-bottom: 8px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.child-list { list-style: none; padding: 0; }
+.muted { color: var(--muted); font-size: 12px; }
+.err { color: var(--danger); font-size: 12px; }
+@media (max-width: 800px) {
+  .sync-pane { grid-template-columns: 1fr; }
+  .left { border-right: none; border-bottom: 1px solid var(--border); max-height: 200px; }
+}
+</style>

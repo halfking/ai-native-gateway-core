@@ -527,8 +527,8 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
 }
 
 .message-error {
-  background: rgba(248, 113, 113, 0.1);
-  border: 1px solid rgba(248, 113, 113, 0.3);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger) 12%, transparent);
   color: var(--danger);
 }
 
@@ -680,7 +680,7 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
 }
 
 .table-row:hover {
-  background: rgba(255, 255, 255, 0.02);
+  background: var(--bg-hover);
 }
 
 .link-button {
@@ -743,7 +743,7 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
 }
 
 .badge-red {
-  background: rgba(248, 113, 113, 0.15);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
   color: var(--danger);
 }
 
@@ -828,13 +828,13 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
 }
 
 .btn-danger {
-  background: rgba(248, 113, 113, 0.15);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
   color: var(--danger);
   border-color: var(--danger);
 }
 
 .btn-danger:hover:not(:disabled) {
-  background: rgba(248, 113, 113, 0.25);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
 }
 
 .btn-sm {

@@ -268,8 +268,8 @@ onMounted(() => {
 }
 
 .message-error {
-  background: rgba(248, 113, 113, 0.1);
-  border: 1px solid rgba(248, 113, 113, 0.3);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger) 12%, transparent);
   color: var(--danger);
 }
 
