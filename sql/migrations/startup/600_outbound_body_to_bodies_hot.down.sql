@@ -2,7 +2,7 @@
 --
 -- Phase 1 stops new outbound_body writes to request_logs_hot while retaining
 -- the legacy column for compatibility. Reverting the application is enough to
--- restore legacy writes; tenant_id on request_logs_bodies_hot is additive.
+-- restore legacy writes.
 
 \set ON_ERROR_STOP on
 
