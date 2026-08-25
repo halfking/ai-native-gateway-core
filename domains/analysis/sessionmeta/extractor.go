@@ -17,6 +17,7 @@ const (
 	MaxMessages       = 20
 	MaxSystemRunes    = 8192
 	MaxInputBytes     = 1 << 20
+	MaxContentRunes   = 65536
 	MaxProjectHints   = 8
 	MaxWorkTypes      = 3
 )
@@ -174,6 +175,8 @@ func ParseMessages(raw []byte) []Message {
 	switch {
 	case hasKey(probe, "system") && !hasKey(probe, "instructions") && !hasKey(probe, "input"):
 		return parseAnthropicMessages(probe)
+	case hasKey(probe, "messages") && (hasKey(probe, "instructions") || hasKey(probe, "input")):
+		return nil
 	case hasKey(probe, "messages"):
 		return parseOpenAIChat(probe["messages"])
 	case hasKey(probe, "instructions") || hasKey(probe, "input"):
@@ -214,6 +217,8 @@ func normalizeMessages(messages []Message) []Message {
 		}
 		if role == "system" {
 			content = truncateRunes(content, MaxSystemRunes)
+		} else {
+			content = truncateRunes(content, MaxContentRunes)
 		}
 		out = append(out, Message{Role: role, Content: content})
 	}
