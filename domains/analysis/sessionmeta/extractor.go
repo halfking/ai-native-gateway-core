@@ -38,6 +38,10 @@ type Input struct {
 	TaskRef        string
 	TaskLabel      string
 	RepoPaths      []string
+	// Expert is an explicit expert type override (e.g. "security"). When
+	// non-empty it wins over system-prompt detection. Use sparingly —
+	// authoritative signals (admin profile) only.
+	Expert string
 }
 
 type Message struct {
@@ -46,18 +50,27 @@ type Message struct {
 }
 
 type Result struct {
-	SchemaVersion string           `json:"schema_version"`
-	AnalysisKind  string           `json:"analysis_kind"`
-	Status        string           `json:"status"`
-	Title         string           `json:"title,omitempty"`
-	Agent         AgentIdentity    `json:"agent,omitempty"`
-	Client        ClientIdentity   `json:"client,omitempty"`
-	WorkTypes     []Classification `json:"work_types,omitempty"`
-	Project       ProjectSignal    `json:"project,omitempty"`
-	Features      []Feature        `json:"features,omitempty"`
-	Evidence      []Evidence       `json:"evidence,omitempty"`
-	Provenance    Provenance       `json:"provenance"`
-	InputHash     string           `json:"input_hash,omitempty"`
+	SchemaVersion string         `json:"schema_version"`
+	AnalysisKind  string         `json:"analysis_kind"`
+	Status        string         `json:"status"`
+	Title         string         `json:"title,omitempty"`
+	Agent         AgentIdentity  `json:"agent"`
+	Client        ClientIdentity `json:"client"`
+	// Expert is always emitted (struct omitempty is a no-op, consistent with
+	// Agent/Client). Use Type=="unknown" to represent "no signal detected".
+	Expert     ExpertIdentity   `json:"expert"`
+	WorkTypes  []Classification `json:"work_types"`
+	Project    ProjectSignal    `json:"project"`
+	Features   []Feature        `json:"features,omitempty"`
+	Evidence   []Evidence       `json:"evidence,omitempty"`
+	Provenance Provenance       `json:"provenance"`
+	InputHash  string           `json:"input_hash,omitempty"`
+}
+
+type ExpertIdentity struct {
+	Type       string  `json:"type"`
+	Source     string  `json:"source"`
+	Confidence float64 `json:"confidence"`
 }
 
 type AgentIdentity struct {
@@ -136,6 +149,7 @@ func Extract(in Input) Result {
 	r.InputHash = hashInput(corpus)
 	r.Agent = extractAgent(in, system)
 	r.Client = extractClient(in, r.Agent)
+	r.Expert = extractExpert(in, system)
 	r.WorkTypes = extractWorkTypes(in.WorkType, user+"\n"+system)
 	r.Project, r.Evidence = extractProject(in, corpus)
 	r.Title = provisionalTitle(user, r.Agent.Name, r.WorkTypes)
