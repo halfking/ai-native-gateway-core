@@ -1,8 +1,8 @@
 {
-  "version": "2.4.7-halfking-20260825-0520-a5-redis-audit",
+  "version": "2.4.7-halfking-20260825-1150-fix-args-alignment",
   "git_tag": "2.4.7",
-  "git_sha": "98198bd18",
-  "build_seq": 1736,
+  "git_sha": "30eb4c34f",
+  "build_seq": 1739,
   "build_date": "20260825",
   "module": "llm-gateway-go"
 }
