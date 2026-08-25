@@ -126,3 +126,67 @@ func TestLiveStreamEmittedForwarder_NilHubIsNoOp(t *testing.T) {
 		t.Fatalf("queue length = %d, want 0 for a nil-hub forwarder", got)
 	}
 }
+
+// 2026-08-25 (审计修正回归): emitted 与 persisted 必须经同一条 FIFO —— 同一
+// request 的 in_progress 投影先入队(请求热路径 t0)、终态补偿后入队(telemetry
+// worker 落库后 t1>t0), 单消费者按序 Publish, 前端 last-write-wins 不会被
+// 乱序回退。此处验证机制核心: 两路投递进同一 chan 且顺序保持。
+func TestLiveStreamEmittedForwarder_PersistSharesFIFOWithEmit(t *testing.T) {
+	hub := admin.NewLiveStreamSSEHub(nil, admin.LiveStreamConfig{BroadcastQueueSize: 8})
+	f := newLiveStreamEmittedForwarder(hub)
+
+	inProgress := telemetry.RequestLogEntry{RequestID: "req-ord", TenantID: "tenant-a"}
+	terminal := telemetry.RequestLogEntry{RequestID: "req-ord", TenantID: "tenant-a", Success: true}
+
+	f.emit(&inProgress)
+	f.persist(&terminal)
+	// 另一 request 的 emitted 排在其后, 不得插队到 req-ord 的终态之前。
+	f.emit(&telemetry.RequestLogEntry{RequestID: "req-ord-2", TenantID: "tenant-a"})
+
+	var order []string
+	for i := 0; i < 3; i++ {
+		select {
+		case got := <-f.entries:
+			stage := "in_progress"
+			if got.Success {
+				stage = "terminal"
+			}
+			order = append(order, got.RequestID+":"+stage)
+		case <-time.After(2 * time.Second):
+			t.Fatalf("entry %d missing from FIFO, got %v", i, order)
+		}
+	}
+	want := []string{"req-ord:in_progress", "req-ord:terminal", "req-ord-2:in_progress"}
+	for i := range want {
+		if order[i] != want[i] {
+			t.Fatalf("FIFO order = %v, want %v (terminal must not precede its in_progress)", order, want)
+		}
+	}
+
+	// persist 的条目同样被消费者 Publish(经 broadcast_count 观察, nil-Redis
+	// hub 的 Publish 只入本地广播队列)。顺序验证已消费掉队列内容, 这里重新
+	// 投递同样的三条让 run() 走完整链路。
+	f.emit(&inProgress)
+	f.persist(&terminal)
+	f.emit(&telemetry.RequestLogEntry{RequestID: "req-ord-2", TenantID: "tenant-a"})
+	go hub.Run()
+	defer hub.Stop()
+	exited := make(chan struct{})
+	go func() { f.run(); close(exited) }()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if n, ok := hub.Stats()["broadcast_count"].(int64); ok && n >= 3 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("forwarder never published persisted entries, stats=%v", hub.Stats())
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	f.stop()
+	select {
+	case <-exited:
+	case <-time.After(2 * time.Second):
+		t.Fatal("run() did not exit after stop()")
+	}
+}
