@@ -12,6 +12,7 @@ export default {
   tabProbe: 'Vérification auto',
   tabProbeTitle: 'Voir les enregistrements de vérification auto (les liaisons échouées sont re-vérifiées toutes les 10 minutes)',
   tabSettings: 'Paramètres',
+  tabErrorDetail: 'Erreurs du fournisseur',
   loading: 'Chargement…',
   loadingFallback: '...',
   refresh: 'Actualiser',

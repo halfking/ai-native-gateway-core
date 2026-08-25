@@ -1507,7 +1507,7 @@ function formatNumber(num: number): string {
   border-radius: 12px;
   width: 90%;
   max-width: 500px;
-  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.2);
+  box-shadow: 0 20px 25px -5px var(--overlay-light);
 }
 
 .modal-header {

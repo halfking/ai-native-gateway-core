@@ -912,7 +912,7 @@ onMounted(() => {
 }
 
 .data-table tbody tr:hover {
-  background: rgba(255, 255, 255, 0.02);
+  background: var(--bg-hover);
 }
 
 .mono {

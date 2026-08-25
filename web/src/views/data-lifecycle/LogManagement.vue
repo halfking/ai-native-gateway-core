@@ -473,7 +473,7 @@ function fmtNum(n: number) {
 .op-box h4 { margin: 0 0 4px; font-size: 14px; color: var(--text); }
 .op-desc { margin: 0 0 10px; font-size: 12px; color: var(--muted); }
 .op-desc.danger { color: var(--danger); }
-.op-result { margin-top: 16px; padding: 12px; background: rgba(63,185,80,.08); border: 1px solid var(--success-bd); border-radius: 4px; color: var(--text); }
+.op-result { margin-top: 16px; padding: 12px; background: color-mix(in srgb, var(--success) 14%, transparent); border: 1px solid var(--success-bd); border-radius: 4px; color: var(--text); }
 .op-result-row { display: flex; gap: 24px; font-size: 13px; flex-wrap: wrap; }
 .op-result-row code { background: var(--bg-subtle); border: 1px solid var(--border); padding: 1px 6px; border-radius: 4px; color: var(--accent-h); font-family: ui-monospace, SFMono-Regular, monospace; }
 .highlight { color: var(--success); }

@@ -481,7 +481,7 @@ const channelLabels = {
 }
 
 .test-result.error {
-  background: rgba(248, 113, 113, 0.1);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
   color: var(--danger);
 }
 </style>

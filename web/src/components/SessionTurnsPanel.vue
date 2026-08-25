@@ -220,7 +220,7 @@ const loadingText = computed(() => {
 .chip-neutral { background: var(--bg-hover); color: var(--text-secondary); }
 .chip-pii { background: var(--success-bg); color: var(--success); border-color: var(--success-bd); }
 .chip-warn { background: var(--warning-bg); color: var(--warning); border-color: var(--warning-bd); }
-.chip-danger { background: rgba(248,113,113,.12); color: var(--danger); border-color: rgba(248,113,113,.3); }
+.chip-danger { background: color-mix(in srgb, var(--danger) 12%, transparent); color: var(--danger); border-color: color-mix(in srgb, var(--danger) 12%, transparent); }
 .stag-olap {
   background: var(--bg-tertiary);
   color: var(--text-muted);

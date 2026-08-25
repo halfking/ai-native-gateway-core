@@ -644,7 +644,7 @@ textarea {
   font-size: 13px;
 }
 .table tbody tr:hover {
-  background: rgba(255, 255, 255, 0.02);
+  background: var(--bg-hover);
 }
 .empty {
   text-align: center;
@@ -712,7 +712,7 @@ code {
 .modal-mask {
   position: fixed;
   inset: 0;
-  background: rgba(15, 17, 23, 0.78);
+  background: var(--overlay-strong);
   backdrop-filter: blur(3px);
   display: flex;
   align-items: center;

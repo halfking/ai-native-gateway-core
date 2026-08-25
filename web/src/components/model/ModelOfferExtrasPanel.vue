@@ -235,5 +235,5 @@ async function checkAcross() {
 .iq-list, .check-list { margin: 8px 0 0; padding-left: 16px; font-size: 12px; }
 .st-ok { color: var(--success); margin: 0 6px; }
 .st-error, .st-unavailable { color: var(--danger); margin: 0 6px; }
-.st-warning { color: #c97800; margin: 0 6px; }
+.st-warning { color: var(--warning-dark); margin: 0 6px; }
 </style>

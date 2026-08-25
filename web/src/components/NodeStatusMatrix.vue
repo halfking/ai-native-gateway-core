@@ -276,7 +276,7 @@ const hasNodes = computed(() => nodes.value.length > 0)
   position: fixed;
   inset: 0;
   z-index: 2900;
-  background: rgba(0, 0, 0, 0.38);
+  background: var(--overlay-medium);
   display: flex;
   justify-content: flex-end;
 }
@@ -286,7 +286,7 @@ const hasNodes = computed(() => nodes.value.length > 0)
   overflow: auto;
   background: var(--kx-surface);
   color: var(--kx-text);
-  box-shadow: -10px 0 30px rgba(0, 0, 0, 0.24);
+  box-shadow: -10px 0 30px var(--overlay-light);
   padding: 18px 20px 28px;
   box-sizing: border-box;
 }

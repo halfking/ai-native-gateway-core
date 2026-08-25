@@ -668,7 +668,7 @@ button:disabled { opacity: .4; cursor: not-allowed; }
 }
 .defaults-table tbody tr:hover,
 .audit-table tbody tr:hover {
-  background: rgba(255, 255, 255, 0.02);
+  background: var(--bg-hover);
 }
 .reason-cell {
   max-width: 200px;

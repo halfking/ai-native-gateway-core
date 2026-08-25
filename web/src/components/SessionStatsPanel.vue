@@ -258,10 +258,10 @@ function onDaysClick(next: number) {
   border: 1px solid var(--border, var(--surface-secondary)); background: var(--card, var(--on-primary));
 }
 .mini-kpi__icon { width: 44px; height: 44px; border-radius: 10px; display: flex; align-items: center; justify-content: center; color: white; flex-shrink: 0; }
-.mini-kpi__icon--new { background: linear-gradient(135deg, #667eea, #764ba2); }
+.mini-kpi__icon--new { background: linear-gradient(135deg, var(--accent), var(--purple)); }
 .mini-kpi__icon--closed { background: linear-gradient(135deg, var(--muted), var(--muted)); }
-.mini-kpi__icon--cost { background: linear-gradient(135deg, #43e97b, #38f9d7); }
-.mini-kpi__icon--compliance { background: linear-gradient(135deg, var(--pink), #fee140); }
+.mini-kpi__icon--cost { background: linear-gradient(135deg, var(--success), var(--probe-cyan-light)); }
+.mini-kpi__icon--compliance { background: linear-gradient(135deg, var(--pink), var(--warning)); }
 .mini-kpi__label { font-size: 13px; color: var(--muted, var(--text-secondary)); }
 .mini-kpi__value { font-size: 22px; font-weight: 600; }
 .charts-row {

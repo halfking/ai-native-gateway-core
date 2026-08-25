@@ -307,7 +307,7 @@ function onClick() {
   animation: live-block-pulse 1.4s ease-in-out infinite;
 }
 @keyframes live-block-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.0); }
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--warning) 14%, transparent); }
   50%      { box-shadow: 0 0 0 4px var(--warning-strong); }
 }
 
@@ -332,7 +332,7 @@ function onClick() {
   z-index: 1;
   color: var(--warning);
   font-weight: 800;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.75);
+  text-shadow: 0 1px 2px var(--overlay-strong);
 }
 
 .live-block__probe svg {
@@ -365,7 +365,7 @@ function onClick() {
   letter-spacing: 0.3px;
   text-transform: uppercase;
   color: var(--danger-bd);
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7);
+  text-shadow: 0 1px 2px var(--overlay-strong);
   width: 100%;
   text-align: center;
   white-space: nowrap;

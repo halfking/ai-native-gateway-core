@@ -302,7 +302,7 @@ async function runUpgradeFlow(version: string, item: CatalogItem) {
   gap: 16px;
   padding: 14px 16px;
   background: var(--kx-surface-soft, rgba(0, 0, 0, 0.03));
-  border: 1px solid var(--kx-border, rgba(0, 0, 0, 0.08));
+  border: 1px solid var(--kx-border, var(--overlay-faint));
   border-radius: 10px;
   margin-bottom: 16px;
 }
@@ -330,7 +330,7 @@ async function runUpgradeFlow(version: string, item: CatalogItem) {
   gap: 10px;
   padding: 8px 12px;
   margin-bottom: 12px;
-  background: rgba(217, 119, 6, 0.1);
+  background: color-mix(in srgb, var(--warning) 12%, transparent);
   border-left: 3px solid var(--kx-warning, var(--warning));
   border-radius: 4px;
   font-size: 13px;
@@ -349,7 +349,7 @@ async function runUpgradeFlow(version: string, item: CatalogItem) {
   gap: 12px;
   align-items: center;
   padding: 10px 14px;
-  border: 1px solid var(--kx-border, rgba(0, 0, 0, 0.08));
+  border: 1px solid var(--kx-border, var(--overlay-faint));
   border-radius: 8px;
   cursor: pointer;
   transition: border-color 0.15s, background 0.15s;
@@ -389,10 +389,10 @@ async function runUpgradeFlow(version: string, item: CatalogItem) {
   font-size: 11px;
   padding: 2px 8px;
   border-radius: 999px;
-  background: var(--kx-surface-soft, rgba(0, 0, 0, 0.05));
+  background: var(--kx-surface-soft, var(--overlay-faint));
   color: var(--muted, var(--muted));
 }
-.artifact-chip--more { background: rgba(0, 0, 0, 0.08); }
+.artifact-chip--more { background: var(--overlay-faint); }
 
 .upgrade-flow {
   padding: 16px;
@@ -423,7 +423,7 @@ async function runUpgradeFlow(version: string, item: CatalogItem) {
   align-items: center;
   gap: 10px;
   padding: 10px 12px;
-  border: 1px solid var(--kx-border, rgba(0, 0, 0, 0.08));
+  border: 1px solid var(--kx-border, var(--overlay-faint));
   border-radius: 8px;
   background: var(--kx-surface, var(--on-primary));
 }

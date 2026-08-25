@@ -348,8 +348,8 @@ function closeDialog() {
 .journey-trigger-title { font-weight:600; font-size:13px; }
 .journey-trigger-meta { color:var(--kx-text-secondary); font-size:11px; margin-left:auto; }
 .journey-trigger svg { width:15px; height:15px; color:var(--kx-text-secondary); }
-.journey-modal-mask { position:fixed; inset:0; z-index:2900; background:rgba(0,0,0,.38); display:flex; justify-content:flex-end; }
-.journey-modal { width:min(760px, 96vw); height:100vh; overflow:auto; background:var(--kx-surface); color:var(--kx-text); box-shadow:-10px 0 30px rgba(0,0,0,.24); padding:18px 20px 28px; box-sizing:border-box; }
+.journey-modal-mask { position:fixed; inset:0; z-index:2900; background:var(--overlay-medium); display:flex; justify-content:flex-end; }
+.journey-modal { width:min(760px, 96vw); height:100vh; overflow:auto; background:var(--kx-surface); color:var(--kx-text); box-shadow:-10px 0 30px var(--overlay-light); padding:18px 20px 28px; box-sizing:border-box; }
 .journey-header-actions { display:flex; gap:6px; }
 .journey-modal-sub { margin:4px 0 0; color:var(--kx-text-secondary); font-size:11px; }
 .journey-header,

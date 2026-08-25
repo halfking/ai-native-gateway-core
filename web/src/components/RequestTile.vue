@@ -846,10 +846,10 @@ function closeTimelinePanel() {
 
 @keyframes status-pulse {
   0%, 100% {
-    box-shadow: 0 0 0 2px color-mix(in srgb, var(--text) 15%, transparent), 0 0 0 0 rgba(59, 130, 246, 0.5);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--text) 15%, transparent), 0 0 0 0 color-mix(in srgb, var(--accent) 16%, transparent);
   }
   50% {
-    box-shadow: 0 0 0 2px color-mix(in srgb, var(--text) 15%, transparent), 0 0 0 4px rgba(59, 130, 246, 0.25);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--text) 15%, transparent), 0 0 0 4px color-mix(in srgb, var(--accent) 16%, transparent);
   }
 }
 
@@ -971,7 +971,7 @@ function closeTimelinePanel() {
   line-height: 1.1;
   text-align: center;
   font-weight: 600;
-  color: rgba(248, 113, 113, 0.95); /* default = failure red */
+  color: color-mix(in srgb, var(--danger) 12%, transparent); /* default = failure red */
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -979,11 +979,11 @@ function closeTimelinePanel() {
   margin-top: 1px;
 }
 .request-tile__reason--idle {
-  color: rgba(156, 163, 175, 0.95);
+  color: color-mix(in srgb, var(--muted) 14%, transparent);
   font-weight: 500;
 }
 .request-tile__reason--probe {
-  color: rgba(56, 189, 248, 0.95);
+  color: color-mix(in srgb, var(--probe-cyan) 22%, transparent);
 }
 
 @media (prefers-reduced-motion: reduce) {
