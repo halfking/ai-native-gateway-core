@@ -87,10 +87,30 @@ html[data-theme='light'] {
   --probe-dark-bg:     #e8edf3;
   --purple:            #a78bfa;
   --magenta:           #d946ef;
+  --pink:              #ec4899;
   --accent-dark:       #1d3f9e;
+  --accent-darker:     #1e3a8a;
   --danger-dark:       #a02d28;
+  --danger-darker:     #7f1d1d;
   --success-dark:      #0f6b47;
+  --success-darker:    #166534;
   --warning-dark:      #92610f;
+  --warning-darker:    #78350f;
+  --github-blue:       #1f6feb;
+  /* 浅色调辅助(用于 chart 渐变 / 状态点强调) */
+  --success-light:     #6ee7b7;
+  --purple-light:      #cba6f7;
+  --purple-dark:       #3730a3;
+  /* 表面/容器背景(代码块 / 暗模式投影) */
+  --bg-elevated:       #1e1e2e;
+  /* 厂商品牌色 (走 token, light/dark 通用) */
+  --vendor-openai:     #10a37f;
+  --vendor-anthropic:  #d97757;
+  --vendor-google:     #4285f4;
+  --vendor-deepseek:   #3b82f6;
+  --vendor-minimax:    #ec4899;
+  --vendor-zhipu:      #06b6d4;
+  --vendor-idle:       #374151;
   /* 文本反白 */
   --on-primary:  var(--kx-text-on-primary);
   --radius:    8px;
@@ -175,9 +195,29 @@ html[data-theme='dark'] {
   --probe-cyan-deep:   #075985;
   --probe-dark-bg: #0e1a29;
   --accent-dark:   #2d5fe3;
+  --accent-darker: #1e3a8a;
   --danger-dark:   #dc5f56;
+  --danger-darker: #7f1d1d;
   --success-dark:  #35b47c;
+  --success-darker: #15803d;
   --warning-dark:  #d29a2b;
+  --warning-darker: #78350f;
+  --pink:          #f472b6;
+  --github-blue:   #58a6ff;
+  /* 浅色调辅助(用于 chart 渐变 / 状态点强调) */
+  --success-light: #6ee7b7;
+  --purple-light:  #cba6f7;
+  --purple-dark:   #3730a3;
+  /* 表面/容器背景(代码块 / 暗模式投影) */
+  --bg-elevated:   #1e1e2e;
+  /* 厂商品牌色 (双主题统一) */
+  --vendor-openai:     #10a37f;
+  --vendor-anthropic:  #d97757;
+  --vendor-google:     #4285f4;
+  --vendor-deepseek:   #3b82f6;
+  --vendor-minimax:    #ec4899;
+  --vendor-zhipu:      #06b6d4;
+  --vendor-idle:       #374151;
   --on-primary:  var(--kx-text-on-primary);
   --radius:    8px;
   color-scheme: dark;

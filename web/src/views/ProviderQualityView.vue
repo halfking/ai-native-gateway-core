@@ -433,7 +433,7 @@ async function handleTabChange(tab: 'providers' | 'ranking') {
   background: white;
   border-radius: 8px;
   overflow: hidden;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+  box-shadow: 0 2px 8px var(--overlay-light);
 }
 
 .ranking-table table {
@@ -549,7 +549,7 @@ async function handleTabChange(tab: 'providers' | 'ranking') {
   background: white;
   border-radius: 8px;
   padding: 24px;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+  box-shadow: 0 2px 8px var(--overlay-light);
 }
 
 .card-header {

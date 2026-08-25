@@ -277,5 +277,5 @@ function thinkingLabel(o: ModelOffer) {
 .empty .hint { font-size: 12px; margin-top: 8px; }
 .row-click { cursor: pointer; }
 .row-click:hover { background: color-mix(in srgb, var(--accent) 6%, transparent); }
-.tag { margin-left: 6px; font-size: 10px; padding: 1px 5px; border-radius: 4px; background: color-mix(in srgb, #c97800 18%, transparent); }
+.tag { margin-left: 6px; font-size: 10px; padding: 1px 5px; border-radius: 4px; background: color-mix(in srgb, var(--warning-dark) 18%, transparent); }
 </style>

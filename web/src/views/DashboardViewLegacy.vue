@@ -575,14 +575,14 @@ scheduleStatsRecalibrate()
   border-radius: var(--radius);
   font-size: 13px;
   background: var(--danger-bg);
-  border: 1px solid rgba(248, 81, 73, 0.45);
+  border: 1px solid color-mix(in srgb, var(--danger) 12%, transparent);
   color: var(--text);
 }
 .proxy-warning-banner strong {
   color: var(--danger);
 }
 .proxy-warning-banner code {
-  background: rgba(0, 0, 0, 0.25);
+  background: var(--overlay-light);
   padding: 1px 6px;
   border-radius: 4px;
   font-size: 12px;
@@ -709,6 +709,6 @@ scheduleStatsRecalibrate()
 .version-btn--active {
   background: var(--accent);
   color: white;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+  box-shadow: 0 1px 2px var(--overlay-light);
 }
 </style>

@@ -131,7 +131,7 @@ const unavailableModels = computed(() => props.models.filter(m => !m.available))
   width: 8px; height: 8px; border-radius: 50%;
   display: inline-block; vertical-align: middle; margin-inline-end: 2px;
 }
-.dot-green { background: #4caf50; }
+.dot-green { background: var(--success); }
 .dot-amber { background: var(--warning); }
 .dot-amber--gapped { margin-inline-start: 8px; }
 .info-section { margin-top: 8px; }

@@ -1131,7 +1131,7 @@ onMounted(async () => {
 .quick-link-card {
   cursor: pointer; text-align: center; padding: 20px;
   transition: all 0.3s;
-  &:hover { transform: translateY(-4px); box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15); }
+  &:hover { transform: translateY(-4px); box-shadow: 0 4px 12px var(--overlay-light); }
   h3 { margin: 12px 0 8px; font-size: 16px; }
   p { color: var(--muted); font-size: 14px; margin: 0; }
 }

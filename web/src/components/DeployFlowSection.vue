@@ -116,7 +116,7 @@ function handleSecondary(path?: string) {
   padding: 28px 24px;
   border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
   border-radius: 14px;
-  background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 10%, transparent), rgba(15, 17, 23, 0.55));
+  background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 10%, transparent), var(--overlay-medium));
 }
 
 .deploy-flow__head {
@@ -189,7 +189,7 @@ function handleSecondary(path?: string) {
   border-radius: 8px;
   font-size: 12px;
   color: var(--border);
-  background: rgba(15, 23, 42, 0.65);
+  background: var(--overlay-medium);
   word-break: break-all;
 }
 

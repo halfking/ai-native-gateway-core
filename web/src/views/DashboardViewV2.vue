@@ -282,7 +282,7 @@ async function onRefresh() {
 .tab-btn--active {
   background: var(--accent);
   color: white;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+  box-shadow: 0 1px 2px var(--overlay-light);
 }
 
 .page-header-right {
@@ -445,7 +445,7 @@ async function onRefresh() {
 
 .stat-mini:hover {
   border-color: var(--accent);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+  box-shadow: 0 2px 8px var(--overlay-light);
 }
 
 .stat-mini__label {
