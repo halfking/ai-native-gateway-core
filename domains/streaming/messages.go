@@ -333,7 +333,7 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 2026-07-14: lowercase at the wire boundary.
-	clientModel := modelname.CanonicalizeClientModel(reqBody.Model)
+	clientModel := modelname.CanonicalizeClientModel(ApplyAliasPrefix(reqBody.Model))
 	resolveRequestJourney(r, tenant(keyInfo), requestedModel, clientModel)
 
 	// ── Tenant model policy (Round 48, 2026-06-21) ──────────────

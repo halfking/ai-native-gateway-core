@@ -136,9 +136,7 @@ END;
 $function$;
 
 COMMENT ON FUNCTION public.promote_session_module_executions_hot_to_partition(INTERVAL, INTEGER) IS
-    'hot → partitioned parent drain for session_module_executions (migration 574). ' ||
-    'Invoked by bg.PartitionManager.promoteSpecs() every promote tick; batched via p_batch_size. ' ||
-    'Returns the number of rows actually moved (0 when nothing is eligible).';
+    'hot → partitioned parent drain for session_module_executions (migration 574). Invoked by bg.PartitionManager.promoteSpecs() every promote tick; batched via p_batch_size. Returns the number of rows actually moved (0 when nothing is eligible).';
 
 DO $do$
 DECLARE
