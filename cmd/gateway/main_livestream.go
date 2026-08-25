@@ -175,19 +175,21 @@ func liveStreamEventTime(entry *telemetry.RequestLogEntry) time.Time {
 	return time.Now().UTC()
 }
 
-// liveStreamEmittedForwarderCapacity bounds the queue between the request
-// hot path (emit) and the single consumer goroutine (run). 2026-08-25:
-// 1024 是 emitted 与 persisted 流量的折中 —— emitted 在每个请求被接收时就
-// 触发(含 in_progress 投影), 频率高于 persisted(仅事务提交后), 需要自己的
-// 余量; 但保持 hub 广播队列(2048)的一半, 避免 burst 期间内存翻倍。
-const liveStreamEmittedForwarderCapacity = 1024
+// liveStreamEmittedForwarderCapacity bounds the queue between the telemetry
+// hooks (emit/persist) and the single consumer goroutine (run). 2026-08-25:
+// 与 hub 广播队列(BroadcastQueueSize=2048)对齐 —— emitted(每请求触发, 含
+// in_progress 投影)与 persisted(insert/update 落库后的补偿)两路流量都走
+// 本队列, 容量减半会在 burst + DB 慢的组合下放大丢弃概率(丢终态补偿比丢
+// in_progress 严重: 该 request 的实时卡片会停在 in_progress 直到下一条
+// update 或 Redis 快照过期)。
+const liveStreamEmittedForwarderCapacity = 2048
 
 // liveStreamEmittedDropsLog bounds drop-warning log volume: log every Nth
 // drop (mirrors the admin package's incidentUpdateDropsLog pattern, N=50).
 const liveStreamEmittedDropsLog = 50
 
-// liveStreamEmittedForwarder bridges telemetry's onEmitted hook to the
-// live-stream SSE hub.
+// liveStreamEmittedForwarder bridges telemetry's onEmitted/onPersisted hooks
+// to the live-stream SSE hub.
 //
 // 2026-08-25 (dashboard 实时流前置发布): 此前 live stream 只挂在
 // AddOnRequestLogPersisted 上, DB 写入成功后请求才可见 —— DB 缺失/延迟会
@@ -203,11 +205,16 @@ const liveStreamEmittedDropsLog = 50
 // 因此 emit() 只做浅拷贝 + chan 投递, 映射与 Publish 全部移到 run() 的
 // 单消费者 goroutine。
 //
-// 两阶段广播契约: emitted → 立即 in_progress 投影(本转发器);
-// persisted → 最终状态补偿(main.go 保留的 AddOnRequestLogPersisted 回调,
-// 在 telemetry worker goroutine 上触发)。同一 request ID 的多次 Publish
-// 由 admin 包 Redis Record 的 per-request 锁 + read-modify-write 去重,
-// 前端按 (request_id, seq) 去重 —— 重复发布安全。
+// 两阶段广播契约 (2026-08-25 审计修正): emitted → 立即 in_progress 投影;
+// persisted → 落库后的终态补偿。**两阶段都经本转发器的同一条 FIFO 队列**:
+// 同一 request 的 emit 投递(请求热路径, t0)必然先于 persist 投递
+// (telemetry worker 落库后, t1>t0), 单消费者 FIFO 因此保证 Publish 顺序
+// 恒为 in_progress → terminal。此前 persisted 在 telemetry worker 上直发,
+// 与 emitted 两路无顺序保证 —— DB 慢时 forwarder 消费者因 200ms provider
+// fallback 降速积压, 终态先显示、晚到的 in_progress 会把前端卡片
+// (request 帧按 request_id last-write-wins, 见 web/src/composables/
+// liveStreamStore.ts) 回退成 in_progress。跨 request 顺序无约束, 由 admin
+// 包 Redis Record 的 per-request 锁 + read-modify-write 各自兜底。
 type liveStreamEmittedForwarder struct {
 	hub      *admin.LiveStreamSSEHub
 	entries  chan *telemetry.RequestLogEntry
@@ -233,6 +240,20 @@ func newLiveStreamEmittedForwarder(hub *admin.LiveStreamSSEHub) *liveStreamEmitt
 // RequestID/TenantID), 拷贝把"emit 时刻的字段值/指针指向"定格下来, 消费者
 // 读到的投影不会被后续 DB 队列处理污染。
 func (f *liveStreamEmittedForwarder) emit(entry *telemetry.RequestLogEntry) {
+	f.enqueue(entry)
+}
+
+// persist is the AddOnRequestLogEmitted-style callback for the persisted
+// (post-commit) compensation. Runs on the telemetry worker goroutine.
+// 2026-08-25 (审计修正): 与 emit 走同一条 FIFO —— 见 type doc, 这是同一
+// request 两阶段顺序保证的核心。回调本身同样只做非阻塞投递, telemetry
+// worker 不因此被 Publish/DB 查找拖慢(比旧直发回调更轻)。
+func (f *liveStreamEmittedForwarder) persist(entry *telemetry.RequestLogEntry) {
+	f.enqueue(entry)
+}
+
+// enqueue is the shared non-blocking hand-off used by both hooks.
+func (f *liveStreamEmittedForwarder) enqueue(entry *telemetry.RequestLogEntry) {
 	if f == nil || f.hub == nil || entry == nil {
 		return
 	}
@@ -240,12 +261,13 @@ func (f *liveStreamEmittedForwarder) emit(entry *telemetry.RequestLogEntry) {
 	select {
 	case f.entries <- &cp:
 	default:
-		// 2026-08-25: 队列满 → 丢弃这条 in_progress 投影并计数。丢 emitted
-		// 只意味着该请求晚一点(落库后经 persisted 补偿)出现在泳道, 不是
-		// 数据丢失; 但每次丢都打日志会刷爆输出, 所以按 N=50 限频
-		// (对齐 admin 包 incidentUpdateDropsLog 模式)。
+		// 2026-08-25: 队列满 → 丢弃并计数。丢 emitted 只意味着该请求晚一点
+		// 出现在泳道(经 persisted 补偿); 丢 persisted 则该 request 的实时卡片
+		// 停在 in_progress, 直到下一条 update 或快照刷新 —— 两者都是显示层
+		// 降级而非数据丢失(request_logs 落库不受影响)。每次丢都打日志会刷爆
+		// 输出, 按 N=50 限频(对齐 admin 包 incidentUpdateDropsLog 模式)。
 		if n := f.dropped.Add(1); n%liveStreamEmittedDropsLog == 1 {
-			slog.Warn("live stream emitted forwarder queue full, dropping in_progress projection",
+			slog.Warn("live stream emitted forwarder queue full, dropping live projection",
 				"dropped", n,
 				"request_id", entry.RequestID,
 			)
@@ -255,15 +277,16 @@ func (f *liveStreamEmittedForwarder) emit(entry *telemetry.RequestLogEntry) {
 
 // run is the single consumer goroutine started by main(). Everything that
 // is NOT hot-path-safe lives here: the 200ms-bounded provider lookup inside
-// adminLiveRequestFromEntry and the hub Publish (hub 后续会把 Publish 改为
-// 非阻塞, 当前版本阻塞也只阻塞本 goroutine)。
+// adminLiveRequestFromEntry and the hub Publish(已改为本地广播优先 + 异步
+// Record, 详见 admin/live_stream_async.go)。FIFO 消费保证同一 request 的
+// in_progress 投影恒先于终态补偿。
 func (f *liveStreamEmittedForwarder) run() {
 	for {
 		select {
 		case <-f.stopCh:
-			// 2026-08-25: 关停时不 drain 残留 entry —— 关停时刻丢弃 in_progress
-			// 投影可接受(最终状态以 persisted 阶段 + Redis Record 快照为准),
-			// 直接退出让 main 的关停顺序(转发器 → hub)尽快推进。
+			// 2026-08-25: 关停时不 drain 残留 entry —— 关停时刻丢弃实时投影
+			// 可接受(落库数据与 Redis Record 快照不受影响), 直接退出让 main
+			// 的关停顺序(转发器 → hub)尽快推进。
 			return
 		case e := <-f.entries:
 			f.hub.Publish(adminLiveRequestFromEntry(e, f.hub))

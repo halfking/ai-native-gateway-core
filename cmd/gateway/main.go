@@ -1999,12 +1999,14 @@ func main() {
 	//                      provider 解析（≤200ms DB 查找）与 Publish 移到转发器的
 	//                      单消费者 goroutine → 请求一被接收就进实时流, 不被
 	//                      DB 写入节奏阻塞。
-	//   阶段二 persisted — 事务提交后补偿最终状态（下方保留的既有回调, 跑在
-	//                      telemetry worker goroutine 上）。
+	//   阶段二 persisted — 落库后补偿最终状态, 与阶段一走同一转发器 FIFO
+	//                      (2026-08-25 审计修正: 两路直发无顺序保证, DB 慢时
+	//                      forwarder 积压会让晚到的 in_progress 把前端已显示
+	//                      的终态卡片回退 —— 同一 FIFO + 单消费者恒保
+	//                      in_progress → terminal 顺序, 见 forwarder type doc)。
 	//
-	// 同一 request ID 的多次 Publish 由 admin 包 Redis Record 的 per-request
-	// 锁 + read-modify-write 去重, 前端按 (request_id, seq) 去重 —— 重复发布
-	// 安全, in_progress 投影会被 persisted 终态覆盖。
+	// 同一 request ID 的多次 Publish 顺序由转发器 FIFO 保证; 跨 request 由
+	// admin 包 Redis Record 的 per-request 锁 + read-modify-write 去重兜底。
 	// Live stream hub hook: register regardless of telemetryClient.Enabled()
 	// (sessionv2mirror/attachment hooks don't gate on Enabled()).
 	// If telemetry is disabled, log a clear warning so operators know
@@ -2019,11 +2021,11 @@ func main() {
 		go fwd.run()
 		telemetryClient.SetOnRequestLogEmitted(fwd.emit)
 		slog.Info("telemetry onEmitted forwarder wired → live stream SSE hub (pre-DB in_progress projection)")
-		// 阶段二: persisted → 最终状态补偿（既有发布点, 保留不动）。
-		telemetryClient.AddOnRequestLogPersisted(func(entry *telemetry.RequestLogEntry) {
-			hub.Publish(adminLiveRequestFromEntry(entry, hub))
-		})
-		slog.Info("telemetry onPersisted wired → live stream SSE hub (post-commit compensation)")
+		// 阶段二: persisted → 最终状态补偿。经同一转发器 FIFO 发布(顺序保证
+		// 见上), 回调在 telemetry worker 上仍只做非阻塞投递 —— 比 旧直发
+		// Publish 回调更轻, 不会拖慢 telemetry 落库 worker。
+		telemetryClient.AddOnRequestLogPersisted(fwd.persist)
+		slog.Info("telemetry onPersisted wired → live stream SSE hub via forwarder FIFO (post-commit compensation)")
 	} else {
 		slog.Warn("live stream hub created but telemetryClient is nil; no data will flow to swim lanes")
 	}
