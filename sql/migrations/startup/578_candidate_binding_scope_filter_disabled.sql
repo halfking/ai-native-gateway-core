@@ -248,11 +248,11 @@ END;
 $$ LANGUAGE plpgsql;
 
 COMMENT ON FUNCTION public.bump_candidate_binding_scope_revision_insert() IS
-    'Statement trigger: bumps each affected raw_model scope once after binding INSERT (skips bindings under disabled providers and manually-disabled credentials since 574).';
+    'Statement trigger: bumps each affected raw_model scope once after binding INSERT (skips bindings under disabled providers and manually-disabled credentials since 578).';
 COMMENT ON FUNCTION public.bump_candidate_binding_scope_revision_delete() IS
-    'Statement trigger: bumps each affected raw_model scope once after binding DELETE (skips bindings under disabled providers and manually-disabled credentials since 574).';
+    'Statement trigger: bumps each affected raw_model scope once after binding DELETE (skips bindings under disabled providers and manually-disabled credentials since 578).';
 COMMENT ON FUNCTION public.bump_candidate_binding_scope_revision_update() IS
-    'Statement trigger: bumps each affected raw_model scope once after meaningful binding UPDATE (skips bindings under disabled providers and manually-disabled credentials since 574).';
+    'Statement trigger: bumps each affected raw_model scope once after meaningful binding UPDATE (skips bindings under disabled providers and manually-disabled credentials since 578).';
 
 -- ── 4. Canonical bump (insert) — fold filter into the hash ───────────────
 CREATE OR REPLACE FUNCTION public.bump_candidate_binding_scope_revision_canonical_insert()
