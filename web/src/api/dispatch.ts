@@ -102,3 +102,19 @@ export function fetchDispatchWaterfall(query: WaterfallQuery = {}): Promise<Wate
 export function fetchDispatchQueues(): Promise<DispatchQueuesSnapshot> {
   return req<DispatchQueuesSnapshot>('GET', '/api/admin/dispatch/queues')
 }
+
+export interface WaterfallByRequestResponse {
+  request: WaterfallRequest
+  source?: string
+}
+
+/** Single-request waterfall (memory ring → DB). 404 when not found. */
+export function fetchWaterfallByRequestId(requestId: string, opts?: { signal?: AbortSignal }) {
+  return req<WaterfallByRequestResponse>(
+    'GET',
+    `/api/admin/dispatch/waterfall/request/${encodeURIComponent(requestId)}`,
+    undefined,
+    { signal: opts?.signal },
+  )
+}
+

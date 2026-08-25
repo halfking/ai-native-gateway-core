@@ -8,6 +8,26 @@ import (
 	"testing"
 )
 
+func TestBuildSessionCompareQuery_WithRequestID(t *testing.T) {
+	q, args := buildSessionCompareQuery("t1", "sess-1", "req-9")
+	if len(args) != 3 || args[0] != "sess-1" || args[1] != "t1" || args[2] != "req-9" {
+		t.Fatalf("args=%v", args)
+	}
+	if !strings.Contains(q, "rl.request_id = $3") {
+		t.Fatalf("missing request_id filter: %s", q)
+	}
+}
+
+func TestBuildSessionCompareQuery_WithoutRequestID(t *testing.T) {
+	q, args := buildSessionCompareQuery("t1", "sess-1", "")
+	if len(args) != 2 {
+		t.Fatalf("args len=%d", len(args))
+	}
+	if strings.Contains(q, "rl.request_id = $3") {
+		t.Fatal("should not filter request_id when empty")
+	}
+}
+
 // TestEstimateTokens 验证 token 估算 (len(s) / 3.5, 取整).
 func TestEstimateTokens(t *testing.T) {
 	tests := []struct {

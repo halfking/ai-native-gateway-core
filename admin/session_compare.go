@@ -134,6 +134,7 @@ func (api *SessionCompareAPI) HandleCompare(w http.ResponseWriter, r *http.Reque
 	}
 
 	sessionID := r.URL.Query().Get("session_id")
+	requestID := strings.TrimSpace(r.URL.Query().Get("request_id"))
 	tenantID := EffectiveTenantID(r)
 
 	if sessionID == "" {
@@ -150,7 +151,7 @@ func (api *SessionCompareAPI) HandleCompare(w http.ResponseWriter, r *http.Reque
 	var data *SessionCompareData
 	err := withTenantTx(ctx, api.db, tenantID, func(tx pgx.Tx) error {
 		var txErr error
-		data, txErr = api.loadCompareData(ctx, tx, tenantID, sessionID)
+		data, txErr = api.loadCompareData(ctx, tx, tenantID, sessionID, requestID)
 		return txErr
 	})
 	if err != nil {
@@ -174,8 +175,9 @@ func (api *SessionCompareAPI) HandleCompare(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusOK, data)
 }
 
-func (api *SessionCompareAPI) loadCompareData(ctx context.Context, q pgx.Tx, tenantID, sessionID string) (*SessionCompareData, error) {
-	// Query all request_logs for this session, ordered by time
+// buildSessionCompareQuery returns SQL + args for session compare rows.
+// Optional requestID adds AND rl.request_id = $3 (turns ≤ 1).
+func buildSessionCompareQuery(tenantID, sessionID, requestID string) (string, []any) {
 	query := `
 		SELECT 
 			rl.request_id,
@@ -188,12 +190,24 @@ func (api *SessionCompareAPI) loadCompareData(ctx context.Context, q pgx.Tx, ten
 		FROM request_logs_with_current_month rl
 		LEFT JOIN request_logs_bodies_with_current_month rb
 		  ON rb.request_id = rl.request_id
-		WHERE rl.gw_session_id = $1 AND rl.tenant_id = $2
+		WHERE rl.gw_session_id = $1 AND rl.tenant_id = $2`
+	args := []any{sessionID, tenantID}
+	if requestID != "" {
+		query += ` AND rl.request_id = $3`
+		args = append(args, requestID)
+	}
+	query += `
 		ORDER BY rl.ts ASC
 		LIMIT 500
 	`
+	return query, args
+}
 
-	rows, err := q.Query(ctx, query, sessionID, tenantID)
+func (api *SessionCompareAPI) loadCompareData(ctx context.Context, q pgx.Tx, tenantID, sessionID, requestID string) (*SessionCompareData, error) {
+	// Query request_logs for this session (optionally one request), ordered by time
+	query, args := buildSessionCompareQuery(tenantID, sessionID, requestID)
+
+	rows, err := q.Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query request_logs: %w", err)
 	}

@@ -314,6 +314,19 @@ func (p *QueueProjection) Snapshot() *SnapshotView {
 	return view
 }
 
+// FindWaterfallByRequestID returns one projection-owned timeline by request id.
+func (p *QueueProjection) FindWaterfallByRequestID(requestID, tenantID string) (WaterfallRequest, bool) {
+	if p == nil || requestID == "" {
+		return WaterfallRequest{}, false
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if !p.wired.Load() || p.waterfall == nil {
+		return WaterfallRequest{}, false
+	}
+	return p.waterfall.findByRequestID(requestID, tenantID)
+}
+
 // SnapshotWaterfall returns the admin timeline from projection-owned state.
 // tenantID empty = all tenants (platform ops).
 func (p *QueueProjection) SnapshotWaterfall(limit int, model string, credentialID int, tenantID string) WaterfallSnapshot {
