@@ -42,6 +42,20 @@
 - `go test ./domains/sessionsummary ./internal/summarystore ./domains/analysis/sessionmeta ./telemetry` 全绿（含新增 6 组测试 14 个用例）
 - Migration 606 语法按既有 startup migrations 模板（`\set ON_ERROR_STOP on` + BEGIN/COMMIT + IF NOT EXISTS + down 脚本）
 
+## 验证（154 生产实测，deploy release 1760-7531930b）
+
+部署过程：
+1. 第一次部署 1758：healthz 超时自动回滚（根因：启动期 schema ensure 例行的 `statement timeout (57014)` 瞬态 PG 负载，与本次改动无关）
+2. 第二次部署 1759 成功：healthz + DB 就绪 + admin 密码同步 + migration 606 已应用（`session_summaries` 加列成功）
+3. 业务级 E2E harness（go build → scp 到 154 → 直连 /etc/llm-gateway-go/env 中的 DSN 与 sk-key + 网关 `summary-fast` 同模型路径实测）对真实会话跑 `GenerateSummary`：
+   - 初始 3 个会话 agent_type/expert_type 均空 → 排查发现 **V1 读面读的是父表** `request_logs_bodies`，而 hot-first（migration 600）已经把请求体出现在 `request_logs_bodies_hot`，父表要等热点提升
+   - 修复 `summarizer.go` + `system_prompt_prefix.go` 三条 SQL 切 `*_with_current_month` 视图 → 重新部署 1760 后重跑 zcode 会话 `gw_8434924f`（真实身份行 "You are ZCode, an interactive coding agent. You are an agent for ZCode CLI."）：
+     ```json
+     { "title": "Go代码管理员权限函数分析", "agent_type": "zcode", "expert_type": "software_engineering", "tags": ["go","http-handler","admin","权限管理"] }
+     ```
+     DB 持久化验证：`SELECT agent_type, expert_type, tags FROM session_summaries WHERE session_key='gw_8434924f-'` 返回 `zcode / software_engineering / {go,http-handler,admin,权限管理}` ✅
+4. 实验产物已清理（`/tmp/sumtest` on 154 + 本地 `cmd/_sumtest/`，均不入仓）
+
 ## 遗留与后续
 
 - `admin/auto_summary_generator.go`（on-request auto summary）的 prompt 由 `adminLLMTask` 配置驱动，要输出同样字段需改配置侧 system prompt；新列其 Upsert 路径天然兼容（空值即空串，列有 DEFAULT）。
