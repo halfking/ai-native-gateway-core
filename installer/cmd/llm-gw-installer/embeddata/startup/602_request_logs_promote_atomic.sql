@@ -1,6 +1,37 @@
+-- Migration 602: fix request_logs promote data loss (atomic CTE + explicit columns).
 --
--- Name: promote_request_logs_hot_to_partition(interval, integer); Type: FUNCTION; Schema: public; Owner: -
+-- 2026-08-25 production incident (154/245, shared 252 PG): request_logs metadata
+-- rows were silently deleted. promote_request_logs_hot_to_partition ran
+-- DELETE FROM request_logs_hot ... BEFORE an INSERT INTO request_logs SELECT *
+-- wrapped in an exception sub-block. The SELECT * is positional and the two
+-- tables drifted apart (hot: caller_id/session_correlation_id/status_code;
+-- parent: effective_timeout_seconds, context_size_tokens, timeout_mode,
+-- is_continuation, continuation_keywords, node_switch_count,
+-- keepalive_sent_count, cached_response_id, raw_model_name,
+-- system_fingerprint, outbound_body, ...). Every promote batch therefore
+-- failed with 42601 ("column customer_id is of type bigint but expression is
+-- of type text"), the sub-block swallowed the error, and the already-executed
+-- DELETE committed: ~529k rows were dropped without ever reaching the monthly
+-- partitions (request_logs_2026_08 stayed at 0 rows while bodies promotion —
+-- which already used the atomic pattern — kept working).
 --
+-- Live repro (2026-08-25, unique request_id 'repro-fix154-loss-test-20260825'):
+--   fn_result=0, after_hot=0, after_parent=0  → row deleted and not inserted.
+--
+-- This migration replaces the function with a single data-modifying CTE
+-- (batch → DELETE ... RETURNING → INSERT), the same proven pattern as
+-- promote_request_logs_bodies_hot_to_partition and migration 535. Delete and
+-- insert are now one atomic statement; errors propagate to the Go caller
+-- (partition_manager logs "promote failed") instead of being swallowed.
+--
+-- Idempotent: yes (CREATE OR REPLACE, deterministic body).
+-- Down: 602_request_logs_promote_atomic.down.sql (restores the pre-fix body —
+-- reintroduces the loss window, emergency rollback only).
+
+\set ON_ERROR_STOP on
+
+BEGIN;
+SELECT pg_advisory_xact_lock(hashtextextended('llm-gateway:request-logs-promote:atomic-v1', 0));
 
 --
 -- Name: promote_request_logs_hot_to_partition(interval, integer); Type: FUNCTION; Schema: public; Owner: -
@@ -139,3 +170,6 @@ BEGIN
     RETURN moved;
 END;
 $$;
+COMMIT;
+
+-- POST_CONDITION: SELECT pg_get_functiondef('promote_request_logs_hot_to_partition(interval,integer)'::regprocedure) contains 'FOR UPDATE SKIP LOCKED' and contains no 'EXCEPTION'
