@@ -208,6 +208,7 @@ import AttachmentManager from './data-lifecycle/AttachmentManager.vue'
 import FilesystemMaintenance from './data-lifecycle/FilesystemMaintenance.vue'
 import StorageConfig from './data-lifecycle/StorageConfig.vue'
 import DegradationRecovery from './data-lifecycle/DegradationRecovery.vue'
+import LogManagement from './data-lifecycle/LogManagement.vue'
 
 const { t } = useI18n()
 
