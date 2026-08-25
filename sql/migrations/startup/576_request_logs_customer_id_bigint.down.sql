@@ -1,4 +1,4 @@
--- Migration 574 DOWN: restore the historical TEXT type on request_logs_hot.
+-- Migration 576 DOWN: restore the historical TEXT type on request_logs_hot.
 
 BEGIN;
 

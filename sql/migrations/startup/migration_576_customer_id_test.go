@@ -6,12 +6,12 @@ import (
 	"testing"
 )
 
-func TestMigration574CustomerIDAlignsHotAndParent(t *testing.T) {
-	up, err := os.ReadFile("574_request_logs_customer_id_bigint.sql")
+func TestMigration576CustomerIDAlignsHotAndParent(t *testing.T) {
+	up, err := os.ReadFile("576_request_logs_customer_id_bigint.sql")
 	if err != nil {
 		t.Fatalf("read migration failed: %v", err)
 	}
-	down, err := os.ReadFile("574_request_logs_customer_id_bigint.down.sql")
+	down, err := os.ReadFile("576_request_logs_customer_id_bigint.down.sql")
 	if err != nil {
 		t.Fatalf("read down migration failed: %v", err)
 	}

@@ -1,4 +1,4 @@
--- Migration 575 DOWN: restore the previous request log view definition.
+-- Migration 577 DOWN: restore the previous request log view definition.
 -- The canonical view object is re-applied by the deployment schema bundle.
 
 BEGIN;
