@@ -57,13 +57,28 @@ const (
 
 	// StickyLevelClientModel: medium priority, client + model scoped.
 	// Format: {tenant}:{app}:{key}:{profile}:{model}
-	// TTL: 24 hours (long-term model preference)
+	// TTL: 60 seconds (short contamination window — see stickyL2TTL below)
 	StickyLevelClientModel StickyLevel = 2
 
 	// StickyLevelClient: lowest priority, client-only scoped.
 	// Format: {tenant}:{app}:{key}:{profile}
-	// TTL: 7 days (baseline fallback)
+	// TTL: 24 hours (baseline fallback)
 	StickyLevelClient StickyLevel = 3
+)
+
+// 2026-08-26 fix: align TTLs across memory, DB, and Redis.
+//
+// Semantics (operator-confirmed):
+//   - L1 (session+model) sticky: same session_id, multiple requests → reuse credential
+//   - L2 (client+model) sticky: NEW sessions must NOT inherit a previous session's
+//     credential; L2's TTL is the contamination window for that risk.
+//     Reduce from 2h/24h → 60s so a stale L2 entry expires before it can lock
+//     many new sessions to one credential.
+//   - L3 (client baseline) sticky: 24h, only used as a fallback when no model info.
+const (
+	stickyL1DefaultTTL = 15 * time.Minute // calculateSessionStickyTTL default
+	stickyL2TTL        = 60 * time.Second
+	stickyL3TTL        = 24 * time.Hour
 )
 
 // StickyLookupResult holds the result of a multi-level sticky lookup.
@@ -80,6 +95,11 @@ type StickyRedisStore interface {
 	SetLevel(ctx context.Context, level int, credID int, rawKey string, ttl time.Duration) error
 	GetLevel(ctx context.Context, level int, rawKey string) (int, bool)
 	DeleteLevelIfCredential(ctx context.Context, level int, rawKey string, credID int) error
+	// ClearForCredential scans the entire sticky namespace and deletes every
+	// entry whose value equals credID. Used for hot-reload when admin changes
+	// a credential's priority/weight/concurrency — clear stale pins so new
+	// sessions can re-enter load balancing.
+	ClearForCredential(ctx context.Context, credID int) (int, error)
 }
 
 const stickyRedisWriteTimeout = 50 * time.Millisecond
@@ -163,6 +183,49 @@ func (s *StickyCache) Clear() {
 	for k := range s.items {
 		delete(s.items, k)
 	}
+}
+
+// ClearForCredential removes every sticky binding that points at credID,
+// across the in-memory map and (if present) the Redis store. Returns the
+// total number of bindings cleared.
+//
+// 2026-08-26 hot-reload hook: when admin changes a credential's priority /
+// weight / concurrency, we clear the stale sticky pins so new sessions
+// don't inherit the previous credential while in-flight sessions complete
+// naturally. Currently-running sessions keep their L1 entry until they
+// record success again (which writes the same level keys but with refreshed
+// TTL).
+func (s *StickyCache) ClearForCredential(credID int) (int, error) {
+	if credID <= 0 {
+		return 0, nil
+	}
+	cleared := 0
+
+	s.mu.Lock()
+	for k, v := range s.items {
+		if v.credentialID == credID {
+			delete(s.items, k)
+			cleared++
+		}
+	}
+	store := s.redisStore
+	s.mu.Unlock()
+
+	if store != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+		defer cancel()
+		n, err := store.ClearForCredential(ctx, credID)
+		if err != nil {
+			return cleared, err
+		}
+		cleared += n
+	}
+	if cleared > 0 {
+		slog.Info("sticky hot-reload: cleared bindings for credential",
+			"credential_id", credID,
+			"cleared", cleared)
+	}
+	return cleared, nil
 }
 
 // Close gracefully shuts down the StickyCache background goroutines.
@@ -314,7 +377,15 @@ func (s *StickyCache) GetMultiLevel(
 			lvl int
 			ttl time.Duration
 		}
-		levels := []lv{{l1, 1, 1 * time.Hour}, {l2, 2, 24 * time.Hour}, {l3, 3, 7 * 24 * time.Hour}}
+		// 2026-08-26 fix: align Redis-fallback TTLs with memory.
+		//   L1 fallback: per-model dynamic TTL
+		//   L2 fallback: stickyL2TTL (60s)
+		//   L3 fallback: stickyL3TTL (24h)
+		l1TTL := stickyL1DefaultTTL
+		if sessionID != "" && model != "" {
+			l1TTL = calculateSessionStickyTTL(model)
+		}
+		levels := []lv{{l1, 1, l1TTL}, {l2, 2, stickyL2TTL}, {l3, 3, stickyL3TTL}}
 		for _, k := range levels {
 			if k.key == "" {
 				continue
@@ -498,25 +569,26 @@ func (s *StickyCache) RecordSuccessMultiLevel(
 		)
 	}
 
-	// L2: client + model (2小时，从24小时缩短)
+	// L2: client + model (60s — short contamination window for new sessions).
+	// See stickyL2TTL docstring.
 	if l2 != "" {
 		s.items[l2] = stickyEntry{
 			credentialID:        credentialID,
 			failures:            0,
 			consecutiveFailures: 0,
 			lastFailureAt:       time.Time{},
-			expiresAt:           now.Add(2 * time.Hour),
+			expiresAt:           now.Add(stickyL2TTL),
 		}
 	}
 
-	// L3: client baseline (1天，从7天缩短)
+	// L3: client baseline (24h).
 	if l3 != "" {
 		s.items[l3] = stickyEntry{
 			credentialID:        credentialID,
 			failures:            0,
 			consecutiveFailures: 0,
 			lastFailureAt:       time.Time{},
-			expiresAt:           now.Add(24 * time.Hour),
+			expiresAt:           now.Add(stickyL3TTL),
 		}
 	}
 	// 并发修复 2026-07-27：在释放写锁之前把 pool 与 redisStore 指针拷到
@@ -527,15 +599,19 @@ func (s *StickyCache) RecordSuccessMultiLevel(
 	store := s.redisStoreSnapshot()
 
 	// Redis 双写(URSM v2 过渡): 用显式 level, 避免 levelOf 启发式
+	// 2026-08-26 fix: align Redis TTLs with memory and document intent.
+	//   L1: dynamic per-model (calculateSessionStickyTTL), like memory
+	//   L2: stickyL2TTL (60s) — same as memory
+	//   L3: stickyL3TTL (24h) — same as memory
 	if store != nil {
 		levels := []struct {
 			key string
 			lvl int
 			ttl time.Duration
 		}{
-			{l1, 1, 1 * time.Hour},
-			{l2, 2, 24 * time.Hour},
-			{l3, 3, 7 * 24 * time.Hour},
+			{l1, 1, calculateSessionStickyTTL(model)},
+			{l2, 2, stickyL2TTL},
+			{l3, 3, stickyL3TTL},
 		}
 		for _, lv := range levels {
 			if lv.key == "" {
@@ -553,7 +629,7 @@ func (s *StickyCache) RecordSuccessMultiLevel(
 
 	// Async DB write for all levels
 	if pool != nil {
-		go s.dbSetMultiLevel(pool, l1, l2, l3, credentialID, now)
+		go s.dbSetMultiLevel(pool, l1, l2, l3, model, credentialID, now)
 	}
 
 	slog.Debug("sticky multi-level recorded",
@@ -586,17 +662,26 @@ func (s *StickyCache) dbSet(pool *pgxpool.Pool, key string, credentialID int, tt
 
 // dbSetMultiLevel takes the pool as a parameter for the same reason as
 // dbSet. 并发修复 2026-07-27.
-func (s *StickyCache) dbSetMultiLevel(pool *pgxpool.Pool, l1, l2, l3 string, credentialID int, baseTime time.Time) {
+//
+// 2026-08-26 fix: align TTLs with memory and Redis.
+//   L1: per-model dynamic TTL via calculateSessionStickyTTL
+//   L2: stickyL2TTL (60s)
+//   L3: stickyL3TTL (24h)
+func (s *StickyCache) dbSetMultiLevel(pool *pgxpool.Pool, l1, l2, l3, model string, credentialID int, baseTime time.Time) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	l1TTL := stickyL1DefaultTTL
+	if model != "" {
+		l1TTL = calculateSessionStickyTTL(model)
+	}
 	keys := []struct {
 		key string
 		ttl time.Duration
 	}{
-		{l1, 1 * time.Hour},
-		{l2, 24 * time.Hour},
-		{l3, 7 * 24 * time.Hour},
+		{l1, l1TTL},
+		{l2, stickyL2TTL},
+		{l3, stickyL3TTL},
 	}
 
 	for _, k := range keys {

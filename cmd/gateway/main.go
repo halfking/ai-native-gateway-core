@@ -524,6 +524,12 @@ func main() {
 	cm := credential.NewManager()
 	lim := credential.NewLimiter()
 
+	// 2026-08-26 hot-reload: declared here (outer scope) so the admin
+	// handler can later call SetHotReloadDeps(stickyCache, lim) and the
+	// PATCH binding/credential handlers can clear stale sticky entries +
+	// refresh the in-process limiter capacity.
+	var stickyCache *executors.StickyCache
+
 	matrixPath := transformation.DefaultMatrixPath()
 	matrix := transformation.New(matrixPath)
 
@@ -1045,7 +1051,7 @@ func main() {
 		resolver.SetDB(dbConn.Pool())
 	}
 	if providerClient.Enabled() {
-		stickyCache := executors.NewStickyCache()
+		stickyCache = executors.NewStickyCache()
 		if dbConn != nil && dbConn.Enabled() {
 			stickyCache.SetDB(dbConn.Pool())
 			if err := stickyCache.RestoreFromDB(context.Background()); err != nil {
@@ -4305,6 +4311,13 @@ func main() {
 			slog.Info("CHECKPOINT: before SetBackgroundServices")
 			adminHandler.SetBackgroundServices(credCycler, credRecovery, envelopeCleaner, stickyCleaner, taxonomySync)
 			slog.Info("CHECKPOINT: after SetBackgroundServices")
+			// 2026-08-26 hot-reload: wire sticky cache + limiter so PATCH
+			// binding/credential endpoints can clear stale sticky pins
+			// and refresh concurrency_limit in-process within the same
+			// request, instead of waiting for the 30s candCache TTL or a
+			// service restart.
+			adminHandler.SetHotReloadDeps(stickyCache, lim)
+			slog.Info("CHECKPOINT: after SetHotReloadDeps")
 			adminHandler.SetProbeServices(credProbeV2, defaultProbePicker)
 			slog.Info("CHECKPOINT: after SetProbeServices")
 			if modelProbe != nil {

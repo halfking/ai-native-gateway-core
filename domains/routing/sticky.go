@@ -62,6 +62,35 @@ type StickyCache struct {
 	redisStore StickyRedisStore
 }
 
+// 2026-08-26 fix: align TTLs with the executors-package StickyCache.
+// L1 = per-model dynamic TTL (10-30 min depending on model)
+// L2 = 60s (short contamination window for new sessions)
+// L3 = 24h (client baseline fallback)
+const (
+	stickyL1DefaultTTL = 15 * time.Minute
+	stickyL2TTL        = 60 * time.Second
+	stickyL3TTL        = 24 * time.Hour
+)
+
+// calculateSessionStickyTTL mirrors the executors-package helper so the V2
+// routing path uses the same model-based TTL. Kept as a small duplication
+// rather than introducing a cross-package import dependency.
+func calculateSessionStickyTTL(model string) time.Duration {
+	modelLower := strings.ToLower(model)
+	switch {
+	case strings.Contains(modelLower, "embedding"), strings.Contains(modelLower, "embed"):
+		return 30 * time.Second
+	case strings.Contains(modelLower, "completion"), strings.Contains(modelLower, "instruct"),
+		strings.Contains(modelLower, "davinci"):
+		return 30 * time.Minute
+	case strings.Contains(modelLower, "chat"), strings.Contains(modelLower, "gpt"),
+		strings.Contains(modelLower, "claude"), strings.Contains(modelLower, "gemini"):
+		return 10 * time.Minute
+	default:
+		return stickyL1DefaultTTL
+	}
+}
+
 type stickyEntry struct {
 	credentialID int
 	failures     int
@@ -196,7 +225,12 @@ func (s *StickyCache) GetMultiLevel(
 			lvl int
 			ttl time.Duration
 		}
-		levels := []lv{{l1, 1, 1 * time.Hour}, {l2, 2, 24 * time.Hour}, {l3, 3, 7 * 24 * time.Hour}}
+		// 2026-08-26 fix: align Redis-fallback TTLs with memory and Redis writes.
+		l1TTL := stickyL1DefaultTTL
+		if sessionID != "" && model != "" {
+			l1TTL = calculateSessionStickyTTL(model)
+		}
+		levels := []lv{{l1, 1, l1TTL}, {l2, 2, stickyL2TTL}, {l3, 3, stickyL3TTL}}
 		for _, k := range levels {
 			if k.key == "" {
 				continue
@@ -284,28 +318,32 @@ func (s *StickyCache) RecordSuccessMultiLevel(
 
 	// L1: session + model (1 hour TTL)
 	if l1 != "" {
+		l1TTL := stickyL1DefaultTTL
+		if model != "" {
+			l1TTL = calculateSessionStickyTTL(model)
+		}
 		s.items[l1] = stickyEntry{
 			credentialID: credentialID,
 			failures:     0,
-			expiresAt:    now.Add(1 * time.Hour),
+			expiresAt:    now.Add(l1TTL),
 		}
 	}
 
-	// L2: client + model (24 hour TTL)
+	// L2: client + model (60s — short contamination window for new sessions)
 	if l2 != "" {
 		s.items[l2] = stickyEntry{
 			credentialID: credentialID,
 			failures:     0,
-			expiresAt:    now.Add(24 * time.Hour),
+			expiresAt:    now.Add(stickyL2TTL),
 		}
 	}
 
-	// L3: client baseline (7 day TTL)
+	// L3: client baseline (24h)
 	if l3 != "" {
 		s.items[l3] = stickyEntry{
 			credentialID: credentialID,
 			failures:     0,
-			expiresAt:    now.Add(7 * 24 * time.Hour),
+			expiresAt:    now.Add(stickyL3TTL),
 		}
 	}
 	s.mu.Unlock()
@@ -314,14 +352,20 @@ func (s *StickyCache) RecordSuccessMultiLevel(
 	store := s.redisStoreSnapshot()
 	if store != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		// 2026-08-26 fix: align TTLs with the executors-package StickyCache
+		// and document the operator-confirmed semantics.
+		l1TTL := stickyL1DefaultTTL
+		if sessionID != "" && model != "" {
+			l1TTL = calculateSessionStickyTTL(model)
+		}
 		levels := []struct {
 			key string
 			lvl int
 			ttl time.Duration
 		}{
-			{l1, 1, 1 * time.Hour},
-			{l2, 2, 24 * time.Hour},
-			{l3, 3, 7 * 24 * time.Hour},
+			{l1, 1, l1TTL},
+			{l2, 2, stickyL2TTL},
+			{l3, 3, stickyL3TTL},
 		}
 		for _, lv := range levels {
 			if lv.key == "" {
@@ -372,13 +416,16 @@ func (s *StickyCache) dbSetMultiLevel(pool *pgxpool.Pool, l1, l2, l3 string, cre
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	// 2026-08-26 fix: align TTLs with memory and Redis writes.
+	// L1/L2/L3 TTLs are the per-level bookkeeping; we don't know which model
+	// this is from here, so default to stickyL1DefaultTTL for L1.
 	keys := []struct {
 		key string
 		ttl time.Duration
 	}{
-		{l1, 1 * time.Hour},
-		{l2, 24 * time.Hour},
-		{l3, 7 * 24 * time.Hour},
+		{l1, stickyL1DefaultTTL},
+		{l2, stickyL2TTL},
+		{l3, stickyL3TTL},
 	}
 
 	for _, k := range keys {

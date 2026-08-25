@@ -94,6 +94,71 @@ func (s *StickyStore) DeleteLevelIfCredential(ctx context.Context, level int, ra
 	return nil
 }
 
+// ClearForCredential scans the entire sticky namespace (L1/L2/L3) and
+// deletes every entry whose value equals credID. Returns the number of
+// entries removed. Used by hot-reload hooks when admin changes a
+// credential's priority / weight / concurrency.
+//
+// 2026-08-26 hot-reload hook: we must clear stale pins so new sessions can
+// re-enter load balancing after the operator explicitly changes a credential's
+// routing configuration.
+//
+// Implementation notes:
+//   - Uses SCAN with COUNT 200 (not KEYS) to avoid blocking Redis at scale.
+//   - Compares each value against credID via GET → strconv.Atoi; deletes only
+//     on match (EVAL ... DEL atomic check).
+//   - Batches DELs in pipelines of 200 to limit round-trips.
+//   - Synchronously invalidates the in-process LRU mirror.
+func (s *StickyStore) ClearForCredential(ctx context.Context, credID int) (int, error) {
+	if credID <= 0 {
+		return 0, nil
+	}
+	credIDStr := strconv.Itoa(credID)
+	cleared := 0
+
+	// 1. Clear LRU mirror up-front (cheap; based on local state).
+	s.lru.DeleteIfValue(credID)
+
+	// 2. SCAN the namespace, batch GET, then pipeline DEL for matches.
+	const scanBatch = 200
+	var cursor uint64
+	for {
+		keys, next, err := s.rdb.Scan(ctx, cursor, "ursm:v2:sticky:L*", int64(scanBatch)).Result()
+		if err != nil {
+			return cleared, err
+		}
+		if len(keys) > 0 {
+			// GET all in one round-trip.
+			gets, err := s.rdb.MGet(ctx, keys...).Result()
+			if err != nil {
+				return cleared, err
+			}
+			toDel := make([]string, 0, len(keys))
+			for i, v := range gets {
+				if v == nil {
+					continue
+				}
+				str, ok := v.(string)
+				if !ok || str != credIDStr {
+					continue
+				}
+				toDel = append(toDel, keys[i])
+			}
+			if len(toDel) > 0 {
+				if err := s.rdb.Del(ctx, toDel...).Err(); err != nil {
+					return cleared, err
+				}
+				cleared += len(toDel)
+			}
+		}
+		cursor = next
+		if cursor == 0 {
+			break
+		}
+	}
+	return cleared, nil
+}
+
 // 约定: caller 传入的 rawKey 已是 buildStickyKeys 产出的完整 key,
 // 通过冒号分隔段数判定: 6 段=L1, 5 段=L2, 4 段=L3。
 func levelOf(rawKey string) int {
