@@ -1,4 +1,4 @@
--- 574_candidate_binding_scope_filter_disabled.sql
+-- 578_candidate_binding_scope_filter_disabled.sql
 -- Filter disabled providers and manually-disabled credentials out of the
 -- reorder scope hash.
 --
