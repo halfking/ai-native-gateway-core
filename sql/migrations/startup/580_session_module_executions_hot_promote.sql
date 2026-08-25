@@ -136,7 +136,7 @@ END;
 $function$;
 
 COMMENT ON FUNCTION public.promote_session_module_executions_hot_to_partition(INTERVAL, INTEGER) IS
-    'hot → partitioned parent drain for session_module_executions (migration 574). Invoked by bg.PartitionManager.promoteSpecs() every promote tick; batched via p_batch_size. Returns the number of rows actually moved (0 when nothing is eligible).';
+    'hot → partitioned parent drain for session_module_executions (migration 580). Invoked by bg.PartitionManager.promoteSpecs() every promote tick; batched via p_batch_size. Returns the number of rows actually moved (0 when nothing is eligible).';
 
 DO $do$
 DECLARE
@@ -152,7 +152,7 @@ END
 $do$;
 
 INSERT INTO public.settings_kv (key, value, value_type, scope, category, updated_at, updated_by)
-VALUES ('lifecycle.session_module_executions_hot_retention_hours', '8', 'int', 'platform', 'lifecycle', now(), 'migration-574')
+VALUES ('lifecycle.session_module_executions_hot_retention_hours', '8', 'int', 'platform', 'lifecycle', now(), 'migration-580')
 ON CONFLICT (key) DO NOTHING;
 
 COMMIT;

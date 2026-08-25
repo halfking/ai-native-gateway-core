@@ -743,10 +743,13 @@ func archiveSpecs() []archiveSpec {
 // All promote functions now use *_hot_to_partition pattern.
 //
 // 2026-07-13: added candidate_failure_logs_hot (Migration 392).
-// 2026-08-25: added session_module_executions_hot (Migration 574) and
-//             dashboard_access_events_hot (Migration 575); both ship the
+// 2026-08-25: added session_module_executions_hot (Migration 580) and
+//             dashboard_access_events_hot (Migration 579); both ship the
 //             hot → monthly-partition drain that previously relied on
 //             manually-run pg_cron archive_* scripts which drifted.
+//             Note: the pair was originally assigned 574/575 but both slots
+//             collided with ledger rows already present on deployed
+//             environments, so they were renumbered to 580/579.
 //
 // Each function signature is promote_<table>_hot_to_partition(p_retention interval,
 // p_batch_size int) RETURNS bigint; the caller loops until the function
@@ -768,8 +771,8 @@ func promoteSpecs() []archiveSpec {
 		{fnName: "promote_candidate_failure_logs_hot_to_partition", label: "candidate_failure_logs_hot"}, // Migration 392
 		{fnName: "promote_session_turns_hot_to_partition", label: "session_turns_hot"},                   // Migration 526
 		{fnName: "promote_handoff_logs_hot_to_partition", label: "handoff_logs_hot"},                     // Migration 532
-		{fnName: "promote_session_module_executions_hot_to_partition", label: "session_module_executions_hot"}, // Migration 574
-		{fnName: "promote_dashboard_access_events_hot_to_partition", label: "dashboard_access_events_hot"},     // Migration 575
+		{fnName: "promote_session_module_executions_hot_to_partition", label: "session_module_executions_hot"}, // Migration 580
+		{fnName: "promote_dashboard_access_events_hot_to_partition", label: "dashboard_access_events_hot"},     // Migration 579
 	}
 }
 
