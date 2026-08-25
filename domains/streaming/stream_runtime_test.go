@@ -44,3 +44,51 @@ func TestCurrentStreamRuntimeConfigEarlyEmptyStoreValue(t *testing.T) {
 		t.Fatalf("store early-empty threshold = %d, want 7", got)
 	}
 }
+
+func TestModelAliasPrefixDefault(t *testing.T) {
+	previous := streamConfigStore.Load()
+	t.Cleanup(func() { streamConfigStore.Store(previous) })
+	t.Setenv("LLM_GATEWAY_MODEL_ALIAS_PREFIX", "")
+	streamConfigStore.Store(config.NewStore(&config.Config{ModelAliasPrefix: "kx-"}))
+	if got := ModelAliasPrefix(); got != "kx-" {
+		t.Fatalf("default alias prefix = %q, want %q", got, "kx-")
+	}
+}
+
+func TestModelAliasPrefixFromStore(t *testing.T) {
+	previous := streamConfigStore.Load()
+	t.Cleanup(func() { streamConfigStore.Store(previous) })
+	t.Setenv("LLM_GATEWAY_MODEL_ALIAS_PREFIX", "")
+
+	streamConfigStore.Store(config.NewStore(&config.Config{ModelAliasPrefix: "kx-"}))
+	if got := ModelAliasPrefix(); got != "kx-" {
+		t.Fatalf("store prefix = %q, want kx-", got)
+	}
+
+	streamConfigStore.Store(config.NewStore(&config.Config{ModelAliasPrefix: "custom-"}))
+	if got := ModelAliasPrefix(); got != "custom-" {
+		t.Fatalf("custom store prefix = %q, want custom-", got)
+	}
+
+	streamConfigStore.Store(config.NewStore(&config.Config{ModelAliasPrefix: ""}))
+	if got := ModelAliasPrefix(); got != "" {
+		t.Fatalf("empty store prefix = %q, want empty", got)
+	}
+}
+
+func TestModelAliasPrefixFallback(t *testing.T) {
+	previous := streamConfigStore.Load()
+	t.Cleanup(func() { streamConfigStore.Store(previous) })
+
+	streamConfigStore.Store(nil)
+
+	t.Setenv("LLM_GATEWAY_MODEL_ALIAS_PREFIX", "")
+	if got := ModelAliasPrefix(); got != "kx-" {
+		t.Fatalf("default fallback prefix = %q, want kx-", got)
+	}
+
+	t.Setenv("LLM_GATEWAY_MODEL_ALIAS_PREFIX", "env-")
+	if got := ModelAliasPrefix(); got != "env-" {
+		t.Fatalf("env fallback prefix = %q, want env-", got)
+	}
+}
