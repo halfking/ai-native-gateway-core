@@ -157,12 +157,45 @@ func (l *RedisLimiter) AdmitRPMWithWait(ctx context.Context, keyID, limit int, n
 // NewRedisLimiterFromEnv creates a limiter using the RATE_LIMIT_REDIS_URL
 // environment variable (e.g. "redis://localhost:6379/0").  Falls back to
 // in-memory if the variable is empty.
+//
+// 2026-08-25 ICR-A5 P2-1: 新增 fallback 链: RATE_LIMIT_REDIS_URL →
+// REDIS_URL → LLM_GATEWAY_REDIS_ADDR/DB → in-memory. 这样即使运维误配
+// (RATE_LIMIT_REDIS_URL 指向独立实例/db), 仍能 fallback 到主网关 Redis
+// 共享 db (避免 rate limiter 与主网关状态分裂).
 func NewRedisLimiterFromEnv() *RedisLimiter {
 	url := strings.TrimSpace(os.Getenv("RATE_LIMIT_REDIS_URL"))
 	if url == "" {
 		url = strings.TrimSpace(os.Getenv("REDIS_URL"))
 	}
 	if url == "" {
+		// 2026-08-25 ICR-A5 P2-1: fallback 到主网关 Redis (LLM_GATEWAY_REDIS_ADDR)
+		addr := strings.TrimSpace(os.Getenv("LLM_GATEWAY_REDIS_ADDR"))
+		if addr != "" {
+			db := 0
+			if dbStr := strings.TrimSpace(os.Getenv("LLM_GATEWAY_REDIS_DB")); dbStr != "" {
+				if n, err := strconv.Atoi(dbStr); err == nil && n >= 0 && n < 16 {
+					db = n
+				}
+			}
+			password := os.Getenv("LLM_GATEWAY_REDIS_PASSWORD")
+			rdb := redis.NewClient(&redis.Options{
+				Addr:        addr,
+				DB:          db,
+				Password:    password,
+				DialTimeout: 2 * time.Second,
+				ReadTimeout: 1 * time.Second,
+			})
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			if err := rdb.Ping(ctx).Err(); err != nil {
+				slog.Warn("Redis (main) ping failed, rate limiter will use in-memory fallback",
+					"addr", addr, "db", db, "error", err)
+				return NewRedisLimiter(nil)
+			}
+			slog.Info("rate limiter using main gateway Redis (LLM_GATEWAY_REDIS_ADDR fallback)",
+				"addr", addr, "db", db)
+			return NewRedisLimiter(rdb)
+		}
 		slog.Warn("RATE_LIMIT_REDIS_URL not set, using in-process rate limiter")
 		return NewRedisLimiter(nil)
 	}
