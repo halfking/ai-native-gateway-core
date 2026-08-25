@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"strconv"
 	"testing"
 
@@ -147,5 +149,46 @@ func TestConfigYAMLSessionIDBodyKeysArray(t *testing.T) {
 	}
 	if cfg.SessionIDBodyKeys[0] != "workspaceId" || cfg.SessionIDBodyKeys[1] != "room_session_key" {
 		t.Fatalf("SessionIDBodyKeys = %#v", cfg.SessionIDBodyKeys)
+	}
+}
+
+func TestLoadModelAliasPrefixDefaultsAndEnv(t *testing.T) {
+	previous, wasSet := os.LookupEnv("LLM_GATEWAY_MODEL_ALIAS_PREFIX")
+	t.Cleanup(func() {
+		if wasSet {
+			_ = os.Setenv("LLM_GATEWAY_MODEL_ALIAS_PREFIX", previous)
+		} else {
+			_ = os.Unsetenv("LLM_GATEWAY_MODEL_ALIAS_PREFIX")
+		}
+	})
+	_ = os.Unsetenv("LLM_GATEWAY_MODEL_ALIAS_PREFIX")
+	if got := Load().ModelAliasPrefix; got != "kx-" {
+		t.Fatalf("unset env ModelAliasPrefix = %q, want kx-", got)
+	}
+
+	t.Setenv("LLM_GATEWAY_MODEL_ALIAS_PREFIX", "")
+	if got := Load().ModelAliasPrefix; got != "" {
+		t.Fatalf("empty env ModelAliasPrefix = %q, want empty", got)
+	}
+
+	t.Setenv("LLM_GATEWAY_MODEL_ALIAS_PREFIX", "alias-")
+	if got := Load().ModelAliasPrefix; got != "alias-" {
+		t.Fatalf("custom env ModelAliasPrefix = %q, want alias-", got)
+	}
+}
+
+func TestLoadFileModelAliasPrefixCanBeEmpty(t *testing.T) {
+	t.Setenv("LLM_GATEWAY_MODEL_ALIAS_PREFIX", "")
+	cfg := Load()
+	_ = os.Unsetenv("LLM_GATEWAY_MODEL_ALIAS_PREFIX")
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("model_alias_prefix: \"\"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.LoadFile(path); err != nil {
+		t.Fatalf("LoadFile() error = %v", err)
+	}
+	if cfg.ModelAliasPrefix != "" {
+		t.Fatalf("empty YAML ModelAliasPrefix = %q, want empty", cfg.ModelAliasPrefix)
 	}
 }

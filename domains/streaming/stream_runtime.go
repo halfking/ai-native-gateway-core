@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/config"
+	"github.com/kaixuan/llm-gateway-go/modelname"
 )
 
 type streamRuntimeConfig struct {
@@ -134,5 +135,13 @@ func ModelAliasPrefix() string {
 			return cfg.ModelAliasPrefix
 		}
 	}
-	return envOrDefault("LLM_GATEWAY_MODEL_ALIAS_PREFIX", "kx-")
+	if value, ok := os.LookupEnv("LLM_GATEWAY_MODEL_ALIAS_PREFIX"); ok {
+		return value
+	}
+	return "kx-"
+}
+
+// ApplyAliasPrefix strips the configured alias prefix from a client-facing model name.
+func ApplyAliasPrefix(model string) string {
+	return modelname.StripAliasPrefix(model, ModelAliasPrefix())
 }

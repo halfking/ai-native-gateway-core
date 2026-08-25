@@ -2292,16 +2292,13 @@ func (h *ChatHandler) serveWithExecutor(
 	// 2026-08-25: strip client-facing alias prefix (e.g. "kx-").
 	// Must run before CanonicalizeClientModel so the alias is removed
 	// before canonicalization and SQL lookup.
-	modelAfterStrip := reqBody.Model
-	if prefix := ModelAliasPrefix(); prefix != "" {
-		modelAfterStrip = modelname.StripAliasPrefix(reqBody.Model, prefix)
-		if modelAfterStrip != reqBody.Model {
-			slog.Debug("handler: alias prefix stripped",
-				"original", reqBody.Model,
-				"prefix", prefix,
-				"stripped", modelAfterStrip,
-				"request_id", requestID)
-		}
+	modelAfterStrip := ApplyAliasPrefix(reqBody.Model)
+	if modelAfterStrip != reqBody.Model {
+		slog.Debug("handler: alias prefix stripped",
+			"original", reqBody.Model,
+			"prefix", ModelAliasPrefix(),
+			"stripped", modelAfterStrip,
+			"request_id", requestID)
 	}
 
 	// 2026-07-14: enforce lowercase at the wire boundary so downstream
@@ -2682,7 +2679,7 @@ func (h *ChatHandler) serveWithExecutor(
 			logCtx.IsAutoRequest = true
 		}
 		// 2026-07-14: keep the client-facing model name lowercase.
-		clientModel = modelname.CanonicalizeClientModel(reqBody.Model)
+		clientModel = modelname.CanonicalizeClientModel(ApplyAliasPrefix(reqBody.Model))
 		logCtx.SetClientModel(clientModel)
 	}
 

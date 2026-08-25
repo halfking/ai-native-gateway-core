@@ -320,7 +320,7 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 2026-07-14: lowercase at the wire boundary.
-	clientModel := modelname.CanonicalizeClientModel(reqBody.Model)
+	clientModel := modelname.CanonicalizeClientModel(ApplyAliasPrefix(reqBody.Model))
 	resolveRequestJourney(r, tenant(keyInfo), requestedModel, clientModel)
 
 	if keyInfo != nil {
