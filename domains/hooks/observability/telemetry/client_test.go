@@ -64,6 +64,36 @@ func requestLogUpdateArgs(entry RequestLogEntry) []interface{} {
 	return args
 }
 
+func TestUpsertRequestLogBodies_UsesBodyOnlyColumns(t *testing.T) {
+	mockDB, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mockDB.Close()
+
+	mockDB.ExpectBegin()
+	tx, err := mockDB.Begin(context.Background())
+	require.NoError(t, err)
+
+	mockDB.ExpectExec(`INSERT INTO request_logs_bodies_hot \(request_id, ts, request_body, response_body, outbound_body\)`).
+		WithArgs("req-body-only", `{"messages":[]}`, `{"choices":[]}`, `{"messages":[]}`).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+
+	client := &Client{}
+	err = client.upsertRequestLogBodies(
+		context.Background(),
+		tx,
+		"req-body-only",
+		"",
+		`{"messages":[]}`,
+		`{"choices":[]}`,
+		`{"messages":[]}`,
+	)
+	require.NoError(t, err)
+
+	mockDB.ExpectRollback()
+	require.NoError(t, tx.Rollback(context.Background()))
+	require.NoError(t, mockDB.ExpectationsWereMet())
+}
+
 func TestInsertSessionOpenedEvent_IsIdempotent(t *testing.T) {
 	mockDB, err := pgxmock.NewPool()
 	require.NoError(t, err)
