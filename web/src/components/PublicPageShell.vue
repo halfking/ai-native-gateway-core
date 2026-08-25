@@ -150,7 +150,7 @@ const { t } = useI18n()
   font-size: 12px;
   font-family: ui-monospace, monospace;
   color: var(--border);
-  background: rgba(15, 23, 42, 0.75);
+  background: var(--overlay-strong);
   word-break: break-all;
 }
 

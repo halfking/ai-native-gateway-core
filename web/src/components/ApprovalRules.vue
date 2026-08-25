@@ -517,9 +517,9 @@ function getRiskLevelLabel(level: string): string {
 }
 
 .btn-icon.btn-danger:hover:not(:disabled) {
-  background: rgba(248, 113, 113, 0.1);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
   color: var(--danger);
-  border-color: rgba(248, 113, 113, 0.3);
+  border-color: color-mix(in srgb, var(--danger) 12%, transparent);
 }
 
 /* Dialog styles */
@@ -529,7 +529,7 @@ function getRiskLevelLabel(level: string): string {
   left: 0;
   right: 0;
   bottom: 0;
-  background: rgba(0, 0, 0, 0.7);
+  background: var(--overlay-strong);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -542,7 +542,7 @@ function getRiskLevelLabel(level: string): string {
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: 8px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 8px 24px var(--overlay-medium);
   max-height: 90vh;
   display: flex;
   flex-direction: column;

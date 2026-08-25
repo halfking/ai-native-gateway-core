@@ -351,7 +351,7 @@ watch(() => props.visible, (visible) => {
   left: 0;
   right: 0;
   bottom: 0;
-  background: rgba(0, 0, 0, 0.75);
+  background: var(--overlay-strong);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -607,7 +607,7 @@ watch(() => props.visible, (visible) => {
 /* 分析和推荐 */
 .diag-analysis {
   padding: 12px;
-  background: rgba(248, 81, 73, 0.1);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
   border-left: 3px solid var(--danger);
   border-radius: 4px;
   font-size: 13px;
@@ -617,7 +617,7 @@ watch(() => props.visible, (visible) => {
 
 .diag-recommendation {
   padding: 12px;
-  background: rgba(88, 166, 255, 0.1);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
   border-left: 3px solid var(--accent);
   border-radius: 4px;
   font-size: 13px;

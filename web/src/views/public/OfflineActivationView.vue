@@ -227,7 +227,7 @@ async function copyResponse() {
 .off-resp pre {
   max-height: 240px;
   overflow: auto;
-  background: rgba(15, 23, 42, 0.75);
+  background: var(--overlay-strong);
   padding: 1rem;
   border-radius: 6px;
   font-size: 0.8rem;

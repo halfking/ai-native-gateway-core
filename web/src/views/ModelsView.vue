@@ -1627,7 +1627,7 @@ watch(activeTab, async (tab) => {
   border-radius: 12px;
   width: 100%;
   max-width: 900px;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+  box-shadow: 0 20px 60px var(--overlay-light);
 }
 
 .modal-header {

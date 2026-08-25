@@ -26,6 +26,9 @@ import {
 } from '../../api/sessionTurnsTree'
 
 const props = defineProps<{ sessionId: string }>()
+const emit = defineEmits<{
+  openRequest: [payload: { requestId: string; turnNumber: number }]
+}>()
 
 const turns = ref<SessionTurnTreeItem[]>([])
 const loading = ref(false)
@@ -178,7 +181,11 @@ function errorText(e: SessionObsApiError | null): string {
         :data-turn-number="t.turn_number"
       >
         <!-- 主请求卡 -->
-        <div class="stt-turn-main">
+        <button
+          type="button"
+          class="stt-turn-main stt-turn-main--clickable"
+          @click="emit('openRequest', { requestId: t.request_id, turnNumber: t.turn_number })"
+        >
           <span class="stt-turn-no">#{{ t.turn_number }}</span>
           <span class="stt-status" :class="statusClass(t.status)">{{ t.status }}</span>
           <span v-if="t.model" class="stt-turn-model">{{ t.model }}</span>
@@ -186,7 +193,7 @@ function errorText(e: SessionObsApiError | null): string {
             {{ fmtLatency(t.latency) }}
           </span>
           <span class="stt-turn-rid" :title="t.request_id">{{ t.request_id }}</span>
-        </div>
+        </button>
 
         <!-- 内联子请求树 -->
         <div
@@ -346,6 +353,20 @@ function errorText(e: SessionObsApiError | null): string {
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
+}
+.stt-turn-main--clickable {
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  padding: 0;
+  font: inherit;
+}
+.stt-turn-main--clickable:hover .stt-turn-rid {
+  color: var(--kx-primary, var(--accent));
+  text-decoration: underline;
 }
 .stt-turn-no {
   font-weight: 600;
