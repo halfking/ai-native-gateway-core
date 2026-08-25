@@ -140,16 +140,25 @@ func (l *RedisLimiter) AdmitRPM(ctx context.Context, keyID, limit int) (Admissio
 }
 
 func (l *RedisLimiter) AdmitRPMWithWait(ctx context.Context, keyID, limit int, notify func(AdmissionResult)) (AdmissionResult, error) {
+	return l.AdmitRPMWithBudget(ctx, keyID, limit, 0, notify)
+}
+
+// AdmitRPMWithBudget enforces a hard queue-wait cap (see
+// RPMBudgetedAdmission). For the Redis-backed path the wait estimate is
+// computed from the Lua-returned queue position; over-budget requests are
+// removed from the queue immediately and rejected with
+// ErrQueueBudgetExceeded.
+func (l *RedisLimiter) AdmitRPMWithBudget(ctx context.Context, keyID, limit int, maxWait time.Duration, notify func(AdmissionResult)) (AdmissionResult, error) {
 	if l.client == nil || !l.isRedisAvailable() {
-		return l.admission.admit(ctx, keyID, limit, notify)
+		return l.admission.AdmitRPMWithBudget(ctx, keyID, limit, maxWait, notify)
 	}
-	result, err := l.admitRPMRedis(ctx, keyID, limit, notify)
-	if errors.Is(err, ErrMinuteBucketFull) {
+	result, err := l.admitRPMRedisWithBudget(ctx, keyID, limit, maxWait, notify)
+	if errors.Is(err, ErrMinuteBucketFull) || errors.Is(err, ErrQueueBudgetExceeded) {
 		return result, err
 	}
 	if err != nil {
 		l.markUnhealthy(err)
-		return l.admission.admit(ctx, keyID, limit, notify)
+		return l.admission.AdmitRPMWithBudget(ctx, keyID, limit, maxWait, notify)
 	}
 	return result, nil
 }

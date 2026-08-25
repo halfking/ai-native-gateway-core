@@ -146,6 +146,49 @@ func TestAuthMiddleware_RejectsInvalidBearer(t *testing.T) {
 	}
 }
 
+func TestAuthMiddleware_StaticKeyWithSkPrefixIsExempt(t *testing.T) {
+	// 2026-08-26 prod incident: deployments set LLM_GATEWAY_API_KEY=sk-gw*
+	// (sk- prefix). Before the fix, the sk- branch unconditionally routed
+	// that exact key to the DB verifier, tier "default" (12 RPM) applied,
+	// and ops/users sharing the static key queued behind the minute bucket
+	// (~55-94s on 245) until the outer deadline canceled them as 502s.
+	// Exact matching must take precedence over the sk- pass-through.
+	called := false
+	mw := NewAuthMiddleware("sk-gwops-static")
+	handler := mw.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		if !IsGlobalAuthPassed(r.Context()) {
+			t.Error("exact static key with sk- prefix must still mark ctx as global-auth-passed")
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	req.Header.Set("Authorization", "Bearer sk-gwops-static")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if !called || rr.Code != http.StatusOK {
+		t.Fatalf("called=%v status=%d, want called=true status=200", called, rr.Code)
+	}
+
+	// A DIFFERENT sk- key must NOT get the sentinel (goes to DB verifier).
+	called = false
+	req2 := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	req2.Header.Set("Authorization", "Bearer sk-gwops-other")
+	rr2 := httptest.NewRecorder()
+	mw.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		if IsGlobalAuthPassed(r.Context()) {
+			t.Error("non-matching sk- key must not be marked global-auth-passed")
+		}
+		w.WriteHeader(http.StatusOK)
+	})).ServeHTTP(rr2, req2)
+	if !called || rr2.Code != http.StatusOK {
+		t.Fatalf("other sk- key must pass through: called=%v status=%d", called, rr2.Code)
+	}
+}
+
 func TestAuthMiddleware_PassesSkKeysToDBVerifier(t *testing.T) {
 	// 2026-08-24 incident fix: sk-* data-plane keys must bypass the static
 	// gate — they are validated downstream by KeyVerifier against api_keys.
