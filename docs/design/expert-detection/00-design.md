@@ -91,7 +91,14 @@ specific roles (security/data_science/devops/...) → `software_engineering` (ca
 |------|------|------|
 | `domains/analysis/sessionmeta/extractor_expert.go` | 新增 | expert pattern registry + detector + types |
 | `domains/analysis/sessionmeta/extractor_expert_test.go` | 新增 | 单元测试（覆盖率 ≥ 90%） |
-| `domains/analysis/sessionmeta/extractor.go` | 修改 | Result 加 Expert 字段 + Extract 调用 extractExpert |
-| `domains/analysis/sessionmeta/extractor_rules.go` | 修改 | Expert 字段挂到 provisionalTitle 入参（仅文档用，不影响 title 输出） |
+| `domains/analysis/sessionmeta/extractor.go` | 修改 | Result 加 Expert 字段 + Extract 调用 extractExpert + Input 加 Expert override |
+| `telemetry/request_metadata.go` | 修改 | cursor patterns 扩展（`powered by composer` / `operate in cursor` / `cursor's ai`） |
 
 行数预算：新增 ~210 行 + 修改 ~10 行 + 测试 ~150 行，合计 ~370 行
+
+## 7. 设计文档与实现一致性说明（审计补遗，2026-08-25）
+
+审计时发现 §6 初版曾描述"修改 `extractor_rules.go`：Expert 字段挂到 provisionalTitle 入参"，
+但实际未实施，且与 §3 不做清单（"不改 auto_title_generator.go，保留向后兼容"）+ §2.5
+（"`provisionalTitle()` 加 `[agent]` 前缀 — 不动，避免标题过长"）明确冲突。删除该行，
+让 §6 与 §3 / §2.5 / 实际代码三者一致。

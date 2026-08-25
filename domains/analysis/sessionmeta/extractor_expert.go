@@ -235,8 +235,10 @@ func extractExpert(in Input, system string) ExpertIdentity {
 	if explicit != "" && explicit != ExpertUnknown {
 		return ExpertIdentity{Type: explicit, Source: "header", Confidence: 1}
 	}
-	detected := DetectExpertFromSystemPrompt(system)
-	if detected != "" && detected != ExpertUnknown {
+	// DetectExpertFromSystemPrompt returns either a non-empty canonical
+	// expert constant or ExpertUnknown — never "" — so a single comparison
+	// against ExpertUnknown is sufficient (audit simplification 2026-08-25).
+	if detected := DetectExpertFromSystemPrompt(system); detected != ExpertUnknown {
 		return ExpertIdentity{Type: detected, Source: "system_prompt", Confidence: 0.85}
 	}
 	return ExpertIdentity{Type: ExpertUnknown, Source: "unknown", Confidence: 0}
