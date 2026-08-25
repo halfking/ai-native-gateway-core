@@ -99,6 +99,7 @@ type requestLogRow struct {
 	// the request-logs list and detail drawer; nil when no title has
 	// been generated or manually set.
 	SessionTitle *string `json:"session_title,omitempty"`
+	CustomerID   *int64  `json:"customer_id,omitempty"`
 }
 
 type requestLogAggregate struct {
@@ -221,7 +222,8 @@ const requestLogsListCols = `
 	-- 2026-08-06: session title. LEFT JOIN session_titles keyed by
 	-- (task_id, scoped_session_id) where scoped_session_id falls back to ''
 	-- when the request has no gw_session_id, matching the upsert path.
-	st.title AS session_title
+	st.title AS session_title,
+	rl.customer_id
 `
 
 // requestLogsDetailCols extends the list columns with JSONB metadata
@@ -242,8 +244,6 @@ const requestLogsDetailCols = requestLogsListCols + `,
 
 const requestLogsJoins = `
 	LEFT JOIN providers p ON p.id = rl.provider_id
-	LEFT JOIN request_logs_bodies_with_current_month rb
-		ON rb.request_id = rl.request_id
 	LEFT JOIN credentials c ON c.id = rl.credential_id
 	LEFT JOIN api_keys ak ON ak.id = rl.api_key_id
 	LEFT JOIN applications app ON app.id = ak.application_id
@@ -312,6 +312,11 @@ const requestLogsJoins = `
 		LIMIT 1
 	) mo_pick ON TRUE
 `
+
+const requestLogsDetailJoins = `
+	LEFT JOIN request_logs_bodies_with_current_month rb
+		ON rb.request_id = rl.request_id
+` + requestLogsJoins
 
 func (h *Handler) handleLogs(w http.ResponseWriter, r *http.Request) {
 	if h.db == nil {
@@ -403,6 +408,7 @@ func scanRequestListRow(rows interface {
 		&l.AttachmentCount,
 		// 2026-08-06: session_titles.title join (see requestLogsJoins).
 		&l.SessionTitle,
+		&l.CustomerID,
 	}
 	if withTraceSeq {
 		dest = append(dest, &l.TraceSeq)
@@ -425,7 +431,10 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	// The list query joins the hot metadata view with provider/model/title
+	// projections. A 5s budget caused valid historical windows to return 500
+	// while the underlying request-log count remained healthy under load.
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
 	now := time.Now().UTC()
@@ -570,11 +579,13 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 	tenantCountSQL := "SELECT COUNT(*) FROM request_logs_with_current_month rl LEFT JOIN api_keys ak ON ak.id = rl.api_key_id WHERE " + where
 	if IsTenantAdmin(r) {
 		if err := h.db.QueryRow(ctx, tenantCountSQL, args...).Scan(&count); err != nil {
+			slog.Error("admin listLogs count query failed", "scope", "tenant", "error", err)
 			writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
 			return
 		}
 	} else {
 		if err := h.db.QueryRow(ctx, superCountSQL, args...).Scan(&count); err != nil {
+			slog.Error("admin listLogs count query failed", "scope", "super_admin", "error", err)
 			writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
 			return
 		}
@@ -731,6 +742,7 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 		ORDER BY %s
 	`, requestLogsListCols, traceSeqOuter, innerSQL, requestLogsJoins, orderBy), listArgs...)
 	if err != nil {
+		slog.Error("admin listLogs page query failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
 	}
@@ -827,7 +839,7 @@ func (h *Handler) getLog(w http.ResponseWriter, r *http.Request) {
 		   AND ($2 OR rl.tenant_id = $3)
 		 ORDER BY rl.ts DESC
 		 LIMIT 1
-	`, requestLogsDetailCols, requestLogsJoins), requestID, !IsTenantAdmin(r), GetTenantID(r)).Scan(
+	`, requestLogsDetailCols, requestLogsDetailJoins), requestID, !IsTenantAdmin(r), GetTenantID(r)).Scan(
 		&detail.Ts,
 		&detail.RequestID,
 		&detail.APIKeyID,
@@ -1100,7 +1112,10 @@ func (h *Handler) listTopModels(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	// 2026-08-25: 5s budget was too tight for wide time ranges — models_canonical
+	// LATERAL JOIN over request_logs_with_current_month scans all ATTACHED
+	// partitions including columnar. Extend to 30s to mirror listLogs/getLog.
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
 	now := time.Now().UTC()
@@ -1133,12 +1148,20 @@ func (h *Handler) listTopModels(w http.ResponseWriter, r *http.Request) {
 		LEFT JOIN models_canonical mc2 ON mc2.id = ma.canonical_id
 		WHERE rl.ts >= $1 AND rl.ts <= $2
 		  AND rl.client_model IS NOT NULL AND rl.client_model != ''
-		GROUP BY canonical_id, canonical_name, display_name
+		-- 2026-08-25: GROUP BY 必须用完整 COALESCE 表达式，不能用别名 canonical_id。
+		-- request_logs_with_current_month view 自身有 canonical_id 列（FK），与
+		-- SELECT 的别名冲突，触发 PostgreSQL "column reference 'canonical_id' is ambiguous"。
+		-- canonical_name / display_name 同理。Ordinal position (1,2,3) 也可行，
+		-- 但显式表达式对 review / 调式更友好。
+		GROUP BY COALESCE(mc.id, mc2.id),
+		         COALESCE(mc.canonical_name, mc2.canonical_name, rl.client_model),
+		         COALESCE(mc.display_name, mc2.display_name, mc.canonical_name, mc2.canonical_name, rl.client_model)
 		ORDER BY request_count DESC
 		LIMIT $3
 	`, start, end, limit)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+		slog.WarnContext(ctx, "listTopModels query failed", "error", err.Error())
+		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
 		return
 	}
 	defer rows.Close()
