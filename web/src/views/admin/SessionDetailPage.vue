@@ -3,7 +3,7 @@
  * SessionDetailPage — admin session detail (summary + request_logs turn tree).
  *
  * Turn list uses SessionTurnsTimeline (GET …/turns → session_turns_tree.go).
- * Clicking a turn opens RequestLogDrawer (unified detail) in session-turns mode.
+ * Clicking a turn opens the fullscreen request detail in session-turns mode.
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
