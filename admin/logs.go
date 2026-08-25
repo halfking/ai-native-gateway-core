@@ -793,104 +793,86 @@ func (h *Handler) getLog(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 2026-08-17 BUGFIX: extend outer ctx to 30s for cold-path defense.
-	//
-	// Why 30s: dashboard "实时请求流 → 点击请求" 是高频路径（24h 内 hot 表命中，
-	// 实测 < 100ms），但用户偶尔点"老请求"会触发 Citus columnar scan，
-	// 单 ID 查询可能 30s+（heap idx 无法用，planner 必须 ColumnarScan 全表 +
-	// 反压 JSONB chunk group）。把外层 ctx 设为 30s 是给冷路径留余量，
-	// nginx proxy_read_timeout 默认 1200s 不受影响。
-	//
-	// 为什么不直接用 r.Context()：保留独立 ctx 让两端都能 slog 监控超时事件
-	// （fetchRequestBodies 也会走自己的 hot/cold ctx 而非继承本 ctx）。
 	start := time.Now()
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
-	// 2026-08-25: omit_body=1 fast path — dashboard 抽屉分阶段首包（先出 meta，再二次拉全量 body）。
-	// 跳过 request_logs_bodies_with_current_month 视图的 LEFT JOIN，避免 planner 在
-	// 当月 columnar 分区（2GB+，无 request_id 索引）上做 ColumnarScan 全表扫描。
-	// 直接查 request_logs_hot（heap，idx_request_logs_hot_request_id，<1ms）。
-	// 找不到（极少见，>30 天前冷请求）才回退到完整视图查询（带 body JOIN，可走 20s ctx）。
+	// 2026-08-25 BUGFIX: ALWAYS run metadata on heap fast path (requestLogsListCols
+	// is body-free, no columnar touch). Body fetched separately by
+	// fetchRequestBodies (cache → hot → columnar). Cold fallback to full view
+	// if not in hot.
 	omitBody := r.URL.Query().Get("omit_body") == "1" || r.URL.Query().Get("omit_body") == "true"
 
 	var detail requestLogDetail
-	if omitBody {
-		// Fast path: heap only, no body JOIN. Slim scan via shared list
-		// scanner (skip the JSONB blobs — those columns are not in
-		// requestLogsListCols and the omit_body=1 caller doesn't need them).
-		// 2026-08-25 BUGFIX: previously this branch ran the slow-path query
-		// (requestLogsDetailCols + body JOIN), which forces the planner to
-		// touch the columnar monthly partition even when omit_body=1 makes
-		// the body columns irrelevant. On hot requests (<7 days, ~50% of
-		// dashboard traffic) this still pushed runtime past 30s on
-		// 2026_08 (2GB columnar, no request_id btree). Querying request_logs_hot
-		// directly is heap + indexed (idx_request_logs_hot_request_id),
-		// finishing in <5ms for the dashboard drawer first-paint.
-		row, fastErr := scanRequestListRow(h.db.QueryRow(ctx, fmt.Sprintf(`
+	row, metaErr := scanRequestListRow(h.db.QueryRow(ctx, fmt.Sprintf(`
+		SELECT %s
+		  FROM request_logs_hot rl
+		%s
+		 WHERE rl.request_id = $1
+		   AND ($2 OR rl.tenant_id = $3)
+		 ORDER BY rl.ts DESC
+		 LIMIT 1
+	`, requestLogsListCols, requestLogsJoins), requestID, !IsTenantAdmin(r), GetTenantID(r)), false)
+
+	coldPath := false
+	if errors.Is(metaErr, sql.ErrNoRows) {
+		coldPath = true
+		row, metaErr = scanRequestListRow(h.db.QueryRow(ctx, fmt.Sprintf(`
 			SELECT %s
-			  FROM request_logs_hot rl
+			  FROM request_logs_with_current_month rl
 			%s
 			 WHERE rl.request_id = $1
 			   AND ($2 OR rl.tenant_id = $3)
 			 ORDER BY rl.ts DESC
 			 LIMIT 1
 		`, requestLogsListCols, requestLogsJoins), requestID, !IsTenantAdmin(r), GetTenantID(r)), false)
-		if fastErr == nil {
-			detail.requestLogRow = row
-			metaElapsed := time.Since(start)
-			if metaElapsed > 1*time.Second {
-				slog.InfoContext(ctx, "admin getLog metadata slow (omit_body hot path)",
-					"request_id", requestID, "elapsed_ms", metaElapsed.Milliseconds())
-			}
-			writeJSON(w, http.StatusOK, detail)
-			return
-		}
-		if !errors.Is(fastErr, sql.ErrNoRows) {
-			metaElapsed := time.Since(start)
-			slog.WarnContext(ctx, "admin getLog scan failed (hot fast path)",
-				"request_id", requestID,
-				"elapsed_ms", metaElapsed.Milliseconds(),
-				"error", fastErr.Error())
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusInternalServerError)
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"error": map[string]any{
-					"detail":     "query failed",
-					"db_error":   fastErr.Error(),
-					"request_id": requestID,
-				},
-			})
-			return
-		}
-		// 2026-08-25: cold request (>7 days, migrated to columnar).
-		// Fall through to the slow path (full view query with body JOIN).
-		// This still uses the slow 30s ctx but is rare enough to not
-		// regress dashboard.
-		slog.InfoContext(ctx, "admin getLog omit_body cold path fallback",
-			"request_id", requestID)
 	}
 
-	// 2026-08-17 BUGFIX: 二阶段 body 读取，避开 columnar 扫描（见上方长注释）。
-	// 优先 cache（<1ms）；miss → hot（idx 命中 <1ms）；找不到再查 columnar 视图
-	// （慢路径，给独立 20s ctx）。
-	var bodyErr error
-	detail.RequestBody, detail.ResponseBody, bodyErr = h.fetchRequestBodies(ctx, requestID)
-	if bodyErr != nil {
-		// sql.ErrNoRows（两端都没找到 body）是预期情况 — 不打 WARN 噪音。
-		// transport 错误（ctx cancel, conn refused, ...）才打 WARN 便于排查。
-		if !errors.Is(bodyErr, sql.ErrNoRows) {
-			slog.WarnContext(ctx, "admin getLog body fetch failed",
-				"request_id", requestID,
-				"total_elapsed_ms", time.Since(start).Milliseconds(),
-				"error", bodyErr.Error())
+	if metaErr != nil {
+		if errors.Is(metaErr, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "request log not found")
+			return
 		}
-		// body 缺失不应让详情接口 500 — metadata 已成功返回，前端可正常展示
-		// 请求/响应以外的所有字段（latency/tokens/cost/model…）。只把 body 置 nil。
-		detail.RequestBody = nil
-		detail.ResponseBody = nil
+		metaElapsed := time.Since(start)
+		slog.WarnContext(ctx, "admin getLog scan failed",
+			"request_id", requestID,
+			"elapsed_ms", metaElapsed.Milliseconds(),
+			"cold_path", coldPath,
+			"error", metaErr.Error())
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"error": map[string]any{
+				"detail":     "query failed",
+				"db_error":   metaErr.Error(),
+				"request_id": requestID,
+			},
+		})
+		return
 	}
-	// Outbound body: it's already a JSON RawMessage from JSONB scan; convert to
-	// a structured payload so the UI can render it as a message list.
+
+	detail.requestLogRow = row
+	metaElapsed := time.Since(start)
+	if metaElapsed > 1*time.Second {
+		slog.InfoContext(ctx, "admin getLog metadata slow",
+			"request_id", requestID, "elapsed_ms", metaElapsed.Milliseconds(),
+			"cold_path", coldPath)
+	}
+
+	if !omitBody {
+		var bodyErr error
+		detail.RequestBody, detail.ResponseBody, bodyErr = h.fetchRequestBodies(ctx, requestID)
+		if bodyErr != nil {
+			if !errors.Is(bodyErr, sql.ErrNoRows) {
+				slog.WarnContext(ctx, "admin getLog body fetch failed",
+					"request_id", requestID,
+					"total_elapsed_ms", time.Since(start).Milliseconds(),
+					"error", bodyErr.Error())
+			}
+			detail.RequestBody = nil
+			detail.ResponseBody = nil
+		}
+	}
 	if len(detail.OutboundBody) > 0 {
 		detail.OutboundBody = normalizeJSONForAPI(detail.OutboundBody)
 	}
