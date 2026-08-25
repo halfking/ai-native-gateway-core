@@ -100,7 +100,7 @@ BEGIN
         SELECT DISTINCT date_trunc('month', occurred_at)::timestamptz
         FROM _dae_promotion_batch
     LOOP
-        PERFORM public.ensure_dashboard_access_events_partition(v_month_value::date);
+        PERFORM public.ensure_dashboard_events_partition(v_month_value::date);
     END LOOP;
 
     WITH moved_rows AS (
@@ -140,7 +140,7 @@ DO $do$
 DECLARE
     hot_exists boolean := to_regclass('public.dashboard_access_events_hot') IS NOT NULL;
     parent_exists boolean := to_regclass('public.dashboard_access_events') IS NOT NULL;
-    ensure_exists boolean := to_regprocedure('public.ensure_dashboard_access_events_partition(date)') IS NOT NULL;
+    ensure_exists boolean := to_regprocedure('public.ensure_dashboard_events_partition(date)') IS NOT NULL;
     promote_exists boolean := to_regprocedure('public.promote_dashboard_access_events_hot_to_partition(interval,integer)') IS NOT NULL;
 BEGIN
     IF NOT (hot_exists AND parent_exists AND ensure_exists AND promote_exists) THEN
