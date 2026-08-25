@@ -594,6 +594,12 @@ type pgRequestLogsSource struct {
 }
 
 func (m *pgRequestLogsSource) getSessionMessagesQuery() string {
+	// 2026-08-26: 读面切到 _with_current_month 视图（hot ∪ parent）。
+	// 此前读 parent request_logs / request_logs_bodies，migration 600 后请求体
+	// 先落 request_logs_bodies_hot，父表要等热点提升才有数据，导致会话刚
+	// 关闭时总结读不到 fresh 消息（观测：hot-only 会话 GenerateSummary 报
+	// "no messages found"）。_with_current_month 视图早已存在且
+	// syncCanonicalSessionTitle 已在用，视图只加宽读面、不改语义。
 	return `
 		SELECT
 			rl.request_id,
@@ -601,8 +607,8 @@ func (m *pgRequestLogsSource) getSessionMessagesQuery() string {
 			COALESCE(rb.request_body->'messages'->-1->>'content', '') as content,
 			rl.outbound_model,
 			rl.ts
-		FROM request_logs rl
-		LEFT JOIN request_logs_bodies rb
+		FROM request_logs_with_current_month rl
+		LEFT JOIN request_logs_bodies_with_current_month rb
 		  ON rb.request_id = rl.request_id
 		WHERE rl.tenant_id = $1 AND rl.gw_session_id = $2
 		ORDER BY rl.ts ASC
@@ -638,13 +644,14 @@ func (m *pgRequestLogsSource) GetMessagesSince(ctx context.Context, tenantID, se
 	if m.pool == nil {
 		return nil, fmt.Errorf("sessionsummary: store pool is nil")
 	}
+	// 2026-08-26: 同 getSessionMessagesQuery，读 _with_current_month 视图。
 	query := `
 		SELECT rl.request_id,
 		       COALESCE(rb.request_body->>'role', 'user') as role,
 		       COALESCE(rb.request_body->'messages'->-1->>'content', '') as content,
 		       rl.outbound_model, rl.ts
-		FROM request_logs rl
-		LEFT JOIN request_logs_bodies rb
+		FROM request_logs_with_current_month rl
+		LEFT JOIN request_logs_bodies_with_current_month rb
 		  ON rb.request_id = rl.request_id
 		WHERE rl.gw_session_id = $1`
 	args := []any{sessionKey}

@@ -168,10 +168,13 @@ func (m *pgRequestLogsSource) GetSystemPromptPrefix(ctx context.Context, tenantI
 		return "", fmt.Errorf("sessionsummary: store pool is nil")
 	}
 	var raw []byte
+	// 2026-08-26: 读 _with_current_month 视图（hot ∪ parent）—— fresh 请求体
+	// 先落 request_logs_bodies_hot，直接读父表会错过（详见 summarizer.go
+	// getSessionMessagesQuery 的同期注释）。
 	err := m.pool.QueryRow(ctx, `
 		SELECT rb.request_body::text
-		FROM request_logs rl
-		JOIN request_logs_bodies rb
+		FROM request_logs_with_current_month rl
+		JOIN request_logs_bodies_with_current_month rb
 		  ON rb.request_id = rl.request_id
 		WHERE rl.tenant_id = $1 AND rl.gw_session_id = $2
 		ORDER BY rl.ts ASC
