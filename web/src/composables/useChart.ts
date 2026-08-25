@@ -21,13 +21,17 @@ function getCssVar(name: string, fallback = ''): string {
 }
 
 /**
- * Chart.js 默认颜色：与全局暗色主题（style.css :root）对齐。
- * 这些常量被各图表配置生成器引用，避免在暗色背景上出现白色边框/网格/文字。
+ * Chart.js 默认颜色：与全局暗色主题对齐。
+ *
+ * ⚠️ CANVAS 铁律：Chart.js 走 canvas fillStyle，**不能**解析 CSS `var()` /
+ * `color-mix()`。必须用字面量 hex/rgba。color-token-fix.mjs 已 SKIP 本文件，
+ * 禁止再把这里改回 token（否则 board 饼图会再变黑糊糊）。
+ * 多处调用方还会做 `chartColors.blue + '80'` 拼 alpha，也要求纯 6 位 hex。
  */
 export const chartTheme = {
-  text: 'var(--surface-secondary)',
-  muted: 'var(--muted)',
-  grid: 'color-mix(in srgb, var(--kx-text) 4%, transparent)',
+  text: '#e6edf3',
+  muted: '#8b949e',
+  grid: 'rgba(255, 255, 255, 0.06)',
   cardBorder: '#1c2128'
 }
 
@@ -179,7 +183,7 @@ export function createTimeSeriesConfig(
     y: {
       beginAtZero: true,
       grid: {
-        color: 'color-mix(in srgb, var(--kx-text) 4%, transparent)'
+        color: 'rgba(255, 255, 255, 0.06)'
       }
     }
   }
@@ -323,7 +327,7 @@ export function createStackedAreaConfig(
           stacked: true,
           beginAtZero: true,
           grid: {
-            color: 'color-mix(in srgb, var(--kx-text) 4%, transparent)'
+            color: 'rgba(255, 255, 255, 0.06)'
           }
         }
       },
@@ -374,7 +378,7 @@ export function createHistogramConfig(
         y: {
           beginAtZero: true,
           grid: {
-            color: 'color-mix(in srgb, var(--kx-text) 4%, transparent)'
+            color: 'rgba(255, 255, 255, 0.06)'
           }
         }
       },
@@ -384,22 +388,22 @@ export function createHistogramConfig(
 }
 
 /**
- * 常用颜色方案
+ * 常用颜色方案（字面量 hex — canvas 不能解析 var()；调用方会拼 +'80' alpha）
  */
 export const chartColors = {
-  primary: 'var(--accent)',
-  success: 'var(--success)',
-  warning: 'var(--warning)',
-  danger: 'var(--danger)',
-  info: 'var(--text-secondary)',
-  blue: 'var(--accent)',
-  green: 'var(--success)',
-  orange: 'var(--warning)',
-  red: 'var(--danger)',
+  primary: '#409EFF',
+  success: '#67C23A',
+  warning: '#E6A23C',
+  danger: '#F56C6C',
+  info: '#909399',
+  blue: '#409EFF',
+  green: '#67C23A',
+  orange: '#E6A23C',
+  red: '#F56C6C',
   purple: '#9b59b6',
   cyan: '#3498db',
-  pink: 'var(--pink)',
-  gray: 'var(--muted)'
+  pink: '#e91e63',
+  gray: '#95a5a6'
 }
 
 /**
