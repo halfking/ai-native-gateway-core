@@ -60,6 +60,16 @@ type Handler struct {
 	envCleaner           *bg.EnvelopeCleaner
 	stickyClean          *bg.StickyCleaner
 	taxSync              *bg.TaxonomySync
+	// 2026-08-26 hot-reload: in-process sticky cache for clear-for-credential
+	// on PATCH binding/credential. Cleared by HandleRoutingCandidateBindingUpdate
+	// and updateCredential so new sessions can re-enter load balancing
+	// without waiting for the sticky TTL to expire.
+	stickyCache StickyCacheClearer
+	// 2026-08-26 hot-reload: in-process limiter for hot-update of
+	// concurrency_limit on PATCH credential/binding. The Limiter pool's
+	// per-credential semaphore capacity is refreshed by
+	// HandleRoutingCandidateBindingUpdate / updateCredential.
+	limiter LimiterCapacitySetter
 	probeV2              *bg.CredentialProbeV2  // 900-series: mini-chat probe (spec §5)
 	probePicker          *bg.DefaultProbePicker // 900-series: default probe model (spec §4)
 	modelProbe           *bg.ModelProbeRunner   // 2026-06-18: per-model re-probe of failing bindings (spec 2026-06-18-model-probe-rounds)
@@ -623,6 +633,36 @@ func (h *Handler) SetBackgroundServices(credCycler *bg.CredentialCycler, credRec
 	h.envCleaner = envCleaner
 	h.stickyClean = stickyClean
 	h.taxSync = taxSync
+}
+
+// 2026-08-26 hot-reload: small interfaces decouple admin handlers from the
+// concrete Limiter / StickyCache types. The executors.StickyCache and
+// credential.Limiter types already implement these (duck-typed). Defined
+// here so admin/handler.go doesn't have to import the heavy packages just
+// for two methods.
+
+// StickyCacheClearer is the small surface of executors.StickyCache that the
+// admin handler needs to clear sticky bindings for one credential.
+type StickyCacheClearer interface {
+	ClearForCredential(credID int) (int, error)
+}
+
+// LimiterCapacitySetter is the small surface of credential.Limiter that
+// the admin handler needs to hot-update concurrency capacity.
+type LimiterCapacitySetter interface {
+	SetCredentialCapacity(providerID, credentialID, capacity int)
+}
+
+// SetHotReloadDeps wires the runtime caches that PATCH endpoints need to
+// invalidate when admin changes a credential's priority / weight /
+// concurrency_limit. Called from cmd/gateway/main.go.
+func (h *Handler) SetHotReloadDeps(stickyCache StickyCacheClearer, limiter LimiterCapacitySetter) {
+	if stickyCache != nil {
+		h.stickyCache = stickyCache
+	}
+	if limiter != nil {
+		h.limiter = limiter
+	}
 }
 
 // SetProbeServices injects the 900-series background services (spec §4-5).

@@ -68,6 +68,10 @@ func (s *deadlineExhaustingStickyStore) DeleteLevelIfCredential(context.Context,
 	return nil
 }
 
+func (s *deadlineExhaustingStickyStore) ClearForCredential(context.Context, int) (int, error) {
+	return 0, nil
+}
+
 func TestExecutorsStickyDoubleWriteKeepsLaterLevelsAfterFirstTimeout(t *testing.T) {
 	store := &deadlineExhaustingStickyStore{}
 	cache := NewStickyCache()

@@ -718,19 +718,24 @@ func (h *Handler) handleRoutingCandidateBindingUpdate(w http.ResponseWriter, r *
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	// Lookup the binding_id for (credential_id, raw_model_name) — the
-	// resolve page hands callers those two keys, never the surrogate
-	// binding id. Resolve via provider_models.raw_model_name so we don't
-	// rely on the inferred provider-side match.
-	var bindingID int
+	// Lookup the binding_id, provider_id, and current concurrency_limit
+	// for (credential_id, raw_model_name) — the resolve page hands callers
+	// those two keys, never the surrogate binding id. Resolve via
+	// provider_models.raw_model_name so we don't rely on the inferred
+	// provider-side match. Concurrency_limit is needed for hot-reloading
+	// the in-process Limiter semaphore so admin changes apply without a
+	// service restart.
+	var bindingID, providerID int
+	var concurrencyLimit *int
 	if err := h.db.QueryRow(ctx, `
-		SELECT cmb.id
+		SELECT cmb.id, c.provider_id, c.concurrency_limit
 		FROM credential_model_bindings cmb
 		JOIN provider_models pm ON pm.id = cmb.provider_model_id
+		JOIN credentials c ON c.id = cmb.credential_id
 		WHERE cmb.credential_id = $1
 		  AND pm.raw_model_name = $2
 		LIMIT 1
-	`, credID, rawModel).Scan(&bindingID); err != nil {
+	`, credID, rawModel).Scan(&bindingID, &providerID, &concurrencyLimit); err != nil {
 		writeError(w, http.StatusNotFound, "binding not found for credential/model pair")
 		return
 	}
@@ -757,6 +762,27 @@ func (h *Handler) handleRoutingCandidateBindingUpdate(w http.ResponseWriter, r *
 	// index — provider.candCache has no LISTEN/NOTIFY path. Mirrors the
 	// other credential-mutating admin handlers (credential_keys.go etc.).
 	provider.InvalidateCandidateCacheForCredential(credID)
+
+	// 2026-08-26 hot-reload (operator-confirmed: priority / concurrency
+	// changes must take effect immediately, no TTL delay, no service restart):
+	//
+	//  1. Refresh the in-process Limiter pool so a new concurrency_limit
+	//     (if changed via the credentials row elsewhere) takes effect for
+	//     new in-flight requests.
+	//  2. Clear every sticky entry pointing at this credential so new
+	//     sessions stop inheriting the previous credential via L2 sticky
+	//     and re-enter load balancing.
+	if h.limiter != nil && concurrencyLimit != nil {
+		h.limiter.SetCredentialCapacity(providerID, credID, *concurrencyLimit)
+	}
+	if h.stickyCache != nil {
+		if cleared, err := h.stickyCache.ClearForCredential(credID); err != nil {
+			slog.Warn("sticky hot-reload: clear failed", "credential_id", credID, "error", err)
+		} else if cleared > 0 {
+			slog.Info("sticky hot-reload: cleared bindings on binding PATCH",
+				"credential_id", credID, "cleared", cleared)
+		}
+	}
 
 	// Audit log: keep before/after so the routing_audit_log table holds
 	// enough context for post-mortem diffs (rule 36 alignment).
