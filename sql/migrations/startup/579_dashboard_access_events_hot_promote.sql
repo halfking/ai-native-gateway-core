@@ -1,4 +1,4 @@
--- Migration 575: promote_dashboard_access_events_hot_to_partition
+-- Migration 579: promote_dashboard_access_events_hot_to_partition
 --
 -- Pair the dashboard_access_events_hot hot table with a partition manager
 -- drain function. The hot table is created in Migration 451 along with the
@@ -134,9 +134,7 @@ END;
 $function$;
 
 COMMENT ON FUNCTION public.promote_dashboard_access_events_hot_to_partition(INTERVAL, INTEGER) IS
-    'hot → partitioned parent drain for dashboard_access_events (migration 575). ' ||
-    'Invoked by bg.PartitionManager.promoteSpecs() every promote tick; batched via p_batch_size. ' ||
-    'Returns the number of rows actually moved (0 when nothing is eligible).';
+    'hot → partitioned parent drain for dashboard_access_events (migration 579). Invoked by bg.PartitionManager.promoteSpecs() every promote tick; batched via p_batch_size. Returns the number of rows actually moved (0 when nothing is eligible).';
 
 DO $do$
 DECLARE
@@ -153,7 +151,7 @@ END
 $do$;
 
 INSERT INTO public.settings_kv (key, value, value_type, scope, category, updated_at, updated_by)
-VALUES ('lifecycle.dashboard_access_events_hot_retention_hours', '8', 'int', 'platform', 'lifecycle', now(), 'migration-575')
+VALUES ('lifecycle.dashboard_access_events_hot_retention_hours', '8', 'int', 'platform', 'lifecycle', now(), 'migration-579')
 ON CONFLICT (key) DO NOTHING;
 
 COMMIT;
