@@ -13,6 +13,8 @@ const props = defineProps<{
   activeRequestId: string | null
   requestBody: unknown
   responseBody: unknown
+  /** When true, only render the turns timeline (fullscreen shell owns facets). */
+  timelineOnly?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -69,7 +71,7 @@ function selectChild(c: SessionChildRequest) {
 </script>
 
 <template>
-  <div class="sync-pane">
+  <div class="sync-pane" :class="{ 'sync-pane--timeline': timelineOnly }">
     <aside class="left">
       <div v-if="loading" class="muted">加载轮次…</div>
       <div v-else-if="error" class="err">{{ error }}</div>
@@ -96,7 +98,7 @@ function selectChild(c: SessionChildRequest) {
         </ul>
       </button>
     </aside>
-    <section class="right">
+    <section v-if="!timelineOnly" class="right">
       <div class="facet-row">
         <button
           v-for="f in ([
@@ -149,7 +151,9 @@ function selectChild(c: SessionChildRequest) {
 
 <style scoped>
 .sync-pane { display: grid; grid-template-columns: minmax(200px, 32%) 1fr; gap: 12px; min-height: 320px; }
+.sync-pane--timeline { grid-template-columns: 1fr; min-height: 0; height: 100%; }
 .left { border-right: 1px solid var(--border); padding-right: 8px; overflow: auto; max-height: 60vh; }
+.sync-pane--timeline .left { border-right: none; max-height: none; height: 100%; padding: 8px; }
 .turn-row {
   display: block; width: 100%; text-align: left;
   border: 1px solid var(--border); background: var(--bg-card, transparent);
