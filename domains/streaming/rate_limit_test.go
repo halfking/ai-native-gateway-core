@@ -50,6 +50,39 @@ func TestCheckGatewayRateLimit_StaticDataPlaneKeySkipsSharedRPM(t *testing.T) {
 	}
 }
 
+func TestCheckGatewayRateLimit_QueuedBeyondBudgetFailsFast(t *testing.T) {
+	// 2026-08-26 kimi-k3 incident: queued requests burned the whole 60s
+	// upstream budget inside the RPM queue and surfaced as bare 502s with
+	// no upstream attempt logged. Now: a request whose remaining deadline
+	// cannot cover the queue wait is rejected immediately (429/Blocked).
+	ratelimit.EnableRateLimit()
+	limiter := ratelimit.NewSlidingWindowLimiter()
+	t.Cleanup(limiter.Stop)
+	limit := 1
+	keyInfo := &authentication.KeyInfo{ID: 777, RateLimitRPM: &limit}
+
+	// Occupy the only slot of the minute bucket.
+	if outcome := checkGatewayRateLimit(context.Background(), keyInfo, limiter, nil); outcome.Blocked {
+		t.Fatal("warm-up request should be admitted")
+	}
+
+	// Simulate a request whose remaining budget (deadline 30s = 25s after
+	// headroom) cannot cover the ~60s queue wait to the next minute bucket.
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(30*time.Second))
+	defer cancel()
+	start := time.Now()
+	outcome := checkGatewayRateLimit(ctx, keyInfo, limiter, nil)
+	if !outcome.Blocked {
+		t.Fatalf("expected fast block on over-budget queue wait, got %+v", outcome)
+	}
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Fatalf("over-budget queue must reject fast, took %v", elapsed)
+	}
+	if outcome.ResetSec < 30 {
+		t.Fatalf("ResetSec=%d, want ~60 (estimated wait to next bucket)", outcome.ResetSec)
+	}
+}
+
 func TestNotifyRateLimitWaitWritesSSEEventOnlyForStreamingClient(t *testing.T) {
 	streamRequest := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	streamRequest.Header.Set("Accept", "text/event-stream")
