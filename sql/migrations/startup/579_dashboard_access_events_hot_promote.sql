@@ -1,4 +1,4 @@
--- Migration 575: promote_dashboard_access_events_hot_to_partition
+-- Migration 579: promote_dashboard_access_events_hot_to_partition
 --
 -- Pair the dashboard_access_events_hot hot table with a partition manager
 -- drain function. The hot table is created in Migration 451 along with the
@@ -100,7 +100,7 @@ BEGIN
         SELECT DISTINCT date_trunc('month', occurred_at)::timestamptz
         FROM _dae_promotion_batch
     LOOP
-        PERFORM public.ensure_dashboard_access_events_partition(v_month_value::date);
+        PERFORM public.ensure_dashboard_events_partition(v_month_value::date);
     END LOOP;
 
     WITH moved_rows AS (
@@ -134,15 +134,13 @@ END;
 $function$;
 
 COMMENT ON FUNCTION public.promote_dashboard_access_events_hot_to_partition(INTERVAL, INTEGER) IS
-    'hot → partitioned parent drain for dashboard_access_events (migration 575). ' ||
-    'Invoked by bg.PartitionManager.promoteSpecs() every promote tick; batched via p_batch_size. ' ||
-    'Returns the number of rows actually moved (0 when nothing is eligible).';
+    'hot → partitioned parent drain for dashboard_access_events (migration 579). Invoked by bg.PartitionManager.promoteSpecs() every promote tick; batched via p_batch_size. Returns the number of rows actually moved (0 when nothing is eligible).';
 
 DO $do$
 DECLARE
     hot_exists boolean := to_regclass('public.dashboard_access_events_hot') IS NOT NULL;
     parent_exists boolean := to_regclass('public.dashboard_access_events') IS NOT NULL;
-    ensure_exists boolean := to_regprocedure('public.ensure_dashboard_access_events_partition(date)') IS NOT NULL;
+    ensure_exists boolean := to_regprocedure('public.ensure_dashboard_events_partition(date)') IS NOT NULL;
     promote_exists boolean := to_regprocedure('public.promote_dashboard_access_events_hot_to_partition(interval,integer)') IS NOT NULL;
 BEGIN
     IF NOT (hot_exists AND parent_exists AND ensure_exists AND promote_exists) THEN
@@ -153,7 +151,7 @@ END
 $do$;
 
 INSERT INTO public.settings_kv (key, value, value_type, scope, category, updated_at, updated_by)
-VALUES ('lifecycle.dashboard_access_events_hot_retention_hours', '8', 'int', 'platform', 'lifecycle', now(), 'migration-575')
+VALUES ('lifecycle.dashboard_access_events_hot_retention_hours', '8', 'int', 'platform', 'lifecycle', now(), 'migration-579')
 ON CONFLICT (key) DO NOTHING;
 
 COMMIT;
