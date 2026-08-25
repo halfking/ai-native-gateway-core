@@ -48,7 +48,7 @@ ModelAliasPrefix string `yaml:"model_alias_prefix" env:"LLM_GATEWAY_MODEL_ALIAS_
 | 默认值 | `kx-` |
 | 环境变量 | `LLM_GATEWAY_MODEL_ALIAS_PREFIX=alias-` |
 | YAML 配置 | `model_alias_prefix: "alias-"` |
-| 优先级 | 环境变量 > YAML > 默认值（与其他字段一致） |
+| 优先级 | 环境变量 > YAML > 默认值（环境变量或 YAML 显式空字符串可禁用） |
 
 ### 3.2 模型名称处理层（`modelname/normalize.go`）
 
@@ -90,7 +90,7 @@ func ModelAliasPrefix() string {
 ```
 
 - 优先读 Store 里的实时配置（热更新路径）；
-- Store 不可用时 fallback 到环境变量或默认值；
+- Store 不可用时 fallback 到环境变量或默认值；环境变量显式为空时表示禁用。
 - 与 `StreamTimeout()`、`UpstreamTimeout()` 等其他热更新旋钮保持一致模式。
 
 ### 3.4 请求处理层（`domains/streaming/handler.go`）
