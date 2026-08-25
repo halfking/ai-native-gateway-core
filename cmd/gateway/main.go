@@ -1997,6 +1997,9 @@ func main() {
 			fwd.emit(entry)
 		})
 		slog.Info("telemetry onEmitted forwarder wired → live stream SSE hub (pre-DB in_progress projection) + request detail capture")
+		// 阶段二: persisted → 最终状态补偿。经同一转发器 FIFO 发布(顺序保证
+		// 见上), 回调在 telemetry worker 上仍只做非阻塞投递 —— 比 旧直发
+		// Publish 回调更轻, 不会拖慢 telemetry 落库 worker。
 		telemetryClient.AddOnRequestLogPersisted(fwd.persist)
 		telemetryClient.AddOnRequestLogPersisted(requestdetail.ClearAfterPersist)
 		slog.Info("telemetry onPersisted wired → live stream SSE hub via forwarder FIFO (post-commit compensation) + request detail clear")
@@ -2470,6 +2473,22 @@ func main() {
 			slog.Info("attachment download/list handler wired",
 				"dir", attachmentStorage.BaseDir())
 		}
+
+		// 2026-08-25: in-flight request detail content store (memory meta +
+		// per-request_id local files). Cleared after telemetry DB persist
+		// (see onEmitted/onPersisted wiring near live stream hub).
+		detailDir := strings.TrimSpace(os.Getenv("LLM_GATEWAY_REQUEST_DETAIL_DIR"))
+		if detailDir == "" {
+			detailDir = filepath.Join(os.TempDir(), "llmgw-request-detail")
+		}
+		if detailStore, err := requestdetail.NewStore(detailDir); err != nil {
+			slog.Warn("request detail content store disabled", "dir", detailDir, "error", err)
+		} else {
+			requestdetail.SetGlobal(detailStore)
+			adminHandler.SetRequestDetailStore(detailStore)
+			slog.Info("request detail content store wired", "dir", detailDir)
+		}
+
 		formatAnomalyRecorder := streaming.NewFormatAnomalyRecorderFromPool(dbConn.Pool())
 		chatHandler.SetFormatAnomalyRecorder(formatAnomalyRecorder)
 		if requestLogger != nil {
