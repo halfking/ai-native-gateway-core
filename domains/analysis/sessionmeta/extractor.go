@@ -54,13 +54,13 @@ type Result struct {
 	AnalysisKind  string         `json:"analysis_kind"`
 	Status        string         `json:"status"`
 	Title         string         `json:"title,omitempty"`
-	Agent         AgentIdentity  `json:"agent"`
-	Client        ClientIdentity `json:"client"`
+	Agent         AgentIdentity  `json:"agent,omitempty"`
+	Client        ClientIdentity `json:"client,omitempty"`
 	// Expert is always emitted (struct omitempty is a no-op, consistent with
 	// Agent/Client). Use Type=="unknown" to represent "no signal detected".
 	Expert     ExpertIdentity   `json:"expert"`
-	WorkTypes  []Classification `json:"work_types"`
-	Project    ProjectSignal    `json:"project"`
+	WorkTypes  []Classification `json:"work_types,omitempty"`
+	Project    ProjectSignal    `json:"project,omitempty"`
 	Features   []Feature        `json:"features,omitempty"`
 	Evidence   []Evidence       `json:"evidence,omitempty"`
 	Provenance Provenance       `json:"provenance"`
