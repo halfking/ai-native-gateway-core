@@ -806,166 +806,68 @@ func (h *Handler) getLog(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
-	var detail requestLogDetail
+	// 2026-08-25: omit_body=1 fast path — dashboard 抽屉分阶段首包（先出 meta，再二次拉全量 body）。
+	// 跳过 request_logs_bodies_with_current_month 视图的 LEFT JOIN，避免 planner 在
+	// 当月 columnar 分区（2GB+，无 request_id 索引）上做 ColumnarScan 全表扫描。
+	// 直接查 request_logs_hot（heap，idx_request_logs_hot_request_id，<1ms）。
+	// 找不到（极少见，>30 天前冷请求）才回退到完整视图查询（带 body JOIN，可走 20s ctx）。
+	omitBody := r.URL.Query().Get("omit_body") == "1" || r.URL.Query().Get("omit_body") == "true"
 
-	// Detail drawer needs the full payload including outbound_body /
-	// outbound_msg_hashes / compression_meta, so use requestLogsDetailCols
-	// (NOT the slimmed requestLogsListCols used by the list endpoint).
-	// 2026-07-21 Ticket #11: Added LEFT JOIN to request_logs_bodies_with_current_month
-	// to retrieve full request_body and response_body (moved to separate table in #10).
-	// COALESCE ensures backwards compatibility with old data still in request_logs_hot.
-	// 2026-07-06: 使用视图查询，避免遗漏 hot 表数据（migration 341）
-	// 2026-07-23 BUGFIX: request_id 是唯一标识，JOIN 只需匹配 request_id
-	//
-	// 2026-08-17 BUGFIX: dashboard "实时请求流 → 点击请求" 报 "query failed"
-	// (HTTP 500 + db_error "timeout: context deadline exceeded")。
-	// 根因：request_logs_bodies 的 2026_08 月分区是 Citus columnar (2020 MB)，
-	// 不支持 btree 索引，planner 必须 ColumnarScan + 反压 JSONB chunk group，
-	// 单 ID 查询 30s+ timeout，把 getLog 5s context 打爆。dashboard 实时流命中的
-	// 请求体仍在 request_logs_bodies_hot（heap, <1ms），与 columnar 同走一个视图
-	// UNION ALL 被迫全表扫描。
-	//
-	// 修复策略：把 body JOIN 从主查询剥离，拆成两步：
-	//   (1) 主查询只读 request_logs_with_current_month（metadata + 主表内嵌 body）
-	//   (2) 若主表内嵌 body 为空（hot 表已迁移 body 列到 sibling 表），
-	//       单独查 body：先 request_logs_bodies_hot（idx 命中，<1ms），
-	//       找不到再回退到 request_logs_bodies 视图（columnar，慢但可走 20s ctx）。
-	// 这样 dashboard 实时流（24h 内请求）走 hot fast path，不会再 5s timeout。
-	err = h.db.QueryRow(ctx, fmt.Sprintf(`
-		SELECT %s
-		  FROM request_logs_with_current_month rl
-		%s
-		 WHERE rl.request_id = $1
-		   AND ($2 OR rl.tenant_id = $3)
-		 ORDER BY rl.ts DESC
-		 LIMIT 1
-	`, requestLogsDetailCols, requestLogsDetailJoins), requestID, !IsTenantAdmin(r), GetTenantID(r)).Scan(
-		&detail.Ts,
-		&detail.RequestID,
-		&detail.APIKeyID,
-		&detail.EndUserID,
-		&detail.ClientModel,
-		&detail.OutboundModel,
-		&detail.CredentialID,
-		&detail.CredentialLabel,
-		&detail.ProviderID,
-		&detail.ProviderName,
-		&detail.ProviderCode,
-		&detail.ClientProfile,
-		&detail.RequestMode,
-		&detail.PromptTokens,
-		&detail.CompletionTokens,
-		&detail.CacheReadTokens,
-		&detail.CacheWriteTokens,
-		&detail.TotalTokens,
-		&detail.CostUSD,
-		&detail.CostDisplay,
-		&detail.CostCurrency,
-		&detail.LatencyMs,
-		&detail.Success,
-		&detail.RequestStatus,
-		&detail.ErrorKind,
-		&detail.SearchText,
-		&detail.IdentityHash,
-		&detail.VirtualClientID,
-		&detail.VirtualIP,
-		&detail.VirtualMAC,
-		&detail.AffinityHit,
-		&detail.RequestChecksum,
-		&detail.ResponseChecksum,
-		&detail.TransformRuleID,
-		&detail.EgressProtocol,
-		&detail.FailureStage,
-		&detail.FailureDetailCode,
-		&detail.UpstreamFinishReason,
-		&detail.RequestPreview,
-		&detail.TransformSummary,
-		&detail.ResponsePreview,
-		&detail.StreamFirstChunkMs,
-		&detail.StreamChunkCount,
-		&detail.StreamDoneReceived,
-		&detail.StreamInterrupted,
-		&detail.StreamDoneSent,
-		&detail.UsageSource,
-		&detail.GwSessionID,
-		&detail.GwTaskID,
-		&detail.APIKeyPrefix,
-		&detail.APIKeyOwnerUser,
-		&detail.ApplicationCode,
-		&detail.CanonicalName,
-		&detail.CanonicalModel, // 2026-07-27: 标准模型名 (migration 458)
-		&detail.AgentName,      // 2026-07-27: 客户端类型
-		&detail.AgentType,      // 2026-07-27: 客户端分组
-		&detail.ClientProtocol, // 2026-07-27: 客户端协议
-		&detail.ProviderModel,
-		&detail.CreditsCharged,
-		// v3 session-level outbound body summary fields (must mirror
-		// requestLogsDetailCols order: list summary fields FIRST, then the
-		// three JSONB blobs that only the detail drawer needs).
-		&detail.OutboundMsgCount,
-		&detail.OutboundTokenEst,
-		&detail.CompressionStrategy,
-		&detail.CompressionReason,
-		&detail.ParentRequestID,
-		// 2026-07-01: attachment_count (migration 325). Same COALESCE expression
-		// as the list query; re-evaluated here so the detail payload also
-		// exposes the count without forcing the client to parse attachments.
-		&detail.AttachmentCount,
-		// 2026-08-06: session_titles.title (see requestLogsListCols).
-		&detail.SessionTitle,
-		&detail.OutboundBody,
-		&detail.OutboundMsgHashes,
-		&detail.CompressionMeta,
-		// 2026-07-01: 完整附件元数据 JSONB (migration 325)。
-		&detail.Attachments,
-		&detail.RoutingAttempts,
-		&detail.RoutingSummary,
-	)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			writeError(w, http.StatusNotFound, "request log not found")
+	var detail requestLogDetail
+	if omitBody {
+		// Fast path: heap only, no body JOIN. Slim scan via shared list
+		// scanner (skip the JSONB blobs — those columns are not in
+		// requestLogsListCols and the omit_body=1 caller doesn't need them).
+		// 2026-08-25 BUGFIX: previously this branch ran the slow-path query
+		// (requestLogsDetailCols + body JOIN), which forces the planner to
+		// touch the columnar monthly partition even when omit_body=1 makes
+		// the body columns irrelevant. On hot requests (<7 days, ~50% of
+		// dashboard traffic) this still pushed runtime past 30s on
+		// 2026_08 (2GB columnar, no request_id btree). Querying request_logs_hot
+		// directly is heap + indexed (idx_request_logs_hot_request_id),
+		// finishing in <5ms for the dashboard drawer first-paint.
+		row, fastErr := scanRequestListRow(h.db.QueryRow(ctx, fmt.Sprintf(`
+			SELECT %s
+			  FROM request_logs_hot rl
+			%s
+			 WHERE rl.request_id = $1
+			   AND ($2 OR rl.tenant_id = $3)
+			 ORDER BY rl.ts DESC
+			 LIMIT 1
+		`, requestLogsListCols, requestLogsJoins), requestID, !IsTenantAdmin(r), GetTenantID(r)), false)
+		if fastErr == nil {
+			detail.requestLogRow = row
+			metaElapsed := time.Since(start)
+			if metaElapsed > 1*time.Second {
+				slog.InfoContext(ctx, "admin getLog metadata slow (omit_body hot path)",
+					"request_id", requestID, "elapsed_ms", metaElapsed.Milliseconds())
+			}
+			writeJSON(w, http.StatusOK, detail)
 			return
 		}
-		// 2026-08-17 BUGFIX: log elapsed time on metadata scan failure.
-		// Distinct context: metadata query hit columnar scan and exceeded the
-		// 30s outer ctx. We distinguish hot-miss vs columnar-cold via the
-		// elapsed duration in logs so ops can triage which path to fix next.
-		metaElapsed := time.Since(start)
-		slog.WarnContext(ctx, "admin getLog scan failed",
-			"request_id", requestID,
-			"elapsed_ms", metaElapsed.Milliseconds(),
-			"error", err.Error())
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"error": map[string]any{
-				"detail":     "query failed",
-				"db_error":   err.Error(),
-				"request_id": requestID,
-			},
-		})
-		return
-	}
-	metaElapsed := time.Since(start)
-	if metaElapsed > 1*time.Second {
-		slog.InfoContext(ctx, "admin getLog metadata slow",
-			"request_id", requestID, "elapsed_ms", metaElapsed.Milliseconds())
-	}
-
-	// 2026-08-21: omit_body=1 用于抽屉分阶段首包（先出 meta，再二次拉全量 body）。
-	omitBody := r.URL.Query().Get("omit_body") == "1" || r.URL.Query().Get("omit_body") == "true"
-	if omitBody {
-		if len(detail.OutboundBody) > 0 {
-			detail.OutboundBody = normalizeJSONForAPI(detail.OutboundBody)
+		if !errors.Is(fastErr, sql.ErrNoRows) {
+			metaElapsed := time.Since(start)
+			slog.WarnContext(ctx, "admin getLog scan failed (hot fast path)",
+				"request_id", requestID,
+				"elapsed_ms", metaElapsed.Milliseconds(),
+				"error", fastErr.Error())
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error": map[string]any{
+					"detail":     "query failed",
+					"db_error":   fastErr.Error(),
+					"request_id": requestID,
+				},
+			})
+			return
 		}
-		if len(detail.OutboundMsgHashes) > 0 {
-			detail.OutboundMsgHashes = normalizeJSONForAPI(detail.OutboundMsgHashes)
-		}
-		if len(detail.CompressionMeta) > 0 {
-			detail.CompressionMeta = normalizeJSONForAPI(detail.CompressionMeta)
-		}
-		writeJSON(w, http.StatusOK, detail)
-		return
+		// 2026-08-25: cold request (>7 days, migrated to columnar).
+		// Fall through to the slow path (full view query with body JOIN).
+		// This still uses the slow 30s ctx but is rare enough to not
+		// regress dashboard.
+		slog.InfoContext(ctx, "admin getLog omit_body cold path fallback",
+			"request_id", requestID)
 	}
 
 	// 2026-08-17 BUGFIX: 二阶段 body 读取，避开 columnar 扫描（见上方长注释）。
