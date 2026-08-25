@@ -1,8 +1,8 @@
 {
-  "version": "2.4.7-d644a267-20260824-1736",
+  "version": "2.4.7-halfking-20260825-0520-a5-redis-audit",
   "git_tag": "2.4.7",
-  "git_sha": "d644a267",
+  "git_sha": "98198bd18",
   "build_seq": 1736,
-  "build_date": "20260824",
+  "build_date": "20260825",
   "module": "llm-gateway-go"
 }

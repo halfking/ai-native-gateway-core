@@ -179,8 +179,16 @@ func splitSystemAndTail(messages []json.RawMessage, ret *Retained, maxTail int) 
 		return nil, lastN(messages, maxTail)
 	}
 	for i, m := range messages {
-		role := messageRole(m)
-		if i == ret.FirstUserIndex && role == "user" {
+		if i < ret.FirstUserIndex {
+			// Preserve runtime reminders that precede the real user intent.
+			// They arrive as user messages and are intentionally not part of
+			// A-track system retention.
+			if messageRole(m) == "user" && isSystemReminderMessage(m) {
+				head = append(head, m)
+			}
+			continue
+		}
+		if i == ret.FirstUserIndex && messageRole(m) == "user" {
 			head = append(head, m) // B-track
 			break
 		}

@@ -6,6 +6,43 @@ import (
 	"testing"
 )
 
+func TestRebuildAnthropicAfterSummary_UsesActualNewlines(t *testing.T) {
+	out, err := rebuildAnthropicSystemField(json.RawMessage(`"S"`), "summary")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got string
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(got, `\\n`) {
+		t.Fatal("summary separator must use actual newlines, not literal backslash-n")
+	}
+	if !strings.Contains(got, "\n\n--- Compressed context") {
+		t.Fatal("summary separator missing")
+	}
+}
+
+func TestRebuildAnthropicAfterSummary_DropsOrphanToolResult(t *testing.T) {
+	body := []byte(`{"model":"m","messages":[
+		{"role":"user","content":"old"},
+		{"role":"assistant","content":[{"type":"tool_use","id":"call_old","name":"f","input":{}}]},
+		{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_old","content":"r"}]},
+		{"role":"user","content":"latest"}
+	]}`)
+	ret, err := extractAnthropic(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, ok := RebuildAnthropicAfterSummary(body, "summary", ret, 1)
+	if !ok {
+		t.Fatal("rebuild must succeed")
+	}
+	if strings.Contains(string(out), "call_old") {
+		t.Fatal("orphan tool_result must not survive Anthropic rebuild")
+	}
+}
+
 func TestRebuildAnthropicAfterSummary_StringSystem(t *testing.T) {
 	body := []byte(`{"model":"m","system":"You are Claude.","messages":[
 		{"role":"user","content":"Hello"},
