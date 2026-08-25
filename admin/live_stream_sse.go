@@ -547,6 +547,34 @@ type LiveStreamSSEHub struct {
 	// our own instanceID is ignored; payloads with no tag (older payloads /
 	// other writers) and tags from other instances are still processed.
 	instanceID string
+
+	// 2026-08-25 (fix-154, SSE Hub 异步化): 主循环慢操作外移到 worker,
+	// 详见 live_stream_async.go 文件头。
+	//
+	// actionTrigger 是 cap-1 的触发 chan: 主循环的 actionTicker case 只做
+	// 非阻塞投递 (triggerActionPoll), worker 忙时 tick 合并 —— pollLiveActions
+	// 每次 LRANGE 最新 500 条 + cursor 推进, 下一 tick 自然追赶。
+	actionTrigger chan struct{}
+	// actionWorkerDone 由 runActionWorker 退出时 close, Stop 有界 join 用。
+	actionWorkerDone chan struct{}
+	// recordQueue 承载 Publish 移交的 store.Record 写入 (本地广播先行),
+	// 单个 drainer goroutine FIFO 消费。
+	recordQueue chan LiveRequest
+	// recordDrainerDone 由 runRecordDrainer 退出时 close, Stop 有界 join 用。
+	recordDrainerDone chan struct{}
+	// recordDrops 统计 recordQueue 满时的丢弃 (Redis 持续慢的背压信号)。
+	recordDrops atomic.Int64
+	// asyncMu 保护两个 started 标记与对应 done chan 的可见性: Run 启动
+	// worker、Stop join worker、Publish 检查 drainer 三方在此竞争。
+	asyncMu              sync.Mutex
+	actionWorkerStarted  bool
+	recordDrainerStarted bool
+
+	// credentialLabelsQuery (2026-08-25): CredentialLabelsFor 的查询缝,
+	// 默认指向 queryCredentialLabels (原内联 SQL 抽出)。测试可注入慢查询
+	// /错误以验证 lifecycle 广播不被 DB 抖动阻塞; 字段为 nil 时回退默认
+	// 实现 —— 手工构造 (零值) 的 hub 也安全。
+	credentialLabelsQuery func(ctx context.Context, ids []int) (map[int]string, error)
 }
 
 // cachedSnapshotEntry is one tenant's cached snapshot plus its last-access
@@ -629,7 +657,7 @@ func (h *LiveStreamSSEHub) fanOutNodeUpdate() {
 // once in its own goroutine before the hub accepts traffic.
 func NewLiveStreamSSEHub(db *pgxpool.Pool, cfg LiveStreamConfig) *LiveStreamSSEHub {
 	cfg.defaults()
-	return &LiveStreamSSEHub{
+	h := &LiveStreamSSEHub{
 		db:                db,
 		cfg:               cfg,
 		store:             NewLiveStreamRedisStore(cfg.RedisClient),
@@ -646,7 +674,17 @@ func NewLiveStreamSSEHub(db *pgxpool.Pool, cfg LiveStreamConfig) *LiveStreamSSEH
 		actionTenantIndex: make(map[string]string),
 		actionTenantMiss:  make(map[string]time.Time),
 		instanceID:        generateLiveStreamInstanceID(),
+		// 2026-08-25 (fix-154): 异步化基础设施。actionTrigger cap=1 ——
+		// 主循环非阻塞投递, worker 忙时 tick 合并; recordQueue cap 见
+		// live_stream_async.go 的 recordQueueCapacity。done chan 由各自
+		// worker 启动时创建 (startActionWorker / startRecordDrainer),
+		// Run 未调用时保持 nil, Stop 的 join 据此跳过。
+		actionTrigger: make(chan struct{}, 1),
+		recordQueue:   make(chan LiveRequest, recordQueueCapacity),
 	}
+	// 查询缝默认指向真实 DB 实现; 构造完成后再挂, 避免构造期内自引用。
+	h.credentialLabelsQuery = h.queryCredentialLabels
+	return h
 }
 
 // generateLiveStreamInstanceID returns a short random per-hub tag used to
@@ -677,6 +715,14 @@ func (h *LiveStreamSSEHub) Run() {
 	if h.store != nil && h.cfg.RedisClient != nil {
 		go h.runRedisSubscriber()
 	}
+
+	// 2026-08-25 (fix-154, SSE Hub 异步化): 慢操作 worker 先于主循环启动。
+	// action worker 承接 pollLiveActions 整条链 (含 CredentialLabelsFor 的
+	// 500ms DB 批量查询), record drainer 承接 Publish 的 store.Record ——
+	// 主循环从此只做非阻塞投递, DB/Redis 抖动不再阻塞注册/注销与普通
+	// request 广播。Stop() 会 close(stopCh) 并有界 join 这两个 worker。
+	h.startActionWorker()
+	h.startRecordDrainer()
 
 	idleTicker := time.NewTicker(h.cfg.IdleTickInterval)
 	keepaliveTicker := time.NewTicker(h.cfg.KeepaliveInterval)
@@ -784,7 +830,14 @@ func (h *LiveStreamSSEHub) Run() {
 				h.fanOutChildRequest(req)
 			}
 		case <-actionTicker.C:
-			h.pollLiveActions()
+			// 2026-08-25 (fix-154): 非阻塞投递给 action worker。此前这里
+			// 同步执行 pollLiveActions —— 冷缓存时 CredentialLabelsFor 的
+			// 500ms DB 批量查询 (叠加 actionReadTimeout 2s) 会把整个主循环
+			// 卡住最长 ~2.5s, 普通 request 广播全部排队。worker 忙时本次
+			// tick 被合并: pollLiveActions 每 tick LRANGE 最新 500 条并按
+			// cursor 推进, 下一次触发自然追赶, at-least-once 语义由前端
+			// (request_id, seq) 去重兜底。
+			h.triggerActionPoll()
 		case <-idleTicker.C:
 			h.maybeEmitIdleMarker()
 		case <-keepaliveTicker.C:
@@ -1075,14 +1128,28 @@ func (h *LiveStreamSSEHub) pushScopeSnapshot(tenantID string, isSuper bool) {
 }
 
 // Stop tears down the hub. It is safe to call concurrently.
+//
+// 2026-08-25 (fix-154): close(stopCh) 后有界 join 异步 worker (action
+// worker / record drainer, 见 live_stream_async.go)。契约: 调用方应先 Run
+// 再 Stop (main.go 即此顺序); Run 从未被调用时 worker 未启动、done chan
+// 为 nil, join 直接跳过 —— Stop 对"Run 未调用"安全, 绝不永久挂起。
 func (h *LiveStreamSSEHub) Stop() {
 	h.stopOnce.Do(func() {
 		// Serialize shutdown with lazy incident-worker startup so Stop cannot
 		// leave behind a newly created channel with no active consumer.
 		h.incidentMu.Lock()
+		// 2026-08-25 (review 修复): close(stopCh) 与 enqueueRecord 的
+		// "stopCh 检查 + recordQueue 投递"（同一 asyncMu 临界区）互斥，
+		// 消除"Stop 之后投递仍成功、但 drainer 已排空退出导致该条
+		// Record 静默滞留 chan"的竞态窗口 —— close 之后的 enqueueRecord
+		// 必见 stopCh 已关闭并走同步兜底。锁序 incidentMu → asyncMu
+		// 单向嵌套（asyncMu 不会在 incidentMu 内反向获取），无死锁。
+		h.asyncMu.Lock()
 		close(h.stopCh)
+		h.asyncMu.Unlock()
 		h.incidentMu.Unlock()
 	})
+	h.joinAsyncWorkers()
 }
 
 // ProviderCodeFor resolves a providers.id to its display name, falling
@@ -1154,9 +1221,16 @@ func (h *LiveStreamSSEHub) CredentialLabelFor(ctx context.Context, credentialID 
 	if cached, ok := h.credentialLabelCache.Load(credentialID); ok {
 		return cached.(string)
 	}
+	// 2026-08-25 (fix-154 核对): credentialLabelForSQL 是
+	// `SELECT id, COALESCE(label,'') FROM credentials WHERE id = ANY($1)`,
+	// 传单元素数组时至多返回一行且 id 恒等于入参 —— 旧代码
+	// `row.Scan(&credentialID, &label)` 把查询结果扫回函数参数, 因参数绑定
+	// 发生在 Scan 之前而"碰巧正确", 但属于隐患写法 (SQL 一旦演化为多行/
+	// 不同列序, 入参会被静默覆写)。修为扫进局部变量, 语义显式化。
+	var id int
 	var label string
 	row := h.db.QueryRow(ctx, credentialLabelForSQL, []int{credentialID})
-	if err := row.Scan(&credentialID, &label); err != nil {
+	if err := row.Scan(&id, &label); err != nil {
 		// No row → cache "" so the next call doesn't retry for this id.
 		h.credentialLabelCache.Store(credentialID, "")
 		slog.Debug("live stream credential label lookup failed", "credential_id", credentialID, "err", err.Error())
@@ -1177,6 +1251,11 @@ func (h *LiveStreamSSEHub) CredentialLabelFor(ctx context.Context, credentialID 
 // The whole lookup runs inside the existing 2s actionReadTimeout window so
 // a degraded DB cannot push request_lifecycle delivery beyond the ≤500ms
 // contract budget.
+//
+// 2026-08-25 (fix-154): 实际的 DB 批量查询抽到 queryCredentialLabels,
+// 经 hub.credentialLabelsQuery 字段间接调用 (测试缝 —— 注入慢查询/错误
+// 用); 缓存/负缓存逻辑保留在本方法。该链路现由 action worker 串行执行
+// (见 live_stream_async.go), 不再阻塞主循环。
 func (h *LiveStreamSSEHub) CredentialLabelsFor(ctx context.Context, ids []int) map[int]string {
 	if h == nil || h.db == nil || len(ids) == 0 {
 		return nil
@@ -1203,8 +1282,16 @@ func (h *LiveStreamSSEHub) CredentialLabelsFor(ctx context.Context, ids []int) m
 	}
 	queryCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
 	defer cancel()
-	rows, err := h.db.Query(queryCtx, credentialLabelForSQL, missing)
-	if err != nil {
+	// 2026-08-25 (fix-154): 查询缝 —— 默认走 queryCredentialLabels (原内联
+	// SQL 移入该方法), 测试可注入 hub.credentialLabelsQuery 模拟慢查询/
+	// 错误, 验证 lifecycle 广播链不被 DB 抖动阻塞; 手工构造的 hub 字段为
+	// nil 时回退默认实现, 零值安全。
+	query := h.credentialLabelsQuery
+	if query == nil {
+		query = h.queryCredentialLabels
+	}
+	found, err := query(queryCtx, missing)
+	if err != nil && len(found) == 0 {
 		slog.Debug("live stream credential labels batch lookup failed", "count", len(missing), "err", err.Error())
 		// Cache the miss so we don't retry every tick for the same ids.
 		for _, id := range missing {
@@ -1212,22 +1299,16 @@ func (h *LiveStreamSSEHub) CredentialLabelsFor(ctx context.Context, ids []int) m
 		}
 		return nil
 	}
-	defer rows.Close()
-	found := make(map[int]struct{}, len(missing))
-	for rows.Next() {
-		var id int
-		var label string
-		if err := rows.Scan(&id, &label); err != nil {
-			continue
-		}
-		found[id] = struct{}{}
+	if err != nil {
+		// 部分成功 (如 rows 迭代中途超时/出错): 沿用旧内联语义 —— 使用已
+		// 读到的行, 只记 Debug, 不让整批失败。
+		slog.Debug("live stream credential labels batch scan failed", "err", err.Error())
+	}
+	for id, label := range found {
 		h.credentialLabelCache.Store(id, label)
 		if label != "" {
 			out[id] = label
 		}
-	}
-	if rows.Err() != nil {
-		slog.Debug("live stream credential labels batch scan failed", "err", rows.Err().Error())
 	}
 	// Negative-cache ids the query did not return so we don't re-query them
 	// on every tick (the row genuinely doesn't exist).
@@ -1240,6 +1321,32 @@ func (h *LiveStreamSSEHub) CredentialLabelsFor(ctx context.Context, ids []int) m
 		return nil
 	}
 	return out
+}
+
+// queryCredentialLabels 是 CredentialLabelsFor 的默认 DB 实现
+// (2026-08-25 从其内联 SQL 抽出, 形成可注入的查询缝 credentialLabelsQuery)。
+// 返回找到的 id→label 原映射 (label 可为空串 —— 缓存/负缓存由调用方负责);
+// 迭代中途出错时返回 (部分结果, err), 与旧内联行为逐字对齐。h.db 为 nil 时
+// 返回 (nil, nil) —— 调用方已在入口处挡掉该情况, 这里再防御一次。
+func (h *LiveStreamSSEHub) queryCredentialLabels(ctx context.Context, ids []int) (map[int]string, error) {
+	if h == nil || h.db == nil {
+		return nil, nil
+	}
+	rows, err := h.db.Query(ctx, credentialLabelForSQL, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[int]string, len(ids))
+	for rows.Next() {
+		var id int
+		var label string
+		if err := rows.Scan(&id, &label); err != nil {
+			continue
+		}
+		out[id] = label
+	}
+	return out, rows.Err()
 }
 
 // ModelVendorFor resolves a model name to its vendor via models_canonical.family → model_families.vendor.
@@ -1872,27 +1979,41 @@ func (h *LiveStreamSSEHub) enqueueBroadcast(req LiveRequest) {
 	}
 }
 
-// Publish persists a request to Redis and notifies every subscriber
-// to fan out SSE updates. Always broadcasts regardless of Redis state
-// so connected SSE clients receive the request in real-time.
+// Publish broadcasts a request to local SSE clients and persists it to
+// Redis. Always broadcasts regardless of Redis state so connected SSE
+// clients receive the request in real-time.
+//
+// 2026-08-25 (fix-154, SSE Hub 异步化): 本地广播优先 —— 先 enqueueBroadcast
+// (SSE 立即可见), store.Record 移到 recordQueue 由单个 drainer goroutine
+// 异步执行。此前 Record (200ms 超时的 Redis 读改写 + per-request SETNX 锁
+// 重试) 在调用方 goroutine 里同步完成, Redis 慢时 telemetry 侧的 Publish
+// 一起被拖慢。
+//
+// 取舍: 广播先于 Record 后, 主循环的 computeScopeDelta 可能在 Redis 写入
+// 前运行, 该次 delta 可能不含本请求 —— envelope 自带 Request tile, 泳道
+// 汇总由下一次 delta (2s 节流窗) / snapshot_refresh 收敛, 接受这一窗口。
+//
+// Record 乱序安全性: recordQueue 是 FIFO 且只有一个 drainer —— 同一
+// request_id 的 in_progress → terminal 两阶段保持 Publish 调用顺序 (比旧版
+// 两个调用方 goroutine 并发抢跑 Record 更严格); 跨 request_id 本就无顺序
+// 依赖 (ZSET score 来自 req.Ts 而非墙钟), store.Record 内部的 per-request
+// SETNX 锁继续兜底跨实例并发。
 func (h *LiveStreamSSEHub) Publish(req LiveRequest) {
-	if h.store != nil && h.cfg.RedisClient != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-		if err := h.store.Record(ctx, req, h.instanceID); err != nil {
-			slog.Warn("live stream redis record failed", "request_id", req.RequestID, "tenant_id", req.TenantID, "model", req.Model, "provider", req.ProviderCode, "err", err.Error())
-		}
-		cancel()
-		h.enqueueBroadcast(req)
+	// 本地 SSE 广播优先: 无 Redis 也立即可见 (旧版同样保证)。
+	h.enqueueBroadcast(req)
+	if h.store == nil || h.cfg.RedisClient == nil {
+		// store 非 nil 但 RedisClient 为 nil 时, 旧版会调 Record 并由其在
+		// rdb==nil 分支 Warn + no-op —— 跳过这次纯 no-op 调用, 对外行为
+		// (无 Redis 写、广播照发) 不变。
 		return
 	}
-	if h.store != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-		if err := h.store.Record(ctx, req, h.instanceID); err != nil {
-			slog.Warn("live stream redis record failed", "request_id", req.RequestID, "tenant_id", req.TenantID, "model", req.Model, "provider", req.ProviderCode, "err", err.Error())
-		}
-		cancel()
+	if h.enqueueRecord(req) {
+		return
 	}
-	h.enqueueBroadcast(req)
+	// drainer 不可用 (Run 未调用 —— 测试/嵌入式用法; Stop 之后; 手工构造
+	// 的 hub): 同步兜底, 保持旧语义 —— Redis 写失败仅 Warn, 不影响已发出
+	// 的本地广播。
+	h.recordToStore(req)
 }
 
 // incidentUpdateCh is a separate, lower-priority channel for
@@ -2502,5 +2623,8 @@ func (h *LiveStreamSSEHub) Stats() map[string]interface{} {
 		// OBS-BE2: request_lifecycle delivery health.
 		"lifecycle_actions_delivered":  atomic.LoadInt64(&h.actionsDelivered),
 		"lifecycle_action_scan_errors": atomic.LoadInt64(&h.actionScanErrors),
+		// 2026-08-25 (fix-154): recordQueue 背压信号 —— Redis 持续慢导致
+		// 异步 Record 丢弃的累计条数 (与 broadcast_drops 对应)。
+		"record_drops": h.recordDropsCount(),
 	}
 }

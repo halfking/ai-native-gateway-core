@@ -1116,7 +1116,9 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 			-- V3.1 queue timestamps (migration 491): 9-stage dispatch queue timestamps.
 			$88, $89, $90, $91, $92, $93, $94, $95, $96, $97,
 			-- 2026-08-19: streaming discard audit events.
-			$98::text::jsonb, $99
+			$98::text::jsonb, $99,
+			-- 2026-08-25 (migration 507): customer metadata.
+			$100
 		)
 
 				-- 2026-08-06 fix: INSERT targets request_logs_hot (NOT the partitioned parent).

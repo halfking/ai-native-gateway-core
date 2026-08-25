@@ -94,3 +94,8 @@
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
 | 573 | `573_drop_request_logs_body_columns.sql` | `f2bfbe03bf3e838b799a4d5e55a9ee0f8a759a44278c3491b09c7897cf335e9c` | applied+verified |
+## 2026-08-25T06:09:32Z — deploy 154 build_seq 1747 (aa42f889)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 601 | `601_request_logs_bodies_drop_metadata.sql` | `17adda684d907c32a8a54842d6256eb29f769ce9c4a338da6987b2cab491120f` | applied+verified |

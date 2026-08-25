@@ -1,4 +1,4 @@
--- Migration 574: promote_session_module_executions_hot_to_partition
+-- Migration 578: promote_session_module_executions_hot_to_partition
 --
 -- Pair the session_module_executions_hot hot table with a partition manager
 -- drain function. The hot table is created in Migration 382 along with the
