@@ -50,6 +50,6 @@ const emit = defineEmits<{
 .mic-part--link:hover code { color: var(--accent); }
 .mic-label { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.02em; }
 .mic code { font-size: inherit; }
-.mic-raw { color: var(--warning, #c97800); font-size: 10px; }
+.mic-raw { color: var(--warning, var(--warning-dark)); font-size: 10px; }
 .mic-empty { color: var(--muted); }
 </style>

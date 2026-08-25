@@ -276,7 +276,7 @@ function goCanonical() {
 @media (max-width: 900px) { .dual { grid-template-columns: 1fr; } }
 .pane h4 { margin: 0 0 10px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .badge { font-size: 10px; padding: 2px 6px; border-radius: 4px; background: color-mix(in srgb, var(--accent) 15%, transparent); }
-.badge.protect { background: color-mix(in srgb, #c97800 20%, transparent); }
+.badge.protect { background: color-mix(in srgb, var(--warning-dark) 20%, transparent); }
 .badge.override { background: color-mix(in srgb, var(--accent) 20%, transparent); }
 .avail-row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
 .avail-badge { font-size: 12px; padding: 2px 8px; border-radius: 999px; }

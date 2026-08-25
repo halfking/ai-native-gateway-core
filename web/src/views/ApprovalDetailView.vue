@@ -518,8 +518,8 @@ onBeforeUnmount(() => {
 }
 
 .message-error {
-  background: rgba(248, 113, 113, 0.1);
-  border: 1px solid rgba(248, 113, 113, 0.3);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger) 12%, transparent);
   color: var(--danger);
 }
 
@@ -657,7 +657,7 @@ onBeforeUnmount(() => {
 }
 
 .badge-red {
-  background: rgba(248, 113, 113, 0.15);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
   color: var(--danger);
 }
 
@@ -677,8 +677,8 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 12px;
   padding: 12px;
-  background: rgba(248, 113, 113, 0.1);
-  border: 1px solid rgba(248, 113, 113, 0.3);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger) 12%, transparent);
   border-radius: 6px;
 }
 
@@ -743,7 +743,7 @@ onBeforeUnmount(() => {
 }
 
 .role-system {
-  background: rgba(139, 148, 158, 0.2);
+  background: color-mix(in srgb, var(--muted) 14%, transparent);
   color: var(--muted);
 }
 

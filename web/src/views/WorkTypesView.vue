@@ -1015,7 +1015,7 @@ watch(activeTab, (tab) => {
 }
 .layer-tag.l1 { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--accent-h); }
 .layer-tag.l2 { background: var(--success-bd); color: var(--success); }
-.layer-tag.intent-tag { background: rgba(210,153,34,.22); color: var(--warning); width: 26px; }
+.layer-tag.intent-tag { background: color-mix(in srgb, var(--warning) 20%, transparent); color: var(--warning); width: 26px; }
 
 .detail-section--intent { display: flex; flex-direction: column; gap: 8px; }
 .intent-hint { margin: 0; font-size: 11px; line-height: 1.4; }
