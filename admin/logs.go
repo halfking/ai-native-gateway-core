@@ -1112,7 +1112,10 @@ func (h *Handler) listTopModels(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	// 2026-08-25: 5s budget was too tight for wide time ranges — models_canonical
+	// LATERAL JOIN over request_logs_with_current_month scans all ATTACHED
+	// partitions including columnar. Extend to 30s to mirror listLogs/getLog.
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
 	now := time.Now().UTC()
