@@ -682,7 +682,7 @@ function goManageFeatured() {
   border: 1px solid var(--border);
   border-radius: 8px;
   overflow: hidden;
-  background: rgba(0, 0, 0, 0.15);
+  background: var(--overlay-light);
 }
 
 .all-models-toolbar {
@@ -908,7 +908,7 @@ function goManageFeatured() {
 }
 
 .script-code {
-  color: #79c0ff;
+  color: var(--probe-cyan-light);
 }
 
 .manual-text {

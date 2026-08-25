@@ -1931,7 +1931,7 @@ onUnmounted(() => stopPoll())
   border-radius: 3px;
   font-size: 10px;
 }
-.l2-cred.top { border-color: var(--success); background: rgba(63,185,80,.08); }
+.l2-cred.top { border-color: var(--success); background: color-mix(in srgb, var(--success) 14%, transparent); }
 .l2-rank { font-weight: 700; color: var(--muted); font-size: 9px; }
 .l2-prov { font-weight: 500; }
 

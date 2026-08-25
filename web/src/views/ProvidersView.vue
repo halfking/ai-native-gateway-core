@@ -1628,7 +1628,7 @@ table code {
   overflow-wrap: break-word;
 }
 .badge-amber {
-  background: rgba(210,153,34,.18);
+  background: color-mix(in srgb, var(--warning) 20%, transparent);
   color: var(--warning);
 }
 .diag-section h4 {
@@ -1665,7 +1665,7 @@ table code {
   display: inline-block;
   flex-shrink: 0;
 }
-.dot-green { background: #4caf50; }
+.dot-green { background: var(--success); }
 .dot-red { background: var(--danger); }
 .bg-label {
   font-weight: 500;

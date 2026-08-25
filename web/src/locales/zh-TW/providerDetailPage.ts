@@ -12,6 +12,7 @@ export default {
   tabProbe: '自動測試',
   tabProbeTitle: '查看自動測試記錄（每 10 分鐘對失敗綁定重新探測）',
   tabSettings: '設定',
+  tabErrorDetail: '供應商錯誤',
   loading: '載入中…',
   loadingFallback: '...',
   refresh: '重新整理',

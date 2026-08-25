@@ -541,7 +541,7 @@ onMounted(() => {
 }
 
 .alert-danger {
-  background: rgba(239, 68, 68, 0.1);
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
   color: var(--danger);
   border: 1px solid var(--danger-strong);
 }

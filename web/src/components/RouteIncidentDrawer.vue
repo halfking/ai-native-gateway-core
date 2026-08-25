@@ -1157,7 +1157,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
   background: var(--bg);
   color: var(--text);
   border-left: 1px solid var(--border);
-  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.4);
+  box-shadow: -8px 0 24px var(--overlay-medium);
 }
 
 .route-incident-drawer__header {
@@ -1662,13 +1662,13 @@ function hasRunValues(values: Record<string, unknown>): boolean {
 }
 
 .action-result__pill--failed {
-  background: rgba(248, 81, 73, 0.18);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
   color: var(--danger);
 }
 
 .action-result__pill--muted,
 .action-result__pill--noop {
-  background: rgba(139, 148, 158, 0.18);
+  background: color-mix(in srgb, var(--muted) 14%, transparent);
   color: var(--text-secondary);
 }
 
@@ -1720,13 +1720,13 @@ function hasRunValues(values: Record<string, unknown>): boolean {
 }
 
 .audit-row__pill--failed {
-  background: rgba(248, 81, 73, 0.18);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
   color: var(--danger);
 }
 
 .audit-row__pill--muted,
 .audit-row__pill--noop {
-  background: rgba(139, 148, 158, 0.18);
+  background: color-mix(in srgb, var(--muted) 14%, transparent);
   color: var(--text-secondary);
 }
 

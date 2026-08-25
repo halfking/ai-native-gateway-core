@@ -29,15 +29,15 @@ export const QUEUE_STAGE_KEYS: WaterfallStageKey[] = [
 export const EXEC_STAGE_KEYS: WaterfallStageKey[] = ['acquire', 'upstream', 'stream']
 
 export const WATERFALL_STAGES: WaterfallStageDef[] = [
-  { key: 'arrive', start: 'arrived_at', end: 'total_enqueued_at', color: '#94a3b8', label: '到达' },
-  { key: 'total', start: 'total_enqueued_at', end: 'total_dequeued_at', color: '#409EFF', label: '总队列', msKey: 'waiting_in_total_ms' },
-  { key: 'admit', start: 'total_dequeued_at', end: 'model_enqueued_at', color: '#7dd3fc', label: '入模' },
-  { key: 'model', start: 'model_enqueued_at', end: 'model_dequeued_at', color: '#67C23A', label: '模型队列', msKey: 'waiting_in_model_ms' },
-  { key: 'select', start: 'model_dequeued_at', end: 'cred_enqueued_at', color: '#a78bfa', label: '选凭据' },
-  { key: 'cred', start: 'cred_enqueued_at', end: 'cred_dequeued_at', color: '#E6A23C', label: '凭据队列', msKey: 'waiting_in_node_ms' },
+  { key: 'arrive', start: 'arrived_at', end: 'total_enqueued_at', color: 'var(--muted)', label: '到达' },
+  { key: 'total', start: 'total_enqueued_at', end: 'total_dequeued_at', color: 'var(--accent)', label: '总队列', msKey: 'waiting_in_total_ms' },
+  { key: 'admit', start: 'total_dequeued_at', end: 'model_enqueued_at', color: 'var(--probe-cyan-light)', label: '入模' },
+  { key: 'model', start: 'model_enqueued_at', end: 'model_dequeued_at', color: 'var(--success)', label: '模型队列', msKey: 'waiting_in_model_ms' },
+  { key: 'select', start: 'model_dequeued_at', end: 'cred_enqueued_at', color: 'var(--purple)', label: '选凭据' },
+  { key: 'cred', start: 'cred_enqueued_at', end: 'cred_dequeued_at', color: 'var(--warning)', label: '凭据队列', msKey: 'waiting_in_node_ms' },
   { key: 'acquire', start: 'cred_dequeued_at', end: 'forward_start_at', color: '#2dd4bf', label: '获取', msKey: 'acquire_ms' },
-  { key: 'upstream', start: 'forward_start_at', end: 'response_start_at', color: '#F56C6C', label: '上游TTFB', msKey: 'upstream_latency_ms' },
-  { key: 'stream', start: 'response_start_at', end: 'response_end_at', color: '#64748b', label: '流式', msKey: 'streaming_duration_ms' },
+  { key: 'upstream', start: 'forward_start_at', end: 'response_start_at', color: 'var(--danger)', label: '上游TTFB', msKey: 'upstream_latency_ms' },
+  { key: 'stream', start: 'response_start_at', end: 'response_end_at', color: 'var(--muted)', label: '流式', msKey: 'streaming_duration_ms' },
 ]
 
 export function parseTS(s?: string): number | null {

@@ -1767,7 +1767,7 @@ onUnmounted(() => {
   align-items: center;
   gap: 8px;
   padding: 8px 12px;
-  background: rgba(63,185,80,.08);
+  background: color-mix(in srgb, var(--success) 14%, transparent);
   border: 1px solid var(--success-bd);
   border-radius: 6px;
   margin-top: 8px;
@@ -1912,7 +1912,7 @@ onUnmounted(() => {
 .qbar-ok .qbar-fill { background: var(--success-bd); }
 .qbar-mid .qbar-fill { background: var(--warning-bd); }
 .qbar-high .qbar-fill { background: rgba(248,81,73,.55); }
-.qbar-exhausted .qbar-fill { background: rgba(248,81,73,.7); }
+.qbar-exhausted .qbar-fill { background: color-mix(in srgb, var(--danger) 12%, transparent); }
 .qbar-unknown .qbar-fill { background: var(--neutral-bd); }
 .qbar-text {
   position: absolute;
