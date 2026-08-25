@@ -6,12 +6,12 @@ import (
 	"testing"
 )
 
-func TestMigration575AppendsCustomerIDToRequestLogView(t *testing.T) {
-	up, err := os.ReadFile("575_request_logs_view_customer_id.sql")
+func TestMigration577AppendsCustomerIDToRequestLogView(t *testing.T) {
+	up, err := os.ReadFile("577_request_logs_view_customer_id.sql")
 	if err != nil {
 		t.Fatalf("read migration failed: %v", err)
 	}
-	down, err := os.ReadFile("575_request_logs_view_customer_id.down.sql")
+	down, err := os.ReadFile("577_request_logs_view_customer_id.down.sql")
 	if err != nil {
 		t.Fatalf("read down migration failed: %v", err)
 	}

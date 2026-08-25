@@ -1,4 +1,4 @@
--- Migration 574: align request_logs_hot customer_id with the partitioned parent
+-- Migration 576: align request_logs_hot customer_id with the partitioned parent
 --
 -- Purpose: keep tenant/customer metadata types identical across the hot heap
 -- table, partitioned parent, and monthly partitions.
@@ -9,9 +9,11 @@
 --
 -- Status: active
 -- Idempotent: NO (versioned startup migration)
--- Rollback: 574_request_logs_customer_id_bigint.down.sql
+-- Rollback: 576_request_logs_customer_id_bigint.down.sql
 -- Changelog:
 --   2026-08-25  v1.0  Align hot customer_id with parent BIGINT type
+--   2026-08-25  v1.1  Renumbered 574 → 576 to avoid clash with
+--                     574_candidate_binding_scope_filter_disabled.sql (main).
 
 BEGIN;
 

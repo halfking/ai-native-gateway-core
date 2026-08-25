@@ -1,16 +1,17 @@
--- Migration 575: expose request customer metadata in the current-month view.
+-- Migration 577: expose request customer metadata in the current-month view.
 --
 -- Purpose: make tenant/user/customer metadata queryable through the same
 -- request_logs_with_current_month contract used by /api/logs.
 --
 -- The column is appended to preserve PostgreSQL view freeze compatibility.
--- Both branches use BIGINT customer_id after migration 574.
+-- Both branches use BIGINT customer_id after migration 576.
 --
 -- Status: active
 -- Idempotent: YES (CREATE OR REPLACE appends only)
--- Rollback: 575_request_logs_view_customer_id.down.sql
+-- Rollback: 577_request_logs_view_customer_id.down.sql
 -- Changelog:
 --   2026-08-25  v1.0  Append customer_id to request log view
+--   2026-08-25  v1.1  Renumbered 575 → 577 to avoid clash with other main migrations.
 
 BEGIN;
 

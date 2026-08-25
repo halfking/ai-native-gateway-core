@@ -604,3 +604,98 @@
 
 **会话二补充时间**：2026-08-25 05:25（接 ICR-A5 编制后约 2 小时）
 **作者**：本次会话（基于子代理 A/B/C/D 报告的具体修复）
+
+---
+
+## 验证发现 P0 隐患（Post-deploy 发现于 build_seq 1736 部署后验证）
+
+> 2026-08-25 03:30+ UTC：build_seq 1736 部署后做 L1/L2/L3 健康检查时发现。
+> 245 网关跑生产 schema 与代码不同步 → INSERT 持续触发 SQLSTATE 42703 错误。
+
+### 现象
+
+`/var/log/llm-gateway-go/gateway.stderr.log` 中：
+```json
+{"level":"WARN","msg":"telemetry request db persist failed; fallback written",
+ "request_id":"...","op":"insert",
+ "error":"ERROR: column \"request_body\" of relation \"request_logs_hot\" does not exist (SQLSTATE 42703)"}
+```
+
+每个 INSERT/UPDATE 请求写主表都失败，被 fallback 写到 `request_logs_bodies_hot` + Redis trace 滞留（trace flush 失败）。
+
+### 根因
+
+**migration 573 `drop_request_logs_body_columns.sql`（2026-08-19 已部署到 252 PG17）** DROP 了：
+- `request_logs_hot.request_body`（2026-07-22 已迁至 `request_logs_bodies_hot`）
+- `request_logs_hot.response_body`
+- `request_logs_hot.outbound_body`（2026-08-24 Phase 1 已迁）
+
+但 **Go 客户端代码 `domains/hooks/observability/telemetry/client.go` 未同步删除 INSERT/UPDATE 中的列名和占位符**。
+
+注释已更新（"-- 2026-08-24 Phase 1: outbound_body routes to request_logs_bodies_hot"），但实际 SQL 仍包含 `request_body, response_body,` 等。
+
+### 影响
+
+- 每次请求 INSERT 都失败（fallback 落盘，request_logs_hot 失数据）
+- 每次 UPDATE 也失败（请求状态无法更新到主表）
+- Redis trace 累积（trace.FlushToPG: request log row not found, retaining Redis trace ~316 次/4min）
+- 大约 22 万请求/h × INSERT/UPDATE 失败率近 100% → request_logs_hot 主表几乎为空
+- 不影响请求路径（fallback 兜底），但**审计/账本/分析数据完全丢失到 hot 表**
+
+### 验证（已现场确认）
+
+```sql
+-- 252 PG17 上 request_logs_hot 表
+SELECT count(*) FROM information_schema.columns
+ WHERE table_name = 'request_logs_hot'
+   AND column_name IN ('request_body', 'response_body', 'outbound_body');
+-- 0 rows (confirmed: columns dropped)
+```
+
+### 尝试的修复
+
+在本会话中尝试修复 `client.go` 的 INSERT 列名 + 占位符对齐（删 3 个 body 列 + 重新编号 $N 占位符），但**手工重排 100+ 个占位符错误率高、风险大**，未提交。
+
+代码已 `git checkout HEAD -- domains/hooks/observability/telemetry/client.go` 还原。
+
+### 修复指南（后续会话建议）
+
+**最小化安全修法**：用 Postgres 部分列 ADD 回占位符（接受NULL）+ 不动 Go 代码：
+```sql
+ALTER TABLE request_logs_hot ADD COLUMN IF NOT EXISTS request_body jsonb;
+ALTER TABLE request_logs_hot ADD COLUMN IF NOT EXISTS response_body jsonb;
+ALTER TABLE request_logs_hot ADD COLUMN IF NOT EXISTS outbound_body jsonb;
+```
+缺点：浪费存储、再次与 body hot 表分裂。
+
+**推荐修法**：写一次性 migration，强制对齐：
+1. Go 端：删 INSERT 列名列表中 `request_body, response_body,` + `outbound_body,`
+2. Go 端：删 Go args 列表中 `nil, // request_body` + `nil, // response_body` + `nil, // outbound_body`
+3. Go 端：重排 VALUES 中后续所有 `$N` 占位符（手动降序重排极易出错）
+4. 测试：用 pgx 跑 `TestRequestLogInsertParamCount` live DB 测试（已存在）端到端验证
+5. 部署：先在 245 灰度 24h，验证 `telemetry request db persist failed` 归零 + `request_logs_hot` 行数开始增长
+
+**或**：使用代码生成器（sqlc / sqlc-go）从 schema 自动生成 INSERT 语句，根除人工漂移。
+
+### 优先级
+
+**P0 业务影响**——fallback 已工作，但 request_logs_hot 主表近乎空写，影响所有依赖主表的查询（admin dashboard、telemetry、计费对账、batch promote）。
+
+### 245 实际状态
+
+由于 245 部署架构是符号链接 `current → releases/<build_seq>-<git_sha>`，本次本会话的尝试性 INSERT 修复（build_seq 1737）**未真正部署**——245 仍跑 `releases/1737-8bd18f36/gateway`（即原始 1737 build，并非本会话 1737）。这意味着：
+
+- ✅ 245 健康运行，未受中间尝试状态影响
+- ❌ 但 42703 错误持续发生，main 表近乎空写
+- ✅ 本会话 ac83c4665 推送的 1736/A5 代码修复（session:v2 db0、live-stream TTL、rate limiter fallback）**已在 154 走 seamless deploy**，**未受影响**
+
+### 后续行动
+
+1. **下个 ICR 会话专门修复 42703 bug**（建议拆独立任务，避免本会话这种"半成状态"）
+2. 部署需严格走 `scripts/deploy-245.sh`（不直接 `mv`/`cp`，会破坏符号链接）
+3. 测试需要 `TestRequestLogInsertParamCount` live DB 验证（需要 LLM_GATEWAY_PG_TEST_URL 网络连通）
+
+---
+
+**会话三补充时间**：2026-08-25 05:48（验证 build_seq 1736 后）
+**作者**：本次会话（健康检查验证 + 文档化 42703 bug）
