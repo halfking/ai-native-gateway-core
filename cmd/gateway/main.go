@@ -1942,6 +1942,10 @@ func main() {
 		2*time.Second,
 	)
 	var liveStreamHub *admin.LiveStreamSSEHub
+	// 2026-08-25: telemetry onEmitted 转发器引用。声明提升到 main 顶层作用域,
+	// 因为 wiring 在 ~2000 行、关停块在 ~6000 行, 两处必须引用同一实例
+	// (先 stop 转发器、再 stop hub, 对齐生产者→消费者的关停顺序)。
+	var liveStreamEmittedFwd *liveStreamEmittedForwarder
 	// probeStreamHub (2026-08-11) mirrors the live request stream for the
 	// 自检 tab. Declared at this scope so it can be constructed in the
 	// system-monitor wiring block and later wired into probe emitters.
@@ -1986,26 +1990,45 @@ func main() {
 			"dbConn_enabled", dbConn != nil && dbConn.Enabled())
 	}
 
-	// Publish terminal live-stream updates only after the request log
-	// transaction commits. Emitting before persistence allowed a green
-	// tile to reach the dashboard before GET /api/logs/{id} could see it.
-	// The provider_id→catalog_code resolution is bounded by the hub's
-	// short lookup context, and Publish remains non-blocking for clients.
+	// 2026-08-25 两阶段实时流契约（取代此前"仅在事务提交后发布"的单一
+	// persisted 契约 —— 那会让 DB 缺失/延迟直接挡住实时显示）:
+	//
+	//   阶段一 emitted   — telemetry EmitRequestLog 在入 DB 队列前、请求热路径
+	//                      goroutine 上同步触发 onEmitted。回调只做浅拷贝 +
+	//                      select-default 投递（liveStreamEmittedForwarder.emit）,
+	//                      provider 解析（≤200ms DB 查找）与 Publish 移到转发器的
+	//                      单消费者 goroutine → 请求一被接收就进实时流, 不被
+	//                      DB 写入节奏阻塞。
+	//   阶段二 persisted — 事务提交后补偿最终状态（下方保留的既有回调, 跑在
+	//                      telemetry worker goroutine 上）。
+	//
+	// 同一 request ID 的多次 Publish 由 admin 包 Redis Record 的 per-request
+	// 锁 + read-modify-write 去重, 前端按 (request_id, seq) 去重 —— 重复发布
+	// 安全, in_progress 投影会被 persisted 终态覆盖。
 	// Live stream hub hook: register regardless of telemetryClient.Enabled()
 	// (sessionv2mirror/attachment hooks don't gate on Enabled()).
 	// If telemetry is disabled, log a clear warning so operators know
 	// the hub runs but receives no data.
 	if telemetryClient != nil {
 		hub := liveStreamHub
+		// 阶段一: emitted → in_progress 投影。SetOnRequestLogEmitted 是替换
+		// 语义（不同于 Add*）且全仓库仅此一处调用, 不会覆盖其他钩子。
+		// 转发器实例存入 liveStreamEmittedFwd 供关停块引用。
+		fwd := newLiveStreamEmittedForwarder(hub)
+		liveStreamEmittedFwd = fwd
+		go fwd.run()
+		telemetryClient.SetOnRequestLogEmitted(fwd.emit)
+		slog.Info("telemetry onEmitted forwarder wired → live stream SSE hub (pre-DB in_progress projection)")
+		// 阶段二: persisted → 最终状态补偿（既有发布点, 保留不动）。
 		telemetryClient.AddOnRequestLogPersisted(func(entry *telemetry.RequestLogEntry) {
 			hub.Publish(adminLiveRequestFromEntry(entry, hub))
 		})
-		slog.Info("telemetry onPersisted wired → live stream SSE hub")
+		slog.Info("telemetry onPersisted wired → live stream SSE hub (post-commit compensation)")
 	} else {
 		slog.Warn("live stream hub created but telemetryClient is nil; no data will flow to swim lanes")
 	}
 	if telemetryClient != nil && !telemetryClient.Enabled() {
-		slog.Warn("telemetryClient.Enabled() == false; live stream hub will receive no onPersisted callbacks")
+		slog.Warn("telemetryClient.Enabled() == false; live stream hub will receive no onEmitted/onPersisted callbacks")
 	}
 
 	slog.Info("live request stream hub enabled (sse /api/admin/live-stream)",
@@ -6007,6 +6030,14 @@ func main() {
 		}
 
 		// 2. Stop hub/background producers before closing their dependencies.
+		// 2026-08-25: 先停 telemetry emitted 转发器（生产者侧）, 再停 hub
+		// （消费者侧）—— 顺序反了会让转发器在 hub 停止后仍向其 Publish。
+		// stop() 后消费者 goroutine 直接退出、不 drain 残留 entry: 关停时刻
+		// 丢弃 in_progress 投影可接受, 最终状态以 persisted 阶段 + Redis
+		// Record 快照为准。
+		if liveStreamEmittedFwd != nil {
+			liveStreamEmittedFwd.stop()
+		}
 		if liveStreamHub != nil {
 			liveStreamHub.Stop()
 		}
