@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Fixed
+- Add credential grouping to the admin live-stream controls, snapshots, incident indexes, persisted preferences, and all dashboard locales.
 - Scope admin popular-model aggregates and cached picker responses by tenant. Successful telemetry now writes tenant-specific Redis ZSETs; usage SQL filters `request_logs_hot.tenant_id`; tenant-admin reads do not consume global live lanes.
 - Add `LLM_GATEWAY_DB_POPULAR_MODELS_LOOKUP_HOURS` with a seven-day fallback, and skip the SQL usage fallback when policy plus Redis already satisfy the requested limit.
 - Expose `llmgw_live_stream_tile_overlay_db_lookup_total{outcome}` for database-corrected live-stream tiles, with pre-warmed success, failure, locked, and unknown labels.
