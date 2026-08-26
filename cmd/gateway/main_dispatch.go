@@ -250,17 +250,18 @@ func handleDispatchDimensions(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(snap)
 }
 
-// handleDispatchJournalByRequest serves
-// GET /api/admin/dispatch/journal/{request_id} (V6-W1.6 R10): the request's
-// dimension entries plus its freshest AttemptJournal snapshot. Available
-// while the dimension index still holds the request (TTL window); past the
-// window the durable projection is requestjourney.
-func handleDispatchJournalByRequest(w http.ResponseWriter, r *http.Request) {
+// handleDispatchRequestDimensions serves
+// GET /api/admin/dispatch/request-dimensions/{request_id} (V6-W1.6 R10,
+// scope-corrected 2026-08-27): the request's dimension MEMBERSHIP entries
+// (model/credential/provider + state/outcome/last action). The execution
+// trace (AttemptJournal) is attached to the request itself — post-hoc path
+// queries go to the request's own journey projection, NOT this endpoint.
+func handleDispatchRequestDimensions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	const prefix = "/api/admin/dispatch/journal/"
+	const prefix = "/api/admin/dispatch/request-dimensions/"
 	requestID := strings.Trim(strings.TrimPrefix(r.URL.Path, prefix), "/")
 	if requestID == "" || strings.Contains(requestID, "/") {
 		http.Error(w, "request_id required", http.StatusBadRequest)
@@ -271,11 +272,14 @@ func handleDispatchJournalByRequest(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "dispatch pipeline not wired", http.StatusServiceUnavailable)
 		return
 	}
-	view, ok := pipeline.DimensionIndex().JournalByRequest(requestID)
+	entries, ok := pipeline.DimensionIndex().EntriesByRequest(requestID)
 	if !ok {
-		http.Error(w, "request journal not found (TTL window expired or unknown request; see requestjourney persistent projection)", http.StatusNotFound)
+		http.Error(w, "request not found in dimension index (TTL window expired or unknown request)", http.StatusNotFound)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(view)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"request_id": requestID,
+		"entries":    entries,
+	})
 }
