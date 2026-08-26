@@ -136,6 +136,35 @@ func (l *LRU[K, V]) Delete(key K) bool {
 	return true
 }
 
+// DeleteIfValue deletes every key whose value matches the supplied target,
+// using == equality. Returns the number of keys removed.
+//
+// 2026-08-26: added for sticky hot-reload — when admin changes a credential's
+// priority/weight, we need to invalidate every LRU entry that points at
+// that credential ID.
+func (l *LRU[K, V]) DeleteIfValue(target V) int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	removed := 0
+	for k, el := range l.idx {
+		entry, ok := el.Value.(*lruEntry[K, V])
+		if !ok {
+			continue
+		}
+		// V is `int` for the sticky LRU; == comparison is sufficient.
+		// Generics don't require comparable constraints here, so use a
+		// reflect-free fast path via type assertion.
+		if v, ok := any(entry.val).(int); ok {
+			if any(target) == v {
+				l.order.Remove(el)
+				delete(l.idx, k)
+				removed++
+			}
+		}
+	}
+	return removed
+}
+
 func (l *LRU[K, V]) Len() int {
 	l.mu.Lock()
 	defer l.mu.Unlock()

@@ -98,7 +98,13 @@
 
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
-| 601 | `601_request_logs_bodies_drop_metadata.sql` | `17adda684d907c32a8a54842d6256eb29f769ce9c4a338da6987b2cab491120f` | applied+verified |## 2026-08-25T19:48:03Z — deploy 154 build_seq 1758 (fe1e870e)
+| 601 | `601_request_logs_bodies_drop_metadata.sql` | `17adda684d907c32a8a54842d6256eb29f769ce9c4a338da6987b2cab491120f` | applied+verified |## 2026-08-25T16:05:05Z — deploy 245 build_seq 1755 (08566ce9)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 605 | `605_fix_tool_calls_index_predicate.sql` | `a4dc10884a165173fe5ea254724eb86deb01699efebb9256e43376733f049aff` | applied+verified |
+
+## 2026-08-25T19:48:03Z — deploy 154 build_seq 1758 (fe1e870e)
 
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|

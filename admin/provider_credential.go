@@ -621,6 +621,26 @@ func (h *Handler) updateCredential(w http.ResponseWriter, r *http.Request, provi
 		settings.WriteAudit(ctx, h.db, *fpSlotAudit)
 	}
 	provider.InvalidateAllCandidateCache()
+
+	// 2026-08-26 hot-reload: when concurrency_limit changes, refresh the
+	// in-process Limiter semaphore so the new capacity takes effect for
+	// new in-flight requests within the same PATCH round-trip — no service
+	// restart, no 30s candCache wait. Also clear every sticky binding that
+	// points at this credential so new sessions can re-enter load
+	// balancing (otherwise L2 sticky would still pin new sessions to the
+	// previous credential for up to 60s).
+	if h.limiter != nil && req.ConcurrencyLimit != nil {
+		h.limiter.SetCredentialCapacity(providerID, credID, *req.ConcurrencyLimit)
+	}
+	if h.stickyCache != nil {
+		if cleared, err := h.stickyCache.ClearForCredential(credID); err != nil {
+			slog.Warn("sticky hot-reload: clear failed on credential PATCH",
+				"credential_id", credID, "error", err)
+		} else if cleared > 0 {
+			slog.Info("sticky hot-reload: cleared bindings on credential PATCH",
+				"credential_id", credID, "cleared", cleared)
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"credential_id": credID, "revision": revision, "message": "updated"})
 }
 
