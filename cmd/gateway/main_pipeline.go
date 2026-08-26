@@ -77,6 +77,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -629,6 +630,13 @@ func newV2DispatchDepsFromMain(cfg v2DispatchConfig, chatHandler *streaming.Chat
 	return deps
 }
 
+// MaxDispatchBodyBytes bounds the dispatch path's request body sniff
+// at 32 MiB. Before this cap was enforced as a silent io.LimitReader
+// (which truncated without erroring), an oversized body would reach
+// chatHandler as a corrupted 32 MiB slice. Now http.MaxBytesReader
+// returns *http.MaxBytesError so we can surface 413 to the client.
+const MaxDispatchBodyBytes = 32 << 20
+
 // dispatchRequestBody parses the JSON body of an OpenAI / Anthropic
 // request just enough to extract the model name and stream flag for
 // the Pipeline envelope. The full body is left for chatHandler to
@@ -636,12 +644,26 @@ func newV2DispatchDepsFromMain(cfg v2DispatchConfig, chatHandler *streaming.Chat
 //
 // Returns (model, stream, rawBody, error). rawBody is always the
 // original payload so chatHandler can re-read it from r.Body.
+//
+// 2026-08-26 (P1-20 fix): the previous implementation used
+// io.LimitReader(r.Body, 32<<20) which silently truncates oversize
+// bodies — a 33 MiB payload would be processed as a corrupted 32 MiB
+// one. We now wrap r.Body in http.MaxBytesReader so an oversize
+// request returns a *http.MaxBytesError that the caller surfaces as
+// HTTP 413 Payload Too Large.
 func dispatchRequestBody(r *http.Request) (model string, stream bool, rawBody []byte, err error) {
 	if r.Body == nil {
 		return "", false, nil, nil
 	}
-	rawBody, err = io.ReadAll(io.LimitReader(r.Body, 32<<20))
+	r.Body = http.MaxBytesReader(nil, r.Body, MaxDispatchBodyBytes)
+	rawBody, err = io.ReadAll(r.Body)
 	if err != nil {
+		var mbErr *http.MaxBytesError
+		if errors.As(err, &mbErr) {
+			// Caller surfaces this as 413. We keep the original error
+			// wrapped so log lines make it obvious which limit hit.
+			return "", false, nil, fmt.Errorf("dispatch body exceeds %d bytes: %w", MaxDispatchBodyBytes, err)
+		}
 		return "", false, nil, err
 	}
 	// Restore the body so chatHandler can read it.
@@ -725,9 +747,27 @@ func v2DispatchHandler(deps *v2DispatchDeps, fallback http.Handler) http.Handler
 			env.SessionID = r.Header.Get("X-Session-Id")
 		}
 
-		// Best-effort body sniff for metadata. chatHandler will
-		// re-parse the full body for its own protocol decoding.
-		model, stream, rawBody, _ := dispatchRequestBody(r)
+		// 2026-08-26 (P1-20 fix): the dispatch sniff used to silently
+		// truncate oversize bodies. We now propagate the error from
+		// dispatchRequestBody and surface HTTP 413 — the request never
+		// reaches chatHandler, so a 33 MiB payload can't corrupt a
+		// downstream protocol decoder. Best-effort: parse errors still
+		// fall through (chatHandler owns the real protocol decoding
+		// and will return its own 400).
+		model, stream, rawBody, derr := dispatchRequestBody(r)
+		if derr != nil {
+			var mbErr *http.MaxBytesError
+			if errors.As(derr, &mbErr) {
+				slog.Warn("dispatch: body exceeds limit",
+					"path", r.URL.Path,
+					"limit_bytes", MaxDispatchBodyBytes)
+				writePayloadTooLarge(w, MaxDispatchBodyBytes)
+				return
+			}
+			// Non-size parse error — continue with empty metadata;
+			// chatHandler will surface the real problem.
+			slog.Debug("dispatch: body sniff error (continuing)", "error", derr.Error())
+		}
 		if env.Envelope != nil && env.Envelope.Transport != nil {
 			env.Envelope.Transport.IsStream = stream
 		}
@@ -1333,4 +1373,16 @@ func SetV2DispatchAnalysisResources(
 		// 注入 ClusterRunner（手动触发聚类用）
 		admin.SetClusterRunner(sessionanalytics.NewSessionClusterer(analyticsDB, cfg, analysisClient, slog.Default()))
 	}
+}
+
+// writePayloadTooLarge returns a 413 with a stable error code so the
+// frontend can distinguish dispatch-cap rejections from upstream 4xx.
+// 2026-08-26 (P1-20 fix): before this helper existed the dispatch path
+// silently truncated at MaxDispatchBodyBytes via io.LimitReader.
+func writePayloadTooLarge(w http.ResponseWriter, limit int) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(http.StatusRequestEntityTooLarge)
+	_, _ = w.Write([]byte(fmt.Sprintf(
+		`{"error":"request body exceeds %d bytes","code":"dispatch.body_too_large"}`,
+		limit)))
 }
