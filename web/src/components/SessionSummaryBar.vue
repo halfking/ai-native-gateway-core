@@ -137,8 +137,9 @@ onBeforeUnmount(() => {
   justify-content: space-between;
   align-items: flex-start;
   padding: 16px 24px;
-  background: white;
-  border-bottom: 1px solid var(--surface-secondary);
+  background: var(--bg-card, var(--card, var(--kx-surface)));
+  border-bottom: 1px solid var(--border, var(--surface-secondary));
+  color: var(--text, var(--kx-text));
   position: sticky;
   top: 0;
   z-index: 10;

@@ -35,7 +35,7 @@
 .pill--err { color: var(--danger, #dc2626); background: color-mix(in srgb, var(--danger, #dc2626) 14%, transparent); }
 .pill--warn { color: var(--warning, #d97706); background: color-mix(in srgb, var(--warning, #d97706) 16%, transparent); }
 .pill--info { color: var(--info, #2563eb); background: color-mix(in srgb, var(--info, #2563eb) 14%, transparent); }
-.pill--muted { color: var(--muted); background: var(--bg-subtle, var(--overlay-light)); }
+.pill--muted { color: var(--muted); background: var(--bg-subtle, var(--surface-secondary)); }
 .mode-seg { display: flex; gap: 4px; }
 .banner { padding: 16px; }
 .banner.err { color: var(--danger); }
@@ -71,13 +71,14 @@
   font-size: 12px;
   color: var(--text);
 }
-.nav-btn.active { background: var(--primary, #2563eb); color: #fff; }
+.nav-btn.active { background: var(--primary, #2563eb); color: var(--on-primary, #fff); }
 .main { padding: 14px; overflow: auto; min-height: 0; }
 .raw {
   font-size: 11px;
   white-space: pre-wrap;
   word-break: break-word;
-  background: var(--bg-subtle);
+  background: var(--bg-subtle, var(--surface-secondary));
   padding: 10px;
   border-radius: 6px;
+  color: var(--text);
 }

@@ -157,7 +157,7 @@ function clip(text: string, max = 480): string {
 <style scoped>
 .qa-card {
   margin-bottom: 14px; padding: 12px; border: 1px solid var(--border);
-  border-radius: 8px; background: var(--bg-subtle, var(--overlay-light));
+  border-radius: 8px; background: var(--bg-subtle, var(--surface-secondary));
 }
 .qa-head {
   display: flex; align-items: center; justify-content: space-between;
@@ -191,7 +191,7 @@ function clip(text: string, max = 480): string {
 .pill--err { color: var(--danger, #dc2626); background: color-mix(in srgb, var(--danger, #dc2626) 14%, transparent); }
 .pill--warn { color: var(--warning, #d97706); background: color-mix(in srgb, var(--warning, #d97706) 16%, transparent); }
 .pill--info { color: var(--info, #2563eb); background: color-mix(in srgb, var(--info, #2563eb) 14%, transparent); }
-.pill--muted { color: var(--muted); background: var(--bg-subtle, var(--overlay-light)); }
+.pill--muted { color: var(--muted); background: var(--bg-subtle, var(--surface-secondary)); }
 .lbl { color: var(--muted); font-size: 11px; }
 code { font-size: 11px; word-break: break-all; }
 .flow-links { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
