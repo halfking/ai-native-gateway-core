@@ -8,32 +8,23 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/dbx"
 )
 
-func TestDefaultRegistryStaysEmpty(t *testing.T) {
-	// The pilot must not leak into the default (production-shaped)
-	// registry: no business code may reach the CRUD layer through it yet.
+func TestDefaultRegistryCarriesPilot(t *testing.T) {
+	// The pilot is activated: DefaultRegistry is the production-shaped
+	// snapshot consumed by shadow reads and the metadata gate. It must
+	// contain exactly the graduated pilot tables - nothing more.
 	reg, err := DefaultRegistry()
 	if err != nil {
 		t.Fatalf("DefaultRegistry: %v", err)
 	}
-	if got := reg.Tables(); len(got) != 0 {
-		t.Errorf("DefaultRegistry tables = %v, want empty until the pilot graduates", got)
-	}
-}
-
-func TestPilotRegistryBuilds(t *testing.T) {
-	reg, err := PilotRegistry()
-	if err != nil {
-		t.Fatalf("PilotRegistry: %v", err)
-	}
 	if got := reg.Tables(); len(got) != 1 || got[0] != "tenant_model_policies" {
-		t.Fatalf("PilotRegistry tables = %v", got)
+		t.Fatalf("DefaultRegistry tables = %v, want [tenant_model_policies]", got)
 	}
 }
 
 func TestTenantModelPoliciesManifestContract(t *testing.T) {
-	reg, err := PilotRegistry()
+	reg, err := DefaultRegistry()
 	if err != nil {
-		t.Fatalf("PilotRegistry: %v", err)
+		t.Fatalf("DefaultRegistry: %v", err)
 	}
 	m, err := reg.Lookup("tenant_model_policies")
 	if err != nil {

@@ -1,9 +1,11 @@
 // Package dbxmanifest is the host-side wiring point for the internal/dbx
 // framework. It carries the project-specific conventions that the framework
-// deliberately does not hard-code, and will host real table manifests when
-// the Phase 3 pilot migrates a low-risk repository.
+// deliberately does not hard-code, and hosts the table manifests starting
+// with the Phase 3 pilot (tenant_model_policies).
 //
-// Nothing here is wired into any production data path yet.
+// No production data path routes through the framework yet: the registry is
+// consumed by shadow reads and the metadata gate, while the legacy
+// repositories (e.g. admin/model_policies.go) stay authoritative.
 package dbxmanifest
 
 import (
@@ -24,10 +26,11 @@ func ScopeConfig() dbx.ScopeConfig {
 	}
 }
 
-// DefaultRegistry builds the registry snapshot. Phase 3 pilot tables are
-// registered here (and only here) once a low-risk repository is selected;
-// until then the registry is intentionally empty and no business code
-// reaches the CRUD layer through it.
+// DefaultRegistry builds the registry snapshot. The Phase 3 pilot table
+// (tenant_model_policies) is activated here: its PK drift against production
+// was repaired by migrations 608/609 (2026-08-27), so the metadata gate has a
+// migration-shaped, production-matching contract to enforce. Further tables
+// graduate here only after their own reviewed-migration drift closure.
 func DefaultRegistry() (*dbx.Registry, error) {
-	return dbx.NewRegistry()
+	return dbx.NewRegistry(TenantModelPolicies())
 }

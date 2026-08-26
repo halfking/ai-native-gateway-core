@@ -1,12 +1,14 @@
 # internal/dbx — pgx-first 数据访问框架
 
-> 状态：CURRENT（Phase 1/2 交付 + Phase 3 探针/元数据门禁/真实表试点 manifest 已通过；生产接入暂缓，见下）
+> 状态：CURRENT（Phase 1/2 交付 + Phase 3 探针/元数据门禁/真实表试点已激活；Phase 4 PK 漂移修复已裁决，见下）
 > 设计文档：[数据库处理框架方案](../../docs/03-design/04-data-design/数据库处理框架方案.md)
 >
-> 真实表试点现状：`tenant_model_policies` 的 manifest 与影子读测试已在宿主侧
-> `db/dbxmanifest/` 交付，但未注册进生产 `DefaultRegistry`——生产 dump
-> (`sql/schema/01-schema.sql`) 显示该表缺 PK 约束（与 migration 024 声明漂移），
-> 元数据门禁按 `pk_mismatch` fail closed。候选核对结论见设计文档 §8。
+> 真实表试点现状：`tenant_model_policies` 已注册进 `DefaultRegistry()`
+> （宿主侧 `db/dbxmanifest/`），影子读与元数据门禁测试在位；无生产数据路径
+> 经由本框架（admin 手写仓储仍为权威）。激活前置的 PK 漂移（生产 252 无
+> PK，与 migration 024 声明漂移）已由 migration 608（补 PK）与 609（audit
+> 表 re-key + PK）走 reviewed migration 修复，baseline（`sql/schema/01-schema.sql`
+> 与 `sql/objects/constraints/`）同步补齐。候选核对结论见设计文档 §8。
 
 ## 模块边界（硬约束）
 

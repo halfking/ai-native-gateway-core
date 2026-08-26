@@ -21257,11 +21257,27 @@ ALTER TABLE ONLY public.tenant_credit_wallets
 
 
 --
+-- Name: tenant_model_policies tenant_model_policies_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.tenant_model_policies
+    ADD CONSTRAINT tenant_model_policies_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: tenant_model_policies tenant_model_policies_tenant_id_canonical_name_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.tenant_model_policies
     ADD CONSTRAINT tenant_model_policies_tenant_id_canonical_name_key UNIQUE (tenant_id, canonical_name);
+
+
+--
+-- Name: tenant_model_policies_audit tenant_model_policies_audit_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.tenant_model_policies_audit
+    ADD CONSTRAINT tenant_model_policies_audit_pkey PRIMARY KEY (id);
 
 
 --
