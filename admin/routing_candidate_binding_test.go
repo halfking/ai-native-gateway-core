@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
 // TestRoutingCandidateBindingUpdate_InputValidation covers the input-side
 // guards added in 2026-07-24 for the candidate-binding PATCH endpoint:
 // - wrong method
@@ -112,9 +113,10 @@ func TestRoutingCandidateBindingUpdate_InputValidation(t *testing.T) {
 
 func TestValidateRoutingCandidateReorder(t *testing.T) {
 	base := routingCandidateReorderRequest{
+		RawModel: "gpt-4",
 		Items: []routingCandidateReorderItem{
-			{CredentialID: 10, RawModel: "gpt-4", ManualPriority: 1},
-			{CredentialID: 20, RawModel: "gpt-4", ManualPriority: 2},
+			{CredentialID: 10, ManualPriority: 1},
+			{CredentialID: 20, ManualPriority: 2},
 		},
 	}
 	cases := []struct {
@@ -123,15 +125,24 @@ func TestValidateRoutingCandidateReorder(t *testing.T) {
 		wantSubstr string
 	}{
 		{name: "valid", mutate: func(*routingCandidateReorderRequest) {}, wantSubstr: ""},
-		{name: "missing model", mutate: func(r *routingCandidateReorderRequest) { r.Items[0].RawModel = " " }, wantSubstr: "raw_model is required"},
+		// Spaced priorities are deliberate: clients can insert mid-rank
+		// values (5, 10, 15…) without rewriting the whole ladder; the
+		// resolve order is ascending manual_priority, uniqueness is the
+		// only constraint.
+		{name: "spaced priorities are allowed", mutate: func(r *routingCandidateReorderRequest) {
+			r.Items[0].ManualPriority = 5
+			r.Items[1].ManualPriority = 10
+		}, wantSubstr: ""},
+		{name: "missing scope", mutate: func(r *routingCandidateReorderRequest) { r.RawModel = ""; r.CanonicalID = 0 }, wantSubstr: "canonical_id or raw_model is required"},
+		{name: "canonical scope alone is valid", mutate: func(r *routingCandidateReorderRequest) { r.CanonicalID = 7; r.RawModel = "" }, wantSubstr: ""},
 		{name: "empty items", mutate: func(r *routingCandidateReorderRequest) { r.Items = nil }, wantSubstr: "items must not be empty"},
 		{name: "non-positive credential", mutate: func(r *routingCandidateReorderRequest) { r.Items[0].CredentialID = 0 }, wantSubstr: "credential_id must be positive"},
-		{name: "duplicate binding", mutate: func(r *routingCandidateReorderRequest) {
+		{name: "priority below range", mutate: func(r *routingCandidateReorderRequest) { r.Items[0].ManualPriority = 0 }, wantSubstr: "manual_priority must be in [1, 99]"},
+		{name: "priority above range", mutate: func(r *routingCandidateReorderRequest) { r.Items[0].ManualPriority = 100 }, wantSubstr: "manual_priority must be in [1, 99]"},
+		{name: "duplicate credential", mutate: func(r *routingCandidateReorderRequest) {
 			r.Items[1].CredentialID = r.Items[0].CredentialID
-			r.Items[1].RawModel = r.Items[0].RawModel
-		}, wantSubstr: "credential_id and raw_model must be unique"},
+		}, wantSubstr: "credential_id must be unique"},
 		{name: "duplicate priority", mutate: func(r *routingCandidateReorderRequest) { r.Items[1].ManualPriority = 1 }, wantSubstr: "manual_priority must be unique"},
-		{name: "non-contiguous priority", mutate: func(r *routingCandidateReorderRequest) { r.Items[1].ManualPriority = 3 }, wantSubstr: "manual_priority must be contiguous"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -182,11 +193,11 @@ func TestHandleRoutingCandidateBindingReorder_InputValidation(t *testing.T) {
 			wantSubstr: "invalid body",
 		},
 		{
-			name:       "missing raw_model",
+			name:       "missing scope",
 			method:     http.MethodPatch,
 			body:       `{"expected_revision":"abc","items":[{"credential_id":1,"manual_priority":1}]}`,
 			wantStatus: http.StatusBadRequest,
-			wantSubstr: "raw_model is required",
+			wantSubstr: "canonical_id or raw_model is required",
 		},
 		{
 			name:       "missing expected_revision",
@@ -196,11 +207,11 @@ func TestHandleRoutingCandidateBindingReorder_InputValidation(t *testing.T) {
 			wantSubstr: "expected_revision is required",
 		},
 		{
-			name:       "raw_model mismatch between top-level and item",
+			name:       "priority out of range",
 			method:     http.MethodPatch,
-			body:       `{"raw_model":"gpt-4","expected_revision":"abc","items":[{"credential_id":1,"raw_model":"claude-3","manual_priority":1}]}`,
+			body:       `{"raw_model":"gpt-4","expected_revision":"abc","items":[{"credential_id":1,"manual_priority":100}]}`,
 			wantStatus: http.StatusBadRequest,
-			wantSubstr: "raw_model mismatch",
+			wantSubstr: "manual_priority must be in [1, 99]",
 		},
 		{
 			name:       "empty items",
@@ -624,4 +635,3 @@ func TestRoutingCandidateBindingReorder_ConcurrentConflict(t *testing.T) {
 		t.Fatalf("final priorities should sum to 3, got %+v", priorities)
 	}
 }
-
