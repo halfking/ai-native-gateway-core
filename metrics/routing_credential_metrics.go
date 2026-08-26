@@ -46,6 +46,25 @@ var (
 		Help: "credential_recovery 30s tick per-row recovery outcomes.",
 	}, []string{"sql_kind", "outcome"})
 
+	// RoutingCredentialRecoveryNotifyTotal counts the cache-invalidate /
+	// probe-submit notifications fired from credential_recovery.recover()
+	// after a state-machine flip. action ∈ {invalidate, probe_submit}.
+	// sql_kind reuses the same labels as RoutingCredentialRecoveryTotal so
+	// operators can correlate "rows recovered" with "notifications fired":
+	// a recovered row with no notify counter increment indicates the hook
+	// is nil-wired (early boot, partial config) or the dispatch path is
+	// degraded.
+	//
+	// 2026-08-26 (quota-recovery-notify fix): without these counters the
+	// "recovery happens but routing layer keeps stale state" regression is
+	// invisible — the 30s tick logs "recovered=4" while the candidate
+	// cache continues to exclude the credential until the next TTL or
+	// probe tick.
+	RoutingCredentialRecoveryNotifyTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "llmgw_routing_credential_recovery_notify_total",
+		Help: "credential_recovery 30s tick post-flip notifications (invalidate / probe_submit).",
+	}, []string{"sql_kind", "action"})
+
 	// RoutingCredentialRecoveryTickDurationSeconds bg/credential_recovery
 	// 主循环最近一次完整跑的耗时。
 	RoutingCredentialRecoveryTickDurationSeconds = promauto.NewGauge(prometheus.GaugeOpts{

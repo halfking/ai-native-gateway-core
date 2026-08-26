@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/admin/distlock" // 2026-08-19 title-gen per-session distributed lock
+	"github.com/kaixuan/llm-gateway-go/admin/logsearch" // 2026-08-26 Phase A: Bleve log full-text search
 	"github.com/kaixuan/llm-gateway-go/bg"
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/discovery"
@@ -1031,6 +1032,12 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/logs/archive", h.superAdmin(h.handleLogArchive))
 	mux.HandleFunc("/api/admin/logs/cleanup", h.superAdmin(h.handleLogCleanup))
 	mux.HandleFunc("/api/admin/logs/archive/list", admin(h.handleLogArchiveList))
+
+	// 2026-08-26 Phase A: Bleve-backed log full-text search endpoint.
+	// Lives next to the other /api/admin/logs/* routes for UX
+	// continuity. See admin/logsearch/logsearch.go for the contract.
+	mux.HandleFunc("/api/admin/logs/search", admin(logsearch.HandleSearch))
+	mux.HandleFunc("/api/admin/logs/search/status", admin(logsearch.HandleStatus))
 
 	// settings-management (Q1: B, Q2: A, Q3: B): 4 platform + 4 tenant endpoints.
 	// Tenant endpoints require super_admin (enforced inside the handler).
