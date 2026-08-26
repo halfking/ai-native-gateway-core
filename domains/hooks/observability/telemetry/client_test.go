@@ -39,13 +39,14 @@ func (m stringPointerMatcher) Match(value interface{}) bool {
 }
 
 func requestLogUpdateArgs(entry RequestLogEntry) []interface{} {
-	args := make([]interface{}, 97)
+	args := make([]interface{}, 99)
 	for index := range args {
 		args[index] = pgxmock.AnyArg()
 	}
 	// SQL $N → args[N-1]. SQL position 37=success, 38=request_status;
 	// client-perception fields at $78-$81; t0..t9 at $82-$91; discard $92;
-	// canonical/routing/attachments at $93-$96.
+	// canonical/routing/attachments at $93-$96; customer_id at $97;
+	// 608 request class/due_at at $98-$99 (V6-W1.6 R8, migration 608).
 	// 2026-08-24 Phase 1: outbound_body (was $60) is removed from the main table
 	// UPDATE bind list. The dedicated request_logs_bodies_hot table is the sole
 	// outbound_body owner; outbound_body is written via upsertRequestLogBodies.
@@ -252,7 +253,7 @@ func TestUpdateRequestLog_MissingRequestFallsBackToInsert(t *testing.T) {
 	mockDB.ExpectExec(`INSERT INTO usage_ledger_hot`).
 		WithArgs(usageInsertArgs...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
-	requestInsertArgs := make([]interface{}, 100)
+	requestInsertArgs := make([]interface{}, 102) // 608: +request_class/due_at ($101/$102)
 	for index := range requestInsertArgs {
 		requestInsertArgs[index] = pgxmock.AnyArg()
 	}
@@ -1053,7 +1054,7 @@ func TestRequestLogEmittedBeforePersisted(t *testing.T) {
 	mockDB.ExpectExec(`INSERT INTO usage_ledger_hot`).
 		WithArgs(usageInsertArgs...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
-	requestInsertArgs := make([]interface{}, 100)
+	requestInsertArgs := make([]interface{}, 102) // 608: +request_class/due_at ($101/$102)
 	for index := range requestInsertArgs {
 		requestInsertArgs[index] = pgxmock.AnyArg()
 	}
