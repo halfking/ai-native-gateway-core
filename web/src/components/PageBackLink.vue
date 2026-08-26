@@ -43,6 +43,6 @@ function goBack() {
   flex-shrink: 0;
 }
 .page-back:hover {
-  background: rgba(255, 255, 255, 0.05);
+  background: color-mix(in srgb, var(--kx-text) 4%, transparent);
 }
 </style>

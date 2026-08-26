@@ -58,7 +58,7 @@ describe('useSessionSummaryJump', () => {
     await nextTick()
     expect(pushSpy).toHaveBeenCalledWith({
       path: '/request-logs',
-      query: { gw_session_id: 'gw_abc_123' },
+      query: { gw_session_id: 'gw_abc_123', open_summary: '1' },
     })
   })
 
@@ -70,7 +70,7 @@ describe('useSessionSummaryJump', () => {
     await nextTick()
     expect(pushSpy).toHaveBeenCalledWith({
       path: '/request-logs',
-      query: { gw_session_id: 'gw_xyz_456' },
+      query: { gw_session_id: 'gw_xyz_456', open_summary: '1' },
     })
   })
 

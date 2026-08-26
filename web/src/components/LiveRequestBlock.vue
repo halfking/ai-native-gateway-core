@@ -24,6 +24,8 @@
 // operator no longer needs to hover for a tooltip to know
 // whether a red tile was upstream 5xx or a client timeout.
 import { computed } from 'vue'
+import { getRequestCredentialId, requestCredentialRevision } from '../composables/liveStreamStore'
+import { credentialDisplayName } from '../composables/useCredentialLabels'
 import { useI18n } from 'vue-i18n'
 import type { LiveRequest } from '../composables/useLiveStream'
 import {
@@ -120,6 +122,13 @@ const statusBorderWidth = computed(() =>
 )
 
 const isPulsing = computed(() => props.request.status === 'in_progress')
+// 2026-08-23 凭据显示：依赖 requestCredentialRevision 让生命周期事件
+//（如 node_switch）触发后立即重算凭据名称，否则 tooltip 会停留在
+//挂载时的过期 ID。
+const credentialName = computed(() => {
+  void requestCredentialRevision.value
+  return credentialDisplayName(getRequestCredentialId(props.request.request_id || ''))
+})
 
 /**
  * Multi-line native tooltip. Native `title` is chosen over a custom
@@ -142,6 +151,8 @@ const tooltip = computed(() => {
   }
   if (r.model) lines.push(`Model: ${r.model}`)
   if (r.provider_code) lines.push(`Provider: ${r.provider_code}`)
+  const credentialId = getRequestCredentialId(r.request_id || '')
+  if (credentialId != null) lines.push(`Credential: ${credentialName.value}`)
   lines.push(`Status: ${r.status ?? '?'}`)
   if (r.latency_ms != null) {
     lines.push(`Latency: ${latencyText.value}`)
@@ -242,7 +253,7 @@ function onClick() {
       class="live-block__vendor"
       :title="request.model || ''"
     >{{ vendorLabel }}</span>
-    <span v-else class="live-block__provider">{{ providerLabel }}</span>
+    <span v-else class="live-block__provider">{{ credentialName !== '—' ? credentialName : providerLabel }}</span>
     <!-- Latency is always the last line. The corner badge is
          intentionally suppressed in failure mode because the line-2
          label already tells the failure story; keeping the badge
@@ -265,7 +276,7 @@ function onClick() {
   width: 64px;
   height: 76px;
   border-radius: 4px;
-  border: 2px solid rgba(139, 148, 158, 0.4);
+  border: 2px solid var(--neutral-bd);
   color: var(--text);
   flex-shrink: 0;
   display: flex;
@@ -296,13 +307,13 @@ function onClick() {
   animation: live-block-pulse 1.4s ease-in-out infinite;
 }
 @keyframes live-block-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.0); }
-  50%      { box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.25); }
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--warning) 14%, transparent); }
+  50%      { box-shadow: 0 0 0 4px var(--warning-strong); }
 }
 
 /* Failure: an extra slight scale-up hint + a subtle red glow. */
 .live-block--failure {
-  box-shadow: 0 0 0 1px rgba(239, 68, 68, 0.4) inset;
+  box-shadow: 0 0 0 1px var(--danger-strong) inset;
 }
 
 .live-block__time {
@@ -319,9 +330,9 @@ function onClick() {
   top: 2px;
   left: 3px;
   z-index: 1;
-  color: #fbbf24;
+  color: var(--warning);
   font-weight: 800;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.75);
+  text-shadow: 0 1px 2px var(--overlay-strong);
 }
 
 .live-block__probe svg {
@@ -353,8 +364,8 @@ function onClick() {
   line-height: 1.1;
   letter-spacing: 0.3px;
   text-transform: uppercase;
-  color: #fecaca;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7);
+  color: var(--danger-bd);
+  text-shadow: 0 1px 2px var(--overlay-strong);
   width: 100%;
   text-align: center;
   white-space: nowrap;

@@ -13,6 +13,7 @@ import {
   type CredentialLifecycleStatus, type ProviderCredential, type CredentialStatus,
 } from '../../api'
 import FpSlotVisualizer from '../../components/FpSlotVisualizer.vue'
+import CredentialModelsPanel from './CredentialModelsPanel.vue'
 
 const { t: td } = useI18n()
 const pd = (k: string, params?: Record<string, unknown>): string =>
@@ -29,9 +30,11 @@ const props = defineProps<{
 // plan type, immediate probe check, manual disable toggle, lifecycle
 // change, default probe model pick — so the operator can keep working
 // without losing context or half-typed fields.
-const emit = defineEmits<{ refresh: []; silentRefresh: [] }>()
+const emit = defineEmits<{ refresh: []; silentRefresh: []; openErrorDetail: [credentialId: number] }>()
 
 const selected = ref<ProviderCredential | null>(null)
+const drawerTab = ref<'info' | 'models'>('info')
+watch(() => selected.value?.id, () => { drawerTab.value = 'info' })
 const saving = ref(false)
 const checking = ref(false)
 const saveMsg = ref('')
@@ -232,6 +235,7 @@ function openDrawer(c: ProviderCredential) {
 }
 
 function closeDrawer() {
+  drawerTab.value = 'info'
   selected.value = null
   saveMsg.value = ''
   saveMsgKind.value = ''
@@ -713,6 +717,7 @@ function onTagsInput(ev: Event) {
             <td>
               <span class="badge" :class="healthBadge(c.health_status)">{{ healthLabel(c.health_status) }}</span>
               <div class="cell-sub">{{ timeText(c.health_checked_at) }}</div>
+              <button type="button" class="btn btn-ghost btn-sm" @click.stop="emit('openErrorDetail', c.id)">{{ pd('creds.viewErrorDetail') }}</button>
             </td>
             <td>
               <code v-if="c.default_probe_model" class="mono-sm">{{ c.default_probe_model }}</code>
@@ -740,11 +745,19 @@ function onTagsInput(ev: Event) {
           <div>
             <h3 style="margin:0">{{ selected.label || pd('creds.drawerTitle', { id: selected.id }) }}</h3>
             <div class="drawer-sub">{{ pd('creds.rowMeta', { id: selected.id, trust: selected.trust_level }) }}</div>
+            <div class="drawer-tabs" style="margin-top:10px;display:flex;gap:6px">
+              <button type="button" class="btn btn-sm" :class="drawerTab === 'info' ? 'btn-primary' : 'btn-ghost'" @click="drawerTab = 'info'">信息</button>
+              <button type="button" class="btn btn-sm" :class="drawerTab === 'models' ? 'btn-primary' : 'btn-ghost'" @click="drawerTab = 'models'">模型</button>
+            </div>
           </div>
           <button type="button" class="btn btn-ghost btn-sm" @click="closeDrawer">{{ pd('creds.drawerClose') }}</button>
         </div>
 
-        <div class="drawer-body">
+        <div v-if="drawerTab === 'models'" class="drawer-body">
+          <CredentialModelsPanel :provider-id="provider.id" :credential-id="selected.id" />
+        </div>
+
+        <div v-else class="drawer-body">
           <div class="drawer-section">
             <div class="drawer-section-title">{{ pd('creds.drawerSectionBasic') }}</div>
             <label class="field-label">{{ pd('creds.drawerFieldLabel') }}</label>
@@ -940,7 +953,7 @@ function onTagsInput(ev: Event) {
           </div>
         </div>
 
-        <div class="drawer-footer">
+        <div v-if="drawerTab === 'info'" class="drawer-footer">
           <div v-if="saveMsg" class="cell-sub cell-sub--danger">{{ saveMsg }}</div>
           <div class="btn-row btn-row--end">
             <button class="btn btn-ghost" @click="closeDrawer">{{ pd('creds.drawerCancel') }}</button>
@@ -1134,12 +1147,12 @@ function onTagsInput(ev: Event) {
   border-color: var(--danger);
 }
 .btn-warning-outline {
-  color: #f59e0b;
-  border-color: #f59e0b;
+  color: var(--warning);
+  border-color: var(--warning);
   background: transparent;
 }
 .btn-warning-outline:hover {
-  background: rgba(245, 158, 11, 0.1);
+  background: var(--warning-bg);
 }
 .drawer-section--danger {
   padding-top: 12px;

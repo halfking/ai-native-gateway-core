@@ -45,11 +45,13 @@ export interface RoutingCandidate {
   quota_cap_usd: number | string | null
   quota_used_usd: number | string | null
   model_name: string
+  canonical_id: number | null
   routable: boolean
   runtime_routable: boolean
   block_reason?: string | null
   runtime_block_reason?: string | null
   manual_priority?: number
+  priority?: boolean
   active_sessions?: number
   consecutive_failures?: number
   // R7: credential-level consecutive_failures (separate from cmb).
@@ -124,10 +126,18 @@ export interface RoutingResolveResponse {
   plan_order: Array<{ credential_id: number; provider_id: number; raw_model: string; tier: number }>
   candidates: RoutingCandidate[]
   // Opaque token the frontend must echo back to
-  // /api/routing/candidate-bindings/reorder. Present only when the
-  // resolve hits exactly one raw_model — mixed alias / canonical hits
-  // leave it undefined so the UI keeps reordering disabled.
+  // /api/routing/candidate-bindings/reorder. Present only when the resolve
+  // hits exactly one canonical_id OR one raw_model_name (legacy fallback for
+  // bindings whose provider rows have NULL canonical_id). Mixed-canonical or
+  // mixed-raw-model hits leave it undefined so the UI keeps reordering disabled.
   reorder_revision?: string
+  // Canonical scope used with reorder_revision. Present when every candidate
+  // belongs to one canonical model, even if raw_model_name aliases differ.
+  reorder_canonical_id?: number
+  // Raw_model scope used with reorder_revision when canonical_id is unavailable.
+  // Exactly one of reorder_canonical_id / reorder_raw_model is set whenever
+  // reorder_revision is set; the client echoes the matching field back on PATCH.
+  reorder_raw_model?: string
 }
 
 export function resolveRouting(model: string, clientProfile?: string, persistProbe = false, options?: RequestOptions) {
@@ -138,12 +148,15 @@ export function resolveRouting(model: string, clientProfile?: string, persistPro
 }
 
 // 2026-07-24: routing-v2 resolve 页管理员设置端点。
-// 仅允许改 cmb 上的 manual_priority / routing_tier / weight（影响路由排序），
+// 仅允许改 cmb 上的 manual_priority / routing_tier / weight / priority（影响路由排序），
 // 不绕过熔断 / 可用性 / 凭据启用等硬规则。需要 super_admin 角色。
+// 2026-08-23: 新增 priority?: boolean — true 表示「优先凭据·额度耗尽前优先使用」，
+// 后端已在 PATCH /api/routing/candidate-binding 上支持。
 export interface CandidateBindingPatch {
   manual_priority?: number
   routing_tier?: number
   weight?: number
+  priority?: boolean
 }
 export function patchCandidateBinding(
   credentialId: number,
@@ -164,9 +177,12 @@ export interface CandidateBindingReorderItem {
 }
 
 export interface CandidateBindingReorderRequest {
-  // Single exact raw_model the reorder targets. Mixed-model submissions
-  // are rejected by the backend so the write path stays atomic.
-  raw_model: string
+  // Scope the reorder targets. canonical_id is preferred (migration 566 covers
+  // bindings across all raw_model_name aliases of one canonical model); when
+  // every candidate has NULL canonical_id the server falls back to the legacy
+  // raw_model scope (migration 541) and the client echoes raw_model instead.
+  canonical_id?: number
+  raw_model?: string
   // Opaque token echoed from RoutingResolveResponse.reorder_revision.
   // The handler rejects mismatches with HTTP 409 so stale views refetch
   // before retrying.
@@ -175,14 +191,17 @@ export interface CandidateBindingReorderRequest {
 }
 
 export interface CandidateBindingReorderOptions {
-  rawModel: string
+  canonicalId?: number
+  rawModel?: string
   expectedRevision: string
   signal?: AbortSignal
 }
 
 export interface CandidateBindingReorderResponse {
   message: string
-  raw_model: string
+  scope: 'canonical_id' | 'raw_model'
+  canonical_id?: number
+  raw_model?: string
   expected_revision: string
   items: CandidateBindingReorderItem[]
 }
@@ -195,7 +214,8 @@ export function reorderCandidateBindings(
     'PATCH',
     '/api/routing/candidate-bindings/reorder',
     {
-      raw_model: options.rawModel,
+      ...(options.canonicalId != null ? { canonical_id: options.canonicalId } : {}),
+      ...(options.rawModel ? { raw_model: options.rawModel } : {}),
       expected_revision: options.expectedRevision,
       items,
     },

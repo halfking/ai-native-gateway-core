@@ -1,6 +1,8 @@
 package ratelimit
 
 import (
+	"context"
+	"errors"
 	"sync"
 	"time"
 )
@@ -11,6 +13,36 @@ type RPMLimiter interface {
 	CheckRPM(keyID int, limit int) bool
 	RPMStatus(keyID int, limit int) (used int, remaining int)
 }
+
+type RPMAdmission interface {
+	AdmitRPM(ctx context.Context, keyID, limit int) (AdmissionResult, error)
+}
+
+type RPMWaitingNotifier interface {
+	AdmitRPMWithWait(ctx context.Context, keyID, limit int, notify func(AdmissionResult)) (AdmissionResult, error)
+}
+
+// ErrQueueBudgetExceeded is returned by AdmitRPMWithBudget when the estimated
+// queue wait exceeds the caller's remaining request budget. The request is
+// reject-fast (handler maps it to 429 + Retry-After) instead of burning the
+// whole upstream timeout in the queue and dying as a "context canceled" 502
+// with no log row (2026-08-26 kimi-k3 incident on 245).
+var ErrQueueBudgetExceeded = errors.New("rate limit queue wait exceeds request budget")
+
+// RPMBudgetedAdmission extends the waiting admission with a hard wait cap:
+// maxWait
+//
+//	<= 0   → unlimited (legacy behaviour)
+//	> 0    → reject fast (ErrQueueBudgetExceeded) when the estimated queue
+//	         wait exceeds maxWait. The AdmissionResult still carries
+//	         Position/Limit and EstimatedWaitSec for the Retry-After header.
+type RPMBudgetedAdmission interface {
+	AdmitRPMWithBudget(ctx context.Context, keyID, limit int, maxWait time.Duration, notify func(AdmissionResult)) (AdmissionResult, error)
+}
+
+// EstimatedWaitSec is the handler-visible estimate of how long a queued
+// request would wait before admission (seconds). Populated on the
+// ErrQueueBudgetExceeded path so callers can set Retry-After accurately.
 
 // rpmShardCount 是 SlidingWindowLimiter 的分片数。每个分片有自己的 mutex,
 // 使不同 keyID 的 RPM/TPM 检查不互相争用。取 2 的幂使取模变成位与。
@@ -30,7 +62,8 @@ type rpmShard struct {
 // 都串行化 —— 在请求热路径上成为瓶颈。分片后不同 key 并行,同一 key 仍互斥
 // (语义不变)。
 type SlidingWindowLimiter struct {
-	shards [rpmShardCount]*rpmShard
+	shards    [rpmShardCount]*rpmShard
+	admission *MinuteBucketAdmission
 }
 
 type rpmWindow struct {
@@ -47,7 +80,7 @@ type tokenEntry struct {
 }
 
 func NewSlidingWindowLimiter() *SlidingWindowLimiter {
-	l := &SlidingWindowLimiter{}
+	l := &SlidingWindowLimiter{admission: NewMinuteBucketAdmission()}
 	for i := range l.shards {
 		l.shards[i] = &rpmShard{
 			windows:   make(map[int]*rpmWindow),
@@ -55,6 +88,20 @@ func NewSlidingWindowLimiter() *SlidingWindowLimiter {
 		}
 	}
 	return l
+}
+
+func (l *SlidingWindowLimiter) AdmitRPM(ctx context.Context, keyID, limit int) (AdmissionResult, error) {
+	return l.admission.AdmitRPM(ctx, keyID, limit)
+}
+
+func (l *SlidingWindowLimiter) AdmitRPMWithWait(ctx context.Context, keyID, limit int, notify func(AdmissionResult)) (AdmissionResult, error) {
+	return l.admission.AdmitRPMWithBudget(ctx, keyID, limit, 0, notify)
+}
+
+// AdmitRPMWithBudget passes the queue-wait cap through to the underlying
+// minute-bucket admission (see RPMBudgetedAdmission).
+func (l *SlidingWindowLimiter) AdmitRPMWithBudget(ctx context.Context, keyID, limit int, maxWait time.Duration, notify func(AdmissionResult)) (AdmissionResult, error) {
+	return l.admission.AdmitRPMWithBudget(ctx, keyID, limit, maxWait, notify)
 }
 
 // shard 返回 keyID 对应的分片。keyID 可能为负 (hash),用位与取非负低 bits。

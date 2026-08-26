@@ -168,7 +168,7 @@ function openLogin() {
 }
 
 .llmgo-landing__extra-links a {
-  color: #1e4fd6;
+  color: var(--accent);
   font-size: 13px;
   font-weight: 650;
   text-decoration: none;
@@ -194,7 +194,7 @@ function openLogin() {
 
 .llmgo-roadmap__eyebrow {
   display: block;
-  color: #1e4fd6;
+  color: var(--accent);
   font-size: 11px;
   font-weight: 750;
   letter-spacing: 0.13em;
@@ -206,13 +206,13 @@ function openLogin() {
   font-family: "Outfit", "Noto Sans SC", "PingFang SC", sans-serif;
   font-size: clamp(1.4rem, 2.4vw, 1.75rem);
   letter-spacing: -0.03em;
-  color: #152033;
+  color: var(--kx-text);
   text-align: left;
 }
 
 .llmgo-roadmap__head p {
   margin: 0;
-  color: #5b6b82;
+  color: var(--kx-muted);
   font-size: 14px;
   line-height: 1.6;
   text-align: left;
@@ -232,10 +232,10 @@ function openLogin() {
   grid-template-columns: 88px minmax(0, 1fr);
   gap: 4px 16px;
   padding: 16px 18px;
-  border: 1px solid #dce3ee;
+  border: 1px solid var(--border);
   border-radius: 12px;
-  background: rgba(255, 255, 255, 0.88);
-  box-shadow: 0 10px 32px rgba(30, 45, 75, 0.04);
+  background: var(--surface-elevated);
+  box-shadow: 0 10px 32px var(--kx-shadow-sm);
   text-align: left;
 }
 
@@ -247,22 +247,22 @@ function openLogin() {
   border-radius: 6px;
   font-size: 12px;
   font-weight: 700;
-  color: #1e4fd6;
-  background: #eaf0ff;
+  color: var(--accent);
+  background: var(--info-bg);
   white-space: nowrap;
 }
 
 .llmgo-roadmap__list strong {
   font-size: 14px;
   font-weight: 650;
-  color: #152033;
+  color: var(--kx-text);
   letter-spacing: -0.02em;
 }
 
 .llmgo-roadmap__list span:last-child {
   font-size: 13px;
   line-height: 1.55;
-  color: #5b6b82;
+  color: var(--kx-muted);
 }
 
 @media (max-width: 640px) {

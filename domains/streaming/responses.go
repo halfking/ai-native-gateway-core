@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -231,26 +230,6 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		rt.Emit(state.EventAuthed)
 	}
 
-	if rlOutcome := checkGatewayRateLimit(keyInfo, h.chatHandler.rateLimiter); !rlOutcome.Skipped {
-		writeRateLimitHeaders(w, rlOutcome)
-		if rlOutcome.Blocked {
-			attemptErrCode = "rate_limit_exceeded"
-			attemptErrMsg = "rate limit exceeded"
-			peeked, _ := io.ReadAll(io.LimitReader(r.Body, int64(maxBodySize)+1))
-			if len(peeked) > maxBodySize {
-				peeked = peeked[:maxBodySize]
-			}
-			if len(peeked) > 0 {
-				attemptRequestBody = peeked
-				if attemptClientModel == "" {
-					attemptClientModel = extractModelFromBody(peeked)
-				}
-			}
-			writeResponsesError(w, http.StatusTooManyRequests, "Rate limit exceeded", "rate_limit_exceeded", "rate_limit_exceeded")
-			return
-		}
-	}
-
 	bodyBytes, err := readRequestBody(r.Context(), r.Body, maxBodySize)
 	if err != nil {
 		if len(bodyBytes) > 0 {
@@ -278,6 +257,16 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		attemptErrCode = "body_too_large"
 		attemptErrMsg = "request body too large"
 		writeResponsesError(w, http.StatusRequestEntityTooLarge, "Request body too large", "invalid_request", "body_too_large")
+		return
+	}
+	// ── Prompt budget guard (2026-08-24, 245 memcg OOM) ──────────────────
+	// 拒绝发生在 JSON 解析 / 上游转发之前；见 request_meta.go 注释。
+	if estTokens, over := promptBudgetExceeded(bodyBytes); over {
+		attemptErrCode = "prompt_too_large"
+		attemptErrMsg = fmt.Sprintf("prompt exceeds gateway budget: estimated %d tokens > %d limit", estTokens, promptBudgetLimit())
+		writeResponsesError(w, http.StatusRequestEntityTooLarge,
+			fmt.Sprintf("Prompt exceeds gateway budget (estimated %d tokens > %d limit)", estTokens, promptBudgetLimit()),
+			"invalid_request", "prompt_too_large")
 		return
 	}
 
@@ -331,7 +320,7 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 2026-07-14: lowercase at the wire boundary.
-	clientModel := modelname.CanonicalizeClientModel(reqBody.Model)
+	clientModel := modelname.CanonicalizeClientModel(ApplyAliasPrefix(reqBody.Model))
 	resolveRequestJourney(r, tenant(keyInfo), requestedModel, clientModel)
 
 	if keyInfo != nil {
@@ -434,6 +423,12 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			slog.Warn("request_logger: responses session merge failed", "request_id", requestID, "error", err)
 		}
 	}
+	// 2026-08-23: protocol-coverage for provisional metadata — mirror the
+	// chat-completions hook so /v1/responses arrivals also feed the rule
+	// extractor. The dispatcher's `instructions`/`input` normalization
+	// lets the Responses shape produce the same heuristic signals as
+	// the OpenAI chat shape (see sessionmeta.ParseMessages).
+	h.chatHandler.invokeProvisionalMetadataOnArrival(r, sessionID, keyInfo, logCtx, bodyBytes)
 	// 2026-08-06 audit fix: extractEndUser only checks X-End-User-Id and
 	// r.Body (which is already drained at this point). The original
 	// request body bytes are in bodyBytes — pass them in so we recover
