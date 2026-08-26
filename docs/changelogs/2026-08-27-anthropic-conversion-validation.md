@@ -12,6 +12,7 @@ The 2026-08-27 request audit for `claude-sonnet-5` showed that the persisted req
 - Reject missing tool-call function objects.
 - Reject malformed tool arguments and valid JSON values that are not objects.
 - Add regression tests for malformed content and tool shapes.
+- Persist client protocol, upstream protocol, and conversion status as explicit request-log metadata.
 
 ## Evidence
 
