@@ -13,6 +13,7 @@ import { createI18n } from 'vue-i18n'
 import type { Ref } from 'vue'
 import zhCN from './locales/zh-CN'
 import enUS from './locales/en-US'
+import { usePersistedValue } from './composables/usePersistedValue'
 
 /** Locales bundled into the initial chunk (full coverage). */
 const STATIC_LOCALES = {
@@ -59,9 +60,25 @@ export { ensureLocaleLoaded }
  * Runs once at module load (before app mount).
  */
 function detectInitialLocale(): string {
-  const saved = localStorage.getItem('llmgw_locale')
-  if (saved) return saved
-  // Simple browser language matching (en-US → en, zh → zh-CN, etc.)
+  return localePersisted.value.value
+}
+
+// LP8 (2026-08-24): locale persistence goes through usePersistedValue so
+// the switch / restoration / initial-detection paths share the same
+// lifecycle-flush primitives. Stored as a raw string (not JSON-quoted) to
+// match the previous direct-setItem format and to keep the value readable
+// when users poke at localStorage by hand.
+const localePersisted = usePersistedValue<string>(
+  'llmgw_locale',
+  () => defaultLocale(),
+  {
+    immediate: true,
+    serialize: (v) => v,
+    deserialize: (r) => r,
+  },
+)
+
+function defaultLocale(): string {
   if (typeof navigator !== 'undefined' && navigator.language) {
     const nav = navigator.language.toLowerCase()
     if (nav.startsWith('zh-tw') || nav.startsWith('zh-hk')) return 'zh-TW'
@@ -113,7 +130,7 @@ export function applyDocumentLocale(code: string): void {
 export async function setLocale(code: string): Promise<void> {
   await ensureLocaleLoaded(code)
   ;(i18n.global.locale as unknown as { value: string }).value = code
-  localStorage.setItem('llmgw_locale', code)
+  localePersisted.value.value = code
   applyDocumentLocale(code)
 }
 

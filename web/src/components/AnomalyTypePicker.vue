@@ -149,7 +149,7 @@ function clearValue() {
   position: fixed;
   inset: 0;
   z-index: 1300;
-  background: rgba(0, 0, 0, 0.5);
+  background: var(--overlay-strong);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -163,7 +163,7 @@ function clearValue() {
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: 12px;
-  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.35);
+  box-shadow: 0 20px 50px var(--overlay-medium);
   overflow: hidden;
 }
 .tp-header {
@@ -227,11 +227,11 @@ function clearValue() {
 }
 .tp-item:hover {
   border-color: var(--accent);
-  background: rgba(96, 165, 250, 0.08);
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
 }
 .tp-item.chosen {
   border-color: var(--accent);
-  background: rgba(96, 165, 250, 0.18);
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
   color: var(--accent);
 }
 .tp-name {

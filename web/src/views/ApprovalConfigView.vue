@@ -268,15 +268,15 @@ onMounted(() => {
 }
 
 .message-error {
-  background: rgba(248, 113, 113, 0.1);
-  border: 1px solid rgba(248, 113, 113, 0.3);
-  color: #f87171;
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger) 12%, transparent);
+  color: var(--danger);
 }
 
 .message-success {
-  background: rgba(52, 211, 153, 0.1);
-  border: 1px solid rgba(52, 211, 153, 0.3);
-  color: #34d399;
+  background: var(--success-bg);
+  border: 1px solid var(--success-bd);
+  color: var(--success);
 }
 
 .loading-container {
@@ -460,11 +460,11 @@ onMounted(() => {
 
 .btn-primary {
   background: var(--accent);
-  color: #fff;
+  color: var(--on-primary);
 }
 
 .btn-primary:hover:not(:disabled) {
-  background: #5558e3;
+  background: var(--accent);
 }
 
 .btn-primary:disabled {

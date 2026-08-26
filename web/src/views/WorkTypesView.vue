@@ -974,7 +974,7 @@ watch(activeTab, (tab) => {
   background: var(--card);
   color: var(--text);
   font-weight: 600;
-  box-shadow: 0 1px 2px rgba(0,0,0,.12);
+  box-shadow: 0 1px 2px var(--overlay-faint);
 }
 
 .hero-stats { display: flex; flex-wrap: wrap; gap: 4px; }
@@ -1014,8 +1014,8 @@ watch(activeTab, (tab) => {
   font-size: 8px; font-weight: 700;
 }
 .layer-tag.l1 { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--accent-h); }
-.layer-tag.l2 { background: rgba(63,185,80,.22); color: var(--success); }
-.layer-tag.intent-tag { background: rgba(210,153,34,.22); color: var(--warning); width: 26px; }
+.layer-tag.l2 { background: var(--success-bd); color: var(--success); }
+.layer-tag.intent-tag { background: color-mix(in srgb, var(--warning) 20%, transparent); color: var(--warning); width: 26px; }
 
 .detail-section--intent { display: flex; flex-direction: column; gap: 8px; }
 .intent-hint { margin: 0; font-size: 11px; line-height: 1.4; }
@@ -1035,8 +1035,8 @@ watch(activeTab, (tab) => {
   align-items: center;
   gap: 4px;
   padding: 2px 4px 2px 8px;
-  background: rgba(210,153,34,.15);
-  border: 1px solid rgba(210,153,34,.4);
+  background: var(--warning-bg);
+  border: 1px solid var(--warning-bd);
   border-radius: 99px;
   font-size: 11px;
   color: var(--warning);
@@ -1058,7 +1058,7 @@ watch(activeTab, (tab) => {
   line-height: 1;
   cursor: pointer;
 }
-.kw-chip-x:hover { background: rgba(210,153,34,.3); }
+.kw-chip-x:hover { background: var(--warning-bd); }
 .kw-input {
   flex: 1;
   min-width: 160px;
@@ -1107,7 +1107,7 @@ watch(activeTab, (tab) => {
 .list-table tbody td { padding: 8px 6px; }
 .model-name { font-weight: 500; font-size: 11px; }
 .model-row { cursor: pointer; }
-.model-row:hover { background: rgba(255,255,255,.04); }
+.model-row:hover { background: var(--row-hover); }
 .model-row:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
 .model-row.disabled { opacity: 0.55; }
 
@@ -1215,9 +1215,9 @@ watch(activeTab, (tab) => {
   text-transform: uppercase;
 }
 .layer-pill--primary {
-  background: rgba(63,185,80,.18);
+  background: var(--success-bd);
   color: var(--success);
-  border: 1px solid rgba(63,185,80,.4);
+  border: 1px solid var(--success-bd);
 }
 .layer-pill--secondary {
   background: color-mix(in srgb, var(--accent) 18%, transparent);
@@ -1332,9 +1332,9 @@ watch(activeTab, (tab) => {
   border: 1px solid var(--border);
 }
 .route-tier-summary__pill--primary {
-  background: rgba(63,185,80,.12);
+  background: var(--success-bg);
   color: var(--success);
-  border-color: rgba(63,185,80,.35);
+  border-color: var(--success-bd);
 }
 .route-tier-summary__pill--secondary {
   background: color-mix(in srgb, var(--accent) 10%, transparent);
@@ -1363,20 +1363,20 @@ watch(activeTab, (tab) => {
   align-items: center;
 }
 .test-result--ok {
-  background: rgba(63,185,80,.12);
-  border: 1px solid rgba(63,185,80,.35);
+  background: var(--success-bg);
+  border: 1px solid var(--success-bd);
   color: var(--success);
 }
 .test-result--fail {
-  background: rgba(248,81,73,.1);
-  border: 1px solid rgba(248,81,73,.35);
+  background: var(--danger-bg);
+  border: 1px solid var(--danger-bd);
   color: var(--danger);
 }
 .test-err { flex: 1 1 100%; word-break: break-word; }
 
 .modal-overlay {
   position: fixed; inset: 0;
-  background: rgba(0,0,0,.5);
+  background: var(--overlay-strong);
   display: flex; align-items: center; justify-content: center;
   z-index: 1000;
 }

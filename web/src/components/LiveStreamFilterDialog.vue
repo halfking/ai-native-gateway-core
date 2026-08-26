@@ -128,7 +128,7 @@ function apply() {
   position: fixed;
   inset: 0;
   z-index: 1200;
-  background: color-mix(in srgb, #000 40%, transparent);
+  background: color-mix(in srgb, var(--kx-text) 40%, transparent);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -140,17 +140,17 @@ function apply() {
   display: flex;
   flex-direction: column;
   background: var(--card, #1a1a1e);
-  color: var(--text, #eee);
-  border: 1px solid var(--border, #333);
+  color: var(--text, var(--surface-secondary));
+  border: 1px solid var(--border, var(--kx-text));
   border-radius: 10px;
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+  box-shadow: 0 12px 40px var(--overlay-medium);
 }
 .lsfd-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 12px 14px;
-  border-bottom: 1px solid var(--border, #333);
+  border-bottom: 1px solid var(--border, var(--kx-text));
 }
 .lsfd-title {
   margin: 0;
@@ -160,7 +160,7 @@ function apply() {
 .lsfd-close {
   border: 0;
   background: transparent;
-  color: var(--muted, #999);
+  color: var(--muted, var(--muted));
   font-size: 22px;
   line-height: 1;
   cursor: pointer;
@@ -177,19 +177,19 @@ function apply() {
   font-size: 12px;
   padding: 4px 10px;
   border-radius: 4px;
-  border: 1px solid var(--border, #444);
-  background: var(--bg, #111);
+  border: 1px solid var(--border, var(--muted));
+  background: var(--bg, var(--kx-text));
   color: var(--text);
   cursor: pointer;
 }
 .lsfd-all--active {
-  border-color: var(--accent, #3b82f6);
-  color: var(--accent, #3b82f6);
+  border-color: var(--accent, var(--accent));
+  color: var(--accent, var(--accent));
   font-weight: 600;
 }
 .lsfd-count {
   font-size: 11px;
-  color: var(--muted, #999);
+  color: var(--muted, var(--muted));
 }
 .lsfd-search {
   flex: 1;
@@ -197,8 +197,8 @@ function apply() {
   font-size: 12px;
   padding: 5px 8px;
   border-radius: 4px;
-  border: 1px solid var(--border, #444);
-  background: var(--bg, #111);
+  border: 1px solid var(--border, var(--muted));
+  background: var(--bg, var(--kx-text));
   color: var(--text);
 }
 .lsfd-list {
@@ -217,7 +217,7 @@ function apply() {
   font-size: 13px;
 }
 .lsfd-option:hover {
-  background: var(--bg-subtle, #222);
+  background: var(--bg-subtle, var(--kx-text));
 }
 .lsfd-option-label {
   flex: 1;
@@ -227,7 +227,7 @@ function apply() {
 .lsfd-empty {
   padding: 24px;
   text-align: center;
-  color: var(--muted, #999);
+  color: var(--muted, var(--muted));
   font-size: 12px;
 }
 .lsfd-foot {
@@ -235,13 +235,13 @@ function apply() {
   justify-content: flex-end;
   gap: 8px;
   padding: 10px 14px;
-  border-top: 1px solid var(--border, #333);
+  border-top: 1px solid var(--border, var(--kx-text));
 }
 .lsfd-btn {
   font-size: 13px;
   padding: 6px 14px;
   border-radius: 6px;
-  border: 1px solid var(--border, #444);
+  border: 1px solid var(--border, var(--muted));
   cursor: pointer;
 }
 .lsfd-btn--ghost {
@@ -249,8 +249,8 @@ function apply() {
   color: var(--text);
 }
 .lsfd-btn--primary {
-  background: var(--accent, #3b82f6);
-  border-color: var(--accent, #3b82f6);
-  color: #fff;
+  background: var(--accent, var(--accent));
+  border-color: var(--accent, var(--accent));
+  color: var(--on-primary);
 }
 </style>

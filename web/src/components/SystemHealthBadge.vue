@@ -77,10 +77,10 @@ onUnmounted(() => {
   display: inline-block;
   transition: background-color 0.3s ease;
 }
-.health-dot-ok       { background-color: #2ecc71; }
-.health-dot-degraded { background-color: #e74c3c; }
-.health-dot-suspect  { background-color: #95a5a6; }
-.health-dot-err      { background-color: #f39c12; }
+.health-dot-ok       { background-color: var(--success); }
+.health-dot-degraded { background-color: var(--danger); }
+.health-dot-suspect  { background-color: var(--muted); }
+.health-dot-err      { background-color: var(--warning); }
 .health-letter {
   font-weight: 600;
   color: var(--system-status-letter, inherit);

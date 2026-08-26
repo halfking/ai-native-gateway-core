@@ -706,7 +706,7 @@ onMounted(() => {
 }
 .btn-primary {
   background: var(--accent);
-  color: #fff;
+  color: var(--on-primary);
 }
 .btn-primary:disabled {
   opacity: 0.5;

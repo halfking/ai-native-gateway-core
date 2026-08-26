@@ -34,6 +34,8 @@ export default {
     auditLogs: "سجلات التدقيق",
     requestLogs: "سجلات الطلبات",
     dispatchWaterfall: "شلال قائمة الانتظار",
+    requestRegistry: "Request Registry",
+    connectionRegistry: "Connection Registry",
     turns: "قائمة الدورات",
     requestTrace: "تتبع الطلبات",
     sessions: "قائمة الجلسات",

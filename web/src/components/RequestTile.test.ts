@@ -80,4 +80,52 @@ describe('RequestTile display format', () => {
     expect(wrapper.find('.request-tile__time').exists()).toBe(true)
     expect(wrapper.find('.request-tile__reason--idle').exists()).toBe(true)
   })
+
+  it('marks large in-progress tiles as routing vs llm by stage_category', () => {
+    const routing = mountTile(baseTile({
+      is_probe: false,
+      status: 'in_progress',
+      stage_category: 'routing',
+    }))
+    expect(routing.classes()).toContain('request-tile--routing')
+    expect(routing.find('.request-tile__stage-indicator--routing').exists()).toBe(true)
+    routing.unmount()
+
+    const llm = mountTile(baseTile({
+      is_probe: false,
+      status: 'in_progress',
+      stage_category: 'llm',
+    }))
+    expect(llm.classes()).toContain('request-tile--llm')
+    expect(llm.find('.request-tile__stage-indicator--llm').exists()).toBe(true)
+    llm.unmount()
+  })
+
+  it('marks small bars with routing / llm stage classes', () => {
+    const routing = mount(RequestTile, {
+      props: {
+        tile: baseTile({ is_probe: false, status: 'in_progress', stage_category: 'routing' }),
+        groupBy: 'vendor',
+        isHighlighted: false,
+        isDimmed: false,
+        mode: 'small',
+      },
+      global: { plugins: [i18n] },
+    })
+    expect(routing.classes()).toContain('request-bar--routing')
+    routing.unmount()
+
+    const llm = mount(RequestTile, {
+      props: {
+        tile: baseTile({ is_probe: false, status: 'in_progress', stage_category: 'llm' }),
+        groupBy: 'vendor',
+        isHighlighted: false,
+        isDimmed: false,
+        mode: 'small',
+      },
+      global: { plugins: [i18n] },
+    })
+    expect(llm.classes()).toContain('request-bar--llm')
+    llm.unmount()
+  })
 })

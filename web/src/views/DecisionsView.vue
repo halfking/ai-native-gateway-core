@@ -3,8 +3,16 @@ import { useI18n } from 'vue-i18n'
 import { ref, watch, onMounted, onUnmounted } from 'vue'
 import { getDecisions, type RoutingDecision } from '../api'
 import ModelPicker from '../components/ModelPicker.vue'
+import { credentialDisplayName, useCredentialLabels } from '../composables/useCredentialLabels'
 
 const { t } = useI18n()
+
+// 凭据显示：订阅标签缓存 revision，标签异步加载完成后自动刷新。
+const { labelRevision } = useCredentialLabels()
+function credentialLabel(id: number | null | undefined): string {
+  void labelRevision.value
+  return credentialDisplayName(id)
+}
 
 
 const rows = ref<RoutingDecision[]>([])
@@ -78,15 +86,16 @@ function fmtTs(ts: string) {
 }
 
 function traceList(v: unknown): string {
+  void labelRevision.value
   if (!Array.isArray(v) || !v.length) return t('decisions.dash')
   return v
     .map((item) => {
       if (!item || typeof item !== 'object') return String(item)
       const row = item as Record<string, unknown>
       const provider = row.provider_id ?? t('decisions.dash')
-      const credential = row.credential_id ?? t('decisions.dash')
+      const credential = row.credential_id != null ? credentialLabel(row.credential_id as number) : t('decisions.dash')
       const reason = row.reason ?? row.raw_model ?? ''
-      return `p${provider}/c${credential} ${reason}`.trim()
+      return `p${provider}/${credential} ${reason}`.trim()
     })
     .join(' | ')
 }
@@ -288,7 +297,7 @@ onUnmounted(() => {
               <div class="drawer-section-title">{{ t('decisionsView.detail.routingDecision') }}</div>
               <div class="detail-grid">
                 <span class="dk">{{ t('decisionsView.detail.providerId') }}</span><span class="dv">{{ selectedRow.chosen_provider_id ?? t('decisions.dash') }}</span>
-                <span class="dk">{{ t('decisionsView.detail.credentialId') }}</span><span class="dv">{{ selectedRow.chosen_credential_id ?? t('decisions.dash') }}</span>
+                <span class="dk">{{ t('decisionsView.detail.credentialId') }}</span><span class="dv" :title="`#${selectedRow.chosen_credential_id ?? ''}`">{{ selectedRow.chosen_credential_id != null ? credentialLabel(selectedRow.chosen_credential_id) : t('decisions.dash') }}</span>
                 <span class="dk">Tier</span><span class="dv">{{ selectedRow.tier ?? t('decisions.dash') }}</span>
                 <span class="dk">{{ t('decisionsView.detail.candidatesCount') }}</span><span class="dv">{{ selectedRow.candidates_tried }}</span>
               </div>
@@ -346,14 +355,14 @@ onUnmounted(() => {
   vertical-align: middle;
 }
 .row-fail td { background: rgba(239,68,68,.05); }
-.badge-ok  { color: #22c55e; font-weight: 600; }
-.badge-err { color: #ef4444; font-weight: 600; }
+.badge-ok  { color: var(--success); font-weight: 600; }
+.badge-err { color: var(--danger); font-weight: 600; }
 .error-banner {
-  background: rgba(239,68,68,.15);
-  border: 1px solid #ef4444;
+  background: var(--danger-bg);
+  border: 1px solid var(--danger);
   border-radius: 8px;
   padding: 12px 16px;
-  color: #ef4444;
+  color: var(--danger);
   margin-bottom: 16px;
 }
 .row-clickable { cursor: pointer; }

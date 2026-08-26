@@ -489,7 +489,7 @@ h1 {
 }
 .subtitle {
   margin: 0 0 24px;
-  color: #888;
+  color: var(--muted);
   font-size: 14px;
 }
 .card {
@@ -517,21 +517,21 @@ h1 {
   align-items: center;
   gap: 6px;
   font-size: 13px;
-  color: #aaa;
+  color: var(--muted);
 }
 .filter-bar select,
 .filter-bar input {
   padding: 4px 8px;
-  background: #0e0e0e;
-  border: 1px solid #2a2a2a;
+  background: var(--bg);
+  border: 1px solid var(--bg);
   color: inherit;
   border-radius: 4px;
   font-size: 13px;
 }
 .filter-bar button {
   padding: 6px 14px;
-  background: #2563eb;
-  color: #fff;
+  background: var(--accent);
+  color: var(--on-primary);
   border: none;
   border-radius: 4px;
   cursor: pointer;
@@ -542,11 +542,11 @@ h1 {
   cursor: not-allowed;
 }
 .error {
-  color: #ef4444;
+  color: var(--danger);
   font-size: 13px;
 }
 .empty {
-  color: #888;
+  color: var(--muted);
   font-size: 13px;
   font-style: italic;
 }
@@ -560,15 +560,15 @@ h1 {
 .accuracy-table th {
   text-align: left;
   padding: 8px 10px;
-  background: #0e0e0e;
-  border-bottom: 1px solid #2a2a2a;
-  color: #aaa;
+  background: var(--bg);
+  border-bottom: 1px solid var(--bg);
+  color: var(--muted);
   font-weight: 500;
 }
 .proposal-table td,
 .accuracy-table td {
   padding: 8px 10px;
-  border-bottom: 1px solid #1f1f1f;
+  border-bottom: 1px solid var(--bg);
   vertical-align: top;
 }
 .mono {
@@ -578,24 +578,24 @@ h1 {
   word-break: break-all;
 }
 .evidence {
-  color: #aaa;
+  color: var(--muted);
   font-size: 12px;
   max-width: 280px;
 }
 .badge {
   display: inline-block;
   padding: 2px 8px;
-  background: #1e3a8a;
-  color: #bfdbfe;
+  background: var(--accent-dark);
+  color: var(--info-bd);
   border-radius: 4px;
   font-size: 11px;
   text-transform: uppercase;
 }
-.status-pending { color: #eab308; font-weight: 600; }
-.status-approved { color: #22c55e; }
-.status-rejected { color: #888; text-decoration: line-through; }
-.status-applied { color: #22c55e; font-weight: 600; }
-.status-expired { color: #888; }
+.status-pending { color: var(--warning); font-weight: 600; }
+.status-approved { color: var(--success); }
+.status-rejected { color: var(--muted); text-decoration: line-through; }
+.status-applied { color: var(--success); font-weight: 600; }
+.status-expired { color: var(--muted); }
 .btn-approve,
 .btn-reject,
 .btn-trigger {
@@ -606,17 +606,17 @@ h1 {
   font-size: 12px;
   margin-right: 4px;
 }
-.btn-approve { background: #16a34a; color: #fff; }
-.btn-reject { background: #6b7280; color: #fff; }
-.btn-trigger { background: var(--accent); color: #fff; padding: 8px 16px; }
+.btn-approve { background: var(--success); color: var(--on-primary); }
+.btn-reject { background: var(--muted); color: var(--on-primary); }
+.btn-trigger { background: var(--accent); color: var(--on-primary); padding: 8px 16px; }
 .reject-row {
   background: #1a0e0e;
 }
 .reject-row input {
   margin: 0 8px;
   padding: 4px 8px;
-  background: #0e0e0e;
-  border: 1px solid #2a2a2a;
+  background: var(--bg);
+  border: 1px solid var(--bg);
   color: inherit;
   border-radius: 4px;
   width: 300px;
@@ -628,14 +628,14 @@ h1 {
   margin-bottom: 16px;
 }
 .summary-card {
-  background: #0e0e0e;
-  border: 1px solid #2a2a2a;
+  background: var(--bg);
+  border: 1px solid var(--bg);
   border-radius: 6px;
   padding: 12px 16px;
 }
 .summary-label {
   font-size: 11px;
-  color: #888;
+  color: var(--muted);
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
@@ -647,24 +647,24 @@ h1 {
 .task-type {
   font-family: 'SF Mono', Menlo, monospace;
   font-size: 12px;
-  color: #93c5fd;
+  color: var(--accent-h);
 }
 .drift {
-  color: #f97316;
+  color: var(--warning);
   font-weight: 600;
 }
 .hint {
-  color: #888;
+  color: var(--muted);
   font-size: 13px;
   margin: 0 0 12px;
 }
 .result {
   margin-top: 12px;
   padding: 8px 12px;
-  background: #0e0e0e;
+  background: var(--bg);
   border-radius: 4px;
   font-size: 13px;
-  color: #aaa;
+  color: var(--muted);
 }
 .strategy-meta {
   display: flex;
@@ -675,10 +675,10 @@ h1 {
 }
 .meta-item {
   font-size: 13px;
-  color: #aaa;
+  color: var(--muted);
 }
 .meta-item strong {
-  color: #e6e6e6;
+  color: var(--border);
 }
 .strategy-table,
 .breakdown-table {
@@ -691,22 +691,22 @@ h1 {
 .breakdown-table th {
   text-align: left;
   padding: 8px 10px;
-  background: #0e0e0e;
-  border-bottom: 1px solid #2a2a2a;
-  color: #aaa;
+  background: var(--bg);
+  border-bottom: 1px solid var(--bg);
+  color: var(--muted);
   font-weight: 500;
 }
 .strategy-table td,
 .breakdown-table td {
   padding: 8px 10px;
-  border-bottom: 1px solid #1f1f1f;
+  border-bottom: 1px solid var(--bg);
 }
 .strategy-tag {
   font-family: 'SF Mono', Menlo, monospace;
   font-size: 11px;
   padding: 2px 6px;
-  background: #1e293b;
-  color: #93c5fd;
+  background: var(--kx-text);
+  color: var(--accent-h);
   border-radius: 3px;
 }
 .breakdown-details {
@@ -716,9 +716,9 @@ h1 {
 .breakdown-details summary {
   cursor: pointer;
   padding: 6px 0;
-  color: #93c5fd;
+  color: var(--accent-h);
 }
 .breakdown-details summary:hover {
-  color: #bfdbfe;
+  color: var(--info-bd);
 }
 </style>

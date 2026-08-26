@@ -190,18 +190,6 @@ export function useLiveStreamFilters(options: LiveStreamFiltersOptions) {
     return count
   })
 
-  const requestTypeCounts = computed(() => {
-    let business = 0
-    let probe = 0
-    for (const lane of lanes.value) {
-      for (const request of lane.requests) {
-        if (request.is_probe === true) probe++
-        else business++
-      }
-    }
-    return { business, probe }
-  })
-
   // ========== 核心过滤逻辑 ==========
   /** 模型维度一律用标准名（tile.model 后端已优先 canonical） */
   function standardModelName(model: string | undefined | null): string {
@@ -293,7 +281,6 @@ export function useLiveStreamFilters(options: LiveStreamFiltersOptions) {
 
     // 统计
     activeFilterCount,
-    requestTypeCounts,
 
     // 过滤后结果
     filteredLanes,

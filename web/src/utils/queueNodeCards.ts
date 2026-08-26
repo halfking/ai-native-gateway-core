@@ -6,14 +6,8 @@ export const WINDOW_MINUTES = 5
 export const STATS_REFRESH_MS = 30_000
 export const CARD_MIN_W = 120
 export const CARD_MAX_W = 280
-/** Mini window cells on queue node cards (per-pair display cap). */
+/** Mini window cells on queue node cards (batch include_entries cap). */
 export const CARD_ENTRY_LIMIT = 24
-/**
- * Per-pair entry cap for the model-header 50-icon strip. Must be >= 48
- * (the admin/credential_monitor_sliding_window.go backend hard cap
- * `slidingWindowBatchMaxEntryRet = 48`); 50 is the user-facing target.
- */
-export const MODEL_HEADER_ENTRY_LIMIT = 50
 
 /** Replace one card's window cells. Missing entries (JSON omitempty) means empty, not "keep stale". */
 export function mergeCardWindowEntries<T>(
@@ -138,6 +132,13 @@ export function orderNodesByRoutingCandidates<T extends { credential_id: number 
   })
 }
 
+/**
+ * Render a node card title in the {供应商}/{凭据名称} format the dashboard
+ * mandates (e.g. `anthropic/terra-prod`). Falls back to `{vendor}/#{id}` when
+ * the credential has no label yet, so an operator can still tell which
+ * upstream the card belongs to even before the credential monitor returns a
+ * human label.
+ */
 export function credentialDisplayName(
   candidate: { credential_label?: string | null; provider_name?: string | null } | null | undefined,
   fallbackProvider: string,
@@ -145,6 +146,7 @@ export function credentialDisplayName(
   nodeLabel?: string | null,
 ): string {
   const label = (candidate?.credential_label || nodeLabel || '').trim()
-  if (label) return label
-  return `${fallbackProvider} · #${credentialId}`
+  const provider = (candidate?.provider_name || fallbackProvider || '').trim() || '—'
+  const suffix = label || `#${credentialId}`
+  return `${provider}/${suffix}`
 }

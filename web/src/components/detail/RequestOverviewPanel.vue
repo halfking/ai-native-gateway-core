@@ -120,6 +120,7 @@ function clip(text: string, max = 480): string {
       <div class="cell"><span class="lbl">Session</span><code>{{ fmt(log?.gw_session_id ?? unified?.meta.gw_session_id) }}</code></div>
       <div class="cell"><span class="lbl">会话标题</span><span>{{ sessionTitle || '—' }}</span></div>
       <div class="cell"><span class="lbl">任务 ID</span><code>{{ fmt(log?.gw_task_id ?? unified?.meta.gw_task_id) }}</code></div>
+      <div class="cell"><span class="lbl">End User</span><code>{{ fmt(log?.end_user_id) }}</code></div>
       <div class="cell"><span class="lbl">Token</span><span>{{ fmt(log?.prompt_tokens) }} / {{ fmt(log?.completion_tokens) }}（总 {{ fmt(log?.total_tokens) }}）</span></div>
       <div class="cell"><span class="lbl">Cache</span><span>{{ fmt(log?.cache_read_tokens) }} / {{ fmt(log?.cache_write_tokens) }}</span></div>
       <div class="cell"><span class="lbl">Cost / Credits</span><span>{{ fmt(log?.cost_usd) }} / {{ fmt(log?.credits_charged) }}</span></div>

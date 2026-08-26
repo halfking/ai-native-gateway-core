@@ -26,6 +26,7 @@ package settings
 import (
 	"fmt"
 	"log/slog"
+	"math"
 	"strings"
 	"sync"
 )
@@ -129,6 +130,9 @@ func (s *Spec) Validate(v any) error {
 		case int64:
 			n = int(x)
 		case float64:
+			if x != math.Trunc(x) {
+				return fmt.Errorf("expected int, got fractional float %v", x)
+			}
 			n = int(x)
 		default:
 			return fmt.Errorf("expected int, got %T", v)
