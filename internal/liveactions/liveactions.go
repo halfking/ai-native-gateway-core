@@ -184,9 +184,10 @@ func ResetMetricsForTest() {
 // readable from unit tests without the prometheus testutil dependency, which
 // is not vendored in this repo).
 var (
-	droppedTotal      atomic.Uint64
-	redisFailureTot   atomic.Uint64
-	metricsRegistered sync.Once
+	droppedTotal        atomic.Uint64
+	redisFailureTot     atomic.Uint64
+	stageNormFailureTot atomic.Uint64
+	metricsRegistered   sync.Once
 )
 
 // DroppedTotal returns how many events this process dropped because the emit
@@ -220,6 +221,9 @@ func (liveActionsCollector) Collect(ch chan<- prometheus.Metric) {
 	ch <- prometheus.MustNewConstMetric(
 		prometheus.NewDesc("live_actions_redis_failures_total", "Action-event Redis writes that failed (silent degradation).", nil, nil),
 		prometheus.CounterValue, float64(redisFailureTot.Load()))
+	ch <- prometheus.MustNewConstMetric(
+		prometheus.NewDesc("live_actions_stage_normalization_failures_total", "Action-event stage-normalization failures (silent degradation).", nil, nil),
+		prometheus.CounterValue, float64(stageNormFailureTot.Load()))
 }
 
 // ── emitter ────────────────────────────────────────────────────────────────
