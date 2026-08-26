@@ -101,7 +101,7 @@ func TestRequestLifecycleEnvelope_SingleFlattensDetail(t *testing.T) {
 	env := LiveStreamEnvelope{
 		Type:      "request_lifecycle",
 		Timestamp: ts,
-		Action:    actionWirePayload([]liveactions.ActionEvent{ev}),
+		Action:    actionWirePayload([]liveactions.ActionEvent{ev}, nil),
 	}
 	b, err := json.Marshal(env)
 	if err != nil {
@@ -142,7 +142,7 @@ func TestRequestLifecycleEnvelope_BatchUsesArray(t *testing.T) {
 	env := LiveStreamEnvelope{
 		Type:      "request_lifecycle",
 		Timestamp: ts,
-		Action:    actionWirePayload(batch),
+		Action:    actionWirePayload(batch, nil),
 	}
 	b, err := json.Marshal(env)
 	if err != nil {
@@ -722,7 +722,7 @@ func TestLiveStreamEnvelope_LifecycleFieldSnapshot(t *testing.T) {
 	lifecycle := LiveStreamEnvelope{
 		Type:      "request_lifecycle",
 		Timestamp: ts,
-		Action:    actionWirePayload([]liveactions.ActionEvent{{RequestID: "r", Seq: 1, Action: liveactions.ActionArrive, Ts: ts}}),
+		Action:    actionWirePayload([]liveactions.ActionEvent{{RequestID: "r", Seq: 1, Action: liveactions.ActionArrive, Ts: ts}}, nil),
 	}
 	b, err := json.Marshal(lifecycle)
 	if err != nil {
