@@ -70,6 +70,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/notification"                        //nolint:depguard // 审批通知器
 	"github.com/kaixuan/llm-gateway-go/domains/providerprofile"                     //nolint:depguard // 供应商画像告警 handler (AlertType)
 	"github.com/kaixuan/llm-gateway-go/domains/quotafetcher"                        //nolint:depguard // P1 proactive upstream quota prefetch
+	"github.com/kaixuan/llm-gateway-go/domains/requestdetail"                       //nolint:depguard // in-flight request content store
 	"github.com/kaixuan/llm-gateway-go/domains/requestjourney"                      //nolint:depguard // request lifecycle observation
 	"github.com/kaixuan/llm-gateway-go/domains/routeincident"                       //nolint:depguard // 2026-07-13 route incident diagnosis (Phase 1)
 	"github.com/kaixuan/llm-gateway-go/domains/routingstate"
@@ -1188,10 +1189,13 @@ func main() {
 		routingExec.AnthropicToOpenAI = streaming.ConvertAnthropicBodyToOpenAI
 
 		// Phase B (2026-06-22): IR-based protocol converter.
-		if os.Getenv("LLM_GATEWAY_IR_CONVERTER") == "true" {
+		// 2026-08-27: restored from deployed build 298201fe0. IR is the
+		// default protocol-conversion path. Set either switch to "false"
+		// only for an explicit emergency rollback to the legacy path.
+		if os.Getenv("LLM_GATEWAY_IR_CONVERTER") != "false" {
 			routingExec.IR = &irAdapter{}
 			slog.Info("ir_converter", "enabled", true)
-			if os.Getenv("LLM_GATEWAY_TRANSPORT_IR") == "true" {
+			if os.Getenv("LLM_GATEWAY_TRANSPORT_IR") != "false" {
 				routingExec.IR = transformation.NewTransportIRConverter(&irAdapter{})
 				slog.Info("transport_ir", "enabled", true, "features", "extensions-roundtrip,circuit-breaker")
 			}
@@ -1875,6 +1879,10 @@ func main() {
 		30*time.Minute,
 	)
 	var liveStreamHub *admin.LiveStreamSSEHub
+	// 2026-08-25: telemetry onEmitted 转发器引用。声明提升到 main 顶层作用域,
+	// 因为 wiring 在 ~2000 行、关停块在 ~6000 行, 两处必须引用同一实例
+	// (先 stop 转发器、再 stop hub, 对齐生产者→消费者的关停顺序)。
+	var liveStreamEmittedFwd *liveStreamEmittedForwarder
 	// probeStreamHub (2026-08-11) mirrors the live request stream for the
 	// 自检 tab. Declared at this scope so it can be constructed in the
 	// system-monitor wiring block and later wired into probe emitters.
@@ -1922,22 +1930,41 @@ func main() {
 	// transaction commits. Emitting before persistence allowed a green
 	// tile to reach the dashboard before GET /api/logs/{id} could see it.
 	// The provider_id→catalog_code resolution is bounded by the hub's
-	// short lookup context, and Publish remains non-blocking for clients.
-	// Live stream hub hook: register regardless of telemetryClient.Enabled()
-	// (sessionv2mirror/attachment hooks don't gate on Enabled()).
-	// If telemetry is disabled, log a clear warning so operators know
-	// the hub runs but receives no data.
+	// 2026-08-25 两阶段实时流契约（取代此前"仅在事务提交后发布"的单一
+	// persisted 契约 —— 那会让 DB 缺失/延迟直接挡住实时显示）:
+	//
+	//   阶段一 emitted   — telemetry EmitRequestLog 在入 DB 队列前、请求热路径
+	//                      goroutine 上同步触发 onEmitted。回调只做浅拷贝 +
+	//                      select-default 投递（liveStreamEmittedForwarder.emit）,
+	//                      provider 解析（≤200ms DB 查找）与 Publish 移到转发器的
+	//                      单消费者 goroutine → 请求一被接收就进实时流, 不被
+	//                      DB 写入节奏阻塞。
+	//   阶段二 persisted — 落库后补偿最终状态, 与阶段一走同一转发器 FIFO
+	//                      (2026-08-25 审计修正: 两路直发无顺序保证, DB 慢时
+	//                      forwarder 积压会让晚到的 in_progress 把前端已显示
+	//                      的终态卡片回退 —— 同一 FIFO + 单消费者恒保
+	//                      in_progress → terminal 顺序, 见 forwarder type doc)。
+	//
+	// 2026-08-27: restored from deployed build 298201fe0 after d2cbaf88b
+	// collapsed this back to a single direct Publish hook.
 	if telemetryClient != nil {
 		hub := liveStreamHub
-		telemetryClient.AddOnRequestLogPersisted(func(entry *telemetry.RequestLogEntry) {
-			hub.Publish(adminLiveRequestFromEntry(entry, hub))
+		fwd := newLiveStreamEmittedForwarder(hub)
+		liveStreamEmittedFwd = fwd
+		go fwd.run()
+		telemetryClient.SetOnRequestLogEmitted(func(entry *telemetry.RequestLogEntry) {
+			requestdetail.CaptureFromEntry(entry)
+			fwd.emit(entry)
 		})
-		slog.Info("telemetry onPersisted wired → live stream SSE hub")
+		slog.Info("telemetry onEmitted forwarder wired → live stream SSE hub (pre-DB in_progress projection) + request detail capture")
+		telemetryClient.AddOnRequestLogPersisted(fwd.persist)
+		telemetryClient.AddOnRequestLogPersisted(requestdetail.ClearAfterPersist)
+		slog.Info("telemetry onPersisted wired → live stream SSE hub via forwarder FIFO (post-commit compensation) + request detail clear")
 	} else {
 		slog.Warn("live stream hub created but telemetryClient is nil; no data will flow to swim lanes")
 	}
 	if telemetryClient != nil && !telemetryClient.Enabled() {
-		slog.Warn("telemetryClient.Enabled() == false; live stream hub will receive no onPersisted callbacks")
+		slog.Warn("telemetryClient.Enabled() == false; live stream hub will receive no onEmitted/onPersisted callbacks")
 	}
 
 	slog.Info("live request stream hub enabled (sse /api/admin/live-stream)",
@@ -3405,6 +3432,19 @@ func main() {
 						provider.InvalidateCandidateCacheForCredential(credID)
 						metrics.RoutingCredentialQuotaRecoveredNotifyTotal.WithLabelValues(source).Inc()
 					})
+					// 2026-08-26 P1-4 (landing point D): also wire the
+					// *immediate* probe-submitter. After recover() flips a
+					// credential back from quota_periodic_exhausted /
+					// availability=suspended, dispatchRecoveryHooks now
+					// fires credProbeV2.ProbeNowAsync synchronously so
+					// the credential is re-validated without waiting for
+					// the 30s fastReprobeDelay (P1-2 default). The wiring
+					// is best-effort — if credProbeV2 hasn't been
+					// constructed yet (early-boot race during unit tests),
+					// SetProbeSubmitterImmediate no-ops on nil.
+					if credProbeV2 != nil {
+						credRecovery.SetProbeSubmitterImmediate(credProbeV2.ProbeNowAsync)
+					}
 					slog.Info("credRecovery: expired-binding probe submitter wired")
 				}
 			} else if useNewProbeMode() {
@@ -5484,7 +5524,9 @@ func main() {
 		mux.HandleFunc("/api/admin/dispatch/waterfall", wrapAdmin(handleDispatchWaterfall))
 		// v6 G-Ⅳ (2026-08-27): 分维成员索引（模型/凭据/供应商）查询。
 		mux.HandleFunc("/api/admin/dispatch/dimensions", wrapAdmin(handleDispatchDimensions))
-		slog.Info("dispatch_v2 queue snapshot enabled (/api/admin/dispatch/queues, /waterfall, /dimensions)")
+		// V6-W1.6 R10 (2026-08-27): 按请求执行轨迹查询（AttemptJournal 视图）。
+		mux.HandleFunc("/api/admin/dispatch/journal/", wrapAdmin(handleDispatchJournalByRequest))
+		slog.Info("dispatch_v2 queue snapshot enabled (/api/admin/dispatch/queues, /waterfall, /dimensions, /journal/{request_id})")
 
 		// D2 (2026-08-07): Cache Metrics API
 		// Unified cache observability for semantic/prefix/delta/kv/session_state layers
@@ -5914,6 +5956,11 @@ func main() {
 		}
 
 		// 2. Stop hub/background producers before closing their dependencies.
+		// Forwarder must stop FIRST so its consumer exits before the hub
+		// (matches producer→consumer shutdown order set up at wiring).
+		if liveStreamEmittedFwd != nil {
+			liveStreamEmittedFwd.stop()
+		}
 		if liveStreamHub != nil {
 			liveStreamHub.Stop()
 		}

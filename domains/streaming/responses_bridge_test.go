@@ -540,6 +540,7 @@ func TestResponsesBridges_OtherSideClosedIsNetworkError(t *testing.T) {
 			assert.Contains(t, rec.Body.String(), "hello")
 			assert.Contains(t, rec.Body.String(), "response.completed")
 			assert.Contains(t, rec.Body.String(), `"status":"incomplete"`)
+
 		})
 	}
 }

@@ -50,6 +50,8 @@ type DispatchNotice struct {
 
 // NextActionKind is the closed vocabulary for FailoverMarker.NextAction —
 // "回队打标" (v6 G-Ⅴ): every requeue stamps what the next round will do.
+// V6-W1.6 R9 extends it with the three terminal states so the journal tail
+// can record how the request ended.
 type NextActionKind string
 
 const (
@@ -58,6 +60,11 @@ const (
 	NextActionSwitchModel   NextActionKind = "switch_model"
 	NextActionCapacityWait  NextActionKind = "capacity_wait"
 	NextActionScheduledWait NextActionKind = "scheduled_wait"
+	// Terminal actions (V6-W1.6 R9): only written by complete(), never by a
+	// requeue site — invariant: no journal entry follows a terminal one.
+	NextActionCompleted NextActionKind = "completed"
+	NextActionFailed    NextActionKind = "failed"
+	NextActionCanceled  NextActionKind = "canceled"
 )
 
 // FailoverMarker summarizes the previous round's outcome plus the decided
