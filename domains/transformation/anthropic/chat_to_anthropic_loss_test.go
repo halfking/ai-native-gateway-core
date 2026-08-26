@@ -116,3 +116,39 @@ func TestChatRequestToAnthropic_RejectsMalformedContentBlock(t *testing.T) {
 		t.Fatalf("ConvertChatRequestToAnthropic() error = %v, want object validation error", err)
 	}
 }
+
+func TestChatRequestToAnthropic_RejectsNonObjectMessage(t *testing.T) {
+	request := []byte(`{"model":"claude-sonnet-5","messages":["keep this prompt"]}`)
+
+	_, err := ConvertChatRequestToAnthropic(request)
+	if err == nil || !strings.Contains(err.Error(), "invalid OpenAI message") {
+		t.Fatalf("ConvertChatRequestToAnthropic() error = %v, want message validation error", err)
+	}
+}
+
+func TestChatRequestToAnthropic_RejectsNonArrayMessages(t *testing.T) {
+	request := []byte(`{"model":"claude-sonnet-5","messages":"keep this prompt"}`)
+
+	_, err := ConvertChatRequestToAnthropic(request)
+	if err == nil || !strings.Contains(err.Error(), "invalid OpenAI messages") {
+		t.Fatalf("ConvertChatRequestToAnthropic() error = %v, want messages validation error", err)
+	}
+}
+
+func TestChatRequestToAnthropic_RejectsNonObjectToolCall(t *testing.T) {
+	request := []byte(`{"model":"claude-sonnet-5","messages":[{"role":"assistant","tool_calls":["call_1"]}]}`)
+
+	_, err := ConvertChatRequestToAnthropic(request)
+	if err == nil || !strings.Contains(err.Error(), "invalid tool call") {
+		t.Fatalf("ConvertChatRequestToAnthropic() error = %v, want tool call validation error", err)
+	}
+}
+
+func TestChatRequestToAnthropic_RejectsNonArrayTools(t *testing.T) {
+	request := []byte(`{"model":"claude-sonnet-5","messages":[],"tools":{"type":"function"}}`)
+
+	_, err := ConvertChatRequestToAnthropic(request)
+	if err == nil || !strings.Contains(err.Error(), "invalid OpenAI tools") {
+		t.Fatalf("ConvertChatRequestToAnthropic() error = %v, want tools validation error", err)
+	}
+}
