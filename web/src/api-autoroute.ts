@@ -5,7 +5,48 @@ import { getKeys, revealKey, type ApiKey } from './api'
 import { store, authBearer } from './store'
 
 const BASE = ''
-let _relayApiKeyCache = ''
+// 2026-08-26 (P1-28 fix): _relayApiKeyCache was a single module-level `let`
+// shared across every page mount. Switching between tenants (or just
+// logging out and logging in as another user) without a full page reload
+// would surface a stale sk-* key from the previous tenant — that is a
+// cross-tenant credential leak.
+//
+// Keyed cache: the lookup key encodes (tenant_id, user_id, bearer) so
+// different tenants cannot collide. ClearRelayApiKeyCache() is wired
+// into store.ts mutations so logout / user-switch drops the cache
+// eagerly. resolveRelayApiKey() also drops an entry whose bearer no
+// longer matches the live auth state, so a stale entry can never be
+// served even if a mutation handler is added later that forgets to
+// call the clear function.
+const _relayApiKeyCache = new Map<string, string>()
+
+function relayCacheKey(): string {
+  const tenant = store.userInfo?.tenant_id || 'default'
+  const uid = store.userInfo?.id != null ? String(store.userInfo.id) : 'anon'
+  const bearer = authBearer() || ''
+  return `${tenant}|${uid}|${bearer}`
+}
+
+/**
+ * Drop every cached sk-* key. Call this whenever the auth state changes
+ * (login / logout / tenant switch / api-key rotation). Idempotent and
+ * safe to call repeatedly.
+ */
+export function clearRelayApiKeyCache(): void {
+  _relayApiKeyCache.clear()
+}
+
+// 2026-08-26 (P1-28 fix): store.ts mutates auth state and must drop the
+// cache synchronously. A direct `import './store'` from here would cycle
+// (api-autoroute → store → api-autoroute), so we expose the invalidator
+// via a globalThis slot that store.ts reads with optional chaining.
+declare global {
+  // eslint-disable-next-line no-var
+  var __llmgwRelayCacheInvalidator: (() => void) | undefined
+}
+if (typeof globalThis !== 'undefined') {
+  globalThis.__llmgwRelayCacheInvalidator = () => _relayApiKeyCache.clear()
+}
 
 async function req<T>(method: string, path: string, body?: unknown): Promise<T> {
   const headers: Record<string, string> = { 'Authorization': `Bearer ${authBearer()}` }
@@ -406,11 +447,18 @@ function isActiveKey(k: ApiKey): boolean {
 }
 
 async function resolveRelayApiKey(): Promise<string> {
+  // 显式传入的 apiKey 永远优先 —— 它意味着调用方已经在 session 里指定了 sk-*，
+  // 跳过 cache 避免对某个 sk-* 的 cache 误命中另一个 sk-*。
   if (store.apiKey?.startsWith('sk-')) {
-    _relayApiKeyCache = store.apiKey
     return store.apiKey
   }
-  if (_relayApiKeyCache.startsWith('sk-')) return _relayApiKeyCache
+
+  // 只在 (tenant, user, bearer) 完全一致时才命中 cache。
+  const k = relayCacheKey()
+  const cached = _relayApiKeyCache.get(k)
+  if (cached && cached.startsWith('sk-')) {
+    return cached
+  }
 
   const keys = await getKeys()
   const active = keys.filter(isActiveKey)
@@ -418,7 +466,10 @@ async function resolveRelayApiKey(): Promise<string> {
     try {
       const revealed = await revealKey(key.id)
       if (revealed.api_key?.startsWith('sk-')) {
-        _relayApiKeyCache = revealed.api_key
+        // recheck 一次 —— await 期间 store 可能被另一个 setUserInfo 调用改写，
+        // 此时不能把当前 reveal 的 key 写到旧 cache key 下，否则又会跨租户命中。
+        const kNow = relayCacheKey()
+        _relayApiKeyCache.set(kNow, revealed.api_key)
         return revealed.api_key
       }
     } catch {
