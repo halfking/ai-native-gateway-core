@@ -182,21 +182,13 @@ func (h *GeminiHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Step 2: Read the request body (Gemini format).
-	// 32 MiB cap matches the pipeline entry point (dispatchRequestBody in
-	// cmd/gateway/main_pipeline.go); without it a hostile client can pin
-	// unbounded memory with a single streaming-free upload.
-	const geminiMaxBodyBytes = 32 << 20
-	bodyBytes, err := io.ReadAll(io.LimitReader(r.Body, geminiMaxBodyBytes+1))
+	// Step 2: Read the request body (Gemini format)
+	bodyBytes, err := io.ReadAll(r.Body)
 	if err != nil {
 		writeGeminiError(w, http.StatusBadRequest, "failed to read body")
 		return
 	}
 	_ = r.Body.Close()
-	if len(bodyBytes) > geminiMaxBodyBytes {
-		writeGeminiError(w, http.StatusRequestEntityTooLarge, "request body exceeds 32 MiB limit")
-		return
-	}
 
 	// Step 3: Parse Gemini body → IR
 	irReq, err := ir.ParseGemini(bodyBytes)

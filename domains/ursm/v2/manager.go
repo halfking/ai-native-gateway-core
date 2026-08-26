@@ -371,13 +371,6 @@ func (m *Manager) FilterAndScore(ctx context.Context, seeds []CandidateSeed) ([]
 // caller. Routers use this to keep backend selection and URSM filtering on the
 // same recovery snapshot; a Ready flip cannot split one request between v2 and
 // the legacy state manager.
-//
-// ModeOff short-circuits before the ready check (off is a rollback/diagnostic
-// mode, never a path that returns authoritative v2 views). For every other
-// mode the captured ready flag is the single source of truth: filterAndScore
-// rejects with "ursm.v2: not ready" on ready==false regardless of mirror
-// contents, so the ready-gate bypass that the original naive shape allowed
-// (mirror-only answer on a closed gate) cannot reoccur here.
 func (m *Manager) FilterAndScoreReady(ctx context.Context, seeds []CandidateSeed, ready bool) ([]api.NodeView, error) {
 	if m == nil {
 		return nil, fmt.Errorf("ursm.v2: nil manager")
@@ -387,6 +380,7 @@ func (m *Manager) FilterAndScoreReady(ctx context.Context, seeds []CandidateSeed
 	}
 	views, _, err := m.filterAndScore(ctx, seeds, ready)
 	return views, err
+
 }
 
 // FilterAndScoreReadyWithSource is the S-3 (routing_state_source)
@@ -525,7 +519,7 @@ func (m *Manager) filterAndScore(ctx context.Context, seeds []CandidateSeed, rea
 		// Grace gear skips the verify: entries served here are within the
 		// mirror soft TTL by construction (GetForTenant honours it), so the
 		// degrade window is bounded by LRUMirrorSoftTTL (default 30s).
-		scoreAndSort(views, seeds, m.cfg)
+		scoreAndSort(views, seeds, m.cfg.ScoringWeights)
 		// Every seed resolved from the mirror (no soft-expired entries).
 		return views, statesource.StateSourceNodeMirrorHit, nil
 	}
@@ -559,7 +553,7 @@ func (m *Manager) filterAndScore(ctx context.Context, seeds []CandidateSeed, rea
 		}
 	}
 
-	scoreAndSort(views, seeds, m.cfg)
+	scoreAndSort(views, seeds, m.cfg.ScoringWeights)
 	// Decide the aggregate source for this request:
 	//   - hit       : every seed served from mirror, no miss/stale
 	//   - stale     : at least one seed was soft-expired (no "never seen")
@@ -616,8 +610,7 @@ func backfillSeedIdentity(v *api.NodeView, s CandidateSeed) {
 // scoreAndSort applies the price/latency/stability scoring and orders views
 // by ascending Score. Extracted so the LRU fast path and the Redis miss path
 // share identical scoring.
-func scoreAndSort(views []api.NodeView, seeds []CandidateSeed, cfg Config) {
-	weights := cfg.ScoringWeights
+func scoreAndSort(views []api.NodeView, seeds []CandidateSeed, weights ScoringWeights) {
 	// Lower score wins. Price and latency are direct costs; stability is a
 	// failure-rate penalty so a higher success rate ranks better. An empty SR5m
 	// window is neutral (0.5), matching the Redis protocol contract, while
@@ -631,27 +624,9 @@ func scoreAndSort(views []api.NodeView, seeds []CandidateSeed, cfg Config) {
 			lat = s.BaseURLMs
 		}
 		successRate := safeSR5m(v.SR5m, v.Samples5m)
-		emptyPenalty := emptyResponsePenalty(v.EmptyResponseRate5m, v.Samples5m, cfg.EmptyResponseMinSamples, cfg.EmptyResponseRateThreshold)
-		if emptyPenalty > 0 {
-			metrics.RecordURSMSoftEmptyResponsePenalty()
-		}
-		v.Score = weights.Price*price + weights.Latency*float64(lat) + weights.Stability*(1-successRate)*1000 + weights.EmptyPenalty*emptyPenalty*1000
+		v.Score = weights.Price*price + weights.Latency*float64(lat) + weights.Stability*(1-successRate)*1000
 	}
 	sort.SliceStable(views, func(i, j int) bool { return views[i].Score < views[j].Score })
-}
-
-// emptyResponsePenalty returns a normalized soft penalty only once a node has
-// enough five-minute traffic to make an empty-response rate meaningful. A rate
-// at the configured threshold is neutral; 100%% maps to 1. The caller uses the
-// penalty solely for ranking, never for availability or circuit state.
-func emptyResponsePenalty(rate float64, samples, minSamples int, threshold float64) float64 {
-	if samples < minSamples || math.IsNaN(rate) || math.IsInf(rate, 0) || rate <= threshold || threshold >= 1 {
-		return 0
-	}
-	if rate >= 1 {
-		return 1
-	}
-	return (rate - threshold) / (1 - threshold)
 }
 
 func safeSR5m(sr float64, samples int) float64 {
@@ -680,21 +655,18 @@ func safeSR5m(sr float64, samples int) float64 {
 // stays decided by Available/CoolUntil per the §14.3/FR-4 boundary.
 func mirrorToAPIView(mv cache.NodeView, s CandidateSeed) api.NodeView {
 	return api.NodeView{
-		ProviderID:          s.ProviderID,
-		CredentialID:        mv.CredentialID,
-		RawModel:            mv.RawModel,
-		CanonicalName:       s.Canonical,
-		TenantID:            s.TenantID,
-		Available:           mv.Available,
-		Reason:              mv.Reason,
-		HealthStatus:        mv.HealthStatus,
-		FailStreak:          mv.FailStreak,
-		CoolUntil:           mv.CoolUntil,
-		LatEWMA:             mv.LatEWMA,
-		SR5m:                mv.SR5m,
-		Samples5m:           mv.Samples5m,
-		EmptyResponses5m:    mv.EmptyResponses5m,
-		EmptyResponseRate5m: mv.EmptyResponseRate5m,
+		ProviderID:    s.ProviderID,
+		CredentialID:  mv.CredentialID,
+		RawModel:      mv.RawModel,
+		CanonicalName: s.Canonical,
+		TenantID:      s.TenantID,
+		Available:     mv.Available,
+		Reason:        mv.Reason,
+		HealthStatus:  mv.HealthStatus,
+		FailStreak:    mv.FailStreak,
+		CoolUntil:     mv.CoolUntil,
+		LatEWMA:       mv.LatEWMA,
+		SR5m:          mv.SR5m,
 	}
 }
 
@@ -786,7 +758,7 @@ func (m *Manager) PlanReadyObserved(ctx context.Context, seeds []CandidateSeed, 
 	for i := range views {
 		backfillSeedIdentity(&views[i], seeds[i])
 	}
-	scoreAndSort(views, seeds, m.cfg)
+	scoreAndSort(views, seeds, m.cfg.ScoringWeights)
 
 	idx := make(map[string]int, len(seeds))
 	for i, seed := range seeds {

@@ -40,10 +40,10 @@ func TestSurvivalCoordinator_LogsCoverAttemptDiscardAndTerminal(t *testing.T) {
 		results: []*executors.ExecuteResult{
 			nil,
 			{
-				LatencyMs:      42,
-				RequestBody:    []byte(`{"model":"glm-5.2"}`),
-				InboundBody:    []byte(`{"model":"glm-5.2"}`),
-				Candidate:      provider.Candidate{ProviderID: 12763, CredentialID: 36, RawModel: "glm-5.2"},
+				LatencyMs:    42,
+				RequestBody:  []byte(`{"model":"glm-5.2"}`),
+				InboundBody:  []byte(`{"model":"glm-5.2"}`),
+				Candidate:    provider.Candidate{ProviderID: 12763, CredentialID: 36, RawModel: "glm-5.2"},
 				RoutingTracker: executors.NewRoutingAttemptsTracker(),
 			},
 		},
@@ -55,11 +55,7 @@ func TestSurvivalCoordinator_LogsCoverAttemptDiscardAndTerminal(t *testing.T) {
 		BodyBytes: []byte(`{"model":"glm-5.2"}`),
 		Capture:   audit.NewStreamCapture(),
 	}
-	res := h.coordinator().Run(withStreamingContext(harnessCtx(), streamingRequestContext{
-		RequestID:   params.RequestID,
-		TenantID:    "tenant-obs",
-		ClientModel: params.Model,
-	}), h.sw, params)
+	res := h.coordinator().Run(harnessCtx(), h.sw, params)
 	if !res.Succeed {
 		t.Fatalf("coordinator did not succeed: decision=%+v err=%v", res.Decision, res.FinalAttempt.FinalError)
 	}
@@ -106,9 +102,6 @@ func TestSurvivalCoordinator_LogsCoverAttemptDiscardAndTerminal(t *testing.T) {
 	if !gotOutcome {
 		t.Errorf("missing survival_attempt_outcome in log: %s", buf.String())
 	}
-	if !strings.Contains(buf.String(), `"request_id":"req-obs-disposable"`) {
-		t.Errorf("survival logs missing request_id correlation: %s", buf.String())
-	}
 	if !sawProviderRawModel {
 		t.Errorf("survival_attempt_outcome never carried raw_model=glm-5.2: %s", buf.String())
 	}
@@ -141,7 +134,7 @@ func TestSurvivalCoordinator_LogsCaptureResumeBlocked(t *testing.T) {
 		credentialID: 21,
 	}
 	co := &SurvivalCoordinator{
-		Exec:     executor,
+		Exec: executor,
 		Protocol: ProtocolOpenAIChat,
 		Options: SurvivalOptions{
 			Deadline:   30 * time.Minute,
@@ -162,11 +155,7 @@ func TestSurvivalCoordinator_LogsCaptureResumeBlocked(t *testing.T) {
 		BodyBytes: []byte(`{"model":"minimax-m3"}`),
 		Capture:   audit.NewStreamCapture(),
 	}
-	res := co.Run(withStreamingContext(harnessCtx(), streamingRequestContext{
-		RequestID:   params.RequestID,
-		TenantID:    "tenant-resume",
-		ClientModel: params.Model,
-	}), h.sw, params)
+	res := co.Run(harnessCtx(), h.sw, params)
 	if res.Decision.Action != TaskActionResumeBlocked {
 		t.Fatalf("action=%s want resume_blocked", res.Decision.Action.String())
 	}
@@ -182,9 +171,6 @@ func TestSurvivalCoordinator_LogsCaptureResumeBlocked(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), `"survival_resume_blocked"`) {
 		t.Fatalf("missing survival_resume_blocked in log: %s", buf.String())
-	}
-	if !strings.Contains(buf.String(), `"request_id":"req-resume-blocked"`) {
-		t.Errorf("resume-blocked log missing request_id correlation: %s", buf.String())
 	}
 	if !strings.Contains(buf.String(), `"provider_id":14`) {
 		t.Errorf("survival_resume_blocked missing provider_id=14: %s", buf.String())

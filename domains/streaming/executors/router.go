@@ -20,7 +20,6 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/shadow"
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/statesource"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
-	met "github.com/kaixuan/llm-gateway-go/metrics" //nolint:depguard // routing credential observability (2026-08-23 hzx-2 audit)
 	"github.com/kaixuan/llm-gateway-go/provider"
 )
 
@@ -134,9 +133,6 @@ type Router struct {
 	}
 	// weightCounters isolates deterministic weighted selection by candidate set.
 	weightCounters sync.Map
-	// PriorityRoutingEnabled controls the priority candidate bucket. It defaults
-	// to true and can be disabled at process start for an emergency rollback.
-	PriorityRoutingEnabled bool
 
 	shadowMu      sync.Mutex
 	shadowWorker  *ursmShadowWorker
@@ -176,10 +172,9 @@ type Router struct {
 
 func NewRouter(sticky *StickyCache, lim *credential.Limiter) *Router {
 	return &Router{
-		Sticky:                 sticky,
-		Limiter:                lim,
-		LoadScoreWeights:       DefaultLoadScoreWeights(), // Phase 1: 使用默认权重
-		PriorityRoutingEnabled: true,
+		Sticky:           sticky,
+		Limiter:          lim,
+		LoadScoreWeights: DefaultLoadScoreWeights(), // Phase 1: 使用默认权重
 	}
 }
 
@@ -308,7 +303,7 @@ func (r *Router) planCandidates(
 			seeds = append(seeds, ursmv2.CandidateSeed{
 				ProviderID:   c.ProviderID,
 				CredentialID: c.CredentialID,
-				RawModel:     c.BindingRawModel(),
+				RawModel:     c.RawModel,
 				Canonical:    firstNonEmpty(c.StandardizedName, canonical),
 				TenantID:     tenantID,
 				PriceIn:      derefPrice(c.PriceInPer1M),
@@ -341,7 +336,7 @@ func (r *Router) planCandidates(
 		}
 		filtered := make([]provider.Candidate, 0, len(candidates))
 		for i, c := range candidates {
-			if allow[seedLookupKey(seeds[i].ProviderID, c.CredentialID, c.BindingRawModel())] ||
+			if allow[seedLookupKey(seeds[i].ProviderID, c.CredentialID, c.RawModel)] ||
 				(probePin != nil && c.CredentialID == *probePin) {
 				filtered = append(filtered, c)
 			}
@@ -457,33 +452,6 @@ func (r *Router) planCandidates(
 		if probePin != nil {
 			available = rescuePinnedCandidate(candidates, available, *probePin)
 		}
-
-		// 2026-08-23 (hzx-2 audit): all-candidates-cooling fallback.
-		//
-		// When filterHealthyNodes removes every candidate (typical when a
-		// pool-wide outage tripped every node's Disabled=true), the original
-		// code returned nil and the request got 503. Periodic-quota nodes
-		// like hzx-2 would never recover because they couldn't even get a
-		// single request through to validate the upstream.
-		//
-		// We relax only in the non-authoritative path (URSM v2 authoritative
-		// still gates on its single source of truth) and only when there is
-		// no probePin (the probe-pin path is a strict, intentional
-		// override). The fallback picks the candidate with the smallest
-		// DisabledUntil so the "freshest" cooldown goes first. A future
-		// real request through that candidate triggers the Lua cooldown-
-		// expired + success branch and the natural recovery resumes.
-		if len(available) == 0 && probePin == nil && r.FpSlots != nil {
-			fallback := r.chooseLeastCooledCandidate(candidates)
-			if fallback != nil {
-				slog.Warn("router: all candidates in cooldown, falling back to least-cooled",
-					"credential_id", fallback.CredentialID,
-					"model", fallback.RawModel,
-					"provider_id", fallback.ProviderID)
-				met.RoutingCoolingFallbackTotal.WithLabelValues("all_unusable").Inc()
-				available = []provider.Candidate{*fallback}
-			}
-		}
 	}
 
 	// Round 1: token_plan / code_plan / agent_plan / free — always before PAYG.
@@ -556,37 +524,7 @@ func (r *Router) planCandidates(
 		recordOuterSource(statesource.StateSourceOff)
 	}
 
-	// Priority routing observability: classify the first-attempt candidate
-	// after every reordering pass (tier/billing, sticky, affinity, canary)
-	// has settled. ordered[0] is what the executor will try first, so this
-	// is the point where "did the priority bucket actually absorb traffic"
-	// becomes measurable. Only recorded when the feature flag is on so the
-	// no_priority_candidates baseline doesn't mask flag-off deployments.
-	if r.PriorityRoutingEnabled && len(ordered) > 0 {
-		met.RoutingPriorityCandidatesSelectedTotal.WithLabelValues(classifyPrioritySelection(ordered)).Inc()
-	}
-
 	return ordered
-}
-
-// classifyPrioritySelection maps the final ordered candidate list to the
-// outcome label of llmgw_routing_priority_candidates_selected_total:
-// priority_only (first attempt is priority-eligible),
-// spillover_to_non_priority (priority candidates exist but a standard
-// candidate is attempted first), or no_priority_candidates (baseline).
-func classifyPrioritySelection(ordered []provider.Candidate) string {
-	if len(ordered) == 0 {
-		return "no_priority_candidates"
-	}
-	if isPriorityBucketEligible(ordered[0]) {
-		return "priority_only"
-	}
-	for _, c := range ordered {
-		if isPriorityBucketEligible(c) {
-			return "spillover_to_non_priority"
-		}
-	}
-	return "no_priority_candidates"
 }
 
 func (r *Router) enqueueURSMv2Shadow(candidates, legacyOrder []provider.Candidate, tenant, canonical, requestID string) {
@@ -651,7 +589,7 @@ func splitStrictCanaryCandidates(manager *ursmv2.Manager, tenant string, candida
 		return candidates, nil
 	}
 	for _, candidate := range candidates {
-		if manager.AllowsIdentity(tenant, candidate.CredentialID, candidate.BindingRawModel()) {
+		if manager.AllowsIdentity(tenant, candidate.CredentialID, candidate.RawModel) {
 			scoped = append(scoped, candidate)
 		} else {
 			legacy = append(legacy, candidate)
@@ -662,7 +600,7 @@ func splitStrictCanaryCandidates(manager *ursmv2.Manager, tenant string, candida
 
 func candidateSeed(c provider.Candidate, tenant, canonical string) ursmv2.CandidateSeed {
 	return ursmv2.CandidateSeed{
-		ProviderID: c.ProviderID, CredentialID: c.CredentialID, RawModel: c.BindingRawModel(),
+		ProviderID: c.ProviderID, CredentialID: c.CredentialID, RawModel: c.RawModel,
 		Canonical: firstNonEmpty(c.StandardizedName, canonical), TenantID: tenant,
 		PriceIn: derefPrice(c.PriceInPer1M), PriceOut: derefPrice(c.PriceOutPer1M),
 		BillingMode: c.BillingMode, BaseURLMs: c.P50LatencyMs,
@@ -723,10 +661,10 @@ func (r *Router) planWithURSMv2Context(fallback []provider.Candidate, requestCtx
 	seeds := make([]ursmv2.CandidateSeed, 0, len(fallback))
 	lookup := make(map[string]provider.Candidate, len(fallback))
 	for _, c := range fallback {
-		key := seedLookupKey(c.ProviderID, c.CredentialID, c.BindingRawModel())
+		key := seedLookupKey(c.ProviderID, c.CredentialID, c.RawModel)
 		lookup[key] = c
 		seeds = append(seeds, ursmv2.CandidateSeed{
-			ProviderID: c.ProviderID, CredentialID: c.CredentialID, RawModel: c.BindingRawModel(),
+			ProviderID: c.ProviderID, CredentialID: c.CredentialID, RawModel: c.RawModel,
 			Canonical: firstNonEmpty(c.StandardizedName, canonical), TenantID: tenant,
 			PriceIn: derefPrice(c.PriceInPer1M), PriceOut: derefPrice(c.PriceOutPer1M),
 			BillingMode: c.BillingMode, BaseURLMs: c.P50LatencyMs,
@@ -778,12 +716,12 @@ func (r *Router) planWithURSMv2(fallback []provider.Candidate) []provider.Candid
 	seeds := make([]ursmv2.CandidateSeed, 0, len(fallback))
 	lookup := make(map[string]provider.Candidate, len(fallback))
 	for _, c := range fallback {
-		key := seedLookupKey(c.ProviderID, c.CredentialID, c.BindingRawModel())
+		key := seedLookupKey(c.ProviderID, c.CredentialID, c.RawModel)
 		lookup[key] = c
 		seeds = append(seeds, ursmv2.CandidateSeed{
 			ProviderID:   c.ProviderID,
 			CredentialID: c.CredentialID,
-			RawModel:     c.BindingRawModel(),
+			RawModel:     c.RawModel,
 			Canonical:    c.StandardizedName,
 			TenantID:     "", // TODO(T20): plumb tenant through PlanCandidates.
 			PriceIn:      derefPrice(c.PriceInPer1M),
@@ -925,16 +863,6 @@ func (r *Router) planByTier(ctx context.Context, candidates []provider.Candidate
 			sorted = p2cOrder(bucket, r)
 		}
 
-		// Priority routing: when enabled, stable-partition the bandit/P2C
-		// order so priority candidates with ok quota_state sort before
-		// standard ones, preserving the relative order within each group.
-		// This mirrors the SQL ORDER BY bucket
-		// (CASE WHEN priority AND quota_state='ok' THEN 0 ELSE 1 END)
-		// so the Go-side re-sort inside planByTier doesn't erase it.
-		if r.PriorityRoutingEnabled {
-			sorted = stablePartitionPriority(sorted)
-		}
-
 		// GW-03: shadow strategy diff（仅观测，不改顺序）。
 		// 在 weighted selection 之前对比 ShadowStrategy 首选 vs 实际首选。
 		if r.ShadowStrategy != nil {
@@ -945,25 +873,7 @@ func (r *Router) planByTier(ctx context.Context, candidates []provider.Candidate
 		// health-aware order produced above for failover.
 		if len(sorted) > 1 {
 			counter := r.nextWeightCounter(sorted)
-			// Priority gate: the weighted lottery must stay inside the
-			// leading priority bucket, otherwise a high-weight standard
-			// candidate gets promoted to index 0 and receives the first
-			// attempt over priority-eligible ones. The partition above
-			// guarantees eligible candidates form a prefix; when the bucket
-			// is all-priority or all-standard the promotion is unchanged.
-			if r.PriorityRoutingEnabled {
-				if head := priorityPrefixLen(sorted); head > 0 && head < len(sorted) {
-					promoted := promoteWeightedCandidate(sorted[:head], counter)
-					merged := make([]provider.Candidate, 0, len(sorted))
-					merged = append(merged, promoted...)
-					merged = append(merged, sorted[head:]...)
-					sorted = merged
-				} else {
-					sorted = promoteWeightedCandidate(sorted, counter)
-				}
-			} else {
-				sorted = promoteWeightedCandidate(sorted, counter)
-			}
+			sorted = promoteWeightedCandidate(sorted, counter)
 		}
 
 		ordered = append(ordered, sorted...)
@@ -1159,53 +1069,6 @@ func (r *Router) filterHealthyNodes(candidates []provider.Candidate) []provider.
 	return healthy
 }
 
-// chooseLeastCooledCandidate returns the candidate whose NodeState has the
-// smallest DisabledUntil (or no cooldown at all). nil when none of the
-// candidates have a NodeState with DisabledUntil set.
-//
-// 2026-08-23 (hzx-2 audit): used by the all-candidates-cooling fallback
-// to pick the "freshest" cooldown so the recovery probe lands on the node
-// most likely to have recovered. Candidates with no NodeState (never seen
-// in this Redis instance) are treated as DisabledUntil=0 — first in line.
-func (r *Router) chooseLeastCooledCandidate(candidates []provider.Candidate) *provider.Candidate {
-	if len(candidates) == 0 {
-		return nil
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-	keys := make([]credentialfpslot.NodeStateKey, len(candidates))
-	for i, cand := range candidates {
-		keys[i] = credentialfpslot.NodeStateKey{CredentialID: cand.CredentialID, Model: cand.RawModel}
-	}
-	states, err := r.FpSlots.GetNodeStatesBatch(ctx, keys)
-	if err != nil {
-		slog.Warn("router: chooseLeastCooledCandidate node-state read failed",
-			"error", err)
-		// Fail-open: return the first candidate so the request still
-		// has a path; the natural cooldown-expired branch in Lua will
-		// re-clear Disabled if the upstream has actually recovered.
-		return &candidates[0]
-	}
-	bestIdx := 0
-	bestUntil := int64(1<<62 - 1)
-	now := time.Now().Unix()
-	for i, s := range states {
-		if s == nil {
-			// No node state ⇒ never disabled ⇒ most eligible.
-			return &candidates[i]
-		}
-		until := s.DisabledUntil
-		if until <= now {
-			return &candidates[i]
-		}
-		if until < bestUntil {
-			bestUntil = until
-			bestIdx = i
-		}
-	}
-	return &candidates[bestIdx]
-}
-
 func p2cOrder(cands []provider.Candidate, r *Router) []provider.Candidate {
 	if len(cands) <= 1 {
 		return cands
@@ -1390,13 +1253,7 @@ func applyProtocolAffinity(ordered []provider.Candidate, pref []string) []provid
 		if ri != rj {
 			return ri < rj
 		}
-		// Same protocol rank: preserve the incoming order. Affinity's
-		// job is to group preferred protocols first, never to re-rank
-		// within a group — the earlier SuccessRate fallback silently
-		// erased the priority bucket, sticky pin, weighted first
-		// attempt, and tier/billing ordering in the single-protocol
-		// common case (the default egress preference is one protocol).
-		return false
+		return ordered[i].SuccessRate > ordered[j].SuccessRate
 	})
 	return ordered
 }
@@ -1460,58 +1317,9 @@ func CalculateCompositeScore(c provider.Candidate, weights ScoringWeights) float
 	return score
 }
 
-// isPriorityBucketEligible mirrors the SQL ORDER BY predicate
-// CASE WHEN COALESCE(mo.priority, FALSE) AND COALESCE(c.quota_state,'ok')='ok'
-// THEN 0 ELSE 1 END — a candidate sorts into the priority bucket only when
-// its priority flag is set AND its quota_state is ok (or absent).
-func isPriorityBucketEligible(c provider.Candidate) bool {
-	return c.Priority && (c.QuotaState == "" || c.QuotaState == "ok")
-}
-
-// stablePartitionPriority reorders candidates so that priority-bucket
-// candidates come before standard ones, preserving the relative order
-// within each group. This keeps the bandit/P2C ordering intact inside
-// each sub-group while lifting priority candidates to the front — the
-// same semantics as the SQL ORDER BY priority bucket.
-func stablePartitionPriority(cands []provider.Candidate) []provider.Candidate {
-	if len(cands) <= 1 {
-		return cands
-	}
-	prio := make([]provider.Candidate, 0, len(cands))
-	rest := make([]provider.Candidate, 0, len(cands))
-	for _, c := range cands {
-		if isPriorityBucketEligible(c) {
-			prio = append(prio, c)
-		} else {
-			rest = append(rest, c)
-		}
-	}
-	return append(prio, rest...)
-}
-
-// priorityPrefixLen returns the length of the leading run of
-// priority-eligible candidates. Callers feed it a stable-partitioned
-// slice (see stablePartitionPriority), so eligibility is contiguous
-// from index 0.
-func priorityPrefixLen(cands []provider.Candidate) int {
-	n := 0
-	for _, c := range cands {
-		if !isPriorityBucketEligible(c) {
-			break
-		}
-		n++
-	}
-	return n
-}
-
 // CompareCandidatePriority returns true when a should sort before b.
-// Priority bucket takes precedence over billing round, mirroring the
-// SQL ORDER BY: priority AND quota_state='ok' ⇒ 0, else 1.
+// Billing round (plan/free before PAYG) takes precedence over composite score.
 func CompareCandidatePriority(a, b provider.Candidate) bool {
-	pa, pb := isPriorityBucketEligible(a), isPriorityBucketEligible(b)
-	if pa != pb {
-		return pa
-	}
 	ra, rb := provider.BillingRound(a.BillingMode), provider.BillingRound(b.BillingMode)
 	if ra != rb {
 		return ra < rb

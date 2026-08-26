@@ -89,10 +89,10 @@ func (n *NoopRecorder) RecordAdapterConversion(provider, direction string, durat
 func (n *NoopRecorder) RecordAdapterFailure(provider, reason string)                               {}
 func (n *NoopRecorder) RecordAdapterTokens(provider, tokenType string, count int)                  {}
 func (n *NoopRecorder) SetAdapterActive(provider string, active bool)                              {}
-func (n *NoopRecorder) RecordSchedulerSelection(providerID string, duration time.Duration)         {}
-func (n *NoopRecorder) UpdateSchedulerWeight(providerID string, weight int)                        {}
-func (n *NoopRecorder) UpdateSchedulerCurrentWeight(providerID string, weight int)                 {}
-func (n *NoopRecorder) UpdateSchedulerEffectiveWeight(providerID string, weight int)               {}
+func (n *NoopRecorder) RecordSchedulerSelection(providerID string, duration time.Duration)       {}
+func (n *NoopRecorder) UpdateSchedulerWeight(providerID string, weight int)                      {}
+func (n *NoopRecorder) UpdateSchedulerCurrentWeight(providerID string, weight int)               {}
+func (n *NoopRecorder) UpdateSchedulerEffectiveWeight(providerID string, weight int)             {}
 func (n *NoopRecorder) SetSchedulerAvailableCredentials(count int)                                 {}
 func (n *NoopRecorder) RecordSafetyCheck(checkType string, duration time.Duration)                 {}
 func (n *NoopRecorder) RecordSafetyAction(action, severity string)                                 {}

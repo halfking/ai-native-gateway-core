@@ -179,45 +179,45 @@ func (d *Downloader) DownloadWithGPG(ctx context.Context, url, sigURL, expectedC
 	if d.gpgVerifier == nil {
 		return nil, fmt.Errorf("GPG verifier not configured")
 	}
-
+	
 	// 1. 下载文件
 	result, err := d.Download(ctx, url, expectedChecksum)
 	if err != nil {
 		return nil, err
 	}
-
+	
 	// 2. 下载签名文件
 	sigFilePath := result.FilePath + ".sig"
 	sigReq, err := http.NewRequestWithContext(ctx, "GET", sigURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create sig request: %w", err)
 	}
-
+	
 	sigResp, err := d.httpClient.Do(sigReq)
 	if err != nil {
 		return nil, fmt.Errorf("download signature: %w", err)
 	}
 	defer sigResp.Body.Close()
-
+	
 	if sigResp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("signature download failed: status %d", sigResp.StatusCode)
 	}
-
+	
 	sigFile, err := os.Create(sigFilePath)
 	if err != nil {
 		return nil, fmt.Errorf("create sig file: %w", err)
 	}
 	defer sigFile.Close()
-
+	
 	if _, err := io.Copy(sigFile, sigResp.Body); err != nil {
 		return nil, fmt.Errorf("write sig file: %w", err)
 	}
 	sigFile.Close()
-
+	
 	// 3. 验证 GPG 签名
 	if err := d.gpgVerifier.VerifySignature(ctx, result.FilePath, sigFilePath); err != nil {
 		return nil, fmt.Errorf("GPG signature verification failed: %w", err)
 	}
-
+	
 	return result, nil
 }

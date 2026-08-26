@@ -185,7 +185,7 @@ func TestPostgresApplyUsesOnlyExplicitContentFreeColumns(t *testing.T) {
 			event.TenantID, event.GatewayInstanceID, event.RequestID, event.Seq,
 			event.Type, event.Stage, event.RequestedModel, nil, nil, nil, nil,
 			nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
-			event.ObservationStatus, nil, event.OccurredAt,
+			event.ObservationStatus, event.OccurredAt,
 		).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 
@@ -213,7 +213,7 @@ func eventRows(event JourneyEvent) *pgxmock.Rows {
 		"credential_id", "from_model", "to_model", "from_credential_id",
 		"to_credential_id", "attempt_id", "attempt_no", "outcome", "error_kind",
 		"http_status", "retry_reason", "switch_reason", "node_health_status",
-		"observation_status", "retry_at", "occurred_at",
+		"observation_status", "occurred_at",
 	}).AddRow(
 		event.TenantID, event.GatewayInstanceID, event.RequestID, event.Seq,
 		string(event.Type), string(event.Stage), nullableTestString(event.RequestedModel),
@@ -225,7 +225,7 @@ func eventRows(event JourneyEvent) *pgxmock.Rows {
 		nullableTestString(string(event.Outcome)), nullableTestString(event.ErrorKind),
 		nullableTestInt(event.HTTPStatus), nullableTestString(event.RetryReason),
 		nullableTestString(event.SwitchReason), nullableTestString(string(event.NodeHealthStatus)),
-		string(event.ObservationStatus), nullableTestTime(event.RetryAt), event.OccurredAt,
+		string(event.ObservationStatus), event.OccurredAt,
 	)
 }
 
@@ -248,11 +248,4 @@ func nullableTestInt(value int) any {
 		return nil
 	}
 	return value
-}
-
-func nullableTestTime(value *time.Time) any {
-	if value == nil {
-		return nil
-	}
-	return *value
 }

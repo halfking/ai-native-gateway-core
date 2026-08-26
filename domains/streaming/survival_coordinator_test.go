@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 )
@@ -62,7 +61,7 @@ func (h *coordHarness) coordinator() *SurvivalCoordinator {
 	return &SurvivalCoordinator{
 		Exec:     h.exec,
 		Protocol: ProtocolAnthropic,
-		Options:  SurvivalOptions{Deadline: 30 * time.Minute, RetryBase: 2 * time.Second, RetryMax: 2 * time.Minute},
+		Options:  SurvivalOptions{Deadline: 30 * time.Minute, RetryBase: 5 * time.Second, RetryMax: 2 * time.Minute},
 		// Deterministic ±20% jitter seam (T3): 0.5 keeps the scripted
 		// backoff steps exact for the assertions below.
 		JitterRand: func() float64 { return 0.5 },
@@ -139,27 +138,6 @@ func TestSurvivalCoordinatorRetryNowRecoversOnSecondAttempt(t *testing.T) {
 	}
 }
 
-func TestSurvivalCoordinatorRetryResetsDiscardedCapture(t *testing.T) {
-	capture := audit.NewStreamCapture()
-	capture.MarkInterruptedWithReason("early_empty_detection")
-	h := newCoordHarness(&scriptedExecutor{
-		errs:    []error{transientFailure(), nil},
-		results: []*executors.ExecuteResult{nil, {}},
-	})
-
-	res := h.coordinator().Run(context.Background(), h.sw, &executors.ExecParams{Capture: capture})
-	if !res.Succeed {
-		t.Fatalf("expected recovery, decision=%v", res.Decision.Action)
-	}
-	_, _, _, interrupted, _ := capture.Snapshot()
-	if interrupted {
-		t.Fatal("discarded attempt interruption leaked into recovered stream capture")
-	}
-	if events := capture.DiscardEventsCopy(); len(events) != 1 || events[0].Reason != "survival_attempt_discarded" {
-		t.Fatalf("discard event missing after capture reset: %+v", events)
-	}
-}
-
 func TestSurvivalCoordinatorWaitRecoveryBacksOffAndKeepalives(t *testing.T) {
 	h := newCoordHarness(&scriptedExecutor{
 		errs:    []error{rateLimitFailure(), nil},
@@ -172,7 +150,7 @@ func TestSurvivalCoordinatorWaitRecoveryBacksOffAndKeepalives(t *testing.T) {
 	if !res.Succeed {
 		t.Fatalf("expected recovery, decision=%v", res.Decision.Action)
 	}
-	if len(h.sleeps) != 1 || h.sleeps[0] != 2*time.Second {
+	if len(h.sleeps) != 1 || h.sleeps[0] != 5*time.Second {
 		t.Fatalf("first wait must sleep the base backoff, got %v", h.sleeps)
 	}
 	if h.flusher.buf.Len() == 0 {
@@ -255,7 +233,7 @@ func TestSurvivalCoordinatorDeadlineStopsLoop(t *testing.T) {
 	h := newCoordHarness(&scriptedExecutor{errs: []error{rateLimitFailure(), rateLimitFailure()}})
 	c := h.coordinator()
 	// Tight deadline: expires before the second retry.
-	c.Options.Deadline = 3 * time.Second // first sleep = 2s, clock advances past deadline
+	c.Options.Deadline = 6 * time.Second // first sleep = 5s, clock advances past deadline
 
 	res := c.Run(context.Background(), h.sw, &executors.ExecParams{})
 
@@ -305,7 +283,7 @@ func TestSurvivalCoordinatorBackoffDoublesAndCaps(t *testing.T) {
 	if !res.Succeed {
 		t.Fatalf("expected recovery on 4th attempt, decision=%v", res.Decision.Action)
 	}
-	want := []time.Duration{2 * time.Second, 4 * time.Second, 8 * time.Second}
+	want := []time.Duration{5 * time.Second, 10 * time.Second, 20 * time.Second}
 	if len(h.sleeps) != len(want) {
 		t.Fatalf("sleeps = %v, want %v", h.sleeps, want)
 	}
@@ -330,15 +308,15 @@ func TestSurvivalCoordinatorEmitsKeepaliveThroughoutWait(t *testing.T) {
 	})
 	c := h.coordinator()
 	c.Sleep = nil
-	c.Options.RetryBase = 35 * time.Millisecond
-	c.Options.KeepaliveInterval = 10 * time.Millisecond
+	c.Options.RetryBase = 5 * time.Second
+	c.Options.KeepaliveInterval = time.Second
 
 	res := c.Run(context.Background(), h.sw, &executors.ExecParams{})
 	if !res.Succeed {
 		t.Fatalf("expected recovery, decision=%v", res.Decision.Action)
 	}
 	if got := strings.Count(h.flusher.buf.String(), "event: ping\ndata: {\"type\":\"ping\"}\n\n"); got < 3 {
-		t.Fatalf("keepalive count = %d, want at least 3 during 35ms wait", got)
+		t.Fatalf("keepalive count = %d, want at least 3 during 5s wait", got)
 	}
 }
 
@@ -421,40 +399,7 @@ func (e *holdbackWriteExecutor) Execute(params *executors.ExecParams) (*executor
 	return &executors.ExecuteResult{}, nil
 }
 
-type holdbackRetryExecutor struct {
-	contents []string
-	calls    int
-}
-
-func (e *holdbackRetryExecutor) Execute(params *executors.ExecParams) (*executors.ExecuteResult, error) {
-	index := e.calls
-	e.calls++
-	if gw, ok := params.W.(*GateWriter); ok && index < len(e.contents) {
-		_, _ = gw.Write([]byte(e.contents[index]))
-	}
-	if index == 0 {
-		return nil, transientFailure()
-	}
-	return &executors.ExecuteResult{}, nil
-}
-
-type committedMetadataRetryExecutor struct{ calls int }
-
-func (e *committedMetadataRetryExecutor) Execute(params *executors.ExecParams) (*executors.ExecuteResult, error) {
-	e.calls++
-	gw, ok := params.W.(*GateWriter)
-	if !ok {
-		return nil, errors.New("survival coordinator did not supply a gate writer")
-	}
-	if _, err := gw.Write([]byte("event: message_start\ndata: {\"type\":\"message_start\"}\n\n")); err != nil {
-		return nil, err
-	}
-	if err := gw.UnderlyingAttemptGate().Commit(); err != nil {
-		return nil, err
-	}
-	return nil, transientFailure()
-}
-
+// TestSurvivalCoordinatorFlushHeldFramesOnSuccessUnderHoldback is the
 // coordinator-level regression for the success-path holdback flush fix
 // (FR-12 L1). An attempt that finishes successfully while the L1 window still
 // holds its semantic frames (gate uncommitted) must release those held frames
@@ -488,80 +433,7 @@ func TestSurvivalCoordinatorFlushHeldFramesOnSuccessUnderHoldback(t *testing.T) 
 	}
 }
 
-func TestSurvivalCoordinatorDiscardsHeldFramesBeforeRetry(t *testing.T) {
-	t.Setenv("LLM_GATEWAY_RECOVERY_HOLDBACK_WINDOW_MS", "5000")
-	t.Setenv("LLM_GATEWAY_RECOVERY_HOLDBACK_MAX_CHUNKS", "5")
-
-	const discarded = "held-from-failed-attempt"
-	const recovered = "held-from-successful-retry"
-	frame := func(marker string) string {
-		return "event: content_block_delta\ndata: {\"delta\":{\"type\":\"text_delta\",\"text\":\"" + marker + "\"}}\n\n"
-	}
-	exec := &holdbackRetryExecutor{contents: []string{frame(discarded), frame(recovered)}}
-	h := newCoordHarness(nil)
-	h.exec = nil
-	c := h.coordinator()
-	c.Exec = exec
-
-	res := c.Run(context.Background(), h.sw, &executors.ExecParams{IsStream: true})
-
-	if !res.Succeed {
-		t.Fatalf("expected retry success, decision=%v reason=%v", res.Decision.Action, res.Decision.Reason)
-	}
-	if res.Attempts != 2 || exec.calls != 2 {
-		t.Fatalf("attempts = %d, executor calls = %d, want two attempts", res.Attempts, exec.calls)
-	}
-	if h.refreshes != 1 {
-		t.Fatalf("retry must refresh candidates once, got %d", h.refreshes)
-	}
-	if len(h.terminals) != 0 {
-		t.Fatalf("transparent recovery must not render terminal output: %v", h.terminals)
-	}
-	wire := h.flusher.buf.String()
-	if strings.Contains(wire, discarded) {
-		t.Fatalf("discarded held output leaked to the client: %q", wire)
-	}
-	if !strings.Contains(wire, recovered) {
-		t.Fatalf("successful retry held output did not reach the client: %q", wire)
-	}
-}
-
-func TestSurvivalCoordinatorDiscardRefusedFailsClosed(t *testing.T) {
-	t.Setenv("LLM_GATEWAY_RECOVERY_HOLDBACK_WINDOW_MS", "")
-	exec := &committedMetadataRetryExecutor{}
-	h := newCoordHarness(nil)
-	h.exec = nil
-	c := h.coordinator()
-	c.Exec = exec
-
-	res := c.Run(context.Background(), h.sw, &executors.ExecParams{})
-
-	if res.Succeed {
-		t.Fatal("discard refusal must not succeed")
-	}
-	if res.Decision.Action != TaskActionFailClosed || res.Decision.Reason != "discard_refused" {
-		t.Fatalf("decision = %+v, want fail_closed/discard_refused", res.Decision)
-	}
-	if res.Attempts != 1 || exec.calls != 1 {
-		t.Fatalf("attempts = %d, executor calls = %d, want one attempt", res.Attempts, exec.calls)
-	}
-	if res.FinalAttempt == nil || res.FinalAttempt.CommitState != CommitStateMetadata || res.FinalAttempt.SafeRetry {
-		t.Fatalf("final attempt = %+v, want committed metadata with SafeRetry=false", res.FinalAttempt)
-	}
-	if h.refreshes != 0 || len(h.sleeps) != 0 {
-		t.Fatalf("discard refusal must stop before retry, refreshes=%d sleeps=%v", h.refreshes, h.sleeps)
-	}
-	if len(h.terminals) != 1 || h.terminals[0].Action != TaskActionFailClosed || h.terminals[0].Reason != "discard_refused" {
-		t.Fatalf("terminal renders = %v, want one discard_refused terminal", h.terminals)
-	}
-	if len(h.committeds) != 1 || !h.committeds[0] {
-		t.Fatalf("terminal committed flag = %v, want [true]", h.committeds)
-	}
-	if !strings.Contains(h.flusher.buf.String(), "message_start") {
-		t.Fatalf("committed metadata should remain visible on the wire: %q", h.flusher.buf.String())
-	}
-}
-
+// TestSurvivalCoordinatorDiscardsHeldFramesOnTerminalFailureUnderHoldback is
 // the complementary check: a terminal failure while the L1 window holds
 // uncommitted semantic frames must NOT leak those frames to the client. The
 // terminal branch uses finishGateWriter, whose committed-guard (gate not

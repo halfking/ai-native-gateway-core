@@ -20,27 +20,25 @@ func TestAvailabilityKeyCounterCountOnce(t *testing.T) {
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	ctx := context.Background()
 
-	// Seed legacy keys to verify the one-time compatibility index build.
+	// Seed 3 keys under the namespace and 1 unrelated key.
 	for _, k := range []string{
 		"llmgw:avail:1:minimax-m3",
 		"llmgw:avail:2:glm-5.2",
 		"llmgw:avail:3:claude-opus-4-6",
+		"unrelated:counter:1",
 	} {
 		if err := client.HSet(ctx, k, map[string]any{"state": "ok"}).Err(); err != nil {
 			t.Fatalf("seed %s: %v", k, err)
 		}
 	}
-	if err := client.HSet(ctx, "unrelated:counter:1", "state", "ok").Err(); err != nil {
-		t.Fatal(err)
-	}
 
 	k := NewAvailabilityKeyCounter(client, time.Hour)
-	keys, err := loadAvailabilityIndex(ctx, client)
+	count, err := scanAvailabilityKeys(ctx, client)
 	if err != nil {
-		t.Fatalf("loadAvailabilityIndex: %v", err)
+		t.Fatalf("scanAvailabilityKeys: %v", err)
 	}
-	if len(keys) != 3 {
-		t.Fatalf("count = %d, want 3 (only llmgw:avail:* keys)", len(keys))
+	if count != 3 {
+		t.Fatalf("count = %d, want 3 (only llmgw:avail:* keys)", count)
 	}
 	k.CountOnce(ctx)
 }
@@ -54,43 +52,6 @@ func TestAvailabilityKeyCounterCountOnceEmpty(t *testing.T) {
 
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	NewAvailabilityKeyCounter(client, time.Hour).CountOnce(context.Background())
-}
-
-func TestLoadAvailabilityIndexRemovesExpiredMembers(t *testing.T) {
-	mr, err := miniredis.Run()
-	if err != nil {
-		t.Fatalf("miniredis.Run: %v", err)
-	}
-	defer mr.Close()
-
-	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	ctx := context.Background()
-	activeKey := "llmgw:avail:9:active"
-	staleKey := "llmgw:avail:9:stale"
-	if err := client.HSet(ctx, activeKey, "state", "ok").Err(); err != nil {
-		t.Fatal(err)
-	}
-	if err := client.SAdd(ctx, availabilityIndexKey, activeKey, staleKey).Err(); err != nil {
-		t.Fatal(err)
-	}
-	if err := client.Set(ctx, availabilityIndexReadyKey, "1", time.Hour).Err(); err != nil {
-		t.Fatal(err)
-	}
-
-	keys, err := loadAvailabilityIndex(ctx, client)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(keys) != 1 || keys[0] != activeKey {
-		t.Fatalf("active keys = %v, want [%s]", keys, activeKey)
-	}
-	stale, err := mr.SIsMember(availabilityIndexKey, staleKey)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if stale {
-		t.Fatal("stale index member was not removed")
-	}
 }
 
 func TestAvailabilityKeyCounterWritesGauge(t *testing.T) {

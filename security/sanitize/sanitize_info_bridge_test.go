@@ -14,14 +14,11 @@ import (
 // (sanitize imports compression; the reverse would cycle). If either side
 // drifts, Invalidate cascades would delete the wrong keys and the L3
 // SanitizeMapRef would point at nothing.
-//
-// T11-P0 v2: keys now include tenantHash; pin with explicit tenant to ensure
-// both sides hash the same way.
 func TestSessionSanitizeRedisKeyMatches(t *testing.T) {
-	if got, want := compression.SessionSanitizeRedisKey("tA", "s1"), SanitizeRedisKey("tA", "s1"); got != want {
+	if got, want := compression.SessionSanitizeRedisKey("s1"), SanitizeRedisKey("s1"); got != want {
 		t.Fatalf("map key drift: compression=%q sanitize=%q", got, want)
 	}
-	if got, want := compression.SessionSanitizeOffsetRedisKey("tA", "s1"), SanitizeOffsetRedisKey("tA", "s1"); got != want {
+	if got, want := compression.SessionSanitizeOffsetRedisKey("s1"), SanitizeOffsetRedisKey("s1"); got != want {
 		t.Fatalf("offset key drift: compression=%q sanitize=%q", got, want)
 	}
 }
@@ -30,9 +27,6 @@ func TestSessionSanitizeRedisKeyMatches(t *testing.T) {
 // input middleware rewrites the body, the downstream handler must see BOTH
 // the placeholder map (legacy context value) and the compression.SanitizeInfo
 // bridge payload used to populate SessionState v8 L3 fields.
-//
-// T11-P0 v2: MapRef 必须包含 tenantHash；测试在 request 上设 X-Gw-Tenant-Id，
-// 期望 middleware 与 mirror 函数一致。
 func TestMiddlewarePublishesSanitizeInfo(t *testing.T) {
 	mw, err := NewSanitizeInputMiddleware(mustSanitizer(t), nil, 0)
 	if err != nil {
@@ -52,16 +46,14 @@ func TestMiddlewarePublishesSanitizeInfo(t *testing.T) {
 	body := `{"model":"m","messages":[{"role":"user","content":"call me at 13800138000 or mail a@b.com"}]}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
 	req.Header.Set("X-Gw-Session-Id", "sess-sc1")
-	req.Header.Set("X-Gw-Tenant-Id", "tenant-sc1")
 	rec := httptest.NewRecorder()
 	mw.Wrap(next).ServeHTTP(rec, req)
 
 	if !infoOK {
 		t.Fatal("SanitizeInfo missing from context after sanitization")
 	}
-	wantRef := compression.SessionSanitizeRedisKey(HashTenant("tenant-sc1"), "sess-sc1")
-	if gotInfo.MapRef != wantRef {
-		t.Fatalf("MapRef = %q, want %q", gotInfo.MapRef, wantRef)
+	if gotInfo.MapRef != compression.SessionSanitizeRedisKey("sess-sc1") {
+		t.Fatalf("MapRef = %q, want session:sess-sc1:sanitize", gotInfo.MapRef)
 	}
 	if gotInfo.Stats.PlaceholderCount != 2 {
 		t.Fatalf("PlaceholderCount = %d, want 2 (phone + email)", gotInfo.Stats.PlaceholderCount)

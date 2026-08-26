@@ -69,17 +69,11 @@ func encryptFernet(plaintext []byte, key []byte) ([]byte, error) {
 	return encoded, nil
 }
 
-// maskAPIKey returns a redacted form of plaintext suitable for displaying in
-// admin UIs. Exposes a 4-char prefix + 4-char suffix (e.g. "sk-a...xyz1") so
-// operators can still tell which key is which without leaking enough material
-// for brute-force guessing. Reveals 8/48-56 chars ≈ 14-17% of typical free-
-// provider keys, versus the previous 10+6 (≈ 28-30%) which was flagged in
-// audit round 2 (H3). Keys ≤ 12 chars are fully redacted.
 func maskAPIKey(plaintext string) string {
-	if len(plaintext) <= 12 {
+	if len(plaintext) <= 16 {
 		return "****"
 	}
-	return plaintext[:4] + "..." + plaintext[len(plaintext)-4:]
+	return plaintext[:10] + "..." + plaintext[len(plaintext)-6:]
 }
 
 func decryptFernet(token []byte, key []byte) (string, error) {

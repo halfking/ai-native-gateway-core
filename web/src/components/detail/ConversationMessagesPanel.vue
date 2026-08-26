@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import {
+  extractAssistantReply,
   extractMessagesFromBody,
   filterMessages,
   formatJson,
@@ -12,17 +13,26 @@ import { extractMultimodalFromBody } from './multimodalHelpers'
 
 const props = defineProps<{
   body: unknown
+  /** When set, show a dedicated assistant reply block below request messages. */
+  responseBody?: unknown
   emptyHint?: string
 }>()
 
 const roleFilter = ref<RoleFilter>('all')
 const expanded = ref<Set<number>>(new Set())
+const replyExpanded = ref(false)
 
 const messages = computed(() =>
   filterMessages(extractMessagesFromBody(props.body), roleFilter.value),
 )
 
 const allMedia = computed(() => extractMultimodalFromBody(props.body))
+
+const replyText = computed(() =>
+  props.responseBody == null ? '' : extractAssistantReply(props.responseBody),
+)
+
+const replyPreview = computed(() => previewText(replyText.value || '(无回复)'))
 
 function mediaForMessage(i: number) {
   return allMedia.value.filter((m) => m.messageIndex === i)
@@ -37,6 +47,16 @@ function toggle(i: number) {
 
 function contentOf(msg: Record<string, unknown>): unknown {
   return msg.content ?? msg
+}
+
+function roleTone(role: unknown): string {
+  switch (String(role || '')) {
+    case 'user': return 'msg-block--user'
+    case 'assistant': return 'msg-block--assistant'
+    case 'system': return 'msg-block--system'
+    case 'tool': return 'msg-block--tool'
+    default: return ''
+  }
 }
 </script>
 
@@ -56,7 +76,7 @@ function contentOf(msg: Record<string, unknown>): unknown {
       <span v-if="allMedia.length" class="media-hint">含媒体 {{ allMedia.length }}</span>
     </div>
     <template v-if="messages.length">
-      <div v-for="(msg, i) in messages" :key="i" class="msg-block">
+      <div v-for="(msg, i) in messages" :key="i" class="msg-block" :class="roleTone(msg.role)">
         <div class="msg-role" :style="{ color: roleColor(String(msg.role || '')) }">
           [{{ msg.role || 'unknown' }}]
         </div>
@@ -92,13 +112,34 @@ function contentOf(msg: Record<string, unknown>): unknown {
       </div>
     </template>
     <div v-else class="text-muted">{{ emptyHint || '(无消息)' }}</div>
+
+    <section v-if="responseBody !== undefined" class="reply-block msg-block--assistant" data-testid="chat-reply">
+      <div class="msg-role" :style="{ color: roleColor('assistant') }">[assistant 回复]</div>
+      <pre class="msg-pre">{{ replyExpanded ? (replyText || '(无回复)') : replyPreview.text }}</pre>
+      <button
+        v-if="replyPreview.truncated || replyExpanded"
+        type="button"
+        class="btn btn-sm linkish"
+        @click="replyExpanded = !replyExpanded"
+      >{{ replyExpanded ? '收起' : '展开' }}</button>
+    </section>
   </div>
 </template>
 
 <style scoped>
 .conv-filters { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; align-items: center; }
 .media-hint { font-size: 11px; color: var(--muted); margin-left: 4px; }
-.msg-block { margin-bottom: 12px; }
+.msg-block {
+  margin-bottom: 12px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border-left: 3px solid var(--border);
+  background: var(--bg-subtle, var(--surface-secondary));
+}
+.msg-block--user { border-left-color: var(--info, #2563eb); background: color-mix(in srgb, var(--info, #2563eb) 7%, transparent); }
+.msg-block--assistant { border-left-color: var(--success, #16a34a); background: color-mix(in srgb, var(--success, #16a34a) 7%, transparent); }
+.msg-block--system { border-left-color: var(--warning, #d97706); background: color-mix(in srgb, var(--warning, #d97706) 8%, transparent); }
+.msg-block--tool { border-left-color: var(--muted); }
 .msg-role { font-size: 12px; font-weight: 600; margin-bottom: 4px; }
 .inline-media {
   display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 6px;
@@ -111,9 +152,14 @@ function contentOf(msg: Record<string, unknown>): unknown {
 .msg-pre, .tool-pre {
   margin: 0; white-space: pre-wrap; word-break: break-word;
   font-size: 12px; line-height: 1.45; max-height: 320px; overflow: auto;
-  background: var(--bg-subtle, var(--overlay-light)); padding: 8px; border-radius: 4px;
+  background: transparent; padding: 4px 0; border-radius: 4px;
 }
 .tool-label { font-size: 11px; color: var(--muted); margin: 6px 0 2px; }
 .linkish { margin-top: 4px; }
+.reply-block {
+  margin-top: 16px; padding: 8px 10px; border-radius: 6px;
+  border-left: 3px solid var(--success, #16a34a);
+  background: color-mix(in srgb, var(--success, #16a34a) 7%, transparent);
+}
 .text-muted { color: var(--muted); font-size: 13px; }
 </style>

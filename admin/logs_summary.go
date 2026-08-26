@@ -32,19 +32,6 @@ var (
 	sessionSummaryCache sync.Map
 )
 
-// sweepSessionSummaryCache deletes expired entries. Keys embed log_count, so
-// every poll of a still-growing session inserts a NEW key; expiry was only
-// checked on read, which let the map grow without bound (2026-08-25 audit).
-// Called on each Store — the admin endpoint's QPS makes the O(n) Range cheap.
-func sweepSessionSummaryCache(now time.Time) {
-	sessionSummaryCache.Range(func(key, value any) bool {
-		if c, ok := value.(*cachedSessionSummary); ok && now.Sub(c.CachedAt) > sessionSummaryCacheTTL {
-			sessionSummaryCache.Delete(key)
-		}
-		return true
-	})
-}
-
 type cachedSessionSummary struct {
 	Summary   string
 	KeyPoints []string
@@ -171,14 +158,12 @@ func (h *Handler) handleSessionSummary(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Store in cache
-	now := time.Now()
-	sweepSessionSummaryCache(now)
 	sessionSummaryCache.Store(cacheKey, &cachedSessionSummary{
 		Summary:   summary,
 		KeyPoints: keyPoints,
 		Model:     model,
 		KeyID:     keyID,
-		CachedAt:  now,
+		CachedAt:  time.Now(),
 	})
 
 	meta := sessionSummaryMeta{
@@ -206,8 +191,8 @@ func (h *Handler) loadSessionLogsForSummary(ctx context.Context, r *http.Request
 
 	rows, err := h.db.Query(ctx, `
 		SELECT rl.ts, rl.request_preview, rl.response_preview,
-		       rb.request_body::text AS request_body,
-		       rb.response_body::text AS response_body,
+		       COALESCE(rb.request_body::text, rl.request_body::text) AS request_body,
+		       COALESCE(rb.response_body::text, rl.response_body::text) AS response_body,
 		       `+requestLogStatusExpr+` AS request_status,
 		       rl.error_kind, rl.client_model
 		FROM request_logs_with_current_month rl
@@ -261,8 +246,8 @@ func (h *Handler) loadSessionLogsBySessionID(ctx context.Context, sessionID, ten
 	}
 	rows, err := h.db.Query(ctx, `
 		SELECT rl.ts, rl.request_preview, rl.response_preview,
-		       rb.request_body::text AS request_body,
-		       rb.response_body::text AS response_body,
+		       COALESCE(rb.request_body::text, rl.request_body::text) AS request_body,
+		       COALESCE(rb.response_body::text, rl.response_body::text) AS response_body,
 		       `+requestLogStatusExpr+` AS request_status,
 		       rl.error_kind, rl.client_model
 		FROM request_logs_with_current_month rl
@@ -535,14 +520,12 @@ func (h *Handler) handleSessionSummaryToMemora(w http.ResponseWriter, r *http.Re
 			writeError(w, http.StatusBadGateway, "总结结果无效，请稍后重试")
 			return
 		}
-		now := time.Now()
-		sweepSessionSummaryCache(now)
 		sessionSummaryCache.Store(cacheKey, &cachedSessionSummary{
 			Summary:   summary,
 			KeyPoints: keyPoints,
 			Model:     model,
 			KeyID:     keyID,
-			CachedAt:  now,
+			CachedAt:  time.Now(),
 		})
 	}
 

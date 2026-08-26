@@ -19,6 +19,7 @@ import ModelPicker from '../components/ModelPicker.vue'
 import RequestLogDrawer from '../components/RequestLogDrawer.vue'
 import SessionSummaryDrawer from '../components/SessionSummaryDrawer.vue'
 import { isSuperAdmin, isDefaultTenant, getCurrentTenantId } from '../store'
+import { openRequestDetailPage } from '../utils/openRequestDetailPage'
 
 const rows = ref<RequestLogRow[]>([])
 const keys = ref<ApiKey[]>([])
@@ -883,7 +884,7 @@ const route = useRoute()
 const router = useRouter()
 
 function showDetail(requestId: string) {
-  void router.push({ name: 'request-detail', params: { requestId } })
+  openRequestDetailPage(requestId, undefined, router)
 }
 
 function closeDetail() {

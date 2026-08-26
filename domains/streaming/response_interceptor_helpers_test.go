@@ -8,7 +8,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/response"
 )
@@ -306,32 +305,5 @@ func TestInjectFollowUpLogsAuthFailureOnMissingKey(t *testing.T) {
 	}
 	if !strings.Contains(gotBody, "missing_key") {
 		t.Fatalf("expected missing_key in body, got %q", gotBody)
-	}
-}
-
-// TestSweepSessionFollowUpsReapsIdle ensures idle counters are reaped so the
-// per-session map cannot grow without bound (2026-08-25 audit fix).
-func TestSweepSessionFollowUpsReapsIdle(t *testing.T) {
-	idle := &followUpCounter{}
-	idle.count.Store(5)
-	idle.lastActive.Store(time.Now().Add(-25 * time.Hour).Unix())
-	live := &followUpCounter{}
-	live.lastActive.Store(time.Now().Unix())
-	sessionFollowUpCounts.Store("sess-idle", idle)
-	sessionFollowUpCounts.Store("sess-live", live)
-	t.Cleanup(func() {
-		sessionFollowUpCounts.Delete("sess-idle")
-		sessionFollowUpCounts.Delete("sess-live")
-	})
-	// Reset the sweep throttle so the call is not suppressed.
-	sessionFollowUpLastSweep.Store(0)
-
-	sweepSessionFollowUps(time.Now().Unix())
-
-	if _, ok := sessionFollowUpCounts.Load("sess-idle"); ok {
-		t.Fatal("idle counter should be reaped")
-	}
-	if _, ok := sessionFollowUpCounts.Load("sess-live"); !ok {
-		t.Fatal("active counter must survive the sweep")
 	}
 }

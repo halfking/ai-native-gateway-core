@@ -1,5 +1,24 @@
 import { reactive } from 'vue'
 
+// 2026-08-26 (P1-28 fix): api-autoroute.ts holds a module-level sk-*
+// relay cache. store.ts cannot import from api-autoroute.ts at module
+// load time (would create a cycle: api-autoroute.ts already imports
+// `store` + `authBearer` from here). Instead, api-autoroute.ts
+// registers a synchronous invalidator on globalThis at its own module
+// init, which we call here on every auth-state mutation so the cache
+// cannot survive a logout / tenant swap / apiKey rotation.
+declare global {
+  // eslint-disable-next-line no-var
+  var __llmgwRelayCacheInvalidator: (() => void) | undefined
+}
+function relayCacheInvalidator(): void {
+  try {
+    globalThis.__llmgwRelayCacheInvalidator?.()
+  } catch {
+    /* api-autoroute.ts not yet loaded — nothing to clear. */
+  }
+}
+
 const KEY = 'llmgw_api_key'
 const JWT_KEY = 'llmgw_jwt' // Real JWT persisted to localStorage for Bearer header
 const USER_KEY = 'llmgw_user_info'
@@ -49,11 +68,22 @@ export const store = reactive({
 export function setApiKey(k: string) {
   store.apiKey = k
   localStorage.setItem(KEY, k)
+  // 2026-08-26 (P1-28 fix): the admin SPA ships a module-level sk-*
+  // relay cache (web/src/api-autoroute.ts). Anything that mutates the
+  // bearer must drop it, otherwise logging out as tenant A and logging
+  // back in as tenant B reuses tenant A's revealed key. The import is
+  // cycle-free: api-autoroute.ts imports from this file (the `store`
+  // reactive singleton) but never the other way around, so a direct
+  // top-level import would not work — we use a sync lazy require via
+  // a globalThis-registered hook set up by api-autoroute.ts at module
+  // load time.
+  relayCacheInvalidator?.()
 }
 
 export function clearApiKey() {
   store.apiKey = ''
   localStorage.removeItem(KEY)
+  relayCacheInvalidator()
 }
 
 /** Per-user preferred API key id for /chat (sk-* resolved via reveal). */
@@ -84,6 +114,9 @@ export function setJwtToken(token: string) {
   } else {
     localStorage.removeItem(JWT_KEY)
   }
+  // 2026-08-26 (P1-28 fix): drop the per-tenant sk-* relay cache when
+  // the bearer changes. See setApiKey() above for the rationale.
+  relayCacheInvalidator()
 }
 
 // Returns the token that should go into the `Authorization: Bearer` header.
@@ -100,11 +133,21 @@ export function authBearer(): string {
 
 export function setUserInfo(user: UserInfo | null) {
   const normalized = normalizeUserInfo(user)
+  // 2026-08-26 (P1-28 fix): a tenant or user-id swap must drop the sk-*
+  // relay cache, otherwise the new user inherits the previous user's
+  // revealed key in the same SPA mount.
+  const prevTenant = store.userInfo?.tenant_id
+  const prevUserId = store.userInfo?.id
   store.userInfo = normalized
   if (normalized) {
     localStorage.setItem(USER_KEY, JSON.stringify(normalized))
   } else {
     localStorage.removeItem(USER_KEY)
+  }
+  const tenantChanged = prevTenant !== normalized?.tenant_id
+  const userChanged = prevUserId !== normalized?.id
+  if (tenantChanged || userChanged) {
+    relayCacheInvalidator()
   }
 }
 
@@ -121,6 +164,10 @@ export function clearJwt() {
   store.userInfo = null
   localStorage.removeItem(JWT_KEY)
   localStorage.removeItem(USER_KEY)
+  // 2026-08-26 (P1-28 fix): drop the sk-* relay cache on logout so the
+  // next user (possibly on a different tenant) never inherits the
+  // previous user's revealed key.
+  relayCacheInvalidator()
 }
 
 // 2026-07-09: 标记 auth hydration 完成。App.vue 首次进入 onMounted 时调用，

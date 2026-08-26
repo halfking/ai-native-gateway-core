@@ -12,8 +12,8 @@
 //     ROW_NUMBER() OVER (ORDER BY ts, request_id) 派生。
 //   - 子请求：parent_request_id 关联的扩展请求（title/summary/sensitive_word 等）。
 //   - request_type：优先 request_logs.request_type（510 迁移列）；缺失/为 'main'
-//     时回退 origin_actor（561 迁移将 origin_actor 暴露到
-//     request_logs_with_current_month；telemetry 落库见 request_log_pipeline.go）。
+//     时回退 origin_actor（X-Gw-Source-Actor 头在 handler 入口读取后由 telemetry
+//     落库为 request_logs_hot.origin_actor，见 request_log_pipeline.go）。
 //
 // TODO(12号口径): session_turns 与 request_logs_hot 双源一致性（归档轮次覆盖）尚未
 // 对齐 —— 当前以 request_logs_with_current_month 为单一事实源，session_turns 的
@@ -209,7 +209,7 @@ func querySessionTurnsTree(ctx context.Context, db sessionTurnsTreeDB, p session
 		WHERE (t.turn_number > $%d OR (t.turn_number = $%d AND t.request_id > $%d))
 		ORDER BY t.turn_number ASC, t.request_id ASC
 		LIMIT $%d`,
-		len(args)+1, len(args)+1, len(args)+2, len(args)+3)
+		len(args)+1, len(args)+2, len(args)+3, len(args)+4)
 	args = append(args, p.Cursor.TurnNumber, p.Cursor.RequestID, p.Limit+1)
 
 	rows, err := db.Query(ctx, mainSQL, args...)
