@@ -482,13 +482,15 @@ func rawContentDocumentWireFromAny(value any, field string) (*rawContentDocument
 		if err != nil {
 			return nil, err
 		}
-		return &rawContentDocumentWire{JSON: cloned}, nil
+		text := string(cloned)
+		return &rawContentDocumentWire{String: &text}, nil
 	}
 	encoded, err := json.Marshal(value)
 	if err != nil {
 		return nil, fmt.Errorf("ir: %s: %w", field, err)
 	}
-	return &rawContentDocumentWire{JSON: encoded}, nil
+	text := string(encoded)
+	return &rawContentDocumentWire{String: &text}, nil
 }
 
 func anyFromRawContentDocumentWire(value *rawContentDocumentWire) any {
@@ -501,7 +503,10 @@ func anyFromRawContentDocumentWire(value *rawContentDocumentWire) any {
 	if len(value.JSON) == 0 {
 		return nil
 	}
-	return cloneRawOrNil(value.JSON)
+	// Existing provider serializers replay unknown content blocks only when
+	// RawContent is a JSON string. The document accepts richer in-memory raw
+	// values but normalizes them to that established replay representation.
+	return string(value.JSON)
 }
 
 func rawJSONFromAny(value any, field string) (json.RawMessage, error) {

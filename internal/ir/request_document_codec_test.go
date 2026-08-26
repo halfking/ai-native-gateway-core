@@ -57,11 +57,43 @@ func TestRequestDocumentRoundTripPreservesRichIR(t *testing.T) {
 	if got, want := decoded.TargetProvider, "minimax"; got != want {
 		t.Errorf("TargetProvider = %q, want %q", got, want)
 	}
-	if got, want := decoded.Messages[0].Content[3].RawContent.(json.RawMessage), json.RawMessage(`{"future":9007199254740993}`); !bytes.Equal(got, want) {
-		t.Errorf("unknown block raw = %s, want %s", got, want)
+	if got, ok := decoded.Messages[0].Content[3].RawContent.(string); !ok || got != `{"future":9007199254740993}` {
+		t.Fatalf("unknown block raw = %#v (%T), want JSON string", decoded.Messages[0].Content[3].RawContent, decoded.Messages[0].Content[3].RawContent)
 	}
 	if !bytes.Contains(encoded, []byte(`"version":1`)) || !bytes.Contains(encoded, []byte(`"kind":"internal_request"`)) {
 		t.Fatalf("encoded document lacks versioned envelope: %s", encoded)
+	}
+}
+
+func TestRequestDocumentNormalizesJSONRawContentForReplay(t *testing.T) {
+	request := &InternalRequest{
+		Model:          "gpt-4o-mini",
+		SourceProtocol: ProtocolOpenAIChat,
+		Messages: []Message{{
+			Role: "user",
+			Content: []ContentBlock{{
+				Type:       "provider_native_future",
+				RawContent: json.RawMessage(`{"type":"provider_native_future","payload":{"large":9007199254740993}}`),
+			}},
+		}},
+	}
+	document, err := EncodeRequestDocument(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := DecodeRequestDocument(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := decoded.Messages[0].Content[0].RawContent.(string); !ok {
+		t.Fatalf("decoded RawContent type = %T, want string", decoded.Messages[0].Content[0].RawContent)
+	}
+	serialized, err := SerializeOpenAI(decoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(serialized, []byte(`"provider_native_future"`)) {
+		t.Fatalf("SerializeOpenAI() dropped raw block: %s", serialized)
 	}
 }
 
