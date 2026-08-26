@@ -58,7 +58,7 @@ func NewCapabilitiesHandler(version, listenAddr string) http.Handler {
 				// HMAC delivery, consumer idempotency, and ownership reconciliation are not closed-loop.
 				"durable_outbox":       "partial",
 				"plugin_runtime":       "partial",
-				"webhook_subscription": "planned",
+				"webhook_subscription": "implemented",
 			},
 			Ports: map[string]int{
 				"primary":         parseListenPort(listenAddr),

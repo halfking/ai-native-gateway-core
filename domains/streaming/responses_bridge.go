@@ -328,7 +328,10 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 		if pc != nil {
 			pc.markInterrupted("client_write_failed")
 		}
-		return StreamOutcome{Interrupted: true, Reason: "client_write_failed", Kind: errorsx.KindCanceled, Resumable: true}
+		// Client connection is dead before any frame — including headers —
+		// reaches the wire. A transparent retry would re-attempt the same
+		// header flush on the same dead connection, wasting an upstream call.
+		return StreamOutcome{Interrupted: true, Reason: "client_write_failed", Kind: errorsx.KindCanceled, Resumable: false}
 	}
 
 	if clientModel == "" {
@@ -482,6 +485,12 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 				scaffold.finishInterrupted(gate, fullText.String(), failure.Reason, inputTokens, outputTokens)
 			}
 			outcome = failure
+			// Gate-aware resumability. streamReadFailureOutcome hardcodes
+			// Resumable=true; a read failure after the client already saw
+			// semantic output must NOT be transparently retried — the next
+			// supplier node would duplicate committed bytes. Mirrors the
+			// eof_without_done and stream_timeout branches in this function.
+			outcome.Resumable = !attemptHasClientSemanticOutput(gate, chunkCount)
 			if capture != nil {
 				capture.MarkInterruptedWithReason(failure.Reason)
 			}
@@ -663,7 +672,10 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 		if pc != nil {
 			pc.markInterrupted("client_write_failed")
 		}
-		return StreamOutcome{Interrupted: true, Reason: "client_write_failed", Kind: errorsx.KindCanceled, Resumable: true}
+		// Client connection is dead before any frame — including headers —
+		// reaches the wire. A transparent retry would re-attempt the same
+		// header flush on the same dead connection, wasting an upstream call.
+		return StreamOutcome{Interrupted: true, Reason: "client_write_failed", Kind: errorsx.KindCanceled, Resumable: false}
 	}
 
 	if clientModel == "" {
@@ -804,6 +816,12 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 					scaffold.finishInterrupted(gate, fullText.String(), failure.Reason, inputTokens, outputTokens)
 				}
 				outcome = failure
+				// Gate-aware resumability. streamReadFailureOutcome hardcodes
+				// Resumable=true; a read failure after the client already saw
+				// semantic output must NOT be transparently retried — the next
+				// supplier node would duplicate committed bytes. Mirrors the
+				// eof_without_done and stream_timeout branches in this function.
+				outcome.Resumable = !attemptHasClientSemanticOutput(gate, chunkCount)
 				return outcome
 			}
 		}

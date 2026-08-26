@@ -67,8 +67,8 @@ func TestPromoteSpecsCoversAllDefaultPartitions(t *testing.T) {
 		"promote_candidate_failure_logs_hot_to_partition":    false, // Migration 392
 		"promote_session_turns_hot_to_partition":             false, // Migration 526
 		"promote_handoff_logs_hot_to_partition":              false, // Migration 532
-		"promote_session_module_executions_hot_to_partition": false, // Migration 578 (88c6fbf7b 引入, 原编号 574 与 candidate_binding 冲突, merge 时重编号)
-		"promote_dashboard_access_events_hot_to_partition":   false, // Migration 575 (88c6fbf7b)
+		"promote_session_module_executions_hot_to_partition": false, // Migration 580
+		"promote_dashboard_access_events_hot_to_partition":   false, // Migration 579 (body repaired by 607)
 	}
 	for _, s := range specs {
 		if _, ok := expected[s.fnName]; !ok {

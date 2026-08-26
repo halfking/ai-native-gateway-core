@@ -43,6 +43,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/bg/freequotareset"
 	"github.com/kaixuan/llm-gateway-go/bg/systemmonitor"
 	"github.com/kaixuan/llm-gateway-go/center"
+	"github.com/kaixuan/llm-gateway-go/cmd/gateway/webhooks" //nolint:depguard // 充值回调 webhook 模块 (落点 B, 2026-08-26)
 	"github.com/kaixuan/llm-gateway-go/config"
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/db"
@@ -2013,8 +2014,10 @@ func main() {
 			outboundBuilder = v2.NewOutboundBuilder(turnReader)
 
 			// Initialize SessionCacheV2 with Redis support
-			// Use cfg.RedisAddr from outer scope
-			sessionCacheV2 = v2.NewSessionCacheV2(dbConn.Pool(), cfg.RedisAddr)
+			// Use cfg.RedisAddr + cfg.RedisDB from outer scope (2026-08-25:
+			// session:v2 governance cache must respect db isolation, no longer
+			// hardcoded to db=0).
+			sessionCacheV2 = v2.NewSessionCacheV2(dbConn.Pool(), cfg.RedisAddr, cfg.RedisDB)
 			sessionCacheV2ForShutdown = sessionCacheV2
 
 			slog.Info("v2 session components initialized",
@@ -3014,6 +3017,14 @@ func main() {
 			if stateManager != nil {
 				credProbeV2.SetStateManager(stateManager)
 			}
+			// 2026-08-26 quota-recovery-notify fix: dispatch the
+			// post-probe-success notification fired from cycleAll's
+			// healthy-ready success branch. Source label "cycle_all"
+			// matches credential_probe_v2.go's invocation.
+			credProbeV2.SetOnQuotaRecovered(func(credID int, source string) {
+				provider.InvalidateCandidateCacheForCredential(credID)
+				metrics.RoutingCredentialQuotaRecoveredNotifyTotal.WithLabelValues(source).Inc()
+			})
 			slog.Info("CHECKPOINT: before credProbeV2.Start")
 			if useNewProbeMode() {
 				slog.Info("credProbeV2 (legacy 1h) skipped: LLM_GATEWAY_USE_NEW_PROBE_MODE=true")
@@ -3346,6 +3357,15 @@ func main() {
 					}
 					probeQueueWorker.SetProbeService(probeService)
 					nodeProbeWorker.SetProbeQueue(probeQueue)
+					// 2026-08-26 quota-recovery-notify fix: dispatch the
+					// post-probe-success notification fired from
+					// processTask's success branch (legacy executor path
+					// AND ProbeService path). Source label "fast_probe"
+					// matches probe_queue_worker.go's invocation.
+					probeQueueWorker.SetOnQuotaRecovered(func(credID int, source string) {
+						provider.InvalidateCandidateCacheForCredential(credID)
+						metrics.RoutingCredentialQuotaRecoveredNotifyTotal.WithLabelValues(source).Inc()
+					})
 					slog.Info("unified probe service wired",
 						"gateway_url", gatewayURL, "gateway_round", queueExecutor != nil && queueExecutor.GatewayEnabled())
 				}
@@ -3375,6 +3395,16 @@ func main() {
 						nodeProbeWorker.Submit(credID, model, "default", "expired-binding-recovery")
 					})
 					credRecovery.SetInvalidateCandidateCache(provider.InvalidateCandidateCacheForCredential)
+					// 2026-08-26 quota-recovery-notify fix: dispatch the
+					// post-probe-success notification to invalidate the
+					// candidate cache and bump the metric. Without this the
+					// routing layer keeps stale state until candCache TTL
+					// elapses, so the first chat request after a recharge
+					// still picks a fallback node.
+					credRecovery.SetOnQuotaRecovered(func(credID int, source string) {
+						provider.InvalidateCandidateCacheForCredential(credID)
+						metrics.RoutingCredentialQuotaRecoveredNotifyTotal.WithLabelValues(source).Inc()
+					})
 					slog.Info("credRecovery: expired-binding probe submitter wired")
 				}
 			} else if useNewProbeMode() {
@@ -4519,6 +4549,31 @@ func main() {
 		}
 	}
 
+	// 2026-08-26 hzx-2 / 充值回调 webhook (落点 B):
+	//
+	// 供应商在用户充值完成后 POST /api/webhooks/quota/recharged，HMAC 验签
+	// 通过后立即触发 BalanceQuotaProbe.OnQuotaRecharged，把"充值完成 → 凭据
+	// 探活"链路从 2 分钟 tick 提到秒级。
+	//
+	// secret 从 env LLM_GATEWAY_QUOTA_WEBHOOK_SECRET 读（settings_kv 集成
+	// 留给后续 PR）。balanceQuotaProbe 在 dbConn 为 nil 的纯兼容模式下不会
+	// 被构造，此处 nil-safe 跳过即可。
+	if balanceQuotaProbe != nil {
+		quotaWebhookSecret := webhooks.SecretSource()
+		if len(quotaWebhookSecret) == 0 {
+			slog.Warn("quota_recharged webhook disabled: LLM_GATEWAY_QUOTA_WEBHOOK_SECRET not set")
+		} else {
+			quotaWebhookMetrics := webhooks.NewQuotaWebhookMetrics()
+			quotaWebhookHandler := &webhooks.QuotaRechargedHandler{
+				Secret:           quotaWebhookSecret,
+				OnQuotaRecharged: balanceQuotaProbe.OnQuotaRecharged,
+				Metrics:          quotaWebhookMetrics,
+			}
+			mux.Handle("POST /api/webhooks/quota/recharged", http.HandlerFunc(quotaWebhookHandler.ServeHTTP))
+			slog.Info("quota_recharged webhook registered at POST /api/webhooks/quota/recharged")
+		}
+	}
+
 	// NET-007 fix: /healthz 拆分两 path：
 	//   - /healthz            匿名基础探测（K8s liveness 用）
 	//   - /healthz/full       admin token 才能访问的详细状态（替换 ?full=true）
@@ -5427,7 +5482,9 @@ func main() {
 		// 2026-08-11 (479): V2 多层队列调度实时快照（Tier-3 显示与统计）。
 		mux.HandleFunc("/api/admin/dispatch/queues", wrapAdmin(handleDispatchQueues))
 		mux.HandleFunc("/api/admin/dispatch/waterfall", wrapAdmin(handleDispatchWaterfall))
-		slog.Info("dispatch_v2 queue snapshot enabled (/api/admin/dispatch/queues, /waterfall)")
+		// v6 G-Ⅳ (2026-08-27): 分维成员索引（模型/凭据/供应商）查询。
+		mux.HandleFunc("/api/admin/dispatch/dimensions", wrapAdmin(handleDispatchDimensions))
+		slog.Info("dispatch_v2 queue snapshot enabled (/api/admin/dispatch/queues, /waterfall, /dimensions)")
 
 		// D2 (2026-08-07): Cache Metrics API
 		// Unified cache observability for semantic/prefix/delta/kv/session_state layers

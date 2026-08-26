@@ -32,10 +32,17 @@ type SessionCacheV2 struct {
 }
 
 // NewSessionCacheV2 creates a new V2 cache instance
-func NewSessionCacheV2(db *pgxpool.Pool, redisAddr string, _ ...int) *SessionCacheV2 {
+//
+// Parameters:
+//   - db: PG pool for l3 (session_turns reader)
+//   - redisAddr: Redis server address (for l2 governance cache)
+//   - redisDB: Redis logical database index (passed through to l2).
+//     2026-08-25: 调用方必须传入 cfg.RedisDB (== LLM_GATEWAY_REDIS_DB), 避免
+//     硬编码 0 污染 PMS 共享 db0.
+func NewSessionCacheV2(db *pgxpool.Pool, redisAddr string, redisDB int) *SessionCacheV2 {
 	return &SessionCacheV2{
-		l1: NewCompressionMetaCache(1024),         // 1024 sessions in memory
-		l2: NewRedisGovernanceCache(redisAddr, 0), // Use default TTL
+		l1: NewCompressionMetaCache(1024),                  // 1024 sessions in memory
+		l2: NewRedisGovernanceCache(redisAddr, 0, redisDB), // Use default TTL
 		l3: NewSessionTurnsReader(db),
 		db: db,
 	}
