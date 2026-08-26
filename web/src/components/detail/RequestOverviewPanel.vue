@@ -128,6 +128,18 @@ const metaProject = computed(() => {
   return [o.label, o.ref].filter(Boolean).map(String).join(' / ')
 })
 
+const securityChips = computed(() => {
+  const meta = props.log?.compression_meta
+  if (!meta || typeof meta !== 'object') return [] as string[]
+  const m = meta as Record<string, unknown>
+  const chips: string[] = []
+  if (m.pii_strip === true || m.pii_strip === 'true') chips.push('PII 剥离')
+  if (m.pii_strip_turn === true || m.pii_strip_turn === 'true') chips.push('本轮 PII 剥离')
+  if (m.sen_det === true || m.sen_det === 'true') chips.push('敏感检测')
+  if (m.audit_score != null && m.audit_score !== '') chips.push(`审计 ${m.audit_score}`)
+  return chips
+})
+
 function clip(text: string, max = 480): string {
   if (!text) return '—'
   if (qaExpanded.value || text.length <= max) return text
@@ -176,6 +188,12 @@ function clip(text: string, max = 480): string {
       <div class="cell"><span class="lbl">Token</span><span>{{ fmt(log?.prompt_tokens) }} / {{ fmt(log?.completion_tokens) }}（总 {{ fmt(log?.total_tokens) }}）</span></div>
       <div class="cell"><span class="lbl">Cache</span><span>{{ fmt(log?.cache_read_tokens) }} / {{ fmt(log?.cache_write_tokens) }}</span></div>
       <div class="cell"><span class="lbl">Cost / Credits</span><span>{{ fmt(log?.cost_usd) }} / {{ fmt(log?.credits_charged) }}</span></div>
+      <div v-if="securityChips.length" class="cell span2" data-testid="overview-security-chips">
+        <span class="lbl">安全/脱敏</span>
+        <span class="chip-row">
+          <span v-for="c in securityChips" :key="c" class="sec-chip">{{ c }}</span>
+        </span>
+      </div>
       <div class="cell"><span class="lbl">finish_reason</span><span>{{ fmt(log?.upstream_finish_reason) }}</span></div>
       <div class="cell" :class="{ 'cell--err': hasFailure }">
         <span class="lbl">failure</span>
@@ -261,4 +279,13 @@ code { font-size: 11px; word-break: break-all; }
 .flow-links { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
 .warn { color: var(--warning); font-size: 12px; margin-top: 8px; }
 .linkish { margin-top: 4px; }
+.chip-row { display:flex; flex-wrap:wrap; gap:6px; }
+.sec-chip {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--kx-border, var(--border));
+  background: color-mix(in srgb, var(--kx-warning, #b45309) 12%, transparent);
+  color: var(--kx-text);
+}
 </style>

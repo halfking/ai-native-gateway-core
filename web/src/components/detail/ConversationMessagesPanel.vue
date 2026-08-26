@@ -10,6 +10,7 @@ import {
   type RoleFilter,
 } from './messageHelpers'
 import { extractMultimodalFromBody } from './multimodalHelpers'
+import { splitSensitivePlaceholders, truncateForPreview } from '../../utils/sensitivePlaceholders'
 
 const props = defineProps<{
   body: unknown
@@ -61,6 +62,17 @@ function contentOf(msg: Record<string, unknown>): unknown {
   return msg.content ?? msg
 }
 
+function contentSegments(msg: Record<string, unknown>) {
+  const raw = formatJson(contentOf(msg))
+  const { text } = truncateForPreview(raw)
+  return splitSensitivePlaceholders(text)
+}
+
+function replySegments() {
+  const { text } = truncateForPreview(replyText.value || '')
+  return splitSensitivePlaceholders(text)
+}
+
 function roleTone(role: unknown): string {
   switch (String(role || '')) {
     case 'user': return 'msg-block--user'
@@ -103,11 +115,7 @@ function roleTone(role: unknown): string {
             <a v-else-if="m.url" :href="m.url" target="_blank" rel="noopener">{{ m.label || m.kind }}</a>
           </template>
         </div>
-        <pre class="msg-pre">{{
-          expanded.has(i)
-            ? formatJson(contentOf(msg))
-            : previewText(contentOf(msg)).text
-        }}</pre>
+        <pre class="msg-pre"><template v-if="expanded.has(i)"><template v-for="(seg, si) in contentSegments(msg)" :key="si"><span v-if="seg.kind === 'ph'" class="ph-badge">{{ seg.value }}</span><template v-else>{{ seg.value }}</template></template></template><template v-else>{{ previewText(contentOf(msg)).text }}</template></pre>
         <button
           v-if="previewText(contentOf(msg)).truncated || expanded.has(i)"
           type="button"
@@ -177,4 +185,13 @@ function roleTone(role: unknown): string {
   background: color-mix(in srgb, var(--success, #16a34a) 7%, transparent);
 }
 .text-muted { color: var(--muted); font-size: 13px; }
+.ph-badge {
+  display: inline;
+  padding: 0 4px;
+  margin: 0 1px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--kx-warning, #b45309) 18%, transparent);
+  color: var(--kx-warning, #b45309);
+  font-weight: 600;
+}
 </style>
