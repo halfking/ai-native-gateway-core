@@ -3145,6 +3145,16 @@ func main() {
 			balanceQuotaProbe = bg.NewBalanceQuotaProbe(dbConn.Pool())
 			if credProbeV2 != nil {
 				balanceQuotaProbe.SetProbeSubmitter(credProbeV2.SubmitFastProbe)
+				// 2026-08-26 self-check audit (apigpt / gpt-5.6-terra):
+				// wire the immediate-execution hook so admin force-probe
+				// and the recharge webhook (OnQuotaRecharged) bypass the
+				// fastReprobeQueue's delay (P1-2 default 30s) and execute
+				// synchronously. Without this, the admin "force probe"
+				// button after a top-up waits up to 30s for results, and
+				// the user's recharge signal is delayed by the same
+				// window. Pinned by
+				// TestCredentialProbeV2_BalanceQuotaProbeForceProbeDispatchesImmediate.
+				balanceQuotaProbe.SetProbeNowAsync(credProbeV2.ProbeNowAsync)
 			}
 			balanceQuotaProbe.Start(context.Background())
 			slog.Info("CHECKPOINT: balanceQuotaProbe started")
