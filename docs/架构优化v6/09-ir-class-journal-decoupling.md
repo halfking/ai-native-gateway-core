@@ -3,7 +3,7 @@
 > **版本**：v6.2（2026-08-27 起草；基于 [`08-dispatch-executor-loop.md`](08-dispatch-executor-loop.md) 已实施基线（G-Ⅰ~G-Ⅵ，LOCAL_VERIFIED））
 > **读者**：架构组 / 后端 Owner / 执行本方案的实现者
 > **范围**：① IR 上增加请求类型（即时/定时）；② 按请求的执行轨迹队列（尝试过的模型+节点、下一步操作类型、各类执行计数、终态）；③ 复用既有分维队列作可查询存储，**不新建存储子系统**；④ 队列管理与执行操作解耦（决策纯函数化）；⑤ 对齐单请求 100 次重试/切换限额。
-> **证据等级**：`DESIGN` + `LOCAL_REVIEWED`（方案-代码匹配度已逐点核对到文件:行；实现后须达 `LOCAL_VERIFIED`）。
+> **证据等级**：`LOCAL_VERIFIED`（2026-08-27 实现完成：commit c386aa427 / 1350dbdbc / def2e9373；`go build ./...` + dispatch/transformation/ir `-race` 全绿 + 冻结契约 fixture 回归通过；实现记录见 [`docs/04-implementation/changes/2026-08-27-v6-w1-6-ir-class-journal-planner.md`](../04-implementation/changes/2026-08-27-v6-w1-6-ir-class-journal-planner.md)）。
 
 ---
 
@@ -208,7 +208,7 @@
 
 ## 6. 完成标准
 
-- [ ] `go build ./...`；`go test -race ./domains/dispatch/ ./domains/transformation/ ./internal/ir/ ./cmd/gateway/`（可编译部分）全绿
-- [ ] §3.3 五条不变量各有对应单测
-- [ ] v4 冻结契约 fixture 回归通过（不加事件类型、不改状态机）
-- [ ] changes 文档落盘（证据等级 `LOCAL_VERIFIED`）
+- [x] `go build ./...`；`go test -race ./domains/dispatch/ ./domains/transformation/ ./internal/ir/ ./cmd/gateway/`（可编译部分）全绿（cmd/gateway 测试构建失败为预存 main_livestream_test，与本轮无关）
+- [x] §3.3 五条不变量各有对应单测（①②③ TestJournalChainFailoverLadder + TestAttemptCapJournalTerminal；④ TestDimensionCompleteAlignsFullJournal；⑤ TestPlannerPurity）
+- [x] v4 冻结契约 fixture 回归通过（./test/events/contract/；不加事件类型、不改状态机）
+- [x] changes 文档落盘（证据等级 `LOCAL_VERIFIED`）
