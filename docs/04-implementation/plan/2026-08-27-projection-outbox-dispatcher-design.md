@@ -158,7 +158,7 @@ CREATE INDEX idx_projection_outbox_claim
 要点：
 
 - **`UNIQUE (request_id, projection_target)` 是 outbox 侧幂等键**。一个请求在每个 target 上至多一条待办事件；迟到终态/重发走 UPSERT 合并而不是插新行（§3.4）。
-- `processing_status='processing' AND lease_until < now()` 即可回收（与 inbox claimSQL :409 同构），不需要额外 `locked_at IS NULL` 判别列。
+- `processing_status='processing' AND lease_until < now()` 且 `next_attempt_at <= now()` 的行即可回收（与 inbox claimSQL :409 同构）；`next_attempt_at > now()` 的 pending 行仍在退避，不可提前认领。
 
 ### 3.3 发射点与目标枚举
 
@@ -245,8 +245,12 @@ worker 生命周期：`RunOnce`（单轮 claim→project→ack，对齐 inbox_co
 WITH claimable AS (
     SELECT projection_event_id
     FROM request_projection_outbox
-    WHERE processing_status = 'pending'
-       OR (processing_status = 'processing' AND lease_until < now())  -- 崩溃 worker 的租约回收
+    WHERE (
+            processing_status = 'pending'
+            OR (processing_status = 'processing' AND lease_until < now())  -- 崩溃 worker 的租约回收
+          )
+      AND next_attempt_at <= now()  -- 失败退避未到期的 pending 行不可认领
+      AND (lease_until IS NULL OR lease_until < now())
     ORDER BY next_attempt_at, projection_event_id
     FOR UPDATE SKIP LOCKED
     LIMIT $2
