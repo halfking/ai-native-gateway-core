@@ -111,14 +111,14 @@ func (h *Handler) handleCompressionStats(w http.ResponseWriter, r *http.Request)
 		// vs the below baseline). Below-band rows also count for transparency
 		// so the band ratios are derivable; only the two non-baseline bands
 		// are surfaced as separate numeric fields for alert wiring.
-		TokenBandBelow       *int64         `json:"token_band_below,omitempty"`
-		TokenBandPreliminary *int64         `json:"token_band_preliminary,omitempty"`
-		TokenBandForced      *int64         `json:"token_band_forced,omitempty"`
-		TotalOutboundTokens  *int64         `json:"total_outbound_tokens,omitempty"`
-		EstimatedOrigTokens  *int64         `json:"estimated_original_tokens,omitempty"`
-		EstimatedTokensSaved *int64         `json:"estimated_tokens_saved,omitempty"`
-		SummaryModeRows      *int64         `json:"summary_mode_rows,omitempty"`
-		HourlySeries         []hourBucket   `json:"hourly_series"`
+		TokenBandBelow       *int64       `json:"token_band_below,omitempty"`
+		TokenBandPreliminary *int64       `json:"token_band_preliminary,omitempty"`
+		TokenBandForced      *int64       `json:"token_band_forced,omitempty"`
+		TotalOutboundTokens  *int64       `json:"total_outbound_tokens,omitempty"`
+		EstimatedOrigTokens  *int64       `json:"estimated_original_tokens,omitempty"`
+		EstimatedTokensSaved *int64       `json:"estimated_tokens_saved,omitempty"`
+		SummaryModeRows      *int64       `json:"summary_mode_rows,omitempty"`
+		HourlySeries         []hourBucket `json:"hourly_series"`
 	}{
 		StrategyDistribution: make(map[string]int),
 		HourlySeries:         make([]hourBucket, 0),
@@ -167,6 +167,11 @@ func (h *Handler) handleCompressionStats(w http.ResponseWriter, r *http.Request)
 		}
 		result.StrategyDistribution[strategy] = cnt
 		totalToksAfter += int64(tokAfter)
+	}
+	if err := aggRows.Err(); err != nil {
+		slog.Warn("compression_stats agg iteration failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
 	}
 
 	if result.TotalRequests > 0 {
@@ -235,6 +240,9 @@ func (h *Handler) handleCompressionStats(w http.ResponseWriter, r *http.Request)
 				result.TokenBandForced = &v
 			}
 		}
+		if err := bandRows.Err(); err != nil {
+			slog.Warn("compression_stats band iteration failed", "error", err)
+		}
 	}
 
 	rangeHours := to.Sub(from).Hours()
@@ -281,6 +289,9 @@ func (h *Handler) handleCompressionStats(w http.ResponseWriter, r *http.Request)
 				Compressed: b.Compressed,
 				Rate:       rate,
 			})
+		}
+		if err := bucketRows.Err(); err != nil {
+			slog.Warn("compression_stats bucket iteration failed", "error", err)
 		}
 	}
 

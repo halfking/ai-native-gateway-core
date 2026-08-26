@@ -16,6 +16,15 @@ import (
 	"github.com/kaixuan/llm-gateway-go/metrics"
 )
 
+// reconciliationDB is the narrow PostgreSQL surface the worker needs. Keeping
+// it separate from the pool lets row iteration failures be regression-tested
+// without weakening the production constructor's pool contract.
+type reconciliationDB interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+	QueryRow(context.Context, string, ...any) pgx.Row
+}
+
 const (
 	defaultReconciliationInterval = 6 * time.Hour
 	reconciliationLookback        = 7 * 24 * time.Hour
@@ -43,7 +52,12 @@ type DBQuerier interface {
 // stats_usage_daily/monthly projections, generates diffs, and automatically
 // repairs small discrepancies while flagging large ones for human approval.
 type ReconciliationWorker struct {
+<<<<<<< Updated upstream
 	db       DBQuerier
+=======
+	db       reconciliationDB
+	refresh  func(context.Context, time.Time, time.Time) error
+>>>>>>> Stashed changes
 	interval time.Duration
 
 	mu      sync.Mutex
@@ -65,11 +79,14 @@ func newReconciliationWorkerWithDB(db DBQuerier, interval time.Duration) *Reconc
 	if interval <= 0 {
 		interval = defaultReconciliationInterval
 	}
-	return &ReconciliationWorker{
+	worker := &ReconciliationWorker{
 		db:       db,
 		interval: interval,
-		done:     make(chan struct{}),
 	}
+	worker.refresh = func(ctx context.Context, start, end time.Time) error {
+		return NewDailyMonthlyRollup(db, 0).Refresh(ctx, start, end)
+	}
+	return worker
 }
 
 func (w *ReconciliationWorker) Start(ctx context.Context) {
@@ -506,6 +523,7 @@ func (w *ReconciliationWorker) reconcileDailyOnce(ctx context.Context, runID str
 	// Rebuild first; only then mark the candidate diffs repaired. This keeps
 	// reconciliation counters truthful when the projection refresh fails.
 	if pendingRepairs > 0 {
+<<<<<<< Updated upstream
 		// DailyMonthlyRollup.Refresh requires a DBQuerier that can Begin a
 		// transaction. In production this is *pgxpool.Pool. A Tx-bound test
 		// stub that only wraps a pgx.Tx does not satisfy Begin; we surface a
@@ -516,6 +534,12 @@ func (w *ReconciliationWorker) reconcileDailyOnce(ctx context.Context, runID str
 			// The Refresh error is already wrapped with the underlying cause
 			// (begin, exec, commit). We reset pending repairs to 'open' so
 			// the next reconciliation cycle retries them.
+=======
+		if w.refresh == nil {
+			return 0, 0, fmt.Errorf("reconciliation rollup refresh not initialized")
+		}
+		if err := w.refresh(ctx, start, end); err != nil {
+>>>>>>> Stashed changes
 			w.resetPendingRepairs(ctx, runID)
 			return 0, 0, 0, false, fmt.Errorf("refresh projections: %w", err)
 		}

@@ -340,6 +340,14 @@ watch(activeTab, loadAll)
           {{ stats.estimated_tokens_saved != null ? fmtNum(stats.estimated_tokens_saved) : '—' }}
         </div>
       </div>
+      <div class="stat-card">
+        <div class="stat-label">{{ t('compression.stats.tokenBands') }}</div>
+        <div class="stat-value" style="font-size:14px">
+          {{ t('compression.stats.tokenBandBelow') }} {{ fmtNum(stats.token_band_below ?? 0) }}
+          · {{ t('compression.stats.tokenBandPreliminary') }} {{ fmtNum(stats.token_band_preliminary ?? 0) }}
+          · {{ t('compression.stats.tokenBandForced') }} {{ fmtNum(stats.token_band_forced ?? 0) }}
+        </div>
+      </div>
     </div>
 
     <!-- Strategy Distribution + Time Series -->
