@@ -35,6 +35,18 @@ type ProbeQueueWorker struct {
 	// 250ms poll) — it is a maintenance sweep, not a hot-path step.
 	reviveMu sync.Mutex
 	reviveAt time.Time
+
+	// onQuotaRecovered is the dispatcher-facing notification fired from
+	// processTask's success branch (the legacy executor path AND the
+	// ProbeService path) once a credential's quota / availability state
+	// has been flipped back to healthy. Wired from main.go via
+	// SetOnQuotaRecovered; nil → processTask stays silent (the routing
+	// layer falls back to candCache TTL).
+	//
+	// 2026-08-26 quota-recovery-notify fix: closes the "DB says ready but
+	// cache still excludes credential" gap on the fast_probe path
+	// (ProbeQueueWorker + ProbeService + NodeProbeWorker.Submit).
+	onQuotaRecovered func(credID int, source string)
 }
 
 // SetProbeService injects the node-probe execution owner after construction
@@ -45,6 +57,24 @@ func (w *ProbeQueueWorker) SetProbeService(ps *ProbeService) {
 	if w != nil {
 		w.cfg.ProbeService = ps
 	}
+}
+
+// SetOnQuotaRecovered wires the dispatcher-facing notification fired from
+// processTask's success branch. The (credID, source) signature lets the
+// integrator route the label + invalidator from a single closure. Safe to
+// call multiple times; the latest non-nil setter wins. nil → processTask
+// stays silent (the routing layer falls back to candCache TTL).
+//
+// 2026-08-26 quota-recovery-notify fix: without this hook the durable
+// probe queue's success path would complete the queue row but the routing
+// layer's candidate cache would still exclude the credential until TTL
+// elapses, so the first chat request after a recharge still picks a
+// fallback node.
+func (w *ProbeQueueWorker) SetOnQuotaRecovered(fn func(credID int, source string)) {
+	if w == nil || fn == nil {
+		return
+	}
+	w.onQuotaRecovered = fn
 }
 
 func NewProbeQueueWorker(cfg ProbeQueueWorkerConfig) *ProbeQueueWorker {
@@ -175,6 +205,14 @@ func (w *ProbeQueueWorker) processTask(ctx context.Context, task ProbeQueueTask)
 			return
 		}
 		w.completeNodeProbe(ctx, task, result)
+		// 2026-08-26 quota-recovery-notify fix: when the unified node_probe
+		// path returned a successful ProbeQueueResult, notify the dispatcher
+		// so the per-credential candidate cache invalidates immediately and
+		// the next chat request re-plans with the recovered binding visible.
+		// nil hook → silent, routing layer falls back to candCache TTL.
+		if result.Status == ProbeQueueSuccess && w.onQuotaRecovered != nil {
+			w.onQuotaRecovered(int(task.CredentialID), "fast_probe")
+		}
 		return
 	}
 	target, err := w.cfg.Executor.LoadTarget(ctx, int(task.CredentialID), task.RawModel)
@@ -198,6 +236,12 @@ func (w *ProbeQueueWorker) processTask(ctx context.Context, task ProbeQueueTask)
 			HTTPStatus: result.HTTPStatus, LatencyMs: result.LatencyMs,
 			BodyPreview: result.RespPreview,
 		})
+		// 2026-08-26 quota-recovery-notify fix: on the legacy executor
+		// success branch, notify the dispatcher so the per-credential
+		// candidate cache invalidates immediately. nil hook → silent.
+		if w.onQuotaRecovered != nil {
+			w.onQuotaRecovered(int(task.CredentialID), "fast_probe")
+		}
 		return
 	}
 	w.completeFailure(ctx, task, result.ErrCode, result.ErrMsg, result.HTTPStatus, result.LatencyMs, result.RespPreview)

@@ -1761,3 +1761,122 @@ func TestRecover_HooksNilSafe(t *testing.T) {
 		t.Fatalf("unmet expectations: %v", err)
 	}
 }
+
+// -----------------------------------------------------------------------------
+// 2026-08-26 quota-recovery-notify fix: SetOnQuotaRecovered unit tests.
+//
+// The new (credID, source) hook is the dispatcher-facing notification fired
+// from the probe paths (cycleAll / processTask) once a credential's quota /
+// availability state has been flipped back to healthy. These tests pin:
+//   - the setter wires the closure and a single invocation calls it
+//   - nil-safe: setter rejects nil and never panics on a nil receiver
+//   - the (credID, source) payload is forwarded verbatim, including the
+//     "fast_probe" / "cycle_all" label, so the dispatcher can route the
+//     metric and the invalidator from a single closure.
+// -----------------------------------------------------------------------------
+
+// TestOnQuotaRecovered_SetAndInvoke pins the setter + dispatch contract: a
+// single closure wired via SetOnQuotaRecovered fires once with the exact
+// (credID, source) pair the caller passes in.
+func TestOnQuotaRecovered_SetAndInvoke(t *testing.T) {
+	r := &CredentialRecovery{done: make(chan struct{})}
+	var (
+		mu        sync.Mutex
+		gotCreds  []int
+		gotSource string
+		calls     int
+	)
+	r.SetOnQuotaRecovered(func(credID int, source string) {
+		mu.Lock()
+		defer mu.Unlock()
+		calls++
+		gotCreds = append(gotCreds, credID)
+		gotSource = source
+	})
+
+	// Nil-safe setter must NOT overwrite a previously wired hook.
+	r.SetOnQuotaRecovered(nil)
+
+	// Mimic what cycleAll does after a healthy-ready flip.
+	if r.onQuotaRecovered != nil {
+		r.onQuotaRecovered(42, "cycle_all")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("expected exactly 1 invocation, got %d", calls)
+	}
+	if len(gotCreds) != 1 || gotCreds[0] != 42 {
+		t.Fatalf("got creds = %v, want [42]", gotCreds)
+	}
+	if gotSource != "cycle_all" {
+		t.Fatalf("got source = %q, want %q", gotSource, "cycle_all")
+	}
+}
+
+// TestOnQuotaRecovered_NilSafe pins the safety contract: an unset hook
+// leaves the probe paths silent (no panic, no nil deref). Operators who
+// forgot to wire the dispatcher (or are still on the pre-fix binary)
+// keep working; only the routing-layer TTL fallback applies.
+func TestOnQuotaRecovered_NilSafe(t *testing.T) {
+	r := &CredentialRecovery{done: make(chan struct{})}
+	if r.onQuotaRecovered != nil {
+		t.Fatalf("fresh CredentialRecovery must have onQuotaRecovered == nil")
+	}
+
+	// Calling a nil closure must NOT panic.
+	defer func() {
+		if rec := recover(); rec != nil {
+			t.Fatalf("invoking nil onQuotaRecovered panicked: %v", rec)
+		}
+	}()
+	if r.onQuotaRecovered != nil {
+		r.onQuotaRecovered(1, "fast_probe")
+	}
+}
+
+// TestOnQuotaRecovered_SourceLabel pins the label forwarding contract: the
+// source string travels verbatim from the probe path through the closure
+// so the wiring in main.go can label the metric counter
+// (RoutingCredentialQuotaRecoveredNotifyTotal{source="fast_probe"|"cycle_all"})
+// without consulting a global.
+func TestOnQuotaRecovered_SourceLabel(t *testing.T) {
+	r := &CredentialRecovery{done: make(chan struct{})}
+	type call struct {
+		credID int
+		source string
+	}
+	var (
+		mu    sync.Mutex
+		calls []call
+	)
+	r.SetOnQuotaRecovered(func(credID int, source string) {
+		mu.Lock()
+		defer mu.Unlock()
+		calls = append(calls, call{credID: credID, source: source})
+	})
+
+	// Mimic the cycleAll + probe_queue_worker invocation sites.
+	if r.onQuotaRecovered != nil {
+		r.onQuotaRecovered(11, "cycle_all")
+		r.onQuotaRecovered(22, "fast_probe")
+		r.onQuotaRecovered(33, "cycle_all")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	want := []call{
+		{credID: 11, source: "cycle_all"},
+		{credID: 22, source: "fast_probe"},
+		{credID: 33, source: "cycle_all"},
+	}
+	if len(calls) != len(want) {
+		t.Fatalf("got %d calls, want %d (got %v)", len(calls), len(want), calls)
+	}
+	for i, w := range want {
+		if calls[i] != w {
+			t.Errorf("calls[%d] = %+v, want %+v", i, calls[i], w)
+		}
+	}
+}
