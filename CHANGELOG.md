@@ -5,6 +5,24 @@
 ### Added
 - **Database topology documentation refresh (2026-08-27)**: added the project-local `db-sync-252-local` skill and `local-pg-sync-from-252.md` runbook for 252-to-local PostgreSQL refreshes. The runbook records hot-table filtering, `PGOPTIONS` timeout handling, password-persistent container recreation, and the `_`-prefixed pending-deletion table convention. Active deployment documentation now treats RDS production, 252 test, and local Docker as the only current database environments; retired server-specific guides moved to `docs/archive/2026-08/` with explicit non-operational banners.
 - **Bleve log full-text search（2026-08-26，Phase A 落地）**：在 slog → lumberjack 管道上叠加 `BleveFanoutHandler`（`internal/logging/bleve_fanout.go`），每条 record 异步进入有界 ring channel + 后台 batch indexer，Bleve 写入失败不会拖垮主链路。新增 `GET /api/admin/logs/search?q=&tenant=&level=&from=&to=&regex=&fuzzy=&page=&size=`（admin 权限）支持子串 / term / date-range / regex / fuzzy / 分页排序，索引文档按 `ts/level/msg/raw` + `request_id/tenant_id/user_id/session_id/trace_id/model/provider_id/method/path` 提升字段，结构与 live + 回灌同构。`GET /api/admin/logs/search/status` 暴露 fan-out 计数器（`records_indexed / records_dropped / records_failed / queue_depth`），启用通过 `LLM_GATEWAY_LOG_BLEVE_ENABLED=true` + `LLM_GATEWAY_LOG_INDEX_DIR=<dir>`，默认 `false`（老路径不变）。新增 `cmd/bleve-backfill/` 独立命令,按天扫描 `gateway-*.log.gz` 并行回灌历史,支持 `--since/--workers/--batch/--dry-run`。设计/运维见 `docs/03-design/02-modules/log-search-bleve.md`。下一阶段（Phase B）将复用同一 Bleve 索引层承载"请求记录搬到文件系统"。
+- Document the audit and implementation plan for attempt-level supplier quality
+  analytics. Existing retry and routing-switch observations are durable, but
+  provider quality aggregation still needs to consume attempt-level facts so a
+  final request success does not hide an earlier node failure.
+
+### Added
+- Add final-request metrics alongside attempt-quality metrics, including tenant
+  RLS-scoped reads, so clients can compare the two success-rate families.
+- Add a tenant-scoped, content-free AttemptFact read model from durable request
+  journey events and separate provider/credential/model attempt-quality
+  aggregation from final-request metrics.
+- Add authenticated `GET /api/admin/quality/attempts` for tenant-scoped attempt
+  quality aggregates with time-window and provider, credential, and model
+  filters; existing final-request quality endpoints remain unchanged.
+- Document the audit and implementation plan for attempt-level supplier quality
+  analytics. Existing retry and routing-switch observations are durable, but
+  provider quality aggregation still needs to consume attempt-level facts so a
+  final request success does not hide an earlier node failure.
 
 ### Removed
 - Remove the temporary `POST /api/admin/live-stream/trigger-snapshot` debug endpoint. Added 2026-07-26 for snapshot_refresh guard validation; superseded by the periodic `PushFullSnapshots` tick (default 30m) plus the terminal-status overlay. The `HandleTriggerSnapshot` method and its route registration are deleted; no production traffic depends on the endpoint (the only frontend caller `_requestSnapshotRefresh` was never invoked).
