@@ -249,7 +249,7 @@ func TestLiveStreamRedisStore_TrimDimensionQueueToTwenty(t *testing.T) {
 	ctx := context.Background()
 	base := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
 
-	for i := 0; i < 25; i++ {
+	for i := 0; i < int(LiveStreamLaneVisibleLimit)+5; i++ {
 		req := LiveRequest{
 			RequestID:     fmt.Sprintf("req-%02d", i),
 			Ts:            base.Add(time.Duration(i) * time.Second).UTC().Format(time.RFC3339),
