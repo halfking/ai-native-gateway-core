@@ -53,6 +53,7 @@ type PolicyPublisher struct {
 func NewPolicyPublisher(pool *pgxpool.Pool, pipeline *Pipeline) *PolicyPublisher {
 	return &PolicyPublisher{
 		pool:     pool,
+		queryer:  pool,
 		pipeline: pipeline,
 	}
 }
@@ -211,7 +212,11 @@ func (p *PolicyPublisher) publishCatchUp(ctx context.Context) error {
 	defer p.publishMu.Unlock()
 	last := p.lastRevision.Load()
 
-	rows, err := p.pool.Query(ctx, `
+	queryer := p.queryer
+	if queryer == nil {
+		queryer = p.pool
+	}
+	rows, err := queryer.Query(ctx, `
 		SELECT id, provider_id, COALESCE(concurrency_mode, 'concurrency'),
 		       COALESCE(concurrency_limit, 0), COALESCE(rpm_limit, 0),
 		       COALESCE(tpm_limit, 0), revision
