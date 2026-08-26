@@ -60,6 +60,36 @@ var (
 		Help: "Requests that could not be enqueued and were redirected/rejected.",
 	}, []string{"reason"}) // reason: cred_queue_full|model_queue_full|pace_timeout|no_route
 
+	// ===== V6-W1.7: dual-backend queue admission (集群准入/容量, 10 号文档) =====
+	// Admit/Release are bumped at the pipeline integration plane; Rejected
+	// counts cluster-capacity refusals; Degraded flips 1 when the redis
+	// backend fail-opens to local bounds (admission is fail-open — the
+	// Governor keeps the opposite, fail-closed, direction).
+	metricQueueBackendAdmit = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "dispatch_queue_backend_admit_total",
+		Help: "Cluster queue-backend admissions (total waiting room + lane reservations).",
+	}, []string{"backend", "lane"}) // lane: total|model|credential
+
+	metricQueueBackendRelease = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "dispatch_queue_backend_release_total",
+		Help: "Cluster queue-backend releases (must mirror admit_total per lane).",
+	}, []string{"backend", "lane"})
+
+	metricQueueBackendRejected = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "dispatch_queue_backend_rejected_total",
+		Help: "Admissions refused because the CLUSTER capacity is full (distinct from per-instance dispatch_overflow_total).",
+	}, []string{"backend", "lane"})
+
+	metricQueueBackendDegraded = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "dispatch_queue_backend_degraded",
+		Help: "1 when the queue backend has fail-opened to local admission bounds (redis unreachable); back to 0 on recovery.",
+	}, []string{"backend"})
+
+	metricQueueBackendHeld = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "dispatch_queue_backend_held",
+		Help: "Admissions currently held by THIS instance per lane (reconcile against the cluster sum for leak detection).",
+	}, []string{"backend", "lane"})
+
 	// metricCredentialFull counts pre-reserve routing skips: dispatch skipped a
 	// credential because its Tier-2 queue was already at capacity. Distinct
 	// from metricOverflow{reason="cred_queue_full"} (post-reserve overflow).
