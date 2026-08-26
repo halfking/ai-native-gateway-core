@@ -28,6 +28,7 @@
   final request success does not hide an earlier node failure.
 
 ### Fixed
+- **Fail-loud OpenAI Chat to Anthropic conversion validation (2026-08-27)**: preserve system text block arrays and reject unsupported content blocks, malformed image blocks, missing tool-call functions, and non-object or invalid tool arguments instead of silently dropping or replacing request data. Added regression coverage for these conversion boundaries after the `claude-sonnet-5` request audit.
 - Add credential grouping to the admin live-stream controls, snapshots, incident indexes, persisted preferences, and all dashboard locales.
 - Scope admin popular-model aggregates and cached picker responses by tenant. Successful telemetry now writes tenant-specific Redis ZSETs; usage SQL filters `request_logs_hot.tenant_id`; tenant-admin reads do not consume global live lanes.
 - Add `LLM_GATEWAY_DB_POPULAR_MODELS_LOOKUP_HOURS` with a seven-day fallback, and skip the SQL usage fallback when policy plus Redis already satisfy the requested limit.
