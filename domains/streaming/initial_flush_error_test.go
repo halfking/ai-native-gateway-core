@@ -53,8 +53,8 @@ func TestProtocolStreamsReportInitialFlushError(t *testing.T) {
 			writer := &initialFlushErrorWriter{header: make(http.Header), flushErr: errors.New("connection closed")}
 			response := &http.Response{Body: io.NopCloser(&errorOnRead{})}
 			outcome := test.run(writer, response)
-			if !outcome.Interrupted || outcome.Reason != "client_write_failed" || !outcome.Resumable {
-				t.Fatalf("outcome = %+v, want resumable client_write_failed", outcome)
+			if !outcome.Interrupted || outcome.Reason != "client_write_failed" || outcome.Resumable {
+				t.Fatalf("outcome = %+v, want NON-resumable client_write_failed (client disconnect is permanent; transparent retry cannot write headers to a dead connection)", outcome)
 			}
 		})
 	}

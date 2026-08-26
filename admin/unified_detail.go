@@ -238,11 +238,19 @@ func (h *Handler) handleUnifiedRequestDetail(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	// Tenant isolation for persisted sources; in-flight is local to this node.
-	if detail.Persistence == requestdetail.PersistencePersisted && IsTenantAdmin(r) {
+	// 2026-08-26 (P1-29 fix): the previous implementation only checked
+	// tenant isolation for PersistencePersisted details, leaving the
+	// in-flight / on-disk path (PersistenceInFlight) open to a tenant
+	// admin who knew / guessed another tenant's request_id. Apply the
+	// same gate to ALL sources: a tenant_admin may only see details
+	// whose TenantID matches their own. An empty TenantID on the
+	// detail is treated as "unknown origin" and denied for tenant_admins
+	// (fail-closed) — legacy in-flight meta written before this commit
+	// has no tenant recorded and must not leak across tenants.
+	if IsTenantAdmin(r) {
 		tenant := GetTenantID(r)
-		if detail.Meta.TenantID != "" && detail.Meta.TenantID != tenant {
-			writeError(w, http.StatusForbidden, "cross-tenant access denied")
+		if detail.Meta.TenantID == "" || detail.Meta.TenantID != tenant {
+			writeError(w, http.StatusNotFound, "request detail not found")
 			return
 		}
 	}

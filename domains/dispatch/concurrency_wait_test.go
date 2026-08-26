@@ -91,7 +91,7 @@ func TestAcquireGiveUpZeroBudgetConcurrency(t *testing.T) {
 	cf := &credForwarder{cred: ref, gov: newGovernor(ref), pipe: p}
 	qr := NewQueuedRequest("g", "t", "m", context.Background(), nil)
 	qr.SelectedCred = ref
-	got := cf.acquireGiveUp(qr)
+	got := cf.acquireGiveUp(qr, cf.govLocked())
 	if !got.IsZero() {
 		t.Fatalf("concurrency zero-budget giveUp = %v, want zero time.Time", got)
 	}
@@ -108,7 +108,7 @@ func TestAcquireGiveUpZeroBudgetRPM(t *testing.T) {
 	qr := NewQueuedRequest("g", "t", "m", context.Background(), nil)
 	qr.SelectedCred = ref
 	before := time.Now()
-	got := cf.acquireGiveUp(qr)
+	got := cf.acquireGiveUp(qr, cf.govLocked())
 	if got.IsZero() || got.Before(before.Add(-time.Millisecond)) {
 		t.Fatalf("rpm zero-budget giveUp = %v, want ~now", got)
 	}

@@ -17,9 +17,11 @@ import (
 // TestStreamChatWithPendingCapture_DisconnectsWithoutPending_ReturnsEarly
 // covers the "no pendingCapturer" path. The writer is a hard-failing
 // http.ResponseWriter; the stream must observe the disconnect on the
-// first chunk, mark the outcome as a resumable failure, and report
-// ChunkCount=0 + Resumable=true (mirrors the pre-fix behavior for
-// callers that opt out of pending-replay).
+// first chunk, mark the outcome as a client_write_failed failure with
+// ChunkCount=0, and report Resumable=false (client disconnect is
+// permanent; transparent retry cannot write headers to a dead
+// connection — mirrors the pre-fix behavior for callers that opt out of
+// pending-replay).
 func TestStreamChatWithPendingCapture_DisconnectsWithoutPending_ReturnsEarly(t *testing.T) {
 	body := strings.Join([]string{
 		"data: {\"id\":\"chunk-1\",\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n",
@@ -46,7 +48,7 @@ func TestStreamChatWithPendingCapture_DisconnectsWithoutPending_ReturnsEarly(t *
 	assert.True(t, outcome.Interrupted)
 	assert.Equal(t, "client_write_failed", outcome.Reason)
 	assert.Equal(t, 0, outcome.ChunkCount)
-	assert.True(t, outcome.Resumable)
+	assert.False(t, outcome.Resumable)
 	_, _, _, interrupted, _ := cap.Snapshot()
 	assert.True(t, interrupted, "audit capture should be marked interrupted on client_write_failed")
 }
