@@ -180,8 +180,74 @@ func TestProjectDurableOptionalFieldsAndMediaMarkers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if !projection.HasMultimodalContent {
+		t.Fatal("Gemini inlineData image did not mark multimodal")
+	}
+
+	gemini.NormalizedBody = []byte(`{"contents":[{"role":"user","parts":[{"fileData":{"mimeType":"audio/wav","fileUri":"https://example.invalid/audio.wav"}}]}]}`)
+	projection, err = ProjectDurable(gemini)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !projection.HasMultimodalContent {
+		t.Fatal("Gemini fileData audio did not mark multimodal")
+	}
+
+	documentOnly := validDurableInput()
+	documentOnly.NormalizedBody = []byte(`{"contents":[{"role":"user","parts":[{"fileData":{"mimeType":"application/pdf","fileUri":"https://example.invalid/document.pdf"}}]}]}`)
+	projection, err = ProjectDurable(documentOnly)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if projection.HasMultimodalContent {
-		t.Fatal("Gemini inlineData misclassified as typed media block")
+		t.Fatal("document-only request did not remain text-routed")
+	}
+}
+
+func TestProjectDurableResponseFormatMarkers(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "OpenAI Responses text format",
+			body: `{"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],"text":{"format":{"type":"json_schema","schema":{"type":"object"}}}}`,
+			want: "json_schema",
+		},
+		{
+			name: "Gemini JSON object",
+			body: `{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"generationConfig":{"responseMimeType":"application/json"}}`,
+			want: "json_object",
+		},
+		{
+			name: "Gemini JSON schema",
+			body: `{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"generationConfig":{"responseMimeType":"application/json","responseSchema":{"type":"object"}}}`,
+			want: "json_schema",
+		},
+		{
+			name: "Gemini null schema",
+			body: `{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"generationConfig":{"responseMimeType":"application/json","responseSchema":null}}`,
+			want: "json_object",
+		},
+		{
+			name: "unsupported Gemini MIME",
+			body: `{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"generationConfig":{"responseMimeType":"text/plain"}}`,
+			want: "",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			input := validDurableInput()
+			input.NormalizedBody = []byte(test.body)
+			projection, err := ProjectDurable(input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if projection.ResponseFormat != test.want {
+				t.Fatalf("response format = %q, want %q", projection.ResponseFormat, test.want)
+			}
+		})
 	}
 }
 
