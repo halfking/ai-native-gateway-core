@@ -348,7 +348,10 @@ func (s *Store) GetRequest(id string) (*RequestRecord, error) {
 		return nil, errors.New("fsstore: empty id")
 	}
 
-	req := bleve.NewSearchRequest(bleve.NewTermQuery(id))
+	// Query by document ID (_id): a bare TermQuery depends on the index
+	// mapping and can miss hyphenated request IDs. DocIDQuery is the
+	// exact-match lookup path.
+	req := bleve.NewSearchRequest(bleve.NewDocIDQuery([]string{id}))
 	req.Fields = []string{"shard_date", "started_at"}
 	res, err := s.reqIdx.Search(req)
 	if err != nil {
@@ -367,8 +370,14 @@ func (s *Store) GetRequest(id string) (*RequestRecord, error) {
 	if dateStr == "" {
 		return nil, fmt.Errorf("fsstore: hit %s missing shard_date", hit.ID)
 	}
+	// datePath uses "YYYY/MM/DD" but the indexed started_at comes back as
+	// RFC3339 ("YYYY-MM-DD..."), so convert to the on-disk shard format.
+	dateDir := dateStr
+	if len(dateDir) == 10 {
+		dateDir = dateDir[:4] + "/" + dateDir[5:7] + "/" + dateDir[8:10]
+	}
 
-	path := filepath.Join(s.cfg.Root, "requests", dateStr, id+".json")
+	path := filepath.Join(s.cfg.Root, "requests", dateDir, id+".json")
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -387,7 +396,12 @@ func (s *Store) ListRequestsInDay(date string) ([]string, error) {
 	if s == nil {
 		return nil, errors.New("fsstore: nil store")
 	}
-	dir := filepath.Join(s.cfg.Root, "requests", date)
+	// On-disk shards use "YYYY/MM/DD"; callers pass "YYYY-MM-DD".
+	dateDir := date
+	if len(dateDir) == 10 && strings.Count(dateDir, "-") == 2 {
+		dateDir = dateDir[:4] + "/" + dateDir[5:7] + "/" + dateDir[8:10]
+	}
+	dir := filepath.Join(s.cfg.Root, "requests", dateDir)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err

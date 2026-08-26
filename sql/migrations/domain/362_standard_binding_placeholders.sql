@@ -21,7 +21,7 @@
 --   - 不预填 credentials 行（缺 API key；handoff §3 已记录此阻塞）
 --
 -- 真实 credential 接入后的"激活"流程（不在本迁移内）：
---   1) INSERT INTO credentials (provider_id=30/17/10, ...) — 含真实 secret
+--   1) INSERT INTO credentials (provider code='xai'/'moonshot'/'google-gemini', ...) — 含真实 secret
 --   2) UPDATE credential_model_bindings
 --        SET credential_id = <new_cred_id>, available = true,
 --            unavailable_reason = NULL, unavailable_at = NULL
@@ -30,35 +30,41 @@
 BEGIN;
 
 -- ─────────────────────────────────────────────────────────────────────────
--- xai (provider_id=30): grok-4.6 → 占位 binding (credential_id=0)
+-- xai (providers.code='xai'): grok-4.6 → 占位 binding (credential_id=0)
 -- ─────────────────────────────────────────────────────────────────────────
 INSERT INTO credential_model_bindings (
     credential_id, provider_model_id, routing_tier, weight,
     available, unavailable_reason, unavailable_at,
-    currency, billing_mode, created_at, updated_at
+    plan_meta, currency, billing_mode, created_at, updated_at
 )
 SELECT 0, pm.id, 2, 100,
        false, 'placeholder_pending_credential', NOW(),
+       '{"source":"migration-362","state":"pending_credential"}'::jsonb,
        'USD', 'per_token', NOW(), NOW()
 FROM provider_models pm
-WHERE pm.provider_id = 30
+JOIN providers p ON p.id = pm.provider_id AND p.tenant_id = pm.tenant_id
+WHERE p.code = 'xai'
+  AND p.tenant_id = 'default'
   AND pm.tenant_id = 'default'
   AND pm.raw_model_name = 'grok-4.6'
 ON CONFLICT (credential_id, provider_model_id) DO NOTHING;
 
 -- ─────────────────────────────────────────────────────────────────────────
--- moonshot (provider_id=17): kimi-k3 / kimi-k2.6 / kimi-k2.7-code(-highspeed)
+-- moonshot (providers.code='moonshot'): kimi-k3 / kimi-k2.6 / kimi-k2.7-code(-highspeed)
 -- ─────────────────────────────────────────────────────────────────────────
 INSERT INTO credential_model_bindings (
     credential_id, provider_model_id, routing_tier, weight,
     available, unavailable_reason, unavailable_at,
-    currency, billing_mode, created_at, updated_at
+    plan_meta, currency, billing_mode, created_at, updated_at
 )
 SELECT 0, pm.id, 2, 100,
        false, 'placeholder_pending_credential', NOW(),
+       '{"source":"migration-362","state":"pending_credential"}'::jsonb,
        'CNY', 'per_token', NOW(), NOW()
 FROM provider_models pm
-WHERE pm.provider_id = 17
+JOIN providers p ON p.id = pm.provider_id AND p.tenant_id = pm.tenant_id
+WHERE p.code = 'moonshot'
+  AND p.tenant_id = 'default'
   AND pm.tenant_id = 'default'
   AND pm.raw_model_name IN (
     'kimi-k3', 'kimi-k2.6', 'kimi-k2.7-code', 'kimi-k2.7-code-highspeed'
@@ -66,18 +72,21 @@ WHERE pm.provider_id = 17
 ON CONFLICT (credential_id, provider_model_id) DO NOTHING;
 
 -- ─────────────────────────────────────────────────────────────────────────
--- google-gemini (provider_id=10): gemini-3.* (10 个 ID)
+-- google-gemini (providers.code='google-gemini'): gemini-3.* (10 个 ID)
 -- ─────────────────────────────────────────────────────────────────────────
 INSERT INTO credential_model_bindings (
     credential_id, provider_model_id, routing_tier, weight,
     available, unavailable_reason, unavailable_at,
-    currency, billing_mode, created_at, updated_at
+    plan_meta, currency, billing_mode, created_at, updated_at
 )
 SELECT 0, pm.id, 2, 100,
        false, 'placeholder_pending_credential', NOW(),
+       '{"source":"migration-362","state":"pending_credential"}'::jsonb,
        'USD', 'per_token', NOW(), NOW()
 FROM provider_models pm
-WHERE pm.provider_id = 10
+JOIN providers p ON p.id = pm.provider_id AND p.tenant_id = pm.tenant_id
+WHERE p.code = 'google-gemini'
+  AND p.tenant_id = 'default'
   AND pm.tenant_id = 'default'
   AND pm.raw_model_name LIKE 'gemini-3%'
 ON CONFLICT (credential_id, provider_model_id) DO NOTHING;

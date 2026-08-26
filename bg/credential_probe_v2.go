@@ -80,14 +80,13 @@ type CredentialProbeV2 struct {
 // next tick" failure mode in scenario tests.
 func NewCredentialProbeV2(db *pgxpool.Pool, encKey []byte) *CredentialProbeV2 {
 	interval := 1 * time.Hour
-	// 2026-08-26 P1-2 (landing point C): shrink the default fastReprobeDelay
-	// from 5 minutes → 30 seconds. The user's principle is "按token计费、
-	// 非周期性的节点至少5分钟一次探测" — 5 minutes still holds for the
-	// scheduled cycleAll, but the *reactive* path that fires after a probe
-	// failure or quota write should wake up far sooner so the system can
-	// detect the upstream coming back inside one user-visible request.
-	// Operators can still override with LLM_GATEWAY_CRED_PROBE_V2_FAST_REPROBE_DELAY.
-	fastDelay := 30 * time.Second
+	// User principle: "按 token 计费、非周期性的节点至少 5 分钟一次探测"
+	// (see .handoff/selfcheck-audit-2026-08-26.md §2.1). 5 minutes is the
+	// minimum cadence the user is willing to pay for; the reactive fastReprobe
+	// path inherits the same cadence. Operators can still override via
+	// LLM_GATEWAY_CRED_PROBE_V2_FAST_REPROBE_DELAY if they explicitly accept
+	// the higher probe cost.
+	fastDelay := 5 * time.Minute
 	if v := strings.TrimSpace(os.Getenv("LLM_GATEWAY_CRED_PROBE_V2_INTERVAL")); v != "" {
 		if d, err := time.ParseDuration(v); err == nil && d > 0 {
 			interval = d
@@ -99,7 +98,7 @@ func NewCredentialProbeV2(db *pgxpool.Pool, encKey []byte) *CredentialProbeV2 {
 		if d, err := time.ParseDuration(v); err == nil && d > 0 {
 			fastDelay = d
 		} else if err != nil {
-			slog.Warn("credential probe v2: invalid LLM_GATEWAY_CRED_PROBE_V2_FAST_REPROBE_DELAY, using 30s", "value", v, "error", err)
+			slog.Warn("credential probe v2: invalid LLM_GATEWAY_CRED_PROBE_V2_FAST_REPROBE_DELAY, using 5m", "value", v, "error", err)
 		}
 	}
 	probe := &CredentialProbeV2{
@@ -1018,14 +1017,94 @@ func (c *CredentialProbeV2) writeHealth(ctx context.Context, credID int, pr prob
 		    -- 同步清除残留的 quota_recover_at，避免状态不一致
 		    -- (quota_state='ok' 但 quota_recover_at 指向未来时间)。
 		    -- 失败分支不传 $8，COALESCE 保持旧值，这里的 CASE 也不会触发。
-		    quota_recover_at = CASE 
-		        WHEN COALESCE($8, quota_state) = 'ok' THEN NULL 
-		        ELSE quota_recover_at 
+		    quota_recover_at = CASE
+		        WHEN COALESCE($8, quota_state) = 'ok' THEN NULL
+		        ELSE quota_recover_at
+		    END,
+		    lifecycle_status = CASE
+		        WHEN COALESCE($8, '') = 'ok'
+		          AND lifecycle_status = 'disabled'
+		          AND auto_disabled_at IS NOT NULL
+		        THEN 'active'
+		        ELSE lifecycle_status
+		    END,
+		    auto_enabled_at = CASE
+		        WHEN COALESCE($8, '') = 'ok'
+		          AND lifecycle_status = 'disabled'
+		          AND auto_disabled_at IS NOT NULL
+		        THEN NOW()
+		        ELSE auto_enabled_at
+		    END,
+		    auto_enabled_reason = CASE
+		        WHEN COALESCE($8, '') = 'ok'
+		          AND lifecycle_status = 'disabled'
+		          AND auto_disabled_at IS NOT NULL
+		        THEN 'periodic_quota_probe_recovered'
+		        ELSE auto_enabled_reason
+		    END,
+		    auto_disabled_at = CASE
+		        WHEN COALESCE($8, '') = 'ok'
+		          AND lifecycle_status = 'disabled'
+		          AND auto_disabled_at IS NOT NULL
+		        THEN NULL
+		        ELSE auto_disabled_at
+		    END,
+		    auto_disabled_reason = CASE
+		        WHEN COALESCE($8, '') = 'ok'
+		          AND lifecycle_status = 'disabled'
+		          AND auto_disabled_at IS NOT NULL
+		        THEN NULL
+		        ELSE auto_disabled_reason
 		    END,
 		    state_reason_code = $9,
-		    state_updated_at = NOW()
+		    state_updated_at = NOW(),
+		    -- A successful probe after a periodic quota window resets the
+		    -- automatically-disabled credential. Manual disable remains guarded.
+		    lifecycle_status = CASE
+		        WHEN COALESCE($8, '') = 'ok'
+		          AND lifecycle_status = 'disabled'
+		          AND auto_disabled_at IS NOT NULL
+		        THEN 'active'
+		        ELSE lifecycle_status
+		    END,
+		    auto_enabled_at = CASE
+		        WHEN COALESCE($8, '') = 'ok'
+		          AND lifecycle_status = 'disabled'
+		          AND auto_disabled_at IS NOT NULL
+		        THEN NOW()
+		        ELSE auto_enabled_at
+		    END,
+		    auto_enabled_reason = CASE
+		        WHEN COALESCE($8, '') = 'ok'
+		          AND lifecycle_status = 'disabled'
+		          AND auto_disabled_at IS NOT NULL
+		        THEN 'periodic_quota_probe_recovered'
+		        ELSE auto_enabled_reason
+		    END,
+		    auto_disabled_at = CASE
+		        WHEN COALESCE($8, '') = 'ok'
+		          AND lifecycle_status = 'disabled'
+		          AND auto_disabled_at IS NOT NULL
+		        THEN NULL
+		        ELSE auto_disabled_at
+		    END,
+		    auto_disabled_reason = CASE
+		        WHEN COALESCE($8, '') = 'ok'
+		          AND lifecycle_status = 'disabled'
+		          AND auto_disabled_at IS NOT NULL
+		        THEN NULL
+		        ELSE auto_disabled_reason
+		    END
 		WHERE id = $10
-		  AND lifecycle_status = 'active'
+		  AND (
+		      lifecycle_status = 'active'
+		      OR (
+		          lifecycle_status = 'disabled'
+		          AND auto_disabled_at IS NOT NULL
+		          AND COALESCE(quota_state, 'ok') = 'periodic_exhausted'
+		          AND (quota_recover_at IS NULL OR quota_recover_at <= now())
+		      )
+		  )
 		  AND COALESCE(manual_disabled, FALSE) = FALSE
 		  -- 2026-08-07 P0 死锁修复：硬配额守卫必须让"探活实测成功"通过。
 		  --
