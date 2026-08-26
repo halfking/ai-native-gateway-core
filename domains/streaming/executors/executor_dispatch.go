@@ -299,6 +299,18 @@ func (e *Executor) executeViaDispatch(
 	qr.AllowProviderChange = params.DispatchAllowProviderChange
 	qr.RetryPerCredential = dispatch.MaxNodeFailures - 1
 	qr.ModelAlternatives = append([]string(nil), params.DispatchModelAlternatives...)
+	// v6 G-Ⅱ: 定时请求 due time flows into the pipeline's due heap.
+	qr.DueAt = params.DispatchDueAt
+	// v6 G-Ⅲ: bridge structured dispatch notices to the handler's thinking
+	// writer (params.OnNodeJump → preStream `: thinking:` SSE comment). The
+	// callback must stay non-blocking — handler.go writes through the
+	// serialized stream writer and detaches on failure. Non-streaming
+	// requests have no OnNodeJump (nil) and are no-ops.
+	qr.OnDispatchNotice = func(notice dispatch.DispatchNotice) {
+		if params.OnNodeJump != nil {
+			params.OnNodeJump(notice.Message)
+		}
+	}
 
 	result, err := e.dispatchPipeline.Submit(dispatchCtx, qr)
 	if err != nil {
@@ -333,6 +345,9 @@ func dispatchErrToExecuteError(err error) *ExecuteError {
 		return &ExecuteError{LastErr: err, Exhausted: true, LastKind: errorsx.KindConcurrent}
 	case errors.Is(err, context.DeadlineExceeded):
 		return &ExecuteError{LastErr: err, Exhausted: true, LastKind: errorsx.KindTimeout}
+	case errors.Is(err, dispatch.ErrScheduleTooFar):
+		// 定时请求的 due time 超出允许窗口：客户端参数问题，不可重试。
+		return &ExecuteError{LastErr: err, Exhausted: true, LastKind: errorsx.KindClientBug}
 	default:
 		if ce, ok := err.(*dispatchErr); ok && ce != nil {
 			// Forward-path sentinels (circuit open / fp saturated / keys

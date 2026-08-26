@@ -79,6 +79,14 @@ type Pipeline struct {
 	// retryScheduler optionally defers failed re-execution until retry_at.
 	// nil ⇒ immediate failover (legacy behavior).
 	retryScheduler RetryScheduler
+	// dueScheduler (v6 G-Ⅱ, 定时请求) parks requests whose DueAt is in the
+	// future and re-admits them into Tier-0 at the due time. Unlike
+	// retryScheduler it is pipeline-owned: created in Start, closed in Stop.
+	dueScheduler *HeapRetryScheduler
+	// dimensionIndex (v6 G-Ⅳ, 分维队列) tracks request membership per
+	// model/credential/provider dimension. Observation-only — never gates
+	// execution.
+	dimensionIndex *DimensionIndex
 	// queueMirror optionally projects queue state to Redis (observation only).
 	queueMirror *QueueMirror
 	// affinitySink persists successful session routes and invalidates a failed
@@ -286,8 +294,23 @@ func NewPipeline(deps Deps) *Pipeline {
 	p.registry = NewLifecycleRegistry(cfg.RegistryCapacity, cfg.CompletedWatermark, 0)
 	p.totalQueue = newTotalExecutionQueue(cfg.TotalQueueCapacity)
 	p.registry.SetEvictHook(p.emitRegistryEviction)
+	p.dimensionIndex = NewDimensionIndex(DimensionIndexConfig{
+		TTL:            time.Duration(cfg.DimensionTTLSeconds) * time.Second,
+		PerKeyCapacity: cfg.DimensionCapacity,
+		MaxKeys:        defaultDimensionMaxKeys,
+	})
 	p.cfg.Store(&cfg)
 	return p
+}
+
+// DimensionIndex exposes the per-dimension membership index for admin reads
+// (v6 G-Ⅳ). Nil-safe callers only — the index is always constructed with the
+// pipeline.
+func (p *Pipeline) DimensionIndex() *DimensionIndex {
+	if p == nil {
+		return nil
+	}
+	return p.dimensionIndex
 }
 
 // SetRetryScheduler swaps the optional timed-retry scheduler (before or
@@ -832,6 +855,15 @@ func (p *Pipeline) Start() {
 	p.observationWg.Add(1)
 	go p.runObservations()
 
+	// v6 G-Ⅱ (定时请求): pipeline-owned due scheduler. Parked requests are
+	// parked at Tier-0 drain time and re-admitted via onScheduledDue; Close
+	// completes still-parked requests with ErrShutdown so Submit callers
+	// never block through a shutdown.
+	p.dueScheduler = NewHeapRetrySchedulerWithCloseHandler(
+		p.onScheduledDue,
+		func(qr *QueuedRequest) { p.complete(qr, ForwardOutcome{Err: ErrShutdown}) },
+		nil, nil)
+
 	// Stage C.2: start the optional snapshot observer. Its lifecycle is
 	// independent of the Pipeline's wg — Stop() drains it explicitly so
 	// no in-flight walk races with the credForwarder cancel loop below.
@@ -872,6 +904,12 @@ func (p *Pipeline) Stop() {
 		return
 	}
 	close(p.stopCh)
+	// v6 G-Ⅱ: close the due scheduler BEFORE waiting on workers so parked
+	// scheduled requests complete with ErrShutdown instead of leaking their
+	// Submit callers.
+	if p.dueScheduler != nil {
+		p.dueScheduler.Close()
+	}
 	p.modelMu.Lock()
 	p.models = map[string]*modelQueue{}
 	p.modelMu.Unlock()
@@ -930,7 +968,13 @@ func (p *Pipeline) Submit(ctx context.Context, qr *QueuedRequest) (any, error) {
 		p.emitRequestTerminal(qr, ForwardOutcome{Err: ErrShutdown})
 		return nil, ErrShutdown
 	}
-	// Stamp before the FIFO handoff. After totalQueue accepts the request its
+	// v6 G-Ⅱ: bound scheduled requests to maxScheduleAhead so dead client
+	// timers cannot park in the due heap forever.
+	if qr.DueAt.After(time.Now().Add(maxScheduleAhead)) {
+		p.emitRequestTerminal(qr, ForwardOutcome{Err: ErrScheduleTooFar})
+		return nil, ErrScheduleTooFar
+	}
+	// Stamp before the FIFO hand-off. After totalQueue accepts the request its
 	// worker may complete it immediately, so later writes would race metrics.
 	if qr.EnqueuedAt.IsZero() {
 		qr.EnqueuedAt = time.Now()
@@ -939,6 +983,7 @@ func (p *Pipeline) Submit(ctx context.Context, qr *QueuedRequest) (any, error) {
 	// LifecycleRegistry is a projection only. Its admission result must never
 	// reject execution; totalQueue is the sole execution capacity boundary.
 	p.registry.RegisterPending(qr.ID, qr.RequestedModel, time.Now())
+	p.dimensionIndex.Track(qr, time.Now())
 	if !p.totalQueue.tryEnqueue(qr) {
 		metricOverflow.WithLabelValues("total_queue_full").Inc()
 		p.observeOverflow("total_queue_full")
@@ -1005,6 +1050,20 @@ func (p *Pipeline) runTotalDrainer() {
 				p.totalQueue.release(qr)
 				p.complete(qr, ForwardOutcome{Err: ErrShutdown})
 				return
+			}
+			// v6 G-Ⅱ (定时请求): a future DueAt parks the request back
+			// into the pending set (due heap) instead of executing it. The
+			// Tier-0 slot is released so scheduled backlog never consumes
+			// the waiting room; the promoter re-admits at the due time.
+			// minScheduleLead: a DueAt inside the lead window executes
+			// immediately — parking must leave enough room to finish the
+			// park-side metadata writes before the picker takes ownership.
+			if qr.DueAt.After(time.Now().Add(minScheduleLead)) {
+				if p.parkScheduledRequest(qr) {
+					p.totalQueue.release(qr)
+					continue
+				}
+				// Scheduler unavailable (shutting down) → execute now.
 			}
 			if !p.enqueueModelFromTotal(queueKeyFor(qr.RequestedModel), qr) {
 				p.totalQueue.release(qr)
@@ -1074,6 +1133,84 @@ func (p *Pipeline) enqueueModelFromTotal(name string, qr *QueuedRequest) bool {
 			return false
 		case <-time.After(time.Millisecond):
 		}
+	}
+}
+
+// minScheduleLead is the minimum remaining time before DueAt for the drainer
+// to park a scheduled request. Inside the window the request executes
+// immediately: Schedule() hands ownership to the picker goroutine, so all
+// park-side writes must complete strictly before the picker can fire.
+const minScheduleLead = 100 * time.Millisecond
+
+// parkScheduledRequest parks a not-yet-due scheduled request in the due heap
+// (v6 G-Ⅱ). All metadata is written BEFORE Schedule — Schedule is the
+// ownership handoff to the picker goroutine, after which this goroutine must
+// not touch qr. Returns false when the scheduler refused (shutting down);
+// the caller then treats the request as immediate (the acceptance notice may
+// already have been sent — harmless: the request simply runs right away).
+func (p *Pipeline) parkScheduledRequest(qr *QueuedRequest) bool {
+	if p == nil || p.dueScheduler == nil || ctxOf(qr).Err() != nil {
+		return false
+	}
+	dueAt := qr.DueAt
+	now := time.Now()
+	at := dueAt
+	qr.emitObservation(Observation{
+		Type:          ObservationRetryScheduled,
+		Stage:         StageRetrying,
+		Model:         qr.RequestedModel,
+		ResolvedModel: qr.ResolvedModel,
+		RetryReason:   "scheduled_wait",
+		RetryAt:       &at,
+	})
+	p.registry.MarkRetryScheduled(qr.ID, dueAt)
+	p.queueMirror.MirrorRetryAt(qr.ID, dueAt)
+	qr.LastFailover = FailoverMarker{
+		Model:      qr.ResolvedModel,
+		NextAction: NextActionScheduledWait,
+		Attempt:    qr.AttemptCount,
+		StampedAt:  now,
+	}
+	p.dimensionIndex.UpdateWait(qr, dueAt, NextActionScheduledWait, now)
+	metricScheduledParked.Inc()
+	qr.notifyDispatch(DispatchNotice{
+		Kind:     NoticeKindScheduled,
+		Message:  scheduledAcceptedMessage(dueAt),
+		RetryAt:  dueAt,
+		WaitHint: waitHint(dueAt.Sub(now)),
+		ToModel:  qr.RequestedModel,
+		Attempt:  qr.AttemptCount,
+	})
+	return p.dueScheduler.Schedule(qr, dueAt)
+}
+
+// onScheduledDue is the due-scheduler pickup: the parked request re-enters
+// Tier-0 admission at (or just after) its DueAt.
+func (p *Pipeline) onScheduledDue(qr *QueuedRequest, dueAt time.Time) {
+	if qr == nil || qr.completed.Load() {
+		return // already terminal (client cancel raced the timer)
+	}
+	if p.shutdown.Load() {
+		p.complete(qr, ForwardOutcome{Err: ErrShutdown})
+		return
+	}
+	if ctxOf(qr).Err() != nil {
+		p.complete(qr, ForwardOutcome{Err: ctxOf(qr).Err()})
+		return
+	}
+	now := time.Now()
+	p.registry.MarkInFlight(qr.ID, now)
+	p.queueMirror.ClearRetryAt(qr.ID)
+	metricScheduledDue.Inc()
+	qr.notifyDispatch(DispatchNotice{
+		Kind:    NoticeKindScheduled,
+		Message: "定时请求到期，开始执行",
+		RetryAt: dueAt,
+	})
+	if !p.totalQueue.tryEnqueue(qr) {
+		metricOverflow.WithLabelValues("total_queue_full_on_due").Inc()
+		p.observeOverflow("total_queue_full_on_due")
+		p.complete(qr, ForwardOutcome{Err: &OverflowError{Reason: "total_queue_full_on_due", RetryAfter: DefaultOverflowRetryAfter}})
 	}
 }
 
@@ -1208,6 +1345,9 @@ func (p *Pipeline) complete(qr *QueuedRequest, out ForwardOutcome) {
 	now := time.Now()
 	p.registry.MarkCompleted(qr.ID, now)
 	p.queueMirror.ClearRetryAt(qr.ID)
+	// v6 G-Ⅳ: terminal transition mutates the membership entries in place;
+	// entries stay in their dimension rings until TTL/capacity evicts them.
+	p.dimensionIndex.Complete(qr, out, now)
 
 	// V3.1: Record T9 timestamp (response end - stream completed)
 	qr.SetT9_ResponseEnd()
@@ -1353,6 +1493,12 @@ func (p *Pipeline) tryEnqueueCred(cred CredentialRef, qr *QueuedRequest) bool {
 	// same bug class as the T5 ordering above (caught by go test -race,
 	// TestModelChange).
 	reqID, model, emitCtx := qr.ID, qr.ResolvedModel, ctxOf(qr)
+
+	// v6 G-Ⅳ: register membership under credential/provider dimensions while
+	// this goroutine still owns qr. If the send below hits a full lane, the
+	// entry is corrected by the next event (capacity-wait / next MarkNode /
+	// terminal) — the index is event-sourced, never an execution gate.
+	p.dimensionIndex.MarkNode(qr, cred, time.Now())
 
 	qr.journeyMu.Lock()
 	cf.handoffMu.Lock()
