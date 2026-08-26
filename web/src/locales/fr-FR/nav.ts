@@ -34,8 +34,6 @@ export default {
     auditLogs: "Journaux d'audit",
     requestLogs: "Journaux de requêtes",
     dispatchWaterfall: "Cascade de files",
-    requestRegistry: "Request Registry",
-    connectionRegistry: "Connection Registry",
     turns: "Liste des tours",
     requestTrace: "Traçage des requêtes",
     sessions: "Sessions",

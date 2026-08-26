@@ -159,7 +159,7 @@ async function onSave() {
   width: min(420px, 100vw);
   height: 100%;
   background: var(--card);
-  box-shadow: -8px 0 24px var(--overlay-faint);
+  box-shadow: -8px 0 24px rgba(0,0,0,0.12);
   display: flex;
   flex-direction: column;
 }
@@ -209,6 +209,6 @@ async function onSave() {
   align-items: center;
   gap: 8px !important;
 }
-.error { color: var(--danger); font-size: 12px; }
-.btn-danger { color: var(--danger); margin-left: auto; }
+.error { color: #b91c1c; font-size: 12px; }
+.btn-danger { color: #b91c1c; margin-left: auto; }
 </style>

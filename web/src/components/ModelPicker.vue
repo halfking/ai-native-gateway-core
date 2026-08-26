@@ -411,7 +411,7 @@ watch(() => props.modelValue, () => {
 .mp-chips { display: flex; flex-wrap: wrap; gap: 4px; flex: 1; min-width: 0; }
 .mp-chip {
   display: inline-flex; align-items: center; gap: 4px;
-  background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent);
+  background: rgba(96, 165, 250, 0.12); color: var(--accent);
   border: 1px solid var(--border); border-radius: 999px;
   padding: 2px 8px; font-size: 12px; max-width: 100%;
 }
@@ -424,7 +424,7 @@ watch(() => props.modelValue, () => {
 
 .mp-overlay {
   position: fixed; inset: 0; z-index: 1300;
-  background: var(--overlay-strong);
+  background: rgba(0, 0, 0, 0.5);
   display: flex; align-items: center; justify-content: center;
   padding: 24px 16px;
 }
@@ -437,7 +437,7 @@ watch(() => props.modelValue, () => {
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: 12px;
-  box-shadow: 0 20px 50px var(--overlay-medium);
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.35);
   overflow: hidden;
 }
 .mp-dialog--vendor { width: min(640px, 100%); }
@@ -475,10 +475,10 @@ watch(() => props.modelValue, () => {
   padding: 6px 12px; font-size: 13px; cursor: pointer;
   max-width: 100%;
 }
-.mp-model:hover { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 15%, transparent); }
+.mp-model:hover { border-color: var(--accent); background: rgba(96, 165, 250, 0.08); }
 .mp-model.chosen {
   border-color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  background: rgba(96, 165, 250, 0.18);
   color: var(--accent);
 }
 .mp-model.mp-more {

@@ -299,7 +299,6 @@ func parseNodeKeyK2(prefix, key string) (ParsedNodeKey, bool) {
 	}
 	return ParsedNodeKey{TenantID: tenant, CredentialID: credentialID, RawModel: raw}, true
 }
-
 // ParsedWindowKey is the tuple recovered from a canonical k2 window key.
 type ParsedWindowKey struct {
 	Bucket       string

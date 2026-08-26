@@ -116,7 +116,7 @@ function handleSecondary(path?: string) {
   padding: 28px 24px;
   border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
   border-radius: 14px;
-  background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 10%, transparent), var(--overlay-medium));
+  background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 10%, transparent), rgba(15, 17, 23, 0.55));
 }
 
 .deploy-flow__head {
@@ -128,13 +128,13 @@ function handleSecondary(path?: string) {
   margin: 0 0 8px;
   font-size: 22px;
   font-weight: 600;
-  color: var(--border);
+  color: #e8eaed;
 }
 
 .deploy-flow__sub {
   margin: 0;
   font-size: 14px;
-  color: var(--muted);
+  color: #94a3b8;
 }
 
 .deploy-flow__steps {
@@ -172,14 +172,14 @@ function handleSecondary(path?: string) {
   margin: 0 0 6px;
   font-size: 15px;
   font-weight: 600;
-  color: var(--border);
+  color: #e8eaed;
 }
 
 .deploy-flow__body p {
   margin: 0;
   font-size: 13px;
   line-height: 1.55;
-  color: var(--muted);
+  color: #9aa0a6;
 }
 
 .deploy-flow__hint {
@@ -188,8 +188,8 @@ function handleSecondary(path?: string) {
   padding: 8px 10px;
   border-radius: 8px;
   font-size: 12px;
-  color: var(--border);
-  background: var(--overlay-medium);
+  color: #cbd5e1;
+  background: rgba(15, 23, 42, 0.65);
   word-break: break-all;
 }
 
@@ -213,7 +213,7 @@ function handleSecondary(path?: string) {
   position: relative;
   padding-left: 16px;
   font-size: 12px;
-  color: var(--muted);
+  color: #64748b;
 }
 
 .deploy-flow__notes li::before {

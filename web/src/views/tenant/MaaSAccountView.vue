@@ -285,10 +285,10 @@ onMounted(load)
 }
 .mono { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 12px; }
 .link-sm { font-size: 12px; color: var(--accent-h); text-decoration: none; }
-.badge-yellow { background: var(--warning-bg); color: var(--warning); padding: 2px 8px; border-radius: 8px; font-size: 11px; }
-.badge-green { background: var(--success-bg); color: var(--success); padding: 2px 8px; border-radius: 8px; font-size: 11px; }
-.badge-red { background: var(--danger-bg); color: var(--danger); padding: 2px 8px; border-radius: 8px; font-size: 11px; }
-.badge-gray { background: var(--neutral-bg); color: var(--muted); padding: 2px 8px; border-radius: 8px; font-size: 11px; }
+.badge-yellow { background: rgba(234,179,8,.15); color: #fbbf24; padding: 2px 8px; border-radius: 8px; font-size: 11px; }
+.badge-green { background: rgba(34,197,94,.15); color: #4ade80; padding: 2px 8px; border-radius: 8px; font-size: 11px; }
+.badge-red { background: rgba(239,68,68,.15); color: #f87171; padding: 2px 8px; border-radius: 8px; font-size: 11px; }
+.badge-gray { background: rgba(156,163,175,.15); color: #9ca3af; padding: 2px 8px; border-radius: 8px; font-size: 11px; }
 .tenant-badge {
   display: inline-flex;
   padding: 4px 10px;
@@ -297,5 +297,5 @@ onMounted(load)
   background: var(--surface-secondary);
   color: var(--text-secondary);
 }
-.alert-danger { padding: 8px 12px; border-radius: 4px; background: var(--danger-bg); color: var(--danger); margin-bottom: 12px; }
+.alert-danger { padding: 8px 12px; border-radius: 4px; background: rgba(239,68,68,.1); color: #f87171; margin-bottom: 12px; }
 </style>

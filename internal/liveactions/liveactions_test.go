@@ -223,40 +223,6 @@ func TestEmitConcurrentNeverBlocks(t *testing.T) {
 	}
 }
 
-func TestNormalizeStageCategory(t *testing.T) {
-	ev := ActionEvent{Action: ActionModelEnqueued}
-	normalizeStage(&ev)
-	if ev.Stage != "model_queue" || ev.StageCategory != "routing" {
-		t.Fatalf("normalized stage = %q/%q, want model_queue/routing", ev.Stage, ev.StageCategory)
-	}
-
-	ev = ActionEvent{Action: ActionFirstByte}
-	normalizeStage(&ev)
-	if ev.Stage != "streaming" || ev.StageCategory != "llm" {
-		t.Fatalf("normalized stage = %q/%q, want streaming/llm", ev.Stage, ev.StageCategory)
-	}
-}
-
-// TestNormalizeStageFailureCounter: an Action outside the closed enum
-// (stageForAction returns "") must increment
-// live_actions_stage_normalization_failures_total exactly once, with no
-// stage / stage_category populated on the event.
-func TestNormalizeStageFailureCounter(t *testing.T) {
-	ResetMetricsForTest()
-
-	const unknown = Action("__test_unknown__")
-
-	ev := ActionEvent{Action: unknown}
-	normalizeStage(&ev)
-
-	if ev.Stage != "" || ev.StageCategory != "" {
-		t.Fatalf("unknown action should leave stage fields empty, got %q/%q", ev.Stage, ev.StageCategory)
-	}
-	if got := StageNormalizationFailuresTotal(); got != 1 {
-		t.Fatalf("stage_normalization_failures = %d, want 1", got)
-	}
-}
-
 // TestNilEmitterIsNoOp: nil emitter 上 Emit 必须 no-op 不 panic。
 func TestNilEmitterIsNoOp(t *testing.T) {
 	var e *Emitter

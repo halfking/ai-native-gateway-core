@@ -193,5 +193,5 @@ onBeforeUnmount(() => {
   margin-top: 12px;
   font-size: 12px;
 }
-.muted { color: var(--text-secondary); }
+.muted { color: #909399; }
 </style>

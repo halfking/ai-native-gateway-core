@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { ref, watch, onMounted } from 'vue'
 import { getModelTaskIndex, type ModelTaskIndexItem } from '../../api-autoroute'
-import { useCredentialLabels } from '../../composables/useCredentialLabels'
 
 const props = defineProps<{
   taskType?: string
@@ -12,10 +11,6 @@ const loading = ref(false)
 const bucket = ref<string | null>(null)
 const items = ref<ModelTaskIndexItem[]>([])
 const warning = ref('')
-// credentialDisplayName resolves credential id → human label; the composable
-// keeps a Map<id,label> refreshed via loadCredentialLabels(), and falls back
-// to "凭据 #ID" if the label is missing.
-const { credentialDisplayName, loadCredentialLabels } = useCredentialLabels()
 
 async function load() {
   if (!props.taskType) {
@@ -49,12 +44,7 @@ function fmtMs(n?: number): string {
 }
 
 watch(() => props.taskType, load)
-onMounted(() => {
-  // Populate the label cache so credentialDisplayName() resolves to the latest
-  // label as soon as the panel mounts.
-  void loadCredentialLabels()
-  void load()
-})
+onMounted(load)
 </script>
 
 <template>
@@ -82,7 +72,7 @@ onMounted(() => {
               <td class="num">{{ i + 1 }}</td>
               <td>
                 <div class="model-name">{{ row.canonical_name || '-' }}</div>
-                <div v-if="row.primary_credential_id" class="text-muted mono-sm">{{ credentialDisplayName(row.primary_credential_id) }}</div>
+                <div v-if="row.primary_credential_id" class="text-muted mono-sm">cred #{{ row.primary_credential_id }}</div>
               </td>
               <td>{{ row.sample_count ?? '-' }}</td>
               <td>{{ fmtPct(row.success_rate) }}</td>

@@ -8,7 +8,6 @@ import { mount } from '@vue/test-utils'
 import { defineComponent, h } from 'vue'
 import { useLiveStreamUrl } from './useLiveStreamUrl'
 import type { ConnectionState } from './liveStreamStore'
-import { __resetCustomEndpointForTest } from './liveStreamStore'
 
 const STORAGE_KEY = 'llmgw_sse_endpoint'
 
@@ -55,7 +54,6 @@ describe('useLiveStreamUrl', () => {
 
   beforeEach(() => {
     localStorage.clear()
-    __resetCustomEndpointForTest()
     connection = makeConnection('idle')
     reconnect = vi.fn()
     t = makeT()

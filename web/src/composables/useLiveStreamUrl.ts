@@ -13,7 +13,6 @@
 
 import { ref, computed, watch, onMounted, type Ref } from 'vue'
 import type { ConnectionState } from './liveStreamStore'
-import { getCustomEndpoint, setCustomEndpoint } from './liveStreamStore'
 
 export interface UseLiveStreamUrlOptions {
   /** 当前 SSE 连接状态（来自 useLiveStream） */
@@ -24,7 +23,16 @@ export interface UseLiveStreamUrlOptions {
   t: (key: string, named?: Record<string, unknown>) => string
 }
 
+const STORAGE_KEY = 'llmgw_sse_endpoint'
 const ENDPOINT_PATH = '/api/admin/live-stream'
+
+function readSavedUrl(): string {
+  try {
+    return localStorage.getItem(STORAGE_KEY) || ''
+  } catch {
+    return ''
+  }
+}
 
 export function useLiveStreamUrl(options: UseLiveStreamUrlOptions) {
   const { connection, reconnect, t } = options
@@ -34,22 +42,14 @@ export function useLiveStreamUrl(options: UseLiveStreamUrlOptions) {
   const isEditingUrl = ref(false)
   const editUrlValue = ref('')
 
-  // LP8 (2026-08-24): localStorage reads / writes for the SSE endpoint go
-  // through liveStreamStore (which now uses usePersistedValue under the
-  // hood). Read lazily on mount so a freshly-saved endpoint lands in the
-  // composable's streamUrl ref immediately.
-  function readStoredUrl(): string {
-    return getCustomEndpoint() || ''
-  }
-
   // 挂载时读取 localStorage 中管理员保存的自定义地址
   onMounted(() => {
-    streamUrl.value = readStoredUrl() || defaultStreamUrl.value
+    streamUrl.value = readSavedUrl() || defaultStreamUrl.value
   })
 
   // 如果用户修改了 window.location（多 tab 测试），默认地址也跟着变
   watch(defaultStreamUrl, (cur) => {
-    if (!readStoredUrl()) streamUrl.value = cur
+    if (!readSavedUrl()) streamUrl.value = cur
   })
 
   function startEditUrl() {
@@ -62,7 +62,11 @@ export function useLiveStreamUrl(options: UseLiveStreamUrlOptions) {
     const url = editUrlValue.value.trim()
     if (url) {
       streamUrl.value = url
-      setCustomEndpoint(url)
+      try {
+        localStorage.setItem(STORAGE_KEY, url)
+      } catch {
+        /* ignore */
+      }
       reconnect()
     }
     isEditingUrl.value = false
@@ -71,7 +75,11 @@ export function useLiveStreamUrl(options: UseLiveStreamUrlOptions) {
   // 重置为默认 URL
   function resetUrl() {
     streamUrl.value = defaultStreamUrl.value
-    setCustomEndpoint('')
+    try {
+      localStorage.removeItem(STORAGE_KEY)
+    } catch {
+      /* ignore */
+    }
     isEditingUrl.value = false
     reconnect()
   }

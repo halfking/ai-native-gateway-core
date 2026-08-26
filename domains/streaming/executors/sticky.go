@@ -57,28 +57,13 @@ const (
 
 	// StickyLevelClientModel: medium priority, client + model scoped.
 	// Format: {tenant}:{app}:{key}:{profile}:{model}
-	// TTL: 60 seconds (short contamination window — see stickyL2TTL below)
+	// TTL: 24 hours (long-term model preference)
 	StickyLevelClientModel StickyLevel = 2
 
 	// StickyLevelClient: lowest priority, client-only scoped.
 	// Format: {tenant}:{app}:{key}:{profile}
-	// TTL: 24 hours (baseline fallback)
+	// TTL: 7 days (baseline fallback)
 	StickyLevelClient StickyLevel = 3
-)
-
-// 2026-08-26 fix: align TTLs across memory, DB, and Redis.
-//
-// Semantics (operator-confirmed):
-//   - L1 (session+model) sticky: same session_id, multiple requests → reuse credential
-//   - L2 (client+model) sticky: NEW sessions must NOT inherit a previous session's
-//     credential; L2's TTL is the contamination window for that risk.
-//     Reduce from 2h/24h → 60s so a stale L2 entry expires before it can lock
-//     many new sessions to one credential.
-//   - L3 (client baseline) sticky: 24h, only used as a fallback when no model info.
-const (
-	stickyL1DefaultTTL = 15 * time.Minute // calculateSessionStickyTTL default
-	stickyL2TTL        = 60 * time.Second
-	stickyL3TTL        = 24 * time.Hour
 )
 
 // StickyLookupResult holds the result of a multi-level sticky lookup.
@@ -95,11 +80,6 @@ type StickyRedisStore interface {
 	SetLevel(ctx context.Context, level int, credID int, rawKey string, ttl time.Duration) error
 	GetLevel(ctx context.Context, level int, rawKey string) (int, bool)
 	DeleteLevelIfCredential(ctx context.Context, level int, rawKey string, credID int) error
-	// ClearForCredential scans the entire sticky namespace and deletes every
-	// entry whose value equals credID. Used for hot-reload when admin changes
-	// a credential's priority/weight/concurrency — clear stale pins so new
-	// sessions can re-enter load balancing.
-	ClearForCredential(ctx context.Context, credID int) (int, error)
 }
 
 const stickyRedisWriteTimeout = 50 * time.Millisecond
@@ -185,49 +165,6 @@ func (s *StickyCache) Clear() {
 	}
 }
 
-// ClearForCredential removes every sticky binding that points at credID,
-// across the in-memory map and (if present) the Redis store. Returns the
-// total number of bindings cleared.
-//
-// 2026-08-26 hot-reload hook: when admin changes a credential's priority /
-// weight / concurrency, we clear the stale sticky pins so new sessions
-// don't inherit the previous credential while in-flight sessions complete
-// naturally. Currently-running sessions keep their L1 entry until they
-// record success again (which writes the same level keys but with refreshed
-// TTL).
-func (s *StickyCache) ClearForCredential(credID int) (int, error) {
-	if credID <= 0 {
-		return 0, nil
-	}
-	cleared := 0
-
-	s.mu.Lock()
-	for k, v := range s.items {
-		if v.credentialID == credID {
-			delete(s.items, k)
-			cleared++
-		}
-	}
-	store := s.redisStore
-	s.mu.Unlock()
-
-	if store != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
-		defer cancel()
-		n, err := store.ClearForCredential(ctx, credID)
-		if err != nil {
-			return cleared, err
-		}
-		cleared += n
-	}
-	if cleared > 0 {
-		slog.Info("sticky hot-reload: cleared bindings for credential",
-			"credential_id", credID,
-			"cleared", cleared)
-	}
-	return cleared, nil
-}
-
 // Close gracefully shuts down the StickyCache background goroutines.
 // 2026-08-06 FIX (P2-4): Prevent goroutine leak in tests and shutdown scenarios.
 // Safe to call multiple times (stopSweep close is idempotent via sync.Once pattern).
@@ -303,24 +240,13 @@ func (s *StickyCache) GetEntry(key string) (int, int, bool) {
 	return e.credentialID, e.failures, true
 }
 
-// 2026-08-26 fix: L2 (client+model) sticky removed from cascade.
+// GetMultiLevel performs a cascading lookup: L1 (session+model) → L2 (client+model) → L3 (client).
+// Returns the first non-expired match, along with which level it came from.
 //
-// Sticky design contract (operator-confirmed):
-//   - Same session_id, multiple requests → MUST pin to L1 (session+model) credential
-//   - NEW session_id with same (client, model) → MUST go through normal load
-//     balancing. If L2 is in the cascade, each successful request re-locks the
-//     (client, model) pair to whatever the previous session picked, so a
-//     sustained QPS keeps every new session glued to ONE credential forever,
-//     killing load balancing.
-//
-// L3 (client baseline) is kept as a fallback only when both sessionID and
-// model are missing (no L1 key derivable).
-//
-// We still record the L2 entry on RecordSuccess (memory-only, very short
-// TTL). It is NOT consulted during lookup; the persisted field is available
-// for legacy callers that Stats(metric) want to know "what the current
-// (client,model) voted for". Operators may want to re-introduce L2 lookup
-// behind a feature gate later — the on-disk shape stays compatible.
+// 2026-06-25: This is the new primary lookup method. It ensures:
+//   - Same session + same model → reuses the same credential (L1)
+//   - Different session + same model → reuses model preference (L2)
+//   - Different model → fresh routing decision (L3 as fallback only)
 func (s *StickyCache) GetMultiLevel(
 	tenantID string,
 	appID, apiKeyID *int,
@@ -328,11 +254,11 @@ func (s *StickyCache) GetMultiLevel(
 	sessionID string,
 	model string,
 ) StickyLookupResult {
-	l1, _ /* l2 intentionally unused */, l3 := buildStickyKeys(tenantID, appID, apiKeyID, clientProfile, sessionID, model)
+	l1, l2, l3 := buildStickyKeys(tenantID, appID, apiKeyID, clientProfile, sessionID, model)
 
 	now := time.Now()
 
-	// 内存级联查找(L1 → L3), 持读锁。
+	// 内存级联查找(L1 → L2 → L3), 持读锁。
 	s.mu.RLock()
 	// Try L1: session + model (highest priority)
 	if l1 != "" {
@@ -348,9 +274,21 @@ func (s *StickyCache) GetMultiLevel(
 		}
 	}
 
-	// Skip L2 per contract above.
+	// Try L2: client + model (medium priority)
+	if l2 != "" {
+		if e, ok := s.items[l2]; ok && now.Before(e.expiresAt) {
+			cred := e.credentialID
+			s.mu.RUnlock()
+			slog.Debug("sticky L2 hit", "key", l2, "credentialID", cred)
+			return StickyLookupResult{
+				CredentialID: cred,
+				Level:        StickyLevelClientModel,
+				Found:        true,
+			}
+		}
+	}
 
-	// Try L3: client baseline (lowest priority, fallback only).
+	// Try L3: client baseline (lowest priority)
 	if l3 != "" {
 		if e, ok := s.items[l3]; ok && now.Before(e.expiresAt) {
 			cred := e.credentialID
@@ -366,7 +304,8 @@ func (s *StickyCache) GetMultiLevel(
 	s.mu.RUnlock()
 
 	// Redis fallback(URSM v2 过渡): 内存 miss 后回源 Redis, 用显式 level。
-	// 2026-08-26 fix: also skip L2 in the Redis cascade — same contract reason.
+	// 读锁已释放, 回填内存走写锁, 避免自死锁。
+	// 2026-07-27 并发修复：SetRedisStore 现在在写锁下写，这里也走快照读取。
 	store := s.redisStoreSnapshot()
 	if store != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
@@ -375,13 +314,7 @@ func (s *StickyCache) GetMultiLevel(
 			lvl int
 			ttl time.Duration
 		}
-		l1TTL := stickyL1DefaultTTL
-		if sessionID != "" && model != "" {
-			l1TTL = calculateSessionStickyTTL(model)
-		}
-		// L1 then L3 only — L2 deliberately excluded so new sessions cannot
-		// inherit a previous session's pinned credential.
-		levels := []lv{{l1, 1, l1TTL}, {l3, 3, stickyL3TTL}}
+		levels := []lv{{l1, 1, 1 * time.Hour}, {l2, 2, 24 * time.Hour}, {l3, 3, 7 * 24 * time.Hour}}
 		for _, k := range levels {
 			if k.key == "" {
 				continue
@@ -395,6 +328,8 @@ func (s *StickyCache) GetMultiLevel(
 				switch k.lvl {
 				case 1:
 					lvl = StickyLevelSession
+				case 2:
+					lvl = StickyLevelClientModel
 				default:
 					lvl = StickyLevelClient
 				}
@@ -527,15 +462,11 @@ func (s *StickyCache) RecordSuccess(key string, credentialID int, ttl time.Durat
 	}
 }
 
-// RecordSuccessMultiLevel records success for the levels we want to keep
-// sticky. 2026-08-26 fix: L2 (client+model) is intentionally NOT recorded
-// anymore — see GetMultiLevel for the rationale. We only record:
-//   - L1: session+model (per-session sticky)
-//   - L3: client baseline (when no session/model, very coarse fallback)
-// Recording L2 caused new sessions of the same (client, model) to inherit
-// the previous session's credential because RecordSuccessMultiLevel fires
-// on every successful request and refreshes TTL — turning L2 into a
-// "forever lock" under sustained traffic.
+// RecordSuccessMultiLevel records success for all applicable levels.
+// This ensures that future requests benefit from the sticky routing at the appropriate level.
+//
+// 2026-07-07 Phase 1: 使用动态 TTL 替代固定 TTL。
+// L1: 10分钟（对话上下文）, L2: 2小时（从24h缩短）, L3: 1天（从7天缩短）
 func (s *StickyCache) RecordSuccessMultiLevel(
 	tenantID string,
 	appID, apiKeyID *int,
@@ -544,8 +475,7 @@ func (s *StickyCache) RecordSuccessMultiLevel(
 	model string,
 	credentialID int,
 ) {
-	// 2026-08-26: skip L2 from buildStickyKeys — passed but unused.
-	l1, _ /* l2 intentionally unused */, l3 := buildStickyKeys(tenantID, appID, apiKeyID, clientProfile, sessionID, model)
+	l1, l2, l3 := buildStickyKeys(tenantID, appID, apiKeyID, clientProfile, sessionID, model)
 
 	s.mu.Lock()
 	now := time.Now()
@@ -568,19 +498,25 @@ func (s *StickyCache) RecordSuccessMultiLevel(
 		)
 	}
 
-	// L2 (client+model) is intentionally NOT written. Per the contract in
-	// RecordSuccessMultiLevel above, L2 is excluded so a previous session's
-	// successful credential cannot pin a *new* session of the same
-	// (client, model).
+	// L2: client + model (2小时，从24小时缩短)
+	if l2 != "" {
+		s.items[l2] = stickyEntry{
+			credentialID:        credentialID,
+			failures:            0,
+			consecutiveFailures: 0,
+			lastFailureAt:       time.Time{},
+			expiresAt:           now.Add(2 * time.Hour),
+		}
+	}
 
-	// L3: client baseline (24h).
+	// L3: client baseline (1天，从7天缩短)
 	if l3 != "" {
 		s.items[l3] = stickyEntry{
 			credentialID:        credentialID,
 			failures:            0,
 			consecutiveFailures: 0,
 			lastFailureAt:       time.Time{},
-			expiresAt:           now.Add(stickyL3TTL),
+			expiresAt:           now.Add(24 * time.Hour),
 		}
 	}
 	// 并发修复 2026-07-27：在释放写锁之前把 pool 与 redisStore 指针拷到
@@ -591,15 +527,15 @@ func (s *StickyCache) RecordSuccessMultiLevel(
 	store := s.redisStoreSnapshot()
 
 	// Redis 双写(URSM v2 过渡): 用显式 level, 避免 levelOf 启发式
-	// 2026-08-26 fix: only L1 and L3 are dual-written. L2 is excluded.
 	if store != nil {
 		levels := []struct {
 			key string
 			lvl int
 			ttl time.Duration
 		}{
-			{l1, 1, calculateSessionStickyTTL(model)},
-			{l3, 3, stickyL3TTL},
+			{l1, 1, 1 * time.Hour},
+			{l2, 2, 24 * time.Hour},
+			{l3, 3, 7 * 24 * time.Hour},
 		}
 		for _, lv := range levels {
 			if lv.key == "" {
@@ -615,15 +551,15 @@ func (s *StickyCache) RecordSuccessMultiLevel(
 		}
 	}
 
-	// Async DB write for the retained levels (L1 + L3 only; L2 intentionally
-	// excluded — see RecordSuccessMultiLevel).
+	// Async DB write for all levels
 	if pool != nil {
-		go s.dbSetMultiLevel(pool, l1, "", l3, model, credentialID, now)
+		go s.dbSetMultiLevel(pool, l1, l2, l3, credentialID, now)
 	}
 
 	slog.Debug("sticky multi-level recorded",
 		"credentialID", credentialID,
 		"l1", l1,
+		"l2", l2,
 		"l3", l3,
 	)
 }
@@ -650,30 +586,17 @@ func (s *StickyCache) dbSet(pool *pgxpool.Pool, key string, credentialID int, tt
 
 // dbSetMultiLevel takes the pool as a parameter for the same reason as
 // dbSet. 并发修复 2026-07-27.
-//
-// 2026-08-26 fix: only L1 and L3 are persisted to sticky_sessions. L2 is
-// excluded per the RecordSuccessMultiLevel contract.
-func (s *StickyCache) dbSetMultiLevel(pool *pgxpool.Pool, l1, l2, l3, model string, credentialID int, baseTime time.Time) {
+func (s *StickyCache) dbSetMultiLevel(pool *pgxpool.Pool, l1, l2, l3 string, credentialID int, baseTime time.Time) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	// 2026-08-26: `_ = l2` — L2 intentionally unused from the persistence
-	// path. The argument is kept in the signature for backwards-compat with
-	// previous shape; dropping the parameter would force callers in the
-	// legacy V2 routing package to be re-touched.
-	_ = l2
-
-	l1TTL := stickyL1DefaultTTL
-	if model != "" {
-		l1TTL = calculateSessionStickyTTL(model)
-	}
 	keys := []struct {
 		key string
 		ttl time.Duration
 	}{
-		{l1, l1TTL},
-		// L2 skipped — see header comment.
-		{l3, stickyL3TTL},
+		{l1, 1 * time.Hour},
+		{l2, 24 * time.Hour},
+		{l3, 7 * 24 * time.Hour},
 	}
 
 	for _, k := range keys {

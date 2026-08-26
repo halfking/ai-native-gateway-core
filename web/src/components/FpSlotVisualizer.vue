@@ -171,7 +171,7 @@ function isLongHeld(d: SlotDetail | null): boolean {
 }
 .fp-cell:hover {
   transform: translateY(-2px);
-  box-shadow: 0 4px 12px var(--overlay-light);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.3);
   z-index: 5;
 }
 
@@ -191,12 +191,12 @@ function isLongHeld(d: SlotDetail | null): boolean {
   color: white;
 }
 .fp-cell--long {
-  background: linear-gradient(135deg, var(--warning) 0%, var(--warning) 100%);
-  border-color: var(--warning);
+  background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+  border-color: #d97706;
   color: white;
 }
 .fp-cell--expired {
-  background: var(--danger-bg);
+  background: rgba(239, 68, 68, 0.15);
   border-color: var(--danger);
   color: var(--danger);
 }
@@ -224,8 +224,8 @@ function isLongHeld(d: SlotDetail | null): boolean {
   height: 18px;
   border: none;
   border-radius: 4px;
-  background: var(--overlay-light);
-  color: var(--on-primary);
+  background: rgba(0,0,0,0.3);
+  color: #fff;
   font-size: 14px;
   line-height: 18px;
   text-align: center;
@@ -239,7 +239,7 @@ function isLongHeld(d: SlotDetail | null): boolean {
   opacity: 1;
 }
 .fp-cell-close:hover {
-  background: var(--danger-strong);
+  background: rgba(239, 68, 68, 0.7);
 }
 
 .fp-tooltip {
@@ -247,8 +247,8 @@ function isLongHeld(d: SlotDetail | null): boolean {
   bottom: calc(100% + 6px);
   left: 50%;
   transform: translateX(-50%);
-  background: var(--probe-dark-bg);
-  border: 1px solid var(--purple);
+  background: #0d1117;
+  border: 1px solid #4f46e5;
   border-radius: 6px;
   padding: 8px 10px;
   min-width: 180px;
@@ -259,7 +259,7 @@ function isLongHeld(d: SlotDetail | null): boolean {
   pointer-events: none;
   transition: opacity 0.15s;
   z-index: 100;
-  box-shadow: 0 4px 16px var(--overlay-strong);
+  box-shadow: 0 4px 16px rgba(0,0,0,0.5);
   white-space: normal;
 }
 .fp-cell:hover .fp-tooltip {
@@ -305,8 +305,8 @@ function isLongHeld(d: SlotDetail | null): boolean {
   height: 8px;
   border-radius: 2px;
 }
-.fp-legend-dot--occupied { background: var(--purple); }
-.fp-legend-dot--long { background: var(--warning); }
+.fp-legend-dot--occupied { background: #4f46e5; }
+.fp-legend-dot--long { background: #d97706; }
 .fp-legend-dot--free {
   background: transparent;
   border: 1px dashed var(--muted);

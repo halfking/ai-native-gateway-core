@@ -11,7 +11,6 @@ import DiagTab from './provider-detail/DiagTab.vue'
 import SettingsTab from './provider-detail/SettingsTab.vue'
 import ProbeHistoryTab from './provider-detail/ProbeHistoryTab.vue'
 import QualityTab from './provider-detail/QualityTab.vue'
-import ErrorDetailTab from './provider-detail/ErrorDetailTab.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -25,7 +24,6 @@ const creds = ref<ProviderCredential[]>([])
 const loading = ref(false)
 const error = ref('')
 const tab = ref('creds')
-const errorCredentialId = ref<number | undefined>()
 const probeFailureCount = ref(0)
 
 const diagLoading = ref(false)
@@ -37,17 +35,6 @@ const modelsFocusOffer = ref<{ credential_id: number; raw_model_name: string } |
 function onOpenModelsTab(payload: { credential_id: number; raw_model_name: string }) {
   modelsFocusOffer.value = payload
   tab.value = 'models'
-}
-
-function onOpenErrorDetail(credentialId: number) {
-  errorCredentialId.value = credentialId
-  tab.value = 'error-detail'
-}
-
-function selectErrorDetailTab() {
-  const value = Number(route.query.credential_id)
-  errorCredentialId.value = Number.isInteger(value) && value > 0 ? value : undefined
-  tab.value = 'error-detail'
 }
 
 async function load() {
@@ -128,9 +115,6 @@ async function runDiagnose() {
 function back() { router.push('/providers') }
 
 onMounted(load)
-onMounted(() => {
-  if (route.query.tab === 'error-detail') selectErrorDetailTab()
-})
 watch(providerId, () => {
   if (!Number.isNaN(providerId.value)) {
     load()
@@ -170,7 +154,6 @@ watch(providerId, () => {
         <button type="button" class="tab-btn" :class="{ active: tab === 'models' }" @click="tab = 'models'">{{ pp('tabModels') }}</button>
         <button type="button" class="tab-btn" :class="{ active: tab === 'quality' }" @click="tab = 'quality'">{{ pp('tabQuality') }}</button>
         <button type="button" class="tab-btn" :class="{ active: tab === 'logs' }" @click="tab = 'logs'">{{ pp('tabLogs') }}</button>
-        <button type="button" class="tab-btn" :class="{ active: tab === 'error-detail' }" @click="selectErrorDetailTab">{{ pp('tabErrorDetail') }}</button>
         <button type="button" class="tab-btn" :class="{ active: tab === 'diag' }" @click="tab = 'diag'">{{ pp('tabDiag') }}</button>
         <button
           type="button"
@@ -195,7 +178,6 @@ watch(providerId, () => {
         :creds="creds"
         @refresh="load"
         @silent-refresh="refreshCredsSilent"
-        @open-error-detail="onOpenErrorDetail"
       />
       <ModelsTab
         v-if="tab==='models'"
@@ -204,7 +186,6 @@ watch(providerId, () => {
       />
       <QualityTab v-if="tab==='quality'" :provider-id="providerId" />
       <LogsTab v-if="tab==='logs'" :provider-id="providerId" />
-      <ErrorDetailTab v-if="tab==='error-detail'" :credential-id="errorCredentialId" />
       <DiagTab v-if="tab==='diag'" :provider-id="providerId" />
       <ProbeHistoryTab v-if="tab==='probe'" :provider-id="providerId" @open-models-tab="onOpenModelsTab" />
       <SettingsTab v-if="tab==='settings'" :provider="provider" @refresh="load" />

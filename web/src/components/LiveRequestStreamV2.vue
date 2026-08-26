@@ -94,6 +94,7 @@ const {
   vendorFilterSelected,
   agentFilterSelected,
   activeFilterCount,
+  requestTypeCounts,
   filteredLanes,
 } = useLiveStreamFilters({ lanes })
 
@@ -288,8 +289,9 @@ function vendorOptionLabel(v: string) {
             :class="{ 'control-btn--active': requestTypeFilter.has('business') }"
             @click="toggleRequestType('business')"
             :title="t('dashboard.liveStream.businessTitle')"
+            :aria-pressed="requestTypeFilter.has('business')"
           >
-            {{ t('dashboard.liveStream.business') }}
+            {{ t('dashboard.liveStream.business') }} ({{ requestTypeCounts.business }})
           </button>
           <button
             type="button"
@@ -297,8 +299,9 @@ function vendorOptionLabel(v: string) {
             :class="{ 'control-btn--active': requestTypeFilter.has('probe') }"
             @click="toggleRequestType('probe')"
             :title="t('dashboard.liveStream.probeTitle')"
+            :aria-pressed="requestTypeFilter.has('probe')"
           >
-            {{ t('dashboard.liveStream.probe') }}
+            {{ t('dashboard.liveStream.probe') }} ({{ requestTypeCounts.probe }})
           </button>
         </div>
 

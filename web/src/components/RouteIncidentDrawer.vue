@@ -1145,7 +1145,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
 .route-incident-drawer__backdrop {
   position: absolute;
   inset: 0;
-  background: var(--overlay-strong);
+  background: rgba(0, 0, 0, 0.45);
 }
 
 .route-incident-drawer__panel {
@@ -1157,7 +1157,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
   background: var(--bg);
   color: var(--text);
   border-left: 1px solid var(--border);
-  box-shadow: -8px 0 24px var(--overlay-medium);
+  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.4);
 }
 
 .route-incident-drawer__header {
@@ -1523,7 +1523,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
 
 .timeline-bar--ok { background: var(--success); }
 .timeline-bar--warn { background: var(--warning); }
-.timeline-bar--slow { background: var(--warning); }
+.timeline-bar--slow { background: #f97316; }
 .timeline-bar--critical { background: var(--danger); }
 
 .timeline-row__p99 {
@@ -1578,10 +1578,10 @@ function hasRunValues(values: Record<string, unknown>): boolean {
   border: 1px solid var(--border);
 }
 
-.event-row__type--opened { color: var(--danger); border-color: var(--danger-bd); }
-.event-row__type--failure_observed { color: var(--danger); border-color: var(--danger-bd); }
-.event-row__type--recovery_progress { color: var(--warning); border-color: var(--warning-bd); }
-.event-row__type--recovered { color: var(--success); border-color: var(--success-bd); }
+.event-row__type--opened { color: var(--danger); border-color: rgba(248, 81, 73, 0.4); }
+.event-row__type--failure_observed { color: var(--danger); border-color: rgba(248, 81, 73, 0.4); }
+.event-row__type--recovery_progress { color: var(--warning); border-color: rgba(210, 153, 34, 0.4); }
+.event-row__type--recovered { color: var(--success); border-color: rgba(63, 185, 80, 0.4); }
 
 .event-row__kind,
 .event-row__status,
@@ -1621,7 +1621,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
 }
 
 .action-grid__btn--destructive {
-  border-color: var(--danger-bd);
+  border-color: rgba(248, 81, 73, 0.5);
   color: var(--danger);
 }
 
@@ -1631,7 +1631,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
 }
 
 .action-grid__btn--slot {
-  border-color: var(--warning-bd);
+  border-color: rgba(210, 153, 34, 0.4);
   color: var(--warning);
 }
 
@@ -1657,18 +1657,18 @@ function hasRunValues(values: Record<string, unknown>): boolean {
 }
 
 .action-result__pill--success {
-  background: var(--success-bd);
+  background: rgba(63, 185, 80, 0.18);
   color: var(--success);
 }
 
 .action-result__pill--failed {
-  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  background: rgba(248, 81, 73, 0.18);
   color: var(--danger);
 }
 
 .action-result__pill--muted,
 .action-result__pill--noop {
-  background: color-mix(in srgb, var(--muted) 14%, transparent);
+  background: rgba(139, 148, 158, 0.18);
   color: var(--text-secondary);
 }
 
@@ -1715,18 +1715,18 @@ function hasRunValues(values: Record<string, unknown>): boolean {
 }
 
 .audit-row__pill--success {
-  background: var(--success-bd);
+  background: rgba(63, 185, 80, 0.18);
   color: var(--success);
 }
 
 .audit-row__pill--failed {
-  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  background: rgba(248, 81, 73, 0.18);
   color: var(--danger);
 }
 
 .audit-row__pill--muted,
 .audit-row__pill--noop {
-  background: color-mix(in srgb, var(--muted) 14%, transparent);
+  background: rgba(139, 148, 158, 0.18);
   color: var(--text-secondary);
 }
 
@@ -1761,7 +1761,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
 .action-modal__backdrop {
   position: absolute;
   inset: 0;
-  background: var(--overlay-strong);
+  background: rgba(0, 0, 0, 0.6);
 }
 
 .action-modal__panel {
@@ -1773,7 +1773,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
   color: var(--text);
   border: 1px solid var(--border);
   border-radius: 8px;
-  box-shadow: 0 8px 32px var(--overlay-strong);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
   display: flex;
   flex-direction: column;
 }
@@ -1815,8 +1815,8 @@ function hasRunValues(values: Record<string, unknown>): boolean {
 
 .action-modal__warning {
   font-size: 12px;
-  background: var(--danger-bg);
-  border: 1px solid var(--danger-bd);
+  background: rgba(248, 81, 73, 0.12);
+  border: 1px solid rgba(248, 81, 73, 0.4);
   color: var(--danger);
   padding: 6px 8px;
   border-radius: 4px;
@@ -1885,7 +1885,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
 }
 
 .route-incident-drawer__btn--primary:hover:not(:disabled) {
-  background: var(--purple);
+  background: #4f46e5;
 }
 
 .route-incident-drawer__btn--destructive {
@@ -1895,7 +1895,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
 }
 
 .route-incident-drawer__btn--destructive:hover:not(:disabled) {
-  background: var(--danger);
+  background: #dc2626;
 }
 
 /* ─── Phase 2: evidence export banner ──────────────────────────── */
@@ -1906,7 +1906,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--overlay-strong);
+  background: rgba(0, 0, 0, 0.5);
 }
 
 .export-banner__panel {
@@ -1915,7 +1915,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
   border-radius: 6px;
   padding: 16px;
   width: min(420px, 100vw);
-  box-shadow: 0 8px 32px var(--overlay-strong);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
 }
 
 .export-banner__panel h4 {

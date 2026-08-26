@@ -7,7 +7,7 @@
 //   - 所有文案走 i18n
 import { ref, computed, onMounted, onUnmounted, inject, type Ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { RouterLink, useRouter } from 'vue-router'
+import { RouterLink } from 'vue-router'
 import { localeRef } from '../i18n'
 import {
   getMaasUsageSummary,
@@ -20,12 +20,12 @@ import {
 import { getCurrentTenantId } from '../store'
 import LiveRequestStream from '../components/LiveRequestStream.vue'
 import LiveRequestStreamV2 from '../components/LiveRequestStreamV2.vue'
+import RequestLogDrawer from '../components/RequestLogDrawer.vue'
 import { useLiveStream } from '../composables/useLiveStream'
-import { openRequestDetailPage } from '../utils/openRequestDetailPage'
+import { useSessionSummaryJump } from '../composables/useSessionSummaryJump'
 import { dashboardPreferenceStorageKey } from '../composables/liveStreamPreferences'
 
 const { t } = useI18n()
-const router = useRouter()
 
 const LEGACY_STORAGE_KEY_DAYS = 'tenant_dashboard_days'
 const VALID_DAYS = [1, 7, 30] as const
@@ -210,11 +210,22 @@ async function showDateDetail(day: string) {
   }
 }
 
-// 实时请求流：点击详情新开页
+// 实时请求流和抽屉
 const { requests: liveRequests } = useLiveStream()
+const activeRequestId = ref<string | null>(null)
 function openRequestDetail(id: string) {
-  openRequestDetailPage(id, undefined, router)
+  activeRequestId.value = id
 }
+function closeRequestDrawer() {
+  activeRequestId.value = null
+}
+
+// 2026-08-06: 详情抽屉的「会话总结」按钮 → 跳到请求日志页并预填会话筛选。
+// 2026-08-06 (later): 重构为 useSessionSummaryJump composable，与其它父视图共享一处
+// 实现；onBeforeJump 钩子用于关闭抽屉。
+const { jumpToSessionSummary: openSessionSummary } = useSessionSummaryJump({
+  onBeforeJump: () => closeRequestDrawer(),
+})
 
 // Tab 控制（与 DashboardViewV2 对齐：stream / stats）
 const LEGACY_STORAGE_KEY_TAB = 'tenant_dashboard_active_tab'
@@ -596,6 +607,13 @@ onUnmounted(() => {
       <RouterLink to="/keys">{{ t('tenants.dashboard.onboardingKeys') }}</RouterLink>
       {{ t('tenants.dashboard.onboardingKeysHint') }}
     </div>
+
+    <!-- 请求详情抽屉 -->
+    <RequestLogDrawer
+      :request-id="activeRequestId"
+      @close="closeRequestDrawer"
+      @generateSessionSummary="openSessionSummary"
+    />
   </div>
 </template>
 
@@ -649,7 +667,7 @@ onUnmounted(() => {
 .tab-btn--active {
   background: var(--accent);
   color: white;
-  box-shadow: 0 1px 2px var(--overlay-light);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
 }
 .page-header-right {
   display: flex;
@@ -665,8 +683,8 @@ onUnmounted(() => {
   border-radius: 12px;
   font-size: 12px;
   font-weight: 500;
-  background: var(--info-bg);
-  color: var(--accent);
+  background: rgba(59, 130, 246, 0.1);
+  color: #3b82f6;
   white-space: nowrap;
 }
 .days-select {
@@ -756,7 +774,7 @@ onUnmounted(() => {
   font-weight: 600;
 }
 .sub-value.highlight {
-  color: var(--warning);
+  color: #f59e0b;
   font-family: 'SF Mono', 'Fira Code', monospace;
 }
 .subscription-empty {
@@ -785,7 +803,7 @@ onUnmounted(() => {
 }
 .stat-mini:hover {
   border-color: var(--accent);
-  box-shadow: 0 2px 8px var(--overlay-light);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
 }
 .stat-mini--highlight {
   border-color: color-mix(in srgb, var(--accent) 40%, transparent);
@@ -869,7 +887,7 @@ onUnmounted(() => {
 }
 .bar-track {
   height: 10px;
-  background: color-mix(in srgb, var(--kx-text) 4%, transparent);
+  background: rgba(255, 255, 255, 0.06);
   border-radius: 5px;
   overflow: hidden;
 }
@@ -908,7 +926,7 @@ onUnmounted(() => {
   font-family: 'SF Mono', 'Fira Code', monospace;
 }
 .num.credits {
-  color: var(--warning);
+  color: #f59e0b;
 }
 .trend-grid {
   display: grid;
@@ -957,7 +975,7 @@ onUnmounted(() => {
   opacity: 0.85;
 }
 .trend-bar.credits {
-  background: linear-gradient(180deg, var(--warning), var(--warning));
+  background: linear-gradient(180deg, #f59e0b, #d97706);
 }
 .trend-bar.requests {
   background: linear-gradient(180deg, var(--accent), var(--accent-h));
@@ -991,8 +1009,8 @@ onUnmounted(() => {
   border-radius: 8px;
   font-size: 11px;
 }
-.badge-green { background: var(--success-bg); color: var(--success); }
-.badge-red { background: var(--danger-bg); color: var(--danger); }
+.badge-green { background: rgba(34,197,94,.15); color: #4ade80; }
+.badge-red { background: rgba(239,68,68,.15); color: #f87171; }
 .detail-footer {
   display: flex;
   gap: 16px;
@@ -1014,8 +1032,8 @@ onUnmounted(() => {
 .alert-danger {
   padding: 8px 12px;
   border-radius: 4px;
-  background: color-mix(in srgb, var(--danger) 14%, transparent);
-  color: var(--danger);
+  background: rgba(239, 68, 68, 0.1);
+  color: #f87171;
   margin-bottom: 12px;
 }
 @media (max-width: 1024px) {

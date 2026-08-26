@@ -11,7 +11,6 @@ import { __testing } from './liveStreamStore'
 import type {
   LiveRequest,
   LiveStreamDelta,
-  LiveStreamEnvelope,
   LiveStreamLane,
   LiveStreamTile,
 } from './liveStreamStore'
@@ -152,7 +151,7 @@ describe('mergeDelta', () => {
   // asserts the contract on both sides: backend sends full
   // dimension, frontend reuses unchanged objects so the DOM stays
   // stable.
-  it('follows the server-provided lane order and preserves lane identity', () => {
+  it('appends a new lane at the tail without reordering existing lanes', () => {
     const openaiBefore = __testing.state.snapshot!.dimensions.vendor[1]
     const delta: LiveStreamDelta = {
       summary: { total: 4, success: 3, failure: 0 },
@@ -171,8 +170,8 @@ describe('mergeDelta', () => {
     }
     __testing.mergeDelta(delta)
     const after = __testing.state.snapshot!.dimensions.vendor
-    expect(after.map((l) => l.id)).toEqual(['google', 'anthropic', 'openai'])
-    expect(after[2]).toBe(openaiBefore)
+    expect(after.map((l) => l.id)).toEqual(['anthropic', 'openai', 'google'])
+    expect(after[1]).toBe(openaiBefore)
   })
 
   it('merges credential lanes from an SSE delta', () => {
@@ -220,7 +219,7 @@ describe('mergeSnapshotFromServer', () => {
     }
   })
 
-  it('removes lanes omitted by an authoritative snapshot', () => {
+  it('keeps existing lanes when incoming snapshot omits them', () => {
     __testing.mergeSnapshotFromServer({
       summary: { total: 0, success: 0, failure: 0 },
       detail_dimensions: { credential: [], vendor: [], provider: [], model: [] },
@@ -228,7 +227,7 @@ describe('mergeSnapshotFromServer', () => {
       dimension_legends: { credential: [], vendor: [], provider: [], model: [] },
       status_legends: [],
     })
-    expect(__testing.state.snapshot!.dimensions.vendor.map((l) => l.id)).toEqual([])
+    expect(__testing.state.snapshot!.dimensions.vendor.map((l) => l.id)).toEqual(['openai'])
   })
 
   it('updates summary from incoming without dropping lanes', () => {
@@ -423,6 +422,18 @@ describe('pushOrQueue', () => {
 // message arrival history. A seeded PRNG keeps runs reproducible.
 // ---------------------------------------------------------------------------
 
+// Mulberry32 — small, fast, deterministic PRNG. Same seed → same sequence.
+function mulberry32(seed: number): () => number {
+  let a = seed >>> 0
+  return function () {
+    a |= 0
+    a = (a + 0x6D2B79F5) | 0
+    let t = Math.imul(a ^ (a >>> 15), 1 | a)
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
+}
+
 function tsAt(seconds: number): string {
   // Fixed base so timestamps are comparable and deterministic.
   return new Date(Date.UTC(2026, 6, 26, 12, 0, 0) + seconds * 1000).toISOString()
@@ -437,7 +448,7 @@ describe('mergeTilesById — deterministic ordering (no-jump invariants)', () =>
       { ...tile('a'), timestamp: tsAt(10) },
       { ...tile('b'), timestamp: tsAt(20) },
     ]
-    // incoming from backend is ASC (oldest first) after lane builder normalization
+    // incoming from backend is DESC (newest first) — exactly what Record emits
     const incoming: LiveStreamTile[] = [
       { ...tile('c'), timestamp: tsAt(30) },
       { ...tile('a'), timestamp: tsAt(10) },
@@ -528,7 +539,7 @@ describe('mergeTilesById — deterministic ordering (no-jump invariants)', () =>
     const incoming: LiveStreamTile[] = []
     // 25 tiles, oldest first in the authoritative sense
     for (let i = 0; i < 25; i++) incoming.push({ ...tile(`r${i}`), timestamp: tsAt(i) })
-    // backend delivers ASC (oldest first); reverse simulates legacy DESC wire order
+    // backend delivers DESC
     incoming.reverse()
     const existing: LiveStreamTile[] = []
     __testing.mergeTilesById(existing, incoming)
@@ -544,7 +555,7 @@ describe('mergeTilesById — deterministic ordering (no-jump invariants)', () =>
       ...tile(`old${i}`),
       timestamp: tsAt(i),
     }))
-    // backend delta may arrive out of order; mergeTilesById normalizes ASC
+    // backend delta arrives DESC: new tile first
     const incoming: LiveStreamTile[] = [
       { ...tile('NEW'), timestamp: tsAt(100) },
       ...existing
@@ -587,53 +598,72 @@ describe('mergeTilesById — deterministic ordering (no-jump invariants)', () =>
     expect(second).toBe(first)
   })
 
-  it('normalizes an authoritative tile set independently of wire order', () => {
-    const tiles = [
-      { ...tile('r1'), timestamp: tsAt(1) },
-      { ...tile('r2'), timestamp: tsAt(2) },
-      { ...tile('r3'), timestamp: tsAt(3) },
-    ]
-    const apply = (incoming: LiveStreamTile[]) => {
-      const existing: LiveStreamTile[] = []
-      __testing.mergeTilesById(existing, incoming)
-      return existing.map((item) => item.request_id).join('>')
+  it('random envelope sequence yields order independent of arrival history', () => {
+    // The core invariant: build the same authoritative state via two different
+    // arrival orders, assert identical final rendering.
+    //
+    // Backend contract: each delta carries the FULL tile list for every
+    // changed lane (admin/live_stream_redis_store.go:lanesChanged emits the
+    // complete dimension). We mirror that here — accumulating each lane's
+    // full state and re-sending it on every step — so the test exercises the
+    // real data flow rather than a single-tile delta the backend never sends.
+    const rng = mulberry32(20260726)
+    const lanes = ['openai', 'anthropic', 'google']
+
+    // Generate 30 requests across 3 lanes
+    const reqs: { id: string; ts: string; lane: string }[] = []
+    for (let i = 0; i < 30; i++) {
+      const lane = lanes[Math.floor(rng() * lanes.length)]
+      reqs.push({ id: `r${i}`, ts: tsAt(i), lane })
     }
 
-    expect(apply(tiles)).toBe('r1>r2>r3')
-    expect(apply([...tiles].reverse())).toBe('r1>r2>r3')
-  })
-
-  it('retains existing tiles absent from a partial delta (no whole-lane wipe)', () => {
-    const existing: LiveStreamTile[] = [
-      { ...tile('keep-a'), timestamp: tsAt(10) },
-      { ...tile('keep-b'), timestamp: tsAt(20) },
-    ]
-    // Partial delta: only the new tile — must not briefly collapse the lane.
-    __testing.mergeTilesById(existing, [{ ...tile('new-c'), timestamp: tsAt(30) }])
-    expect(existing.map((t) => t.request_id)).toEqual(['keep-a', 'keep-b', 'new-c'])
-  })
-
-  it('defaults in_progress tiles without stage_category to routing on merge', () => {
-    const existing: LiveStreamTile[] = []
-    __testing.mergeTilesById(existing, [{
-      ...tile('inflight'),
-      status: 'in_progress',
-      timestamp: tsAt(1),
-    }])
-    expect(existing[0].stage_category).toBe('routing')
-  })
-})
-
-describe('request_lifecycle stage_category patch', () => {
-  it('updates lane tile stage_category when upstream_request arrives', () => {
-    __testing.resetStream()
-    const inflight: LiveStreamTile = {
-      ...tile('req-up'),
-      status: 'in_progress',
-      stage_category: 'routing',
-      timestamp: tsAt(1),
+    function run(order: { id: string; ts: string; lane: string }[]): string {
+      __testing.resetStream()
+      // Seed an initial empty snapshot for the three lanes
+      __testing.handleEnvelope({
+        type: 'snapshot_refresh',
+        ts: '2026-07-26T00:00:00Z',
+        snapshot: {
+          summary: { total: 0, success: 0, failure: 0 },
+          dimensions: { vendor: [], provider: [], model: [] },
+          detail_dimensions: { vendor: [], provider: [], model: [] },
+          dimension_legends: { vendor: [], provider: [], model: [] },
+          status_legends: [],
+          latest_request_ts: '',
+        },
+      })
+      // Accumulate the authoritative per-lane tile set as we replay.
+      const laneTiles = new Map<string, LiveStreamTile[]>()
+      for (const lane of lanes) laneTiles.set(lane, [])
+      for (const r of order) {
+        laneTiles.get(r.lane)!.push({ ...tile(r.id), timestamp: r.ts })
+        // Emit a delta carrying EVERY changed lane's full current tile list,
+        // matching the backend contract.
+        const changedLanes = lanes
+          .filter((l) => laneTiles.get(l)!.some((t) => t.timestamp === r.ts))
+          .map((l) =>
+            lane(l, laneTiles.get(l)!.length, laneTiles.get(l)!.map((t) => ({ ...t }))),
+          )
+        __testing.handleEnvelope({
+          type: 'request',
+          ts: r.ts,
+          delta: {
+            summary: { total: 1, success: 1, failure: 0 },
+            changed_lanes: { vendor: changedLanes, provider: [], model: [] },
+            dimension_legends: { vendor: [], provider: [], model: [] },
+            status_legends: [],
+          },
+        })
+      }
+      // Collect each lane's rendered tile ids in order
+      const snap = __testing.state.snapshot!.dimensions.vendor
+      return snap
+        .slice()
+        .sort((a, b) => a.id.localeCompare(b.id))
+        .map((l) => `${l.id}:${l.requests.map((t) => t.request_id).join('>')}`)
+        .join('|')
     }
-    __testing.handleEnvelope({
+	__testing.handleEnvelope({
       type: 'snapshot_refresh',
       ts: tsAt(1),
       snapshot: {
@@ -657,7 +687,7 @@ describe('request_lifecycle stage_category patch', () => {
         stage_category: 'llm',
       }],
     } as LiveStreamEnvelope)
-    const patched = __testing.state.snapshot!.dimensions.vendor[0].requests[0]
-    expect(patched.stage_category).toBe('llm')
+	const patched = __testing.state.snapshot!.dimensions.vendor[0].requests[0]
+	expect(patched.stage_category).toBe('llm')
   })
 })

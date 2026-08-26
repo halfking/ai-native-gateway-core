@@ -233,21 +233,21 @@ onMounted(load)
 </template>
 
 <style scoped>
-.dl-supporters { color: var(--muted); margin: 0 0 1rem; }
+.dl-supporters { color: #94a3b8; margin: 0 0 1rem; }
 .dl-version { margin-bottom: 1.5rem; }
 .dl-version__head { margin-bottom: 0.75rem; }
 .dl-version__row { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
 .dl-version h2 { margin: 0; font-size: 1.25rem; }
-.dl-version__meta { margin: 4px 0 0; color: var(--muted); font-size: 0.875rem; }
+.dl-version__meta { margin: 4px 0 0; color: #94a3b8; font-size: 0.875rem; }
 .dl-doc-link { color: var(--accent-h); font-weight: 500; text-decoration: none; white-space: nowrap; }
 .dl-doc-link:hover { text-decoration: underline; }
 .dl-meta { margin-bottom: 1.5rem; }
 .dl-meta__row { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem; }
-.dl-hint { margin: 0.75rem 0 0; color: var(--muted); font-size: 0.875rem; }
+.dl-hint { margin: 0.75rem 0 0; color: #94a3b8; font-size: 0.875rem; }
 .dl-grid { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); }
 .dl-card__icon { font-size: 28px; margin-bottom: 8px; }
 .dl-card h3 { margin: 0 0 0.5rem; font-size: 1rem; }
-.dl-file { font-family: ui-monospace, monospace; font-size: 0.8rem; color: var(--muted); word-break: break-all; }
-.dl-size, .dl-sha { font-size: 0.8rem; color: var(--muted); }
+.dl-file { font-family: ui-monospace, monospace; font-size: 0.8rem; color: #94a3b8; word-break: break-all; }
+.dl-size, .dl-sha { font-size: 0.8rem; color: #64748b; }
 .dl-extra h3 { margin: 0 0 0.75rem; font-size: 1rem; }
 </style>

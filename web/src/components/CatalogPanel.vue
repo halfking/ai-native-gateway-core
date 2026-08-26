@@ -216,7 +216,7 @@ onMounted(load)
 .model-tag {
   display: inline-block;
   padding: 1px 7px;
-  background: color-mix(in srgb, var(--on-primary) 5%, transparent);
+  background: rgba(255,255,255,.05);
   border: 1px solid var(--border);
   border-radius: 4px;
   font-size: 11px;

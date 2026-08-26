@@ -217,7 +217,7 @@ async function copyResponse() {
 </template>
 
 <style scoped>
-.off-hint { color: var(--muted); }
+.off-hint { color: #94a3b8; }
 .off-steps { margin: 1.5rem 0; }
 .off-upload { margin-top: 0.5rem; }
 .off-device, .off-local, .off-status, .off-resp { margin-top: 1rem; }
@@ -227,10 +227,10 @@ async function copyResponse() {
 .off-resp pre {
   max-height: 240px;
   overflow: auto;
-  background: var(--overlay-strong);
+  background: rgba(15, 23, 42, 0.75);
   padding: 1rem;
   border-radius: 6px;
   font-size: 0.8rem;
-  color: var(--border);
+  color: #cbd5e1;
 }
 </style>

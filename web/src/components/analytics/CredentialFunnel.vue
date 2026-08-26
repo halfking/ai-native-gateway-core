@@ -112,8 +112,8 @@ function widthPct(v: number): string {
   border-color: color-mix(in srgb, var(--success) 30%, var(--border));
 }
 .funnel-stage:nth-child(3) .funnel-bar {
-  background: color-mix(in srgb, var(--success) 22%, var(--bg-subtle));
-  border-color: color-mix(in srgb, var(--success) 35%, var(--border));
+  background: color-mix(in srgb, #3fb950 22%, var(--bg-subtle));
+  border-color: color-mix(in srgb, #3fb950 35%, var(--border));
 }
 .funnel-label {
   font-size: 10px;

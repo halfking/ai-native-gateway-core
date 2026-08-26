@@ -16,35 +16,12 @@
 import { computed } from 'vue'
 import { getRequestActions, type ActionEvent } from '../composables/liveStreamStore'
 import { actionEventLabel } from '../composables/liveStreamDisplay'
-import { credentialDisplayName, useCredentialLabels } from '../composables/useCredentialLabels'
 
 const props = defineProps<{
   requestId: string
 }>()
 
 const actions = computed<ActionEvent[]>(() => getRequestActions(props.requestId))
-// 2026-08-23 凭据显示：订阅标签缓存 revision，让异步加载完成后
-// 时间线 credential 名称自动刷新。
-//
-// 2026-08-23 (Agent C): 三级回退链 —
-//   1) 客户端缓存命中（label 缓存 / SSE 之前已加载）；
-//   2) action 自带的 `credential_label`（OBS-BE2 后端 projection）；
-//   3) `凭据 #ID` 占位。
-// SSE 路径在自身 cache miss 时也会写入 `credential_label`，第二级是冷
-// 启动窗口里的救命稻草。
-const { labelRevision } = useCredentialLabels()
-// Probe the cache with a sentinel prefix so we can tell whether the
-// composable produced a real label or fell back to the "凭据 #ID"
-// placeholder — relying on string-matching the placeholder is fragile
-// (the prefix is shared with i18n / other call sites).
-const PROBE_PREFIX = '\u0000credential-label-probe\u0000'
-function credLabel(action: ActionEvent, id: number): string {
-  void labelRevision.value
-  const probed = credentialDisplayName(id, PROBE_PREFIX)
-  if (probed !== `${PROBE_PREFIX} #${id}`) return probed
-  if (action.credential_label) return action.credential_label
-  return credentialDisplayName(id)
-}
 
 // BE2 摊平后的已知 detail 键 → 中文标签；未知键退回原键名。
 const DETAIL_LABELS: Record<string, string> = {
@@ -135,7 +112,7 @@ const hasActions = computed(() => actions.value.length > 0)
         <span class="at-marker" aria-hidden="true" />
         <span class="at-name">{{ actionLabel(ev) }}</span>
         <span v-if="ev.model" class="at-model">{{ ev.model }}</span>
-        <span v-if="ev.credential_id" class="at-cred">{{ credLabel(ev, ev.credential_id) }}</span>
+        <span v-if="ev.credential_id" class="at-cred">节点 {{ ev.credential_id }}</span>
         <span v-if="ev.retry === true" class="at-retry" :title="`重试第 ${ev.retry_seq ?? '?'} 次`">⭐r{{ ev.retry_seq ?? '?' }}</span>
         <span v-if="ev.error_kind" class="at-error">{{ ev.error_kind }}</span>
         <span v-if="detailChips(ev).length" class="at-chips">

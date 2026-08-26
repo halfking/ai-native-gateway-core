@@ -28,13 +28,8 @@ import {
   type SignupHubResponse,
   type SignupPlatformEntry,
 } from '../api'
-import { useCredentialLabels } from '../composables/useCredentialLabels'
 
 const { t } = useI18n()
-// credentialDisplayName resolves credential id → human label; the composable
-// keeps a Map<id,label> refreshed via loadCredentialLabels(), and falls back
-// to "凭据 #ID" if the label is missing.
-const { credentialDisplayName, loadCredentialLabels } = useCredentialLabels()
 
 
 const poolData  = ref<FreePoolStatusResponse | null>(null)
@@ -343,7 +338,7 @@ async function runQuickSave(probeFirst = true) {
     })
     probeResult.value = res.probe ?? null
     if (res.status === 'ok') {
-      message.value = `凭据已入库 · catalog=${res.catalog_code} · credential ${res.credential_id ? credentialDisplayName(res.credential_id) : t('freePool.credentialSavedPlaceholder')}`
+      message.value = `凭据已入库 · catalog=${res.catalog_code} · credential #${res.credential_id ?? t('freePool.credentialSavedPlaceholder')}`
       quickEntry.value.api_key = ''
       await load()
     } else {
@@ -649,9 +644,6 @@ function latencyLabel(m: FreePoolModelEntry): string {
 }
 
 onMounted(() => {
-  // Populate the label cache so credentialDisplayName() resolves to real
-  // labels on first render (the composable is best-effort and self-caches).
-  void loadCredentialLabels()
   load()
 
   // Auto-poll every 15s so the page reflects upstream changes (429 cooldowns,
@@ -1287,7 +1279,7 @@ onUnmounted(() => {
               </td>
               <td>
                 <div class="cell-muted">{{ m.credential_label }}</div>
-                <div class="cell-muted">{{ credentialDisplayName(m.credential_id) }}</div>
+                <div class="cell-muted">#{{ m.credential_id }}</div>
               </td>
             </tr>
           </tbody>
@@ -1322,7 +1314,7 @@ onUnmounted(() => {
                     :title="`多 Key 池化：${entry.key_count} 个 Key 轮转（放大配额）`"
                   >🔑 ×{{ entry.key_count }}</span>
                 </div>
-                <div class="cell-muted">{{ credentialDisplayName(entry.credential_id) }} · {{ entry.availability_state || t('freePool.ready') }}</div>
+                <div class="cell-muted">#{{ entry.credential_id }} · {{ entry.availability_state || t('freePool.ready') }}</div>
               </td>
               <td>
                 <span class="badge" :class="statusBadgeClass(entry)">{{ statusLabel(entry) }}</span>
@@ -1423,7 +1415,7 @@ onUnmounted(() => {
               <td>
                 <div>{{ k.provider_name }}</div>
                 <code style="font-size:11px">{{ k.catalog_code }}</code>
-                <div class="cell-muted">{{ credentialDisplayName(k.credential_id) }} · {{ k.credential_label }}</div>
+                <div class="cell-muted">#{{ k.credential_id }} · {{ k.credential_label }}</div>
               </td>
               <td><code class="model-code">{{ k.key_masked || (k.has_secret ? '***' : t('freePool.noKey')) }}</code></td>
               <td><span class="acq-pill">{{ acquisitionLabel(k.acquisition_source || 'manual') }}</span></td>
@@ -1560,7 +1552,7 @@ onUnmounted(() => {
 }
 .tab-btn.active {
   background: var(--accent);
-  color: var(--on-primary);
+  color: #fff;
   border-color: transparent;
 }
 
@@ -1581,13 +1573,13 @@ onUnmounted(() => {
   font-size: 11px;
   padding: 2px 8px;
   border-radius: 999px;
-  background: var(--neutral-bg);
+  background: rgba(139,148,158,.12);
   color: var(--text);
   border: 1px solid var(--border);
 }
 .model-tag.routable {
-  background: var(--success-bg);
-  border-color: var(--success-bd);
+  background: rgba(63,185,80,.15);
+  border-color: rgba(63,185,80,.35);
   color: var(--success);
 }
 .model-tag.template {
@@ -1602,19 +1594,19 @@ onUnmounted(() => {
   font-weight: 700;
   padding: 2px 8px;
   border-radius: 6px;
-  background: var(--warning-bg);
+  background: rgba(210,153,34,.15);
   color: var(--warning);
 }
 .acq-pill {
   font-size: 11px;
   padding: 2px 8px;
   border-radius: 6px;
-  background: var(--neutral-bg);
+  background: rgba(139,148,158,.12);
   color: var(--text);
 }
-.acq-pill.risk-high { color: var(--danger); background: var(--danger-bg); }
-.acq-pill.risk-medium { color: var(--warning); background: var(--warning-bg); }
-.acq-pill.risk-low { color: var(--success); background: var(--success-bg); }
+.acq-pill.risk-high { color: var(--danger); background: rgba(248,81,73,.12); }
+.acq-pill.risk-medium { color: var(--warning); background: rgba(210,153,34,.12); }
+.acq-pill.risk-low { color: var(--success); background: rgba(63,185,80,.12); }
 
 .guide-grid {
   display: grid;
@@ -1668,8 +1660,8 @@ onUnmounted(() => {
   max-height: 240px;
 }
 
-.badge-orange { background: var(--warning-bg); color: var(--warning); }
-.badge-gray { background: var(--neutral-bg); color: var(--muted); }
+.badge-orange { background: rgba(210,153,34,.15); color: var(--warning); }
+.badge-gray { background: rgba(139,148,158,.15); color: var(--muted); }
 
 .assistant-layout {
   display: flex;
@@ -1767,8 +1759,8 @@ onUnmounted(() => {
   align-items: center;
   gap: 8px;
   padding: 8px 12px;
-  background: color-mix(in srgb, var(--success) 14%, transparent);
-  border: 1px solid var(--success-bd);
+  background: rgba(63,185,80,.08);
+  border: 1px solid rgba(63,185,80,.25);
   border-radius: 6px;
   margin-top: 8px;
   flex-wrap: wrap;
@@ -1785,12 +1777,12 @@ onUnmounted(() => {
   cursor: pointer;
   padding: 4px 8px;
   border-radius: 4px;
-  background: var(--success-bg);
+  background: rgba(63,185,80,.15);
   border: 1px solid transparent;
   font-family: inherit;
 }
 .verification-code:hover {
-  background: var(--success-bd);
+  background: rgba(63,185,80,.25);
 }
 .verification-code:focus-visible {
   outline: 2px solid var(--accent);
@@ -1880,9 +1872,9 @@ onUnmounted(() => {
   background: currentColor;
   flex-shrink: 0;
 }
-.fresh-ok { color: var(--success); border-color: var(--success-bd); }
-.fresh-warn { color: var(--warning); border-color: var(--warning-bd); }
-.fresh-stale { color: var(--danger); border-color: var(--danger-bd); }
+.fresh-ok { color: var(--success); border-color: rgba(63,185,80,.35); }
+.fresh-warn { color: var(--warning); border-color: rgba(210,153,34,.35); }
+.fresh-stale { color: var(--danger); border-color: rgba(248,81,73,.35); }
 /* Live pulse: briefly highlights when an SSE event arrives. */
 .live-pulse {
   animation: livePulse 0.6s ease-out;
@@ -1900,7 +1892,7 @@ onUnmounted(() => {
   min-width: 110px;
   height: 18px;
   border-radius: 9px;
-  background: var(--neutral-bg);
+  background: rgba(139,148,158,.15);
   overflow: hidden;
   border: 1px solid var(--border);
 }
@@ -1909,11 +1901,11 @@ onUnmounted(() => {
   border-radius: 9px 0 0 9px;
   transition: width 0.4s ease;
 }
-.qbar-ok .qbar-fill { background: var(--success-bd); }
-.qbar-mid .qbar-fill { background: var(--warning-bd); }
+.qbar-ok .qbar-fill { background: rgba(63,185,80,.5); }
+.qbar-mid .qbar-fill { background: rgba(210,153,34,.5); }
 .qbar-high .qbar-fill { background: rgba(248,81,73,.55); }
-.qbar-exhausted .qbar-fill { background: color-mix(in srgb, var(--danger) 12%, transparent); }
-.qbar-unknown .qbar-fill { background: var(--neutral-bd); }
+.qbar-exhausted .qbar-fill { background: rgba(248,81,73,.7); }
+.qbar-unknown .qbar-fill { background: rgba(139,148,158,.25); }
 .qbar-text {
   position: absolute;
   inset: 0;
@@ -1934,13 +1926,13 @@ onUnmounted(() => {
   font-size: 10px;
   padding: 2px 6px;
   border-radius: 4px;
-  background: var(--neutral-bg);
+  background: rgba(139,148,158,.12);
   color: var(--text);
   border: 1px solid var(--border);
 }
-.hp-ok { color: var(--success); background: var(--success-bg); border-color: var(--success-bd); }
-.hp-bad { color: var(--danger); background: var(--danger-bg); border-color: var(--danger-bd); }
-.hp-mid { color: var(--warning); background: var(--warning-bg); border-color: var(--warning-bd); }
+.hp-ok { color: var(--success); background: rgba(63,185,80,.12); border-color: rgba(63,185,80,.3); }
+.hp-bad { color: var(--danger); background: rgba(248,81,73,.12); border-color: rgba(248,81,73,.3); }
+.hp-mid { color: var(--warning); background: rgba(210,153,34,.12); border-color: rgba(210,153,34,.3); }
 .fail-streak { color: var(--danger); font-size: 10px; margin-top: 3px; }
 .cooling-tag { color: var(--warning); font-size: 10px; margin-top: 2px; }
 .quota-cell { min-width: 130px; }

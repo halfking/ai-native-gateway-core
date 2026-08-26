@@ -272,9 +272,9 @@ function onTenantChange(row: RoutingDefault, value: string) {
   font-size: 12px;
   font-weight: 600;
 }
-.tier-primary { background: var(--success-bg); color: var(--success-dark); }
-.tier-secondary { background: var(--info-bg); color: #3730a3; }
-.tier-fallback { background: var(--surface-secondary); color: var(--muted); }
+.tier-primary { background: #dcfce7; color: #166534; }
+.tier-secondary { background: #e0e7ff; color: #3730a3; }
+.tier-fallback { background: #f3f4f6; color: #4b5563; }
 .add-panel {
   margin-bottom: 12px;
   padding: 10px;
@@ -379,8 +379,8 @@ function onTenantChange(row: RoutingDefault, value: string) {
   background: var(--bg-subtle);
   align-self: center;
 }
-.error { color: var(--danger); font-size: 12px; margin: 6px 0 0; }
-.btn-danger { color: var(--danger); }
+.error { color: #b91c1c; font-size: 12px; margin: 6px 0 0; }
+.btn-danger { color: #b91c1c; }
 
 /* Icon-only actions: render @element-plus/icons-vue directly.
  * Do NOT wrap in <el-icon> — Element Plus is not registered in main.ts. */

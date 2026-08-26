@@ -59,15 +59,12 @@ func (e *Executor) reduceDispatchForwardOutcome(
 	startedAt time.Time,
 	healthEvidence bool,
 ) (nodehealth.Decision, bool) {
-	// Node health and URSM state must use the upstream raw model. A standardized
-	// client-facing name can map to multiple provider model bindings, so using it
-	// here would merge their empty-response windows and misroute sibling models.
-	model := cand.BindingRawModel()
-	if model == "" {
-		model = strings.TrimSpace(cand.StandardizedName)
-	}
+	model := strings.TrimSpace(cand.StandardizedName)
 	if model == "" && params != nil {
 		model = strings.TrimSpace(params.Model)
+	}
+	if model == "" {
+		model = strings.TrimSpace(cand.RawModel)
 	}
 	requestID := ""
 	tenantID := ""
@@ -169,21 +166,14 @@ func (a executorNodeHealthAdapter) ApplyNodeHealthDecision(ctx context.Context, 
 					e.StateObserver.UpdateOnFailure(ctx, int(decision.Node.CredentialID), decision.Node.Model, kind, decision.RequestID, decision.Node.TenantID, decision.BillingMode)
 				}
 			}
-		case nodehealth.EffectSetBindingUnavailable:
+		case nodehealth.EffectSetBindingUnavailable, nodehealth.EffectSetCredentialUnavailable:
 			if e.State != nil && e.State.Enabled() {
 				failure := credential.Failure{Kind: kind, Detail: decision.ErrorDetail}
 				if err := e.State.WriteOnError(ctx, int(decision.Node.CredentialID), decision.Node.Model, failure); err != nil {
 					errs = append(errs, err)
 				}
 			}
-		case nodehealth.EffectSetCredentialUnavailable:
-			if e.State != nil && e.State.Enabled() {
-				failure := credential.Failure{Kind: kind, Detail: decision.ErrorDetail}
-				if err := e.State.SetCredentialUnavailable(ctx, int(decision.Node.CredentialID), failure); err != nil {
-					errs = append(errs, err)
-				}
-			}
-		case nodehealth.EffectRestoreBinding:
+		case nodehealth.EffectRestoreBinding, nodehealth.EffectRestoreCredential:
 			if e.State != nil && e.State.Enabled() {
 				if err := e.State.RestoreOnSuccess(ctx, int(decision.Node.CredentialID), decision.Node.Model); err != nil {
 					errs = append(errs, err)
@@ -236,12 +226,6 @@ func (e *Executor) recordProtocolCircuitSuccess(params *ExecParams, providerID, 
 }
 
 func (e *Executor) recordProtocolCircuitFailure(params *ExecParams, providerID, credentialID int, kind errorsx.ErrorKind) {
-	if kind == errorsx.KindEmptyResponse {
-		// Empty responses are recorded on the tenant/credential/raw-model URSM
-		// node for soft routing penalties. The legacy circuit is only keyed by
-		// provider/credential and would incorrectly suppress sibling models.
-		return
-	}
 	if params != nil && params.DispatchAttempt {
 		return
 	}
@@ -274,8 +258,6 @@ func nodeHealthErrorKind(kind errorsx.ErrorKind) nodehealth.ErrorKind {
 		return nodehealth.ErrorKindQuota
 	case errorsx.KindModelNotFound, errorsx.KindModelDeprecated:
 		return nodehealth.ErrorKindModelBinding
-	case errorsx.KindEmptyResponse:
-		return nodehealth.ErrorKindEmptyResponse
 	default:
 		return nodehealth.ErrorKindUpstream
 	}
@@ -295,8 +277,6 @@ func errorKindFromNodeHealth(kind nodehealth.ErrorKind) errorsx.ErrorKind {
 		return errorsx.KindQuotaPermanent
 	case nodehealth.ErrorKindModelBinding:
 		return errorsx.KindModelNotFound
-	case nodehealth.ErrorKindEmptyResponse:
-		return errorsx.KindEmptyResponse
 	default:
 		return errorsx.KindTransient
 	}

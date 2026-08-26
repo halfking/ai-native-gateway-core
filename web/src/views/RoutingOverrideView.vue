@@ -372,11 +372,11 @@ h2 {
 }
 .subtitle {
   margin: 0 0 24px;
-  color: var(--muted);
+  color: #888;
   font-size: 14px;
 }
 .subtitle a {
-  color: var(--accent-h);
+  color: #93c5fd;
   text-decoration: none;
 }
 .subtitle a:hover {
@@ -389,14 +389,14 @@ h2 {
   margin-bottom: 16px;
 }
 .summary-card {
-  background: var(--bg);
-  border: 1px solid var(--bg);
+  background: #0e0e0e;
+  border: 1px solid #2a2a2a;
   border-radius: 6px;
   padding: 12px 16px;
 }
 .summary-label {
   font-size: 11px;
-  color: var(--muted);
+  color: #888;
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
@@ -423,14 +423,14 @@ h2 {
   align-items: center;
   gap: 6px;
   font-size: 13px;
-  color: var(--muted);
+  color: #aaa;
 }
 .filter-bar input[type="text"],
 .filter-bar input:not([type]),
 .filter-bar select {
   padding: 4px 8px;
-  background: var(--bg);
-  border: 1px solid var(--bg);
+  background: #0e0e0e;
+  border: 1px solid #2a2a2a;
   color: inherit;
   border-radius: 4px;
   font-size: 13px;
@@ -438,8 +438,8 @@ h2 {
 }
 .filter-bar button {
   padding: 6px 14px;
-  background: var(--accent);
-  color: var(--on-primary);
+  background: #2563eb;
+  color: #fff;
   border: none;
   border-radius: 4px;
   cursor: pointer;
@@ -447,20 +447,20 @@ h2 {
 }
 .filter-bar button:disabled { opacity: 0.5; cursor: not-allowed; }
 .filter-bar button.btn-new {
-  background: var(--success);
+  background: #16a34a;
 }
 .error {
-  color: var(--danger);
+  color: #ef4444;
   font-size: 13px;
   margin-top: 8px;
 }
 .empty {
-  color: var(--muted);
+  color: #888;
   font-size: 13px;
   font-style: italic;
 }
 .hint {
-  color: var(--muted);
+  color: #888;
   font-size: 13px;
   margin: 0 0 12px;
 }
@@ -474,7 +474,7 @@ h2 {
   display: flex;
   flex-direction: column;
   font-size: 12px;
-  color: var(--muted);
+  color: #aaa;
   gap: 4px;
 }
 .create-form .form-grid label.full-width {
@@ -483,8 +483,8 @@ h2 {
 .create-form .form-grid input,
 .create-form .form-grid select {
   padding: 6px 10px;
-  background: var(--bg);
-  border: 1px solid var(--bg);
+  background: #0e0e0e;
+  border: 1px solid #2a2a2a;
   color: inherit;
   border-radius: 4px;
   font-size: 13px;
@@ -495,8 +495,8 @@ h2 {
 }
 .create-form .form-actions .btn-create {
   padding: 8px 18px;
-  background: var(--success);
-  color: var(--on-primary);
+  background: #16a34a;
+  color: #fff;
   border: none;
   border-radius: 4px;
   cursor: pointer;
@@ -504,8 +504,8 @@ h2 {
 }
 .create-form .form-actions button:not(.btn-create) {
   padding: 8px 18px;
-  background: var(--bg);
-  color: var(--on-primary);
+  background: #2a2a2a;
+  color: #fff;
   border: none;
   border-radius: 4px;
   cursor: pointer;
@@ -514,15 +514,15 @@ h2 {
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: var(--overlay-strong);
+  background: rgba(0, 0, 0, 0.6);
   display: flex;
   align-items: center;
   justify-content: center;
   z-index: 1000;
 }
 .modal {
-  background: var(--kx-text);
-  border: 1px solid var(--bg);
+  background: #1a1a1a;
+  border: 1px solid #2a2a2a;
   border-radius: 8px;
   padding: 20px 24px;
   min-width: 360px;
@@ -536,14 +536,14 @@ h2 {
   display: flex;
   flex-direction: column;
   font-size: 12px;
-  color: var(--muted);
+  color: #aaa;
   gap: 4px;
   margin-bottom: 8px;
 }
 .modal input {
   padding: 6px 10px;
-  background: var(--bg);
-  border: 1px solid var(--bg);
+  background: #0e0e0e;
+  border: 1px solid #2a2a2a;
   color: inherit;
   border-radius: 4px;
   font-size: 13px;
@@ -556,14 +556,14 @@ h2 {
 .overrides-table th {
   text-align: left;
   padding: 8px 10px;
-  background: var(--bg);
-  border-bottom: 1px solid var(--bg);
-  color: var(--muted);
+  background: #0e0e0e;
+  border-bottom: 1px solid #2a2a2a;
+  color: #aaa;
   font-weight: 500;
 }
 .overrides-table td {
   padding: 8px 10px;
-  border-bottom: 1px solid var(--bg);
+  border-bottom: 1px solid #1f1f1f;
   vertical-align: top;
 }
 .overrides-table tr.row-expired {
@@ -583,12 +583,12 @@ h2 {
   letter-spacing: 0.5px;
 }
 .mode-pin {
-  background: var(--success-strong);
-  color: var(--success);
+  background: #14532d;
+  color: #86efac;
 }
 .mode-ban {
-  background: var(--warning-dark);
-  color: var(--warning);
+  background: #422006;
+  color: #fb923c;
 }
 .tag {
   font-family: 'SF Mono', Menlo, monospace;
@@ -598,23 +598,23 @@ h2 {
   display: inline-block;
 }
 .tag-model {
-  background: var(--kx-text);
-  color: var(--accent-h);
+  background: #1e293b;
+  color: #93c5fd;
 }
 .tag-task {
-  background: var(--success-strong);
-  color: var(--success);
+  background: #14532d;
+  color: #86efac;
 }
 .text-muted {
-  color: var(--muted);
+  color: #888;
   font-size: 12px;
 }
 .text-warn {
-  color: var(--warning);
+  color: #eab308;
   font-weight: 600;
 }
 .reason {
-  color: var(--border);
+  color: #ccc;
   font-size: 12px;
   max-width: 360px;
   word-break: break-word;
@@ -633,11 +633,11 @@ h2 {
   font-size: 11px;
 }
 .btn-extend {
-  background: var(--accent-dark);
-  color: var(--on-primary);
+  background: #1e40af;
+  color: #fff;
 }
 .btn-delete {
-  background: var(--muted);
-  color: var(--on-primary);
+  background: #6b7280;
+  color: #fff;
 }
 </style>

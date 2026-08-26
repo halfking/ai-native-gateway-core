@@ -114,15 +114,15 @@ type OpsAlert struct {
 
 // RuntimeMetricsSummary 实例性能汇总（用于 Ops Overview）
 type RuntimeMetricsSummary struct {
-	InstanceID string           `json:"instance_id"`
-	Hostname   string           `json:"hostname"`
-	Region     string           `json:"region"`
-	Version    string           `json:"version"`
-	Status     string           `json:"status"`
-	AvgCPU     float64          `json:"avg_cpu_pct"`
-	AvgMemPct  float64          `json:"avg_mem_pct"`
-	AvgTPS     float64          `json:"avg_tps"`
-	MaxP99     int              `json:"max_p99_ms"`
-	TopModels  map[string]int64 `json:"top_models"`
-	LastUpdate *time.Time       `json:"last_update"`
+	InstanceID string             `json:"instance_id"`
+	Hostname   string             `json:"hostname"`
+	Region     string             `json:"region"`
+	Version    string             `json:"version"`
+	Status     string             `json:"status"`
+	AvgCPU     float64            `json:"avg_cpu_pct"`
+	AvgMemPct  float64            `json:"avg_mem_pct"`
+	AvgTPS     float64            `json:"avg_tps"`
+	MaxP99     int                `json:"max_p99_ms"`
+	TopModels  map[string]int64   `json:"top_models"`
+	LastUpdate *time.Time         `json:"last_update"`
 }

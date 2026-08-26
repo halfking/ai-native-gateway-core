@@ -145,7 +145,7 @@ defineExpose({ open, close })
 .drawer-overlay {
   position: fixed;
   inset: 0;
-  background: var(--overlay-strong);
+  background: rgba(0, 0, 0, 0.6);
   z-index: 1000;
   display: flex;
   justify-content: flex-end;
@@ -157,7 +157,7 @@ defineExpose({ open, close })
   background: var(--card);
   display: flex;
   flex-direction: column;
-  box-shadow: -4px 0 24px var(--overlay-light);
+  box-shadow: -4px 0 24px rgba(0, 0, 0, 0.3);
 }
 
 .drawer-header {
@@ -295,8 +295,8 @@ defineExpose({ open, close })
 }
 
 .badge-blue {
-  background: var(--info-bg);
-  color: var(--accent);
+  background: rgba(59, 130, 246, 0.15);
+  color: #3b82f6;
 }
 
 /* 动画 */

@@ -535,12 +535,9 @@ func TestResponsesBridges_OtherSideClosedIsNetworkError(t *testing.T) {
 			assert.True(t, out.Interrupted)
 			assert.Equal(t, "network_error", out.Reason)
 			assert.Equal(t, errorsx.KindNetwork, out.Kind)
-			assert.False(t, out.Resumable, "visible Responses output must not be replayed to another provider")
+			assert.True(t, out.Resumable)
 			assert.Greater(t, out.ChunkCount, 0)
 			assert.Contains(t, rec.Body.String(), "hello")
-			assert.Contains(t, rec.Body.String(), "response.completed")
-			assert.Contains(t, rec.Body.String(), `"status":"incomplete"`)
-
 		})
 	}
 }

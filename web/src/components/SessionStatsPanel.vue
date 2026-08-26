@@ -1,19 +1,22 @@
 <script setup lang="ts">
 /**
- * SessionStatsPanel — 首页 stats tab 会话基础统计总览
- * KPI / 趋势对齐 session_summaries + days；细分块复用已拉的 perf/error。
+ * SessionStatsPanel.vue — Session statistics overview panel.
+ *
+ * Refactored (2026-07-10):
+ *   - Switched from direct admin API to useDashboard composable
+ *   - Integrated ECharts-based SessionTrendChart and HealthGradeChart
+ *   - Full i18n support via vue-i18n
+ *   - Vue 3 Composition API + TypeScript
  */
+
 import { computed } from 'vue'
+import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { Plus, Minus, Money, CircleCheck } from '@element-plus/icons-vue'
 import { useDashboard } from '../composables/useDashboard'
-import DashboardStatsRow, { type DashboardStats } from './analytics/DashboardStatsRow.vue'
 import SessionTrendChart from './analytics/SessionTrendChart.vue'
 import HealthGradeChart from './analytics/HealthGradeChart.vue'
-import SessionStatsSignals from './analytics/SessionStatsSignals.vue'
-import SessionStatsRankings from './analytics/SessionStatsRankings.vue'
-import type { TrendDataPoint } from './analytics/SessionTrendChart.vue'
 
+const router = useRouter()
 const { t } = useI18n()
 
 const {
@@ -21,270 +24,359 @@ const {
   error,
   overview,
   trend,
-  performanceStats,
-  errorStats,
-  lastUpdated,
-  responseTime,
+  healthDistribution,
   refresh,
   changeDays,
   days,
-} = useDashboard({ autoRefresh: true, refreshInterval: 5 * 60 * 1000, defaultDays: 30 })
+} = useDashboard()
 
-const dashboardStats = computed<DashboardStats>(() => {
-  const ov = overview.value
-  const cost = ov?.cost_stats
-  const fromTrend = ov?.cost_trend?.reduce((sum, p) => sum + (p.requests ?? 0), 0) ?? 0
-  return {
-    totalSessions: ov?.total_sessions ?? 0,
-    totalSessionsChange: (() => {
-      const g = trend.value?.summary?.growth_rate
-      return g != null && Math.abs(g) > 1e-9 ? g : null
-    })(),
-    activeSessions: ov?.active_sessions ?? 0,
-    totalCost: cost?.total_cost_usd ?? 0,
-    totalCostChange: (() => {
-      const g = cost?.cost_growth_pct
-      return g != null && Math.abs(g) > 1e-9 ? g : null
-    })(),
-    complianceRate: ov?.compliance_stats?.compliance_rate ?? 0,
-    complianceRateChange: null,
-    avgHealthScore: ov?.health_distribution?.avg_score ?? null,
-    avgHealthScoreChange: null,
-    avgLatency: cost?.avg_latency_ms ?? 0,
-    avgLatencyChange: null,
-    totalRequests: cost?.total_requests ?? fromTrend,
-    totalRequestsChange: null,
-    totalTokens: 0,
-    totalTokensChange: null,
-  }
-})
-
-const periodLabel = computed(() => {
-  const ov = overview.value
-  if (!ov?.period_start || !ov?.period_end) return ''
-  return `${new Date(ov.period_start).toLocaleDateString()} → ${new Date(ov.period_end).toLocaleDateString()}`
-})
-
-const trendSummary = computed(() => trend.value?.summary ?? null)
-const pipelineLatency = computed(() => performanceStats.value?.summary ?? null)
-const errorSummary = computed(() => errorStats.value?.summary ?? null)
-
-const trendChartData = computed<TrendDataPoint[]>(() => {
-  if (trend.value?.trend?.length) {
-    return trend.value.trend.map((p) => ({
-      date: p.date,
-      new_sessions: p.new_sessions,
-      active_sessions: p.active_sessions,
-      closed_sessions: p.closed_sessions,
-      total_cost: p.total_cost ?? 0,
-      total_requests: p.total_requests ?? 0,
-    }))
-  }
-  const ov = overview.value
-  if (!ov) return []
-  const costByDate = new Map(ov.cost_trend.map(p => [p.date, p]))
-  return ov.session_trend.map(st => {
-    const cost = costByDate.get(st.date)
-    return {
-      date: st.date,
-      new_sessions: st.new_sessions,
-      active_sessions: st.active_count,
-      closed_sessions: st.closed_count,
-      total_cost: cost?.cost ?? 0,
-      total_requests: cost?.requests ?? 0,
-    }
-  })
-})
-
-function formatUsd(value: number) {
-  return `$${value.toFixed(4)}`
+// Health score color helper (0-10 scale)
+function healthScoreColor(score: number | null | undefined): 'success' | 'warning' | 'danger' | 'info' {
+  if (score === null || score === undefined) return 'info'
+  if (score >= 8) return 'success'
+  if (score >= 6) return 'warning'
+  return 'danger'
 }
 
-function formatPct(value: number) {
-  const sign = value > 0 ? '+' : ''
-  return `${sign}${value.toFixed(1)}%`
+// Health distribution combined for badges (6-7 = B+C)
+const healthGood = computed(() => overview.value?.health_distribution?.a ?? 0)
+const healthFair = computed(() =>
+  (overview.value?.health_distribution?.b ?? 0) + (overview.value?.health_distribution?.c ?? 0)
+)
+const healthPoor = computed(() =>
+  (overview.value?.health_distribution?.d ?? 0) + (overview.value?.health_distribution?.f ?? 0)
+)
+
+// Latest cost from cost_trend
+const latestCost = computed(() => {
+  const trend = overview.value?.cost_trend
+  if (!trend || trend.length === 0) return 0
+  return trend[trend.length - 1]?.cost ?? 0
+})
+
+// Trend data for SessionTrendChart
+const trendChartData = computed(() => trend.value?.trend ?? [])
+
+// Navigation
+function handleClientClick(clientId: string) {
+  router.push(`/admin/session-analytics/clients/${clientId}`)
 }
 
-function onDaysClick(next: number) {
-  if (days.value === next) return
-  changeDays(next)
+function handleTaskClick(taskId: string) {
+  router.push(`/admin/session-analytics/tasks/${taskId}`)
 }
 </script>
 
 <template>
   <div class="session-stats-panel">
+    <!-- Error state -->
     <div v-if="error" class="alert alert-danger" role="alert">
+      <span class="alert-icon" aria-hidden="true">&#x26A0;&#xFE0F;</span>
       <span class="alert-text">{{ error }}</span>
-      <button type="button" class="alert-retry" :disabled="loading" @click="refresh">
-        {{ t('sessions.stats.retry') }}
+      <button
+        type="button"
+        class="btn btn-sm alert-retry"
+        :disabled="loading"
+        @click="refresh"
+      >
+        <span v-if="loading">&#x23F3;</span>
+        <span v-else>{{ t('sessions.stats.retry') || t('dashboard.refresh') }}</span>
       </button>
     </div>
 
-    <div :class="{ 'session-stats-panel--has-error': error, 'session-stats-panel--loading': loading }">
-      <div class="panel-toolbar">
-        <div class="panel-toolbar__meta">
-          <span v-if="lastUpdated" class="meta-text">
-            {{ t('sessions.stats.lastUpdated') }}: {{ lastUpdated.toLocaleString() }}
-            <span v-if="responseTime"> · {{ responseTime }}ms</span>
-          </span>
-          <span v-if="periodLabel" class="period-banner">
-            {{ t('sessions.stats.periodRange') }}: {{ periodLabel }}
-            <template v-if="trendSummary">
-              · {{ t('sessions.stats.periodNew') }}: {{ trendSummary.total_new.toLocaleString() }}
-              · {{ t('sessions.stats.avgDailyNew') }}: {{ trendSummary.avg_daily_new?.toFixed(1) ?? '—' }}
-            </template>
-          </span>
-        </div>
-        <div class="days-switch" role="group">
-          <button type="button" class="days-btn" :class="{ 'days-btn--active': days === 7 }" @click="onDaysClick(7)">
-            {{ t('sessions.stats.last7Days') }}
-          </button>
-          <button type="button" class="days-btn" :class="{ 'days-btn--active': days === 30 }" @click="onDaysClick(30)">
-            {{ t('sessions.stats.last30Days') }}
-          </button>
-        </div>
+    <div v-loading="loading" :class="{ 'session-stats-panel--has-error': error }">
+      <!-- Stat cards row -->
+      <el-row :gutter="16" style="margin-bottom: 20px;">
+        <el-col :span="6">
+          <el-card shadow="hover">
+            <div class="stat-card">
+              <div class="stat-icon total">
+                <el-icon :size="32"><Collection /></el-icon>
+              </div>
+              <div class="stat-content">
+                <div class="stat-label">{{ t('sessions.stats.totalSessions') }}</div>
+                <div class="stat-value">{{ overview?.total_sessions?.toLocaleString() || 0 }}</div>
+              </div>
+            </div>
+          </el-card>
+        </el-col>
+        <el-col :span="6">
+          <el-card shadow="hover">
+            <div class="stat-card">
+              <div class="stat-icon active">
+                <el-icon :size="32"><Check /></el-icon>
+              </div>
+              <div class="stat-content">
+                <div class="stat-label">{{ t('sessions.stats.activeSessions') }}</div>
+                <div class="stat-value">{{ overview?.active_sessions?.toLocaleString() || 0 }}</div>
+              </div>
+            </div>
+          </el-card>
+        </el-col>
+        <el-col :span="6">
+          <el-card shadow="hover">
+            <div class="stat-card">
+              <div class="stat-icon health">
+                <el-icon :size="32"><TrendCharts /></el-icon>
+              </div>
+              <div class="stat-content">
+                <div class="stat-label">{{ t('sessions.stats.healthDistribution') }}</div>
+                <div class="stat-value health-badges">
+                  <el-tag
+                    v-if="(healthGood + healthFair + healthPoor) > 0"
+                    :type="healthScoreColor(10)"
+                    size="small"
+                  >
+                    &ge;8: {{ healthGood }}
+                  </el-tag>
+                  <el-tag
+                    v-if="(healthGood + healthFair + healthPoor) > 0"
+                    :type="healthScoreColor(6)"
+                    size="small"
+                  >
+                    6-7: {{ healthFair }}
+                  </el-tag>
+                  <el-tag
+                    v-if="(healthGood + healthFair + healthPoor) > 0"
+                    :type="healthScoreColor(0)"
+                    size="small"
+                  >
+                    &lt;6: {{ healthPoor }}
+                  </el-tag>
+                  <span v-else>&mdash;</span>
+                </div>
+              </div>
+            </div>
+          </el-card>
+        </el-col>
+        <el-col :span="6">
+          <el-card shadow="hover">
+            <div class="stat-card">
+              <div class="stat-icon cost">
+                <el-icon :size="32"><TrendCharts /></el-icon>
+              </div>
+              <div class="stat-content">
+                <div class="stat-label">{{ t('sessions.stats.costTrend') }}</div>
+                <div class="stat-value">
+                  {{ latestCost.toFixed(2) }} {{ t('dashboard.costSuffix') }}
+                </div>
+              </div>
+            </div>
+          </el-card>
+        </el-col>
+      </el-row>
+
+      <!-- Time range selector -->
+      <div style="display: flex; justify-content: flex-end; margin-bottom: 12px;">
+        <el-radio-group v-model="days" size="small" @change="changeDays">
+          <el-radio-button :value="7">{{ t('sessions.stats.last7Days') }}</el-radio-button>
+          <el-radio-button :value="30">{{ t('sessions.stats.last30Days') }}</el-radio-button>
+        </el-radio-group>
       </div>
 
-      <DashboardStatsRow :stats="dashboardStats" :loading="loading" :show-tokens="false" />
-
-      <div class="secondary-kpi-row">
-        <div class="mini-kpi">
-          <div class="mini-kpi__icon mini-kpi__icon--new"><el-icon :size="24"><Plus /></el-icon></div>
-          <div>
-            <div class="mini-kpi__label">{{ t('sessions.stats.newSessions24h') }}</div>
-            <div class="mini-kpi__value">{{ overview?.new_sessions_24h?.toLocaleString() ?? 0 }}</div>
-          </div>
-        </div>
-        <div class="mini-kpi">
-          <div class="mini-kpi__icon mini-kpi__icon--closed"><el-icon :size="24"><Minus /></el-icon></div>
-          <div>
-            <div class="mini-kpi__label">{{ t('sessions.stats.closedSessions24h') }}</div>
-            <div class="mini-kpi__value">{{ overview?.closed_sessions_24h?.toLocaleString() ?? 0 }}</div>
-          </div>
-        </div>
-        <div class="mini-kpi">
-          <div class="mini-kpi__icon mini-kpi__icon--cost"><el-icon :size="24"><Money /></el-icon></div>
-          <div>
-            <div class="mini-kpi__label">{{ t('sessions.stats.avgCostPerSession') }}</div>
-            <div class="mini-kpi__value">{{ formatUsd(overview?.cost_stats?.avg_cost_per_session ?? 0) }}</div>
-          </div>
-        </div>
-        <div class="mini-kpi">
-          <div class="mini-kpi__icon mini-kpi__icon--compliance"><el-icon :size="24"><CircleCheck /></el-icon></div>
-          <div>
-            <div class="mini-kpi__label">{{ t('sessions.stats.violations') }}</div>
-            <div class="mini-kpi__value">{{ overview?.compliance_stats?.violation?.toLocaleString() ?? 0 }}</div>
-          </div>
-        </div>
-      </div>
-
-      <div class="charts-row">
-        <div class="charts-row__trend">
-          <SessionTrendChart :data="trendChartData" :loading="loading" />
-        </div>
-        <div class="charts-row__health">
+      <!-- Charts row: trend + health -->
+      <el-row :gutter="16" style="margin-bottom: 20px;">
+        <el-col :span="16">
+          <SessionTrendChart
+            :data="trendChartData"
+            :loading="loading"
+          />
+        </el-col>
+        <el-col :span="8">
           <HealthGradeChart
             :distribution="overview?.health_distribution ?? null"
             :avg-score="overview?.health_distribution?.avg_score"
             :loading="loading"
           />
-        </div>
-      </div>
+        </el-col>
+      </el-row>
 
-      <div class="detail-grid">
-        <div class="detail-card">
-          <div class="detail-card__header">{{ t('sessions.stats.costBreakdown') }}</div>
-          <dl class="kv-list">
-            <div class="kv-row">
-              <dt>{{ t('sessions.stats.totalCost') }}</dt>
-              <dd>
-                {{ formatUsd(overview?.cost_stats?.total_cost_usd ?? 0) }}
-                <span
-                  v-if="overview?.cost_stats?.cost_growth_pct != null"
-                  class="growth-tag"
-                  :class="(overview?.cost_stats?.cost_growth_pct ?? 0) > 0 ? 'growth-tag--bad' : 'growth-tag--good'"
-                >{{ formatPct(overview?.cost_stats?.cost_growth_pct ?? 0) }}</span>
-              </dd>
-            </div>
-            <div class="kv-row"><dt>{{ t('sessions.stats.inputCost') }}</dt><dd>{{ formatUsd(overview?.cost_stats?.input_cost_usd ?? 0) }}</dd></div>
-            <div class="kv-row"><dt>{{ t('sessions.stats.outputCost') }}</dt><dd>{{ formatUsd(overview?.cost_stats?.output_cost_usd ?? 0) }}</dd></div>
-            <div class="kv-row"><dt>{{ t('sessions.stats.avgCostPerRequest') }}</dt><dd>{{ formatUsd(overview?.cost_stats?.avg_cost_per_request ?? 0) }}</dd></div>
-            <div class="kv-row"><dt>{{ t('sessions.stats.maxCostSession') }}</dt><dd>{{ formatUsd(overview?.cost_stats?.max_cost_session ?? 0) }}</dd></div>
-          </dl>
-        </div>
-        <div class="detail-card">
-          <div class="detail-card__header">{{ t('sessions.stats.complianceBreakdown') }}</div>
-          <dl class="kv-list">
-            <div class="kv-row"><dt>{{ t('sessions.stats.compliant') }}</dt><dd>{{ overview?.compliance_stats?.compliant?.toLocaleString() ?? 0 }}</dd></div>
-            <div class="kv-row"><dt>{{ t('sessions.stats.warnings') }}</dt><dd>{{ overview?.compliance_stats?.warning?.toLocaleString() ?? 0 }}</dd></div>
-            <div class="kv-row"><dt>{{ t('sessions.stats.violations') }}</dt><dd>{{ overview?.compliance_stats?.violation?.toLocaleString() ?? 0 }}</dd></div>
-            <div class="kv-row"><dt>{{ t('sessions.stats.promptInjection') }}</dt><dd>{{ overview?.compliance_stats?.prompt_injection_detected ?? 0 }}</dd></div>
-            <div class="kv-row"><dt>{{ t('sessions.stats.piiDetected') }}</dt><dd>{{ overview?.compliance_stats?.pii_detected ?? 0 }}</dd></div>
-          </dl>
-        </div>
-      </div>
-
-      <SessionStatsSignals :pipeline="pipelineLatency" :errors="errorSummary" />
-
-      <SessionStatsRankings
-        v-if="overview"
-        :top-clients="overview.top_clients || []"
-        :top-tasks="overview.top_tasks || []"
-        :model-usage="overview.model_usage || []"
-      />
+      <!-- Top 5 rankings -->
+      <el-row :gutter="16">
+        <el-col :span="12">
+          <el-card shadow="hover">
+            <template #header>
+              <span>{{ t('sessions.stats.topClients') }}</span>
+            </template>
+            <el-table :data="overview?.top_clients || []" style="width: 100%" max-height="300">
+              <el-table-column prop="client_id" :label="t('sessions.stats.clientId')" min-width="120">
+                <template #default="scope">
+                  <el-link type="primary" @click="handleClientClick(scope?.row?.client_id)">
+                    {{ scope?.row?.client_id }}
+                  </el-link>
+                </template>
+              </el-table-column>
+              <el-table-column prop="session_count" :label="t('sessions.stats.sessionCount')" width="100" align="right" />
+              <el-table-column prop="total_cost" :label="t('sessions.stats.totalCost')" width="100" align="right">
+                <template #default="scope">
+                  ${{ (scope?.row?.total_cost ?? 0).toFixed(2) }}
+                </template>
+              </el-table-column>
+              <el-table-column prop="avg_health" :label="t('sessions.stats.avgHealth')" width="80" align="center">
+                <template #default="scope">
+                  <el-tag v-if="scope?.row?.avg_health" size="small">{{ scope?.row?.avg_health }}</el-tag>
+                  <span v-else>&mdash;</span>
+                </template>
+              </el-table-column>
+            </el-table>
+          </el-card>
+        </el-col>
+        <el-col :span="12">
+          <el-card shadow="hover">
+            <template #header>
+              <span>{{ t('sessions.stats.topTasks') }}</span>
+            </template>
+            <el-table :data="overview?.top_tasks || []" style="width: 100%" max-height="300">
+              <el-table-column prop="task_id" :label="t('sessions.stats.taskId')" min-width="120">
+                <template #default="scope">
+                  <el-link type="primary" @click="handleTaskClick(scope?.row?.task_id)">
+                    {{ scope?.row?.task_id }}
+                  </el-link>
+                </template>
+              </el-table-column>
+              <el-table-column prop="session_count" :label="t('sessions.stats.sessionCount')" width="100" align="right" />
+              <el-table-column prop="total_cost" :label="t('sessions.stats.totalCost')" width="100" align="right">
+                <template #default="scope">
+                  ${{ (scope?.row?.total_cost ?? 0).toFixed(2) }}
+                </template>
+              </el-table-column>
+              <el-table-column prop="avg_health" :label="t('sessions.stats.avgHealth')" width="90" align="center">
+                <template #default="scope">
+                  <el-tag
+                    v-if="scope?.row?.avg_health !== null && scope?.row?.avg_health !== undefined"
+                    :type="healthScoreColor(scope?.row?.avg_health)"
+                    size="small"
+                  >
+                    {{ scope?.row?.avg_health?.toFixed(1) }}/10
+                  </el-tag>
+                  <span v-else>&mdash;</span>
+                </template>
+              </el-table-column>
+            </el-table>
+          </el-card>
+        </el-col>
+      </el-row>
     </div>
   </div>
 </template>
 
 <style scoped>
-.session-stats-panel { padding: 0 0 20px; width: 100%; }
-.session-stats-panel--has-error { opacity: 0.6; pointer-events: none; }
-.session-stats-panel--loading { opacity: 0.85; }
-.panel-toolbar { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 16px; flex-wrap: wrap; gap: 12px; }
-.panel-toolbar__meta { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-.meta-text, .period-banner { font-size: 12px; color: var(--muted, var(--text-secondary)); }
-.period-banner { color: var(--text, var(--text)); }
-.days-switch { display: inline-flex; border: 1px solid var(--border, var(--border)); border-radius: 6px; overflow: hidden; }
-.days-btn { border: 0; background: transparent; padding: 6px 14px; font-size: 13px; cursor: pointer; color: var(--muted, var(--muted)); }
-.days-btn--active { background: var(--accent, var(--accent)); color: var(--on-primary); }
-.alert { display: flex; align-items: center; gap: 12px; padding: 12px 16px; margin-bottom: 16px; border-radius: 6px; background: var(--danger-bg); border: 1px solid var(--danger-bd); color: var(--danger); }
-.alert-retry { padding: 4px 12px; border: 1px solid var(--danger-bd); border-radius: 4px; background: white; cursor: pointer; }
-.secondary-kpi-row {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 16px; margin-bottom: 16px; width: 100%;
+.session-stats-panel {
+  padding: 20px;
 }
-.mini-kpi {
-  display: flex; align-items: center; gap: 12px; padding: 14px 16px; border-radius: 10px;
-  border: 1px solid var(--border, var(--surface-secondary)); background: var(--card, var(--on-primary));
+
+.session-stats-panel--has-error {
+  opacity: 0.6;
+  pointer-events: none;
 }
-.mini-kpi__icon { width: 44px; height: 44px; border-radius: 10px; display: flex; align-items: center; justify-content: center; color: white; flex-shrink: 0; }
-.mini-kpi__icon--new { background: linear-gradient(135deg, var(--accent), var(--purple)); }
-.mini-kpi__icon--closed { background: linear-gradient(135deg, var(--muted), var(--muted)); }
-.mini-kpi__icon--cost { background: linear-gradient(135deg, var(--success), var(--probe-cyan-light)); }
-.mini-kpi__icon--compliance { background: linear-gradient(135deg, var(--pink), var(--warning)); }
-.mini-kpi__label { font-size: 13px; color: var(--muted, var(--text-secondary)); }
-.mini-kpi__value { font-size: 22px; font-weight: 600; }
-.charts-row {
-  display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
-  gap: 16px; margin-bottom: 16px; width: 100%;
+
+.alert {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  margin-bottom: 16px;
+  border-radius: 6px;
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  color: #dc2626;
 }
-@media (max-width: 960px) { .charts-row { grid-template-columns: 1fr; } }
-.detail-grid {
-  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 16px; margin-bottom: 16px; width: 100%;
+
+.alert-icon {
+  font-size: 18px;
+  flex-shrink: 0;
 }
-@media (max-width: 900px) { .detail-grid { grid-template-columns: 1fr; } }
-.detail-card {
-  border: 1px solid var(--border, var(--surface-secondary)); border-radius: 10px;
-  background: var(--card, var(--on-primary)); padding: 14px 16px; min-width: 0;
+
+.alert-text {
+  flex: 1;
+  font-size: 14px;
+  line-height: 1.5;
 }
-.detail-card__header { font-weight: 600; font-size: 14px; margin-bottom: 12px; }
-.kv-list { margin: 0; }
-.kv-row { display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--border, var(--surface-secondary)); font-size: 13px; }
-.kv-row:last-child { border-bottom: 0; }
-.kv-row dt { color: var(--muted, var(--text-secondary)); }
-.kv-row dd { margin: 0; font-weight: 500; }
-.growth-tag { margin-left: 8px; font-size: 12px; }
-.growth-tag--bad { color: var(--danger); }
-.growth-tag--good { color: var(--success); }
+
+.alert-retry {
+  flex-shrink: 0;
+  padding: 4px 12px;
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  border-radius: 4px;
+  background: white;
+  color: #dc2626;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.alert-retry:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.05);
+  border-color: #dc2626;
+}
+
+.alert-retry:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.stat-card {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.stat-icon {
+  width: 60px;
+  height: 60px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.stat-icon.total {
+  background: linear-gradient(135deg, var(--accent), var(--accent-h));
+  color: white;
+}
+
+.stat-icon.active {
+  background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+  color: white;
+}
+
+.stat-icon.health {
+  background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+  color: white;
+}
+
+.stat-icon.cost {
+  background: linear-gradient(135deg, #43e97b 0%, #38f9d7 100%);
+  color: white;
+}
+
+.stat-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.stat-label {
+  font-size: 14px;
+  color: #909399;
+  margin-bottom: 8px;
+}
+
+.stat-value {
+  font-size: 24px;
+  font-weight: 600;
+  color: #303133;
+}
+
+.stat-value.health-badges {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  font-size: 14px;
+}
+
+:deep(.el-card__header) {
+  padding: 12px 20px;
+  font-weight: 500;
+}
 </style>

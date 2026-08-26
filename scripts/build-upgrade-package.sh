@@ -66,16 +66,11 @@ if ! docker image inspect "$IMAGE_TAG" >/dev/null 2>&1; then
 fi
 docker save "$IMAGE_TAG" -o "$WORK/images.tar"
 
-# 3. 复制受控的 startup migration bundle。离线升级器没有
+# 3. 复制受控的 stats startup migration bundle。离线升级器没有
 # schema_migrations checksum ledger，因此不能把整段历史迁移无差别重放。
-echo "[3/5] Copying controlled startup migration bundle..."
+echo "[3/5] Copying stats startup migration bundle..."
 mkdir -p "$WORK/migrations/startup"
-startup_migrations=(
-	511_state_transitions_table.sql
-	515_state_transitions_seq_unique.sql
-	521_repair_state_transitions_tenant.sql
-	530_request_journey_contract.sql
-	531_request_journey_tenant_uniqueness.sql
+stats_migrations=(
 	536_stats_analytics_foundation.sql
 	537_usage_facts.sql
 	539_stats_reconciliation_tenant.sql
@@ -85,10 +80,8 @@ startup_migrations=(
 	546_stats_reconciliation_diffs_unique.sql
 	547_session_project_attribution.sql
 	548_stats_reconciliation_diffs_identity.sql
-	553_approval_resume_claim.sql
-	552_request_journey_durable_outbox.sql
 )
-for name in "${startup_migrations[@]}"; do
+for name in "${stats_migrations[@]}"; do
   source="sql/migrations/startup/$name"
   [[ -f "$source" ]] || { echo "missing required startup migration: $source" >&2; exit 1; }
   cp "$source" "$WORK/migrations/startup/$name"

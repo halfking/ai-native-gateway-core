@@ -179,8 +179,6 @@ export default {
       colStatus: '状态',
       routable: '可路由',
       unroutable: '不可用',
-      colPriority: '优先',
-      priorityTooltip: '优先凭据标志：额度（quota）充足时优先承接全部流量，额度耗尽自动让位给其它凭据。与「排序序号」无关。',
       l2Funnel: '本次 L2 漏斗',
       funnelStages: {
         candidates: '总候选',

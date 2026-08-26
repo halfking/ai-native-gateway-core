@@ -15,16 +15,7 @@ CREATE TABLE public.approval_queue (
     reason text,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     expires_at timestamp with time zone NOT NULL,
-    resume_state text DEFAULT 'idle'::text NOT NULL,
-    resume_owner text,
-    resume_lease_until timestamp with time zone,
-    resume_fencing_token bigint DEFAULT 0 NOT NULL,
-    resume_started_at timestamp with time zone,
-    resume_completed_at timestamp with time zone,
-    resume_error text,
-    CONSTRAINT approval_queue_status_chk CHECK ((status = ANY (ARRAY['pending'::text, 'approved'::text, 'rejected'::text, 'timeout'::text]))),
-    CONSTRAINT approval_queue_resume_state_chk CHECK ((resume_state = ANY (ARRAY['idle'::text, 'running'::text, 'completed'::text, 'failed'::text]))),
-    CONSTRAINT approval_queue_resume_fencing_token_chk CHECK ((resume_fencing_token >= 0))
+    CONSTRAINT approval_queue_status_chk CHECK ((status = ANY (ARRAY['pending'::text, 'approved'::text, 'rejected'::text, 'timeout'::text])))
 );
 
 ALTER TABLE ONLY public.approval_queue FORCE ROW LEVEL SECURITY;

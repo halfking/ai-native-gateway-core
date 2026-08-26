@@ -59,9 +59,9 @@ func (m *mockApprovalManager) MarkTimeout(ctx context.Context) (int, error) {
 }
 
 type mockAuthService struct {
-	tenantID     string
+	tenantID    string
 	isSuperAdmin bool
-	userID       string
+	userID      string
 }
 
 func (m *mockAuthService) GetTenantID(r *http.Request) string {
@@ -91,7 +91,7 @@ func (m *mockAuthService) CanAccessApproval(r *http.Request, approvalID string, 
 func TestGetApproval_Success(t *testing.T) {
 	now := time.Now()
 	expiresAt := now.Add(1 * time.Hour)
-
+	
 	mockMgr := &mockApprovalManager{
 		getFunc: func(ctx context.Context, approvalID, tenantID string) (*sessionaudit.ApprovalRecord, error) {
 			if approvalID != "test-approval-123" {
@@ -313,7 +313,7 @@ func TestRejectApproval_MissingReason(t *testing.T) {
 
 func TestListApprovals_Success(t *testing.T) {
 	now := time.Now()
-
+	
 	mockMgr := &mockApprovalManager{
 		listFunc: func(ctx context.Context, filter *sessionaudit.ApprovalFilter) ([]*sessionaudit.ApprovalRecord, error) {
 			// Verify filter parameters
@@ -402,7 +402,7 @@ func TestListApprovals_TenantIsolation(t *testing.T) {
 	}
 
 	auth := &mockAuthService{
-		tenantID:     "tenant-1",
+		tenantID:    "tenant-1",
 		isSuperAdmin: false,
 	}
 	handler := NewApprovalHandler(mockMgr, auth)
@@ -430,7 +430,7 @@ func TestListApprovals_SuperAdminCanAccessAll(t *testing.T) {
 	}
 
 	auth := &mockAuthService{
-		tenantID:     "tenant-1",
+		tenantID:    "tenant-1",
 		isSuperAdmin: true,
 	}
 	handler := NewApprovalHandler(mockMgr, auth)
@@ -454,29 +454,29 @@ func TestGetApprovalStats_Success(t *testing.T) {
 		listFunc: func(ctx context.Context, filter *sessionaudit.ApprovalFilter) ([]*sessionaudit.ApprovalRecord, error) {
 			return []*sessionaudit.ApprovalRecord{
 				{
-					ID:           "approval-1",
-					Status:       sessionaudit.ApprovalPending,
+					ID:        "approval-1",
+					Status:    sessionaudit.ApprovalPending,
 					DetectResult: &sessionaudit.DetectResult{Decision: sessionaudit.DecisionNeedApproval},
-					CreatedAt:    now,
+					CreatedAt: now,
 				},
 				{
-					ID:           "approval-2",
-					Status:       sessionaudit.ApprovalApproved,
+					ID:         "approval-2",
+					Status:     sessionaudit.ApprovalApproved,
 					DetectResult: &sessionaudit.DetectResult{Decision: sessionaudit.DecisionWarn},
-					CreatedAt:    yesterday,
-					ApprovedAt:   &approvedTime,
+					CreatedAt:  yesterday,
+					ApprovedAt: &approvedTime,
 				},
 				{
-					ID:           "approval-3",
-					Status:       sessionaudit.ApprovalRejected,
+					ID:        "approval-3",
+					Status:    sessionaudit.ApprovalRejected,
 					DetectResult: &sessionaudit.DetectResult{Decision: sessionaudit.DecisionBlock},
-					CreatedAt:    yesterday,
+					CreatedAt: yesterday,
 				},
 				{
-					ID:           "approval-4",
-					Status:       sessionaudit.ApprovalTimeout,
+					ID:        "approval-4",
+					Status:    sessionaudit.ApprovalTimeout,
 					DetectResult: &sessionaudit.DetectResult{Decision: sessionaudit.DecisionNeedApproval},
-					CreatedAt:    yesterday,
+					CreatedAt: yesterday,
 				},
 			}, nil
 		},
@@ -580,7 +580,7 @@ func TestFormatDuration(t *testing.T) {
 
 func TestParseListRequest_Defaults(t *testing.T) {
 	handler := &ApprovalHandler{}
-
+	
 	req := httptest.NewRequest(http.MethodGet, "/api/admin/approvals", nil)
 	parsed := handler.parseListRequest(req)
 
@@ -607,7 +607,7 @@ func TestParseListRequest_Defaults(t *testing.T) {
 
 func TestParseListRequest_CustomValues(t *testing.T) {
 	handler := &ApprovalHandler{}
-
+	
 	req := httptest.NewRequest(http.MethodGet, "/api/admin/approvals?page=2&page_size=100&status=approved&sort_by=risk_level&sort_order=asc", nil)
 	parsed := handler.parseListRequest(req)
 
@@ -634,7 +634,7 @@ func TestParseListRequest_CustomValues(t *testing.T) {
 
 func TestParseListRequest_InvalidPageSize(t *testing.T) {
 	handler := &ApprovalHandler{}
-
+	
 	// Page size exceeding limit should be capped
 	req := httptest.NewRequest(http.MethodGet, "/api/admin/approvals?page_size=500", nil)
 	parsed := handler.parseListRequest(req)
