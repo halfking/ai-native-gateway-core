@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
+  extractAssistantReply,
+  extractLastUserPrompt,
   extractMessagesFromBody,
   filterMessages,
   previewText,
@@ -22,5 +24,18 @@ describe('messageHelpers', () => {
     const p = previewText(long, 3)
     expect(p.truncated).toBe(true)
     expect(p.text.split('\n')).toHaveLength(3)
+  })
+
+  it('extracts last user prompt and assistant reply', () => {
+    expect(extractLastUserPrompt({
+      messages: [
+        { role: 'user', content: 'first' },
+        { role: 'assistant', content: 'mid' },
+        { role: 'user', content: [{ type: 'text', text: 'latest ask' }] },
+      ],
+    })).toBe('latest ask')
+    expect(extractAssistantReply({
+      choices: [{ message: { role: 'assistant', content: 'hello world' } }],
+    })).toBe('hello world')
   })
 })

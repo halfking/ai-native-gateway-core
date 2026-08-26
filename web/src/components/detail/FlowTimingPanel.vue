@@ -4,6 +4,9 @@ import { computed, ref, watch } from 'vue'
 import { getRequestTrace, type RequestTrace, type TraceEvent } from '../../api/trace'
 
 const props = defineProps<{ requestId: string | null }>()
+const emit = defineEmits<{
+  (e: 'goto', section: 'waterfall' | 'attempts'): void
+}>()
 
 const loading = ref(false)
 const error = ref('')
@@ -53,6 +56,8 @@ function statusClass(status: string): string {
         <span>状态 {{ trace.final_status || 'in_progress' }}</span>
         <span v-if="trace.failed_at_stage" class="bad">失败于 {{ trace.failed_at_stage }}</span>
         <span class="muted">来源 {{ trace.source }}</span>
+        <button type="button" class="btn btn-sm link" @click="emit('goto', 'waterfall')">查看调度瀑布</button>
+        <button type="button" class="btn btn-sm link" @click="emit('goto', 'attempts')">查看路由重试</button>
       </div>
       <ul class="flow-list">
         <li
@@ -94,4 +99,5 @@ function statusClass(status: string): string {
 .err-snip { color: var(--danger); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .err { color: var(--danger); }
 .muted, .text-muted { color: var(--muted); font-size: 12px; }
+.link { margin-left: 4px; }
 </style>
