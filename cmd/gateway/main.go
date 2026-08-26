@@ -3428,6 +3428,19 @@ func main() {
 						provider.InvalidateCandidateCacheForCredential(credID)
 						metrics.RoutingCredentialQuotaRecoveredNotifyTotal.WithLabelValues(source).Inc()
 					})
+					// 2026-08-26 P1-4 (landing point D): also wire the
+					// *immediate* probe-submitter. After recover() flips a
+					// credential back from quota_periodic_exhausted /
+					// availability=suspended, dispatchRecoveryHooks now
+					// fires credProbeV2.ProbeNowAsync synchronously so
+					// the credential is re-validated without waiting for
+					// the 30s fastReprobeDelay (P1-2 default). The wiring
+					// is best-effort — if credProbeV2 hasn't been
+					// constructed yet (early-boot race during unit tests),
+					// SetProbeSubmitterImmediate no-ops on nil.
+					if credProbeV2 != nil {
+						credRecovery.SetProbeSubmitterImmediate(credProbeV2.ProbeNowAsync)
+					}
 					slog.Info("credRecovery: expired-binding probe submitter wired")
 				}
 			} else if useNewProbeMode() {
