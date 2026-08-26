@@ -36,6 +36,46 @@ func TestPostgresRepositoryDetailIsTenantScoped(t *testing.T) {
 	}
 }
 
+func TestPostgresRepositoryAttemptFactsUseTenantScopedContentFreeEvents(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+
+	startedAt := time.Unix(1_700_000_000, 0).UTC()
+	started := testJourneyEvent("tenant-a", "request-1", 1)
+	started.Type = EventAttemptStarted
+	started.Stage = StageUpstream
+	started.OccurredAt = startedAt
+	started.Model = "model-a"
+	started.ProviderID = 101
+	started.CredentialID = 11
+	started.Attempt = &AttemptRef{AttemptID: "attempt-a", AttemptNo: 1, Model: "model-a", ProviderID: 101, CredentialID: 11}
+	failed := started
+	failed.Seq = 2
+	failed.Type = EventAttemptFailed
+	failed.Outcome = OutcomeFailure
+	failed.ErrorKind = ErrorKindUpstreamError
+	failed.HTTPStatus = 503
+	failed.OccurredAt = startedAt.Add(time.Second)
+
+	mock.ExpectQuery(`SELECT[\s\S]+FROM request_state_transitions[\s\S]+tenant_id = \$1[\s\S]+event_type = 'attempt_started'`).
+		WithArgs("tenant-a", startedAt, startedAt.Add(time.Hour)).
+		WillReturnRows(eventRows(started, failed))
+
+	facts, err := NewPostgresRepository(mock).AttemptFacts(context.Background(), "tenant-a", startedAt, startedAt.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(facts) != 1 || facts[0].AttemptID != "attempt-a" || facts[0].Outcome != OutcomeFailure {
+		t.Fatalf("attempt facts = %+v", facts)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestQueryServiceFallsBackToPostgresOnRedisMiss(t *testing.T) {
 	server := miniredis.RunT(t)
 	redisClient := redis.NewClient(&redis.Options{Addr: server.Addr()})
@@ -206,27 +246,36 @@ func expectRecentPGJourney(mock pgxmock.PgxPoolIface, event JourneyEvent) {
 		WillReturnRows(eventRows(event))
 }
 
-func eventRows(event JourneyEvent) *pgxmock.Rows {
-	return pgxmock.NewRows([]string{
+func eventRows(events ...JourneyEvent) *pgxmock.Rows {
+	rows := pgxmock.NewRows([]string{
 		"tenant_id", "gateway_instance_id", "request_id", "seq", "event_type", "stage",
 		"requested_model", "resolved_model", "model", "provider_id", "provider",
 		"credential_id", "from_model", "to_model", "from_credential_id",
 		"to_credential_id", "attempt_id", "attempt_no", "outcome", "error_kind",
 		"http_status", "retry_reason", "switch_reason", "node_health_status",
 		"observation_status", "retry_at", "occurred_at",
-	}).AddRow(
-		event.TenantID, event.GatewayInstanceID, event.RequestID, event.Seq,
-		string(event.Type), string(event.Stage), nullableTestString(event.RequestedModel),
-		nullableTestString(event.ResolvedModel), nullableTestString(event.Model),
-		nullableTestInt64(event.ProviderID), nullableTestString(event.Provider),
-		nullableTestInt64(event.CredentialID), nullableTestString(event.FromModel),
-		nullableTestString(event.ToModel), nullableTestInt64(event.FromCredentialID),
-		nullableTestInt64(event.ToCredentialID), nil, nil,
-		nullableTestString(string(event.Outcome)), nullableTestString(event.ErrorKind),
-		nullableTestInt(event.HTTPStatus), nullableTestString(event.RetryReason),
-		nullableTestString(event.SwitchReason), nullableTestString(string(event.NodeHealthStatus)),
-		string(event.ObservationStatus), nullableTestTime(event.RetryAt), event.OccurredAt,
-	)
+	})
+	for _, event := range events {
+		var attemptID, attemptNo any
+		if event.Attempt != nil {
+			attemptID = event.Attempt.AttemptID
+			attemptNo = event.Attempt.AttemptNo
+		}
+		rows.AddRow(
+			event.TenantID, event.GatewayInstanceID, event.RequestID, event.Seq,
+			string(event.Type), string(event.Stage), nullableTestString(event.RequestedModel),
+			nullableTestString(event.ResolvedModel), nullableTestString(event.Model),
+			nullableTestInt64(event.ProviderID), nullableTestString(event.Provider),
+			nullableTestInt64(event.CredentialID), nullableTestString(event.FromModel),
+			nullableTestString(event.ToModel), nullableTestInt64(event.FromCredentialID),
+			nullableTestInt64(event.ToCredentialID), attemptID, attemptNo,
+			nullableTestString(string(event.Outcome)), nullableTestString(event.ErrorKind),
+			nullableTestInt(event.HTTPStatus), nullableTestString(event.RetryReason),
+			nullableTestString(event.SwitchReason), nullableTestString(string(event.NodeHealthStatus)),
+			string(event.ObservationStatus), nullableTestTime(event.RetryAt), event.OccurredAt,
+		)
+	}
+	return rows
 }
 
 func nullableTestString(value string) any {

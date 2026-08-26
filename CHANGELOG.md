@@ -9,6 +9,12 @@
   final request success does not hide an earlier node failure.
 
 ### Added
+- Add a tenant-scoped, content-free AttemptFact read model from durable request
+  journey events and separate provider/credential/model attempt-quality
+  aggregation from final-request metrics.
+- Add authenticated `GET /api/admin/quality/attempts` for tenant-scoped attempt
+  quality aggregates with time-window and provider, credential, and model
+  filters; existing final-request quality endpoints remain unchanged.
 - Document the audit and implementation plan for attempt-level supplier quality
   analytics. Existing retry and routing-switch observations are durable, but
   provider quality aggregation still needs to consume attempt-level facts so a
