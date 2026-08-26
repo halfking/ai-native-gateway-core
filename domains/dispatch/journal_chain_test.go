@@ -169,24 +169,32 @@ func TestJournalScheduledParkFirstEntry(t *testing.T) {
 
 	qr := NewQueuedRequest("js1", "t", "gpt4", context.Background(), "payload")
 	qr.DueAt = time.Now().Add(400 * time.Millisecond) // > minScheduleLead with slack for -race scheduling
-	go func() { _, _ = p.Submit(context.Background(), qr) }()
+	notices := collectNotices(qr)
+	done := make(chan struct{})
+	go func() {
+		_, _ = p.Submit(context.Background(), qr)
+		close(done)
+	}()
 
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if len(qr.AttemptJournal) > 0 {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
+	// The scheduled notice is emitted by the same owner goroutine AFTER the
+	// park journal write — receiving it establishes happens-before, so the
+	// entry is visible without racing the pipeline.
+	n := readNotice(t, notices, 2*time.Second)
+	if n.Kind != NoticeKindScheduled {
+		t.Fatalf("first notice = %+v, want scheduled", n)
+	}
+
+	// Terminal quiescence: after Submit returns no owner writes remain.
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("Submit did not return")
 	}
 	if len(qr.AttemptJournal) == 0 {
 		t.Fatalf("scheduled park journaled nothing")
 	}
 	if e := qr.AttemptJournal[0]; e.Action != NextActionScheduledWait || qr.Counts.ScheduledWaits != 1 {
 		t.Fatalf("first journal entry = %+v, counts %+v; want scheduled_wait", e, qr.Counts)
-	}
-	// Wait for terminal and assert the park entry survived in the trace.
-	for time.Now().Before(deadline) && !qr.completed.Load() {
-		time.Sleep(5 * time.Millisecond)
 	}
 	if qr.AttemptJournal[0].Action != NextActionScheduledWait {
 		t.Fatalf("park entry lost after completion: %+v", qr.AttemptJournal)

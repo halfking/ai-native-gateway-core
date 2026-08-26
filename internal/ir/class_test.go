@@ -39,10 +39,10 @@ func TestClassOfBoundaries(t *testing.T) {
 // does not.
 func TestSerializersDoNotLeakRequestClass(t *testing.T) {
 	base := &InternalRequest{
-		Model:       "gpt-test",
-		MaxTokens:   128,
-		Stream:      false,
-		Messages:    []Message{{Role: "user", Content: []ContentBlock{{Type: "text", Text: "hi"}}}},
+		Model:          "gpt-test",
+		MaxTokens:      128,
+		Stream:         false,
+		Messages:       []Message{{Role: "user", Content: []ContentBlock{{Type: "text", Text: "hi"}}}},
 		SourceProtocol: ProtocolOpenAIChat,
 	}
 	stamped := *base
