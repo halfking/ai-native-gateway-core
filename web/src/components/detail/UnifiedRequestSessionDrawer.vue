@@ -6,6 +6,7 @@ import {
   getUnifiedRequestDetail,
   type UnifiedRequestDetail,
 } from '../../api/requestDetail'
+import { getSessionSnapshot } from '../../api/sessions_v2'
 import RequestOverviewPanel from './RequestOverviewPanel.vue'
 import ConversationMessagesPanel from './ConversationMessagesPanel.vue'
 import FlowTimingPanel from './FlowTimingPanel.vue'
@@ -43,6 +44,7 @@ const loading = ref(false)
 const error = ref('')
 const log = ref<RequestLogDetail | null>(null)
 const unified = ref<UnifiedRequestDetail | null>(null)
+const sessionSnap = ref<Record<string, unknown> | null>(null)
 const activeRequestId = ref<string | null>(null)
 
 const sessionId = computed(
@@ -67,6 +69,7 @@ watch(
     activeRequestId.value = id
     log.value = null
     unified.value = null
+    sessionSnap.value = null
     error.value = ''
     viewMode.value = props.initialViewMode
     tab.value = props.initialTraceOpen ? 'flow' : 'overview'
@@ -99,6 +102,14 @@ async function loadRequest(id: string) {
         log.value = { ...meta, ...full }
       } catch {
         /* meta-only ok */
+      }
+    }
+    const sid = log.value?.gw_session_id || unified.value?.meta.gw_session_id
+    if (sid) {
+      try {
+        sessionSnap.value = (await getSessionSnapshot(sid)) as Record<string, unknown>
+      } catch {
+        sessionSnap.value = null
       }
     }
   } catch (e: unknown) {
@@ -205,10 +216,18 @@ function switchToSession() {
           </div>
 
           <div class="drawer-body-scroll">
-            <RequestOverviewPanel v-if="tab === 'overview'" :log="log" :unified="unified" />
+            <RequestOverviewPanel
+              v-if="tab === 'overview'"
+              :log="log"
+              :unified="unified"
+              :request-body="requestBody"
+              :response-body="responseBody"
+              :session-snap="sessionSnap"
+            />
             <ConversationMessagesPanel
               v-else-if="tab === 'chat'"
               :body="requestBody"
+              :response-body="responseBody"
             />
             <FlowTimingPanel v-else-if="tab === 'flow'" :request-id="activeRequestId" />
             <CompressionRedactionPanel
