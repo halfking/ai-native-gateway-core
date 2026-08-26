@@ -3,7 +3,6 @@
 // 设计依据: docs/会话优化v2/32-系统监测模块设计.md §6
 // 端点全部从 admin/systemmonitor_handlers.go 接入。
 import { req } from './_core'
-import { authBearer } from '../store'
 
 // ── 类型定义 ─────────────────────────────────────────────────
 
@@ -152,16 +151,15 @@ export function updateSystemMonitorConcurrency(monitor_concurrency: number) {
 //
 // 设计 §5.1 — 与 /api/admin/live-stream 物理隔离。
 //
-// EventSource 不支持自定义 header，所以 token 走 ?token= 查询串。
-// 即便如此，llmgw_session cookie 仍通过 credentials=include 一并发出。
+// 2026-08-26 (P1-7 fix): EventSource 不再在 URL 里走 ?token=。Cookie
+// (`llmgw_session`) 通过 credentials=include 一并发出；后端
+// ExtractBearerOrCookieToken 已经支持 cookie 路径。
 export function openSystemMonitorStream(
   onEvent: (env: SystemMonitorEvent) => void,
   onError?: (e: Event) => void,
 ): () => void {
   const base = ''
-  const token = authBearer()
   const url = new URL(base + '/api/admin/system-monitor/stream', window.location.origin)
-  if (token) url.searchParams.set('token', token)
   const es = new EventSource(url.toString(), { withCredentials: true })
 
   const handler = (raw: MessageEvent) => {
