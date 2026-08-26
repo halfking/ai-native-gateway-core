@@ -5713,8 +5713,15 @@ func main() {
 				}
 			}
 			if dingSignSecret != "" {
-				api.RegisterDingTalkRoutes(mux, approvalMgr, dingSignSecret)
-				slog.Info("dingtalk approval callback enabled (/api/webhooks/dingtalk/approval-callback)")
+				// P0-2: 传入 redis 客户端用于 event_id 重放去重（SETNX event_id → HMAC(body)，TTL ≥ 2h）。
+				// redisClientForCache 为 nil 时 handler 内部跳过重放保护（仅 dev 环境）。
+				var dingRedisClient *redis.Client
+				if redisClientForCache != nil {
+					dingRedisClient = redisClientForCache.Client()
+				}
+				api.RegisterDingTalkRoutes(mux, approvalMgr, dingSignSecret, dingRedisClient)
+				slog.Info("dingtalk approval callback enabled (/api/webhooks/dingtalk/approval-callback)",
+					"replay_dedup_enabled", dingRedisClient != nil)
 			} else {
 				slog.Warn("DINGTALK_SIGN_SECRET not set, dingtalk approval callback disabled")
 			}
