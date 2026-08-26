@@ -27,9 +27,9 @@ watch(
     if (!sid) return
     loading.value = true
     try {
-      const data = await getSessionCompare(sid)
+      const data = await getSessionCompare(sid, undefined, { requestId: rid || undefined })
       const matched = (data.turns || []).find((t) => t.request_id === rid)
-        || (data.turns || [])[data.turns!.length - 1]
+        || (data.turns || [])[0]
         || null
       turn.value = matched
     } catch (e: unknown) {

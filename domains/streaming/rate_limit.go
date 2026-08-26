@@ -71,6 +71,36 @@ func checkGatewayRateLimit(ctx context.Context, keyInfo *authentication.KeyInfo,
 		return rateLimitOutcome{Limit: 0, Remaining: -1, ResetSec: 0}
 	}
 	if admission, ok := rl.(ratelimit.RPMAdmission); ok {
+		// 2026-08-26: budget the queue wait. Queued requests used to wait up
+		// to 2 minutes (maxMinuteBucketWait) while the request context only
+		// carries the upstream timeout (LLM_GATEWAY_UPSTREAM_TIMEOUT=60s on
+		// 154/245). Any queue wait longer than the remaining budget produced
+		// a mid-flight "context canceled" 502 with no request_logs row — the
+		// kimi-k3 "always fails" incident. When the limiter supports
+		// budgeted admission, reject fast with a 429 + Retry-After instead.
+		maxQueueWait, hasDeadline := rateLimitQueueBudget(ctx)
+		if hasDeadline && maxQueueWait <= 0 {
+			// No usable budget left at all (deadline already within headroom).
+			// Reject immediately rather than queue-then-cancel.
+			return rateLimitOutcome{Blocked: true, Limit: limit, ResetSec: 1}
+		}
+		if budgeted, ok := rl.(ratelimit.RPMBudgetedAdmission); ok && hasDeadline {
+			result, err := budgeted.AdmitRPMWithBudget(ctx, keyInfo.ID, limit, maxQueueWait, notify)
+			if err == nil {
+				return rateLimitOutcome{Limit: limit, Remaining: result.Remaining, Queue: result}
+			}
+			if errors.Is(err, ratelimit.ErrQueueBudgetExceeded) {
+				resetSec := result.EstimatedWaitSec
+				if resetSec < 1 {
+					resetSec = 1
+				}
+				return rateLimitOutcome{Blocked: true, Limit: limit, ResetSec: resetSec, Queue: result}
+			}
+			if errors.Is(err, ratelimit.ErrMinuteBucketFull) || errors.Is(err, ratelimit.ErrMinuteBucketWaitTimeout) {
+				return rateLimitOutcome{Blocked: true, Limit: limit, ResetSec: 60, Queue: result}
+			}
+			return rateLimitOutcome{Blocked: true, Limit: limit, ResetSec: 1}
+		}
 		if waiting, ok := rl.(ratelimit.RPMWaitingNotifier); ok {
 			result, err := waiting.AdmitRPMWithWait(ctx, keyInfo.ID, limit, notify)
 			if err == nil {
@@ -103,6 +133,26 @@ func checkGatewayRateLimit(ctx context.Context, keyInfo *authentication.KeyInfo,
 		}
 	}
 	return rateLimitOutcome{Limit: limit, Remaining: -1, ResetSec: 0}
+}
+
+// queueBudgetHeadroom is the minimum time that must remain for the request
+// to reach upstream after rate-limit admission. Queueing beyond this always
+// ends in "context canceled" mid-flight, so it is never a useful wait.
+const queueBudgetHeadroom = 5 * time.Second
+
+// rateLimitQueueBudget derives how long a request may sit in the RPM queue:
+// the request context's remaining deadline minus a fixed headroom reserved
+// for the actual upstream call. A context without a deadline (background
+// callers, tests) means "no budget" → 0 → legacy unlimited queueing.
+// rateLimitQueueBudget returns the maximum time a request may sit in the
+// RPM queue and whether the context carries a deadline. No deadline means
+// "no budget" → hasDeadline=false and callers fall back to legacy queuing.
+func rateLimitQueueBudget(ctx context.Context) (maxWait time.Duration, hasDeadline bool) {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return 0, false
+	}
+	return time.Until(deadline) - queueBudgetHeadroom, true
 }
 
 func rateLimitOutcomeKind(o rateLimitOutcome) string {

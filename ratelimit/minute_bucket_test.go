@@ -66,7 +66,7 @@ func TestMinuteBucketAdmissionReleasesFIFOAtNextBucket(t *testing.T) {
 	firstCtx, cancelFirst := context.WithCancel(context.Background())
 	defer cancelFirst()
 	go func() {
-		_, err := a.admit(firstCtx, 7, 1, func(AdmissionResult) { firstQueued <- struct{}{} })
+		_, err := a.admit(firstCtx, 7, 1, 0, func(AdmissionResult) { firstQueued <- struct{}{} })
 		firstDone <- err
 	}()
 	<-firstQueued
@@ -81,6 +81,40 @@ func TestMinuteBucketAdmissionReleasesFIFOAtNextBucket(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("first waiter was not released")
+	}
+}
+
+func TestMinuteBucketAdmissionBudgetedRejectsFastWhenWaitExceedsBudget(t *testing.T) {
+	a := NewMinuteBucketAdmission()
+	clock := time.Date(2026, 8, 26, 12, 0, 0, 0, time.UTC)
+	a.clock = func() time.Time { return clock }
+	a.window = time.Minute
+
+	// Fill the current bucket (limit=1).
+	if _, err := a.Admit(context.Background(), 11, 1); err != nil {
+		t.Fatalf("warm-up admit failed: %v", err)
+	}
+
+	start := time.Now()
+	result, err := a.AdmitRPMWithBudget(context.Background(), 11, 1, 5*time.Second, nil)
+	if !errors.Is(err, ErrQueueBudgetExceeded) {
+		t.Fatalf("expected ErrQueueBudgetExceeded, got err=%v result=%+v", err, result)
+	}
+	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
+		t.Fatalf("budgeted reject must be fast, took %v", elapsed)
+	}
+	if result.Position != 1 {
+		t.Fatalf("result.Position=%d, want 1 (would-be queue position)", result.Position)
+	}
+	if result.EstimatedWaitSec < 55 { // ~60s to next bucket
+		t.Fatalf("EstimatedWaitSec=%d, want ~60s", result.EstimatedWaitSec)
+	}
+	// Request must NOT be enqueued (else it would shadow the queue).
+	a.mu.Lock()
+	queued := len(a.queues[11])
+	a.mu.Unlock()
+	if queued != 0 {
+		t.Fatalf("budget-rejected request must not be enqueued, queues len=%d", queued)
 	}
 }
 

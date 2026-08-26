@@ -85,6 +85,14 @@ function openSession() {
   void router.push(`/admin/sessions/${encodeURIComponent(sid)}`)
 }
 
+function openFullscreen() {
+  const id = selected.value?.request_id?.trim()
+  if (!id) return
+  selected.value = null
+  selectedId.value = null
+  void router.push({ name: 'request-detail', params: { requestId: id }, query: { tab: 'waterfall' } })
+}
+
 function startPoll() {
   stopPoll()
   if (!autoRefresh.value) return
@@ -146,6 +154,7 @@ onBeforeUnmount(stopPoll)
       :selected="selected"
       @close="selected = null; selectedId = null"
       @open-session="openSession"
+      @open-fullscreen="openFullscreen"
     />
   </div>
 </template>

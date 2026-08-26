@@ -135,6 +135,38 @@ func handleDispatchWaterfall(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(snap)
 }
 
+// handleDispatchWaterfallByRequest serves
+// GET /api/admin/dispatch/waterfall/request/{request_id}
+func handleDispatchWaterfallByRequest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	const prefix = "/api/admin/dispatch/waterfall/request/"
+	requestID := strings.TrimPrefix(r.URL.Path, prefix)
+	requestID = strings.Trim(requestID, "/")
+	if requestID == "" || strings.Contains(requestID, "/") {
+		http.Error(w, "request_id required", http.StatusBadRequest)
+		return
+	}
+	tenantID := admin.EffectiveTenantIDAll(r)
+	var mem dispatch.WaterfallRequest
+	memOK := false
+	if projection := gatewayQueueProjection.Load(); projection != nil {
+		mem, memOK = projection.FindWaterfallByRequestID(requestID, tenantID)
+	}
+	item, source, ok := resolveWaterfallByRequest(r.Context(), mem, memOK, requestID, tenantID)
+	if !ok {
+		http.Error(w, "waterfall request not found", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"request": item,
+		"source":  source,
+	})
+}
+
 // handleDispatchMinuteStats serves the Redis-backed immediate operational
 // projection. Persistent financial reporting remains under /api/admin/stats.
 func handleDispatchMinuteStats(w http.ResponseWriter, r *http.Request) {

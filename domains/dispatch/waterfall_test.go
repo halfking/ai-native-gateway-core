@@ -41,6 +41,29 @@ func TestWaterfallRingFilter(t *testing.T) {
 	}
 }
 
+func TestWaterfallRingFindByRequestID(t *testing.T) {
+	r := newWaterfallRing(10)
+	r.push(WaterfallRequest{RequestID: "a", TenantID: "t1", Model: "m", Result: "success"})
+	r.push(WaterfallRequest{RequestID: "b", TenantID: "t2", Model: "m", Result: "fail"})
+
+	got, ok := r.findByRequestID("b", "")
+	if !ok || got.RequestID != "b" || got.Result != "fail" {
+		t.Fatalf("find b=%+v ok=%v", got, ok)
+	}
+	_, ok = r.findByRequestID("b", "t1")
+	if ok {
+		t.Fatal("tenant t1 should not see b")
+	}
+	got, ok = r.findByRequestID("a", "t1")
+	if !ok || got.RequestID != "a" {
+		t.Fatalf("find a scoped=%+v ok=%v", got, ok)
+	}
+	_, ok = r.findByRequestID("missing", "")
+	if ok {
+		t.Fatal("missing should be false")
+	}
+}
+
 func TestWaterfallRingTenantFilter(t *testing.T) {
 	r := newWaterfallRing(10)
 	r.push(WaterfallRequest{RequestID: "a", TenantID: "t1", Model: "m"})

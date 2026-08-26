@@ -51,12 +51,18 @@ var ErrStaleVersion = errors.New("summarystore: stale summary_version")
 // Callers that don't know the timestamps can leave them zero; Upsert
 // falls back to LastSummarized / NOW() so the NOT NULL constraint holds.
 type Summary struct {
-	SessionKey     string    // gw_session_id (PK)
-	TenantID       string    // tenant namespace
-	Title          string    // short session title
-	Summary        string    // 80-200 字 Chinese summary
-	KeyTopics      []string  // 3-5 key points (15-40 字 each)
-	UserIntent     string    // user's underlying goal
+	SessionKey string   // gw_session_id (PK)
+	TenantID   string   // tenant namespace
+	Title      string   // short session title
+	Summary    string   // 80-200 字 Chinese summary
+	KeyTopics  []string // 3-5 key points (15-40 字 each)
+	UserIntent string   // user's underlying goal
+	// 2026-08-26 (migration 606): agent/expert/tags — 由会话总结 LLM 输出
+	// （或规则兜底）识别的智能体类型、专家类型与标签。空值语义：
+	// AgentType/ExpertType 用 ""（未识别），Tags 为空 slice。
+	AgentType      string    // canonical agent/client name (cursor|zcode|opencode|...)
+	ExpertType     string    // expert specialty (software_engineering|security|...)
+	Tags           []string  // LLM-extracted tags (normalized, capped)
 	LastSummarized time.Time // when this row was last generated (read by the rolling gate)
 	FirstRequestAt time.Time // first request ts for this session (NOT NULL column)
 	LastRequestAt  time.Time // last request ts for this session (NOT NULL column)
@@ -135,18 +141,23 @@ func (s *Store) Upsert(ctx context.Context, sum Summary) (UpsertResult, error) {
 
 	firstReq, lastReq := normalizeFirstLast(sum.FirstRequestAt, sum.LastRequestAt, sum.LastSummarized)
 	title, summaryText, userIntent, dirty := sanitizeSummaryTexts(sum)
+	agentType, expertType, tags := normalizeIdentity(sum)
 
 	const query = `
 		INSERT INTO session_summaries (
 			session_key, tenant_id, title, summary, key_topics,
-			user_intent, last_summarized_at, created_at, updated_at,
+			user_intent, agent_type, expert_type, tags,
+			last_summarized_at, created_at, updated_at,
 			first_request_at, last_request_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW(), $8, $9)
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), NOW(), $11, $12)
 		ON CONFLICT (tenant_id, session_key) DO UPDATE SET
 			title = EXCLUDED.title,
 			summary = EXCLUDED.summary,
 			key_topics = EXCLUDED.key_topics,
 			user_intent = EXCLUDED.user_intent,
+			agent_type = EXCLUDED.agent_type,
+			expert_type = EXCLUDED.expert_type,
+			tags = EXCLUDED.tags,
 			last_summarized_at = EXCLUDED.last_summarized_at,
 			last_request_at = GREATEST(session_summaries.last_request_at, EXCLUDED.last_request_at),
 			summary_version = session_summaries.summary_version + 1,
@@ -170,6 +181,9 @@ func (s *Store) Upsert(ctx context.Context, sum Summary) (UpsertResult, error) {
 		summaryText,
 		sum.KeyTopics,
 		userIntent,
+		agentType,
+		expertType,
+		tags,
 		sum.LastSummarized,
 		firstReq,
 		lastReq,
@@ -210,6 +224,7 @@ func (s *Store) UpsertCAS(ctx context.Context, sum Summary, expectedVersion int)
 
 	firstReq, lastReq := normalizeFirstLast(sum.FirstRequestAt, sum.LastRequestAt, sum.LastSummarized)
 	title, summaryText, userIntent, dirty := sanitizeSummaryTexts(sum)
+	agentType, expertType, tags := normalizeIdentity(sum)
 	if dirty {
 		slog.Warn("summarystore: UTF-8 sanitization applied (CAS path)",
 			"session_key", sum.SessionKey,
@@ -224,16 +239,18 @@ func (s *Store) UpsertCAS(ctx context.Context, sum Summary, expectedVersion int)
 		insertSQL := `
 			INSERT INTO session_summaries (
 				session_key, tenant_id, title, summary, key_topics,
-				user_intent, last_summarized_at, created_at, updated_at,
+				user_intent, agent_type, expert_type, tags,
+				last_summarized_at, created_at, updated_at,
 				first_request_at, last_request_at
-			) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW(), $8, $9)
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), NOW(), $11, $12)
 			ON CONFLICT (tenant_id, session_key) DO NOTHING
 			RETURNING summary_version
 		`
 		var newVersion int
 		err := s.pool.QueryRow(ctx, insertSQL,
 			sum.SessionKey, sum.TenantID, title, summaryText, sum.KeyTopics,
-			userIntent, sum.LastSummarized, firstReq, lastReq,
+			userIntent, agentType, expertType, tags, sum.LastSummarized,
+			firstReq, lastReq,
 		).Scan(&newVersion)
 		if err == nil {
 			// 成功 INSERT；返回 newVersion，Updated = false。
@@ -272,6 +289,9 @@ func (s *Store) UpsertCAS(ctx context.Context, sum Summary, expectedVersion int)
 			summary = $4,
 			key_topics = $5,
 			user_intent = $6,
+			agent_type = $10,
+			expert_type = $11,
+			tags = $12,
 			last_summarized_at = $7,
 			last_request_at = GREATEST(session_summaries.last_request_at, $9),
 			summary_version = session_summaries.summary_version + 1,
@@ -283,6 +303,7 @@ func (s *Store) UpsertCAS(ctx context.Context, sum Summary, expectedVersion int)
 	err := s.pool.QueryRow(ctx, updateSQL,
 		sum.TenantID, sum.SessionKey, title, summaryText, sum.KeyTopics,
 		userIntent, sum.LastSummarized, expectedVersion, lastReq,
+		agentType, expertType, tags,
 	).Scan(&newVersion)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// WHERE 子句 summary_version 不匹配（并发 writer 抢先更新了）
@@ -338,7 +359,27 @@ func sanitizeSummaryTexts(sum Summary) (title, summaryText, userIntent string, d
 // strings.ToValidUTF8 is the standard library function for this; it is
 // available since Go 1.13.
 func sanitiseUTF8(s string) string {
-	return strings.ToValidUTF8(s, "\ufffd")
+	return strings.ToValidUTF8(s, "�")
+}
+
+// normalizeIdentity returns UTF-8-clean AgentType / ExpertType and a non-nil,
+// deduped, capped Tags slice ready for TEXT[] persistence. Non-nil empty
+// slice matters: tags 列是 NOT NULL DEFAULT '{}'（migration 606），传 nil
+// 会被 pgx 编码成 NULL 违反约束。
+//
+// 2026-08-26: 与 migration 606 配套。裁剪规则（lower + trim + dedupe + cap）
+// 由调用方（summarizer）完成，这里只做 Unicode 清洗和 nil 兜底，保持写入
+// 路径行为与 sanitizeSummaryTexts 一致。
+func normalizeIdentity(sum Summary) (agentType, expertType string, tags []string) {
+	agentType = sanitiseUTF8(strings.TrimSpace(sum.AgentType))
+	expertType = sanitiseUTF8(strings.TrimSpace(sum.ExpertType))
+	tags = make([]string, 0, len(sum.Tags))
+	for _, t := range sum.Tags {
+		if v := sanitiseUTF8(strings.TrimSpace(t)); v != "" {
+			tags = append(tags, v)
+		}
+	}
+	return
 }
 
 // LastSummarized returns the last_summarized_at timestamp for the session

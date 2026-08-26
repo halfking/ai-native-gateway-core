@@ -3,22 +3,21 @@
  * SessionDetailPage — admin session detail (summary + request_logs turn tree).
  *
  * Turn list uses SessionTurnsTimeline (GET …/turns → session_turns_tree.go).
- * Clicking a turn opens RequestLogDrawer (unified detail) in session-turns mode.
+ * Clicking a turn opens the fullscreen request detail in session-turns mode.
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { getSessionSnapshot } from '../../api/sessions_v2'
 import { ApiError } from '../../api/_core'
 import SessionSummaryBar from '../../components/SessionSummaryBar.vue'
 import SessionTurnsTimeline from '../../components/session/SessionTurnsTimeline.vue'
-import RequestLogDrawer from '../../components/RequestLogDrawer.vue'
 
 const route = useRoute()
+const router = useRouter()
 const sessionId = computed(() => String(route.params.id || ''))
 
 const snapshotError = ref('')
 const snapshot = ref<Record<string, unknown> | null>(null)
-const detailRequestId = ref<string | null>(null)
 let snapshotController: AbortController | null = null
 
 async function loadSnapshot() {
@@ -39,13 +38,16 @@ async function loadSnapshot() {
 }
 
 function openTurn(payload: { requestId: string; turnNumber: number }) {
-  detailRequestId.value = payload.requestId
+  void router.push({
+    name: 'request-detail',
+    params: { requestId: payload.requestId },
+    query: { mode: 'session-turns' },
+  })
 }
 
 onMounted(loadSnapshot)
 
 watch(sessionId, () => {
-  detailRequestId.value = null
   loadSnapshot()
 })
 
@@ -76,13 +78,6 @@ onBeforeUnmount(() => {
         @open-request="openTurn"
       />
     </div>
-    <RequestLogDrawer
-      :request-id="detailRequestId"
-      mode="request-logs"
-      initial-view-mode="session-turns"
-      @close="detailRequestId = null"
-      @open-request="detailRequestId = $event"
-    />
   </div>
 </template>
 
