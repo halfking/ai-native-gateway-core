@@ -2,12 +2,11 @@
 import { ref, onMounted, onUnmounted, computed, watch, inject, type Ref, type ComputedRef } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { localeRef } from '../i18n'
-import { RouterLink } from 'vue-router'
+import { RouterLink, useRouter } from 'vue-router'
 import MemoraStatusButton from '../components/MemoraStatusButton.vue'
 import LiveRequestStream from '../components/LiveRequestStream.vue'
-import RequestLogDrawer from '../components/RequestLogDrawer.vue'
 import TenantDashboardView from './TenantDashboardView.vue'
-import { useSessionSummaryJump } from '../composables/useSessionSummaryJump'
+import { openRequestDetailPage } from '../utils/openRequestDetailPage'
 import {
   getUsageSummary,
   getUsageByModel,
@@ -195,23 +194,11 @@ const liveRequests = dashboardData?.liveRequests || computed(() => [] as LiveReq
 const onRequestEvicted = dashboardData?.onRequestEvicted || ((_callback: (id: string) => void) => {})
 const resetLiveStream = dashboardData?.resetLiveStream || (() => {})
 const discoveryStatus = dashboardData?.discoveryStatus || ref(null)
+const router = useRouter()
 
-const activeRequestId = ref<string | null>(null)
 function openRequestDetail(id: string) {
-  // 2026-07-17: 实时请求流点击打开原始请求详情抽屉。
-  // 抽屉内的「流程详情」按钮负责打开内嵌面板 RequestTracePanel，避免依赖已删除的独立 trace 路由。
-  activeRequestId.value = id
+  openRequestDetailPage(id, undefined, router)
 }
-function closeRequestDrawer() {
-  activeRequestId.value = null
-}
-
-// 2026-08-06: 详情抽屉的「会话总结」按钮 → 跳到请求日志页并预填会话筛选。
-// 2026-08-06 (later): 重构为 useSessionSummaryJump composable，与其它父视图共享一处
-// 实现；onBeforeJump 钩子用于关闭抽屉。
-const { jumpToSessionSummary: openSessionSummary } = useSessionSummaryJump({
-  onBeforeJump: () => closeRequestDrawer(),
-})
 
 const seenLiveRequestIds = new Set<string>()
 
@@ -528,13 +515,6 @@ scheduleStatsRecalibrate()
       🚀 暂无请求数据。配置好提供商后，通过 <code>/v1/chat/completions</code> 发起调用吧。
     </div>
   </div>
-
-  <!-- 2026-07-03: tile 点击 → 详情抽屉。复用现有 RequestLogDrawer。 -->
-  <RequestLogDrawer
-    :request-id="activeRequestId"
-    @close="closeRequestDrawer"
-    @generateSessionSummary="openSessionSummary"
-  />
 </template>
 
 <style scoped>

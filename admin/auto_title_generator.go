@@ -533,13 +533,15 @@ func extractLastUserMessageRuneCount(requestBody string) int {
 
 // extractMessagesForTitle parses a chat completion request body (JSON) and
 // extracts the conversation messages into a clean "role: content" text suitable
-// for title generation. It focuses on user/assistant messages and truncates
-// each message to avoid feeding megabytes of system prompt to the title LLM.
+// for title generation. It uses only user/assistant messages — system prompts
+// (IDE tool catalogs, agent boilerplate) must never form the title corpus.
 //
 // v5 (2026-08-06): bumped limits (10 msgs / 1200 chars / 6000 total) and
 // preserves the LAST user message in full — that is the actual question the
 // user asked, which the title LLM needs to see uncut. Earlier messages are
 // truncated as before.
+//
+// v6 (2026-08-26): exclude system/developer roles entirely from the corpus.
 //
 // Returns "" if the body cannot be parsed or has no usable messages.
 func extractMessagesForTitle(requestBody string) string {
@@ -556,11 +558,9 @@ func extractMessagesForTitle(requestBody string) string {
 	if err := json.Unmarshal(body, &parsed); err != nil || len(parsed.Messages) == 0 {
 		return ""
 	}
-	const maxPerMsg = 1200  // chars per message (was 500 — bumped 2026-08-06)
-	const maxTotal = 6000   // total chars cap (was 3000)
-	const maxMsgs = 10      // semantic messages, excluding tool/function traffic
-	const maxSysChars = 800 // long system messages (IDE tool descriptions) get truncated at this length
-	const sysSnippet = 300  // how much of a long system message to keep
+	const maxPerMsg = 1200 // chars per message (was 500 — bumped 2026-08-06)
+	const maxTotal = 6000  // total chars cap (was 3000)
+	const maxMsgs = 10     // semantic messages, excluding tool/function/system
 
 	// 2026-08-06: pre-scan to find the LAST user message; preserve it in full
 	// even if doing so pushes the corpus past maxTotal. This is the actual
@@ -580,14 +580,12 @@ func extractMessagesForTitle(requestBody string) string {
 	var parts []string
 	semanticMessages := 0
 	for _, msg := range parsed.Messages {
-		role := strings.TrimSpace(msg.Role)
-		// Tool/function records contain implementation output, not the user's
-		// intent. Exclude them before counting the corpus budget so tool-heavy
-		// turns cannot crowd out later conversation messages.
-		if role == "tool" || role == "function" {
+		role := strings.ToLower(strings.TrimSpace(msg.Role))
+		// System/developer prompts and tool traffic are not user intent.
+		if role == "system" || role == "developer" || role == "tool" || role == "function" {
 			continue
 		}
-		if role != "user" && role != "assistant" && role != "system" {
+		if role != "user" && role != "assistant" {
 			continue
 		}
 		if semanticMessages >= maxMsgs {
@@ -597,19 +595,12 @@ func extractMessagesForTitle(requestBody string) string {
 		if text == "" {
 			continue
 		}
-		// Long system prompts (IDE tool descriptions) are usually boilerplate;
-		// truncate aggressively so the user question is not crowded out.
-		if role == "system" && len(text) > maxSysChars {
-			text = text[:sysSnippet] + "… <ide-tool-context truncated>"
-		}
 		if len(text) > maxPerMsg {
 			text = text[:maxPerMsg] + "…"
 		}
 		parts = append(parts, role+": "+text)
 		semanticMessages++
 	}
-	// Truncate the prefix loop's joined output to maxTotal so a long IDE
-	// system prompt doesn't crowd out the preserved user message below.
 	result := strings.Join(parts, "\n")
 	if len(result) > maxTotal {
 		result = result[:maxTotal] + "…"

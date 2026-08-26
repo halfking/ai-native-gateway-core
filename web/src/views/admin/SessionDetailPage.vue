@@ -11,6 +11,7 @@ import { getSessionSnapshot } from '../../api/sessions_v2'
 import { ApiError } from '../../api/_core'
 import SessionSummaryBar from '../../components/SessionSummaryBar.vue'
 import SessionTurnsTimeline from '../../components/session/SessionTurnsTimeline.vue'
+import { openRequestDetailPage } from '../../utils/openRequestDetailPage'
 
 const route = useRoute()
 const router = useRouter()
@@ -38,11 +39,7 @@ async function loadSnapshot() {
 }
 
 function openTurn(payload: { requestId: string; turnNumber: number }) {
-  void router.push({
-    name: 'request-detail',
-    params: { requestId: payload.requestId },
-    query: { mode: 'session-turns' },
-  })
+  openRequestDetailPage(payload.requestId, { mode: 'session-turns' }, router)
 }
 
 onMounted(loadSnapshot)
