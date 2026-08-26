@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { getHealth, getBackgroundTasksStatus, type HealthResponse, type BackgroundTasksStatus } from '../api/system'
+import { isAuthenticated } from '../store'
 
 const health = ref<HealthResponse | null>(null)
 const bgTasks = ref<BackgroundTasksStatus | null>(null)
@@ -121,20 +122,32 @@ async function loadStatus() {
     // is set (authBearer() returns it). If the user is not logged in
     // (no JWT, no cookie), the call returns 401 and we fall back to the
     // public basic healthz for status/version display.
-    try {
-      health.value = await getHealth(true)
-    } catch (e) {
-      // 401 or network error → fall back to public basic /healthz
-      console.warn('full healthz unavailable, falling back to basic', e)
+    //
+    // 2026-08-24: when the SPA knows the visitor is unauthenticated, skip
+    // the authenticated calls entirely instead of firing guaranteed 401s
+    // every 30s — this indicator mounts on every page (incl. public
+    // /?login=1) and was a top source of the 96k/day /api 401 storm.
+    const authed = isAuthenticated()
+    if (authed) {
+      try {
+        health.value = await getHealth(true)
+      } catch (e) {
+        // 401 or network error → fall back to public basic /healthz
+        console.warn('full healthz unavailable, falling back to basic', e)
+        health.value = await getHealth()
+      }
+    } else {
       health.value = await getHealth()
     }
 
-    // Load background tasks
-    try {
-      bgTasks.value = await getBackgroundTasksStatus()
-    } catch (e) {
-      // Background tasks might not be available, ignore
-      console.warn('Background tasks not available:', e)
+    // Load background tasks (admin-only endpoint — authed visitors only)
+    if (authed) {
+      try {
+        bgTasks.value = await getBackgroundTasksStatus()
+      } catch (e) {
+        // Background tasks might not be available, ignore
+        console.warn('Background tasks not available:', e)
+      }
     }
 
     lastChecked.value = new Date()

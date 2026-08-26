@@ -108,10 +108,15 @@ export interface HandoffResponse {
   completed_tasks: number
 }
 
-/** Get session compare data. */
-export async function getSessionCompare(sessionId: string, tenantId?: string): Promise<SessionCompareData> {
+/** Get session compare data. Optional requestId filters to one turn. */
+export async function getSessionCompare(
+  sessionId: string,
+  tenantId?: string,
+  opts?: { requestId?: string },
+): Promise<SessionCompareData> {
   let path = `/api/admin/session-compare?session_id=${encodeURIComponent(sessionId)}`
   if (tenantId) path += `&tenant_id=${encodeURIComponent(tenantId)}`
+  if (opts?.requestId) path += `&request_id=${encodeURIComponent(opts.requestId)}`
   return req<SessionCompareData>('GET', path)
 }
 

@@ -475,7 +475,7 @@ async function copyRawJson() {
 /*
  * 2026-07-17: 暗色内嵌面板 (替代此前的 modal)。
  * 关键约束:
- *   - 所有背景使用 var(--bg) / var(--card) / var(--bg-subtle), 严禁 #fff / rgba 红黄绿大块;
+ *   - 所有背景使用 var(--bg) / var(--card) / var(--bg-subtle), 严禁 var(--on-primary) / rgba 红黄绿大块;
  *   - 状态色仅用于小尺寸元素: 序号圆点 / 文字 / 左侧细条;
  *   - 与所在 drawer / 详情面板 视觉一体, 不出现独立"亮色卡片"。
  */

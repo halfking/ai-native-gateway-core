@@ -21,8 +21,12 @@ function getCssVar(name: string, fallback = ''): string {
 }
 
 /**
- * Chart.js 默认颜色：与全局暗色主题（style.css :root）对齐。
- * 这些常量被各图表配置生成器引用，避免在暗色背景上出现白色边框/网格/文字。
+ * Chart.js 默认颜色：与全局暗色主题对齐。
+ *
+ * ⚠️ CANVAS 铁律：Chart.js 走 canvas fillStyle，**不能**解析 CSS `var()` /
+ * `color-mix()`。必须用字面量 hex/rgba。color-token-fix.mjs 已 SKIP 本文件，
+ * 禁止再把这里改回 token（否则 board 饼图会再变黑糊糊）。
+ * 多处调用方还会做 `chartColors.blue + '80'` 拼 alpha，也要求纯 6 位 hex。
  */
 export const chartTheme = {
   text: '#e6edf3',
@@ -384,7 +388,7 @@ export function createHistogramConfig(
 }
 
 /**
- * 常用颜色方案
+ * 常用颜色方案（字面量 hex — canvas 不能解析 var()；调用方会拼 +'80' alpha）
  */
 export const chartColors = {
   primary: '#409EFF',
