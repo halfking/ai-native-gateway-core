@@ -36,6 +36,7 @@
 | 07 | [`07-audit-report-2026-08-24.md`](07-audit-report-2026-08-24.md) | 审计报告 | 2026-08-24 对照审计：credentialfpslot 修复记录、文档事实修正清单、测试证据、未解决项移交。 |
 | 08 | [`08-dispatch-executor-loop.md`](08-dispatch-executor-loop.md) | 调度执行器闭环 | 2026-08-27 需求对照（待处理队列/执行器/定时请求/回队打标/think 通知/分维队列），G-Ⅰ~G-Ⅵ 缺口分析与 V6-W1.5 任务定稿。 |
 | 09 | [`09-ir-class-journal-decoupling.md`](09-ir-class-journal-decoupling.md) | IR 类型 + 轨迹队列 + 解耦 | V6-W1.6：IR 即时/定时类型、AttemptJournal 执行轨迹（复用分维队列存储）、planner 决策层抽取、100 次限额口径；含方案-代码匹配度核查与异常矩阵。 |
+| 10 | [`10-dual-backend-queue.md`](10-dual-backend-queue.md) | 双后端队列（内存\|Redis） | V6-W1.7：队列原语双实现（有 Redis 用 Redis/无则回退内存），多服务器分布式准入/容量/定时可见；连接亲和约束与降级语义定稿。 |
 
 ---
 

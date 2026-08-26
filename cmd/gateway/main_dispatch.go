@@ -249,3 +249,33 @@ func handleDispatchDimensions(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = json.NewEncoder(w).Encode(snap)
 }
+
+// handleDispatchJournalByRequest serves
+// GET /api/admin/dispatch/journal/{request_id} (V6-W1.6 R10): the request's
+// dimension entries plus its freshest AttemptJournal snapshot. Available
+// while the dimension index still holds the request (TTL window); past the
+// window the durable projection is requestjourney.
+func handleDispatchJournalByRequest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	const prefix = "/api/admin/dispatch/journal/"
+	requestID := strings.Trim(strings.TrimPrefix(r.URL.Path, prefix), "/")
+	if requestID == "" || strings.Contains(requestID, "/") {
+		http.Error(w, "request_id required", http.StatusBadRequest)
+		return
+	}
+	pipeline := gatewayDispatchPipeline
+	if pipeline == nil || pipeline.DimensionIndex() == nil {
+		http.Error(w, "dispatch pipeline not wired", http.StatusServiceUnavailable)
+		return
+	}
+	view, ok := pipeline.DimensionIndex().JournalByRequest(requestID)
+	if !ok {
+		http.Error(w, "request journal not found (TTL window expired or unknown request; see requestjourney persistent projection)", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(view)
+}

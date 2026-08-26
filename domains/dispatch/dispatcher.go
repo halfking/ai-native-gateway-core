@@ -204,16 +204,18 @@ func (p *Pipeline) tryModelChangeOutcome(qr *QueuedRequest, outcome ForwardOutco
 	})
 	// v6 G-Ⅴ (回队打标) + G-Ⅲ (换模型 think 通知)：请求带着上一轮的失败
 	// 标志换道重进 Tier-1，客户端在同一连接上看到模型切换进度。
+	// W1.6 R9: journal 继承上一条的 ErrorKind/HTTPStatus/Vendor ——
+	// entry 构造先于 recordDecision（后者会重写 LastFailover 投影）。
 	now := time.Now()
-	qr.LastFailover = FailoverMarker{
-		ErrorKind:  qr.LastFailover.ErrorKind,
-		HTTPStatus: qr.LastFailover.HTTPStatus,
+	qr.recordDecision(JournalEntry{
 		Model:      fromModel,
 		Vendor:     qr.LastFailover.Vendor,
-		NextAction: NextActionSwitchModel,
+		Action:     NextActionSwitchModel,
+		ErrorKind:  qr.LastFailover.ErrorKind,
+		HTTPStatus: qr.LastFailover.HTTPStatus,
 		Attempt:    qr.AttemptCount,
-		StampedAt:  now,
-	}
+		At:         now,
+	})
 	qr.notifyDispatch(DispatchNotice{
 		Kind:      NoticeKindModelSwitch,
 		Message:   fmt.Sprintf("模型 %s 无可用节点，切换到 %s 继续执行…", fromModel, chosen),
@@ -330,12 +332,12 @@ func (p *Pipeline) scheduleCapacityRetry(qr *QueuedRequest) {
 			// v6 G-Ⅲ/G-Ⅴ: 供应商并发/限流到达时的等待通知（think 通道，
 			// 不影响会话）+ 回队打标。凭据不标记 tried（队列满是暂态）。
 			now := time.Now()
-			qr.LastFailover = FailoverMarker{
-				Model:      qr.ResolvedModel,
-				NextAction: NextActionCapacityWait,
-				Attempt:    qr.AttemptCount,
-				StampedAt:  now,
-			}
+			qr.recordDecision(JournalEntry{
+				Model:   qr.ResolvedModel,
+				Action:  NextActionCapacityWait,
+				Attempt: qr.AttemptCount,
+				At:      now,
+			})
 			p.dimensionIndex.UpdateWait(qr, retryAt, NextActionCapacityWait, now)
 			qr.notifyDispatch(DispatchNotice{
 				Kind:     NoticeKindQueued,

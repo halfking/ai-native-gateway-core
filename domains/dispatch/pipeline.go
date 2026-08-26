@@ -1165,12 +1165,15 @@ func (p *Pipeline) parkScheduledRequest(qr *QueuedRequest) bool {
 	})
 	p.registry.MarkRetryScheduled(qr.ID, dueAt)
 	p.queueMirror.MirrorRetryAt(qr.ID, dueAt)
-	qr.LastFailover = FailoverMarker{
-		Model:      qr.ResolvedModel,
-		NextAction: NextActionScheduledWait,
-		Attempt:    qr.AttemptCount,
-		StampedAt:  now,
-	}
+	// v6 G-Ⅱ: dedicated scheduled key so the Redis-side pending set
+	// distinguishes 定时停靠 from failure backoff (observation-only).
+	p.queueMirror.MirrorScheduledAt(qr.ID, dueAt)
+	qr.recordDecision(JournalEntry{
+		Model:   qr.ResolvedModel,
+		Action:  NextActionScheduledWait,
+		Attempt: qr.AttemptCount,
+		At:      now,
+	})
 	p.dimensionIndex.UpdateWait(qr, dueAt, NextActionScheduledWait, now)
 	metricScheduledParked.Inc()
 	qr.notifyDispatch(DispatchNotice{
@@ -1201,6 +1204,7 @@ func (p *Pipeline) onScheduledDue(qr *QueuedRequest, dueAt time.Time) {
 	now := time.Now()
 	p.registry.MarkInFlight(qr.ID, now)
 	p.queueMirror.ClearRetryAt(qr.ID)
+	p.queueMirror.ClearScheduledAt(qr.ID)
 	metricScheduledDue.Inc()
 	qr.notifyDispatch(DispatchNotice{
 		Kind:    NoticeKindScheduled,
@@ -1340,11 +1344,29 @@ func (p *Pipeline) complete(qr *QueuedRequest, out ForwardOutcome) {
 	if !qr.completed.CompareAndSwap(false, true) {
 		return
 	}
+	// V6-W1.6 R9: the terminal journal entry rides inside the completion CAS
+	// so it is written exactly once and no entry can follow it (invariant 3).
+	// Written before Complete() so the dimension snapshots see the full trace.
+	terminalKind := out.ErrorKind
+	if terminalKind == "" && out.Err != nil {
+		terminalKind = classifyError(out.Err)
+	}
+	qr.recordDecision(JournalEntry{
+		Model:        qr.ResolvedModel,
+		CredentialID: qr.SelectedCred.CredentialID,
+		ProviderID:   qr.SelectedCred.ProviderID,
+		Vendor:       qr.SelectedCred.Vendor,
+		Action:       terminalActionOf(out),
+		ErrorKind:    terminalKind,
+		HTTPStatus:   out.HTTPStatus,
+		Attempt:      qr.AttemptCount,
+	})
 	// V4 R1.1: registry terminal transition (completed; kept until the
 	// R1.8 watermark evicts it). Bookkeeping bypass — never gates delivery.
 	now := time.Now()
 	p.registry.MarkCompleted(qr.ID, now)
 	p.queueMirror.ClearRetryAt(qr.ID)
+	p.queueMirror.ClearScheduledAt(qr.ID)
 	// v6 G-Ⅳ: terminal transition mutates the membership entries in place;
 	// entries stay in their dimension rings until TTL/capacity evicts them.
 	p.dimensionIndex.Complete(qr, out, now)
