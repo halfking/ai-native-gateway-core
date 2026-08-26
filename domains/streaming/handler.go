@@ -1056,6 +1056,14 @@ func clientProtocolFromPath(path string) string {
 	}
 }
 
+func protocolConversionFlag(clientProtocol, upstreamProtocol string) *bool {
+	if clientProtocol == "" || upstreamProtocol == "" {
+		return nil
+	}
+	converted := clientProtocol != upstreamProtocol
+	return &converted
+}
+
 // emitAction 是 liveactions 注入的薄包装（同 emitTrace 的做法）。
 // Detail 只允许放 id/模型名/错误 kind 等元数据 —— 正文、API key、系统
 // prompt 严禁进入（23 号 §2 安全红线）。
@@ -3586,7 +3594,7 @@ func (h *ChatHandler) serveWithExecutor(
 		clientID.Fingerprint.ClientProfile, identityHash,
 		logCtx.ProviderID, logCtx.CredentialID, canonicalID,
 		canonicalNameFromResolution(modelResolution), // 2026-07-27: 标准模型名
-		bodyBytes, txResult, egressProtocol, isStream,
+		bodyBytes, clientProtocolFromPath(r.URL.Path), txResult, egressProtocol, isStream,
 		gwSessionID, gwTaskID,
 		logCtx,
 	)
@@ -6510,7 +6518,7 @@ func (h *ChatHandler) recordInitialRequestLog(
 	clientProfile, identityHash string,
 	providerID, credentialID, canonicalID *int,
 	canonicalName string, // 2026-07-27: 标准模型名 (migration 458)
-	requestBody []byte,
+	requestBody []byte, clientProtocol string,
 	txResult *transformation.TransformResult,
 	egressProtocol string,
 	isStream bool,
@@ -6594,13 +6602,16 @@ func (h *ChatHandler) recordInitialRequestLog(
 		// initial in_progress row carries the same classification as the eventual
 		// success UPDATE. The success path's emitTelemetry will overwrite this
 		// via tokenBandFromLogCtx.
-		TokenBand:         strPtrFromLogCtx(autoCtx),
-		RequestBody:       requestBodyText,
-		RequestPreview:    requestPreviewPtr,
-		TransformSummary:  transformSummaryPtr,
-		TransformRuleID:   transformRuleID,
-		EgressProtocol:    strPtr(egressProtocol),
-		StreamInterrupted: &streamInterrupted,
+		TokenBand:          strPtrFromLogCtx(autoCtx),
+		RequestBody:        requestBodyText,
+		RequestPreview:     requestPreviewPtr,
+		TransformSummary:   transformSummaryPtr,
+		TransformRuleID:    transformRuleID,
+		EgressProtocol:     strPtr(egressProtocol),
+		ClientProtocol:     strPtr(clientProtocol),
+		UpstreamProtocol:   strPtr(egressProtocol),
+		ProtocolConversion: protocolConversionFlag(clientProtocol, egressProtocol),
+		StreamInterrupted:  &streamInterrupted,
 		// 2026-06-26: preserve client-supplied X-Request-Id for debug
 		// (request_id itself is server-generated; see middleware/requestid_mw.go).
 		ClientRequestID: clientRequestIDPtr,

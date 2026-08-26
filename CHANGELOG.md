@@ -11,6 +11,7 @@
 - Remove the temporary `POST /api/admin/live-stream/trigger-snapshot` debug endpoint. Added 2026-07-26 for snapshot_refresh guard validation; superseded by the periodic `PushFullSnapshots` tick (default 30m) plus the terminal-status overlay. The `HandleTriggerSnapshot` method and its route registration are deleted; no production traffic depends on the endpoint (the only frontend caller `_requestSnapshotRefresh` was never invoked).
 
 ### Fixed
+- **Request protocol metadata parity (2026-08-27)**: persist client protocol, upstream protocol, and protocol-conversion status together so cross-protocol requests such as OpenAI Chat to Anthropic are auditable without inferring from `transform_summary`. Added field-alignment and conversion-flag regression coverage.
 - **Fail-loud OpenAI Chat to Anthropic conversion validation (2026-08-27)**: preserve system text block arrays and reject unsupported content blocks, malformed image blocks, missing tool-call functions, and non-object or invalid tool arguments instead of silently dropping or replacing request data. Added regression coverage for these conversion boundaries after the `claude-sonnet-5` request audit.
 - Add credential grouping to the admin live-stream controls, snapshots, incident indexes, persisted preferences, and all dashboard locales.
 - Scope admin popular-model aggregates and cached picker responses by tenant. Successful telemetry now writes tenant-specific Redis ZSETs; usage SQL filters `request_logs_hot.tenant_id`; tenant-admin reads do not consume global live lanes.
