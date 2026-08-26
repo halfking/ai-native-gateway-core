@@ -380,15 +380,36 @@ func (w *NodeProbeWorker) Start(ctx context.Context) {
 	)
 }
 
-// resolveProbeAPIKey preserves the caller-provided data-plane key. Local
-// gateway probes traverse AuthMiddleware, which validates only the static
-// gateway key; substituting a database system key causes an unrelated 401.
+// resolveProbeAPIKey tries to find a system API key owned by the default
+// tenant's admin user.  When found it replaces w.apiKey so the gateway
+// probe round uses a real admin-owned key.  If nothing is found the
+// caller-provided value (env var) is kept as-is.
 func (w *NodeProbeWorker) resolveProbeAPIKey(ctx context.Context) {
-	if w == nil {
+	// The default tenant's admin login is "{tenant_code}user" — "defaultuser"
+	// for the "default" tenant (see admin/password.go:DefaultTenantAdminUsername).
+	adminUser := "defaultuser"
+
+	qr := w.db.QueryRow(ctx, `
+		SELECT key_ciphertext FROM api_keys
+		WHERE COALESCE(is_system, FALSE) = TRUE AND status = 'active'
+		  AND tenant_id = 'default' AND owner_user = $1
+		ORDER BY created_at DESC LIMIT 1`, adminUser)
+
+	var ciphertext string
+	if err := qr.Scan(&ciphertext); err != nil {
+		slog.Debug("node_probe_worker: no existing admin system key, keeping env key",
+			"admin_user", adminUser, "error", err)
 		return
 	}
-	slog.DebugContext(ctx, "node_probe_worker: using configured gateway API key",
-		"api_key_resolved", w.apiKey != "")
+	pt, _, err := secret.DecryptAny(ciphertext, w.keyring, w.encKey)
+	if err != nil {
+		slog.Warn("node_probe_worker: admin system key exists but cannot decrypt, keeping env key",
+			"admin_user", adminUser, "error", err)
+		return
+	}
+	w.apiKey = string(pt)
+	slog.Info("node_probe_worker: resolved probe API key from DB",
+		"admin_user", adminUser)
 }
 
 func (w *NodeProbeWorker) Stop() {

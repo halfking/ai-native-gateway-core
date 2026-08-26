@@ -920,6 +920,16 @@ func classifyProbeFailure(errMsg string) probeResult {
 		pr.AvailabilityState = "ready"
 		pr.HealthError = errMsg
 		pr.StateReasonCode = probeutil.EndpointIDRequiredErrCode
+		pr.BindingOnly = true
+	case isModelBindingProbeError(errMsg):
+		// An explicit model response is binding-scoped. Do not convert this
+		// into credential-level unavailable state: the same credential can
+		// still serve its other bound models.
+		pr.HealthStatus = "warning"
+		pr.AvailabilityState = "ready"
+		pr.HealthError = errMsg
+		pr.StateReasonCode = "model_binding_error"
+		pr.BindingOnly = true
 	default:
 		pr.HealthStatus = "unreachable"
 		pr.AvailabilityState = "unreachable"
@@ -929,6 +939,19 @@ func classifyProbeFailure(errMsg string) probeResult {
 		pr.StateReasonCode = "network_error"
 	}
 	return pr
+}
+
+// isModelBindingProbeError accepts only chat-probe responses. A similarly
+// worded failure from the provider's /models endpoint is provider/API evidence
+// and must remain credential-scoped.
+func isModelBindingProbeError(errMsg string) bool {
+	message := strings.ToLower(errMsg)
+	if !strings.HasPrefix(message, "chat status ") && !strings.HasPrefix(message, "messages status ") {
+		return false
+	}
+	return strings.Contains(message, "model not found") ||
+		strings.Contains(message, "model has been deprecated") ||
+		strings.Contains(message, "model is deprecated")
 }
 
 // writeHealth persists probe results with manual-disable guard.
@@ -966,14 +989,57 @@ func (c *CredentialProbeV2) writeHealth(ctx context.Context, credID int, pr prob
 		    -- 同步清除残留的 quota_recover_at，避免状态不一致
 		    -- (quota_state='ok' 但 quota_recover_at 指向未来时间)。
 		    -- 失败分支不传 $8，COALESCE 保持旧值，这里的 CASE 也不会触发。
-		    quota_recover_at = CASE 
-		        WHEN COALESCE($8, quota_state) = 'ok' THEN NULL 
-		        ELSE quota_recover_at 
+		    quota_recover_at = CASE
+		        WHEN COALESCE($8, quota_state) = 'ok' THEN NULL
+		        ELSE quota_recover_at
+		    END,
+		    lifecycle_status = CASE
+		        WHEN COALESCE($8, '') = 'ok'
+		          AND lifecycle_status = 'disabled'
+		          AND auto_disabled_at IS NOT NULL
+		        THEN 'active'
+		        ELSE lifecycle_status
+		    END,
+		    auto_enabled_at = CASE
+		        WHEN COALESCE($8, '') = 'ok'
+		          AND lifecycle_status = 'disabled'
+		          AND auto_disabled_at IS NOT NULL
+		        THEN NOW()
+		        ELSE auto_enabled_at
+		    END,
+		    auto_enabled_reason = CASE
+		        WHEN COALESCE($8, '') = 'ok'
+		          AND lifecycle_status = 'disabled'
+		          AND auto_disabled_at IS NOT NULL
+		        THEN 'periodic_quota_probe_recovered'
+		        ELSE auto_enabled_reason
+		    END,
+		    auto_disabled_at = CASE
+		        WHEN COALESCE($8, '') = 'ok'
+		          AND lifecycle_status = 'disabled'
+		          AND auto_disabled_at IS NOT NULL
+		        THEN NULL
+		        ELSE auto_disabled_at
+		    END,
+		    auto_disabled_reason = CASE
+		        WHEN COALESCE($8, '') = 'ok'
+		          AND lifecycle_status = 'disabled'
+		          AND auto_disabled_at IS NOT NULL
+		        THEN NULL
+		        ELSE auto_disabled_reason
 		    END,
 		    state_reason_code = $9,
 		    state_updated_at = NOW()
 		WHERE id = $10
-		  AND lifecycle_status = 'active'
+		  AND (
+		      lifecycle_status = 'active'
+		      OR (
+		          lifecycle_status = 'disabled'
+		          AND auto_disabled_at IS NOT NULL
+		          AND COALESCE(quota_state, 'ok') = 'periodic_exhausted'
+		          AND (quota_recover_at IS NULL OR quota_recover_at <= now())
+		      )
+		  )
 		  AND COALESCE(manual_disabled, FALSE) = FALSE
 		  -- 2026-08-07 P0 死锁修复：硬配额守卫必须让"探活实测成功"通过。
 		  --
@@ -1047,54 +1113,51 @@ func (c *CredentialProbeV2) writeHealth(ctx context.Context, credID int, pr prob
 		writeModels = []string{pr.HealthProbeModel}
 	}
 	if c.cache != nil && c.cache.Enabled() && pr.HealthProbeModel != "" {
-		available := pr.AvailabilityState == "ready"
+		available := pr.AvailabilityState == "ready" && !pr.BindingOnly
 		state := pr.HealthStatus
 		if state == "healthy" {
 			state = "healthy_confirmed"
 		}
-		if !available && pr.AvailabilityState != "" {
+		if !available && !pr.BindingOnly && pr.AvailabilityState != "" {
 			state = pr.AvailabilityState
 		}
-		if err := c.cache.Set(execCtx, credID, pr.HealthProbeModel, modelAvailabilityFields(
-			credID,
-			pr.HealthProbeModel,
-			state,
-			available,
-			pr.HealthStatus,
-			0,
-			0,
-			recoverAt,
-			pr.HealthSource,
-		)); err != nil {
-			slog.Warn("credential probe v2: cache write failed",
-				"credential_id", credID,
-				"probe_model", pr.HealthProbeModel,
-				"error", err)
+		if pr.BindingOnly {
+			state = "model_binding"
+		}
+		for _, model := range writeModels {
+			if err := c.cache.Set(execCtx, credID, model, modelAvailabilityFields(
+				credID, model, state, available, pr.HealthStatus, 0, 0,
+				recoverAt, pr.HealthSource,
+			)); err != nil {
+				slog.Warn("credential probe v2: cache write failed",
+					"credential_id", credID, "probe_model", model, "error", err)
+			}
 		}
 	}
 
 	// 新增：同步到状态管理器
 	if c.stateManager != nil && pr.HealthProbeModel != "" {
 		now := time.Now()
-		state := &credentialstate.State{
-			CredentialID:  credID,
-			Model:         pr.HealthProbeModel,
-			Available:     pr.AvailabilityState == "ready",
-			HealthStatus:  pr.HealthStatus,
-			AvgLatencyMs:  pr.HealthLatencyMs,
-			LastUpdatedAt: now,
-			LastSuccessAt: func() *time.Time {
-				if pr.AvailabilityState != "ready" {
-					return nil
-				}
-				return &now
-			}(),
-			LastError: pr.HealthError,
-
-			RecoverAt: recoverAt,
-			Source:    "probe_v2",
+		for _, model := range writeModels {
+			state := &credentialstate.State{
+				CredentialID:  credID,
+				Model:         model,
+				Available:     pr.AvailabilityState == "ready" && !pr.BindingOnly,
+				HealthStatus:  pr.HealthStatus,
+				AvgLatencyMs:  pr.HealthLatencyMs,
+				LastUpdatedAt: now,
+				LastSuccessAt: func() *time.Time {
+					if pr.AvailabilityState != "ready" {
+						return nil
+					}
+					return &now
+				}(),
+				LastError: pr.HealthError,
+				RecoverAt: recoverAt,
+				Source:    "probe_v2",
+			}
+			c.stateManager.UpdateFromProbe(execCtx, state)
 		}
-		c.stateManager.UpdateFromProbe(execCtx, state)
 	}
 }
 

@@ -60,10 +60,14 @@ func TestCredentialProbeV2_BalanceQuotaProbeInterval(t *testing.T) {
 	}
 }
 
-// TestCredentialProbeV2_FastReprobeDelay pins the 5-minute fast reprobe
+// TestCredentialProbeV2_FastReprobeDelay pins the 30-second fast reprobe
 // budget. After a failed probe, the worker enqueues a delayed re-probe via
-// fastReprobeDelay (default 5 minutes, see credential_probe_v2.go:71).
-// The user's 5-minute cadence expectation maps to this knob too.
+// fastReprobeDelay. Commit e13799f8b (2026-08-26, P1-2 落点 C) explicitly
+// upgraded the default from 5 minutes to 30 seconds: the user's 5-minute
+// cadence still governs the scheduled cycleAll path, while the reactive
+// fastReprobe path must wake up sooner so the system detects upstream
+// recovery within one user-visible request. Operators can override via
+// LLM_GATEWAY_CRED_PROBE_V2_FAST_REPROBE_DELAY.
 func TestCredentialProbeV2_FastReprobeDelay(t *testing.T) {
 	src, err := os.ReadFile("credential_probe_v2.go")
 	if err != nil {
@@ -71,9 +75,9 @@ func TestCredentialProbeV2_FastReprobeDelay(t *testing.T) {
 	}
 	body := string(src)
 
-	// Default fastReprobeDelay = 5 minutes.
-	if !strings.Contains(body, "fastDelay := 5 * time.Minute") {
-		t.Fatalf("CredentialProbeV2 fastReprobeDelay default changed: must be 5 minutes (user cadence expectation)")
+	// Default fastReprobeDelay = 30 seconds (P1-2 落点 C, e13799f8b).
+	if !strings.Contains(body, "fastDelay := 30 * time.Second") {
+		t.Fatalf("CredentialProbeV2 fastReprobeDelay default changed: must be 30 seconds (P1-2 reactive cadence, e13799f8b)")
 	}
 
 	// Env override hook for ops.
