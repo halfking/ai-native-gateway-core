@@ -303,11 +303,11 @@ async function handleTabChange(tab: 'providers' | 'ranking') {
   font-size: 28px;
   font-weight: 600;
   margin-bottom: 8px;
-  color: #1a1a1a;
+  color: var(--kx-text);
 }
 
 .subtitle {
-  color: #666;
+  color: var(--muted);
   font-size: 14px;
 }
 
@@ -316,7 +316,7 @@ async function handleTabChange(tab: 'providers' | 'ranking') {
   display: flex;
   gap: 8px;
   margin-bottom: 24px;
-  border-bottom: 1px solid #e5e5e5;
+  border-bottom: 1px solid var(--border);
 }
 
 .tabs button {
@@ -325,14 +325,14 @@ async function handleTabChange(tab: 'providers' | 'ranking') {
   background: none;
   cursor: pointer;
   font-size: 14px;
-  color: #666;
+  color: var(--muted);
   border-bottom: 2px solid transparent;
   transition: all 0.2s;
 }
 
 .tabs button.active {
-  color: #1890ff;
-  border-bottom-color: #1890ff;
+  color: var(--accent);
+  border-bottom-color: var(--accent);
   font-weight: 500;
 }
 
@@ -342,7 +342,7 @@ async function handleTabChange(tab: 'providers' | 'ranking') {
   gap: 16px;
   align-items: flex-end;
   padding: 20px;
-  background: #f9f9f9;
+  background: var(--surface-secondary);
   border-radius: 8px;
   margin-bottom: 24px;
 }
@@ -355,14 +355,14 @@ async function handleTabChange(tab: 'providers' | 'ranking') {
 
 .filter-group label {
   font-size: 12px;
-  color: #666;
+  color: var(--muted);
   font-weight: 500;
 }
 
 .filter-group input,
 .filter-group select {
   padding: 8px 12px;
-  border: 1px solid #ddd;
+  border: 1px solid var(--border);
   border-radius: 4px;
   font-size: 14px;
   min-width: 150px;
@@ -370,7 +370,7 @@ async function handleTabChange(tab: 'providers' | 'ranking') {
 
 .refresh-btn {
   padding: 8px 20px;
-  background: #1890ff;
+  background: var(--accent);
   color: white;
   border: none;
   border-radius: 4px;
@@ -380,7 +380,7 @@ async function handleTabChange(tab: 'providers' | 'ranking') {
 }
 
 .refresh-btn:hover {
-  background: #40a9ff;
+  background: var(--accent);
 }
 
 /* 加载和错误 */
@@ -392,8 +392,8 @@ async function handleTabChange(tab: 'providers' | 'ranking') {
 .spinner {
   width: 40px;
   height: 40px;
-  border: 4px solid #f3f3f3;
-  border-top: 4px solid #1890ff;
+  border: 4px solid var(--surface-secondary);
+  border-top: 4px solid var(--accent);
   border-radius: 50%;
   animation: spin 1s linear infinite;
   margin: 0 auto 16px;
@@ -406,16 +406,16 @@ async function handleTabChange(tab: 'providers' | 'ranking') {
 .error-box {
   text-align: center;
   padding: 40px 20px;
-  background: #fff2f0;
-  border: 1px solid #ffccc7;
+  background: var(--danger-bg);
+  border: 1px solid var(--danger-bd);
   border-radius: 8px;
-  color: #ff4d4f;
+  color: var(--danger);
 }
 
 .error-box button {
   margin-top: 16px;
   padding: 8px 16px;
-  background: #ff4d4f;
+  background: var(--danger);
   color: white;
   border: none;
   border-radius: 4px;
@@ -425,7 +425,7 @@ async function handleTabChange(tab: 'providers' | 'ranking') {
 .empty {
   text-align: center;
   padding: 60px 20px;
-  color: #999;
+  color: var(--muted);
 }
 
 /* 排行榜表格 */
@@ -433,7 +433,7 @@ async function handleTabChange(tab: 'providers' | 'ranking') {
   background: white;
   border-radius: 8px;
   overflow: hidden;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+  box-shadow: 0 2px 8px var(--overlay-light);
 }
 
 .ranking-table table {
@@ -442,18 +442,18 @@ async function handleTabChange(tab: 'providers' | 'ranking') {
 }
 
 .ranking-table th {
-  background: #fafafa;
+  background: var(--surface-secondary);
   padding: 16px;
   text-align: left;
   font-weight: 600;
   font-size: 14px;
-  color: #333;
-  border-bottom: 2px solid #f0f0f0;
+  color: var(--kx-text);
+  border-bottom: 2px solid var(--surface-secondary);
 }
 
 .ranking-table td {
   padding: 16px;
-  border-bottom: 1px solid #f0f0f0;
+  border-bottom: 1px solid var(--surface-secondary);
   font-size: 14px;
 }
 
@@ -474,31 +474,31 @@ async function handleTabChange(tab: 'providers' | 'ranking') {
 
 .rank-1 {
   background: #ffd700;
-  color: #fff;
+  color: var(--on-primary);
 }
 
 .rank-2 {
-  background: #c0c0c0;
-  color: #fff;
+  background: var(--border);
+  color: var(--on-primary);
 }
 
 .rank-3 {
   background: #cd7f32;
-  color: #fff;
+  color: var(--on-primary);
 }
 
 .rank-other {
-  background: #f0f0f0;
-  color: #666;
+  background: var(--surface-secondary);
+  color: var(--muted);
 }
 
 .provider-name {
   font-weight: 500;
-  color: #1a1a1a;
+  color: var(--kx-text);
 }
 
 .model-name {
-  color: #666;
+  color: var(--muted);
   font-family: 'Monaco', 'Menlo', monospace;
   font-size: 13px;
 }
@@ -506,7 +506,7 @@ async function handleTabChange(tab: 'providers' | 'ranking') {
 .score {
   font-size: 18px;
   font-weight: 600;
-  color: #1890ff;
+  color: var(--accent);
 }
 
 .grade {
@@ -526,16 +526,16 @@ async function handleTabChange(tab: 'providers' | 'ranking') {
 
 .grade-label {
   font-size: 12px;
-  color: #666;
+  color: var(--muted);
 }
 
 .sub-score {
-  color: #666;
+  color: var(--muted);
 }
 
 .timestamp {
   font-size: 12px;
-  color: #999;
+  color: var(--muted);
 }
 
 /* 供应商卡片 */
@@ -549,7 +549,7 @@ async function handleTabChange(tab: 'providers' | 'ranking') {
   background: white;
   border-radius: 8px;
   padding: 24px;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+  box-shadow: 0 2px 8px var(--overlay-light);
 }
 
 .card-header {
@@ -558,20 +558,20 @@ async function handleTabChange(tab: 'providers' | 'ranking') {
   align-items: center;
   margin-bottom: 20px;
   padding-bottom: 16px;
-  border-bottom: 2px solid #f0f0f0;
+  border-bottom: 2px solid var(--surface-secondary);
 }
 
 .card-header h3 {
   font-size: 18px;
   font-weight: 600;
-  color: #1a1a1a;
+  color: var(--kx-text);
   margin: 0;
 }
 
 .model-count {
   font-size: 12px;
-  color: #999;
-  background: #f0f0f0;
+  color: var(--muted);
+  background: var(--surface-secondary);
   padding: 4px 12px;
   border-radius: 12px;
 }
@@ -583,10 +583,10 @@ async function handleTabChange(tab: 'providers' | 'ranking') {
 }
 
 .model-item {
-  border: 1px solid #f0f0f0;
+  border: 1px solid var(--surface-secondary);
   border-radius: 6px;
   padding: 16px;
-  background: #fafafa;
+  background: var(--surface-secondary);
 }
 
 .model-header {
@@ -599,7 +599,7 @@ async function handleTabChange(tab: 'providers' | 'ranking') {
 .model-header .model-name {
   font-weight: 500;
   font-size: 14px;
-  color: #1a1a1a;
+  color: var(--kx-text);
 }
 
 .model-quality {
@@ -611,7 +611,7 @@ async function handleTabChange(tab: 'providers' | 'ranking') {
 .quality-score {
   font-size: 20px;
   font-weight: 600;
-  color: #1890ff;
+  color: var(--accent);
 }
 
 .scores-grid {
@@ -624,21 +624,21 @@ async function handleTabChange(tab: 'providers' | 'ranking') {
 .score-item label {
   display: block;
   font-size: 12px;
-  color: #666;
+  color: var(--muted);
   margin-bottom: 6px;
 }
 
 .score-bar {
   position: relative;
   height: 24px;
-  background: #e6e6e6;
+  background: var(--border);
   border-radius: 12px;
   overflow: hidden;
 }
 
 .bar-fill {
   height: 100%;
-  background: linear-gradient(90deg, #1890ff, #40a9ff);
+  background: linear-gradient(90deg, var(--accent), var(--accent));
   transition: width 0.3s;
 }
 
@@ -649,12 +649,12 @@ async function handleTabChange(tab: 'providers' | 'ranking') {
   transform: translateY(-50%);
   font-size: 11px;
   font-weight: 600;
-  color: #333;
+  color: var(--kx-text);
 }
 
 .model-footer {
   padding-top: 12px;
-  border-top: 1px solid #e6e6e6;
+  border-top: 1px solid var(--border);
 }
 
 /* 响应式 */

@@ -32,7 +32,7 @@ type SessionCacheV2 struct {
 }
 
 // NewSessionCacheV2 creates a new V2 cache instance
-func NewSessionCacheV2(db *pgxpool.Pool, redisAddr string) *SessionCacheV2 {
+func NewSessionCacheV2(db *pgxpool.Pool, redisAddr string, _ ...int) *SessionCacheV2 {
 	return &SessionCacheV2{
 		l1: NewCompressionMetaCache(1024),         // 1024 sessions in memory
 		l2: NewRedisGovernanceCache(redisAddr, 0), // Use default TTL

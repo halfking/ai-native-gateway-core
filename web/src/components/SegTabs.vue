@@ -69,7 +69,7 @@ defineEmits<{
   background: var(--card);
   color: var(--text);
   font-weight: 600;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+  box-shadow: 0 1px 2px var(--overlay-faint);
 }
 .seg-tab-icon { font-size: 12px; line-height: 1; }
 .seg-tab-badge {

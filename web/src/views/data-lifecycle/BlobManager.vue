@@ -246,9 +246,9 @@ onMounted(load)
 
 .btn { padding: 6px 14px; border-radius: 6px; border: 1px solid transparent; font-size: 13px; cursor: pointer; }
 .btn-sm { padding: 4px 10px; font-size: 12px; }
-.btn-primary { background: var(--accent); color: #fff; }
+.btn-primary { background: var(--accent); color: var(--on-primary); }
 .btn-primary:hover:not(:disabled) { background: var(--accent-h); }
-.btn-danger { background: var(--danger); color: #fff; }
+.btn-danger { background: var(--danger); color: var(--on-primary); }
 .btn-danger:hover:not(:disabled) { background: color-mix(in srgb, var(--danger) 88%, var(--text)); }
 .btn-ghost { background: transparent; border-color: var(--border); color: var(--text); }
 .btn-ghost:hover:not(:disabled) { background: var(--bg-hover); }

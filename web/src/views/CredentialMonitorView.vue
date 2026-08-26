@@ -4,12 +4,15 @@ import { useI18n } from 'vue-i18n'
 import { getCredentialMonitorSummary, getSlidingWindow, promoteCredential, demoteCredential, setConcurrencyAuto, toggleModelAvailability, getModelHistory, getCredentialFpSlotStats, getCredentialDecisions, clearManualDisabled, setManualDisabled, type CredentialMonitorSummary, type CredentialModelStatus, type CallEntry, type ModelHistoryEvent, type ModelToggleAction, type FpSlotStats, type CredentialRoutingDecision, type CredentialMonitorMeta } from '../api'
 import { Chart, registerables } from 'chart.js'
 import FpSlotVisualizer from '../components/FpSlotVisualizer.vue'
+import { useCredentialLabels } from '../composables/useCredentialLabels'
 import SegTabs, { type SegTab } from '../components/SegTabs.vue'
 import StatusBadge from '../components/StatusBadge.vue'
 
 Chart.register(...registerables)
 
 const { t } = useI18n()
+
+const { credentialDisplayName, loadCredentialLabels } = useCredentialLabels()
 
 const loading = ref(false)
 const detailLoading = ref(false)
@@ -820,7 +823,10 @@ function p95Class(ms: number | null | undefined) {
   return 'p95-bad'
 }
 
-onMounted(() => load())
+onMounted(() => {
+  void loadCredentialLabels()
+  load()
+})
 
 onUnmounted(() => {
   stopAutoRefresh()
@@ -976,7 +982,7 @@ onUnmounted(() => {
       <div class="drawer-panel card drawer-panel-wide" @click.stop>
         <div class="drawer-header">
           <div>
-            <h3 style="margin:0">{{ selectedCred.label || `凭据 #${selectedCred.id}` }}</h3>
+            <h3 style="margin:0">{{ credentialDisplayName(selectedCred.id, selectedCred.label || '凭据') }}</h3>
             <div class="drawer-sub">{{ selectedCred.provider_name }}</div>
           </div>
           <div style="display:flex;gap:8px;align-items:center">
@@ -1194,6 +1200,9 @@ onUnmounted(() => {
                           @click="selectModel(m.raw_model_name)">
                         <td>
                           <code class="mono-sm">{{ m.raw_model_name }}</code>
+                          <div v-if="m.standardized_name || m.canonical_name" class="cell-muted" style="font-size:11px">
+                            标准: {{ m.canonical_name || m.standardized_name }}
+                          </div>
                           <span v-if="!m.offer_available || !m.binding_available" class="badge badge-gray" style="margin-left:4px">unavail</span>
                         </td>
                         <td>
@@ -1551,7 +1560,7 @@ onUnmounted(() => {
           确认{{ toggleTarget?.action === 'offline' ? '下线' : '上线' }}
         </h3>
         <div class="cell-sub" style="margin-bottom:12px">
-          <code class="mono-sm">{{ toggleTarget?.rawModel }}</code> · 凭据 #{{ toggleTarget?.credId }}
+          <code class="mono-sm">{{ toggleTarget?.rawModel }}</code> · 凭据 {{ selectedCred?.label || `#${toggleTarget?.credId}` }}
         </div>
         <div v-if="toggleTarget?.action === 'offline'" class="cell-sub" style="margin-bottom:12px">
           下线后自动探测将不再触碰该模型（原因 = <code>manual_offline</code>），需你手动恢复。
@@ -1780,11 +1789,11 @@ onUnmounted(() => {
   color: var(--muted);
   margin-top: 2px;
 }
-.summary-good { border-color: rgba(63, 185, 80, 0.4); }
+.summary-good { border-color: var(--success-bd); }
 .summary-good .summary-value { color: var(--success); }
-.summary-warn { border-color: rgba(210, 153, 34, 0.4); }
+.summary-warn { border-color: var(--warning-bd); }
 .summary-warn .summary-value { color: var(--warning); }
-.summary-bad { border-color: rgba(248, 81, 73, 0.4); }
+.summary-bad { border-color: var(--danger-bd); }
 .summary-bad .summary-value { color: var(--danger); }
 
 .drawer-body {
@@ -1814,7 +1823,7 @@ onUnmounted(() => {
 
 .skeleton {
   border-radius: 999px;
-  background: linear-gradient(90deg, rgba(139, 148, 158, 0.16) 25%, rgba(139, 148, 158, 0.28) 50%, rgba(139, 148, 158, 0.16) 75%);
+  background: linear-gradient(90deg, var(--neutral-bg) 25%, rgba(139, 148, 158, 0.28) 50%, var(--neutral-bg) 75%);
   background-size: 200% 100%;
   animation: detail-skeleton-shimmer 1.2s ease-in-out infinite;
 }
@@ -1857,7 +1866,7 @@ onUnmounted(() => {
   background: color-mix(in srgb, var(--card) 92%, var(--accent) 8%);
   color: var(--muted);
   font-size: 11px;
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.12);
+  box-shadow: 0 6px 18px var(--overlay-faint);
 }
 
 @keyframes detail-skeleton-shimmer {
@@ -1915,7 +1924,7 @@ onUnmounted(() => {
   cursor: pointer;
 }
 .clickable-row:hover {
-  background: rgba(255, 255, 255, 0.04) !important;
+  background: color-mix(in srgb, var(--kx-text) 4%, transparent) !important;
 }
 
 /* Model table in drawer */
@@ -1940,7 +1949,7 @@ onUnmounted(() => {
   cursor: pointer;
 }
 .model-table tbody tr:hover {
-  background: rgba(255, 255, 255, 0.03);
+  background: color-mix(in srgb, var(--kx-text) 4%, transparent);
 }
 .model-row-selected {
   background: color-mix(in srgb, var(--accent) 12%, transparent) !important;
@@ -1970,11 +1979,11 @@ onUnmounted(() => {
   letter-spacing: 0.02em;
 }
 .source-live {
-  background: rgba(63, 185, 80, 0.15);
+  background: var(--success-bg);
   color: var(--success);
 }
 .source-declared {
-  background: rgba(139, 148, 158, 0.15);
+  background: var(--neutral-bg);
   color: var(--muted);
 }
 
@@ -2042,7 +2051,7 @@ onUnmounted(() => {
   font-weight: 600;
   vertical-align: middle;
 }
-.src-redis { background: rgba(63, 185, 80, 0.15); color: var(--success); }
+.src-redis { background: var(--success-bg); color: var(--success); }
 .src-rl { background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent-h); }
 
 .cell-sub { font-size: 11px; color: var(--muted); }
@@ -2139,7 +2148,7 @@ onUnmounted(() => {
   background: rgba(239, 68, 68, 0.03);
 }
 .decision-table tbody tr:hover {
-  background: rgba(255, 255, 255, 0.05) !important;
+  background: color-mix(in srgb, var(--kx-text) 4%, transparent) !important;
 }
 
 /* ════════════════════════════════════════════════════════════════════════
@@ -2214,7 +2223,7 @@ onUnmounted(() => {
   line-height: 1.4;
 }
 .layout-btn:last-child { border-right: 0; }
-.layout-btn:hover { background: rgba(255, 255, 255, 0.04); color: var(--text); }
+.layout-btn:hover { background: color-mix(in srgb, var(--kx-text) 4%, transparent); color: var(--text); }
 .layout-btn.active {
   background: color-mix(in srgb, var(--accent) 18%, transparent);
   color: var(--accent-h);

@@ -177,11 +177,7 @@ func TestWriteHealth_FansOutBoundRawModels(t *testing.T) {
 		"COALESCE(cmb.available, TRUE) = TRUE",
 		"COALESCE(pm.available, TRUE) = TRUE",
 		"if err := rows.Err(); err != nil",
-		// 2026-08-26 self-check audit: pin the failure-branch call site
-		// (the cache mirrors current DB state when the probe is sick).
-		// The healthy-ready branch uses loadBoundRawModelsAll instead;
-		// covered by TestCredentialProbeV2_CacheFanOutIncludesAllBindings.
-		"uniqueStringSet([]string{pr.HealthProbeModel}, c.loadBoundRawModels(execCtx, credID))",
+		"writeModels := uniqueStringSet([]string{pr.HealthProbeModel}, c.loadBoundRawModels(execCtx, credID))",
 		"for _, model := range writeModels",
 		"c.cache.Set(execCtx, credID, model",
 		"Model:         model",

@@ -12,18 +12,29 @@ import {
   truncateText,
 } from '../types/swimlane'
 import { errorKindLabel, statusBarColor, statusSemanticLabel } from '../composables/liveStreamDisplay'
-import { getRequestActions, getRequestChildren, type LiveRequest } from '../composables/liveStreamStore'
+import {
+  getRequestActions,
+  getRequestChildren,
+  getRequestCredentialId,
+  requestCredentialRevision,
+  type LiveRequest,
+} from '../composables/liveStreamStore'
+import { credentialDisplayName } from '../composables/useCredentialLabels'
 import ActionTimeline from './ActionTimeline.vue'
 
 const { t, locale } = useI18n()
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   tile: RequestTileType
   groupBy: GroupByDimension
   isHighlighted: boolean
   isDimmed: boolean
   mode?: SwimLaneMode
-}>()
+  showTimelineBadge?: boolean
+}>(), {
+  // Live stream cards never show ≈N; detail drawer / ActionTimeline keep it.
+  showTimelineBadge: false,
+})
 
 const mode = computed<SwimLaneMode>(() => props.mode || 'small')
 const isSmall = computed(() => mode.value === 'small')
@@ -70,6 +81,12 @@ const probeBadgeTooltip = computed(() => {
 const isIdle = computed(() => props.tile.status === 'idle')
 const isInProgress = computed(() => props.tile.status === 'in_progress')
 const isFailure = computed(() => props.tile.status === 'failure')
+
+const credentialId = computed(() => {
+  void requestCredentialRevision.value
+  return getRequestCredentialId(props.tile.request_id)
+})
+const credentialName = computed(() => credentialDisplayName(credentialId.value))
 
 // 2026-07-14: idle markers now arrive with an explicit error_kind
 // ('no_traffic_5min') so we can show "无流量 X 分钟" instead of a
@@ -203,6 +220,7 @@ const tooltipText = computed(() => {
   if (props.tile.model) lines.push(tooltipLine(`${tip}.model`, props.tile.model))
   if (props.tile.vendor) lines.push(tooltipLine(`${tip}.vendor`, props.tile.vendor))
   if (props.tile.provider) lines.push(tooltipLine(`${tip}.provider`, props.tile.provider))
+  if (credentialId.value != null) lines.push(tooltipLine('凭据', credentialName.value))
   if (props.tile.latency_ms != null) {
     const ms = props.tile.latency_ms
     lines.push(tooltipLine(`${tip}.latency`, ms >= 1000 ? (ms / 1000).toFixed(1) + 's' : Math.round(ms) + 'ms'))
@@ -255,6 +273,11 @@ const childBadgeTitle = computed(() =>
     ? `子请求 ${childCount.value} 个（点击查看）`
     : '子请求（暂无推送，点击查看）',
 )
+
+const stageCategory = computed(() => props.tile.stage_category || null)
+const isRouting = computed(() => stageCategory.value === 'routing' && isInProgress.value)
+const isWaitingLLM = computed(() => stageCategory.value === 'llm' && isInProgress.value)
+const isRetrying = computed(() => stageCategory.value === 'retrying')
 
 // 子请求类型缩写（26号 §3：title/summary/sensitive_word）。
 const CHILD_TYPE_SHORT: Record<string, string> = {
@@ -347,6 +370,8 @@ function closeTimelinePanel() {
       'request-bar--idle': isIdle,
       'request-bar--in-progress': isInProgress,
       'request-bar--failure': isFailure,
+      'request-bar--routing': isRouting,
+      'request-bar--llm': isWaitingLLM,
     }"
     :style="{ '--bar-color': barColor }"
     :title="tooltipText"
@@ -357,6 +382,8 @@ function closeTimelinePanel() {
     @keydown.enter="handleClick"
   >
     <span v-if="tile.is_probe" class="request-bar__probe-mark" aria-hidden="true" />
+    <span v-if="isRouting" class="request-bar__stage-mark request-bar__stage-mark--routing" aria-hidden="true" />
+    <span v-if="isWaitingLLM" class="request-bar__stage-mark request-bar__stage-mark--llm" aria-hidden="true" />
   </div>
 
   <div
@@ -369,6 +396,8 @@ function closeTimelinePanel() {
       'request-tile--idle': isIdle,
       'request-tile--in-progress': isInProgress,
       'request-tile--failure': isFailure,
+      'request-tile--routing': isRouting,
+      'request-tile--llm': isWaitingLLM,
     }"
     :style="{
       '--accent-color': accentColor,
@@ -432,7 +461,7 @@ function closeTimelinePanel() {
     <!-- OBS-FE2 (26号 §6): 动作轨迹按钮（仅大形态，位于子请求徽标下方）。
          点击弹出 ActionTimeline 面板；计数 0（事件未推送）时置灰仍可点击。 -->
     <button
-      v-if="!isIdle"
+      v-if="!isIdle && showTimelineBadge"
       ref="timelineBadgeRef"
       type="button"
       class="request-tile__timeline-badge"
@@ -464,6 +493,9 @@ function closeTimelinePanel() {
         <span class="request-tile__provider">{{ line3Content }}</span>
         <span v-if="latencyLabel && !isIdle" class="request-tile__latency">{{ latencyLabel }}</span>
       </div>
+      <span v-if="isRouting" class="request-tile__stage-indicator request-tile__stage-indicator--routing" title="路由排队中" aria-label="路由排队中">⏳</span>
+      <span v-if="isWaitingLLM" class="request-tile__stage-indicator request-tile__stage-indicator--llm" title="等待大模型响应" aria-label="等待大模型响应">🔄</span>
+      <span v-if="isRetrying" class="request-tile__stage-indicator request-tile__stage-indicator--retrying" title="重试调度中" aria-label="重试调度中">🔁</span>
     </div>
 
     <!-- OBS-FE3 (26号 §3): 子请求列表面板 — Teleport 到 body，
@@ -606,23 +638,54 @@ function closeTimelinePanel() {
   50% { opacity: 1; }
 }
 
+/* Dual-stage: routing = cold dashed stripe; llm = solid pulse top mark */
+.request-bar--routing {
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  background:
+    repeating-linear-gradient(
+      -45deg,
+      color-mix(in srgb, var(--accent) 14%, transparent) 0 3px,
+      transparent 3px 7px
+    ),
+    var(--kx-surface, var(--on-primary));
+}
+.request-bar--routing::after {
+  animation: none;
+  opacity: 0.35;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 18%, transparent) 0%, transparent 70%);
+}
+.request-bar--llm {
+  border-style: solid;
+  border-color: color-mix(in srgb, var(--accent) 60%, transparent);
+}
+.request-bar__stage-mark {
+  position: absolute;
+  left: 1px;
+  right: 1px;
+  top: 0;
+  height: 3px;
+  border-radius: 2px 2px 0 0;
+  pointer-events: none;
+}
+.request-bar__stage-mark--routing {
+  background: color-mix(in srgb, var(--accent) 75%, transparent);
+}
+.request-bar__stage-mark--llm {
+  background: color-mix(in srgb, var(--accent) 85%, transparent);
+  animation: bar-pulse 1.2s ease-in-out infinite;
+}
+
 /* 探测请求左侧青色标记条 */
 .request-bar__probe-mark {
   position: absolute;
   left: 0;
   top: 0;
   bottom: 0;
-  width: 12px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #082f49;
-  background: #7dd3fc;
-  font-size: 8px;
-  font-weight: 700;
-  line-height: 1;
+  width: 2px;
+  background: var(--probe-cyan);
   border-radius: 3px 0 0 3px;
-  box-shadow: 0 0 4px color-mix(in srgb, #38bdf8 70%, transparent);
+  box-shadow: 0 0 4px color-mix(in srgb, var(--probe-cyan) 70%, transparent);
 }
 
 .request-bar--failure {
@@ -698,31 +761,56 @@ function closeTimelinePanel() {
 }
 
 .request-tile--failure {
-  border-color: color-mix(in srgb, #ef4444 45%, var(--accent-color));
+  border-color: color-mix(in srgb, var(--danger) 45%, var(--accent-color));
+}
+
+/* Dual-stage large cards: routing = cold dashed; llm = solid pulse border */
+.request-tile--routing {
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  background:
+    linear-gradient(
+      145deg,
+      color-mix(in srgb, var(--accent) 14%, var(--kx-surface)) 0%,
+      color-mix(in srgb, var(--accent) 5%, var(--kx-bg)) 100%
+    );
+  box-shadow: none;
+}
+.request-tile--llm {
+  border-style: solid;
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--accent-color));
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent),
+    0 0 10px color-mix(in srgb, var(--accent) 12%, transparent);
+  animation: request-tile-llm-glow 1.8s ease-in-out infinite;
+}
+@keyframes request-tile-llm-glow {
+  0%, 100% { box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 18%, transparent); }
+  50% { box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent), 0 0 12px color-mix(in srgb, var(--accent) 18%, transparent); }
 }
 
 .request-tile--probe {
-  border-color: color-mix(in srgb, #38bdf8 50%, var(--accent-color));
+  border-color: color-mix(in srgb, var(--probe-cyan) 50%, var(--accent-color));
   /* 2026-07-14: 探测请求特殊背景 — 青色玻璃质感，与正常业务请求一眼区分 */
   background:
     linear-gradient(
       145deg,
-      color-mix(in srgb, #38bdf8 22%, var(--kx-surface)) 0%,
-      color-mix(in srgb, #0ea5e9 10%, var(--kx-bg)) 100%
+      color-mix(in srgb, var(--probe-cyan) 22%, var(--kx-surface)) 0%,
+      color-mix(in srgb, var(--probe-cyan-deep) 10%, var(--kx-bg)) 100%
     );
   box-shadow:
-    inset 0 1px 0 color-mix(in srgb, #38bdf8 12%, transparent),
-    0 0 0 1px color-mix(in srgb, #38bdf8 20%, transparent),
+    inset 0 1px 0 color-mix(in srgb, var(--probe-cyan) 12%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--probe-cyan) 20%, transparent),
     0 1px 3px color-mix(in srgb, var(--text) 12%, transparent);
 }
 
 .request-tile--probe.request-tile--failure {
-  border-color: color-mix(in srgb, #38bdf8 35%, #ef4444 45%);
+  border-color: color-mix(in srgb, var(--probe-cyan) 35%, var(--danger) 45%);
   background:
     linear-gradient(
       145deg,
-      color-mix(in srgb, #38bdf8 14%, color-mix(in srgb, #ef4444 18%, var(--kx-surface))) 0%,
-      color-mix(in srgb, #0ea5e9 7%, var(--kx-bg)) 100%
+      color-mix(in srgb, var(--probe-cyan) 14%, color-mix(in srgb, var(--danger) 18%, var(--kx-surface))) 0%,
+      color-mix(in srgb, var(--probe-cyan-deep) 7%, var(--kx-bg)) 100%
     );
 }
 
@@ -737,7 +825,7 @@ function closeTimelinePanel() {
 }
 
 .request-tile--failure .request-tile__accent {
-  background: linear-gradient(180deg, #ef4444, var(--accent-color));
+  background: linear-gradient(180deg, var(--danger), var(--accent-color));
 }
 
 .request-tile__status-dot {
@@ -758,10 +846,10 @@ function closeTimelinePanel() {
 
 @keyframes status-pulse {
   0%, 100% {
-    box-shadow: 0 0 0 2px color-mix(in srgb, var(--text) 15%, transparent), 0 0 0 0 rgba(59, 130, 246, 0.5);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--text) 15%, transparent), 0 0 0 0 color-mix(in srgb, var(--accent) 16%, transparent);
   }
   50% {
-    box-shadow: 0 0 0 2px color-mix(in srgb, var(--text) 15%, transparent), 0 0 0 4px rgba(59, 130, 246, 0.25);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--text) 15%, transparent), 0 0 0 4px color-mix(in srgb, var(--accent) 16%, transparent);
   }
 }
 
@@ -775,10 +863,10 @@ function closeTimelinePanel() {
   align-items: center;
   justify-content: center;
   border-radius: 3px;
-  color: #0c1a26;
-  background: linear-gradient(180deg, #7dd3fc 0%, #38bdf8 100%);
-  border: 1.5px solid #0284c7;
-  box-shadow: 0 0 5px rgba(56, 189, 248, 0.8);
+  color: var(--probe-dark-bg);
+  background: linear-gradient(180deg, var(--probe-cyan-light) 0%, var(--probe-cyan) 100%);
+  border: 1.5px solid var(--probe-cyan-darker);
+  box-shadow: 0 0 5px color-mix(in srgb, var(--probe-cyan) 30%, transparent);
   z-index: 3;
 }
 
@@ -790,21 +878,21 @@ function closeTimelinePanel() {
 
 /* 按探测来源区分颜色：scheduled=橙黄/周期，direct=红色/主动 */
 .request-tile__probe-badge--direct {
-  background: linear-gradient(180deg, #fca5a5 0%, #ef4444 100%);
-  border-color: #b91c1c;
-  color: #fff;
+  background: linear-gradient(180deg, var(--danger-bd) 0%, var(--danger) 100%);
+  border-color: var(--danger);
+  color: var(--on-primary);
 }
 
 .request-tile__probe-badge--scheduled {
-  background: linear-gradient(180deg, #fde68a 0%, #fbbf24 100%);
-  border-color: #f59e0b;
-  color: #422006;
+  background: linear-gradient(180deg, var(--warning-bg) 0%, var(--warning) 100%);
+  border-color: var(--warning);
+  color: var(--warning-dark);
 }
 
 .request-tile__probe-badge--gateway {
-  background: linear-gradient(180deg, #93c5fd 0%, #3b82f6 100%);
-  border-color: #1d4ed8;
-  color: #fff;
+  background: linear-gradient(180deg, var(--accent-h) 0%, var(--accent) 100%);
+  border-color: var(--accent);
+  color: var(--on-primary);
 }
 
 .request-tile__body {
@@ -883,7 +971,7 @@ function closeTimelinePanel() {
   line-height: 1.1;
   text-align: center;
   font-weight: 600;
-  color: rgba(248, 113, 113, 0.95); /* default = failure red */
+  color: color-mix(in srgb, var(--danger) 12%, transparent); /* default = failure red */
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -891,11 +979,11 @@ function closeTimelinePanel() {
   margin-top: 1px;
 }
 .request-tile__reason--idle {
-  color: rgba(156, 163, 175, 0.95);
+  color: color-mix(in srgb, var(--muted) 14%, transparent);
   font-weight: 500;
 }
 .request-tile__reason--probe {
-  color: rgba(56, 189, 248, 0.95);
+  color: color-mix(in srgb, var(--probe-cyan) 22%, transparent);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1212,6 +1300,49 @@ function closeTimelinePanel() {
   .request-tile__timeline-panel {
     animation: none;
     transition: none;
+  }
+}
+
+.request-tile__stage-indicator {
+  position: absolute;
+  bottom: 4px;
+  left: 6px;
+  z-index: 2;
+  font-size: 10px;
+  line-height: 1;
+  pointer-events: none;
+}
+
+.request-tile__stage-indicator--routing {
+  animation: request-tile-queue-pulse 2s ease-in-out infinite;
+}
+
+.request-tile__stage-indicator--llm {
+  animation: request-tile-llm-spin 1.5s linear infinite;
+}
+
+.request-tile__stage-indicator--retrying {
+  animation: request-tile-retry-pulse 1s ease-in-out infinite;
+}
+
+@keyframes request-tile-queue-pulse {
+  0%, 100% { opacity: 0.5; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.1); }
+}
+
+@keyframes request-tile-llm-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes request-tile-retry-pulse {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .request-tile__stage-indicator {
+    animation: none;
   }
 }
 </style>

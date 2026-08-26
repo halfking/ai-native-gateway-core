@@ -16,10 +16,64 @@ import (
 	telemetryv1 "github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry" //nolint:depguard // RequestLogEntry struct lives here; aliased to avoid clash with /telemetry extractor package
 	"github.com/kaixuan/llm-gateway-go/domains/identity"                                  //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/internal/ir"                                       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/settings"                                          //nolint:depguard // hot-reloadable prompt budget
 	"github.com/kaixuan/llm-gateway-go/telemetry"                                         //nolint:depguard // canonical IP / agent / protocol extractors
 )
 
 var errBodyTooLarge = errors.New("request body too large")
+
+// ── Prompt budget guard (2026-08-24, 245 memcg OOM) ────────────────────────
+//
+// 245 预发环境在长上下文流量下被 memcg OOM-kill 53 次（anon 1.95G 撑满
+// MemoryMax=2G，单请求 max prompt_tokens=920179 —— 一份 ~4MB JSON 在
+// 解析/转发/审计路径上被复制多份，数个并发即可把 2G 堆顶穿）。
+// gateway.max_prompt_tokens 让网关在入口处拒绝超预算 prompt：
+//
+//	=0          → 不限制
+//	>0           → estimateTokens(body) 超过即 413 prompt_too_large
+//
+// 默认值为 1048576（1M）。读取侧 5s TTL 缓存，系统配置 DB > env > default。
+// 拒绝发生在 JSON 解析与上游转发之前。
+
+const promptBudgetDefaultTokens = 1048576
+
+// promptBudgetLimit resolves the hot-reloadable system setting. The env
+// fallback keeps DB-less deployments and tests usable before settings specs
+// are registered by the gateway composition root.
+func promptBudgetLimit() int {
+	if settings.Global != nil && settings.Global.Spec("gateway.max_prompt_tokens") != nil {
+		return settings.CachedPlatformInt("gateway.max_prompt_tokens", promptBudgetDefaultTokens)
+	}
+	return promptBudgetLimitFromEnv()
+}
+
+func promptBudgetLimitFromEnv() int {
+	v := strings.TrimSpace(os.Getenv("LLM_GATEWAY_MAX_PROMPT_TOKENS"))
+	if v == "" {
+		return promptBudgetDefaultTokens
+	}
+	switch strings.ToLower(v) {
+	case "0", "off", "false", "disabled":
+		return 0
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		return promptBudgetDefaultTokens
+	}
+	return n
+}
+
+// promptBudgetExceeded estimates prompt tokens for the buffered body and
+// reports whether the estimate exceeds the configured budget. Always
+// (0, false) when the guard is off or the body is empty.
+func promptBudgetExceeded(body []byte) (est int, over bool) {
+	limit := promptBudgetLimit()
+	if limit <= 0 || len(body) == 0 {
+		return 0, false
+	}
+	est = estimateTokens(body)
+	return est, est > limit
+}
 
 const defaultRequestBodyTimeout = 120 * time.Second
 

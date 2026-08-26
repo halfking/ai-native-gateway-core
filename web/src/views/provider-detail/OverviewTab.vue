@@ -126,13 +126,13 @@ const unavailableModels = computed(() => props.models.filter(m => !m.available))
   color: var(--muted);
   margin-top: 4px;
 }
-.text-danger { color: #f44336; }
+.text-danger { color: var(--danger); }
 .dot {
   width: 8px; height: 8px; border-radius: 50%;
   display: inline-block; vertical-align: middle; margin-inline-end: 2px;
 }
-.dot-green { background: #4caf50; }
-.dot-amber { background: #f0b429; }
+.dot-green { background: var(--success); }
+.dot-amber { background: var(--warning); }
 .dot-amber--gapped { margin-inline-start: 8px; }
 .info-section { margin-top: 8px; }
 .info-section h4 { margin: 0 0 8px; font-size: 14px; color: var(--text); }

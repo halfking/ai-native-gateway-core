@@ -3,8 +3,27 @@
 // SSE 断线态、空态/骨架、SSE 增量驱动。
 import { mount, flushPromises } from '@vue/test-utils'
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
-import type { Ref } from 'vue'
+import { nextTick, type Ref } from 'vue'
 import ProbeTriStateQueue from './ProbeTriStateQueue.vue'
+
+const { getCredentialMonitorSummary } = vi.hoisted(() => ({
+  getCredentialMonitorSummary: vi.fn(),
+}))
+
+vi.mock('../../api/credential-monitor', () => ({
+  getCredentialMonitorSummary,
+}))
+
+beforeEach(async () => {
+  tiles.value = []
+  connection.value = 'open'
+  // 默认让 mount 流程立即拿到空凭据，避免组件层 await Promise.then 报错；
+  // 需要覆盖特定场景的测试再用 mockImplementationOnce 替换。
+  getCredentialMonitorSummary.mockReset().mockResolvedValue({ credentials: [] })
+  // 重置共享凭据标签缓存，避免其它测试串味。
+  const { clearCredentialLabels } = await import('../../composables/useCredentialLabels')
+  clearCredentialLabels()
+})
 
 // ── mock probeStreamStore 单例（SSE 通道） ────────────────────────────
 // 工厂内创建共享 ref，测试通过 mocked 模块导出直接驱动 tiles/connection。
@@ -79,11 +98,6 @@ function stubTriFetch(legs: { pending?: unknown[]; in_flight?: unknown[]; comple
   })
 }
 
-beforeEach(() => {
-  tiles.value = []
-  connection.value = 'open'
-})
-
 afterEach(() => {
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
@@ -93,7 +107,8 @@ function mountQueue() {
   return mount(ProbeTriStateQueue, {
     global: {
       // api-selfcheck 的 req() 会读 authBearer（localStorage 兜底为空）。
-      stubs: { 'transition-group': false },
+      // Filter assertions must not count leaving TransitionGroup nodes.
+      stubs: { 'transition-group': true },
     },
   })
 }
@@ -117,7 +132,7 @@ describe('ProbeTriStateQueue — 三段渲染', () => {
     expect(w.findAll('[data-testid="probe-inflight-card"]')).toHaveLength(1)
     expect(w.findAll('[data-testid="probe-completed-card"]')).toHaveLength(1)
 
-    // 目标节点：credential_id / raw_model
+    // 默认标签缓存为空：fallback 为「凭据 #ID」便于人工排查
     expect(w.find('[data-testid="tri-pending"]').text()).toContain('凭据 #11')
     expect(w.find('[data-testid="tri-pending"]').text()).toContain('m1')
     // pending 小卡：预计执行时间（next_retry_at_ms 存在时才渲染）
@@ -126,6 +141,46 @@ describe('ProbeTriStateQueue — 三段渲染', () => {
     // in_flight 卡：实时耗时
     expect(w.find('[data-testid="inflight-elapsed"]').exists()).toBe(true)
 
+    w.unmount()
+  })
+
+  it('共享凭据名称加载后渲染 label 而非 #ID', async () => {
+    // mock 延迟 resolve：保证「凭证接口先于 refreshFromApi 返回」
+    // 的真实时序，验证 revision 后模板重新渲染。
+    let resolveCreds: (() => void) | null = null
+    const inFlight = new Promise<{ credentials: Array<{ id: number; label: string; provider_id?: number; provider_name?: string }> }>((resolve) => {
+      resolveCreds = () => resolve({
+        credentials: [{ id: 11, label: 'key-prod-001', provider_id: 7, provider_name: 'openai' }],
+      })
+    })
+    getCredentialMonitorSummary.mockReset().mockImplementation(() => inFlight)
+
+    vi.stubGlobal('fetch', stubTriFetch({
+      pending: [triTask({ id: 11, dedup_key: 'k1', credential_id: 11, raw_model: 'm1' })],
+    }))
+    const w = mountQueue()
+    await flushPromises()
+    expect(w.find('[data-testid="tri-pending"]').text()).toContain('凭据 #11')
+    // 非空断言：赋值发生在上面的 Promise 构造器回调里，TS 控制流分析
+    // 看不到，会把 resolveCreds 收窄为 null。
+    resolveCreds!()
+    await flushPromises()
+    await flushPromises()
+    expect(w.find('[data-testid="tri-pending"]').text()).toContain('key-prod-001')
+    expect(w.find('[data-testid="tri-pending"]').text()).not.toContain('凭据 #11')
+    w.unmount()
+  })
+
+  it('标签缓存失败保留「凭据 #ID」fallback 且不中断渲染', async () => {
+    getCredentialMonitorSummary.mockImplementationOnce(async () => {
+      throw new Error('boom')
+    })
+    vi.stubGlobal('fetch', stubTriFetch({
+      pending: [triTask({ id: 11, dedup_key: 'k2', credential_id: 11, raw_model: 'm1' })],
+    }))
+    const w = mountQueue()
+    await flushPromises()
+    expect(w.find('[data-testid="tri-pending"]').text()).toContain('凭据 #11')
     w.unmount()
   })
 
@@ -168,6 +223,42 @@ describe('ProbeTriStateQueue — origin 徽标', () => {
 })
 
 describe('ProbeTriStateQueue — completed 大卡', () => {
+  it('按供应商、凭据和模型过滤已完成任务', async () => {
+    vi.stubGlobal('fetch', stubTriFetch({
+      completed: [
+        triTask({ id: 1, credential_id: 11, provider_id: 101, provider_name: '供应商 A', raw_model: 'model-a', status: 'completed', outcome: 'success' }),
+        triTask({ id: 2, credential_id: 12, provider_id: 102, provider_name: '供应商 B', raw_model: 'model-b', status: 'completed', outcome: 'failed' }),
+      ],
+    }))
+    const w = mountQueue()
+    await flushPromises()
+
+    const selects = w.findAll('[data-testid="completed-filters"] select')
+    expect(selects).toHaveLength(3)
+    expect(w.findAll('[data-testid="probe-completed-card"]')).toHaveLength(2)
+    expect(selects[0].findAll('option').map((option) => option.element.value)).toContain('供应商 A')
+
+    await selects[0].setValue('供应商 A')
+    await flushPromises()
+    await nextTick()
+    expect((selects[0].element as HTMLSelectElement).value).toBe('供应商 A')
+    expect(w.findAll('[data-testid="probe-completed-card"]')).toHaveLength(1)
+    expect(w.find('[data-testid="tri-completed"]').text()).toContain('model-a')
+
+    await selects[0].setValue('')
+    await selects[1].setValue('12')
+    await nextTick()
+    expect(w.findAll('[data-testid="probe-completed-card"]')).toHaveLength(1)
+    expect(w.find('[data-testid="tri-completed"]').text()).toContain('model-b')
+
+    await selects[1].setValue('')
+    await selects[2].setValue('model-a')
+    await nextTick()
+    expect(w.findAll('[data-testid="probe-completed-card"]')).toHaveLength(1)
+    expect(w.find('[data-testid="tri-completed"]').text()).toContain('凭据 #11')
+    w.unmount()
+  })
+
   it('点击展开显示结果/延迟/错误码/观察时间', async () => {
     vi.stubGlobal('fetch', stubTriFetch({
       completed: [triTask({

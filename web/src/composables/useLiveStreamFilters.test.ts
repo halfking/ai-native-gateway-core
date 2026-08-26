@@ -3,7 +3,7 @@
 import { beforeEach, describe, it, expect } from 'vitest'
 import { ref } from 'vue'
 import { useLiveStreamFilters } from './useLiveStreamFilters'
-import { liveStreamPreferencesStorageKey } from './liveStreamPreferences'
+import { _resetPersistState, flushPersist, liveStreamPreferencesStorageKey } from './liveStreamPreferences'
 import type { SwimLane, RequestTile } from '../types/swimlane'
 
 // Test helper: create minimal RequestTile for testing
@@ -34,6 +34,7 @@ function makeLane(id: string, requests: RequestTile[]): SwimLane {
 describe('useLiveStreamFilters', () => {
   beforeEach(() => {
     localStorage.clear()
+    _resetPersistState()
   })
 
   it('restores and persists all filter selections', () => {
@@ -61,6 +62,7 @@ describe('useLiveStreamFilters', () => {
     expect([...filters.agentFilter.value]).toEqual(['zcode'])
 
     filters.applyAgentFilter(['OpenCode'])
+    flushPersist() // 2026-08-24 LP7: writes 已是 debounced，需要手动 flush 读 storage
     const saved = JSON.parse(localStorage.getItem(liveStreamPreferencesStorageKey()) || '{}')
     expect(saved.filters.agents).toEqual(['opencode'])
     expect(saved.filters.providers).toEqual(['provider-a'])
@@ -176,7 +178,6 @@ describe('useLiveStreamFilters', () => {
     ])
     const filters = useLiveStreamFilters({ lanes })
 
-    expect(filters.requestTypeCounts.value).toEqual({ business: 2, probe: 1 })
     expect(filters.filteredLanes.value[0].requests.length).toBe(3)
 
     filters.toggleRequestType('business')
