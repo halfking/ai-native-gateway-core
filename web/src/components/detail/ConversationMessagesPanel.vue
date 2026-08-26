@@ -159,9 +159,9 @@ function roleTone(role: unknown): string {
   border-left: 3px solid var(--border);
   background: var(--bg-subtle, var(--surface-secondary));
 }
-.msg-block--user { border-left-color: var(--info, #2563eb); background: color-mix(in srgb, var(--info, #2563eb) 7%, transparent); }
-.msg-block--assistant { border-left-color: var(--success, #16a34a); background: color-mix(in srgb, var(--success, #16a34a) 7%, transparent); }
-.msg-block--system { border-left-color: var(--warning, #d97706); background: color-mix(in srgb, var(--warning, #d97706) 8%, transparent); }
+.msg-block--user { border-left-color: var(--kx-primary); background: color-mix(in srgb, var(--kx-primary) 7%, transparent); }
+.msg-block--assistant { border-left-color: var(--kx-success); background: color-mix(in srgb, var(--kx-success) 7%, transparent); }
+.msg-block--system { border-left-color: var(--kx-warning); background: color-mix(in srgb, var(--kx-warning) 8%, transparent); }
 .msg-block--tool { border-left-color: var(--muted); }
 .msg-role { font-size: 12px; font-weight: 600; margin-bottom: 4px; }
 .inline-media {
@@ -181,8 +181,8 @@ function roleTone(role: unknown): string {
 .linkish { margin-top: 4px; }
 .reply-block {
   margin-top: 16px; padding: 8px 10px; border-radius: 6px;
-  border-left: 3px solid var(--success, #16a34a);
-  background: color-mix(in srgb, var(--success, #16a34a) 7%, transparent);
+  border-left: 3px solid var(--kx-success);
+  background: color-mix(in srgb, var(--kx-success) 7%, transparent);
 }
 .text-muted { color: var(--muted); font-size: 13px; }
 .ph-badge {
@@ -190,8 +190,8 @@ function roleTone(role: unknown): string {
   padding: 0 4px;
   margin: 0 1px;
   border-radius: 4px;
-  background: color-mix(in srgb, var(--kx-warning, #b45309) 18%, transparent);
-  color: var(--kx-warning, #b45309);
+  background: color-mix(in srgb, var(--kx-warning) 18%, transparent);
+  color: var(--kx-warning);
   font-weight: 600;
 }
 </style>

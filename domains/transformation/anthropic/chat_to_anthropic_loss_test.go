@@ -98,3 +98,21 @@ func TestChatRequestToAnthropic_RejectsImageBlockWithoutURL(t *testing.T) {
 		t.Fatalf("ConvertChatRequestToAnthropic() error = %q, want invalid image context", err)
 	}
 }
+
+func TestChatRequestToAnthropic_RejectsNonObjectToolArguments(t *testing.T) {
+	request := []byte(`{"model":"claude-sonnet-5","messages":[{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"lookup","arguments":"[]"}}]}]}`)
+
+	_, err := ConvertChatRequestToAnthropic(request)
+	if err == nil || !strings.Contains(err.Error(), "expected JSON object") {
+		t.Fatalf("ConvertChatRequestToAnthropic() error = %v, want object validation error", err)
+	}
+}
+
+func TestChatRequestToAnthropic_RejectsMalformedContentBlock(t *testing.T) {
+	request := []byte(`{"model":"claude-sonnet-5","messages":[{"role":"user","content":["keep this prompt"]}]}`)
+
+	_, err := ConvertChatRequestToAnthropic(request)
+	if err == nil || !strings.Contains(err.Error(), "expected object") {
+		t.Fatalf("ConvertChatRequestToAnthropic() error = %v, want object validation error", err)
+	}
+}
