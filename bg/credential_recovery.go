@@ -114,6 +114,24 @@ type CredentialRecovery struct {
 	// binding visible without waiting for the 30s candCache TTL.
 	// Wired from main.go via SetInvalidateCandidateCache.
 	invalidateCandidateCache func(credID int)
+	// onQuotaRecovered is the dispatcher-facing hook fired when a probe
+	// path (cycleAll / fastProbe / probeQueueWorker) flips a credential
+	// back to healthy after a quota-recovery flip. The signature carries
+	// (credID, source) so the wired handler can route the metric label
+	// and pick the right cache invalidator without consulting a global.
+	// Wired from main.go via SetOnQuotaRecovered; nil → the probe paths
+	// stay silent (the routing layer falls back to its candCache TTL).
+	// 2026-08-26 quota-recovery-notify fix: closes the
+	// "DB says ready but cache still excludes credential" gap.
+	onQuotaRecovered func(credID int, source string)
+	// probeSubmitterImmediate is the *synchronous* probe-submitter
+	// fired by dispatchRecoveryHooks the moment a credential flips out
+	// of a quota-blocked / availability-blocked state. Wired from
+	// main.go via SetProbeSubmitterImmediate (typically bound to
+	// credProbeV2.ProbeNowAsync). nil → only the delayed
+	// fastReprobeQueue path runs, behaviour matches pre-P1-4.
+	// 2026-08-26 P1-4 (落点 D).
+	probeSubmitterImmediate func(credID int)
 	cancel                   context.CancelFunc
 	done                     chan struct{}
 	// lookbackDone signals the 36h lookback scan loop exited (Stop waits on
@@ -146,6 +164,32 @@ func (r *CredentialRecovery) SetProbeSubmitter(fn func(credID int, model string)
 	r.probeSubmitter = fn
 }
 
+// SetProbeSubmitterImmediate wires a *second* probe-submitter hook that
+// fires synchronously from the recovery tick the moment a credential flips
+// out of a quota-blocked / availability-blocked state. Unlike
+// SetProbeSubmitter (which goes through the delayed fastReprobeQueue with
+// the 5-minute default — user principle "≥5 分钟探测一次" preserved; see
+// .handoff/selfcheck-audit-2026-08-26.md §2.1), this hook bypasses the
+// delay so the first chat request after a recovery sees a fresh probe
+// rather than waiting for the next scheduled cycle.
+//
+// 2026-08-26 P1-4 (landing point D): the immediate-submit path closes
+// the "recover() flips the DB but the next chat request still picks a
+// fallback because no probe has re-validated the credential yet" gap
+// for vendors whose probe is cheap (vendor accounts with
+// health-check-style endpoints). Vendors whose probe is expensive
+// (token-billing accounts that pay per request) should leave this hook
+// unwired — the existing delayed queue is the safer default.
+//
+// Safe to call multiple times; the latest non-nil setter wins. nil →
+// no-op (only the delayed path is used; behavior reverts to pre-P1-4).
+func (r *CredentialRecovery) SetProbeSubmitterImmediate(fn func(credID int)) {
+	if fn == nil {
+		return
+	}
+	r.probeSubmitterImmediate = fn
+}
+
 // SetInvalidateCandidateCache wires the per-credential candidate
 // cache invalidator so the next chat request re-plans with the
 // recovered binding visible.
@@ -154,6 +198,25 @@ func (r *CredentialRecovery) SetInvalidateCandidateCache(fn func(credID int)) {
 		return
 	}
 	r.invalidateCandidateCache = fn
+}
+
+// SetOnQuotaRecovered wires the dispatcher-facing notification that the
+// probe paths (cycleAll / fastProbe / probeQueueWorker) call once a
+// credential's quota / availability state has been flipped back to healthy.
+// The (credID, source) signature lets the integrator route the label +
+// invalidator from a single closure. Safe to call multiple times; the
+// latest non-nil setter wins. nil → no-op (the probe paths stay silent,
+// the routing layer falls back to its candCache TTL).
+//
+// 2026-08-26 quota-recovery-notify fix: without this hook the probe path
+// would write healthy into the DB but the routing layer's candidate
+// cache would still exclude the credential until TTL elapses, so the
+// first chat request after a recharge still picks a fallback node.
+func (r *CredentialRecovery) SetOnQuotaRecovered(fn func(credID int, source string)) {
+	if fn == nil {
+		return
+	}
+	r.onQuotaRecovered = fn
 }
 
 // SetURSMRecoverSink wires the Recover(30) URSM v2 write used by the 36h
@@ -239,6 +302,7 @@ func (r *CredentialRecovery) recover(ctx context.Context) {
 	timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
+
 	// 2026-08-23 (hzx-2 audit): record tick duration and per-block recovery
 	// outcomes so on-call engineers can see whether the 30s tick is actually
 	// recovering nodes, hitting permanent-kind guards, or erroring out. The
@@ -251,6 +315,85 @@ func (r *CredentialRecovery) recover(ctx context.Context) {
 	}()
 	recordOutcome := func(sqlKind, outcome string) {
 		met.RoutingCredentialRecoveryTotal.WithLabelValues(sqlKind, outcome).Inc()
+	}
+
+	// 2026-08-26 (quota-recovery-notify fix): every per-block UPDATE that
+	// flips a credential back to healthy MUST publish the affected credential
+	// IDs so the routing layer's candidate cache invalidates immediately
+	// and the durable probe queue receives a fresh submission. Without this,
+	// the 30s tick logs "recovered=N" but the next chat request still sees
+	// the stale snapshot until candCache TTL or the next 5-min
+	// PeriodicQuotaProbe tick.
+	//
+	// dispatchRecoveryHooks queries the same UPDATE statement with
+	// RETURNING id, calls InvalidateCandidateCache + probeSubmitter per row,
+	// and increments the per-action counter. It is nil-safe (Exec fallback
+	// when both hooks are nil so RowsAffected semantics don't change) and
+	// mirrors the defensive pattern of recoverExpiredBindings /
+	// recoverFreshDegradedBindings / reconcileStaleNodeProbeStates.
+	//
+	// Returns (affectedRowCount, err) — same shape as r.db.Exec.
+	dispatchRecoveryHooks := func(sqlKind, sqlText string, args ...any) (int, error) {
+		if r.invalidateCandidateCache == nil && r.probeSubmitter == nil && r.probeSubmitterImmediate == nil {
+			// All hooks nil: cheap Exec path so the outcome counter /
+			// RowsAffected semantics don't change.
+			tag, execErr := r.db.Exec(timeoutCtx, sqlText, args...)
+			if execErr != nil {
+				return 0, execErr
+			}
+			return int(tag.RowsAffected()), nil
+		}
+		rows, qErr := r.db.Query(timeoutCtx, sqlText, args...)
+		if qErr != nil {
+			return 0, qErr
+		}
+		defer rows.Close()
+
+		seen := make(map[int]struct{})
+		for rows.Next() {
+			var id int
+			if err := rows.Scan(&id); err != nil {
+				slog.Warn("credential_recovery: RETURNING id scan failed",
+					"sql_kind", sqlKind, "error", err)
+				continue
+			}
+			if _, dup := seen[id]; dup {
+				continue
+			}
+			seen[id] = struct{}{}
+			if r.invalidateCandidateCache != nil {
+				r.invalidateCandidateCache(id)
+				met.RoutingCredentialRecoveryNotifyTotal.WithLabelValues(sqlKind, "invalidate").Inc()
+			}
+			if r.probeSubmitter != nil {
+				// Empty model → NodeProbeWorker.Submit picks the credential's
+				// default_probe_model (its existing "let the worker decide"
+				// sentinel — see main.go:3504 where expired-binding-recovery
+				// uses the same shape).
+				r.probeSubmitter(id, "")
+				met.RoutingCredentialRecoveryNotifyTotal.WithLabelValues(sqlKind, "probe_submit").Inc()
+			}
+		}
+		if err := rows.Err(); err != nil {
+			return len(seen), err
+		}
+		// 2026-08-26 P1-4 (landing point D): for recovery-flip actions
+		// (quota_periodic_recover / availability_recover) bypass the
+		// fastReprobeQueue's 30s delay (P1-2 default) by firing an immediate
+		// probe per unique credential that just flipped. The local `seen`
+		// map already dedupes RETURNING ids within this UPDATE block.
+		// nil probeSubmitterImmediate is silently skipped — falls back
+		// to the delayed probeSubmitter path. Observability bump lets
+		// operators confirm the immediate path actually fires (otherwise
+		// it would be invisible).
+		if r.probeSubmitterImmediate != nil && len(seen) > 0 &&
+			(sqlKind == "quota_periodic_recover" || sqlKind == "availability_recover") {
+			for id := range seen {
+				r.probeSubmitterImmediate(id)
+			}
+			met.RoutingCredentialRecoveryNotifyTotal.WithLabelValues(sqlKind, "probe_immediate").Inc()
+		}
+		return len(seen), nil
 	}
 
 	// 2026-08-18 fix (glm-5.2 outage): 智谱 GLM Coding Plan 5 小时窗口的 429
@@ -276,7 +419,7 @@ func (r *CredentialRecovery) recover(ctx context.Context) {
 	// availability 恢复就分不清"本次刚到期的 periodic"与"本来就 ok"，
 	// 无法正确联动。先跑 availability（读到真实 quota_state），再跑 quota
 	// （按 quota_recover_at 到期清除）才能各取所需。
-	tag, err = r.db.Exec(timeoutCtx, `
+	availSQL := `
 		UPDATE credentials
 		SET availability_state = 'ready',
 		    availability_recover_at = NULL,
@@ -341,18 +484,21 @@ func (r *CredentialRecovery) recover(ctx context.Context) {
 		        AND mps.state = 'broken_confirmed'
 		        AND cmb.available = FALSE
 		  )
-	`)
-	if err != nil {
-		slog.Warn("credential availability recovery failed", "error", err)
+		  RETURNING id
+	`
+	availRecovered, availErr := dispatchRecoveryHooks("availability_recover", availSQL)
+	switch {
+	case availErr != nil:
+		slog.Warn("credential availability recovery failed", "error", availErr)
 		recordOutcome("availability_recover", "error")
-	} else if tag.RowsAffected() > 0 {
-		slog.Info("credential availability recovered", "count", tag.RowsAffected())
+	case availRecovered > 0:
+		slog.Info("credential availability recovered", "count", availRecovered)
 		recordOutcome("availability_recover", "recovered")
-	} else {
+	default:
 		recordOutcome("availability_recover", "no_row")
 	}
 
-	tag, err = r.db.Exec(timeoutCtx, `
+	quotaRecovered, quotaErr := dispatchRecoveryHooks("quota_periodic_recover", `
 		UPDATE credentials
 		SET quota_state = 'ok',
 		    quota_recover_at = NULL,
@@ -361,14 +507,16 @@ func (r *CredentialRecovery) recover(ctx context.Context) {
 		  AND quota_recover_at IS NOT NULL
 		  AND quota_recover_at <= now()
 		  AND lifecycle_status = 'active'
+		RETURNING id
 	`)
-	if err != nil {
-		slog.Warn("credential quota recovery failed", "error", err)
+	switch {
+	case quotaErr != nil:
+		slog.Warn("credential quota recovery failed", "error", quotaErr)
 		recordOutcome("quota_periodic_recover", "error")
-	} else if tag.RowsAffected() > 0 {
-		slog.Info("credential quota recovered", "count", tag.RowsAffected())
+	case quotaRecovered > 0:
+		slog.Info("credential quota recovered", "count", quotaRecovered)
 		recordOutcome("quota_periodic_recover", "recovered")
-	} else {
+	default:
 		// 2026-08-23 (hzx-2 audit): "no_row" likely means quota_recover_at
 		// was NULL (permanent kind was written). Operators reading the
 		// counter trend can spot a permanent-kind buildup that needs
@@ -377,19 +525,20 @@ func (r *CredentialRecovery) recover(ctx context.Context) {
 		recordOutcome("quota_periodic_recover", "no_row")
 	}
 
-	tag, err = r.db.Exec(timeoutCtx, stalePeriodicExhaustedCleanupSQL())
-	if err != nil {
-		slog.Warn("stale periodic_exhausted cleanup failed", "error", err)
+	staleRecovered, staleErr := dispatchRecoveryHooks("stale_periodic_exhausted_cleanup", stalePeriodicExhaustedCleanupSQL()+"\n\t\tRETURNING id")
+	switch {
+	case staleErr != nil:
+		slog.Warn("stale periodic_exhausted cleanup failed", "error", staleErr)
 		recordOutcome("stale_periodic_exhausted_cleanup", "error")
-	} else if tag.RowsAffected() > 0 {
+	case staleRecovered > 0:
 		slog.Info("stale periodic_exhausted cleared (credentials already healthy)",
-			"count", tag.RowsAffected())
+			"count", staleRecovered)
 		recordOutcome("stale_periodic_exhausted_cleanup", "recovered")
-	} else {
+	default:
 		recordOutcome("stale_periodic_exhausted_cleanup", "no_row")
 	}
 
-	tag, err = r.db.Exec(timeoutCtx, `
+	circuitRecovered, circuitErr := dispatchRecoveryHooks("circuit_close", `
 		UPDATE credentials
 		SET circuit_state = 'closed',
 		    cooling_until = NULL,
@@ -398,18 +547,20 @@ func (r *CredentialRecovery) recover(ctx context.Context) {
 		WHERE circuit_state = 'open'
 		  AND (cooling_until IS NULL OR cooling_until <= now())
 		  AND lifecycle_status = 'active'
+		RETURNING id
 	`)
-	if err != nil {
-		slog.Warn("circuit breaker recovery failed", "error", err)
+	switch {
+	case circuitErr != nil:
+		slog.Warn("circuit breaker recovery failed", "error", circuitErr)
 		recordOutcome("circuit_close", "error")
-	} else if tag.RowsAffected() > 0 {
-		slog.Info("circuit breakers closed", "count", tag.RowsAffected())
+	case circuitRecovered > 0:
+		slog.Info("circuit breakers closed", "count", circuitRecovered)
 		recordOutcome("circuit_close", "recovered")
-	} else {
+	default:
 		recordOutcome("circuit_close", "no_row")
 	}
 
-	tag, err = r.db.Exec(timeoutCtx, `
+	fcRecovered, fcErr := dispatchRecoveryHooks("consecutive_failures_clear", `
 		UPDATE credentials
 		SET consecutive_failures = 0,
 		    state_updated_at = now()
@@ -418,14 +569,16 @@ func (r *CredentialRecovery) recover(ctx context.Context) {
 		  AND circuit_state = 'closed'
 		  AND availability_state = 'ready'
 		  AND lifecycle_status = 'active'
+		RETURNING id
 	`)
-	if err != nil {
-		slog.Warn("failure counter clear failed", "error", err)
+	switch {
+	case fcErr != nil:
+		slog.Warn("failure counter clear failed", "error", fcErr)
 		recordOutcome("consecutive_failures_clear", "error")
-	} else if tag.RowsAffected() > 0 {
-		slog.Info("stale failure counters cleared", "count", tag.RowsAffected())
+	case fcRecovered > 0:
+		slog.Info("stale failure counters cleared", "count", fcRecovered)
 		recordOutcome("consecutive_failures_clear", "recovered")
-	} else {
+	default:
 		recordOutcome("consecutive_failures_clear", "no_row")
 	}
 
@@ -443,7 +596,7 @@ func (r *CredentialRecovery) recover(ctx context.Context) {
 	// not 'healthy'/'unknown' for more than 2 minutes. The next cycler
 	// (every hour) or probe-v2 (next :30 mark) will overwrite health_status
 	// with a fresh result, and a successful probe restores routability.
-	tag, err = r.db.Exec(timeoutCtx, `
+	healthRecovered, healthErr := dispatchRecoveryHooks("health_status_reset", `
 		UPDATE credentials
 		SET health_status = 'unknown',
 		    health_error = NULL,
@@ -455,36 +608,46 @@ func (r *CredentialRecovery) recover(ctx context.Context) {
 		  AND COALESCE(manual_disabled, FALSE) = FALSE
 		  AND (health_checked_at IS NULL OR health_checked_at < NOW() - INTERVAL '2 minutes')
 		  AND COALESCE(availability_state, 'ready') NOT IN ('suspended', 'auth_failed')
+		RETURNING id
 	`)
-	if err != nil {
-		slog.Warn("health_status recovery failed", "error", err)
-	} else if tag.RowsAffected() > 0 {
+	if healthErr != nil {
+		slog.Warn("health_status recovery failed", "error", healthErr)
+	} else if healthRecovered > 0 {
 		slog.Warn("stale health_status reset to 'unknown' (re-probe will rerun shortly)",
-			"count", tag.RowsAffected(),
+			"count", healthRecovered,
 		)
 	}
 
-	tag, err = r.db.Exec(timeoutCtx, mnfCoolingRecoverySQL(), mnfCoolingRecoveryMinutes())
-	if err != nil {
-		slog.Warn("mnf_cooling binding recovery failed", "error", err)
+	// mnf_cooling_recover writes to credential_model_bindings, not
+	// credentials — so RETURNING cmb.credential_id (which the dispatchRecoveryHooks
+	// helper scans into the generic `id` variable; the cache invalidator only
+	// needs the credential_id).
+	//
+	// We also fire the dispatch for the mirror UPDATE because it changes the
+	// model_offers state the admin /api/routing/resolve panel reads directly.
+	mnfRecovered, mnfErr := dispatchRecoveryHooks("mnf_cooling_recover",
+		mnfCoolingRecoverySQL()+"\n\t\tRETURNING cmb.credential_id",
+		mnfCoolingRecoveryMinutes())
+	switch {
+	case mnfErr != nil:
+		slog.Warn("mnf_cooling binding recovery failed", "error", mnfErr)
 		recordOutcome("mnf_cooling_recover", "error")
-	} else if tag.RowsAffected() > 0 {
-		slog.Info("mnf_cooling bindings recovered", "count", tag.RowsAffected())
+	case mnfRecovered > 0:
+		slog.Info("mnf_cooling bindings recovered", "count", mnfRecovered)
 		recordOutcome("mnf_cooling_recover", "recovered")
-		// Mirror the cmb recovery onto model_offers so /api/routing/resolve
-		// ("test route") and the admin UI badges agree with the production
-		// router. Without this, mnf_cooling restores the binding on the
-		// cmb side but the offer still shows unavailable on model_offers
-		// until manual admin intervention.
-		if moTag, moErr := r.db.Exec(timeoutCtx, mnfCoolingRecoveryMirrorSQL(), mnfCoolingRecoveryMinutes()); moErr != nil {
-			slog.Warn("mnf_cooling model_offers mirror recovery failed", "error", moErr)
-			recordOutcome("mnf_cooling_mirror", "error")
-		} else if moTag.RowsAffected() > 0 {
-			slog.Info("mnf_cooling model_offers mirrored", "count", moTag.RowsAffected())
-			recordOutcome("mnf_cooling_mirror", "recovered")
-		} else {
-			recordOutcome("mnf_cooling_mirror", "no_row")
-		}
+	default:
+		recordOutcome("mnf_cooling_recover", "no_row")
+	}
+	// Mirror the cmb recovery onto model_offers so /api/routing/resolve
+	// ("test route") and the admin UI badges agree with the production
+	// router. Without this, mnf_cooling restores the binding on the
+	// cmb side but the offer still shows unavailable on model_offers
+	// until manual admin intervention.
+	moTag, moErr := r.db.Exec(timeoutCtx, mnfCoolingRecoveryMirrorSQL(), mnfCoolingRecoveryMinutes())
+	if moErr != nil {
+		slog.Warn("mnf_cooling model_offers mirror recovery failed", "error", moErr)
+	} else if moTag.RowsAffected() > 0 {
+		slog.Info("mnf_cooling model_offers mirrored", "count", moTag.RowsAffected())
 	}
 
 	// The node_probe_state row is intentionally left for the probe worker. A
@@ -582,15 +745,6 @@ func (r *CredentialRecovery) recover(ctx context.Context) {
 	if err := r.recoverFreshDegradedBindings(timeoutCtx); err != nil {
 		slog.Warn("fresh-degraded binding probe recovery failed", "error", err)
 	}
-
-	// 2026-08-23 (hzx-2 audit): a recovered credential is one whose
-	// availability/quota/circuit block flipped at least one row. The other
-	// branches (expired/fresh-degraded) hand work off to NodeProbeWorker and
-	// don't write to cmb.available themselves, so we don't count them here.
-	// Operators read this counter alongside the per-block WithLabelValues
-	// calls below to spot silent recoveries (counter still increasing
-	// means the tick is healthy).
-	recordOutcome("overall", "completed")
 }
 
 // stalePeriodicExhaustedCleanupSQL returns the SQL that clears credentials
@@ -907,39 +1061,21 @@ func (r *CredentialRecovery) recoverExpiredBindings(ctx context.Context) error {
 //
 //   - cmb.available = FALSE + unavailable_reason = 'continuous_failure'.
 //     Other reasons use different code paths:
-//
 //   - 'manual*' : operators chose those; never auto-restore.
-//
 //   - 'probe_*' : already covered by node_probe.go's own re-arm ladder.
-//
 //   - 'auto_*'   : written by domains/credential/writer.go for transient
 //     per-model failures; out of scope for this branch.
-//
 //   - unavailable_recover_at IS NOT NULL AND > now() (i.e., still in cooldown).
-//
-//   - unavailable_at <= now() - 30 seconds. Don't re-probe a row that was
+//   - unavailable_at <= now() - 60 seconds. Don't re-probe a row that was
 //     just marked unavailable seconds ago — give the original failure burst
-//     a chance to settle.
-//
-//     2026-08-23 hzx-2 audit: tightened from 60s to 30s. The original 60s
-//     matched the legacy 60s tick; the credential_recovery loop now runs
-//     at 30s (defaultCredentialRecoveryInterval), and the credential can
-//     enter a sustained-failure cycle that takes ~3 minutes to recover
-//     once the upstream clears. Halving the guard reduces the worst-case
-//     detection lag from "next 60s tick after 60s settle = 120s" to
-//     "next 30s tick after 30s settle = 60s" — still enough headroom
-//     for the failure burst to settle, twice as quick to react when it
-//     has.
-//
+//     a chance to settle. 60s matches the original 60s tick so the first
+//     re-check happens on the second tick after degradation.
 //   - Same hard guards as the expired branch (manual, lifecycle, provider,
 //     admin_protected, availability_state, paused).
-//
 //   - Skip rows whose node_probe_state already has a future next_retry_at
 //     so we don't pile probes on top of an in-flight backoff ladder.
-//
 //   - ORDER BY oldest unavailable_at first so the most-stale rows (the
 //     ones most likely to have recovered upstream-side) get probed first.
-//
 //   - LIMIT 30/tick to bound fan-out.
 func freshDegradedCmbSQL() string {
 	return `
@@ -951,7 +1087,7 @@ func freshDegradedCmbSQL() string {
 		WHERE cmb.available = FALSE
 		  AND cmb.unavailable_reason = 'continuous_failure'
 		  AND cmb.unavailable_at IS NOT NULL
-		  AND cmb.unavailable_at <= now() - INTERVAL '30 seconds'
+		  AND cmb.unavailable_at <= now() - INTERVAL '60 seconds'
 		  AND cmb.unavailable_recover_at IS NOT NULL
 		  AND cmb.unavailable_recover_at > now()
 		  AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'

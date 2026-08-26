@@ -79,12 +79,18 @@ watch(
   { immediate: true },
 )
 
+watch(tab, (t) => {
+  const id = activeRequestId.value
+  if (id && needsBodies(t)) void ensureBodies(id)
+})
+
 async function loadRequest(id: string) {
   loading.value = true
   error.value = ''
   try {
+    // Phase A: meta only — never block the drawer on large bodies.
     const [u, meta] = await Promise.all([
-      getUnifiedRequestDetail(id).catch(() => null),
+      getUnifiedRequestDetail(id, { omitBody: true }).catch(() => null),
       getRequestLogDetail(id, { omitBody: true }).catch(() => null),
     ])
     unified.value = u
@@ -93,29 +99,34 @@ async function loadRequest(id: string) {
       error.value = '请求详情未找到'
       return
     }
-    // Fill bodies: prefer unified; else full log detail.
-    if (u?.bodies) {
-      // already have bodies
-    } else if (meta) {
-      try {
-        const full = await getRequestLogDetail(id)
-        log.value = { ...meta, ...full }
-      } catch {
-        /* meta-only ok */
-      }
-    }
     const sid = log.value?.gw_session_id || unified.value?.meta.gw_session_id
     if (sid) {
-      try {
-        sessionSnap.value = (await getSessionSnapshot(sid)) as Record<string, unknown>
-      } catch {
-        sessionSnap.value = null
-      }
+      void getSessionSnapshot(sid)
+        .then((snap) => { sessionSnap.value = snap as Record<string, unknown> })
+        .catch(() => { sessionSnap.value = null })
+    }
+    // Phase B: bodies only when a content tab is active.
+    if (needsBodies(tab.value)) {
+      await ensureBodies(id)
     }
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : String(e)
   } finally {
     loading.value = false
+  }
+}
+
+function needsBodies(t: string): boolean {
+  return t === 'chat' || t === 'compress' || t === 'raw' || t === 'attachments'
+}
+
+async function ensureBodies(id: string) {
+  if (unified.value?.bodies || log.value?.request_body || log.value?.response_body) return
+  try {
+    const full = await getRequestLogDetail(id)
+    log.value = log.value ? { ...log.value, ...full } : full
+  } catch {
+    /* meta-only ok */
   }
 }
 

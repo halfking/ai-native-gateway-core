@@ -604,6 +604,8 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	dispatchAllowProviderChange, dispatchAllowModelChange, dispatchModelAlternatives := responsesDispatchOptions(
 		logCtx, hasMultipleProviders(candidates),
 	)
+	// v6 G-Ⅱ: X-Gw-Due-At 定时请求（到期前停在 dispatch 的到期堆）。
+	dispatchDueAt := parseDispatchDueAt(r)
 	buildExecParams := func(streamWriter http.ResponseWriter) *executors.ExecParams {
 		return &executors.ExecParams{
 			W:                          streamWriter,
@@ -612,7 +614,15 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			IsStream:                   isStream,
 			StreamSurvivesClientCancel: explicitStreamSession(r.Context()),
 			PreStreamPrepared:          preStreamPrepared,
+			DispatchDueAt:              dispatchDueAt,
 			OnStreamReady:              func() {},
+			// v6 G-Ⅲ: dispatch 回队/切换通知走 `: thinking:` SSE 注释
+			// 通道（不影响会话内容；preStream 为 nil 时安全跳过）。
+			OnNodeJump: func(message string) {
+				if preStream != nil {
+					preStream.writeThinking(message)
+				}
+			},
 			OnStreamHeartbeat: func() error {
 				if preStream != nil {
 					return preStream.session.Heartbeat()

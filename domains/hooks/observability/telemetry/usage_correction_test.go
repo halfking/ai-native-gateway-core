@@ -85,7 +85,7 @@ func TestUpdateRequestLog_DoesNotDowngradeCorrectedUsageSource(t *testing.T) {
 		WithArgs(requestLogUpdateArgs(RequestLogEntry{Success: true, RequestStatus: &status})...).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	mockDB.ExpectExec(`INSERT INTO request_logs_bodies_hot`).
-		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mockDB.ExpectCommit()
 

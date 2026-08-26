@@ -195,3 +195,91 @@ func handleDispatchMinuteStats(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"bucket": bucket.UTC().Truncate(time.Minute), "items": stats})
 }
+
+// handleDispatchDimensions serves GET /api/admin/dispatch/dimensions — the
+// per-dimension request membership index (v6 G-Ⅳ, 分维队列). Requests stay in
+// their model/credential/provider rings after completion until TTL/capacity
+// eviction, answering "which requests ran or are waiting on this node".
+//
+// Query:
+//   - kind: model|credential|provider (default model)
+//   - id:   dimension id (model name / credential id / provider id)
+//   - limit (default 50, max 200)
+//   - no id → returns the per-dimension key summary with live entry counts
+func handleDispatchDimensions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	pipeline := gatewayDispatchPipeline
+	if pipeline == nil || pipeline.DimensionIndex() == nil {
+		http.Error(w, "dispatch pipeline not wired", http.StatusServiceUnavailable)
+		return
+	}
+	index := pipeline.DimensionIndex()
+	q := r.URL.Query()
+	kind := dispatch.DimensionKind(strings.TrimSpace(q.Get("kind")))
+	switch kind {
+	case dispatch.DimensionModel, dispatch.DimensionCredential, dispatch.DimensionProvider:
+	default:
+		http.Error(w, "kind must be model|credential|provider", http.StatusBadRequest)
+		return
+	}
+	id := strings.TrimSpace(q.Get("id"))
+	limit := 50
+	if v := q.Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if id == "" {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"kind":       kind,
+			"dimensions": index.Dimensions()[kind],
+		})
+		return
+	}
+	snap := index.Snapshot(kind, id, limit)
+	if snap.Entries == nil {
+		snap.Entries = []dispatch.DimensionEntry{}
+	}
+	_ = json.NewEncoder(w).Encode(snap)
+}
+
+// handleDispatchRequestDimensions serves
+// GET /api/admin/dispatch/request-dimensions/{request_id} (V6-W1.6 R10,
+// scope-corrected 2026-08-27): the request's dimension MEMBERSHIP entries
+// (model/credential/provider + state/outcome/last action). The execution
+// trace (AttemptJournal) is attached to the request itself — post-hoc path
+// queries go to the request's own journey projection, NOT this endpoint.
+func handleDispatchRequestDimensions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	const prefix = "/api/admin/dispatch/request-dimensions/"
+	requestID := strings.Trim(strings.TrimPrefix(r.URL.Path, prefix), "/")
+	if requestID == "" || strings.Contains(requestID, "/") {
+		http.Error(w, "request_id required", http.StatusBadRequest)
+		return
+	}
+	pipeline := gatewayDispatchPipeline
+	if pipeline == nil || pipeline.DimensionIndex() == nil {
+		http.Error(w, "dispatch pipeline not wired", http.StatusServiceUnavailable)
+		return
+	}
+	entries, ok := pipeline.DimensionIndex().EntriesByRequest(requestID)
+	if !ok {
+		http.Error(w, "request not found in dimension index (TTL window expired or unknown request)", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"request_id": requestID,
+		"entries":    entries,
+	})
+}

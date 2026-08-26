@@ -516,6 +516,15 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 	// Top-level panic recovery so a panic during streaming (e.g. JSON parse
 	// failure, write to a closed connection) does not skip the deferred
 	// audit emit in the caller and lose the request_logs row entirely.
+	// Hoist gate above this defer so the recover closure can see it: a
+	// panic after the client already saw semantic output must not be
+	// classified as transparently resumable (would duplicate committed
+	// bytes). Mirrors responses_bridge.go (commit 485f3ca2e) and
+	// responses_stream.go. gate stays nil until wrapAttemptWriter assigns
+	// it; attemptHasClientSemanticOutput(nil, 0) returns false so the
+	// not-yet-wired case degrades to Resumable=true, the same as the
+	// sibling paths.
+	var gate *AttemptCommitGate
 	defer func() {
 		if r := recover(); r != nil {
 			slog.Error("stream panic recovered", "panic", r, "stack", string(debug.Stack()), "client_model", clientModel)
@@ -525,6 +534,7 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 			outcome.Interrupted = true
 			outcome.Reason = "stream_panic"
 			outcome.Kind = errorsx.KindUpstreamDown
+			outcome.Resumable = !attemptHasClientSemanticOutput(gate, 0)
 			if pc != nil {
 				pc.markInterrupted("stream_panic")
 			}
@@ -543,7 +553,7 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 
 	// SR-W1: route client frames through the attempt commit gate.
 	// Disabled (default) this is the identity function — legacy wire bytes.
-	w, gate := wrapAttemptWriter(w, ProtocolOpenAIChat)
+	w, gate = wrapAttemptWriter(w, ProtocolOpenAIChat)
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)
@@ -558,11 +568,14 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 		if capture != nil {
 			capture.MarkInterruptedWithReason("client_write_failed")
 		}
+		// Client connection is dead before any frame — including headers —
+		// reaches the wire. A transparent retry would re-attempt the same
+		// header flush on the same dead connection, wasting an upstream call.
 		return StreamOutcome{
 			Interrupted: true,
 			Reason:      "client_write_failed",
 			Kind:        errorsx.KindUpstreamDown,
-			Resumable:   true,
+			Resumable:   false,
 			ChunkCount:  0,
 		}
 	}
@@ -612,10 +625,17 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 		if !clientDisconnected || pc != nil {
 			return false
 		}
+		// Client connection is gone mid-stream. A transparent retry would
+		// re-attempt header writes against the same dead connection,
+		// wasting an upstream call regardless of whether semantic output
+		// had reached the wire. Mark non-resumable so the executor fails
+		// the task instead of transparently retrying. Mirrors the
+		// initial-flush site above and the deferred-Finish site in
+		// anthropic_bridge.go.
 		outcome.Interrupted = true
 		outcome.Reason = "client_write_failed"
 		outcome.Kind = errorsx.KindCanceled
-		outcome.Resumable = true
+		outcome.Resumable = false
 		outcome.ChunkCount = 0
 		if capture != nil {
 			capture.MarkInterruptedWithReason("client_write_failed")
@@ -941,15 +961,33 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 				outcome.Interrupted = true
 				outcome.Reason = "stream_timeout"
 				outcome.Kind = errorsx.KindStreamTimeout
-				outcome.Resumable = true // Timeout is resumable
+				// Gate-aware resumability. Mirrors the eof_without_done and
+				// default branches in this switch (and the stream_timeout
+				// branches in responses_stream.go:282 and
+				// anthropic_stream.go:503): a timeout after the client
+				// already saw semantic output must NOT be transparently
+				// retried — the next supplier node would duplicate committed
+				// bytes. The pre-fix "Timeout is resumable" comment was a
+				// simplification that this fix corrects.
+				outcome.Resumable = !attemptHasClientSemanticOutput(gate, chunkCount)
 				outcome.ChunkCount = chunkCount
-			default:
+default:
 				failure := streamReadFailureOutcome(readResult.err, chunkCount)
 				slog.Warn("stream read error", "error", readResult.err, "kind", failure.Kind, "reason", failure.Reason)
 				if capture != nil {
 					capture.MarkInterruptedWithReason(failure.Reason)
 				}
 				outcome = failure
+				// Gate-aware resumability. streamReadFailureOutcome hardcodes
+				// Resumable=true, but a recoverable read failure after the client
+				// already saw semantic output must NOT be transparently retried —
+				// the next supplier node would duplicate committed bytes. The
+				// downstream executor (executor_chat.go:1124) keeps an independent
+				// ceiling on chunk count (StreamRetryThreshold, default 50), and
+				// mayRetryInterruptedStream (executor.go:2963-2978) refuses retry
+				// when any chunk has been captured. Mirrors the gate-aware
+				// treatment in the eof_without_done and stream_timeout branches.
+				outcome.Resumable = !attemptHasClientSemanticOutput(gate, chunkCount)
 			}
 			return outcome
 		}
