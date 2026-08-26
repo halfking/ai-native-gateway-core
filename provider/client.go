@@ -135,11 +135,15 @@ type Candidate struct {
 	SupportsPromptCache  bool     `json:"supports_prompt_cache"`
 	CacheMode            string   `json:"cache_mode"`
 	ManualPriority       int      `json:"manual_priority"`
-	ActiveSessions       int      `json:"active_sessions"`
-	ConsecutiveFailures  int      `json:"consecutive_failures"`
-	CompositeScore       float64  `json:"composite_score"`
-	Currency             string   `json:"currency"`
-	BillingMode          string   `json:"billing_mode"`
+	// Priority is the explicit operator priority flag on a credential-model
+	// binding. It is additive to ManualPriority: routing keeps ManualPriority
+	// ordering while callers can surface this boolean in admin projections.
+	Priority            bool    `json:"priority"`
+	ActiveSessions      int     `json:"active_sessions"`
+	ConsecutiveFailures int     `json:"consecutive_failures"`
+	CompositeScore      float64 `json:"composite_score"`
+	Currency            string  `json:"currency"`
+	BillingMode         string  `json:"billing_mode"`
 	// ContextWindow is the upstream model's context window in tokens. Precedence
 	// (migration 523): credential×model override (credential_model_bindings
 	// .context_window_override) > canonical override (models_canonical
@@ -1277,10 +1281,10 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 			COALESCE(c.availability_state, 'ready') AS availability_state,
 			COALESCE(c.quota_state, 'ok') AS quota_state,
 			COALESCE(c.lifecycle_status, 'active') AS lifecycle_status,
-			COALESCE(mo.unit_price_in_per_1m, 0)::float8 AS unit_price_in_per_1m,
-			COALESCE(mo.unit_price_out_per_1m, 0)::float8 AS unit_price_out_per_1m,
-			COALESCE(mo.cache_read_price_per_1m, 0)::float8 AS cache_read_price_per_1m,
-			COALESCE(mo.cache_write_price_per_1m, 0)::float8 AS cache_write_price_per_1m,
+			COALESCE(mo.unit_price_in_per_1m, pp_fb.plan_in)::float8 AS unit_price_in_per_1m,
+			COALESCE(mo.unit_price_out_per_1m, pp_fb.plan_out)::float8 AS unit_price_out_per_1m,
+			mo.cache_read_price_per_1m::float8 AS cache_read_price_per_1m,
+			mo.cache_write_price_per_1m::float8 AS cache_write_price_per_1m,
 			-- is_routable comes from the unified VIEW (manual > auto priority).
 			-- Spec: 2026-06-12-credential-availability-audit-design §3.1
 			COALESCE(v.is_routable, FALSE) AS runtime_routable,
@@ -1288,6 +1292,7 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 			CASE WHEN cc.capability = 'prompt_caching' AND cc.supported IS TRUE THEN TRUE ELSE FALSE END AS supports_prompt_cache,
 			COALESCE(cc.evidence_json->>'cache_mode', '') AS cache_mode,
 			COALESCE(mo.manual_priority, 99)::int AS manual_priority,
+			COALESCE(mo.priority, FALSE) AS priority,
 			COALESCE(mo.active_sessions, 0)::int AS active_sessions,
 			COALESCE(mo.consecutive_failures, 0)::int AS consecutive_failures,
 			COALESCE(mo.currency, 'USD') AS currency,
@@ -1321,6 +1326,18 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 		       ON ma.raw_name = mo.canonical_raw_name
 		      AND COALESCE(ma.status, 'active') = 'active'
 		LEFT JOIN models_canonical mc ON mc.id = COALESCE(mo.canonical_id, ma.canonical_id)
+		LEFT JOIN LATERAL (
+			SELECT
+				NULLIF(pp.plan_json->>'input_per_1m', '')::float8 AS plan_in,
+				NULLIF(pp.plan_json->>'output_per_1m', '')::float8 AS plan_out
+			FROM pricing_plans pp
+			WHERE pp.model_canonical_id = mc.id
+			  AND pp.effective_to IS NULL
+			  AND (pp.credential_id = c.id OR pp.credential_id IS NULL)
+			ORDER BY CASE WHEN pp.credential_id = c.id THEN 0 ELSE 1 END,
+			         pp.effective_from DESC
+			LIMIT 1
+		) pp_fb ON TRUE
 		-- LEFT JOIN model_name_mapping for standardized name lookup fallback
 		LEFT JOIN model_name_mapping mnm
 		       ON mnm.raw_model_name = mo.canonical_raw_name
@@ -1368,7 +1385,10 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 			      -- transient failures; the executor and state manager soft-demote
 			      -- them instead of hard-excluding the only route.
 			      COALESCE(mo.billing_mode, 'per_token') <> 'free'
-			      AND rsr.samples >= 20
+			      -- MERGE-AUDIT 2026-08-27: preserve the prior hard-gate terms
+			      -- below for review, but disable exclusion so a degraded sibling
+			      -- remains routable and can be soft-demoted by ORDER BY.
+			      AND FALSE
 			      AND COALESCE(rsr.rate, 1.0) < 0.5
 			      -- A single-candidate model needs a recovery chance. Circuit,
 			      -- model-probe and permanent-state guards still apply; the
@@ -1450,6 +1470,7 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 			)
 
 		ORDER BY
+			CASE WHEN COALESCE(mo.priority, FALSE) AND COALESCE(c.quota_state, 'ok') = 'ok' THEN 0 ELSE 1 END,
 			CASE COALESCE(mo.billing_mode, 'per_token')
 				WHEN 'free' THEN 1
 				WHEN 'token_plan' THEN 1
@@ -1543,6 +1564,7 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 			&cand.SupportsPromptCache,
 			&cand.CacheMode,
 			&cand.ManualPriority,
+			&cand.Priority,
 			&cand.ActiveSessions,
 			&cand.ConsecutiveFailures,
 			&cand.Currency,
