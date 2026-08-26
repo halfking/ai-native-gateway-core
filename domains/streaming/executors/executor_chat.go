@@ -1488,9 +1488,13 @@ func (e *Executor) finalizeOpenAIUpstreamBody(params *ExecParams, cand provider.
 		if converter, ok := irScoped.(interface {
 			SetContext(*domain.TransportContext)
 		}); ok {
+			// V6-W1.6 T2: carry the dispatch request class (定时请求) into the
+			// converter so the parsed IR is class-stamped.
 			converter.SetContext(&domain.TransportContext{
 				UpstreamCatalogCode: cand.CatalogCode,
 				ProviderID:          cand.ProviderID,
+				RequestClass:        string(ir.ClassOf(params.DispatchDueAt)),
+				DueAt:               params.DispatchDueAt,
 			})
 		}
 		// Parse Anthropic body → IR → Serialize OpenAI
