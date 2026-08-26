@@ -67,16 +67,18 @@ describe('mergeDelta', () => {
     __testing.state.snapshot = {
       summary: { total: 2, success: 2, failure: 0 },
       detail_dimensions: {
+        credential: [],
         vendor: [lane('anthropic', 1), lane('openai', 1, [tile('r1')])],
         provider: [],
         model: [],
       },
       dimensions: {
+        credential: [],
         vendor: [lane('anthropic', 1), lane('openai', 1, [tile('r1')])],
         provider: [],
         model: [],
       },
-      dimension_legends: { vendor: [], provider: [], model: [] },
+      dimension_legends: { credential: [], vendor: [], provider: [], model: [] },
       status_legends: [],
     }
   })
@@ -86,11 +88,12 @@ describe('mergeDelta', () => {
     const delta: LiveStreamDelta = {
       summary: { total: 3, success: 3, failure: 0 },
       changed_lanes: {
+        credential: [],
         vendor: [lane('anthropic', 2), lane('openai', 1, [tile('r1')])],
         provider: [],
         model: [],
       },
-      dimension_legends: { vendor: [], provider: [], model: [] },
+      dimension_legends: { credential: [], vendor: [], provider: [], model: [] },
       status_legends: [],
     }
     __testing.mergeDelta(delta)
@@ -103,11 +106,12 @@ describe('mergeDelta', () => {
     const delta: LiveStreamDelta = {
       summary: { total: 3, success: 3, failure: 0 },
       changed_lanes: {
+        credential: [],
         vendor: [lane('anthropic', 1), lane('openai', 2, [tile('r1'), tile('r2')])],
         provider: [],
         model: [],
       },
-      dimension_legends: { vendor: [], provider: [], model: [] },
+      dimension_legends: { credential: [], vendor: [], provider: [], model: [] },
       status_legends: [],
     }
     __testing.mergeDelta(delta)
@@ -123,11 +127,12 @@ describe('mergeDelta', () => {
     const delta: LiveStreamDelta = {
       summary: { total: 2, success: 2, failure: 0 },
       changed_lanes: {
+        credential: [],
         vendor: [lane('anthropic', 1), lane('openai', 1, [tile('r2')])],
         provider: [],
         model: [],
       },
-      dimension_legends: { vendor: [], provider: [], model: [] },
+      dimension_legends: { credential: [], vendor: [], provider: [], model: [] },
       status_legends: [],
     }
 
@@ -152,6 +157,7 @@ describe('mergeDelta', () => {
     const delta: LiveStreamDelta = {
       summary: { total: 4, success: 3, failure: 0 },
       changed_lanes: {
+        credential: [],
         vendor: [
           lane('google', 1, [tile('r3')]),
           lane('anthropic', 2),
@@ -160,13 +166,41 @@ describe('mergeDelta', () => {
         provider: [],
         model: [],
       },
-      dimension_legends: { vendor: [], provider: [], model: [] },
+      dimension_legends: { credential: [], vendor: [], provider: [], model: [] },
       status_legends: [],
     }
     __testing.mergeDelta(delta)
     const after = __testing.state.snapshot!.dimensions.vendor
     expect(after.map((l) => l.id)).toEqual(['google', 'anthropic', 'openai'])
     expect(after[2]).toBe(openaiBefore)
+  })
+
+  it('merges credential lanes from an SSE delta', () => {
+    const delta: LiveStreamDelta = {
+      summary: { total: 1, success: 1, failure: 0 },
+      changed_lanes: {
+        credential: [{
+          ...lane('credential-42', 1, [tile('r-credential')]),
+          dimension: 'credential',
+          name: 'Primary credential',
+        }],
+        vendor: [],
+        provider: [],
+        model: [],
+      },
+      dimension_legends: {
+        credential: [{ key: 'credential-42', name: 'Primary credential', count: 1 }],
+        vendor: [],
+        provider: [],
+        model: [],
+      },
+      status_legends: [],
+    }
+
+    __testing.mergeDelta(delta)
+
+    expect(__testing.state.snapshot!.dimensions.credential[0]?.name).toBe('Primary credential')
+    expect(__testing.state.snapshot!.dimension_legends.credential[0]?.key).toBe('credential-42')
   })
 })
 
@@ -179,9 +213,9 @@ describe('mergeSnapshotFromServer', () => {
     __testing.resetStream()
     __testing.state.snapshot = {
       summary: { total: 1, success: 1, failure: 0 },
-      detail_dimensions: { vendor: [lane('openai', 1, [tile('r1')])], provider: [], model: [] },
-      dimensions: { vendor: [lane('openai', 1, [tile('r1')])], provider: [], model: [] },
-      dimension_legends: { vendor: [], provider: [], model: [] },
+      detail_dimensions: { credential: [], vendor: [lane('openai', 1, [tile('r1')])], provider: [], model: [] },
+      dimensions: { credential: [], vendor: [lane('openai', 1, [tile('r1')])], provider: [], model: [] },
+      dimension_legends: { credential: [], vendor: [], provider: [], model: [] },
       status_legends: [],
     }
   })
@@ -189,9 +223,9 @@ describe('mergeSnapshotFromServer', () => {
   it('removes lanes omitted by an authoritative snapshot', () => {
     __testing.mergeSnapshotFromServer({
       summary: { total: 0, success: 0, failure: 0 },
-      detail_dimensions: { vendor: [], provider: [], model: [] },
-      dimensions: { vendor: [], provider: [], model: [] },
-      dimension_legends: { vendor: [], provider: [], model: [] },
+      detail_dimensions: { credential: [], vendor: [], provider: [], model: [] },
+      dimensions: { credential: [], vendor: [], provider: [], model: [] },
+      dimension_legends: { credential: [], vendor: [], provider: [], model: [] },
       status_legends: [],
     })
     expect(__testing.state.snapshot!.dimensions.vendor.map((l) => l.id)).toEqual([])
@@ -200,9 +234,9 @@ describe('mergeSnapshotFromServer', () => {
   it('updates summary from incoming without dropping lanes', () => {
     __testing.mergeSnapshotFromServer({
       summary: { total: 2, success: 2, failure: 0 },
-      detail_dimensions: { vendor: [lane('openai', 2, [tile('r1'), tile('r2')])], provider: [], model: [] },
-      dimensions: { vendor: [lane('openai', 2, [tile('r1'), tile('r2')])], provider: [], model: [] },
-      dimension_legends: { vendor: [], provider: [], model: [] },
+      detail_dimensions: { credential: [], vendor: [lane('openai', 2, [tile('r1'), tile('r2')])], provider: [], model: [] },
+      dimensions: { credential: [], vendor: [lane('openai', 2, [tile('r1'), tile('r2')])], provider: [], model: [] },
+      dimension_legends: { credential: [], vendor: [], provider: [], model: [] },
       status_legends: [],
     })
     expect(__testing.state.snapshot!.summary.total).toBe(2)
@@ -216,9 +250,9 @@ describe('mergeSnapshotFromServer', () => {
       ts: '2026-07-14T00:01:00Z',
       snapshot: {
         summary: { total: 2, success: 2, failure: 0 },
-        detail_dimensions: { vendor: [lane('openai', 2, [tile('r1'), tile('r2')])], provider: [], model: [] },
-        dimensions: { vendor: [lane('openai', 2, [tile('r1'), tile('r2')])], provider: [], model: [] },
-        dimension_legends: { vendor: [], provider: [], model: [] },
+        detail_dimensions: { credential: [], vendor: [lane('openai', 2, [tile('r1'), tile('r2')])], provider: [], model: [] },
+        dimensions: { credential: [], vendor: [lane('openai', 2, [tile('r1'), tile('r2')])], provider: [], model: [] },
+        dimension_legends: { credential: [], vendor: [], provider: [], model: [] },
         status_legends: [],
       },
     })
@@ -229,11 +263,12 @@ describe('mergeSnapshotFromServer', () => {
     const delta: LiveStreamDelta = {
       summary: { total: 2, success: 2, failure: 0 },
       changed_lanes: {
+        credential: [],
         vendor: [lane('anthropic', 2), lane('openai', 1, [tile('r1')])],
         provider: [],
         model: [],
       },
-      dimension_legends: { vendor: [], provider: [], model: [] },
+      dimension_legends: { credential: [], vendor: [], provider: [], model: [] },
       status_legends: [],
     }
     __testing.handleEnvelope({ type: 'idle_marker', ts: '2026-07-14T00:01:00Z', delta })
@@ -252,9 +287,9 @@ describe('mergeSnapshotFromServer', () => {
       ts: '2026-07-14T00:01:00Z',
       snapshot: {
         summary: { total: 1, success: 1, failure: 0 },
-        detail_dimensions: { vendor: [lane('openai', 1, [tile('r1')])], provider: [], model: [] },
-        dimensions: { vendor: [lane('openai', 1, [tile('r1')])], provider: [], model: [] },
-        dimension_legends: { vendor: [], provider: [], model: [] },
+        detail_dimensions: { credential: [], vendor: [lane('openai', 1, [tile('r1')])], provider: [], model: [] },
+        dimensions: { credential: [], vendor: [lane('openai', 1, [tile('r1')])], provider: [], model: [] },
+        dimension_legends: { credential: [], vendor: [], provider: [], model: [] },
         status_legends: [],
         latest_request_ts: '2026-07-14T12:00:02Z',
       },
@@ -271,9 +306,9 @@ describe('mergeSnapshotFromServer', () => {
       ts: '2026-07-14T00:01:00Z',
       snapshot: {
         summary: { total: 1, success: 1, failure: 0 },
-        detail_dimensions: { vendor: [lane('openai', 1, [tile('r1')])], provider: [], model: [] },
-        dimensions: { vendor: [lane('openai', 1, [tile('r1')])], provider: [], model: [] },
-        dimension_legends: { vendor: [], provider: [], model: [] },
+        detail_dimensions: { credential: [], vendor: [lane('openai', 1, [tile('r1')])], provider: [], model: [] },
+        dimensions: { credential: [], vendor: [lane('openai', 1, [tile('r1')])], provider: [], model: [] },
+        dimension_legends: { credential: [], vendor: [], provider: [], model: [] },
         status_legends: [],
         latest_request_ts: '2026-07-14T12:00:02Z',
       },
@@ -284,9 +319,9 @@ describe('mergeSnapshotFromServer', () => {
       ts: '2026-07-14T00:02:00Z',
       snapshot: {
         summary: { total: 999, success: 999, failure: 0 },
-        detail_dimensions: { vendor: [lane('openai', 999, [tile('r1')])], provider: [], model: [] },
-        dimensions: { vendor: [lane('openai', 999, [tile('r1')])], provider: [], model: [] },
-        dimension_legends: { vendor: [], provider: [], model: [] },
+        detail_dimensions: { credential: [], vendor: [lane('openai', 999, [tile('r1')])], provider: [], model: [] },
+        dimensions: { credential: [], vendor: [lane('openai', 999, [tile('r1')])], provider: [], model: [] },
+        dimension_legends: { credential: [], vendor: [], provider: [], model: [] },
         status_legends: [],
         latest_request_ts: '2026-07-14T12:00:01Z',
       },
@@ -304,9 +339,9 @@ describe('mergeSnapshotFromServer', () => {
       ts: '2026-07-14T00:01:00Z',
       snapshot: {
         summary: { total: 1, success: 1, failure: 0 },
-        detail_dimensions: { vendor: [lane('openai', 1, [tile('r1')])], provider: [], model: [] },
-        dimensions: { vendor: [lane('openai', 1, [tile('r1')])], provider: [], model: [] },
-        dimension_legends: { vendor: [], provider: [], model: [] },
+        detail_dimensions: { credential: [], vendor: [lane('openai', 1, [tile('r1')])], provider: [], model: [] },
+        dimensions: { credential: [], vendor: [lane('openai', 1, [tile('r1')])], provider: [], model: [] },
+        dimension_legends: { credential: [], vendor: [], provider: [], model: [] },
         status_legends: [],
         latest_request_ts: '2026-07-14T12:00:01Z',
       },
@@ -318,11 +353,12 @@ describe('mergeSnapshotFromServer', () => {
       delta: {
         summary: { total: 2, success: 2, failure: 0 },
         changed_lanes: {
+          credential: [],
           vendor: [lane('openai', 2, [{ ...tile('r2'), timestamp: '2026-07-14T12:00:03Z' }])],
           provider: [],
           model: [],
         },
-        dimension_legends: { vendor: [], provider: [], model: [] },
+        dimension_legends: { credential: [], vendor: [], provider: [], model: [] },
         status_legends: [],
       },
     })
@@ -333,9 +369,9 @@ describe('mergeSnapshotFromServer', () => {
       ts: '2026-07-14T00:02:00Z',
       snapshot: {
         summary: { total: 999, success: 999, failure: 0 },
-        detail_dimensions: { vendor: [lane('openai', 999, [tile('r1')])], provider: [], model: [] },
-        dimensions: { vendor: [lane('openai', 999, [tile('r1')])], provider: [], model: [] },
-        dimension_legends: { vendor: [], provider: [], model: [] },
+        detail_dimensions: { credential: [], vendor: [lane('openai', 999, [tile('r1')])], provider: [], model: [] },
+        dimensions: { credential: [], vendor: [lane('openai', 999, [tile('r1')])], provider: [], model: [] },
+        dimension_legends: { credential: [], vendor: [], provider: [], model: [] },
         status_legends: [],
         latest_request_ts: '2026-07-14T12:00:02Z',
       },
@@ -428,16 +464,18 @@ describe('mergeTilesById — deterministic ordering (no-jump invariants)', () =>
       snapshot: {
         summary: { total: 3, success: 3, failure: 0 },
         dimensions: {
+          credential: [],
           vendor: [lane('openai', 3, [...newestFirst])],
           provider: [lane('openai', 3, [...newestFirst])],
           model: [lane('gpt-4o', 3, [...newestFirst])],
         },
         detail_dimensions: {
+          credential: [],
           vendor: [lane('openai', 3, [...newestFirst])],
           provider: [lane('openai', 3, [...newestFirst])],
           model: [lane('gpt-4o', 3, [...newestFirst])],
         },
-        dimension_legends: { vendor: [], provider: [], model: [] },
+        dimension_legends: { credential: [], vendor: [], provider: [], model: [] },
         status_legends: [],
         latest_request_ts: tsAt(30),
       },
@@ -472,11 +510,12 @@ describe('mergeTilesById — deterministic ordering (no-jump invariants)', () =>
       delta: {
         summary: { total: 2, success: 2, failure: 0 },
         changed_lanes: {
+          credential: [],
           vendor: [lane('new-vendor', 2, newestFirst)],
           provider: [],
           model: [],
         },
-        dimension_legends: { vendor: [], provider: [], model: [] },
+        dimension_legends: { credential: [], vendor: [], provider: [], model: [] },
         status_legends: [],
       },
     })
@@ -529,9 +568,9 @@ describe('mergeTilesById — deterministic ordering (no-jump invariants)', () =>
         ts: '2026-07-26T00:00:00Z',
         snapshot: {
           summary: { total: tiles.length, success: tiles.length, failure: 0 },
-          dimensions: { vendor: [lane('openai', tiles.length, tiles)], provider: [], model: [] },
-          detail_dimensions: { vendor: [lane('openai', tiles.length, tiles)], provider: [], model: [] },
-          dimension_legends: { vendor: [], provider: [], model: [] },
+          dimensions: { credential: [], vendor: [lane('openai', tiles.length, tiles)], provider: [], model: [] },
+          detail_dimensions: { credential: [], vendor: [lane('openai', tiles.length, tiles)], provider: [], model: [] },
+          dimension_legends: { credential: [], vendor: [], provider: [], model: [] },
           status_legends: [],
           latest_request_ts: tiles[tiles.length - 1]?.timestamp || '',
         },
@@ -599,9 +638,9 @@ describe('request_lifecycle stage_category patch', () => {
       ts: tsAt(1),
       snapshot: {
         summary: { total: 1, success: 0, failure: 0, in_progress: 1 },
-        dimensions: { vendor: [lane('openai', 1, [inflight])], provider: [], model: [] },
-        detail_dimensions: { vendor: [lane('openai', 1, [inflight])], provider: [], model: [] },
-        dimension_legends: { vendor: [], provider: [], model: [] },
+        dimensions: { credential: [], vendor: [lane('openai', 1, [inflight])], provider: [], model: [] },
+        detail_dimensions: { credential: [], vendor: [lane('openai', 1, [inflight])], provider: [], model: [] },
+        dimension_legends: { credential: [], vendor: [], provider: [], model: [] },
         status_legends: [],
         latest_request_ts: tsAt(1),
       },

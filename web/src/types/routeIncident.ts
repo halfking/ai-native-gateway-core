@@ -19,7 +19,7 @@ export interface RouteIncidentRouteKey {
 }
 
 export interface RouteIncidentAffectedLane {
-  dimension: 'provider' | 'model' | 'vendor'
+  dimension: 'credential' | 'provider' | 'model' | 'vendor'
   value: string
 }
 
@@ -160,7 +160,7 @@ export interface RouteIncidentTimelineResponse {
 // envelope carries the affected_lanes list; the frontend reduces
 // it to a LaneKey per active groupBy dimension.
 export interface LaneKey {
-  dimension: 'vendor' | 'provider' | 'model'
+  dimension: 'credential' | 'vendor' | 'provider' | 'model'
   value: string
 }
 
