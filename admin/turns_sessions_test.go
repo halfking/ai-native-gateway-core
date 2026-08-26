@@ -310,6 +310,22 @@ func TestTurnsSessionsListSQL_SlimMainQuery(t *testing.T) {
 	if !strings.Contains(sql, "session_title_states tstate") {
 		t.Fatalf("main query must join tstate for search: %s", sql)
 	}
+	// 2026-08-26: 验证 session_analysis_metadata LATERAL join 已就位 —— 排序
+	// 规则（status='final' 优先 + updated_at DESC）和投影列（status/schema_version/
+	// input_hash/source_task_id/updated_at/payload）必须出现，避免后续重构悄悄
+	// 退化到普通 LEFT JOIN 而导致一对多行重复或误读到旧 provisional。
+	if !strings.Contains(sql, "LEFT JOIN LATERAL") {
+		t.Fatalf("main query must use LATERAL join for session_analysis_metadata: %s", sql)
+	}
+	if !strings.Contains(sql, "session_analysis_metadata sam") {
+		t.Fatalf("main query must alias session_analysis_metadata as sam: %s", sql)
+	}
+	if !strings.Contains(sql, "(sam.status = 'final') DESC") {
+		t.Fatalf("main query must prefer status='final' over 'provisional': %s", sql)
+	}
+	if !strings.Contains(sql, "sam.payload") {
+		t.Fatalf("main query must project sam.payload for SessionAnalysisView.Payload: %s", sql)
+	}
 }
 
 func TestResolveTurnsSessionsTenant(t *testing.T) {

@@ -102,6 +102,11 @@ type TurnsSessionGroup struct {
 	// 回环分支会话）按 ID 前缀推导。
 	ParentSessionID *string `json:"parent_session_id,omitempty"`
 	ParentRelation  *string `json:"parent_relation,omitempty"` // handoff | auto_title | auto_summary
+
+	// SessionAnalysis 是 migration 567 的 session_analysis_metadata 读侧投影
+	// （LEFT JOIN LATERAL 命中时非空）。Payload 字段是 sessionmeta.Result，
+	// 与 admin/session-analytics/* 的窄视图保持同一形状。
+	SessionAnalysis *SessionAnalysisView `json:"session_analysis,omitempty"`
 }
 
 // TurnGroupItem 是会话内单个轮次的记录（含 compression / cache / failover 明细）。
@@ -134,30 +139,39 @@ type TurnGroupItem struct {
 
 // turnsSessionsListSQL 是会话列表主查询（不含 WHERE/LIMIT）。
 // api_key / handoff 在分页结果确定后批量 enrich，避免每行 LATERAL 扫 request_logs。
+//
+// 2026-08-26: 增加 LEFT JOIN LATERAL session_analysis_metadata（migration 567），
+// 暴露 SessionAnalysisView。前端轮次列表页直接渲染 agent/work_types/project，
+// 不再依赖额外的 /session-analytics/* 调用。该 join 走 (tenant_id, scoped_session_id)
+// 选择 status='final' 优先、最新 updated_at 兜底（见 session_meta_view.go）。
 func turnsSessionsListSQL() string {
 	return fmt.Sprintf(`
-		SELECT s.session_id, s.tenant_id,
-				COALESCE(NULLIF(s.title, ''), st.title, ss.title) AS title,
-				s.topic,
-				COALESCE(NULLIF(s.intent, ''), ss.user_intent) AS intent,
-				COALESCE(NULLIF(s.summary, ''), ss.summary) AS summary,
-				s.summary_model, s.summary_generated_at,
-				s.status, s.task_type, s.client_type,
-				s.created_at, s.updated_at, s.closed_at,
-				s.total_turns, s.total_tokens, s.total_cost_usd,
-				s.last_turn_no, s.last_model, s.last_provider,
-				%s, sd.task_id, sd.owner_user,
-				sd.client_id, sd.application_code, sd.end_user_id,
-				COALESCE(ss.user_tags, '{}') AS user_tags,
-				ss.first_request_at AS start_time
-		FROM public.sessions s
-		LEFT JOIN session_dim sd
-			ON sd.gw_session_id = s.session_id AND sd.tenant_id = s.tenant_id
-		LEFT JOIN session_summaries ss
-			ON ss.session_key = s.session_id AND ss.tenant_id = s.tenant_id
-		LEFT JOIN public.session_title_states tstate
-			ON tstate.tenant_id = s.tenant_id AND tstate.scoped_session_id = s.session_id
-		%s`, turnsSessionProjectExpr,
+			SELECT s.session_id, s.tenant_id,
+					COALESCE(NULLIF(s.title, ''), st.title, ss.title) AS title,
+					s.topic,
+					COALESCE(NULLIF(s.intent, ''), ss.user_intent) AS intent,
+					COALESCE(NULLIF(s.summary, ''), ss.summary) AS summary,
+					s.summary_model, s.summary_generated_at,
+					s.status, s.task_type, s.client_type,
+					s.created_at, s.updated_at, s.closed_at,
+					s.total_turns, s.total_tokens, s.total_cost_usd,
+					s.last_turn_no, s.last_model, s.last_provider,
+					%s, sd.task_id, sd.owner_user,
+					sd.client_id, sd.application_code, sd.end_user_id,
+					COALESCE(ss.user_tags, '{}') AS user_tags,
+					ss.first_request_at AS start_time,
+					%s
+			FROM public.sessions s
+			LEFT JOIN session_dim sd
+				ON sd.gw_session_id = s.session_id AND sd.tenant_id = s.tenant_id
+			LEFT JOIN session_summaries ss
+				ON ss.session_key = s.session_id AND ss.tenant_id = s.tenant_id
+			LEFT JOIN public.session_title_states tstate
+				ON tstate.tenant_id = s.tenant_id AND tstate.scoped_session_id = s.session_id
+			%s
+			%s`, turnsSessionProjectExpr,
+		sessionAnalysisSelectCols(),
+		sessionAnalysisJoinSQL(),
 		sessionTitleFallbackJoinSQL("s.session_id", "sd.task_id"))
 }
 
@@ -251,6 +265,13 @@ func (h *Handler) handleTurnsSessions(w http.ResponseWriter, r *http.Request) {
 	sessions := make([]*TurnsSessionGroup, 0, limit+1)
 	for rows.Next() {
 		var g TurnsSessionGroup
+		// session_analysis_metadata 列（LEFT JOIN LATERAL 命中时为非空）。
+		var (
+			saStatus, saSchemaVersion, saInputHash string
+			saSourceTaskID                          *string
+			saUpdatedAt                             *time.Time
+			saPayloadRaw                            []byte
+		)
 		if err := rows.Scan(
 			&g.SessionID, &g.TenantID, &g.Title, &g.Topic, &g.Intent,
 			&g.Summary, &g.SummaryModel, &g.SummaryGeneratedAt,
@@ -261,6 +282,7 @@ func (h *Handler) handleTurnsSessions(w http.ResponseWriter, r *http.Request) {
 			&g.ProjectID, &g.TaskID, &g.OwnerUser,
 			&g.ClientID, &g.ApplicationCode, &g.EndUserID,
 			&g.UserTags, &g.StartTime,
+			&saStatus, &saSchemaVersion, &saInputHash, &saSourceTaskID, &saUpdatedAt, &saPayloadRaw,
 		); err != nil {
 			slog.Warn("admin handleTurnsSessions scan failed", "err", err.Error())
 			writeError(w, http.StatusInternalServerError, "scan session failed")
@@ -271,6 +293,11 @@ func (h *Handler) handleTurnsSessions(w http.ResponseWriter, r *http.Request) {
 			g.UserTags = []string{}
 		}
 		g.Compression = TurnsCompressionAgg{Strategies: []string{}}
+		if saStatus != "" {
+			var view SessionAnalysisView
+			scanSessionAnalysis(&view, saStatus, saSchemaVersion, saInputHash, saSourceTaskID, saUpdatedAt, saPayloadRaw)
+			g.SessionAnalysis = &view
+		}
 
 		sessions = append(sessions, &g)
 	}
