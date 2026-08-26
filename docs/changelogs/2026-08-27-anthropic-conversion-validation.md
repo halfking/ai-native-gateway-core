@@ -24,3 +24,7 @@ The 2026-08-27 request audit for `claude-sonnet-5` showed that the persisted req
 ## Remaining Risk
 
 The repository-wide test command is currently blocked by pre-existing compile and test failures in unrelated packages. The conversion fix must still pass the 245 deployment gate before any promotion to 154.
+
+## Audit Follow-up
+
+The follow-up audit confirmed that the branch also contains concurrent session changes in routing, summary, live-stream, and credential modules. Those changes were preserved and are listed by `git diff main...HEAD`; they were not reverted or folded into the conversion diagnosis. A merge-path regression test now verifies that protocol metadata survives request-log entry aggregation.
