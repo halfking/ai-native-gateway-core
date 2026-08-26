@@ -34,6 +34,7 @@ import {
   WINDOW_MINUTES,
   STATS_REFRESH_MS,
   CARD_ENTRY_LIMIT,
+  MODEL_HEADER_ENTRY_LIMIT,
   mergeCardWindowEntries,
   assignSpacedPriorities,
   cardWidthFromCapacity,
@@ -770,7 +771,33 @@ function windowEntriesFor(group: ModelGroup, credentialId: number): CallEntry[] 
   const model = group.reorderRawModel
     ?? (group.rawModels.length > 0 ? group.rawModels[0] : undefined)
   if (!model) return []
-  return windowEntriesByKey.value.get(statsKey(credentialId, model)) ?? []
+  // node-card mini window 固定只显示 CARD_ENTRY_LIMIT 条；模型标题的
+  // 50-icon strip 在 modelRecentEntries() 里另读全量 entries 数组。
+  return (windowEntriesByKey.value.get(statsKey(credentialId, model)) ?? []).slice(0, CARD_ENTRY_LIMIT)
+}
+
+// 2026-08-26 模型标题最近 50 次请求图标：聚合该模型覆盖的
+// (credential, raw_model) 对的所有 CallEntry，按时间升序（旧→新）排好后
+// 截取最近 50 条。windowEntriesByKey 已被 refreshWindowStats 30s 周期按
+// MODEL_HEADER_ENTRY_LIMIT 填好，这里只读不写，复用现成数据避免额外的
+// HTTP 请求。条目上限实际为后端 hard cap 48（admin/credential_monitor_sliding_window.go
+// 的 slidingWindowBatchMaxEntryRet），用户面写为"最近 50"。
+function modelRecentEntries(group: ModelGroup): CallEntry[] {
+  const merged: CallEntry[] = []
+  for (const node of group.nodes) {
+    for (const rawModel of group.rawModels) {
+      const key = statsKey(node.credential_id, rawModel)
+      const entries = windowEntriesByKey.value.get(key)
+      if (!entries || entries.length === 0) continue
+      for (const entry of entries) merged.push(entry)
+    }
+  }
+  if (merged.length === 0) return []
+  // 按时间升序：最旧在左、最新在右。
+  merged.sort((a, b) => (a.ts ?? 0) - (b.ts ?? 0))
+  return merged.length > MODEL_HEADER_ENTRY_LIMIT
+    ? merged.slice(-MODEL_HEADER_ENTRY_LIMIT)
+    : merged
 }
 
 async function refreshWindowStats() {
@@ -810,13 +837,16 @@ async function refreshWindowStats() {
     next.set(statsKey(credentialId, model), { success, failed, total })
   }
   const applyEntries = (credentialId: number, model: string, entries: CallEntry[] | undefined) => {
-    mergeCardWindowEntries(nextEntries, statsKey(credentialId, model), entries)
+    // 2026-08-26: 用 MODEL_HEADER_ENTRY_LIMIT 取代默认 CARD_ENTRY_LIMIT，
+    // 让模型标题 50-icon strip 能拿到全量；node-card mini window 在
+    // windowEntriesFor() 里自行 .slice(CARD_ENTRY_LIMIT) 截短。
+    mergeCardWindowEntries(nextEntries, statsKey(credentialId, model), entries, MODEL_HEADER_ENTRY_LIMIT)
   }
 
   try {
     const batch = await getSlidingWindowBatch(
       targets.map(t => ({ credential_id: t.credentialId, model: t.model })),
-      { minutes: WINDOW_MINUTES, includeEntries: true, entryLimit: CARD_ENTRY_LIMIT },
+      { minutes: WINDOW_MINUTES, includeEntries: true, entryLimit: MODEL_HEADER_ENTRY_LIMIT },
       { signal: controller.signal },
     )
     if (controller.signal.aborted) return
@@ -1065,9 +1095,24 @@ function formatTs(ts: string | undefined): string {
             <span v-if="group.featured" class="qp-model-tag">特色</span>
             <span v-if="group.hotRequests" class="qp-model-tag qp-model-tag--hot">热门 {{ group.hotRequests }}</span>
             <span class="qp-pill">{{ group.nodes.length }} 节点</span>
-            <!-- 请求图标（缩微版）：右侧显示该模型当前正在处理的请求数；
-                 默认折叠状态下仍能直接看到是否在跑流量，无需展开。 -->
+            <!-- 最近 50 次请求图标条：右侧显示该模型最近 50 次请求的结果小条，
+                 从左到右旧→新；默认折叠状态下仍能直接看到最近流量状态。
+                 当数据尚未到达时降级回单图标 + 当前请求数。 -->
             <span
+              v-if="modelRecentEntries(group).length > 0"
+              class="qp-model-rq-strip"
+              :title="`${modelRecentEntries(group).length} 条最近请求（最旧在左，最新在右）`"
+              aria-hidden="true"
+            >
+              <span
+                v-for="(entry, idx) in modelRecentEntries(group)"
+                :key="`${entry.rid || 'r'}-${entry.ts}-${idx}`"
+                class="qp-model-rq-cell"
+                :class="entry.ok ? 'ok' : 'bad'"
+              />
+            </span>
+            <span
+              v-else
               class="qp-model-rq-icon"
               :class="{ 'qp-model-rq-icon--active': group.requestCount > 0 }"
               :title="`${group.requestCount} 当前请求`"
@@ -1610,4 +1655,32 @@ function formatTs(ts: string | undefined): string {
   background: color-mix(in srgb, var(--kx-primary) 8%, var(--kx-surface));
 }
 .qp-model-rq-count { font-weight: 600; }
+
+/* 模型标题右侧最近 50 次请求图标条（2026-08-26）：
+   复用节点小窗的配色与节奏，左→右旧→新；折叠状态下也能让操作员
+   一眼看到该模型最近流量是连续成功还是零星失败。 */
+.qp-model-rq-strip {
+  display: inline-flex;
+  align-items: stretch;
+  gap: 1px;
+  height: 12px;
+  padding: 2px 4px;
+  border-radius: 4px;
+  background: var(--kx-bg, var(--kx-surface));
+  border: 1px solid var(--kx-border);
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 240px;
+  justify-content: flex-end;
+  overflow: hidden;
+}
+.qp-model-rq-cell {
+  flex: 0 0 3px;
+  width: 3px;
+  min-width: 2px;
+  border-radius: 1px;
+  background: var(--kx-success);
+  align-self: center;
+}
+.qp-model-rq-cell.bad { background: var(--kx-danger); }
 </style>

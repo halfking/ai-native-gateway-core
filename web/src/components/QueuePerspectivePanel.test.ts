@@ -813,7 +813,7 @@ describe('QueuePerspectivePanel', () => {
 
     expect(getSlidingWindowBatch).toHaveBeenCalledWith(
       expect.any(Array),
-      expect.objectContaining({ includeEntries: true, entryLimit: 24 }),
+      expect.objectContaining({ includeEntries: true, entryLimit: 50 }),
       expect.anything(),
     )
     expect(getSlidingWindow).not.toHaveBeenCalled()
@@ -876,6 +876,63 @@ describe('QueuePerspectivePanel', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('renders a 50-cell request strip on the model header, sorted oldest→newest', async () => {
+    // 2026-08-26: 模型标题右侧展示最近 50 次请求图标条（左→右旧→新）。
+    // 这里给一个模型节点喂 60 条历史样本，断言：
+    //   1) 标题栏渲染 .qp-model-rq-strip
+    //   2) 最多 50 个 .qp-model-rq-cell
+    //   3) 默认折叠状态下仍可见
+    //   4) 颜色按 entry.ok 区分成功/失败
+    //   5) 顺序：cell[0] 是最旧、cell[49] 是最新
+    const entries = Array.from({ length: 60 }, (_, i) => ({
+      rid: `r-${i}`,
+      ts: 1_700_000_000_000 + i * 1_000, // +1s each, oldest first
+      ok: i % 7 !== 0, // every 7th entry fails
+      lat: 10 + i,
+    }))
+    getSlidingWindowBatch.mockReset().mockResolvedValue({
+      window_minutes: 5,
+      count: 1,
+      results: [{
+        credential_id: 1,
+        model: 'm-1',
+        source: 'redis',
+        stats: { total: 60, success: 51, failed: 9, failure_rate: 0.15 },
+        entries,
+      }],
+    })
+    resolveRouting.mockImplementation(async (model: string) => ({
+      raw_models: [model],
+      reorder_revision: `rev-${model}`,
+      reorder_canonical_id: 200,
+      candidates: model === 'm-1'
+        ? [{ credential_id: 1, model_name: 'm-1', canonical_id: 200, manual_priority: 5, credential_label: 'a' }]
+        : [],
+    }))
+    liveStreamState.nodes = [
+      { credential_id: 1, provider_id: 1, provider_code: 'p', manual_disabled: false, circuit_state: 'closed', raw_models: ['m-1'] },
+    ]
+
+    const wrapper = mountPanel()
+    await flushPromises()
+    await flushPromises()
+
+    const strip = wrapper.find('.qp-model-rq-strip')
+    expect(strip.exists()).toBe(true)
+    const cells = wrapper.findAll('.qp-model-rq-cell')
+    expect(cells).toHaveLength(50)
+    // mock 返回 60 条样本，ok = i % 7 !== 0 → i=0,7,14,21,28,35,42,49,56 失败 (9 条)；
+    // 前端 mergeCardWindowEntries 用 MODEL_HEADER_ENTRY_LIMIT=50 截取前 50 条
+    // （i=0..49），所以 8 个失败 (i=0,7,14,21,28,35,42,49)、42 个成功。
+    expect(wrapper.findAll('.qp-model-rq-cell.bad')).toHaveLength(8)
+    expect(wrapper.findAll('.qp-model-rq-cell.ok')).toHaveLength(42)
+    // 折叠态下也可见（用户不需要点开 group 才能看到）。
+    expect(wrapper.findAll('.qp-model-group-body')).toHaveLength(0)
+    // 标题 tooltip 反映最近请求计数。
+    const titles = strip.attributes('title') ?? ''
+    expect(titles).toMatch(/50 条最近请求/)
   })
 
   it('falls back to cached credential label on node cards when SSE and resolve omit it', async () => {
