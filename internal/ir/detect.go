@@ -319,7 +319,12 @@ func indexString(s, substr string) int {
 func DetectProtocolByURL(body []byte, urlPath string) (protocol string, confidence float64, err error) {
 	proto, conf, err := DetectProtocol(body)
 	if err != nil {
-		return "unknown", 0.0, err
+		// Metadata extraction can run before the request body is buffered.
+		// In that case the URL remains authoritative for known gateway routes.
+		if len(body) != 0 {
+			return "unknown", 0.0, err
+		}
+		proto, conf = "unknown", 0
 	}
 
 	// High-confidence body detection is authoritative

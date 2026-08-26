@@ -94,6 +94,14 @@ var statsMigration548 []byte
 //go:embed embeddata/startup/552_request_journey_durable_outbox.sql
 var requestJourneyMigration552 []byte
 
+// MERGE-AUDIT 2026-08-26: remote parent 4b512d640 carried the same approval
+// resume claim migration as version 551 (blob
+// 38a59e2b62a86f7208a8f620db6f647a49c58f37). This branch had already reserved
+// version 553. Only 553 is executable: registering both would apply the same
+// DDL twice. Recover the remote source for review with:
+// git show 4b512d640:sql/migrations/startup/551_approval_resume_claim.sql
+// > docs/archive/merge-audit/551_approval_resume_claim.sql
+//
 //go:embed embeddata/startup/553_approval_resume_claim.sql
 var approvalResumeMigration553 []byte
 
@@ -847,8 +855,7 @@ func copySQLBackup(root string) error {
 		"startup/571_candidate_binding_scope_revision_canonical_priority_hash.sql": candidateBindingScopeRevisionCanonicalPriorityHashMigration571,
 		"startup/600_outbound_body_to_bodies_hot.sql":                              outboundBodyToBodiesHotMigration600,
 		"startup/601_request_logs_bodies_drop_metadata.sql":                        requestLogsBodiesDropMetadataMigration601,
-		"startup/602_request_logs_promote_atomic.sql":                              requestLogsPromoteAtomicMigration602,
-	}
+		"startup/602_request_logs_promote_atomic.sql":                              requestLogsPromoteAtomicMigration602}
 	for name, content := range files {
 		path := filepath.Join(initDir, name)
 		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
@@ -951,8 +958,7 @@ func setupSQLDir() (string, func(), error) {
 		"startup/571_candidate_binding_scope_revision_canonical_priority_hash.sql": candidateBindingScopeRevisionCanonicalPriorityHashMigration571,
 		"startup/600_outbound_body_to_bodies_hot.sql":                              outboundBodyToBodiesHotMigration600,
 		"startup/601_request_logs_bodies_drop_metadata.sql":                        requestLogsBodiesDropMetadataMigration601,
-		"startup/602_request_logs_promote_atomic.sql":                              requestLogsPromoteAtomicMigration602,
-	}
+		"startup/602_request_logs_promote_atomic.sql":                              requestLogsPromoteAtomicMigration602}
 	for name, content := range files {
 		path := filepath.Join(tmp, name)
 		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {

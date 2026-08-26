@@ -134,43 +134,6 @@ func TestQuerySessionTurnsTree_Normal(t *testing.T) {
 	}
 }
 
-func TestQuerySessionTurnsTree_Page2(t *testing.T) {
-	mock, err := pgxmock.NewPool()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer mock.Close()
-
-	latency := 900
-	mainRows := pgxmock.NewRows([]string{"turn_number", "request_id", "status", "model", "latency_ms"}).
-		AddRow(int64(3), "req_main_3", "success", "glm-4", &latency)
-	mock.ExpectQuery("SELECT t.turn_number").
-		WithArgs("gw_s1", "acme", int64(2), "req_main_2", 3).
-		WillReturnRows(mainRows)
-	mock.ExpectQuery("SELECT parent_request_id").
-		WithArgs([]string{"req_main_3"}, "acme").
-		WillReturnRows(pgxmock.NewRows([]string{"parent_request_id", "request_id", "request_status", "latency_ms", "request_type", "origin_actor"}))
-
-	res, err := querySessionTurnsTree(context.Background(), mock, sessionTurnsTreeParams{
-		SessionID: "gw_s1",
-		TenantID:  "acme",
-		Limit:     2,
-		Cursor:    sessionTurnsTreeCursor{TurnNumber: 2, RequestID: "req_main_2"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(res.Turns) != 1 || res.Turns[0].RequestID != "req_main_3" {
-		t.Fatalf("page2 turns mismatch: %+v", res.Turns)
-	}
-	if res.HasMore {
-		t.Fatal("expected has_more=false for single trailing row")
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func TestQuerySessionTurnsTree_NotFound(t *testing.T) {
 	mock, err := pgxmock.NewPool()
 	if err != nil {

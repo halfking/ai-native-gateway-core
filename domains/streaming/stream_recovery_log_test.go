@@ -24,9 +24,9 @@ func TestNextRecoveryAction_EmitsStructuredLogOnDiscardReplay(t *testing.T) {
 	t.Cleanup(func() { slog.SetDefault(prev) })
 
 	state := &StreamRecoveryState{
-		RecoveryNo:      1, // budget left
-		SameNodeRetries: 2, // L0 already used (default cap)
-		CommittedChunks: 0, // L1 fires
+		RecoveryNo:      1,                       // budget left
+		SameNodeRetries: 2,                       // L0 already used (default cap)
+		CommittedChunks: 0,                       // L1 fires
 	}
 	act := NextRecoveryActionCtx(context.Background(), state, DefaultStreamRecoveryConfig(),
 		errors.New("eof_without_done: upstream closed mid-stream"))

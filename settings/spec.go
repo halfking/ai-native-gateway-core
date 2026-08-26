@@ -130,8 +130,8 @@ func (s *Spec) Validate(v any) error {
 		case int64:
 			n = int(x)
 		case float64:
-			if math.Trunc(x) != x {
-				return fmt.Errorf("expected integer, got %v", x)
+			if x != math.Trunc(x) {
+				return fmt.Errorf("expected int, got fractional float %v", x)
 			}
 			n = int(x)
 		default:
@@ -323,7 +323,6 @@ const EnvBackendScope Scope = "__env__"
 
 // Init wires the DB and env backends into Global. Idempotent.
 func Init(dbStore Backend) {
-	InvalidateSettingsCache()
 	Global.RegisterBackend(ScopePlatform, dbStore)
 	Global.RegisterBackend(ScopeTenant, dbStore)
 	Global.RegisterBackend(EnvBackendScope, NewStoreEnv())

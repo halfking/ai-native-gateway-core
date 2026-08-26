@@ -69,7 +69,7 @@ export type LiveStreamPreferencesPatch = Partial<Pick<LiveStreamPreferences, 'gr
   queue?: { depthOpen?: boolean; expandedModels?: string[]; statusFilter?: Partial<Record<QueueStatusBucket, boolean>> }
 }
 
-const GROUP_BY_VALUES: GroupByDimension[] = ['queue', 'vendor', 'provider', 'model']
+const GROUP_BY_VALUES: GroupByDimension[] = ['queue', 'credential', 'vendor', 'provider', 'model']
 const MODE_VALUES: SwimLaneMode[] = ['small', 'large']
 const REQUEST_TYPE_VALUES: LiveStreamRequestType[] = ['business', 'probe']
 const QUEUE_STATUS_BUCKET_VALUES: QueueStatusBucket[] = ['active', 'degraded', 'manualDisabled', 'exhausted']

@@ -73,9 +73,7 @@ func TestApply_AnthropicBudgetOK_NoChange(t *testing.T) {
 	}
 	// If it was modified, budget must still be < max_tokens
 	m := mustUnmarshal(out)
-	var th struct {
-		BudgetTokens int `json:"budget_tokens"`
-	}
+	var th struct{ BudgetTokens int `json:"budget_tokens"` }
 	if err := json.Unmarshal(m["thinking"], &th); err != nil {
 		t.Fatal(err)
 	}

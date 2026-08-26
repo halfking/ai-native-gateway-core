@@ -92,12 +92,12 @@ type NodeView struct {
 	Samples1m            int       `json:"samples_1m"`
 	Samples5m            int       `json:"samples_5m"`
 	Samples30m           int       `json:"samples_30m"`
-	EmptyResponses1m     int       `json:"empty_responses_1m,omitempty"`
-	EmptyResponses5m     int       `json:"empty_responses_5m,omitempty"`
-	EmptyResponses30m    int       `json:"empty_responses_30m,omitempty"`
-	EmptyResponseRate1m  float64   `json:"empty_response_rate_1m,omitempty"`
-	EmptyResponseRate5m  float64   `json:"empty_response_rate_5m,omitempty"`
-	EmptyResponseRate30m float64   `json:"empty_response_rate_30m,omitempty"`
+	EmptyResponses1m     int       `json:"empty_responses_1m"`
+	EmptyResponses5m     int       `json:"empty_responses_5m"`
+	EmptyResponses30m    int       `json:"empty_responses_30m"`
+	EmptyResponseRate1m  float64   `json:"empty_response_rate_1m"`
+	EmptyResponseRate5m  float64   `json:"empty_response_rate_5m"`
+	EmptyResponseRate30m float64   `json:"empty_response_rate_30m"`
 	LatP50Ms             int       `json:"lat_p50_ms"`
 	LatP95Ms             int       `json:"lat_p95_ms"`
 	LatEWMA              int       `json:"lat_ewma_ms"`

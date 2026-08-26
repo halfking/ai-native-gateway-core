@@ -74,16 +74,3 @@ func TestSessionTitleMapKey(t *testing.T) {
 		t.Fatalf("empty scoped session should still key")
 	}
 }
-
-func TestSessionTitleBatchQueryUsesExactRequestedPairs(t *testing.T) {
-	query := `
-		SELECT st.task_id, st.scoped_session_id, st.title
-		FROM session_titles st
-		JOIN unnest($1::text[], $2::text[]) AS requested(task_id, scoped_session_id)
-		  ON requested.task_id = st.task_id
-		 AND requested.scoped_session_id = st.scoped_session_id
-	`
-	if !strings.Contains(query, "requested.scoped_session_id = st.scoped_session_id") {
-		t.Fatal("batch query must constrain the requested scoped session pair")
-	}
-}

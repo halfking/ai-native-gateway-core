@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"strconv"
 	"time"
 
@@ -18,7 +17,6 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/runctx"
 	"github.com/kaixuan/llm-gateway-go/provider"
 	"github.com/kaixuan/llm-gateway-go/settings"
-	upstreampkg "github.com/kaixuan/llm-gateway-go/upstream"
 )
 
 // executor_dispatch.go implements the multi-tier dispatch pipeline
@@ -115,13 +113,7 @@ func (e *Executor) dispatchRoute(ctx context.Context, qr *dispatch.QueuedRequest
 		}
 		return filtered, nil
 	}
-	// Stage D: capacity-aware soft-rank. Applied BEFORE the liveActions
-	// emit so the credential_selected event reports the post-penalty best
-	// candidate. The pin filter path above short-circuits with a 0-1
-	// element list (single-cred probe must not soft-skip), so this hook
-	// fires only on the multi-candidate route.
 	refs = e.dispatchRouteSoftRank(refs)
-
 	// V3.3-OBS OBS-B1 (2026-08-15): dispatch_v2 路径的 credential_selected
 	// 动作事件（S5，Router.PlanCandidates 输出，best-first 首个 ref）。
 	if len(refs) > 0 {
@@ -138,13 +130,6 @@ func (e *Executor) dispatchRoute(ctx context.Context, qr *dispatch.QueuedRequest
 	return refs, nil
 }
 
-// dispatchRouteSoftRank applies the Stage D capacity-aware soft penalty
-// when both the on flag and the snapFn are set. Lifted out of
-// dispatchRoute so the hot-path branch is single-line and the test
-// surface stays isolated.
-//
-// No-op when either is unset; a nil snapFn OR on=false both fall
-// through to the unchanged behavior.
 func (e *Executor) dispatchRouteSoftRank(refs []dispatch.CredentialRef) []dispatch.CredentialRef {
 	if !e.capacityAwareSortOn || e.capacityAwareSnapFn == nil {
 		return refs
@@ -221,11 +206,6 @@ func candidateToRef(c provider.Candidate) dispatch.CredentialRef {
 		CredentialID: c.CredentialID,
 		ProviderID:   c.ProviderID,
 		Vendor:       c.CatalogCode,
-	}
-	if c.Priority {
-		r.PriorityCluster = 0
-	} else {
-		r.PriorityCluster = 1
 	}
 	mode := c.ConcurrencyMode
 	if mode == "" {
@@ -317,7 +297,6 @@ func (e *Executor) executeViaDispatch(
 	qr.EstimatedTokens = estimatePromptTokens(params)
 	qr.AllowModelChange = params.DispatchAllowModelChange
 	qr.AllowProviderChange = params.DispatchAllowProviderChange
-	qr.OnNodeSwitchSummary = params.OnNodeJump
 	qr.RetryPerCredential = dispatch.MaxNodeFailures - 1
 	qr.ModelAlternatives = append([]string(nil), params.DispatchModelAlternatives...)
 
@@ -520,11 +499,6 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 
 	var result *ExecuteResult
 	var execErr error
-	// resolvedKeyIdx carries the key-rotator index used for THIS attempt so the
-	// success/error branches below can feed RecordKey{Success,Failure}.
-	// -1 means "single-key / no rotator / unresolved" — those paths skip the
-	// rotator bookkeeping entirely.
-	resolvedKeyIdx := -1
 	func() {
 		releasePeak := e.PeakCollector != nil
 		if releasePeak {
@@ -542,26 +516,11 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 		if cand.KeyRotator != nil {
 			idx := cand.KeyRotator.ResolveKey(cand.CredentialID, -1)
 			if idx < 0 {
-				// ResolveKey exhausted the rotator. Distinguish "no key
-				// registered yet" (false alarm) from "ALL keys dead" (real
-				// credential-level fatal). Only the latter is propagated as a
-				// typed upstream error so the credential-level breaker opens;
-				// the former stays a plain dispatch error and falls back to
-				// failover. Mirrors OmniRoute A3 guard semantics.
-				if cand.KeyRotator.AllKeysInvalid(cand.CredentialID) {
-					execErr = &upstreampkg.Error{
-						Kind:       upstreampkg.KindQuota,
-						StatusCode: http.StatusTooManyRequests,
-						Message:    "all credential keys exhausted (terminal)",
-					}
-				} else {
-					execErr = errDispatchKeysExhausted
-				}
+				execErr = errDispatchKeysExhausted
 				return
 			} else if idx >= 1 && idx-1 < len(cand.APIKeys) {
 				cand.APIKey = cand.APIKeys[idx-1]
 			}
-			resolvedKeyIdx = idx
 		}
 
 		// ── MM-1/MM-2 outbound attachment transforms ─────────────────
@@ -615,11 +574,6 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 	}()
 
 	if execErr == nil {
-		// Feed the key-rotator success path before the side-effect recorder so
-		// the next dispatch attempt's ResolveKey sees fresh state.
-		if cand.KeyRotator != nil && resolvedKeyIdx >= 0 {
-			cand.KeyRotator.RecordKeySuccess(cand.CredentialID, resolvedKeyIdx)
-		}
 		e.recordDispatchSuccess(params, cand, result)
 		return dispatch.ForwardOutcome{Result: result}
 	}
@@ -631,18 +585,6 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 		}
 	}
 	kind := e.recordDispatchError(params, cand, execErr)
-
-	// Per-key health: feed the rotator the failure kind so terminal kinds
-	// (KindQuotaPermanent / KindQuotaBalance / KindAuthRevoked) mark the key
-	// immediately and non-terminal kinds accumulate toward the threshold.
-	// Only meaningful when this attempt actually used a rotator-managed key.
-	// The resolvedKeyIdx >= 0 gate is the load-bearing condition: it correctly
-	// excludes both single-key creds and the two keys-exhausted branches above
-	// (where idx stays -1 by construction). The errDispatchKeysExhausted
-	// sentinel comparison alone would miss the typed *upstream.Error branch.
-	if cand.KeyRotator != nil && resolvedKeyIdx >= 0 {
-		cand.KeyRotator.RecordKeyFailure(cand.CredentialID, resolvedKeyIdx, kind)
-	}
 
 	// candidate_failure_logs (migration 300 + V358 session_id): one row per
 	// failed dispatch attempt. Ported from the retired legacy sync loop —
@@ -806,8 +748,6 @@ func extractQueueTimestamps(qr *dispatch.QueuedRequest) (
 	if qr == nil {
 		return
 	}
-	// Detached copies: the request's stage array is rewritten on failover
-	// re-enqueue, so extracted values must never alias request state.
 	return qr.StageTimestamps()
 }
 

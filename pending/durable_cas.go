@@ -19,20 +19,16 @@ const (
 
 var durableSaveScript = redis.NewScript(`
 local exists = redis.call('EXISTS', KEYS[1])
-	if exists == 1 then
-	  local current_task = redis.call('HGET', KEYS[1], 'task_id') or ''
-	  if current_task ~= '' and current_task ~= ARGV[1] then
-	    return 0
-	  end
-	  local current_status = redis.call('HGET', KEYS[1], 'status') or ''
-	  if ARGV[8] == 'in_progress' and (current_status == 'completed' or current_status == 'failed') then
-	    return 2
-	  end
-	  local current_version = tonumber(redis.call('HGET', KEYS[1], 'result_version') or '-1')
-	  if tonumber(ARGV[3]) < current_version then
-	    return 2
-	  end
-	end
+if exists == 1 then
+  local current_task = redis.call('HGET', KEYS[1], 'task_id') or ''
+  if current_task ~= '' and current_task ~= ARGV[1] then
+    return 0
+  end
+  local current_version = tonumber(redis.call('HGET', KEYS[1], 'result_version') or '-1')
+  if tonumber(ARGV[3]) < current_version then
+    return 2
+  end
+end
 
 redis.call('HSET', KEYS[1],
   'task_id', ARGV[1],

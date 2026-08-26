@@ -483,26 +483,26 @@ func (h *PromptInjectionHandler) toggleRule(w http.ResponseWriter, r *http.Reque
 
 // PromptInjectionDetection 检测日志
 type PromptInjectionDetection struct {
-	ID                int      `json:"id"`
-	TenantID          string   `json:"tenant_id"`
-	RequestID         string   `json:"request_id"`
-	SessionKey        string   `json:"session_key"`
-	DetectedAt        string   `json:"detected_at"`
-	DetectionScore    int      `json:"detection_score"`
-	RiskLevel         string   `json:"risk_level"`
-	MatchedRules      string   `json:"matched_rules"`
-	MatchedRulesCount int      `json:"matched_rules_count"`
-	ActionTaken       string   `json:"action_taken"`
-	Blocked           bool     `json:"blocked"`
-	EvidenceText      string   `json:"evidence_text"`
-	Categories        []string `json:"categories"`
-	LLMConfidence     *float64 `json:"llm_confidence"`
-	LLMReason         string   `json:"llm_reason"`
-	CanaryTokenLeaked string   `json:"canary_token_leaked"`
-	ApprovalID        string   `json:"approval_id"`
-	ReplacedContent   string   `json:"replaced_content"`
-	ClientIP          string   `json:"client_ip"`
-	UserAgent         string   `json:"user_agent"`
+	ID                 int      `json:"id"`
+	TenantID           string   `json:"tenant_id"`
+	RequestID          string   `json:"request_id"`
+	SessionKey         string   `json:"session_key"`
+	DetectedAt         string   `json:"detected_at"`
+	DetectionScore     int      `json:"detection_score"`
+	RiskLevel          string   `json:"risk_level"`
+	MatchedRules       string   `json:"matched_rules"`
+	MatchedRulesCount  int      `json:"matched_rules_count"`
+	ActionTaken        string   `json:"action_taken"`
+	Blocked            bool     `json:"blocked"`
+	EvidenceText       string   `json:"evidence_text"`
+	Categories         []string `json:"categories"`
+	LLMConfidence      *float64 `json:"llm_confidence"`
+	LLMReason          string   `json:"llm_reason"`
+	CanaryTokenLeaked  string   `json:"canary_token_leaked"`
+	ApprovalID         string   `json:"approval_id"`
+	ReplacedContent    string   `json:"replaced_content"`
+	ClientIP           string   `json:"client_ip"`
+	UserAgent          string   `json:"user_agent"`
 }
 
 func (h *PromptInjectionHandler) handleDetections(w http.ResponseWriter, r *http.Request) {
@@ -605,20 +605,20 @@ func (h *PromptInjectionHandler) handleDetections(w http.ResponseWriter, r *http
 // ==================== 统计 ====================
 
 type DetectionStats struct {
-	TotalDetections  int     `json:"total_detections"`
-	BlockedCount     int     `json:"blocked_count"`
-	CriticalCount    int     `json:"critical_count"`
-	HighCount        int     `json:"high_count"`
-	MediumCount      int     `json:"medium_count"`
-	LowCount         int     `json:"low_count"`
-	ApprovalCount    int     `json:"approval_count"`
-	ReplacedCount    int     `json:"replaced_count"`
-	TerminatedCount  int     `json:"terminated_count"`
-	CanaryLeakCount  int     `json:"canary_leak_count"`
-	AvgScore         float64 `json:"avg_score"`
-	MaxScore         int     `json:"max_score"`
-	AvgLLMConf       float64 `json:"avg_llm_confidence"`
-	AffectedSessions int     `json:"affected_sessions"`
+	TotalDetections int     `json:"total_detections"`
+	BlockedCount    int     `json:"blocked_count"`
+	CriticalCount   int     `json:"critical_count"`
+	HighCount       int     `json:"high_count"`
+	MediumCount     int     `json:"medium_count"`
+	LowCount        int     `json:"low_count"`
+	ApprovalCount   int     `json:"approval_count"`
+	ReplacedCount   int     `json:"replaced_count"`
+	TerminatedCount int     `json:"terminated_count"`
+	CanaryLeakCount int     `json:"canary_leak_count"`
+	AvgScore        float64 `json:"avg_score"`
+	MaxScore        int     `json:"max_score"`
+	AvgLLMConf      float64 `json:"avg_llm_confidence"`
+	AffectedSessions int    `json:"affected_sessions"`
 }
 
 func (h *PromptInjectionHandler) handleStats(w http.ResponseWriter, r *http.Request) {
@@ -656,28 +656,28 @@ func (h *PromptInjectionHandler) handleStats(w http.ResponseWriter, r *http.Requ
 // ==================== LLM 引擎管理 ====================
 
 type LLMEngine struct {
-	ID               int     `json:"id"`
-	TenantID         string  `json:"tenant_id"`
-	EngineName       string  `json:"engine_name"`
-	Description      string  `json:"description"`
-	ModelCanonicalID *int    `json:"model_canonical_id"`
-	ModelName        string  `json:"model_name"`
-	CredentialID     *int    `json:"credential_id"`
-	Temperature      float64 `json:"temperature"`
-	MaxTokens        int     `json:"max_tokens"`
-	TimeoutMs        int     `json:"timeout_ms"`
-	MaxRetries       int     `json:"max_retries"`
-	SystemPrompt     string  `json:"system_prompt"`
-	DetectionPrompt  string  `json:"detection_prompt"`
-	Priority         int     `json:"priority"`
-	Enabled          bool    `json:"enabled"`
-	TotalCalls       int     `json:"total_calls"`
-	TotalDetections  int     `json:"total_detections"`
-	AvgLatencyMs     float64 `json:"avg_latency_ms"`
-	ErrorCount       int     `json:"error_count"`
-	LastCalledAt     *string `json:"last_called_at"`
-	CreatedAt        string  `json:"created_at"`
-	UpdatedAt        string  `json:"updated_at"`
+	ID               int      `json:"id"`
+	TenantID         string   `json:"tenant_id"`
+	EngineName       string   `json:"engine_name"`
+	Description      string   `json:"description"`
+	ModelCanonicalID *int     `json:"model_canonical_id"`
+	ModelName        string   `json:"model_name"`
+	CredentialID     *int     `json:"credential_id"`
+	Temperature      float64  `json:"temperature"`
+	MaxTokens        int      `json:"max_tokens"`
+	TimeoutMs        int      `json:"timeout_ms"`
+	MaxRetries       int      `json:"max_retries"`
+	SystemPrompt     string   `json:"system_prompt"`
+	DetectionPrompt  string   `json:"detection_prompt"`
+	Priority         int      `json:"priority"`
+	Enabled          bool     `json:"enabled"`
+	TotalCalls       int      `json:"total_calls"`
+	TotalDetections  int      `json:"total_detections"`
+	AvgLatencyMs     float64  `json:"avg_latency_ms"`
+	ErrorCount       int      `json:"error_count"`
+	LastCalledAt     *string  `json:"last_called_at"`
+	CreatedAt        string   `json:"created_at"`
+	UpdatedAt        string   `json:"updated_at"`
 }
 
 func (h *PromptInjectionHandler) handleEngines(w http.ResponseWriter, r *http.Request) {
@@ -913,19 +913,19 @@ func (h *PromptInjectionHandler) testEngine(w http.ResponseWriter, r *http.Reque
 // ==================== 严重等级矩阵 ====================
 
 type SeverityAction struct {
-	ID                     int      `json:"id"`
-	TenantID               string   `json:"tenant_id"`
-	SeverityLevel          string   `json:"severity_level"`
-	ObserveAction          string   `json:"observe_action"`
-	EnforceAction          string   `json:"enforce_action"`
-	RequireApproval        bool     `json:"require_approval"`
-	ApprovalTimeoutMinutes int      `json:"approval_timeout_minutes"`
-	NotifyOnDetect         bool     `json:"notify_on_detect"`
-	NotifyChannels         []string `json:"notify_channels"`
-	AffectSessionHealth    bool     `json:"affect_session_health"`
-	SessionHealthPenalty   int      `json:"session_health_penalty"`
-	TerminateOnRepeat      bool     `json:"terminate_session_on_repeat"`
-	RepeatThreshold        int      `json:"repeat_threshold"`
+	ID                      int      `json:"id"`
+	TenantID                string   `json:"tenant_id"`
+	SeverityLevel           string   `json:"severity_level"`
+	ObserveAction           string   `json:"observe_action"`
+	EnforceAction           string   `json:"enforce_action"`
+	RequireApproval         bool     `json:"require_approval"`
+	ApprovalTimeoutMinutes  int      `json:"approval_timeout_minutes"`
+	NotifyOnDetect          bool     `json:"notify_on_detect"`
+	NotifyChannels          []string `json:"notify_channels"`
+	AffectSessionHealth     bool     `json:"affect_session_health"`
+	SessionHealthPenalty    int      `json:"session_health_penalty"`
+	TerminateOnRepeat       bool     `json:"terminate_session_on_repeat"`
+	RepeatThreshold         int      `json:"repeat_threshold"`
 }
 
 func (h *PromptInjectionHandler) handleSeverityMatrix(w http.ResponseWriter, r *http.Request) {
@@ -1154,16 +1154,16 @@ func (h *PromptInjectionHandler) deleteCanaryToken(w http.ResponseWriter, r *htt
 // ==================== 攻击向量库 ====================
 
 type AttackVector struct {
-	ID         int      `json:"id"`
-	TenantID   string   `json:"tenant_id"`
-	AttackText string   `json:"attack_text"`
-	AttackHash string   `json:"attack_hash"`
-	Categories []string `json:"categories"`
-	Severity   int      `json:"severity"`
-	Source     string   `json:"source"`
-	RequestID  string   `json:"request_id"`
-	DetectedAt *string  `json:"detected_at"`
-	CreatedAt  string   `json:"created_at"`
+	ID          int      `json:"id"`
+	TenantID    string   `json:"tenant_id"`
+	AttackText  string   `json:"attack_text"`
+	AttackHash  string   `json:"attack_hash"`
+	Categories  []string `json:"categories"`
+	Severity    int      `json:"severity"`
+	Source      string   `json:"source"`
+	RequestID   string   `json:"request_id"`
+	DetectedAt  *string  `json:"detected_at"`
+	CreatedAt   string   `json:"created_at"`
 }
 
 func (h *PromptInjectionHandler) handleAttackVectors(w http.ResponseWriter, r *http.Request) {
