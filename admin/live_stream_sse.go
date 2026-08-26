@@ -2221,21 +2221,6 @@ func (h *LiveStreamSSEHub) HandleLiveStream(w http.ResponseWriter, r *http.Reque
 	<-r.Context().Done()
 }
 
-// HandleTriggerSnapshot is a POST-only TEMPORARY DEBUG endpoint that triggers an immediate
-// full-snapshot push. Added 2026-07-26 for snapshot_refresh guard validation.
-// TODO: Remove this endpoint when no longer needed for debugging.
-//
-// Route: POST /api/admin/live-stream/trigger-snapshot
-func (h *LiveStreamSSEHub) HandleTriggerSnapshot(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-	h.PushFullSnapshots()
-	w.Header().Set("Content-Type", "application/json")
-	w.Write([]byte(`{"status":"ok"}`))
-}
-
 // replay loads the most recent N requests. ASC order so the client
 // renders them left-to-right.
 func (h *LiveStreamSSEHub) replay(ctx context.Context, tenantID string, isSuper bool, limit int) ([]LiveRequest, error) {

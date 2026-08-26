@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Removed
+- Remove the temporary `POST /api/admin/live-stream/trigger-snapshot` debug endpoint. Added 2026-07-26 for snapshot_refresh guard validation; superseded by the periodic `PushFullSnapshots` tick (default 30m) plus the terminal-status overlay. The `HandleTriggerSnapshot` method and its route registration are deleted; no production traffic depends on the endpoint (the only frontend caller `_requestSnapshotRefresh` was never invoked).
+
 ### Fixed
 - Add credential grouping to the admin live-stream controls, snapshots, incident indexes, persisted preferences, and all dashboard locales.
 - Scope admin popular-model aggregates and cached picker responses by tenant. Successful telemetry now writes tenant-specific Redis ZSETs; usage SQL filters `request_logs_hot.tenant_id`; tenant-admin reads do not consume global live lanes.
