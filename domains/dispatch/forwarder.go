@@ -20,10 +20,9 @@ import (
 // forwarder's loop goroutine or invalidating the in-flight attempts
 // path. Reads from acquire/release paths take the RLock; the
 // snapshot observer holds credMu + govMu.RLock as an ordered pair.
-// Acquire/Release on the swapped-out Governor still resolves correctly
-// because the release path captures the Governor pointer in the same
-// critical section that resolved the Acquire (forwarder.go attempt
-// lines 290–316 capture `cf.govRLocked()` once into a local).
+// An admitted request carries the Governor selected for Acquire into its
+// execution attempt, so its matching Release is never redirected to a
+// replacement Governor.
 type credForwarder struct {
 	cred      CredentialRef
 	queue     chan *QueuedRequest
@@ -40,11 +39,12 @@ type credForwarder struct {
 
 func newCredForwarder(cred CredentialRef, queueDepth int, pipe *Pipeline) *credForwarder {
 	ctx, cancel := context.WithCancel(context.Background())
+	gov := buildForwarderGovernor(pipe, cred)
 	cf := &credForwarder{
 		cred:   cred,
 		queue:  make(chan *QueuedRequest, queueDepth),
 		limit:  int64(queueDepth),
-		gov:    pipe.governorForCredential(cred),
+		gov:    gov,
 		pipe:   pipe,
 		ctx:    ctx,
 		cancel: cancel,
@@ -57,6 +57,25 @@ func newCredForwarder(cred CredentialRef, queueDepth int, pipe *Pipeline) *credF
 	pipe.wg.Add(1)
 	go cf.loop()
 	return cf
+}
+
+// buildForwarderGovernor wraps the policy-aware governor constructor with a
+// fail-open fallback for the cold-start path. ApplyPolicy itself must
+// fail-closed when the backend rejects a spec; but a cold-start forwarder
+// cannot block dispatch when the Redis backend is transiently unavailable —
+// we degrade to the in-process governor and rely on the publisher's retry
+// to install the Redis governor once the cluster recovers.
+func buildForwarderGovernor(pipe *Pipeline, cred CredentialRef) Governor {
+	gov, err := pipe.governorForCredential(cred, pipe.ActiveRevision())
+	if err == nil {
+		return gov
+	}
+	slog.Warn("dispatch: cold-start governor fell back to in-process impl; redis backend unavailable",
+		"credential_id", cred.CredentialID,
+		"provider_id", cred.ProviderID,
+		"mode", cred.ConcurrencyMode,
+		"error", err)
+	return newGovernor(cred)
 }
 
 // govLocked returns the current Governor under govMu.RLock. The returned
@@ -124,14 +143,15 @@ func (cf *credForwarder) loop() {
 			// the lock during governor waits or upstream I/O.
 			cf.handoffMu.Lock()
 			cf.handoffMu.Unlock()
-			if !cf.acquire(qr) {
+			gov, acquired := cf.acquire(qr)
+			if !acquired {
 				continue
 			}
 			depth := cf.depth.Add(-1)
 			metricCredQueueDepth.WithLabelValues(itoa(cf.cred.CredentialID), cf.cred.ConcurrencyMode).Dec()
 			cf.pipe.observeQueue(QueueObservation{Kind: QueueCredentialDepth, CredentialID: cf.cred.CredentialID, Mode: cf.cred.ConcurrencyMode, Depth: depth, Delta: -1, AbsoluteDepth: true})
 			cf.wg.Add(1)
-			go cf.attempt(qr)
+			go cf.attempt(qr, gov)
 		case <-cf.ctx.Done():
 			// Drain remaining queued requests and complete them with
 			// ErrShutdown so their Submit callers don't block forever on
@@ -172,25 +192,24 @@ func (cf *credForwarder) drainAndComplete() {
 //     pace_timeout → failover (plan A / v4 wait-room semantics).
 //   - budget == 0 + RPM/TPM: giveUp = now → immediate pace timeout if saturated
 //     (keeps v4 zero-wait rate-bucket behaviour).
-func (cf *credForwarder) acquireGiveUp(qr *QueuedRequest) time.Time {
+func (cf *credForwarder) acquireGiveUp(qr *QueuedRequest, gov Governor) time.Time {
 	budget := cf.pipe.queueWaitBudget(qr)
 	if budget > 0 {
 		return time.Now().Add(budget)
 	}
-	if cf.govLocked().Mode() == ModeConcurrency {
+	if gov.Mode() == ModeConcurrency {
 		return time.Time{}
 	}
 	return time.Now()
 }
 
-func (cf *credForwarder) acquire(qr *QueuedRequest) bool {
-	// Stage F: capture the live Governor under govMu.RLock so the matching
-	// Release in commitReservedAttempt uses the same instance. A swap mid-
-	// acquire falls back to the old Governor's Release, which is safe —
-	// the new Governor sees no count to release (it never saw the Acquire).
+func (cf *credForwarder) acquire(qr *QueuedRequest) (Governor, bool) {
+	// Keep this Governor for the entire admission/attempt lifetime. ApplyPolicy
+	// may swap cf.gov after admission, but only this instance owns the acquired
+	// capacity or Redis lease.
 	gov := cf.govLocked()
 	attempt := qr.reserveAttempt(cf.cred)
-	giveUp := cf.acquireGiveUp(qr)
+	giveUp := cf.acquireGiveUp(qr, gov)
 	ctx, cancel := context.WithCancel(ctxOf(qr))
 	defer cancel()
 	go func() {
@@ -208,11 +227,11 @@ func (cf *credForwarder) acquire(qr *QueuedRequest) bool {
 		cf.pipe.observeQueue(QueueObservation{Kind: QueueCredentialDepth, CredentialID: cf.cred.CredentialID, Mode: cf.cred.ConcurrencyMode, Depth: depth, Delta: -1, AbsoluteDepth: true})
 		if ctxOf(qr).Err() != nil {
 			cf.pipe.complete(qr, ForwardOutcome{Err: ctxOf(qr).Err()})
-			return false
+			return nil, false
 		}
 		if cf.ctx.Err() != nil {
 			cf.pipe.complete(qr, ForwardOutcome{Err: ErrShutdown})
-			return false
+			return nil, false
 		}
 		if IsPaceTimeout(err) {
 			// Mark credential as tried to prevent retry on same credential (P1 fix)
@@ -222,7 +241,7 @@ func (cf *credForwarder) acquire(qr *QueuedRequest) bool {
 		metricOverflow.WithLabelValues("pace_timeout").Inc()
 		cf.pipe.observeOverflow("pace_timeout")
 		cf.pipe.routeFailover(qr, ForwardOutcome{Err: err})
-		return false
+		return nil, false
 	}
 
 	// V3.1: Record T6 timestamp (credential queue dequeue, governor acquired)
@@ -234,7 +253,7 @@ func (cf *credForwarder) acquire(qr *QueuedRequest) bool {
 		metricCredQueueDepth.WithLabelValues(itoa(cf.cred.CredentialID), cf.cred.ConcurrencyMode).Dec()
 		cf.pipe.observeQueue(QueueObservation{Kind: QueueCredentialDepth, CredentialID: cf.cred.CredentialID, Mode: cf.cred.ConcurrencyMode, Depth: depth, Delta: -1, AbsoluteDepth: true})
 		cf.pipe.complete(qr, ForwardOutcome{Err: errors.New("dispatch: missing reserved attempt")})
-		return false
+		return nil, false
 	}
 
 	// V3.3-OBS OBS-B1 (2026-08-15): node_selected 动作事件（S7 前，最终选定
@@ -263,20 +282,16 @@ func (cf *credForwarder) acquire(qr *QueuedRequest) bool {
 	if !qr.CredEnqueuedAt.IsZero() {
 		metricCredQueueWait.WithLabelValues(itoa(cf.cred.CredentialID)).Observe(qr.DequeuedAt.Sub(qr.CredEnqueuedAt).Seconds())
 	}
-	return true
+	return gov, true
 }
 
 // attempt forwards one request after governor admission.
-func (cf *credForwarder) attempt(qr *QueuedRequest) {
+func (cf *credForwarder) attempt(qr *QueuedRequest, gov Governor) {
 	defer cf.wg.Done()
 	mode := cf.cred.ConcurrencyMode
-	// Stage F: capture the live Governor under govMu.RLock so Acquire's
-	// matching Release uses the same instance even if ApplyPolicy swaps the
-	// Governor while this goroutine is running. The pointer is held until
-	// releaseResources completes.
-	gov := cf.govLocked()
 	attempt, startedAt, started := qr.startAllocatedAttempt()
 	if !started {
+		gov.Release(qr)
 		cf.pipe.complete(qr, ForwardOutcome{Err: errors.New("dispatch: missing allocated attempt")})
 		return
 	}
