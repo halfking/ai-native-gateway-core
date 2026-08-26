@@ -85,11 +85,11 @@ func NewPeriodicQuotaProbe(db *pgxpool.Pool) *PeriodicQuotaProbe {
 		}
 	}
 	return &PeriodicQuotaProbe{
-		db:                 db,
-		interval:           interval,
-		stopCh:             make(chan struct{}),
-		preProbeWindow:     preProbeWindow,
-		recoverAtMaxLinger: recoverAtMaxLinger,
+		db:                  db,
+		interval:            interval,
+		stopCh:              make(chan struct{}),
+		preProbeWindow:      preProbeWindow,
+		recoverAtMaxLinger:  recoverAtMaxLinger,
 	}
 }
 
