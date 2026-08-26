@@ -5,18 +5,22 @@ import "github.com/kaixuan/llm-gateway-go/internal/dbx"
 // TenantModelPolicies is the Phase 3 pilot manifest for the tenant model
 // denylist table (sql/migrations/startup/024_tenant_model_policies.sql).
 //
-// Pilot status: SHADOW-READ ONLY. It is deliberately NOT registered in
-// DefaultRegistry and no production data path reaches it. The existing
-// repository (admin/model_policies.go) stays authoritative.
+// Pilot status: ACTIVATED in DefaultRegistry (shadow reads + metadata gate).
+// No production data path routes through the framework; the existing
+// repository (admin/model_policies.go) stays authoritative until the pilot
+// graduates.
 //
-// Known schema drift blocking activation: migration 024 and the idempotent
-// bootstrap in db/db.go declare `id BIGSERIAL PRIMARY KEY`, but the
-// production dump (sql/schema/01-schema.sql) shows no primary-key
-// constraint on this table - only UNIQUE (tenant_id, canonical_name). The
-// dbx metadata gate therefore reports DriftPKMismatch (blocking) against
-// the dumped shape: UPDATE ... WHERE id = $1 has no single-column unique
-// guarantee there. Activation requires a reviewed migration that restores
-// the primary key; the framework never repairs schemas itself.
+// Drift history (resolved 2026-08-27): migration 024 and the idempotent
+// bootstrap in db/db.go declare `id BIGSERIAL PRIMARY KEY`, but production
+// 252 carried no primary-key constraint on this table (nor on
+// tenant_model_policies_audit, which additionally held duplicate ids) -
+// environments bootstrapped from the dump-shaped baseline kept the drift
+// alive because 024's CREATE TABLE IF NOT EXISTS short-circuits. Migrations
+// 608 (pkey, pure DDL) and 609 (audit re-key + pkey) repair existing
+// environments; the baseline (sql/schema/01-schema.sql,
+// sql/objects/constraints/) now carries both pkeys so fresh installs match
+// 024's declared shape. The dbx gate reported DriftPKMismatch (blocking)
+// against the drifted shape and must stay green against the repaired one.
 //
 // Column contract notes:
 //   - deleted_by stays writable for explicit patches, but the framework's
@@ -51,11 +55,4 @@ func TenantModelPolicies() dbx.TableManifest {
 		TouchColumn:   &touch,
 		MaxUpdateRows: 1,
 	}
-}
-
-// PilotRegistry builds a registry containing only the pilot manifests for
-// isolated tests and shadow reads. It must not be wired into request
-// serving; DefaultRegistry stays empty until the pilot graduates.
-func PilotRegistry() (*dbx.Registry, error) {
-	return dbx.NewRegistry(TenantModelPolicies())
 }

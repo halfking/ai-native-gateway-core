@@ -10,8 +10,9 @@
 //     stay green and dbx CRUD results must match the legacy handwritten
 //     statements from admin/model_policies.go;
 //   - production-dump shape (no PK, only UNIQUE(tenant_id,canonical_name)):
-//     the gate must fail closed with DriftPKMismatch - this is the real
-//     drift observed between sql/schema/01-schema.sql and migration 024.
+//     the gate must fail closed with DriftPKMismatch - this was the real
+//     drift production 252 carried until migrations 608/609 repaired it
+//     (2026-08-27); the shape stays here as a permanent gate regression.
 //
 // Run with: go test -tags integration ./db/dbxmanifest/...
 package dbxmanifest
@@ -172,9 +173,9 @@ func dialPilot(ctx context.Context, cfg *pgxpool.Config) (*pgxpool.Pool, error) 
 func newPilotKit(t *testing.T) (*dbx.ScopeRunner, *dbx.CRUD, *dbx.Registry) {
 	t.Helper()
 	env := sharedPilotEnv(t)
-	reg, err := PilotRegistry()
+	reg, err := DefaultRegistry()
 	if err != nil {
-		t.Fatalf("PilotRegistry: %v", err)
+		t.Fatalf("DefaultRegistry: %v", err)
 	}
 	runner, err := dbx.NewScopeRunner(ScopeConfig(), env.app)
 	if err != nil {
@@ -228,9 +229,9 @@ func legacyList(ctx context.Context, runner *dbx.ScopeRunner, tenant string, inc
 
 func TestPilotGateGreenOnMigrationShape(t *testing.T) {
 	env := sharedPilotEnv(t)
-	reg, err := PilotRegistry()
+	reg, err := DefaultRegistry()
 	if err != nil {
-		t.Fatalf("PilotRegistry: %v", err)
+		t.Fatalf("DefaultRegistry: %v", err)
 	}
 	reader, err := dbx.NewMetadataReader("public")
 	if err != nil {
