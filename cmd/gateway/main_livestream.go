@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -189,6 +190,121 @@ func liveStreamEventTime(entry *telemetry.RequestLogEntry) time.Time {
 		return entry.EventAt.UTC()
 	}
 	return time.Now().UTC()
+}
+
+// 2026-08-27: liveStreamEmittedForwarder restored from deployed build
+// 298201fe0. d2cbaf88b (origin/main integration) deleted this entire block
+// in favour of origin/main's older "direct hub.Publish from
+// AddOnRequestLogEmitted" design — but HEAD's own tests
+// (cmd/gateway/main_livestream_test.go) still reference the forwarder,
+// and the deployed version of adminLiveRequestFromEntry+credential label
+// resolution above depends on the FIFO ordering the forwarder provides
+// (see type doc below). Without it: dashboard in_progress projection
+// regresses back to DB-bound latency (the original a579b1348 motivation),
+// and the gateway vet suite fails to compile.
+
+// liveStreamEmittedForwarderCapacity bounds the queue between the telemetry
+// hooks (emit/persist) and the single consumer goroutine (run). 2026-08-25:
+// 与 hub 广播队列(BroadcastQueueSize=2048)对齐 —— emitted(每请求触发, 含
+// in_progress 投影)与 persisted(insert/update 落库后的补偿)两路流量都走
+// 本队列, 容量减半会在 burst + DB 慢的组合下放大丢弃概率(丢终态补偿比丢
+// in_progress 严重: 该 request 的实时卡片会停在 in_progress 直到下一条
+// update 或 Redis 快照过期)。
+const liveStreamEmittedForwarderCapacity = 2048
+
+// liveStreamEmittedDropsLog bounds drop-warning log volume: log every Nth
+// drop (mirrors the admin package's incidentUpdateDropsLog pattern, N=50).
+const liveStreamEmittedDropsLog = 50
+
+// liveStreamEmittedForwarder bridges telemetry's onEmitted/onPersisted hooks
+// to the live-stream SSE hub.
+//
+// 2026-08-25 (dashboard 实时流前置发布): 此前 live stream 只挂在
+// AddOnRequestLogPersisted 上, DB 写入成功后请求才可见 —— DB 缺失/延迟会
+// 直接挡住实时显示。现在额外订阅 SetOnRequestLogEmitted: 请求一被接收就
+// 广播 in_progress 投影, DB 写入保持异步。
+//
+// 为什么不能在 onEmitted 回调里直接 Publish:
+//   - onEmitted 在调用方(请求热路径)goroutine 上、入 DB 队列之前同步触发,
+//     回调必须 O(1) 非阻塞(select-default), 否则会拖慢每个请求;
+//   - adminLiveRequestFromEntry 内含最多 200ms 的 DB provider 查找
+//     (hub.ProviderCodeForCredential/ProviderCodeFor), 绝不能上热路径。
+//
+// 因此 emit() 只做浅拷贝 + chan 投递, 映射与 Publish 全部移到 run() 的
+// 单消费者 goroutine。
+//
+// 两阶段广播契约 (2026-08-25 审计修正): emitted → 立即 in_progress 投影;
+// persisted → 落库后的终态补偿。**两阶段都经本转发器的同一条 FIFO 队列**:
+// 同一 request 的 emit 投递(请求热路径, t0)必然先于 persist 投递
+// (telemetry worker 落库后, t1>t0), 单消费者 FIFO 因此保证 Publish 顺序
+// 恒为 in_progress → terminal。
+type liveStreamEmittedForwarder struct {
+	hub      *admin.LiveStreamSSEHub
+	entries  chan *telemetry.RequestLogEntry
+	stopCh   chan struct{}
+	stopOnce sync.Once
+	dropped  atomic.Uint64 // 2026-08-25: 限频告警用丢弃计数, 无锁读于 emit
+}
+
+func newLiveStreamEmittedForwarder(hub *admin.LiveStreamSSEHub) *liveStreamEmittedForwarder {
+	return &liveStreamEmittedForwarder{
+		hub:     hub,
+		entries: make(chan *telemetry.RequestLogEntry, liveStreamEmittedForwarderCapacity),
+		stopCh:  make(chan struct{}),
+	}
+}
+
+// emit is the SetOnRequestLogEmitted callback. Runs synchronously on the
+// request hot-path goroutine, BEFORE the entry enters the telemetry DB
+// queue — hence MUST stay non-blocking.
+func (f *liveStreamEmittedForwarder) emit(entry *telemetry.RequestLogEntry) {
+	f.enqueue(entry)
+}
+
+// persist is the AddOnRequestLogEmitted-style callback for the persisted
+// (post-commit) compensation. Runs on the telemetry worker goroutine.
+func (f *liveStreamEmittedForwarder) persist(entry *telemetry.RequestLogEntry) {
+	f.enqueue(entry)
+}
+
+// enqueue is the shared non-blocking hand-off used by both hooks.
+func (f *liveStreamEmittedForwarder) enqueue(entry *telemetry.RequestLogEntry) {
+	if f == nil || f.hub == nil || entry == nil {
+		return
+	}
+	cp := *entry
+	select {
+	case f.entries <- &cp:
+	default:
+		if n := f.dropped.Add(1); n%liveStreamEmittedDropsLog == 1 {
+			slog.Warn("live stream emitted forwarder queue full, dropping live projection",
+				"dropped", n,
+				"request_id", entry.RequestID,
+			)
+		}
+	}
+}
+
+// run is the single consumer goroutine started by main(). Everything that
+// is NOT hot-path-safe lives here.
+func (f *liveStreamEmittedForwarder) run() {
+	for {
+		select {
+		case <-f.stopCh:
+			return
+		case e := <-f.entries:
+			f.hub.Publish(adminLiveRequestFromEntry(e, f.hub))
+		}
+	}
+}
+
+// stop closes stopCh exactly once (idempotent, safe for repeated/deferred
+// calls).
+func (f *liveStreamEmittedForwarder) stop() {
+	if f == nil {
+		return
+	}
+	f.stopOnce.Do(func() { close(f.stopCh) })
 }
 
 // incidentUpdateFromResult converts a route-incident transition
