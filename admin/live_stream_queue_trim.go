@@ -43,10 +43,23 @@ func liveStreamInflightProtectDeadline() time.Duration {
 func isMainOrStatusQueueKey(key string) bool {
 	return key == liveStreamMainKey ||
 		strings.HasSuffix(key, ":main") ||
-		strings.HasPrefix(key, liveStreamStatPrefix)
+		strings.HasPrefix(key, liveStreamStatPrefix) ||
+		strings.Contains(key, ":status:")
 }
 
-func batchLoadRequestStatus(ctx context.Context, rdb redis.Cmdable, members []redis.Z) map[string]string {
+func liveStreamQueueTenantID(key string) string {
+	if !strings.HasPrefix(key, "llmgw:live:tenant:") {
+		return ""
+	}
+	rest := strings.TrimPrefix(key, "llmgw:live:tenant:")
+	tenantID, _, ok := strings.Cut(rest, ":")
+	if !ok || tenantID == "" {
+		return ""
+	}
+	return tenantID
+}
+
+func batchLoadRequestStatus(ctx context.Context, rdb redis.Cmdable, key string, members []redis.Z) map[string]string {
 	out := make(map[string]string, len(members))
 	if rdb == nil || len(members) == 0 {
 		return out
@@ -54,6 +67,7 @@ func batchLoadRequestStatus(ctx context.Context, rdb redis.Cmdable, members []re
 	pipe := rdb.Pipeline()
 	cmds := make([]*redis.StringCmd, 0, len(members))
 	ids := make([]string, 0, len(members))
+	tenantID := liveStreamQueueTenantID(key)
 	for _, z := range members {
 		member, ok := z.Member.(string)
 		if !ok || member == "" || strings.HasPrefix(member, "idle-") {
@@ -62,8 +76,12 @@ func batchLoadRequestStatus(ctx context.Context, rdb redis.Cmdable, members []re
 		if _, looksJSON := looksLikeTileSlim(member); looksJSON {
 			continue
 		}
+		detailKey := liveStreamGlobalRequestDetailKey(member)
+		if tenantID != "" {
+			detailKey = liveStreamRequestDetailKey(tenantID, member)
+		}
 		ids = append(ids, member)
-		cmds = append(cmds, pipe.Get(ctx, liveStreamGlobalRequestDetailKey(member)))
+		cmds = append(cmds, pipe.Get(ctx, detailKey))
 	}
 	if len(cmds) == 0 {
 		return out
@@ -161,12 +179,13 @@ func selectiveTrimLiveStreamQueue(ctx context.Context, rdb redis.Cmdable, key st
 	}
 	statusByMember := map[string]string{}
 	if isMainOrStatusQueueKey(key) {
-		statusByMember = batchLoadRequestStatus(ctx, rdb, members)
+		statusByMember = batchLoadRequestStatus(ctx, rdb, key, members)
 	}
 	now := time.Now().UTC()
 	protect := liveStreamInflightProtectDeadline()
 	overflow := int(count) - keep
 	toRemove := make([]interface{}, 0, overflow)
+	protected := make([]string, 0, overflow)
 	for _, z := range members {
 		if overflow <= 0 {
 			break
@@ -179,8 +198,16 @@ func selectiveTrimLiveStreamQueue(ctx context.Context, rdb redis.Cmdable, key st
 		if s, ok := statusByMember[member]; ok && s != "" {
 			status = s
 		}
-		if !isLiveStreamEvictableMember(status, tileTime, now, protect) {
+		if isLiveStreamEvictableMember(status, tileTime, now, protect) {
+			toRemove = append(toRemove, member)
+			overflow--
 			continue
+		}
+		protected = append(protected, member)
+	}
+	for _, member := range protected {
+		if overflow <= 0 {
+			break
 		}
 		toRemove = append(toRemove, member)
 		overflow--
