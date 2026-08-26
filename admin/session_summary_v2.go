@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -187,59 +188,131 @@ func (api *SessionSummaryV2API) queryTurnsForSummary(
 	return turns, rows.Err()
 }
 
-// buildConversationText 将turns转换为适合LLM分析的文本格式
+// buildConversationText 将turns转换为适合LLM分析的文本格式。
+// 只纳入 user/assistant 内容，排除 system/developer 样板提示。
 func buildConversationText(turns []turnForSummary) string {
 	var buf bytes.Buffer
 
 	for _, t := range turns {
 		buf.WriteString(fmt.Sprintf("=== Turn %d ===\n", t.TurnNo))
 
-		// Request
-		buf.WriteString("User: ")
-		if t.RequestDelta != nil {
-			if msg, ok := extractMessageContent(t.RequestDelta); ok {
-				buf.WriteString(msg)
-			} else {
-				buf.WriteString(fmt.Sprintf("%v", t.RequestDelta))
-			}
+		userText := extractDialogueContent(t.RequestDelta, "user")
+		assistantText := extractDialogueContent(t.ResponseDelta, "assistant")
+		if userText == "" {
+			userText = extractDialogueContent(t.RequestDelta, "")
 		}
+		if assistantText == "" {
+			assistantText = extractDialogueContent(t.ResponseDelta, "")
+		}
+
+		buf.WriteString("User: ")
+		buf.WriteString(userText)
 		buf.WriteString("\n\n")
 
-		// Response
 		buf.WriteString("Assistant: ")
-		if t.ResponseDelta != nil {
-			if msg, ok := extractMessageContent(t.ResponseDelta); ok {
-				buf.WriteString(msg)
-			} else {
-				buf.WriteString(fmt.Sprintf("%v", t.ResponseDelta))
-			}
-		}
+		buf.WriteString(assistantText)
 		buf.WriteString("\n\n")
 	}
 
 	return buf.String()
 }
 
-// extractMessageContent 从delta JSON中提取文本内容
-func extractMessageContent(delta any) (string, bool) {
-	// Delta format: {"role": "user", "content": "text"}
-	// Or: [{"role": "user", "content": "text"}]
+// extractDialogueContent extracts plain text for summary corpora.
+// Prefer roleFilter when set; always skip system/developer/tool messages.
+func extractDialogueContent(delta any, roleFilter string) string {
+	if delta == nil {
+		return ""
+	}
+	want := strings.ToLower(strings.TrimSpace(roleFilter))
 
-	if deltaMap, ok := delta.(map[string]any); ok {
-		if content, ok := deltaMap["content"].(string); ok {
-			return content, true
+	appendContent := func(parts *[]string, role string, content any) {
+		role = strings.ToLower(strings.TrimSpace(role))
+		if role == "system" || role == "developer" || role == "tool" || role == "function" {
+			return
+		}
+		if want != "" && role != "" && role != want {
+			return
+		}
+		text := strings.TrimSpace(contentToPlainText(content))
+		if text != "" {
+			*parts = append(*parts, text)
 		}
 	}
 
-	if deltaSlice, ok := delta.([]any); ok && len(deltaSlice) > 0 {
-		if msg, ok := deltaSlice[0].(map[string]any); ok {
-			if content, ok := msg["content"].(string); ok {
-				return content, true
+	var parts []string
+	switch v := delta.(type) {
+	case map[string]any:
+		if msgs, ok := v["messages"].([]any); ok {
+			for _, raw := range msgs {
+				msg, ok := raw.(map[string]any)
+				if !ok {
+					continue
+				}
+				appendContent(&parts, fmt.Sprint(msg["role"]), msg["content"])
+			}
+			if len(parts) > 0 {
+				return strings.Join(parts, "\n")
 			}
 		}
+		if choices, ok := v["choices"].([]any); ok && len(choices) > 0 {
+			if last, ok := choices[len(choices)-1].(map[string]any); ok {
+				if msg, ok := last["message"].(map[string]any); ok {
+					appendContent(&parts, fmt.Sprint(msg["role"]), msg["content"])
+				}
+			}
+			if len(parts) > 0 {
+				return strings.Join(parts, "\n")
+			}
+		}
+		appendContent(&parts, fmt.Sprint(v["role"]), v["content"])
+	case []any:
+		for _, raw := range v {
+			msg, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			appendContent(&parts, fmt.Sprint(msg["role"]), msg["content"])
+		}
+	case string:
+		return strings.TrimSpace(v)
 	}
+	return strings.Join(parts, "\n")
+}
 
-	return "", false
+func contentToPlainText(content any) string {
+	switch c := content.(type) {
+	case string:
+		return c
+	case []any:
+		var texts []string
+		for _, part := range c {
+			switch p := part.(type) {
+			case string:
+				if strings.TrimSpace(p) != "" {
+					texts = append(texts, p)
+				}
+			case map[string]any:
+				if t, ok := p["text"].(string); ok && strings.TrimSpace(t) != "" {
+					texts = append(texts, t)
+				} else if t, ok := p["content"].(string); ok && strings.TrimSpace(t) != "" {
+					texts = append(texts, t)
+				}
+			}
+		}
+		return strings.Join(texts, "\n")
+	default:
+		return ""
+	}
+}
+
+// extractMessageContent keeps the old helper name for call sites that only
+// need "any readable text" — still skips system-like roles.
+func extractMessageContent(delta any) (string, bool) {
+	text := extractDialogueContent(delta, "")
+	if text == "" {
+		return "", false
+	}
+	return text, true
 }
 
 // callLLMForSummary 调用LLM生成会话标题和总结
