@@ -13,8 +13,8 @@ import (
 // never empty the candidate pool).
 func TestStandardIQMatch(t *testing.T) {
 	const (
-		highIQModel  = "claude-opus-4-8" // 61.4 in the embedded reference
-		lowIQModel   = "gpt-3.5-turbo"   // 3.0 in the embedded reference
+		highIQModel = "claude-opus-4-8"  // 61.4 in the embedded reference
+		lowIQModel  = "gpt-3.5-turbo"    // 3.0 in the embedded reference
 		unknownModel = "totally-unknown-model-x"
 	)
 	highIQ, highFound, _ := modeliqdata.LookupStandardIQ(highIQModel)
@@ -25,12 +25,12 @@ func TestStandardIQMatch(t *testing.T) {
 	}
 
 	tests := []struct {
-		name      string
-		model     string
-		minIQ     float64
-		wantPass  bool
-		wantIQ    float64
-		wantFound bool
+		name       string
+		model      string
+		minIQ      float64
+		wantPass   bool
+		wantIQ     float64
+		wantFound  bool
 	}{
 		{
 			name:      "known model above threshold passes",

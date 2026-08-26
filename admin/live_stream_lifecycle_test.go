@@ -87,72 +87,6 @@ func asActionArray(t *testing.T, v any) []map[string]any {
 
 // ── wire contract ───────────────────────────────────────────────────────────
 
-func TestFlattenActionEvent_ProjectsCredentialLabelWhenPresent(t *testing.T) {
-	ts := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
-	ev := liveactions.ActionEvent{
-		RequestID:    "req-1",
-		Seq:          7,
-		Action:       liveactions.ActionCredentialSelected,
-		Ts:           ts,
-		CredentialID: 42,
-	}
-	labels := map[int]string{42: "openai-prod"}
-
-	m := flattenActionEvent(ev, labels)
-	if got := m["credential_label"]; got != "openai-prod" {
-		t.Fatalf("credential_label must surface from labels map, got %v", m["credential_label"])
-	}
-	if m["credential_id"] == nil {
-		t.Fatalf("credential_id must still be present alongside credential_label, got %#v", m)
-	}
-}
-
-func TestFlattenActionEvent_NoLabelProjectionWithoutLookup(t *testing.T) {
-	ts := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
-	ev := liveactions.ActionEvent{
-		RequestID:    "req-1",
-		Seq:          8,
-		Action:       liveactions.ActionCredentialSelected,
-		Ts:           ts,
-		CredentialID: 42,
-	}
-
-	// nil labels map: no projection, credential_id stays as the only wire field.
-	m := flattenActionEvent(ev, nil)
-	if _, ok := m["credential_label"]; ok {
-		t.Fatalf("credential_label must NOT appear when labels is nil, got %#v", m)
-	}
-
-	// Empty label for the id: same — no projection. The frontend falls back.
-	labels := map[int]string{42: ""}
-	m2 := flattenActionEvent(ev, labels)
-	if _, ok := m2["credential_label"]; ok {
-		t.Fatalf("credential_label must NOT appear when label is blank, got %#v", m2)
-	}
-}
-
-func TestCollectCredentialIDs_DedupesAndSkipsZero(t *testing.T) {
-	ts := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
-	actions := []liveactions.ActionEvent{
-		{RequestID: "r1", Seq: 1, Action: liveactions.ActionCredentialSelected, Ts: ts, CredentialID: 7},
-		{RequestID: "r1", Seq: 2, Action: liveactions.ActionReply, Ts: ts, CredentialID: 7}, // dup
-		{RequestID: "r2", Seq: 3, Action: liveactions.ActionNodeEnqueued, Ts: ts, CredentialID: 0}, // skipped
-		{RequestID: "r3", Seq: 4, Action: liveactions.ActionNodeSwitch, Ts: ts,
-			Detail: map[string]string{"from_credential_id": "9", "to_credential_id": "11"}},
-		{RequestID: "r3", Seq: 5, Action: liveactions.ActionCredentialSelected, Ts: ts, CredentialID: 11}, // dup of to
-	}
-	got := collectCredentialIDs(actions)
-	want := []int{7, 9, 11}
-	if len(got) != len(want) {
-		t.Fatalf("collectCredentialIDs length: want %v got %v", want, got)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("collectCredentialIDs[%d]: want %d got %v", i, want[i], got)
-		}
-	}
-}
-
 func TestRequestLifecycleEnvelope_SingleFlattensDetail(t *testing.T) {
 	ts := time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC)
 	ev := liveactions.ActionEvent{
@@ -167,7 +101,7 @@ func TestRequestLifecycleEnvelope_SingleFlattensDetail(t *testing.T) {
 	env := LiveStreamEnvelope{
 		Type:      "request_lifecycle",
 		Timestamp: ts,
-		Action:    actionWirePayload([]liveactions.ActionEvent{ev}, nil),
+		Action:    actionWirePayload([]liveactions.ActionEvent{ev}),
 	}
 	b, err := json.Marshal(env)
 	if err != nil {
@@ -208,7 +142,7 @@ func TestRequestLifecycleEnvelope_BatchUsesArray(t *testing.T) {
 	env := LiveStreamEnvelope{
 		Type:      "request_lifecycle",
 		Timestamp: ts,
-		Action:    actionWirePayload(batch, nil),
+		Action:    actionWirePayload(batch),
 	}
 	b, err := json.Marshal(env)
 	if err != nil {
@@ -788,7 +722,7 @@ func TestLiveStreamEnvelope_LifecycleFieldSnapshot(t *testing.T) {
 	lifecycle := LiveStreamEnvelope{
 		Type:      "request_lifecycle",
 		Timestamp: ts,
-		Action:    actionWirePayload([]liveactions.ActionEvent{{RequestID: "r", Seq: 1, Action: liveactions.ActionArrive, Ts: ts}}, nil),
+		Action:    actionWirePayload([]liveactions.ActionEvent{{RequestID: "r", Seq: 1, Action: liveactions.ActionArrive, Ts: ts}}),
 	}
 	b, err := json.Marshal(lifecycle)
 	if err != nil {

@@ -2404,7 +2404,7 @@ BEGIN
         unit_price_in_per_1m, unit_price_out_per_1m,
         cache_read_price_per_1m, cache_write_price_per_1m,
         currency, billing_mode, pricing_source, pricing_updated_at,
-        admin_protected, context_window_override, priority
+        admin_protected
     ) VALUES (
         NEW.credential_id, NEW.id, COALESCE(NEW.available, TRUE),
         COALESCE(NEW.routing_tier, 2), COALESCE(NEW.weight, 100), COALESCE(NEW.manual_priority, 99),
@@ -2414,8 +2414,7 @@ BEGIN
         COALESCE(NEW.cache_read_price_per_1m, 0), COALESCE(NEW.cache_write_price_per_1m, 0),
         COALESCE(NEW.currency, 'USD'), COALESCE(NEW.billing_mode, 'token'),
         NEW.pricing_source, NEW.pricing_updated_at,
-        COALESCE(NEW.admin_protected, FALSE),
-        NEW.context_window_override, COALESCE(NEW.priority, FALSE)
+        COALESCE(NEW.admin_protected, FALSE)
     )
     ON CONFLICT (credential_id, provider_model_id) DO UPDATE SET
         routing_tier = COALESCE(EXCLUDED.routing_tier, credential_model_bindings.routing_tier),
@@ -2433,8 +2432,6 @@ BEGIN
         billing_mode = COALESCE(EXCLUDED.billing_mode, credential_model_bindings.billing_mode),
         pricing_source = COALESCE(EXCLUDED.pricing_source, credential_model_bindings.pricing_source),
         pricing_updated_at = COALESCE(EXCLUDED.pricing_updated_at, credential_model_bindings.pricing_updated_at),
-        context_window_override = COALESCE(EXCLUDED.context_window_override, credential_model_bindings.context_window_override),
-        priority = COALESCE(EXCLUDED.priority, credential_model_bindings.priority),
         updated_at = now();
 
     RETURN NEW;
@@ -2496,8 +2493,6 @@ BEGIN
         billing_mode = COALESCE(NEW.billing_mode, credential_model_bindings.billing_mode),
         pricing_source = COALESCE(NEW.pricing_source, credential_model_bindings.pricing_source),
         pricing_updated_at = COALESCE(NEW.pricing_updated_at, credential_model_bindings.pricing_updated_at),
-        context_window_override = COALESCE(NEW.context_window_override, credential_model_bindings.context_window_override),
-        priority = COALESCE(NEW.priority, credential_model_bindings.priority),
         updated_at = now()
     WHERE id = OLD.id;
 
@@ -4506,16 +4501,7 @@ CREATE TABLE public.approval_queue (
     reason text,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     expires_at timestamp with time zone NOT NULL,
-    resume_state text DEFAULT 'idle'::text NOT NULL,
-    resume_owner text,
-    resume_lease_until timestamp with time zone,
-    resume_fencing_token bigint DEFAULT 0 NOT NULL,
-    resume_started_at timestamp with time zone,
-    resume_completed_at timestamp with time zone,
-    resume_error text,
-    CONSTRAINT approval_queue_status_chk CHECK ((status = ANY (ARRAY['pending'::text, 'approved'::text, 'rejected'::text, 'timeout'::text]))),
-    CONSTRAINT approval_queue_resume_state_chk CHECK ((resume_state = ANY (ARRAY['idle'::text, 'running'::text, 'completed'::text, 'failed'::text]))),
-    CONSTRAINT approval_queue_resume_fencing_token_chk CHECK ((resume_fencing_token >= 0))
+    CONSTRAINT approval_queue_status_chk CHECK ((status = ANY (ARRAY['pending'::text, 'approved'::text, 'rejected'::text, 'timeout'::text])))
 );
 
 ALTER TABLE ONLY public.approval_queue FORCE ROW LEVEL SECURITY;
@@ -5201,9 +5187,7 @@ CREATE TABLE public.credential_model_bindings (
     transient_failure_count integer DEFAULT 0,
     pending_verification boolean DEFAULT false,
     plan_type_origin text,
-    plan_type_updated_at timestamp with time zone,
-    context_window_override integer,
-    priority boolean DEFAULT false NOT NULL
+    plan_type_updated_at timestamp with time zone
 );
 
 
@@ -8874,9 +8858,7 @@ CREATE VIEW public.model_offers AS
     cmb.admin_protected,
     cmb.created_at,
     cmb.updated_at,
-    pm.modality AS provider_modality,
-    cmb.context_window_override,
-    cmb.priority
+    pm.modality AS provider_modality
    FROM (public.credential_model_bindings cmb
      JOIN public.provider_models pm ON ((pm.id = cmb.provider_model_id)));
 
@@ -21897,14 +21879,6 @@ CREATE INDEX idx_approval_queue_expires ON public.approval_queue USING btree (ex
 
 
 --
--- Name: idx_approval_queue_resume_claimable; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_approval_queue_resume_claimable ON public.approval_queue USING btree (resume_lease_until, created_at)
-    WHERE ((status = 'approved'::text) AND (resume_state = ANY (ARRAY['idle'::text, 'running'::text, 'failed'::text])));
-
-
---
 -- Name: idx_approval_queue_session; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -23861,7 +23835,7 @@ CREATE INDEX idx_request_logs_provider_quality ON ONLY public.request_logs USING
 -- Name: idx_request_logs_provider_tool_calls; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX idx_request_logs_provider_tool_calls ON ONLY public.request_logs USING btree (provider_id, ts DESC) WHERE ((tool_calls IS NOT NULL) AND (jsonb_typeof(tool_calls) = 'array') AND (jsonb_array_length(tool_calls) > 0));
+CREATE INDEX idx_request_logs_provider_tool_calls ON ONLY public.request_logs USING btree (provider_id, ts DESC) WHERE ((tool_calls IS NOT NULL) AND (jsonb_array_length(tool_calls) > 0));
 
 
 --
@@ -25345,7 +25319,7 @@ CREATE INDEX request_logs_2026_07_provider_id_quality_score_ts_idx ON public.req
 -- Name: request_logs_2026_07_provider_id_ts_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX request_logs_2026_07_provider_id_ts_idx ON public.request_logs_2026_07 USING btree (provider_id, ts DESC) WHERE ((tool_calls IS NOT NULL) AND (jsonb_typeof(tool_calls) = 'array') AND (jsonb_array_length(tool_calls) > 0));
+CREATE INDEX request_logs_2026_07_provider_id_ts_idx ON public.request_logs_2026_07 USING btree (provider_id, ts DESC) WHERE ((tool_calls IS NOT NULL) AND (jsonb_array_length(tool_calls) > 0));
 
 
 --
@@ -25590,7 +25564,7 @@ CREATE INDEX request_logs_2026_08_provider_id_quality_score_ts_idx ON public.req
 -- Name: request_logs_2026_08_provider_id_ts_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX request_logs_2026_08_provider_id_ts_idx ON public.request_logs_2026_08 USING btree (provider_id, ts DESC) WHERE ((tool_calls IS NOT NULL) AND (jsonb_typeof(tool_calls) = 'array') AND (jsonb_array_length(tool_calls) > 0));
+CREATE INDEX request_logs_2026_08_provider_id_ts_idx ON public.request_logs_2026_08 USING btree (provider_id, ts DESC) WHERE ((tool_calls IS NOT NULL) AND (jsonb_array_length(tool_calls) > 0));
 
 
 --
@@ -27792,7 +27766,7 @@ CREATE TRIGGER trg_notify_auto_route_cmb_insert_delete AFTER INSERT OR DELETE ON
 -- Name: credential_model_bindings trg_notify_auto_route_cmb_update; Type: TRIGGER; Schema: public; Owner: -
 --
 
-CREATE TRIGGER trg_notify_auto_route_cmb_update AFTER UPDATE ON public.credential_model_bindings FOR EACH ROW WHEN (((old.available IS DISTINCT FROM new.available) OR (old.unavailable_reason IS DISTINCT FROM new.unavailable_reason) OR (old.unavailable_at IS DISTINCT FROM new.unavailable_at) OR (old.routing_tier IS DISTINCT FROM new.routing_tier) OR (old.weight IS DISTINCT FROM new.weight) OR (old.manual_priority IS DISTINCT FROM new.manual_priority) OR (old.active_sessions IS DISTINCT FROM new.active_sessions) OR (old.consecutive_failures IS DISTINCT FROM new.consecutive_failures) OR (old.context_window_override IS DISTINCT FROM new.context_window_override) OR (old.priority IS DISTINCT FROM new.priority)) EXECUTE FUNCTION public.notify_auto_route_refresh();
+CREATE TRIGGER trg_notify_auto_route_cmb_update AFTER UPDATE ON public.credential_model_bindings FOR EACH ROW WHEN (((old.available IS DISTINCT FROM new.available) OR (old.unavailable_reason IS DISTINCT FROM new.unavailable_reason) OR (old.unavailable_at IS DISTINCT FROM new.unavailable_at) OR (old.routing_tier IS DISTINCT FROM new.routing_tier) OR (old.weight IS DISTINCT FROM new.weight) OR (old.manual_priority IS DISTINCT FROM new.manual_priority) OR (old.active_sessions IS DISTINCT FROM new.active_sessions) OR (old.consecutive_failures IS DISTINCT FROM new.consecutive_failures))) EXECUTE FUNCTION public.notify_auto_route_refresh();
 
 
 --

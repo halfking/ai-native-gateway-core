@@ -112,21 +112,21 @@ func TestRecommendV2WithHints_StandardIQGate_TenantPolicyOverridesGlobal(t *test
 		wantExcluded bool
 	}{
 		{
-			name:         "tenant entry enables gate while global is off",
+			name: "tenant entry enables gate while global is off",
 			globalGateOn: false, globalMin: 0,
 			hasPolicy: true, tenantMin: 50,
 			wantExcluded: true,
 		},
 		{
-			name:         "tenant entry 0 disables gate while global is on",
+			name: "tenant entry 0 disables gate while global is on",
 			globalGateOn: true, globalMin: 50,
 			hasPolicy: true, tenantMin: 0,
 			wantExcluded: false,
 		},
 		{
-			name:         "no tenant entry falls back to global off",
+			name: "no tenant entry falls back to global off",
 			globalGateOn: false, globalMin: 50,
-			hasPolicy:    false,
+			hasPolicy: false,
 			wantExcluded: false,
 		},
 	}

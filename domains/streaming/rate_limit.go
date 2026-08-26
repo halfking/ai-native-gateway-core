@@ -38,6 +38,7 @@ type rateLimitOutcome struct {
 	Remaining int
 	ResetSec  int
 	Queue     ratelimit.AdmissionResult
+	Reason    string
 }
 
 // checkGatewayRateLimit runs the single-source-of-truth RPM check used by
@@ -82,7 +83,7 @@ func checkGatewayRateLimit(ctx context.Context, keyInfo *authentication.KeyInfo,
 		if hasDeadline && maxQueueWait <= 0 {
 			// No usable budget left at all (deadline already within headroom).
 			// Reject immediately rather than queue-then-cancel.
-			return rateLimitOutcome{Blocked: true, Limit: limit, ResetSec: 1}
+			return rateLimitOutcome{Blocked: true, Limit: limit, ResetSec: 1, Reason: "queue_budget_exceeded"}
 		}
 		if budgeted, ok := rl.(ratelimit.RPMBudgetedAdmission); ok && hasDeadline {
 			result, err := budgeted.AdmitRPMWithBudget(ctx, keyInfo.ID, limit, maxQueueWait, notify)
@@ -94,31 +95,40 @@ func checkGatewayRateLimit(ctx context.Context, keyInfo *authentication.KeyInfo,
 				if resetSec < 1 {
 					resetSec = 1
 				}
-				return rateLimitOutcome{Blocked: true, Limit: limit, ResetSec: resetSec, Queue: result}
+				return rateLimitOutcome{Blocked: true, Limit: limit, ResetSec: resetSec, Queue: result, Reason: "queue_budget_exceeded"}
 			}
-			if errors.Is(err, ratelimit.ErrMinuteBucketFull) || errors.Is(err, ratelimit.ErrMinuteBucketWaitTimeout) {
-				return rateLimitOutcome{Blocked: true, Limit: limit, ResetSec: 60, Queue: result}
+			if errors.Is(err, ratelimit.ErrMinuteBucketFull) {
+				return rateLimitOutcome{Blocked: true, Limit: limit, ResetSec: 60, Queue: result, Reason: "queue_full"}
 			}
-			return rateLimitOutcome{Blocked: true, Limit: limit, ResetSec: 1}
+			if errors.Is(err, ratelimit.ErrMinuteBucketWaitTimeout) {
+				return rateLimitOutcome{Blocked: true, Limit: limit, ResetSec: 60, Queue: result, Reason: "bucket_timeout"}
+			}
+			return rateLimitOutcome{Blocked: true, Limit: limit, ResetSec: 1, Reason: "admission_error"}
 		}
 		if waiting, ok := rl.(ratelimit.RPMWaitingNotifier); ok {
 			result, err := waiting.AdmitRPMWithWait(ctx, keyInfo.ID, limit, notify)
 			if err == nil {
 				return rateLimitOutcome{Limit: limit, Remaining: result.Remaining, Queue: result}
 			}
-			if !errors.Is(err, ratelimit.ErrMinuteBucketFull) {
-				return rateLimitOutcome{Blocked: true, Limit: limit, ResetSec: 1}
+			if errors.Is(err, ratelimit.ErrMinuteBucketWaitTimeout) {
+				return rateLimitOutcome{Blocked: true, Limit: limit, ResetSec: 60, Queue: result, Reason: "bucket_timeout"}
 			}
-			return rateLimitOutcome{Blocked: true, Limit: limit, ResetSec: 60, Queue: result}
+			if !errors.Is(err, ratelimit.ErrMinuteBucketFull) {
+				return rateLimitOutcome{Blocked: true, Limit: limit, ResetSec: 1, Reason: "admission_error"}
+			}
+			return rateLimitOutcome{Blocked: true, Limit: limit, ResetSec: 60, Queue: result, Reason: "queue_full"}
 		}
 		result, err := admission.AdmitRPM(ctx, keyInfo.ID, limit)
 		if err == nil {
 			return rateLimitOutcome{Limit: limit, Remaining: result.Remaining, Queue: result}
 		}
-		if !errors.Is(err, ratelimit.ErrMinuteBucketFull) {
-			return rateLimitOutcome{Blocked: true, Limit: limit, ResetSec: 1}
+		if errors.Is(err, ratelimit.ErrMinuteBucketWaitTimeout) {
+			return rateLimitOutcome{Blocked: true, Limit: limit, ResetSec: 60, Queue: result, Reason: "bucket_timeout"}
 		}
-		return rateLimitOutcome{Blocked: true, Limit: limit, ResetSec: 60, Queue: result}
+		if !errors.Is(err, ratelimit.ErrMinuteBucketFull) {
+			return rateLimitOutcome{Blocked: true, Limit: limit, ResetSec: 1, Reason: "admission_error"}
+		}
+		return rateLimitOutcome{Blocked: true, Limit: limit, ResetSec: 60, Queue: result, Reason: "queue_full"}
 	}
 	if !rl.CheckRPM(keyInfo.ID, limit) {
 		_, remaining := rl.RPMStatus(keyInfo.ID, limit)
@@ -130,6 +140,7 @@ func checkGatewayRateLimit(ctx context.Context, keyInfo *authentication.KeyInfo,
 			Limit:     limit,
 			Remaining: remaining,
 			ResetSec:  60,
+			Reason:    "rpm_limit",
 		}
 	}
 	return rateLimitOutcome{Limit: limit, Remaining: -1, ResetSec: 0}

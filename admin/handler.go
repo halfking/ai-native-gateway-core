@@ -27,8 +27,8 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/memory"          //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/modelquality"    // model-IQ backend interface (modelQualityBackend)
 	"github.com/kaixuan/llm-gateway-go/domains/requestdetail"
-	"github.com/kaixuan/llm-gateway-go/domains/session"         //nolint:depguard // session state manager
-	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit"    //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/session"      //nolint:depguard // session state manager
+	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/stats"
 	"github.com/kaixuan/llm-gateway-go/domains/stats/boardcache"
 	v2 "github.com/kaixuan/llm-gateway-go/domains/ursm/v2"
@@ -69,10 +69,10 @@ type Handler struct {
 	// concurrency_limit on PATCH credential/binding. The Limiter pool's
 	// per-credential semaphore capacity is refreshed by
 	// HandleRoutingCandidateBindingUpdate / updateCredential.
-	limiter LimiterCapacitySetter
-	probeV2              *bg.CredentialProbeV2  // 900-series: mini-chat probe (spec §5)
-	probePicker          *bg.DefaultProbePicker // 900-series: default probe model (spec §4)
-	modelProbe           *bg.ModelProbeRunner   // 2026-06-18: per-model re-probe of failing bindings (spec 2026-06-18-model-probe-rounds)
+	limiter     LimiterCapacitySetter
+	probeV2     *bg.CredentialProbeV2  // 900-series: mini-chat probe (spec §5)
+	probePicker *bg.DefaultProbePicker // 900-series: default probe model (spec §4)
+	modelProbe  *bg.ModelProbeRunner   // 2026-06-18: per-model re-probe of failing bindings (spec 2026-06-18-model-probe-rounds)
 	// balanceQuotaProbe (2026-08-23 hzx-2 audit) backs the admin
 	// "force re-check after recharge" endpoint. nil → the route is
 	// still registered (URL stays stable across deployments); the
@@ -343,6 +343,12 @@ type Handler struct {
 	statsShadowExecutor *statsShadowExecutor
 	// auditLogger (V3.2-LP5, 2026-08-14) 节点操作审计：异步写入 request_state_transitions。
 	auditLogger *nodeOperationAuditLogger
+}
+
+// refreshDB returns the pool used by catalog writes during an admin model
+// refresh. Keeping the accessor local avoids widening Handler's public API.
+func (h *Handler) refreshDB() *pgxpool.Pool {
+	return h.db
 }
 
 func NewHandler(db *pgxpool.Pool, secretKey string, encKey []byte) *Handler {
