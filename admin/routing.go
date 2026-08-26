@@ -49,37 +49,44 @@ type routingHandler struct { //nolint:unused
 // safe and gives an order-of-magnitude speedup under repeated
 // page-load / tab-switch traffic.
 type availableModelsCache struct {
-	mu        sync.Mutex
-	value     map[string]any
-	expiresAt time.Time
-	ttl       time.Duration
+	mu      sync.Mutex
+	entries map[string]availableModelsCacheEntry
+	ttl     time.Duration
 	// hits/misses are exposed via /api/system/background-tasks for ops.
 	hits   uint64
 	misses uint64
 }
 
-func (c *availableModelsCache) get(now time.Time) (map[string]any, bool) {
-	if c == nil || c.value == nil {
+type availableModelsCacheEntry struct {
+	value     map[string]any
+	expiresAt time.Time
+}
+
+func (c *availableModelsCache) get(now time.Time, tenantID string) (map[string]any, bool) {
+	if c == nil {
 		return nil, false
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if now.Before(c.expiresAt) {
+	entry, ok := c.entries[tenantID]
+	if ok && now.Before(entry.expiresAt) {
 		c.hits++
-		return c.value, true
+		return entry.value, true
 	}
 	c.misses++
 	return nil, false
 }
 
-func (c *availableModelsCache) set(now time.Time, value map[string]any) {
+func (c *availableModelsCache) set(now time.Time, tenantID string, value map[string]any) {
 	if c == nil {
 		return
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.value = value
-	c.expiresAt = now.Add(c.ttl)
+	if c.entries == nil {
+		c.entries = make(map[string]availableModelsCacheEntry)
+	}
+	c.entries[tenantID] = availableModelsCacheEntry{value: value, expiresAt: now.Add(c.ttl)}
 }
 
 const availableModelsCacheTTL = 30 * time.Second
@@ -2549,16 +2556,17 @@ type popularModelEntry struct {
 	Count         *int   `json:"count,omitempty"`
 }
 
-// popularModelsHotCutoffWindow is how far back we look in request_logs_hot
-// for "popular models" suggestions. request_logs_hot is the hot standalone
+// defaultPopularModelsLookupWindow is how far back we look in request_logs_hot
+// for "popular models" suggestions unless the environment overrides it.
+// request_logs_hot is the hot standalone
 // table (rule 33 / migration 341) — older rows are migrated nightly into
 // the monthly partitioned request_logs table by promote_request_logs_hot_to_partition.
 // Querying request_logs_hot directly avoids the columnar monthly partitions
 // that the previous request_logs_with_current_month UNION dragged in.
-const popularModelsHotCutoffWindow = 7 * 24 * time.Hour
+const defaultPopularModelsLookupWindow = 7 * 24 * time.Hour
 
 // popularModelsHotSQL returns up to 10 (model_key, count) rows from
-// request_logs_hot covering the last popularModelsHotCutoffWindow.
+// request_logs_hot covering the configured lookup window.
 //
 // The cutoff is passed as a plan-time literal ($1) computed in Go so the
 // hot-table scan is bounded by an index range on (ts) rather than the
@@ -2581,6 +2589,7 @@ SELECT model_key, cnt FROM (
     LEFT JOIN models_canonical mc2 ON mc2.id = ma.canonical_id
     WHERE rl.ts >= $1
       AND rl.success = TRUE
+      AND ($2 = '' OR rl.tenant_id = $2)
       AND rl.client_model IS NOT NULL AND rl.client_model != ''
     GROUP BY model_key
 ) u
@@ -2650,9 +2659,9 @@ func livePopularModels(ctx context.Context, rdb *redis.Client, limit int) []popu
 	return out
 }
 
-// recentlyUsedModelsKey is the dedicated Redis ZSET that records every
-// canonical model name hit by a real (non-probe) successful request over
-// the last RecentlyUsedModelsTTL. It is the primary fast path for the
+// recentlyUsedModelsKeyPrefix namespaces one Redis ZSET per tenant. Each key
+// records canonical model names hit by a real (non-probe) successful request
+// over the last RecentlyUsedModelsTTL. This is the primary fast path for the
 // "凭据路由模型" dashboard widget — O(log N) writes (ZINCRBY) on the
 // request hot path, O(log N + M) reads (ZREVRANGE) here.
 //
@@ -2668,19 +2677,29 @@ func livePopularModels(ctx context.Context, rdb *redis.Client, limit int) []popu
 //   - Persistent across gateway restarts via AOF/RDB (lane queue
 //     contents live in process memory only).
 const (
-	recentlyUsedModelsKey   = "llmgw:routing:recently_used_models"
-	RecentlyUsedModelsTTL   = 7 * 24 * time.Hour
-	recentlyUsedModelsLimit = 10
+	recentlyUsedModelsKeyPrefix = "llmgw:routing:recently_used_models:"
+	RecentlyUsedModelsTTL       = 7 * 24 * time.Hour
+	recentlyUsedModelsLimit     = 10
 )
 
 // recentlyUsedPopularModels reads the top-N recently-used canonical model
-// names from the dedicated Redis ZSET. Best-effort: returns nil on any
-// Redis error so the caller falls back to the SQL path.
-func recentlyUsedPopularModels(ctx context.Context, rdb *redis.Client, limit int) []popularModelEntry {
-	if rdb == nil || limit <= 0 {
+// names for one tenant. An empty tenant intentionally has no Redis aggregate:
+// super-admin reads remain DB-backed and cannot be served by a global key.
+// Best-effort: returns nil on any Redis error so callers fall back to SQL.
+func recentlyUsedModelsKey(tenantID string) string {
+	tenantID = strings.TrimSpace(tenantID)
+	if tenantID == "" {
+		return ""
+	}
+	return recentlyUsedModelsKeyPrefix + tenantID
+}
+
+func recentlyUsedPopularModels(ctx context.Context, rdb *redis.Client, tenantID string, limit int) []popularModelEntry {
+	key := recentlyUsedModelsKey(tenantID)
+	if rdb == nil || key == "" || limit <= 0 {
 		return nil
 	}
-	pairs, err := rdb.ZRevRangeWithScores(ctx, recentlyUsedModelsKey, 0, int64(limit-1)).Result()
+	pairs, err := rdb.ZRevRangeWithScores(ctx, key, 0, int64(limit-1)).Result()
 	if err != nil || len(pairs) == 0 {
 		return nil
 	}
@@ -2708,9 +2727,14 @@ func recentlyUsedPopularModels(ctx context.Context, rdb *redis.Client, limit int
 // counter (no log spam per request).
 //
 // Probe / selfcheck / pre-flight requests must pass isProbe=false so
-// health-check traffic does not skew the dashboard ranking.
-func RecordRecentlyUsedModel(ctx context.Context, rdb *redis.Client, canonical string, isProbe bool) {
+// health-check traffic does not skew the dashboard ranking. tenantID is
+// required so model popularity never crosses tenant boundaries.
+func RecordRecentlyUsedModel(ctx context.Context, rdb *redis.Client, tenantID, canonical string, isProbe bool) {
 	if rdb == nil || isProbe {
+		return
+	}
+	key := recentlyUsedModelsKey(tenantID)
+	if key == "" {
 		return
 	}
 	canonical = normalizeModelKey(canonical)
@@ -2718,8 +2742,8 @@ func RecordRecentlyUsedModel(ctx context.Context, rdb *redis.Client, canonical s
 		return
 	}
 	pipe := rdb.Pipeline()
-	pipe.ZIncrBy(ctx, recentlyUsedModelsKey, 1, canonical)
-	pipe.Expire(ctx, recentlyUsedModelsKey, RecentlyUsedModelsTTL)
+	pipe.ZIncrBy(ctx, key, 1, canonical)
+	pipe.Expire(ctx, key, RecentlyUsedModelsTTL)
 	if _, err := pipe.Exec(ctx); err != nil {
 		// Best-effort: do not log per-request (would flood). A future
 		// counter hook (RecentlyUsedRedisErrors) can catch chronic issues.
@@ -2727,7 +2751,10 @@ func RecordRecentlyUsedModel(ctx context.Context, rdb *redis.Client, canonical s
 	}
 }
 
-func (h *Handler) queryPopularModels(ctx context.Context, featuredModels []string, byCanonical map[string]*availableVersionEntry) []popularModelEntry {
+func (h *Handler) queryPopularModels(ctx context.Context, featuredModels []string, byCanonical map[string]*availableVersionEntry, tenantID string, limit int) []popularModelEntry {
+	if limit <= 0 {
+		return nil
+	}
 	popular := make([]popularModelEntry, 0, 32)
 	seen := map[string]bool{}
 
@@ -2766,20 +2793,25 @@ func (h *Handler) queryPopularModels(ctx context.Context, featuredModels []strin
 	// accessed models" take precedence over the slower 7-day aggregate when
 	// the SQL path is cold / unavailable.
 	if rc, ok := h.redisClient.(*redis.Client); ok {
-		for _, live := range livePopularModels(ctx, rc, 5) {
-			add(live.CanonicalName, live.DisplayName, "live", live.Count)
+		if tenantID == "" {
+			for _, live := range livePopularModels(ctx, rc, 5) {
+				add(live.CanonicalName, live.DisplayName, "live", live.Count)
+			}
 		}
 		// Recent source: dedicated recently-used ZSET (TTL 7d, real request
 		// counter, probe-gated). This is the primary fast path for the
 		// dashboard — covers the same window as the SQL aggregate but at
 		// Redis latency instead of a request_logs_hot scan.
-		for _, recent := range recentlyUsedPopularModels(ctx, rc, recentlyUsedModelsLimit) {
+		for _, recent := range recentlyUsedPopularModels(ctx, rc, tenantID, recentlyUsedModelsLimit) {
 			add(recent.CanonicalName, recent.DisplayName, "recent", recent.Count)
 		}
 	}
 
-	cutoff := time.Now().UTC().Add(-popularModelsHotCutoffWindow)
-	usageRows, err := h.db.Query(ctx, popularModelsHotSQL, cutoff)
+	if len(popular) >= limit {
+		return popular[:limit]
+	}
+	cutoff := time.Now().UTC().Add(-popularModelsLookupWindow())
+	usageRows, err := h.db.Query(ctx, popularModelsHotSQL, cutoff, tenantID)
 	if err == nil {
 		defer usageRows.Close()
 		for usageRows.Next() {
@@ -2791,6 +2823,9 @@ func (h *Handler) queryPopularModels(ctx context.Context, featuredModels []strin
 			c := cnt
 			add(modelKey, modelKey, "usage", &c)
 		}
+	}
+	if len(popular) > limit {
+		return popular[:limit]
 	}
 	return popular
 }
@@ -2816,7 +2851,8 @@ func (h *Handler) handleRoutingAvailableModels(w http.ResponseWriter, r *http.Re
 	// policy edit / provider refresh is handled in those paths
 	// (call invalidateAvailableModelsCache below).
 	if r.Method == http.MethodGet {
-		if cached, ok := globalAvailableModelsCache.get(time.Now()); ok {
+		tenantID := EffectiveTenantIDAll(r)
+		if cached, ok := globalAvailableModelsCache.get(time.Now(), tenantID); ok {
 			writeJSON(w, http.StatusOK, cached)
 			return
 		}
@@ -2995,7 +3031,8 @@ func (h *Handler) handleRoutingAvailableModels(w http.ResponseWriter, r *http.Re
 	})
 	sort.Strings(unmapped)
 
-	popular := h.queryPopularModels(ctx, featuredModels, byCanonical)
+	tenantID := EffectiveTenantIDAll(r)
+	popular := h.queryPopularModels(ctx, featuredModels, byCanonical, tenantID, 20)
 
 	resp := map[string]any{
 		"families":  familiesOut,
@@ -3004,7 +3041,7 @@ func (h *Handler) handleRoutingAvailableModels(w http.ResponseWriter, r *http.Re
 		"total_raw": totalRaw,
 	}
 	if r.Method == http.MethodGet {
-		globalAvailableModelsCache.set(time.Now(), resp)
+		globalAvailableModelsCache.set(time.Now(), tenantID, resp)
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -3018,8 +3055,7 @@ func (h *Handler) handleRoutingAvailableModels(w http.ResponseWriter, r *http.Re
 // admin.InvalidateAvailableModelsCache() without importing the cache.
 func InvalidateAvailableModelsCache() {
 	globalAvailableModelsCache.mu.Lock()
-	globalAvailableModelsCache.value = nil
-	globalAvailableModelsCache.expiresAt = time.Time{}
+	globalAvailableModelsCache.entries = nil
 	globalAvailableModelsCache.mu.Unlock()
 }
 
@@ -3027,11 +3063,11 @@ func InvalidateAvailableModelsCache() {
 // (admin/routing_cache_test.go) exercise the hit/miss/invalidate
 // lifecycle without spinning up a real DB.
 func setAvailableModelsCacheForTest(value map[string]any) {
-	globalAvailableModelsCache.set(time.Now(), value)
+	globalAvailableModelsCache.set(time.Now(), "", value)
 }
 
 func getAvailableModelsCacheForTest() (map[string]any, bool) {
-	return globalAvailableModelsCache.get(time.Now())
+	return globalAvailableModelsCache.get(time.Now(), "")
 }
 
 func (h *Handler) handleRoutingAvailableModelsRaw(w http.ResponseWriter, r *http.Request) {
@@ -3824,7 +3860,7 @@ func (h *Handler) handleRoutingFeaturedModelsDynamic(w http.ResponseWriter, r *h
 	polRow := h.db.QueryRow(ctx, `SELECT featured_models FROM routing_policy WHERE tenant_id = 'default'`)
 	_ = polRow.Scan(&featuredModels)
 
-	popular := h.queryPopularModels(ctx, featuredModels, nil)
+	popular := h.queryPopularModels(ctx, featuredModels, nil, EffectiveTenantIDAll(r), 20)
 
 	type featuredModel struct {
 		Name             string `json:"name"`

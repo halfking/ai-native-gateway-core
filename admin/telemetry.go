@@ -413,7 +413,7 @@ func (t *telemetryIngester) persistRequestLog(ctx context.Context, e *requestLog
 	// (the request_log_ingest schema does not carry a separate canonical
 	// field — ClientModel is the lower-cased canonical form on this path).
 	if rc := t.redisClient.Load(); rc != nil && e.Success {
-		RecordRecentlyUsedModel(ctx, rc, derefStr(e.ClientModel), false)
+		RecordRecentlyUsedModel(ctx, rc, nonEmptyDefault(e.TenantID), derefStr(e.ClientModel), false)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
