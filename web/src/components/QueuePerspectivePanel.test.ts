@@ -437,11 +437,12 @@ describe('QueuePerspectivePanel', () => {
     // 默认折叠下不渲染节点卡片（移动到 body 中）。
     expect(groups[0].findAll('.qp-node-card')).toHaveLength(0)
     await groups[0].get('.qp-model-group-toggle').trigger('click')
-    const gptCards = groups[0].findAll('.qp-node-card')
-    expect(gptCards.map(card => card.get('.qp-node-card-title').text()).sort()).toEqual(['a/#1', 'b/#2'])
-    expect(gptCards[0].findAll('.qp-dot')).toHaveLength(4)
-    expect(gptCards[0].text()).toMatch(/✓/)
-    expect(gptCards[0].text()).toMatch(/5m/)
+    // groups[0] 是 claude-sonnet 分组（按 displayName 字母序在前），节点 = #2 (b) + #3 (c)。
+    const claudeCards = groups[0].findAll('.qp-node-card')
+    expect(claudeCards.map(card => card.get('.qp-node-card-title').text()).sort()).toEqual(['b/#2', 'c/#3'])
+    expect(claudeCards[0].findAll('.qp-dot')).toHaveLength(4)
+    expect(claudeCards[0].text()).toMatch(/✓/)
+    expect(claudeCards[0].text()).toMatch(/5m/)
 
     // 折叠态下不展开请求列表（这里第一个 group 已经展开，所以检查第二个）。
     expect(groups[1].findAll('.qp-model-group-requests')).toHaveLength(0)
@@ -508,8 +509,8 @@ describe('QueuePerspectivePanel', () => {
         : [],
     }))
     liveStreamState.nodes = [
-      { credential_id: 10, provider_id: 1, provider_code: 'p', manual_disabled: false, circuit_state: 'closed', raw_models: ['m-1'] },
-      { credential_id: 5, provider_id: 1, provider_code: 'p', manual_disabled: false, circuit_state: 'closed', raw_models: ['m-1'] },
+      { credential_id: 10, provider_id: 1, provider_code: 'p', manual_disabled: false, circuit_state: 'closed', raw_models: ['m-1'], credential_label: 'later-priority' },
+      { credential_id: 5, provider_id: 1, provider_code: 'p', manual_disabled: false, circuit_state: 'closed', raw_models: ['m-1'], credential_label: 'first-priority' },
     ]
 
     const wrapper = mountPanel()
@@ -535,8 +536,8 @@ describe('QueuePerspectivePanel', () => {
         : [],
     }))
     liveStreamState.nodes = [
-      { credential_id: 1, provider_id: 1, provider_code: 'p', manual_disabled: false, circuit_state: 'closed', raw_models: ['m-1'] },
-      { credential_id: 2, provider_id: 1, provider_code: 'p', manual_disabled: false, circuit_state: 'closed', raw_models: ['m-1'] },
+      { credential_id: 1, provider_id: 1, provider_code: 'p', manual_disabled: false, circuit_state: 'closed', raw_models: ['m-1'], credential_label: 'alpha-key' },
+      { credential_id: 2, provider_id: 1, provider_code: 'p', manual_disabled: false, circuit_state: 'closed', raw_models: ['m-1'], credential_label: 'beta-key' },
     ]
 
     const wrapper = mountPanel()
@@ -650,8 +651,8 @@ describe('QueuePerspectivePanel', () => {
     }))
     // Only credentials 1 and 3 are currently live; #2 is still in the binding set.
     liveStreamState.nodes = [
-      { credential_id: 1, provider_id: 1, provider_code: 'p', manual_disabled: false, circuit_state: 'closed', raw_models: ['m-1'] },
-      { credential_id: 3, provider_id: 1, provider_code: 'p', manual_disabled: false, circuit_state: 'closed', raw_models: ['m-1'] },
+      { credential_id: 1, provider_id: 1, provider_code: 'p', manual_disabled: false, circuit_state: 'closed', raw_models: ['m-1'], credential_label: 'live-a' },
+      { credential_id: 3, provider_id: 1, provider_code: 'p', manual_disabled: false, circuit_state: 'closed', raw_models: ['m-1'], credential_label: 'live-c' },
     ]
 
     const wrapper = mountPanel()
@@ -808,6 +809,7 @@ describe('QueuePerspectivePanel', () => {
     const wrapper = mountPanel()
     await flushPromises()
     await flushPromises()
+    await expandAllModelGroups(wrapper)
 
     expect(getSlidingWindowBatch).toHaveBeenCalledWith(
       expect.any(Array),
@@ -854,6 +856,7 @@ describe('QueuePerspectivePanel', () => {
       const wrapper = mountPanel()
       await flushPromises()
       await flushPromises()
+      await expandAllModelGroups(wrapper)
       expect(wrapper.findAll('.qp-node-window-cell')).toHaveLength(2)
 
       getSlidingWindowBatch.mockResolvedValue({
