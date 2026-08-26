@@ -22,11 +22,13 @@ import {
   queueRef,
   nodesRef,
   liveStreamState,
+  snapshotRef,
   getNodesForModel,
   getRequestsForCredential,
   type LiveNodeStatus,
   type LiveRequest,
 } from '../composables/liveStreamStore'
+import { recentTilesForGroup } from '../composables/useModelRecentStatusStrip'
 import { isSuperAdmin, isAuthenticated } from '../store'
 import { ApiError } from '../api/_core'
 import { readLiveStreamPreferences, writeLiveStreamPreferences, type QueueStatusBucket } from '../composables/liveStreamPreferences'
@@ -46,6 +48,8 @@ import {
 import { credentialDisplayName as credentialLabelById, useCredentialLabels } from '../composables/useCredentialLabels'
 import RequestProcessingTrail from './RequestProcessingTrail.vue'
 import NodeDetailDrawer from './NodeDetailDrawer.vue'
+import { openRequestDetailPage } from '../utils/openRequestDetailPage'
+import ModelRecentStatusStrip from './ModelRecentStatusStrip.vue'
 
 const { t } = useI18n()
 const queue = queueRef
@@ -216,6 +220,11 @@ function modelKey(model: string): string {
 // 点击模型分组中的节点卡片：把「模型 + 节点」一起传给详情抽屉。
 // aliases 含分组 scope key 与该组的 raw 模型名，取该节点在此分组下的
 // raw 绑定作为 scope 模型（与 monitor/sliding-window/history 的 raw 命名一致）。
+function openRequestFromQueue(requestId: string | undefined) {
+  if (!requestId) return
+  openRequestDetailPage(requestId)
+}
+
 function openNode(node: LiveNodeStatus, aliases: string[] = []) {
   selectedNode.value = node
   const aliasSet = aliases.map(modelKey)
@@ -443,6 +452,16 @@ const modelGroups = computed<ModelGroup[]>(() => {
     || a.model.localeCompare(b.model),
   )
 })
+
+/** 与「按模型」泳道同源：snapshot.dimensions.model */
+const modelDimensionLanes = computed(() => snapshotRef.value?.dimensions?.model ?? [])
+
+function recentStatusTilesForGroup(group: ModelGroup) {
+  return recentTilesForGroup(
+    { model: group.model, displayName: group.displayName, aliases: group.aliases },
+    modelDimensionLanes.value,
+  )
+}
 
 // ── 节点状态过滤（在用 / 降级 / 人工禁用 / 配额耗尽） ─────────────────────
 // 每个节点只归属一个主状态桶：人工禁用 > 耗尽/暂停 > 降级 > 在用。
@@ -1081,6 +1100,7 @@ function formatTs(ts: string | undefined): string {
               <span class="qp-model-rq-count">{{ group.requestCount }}</span>
             </span>
             <span class="qp-pill qp-pill--hint" :title="dragDisabledHint(group)">{{ canReorder(group) ? '拖动调整优先级' : '优先级排序不可用' }}</span>
+            <ModelRecentStatusStrip :tiles="recentStatusTilesForGroup(group)" />
           </div>
           <div v-if="expandedModels.has(group.model)" class="qp-model-group-body">
             <div class="qp-model-nodes">
@@ -1149,7 +1169,16 @@ function formatTs(ts: string | undefined): string {
             <p class="qp-model-detail-hint">{{ t('requestJourneys.nodeDetailHint') }}</p>
             <ul v-if="group.nodes.some(node => requestsForNode(node, group.aliases).length)" class="qp-model-group-requests">
               <template v-for="node in group.nodes" :key="node.credential_id">
-                <li v-for="request in requestsForNode(node, group.aliases)" :key="request.request_id" class="qp-model-group-request">
+                <li
+                  v-for="request in requestsForNode(node, group.aliases)"
+                  :key="request.request_id"
+                  class="qp-model-group-request qp-model-group-request--clickable"
+                  role="button"
+                  tabindex="0"
+                  :title="request.request_id"
+                  @click="openRequestFromQueue(request.request_id)"
+                  @keydown.enter="openRequestFromQueue(request.request_id)"
+                >
                   <span class="qp-rq-node">{{ nodeCardTitle(node, group) }}</span><span class="qp-rq-model">{{ request.model || '—' }}</span><span class="qp-rq-status" :class="`qp-rq-status--${request.status}`">{{ request.status || '—' }}</span><span v-if="typeof request.latency_ms === 'number'" class="qp-rq-latency">{{ formatLatency(request.latency_ms) }}</span><span v-if="request.error_kind" class="qp-rq-err">{{ request.error_kind }}</span><span class="qp-rq-ts">{{ formatTs(request.ts) }}</span>
                 </li>
               </template>
@@ -1374,7 +1403,8 @@ function formatTs(ts: string | undefined): string {
   padding: 4px 0;
   color: var(--kx-text);
 }
-.qp-model-compact { display:flex; align-items:center; gap:7px; flex-wrap:wrap; padding:7px 9px; }
+.qp-model-compact { display:flex; align-items:center; gap:7px; flex-wrap:nowrap; padding:7px 9px; min-width:0; }
+.qp-model-compact > .model-recent-status-strip { flex: 1 1 auto; }
 .qp-model-tag { font-size:10px; padding:2px 6px; border-radius:999px; color:var(--kx-accent); background:color-mix(in srgb, var(--kx-accent) 12%, transparent); }
 .qp-model-tag--hot { color:var(--kx-warning); background:color-mix(in srgb, var(--kx-warning) 12%, transparent); }
 .qp-model-nodes { display:flex; gap:6px; flex-wrap:wrap; flex:1 1 100%; padding-left:18px; }
@@ -1492,6 +1522,14 @@ function formatTs(ts: string | undefined): string {
   padding: 2px 4px;
   border-top: 1px dashed var(--kx-border);
   color: var(--kx-text);
+}
+.qp-model-group-request--clickable {
+  cursor: pointer;
+  border-radius: 4px;
+  margin: 0 -4px;
+}
+.qp-model-group-request--clickable:hover {
+  background: color-mix(in srgb, var(--kx-primary) 8%, transparent);
 }
 .qp-model-group-request:first-child {
   border-top: none;

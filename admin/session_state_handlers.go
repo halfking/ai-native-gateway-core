@@ -200,6 +200,8 @@ func (h *Handler) handleSessionSubrouter(w http.ResponseWriter, r *http.Request)
 		h.serveSessionSnapshot(w, r, sessionID)
 	case "instant-summary":
 		h.serveSessionInstantSummary(w, r, sessionID)
+	case "sanitize-matches":
+		h.serveSessionSanitizeMatches(w, r, sessionID)
 	default:
 		// /turns/<turnNo> 单轮详情，或 /turns/<turnNo>/attachments/<id>/url|revoke
 		if strings.HasPrefix(action, "turns/") {

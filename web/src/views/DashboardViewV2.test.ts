@@ -117,4 +117,20 @@ describe('dashboard board tab contract', () => {
     expect(statsPanel).toContain('compliance_stats')
     expect(statsPanel).toContain('model_usage')
   })
+
+  it('opens request details from queue journey, node drawer, and stats drilldown', async () => {
+    const [journey, nodeActions, drill] = await Promise.all([
+      readFile(resolve(process.cwd(), 'web/src/components/RequestJourneyQueues.vue'), 'utf8').catch(() =>
+        readFile(resolve(process.cwd(), 'src/components/RequestJourneyQueues.vue'), 'utf8')),
+      readFile(resolve(process.cwd(), 'web/src/composables/useNodeDetailDrawerActions.ts'), 'utf8').catch(() =>
+        readFile(resolve(process.cwd(), 'src/composables/useNodeDetailDrawerActions.ts'), 'utf8')),
+      readFile(resolve(process.cwd(), 'web/src/components/session/SessionDrilldownPanel.vue'), 'utf8').catch(() =>
+        readFile(resolve(process.cwd(), 'src/components/session/SessionDrilldownPanel.vue'), 'utf8')),
+    ])
+    expect(journey).toContain('openRequestDetailPage(requestId')
+    expect(nodeActions).toContain('openRequestDetailPage(rid')
+    expect(drill).toContain('openRequestDetailPage(payload.requestId')
+    expect(drill).toContain('@open-request="openRequest"')
+  })
+
 })

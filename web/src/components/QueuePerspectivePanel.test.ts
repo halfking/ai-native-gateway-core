@@ -106,6 +106,7 @@ describe('QueuePerspectivePanel', () => {
     }
     liveStreamState.requests = []
     liveStreamState.nodes = []
+    liveStreamState.snapshot = null
     getFeatured.mockReset().mockResolvedValue({ featured_models: ['gpt-4o', 'claude-sonnet', 'm-1'] })
     resolveRouting.mockReset().mockResolvedValue({ raw_models: [], candidates: [] })
     reorderCandidateBindings.mockReset().mockResolvedValue({ message: 'updated', items: [] })
@@ -446,6 +447,76 @@ describe('QueuePerspectivePanel', () => {
 
     // 折叠态下不展开请求列表（这里第一个 group 已经展开，所以检查第二个）。
     expect(groups[1].findAll('.qp-model-group-requests')).toHaveLength(0)
+  })
+
+  it('renders recent model-lane status strip on each model title row', async () => {
+    liveStreamState.nodes = [
+      { credential_id: 1, provider_id: 2, provider_code: 'a', manual_disabled: false, circuit_state: 'closed', raw_models: ['gpt-4o'] },
+      { credential_id: 3, provider_id: 4, provider_code: 'c', manual_disabled: false, circuit_state: 'closed', raw_models: ['claude-sonnet'] },
+    ]
+    liveStreamState.snapshot = {
+      summary: { total: 3, success: 2, failure: 0, in_progress: 1 },
+      detail_dimensions: { credential: [], vendor: [], provider: [], model: [] },
+      dimensions: {
+        credential: [],
+        vendor: [],
+        provider: [],
+        model: [
+          {
+            id: 'gpt-4o',
+            name: 'gpt-4o',
+            dimension: 'model',
+            isOthers: false,
+            stats: { total: 2, success: 1, failure: 0, in_progress: 1 },
+            requests: [
+              {
+                request_id: 'r-g1',
+                timestamp: '2026-08-27T00:00:01Z',
+                model: 'gpt-4o',
+                vendor: 'openai',
+                provider: 'a',
+                status: 'success',
+              },
+              {
+                request_id: 'r-g2',
+                timestamp: '2026-08-27T00:00:02Z',
+                model: 'gpt-4o',
+                vendor: 'openai',
+                provider: 'a',
+                status: 'in_progress',
+              },
+            ],
+          },
+          {
+            id: 'claude-sonnet',
+            name: 'claude-sonnet',
+            dimension: 'model',
+            isOthers: false,
+            stats: { total: 1, success: 1, failure: 0 },
+            requests: [
+              {
+                request_id: 'r-c1',
+                timestamp: '2026-08-27T00:00:03Z',
+                model: 'claude-sonnet',
+                vendor: 'anthropic',
+                provider: 'c',
+                status: 'success',
+              },
+            ],
+          },
+        ],
+      },
+      dimension_legends: { credential: [], vendor: [], provider: [], model: [] },
+      status_legends: [],
+    }
+
+    const wrapper = mountPanel()
+    await flushPromises()
+    const strips = wrapper.findAll('.model-recent-status-strip')
+    expect(strips).toHaveLength(2)
+    // 字母序：claude-sonnet 在前（1 cell），gpt-4o 在后（2 cells）
+    expect(strips[0].findAll('.model-recent-status-strip__cell')).toHaveLength(1)
+    expect(strips[1].findAll('.model-recent-status-strip__cell')).toHaveLength(2)
   })
 
   it('expands a model to show requests routed to those nodes', async () => {
