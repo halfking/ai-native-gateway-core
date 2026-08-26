@@ -113,7 +113,13 @@ type telemetryIngester struct {
 	// Redis fast path that mirrors the request_logs_hot SQL aggregate.
 	// Nil-safe: persistRequestLog skips the bump without affecting the
 	// existing ingest contract.
-	redisClient *redis.Client
+	//
+	// Wrapped in atomic.Pointer so SetIngesterRedisClient (called from
+	// main goroutine after StartIngester) and persistRequestLog (called
+	// from the ingest worker goroutine) race-free share the value. The
+	// underlying *redis.Client is itself safe for concurrent use, so a
+	// pointer swap is sufficient — no extra mutex required.
+	redisClient atomic.Pointer[redis.Client]
 
 	// 2026-07-16: failure counters split by category so ops can
 	// distinguish transient (worth retrying) from permanent (data
@@ -132,7 +138,7 @@ func SetIngesterRedisClient(rc *redis.Client) {
 	if ingester == nil {
 		return
 	}
-	ingester.redisClient = rc
+	ingester.redisClient.Store(rc)
 }
 
 var ingester *telemetryIngester
@@ -406,8 +412,8 @@ func (t *telemetryIngester) persistRequestLog(ctx context.Context, e *requestLog
 	// canonical name the gateway resolves before writing request_logs_hot
 	// (the request_log_ingest schema does not carry a separate canonical
 	// field — ClientModel is the lower-cased canonical form on this path).
-	if t.redisClient != nil && e.Success {
-		RecordRecentlyUsedModel(ctx, t.redisClient, derefStr(e.ClientModel), false)
+	if rc := t.redisClient.Load(); rc != nil && e.Success {
+		RecordRecentlyUsedModel(ctx, rc, derefStr(e.ClientModel), false)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
