@@ -1,0 +1,125 @@
+package dispatch
+
+import (
+	"context"
+	"errors"
+	"time"
+)
+
+// AttemptJournal (执行轨迹队列, V6-W1.6 R9 / docs/架构优化v6/
+// 09-ir-class-journal-decoupling.md) is the per-request execution trace:
+// every model×node attempted, the decided next action, cumulative per-action
+// counters and the terminal state. The authoritative copy lives on the
+// QueuedRequest (single-owner invariant); dimension entries only hold
+// snapshots taken at the existing UpdateWait/Complete sync points.
+
+// JournalEntry is one decision record: what executed, what happened, what the
+// scheduler decided next. Seq is assigned by recordDecision.
+type JournalEntry struct {
+	Seq          int            `json:"seq"`
+	At           time.Time      `json:"at"`
+	Model        string         `json:"model,omitempty"`
+	CredentialID int            `json:"credential_id,omitempty"`
+	ProviderID   int            `json:"provider_id,omitempty"`
+	Vendor       string         `json:"vendor,omitempty"`
+	Action       NextActionKind `json:"action"`
+	ErrorKind    string         `json:"error_kind,omitempty"`
+	HTTPStatus   int            `json:"http_status,omitempty"`
+	// Attempt is the cumulative AttemptCount after the event.
+	Attempt int `json:"attempt"`
+	// Counts is the cumulative per-action counter snapshot after the event.
+	Counts ActionCounts `json:"counts"`
+}
+
+// ActionCounts aggregates the decision types across the request lifetime.
+// They are a classification VIEW: the authoritative attempt limit is
+// AttemptCount (R12) — sending actions (retry/switch_cred/switch_model) each
+// correspond to exactly one later forward, while waits do not send and are
+// not counted in AttemptCount.
+type ActionCounts struct {
+	Retries        int `json:"retries"`
+	NodeSwitches   int `json:"node_switches"`
+	ModelSwitches  int `json:"model_switches"`
+	CapacityWaits  int `json:"capacity_waits"`
+	ScheduledWaits int `json:"scheduled_waits"`
+}
+
+// journalCapacity bounds the trace ring: maxAttempts(100) + first admission
+// + terminal leaves headroom, so a normal request is never truncated; the
+// bound only defends pathological paths (R9 boundary).
+const journalCapacity = 128
+
+// Request-class string mirrors. dispatch must NOT import internal/ir (E14);
+// journal_mirror_test.go pins these against ir.ClassImmediate/ClassScheduled.
+const (
+	RequestClassImmediate = "immediate"
+	RequestClassScheduled = "scheduled"
+)
+
+// requestClass resolves the request class: an explicit RequestClass field
+// (pre-stamped by the executor) wins; otherwise it derives from DueAt.
+func (qr *QueuedRequest) requestClass() string {
+	if qr.RequestClass != "" {
+		return qr.RequestClass
+	}
+	if qr.DueAt.IsZero() || !qr.DueAt.After(time.Now()) {
+		return RequestClassImmediate
+	}
+	return RequestClassScheduled
+}
+
+// recordDecision is the single journal write entry point (single-owner
+// invariant: call while the current goroutine owns qr, BEFORE any ownership
+// handoff such as a Tier-2 enqueue). It assigns the monotonic Seq, folds the
+// action into the cumulative Counts, appends to the bounded ring (dropping
+// the oldest entry on overflow) and refreshes qr.LastFailover as a projection
+// of the new tail so the notice path and the trace can never drift.
+func (qr *QueuedRequest) recordDecision(entry JournalEntry) JournalEntry {
+	qr.journalSeq++
+	entry.Seq = qr.journalSeq
+	if entry.At.IsZero() {
+		entry.At = time.Now()
+	}
+	switch entry.Action {
+	case NextActionRetrySameCred:
+		qr.Counts.Retries++
+	case NextActionSwitchCred:
+		qr.Counts.NodeSwitches++
+	case NextActionSwitchModel:
+		qr.Counts.ModelSwitches++
+	case NextActionCapacityWait:
+		qr.Counts.CapacityWaits++
+	case NextActionScheduledWait:
+		qr.Counts.ScheduledWaits++
+	}
+	entry.Counts = qr.Counts
+	qr.AttemptJournal = append(qr.AttemptJournal, entry)
+	if overflow := len(qr.AttemptJournal) - journalCapacity; overflow > 0 {
+		copy(qr.AttemptJournal, qr.AttemptJournal[overflow:])
+		qr.AttemptJournal = qr.AttemptJournal[:journalCapacity]
+	}
+	qr.LastFailover = FailoverMarker{
+		ErrorKind:    entry.ErrorKind,
+		HTTPStatus:   entry.HTTPStatus,
+		Model:        entry.Model,
+		CredentialID: entry.CredentialID,
+		Vendor:       entry.Vendor,
+		NextAction:   entry.Action,
+		Attempt:      entry.Attempt,
+		StampedAt:    entry.At,
+	}
+	return entry
+}
+
+// terminalActionOf classifies a terminal ForwardOutcome into the journal
+// terminal vocabulary, mirroring emitRequestTerminal: success → completed,
+// client cancel/deadline → canceled, everything else → failed.
+func terminalActionOf(out ForwardOutcome) NextActionKind {
+	if out.Err == nil {
+		return NextActionCompleted
+	}
+	if errors.Is(out.Err, context.Canceled) || errors.Is(out.Err, context.DeadlineExceeded) {
+		return NextActionCanceled
+	}
+	return NextActionFailed
+}

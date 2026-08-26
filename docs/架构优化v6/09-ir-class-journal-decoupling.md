@@ -77,6 +77,7 @@
   - `Class string` —— Track() 时从 `qr` 填入（见 R8 链路末端的 `qr.requestClass()`；QueuedRequest 增加 `RequestClass` 冗余字段，Submit 时从 DueAt 推导，避免 dispatch 反向依赖 ir 包——**dispatch 不 import internal/ir**，用字符串常量镜像，注释标注与 `ir.RequestClass` 的对应关系）；
   - `Journal []JournalEntry` —— 在**既有同步点**复制快照：`UpdateWait`（每次回队，取当时 journal 尾部最多 16 条 + 完整计数）与 `Complete`（终条 + 完整 journal，仍受条目整体容量约束）。
 - **一致性口径（文档级验证结论）**：分维条目内的 Journal 是**快照**，权威在 QueuedRequest；同一请求在 model/credential/provider 三个环里的条目是独立副本，快照时点可能差一步（终态时 Complete 统一拉齐）。分维队列的 TTL/容量淘汰语义（完成后不移除）不变。
+- **Redis 侧边界（2026-08-27 修正，见 08 号 §2.1 存储拓扑）**：执行队列本体（Tier-0/1/2、重试堆、到期堆）在进程内存，**不在 Redis**（v4 冻结契约：`ordinary_dispatch → dropped`；镜像禁止恢复执行）。Redis 侧待处理集合 = `llmgw:dispatch:mirror:v1:retry_at:*`（错误/容量重试）∪ `scheduled_at:*`（定时停靠，独立键族）∪ 深度/在途镜像。DimensionIndex/Journal 本轮**不投影 Redis**（F5 后续）；若 T4 实施时需要跨实例可见，走 mirror 异步旁路新增 dimension 摘要键，禁止同步写。
 - **查询面**：
   - 既有 `GET /api/admin/dispatch/dimensions?kind=&id=&limit=` 的条目自动携带 Class 与 Journal 尾部；
   - 新增 `GET /api/admin/dispatch/journal/{request_id}`：`DimensionIndex.JournalByRequest(requestID)` 返回该请求全部条目 + 最新 journal（从 byReq 索引取，仍在 TTL 窗口内可用；窗口外 404 并提示用 requestjourney 持久投影）。
@@ -164,6 +165,8 @@
 | E12 | 外层 goal-retry 与 dispatch attempts 双层叠加 | 既有债务（UpstreamAttemptBudget vs AttemptCount），v6-W1-5 统一，本轮仅文档标注 | 明示不做 |
 | E13 | DueAt 巨量并发 park | Tier-0 槽位 park 即释放（08 号）；due heap 无界——沿用 retry heap 同样假设，文档登记（后续可加 due 容量） | 登记为 F8 |
 | E14 | dispatch 与 ir 的 Class 常量漂移 | dispatch 侧镜像常量 + 单测断言字符串相等（编译期不可达，用测试钉死）| 任务 T4 验收含此项 |
+| E15 | Redis 不可达 / 镜像通道满 | scheduled_at/retry_at 镜像丢失可接受（mirror 是异步旁路，满即丢并计数 `dispatch_overflow_total{queue_mirror_full}`）；权威在内存到期堆/重试堆，执行不受影响；Redis 恢复后新事件重新镜像，丢的旧键靠 TTL 10min 自然消失 | 08 号 §2.1；既有 mirror 契约 |
+| E16 | 误把 Redis 镜像当执行队列（读 scheduled_at 去驱动执行）| 契约禁止：镜像仅观测/元数据重建；执行恢复唯一通道是 durable lane（PG，默认关）| 08 号 §2.1 明示；Code review 门禁 |
 
 ### 3.3 时序不变量（实现后须全部成立）
 
@@ -182,7 +185,7 @@
 | T1 | IR 请求类型 | `internal/ir/types.go`（+`class.go` 常量与 ClassOf）、4 个 serializer 不动 | 编译零改 serializer；单测：ClassOf 边界；serialize 输出不含 class（golden 对比）|
 | T2 | TransportContext→IR 盖章 | `domain/transport.go`、`domains/transformation/ir_converter.go`（3 个 Parse 方法 + scopedConverter 透传）、executor 4 个 SetContext 站点 | 单测：Parse 后 IR.Class==ctx.Class；未设置时为空/immediate |
 | T3 | AttemptJournal + ActionCounts + recordDecision | `domains/dispatch/journal.go`（新）、`queued_request.go`（字段）、6 个决策站点改造、`notice.go`（LastFailover 由 journal 投影） | 单测：C 链全走查的 Seq/Counts/Attempt 恒等式；容量 128 截断；终条唯一 |
-| T4 | 分维队列复用扩展 | `domains/dispatch/dimension_index.go`（Class/Journal 字段 + JournalByRequest）、`pipeline.go` 同步点、`cmd/gateway/main_dispatch.go`（条目自动携带 + `/api/admin/dispatch/journal/{id}`）、`cmd/gateway/main.go` 路由 | 单测：完成拉齐、快照边界、404 路径；dispatch↔ir 常量一致断言 |
+| T4 | 分维队列复用扩展 | `domains/dispatch/dimension_index.go`（Class/Journal 字段 + JournalByRequest）、`pipeline.go` 同步点、`cmd/gateway/main_dispatch.go`（条目自动携带 + `/api/admin/dispatch/journal/{id}`）、`cmd/gateway/main.go` 路由 | 单测：完成拉齐、快照边界、404 路径；dispatch↔ir 常量一致断言；不新增 Redis 同步写（E15/E16） |
 | T5 | planner 抽取（等价重构） | `domains/dispatch/planner.go`（新）、`failover.go`/`dispatcher.go` 改为消费 Decision | **`go test -race ./domains/dispatch/` 全量零修改通过**；planner 纯函数单测（表驱动覆盖 C/D/E5 路径）|
 | T6 | 100 限额口径 | planner 内集中检查；`failed(attempt_cap)` 终条 | 单测：99 次后允许延续、100 次后拒绝 |
 | T7 | 文档 | 本文 §3 走查结论复核 + `docs/04-implementation/changes/2026-MM-DD-v6-w1-6-*.md` | 落盘 |
