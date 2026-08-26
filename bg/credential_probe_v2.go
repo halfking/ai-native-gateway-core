@@ -80,14 +80,13 @@ type CredentialProbeV2 struct {
 // next tick" failure mode in scenario tests.
 func NewCredentialProbeV2(db *pgxpool.Pool, encKey []byte) *CredentialProbeV2 {
 	interval := 1 * time.Hour
-	// 2026-08-26 P1-2 (landing point C): shrink the default fastReprobeDelay
-	// from 5 minutes → 30 seconds. The user's principle is "按token计费、
-	// 非周期性的节点至少5分钟一次探测" — 5 minutes still holds for the
-	// scheduled cycleAll, but the *reactive* path that fires after a probe
-	// failure or quota write should wake up far sooner so the system can
-	// detect the upstream coming back inside one user-visible request.
-	// Operators can still override with LLM_GATEWAY_CRED_PROBE_V2_FAST_REPROBE_DELAY.
-	fastDelay := 30 * time.Second
+	// User principle: "按 token 计费、非周期性的节点至少 5 分钟一次探测"
+	// (see .handoff/selfcheck-audit-2026-08-26.md §2.1). 5 minutes is the
+	// minimum cadence the user is willing to pay for; the reactive fastReprobe
+	// path inherits the same cadence. Operators can still override via
+	// LLM_GATEWAY_CRED_PROBE_V2_FAST_REPROBE_DELAY if they explicitly accept
+	// the higher probe cost.
+	fastDelay := 5 * time.Minute
 	if v := strings.TrimSpace(os.Getenv("LLM_GATEWAY_CRED_PROBE_V2_INTERVAL")); v != "" {
 		if d, err := time.ParseDuration(v); err == nil && d > 0 {
 			interval = d
@@ -99,7 +98,7 @@ func NewCredentialProbeV2(db *pgxpool.Pool, encKey []byte) *CredentialProbeV2 {
 		if d, err := time.ParseDuration(v); err == nil && d > 0 {
 			fastDelay = d
 		} else if err != nil {
-			slog.Warn("credential probe v2: invalid LLM_GATEWAY_CRED_PROBE_V2_FAST_REPROBE_DELAY, using 30s", "value", v, "error", err)
+			slog.Warn("credential probe v2: invalid LLM_GATEWAY_CRED_PROBE_V2_FAST_REPROBE_DELAY, using 5m", "value", v, "error", err)
 		}
 	}
 	probe := &CredentialProbeV2{

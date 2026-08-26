@@ -159,6 +159,65 @@ func resolveGovernorObserver() (time.Duration, bool) {
 	}
 }
 
+// envQueueBackend returns the trimmed, lowercased value of
+// LLM_GATEWAY_DISPATCH_QUEUE_BACKEND (empty string when unset → "auto").
+// V6-W1.7 (docs/架构优化v6/10-dual-backend-queue.md): cluster queue
+// admission backend — auto|local|redis.
+func envQueueBackend() string {
+	return strings.ToLower(strings.TrimSpace(os.Getenv("LLM_GATEWAY_DISPATCH_QUEUE_BACKEND")))
+}
+
+// resolveQueueBackend is the pure env-decision helper (mirrors
+// resolveGovernorBackend so the flag table is unit-testable):
+//
+//   - "" / "auto"  → redis when a client is configured, else local + WARN
+//                    (用户口径：没有 Redis 才回退本机内存)
+//   - "local"      → pass-through local backend (in-process primitives stay
+//                    the sole admission authority — bit-equivalent)
+//   - "redis"      → cluster backend; without a client → local + WARN
+//   - other        → error log + local
+func resolveQueueBackend(mode string, redisClient *redis.Client, instanceID string) dispatch.QueueBackend {
+	switch mode {
+	case "", "auto":
+		if redisClient == nil {
+			slog.Warn("dispatch: LLM_GATEWAY_DISPATCH_QUEUE_BACKEND=auto without Redis; queue admission stays local (per-instance bounds)")
+			return dispatch.NewLocalQueueBackend()
+		}
+		return dispatch.NewRedisQueueBackend(redisClient, instanceID)
+	case "local":
+		return dispatch.NewLocalQueueBackend()
+	case "redis":
+		if redisClient == nil {
+			slog.Warn("dispatch: LLM_GATEWAY_DISPATCH_QUEUE_BACKEND=redis but Redis is disabled; falling back to local queue admission")
+			return dispatch.NewLocalQueueBackend()
+		}
+		return dispatch.NewRedisQueueBackend(redisClient, instanceID)
+	default:
+		slog.Error("dispatch: unknown LLM_GATEWAY_DISPATCH_QUEUE_BACKEND value; falling back to local",
+			"value", mode, "supported", []string{"auto", "local", "redis"})
+		return dispatch.NewLocalQueueBackend()
+	}
+}
+
+// wireDispatchQueueBackend (V6-W1.7 U4) is the queue-backend composition
+// root, called right after SetQueueMirror (与 governor 组合根同位). Fail-open
+// semantics live in the redis backend (§2.2): an unreachable Redis degrades
+// admission to local bounds — the Governor keeps the opposite direction.
+func wireDispatchQueueBackend(p *dispatch.Pipeline, redisClient *redis.Client, instanceID string) {
+	if p == nil {
+		return
+	}
+	backend := resolveQueueBackend(envQueueBackend(), redisClient, instanceID)
+	if err := backend.Open(context.Background()); err != nil {
+		slog.Warn("dispatch: queue backend Open failed; queue admission stays local",
+			"backend", backend.Kind(), "error", err)
+		return
+	}
+	p.SetQueueBackend(backend)
+	slog.Info("dispatch: queue backend wired",
+		"kind", backend.Kind(), "instance", instanceID)
+}
+
 // envCapacityAwareSort returns the trimmed, lowercased value of
 // LLM_GATEWAY_DISPATCH_CAPACITY_AWARE_SORT (empty string when unset).
 // Stage D: capacity-aware soft-rank in dispatchRoute.

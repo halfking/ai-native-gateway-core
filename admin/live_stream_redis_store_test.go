@@ -239,7 +239,7 @@ func TestIdleMarkerUsesScanTimeAsTs(t *testing.T) {
 	}
 }
 
-func TestLiveStreamRedisStore_TrimDimensionQueueToTwenty(t *testing.T) {
+func TestLiveStreamRedisStore_TrimDimensionQueueToVisibleLimit(t *testing.T) {
 	mr, err := miniredis.Run()
 	if err != nil {
 		t.Fatalf("miniredis: %v", err)
@@ -249,9 +249,10 @@ func TestLiveStreamRedisStore_TrimDimensionQueueToTwenty(t *testing.T) {
 	ctx := context.Background()
 	base := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
 
-	for i := 0; i < int(LiveStreamLaneVisibleLimit)+5; i++ {
+	total := LiveStreamLaneVisibleLimit + 5
+	for i := 0; i < total; i++ {
 		req := LiveRequest{
-			RequestID:     fmt.Sprintf("req-%02d", i),
+			RequestID:     fmt.Sprintf("req-%03d", i),
 			Ts:            base.Add(time.Duration(i) * time.Second).UTC().Format(time.RFC3339),
 			Model:         "gpt-4o",
 			ModelCategory: "openai",
@@ -277,8 +278,9 @@ func TestLiveStreamRedisStore_TrimDimensionQueueToTwenty(t *testing.T) {
 	}
 	// Dimension queues store slim tile JSON members, so compare the decoded
 	// request id rather than the raw member.
-	if len(oldest) == 0 || requestIDFromDimensionQueueMember(oldest[0]) != "req-05" {
-		t.Fatalf("oldest member=%v want req-05 (first 5 trimmed)", oldest)
+	wantOldest := fmt.Sprintf("req-%03d", total-LiveStreamLaneVisibleLimit)
+	if len(oldest) == 0 || requestIDFromDimensionQueueMember(oldest[0]) != wantOldest {
+		t.Fatalf("oldest member=%v want %q (first 5 trimmed)", oldest, wantOldest)
 	}
 }
 
@@ -1406,13 +1408,12 @@ func TestBuildLiveStreamLanes_StableAlphabeticalOrder(t *testing.T) {
 	}
 }
 
-// 2026-07-26: the lane ordering contract is ASC (oldest first).
-// SwimLaneTrack.vue paints index 0 leftmost and slices the last N, and
-// lastTiles() caps each lane by taking items[len-limit:]. Both mean
-// "oldest on the left, newest on the right, oldest truncated" when the
-// lane builder emits ASC. buildLiveStreamLanes therefore sorts each lane
-// itself rather than inheriting the caller's order, so the dimension-queue
-// path and the main-queue replay path agree.
+// 2026-08-27: the lane ordering contract is ASC FIFO (oldest left → newest
+// right), flipped deliberately by 730cbaef8. SwimLaneTrack paints index 0
+// leftmost and lastTiles() caps each lane by keeping the tail (newest N).
+// buildLiveStreamLanes therefore sorts each lane itself rather than
+// inheriting the caller's order, so the dimension-queue path and the
+// main-queue replay path agree.
 func TestBuildLiveStreamLanes_LaneRequestsAreASC(t *testing.T) {
 	// Deliberately shuffled: the lane builder must not depend on the
 	// caller pre-sorting its input.
@@ -1436,15 +1437,18 @@ func TestBuildLiveStreamLanes_LaneRequestsAreASC(t *testing.T) {
 				lanes[0].ID, i, requests[i-1].Timestamp, requests[i].Timestamp)
 		}
 	}
-	// ASC means the newest request is what the UI paints rightmost.
+	// ASC FIFO: the oldest request is painted leftmost, newest rightmost.
+	if requests[0].RequestID != "r1" {
+		t.Fatalf("expected oldest request (r1) at head, got %q", requests[0].RequestID)
+	}
 	if requests[len(requests)-1].RequestID != "r4" {
 		t.Fatalf("expected newest request (r4) at tail, got %q", requests[len(requests)-1].RequestID)
 	}
 }
 
-// 2026-07-26: the per-lane cap must drop the OLDEST tiles. Under ASC
-// ordering lastTiles keeps items[len-limit:] = the newest N, so a busy lane
-// always shows its most recent window.
+// 2026-08-27: under the ASC FIFO contract lastTiles() keeps items[len-N:],
+// i.e. the newest N tiles — the cap must drop the OLDEST so a busy lane
+// keeps showing fresh traffic instead of freezing on its first tiles.
 func TestBuildLiveStreamLanes_LaneCapKeepsNewest(t *testing.T) {
 	base := time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC)
 	total := liveStreamLaneLimit + 5
@@ -1793,6 +1797,8 @@ func TestSlimTileFormatSizeReduction(t *testing.T) {
 
 func float64Ptr(v float64) *float64 { return &v }
 
+// lastTiles caps a lane whose items are sorted ASC (oldest first), so the
+// kept tail is the newest N — the FIFO contract from 730cbaef8.
 func TestLastTiles(t *testing.T) {
 	tiles := []LiveStreamTile{
 		{RequestID: "oldest", Timestamp: "2026-07-26T12:00:00Z"},
@@ -1807,7 +1813,7 @@ func TestLastTiles(t *testing.T) {
 		assert.Equal(t, "oldest", result[0].RequestID)
 	})
 
-	t.Run("returns last N when limit < length", func(t *testing.T) {
+	t.Run("keeps newest N when limit < length", func(t *testing.T) {
 		result := lastTiles(tiles, 2)
 		assert.Equal(t, 2, len(result))
 		assert.Equal(t, "newer", result[0].RequestID)
@@ -2023,11 +2029,12 @@ func TestBuildLiveStreamSnapshot_DedupesIdleMarkersPerLane(t *testing.T) {
 	if len(lane.Requests) != 2 {
 		t.Fatalf("expected one normal tile plus one idle tile, got %#v", lane.Requests)
 	}
-	if lane.Requests[1].RequestID != "req-new" {
-		t.Fatalf("new normal request should be rightmost, got %#v", lane.Requests)
-	}
+	// ASC FIFO: the idle marker (10:05) precedes the newer request (10:06).
 	if lane.Requests[0].RequestID != newIdle.RequestID || lane.Requests[0].Status != "idle" {
-		t.Fatalf("expected idle marker before newest request on the left, got %#v", lane.Requests)
+		t.Fatalf("expected newest idle marker first under ASC ordering, got %#v", lane.Requests)
+	}
+	if lane.Requests[1].RequestID != "req-new" {
+		t.Fatalf("new normal request should be the newest (rightmost) tile, got %#v", lane.Requests)
 	}
 	for _, tile := range lane.Requests {
 		if tile.Status == "idle" && tile.RequestID == oldIdle.RequestID {
@@ -2399,9 +2406,9 @@ func TestComputeScopeDelta_DropsDegradedSnapshot(t *testing.T) {
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	defer rdb.Close()
 	hub := NewLiveStreamSSEHub(nil, LiveStreamConfig{RedisClient: rdb, InitialReplayLimit: 200})
-	// 2026-08-25 (merge audit): 同 sse_audit 测试 — 06408163c 的 2s 节流会在
-	// 窗口内重放上一次 delta, 与"degraded snapshot 必须丢弃"的非节流断言冲突。
-	// 关闭节流, 保持对丢弃语义的直接验证。
+	// Disable the 2s snapshot throttle (2026-08-25): this test exercises the
+	// degraded-snapshot guard, which must run on the immediate second read —
+	// the throttle would just replay the cached baseline delta instead.
 	hub.SetSnapshotMinInterval(0)
 	ctx := context.Background()
 
