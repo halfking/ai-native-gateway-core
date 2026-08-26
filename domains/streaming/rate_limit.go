@@ -15,11 +15,14 @@
 package streaming
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/authentication" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/middleware"
 	"github.com/kaixuan/llm-gateway-go/ratelimit"
 )
 
@@ -30,7 +33,7 @@ import (
 //	Otherwise — within cap; caller may proceed (Limit/Remaining populated for telemetry)
 type rateLimitOutcome struct {
 	Skipped   bool
-	Blocked   bool
+	Blocked   bool // queue full or admission failed; caller writes the canonical error
 	Limit     int
 	Remaining int
 	ResetSec  int
@@ -47,9 +50,17 @@ type rateLimitOutcome struct {
 // gateway RPM layer is bypassed (Skipped=true). This matches the user
 // semantic "限流降级模块关闭时不限制 RPM"; only the upstream provider's
 // own rate-limit (which the LLM gateway cannot control) still applies.
-func checkGatewayRateLimit(keyInfo *authentication.KeyInfo, rl ratelimit.RPMLimiter) rateLimitOutcome {
+//
+// The static data-plane key is a gateway admission key shared by frontend
+// callers. It must not be treated as a tenant API-key quota, or aggregate
+// frontend traffic exhausts one shared RPM window. AuthMiddleware creates the
+// context marker only after constant-time static-key verification.
+func checkGatewayRateLimit(ctx context.Context, keyInfo *authentication.KeyInfo, rl ratelimit.RPMLimiter, notify func(ratelimit.AdmissionResult)) rateLimitOutcome {
 	// AUDIT-2: 限流总开关关闭 → 整个 RPM 检查 no-op。
 	if !ratelimit.IsRateLimitEnabled() {
+		return rateLimitOutcome{Skipped: true}
+	}
+	if middleware.IsGlobalAuthPassed(ctx) {
 		return rateLimitOutcome{Skipped: true}
 	}
 	if keyInfo == nil || rl == nil || keyInfo.IsInternal {
@@ -135,6 +146,26 @@ func checkGatewayRateLimit(keyInfo *authentication.KeyInfo, rl ratelimit.RPMLimi
 	return rateLimitOutcome{Limit: limit, Remaining: -1, ResetSec: 0}
 }
 
+// queueBudgetHeadroom is the minimum time that must remain for the request
+// to reach upstream after rate-limit admission. Queueing beyond this always
+// ends in "context canceled" mid-flight, so it is never a useful wait.
+const queueBudgetHeadroom = 5 * time.Second
+
+// rateLimitQueueBudget derives how long a request may sit in the RPM queue:
+// the request context's remaining deadline minus a fixed headroom reserved
+// for the actual upstream call. A context without a deadline (background
+// callers, tests) means "no budget" → 0 → legacy unlimited queueing.
+// rateLimitQueueBudget returns the maximum time a request may sit in the
+// RPM queue and whether the context carries a deadline. No deadline means
+// "no budget" → hasDeadline=false and callers fall back to legacy queuing.
+func rateLimitQueueBudget(ctx context.Context) (maxWait time.Duration, hasDeadline bool) {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return 0, false
+	}
+	return time.Until(deadline) - queueBudgetHeadroom, true
+}
+
 func rateLimitOutcomeKind(o rateLimitOutcome) string {
 	if o.Skipped {
 		return "skipped"
@@ -165,5 +196,28 @@ func writeRateLimitHeaders(w http.ResponseWriter, o rateLimitOutcome) {
 	}
 	if o.Blocked && o.ResetSec > 0 {
 		w.Header().Set("Retry-After", fmt.Sprintf("%d", o.ResetSec))
+	}
+	if o.Queue.Limit > 0 {
+		w.Header().Set("X-RateLimit-Queue-Limit", fmt.Sprintf("%d", o.Queue.Limit))
+		w.Header().Set("X-RateLimit-Queue-Remaining", fmt.Sprintf("%d", o.Queue.QueueRemaining))
+		if o.Queue.Position > 0 {
+			w.Header().Set("X-RateLimit-Queue-Position", fmt.Sprintf("%d", o.Queue.Position))
+		}
+	}
+}
+
+func notifyRateLimitWait(w http.ResponseWriter, stream bool) func(ratelimit.AdmissionResult) {
+	if !stream {
+		return nil
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		return nil
+	}
+	return func(result ratelimit.AdmissionResult) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		fmt.Fprintf(w, "event: rate_limit_waiting\ndata: %s\n\n", fmt.Sprintf(`{"type":"rate_limit_waiting","message":"rate limited; waiting for next time bucket","position":%d}`, result.Position))
+		flusher.Flush()
 	}
 }

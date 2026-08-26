@@ -7,9 +7,10 @@
 // ?token=<jwt> to the URL (AdminMiddleware extracts it to Authorization).
 // The HttpOnly cookie is also sent (credentials: 'include').
 
-import { reactive, computed, type ComputedRef } from 'vue'
+import { reactive, computed, ref, type ComputedRef } from 'vue'
 import { authBearer } from '../store'
 import type { RouteIncidentUpdate } from '../types/routeIncident'
+import { usePersistedValue } from './usePersistedValue'
 
 export type LiveStatus = 'in_progress' | 'success' | 'failure' | 'rate_limited'
 
@@ -52,6 +53,10 @@ export interface LiveRequest {
   retryReasonClass?: string
   parentRequestId?: string
   requestType?: 'chat' | 'title' | 'summary' | 'sensitive_word' | 'probe' | 'unknown'
+  // 2026-08-15 (24号 §4): stage 的呈现分类（routing/llm/retrying/terminal）。
+  // lifecycle patch 落到请求 tile 时写入；in-flight 且尚无分类的请求在
+  // 渲染前默认补 'routing'（见 normalizeRequests）。
+  stage_category?: 'routing' | 'llm' | 'retrying' | 'terminal'
 }
 
 /**
@@ -72,9 +77,12 @@ export interface ActionEvent {
   ts?: string
   model?: string
   credential_id?: number
+  credential_label?: string
   error_kind?: string | null
   retry_seq?: number
   retry?: boolean
+  stage?: string
+  stage_category?: 'routing' | 'llm' | 'retrying' | 'terminal'
   // §2 per-action detail fields (only present on the actions that use them)
   client_protocol?: string
   auto_decision?: string
@@ -118,6 +126,8 @@ export interface LiveStreamTile {
   is_probe?: boolean
   probe_origin?: string
   probe_attempt?: number
+  stage?: string
+  stage_category?: 'routing' | 'llm' | 'retrying' | 'terminal'
 }
 
 export interface LiveStreamLane {
@@ -161,6 +171,8 @@ export interface LiveQueueLaneSnapshot {
   credential?: number
   mode?: string
   depth: number
+  limit?: number
+  full?: boolean
 }
 
 // OBS-BE3 (V3.3-OBS, 2026-08-15, 13号 §4 pipeline 层): 全链路 pipeline 聚合
@@ -186,6 +198,7 @@ export interface LiveQueueSnapshot {
 
 export interface LiveNodeStatus {
   credential_id: number
+  credential_label?: string
   provider_id?: number
   provider_code?: string
   circuit_state?: string
@@ -354,6 +367,11 @@ export const ENDPOINT = '/api/admin/live-stream'
 
 // localStorage 中允许管理员写入一个自定义 SSE endpoint（reverse proxy / 隧道）
 // 读取时若为空字符串 / 不可达 / 同源默认则走 ENDPOINT。
+//
+// LP8 (2026-08-24): persistence path now goes through usePersistedValue so
+// the SSE endpoint share the lifecycle-flush / error-degrade primitives
+// with the rest of the frontend. Read still happens lazily through the
+// module-level `customEndpoint` cache so module-init order is preserved.
 function readCustomEndpoint(): string {
   try {
     const v = localStorage.getItem('llmgw_sse_endpoint')
@@ -362,6 +380,19 @@ function readCustomEndpoint(): string {
     return ''
   }
 }
+
+const sseEndpointPersisted = usePersistedValue<string>(
+  'llmgw_sse_endpoint',
+  () => '',
+  {
+    immediate: true,
+    // Store the raw URL (no JSON quoting) so existing call sites that
+    // read localStorage.getItem('llmgw_sse_endpoint') and expect a bare
+    // string continue to work unchanged.
+    serialize: (v) => v,
+    deserialize: (r) => r,
+  },
+)
 
 function buildUrl(endpoint: string): string {
   let url = endpoint
@@ -382,11 +413,10 @@ let customEndpoint = readCustomEndpoint()
 
 export function setCustomEndpoint(url: string) {
   customEndpoint = (url || '').trim()
-  try {
-    if (customEndpoint) localStorage.setItem('llmgw_sse_endpoint', customEndpoint)
-    else localStorage.removeItem('llmgw_sse_endpoint')
-  } catch {
-    /* ignore */
+  if (customEndpoint) {
+    sseEndpointPersisted.value.value = customEndpoint
+  } else {
+    sseEndpointPersisted.remove()
   }
 }
 
@@ -395,6 +425,17 @@ export function getCustomEndpoint(): string {
     customEndpoint = readCustomEndpoint()
   }
   return customEndpoint
+}
+
+/**
+ * @internal Test-only: drop the module-level cache so the next
+ * getCustomEndpoint() re-reads localStorage. Production callers should
+ * use setCustomEndpoint() to mutate state. Exposed here (instead of as a
+ * separate test helper module) so beforeEach cleanup in useLiveStreamUrl's
+ * test suite can reset state without spinning up extra mock plumbing.
+ */
+export function __resetCustomEndpointForTest(): void {
+  customEndpoint = ''
 }
 
 const idIndex = new Set<string>()
@@ -440,6 +481,7 @@ function seqOf(a: ActionEvent): number {
 // 与"实时请求流"栏目本身的窗口语义一致，不承诺全量历史。
 type RequestCredentialIndex = Map<string, { credentialId: number; seq: number; ts: number }>
 const requestCredential: RequestCredentialIndex = new Map()
+export const requestCredentialRevision = ref(0)
 
 // Carry-credential actions: ActionEvent 中带 credential_id 且表示"请求
 // 绑定到该凭据"的子集。node_switch 携带 from_credential_id +
@@ -472,6 +514,7 @@ function applyRequestCredentialIndex(requestId: string, action: ActionEvent) {
   if (prev && prev.seq > next.seq) return
   if (prev && prev.seq === next.seq && prev.ts > next.ts) return
   requestCredential.set(requestId, next)
+  requestCredentialRevision.value++
 }
 
 function rebuildRequestCredentialIndex(requestId: string, timeline: ActionEvent[]) {
@@ -516,7 +559,7 @@ export function getNodesForModel(model: string): LiveNodeStatus[] {
 
 export function clearRequestCredentialIndex() {
   requestCredential.clear()
-	requestCredentialRevision.value++
+  requestCredentialRevision.value++
 }
 
 function applyStageToRequest(requestId: string, action: ActionEvent) {
@@ -537,8 +580,8 @@ function applyStageToRequest(requestId: string, action: ActionEvent) {
     for (const lane of snapshot.detail_dimensions[dim] || []) {
       const tile = lane.requests.find((item) => item.request_id === requestId)
       if (tile) Object.assign(tile, patch)
-		}
-	}
+    }
+  }
 }
 
 /** Insert one action into its request's timeline, kept sorted by seq ASC.
@@ -610,6 +653,7 @@ function applyLifecycleActions(payload: ActionEvent | ActionEvent[] | undefined)
   for (const action of batch) {
     if (!action || typeof action !== 'object') continue
     recordAction(action)
+    applyStageToRequest(action.request_id || '', action)
   }
 }
 
@@ -680,7 +724,17 @@ function trimOldest() {
   }
 }
 
+function ensureDefaultStageCategory(item: LiveRequest) {
+  // In-flight tiles without a lifecycle patch yet default to "routing"
+  // so operators can tell "received / routing" from "waiting on LLM".
+  if (item.type === 'idle_marker') return
+  if (item.status === 'in_progress' && !item.stage_category) {
+    item.stage_category = 'routing'
+  }
+}
+
 function pushOrQueue(item: LiveRequest) {
+  ensureDefaultStageCategory(item)
   if (liveStreamState.paused) {
     pending.push(item)
     if (pending.length > PENDING_CAP) {
@@ -941,7 +995,6 @@ function normalizeLaneTiles(lane: LiveStreamLane) {
   mergeTilesById(lane.requests, tiles)
 }
 
-/** Merge server snapshot without dropping lanes that disappeared from Redis. */
 function mergeSnapshotFromServer(incoming: LiveStreamSnapshot) {
   if (!liveStreamState.snapshot) {
     // The backend serializes lane tiles newest-first for its own replay/cap
@@ -1095,65 +1148,77 @@ function mergeDelta(delta: LiveStreamDelta) {
 // NOT change rank stay where they are. This is what the operator
 // wants: "no flicker" + "newest lane visible".
 function mergeLanesById(existing: LiveStreamLane[], incoming: LiveStreamLane[]) {
-  const byId = new Map<string, number>()
-  for (let i = 0; i < existing.length; i++) {
-    byId.set(existing[i].id, i)
-  }
+  const byId = new Map(existing.filter((lane) => lane.id).map((lane) => [lane.id, lane]))
+  const next: LiveStreamLane[] = []
+  const seen = new Set<string>()
   for (const lane of incoming) {
-    const idx = byId.get(lane.id)
-    if (idx === undefined) {
-      // New lane — normalize its tiles before appending. The backend sends
-      // lane requests newest-first, while the UI renders FIFO left-to-right.
-      const normalizedLane = {
-        ...lane,
-        requests: [...lane.requests],
-      }
-      normalizeLaneTiles(normalizedLane)
-      byId.set(lane.id, existing.length)
-      existing.push(normalizedLane)
-    } else {
-      // Existing lane — mutate in place. Don't touch .id (it's the
-      // merge key) or .dimension (it's structural).
-      const target = existing[idx]
+    if (!lane.id || seen.has(lane.id)) continue
+    seen.add(lane.id)
+    const target = byId.get(lane.id)
+    if (target) {
       target.name = lane.name
+      target.dimension = lane.dimension
       target.isOthers = lane.isOthers
       target.stats = lane.stats
-      // Diff tiles by request_id (TransitionGroup's `:key`). Replace
-      // per-id so unchanged tiles keep their Vue component identity and
-      // Vue does not run the leave/enter animation for tiles whose only
-      // change is the backend re-serialising them with new pointers.
-      // The backend guarantees DESC order (newest first), so a stable id
-      // match also preserves the on-screen position.
-      mergeTilesById(target.requests, lane.requests)
+      const laneTotal = lane.stats?.total
+      const authoritativeTrim =
+        laneTotal != null
+        && laneTotal === lane.requests.length
+        && lane.requests.length < target.requests.length
+      mergeTilesById(target.requests, lane.requests, { dropAbsent: authoritativeTrim })
+      next.push(target)
+    } else {
+      const normalized = { ...lane, requests: [...lane.requests] }
+      normalizeLaneTiles(normalized)
+      next.push(normalized)
     }
   }
+  existing.splice(0, existing.length, ...next)
 }
 
-// mergeTilesById replaces the existing tile array with the incoming one,
-// then sorts deterministically by (timestamp ASC, request_id ASC) and truncates
-// to the lane limit. This ensures rendering order depends only on server state,
-// not on message arrival history — eliminating drift and sudden "page flip" jumps.
-//
-// Vue TransitionGroup reuses components by `:key="tile.request_id"`, so swapping
-// object references does NOT re-trigger enter/leave animations as long as the key
-// set remains stable. Only actual additions/removals animate.
-function mergeTilesById(existing: LiveStreamTile[], incoming: LiveStreamTile[]) {
-  // Replace entire array
-  existing.length = 0
-  existing.push(...incoming)
-  
-  // Sort deterministically: oldest first (ASC), tie-break by request_id
-  existing.sort((a, b) => {
-    const tsCmp = (a.timestamp || '').localeCompare(b.timestamp || '')
-    if (tsCmp !== 0) return tsCmp
-    return (a.request_id || '').localeCompare(b.request_id || '')
-  })
-  
-  // Truncate to backend lane limit (20) to match server authority
-  const limit = 20
-  if (existing.length > limit) {
-    existing.splice(0, existing.length - limit)
+function mergeTilesById(
+  existing: LiveStreamTile[],
+  incoming: LiveStreamTile[],
+  opts?: { dropAbsent?: boolean },
+) {
+  const dropAbsent = opts?.dropAbsent === true
+  // Retain existing tiles absent from a partial delta so a single-tile
+  // push cannot briefly wipe the lane. Authoritative trims (stats.total
+  // matches incoming count and is smaller than local) drop extras.
+  const incomingById = new Map(
+    incoming.filter((tile) => tile.request_id).map((tile) => [tile.request_id, tile]),
+  )
+  const next: LiveStreamTile[] = []
+  const seen = new Set<string>()
+  for (const tile of existing) {
+    if (!tile.request_id || seen.has(tile.request_id)) continue
+    seen.add(tile.request_id)
+    const update = incomingById.get(tile.request_id)
+    if (update) {
+      // Preserve locally-derived stage_category when the wire omitempty
+      // field is absent on the update payload.
+      const prevCategory = tile.stage_category
+      Object.assign(tile, update)
+      if (!tile.stage_category && prevCategory) tile.stage_category = prevCategory
+      if (tile.status === 'in_progress' && !tile.stage_category) tile.stage_category = 'routing'
+      next.push(tile)
+      incomingById.delete(tile.request_id)
+    } else if (!dropAbsent) {
+      next.push(tile)
+    }
   }
+  for (const tile of incomingById.values()) {
+    if (!tile.request_id || seen.has(tile.request_id)) continue
+    seen.add(tile.request_id)
+    const copy = { ...tile }
+    if (copy.status === 'in_progress' && !copy.stage_category) copy.stage_category = 'routing'
+    next.push(copy)
+  }
+  next.sort((a, b) => {
+    const timestamp = (a.timestamp || '').localeCompare(b.timestamp || '')
+    return timestamp || (a.request_id || '').localeCompare(b.request_id || '')
+  })
+  existing.splice(0, existing.length, ...next.slice(-20))
 }
 
 // mergeLegendsByKey is the same idea but for the legend strips —
@@ -1318,7 +1383,9 @@ export function resetStream() {
   liveStreamState.snapshot = null
   liveStreamState.actions.clear()
   liveStreamState.children.clear()
-  requestCredential.clear()
+  // 复用 clearRequestCredentialIndex，让依赖于 requestCredentialRevision 的
+  // 组件（RequestTile、LiveRequestBlock）在重连/重建流时立即刷新凭据显示。
+  clearRequestCredentialIndex()
   actionsTotal = 0
   childrenTotal = 0
   idIndex.clear()
@@ -1357,6 +1424,7 @@ export const __testing = {
   actionsTotal: () => actionsTotal,
   childrenTotal: () => childrenTotal,
   requestCredential,
+  requestCredentialRevision,
   getRequestCredentialId,
   getRequestsForCredential,
   getNodesForModel,

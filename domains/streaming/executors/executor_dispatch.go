@@ -113,6 +113,7 @@ func (e *Executor) dispatchRoute(ctx context.Context, qr *dispatch.QueuedRequest
 		}
 		return filtered, nil
 	}
+	refs = e.dispatchRouteSoftRank(refs)
 	// V3.3-OBS OBS-B1 (2026-08-15): dispatch_v2 路径的 credential_selected
 	// 动作事件（S5，Router.PlanCandidates 输出，best-first 首个 ref）。
 	if len(refs) > 0 {
@@ -127,6 +128,13 @@ func (e *Executor) dispatchRoute(ctx context.Context, qr *dispatch.QueuedRequest
 		})
 	}
 	return refs, nil
+}
+
+func (e *Executor) dispatchRouteSoftRank(refs []dispatch.CredentialRef) []dispatch.CredentialRef {
+	if !e.capacityAwareSortOn || e.capacityAwareSnapFn == nil {
+		return refs
+	}
+	return dispatch.ApplySoftPenalty(refs, e.capacityAwareSnapFn)
 }
 
 // dispatchCandidateAllowed preserves a trusted probe pin that the router has
@@ -740,20 +748,7 @@ func extractQueueTimestamps(qr *dispatch.QueuedRequest) (
 	if qr == nil {
 		return
 	}
-	if !qr.T0_ArrivedAt.IsZero() {
-		t := qr.T0_ArrivedAt
-		t0 = &t
-	}
-	t1 = qr.T1_TotalEnqueuedAt
-	t2 = qr.T2_TotalDequeuedAt
-	t3 = qr.T3_ModelEnqueuedAt
-	t4 = qr.T4_ModelDequeuedAt
-	t5 = qr.T5_CredEnqueuedAt
-	t6 = qr.T6_CredDequeuedAt
-	t7 = qr.T7_ForwardStartAt
-	t8 = qr.T8_ResponseStartAt
-	t9 = qr.T9_ResponseEndAt
-	return
+	return qr.StageTimestamps()
 }
 
 // sentinel errors for the dispatch forward path.

@@ -11,6 +11,7 @@ import { __testing } from './liveStreamStore'
 import type {
   LiveRequest,
   LiveStreamDelta,
+  LiveStreamEnvelope,
   LiveStreamLane,
   LiveStreamTile,
 } from './liveStreamStore'
@@ -625,9 +626,9 @@ describe('mergeTilesById — deterministic ordering (no-jump invariants)', () =>
         ts: '2026-07-26T00:00:00Z',
         snapshot: {
           summary: { total: 0, success: 0, failure: 0 },
-          dimensions: { vendor: [], provider: [], model: [] },
-          detail_dimensions: { vendor: [], provider: [], model: [] },
-          dimension_legends: { vendor: [], provider: [], model: [] },
+          dimensions: { credential: [], vendor: [], provider: [], model: [] },
+          detail_dimensions: { credential: [], vendor: [], provider: [], model: [] },
+          dimension_legends: { credential: [], vendor: [], provider: [], model: [] },
           status_legends: [],
           latest_request_ts: '',
         },
@@ -649,8 +650,8 @@ describe('mergeTilesById — deterministic ordering (no-jump invariants)', () =>
           ts: r.ts,
           delta: {
             summary: { total: 1, success: 1, failure: 0 },
-            changed_lanes: { vendor: changedLanes, provider: [], model: [] },
-            dimension_legends: { vendor: [], provider: [], model: [] },
+            changed_lanes: { credential: [], vendor: changedLanes, provider: [], model: [] },
+            dimension_legends: { credential: [], vendor: [], provider: [], model: [] },
             status_legends: [],
           },
         })
@@ -663,7 +664,26 @@ describe('mergeTilesById — deterministic ordering (no-jump invariants)', () =>
         .map((l) => `${l.id}:${l.requests.map((t) => t.request_id).join('>')}`)
         .join('|')
     }
-	__testing.handleEnvelope({
+
+    const forward = run(reqs)
+    const reversed = run([...reqs].reverse())
+    const shuffled = run([...reqs].sort(() => rng() - 0.5))
+
+    expect(reversed).toBe(forward)
+    expect(shuffled).toBe(forward)
+  })
+})
+
+describe('request_lifecycle stage_category patch', () => {
+  it('updates lane tile stage_category when upstream_request arrives', () => {
+    __testing.resetStream()
+    const inflight: LiveStreamTile = {
+      ...tile('req-up'),
+      status: 'in_progress',
+      stage_category: 'routing',
+      timestamp: tsAt(1),
+    }
+    __testing.handleEnvelope({
       type: 'snapshot_refresh',
       ts: tsAt(1),
       snapshot: {
@@ -687,7 +707,7 @@ describe('mergeTilesById — deterministic ordering (no-jump invariants)', () =>
         stage_category: 'llm',
       }],
     } as LiveStreamEnvelope)
-	const patched = __testing.state.snapshot!.dimensions.vendor[0].requests[0]
-	expect(patched.stage_category).toBe('llm')
+    const patched = __testing.state.snapshot!.dimensions.vendor[0].requests[0]
+    expect(patched.stage_category).toBe('llm')
   })
 })

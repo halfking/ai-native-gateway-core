@@ -776,7 +776,7 @@ func buildSanitizeInfoForSession(sessionID string, sm SanitizeMap) compression.S
 	for ph := range sm {
 		keys[ph] = struct{}{}
 	}
-	return compression.BuildSanitizeInfo(sessionID, func(placeholder string) (string, bool) {
+	return compression.BuildSanitizeInfo("", sessionID, func(placeholder string) (string, bool) {
 		p, ok := ParsePlaceholder(placeholder)
 		if !ok {
 			return "", false
