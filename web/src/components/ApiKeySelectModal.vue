@@ -120,7 +120,7 @@ function goKeys(action?: string) {
   align-items: center;
   justify-content: center;
   padding: 16px;
-  background: rgba(0, 0, 0, 0.55);
+  background: var(--overlay-strong);
   backdrop-filter: blur(2px);
 }
 
@@ -135,7 +135,7 @@ function goKeys(action?: string) {
   padding: 18px 20px;
   border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
   background: var(--card);
-  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.45);
+  box-shadow: 0 16px 48px var(--overlay-strong);
 }
 
 .modal-panel__head {
@@ -213,7 +213,7 @@ function goKeys(action?: string) {
   margin-left: 6px;
   font-size: 11px;
   font-weight: 500;
-  color: #f59e0b;
+  color: var(--warning);
 }
 
 .key-list__empty {

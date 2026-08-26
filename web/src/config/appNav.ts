@@ -1,6 +1,7 @@
 /** Sidebar navigation — grouped menus with role / tenant visibility flags. */
 
 import { showOpsPlatform } from './edition'
+import { usePersistedValue } from '../composables/usePersistedValue'
 
 export type NavItem = {
   path: string
@@ -100,6 +101,9 @@ export const NAV_GROUPS: NavGroup[] = [
       { path: '/request-logs', label: '请求日志', labelKey: 'nav.item.requestLogs', icon: '📋' },
       { path: '/dispatch/waterfall', label: '队列瀑布图', labelKey: 'nav.item.dispatchWaterfall', icon: '📊', platformOps: true, hideForTenant: true },
       { path: '/admin/turns', label: '轮次列表', labelKey: 'nav.item.turns', icon: '🔄', super: true, hideForTenant: true },
+      // T9 — 请求注册表 + 连接注册台（mock stage）
+      { path: '/admin/request-registry', label: '请求注册表', labelKey: 'nav.item.requestRegistry', icon: '📑', super: true, hideForTenant: true },
+      { path: '/admin/connection-registry', label: '连接注册台', labelKey: 'nav.item.connectionRegistry', icon: '🔗', super: true, hideForTenant: true },
       // 2026-07-23: ai-session-manager plugin 入口
       // Plugin 模式：完整页面跳转（同 opsPlatform 的 external 机制）
       { path: '/plugins/ai-session-manager/sessions', label: '会话列表', labelKey: 'nav.item.pluginSessions', icon: '💬', super: true, hideForTenant: true, external: true, plugin: 'ai-session-manager' },
@@ -194,20 +198,26 @@ export function isNavItemActive(path: string, currentPath: string, exact?: boole
 
 const SIDEBAR_COLLAPSED_KEY = 'llmgw_sidebar_collapsed'
 
+// LP8 (2026-08-24): sidebar collapse state persisted through usePersistedValue
+// for shared lifecycle-flush / error-degrade. Stored as '0'/'1' (compact)
+// instead of JSON to keep the legacy key format intact for any external
+// tooling that reads localStorage directly.
+const sidebarCollapsedPersisted = usePersistedValue<boolean>(
+  SIDEBAR_COLLAPSED_KEY,
+  () => false,
+  {
+    immediate: true,
+    serialize: (v) => (v ? '1' : '0'),
+    deserialize: (r) => (r === '1' ? true : r === '0' ? false : undefined),
+  },
+)
+
 export function readSidebarCollapsed(): boolean {
-  try {
-    return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === '1'
-  } catch {
-    return false
-  }
+  return sidebarCollapsedPersisted.value.value
 }
 
 export function writeSidebarCollapsed(collapsed: boolean) {
-  try {
-    localStorage.setItem(SIDEBAR_COLLAPSED_KEY, collapsed ? '1' : '0')
-  } catch {
-    // ignore
-  }
+  sidebarCollapsedPersisted.value.value = collapsed
 }
 
 // 2026-07-21: 顶部 topbar 用的"扁平化 + 分组标签"导航数据。

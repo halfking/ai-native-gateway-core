@@ -368,4 +368,16 @@ export default {
     sessionCount: '会话数',
     sessionTrend: '会话趋势',
   },
+  statsRow: {
+    totalSessions: '会话总数',
+    activeSessions: '活跃会话',
+    activeHint: '24h 内有请求',
+    totalCost: '总成本',
+    complianceRate: '合规率',
+    avgHealthScore: '平均健康分',
+    healthHint: '基于会话健康分',
+    avgLatency: '平均延迟',
+    totalRequests: '总请求数',
+    totalTokens: '总 Token',
+  },
 }

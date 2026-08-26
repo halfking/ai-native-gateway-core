@@ -21,6 +21,7 @@ import {
   QUALITY_GRADE_LABELS,
   type QualityGrade,
 } from '../types/quality-api'
+import { useCredentialLabels } from '../composables/useCredentialLabels'
 
 const { t } = useI18n()
 const pm = (k: string, params?: Record<string, unknown>): string =>
@@ -48,6 +49,10 @@ const credentialsByProvider = ref<Record<number, ProviderCredential[]>>({})
 const credentialLoading = ref<Record<number, boolean>>({})
 const credentialSaving = ref<Record<number, boolean>>({})
 const credentialErrors = ref<Record<number, string>>({})
+// credentialDisplayName resolves credential id → human label; the composable
+// keeps a Map<id,label> refreshed via loadCredentialLabels(), and falls back
+// to "凭据 #ID" if the label is missing.
+const { credentialDisplayName, loadCredentialLabels } = useCredentialLabels()
 
 // ── Filter & sort state ──────────────────────────────────────────────────────
 // 2026-07-08: filter selections are persisted to localStorage so each
@@ -764,6 +769,9 @@ async function loadBgStatus() {
 }
 
 onMounted(() => {
+  // Populate the label cache so credentialDisplayName() resolves to real
+  // labels on first render (the composable is best-effort and self-caches).
+  void loadCredentialLabels()
   load()
   loadBgStatus()
   _bgPollTimer = setInterval(loadBgStatus, 15000)
@@ -1330,7 +1338,7 @@ onUnmounted(() => {
               <template v-for="r in diagnoseResult.results" :key="r.credential_id">
                 <tr>
                   <td>
-                    <div>#{{ r.credential_id }}</div>
+                    <div>{{ credentialDisplayName(r.credential_id) }}</div>
                     <div class="muted" v-if="r.effective_source === 'manifest_only'">{{ pm('diagnose.manifestOnly') }}</div>
                   </td>
                   <td>
@@ -1524,11 +1532,11 @@ table code {
 }
 .filter-tab:hover {
   color: var(--text);
-  background: rgba(255,255,255,0.05);
+  background: color-mix(in srgb, var(--kx-text) 4%, transparent);
 }
 .filter-tab.active {
   background: var(--accent);
-  color: #fff;
+  color: var(--on-primary);
 }
 .filter-divider {
   width: 1px;
@@ -1590,7 +1598,7 @@ table code {
   border-bottom: none;
 }
 .credential-table tbody tr:hover td {
-  background: rgba(255,255,255,.03);
+  background: color-mix(in srgb, var(--kx-text) 4%, transparent);
 }
 .compact-input {
   width: 100%;
@@ -1620,8 +1628,8 @@ table code {
   overflow-wrap: break-word;
 }
 .badge-amber {
-  background: rgba(210,153,34,.18);
-  color: #f0b429;
+  background: color-mix(in srgb, var(--warning) 20%, transparent);
+  color: var(--warning);
 }
 .diag-section h4 {
   margin: 0 0 6px 0;
@@ -1657,8 +1665,8 @@ table code {
   display: inline-block;
   flex-shrink: 0;
 }
-.dot-green { background: #4caf50; }
-.dot-red { background: #f44336; }
+.dot-green { background: var(--success); }
+.dot-red { background: var(--danger); }
 .bg-label {
   font-weight: 500;
   margin-inline-end: 2px;
@@ -1672,7 +1680,7 @@ table code {
   color: #42a5f5;
 }
 .badge-orange {
-  background: rgba(210,153,34,.15);
+  background: var(--warning-bg);
   color: var(--warning);
 }
 .provider-row {

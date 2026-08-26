@@ -36,6 +36,8 @@ export default {
     auditLogs: 'Audit Logs',
     requestLogs: 'Request Logs',
     dispatchWaterfall: 'Queue Waterfall',
+    requestRegistry: 'Request Registry',
+    connectionRegistry: 'Connection Registry',
     turns: 'Turns List',
     sessions: 'Sessions',
     pluginSessions: 'Plugin Sessions',

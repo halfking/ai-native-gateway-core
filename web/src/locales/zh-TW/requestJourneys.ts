@@ -46,7 +46,6 @@ export default {
     groupWarn: '⚡ 警告節點 ({count})',
     groupOk: '✅ 正常節點 ({count})',
     groupDisabled: '🚫 已停用節點 ({count})',
-    nodeLabel: '節點 {credentialId}',
     circuit: '熔斷',
     availability: '可用',
     quota: '配額',

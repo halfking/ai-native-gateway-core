@@ -228,6 +228,8 @@ export default {
       colRoutable: 'Routing-fähig',
       colTopCred: 'Top-Anmeldedaten',
       replay: 'Erneut abfragen',
+      colPriority: 'Priorität',
+      priorityTooltip: 'Prioritäts-Credential: Solange das Kontingent reicht, übernimmt es den Traffic zuerst; bei Erschöpfung weicht der Traffic automatisch aus. Unabhängig von der Sortiernummer.',
     },
     live: {
       simulatorTitle: 'Routing-Simulation',
