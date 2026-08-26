@@ -6,6 +6,7 @@ import {
   getUnifiedRequestDetail,
   type UnifiedRequestDetail,
 } from '../../api/requestDetail'
+import { getSessionSnapshot } from '../../api/sessions_v2'
 import RequestOverviewPanel from './RequestOverviewPanel.vue'
 import ConversationMessagesPanel from './ConversationMessagesPanel.vue'
 import FlowTimingPanel from './FlowTimingPanel.vue'
@@ -43,6 +44,7 @@ const loading = ref(false)
 const error = ref('')
 const log = ref<RequestLogDetail | null>(null)
 const unified = ref<UnifiedRequestDetail | null>(null)
+const sessionSnap = ref<Record<string, unknown> | null>(null)
 const activeRequestId = ref<string | null>(null)
 
 const sessionId = computed(
@@ -67,6 +69,7 @@ watch(
     activeRequestId.value = id
     log.value = null
     unified.value = null
+    sessionSnap.value = null
     error.value = ''
     viewMode.value = props.initialViewMode
     tab.value = props.initialTraceOpen ? 'flow' : 'overview'
@@ -76,12 +79,18 @@ watch(
   { immediate: true },
 )
 
+watch(tab, (t) => {
+  const id = activeRequestId.value
+  if (id && needsBodies(t)) void ensureBodies(id)
+})
+
 async function loadRequest(id: string) {
   loading.value = true
   error.value = ''
   try {
+    // Phase A: meta only — never block the drawer on large bodies.
     const [u, meta] = await Promise.all([
-      getUnifiedRequestDetail(id).catch(() => null),
+      getUnifiedRequestDetail(id, { omitBody: true }).catch(() => null),
       getRequestLogDetail(id, { omitBody: true }).catch(() => null),
     ])
     unified.value = u
@@ -90,21 +99,34 @@ async function loadRequest(id: string) {
       error.value = '请求详情未找到'
       return
     }
-    // Fill bodies: prefer unified; else full log detail.
-    if (u?.bodies) {
-      // already have bodies
-    } else if (meta) {
-      try {
-        const full = await getRequestLogDetail(id)
-        log.value = { ...meta, ...full }
-      } catch {
-        /* meta-only ok */
-      }
+    const sid = log.value?.gw_session_id || unified.value?.meta.gw_session_id
+    if (sid) {
+      void getSessionSnapshot(sid)
+        .then((snap) => { sessionSnap.value = snap as Record<string, unknown> })
+        .catch(() => { sessionSnap.value = null })
+    }
+    // Phase B: bodies only when a content tab is active.
+    if (needsBodies(tab.value)) {
+      await ensureBodies(id)
     }
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : String(e)
   } finally {
     loading.value = false
+  }
+}
+
+function needsBodies(t: string): boolean {
+  return t === 'chat' || t === 'compress' || t === 'raw' || t === 'attachments'
+}
+
+async function ensureBodies(id: string) {
+  if (unified.value?.bodies || log.value?.request_body || log.value?.response_body) return
+  try {
+    const full = await getRequestLogDetail(id)
+    log.value = log.value ? { ...log.value, ...full } : full
+  } catch {
+    /* meta-only ok */
   }
 }
 
@@ -205,10 +227,18 @@ function switchToSession() {
           </div>
 
           <div class="drawer-body-scroll">
-            <RequestOverviewPanel v-if="tab === 'overview'" :log="log" :unified="unified" />
+            <RequestOverviewPanel
+              v-if="tab === 'overview'"
+              :log="log"
+              :unified="unified"
+              :request-body="requestBody"
+              :response-body="responseBody"
+              :session-snap="sessionSnap"
+            />
             <ConversationMessagesPanel
               v-else-if="tab === 'chat'"
               :body="requestBody"
+              :response-body="responseBody"
             />
             <FlowTimingPanel v-else-if="tab === 'flow'" :request-id="activeRequestId" />
             <CompressionRedactionPanel

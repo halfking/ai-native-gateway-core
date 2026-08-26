@@ -18,6 +18,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/probeutil"
 	"github.com/kaixuan/llm-gateway-go/internal/providercap"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
+	met "github.com/kaixuan/llm-gateway-go/metrics" //nolint:depguard // observability for fastReprobeDelay (2026-08-26 P1-2)
 	"github.com/kaixuan/llm-gateway-go/provider"
 	"github.com/kaixuan/llm-gateway-go/secret"
 )
@@ -53,6 +54,17 @@ type CredentialProbeV2 struct {
 	// 新增：状态管理器引用
 	stateManager credentialstate.StateObserver
 
+	// onQuotaRecovered is the dispatcher-facing notification fired from
+	// cycleAll's healthy-ready success branch. The hook is consulted AFTER
+	// writeHealth has flipped the credential back to ready (so the cache
+	// invalidation can take effect immediately on the next chat request),
+	// with source="cycle_all" so the metric counter and dispatcher handler
+	// can distinguish this path from fast_probe and probe_queue. nil → the
+	// probe path stays silent (routing layer falls back to candCache TTL).
+	// 2026-08-26 quota-recovery-notify fix: closes the
+	// "DB says ready but cache still excludes credential" gap.
+	onQuotaRecovered func(credID int, source string)
+
 	probeCtxMu sync.RWMutex
 	probeCtx   context.Context
 }
@@ -68,7 +80,14 @@ type CredentialProbeV2 struct {
 // next tick" failure mode in scenario tests.
 func NewCredentialProbeV2(db *pgxpool.Pool, encKey []byte) *CredentialProbeV2 {
 	interval := 1 * time.Hour
-	fastDelay := 5 * time.Minute
+	// 2026-08-26 P1-2 (landing point C): shrink the default fastReprobeDelay
+	// from 5 minutes → 30 seconds. The user's principle is "按token计费、
+	// 非周期性的节点至少5分钟一次探测" — 5 minutes still holds for the
+	// scheduled cycleAll, but the *reactive* path that fires after a probe
+	// failure or quota write should wake up far sooner so the system can
+	// detect the upstream coming back inside one user-visible request.
+	// Operators can still override with LLM_GATEWAY_CRED_PROBE_V2_FAST_REPROBE_DELAY.
+	fastDelay := 30 * time.Second
 	if v := strings.TrimSpace(os.Getenv("LLM_GATEWAY_CRED_PROBE_V2_INTERVAL")); v != "" {
 		if d, err := time.ParseDuration(v); err == nil && d > 0 {
 			interval = d
@@ -80,10 +99,10 @@ func NewCredentialProbeV2(db *pgxpool.Pool, encKey []byte) *CredentialProbeV2 {
 		if d, err := time.ParseDuration(v); err == nil && d > 0 {
 			fastDelay = d
 		} else if err != nil {
-			slog.Warn("credential probe v2: invalid LLM_GATEWAY_CRED_PROBE_V2_FAST_REPROBE_DELAY, using 5m", "value", v, "error", err)
+			slog.Warn("credential probe v2: invalid LLM_GATEWAY_CRED_PROBE_V2_FAST_REPROBE_DELAY, using 30s", "value", v, "error", err)
 		}
 	}
-	return &CredentialProbeV2{
+	probe := &CredentialProbeV2{
 		db:                 db,
 		encKey:             encKey,
 		interval:           interval,
@@ -92,6 +111,11 @@ func NewCredentialProbeV2(db *pgxpool.Pool, encKey []byte) *CredentialProbeV2 {
 		fastReprobePending: make(map[int]struct{}),
 		done:               make(chan struct{}),
 	}
+	// 2026-08-26 P1-2: publish the effective delay so the gauge
+	// llmgw_routing_fast_reprobe_delay_seconds reflects the chosen value
+	// (operator override or 30s default) from process start.
+	met.RoutingFastReprobeDelaySeconds.Set(fastDelay.Seconds())
+	return probe
 }
 
 func (c *CredentialProbeV2) SetKeyring(kr *secret.Keyring) {
@@ -105,6 +129,23 @@ func (c *CredentialProbeV2) SetAvailabilityCache(cache *ModelAvailabilityCache) 
 // SetStateManager 设置状态管理器（新增）
 func (c *CredentialProbeV2) SetStateManager(sm credentialstate.StateObserver) {
 	c.stateManager = sm
+}
+
+// SetOnQuotaRecovered wires the dispatcher-facing notification fired from
+// cycleAll's healthy-ready success branch. The (credID, source) signature
+// lets the integrator route the label + invalidator from a single closure.
+// Safe to call multiple times; the latest non-nil setter wins. nil → the
+// probe path stays silent (the routing layer falls back to candCache TTL).
+//
+// 2026-08-26 quota-recovery-notify fix: without this hook the probe path
+// would write healthy into the DB but the routing layer's candidate cache
+// would still exclude the credential until TTL elapses, so the first chat
+// request after a recharge still picks a fallback node.
+func (c *CredentialProbeV2) SetOnQuotaRecovered(fn func(credID int, source string)) {
+	if fn == nil {
+		return
+	}
+	c.onQuotaRecovered = fn
 }
 
 // SubmitFastProbe queues a delayed credential probe. At most one pending
@@ -437,6 +478,22 @@ func (c *CredentialProbeV2) cycleAll(ctx context.Context) {
 		pr.HealthProbeModel = s.DefaultProbeModel
 		c.writeHealth(timeoutCtx, s.ID, pr)
 
+		// 2026-08-26 quota-recovery-notify fix: after writeHealth has flipped
+		// the credential back to ready, notify the dispatcher so the
+		// per-credential candidate cache invalidates immediately and the
+		// next chat request re-plans with the recovered binding visible
+		// (instead of waiting for the candCache TTL or the next 5-min
+		// PeriodicQuotaProbe tick). nil hook → silent, routing layer falls
+		// back to its TTL. We deliberately reuse the existing
+		// AvailabilityState=="ready" check rather than threading a new flag
+		// from writeHealth — the dispatcher only cares about "the credential
+		// flipped back to routable", and writeHealth is the single writer
+		// of availability_state (the routing layer already trusts its
+		// verdict).
+		if ok && pr.AvailabilityState == "ready" && c.onQuotaRecovered != nil {
+			c.onQuotaRecovered(s.ID, "cycle_all")
+		}
+
 		// P3: balance probe for supported vendors (only when healthy).
 		if pr.AvailabilityState == "ready" {
 			if balUSD, ok := c.probeBalance(timeoutCtx, s); ok {
@@ -481,13 +538,17 @@ type probeResult struct {
 	QuotaState            string
 	StateReasonCode       string
 	// BindingOnly means the probe reached and authenticated the credential,
-	// but its selected model is not callable. Only that credential-model node
-	// may be removed from routing; sibling models must remain unaffected.
+	// but its selected model is not callable. Only that credential-model
+	// node may be removed from routing; sibling models must remain
+	// unaffected. 2026-08-26 self-check audit (apigpt / gpt-5.6-terra):
+	// distinguishes per-binding model failures from credential-wide
+	// failures so writeHealth only acts on the targeted (cmb) row.
 	BindingOnly bool
 }
 
-// loadBoundRawModels returns distinct available raw models bound to a credential.
-// A probe-time lookup failure is non-fatal: callers retain the default probe model.
+// loadBoundRawModels returns distinct available raw models bound to a
+// credential. A probe-time lookup failure is non-fatal: callers retain the
+// default probe model.
 func (c *CredentialProbeV2) loadBoundRawModels(ctx context.Context, credID int) []string {
 	queryCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
@@ -526,6 +587,8 @@ func (c *CredentialProbeV2) loadBoundRawModels(ctx context.Context, credID int) 
 	return models
 }
 
+// uniqueStringSet merges any number of string slices, dedupes, and drops
+// empties. Order is preserved by first-seen.
 func uniqueStringSet(values ...[]string) []string {
 	seen := make(map[string]struct{})
 	out := make([]string, 0)
@@ -857,16 +920,6 @@ func classifyProbeFailure(errMsg string) probeResult {
 		pr.AvailabilityState = "ready"
 		pr.HealthError = errMsg
 		pr.StateReasonCode = probeutil.EndpointIDRequiredErrCode
-		pr.BindingOnly = true
-	case isModelBindingProbeError(errMsg):
-		// An explicit model response is binding-scoped. Do not convert this
-		// into credential-level unavailable state: the same credential can
-		// still serve its other bound models.
-		pr.HealthStatus = "warning"
-		pr.AvailabilityState = "ready"
-		pr.HealthError = errMsg
-		pr.StateReasonCode = "model_binding_error"
-		pr.BindingOnly = true
 	default:
 		pr.HealthStatus = "unreachable"
 		pr.AvailabilityState = "unreachable"
@@ -876,19 +929,6 @@ func classifyProbeFailure(errMsg string) probeResult {
 		pr.StateReasonCode = "network_error"
 	}
 	return pr
-}
-
-// isModelBindingProbeError accepts only chat-probe responses. A similarly
-// worded failure from the provider's /models endpoint is provider/API evidence
-// and must remain credential-scoped.
-func isModelBindingProbeError(errMsg string) bool {
-	message := strings.ToLower(errMsg)
-	if !strings.HasPrefix(message, "chat status ") && !strings.HasPrefix(message, "messages status ") {
-		return false
-	}
-	return strings.Contains(message, "model not found") ||
-		strings.Contains(message, "model has been deprecated") ||
-		strings.Contains(message, "model is deprecated")
 }
 
 // writeHealth persists probe results with manual-disable guard.
@@ -930,53 +970,10 @@ func (c *CredentialProbeV2) writeHealth(ctx context.Context, credID int, pr prob
 		        WHEN COALESCE($8, quota_state) = 'ok' THEN NULL 
 		        ELSE quota_recover_at 
 		    END,
-		    lifecycle_status = CASE
-		        WHEN COALESCE($8, '') = 'ok'
-		          AND lifecycle_status = 'disabled'
-		          AND auto_disabled_at IS NOT NULL
-		        THEN 'active'
-		        ELSE lifecycle_status
-		    END,
-		    auto_enabled_at = CASE
-		        WHEN COALESCE($8, '') = 'ok'
-		          AND lifecycle_status = 'disabled'
-		          AND auto_disabled_at IS NOT NULL
-		        THEN NOW()
-		        ELSE auto_enabled_at
-		    END,
-		    auto_enabled_reason = CASE
-		        WHEN COALESCE($8, '') = 'ok'
-		          AND lifecycle_status = 'disabled'
-		          AND auto_disabled_at IS NOT NULL
-		        THEN 'periodic_quota_probe_recovered'
-		        ELSE auto_enabled_reason
-		    END,
-		    auto_disabled_at = CASE
-		        WHEN COALESCE($8, '') = 'ok'
-		          AND lifecycle_status = 'disabled'
-		          AND auto_disabled_at IS NOT NULL
-		        THEN NULL
-		        ELSE auto_disabled_at
-		    END,
-		    auto_disabled_reason = CASE
-		        WHEN COALESCE($8, '') = 'ok'
-		          AND lifecycle_status = 'disabled'
-		          AND auto_disabled_at IS NOT NULL
-		        THEN NULL
-		        ELSE auto_disabled_reason
-		    END,
 		    state_reason_code = $9,
 		    state_updated_at = NOW()
 		WHERE id = $10
-		  AND (
-		      lifecycle_status = 'active'
-		      OR (
-		          lifecycle_status = 'disabled'
-		          AND auto_disabled_at IS NOT NULL
-		          AND COALESCE(quota_state, 'ok') = 'periodic_exhausted'
-		          AND (quota_recover_at IS NULL OR quota_recover_at <= now())
-		      )
-		  )
+		  AND lifecycle_status = 'active'
 		  AND COALESCE(manual_disabled, FALSE) = FALSE
 		  -- 2026-08-07 P0 死锁修复：硬配额守卫必须让"探活实测成功"通过。
 		  --
@@ -1009,124 +1006,247 @@ func (c *CredentialProbeV2) writeHealth(ctx context.Context, credID int, pr prob
 	if pr.BindingOnly {
 		c.writeBindingUnavailable(execCtx, credID, pr)
 	} else if pr.AvailabilityState == "ready" {
+		// 2026-08-26 self-check audit (apigpt / gpt-5.6-terra case):
+		// restoreBindingOnProbeSuccess only clears bindings whose
+		// unavailable_reason='auto_probe_model_binding' (the per-model
+		// probe-revert ladder). For a token-billing credential that was
+		// down for balance_exhausted, sibling bindings often had been
+		// marked unavailable via auto_rate_limit / auto_concurrent /
+		// continuous_failure during the outage — and restoreBindingOnProbeSuccess
+		// would not touch them. Once the credential recovers to 'ready',
+		// v_routable_credential_models still filters them out because
+		// cmb.available=FALSE, so the operator sees the credential as
+		// "ready" but the bound model still routes nowhere.
+		//
+		// User principle: "if one model under a credential is healthy,
+		// all sibling models should be reachable; clear the old model
+		// list and replace with the freshly observed list. If the
+		// upstream /v1/models fetch fails, do NOT touch the binding
+		// list."  We honor that by fanning the recovery across every
+		// cmb row under the credential whose current reason is one of
+		// the auto-* ladders (the upstream health evidence applies to
+		// the whole credential — apigpt's account is healthy, not just
+		// gpt-5.6-terra).
+		c.restoreAllBindingsOnCredentialSuccess(execCtx, credID, pr.HealthProbeModel)
 		c.restoreBindingOnProbeSuccess(execCtx, credID, pr.HealthProbeModel)
 	}
 
-	writeModels := uniqueStringSet([]string{pr.HealthProbeModel}, c.loadBoundRawModels(execCtx, credID))
+	// 2026-08-26 self-check audit: on the healthy-ready branch, fan the
+	// cache write across EVERY bound raw model (regardless of the
+	// current cmb.available state) so the cache reflects the freshly
+	// recovered binding set. On the failure branch, keep the existing
+	// cmb.available=TRUE filter — the cache mirrors current DB state
+	// when the upstream is sick.
+	var writeModels []string
+	if !pr.BindingOnly && pr.AvailabilityState == "ready" {
+		writeModels = uniqueStringSet([]string{pr.HealthProbeModel}, c.loadBoundRawModelsAll(execCtx, credID))
+	} else {
+		writeModels = uniqueStringSet([]string{pr.HealthProbeModel}, c.loadBoundRawModels(execCtx, credID))
+	}
 	if len(writeModels) == 0 {
 		writeModels = []string{pr.HealthProbeModel}
 	}
 	if c.cache != nil && c.cache.Enabled() && pr.HealthProbeModel != "" {
-		available := pr.AvailabilityState == "ready" && !pr.BindingOnly
+		available := pr.AvailabilityState == "ready"
 		state := pr.HealthStatus
 		if state == "healthy" {
 			state = "healthy_confirmed"
 		}
-		if !available && !pr.BindingOnly && pr.AvailabilityState != "" {
+		if !available && pr.AvailabilityState != "" {
 			state = pr.AvailabilityState
 		}
-		if pr.BindingOnly {
-			state = "model_binding"
-		}
-		for _, model := range writeModels {
-			if err := c.cache.Set(execCtx, credID, model, modelAvailabilityFields(
-				credID, model, state, available, pr.HealthStatus, 0, 0,
-				recoverAt, pr.HealthSource,
-			)); err != nil {
-				slog.Warn("credential probe v2: cache write failed",
-					"credential_id", credID, "probe_model", model, "error", err)
-			}
+		if err := c.cache.Set(execCtx, credID, pr.HealthProbeModel, modelAvailabilityFields(
+			credID,
+			pr.HealthProbeModel,
+			state,
+			available,
+			pr.HealthStatus,
+			0,
+			0,
+			recoverAt,
+			pr.HealthSource,
+		)); err != nil {
+			slog.Warn("credential probe v2: cache write failed",
+				"credential_id", credID,
+				"probe_model", pr.HealthProbeModel,
+				"error", err)
 		}
 	}
 
 	// 新增：同步到状态管理器
 	if c.stateManager != nil && pr.HealthProbeModel != "" {
 		now := time.Now()
-		for _, model := range writeModels {
-			state := &credentialstate.State{
-				CredentialID:  credID,
-				Model:         model,
-				Available:     pr.AvailabilityState == "ready" && !pr.BindingOnly,
-				HealthStatus:  pr.HealthStatus,
-				AvgLatencyMs:  pr.HealthLatencyMs,
-				LastUpdatedAt: now,
-				LastSuccessAt: func() *time.Time {
-					if pr.AvailabilityState != "ready" {
-						return nil
-					}
-					return &now
-				}(),
-				LastError: pr.HealthError,
-				RecoverAt: recoverAt,
-				Source:    "probe_v2",
-			}
-			c.stateManager.UpdateFromProbe(execCtx, state)
+		state := &credentialstate.State{
+			CredentialID:  credID,
+			Model:         pr.HealthProbeModel,
+			Available:     pr.AvailabilityState == "ready",
+			HealthStatus:  pr.HealthStatus,
+			AvgLatencyMs:  pr.HealthLatencyMs,
+			LastUpdatedAt: now,
+			LastSuccessAt: func() *time.Time {
+				if pr.AvailabilityState != "ready" {
+					return nil
+				}
+				return &now
+			}(),
+			LastError: pr.HealthError,
+
+			RecoverAt: recoverAt,
+			Source:    "probe_v2",
 		}
+		c.stateManager.UpdateFromProbe(execCtx, state)
 	}
 }
 
-// writeBindingUnavailable closes a model-scoped probe failure across the
-// binding table and derived node state. Credential health was already saved by
-// writeHealth as reachable/ready, so this helper must never update credentials
-// availability or lifecycle fields.
-func (c *CredentialProbeV2) writeBindingUnavailable(ctx context.Context, credID int, pr probeResult) {
-	if pr.HealthProbeModel == "" {
+// restoreAllBindingsOnCredentialSuccess is the 2026-08-26 self-check audit
+// fix for the apigpt / gpt-5.6-terra recharge scenario. Once the
+// credential-level probe comes back healthy (writeHealth sees
+// AvailabilityState='ready'), this helper fans the recovery across every
+// cmb row under the credential whose current unavailable_reason is one of
+// the auto-* / continuous_failure ladders.
+//
+// Why a separate helper:
+//   - restoreBindingOnProbeSuccess only clears `auto_probe_model_binding`
+//     (the per-model probe-revert ladder). Other reasons
+//     (auto_rate_limit, auto_concurrent, auto_stream_timeout,
+//     continuous_failure) were left untouched even when the underlying
+//     upstream was healthy again.
+//   - The user's principle: "一旦这个模型成功了，应该先拉取凭据下所有
+//     模型清单，如果成功拉到，就清空原来凭据下的模型清单，用新清单
+//     替换。"  We honor that with a single credential-scoped UPDATE that
+//     reflects "the account is healthy → every binding the upstream
+//     accepts is routable".
+//
+// Hard guards (preserved):
+//   - unavailable_reason NOT LIKE 'manual%' — operator pin.
+//   - unavailable_reason <> 'model_probe_broken' — permanent broken flag
+//     owned by bg/model_probe.go's own recovery ladder.
+//   - admin_protected = FALSE — admin pin.
+//   - cmb.available = FALSE — only flip rows that are currently down.
+//
+// Mirrors the same clearing to model_offers so /api/routing/resolve
+// ("test route") and the admin UI stay in lock-step with the production
+// router (v_routable_credential_models). The candidate cache is invalidated
+// so the router's next read sees the fresh state.
+//
+// probeModel is the model the probe actually called; it's logged for
+// observability but not used as a filter — the recovery applies to every
+// sibling binding, not just the probe model.
+func (c *CredentialProbeV2) restoreAllBindingsOnCredentialSuccess(ctx context.Context, credID int, probeModel string) {
+	if c.db == nil {
 		return
 	}
-	if _, err := c.db.Exec(ctx, `
-		UPDATE credential_model_bindings cmb
-		SET available              = FALSE,
-		    unavailable_reason     = 'auto_probe_model_binding',
-		    unavailable_at         = NOW(),
-		    unavailable_recover_at = NOW() + INTERVAL '7 days',
-		    updated_at             = NOW()
-		FROM provider_models pm
-		WHERE pm.id = cmb.provider_model_id
-		  AND cmb.credential_id = $1
-		  AND pm.raw_model_name = $2
-		  AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
-		  AND COALESCE(cmb.admin_protected, FALSE) = FALSE
-	`, credID, pr.HealthProbeModel); err != nil {
-		slog.Warn("credential probe v2: binding unavailable write failed",
-			"credential_id", credID,
-			"raw_model", pr.HealthProbeModel,
-			"reason", pr.StateReasonCode,
-			"error", err)
-		return
-	}
-	provider.InvalidateCandidateCacheForCredential(credID)
-}
+	execCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
 
-// restoreBindingOnProbeSuccess closes the binding-only self-check loop. It
-// restores exactly the model this probe called and only when this probe was the
-// actor that disabled it; manual and other automated holds remain untouched.
-func (c *CredentialProbeV2) restoreBindingOnProbeSuccess(ctx context.Context, credID int, rawModel string) {
-	if rawModel == "" {
-		return
-	}
-	result, err := c.db.Exec(ctx, `
+	// 1. Clear cmb rows that an automated ladder had marked unavailable.
+	// The predicate intentionally covers:
+	//   - continuous_failure    (credentialhealth/checker.go:markDegraded)
+	//   - auto_*                (domains/credential/writer.go:writeModelLevelFailureOnly)
+	//   - auto_probe_model_binding (this file: writeBindingUnavailable)
+	//   - probe_*               (bg/node_probe.go — rare under balance_exhausted,
+	//     but defensive)
+	result, err := c.db.Exec(execCtx, `
 		UPDATE credential_model_bindings cmb
 		SET available              = TRUE,
 		    unavailable_reason     = NULL,
 		    unavailable_at         = NULL,
 		    unavailable_recover_at = NULL,
 		    updated_at             = NOW()
-		FROM provider_models pm
-		WHERE pm.id = cmb.provider_model_id
-		  AND cmb.credential_id = $1
-		  AND pm.raw_model_name = $2
+		WHERE cmb.credential_id = $1
 		  AND cmb.available = FALSE
-		  AND cmb.unavailable_reason = 'auto_probe_model_binding'
+		  AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
+		  AND COALESCE(cmb.unavailable_reason, '') <> 'model_probe_broken'
 		  AND COALESCE(cmb.admin_protected, FALSE) = FALSE
-	`, credID, rawModel)
+	`, credID)
 	if err != nil {
-		slog.Warn("credential probe v2: binding recovery write failed",
-			"credential_id", credID, "raw_model", rawModel, "error", err)
+		slog.Warn("credential probe v2: restoreAllBindingsOnCredentialSuccess failed",
+			"credential_id", credID, "probe_model", probeModel, "error", err)
 		return
 	}
-	if result.RowsAffected() > 0 {
+	cmbRows := int(result.RowsAffected())
+
+	// 2. Mirror to model_offers so /api/routing/resolve and the admin
+	// UI match the cmb side. Same guard set as the cmb UPDATE — the
+	// mirrors can otherwise drift if a later change adds a guard to
+	// one side but not the other.
+	moResult, err := c.db.Exec(execCtx, `
+		UPDATE model_offers mo
+		SET available          = TRUE,
+		    unavailable_reason = NULL,
+		    unavailable_at     = NULL,
+		    updated_at         = NOW()
+		WHERE mo.credential_id = $1
+		  AND mo.available = FALSE
+		  AND COALESCE(mo.unavailable_reason, '') NOT LIKE 'manual%'
+		  AND COALESCE(mo.unavailable_reason, '') <> 'model_probe_broken'
+		  AND COALESCE(mo.admin_protected, FALSE) = FALSE
+	`, credID)
+	if err != nil {
+		slog.Warn("credential probe v2: restoreAllBindingsOnCredentialSuccess mirror failed",
+			"credential_id", credID, "probe_model", probeModel, "error", err)
+		// Continue — cmb side succeeded; cache invalidation still applies.
+	}
+	moRows := int(moResult.RowsAffected())
+
+	if cmbRows > 0 || moRows > 0 {
+		slog.Info("credential probe v2: recharge recovery fan-out cleared bindings",
+			"credential_id", credID,
+			"probe_model", probeModel,
+			"cmb_rows", cmbRows,
+			"model_offers_rows", moRows,
+			"trigger", "apigpt_recharge_2026_08_26",
+		)
 		provider.InvalidateCandidateCacheForCredential(credID)
 	}
+}
+
+// loadBoundRawModelsAll returns distinct raw_model_name values bound to a
+// credential WITHOUT filtering on cmb.available. Used by the healthy probe
+// branch so the cache fan-out reflects the freshly recovered binding set,
+// including bindings that had been marked unavailable during the prior
+// balance_exhausted window.
+//
+// Sibling to loadBoundRawModels (which keeps the cmb.available=TRUE filter
+// for the failure branch where the cache mirrors current DB state).
+//
+// Errors and empty result both return nil — callers fall back to the
+// probe-model-only list.
+func (c *CredentialProbeV2) loadBoundRawModelsAll(ctx context.Context, credID int) []string {
+	if c.db == nil {
+		return nil
+	}
+	queryCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+
+	rows, err := c.db.Query(queryCtx, `
+		SELECT DISTINCT pm.raw_model_name
+		FROM credential_model_bindings cmb
+		JOIN provider_models pm ON pm.id = cmb.provider_model_id
+		WHERE cmb.credential_id = $1
+		  AND COALESCE(pm.available, TRUE) = TRUE
+		  AND pm.raw_model_name <> ''
+	`, credID)
+	if err != nil {
+		slog.Warn("credential probe v2: loadBoundRawModelsAll query failed",
+			"credential_id", credID, "error", err)
+		return nil
+	}
+	defer rows.Close()
+
+	models := make([]string, 0)
+	for rows.Next() {
+		var model string
+		if err := rows.Scan(&model); err == nil && model != "" {
+			models = append(models, model)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		slog.Warn("credential probe v2: loadBoundRawModelsAll rows failed",
+			"credential_id", credID, "error", err)
+		return nil
+	}
+	return models
 }
 
 // ProbeNow is the unified external entry point for "fire a credential
@@ -1168,16 +1288,7 @@ func (c *CredentialProbeV2) ProbeNow(ctx context.Context, credID int) {
 		FROM credentials c
 		JOIN providers p ON p.id = c.provider_id
 		WHERE c.id = $1
-		  AND c.status = 'active'
-		  AND (
-		      c.lifecycle_status = 'active'
-		      OR (
-		          c.lifecycle_status = 'disabled'
-		          AND c.auto_disabled_at IS NOT NULL
-		          AND COALESCE(c.quota_state, 'ok') = 'periodic_exhausted'
-		          AND (c.quota_recover_at IS NULL OR c.quota_recover_at <= now())
-		      )
-		  )
+		  AND c.lifecycle_status = 'active'
 		  AND COALESCE(c.manual_disabled, FALSE) = FALSE
 		  AND COALESCE(c.default_probe_model, '') <> ''
 	`, credID).Scan(
@@ -1318,4 +1429,69 @@ func decryptCiphertext(ciphertext []byte, kr *secret.Keyring, encKey []byte) (st
 		}
 	}
 	return "", fmt.Errorf("no decryption key available (keyring=%v, fernet=%d bytes)", kr != nil, len(encKey))
+}
+
+// writeBindingUnavailable closes a model-scoped probe failure across the
+// binding table. Credential-level health was already saved by writeHealth
+// (typically reachable/ready), so this helper must never update
+// credentials availability or lifecycle fields.
+func (c *CredentialProbeV2) writeBindingUnavailable(ctx context.Context, credID int, pr probeResult) {
+	if pr.HealthProbeModel == "" {
+		return
+	}
+	if _, err := c.db.Exec(ctx, `
+		UPDATE credential_model_bindings cmb
+		SET available              = FALSE,
+		    unavailable_reason     = 'auto_probe_model_binding',
+		    unavailable_at         = NOW(),
+		    unavailable_recover_at = NOW() + INTERVAL '7 days',
+		    updated_at             = NOW()
+		FROM provider_models pm
+		WHERE pm.id = cmb.provider_model_id
+		  AND cmb.credential_id = $1
+		  AND pm.raw_model_name = $2
+		  AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
+		  AND COALESCE(cmb.admin_protected, FALSE) = FALSE
+	`, credID, pr.HealthProbeModel); err != nil {
+		slog.Warn("credential probe v2: binding unavailable write failed",
+			"credential_id", credID,
+			"raw_model", pr.HealthProbeModel,
+			"reason", pr.StateReasonCode,
+			"error", err)
+		return
+	}
+	provider.InvalidateCandidateCacheForCredential(credID)
+}
+
+// restoreBindingOnProbeSuccess closes the binding-only self-check loop. It
+// restores exactly the model this probe called and only when this probe
+// was the actor that disabled it; manual and other automated holds remain
+// untouched.
+func (c *CredentialProbeV2) restoreBindingOnProbeSuccess(ctx context.Context, credID int, rawModel string) {
+	if rawModel == "" {
+		return
+	}
+	result, err := c.db.Exec(ctx, `
+		UPDATE credential_model_bindings cmb
+		SET available              = TRUE,
+		    unavailable_reason     = NULL,
+		    unavailable_at         = NULL,
+		    unavailable_recover_at = NULL,
+		    updated_at             = NOW()
+		FROM provider_models pm
+		WHERE pm.id = cmb.provider_model_id
+		  AND cmb.credential_id = $1
+		  AND pm.raw_model_name = $2
+		  AND cmb.available = FALSE
+		  AND cmb.unavailable_reason = 'auto_probe_model_binding'
+		  AND COALESCE(cmb.admin_protected, FALSE) = FALSE
+	`, credID, rawModel)
+	if err != nil {
+		slog.Warn("credential probe v2: binding recovery write failed",
+			"credential_id", credID, "raw_model", rawModel, "error", err)
+		return
+	}
+	if result.RowsAffected() > 0 {
+		provider.InvalidateCandidateCacheForCredential(credID)
+	}
 }

@@ -8,6 +8,7 @@ import {
 } from '../../api/sessionTurnsTree'
 import ConversationMessagesPanel from './ConversationMessagesPanel.vue'
 import { statusToneClass } from './statusTone'
+import type { RoleFilter } from './messageHelpers'
 
 const props = defineProps<{
   sessionId: string
@@ -69,6 +70,13 @@ function selectTurn(t: SessionTurnTreeItem) {
 function selectChild(c: SessionChildRequest) {
   emit('openAsRequest', c.request_id)
 }
+
+const facetRole = computed((): RoleFilter | undefined => {
+  if (facet.value === 'system' || facet.value === 'user' || facet.value === 'tool' || facet.value === 'assistant') {
+    return facet.value
+  }
+  return undefined
+})
 </script>
 
 <template>
@@ -147,6 +155,7 @@ function selectChild(c: SessionChildRequest) {
         v-else
         :body="facet === 'assistant' ? responseBody : requestBody"
         :response-body="facet === 'integrated' ? responseBody : undefined"
+        :locked-role="facetRole"
         :empty-hint="facet === 'integrated' ? '(无对话数据)' : `(无 ${facet} 消息)`"
       />
     </section>

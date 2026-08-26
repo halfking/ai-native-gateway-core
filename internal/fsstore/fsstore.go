@@ -141,16 +141,20 @@ func (s *Store) Close() error {
 	if s == nil {
 		return nil
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	var firstErr error
 	if s.entsIdx != nil {
 		if err := s.entsIdx.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
+		s.entsIdx = nil
 	}
 	if s.reqIdx != nil {
 		if err := s.reqIdx.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
+		s.reqIdx = nil
 	}
 	return firstErr
 }
@@ -343,10 +347,12 @@ func (s *Store) GetRequest(id string) (*RequestRecord, error) {
 	// We pick the newest by Sort if available, otherwise the first.
 	hit := res.Hits[0]
 	dateStr := ""
-	if v, ok := hit.Fields["started_at"].(string); ok {
-		dateStr = v
+	if v, ok := hit.Fields["started_at"].(string); ok && len(v) >= 10 {
+		dateStr = v[:10] // YYYY-MM-DD
 	}
-	dateStr = dateStr[:10] // YYYY-MM-DD
+	if dateStr == "" {
+		return nil, fmt.Errorf("fsstore: hit %s missing started_at", hit.ID)
+	}
 
 	path := filepath.Join(s.cfg.Root, "requests", dateStr, id+".json")
 	f, err := os.Open(path)

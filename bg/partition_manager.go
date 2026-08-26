@@ -738,9 +738,10 @@ func archiveSpecs() []archiveSpec {
 //
 // 2026-07-13: added candidate_failure_logs_hot (Migration 392).
 // 2026-08-25: added session_module_executions_hot (Migration 580) and
-//             dashboard_access_events_hot (Migration 579); both ship the
-//             hot → monthly-partition drain that previously relied on
-//             manually-run pg_cron archive_* scripts which drifted.
+//
+//	dashboard_access_events_hot (Migration 579); both ship the
+//	hot → monthly-partition drain that previously relied on
+//	manually-run pg_cron archive_* scripts which drifted.
 //
 // Each function signature is promote_<table>_hot_to_partition(p_retention interval,
 // p_batch_size int) RETURNS bigint; the caller loops until the function
@@ -759,9 +760,9 @@ func promoteSpecs() []archiveSpec {
 		// 不再 promote 到 columnar 分区。hot 表数据通过 cleanupOldModelProbeRuns()
 		// 按 lifecycle.model_probe_runs_ttl_days 直接 DELETE 清理。
 		// {fnName: "promote_model_probe_runs_hot_to_partition", label: "model_probe_runs_hot"},
-		{fnName: "promote_candidate_failure_logs_hot_to_partition", label: "candidate_failure_logs_hot"}, // Migration 392
-		{fnName: "promote_session_turns_hot_to_partition", label: "session_turns_hot"},                   // Migration 526
-		{fnName: "promote_handoff_logs_hot_to_partition", label: "handoff_logs_hot"},                     // Migration 532
+		{fnName: "promote_candidate_failure_logs_hot_to_partition", label: "candidate_failure_logs_hot"},       // Migration 392
+		{fnName: "promote_session_turns_hot_to_partition", label: "session_turns_hot"},                         // Migration 526
+		{fnName: "promote_handoff_logs_hot_to_partition", label: "handoff_logs_hot"},                           // Migration 532
 		{fnName: "promote_session_module_executions_hot_to_partition", label: "session_module_executions_hot"}, // Migration 580
 		{fnName: "promote_dashboard_access_events_hot_to_partition", label: "dashboard_access_events_hot"},     // Migration 579
 	}
@@ -904,16 +905,36 @@ func (pm *PartitionManager) analyzePartitionStats(ctx context.Context) {
 // layer to invalidate. Updated settings take effect within one tick
 // (DefaultPromoteInterval = 1h).
 //
-// Per-table retention settings (all hot-reloadable, all default 24h except
-// request_logs_bodies which is 1d due to size):
-//   - lifecycle.hot_retention_hours            — request_logs_hot, usage_ledger_hot, ...
+// Per-table retention settings (all hot-reloadable):
+//   - lifecycle.hot_retention_hours            — request_logs_hot, usage_ledger_hot, ... (default 24h)
 //   - lifecycle.request_logs_bodies_retention_hours — request_logs_bodies (1d default)
+//   - lifecycle.handoff_logs_hot_retention_hours — handoff_logs_hot (8h default)
+//   - lifecycle.session_module_executions_hot_retention_hours — Migration 580 (8h default)
+//   - lifecycle.dashboard_access_events_hot_retention_hours — Migration 579 (8h default)
 //   - lifecycle.credential_model_index_ttl_days  — credential_model_index (reaped by
 //     cleanup_old_credential_model_index())
 func resolvePromoteConfig(label string) (time.Duration, int) {
 	switch label {
 	case "handoff_logs_hot":
 		hours := settingsGetPlatformInt("lifecycle.handoff_logs_hot_retention_hours", 8)
+		retention := time.Duration(hours) * time.Hour
+		if retention < time.Hour {
+			retention = time.Hour
+		}
+		batchSize := settingsGetPlatformInt("lifecycle.promote_batch_size", promoteBatchSize)
+		if batchSize < 100 {
+			batchSize = 100
+		}
+		if batchSize > 50_000 {
+			batchSize = 50_000
+		}
+		return retention, batchSize
+	case "session_module_executions_hot", "dashboard_access_events_hot":
+		// Migrations 580/579 pair these hot tables with PartitionManager
+		// and seed lifecycle.<label>_retention_hours = 8. (579's function
+		// body shipped with a wrong column projection; migration 607
+		// re-installs the corrected body.)
+		hours := settingsGetPlatformInt("lifecycle."+label+"_retention_hours", 8)
 		retention := time.Duration(hours) * time.Hour
 		if retention < time.Hour {
 			retention = time.Hour
