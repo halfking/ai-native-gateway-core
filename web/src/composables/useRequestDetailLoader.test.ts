@@ -1,15 +1,26 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
-import { mapLogRoutingAttempts, useRequestDetailLoader } from './useRequestDetailLoader'
+import {
+  clearRequestDetailCache,
+  mapLogRoutingAttempts,
+  useRequestDetailLoader,
+} from './useRequestDetailLoader'
 
-const { getUnifiedRequestDetail, getRequestLogDetail, fetchWaterfallByRequestId } = vi.hoisted(() => ({
+const {
+  getUnifiedRequestDetail,
+  getRequestLogDetail,
+  fetchWaterfallByRequestId,
+  getSessionSnapshot,
+} = vi.hoisted(() => ({
   getUnifiedRequestDetail: vi.fn(),
   getRequestLogDetail: vi.fn(),
   fetchWaterfallByRequestId: vi.fn(),
+  getSessionSnapshot: vi.fn(),
 }))
 
 vi.mock('../api/requestDetail', () => ({ getUnifiedRequestDetail }))
 vi.mock('../api/logs', () => ({ getRequestLogDetail }))
 vi.mock('../api/dispatch', () => ({ fetchWaterfallByRequestId }))
+vi.mock('../api/sessions_v2', () => ({ getSessionSnapshot }))
 
 describe('mapLogRoutingAttempts', () => {
   it('maps log attempts to waterfall shape', () => {
@@ -34,9 +45,12 @@ describe('mapLogRoutingAttempts', () => {
 
 describe('useRequestDetailLoader', () => {
   beforeEach(() => {
+    clearRequestDetailCache()
     getUnifiedRequestDetail.mockReset()
     getRequestLogDetail.mockReset()
     fetchWaterfallByRequestId.mockReset()
+    getSessionSnapshot.mockReset()
+    getSessionSnapshot.mockResolvedValue({ title: 'T', summary: 'S' })
   })
 
   it('Phase A loads omit_body only and does not fetch waterfall', async () => {
@@ -61,6 +75,45 @@ describe('useRequestDetailLoader', () => {
     expect(loader.metaLoading.value).toBe(false)
   })
 
+  it('reuses short TTL cache on second loadMeta', async () => {
+    getUnifiedRequestDetail.mockResolvedValue({
+      source: 'request_logs',
+      persistence: 'persisted',
+      meta: { request_id: 'r2', gw_session_id: 's2' },
+    })
+    getRequestLogDetail.mockResolvedValue({ request_id: 'r2', gw_session_id: 's2' })
+
+    const loader = useRequestDetailLoader()
+    await loader.loadMeta('r2')
+    const n1 = getRequestLogDetail.mock.calls.length
+    await loader.loadMeta('r2')
+    expect(getRequestLogDetail.mock.calls.length).toBe(n1)
+    expect(loader.log.value?.request_id).toBe('r2')
+  })
+
+  it('overview section ensures bodies', async () => {
+    getUnifiedRequestDetail.mockResolvedValue({
+      source: 'request_logs',
+      persistence: 'persisted',
+      meta: { request_id: 'r3' },
+    })
+    getRequestLogDetail
+      .mockResolvedValueOnce({ request_id: 'r3' })
+      .mockResolvedValueOnce({
+        request_id: 'r3',
+        request_body: { messages: [{ role: 'user', content: 'hi' }] },
+        response_body: { choices: [{ message: { content: 'yo' } }] },
+      })
+
+    const loader = useRequestDetailLoader()
+    await loader.loadMeta('r3')
+    await loader.onSectionNeed('r3', 'overview')
+    expect(loader.bodiesLoaded.value).toBe(true)
+    expect(loader.requestBody.value).toEqual({
+      messages: [{ role: 'user', content: 'hi' }],
+    })
+  })
+
   it('switching request bumps seq and ignores stale waterfall', async () => {
     getUnifiedRequestDetail.mockResolvedValue({
       source: 'memory',
@@ -78,7 +131,22 @@ describe('useRequestDetailLoader', () => {
     await loader.loadMeta('a')
     const p = loader.ensureWaterfall('a')
     await loader.loadMeta('b')
-    resolveWf({ request: { request_id: 'a', result: 'success', waiting_in_total_ms: 0, waiting_in_model_ms: 0, waiting_in_node_ms: 0, routing_ms: 0, acquire_ms: 0, upstream_latency_ms: 0, streaming_duration_ms: 0, queue_wait_ms: 0, total_ms: 0 }, source: 'memory' })
+    resolveWf({
+      request: {
+        request_id: 'a',
+        result: 'success',
+        waiting_in_total_ms: 0,
+        waiting_in_model_ms: 0,
+        waiting_in_node_ms: 0,
+        routing_ms: 0,
+        acquire_ms: 0,
+        upstream_latency_ms: 0,
+        streaming_duration_ms: 0,
+        queue_wait_ms: 0,
+        total_ms: 0,
+      },
+      source: 'memory',
+    })
     await p
     expect(loader.waterfall.value).toBeNull()
   })

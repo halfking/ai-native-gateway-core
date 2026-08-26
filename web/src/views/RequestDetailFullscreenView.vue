@@ -6,14 +6,12 @@ import {
   useRequestDetailLoader,
   type DetailSection,
 } from '../composables/useRequestDetailLoader'
-import RequestOverviewPanel from '../components/detail/RequestOverviewPanel.vue'
-import ConversationMessagesPanel from '../components/detail/ConversationMessagesPanel.vue'
-import FlowTimingPanel from '../components/detail/FlowTimingPanel.vue'
-import CompressionRedactionPanel from '../components/detail/CompressionRedactionPanel.vue'
 import SessionTurnsSyncPane from '../components/detail/SessionTurnsSyncPane.vue'
-import RequestWaterfallPanel from '../components/detail/RequestWaterfallPanel.vue'
-import MultimodalAttachmentsPanel from '../components/detail/MultimodalAttachmentsPanel.vue'
-import { formatJson } from '../components/detail/messageHelpers'
+import RequestDetailSectionHost from '../components/detail/RequestDetailSectionHost.vue'
+import SessionSummaryBar from '../components/SessionSummaryBar.vue'
+import { statusToneClass } from '../components/detail/statusTone'
+import { downloadSessionDetailMarkdown } from '../utils/sessionDetailExport'
+import './request-detail-fullscreen.css'
 
 type ViewMode = 'request' | 'session-turns'
 
@@ -30,60 +28,43 @@ const SECTIONS: [DetailSection, string][] = [
 
 const route = useRoute()
 const router = useRouter()
+const loader = useRequestDetailLoader()
 const {
-  metaLoading,
-  metaError,
-  log,
-  unified,
-  sessionId,
-  requestBody,
-  responseBody,
-  outboundBody,
-  waterfallLoading,
-  waterfallError,
-  waterfall,
-  waterfallSource,
-  attempts,
-  loadMeta,
-  onSectionNeed,
-  dispose,
-} = useRequestDetailLoader()
+  metaLoading, metaError, log, unified, sessionSnap, sessionId,
+  requestBody, responseBody, outboundBody, waterfallLoading, waterfallError,
+  waterfall, waterfallSource, attempts, loadMeta, onSectionNeed, dispose,
+} = loader
 
 const requestId = computed(() => String(route.params.requestId || '').trim())
 const viewMode = ref<ViewMode>('request')
 const section = ref<DetailSection>('overview')
+const exporting = ref(false)
+const exportError = ref('')
 
-watch(
-  () => route.query.mode,
-  (m) => {
-    if (m === 'session-turns') viewMode.value = 'session-turns'
-    else if (m === 'request') viewMode.value = 'request'
-  },
-  { immediate: true },
-)
+watch(() => route.query.mode, (m) => {
+  if (m === 'session-turns') viewMode.value = 'session-turns'
+  else if (m === 'request') viewMode.value = 'request'
+}, { immediate: true })
 
-watch(
-  () => route.query.tab,
-  (t) => {
-    const key = String(t || '')
-    if (SECTIONS.some(([k]) => k === key)) section.value = key as DetailSection
-  },
-  { immediate: true },
-)
+watch(() => route.query.tab, (t) => {
+  const key = String(t || '')
+  if (SECTIONS.some(([k]) => k === key)) section.value = key as DetailSection
+}, { immediate: true })
 
-watch(
-  requestId,
-  async (id) => {
-    if (!id) return
-    await loadMeta(id)
-    await onSectionNeed(id, section.value)
-  },
-  { immediate: true },
-)
+watch(requestId, async (id) => {
+  if (!id) return
+  await loadMeta(id)
+  await onSectionNeed(id, viewMode.value === 'session-turns' ? 'chat' : section.value)
+}, { immediate: true })
 
 watch(section, (s) => {
+  if (viewMode.value === 'request' && requestId.value) void onSectionNeed(requestId.value, s)
+})
+
+watch(viewMode, (mode) => {
   const id = requestId.value
-  if (id) void onSectionNeed(id, s)
+  if (!id) return
+  void onSectionNeed(id, mode === 'session-turns' ? 'chat' : section.value)
 })
 
 onUnmounted(() => dispose())
@@ -93,7 +74,7 @@ async function onSelectTurn(rid: string) {
   await router.replace({
     name: 'request-detail',
     params: { requestId: rid },
-    query: { ...route.query, mode: 'session-turns', tab: section.value },
+    query: { ...route.query, mode: 'session-turns' },
   })
 }
 
@@ -118,9 +99,7 @@ function goBack() {
 }
 
 async function copyId() {
-  try {
-    await navigator.clipboard.writeText(requestId.value)
-  } catch { /* ignore */ }
+  try { await navigator.clipboard.writeText(requestId.value) } catch { /* ignore */ }
 }
 
 function openSession() {
@@ -128,9 +107,59 @@ function openSession() {
   if (sid) void router.push(`/admin/sessions/${encodeURIComponent(sid)}`)
 }
 
+function gotoSection(s: DetailSection) {
+  section.value = s
+  viewMode.value = 'request'
+  void router.replace({ query: { ...route.query, mode: 'request', tab: s } })
+}
+
+function onSummaryUpdated(snap: Record<string, unknown>) {
+  sessionSnap.value = snap
+}
+
+async function exportSessionMd() {
+  const sid = sessionId.value
+  if (!sid || exporting.value) return
+  exporting.value = true
+  exportError.value = ''
+  try {
+    await downloadSessionDetailMarkdown({
+      sessionId: sid,
+      title: typeof snapTitle.value === 'string' ? snapTitle.value : undefined,
+      summary: snapSummary.value,
+      totalTurns: snapTurns.value,
+      totalCostUsd: snapCost.value,
+    })
+  } catch (e: unknown) {
+    exportError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    exporting.value = false
+  }
+}
+
 const statusLabel = computed(
   () => log.value?.request_status ?? unified.value?.meta.request_status ?? '—',
 )
+const snapTitle = computed(() => {
+  const t = sessionSnap.value?.title
+  return typeof t === 'string' ? t : (log.value?.session_title || undefined)
+})
+const snapSummary = computed(() => {
+  const s = sessionSnap.value?.summary
+  return typeof s === 'string' ? s : undefined
+})
+const snapTurns = computed(() => {
+  const n = sessionSnap.value?.total_turns
+  return typeof n === 'number' ? n : undefined
+})
+const snapCost = computed(() => {
+  const n = sessionSnap.value?.total_cost_usd
+  return typeof n === 'number' ? n : undefined
+})
+const snapGeneratedAt = computed(() => {
+  const s = sessionSnap.value?.summary_generated_at
+  return typeof s === 'string' ? s : undefined
+})
 </script>
 
 <template>
@@ -139,60 +168,50 @@ const statusLabel = computed(
       <button type="button" class="btn btn-sm" @click="goBack">←</button>
       <div class="id-block">
         <code>{{ requestId || '—' }}</code>
-        <span class="meta">{{ statusLabel }}</span>
+        <span class="status-pill" :class="statusToneClass(statusLabel, 'pill')">{{ statusLabel }}</span>
         <span v-if="sessionId" class="meta">session: {{ sessionId }}</span>
-        <span v-if="unified" class="meta">
-          {{ unified.source }} · {{ unified.persistence }}
-        </span>
+        <span v-if="unified" class="meta">{{ unified.source }} · {{ unified.persistence }}</span>
       </div>
       <div class="mode-seg">
-        <button
-          type="button"
-          class="btn btn-sm"
-          :class="{ 'btn-primary': viewMode === 'request' }"
-          @click="switchMode('request')"
-        >单请求</button>
-        <button
-          type="button"
-          class="btn btn-sm"
-          :class="{ 'btn-primary': viewMode === 'session-turns' }"
-          :disabled="!sessionId"
-          @click="switchMode('session-turns')"
-        >会话轮次</button>
+        <button type="button" class="btn btn-sm" :class="{ 'btn-primary': viewMode === 'request' }" @click="switchMode('request')">单请求</button>
+        <button type="button" class="btn btn-sm" :class="{ 'btn-primary': viewMode === 'session-turns' }" :disabled="!sessionId" @click="switchMode('session-turns')">会话轮次</button>
       </div>
       <button type="button" class="btn btn-sm" @click="copyId">复制</button>
       <button
         v-if="sessionId"
         type="button"
         class="btn btn-sm"
-        @click="openSession"
-      >打开会话</button>
+        :disabled="exporting"
+        data-testid="export-session-md"
+        @click="exportSessionMd"
+      >{{ exporting ? '导出中…' : '导出 MD' }}</button>
+      <button v-if="sessionId" type="button" class="btn btn-sm" @click="openSession">打开会话</button>
       <button type="button" class="btn btn-sm" @click="goBack">关闭</button>
     </header>
 
+    <div v-if="exportError" class="banner err">导出失败：{{ exportError }}</div>
+
     <div v-if="metaLoading" class="banner">加载元数据…</div>
-    <div v-else-if="metaError && !log && !unified" class="banner err">
-      {{ metaError }}
-    </div>
+    <div v-else-if="metaError && !log && !unified" class="banner err">{{ metaError }}</div>
 
-    <div v-else class="body" :class="{ 'body--session': viewMode === 'session-turns' }">
-      <nav class="nav">
-        <button
-          v-for="[key, label] in SECTIONS"
-          :key="key"
-          type="button"
-          class="nav-btn"
-          :class="{ active: section === key }"
-          @click="section = key"
-        >{{ label }}</button>
-      </nav>
+    <template v-else>
+      <SessionSummaryBar
+        v-if="sessionId && viewMode === 'request'"
+        :session-id="sessionId"
+        :title="snapTitle"
+        :summary="snapSummary"
+        :total-turns="snapTurns"
+        :total-cost="snapCost"
+        :summary-generated-at="snapGeneratedAt"
+        @summary-updated="onSummaryUpdated"
+      />
 
-      <aside
+      <div
         v-if="viewMode === 'session-turns' && sessionId"
-        class="turns"
+        class="session-shell"
+        data-testid="session-sync-shell"
       >
         <SessionTurnsSyncPane
-          timeline-only
           :session-id="sessionId"
           :active-request-id="requestId"
           :request-body="requestBody"
@@ -200,101 +219,37 @@ const statusLabel = computed(
           @select-request="onSelectTurn"
           @open-as-request="openAsRequest"
         />
-      </aside>
+      </div>
 
-      <main class="main">
-        <RequestOverviewPanel
-          v-if="section === 'overview'"
+      <div v-else class="body">
+        <nav class="nav">
+          <button
+            v-for="[key, label] in SECTIONS"
+            :key="key"
+            type="button"
+            class="nav-btn"
+            :class="{ active: section === key }"
+            @click="gotoSection(key)"
+          >{{ label }}</button>
+        </nav>
+        <RequestDetailSectionHost
+          :section="section"
+          :request-id="requestId"
           :log="log"
           :unified="unified"
-        />
-        <ConversationMessagesPanel
-          v-else-if="section === 'chat'"
-          :body="requestBody"
-        />
-        <RequestWaterfallPanel
-          v-else-if="section === 'waterfall'"
-          :selected="waterfall"
-          :attempts="attempts"
-          :loading="waterfallLoading"
-          :error="waterfallError"
-          :source="waterfallSource"
-        />
-        <RequestWaterfallPanel
-          v-else-if="section === 'attempts'"
-          :selected="null"
-          :attempts="attempts"
-          :loading="waterfallLoading"
-          :error="waterfallError"
-        />
-        <FlowTimingPanel
-          v-else-if="section === 'flow'"
-          :request-id="requestId"
-        />
-        <CompressionRedactionPanel
-          v-else-if="section === 'compress'"
+          :session-snap="sessionSnap"
           :session-id="sessionId"
-          :request-id="requestId"
           :request-body="requestBody"
-          :outbound-body="outboundBody"
           :response-body="responseBody"
+          :outbound-body="outboundBody"
+          :waterfall="waterfall"
+          :attempts="attempts"
+          :waterfall-loading="waterfallLoading"
+          :waterfall-error="waterfallError"
+          :waterfall-source="waterfallSource"
+          @goto="gotoSection"
         />
-        <MultimodalAttachmentsPanel
-          v-else-if="section === 'attachments'"
-          :request-id="requestId"
-          :request-body="requestBody"
-          :attachments="log?.attachments"
-        />
-        <pre v-else class="raw">{{
-          formatJson({
-            unified,
-            log_meta: log,
-            waterfall,
-            request_body: requestBody,
-            outbound_body: outboundBody,
-            response_body: responseBody,
-          })
-        }}</pre>
-      </main>
-    </div>
+      </div>
+    </template>
   </div>
 </template>
-
-<style scoped>
-.rdf {
-  display: flex; flex-direction: column; min-height: calc(100vh - 48px);
-  background: var(--bg, var(--kx-bg));
-}
-.top {
-  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
-  padding: 10px 14px; border-bottom: 1px solid var(--border);
-  background: var(--bg-card, var(--card));
-}
-.id-block { flex: 1; min-width: 180px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-.id-block code { font-size: 12px; word-break: break-all; }
-.meta { font-size: 11px; color: var(--muted); }
-.mode-seg { display: flex; gap: 4px; }
-.banner { padding: 16px; }
-.banner.err { color: var(--danger); }
-.body {
-  display: grid; grid-template-columns: 140px 1fr; flex: 1; min-height: 0;
-}
-.body--session { grid-template-columns: 140px minmax(200px, 280px) 1fr; }
-.nav {
-  display: flex; flex-direction: column; gap: 2px; padding: 10px 8px;
-  border-right: 1px solid var(--border); background: var(--bg-card, var(--card));
-}
-.nav-btn {
-  text-align: left; border: none; background: transparent; padding: 8px 10px;
-  border-radius: 6px; cursor: pointer; font-size: 12px; color: var(--text);
-}
-.nav-btn.active { background: var(--primary, #2563eb); color: #fff; }
-.turns {
-  border-right: 1px solid var(--border); overflow: auto; min-height: 0;
-}
-.main { padding: 14px; overflow: auto; min-height: 0; }
-.raw {
-  font-size: 11px; white-space: pre-wrap; word-break: break-word;
-  background: var(--bg-subtle); padding: 10px; border-radius: 6px;
-}
-</style>
