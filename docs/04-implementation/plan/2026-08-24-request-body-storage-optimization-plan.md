@@ -151,6 +151,16 @@ GOAL-7: ./scripts/check-body-storage-schema.sh exit 0
 - ❌ **不**含回滚脚本自动执行（只设计手动回滚路径 + 条件）
 - ❌ **不**含 a/b testing 框架（LP4 canary 用 application-level flag）
 
+### 3.6 与请求持久化总方案的边界
+
+本计划仅处理 request log 正文拆表、主表瘦身和相关验证；它不定义请求恢复、Session V2 双写、Redis 执行队列或统计事件的可靠投递协议。
+
+完整的 IR/运行期会话上下文、本机活跃归档、request_logs/session_turns 投影、durable PG、Redis 最小职责与统计事实源定义见：
+
+- [请求记录、IR 与 Session V2 持久化重构最终方案](./2026-08-25-request-session-persistence-final-plan.md)
+
+约束：完整 request/response body 与 IR 不得进入 Redis 看板、统计事件或 queue mirror；正文历史事实仍由 `request_logs_bodies*` 和后续 durable archive 承担。
+
 ---
 
 ## 4. Logical Points（LP1-LP5，自包含三件套）
