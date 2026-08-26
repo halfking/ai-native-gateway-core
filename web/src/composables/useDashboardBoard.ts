@@ -4,6 +4,7 @@ import { resolveDashboardRefreshMs } from './dashboardRefreshSettings'
 import { subscribeTerminalRequests, connectionRef } from './liveStreamStore'
 import { applyLiveRequestToBoard } from './boardLiveMerge'
 import { dashboardPreferenceStorageKey } from './liveStreamPreferences'
+import { usePersistedValue } from './usePersistedValue'
 import {
   defaultBoardTimeRange,
   boardRangeIncludesToday,
@@ -43,12 +44,17 @@ function readStoredTimeRange(): BoardTimeRange {
   }
 }
 
+// LP8 (2026-08-24): board-range preference goes through usePersistedValue so
+// it shares the lifecycle-flush / error-degrade primitives. Each call site
+// mutates the ref; the composable handles serialisation + immediate write.
+const boardRangePersisted = usePersistedValue<BoardTimeRange>(
+  dashboardPreferenceStorageKey('board-range'),
+  defaultBoardTimeRange,
+  { immediate: true },
+)
+
 function persistTimeRange(range: BoardTimeRange) {
-  try {
-    localStorage.setItem(dashboardPreferenceStorageKey('board-range'), JSON.stringify(range))
-  } catch {
-    // Browser storage can be unavailable; the board still works in-memory.
-  }
+  boardRangePersisted.value.value = range
 }
 
 async function resolveRefreshMs(): Promise<number> {

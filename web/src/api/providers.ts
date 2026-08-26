@@ -316,15 +316,22 @@ export function revealCredentialKey(providerId: number, credId: number) {
   return req<{ credential_id: number; api_key: string }>('POST', `/api/providers/${providerId}/credentials/${credId}/reveal`)
 }
 
-// ── GET/POST dual-mode utility ─────────────────────────────────────────────
-
-export async function getOrPost<T>(path: string, getParams?: Record<string, string>, postBody?: any): Promise<T> {
-  try {
-    const qs = getParams && Object.keys(getParams).length > 0 ? '?' + new URLSearchParams(getParams).toString() : ''
-    return await req<T>('GET', path + qs)
-  } catch {
-    return req<T>('POST', path, postBody)
-  }
+// ── GET helper (was: GET with POST fallback) ─────────────────────────────
+// 2026-08-23: the prior GET-then-POST fallback masked 500s as POST requests
+// (e.g. /api/providers/14/models when migration 361 was missing — GET 500
+// surfaced as "POST /api/providers/14/models 500" in the browser and tools).
+// Both methods ran the same SELECT path, so the fallback never recovered.
+// Drop the fallback; callers wanting POST behaviour should call `req('POST', …)`
+// directly. The unused `postBody` parameter is preserved on the signature
+// so existing call sites (`getOrPost(path, getParams, body)`) keep compiling
+// while we route everyone to the GET-only contract.
+export async function getOrPost<T>(
+  path: string,
+  getParams?: Record<string, string>,
+  _postBody?: any
+): Promise<T> {
+  const qs = getParams && Object.keys(getParams).length > 0 ? '?' + new URLSearchParams(getParams).toString() : ''
+  return req<T>('GET', path + qs)
 }
 
 // ── Background task API ───────────────────────────────────────────────────
@@ -411,6 +418,12 @@ export interface ModelOffer {
   last_seen_at: string | null
   routing_tier: string
   availability_source: string
+  modality?: string
+  multimodal_caps?: string[]
+  reasoning_caps?: Record<string, unknown> | null
+  canonical_status?: string
+  admin_protected?: boolean
+  source?: string
   /**
    * Upstream-side model identifier — for providers like Volcano Ark this is
    * the deployment endpoint ID (e.g. "ep-20241227XXXX") that must be sent
@@ -502,6 +515,52 @@ export function getProviderRefreshStatus(providerId: number) {
 export function clearProviderModels(providerId: number) {
   return req<{ message: string; deleted: number }>(
     'DELETE', `/api/providers/${providerId}/models`
+  )
+}
+
+export interface CredentialModelCreateBody {
+  raw_model_name: string
+  standardized_name?: string | null
+  canonical_id?: number | null
+  outbound_model_name?: string | null
+  available?: boolean
+  context_window?: number | null
+  modality?: string
+  multimodal_caps?: string[]
+  reasoning_caps?: Record<string, unknown> | null
+  canonical_status?: string
+}
+
+export interface CredentialRefreshResult {
+  message: string
+  models_upserted: number
+  models_failed: number
+  skipped_protected: number
+  protected_bindings: number
+  credential_id: number
+  provider_id: number
+}
+
+export function getCredentialModels(providerId: number, credentialId: number) {
+  return req<ModelOffer[]>('GET', `/api/providers/${providerId}/credentials/${credentialId}/models`)
+}
+
+export function createCredentialModel(providerId: number, credentialId: number, body: CredentialModelCreateBody) {
+  return req<{ id: number; credential_id: number; raw_model_name: string; canonical_id: number }>(
+    'POST', `/api/providers/${providerId}/credentials/${credentialId}/models`, body
+  )
+}
+
+export function clearCredentialModels(providerId: number, credentialId: number, includeProtected = false) {
+  const q = includeProtected ? '?include_protected=1' : '?include_protected=0'
+  return req<{ message: string; deleted: number; include_protected: boolean; protected_kept?: number }>(
+    'DELETE', `/api/providers/${providerId}/credentials/${credentialId}/models${q}`
+  )
+}
+
+export function refreshCredentialModels(providerId: number, credentialId: number) {
+  return req<CredentialRefreshResult>(
+    'POST', `/api/providers/${providerId}/credentials/${credentialId}/refresh-models`, {}
   )
 }
 
@@ -752,6 +811,9 @@ export interface ProviderLogEntry {
   credential_label?: string | null
   client_model: string | null
   outbound_model: string | null
+  canonical_name?: string | null
+  canonical_model?: string | null
+  provider_model?: string | null
   success: boolean
   error_kind: string | null
   prompt_tokens: number | null

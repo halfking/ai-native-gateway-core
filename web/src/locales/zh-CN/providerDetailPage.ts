@@ -11,6 +11,7 @@ export default {
   tabProbe: '自动测试',
   tabProbeTitle: '查看自动测试记录（每 10 分钟对失败绑定重新探测）',
   tabSettings: '设置',
+  tabErrorDetail: '供应商错误',
   quality: {
     loading: '加载品质数据…',
     noData: '暂无质量数据。品质画像由后台定时计算，稍后刷新或触发探测后再看。',

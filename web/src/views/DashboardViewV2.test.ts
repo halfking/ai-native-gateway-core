@@ -49,54 +49,72 @@ describe('dashboard board tab contract', () => {
   })
 
   it('reuses one detail drawer without loading provider statistics', async () => {
-    const [logs, drawer] = await Promise.all([
+    const [logs, drawerShell, unified] = await Promise.all([
       readViewSource('RequestLogsView.vue'),
       readFile(
         resolve(process.cwd(), 'web/src/components/RequestLogDrawer.vue'),
         'utf8',
       ).catch(() => readFile(resolve(process.cwd(), 'src/components/RequestLogDrawer.vue'), 'utf8')),
+      readFile(
+        resolve(process.cwd(), 'web/src/components/detail/UnifiedRequestSessionDrawer.vue'),
+        'utf8',
+      ).catch(() => readFile(resolve(process.cwd(), 'src/components/detail/UnifiedRequestSessionDrawer.vue'), 'utf8')),
     ])
 
     expect(logs).toContain('<RequestLogDrawer')
     expect(logs).not.toContain('getRequestLogDetail')
-    expect(drawer).toContain('getRequestLogDetail')
-    expect(drawer).not.toContain('getProviderRequestStats')
-    expect(drawer).not.toContain('providerStats')
+    expect(drawerShell).toContain('UnifiedRequestSessionDrawer')
+    expect(unified).toContain('getRequestLogDetail')
+    expect(unified).not.toContain('getProviderRequestStats')
+    expect(unified).not.toContain('providerStats')
   })
 
-  it('guards the shared drawer against stale detail and session writes', async () => {
+  it('delegates drawer shell to UnifiedRequestSessionDrawer', async () => {
     const drawer = await readFile(
       resolve(process.cwd(), 'web/src/components/RequestLogDrawer.vue'),
       'utf8',
     ).catch(() => readFile(resolve(process.cwd(), 'src/components/RequestLogDrawer.vue'), 'utf8'))
 
-    expect(drawer).toContain('let detailLoadSeq = 0')
-    expect(drawer).toContain('const loadSeq = ++detailLoadSeq')
-    expect(drawer).toContain('if (loadSeq !== detailLoadSeq || props.requestId !== id) return')
-    expect(drawer).toContain('function isCurrentDetail(requestId: string, loadSeq: number): boolean')
-    expect(drawer).toContain('if (!isCurrentDetail(requestId, loadSeq)) return')
+    expect(drawer).toContain('UnifiedRequestSessionDrawer')
+    expect(drawer).toContain(':request-id="requestId"')
   })
 
-  it('opens request details locally after the trace page was replaced by an inline panel', async () => {
+  it('opens request details in a new tab from live stream and request logs', async () => {
     const [v2, legacy, logs] = await Promise.all([
       readViewSource('DashboardViewV2.vue'),
       readViewSource('DashboardViewLegacy.vue'),
       readViewSource('RequestLogsView.vue'),
     ])
 
-    // 首页 V1/V2 实时流点击应打开本地抽屉，而非跳转到已删除的 trace 路由。
-    expect(v2).toContain('activeRequestId.value = id')
-    expect(legacy).toContain('activeRequestId.value = id')
+    // 首页 V1/V2 实时流点击应新开全屏详情页，而非同窗弹抽屉 / 已删除的 trace 路由。
+    expect(v2).toContain('openRequestDetailPage(id')
+    expect(legacy).toContain('openRequestDetailPage(id')
+    expect(v2).not.toContain('<RequestLogDrawer')
+    expect(legacy).not.toContain('<RequestLogDrawer')
     expect(v2).not.toContain('/admin/request-trace')
     expect(legacy).not.toContain('/admin/request-trace')
-    // 请求日志列表与首页实时流复用同一个请求详情抽屉；流程详情入口
-    // 通过抽屉的 initialTraceOpen prop 控制内嵌面板，而非维护第二套详情实现。
-    expect(logs).toContain("activeRequestId.value = requestId")
-    expect(logs).toContain("openDetailWithTrace.value = true")
-    expect(logs).toContain('<RequestLogDrawer')
-    expect(logs).toContain('mode="request-logs"')
-    expect(logs).toContain(':initial-trace-open="openDetailWithTrace"')
+    // 请求日志列表同样新开全屏详情；抽屉可保留兼容其它入口，但列表点击不再写 activeRequestId。
+    expect(logs).toContain('openRequestDetailPage(requestId')
     expect(logs).not.toContain('<RequestTraceModal')
     expect(logs).not.toContain('/admin/request-trace')
+  })
+
+  it('stats tab shows overview panel before drilldown and uses KPI row', async () => {
+    const v2 = await readViewSource('DashboardViewV2.vue')
+    const statsPanel = await readFile(
+      resolve(process.cwd(), 'web/src/components/SessionStatsPanel.vue'),
+      'utf8',
+    ).catch(() => readFile(resolve(process.cwd(), 'src/components/SessionStatsPanel.vue'), 'utf8'))
+
+    const statsIdx = v2.indexOf('SessionStatsPanel')
+    const drillIdx = v2.indexOf('SessionDrilldownPanel')
+    expect(statsIdx).toBeGreaterThan(-1)
+    expect(drillIdx).toBeGreaterThan(-1)
+    expect(statsIdx).toBeLessThan(drillIdx)
+
+    expect(statsPanel).toContain('DashboardStatsRow')
+    expect(statsPanel).toContain('cost_stats')
+    expect(statsPanel).toContain('compliance_stats')
+    expect(statsPanel).toContain('model_usage')
   })
 })

@@ -272,8 +272,8 @@ onBeforeUnmount(() => {
   gap: 12px;
   align-items: center;
 }
-.warn { color: #e6a23c; font-weight: 600; }
-.muted { color: #909399; font-size: 13px; }
+.warn { color: var(--warning); font-weight: 600; }
+.muted { color: var(--text-secondary); font-size: 13px; }
 .telemetry-preference {
   margin-top: 16px;
   padding-top: 16px;
@@ -284,7 +284,7 @@ onBeforeUnmount(() => {
   align-items: center;
 }
 .telemetry-preference h3 { margin: 0 0 4px; font-size: 15px; }
-.telemetry-preference p { margin: 0 0 4px; color: #606266; font-size: 13px; max-width: 680px; }
+.telemetry-preference p { margin: 0 0 4px; color: var(--muted); font-size: 13px; max-width: 680px; }
 @media (max-width: 640px) {
   .telemetry-preference { align-items: flex-start; flex-direction: column; gap: 12px; }
 }

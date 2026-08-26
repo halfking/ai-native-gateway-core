@@ -5,7 +5,7 @@
 // polls /snapshot for up to 30s, looking for a fresh
 // summary_generated_at timestamp.
 
-import { ref } from 'vue'
+import { onBeforeUnmount, ref, watch } from 'vue'
 import {
   triggerInstantSummary,
   getSessionSnapshot,
@@ -20,45 +20,84 @@ const props = defineProps<{
   summaryGeneratedAt?: string
 }>()
 
+const emit = defineEmits<{
+  (event: 'summary-updated', snapshot: Record<string, unknown>): void
+}>()
+
 const status = ref<'idle' | 'pending' | 'done' | 'failed'>('idle')
 const errMsg = ref('')
+let pollGeneration = 0
+let pollTimer: ReturnType<typeof setTimeout> | null = null
 
-async function poll(): Promise<void> {
+function clearPollTimer() {
+  if (pollTimer) clearTimeout(pollTimer)
+  pollTimer = null
+}
+
+async function poll(sessionId: string, generation: number, previousGeneratedAt?: string): Promise<void> {
   for (let i = 0; i < 15; i++) {
-    await new Promise((r) => setTimeout(r, 2000))
+    await new Promise<void>(resolve => {
+      pollTimer = setTimeout(() => {
+        pollTimer = null
+        resolve()
+      }, 2000)
+    })
+    if (generation !== pollGeneration || sessionId !== props.sessionId) return
     try {
-      const snap = (await getSessionSnapshot(props.sessionId)) as {
-        title?: string
-        summary_generated_at?: string
+      const snap = (await getSessionSnapshot(sessionId)) as Record<string, unknown>
+      const generatedAt = typeof snap.summary_generated_at === 'string' ? snap.summary_generated_at : ''
+      const timestamp = generatedAt ? Date.parse(generatedAt) : NaN
+      const previous = previousGeneratedAt ? Date.parse(previousGeneratedAt) : NaN
+      if (generatedAt && (!previousGeneratedAt || (Number.isFinite(timestamp) && timestamp > previous))) {
+        emit('summary-updated', snap)
+        if (generation === pollGeneration && sessionId === props.sessionId) status.value = 'done'
+        return
       }
-      if (snap.title && snap.summary_generated_at) {
-        const ts = Date.parse(snap.summary_generated_at)
-        // "fresh" if generated within the last 60s — matches our trigger
-        if (ts > Date.now() - 60_000) {
-          status.value = 'done'
-          return
-        }
-      }
-    } catch (e) {
+    } catch {
       // transient: keep polling
     }
   }
-  status.value = 'failed'
-  errMsg.value = '超时未生成'
+  if (generation === pollGeneration && sessionId === props.sessionId) {
+    status.value = 'failed'
+    errMsg.value = '超时未生成'
+  }
 }
 
 async function trigger() {
   if (status.value === 'pending') return
+  const sessionId = props.sessionId
+  const generation = ++pollGeneration
+  const previousGeneratedAt = props.summaryGeneratedAt
+  clearPollTimer()
   status.value = 'pending'
   errMsg.value = ''
   try {
-    await triggerInstantSummary(props.sessionId)
-    await poll()
+    const result = await triggerInstantSummary(sessionId)
+    if (generation !== pollGeneration || sessionId !== props.sessionId) return
+    if (result && typeof result === 'object' && 'summary' in result) {
+      emit('summary-updated', result)
+      status.value = 'done'
+      return
+    }
+    await poll(sessionId, generation, previousGeneratedAt)
   } catch (e) {
+    if (generation !== pollGeneration || sessionId !== props.sessionId) return
     status.value = 'failed'
     errMsg.value = e instanceof Error ? e.message : String(e)
   }
 }
+
+watch(() => props.sessionId, () => {
+  pollGeneration++
+  clearPollTimer()
+  status.value = 'idle'
+  errMsg.value = ''
+})
+
+onBeforeUnmount(() => {
+  pollGeneration++
+  clearPollTimer()
+})
 </script>
 
 <template>
@@ -98,8 +137,9 @@ async function trigger() {
   justify-content: space-between;
   align-items: flex-start;
   padding: 16px 24px;
-  background: white;
-  border-bottom: 1px solid #e5e7eb;
+  background: var(--bg-card, var(--card, var(--kx-surface)));
+  border-bottom: 1px solid var(--border, var(--surface-secondary));
+  color: var(--text, var(--kx-text));
   position: sticky;
   top: 0;
   z-index: 10;
@@ -109,12 +149,12 @@ async function trigger() {
 h2 {
   margin: 0 0 4px;
   font-size: 18px;
-  color: #111827;
+  color: var(--kx-text);
 }
-p { margin: 0 0 6px; color: #4b5563; font-size: 13px; }
-.metrics { color: #6b7280; font-size: 13px; display: flex; gap: 6px; }
-.dot { color: #d1d5db; }
+p { margin: 0 0 6px; color: var(--muted); font-size: 13px; }
+.metrics { color: var(--muted); font-size: 13px; display: flex; gap: 6px; }
+.dot { color: var(--border); }
 .right { display: flex; gap: 8px; align-items: center; }
-.err { color: #ef4444; font-size: 12px; }
-.ok { color: #10b981; font-size: 12px; }
+.err { color: var(--danger); font-size: 12px; }
+.ok { color: var(--success); font-size: 12px; }
 </style>

@@ -117,8 +117,8 @@ func TestBuildTurnsSessionWhere(t *testing.T) {
 	where, args, nextArg := buildTurnsSessionWhere(req, "t1", tsFrom, tsTo, now.Add(-time.Minute), "gw_s1", 1)
 
 	checks := []string{
-		"COALESCE(ss.first_request_at, s.created_at) >= $1",
-		"COALESCE(ss.first_request_at, s.created_at) <= $2",
+		"s.updated_at >= $1",
+		"s.updated_at <= $2",
 		"s.tenant_id = $3",
 		"COALESCE(NULLIF(ss.gw_project_id, ''), sd.project_id) = $4",
 		"sd.task_id = $5",
@@ -127,7 +127,7 @@ func TestBuildTurnsSessionWhere(t *testing.T) {
 		"ss.user_tags && $10",
 		// search now matches title/topic/intent/summary → 4 placeholders $11..$14,
 		// cursor follows at $15/$16 (was $14/$15 before intent was added).
-		"COALESCE(NULLIF(s.title, ''), st.title, ss.title, '') ILIKE '%'||$11||'%'",
+		"CASE WHEN tstate.tenant_id IS NOT NULL THEN COALESCE(tstate.title, '') ELSE COALESCE(NULLIF(s.title, ''), st.title, ss.title, '') END ILIKE '%'||$11||'%'",
 		"COALESCE(NULLIF(s.summary, ''), ss.summary, '') ILIKE '%'||$14||'%'",
 		"(s.updated_at, s.session_id) < ($15, $16)",
 	}
@@ -250,5 +250,102 @@ func TestBuildTurnsSessionWhere_NoTimeWindowStillCursor(t *testing.T) {
 	}
 	if nextArg != 4 || len(args) != 3 {
 		t.Fatalf("expected nextArg=4 args=3, got %d %d", nextArg, len(args))
+	}
+}
+
+func TestBuildTurnsSessionWhere_APIKeyAndStatus(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/turns/sessions?api_key_id=42&status=active", nil)
+	where, args, nextArg := buildTurnsSessionWhere(req, "t1", time.Time{}, time.Time{}, time.Time{}, "", 1)
+	if !strings.Contains(where, "rl.api_key_id = $2") {
+		t.Fatalf("missing api_key_id EXISTS clause: %s", where)
+	}
+	if !strings.Contains(where, "s.status = $3") {
+		t.Fatalf("missing status clause: %s", where)
+	}
+	if !strings.Contains(where, "request_logs_with_current_month") {
+		t.Fatalf("api_key filter must join request_logs view: %s", where)
+	}
+	if len(args) != 3 || nextArg != 4 {
+		t.Fatalf("expected 3 args / nextArg=4, got %d / %d", len(args), nextArg)
+	}
+	if args[1] != int64(42) {
+		t.Fatalf("api_key_id arg want 42, got %v (%T)", args[1], args[1])
+	}
+	if args[2] != "active" {
+		t.Fatalf("status arg want active, got %v", args[2])
+	}
+}
+
+func TestLastActiveSource_WindowUsedByFilterOptions(t *testing.T) {
+	src := (&Handler{}).lastActiveSource("sd.task_id", " JOIN session_dim sd ON true",
+		"ss.first_request_at > NOW() - INTERVAL '30 days' AND sd.task_id != ''", "")
+	if !strings.Contains(src, "INTERVAL '30 days'") {
+		t.Fatalf("session filter options must constrain 30d window: %s", src)
+	}
+}
+
+func TestBuildTurnsSessionWhere_UsesUpdatedAt(t *testing.T) {
+	now := time.Now().UTC()
+	where, _, _ := buildTurnsSessionWhere(
+		httptest.NewRequest(http.MethodGet, "/api/admin/turns/sessions", nil),
+		"", now.Add(-time.Hour), now, time.Time{}, "", 1)
+	for _, c := range []string{"s.updated_at >= $1", "s.updated_at <= $2"} {
+		if !strings.Contains(where, c) {
+			t.Fatalf("where missing %q\nwhere=%s", c, where)
+		}
+	}
+	if strings.Contains(where, "first_request_at") {
+		t.Fatalf("time window must not use first_request_at: %s", where)
+	}
+}
+
+func TestTurnsSessionsListSQL_SlimMainQuery(t *testing.T) {
+	sql := turnsSessionsListSQL()
+	if strings.Contains(sql, "request_logs_with_current_month") {
+		t.Fatalf("main query must not join request_logs: %s", sql)
+	}
+	if strings.Contains(sql, "handoff_logs_with_current_month") {
+		t.Fatalf("main query must not lateral join handoff_logs: %s", sql)
+	}
+	if !strings.Contains(sql, "session_title_states tstate") {
+		t.Fatalf("main query must join tstate for search: %s", sql)
+	}
+	// 2026-08-26: 验证 session_analysis_metadata LATERAL join 已就位 —— 排序
+	// 规则（status='final' 优先 + updated_at DESC）和投影列（status/schema_version/
+	// input_hash/source_task_id/updated_at/payload）必须出现，避免后续重构悄悄
+	// 退化到普通 LEFT JOIN 而导致一对多行重复或误读到旧 provisional。
+	if !strings.Contains(sql, "LEFT JOIN LATERAL") {
+		t.Fatalf("main query must use LATERAL join for session_analysis_metadata: %s", sql)
+	}
+	if !strings.Contains(sql, "session_analysis_metadata sam") {
+		t.Fatalf("main query must alias session_analysis_metadata as sam: %s", sql)
+	}
+	if !strings.Contains(sql, "(sam.status = 'final') DESC") {
+		t.Fatalf("main query must prefer status='final' over 'provisional': %s", sql)
+	}
+	if !strings.Contains(sql, "sam.payload") {
+		t.Fatalf("main query must project sam.payload for SessionAnalysisView.Payload: %s", sql)
+	}
+}
+
+func TestResolveTurnsSessionsTenant(t *testing.T) {
+	cases := []struct {
+		name  string
+		auth  *AuthContext
+		query string
+		want  string
+	}{
+		{"tenant_admin scoped", &AuthContext{Role: "tenant_admin", TenantID: "t1"}, "", "t1"},
+		{"super_admin all tenants", &AuthContext{Role: "super_admin", TenantID: "default"}, "", ""},
+		{"super_admin explicit tenant", &AuthContext{Role: "super_admin", TenantID: "default"}, "?tenant=acme", "acme"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/api/admin/turns/sessions"+c.query, nil)
+			req = SetAuthContext(req, c.auth)
+			if got := resolveTurnsSessionsTenant(req); got != c.want {
+				t.Fatalf("resolveTurnsSessionsTenant() = %q, want %q", got, c.want)
+			}
+		})
 	}
 }
