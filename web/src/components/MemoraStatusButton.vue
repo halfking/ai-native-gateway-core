@@ -221,9 +221,9 @@ onUnmounted(() => {
   border-color: var(--accent);
   color: var(--text);
 }
-.memora-btn--ok { border-color: var(--success-bd); color: var(--success); }
-.memora-btn--error { border-color: var(--danger-bd); color: var(--danger); }
-.memora-btn--paused { border-color: var(--warning-bd); color: var(--warning); }
+.memora-btn--ok { border-color: rgba(63, 185, 80, 0.35); color: var(--success); }
+.memora-btn--error { border-color: rgba(248, 81, 73, 0.4); color: var(--danger); }
+.memora-btn--paused { border-color: rgba(210, 153, 34, 0.45); color: var(--warning); }
 
 .dot {
   width: 6px;
@@ -231,8 +231,8 @@ onUnmounted(() => {
   border-radius: 50%;
   background: var(--muted);
 }
-.dot--ok { background: var(--success); box-shadow: 0 0 0 2px var(--success-bd); }
-.dot--error { background: var(--danger); box-shadow: 0 0 0 2px var(--danger-bd); }
+.dot--ok { background: var(--success); box-shadow: 0 0 0 2px rgba(63, 185, 80, 0.25); }
+.dot--error { background: var(--danger); box-shadow: 0 0 0 2px rgba(248, 81, 73, 0.25); }
 .dot--paused { background: var(--warning); }
 .dot--loading { animation: pulse 1.2s ease-in-out infinite; }
 @keyframes pulse { 50% { opacity: 0.35; } }
@@ -255,7 +255,7 @@ onUnmounted(() => {
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  box-shadow: 0 8px 24px var(--overlay-strong);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
 }
 
 .panel-head {
@@ -276,9 +276,9 @@ onUnmounted(() => {
   border: 1px solid var(--border);
   color: var(--muted);
 }
-.panel-badge--ok { color: var(--success); border-color: var(--success-bd); }
-.panel-badge--error { color: var(--danger); border-color: var(--danger-bd); }
-.panel-badge--paused { color: var(--warning); border-color: var(--warning-bd); }
+.panel-badge--ok { color: var(--success); border-color: rgba(63, 185, 80, 0.35); }
+.panel-badge--error { color: var(--danger); border-color: rgba(248, 81, 73, 0.35); }
+.panel-badge--paused { color: var(--warning); border-color: rgba(210, 153, 34, 0.35); }
 .panel-close {
   margin-left: auto;
   border: none;

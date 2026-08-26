@@ -46,6 +46,7 @@ export default {
     groupWarn: '⚡ Nœuds en alerte ({count})',
     groupOk: '✅ Nœuds normaux ({count})',
     groupDisabled: '🚫 Nœuds désactivés ({count})',
+    nodeLabel: 'Nœud {credentialId}',
     circuit: 'Disjoncteur',
     availability: 'Disponibilité',
     quota: 'Quota',

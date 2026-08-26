@@ -114,34 +114,6 @@ func (s JourneyStage) Valid() bool {
 	return false
 }
 
-// StageCategory groups journey stages for real-time request visualization.
-type StageCategory string
-
-const (
-	StageCategoryRouting  StageCategory = "routing"
-	StageCategoryLLM      StageCategory = "llm"
-	StageCategoryRetrying StageCategory = "retrying"
-	StageCategoryTerminal StageCategory = "terminal"
-)
-
-// ClassifyStage maps a lifecycle stage to its high-level UI category.
-func ClassifyStage(stage JourneyStage) StageCategory {
-	switch stage {
-	case StageReceived, StageRouting, StageModelQueue, StageCredentialQueue, StageNodeSelection:
-		return StageCategoryRouting
-	case StageUpstream, StageStreaming:
-		return StageCategoryLLM
-	case StageRetrying:
-		return StageCategoryRetrying
-	case StageTerminal:
-		return StageCategoryTerminal
-	default:
-		return StageCategoryRouting
-	}
-}
-
-func (s JourneyStage) Category() StageCategory { return ClassifyStage(s) }
-
 // LifecycleState is the closed three-state request lifecycle of the request
 // registry (会话优化 v4 R1.1/T2). It is DERIVED from journey stages (spec §6):
 //
@@ -492,13 +464,8 @@ func (e JourneyEvent) Validate() error {
 			return errors.New("observation_degraded event requires degraded observation status")
 		}
 	}
-	if e.RetryAt != nil {
-		if e.RetryAt.IsZero() {
-			return errors.New("retry_at, when present, must not be zero")
-		}
-		if e.Type != EventRetryScheduled {
-			return errors.New("retry_at is only valid on retry_scheduled events")
-		}
+	if e.RetryAt != nil && e.RetryAt.IsZero() {
+		return errors.New("retry_at, when present, must not be zero")
 	}
 	if e.OccurredAt.IsZero() {
 		return errors.New("occurred_at is required")

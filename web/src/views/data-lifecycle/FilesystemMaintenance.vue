@@ -318,7 +318,7 @@ defineExpose({ load })
 .btn-refresh {
   padding: 8px 16px;
   background: var(--accent);
-  color: var(--on-primary);
+  color: #fff;
   border: none;
   border-radius: var(--radius, 8px);
   cursor: pointer;
@@ -489,7 +489,7 @@ defineExpose({ load })
 
 .btn-preview {
   background: var(--accent);
-  color: var(--on-primary);
+  color: #fff;
 }
 
 .btn-preview:hover:not(:disabled) {
@@ -498,7 +498,7 @@ defineExpose({ load })
 
 .btn-execute {
   background: var(--danger);
-  color: var(--on-primary);
+  color: #fff;
 }
 
 .btn-execute:hover:not(:disabled) {
@@ -526,7 +526,7 @@ defineExpose({ load })
 
 .btn-danger {
   background: var(--danger);
-  color: var(--on-primary);
+  color: #fff;
 }
 
 .btn-danger:hover:not(:disabled) {
@@ -546,7 +546,7 @@ defineExpose({ load })
   left: 0;
   right: 0;
   bottom: 0;
-  background: var(--overlay-strong);
+  background: rgba(0, 0, 0, 0.5);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -562,7 +562,7 @@ defineExpose({ load })
   width: 90%;
   max-height: 80vh;
   overflow-y: auto;
-  box-shadow: 0 8px 24px var(--overlay-light);
+  box-shadow: 0 8px 24px rgba(0,0,0,.15);
 }
 
 .modal-content h3 {

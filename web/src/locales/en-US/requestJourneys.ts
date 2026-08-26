@@ -46,6 +46,7 @@ export default {
     groupWarn: '⚡ Warning nodes ({count})',
     groupOk: '✅ Normal nodes ({count})',
     groupDisabled: '🚫 Disabled nodes ({count})',
+    nodeLabel: 'Node {credentialId}',
     circuit: 'Circuit',
     availability: 'Availability',
     quota: 'Quota',

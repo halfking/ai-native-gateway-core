@@ -197,12 +197,12 @@ onUnmounted(() => {
 .qr-order { font-size: 11px; color: var(--text); word-break: break-all; padding: 0 8px; }
 .pay-hint { font-size: 13px; color: var(--text); margin-bottom: 8px; }
 .stub-note { font-size: 12px; color: var(--muted); }
-.paid-note { margin-top: 16px; font-size: 14px; color: var(--success); }
+.paid-note { margin-top: 16px; font-size: 14px; color: #4ade80; }
 .mono { font-family: 'SF Mono', 'Fira Code', monospace; }
-.badge-yellow { background: var(--warning-bg); color: var(--warning); padding: 4px 10px; border-radius: 8px; font-size: 12px; }
-.badge-green { background: var(--success-bg); color: var(--success); padding: 4px 10px; border-radius: 8px; font-size: 12px; }
-.badge-red { background: var(--danger-bg); color: var(--danger); padding: 4px 10px; border-radius: 8px; font-size: 12px; }
-.badge-gray { background: var(--neutral-bg); color: var(--muted); padding: 4px 10px; border-radius: 8px; font-size: 12px; }
+.badge-yellow { background: rgba(234,179,8,.15); color: #fbbf24; padding: 4px 10px; border-radius: 8px; font-size: 12px; }
+.badge-green { background: rgba(34,197,94,.15); color: #4ade80; padding: 4px 10px; border-radius: 8px; font-size: 12px; }
+.badge-red { background: rgba(239,68,68,.15); color: #f87171; padding: 4px 10px; border-radius: 8px; font-size: 12px; }
+.badge-gray { background: rgba(156,163,175,.15); color: #9ca3af; padding: 4px 10px; border-radius: 8px; font-size: 12px; }
 .empty { text-align: center; padding: 40px; color: var(--muted); }
-.alert-danger { padding: 8px 12px; border-radius: 4px; background: var(--danger-bg); color: var(--danger); margin-bottom: 12px; }
+.alert-danger { padding: 8px 12px; border-radius: 4px; background: rgba(239,68,68,.1); color: #f87171; margin-bottom: 12px; }
 </style>

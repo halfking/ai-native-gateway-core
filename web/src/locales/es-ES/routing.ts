@@ -226,8 +226,6 @@ export default {
       colRoutable: 'Enrutable',
       colTopCred: 'Top cred.',
       replay: 'Repetir',
-      colPriority: 'Prioridad',
-      priorityTooltip: 'Credencial prioritario: mientras haya cuota suficiente asume el tráfico primero; al agotarse, el tráfico pasa automáticamente a otros. Independiente del número de orden.',
     },
     live: {
       simulatorTitle: 'Simulador de enrutamiento',

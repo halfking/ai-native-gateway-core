@@ -43,19 +43,14 @@ func TestSummarizer_NilPoolIsSafe(t *testing.T) {
 	// the assertion below matches. saveSummaryToDB delegates to
 	// summarystore.Upsert which uses its own "summarystore:" prefix.
 	checks := []struct {
-		name       string
-		fn         func() error
+		name      string
+		fn        func() error
 		wantPrefix string
 	}{
 		{"getPrevSummary", func() error { _, _, err := summarizer.getPrevSummary(context.Background(), "t", "s"); return err }, "sessionsummary:"},
-		{"getMessagesSince", func() error {
-			_, err := summarizer.getMessagesSince(context.Background(), "t", "s", time.Time{})
-			return err
-		}, "sessionsummary:"},
+		{"getMessagesSince", func() error { _, err := summarizer.getMessagesSince(context.Background(), "t", "s", time.Time{}); return err }, "sessionsummary:"},
 		{"getSessionMessages", func() error { _, err := summarizer.getSessionMessages(context.Background(), "t", "s"); return err }, "sessionsummary:"},
-		{"saveSummaryToDB", func() error {
-			return summarizer.saveSummaryToDB(context.Background(), "t", &SessionSummary{SessionKey: "s"})
-		}, "summarystore:"},
+		{"saveSummaryToDB", func() error { return summarizer.saveSummaryToDB(context.Background(), "t", &SessionSummary{SessionKey: "s"}) }, "summarystore:"},
 		{"updateSessionTitle", func() error { return summarizer.updateSessionTitle(context.Background(), "t", "s", "title") }, "sessionsummary:"},
 	}
 	for _, c := range checks {

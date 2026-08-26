@@ -282,7 +282,7 @@ test_legacy_252_entry_is_frozen() {
   echo "── legacy_252_entry_is_frozen ──"
   local tmp out rc
   tmp=$(setup_fake_bin)
-  out=$(PATH="$tmp/fake-bin:$PATH" TMPDIR="$tmp" bash "$REPO_ROOT/_to_be_deleted/deploy-to-252.sh" --skip-build --skip-migration --skip-restart 2>&1); rc=$?
+  out=$(PATH="$tmp/fake-bin:$PATH" TMPDIR="$tmp" bash "$REPO_ROOT/deploy-to-252.sh" --skip-build --skip-migration --skip-restart 2>&1); rc=$?
   assert_eq "legacy 252 deployer returns 64" "$rc" "64"
   assert_match "legacy 252 deployer names infrastructure role" "$out" 'database/infrastructure'
   if [[ ! -s "$tmp/fake-bin/.log" ]]; then

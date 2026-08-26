@@ -72,7 +72,7 @@ function close() {
   align-items: center;
   justify-content: center;
   padding: 16px;
-  background: var(--overlay-strong);
+  background: rgba(0, 0, 0, 0.45);
 }
 
 .user-info-dialog {
@@ -80,7 +80,7 @@ function close() {
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: 12px;
-  box-shadow: 0 24px 48px var(--overlay-light);
+  box-shadow: 0 24px 48px rgba(0, 0, 0, 0.25);
 }
 
 .user-info-dialog__header {
@@ -109,7 +109,7 @@ function close() {
 }
 
 .user-info-dialog__close:hover {
-  background: var(--bg-subtle, color-mix(in srgb, var(--kx-text) 4%, transparent));
+  background: var(--bg-subtle, rgba(255, 255, 255, 0.05));
   color: var(--text);
 }
 

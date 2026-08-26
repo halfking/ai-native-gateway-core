@@ -6,8 +6,14 @@ export const WINDOW_MINUTES = 5
 export const STATS_REFRESH_MS = 30_000
 export const CARD_MIN_W = 120
 export const CARD_MAX_W = 280
-/** Mini window cells on queue node cards (batch include_entries cap). */
+/** Mini window cells on queue node cards (per-pair display cap). */
 export const CARD_ENTRY_LIMIT = 24
+/**
+ * Per-pair entry cap for the model-header 50-icon strip. Must be >= 48
+ * (the admin/credential_monitor_sliding_window.go backend hard cap
+ * `slidingWindowBatchMaxEntryRet = 48`); 50 is the user-facing target.
+ */
+export const MODEL_HEADER_ENTRY_LIMIT = 50
 
 /** Replace one card's window cells. Missing entries (JSON omitempty) means empty, not "keep stale". */
 export function mergeCardWindowEntries<T>(

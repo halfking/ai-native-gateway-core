@@ -296,9 +296,9 @@ func (a *AdminAPI) ListAlerts(c echo.Context) error {
 		}
 	}
 	return c.JSON(http.StatusOK, map[string]interface{}{
-		"items": alerts,
-		"total": len(alerts),
-		"open":  open,
+		"items":  alerts,
+		"total":  len(alerts),
+		"open":   open,
 	})
 }
 

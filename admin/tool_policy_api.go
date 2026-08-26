@@ -461,10 +461,6 @@ func (api *UsageStatsAPI) HandleTopTools(w http.ResponseWriter, r *http.Request)
 		if err != nil {
 			continue
 		}
-		successRate := 0.0
-		if calls > 0 {
-			successRate = float64(success) / float64(calls) * 100
-		}
 		tools = append(tools, map[string]any{
 			"tool_id":        tid,
 			"tenant_id":      ttenantID,
@@ -472,7 +468,7 @@ func (api *UsageStatsAPI) HandleTopTools(w http.ResponseWriter, r *http.Request)
 			"success_count":  success,
 			"error_count":    errCount,
 			"avg_latency_ms": avgLatency,
-			"success_rate":   fmt.Sprintf("%.2f%%", successRate),
+			"success_rate":   fmt.Sprintf("%.2f%%", float64(success)/float64(calls)*100),
 		})
 	}
 

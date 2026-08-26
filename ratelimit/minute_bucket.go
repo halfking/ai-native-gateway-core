@@ -9,6 +9,7 @@ import (
 
 var ErrMinuteBucketFull = errors.New("rate limit queue full")
 var ErrMinuteBucketWaitTimeout = errors.New("rate limit queue wait timeout")
+var ErrQueueBudgetExceeded = errors.New("rate limit queue budget exceeded")
 
 const maxMinuteBucketWait = 2 * time.Minute
 

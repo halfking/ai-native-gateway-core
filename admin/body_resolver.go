@@ -155,7 +155,7 @@ func (h *Handler) handleControlledBody(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	occurredAt, requestBody, responseBody, outboundBody, err := h.lookupControlledBody(ctx, parsed.RequestID, claims.TenantID)
+	occurredAt, requestBody, responseBody, err := h.lookupControlledBody(ctx, parsed.RequestID, claims.TenantID)
 	if err != nil {
 		writeControlledBodyError(w, http.StatusNotFound)
 		return
@@ -163,27 +163,10 @@ func (h *Handler) handleControlledBody(w http.ResponseWriter, r *http.Request) {
 
 	var content string
 	var role string
-	switch parsed.Slot {
-	case "prompt":
-		// 2026-08-24 Phase 1: outbound_body is the post-compression /
-		// post-transform body actually sent upstream. For LLM Gateway's
-		// canonical prompt slot we prefer outbound_body when present and
-		// fall back to the original request_body for upstream messages
-		// whose compression rewrite was a no-op.
-		if v, found := normalizeControlledPrompt(outboundBody); found {
-			content, ok = v, true
-		} else {
-			content, ok = normalizeControlledPrompt(requestBody)
-		}
+	if parsed.Slot == "prompt" {
+		content, ok = normalizeControlledPrompt(requestBody)
 		role = "user"
-	case "outbound":
-		// 2026-08-24 Phase 1: explicit "outbound" slot — return the
-		// compressed/transformed body as text. The slot has no normalized
-		// message role; we surface the body verbatim when extractable,
-		// otherwise 404.
-		content, ok = normalizeControlledPrompt(outboundBody)
-		role = "outbound"
-	default:
+	} else {
 		content, ok = normalizeControlledResponse(responseBody)
 		role = "assistant"
 	}
@@ -217,30 +200,25 @@ func controlledBodyBearerClaims(r *http.Request, fallbackSecret string, now time
 	return claims, true
 }
 
-func (h *Handler) lookupControlledBody(ctx context.Context, requestID, tenantID string) (time.Time, *string, *string, *string, error) {
+func (h *Handler) lookupControlledBody(ctx context.Context, requestID, tenantID string) (time.Time, *string, *string, error) {
 	var occurredAt time.Time
-	var requestBody, responseBody, outboundBody *string
+	var requestBody, responseBody *string
 
-	// 2026-08-24 Phase 1: outbound_body is also routed to
-	// request_logs_bodies_hot alongside request_body / response_body. The main
-	// request_logs_hot row keeps all three body columns NULL, so the LEFT JOIN
-	// through the dedicated body table is the canonical read path. The COALESCE
-	// keeps a (currently theoretical) backward-compatible fallback to any legacy
-	// in-main-table value that older deployments may still hold.
+	// The hot query is intentionally separate so the common recent-request path
+	// never invokes the UNION view over archived/columnar partitions.
 	err := h.bodyDB.QueryRow(ctx, `
 		SELECT rl.ts,
-		       rb.request_body::text,
-		       rb.response_body::text,
-		       rb.outbound_body::text
+		       COALESCE(rb.request_body::text, rl.request_body::text),
+		       COALESCE(rb.response_body::text, rl.response_body::text)
 		  FROM request_logs_hot rl
 		  LEFT JOIN request_logs_bodies_hot rb
-		    ON rb.request_id = rl.request_id
+		    ON rb.request_id = rl.request_id AND rb.ts = rl.ts
 		 WHERE rl.request_id = $1
 		   AND rl.tenant_id = $2
 		 LIMIT 1
-	`, requestID, tenantID).Scan(&occurredAt, &requestBody, &responseBody, &outboundBody)
+	`, requestID, tenantID).Scan(&occurredAt, &requestBody, &responseBody)
 	if err == nil {
-		return occurredAt, requestBody, responseBody, outboundBody, nil
+		return occurredAt, requestBody, responseBody, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) && !errors.Is(err, sql.ErrNoRows) {
 		// A stale/missing hot table should not prevent the bounded archive fallback.
@@ -249,20 +227,19 @@ func (h *Handler) lookupControlledBody(ctx context.Context, requestID, tenantID 
 
 	err = h.bodyDB.QueryRow(ctx, `
 		SELECT rl.ts,
-		       rb.request_body::text,
-		       rb.response_body::text,
-		       rb.outbound_body::text
+		       COALESCE(rb.request_body::text, rl.request_body::text),
+		       COALESCE(rb.response_body::text, rl.response_body::text)
 		  FROM request_logs_with_current_month rl
 		  LEFT JOIN request_logs_bodies_with_current_month rb
-		    ON rb.request_id = rl.request_id
+		    ON rb.request_id = rl.request_id AND rb.ts = rl.ts
 		 WHERE rl.request_id = $1
 		   AND rl.tenant_id = $2
 		 LIMIT 1
-	`, requestID, tenantID).Scan(&occurredAt, &requestBody, &responseBody, &outboundBody)
+	`, requestID, tenantID).Scan(&occurredAt, &requestBody, &responseBody)
 	if err != nil {
-		return time.Time{}, nil, nil, nil, err
+		return time.Time{}, nil, nil, err
 	}
-	return occurredAt, requestBody, responseBody, outboundBody, nil
+	return occurredAt, requestBody, responseBody, nil
 }
 
 func normalizeControlledPrompt(raw *string) (string, bool) {

@@ -34,13 +34,7 @@ const DefaultPromoteInterval = 1 * time.Hour
 //     partitions on the promote scheduler;
 //   - model_probe_runs_hot is an exception as of 2026-07-14: it no longer
 //     promotes and is cleaned by direct TTL DELETE.
-//
-// 2026-08-25: default hot window tightened 24h → 8h per the v6 storage
-// architecture (docs/架构优化v6/02 D28): hot tables are an 8h mutable
-// landing zone; update/delete only happens there, and the promote scheduler
-// batches rows into monthly columnar partitions. Operators can still
-// override via lifecycle.hot_retention_hours.
-const DefaultRetentionWindow = 8 * time.Hour
+const DefaultRetentionWindow = 24 * time.Hour
 
 // promoteBatchSize is the per-call LIMIT inside each promote_xxx_batch
 // CTE. Keeps per-tx memory bounded so a backlog cannot OOM the gateway.
@@ -743,13 +737,6 @@ func archiveSpecs() []archiveSpec {
 // All promote functions now use *_hot_to_partition pattern.
 //
 // 2026-07-13: added candidate_failure_logs_hot (Migration 392).
-// 2026-08-25: added session_module_executions_hot (Migration 580) and
-//             dashboard_access_events_hot (Migration 579); both ship the
-//             hot → monthly-partition drain that previously relied on
-//             manually-run pg_cron archive_* scripts which drifted.
-//             Note: the pair was originally assigned 574/575 but both slots
-//             collided with ledger rows already present on deployed
-//             environments, so they were renumbered to 580/579.
 //
 // Each function signature is promote_<table>_hot_to_partition(p_retention interval,
 // p_batch_size int) RETURNS bigint; the caller loops until the function
@@ -771,8 +758,6 @@ func promoteSpecs() []archiveSpec {
 		{fnName: "promote_candidate_failure_logs_hot_to_partition", label: "candidate_failure_logs_hot"}, // Migration 392
 		{fnName: "promote_session_turns_hot_to_partition", label: "session_turns_hot"},                   // Migration 526
 		{fnName: "promote_handoff_logs_hot_to_partition", label: "handoff_logs_hot"},                     // Migration 532
-		{fnName: "promote_session_module_executions_hot_to_partition", label: "session_module_executions_hot"}, // Migration 580
-		{fnName: "promote_dashboard_access_events_hot_to_partition", label: "dashboard_access_events_hot"},     // Migration 579
 	}
 }
 

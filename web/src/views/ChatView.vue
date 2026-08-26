@@ -909,7 +909,7 @@ function onKeydown(e: KeyboardEvent) {
 }
 
 .session-item__btn:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--kx-text) 4%, transparent);
+  background: rgba(255, 255, 255, 0.05);
 }
 
 .session-item.active .session-item__btn {
@@ -954,7 +954,7 @@ function onKeydown(e: KeyboardEvent) {
 
 .session-item__del:hover {
   color: var(--danger);
-  background: var(--danger-bg);
+  background: rgba(248, 81, 73, 0.12);
 }
 
 .session-item__meta {
@@ -1076,7 +1076,7 @@ function onKeydown(e: KeyboardEvent) {
 
 .chat-bubble.assistant {
   align-self: flex-start;
-  background: color-mix(in srgb, var(--kx-text) 4%, transparent);
+  background: rgba(255, 255, 255, 0.04);
   border: 1px solid var(--border);
 }
 
@@ -1114,9 +1114,9 @@ function onKeydown(e: KeyboardEvent) {
   padding: 1px 6px;
   font-size: 11px;
   border-radius: 8px;
-  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  background: rgba(64, 158, 255, 0.12);
   color: var(--primary);
-  border: 1px solid color-mix(in srgb, var(--accent) 20%, transparent);
+  border: 1px solid rgba(64, 158, 255, 0.3);
   white-space: nowrap;
   cursor: help;
 }
@@ -1193,7 +1193,7 @@ function onKeydown(e: KeyboardEvent) {
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: var(--overlay-strong);
+  background: rgba(0, 0, 0, 0.55);
   display: flex;
   align-items: center;
   justify-content: center;

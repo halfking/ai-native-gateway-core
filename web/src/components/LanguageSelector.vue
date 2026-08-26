@@ -96,7 +96,7 @@ if (typeof window !== 'undefined') {
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  box-shadow: 0 4px 12px var(--overlay-light);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
   z-index: 1000;
   overflow: hidden;
 }

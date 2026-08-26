@@ -669,7 +669,7 @@ func (h *Handler) handleMemoraContext(w http.ResponseWriter, r *http.Request) {
 	`, taskID).Scan(&writtenFromLog, &extractedAt)
 
 	var title string
-	if stored, ok := h.loadStoredSessionTitleForRequest(ctx, r, taskID, sc.SessionID); ok {
+	if stored, ok := h.loadStoredSessionTitle(ctx, taskID, sc.SessionID); ok {
 		title = stored
 	} else if len(facts) > 0 {
 		if mem, ok := facts[0]["memory"].(string); ok && len(mem) > 0 {
@@ -782,8 +782,8 @@ func (h *Handler) handleSessionMessages(w http.ResponseWriter, r *http.Request) 
 			rl.outbound_model,
 			rl.request_preview,
 			rl.response_preview,
-			rb.request_body::text AS request_body,
-			rb.response_body::text AS response_body,
+			COALESCE(rb.request_body::text, rl.request_body::text) AS request_body,
+			COALESCE(rb.response_body::text, rl.response_body::text) AS response_body,
 			rl.prompt_tokens,
 			rl.completion_tokens,
 			rl.latency_ms,

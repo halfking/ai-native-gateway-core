@@ -17,7 +17,6 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { getFeatured, resolveRouting, reorderCandidateBindings, type CandidateBindingReorderItem, type RoutingCandidate } from '../api/routing'
 import { getRequestLogTopModels, type TopRequestModel } from '../api/logs'
-import { getSlidingWindow, getSlidingWindowBatch, type CallEntry } from '../api/credential-monitor'
 import {
   queueRef,
   nodesRef,
@@ -27,13 +26,14 @@ import {
   type LiveNodeStatus,
   type LiveRequest,
 } from '../composables/liveStreamStore'
-import { isSuperAdmin, isAuthenticated } from '../store'
+import { isSuperAdmin } from '../store'
 import { ApiError } from '../api/_core'
 import { readLiveStreamPreferences, writeLiveStreamPreferences, type QueueStatusBucket } from '../composables/liveStreamPreferences'
 import {
   WINDOW_MINUTES,
   STATS_REFRESH_MS,
   CARD_ENTRY_LIMIT,
+  MODEL_HEADER_ENTRY_LIMIT,
   mergeCardWindowEntries,
   assignSpacedPriorities,
   cardWidthFromCapacity,
@@ -50,13 +50,6 @@ import NodeDetailDrawer from './NodeDetailDrawer.vue'
 const { t } = useI18n()
 const queue = queueRef
 const nodes = nodesRef
-// 2026-08-23 凭据显示：订阅标签缓存 revision，让异步加载完成后
-// 队列深度行的凭据名称自动刷新。
-const { labelRevision, credentialLabelForId } = useCredentialLabels()
-function credLabelById(id: number | null | undefined): string {
-  void labelRevision.value
-  return credentialLabelById(id)
-}
 
 // OBS-BE3 pipeline 总览：字段缺省（dispatch 未启用/未接线）时整层隐藏。
 const pipeline = computed(() => queue.value?.pipeline ?? null)
@@ -112,7 +105,7 @@ const congestionHint = computed(() => {
   const maxModel = topModels.value[0]
   const maxCred = topCredentials.value[0]
   if (maxCred && (maxCred.depth || 0) >= (maxModel?.depth || 0)) {
-    return `节点队列拥堵：${credLabelById(maxCred.credential)} 深度 ${maxCred.depth}`
+    return `节点队列拥堵：credential ${maxCred.credential} 深度 ${maxCred.depth}`
   }
   if (maxModel) {
     return `模型队列拥堵：${maxModel.model} 深度 ${maxModel.depth}`
@@ -155,52 +148,27 @@ interface ModelScopeMeta {
   featured: boolean
   hotRequests: number
   aliases: Set<string>
-  /**
-   * Preferred display name for the scope (canonical_name when available,
-   * otherwise the model alias itself). Used as the section title text and
-   * as the primary sort key so users can locate a model alphabetically.
-   */
-  displayName: string
 }
 
 interface ModelGroup {
   model: string
-  /**
-   * Standard (canonical) display name for the model — used for the section
-   * title and as the primary sort key so users can locate a model
-   * alphabetically. Falls back to `model` when no canonical mapping is known.
-   */
-  displayName: string
   nodes: LiveNodeStatus[]
   requestCount: number
   featured: boolean
   hotRequests: number
   aliases: string[]
-  /** 仅当所有节点都属于同一个完整 canonical binding 列表时可安全重排。 */
-  reorderCanonicalId?: number
-  /** Raw model retained for node stats and display context. */
+  /** 仅当所有节点都属于同一个完整 raw binding 列表时可安全重排。 */
   reorderRawModel?: string
   /**
    * 服务端 reorder_revision 透传，缺失时表示当前分组不接受重排
-   * （多 canonical / 未在 resolve 列表中）。
+   * （别名聚合 / 多 raw-model / 未在 resolve 列表中）。
    */
   reorderRevision?: string
-  /**
-   * Raw model aliases the group covers. Used by sliding-window stats to
-   * pick a model key under canonical-id scopes (where reorderRawModel is
-   * intentionally undefined).
-   */
-  rawModels: string[]
 }
 
 const modelScopeMeta = ref<Map<string, ModelScopeMeta>>(new Map())
 const modelScopeAliasIndex = ref<Map<string, string>>(new Map())
 const modelCandidatesByRawModel = ref<Map<string, RoutingCandidate[]>>(new Map())
-const reorderRevisionsByCanonical = ref<Map<number, string>>(new Map())
-// Legacy raw_model-keyed reorder revisions (migration 541) for bindings whose
-// provider rows still have NULL canonical_id. The server only emits one of
-// reorder_canonical_id / reorder_raw_model per resolve; we keep both maps and
-// modelGroups picks the matching one when assembling the reorder scope.
 const reorderRevisionsByRawModel = ref<Map<string, string>>(new Map())
 const modelScopeLoading = ref(true)
 const modelScopeError = ref('')
@@ -242,41 +210,25 @@ async function loadModelScope() {
     return
   }
   const scope = new Map<string, ModelScopeMeta>()
-  const addScope = (model: string, isFeatured: boolean, hotRequests: number, displayName?: string) => {
+  const addScope = (model: string, isFeatured: boolean, hotRequests: number) => {
     const key = modelKey(model)
     if (!key) return
-    const current = scope.get(key)
-      ?? { key, featured: false, hotRequests: 0, aliases: new Set<string>(), displayName: model.trim() }
+    const current = scope.get(key) ?? { key, featured: false, hotRequests: 0, aliases: new Set<string>() }
     current.featured ||= isFeatured
     current.hotRequests = Math.max(current.hotRequests, hotRequests)
     current.aliases.add(key)
-    // Prefer the longest/most-readable name we've seen for this scope so the
-    // section title picks "GPT-4o" over a raw alias like "gpt-4o-2024-08-06"
-    // when both resolve to the same canonical model.
-    const incoming = (displayName ?? model).trim()
-    if (incoming && (!current.displayName || incoming.length > current.displayName.length)) {
-      current.displayName = incoming
-    }
     scope.set(key, current)
   }
   if (featured.status === 'fulfilled') featured.value.featured_models.forEach(model => addScope(model, true, 0))
-  if (hot.status === 'fulfilled') hot.value.items.forEach((model: TopRequestModel) => {
-    const display = (model.canonical_name && model.canonical_name.trim()) || model.display_name
-    addScope(display, false, model.request_count, display)
-  })
+  if (hot.status === 'fulfilled') hot.value.items.forEach((model: TopRequestModel) => addScope(model.canonical_name || model.display_name, false, model.request_count))
   const aliases = new Map<string, string>()
   const candidatesByRawModel = new Map<string, RoutingCandidate[]>()
-  const revisionsByCanonical = new Map<number, string>()
   const revisionsByRawModel = new Map<string, string>()
   const resolveOne = async (meta: ModelScopeMeta) => {
     const name = [...meta.aliases][0]
     try {
       const resolved = await resolveRouting(name, undefined, false, { signal: controller.signal })
       if (controller.signal.aborted) return
-      // Canonical name (when present) is the authoritative standard label for
-      // this scope — overwrite any alias-only displayName we collected earlier.
-      const canonicalName = resolved.canonical_name?.trim()
-      if (canonicalName) meta.displayName = canonicalName
       const assignAlias = (raw: string) => {
         const key = modelKey(raw)
         if (!key) return
@@ -292,28 +244,12 @@ async function loadModelScope() {
         candidates.push(candidate)
         candidatesByRawModel.set(key, candidates)
       }
-      // Record a revision only when every resolved candidate shares one
-      // canonical_id OR one raw_model_name. Within a canonical scope, raw
-      // aliases are all safe to reorder atomically. Within a raw_model
-      // scope (legacy fallback when canonical_id is NULL), the candidates
-      // must all map to one raw_model_name. Mixed hits stay disabled.
+      // Only record a revision when the resolve hit a single raw_model so the
+      // panel can safely submit a complete-set reorder against it.
       if (resolved.reorder_revision) {
-        const canonicalID = resolved.candidates[0]?.canonical_id
-        if (
-          canonicalID != null
-          && resolved.reorder_canonical_id === canonicalID
-          && resolved.candidates.every(c => c.canonical_id === canonicalID)
-        ) {
-          revisionsByCanonical.set(canonicalID, resolved.reorder_revision)
-        } else {
-          const rawModel = resolved.candidates[0]?.model_name
-          if (
-            rawModel
-            && resolved.reorder_raw_model === rawModel
-            && resolved.candidates.every(c => c.model_name === rawModel)
-          ) {
-            revisionsByRawModel.set(rawModel, resolved.reorder_revision)
-          }
+        const firstName = resolved.candidates[0]?.model_name
+        if (firstName && resolved.candidates.every(c => c.model_name === firstName)) {
+          revisionsByRawModel.set(modelKey(firstName), resolved.reorder_revision)
         }
       }
     } catch {
@@ -334,20 +270,13 @@ async function loadModelScope() {
   modelScopeMeta.value = scope
   modelScopeAliasIndex.value = aliases
   modelCandidatesByRawModel.value = candidatesByRawModel
-  reorderRevisionsByCanonical.value = revisionsByCanonical
   reorderRevisionsByRawModel.value = revisionsByRawModel
   if (featured.status === 'rejected' && hot.status === 'rejected') modelScopeError.value = '模型范围暂不可用，未展示模型节点。'
   modelScopeLoading.value = false
 }
 
-onMounted(() => {
-  void loadModelScope()
-  startStatsPoll()
-})
-onUnmounted(() => {
-  modelScopeAbort?.abort()
-  stopStatsPoll()
-})
+onMounted(() => { void loadModelScope() })
+onUnmounted(() => { modelScopeAbort?.abort() })
 
 function toggleModel(model: string) {
   const next = new Set(expandedModels.value)
@@ -381,31 +310,17 @@ const modelGroups = computed<ModelGroup[]>(() => {
     const modelNodes = nodes.value.filter(node => credentialIds.has(node.credential_id))
     const aliases = [scopeKey, ...rawModels].map(modelKey)
     const rawModelList = [...rawModels]
-    // Aggregate resolve candidates across every raw_model alias that shares
-    // the canonical scope, deduping by credential_id. Each per-alias slice is
-    // already sorted server-side (priority → manual_priority → tier); we
-    // preserve that order within an alias and append newly-seen credentials
-    // in alias order, so the combined list stays stable across renders.
-    const candidatesByCredential = new Map<number, RoutingCandidate>()
-    for (const rawModel of rawModelList) {
-      for (const candidate of modelCandidatesByRawModel.value.get(modelKey(rawModel)) ?? []) {
-        candidatesByCredential.set(candidate.credential_id, candidate)
-      }
-    }
-    const candidates = sortRoutingCandidates([...candidatesByCredential.values()])
-    const candidatesByCredentialSorted = new Map(candidates.map(candidate => [candidate.credential_id, candidate]))
-    const canonicalIDs = new Set(
-      candidates.map(candidate => candidate.canonical_id).filter((id): id is number => id != null && id > 0),
-    )
-    const canonicalID = canonicalIDs.size === 1 ? [...canonicalIDs][0] : undefined
+    const rawModel = rawModelList.length === 1 ? rawModelList[0] : undefined
+    const candidates = rawModel
+      ? modelCandidatesByRawModel.value.get(modelKey(rawModel)) ?? []
+      : []
     const candidateOrder = new Map(candidates.map((candidate, index) => [candidate.credential_id, index]))
-    // Live nodes are often a subset of resolve candidates (offline / filtered-out
-    // credentials still exist in the binding set). Require live ⊆ candidates so
-    // we can order, label, size cards, and submit a full-set reorder safely.
-    const liveCoveredByCandidates = canonicalID != null
-      && candidates.length > 0
-      && modelNodes.every(node => candidateOrder.has(node.credential_id))
-    const orderedNodes = orderNodesByRoutingCandidates(modelNodes, candidatesByCredentialSorted)
+    const candidatesMatchNodes = rawModel != null
+      && candidates.length === modelNodes.length
+      && candidates.every(candidate => candidateOrder.has(candidate.credential_id) && credentialIds.has(candidate.credential_id))
+    const orderedNodes = candidatesMatchNodes
+      ? [...modelNodes].sort((left, right) => (candidateOrder.get(left.credential_id) ?? Number.MAX_SAFE_INTEGER) - (candidateOrder.get(right.credential_id) ?? Number.MAX_SAFE_INTEGER))
+      : modelNodes
     const requestIds = new Set<string>()
     for (const credentialId of credentialIds) {
       for (const request of getRequestsForCredential(credentialId)) {
@@ -414,34 +329,18 @@ const modelGroups = computed<ModelGroup[]>(() => {
     }
     groups.push({
       model: scopeKey,
-      displayName: meta.displayName,
       nodes: orderedNodes,
       requestCount: requestIds.size,
       featured: meta.featured,
       hotRequests: meta.hotRequests,
       aliases,
-      reorderCanonicalId: liveCoveredByCandidates && canonicalID != null ? canonicalID : undefined,
-      reorderRawModel: liveCoveredByCandidates && canonicalID == null && rawModelList.length > 0
-        ? rawModelList[0]
+      reorderRawModel: candidatesMatchNodes ? rawModel : undefined,
+      reorderRevision: candidatesMatchNodes && rawModel
+        ? reorderRevisionsByRawModel.value.get(modelKey(rawModel))
         : undefined,
-      reorderRevision: liveCoveredByCandidates
-        ? (canonicalID != null
-          ? reorderRevisionsByCanonical.value.get(canonicalID)
-          : (rawModelList[0] ? reorderRevisionsByRawModel.value.get(rawModelList[0]) : undefined))
-        : undefined,
-      rawModels: [...rawModelList],
     })
   }
-  // Alphabetical by canonical displayName — operators scan top→bottom to find
-  // a model, so the canonical label (not the lowercased scope key) is the
-  // primary key. Featured/hot are deprioritized to ties so the user sees a
-  // stable alphabetical order regardless of which one happens to be hot.
-  return groups.sort((a, b) =>
-    a.displayName.localeCompare(b.displayName, 'zh-CN', { sensitivity: 'base' })
-    || Number(b.featured) - Number(a.featured)
-    || b.hotRequests - a.hotRequests
-    || a.model.localeCompare(b.model),
-  )
+  return groups.sort((a, b) => Number(b.featured) - Number(a.featured) || b.hotRequests - a.hotRequests || b.nodes.length - a.nodes.length || a.model.localeCompare(b.model))
 })
 
 // ── 节点状态过滤（在用 / 降级 / 人工禁用 / 配额耗尽） ─────────────────────
@@ -477,40 +376,31 @@ const filteredModelGroups = computed<ModelGroup[]>(() => {
 const hasFilteredGroups = computed(() => filteredModelGroups.value.length > 0)
 
 // ── 节点拖拽调整优先级（HTML5 dnd） ───────────────────────────────────────
-// 单一 canonical scope + live ⊆ candidates + reorder_revision 即可重排
-//（与状态过滤解耦）。可见子集上拖动时，把相对顺序写回完整候选
-//列表再提交（后端要求完整集原子写）。
+// 只在显示完整的单 raw-model 候选集且四个状态均显示时允许重排：后端排序
+// API 以该完整集合为原子单位，提交 `1..N` 的连续 manual_priority。
 const dragScopeKey = ref<string | null>(null)
 const dragSourceCredentialId = ref<number | null>(null)
 const dragOverCredentialId = ref<number | null>(null)
 const dragSaving = ref(false)
 const dragError = ref('')
 
+const filtersAreAllEnabled = computed(() => Object.values(statusFilter.value).every(Boolean))
+
 function canReorder(group: ModelGroup): boolean {
   return isSuperAdmin()
     && !dragSaving.value
-    && (group.reorderCanonicalId != null || (group.reorderRawModel != null && group.reorderRawModel !== ''))
+    && filtersAreAllEnabled.value
+    && Boolean(group.reorderRawModel)
     && Boolean(group.reorderRevision)
 }
 
 function dragDisabledHint(group: ModelGroup): string {
   if (!isSuperAdmin()) return '仅超级管理员可以调整优先级。'
   if (dragSaving.value) return '正在保存优先级调整。'
-  if (group.reorderCanonicalId == null && (group.reorderRawModel == null || group.reorderRawModel === '')) {
-    return '该模型分组合并了多个规范模型或多个原始模型，或存在不在候选集中的实时节点，无法安全调整优先级。'
-  }
+  if (!filtersAreAllEnabled.value) return '请显示全部状态后再调整完整候选列表的优先级。'
+  if (!group.reorderRawModel) return '该模型分组合并了多个原始模型或实时节点不完整，无法安全调整优先级。'
   if (!group.reorderRevision) return '尚未拿到后端修订版本，请等待数据加载完成后再试。'
-  return '拖动节点以调整优先级，越靠前优先级越高。隐藏状态的节点会保持原有相对位置。'
-}
-
-/** Map a reordered visible subset back onto the full candidate list. */
-function mergeVisibleOrderIntoFull(
-  fullCredentialIds: number[],
-  visibleOrderedIds: number[],
-): number[] {
-  const visibleSet = new Set(visibleOrderedIds)
-  const nextVisible = [...visibleOrderedIds]
-  return fullCredentialIds.map(id => (visibleSet.has(id) ? nextVisible.shift()! : id))
+  return '拖动节点以调整优先级，越靠前优先级越高。'
 }
 
 function onDragStart(event: DragEvent, group: ModelGroup, credentialId: number) {
@@ -550,9 +440,7 @@ function clearDragState() {
 }
 
 async function onDrop(event: DragEvent, group: ModelGroup, targetCredentialId: number) {
-  const hasCanonical = group.reorderCanonicalId != null
-  const hasRaw = group.reorderRawModel != null && group.reorderRawModel !== ''
-  if (!canReorder(group) || dragScopeKey.value !== group.model || (!hasCanonical && !hasRaw) || !group.reorderRevision) return
+  if (!canReorder(group) || dragScopeKey.value !== group.model || !group.reorderRawModel || !group.reorderRevision) return
   event.preventDefault()
   const ordered = [...group.nodes]
   const fromIndex = ordered.findIndex(n => n.credential_id === dragSourceCredentialId.value)
@@ -563,78 +451,20 @@ async function onDrop(event: DragEvent, group: ModelGroup, targetCredentialId: n
   }
   const [moved] = ordered.splice(fromIndex, 1)
   ordered.splice(toIndex, 0, moved)
-  const canonicalId = hasCanonical ? (group.reorderCanonicalId as number) : undefined
-  const rawModel = hasRaw ? (group.reorderRawModel as string) : undefined
-  const expectedRevision = group.reorderRevision as string
-  // Build the full candidate set for this canonical scope (dedup by credential_id),
-  // using the union of resolve results across all raw aliases in the group.
-  const fullCandidatesById = new Map<number, RoutingCandidate>()
-  for (const rawModel of group.aliases) {
-    for (const candidate of modelCandidatesByRawModel.value.get(modelKey(rawModel)) ?? []) {
-      fullCandidatesById.set(candidate.credential_id, candidate)
-    }
-  }
-  const fullIds = [...fullCandidatesById.keys()]
-  // Prefer full candidate list; if somehow empty, fall back to visible order only.
-  const mergedIds = fullIds.length > 0
-    ? mergeVisibleOrderIntoFull(fullIds, ordered.map(n => n.credential_id))
-    : ordered.map(n => n.credential_id)
-  const priorities = (() => {
-    try {
-      return assignSpacedPriorities(mergedIds.length)
-    } catch (error) {
-      clearDragState()
-      dragError.value = error instanceof Error ? error.message : '候选数量超过优先级上限，无法排序'
-      return null
-    }
-  })()
-  if (!priorities) return
-  // Each item keeps its own raw alias (from the unioned candidates) so
-  // backend validation sees every credential's actual provider_model binding.
-  const items: CandidateBindingReorderItem[] = mergedIds.map((credentialId, index) => ({
-    credential_id: credentialId,
-    raw_model: fullCandidatesById.get(credentialId)?.model_name ?? group.reorderRawModel ?? '',
-    manual_priority: priorities[index],
+  const rawModel = group.reorderRawModel
+  const expectedRevision = group.reorderRevision
+  const items: CandidateBindingReorderItem[] = ordered.map((node, index) => ({
+    credential_id: node.credential_id,
+    raw_model: rawModel,
+    manual_priority: index + 1,
   }))
   clearDragState()
   dragSaving.value = true
   dragError.value = ''
-  // Optimistic local order: update the per-raw-alias candidate map so the
-  // next drag sees spaced priorities immediately. Iterate by raw alias to
-  // match each candidate's own model_name.
-  const optimisticByRaw = new Map<string, RoutingCandidate[]>()
-  for (const rawModel of group.aliases) {
-    optimisticByRaw.set(rawModel, [])
-  }
-  for (let i = 0; i < mergedIds.length; i++) {
-    const credentialId = mergedIds[i]
-    const candidate = fullCandidatesById.get(credentialId)
-    if (!candidate) continue
-    const optimistic = {
-      ...candidate,
-      manual_priority: priorities[i],
-      rank: i + 1,
-    }
-    const list = optimisticByRaw.get(candidate.model_name)
-    if (list) list.push(optimistic)
-  }
-  const prevByRaw = new Map<string, RoutingCandidate[]>()
-  for (const rawModel of group.aliases) {
-    prevByRaw.set(rawModel, modelCandidatesByRawModel.value.get(rawModel) ?? [])
-  }
-  for (const [rawModel, list] of optimisticByRaw.entries()) {
-    modelCandidatesByRawModel.value = new Map(modelCandidatesByRawModel.value).set(rawModel, list)
-  }
   try {
-    await reorderCandidateBindings(items, {
-      canonicalId: canonicalId ?? undefined,
-      rawModel: rawModel ?? undefined,
-      expectedRevision,
-    })
+    await reorderCandidateBindings(items, { rawModel, expectedRevision })
+    await loadModelScope()
   } catch (error) {
-    for (const [rawModel, prev] of prevByRaw.entries()) {
-      modelCandidatesByRawModel.value = new Map(modelCandidatesByRawModel.value).set(rawModel, prev)
-    }
     const fallback = error instanceof Error ? error.message : '调整优先级失败'
     // 409 stale / incomplete / transient ordering conflict — surface a
     // user-friendly hint and refetch so the UI catches up with the server.
@@ -644,16 +474,6 @@ async function onDrop(event: DragEvent, group: ModelGroup, targetCredentialId: n
     } else {
       dragError.value = fallback
     }
-    dragSaving.value = false
-    return
-  }
-  try {
-    await loadModelScope()
-  } catch (error) {
-    // Server already accepted the new order — keep optimistic UI, do not roll back.
-    dragError.value = error instanceof Error
-      ? `已保存排序，但刷新候选列表失败：${error.message}`
-      : '已保存排序，但刷新候选列表失败，请手动刷新。'
   } finally {
     dragSaving.value = false
   }
@@ -675,40 +495,9 @@ function nodeStatusSummary(n: LiveNodeStatus): string {
   return parts.join(' / ')
 }
 
-function candidateForNode(group: ModelGroup, credentialId: number): RoutingCandidate | undefined {
-  // Look up the candidate across all raw aliases in the group. Either
-  // reorderRawModel (legacy 541 scope) or the canonical-id scope uses the
-  // same unioned candidate map, so iterating group.aliases finds the row in
-  // both cases. We previously keyed off reorderRawModel alone, which left
-  // canonical-scoped groups with no candidate metadata (label, priority, etc).
-  for (const raw of group.aliases) {
-    const match = (modelCandidatesByRawModel.value.get(modelKey(raw)) ?? [])
-      .find(c => c.credential_id === credentialId)
-    if (match) return match
-  }
-  if (group.reorderRawModel) {
-    return (modelCandidatesByRawModel.value.get(modelKey(group.reorderRawModel)) ?? [])
-      .find(c => c.credential_id === credentialId)
-  }
-  return undefined
-}
-
+// ── 节点小卡片：标题用 供应商 + 凭据，状态用四态点 ─────────────────────────
 function providerLabel(n: LiveNodeStatus): string {
   return n.provider_code || (n.provider_id ? `P${n.provider_id}` : '—')
-}
-
-/** Node card title: `{provider}/{credentialLabel}` for the model-group view.
- *  Falls back to `{provider}/#{credentialId}` when no label is known — the
- *  `/` separator keeps the provider anchor readable while still disambiguating
- *  the credential. Centralized here so the request-list rows share the same
- *  format. */
-function nodeCardTitle(n: LiveNodeStatus, group?: ModelGroup): string {
-  void labelRevision.value
-  const cachedLabel = credentialLabelForId(n.credential_id)
-  const label = (n.credential_label || cachedLabel || '').trim()
-  const provider = providerLabel(n)
-  if (label) return `${provider}/${label}`
-  return `${provider}/#${n.credential_id}`
 }
 
 function nodeTitle(n: LiveNodeStatus, group?: ModelGroup): string {
@@ -770,7 +559,33 @@ function windowEntriesFor(group: ModelGroup, credentialId: number): CallEntry[] 
   const model = group.reorderRawModel
     ?? (group.rawModels.length > 0 ? group.rawModels[0] : undefined)
   if (!model) return []
-  return windowEntriesByKey.value.get(statsKey(credentialId, model)) ?? []
+  // node-card mini window 固定只显示 CARD_ENTRY_LIMIT 条；模型标题的
+  // 50-icon strip 在 modelRecentEntries() 里另读全量 entries 数组。
+  return (windowEntriesByKey.value.get(statsKey(credentialId, model)) ?? []).slice(0, CARD_ENTRY_LIMIT)
+}
+
+// 2026-08-26 模型标题最近 50 次请求图标：聚合该模型覆盖的
+// (credential, raw_model) 对的所有 CallEntry，按时间升序（旧→新）排好后
+// 截取最近 50 条。windowEntriesByKey 已被 refreshWindowStats 30s 周期按
+// MODEL_HEADER_ENTRY_LIMIT 填好，这里只读不写，复用现成数据避免额外的
+// HTTP 请求。条目上限实际为后端 hard cap 48（admin/credential_monitor_sliding_window.go
+// 的 slidingWindowBatchMaxEntryRet），用户面写为"最近 50"。
+function modelRecentEntries(group: ModelGroup): CallEntry[] {
+  const merged: CallEntry[] = []
+  for (const node of group.nodes) {
+    for (const rawModel of group.rawModels) {
+      const key = statsKey(node.credential_id, rawModel)
+      const entries = windowEntriesByKey.value.get(key)
+      if (!entries || entries.length === 0) continue
+      for (const entry of entries) merged.push(entry)
+    }
+  }
+  if (merged.length === 0) return []
+  // 按时间升序：最旧在左、最新在右。
+  merged.sort((a, b) => (a.ts ?? 0) - (b.ts ?? 0))
+  return merged.length > MODEL_HEADER_ENTRY_LIMIT
+    ? merged.slice(-MODEL_HEADER_ENTRY_LIMIT)
+    : merged
 }
 
 async function refreshWindowStats() {
@@ -810,13 +625,16 @@ async function refreshWindowStats() {
     next.set(statsKey(credentialId, model), { success, failed, total })
   }
   const applyEntries = (credentialId: number, model: string, entries: CallEntry[] | undefined) => {
-    mergeCardWindowEntries(nextEntries, statsKey(credentialId, model), entries)
+    // 2026-08-26: 用 MODEL_HEADER_ENTRY_LIMIT 取代默认 CARD_ENTRY_LIMIT，
+    // 让模型标题 50-icon strip 能拿到全量；node-card mini window 在
+    // windowEntriesFor() 里自行 .slice(CARD_ENTRY_LIMIT) 截短。
+    mergeCardWindowEntries(nextEntries, statsKey(credentialId, model), entries, MODEL_HEADER_ENTRY_LIMIT)
   }
 
   try {
     const batch = await getSlidingWindowBatch(
       targets.map(t => ({ credential_id: t.credentialId, model: t.model })),
-      { minutes: WINDOW_MINUTES, includeEntries: true, entryLimit: CARD_ENTRY_LIMIT },
+      { minutes: WINDOW_MINUTES, includeEntries: true, entryLimit: MODEL_HEADER_ENTRY_LIMIT },
       { signal: controller.signal },
     )
     if (controller.signal.aborted) return
@@ -1004,7 +822,7 @@ function formatTs(ts: string | undefined): string {
             </span>
           </div>
           <div v-for="c in topCredentials" :key="c.credential" class="qp-row">
-            <span class="qp-row-label">{{ credLabelById(c.credential) }}</span>
+            <span class="qp-row-label">节点 {{ c.credential }}</span>
             <div class="qp-bar qp-bar--sm">
               <div
                 class="qp-bar-fill qp-bar-fill--cred"
@@ -1060,14 +878,29 @@ function formatTs(ts: string | undefined): string {
           <div class="qp-model-compact">
             <button type="button" class="qp-model-group-toggle" :aria-expanded="expandedModels.has(group.model)" @click="toggleModel(group.model)">
               <span class="qp-model-group-caret" :class="{ 'qp-model-group-caret--open': expandedModels.has(group.model) }">▸</span>
-              <strong class="qp-model-group-name">{{ group.displayName }}</strong>
+              <strong class="qp-model-group-name">{{ group.model }}</strong>
             </button>
             <span v-if="group.featured" class="qp-model-tag">特色</span>
             <span v-if="group.hotRequests" class="qp-model-tag qp-model-tag--hot">热门 {{ group.hotRequests }}</span>
             <span class="qp-pill">{{ group.nodes.length }} 节点</span>
-            <!-- 请求图标（缩微版）：右侧显示该模型当前正在处理的请求数；
-                 默认折叠状态下仍能直接看到是否在跑流量，无需展开。 -->
+            <!-- 最近 50 次请求图标条：右侧显示该模型最近 50 次请求的结果小条，
+                 从左到右旧→新；默认折叠状态下仍能直接看到最近流量状态。
+                 当数据尚未到达时降级回单图标 + 当前请求数。 -->
             <span
+              v-if="modelRecentEntries(group).length > 0"
+              class="qp-model-rq-strip"
+              :title="`${modelRecentEntries(group).length} 条最近请求（最旧在左，最新在右）`"
+              aria-hidden="true"
+            >
+              <span
+                v-for="(entry, idx) in modelRecentEntries(group)"
+                :key="`${entry.rid || 'r'}-${entry.ts}-${idx}`"
+                class="qp-model-rq-cell"
+                :class="entry.ok ? 'ok' : 'bad'"
+              />
+            </span>
+            <span
+              v-else
               class="qp-model-rq-icon"
               :class="{ 'qp-model-rq-icon--active': group.requestCount > 0 }"
               :title="`${group.requestCount} 当前请求`"
@@ -1081,15 +914,12 @@ function formatTs(ts: string | undefined): string {
               <span class="qp-model-rq-count">{{ group.requestCount }}</span>
             </span>
             <span class="qp-pill qp-pill--hint" :title="dragDisabledHint(group)">{{ canReorder(group) ? '拖动调整优先级' : '优先级排序不可用' }}</span>
-          </div>
-          <div v-if="expandedModels.has(group.model)" class="qp-model-group-body">
             <div class="qp-model-nodes">
               <div
-                v-for="(node, nodeIndex) in group.nodes"
+                v-for="node in group.nodes"
                 :key="node.credential_id"
                 class="qp-node-card-wrap"
                 :class="{ 'is-drag-over': isDragTarget(group.model, node.credential_id) }"
-                :style="{ width: `${nodeCardWidth(group, node)}px` }"
                 @dragover="onDragOver($event, group, node.credential_id)"
                 @dragleave="onDragLeave(group, node.credential_id)"
                 @drop="onDrop($event, group, node.credential_id)"
@@ -1098,59 +928,30 @@ function formatTs(ts: string | undefined): string {
                   type="button"
                   class="qp-node-card"
                   :class="nodeCardTone(node)"
-                  :title="`${nodeCardTitle(node, group)}：${nodeStatusSummary(node)}${node.last_error ? `；${node.last_error}` : ''}`"
+                  :title="`${nodeTitle(node)}：${nodeStatusSummary(node)}${node.last_error ? `；${node.last_error}` : ''}`"
+                  :draggable="canReorder(group)"
                   @click="openNode(node, group.aliases)"
+                  @dragstart="onDragStart($event, group, node.credential_id)"
+                  @dragend="clearDragState"
                 >
-                  <span
-                    class="qp-node-card-drag-handle"
-                    :class="{ 'is-enabled': canReorder(group) }"
-                    :draggable="canReorder(group)"
-                    aria-hidden="true"
-                    @click.stop.prevent
-                    @dragstart.stop="onDragStart($event, group, node.credential_id)"
-                    @dragend.stop="clearDragState"
-                  >⋮⋮</span>
-                  <span class="qp-node-card-title">
-                    <span v-if="isPriorityNode(group, node)" class="qp-node-priority-flag" title="优先节点：额度用完前优先路由">★</span>
-                    {{ nodeCardTitle(node, group) }}
-                  </span>
+                  <span class="qp-node-card-drag-handle" aria-hidden="true">⋮⋮</span>
+                  <span class="qp-node-card-title">{{ nodeTitle(node) }}</span>
                   <span class="qp-node-card-dots" :title="`熔断 ${node.circuit_state || '未知'} · 可用性 ${node.availability_state || '未知'} · 配额 ${node.quota_state || '未知'} · 健康 ${node.health_status || '未知'}`">
                     <i class="qp-dot" :class="dotClass(circuitOk(node))" /><i class="qp-dot" :class="dotClass(availabilityOk(node))" /><i class="qp-dot" :class="dotClass(quotaOk(node))" /><i class="qp-dot" :class="dotClass(healthOk(node))" />
-                    <span class="qp-node-rank">{{ nodePriorityLabel(group, node, nodeIndex) }}</span>
                   </span>
                   <span class="qp-node-card-meta">
-                    <template v-if="windowStatsFor(group, node.credential_id)">
-                      <span class="qp-stat-ok">✓{{ windowStatsFor(group, node.credential_id)!.success }}</span>
-                      <span class="qp-stat-fail">✗{{ windowStatsFor(group, node.credential_id)!.failed }}</span>
-                      <span class="qp-stat-window">· {{ WINDOW_MINUTES }}m</span>
-                    </template>
-                    <template v-else>
-                      <span class="qp-stat-ok">✓—</span>
-                      <span class="qp-stat-fail">✗—</span>
-                      <span class="qp-stat-window">· {{ WINDOW_MINUTES }}m</span>
-                    </template>
-                    <template v-if="node.in_flight"> · 在途 {{ node.in_flight }}</template>
+                    {{ nodeStatusSummary(node) }}<template v-if="node.in_flight"> · 在途 {{ node.in_flight }}</template><template v-if="node.last_latency_ms != null"> · {{ formatLatency(node.last_latency_ms) }}</template>
                   </span>
-                  <div
-                    v-if="windowEntriesFor(group, node.credential_id).length"
-                    class="qp-node-window"
-                    aria-hidden="true"
-                  >
-                    <span
-                      v-for="(entry, idx) in windowEntriesFor(group, node.credential_id)"
-                      :key="`${entry.rid || 'e'}-${entry.ts}-${idx}`"
-                      class="qp-node-window-cell"
-                      :class="entry.ok ? 'ok' : 'bad'"
-                    />
-                  </div>
                 </button>
               </div>
             </div>
+          </div>
+          <div v-if="expandedModels.has(group.model)" class="qp-model-group-body">
             <p class="qp-model-detail-hint">{{ t('requestJourneys.nodeDetailHint') }}</p>
             <ul v-if="group.nodes.some(node => requestsForNode(node, group.aliases).length)" class="qp-model-group-requests">
               <template v-for="node in group.nodes" :key="node.credential_id">
                 <li v-for="request in requestsForNode(node, group.aliases)" :key="request.request_id" class="qp-model-group-request">
-                  <span class="qp-rq-node">{{ nodeCardTitle(node, group) }}</span><span class="qp-rq-model">{{ request.model || '—' }}</span><span class="qp-rq-status" :class="`qp-rq-status--${request.status}`">{{ request.status || '—' }}</span><span v-if="typeof request.latency_ms === 'number'" class="qp-rq-latency">{{ formatLatency(request.latency_ms) }}</span><span v-if="request.error_kind" class="qp-rq-err">{{ request.error_kind }}</span><span class="qp-rq-ts">{{ formatTs(request.ts) }}</span>
+                  <span class="qp-rq-node">{{ nodeTitle(node) }}</span><span class="qp-rq-model">{{ request.model || '—' }}</span><span class="qp-rq-status" :class="`qp-rq-status--${request.status}`">{{ request.status || '—' }}</span><span v-if="typeof request.latency_ms === 'number'" class="qp-rq-latency">{{ formatLatency(request.latency_ms) }}</span><span v-if="request.error_kind" class="qp-rq-err">{{ request.error_kind }}</span><span class="qp-rq-ts">{{ formatTs(request.ts) }}</span>
                 </li>
               </template>
             </ul>
@@ -1378,29 +1179,20 @@ function formatTs(ts: string | undefined): string {
 .qp-model-tag { font-size:10px; padding:2px 6px; border-radius:999px; color:var(--kx-accent); background:color-mix(in srgb, var(--kx-accent) 12%, transparent); }
 .qp-model-tag--hot { color:var(--kx-warning); background:color-mix(in srgb, var(--kx-warning) 12%, transparent); }
 .qp-model-nodes { display:flex; gap:6px; flex-wrap:wrap; flex:1 1 100%; padding-left:18px; }
-.qp-node-card-wrap { border-radius:6px; transition: background 120ms ease, outline-color 120ms ease, width 160ms ease; outline: 2px dashed transparent; outline-offset: 1px; flex: 0 0 auto; }
+.qp-node-card-wrap { border-radius:6px; transition: background 120ms ease, outline-color 120ms ease; outline: 2px dashed transparent; outline-offset: 1px; }
 .qp-node-card-wrap.is-drag-over { background: color-mix(in srgb, var(--kx-accent) 14%, transparent); outline-color: var(--kx-accent); }
-.qp-node-card { display:grid; gap:4px; text-align:left; width:100%; box-sizing:border-box; padding:7px 9px; border:1px solid var(--kx-border); border-left-width:3px; border-radius:6px; background:var(--kx-surface); cursor:pointer; color:var(--kx-text); position:relative; }
-.qp-node-rank { margin-left:6px; font-size:10px; color:var(--kx-muted); font-variant-numeric: tabular-nums; }
-.qp-node-card-meta { display:flex; flex-wrap:wrap; gap:4px; align-items:baseline; font-size:11px; color:var(--kx-muted); overflow:hidden; }
-.qp-stat-ok { color: var(--kx-success); font-variant-numeric: tabular-nums; }
-.qp-stat-fail { color: var(--kx-danger); font-variant-numeric: tabular-nums; }
-.qp-stat-window { color: var(--kx-muted); }
+.qp-node-card { display:grid; gap:4px; text-align:left; min-width:150px; max-width:230px; padding:7px 9px; border:1px solid var(--kx-border); border-left-width:3px; border-radius:6px; background:var(--kx-surface); cursor:pointer; color:var(--kx-text); position:relative; }
 .qp-node-card:hover { border-color:var(--kx-accent); }
-.qp-node-card-drag-handle { position:absolute; top:3px; right:5px; font-size:10px; color:var(--kx-text-secondary); opacity:.45; line-height:1; user-select:none; cursor:default; }
-.qp-node-card-drag-handle.is-enabled { opacity:.85; cursor:grab; }
-.qp-node-card-drag-handle.is-enabled:active { cursor:grabbing; }
-.qp-node-window { display:flex; align-items:stretch; height:8px; gap:1px; overflow:hidden; margin-top:2px; }
-.qp-node-window-cell { flex:0 0 3px; width:3px; min-width:2px; border-radius:1px; background:var(--kx-danger); }
-.qp-node-window-cell.ok { background:var(--kx-success); }
-.qp-node-window-cell.bad { background:var(--kx-danger); }
-.qp-node-card-title { font-size:12px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; padding-right:14px; display:inline-flex; align-items:center; gap:4px; max-width:100%; }
-.qp-node-priority-flag { color:var(--kx-warning); font-size:11px; line-height:1; flex:0 0 auto; }
+.qp-node-card-drag-handle { position:absolute; top:3px; right:5px; font-size:10px; color:var(--kx-text-secondary); opacity:.6; line-height:1; user-select:none; }
+.qp-node-card[draggable="true"] { cursor: grab; }
+.qp-node-card[draggable="true"]:active { cursor: grabbing; }
+.qp-node-card-title { font-size:12px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; padding-right:14px; }
 .qp-node-card-dots { display:inline-flex; gap:4px; align-items:center; }
 .qp-dot { width:7px; height:7px; border-radius:50%; background:var(--kx-text-secondary); opacity:.5; }
 .qp-dot--ok { background:var(--kx-success); opacity:1; }
 .qp-dot--bad { background:var(--kx-danger); opacity:1; }
 .qp-dot--unknown { background:var(--kx-text-secondary); opacity:.4; }
+.qp-node-card-meta { font-size:11px; color:var(--kx-text-secondary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .qp-node-card--ok { border-left-color:var(--kx-success); }
 .qp-node-card--warn { border-left-color:var(--kx-warning); }
 .qp-node-card--danger { border-left-color:var(--kx-danger); }
@@ -1587,7 +1379,6 @@ function formatTs(ts: string | undefined): string {
   color: var(--kx-muted, var(--kx-text-secondary));
   cursor: help;
 }
-
 /* 模型标题右侧请求图标：默认折叠时也能一眼看到模型在跑流量。
    三层条形 = 模拟请求纸面，"active" 状态下加深以提示有在途请求。 */
 .qp-model-rq-icon {
@@ -1610,4 +1401,32 @@ function formatTs(ts: string | undefined): string {
   background: color-mix(in srgb, var(--kx-primary) 8%, var(--kx-surface));
 }
 .qp-model-rq-count { font-weight: 600; }
+
+/* 模型标题右侧最近 50 次请求图标条（2026-08-26）：
+   复用节点小窗的配色与节奏，左→右旧→新；折叠状态下也能让操作员
+   一眼看到该模型最近流量是连续成功还是零星失败。 */
+.qp-model-rq-strip {
+  display: inline-flex;
+  align-items: stretch;
+  gap: 1px;
+  height: 12px;
+  padding: 2px 4px;
+  border-radius: 4px;
+  background: var(--kx-bg, var(--kx-surface));
+  border: 1px solid var(--kx-border);
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 240px;
+  justify-content: flex-end;
+  overflow: hidden;
+}
+.qp-model-rq-cell {
+  flex: 0 0 3px;
+  width: 3px;
+  min-width: 2px;
+  border-radius: 1px;
+  background: var(--kx-success);
+  align-self: center;
+}
+.qp-model-rq-cell.bad { background: var(--kx-danger); }
 </style>

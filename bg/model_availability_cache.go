@@ -8,11 +8,7 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-const (
-	modelAvailabilityCacheTTL = 4 * time.Hour
-	availabilityIndexKey      = "llmgw:avail:index"
-	availabilityIndexReadyKey = "llmgw:avail:index:ready"
-)
+const modelAvailabilityCacheTTL = 4 * time.Hour
 
 // ModelAvailabilityCache stores per-(credential, model) probe state in Redis
 // so operators and future routing paths can query a single fast public source.
@@ -44,9 +40,6 @@ func (c *ModelAvailabilityCache) Set(ctx context.Context, credentialID int, rawM
 	pipe := c.redis.Pipeline()
 	pipe.HSet(ctx, key, fields)
 	pipe.Expire(ctx, key, c.ttl)
-	pipe.SAdd(ctx, availabilityIndexKey, key)
-	pipe.Expire(ctx, availabilityIndexKey, c.ttl)
-	pipe.Set(ctx, availabilityIndexReadyKey, "1", c.ttl)
 	_, err := pipe.Exec(ctx)
 	recordAvailabilityWriteDuration(time.Since(writeStart).Seconds())
 	if err == nil {

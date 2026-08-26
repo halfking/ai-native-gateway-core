@@ -34,8 +34,6 @@ export default {
     auditLogs: "Audit-Logs",
     requestLogs: "Anfrage-Logs",
     dispatchWaterfall: "Warteschlangen-Wasserfall",
-    requestRegistry: "Request Registry",
-    connectionRegistry: "Connection Registry",
     turns: "Turns-Liste",
     requestTrace: "Anfrage-Verfolgung",
     sessions: "Sitzungen",

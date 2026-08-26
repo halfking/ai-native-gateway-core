@@ -18,8 +18,7 @@ export type RequestStatus =
   | 'failure_other'
   | 'idle'              // 空闲块（系统生成）
 
-export type StageCategory = 'routing' | 'llm' | 'retrying' | 'terminal'
-
+// 状态描述映射（显示在状态图例中）
 export const STATUS_DESCRIPTIONS: Record<RequestStatus, string> = {
   'success': '请求成功',
   'in_progress': '正在处理中',
@@ -72,7 +71,6 @@ export interface RequestTile {
   // backward compatible — absent means "not reported", the card must NOT
   // render a guessed value (13号 gate).
   stage?: string
-  stage_category?: StageCategory
   retrySeq?: number
   parentRequestId?: string
   requestType?: 'chat' | 'title' | 'summary' | 'sensitive_word' | 'probe' | 'unknown'

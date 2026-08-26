@@ -46,6 +46,7 @@ export default {
     groupWarn: '⚡ 警告ノード ({count})',
     groupOk: '✅ 正常ノード ({count})',
     groupDisabled: '🚫 無効ノード ({count})',
+    nodeLabel: 'ノード {credentialId}',
     circuit: 'サーキット',
     availability: '可用性',
     quota: 'クォータ',

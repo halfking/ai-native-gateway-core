@@ -34,8 +34,6 @@ export default {
     auditLogs: "監査ログ",
     requestLogs: "リクエストログ",
     dispatchWaterfall: "キューウォーターフォール",
-    requestRegistry: "Request Registry",
-    connectionRegistry: "Connection Registry",
     turns: "ターンリスト",
     requestTrace: "リクエストトレース",
     sessions: "セッション一覧",

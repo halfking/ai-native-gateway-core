@@ -46,11 +46,11 @@ type ModelTierConfig struct {
 
 // ModelTier caches the featured set and answers IsFeaturedModel.
 type ModelTier struct {
-	db   *pgxpool.Pool
-	cfg  ModelTierConfig
-	cur  atomic.Pointer[featuredSet]
-	done chan struct{}
-	once atomic.Bool
+	db    *pgxpool.Pool
+	cfg   ModelTierConfig
+	cur   atomic.Pointer[featuredSet]
+	done  chan struct{}
+	once  atomic.Bool
 }
 
 // NewModelTier constructs the tier cache. nil db ⇒ a no-op tier (IsFeaturedModel

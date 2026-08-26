@@ -7,16 +7,11 @@ import { resolveRouting } from '../api/routing'
 import { getDecisions } from '../api/routing'
 import { getRequestLogs } from '../api/logs'
 import { getSlidingWindow } from '../api/credential-monitor'
-import { useCredentialLabels } from '../composables/useCredentialLabels'
 import { store } from '../store'
 
 const route = useRoute()
 const router = useRouter()
 const modelName = ref((route.query.model as string) || '')
-// credentialDisplayName resolves credential id → human label; the composable
-// keeps a Map<id,label> refreshed via loadCredentialLabels(), and falls back
-// to "凭据 #ID" if the label is missing.
-const { credentialDisplayName } = useCredentialLabels()
 
 type TabId = 'nodes' | 'routing' | 'decisions' | 'monitor' | 'logs' | 'probe' | 'pricing'
 const tabs: { id: TabId; label: string }[] = [
@@ -267,7 +262,7 @@ async function triggerProbe(node: ModelNode) {
       credential_id: node.credential_id,
       raw_model_name: modelName.value,
     })
-    flash(`已触发 ${credentialDisplayName(node.credential_id)} 的探活`)
+    flash(`已触发凭据 #${node.credential_id} 的探活`)
   } catch (err) {
     flash(`触发失败: ${err instanceof Error ? err.message : String(err)}`)
   } finally {
@@ -445,7 +440,7 @@ onMounted(() => {
               <div>
                 <div class="node-label">{{ node.credential_label }}</div>
                 <div class="muted-text small">
-                  {{ credentialDisplayName(node.credential_id) }} · {{ node.provider_name }}
+                  Credential #{{ node.credential_id }} · {{ node.provider_name }}
                 </div>
               </div>
               <div class="node-badges">
@@ -505,7 +500,7 @@ onMounted(() => {
                 <td>T{{ c.tier }}</td>
                 <td>{{ c.provider_name }}</td>
                 <td>
-                  {{ c.credential_label || credentialDisplayName(c.credential_id) }}
+                  {{ c.credential_label || '#' + c.credential_id }}
                   <div v-if="c.runtime_block_reason" class="muted-text small">{{ c.runtime_block_reason }}</div>
                 </td>
                 <td>{{ formatNumber(c.success_rate * 100, 1) }}%</td>
@@ -543,7 +538,7 @@ onMounted(() => {
             <tr v-for="d in decisions" :key="d.request_id">
               <td>{{ formatTime(d.ts) }}</td>
               <td class="mono">{{ d.request_id.slice(0, 12) }}…</td>
-              <td>{{ d.chosen_credential_id ? credentialDisplayName(d.chosen_credential_id) : '—' }}</td>
+              <td>{{ d.chosen_credential_id ? '#' + d.chosen_credential_id : '—' }}</td>
               <td>{{ d.tier != null ? 'T' + d.tier : '—' }}</td>
               <td>
                 <span :class="['badge', d.success ? 'badge-green' : 'badge-red']">
@@ -628,7 +623,7 @@ onMounted(() => {
               <td class="mono">{{ log.request_id.slice(0, 12) }}…</td>
               <td>
                 <span v-if="log.credential_label">{{ log.credential_label }}</span>
-                <span v-else-if="log.credential_id">{{ credentialDisplayName(log.credential_id) }}</span>
+                <span v-else-if="log.credential_id">#{{ log.credential_id }}</span>
                 <span v-else>—</span>
                 <div v-if="log.provider_name" class="muted-text small">{{ log.provider_name }}</div>
               </td>
@@ -666,7 +661,7 @@ onMounted(() => {
             <div class="probe-info">
               <strong>{{ node.credential_label }}</strong>
               <span class="muted-text small">
-                · {{ credentialDisplayName(node.credential_id) }} · {{ node.provider_name }}
+                · #{{ node.credential_id }} · {{ node.provider_name }}
                 · 状态:
                 <span :style="{ color: getStateColor(node.state) }">{{ node.state }}</span>
               </span>
@@ -709,7 +704,7 @@ onMounted(() => {
               <td>{{ p.provider_name }}</td>
               <td>
                 {{ p.credential_label }}
-                <div class="muted-text small">{{ credentialDisplayName(p.credential_id) }}</div>
+                <div class="muted-text small">#{{ p.credential_id }}</div>
               </td>
               <td>{{ formatPrice(p.unit_price_in_per_1m, p.currency) }}</td>
               <td>{{ formatPrice(p.unit_price_out_per_1m, p.currency) }}</td>
@@ -769,7 +764,7 @@ onMounted(() => {
 
 .flash {
   padding: 8px 16px;
-  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  background: rgba(96, 165, 250, 0.12);
   color: var(--accent);
   border-radius: var(--radius);
   margin-bottom: 12px;
@@ -912,7 +907,7 @@ onMounted(() => {
 }
 
 .data-table tbody tr:hover {
-  background: var(--bg-hover);
+  background: rgba(255, 255, 255, 0.02);
 }
 
 .mono {
@@ -945,7 +940,7 @@ onMounted(() => {
 .window-btn.active {
   color: var(--accent);
   border-color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  background: rgba(96, 165, 250, 0.08);
 }
 
 .stats-row {

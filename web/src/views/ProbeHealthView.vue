@@ -444,10 +444,10 @@ h1 {
   text-align: center;
 }
 
-.queue-urgent { background: var(--danger-bg); }
-.queue-suspicious { background: var(--warning-bg); }
-.queue-failing { background: var(--warning-bg); }
-.queue-watchdog { background: var(--success-bg); }
+.queue-urgent { background: rgba(248,81,73,.1); }
+.queue-suspicious { background: rgba(210,153,34,.1); }
+.queue-failing { background: rgba(210,153,34,.1); }
+.queue-watchdog { background: rgba(63,185,80,.1); }
 
 .queue-label {
   font-size: 11px;
@@ -520,7 +520,7 @@ h1 {
 }
 
 .data-table tbody tr:hover {
-  background: var(--bg-hover);
+  background: rgba(255, 255, 255, 0.02);
 }
 
 .text-center {

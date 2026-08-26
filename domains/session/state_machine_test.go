@@ -437,11 +437,11 @@ func TestApprovalFlow_ErrorHandling(t *testing.T) {
 func TestApprovalFlow_TimeoutScenario(t *testing.T) {
 	sm := NewStateMachine()
 	sc := &SessionContext{
-		SessionID:         "test_session_timeout",
-		RequestID:         "test_request_timeout",
-		State:             StateApprovalRequested,
-		CreatedAt:         time.Now(),
-		Metadata:          make(map[string]any),
+		SessionID: "test_session_timeout",
+		RequestID: "test_request_timeout",
+		State:     StateApprovalRequested,
+		CreatedAt: time.Now(),
+		Metadata:  make(map[string]any),
 		ApprovalRequestID: "req_timeout_test",
 		ApprovalStatus:    "pending",
 	}

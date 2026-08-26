@@ -12,7 +12,6 @@ export default {
   tabProbe: 'Auto-Prüfung',
   tabProbeTitle: 'Auto-Prüfungs-Datensätze anzeigen (fehlgeschlagene Bindungen werden alle 10 Minuten erneut geprüft)',
   tabSettings: 'Einstellungen',
-  tabErrorDetail: 'Anbieter-Fehler',
   loading: 'Wird geladen…',
   loadingFallback: '...',
   refresh: 'Aktualisieren',

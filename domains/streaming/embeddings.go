@@ -224,7 +224,7 @@ func (h *EmbeddingsHandler) authenticate(w http.ResponseWriter, r *http.Request,
 		writeErrorJSON(w, http.StatusTooManyRequests, requestID, "API key throttled", "rate_limit_error", "key_throttled")
 		return nil, false
 	}
-	if outcome := checkGatewayRateLimit(r.Context(), keyInfo, h.rateLimiter, nil); !outcome.Skipped {
+	if outcome := checkGatewayRateLimit(keyInfo, h.rateLimiter); !outcome.Skipped {
 		writeRateLimitHeaders(w, outcome)
 		if outcome.Blocked {
 			h.recordRateLimited(requestID, keyInfo, "<unknown>", "rate_limit_exceeded")
