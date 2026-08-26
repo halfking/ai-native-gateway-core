@@ -1001,7 +1001,7 @@ function mergeSnapshotFromServer(incoming: LiveStreamSnapshot) {
     // semantics. The UI contract is the opposite: FIFO, oldest on the left
     // and newest on the right. Normalize the first snapshot too; incremental
     // merges already pass through mergeTilesById below.
-    for (const dim of ['vendor', 'provider', 'model'] as const) {
+    for (const dim of ['credential', 'vendor', 'provider', 'model'] as const) {
       for (const lane of incoming.dimensions[dim] || []) {
         normalizeLaneTiles(lane)
       }
@@ -1015,7 +1015,7 @@ function mergeSnapshotFromServer(incoming: LiveStreamSnapshot) {
   const s = liveStreamState.snapshot
   s.summary = incoming.summary
   s.status_legends = incoming.status_legends
-  for (const dim of ['vendor', 'provider', 'model'] as const) {
+  for (const dim of ['credential', 'vendor', 'provider', 'model'] as const) {
     if (incoming.dimensions[dim]) {
       if (!s.dimensions[dim]) s.dimensions[dim] = []
       mergeLanesById(s.dimensions[dim], incoming.dimensions[dim])
@@ -1042,7 +1042,9 @@ function tilesEqual(a: LiveStreamTile[], b: LiveStreamTile[]): boolean {
       x.status !== y.status ||
       x.model !== y.model ||
       x.vendor !== y.vendor ||
-      x.provider !== y.provider
+      x.provider !== y.provider ||
+      x.credential_id !== y.credential_id ||
+      x.credential_label !== y.credential_label
     ) {
       return false
     }
