@@ -17,21 +17,23 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/admin/distlock" // 2026-08-19 title-gen per-session distributed lock
-	"github.com/kaixuan/llm-gateway-go/admin/logsearch" // 2026-08-26 Phase A: Bleve log full-text search
 	"github.com/kaixuan/llm-gateway-go/bg"
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/discovery"
+	"github.com/kaixuan/llm-gateway-go/domains/analysis/sessionmeta"
 	"github.com/kaixuan/llm-gateway-go/domains/attachments"     //nolint:depguard // attachment download/list routes live in the admin mux
 	"github.com/kaixuan/llm-gateway-go/domains/credentialstate" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/dbdegradation"   //nolint:depguard // 数据库降级模块
 	"github.com/kaixuan/llm-gateway-go/domains/memory"          //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/modelquality"    // model-IQ backend interface (modelQualityBackend)
-	"github.com/kaixuan/llm-gateway-go/domains/session"         //nolint:depguard // session state manager
-	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit"    //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/requestdetail"
+	"github.com/kaixuan/llm-gateway-go/domains/session"      //nolint:depguard // session state manager
+	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/stats"
 	"github.com/kaixuan/llm-gateway-go/domains/stats/boardcache"
 	v2 "github.com/kaixuan/llm-gateway-go/domains/ursm/v2"
 	"github.com/kaixuan/llm-gateway-go/internal/summarystore" //nolint:depguard // 2026-08-06 auto summary persistence
+	"github.com/kaixuan/llm-gateway-go/internal/titlestore"   //nolint:depguard // durable title fencing/tombstone state
 	"github.com/kaixuan/llm-gateway-go/pending"
 	"github.com/kaixuan/llm-gateway-go/secret"
 	"github.com/kaixuan/llm-gateway-go/security/ipblocklist"
@@ -58,9 +60,24 @@ type Handler struct {
 	envCleaner           *bg.EnvelopeCleaner
 	stickyClean          *bg.StickyCleaner
 	taxSync              *bg.TaxonomySync
-	probeV2              *bg.CredentialProbeV2  // 900-series: mini-chat probe (spec §5)
-	probePicker          *bg.DefaultProbePicker // 900-series: default probe model (spec §4)
-	modelProbe           *bg.ModelProbeRunner   // 2026-06-18: per-model re-probe of failing bindings (spec 2026-06-18-model-probe-rounds)
+	// 2026-08-26 hot-reload: in-process sticky cache for clear-for-credential
+	// on PATCH binding/credential. Cleared by HandleRoutingCandidateBindingUpdate
+	// and updateCredential so new sessions can re-enter load balancing
+	// without waiting for the sticky TTL to expire.
+	stickyCache StickyCacheClearer
+	// 2026-08-26 hot-reload: in-process limiter for hot-update of
+	// concurrency_limit on PATCH credential/binding. The Limiter pool's
+	// per-credential semaphore capacity is refreshed by
+	// HandleRoutingCandidateBindingUpdate / updateCredential.
+	limiter     LimiterCapacitySetter
+	probeV2     *bg.CredentialProbeV2  // 900-series: mini-chat probe (spec §5)
+	probePicker *bg.DefaultProbePicker // 900-series: default probe model (spec §4)
+	modelProbe  *bg.ModelProbeRunner   // 2026-06-18: per-model re-probe of failing bindings (spec 2026-06-18-model-probe-rounds)
+	// balanceQuotaProbe (2026-08-23 hzx-2 audit) backs the admin
+	// "force re-check after recharge" endpoint. nil → the route is
+	// still registered (URL stays stable across deployments); the
+	// handler returns 503 when this is nil.
+	balanceQuotaProbe *bg.BalanceQuotaProbe
 	// 2026-07-23: 系统监测模块 — 所有探测任务的唯一入口 (design §1.2 #1).
 	// nil 时 /api/admin/system-monitor/* 端点 503；探测仍可能由旧 worker 跑。
 	systemMonitor    SystemMonitorBackend
@@ -81,8 +98,9 @@ type Handler struct {
 	// 2026-06-23 Phase 2/3: backs /api/candidate-failures* endpoints.
 	// Wired from cmd/gateway/main.go via SetCandidateFailureHandlers so
 	// /alerts can read live data from the CandidateFailureMonitor.
-	cfHandlers *candidateFailureHandlers
-	fpSlots    *credentialfpslot.Manager
+	cfHandlers  *candidateFailureHandlers
+	vceHandlers *vendorCredentialErrorHandlers
+	fpSlots     *credentialfpslot.Manager
 	// pendingStore (Track C C7, 2026-06-18) is the durable cache
 	// for client reconnect and vendor async retry. nil disables
 	// the /api/admin/pending-responses* endpoints; the GET
@@ -197,6 +215,8 @@ type Handler struct {
 	}
 	redisClient            interface{}                   // Redis client for sliding window access
 	titleDistLock          distlock.Manager              // 2026-08-19 per-session title-gen distributed lock; defaults to in-process LocalManager
+	titleStore             *titlestore.Store             // durable title fencing/tombstone state
+	analysisMetadataStore  *sessionmeta.MetadataStore    // arrival/final session analysis metadata
 	availabilityReader     *bg.ModelAvailabilityReader   // 2026-06-29 mirror of unified probe state to Redis
 	availabilityBackfill   *bg.AvailabilityCacheBackfill // 2026-06-29 on-demand DB→Redis cache rebuild
 	availabilityKeyCounter *bg.AvailabilityKeyCounter    // 2026-06-29 on-demand SCAN-based key count
@@ -293,12 +313,42 @@ type Handler struct {
 		UpdateFromProbe(ctx context.Context, state *credentialstate.State)
 	}
 
+	// probeSubmitter (2026-08-23, hzx-2 audit) lets the focused
+	// /api/routing/credentials/{id}/reset-state endpoint trigger an
+	// immediate self-check probe so the operator doesn't have to wait for
+	// the next 5-min tick to learn whether the upstream is back.
+	// nil → trigger_probe=true is silently ignored.
+	//
+	// Stored as a function value (not an interface) so cmd/gateway/main.go
+	// can wire a closure around the late-constructed NodeProbeWorker
+	// without needing a named adapter type.
+	probeSubmitter func(credentialID int, rawModel, tenantID, parentReqID string)
+
+	// autoHealOneShot (2026-08-23, hzx-2 audit) is the bg.CredentialAutoHealWorker.OneShot
+	// method bound to the credentialAutoHealWorker instance. The reset-state
+	// endpoint calls it synchronously after a successful reset so the
+	// self-heal probes start within the same request instead of waiting
+	// for the next 5-min tick. Returns the number of (cred, model) pairs
+	// submitted. nil → the endpoint silently skips this step.
+	autoHealOneShot func(ctx context.Context, credentialID int) int
+
+	// requestDetailStore (2026-08-25): in-flight request meta + per-request_id
+	// local body files. Locator prefers memory/file before DB dual-write.
+	requestDetailStore   *requestdetail.Store
+	requestDetailLocator *requestdetail.Locator
+
 	// rateLimiter (V3.2-LP5, 2026-08-14) 节点操作限流器：test-now 1req/s per-cred + 10req/min per-operator。
 	rateLimiter *nodeOperationsRateLimiter
 	// statsShadowExecutor runs bounded, read-only legacy/canonical comparisons.
 	statsShadowExecutor *statsShadowExecutor
 	// auditLogger (V3.2-LP5, 2026-08-14) 节点操作审计：异步写入 request_state_transitions。
 	auditLogger *nodeOperationAuditLogger
+}
+
+// refreshDB returns the pool used by catalog writes during an admin model
+// refresh. Keeping the accessor local avoids widening Handler's public API.
+func (h *Handler) refreshDB() *pgxpool.Pool {
+	return h.db
 }
 
 func NewHandler(db *pgxpool.Pool, secretKey string, encKey []byte) *Handler {
@@ -320,8 +370,11 @@ func NewHandler(db *pgxpool.Pool, secretKey string, encKey []byte) *Handler {
 		// single-flight semantics within a single replica. The wiring
 		// code in cmd/gateway/main.go upgrades this to a Redis-backed
 		// manager once the cluster Redis client is healthy.
-		titleDistLock: distlock.NewLocalManager(),
+		titleDistLock:         distlock.NewLocalManager(),
+		titleStore:            titlestore.New(db),
+		analysisMetadataStore: sessionmeta.NewMetadataStore(db),
 	}
+
 	// Initialize auto title generator
 	h.autoTitleGen = NewAutoTitleGenerator(h)
 	// 2026-08-06: initialize incremental-rolling session summary generator.
@@ -588,6 +641,36 @@ func (h *Handler) SetBackgroundServices(credCycler *bg.CredentialCycler, credRec
 	h.taxSync = taxSync
 }
 
+// 2026-08-26 hot-reload: small interfaces decouple admin handlers from the
+// concrete Limiter / StickyCache types. The executors.StickyCache and
+// credential.Limiter types already implement these (duck-typed). Defined
+// here so admin/handler.go doesn't have to import the heavy packages just
+// for two methods.
+
+// StickyCacheClearer is the small surface of executors.StickyCache that the
+// admin handler needs to clear sticky bindings for one credential.
+type StickyCacheClearer interface {
+	ClearForCredential(credID int) (int, error)
+}
+
+// LimiterCapacitySetter is the small surface of credential.Limiter that
+// the admin handler needs to hot-update concurrency capacity.
+type LimiterCapacitySetter interface {
+	SetCredentialCapacity(providerID, credentialID, capacity int)
+}
+
+// SetHotReloadDeps wires the runtime caches that PATCH endpoints need to
+// invalidate when admin changes a credential's priority / weight /
+// concurrency_limit. Called from cmd/gateway/main.go.
+func (h *Handler) SetHotReloadDeps(stickyCache StickyCacheClearer, limiter LimiterCapacitySetter) {
+	if stickyCache != nil {
+		h.stickyCache = stickyCache
+	}
+	if limiter != nil {
+		h.limiter = limiter
+	}
+}
+
 // SetProbeServices injects the 900-series background services (spec §4-5).
 func (h *Handler) SetProbeServices(probeV2 *bg.CredentialProbeV2, picker *bg.DefaultProbePicker) {
 	h.probeV2 = probeV2
@@ -598,6 +681,11 @@ func (h *Handler) SetProbeServices(probeV2 *bg.CredentialProbeV2, picker *bg.Def
 // 2026-06-18-model-probe-rounds).  nil-safe — admin keeps working
 // without the manual-trigger endpoint if the worker isn't running.
 func (h *Handler) SetModelProbeRunner(r *bg.ModelProbeRunner) { h.modelProbe = r }
+
+// SetBalanceQuotaProbe wires the balance/permanent quota probe worker
+// so the admin force-probe endpoint (POST /api/admin/probe/force/{id})
+// can dispatch immediate re-checks. Pass nil to disable the endpoint.
+func (h *Handler) SetBalanceQuotaProbe(b *bg.BalanceQuotaProbe) { h.balanceQuotaProbe = b }
 
 // SetModelQualityBackend wires the model-quality worker for the on-demand
 // node IQ test endpoint (POST /api/admin/model-iq/trigger). Pass nil to
@@ -668,6 +756,22 @@ func (h *Handler) SetCredStateRecoverer(r interface {
 	UpdateFromProbe(ctx context.Context, state *credentialstate.State)
 }) {
 	h.credStateRecoverer = r
+}
+
+// SetProbeSubmitter (2026-08-23, hzx-2 audit) wires the focused
+// /api/routing/credentials/{id}/reset-state endpoint to a probe-submitting
+// function. Optional — when nil the reset endpoint still works but
+// trigger_probe=true is silently ignored.
+func (h *Handler) SetProbeSubmitter(s func(credentialID int, rawModel, tenantID, parentReqID string)) {
+	h.probeSubmitter = s
+}
+
+// SetAutoHealOneShot (2026-08-23, hzx-2 audit) wires the bg.CredentialAutoHealWorker.OneShot
+// method into the focused reset-state endpoint so a successful reset kicks
+// off self-heal probes immediately. Optional — when nil the endpoint skips
+// the immediate self-heal submission.
+func (h *Handler) SetAutoHealOneShot(f func(ctx context.Context, credentialID int) int) {
+	h.autoHealOneShot = f
 }
 
 // SetSettingsStore (settings-management, 2026-06-20) injects the
@@ -766,13 +870,19 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/routing/recent-model-failures", admin(h.handleRoutingRecentModelFailures))
 	// 2026-07-24: routing-v2 resolve 页"候选设置"写入端点（仅 super_admin）。
 	// 仅允许改 credential_model_bindings 的 manual_priority / routing_tier /
-	// weight 三个排序相关字段；状态/熔断/可用性等硬规则必须走原有监控路径。
+	// weight / priority 四个排序相关字段；状态/熔断/可用性等硬规则必须走原有监控路径。
 	mux.HandleFunc("/api/routing/candidate-binding/", h.superAdmin(h.handleRoutingCandidateBindingUpdate))
 	mux.HandleFunc("/api/routing/candidate-bindings/reorder", h.superAdmin(h.handleRoutingCandidateBindingReorder))
 	// 2026-07-24: emergency repair endpoint for routing-v2 resolve page.
 	// Supports: force_enable, force_disable, clear_circuit, reset_errors.
 	// Only super_admin can access. All actions are audited.
 	mux.HandleFunc("/api/routing/emergency-repair", h.superAdmin(h.handleEmergencyRepair))
+
+	// 2026-08-23 (hzx-2 audit): focused credential state reset. Body
+	// {reason, raw_model?, trigger_probe?}; runs the same DB + in-memory
+	// + URSM v2 chain as emergency-repair force_enable, with optional
+	// immediate self-check probe. super_admin only.
+	mux.HandleFunc("POST /api/routing/credentials/{id}/reset-state", h.superAdmin(h.handleResetCredentialState))
 
 	// NOTE: /api/credentials/monitor-summary is registered later in
 	// RegisterMonitorRoutes (line ~460) via NewCredentialMonitorHandlers.
@@ -842,6 +952,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	if h.liveStreamHub != nil {
 		mux.HandleFunc("/api/admin/live-stream", admin(h.liveStreamHub.HandleLiveStream))
 		mux.HandleFunc("/api/admin/live-stream/stats", admin(h.handleLiveStreamStats))
+		// TEMPORARY DEBUG: snapshot_refresh validation (added 2026-07-26, TODO: remove when no longer needed)
+		mux.HandleFunc("/api/admin/live-stream/trigger-snapshot", admin(h.liveStreamHub.HandleTriggerSnapshot))
 	}
 
 	// 2026-08-18: 会话优化 v4（T4）连接注册表只读投影 + 请求 action
@@ -851,6 +963,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/connection-registry", admin(h.handleConnectionRegistryList))
 	mux.HandleFunc("/api/admin/connection-registry/{request_id}", admin(h.handleConnectionRegistryGet))
 	mux.HandleFunc("/api/admin/requests/{id}/actions", admin(h.handleRequestActions))
+	// 2026-08-23: 节点恢复时间线（node_probe_runs → SPA NodeRecoveryEvent）。
+	mux.HandleFunc("/api/admin/node-health/{credential_id}/timeline", admin(h.handleNodeHealthTimeline))
 
 	// 2026-07-13: read-only route-incident diagnosis API (Phase 1).
 	// Super-admin only. nil handler means the diagnose entry is
@@ -925,12 +1039,6 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/logs/archive", h.superAdmin(h.handleLogArchive))
 	mux.HandleFunc("/api/admin/logs/cleanup", h.superAdmin(h.handleLogCleanup))
 	mux.HandleFunc("/api/admin/logs/archive/list", admin(h.handleLogArchiveList))
-
-	// 2026-08-26 Phase A: Bleve-backed log full-text search endpoint.
-	// Lives next to the other /api/admin/logs/* routes for UX
-	// continuity. See admin/logsearch/logsearch.go for the contract.
-	mux.HandleFunc("/api/admin/logs/search", admin(logsearch.HandleSearch))
-	mux.HandleFunc("/api/admin/logs/search/status", admin(logsearch.HandleStatus))
 
 	// settings-management (Q1: B, Q2: A, Q3: B): 4 platform + 4 tenant endpoints.
 	// Tenant endpoints require super_admin (enforced inside the handler).
@@ -1045,10 +1153,14 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	if h.cfHandlers == nil {
 		h.cfHandlers = &candidateFailureHandlers{db: h.db}
 	}
+	if h.vceHandlers == nil {
+		h.vceHandlers = &vendorCredentialErrorHandlers{db: h.db}
+	}
 	mux.HandleFunc("/api/candidate-failures", admin(h.cfHandlers.listCandidateFailures))
 	mux.HandleFunc("/api/candidate-failures/stats", admin(h.cfHandlers.getCandidateFailureStats))
 	mux.HandleFunc("/api/candidate-failures/credential/{id}", admin(h.cfHandlers.getCandidateFailuresByCredential))
 	mux.HandleFunc("/api/candidate-failures/alerts", admin(h.cfHandlers.listRecentAlerts))
+	mux.HandleFunc("/api/vendors/credentials/{id}/error-detail", admin(h.vceHandlers.getVendorCredentialErrorDetail))
 	mux.HandleFunc("/api/keys", admin(h.handleKeysRoot))
 	mux.HandleFunc("/api/keys/", admin(h.handleKeys))
 	mux.HandleFunc("/api/key-applications", admin(h.handleKeyApplicationsList))
@@ -1064,6 +1176,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/usage/", h.admin(h.HandleUsageAdmin))
 	mux.HandleFunc("/api/logs", admin(h.handleLogsRoot))
 	mux.HandleFunc("/api/logs/", admin(h.handleLogs))
+	// 2026-08-25: unified request detail (memory/file → request_logs → session_turns)
+	mux.HandleFunc("/api/admin/request-detail/", admin(h.handleUnifiedRequestDetail))
 	// 2026-08-09: 跨会话轮次列表端点（复用 session_turns 表）
 	mux.HandleFunc("/api/admin/turns", admin(h.handleTurnsList))
 	// 2026-08-10: 会话分组轮次列表端点（最外层会话 + 内层轮次，分层展示）
@@ -1182,6 +1296,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 		// 2026-07-24: 供应商级路由阻塞诊断 — "凭据正常但路由不到"场景
 		mux.HandleFunc("/api/admin/diagnostics/routing-blocked", h.superAdmin(h.handleRoutingBlockedDiagnostic))
 		mux.HandleFunc("/api/admin/diagnostics/routing-blocked/fix", h.superAdmin(h.handleRoutingBlockedFix))
+		mux.HandleFunc("/api/admin/diagnostics/model-routing", h.superAdmin(h.handleModelRoutingDiagnostic))
 
 		// 2026-08-11: 模型智商（Model IQ）— 标准智商 / 节点智商历史 / 立即测试。
 		// catalog/node-latest/history 只读 DB；trigger 调用 modelQualityBackend。

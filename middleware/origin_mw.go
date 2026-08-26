@@ -350,3 +350,11 @@ func RegisterAuthOwnerUser(ctx context.Context, ownerUser string) context.Contex
 	}
 	return context.WithValue(ctx, authOwnerUserCtxKey, ownerUser)
 }
+
+// IsGlobalAuthPassed reports whether AuthMiddleware authenticated the request
+// with the deployed static data-plane key. The sentinel is intentionally
+// private to middleware so downstream packages can only observe the decision,
+// not forge the context value.
+func IsGlobalAuthPassed(ctx context.Context) bool {
+	return authOwnerUser(ctx) == "global-auth-passed"
+}

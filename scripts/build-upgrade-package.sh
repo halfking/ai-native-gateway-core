@@ -85,7 +85,10 @@ startup_migrations=(
 	546_stats_reconciliation_diffs_unique.sql
 	547_session_project_attribution.sql
 	548_stats_reconciliation_diffs_identity.sql
-	553_approval_resume_claim.sql	552_request_journey_durable_outbox.sql
+	# MERGE-AUDIT 2026-08-26: retain local 553 as the sole executable
+	# approval-resume migration. Remote used a conflicting duplicate 551.
+	552_request_journey_durable_outbox.sql
+	553_approval_resume_claim.sql
 )
 for name in "${startup_migrations[@]}"; do
   source="sql/migrations/startup/$name"
