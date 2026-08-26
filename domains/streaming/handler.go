@@ -3876,6 +3876,8 @@ func (h *ChatHandler) serveWithExecutor(
 	journeyInstanceID, journeySeq, journeyTerminal := requestJourneyExecState(r)
 	// v6 G-Ⅱ: X-Gw-Due-At 定时请求（到期前停在 dispatch 的到期堆）。
 	dispatchDueAt := parseDispatchDueAt(r)
+	// V6-W1.6 R8: class 一并写入 logCtx，供首行与完成 UPDATE 落库（608）。
+	applyRequestClassToLogCtx(logCtx, dispatchDueAt)
 	buildExecParams := func(streamWriter http.ResponseWriter) *executors.ExecParams {
 		return &executors.ExecParams{
 			W:                          streamWriter,
@@ -5800,6 +5802,12 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 	// instead of an LCS-inferred verdict. The header never survives to the hook
 	// otherwise — the hook only sees the telemetry entry, not the request.
 	applySubmitModeHeader(reqLog, logCtx)
+	// V6-W1.6 R8 (migration 608): 完成态 UPDATE 也带上请求类型（幂等，
+	// 首行已写时保持原值，COALESCE 侧同样防回退）。
+	if reqLog.RequestClass == nil {
+		reqLog.RequestClass = requestClassPtr(logCtx)
+		reqLog.DueAt = requestDueAtPtr(logCtx)
+	}
 
 	// 2026-07-19: 填充路由尝试追踪数据到 telemetry
 	// 2026-07-20: Try result.RoutingTracker first (populated by the executor),
@@ -6579,6 +6587,9 @@ func (h *ChatHandler) recordInitialRequestLog(
 		ProviderID:      providerID,
 		CredentialID:    credentialID,
 		CanonicalID:     canonicalID,
+		// V6-W1.6 R8 (migration 608): 请求类型（即时/定时）随首行落库。
+		RequestClass: requestClassPtr(autoCtx),
+		DueAt:        requestDueAtPtr(autoCtx),
 		// 2026-07-27: 标准模型名 (canonical_name),见 migration 458。
 		CanonicalModel: strPtr(canonicalName),
 		ClientProfile:  strPtr(clientProfile),
