@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strconv"
 	"sync/atomic"
 	"time"
 
@@ -92,7 +93,14 @@ func sortActionsStable(actions []liveactions.ActionEvent) {
 // is flattened to the top level so the FE1 ActionEvent contract is met
 // without a second DTO. Detail never carries body content or secrets
 // (BE1 安全红线), so promotion across the wire is safe.
-func flattenActionEvent(ev liveactions.ActionEvent) map[string]any {
+//
+// 2026-08-23 (Agent C): if labels is non-nil and contains an entry for
+// ev.CredentialID, the resolved label is written as `credential_label`
+// so the dashboard can render "供应商+凭据" without a second fetch. The
+// ActionEvent contract (liveactions/liveactions.go) stays unchanged —
+// credential_label is purely a wire-side projection, optional, omitted
+// when the lookup misses.
+func flattenActionEvent(ev liveactions.ActionEvent, labels map[int]string) map[string]any {
 	b, err := json.Marshal(ev)
 	if err != nil {
 		slog.Debug("live actions flatten: marshal failed", "action", ev.Action, "request_id", ev.RequestID, "err", err.Error())
@@ -111,7 +119,70 @@ func flattenActionEvent(ev liveactions.ActionEvent) map[string]any {
 			}
 		}
 	}
+	if labels != nil && ev.CredentialID > 0 {
+		if label, ok := labels[ev.CredentialID]; ok && label != "" {
+			// Don't clobber an explicit `credential_label` already on the
+			// wire (e.g. a future emitter that promotes its own label).
+			if _, taken := m["credential_label"]; !taken {
+				m["credential_label"] = label
+			}
+		}
+	}
 	return m
+}
+
+// collectCredentialIDs returns the deduplicated set of credential IDs that
+// appear on a batch of ActionEvents (credential_id plus from_credential_id /
+// to_credential_id for node_switch). The caller uses the slice as the
+// `WHERE id = ANY(...)` argument to a single batched credentials lookup so
+// a 50-action tick does not fan out 50 round-trips.
+func collectCredentialIDs(actions []liveactions.ActionEvent) []int {
+	if len(actions) == 0 {
+		return nil
+	}
+	seen := make(map[int]struct{})
+	out := make([]int, 0, len(actions))
+	add := func(id int) {
+		if id <= 0 {
+			return
+		}
+		if _, dup := seen[id]; dup {
+			return
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	for _, a := range actions {
+		add(a.CredentialID)
+		if a.Action == liveactions.ActionNodeSwitch {
+			if v, ok := extractIntFromDetail(a.Detail, "from_credential_id"); ok {
+				add(v)
+			}
+			if v, ok := extractIntFromDetail(a.Detail, "to_credential_id"); ok {
+				add(v)
+			}
+		}
+	}
+	return out
+}
+
+// extractIntFromDetail parses an int from the emitter's Detail map. Detail
+// values are typed as strings (liveactions.ActionEvent.Detail) but the wire
+// contract uses int-valued keys for from/to_credential_id — accept either
+// representation defensively.
+func extractIntFromDetail(detail map[string]string, key string) (int, bool) {
+	if detail == nil {
+		return 0, false
+	}
+	raw, ok := detail[key]
+	if !ok || raw == "" {
+		return 0, false
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		return 0, false
+	}
+	return n, true
 }
 
 // normalizeLiveRequestType maps the persisted request_type vocabulary
@@ -141,13 +212,20 @@ func normalizeLiveRequestType(raw string) string {
 // actionWirePayload shapes the envelope's "action" field: a single object
 // for one event (24号 §3 示例), an array for an aggregated batch frame.
 // Both shapes are accepted by the frontend store.
-func actionWirePayload(actions []liveactions.ActionEvent) any {
+//
+// 2026-08-23 (Agent C): optional labels map (credential_id → label) is
+// forwarded to flattenActionEvent so each emitted action carries a
+// `credential_label` projection. Pass nil when the lookup is unavailable
+// (no DB / batch with no credential_id) — flattenActionEvent treats nil
+// as a no-op and the wire shape stays identical to the pre-credential-
+// label contract.
+func actionWirePayload(actions []liveactions.ActionEvent, labels map[int]string) any {
 	if len(actions) == 1 {
-		return flattenActionEvent(actions[0])
+		return flattenActionEvent(actions[0], labels)
 	}
 	out := make([]map[string]any, len(actions))
 	for i, a := range actions {
-		out[i] = flattenActionEvent(a)
+		out[i] = flattenActionEvent(a, labels)
 	}
 	return out
 }
@@ -431,10 +509,16 @@ func (h *LiveStreamSSEHub) fanOutLifecycleActions(actions []liveactions.ActionEv
 			payloads[key] = nil
 			continue
 		}
+		// 2026-08-23 (Agent C): resolve credential labels once per distinct
+		// payload. The lookup is best-effort (nil when no DB / cache cold)
+		// and the wire contract remains valid without it. Use a fresh,
+		// bounded background context so the broadcast path does not depend
+		// on any per-client deadline (it never gets one).
+		labels := h.CredentialLabelsFor(context.Background(), collectCredentialIDs(subset))
 		data, err := json.Marshal(LiveStreamEnvelope{
 			Type:      "request_lifecycle",
 			Timestamp: time.Now().UTC(),
-			Action:    actionWirePayload(subset),
+			Action:    actionWirePayload(subset, labels),
 		})
 		if err != nil {
 			slog.Warn("live actions marshal failed", "err", err.Error())
@@ -556,10 +640,14 @@ func (h *LiveStreamSSEHub) replayLifecycleActionsFor(ctx context.Context, client
 	if len(subset) == 0 {
 		return
 	}
+	// 2026-08-23 (Agent C): pre-resolve credential labels so the initial
+	// action replay already carries `credential_label`. Same best-effort
+	// semantics as the live broadcast path.
+	labels := h.CredentialLabelsFor(ctx, collectCredentialIDs(subset))
 	data, err := json.Marshal(LiveStreamEnvelope{
 		Type:      "request_lifecycle",
 		Timestamp: time.Now().UTC(),
-		Action:    actionWirePayload(subset),
+		Action:    actionWirePayload(subset, labels),
 	})
 	if err != nil {
 		slog.Warn("live actions replay marshal failed", "err", err.Error())

@@ -56,17 +56,19 @@ func TestPromoteSpecsCoversAllDefaultPartitions(t *testing.T) {
 	// added model_probe_runs_hot, but 2026-07-14 retired it (pure-hot-table
 	// strategy). Migration 392 (2026-07-13) added candidate_failure_logs_hot.
 	expected := map[string]bool{
-		"promote_request_logs_hot_to_partition":           false,
-		"promote_usage_ledger_hot_to_partition":           false,
-		"promote_request_wal_hot_to_partition":            false,
-		"promote_routing_decision_log_hot_to_partition":   false,
-		"promote_credential_model_index_hot_to_partition": false,
-		"promote_request_logs_bodies_hot_to_partition":    false,
-		"promote_credit_ledger_hot_to_partition":          false,
-		"promote_tool_usage_stats_hot_to_partition":       false,
-		"promote_candidate_failure_logs_hot_to_partition": false, // Migration 392
-		"promote_session_turns_hot_to_partition":          false, // Migration 526
-		"promote_handoff_logs_hot_to_partition":           false, // Migration 532
+		"promote_request_logs_hot_to_partition":              false,
+		"promote_usage_ledger_hot_to_partition":              false,
+		"promote_request_wal_hot_to_partition":               false,
+		"promote_routing_decision_log_hot_to_partition":      false,
+		"promote_credential_model_index_hot_to_partition":    false,
+		"promote_request_logs_bodies_hot_to_partition":       false,
+		"promote_credit_ledger_hot_to_partition":             false,
+		"promote_tool_usage_stats_hot_to_partition":          false,
+		"promote_candidate_failure_logs_hot_to_partition":    false, // Migration 392
+		"promote_session_turns_hot_to_partition":             false, // Migration 526
+		"promote_handoff_logs_hot_to_partition":              false, // Migration 532
+		"promote_session_module_executions_hot_to_partition": false, // Migration 578 (88c6fbf7b 引入, 原编号 574 与 candidate_binding 冲突, merge 时重编号)
+		"promote_dashboard_access_events_hot_to_partition":   false, // Migration 575 (88c6fbf7b)
 	}
 	for _, s := range specs {
 		if _, ok := expected[s.fnName]; !ok {

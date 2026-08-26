@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -38,7 +39,7 @@ func (m stringPointerMatcher) Match(value interface{}) bool {
 }
 
 func requestLogUpdateArgs(entry RequestLogEntry) []interface{} {
-	args := make([]interface{}, 96)
+	args := make([]interface{}, 97)
 	for index := range args {
 		args[index] = pgxmock.AnyArg()
 	}
@@ -61,6 +62,36 @@ func requestLogUpdateArgs(entry RequestLogEntry) []interface{} {
 	// $82-$91 t0..t9 stay AnyArg; $92 discard; $93-$96 canonical/routing/attachments
 	args[91] = nullableJSONArg(entry.DiscardEvents)
 	return args
+}
+
+func TestUpsertRequestLogBodies_UsesBodyOnlyColumns(t *testing.T) {
+	mockDB, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mockDB.Close()
+
+	mockDB.ExpectBegin()
+	tx, err := mockDB.Begin(context.Background())
+	require.NoError(t, err)
+
+	mockDB.ExpectExec(`INSERT INTO request_logs_bodies_hot \(request_id, ts, request_body, response_body, outbound_body\)`).
+		WithArgs("req-body-only", `{"messages":[]}`, `{"choices":[]}`, `{"messages":[]}`).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+
+	client := &Client{}
+	err = client.upsertRequestLogBodies(
+		context.Background(),
+		tx,
+		"req-body-only",
+		"",
+		`{"messages":[]}`,
+		`{"choices":[]}`,
+		`{"messages":[]}`,
+	)
+	require.NoError(t, err)
+
+	mockDB.ExpectRollback()
+	require.NoError(t, tx.Rollback(context.Background()))
+	require.NoError(t, mockDB.ExpectationsWereMet())
 }
 
 func TestInsertSessionOpenedEvent_IsIdempotent(t *testing.T) {
@@ -103,7 +134,7 @@ func TestUpdateRequestLog_AllowsTerminalSuccessToReplaceIntermediateFailure(t *t
 		WithArgs(requestLogArgs...).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	mockDB.ExpectExec(`INSERT INTO request_logs_bodies_hot`).
-		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mockDB.ExpectCommit()
 
@@ -182,7 +213,7 @@ func TestUpdateRequestLog_TerminalGuardDistinguishesNoOpFromMissing(t *testing.T
 			}
 			if tc.wantCommit {
 				mockDB.ExpectExec(`INSERT INTO request_logs_bodies_hot`).
-					WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+					WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 					WillReturnResult(pgxmock.NewResult("INSERT", 1))
 				mockDB.ExpectCommit()
 			}
@@ -221,15 +252,15 @@ func TestUpdateRequestLog_MissingRequestFallsBackToInsert(t *testing.T) {
 	mockDB.ExpectExec(`INSERT INTO usage_ledger_hot`).
 		WithArgs(usageInsertArgs...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
-	requestInsertArgs := make([]interface{}, 102)
+	requestInsertArgs := make([]interface{}, 100)
 	for index := range requestInsertArgs {
 		requestInsertArgs[index] = pgxmock.AnyArg()
 	}
-	mockDB.ExpectExec(`INSERT INTO request_logs_hot`).
+	mockDB.ExpectExec(`INSERT INTO\s+request_logs_hot\s*\(`).
 		WithArgs(requestInsertArgs...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mockDB.ExpectExec(`INSERT INTO request_logs_bodies_hot`).
-		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mockDB.ExpectCommit()
 
@@ -427,6 +458,76 @@ func TestMergeRequestLogEntry_PreservesBodiesOnEmptyUpdate(t *testing.T) {
 	if dst.ResponseBody == nil || *dst.ResponseBody != responseBody {
 		t.Fatalf("ResponseBody = %v, want original body", dst.ResponseBody)
 	}
+}
+
+func TestPersistRequestLog_ReleasesBodiesAfterPersistedHooks(t *testing.T) {
+	requestBody := `{"messages":[{"role":"user","content":"hello"}]}`
+	responseBody := `{"choices":[{"message":{"content":"hi"}}]}`
+	outboundBody := json.RawMessage(`{"messages":[{"role":"user","content":"hello"}]}`)
+	status := RequestStatusSuccess
+
+	mockDB, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mockDB.Close()
+
+	mockDB.ExpectBegin()
+	mockDB.ExpectExec(`UPDATE usage_ledger_hot`).
+		WithArgs("req-release", pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	mockDB.ExpectExec(`UPDATE request_logs_hot`).
+		WithArgs(requestLogUpdateArgs(RequestLogEntry{Success: true, RequestStatus: &status})...).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	mockDB.ExpectExec(`INSERT INTO request_logs_bodies_hot`).
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mockDB.ExpectCommit()
+
+	entry := &RequestLogEntry{
+		RequestID:     "req-release",
+		Op:            RequestLogUpdate,
+		Success:       true,
+		RequestStatus: &status,
+		RequestBody:   &requestBody,
+		ResponseBody:  &responseBody,
+		OutboundBody:  outboundBody,
+	}
+	client := &Client{requestLogDB: mockDB}
+	client.AddOnRequestLogPersisted(func(got *RequestLogEntry) {
+		require.Equal(t, requestBody, *got.RequestBody)
+		require.Equal(t, responseBody, *got.ResponseBody)
+		require.Equal(t, outboundBody, got.OutboundBody)
+	})
+
+	require.NoError(t, client.persistRequestLog(entry))
+	require.Nil(t, entry.RequestBody)
+	require.Nil(t, entry.ResponseBody)
+	require.Nil(t, entry.OutboundBody)
+	require.NoError(t, mockDB.ExpectationsWereMet())
+}
+
+func TestPersistRequestLog_KeepsBodiesWhenWriteFails(t *testing.T) {
+	requestBody := `{"messages":[{"role":"user","content":"hello"}]}`
+	responseBody := `{"choices":[{"message":{"content":"hi"}}]}`
+	outboundBody := json.RawMessage(`{"messages":[{"role":"user","content":"hello"}]}`)
+
+	mockDB, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mockDB.Close()
+
+	mockDB.ExpectBegin().WillReturnError(pgx.ErrTxClosed)
+	entry := &RequestLogEntry{
+		RequestID:    "req-retain",
+		RequestBody:  &requestBody,
+		ResponseBody: &responseBody,
+		OutboundBody: outboundBody,
+	}
+	client := &Client{requestLogDB: mockDB}
+
+	require.Error(t, client.persistRequestLog(entry))
+	require.Equal(t, requestBody, *entry.RequestBody)
+	require.Equal(t, responseBody, *entry.ResponseBody)
+	require.Equal(t, outboundBody, entry.OutboundBody)
+	require.NoError(t, mockDB.ExpectationsWereMet())
 }
 
 func TestMergeRequestLogEntry_PreservesClientPerceptionFields(t *testing.T) {
@@ -855,4 +956,168 @@ func TestLookupTurnNumber(t *testing.T) {
 			mockDB.Close()
 		}
 	})
+}
+
+// ── 2026-08-25 live-stream decoupling: SetOnRequestLogEmitted hook ────────────
+//
+// EmitRequestLog fires onEmitted synchronously on the caller's goroutine
+// BEFORE the entry enters the queue (or the sync-fallback persist path).
+// These tests pin that ordering contract plus the disabled/stopped gates.
+
+// newEmittedHookClient builds an Enabled() Client with a worker-free queue:
+// EmitRequestLog runs gate → onEmitted → enqueue, and pre-filling the buffer
+// drives the queue-full sync fallback (persistRequestLog → onPersisted).
+// No worker goroutine is started, so nothing drains the queue behind the
+// test's back and there is nothing to leak.
+func newEmittedHookClient(t *testing.T, bufSize int) (*Client, pgxmock.PgxPoolIface) {
+	t.Helper()
+	mockDB, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	t.Cleanup(func() { mockDB.Close() })
+	return &Client{
+		requestLogDB: mockDB,
+		queue:        make(chan any, bufSize),
+		done:         make(chan struct{}),
+	}, mockDB
+}
+
+func TestRequestLogEmittedHookFiresBeforeQueueing(t *testing.T) {
+	c, _ := newEmittedHookClient(t, 4)
+	emitted := make(chan *RequestLogEntry, 1)
+	c.SetOnRequestLogEmitted(func(entry *RequestLogEntry) { emitted <- entry })
+
+	c.EmitRequestLog(&RequestLogEntry{RequestID: "req-emit-sync", TenantID: "tenant-a"})
+
+	// Synchronous contract: by the time EmitRequestLog returns, the hook has
+	// already fired — no receive-wait, no scheduler dependency.
+	select {
+	case got := <-emitted:
+		require.Equal(t, "req-emit-sync", got.RequestID)
+	default:
+		t.Fatal("onEmitted must fire before EmitRequestLog returns (synchronous, caller goroutine)")
+	}
+	// The same call must also have queued the entry (after the hook).
+	select {
+	case queued := <-c.queue:
+		entry, ok := queued.(*RequestLogEntry)
+		require.True(t, ok, "queued item type %T", queued)
+		require.Equal(t, "req-emit-sync", entry.RequestID)
+		require.Equal(t, RequestLogInsert, entry.Op, "EmitRequestLog must default Op before queueing")
+	default:
+		t.Fatal("entry must be queued by EmitRequestLog")
+	}
+}
+
+func TestSetOnRequestLogEmitted_ReplacesAndClears(t *testing.T) {
+	c, _ := newEmittedHookClient(t, 4)
+	first, second := make(chan struct{}, 2), make(chan struct{}, 2)
+	c.SetOnRequestLogEmitted(func(*RequestLogEntry) { first <- struct{}{} })
+	c.SetOnRequestLogEmitted(func(*RequestLogEntry) { second <- struct{}{} }) // replace semantics
+	c.EmitRequestLog(&RequestLogEntry{RequestID: "req-replace"})
+
+	select {
+	case <-first:
+		t.Fatal("a replaced onEmitted hook must not fire")
+	default:
+	}
+	select {
+	case <-second:
+	default:
+		t.Fatal("the latest onEmitted hook must fire")
+	}
+
+	c.SetOnRequestLogEmitted(nil) // clear
+	c.EmitRequestLog(&RequestLogEntry{RequestID: "req-clear"})
+	select {
+	case <-second:
+		t.Fatal("cleared onEmitted hook must not fire")
+	default:
+	}
+}
+
+// TestRequestLogEmittedBeforePersisted pins the two-phase broadcast contract:
+// for one entry, the onEmitted hook fires before the entry reaches the
+// database and the onPersisted hook fires only after the successful INSERT.
+// The queue is pre-filled so EmitRequestLog takes the queue-full sync
+// fallback (persistRequestLog), letting BOTH hooks fire within a single call
+// on the same goroutine — the observed order is therefore deterministic.
+func TestRequestLogEmittedBeforePersisted(t *testing.T) {
+	c, mockDB := newEmittedHookClient(t, 1)
+
+	// Insert-path mock sequence (mirrors TestUpdateRequestLog_MissingRequestFallsBackToInsert).
+	mockDB.ExpectBegin()
+	usageInsertArgs := make([]interface{}, 18)
+	for index := range usageInsertArgs {
+		usageInsertArgs[index] = pgxmock.AnyArg()
+	}
+	mockDB.ExpectExec(`INSERT INTO usage_ledger_hot`).
+		WithArgs(usageInsertArgs...).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	requestInsertArgs := make([]interface{}, 100)
+	for index := range requestInsertArgs {
+		requestInsertArgs[index] = pgxmock.AnyArg()
+	}
+	mockDB.ExpectExec(`INSERT INTO\s+request_logs_hot\s*\(`).
+		WithArgs(requestInsertArgs...).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mockDB.ExpectExec(`INSERT INTO request_logs_bodies_hot`).
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mockDB.ExpectCommit()
+
+	var mu sync.Mutex
+	var order []string
+	record := func(stage string) func(*RequestLogEntry) {
+		return func(*RequestLogEntry) {
+			mu.Lock()
+			order = append(order, stage)
+			mu.Unlock()
+		}
+	}
+	c.SetOnRequestLogEmitted(record("emitted"))
+	c.AddOnRequestLogPersisted(record("persisted"))
+
+	// 1st emit fills the queue; 2nd emit hits the sync fallback: gate →
+	// onEmitted → persistRequestLog (INSERT) → onPersisted.
+	c.EmitRequestLog(&RequestLogEntry{RequestID: "req-fill", TenantID: "tenant-a"})
+	c.EmitRequestLog(&RequestLogEntry{RequestID: "req-emit-before-persist", TenantID: "tenant-a"})
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, []string{"emitted", "emitted", "persisted"}, order,
+		"per entry the emitted hook must fire before the persisted hook")
+	require.NoError(t, mockDB.ExpectationsWereMet())
+}
+
+// TestRequestLogEmittedGatedOnDisabledAndStopped: the onEmitted hook is a
+// telemetry emit concern, not a shutdown broadcast — it must stay silent when
+// the client is disabled (no DB) or already stopped.
+func TestRequestLogEmittedGatedOnDisabledAndStopped(t *testing.T) {
+	fired := func() chan *RequestLogEntry { return make(chan *RequestLogEntry, 1) }
+
+	disabled := NewClient()
+	require.False(t, disabled.Enabled(), "client without a DB must be disabled")
+	disabledFired := fired()
+	disabled.SetOnRequestLogEmitted(func(entry *RequestLogEntry) { disabledFired <- entry })
+	disabled.EmitRequestLog(&RequestLogEntry{RequestID: "req-gate-disabled"})
+	select {
+	case <-disabledFired:
+		t.Fatal("onEmitted must not fire when the client is disabled")
+	default:
+	}
+
+	stopped, _ := newEmittedHookClient(t, 4)
+	stopped.Stop()
+	stoppedFired := fired()
+	stopped.SetOnRequestLogEmitted(func(entry *RequestLogEntry) { stoppedFired <- entry })
+	stopped.EmitRequestLog(&RequestLogEntry{RequestID: "req-gate-stopped"})
+	select {
+	case <-stoppedFired:
+		t.Fatal("onEmitted must not fire after Stop()")
+	default:
+	}
+	// Sanity: the gate fires before queueing, so nothing was enqueued either.
+	if got := len(stopped.queue); got != 0 {
+		t.Fatalf("stopped client queued %d entries, want 0", got)
+	}
 }

@@ -408,8 +408,19 @@ func (h *Handler) handleProviders(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodDelete:
 			h.clearProviderModels(w, r, providerID)
-		case http.MethodGet, http.MethodPost:
+		case http.MethodGet:
 			h.getProviderModels(w, r, providerID)
+		// 2026-08-23: explicitly reject POST on /api/providers/{id}/models.
+		// Earlier the dispatcher aliased POST→GET, which made
+		// getProviderModels run on the read path while still parsing as a
+		// POST in HTTP logs and downstream tooling. Frontend's getOrPost
+		// helper also relied on this fallback, surfacing the same 500 as
+		// a POST request after a 500 GET (e.g. on environments missing
+		// migration 361 → provider_models.source). Reject with 405 so the
+		// caller is forced to fix the route / verb rather than retrying
+		// into the same failing SELECT.
+		case http.MethodPost:
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		default:
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
