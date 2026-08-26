@@ -100,6 +100,17 @@ func adminLiveRequestFromEntry(entry *telemetry.RequestLogEntry, hub *admin.Live
 			slog.Debug("live stream: provider resolution returned empty",
 				"request_id", entry.RequestID, "credential_id", entry.CredentialID,
 				"provider_id", entry.ProviderID, "tenant_id", entry.TenantID)
+			// Redis-only / DB-unavailable mode must keep the provider lane
+			// observable even when its display name cannot be resolved.
+			if hasProv {
+				providerCode = fmt.Sprintf("provider-%d", *entry.ProviderID)
+			} else {
+				providerCode = fmt.Sprintf("provider-credential-%d", *entry.CredentialID)
+			}
+		}
+		credentialID := 0
+		if hasCred {
+			credentialID = *entry.CredentialID
 		}
 
 		// Extract canonical_id for model name resolution and aggregation
@@ -108,7 +119,7 @@ func adminLiveRequestFromEntry(entry *telemetry.RequestLogEntry, hub *admin.Live
 			canonicalID = *entry.CanonicalID
 		}
 
-		return hub.LiveRequestFromTelemetry(
+		liveRequest := hub.LiveRequestFromTelemetry(
 			ctx,
 			entry.RequestID,
 			liveStreamEventTime(entry),
@@ -132,6 +143,11 @@ func adminLiveRequestFromEntry(entry *telemetry.RequestLogEntry, hub *admin.Live
 			derefStr(entry.ClientProtocol),
 			entry,
 		)
+		liveRequest.CredentialID = credentialID
+		if credentialID > 0 {
+			liveRequest.CredentialLabel = hub.CredentialLabelFor(ctx, credentialID)
+		}
+		return liveRequest
 	}
 	// Fallback when hub is nil (defensive; unreachable in normal operation
 	// because SetOnRequestLogEmitted is only wired when hub != nil).
@@ -144,6 +160,10 @@ func adminLiveRequestFromEntry(entry *telemetry.RequestLogEntry, hub *admin.Live
 	fallbackModel := clientModel
 	if fallbackModel == "" {
 		fallbackModel = outboundModel
+	}
+	credentialID := 0
+	if entry.CredentialID != nil && *entry.CredentialID > 0 {
+		credentialID = *entry.CredentialID
 	}
 	return admin.LiveRequest{
 		RequestID:        entry.RequestID,
@@ -160,6 +180,7 @@ func adminLiveRequestFromEntry(entry *telemetry.RequestLogEntry, hub *admin.Live
 		TotalTokens:      totalTokens,
 		CostUSD:          entry.CostUSD,
 		ErrorKind:        entry.ErrorKind,
+		CredentialID:     credentialID,
 	}
 }
 
