@@ -51,13 +51,39 @@ type DimensionEntry struct {
 	RetryAt      time.Time
 	LastAction   NextActionKind
 	Attempts     int
-	EnqueuedAt   time.Time
-	StartedAt    time.Time
-	CompletedAt  time.Time
-	ExpiresAt    time.Time
+	// Class is the request class snapshot (immediate|scheduled, V6-W1.6 R10)
+	// stamped at Track/MarkNode from qr.requestClass().
+	Class string
+	// Journal is a DETACHED snapshot of the request's AttemptJournal tail
+	// (dimensionJournalTail entries on UpdateWait, the full ring on
+	// Complete). The authority lives on the QueuedRequest; three-ring copies
+	// may lag one step until Complete aligns them (E9).
+	Journal    []JournalEntry
+	EnqueuedAt time.Time
+	StartedAt  time.Time
+	CompletedAt time.Time
+	ExpiresAt   time.Time
 	// LastUpdated is the last membership mutation time (drives TTL from the
 	// terminal transition, not admission).
 	LastUpdated time.Time
+}
+
+// dimensionJournalTail bounds the per-entry journal snapshot copied on
+// UpdateWait (R10: tail 16 + counters; the full ring only lands at Complete).
+const dimensionJournalTail = 16
+
+// journalTail returns a detached copy of the last n journal entries.
+func journalTail(qr *QueuedRequest, n int) []JournalEntry {
+	if n <= 0 || len(qr.AttemptJournal) == 0 {
+		return nil
+	}
+	src := qr.AttemptJournal
+	if len(src) > n {
+		src = src[len(src)-n:]
+	}
+	out := make([]JournalEntry, len(src))
+	copy(out, src)
+	return out
 }
 
 // DimensionIndexConfig bounds the index memory.
@@ -142,6 +168,7 @@ func (ix *DimensionIndex) Track(qr *QueuedRequest, now time.Time) {
 		Model:       queueKeyFor(qr.RequestedModel),
 		State:       DimensionStatePending,
 		Attempts:    qr.AttemptCount,
+		Class:       qr.requestClass(),
 		EnqueuedAt:  now,
 		LastUpdated: now,
 	}
@@ -176,6 +203,7 @@ func (ix *DimensionIndex) MarkNode(qr *QueuedRequest, cred CredentialRef, now ti
 		Vendor:       cred.Vendor,
 		State:        DimensionStateInFlight,
 		Attempts:     qr.AttemptCount,
+		Class:        qr.requestClass(),
 		EnqueuedAt:   now,
 		StartedAt:    now,
 	}
@@ -191,6 +219,7 @@ func (ix *DimensionIndex) MarkNode(qr *QueuedRequest, cred CredentialRef, now ti
 			Vendor:       cred.Vendor,
 			State:        DimensionStateInFlight,
 			Attempts:     qr.AttemptCount,
+			Class:        qr.requestClass(),
 			EnqueuedAt:   now,
 			StartedAt:    now,
 		}, dimensionKey(DimensionProvider, strconv.Itoa(cred.ProviderID)))
@@ -199,10 +228,32 @@ func (ix *DimensionIndex) MarkNode(qr *QueuedRequest, cred CredentialRef, now ti
 
 // Complete marks every entry of the request terminal. Entries REMAIN in
 // their dimension rings (TTL/capacity evict them) — the user-required
-// "完成后不移除" semantics.
+// "完成后不移除" semantics. The full journal (terminal entry included) is
+// copied onto every ring so the three snapshots align (invariant 4).
 func (ix *DimensionIndex) Complete(qr *QueuedRequest, out ForwardOutcome, now time.Time) {
 	if !ix.enabled() || qr == nil {
 		return
+	}
+	// Invariant-4 backfill: pipeline.complete records the terminal entry
+	// inside its CAS before this call; if the tail is not terminal (direct
+	// use, future call sites), record it here so completed entries always
+	// end on a terminal journal action. Idempotent — a terminal tail is
+	// never extended (invariant 3).
+	if n := len(qr.AttemptJournal); n == 0 || !isTerminalAction(qr.AttemptJournal[n-1].Action) {
+		terminalKind := out.ErrorKind
+		if terminalKind == "" && out.Err != nil {
+			terminalKind = classifyError(out.Err)
+		}
+		qr.recordDecision(JournalEntry{
+			Model:        qr.ResolvedModel,
+			CredentialID: qr.SelectedCred.CredentialID,
+			ProviderID:   qr.SelectedCred.ProviderID,
+			Vendor:       qr.SelectedCred.Vendor,
+			Action:       terminalActionOf(out),
+			ErrorKind:    terminalKind,
+			HTTPStatus:   out.HTTPStatus,
+			Attempt:      qr.AttemptCount,
+		})
 	}
 	outcome := "success"
 	if out.Err != nil {
@@ -210,19 +261,33 @@ func (ix *DimensionIndex) Complete(qr *QueuedRequest, out ForwardOutcome, now ti
 	}
 	ix.mu.Lock()
 	defer ix.mu.Unlock()
+	full := journalTail(qr, journalCapacity)
 	for _, e := range ix.byReq[qr.ID] {
 		e.State = DimensionStateCompleted
 		e.Outcome = outcome
 		e.ErrorKind = out.ErrorKind
 		e.Attempts = qr.AttemptCount
+		e.Journal = full
 		e.CompletedAt = now
 		e.LastUpdated = now
 		e.ExpiresAt = now.Add(ix.cfg.TTL)
 	}
 }
 
+// isTerminalAction reports whether the journal action is one of the three
+// terminal kinds (after which no entry may follow, invariant 3).
+func isTerminalAction(a NextActionKind) bool {
+	switch a {
+	case NextActionCompleted, NextActionFailed, NextActionCanceled:
+		return true
+	}
+	return false
+}
+
 // UpdateWait stamps requeue metadata (retry_at, last action) onto the
-// request's entries while it parks back to pending.
+// request's entries while it parks back to pending. Each entry receives its
+// own detached copy of the journal tail; the TTL window restarts from the
+// requeue so a parked-forever request still ages out of the index.
 func (ix *DimensionIndex) UpdateWait(qr *QueuedRequest, retryAt time.Time, action NextActionKind, now time.Time) {
 	if !ix.enabled() || qr == nil {
 		return
@@ -234,7 +299,9 @@ func (ix *DimensionIndex) UpdateWait(qr *QueuedRequest, retryAt time.Time, actio
 		e.RetryAt = retryAt
 		e.LastAction = action
 		e.Attempts = qr.AttemptCount
+		e.Journal = journalTail(qr, dimensionJournalTail)
 		e.LastUpdated = now
+		e.ExpiresAt = now.Add(ix.cfg.TTL)
 	}
 }
 
@@ -408,4 +475,49 @@ func (ix *DimensionIndex) Stats() (tracked, evicted uint64, requests int) {
 	ix.mu.Lock()
 	defer ix.mu.Unlock()
 	return ix.tracked, ix.evicted, len(ix.byReq)
+}
+
+// RequestJournalView is the per-request projection behind
+// GET /api/admin/dispatch/journal/{request_id} (V6-W1.6 R10): every
+// dimension entry of the request plus the freshest journal snapshot. The
+// authority stays on the QueuedRequest; once TTL/capacity evicts the last
+// entry the view is gone and the endpoint answers 404 (ops falls back to
+// the requestjourney persistent projection).
+type RequestJournalView struct {
+	RequestID string           `json:"request_id"`
+	Class     string           `json:"class,omitempty"`
+	Entries   []DimensionEntry `json:"entries"`
+	Journal   []JournalEntry   `json:"journal,omitempty"`
+}
+
+// JournalByRequest serves the per-request journal view from the byReq index.
+// The three ring copies may lag one step until Complete aligns them (E9);
+// the snapshot with the highest tail Seq wins.
+func (ix *DimensionIndex) JournalByRequest(requestID string) (RequestJournalView, bool) {
+	if !ix.enabled() || requestID == "" {
+		return RequestJournalView{}, false
+	}
+	ix.Sweep(time.Now())
+	ix.mu.Lock()
+	defer ix.mu.Unlock()
+	entries := ix.byReq[requestID]
+	if len(entries) == 0 {
+		return RequestJournalView{}, false
+	}
+	view := RequestJournalView{
+		RequestID: requestID,
+		Entries:   make([]DimensionEntry, 0, len(entries)),
+	}
+	for _, e := range entries {
+		view.Entries = append(view.Entries, *e)
+		if view.Class == "" {
+			view.Class = e.Class
+		}
+		if n := len(e.Journal); n > 0 {
+			if m := len(view.Journal); m == 0 || e.Journal[n-1].Seq > view.Journal[m-1].Seq {
+				view.Journal = e.Journal
+			}
+		}
+	}
+	return view, true
 }
