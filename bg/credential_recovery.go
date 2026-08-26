@@ -168,7 +168,8 @@ func (r *CredentialRecovery) SetProbeSubmitter(fn func(credID int, model string)
 // fires synchronously from the recovery tick the moment a credential flips
 // out of a quota-blocked / availability-blocked state. Unlike
 // SetProbeSubmitter (which goes through the delayed fastReprobeQueue with
-// the 30s default — see P1-2 landing point C), this hook bypasses the
+// the 5-minute default — user principle "≥5 分钟探测一次" preserved; see
+// .handoff/selfcheck-audit-2026-08-26.md §2.1), this hook bypasses the
 // delay so the first chat request after a recovery sees a fresh probe
 // rather than waiting for the next scheduled cycle.
 //

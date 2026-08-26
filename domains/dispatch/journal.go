@@ -9,9 +9,13 @@ import (
 // AttemptJournal (执行轨迹队列, V6-W1.6 R9 / docs/架构优化v6/
 // 09-ir-class-journal-decoupling.md) is the per-request execution trace:
 // every model×node attempted, the decided next action, cumulative per-action
-// counters and the terminal state. The authoritative copy lives on the
-// QueuedRequest (single-owner invariant); dimension entries only hold
-// snapshots taken at the existing UpdateWait/Complete sync points.
+// counters and the terminal state. The trace is ATTACHED TO THE REQUEST
+// (scope correction 2026-08-27): the authoritative copy lives on the
+// QueuedRequest under the single-owner invariant, is delivered to the
+// request's own consumers via JournalSnapshot, and is NEVER replicated into
+// process-wide structures (dimension index entries carry membership metadata
+// only). Post-hoc path persistence rides the request's own journey/log
+// records, not a global store.
 
 // JournalEntry is one decision record: what executed, what happened, what the
 // scheduler decided next. Seq is assigned by recordDecision.
@@ -131,4 +135,18 @@ func terminalActionOf(out ForwardOutcome) NextActionKind {
 		return NextActionCanceled
 	}
 	return NextActionFailed
+}
+
+// JournalSnapshot returns a detached copy of the full execution trace. This
+// is THE way the trace leaves the request: callers that hold the request
+// (the executor adapter after Submit returns, tests) read it here — the
+// journal never flows into process-wide stores. After the terminal entry the
+// ring is immutable, so a terminal-time snapshot stays valid.
+func (qr *QueuedRequest) JournalSnapshot() []JournalEntry {
+	if qr == nil || len(qr.AttemptJournal) == 0 {
+		return nil
+	}
+	out := make([]JournalEntry, len(qr.AttemptJournal))
+	copy(out, qr.AttemptJournal)
+	return out
 }
