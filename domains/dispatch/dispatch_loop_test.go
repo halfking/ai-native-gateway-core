@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/alicebob/miniredis/v2"
 )
 
 // ── v6 G-Ⅰ: adaptive executor count ─────────────────────────────────────
@@ -426,4 +428,111 @@ func TestPipelineDimensionIndexWiring(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("credential dimension never reached completed state")
+}
+
+// ── v6 G-Ⅱ (Redis 侧修正): scheduled_at 镜像键族 ────────────────────────
+//
+// 执行队列本体在进程内存（v4 冻结契约）；Redis 是观测镜像。定时停靠必须在
+// Redis 侧与错误重试可区分：scheduled_at:{request_id} 独立键族。
+
+// mget reads a miniredis key as a plain string ("" when absent).
+func mget(mr *miniredis.Miniredis, key string) string {
+	v, _ := mr.Get(key)
+	return v
+}
+
+func TestQueueMirrorScheduledKeys(t *testing.T) {
+	m, mr := newTestMirror(t)
+	defer m.Close()
+
+	due := time.Unix(1700000999, 0).UTC()
+	m.MirrorRetryAt("req-retry", due)
+	m.MirrorScheduledAt("req-sched", due)
+	m.Flush()
+
+	prefix := DefaultQueueMirrorPrefix + ":" + DefaultQueueMirrorKeyVersion
+	if got := mget(mr, prefix+":scheduled_at:req-sched"); got != "1700000999000" {
+		t.Fatalf("scheduled_at key wrong: %q", got)
+	}
+	if got := mget(mr, prefix+":retry_at:req-retry"); got != "1700000999000" {
+		t.Fatalf("retry_at key wrong: %q", got)
+	}
+
+	// RebuildMetadata must classify the two families separately.
+	meta, err := m.RebuildMetadata(context.Background())
+	if err != nil {
+		t.Fatalf("rebuild: %v", err)
+	}
+	if len(meta.Scheduled) != 1 || meta.Scheduled[0].RequestID != "req-sched" {
+		t.Fatalf("scheduled classification wrong: %+v", meta.Scheduled)
+	}
+	if len(meta.Retries) != 1 || meta.Retries[0].RequestID != "req-retry" {
+		t.Fatalf("retry classification wrong: %+v", meta.Retries)
+	}
+
+	// Clear removes only the scheduled key.
+	m.ClearScheduledAt("req-sched")
+	m.Flush()
+	if got := mget(mr, prefix+":scheduled_at:req-sched"); got != "" {
+		t.Fatalf("scheduled_at key not cleared: %q", got)
+	}
+	if got := mget(mr, prefix+":retry_at:req-retry"); got == "" {
+		t.Fatalf("retry_at key must survive scheduled clear")
+	}
+}
+
+// TestPipelineMirrorsScheduledLifecycle: 管线级闭环——park 时写入
+// scheduled_at，到期执行后清理（miniredis 验证 Redis 侧状态）。
+func TestPipelineMirrorsScheduledLifecycle(t *testing.T) {
+	m, mr := newTestMirror(t)
+	defer m.Close()
+
+	f := &fakeDeps{
+		refsByModel: map[string][]CredentialRef{"gpt4": {cred(1, ModeConcurrency, 5)}},
+		forwardFn: func(ctx context.Context, qr *QueuedRequest, c CredentialRef) ForwardOutcome {
+			return ForwardOutcome{}
+		},
+		forwardCalls: map[int]int{},
+	}
+	p := f.pipeline()
+	p.SetQueueMirror(m)
+	p.Start()
+	defer p.Stop()
+
+	due := time.Now().Add(250 * time.Millisecond)
+	qr := NewQueuedRequest("mir-1", "t", "gpt4", context.Background(), "payload")
+	qr.DueAt = due
+	go func() { _, _ = p.Submit(context.Background(), qr) }()
+
+	prefix := DefaultQueueMirrorPrefix + ":" + DefaultQueueMirrorKeyVersion
+	schedKey := prefix + ":scheduled_at:mir-1"
+	// Parked: scheduled key present.
+	deadline := time.Now().Add(2 * time.Second)
+	parked := false
+	for time.Now().Before(deadline) {
+		if mget(mr, schedKey) != "" {
+			parked = true
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !parked {
+		t.Fatalf("scheduled_at key never mirrored at park time")
+	}
+	// After due execution + completion: scheduled key cleared. Fresh
+	// deadline: the due wait (250ms) plus the async mirror DEL must fit in a
+	// window that does not share budget with the park-poll above.
+	clearDeadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(clearDeadline) {
+		if mget(mr, schedKey) == "" && qr.completed.Load() {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := mget(mr, schedKey); got != "" {
+		t.Fatalf("scheduled_at key not cleared after execution: %q", got)
+	}
+	if !qr.completed.Load() {
+		t.Fatalf("request never completed")
+	}
 }

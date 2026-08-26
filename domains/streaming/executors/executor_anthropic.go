@@ -18,6 +18,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"    //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/transformation" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/errorsx"
+	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/internal/textsplit"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/pool"
@@ -429,9 +430,13 @@ func (e *Executor) prepareAnthropicRequestBody(params *ExecParams, cand provider
 		if converter, ok := irScoped.(interface {
 			SetContext(*domain.TransportContext)
 		}); ok {
+			// V6-W1.6 T2: carry the dispatch request class (定时请求) into the
+			// converter so the parsed IR is class-stamped.
 			converter.SetContext(&domain.TransportContext{
 				UpstreamCatalogCode: cand.CatalogCode,
 				ProviderID:          cand.ProviderID,
+				RequestClass:        string(ir.ClassOf(params.DispatchDueAt)),
+				DueAt:               params.DispatchDueAt,
 			})
 		}
 		// Parse OpenAI body → IR → Serialize Anthropic
