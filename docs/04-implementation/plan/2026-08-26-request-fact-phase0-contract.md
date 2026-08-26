@@ -98,7 +98,36 @@ additive and is ignored by a V1 reader.
 `internal/requestfact/types.go`; the wildcard notation above groups fields only
 for readability and does not authorize renaming or omission.
 
-## Compatibility Boundaries
+## Phase 1A Internal Request Document
+
+`payload.request.canonical_ir` and `payload.upstream.canonical_ir` use the
+versioned `internal/ir` request document codec beginning in Phase 1A. The
+independent document envelope is:
+
+```json
+{
+  "version": 1,
+  "kind": "internal_request",
+  "payload": { "...": "explicit normalized IR fields" }
+}
+```
+
+The document version is independent of every request-fact envelope/payload
+version and Session V2's `"$ir": 1` marker. It stores normalized IR semantics,
+including provider raw fields and extensions; it is not a provider request and
+must not be replaced with `json.Marshal(InternalRequest)`.
+
+The fact builders accept pre-existing artifacts only:
+
+- client document: received JSON bytes plus the `InternalRequest` returned by
+  the selected existing protocol parser;
+- upstream document: final bytes sent after any wire-only transformation plus
+  the already-mutated `InternalRequest` supplied to the serializer.
+
+Both builders defensively copy caller-owned JSON bytes and return an error for a
+missing, `null`, or malformed core document. They do not parse raw bytes,
+execute a serializer, write a projection, or mutate a request fact. The
+upstream semantic IR and exact wire body are intentionally distinct.
 
 
 - **IR:** Phase 0 stores explicit JSON documents. Phase 1 must construct them
