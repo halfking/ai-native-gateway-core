@@ -117,6 +117,40 @@
 
 ---
 
+## 2.1 存储拓扑：内存 vs Redis（2026-08-27 修正增补）
+
+> 背景：需要明确"请求队列放在哪里"。核查结论（file:line 证据见 §2.1 表）——
+> **执行队列本体在进程内存，不在 Redis**；Redis 承担的是观测镜像、响应缓存
+> 与跨实例限流。这是 v4 冻结契约（`restart_semantics_v1_valid.json`：
+> `ordinary_dispatch → expected_projection: "dropped"`；`queue_mirror.go` 头注释
+> "MUST NOT be used to resume execution"）。
+
+| 状态 | 位置 | 角色 | 键/结构 |
+|---|---|---|---|
+| Tier-0 总队列（等待室，cap 1000） | 进程内存（`total_queue.go` chan） | **执行准入权威** | — |
+| Tier-1 模型道 / Tier-2 凭据道 | 进程内存（`pipeline.go`/`forwarder.go` chan） | 执行排队 | — |
+| 错误重试堆 / 定时到期堆 | 进程内存（`retry_schedule.go` heap） | 到期再入队 | — |
+| 队列深度 / 在途数 / retry_at / scheduled_at | **Redis 镜像**（`queue_mirror.go`，TTL 10min，异步旁路） | 观测 + 重启后元数据重建（**不得恢复执行**） | `llmgw:dispatch:mirror:v1:{t1_depth,t2_depth,inflight,retry_at:*,scheduled_at:*}` |
+| 定时请求停靠（G-Ⅱ） | 权威在内存到期堆；**Redis 侧由 `scheduled_at:{request_id}` 独立键族投影**（与错误重试 `retry_at` 可区分），park 写 / 到期与终态清 | 观测 | 同上 |
+| 待取回响应（客户端重连） | **Redis**（`pending/pending.go`） | 响应缓存，非执行队列 | `pending_response` + ZSET index |
+| 生命周期动作事件 | **Redis** LIST（`internal/liveactions`） | 观测（admin SSE） | `llmgw:live:actions` |
+| 供应商并限/限流（concurrency/RPM/TPM） | **Redis 权威**（Governor `redis_backend.go`，可回退本地） | 跨实例执行准入的一部分 | GovernorSpec 键 |
+| 执行恢复（重启续跑） | **PG**（`durable/`，默认关） | 唯一合法恢复通道 | `durable_llm_tasks` |
+
+若未来需要"执行队列本体入 Redis"（跨实例排队/重启续跑），那是推翻冻结契约的
+架构级变更，必须走新 ADR + durable lane 评审，不属于 v6-W1.5/W1.6 范围。
+
+> **2026-08-27 用户决策修订**：队列原语升级为**双后端**（有 Redis 用 Redis、
+> 无 Redis 回退本机内存），支撑多服务器分布式接收——设计定稿见
+> [`10-dual-backend-queue.md`](10-dual-backend-queue.md)（V6-W1.7）。连接亲和
+> 约束不变：执行对象（goroutine/连接/ResultCh 不可序列化）仍在本实例，Redis
+> 后端管跨实例**准入/容量/定时可见**，跨实例接管执行仍属 durable lane。本表
+> 中"Tier-0/1/2、重试堆、到期堆 在进程内存"指**执行对象**；其**准入与容量
+> 口径**自 W1.7 起按后端选择（local | redis）。
+
+
+---
+
 ## 3. 任务分解（Waves）
 
 ### 3.1 V6-W1.5 · 本轮实施（LOCAL_VERIFIED 目标）
@@ -129,6 +163,7 @@
 | T4 | 回队打标 LastFailover | `queued_request.go`、`failover.go`、`dispatcher.go` | 每个回队站点写标；通知与索引携带 |
 | T5 | DimensionIndex 分维队列 | `domains/dispatch/dimension_index.go`、`pipeline.go`、`metrics.go`、`cmd/gateway/main_dispatch.go` | 登记/完成/TTL/容量淘汰单测；`GET /api/admin/dispatch/dimensions` 端点 |
 | T6 | 文档 | 本文件 + `docs/04-implementation/changes/2026-08-27-v6-dispatch-executor-loop.md` + README 索引 | 落盘 |
+| T7 | scheduled_at Redis 镜像键族（2026-08-27 修正） | `queue_mirror.go`、`pipeline.go`（park/due/complete 接线） | 键写入/清理/RebuildMetadata 分类单测；管线级 park→到期→清理闭环（miniredis）；Redis 侧待处理集合 = `retry_at:*`（错误/容量重试）∪ `scheduled_at:*`（定时），可区分 |
 
 ### 3.2 后续波次（不在本轮）
 

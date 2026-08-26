@@ -297,6 +297,12 @@ func TestDispatchUsesJourneyAttemptIDForNodeHealthReduction(t *testing.T) {
 	if decision.AttemptID != journeyAttemptID {
 		t.Fatalf("reducer attempt ID = %q, journey UUID = %q", decision.AttemptID, journeyAttemptID)
 	}
+	// Node health keys by the binding-scoped raw model (OfferRawModel →
+	// RawModel fallback), NOT the standardized client name: a client-facing
+	// name can map to multiple provider bindings and keying by it would
+	// merge their empty-response / health windows. The fixture sets
+	// RawModel="vendor-model-a" with no OfferRawModel, so the reducer's
+	// BindingRawModel() fallback must yield "vendor-model-a".
 	if decision.Node != (nodehealth.NodeKey{TenantID: "tenant-a", ProviderID: 7, CredentialID: 22, Model: "vendor-model-a"}) {
 		t.Fatalf("node = %+v", decision.Node)
 	}

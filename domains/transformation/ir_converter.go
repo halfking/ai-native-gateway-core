@@ -203,6 +203,7 @@ func (s *scopedConverter) ParseOpenAI(body []byte) (*ir.InternalRequest, error) 
 		return nil, err
 	}
 	s.parent.extractRequestExtensions(body, req)
+	stampRequestClass(req, s.context)
 	s.recordOK()
 	return req, nil
 }
@@ -217,6 +218,7 @@ func (s *scopedConverter) ParseAnthropic(body []byte) (*ir.InternalRequest, erro
 		return nil, err
 	}
 	s.parent.extractRequestExtensions(body, req)
+	stampRequestClass(req, s.context)
 	s.recordOK()
 	return req, nil
 }
@@ -231,6 +233,7 @@ func (s *scopedConverter) ParseResponses(body []byte) (*ir.InternalRequest, erro
 		return nil, err
 	}
 	s.parent.extractRequestExtensions(body, req)
+	stampRequestClass(req, s.context)
 	s.recordOK()
 	return req, nil
 }
@@ -364,6 +367,7 @@ func (c *TransportIRConverter) ParseOpenAI(body []byte) (*ir.InternalRequest, er
 		return nil, err
 	}
 	c.extractRequestExtensions(body, req)
+	stampRequestClass(req, c.contextSnapshot())
 	return req, nil
 }
 
@@ -379,6 +383,7 @@ func (c *TransportIRConverter) ParseAnthropic(body []byte) (*ir.InternalRequest,
 		return nil, err
 	}
 	c.extractRequestExtensions(body, req)
+	stampRequestClass(req, c.contextSnapshot())
 	return req, nil
 }
 
@@ -397,7 +402,23 @@ func (c *TransportIRConverter) ParseResponses(body []byte) (*ir.InternalRequest,
 		return nil, err
 	}
 	c.extractRequestExtensions(body, req)
+	stampRequestClass(req, c.contextSnapshot())
 	return req, nil
+}
+
+// stampRequestClass copies the gateway-internal request type from the
+// transport context onto the parsed IR (V6-W1.6 R8). Nil context or empty
+// class leaves the IR at the zero value (empty ≙ immediate).
+func stampRequestClass(req *ir.InternalRequest, ctx *domain.TransportContext) {
+	if req == nil || ctx == nil {
+		return
+	}
+	if ctx.RequestClass != "" {
+		req.Class = ir.RequestClass(ctx.RequestClass)
+	}
+	if !ctx.DueAt.IsZero() {
+		req.DueAt = ctx.DueAt
+	}
 }
 
 // extractRequestExtensions populates req.Extensions with non-standard
