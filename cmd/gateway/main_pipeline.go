@@ -95,7 +95,8 @@ import (
 	agentecosystem "github.com/kaixuan/llm-gateway-go/domains/agent-ecosystem"               //nolint:depguard
 	sessionanalytics "github.com/kaixuan/llm-gateway-go/domains/analysis"                    //nolint:depguard // Phase 4 会话全景分析引擎
 	"github.com/kaixuan/llm-gateway-go/domains/analysis/bus"                                 //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/domains/analysis/projectattr"                        //nolint:depguard // 2026-08-20 项目归属 resolver 装配点
+	"github.com/kaixuan/llm-gateway-go/domains/analysis/projectattr"                         //nolint:depguard // 2026-08-20 项目归属 resolver 装配点
+	"github.com/kaixuan/llm-gateway-go/domains/analysis/sessionmeta"                         //nolint:depguard // session analysis metadata final UPSERT
 	"github.com/kaixuan/llm-gateway-go/domains/analysis/workers"                             //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/assets"                                       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/authentication"                               //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -140,6 +141,9 @@ type v2DispatchConfig struct {
 	EnableAnalysis    bool // PR-V4-09: 异步分析 Loop 默认 off
 	AnalysisInterval  time.Duration
 	AnalysisBatchSize int
+	// AdminAPIKey gates the X-LLMGW-Preferred-Credential routing override.
+	// 2026-08-23.
+	AdminAPIKey string
 }
 
 // v2UsePipeline reports whether the v2 Pipeline wrapper should be used
@@ -173,6 +177,7 @@ func loadV2DispatchConfig() v2DispatchConfig {
 		EnableAnalysis:    envBool("LLM_GATEWAY_V2_ANALYSIS", false),
 		AnalysisInterval:  envDuration("LLM_GATEWAY_V2_ANALYSIS_INTERVAL", 5*time.Second),
 		AnalysisBatchSize: envInt("LLM_GATEWAY_V2_ANALYSIS_BATCH", 10),
+		AdminAPIKey:       os.Getenv("LLM_GATEWAY_ADMIN_API_KEY"),
 	}
 }
 
@@ -218,6 +223,13 @@ type v2DispatchDeps struct {
 	CredentialLimit  *credential.Limiter
 	ProviderStore    *provider.InMemoryStore
 	ProviderProber   *provider.Prober
+
+	// AdminAPIKey is the static admin token (cfg.AdminAPIKey, env
+	// LLM_GATEWAY_ADMIN_API_KEY). It is used to gate the
+	// X-LLMGW-Preferred-Credential routing override so that only
+	// authenticated admins can force a credential on a request.
+	// 2026-08-23.
+	AdminAPIKey string
 
 	// ── v1 references (the actual data plane) ──────────────────────
 	// ChatHandler is the production v1 chat dispatcher. The Pipeline
@@ -624,6 +636,7 @@ func newV2DispatchDepsFromMain(cfg v2DispatchConfig, chatHandler *streaming.Chat
 		EventBus:         eventbus.NewMemoryBus(100),
 		ChatHandler:      chatHandler,
 		KeyVerifier:      keyVerifier,
+		AdminAPIKey:      cfg.AdminAPIKey,
 	}
 	deps.Pipeline = buildV2DispatchPipeline(deps)
 	return deps
@@ -748,6 +761,26 @@ func v2DispatchHandler(deps *v2DispatchDeps, fallback http.Handler) http.Handler
 		rawKey := pipelineAPIKey(r)
 		if rawKey != "" {
 			env.Metadata["api_key"] = rawKey
+		}
+
+		// 2026-08-23: read the X-LLMGW-Preferred-Credential routing
+		// override. The header is gated on the admin token (carried in a
+		// separate X-LLMGW-Admin-Token header) so only authenticated
+		// operators can pin a credential on a request. The chat request
+		// itself still authenticates with a normal client key; the admin
+		// token only unlocks the pin. The body metadata field (OpenAI
+		// metadata / Anthropic messages.metadata / Responses Extra) is
+		// extracted from rawBody and merged into the same key. Either
+		// source populates env.Metadata["preferred_credential"], which the
+		// v2 routing StickyRouter already consumes.
+		if pref := streaming.ExtractPreferredCredential(
+			r.Header.Get(streaming.PreferredCredentialHeader),
+			rawBody,
+			r.Header.Get(streaming.PreferredCredentialAdminTokenHeader),
+			deps.AdminAPIKey,
+		); pref != "" {
+			env.Metadata["preferred_credential"] = pref
+			env.Metadata["preferred_credential_source"] = "admin"
 		}
 		if deps.KeyVerifier != nil && deps.KeyVerifier.Enabled() {
 			if rawKey == "" {
@@ -1097,6 +1130,23 @@ func startAnalysisLoopIfConfigured(deps *v2DispatchDeps) {
 				"flag_on", settings.GetPlatformBool("project_attribution.enabled", false),
 				"pg_ready", deps.PGDBPool != nil,
 				"resolver_ready", deps.ProjectAttrResolver != nil)
+		}
+
+		// Session analysis metadata final UPSERT (migration 567 §7).
+		// 2026-08-27: d2cbaf88b restored this block from origin/main but
+		// sessionsummary.NewRequestLogsMessageSource was removed when v2
+		// session_bodies became the only source. Fold the flag — v2 is the
+		// sole supported path; the flag is still honored by the compression
+		// layer below for read-source selection.
+		if deps.PGDBPool != nil {
+			msgSource := sessionsummary.NewV2SessionBodiesSource(deps.PGDBPool)
+			metaHook := workers.NewSessionMetadataCloseHook(
+				sessionmeta.NewMetadataStore(deps.PGDBPool),
+				msgSource,
+				slog.Default(),
+			)
+			sumWorker.AddCloseHook(metaHook)
+			slog.Info("v2 pipeline: session metadata final close hook enabled")
 		}
 
 		sumPoll := bus.NewPGPollFunc(bus.AsPGDB(deps.PGDBPool), sumWorker.SubscribedTypes(), deps.Config.AnalysisBatchSize)
