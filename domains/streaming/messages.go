@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -45,13 +46,6 @@ type messagesRequestBody struct {
 
 type anthropicMeta struct {
 	UserID string `json:"user_id,omitempty"`
-	// 2026-08-23: gateway-private routing override. Mirrors the
-	// X-LLMGW-Preferred-Credential HTTP header so clients that cannot set
-	// custom headers (e.g. SDK defaults) can still pin a credential via
-	// the OpenAI-compatible metadata extension slot. The admin token gate
-	// is applied by ExtractPreferredCredential at the v2 preflight layer;
-	// this struct field only carries the parsed value to the decoder.
-	PreferredCredential string `json:"preferred_credential,omitempty"`
 }
 
 type MessagesHandler struct {
@@ -214,6 +208,39 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if rlOutcome := checkGatewayRateLimit(keyInfo, h.chatHandler.rateLimiter); !rlOutcome.Skipped {
+		writeRateLimitHeaders(w, rlOutcome)
+		if rlOutcome.Blocked {
+			attemptErrCode = "rate_limit_exceeded"
+			attemptErrMsg = "rate limit exceeded"
+			// Peek the body so the safety-net can recover client_model
+			// and request preview from the rejected request. Body is read
+			// lazily so non-rate-limited requests are not penalised.
+			peeked, _ := io.ReadAll(io.LimitReader(r.Body, int64(maxBodySize)+1))
+			if len(peeked) > maxBodySize {
+				peeked = peeked[:maxBodySize]
+			}
+			if len(peeked) > 0 {
+				attemptRequestBody = peeked
+				if attemptClientModel == "" {
+					attemptClientModel = extractModelFromBody(peeked)
+				}
+			}
+			// 2026-06-20 audit fix v3: even when body is empty,
+			// ensure client_model is set to "<unknown>" so the
+			// request_logs row never has a blank client_model.
+			// Without this, an empty body + rate-limited request
+			// would produce a row with client_model=NULL — same
+			// diagnostic gap closed for captureAttemptBody /
+			// ensureRequestBodyBuffered in v2.
+			if attemptClientModel == "" {
+				attemptClientModel = "<unknown>"
+			}
+			writeAnthropicError(w, 529, "rate_limit_error", "Rate limit exceeded. Please wait and retry.")
+			return
+		}
+	}
+
 	bodyBytes, err := readRequestBody(r.Context(), r.Body, maxBodySize)
 	if err != nil {
 		if len(bodyBytes) > 0 {
@@ -260,15 +287,6 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			attemptClientModel = "<unknown>"
 		}
 		writeAnthropicError(w, http.StatusRequestEntityTooLarge, "invalid_request", "Request body too large")
-		return
-	}
-	// ── Prompt budget guard (2026-08-24, 245 memcg OOM) ──────────────────
-	// 拒绝发生在 JSON 解析 / 上游转发之前；见 request_meta.go 注释。
-	if estTokens, over := promptBudgetExceeded(bodyBytes); over {
-		attemptErrCode = "prompt_too_large"
-		attemptErrMsg = fmt.Sprintf("prompt exceeds gateway budget: estimated %d tokens > %d limit", estTokens, promptBudgetLimit())
-		writeAnthropicError(w, http.StatusRequestEntityTooLarge, "invalid_request",
-			fmt.Sprintf("Prompt exceeds gateway budget (estimated %d tokens > %d limit)", estTokens, promptBudgetLimit()))
 		return
 	}
 
@@ -333,7 +351,7 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 2026-07-14: lowercase at the wire boundary.
-	clientModel := modelname.CanonicalizeClientModel(ApplyAliasPrefix(reqBody.Model))
+	clientModel := modelname.CanonicalizeClientModel(reqBody.Model)
 	resolveRequestJourney(r, tenant(keyInfo), requestedModel, clientModel)
 
 	// ── Tenant model policy (Round 48, 2026-06-21) ──────────────
@@ -449,13 +467,6 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			slog.Warn("request_logger: messages session merge failed", "request_id", requestID, "error", err)
 		}
 	}
-	// 2026-08-23: protocol-coverage for provisional metadata — mirror the
-	// chat-completions hook so /v1/messages arrivals also feed the rule
-	// extractor. The dispatcher's content-block / `system` field
-	// handling lets the Anthropic native shape produce the same
-	// heuristic signals as the OpenAI chat shape (see
-	// sessionmeta.ParseMessages).
-	h.chatHandler.invokeProvisionalMetadataOnArrival(r, sessionID, keyInfo, logCtx, bodyBytes)
 	// 2026-08-06 audit fix: Anthropic Messages native metadata.user_id
 	// remains highest priority; the unified resolver handles the
 	// remaining cases (X-End-User-Id header, OpenAI-style body

@@ -34,8 +34,6 @@ export default {
     auditLogs: "稽核記錄",
     requestLogs: "請求記錄",
     dispatchWaterfall: "佇列瀑布圖",
-    requestRegistry: "Request Registry",
-    connectionRegistry: "Connection Registry",
     turns: "輪次列表",
     requestTrace: "請求鏈路追蹤",
     sessions: "會話清單",

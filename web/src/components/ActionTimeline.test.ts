@@ -76,8 +76,7 @@ describe('ActionTimeline (OBS-FE2)', () => {
     )
 
     const wrapper = mount(ActionTimeline, { props: { requestId: 'req-4' } })
-    // 2026-08-23 凭据显示：标签缓存未命中时回退「凭据 #ID」便于人工排查。
-    expect(wrapper.text()).toContain('凭据 #7')
+    expect(wrapper.text()).toContain('节点 7')
     expect(wrapper.text()).toContain('粘滞 true')
   })
 

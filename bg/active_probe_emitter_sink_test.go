@@ -130,13 +130,13 @@ func TestActiveProbeEmitter_NoSinkIsSafe(t *testing.T) {
 // TestProbeSourceForOrigin pins the origin→source mapping.
 func TestProbeSourceForOrigin(t *testing.T) {
 	cases := map[string]string{
-		"integrity":        "integrity",
-		"integrity_verify": "integrity",
-		"selfcheck":        "selfcheck",
-		"self_check":       "selfcheck",
-		"direct":           "node_probe",
-		"":                 "node_probe",
-		"gateway":          "node_probe",
+		"integrity":         "integrity",
+		"integrity_verify":  "integrity",
+		"selfcheck":         "selfcheck",
+		"self_check":        "selfcheck",
+		"direct":            "node_probe",
+		"":                  "node_probe",
+		"gateway":           "node_probe",
 	}
 	for in, want := range cases {
 		if got := probeSourceForOrigin(in); got != want {

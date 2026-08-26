@@ -12,7 +12,6 @@ export default {
   tabProbe: '自動テスト',
   tabProbeTitle: '自動テスト記録を表示 (10 分ごとに失敗した紐付けを再検出)',
   tabSettings: '設定',
-  tabErrorDetail: 'ベンダーエラー',
   loading: '読み込み中…',
   loadingFallback: '...',
   refresh: '更新',

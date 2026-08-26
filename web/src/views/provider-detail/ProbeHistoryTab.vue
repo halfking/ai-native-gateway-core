@@ -9,7 +9,6 @@ import {
   type ProbeState,
 } from '../../api'
 import { useFormat } from '../../i18n/useFormat'
-import { useCredentialLabels } from '../../composables/useCredentialLabels'
 
 const props = defineProps<{ providerId: number }>()
 const emit = defineEmits<{
@@ -19,10 +18,6 @@ const emit = defineEmits<{
 const { t: td } = useI18n()
 const pp = (k: string, params?: Record<string, unknown>): string => td(`providerDetail.probe.${k}` as never, params as never)
 const { fmtDateTime } = useFormat()
-// credentialDisplayName resolves credential id → human label; the composable
-// keeps a Map<id,label> refreshed via loadCredentialLabels(), and falls back
-// to "凭据 #ID" if the label is missing.
-const { credentialDisplayName, loadCredentialLabels } = useCredentialLabels()
 
 const runs = ref<ProbeRun[]>([])
 const states = ref<ProbeState[]>([])
@@ -53,9 +48,6 @@ const stateOptions = computed(() => [
 const RequiredConsensus = 3
 
 async function load() {
-  // Refresh the label cache alongside the probe history so credentialDisplayName()
-  // resolves to real labels on first render after a credential rename.
-  void loadCredentialLabels()
   loading.value = true
   error.value = ''
   try {
@@ -174,7 +166,7 @@ watch(stateFilter, load)
           </thead>
           <tbody>
             <tr v-for="s in states" :key="`${s.credential_id}-${s.raw_model_name}`">
-              <td>{{ credentialDisplayName(s.credential_id) }}</td>
+              <td>#{{ s.credential_id }}</td>
               <td><code class="mono-sm">{{ s.raw_model_name }}</code></td>
               <td><span class="badge" :class="consensusBadge(s.state)">{{ consensusLabel(s.state) }}</span></td>
               <td><span class="counter counter-ok">{{ s.consecutive_successes }}/{{ RequiredConsensus }}</span></td>
@@ -227,7 +219,7 @@ watch(stateFilter, load)
           <tbody>
             <tr v-for="r in runs" :key="r.id">
               <td class="cell-muted ts">{{ fmtTime(r.created_at) }}</td>
-              <td>{{ credentialDisplayName(r.credential_id) }}</td>
+              <td>#{{ r.credential_id }}</td>
               <td><code class="mono-sm">{{ r.raw_model_name }}</code></td>
               <td><span class="badge" :class="statusBadge(r.status)">{{ r.status }}</span></td>
               <td>{{ r.http_status ?? '—' }}</td>
@@ -382,12 +374,12 @@ watch(stateFilter, load)
 }
 
 .counter-ok {
-  background: var(--success-bg);
+  background: rgba(63, 185, 80, 0.15);
   color: var(--success);
 }
 
 .counter-fail {
-  background: var(--danger-bg);
+  background: rgba(248, 81, 73, 0.15);
   color: var(--danger);
 }
 </style>

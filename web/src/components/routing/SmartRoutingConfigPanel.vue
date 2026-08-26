@@ -195,7 +195,7 @@ defineExpose({ reload: load })
 .rank { color:var(--muted); text-align:center; }
 .enabled { display:flex; align-items:center; gap:4px; font-size:12px; white-space:nowrap; }
 .empty { color:var(--muted); font-size:13px; padding:8px 0; }
-.error { color:var(--danger); font-size:13px; margin:0; }
-.saved { color:var(--success-dark); font-size:13px; margin:0; }
+.error { color:#b91c1c; font-size:13px; margin:0; }
+.saved { color:#15803d; font-size:13px; margin:0; }
 @media (max-width: 760px) { .panel-head { flex-direction:column; } .route-row { grid-template-columns:24px 1fr 32px; } .route-row input[type=number], .enabled { grid-column:2; } }
 </style>

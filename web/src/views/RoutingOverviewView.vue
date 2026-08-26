@@ -11,13 +11,8 @@ import {
   type FeaturedModel,
 } from '../api'
 import { isReadOnlyMode, isSuperAdmin } from '../store'
-import { useCredentialLabels } from '../composables/useCredentialLabels'
 
 const { t } = useI18n()
-// credentialDisplayName resolves credential id → human label; the composable
-// keeps a Map<id,label> refreshed via loadCredentialLabels(), and falls back
-// to "凭据 #ID" if the label is missing.
-const { credentialDisplayName } = useCredentialLabels()
 
 
 interface FlatVariant {
@@ -377,7 +372,7 @@ onMounted(load)
               >
                 <td>{{ cred.provider_name }}</td>
                 <td>
-                  <div>{{ credentialDisplayName(cred.credential_id) }}</div>
+                  <div>#{{ cred.credential_id }}</div>
                   <div class="text-muted">{{ cred.credential_label }}</div>
                 </td>
                 <td><span class="badge" :class="statusClass(cred)">T{{ cred.tier }} · w{{ cred.weight }}</span></td>
@@ -464,7 +459,7 @@ onMounted(load)
   border-radius: 3px;
   font-size: 8px; font-weight: 700;
 }
-.layer-tag.l2 { background: var(--success-bd); color: var(--success); }
+.layer-tag.l2 { background: rgba(63,185,80,.22); color: var(--success); }
 
 .search-input {
   flex: 1;

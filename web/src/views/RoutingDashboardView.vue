@@ -17,7 +17,7 @@ import { useL1TaskTypes } from '../composables/useL1TaskTypes'
 import { getWorkTypeStats, type WorkTypeSyncMeta } from '../api-work-types'
 import {
   getPolicy, patchPolicy, getScoringWeights, updateScoringWeights,
-  resolveRouting, reorderCandidateBindings, patchCandidateBinding,
+  resolveRouting, reorderCandidateBindings,
   type RoutingPolicy, type ScoringWeights, type RoutingResolveResponse,
   type RoutingCandidate, type CandidateBindingReorderItem,
 } from '../api'
@@ -32,12 +32,10 @@ import DecisionDetail from '../components/analytics/DecisionDetail.vue'
 import CredentialFunnel from '../components/analytics/CredentialFunnel.vue'
 import SmartRoutingConfigPanel from '../components/routing/SmartRoutingConfigPanel.vue'
 import SmartRoutingConfigDrawer from '../components/routing/SmartRoutingConfigDrawer.vue'
-import NodeDetailDrawer from '../components/NodeDetailDrawer.vue'
-import { nodesRef, type LiveNodeStatus } from '../composables/liveStreamStore'
-import { useCredentialLabels } from '../composables/useCredentialLabels'
+import CandidateDetailDrawer from '../components/routing/CandidateDetailDrawer.vue'
+import CandidateSettingsDialog from '../components/routing/CandidateSettingsDialog.vue'
 import { isSuperAdmin } from '../store'
 import { ApiError } from '../api/_core'
-import { assignSpacedPriorities } from '../utils/queueNodeCards'
 
 const { t } = useI18n()
 
@@ -396,7 +394,7 @@ function startPoll() {
     // 2026-08-13: silently re-resolve on the resolve tab so node-status changes
     // (auto-recovery flipping availability_state back to ready, a new circuit
     // open, or another admin's force_enable) appear without a manual re-pick.
-    if (activeTab.value === 'resolve' && resolved.value && draggingCredentialId.value === null) refreshResolveSilent()
+    if (activeTab.value === 'resolve' && resolved.value) refreshResolveSilent()
   }, 5000)
 }
 function stopPoll() {
@@ -415,58 +413,26 @@ const resolveLog = ref<ResolveLogEntry[]>([])
 const draggingCredentialId = ref<number | null>(null)
 const reorderSaving = ref(false)
 const reorderErr = ref('')
-// 2026-08-23: priority toggle per-candidate. Tracks which credential_id is
-// mid-flight and the latest pending value so the row disables the toggle
-// while PATCH is in flight, avoiding duplicate submissions.
-const prioritySaving = ref<number | null>(null)
-const priorityPendingValue = ref<Record<number, boolean>>({})
-const priorityErr = ref('')
 // 2026-08-19: opaque token echoed back to
-// /api/routing/candidate-bindings/reorder. Backend refuses mixed-canonical
+// /api/routing/candidate-bindings/reorder. Backend refuses mixed-model
 // reorders and stale revisions; the UI keeps both cases disabled.
 const resolveReorderRevision = ref<string>('')
-const resolveReorderCanonicalID = ref<number | null>(null)
-const resolveReorderRawModel = ref<string | null>(null)
-// 统一节点详情抽屉（明细 / 设置共用 NodeDetailDrawer）
-const nodeDrawerOpen = ref(false)
-const nodeDrawerNode = ref<LiveNodeStatus | null>(null)
-const nodeDrawerModel = ref('')
-const nodeDrawerTab = ref<'detail' | 'availability' | 'requests' | 'settings'>('availability')
-const nodeDrawerSeed = ref<RoutingCandidate | null>(null)
+// 2026-07-24: routing-v2 resolve 页「候选明细 / 设置」状态。
+const detailCandidate = ref<RoutingCandidate | null>(null)
+const settingsCandidate = ref<RoutingCandidate | null>(null)
 const superAdmin = isSuperAdmin()
 
-function candidateToNode(c: RoutingCandidate): LiveNodeStatus {
-  const live = nodesRef.value.find(n => n.credential_id === c.credential_id)
-  if (live) return live
-  return {
-    credential_id: c.credential_id,
-    provider_id: c.provider_id,
-    provider_code: c.catalog_code || c.provider_name,
-    circuit_state: c.circuit_state ?? undefined,
-    availability_state: c.availability_state ?? undefined,
-    quota_state: c.quota_state ?? undefined,
-    health_status: c.availability_state === 'unreachable' ? 'unreachable' : undefined,
-    manual_disabled: false,
-    raw_models: c.model_name ? [c.model_name] : undefined,
-  }
-}
-
 function openCandidateDetail(c: RoutingCandidate) {
-  nodeDrawerSeed.value = c
-  nodeDrawerNode.value = candidateToNode(c)
-  nodeDrawerModel.value = c.model_name
-  nodeDrawerTab.value = 'availability'
-  nodeDrawerOpen.value = true
+  detailCandidate.value = c
 }
 function openCandidateSettings(c: RoutingCandidate) {
   if (!superAdmin) return
-  nodeDrawerSeed.value = c
-  nodeDrawerNode.value = candidateToNode(c)
-  nodeDrawerModel.value = c.model_name
-  nodeDrawerTab.value = 'settings'
-  nodeDrawerOpen.value = true
+  settingsCandidate.value = c
 }
 async function onCandidateSettingsApplied() {
+  // 写完直接重查当前模型，让 admin 看到新排序生效。
+  // 同时通知当前页面上所有 ModelPicker/ChatView 实例丢弃目录缓存，
+  // 否则 force_enable 后 resolve 已更新，模型下拉列表仍可能长期使用旧快照。
   await doResolve()
   window.dispatchEvent(new CustomEvent('llm-gateway:models-updated'))
 }
@@ -486,20 +452,6 @@ const filteredResolveCandidates = computed(() => resolveCandidates.value)
 const resolveUnavailableCount = computed(() =>
   resolveCandidates.value.filter(c => !c.routable).length,
 )
-const canReorderResolve = computed(() =>
-  superAdmin
-  && !reorderSaving.value
-  && (resolveReorderCanonicalID.value !== null || resolveReorderRawModel.value !== null)
-  && Boolean(resolveReorderRevision.value),
-)
-function resolveReorderDisabledHint(): string {
-  if (!superAdmin) return '仅超级管理员可以调整排序。'
-  if (reorderSaving.value) return '正在保存排序调整。'
-  if (!resolveReorderRevision.value) {
-    return '尚未拿到后端修订版本（可能合并了多个原始模型），无法安全调整排序。'
-  }
-  return '拖动以调整排序'
-}
 
 function candidateBlockReason(c: RoutingCandidate): string {
   return c.block_reason || c.runtime_block_reason || 'unavailable'
@@ -540,22 +492,8 @@ function resolveStateHint(c: RoutingCandidate): string {
   return parts.join(' · ')
 }
 
-// isCandidatePrioritySaving — whether a row's priority toggle is in flight.
-// Other rows see "false" so they stay interactive. Tested by the unit spec.
-function isCandidatePrioritySaving(c: RoutingCandidate): boolean {
-  return prioritySaving.value === c.credential_id
-}
-
-function candidatePriorityDisabled(c: RoutingCandidate): boolean {
-  // Per-row lock during save, plus a global gate when another row is saving.
-  if (!superAdmin) return true
-  if (prioritySaving.value !== null) return true
-  if (!c.model_name) return true
-  return false
-}
-
 function onCandidateDragStart(c: RoutingCandidate, event: DragEvent) {
-  if (!canReorderResolve.value) {
+  if (!superAdmin || reorderSaving.value || !resolveReorderRevision.value) {
     event.preventDefault()
     return
   }
@@ -565,7 +503,7 @@ function onCandidateDragStart(c: RoutingCandidate, event: DragEvent) {
 }
 
 function onCandidateDragOver(event: DragEvent) {
-  if (!canReorderResolve.value || draggingCredentialId.value === null) return
+  if (!superAdmin || draggingCredentialId.value === null || !resolveReorderRevision.value) return
   event.preventDefault()
   if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'
 }
@@ -576,10 +514,8 @@ async function onCandidateDrop(target: RoutingCandidate, event: DragEvent) {
   draggingCredentialId.value = null
   if (!superAdmin || sourceID === null || sourceID === target.credential_id || reorderSaving.value) return
   const expectedRevision = resolveReorderRevision.value
-  const canonicalID = resolveReorderCanonicalID.value
-  const rawModel = resolveReorderRawModel.value
-  if (!expectedRevision || (canonicalID === null && rawModel === null)) {
-    reorderErr.value = '该模型分组合并了多个规范模型或多个原始模型，无法安全调整优先级。'
+  if (!expectedRevision) {
+    reorderErr.value = '该模型分组合并了多个原始模型，无法安全调整优先级。'
     return
   }
 
@@ -591,37 +527,29 @@ async function onCandidateDrop(target: RoutingCandidate, event: DragEvent) {
   const next = [...previous]
   const [moved] = next.splice(sourceIndex, 1)
   next.splice(targetIndex, 0, moved)
-  // Align with queue-perspective cards: spaced priorities (5,10,15…) so
-  // resolve drag and dashboard drag share one assignment contract.
-  let priorities: number[]
-  try {
-    priorities = assignSpacedPriorities(next.length)
-  } catch (error) {
-    reorderErr.value = error instanceof Error ? error.message : '候选数量超过优先级上限，无法排序'
-    return
-  }
   resolveCandidates.value = next.map((candidate, index) => ({
     ...candidate,
     rank: index + 1,
-    manual_priority: priorities[index],
+    manual_priority: index + 1,
   }))
-  // Candidates may use several raw_model_name aliases, but they all share
-  // the one canonical scope carried by resolveReorderCanonicalID. Preserve
-  // each candidate's raw name for audit context; the backend validates every
-  // credential belongs to the canonical scope and applies the set atomically.
+  // All candidates share one raw_model at this point (resolveReorderRevision
+  // is only populated for single-model resolves), so reuse candidate.model_name
+  // for every item. The backend re-validates the contract and rejects drift.
+  const rawModel = next[0]?.model_name ?? ''
+  if (!rawModel) {
+    reorderErr.value = '无法确定原始模型名，请重新查询后再试。'
+    resolveCandidates.value = previous
+    return
+  }
   const items: CandidateBindingReorderItem[] = next.map((candidate, index) => ({
     credential_id: candidate.credential_id,
-    raw_model: candidate.model_name,
-    manual_priority: priorities[index],
+    raw_model: rawModel,
+    manual_priority: index + 1,
   }))
   reorderSaving.value = true
   reorderErr.value = ''
   try {
-    await reorderCandidateBindings(items, {
-      canonicalId: canonicalID ?? undefined,
-      rawModel: rawModel ?? undefined,
-      expectedRevision,
-    })
+    await reorderCandidateBindings(items, { rawModel, expectedRevision })
     await doResolve()
   } catch (e: unknown) {
     resolveCandidates.value = previous
@@ -639,43 +567,6 @@ async function onCandidateDrop(target: RoutingCandidate, event: DragEvent) {
 
 function onCandidateDragEnd() {
   draggingCredentialId.value = null
-}
-
-// 2026-08-23: persist priority toggle on a single candidate. PATCH
-// /api/routing/candidate-binding/{cred_id}?raw_model=... body {priority: bool},
-// then re-resolve so the badge reflects the fresh server value.
-async function saveCandidatePriority(c: RoutingCandidate, value: boolean) {
-  if (!superAdmin) return
-  if (prioritySaving.value !== null) return
-  const credId = c.credential_id
-  const rawModel = c.model_name
-  if (!rawModel) return
-  const previous = resolveCandidates.value
-  priorityPendingValue.value = { ...priorityPendingValue.value, [credId]: value }
-  prioritySaving.value = credId
-  priorityErr.value = ''
-  // Optimistic update so the toggle feels instant.
-  resolveCandidates.value = previous.map(row =>
-    row.credential_id === credId ? { ...row, priority: value } : row,
-  )
-  try {
-    await patchCandidateBinding(credId, rawModel, { priority: value })
-    await doResolve()
-  } catch (e: unknown) {
-    // Roll back to server truth on error.
-    resolveCandidates.value = previous
-    const fallback = e instanceof Error ? e.message : '保存失败'
-    if (e instanceof ApiError && e.status === 403) {
-      priorityErr.value = '仅超级管理员可以切换优先凭据。'
-    } else {
-      priorityErr.value = fallback
-    }
-  } finally {
-    prioritySaving.value = null
-    const next = { ...priorityPendingValue.value }
-    delete next[credId]
-    priorityPendingValue.value = next
-  }
 }
 
 function loadResolveLog() {
@@ -729,10 +620,7 @@ async function doResolve() {
     resolution.value = res
     resolveCandidates.value = res.candidates
     resolved.value = true
-    const reorderScope = singleCanonicalRevision(res)
-    resolveReorderRevision.value = reorderScope.revision
-    resolveReorderCanonicalID.value = reorderScope.canonicalID
-    resolveReorderRawModel.value = reorderScope.rawModel
+    resolveReorderRevision.value = singleRawModelRevision(res)
     appendResolveLog(res, profile)
   } catch (e: unknown) {
     resolveErr.value = e instanceof Error ? e.message : t('routing.queryFailed')
@@ -752,37 +640,24 @@ async function refreshResolveSilent() {
     const res = await resolveRouting(modelInput.value.trim(), profile || undefined, true)
     resolution.value = res
     resolveCandidates.value = res.candidates
-    const reorderScope = singleCanonicalRevision(res)
-    resolveReorderRevision.value = reorderScope.revision
-    resolveReorderCanonicalID.value = reorderScope.canonicalID
-    resolveReorderRawModel.value = reorderScope.rawModel
+    resolveReorderRevision.value = singleRawModelRevision(res)
   } catch {
     // swallow — keep stale list; next tick retries
   }
 }
 
-// singleCanonicalRevision returns the server's reorder revision only when
-// every candidate shares the exact same canonical_id (canonical scope) or
-// every candidate shares the exact same raw_model_name (legacy fallback for
-// bindings whose provider rows have NULL canonical_id). Genuinely mixed
-// canonical models or mixed raw_model names stay disabled.
-function singleCanonicalRevision(res: RoutingResolveResponse): { revision: string; canonicalID: number | null; rawModel: string | null } {
-  if (!res.reorder_revision || res.candidates.length === 0) {
-    return { revision: '', canonicalID: null, rawModel: null }
+// singleRawModelRevision returns the server's reorder revision only when
+// every candidate shares the exact same raw_model. Mixed aliases /
+// canonical hits intentionally produce an empty string so the reorder
+// path stays disabled.
+function singleRawModelRevision(res: RoutingResolveResponse): string {
+  if (!res.reorder_revision || res.candidates.length === 0) return ''
+  const first = res.candidates[0].model_name
+  if (!first) return ''
+  for (const c of res.candidates) {
+    if (c.model_name !== first) return ''
   }
-  const canonicalID = res.candidates[0].canonical_id
-  if (canonicalID && res.reorder_canonical_id === canonicalID) {
-    if (res.candidates.every(c => c.canonical_id === canonicalID)) {
-      return { revision: res.reorder_revision, canonicalID, rawModel: null }
-    }
-  }
-  const rawModel = res.candidates[0].model_name
-  if (rawModel && res.reorder_raw_model === rawModel) {
-    if (res.candidates.every(c => c.model_name === rawModel)) {
-      return { revision: res.reorder_revision, canonicalID: null, rawModel }
-    }
-  }
-  return { revision: '', canonicalID: null, rawModel: null }
+  return res.reorder_revision
 }
 
 function replayFromLog(entry: ResolveLogEntry) {
@@ -848,15 +723,6 @@ function distMax(d: Record<string, number>): number {
 // L1 task types come from useL1TaskTypes composable (DB-backed; canonical 8
 // seeded immediately, then live list replaces it after fetch).
 const { l1TaskTypes, l1Label: taskLabel, refreshL1TaskTypes } = useL1TaskTypes()
-// credentialDisplayName resolves credential id → human label; the composable
-// keeps a Map<id,label> refreshed via loadCredentialLabels(), and falls back
-// to "凭据 #ID" if the label is missing.
-const { credentialDisplayName } = useCredentialLabels()
-
-function asCredentialId(value: unknown): number | null {
-  const n = Number(value)
-  return Number.isSafeInteger(n) && n > 0 ? n : null
-}
 
 const L1_STEPS = computed(() => ['Prompt', '8类分类', t('routing.sixDimScore'), 'Profile', t('routing.chooseModel')])
 const L2_STEPS = computed(() => [t('routing.modelParse'), t('routing.tierFallback'), '计费轮次', 'P2C得分', '执行/熔断'])
@@ -1373,7 +1239,7 @@ onUnmounted(() => stopPoll())
         <div v-if="resolution.plan_order.length" class="plan-order">
           执行顺序（P2C+粘性）：
           <span v-for="(p, i) in resolution.plan_order" :key="p.credential_id">
-            {{ i > 0 ? ' → ' : '' }}{{ credentialDisplayName(p.credential_id) }} ({{ p.raw_model }})
+            {{ i > 0 ? ' → ' : '' }}#{{ p.credential_id }} ({{ p.raw_model }})
           </span>
         </div>
       </div>
@@ -1385,13 +1251,8 @@ onUnmounted(() => stopPoll())
             <span class="toolbar-title">路由候选 — {{ modelInput }}</span>
             <span v-if="resolveUnavailableCount > 0" class="text-muted">不可用 {{ resolveUnavailableCount }}</span>
             <span v-if="reorderSaving" class="text-muted">保存排序中…</span>
-            <span
-              v-else-if="superAdmin && resolveCandidates.length > 0 && !canReorderResolve"
-              class="text-muted"
-            >{{ resolveReorderDisabledHint() }}</span>
           </div>
           <div v-if="reorderErr" class="text-danger reorder-error">{{ reorderErr }}</div>
-          <div v-else-if="priorityErr" class="text-danger reorder-error">{{ priorityErr }}</div>
         </div>
         <div v-if="resolveCandidates.length === 0" class="empty-hint">该模型暂无凭据配置</div>
         <div v-else class="table-wrap">
@@ -1403,7 +1264,6 @@ onUnmounted(() => stopPoll())
               <col class="col-provider">
               <col class="col-upstream">
               <col class="col-tier">
-              <col class="col-priority">
               <col class="col-actions">
             </colgroup>
             <thead>
@@ -1414,9 +1274,6 @@ onUnmounted(() => stopPoll())
                 <th>供应商 / 凭据</th>
                 <th style="width: 220px">上游</th>
                 <th style="width: 120px">Tier · 权重</th>
-                <th style="width: 92px" :title="t('routing.dashboard.resolve.priorityTooltip')">
-                  {{ t('routing.dashboard.resolve.colPriority') }}
-                </th>
                 <th style="width: 120px"></th>
               </tr>
             </thead>
@@ -1424,14 +1281,14 @@ onUnmounted(() => stopPoll())
               <tr
                 v-for="(c, i) in filteredResolveCandidates"
                 :key="c.credential_id"
-                :draggable="canReorderResolve"
+                :draggable="superAdmin && !reorderSaving"
                 :class="['resolve-row', c.routable ? 'is-routable' : 'is-unroutable', { dragging: draggingCredentialId === c.credential_id }]"
                 @dragstart="onCandidateDragStart(c, $event)"
                 @dragover="onCandidateDragOver"
                 @drop="onCandidateDrop(c, $event)"
                 @dragend="onCandidateDragEnd"
               >
-                <td v-if="superAdmin" class="drag-cell" :title="resolveReorderDisabledHint()" aria-label="拖动以调整排序">⠿</td>
+                <td v-if="superAdmin" class="drag-cell" title="拖动以调整优先级" aria-label="拖动以调整优先级">⠿</td>
                 <td class="rank-cell">{{ i + 1 }}</td>
                 <td>
                   <span class="badge" :class="resolveStateBadge(c).cls">
@@ -1443,43 +1300,14 @@ onUnmounted(() => stopPoll())
                 </td>
                 <td>
                   <div class="provider-name">{{ c.provider_name }}</div>
-                  <div class="text-muted">{{ credentialDisplayName(c.credential_id) }} · {{ c.credential_label }}</div>
+                  <div class="text-muted">#{{ c.credential_id }} · {{ c.credential_label }}</div>
                 </td>
                 <td><code class="mono-sm">{{ c.model_name }}</code></td>
                 <td>
                   T{{ c.tier }} · w{{ c.weight }}
-                  <span
-                    v-if="c.manual_priority != null && c.manual_priority !== 99"
-                    class="text-muted"
-                    title="排序序号：数字越小越靠前，只决定顺序，不保证独占流量"
-                  >
+                  <span v-if="c.manual_priority != null && c.manual_priority !== 99" class="text-muted">
                     · p{{ c.manual_priority }}
                   </span>
-                </td>
-                <td class="priority-cell" :class="{ 'is-saving': isCandidatePrioritySaving(c) }">
-                  <label
-                    v-if="superAdmin"
-                    class="priority-toggle"
-                    :title="t('routing.dashboard.resolve.priorityTooltip')"
-                  >
-                    <input
-                      type="checkbox"
-                      :checked="!!c.priority"
-                      :disabled="candidatePriorityDisabled(c)"
-                      :aria-label="`优先凭据 ${credentialDisplayName(c.credential_id)}`"
-                      @change="saveCandidatePriority(c, ($event.target as HTMLInputElement).checked)"
-                    />
-                    <span v-if="c.priority" class="priority-star" aria-hidden="true">★</span>
-                  </label>
-                  <template v-else>
-                    <span
-                      v-if="c.priority"
-                      class="priority-star"
-                      :title="t('routing.dashboard.resolve.priorityTooltip')"
-                      :aria-label="t('routing.dashboard.resolve.priorityTooltip')"
-                    >★</span>
-                    <span v-else class="text-muted">—</span>
-                  </template>
                 </td>
                 <td class="row-actions">
                   <button class="btn btn-ghost btn-sm" type="button" @click="openCandidateDetail(c)">
@@ -1555,7 +1383,7 @@ onUnmounted(() => stopPoll())
                 <span class="sim-step">{{ fmt(Number((simResult.decision as Record<string, unknown>).confidence) * 100, 0) }}%</span>
                 <span class="pipe-dot">→</span>
                 <span class="sim-step l2 win">{{ (simResult.decision as Record<string, unknown>).chosen_model }}</span>
-                <span class="text-muted">{{ credentialDisplayName(asCredentialId((simResult.decision as Record<string, unknown>).chosen_credential_id)) }}</span>
+                <span class="text-muted">cred #{{ (simResult.decision as Record<string, unknown>).chosen_credential_id }}</span>
               </div>
             </div>
           </div>
@@ -1632,13 +1460,15 @@ onUnmounted(() => stopPoll())
       @close="showSmartConfigDrawer = false"
     />
 
-    <NodeDetailDrawer
-      v-model="nodeDrawerOpen"
-      :node="nodeDrawerNode"
-      :model="nodeDrawerModel"
-      :initial-tab="nodeDrawerTab"
-      :seed-candidate="nodeDrawerSeed"
-      :require-super-admin-edit="true"
+    <CandidateDetailDrawer
+      v-if="detailCandidate"
+      :candidate="detailCandidate"
+      @close="detailCandidate = null"
+    />
+    <CandidateSettingsDialog
+      v-if="settingsCandidate && superAdmin"
+      :candidate="settingsCandidate"
+      @close="settingsCandidate = null"
       @applied="onCandidateSettingsApplied"
     />
   </div>
@@ -1742,7 +1572,7 @@ onUnmounted(() => stopPoll())
   background: var(--card);
   color: var(--text);
   font-weight: 600;
-  box-shadow: 0 1px 2px var(--overlay-faint);
+  box-shadow: 0 1px 2px rgba(0,0,0,.12);
 }
 
 .tab-content { display: flex; flex-direction: column; gap: 8px; }
@@ -1821,7 +1651,7 @@ onUnmounted(() => stopPoll())
   flex-shrink: 0;
 }
 .layer-tag.l1 { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--accent-h); }
-.layer-tag.l2 { background: var(--success-bd); color: var(--success); }
+.layer-tag.l2 { background: rgba(63,185,80,.22); color: var(--success); }
 .task-hint { font-weight: 400; color: var(--muted); font-size: 10px; }
 
 .task-pill {
@@ -1872,10 +1702,10 @@ onUnmounted(() => stopPoll())
   border-radius: 99px;
   font-size: 10px;
   font-weight: 600;
-  background: var(--neutral-bg);
+  background: rgba(139,148,158,.15);
   color: var(--muted);
 }
-.score-pill.good { background: var(--success-bg); color: var(--success); }
+.score-pill.good { background: rgba(63,185,80,.15); color: var(--success); }
 .score-pill.sm { font-size: 9px; padding: 0 4px; }
 
 /* 2026-07-24: routing-v2 resolve 页候选行（默认全量展示）
@@ -1903,7 +1733,7 @@ onUnmounted(() => stopPoll())
 }
 
 .model-row { cursor: pointer; }
-.model-row:hover { background: color-mix(in srgb, var(--kx-text) 4%, transparent); }
+.model-row:hover { background: rgba(255,255,255,.03); }
 .model-row.expanded { background: color-mix(in srgb, var(--accent) 5%, transparent); }
 .detail-row td { padding: 6px; background: var(--bg-subtle); border-top: none; }
 
@@ -1931,7 +1761,7 @@ onUnmounted(() => stopPoll())
   border-radius: 3px;
   font-size: 10px;
 }
-.l2-cred.top { border-color: var(--success); background: color-mix(in srgb, var(--success) 14%, transparent); }
+.l2-cred.top { border-color: var(--success); background: rgba(63,185,80,.08); }
 .l2-rank { font-weight: 700; color: var(--muted); font-size: 9px; }
 .l2-prov { font-weight: 500; }
 
@@ -2028,7 +1858,7 @@ onUnmounted(() => stopPoll())
   position: fixed;
   inset: 0;
   z-index: 1000;
-  background: var(--overlay-strong);
+  background: rgba(0, 0, 0, 0.45);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2059,7 +1889,7 @@ onUnmounted(() => stopPoll())
   background: var(--bg-subtle);
 }
 .sim-step.l1 { background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent-h); }
-.sim-step.l2.win { background: var(--success-bg); color: var(--success); font-weight: 600; }
+.sim-step.l2.win { background: rgba(63,185,80,.15); color: var(--success); font-weight: 600; }
 
 .dist-mini { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .dist-col h4 { font-size: 9px; text-transform: uppercase; color: var(--muted); margin: 0 0 4px; letter-spacing: .04em; }
@@ -2124,29 +1954,6 @@ onUnmounted(() => stopPoll())
   font-variant-numeric: tabular-nums;
   text-align: right;
 }
-.resolve-row .priority-cell {
-  text-align: center;
-  vertical-align: middle;
-  white-space: nowrap;
-}
-.resolve-row .priority-cell .priority-star {
-  color: var(--warning);
-  font-size: 14px;
-  line-height: 1;
-}
-.resolve-row .priority-cell .priority-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  cursor: pointer;
-  margin: 0;
-}
-.resolve-row .priority-cell .priority-toggle input[type='checkbox'] {
-  width: 14px;
-  height: 14px;
-  accent-color: var(--warning);
-}
-.resolve-row .priority-cell.is-saving { opacity: .55; }
 .reorder-error { color: var(--kx-danger); font-size: 10px; }
 .resolve-picker { min-width: 200px; }
 .resolve-profile { font-size: 11px; padding: 3px 6px; }

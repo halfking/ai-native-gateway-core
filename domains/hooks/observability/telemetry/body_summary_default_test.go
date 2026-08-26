@@ -27,6 +27,7 @@ func TestUpdateRequestLog_SessionsV2DefaultsToFullBodies(t *testing.T) {
 	mockDB.ExpectExec(`INSERT INTO request_logs_bodies_hot`).
 		WithArgs(
 			pgxmock.AnyArg(),
+			pgxmock.AnyArg(), // tenant_id
 			fullBodyMatcher{want: requestBody},
 			fullBodyMatcher{want: responseBody},
 			pgxmock.AnyArg(), // outbound_body (Phase 1)
@@ -70,6 +71,7 @@ func TestUpdateRequestLog_LegacyFalseOverrideStillKeepsFullBodies(t *testing.T) 
 	mockDB.ExpectExec(`INSERT INTO request_logs_bodies_hot`).
 		WithArgs(
 			pgxmock.AnyArg(),
+			pgxmock.AnyArg(), // tenant_id
 			fullBodyMatcher{want: requestBody},
 			fullBodyMatcher{want: responseBody},
 			pgxmock.AnyArg(), // outbound_body (Phase 1)

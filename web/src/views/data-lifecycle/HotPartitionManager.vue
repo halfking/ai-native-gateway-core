@@ -1454,7 +1454,7 @@ function formatNumber(num: number): string {
 .btn-primary {
   background: var(--accent);
   border-color: var(--accent);
-  color: var(--on-primary);
+  color: #fff;
 }
 
 .btn-primary:hover:not(:disabled) {
@@ -1493,7 +1493,7 @@ function formatNumber(num: number): string {
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: var(--overlay-strong);
+  background: rgba(0, 0, 0, 0.5);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1507,7 +1507,7 @@ function formatNumber(num: number): string {
   border-radius: 12px;
   width: 90%;
   max-width: 500px;
-  box-shadow: 0 20px 25px -5px var(--overlay-light);
+  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.2);
 }
 
 .modal-header {

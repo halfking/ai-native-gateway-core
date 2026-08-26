@@ -594,7 +594,7 @@ onMounted(() => {
 }
 
 .view-subtitle {
-  color: var(--muted);
+  color: #666;
   margin: 0 0 1.5rem;
 }
 
@@ -603,7 +603,7 @@ onMounted(() => {
   display: flex;
   gap: 0;
   margin-bottom: 1.5rem;
-  border-bottom: 1px solid var(--surface-secondary);
+  border-bottom: 1px solid #e5e7eb;
 }
 
 .tab-btn {
@@ -613,14 +613,14 @@ onMounted(() => {
   border-bottom: 2px solid transparent;
   cursor: pointer;
   font-size: 0.9375rem;
-  color: var(--muted);
+  color: #666;
   transition: all 0.2s;
 }
 
-.tab-btn:hover { color: var(--accent); }
+.tab-btn:hover { color: #3b82f6; }
 .tab-btn.active {
-  color: var(--accent);
-  border-bottom-color: var(--accent);
+  color: #3b82f6;
+  border-bottom-color: #3b82f6;
   font-weight: 500;
 }
 
@@ -634,14 +634,14 @@ onMounted(() => {
 
 .stat-card {
   background: white;
-  border: 1px solid var(--surface-secondary);
+  border: 1px solid #e5e7eb;
   border-radius: 8px;
   padding: 1rem;
 }
 
 .stat-label {
   font-size: 0.875rem;
-  color: var(--muted);
+  color: #666;
   margin-bottom: 0.5rem;
 }
 
@@ -650,8 +650,8 @@ onMounted(() => {
   font-weight: 600;
 }
 
-.stat-danger { color: var(--danger); }
-.stat-warn { color: var(--warning); }
+.stat-danger { color: #ef4444; }
+.stat-warn { color: #f59e0b; }
 
 /* 筛选栏 */
 .filter-bar {
@@ -664,7 +664,7 @@ onMounted(() => {
 .filter-input,
 .filter-select {
   padding: 0.5rem 0.75rem;
-  border: 1px solid var(--border);
+  border: 1px solid #d1d5db;
   border-radius: 6px;
   font-size: 0.875rem;
   min-width: 150px;
@@ -673,13 +673,13 @@ onMounted(() => {
 .filter-input:focus,
 .filter-select:focus {
   outline: none;
-  border-color: var(--accent);
+  border-color: #3b82f6;
 }
 
 /* 表格 */
 .table-container {
   background: white;
-  border: 1px solid var(--surface-secondary);
+  border: 1px solid #e5e7eb;
   border-radius: 8px;
   overflow-x: auto;
   margin-bottom: 1rem;
@@ -692,24 +692,24 @@ onMounted(() => {
 }
 
 .data-table th {
-  background: var(--surface-secondary);
+  background: #f9fafb;
   padding: 0.75rem 1rem;
   text-align: left;
   font-weight: 600;
-  border-bottom: 1px solid var(--surface-secondary);
+  border-bottom: 1px solid #e5e7eb;
   white-space: nowrap;
 }
 
 .data-table td {
   padding: 0.75rem 1rem;
-  border-bottom: 1px solid var(--surface-secondary);
+  border-bottom: 1px solid #f3f4f6;
 }
 
 .loading-cell,
 .empty-cell {
   text-align: center;
   padding: 2rem;
-  color: var(--muted);
+  color: #999;
 }
 
 .loading-cell {
@@ -737,7 +737,7 @@ onMounted(() => {
 .date-cell {
   white-space: nowrap;
   font-size: 0.8rem;
-  color: var(--muted);
+  color: #666;
 }
 
 /* 分页 */
@@ -750,7 +750,7 @@ onMounted(() => {
 
 .page-info {
   font-size: 0.875rem;
-  color: var(--muted);
+  color: #666;
 }
 
 /* 按钮 */
@@ -766,50 +766,50 @@ onMounted(() => {
 }
 
 .btn-primary {
-  background: var(--accent);
+  background: #3b82f6;
   color: white;
 }
 
-.btn-primary:hover { background: var(--accent); }
+.btn-primary:hover { background: #2563eb; }
 .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .btn-secondary {
   background: white;
-  color: var(--muted);
-  border: 1px solid var(--border);
+  color: #374151;
+  border: 1px solid #d1d5db;
 }
 
-.btn-secondary:hover { background: var(--surface-secondary); }
+.btn-secondary:hover { background: #f9fafb; }
 .btn-secondary:disabled { opacity: 0.5; cursor: not-allowed; }
 
 /* Badge */
 .badge-blue {
-  background: var(--info-bg);
-  color: var(--accent-dark);
+  background: #dbeafe;
+  color: #1e40af;
   padding: 0.25rem 0.5rem;
   border-radius: 4px;
   font-size: 0.75rem;
 }
 
 .badge-yellow {
-  background: var(--warning-bg);
-  color: var(--warning-dark);
+  background: #fef3c7;
+  color: #92400e;
   padding: 0.25rem 0.5rem;
   border-radius: 4px;
   font-size: 0.75rem;
 }
 
 .badge-green {
-  background: var(--success-bg);
-  color: var(--success-strong);
+  background: #d1fae5;
+  color: #065f46;
   padding: 0.25rem 0.5rem;
   border-radius: 4px;
   font-size: 0.75rem;
 }
 
 .badge-gray {
-  background: var(--surface-secondary);
-  color: var(--muted);
+  background: #f3f4f6;
+  color: #374151;
   padding: 0.25rem 0.5rem;
   border-radius: 4px;
   font-size: 0.75rem;
@@ -821,15 +821,15 @@ onMounted(() => {
   align-items: center;
   gap: 10px;
   padding: 2rem;
-  color: var(--muted);
+  color: #666;
 }
 
 .spinner {
   display: inline-block;
   width: 14px;
   height: 14px;
-  border: 2px solid var(--surface-secondary);
-  border-top-color: var(--accent);
+  border: 2px solid #e5e7eb;
+  border-top-color: #3b82f6;
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
 }
@@ -837,18 +837,18 @@ onMounted(() => {
 @keyframes spin { to { transform: rotate(360deg); } }
 
 .error-banner {
-  background: var(--danger-bg);
-  border: 1px solid var(--danger-bd);
-  color: var(--danger);
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  color: #dc2626;
   padding: 0.75rem 1rem;
   border-radius: 6px;
   margin-bottom: 1rem;
 }
 
 .success-banner {
-  background: var(--success-bg);
+  background: #d1fae5;
   border: 1px solid #6ee7b7;
-  color: var(--success-strong);
+  color: #065f46;
   padding: 0.75rem 1rem;
   border-radius: 6px;
   margin-bottom: 1rem;
@@ -868,7 +868,7 @@ onMounted(() => {
 .config-section {
   margin-bottom: 2rem;
   padding-bottom: 1.5rem;
-  border-bottom: 1px solid var(--surface-secondary);
+  border-bottom: 1px solid #e5e7eb;
 }
 
 .config-section:last-of-type {
@@ -879,7 +879,7 @@ onMounted(() => {
   margin: 0 0 1rem;
   font-size: 1rem;
   font-weight: 600;
-  color: var(--muted);
+  color: #374151;
 }
 
 .form-row {
@@ -893,34 +893,34 @@ onMounted(() => {
 .form-row label {
   min-width: 180px;
   font-weight: 500;
-  color: var(--muted);
+  color: #374151;
 }
 
 .form-input {
   flex: 1;
   min-width: 200px;
   padding: 0.5rem 0.75rem;
-  border: 1px solid var(--border);
+  border: 1px solid #d1d5db;
   border-radius: 6px;
   font-size: 0.875rem;
 }
 
 .form-input:focus {
   outline: none;
-  border-color: var(--accent);
+  border-color: #3b82f6;
 }
 
 .form-input-small {
   width: 100px;
   padding: 0.5rem 0.75rem;
-  border: 1px solid var(--border);
+  border: 1px solid #d1d5db;
   border-radius: 6px;
   font-size: 0.875rem;
 }
 
 .form-select {
   padding: 0.5rem 0.75rem;
-  border: 1px solid var(--border);
+  border: 1px solid #d1d5db;
   border-radius: 6px;
   font-size: 0.875rem;
   min-width: 150px;
@@ -928,7 +928,7 @@ onMounted(() => {
 
 .form-select:focus {
   outline: none;
-  border-color: var(--accent);
+  border-color: #3b82f6;
 }
 
 .form-checkbox {

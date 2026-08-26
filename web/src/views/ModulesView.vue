@@ -1282,7 +1282,7 @@ onMounted(() => {
   height: 16px;
   font-size: 10px;
   font-weight: 700;
-  color: color-mix(in srgb, var(--warning) 20%, var(--kx-text));
+  color: color-mix(in srgb, var(--warning) 20%, #000);
   background: var(--warning);
   border-radius: 50%;
   margin-left: 2px;
@@ -1420,7 +1420,7 @@ onMounted(() => {
   font-weight: 500;
   transition: background 0.15s;
 }
-.dep-chip:hover { background: var(--warning-bd); }
+.dep-chip:hover { background: rgba(251, 191, 36, 0.3); }
 .dep-jump {
   font-size: 10px;
   opacity: 0.7;
@@ -1481,7 +1481,7 @@ onMounted(() => {
   line-height: 1.5;
 }
 .cap-check {
-  color: var(--success);
+  color: #34d399;
   font-weight: 700;
   flex-shrink: 0;
 }
@@ -1524,20 +1524,20 @@ onMounted(() => {
   font-weight: 500;
 }
 .level-safe {
-  background: var(--success-bg);
-  color: var(--success);
+  background: rgba(52, 211, 153, 0.12);
+  color: #34d399;
 }
 .level-warn {
-  background: var(--warning-bg);
-  color: var(--warning);
+  background: rgba(251, 191, 36, 0.12);
+  color: #fbbf24;
 }
 .level-danger {
-  background: color-mix(in srgb, var(--danger) 12%, transparent);
-  color: var(--danger);
+  background: rgba(248, 113, 113, 0.12);
+  color: #f87171;
 }
 .level-breaking {
-  background: var(--danger-bg);
-  color: var(--danger);
+  background: rgba(239, 68, 68, 0.15);
+  color: #ef4444;
 }
 
 /* ── Dependencies ── */
@@ -1561,7 +1561,7 @@ onMounted(() => {
 }
 .dep-item.dep-disabled {
   opacity: 0.7;
-  border-color: var(--warning-bd);
+  border-color: rgba(251, 191, 36, 0.3);
 }
 .dep-icon {
   font-size: 20px;
@@ -1591,22 +1591,22 @@ onMounted(() => {
   flex-shrink: 0;
 }
 .dep-badge.required {
-  background: var(--danger-bg);
-  color: var(--danger);
+  background: rgba(239, 68, 68, 0.12);
+  color: #f87171;
 }
 .dep-badge.optional {
-  background: var(--neutral-bg);
-  color: var(--muted);
+  background: rgba(139, 148, 158, 0.12);
+  color: #8b949e;
 }
 .dep-status {
   font-size: 12px;
   flex-shrink: 0;
 }
 .dep-status.ok {
-  color: var(--success);
+  color: #34d399;
 }
 .dep-status.warning {
-  color: var(--warning);
+  color: #fbbf24;
   display: flex;
   align-items: center;
   gap: 4px;
@@ -1631,11 +1631,11 @@ onMounted(() => {
 .btn-action:disabled { opacity: 0.5; cursor: not-allowed; }
 .btn-primary {
   background: var(--accent);
-  color: var(--on-primary);
+  color: #fff;
 }
 .btn-danger {
-  background: var(--danger-strong);
-  color: var(--on-primary);
+  background: rgba(239, 68, 68, 0.85);
+  color: #fff;
 }
 .btn-ghost {
   padding: 8px 16px;
@@ -1660,14 +1660,14 @@ onMounted(() => {
   gap: 4px;
 }
 .test-ok {
-  background: var(--success-bg);
-  border: 1px solid var(--success-bd);
-  color: var(--success);
+  background: rgba(52, 211, 153, 0.1);
+  border: 1px solid rgba(52, 211, 153, 0.3);
+  color: #34d399;
 }
 .test-fail {
-  background: color-mix(in srgb, var(--danger) 12%, transparent);
-  border: 1px solid color-mix(in srgb, var(--danger) 12%, transparent);
-  color: var(--danger);
+  background: rgba(248, 113, 113, 0.1);
+  border: 1px solid rgba(248, 113, 113, 0.3);
+  color: #f87171;
 }
 .test-detail {
   font-family: ui-monospace, SFMono-Regular, monospace;
@@ -1787,7 +1787,7 @@ onMounted(() => {
   left: 2px;
   width: 14px;
   height: 14px;
-  background: var(--on-primary);
+  background: #fff;
   border-radius: 50%;
   transition: transform 0.2s;
 }
@@ -1807,16 +1807,16 @@ onMounted(() => {
   font-weight: 500;
 }
 .src-badge.src-db {
-  background: var(--success-bg);
-  color: var(--success);
+  background: rgba(52, 211, 153, 0.15);
+  color: #34d399;
 }
 .src-badge.src-env {
   background: color-mix(in srgb, var(--accent) 15%, transparent);
   color: var(--accent-h);
 }
 .src-badge.src-default {
-  background: var(--neutral-bg);
-  color: var(--muted);
+  background: rgba(139, 148, 158, 0.15);
+  color: #8b949e;
 }
 
 /* ── Integration Card ── */
@@ -1886,10 +1886,10 @@ onMounted(() => {
   border-radius: 50%;
 }
 .status-indicator.connected {
-  background: var(--success);
-  box-shadow: 0 0 4px var(--success-bd);
+  background: #34d399;
+  box-shadow: 0 0 4px rgba(52, 211, 153, 0.4);
 }
-.status-indicator.disconnected { background: var(--muted); }
+.status-indicator.disconnected { background: #6e7681; }
 
 /* ── Status Tab (Runtime Summary) ── */
 .status-grid {
@@ -1916,8 +1916,8 @@ onMounted(() => {
   font-weight: 500;
 }
 
-.text-green { color: var(--success); }
-.text-muted { color: var(--muted); }
+.text-green { color: #34d399; }
+.text-muted { color: #6e7681; }
 
 /* ── Dependency Section ── */
 .dependency-section {
@@ -1929,9 +1929,9 @@ onMounted(() => {
 }
 .warning-banner {
   padding: 10px 14px;
-  background: var(--warning-bg);
-  border: 1px solid var(--warning-bd);
-  color: var(--warning);
+  background: rgba(251, 191, 36, 0.1);
+  border: 1px solid rgba(251, 191, 36, 0.3);
+  color: #fbbf24;
   border-radius: 6px;
   margin-bottom: 12px;
   font-size: 12px;
@@ -1951,10 +1951,10 @@ onMounted(() => {
   border: 1px solid var(--border);
 }
 .dependency-item.dep-enabled {
-  border-color: var(--success-bd);
+  border-color: rgba(52, 211, 153, 0.3);
 }
 .dependency-item.dep-disabled.dep-required {
-  border-color: color-mix(in srgb, var(--danger) 12%, transparent);
+  border-color: rgba(248, 113, 113, 0.3);
 }
 .dep-status-icon {
   font-size: 16px;
@@ -1982,12 +1982,12 @@ onMounted(() => {
   font-weight: 500;
 }
 .badge-required {
-  background: color-mix(in srgb, var(--danger) 12%, transparent);
-  color: var(--danger);
+  background: rgba(248, 113, 113, 0.15);
+  color: #f87171;
 }
 .badge-optional {
   background: rgba(107, 114, 128, 0.15);
-  color: var(--muted);
+  color: #9ca3af;
 }
 
 .dep-title-icon {
@@ -2008,10 +2008,10 @@ onMounted(() => {
   margin-top: 12px;
   padding: 10px 12px;
   background: rgba(52, 211, 153, 0.08);
-  border: 1px solid var(--success-bd);
+  border: 1px solid rgba(52, 211, 153, 0.3);
   border-radius: 6px;
   font-size: 12px;
-  color: var(--success);
+  color: #34d399;
 }
 .cascade-log ul {
   margin: 6px 0 0 16px;
@@ -2054,10 +2054,10 @@ onMounted(() => {
 .dependency-warning {
   margin-top: 8px;
   padding: 8px 10px;
-  background: var(--warning-bg);
-  border: 1px solid var(--warning-bd);
+  background: rgba(251, 191, 36, 0.1);
+  border: 1px solid rgba(251, 191, 36, 0.3);
   border-radius: 4px;
-  color: var(--warning);
+  color: #fbbf24;
   font-size: 11px;
   line-height: 1.4;
 }

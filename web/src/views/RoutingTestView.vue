@@ -8,12 +8,8 @@ import {
   type ScoreDetail,
 } from '../api'
 import ModelPicker from '../components/ModelPicker.vue'
-import { useCredentialLabels } from '../composables/useCredentialLabels'
 
 const { t } = useI18n()
-// credentialDisplayName resolves credential id → human label; fallback is
-// "凭据 #ID" if the label cache is empty (label loaded async by the composable).
-const { credentialDisplayName } = useCredentialLabels()
 const modelInput  = ref('')
 const clientProfile = ref('')
 const resolution  = ref<RoutingResolveResponse | null>(null)
@@ -234,7 +230,7 @@ function dateWindow(c: RoutingCandidate): string {
       <div v-if="resolution.plan_order.length" style="margin-top:12px;font-size:12px;color:var(--muted)">
         执行顺序（P2C+粘性）：
         <span v-for="(p, i) in resolution.plan_order" :key="p.credential_id">
-          {{ i > 0 ? ' → ' : '' }}{{ credentialDisplayName(p.credential_id) }} ({{ p.raw_model }})
+          {{ i > 0 ? ' → ' : '' }}#{{ p.credential_id }} ({{ p.raw_model }})
         </span>
       </div>
     </div>
@@ -290,7 +286,7 @@ function dateWindow(c: RoutingCandidate): string {
             <td><code style="font-size:11px">{{ c.catalog_code }}</code></td>
             <td>
               <div>{{ c.credential_label }}</div>
-              <div class="cell-muted">{{ credentialDisplayName(c.credential_id) }} · 并发 {{ c.effective_concurrency ?? c.concurrency_limit ?? '—' }}</div>
+              <div class="cell-muted">#{{ c.credential_id }} · 并发 {{ c.effective_concurrency ?? c.concurrency_limit ?? '—' }}</div>
             </td>
             <td><code style="font-size:11px">{{ c.model_name }}</code></td>
             <td>
@@ -386,15 +382,15 @@ function dateWindow(c: RoutingCandidate): string {
   text-align: center;
 }
 .score-free {
-  background: var(--success-bg);
-  color: var(--success-dark);
+  background: #dcfce7;
+  color: #166534;
 }
 .score-good {
-  background: var(--info-bg);
-  color: var(--accent-dark);
+  background: #dbeafe;
+  color: #1e40af;
 }
 .score-normal {
-  background: var(--surface-secondary);
-  color: var(--muted);
+  background: #f3f4f6;
+  color: #374151;
 }
 </style>

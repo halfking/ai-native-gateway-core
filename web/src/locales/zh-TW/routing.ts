@@ -182,8 +182,6 @@ export default {
       colStatus: '狀態',
       routable: '可路由',
       unroutable: '不可用',
-      colPriority: '優先',
-      priorityTooltip: '優先憑據標誌：額度（quota）充足時優先承接全部流量，額度耗盡自動讓位給其它憑據。與「排序序號」無關。',
       l2Funnel: '本次 L2 漏斗',
       funnelStages: {
         candidates: '總候選',

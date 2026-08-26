@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { computed, ref } from 'vue'
-import { _resetPersistState, flushPersist, liveStreamPreferencesStorageKey } from './liveStreamPreferences'
+import { liveStreamPreferencesStorageKey } from './liveStreamPreferences'
 import { useSwimLane } from './useSwimLane'
 import type { LiveStreamSnapshot } from './liveStreamStore'
 
@@ -17,7 +17,6 @@ function emptySnapshot(): LiveStreamSnapshot {
 describe('useSwimLane preferences', () => {
   beforeEach(() => {
     localStorage.clear()
-    _resetPersistState()
   })
 
   it('restores group and mode, then persists later selections', () => {
@@ -35,7 +34,6 @@ describe('useSwimLane preferences', () => {
 
     state.setGroupBy('model')
     state.setMode('small')
-    flushPersist() // 2026-08-24 LP7: writes 已是 debounced
     const saved = JSON.parse(localStorage.getItem(liveStreamPreferencesStorageKey()) || '{}')
     expect(saved.groupBy).toBe('model')
     expect(saved.mode).toBe('small')

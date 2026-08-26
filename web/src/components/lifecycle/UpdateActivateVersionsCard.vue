@@ -302,14 +302,14 @@ async function runUpgradeFlow(version: string, item: CatalogItem) {
   gap: 16px;
   padding: 14px 16px;
   background: var(--kx-surface-soft, rgba(0, 0, 0, 0.03));
-  border: 1px solid var(--kx-border, var(--overlay-faint));
+  border: 1px solid var(--kx-border, rgba(0, 0, 0, 0.08));
   border-radius: 10px;
   margin-bottom: 16px;
 }
 .banner-cell { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .banner-label {
   font-size: 11px;
-  color: var(--muted, var(--muted));
+  color: var(--muted, #6b7280);
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
@@ -319,7 +319,7 @@ async function runUpgradeFlow(version: string, item: CatalogItem) {
 }
 .banner-arrow {
   font-size: 20px;
-  color: var(--muted, var(--muted));
+  color: var(--muted, #9ca3af);
   align-self: center;
 }
 .ml { margin-left: 6px; }
@@ -330,11 +330,11 @@ async function runUpgradeFlow(version: string, item: CatalogItem) {
   gap: 10px;
   padding: 8px 12px;
   margin-bottom: 12px;
-  background: color-mix(in srgb, var(--warning) 12%, transparent);
-  border-left: 3px solid var(--kx-warning, var(--warning));
+  background: rgba(217, 119, 6, 0.1);
+  border-left: 3px solid var(--kx-warning, #d97706);
   border-radius: 4px;
   font-size: 13px;
-  color: var(--kx-warning, var(--warning-dark));
+  color: var(--kx-warning, #92400e);
 }
 
 .version-list {
@@ -349,14 +349,14 @@ async function runUpgradeFlow(version: string, item: CatalogItem) {
   gap: 12px;
   align-items: center;
   padding: 10px 14px;
-  border: 1px solid var(--kx-border, var(--overlay-faint));
+  border: 1px solid var(--kx-border, rgba(0, 0, 0, 0.08));
   border-radius: 8px;
   cursor: pointer;
   transition: border-color 0.15s, background 0.15s;
 }
-.version-row:hover { border-color: var(--kx-primary, var(--accent)); }
+.version-row:hover { border-color: var(--kx-primary, #2563eb); }
 .version-row.is-selected {
-  border-color: var(--kx-primary, var(--accent));
+  border-color: var(--kx-primary, #2563eb);
   background: rgba(37, 99, 235, 0.06);
 }
 .version-row.is-installed { background: rgba(22, 163, 74, 0.04); }
@@ -376,7 +376,7 @@ async function runUpgradeFlow(version: string, item: CatalogItem) {
   display: flex;
   gap: 6px;
   font-size: 12px;
-  color: var(--muted, var(--muted));
+  color: var(--muted, #6b7280);
   flex-wrap: wrap;
 }
 .version-row__artifacts {
@@ -389,10 +389,10 @@ async function runUpgradeFlow(version: string, item: CatalogItem) {
   font-size: 11px;
   padding: 2px 8px;
   border-radius: 999px;
-  background: var(--kx-surface-soft, var(--overlay-faint));
-  color: var(--muted, var(--muted));
+  background: var(--kx-surface-soft, rgba(0, 0, 0, 0.05));
+  color: var(--muted, #4b5563);
 }
-.artifact-chip--more { background: var(--overlay-faint); }
+.artifact-chip--more { background: rgba(0, 0, 0, 0.08); }
 
 .upgrade-flow {
   padding: 16px;
@@ -409,7 +409,7 @@ async function runUpgradeFlow(version: string, item: CatalogItem) {
   gap: 8px;
 }
 .flow-title { margin: 0; font-size: 14px; font-weight: 600; }
-.flow-hint { font-size: 12px; color: var(--muted, var(--muted)); }
+.flow-hint { font-size: 12px; color: var(--muted, #6b7280); }
 
 .flow-steps {
   display: grid;
@@ -423,13 +423,13 @@ async function runUpgradeFlow(version: string, item: CatalogItem) {
   align-items: center;
   gap: 10px;
   padding: 10px 12px;
-  border: 1px solid var(--kx-border, var(--overlay-faint));
+  border: 1px solid var(--kx-border, rgba(0, 0, 0, 0.08));
   border-radius: 8px;
-  background: var(--kx-surface, var(--on-primary));
+  background: var(--kx-surface, #fff);
 }
-.flow-step--in_progress { border-color: var(--kx-warning, var(--warning)); background: rgba(217, 119, 6, 0.05); }
-.flow-step--done { border-color: var(--kx-success, var(--success)); background: rgba(22, 163, 74, 0.05); }
-.flow-step--failed { border-color: var(--danger); background: rgba(220, 38, 38, 0.05); }
+.flow-step--in_progress { border-color: var(--kx-warning, #d97706); background: rgba(217, 119, 6, 0.05); }
+.flow-step--done { border-color: var(--kx-success, #16a34a); background: rgba(22, 163, 74, 0.05); }
+.flow-step--failed { border-color: #dc2626; background: rgba(220, 38, 38, 0.05); }
 .flow-step__index {
   width: 28px;
   height: 28px;
@@ -440,14 +440,14 @@ async function runUpgradeFlow(version: string, item: CatalogItem) {
   font-weight: 600;
   font-size: 13px;
   background: var(--kx-primary-soft, rgba(37, 99, 235, 0.12));
-  color: var(--kx-primary, var(--accent));
+  color: var(--kx-primary, #2563eb);
 }
-.flow-step--done .flow-step__index { background: rgba(22, 163, 74, 0.15); color: var(--kx-success, var(--success)); }
-.flow-step--failed .flow-step__index { background: rgba(220, 38, 38, 0.15); color: var(--danger); }
-.flow-step--in_progress .flow-step__index { background: rgba(217, 119, 6, 0.18); color: var(--kx-warning, var(--warning)); }
+.flow-step--done .flow-step__index { background: rgba(22, 163, 74, 0.15); color: var(--kx-success, #16a34a); }
+.flow-step--failed .flow-step__index { background: rgba(220, 38, 38, 0.15); color: #dc2626; }
+.flow-step--in_progress .flow-step__index { background: rgba(217, 119, 6, 0.18); color: var(--kx-warning, #d97706); }
 .flow-step__body { min-width: 0; }
 .flow-step__title { font-size: 13px; font-weight: 600; margin-bottom: 2px; }
-.flow-step__desc { font-size: 12px; color: var(--muted, var(--muted)); }
+.flow-step__desc { font-size: 12px; color: var(--muted, #6b7280); }
 
 .flow-actions {
   display: flex;
@@ -455,5 +455,5 @@ async function runUpgradeFlow(version: string, item: CatalogItem) {
   gap: 12px;
   flex-wrap: wrap;
 }
-.muted { color: var(--muted, var(--muted)); font-size: 12px; }
+.muted { color: var(--muted, #6b7280); font-size: 12px; }
 </style>

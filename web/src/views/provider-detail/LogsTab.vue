@@ -1,14 +1,11 @@
 <script setup lang="ts">
-import ModelIdentityChip from '../../components/model/ModelIdentityChip.vue'
 import { ref, onMounted, watch } from 'vue'
-import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { getProviderLogs, getProviderCredentials, type ProviderLogEntry, type ProviderCredential } from '../../api'
 import ModelPicker from '../../components/ModelPicker.vue'
 import { useFormat } from '../../i18n/useFormat'
 
 const props = defineProps<{ providerId: number }>()
-const router = useRouter()
 const { t: td } = useI18n()
 const pl = (k: string, params?: Record<string, unknown>): string => td(`providerDetail.logs.${k}` as never, params as never)
 const { fmtDateTime, fmtNumber } = useFormat()
@@ -24,11 +21,6 @@ const credentialId = ref<number | ''>('')
 const successFilter = ref<'all' | 'true' | 'false'>('all')
 const errorKindFilter = ref('')
 const hours = ref(24)
-
-function goCanonical(name?: string | null) {
-  const q = (name || '').trim()
-  if (q) router.push({ path: '/models', query: { q } })
-}
 
 function timeRange() {
   const end = new Date()
@@ -149,7 +141,8 @@ watch(() => props.providerId, () => { loadCredentials(); resetFilters() })
           <tr>
             <th>{{ pl('table.time') }}</th>
             <th>{{ pl('table.credential') }}</th>
-            <th>{{ pl('table.clientModel') }} / 标准 / 出站</th>
+            <th>{{ pl('table.clientModel') }}</th>
+            <th>{{ pl('table.outboundModel') }}</th>
             <th>{{ pl('table.result') }}</th>
             <th>{{ pl('table.errorKind') }}</th>
             <th>{{ pl('table.tokens') }}</th>
@@ -161,21 +154,14 @@ watch(() => props.providerId, () => { loadCredentials(); resetFilters() })
           <tr v-for="(l, i) in logs" :key="l.request_id || i">
             <td>{{ fmtTs(l.ts) }}</td>
             <td class="cell-muted" :title="l.credential_id != null ? pl('credentialTitleAttr', { id: l.credential_id }) : ''">{{ credLabel(l) }}</td>
-            <td>
-              <ModelIdentityChip
-                compact
-                :client-model="l.client_model"
-                :canonical-name="l.canonical_name || l.canonical_model"
-                :outbound-model="l.outbound_model || l.provider_model"
-                @click-canonical="goCanonical(l.canonical_name || l.canonical_model)"
-              />
-            </td>
+            <td><code>{{ l.client_model || '—' }}</code></td>
+            <td><code>{{ l.outbound_model || '—' }}</code></td>
             <td>
               <span class="badge" :class="l.success ? 'badge-green' : 'badge-red'">{{ l.success ? pl('resultOk') : pl('resultFail') }}</span>
             </td>
             <td class="cell-muted">{{ l.error_kind || '—' }}</td>
             <td>{{ token(l.prompt_tokens) }} / {{ token(l.completion_tokens) }}</td>
-            <td>{{ l.cost_usd != null ? '$' + Number(l.cost_usd).toFixed(4) : '—' }}</td>
+            <td>{{ l.cost_usd != null ? '$' + Number(l.cost_usd).toFixed(6) : '—' }}</td>
             <td>{{ l.latency_ms != null ? l.latency_ms + 'ms' : '—' }}</td>
           </tr>
         </tbody>

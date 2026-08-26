@@ -411,7 +411,7 @@ const channelLabels = {
 }
 
 .required {
-  color: var(--danger);
+  color: #f87171;
 }
 
 .optional {
@@ -457,11 +457,11 @@ const channelLabels = {
 
 .btn-primary {
   background: var(--accent);
-  color: var(--on-primary);
+  color: #fff;
 }
 
 .btn-primary:hover:not(:disabled) {
-  background: var(--accent);
+  background: #5558e3;
 }
 
 .btn-primary:disabled {
@@ -476,12 +476,12 @@ const channelLabels = {
 }
 
 .test-result.success {
-  background: var(--success-bg);
-  color: var(--success);
+  background: rgba(52, 211, 153, 0.15);
+  color: #34d399;
 }
 
 .test-result.error {
-  background: color-mix(in srgb, var(--danger) 12%, transparent);
-  color: var(--danger);
+  background: rgba(248, 113, 113, 0.1);
+  color: #f87171;
 }
 </style>

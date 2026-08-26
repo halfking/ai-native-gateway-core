@@ -46,6 +46,7 @@ export default {
     groupWarn: '⚡ Nodos en advertencia ({count})',
     groupOk: '✅ Nodos normales ({count})',
     groupDisabled: '🚫 Nodos deshabilitados ({count})',
+    nodeLabel: 'Nodo {credentialId}',
     circuit: 'Disyuntor',
     availability: 'Disponibilidad',
     quota: 'Cuota',

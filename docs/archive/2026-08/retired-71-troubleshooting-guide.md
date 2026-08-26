@@ -4,7 +4,9 @@
 
 ### 1. 检查服务状态
 ```bash
-# 71 服务器
+# RETIRED: Historical Troubleshooting Guide
+
+> This document is archived historical material for retired infrastructure. Current environments are RDS production, 252 test, and local Docker.
 ssh -p __PORT_1__ __SSH_TARGET_2__
 
 # 检查容器状态

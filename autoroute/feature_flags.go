@@ -135,8 +135,8 @@ func DefaultFeatureFlags() *FeatureFlags {
 		MinStandardIQ:     0,
 		// RT-3 popularity/featured weighting: default off (same requirement).
 		UsePopularityWeight: false,
-		PopularityWeight:    5,
-		FeaturedBonus:       5,
+		PopularityWeight:   5,
+		FeaturedBonus:      5,
 	}
 }
 
@@ -169,8 +169,8 @@ func LoadFeatureFlagsFromEnv() *FeatureFlags {
 		// RT-3: AUTO_USE_POPULARITY_WEIGHT (default off) +
 		// AUTO_POPULARITY_WEIGHT / AUTO_FEATURED_BONUS (defaults 5 / 5).
 		UsePopularityWeight: getEnvBool("AUTO_USE_POPULARITY_WEIGHT", false),
-		PopularityWeight:    getEnvFloat("AUTO_POPULARITY_WEIGHT", 5),
-		FeaturedBonus:       getEnvFloat("AUTO_FEATURED_BONUS", 5),
+		PopularityWeight:   getEnvFloat("AUTO_POPULARITY_WEIGHT", 5),
+		FeaturedBonus:      getEnvFloat("AUTO_FEATURED_BONUS", 5),
 	}
 
 	if flags.EnableV2Logic {

@@ -485,7 +485,7 @@ defineExpose({
 
 .penalty-item.clickable:hover {
   background: var(--el-fill-color);
-  box-shadow: 0 2px 8px var(--overlay-faint);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
   transform: translateX(2px);
 }
 
