@@ -5,7 +5,6 @@ import { statusClass } from '../utils/nodeDetailFormat'
 import { credentialDisplayName, useCredentialLabels } from '../composables/useCredentialLabels'
 import { useNodeDetailDrawerLoad, type NodeDetailTab } from '../composables/useNodeDetailDrawerLoad'
 import { useNodeDetailDrawerActions } from '../composables/useNodeDetailDrawerActions'
-import RequestLogDrawer from './RequestLogDrawer.vue'
 import NodeDetailConcurrencyPanel from './NodeDetailConcurrencyPanel.vue'
 import NodeDetailOtherModelsPanel from './NodeDetailOtherModelsPanel.vue'
 import NodeDetailAvailabilityPanel from './NodeDetailAvailabilityPanel.vue'
@@ -47,7 +46,7 @@ const {
 } = load
 
 const {
-  jumpToSessionSummary, openRequestDetail, closeRequestDetail,
+  openRequestDetail,
   testNow, saveSettings, onEmergencyApplied, setCredentialDisabled, toggleSelectedModel,
 } = useNodeDetailDrawerActions({
   emit, canEdit, currentNode, candidate, selectedModel, selectedModelStatus,
@@ -193,12 +192,6 @@ const node = currentNode
         </template>
       </div>
     </aside>
-    <RequestLogDrawer
-      :request-id="detailRequestId"
-      stack-level="nested"
-      @close="closeRequestDetail"
-      @generate-session-summary="jumpToSessionSummary"
-    />
   </Teleport>
 </template>
 

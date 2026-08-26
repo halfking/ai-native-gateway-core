@@ -13,6 +13,7 @@
 import { ref } from 'vue'
 import OnlineSessionsPanel from './OnlineSessionsPanel.vue'
 import SessionTurnsTimeline from './SessionTurnsTimeline.vue'
+import { openRequestDetailPage } from '../../utils/openRequestDetailPage'
 
 const selectedSessionId = ref<string | null>(null)
 
@@ -22,6 +23,10 @@ function openSession(sessionId: string) {
 
 function backToList() {
   selectedSessionId.value = null
+}
+
+function openRequest(payload: { requestId: string }) {
+  openRequestDetailPage(payload.requestId, { mode: 'session-turns' })
 }
 </script>
 
@@ -37,7 +42,11 @@ function backToList() {
             &larr; 返回在线会话列表
           </button>
         </div>
-        <SessionTurnsTimeline :session-id="selectedSessionId" :key="selectedSessionId" />
+        <SessionTurnsTimeline
+          :session-id="selectedSessionId"
+          :key="selectedSessionId"
+          @open-request="openRequest"
+        />
       </div>
     </template>
   </div>
