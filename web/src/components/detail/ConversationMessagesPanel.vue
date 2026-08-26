@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import {
   extractAssistantReply,
   extractMessagesFromBody,
@@ -16,14 +16,26 @@ const props = defineProps<{
   /** When set, show a dedicated assistant reply block below request messages. */
   responseBody?: unknown
   emptyHint?: string
+  /** When set, lock the role filter (used by session SyncPane facets). */
+  lockedRole?: RoleFilter
 }>()
 
 const roleFilter = ref<RoleFilter>('all')
 const expanded = ref<Set<number>>(new Set())
 const replyExpanded = ref(false)
 
+watch(
+  () => props.lockedRole,
+  (r) => {
+    if (r) roleFilter.value = r
+  },
+  { immediate: true },
+)
+
+const effectiveRole = computed(() => props.lockedRole || roleFilter.value)
+
 const messages = computed(() =>
-  filterMessages(extractMessagesFromBody(props.body), roleFilter.value),
+  filterMessages(extractMessagesFromBody(props.body), effectiveRole.value),
 )
 
 const allMedia = computed(() => extractMultimodalFromBody(props.body))
@@ -62,18 +74,21 @@ function roleTone(role: unknown): string {
 
 <template>
   <div class="conv-panel">
-    <div class="conv-filters">
+    <div v-if="!lockedRole" class="conv-filters">
       <button
         v-for="f in (['all', 'system', 'user', 'tool', 'assistant'] as RoleFilter[])"
         :key="f"
         type="button"
         class="btn btn-sm"
-        :class="{ 'btn-primary': roleFilter === f }"
+        :class="{ 'btn-primary': effectiveRole === f }"
         @click="roleFilter = f"
       >
         {{ f === 'all' ? '全部' : f }}
       </button>
       <span v-if="allMedia.length" class="media-hint">含媒体 {{ allMedia.length }}</span>
+    </div>
+    <div v-else-if="allMedia.length" class="conv-filters">
+      <span class="media-hint">含媒体 {{ allMedia.length }}</span>
     </div>
     <template v-if="messages.length">
       <div v-for="(msg, i) in messages" :key="i" class="msg-block" :class="roleTone(msg.role)">

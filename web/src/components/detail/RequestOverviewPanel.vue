@@ -76,6 +76,58 @@ const hasFailure = computed(() => {
   return Boolean(stage || code)
 })
 
+/** sessionmeta.Result from snapshot.session_analysis.payload (when analysed). */
+const analysisPayload = computed(() => {
+  const sa = props.sessionSnap?.session_analysis
+  if (!sa || typeof sa !== 'object') return null
+  const payload = (sa as Record<string, unknown>).payload
+  if (!payload || typeof payload !== 'object') return null
+  return payload as Record<string, unknown>
+})
+
+const analysisStatus = computed(() => {
+  const sa = props.sessionSnap?.session_analysis
+  if (!sa || typeof sa !== 'object') return ''
+  return String((sa as Record<string, unknown>).status || '')
+})
+
+const metaAgent = computed(() => {
+  const a = analysisPayload.value?.agent
+  if (!a || typeof a !== 'object') return ''
+  const o = a as Record<string, unknown>
+  return [o.name, o.type].filter(Boolean).map(String).join(' · ')
+})
+
+const metaExpert = computed(() => {
+  const e = analysisPayload.value?.expert
+  if (!e || typeof e !== 'object') return ''
+  const t = String((e as Record<string, unknown>).type || '')
+  return t && t !== 'unknown' ? t : ''
+})
+
+const metaClient = computed(() => {
+  const c = analysisPayload.value?.client
+  if (!c || typeof c !== 'object') return ''
+  const o = c as Record<string, unknown>
+  return [o.type, o.protocol].filter(Boolean).map(String).join(' · ')
+})
+
+const metaWorkTypes = computed(() => {
+  const wt = analysisPayload.value?.work_types
+  if (!Array.isArray(wt)) return ''
+  return wt
+    .map((x) => (x && typeof x === 'object' ? String((x as Record<string, unknown>).value || '') : ''))
+    .filter((v) => v && v !== 'unknown')
+    .join(', ')
+})
+
+const metaProject = computed(() => {
+  const p = analysisPayload.value?.project
+  if (!p || typeof p !== 'object') return ''
+  const o = p as Record<string, unknown>
+  return [o.label, o.ref].filter(Boolean).map(String).join(' / ')
+})
+
 function clip(text: string, max = 480): string {
   if (!text) return '—'
   if (qaExpanded.value || text.length <= max) return text
@@ -132,6 +184,15 @@ function clip(text: string, max = 480): string {
       <div class="cell"><span class="lbl">压缩</span><span>{{ fmt(log?.compression_strategy) }} · {{ fmt(log?.compression_reason) }}</span></div>
       <div class="cell"><span class="lbl">parent_request</span><code>{{ fmt(log?.parent_request_id) }}</code></div>
       <div class="cell"><span class="lbl">Agent</span><span>{{ fmt(log?.agent_name) }} · {{ fmt(log?.agent_type) }}</span></div>
+      <div v-if="metaAgent || metaExpert || metaClient || metaWorkTypes || metaProject || analysisStatus" class="cell cell--meta" data-testid="overview-sessionmeta">
+        <span class="lbl">会话分析{{ analysisStatus ? ` (${analysisStatus})` : '' }}</span>
+        <span v-if="metaAgent">智能体 {{ metaAgent }}</span>
+        <span v-if="metaExpert">专家 {{ metaExpert }}</span>
+        <span v-if="metaClient">客户端 {{ metaClient }}</span>
+        <span v-if="metaWorkTypes">工作类型 {{ metaWorkTypes }}</span>
+        <span v-if="metaProject">项目 {{ metaProject }}</span>
+        <span v-if="!metaAgent && !metaExpert && !metaClient && !metaWorkTypes && !metaProject">—</span>
+      </div>
       <div class="cell"><span class="lbl">快照模型/供应商</span><span>{{ fmt(sessionSnap?.last_model) }} · {{ fmt(sessionSnap?.last_provider) }}</span></div>
       <div class="cell"><span class="lbl">Stream</span><span>首包 {{ fmt(log?.stream_first_chunk_ms) }}ms · chunks {{ fmt(log?.stream_chunk_count) }}</span></div>
       <div
@@ -184,6 +245,8 @@ function clip(text: string, max = 480): string {
 .cell--err { border-color: color-mix(in srgb, var(--danger, #dc2626) 55%, var(--border)); background: color-mix(in srgb, var(--danger, #dc2626) 6%, transparent); }
 .cell--warn { border-color: color-mix(in srgb, var(--warning, #d97706) 50%, var(--border)); }
 .cell--info { border-color: color-mix(in srgb, var(--info, #2563eb) 45%, var(--border)); }
+.cell--meta { gap: 4px; }
+.cell--meta > span:not(.lbl) { display: block; line-height: 1.35; }
 .pill {
   display: inline-block; width: fit-content; padding: 1px 8px; border-radius: 999px;
   font-size: 11px; font-weight: 600;
