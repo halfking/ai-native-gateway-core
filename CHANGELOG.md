@@ -8,6 +8,24 @@
 
 ### Removed
 - Remove the temporary `POST /api/admin/live-stream/trigger-snapshot` debug endpoint. Added 2026-07-26 for snapshot_refresh guard validation; superseded by the periodic `PushFullSnapshots` tick (default 30m) plus the terminal-status overlay. The `HandleTriggerSnapshot` method and its route registration are deleted; no production traffic depends on the endpoint (the only frontend caller `_requestSnapshotRefresh` was never invoked).
+- Document the audit and implementation plan for attempt-level supplier quality
+  analytics. Existing retry and routing-switch observations are durable, but
+  provider quality aggregation still needs to consume attempt-level facts so a
+  final request success does not hide an earlier node failure.
+
+### Added
+- Add final-request metrics alongside attempt-quality metrics, including tenant
+  RLS-scoped reads, so clients can compare the two success-rate families.
+- Add a tenant-scoped, content-free AttemptFact read model from durable request
+  journey events and separate provider/credential/model attempt-quality
+  aggregation from final-request metrics.
+- Add authenticated `GET /api/admin/quality/attempts` for tenant-scoped attempt
+  quality aggregates with time-window and provider, credential, and model
+  filters; existing final-request quality endpoints remain unchanged.
+- Document the audit and implementation plan for attempt-level supplier quality
+  analytics. Existing retry and routing-switch observations are durable, but
+  provider quality aggregation still needs to consume attempt-level facts so a
+  final request success does not hide an earlier node failure.
 
 ### Fixed
 - Add credential grouping to the admin live-stream controls, snapshots, incident indexes, persisted preferences, and all dashboard locales.
