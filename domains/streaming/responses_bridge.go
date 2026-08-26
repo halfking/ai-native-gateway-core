@@ -328,7 +328,9 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 		if pc != nil {
 			pc.markInterrupted("client_write_failed")
 		}
-		return StreamOutcome{Interrupted: true, Reason: "client_write_failed", Kind: errorsx.KindCanceled, Resumable: true}
+		return StreamOutcome{Interrupted: true, Reason: "client_write_failed", Kind: errorsx.KindCanceled, Resumable: false}
+		// Initial flush write failed — client disconnected before any frame left;
+		// retry is pointless and would violate the no-replay contract.
 	}
 
 	if clientModel == "" {
@@ -663,7 +665,9 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 		if pc != nil {
 			pc.markInterrupted("client_write_failed")
 		}
-		return StreamOutcome{Interrupted: true, Reason: "client_write_failed", Kind: errorsx.KindCanceled, Resumable: true}
+		return StreamOutcome{Interrupted: true, Reason: "client_write_failed", Kind: errorsx.KindCanceled, Resumable: false}
+		// Initial flush write failed — client disconnected before any frame left;
+		// retry is pointless and would violate the no-replay contract.
 	}
 
 	if clientModel == "" {
