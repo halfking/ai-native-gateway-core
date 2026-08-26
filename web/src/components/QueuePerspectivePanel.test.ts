@@ -80,6 +80,18 @@ function mountPanel() {
   return mount(QueuePerspectivePanel, { global: { plugins: [i18n] } })
 }
 
+/**
+ * 默认折叠下节点卡片都收在 group.body 内。多数重排 / 卡片相关的测试需要
+ * 先展开 group 才会渲染出 .qp-node-card 与拖拽手柄。这里封装成 helper 以
+ * 避免在每个 it() 内重复 trigger。
+ */
+async function expandAllModelGroups(wrapper: ReturnType<typeof mountPanel>) {
+  for (const toggle of wrapper.findAll('.qp-model-group-toggle')) {
+    await toggle.trigger('click')
+  }
+  await flushPromises()
+}
+
 
 describe('QueuePerspectivePanel', () => {
   beforeEach(() => {
@@ -409,23 +421,30 @@ describe('QueuePerspectivePanel', () => {
 
     const groups = groupLayer.findAll('.qp-model-group')
     expect(groups).toHaveLength(2)
-    // 特色模型优先，其次按近三天热门请求数排序。
-    expect(groups[0].text()).toContain('gpt-4o')
+    // 默认按字母序排列 displayName：claude-sonnet → gpt-4o。
+    expect(groups[0].text()).toContain('claude-sonnet')
     expect(groups[0].text()).toContain('2 节点')
-    expect(groups[0].text()).toContain('2 当前请求')
-    expect(groups[1].text()).toContain('claude-sonnet')
+    expect(groups[0].text()).toContain('2') // 请求图标里也会渲染数字
+    expect(groups[1].text()).toContain('gpt-4o')
     expect(groups[1].text()).toContain('2 节点')
-    expect(groups[1].text()).toContain('2 当前请求')
+
+    // 标题栏上的请求数图标：默认折叠状态下也应当暴露当前请求数。
+    const rqIcons = groupLayer.findAll('.qp-model-rq-icon')
+    expect(rqIcons).toHaveLength(2)
+    expect(rqIcons.map(icon => icon.get('.qp-model-rq-count').text())).toEqual(['2', '2'])
 
     // 节点以 供应商+凭据 小卡片呈现（标题 + 四态点 + 状态摘要）
+    // 默认折叠下不渲染节点卡片（移动到 body 中）。
+    expect(groups[0].findAll('.qp-node-card')).toHaveLength(0)
+    await groups[0].get('.qp-model-group-toggle').trigger('click')
     const gptCards = groups[0].findAll('.qp-node-card')
-    expect(gptCards.map(card => card.get('.qp-node-card-title').text()).sort()).toEqual(['a · #1', 'b · #2'])
+    expect(gptCards.map(card => card.get('.qp-node-card-title').text()).sort()).toEqual(['a/#1', 'b/#2'])
     expect(gptCards[0].findAll('.qp-dot')).toHaveLength(4)
     expect(gptCards[0].text()).toMatch(/✓/)
     expect(gptCards[0].text()).toMatch(/5m/)
 
-    // 折叠态下不展开请求列表
-    expect(groups[0].findAll('.qp-model-group-requests')).toHaveLength(0)
+    // 折叠态下不展开请求列表（这里第一个 group 已经展开，所以检查第二个）。
+    expect(groups[1].findAll('.qp-model-group-requests')).toHaveLength(0)
   })
 
   it('expands a model to show requests routed to those nodes', async () => {
@@ -453,8 +472,8 @@ describe('QueuePerspectivePanel', () => {
     expect(body.exists()).toBe(true)
     const reqList = body.find('.qp-model-group-requests')
     expect(reqList.exists()).toBe(true)
-    // 请求行的节点标示同样使用 供应商 · #凭据
-    expect(reqList.text()).toContain('p · #5')
+    // 请求行的节点标示同样使用 供应商 / 凭据ID（无标签时 fallback）
+    expect(reqList.text()).toContain('p/#5')
     expect(reqList.text()).toContain('m-1')
     expect(reqList.text()).toContain('success')
     expect(reqList.text()).toContain('410ms')
@@ -467,6 +486,8 @@ describe('QueuePerspectivePanel', () => {
 
     const wrapper = mountPanel()
     await flushPromises()
+    // 默认折叠，先展开再点击节点卡片。
+    await wrapper.get('.qp-model-group-toggle').trigger('click')
     await wrapper.get('.qp-node-card').trigger('click')
 
     const drawer = wrapper.findComponent(NodeDetailDrawer)
@@ -493,6 +514,8 @@ describe('QueuePerspectivePanel', () => {
 
     const wrapper = mountPanel()
     await flushPromises()
+    // 默认折叠 — 展开后才看到节点卡片。
+    await wrapper.get('.qp-model-group-toggle').trigger('click')
     const titles = wrapper.findAll('.qp-node-card-title').map(el => el.text())
     expect(titles[0]).toContain('first-priority')
     expect(titles[1]).toContain('later-priority')
@@ -518,6 +541,7 @@ describe('QueuePerspectivePanel', () => {
 
     const wrapper = mountPanel()
     await flushPromises()
+    await expandAllModelGroups(wrapper)
     const cards = wrapper.findAll('.qp-node-card')
     expect(cards).toHaveLength(2)
     expect(wrapper.text()).toContain('alpha-key')
@@ -566,6 +590,7 @@ describe('QueuePerspectivePanel', () => {
 
     const wrapper = mountPanel()
     await flushPromises()
+    await expandAllModelGroups(wrapper)
     const cards = wrapper.findAll('.qp-node-card')
     expect(cards).toHaveLength(2)
     expect(cards.every(card => !card.attributes('draggable'))).toBe(true)
@@ -596,6 +621,7 @@ describe('QueuePerspectivePanel', () => {
 
     const wrapper = mountPanel()
     await flushPromises()
+    await expandAllModelGroups(wrapper)
     const handles = wrapper.findAll('.qp-node-card-drag-handle')
     const wraps = wrapper.findAll('.qp-node-card-wrap')
     const transfer = { effectAllowed: '', dropEffect: '', setData: vi.fn() }
@@ -630,6 +656,7 @@ describe('QueuePerspectivePanel', () => {
 
     const wrapper = mountPanel()
     await flushPromises()
+    await expandAllModelGroups(wrapper)
     const cards = wrapper.findAll('.qp-node-card')
     expect(cards).toHaveLength(2)
     expect(wrapper.text()).toContain('live-a')
@@ -681,6 +708,7 @@ describe('QueuePerspectivePanel', () => {
 
     const wrapper = mountPanel()
     await flushPromises()
+    await expandAllModelGroups(wrapper)
     // Default filter is active-only: cards 1 and 3 visible; card 2 hidden.
     const cards = wrapper.findAll('.qp-node-card')
     expect(cards).toHaveLength(2)
@@ -726,6 +754,7 @@ describe('QueuePerspectivePanel', () => {
 
     const wrapper = mountPanel()
     await flushPromises()
+    await expandAllModelGroups(wrapper)
     const handles = wrapper.findAll('.qp-node-card-drag-handle')
     expect(handles.every(h => h.attributes('draggable') === 'false')).toBe(true)
     // Mixed canonical disables the row by setting reorderCanonicalId=null;
@@ -890,8 +919,9 @@ describe('QueuePerspectivePanel', () => {
     const wrapper = mountPanel()
     await loadCredentialLabels()
     await flushPromises()
+    await expandAllModelGroups(wrapper)
 
-    expect(wrapper.get('.qp-node-card-title').text()).toBe('hzx-prod')
-    expect(wrapper.text()).not.toContain('p · #5')
+    expect(wrapper.get('.qp-node-card-title').text()).toBe('p/hzx-prod')
+    expect(wrapper.text()).not.toContain('p/#5')
   })
 })
