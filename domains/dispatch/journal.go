@@ -72,8 +72,12 @@ func (qr *QueuedRequest) requestClass() string {
 // invariant: call while the current goroutine owns qr, BEFORE any ownership
 // handoff such as a Tier-2 enqueue). It assigns the monotonic Seq, folds the
 // action into the cumulative Counts, appends to the bounded ring (dropping
-// the oldest entry on overflow) and refreshes qr.LastFailover as a projection
-// of the new tail so the notice path and the trace can never drift.
+// the oldest entry on overflow) and — for CONTINUATION actions only —
+// refreshes qr.LastFailover as a projection of the new tail so the notice
+// path and the trace can never drift. Terminal entries (completed/failed/
+// canceled) journal but leave LastFailover untouched: the marker answers
+// "why is this request queued AGAIN", which stays meaningful after the
+// request ended (08 号 tests pin this).
 func (qr *QueuedRequest) recordDecision(entry JournalEntry) JournalEntry {
 	qr.journalSeq++
 	entry.Seq = qr.journalSeq
@@ -98,15 +102,20 @@ func (qr *QueuedRequest) recordDecision(entry JournalEntry) JournalEntry {
 		copy(qr.AttemptJournal, qr.AttemptJournal[overflow:])
 		qr.AttemptJournal = qr.AttemptJournal[:journalCapacity]
 	}
-	qr.LastFailover = FailoverMarker{
-		ErrorKind:    entry.ErrorKind,
-		HTTPStatus:   entry.HTTPStatus,
-		Model:        entry.Model,
-		CredentialID: entry.CredentialID,
-		Vendor:       entry.Vendor,
-		NextAction:   entry.Action,
-		Attempt:      entry.Attempt,
-		StampedAt:    entry.At,
+	switch entry.Action {
+	case NextActionCompleted, NextActionFailed, NextActionCanceled:
+		// Terminal: journal only; LastFailover keeps the last requeue story.
+	default:
+		qr.LastFailover = FailoverMarker{
+			ErrorKind:    entry.ErrorKind,
+			HTTPStatus:   entry.HTTPStatus,
+			Model:        entry.Model,
+			CredentialID: entry.CredentialID,
+			Vendor:       entry.Vendor,
+			NextAction:   entry.Action,
+			Attempt:      entry.Attempt,
+			StampedAt:    entry.At,
+		}
 	}
 	return entry
 }
