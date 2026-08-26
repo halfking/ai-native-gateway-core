@@ -67,12 +67,12 @@ lane tile 永远 in_progress"现象：业务正常返回 200，DB `request_logs`
 - 连接级：HandleLiveStream 首次 snapshot 不走节流（连接级触发，
   本就是低频事件）
 
-### 第 3 段：常用模型三源聚合（live + recent + usage SQL）
+### 第 3 段：常用模型三源聚合（DB 兜底 + Redis fast path）
 
-旧：admin "凭据路由模型" picker `admin/routing.go:queryPopularModels`
-仅从 Redis 候选集（policy + featured）拼装，下拉选不到运营真实在用
-的模型。154 prod 8/22 14:00-17:00 复现：Redis dim queue 被 trim / flush
-后 admin 下拉空白，运营误以为模型下线。
+旧：`admin/routing.go:queryPopularModels` 仅从 Redis 候选集（policy +
+featured）拼装，下拉选不到运营真实在用的模型。154 prod 8/22 14:00-17:00
+复现：Redis dim queue 被 trim / flush 后 admin 下拉空白，运营误以为
+模型下线。
 
 `queryPopularModels(ctx, featuredModels, byCanonical)` 新增三源去重聚合：
 
@@ -100,13 +100,13 @@ lane tile 永远 in_progress"现象：业务正常返回 200，DB `request_logs`
 hot-table SQL contract / ZSET round-trip + ZINCRBY / probe gate /
 nil-safe / TTL refresh / live stream empty / listTopModels SQL contract。
 
-**审计修正（2026-08-26 session）**：原 commit message + 旧版本节描述的
-`fetchPopularModels(rdb, db)` / `fetchPopularModelsForTenant(rdb, db, tenantID)`
+**未实现**（**审计修正 2026-08-26 session**：原 commit message + 本 doc
+描述的 `fetchPopularModels(rdb, db)` / `fetchPopularModelsForTenant(rdb, db, tenantID)`
 / `LLM_GATEWAY_DB_POPULAR_MODELS_LOOKUP_HOURS` env / "DB count ≤ ZSet 候选数
 short-circuit" / `live_stream_tile_overlay_db_lookup` Prometheus metric 均
-**未落地**（code grep 0 命中）。`queryPopularModels` 在 admin/routing.go 内联
+**未落地**；code grep 0 命中。`queryPopularModels` 在 admin/routing.go 内联
 实现 + ZSET fast path + SQL fallback，**无租户维度**，**无 Prometheus 指标**，
-**无 24h env**，**无 short-circuit**。详见
+**无 24h env**，**无 short-circuit**）。详见
 `docs/changelogs/2026-08-26-popular-models-audit.md`。Follow-up：
 补 `fetchPopularModelsForTenant`（按 tenant_id / credential_id 过滤 usage source）
 + 补 `live_stream_tile_overlay_db_lookup` Prometheus counter（success/fail/locked/unknown）
@@ -121,8 +121,10 @@ admin/live_stream_redis_store_snapshot_fix.go | +23 -（discover + BuildSnapshot
 admin/live_stream_sse.go                    | +222 -（overlay 闭环 + 节流）
 admin/routing.go                            | +231 -（popular models 三源聚合：live + recent + usage）
 admin/routing_popular_models_test.go        | +190 新增（7 个 tests：hot-table SQL / ZSET / probe gate / nil-safe / TTL refresh / live / listTopModels）
-admin/telemetry.go                          | +32  -（recently-used ZSET ZINCRBY on persistRequestLog success）
-admin/logs.go                               | +23  -（listTopModels 切换 request_logs_hot + 10s timeout）
+admin/telemetry.go                          | +32  -（live_stream overlay metrics）
+admin/logs.go                               | +23  -（popular models tenant scope）
+cmd/gateway/main.go                         | +17  -（overlay DB pool 注入）
+cmd/gateway/main_livestream.go              | +66  -（overlay 节流开关）
 admin/live_stream_redis_store_test.go       | +2   -（trim 容量常量更新）
 CHANGELOG.md                                | +8
 ```
@@ -162,8 +164,12 @@ $ npx vite build
 
 ## 已知遗留
 
-- popular models DB 兜底 `LLM_GATEWAY_DB_POPULAR_MODELS_LOOKUP_HOURS`
-  默认 24h（env 可调），如调大需关注 DB 负载（GROUP BY 全表）。
+- popular models SQL 兜底 cutoff 硬编码 `popularModelsHotCutoffWindow = 7*24*time.Hour`
+  （非 env 可调）。如需调大需关注 DB 负载（GROUP BY 全表）→ follow-up：
+  引入 `LLM_GATEWAY_DB_POPULAR_MODELS_LOOKUP_HOURS` env 替换硬编码。
+- 当前 `queryPopularModels` **未实现**租户维度（`fetchPopularModelsForTenant`
+  计划但未落地），多租户场景下所有 tenant 共享同一聚合池。Follow-up：
+  按 `tenant_id` / `credential_id` 过滤 usage source SQL。
 - overlay 节流 60s 内不查 DB，理论上仍可能有 60s 内 in_progress
   假阳性，但业务可接受（live stream 本就是"近似实时"）。
 - vendor 维度作为别名永久保留（前端 tile 颜色继续依赖 `Vendor`
