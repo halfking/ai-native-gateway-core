@@ -4,7 +4,7 @@
 **分支**：main
 **证据等级**：`LOCAL_VERIFIED`（`go build ./...` + `go test -race ./domains/dispatch/ ./domains/transformation/ ./internal/ir/` 全绿 + v4 冻结契约 fixture 回归通过；staging 负载对比未做）
 **Commit / Migration / Flag**：
-- commit: `c386aa427`（T1~T3）、`1350dbdbc`（T4）、`def2e9373`（T5+T6）
+- commit: `c386aa427`（T1~T3）、`1350dbdbc`（T4）、`03b1846d8`（T5+T6，rebase 后）
 - migration: N/A
 - flag: N/A（纯内部行为等价重构 + 加法字段；无新开关）
 
@@ -51,7 +51,7 @@
 ## 回滚动作
 
 - T1~T4 纯加法：revert 对应 commit 即回 08 号形态（无 schema/契约变更）。
-- T5/T6 与 T3/T4 分 commit：revert `def2e9373` 单独回到"有 journal 无 planner"形态，dispatch 测试仍全绿。
+- T5/T6 与 T3/T4 分 commit：revert T5+T6 commit 单独回到"有 journal 无 planner"形态，dispatch 测试仍全绿。
 
 ## 遗留（后续波次）
 
