@@ -1,4 +1,6 @@
-# 数据库环境分离修正总结报告
+# RETIRED: Historical Database Separation Fix Summary
+
+> This document is archived historical material for retired infrastructure. Current environments are RDS production, 252 test, and local Docker.
 
 **日期**: 2026-06-30
 **任务**: 将71生产环境与184测试环境数据库分离，修正所有技能和脚本
