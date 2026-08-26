@@ -55,12 +55,18 @@ func ConvertChatRequestToAnthropic(in []byte) ([]byte, error) {
 			msgMap, _ := msg.(map[string]any)
 			role, _ := msgMap["role"].(string)
 			if role == "system" {
-				if system, ok := msgMap["content"].(string); ok {
-					systemContent = system
+				content, err := chatSystemContent(msgMap["content"])
+				if err != nil {
+					return nil, err
 				}
+				systemContent = joinNonEmpty(systemContent, content)
 				continue
 			}
-			anthropicMsgs = append(anthropicMsgs, convertChatMessageToAnthropic(msgMap))
+			converted, err := convertChatMessageToAnthropic(msgMap)
+			if err != nil {
+				return nil, err
+			}
+			anthropicMsgs = append(anthropicMsgs, converted)
 		}
 	}
 	if systemContent != "" {
@@ -98,7 +104,7 @@ func ConvertChatRequestToAnthropic(in []byte) ([]byte, error) {
 	return json.Marshal(out)
 }
 
-func convertChatMessageToAnthropic(msg map[string]any) map[string]any {
+func convertChatMessageToAnthropic(msg map[string]any) (map[string]any, error) {
 	role, _ := msg["role"].(string)
 	out := map[string]any{"role": role}
 	content := msg["content"]
@@ -108,9 +114,15 @@ func convertChatMessageToAnthropic(msg map[string]any) map[string]any {
 	case []any:
 		blocks := make([]any, 0, len(typed))
 		for _, block := range typed {
-			blockMap, _ := block.(map[string]any)
+			blockMap, ok := block.(map[string]any)
+			if !ok {
+				return nil, fmt.Errorf("invalid OpenAI content block: expected object")
+			}
 			switch blockMap["type"] {
 			case "text":
+				if _, ok := blockMap["text"].(string); !ok {
+					return nil, fmt.Errorf("invalid text content block: missing text")
+				}
 				blocks = append(blocks, map[string]any{"type": "text", "text": blockMap["text"]})
 			case "image_url":
 				if imageURL, ok := blockMap["image_url"].(map[string]any); ok {
@@ -127,8 +139,12 @@ func convertChatMessageToAnthropic(msg map[string]any) map[string]any {
 							"type":   "image",
 							"source": source,
 						})
+						continue
 					}
 				}
+				return nil, fmt.Errorf("invalid image_url content block: missing url")
+			default:
+				return nil, fmt.Errorf("unsupported OpenAI content block: %v", blockMap["type"])
 			}
 		}
 		out["content"] = blocks
@@ -147,7 +163,7 @@ func convertChatMessageToAnthropic(msg map[string]any) map[string]any {
 				},
 			}
 		}
-		return out
+		return out, nil
 	}
 	if toolCalls, ok := msg["tool_calls"].([]any); ok {
 		var existing []any
@@ -160,10 +176,19 @@ func convertChatMessageToAnthropic(msg map[string]any) map[string]any {
 		for _, toolCall := range toolCalls {
 			toolCallMap, _ := toolCall.(map[string]any)
 			function, _ := toolCallMap["function"].(map[string]any)
+			if function == nil {
+				return nil, fmt.Errorf("invalid tool call: missing function (tool_call_id=%v)", toolCallMap["id"])
+			}
 			argsStr, _ := function["arguments"].(string)
 			var args any
-			if json.Unmarshal([]byte(argsStr), &args) != nil {
-				args = map[string]any{}
+			if !json.Valid([]byte(argsStr)) {
+				return nil, fmt.Errorf("invalid tool arguments: tool_call_id=%v", toolCallMap["id"])
+			}
+			if err := json.Unmarshal([]byte(argsStr), &args); err != nil {
+				return nil, fmt.Errorf("unmarshal tool arguments failed: %w (tool_call_id=%v)", err, toolCallMap["id"])
+			}
+			if _, ok := args.(map[string]any); !ok {
+				return nil, fmt.Errorf("invalid tool arguments: expected JSON object (tool_call_id=%v)", toolCallMap["id"])
 			}
 			existing = append(existing, map[string]any{
 				"type":  "tool_use",
@@ -174,7 +199,43 @@ func convertChatMessageToAnthropic(msg map[string]any) map[string]any {
 		}
 		out["content"] = existing
 	}
-	return out
+	return out, nil
+}
+
+func chatSystemContent(content any) (string, error) {
+	switch typed := content.(type) {
+	case string:
+		return typed, nil
+	case []any:
+		parts := make([]string, 0, len(typed))
+		for _, raw := range typed {
+			block, ok := raw.(map[string]any)
+			if !ok {
+				return "", fmt.Errorf("invalid system content block: expected object")
+			}
+			if block["type"] != "text" {
+				return "", fmt.Errorf("unsupported OpenAI content block: %v", block["type"])
+			}
+			text, ok := block["text"].(string)
+			if !ok {
+				return "", fmt.Errorf("invalid system text content block: missing text")
+			}
+			parts = append(parts, text)
+		}
+		return strings.Join(parts, "\n"), nil
+	default:
+		return "", fmt.Errorf("invalid system content: expected string or text blocks")
+	}
+}
+
+func joinNonEmpty(left, right string) string {
+	if left == "" {
+		return right
+	}
+	if right == "" {
+		return left
+	}
+	return left + "\n" + right
 }
 
 func parseImageDataURI(value string) (mediaType, data string, ok bool) {

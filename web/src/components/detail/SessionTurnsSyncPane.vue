@@ -173,10 +173,10 @@ const facetRole = computed((): RoleFilter | undefined => {
   border-radius: 6px; padding: 8px; margin-bottom: 6px; cursor: pointer; color: inherit;
 }
 .turn-row.active { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
-.turn--ok { border-left: 3px solid var(--success, #16a34a); }
-.turn--err { border-left: 3px solid var(--danger, #dc2626); background: color-mix(in srgb, var(--danger, #dc2626) 5%, transparent); }
-.turn--warn { border-left: 3px solid var(--warning, #d97706); }
-.turn--info { border-left: 3px solid var(--info, #2563eb); }
+.turn--ok { border-left: 3px solid var(--kx-success); }
+.turn--err { border-left: 3px solid var(--kx-error); background: color-mix(in srgb, var(--kx-error) 5%, transparent); }
+.turn--warn { border-left: 3px solid var(--kx-warning); }
+.turn--info { border-left: 3px solid var(--kx-primary); }
 .tn { font-weight: 600; margin-right: 6px; }
 .st, .lat, .mdl { font-size: 11px; color: var(--muted); margin-right: 6px; }
 .pill {
@@ -184,10 +184,10 @@ const facetRole = computed((): RoleFilter | undefined => {
   font-size: 11px; font-weight: 600; color: inherit;
 }
 .pill--sm { padding: 0 6px; font-size: 10px; }
-.pill--ok { color: var(--success, #16a34a); background: color-mix(in srgb, var(--success, #16a34a) 14%, transparent); }
-.pill--err { color: var(--danger, #dc2626); background: color-mix(in srgb, var(--danger, #dc2626) 14%, transparent); }
-.pill--warn { color: var(--warning, #d97706); background: color-mix(in srgb, var(--warning, #d97706) 16%, transparent); }
-.pill--info { color: var(--info, #2563eb); background: color-mix(in srgb, var(--info, #2563eb) 14%, transparent); }
+.pill--ok { color: var(--kx-success); background: color-mix(in srgb, var(--kx-success) 14%, transparent); }
+.pill--err { color: var(--kx-error); background: color-mix(in srgb, var(--kx-error) 14%, transparent); }
+.pill--warn { color: var(--kx-warning); background: color-mix(in srgb, var(--kx-warning) 16%, transparent); }
+.pill--info { color: var(--kx-primary); background: color-mix(in srgb, var(--kx-primary) 14%, transparent); }
 .pill--muted { color: var(--muted); background: var(--bg-subtle, var(--surface-secondary)); }
 .children { margin: 6px 0 0; padding-left: 14px; font-size: 11px; color: var(--muted); }
 .children li { cursor: pointer; }

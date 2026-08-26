@@ -395,17 +395,18 @@ const sseEndpointPersisted = usePersistedValue<string>(
 )
 
 function buildUrl(endpoint: string): string {
-  let url = endpoint
-  try {
-    const token = authBearer()
-    if (token) {
-      const sep = url.includes('?') ? '&' : '?'
-      url = `${url}${sep}token=${encodeURIComponent(token)}`
-    }
-  } catch {
-    /* SSR or storage disabled — fall back to cookie auth */
-  }
-  return url
+  // 2026-08-26 (P1-7 fix): do NOT append a `?token=` query parameter.
+  // Anything in the URL lives in browser history, server access logs,
+  // and proxy logs — that is a long-lived JWT / api-key exposure.
+  // The backend already accepts the HttpOnly `llmgw_session` cookie
+  // for EventSource auth (admin/auth_cookie_helpers.go), and the
+  // EventSource is opened with `credentials: 'include'` below, so
+  // the browser will attach the cookie automatically. Legacy api-key
+  // users still work because their Authorization: Bearer header is
+  // ignored by EventSource (it cannot set custom headers) — they must
+  // rely on the cookie path, which admin/auth.go already supports via
+  // ExtractBearerOrCookieToken.
+  return endpoint
 }
 
 // 用户层想要使用的最终 URL（可能被管理员通过弹窗覆盖）
