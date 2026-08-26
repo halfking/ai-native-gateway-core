@@ -77,3 +77,36 @@ func TestAggregateAttemptQualityReportsDegradedObservationsOutsideFailures(t *te
 		t.Fatalf("degraded aggregate = %+v", got)
 	}
 }
+
+func TestAggregateAttemptQualityReportsLatencyPercentiles(t *testing.T) {
+	start := time.Unix(1_700_000_000, 0).UTC()
+	facts := make([]requestjourney.AttemptFact, 0, 3)
+	for i, duration := range []time.Duration{100 * time.Millisecond, 200 * time.Millisecond, 300 * time.Millisecond} {
+		startedAt := start.Add(time.Duration(i) * time.Second)
+		firstByte := startedAt.Add(duration / 2)
+		facts = append(facts, requestjourney.AttemptFact{
+			RequestID: "request-latency", ProviderID: 101, CredentialID: 11, Model: "model-a",
+			AttemptNo: i + 1, StartedAt: startedAt,
+			FirstByteAt: &firstByte, EndedAt: timePtr(startedAt.Add(duration)),
+			Outcome: requestjourney.OutcomeSuccess, ObservationStatus: requestjourney.ObservationComplete,
+		})
+	}
+	got := AggregateAttemptQuality(facts)[0]
+	if got.TTFTP50Ms != 100 || got.TTFTP95Ms != 150 || got.TTFTP99Ms != 150 || got.LatencyP50Ms != 200 || got.LatencyP95Ms != 300 || got.LatencyP99Ms != 300 {
+		t.Fatalf("latency percentiles = %+v", got)
+	}
+}
+
+func TestAggregateAttemptQualityEmptyWindowReturnsEmptyAggregates(t *testing.T) {
+	got := AggregateAttemptQuality(nil)
+	if got == nil {
+		t.Fatal("AggregateAttemptQuality(nil) returned nil, want explicit empty result")
+	}
+	if len(got) != 0 {
+		t.Fatalf("empty aggregates = %+v, want none", got)
+	}
+}
+
+func timePtr(value time.Time) *time.Time {
+	return &value
+}

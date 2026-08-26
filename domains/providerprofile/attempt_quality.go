@@ -33,6 +33,14 @@ type AttemptQualityAggregate struct {
 	ObservationDegradedCount int            `json:"observation_degraded_count"`
 	ErrorKinds               map[string]int `json:"error_kinds"`
 	HTTPStatuses             map[int]int    `json:"http_statuses"`
+	TTFTP50Ms                int            `json:"ttft_p50_ms"`
+	TTFTP95Ms                int            `json:"ttft_p95_ms"`
+	TTFTP99Ms                int            `json:"ttft_p99_ms"`
+	LatencyP50Ms             int            `json:"latency_p50_ms"`
+	LatencyP95Ms             int            `json:"latency_p95_ms"`
+	LatencyP99Ms             int            `json:"latency_p99_ms"`
+	ttftSamples              []int
+	latencySamples           []int
 }
 
 type attemptQualityKey struct {
@@ -148,6 +156,18 @@ func addAttemptQualityFact(aggregate *AttemptQualityAggregate, fact requestjourn
 	if fact.HTTPStatus != 0 {
 		aggregate.HTTPStatuses[fact.HTTPStatus]++
 	}
+	if fact.FirstByteAt != nil {
+		ttft := int(fact.FirstByteAt.Sub(fact.StartedAt).Milliseconds())
+		if ttft >= 0 {
+			aggregate.ttftSamples = append(aggregate.ttftSamples, ttft)
+		}
+	}
+	if fact.EndedAt != nil {
+		latency := int(fact.EndedAt.Sub(fact.StartedAt).Milliseconds())
+		if latency >= 0 {
+			aggregate.latencySamples = append(aggregate.latencySamples, latency)
+		}
+	}
 }
 
 func finishAttemptQualityRates(aggregate *AttemptQualityAggregate) {
@@ -165,4 +185,25 @@ func finishAttemptQualityRates(aggregate *AttemptQualityAggregate) {
 	if aggregate.NodeSwitchInTotal > 0 {
 		aggregate.NodeSwitchInSuccessRate = float64(aggregate.NodeSwitchInSuccess) / float64(aggregate.NodeSwitchInTotal)
 	}
+	aggregate.TTFTP50Ms, aggregate.TTFTP95Ms, aggregate.TTFTP99Ms = percentiles(aggregate.ttftSamples)
+	aggregate.LatencyP50Ms, aggregate.LatencyP95Ms, aggregate.LatencyP99Ms = percentiles(aggregate.latencySamples)
+	aggregate.ttftSamples = nil
+	aggregate.latencySamples = nil
+}
+
+func percentiles(samples []int) (int, int, int) {
+	if len(samples) == 0 {
+		return 0, 0, 0
+	}
+	sorted := append([]int(nil), samples...)
+	sort.Ints(sorted)
+	return percentile(sorted, 50), percentile(sorted, 95), percentile(sorted, 99)
+}
+
+func percentile(sorted []int, p int) int {
+	index := (len(sorted)*p + 99) / 100
+	if index > 0 {
+		index--
+	}
+	return sorted[index]
 }

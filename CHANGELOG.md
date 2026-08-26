@@ -9,6 +9,8 @@
   final request success does not hide an earlier node failure.
 
 ### Added
+- Add final-request metrics alongside attempt-quality metrics, including tenant
+  RLS-scoped reads, so clients can compare the two success-rate families.
 - Add a tenant-scoped, content-free AttemptFact read model from durable request
   journey events and separate provider/credential/model attempt-quality
   aggregation from final-request metrics.

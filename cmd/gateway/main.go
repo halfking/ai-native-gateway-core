@@ -5407,9 +5407,7 @@ func main() {
 	slog.Info("request journey admin API enabled",
 		"routes", []string{"GET /api/admin/request-journeys/queues", "GET /api/admin/request-journeys/{id}"})
 	if dbConn != nil && dbConn.Enabled() {
-		attemptQualityAPI := admin.NewAttemptQualityAPI(
-			providerprofile.NewAttemptQualityAnalyzer(requestjourney.NewPostgresRepository(dbConn.Pool())),
-		)
+		attemptQualityAPI := admin.NewAttemptQualityAPIWithPool(dbConn.Pool())
 		mux.HandleFunc("/api/admin/quality/attempts", requestJourneyWrapAdmin(attemptQualityAPI.ServeHTTP))
 		slog.Info("attempt quality admin API enabled", "route", "GET /api/admin/quality/attempts")
 	}

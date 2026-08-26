@@ -9,9 +9,22 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/kaixuan/llm-gateway-go/domains/providerprofile"
 	"github.com/kaixuan/llm-gateway-go/domains/requestjourney"
 )
+
+type finalMetricsRow struct {
+	metrics finalRequestMetrics
+}
+
+func (r finalMetricsRow) Scan(dest ...any) error {
+	*dest[0].(*int64) = r.metrics.TotalRequests
+	*dest[1].(*int64) = r.metrics.SuccessRequests
+	*dest[2].(*int64) = r.metrics.FailureRequests
+	*dest[3].(*int64) = r.metrics.TotalTokens
+	return nil
+}
 
 type attemptQualityAnalyzerStub struct {
 	tenantID   string
@@ -51,6 +64,9 @@ func TestAttemptQualityAPIUsesAuthenticatedTenantAndAppliesFilters(t *testing.T)
 	}
 	if !strings.Contains(w.Body.String(), `"observation_status":"complete"`) {
 		t.Fatalf("response does not report complete observation: %s", w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"final_request_metrics":{"total_requests":0,"success_requests":0,"failure_requests":0,"total_tokens":0,"success_rate":0}`) {
+		t.Fatalf("response does not separate final request metrics: %s", w.Body.String())
 	}
 }
 
@@ -92,6 +108,32 @@ func TestAttemptQualityAPIRejectsInvalidInputAndReportsAnalyzerFailure(t *testin
 			if w.Code != tt.statusCode {
 				t.Fatalf("status = %d, want %d, body=%s", w.Code, tt.statusCode, w.Body.String())
 			}
+			if tt.name == "analyzer failure" && strings.Contains(w.Body.String(), "database unavailable") {
+				t.Fatal("internal analyzer error leaked to client")
+			}
 		})
+	}
+}
+
+func TestLoadFinalRequestMetricsScopesTenantAndFilters(t *testing.T) {
+	var query string
+	var args []any
+	queryRow := func(_ context.Context, gotQuery string, gotArgs ...any) pgx.Row {
+		query = gotQuery
+		args = gotArgs
+		return finalMetricsRow{metrics: finalRequestMetrics{TotalRequests: 4, SuccessRequests: 3, FailureRequests: 1, TotalTokens: 99}}
+	}
+	start := time.Unix(1_700_000_000, 0).UTC()
+	got, err := loadFinalRequestMetrics(context.Background(), queryRow, "tenant-a", start, start.Add(time.Hour), 101, 11, "model-a")
+	if err != nil || got.SuccessRate != 0.75 || got.TotalTokens != 99 {
+		t.Fatalf("loadFinalRequestMetrics() = (%+v, %v)", got, err)
+	}
+	for _, required := range []string{"FROM request_logs_hot", "tenant_id = $1", "provider_id = $4", "credential_id = $5", "COALESCE(outbound_model, client_model) = $6"} {
+		if !strings.Contains(query, required) {
+			t.Fatalf("final metrics query missing %q: %s", required, query)
+		}
+	}
+	if len(args) != 6 || args[0] != "tenant-a" || args[3] != int64(101) || args[4] != int64(11) || args[5] != "model-a" {
+		t.Fatalf("final metrics args = %#v", args)
 	}
 }
