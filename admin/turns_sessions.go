@@ -16,16 +16,14 @@
 //       &model=...         仅返回包含该模型轮次的会话
 //       &provider=...      仅返回包含该供应商轮次的会话
 //       &status_code=...   仅返回包含该状态码轮次的会话
-//       &ts_from=...       会话最近更新时间（s.updated_at）起始（RFC3339）
-//       &ts_to=...         会话最近更新时间截止（RFC3339）
+//       &ts_from=...       会话开始时间（COALESCE(ss.first_request_at, s.created_at)）起始（RFC3339）
+//       &ts_to=...         会话开始时间截止（RFC3339）
 //       &project_id=...    按会话所属项目（ss.gw_project_id）过滤
 //       &task_id=...       按会话任务（sd.task_id）过滤
 //       &search=...        标题 / topic / 摘要 模糊匹配
 //       &tags=...          按 user_tags（逗号分隔，任一命中即保留，&& 数组重叠语义）过滤
 //       &client=...        按客户端（sd.client_id / sd.application_code / s.client_type）过滤
 //       &owner_user=...    按会话属主用户（sd.owner_user）过滤
-//       &api_key_id=...    按会话内轮次关联的 API Key（request_logs.api_key_id）过滤
-//       &status=...        按会话状态（active/closed/archived/deleted）过滤
 //
 // 鉴权：admin() 中间件。tenant_admin 只能看到自己的租户数据。
 // 返回：{ items: TurnsSessionGroup[], has_more: bool, next_cursor: string }
@@ -93,9 +91,6 @@ type TurnsSessionGroup struct {
 	EndUserID       *string    `json:"end_user_id,omitempty"`
 	UserTags        []string   `json:"user_tags"`
 	StartTime       *time.Time `json:"start_time,omitempty"`
-	// API Key：取会话最近一轮关联 request_logs.api_key_id；label 仅前缀/别名。
-	APIKeyID    *int64  `json:"api_key_id,omitempty"`
-	APIKeyLabel *string `json:"api_key_label,omitempty"`
 
 	// 会话间父子/附属关系：本会话由哪个会话创建/派生。
 	// handoff_logs（透明轮换，持久化）优先；gt_/gs_ 前缀（auto title/summary
@@ -108,7 +103,6 @@ type TurnsSessionGroup struct {
 type TurnGroupItem struct {
 	TurnNo                 int       `json:"turn_no"`
 	Ts                     time.Time `json:"ts"`
-	RequestID              string    `json:"request_id,omitempty"`
 	Title                  string    `json:"title,omitempty"`
 	Summary                string    `json:"summary,omitempty"`
 	RequestTokens          int       `json:"request_tokens"`
@@ -132,48 +126,6 @@ type TurnGroupItem struct {
 	LatencyMs              *int      `json:"latency_ms,omitempty"`
 }
 
-// turnsSessionsListSQL 是会话列表主查询（不含 WHERE/LIMIT）。
-// api_key / handoff 在分页结果确定后批量 enrich，避免每行 LATERAL 扫 request_logs。
-func turnsSessionsListSQL() string {
-	return fmt.Sprintf(`
-		SELECT s.session_id, s.tenant_id,
-				COALESCE(NULLIF(s.title, ''), st.title, ss.title) AS title,
-				s.topic,
-				COALESCE(NULLIF(s.intent, ''), ss.user_intent) AS intent,
-				COALESCE(NULLIF(s.summary, ''), ss.summary) AS summary,
-				s.summary_model, s.summary_generated_at,
-				s.status, s.task_type, s.client_type,
-				s.created_at, s.updated_at, s.closed_at,
-				s.total_turns, s.total_tokens, s.total_cost_usd,
-				s.last_turn_no, s.last_model, s.last_provider,
-				%s, sd.task_id, sd.owner_user,
-				sd.client_id, sd.application_code, sd.end_user_id,
-				COALESCE(ss.user_tags, '{}') AS user_tags,
-				ss.first_request_at AS start_time
-		FROM public.sessions s
-		LEFT JOIN session_dim sd
-			ON sd.gw_session_id = s.session_id AND sd.tenant_id = s.tenant_id
-		LEFT JOIN session_summaries ss
-			ON ss.session_key = s.session_id AND ss.tenant_id = s.tenant_id
-		LEFT JOIN public.session_title_states tstate
-			ON tstate.tenant_id = s.tenant_id AND tstate.scoped_session_id = s.session_id
-		%s`, turnsSessionProjectExpr,
-		sessionTitleFallbackJoinSQL("s.session_id", "sd.task_id"))
-}
-
-// resolveTurnsSessionsTenant 解析 turns 列表的租户范围。
-// tenant_admin 仅看本租户；super_admin 默认全租户（EffectiveTenantIDAll），
-// 可通过 ?tenant= 显式收窄。
-func resolveTurnsSessionsTenant(r *http.Request) string {
-	if IsTenantAdmin(r) {
-		return GetTenantID(r)
-	}
-	if v := strings.TrimSpace(r.URL.Query().Get("tenant")); v != "" {
-		return v
-	}
-	return EffectiveTenantIDAll(r)
-}
-
 // handleTurnsSessions 处理 GET /api/admin/turns/sessions。
 func (h *Handler) handleTurnsSessions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -187,7 +139,13 @@ func (h *Handler) handleTurnsSessions(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 
-	tenantID := resolveTurnsSessionsTenant(r)
+	// 租户范围
+	tenantID := ""
+	if IsTenantAdmin(r) {
+		tenantID = GetTenantID(r)
+	} else {
+		tenantID = tenantFromQueryOrContext(r)
+	}
 
 	// 页大小（按会话数计）
 	limit := defaultTurnsSessionsLimit
@@ -214,7 +172,7 @@ func (h *Handler) handleTurnsSessions(w http.ResponseWriter, r *http.Request) {
 		beforeSessionID = decoded.SessionID
 	}
 
-	// 会话时间范围（基于 s.updated_at，与列表排序一致）。
+	// 会话时间范围（基于会话开始时间 COALESCE(ss.first_request_at, s.created_at)）。
 	// 未提供 ts_from / ts_to 时不加时间限制 —— 默认返回最近（按 updated_at 倒序）的会话，
 	// 配合 LIMIT 即"最近 20 个会话"。
 	var tsFrom, tsTo time.Time
@@ -233,11 +191,46 @@ func (h *Handler) handleTurnsSessions(w http.ResponseWriter, r *http.Request) {
 	if where != "" {
 		queryClause = "WHERE " + where
 	}
-	query := fmt.Sprintf(`%s
+	query := fmt.Sprintf(`
+		SELECT s.session_id, s.tenant_id,
+				COALESCE(NULLIF(s.title, ''), st.title, ss.title) AS title,
+				s.topic,
+				COALESCE(NULLIF(s.intent, ''), ss.user_intent) AS intent,
+				COALESCE(NULLIF(s.summary, ''), ss.summary) AS summary,
+				s.summary_model, s.summary_generated_at,
+				s.status, s.task_type, s.client_type,
+				s.created_at, s.updated_at, s.closed_at,
+				s.total_turns, s.total_tokens, s.total_cost_usd,
+				s.last_turn_no, s.last_model, s.last_provider,
+				%s, sd.task_id, sd.owner_user,
+				sd.client_id, sd.application_code, sd.end_user_id,
+				COALESCE(ss.user_tags, '{}') AS user_tags,
+
+			ss.first_request_at AS start_time,
+			ho.parent_session_id, ho.trigger_reason
+		FROM public.sessions s
+		LEFT JOIN session_dim sd
+			ON sd.gw_session_id = s.session_id AND sd.tenant_id = s.tenant_id		LEFT JOIN session_summaries ss
+			ON ss.session_key = s.session_id AND ss.tenant_id = s.tenant_id
+		-- 会话父子关系：本会话若是 handoff（透明轮换）创建的新会话，
+		-- handoff_logs 里 new_session_id = 本会话 的记录给出父会话。
+		-- LATERAL LIMIT 1 防止多次轮换记录导致行扩展。
+		LEFT JOIN LATERAL (
+			SELECT hl.session_id AS parent_session_id, hl.trigger_reason
+			FROM public.handoff_logs_with_current_month hl
+			WHERE hl.new_session_id = s.session_id
+			ORDER BY hl.created_at DESC
+			LIMIT 1
+		) ho ON TRUE
+		-- session_titles: auto_title_generator 写入的标题（V1 表），
+		-- 取最新一条作为 s.title 的 fallback。用 LATERAL 避免一个会话多行导致行扩展。
+		-- task_id 过滤防止跨任务/租户泄漏：优先匹配真实 task_id（sd.task_id），
+		-- 其次接受 'auto'（auto_title_generator 旧版默认值）。
+		%s
 		%s
 		ORDER BY s.updated_at DESC, s.session_id DESC
 		LIMIT $%d
-		`, turnsSessionsListSQL(), queryClause, argIdx)
+		`, turnsSessionProjectExpr, sessionTitleFallbackJoinSQL("s.session_id", "sd.task_id"), queryClause, argIdx)
 	args = append(args, limit+1)
 
 	rows, err := h.db.Query(ctx, query, args...)
@@ -248,6 +241,7 @@ func (h *Handler) handleTurnsSessions(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
+	var handoffReason *string
 	sessions := make([]*TurnsSessionGroup, 0, limit+1)
 	for rows.Next() {
 		var g TurnsSessionGroup
@@ -261,6 +255,7 @@ func (h *Handler) handleTurnsSessions(w http.ResponseWriter, r *http.Request) {
 			&g.ProjectID, &g.TaskID, &g.OwnerUser,
 			&g.ClientID, &g.ApplicationCode, &g.EndUserID,
 			&g.UserTags, &g.StartTime,
+			&g.ParentSessionID, &handoffReason,
 		); err != nil {
 			slog.Warn("admin handleTurnsSessions scan failed", "err", err.Error())
 			writeError(w, http.StatusInternalServerError, "scan session failed")
@@ -272,6 +267,7 @@ func (h *Handler) handleTurnsSessions(w http.ResponseWriter, r *http.Request) {
 		}
 		g.Compression = TurnsCompressionAgg{Strategies: []string{}}
 
+		applySessionParent(&g)
 		sessions = append(sessions, &g)
 	}
 	if err := rows.Err(); err != nil {
@@ -285,15 +281,8 @@ func (h *Handler) handleTurnsSessions(w http.ResponseWriter, r *http.Request) {
 		sessions = sessions[:limit]
 	}
 
+	// 批量加载这些会话的轮次
 	if len(sessions) > 0 {
-		if err := h.enrichTurnsSessionMeta(ctx, sessions, tenantID); err != nil {
-			slog.Warn("admin handleTurnsSessions enrich meta failed", "err", err.Error())
-			writeError(w, http.StatusInternalServerError, "enrich sessions failed")
-			return
-		}
-		for _, g := range sessions {
-			applySessionParent(g)
-		}
 		if err := h.loadTurnsForSessions(ctx, sessions, tenantID, r); err != nil {
 			slog.Warn("admin handleTurnsSessions load turns failed", "err", err.Error())
 			writeError(w, http.StatusInternalServerError, "query turns failed")
@@ -320,7 +309,7 @@ func (h *Handler) handleTurnsSessions(w http.ResponseWriter, r *http.Request) {
 }
 
 // buildTurnsSessionWhere 构造会话级 WHERE 条件。
-// 时间范围基于 s.updated_at（与列表排序一致）；
+// 时间范围基于会话开始时间 COALESCE(ss.first_request_at, s.created_at)；
 // tsFrom / tsTo 为零值（time.Time{}）时表示未指定，不生成对应时间子句。
 // 支持 project_id / task_id / search / tags / client / owner_user 过滤
 // （来自 session_dim sd / session_summaries ss LEFT JOIN）。
@@ -332,12 +321,12 @@ func buildTurnsSessionWhere(r *http.Request, tenantID string, tsFrom, tsTo time.
 	argIdx := startArg
 
 	if !tsFrom.IsZero() {
-		clauses = append(clauses, fmt.Sprintf("s.updated_at >= $%d", argIdx))
+		clauses = append(clauses, fmt.Sprintf("COALESCE(ss.first_request_at, s.created_at) >= $%d", argIdx))
 		args = append(args, tsFrom)
 		argIdx++
 	}
 	if !tsTo.IsZero() {
-		clauses = append(clauses, fmt.Sprintf("s.updated_at <= $%d", argIdx))
+		clauses = append(clauses, fmt.Sprintf("COALESCE(ss.first_request_at, s.created_at) <= $%d", argIdx))
 		args = append(args, tsTo)
 		argIdx++
 	}
@@ -394,24 +383,6 @@ func buildTurnsSessionWhere(r *http.Request, tenantID string, tsFrom, tsTo time.
 		args = append(args, v, v, v)
 		argIdx += 3
 	}
-	if v := strings.TrimSpace(r.URL.Query().Get("api_key_id")); v != "" {
-		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
-			clauses = append(clauses, fmt.Sprintf(
-				`EXISTS (
-					SELECT 1 FROM public.session_turns_with_current_month ft
-					JOIN public.request_logs_with_current_month rl ON rl.request_id = ft.request_id
-					WHERE ft.session_id = s.session_id AND ft.tenant_id = s.tenant_id
-					  AND rl.api_key_id = $%d
-				)`, argIdx))
-			args = append(args, n)
-			argIdx++
-		}
-	}
-	if v := strings.TrimSpace(r.URL.Query().Get("status")); v != "" {
-		clauses = append(clauses, fmt.Sprintf("s.status = $%d", argIdx))
-		args = append(args, v)
-		argIdx++
-	}
 	if v := strings.TrimSpace(r.URL.Query().Get("tags")); v != "" {
 		clauses = append(clauses, fmt.Sprintf("ss.user_tags && $%d", argIdx))
 		args = append(args, strings.Split(v, ","))
@@ -422,7 +393,7 @@ func buildTurnsSessionWhere(r *http.Request, tenantID string, tsFrom, tsTo time.
 		// topic、user_intent、摘要（含 session_summaries fallback），让自动生成
 		// 的标题/摘要也能被搜到。
 		clauses = append(clauses, fmt.Sprintf(
-			"(CASE WHEN tstate.tenant_id IS NOT NULL THEN COALESCE(tstate.title, '') ELSE COALESCE(NULLIF(s.title, ''), st.title, ss.title, '') END ILIKE '%%'||$%d||'%%'"+
+			"(COALESCE(NULLIF(s.title, ''), st.title, ss.title, '') ILIKE '%%'||$%d||'%%'"+
 				" OR COALESCE(NULLIF(s.topic, ''), '') ILIKE '%%'||$%d||'%%'"+
 				" OR COALESCE(NULLIF(s.intent, ''), ss.user_intent, '') ILIKE '%%'||$%d||'%%'"+
 				" OR COALESCE(NULLIF(s.summary, ''), ss.summary, '') ILIKE '%%'||$%d||'%%')",
@@ -491,7 +462,6 @@ func (h *Handler) loadTurnsForSessions(ctx context.Context, sessions []*TurnsSes
 
 	query := fmt.Sprintf(`
 		SELECT t.session_id, t.turn_no, t.ts,
-			COALESCE(t.request_id, '') AS request_id,
 			COALESCE(t.title, '') AS title,
 			COALESCE(t.summary, '') AS summary,
 			COALESCE(t.prompt_tokens, 0) AS prompt_tokens,
@@ -533,7 +503,7 @@ func (h *Handler) loadTurnsForSessions(ctx context.Context, sessions []*TurnsSes
 		var it TurnGroupItem
 		var sessionID string
 		if err := rows.Scan(
-			&sessionID, &it.TurnNo, &it.Ts, &it.RequestID,
+			&sessionID, &it.TurnNo, &it.Ts,
 			&it.Title, &it.Summary,
 			&it.RequestTokens, &it.ResponseTokens,
 			&it.CacheReadTokens, &it.CacheWriteTokens,
@@ -585,90 +555,6 @@ func (h *Handler) loadTurnsForSessions(ctx context.Context, sessions []*TurnsSes
 		}
 	}
 
-	return nil
-}
-
-// enrichTurnsSessionMeta 批量回填 api_key 与 handoff 父会话（仅针对当前页会话）。
-func (h *Handler) enrichTurnsSessionMeta(ctx context.Context, sessions []*TurnsSessionGroup, tenantID string) error {
-	if len(sessions) == 0 {
-		return nil
-	}
-	sessionIDs := make([]string, 0, len(sessions))
-	for _, g := range sessions {
-		sessionIDs = append(sessionIDs, g.SessionID)
-	}
-
-	turnTenant := ""
-	turnArgs := []any{sessionIDs}
-	if tenantID != "" {
-		turnTenant = " AND t.tenant_id = $2"
-		turnArgs = append(turnArgs, tenantID)
-	}
-
-	apiKeyQuery := fmt.Sprintf(`
-		SELECT DISTINCT ON (t.session_id)
-			t.session_id,
-			rl.api_key_id,
-			COALESCE(NULLIF(ak.key_alias, ''), ak.key_prefix, 'key#' || rl.api_key_id::text) AS api_key_label
-		FROM public.session_turns_with_current_month t
-		JOIN public.request_logs_with_current_month rl ON rl.request_id = t.request_id
-		LEFT JOIN public.api_keys ak ON ak.id = rl.api_key_id
-		WHERE t.session_id = ANY($1)
-		  AND rl.api_key_id IS NOT NULL%s
-		ORDER BY t.session_id, t.turn_no DESC`, turnTenant)
-
-	rows, err := h.db.Query(ctx, apiKeyQuery, turnArgs...)
-	if err != nil {
-		return fmt.Errorf("batch api_key enrich failed: %w", err)
-	}
-	bySession := make(map[string]*TurnsSessionGroup, len(sessions))
-	for _, g := range sessions {
-		bySession[g.SessionID] = g
-	}
-	for rows.Next() {
-		var sessionID string
-		var keyID int64
-		var label string
-		if err := rows.Scan(&sessionID, &keyID, &label); err != nil {
-			rows.Close()
-			return fmt.Errorf("scan api_key enrich failed: %w", err)
-		}
-		if g := bySession[sessionID]; g != nil {
-			g.APIKeyID = &keyID
-			g.APIKeyLabel = &label
-		}
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("iterate api_key enrich failed: %w", err)
-	}
-
-	handoffQuery := `
-		SELECT DISTINCT ON (hl.new_session_id)
-			hl.new_session_id,
-			hl.session_id AS parent_session_id,
-			hl.trigger_reason
-		FROM public.handoff_logs_with_current_month hl
-		WHERE hl.new_session_id = ANY($1)
-		ORDER BY hl.new_session_id, hl.created_at DESC`
-	hRows, err := h.db.Query(ctx, handoffQuery, sessionIDs)
-	if err != nil {
-		return fmt.Errorf("batch handoff enrich failed: %w", err)
-	}
-	defer hRows.Close()
-	for hRows.Next() {
-		var newSessionID, parentSessionID, triggerReason string
-		if err := hRows.Scan(&newSessionID, &parentSessionID, &triggerReason); err != nil {
-			return fmt.Errorf("scan handoff enrich failed: %w", err)
-		}
-		if g := bySession[newSessionID]; g != nil {
-			g.ParentSessionID = &parentSessionID
-			_ = triggerReason // applySessionParent sets relation=handoff when ParentSessionID set
-		}
-	}
-	if err := hRows.Err(); err != nil {
-		return fmt.Errorf("iterate handoff enrich failed: %w", err)
-	}
 	return nil
 }
 

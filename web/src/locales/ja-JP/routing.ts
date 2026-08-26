@@ -227,8 +227,6 @@ export default {
       colRoutable: 'ルーティング可能',
       colTopCred: 'トップ認証情報',
       replay: '再検索',
-      colPriority: '優先',
-      priorityTooltip: '優先クレデンシャル：クォータに余裕がある間はトラフィックを優先的に受け持ち、使い切ると自動的に他へ譲ります。並び順序号とは無関係です。',
     },
     live: {
       simulatorTitle: 'ルーティングシミュレータ',

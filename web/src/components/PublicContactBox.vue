@@ -48,13 +48,13 @@ async function copyText(text: string) {
 
 .pub-contact-box p {
   margin: 0;
-  color: var(--muted);
+  color: #94a3b8;
   font-size: 0.875rem;
 }
 
 .pub-contact-label {
   font-size: 0.8rem;
-  color: var(--muted);
+  color: #64748b;
   min-width: 4.5rem;
 }
 </style>

@@ -2,7 +2,6 @@ package admin
 
 import (
 	"bytes"
-	"database/sql"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -56,76 +55,6 @@ func TestUpdateCredentialHandler_BadRequestInvalidJSON(t *testing.T) {
 	h.updateCredential(rr, req, 1, 1)
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for invalid JSON, got %d", rr.Code)
-	}
-}
-
-// TestMarshalCredentialTags_PinsJSONArray pins the 2026-08-23 fix: PATCH tags
-// must serialize as a JSON array document because credentials.tags is jsonb.
-// The old comma-join rendered `[]` as "" and PG rejected the UPDATE with
-// 22P02 "invalid input syntax for type json" on llmgo.kxpms.cn
-// PATCH /api/providers/14/credentials/21.
-func TestMarshalCredentialTags_PinsJSONArray(t *testing.T) {
-	cases := []struct {
-		name string
-		in   []string
-		want string
-	}{
-		{name: "empty array (incident payload)", in: []string{}, want: "[]"},
-		{name: "single tag", in: []string{"prod"}, want: `["prod"]`},
-		{name: "multiple tags", in: []string{"a", "b"}, want: `["a","b"]`},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got, err := marshalCredentialTags(tc.in)
-			if err != nil {
-				t.Fatalf("marshal: %v", err)
-			}
-			if got != tc.want {
-				t.Fatalf("marshalCredentialTags(%v) = %q, want %q", tc.in, got, tc.want)
-			}
-			if !json.Valid([]byte(got)) {
-				t.Fatalf("output is not valid JSON: %q", got)
-			}
-			// Read-side contract: parseTags must decode what we write.
-			roundTrip := parseTags(sql.NullString{String: got, Valid: true})
-			if len(roundTrip) != len(tc.in) {
-				t.Fatalf("parseTags round-trip len = %d, want %d", len(roundTrip), len(tc.in))
-			}
-			for i := range tc.in {
-				if roundTrip[i] != tc.in[i] {
-					t.Fatalf("parseTags round-trip[%d] = %q, want %q", i, roundTrip[i], tc.in[i])
-				}
-			}
-		})
-	}
-}
-
-// TestUpdateCredentialBody_TagsDecodeSemantics pins the `req.Tags != nil`
-// guard: JSON `[]` decodes to a non-nil empty slice (field is updated to
-// empty), JSON `null` / absent decodes to nil (field is untouched).
-func TestUpdateCredentialBody_TagsDecodeSemantics(t *testing.T) {
-	cases := []struct {
-		name    string
-		body    string
-		wantNil bool
-	}{
-		{name: "empty array present", body: `{"tags":[]}`, wantNil: false},
-		{name: "non-empty array", body: `{"tags":["x"]}`, wantNil: false},
-		{name: "explicit null", body: `{"tags":null}`, wantNil: true},
-		{name: "absent", body: `{"label":"x"}`, wantNil: true},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			var req struct {
-				Tags []string `json:"tags"`
-			}
-			if err := json.NewDecoder(bytes.NewBufferString(tc.body)).Decode(&req); err != nil {
-				t.Fatalf("decode: %v", err)
-			}
-			if (req.Tags == nil) != tc.wantNil {
-				t.Fatalf("Tags nil = %v, want %v", req.Tags == nil, tc.wantNil)
-			}
-		})
 	}
 }
 

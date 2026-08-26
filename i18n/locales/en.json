@@ -41,9 +41,6 @@
   "model_deprecated": {
     "other": "The requested model has been permanently removed (end-of-life) by the upstream provider."
   },
-  "unsupported_feature": {
-    "other": "The selected model does not support this request format or modality."
-  },
   "meta_tool_error": {
     "other": "Meta-tool processing failed"
   },

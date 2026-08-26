@@ -8,11 +8,15 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// AvailabilityKeyCounter periodically refreshes the availability key gauge.
+// AvailabilityKeyCounter periodically SCANs the llmgw:avail:* keyspace
+// and refreshes the llmgw_availability_keys_count Prometheus gauge.
 //
-// The index is maintained with each cache write. A one-time legacy scan only
-// seeds the index after an upgrade, so periodic reconciliation never walks the
-// shared Redis database.
+// It is intentionally independent of the per-write incremental gauge
+// update: writers can race, writers can crash before the post-write
+// gauge update, the cache can be FLUSHDB'd by an operator, or the
+// Redis cluster can fail over to a node with a different cardinality.
+// A periodic SCAN reconciles all of those without coupling to the
+// hot path.
 type AvailabilityKeyCounter struct {
 	redis    *redis.Client
 	interval time.Duration
@@ -36,7 +40,7 @@ func NewAvailabilityKeyCounter(redisClient *redis.Client, interval time.Duration
 	}
 }
 
-// Start launches the periodic refresh loop. Call Stop to terminate.
+// Start launches the periodic scan loop. Call Stop to terminate.
 func (k *AvailabilityKeyCounter) Start(ctx context.Context) {
 	if k == nil {
 		return
@@ -73,10 +77,11 @@ func (k *AvailabilityKeyCounter) run(ctx context.Context) {
 	}
 }
 
-// CountOnce reads the availability index and updates the gauge.
+// CountOnce performs a single SCAN-based count and updates the gauge.
 // Exposed so tests and the admin /cache-state path can refresh on
-// demand. A compatibility SCAN is used only while initializing a missing
-// index after an upgrade or Redis flush.
+// demand. Uses SCAN with COUNT=500 to avoid blocking Redis on a
+// large keyspace; the upper bound on the count is the number of
+// match keys, so it is at most the cardinality of llmgw:avail:*.
 func (k *AvailabilityKeyCounter) CountOnce(ctx context.Context) {
 	if k == nil {
 		return
@@ -84,61 +89,25 @@ func (k *AvailabilityKeyCounter) CountOnce(ctx context.Context) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	keys, err := loadAvailabilityIndex(ctx, k.redis)
+	count, err := scanAvailabilityKeys(ctx, k.redis)
 	if err != nil {
-		slog.Warn("availability key counter: index read failed", "error", err)
+		slog.Warn("availability key counter: SCAN failed", "error", err)
 		return
 	}
-	recordAvailabilityKeysAbsolute(len(keys))
+	recordAvailabilityKeysAbsolute(count)
 }
 
-func loadAvailabilityIndex(ctx context.Context, client *redis.Client) ([]string, error) {
-	keys, err := client.SMembers(ctx, availabilityIndexKey).Result()
-	if err != nil {
-		return nil, err
+// scanAvailabilityKeys uses SCAN over the llmgw:avail:* pattern with
+// COUNT=500 to count matching keys without blocking Redis. Returns
+// the total number of matches.
+func scanAvailabilityKeys(ctx context.Context, client *redis.Client) (int, error) {
+	iter := client.Scan(ctx, 0, "llmgw:avail:*", 500).Iterator()
+	count := 0
+	for iter.Next(ctx) {
+		count++
 	}
-	ready, err := client.Exists(ctx, availabilityIndexReadyKey).Result()
-	if err != nil {
-		return nil, err
+	if err := iter.Err(); err != nil {
+		return 0, err
 	}
-	if ready == 0 {
-		iter := client.Scan(ctx, 0, "llmgw:avail:*", 500).Iterator()
-		for iter.Next(ctx) {
-			keys = append(keys, iter.Val())
-		}
-		if err := iter.Err(); err != nil {
-			return nil, err
-		}
-		if len(keys) > 0 {
-			pipe := client.Pipeline()
-			pipe.SAdd(ctx, availabilityIndexKey, keys)
-			pipe.Expire(ctx, availabilityIndexKey, modelAvailabilityCacheTTL)
-			if _, err := pipe.Exec(ctx); err != nil {
-				return nil, err
-			}
-		}
-		if err := client.Set(ctx, availabilityIndexReadyKey, "1", modelAvailabilityCacheTTL).Err(); err != nil {
-			return nil, err
-		}
-	}
-
-	active := make([]string, 0, len(keys))
-	stale := make([]string, 0)
-	for _, key := range keys {
-		exists, err := client.Exists(ctx, key).Result()
-		if err != nil {
-			return nil, err
-		}
-		if exists == 1 {
-			active = append(active, key)
-		} else {
-			stale = append(stale, key)
-		}
-	}
-	if len(stale) > 0 {
-		if err := client.SRem(ctx, availabilityIndexKey, stale).Err(); err != nil {
-			return nil, err
-		}
-	}
-	return active, nil
+	return count, nil
 }

@@ -36,9 +36,6 @@ export interface CredentialMonitorSummary {
 // Per-(credential, model) availability row for the credential monitor drawer.
 export interface CredentialModelStatus {
   raw_model_name: string
-  /** Optional catalog mapping fields when monitor payload includes them. */
-  standardized_name?: string | null
-  canonical_name?: string | null
   offer_available: boolean
   offer_unavailable_reason?: string | null
   binding_available: boolean
@@ -136,14 +133,6 @@ export function sessionPingCredential(credentialId: number, model: string) {
   )
 }
 
-/** 异步入队单模型探活（202 Accepted）；结果经 probe/history 可见。 */
-export function testCredentialModel(credentialId: number, model: string) {
-  return req<{ message: string; credential_id: number; model: string; status: string }>(
-    'POST',
-    `/api/credentials/${credentialId}/models/${encodeURIComponent(model)}/test`,
-  )
-}
-
 export function getSlidingWindow(credentialId: number, model: string, minutes = 60, requestOptions?: RequestOptions) {
   const params = new URLSearchParams()
   params.set('credential_id', String(credentialId))
@@ -163,52 +152,6 @@ export function getSlidingWindow(credentialId: number, model: string, minutes = 
       error_kinds: Record<string, number>
     }
   }>('GET', `/api/credentials/sliding-window?${params.toString()}`, undefined, requestOptions)
-}
-
-export type SlidingWindowBatchItem = { credential_id: number; model: string }
-
-export type SlidingWindowBatchOptions = {
-  minutes?: number
-  includeEntries?: boolean
-  entryLimit?: number
-}
-
-export type SlidingWindowBatchResult = {
-  credential_id: number
-  model: string
-  source?: 'redis' | 'request_logs'
-  stats?: {
-    total: number
-    success: number
-    failed: number
-    failure_rate: number
-    error_kinds?: Record<string, number>
-  }
-  entries?: CallEntry[]
-  error?: string
-}
-
-/** Queue-perspective stats: one POST for many credential×model pairs. */
-export function getSlidingWindowBatch(
-  items: SlidingWindowBatchItem[],
-  minutesOrOptions: number | SlidingWindowBatchOptions = 5,
-  requestOptions?: RequestOptions,
-) {
-  const options: SlidingWindowBatchOptions =
-    typeof minutesOrOptions === 'number'
-      ? { minutes: minutesOrOptions }
-      : (minutesOrOptions ?? {})
-  const minutes = options.minutes ?? 5
-  const body: Record<string, unknown> = { minutes, items }
-  if (options.includeEntries) {
-    body.include_entries = true
-    if (options.entryLimit != null) body.entry_limit = options.entryLimit
-  }
-  return req<{
-    window_minutes: number
-    count: number
-    results: SlidingWindowBatchResult[]
-  }>('POST', '/api/credentials/sliding-window/batch', body, requestOptions)
 }
 
 export function promoteCredential(credentialId: number, reason: string) {

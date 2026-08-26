@@ -12,7 +12,6 @@ export default {
   tabProbe: 'الاختبار التلقائي',
   tabProbeTitle: 'عرض سجلات الاختبار التلقائي (إعادة اختبار كل 10 دقائق للارتباطات الفاشلة)',
   tabSettings: 'الإعدادات',
-  tabErrorDetail: 'أخطاء المزوّد',
   loading: 'جاري التحميل…',
   loadingFallback: '...',
   refresh: 'تحديث',

@@ -13,7 +13,6 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -47,15 +46,11 @@ func valueOrEmpty(v *string) string {
 	return *v
 }
 
-// adminLiveRequestFromEntry adapts a telemetry RequestLogEntry into the
-// dashboard's swim-lane LiveRequest shape.
-//
-// 2026-08-25: two call sites now — (1) the emitted forwarder's consumer
-// goroutine (pre-DB in_progress projection) and (2) the telemetry worker
-// goroutine (persisted post-commit compensation). Neither runs on the
-// request hot path, so the provider_id → catalog_code sync.Map lookup
-// (with a 200ms-timeout DB fallback on miss) is acceptable in both; it
-// must merely stay bounded, which the hub lookup context guarantees.
+// adminLiveRequestFromEntry adapts a freshly-persisted telemetry
+// RequestLogEntry into the dashboard's swim-lane LiveRequest shape.
+// Called on the telemetry worker goroutine, so the implementation
+// MUST be cheap — the only I/O is the provider_id → catalog_code
+// sync.Map lookup (with a 200ms-timeout DB fallback on miss).
 // 2026-07-06: now resolves provider through credential_id when available.
 func adminLiveRequestFromEntry(entry *telemetry.RequestLogEntry, hub *admin.LiveStreamSSEHub) admin.LiveRequest {
 	clientModel := ""
@@ -105,24 +100,6 @@ func adminLiveRequestFromEntry(entry *telemetry.RequestLogEntry, hub *admin.Live
 			slog.Debug("live stream: provider resolution returned empty",
 				"request_id", entry.RequestID, "credential_id", entry.CredentialID,
 				"provider_id", entry.ProviderID, "tenant_id", entry.TenantID)
-			// 2026-08-26 (无 DB 兜底): DB 不可用 / 行缺失时 provider 维度
-			// 原来直接落空 → 整条请求从"按供应商"泳道消失。改为用稳定身份
-			// provider-<id> 兜底显示，保证无 DB 时实时请求流供货商泳道
-			// 仍然正确分组（显示名降级为技术性 ID，可接受）。
-			if hasProv && entry.ProviderID != nil {
-				providerCode = fmt.Sprintf("provider-%d", *entry.ProviderID)
-			} else if hasCred && entry.CredentialID != nil {
-				providerCode = fmt.Sprintf("provider-cred-%d", *entry.CredentialID)
-			}
-		}
-
-		// 2026-08-26: 凭据维度身份。label 允许多次查找（hub 缓存 + 200ms
-		// 超时上下文）；无 DB / 无行 / 无标签时留空，由凭据泳道 key 规则
-		// （liveStreamCredentialKey, label → "凭据 #ID"）兜底，保证无
-		// 数据库部署下凭据泳道依旧可用。
-		credentialID := 0
-		if hasCred && entry.CredentialID != nil {
-			credentialID = *entry.CredentialID
 		}
 
 		// Extract canonical_id for model name resolution and aggregation
@@ -131,7 +108,7 @@ func adminLiveRequestFromEntry(entry *telemetry.RequestLogEntry, hub *admin.Live
 			canonicalID = *entry.CanonicalID
 		}
 
-		lr := hub.LiveRequestFromTelemetry(
+		return hub.LiveRequestFromTelemetry(
 			ctx,
 			entry.RequestID,
 			liveStreamEventTime(entry),
@@ -155,13 +132,6 @@ func adminLiveRequestFromEntry(entry *telemetry.RequestLogEntry, hub *admin.Live
 			derefStr(entry.ClientProtocol),
 			entry,
 		)
-		// 2026-08-26: 凭据维度身份注入（label 为 best-effort，DB 不可用时
-		// 回退为空 → 前端/泳道 key 用 "凭据 #ID"）。
-		lr.CredentialID = credentialID
-		if credentialID > 0 {
-			lr.CredentialLabel = hub.CredentialLabelFor(ctx, credentialID)
-		}
-		return lr
 	}
 	// Fallback when hub is nil (defensive; unreachable in normal operation
 	// because SetOnRequestLogEmitted is only wired when hub != nil).
@@ -174,10 +144,6 @@ func adminLiveRequestFromEntry(entry *telemetry.RequestLogEntry, hub *admin.Live
 	fallbackModel := clientModel
 	if fallbackModel == "" {
 		fallbackModel = outboundModel
-	}
-	fallbackCredentialID := 0
-	if entry.CredentialID != nil && *entry.CredentialID > 0 {
-		fallbackCredentialID = *entry.CredentialID
 	}
 	return admin.LiveRequest{
 		RequestID:        entry.RequestID,
@@ -194,7 +160,6 @@ func adminLiveRequestFromEntry(entry *telemetry.RequestLogEntry, hub *admin.Live
 		TotalTokens:      totalTokens,
 		CostUSD:          entry.CostUSD,
 		ErrorKind:        entry.ErrorKind,
-		CredentialID:     fallbackCredentialID, // 2026-08-26: 凭据维度（label 不可得时泳道用 "凭据 #ID"）
 	}
 }
 
@@ -203,142 +168,6 @@ func liveStreamEventTime(entry *telemetry.RequestLogEntry) time.Time {
 		return entry.EventAt.UTC()
 	}
 	return time.Now().UTC()
-}
-
-// liveStreamEmittedForwarderCapacity bounds the queue between the telemetry
-// hooks (emit/persist) and the single consumer goroutine (run). 2026-08-25:
-// 与 hub 广播队列(BroadcastQueueSize=2048)对齐 —— emitted(每请求触发, 含
-// in_progress 投影)与 persisted(insert/update 落库后的补偿)两路流量都走
-// 本队列, 容量减半会在 burst + DB 慢的组合下放大丢弃概率(丢终态补偿比丢
-// in_progress 严重: 该 request 的实时卡片会停在 in_progress 直到下一条
-// update 或 Redis 快照过期)。
-const liveStreamEmittedForwarderCapacity = 2048
-
-// liveStreamEmittedDropsLog bounds drop-warning log volume: log every Nth
-// drop (mirrors the admin package's incidentUpdateDropsLog pattern, N=50).
-const liveStreamEmittedDropsLog = 50
-
-// liveStreamEmittedForwarder bridges telemetry's onEmitted/onPersisted hooks
-// to the live-stream SSE hub.
-//
-// 2026-08-25 (dashboard 实时流前置发布): 此前 live stream 只挂在
-// AddOnRequestLogPersisted 上, DB 写入成功后请求才可见 —— DB 缺失/延迟会
-// 直接挡住实时显示。现在额外订阅 SetOnRequestLogEmitted: 请求一被接收就
-// 广播 in_progress 投影, DB 写入保持异步。
-//
-// 为什么不能在 onEmitted 回调里直接 Publish:
-//   - onEmitted 在调用方(请求热路径)goroutine 上、入 DB 队列之前同步触发,
-//     回调必须 O(1) 非阻塞(select-default), 否则会拖慢每个请求;
-//   - adminLiveRequestFromEntry 内含最多 200ms 的 DB provider 查找
-//     (hub.ProviderCodeForCredential/ProviderCodeFor), 绝不能上热路径。
-//
-// 因此 emit() 只做浅拷贝 + chan 投递, 映射与 Publish 全部移到 run() 的
-// 单消费者 goroutine。
-//
-// 两阶段广播契约 (2026-08-25 审计修正): emitted → 立即 in_progress 投影;
-// persisted → 落库后的终态补偿。**两阶段都经本转发器的同一条 FIFO 队列**:
-// 同一 request 的 emit 投递(请求热路径, t0)必然先于 persist 投递
-// (telemetry worker 落库后, t1>t0), 单消费者 FIFO 因此保证 Publish 顺序
-// 恒为 in_progress → terminal。此前 persisted 在 telemetry worker 上直发,
-// 与 emitted 两路无顺序保证 —— DB 慢时 forwarder 消费者因 200ms provider
-// fallback 降速积压, 终态先显示、晚到的 in_progress 会把前端卡片
-// (request 帧按 request_id last-write-wins, 见 web/src/composables/
-// liveStreamStore.ts) 回退成 in_progress。跨 request 顺序无约束, 由 admin
-// 包 Redis Record 的 per-request 锁 + read-modify-write 各自兜底。
-type liveStreamEmittedForwarder struct {
-	hub      *admin.LiveStreamSSEHub
-	entries  chan *telemetry.RequestLogEntry
-	stopCh   chan struct{}
-	stopOnce sync.Once
-	dropped  atomic.Uint64 // 2026-08-25: 限频告警用丢弃计数, 无锁读于 emit
-}
-
-func newLiveStreamEmittedForwarder(hub *admin.LiveStreamSSEHub) *liveStreamEmittedForwarder {
-	return &liveStreamEmittedForwarder{
-		hub:     hub,
-		entries: make(chan *telemetry.RequestLogEntry, liveStreamEmittedForwarderCapacity),
-		stopCh:  make(chan struct{}),
-	}
-}
-
-// emit is the SetOnRequestLogEmitted callback. Runs synchronously on the
-// request hot-path goroutine, BEFORE the entry enters the telemetry DB
-// queue — hence MUST stay non-blocking.
-//
-// 2026-08-25: 投递 entry 的浅拷贝而非原指针 —— telemetry worker 出队后会
-// 原地改写 entry(sanitizeRequestLogEntry 会替换指针字段、重写
-// RequestID/TenantID), 拷贝把"emit 时刻的字段值/指针指向"定格下来, 消费者
-// 读到的投影不会被后续 DB 队列处理污染。
-func (f *liveStreamEmittedForwarder) emit(entry *telemetry.RequestLogEntry) {
-	f.enqueue(entry)
-}
-
-// persist is the AddOnRequestLogEmitted-style callback for the persisted
-// (post-commit) compensation. Runs on the telemetry worker goroutine.
-// 2026-08-25 (审计修正): 与 emit 走同一条 FIFO —— 见 type doc, 这是同一
-// request 两阶段顺序保证的核心。回调本身同样只做非阻塞投递, telemetry
-// worker 不因此被 Publish/DB 查找拖慢(比旧直发回调更轻)。
-func (f *liveStreamEmittedForwarder) persist(entry *telemetry.RequestLogEntry) {
-	f.enqueue(entry)
-}
-
-// enqueue is the shared non-blocking hand-off used by both hooks.
-func (f *liveStreamEmittedForwarder) enqueue(entry *telemetry.RequestLogEntry) {
-	if f == nil || f.hub == nil || entry == nil {
-		return
-	}
-	cp := *entry
-	for {
-		select {
-		case f.entries <- &cp:
-			return
-		default:
-		}
-		// 2026-08-26: 队列满 → 按 FIFO 挤出最旧的一条（而非丢弃新到达的
-		// 终态事件）。新事件（尤其 persisted 终态补偿）必须保证入队 —— 旧的
-		// in_progress 投影本来就会被后续终态覆盖，丢它无损；丢 persisted 则
-		// 会让实时卡片永久停在 in_progress（"请求已完成但显示进行中"）。
-		select {
-		case evicted := <-f.entries:
-			if n := f.dropped.Add(1); n%liveStreamEmittedDropsLog == 1 {
-				slog.Warn("live stream emitted forwarder queue full, evicted oldest projection FIFO",
-					"dropped", n,
-					"evicted_request_id", evicted.RequestID,
-					"incoming_request_id", entry.RequestID,
-				)
-			}
-		default:
-			// 并发下刚被其他消费者取走 → 队列已有空位，直接重试发送。
-		}
-	}
-}
-
-// run is the single consumer goroutine started by main(). Everything that
-// is NOT hot-path-safe lives here: the 200ms-bounded provider lookup inside
-// adminLiveRequestFromEntry and the hub Publish(已改为本地广播优先 + 异步
-// Record, 详见 admin/live_stream_async.go)。FIFO 消费保证同一 request 的
-// in_progress 投影恒先于终态补偿。
-func (f *liveStreamEmittedForwarder) run() {
-	for {
-		select {
-		case <-f.stopCh:
-			// 2026-08-25: 关停时不 drain 残留 entry —— 关停时刻丢弃实时投影
-			// 可接受(落库数据与 Redis Record 快照不受影响), 直接退出让 main
-			// 的关停顺序(转发器 → hub)尽快推进。
-			return
-		case e := <-f.entries:
-			f.hub.Publish(adminLiveRequestFromEntry(e, f.hub))
-		}
-	}
-}
-
-// stop closes stopCh exactly once (idempotent, safe for repeated/deferred
-// calls). The consumer exits without draining — see run.
-func (f *liveStreamEmittedForwarder) stop() {
-	if f == nil {
-		return
-	}
-	f.stopOnce.Do(func() { close(f.stopCh) })
 }
 
 // incidentUpdateFromResult converts a route-incident transition
@@ -429,7 +258,7 @@ func liveQueueSnapshotProvider(projection *dispatch.QueueProjection) *admin.Live
 		out.Models = append(out.Models, admin.LiveQueueLaneSnapshot{Model: lane.Model, Depth: lane.Depth})
 	}
 	for _, lane := range view.Credentials {
-		out.Credentials = append(out.Credentials, admin.LiveQueueLaneSnapshot{Credential: lane.Credential, Mode: lane.Mode, Depth: lane.Depth, Limit: lane.Limit, Full: lane.Full})
+		out.Credentials = append(out.Credentials, admin.LiveQueueLaneSnapshot{Credential: lane.Credential, Mode: lane.Mode, Depth: lane.Depth})
 	}
 	return out
 }
@@ -448,8 +277,6 @@ func liveQueueSnapshotFromLanes(models, credentials []dispatch.QueueSnapshot, en
 			Credential: lane.Credential,
 			Mode:       lane.Mode,
 			Depth:      lane.Depth,
-			Limit:      lane.Limit,
-			Full:       lane.Full,
 		})
 	}
 	return &admin.LiveQueueSnapshot{
@@ -484,7 +311,7 @@ func liveNodeStatusProvider(ctx context.Context, pool *pgxpool.Pool, fps *creden
 	queryCtx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
 	defer cancel()
 	rows, err := pool.Query(queryCtx, `
-		SELECT c.id, COALESCE(c.label, ''), c.provider_id,
+		SELECT c.id, c.provider_id,
 		       COALESCE(NULLIF(p.display_name, ''), NULLIF(p.catalog_code, ''), p.code, ''),
 		       COALESCE(c.circuit_state, ''),
 		       COALESCE(c.availability_state, ''),
@@ -508,7 +335,6 @@ func liveNodeStatusProvider(ctx context.Context, pool *pgxpool.Pool, fps *creden
 		var availRecoverAt, quotaRecoverAt, coolingUntil *time.Time
 		if err := rows.Scan(
 			&status.CredentialID,
-			&status.CredentialLabel,
 			&status.ProviderID,
 			&status.ProviderCode,
 			&status.CircuitState,

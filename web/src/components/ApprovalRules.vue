@@ -431,8 +431,8 @@ function getRiskLevelLabel(level: string): string {
 }
 
 .priority-badge {
-  background: var(--neutral-bg);
-  color: var(--muted);
+  background: rgba(139, 148, 158, 0.15);
+  color: #8b949e;
 }
 
 .rule-description {
@@ -480,8 +480,8 @@ function getRiskLevelLabel(level: string): string {
 }
 
 .condition-item .value {
-  background: var(--success-bg);
-  color: var(--success);
+  background: rgba(52, 211, 153, 0.1);
+  color: #34d399;
 }
 
 .rule-actions {
@@ -506,9 +506,9 @@ function getRiskLevelLabel(level: string): string {
 }
 
 .btn-icon.active {
-  background: var(--success-bg);
-  color: var(--success);
-  border-color: var(--success);
+  background: rgba(52, 211, 153, 0.15);
+  color: #34d399;
+  border-color: #34d399;
 }
 
 .btn-icon:disabled {
@@ -517,9 +517,9 @@ function getRiskLevelLabel(level: string): string {
 }
 
 .btn-icon.btn-danger:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--danger) 12%, transparent);
-  color: var(--danger);
-  border-color: color-mix(in srgb, var(--danger) 12%, transparent);
+  background: rgba(248, 113, 113, 0.1);
+  color: #f87171;
+  border-color: rgba(248, 113, 113, 0.3);
 }
 
 /* Dialog styles */
@@ -529,7 +529,7 @@ function getRiskLevelLabel(level: string): string {
   left: 0;
   right: 0;
   bottom: 0;
-  background: var(--overlay-strong);
+  background: rgba(0, 0, 0, 0.7);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -542,7 +542,7 @@ function getRiskLevelLabel(level: string): string {
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: 8px;
-  box-shadow: 0 8px 24px var(--overlay-medium);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
   max-height: 90vh;
   display: flex;
   flex-direction: column;
@@ -602,7 +602,7 @@ function getRiskLevelLabel(level: string): string {
 }
 
 .required {
-  color: var(--danger);
+  color: #f87171;
 }
 
 .form-input,
@@ -685,11 +685,11 @@ function getRiskLevelLabel(level: string): string {
 
 .btn-primary {
   background: var(--accent);
-  color: var(--on-primary);
+  color: #fff;
 }
 
 .btn-primary:hover {
-  background: var(--accent);
+  background: #5558e3;
 }
 
 .btn-ghost {

@@ -167,7 +167,7 @@ func (l *PassiveProbeListener) pollNewErrors(ctx context.Context) {
 		    rl.error_kind,
 		    COUNT(*), COUNT(*), 0,
 		    MIN(rl.ts), NOW(),
-		    LEFT(COALESCE(MAX(rb.response_body::text), ''), 200)
+		    LEFT(COALESCE(MAX(COALESCE(rb.response_body::text, rl.response_body::text)), ''), 200)
 		FROM request_logs_with_current_month rl
 		LEFT JOIN request_logs_bodies_with_current_month rb ON rb.request_id = rl.request_id
 		LEFT JOIN passive_probe_state pps

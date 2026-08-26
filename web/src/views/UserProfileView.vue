@@ -214,7 +214,7 @@ function healthGradeColor(grade?: string): string {
 .page-header { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
 .stat-row { margin-bottom: 16px; }
 .stat-card { text-align: center; }
-.stat-label { font-size: 13px; color: var(--muted); margin-bottom: 4px; }
+.stat-label { font-size: 13px; color: #999; margin-bottom: 4px; }
 .stat-value { font-size: 24px; font-weight: 700; }
 .chart-card { margin-bottom: 16px; }
 .section-card { margin-bottom: 16px; }

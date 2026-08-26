@@ -1233,7 +1233,6 @@ watch(activeTab, async (tab) => {
                     <th>供应商</th>
                     <th>凭据</th>
                     <th>原始模型名</th>
-                    <th>标准名</th>
                     <th>输入价格</th>
                     <th>输出价格</th>
                     <th>成功率</th>
@@ -1257,7 +1256,7 @@ watch(activeTab, async (tab) => {
                       </div>
                     </td>
                     <td><code>{{ offer.raw_model_name }}</code></td>
-                    <td><code v-if="offer.standardized_name" style="color:var(--accent)">{{ offer.standardized_name }}</code><span v-else class="muted">—</span></td>
+                    <td v-if="offer.standardized_name"><code style="color:var(--accent)">{{ offer.standardized_name }}</code></td>
                     <td>{{ offer.input_price ? `¥${offer.input_price}/M` : '-' }}</td>
                     <td>{{ offer.output_price ? `¥${offer.output_price}/M` : '-' }}</td>
                     <td>
@@ -1398,7 +1397,7 @@ watch(activeTab, async (tab) => {
 .tab-bar { display: flex; gap: 8px; flex-wrap: wrap; }
 .tab-btn {
   border: 1px solid var(--border);
-  background: var(--row-hover);
+  background: rgba(255,255,255,.02);
   border-radius: 999px;
   padding: 6px 14px;
   font-size: 13px;
@@ -1486,7 +1485,7 @@ watch(activeTab, async (tab) => {
 
 .family-chip {
   border: 1px solid var(--border);
-  background: var(--neutral-bg);
+  background: rgba(139,148,158,.15);
   border-radius: 999px;
   padding: 4px 9px;
   font-size: 12px;
@@ -1530,7 +1529,7 @@ watch(activeTab, async (tab) => {
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 10px;
-  background: var(--row-hover);
+  background: rgba(255,255,255,.02);
 }
 
 .ns-label-row {
@@ -1570,7 +1569,7 @@ watch(activeTab, async (tab) => {
   left: 0;
   right: 0;
   bottom: 0;
-  background: var(--overlay-strong);
+  background: rgba(0, 0, 0, 0.5);
   z-index: 1000;
 }
 
@@ -1613,7 +1612,7 @@ watch(activeTab, async (tab) => {
   left: 0;
   right: 0;
   bottom: 0;
-  background: var(--overlay-strong);
+  background: rgba(0, 0, 0, 0.5);
   display: flex;
   justify-content: center;
   align-items: flex-start;
@@ -1627,7 +1626,7 @@ watch(activeTab, async (tab) => {
   border-radius: 12px;
   width: 100%;
   max-width: 900px;
-  box-shadow: 0 20px 60px var(--overlay-light);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
 }
 
 .modal-header {
@@ -1676,7 +1675,7 @@ watch(activeTab, async (tab) => {
 }
 
 .form-group .required {
-  color: var(--danger);
+  color: #ef4444;
 }
 
 .form-group .help-text {
@@ -1776,9 +1775,9 @@ watch(activeTab, async (tab) => {
   gap: 2px;
 }
 
-.text-green { color: var(--success-dark); }
-.text-yellow { color: var(--warning-dark); }
-.text-red { color: var(--danger-dark); }
+.text-green { color: #166534; }
+.text-yellow { color: #92400e; }
+.text-red { color: #991b1b; }
 
 /* Badge 样式 */
 .badge-red { background: color-mix(in srgb, var(--danger) 15%, var(--surface-primary)); color: var(--danger); }

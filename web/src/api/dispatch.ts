@@ -1,28 +1,12 @@
 import { req } from './_core'
 
-export interface WaterfallAttempt {
-  attempt_id: string
-  attempt_no: number
-  model?: string
-  provider_id?: number
-  credential_id: number
-  vendor?: string
-  started_at?: string
-  first_byte_at?: string
-  ended_at?: string
-  outcome?: string
-  error_kind?: string
-}
-
 export interface WaterfallRequest {
   request_id: string
-  tenant_id?: string
   session_id?: string
   model?: string
   credential_id?: number
   result: string
   vendor?: string
-  attempts?: WaterfallAttempt[]
   arrived_at?: string
   total_enqueued_at?: string
   total_dequeued_at?: string
@@ -56,8 +40,6 @@ export interface WaterfallSnapshot {
   bottleneck_diagnosis: BottleneckDiagnosis
   enabled: boolean
   wired: boolean
-  /** memory | memory+db | db | none */
-  source?: string
 }
 
 export interface QueueSnapshot {
@@ -102,19 +84,3 @@ export function fetchDispatchWaterfall(query: WaterfallQuery = {}): Promise<Wate
 export function fetchDispatchQueues(): Promise<DispatchQueuesSnapshot> {
   return req<DispatchQueuesSnapshot>('GET', '/api/admin/dispatch/queues')
 }
-
-export interface WaterfallByRequestResponse {
-  request: WaterfallRequest
-  source?: string
-}
-
-/** Single-request waterfall (memory ring → DB). 404 when not found. */
-export function fetchWaterfallByRequestId(requestId: string, opts?: { signal?: AbortSignal }) {
-  return req<WaterfallByRequestResponse>(
-    'GET',
-    `/api/admin/dispatch/waterfall/request/${encodeURIComponent(requestId)}`,
-    undefined,
-    { signal: opts?.signal },
-  )
-}
-

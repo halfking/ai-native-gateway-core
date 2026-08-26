@@ -1,6 +1,5 @@
 import { createGatewaySession, getPendingResponse } from '../api'
 import { loadPersistedGwSessionId, persistLastGwSessionId } from './useChatSessions'
-import { usePersistedValue } from './usePersistedValue'
 
 export interface ChatCompletionMessage {
   role: 'user' | 'assistant' | 'system'
@@ -101,18 +100,13 @@ function parseForbiddenFromResponse(status: number, raw: string): SessionForbidd
 
 const DEVICE_SEED_KEY = 'llmgw_device_seed'
 
-// LP8 (2026-08-24): persist the per-device UUID through usePersistedValue so
-// the seed write shares the lifecycle-flush / debounce / error-degrade
-// primitives with useChatSessions / liveStreamPreferences. Seed is written
-// once on first use; subsequent reads return the stored value without IO.
-const deviceSeedPersisted = usePersistedValue<string>(
-  DEVICE_SEED_KEY,
-  () => crypto.randomUUID(),
-  { immediate: true },
-)
-
 function deviceSeed(): string {
-  return deviceSeedPersisted.value.value
+  let seed = localStorage.getItem(DEVICE_SEED_KEY)
+  if (!seed) {
+    seed = crypto.randomUUID()
+    localStorage.setItem(DEVICE_SEED_KEY, seed)
+  }
+  return seed
 }
 
 /** Skip assistant error bubbles so retries are not polluted. */

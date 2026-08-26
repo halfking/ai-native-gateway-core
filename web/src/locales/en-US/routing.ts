@@ -180,8 +180,6 @@ export default {
       colStatus: 'Status',
       routable: 'Routable',
       unroutable: 'Unavailable',
-      colPriority: 'Priority',
-      priorityTooltip: 'Priority credential flag: while quota is OK this credential takes traffic first; when exhausted traffic spills over automatically. Independent of the sort order number.',
       l2Funnel: 'This L2 funnel',
       funnelStages: {
         candidates: 'Total candidates',

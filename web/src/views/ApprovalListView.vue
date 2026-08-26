@@ -527,15 +527,15 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
 }
 
 .message-error {
-  background: color-mix(in srgb, var(--danger) 12%, transparent);
-  border: 1px solid color-mix(in srgb, var(--danger) 12%, transparent);
-  color: var(--danger);
+  background: rgba(248, 113, 113, 0.1);
+  border: 1px solid rgba(248, 113, 113, 0.3);
+  color: #f87171;
 }
 
 .message-success {
-  background: var(--success-bg);
-  border: 1px solid var(--success-bd);
-  color: var(--success);
+  background: rgba(52, 211, 153, 0.1);
+  border: 1px solid rgba(52, 211, 153, 0.3);
+  color: #34d399;
 }
 
 .stats-grid {
@@ -570,15 +570,15 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
 }
 
 .stat-value.stat-highlight {
-  color: var(--warning);
+  color: #fbbf24;
 }
 
 .stat-value.stat-green {
-  color: var(--success);
+  color: #34d399;
 }
 
 .stat-value.stat-red {
-  color: var(--danger);
+  color: #f87171;
 }
 
 .filters-section {
@@ -680,7 +680,7 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
 }
 
 .table-row:hover {
-  background: var(--bg-hover);
+  background: rgba(255, 255, 255, 0.02);
 }
 
 .link-button {
@@ -694,7 +694,7 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
 }
 
 .link-button:hover {
-  color: var(--accent);
+  color: #5558e3;
 }
 
 .text-mono {
@@ -709,7 +709,7 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
 
 .time-left {
   font-size: 11px;
-  color: var(--warning);
+  color: #fbbf24;
   margin-top: 2px;
 }
 
@@ -728,28 +728,28 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
 }
 
 .badge-green {
-  background: var(--success-bg);
-  color: var(--success);
+  background: rgba(52, 211, 153, 0.15);
+  color: #34d399;
 }
 
 .badge-yellow {
-  background: var(--warning-bg);
-  color: var(--warning);
+  background: rgba(251, 191, 36, 0.15);
+  color: #fbbf24;
 }
 
 .badge-orange {
-  background: var(--warning-bd);
-  color: var(--warning);
+  background: rgba(251, 146, 60, 0.15);
+  color: #fb923c;
 }
 
 .badge-red {
-  background: color-mix(in srgb, var(--danger) 12%, transparent);
-  color: var(--danger);
+  background: rgba(248, 113, 113, 0.15);
+  color: #f87171;
 }
 
 .badge-gray {
-  background: var(--neutral-bg);
-  color: var(--muted);
+  background: rgba(139, 148, 158, 0.15);
+  color: #8b949e;
 }
 
 .actions-column {
@@ -804,12 +804,12 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
 
 .btn-primary {
   background: var(--accent);
-  color: var(--on-primary);
+  color: #fff;
   border-color: var(--accent);
 }
 
 .btn-primary:hover:not(:disabled) {
-  background: var(--accent);
+  background: #5558e3;
 }
 
 .btn-secondary {
@@ -818,23 +818,23 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
 }
 
 .btn-success {
-  background: var(--success-bg);
-  color: var(--success);
-  border-color: var(--success);
+  background: rgba(52, 211, 153, 0.15);
+  color: #34d399;
+  border-color: #34d399;
 }
 
 .btn-success:hover:not(:disabled) {
-  background: var(--success-bd);
+  background: rgba(52, 211, 153, 0.25);
 }
 
 .btn-danger {
-  background: color-mix(in srgb, var(--danger) 12%, transparent);
-  color: var(--danger);
-  border-color: var(--danger);
+  background: rgba(248, 113, 113, 0.15);
+  color: #f87171;
+  border-color: #f87171;
 }
 
 .btn-danger:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  background: rgba(248, 113, 113, 0.25);
 }
 
 .btn-sm {

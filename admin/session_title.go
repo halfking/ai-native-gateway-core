@@ -19,7 +19,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/kaixuan/llm-gateway-go/admin/distlock"
-	"github.com/kaixuan/llm-gateway-go/internal/titlestore"
 )
 
 const (
@@ -92,7 +91,7 @@ func (h *Handler) handleSessionSummarizeTitle(w http.ResponseWriter, r *http.Req
 					writeError(w, http.StatusConflict, "标题生成仍在进行，请稍后重试")
 					return
 				}
-				if title, found, deleted := h.loadCanonicalSessionTitle(ctx, GetTenantID(r), scopedKey); found && !deleted && title != "" {
+				if title, ok := h.loadStoredSessionTitle(ctx, taskID, scopedKey); ok {
 					meta := sessionTitleMeta{
 						TaskID:          taskID,
 						ScopedSessionID: sc.SessionID,
@@ -108,9 +107,8 @@ func (h *Handler) handleSessionSummarizeTitle(w http.ResponseWriter, r *http.Req
 		}
 	}
 
-	logs, err := h.loadLogsForSessionTitle(ctx, r, taskID, sc)
+	logs, err := h.loadTaskLogsForTitle(ctx, taskID, sc, r)
 	if err != nil {
-		slog.Warn("session_title: load logs failed", "task_id", taskID, "session_id", sc.SessionID, "error", err)
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
 	}
@@ -156,12 +154,7 @@ func (h *Handler) handleSessionSummarizeTitle(w http.ResponseWriter, r *http.Req
 			return
 		}
 	}
-	if scopedKey != "" {
-		if err := h.commitCanonicalTitle(ctx, GetTenantID(r), scopedKey, taskID, title, titlestore.SourceUserSummarize, true, titlestore.SourcePriorityUser); err != nil {
-			writeError(w, http.StatusInternalServerError, "保存标题失败")
-			return
-		}
-	} else if err := h.upsertSessionTitle(ctx, taskID, scopedKey, title, model, keyID); err != nil {
+	if err := h.upsertSessionTitle(ctx, taskID, scopedKey, title, model, keyID); err != nil {
 		writeError(w, http.StatusInternalServerError, "保存标题失败")
 		return
 	}
@@ -177,31 +170,14 @@ func (h *Handler) handleSessionSummarizeTitle(w http.ResponseWriter, r *http.Req
 	writeJSON(w, http.StatusOK, sessionTitleResponse{Title: title, Meta: meta})
 }
 
-// loadLogsForSessionTitle prefers gw_session_id scoped logs (same path as
-// session-summary) when the caller passes session_id — request-logs drawer
-// always does. Falls back to task_id + hours window when session lookup is
-// empty (legacy memora-context callers).
-func (h *Handler) loadLogsForSessionTitle(ctx context.Context, r *http.Request, taskID string, sc sessionScope) ([]sessionLogForSummary, error) {
-	if sid := strings.TrimSpace(sc.SessionID); sid != "" {
-		logs, err := h.loadSessionLogsForSummary(ctx, r, sid)
-		if err != nil {
-			return nil, err
-		}
-		if len(logs) > 0 {
-			return logs, nil
-		}
-	}
-	return h.loadTaskLogsForTitle(ctx, taskID, sc, r)
-}
-
 func (h *Handler) loadTaskLogsForTitle(ctx context.Context, taskID string, sc sessionScope, r *http.Request) ([]sessionLogForSummary, error) {
 	where, args := sessionLogsWhere(taskID, sc, r)
 	args = append(args, 300)
 	limitArg := "$" + strconv.Itoa(len(args))
 	rows, err := h.db.Query(ctx, `
 		SELECT rl.ts, rl.request_preview, rl.response_preview,
-		       rb.request_body::text AS request_body,
-		       rb.response_body::text AS response_body,
+		       COALESCE(rb.request_body::text, rl.request_body::text) AS request_body,
+		       COALESCE(rb.response_body::text, rl.response_body::text) AS response_body,
 		       `+requestLogStatusExpr+` AS request_status,
 		       rl.error_kind, rl.client_model
 		FROM request_logs_with_current_month rl
@@ -290,33 +266,6 @@ func scopedSessionIDKey(sessionID string) string {
 	return strings.TrimSpace(sessionID)
 }
 
-func (h *Handler) loadCanonicalSessionTitle(ctx context.Context, tenantID, sessionID string) (string, bool, bool) {
-	if h.titleStore == nil || strings.TrimSpace(tenantID) == "" || strings.TrimSpace(sessionID) == "" {
-		return "", false, false
-	}
-	st, err := h.titleStore.Get(ctx, tenantID, sessionID)
-	if err != nil {
-		return "", false, false
-	}
-	if st.Deleted {
-		return "", true, true
-	}
-	if strings.TrimSpace(st.Title) == "" {
-		return "", true, false
-	}
-	return st.Title, true, false
-}
-
-func (h *Handler) loadStoredSessionTitleForRequest(ctx context.Context, r *http.Request, taskID, scopedSessionID string) (string, bool) {
-	if title, found, deleted := h.loadCanonicalSessionTitle(ctx, GetTenantID(r), scopedSessionID); found {
-		if deleted {
-			return "", false
-		}
-		return title, title != ""
-	}
-	return h.loadStoredSessionTitle(ctx, taskID, scopedSessionID)
-}
-
 func (h *Handler) loadStoredSessionTitle(ctx context.Context, taskID, scopedSessionID string) (string, bool) {
 	if h.db == nil {
 		return "", false
@@ -330,32 +279,6 @@ func (h *Handler) loadStoredSessionTitle(ctx context.Context, taskID, scopedSess
 		return "", false
 	}
 	return title, true
-}
-
-func (h *Handler) commitCanonicalTitle(ctx context.Context, tenantID, sessionID, taskID, title, source string, explicit bool, priority int) error {
-	if h.titleStore == nil || strings.TrimSpace(tenantID) == "" || strings.TrimSpace(sessionID) == "" {
-		return fmt.Errorf("canonical title state unavailable")
-	}
-	owner := fmt.Sprintf("%s:%s:%d", source, sessionID, time.Now().UnixNano())
-	claim, err := h.titleStore.BeginMutation(ctx, titlestore.Claim{
-		TenantID: tenantID, SessionID: sessionID, Owner: owner,
-		TTL: 30 * time.Second, Source: source, SourcePriority: priority,
-		Explicit: explicit, TaskID: taskID,
-	})
-	if err != nil {
-		return err
-	}
-	_, err = h.titleStore.CommitTitle(ctx, claim, tenantID, sessionID, title, taskID)
-	return err
-}
-
-func (h *Handler) deleteCanonicalTitle(ctx context.Context, tenantID, sessionID, taskID string) error {
-	if h.titleStore == nil || strings.TrimSpace(tenantID) == "" || strings.TrimSpace(sessionID) == "" {
-		return fmt.Errorf("canonical title state unavailable")
-	}
-	owner := fmt.Sprintf("manual-delete:%s:%d", sessionID, time.Now().UnixNano())
-	_, err := h.titleStore.DeleteTitle(ctx, tenantID, sessionID, taskID, owner)
-	return err
 }
 
 func (h *Handler) upsertSessionTitle(ctx context.Context, taskID, scopedSessionID, title, model string, apiKeyID int) error {
@@ -404,32 +327,25 @@ func (h *Handler) loadSessionTitlesBatch(ctx context.Context, keys [][2]string) 
 		return out
 	}
 	taskIDs := make([]string, 0, len(keys))
-	scopedIDs := make([]string, 0, len(keys))
 	seen := make(map[string]struct{}, len(keys))
 	for _, k := range keys {
-		taskID := strings.TrimSpace(k[0])
-		if taskID == "" {
+		if k[0] == "" {
 			continue
 		}
-		scopedID := scopedSessionIDKey(k[1])
-		pair := sessionTitleMapKey(taskID, scopedID)
-		if _, ok := seen[pair]; ok {
+		if _, ok := seen[k[0]]; ok {
 			continue
 		}
-		seen[pair] = struct{}{}
-		taskIDs = append(taskIDs, taskID)
-		scopedIDs = append(scopedIDs, scopedID)
+		seen[k[0]] = struct{}{}
+		taskIDs = append(taskIDs, k[0])
 	}
 	if len(taskIDs) == 0 {
 		return out
 	}
 	rows, err := h.db.Query(ctx, `
-		SELECT st.task_id, st.scoped_session_id, st.title
-		FROM session_titles st
-		JOIN unnest($1::text[], $2::text[]) AS requested(task_id, scoped_session_id)
-		  ON requested.task_id = st.task_id
-		 AND requested.scoped_session_id = st.scoped_session_id
-	`, taskIDs, scopedIDs)
+		SELECT task_id, scoped_session_id, title
+		FROM session_titles
+		WHERE task_id = ANY($1)
+	`, taskIDs)
 	if err != nil {
 		return out
 	}
@@ -521,7 +437,7 @@ func (h *Handler) handleSessionTitleUpdate(w http.ResponseWriter, r *http.Reques
 					writeError(w, http.StatusConflict, "标题生成仍在进行，请稍后重试")
 					return
 				}
-				if title, ok := h.loadStoredSessionTitleForRequest(ctx, r, taskID, scopedKey); ok {
+				if title, ok := h.loadStoredSessionTitle(ctx, taskID, scopedKey); ok {
 					writeJSON(w, http.StatusOK, map[string]any{
 						"task_id":           taskID,
 						"scoped_session_id": scopedKey,
@@ -547,24 +463,17 @@ func (h *Handler) handleSessionTitleUpdate(w http.ResponseWriter, r *http.Reques
 			return
 		}
 	}
-	if scopedKey != "" {
-		if err := h.commitCanonicalTitle(ctx, GetTenantID(r), scopedKey, taskID, cleaned, titlestore.SourceManual, true, titlestore.SourcePriorityManual); err != nil {
-			writeError(w, http.StatusInternalServerError, "save title: "+err.Error())
-			return
-		}
-	} else {
-		_, err := h.db.Exec(ctx, `
-			INSERT INTO session_titles (task_id, scoped_session_id, title, generated_at, model, api_key_id)
-			VALUES ($1, $2, $3, NOW(), 'manual', NULL)
-			ON CONFLICT (task_id, scoped_session_id) DO UPDATE SET
-				title = EXCLUDED.title,
-				generated_at = EXCLUDED.generated_at,
-				model = EXCLUDED.model
-		`, taskID, scopedKey, cleaned)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "save title: "+err.Error())
-			return
-		}
+	_, err := h.db.Exec(ctx, `
+		INSERT INTO session_titles (task_id, scoped_session_id, title, generated_at, model, api_key_id)
+		VALUES ($1, $2, $3, NOW(), 'manual', NULL)
+		ON CONFLICT (task_id, scoped_session_id) DO UPDATE SET
+			title = EXCLUDED.title,
+			generated_at = EXCLUDED.generated_at,
+			model = EXCLUDED.model
+	`, taskID, scopedKey, cleaned)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "save title: "+err.Error())
+		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -647,16 +556,6 @@ func (h *Handler) handleSessionTitleDelete(w http.ResponseWriter, r *http.Reques
 			writeError(w, http.StatusConflict, "标题租约已失效，请稍后重试")
 			return
 		}
-	}
-	if scopedKey != "" {
-		if err := h.deleteCanonicalTitle(ctx, GetTenantID(r), scopedKey, taskID); err != nil {
-			writeError(w, http.StatusInternalServerError, "delete title: "+err.Error())
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"task_id": taskID, "scoped_session_id": scopedKey, "deleted": true,
-		})
-		return
 	}
 	tag, err := h.db.Exec(ctx, `
 		DELETE FROM session_titles

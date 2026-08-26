@@ -87,16 +87,6 @@ func recordSuspiciousExitDBDuration(seconds float64) {
 	suspiciousExitDBDuration.Observe(seconds)
 }
 
-// BindingRawModel returns the model_offers identity used for routing state.
-// RawModel is the outbound request name and can be shared by several bindings.
-// State keyed by RawModel would merge their independent health telemetry.
-func (c Candidate) BindingRawModel() string {
-	if strings.TrimSpace(c.OfferRawModel) != "" {
-		return strings.TrimSpace(c.OfferRawModel)
-	}
-	return strings.TrimSpace(c.RawModel)
-}
-
 type Candidate struct {
 	CredentialID     int     `json:"credential_id"`
 	ProviderID       int     `json:"provider_id"`
@@ -145,7 +135,6 @@ type Candidate struct {
 	SupportsPromptCache  bool     `json:"supports_prompt_cache"`
 	CacheMode            string   `json:"cache_mode"`
 	ManualPriority       int      `json:"manual_priority"`
-	Priority             bool     `json:"priority"`
 	ActiveSessions       int      `json:"active_sessions"`
 	ConsecutiveFailures  int      `json:"consecutive_failures"`
 	CompositeScore       float64  `json:"composite_score"`
@@ -474,20 +463,6 @@ func ResetKeyRotatorForCredential(credentialID int) {
 	}
 	defaultClient.keyRotator.ResetCredential(credentialID)
 	slog.Debug("key rotator reset for credential", "credential_id", credentialID)
-}
-
-// ResetKeyRotatorKey clears in-memory health for a single key on a credential.
-// Use when only one key's status changed (admin PATCH /keys/{kid} status, or
-// operator re-activates a single key) so sibling keys' round-robin health is
-// preserved. No-op when the rotator is in single-key mode (the per-credential
-// states map has no entry for credentialID, so there is nothing to reset).
-func ResetKeyRotatorKey(credentialID, kid int) {
-	if defaultClient == nil || credentialID == 0 || defaultClient.keyRotator == nil {
-		return
-	}
-	defaultClient.keyRotator.ResetKey(credentialID, kid)
-	slog.Debug("key rotator reset for single key",
-		"credential_id", credentialID, "kid", kid)
 }
 
 // InvalidateCredentialKeyCache evicts both primary-key caches for one
@@ -1302,8 +1277,8 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 			COALESCE(c.availability_state, 'ready') AS availability_state,
 			COALESCE(c.quota_state, 'ok') AS quota_state,
 			COALESCE(c.lifecycle_status, 'active') AS lifecycle_status,
-			COALESCE(mo.unit_price_in_per_1m, pp_fb.plan_in)::float8 AS unit_price_in_per_1m,
-			COALESCE(mo.unit_price_out_per_1m, pp_fb.plan_out)::float8 AS unit_price_out_per_1m,
+			COALESCE(mo.unit_price_in_per_1m, 0)::float8 AS unit_price_in_per_1m,
+			COALESCE(mo.unit_price_out_per_1m, 0)::float8 AS unit_price_out_per_1m,
 			COALESCE(mo.cache_read_price_per_1m, 0)::float8 AS cache_read_price_per_1m,
 			COALESCE(mo.cache_write_price_per_1m, 0)::float8 AS cache_write_price_per_1m,
 			-- is_routable comes from the unified VIEW (manual > auto priority).
@@ -1312,9 +1287,8 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 			v.unavailable_reason,
 			CASE WHEN cc.capability = 'prompt_caching' AND cc.supported IS TRUE THEN TRUE ELSE FALSE END AS supports_prompt_cache,
 			COALESCE(cc.evidence_json->>'cache_mode', '') AS cache_mode,
-				COALESCE(mo.manual_priority, 99)::int AS manual_priority,
-				COALESCE(mo.priority, FALSE) AS priority,
-				COALESCE(mo.active_sessions, 0)::int AS active_sessions,
+			COALESCE(mo.manual_priority, 99)::int AS manual_priority,
+			COALESCE(mo.active_sessions, 0)::int AS active_sessions,
 			COALESCE(mo.consecutive_failures, 0)::int AS consecutive_failures,
 			COALESCE(mo.currency, 'USD') AS currency,
 			COALESCE(mo.billing_mode, 'per_token') AS billing_mode,
@@ -1350,20 +1324,6 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 		-- LEFT JOIN model_name_mapping for standardized name lookup fallback
 		LEFT JOIN model_name_mapping mnm
 		       ON mnm.raw_model_name = mo.canonical_raw_name
-		-- pricing_plans fallback when credential_model_bindings prices are NULL.
-		LEFT JOIN LATERAL (
-			SELECT
-				NULLIF(pp.plan_json->>'input_per_1m', '')::float8 AS plan_in,
-				NULLIF(pp.plan_json->>'output_per_1m', '')::float8 AS plan_out
-			FROM pricing_plans pp
-			WHERE pp.model_canonical_id = mo.canonical_id
-			  AND pp.effective_to IS NULL
-			  AND (pp.credential_id = mo.credential_id OR pp.credential_id IS NULL)
-			ORDER BY
-				CASE WHEN pp.credential_id = mo.credential_id THEN 0 ELSE 1 END,
-				pp.effective_from DESC NULLS LAST
-			LIMIT 1
-		) pp_fb ON TRUE
 		-- Last-N success rate over request_logs. LATERAL so each candidate
 		-- row carries its own recent (rate, samples). STABLE function, hits
 		-- idx_request_logs_credential_ts (credential_id, ts DESC) so the
@@ -1394,12 +1354,76 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 		        AND mps.raw_model_name = mo.raw_model_name
 		        AND mps.state = 'broken_confirmed'
 		  )
-		  -- Recent success rate is a preference signal, not an availability
-		  -- signal. Hard-excluding a degraded sibling leaves a failing primary
-		  -- with no failover path, even when that sibling is still serviceable.
-		  -- Authoritative permanent/manual/probe state remains enforced by
-		  -- v_routable_credential_models above; ORDER BY below demotes lower
-		  -- recent success rates while preserving them for automatic failover.
+		  -- 2026-06-22 defect (3) hard gate: exclude pairs whose real recent
+		  -- success rate is below 0.5 once we have at least 20 samples. The
+		  -- min-sample threshold avoids cold-start false positives (a brand-new
+		  -- credential with 1 unlucky failure). Pairs in the 0.5-0.9 band are
+		  -- kept but soft-de-prioritized via RecentSuccessRate in the router.
+		  -- 2026-07-15: restored to 0.5. The 2026-06-23 temporary 0.3 was
+		  -- lowered to absorb the 54% failure spike from a resource leak;
+		  -- the leak is fixed and the rolling 50-request window has long
+		  -- since rotated past it.
+			  AND NOT (
+			      -- Free/token-plan credentials intentionally stay routable after
+			      -- transient failures; the executor and state manager soft-demote
+			      -- them instead of hard-excluding the only route.
+			      COALESCE(mo.billing_mode, 'per_token') <> 'free'
+			      AND rsr.samples >= 20
+			      AND COALESCE(rsr.rate, 1.0) < 0.5
+			      -- A single-candidate model needs a recovery chance. Circuit,
+			      -- model-probe and permanent-state guards still apply; the
+			      -- rolling-rate gate is a failover preference only when a
+			      -- sibling offer can actually take traffic.
+			      AND EXISTS (
+			          SELECT 1
+			          FROM model_offers mo_sibling
+			                  JOIN credentials c_sibling ON c_sibling.id = mo_sibling.credential_id
+			                  JOIN providers p_sibling ON p_sibling.id = c_sibling.provider_id
+			                  LEFT JOIN v_routable_credential_models v_sibling
+			                         ON v_sibling.credential_id = mo_sibling.credential_id
+			                        AND (v_sibling.raw_model_name = mo_sibling.raw_model_name
+			                             OR v_sibling.raw_model_name = mo_sibling.standardized_name)
+			          WHERE mo_sibling.credential_id <> mo.credential_id
+			            AND mo_sibling.available = TRUE
+			            AND COALESCE(v_sibling.is_routable, FALSE) = TRUE
+			            AND COALESCE(c_sibling.status, 'active') = 'active'
+			            AND COALESCE(c_sibling.lifecycle_status, 'active') = 'active'
+			            AND COALESCE(c_sibling.manual_disabled, FALSE) = FALSE
+			            /* 2026-08-08 audit note: this c_sibling.quota_state predicate
+			               deliberately does NOT exclude periodic_exhausted, while
+			               GetProbeCandidates (line ~578) DOES exclude it. Intentional:
+			               this subquery asks "does ANY sibling binding exist that COULD
+			               take traffic" (the sibling EXISTS gate for the lone-candidate
+			               fail-open path), not "which sibling should we route to". A
+			               periodic-exhausted sibling is still a potential failover
+			               target because its window resets in minutes/hours;
+			               routing-time selection is filtered separately above. */
+			            AND COALESCE(c_sibling.quota_state, 'ok') NOT IN ('permanently_exhausted', 'balance_exhausted')
+			            AND COALESCE(p_sibling.enabled, FALSE) = TRUE
+			            AND COALESCE(p_sibling.manual_disabled, FALSE) = FALSE
+			            AND (
+			                mo_sibling.standardized_name = mo.standardized_name
+			                OR mo_sibling.canonical_raw_name = mo.canonical_raw_name
+			            )
+			            /* 2026-08-08 P0 Fix: a sibling that admin has explicitly
+			               disabled via the binding-level unavailable_reason='manual'
+			               (or via credentials.manual_disabled / providers.manual_disabled)
+			               must NOT count as a live failover. Without this guard, the
+			               sibling EXISTS subquery returns TRUE while no real sibling
+			               can take traffic — the lone routable candidate gets hard-
+			               excluded by the recent_success_rate gate below, producing
+			               candidates_count=0 and 503 for every Claude/GPT request. */
+			            AND COALESCE(mo_sibling.unavailable_reason, '') NOT LIKE 'manual%'
+			            AND COALESCE(c_sibling.manual_disabled, FALSE) = FALSE
+			            AND COALESCE(p_sibling.manual_disabled, FALSE) = FALSE
+			            AND NOT EXISTS (
+			                SELECT 1 FROM model_probe_state mps_sibling
+			                WHERE mps_sibling.credential_id = mo_sibling.credential_id
+			                  AND mps_sibling.raw_model_name = mo_sibling.raw_model_name
+			                  AND mps_sibling.state = 'broken_confirmed'
+			            )
+			      )
+			  )
 
 		  AND (
 		      -- (1) exact match on the offer's canonical_raw_name (lowercase)
@@ -1425,9 +1449,8 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 				OR lower(mc.canonical_name) = $1
 			)
 
-			ORDER BY
-				CASE WHEN COALESCE(mo.priority, FALSE) AND COALESCE(c.quota_state, 'ok') = 'ok' THEN 0 ELSE 1 END,
-				CASE COALESCE(mo.billing_mode, 'per_token')
+		ORDER BY
+			CASE COALESCE(mo.billing_mode, 'per_token')
 				WHEN 'free' THEN 1
 				WHEN 'token_plan' THEN 1
 				WHEN 'code_plan' THEN 1
@@ -1520,7 +1543,6 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 			&cand.SupportsPromptCache,
 			&cand.CacheMode,
 			&cand.ManualPriority,
-			&cand.Priority,
 			&cand.ActiveSessions,
 			&cand.ConsecutiveFailures,
 			&cand.Currency,
@@ -2064,18 +2086,12 @@ func (c *Client) defaultAsyncExitSuspicious(credentialID int, rawModel string) {
 			return
 		}
 		nextRetryAt := time.Now().Add(30 * time.Second).UTC().Format(time.RFC3339Nano)
-		key := fmt.Sprintf("llmgw:avail:%d:%s", credentialID, rawModel)
-		pipe := c.redis.Pipeline()
-		pipe.HSet(bgCtx, key, map[string]any{
+		if cacheErr := c.redis.HSet(bgCtx, fmt.Sprintf("llmgw:avail:%d:%s", credentialID, rawModel), map[string]any{
 			"state":         "recovering",
 			"updated_at":    time.Now().UTC().Format(time.RFC3339Nano),
 			"next_retry_at": nextRetryAt,
 			"source":        "call_exit",
-		})
-		pipe.SAdd(bgCtx, "llmgw:avail:index", key)
-		pipe.Expire(bgCtx, "llmgw:avail:index", 4*time.Hour)
-		pipe.Set(bgCtx, "llmgw:avail:index:ready", "1", 4*time.Hour)
-		if _, cacheErr := pipe.Exec(bgCtx); cacheErr != nil {
+		}).Err(); cacheErr != nil {
 			slog.Warn("provider: maybeExitSuspicious cache update failed",
 				"credential_id", credentialID,
 				"raw_model", rawModel,

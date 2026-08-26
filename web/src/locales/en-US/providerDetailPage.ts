@@ -11,7 +11,6 @@ export default {
   tabProbe: 'Auto-probe',
   tabProbeTitle: 'View auto-probe records (failed bindings are re-probed every 10 minutes)',
   tabSettings: 'Settings',
-  tabErrorDetail: 'Vendor Errors',
   quality: {
     loading: 'Loading quality data…',
     noData: 'No quality data yet. Quality profiles are calculated periodically; refresh later or run a probe first.',

@@ -17,14 +17,10 @@ import (
 // ──────────────────────────────────────────────────────────────────────────────
 
 type fakeApprovalMgr struct {
-	mu             sync.Mutex
-	record         *sessionaudit.ApprovalRecord
-	getErr         error
-	calls          int
-	resumeClaimed  bool
-	resumeComplete bool
-	resumeToken    int64
-	claimAttempts  chan struct{}
+	mu     sync.Mutex
+	record *sessionaudit.ApprovalRecord
+	getErr error
+	calls  int
 }
 
 func (f *fakeApprovalMgr) GetForTenant(_ context.Context, _, _ string) (*sessionaudit.ApprovalRecord, error) {
@@ -34,41 +30,6 @@ func (f *fakeApprovalMgr) GetForTenant(_ context.Context, _, _ string) (*session
 	return f.record, f.getErr
 }
 
-func (f *fakeApprovalMgr) ClaimResume(_ context.Context, _, _ string, owner string, _ time.Time) (*sessionaudit.ResumeClaim, error) {
-	if f.claimAttempts != nil {
-		f.claimAttempts <- struct{}{}
-	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.resumeComplete {
-		return &sessionaudit.ResumeClaim{Record: f.record, ResumeState: "completed", AlreadyDone: true}, nil
-	}
-	if f.resumeClaimed {
-		return &sessionaudit.ResumeClaim{Record: f.record, ResumeState: "running", AlreadyRunning: true}, nil
-	}
-	f.resumeClaimed = true
-	f.resumeToken++
-	return &sessionaudit.ResumeClaim{Record: f.record, Owner: owner, FencingToken: f.resumeToken, ResumeState: "running"}, nil
-}
-
-func (f *fakeApprovalMgr) RenewResumeLease(_ context.Context, _, _ string, _ string, _ int64, _ time.Time) error {
-	return nil
-}
-
-func (f *fakeApprovalMgr) CompleteResume(_ context.Context, _, _ string, _ string, _ int64) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.resumeComplete = true
-	return nil
-}
-
-func (f *fakeApprovalMgr) FailResume(_ context.Context, _, _ string, _ string, _ int64, _ string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.resumeClaimed = false
-	return nil
-}
-
 type fakeLLMCaller struct {
 	mu       sync.Mutex
 	calls    int
@@ -76,7 +37,7 @@ type fakeLLMCaller struct {
 	err      error
 }
 
-func (f *fakeLLMCaller) CallFromSnapshot(_ context.Context, snap *sessionaudit.RequestSnapshot, _ ResumeExecution) error {
+func (f *fakeLLMCaller) CallFromSnapshot(_ context.Context, snap *sessionaudit.RequestSnapshot) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
@@ -85,35 +46,6 @@ func (f *fakeLLMCaller) CallFromSnapshot(_ context.Context, snap *sessionaudit.R
 }
 
 func (f *fakeLLMCaller) Calls() int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.calls
-}
-
-type blockingLLMCaller struct {
-	started chan struct{}
-	release chan struct{}
-	calls   int
-	mu      sync.Mutex
-}
-
-func (f *blockingLLMCaller) CallFromSnapshot(ctx context.Context, _ *sessionaudit.RequestSnapshot, _ ResumeExecution) error {
-	f.mu.Lock()
-	f.calls++
-	f.mu.Unlock()
-	select {
-	case f.started <- struct{}{}:
-	default:
-	}
-	select {
-	case <-f.release:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
-
-func (f *blockingLLMCaller) Calls() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.calls
@@ -260,67 +192,6 @@ func TestResumeApproved_CallsLLM(t *testing.T) {
 	}
 }
 
-func TestResumeApproved_ConcurrentCallsClaimOnce(t *testing.T) {
-	const callers = 8
-
-	mgr := &fakeApprovalMgr{
-		record:        makeRecord(sessionaudit.ApprovalApproved, true, ""),
-		claimAttempts: make(chan struct{}, callers),
-	}
-	llm := &blockingLLMCaller{started: make(chan struct{}, 1), release: make(chan struct{})}
-	h := NewApprovalResumeHandler(nil, mgr, llm, nil, nil)
-
-	start := make(chan struct{})
-	errs := make(chan error, callers)
-	var wg sync.WaitGroup
-	wg.Add(callers)
-	for i := 0; i < callers; i++ {
-		go func() {
-			defer wg.Done()
-			<-start
-			errs <- h.ResumeAfterApproval(context.Background(), "appr-1", "tenant-1")
-		}()
-	}
-	close(start)
-	select {
-	case <-llm.started:
-	case <-time.After(time.Second):
-		t.Fatal("no resume caller reached LLM")
-	}
-	for i := 0; i < callers; i++ {
-		select {
-		case <-mgr.claimAttempts:
-		case <-time.After(time.Second):
-			t.Fatalf("only %d callers reached the claim boundary", i)
-		}
-	}
-	close(llm.release)
-	wg.Wait()
-	close(errs)
-
-	var completed, inProgress, unexpected int
-	for err := range errs {
-		switch {
-		case err == nil:
-			completed++
-		case errors.Is(err, ErrResumeInProgress):
-			inProgress++
-		default:
-			unexpected++
-			t.Errorf("unexpected concurrent resume error: %v", err)
-		}
-	}
-	if completed < 1 {
-		t.Fatalf("successful resume calls: got %d want at least 1", completed)
-	}
-	if completed+inProgress+unexpected != callers {
-		t.Fatalf("result count: got %d want %d", completed+inProgress+unexpected, callers)
-	}
-	if got := llm.Calls(); got != 1 {
-		t.Fatalf("LLM calls: got %d want 1", got)
-	}
-}
-
 func TestResumeApproved_MarksSessionStateApproved(t *testing.T) {
 	mgr := &fakeApprovalMgr{record: makeRecord(sessionaudit.ApprovalApproved, true, "")}
 	cache := compression.NewSessionCache(nil, nil)
@@ -371,11 +242,7 @@ func TestResumeApproved_LLMError_WritesFailedPending(t *testing.T) {
 		}
 	}
 	if !foundFailed {
-		statuses := make([]string, 0, len(saves))
-		for _, save := range saves {
-			statuses = append(statuses, save.Status)
-		}
-		t.Errorf("expected at least one failed pending, got statuses=%v", statuses)
+		t.Errorf("expected at least one failed pending, got: %+v", saves)
 	}
 }
 

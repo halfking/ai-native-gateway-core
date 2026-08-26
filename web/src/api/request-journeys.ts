@@ -113,9 +113,6 @@ export interface RequestJourneySnapshot {
   started_at?: string
   updated_at: string
   completed_at?: string
-  /** v4 R1.1 lifecycle 三态（后端 additive 字段） */
-  lifecycle_state?: 'pending' | 'in_flight' | 'completed'
-  retry_at?: string
 }
 
 export interface RequestIngressSnapshot {
