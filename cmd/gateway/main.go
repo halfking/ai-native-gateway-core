@@ -5791,6 +5791,14 @@ func main() {
 		if redisClientForCache != nil {
 			pipeline.SetQueueMirror(dispatch.NewQueueMirror(redisClientForCache.Client()))
 		}
+		// V6-W1.7 (2026-08-27): 集群队列准入双后端（auto|local|redis，
+		// LLM_GATEWAY_DISPATCH_QUEUE_BACKEND）。准入/容量 fail-open 回退 local
+		// （保可用）；执行仍在本实例（连接亲和），跨实例只共享准入/容量/定时可见。
+		var queueBackendRedis *redis.Client
+		if redisClientForCache != nil {
+			queueBackendRedis = redisClientForCache.Client()
+		}
+		wireDispatchQueueBackend(pipeline, queueBackendRedis, stableGatewayInstanceID())
 	}
 	if liveStreamHub != nil {
 		projection := gatewayQueueProjection.Load()
