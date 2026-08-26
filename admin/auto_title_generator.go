@@ -18,6 +18,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/kaixuan/llm-gateway-go/admin/distlock"
+	"github.com/kaixuan/llm-gateway-go/domains/analysis/sessionmeta"
+	"github.com/kaixuan/llm-gateway-go/internal/titlestore"
 	"github.com/kaixuan/llm-gateway-go/metrics"
 )
 
@@ -35,16 +37,11 @@ const (
 	autoSourceActorHeader     = "X-Gw-Source-Actor"
 )
 
-// titleDistLockKey builds the distributed-lock key for a (kind, taskID,
-// sessionID) tuple. The kind ("auto" or "manual") keeps the two trigger
-// pipelines from blocking each other, matching the operator requirement
-// that auto-title and manual-title are independently concurrency-gated.
-//
-// Key shape: llmgw:distlock:title:<kind>:<taskID>\x00<sessionID>
-// The \x00 separator matches sessionTitleMapKey so cross-pipeline key
-// lookups are stable.
+// Key shape uses the shared Cluster-safe builder and a stable logical key.
+// The kind keeps auto-title and manual-title independently concurrency-gated.
 func titleDistLockKey(kind, taskID, sessionID string) string {
-	return "llmgw:distlock:title:" + kind + ":" + strings.TrimSpace(taskID) + "\x00" + strings.TrimSpace(sessionID)
+	logicalKey := strings.TrimSpace(taskID) + "\x00" + strings.TrimSpace(sessionID)
+	return distlock.BuildKey("title:"+strings.TrimSpace(kind), logicalKey)
 }
 
 // AutoTitleGenerator handles automatic session title generation.
@@ -127,6 +124,60 @@ func (g *AutoTitleGenerator) MaybeGenerateTitle(sessionID, tenantID, taskID, req
 
 	// Run in a separate goroutine to avoid blocking
 	go g.generateTitleAsync(sessionID, tenantID, taskID, requestBody, requestPreview, parentRequestID)
+}
+
+// MaybeGenerateProvisionalMetadata implements the streaming arrival hook. The
+// extraction itself is synchronous; metadata UPSERT and title projection are
+// queued in a short-lived goroutine so database latency never extends the
+// request path. Metadata is written even when title is empty; title projection
+// only runs when auto-title is enabled and the session has no title yet.
+func (g *AutoTitleGenerator) MaybeGenerateProvisionalMetadata(tenantID, sessionID, taskID string, in sessionmeta.Input) {
+	if g == nil || !g.enabled || g.handler == nil {
+		return
+	}
+	if g.handler.analysisMetadataStore == nil && g.handler.titleStore == nil {
+		return
+	}
+	if strings.TrimSpace(tenantID) == "" || strings.TrimSpace(sessionID) == "" {
+		return
+	}
+	result := sessionmeta.Extract(in)
+	go g.commitProvisionalArrival(tenantID, sessionID, taskID, result)
+}
+
+func (g *AutoTitleGenerator) commitProvisionalArrival(tenantID, sessionID, taskID string, result sessionmeta.Result) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if g.handler.analysisMetadataStore != nil {
+		if err := g.handler.analysisMetadataStore.UpsertProvisional(ctx, tenantID, sessionID, taskID, result); err != nil {
+			slog.Warn("provisional session metadata upsert failed",
+				"session_id", sessionID, "tenant_id", tenantID, "error", err)
+		}
+	}
+	title := strings.TrimSpace(result.Title)
+	if title == "" || g.handler.titleStore == nil {
+		return
+	}
+	g.commitProvisionalTitle(ctx, tenantID, sessionID, taskID, title)
+}
+
+// commitProvisionalTitle writes the arrival title as a dedicated
+// provisional source (priority 5 < auto-title 10) with an atomic
+// only-if-empty claim: first writer wins, later arrivals and refined/final
+// titles can never be overwritten by a stale provisional goroutine.
+func (g *AutoTitleGenerator) commitProvisionalTitle(ctx context.Context, tenantID, sessionID, taskID, title string) {
+	owner := fmt.Sprintf("arrival-title:%s:%d", sessionID, time.Now().UnixNano())
+	claim, err := g.handler.titleStore.BeginMutation(ctx, titlestore.Claim{
+		TenantID: tenantID, SessionID: sessionID, Owner: owner,
+		TTL: 5 * time.Second, Source: titlestore.SourceProvisionalTitle,
+		SourcePriority: titlestore.SourcePriorityProvisional, OnlyIfEmpty: true, TaskID: taskID,
+	})
+	if err != nil {
+		return
+	}
+	if _, err := g.handler.titleStore.CommitTitle(ctx, claim, tenantID, sessionID, title, taskID); err != nil {
+		slog.Debug("provisional session title commit skipped", "session_id", sessionID, "error", err)
+	}
 }
 
 // isFirstSuccessfulUserTurn determines title eligibility from persisted
@@ -221,7 +272,8 @@ func (g *AutoTitleGenerator) generateTitleAsync(sessionID, tenantID, taskID, req
 				//   - Leader failed → skip this round; the next
 				//     first-turn request will retry.
 				waitErr := h.Wait(ctx)
-				hasTitle, terr := g.checkSessionHasTitle(ctx, sessionID)
+				hasTitle, terr := g.checkSessionHasTitle(ctx, tenantID, taskID, sessionID)
+
 				if terr != nil {
 					logger.Warn("auto_title: follower re-check failed; skipping round",
 						"wait_err", waitErr, "check_err", terr)
@@ -244,7 +296,7 @@ func (g *AutoTitleGenerator) generateTitleAsync(sessionID, tenantID, taskID, req
 	}
 
 	// Step 1: Check if title already exists (avoid duplicate work)
-	hasTitle, err := g.checkSessionHasTitle(ctx, sessionID)
+	hasTitle, err := g.checkSessionHasTitle(ctx, tenantID, taskID, sessionID)
 	if err != nil {
 		logger.Warn("failed to check existing title", "error", err)
 		return
@@ -274,7 +326,22 @@ func (g *AutoTitleGenerator) generateTitleAsync(sessionID, tenantID, taskID, req
 			return
 		}
 	}
-	if err := g.saveSessionTitle(ctx, sessionID, taskID, title, model, keyID); err != nil {
+	if g.handler.titleStore != nil {
+		owner := fmt.Sprintf("auto-title:%s:%d", sessionID, time.Now().UnixNano())
+		claim, claimErr := g.handler.titleStore.BeginMutation(ctx, titlestore.Claim{
+			TenantID: tenantID, SessionID: sessionID, Owner: owner,
+			TTL: 60 * time.Second, Source: titlestore.SourceAutoTitle,
+			SourcePriority: titlestore.SourcePriorityAuto, TaskID: taskID,
+		})
+		if claimErr != nil {
+			logger.Info("auto_title: canonical mutation blocked", "error", claimErr)
+			return
+		}
+		if _, commitErr := g.handler.titleStore.CommitTitle(ctx, claim, tenantID, sessionID, title, taskID); commitErr != nil {
+			logger.Info("auto_title: canonical commit blocked", "error", commitErr)
+			return
+		}
+	} else if err := g.saveSessionTitle(ctx, sessionID, taskID, title, model, keyID); err != nil {
 		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
 			logger.Debug("title already saved by another goroutine")
 			return
@@ -286,15 +353,25 @@ func (g *AutoTitleGenerator) generateTitleAsync(sessionID, tenantID, taskID, req
 	logger.Info("auto title saved successfully", "title", title, "length", len(title), "model", model)
 }
 
-// checkSessionHasTitle checks if a session already has a title.
-func (g *AutoTitleGenerator) checkSessionHasTitle(ctx context.Context, sessionID string) (bool, error) {
+func (g *AutoTitleGenerator) checkSessionHasTitle(ctx context.Context, tenantID, taskID, sessionID string) (bool, error) {
+	if g.handler.titleStore != nil {
+		st, err := g.handler.titleStore.Get(ctx, tenantID, sessionID)
+		if err == nil {
+			// A provisional arrival title is not a real title yet — the
+			// refined LLM path must still run and replace it (priority 10 > 5).
+			return st.Deleted || (strings.TrimSpace(st.Title) != "" && st.Source != titlestore.SourceProvisionalTitle), nil
+		}
+	}
+	if strings.TrimSpace(taskID) == "" {
+		taskID = "auto"
+	}
 	var exists bool
 	err := g.handler.db.QueryRow(ctx, `
 		SELECT EXISTS(
-			SELECT 1 FROM session_titles 
-			WHERE scoped_session_id = $1
+			SELECT 1 FROM session_titles
+			WHERE task_id = $1 AND scoped_session_id = $2
 		)
-	`, sessionID).Scan(&exists)
+	`, taskID, sessionID).Scan(&exists)
 	return exists, err
 }
 
@@ -385,7 +462,7 @@ func (g *AutoTitleGenerator) generateTitleFromFirstRequest(ctx context.Context, 
 	// gets its own gw_session_id and does NOT pollute the user's conversation).
 	// The parent_request_id is forwarded so request_logs_hot.parent_request_id
 	// makes the loopback linkable back to its parent user request.
-	llmRes, err := g.callAutoTitleLLM(ctx, apiKey, sessionID, parentRequestID, userContent)
+	llmRes, err := g.callAutoTitleLLM(ctx, apiKey, keyID, sessionID, parentRequestID, userContent)
 	if err != nil {
 		// Fallback: simple extraction from in-memory preview
 		if requestPreview != "" {
@@ -456,13 +533,15 @@ func extractLastUserMessageRuneCount(requestBody string) int {
 
 // extractMessagesForTitle parses a chat completion request body (JSON) and
 // extracts the conversation messages into a clean "role: content" text suitable
-// for title generation. It focuses on user/assistant messages and truncates
-// each message to avoid feeding megabytes of system prompt to the title LLM.
+// for title generation. It uses only user/assistant messages — system prompts
+// (IDE tool catalogs, agent boilerplate) must never form the title corpus.
 //
 // v5 (2026-08-06): bumped limits (10 msgs / 1200 chars / 6000 total) and
 // preserves the LAST user message in full — that is the actual question the
 // user asked, which the title LLM needs to see uncut. Earlier messages are
 // truncated as before.
+//
+// v6 (2026-08-26): exclude system/developer roles entirely from the corpus.
 //
 // Returns "" if the body cannot be parsed or has no usable messages.
 func extractMessagesForTitle(requestBody string) string {
@@ -479,11 +558,9 @@ func extractMessagesForTitle(requestBody string) string {
 	if err := json.Unmarshal(body, &parsed); err != nil || len(parsed.Messages) == 0 {
 		return ""
 	}
-	const maxPerMsg = 1200  // chars per message (was 500 — bumped 2026-08-06)
-	const maxTotal = 6000   // total chars cap (was 3000)
-	const maxMsgs = 10      // semantic messages, excluding tool/function traffic
-	const maxSysChars = 800 // long system messages (IDE tool descriptions) get truncated at this length
-	const sysSnippet = 300  // how much of a long system message to keep
+	const maxPerMsg = 1200 // chars per message (was 500 — bumped 2026-08-06)
+	const maxTotal = 6000  // total chars cap (was 3000)
+	const maxMsgs = 10     // semantic messages, excluding tool/function/system
 
 	// 2026-08-06: pre-scan to find the LAST user message; preserve it in full
 	// even if doing so pushes the corpus past maxTotal. This is the actual
@@ -503,14 +580,12 @@ func extractMessagesForTitle(requestBody string) string {
 	var parts []string
 	semanticMessages := 0
 	for _, msg := range parsed.Messages {
-		role := strings.TrimSpace(msg.Role)
-		// Tool/function records contain implementation output, not the user's
-		// intent. Exclude them before counting the corpus budget so tool-heavy
-		// turns cannot crowd out later conversation messages.
-		if role == "tool" || role == "function" {
+		role := strings.ToLower(strings.TrimSpace(msg.Role))
+		// System/developer prompts and tool traffic are not user intent.
+		if role == "system" || role == "developer" || role == "tool" || role == "function" {
 			continue
 		}
-		if role != "user" && role != "assistant" && role != "system" {
+		if role != "user" && role != "assistant" {
 			continue
 		}
 		if semanticMessages >= maxMsgs {
@@ -520,19 +595,12 @@ func extractMessagesForTitle(requestBody string) string {
 		if text == "" {
 			continue
 		}
-		// Long system prompts (IDE tool descriptions) are usually boilerplate;
-		// truncate aggressively so the user question is not crowded out.
-		if role == "system" && len(text) > maxSysChars {
-			text = text[:sysSnippet] + "… <ide-tool-context truncated>"
-		}
 		if len(text) > maxPerMsg {
 			text = text[:maxPerMsg] + "…"
 		}
 		parts = append(parts, role+": "+text)
 		semanticMessages++
 	}
-	// Truncate the prefix loop's joined output to maxTotal so a long IDE
-	// system prompt doesn't crowd out the preserved user message below.
 	result := strings.Join(parts, "\n")
 	if len(result) > maxTotal {
 		result = result[:maxTotal] + "…"
@@ -768,8 +836,8 @@ func (g *AutoTitleGenerator) loadSessionLogsForTitle(ctx context.Context, sessio
 
 	rows, err := g.handler.db.Query(ctx, `
 		SELECT rl.ts, rl.request_preview, rl.response_preview,
-		       COALESCE(rb.request_body::text, rl.request_body::text) AS request_body,
-		       COALESCE(rb.response_body::text, rl.response_body::text) AS response_body,
+		       rb.request_body::text AS request_body,
+		       rb.response_body::text AS response_body,
 		       `+requestLogStatusExpr+` AS request_status,
 		       rl.error_kind, rl.client_model
 		FROM request_logs_with_current_month rl
@@ -841,7 +909,7 @@ func (g *AutoTitleGenerator) resolveAutoTitleModel(ctx context.Context) string {
 //     This is the answer to the operator question "did the LLM actually
 //     receive the request?" — if status_code >= 200 and < 300 the LLM did;
 //     otherwise the body_excerpt reveals what the upstream said.
-func (g *AutoTitleGenerator) callAutoTitleLLM(ctx context.Context, apiKey, sessionID, parentRequestID, userContent string) (adminLLMChatResult, error) {
+func (g *AutoTitleGenerator) callAutoTitleLLM(ctx context.Context, apiKey string, apiKeyID int, sessionID, parentRequestID, userContent string) (adminLLMChatResult, error) {
 	if g.handler == nil {
 		return adminLLMChatResult{}, fmt.Errorf("handler not configured")
 	}
@@ -935,10 +1003,18 @@ func (g *AutoTitleGenerator) callAutoTitleLLM(ctx context.Context, apiKey, sessi
 		"model", model,
 		"status_code", lastStatus,
 		"body_excerpt", lastBodyExcerpt,
+		"loopback_key_source", loopbackKeySource(apiKeyID),
 		"retries", maxRetries,
 		"error", errString(lastErr),
 	)
 	return adminLLMChatResult{}, lastErr
+}
+
+func loopbackKeySource(apiKeyID int) string {
+	if apiKeyID == 0 {
+		return "static"
+	}
+	return "tenant_api_key"
 }
 
 // doCallAutoTitleOnce performs one HTTP attempt and returns either a parsed
@@ -1095,8 +1171,13 @@ func (g *AutoTitleGenerator) getGatewayEndpoint() string {
 	return "http://127.0.0.1:8781"
 }
 
-// pickFirstAvailableAPIKeyForAuto picks the first available API key for auto title generation.
+// pickFirstAvailableAPIKeyForAuto picks credentials for internal loopback calls.
+// When the data-plane static gate is enabled, loopbacks must use that key rather
+// than an arbitrary tenant key from api_keys. Those credential domains differ.
 func (h *Handler) pickFirstAvailableAPIKeyForAuto(ctx context.Context, tenantID string) (id int, apiKey string, err error) {
+	if apiKey = strings.TrimSpace(os.Getenv(EnvAPIKey)); apiKey != "" {
+		return 0, apiKey, nil
+	}
 	if h == nil || h.db == nil {
 		return 0, "", fmt.Errorf("database not configured")
 	}
