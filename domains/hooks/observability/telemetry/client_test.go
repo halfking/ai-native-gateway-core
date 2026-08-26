@@ -149,6 +149,30 @@ func TestUpdateRequestLog_AllowsTerminalSuccessToReplaceIntermediateFailure(t *t
 	require.NoError(t, mockDB.ExpectationsWereMet())
 }
 
+func TestMergeRequestLogEntry_PreservesProtocolMetadata(t *testing.T) {
+	client := "openai-completions"
+	upstream := "anthropic-messages"
+	converted := true
+	dst := &RequestLogEntry{RequestID: "request-1"}
+	src := &RequestLogEntry{
+		ClientProtocol:     &client,
+		UpstreamProtocol:   &upstream,
+		ProtocolConversion: &converted,
+	}
+
+	mergeRequestLogEntry(dst, src)
+
+	if dst.ClientProtocol == nil || *dst.ClientProtocol != client {
+		t.Fatalf("client protocol = %v, want %q", dst.ClientProtocol, client)
+	}
+	if dst.UpstreamProtocol == nil || *dst.UpstreamProtocol != upstream {
+		t.Fatalf("upstream protocol = %v, want %q", dst.UpstreamProtocol, upstream)
+	}
+	if dst.ProtocolConversion == nil || !*dst.ProtocolConversion {
+		t.Fatalf("protocol conversion = %v, want true", dst.ProtocolConversion)
+	}
+}
+
 func TestUpdateRequestLog_TerminalGuardDistinguishesNoOpFromMissing(t *testing.T) {
 	tests := []struct {
 		name         string
