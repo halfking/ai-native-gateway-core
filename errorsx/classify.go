@@ -355,9 +355,9 @@ var budgetExceededRe = regexp.MustCompile(
 		// {"code":"INSUFFICIENT_BALANCE","message":"..."} with HTTP 403.
 		`"code"\s*:\s*"INSUFFICIENT_BALANCE"|` +
 		`"code"\s*:\s*"insufficient_balance"|` +
-		// Chinese quota exhaustion patterns (智谱AI, etc.)
-		`达到.{0,10}(每周|每月|每日|使用)?上限|` +
-		`(配额|额度|余额).{0,10}(用尽|耗尽|不足|超限)|` +
+		// Chinese quota exhaustion patterns (智谱AI, MiniMax, etc.).
+		`达到.{0,40}(每周|每月|每日|使用|用量)?上限|` +
+		`(配额|额度|余额|费用|用量).{0,10}(用尽|用完|耗尽|不足|超限|上限)|` +
 		`(限额|使用量).{0,10}重置|` +
 		`"code"\s*:\s*"1310"|` + // 智谱AI specific code
 		// OmniRoute-derived provider-specific quota signals (classify429.ts).
@@ -369,6 +369,9 @@ var budgetExceededRe = regexp.MustCompile(
 		`individual quota reached|` + // Antigravity / Google Cloud Code
 		`INSUFFICIENT_G1_CREDITS_BALANCE|` + // Antigravity credit balance
 		`out of credits|` +
+		`quota.{0,15}exhausted|` +
+		`\bno\s+available\s+(credits?|accounts?)\b|` +
+		`\baccount\s+(unavailable|disabled|suspended)\b|` +
 		`hard.?(limit|cap))`,
 )
 
@@ -445,8 +448,7 @@ var concurrentOverloadRe = regexp.MustCompile(
 		`(server|service|upstream) (is )?(overload|under pressure)|` +
 		`(rpm|tpm).{0,20}(limit|exceed|reach|over)|` +
 		`request(ed|s)? too (fast|frequent|many)|` +
-		`slow down|try again later|backoff|` +
-		`available accounts|account (not|un)available|quota exhausted|insufficient credit)`,
+		`slow down|try again later|backoff)`,
 )
 var concurrentOverloadCJKRe = regexp.MustCompile(
 	`并发.{0,15}(超限|过大|过高|达到上限|超过限制)|` +
@@ -568,6 +570,9 @@ func ClassifyError(err error, resp *http.Response) ErrorKind {
 		// before generic timeouts because upstream-reported overload
 		// messages often include words like "timeout" or "connection"
 		// that would otherwise be mis-classified.
+		if budgetExceededRe.MatchString(msg) {
+			return KindQuotaPermanent
+		}
 		if concurrentOverloadRe.MatchString(msg) || concurrentOverloadCJKRe.MatchString(msg) {
 			return KindConcurrent
 		}
@@ -644,9 +649,6 @@ func ClassifyError(err error, resp *http.Response) ErrorKind {
 		// sets availability_state='suspended' instead of cascading
 		// retries. Periodic recovery (quotaResetsRe) is handled by the
 		// typed *upstream.Error path with full body access.
-		if budgetExceededRe.MatchString(msg) {
-			return KindQuotaPermanent
-		}
 		return KindTransient
 	}
 	if resp == nil {
@@ -730,7 +732,16 @@ func ClassifyErrorWithBody(status int, body []byte) ErrorKind {
 			return KindUpstreamDown
 		}
 
-		if concurrentOverloadRe.Match(body) || concurrentOverloadCJKRe.Match(body) {
+		if concurrentOverloadCJKRe.Match(body) {
+			return overloadKindForStatus(status)
+		}
+		if (status == 402 || status == 403 || status == 429) && budgetExceededRe.Match(body) {
+			if quotaResetsRe.Match(body) {
+				return KindQuotaPeriodic
+			}
+			return KindQuotaPermanent
+		}
+		if concurrentOverloadRe.Match(body) {
 			return overloadKindForStatus(status)
 		}
 		// KindModelDeprecated (2026-08-05 P0): upstream permanently removed /
@@ -812,12 +823,6 @@ func ClassifyErrorWithBody(status int, body []byte) ErrorKind {
 		// Both cases are body-driven, so we still require the budget pattern
 		// to match — a 403 with no body or unrelated body text falls through
 		// to KindAuth as before.
-		if (status == 402 || status == 403 || status == 429) && budgetExceededRe.Match(body) {
-			if quotaResetsRe.Match(body) {
-				return KindQuotaPeriodic
-			}
-			return KindQuotaPermanent
-		}
 	}
 	// 2026-06-13: protocol/shape 4xx codes (e.g. 405 Method Not Allowed,
 	// 406 Not Acceptable, 415 Unsupported Media Type) are NOT transient —
@@ -1000,7 +1005,16 @@ func ClassifyResponseBody(status int, body []byte) ErrorKind {
 		if degradedFunctionRe.Match(body) {
 			return KindUpstreamDown
 		}
-		if concurrentOverloadRe.Match(body) || concurrentOverloadCJKRe.Match(body) {
+		if concurrentOverloadCJKRe.Match(body) {
+			return overloadKindForStatus(status)
+		}
+		if (status == 402 || status == 403 || status == 429) && budgetExceededRe.Match(body) {
+			if quotaResetsRe.Match(body) {
+				return KindQuotaPeriodic
+			}
+			return KindQuotaPermanent
+		}
+		if concurrentOverloadRe.Match(body) {
 			return overloadKindForStatus(status)
 		}
 		// KindModelDeprecated: see ClassifyErrorWithBody. Checked before
@@ -1046,12 +1060,6 @@ func ClassifyResponseBody(status int, body []byte) ErrorKind {
 		// thinking the API key is invalid when it's actually a balance
 		// issue. See the matching comment in ClassifyErrorWithBody for the
 		// full rationale.
-		if (status == 402 || status == 403 || status == 429) && budgetExceededRe.Match(body) {
-			if quotaResetsRe.Match(body) {
-				return KindQuotaPeriodic
-			}
-			return KindQuotaPermanent
-		}
 	}
 	return ""
 }
