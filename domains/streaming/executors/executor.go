@@ -1245,6 +1245,12 @@ type ExecParams struct {
 	// resolved the initial candidates. Dispatch V2 reuses it when lazily resolving
 	// candidates for an alternate model.
 	DispatchRequestModality string
+	// DispatchDueAt schedules future execution (v6 G-Ⅱ, 定时请求). Zero =
+	// immediate. Populated from the X-Gw-Due-At request header by the
+	// handler; the pipeline parks the request in its due heap until the
+	// time elapses. Beyond the pipeline's schedule-ahead cap the Submit call
+	// fails with dispatch.ErrScheduleTooFar (mapped to a client-error kind).
+	DispatchDueAt time.Time
 	// DispatchAllowProviderChange permits dispatch V2 to leave the provider of
 	// the first selected credential. When false it may still switch credentials
 	// within the same provider.

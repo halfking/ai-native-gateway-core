@@ -3874,6 +3874,8 @@ func (h *ChatHandler) serveWithExecutor(
 	// one construction site, zero drift between the two paths.
 	upstreamAttempts := executors.NewUpstreamAttemptBudget(executors.DefaultUpstreamAttemptLimit)
 	journeyInstanceID, journeySeq, journeyTerminal := requestJourneyExecState(r)
+	// v6 G-Ⅱ: X-Gw-Due-At 定时请求（到期前停在 dispatch 的到期堆）。
+	dispatchDueAt := parseDispatchDueAt(r)
 	buildExecParams := func(streamWriter http.ResponseWriter) *executors.ExecParams {
 		return &executors.ExecParams{
 			W:                          streamWriter,
@@ -3884,6 +3886,7 @@ func (h *ChatHandler) serveWithExecutor(
 			IsStream:                   isStream,
 			StreamSurvivesClientCancel: explicitStreamSession(r.Context()),
 			PreStreamPrepared:          preStreamPrepared,
+			DispatchDueAt:              dispatchDueAt,
 			// The StreamSession heartbeat remains active while the protocol
 			// bridge is blocked on upstream reads. The request-level defer owns
 			// shutdown at the terminal outcome.

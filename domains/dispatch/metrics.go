@@ -80,6 +80,34 @@ var (
 		Help: "Tier-3 stats events dropped because the event bus was full.",
 	})
 
+	// ===== v6 G-Ⅳ: per-dimension membership index (分维队列) counters =====
+	metricDimensionTracked = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "dispatch_dimension_tracked_total",
+		Help: "Request→dimension memberships registered in the per-dimension index (model/credential/provider).",
+	})
+
+	metricDimensionEvicted = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "dispatch_dimension_evicted_total",
+		Help: "Dimension entries evicted by TTL expiry or ring-capacity pressure.",
+	})
+
+	// ===== v6 G-Ⅱ: scheduled requests (定时请求) =====
+	metricScheduledParked = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "dispatch_scheduled_parked_total",
+		Help: "Scheduled requests parked in the due heap (DueAt in the future) at Tier-0 drain.",
+	})
+
+	metricScheduledDue = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "dispatch_scheduled_due_total",
+		Help: "Scheduled requests re-admitted into Tier-0 after their DueAt elapsed.",
+	})
+
+	// ===== v6 G-Ⅲ: client-visible dispatch notices (think 通道) =====
+	metricDispatchNotice = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "dispatch_notice_total",
+		Help: "Client-visible dispatch notices emitted (bridged to the : thinking: SSE comment channel).",
+	}, []string{"kind"}) // kind: retry|node_switch|model_switch|queued|scheduled
+
 	// ===== V3.1: 9-stage lifecycle histograms (T0–T9) =====
 	// Observed once per completed request in Pipeline.complete().
 	// Label "result" is a closed enum: success|fail_prefirstbyte|fail_postfirstbyte|shutdown|error.
