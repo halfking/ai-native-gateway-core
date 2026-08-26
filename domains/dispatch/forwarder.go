@@ -14,6 +14,16 @@ import (
 
 // credForwarder is the ② Credential Forwarder for one credential. It owns the
 // Tier-2 FIFO queue and the per-credential governor that paces forwarding.
+//
+// The Governor reference is held under govMu (RWMutex) so Stage F
+// ApplyPolicy can replace it atomically without rebuilding the
+// forwarder's loop goroutine or invalidating the in-flight attempts
+// path. Reads from acquire/release paths take the RLock; the
+// snapshot observer holds credMu + govMu.RLock as an ordered pair.
+// Acquire/Release on the swapped-out Governor still resolves correctly
+// because the release path captures the Governor pointer in the same
+// critical section that resolved the Acquire (forwarder.go attempt
+// lines 290–316 capture `cf.govRLocked()` once into a local).
 type credForwarder struct {
 	cred      CredentialRef
 	queue     chan *QueuedRequest
@@ -21,6 +31,7 @@ type credForwarder struct {
 	depth     atomic.Int64
 	limit     int64
 	gov       Governor
+	govMu     sync.RWMutex // protects cf.gov (Stage F: hot-swap by ApplyPolicy)
 	pipe      *Pipeline
 	ctx       context.Context
 	cancel    context.CancelFunc
@@ -46,6 +57,24 @@ func newCredForwarder(cred CredentialRef, queueDepth int, pipe *Pipeline) *credF
 	pipe.wg.Add(1)
 	go cf.loop()
 	return cf
+}
+
+// govLocked returns the current Governor under govMu.RLock. The returned
+// pointer is stable for the duration of the caller's critical section;
+// ApplyPolicy swaps it under govMu.Lock so concurrent callers either see
+// the old Governor or the new one but never a torn pointer.
+func (cf *credForwarder) govLocked() Governor {
+	cf.govMu.RLock()
+	defer cf.govMu.RUnlock()
+	return cf.gov
+}
+
+// replaceGov atomically swaps the Governor. Stage F: ApplyPolicy calls
+// this once per spec while holding credMu.
+func (cf *credForwarder) replaceGov(g Governor) {
+	cf.govMu.Lock()
+	cf.gov = g
+	cf.govMu.Unlock()
 }
 
 func (cf *credForwarder) tryReserve() bool {
@@ -148,13 +177,18 @@ func (cf *credForwarder) acquireGiveUp(qr *QueuedRequest) time.Time {
 	if budget > 0 {
 		return time.Now().Add(budget)
 	}
-	if cf.gov.Mode() == ModeConcurrency {
+	if cf.govLocked().Mode() == ModeConcurrency {
 		return time.Time{}
 	}
 	return time.Now()
 }
 
 func (cf *credForwarder) acquire(qr *QueuedRequest) bool {
+	// Stage F: capture the live Governor under govMu.RLock so the matching
+	// Release in commitReservedAttempt uses the same instance. A swap mid-
+	// acquire falls back to the old Governor's Release, which is safe —
+	// the new Governor sees no count to release (it never saw the Acquire).
+	gov := cf.govLocked()
 	attempt := qr.reserveAttempt(cf.cred)
 	giveUp := cf.acquireGiveUp(qr)
 	ctx, cancel := context.WithCancel(ctxOf(qr))
@@ -167,7 +201,7 @@ func (cf *credForwarder) acquire(qr *QueuedRequest) bool {
 		}
 	}()
 
-	if err := cf.gov.Acquire(ctx, qr, giveUp); err != nil {
+	if err := gov.Acquire(ctx, qr, giveUp); err != nil {
 		qr.abandonReservedAttempt(attempt.AttemptID)
 		depth := cf.depth.Add(-1)
 		metricCredQueueDepth.WithLabelValues(itoa(cf.cred.CredentialID), cf.cred.ConcurrencyMode).Dec()
@@ -195,7 +229,7 @@ func (cf *credForwarder) acquire(qr *QueuedRequest) bool {
 	qr.SetT6_CredDequeued()
 	attempt, committed := qr.commitReservedAttempt(attempt.AttemptID)
 	if !committed {
-		cf.gov.Release(qr)
+		gov.Release(qr)
 		depth := cf.depth.Add(-1)
 		metricCredQueueDepth.WithLabelValues(itoa(cf.cred.CredentialID), cf.cred.ConcurrencyMode).Dec()
 		cf.pipe.observeQueue(QueueObservation{Kind: QueueCredentialDepth, CredentialID: cf.cred.CredentialID, Mode: cf.cred.ConcurrencyMode, Depth: depth, Delta: -1, AbsoluteDepth: true})
@@ -205,7 +239,7 @@ func (cf *credForwarder) acquire(qr *QueuedRequest) bool {
 
 	// V3.3-OBS OBS-B1 (2026-08-15): node_selected 动作事件（S7 前，最终选定
 	// 节点——通过 governor 准入，即将开始转发）。
-	cf.pipe.observeQueue(QueueObservation{Kind: QueueGovernorDegraded, CredentialID: cf.cred.CredentialID, Degraded: cf.gov.Mode() == ModeDisabled})
+	cf.pipe.observeQueue(QueueObservation{Kind: QueueGovernorDegraded, CredentialID: cf.cred.CredentialID, Degraded: gov.Mode() == ModeDisabled})
 	cf.pipe.liveActions.Emit(ctxOf(qr), liveactions.ActionEvent{
 		RequestID:    qr.ID,
 		Action:       liveactions.ActionNodeSelected,
@@ -236,6 +270,11 @@ func (cf *credForwarder) acquire(qr *QueuedRequest) bool {
 func (cf *credForwarder) attempt(qr *QueuedRequest) {
 	defer cf.wg.Done()
 	mode := cf.cred.ConcurrencyMode
+	// Stage F: capture the live Governor under govMu.RLock so Acquire's
+	// matching Release uses the same instance even if ApplyPolicy swaps the
+	// Governor while this goroutine is running. The pointer is held until
+	// releaseResources completes.
+	gov := cf.govLocked()
 	attempt, startedAt, started := qr.startAllocatedAttempt()
 	if !started {
 		cf.pipe.complete(qr, ForwardOutcome{Err: errors.New("dispatch: missing allocated attempt")})
@@ -269,7 +308,7 @@ func (cf *credForwarder) attempt(qr *QueuedRequest) {
 	}()
 	// Use the credential's CONFIGURED mode for all metric labels so labels are
 	// consistent across queue-depth / dequeued / in-flight. Do NOT use
-	// cf.gov.Mode(): a concurrency credential with limit 0 degrades to a
+	// gov.Mode(): a concurrency credential with limit 0 degrades to a
 	// noopGovernor whose Mode() returns "disabled", which would mismatch the
 	// "concurrency" label used on the queue-depth gauge for the same credential.
 	metricDequeued.WithLabelValues(itoa(cf.cred.CredentialID), mode).Inc()
@@ -279,7 +318,7 @@ func (cf *credForwarder) attempt(qr *QueuedRequest) {
 	var releaseOnce sync.Once
 	releaseResources := func() {
 		releaseOnce.Do(func() {
-			cf.gov.Release(qr)
+			gov.Release(qr)
 			inFlight := cf.pipe.inFlight.Add(-1)
 			metricInFlight.WithLabelValues(itoa(cf.cred.CredentialID), mode).Dec()
 			cf.pipe.observeQueue(QueueObservation{Kind: QueueInFlight, InFlight: inFlight, Delta: -1})

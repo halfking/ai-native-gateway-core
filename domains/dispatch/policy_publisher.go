@@ -19,9 +19,15 @@ const credentialsRevisionChannel = "credentials_revision"
 // materializes GovernorPolicy metadata from PostgreSQL, and publishes the
 // active revision to the selected backend.
 //
-// Stage E scope: publication only. No production ApplyPolicySnapshot is
-// wired onto the Pipeline yet, and live credForwarder governors keep their
-// local construction — the forward-path swap is the follow-up stage.
+// Stage F scope: publication produces a GovernorPolicy and hands it to
+// Pipeline.ApplyPolicy, which is the production implementation behind
+// policy_applier.ApplyPolicySnapshot. The publisher is responsible only
+// for: (1) accepting NOTIFY from the credentials_revision channel,
+// (2) loading the credential delta since the last revision, (3)
+// calling ApplyPolicy with the materialized policy. The local
+// credForwarder governor swap, the active revision stamp, and the
+// backend NotifyRevisions round-trip all live inside ApplyPolicy —
+// keeping fail-closed behaviour in one place.
 type PolicyPublisher struct {
 	pool     *pgxpool.Pool
 	pipeline *Pipeline
