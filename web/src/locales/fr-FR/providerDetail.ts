@@ -58,6 +58,7 @@ export default {
     labelFallback: "Identifiant #{id}",
     fingerprintTitle: "Pour rapprochement amont uniquement — pas la clé complète",
     fingerprintUnparsed: "Impossible d'analyser",
+    viewErrorDetail: "Voir les erreurs du fournisseur",
     rowMeta: "#{id} · {trust}",
     cellUnset: "Non défini",
     noLimit: "Aucune limite",
@@ -203,6 +204,16 @@ export default {
     checkFailed: "Vérification échouée",
     lifecycleFailed: "Échec de l'opération",
     planTypeFailed: "Échec de la définition de plan_type"
+  },
+  errorDetail: {
+    title: "供应商错误明细", selectCredential: "请先从凭据列表选择凭据", windowTitle: "统计时间窗口",
+    lastHour: "最近 1 小时", lastDay: "最近 24 小时", lastWeek: "最近 7 天", loading: "加载错误明细中…",
+    loadFailed: "加载供应商错误明细失败", credential: "凭据", health: "健康状态", availability: "可用状态", circuit: "熔断状态",
+    consecutiveFailures: "连续失败", balance: "余额", summary: "错误分布", errorKind: "错误类型", count: "次数",
+    statusCodes: "状态码种类", lastSeen: "最近发生", noErrors: "窗口内没有错误记录", recentFailures: "最近失败明细",
+    time: "时间", model: "模型", kind: "错误类型", httpStatus: "HTTP 状态", message: "错误消息", upstreamPreview: "上游响应预览",
+    noRecentFailures: "没有最近失败记录", qualityScores: "最近 7 天供应商质量评分", date: "日期", totalScore: "综合评分",
+    availabilityScore: "可用性评分", stabilityScore: "稳定性评分", noQualityScores: "暂无质量评分",
   },
   models: {
     title: "Modèles ({n})",

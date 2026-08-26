@@ -134,7 +134,7 @@ function roleTone(role: unknown): string {
   padding: 8px 10px;
   border-radius: 6px;
   border-left: 3px solid var(--border);
-  background: var(--bg-subtle, var(--overlay-light));
+  background: var(--bg-subtle, var(--surface-secondary));
 }
 .msg-block--user { border-left-color: var(--info, #2563eb); background: color-mix(in srgb, var(--info, #2563eb) 7%, transparent); }
 .msg-block--assistant { border-left-color: var(--success, #16a34a); background: color-mix(in srgb, var(--success, #16a34a) 7%, transparent); }

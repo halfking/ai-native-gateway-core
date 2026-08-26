@@ -29,8 +29,11 @@ func TestPopularModelsHotSQL_TargetsHotTable(t *testing.T) {
 	if !strings.Contains(popularModelsHotSQL, "$1") {
 		t.Fatalf("popularModelsHotSQL must parameterize the cutoff timestamp for plan-time binding:\n%s", popularModelsHotSQL)
 	}
-	if got, want := popularModelsHotCutoffWindow, 7*24*time.Hour; got != want {
-		t.Fatalf("popularModelsHotCutoffWindow = %s, want %s", got, want)
+	if got, want := popularModelsLookupWindow(), 7*24*time.Hour; got != want {
+		t.Fatalf("popularModelsLookupWindow() = %s, want %s", got, want)
+	}
+	if !strings.Contains(popularModelsHotSQL, "rl.tenant_id = $2") {
+		t.Fatalf("popularModelsHotSQL must tenant-filter scoped lookups:\n%s", popularModelsHotSQL)
 	}
 }
 
@@ -47,12 +50,12 @@ func TestRecentlyUsedPopularModels_ReadsZSET(t *testing.T) {
 
 	// Simulate three recent successful requests hitting different
 	// canonical models. gpt-4o is bumped twice to confirm ZINCRBY.
-	RecordRecentlyUsedModel(ctx, rdb, "gpt-4o", false)
-	RecordRecentlyUsedModel(ctx, rdb, "gpt-4o", false)
-	RecordRecentlyUsedModel(ctx, rdb, "claude-3-5-sonnet", false)
-	RecordRecentlyUsedModel(ctx, rdb, "gemini-2.5-pro", false)
+	RecordRecentlyUsedModel(ctx, rdb, "tenant-a", "gpt-4o", false)
+	RecordRecentlyUsedModel(ctx, rdb, "tenant-a", "gpt-4o", false)
+	RecordRecentlyUsedModel(ctx, rdb, "tenant-a", "claude-3-5-sonnet", false)
+	RecordRecentlyUsedModel(ctx, rdb, "tenant-a", "gemini-2.5-pro", false)
 
-	got := recentlyUsedPopularModels(ctx, rdb, 10)
+	got := recentlyUsedPopularModels(ctx, rdb, "tenant-a", 10)
 	if len(got) != 3 {
 		t.Fatalf("expected 3 entries, got %d: %+v", len(got), got)
 	}
@@ -77,12 +80,12 @@ func TestRecordRecentlyUsedModel_ProbeGate(t *testing.T) {
 
 	ctx := context.Background()
 
-	RecordRecentlyUsedModel(ctx, rdb, "gpt-4o", true)       // probe - must not write
-	RecordRecentlyUsedModel(ctx, rdb, "", false)            // empty - must not write
-	RecordRecentlyUsedModel(ctx, rdb, "  unknown  ", false) // "unknown" - must not write
-	RecordRecentlyUsedModel(ctx, rdb, "claude-3-5-sonnet", false)
+	RecordRecentlyUsedModel(ctx, rdb, "tenant-a", "gpt-4o", true)       // probe - must not write
+	RecordRecentlyUsedModel(ctx, rdb, "tenant-a", "", false)            // empty - must not write
+	RecordRecentlyUsedModel(ctx, rdb, "tenant-a", "  unknown  ", false) // "unknown" - must not write
+	RecordRecentlyUsedModel(ctx, rdb, "tenant-a", "claude-3-5-sonnet", false)
 
-	got := recentlyUsedPopularModels(ctx, rdb, 10)
+	got := recentlyUsedPopularModels(ctx, rdb, "tenant-a", 10)
 	if len(got) != 1 || got[0].CanonicalName != "claude-3-5-sonnet" {
 		t.Fatalf("probe / empty / unknown calls must be filtered out, got %+v", got)
 	}
@@ -94,8 +97,8 @@ func TestRecordRecentlyUsedModel_ProbeGate(t *testing.T) {
 func TestRecordRecentlyUsedModel_NilClientSafe(t *testing.T) {
 	ctx := context.Background()
 	// Both must not panic.
-	RecordRecentlyUsedModel(ctx, nil, "gpt-4o", false)
-	if got := recentlyUsedPopularModels(ctx, nil, 10); got != nil {
+	RecordRecentlyUsedModel(ctx, nil, "tenant-a", "gpt-4o", false)
+	if got := recentlyUsedPopularModels(ctx, nil, "tenant-a", 10); got != nil {
 		t.Fatalf("recentlyUsedPopularModels(nil) must return nil, got %+v", got)
 	}
 }
@@ -111,9 +114,9 @@ func TestRecordRecentlyUsedModel_TTLRefreshed(t *testing.T) {
 	t.Cleanup(func() { _ = rdb.Close() })
 
 	ctx := context.Background()
-	RecordRecentlyUsedModel(ctx, rdb, "gpt-4o", false)
+	RecordRecentlyUsedModel(ctx, rdb, "tenant-a", "gpt-4o", false)
 
-	ttl1, err := rdb.TTL(ctx, recentlyUsedModelsKey).Result()
+	ttl1, err := rdb.TTL(ctx, recentlyUsedModelsKey("tenant-a")).Result()
 	if err != nil {
 		t.Fatalf("TTL read: %v", err)
 	}
@@ -123,9 +126,9 @@ func TestRecordRecentlyUsedModel_TTLRefreshed(t *testing.T) {
 
 	// Advance miniredis clock and write again; TTL should reset to max.
 	mr.FastForward(2 * time.Hour)
-	RecordRecentlyUsedModel(ctx, rdb, "gpt-4o", false)
+	RecordRecentlyUsedModel(ctx, rdb, "tenant-a", "gpt-4o", false)
 
-	ttl2, err := rdb.TTL(ctx, recentlyUsedModelsKey).Result()
+	ttl2, err := rdb.TTL(ctx, recentlyUsedModelsKey("tenant-a")).Result()
 	if err != nil {
 		t.Fatalf("TTL read after refresh: %v", err)
 	}
@@ -136,6 +139,44 @@ func TestRecordRecentlyUsedModel_TTLRefreshed(t *testing.T) {
 	// refresh the value should equal the configured window.
 	if ttl2 != RecentlyUsedModelsTTL {
 		t.Fatalf("TTL after refresh should equal %s, got %s", RecentlyUsedModelsTTL, ttl2)
+	}
+}
+
+func TestRecentlyUsedPopularModels_IsolatesTenants(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = rdb.Close() })
+
+	ctx := context.Background()
+	RecordRecentlyUsedModel(ctx, rdb, "tenant-a", "gpt-4o", false)
+	RecordRecentlyUsedModel(ctx, rdb, "tenant-b", "claude-3-5-sonnet", false)
+	RecordRecentlyUsedModel(ctx, rdb, "", "must-not-write", false)
+
+	gotA := recentlyUsedPopularModels(ctx, rdb, "tenant-a", 10)
+	gotB := recentlyUsedPopularModels(ctx, rdb, "tenant-b", 10)
+	if len(gotA) != 1 || gotA[0].CanonicalName != "gpt-4o" {
+		t.Fatalf("tenant-a models = %+v", gotA)
+	}
+	if len(gotB) != 1 || gotB[0].CanonicalName != "claude-3-5-sonnet" {
+		t.Fatalf("tenant-b models = %+v", gotB)
+	}
+	if got := recentlyUsedPopularModels(ctx, rdb, "", 10); got != nil {
+		t.Fatalf("all-tenant recent models must not use a global key: %+v", got)
+	}
+}
+
+func TestPopularModelsLookupWindow(t *testing.T) {
+	t.Setenv(popularModelsLookupHoursEnv, "24")
+	if got := popularModelsLookupWindow(); got != 24*time.Hour {
+		t.Fatalf("24h override = %s", got)
+	}
+	t.Setenv(popularModelsLookupHoursEnv, "invalid")
+	if got := popularModelsLookupWindow(); got != defaultPopularModelsLookupWindow {
+		t.Fatalf("invalid override = %s", got)
+	}
+	t.Setenv(popularModelsLookupHoursEnv, "0")
+	if got := popularModelsLookupWindow(); got != defaultPopularModelsLookupWindow {
+		t.Fatalf("zero override = %s", got)
 	}
 }
 

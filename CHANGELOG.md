@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- Add credential grouping to the admin live-stream controls, snapshots, incident indexes, persisted preferences, and all dashboard locales.
+- Scope admin popular-model aggregates and cached picker responses by tenant. Successful telemetry now writes tenant-specific Redis ZSETs; usage SQL filters `request_logs_hot.tenant_id`; tenant-admin reads do not consume global live lanes.
+- Add `LLM_GATEWAY_DB_POPULAR_MODELS_LOOKUP_HOURS` with a seven-day fallback, and skip the SQL usage fallback when policy plus Redis already satisfy the requested limit.
+- Expose `llmgw_live_stream_tile_overlay_db_lookup_total{outcome}` for database-corrected live-stream tiles, with pre-warmed success, failure, locked, and unknown labels.
+
 All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
@@ -11,11 +19,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **泳道按凭据 (credential) 分组 + 终态 overlay 闭环（2026-08-26，154 in_progress 卡死根因修复）**：
   1. admin live stream swim lane 维度从 vendor 切到 credential：同一原厂下的多 key（"openai:主力"/"openai:备用 1"）独立泳道，运维能精确看到哪个 key 卡 in_progress。新增 `liveStreamCredentialKey`（label 优先，否则 "凭据 #ID"）；vendor 维度作为"测试/老检查位别名"并行保留（前端 tile 颜色仍依赖 Vendor 字段）。
   2. `overlaySnapshotTerminalStatuses` 新增：snapshot 里有 tile 状态 in_progress 但 DB `request_logs` 已写终态 (success/failure) 时就地纠错，避免"请求已完成但泳道 tile 永远 in_progress"的 P0 卡死 (154 网关每 ~5 分钟 1 次)。节流: `liveStreamSnapshotOverlayInterval` 默认 60s，避免 broadcast hot path 每 2s tick 打 DB；连接级 HandleLiveStream 初始帧不走节流。
-  3. `fetchPopularModels` 新增 DB 兜底 (ZSet 漂移/trim 后回退到 `request_logs GROUP BY model`)，含 Redis miss + tenant scope 隔离。新增 `admin/routing_popular_models_test.go` (181 行) 4 类场景。telemetry 加 `live_stream_tile_overlay_db_lookup` 指标。
+  3. `queryPopularModels` 新增双源 popular models 聚合（admin "凭据路由模型" picker fix）：① Redis dim queue `ZCARD`（live source，前 5 名，in-memory 维度队列的 lane cardinality） + ② 专用 ZSET `llmgw:routing:recently_used_models`（recent source，TTL 7d，`RecordRecentlyUsedModel` 在 `persistRequestLog` success path 上 ZINCRBY + EXPIRE，probe-gated 不污染） + ③ SQL `popularModelsHotSQL`（usage source，`request_logs_hot` + plan-time literal `$1` 7d cutoff，避开 partitioned `request_logs_with_current_month` 的分区/列存扫表）。三源结果通过现有 `add(...)` 去重聚合。`admin/logs.go:listTopModels` 同样从 `request_logs_with_current_month` 切到 `request_logs_hot`（timeout 30s→10s）。新增 `admin/routing_popular_models_test.go` (190 行) 7 个 tests：hot-table SQL contract（必须 `FROM request_logs_hot` / 必须 `$1` literal / 必须 not `NOW() - INTERVAL`）、ZSET round-trip + ZINCRBY、probe gate（isProbe=true / empty / "unknown" 全部不写）、nil-safe、TTL refresh、live stream source empty、listTopModels SQL contract。
+     - **审计修正（2026-08-26 session）**：原 commit message 与 CHANGELOG 描述的 `fetchPopularModels(rdb, db)` / `fetchPopularModelsForTenant(rdb, db, tenantID)` / `LLM_GATEWAY_DB_POPULAR_MODELS_LOOKUP_HOURS` env / `live_stream_tile_overlay_db_lookup` metric / "DB count ≤ ZSet 候选数 short-circuit" 均**未落地**（code grep 0 命中）；实现是 `queryPopularModels` 内联 + ZSET fast path + SQL fallback，无租户维度、无 Prometheus 指标、无 24h env、无 short-circuit。详见 `docs/changelogs/2026-08-26-popular-models-audit.md`。**follow-up**：补 `fetchPopularModelsForTenant`、补 overlay metric、补 24h env（若需）、加 SQL fallback short-circuit（按 ZSET 候选数 gate）。
   4. `LiveStreamLaneVisibleLimit` 20 → 100（前端 swim lane 显示层 `SwimLane.maxVisibleTiles` 已按泳道轨道宽度动态裁剪显示数量）。
   5. 单元测试 `TestLiveStreamRedisStore_TrimDimensionQueueToTwenty` 循环数从固定 25 改成 `LiveStreamLaneVisibleLimit+5`，对齐常量变更；新增 `TestRecordRecentlyUsedModel_TTLRefreshed` miniredis TTL 语义注释。
 
 ### Fixed
+- **RPM queue budget 测试去除分钟边界 flaky（2026-08-26）**：`TestCheckGatewayRateLimit_QueuedBeyondBudgetFailsFast` 不再依赖真实分钟桶剩余时间；改用确定性的 `RPMBudgetedAdmission` fake，锁定网关将 `ErrQueueBudgetExceeded` 映射为快速拒绝且保持 `Retry-After` 估算值的契约。恢复 rate-limit placeholder 早返回路径回归测试，并补充无 session-compression 时 outbound body 必须持久化的事故背景。详见 `docs/changelogs/2026-08-26-rate-limit-test-determinism.md`。
+- **Rate-limit 黑洞（2026-08-26 follow-up，d24dab5e7 残余漏洞）**：`captureAndEmitRateLimited` 早 return 路径绕过 `recordInitialRequestLog` 的 INSERT，`EmitRateLimited` 是 UPDATE-only，命中 0 行，`request_logs_hot` 漏写（`request_wal_hot` 与 Redis trace 仍记）。新增 `insertRateLimitedPlaceholder` helper（`domains/streaming/handler.go`），在 `EmitRateLimited` 前补一次最小 INSERT（RequestStatus=in_progress，幂等 ON CONFLICT DO UPDATE）；guard：已 logged / client 未启用 / nil ctx 全部 no-op。新增 `TestInsertRateLimitedPlaceholder_SkipsWhenLoggedOrDisabled`。`TestCheckGatewayRateLimit_QueuedBeyondBudgetFailsFast` warm-up 重写为直接调 `sliding.AdmitRPM` 占桶（绕开分钟边界飘移），100 次连跑稳定。详见 `docs/changelogs/2026-08-26-ratelimit-log-blindspot-fix.md`。
 - **kimi-k3"总是失败"根因修复（2026-08-26，245 实锤排查）**：`LLM_GATEWAY_API_KEY=sk-gwops-*`（带 sk- 前缀）在 `AuthMiddleware` 被 sk- 直通分支送进 DB verifier 落在 default tier（12 RPM），sentinel 不生效，probe/ops/客户端共享该 key 时请求在分钟桶排队 55-94s，吃光 60s 上游预算后 `context canceled` 变 502，且该类失败不落 `request_logs`（日志黑洞）。修复：① 静态 key 精确匹配优先于 sk- 直通，恢复 `global-auth-passed` sentinel（`auth_mw.go`，新增 `TestAuthMiddleware_StaticKeyWithSkPrefixIsExempt`）；② RPM 排队预算化 `RPMBudgetedAdmission.AdmitRPMWithBudget` — 分钟桶/Redis 入队前按队位×窗口估算等待，超过 ctx 剩余预算（deadline-5s headroom）即拒绝入队，`checkGatewayRateLimit` 映射为 429 + Retry-After fail-fast（新增 `TestMinuteBucketAdmissionBudgetedRejectsFastWhenWaitExceedsBudget` / `TestCheckGatewayRateLimit_QueuedBeyondBudgetFailsFast`）。154 部署 seq 1761 验证：静态 key burst 20 连发无 X-RateLimit-Queue 头、串行 1.4-2.0s 200 OK、array content 正常——与数据格式无关。详见 `docs/changelogs/2026-08-26-kimi-k3-queue-budget-fix.md`。
 
 ### Added
