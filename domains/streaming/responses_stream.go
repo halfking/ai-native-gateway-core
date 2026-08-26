@@ -18,6 +18,14 @@ import (
 func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture) (outcome StreamOutcome) {
 	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
+	// Hoist gate above the panic-recovery defer so the recover closure can see
+	// it: a panic after the client already saw semantic output must not be
+	// classified as transparently resumable (would duplicate client-visible
+	// content). Mirrors responses_bridge.go (commit 485f3ca2e). gate stays nil
+	// until wrapAttemptWriter assigns it; attemptHasClientSemanticOutput(nil,
+	// 0) returns false so the not-yet-wired case degrades to resumable, the
+	// legacy behaviour.
+	var gate *AttemptCommitGate
 	defer func() {
 		if r := recover(); r != nil {
 			slog.Error("responses stream panic recovered", "panic", r, "stack", string(debug.Stack()), "request_id", requestID)
@@ -27,13 +35,14 @@ func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 			outcome.Interrupted = true
 			outcome.Reason = "stream_panic"
 			outcome.Kind = errorsx.KindUpstreamDown
+			outcome.Resumable = !attemptHasClientSemanticOutput(gate, 0)
 		}
 	}()
 	runtimeCfg := currentStreamRuntimeConfig()
 
 	// SR-W1: route client frames through the attempt commit gate.
 	// Disabled (default) this is the identity function — legacy wire bytes.
-	w, gate := wrapAttemptWriter(w, ProtocolOpenAIResponses)
+	w, gate = wrapAttemptWriter(w, ProtocolOpenAIResponses)
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)
@@ -51,7 +60,10 @@ func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 		if capture != nil {
 			capture.MarkInterruptedWithReason("client_write_failed")
 		}
-		return StreamOutcome{Interrupted: true, Reason: "client_write_failed", Kind: errorsx.KindCanceled, Resumable: true}
+		// Client connection is dead before any frame — including headers —
+		// reaches the wire. A transparent retry would re-attempt the same
+		// header flush on the same dead connection, wasting an upstream call.
+		return StreamOutcome{Interrupted: true, Reason: "client_write_failed", Kind: errorsx.KindCanceled, Resumable: false}
 	}
 
 	respID := "resp_"
@@ -143,6 +155,7 @@ func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 		outcome.Interrupted = true
 		outcome.Reason = "first_byte_timeout"
 		outcome.Kind = errorsx.KindStreamTimeout
+		outcome.Resumable = !attemptHasClientSemanticOutput(gate, 0)
 		return outcome
 	}
 
@@ -282,6 +295,12 @@ func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 					writeResponsesIncomplete(w, flusher, respID, msgID, createdAt, clientModel, fullText, failure.Reason)
 				}
 				outcome = failure
+				// Gate-aware resumability. streamReadFailureOutcome hardcodes
+				// Resumable=true; a read failure after the client already saw
+				// semantic output must NOT be transparently retried — the next
+				// supplier node would duplicate committed bytes. Mirrors the
+				// eof_without_done and stream_timeout branches above.
+				outcome.Resumable = !attemptHasClientSemanticOutput(gate, chunkCount)
 				return outcome
 			}
 		}

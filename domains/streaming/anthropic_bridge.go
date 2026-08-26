@@ -155,11 +155,17 @@ func StreamAnthropicPassthroughWithDiagnostics(
 	defer func() {
 		if finisher, ok := w.(interface{ Finish() error }); ok {
 			if err := finisher.Finish(); err != nil && !outcome.Interrupted {
+				// Client connection is dead by the time Finish() fails. A
+				// transparent retry would attempt to write headers to the
+				// same dead connection, wasting an upstream call. We
+				// deliberately do not consult the gate here: regardless of
+				// whether semantic output was committed, the new attempt
+				// cannot reach the dead client.
 				outcome = StreamOutcome{
 					Interrupted: true,
 					Reason:      "client_write_failed",
 					Kind:        errorsx.KindCanceled,
-					Resumable:   true,
+					Resumable:   false,
 					ChunkCount:  outcome.ChunkCount,
 				}
 				if capture != nil {
@@ -187,7 +193,10 @@ func StreamAnthropicPassthroughWithDiagnostics(
 		if pc != nil {
 			pc.markInterrupted("client_write_failed")
 		}
-		return StreamOutcome{Interrupted: true, Reason: "client_write_failed", Kind: errorsx.KindCanceled, Resumable: true}
+		// Client connection is dead before any frame — including headers —
+		// reaches the wire. A transparent retry would re-attempt the same
+		// header flush on the same dead connection, wasting an upstream call.
+		return StreamOutcome{Interrupted: true, Reason: "client_write_failed", Kind: errorsx.KindCanceled, Resumable: false}
 	}
 
 	reader := bufio.NewReaderSize(resp.Body, anthropicSSEBufSize)
@@ -276,7 +285,12 @@ func StreamAnthropicPassthroughWithDiagnostics(
 			if errors.Is(err, context.Canceled) || (ctx != nil && errors.Is(ctx.Err(), context.Canceled)) {
 				outcome = StreamOutcome{Interrupted: true, Reason: "client_cancel", Kind: errorsx.KindCanceled, Resumable: false, ChunkCount: chunkCount}
 			} else if errors.Is(err, context.DeadlineExceeded) || strings.Contains(strings.ToLower(err.Error()), "stream read timeout") {
-				outcome = StreamOutcome{Interrupted: true, Reason: "stream_chunk_timeout", Kind: errorsx.KindStreamTimeout, Resumable: true, ChunkCount: chunkCount}
+				// Gate-aware resumability. Mirrors the eof_without_done,
+				// stream_timeout, and upstream_error branches in this
+				// function: a chunk timeout after the client already saw
+				// semantic output must NOT be transparently retried — the
+				// next supplier node would duplicate committed bytes.
+				outcome = StreamOutcome{Interrupted: true, Reason: "stream_chunk_timeout", Kind: errorsx.KindStreamTimeout, Resumable: !attemptHasClientSemanticOutput(attemptGate, chunkCount), ChunkCount: chunkCount}
 			} else {
 				outcome = streamReadFailureOutcome(err, chunkCount)
 			}
@@ -619,7 +633,10 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 		if pc != nil {
 			pc.markInterrupted("client_write_failed")
 		}
-		return StreamOutcome{Interrupted: true, Reason: "client_write_failed", Kind: errorsx.KindCanceled, Resumable: true}
+		// Client connection is dead before any frame — including headers —
+		// reaches the wire. A transparent retry would re-attempt the same
+		// header flush on the same dead connection, wasting an upstream call.
+		return StreamOutcome{Interrupted: true, Reason: "client_write_failed", Kind: errorsx.KindCanceled, Resumable: false}
 	}
 
 	chatID := "chatcmpl-" + requestID
@@ -814,6 +831,13 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 			}
 			failure := streamReadFailureOutcome(err, chunkCount)
 			outcome = failure
+			// Gate-aware resumability. streamReadFailureOutcome hardcodes
+			// Resumable=true; a read failure after the client already saw
+			// semantic output must NOT be transparently retried — the next
+			// supplier node would duplicate committed bytes. Mirrors the
+			// eof_without_done, stream_timeout, and stream_chunk_timeout
+			// branches in this function.
+			outcome.Resumable = !attemptHasClientSemanticOutput(gate, chunkCount)
 			if capture != nil {
 				capture.MarkInterruptedWithReason(failure.Reason)
 			}
