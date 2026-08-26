@@ -17,10 +17,10 @@
 | Item              | 252 source                | local target              | Status |
 |-------------------|---------------------------|---------------------------|--------|
 | PG user           | `llm_gateway`             | `llm_gateway`             | ✓ MATCH |
-| PG password       | `4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg` | (now same, persisted via env) | ✓ SYNCED |
+| PG password       | `<env:COMMON_PG_SUPERUSER_PASS>` | (now same, persisted via env) | ✓ SYNCED |
 | PG database       | `llm_gateway`             | `llm_gateway`             | ✓ MATCH |
 
-来源：`envs/common/database.yaml` (`COMMON_PG_SUPERUSER_PASS`)
+来源：`envs/common/database.yaml` (`<env:COMMON_PG_SUPERUSER_PASS>`)
 
 ## 3. Schema 对比
 
