@@ -71,8 +71,8 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/notification"                        //nolint:depguard // 审批通知器
 	"github.com/kaixuan/llm-gateway-go/domains/providerprofile"                     //nolint:depguard // 供应商画像告警 handler (AlertType)
 	"github.com/kaixuan/llm-gateway-go/domains/quotafetcher"                        //nolint:depguard // P1 proactive upstream quota prefetch
-	"github.com/kaixuan/llm-gateway-go/domains/requestjourney"                      //nolint:depguard // request lifecycle observation
 	"github.com/kaixuan/llm-gateway-go/domains/requestdetail"                       //nolint:depguard // in-flight request content store
+	"github.com/kaixuan/llm-gateway-go/domains/requestjourney"                      //nolint:depguard // request lifecycle observation
 	"github.com/kaixuan/llm-gateway-go/domains/routeincident"                       //nolint:depguard // 2026-07-13 route incident diagnosis (Phase 1)
 	"github.com/kaixuan/llm-gateway-go/domains/routingstate"
 	"github.com/kaixuan/llm-gateway-go/domains/session" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -1781,11 +1781,11 @@ func main() {
 		// 回收其订阅 channel。
 		gatewayActionBridge = streaming.NewActionBridge(streaming.ActionBridgeConfig{
 			Enabled:                  false, // 灰阶：运营开关打开前一根思考帧都不发
-			Registry:                connectionRegistry,
-			Source:                  streaming.EmitterActionSource{Emitter: gatewayLiveActionsEmitter, BufferSize: 0},
-			BufferSize:              256,
+			Registry:                 connectionRegistry,
+			Source:                   streaming.EmitterActionSource{Emitter: gatewayLiveActionsEmitter, BufferSize: 0},
+			BufferSize:               256,
 			SemanticFrameClientTypes: nil,
-			Hot:                     executorHotConfig,
+			Hot:                      executorHotConfig,
 		})
 		slog.Info("action_bridge: wired (disabled by default; enable via llmgw_action_bridge_enabled)",
 			"hot_config", executorHotConfig != nil)
@@ -3806,6 +3806,13 @@ func main() {
 		// channel that no consumer ever drains.
 		admin.StartIngester(dbConn.Pool())
 		defer admin.StopIngester()
+		// 2026-08-26: wire the telemetry ingester's Redis client so the
+		// request hot path can bump llmgw:routing:recently_used_models
+		// (the admin "凭据路由模型" picker fast path). Safe no-op when
+		// the cluster Redis client is unavailable.
+		if redisClientForCache != nil {
+			admin.SetIngesterRedisClient(redisClientForCache.Client())
+		}
 		slog.Info("CHECKPOINT: after StartIngester")
 		// 2026-06-27: 启动审批超时扫描 worker。approvalMgr 在前面
 		// 已通过 adminHandler.SetApprovalManager 注入；这里直接构造 worker

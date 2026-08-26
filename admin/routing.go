@@ -32,6 +32,7 @@ import (
 	met "github.com/kaixuan/llm-gateway-go/metrics" //nolint:depguard // routing credential observability counters
 	"github.com/kaixuan/llm-gateway-go/modelname"
 	"github.com/kaixuan/llm-gateway-go/provider"
+	"github.com/redis/go-redis/v9"
 )
 
 type routingHandler struct { //nolint:unused
@@ -551,10 +552,10 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 	// ensureScopeRevision / ensureCanonicalScopeRevision seeds version=1 so
 	// drag-and-drop stays available.
 	var (
-		reorderRevision       string
-		reorderCanonicalID    int64
-		reorderRawModel       string
-		respCanonicalIDValue  *int64
+		reorderRevision      string
+		reorderCanonicalID   int64
+		reorderRawModel      string
+		respCanonicalIDValue *int64
 	)
 	if len(candidates) > 0 {
 		if firstCanonical, ok := singleCanonicalForRevision(candidates); ok {
@@ -2548,8 +2549,186 @@ type popularModelEntry struct {
 	Count         *int   `json:"count,omitempty"`
 }
 
+// popularModelsHotCutoffWindow is how far back we look in request_logs_hot
+// for "popular models" suggestions. request_logs_hot is the hot standalone
+// table (rule 33 / migration 341) — older rows are migrated nightly into
+// the monthly partitioned request_logs table by promote_request_logs_hot_to_partition.
+// Querying request_logs_hot directly avoids the columnar monthly partitions
+// that the previous request_logs_with_current_month UNION dragged in.
+const popularModelsHotCutoffWindow = 7 * 24 * time.Hour
+
+// popularModelsHotSQL returns up to 10 (model_key, count) rows from
+// request_logs_hot covering the last popularModelsHotCutoffWindow.
+//
+// The cutoff is passed as a plan-time literal ($1) computed in Go so the
+// hot-table scan is bounded by an index range on (ts) rather than the
+// previous `NOW() - INTERVAL '7 days'` predicate that could not prune
+// against the partitioned parent view.
+const popularModelsHotSQL = `
+SELECT model_key, cnt FROM (
+    SELECT
+        COALESCE(mc.canonical_name, mc2.canonical_name, rl.client_model) AS model_key,
+        COUNT(*) AS cnt
+    FROM request_logs_hot rl
+    LEFT JOIN models_canonical mc ON mc.id = rl.canonical_id
+    LEFT JOIN LATERAL (
+        SELECT canonical_id
+        FROM model_aliases
+        WHERE raw_name = lower(rl.client_model)
+          AND status = 'active'
+        LIMIT 1
+    ) ma ON TRUE
+    LEFT JOIN models_canonical mc2 ON mc2.id = ma.canonical_id
+    WHERE rl.ts >= $1
+      AND rl.success = TRUE
+      AND rl.client_model IS NOT NULL AND rl.client_model != ''
+    GROUP BY model_key
+) u
+ORDER BY cnt DESC
+LIMIT 10`
+
+// livePopularModels queries Redis for "currently accessed models" using the
+// live-stream dimension queues indexed at llmgw:live:dim:index:global.
+// Each lane queue key llmgw:live:dim:model:<normalized> has ZSET members
+// (one per recent request-id in that lane). ZCARD is a cheap O(1) proxy
+// for "currently in flight / recently active". Results are returned sorted
+// by cardinality desc, capped at topLivePopularLimit.
+//
+// This is the fast path that lets the dashboard's "凭据路由模型" picker
+// surface *what is being routed right now* without touching the request_logs
+// tables at all. Best-effort: errors are swallowed and an empty slice
+// is returned so callers fall back to the SQL path.
+func livePopularModels(ctx context.Context, rdb *redis.Client, limit int) []popularModelEntry {
+	if rdb == nil || limit <= 0 {
+		return nil
+	}
+	keys, err := rdb.SMembers(ctx, liveStreamDimIndexKey("", true)).Result()
+	if err != nil || len(keys) == 0 {
+		return nil
+	}
+	const dimModelPrefix = liveStreamDimPrefix + "model:"
+	type modelCount struct {
+		name  string
+		count int64
+	}
+	bucket := make([]modelCount, 0, len(keys))
+	for _, key := range keys {
+		if !strings.HasPrefix(key, dimModelPrefix) {
+			continue
+		}
+		n, err := rdb.ZCard(ctx, key).Result()
+		if err != nil || n <= 0 {
+			continue
+		}
+		bucket = append(bucket, modelCount{
+			name:  strings.TrimPrefix(key, dimModelPrefix),
+			count: n,
+		})
+	}
+	if len(bucket) == 0 {
+		return nil
+	}
+	sort.Slice(bucket, func(i, j int) bool {
+		if bucket[i].count != bucket[j].count {
+			return bucket[i].count > bucket[j].count
+		}
+		return bucket[i].name < bucket[j].name
+	})
+	if len(bucket) > limit {
+		bucket = bucket[:limit]
+	}
+	out := make([]popularModelEntry, 0, len(bucket))
+	for _, b := range bucket {
+		c := int(b.count)
+		out = append(out, popularModelEntry{
+			CanonicalName: b.name,
+			DisplayName:   b.name,
+			Source:        "live",
+			Count:         &c,
+		})
+	}
+	return out
+}
+
+// recentlyUsedModelsKey is the dedicated Redis ZSET that records every
+// canonical model name hit by a real (non-probe) successful request over
+// the last RecentlyUsedModelsTTL. It is the primary fast path for the
+// "凭据路由模型" dashboard widget — O(log N) writes (ZINCRBY) on the
+// request hot path, O(log N + M) reads (ZREVRANGE) here.
+//
+// Why a dedicated key (vs the live-stream dim queue ZCARD used by
+// livePopularModels):
+//   - TTL exactly matches the 7-day hot-popular window, no extra
+//     "we measured 24h but the UI asks for 7d" drift.
+//   - Writes are gated on is_probe=false + success=true so node
+//     probes, model probes, and self-check tiles cannot pollute the
+//     ranking.
+//   - Score is the real request counter (not lane-queue cardinality
+//     which mixes real requests with idle markers and capped lanes).
+//   - Persistent across gateway restarts via AOF/RDB (lane queue
+//     contents live in process memory only).
+const (
+	recentlyUsedModelsKey   = "llmgw:routing:recently_used_models"
+	RecentlyUsedModelsTTL   = 7 * 24 * time.Hour
+	recentlyUsedModelsLimit = 10
+)
+
+// recentlyUsedPopularModels reads the top-N recently-used canonical model
+// names from the dedicated Redis ZSET. Best-effort: returns nil on any
+// Redis error so the caller falls back to the SQL path.
+func recentlyUsedPopularModels(ctx context.Context, rdb *redis.Client, limit int) []popularModelEntry {
+	if rdb == nil || limit <= 0 {
+		return nil
+	}
+	pairs, err := rdb.ZRevRangeWithScores(ctx, recentlyUsedModelsKey, 0, int64(limit-1)).Result()
+	if err != nil || len(pairs) == 0 {
+		return nil
+	}
+	out := make([]popularModelEntry, 0, len(pairs))
+	for _, p := range pairs {
+		name, _ := p.Member.(string)
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		c := int(p.Score)
+		out = append(out, popularModelEntry{
+			CanonicalName: name,
+			DisplayName:   name,
+			Source:        "recent",
+			Count:         &c,
+		})
+	}
+	return out
+}
+
+// RecordRecentlyUsedModel bumps the canonical model's score in the
+// recently-used ZSET and refreshes the key TTL. Safe to call from
+// the request hot path: errors are swallowed and reported through a
+// counter (no log spam per request).
+//
+// Probe / selfcheck / pre-flight requests must pass isProbe=false so
+// health-check traffic does not skew the dashboard ranking.
+func RecordRecentlyUsedModel(ctx context.Context, rdb *redis.Client, canonical string, isProbe bool) {
+	if rdb == nil || isProbe {
+		return
+	}
+	canonical = normalizeModelKey(canonical)
+	if canonical == "" || canonical == "unknown" {
+		return
+	}
+	pipe := rdb.Pipeline()
+	pipe.ZIncrBy(ctx, recentlyUsedModelsKey, 1, canonical)
+	pipe.Expire(ctx, recentlyUsedModelsKey, RecentlyUsedModelsTTL)
+	if _, err := pipe.Exec(ctx); err != nil {
+		// Best-effort: do not log per-request (would flood). A future
+		// counter hook (RecentlyUsedRedisErrors) can catch chronic issues.
+		_ = err
+	}
+}
+
 func (h *Handler) queryPopularModels(ctx context.Context, featuredModels []string, byCanonical map[string]*availableVersionEntry) []popularModelEntry {
-	popular := make([]popularModelEntry, 0, 20)
+	popular := make([]popularModelEntry, 0, 32)
 	seen := map[string]bool{}
 
 	add := func(canonical, display, source string, count *int) {
@@ -2583,30 +2762,24 @@ func (h *Handler) queryPopularModels(ctx context.Context, featuredModels []strin
 		add(n, n, "policy", nil)
 	}
 
-	usageRows, err := h.db.Query(ctx, `
-		SELECT model_key, cnt FROM (
-			SELECT
-				COALESCE(mc.canonical_name, mc2.canonical_name, rl.client_model) AS model_key,
-				COUNT(*) AS cnt
-			FROM request_logs_with_current_month rl
-			LEFT JOIN models_canonical mc ON mc.id = rl.canonical_id
-			LEFT JOIN LATERAL (
-				SELECT canonical_id
-				FROM model_aliases
-				-- 2026-07-14: model_aliases.raw_name is stored lowercase; compare directly.
-				WHERE raw_name = lower(rl.client_model)
-				  AND status = 'active'
-				LIMIT 1
-			) ma ON TRUE
-			LEFT JOIN models_canonical mc2 ON mc2.id = ma.canonical_id
-			WHERE rl.ts > NOW() - INTERVAL '7 days'
-			  AND rl.success = TRUE
-			  AND rl.client_model IS NOT NULL AND rl.client_model != ''
-			GROUP BY model_key
-		) u
-		ORDER BY cnt DESC
-		LIMIT 10
-	`)
+	// Live source: Redis dimension queues. Inserted before SQL so "currently
+	// accessed models" take precedence over the slower 7-day aggregate when
+	// the SQL path is cold / unavailable.
+	if rc, ok := h.redisClient.(*redis.Client); ok {
+		for _, live := range livePopularModels(ctx, rc, 5) {
+			add(live.CanonicalName, live.DisplayName, "live", live.Count)
+		}
+		// Recent source: dedicated recently-used ZSET (TTL 7d, real request
+		// counter, probe-gated). This is the primary fast path for the
+		// dashboard — covers the same window as the SQL aggregate but at
+		// Redis latency instead of a request_logs_hot scan.
+		for _, recent := range recentlyUsedPopularModels(ctx, rc, recentlyUsedModelsLimit) {
+			add(recent.CanonicalName, recent.DisplayName, "recent", recent.Count)
+		}
+	}
+
+	cutoff := time.Now().UTC().Add(-popularModelsHotCutoffWindow)
+	usageRows, err := h.db.Query(ctx, popularModelsHotSQL, cutoff)
 	if err == nil {
 		defer usageRows.Close()
 		for usageRows.Next() {
