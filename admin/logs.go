@@ -999,7 +999,18 @@ func (h *Handler) listTopModels(w http.ResponseWriter, r *http.Request) {
 	// 2026-08-25: 5s budget was too tight for wide time ranges — models_canonical
 	// LATERAL JOIN over request_logs_with_current_month scans all ATTACHED
 	// partitions including columnar. Extend to 30s to mirror listLogs/getLog.
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	//
+	// 2026-08-26 (this change): the top-models dashboard widget is a "recent
+	// hot models" view. It used request_logs_with_current_month, which is
+	// `request_logs_hot UNION ALL request_logs` — the parent monthly table
+	// brings every ATTACHED columnar partition into the scan even for a
+	// 72h window. Switch the source to request_logs_hot directly (heap,
+	// ~7 days retention by promote_request_logs_hot_to_partition). For
+	// ranges that exceed the hot-table window the widget sees fewer rows
+	// than before; that is acceptable because top-models is a "what is hot
+	// right now" surface and an older window would force the same columnar
+	// scan we are trying to avoid.
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
 	now := time.Now().UTC()
@@ -1019,7 +1030,7 @@ func (h *Handler) listTopModels(w http.ResponseWriter, r *http.Request) {
 			COALESCE(mc.canonical_name, mc2.canonical_name, rl.client_model) AS canonical_name,
 			COALESCE(mc.display_name, mc2.display_name, mc.canonical_name, mc2.canonical_name, rl.client_model) AS display_name,
 			COUNT(*) AS request_count
-		FROM request_logs_with_current_month rl
+		FROM request_logs_hot rl
 		LEFT JOIN models_canonical mc ON mc.id = rl.canonical_id
 		LEFT JOIN LATERAL (
 			SELECT canonical_id
@@ -1032,11 +1043,9 @@ func (h *Handler) listTopModels(w http.ResponseWriter, r *http.Request) {
 		LEFT JOIN models_canonical mc2 ON mc2.id = ma.canonical_id
 		WHERE rl.ts >= $1 AND rl.ts <= $2
 		  AND rl.client_model IS NOT NULL AND rl.client_model != ''
-		-- 2026-08-25: GROUP BY 必须用完整 COALESCE 表达式，不能用别名 canonical_id。
-		-- request_logs_with_current_month view 自身有 canonical_id 列（FK），与
-		-- SELECT 的别名冲突，触发 PostgreSQL "column reference 'canonical_id' is ambiguous"。
-		-- canonical_name / display_name 同理。Ordinal position (1,2,3) 也可行，
-		-- 但显式表达式对 review / 调式更友好。
+		-- 2026-08-25: GROUP BY must use full COALESCE expressions, not the
+		-- SELECT aliases (rl.canonical_id / canonical_name / display_name
+		-- collide with view columns and trigger "column reference is ambiguous").
 		GROUP BY COALESCE(mc.id, mc2.id),
 		         COALESCE(mc.canonical_name, mc2.canonical_name, rl.client_model),
 		         COALESCE(mc.display_name, mc2.display_name, mc.canonical_name, mc2.canonical_name, rl.client_model)
