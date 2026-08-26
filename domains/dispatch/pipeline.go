@@ -137,6 +137,7 @@ type Pipeline struct {
 	// value.
 	backendMu       sync.RWMutex
 	governorBackend GovernorBackend
+	policyMu        sync.Mutex
 
 	// snapshotObserver (Stage C.2): optional 100ms tick that walks the
 	// credForwarders map under credMu and emits a GovernorSnapshot per
@@ -167,6 +168,14 @@ type Pipeline struct {
 	// and SnapshotForCred fails open (ok=false).
 	credStateCacheMu sync.RWMutex
 	credStateCache   map[int]SnapshotState
+
+	// pendingGov (Stage F): per-cred Governor produced by ApplyPolicy but
+	// not yet attached to a live credForwarder. Consulted by
+	// getOrCreateForwarder under credMu so that a policy published BEFORE
+	// the first request creates a forwarder uses the spec-derived Governor
+	// instead of the CredentialRef snapshot. Map entry is deleted when the
+	// forwarder claims it.
+	pendingGov map[int]Governor
 }
 
 type observationItem struct {
@@ -265,6 +274,7 @@ func NewPipeline(deps Deps) *Pipeline {
 		forwarders:           make(map[int]*credForwarder),
 		snapshotAgeMS:        make(map[int]int64),
 		credStateCache:       make(map[int]SnapshotState),
+		pendingGov:           make(map[int]Governor),
 		stopCh:               make(chan struct{}),
 	}
 	cfg := DefaultConfig()
@@ -348,15 +358,25 @@ func (p *Pipeline) GovernorBackend() GovernorBackend {
 	return p.governorBackend
 }
 
-// governorForCredential uses Redis enforcement for all configured modes.
-func (p *Pipeline) governorForCredential(cred CredentialRef) Governor {
+// governorForCredential returns the live Governor for a credential.
+//
+// specRevision is the policy revision stamped onto the Redis-backed
+// GovernorSpec. Cold-start (newCredForwarder) passes p.ActiveRevision() so the
+// freshly constructed forwarder carries the currently-active revision;
+// ApplyPolicy passes pol.Revision so a hot-swapped Redis governor is tagged
+// with the revision the publisher will publish, not the previous one. Backend
+// failure is propagated as an ErrGovernorUnavailable-wrapped error so
+// ApplyPolicy can fail-closed (no swap, no revision advance);
+// newCredForwarder wraps this in a fail-open fallback so a transient Redis
+// outage cannot block the very first dispatch to a fresh forwarder.
+func (p *Pipeline) governorForCredential(cred CredentialRef, specRevision uint64) (Governor, error) {
 	backend := p.GovernorBackend()
 	mode := cred.ConcurrencyMode
 	if mode == "" {
 		mode = ModeConcurrency
 	}
 	if backend == nil || backend.Kind() != BackendRedisEnforce {
-		return newGovernor(cred)
+		return newGovernor(cred), nil
 	}
 	limit := cred.ConcurrencyLimit
 	if mode == ModeRPM {
@@ -365,21 +385,21 @@ func (p *Pipeline) governorForCredential(cred CredentialRef) Governor {
 		limit = cred.TPMLimit
 	}
 	if limit <= 0 || mode == ModeDisabled {
-		return newGovernor(cred)
+		return newGovernor(cred), nil
 	}
 
 	gov, err := backend.New(context.Background(), GovernorSpec{
 		CredentialID: cred.CredentialID,
 		ProviderID:   cred.ProviderID,
-		Mode:         ModeConcurrency,
+		Mode:         mode,
 		Limit:        limit,
 		RPMLimit:     cred.RPMLimit,
 		TPMLimit:     cred.TPMLimit,
 		Backend:      BackendRedisEnforce,
-		Revision:     p.ActiveRevision(),
+		Revision:     specRevision,
 	})
 	if err == nil && gov != nil {
-		return gov
+		return gov, nil
 	}
 	if err == nil {
 		err = errors.New("governor backend returned nil governor")
@@ -388,8 +408,9 @@ func (p *Pipeline) governorForCredential(cred CredentialRef) Governor {
 		"credential_id", cred.CredentialID,
 		"provider_id", cred.ProviderID,
 		"backend", backend.Kind(),
+		"revision", specRevision,
 		"error", err)
-	return unavailableGovernor{mode: mode, err: fmt.Errorf("%w: %w", ErrGovernorUnavailable, err)}
+	return nil, fmt.Errorf("%w: %w", ErrGovernorUnavailable, err)
 }
 
 // SetGovernorSnapshotObserver wires the optional C.2 snapshot observer.
@@ -420,11 +441,139 @@ func (p *Pipeline) SetGovernorSnapshotObserver(o *governorSnapshotObserver) {
 // revision. Stage E's policy_publisher calls this after a successful
 // ApplyPolicySnapshot; Stage C.2's observer reads it via
 // Pipeline.ActiveRevision. Safe before/after Start.
+//
+// NOTE: retained as an internal helper for tests / shadow-load
+// scenarios. Production code paths MUST go through Pipeline.ApplyPolicy
+// (Stage F) so that the active revision moves together with the
+// forwarder governor swap and the backend NotifyRevisions round-trip.
 func (p *Pipeline) SetActivePolicyRevision(rev uint64) {
 	if p == nil {
 		return
 	}
 	p.activePolicyRevision.Store(rev)
+}
+
+// ApplyPolicy is the Stage F live-path entry point for a new
+// GovernorPolicy. It is the production implementation behind
+// policy_applier.ApplyPolicySnapshot (policy_applier.go:17): a strictly-
+// monotonic revision stamps the new active policy; each spec rebuilds
+// the per-credential Governor and either swaps it on the live
+// credForwarder or queues it for the first forwarder construction.
+//
+// Backend wiring: when GovernorBackend is BackendRedisEnforce, the
+// backend's NotifyRevisions round-trip MUST succeed before any local
+// swap or revision stamp advance; otherwise the active revision stays
+// put so the next NOTIFY replays the same delta (mirrors the
+// publisher's Stage E fail-closed contract).
+//
+// Mode/limit derivation reuses governorForCredential so the same mode-
+// mapping rules govern cold-start and live-swap. Specs whose
+// CredentialID is not in the credentials table are still parsed; their
+// Governor is built from the spec alone, so a forwarder created later
+// for that ID picks up the spec-derived Governor via pendingGov.
+func (p *Pipeline) ApplyPolicy(ctx context.Context, pol GovernorPolicy) error {
+	if p == nil {
+		return errors.New("dispatch: nil pipeline")
+	}
+	p.policyMu.Lock()
+	defer p.policyMu.Unlock()
+	if pol.Revision == 0 {
+		return errors.New("dispatch: ApplyPolicy revision must be > 0")
+	}
+	current := p.activePolicyRevision.Load()
+	if pol.Revision <= current {
+		// No-op per the ApplyPolicySnapshot contract: same-or-older
+		// revisions mean the upstream publisher replayed a known delta.
+		return nil
+	}
+	backend := p.GovernorBackend()
+
+	// 1. Backend NotifyRevisions FIRST (fail-closed). We need the cluster-
+	// wide pubsub to acknowledge the new revision before any local swap so
+	// that a partial failure does not leave this process out of sync with
+	// its peers.
+	if backend != nil && backend.Kind() == BackendRedisEnforce {
+		if err := backend.NotifyRevisions(ctx, pol.Revision); err != nil {
+			return fmt.Errorf("dispatch: notify backend revision %d: %w", pol.Revision, err)
+		}
+	}
+
+	// 2. Build a credentialID -> Governor map from the new specs. Specs
+	// without a matching live credForwarder are stashed in pendingGov so
+	// getOrCreateForwarder picks them up when the forwarder is finally
+	// constructed for that credential.
+	//
+	// Limit semantics: spec.Limit is mode-dependent (concurrency cap, RPM,
+	// or TPM). The canonical contract is one canonical limit per mode, so
+	// we route it into the corresponding CredentialRef field based on
+	// spec.Mode. When the publisher populates the mirror fields, the max
+	// of canonical-vs-mirror wins because a populated mirror is the
+	// upstream-declared value (e.g. RPM mirrors TPM when publisher has a
+	// richer view).
+	newGovByCredID := make(map[int]Governor, len(pol.Specs))
+	for _, spec := range pol.Specs {
+		cred := specToCredentialRef(spec)
+		gov, err := p.governorForCredential(cred, pol.Revision)
+		if err != nil {
+			// Fail-closed: any backend error leaves activePolicyRevision
+			// pinned and pendingGov untouched. The publisher's retry loop
+			// will replay the same policy delta on the next NOTIFY.
+			return fmt.Errorf("dispatch: build governor for credential %d: %w", spec.CredentialID, err)
+		}
+		newGovByCredID[spec.CredentialID] = gov
+	}
+
+	// 3. Swap on live credForwarders and queue the rest.
+	p.credMu.Lock()
+	for credID, newGov := range newGovByCredID {
+		if cf, ok := p.forwarders[credID]; ok {
+			cf.replaceGov(newGov)
+			continue
+		}
+		p.pendingGov[credID] = newGov
+	}
+	// 4. Stamp the active revision while forwarders remain locked so an
+	// observer cannot pair a new Governor with the old policy revision.
+	p.activePolicyRevision.Store(pol.Revision)
+	p.credMu.Unlock()
+	return nil
+}
+
+// specToCredentialRef derives the CredentialRef for a GovernorSpec.
+//
+// spec.Limit is mode-dependent: the canonical limit for the credential's
+// mode. RPMLimit/TPMLimit on the spec are upstream mirrors — when both are
+// populated we use the max so a richer upstream view wins, matching the
+// pre-Stage-F publisher behavior.
+//
+// This belongs in pipeline.go rather than governor_spec.go because it is
+// part of the policy-application contract, not the backend-call contract.
+func specToCredentialRef(spec GovernorSpec) CredentialRef {
+	cred := CredentialRef{
+		CredentialID:    spec.CredentialID,
+		ProviderID:      spec.ProviderID,
+		ConcurrencyMode: spec.Mode,
+	}
+	switch spec.Mode {
+	case ModeRPM:
+		cred.RPMLimit = spec.Limit
+		if spec.RPMLimit > cred.RPMLimit {
+			cred.RPMLimit = spec.RPMLimit
+		}
+		cred.TPMLimit = spec.TPMLimit
+	case ModeTPM:
+		cred.TPMLimit = spec.Limit
+		if spec.TPMLimit > cred.TPMLimit {
+			cred.TPMLimit = spec.TPMLimit
+		}
+		cred.RPMLimit = spec.RPMLimit
+	default:
+		// ModeConcurrency or ModeDisabled or empty (default concurrency).
+		cred.ConcurrencyLimit = spec.Limit
+		cred.RPMLimit = spec.RPMLimit
+		cred.TPMLimit = spec.TPMLimit
+	}
+	return cred
 }
 
 // ActiveRevision satisfies SnapshotProvider; returns the current
@@ -435,6 +584,8 @@ func (p *Pipeline) ActiveRevision() uint64 {
 	}
 	return p.activePolicyRevision.Load()
 }
+
+var _ ApplyPolicySnapshot = (*Pipeline)(nil)
 
 // SnapshotForCred satisfies SnapshotProvider. Reads from the
 // per-cred cache populated by ForEachCredSnapshot (and consumed by
@@ -550,10 +701,18 @@ func (p *Pipeline) snapshotForCredForwarderLocked(cf *credForwarder) GovernorSna
 	}
 	p.backendMu.RUnlock()
 
+	// Stage F: capture the Governor under govMu.RLock. The caller already
+	// holds credMu, so ordering is credMu -> govMu which matches the
+	// ApplyPolicy path (credMu -> govMu.Lock). Holding RLock for the type-
+	// switch block is fine: the observer tick is the only goroutine that
+	// walks forwarders in this way, and ApplyPolicy holds govMu.Lock for
+	// only the duration of the pointer assignment.
+	gov := cf.govLocked()
+
 	snap := GovernorSnapshot{
 		SpecRevision: p.activePolicyRevision.Load(),
 		Backend:      backendKind,
-		Mode:         cf.gov.Mode(),
+		Mode:         gov.Mode(),
 		Limit:        int(cf.limit),
 		InFlight:     int(cf.depth.Load()),
 		QueueDepth:   int(cf.depth.Load()),
@@ -564,7 +723,7 @@ func (p *Pipeline) snapshotForCredForwarderLocked(cf *credForwarder) GovernorSna
 	}
 	// Pull governor-specific "Used" counters without changing the
 	// Governor interface — type-assert on the four impls.
-	switch g := cf.gov.(type) {
+	switch g := gov.(type) {
 	case *concurrencyGovernor:
 		// Limit must be the concurrency cap (g.cap), NOT the Tier-2 queue
 		// depth (cf.limit, default 300). Comparing used vs queue depth made
@@ -1255,6 +1414,13 @@ func (p *Pipeline) getOrCreateForwarder(cred CredentialRef) *credForwarder {
 		depth = p.config().MaxQueueDepth
 	}
 	cf := newCredForwarder(cred, depth, p)
+	// Stage F: prefer the spec-derived Governor queued by an earlier
+	// ApplyPolicy over the CredentialRef snapshot. Fall back to the
+	// ref-derived Governor when no spec has been published yet.
+	if cached, ok := p.pendingGov[cred.CredentialID]; ok && cached != nil {
+		cf.replaceGov(cached)
+		delete(p.pendingGov, cred.CredentialID)
+	}
 	p.forwarders[cred.CredentialID] = cf
 	return cf
 }
