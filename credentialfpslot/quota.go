@@ -147,7 +147,7 @@ func (m *Manager) acquireRedisWithQuota(
 		sessionPinTTLSeconds,
 		m.cfg.resolveActiveGateSeconds(),
 		credentialID,
-		clientType,
+		normalizeMetricClientType(clientType),
 		quota.MaxFPSlots,
 		boolInt(quota.enforce(now)),
 		now.Unix(),
@@ -201,7 +201,7 @@ func (m *Manager) ActiveSlotCount(ctx context.Context, credentialID int, clientT
 	}
 	count, err := activeSlotCountScript.Run(ctx, m.client,
 		[]string{globalMetadataKey(credentialID)},
-		clientType,
+		normalizeMetricClientType(clientType),
 		time.Now().Unix(),
 	).Int64()
 	if err != nil {
@@ -213,11 +213,8 @@ func (m *Manager) ActiveSlotCount(ctx context.Context, credentialID int, clientT
 var activeSlotCountScript = redis.NewScript(`
 local meta = KEYS[1]
 local clientType = ARGV[1]
-local now = tonumber(ARGV[2])
-
 local function prune(key)
-    local exp = tonumber(redis.call('HGET', meta, key .. ':exp') or '0')
-    if exp > 0 and exp <= now then
+    if redis.call('EXISTS', key) == 0 then
         local oldType = redis.call('HGET', meta, key)
         if oldType then
             redis.call('HINCRBY', meta, oldType .. ':count', -1)
@@ -294,11 +291,11 @@ local entries = redis.call('HGETALL', meta)
 for i = 1, #entries, 2 do
     local slotKey = entries[i]
     local val = entries[i + 1]
-    if val and val ~= clientType then
-        local exp = tonumber(redis.call('HGET', meta, slotKey .. ':exp') or '0')
-        if exp > 0 and exp <= now then
-            forget(slotKey)
-        end
+    if val
+        and string.sub(slotKey, -4) ~= ':exp'
+        and string.sub(slotKey, -6) ~= ':count'
+        and redis.call('EXISTS', slotKey) == 0 then
+        forget(slotKey)
     end
 end
 
