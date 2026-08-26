@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **泳道按凭据 (credential) 分组 + 终态 overlay 闭环（2026-08-26，154 in_progress 卡死根因修复）**：
+  1. admin live stream swim lane 维度从 vendor 切到 credential：同一原厂下的多 key（"openai:主力"/"openai:备用 1"）独立泳道，运维能精确看到哪个 key 卡 in_progress。新增 `liveStreamCredentialKey`（label 优先，否则 "凭据 #ID"）；vendor 维度作为"测试/老检查位别名"并行保留（前端 tile 颜色仍依赖 Vendor 字段）。
+  2. `overlaySnapshotTerminalStatuses` 新增：snapshot 里有 tile 状态 in_progress 但 DB `request_logs` 已写终态 (success/failure) 时就地纠错，避免"请求已完成但泳道 tile 永远 in_progress"的 P0 卡死 (154 网关每 ~5 分钟 1 次)。节流: `liveStreamSnapshotOverlayInterval` 默认 60s，避免 broadcast hot path 每 2s tick 打 DB；连接级 HandleLiveStream 初始帧不走节流。
+  3. `fetchPopularModels` 新增 DB 兜底 (ZSet 漂移/trim 后回退到 `request_logs GROUP BY model`)，含 Redis miss + tenant scope 隔离。新增 `admin/routing_popular_models_test.go` (181 行) 4 类场景。telemetry 加 `live_stream_tile_overlay_db_lookup` 指标。
+  4. `LiveStreamLaneVisibleLimit` 20 → 100（前端 swim lane 显示层 `SwimLane.maxVisibleTiles` 已按泳道轨道宽度动态裁剪显示数量）。
+  5. 单元测试 `TestLiveStreamRedisStore_TrimDimensionQueueToTwenty` 循环数从固定 25 改成 `LiveStreamLaneVisibleLimit+5`，对齐常量变更；新增 `TestRecordRecentlyUsedModel_TTLRefreshed` miniredis TTL 语义注释。
+
 ### Fixed
 - **kimi-k3"总是失败"根因修复（2026-08-26，245 实锤排查）**：`LLM_GATEWAY_API_KEY=sk-gwops-*`（带 sk- 前缀）在 `AuthMiddleware` 被 sk- 直通分支送进 DB verifier 落在 default tier（12 RPM），sentinel 不生效，probe/ops/客户端共享该 key 时请求在分钟桶排队 55-94s，吃光 60s 上游预算后 `context canceled` 变 502，且该类失败不落 `request_logs`（日志黑洞）。修复：① 静态 key 精确匹配优先于 sk- 直通，恢复 `global-auth-passed` sentinel（`auth_mw.go`，新增 `TestAuthMiddleware_StaticKeyWithSkPrefixIsExempt`）；② RPM 排队预算化 `RPMBudgetedAdmission.AdmitRPMWithBudget` — 分钟桶/Redis 入队前按队位×窗口估算等待，超过 ctx 剩余预算（deadline-5s headroom）即拒绝入队，`checkGatewayRateLimit` 映射为 429 + Retry-After fail-fast（新增 `TestMinuteBucketAdmissionBudgetedRejectsFastWhenWaitExceedsBudget` / `TestCheckGatewayRateLimit_QueuedBeyondBudgetFailsFast`）。154 部署 seq 1761 验证：静态 key burst 20 连发无 X-RateLimit-Queue 头、串行 1.4-2.0s 200 OK、array content 正常——与数据格式无关。详见 `docs/changelogs/2026-08-26-kimi-k3-queue-budget-fix.md`。
 
