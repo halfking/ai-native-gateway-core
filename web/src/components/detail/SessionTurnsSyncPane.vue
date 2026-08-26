@@ -146,6 +146,7 @@ function selectChild(c: SessionChildRequest) {
       <ConversationMessagesPanel
         v-else
         :body="facet === 'assistant' ? responseBody : requestBody"
+        :response-body="facet === 'integrated' ? responseBody : undefined"
         :empty-hint="facet === 'integrated' ? '(无对话数据)' : `(无 ${facet} 消息)`"
       />
     </section>
