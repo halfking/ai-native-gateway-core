@@ -114,15 +114,13 @@ const trackWidth = ref(0)
 const MIN_VISIBLE_TILES = 1
 
 const maxVisibleTiles = computed(() => {
-  const total = props.lane.requests.length
-  // 2026-07-26: Return conservative estimate before measurement completes,
-  // avoiding initial over-render and subsequent jump.
-  if (trackWidth.value <= 0) return Math.min(total, 10)
+  // Width-only capacity: do NOT clamp to tiles.length — coupling window size
+  // to count re-layouts the visible window as tiles arrive (shake secondary).
+  if (trackWidth.value <= 0) return 10
   const availableWidth = Math.max(0, trackWidth.value - TRACK_PADDING)
   if (availableWidth <= 0) return MIN_VISIBLE_TILES
-  // 第一个 tile 没有前 gap，最后一个有 padding；保守按 (n+gap) total 算
   const count = Math.floor((availableWidth + TILE_GAP.value) / (TILE_WIDTH.value + TILE_GAP.value))
-  return Math.max(MIN_VISIBLE_TILES, Math.min(count, total))
+  return Math.max(MIN_VISIBLE_TILES, count)
 })
 
 // 2026-07-13: 应急诊断按钮 — 旧版启发式（错误率 >= 1/3）。
@@ -202,11 +200,8 @@ watch(trackRef, async (newEl, oldEl) => {
   }
 })
 
-// lane 数据变化（如新增请求）也再测一次，防止容器宽度的视口调整与请求密度共同变化
-watch(
-  () => props.lane.requests.length,
-  () => measureTrack()
-)
+// Do not re-measure on requests.length — width is independent of tile count;
+// re-measure here caused maxVisible flicker as tiles arrived.
 
 // 2026-07-23: 模式切换后 tile 尺寸变化，需重新计算容量
 watch(laneMode, async () => {
@@ -372,17 +367,17 @@ watch(laneMode, async () => {
 }
 
 .swim-lane__diagnose--active {
-  border-color: rgba(248, 81, 73, 0.5);
+  border-color: var(--danger-bd);
   color: var(--danger);
 }
 .swim-lane__diagnose--active .swim-lane__diagnose-dot {
   background: var(--danger);
-  box-shadow: 0 0 0 3px rgba(248, 81, 73, 0.18);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 12%, transparent);
   animation: pulse-dot 1.4s ease-in-out infinite;
 }
 
 .swim-lane__diagnose--recovering {
-  border-color: rgba(210, 153, 34, 0.5);
+  border-color: var(--warning-bd);
   color: var(--warning);
 }
 .swim-lane__diagnose--recovering .swim-lane__diagnose-dot {

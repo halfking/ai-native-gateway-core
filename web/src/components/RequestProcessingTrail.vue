@@ -9,6 +9,13 @@
 import { computed } from 'vue'
 import { requestsRef, getRequestActions, type ActionEvent, type LiveRequest } from '../composables/liveStreamStore'
 import { actionEventLabel } from '../composables/liveStreamDisplay'
+import { credentialDisplayName, useCredentialLabels } from '../composables/useCredentialLabels'
+
+const { labelRevision } = useCredentialLabels()
+function nodeLabel(id: number | null): string {
+  void labelRevision.value
+  return credentialDisplayName(id)
+}
 
 const recentRequests = computed(() => requestsRef.value
   .filter((request) => request.type !== 'idle_marker' && request.request_id)
@@ -82,7 +89,7 @@ function currentNode(requestId?: string): number | null {
             <span class="trail-step trail-step--latest">{{ actionEventLabel(latestAction(request.request_id)?.action) }}</span>
             <template v-if="currentNode(request.request_id)">
               <i aria-hidden="true">→</i>
-              <span class="trail-step trail-step--provider">节点 {{ currentNode(request.request_id) }}</span>
+              <span class="trail-step trail-step--provider">{{ nodeLabel(currentNode(request.request_id)) }}</span>
             </template>
           </template>
           <template v-else>

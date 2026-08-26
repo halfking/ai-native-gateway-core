@@ -220,7 +220,7 @@ function onSelect(requestId: string) {
 }
 .live-stream__status--ok .live-stream__dot {
   background: var(--success);
-  box-shadow: 0 0 0 3px rgba(63, 185, 80, 0.18);
+  box-shadow: 0 0 0 3px var(--success-bd);
 }
 .live-stream__status--warn .live-stream__dot {
   background: var(--warning);

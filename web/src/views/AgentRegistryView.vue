@@ -597,8 +597,8 @@ onBeforeUnmount(() => {
 .stat-card {
   flex: 1 1 120px;
   padding: 10px 14px;
-  background: var(--surface-1, rgba(255,255,255,0.04));
-  border: 1px solid var(--border, rgba(255,255,255,0.08));
+  background: var(--surface-1, color-mix(in srgb, var(--kx-text) 4%, transparent));
+  border: 1px solid var(--border, color-mix(in srgb, var(--kx-text) 4%, transparent));
   border-radius: 8px;
 }
 .stat-label {
@@ -612,8 +612,8 @@ onBeforeUnmount(() => {
   font-weight: 600;
   margin-top: 4px;
 }
-.stat-healthy { color: #4ade80; }
-.stat-down { color: #f87171; }
+.stat-healthy { color: var(--success); }
+.stat-down { color: var(--danger); }
 
 .neighbors-body { padding: 8px 0; }
 .neighbors-meta { font-size: 12px; opacity: 0.7; margin: 0 0 12px; }
@@ -629,7 +629,7 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 8px;
   padding: 6px 8px;
-  border-bottom: 1px solid var(--border, rgba(255,255,255,0.06));
+  border-bottom: 1px solid var(--border, color-mix(in srgb, var(--kx-text) 4%, transparent));
   font-size: 13px;
 }
 .ref-id { opacity: 0.5; font-size: 11px; }
@@ -643,13 +643,13 @@ onBeforeUnmount(() => {
   font-weight: 600;
 }
 .kind-llm_endpoint { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent-h); }
-.kind-mcp_server   { background: rgba(34, 197, 94, 0.18); color: #4ade80; }
-.kind-agent        { background: rgba(245, 158, 11, 0.18); color: #fbbf24; }
+.kind-mcp_server   { background: var(--success-bd); color: var(--success); }
+.kind-agent        { background: var(--warning-bd); color: var(--warning); }
 
 .metadata-block {
   margin: 6px 0 0;
   padding: 10px 12px;
-  background: var(--surface-secondary, rgba(255, 255, 255, 0.04));
+  background: var(--surface-secondary, color-mix(in srgb, var(--kx-text) 4%, transparent));
   border: 1px solid var(--border);
   border-radius: 6px;
   font-size: 11px;

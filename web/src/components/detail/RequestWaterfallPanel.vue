@@ -158,5 +158,5 @@ function credentialLabel(id: number): string {
 .pill--err { color: var(--danger, #dc2626); background: color-mix(in srgb, var(--danger, #dc2626) 14%, transparent); }
 .pill--warn { color: var(--warning, #d97706); background: color-mix(in srgb, var(--warning, #d97706) 16%, transparent); }
 .pill--info { color: var(--info, #2563eb); background: color-mix(in srgb, var(--info, #2563eb) 14%, transparent); }
-.pill--muted { color: var(--muted); background: var(--bg-subtle, var(--overlay-light)); }
+.pill--muted { color: var(--muted); background: var(--bg-subtle, var(--surface-secondary)); }
 </style>

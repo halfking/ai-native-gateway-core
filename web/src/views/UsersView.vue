@@ -334,15 +334,15 @@ onMounted(() => { load(); loadTenants() })
 .page-header h1 { font-size: 20px; margin: 0; }
 
 .badge-purple { background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent-h); }
-.badge-blue { background: rgba(59,130,246,.15); color: #60a5fa; }
-.badge-green { background: rgba(34,197,94,.15); color: #4ade80; }
-.badge-red { background: rgba(239,68,68,.15); color: #f87171; }
-.badge-yellow { background: rgba(234,179,8,.15); color: #facc15; }
+.badge-blue { background: var(--info-bg); color: var(--accent); }
+.badge-green { background: var(--success-bg); color: var(--success); }
+.badge-red { background: var(--danger-bg); color: var(--danger); }
+.badge-yellow { background: var(--warning-bg); color: var(--warning); }
 
 .modal-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(0,0,0,.5);
+  background: var(--overlay-strong);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -390,7 +390,7 @@ onMounted(() => { load(); loadTenants() })
 }
 
 .is-pass {
-  color: #4ade80;
+  color: var(--success);
 }
 
 .is-pending {
@@ -398,6 +398,6 @@ onMounted(() => { load(); loadTenants() })
 }
 
 .is-error {
-  color: #f87171;
+  color: var(--danger);
 }
 </style>

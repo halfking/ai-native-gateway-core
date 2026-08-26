@@ -41,7 +41,7 @@ const { t } = useI18n()
 .smart-drawer-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.45);
+  background: var(--overlay-strong);
   z-index: 70;
   display: flex;
   justify-content: flex-end;

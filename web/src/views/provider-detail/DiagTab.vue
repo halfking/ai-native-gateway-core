@@ -2,10 +2,13 @@
 import { ref, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { startDiagnose, getDiagnoseResult, getTask, type BackgroundTask } from '../../api'
+import { useCredentialLabels } from '../../composables/useCredentialLabels'
 
 const props = defineProps<{ providerId: number }>()
     const { t: td } = useI18n()
     const pdg = (k: string, params?: Record<string, unknown>): string => td(`providerDetail.diag.${k}` as never, params as never)
+
+const { credentialDisplayName, loadCredentialLabels } = useCredentialLabels()
 
 const taskStatus = ref<BackgroundTask | null>(null)
 const cachedResult = ref<any>(null)
@@ -64,7 +67,10 @@ async function loadCached() {
   } catch { /* no cached result */ }
 }
 
-onMounted(loadCached)
+onMounted(() => {
+  void loadCredentialLabels()
+  loadCached()
+})
 
 function scoreColor(score: number): string {
   if (score >= 80) return '#4caf50'
@@ -124,7 +130,7 @@ function scoreColor(score: number): string {
         <h4 style="margin:0 0 8px;font-size:14px">{{ pdg('healthScoresTitle') }}</h4>
         <div style="display:flex;gap:12px;flex-wrap:wrap">
           <div v-for="s in cachedResult.health_scores" :key="s.credential_id" style="display:flex;align-items:center;gap:6px;min-width:120px">
-            <span style="color:var(--muted);font-size:11px">#{{ s.credential_id }}</span>
+            <span style="color:var(--muted);font-size:11px">{{ credentialDisplayName(s.credential_id) }}</span>
             <div style="flex:1;height:6px;background:var(--bg-subtle);border-radius:3px;overflow:hidden">
               <div :style="{ width: s.score + '%', background: scoreColor(s.score), height: '100%', borderRadius: '3px' }"></div>
             </div>
@@ -147,7 +153,7 @@ function scoreColor(score: number): string {
           </thead>
           <tbody>
             <tr v-for="cd in cachedResult.credentials" :key="cd.credential_id" style="border-bottom:1px solid var(--border)">
-              <td style="padding:6px">#{{ cd.credential_id }} {{ cd.label }}</td>
+              <td style="padding:6px">{{ credentialDisplayName(cd.credential_id) }} {{ cd.label }}</td>
               <td style="padding:6px"><span class="badge" :class="cd.status === 'active' ? 'badge-green' : 'badge-red'">{{ cd.status }}</span></td>
               <td style="padding:6px"><span class="badge" :class="cd.circuit_state === 'closed' ? 'badge-green' : 'badge-amber'">{{ cd.circuit_state }}</span></td>
               <td style="padding:6px">

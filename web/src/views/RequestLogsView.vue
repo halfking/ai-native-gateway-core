@@ -1,27 +1,25 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, onBeforeUnmount, watch } from 'vue'
 import { localeRef } from '../i18n'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import {
   getRequestLogs,
   getBodyCacheStats,
-  getSessionSummary,
-  sessionSummaryToMemora,
   getKeys,
   type RequestLogRow,
   type BodyCacheStats,
   type ApiKey,
   type RequestLogsResponse,
   type RequestLogsAggregate,
-  type SessionSummaryResponse,
-  type SessionSummaryToMemoraResponse,
 } from '../api'
 import { getCredentialMonitorSummary } from '../api/credential-monitor'
 import { getProviders, getProviderCredentials } from '../api/providers'
 import ModelPicker from '../components/ModelPicker.vue'
 import RequestLogDrawer from '../components/RequestLogDrawer.vue'
+import SessionSummaryDrawer from '../components/SessionSummaryDrawer.vue'
 import { isSuperAdmin, isDefaultTenant, getCurrentTenantId } from '../store'
+import { openRequestDetailPage } from '../utils/openRequestDetailPage'
 
 const rows = ref<RequestLogRow[]>([])
 const keys = ref<ApiKey[]>([])
@@ -47,12 +45,7 @@ const errorKindFilter = ref('')
 const usageSourceFilter = ref<'' | 'llm' | 'estimated'>('')
 const gwSessionFilter = ref('')
 const gwTaskFilter = ref('')
-const summaryLoading = ref(false)
-const summaryError = ref<string | null>(null)
-const summaryResult = ref<SessionSummaryResponse | null>(null)
-const memoraLoading = ref(false)
-const memoraError = ref<string | null>(null)
-const memoraResult = ref<SessionSummaryToMemoraResponse['memora'] | null>(null)
+const summaryDrawerOpen = ref(false)
 
 const page = ref(1)
 const pageSize = ref(50)
@@ -662,79 +655,29 @@ function widenRangeForTrace() {
 function clearTraceFilter() {
   gwTaskFilter.value = ''
   gwSessionFilter.value = ''
-  summaryError.value = null
-  summaryResult.value = null
-  memoraError.value = null
-  memoraResult.value = null
   resetPageAndLoad()
 }
 
 const canSummarizeSession = computed(() => gwSessionFilter.value.trim().length > 0)
 
-async function generateSessionSummary() {
+const summaryDrawerTitle = computed(() => {
   const sid = gwSessionFilter.value.trim()
-  if (!sid) return
-  summaryLoading.value = true
-  summaryError.value = null
-  summaryResult.value = null
-  try {
-    summaryResult.value = await getSessionSummary(sid)
-  } catch (e: unknown) {
-    summaryError.value = e instanceof Error ? e.message : String(e)
-  } finally {
-    summaryLoading.value = false
-  }
+  if (!sid) return null
+  const row = rows.value.find(r => r.gw_session_id === sid && r.session_title)
+  return row?.session_title ?? null
+})
+
+function openSessionSummaryDrawer() {
+  if (!canSummarizeSession.value) return
+  summaryDrawerOpen.value = true
 }
 
-function summaryExportContent(data: SessionSummaryResponse): string {
-  const lines: string[] = []
-  lines.push(t('requests.title'))
-  lines.push('')
-  lines.push(`- Session ID: ${data.meta.session_id}`)
-  lines.push(`- 时间范围: ${fmtTs(data.meta.data_from)} ~ ${fmtTs(data.meta.data_to)}`)
-  lines.push(`- 日志条数: ${data.meta.log_count}`)
-  lines.push(`- 生成时间: ${fmtTs(data.meta.generated_at)}`)
-  lines.push('')
-  lines.push(t('requests.summaryHeading'))
-  lines.push(data.summary)
-  if (data.key_points && data.key_points.length) {
-    lines.push('')
-    lines.push(t('requests.keyPointsHeading'))
-    for (const p of data.key_points) lines.push(`- ${p}`)
-  }
-  return lines.join('\n')
+function onDrawerFilterSession(sessionId: string) {
+  filterBySession(sessionId)
 }
 
-function exportSessionSummary(format: 'md' | 'txt' = 'md') {
-  if (!summaryResult.value) return
-  const content = summaryExportContent(summaryResult.value)
-  const blob = new Blob([content], { type: 'text/plain;charset=utf-8' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  const day = new Date().toISOString().slice(0, 10)
-  a.href = url
-  a.download = `session-summary-${summaryResult.value.meta.session_id}-${day}.${format}`
-  document.body.appendChild(a)
-  a.click()
-  document.body.removeChild(a)
-  URL.revokeObjectURL(url)
-}
-
-async function writeSummaryToMemora() {
-  const sid = gwSessionFilter.value.trim()
-  if (!sid) return
-  memoraLoading.value = true
-  memoraError.value = null
-  memoraResult.value = null
-  try {
-    const resp = await sessionSummaryToMemora(sid)
-    summaryResult.value = { summary: resp.summary, key_points: resp.key_points, meta: resp.meta }
-    memoraResult.value = resp.memora
-  } catch (e: unknown) {
-    memoraError.value = e instanceof Error ? e.message : String(e)
-  } finally {
-    memoraLoading.value = false
-  }
+function onDrawerOpenRequest(requestId: string) {
+  showDetail(requestId)
 }
 
 function routeProviderLine(r: RequestLogRow): string {
@@ -937,9 +880,11 @@ function shortHash(v: string | null | undefined) {
   return v ? `${v.slice(0, 12)}…` : t('requests.none')
 }
 
+const route = useRoute()
+const router = useRouter()
+
 function showDetail(requestId: string) {
-  openDetailWithTrace.value = false
-  activeRequestId.value = requestId
+  openRequestDetailPage(requestId, undefined, router)
 }
 
 function closeDetail() {
@@ -1030,13 +975,14 @@ function calcSavingDetail(row: any): { savingStr: string; tokenSavingStr: string
   return { savingStr, tokenSavingStr, msgReductionStr, hasSaving: true }
 }
 
-const route = useRoute()
-
 // super_admin 在每条日志行可直接打开共享请求详情，并展开流程面板。
 function gotoTrace(requestId: string) {
   if (!requestId) return
-  openDetailWithTrace.value = true
-  activeRequestId.value = requestId
+  void router.push({
+    name: 'request-detail',
+    params: { requestId },
+    query: { tab: 'flow' },
+  })
 }
 
 onMounted(async () => {
@@ -1105,6 +1051,10 @@ onMounted(async () => {
     console.error('Failed to load request logs:', e)
     error.value = e instanceof Error ? e.message : String(e)
     loading.value = false
+  }
+
+  if (sessionId && (q.open_summary === '1' || q.open_summary === 'true')) {
+    summaryDrawerOpen.value = true
   }
 })
 </script>
@@ -1478,42 +1428,14 @@ onMounted(async () => {
       <button class="btn btn-ghost btn-sm" style="margin-left:auto" @click="clearTraceFilter">清除脉络筛选</button>
     </div>
 
-    <div v-if="canSummarizeSession" class="card" style="margin-bottom:12px;padding:12px">
+    <div v-if="canSummarizeSession" class="card session-summary-entry" style="margin-bottom:12px;padding:12px">
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
         <strong>会话总结</strong>
-        <span style="color:var(--muted);font-size:12px">仅在会话 ID 筛选下可用</span>
-        <button class="btn btn-primary btn-sm" :disabled="summaryLoading" @click="generateSessionSummary">
-          {{ summaryLoading ? t('requests.generating') : t('requests.generate') }}
+        <span style="color:var(--muted);font-size:12px">{{ t('requests.list.trace.sessionSummaryHint') }}</span>
+        <span style="color:var(--muted);font-size:12px">会话: {{ shortHash(gwSessionFilter) }}</span>
+        <button class="btn btn-primary btn-sm" style="margin-left:auto" @click="openSessionSummaryDrawer">
+          打开会话总结
         </button>
-        <button
-          v-if="summaryResult"
-          class="btn btn-ghost btn-sm"
-          @click="exportSessionSummary('md')"
-        >导出 Markdown</button>
-        <button
-          v-if="summaryResult"
-          class="btn btn-ghost btn-sm"
-          @click="exportSessionSummary('txt')"
-        >导出 TXT</button>
-        <button
-          class="btn btn-ghost btn-sm"
-          :disabled="memoraLoading"
-          @click="writeSummaryToMemora"
-        >{{ memoraLoading ? t('requests.writingMemora') : t('requests.writeMemora') }}</button>
-      </div>
-      <p v-if="summaryError" style="margin:8px 0 0;color:var(--danger)">{{ summaryError }}</p>
-      <p v-if="memoraError" style="margin:8px 0 0;color:var(--danger)">Memora: {{ memoraError }}</p>
-      <p v-if="memoraResult" style="margin:8px 0 0;color:var(--success)">
-        已写入 Memora：{{ memoraResult.written }} 条（{{ memoraResult.status }}）
-      </p>
-      <div v-if="summaryResult" style="margin-top:10px;font-size:12px">
-        <div style="color:var(--muted);margin-bottom:6px">
-          范围：{{ fmtTs(summaryResult.meta.data_from) }} ~ {{ fmtTs(summaryResult.meta.data_to) }} · {{ summaryResult.meta.log_count }} 条
-        </div>
-        <div style="white-space:pre-wrap;line-height:1.6">{{ summaryResult.summary }}</div>
-        <ul v-if="summaryResult.key_points?.length" style="margin:8px 0 0;padding-left:18px">
-          <li v-for="(p, i) in summaryResult.key_points" :key="i">{{ p }}</li>
-        </ul>
       </div>
     </div>
 
@@ -1689,6 +1611,17 @@ onMounted(async () => {
       :initial-trace-open="openDetailWithTrace"
       @close="closeDetail"
       @session-title-changed="syncSessionTitle"
+      @filter-session="onDrawerFilterSession"
+      @open-request="onDrawerOpenRequest"
+    />
+
+    <SessionSummaryDrawer
+      :open="summaryDrawerOpen"
+      :session-id="gwSessionFilter.trim() || null"
+      :session-title="summaryDrawerTitle"
+      @close="summaryDrawerOpen = false"
+      @filter-session="onDrawerFilterSession"
+      @open-request="onDrawerOpenRequest"
     />
   </div>
 </template>
@@ -1855,12 +1788,12 @@ onMounted(async () => {
   color: var(--text-secondary);
 }
 .tenant-badge--admin {
-  background: rgba(59, 130, 246, 0.1);
-  color: #3b82f6;
+  background: var(--info-bg);
+  color: var(--accent);
 }
 .tenant-badge--default {
-  background: rgba(34, 197, 94, 0.1);
-  color: #22c55e;
+  background: var(--success-bg);
+  color: var(--success);
 }
 
 /* Round 47 compression v7: parent-child chain badge. */
@@ -1880,20 +1813,20 @@ onMounted(async () => {
   color: var(--text-secondary);
 }
 .compression-badge.strategy-mechanical_trim {
-  background: rgba(245, 158, 11, 0.1);
-  color: #b45309;
+  background: var(--warning-bg);
+  color: var(--warning-dark);
 }
 .compression-badge.strategy-memora_l1_inject {
   background: color-mix(in srgb, var(--accent) 10%, transparent);
   color: #6d28d9;
 }
 .compression-badge.strategy-llm_summary {
-  background: rgba(59, 130, 246, 0.1);
-  color: #1d4ed8;
+  background: var(--info-bg);
+  color: var(--accent);
 }
 .compression-badge.strategy-noop {
   background: rgba(107, 114, 128, 0.1);
-  color: #4b5563;
+  color: var(--muted);
 }
 /* v3 (2026-06-19) session-level compression strategies.
    Different color palette from v7 to make them visually distinguishable
@@ -1906,9 +1839,9 @@ onMounted(async () => {
 .compression-badge.strategy-sliding_window_token,
 .compression-badge.strategy-sliding_window_count,
 .compression-badge.strategy-sliding_window_idle {
-  background: color-mix(in srgb, #d946ef 12%, transparent);
+  background: color-mix(in srgb, var(--magenta) 12%, transparent);
   color: #7e22ce;
-  border: 1px solid color-mix(in srgb, #d946ef 30%, transparent);
+  border: 1px solid color-mix(in srgb, var(--magenta) 30%, transparent);
 }
 .col-compress {
   max-width: 180px;
@@ -1925,8 +1858,8 @@ onMounted(async () => {
   border-radius: 8px;
   font-size: 10px;
   font-weight: 600;
-  background: color-mix(in srgb, #d946ef 12%, transparent);
-  color: #c084fc;
+  background: color-mix(in srgb, var(--magenta) 12%, transparent);
+  color: var(--purple);
 }
 .parent-id {
   color: var(--text-secondary);
@@ -2037,7 +1970,7 @@ onMounted(async () => {
 .filter-section .filter-select:focus {
   outline: none;
   border-color: var(--accent);
-  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.1);
+  box-shadow: 0 0 0 2px var(--info-bg);
 }
 .filter-section .filter-input {
   width: 100%;
@@ -2052,7 +1985,7 @@ onMounted(async () => {
 .filter-section .filter-input:focus {
   outline: none;
   border-color: var(--accent);
-  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.1);
+  box-shadow: 0 0 0 2px var(--info-bg);
 }
 .filter-section .filter-input::placeholder {
   color: var(--text-secondary);
@@ -2092,7 +2025,7 @@ onMounted(async () => {
 .preset-chip--active {
   border-color: var(--accent);
   color: var(--accent-h);
-  background: rgba(59, 130, 246, 0.12);
+  background: var(--info-bg);
 }
 .preset-chip--disabled { opacity: 0.45; cursor: not-allowed; }
 .preset-chip--disabled:hover { border-color: var(--border); color: var(--text); }

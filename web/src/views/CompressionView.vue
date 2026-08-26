@@ -716,7 +716,7 @@ watch(activeTab, loadAll)
   padding: 1px 6px;
   border-radius: 4px;
   font-size: 11px;
-  color: #fff;
+  color: var(--on-primary);
   font-weight: 500;
 }
 
@@ -774,8 +774,8 @@ watch(activeTab, loadAll)
   color: var(--text-primary);
   border: 1px solid var(--border);
 }
-.chip-on { background: rgba(52,211,153,.15); color: #34d399; border-color: rgba(52,211,153,.3); }
-.chip-off { background: rgba(139,148,158,.15); color: #8b949e; border-color: rgba(139,148,158,.3); }
+.chip-on { background: var(--success-bg); color: var(--success); border-color: var(--success-bd); }
+.chip-off { background: var(--neutral-bg); color: var(--muted); border-color: var(--neutral-bd); }
 .chip-item { display: flex; align-items: center; gap: 6px; }
 .chip-lbl { font-size: 11px; color: var(--text-secondary); }
 .code-chip { font-family: ui-monospace, SFMono-Regular, monospace; font-size: 11px; max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

@@ -302,11 +302,13 @@ describe('requestCredential index', () => {
     expect(getRequestCredentialId('r1')).toBeNull()
   })
 
-  it('resetStream clears the index', () => {
+  it('resetStream clears the index and bumps the revision', () => {
     lifecycle(action('r1', 1, { action: 'credential_selected', credential_id: 7 }))
     expect(getRequestCredentialId('r1')).toBe(7)
+    const before = __testing.requestCredentialRevision.value
     __testing.resetStream()
     expect(getRequestCredentialId('r1')).toBeNull()
+    expect(__testing.requestCredentialRevision.value).toBeGreaterThan(before)
   })
 
   // 2026-08-17 (audit P1): 同 seq replay 也要同步 requestCredential 索引。

@@ -214,7 +214,7 @@ function handleRefresh() {
   margin: 0;
   font-size: 20px;
   font-weight: 600;
-  color: #303133;
+  color: var(--text);
 }
 
 .toolbar-right {
@@ -238,7 +238,7 @@ function handleRefresh() {
 
 :deep(.el-statistic__head) {
   font-size: 14px;
-  color: #909399;
+  color: var(--text-secondary);
   margin-bottom: 8px;
 }
 

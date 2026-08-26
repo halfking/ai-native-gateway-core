@@ -22,6 +22,7 @@ const RoutingOverrideView = () => import('./views/RoutingOverrideView.vue')
 const QualityCorrelationsView = () => import('./views/QualityCorrelationsView.vue')
 const RoutingAuditView = () => import('./views/RoutingAuditView.vue')
 const RequestLogsView = () => import('./views/RequestLogsView.vue')
+const RequestDetailFullscreenView = () => import('./views/RequestDetailFullscreenView.vue')
 const DispatchWaterfallView = () => import('./views/DispatchWaterfallView.vue')
 const ModelsView = () => import('./views/ModelsView.vue')
 const ProviderDetailView = () => import('./views/ProviderDetailView.vue')
@@ -63,6 +64,12 @@ const ClientAnalyticsView = () => import('./views/ClientAnalyticsView.vue')
 const TaskAnalyticsView = () => import('./views/TaskAnalyticsView.vue')
 const UserProfileListView = () => import('./views/UserProfileListView.vue')
 const UserProfileView = () => import('./views/UserProfileView.vue')
+
+// T9 — 请求注册表 / Journey 详情 / 连接注册台 / 节点恢复时间线（mock stage）
+const RequestRegistryView = () => import('./views/RequestRegistryView.vue')
+const RequestJourneyDetailView = () => import('./views/RequestJourneyDetailView.vue')
+const ConnectionRegistryView = () => import('./views/ConnectionRegistryView.vue')
+const NodeHealthTimelineView = () => import('./views/NodeHealthTimelineView.vue')
 
 // Customer lifecycle — merged「更新与激活」+ offline fallback
 const CustomerUpdateActivateView = () => import('./views/lifecycle/UpdateActivateView.vue')
@@ -195,6 +202,11 @@ export const router = createRouter({
     { path: '/routing/overrides/audit', component: RoutingAuditView, meta: { requiresSuper: true } },
     { path: '/quality-correlations',  component: QualityCorrelationsView, meta: { requiresSuper: true } },
     { path: '/request-logs',       component: RequestLogsView },
+    {
+      path: '/request-detail/:requestId',
+      name: 'request-detail',
+      component: RequestDetailFullscreenView,
+    },
     { path: '/dispatch/waterfall', component: DispatchWaterfallView, meta: { requiresPlatformOps: true } },
     { path: '/admin/session-analytics/users', component: UserProfileListView, meta: { requiresAuth: true } },
     { path: '/admin/session-analytics/users/:owner', component: UserProfileView, meta: { requiresAuth: true } },
@@ -213,6 +225,11 @@ export const router = createRouter({
     { path: '/admin/usage',        component: UsageCostView }, // 用量成本视图 (T2.4)
     { path: '/admin/sessions/:id', component: SessionDetailView, meta: { requiresSuper: true } }, // 2026-07-24: V2-P4 session detail
     { path: '/admin/turns',        component: TurnsListView, meta: { requiresSuper: true } }, // 2026-08-09: 跨会话轮次列表
+    // T9 — 请求注册表 / Journey 详情 / 连接注册台 / 节点恢复时间线
+    { path: '/admin/request-registry', component: RequestRegistryView, meta: { requiresSuper: true } },
+    { path: '/admin/request-registry/journey/:requestId', name: 'request-journey-detail', component: RequestJourneyDetailView, meta: { requiresSuper: true } },
+    { path: '/admin/connection-registry', component: ConnectionRegistryView, meta: { requiresSuper: true } },
+    { path: '/admin/connection-registry/:credentialId/recovery', name: 'node-health-timeline', component: NodeHealthTimelineView, meta: { requiresSuper: true } },
     { path: '/examples',           component: ExamplesView },
     { path: '/chat',               component: ChatView },
 
@@ -235,6 +252,9 @@ export const router = createRouter({
     externalMaintainRedirect('/ops', '/maintain/ops/overview'),
     { path: '/ops/vibecoding', component: VibeCodingView, meta: { requiresSuper: true, requiresOpsPlatform: true } },
 
+    ...(import.meta.env.DEV
+      ? [{ path: '/dev/waterfall-preview', component: () => import('./views/DispatchWaterfallPreview.vue'), meta: { public: true } }]
+      : []),
     { path: '/:pathMatch(.*)*', redirect: '/' },
   ],
 })
@@ -246,6 +266,7 @@ const BOOTSTRAP_GATE_TTL_MS = 15_000
 async function shouldRedirectToBootstrap(toPath: string): Promise<boolean> {
   if (toPath === '/bootstrap' || toPath === '/forbidden' || toPath === '/login') return false
   if (toPath.startsWith('/customer/')) return false
+  if (import.meta.env.DEV && toPath.startsWith('/dev/')) return false
   try {
     if (localStorage.getItem('llmgw_require_bootstrap') === '0') return false
     if (localStorage.getItem('llmgw_activated') === '1') return false
