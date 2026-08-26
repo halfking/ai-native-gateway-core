@@ -61,9 +61,16 @@ func TestCheckGatewayRateLimit_QueuedBeyondBudgetFailsFast(t *testing.T) {
 	limit := 1
 	keyInfo := &authentication.KeyInfo{ID: 777, RateLimitRPM: &limit}
 
-	// Occupy the only slot of the minute bucket.
-	if outcome := checkGatewayRateLimit(context.Background(), keyInfo, limiter, nil); outcome.Blocked {
-		t.Fatal("warm-up request should be admitted")
+	// Pre-fill the single bucket slot via the underlying minute-bucket
+	// admission directly (bypasses checkGatewayRateLimit's budget logic so
+	// the warm-up is deterministic regardless of where the test starts
+	// within the minute). bucket.count=1 → next call is guaranteed to
+	// reach the queueing path.
+	sliding := limiter
+	warmupCtx, warmupCancel := context.WithDeadline(context.Background(), time.Now().Add(60*time.Second))
+	defer warmupCancel()
+	if _, err := sliding.AdmitRPM(warmupCtx, keyInfo.ID, limit); err != nil {
+		t.Fatalf("warm-up admit failed: %v", err)
 	}
 
 	// Simulate a request whose remaining budget (deadline 30s = 25s after

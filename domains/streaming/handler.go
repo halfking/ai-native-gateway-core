@@ -1999,6 +1999,16 @@ func (h *ChatHandler) serveWithExecutor(
 				logCtx.SetClientModel("<unknown>")
 			}
 		}
+		// 2026-08-26 (kimi-k3 queue bug fix #2): rate-limit early-return
+		// bypassed recordInitialRequestLog (handler.go:3572), so the
+		// subsequent EmitRateLimited UPDATE hit 0 rows in
+		// request_logs_hot — leaving the failure unlogged while the WAL
+		// and Redis trace still recorded it. INSERT a minimal placeholder
+		// (RequestStatus=in_progress) so the UPDATE lands. Idempotent via
+		// INSERT … ON CONFLICT (request_id) DO UPDATE on
+		// request_logs_hot. Mirrors the recordInitialRequestLog seed
+		// surface without pulling in its 14-arg signature.
+		h.insertRateLimitedPlaceholder(logCtx)
 		logCtx.EmitRateLimited(errCode, errMsg, providerID, credentialID)
 		logCtx.MarkLogged()
 	}
@@ -6965,6 +6975,43 @@ func extractBearerToken(r *http.Request) string {
 		return key
 	}
 	return ""
+}
+
+// insertRateLimitedPlaceholder ensures request_logs_hot has a row before the
+// rate-limit UPDATE writes its terminal fields. Used by the rate-limit
+// early-return path (handler.go captureAndEmitRateLimited) which bypasses
+// recordInitialRequestLog. Idempotent: INSERT … ON CONFLICT (request_id)
+// DO UPDATE means a subsequent UPDATE still lands on the same row.
+//
+// 2026-08-26: introduced to plug the kimi-k3 / RPM queue blind spot —
+// when the queue budget was exceeded the request returned 429/200 bytes
+// but never landed in request_logs_hot (only WAL + Redis trace did),
+// producing "request log row not found, retaining Redis trace" warnings
+// at FlushToPG. Mirrors the seed surface of recordInitialRequestLog
+// without pulling in its 14-arg signature.
+func (h *ChatHandler) insertRateLimitedPlaceholder(logCtx *RequestLogContext) {
+	if logCtx == nil || logCtx.IsLogged() {
+		return
+	}
+	if h.telemetryClient == nil || !h.telemetryClient.Enabled() {
+		return
+	}
+	minimal := &telemetry.RequestLogEntry{
+		RequestID:     logCtx.RequestID,
+		TenantID:      "default",
+		ClientModel:   strPtr(logCtx.ClientModel),
+		RequestStatus: strPtr(telemetry.RequestStatusInProgress),
+	}
+	if ki := logCtx.KeyInfo; ki != nil {
+		minimal.TenantID = ki.TenantID
+		kid := ki.ID
+		minimal.APIKeyID = &kid
+		if aid := appID(ki); aid != nil {
+			a := *aid
+			minimal.ApplicationID = &a
+		}
+	}
+	h.telemetryClient.EmitRequestLogInsert(minimal)
 }
 
 // resolveEndUser picks the best end-user identifier available for this
