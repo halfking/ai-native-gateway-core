@@ -490,7 +490,7 @@ onMounted(async () => {
   border-radius: 10px;
   background: var(--card);
   padding: 12px 14px;
-  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--kx-text) 4%, transparent);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
 }
 .stat-card.warning {
   border-left: 4px solid var(--warning);
@@ -596,7 +596,7 @@ textarea {
 .btn-primary {
   background: var(--accent);
   border-color: var(--accent);
-  color: var(--on-primary);
+  color: #fff;
 }
 .btn-primary:hover:not(:disabled) {
   background: var(--accent-h);
@@ -612,9 +612,9 @@ textarea {
   margin-bottom: 12px;
   padding: 10px 12px;
   border-radius: 8px;
-  background: var(--danger-bg);
-  color: var(--danger-bd);
-  border: 1px solid var(--danger-bd);
+  background: rgba(248, 81, 73, 0.12);
+  color: #ffb4ad;
+  border: 1px solid rgba(248, 81, 73, 0.32);
 }
 .table-wrap {
   overflow: auto;
@@ -644,7 +644,7 @@ textarea {
   font-size: 13px;
 }
 .table tbody tr:hover {
-  background: var(--bg-hover);
+  background: rgba(255, 255, 255, 0.02);
 }
 .empty {
   text-align: center;
@@ -674,19 +674,19 @@ textarea {
   color: var(--accent-h);
 }
 .badge-medium {
-  background: var(--warning-bg);
-  border-color: var(--warning-bd);
-  color: var(--warning-bd);
+  background: rgba(210, 153, 34, 0.14);
+  border-color: rgba(210, 153, 34, 0.24);
+  color: #f7d58a;
 }
 .badge-high {
-  background: var(--warning-bd);
-  border-color: var(--warning-bd);
-  color: var(--warning-bd);
+  background: rgba(249, 115, 22, 0.14);
+  border-color: rgba(249, 115, 22, 0.24);
+  color: #fdba74;
 }
 .badge-critical {
-  background: var(--danger-bg);
-  border-color: var(--danger-bd);
-  color: var(--danger-bd);
+  background: rgba(248, 81, 73, 0.14);
+  border-color: rgba(248, 81, 73, 0.26);
+  color: #ffb4ad;
 }
 .status-ok {
   color: var(--success);
@@ -712,7 +712,7 @@ code {
 .modal-mask {
   position: fixed;
   inset: 0;
-  background: var(--overlay-strong);
+  background: rgba(15, 17, 23, 0.78);
   backdrop-filter: blur(3px);
   display: flex;
   align-items: center;
@@ -728,7 +728,7 @@ code {
   border-radius: 12px;
   padding: 18px;
   color: var(--text);
-  box-shadow: 0 24px 60px var(--overlay-strong);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
 }
 .modal-header {
   display: flex;

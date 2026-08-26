@@ -44,12 +44,11 @@ function handleTileClick(requestId: string) {
 
 <template>
   <div class="swim-lane-track">
-    <TransitionGroup
-      name="swim-tile"
-      tag="div"
+    <TransitionGroup 
+      name="swim-tile" 
+      tag="div" 
       class="swim-lane-track__tiles"
       :class="{ 'swim-lane-track__tiles--small': mode === 'small' }"
-      move-class="swim-tile-move"
     >
       <RequestTileComponent
         v-for="tile in visibleTiles"
@@ -59,7 +58,6 @@ function handleTileClick(requestId: string) {
         :mode="mode"
         :is-highlighted="isTileHighlighted(tile)"
         :is-dimmed="isTileDimmed(tile)"
-        :show-timeline-badge="false"
         @click="handleTileClick"
       />
     </TransitionGroup>
@@ -69,16 +67,12 @@ function handleTileClick(requestId: string) {
 <style scoped>
 .swim-lane-track {
   display: flex;
-  justify-content: flex-start; /* left-anchored: oldest on the left, new tiles grow to the right */
   overflow-x: hidden;
   min-width: 0;
-  position: relative;
-  width: 100%;
 }
 
 .swim-lane-track__tiles {
   display: flex;
-  justify-content: flex-start;
   gap: var(--tile-gap, 6px);
   flex-direction: row;
   min-width: 0;
@@ -88,26 +82,43 @@ function handleTileClick(requestId: string) {
   gap: var(--tile-gap, 4px);
 }
 
-/* Right-anchored + no move/absolute-leave: prevents whole-lane shake on insert */
-.swim-tile-enter-active,
-.swim-tile-leave-active {
-  transition: opacity 0.2s ease;
+/* 2026-07-26: Animation direction reversed. New tiles enter from RIGHT,
+   old tiles exit to LEFT. Existing tiles shift left when new tile arrives. */
+.swim-tile-enter-active {
+  transition: all 0.3s ease;
 }
 
-.swim-tile-enter-from,
+.swim-tile-enter-from {
+  opacity: 0;
+  transform: translateX(20px); /* New tiles enter from RIGHT */
+}
+
+.swim-tile-leave-active {
+  transition: all 0.3s ease;
+  position: absolute;
+}
+
 .swim-tile-leave-to {
   opacity: 0;
+  transform: translateX(-20px); /* Old tiles slide out LEFT */
 }
 
-/* Disable FLIP move; absolute leave was collapsing then restoring layout */
+/* Existing tiles shift LEFT when new tile arrives on RIGHT */
 .swim-tile-move {
-  transition: none;
+  transition: transform 0.3s ease;
 }
 
 @media (prefers-reduced-motion: reduce) {
   .swim-tile-enter-active,
   .swim-tile-leave-active {
-    transition: opacity 0.1s linear;
+    transition: opacity 0.15s linear;
+  }
+  .swim-tile-enter-from,
+  .swim-tile-leave-to {
+    transform: none;
+  }
+  .swim-tile-move {
+    transition: none;
   }
 }
 </style>

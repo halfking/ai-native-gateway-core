@@ -276,18 +276,7 @@ func StreamAnthropicPassthroughWithDiagnostics(
 			if errors.Is(err, context.Canceled) || (ctx != nil && errors.Is(ctx.Err(), context.Canceled)) {
 				outcome = StreamOutcome{Interrupted: true, Reason: "client_cancel", Kind: errorsx.KindCanceled, Resumable: false, ChunkCount: chunkCount}
 			} else if errors.Is(err, context.DeadlineExceeded) || strings.Contains(strings.ToLower(err.Error()), "stream read timeout") {
-				// Gate-aware: a per-chunk timeout after the gate committed
-				// content must NOT be transparently retried — duplicating
-				// committed bytes on another supplier would violate
-				// "client connection is preserved across supplier node
-				// switches".
-				outcome = StreamOutcome{
-					Interrupted: true,
-					Reason:      "stream_chunk_timeout",
-					Kind:        errorsx.KindStreamTimeout,
-					Resumable:   !attemptHasClientSemanticOutput(attemptGate, chunkCount),
-					ChunkCount:  chunkCount,
-				}
+				outcome = StreamOutcome{Interrupted: true, Reason: "stream_chunk_timeout", Kind: errorsx.KindStreamTimeout, Resumable: true, ChunkCount: chunkCount}
 			} else {
 				outcome = streamReadFailureOutcome(err, chunkCount)
 			}

@@ -46,6 +46,7 @@ export default {
     groupWarn: '⚡ عقد في وضع تحذير ({count})',
     groupOk: '✅ عقد سليمة ({count})',
     groupDisabled: '🚫 عقد معطّلة ({count})',
+    nodeLabel: 'العقدة {credentialId}',
     circuit: 'قاطع',
     availability: 'متاحة',
     quota: 'الحصة',

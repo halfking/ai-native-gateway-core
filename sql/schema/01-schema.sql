@@ -2401,7 +2401,7 @@ BEGIN
         unit_price_in_per_1m, unit_price_out_per_1m,
         cache_read_price_per_1m, cache_write_price_per_1m,
         currency, billing_mode, pricing_source, pricing_updated_at,
-        admin_protected, context_window_override, priority
+        admin_protected
     ) VALUES (
         NEW.credential_id, NEW.id, COALESCE(NEW.available, TRUE),
         COALESCE(NEW.routing_tier, 2), COALESCE(NEW.weight, 100), COALESCE(NEW.manual_priority, 99),
@@ -2411,8 +2411,7 @@ BEGIN
         COALESCE(NEW.cache_read_price_per_1m, 0), COALESCE(NEW.cache_write_price_per_1m, 0),
         COALESCE(NEW.currency, 'USD'), COALESCE(NEW.billing_mode, 'token'),
         NEW.pricing_source, NEW.pricing_updated_at,
-        COALESCE(NEW.admin_protected, FALSE),
-        NEW.context_window_override, COALESCE(NEW.priority, FALSE)
+        COALESCE(NEW.admin_protected, FALSE)
     )
     ON CONFLICT (credential_id, provider_model_id) DO UPDATE SET
         routing_tier = COALESCE(EXCLUDED.routing_tier, credential_model_bindings.routing_tier),
@@ -2430,8 +2429,6 @@ BEGIN
         billing_mode = COALESCE(EXCLUDED.billing_mode, credential_model_bindings.billing_mode),
         pricing_source = COALESCE(EXCLUDED.pricing_source, credential_model_bindings.pricing_source),
         pricing_updated_at = COALESCE(EXCLUDED.pricing_updated_at, credential_model_bindings.pricing_updated_at),
-        context_window_override = COALESCE(EXCLUDED.context_window_override, credential_model_bindings.context_window_override),
-        priority = COALESCE(EXCLUDED.priority, credential_model_bindings.priority),
         updated_at = now();
 
     RETURN NEW;
@@ -2493,8 +2490,6 @@ BEGIN
         billing_mode = COALESCE(NEW.billing_mode, credential_model_bindings.billing_mode),
         pricing_source = COALESCE(NEW.pricing_source, credential_model_bindings.pricing_source),
         pricing_updated_at = COALESCE(NEW.pricing_updated_at, credential_model_bindings.pricing_updated_at),
-        context_window_override = COALESCE(NEW.context_window_override, credential_model_bindings.context_window_override),
-        priority = COALESCE(NEW.priority, credential_model_bindings.priority),
         updated_at = now()
     WHERE id = OLD.id;
 
@@ -2794,41 +2789,10 @@ CREATE FUNCTION public.notify_auto_route_refresh() RETURNS trigger
     LANGUAGE plpgsql
     AS $$ DECLARE entity_id text := ''; BEGIN IF TG_TABLE_NAME = 'credential_model_bindings' THEN entity_id := COALESCE(NEW.credential_id, OLD.credential_id)::text; ELSIF TG_TABLE_NAME IN ('credentials', 'api_keys', 'providers') THEN entity_id := COALESCE(NEW.id, OLD.id)::text; END IF; PERFORM pg_notify('auto_route_refresh', TG_TABLE_NAME || ':' || TG_OP || ':' || entity_id); RETURN COALESCE(NEW, OLD); END; $$;
 
--- Name: bump_credentials_governor_revision(); Type: FUNCTION; Schema: public; Owner: -
---
-
-CREATE FUNCTION public.bump_credentials_governor_revision() RETURNS trigger
-    LANGUAGE plpgsql
-    AS $$
-BEGIN
-    IF TG_OP = 'INSERT' THEN
-        NEW.revision := nextval('public.credentials_governor_revision_seq');
-    ELSIF OLD.concurrency_limit IS DISTINCT FROM NEW.concurrency_limit
-       OR OLD.concurrency_mode IS DISTINCT FROM NEW.concurrency_mode
-       OR OLD.rpm_limit IS DISTINCT FROM NEW.rpm_limit
-       OR OLD.tpm_limit IS DISTINCT FROM NEW.tpm_limit
-       OR OLD.fp_slot_limit IS DISTINCT FROM NEW.fp_slot_limit
-       OR OLD.max_queue_depth IS DISTINCT FROM NEW.max_queue_depth
-       OR OLD.max_queue_wait_ms IS DISTINCT FROM NEW.max_queue_wait_ms THEN
-        NEW.revision := nextval('public.credentials_governor_revision_seq');
-    ELSE
-        NEW.revision := OLD.revision;
-    END IF;
-    RETURN NEW;
-END;
-$$;
-
--- Name: notify_credentials_governor_revision(); Type: FUNCTION; Schema: public; Owner: -
---
-
-CREATE FUNCTION public.notify_credentials_governor_revision() RETURNS trigger
-    LANGUAGE plpgsql
-    AS $$ BEGIN PERFORM pg_notify('credentials_revision', NEW.revision::text); RETURN NEW; END; $$;
-
 
 --
 -- Name: populate_model_name_mapping_from_provider_models(); Type: FUNCTION; Schema: public; Owner: -
-
+--
 
 CREATE FUNCTION public.populate_model_name_mapping_from_provider_models() RETURNS void
     LANGUAGE plpgsql
@@ -3177,141 +3141,39 @@ $$;
 
 
 --
---
 -- Name: promote_request_logs_hot_to_partition(interval, integer); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE OR REPLACE FUNCTION public.promote_request_logs_hot_to_partition(p_retention interval DEFAULT '7 days'::interval, p_batch_size integer DEFAULT 5000) RETURNS bigint
+CREATE FUNCTION public.promote_request_logs_hot_to_partition(p_retention interval DEFAULT '7 days'::interval, p_batch_size integer DEFAULT 5000) RETURNS bigint
     LANGUAGE plpgsql
     AS $$
 DECLARE
-    moved bigint := 0;
-    month_rec record;
+  n bigint := 0;
 BEGIN
-    IF p_retention IS NULL OR p_retention <= interval '0 seconds' THEN
-        RAISE EXCEPTION 'p_retention must be positive';
-    END IF;
-    IF p_batch_size IS NULL OR p_batch_size < 1 OR p_batch_size > 50000 THEN
-        RAISE EXCEPTION 'p_batch_size must be between 1 and 50000';
-    END IF;
+  CREATE TEMP TABLE _promote_hot_batch ON COMMIT DROP AS
+  SELECT * FROM request_logs_hot
+  WHERE ts < now() - p_retention
+  ORDER BY ts
+  LIMIT p_batch_size;
 
-    -- Guarantee a routing target exists for every affected month before any
-    -- row leaves the hot table (ensure_request_logs_partition is idempotent).
-    FOR month_rec IN
-        SELECT DISTINCT date_trunc('month', ts) AS month_start
-        FROM public.request_logs_hot
-        WHERE ts < statement_timestamp() - p_retention
-        ORDER BY 1
-        LIMIT 12
-    LOOP
-        PERFORM public.ensure_request_logs_partition(month_rec.month_start);
-    END LOOP;
+  GET DIAGNOSTICS n = ROW_COUNT;
 
-    -- 2026-08-25 incident fix: the previous implementation DELETEd the batch
-    -- from request_logs_hot BEFORE a separately-protected
-    -- INSERT INTO request_logs SELECT * FROM _promote_hot_batch. Schema drift
-    -- between the two tables (hot carries caller_id / session_correlation_id /
-    -- status_code, the partitioned parent carries 14 legacy columns) made the
-    -- positional SELECT * fail on every batch, and because the DELETE had
-    -- already executed outside the exception sub-block, each failed batch was
-    -- silently dropped (the RAISE WARNING even claimed "rows preserved in hot
-    -- table"). Rewrite as ONE data-modifying CTE statement: delete and insert
-    -- commit atomically and any error propagates to the caller instead of
-    -- being swallowed. Columns are explicit so future drift cannot lose
-    -- positional alignment; the five hot-side columns whose types diverged
-    -- from the parent (protocol_conversion, ir_extensions,
-    -- sanitizer_mutations, content_safety_score, dlp_violations) are
-    -- intentionally omitted — no code path ever writes them, so promoting
-    -- NULLs is pointless and the cross-type casts would be loss-prone.
-    WITH batch AS (
-        SELECT id, ts
-        FROM public.request_logs_hot
-        WHERE ts < statement_timestamp() - p_retention
-        ORDER BY ts, id
-        LIMIT p_batch_size
-        FOR UPDATE SKIP LOCKED
-    ),
-    moved_rows AS (
-        DELETE FROM public.request_logs_hot
-        WHERE id IN (SELECT id FROM batch)
-        RETURNING
-                id, request_id, ts, tenant_id, application_id, api_key_id,
-                end_user_id, client_model, outbound_model, credential_id, provider_id, canonical_id,
-                client_profile, request_mode, prompt_tokens, completion_tokens, total_tokens, cost_usd,
-                latency_ms, success, error_kind, search_text, cache_read_tokens, cache_write_tokens,
-                identity_hash, virtual_client_id, virtual_ip, virtual_mac, affinity_hit, stream_first_chunk_ms,
-                stream_chunk_count, stream_interrupted, stream_done_sent, request_checksum, response_checksum, transform_rule_id,
-                egress_protocol, failure_stage, failure_detail_code, request_preview, transform_summary, response_preview,
-                stream_done_received, cost_display, cost_currency, usage_source, gw_session_id, gw_task_id,
-                request_status, api_key_prefix, owner_user, application_code, key_alias, api_key_owner_user,
-                is_auto_request, task_type, auto_profile, auto_decision, auto_confidence, work_type,
-                task_type_chosen, confidence_num, model_chosen, strategy_used, credits_charged, parent_request_id,
-                compression_reason, compression_strategy, compression_meta, outbound_msg_count, outbound_token_est, outbound_msg_hashes,
-                quality_flags, quality_fix_actions, quality_score, upstream_finish_reason, tool_calls, client_endpoint,
-                client_timeout, stream_chunk_errors, stream_chunks_sent, client_request_id, upstream_status_code, test_col,
-                test_tab_indent, provider_model, attachments, has_attachments, attachment_count, client_ip,
-                compression_start_index, compression_end_index, client_forwarded_for, agent_name, agent_type, api_key_fingerprint,
-                customer_id, upstream_endpoint, session_title, session_summary, task_id, task_title,
-                compression_ratio, cache_hit, cache_tokens_saved, sensitive_keywords, vendor_metadata, client_protocol,
-                rate_limit_status, upstream_protocol, reasoning_tokens, image_tokens, audio_tokens, video_tokens,
-                provider_tokens, origin_stage, origin_actor, routing_attempts, routing_summary, trace_events,
-                canonical_model, t0_arrived_at, t1_total_enqueued_at, t2_total_dequeued_at, t3_model_enqueued_at, t4_model_dequeued_at,
-                t5_cred_enqueued_at, t6_cred_dequeued_at, t7_forward_start_at, t8_response_start_at, t9_response_end_at, request_type,
-                is_final_success, discard_events, token_band
-    )
-    INSERT INTO public.request_logs (
-                id, request_id, ts, tenant_id, application_id, api_key_id,
-                end_user_id, client_model, outbound_model, credential_id, provider_id, canonical_id,
-                client_profile, request_mode, prompt_tokens, completion_tokens, total_tokens, cost_usd,
-                latency_ms, success, error_kind, search_text, cache_read_tokens, cache_write_tokens,
-                identity_hash, virtual_client_id, virtual_ip, virtual_mac, affinity_hit, stream_first_chunk_ms,
-                stream_chunk_count, stream_interrupted, stream_done_sent, request_checksum, response_checksum, transform_rule_id,
-                egress_protocol, failure_stage, failure_detail_code, request_preview, transform_summary, response_preview,
-                stream_done_received, cost_display, cost_currency, usage_source, gw_session_id, gw_task_id,
-                request_status, api_key_prefix, owner_user, application_code, key_alias, api_key_owner_user,
-                is_auto_request, task_type, auto_profile, auto_decision, auto_confidence, work_type,
-                task_type_chosen, confidence_num, model_chosen, strategy_used, credits_charged, parent_request_id,
-                compression_reason, compression_strategy, compression_meta, outbound_msg_count, outbound_token_est, outbound_msg_hashes,
-                quality_flags, quality_fix_actions, quality_score, upstream_finish_reason, tool_calls, client_endpoint,
-                client_timeout, stream_chunk_errors, stream_chunks_sent, client_request_id, upstream_status_code, test_col,
-                test_tab_indent, provider_model, attachments, has_attachments, attachment_count, client_ip,
-                compression_start_index, compression_end_index, client_forwarded_for, agent_name, agent_type, api_key_fingerprint,
-                customer_id, upstream_endpoint, session_title, session_summary, task_id, task_title,
-                compression_ratio, cache_hit, cache_tokens_saved, sensitive_keywords, vendor_metadata, client_protocol,
-                rate_limit_status, upstream_protocol, reasoning_tokens, image_tokens, audio_tokens, video_tokens,
-                provider_tokens, origin_stage, origin_actor, routing_attempts, routing_summary, trace_events,
-                canonical_model, t0_arrived_at, t1_total_enqueued_at, t2_total_dequeued_at, t3_model_enqueued_at, t4_model_dequeued_at,
-                t5_cred_enqueued_at, t6_cred_dequeued_at, t7_forward_start_at, t8_response_start_at, t9_response_end_at, request_type,
-                is_final_success, discard_events, token_band
-    )
-    SELECT
-                id, request_id, ts, tenant_id, application_id, api_key_id,
-                end_user_id, client_model, outbound_model, credential_id, provider_id, canonical_id,
-                client_profile, request_mode, prompt_tokens, completion_tokens, total_tokens, cost_usd,
-                latency_ms, success, error_kind, search_text, cache_read_tokens, cache_write_tokens,
-                identity_hash, virtual_client_id, virtual_ip, virtual_mac, affinity_hit, stream_first_chunk_ms,
-                stream_chunk_count, stream_interrupted, stream_done_sent, request_checksum, response_checksum, transform_rule_id,
-                egress_protocol, failure_stage, failure_detail_code, request_preview, transform_summary, response_preview,
-                stream_done_received, cost_display, cost_currency, usage_source, gw_session_id, gw_task_id,
-                request_status, api_key_prefix, owner_user, application_code, key_alias, api_key_owner_user,
-                is_auto_request, task_type, auto_profile, auto_decision, auto_confidence, work_type,
-                task_type_chosen, confidence_num, model_chosen, strategy_used, credits_charged, parent_request_id,
-                compression_reason, compression_strategy, compression_meta, outbound_msg_count, outbound_token_est, outbound_msg_hashes,
-                quality_flags, quality_fix_actions, quality_score, upstream_finish_reason, tool_calls, client_endpoint,
-                client_timeout, stream_chunk_errors, stream_chunks_sent, client_request_id, upstream_status_code, test_col,
-                test_tab_indent, provider_model, attachments, has_attachments, attachment_count, client_ip,
-                compression_start_index, compression_end_index, client_forwarded_for, agent_name, agent_type, api_key_fingerprint,
-                customer_id, upstream_endpoint, session_title, session_summary, task_id, task_title,
-                compression_ratio, cache_hit, cache_tokens_saved, sensitive_keywords, vendor_metadata, client_protocol,
-                rate_limit_status, upstream_protocol, reasoning_tokens, image_tokens, audio_tokens, video_tokens,
-                provider_tokens, origin_stage, origin_actor, routing_attempts, routing_summary, trace_events,
-                canonical_model, t0_arrived_at, t1_total_enqueued_at, t2_total_dequeued_at, t3_model_enqueued_at, t4_model_dequeued_at,
-                t5_cred_enqueued_at, t6_cred_dequeued_at, t7_forward_start_at, t8_response_start_at, t9_response_end_at, request_type,
-                is_final_success, discard_events, token_band
-    FROM moved_rows;
+  IF n = 0 THEN
+    RETURN 0;
+  END IF;
 
-    GET DIAGNOSTICS moved = ROW_COUNT;
-    RETURN moved;
+  DELETE FROM request_logs_hot
+  WHERE id IN (SELECT id FROM _promote_hot_batch);
+
+  BEGIN
+    INSERT INTO request_logs
+    SELECT * FROM _promote_hot_batch;
+  EXCEPTION WHEN OTHERS THEN
+    RAISE WARNING 'promote_request_logs_hot_to_partition: INSERT failed (%), rows preserved in hot table', SQLERRM;
+    n := 0;
+  END;
+
+  RETURN n;
 END;
 $$;
 
@@ -4636,16 +4498,7 @@ CREATE TABLE public.approval_queue (
     reason text,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     expires_at timestamp with time zone NOT NULL,
-    resume_state text DEFAULT 'idle'::text NOT NULL,
-    resume_owner text,
-    resume_lease_until timestamp with time zone,
-    resume_fencing_token bigint DEFAULT 0 NOT NULL,
-    resume_started_at timestamp with time zone,
-    resume_completed_at timestamp with time zone,
-    resume_error text,
-    CONSTRAINT approval_queue_status_chk CHECK ((status = ANY (ARRAY['pending'::text, 'approved'::text, 'rejected'::text, 'timeout'::text]))),
-    CONSTRAINT approval_queue_resume_state_chk CHECK ((resume_state = ANY (ARRAY['idle'::text, 'running'::text, 'completed'::text, 'failed'::text]))),
-    CONSTRAINT approval_queue_resume_fencing_token_chk CHECK ((resume_fencing_token >= 0))
+    CONSTRAINT approval_queue_status_chk CHECK ((status = ANY (ARRAY['pending'::text, 'approved'::text, 'rejected'::text, 'timeout'::text])))
 );
 
 ALTER TABLE ONLY public.approval_queue FORCE ROW LEVEL SECURITY;
@@ -5331,9 +5184,7 @@ CREATE TABLE public.credential_model_bindings (
     transient_failure_count integer DEFAULT 0,
     pending_verification boolean DEFAULT false,
     plan_type_origin text,
-    plan_type_updated_at timestamp with time zone,
-    context_window_override integer,
-    priority boolean DEFAULT false NOT NULL
+    plan_type_updated_at timestamp with time zone
 );
 
 
@@ -6037,7 +5888,6 @@ CREATE TABLE public.credentials (
     plan_type text,
     plan_type_updated_at timestamp with time zone,
     rpm_limit integer,
-    revision bigint DEFAULT 0 NOT NULL,
     auto_disabled_at timestamp with time zone,
     auto_disabled_reason text,
     auto_enabled_at timestamp with time zone,
@@ -6130,13 +5980,6 @@ the template rpmLimit; paid credentials are typically NULL.';
 
 
 --
--- Name: COLUMN credentials.revision; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.credentials.revision IS 'Globally monotonic governor policy revision. Bumped by governor-relevant credential writes and consumed by domains/dispatch/policy_publisher.go via LISTEN credentials_revision.';
-
-
---
 -- Name: COLUMN credentials.auto_disabled_at; Type: COMMENT; Schema: public; Owner: -
 --
 
@@ -6188,19 +6031,6 @@ CREATE SEQUENCE public.credentials_id_seq
 --
 
 ALTER SEQUENCE public.credentials_id_seq OWNED BY public.credentials.id;
-
-
---
--- Name: credentials_governor_revision_seq; Type: SEQUENCE; Schema: public; Owner: -
---
-
-CREATE SEQUENCE public.credentials_governor_revision_seq
-    AS bigint
-    START WITH 1
-    INCREMENT BY 1
-    MINVALUE 1
-    NO MAXVALUE
-    CACHE 1;
 
 
 --
@@ -9025,9 +8855,7 @@ CREATE VIEW public.model_offers AS
     cmb.admin_protected,
     cmb.created_at,
     cmb.updated_at,
-    pm.modality AS provider_modality,
-    cmb.context_window_override,
-    cmb.priority
+    pm.modality AS provider_modality
    FROM (public.credential_model_bindings cmb
      JOIN public.provider_models pm ON ((pm.id = cmb.provider_model_id)));
 
@@ -22048,14 +21876,6 @@ CREATE INDEX idx_approval_queue_expires ON public.approval_queue USING btree (ex
 
 
 --
--- Name: idx_approval_queue_resume_claimable; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_approval_queue_resume_claimable ON public.approval_queue USING btree (resume_lease_until, created_at)
-    WHERE ((status = 'approved'::text) AND (resume_state = ANY (ARRAY['idle'::text, 'running'::text, 'failed'::text])));
-
-
---
 -- Name: idx_approval_queue_session; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -22431,12 +22251,6 @@ CREATE INDEX idx_credentials_auto_limit ON public.credentials USING btree (concu
 --
 
 CREATE INDEX idx_credentials_plan_type ON public.credentials USING btree (plan_type);
-
---
--- Name: credentials_revision_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX credentials_revision_idx ON public.credentials USING btree (revision);
 
 
 --
@@ -24018,7 +23832,7 @@ CREATE INDEX idx_request_logs_provider_quality ON ONLY public.request_logs USING
 -- Name: idx_request_logs_provider_tool_calls; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX idx_request_logs_provider_tool_calls ON ONLY public.request_logs USING btree (provider_id, ts DESC) WHERE ((tool_calls IS NOT NULL) AND (jsonb_typeof(tool_calls) = 'array') AND (jsonb_array_length(tool_calls) > 0));
+CREATE INDEX idx_request_logs_provider_tool_calls ON ONLY public.request_logs USING btree (provider_id, ts DESC) WHERE ((tool_calls IS NOT NULL) AND (jsonb_array_length(tool_calls) > 0));
 
 
 --
@@ -25502,7 +25316,7 @@ CREATE INDEX request_logs_2026_07_provider_id_quality_score_ts_idx ON public.req
 -- Name: request_logs_2026_07_provider_id_ts_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX request_logs_2026_07_provider_id_ts_idx ON public.request_logs_2026_07 USING btree (provider_id, ts DESC) WHERE ((tool_calls IS NOT NULL) AND (jsonb_typeof(tool_calls) = 'array') AND (jsonb_array_length(tool_calls) > 0));
+CREATE INDEX request_logs_2026_07_provider_id_ts_idx ON public.request_logs_2026_07 USING btree (provider_id, ts DESC) WHERE ((tool_calls IS NOT NULL) AND (jsonb_array_length(tool_calls) > 0));
 
 
 --
@@ -25747,7 +25561,7 @@ CREATE INDEX request_logs_2026_08_provider_id_quality_score_ts_idx ON public.req
 -- Name: request_logs_2026_08_provider_id_ts_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX request_logs_2026_08_provider_id_ts_idx ON public.request_logs_2026_08 USING btree (provider_id, ts DESC) WHERE ((tool_calls IS NOT NULL) AND (jsonb_typeof(tool_calls) = 'array') AND (jsonb_array_length(tool_calls) > 0));
+CREATE INDEX request_logs_2026_08_provider_id_ts_idx ON public.request_logs_2026_08 USING btree (provider_id, ts DESC) WHERE ((tool_calls IS NOT NULL) AND (jsonb_array_length(tool_calls) > 0));
 
 
 --
@@ -27949,29 +27763,14 @@ CREATE TRIGGER trg_notify_auto_route_cmb_insert_delete AFTER INSERT OR DELETE ON
 -- Name: credential_model_bindings trg_notify_auto_route_cmb_update; Type: TRIGGER; Schema: public; Owner: -
 --
 
-CREATE TRIGGER trg_notify_auto_route_cmb_update AFTER UPDATE ON public.credential_model_bindings FOR EACH ROW WHEN (((old.available IS DISTINCT FROM new.available) OR (old.unavailable_reason IS DISTINCT FROM new.unavailable_reason) OR (old.unavailable_at IS DISTINCT FROM new.unavailable_at) OR (old.routing_tier IS DISTINCT FROM new.routing_tier) OR (old.weight IS DISTINCT FROM new.weight) OR (old.manual_priority IS DISTINCT FROM new.manual_priority) OR (old.active_sessions IS DISTINCT FROM new.active_sessions) OR (old.consecutive_failures IS DISTINCT FROM new.consecutive_failures) OR (old.context_window_override IS DISTINCT FROM new.context_window_override) OR (old.priority IS DISTINCT FROM new.priority)) EXECUTE FUNCTION public.notify_auto_route_refresh();
+CREATE TRIGGER trg_notify_auto_route_cmb_update AFTER UPDATE ON public.credential_model_bindings FOR EACH ROW WHEN (((old.available IS DISTINCT FROM new.available) OR (old.unavailable_reason IS DISTINCT FROM new.unavailable_reason) OR (old.unavailable_at IS DISTINCT FROM new.unavailable_at) OR (old.routing_tier IS DISTINCT FROM new.routing_tier) OR (old.weight IS DISTINCT FROM new.weight) OR (old.manual_priority IS DISTINCT FROM new.manual_priority) OR (old.active_sessions IS DISTINCT FROM new.active_sessions) OR (old.consecutive_failures IS DISTINCT FROM new.consecutive_failures))) EXECUTE FUNCTION public.notify_auto_route_refresh();
 
 
 --
 -- Name: credentials trg_notify_auto_route_creds; Type: TRIGGER; Schema: public; Owner: -
 --
 
-CREATE TRIGGER trg_notify_auto_route_creds AFTER UPDATE OF status, availability_state, quota_state, circuit_state, concurrency_limit, concurrency_mode, rpm_limit, tpm_limit, fp_slot_limit, max_queue_depth, max_queue_wait_ms, lifecycle_status, manual_disabled ON public.credentials FOR EACH ROW WHEN ((old.* IS DISTINCT FROM new.*)) EXECUTE FUNCTION public.notify_auto_route_refresh();
-
--- Name: credentials trg_bump_credentials_governor_revision; Type: TRIGGER; Schema: public; Owner: -
---
-
-CREATE TRIGGER trg_bump_credentials_governor_revision BEFORE INSERT OR UPDATE OF concurrency_limit, concurrency_mode, rpm_limit, tpm_limit, fp_slot_limit, max_queue_depth, max_queue_wait_ms ON public.credentials FOR EACH ROW EXECUTE FUNCTION public.bump_credentials_governor_revision();
-
--- Name: credentials trg_notify_credentials_governor_revision_insert; Type: TRIGGER; Schema: public; Owner: -
---
-
-CREATE TRIGGER trg_notify_credentials_governor_revision_insert AFTER INSERT ON public.credentials FOR EACH ROW EXECUTE FUNCTION public.notify_credentials_governor_revision();
-
--- Name: credentials trg_notify_credentials_governor_revision_update; Type: TRIGGER; Schema: public; Owner: -
---
-
-CREATE TRIGGER trg_notify_credentials_governor_revision_update AFTER UPDATE OF concurrency_limit, concurrency_mode, rpm_limit, tpm_limit, fp_slot_limit, max_queue_depth, max_queue_wait_ms ON public.credentials FOR EACH ROW WHEN ((old.revision IS DISTINCT FROM new.revision)) EXECUTE FUNCTION public.notify_credentials_governor_revision();
+CREATE TRIGGER trg_notify_auto_route_creds AFTER UPDATE OF status, availability_state, quota_state, circuit_state, concurrency_limit, lifecycle_status, manual_disabled ON public.credentials FOR EACH ROW WHEN ((old.* IS DISTINCT FROM new.*)) EXECUTE FUNCTION public.notify_auto_route_refresh();
 
 
 --

@@ -20,7 +20,7 @@ import (
 //  2. 租户白名单 TRANSPORT_IR_TENANT_WHITELIST
 //  3. 模型白名单 TRANSPORT_IR_MODEL_WHITELIST
 //  4. 百分比灰度 TRANSPORT_IR_ROLLOUT_PERCENT（基于 tenant_id+model 哈希稳定分配）
-//  5. 默认 IR；显式 false 或流式熔断时回退 Legacy
+//  5. 默认 Legacy
 type TransportFactory struct {
 	mu              sync.RWMutex
 	irTransport     *IRTransport
@@ -45,10 +45,10 @@ func NewTransportFactory() *TransportFactory {
 	return &TransportFactory{
 		irTransport:     NewIRTransport(),
 		legacyTransport: NewLegacyTransport(),
-		enabled:         true,
+		enabled:         false,
 		tenantWhitelist: make(map[string]struct{}),
 		modelWhitelist:  make(map[string]struct{}),
-		rolloutPercent:  100,
+		rolloutPercent:  0,
 	}
 }
 
@@ -57,10 +57,10 @@ func (f *TransportFactory) Reload() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	f.enabled = os.Getenv("TRANSPORT_LAYER_IR_ENABLED") != "false"
+	f.enabled = os.Getenv("TRANSPORT_LAYER_IR_ENABLED") == "true"
 	f.tenantWhitelist = parseList(os.Getenv("TRANSPORT_IR_TENANT_WHITELIST"))
 	f.modelWhitelist = parseList(os.Getenv("TRANSPORT_IR_MODEL_WHITELIST"))
-	f.rolloutPercent = parseInt(os.Getenv("TRANSPORT_IR_ROLLOUT_PERCENT"), 100, 0, 100)
+	f.rolloutPercent = parseInt(os.Getenv("TRANSPORT_IR_ROLLOUT_PERCENT"), 0, 0, 100)
 
 	// 同步 metric
 	SetActiveImplementation("ir", f.enabled)

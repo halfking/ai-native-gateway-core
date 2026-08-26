@@ -379,16 +379,4 @@ tabs: {
     modelBreakdown: 'モデル別',
     dailyBreakdown: '日次モデル内訳',
   },
-  statsRow: {
-    totalSessions: "Total Sessions",
-    activeSessions: "Active Sessions",
-    activeHint: "Active in 24h",
-    totalCost: "Total Cost",
-    complianceRate: "Compliance Rate",
-    avgHealthScore: "Avg Health Score",
-    healthHint: "From session health score",
-    avgLatency: "Avg Latency",
-    totalRequests: "Total Requests",
-    totalTokens: "Total Tokens",
-  },
 }

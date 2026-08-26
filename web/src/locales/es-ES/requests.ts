@@ -120,9 +120,9 @@ export default {
       sessionSummary: 'Resumen de sesión',
       sessionSummaryHint: 'Solo disponible con un filtro de ID de sesión activo',
       // 2026-08-06: etiqueta y tooltip del botón "Resumen de sesión" en el cajetín de detalle.
-      drawerSummaryButton: 'Resumen',
-      drawerSummaryTitle: 'Ver o generar el resumen de sesión',
-      drawerSummaryAria: 'Resumen de sesión',
+      drawerSummaryButton: '📝 Resumen de sesión',
+      drawerSummaryTitle: 'Abrir el registro de peticiones filtrado por esta sesión',
+      drawerSummaryAria: 'Abrir la vista de resumen de sesión',
       generating: 'Resumiendo…',
       generate: 'Generar resumen',
       exportMd: 'Exportar Markdown',

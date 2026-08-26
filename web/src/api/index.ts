@@ -17,9 +17,6 @@ export * from './modules'
 export * from './usage'
 export * from './board'
 export * from './request-journeys'
-export * from './node-health'
-export * from './connection-registry'
-export * from './vendor-credential-error'
 export {
   BASE,
   headers,

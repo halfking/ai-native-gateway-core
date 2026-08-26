@@ -243,21 +243,3 @@ func CanonicalizeClientModel(rawName string) string {
 	}
 	return strings.TrimSpace(rawName)
 }
-
-// StripAliasPrefix removes the client-facing model alias prefix from a model name.
-// When clients send "kx-gpt-5.6-terra", this strips "kx-" and returns "gpt-5.6-terra".
-// The prefix comparison is case-insensitive since model names are normalized to lowercase
-// before this function is called. If the model does not start with prefix, it is returned unchanged.
-// Empty prefix disables stripping.
-func StripAliasPrefix(model, prefix string) string {
-	if prefix == "" {
-		return model
-	}
-	modelLower := strings.ToLower(model)
-	prefixLower := strings.ToLower(prefix)
-	if strings.HasPrefix(modelLower, prefixLower) {
-		stripped := model[len(prefix):]
-		return strings.TrimPrefix(stripped, prefix)
-	}
-	return model
-}

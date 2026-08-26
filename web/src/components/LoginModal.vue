@@ -167,7 +167,7 @@ async function handleLogin() {
   border-radius: 12px;
   padding: 24px;
   width: min(400px, calc(100vw - 32px));
-  box-shadow: 0 16px 48px var(--overlay-strong);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.45);
 }
 
 .login-modal__header {

@@ -90,7 +90,7 @@ async function handleSubmit() {
 .modal-backdrop {
   position: fixed;
   inset: 0;
-  background: var(--overlay-strong);
+  background: rgba(0,0,0,.5);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -120,5 +120,5 @@ async function handleSubmit() {
 }
 .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
 .alert { padding: 8px 12px; border-radius: 4px; font-size: 13px; margin-bottom: 12px; }
-.alert-danger { background: var(--danger-bg); color: var(--danger); border: 1px solid var(--danger-bd); }
+.alert-danger { background: rgba(239,68,68,.1); color: #f87171; border: 1px solid rgba(239,68,68,.3); }
 </style>

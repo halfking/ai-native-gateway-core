@@ -1,4 +1,4 @@
-import { store, clearApiKey, clearAll, authBearer, getLocale, isAuthenticated } from '../store'
+import { store, clearApiKey, clearAll, authBearer, getLocale } from '../store'
 import type { UserInfo } from '../store'
 
 // _core.ts — v6.0 audit T12 (2026-06-22)
@@ -45,36 +45,6 @@ function isAdminProtectedPath(path: string): boolean {
   )
 }
 
-// isOnInlineLoginScreen reports whether the SPA is already showing the
-// home inline-login (router sends unauthenticated users to /?login=1).
-// Loop guard: a 401 arriving while already on that screen must not
-// trigger another redirect.
-function isOnInlineLoginScreen(): boolean {
-  return (
-    window.location.pathname === '/' &&
-    window.location.search.includes('login=1')
-  )
-}
-
-// isSessionExpiredAuthLoss reports whether a 401 from `path` should be
-// treated as "the session died mid-page" for a user the SPA still
-// considers authenticated. Conditions:
-//  - the endpoint is an /api/* call (same family as the admin surface,
-//    authenticated by the llmgw_session cookie), and
-//  - the SPA still believes the user is logged in (stale localStorage
-//    userInfo while the cookie expired), and
-//  - the endpoint is not the auth hydration probe (/api/auth/me), whose
-//    401 is the EXPECTED "logged out" answer and is handled explicitly
-//    by App.vue (see comment above isAdminProtectedPath).
-// When true the caller clears auth state and bounces to the inline
-// login so mounted pollers stop hammering protected endpoints.
-function isSessionExpiredAuthLoss(path: string): boolean {
-  if (!path.startsWith('/api/') || path === '/api/auth/me') {
-    return false
-  }
-  return isAuthenticated()
-}
-
 export interface RequestOptions {
   signal?: AbortSignal
 }
@@ -109,18 +79,6 @@ export async function req<T>(method: string, path: string, body?: unknown, optio
       clearAll()
       if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
         window.location.href = '/login'
-      }
-    } else if (isSessionExpiredAuthLoss(path)) {
-      // 2026-08-24: 其他受保护 /api 端点（background-tasks、credentials/
-      // sliding-window 等）在 SPA 仍认为已登录时返回 401 = 会话中途失效
-      // （cookie 过期）。此前这些路径的 401 只 throw，挂着的管理面板轮询
-      // 永不停歇 —— 252 nginx 单日 9.6 万次 /api 401 风暴的根因之一。
-      // clear + 整页跳到内联登录（与 router 守卫的 /?login=1 语义一致），
-      // 页面刷新后所有轮询组件随路由卸载自然停止。
-      clearAll()
-      if (typeof window !== 'undefined' && !isOnInlineLoginScreen()) {
-        const redirect = window.location.pathname + window.location.search
-        window.location.href = '/?login=1&redirect=' + encodeURIComponent(redirect)
       }
     }
     // 公共/半公开端点 401（如 /healthz?full=true）只 throw，不强制 redirect，避免 loop

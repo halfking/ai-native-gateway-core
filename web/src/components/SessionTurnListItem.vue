@@ -61,43 +61,42 @@ const ts = computed(() => {
 .turn-row {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  border: 1px solid var(--surface-secondary);
+  border: 1px solid #e5e7eb;
   border-radius: 8px;
   padding: 12px;
   margin-bottom: 8px;
   cursor: pointer;
   transition: background 0.15s;
-  background: var(--bg-card, var(--card, var(--kx-surface)));
-  color: var(--text, var(--kx-text));
+  background: white;
 }
-.turn-row:hover { background: var(--surface-secondary); }
-.turn-row.active { background: var(--info-bg); border-color: var(--accent); }
+.turn-row:hover { background: #f9fafb; }
+.turn-row.active { background: #eff6ff; border-color: #3b82f6; }
 .col { padding: 0 8px; }
-.col + .col { border-left: 1px dashed var(--surface-secondary); }
+.col + .col { border-left: 1px dashed #e5e7eb; }
 .meta {
   display: flex;
   gap: 8px;
   font-size: 12px;
-  color: var(--muted);
+  color: #6b7280;
   margin-bottom: 6px;
   flex-wrap: wrap;
 }
-.turn-no { font-weight: 600; color: var(--kx-text); }
+.turn-no { font-weight: 600; color: #111827; }
 .verdict { padding: 2px 6px; border-radius: 4px; font-size: 11px; }
-.tag-pass { background: var(--success-bg); color: var(--success-strong); }
-.tag-warn { background: var(--warning-bg); color: var(--warning-dark); }
-.tag-block { background: var(--danger-bg); color: var(--danger-dark); }
-.tag-skip { background: var(--surface-secondary); color: var(--muted); }
-.preview { color: var(--kx-text); margin-bottom: 6px; }
+.tag-pass { background: #d1fae5; color: #065f46; }
+.tag-warn { background: #fef3c7; color: #92400e; }
+.tag-block { background: #fee2e2; color: #991b1b; }
+.tag-skip { background: #f3f4f6; color: #4b5563; }
+.preview { color: #111827; margin-bottom: 6px; }
 .badges { display: flex; gap: 6px; flex-wrap: wrap; }
 .badge {
-  background: var(--surface-secondary);
+  background: #f3f4f6;
   padding: 2px 6px;
   border-radius: 4px;
   font-size: 11px;
-  color: var(--muted);
+  color: #4b5563;
 }
-.badge.cost { background: var(--success-bg); color: var(--success-strong); }
-.badge.status[data-ok="true"] { background: var(--success-bg); color: var(--success-strong); }
-.badge.status[data-ok="false"] { background: var(--danger-bg); color: var(--danger-dark); }
+.badge.cost { background: #ecfdf5; color: #065f46; }
+.badge.status[data-ok="true"] { background: #d1fae5; color: #065f46; }
+.badge.status[data-ok="false"] { background: #fee2e2; color: #991b1b; }
 </style>

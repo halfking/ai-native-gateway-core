@@ -121,7 +121,6 @@ type RedisLimiter struct {
 	// goroutine; recoveryStop signals the live one to exit.
 	recovering   bool
 	recoveryStop chan struct{}
-	admission    *MinuteBucketAdmission
 }
 
 // NewRedisLimiter creates a limiter backed by the given Redis client.
@@ -131,80 +130,18 @@ func NewRedisLimiter(rdb *redis.Client) *RedisLimiter {
 		client:       rdb,
 		fallback:     NewSlidingWindowLimiter(),
 		recoveryStop: make(chan struct{}),
-		admission:    NewMinuteBucketAdmission(),
 	}
-}
-
-func (l *RedisLimiter) AdmitRPM(ctx context.Context, keyID, limit int) (AdmissionResult, error) {
-	return l.AdmitRPMWithWait(ctx, keyID, limit, nil)
-}
-
-func (l *RedisLimiter) AdmitRPMWithWait(ctx context.Context, keyID, limit int, notify func(AdmissionResult)) (AdmissionResult, error) {
-	return l.AdmitRPMWithBudget(ctx, keyID, limit, 0, notify)
-}
-
-// AdmitRPMWithBudget enforces a hard queue-wait cap (see
-// RPMBudgetedAdmission). For the Redis-backed path the wait estimate is
-// computed from the Lua-returned queue position; over-budget requests are
-// removed from the queue immediately and rejected with
-// ErrQueueBudgetExceeded.
-func (l *RedisLimiter) AdmitRPMWithBudget(ctx context.Context, keyID, limit int, maxWait time.Duration, notify func(AdmissionResult)) (AdmissionResult, error) {
-	if l.client == nil || !l.isRedisAvailable() {
-		return l.admission.AdmitRPMWithBudget(ctx, keyID, limit, maxWait, notify)
-	}
-	result, err := l.admitRPMRedisWithBudget(ctx, keyID, limit, maxWait, notify)
-	if errors.Is(err, ErrMinuteBucketFull) || errors.Is(err, ErrQueueBudgetExceeded) {
-		return result, err
-	}
-	if err != nil {
-		l.markUnhealthy(err)
-		return l.admission.AdmitRPMWithBudget(ctx, keyID, limit, maxWait, notify)
-	}
-	return result, nil
 }
 
 // NewRedisLimiterFromEnv creates a limiter using the RATE_LIMIT_REDIS_URL
 // environment variable (e.g. "redis://localhost:6379/0").  Falls back to
 // in-memory if the variable is empty.
-//
-// 2026-08-25 ICR-A5 P2-1: 新增 fallback 链: RATE_LIMIT_REDIS_URL →
-// REDIS_URL → LLM_GATEWAY_REDIS_ADDR/DB → in-memory. 这样即使运维误配
-// (RATE_LIMIT_REDIS_URL 指向独立实例/db), 仍能 fallback 到主网关 Redis
-// 共享 db (避免 rate limiter 与主网关状态分裂).
 func NewRedisLimiterFromEnv() *RedisLimiter {
 	url := strings.TrimSpace(os.Getenv("RATE_LIMIT_REDIS_URL"))
 	if url == "" {
 		url = strings.TrimSpace(os.Getenv("REDIS_URL"))
 	}
 	if url == "" {
-		// 2026-08-25 ICR-A5 P2-1: fallback 到主网关 Redis (LLM_GATEWAY_REDIS_ADDR)
-		addr := strings.TrimSpace(os.Getenv("LLM_GATEWAY_REDIS_ADDR"))
-		if addr != "" {
-			db := 0
-			if dbStr := strings.TrimSpace(os.Getenv("LLM_GATEWAY_REDIS_DB")); dbStr != "" {
-				if n, err := strconv.Atoi(dbStr); err == nil && n >= 0 && n < 16 {
-					db = n
-				}
-			}
-			password := os.Getenv("LLM_GATEWAY_REDIS_PASSWORD")
-			rdb := redis.NewClient(&redis.Options{
-				Addr:        addr,
-				DB:          db,
-				Password:    password,
-				DialTimeout: 2 * time.Second,
-				ReadTimeout: 1 * time.Second,
-			})
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			defer cancel()
-			if err := rdb.Ping(ctx).Err(); err != nil {
-				slog.Warn("Redis (main) ping failed, rate limiter will use in-memory fallback",
-					"addr", addr, "db", db, "error", err)
-				return NewRedisLimiter(nil)
-			}
-			slog.Info("rate limiter using main gateway Redis (LLM_GATEWAY_REDIS_ADDR fallback)",
-				"addr", addr, "db", db)
-			return NewRedisLimiter(rdb)
-		}
 		slog.Warn("RATE_LIMIT_REDIS_URL not set, using in-process rate limiter")
 		return NewRedisLimiter(nil)
 	}

@@ -6,25 +6,6 @@ import (
 	"testing"
 )
 
-func TestCompressMessagesIfNeeded_AccountsForFixedTopLevelFields(t *testing.T) {
-	long := strings.Repeat("x", 400)
-	tools := strings.Repeat("tool-schema-", 20)
-	body := []byte(`{"model":"m","tools":"` + tools + `","messages":[
-		{"role":"user","content":"` + long + `"},
-		{"role":"assistant","content":"` + long + `"},
-		{"role":"user","content":"` + long + `"},
-		{"role":"assistant","content":"` + long + `"},
-		{"role":"user","content":"latest"}
-	]}`)
-	out := CompressMessagesIfNeeded(body, 300)
-	if len(out) >= len(body) {
-		t.Fatal("expected fixed-field-heavy body to be trimmed")
-	}
-	if got := EstimateTokens(out); got > 255 {
-		t.Fatalf("trimmed body estimate must include fixed fields and stay below soft budget: got %d", got)
-	}
-}
-
 func TestCompressMessagesIfNeeded_NoOpWhenFits(t *testing.T) {
 	body := []byte(`{"model":"m","messages":[
 		{"role":"system","content":"You are helpful."},

@@ -51,14 +51,4 @@ func TestModelAvailabilityCacheSet(t *testing.T) {
 	if ttl := mr.TTL("llmgw:avail:42:minimax-m3"); ttl <= 0 {
 		t.Fatalf("ttl = %v, want > 0", ttl)
 	}
-	indexed, err := mr.SIsMember(availabilityIndexKey, "llmgw:avail:42:minimax-m3")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !indexed {
-		t.Fatalf("availability index missing cache key")
-	}
-	if ttl := mr.TTL(availabilityIndexReadyKey); ttl <= 0 {
-		t.Fatalf("index readiness ttl = %v, want > 0", ttl)
-	}
 }

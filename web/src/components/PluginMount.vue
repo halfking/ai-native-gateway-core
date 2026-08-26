@@ -90,6 +90,6 @@ onBeforeUnmount(() => {
 <style scoped>
 .plugin-mount { height: calc(100vh - 56px); width: 100%; }
 .plugin-iframe { width: 100%; height: 100%; border: 0; }
-.plugin-degraded { padding: 4rem 2rem 2rem; color: var(--muted); text-align: center; }
-.plugin-degraded .muted { color: var(--muted); font-size: 0.9em; margin-top: 0.5rem; }
+.plugin-degraded { padding: 4rem 2rem 2rem; color: #666; text-align: center; }
+.plugin-degraded .muted { color: #999; font-size: 0.9em; margin-top: 0.5rem; }
 </style>

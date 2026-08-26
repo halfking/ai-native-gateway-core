@@ -136,7 +136,7 @@ onMounted(loadTags)
   position: absolute; top: 100%; left: 0; right: 0; z-index: 10;
   margin-top: 2px; background: var(--card); border: 1px solid var(--border); border-radius: 6px;
   list-style: none; padding: 4px 0; max-height: 200px; overflow-y: auto;
-  box-shadow: 0 4px 12px var(--overlay-light);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1);
 }
 .suggest li { padding: 4px 10px; cursor: pointer; font-size: 12px; }
 .suggest li:hover { background: var(--bg); }

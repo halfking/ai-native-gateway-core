@@ -49,7 +49,7 @@ function openDialog(tool: ToolId) {
 }
 
 .tool-card {
-  background: color-mix(in srgb, var(--kx-text) 4%, transparent);
+  background: rgba(255, 255, 255, 0.03);
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 14px 16px;

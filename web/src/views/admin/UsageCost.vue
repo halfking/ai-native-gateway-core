@@ -541,9 +541,9 @@ onMounted(() => {
 }
 
 .alert-danger {
-  background: color-mix(in srgb, var(--danger) 14%, transparent);
-  color: var(--danger);
-  border: 1px solid var(--danger-strong);
+  background: rgba(239, 68, 68, 0.1);
+  color: #f87171;
+  border: 1px solid rgba(239, 68, 68, 0.3);
 }
 
 .section {
@@ -657,11 +657,11 @@ onMounted(() => {
 }
 
 .trend-up {
-  color: var(--danger) !important;
+  color: #f87171 !important;
 }
 
 .trend-down {
-  color: var(--success) !important;
+  color: #4ade80 !important;
 }
 
 .trend-flat {
@@ -678,8 +678,8 @@ onMounted(() => {
 }
 
 .badge-warning {
-  background: var(--warning-bd);
-  color: var(--warning);
+  background: rgba(251, 146, 60, 0.15);
+  color: #fb923c;
 }
 
 /* 图表容器 */
@@ -791,7 +791,7 @@ onMounted(() => {
 }
 
 .cache-value--green {
-  color: var(--success);
+  color: #22c55e;
 }
 
 .cache-value--highlight {

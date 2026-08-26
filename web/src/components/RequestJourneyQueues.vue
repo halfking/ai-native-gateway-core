@@ -2,7 +2,6 @@
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Close, RefreshRight } from '@element-plus/icons-vue'
-import { credentialDisplayName as credentialLabelById, useCredentialLabels } from '../composables/useCredentialLabels'
 import {
   getRequestJourney,
   getRequestJourneyQueues,
@@ -16,17 +15,10 @@ import {
   type RequestJourneySnapshot,
   type TotalRequestFIFOSnapshot,
 } from '../api/request-journeys'
-import { isSuperAdmin, store } from '../store'
+import { isSuperAdmin } from '../store'
 import RoutingAttemptsTimeline from './RoutingAttemptsTimeline.vue'
 
 const { t, locale } = useI18n()
-// 2026-08-23 凭据显示：订阅标签缓存 revision，让异步加载完成后
-// 节点分组标题的 credentialLabelById 结果自动刷新。
-const { labelRevision } = useCredentialLabels()
-function nodeLabel(id: number): string {
-  void labelRevision.value
-  return credentialLabelById(id)
-}
 const DEFAULT_CAPACITY = 100
 
 interface QueueGroup {
@@ -54,13 +46,9 @@ function isEnvelope(payload: RequestJourneyQueuesPayload): payload is RequestJou
 
 function ingressAsJourneySnapshot(snapshot: RequestIngressSnapshot): RequestJourneySnapshot {
   const terminal = snapshot.status !== 'arrived'
-  // 保留入站快照上的 tenant_id（如有），便于 scope=all 视图下按租户过滤可跳详情。
-  // IngressSnapshot 接口未声明 tenant_id（匿名入站常见），因此可选携带。
-  const ingressTenant = (snapshot as RequestIngressSnapshot & { tenant_id?: string }).tenant_id
   return {
     request_id: snapshot.request_id,
     gateway_instance_id: snapshot.gateway_instance_id,
-    tenant_id: ingressTenant,
     current_stage: terminal ? 'terminal' : 'received',
     outcome: snapshot.status === 'succeeded'
       ? 'success'
@@ -125,12 +113,10 @@ const groups = computed<QueueGroup[]>(() => {
   }
   return nodeSnapshots(payload).map(snapshot => ({
     key: `node:${snapshot.model}:${snapshot.provider_id ?? 0}:${snapshot.credential_id}`,
-    // 2026-08-23 凭据显示：用共享标签缓存替代原始 ID；缓存未命中时仍显示
-    // 「凭据 #ID」便于排查（credentialLabelById 已包含 fallback）。
     label: t('requestJourneys.nodeGroup', {
       model: snapshot.model,
       provider: snapshot.provider_id ?? '—',
-      node: nodeLabel(snapshot.credential_id),
+      node: snapshot.credential_id,
     }),
     capacity: snapshot.capacity || DEFAULT_CAPACITY,
     requests: snapshot.requests ?? [],
@@ -148,16 +134,10 @@ const queueObservationDegraded = computed(() => {
   )
 })
 
-function canOpenDetailForRequest(request: RequestJourneySnapshot | RequestIngressSnapshot): boolean {
+const canOpenDetails = computed(() => {
   const payload = payloads.value[activeView.value]
-  if (!payload || !isEnvelope(payload) || payload.scope !== 'all') return true
-  // request-journeys 携带 tenant_id；scope=all 视图下仅匹配自身租户允许跳详情。
-  // 缺 tenant_id 的入站快照（匿名）按不可跳处理，避免跨租户细节泄露。
-  const userTenant = store.userInfo?.tenant_id
-  if (!userTenant) return false
-  const reqTenant = (request as { tenant_id?: string }).tenant_id
-  return Boolean(reqTenant) && reqTenant === userTenant
-}
+  return !(payload && isEnvelope(payload) && payload.scope === 'all')
+})
 
 async function loadView(view: RequestJourneyQueueView, force = false) {
   if (!force && payloads.value[view]) return
@@ -290,9 +270,9 @@ function closeDialog() {
               type="button"
               class="queue-row"
               data-testid="journey-queue-row"
-              :aria-label="canOpenDetailForRequest(request) ? t('requestJourneys.openDetail', { requestId: request.request_id }) : request.request_id"
-              :disabled="!canOpenDetailForRequest(request)"
-              @click="canOpenDetailForRequest(request) && openJourney(request.request_id)"
+              :aria-label="canOpenDetails ? t('requestJourneys.openDetail', { requestId: request.request_id }) : request.request_id"
+              :disabled="!canOpenDetails"
+              @click="canOpenDetails && openJourney(request.request_id)"
             >
               <span class="queue-position">{{ t('requestJourneys.position', { position: index + 1 }) }}</span>
               <span class="queue-request">
@@ -348,8 +328,8 @@ function closeDialog() {
 .journey-trigger-title { font-weight:600; font-size:13px; }
 .journey-trigger-meta { color:var(--kx-text-secondary); font-size:11px; margin-left:auto; }
 .journey-trigger svg { width:15px; height:15px; color:var(--kx-text-secondary); }
-.journey-modal-mask { position:fixed; inset:0; z-index:2900; background:var(--overlay-medium); display:flex; justify-content:flex-end; }
-.journey-modal { width:min(760px, 96vw); height:100vh; overflow:auto; background:var(--kx-surface); color:var(--kx-text); box-shadow:-10px 0 30px var(--overlay-light); padding:18px 20px 28px; box-sizing:border-box; }
+.journey-modal-mask { position:fixed; inset:0; z-index:2900; background:rgba(0,0,0,.38); display:flex; justify-content:flex-end; }
+.journey-modal { width:min(760px, 96vw); height:100vh; overflow:auto; background:var(--kx-surface); color:var(--kx-text); box-shadow:-10px 0 30px rgba(0,0,0,.24); padding:18px 20px 28px; box-sizing:border-box; }
 .journey-header-actions { display:flex; gap:6px; }
 .journey-modal-sub { margin:4px 0 0; color:var(--kx-text-secondary); font-size:11px; }
 .journey-header,

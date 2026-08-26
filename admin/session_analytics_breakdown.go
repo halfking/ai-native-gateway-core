@@ -175,7 +175,7 @@ func (h *Handler) HandleSessionShape(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	var (
-		requestBuckets  []ShapeBucket
+		requestBuckets []ShapeBucket
 		durationBuckets []ShapeBucket
 	)
 	if err := h.withSessionAnalyticsReadTx(ctx, r, func(tx pgx.Tx) error {

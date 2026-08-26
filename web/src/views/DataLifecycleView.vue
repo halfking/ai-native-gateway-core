@@ -208,7 +208,6 @@ import AttachmentManager from './data-lifecycle/AttachmentManager.vue'
 import FilesystemMaintenance from './data-lifecycle/FilesystemMaintenance.vue'
 import StorageConfig from './data-lifecycle/StorageConfig.vue'
 import DegradationRecovery from './data-lifecycle/DegradationRecovery.vue'
-import LogManagement from './data-lifecycle/LogManagement.vue'
 
 const { t } = useI18n()
 
@@ -567,7 +566,7 @@ onUnmounted(() => {
 
 .btn { padding: 6px 14px; border-radius: 6px; border: 1px solid transparent; font-size: 13px; font-weight: 500; cursor: pointer; transition: all 0.15s; }
 .btn-sm { padding: 4px 10px; font-size: 12px; }
-.btn-primary { background: var(--accent); color: var(--on-primary); }
+.btn-primary { background: var(--accent); color: #fff; }
 .btn-primary:hover:not(:disabled) { background: var(--accent-h); }
 .btn-ghost { background: transparent; border-color: var(--border); color: var(--text); }
 .btn-ghost:hover:not(:disabled) { background: var(--bg-hover); border-color: var(--accent); color: var(--accent-h); }

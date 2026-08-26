@@ -14,7 +14,7 @@ const (
 	slidingWindowBatchMaxItems    = 100
 	slidingWindowBatchWorkers     = 8
 	slidingWindowBatchLimit       = 50 // entries fetched per pair for stats
-	slidingWindowBatchMaxEntryRet = 48 // hard cap when include_entries is true
+	slidingWindowBatchMaxEntryRet = 50 // hard cap when include_entries is true (queue-perspective model header shows 50 icons)
 )
 
 // loadSlidingWindowEntries loads call entries for one credential×model pair.
@@ -135,12 +135,12 @@ func (m *CredentialMonitorHandlers) handleSlidingWindowBatch(w http.ResponseWrit
 		model        string
 	}
 	type itemResult struct {
-		CredentialID int                          `json:"credential_id"`
-		Model        string                       `json:"model"`
-		Source       string                       `json:"source,omitempty"`
-		Stats        map[string]any               `json:"stats,omitempty"`
+		CredentialID int                           `json:"credential_id"`
+		Model        string                        `json:"model"`
+		Source       string                        `json:"source,omitempty"`
+		Stats        map[string]any                `json:"stats,omitempty"`
 		Entries      *[]credentialhealth.CallEntry `json:"entries,omitempty"`
-		Error        string                       `json:"error,omitempty"`
+		Error        string                        `json:"error,omitempty"`
 	}
 
 	work := make([]pair, 0, len(req.Items))

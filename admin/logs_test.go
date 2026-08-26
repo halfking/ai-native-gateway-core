@@ -25,9 +25,9 @@ func TestGetLogDetail_WithBodies(t *testing.T) {
 	// Query using the COALESCE pattern (simulating getLog API)
 	var requestBody, responseBody string
 	err := pool.QueryRow(ctx, `
-SELECT
-		  rb.request_body::text AS request_body,
-		  rb.response_body::text AS response_body
+		SELECT 
+		  COALESCE(rb.request_body::text, rl.request_body::text) AS request_body,
+		  COALESCE(rb.response_body::text, rl.response_body::text) AS response_body
 		FROM request_logs_with_current_month rl
 		LEFT JOIN request_logs_bodies_with_current_month rb 
 		  ON rb.request_id = rl.request_id
@@ -58,9 +58,9 @@ func TestGetLogDetail_BackwardsCompatible(t *testing.T) {
 	// Query using the COALESCE pattern
 	var requestBody, responseBody string
 	err := pool.QueryRow(ctx, `
-SELECT
-		  rb.request_body::text AS request_body,
-		  rb.response_body::text AS response_body
+		SELECT 
+		  COALESCE(rb.request_body::text, rl.request_body::text) AS request_body,
+		  COALESCE(rb.response_body::text, rl.response_body::text) AS response_body
 		FROM request_logs_with_current_month rl
 		LEFT JOIN request_logs_bodies_with_current_month rb 
 		  ON rb.request_id = rl.request_id
@@ -91,9 +91,9 @@ func TestGetLogDetail_MissingBodies(t *testing.T) {
 	// Query using the COALESCE pattern
 	var requestBody, responseBody *string
 	err := pool.QueryRow(ctx, `
-SELECT
-		  rb.request_body::text AS request_body,
-		  rb.response_body::text AS response_body
+		SELECT 
+		  COALESCE(rb.request_body::text, rl.request_body::text) AS request_body,
+		  COALESCE(rb.response_body::text, rl.response_body::text) AS response_body
 		FROM request_logs_with_current_month rl
 		LEFT JOIN request_logs_bodies_with_current_month rb 
 		  ON rb.request_id = rl.request_id

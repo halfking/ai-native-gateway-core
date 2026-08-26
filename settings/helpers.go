@@ -3,7 +3,6 @@ package settings
 import (
 	"encoding/json"
 	"log/slog"
-	"strings"
 )
 
 // Helpers for reading platform-scoped settings with hot-reload support.
@@ -65,10 +64,6 @@ func getPlatformInt(key string, fallback int) int {
 	raw, _, err := Global.EffectiveValue(sp.Scope, key, "")
 	if err != nil || len(raw) == 0 {
 		return fallback
-	}
-	switch strings.ToLower(strings.TrimSpace(string(raw))) {
-	case "off", "false", "disabled":
-		return 0
 	}
 	var v int
 	if err := json.Unmarshal(raw, &v); err != nil {
