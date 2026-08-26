@@ -20,6 +20,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/shadow"
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/statesource"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
+	met "github.com/kaixuan/llm-gateway-go/metrics" //nolint:depguard // routing credential observability
 	"github.com/kaixuan/llm-gateway-go/provider"
 )
 
@@ -133,6 +134,9 @@ type Router struct {
 	}
 	// weightCounters isolates deterministic weighted selection by candidate set.
 	weightCounters sync.Map
+	// PriorityRoutingEnabled controls the priority candidate bucket. It defaults
+	// to true and can be disabled at process start for an emergency rollback.
+	PriorityRoutingEnabled bool
 
 	shadowMu      sync.Mutex
 	shadowWorker  *ursmShadowWorker
@@ -172,9 +176,10 @@ type Router struct {
 
 func NewRouter(sticky *StickyCache, lim *credential.Limiter) *Router {
 	return &Router{
-		Sticky:           sticky,
-		Limiter:          lim,
-		LoadScoreWeights: DefaultLoadScoreWeights(), // Phase 1: 使用默认权重
+		Sticky:                 sticky,
+		Limiter:                lim,
+		LoadScoreWeights:       DefaultLoadScoreWeights(), // Phase 1: 使用默认权重
+		PriorityRoutingEnabled: true,
 	}
 }
 
@@ -524,7 +529,30 @@ func (r *Router) planCandidates(
 		recordOuterSource(statesource.StateSourceOff)
 	}
 
+	// Priority routing observability: classify the final first-attempt candidate
+	// after tier/billing, sticky, affinity, and canary ordering has settled.
+	if r.PriorityRoutingEnabled && len(ordered) > 0 {
+		met.RoutingPriorityCandidatesSelectedTotal.WithLabelValues(classifyPrioritySelection(ordered)).Inc()
+	}
+
 	return ordered
+}
+
+// classifyPrioritySelection maps the final ordered candidate list to the
+// priority-routing observability outcome.
+func classifyPrioritySelection(ordered []provider.Candidate) string {
+	if len(ordered) == 0 {
+		return "no_priority_candidates"
+	}
+	if isPriorityBucketEligible(ordered[0]) {
+		return "priority_only"
+	}
+	for _, c := range ordered {
+		if isPriorityBucketEligible(c) {
+			return "spillover_to_non_priority"
+		}
+	}
+	return "no_priority_candidates"
 }
 
 func (r *Router) enqueueURSMv2Shadow(candidates, legacyOrder []provider.Candidate, tenant, canonical, requestID string) {
@@ -863,6 +891,12 @@ func (r *Router) planByTier(ctx context.Context, candidates []provider.Candidate
 			sorted = p2cOrder(bucket, r)
 		}
 
+		// Priority routing: partition the load-aware order without disturbing
+		// the relative order inside either bucket.
+		if r.PriorityRoutingEnabled {
+			sorted = stablePartitionPriority(sorted)
+		}
+
 		// GW-03: shadow strategy diff（仅观测，不改顺序）。
 		// 在 weighted selection 之前对比 ShadowStrategy 首选 vs 实际首选。
 		if r.ShadowStrategy != nil {
@@ -873,7 +907,16 @@ func (r *Router) planByTier(ctx context.Context, candidates []provider.Candidate
 		// health-aware order produced above for failover.
 		if len(sorted) > 1 {
 			counter := r.nextWeightCounter(sorted)
-			sorted = promoteWeightedCandidate(sorted, counter)
+			if r.PriorityRoutingEnabled {
+				if head := priorityPrefixLen(sorted); head > 0 && head < len(sorted) {
+					promoted := promoteWeightedCandidate(sorted[:head], counter)
+					sorted = append(promoted, sorted[head:]...)
+				} else {
+					sorted = promoteWeightedCandidate(sorted, counter)
+				}
+			} else {
+				sorted = promoteWeightedCandidate(sorted, counter)
+			}
 		}
 
 		ordered = append(ordered, sorted...)
@@ -1067,6 +1110,39 @@ func (r *Router) filterHealthyNodes(candidates []provider.Candidate) []provider.
 		return candidates
 	}
 	return healthy
+}
+
+// chooseLeastCooledCandidate returns the candidate whose NodeState has the
+// smallest DisabledUntil (or no cooldown at all). nil when no candidates are
+// available.
+func (r *Router) chooseLeastCooledCandidate(candidates []provider.Candidate) *provider.Candidate {
+	if len(candidates) == 0 {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	keys := make([]credentialfpslot.NodeStateKey, len(candidates))
+	for i, cand := range candidates {
+		keys[i] = credentialfpslot.NodeStateKey{CredentialID: cand.CredentialID, Model: cand.RawModel}
+	}
+	states, err := r.FpSlots.GetNodeStatesBatch(ctx, keys)
+	if err != nil {
+		slog.Warn("router: chooseLeastCooledCandidate node-state read failed", "error", err)
+		return &candidates[0]
+	}
+	bestIdx := 0
+	bestUntil := int64(1<<62 - 1)
+	now := time.Now().Unix()
+	for i, state := range states {
+		if state == nil || state.DisabledUntil <= now {
+			return &candidates[i]
+		}
+		if state.DisabledUntil < bestUntil {
+			bestUntil = state.DisabledUntil
+			bestIdx = i
+		}
+	}
+	return &candidates[bestIdx]
 }
 
 func p2cOrder(cands []provider.Candidate, r *Router) []provider.Candidate {
@@ -1317,9 +1393,48 @@ func CalculateCompositeScore(c provider.Candidate, weights ScoringWeights) float
 	return score
 }
 
-// CompareCandidatePriority returns true when a should sort before b.
-// Billing round (plan/free before PAYG) takes precedence over composite score.
+// isPriorityBucketEligible mirrors the SQL priority predicate. A candidate
+// enters the priority bucket only when its priority flag is set and its quota
+// state is either unset or currently OK.
+func isPriorityBucketEligible(c provider.Candidate) bool {
+	return c.Priority && (c.QuotaState == "" || c.QuotaState == "ok")
+}
+
+// stablePartitionPriority keeps the load-aware order within each bucket while
+// placing priority-eligible candidates before standard candidates.
+func stablePartitionPriority(cands []provider.Candidate) []provider.Candidate {
+	if len(cands) <= 1 {
+		return cands
+	}
+	priority := make([]provider.Candidate, 0, len(cands))
+	standard := make([]provider.Candidate, 0, len(cands))
+	for _, c := range cands {
+		if isPriorityBucketEligible(c) {
+			priority = append(priority, c)
+		} else {
+			standard = append(standard, c)
+		}
+	}
+	return append(priority, standard...)
+}
+
+func priorityPrefixLen(cands []provider.Candidate) int {
+	for i, c := range cands {
+		if !isPriorityBucketEligible(c) {
+			return i
+		}
+	}
+	return len(cands)
+}
+
+// CompareCandidatePriority mirrors the SQL ordering used by the candidate
+// resolver, including priority bucket, billing round, score, manual priority,
+// tier, and credential ID as a deterministic tie-break.
 func CompareCandidatePriority(a, b provider.Candidate) bool {
+	pa, pb := isPriorityBucketEligible(a), isPriorityBucketEligible(b)
+	if pa != pb {
+		return pa
+	}
 	ra, rb := provider.BillingRound(a.BillingMode), provider.BillingRound(b.BillingMode)
 	if ra != rb {
 		return ra < rb
