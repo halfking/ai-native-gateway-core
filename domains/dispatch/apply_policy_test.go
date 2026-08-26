@@ -203,10 +203,6 @@ func TestApplyPolicyBackendNotifyFailureLeavesRevisionPinned(t *testing.T) {
 }
 
 func TestApplyPolicyLocalBackendSkipsNotifyRevisions(t *testing.T) {
-	// Stage F: with a non-Redis backend (Local/Shadow) ApplyPolicy must
-	// still swap the governor but MUST NOT call NotifyRevisions (only
-	// RedisEnforce uses the round-trip; local/Shadow are passive
-	// observers).
 	p := NewPipeline(Deps{})
 	defer p.Stop()
 
@@ -234,5 +230,298 @@ func TestApplyPolicyLocalBackendSkipsNotifyRevisions(t *testing.T) {
 	got, _ := cf.govLocked().(*concurrencyGovernor)
 	if got.cap != 16 {
 		t.Fatalf("local swap cap = %d, want 16", got.cap)
+	}
+}
+
+type countingGovernor struct {
+	mode         string
+	acquireCalls int
+	releaseCalls int
+}
+
+func (g *countingGovernor) Mode() string { return g.mode }
+func (g *countingGovernor) Acquire(context.Context, *QueuedRequest, time.Time) error {
+	g.acquireCalls++
+	return nil
+}
+func (g *countingGovernor) Release(*QueuedRequest) { g.releaseCalls++ }
+
+type gatedNotifyBackend struct {
+	fakeBackend
+	blockRevision uint64
+	entered       chan struct{}
+	release       chan struct{}
+}
+
+func (b *gatedNotifyBackend) NotifyRevisions(ctx context.Context, rev uint64) error {
+	b.notifs = append(b.notifs, rev)
+	if rev == b.blockRevision {
+		select {
+		case b.entered <- struct{}{}:
+		default:
+		}
+		select {
+		case <-b.release:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return b.notifyErr
+}
+
+func TestApplyPolicySerializesConcurrentRevisions(t *testing.T) {
+	backend := &gatedNotifyBackend{
+		fakeBackend:   fakeBackend{kind: BackendRedisEnforce, name: "redis"},
+		blockRevision: 10,
+		entered:       make(chan struct{}, 1),
+		release:       make(chan struct{}),
+	}
+	p := NewPipeline(Deps{})
+	defer p.Stop()
+	p.SetGovernorBackend(backend)
+
+	firstDone := make(chan error, 1)
+	go func() { firstDone <- p.ApplyPolicy(context.Background(), GovernorPolicy{Revision: 10}) }()
+	select {
+	case <-backend.entered:
+	case <-time.After(time.Second):
+		t.Fatal("revision 10 did not enter backend notification")
+	}
+
+	secondDone := make(chan error, 1)
+	go func() { secondDone <- p.ApplyPolicy(context.Background(), GovernorPolicy{Revision: 11}) }()
+	select {
+	case err := <-secondDone:
+		t.Fatalf("revision 11 completed before revision 10: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(backend.release)
+	if err := <-firstDone; err != nil {
+		t.Fatalf("revision 10: %v", err)
+	}
+	if err := <-secondDone; err != nil {
+		t.Fatalf("revision 11: %v", err)
+	}
+	if got := p.ActiveRevision(); got != 11 {
+		t.Fatalf("active revision = %d, want 11", got)
+	}
+	if len(backend.notifs) != 2 || backend.notifs[0] != 10 || backend.notifs[1] != 11 {
+		t.Fatalf("backend revisions = %v, want [10 11]", backend.notifs)
+	}
+}
+
+func TestForwarderReleasesGovernorCapturedBeforeHotSwap(t *testing.T) {
+	forwardStarted := make(chan struct{})
+	forwardRelease := make(chan struct{})
+	p := NewPipeline(Deps{
+		ForwardFunc: func(context.Context, *QueuedRequest, CredentialRef) ForwardOutcome {
+			close(forwardStarted)
+			<-forwardRelease
+			return ForwardOutcome{Result: "ok"}
+		},
+	})
+	defer p.Stop()
+
+	oldGov := &countingGovernor{mode: ModeConcurrency}
+	newGov := &countingGovernor{mode: ModeConcurrency}
+	ref := cred(31, ModeConcurrency, 1)
+	cf := &credForwarder{
+		cred:  ref,
+		queue: make(chan *QueuedRequest, 1),
+		limit: 1,
+		gov:   oldGov,
+		pipe:  p,
+		ctx:   context.Background(),
+	}
+	cf.depth.Store(1)
+	qr := NewQueuedRequest("hot-swap-release", "tenant", "model", context.Background(), nil)
+	gov, acquired := cf.acquire(qr)
+	if !acquired {
+		t.Fatal("governor admission failed")
+	}
+	cf.replaceGov(newGov)
+	cf.wg.Add(1)
+	go cf.attempt(qr, gov)
+	select {
+	case <-forwardStarted:
+	case <-time.After(time.Second):
+		t.Fatal("forward attempt did not start")
+	}
+	close(forwardRelease)
+	select {
+	case <-qr.ResultCh:
+	case <-time.After(time.Second):
+		t.Fatal("forward attempt did not complete")
+	}
+	cf.wg.Wait()
+	if oldGov.acquireCalls != 1 || oldGov.releaseCalls != 1 {
+		t.Fatalf("old governor calls = acquire %d release %d, want 1/1", oldGov.acquireCalls, oldGov.releaseCalls)
+	}
+	if newGov.releaseCalls != 0 {
+		t.Fatalf("new governor release calls = %d, want 0", newGov.releaseCalls)
+	}
+}
+
+// TestApplyPolicyRPMSpecRoutesCanonicalLimit pins the mode-correct limit
+// routing: an RPM policy that sets only the canonical Limit field (no
+// mirror in RPMLimit) must populate the CredentialRef's RPMLimit so the
+// governor factory builds an RPM token bucket, not a no-op.
+func TestApplyPolicyRPMSpecRoutesCanonicalLimit(t *testing.T) {
+	p := NewPipeline(Deps{})
+	defer p.Stop()
+
+	backend := &fakeBackend{kind: BackendRedisEnforce, name: "redis"}
+	p.SetGovernorBackend(backend)
+
+	if err := p.ApplyPolicy(context.Background(), GovernorPolicy{
+		Revision:    1,
+		GeneratedAt: time.Now(),
+		Specs: []GovernorSpec{
+			// No RPMLimit mirror: only the canonical Limit field.
+			{CredentialID: 41, Mode: ModeRPM, Limit: 100},
+		},
+	}); err != nil {
+		t.Fatalf("ApplyPolicy: %v", err)
+	}
+	if got := p.ActiveRevision(); got != 1 {
+		t.Fatalf("active revision: got %d want 1", got)
+	}
+	if got := backend.newSpecs[0].Mode; got != ModeRPM {
+		t.Fatalf("backend spec mode = %q, want %q", got, ModeRPM)
+	}
+	if got := backend.newSpecs[0].Limit; got != 100 {
+		t.Fatalf("backend spec limit = %d, want 100 (canonical RPM cap)", got)
+	}
+	if got := backend.newSpecs[0].RPMLimit; got != 100 {
+		t.Fatalf("backend spec RPMLimit = %d, want 100 (derived from canonical Limit)", got)
+	}
+}
+
+// TestApplyPolicyTPMSpecRoutesCanonicalLimit mirrors the RPM test for TPM.
+func TestApplyPolicyTPMSpecRoutesCanonicalLimit(t *testing.T) {
+	p := NewPipeline(Deps{})
+	defer p.Stop()
+
+	backend := &fakeBackend{kind: BackendRedisEnforce, name: "redis"}
+	p.SetGovernorBackend(backend)
+
+	if err := p.ApplyPolicy(context.Background(), GovernorPolicy{
+		Revision:    1,
+		GeneratedAt: time.Now(),
+		Specs: []GovernorSpec{
+			// No TPMLimit mirror: only the canonical Limit field.
+			{CredentialID: 42, Mode: ModeTPM, Limit: 8000},
+		},
+	}); err != nil {
+		t.Fatalf("ApplyPolicy: %v", err)
+	}
+	if got := backend.newSpecs[0].Mode; got != ModeTPM {
+		t.Fatalf("backend spec mode = %q, want %q", got, ModeTPM)
+	}
+	if got := backend.newSpecs[0].Limit; got != 8000 {
+		t.Fatalf("backend spec limit = %d, want 8000 (canonical TPM cap)", got)
+	}
+	if got := backend.newSpecs[0].TPMLimit; got != 8000 {
+		t.Fatalf("backend spec TPMLimit = %d, want 8000 (derived from canonical Limit)", got)
+	}
+}
+
+// TestApplyPolicyPassesNewRevisionToBackendNew pins the contract that
+// governor construction during a live policy apply carries the new
+// policy's revision, not the previous one. The Redis backend uses
+// spec.Revision as the cache-invalidation identity (see
+// redis_backend.go:634 nextToken and the per-cred revision sequence),
+// so a stale revision would silently reuse stale lease state.
+func TestApplyPolicyPassesNewRevisionToBackendNew(t *testing.T) {
+	p := NewPipeline(Deps{})
+	defer p.Stop()
+
+	backend := &fakeBackend{kind: BackendRedisEnforce, name: "redis"}
+	p.SetGovernorBackend(backend)
+
+	if err := p.ApplyPolicy(context.Background(), GovernorPolicy{
+		Revision:    5,
+		GeneratedAt: time.Now(),
+		Specs: []GovernorSpec{
+			{CredentialID: 43, Mode: ModeConcurrency, Limit: 4},
+		},
+	}); err != nil {
+		t.Fatalf("first ApplyPolicy: %v", err)
+	}
+	if got := backend.newSpecs[0].Revision; got != 5 {
+		t.Fatalf("first apply: backend spec revision = %d, want 5 (new policy revision)", got)
+	}
+
+	if err := p.ApplyPolicy(context.Background(), GovernorPolicy{
+		Revision:    6,
+		GeneratedAt: time.Now(),
+		Specs: []GovernorSpec{
+			{CredentialID: 43, Mode: ModeConcurrency, Limit: 8},
+		},
+	}); err != nil {
+		t.Fatalf("second ApplyPolicy: %v", err)
+	}
+	if got := backend.newSpecs[1].Revision; got != 6 {
+		t.Fatalf("second apply: backend spec revision = %d, want 6 (new policy revision, not 5)", got)
+	}
+}
+
+// TestApplyPolicyFailClosedOnBackendNewError pins that a Redis backend
+// failure during ApplyPolicy aborts the swap, leaves activePolicyRevision
+// pinned at its previous value, and surfaces ErrGovernorUnavailable so the
+// publisher's retry loop can replay the same delta. Pre-fix, the
+// unavailableGovernor was swapped in and the revision was advanced,
+// silently denying subsequent admissions.
+func TestApplyPolicyFailClosedOnBackendNewError(t *testing.T) {
+	p := NewPipeline(Deps{})
+	defer p.Stop()
+
+	want := errors.New("redis: cluster rebalancing")
+	backend := &fakeBackend{kind: BackendRedisEnforce, name: "redis", newErr: want}
+	p.SetGovernorBackend(backend)
+
+	// Stage an in-process forwarder so we can verify the live governor is
+	// preserved across the failed apply.
+	ref := cred(44, ModeConcurrency, 1)
+	cf := p.getOrCreateForwarder(ref)
+	original := cf.gov
+
+	err := p.ApplyPolicy(context.Background(), GovernorPolicy{
+		Revision:    1,
+		GeneratedAt: time.Now(),
+		Specs: []GovernorSpec{
+			{CredentialID: 44, Mode: ModeConcurrency, Limit: 99},
+		},
+	})
+	if !errors.Is(err, want) {
+		t.Fatalf("ApplyPolicy error = %v, want %v", err, want)
+	}
+	if !IsGovernorUnavailable(err) {
+		t.Fatalf("ApplyPolicy error is not ErrGovernorUnavailable: %v", err)
+	}
+	if got := p.ActiveRevision(); got != 0 {
+		t.Fatalf("active revision after backend failure: got %d want 0 (must stay pinned)", got)
+	}
+	if current := cf.gov; current != original {
+		t.Fatalf("live forwarder governor swapped despite backend failure: was %T now %T", original, current)
+	}
+
+	// Recovery: when the backend is reachable again, the next ApplyPolicy
+	// must succeed. This proves the failure path did not wedge the
+	// pipeline into a stuck state.
+	backend.newErr = nil
+	backend.newGov = newConcurrencyGovernor(2)
+	if err := p.ApplyPolicy(context.Background(), GovernorPolicy{
+		Revision:    2,
+		GeneratedAt: time.Now(),
+		Specs: []GovernorSpec{
+			{CredentialID: 44, Mode: ModeConcurrency, Limit: 4},
+		},
+	}); err != nil {
+		t.Fatalf("follow-up ApplyPolicy: %v (pipeline should not be wedged)", err)
+	}
+	if got := p.ActiveRevision(); got != 2 {
+		t.Fatalf("active revision after recovery: got %d want 2", got)
 	}
 }
