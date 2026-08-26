@@ -192,6 +192,11 @@
 
 顺序依赖：T1→T2；T3→T4；T5 依赖 T3（planner 读 journal/counts）；T6 并入 T5。
 
+> **执行顺序（2026-08-27 增补）**：W1.6（本文档）先行，随后执行 W1.7
+> （[`10-dual-backend-queue.md`](10-dual-backend-queue.md)，双后端队列）——两者
+> 都动 dispatch 核心，串行降低冲突。W1.7 不改变本文任何设计：journal/dimension
+> 仍为本地观测投影，planner 决策不感知后端。
+
 ## 5. 风险与回滚
 
 | 风险 | 缓解 | 回滚 |
