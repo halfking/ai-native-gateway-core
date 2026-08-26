@@ -129,6 +129,41 @@ missing, `null`, or malformed core document. They do not parse raw bytes,
 execute a serializer, write a projection, or mutate a request fact. The
 upstream semantic IR and exact wire body are intentionally distinct.
 
+## Phase 1B Pre-Terminal Durable Projection Input
+
+`internal/requestfact` owns a neutral, credential-free durable projection
+input for the existing durable cut point (after authentication, session
+resolution, tool-ID expansion, and body normalization; before candidate
+resolution). It is intentionally not derived from `CanonicalRequestFact`:
+the archive fact is a terminal document, while a durable task may still be
+running.
+
+The input carries only handler-resolved immutable facts: protocol, endpoint,
+tenant, application ID, opaque API key ID, session ID/source, client model,
+exact normalized body bytes, client identity hash, tools flag, request ID,
+optional parent request ID, and policy version.
+
+The projection:
+
+- computes `RequestHash` as SHA-256 over the exact normalized body bytes. It
+  feeds the durable AAD binding, so formatting differences must change it.
+  This is deliberately different from `requestfact.BodySHA256`, which
+  canonicalizes JSON;
+- defensively copies caller-owned body bytes and fails closed on missing
+  identity, routing, session, key, policy, or malformed body input;
+- derives only shallow `response_format` and multimodal JSON-shape markers.
+  The eventual streaming bridge remains free to apply its full modality
+  detection;
+- structurally excludes scheduler/store-owned state (task ID, status, leases,
+  fencing, attempts, deadlines, results, ciphertext) and credentials/routing
+  material (authorization headers, cookies, key values, credential IDs,
+  providers, candidates, live routing state). The normalized body is opaque
+  user content destined for durable encryption and is never keyword-filtered.
+
+Ownership split: `internal/requestfact` owns the neutral input and
+projection; a future `domains/streaming` bridge maps it onto the existing
+snapshot DTO; `durable` remains the encryption/AAD, lease, fencing,
+persistence, and recovery boundary.
 
 - **IR:** Phase 0 stores explicit JSON documents. Phase 1 must construct them
   from the existing `internal/ir` parser/serializer path; it must not create a
