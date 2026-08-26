@@ -503,6 +503,8 @@ type Executor struct {
 	// synchronous candidate loop. See executor_dispatch.go.
 	dispatchPipeline         *dispatch.Pipeline
 	dispatchModelRecommender DispatchModelRecommender
+	capacityAwareSortOn      bool
+	capacityAwareSnapFn      func(int) (dispatch.SnapshotState, bool)
 	// traceRecorder (2026-07-17) 注入请求链路追踪器,记录 upstream_request /
 	// stream_start 事件。nil 时降级为 NoopRecorder 等价。
 	traceRecorder gwtrace.Recorder
@@ -1373,6 +1375,13 @@ func (e *Executor) SetTraceRecorder(rec gwtrace.Recorder) {
 func (e *Executor) SetLiveActions(em *liveactions.Emitter) {
 	if e != nil {
 		e.liveActions = em
+	}
+}
+
+func (e *Executor) SetCapacityAwareSort(on bool, snapFn func(int) (dispatch.SnapshotState, bool)) {
+	if e != nil {
+		e.capacityAwareSortOn = on
+		e.capacityAwareSnapFn = snapFn
 	}
 }
 

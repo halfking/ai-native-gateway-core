@@ -173,7 +173,7 @@ func (a executorNodeHealthAdapter) ApplyNodeHealthDecision(ctx context.Context, 
 					errs = append(errs, err)
 				}
 			}
-		case nodehealth.EffectRestoreBinding, nodehealth.EffectRestoreCredential:
+		case nodehealth.EffectRestoreBinding:
 			if e.State != nil && e.State.Enabled() {
 				if err := e.State.RestoreOnSuccess(ctx, int(decision.Node.CredentialID), decision.Node.Model); err != nil {
 					errs = append(errs, err)

@@ -611,6 +611,7 @@ func NewLiveStreamSSEHub(db *pgxpool.Pool, cfg LiveStreamConfig) *LiveStreamSSEH
 		actionTenantIndex: make(map[string]string),
 		actionTenantMiss:  make(map[string]time.Time),
 		instanceID:        generateLiveStreamInstanceID(),
+		terminalOverlayAt: make(map[string]time.Time),
 	}
 }
 
