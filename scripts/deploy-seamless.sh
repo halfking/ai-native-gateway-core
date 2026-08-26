@@ -176,81 +176,6 @@ _env_file_for_target() {
   esac
 }
 
-# Inject the data-plane gate through stdin so the secret never appears in the
-# remote command line or deployment logs. The target env file remains the
-# systemd/container runtime source of truth after the deployment exits.
-inject_gateway_api_key() {
-  local env_file key key_digest
-  env_file=$(_env_file_for_target)
-  key="${LLM_GATEWAY_API_KEY:-}"
-  if [[ -z "$key" || "$key" == CHANGE_ME || "$key" == sk-CHANGE_ME ]]; then
-    err "LLM_GATEWAY_API_KEY is missing or still a placeholder"
-    return 1
-  fi
-  if command -v sha256sum >/dev/null 2>&1; then
-    key_digest=$(printf '%s' "$key" | sha256sum | awk '{print $1}')
-  elif command -v shasum >/dev/null 2>&1; then
-    key_digest=$(printf '%s' "$key" | shasum -a 256 | awk '{print $1}')
-  else
-    err "缺少 sha256sum/shasum，无法校验 LLM_GATEWAY_API_KEY"
-    return 1
-  fi
-
-  printf '%s\n' "$key" | remote_ssh_pipe "ENV_FILE='$env_file' EXPECTED_DIGEST='$key_digest' python3 -c '
-import os
-import pathlib
-import stat
-import sys
-import tempfile
-import hashlib
-
-path = pathlib.Path(os.environ[\"ENV_FILE\"])
-key = sys.stdin.readline().rstrip(\"\\n\")
-expected_digest = os.environ[\"EXPECTED_DIGEST\"]
-if not key or key in {\"CHANGE_ME\", \"sk-CHANGE_ME\"}:
-    raise SystemExit(2)
-if not path.is_file():
-    raise SystemExit(3)
-actual_digest = hashlib.sha256(key.encode(\"utf-8\")).hexdigest()
-if actual_digest != expected_digest:
-    raise SystemExit(4)
-
-lines = path.read_text(encoding=\"utf-8\").splitlines(keepends=True)
-replacement = f\"LLM_GATEWAY_API_KEY={key}\\n\"
-updated = False
-result = []
-for line in lines:
-    if line.startswith(\"LLM_GATEWAY_API_KEY=\"):
-        if not updated:
-            result.append(replacement)
-            updated = True
-    else:
-        result.append(line)
-if not updated:
-    result.append(replacement)
-
-mode = stat.S_IMODE(path.stat().st_mode)
-fd, tmp_name = tempfile.mkstemp(prefix=path.name + \".\", dir=path.parent)
-try:
-    with os.fdopen(fd, \"w\", encoding=\"utf-8\") as tmp:
-        tmp.writelines(result)
-        tmp.flush()
-        os.fsync(tmp.fileno())
-    os.chmod(tmp_name, mode)
-    os.replace(tmp_name, path)
-except BaseException:
-    try:
-        os.unlink(tmp_name)
-    except FileNotFoundError:
-        pass
-    raise
-'" || {
-    err "无法原子注入 LLM_GATEWAY_API_KEY: $TARGET:$env_file"
-    return 1
-  }
-  ok "LLM_GATEWAY_API_KEY 已注入 $TARGET:$env_file"
-}
-
 # 确认 current、systemd MainPID 和运行二进制都属于目标 release。
 _verify_running_release() {
   local expected_version=$1
@@ -458,9 +383,6 @@ do_deploy() {
   log "[0.5/9] 运维节点 env (OPS_NODE_REGION)"
   bash "$SCRIPT_DIR/ops/ensure-ops-node-env.sh" "$TARGET" || warn "OPS_NODE_REGION 设置失败，继续部署"
 
-  log "[0.7/9] 注入数据面 API Key"
-  inject_gateway_api_key || exit 2
-
   if [[ "$TARGET" == "245" ]]; then
     if ! $SSH_CMD "grep -q '^LLM_GATEWAY_ADMIN_USER=' '$(_env_file_for_target)' && grep -q '^LLM_GATEWAY_ADMIN_PASSWORD=' '$(_env_file_for_target)'" 2>/dev/null; then
       warn "245 .env 缺少 ADMIN_USER/PASSWORD → 从 154 同步"
@@ -507,10 +429,6 @@ do_deploy() {
   else
     warn "跳过前端 (--no-frontend)，仅更新二进制"
   fi
-  # rule 13 §1: GFW 内网必须走国内镜像；内网无 sumdb 访问
-  export GOPROXY="${GOPROXY:-https://goproxy.cn,direct}"
-  export GOSUMDB="${GOSUMDB:-off}"
-  export GOFLAGS="${GOFLAGS:-}"
   CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" \
     -o "$tmpbin" ./cmd/gateway
   ok "编译完成 ($(du -h "$tmpbin" | cut -f1))"

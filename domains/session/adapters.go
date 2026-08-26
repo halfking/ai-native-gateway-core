@@ -56,19 +56,6 @@ func (a *PendingStoreAdapter) Save(ctx context.Context, entry *PendingResumeEntr
 		BytesBuffered: len(entry.Body),
 		IsStream:      false, // approval resume is not streaming
 		ErrorMessage:  entry.ErrorMessage,
-		TaskID:        entry.TaskID,
-		FencingToken:  entry.FencingToken,
-		ResultVersion: entry.ResultVersion,
-	}
-	if resp.TaskID != "" && resp.ResultVersion > 0 {
-		result, err := a.store.SaveDurableCAS(ctx, resp, time.Now().Add(a.store.TTL()))
-		if err != nil {
-			return err
-		}
-		if result != pending.DurableCASApplied {
-			return fmt.Errorf("pending store adapter: durable projection rejected: %d", result)
-		}
-		return nil
 	}
 
 	return a.store.Save(ctx, resp)
@@ -166,9 +153,9 @@ func (r *PendingStoreResponder) RespondRejection(ctx context.Context, snap *sess
 // ──────────────────────────────────────────────────────────────────────────────
 
 // LLMCallerFunc is a function adapter for LLMCaller.
-type LLMCallerFunc func(ctx context.Context, snap *sessionaudit.RequestSnapshot, execution ResumeExecution) error
+type LLMCallerFunc func(ctx context.Context, snap *sessionaudit.RequestSnapshot) error
 
 // CallFromSnapshot implements LLMCaller.
-func (f LLMCallerFunc) CallFromSnapshot(ctx context.Context, snap *sessionaudit.RequestSnapshot, execution ResumeExecution) error {
-	return f(ctx, snap, execution)
+func (f LLMCallerFunc) CallFromSnapshot(ctx context.Context, snap *sessionaudit.RequestSnapshot) error {
+	return f(ctx, snap)
 }

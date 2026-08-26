@@ -31,9 +31,9 @@ type sessionListItem struct {
 	LastRequestAt         time.Time  `json:"last_request_at"`
 	StoppedAt             *time.Time `json:"stopped_at,omitempty"`
 	// 健康评分字段（T1.5）
-	HealthScore *int    `json:"health_score,omitempty"`
-	HealthGrade *string `json:"health_grade,omitempty"`
-	Outcome     *string `json:"outcome,omitempty"`
+	HealthScore           *int       `json:"health_score,omitempty"`
+	HealthGrade           *string    `json:"health_grade,omitempty"`
+	Outcome               *string    `json:"outcome,omitempty"`
 }
 
 type sessionListResponse struct {

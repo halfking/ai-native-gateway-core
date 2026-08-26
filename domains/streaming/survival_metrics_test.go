@@ -382,8 +382,8 @@ func TestSurvivalMetricsWaitSeconds(t *testing.T) {
 			if ca-cb != 1 {
 				t.Fatalf("wait_seconds{%s} sample count delta = %d, want 1", tc.reason, ca-cb)
 			}
-			if got := (sa - sb) * 1e9; got != 2*1e9 {
-				t.Fatalf("wait_seconds{%s} observed %vns, want the 2s base backoff", tc.reason, got)
+			if got := (sa - sb) * 1e9; got != 5*1e9 {
+				t.Fatalf("wait_seconds{%s} observed %vns, want the 5s base backoff", tc.reason, got)
 			}
 		})
 	}
@@ -428,10 +428,10 @@ func TestSurvivalMetricsRecoveryLatency(t *testing.T) {
 		if ca-cb != 1 {
 			t.Fatalf("recovery_latency sample count delta = %d, want 1", ca-cb)
 		}
-		// Backoff doubles: 2s wait + 4s wait = first failure → completion
-		// spans 6s on the fake clock.
-		if got := (sa - sb) * 1e9; got != 6*1e9 {
-			t.Fatalf("recovery_latency observed %vns, want 6s (2s+4s waits)", got)
+		// Backoff doubles: 5s wait + 10s wait = first failure → completion
+		// spans 15s on the fake clock.
+		if got := (sa - sb) * 1e9; got != 15*1e9 {
+			t.Fatalf("recovery_latency observed %vns, want 15s (5s+10s waits)", got)
 		}
 	})
 
@@ -450,7 +450,7 @@ func TestSurvivalMetricsRecoveryLatency(t *testing.T) {
 	t.Run("task that never recovers records no recovery latency", func(t *testing.T) {
 		h := newCoordHarness(&scriptedExecutor{errs: []error{rateLimitFailure(), rateLimitFailure()}})
 		c := h.coordinator()
-		c.Options.Deadline = 3 * time.Second
+		c.Options.Deadline = 6 * time.Second
 		cb, _ := survivalHistogramDelta(t, hist())
 
 		c.Run(context.Background(), h.sw, &executors.ExecParams{})

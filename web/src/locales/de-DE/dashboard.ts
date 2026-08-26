@@ -221,7 +221,7 @@ v2: {
     empty: "Keine Live-Anfragen",
 
     emptyWaiting: 'Warten auf Live-Anfragestream-Daten…',
-    groupByVendor: 'Nach Anbieter', groupByProvider: 'Nach Provider', groupByModel: 'Nach Modell',
+    groupByCredential: 'Nach Zugangsdaten', groupByVendor: 'Nach Anbieter', groupByProvider: 'Nach Provider', groupByModel: 'Nach Modell',
     modeSmall: 'Klein',
     modeLarge: 'Groß',
     modeSmallTitle: 'Kleiner Modus: vertikale Balken, fasst mehr Anfragen (Standard)',
@@ -234,7 +234,7 @@ v2: {
     businessTitle: 'Nur echte Geschäftsanfragen anzeigen',
     probeTitle: 'Nur Probe-Anfragen anzeigen',
     cacheWindow: 'Cache / Fenster', connectionDetailTitle: 'Klicken für Verbindungsdetails',
-    dimensionVendor: 'Anbieter', dimensionProvider: 'Provider', dimensionModel: 'Modell',
+    dimensionCredential: 'Zugangsdaten', dimensionVendor: 'Anbieter', dimensionProvider: 'Provider', dimensionModel: 'Modell',
     statusOpen: 'Verbunden', statusConnecting: 'Verbinden', statusReconnecting: 'Wiederverbinden',
     statusUnsupported: 'Nicht unterstützt', statusClosed: 'Nicht verbunden',
     sseDetailTitle: 'SSE-Verbindungsdetails', sseStatusLabel: 'Verbindungsstatus', sseUrlLabel: 'SSE-URL',

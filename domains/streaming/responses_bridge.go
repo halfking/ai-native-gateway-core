@@ -403,9 +403,6 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 		}
 		if capture != nil {
 			capture.ObserveChunk(chunk)
-			if !clientWriter.clientDisconnected {
-				capture.RecordChunkSent()
-			}
 		}
 		chunkCount++
 
@@ -447,25 +444,12 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				if !messageStopReceived {
-					// 2026-08-23: same recovery as stream.go / anthropic_stream.go —
-					// if a finish_reason has already been accumulated, treat
-					// the missing message_stop as benign (some upstreams —
-					// notably minimax via the Anthropic bridge — close the
-					// stream right after the finish_reason chunk instead of
-					// emitting a terminal event).
-					if finishReason != "" {
-						scaffold.finishAttempt(gate, fullText.String(), finishReason, inputTokens, outputTokens, inputTokens+outputTokens)
-						return StreamOutcome{ChunkCount: chunkCount}
-					}
 					outcome = StreamOutcome{
 						Interrupted: true,
 						Reason:      "eof_without_done",
 						Kind:        errorsx.KindUpstreamDown,
 						Resumable:   !attemptHasClientSemanticOutput(gate, chunkCount),
 						ChunkCount:  chunkCount,
-					}
-					if !outcome.Resumable {
-						scaffold.finishInterrupted(gate, fullText.String(), outcome.Reason, inputTokens, outputTokens)
 					}
 
 					if capture != nil {
@@ -477,10 +461,6 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 				return StreamOutcome{ChunkCount: chunkCount}
 			}
 			failure := streamReadFailureOutcome(err, chunkCount)
-			failure.Resumable = !attemptHasClientSemanticOutput(gate, chunkCount)
-			if !failure.Resumable {
-				scaffold.finishInterrupted(gate, fullText.String(), failure.Reason, inputTokens, outputTokens)
-			}
 			outcome = failure
 			if capture != nil {
 				capture.MarkInterruptedWithReason(failure.Reason)
@@ -528,9 +508,6 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 					Kind:        errorsx.KindUpstreamDown,
 					Resumable:   !attemptHasClientSemanticOutput(gate, chunkCount),
 					ChunkCount:  chunkCount,
-				}
-				if !outcome.Resumable {
-					scaffold.finishInterrupted(gate, fullText.String(), outcome.Reason, inputTokens, outputTokens)
 				}
 				if capture != nil {
 					capture.MarkInterruptedWithReason(outcome.Reason)
@@ -732,9 +709,6 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 		}
 		if capture != nil {
 			capture.ObserveChunk(chunk)
-			if !clientWriter.clientDisconnected {
-				capture.RecordChunkSent()
-			}
 		}
 		chunkCount++
 		if chunk.Type == ir.ChunkTypeDelta && chunk.Delta != nil {
@@ -766,9 +740,6 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 						Resumable:   !attemptHasClientSemanticOutput(gate, chunkCount),
 						ChunkCount:  chunkCount,
 					}
-					if !outcome.Resumable {
-						scaffold.finishInterrupted(gate, fullText.String(), outcome.Reason, inputTokens, outputTokens)
-					}
 
 					if capture != nil {
 						capture.MarkInterruptedWithReason(outcome.Reason)
@@ -787,22 +758,16 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 				outcome.Kind = errorsx.KindStreamTimeout
 				outcome.Resumable = !attemptHasClientSemanticOutput(gate, chunkCount)
 				outcome.ChunkCount = chunkCount
-				if !outcome.Resumable {
-					scaffold.finishInterrupted(gate, fullText.String(), outcome.Reason, inputTokens, outputTokens)
-				}
 
 				return outcome
-
 			default:
+
 				failure := streamReadFailureOutcome(readResult.err, chunkCount)
-				failure.Resumable = !attemptHasClientSemanticOutput(gate, chunkCount)
 				slog.Warn("openai_to_responses: stream read error", "error", readResult.err, "kind", failure.Kind, "reason", failure.Reason)
 				if capture != nil {
 					capture.MarkInterruptedWithReason(failure.Reason)
 				}
-				if !failure.Resumable {
-					scaffold.finishInterrupted(gate, fullText.String(), failure.Reason, inputTokens, outputTokens)
-				}
+				scaffold.finishAttempt(gate, fullText.String(), finishReason, inputTokens, outputTokens, inputTokens+outputTokens)
 				outcome = failure
 				return outcome
 			}
@@ -856,9 +821,6 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 					Kind:        errorsx.KindUpstreamDown,
 					Resumable:   !attemptHasClientSemanticOutput(gate, chunkCount),
 					ChunkCount:  chunkCount,
-				}
-				if !outcome.Resumable {
-					scaffold.finishInterrupted(gate, fullText.String(), outcome.Reason, inputTokens, outputTokens)
 				}
 				if capture != nil {
 					capture.MarkInterruptedWithReason(outcome.Reason)

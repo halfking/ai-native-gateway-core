@@ -21,7 +21,7 @@ var paramregEnabled = sync.OnceValue(func() bool {
 //
 // 这个函数替换了此前散落在 serialize_openai.go:179 / serialize_anthropic.go:196 /
 // serialize_responses.go:166 的三段重复代码，并补上了 serialize_gemini.go 完全
-// 缺失的还原逻辑。
+//缺失的还原逻辑。
 //
 // 旧实现的问题（docs/参数全量兼容/01-审计基线与研究结论.md 1.1-1.3）：
 //

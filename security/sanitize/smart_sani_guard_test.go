@@ -71,7 +71,7 @@ func TestSanitizeInputMiddleware_BasicSanitize(t *testing.T) {
 	assert.Contains(t, capturedBody.String(), "{SENSITIVE:phone:1}", "应有占位符")
 
 	// Redis 中应存有映射表
-	key := SanitizeRedisKey(HashTenant("_unknown"), "session-test-1")
+	key := SanitizeRedisKey("session-test-1")
 	vals, err := rdb.HGetAll(context.Background(), key).Result()
 	require.NoError(t, err)
 	assert.Equal(t, "13800138000", vals["{SENSITIVE:phone:1}"])
@@ -106,7 +106,7 @@ func TestSanitizeInputMiddleware_MultiRoundNoCollision(t *testing.T) {
 	}
 
 	// Redis 中应有两个不同编号的占位符
-	vals, err := rdb.HGetAll(context.Background(), SanitizeRedisKey(HashTenant("_unknown"), "session-multi")).Result()
+	vals, err := rdb.HGetAll(context.Background(), SanitizeRedisKey("session-multi")).Result()
 	require.NoError(t, err)
 	assert.Contains(t, vals, "{SENSITIVE:phone:1}", "第1轮占位符")
 	assert.Contains(t, vals, "{SENSITIVE:phone:2}", "第2轮占位符（与第1轮不撞号）")
@@ -142,7 +142,7 @@ func TestSanitizeRestoreInterceptor_RestoresPlaceholders(t *testing.T) {
 	rdb := setupSaniGuardRedis(t)
 
 	// 预先把映射表写入 Redis（模拟输入侧已写入）
-	key := SanitizeRedisKey(HashTenant("_unknown"), "session-restore")
+	key := SanitizeRedisKey("session-restore")
 	rdb.HSet(context.Background(), key, map[string]any{
 		"{SENSITIVE:phone:1}": "13800138000",
 		"{SENSITIVE:email:1}": "test@example.com",
@@ -513,7 +513,7 @@ func TestRestoreResponseBody_NonAssistantRole_UnknownPlaceholderMasked(t *testin
 
 	// 准备映射表：phone:1 → 13800138000（email:99 不在 sm）
 	ctx := context.Background()
-	require.NoError(t, rdb.HSet(ctx, SanitizeRedisKey(HashTenant("_unknown"), "sess-mask"),
+	require.NoError(t, rdb.HSet(ctx, SanitizeRedisKey("sess-mask"),
 		"{SENSITIVE:phone:1}", "13800138000").Err())
 
 	// 响应体中含 role=tool 的消息，文本里同时有已知占位符与未知占位符
@@ -563,7 +563,7 @@ func TestRestoreResponseBody_UnknownPlaceholderMasked(t *testing.T) {
 
 	ctx := context.Background()
 	// 只放 phone:1
-	require.NoError(t, rdb.HSet(ctx, SanitizeRedisKey(HashTenant("_unknown"), "sess-unknown"),
+	require.NoError(t, rdb.HSet(ctx, SanitizeRedisKey("sess-unknown"),
 		"{SENSITIVE:phone:1}", "13800138000").Err())
 
 	body := []byte(`{
@@ -643,13 +643,13 @@ func TestSanitizeInputMiddleware_MultiRound_OffsetKeyAccumulation(t *testing.T) 
 
 	// 验证 offset key 单独存在，且字段正确
 	ctx := context.Background()
-	offsets, err := rdb.HGetAll(ctx, SanitizeOffsetRedisKey(HashTenant("_unknown"), "sess-offset-1")).Result()
+	offsets, err := rdb.HGetAll(ctx, SanitizeOffsetRedisKey("sess-offset-1")).Result()
 	require.NoError(t, err)
 	assert.Equal(t, "2", offsets["phone"], "phone offset 应累计到 2（第 3 轮无 phone）")
 	assert.Equal(t, "1", offsets["email"], "email offset 应为 1")
 
 	// 验证主 map 里有 2 个 phone + 1 个 email
-	mapVals, err := rdb.HGetAll(ctx, SanitizeRedisKey(HashTenant("_unknown"), "sess-offset-1")).Result()
+	mapVals, err := rdb.HGetAll(ctx, SanitizeRedisKey("sess-offset-1")).Result()
 	require.NoError(t, err)
 	assert.Len(t, mapVals, 3, "主 map 应有 3 个占位符")
 }
@@ -688,7 +688,7 @@ func TestSanitizeRestoreInterceptor_StreamEnd_RecoversAuditBody(t *testing.T) {
 	require.NoError(t, err)
 
 	ctx := context.Background()
-	require.NoError(t, rdb.HSet(ctx, SanitizeRedisKey(HashTenant("_unknown"), "sess-stream-end"),
+	require.NoError(t, rdb.HSet(ctx, SanitizeRedisKey("sess-stream-end"),
 		"{SENSITIVE:phone:1}", "13800138000").Err())
 
 	// stream-end 时 streamCapture 已重组为完整 body
@@ -743,7 +743,7 @@ func TestSanitizeInputMiddleware_AlternativeSessionHeaders(t *testing.T) {
 			handler.ServeHTTP(httptest.NewRecorder(), req)
 
 			// 验证 Redis key 用的是 header 里的 sessionID
-			key := SanitizeRedisKey(HashTenant("_unknown"), tc.value)
+			key := SanitizeRedisKey(tc.value)
 			vals, err := rdb.HGetAll(context.Background(), key).Result()
 			require.NoError(t, err)
 			assert.Contains(t, vals, "{SENSITIVE:phone:1}",
@@ -778,12 +778,12 @@ func TestSanitizeInputMiddleware_SessionHeaderPriority(t *testing.T) {
 	req.Header.Set("X-Thread-Id", "loser-4")
 	handler.ServeHTTP(httptest.NewRecorder(), req)
 
-	winnerVals, err := rdb.HGetAll(context.Background(), SanitizeRedisKey(HashTenant("_unknown"), "winner")).Result()
+	winnerVals, err := rdb.HGetAll(context.Background(), SanitizeRedisKey("winner")).Result()
 	require.NoError(t, err)
 	assert.Contains(t, winnerVals, "{SENSITIVE:phone:1}", "X-Gw-Session-Id 应胜出")
 
 	for _, loser := range []string{"loser-1", "loser-2", "loser-3", "loser-4"} {
-		loserVals, err := rdb.HGetAll(context.Background(), SanitizeRedisKey(HashTenant("_unknown"), loser)).Result()
+		loserVals, err := rdb.HGetAll(context.Background(), SanitizeRedisKey(loser)).Result()
 		require.NoError(t, err)
 		assert.Empty(t, loserVals, "低优先级 header 不应被误用作 sessionID (loser=%s)", loser)
 	}
@@ -796,7 +796,7 @@ func TestSanitizeInputMiddleware_SessionHeaderPriority(t *testing.T) {
 func TestSanitizeRestoreInterceptor_StreamChunk_OpenAIDeltaRestore(t *testing.T) {
 	rdb := setupSaniGuardRedis(t)
 	ctx := context.Background()
-	require.NoError(t, rdb.HSet(ctx, SanitizeRedisKey(HashTenant("_unknown"), "sess-oai"),
+	require.NoError(t, rdb.HSet(ctx, SanitizeRedisKey("sess-oai"),
 		"{SENSITIVE:phone:1}", "13800138000").Err())
 
 	s, err := NewSanitizer(NewPatternDetector())
@@ -820,7 +820,7 @@ func TestSanitizeRestoreInterceptor_StreamChunk_OpenAIDeltaRestore(t *testing.T)
 func TestSanitizeRestoreInterceptor_StreamChunk_AnthropicDeltaRestore(t *testing.T) {
 	rdb := setupSaniGuardRedis(t)
 	ctx := context.Background()
-	require.NoError(t, rdb.HSet(ctx, SanitizeRedisKey(HashTenant("_unknown"), "sess-ant"),
+	require.NoError(t, rdb.HSet(ctx, SanitizeRedisKey("sess-ant"),
 		"{SENSITIVE:phone:1}", "13800138000").Err())
 
 	s, err := NewSanitizer(NewPatternDetector())
@@ -841,7 +841,7 @@ func TestSanitizeRestoreInterceptor_StreamChunk_AnthropicDeltaRestore(t *testing
 func TestSanitizeRestoreInterceptor_StreamChunk_AnthropicNonDelta_NoOp(t *testing.T) {
 	rdb := setupSaniGuardRedis(t)
 	ctx := context.Background()
-	require.NoError(t, rdb.HSet(ctx, SanitizeRedisKey(HashTenant("_unknown"), "sess-ant-ctrl"),
+	require.NoError(t, rdb.HSet(ctx, SanitizeRedisKey("sess-ant-ctrl"),
 		"{SENSITIVE:phone:1}", "13800138000").Err())
 
 	s, err := NewSanitizer(NewPatternDetector())
@@ -860,7 +860,7 @@ func TestSanitizeRestoreInterceptor_StreamChunk_AnthropicNonDelta_NoOp(t *testin
 func TestSanitizeRestoreInterceptor_StreamChunk_ResponsesDeltaRestore(t *testing.T) {
 	rdb := setupSaniGuardRedis(t)
 	ctx := context.Background()
-	require.NoError(t, rdb.HSet(ctx, SanitizeRedisKey(HashTenant("_unknown"), "sess-resp"),
+	require.NoError(t, rdb.HSet(ctx, SanitizeRedisKey("sess-resp"),
 		"{SENSITIVE:phone:1}", "13800138000").Err())
 
 	s, err := NewSanitizer(NewPatternDetector())
@@ -880,7 +880,7 @@ func TestSanitizeRestoreInterceptor_StreamChunk_ResponsesDeltaRestore(t *testing
 func TestSanitizeRestoreInterceptor_StreamChunk_NoDataLine_Passthrough(t *testing.T) {
 	rdb := setupSaniGuardRedis(t)
 	ctx := context.Background()
-	require.NoError(t, rdb.HSet(ctx, SanitizeRedisKey(HashTenant("_unknown"), "sess-done"),
+	require.NoError(t, rdb.HSet(ctx, SanitizeRedisKey("sess-done"),
 		"{SENSITIVE:phone:1}", "13800138000").Err())
 
 	s, err := NewSanitizer(NewPatternDetector())
@@ -908,7 +908,7 @@ func TestSanitizeRestoreInterceptor_StreamChunk_UnknownPlaceholderMasked(t *test
 	rdb := setupSaniGuardRedis(t)
 	ctx := context.Background()
 	// 只放 phone:1 的映射，phone:99 不存在
-	require.NoError(t, rdb.HSet(ctx, SanitizeRedisKey(HashTenant("_unknown"), "sess-unknown"),
+	require.NoError(t, rdb.HSet(ctx, SanitizeRedisKey("sess-unknown"),
 		"{SENSITIVE:phone:1}", "13800138000").Err())
 
 	s, err := NewSanitizer(NewPatternDetector())
@@ -929,10 +929,8 @@ func TestSanitizeRestoreInterceptor_StreamChunk_UnknownPlaceholderMasked(t *test
 // TestSanitizeRestoreInterceptor_StreamChunk_FrameSplitAcrossChunks
 // 2026-08-08 audit: SSE framing 在 chunk 边界上是经典坑位. 上游可能把
 // 同一 SSE 帧 (data: <json>\n\n) 拆到两次 Write 调用里:
-//
-//	chunk1 = "data: {\"id\":\"x\",\"choices\":[{\"delta\":{\"content\":\"phone "
-//	chunk2 = "{SENSITIVE:phone:1}\"}}]}\n\n"
-//
+//   chunk1 = "data: {\"id\":\"x\",\"choices\":[{\"delta\":{\"content\":\"phone "
+//   chunk2 = "{SENSITIVE:phone:1}\"}}]}\n\n"
 // 当前实现是按 chunk 独立做 SSE framing + JSON 解析; chunk1 没有完整
 // JSON, 命中 lineEnd == -1 路径 → 返回 (nil, false, nil) 透传;
 // chunk2 开头没有 data: 前缀, 也走不出 data: 行 → 同样透传.
@@ -946,7 +944,7 @@ func TestSanitizeRestoreInterceptor_StreamChunk_UnknownPlaceholderMasked(t *test
 func TestSanitizeRestoreInterceptor_StreamChunk_FrameSplitAcrossChunks(t *testing.T) {
 	rdb := setupSaniGuardRedis(t)
 	ctx := context.Background()
-	require.NoError(t, rdb.HSet(ctx, SanitizeRedisKey(HashTenant("_unknown"), "sess-split"),
+	require.NoError(t, rdb.HSet(ctx, SanitizeRedisKey("sess-split"),
 		"{SENSITIVE:phone:1}", "13800138000").Err())
 
 	s, err := NewSanitizer(NewPatternDetector())

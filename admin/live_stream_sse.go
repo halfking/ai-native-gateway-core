@@ -43,6 +43,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
+	met "github.com/kaixuan/llm-gateway-go/metrics"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -2461,6 +2462,7 @@ func (h *LiveStreamSSEHub) overlaySnapshotTerminalStatuses(ctx context.Context, 
 			for i := range lane.Requests {
 				if st, ok := statuses[lane.Requests[i].RequestID]; ok && st != "" {
 					lane.Requests[i].Status = st
+					met.RecordLiveStreamTileOverlayDBLookup(st)
 					fixed++
 				}
 			}

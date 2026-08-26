@@ -136,7 +136,7 @@ func TestIntegration_ConcurrentCollection(t *testing.T) {
 	networkProber := &mockNetworkProber{}
 	requestAnalyzer := &mockRequestAnalyzer{}
 	scaleProvider := &mockScaleProvider{}
-
+	
 	// Test with multiple credentials
 	credentialLister := &mockCredentialLister{credentialIDs: []int64{1, 2, 3, 4, 5}}
 
