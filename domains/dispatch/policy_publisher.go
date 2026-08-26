@@ -10,10 +10,18 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 const credentialsRevisionChannel = "credentials_revision"
+
+// policyPublisherQuerier is the narrow database dependency used by catch-up.
+// Keeping the LISTEN pool concrete preserves the publisher lifecycle while
+// allowing catch-up policy behavior to be tested without a PostgreSQL server.
+type policyPublisherQuerier interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}
 
 // PolicyPublisher listens for globally ordered credential governor revisions,
 // materializes GovernorPolicy metadata from PostgreSQL, and publishes the
@@ -30,6 +38,7 @@ const credentialsRevisionChannel = "credentials_revision"
 // keeping fail-closed behaviour in one place.
 type PolicyPublisher struct {
 	pool     *pgxpool.Pool
+	queryer  policyPublisherQuerier
 	pipeline *Pipeline
 
 	lastRevision atomic.Uint64
@@ -194,9 +203,9 @@ func (p *PolicyPublisher) publishCatchUpWithRetry(ctx context.Context) error {
 // publishCatchUp loads every credential whose revision is at or above the
 // last published revision. On the initial catch-up (lastRevision == 0)
 // this is the complete credential set; afterwards it is the delta since
-// the last publication. Because Stage E has no live policy applier, the
-// resulting GovernorPolicy is publication metadata: the backend is
-// notified and the pipeline's active revision stamp is advanced.
+// the last publication. The materialized GovernorPolicy is handed to
+// Pipeline.ApplyPolicy, which updates live and cold-start governors and
+// preserves fail-closed revision semantics.
 func (p *PolicyPublisher) publishCatchUp(ctx context.Context) error {
 	p.publishMu.Lock()
 	defer p.publishMu.Unlock()
@@ -221,7 +230,7 @@ func (p *PolicyPublisher) publishCatchUp(ctx context.Context) error {
 		var revision int64
 		var mode string
 		if err := rows.Scan(&spec.CredentialID, &spec.ProviderID, &mode,
-			&spec.RPMLimit, &spec.Limit, &spec.TPMLimit, &revision); err != nil {
+			&spec.Limit, &spec.RPMLimit, &spec.TPMLimit, &revision); err != nil {
 			return err
 		}
 		spec.Mode = normalizeConcurrencyMode(mode)
@@ -251,18 +260,14 @@ func (p *PolicyPublisher) publishCatchUp(ctx context.Context) error {
 		Source:      "pg_notify",
 	}
 
-	// Backend notification is fail-closed: a NotifyRevisions failure keeps
-	// lastRevision where it was, so publishCatchUpWithRetry (or the next
-	// notification) replays the same delta instead of skipping it.
-	backend := p.pipeline.GovernorBackend()
-	if backend != nil {
-		if err := backend.NotifyRevisions(ctx, maxRevision); err != nil {
-			return fmt.Errorf("notify backend revision %d: %w", maxRevision, err)
-		}
+	// ApplyPolicy is fail-closed: any backend error leaves its active revision
+	// unchanged. Keep the publisher revision pinned too, so a retry or later
+	// notification replays this same database delta.
+	if err := p.pipeline.ApplyPolicy(ctx, policy); err != nil {
+		return fmt.Errorf("apply policy revision %d: %w", maxRevision, err)
 	}
 	slog.Debug("dispatch policy publisher applied revision",
 		"revision", policy.Revision, "specs", len(policy.Specs), "source", policy.Source)
-	p.pipeline.SetActivePolicyRevision(maxRevision)
 	p.lastRevision.Store(maxRevision)
 	return nil
 }
