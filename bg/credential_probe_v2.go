@@ -913,13 +913,37 @@ func classifyProbeFailure(errMsg string) probeResult {
 		// ID (outbound_model_name) to be callable.  We mark health=warning so
 		// admins see something is wrong, but availability_state stays "ready"
 		// so routing for the OTHER models on this credential is NOT blocked.
-		// admin will see state_reason_code="endpoint_id_required" and can
-		// either set outbound_model_name on the binding or pick a different
-		// default_probe_model.
+		// BindingOnly=true tells writeHealth to flip ONLY the probe model
+		// binding to unavailable — sibling bindings must stay routable
+		// (apigpt / gpt-5.6-terra audit, 2026-08-26).
 		pr.HealthStatus = "warning"
 		pr.AvailabilityState = "ready"
 		pr.HealthError = errMsg
 		pr.StateReasonCode = probeutil.EndpointIDRequiredErrCode
+		pr.BindingOnly = true
+	case isPerModelChatFailure(errMsg):
+		// 2026-08-26 self-check audit: a probe-model "model not found"
+		// (404) or "model deprecated" (410) reported by the chat
+		// endpoint is a per-binding failure, not a credential-wide one.
+		// The credential may still serve sibling models under the same
+		// apigpt account — the user's principle is "如果一个模型可用，
+		// 默认应该所有模型均可用" and the corollary is "if only the
+		// probe_model is broken, sibling models must remain routable".
+		// Mark the binding unavailable and keep availability_state='ready'
+		// so the routing layer still considers the credential (it just
+		// won't pick the broken model until an operator updates
+		// default_probe_model).
+		//
+		// Note: the same upstream message from the /v1/models endpoint
+		// is *credential-scoped* — a 404 from /v1/models means the
+		// provider refused to enumerate any models for this account
+		// (auth/revocation/scope removal). isPerModelChatFailure
+		// guards against that path by requiring the chat-level prefix.
+		pr.HealthStatus = "warning"
+		pr.AvailabilityState = "ready"
+		pr.HealthError = errMsg
+		pr.StateReasonCode = "model_binding_error"
+		pr.BindingOnly = true
 	default:
 		pr.HealthStatus = "unreachable"
 		pr.AvailabilityState = "unreachable"
@@ -929,6 +953,34 @@ func classifyProbeFailure(errMsg string) probeResult {
 		pr.StateReasonCode = "network_error"
 	}
 	return pr
+}
+
+// isPerModelChatFailure returns true when the errMsg describes a
+// failure that applies only to the probed model — the credential may
+// still be healthy. Currently recognises chat-level 404 "model not
+// found" and 410 "model deprecated" responses emitted by upstream
+// vendors that have removed the model from their catalog.
+//
+// Note: 402 "payment required" / 401 / 403 / 429 are explicitly NOT in
+// this set — those are credential-wide and must keep the original
+// availability handling. endpoint_id_required has its own branch and
+// pre-empts the 404 check above.
+//
+// The chat-level prefix requirement (`chat status 404` or
+// `messages status 404`) keeps the same upstream message from the
+// /v1/models endpoint (`models endpoint unreachable (...)`) on the
+// credential-scoped path — a 404 from /v1/models means the provider
+// refused to enumerate any models for this account (auth/revocation/
+// scope removal) and must NOT be treated as a single-binding failure.
+func isPerModelChatFailure(errMsg string) bool {
+	if !(strings.Contains(errMsg, "model not found") ||
+		strings.Contains(errMsg, "model has been deprecated")) {
+		return false
+	}
+	return strings.Contains(errMsg, "chat status 404") ||
+		strings.Contains(errMsg, "chat status 410") ||
+		strings.Contains(errMsg, "messages status 404") ||
+		strings.Contains(errMsg, "messages status 410")
 }
 
 // writeHealth persists probe results with manual-disable guard.
@@ -1046,55 +1098,111 @@ func (c *CredentialProbeV2) writeHealth(ctx context.Context, credID int, pr prob
 	if len(writeModels) == 0 {
 		writeModels = []string{pr.HealthProbeModel}
 	}
+	// 2026-08-26 self-check audit (apigpt / gpt-5.6-terra): on the
+	// healthy-ready branch the cache must reflect the freshly
+	// recovered binding set, including every sibling model the probe
+	// indirectly validated. On the failure branch the cache mirrors
+	// current DB state (only the models currently marked cmb.available).
+	//
+	// BindingOnly failures (e.g. probe_model endpoint_id_required,
+	// 404 model not found) leave availability_state='ready' so the
+	// credential stays routable for sibling models, but the failed
+	// model itself must NOT appear "available" in the cache. The
+	// cache writes one entry per model in writeModels; the failed
+	// model flips to state="model_binding" while siblings stay
+	// healthy_confirmed.
+	//
+	// `available` is shared between the cache fan-out and the
+	// StateManager UpdateFromProbe below — both surfaces must agree
+	// on whether the probe_model is currently routable. The single
+	// source of truth keeps the credentialstate cache in lock-step
+	// with the Redis model availability cache so a future router
+	// that reads either gets a consistent answer.
+	available := pr.AvailabilityState == "ready" && !pr.BindingOnly
+	state := pr.HealthStatus
+	if state == "healthy" {
+		state = "healthy_confirmed"
+	}
+	if pr.BindingOnly {
+		// Per-model probe failure — the credential itself is healthy,
+		// only the probe_model binding is down. writeBindingUnavailable
+		// has already flipped cmb.available=FALSE for the probe model
+		// (see top of writeHealth), so the cache must reflect that.
+		state = "model_binding"
+	} else if !available && pr.AvailabilityState != "" {
+		state = pr.AvailabilityState
+	}
 	if c.cache != nil && c.cache.Enabled() && pr.HealthProbeModel != "" {
-		available := pr.AvailabilityState == "ready"
-		state := pr.HealthStatus
-		if state == "healthy" {
-			state = "healthy_confirmed"
-		}
-		if !available && pr.AvailabilityState != "" {
-			state = pr.AvailabilityState
-		}
-		if err := c.cache.Set(execCtx, credID, pr.HealthProbeModel, modelAvailabilityFields(
-			credID,
-			pr.HealthProbeModel,
-			state,
-			available,
-			pr.HealthStatus,
-			0,
-			0,
-			recoverAt,
-			pr.HealthSource,
-		)); err != nil {
-			slog.Warn("credential probe v2: cache write failed",
-				"credential_id", credID,
-				"probe_model", pr.HealthProbeModel,
-				"error", err)
+		for _, model := range writeModels {
+			// For BindingOnly failures, only the probe model itself
+			// should be reported unavailable in the cache; sibling models
+			// remain routable.
+			modelAvailable := available
+			modelState := state
+			if pr.BindingOnly && model != pr.HealthProbeModel {
+				modelAvailable = true
+				modelState = "healthy_confirmed"
+			}
+			if err := c.cache.Set(execCtx, credID, model, modelAvailabilityFields(
+				credID,
+				model,
+				modelState,
+				modelAvailable,
+				pr.HealthStatus,
+				0,
+				0,
+				recoverAt,
+				pr.HealthSource,
+			)); err != nil {
+				slog.Warn("credential probe v2: cache write failed",
+					"credential_id", credID,
+					"probe_model", model,
+					"error", err)
+			}
 		}
 	}
 
 	// 新增：同步到状态管理器
-	if c.stateManager != nil && pr.HealthProbeModel != "" {
+	if c.stateManager != nil && len(writeModels) > 0 {
 		now := time.Now()
-		state := &credentialstate.State{
-			CredentialID:  credID,
-			Model:         pr.HealthProbeModel,
-			Available:     pr.AvailabilityState == "ready",
-			HealthStatus:  pr.HealthStatus,
-			AvgLatencyMs:  pr.HealthLatencyMs,
-			LastUpdatedAt: now,
-			LastSuccessAt: func() *time.Time {
-				if pr.AvailabilityState != "ready" {
-					return nil
+		// Fan the per-model update over writeModels so the
+		// StateManager cache mirrors the same binding set the Redis
+		// model availability cache just wrote. The single
+		// `pr.AvailabilityState == "ready" && !pr.BindingOnly`
+		// expression below is the source of truth shared with the
+		// cache fan-out — both surfaces must agree on whether each
+		// model is currently routable.
+		//
+		// For BindingOnly failures, only the probe_model itself is
+		// down — sibling models stay available. For credential-wide
+		// successes, every bound model is fresh-confirmed.
+		for _, model := range writeModels {
+			lastSuccess := &now
+			if pr.BindingOnly {
+				if model == pr.HealthProbeModel {
+					// Probe model failed at the binding level;
+					// there is no successful probe timestamp to
+					// report.
+					lastSuccess = nil
 				}
-				return &now
-			}(),
-			LastError: pr.HealthError,
+			}
+			if pr.AvailabilityState != "ready" {
+				lastSuccess = nil
+			}
+			c.stateManager.UpdateFromProbe(execCtx, &credentialstate.State{
+				CredentialID:  credID,
+				Model:         model,
+				Available:     pr.AvailabilityState == "ready" && !pr.BindingOnly,
+				HealthStatus:  pr.HealthStatus,
+				AvgLatencyMs:  pr.HealthLatencyMs,
+				LastUpdatedAt: now,
+				LastSuccessAt: lastSuccess,
+				LastError:     pr.HealthError,
 
-			RecoverAt: recoverAt,
-			Source:    "probe_v2",
+				RecoverAt: recoverAt,
+				Source:    "probe_v2",
+			})
 		}
-		c.stateManager.UpdateFromProbe(execCtx, state)
 	}
 }
 
