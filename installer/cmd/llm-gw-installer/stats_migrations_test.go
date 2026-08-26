@@ -42,8 +42,7 @@ func TestStatsStartupMigrationsMatchCanonicalSources(t *testing.T) {
 		"569_candidate_binding_scope_revision_canonical.sql":               candidateBindingScopeRevisionCanonicalMigration569,
 		"570_model_offers_insert_priority_passthrough.sql":                 modelOffersInsertPriorityPassthroughMigration570,
 		"571_candidate_binding_scope_revision_canonical_priority_hash.sql": candidateBindingScopeRevisionCanonicalPriorityHashMigration571,
-		"601_request_logs_bodies_drop_metadata.sql":                        requestLogsBodiesDropMetadataMigration601,
-	}
+		"601_request_logs_bodies_drop_metadata.sql":                        requestLogsBodiesDropMetadataMigration601,	}
 
 	for name, embedded := range expected {
 		canonical, err := os.ReadFile(filepath.Join(canonicalDir, name))
@@ -72,6 +71,7 @@ func TestStatsStartupMigrationsAreWrittenToInstallerDirectories(t *testing.T) {
 		"546_stats_reconciliation_diffs_unique.sql",
 		"547_session_project_attribution.sql",
 		"548_stats_reconciliation_diffs_identity.sql",
+		"553_approval_resume_claim.sql",
 		"552_request_journey_durable_outbox.sql",
 		"553_approval_resume_claim.sql",
 		"554_goal_runs.sql",
