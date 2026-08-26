@@ -178,7 +178,7 @@ function selectChild(c: SessionChildRequest) {
 .pill--err { color: var(--danger, #dc2626); background: color-mix(in srgb, var(--danger, #dc2626) 14%, transparent); }
 .pill--warn { color: var(--warning, #d97706); background: color-mix(in srgb, var(--warning, #d97706) 16%, transparent); }
 .pill--info { color: var(--info, #2563eb); background: color-mix(in srgb, var(--info, #2563eb) 14%, transparent); }
-.pill--muted { color: var(--muted); background: var(--bg-subtle, var(--overlay-light)); }
+.pill--muted { color: var(--muted); background: var(--bg-subtle, var(--surface-secondary)); }
 .children { margin: 6px 0 0; padding-left: 14px; font-size: 11px; color: var(--muted); }
 .children li { cursor: pointer; }
 .children li:hover { color: var(--accent); }

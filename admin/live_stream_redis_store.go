@@ -1122,10 +1122,12 @@ func liveStreamDimensionKey(dimension string, req LiveRequest) string {
 		// 的 label 优先规则对真实请求与 idle marker 同时成立。
 		return liveStreamCredentialKey(req)
 	case "vendor":
-		// 2026-08-26: 原厂维度仍作为 BuildLiveStreamSnapshot 的"测试维度别名"
-		// 保留（管理后台 store 内的 dim 计算已切到 credential，写队列已停止
-		// vendor 维度，但快照合并仍输出 vendor 维度让 admin 测试/老检查位
-		// 兼容）。见 BuildLiveStreamSnapshot dim 循环。
+		// 2026-08-26: 原厂维度仍在泳道队列里有写入 (liveRequestQueueKeys
+		// 写 vendor:<vendor> + tenant dim:vendor:<vendor> 双队列)，保留
+		// 是因为：(a) BuildLiveStreamSnapshot 在 credential 之外仍输出
+		// vendor 维度让前端 tile 颜色 / 老检查位兼容；(b) CreateIdleMarkerForDimension
+		// 的 vendor case 把 ModelCategory 作为泳道 key 注入 → 与真实
+		// 请求归到同一泳道，避免出现"空闲块"重复泳道。
 		if req.Type == "idle_marker" {
 			return req.ModelCategory
 		}

@@ -448,14 +448,19 @@ func (h *Handler) serveSessionInstantSummary(w http.ResponseWriter, r *http.Requ
 	}
 
 	now := time.Now()
+	// Partitioned sessions table: UPDATE ... ORDER BY/LIMIT is invalid in PostgreSQL.
+	// Pin the newest partition via MAX(partition_date), same pattern as titlestore.
 	result, uerr := h.db.Exec(r.Context(), `
 		UPDATE public.sessions
 		SET title=$3, summary=$4, summary_generated_at=$5, updated_at=$5
 		WHERE session_id=$1 AND tenant_id=$2
-		ORDER BY partition_date DESC LIMIT 1`,
+		  AND partition_date = (
+			SELECT MAX(partition_date) FROM public.sessions
+			WHERE session_id=$1 AND tenant_id=$2
+		  )`,
 		sessionID, tenantID, summary.Title, summary.Summary, now)
 	if uerr != nil {
-		writeError(w, http.StatusInternalServerError, "update snapshot failed")
+		writeError(w, http.StatusInternalServerError, "update snapshot failed: "+uerr.Error())
 		return
 	}
 	if result.RowsAffected() == 0 {

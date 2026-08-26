@@ -445,21 +445,31 @@ func TestExtractMessagesForTitle_BumpedLimits(t *testing.T) {
 	// (turn-11 was preserved by the last-user rule.)
 }
 
-// TestExtractMessagesForTitle_LongSystemTruncated (2026-08-06) — long system
-// messages (IDE tool descriptions) get the explicit "<ide-tool-context truncated>"
-// marker so it's obvious in logs that the system prompt was cut.
-func TestExtractMessagesForTitle_LongSystemTruncated(t *testing.T) {
-	longSys := strings.Repeat("你可以使用以下工具...", 100) // well over 800 chars
+// TestExtractMessagesForTitle_ExcludesSystem (2026-08-26) — system/developer
+// prompts must never enter the title corpus; only user/assistant remain.
+func TestExtractMessagesForTitle_ExcludesSystem(t *testing.T) {
+	longSys := strings.Repeat("你可以使用以下工具...", 100)
 	body := fmt.Sprintf(`{"messages":[
 		{"role":"system","content":%q},
-		{"role":"user","content":"实际问题"}
+		{"role":"developer","content":"dev instructions"},
+		{"role":"user","content":"实际问题"},
+		{"role":"assistant","content":"好的"}
 	]}`, longSys)
 	got := extractMessagesForTitle(body)
 	if got == "" {
 		t.Fatal("expected non-empty corpus")
 	}
-	if !strings.Contains(got, "<ide-tool-context truncated>") {
-		t.Fatalf("expected ide-tool-context truncated marker; got:\n%s", got)
+	if strings.Contains(got, "你可以使用以下工具") || strings.Contains(got, "dev instructions") {
+		t.Fatalf("system/developer content leaked into title corpus:\n%s", got)
+	}
+	if strings.Contains(got, "system:") || strings.Contains(got, "developer:") {
+		t.Fatalf("system/developer role lines leaked into title corpus:\n%s", got)
+	}
+	if !strings.Contains(got, "实际问题") {
+		t.Fatalf("expected user question preserved; got:\n%s", got)
+	}
+	if !strings.Contains(got, "assistant: 好的") {
+		t.Fatalf("expected assistant reply preserved; got:\n%s", got)
 	}
 }
 
