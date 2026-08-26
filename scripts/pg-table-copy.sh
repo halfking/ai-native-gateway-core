@@ -118,9 +118,9 @@ fi
 
 # ── Helper functions ──────────────────────────────────────────────────────
 
-# Run psql on source
+# Run psql on source (respect PGOPTIONS for statement_timeout overrides)
 src_psql() {
-  PGPASSWORD="$SRC_PASS" psql -h "$SRC_HOST" -p "$SRC_PORT" -U "$SRC_USER" -d "$SRC_DB" -tAq "$@"
+  PGPASSWORD="$SRC_PASS" psql ${PGOPTIONS:-} -h "$SRC_HOST" -p "$SRC_PORT" -U "$SRC_USER" -d "$SRC_DB" -tAq "$@"
 }
 
 # Run psql on target. Local docker → docker exec; remote → network psql.

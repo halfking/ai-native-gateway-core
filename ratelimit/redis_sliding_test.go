@@ -1,10 +1,7 @@
 package ratelimit
 
 import (
-	"context"
-	"errors"
 	"testing"
-	"time"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
@@ -16,39 +13,6 @@ func newTestRedisLimiter(t *testing.T) (*RedisLimiter, *miniredis.Miniredis) {
 	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
 	t.Cleanup(func() { _ = client.Close() })
 	return NewRedisLimiter(client), server
-}
-
-func TestRedisLimiter_AdmitRPMCapsAtTwoBuckets(t *testing.T) {
-	l, _ := newTestRedisLimiter(t)
-	const limit = 2
-	for i := 0; i < limit; i++ {
-		result, err := l.AdmitRPM(context.Background(), 3, limit)
-		if err != nil || !result.Admitted {
-			t.Fatalf("current bucket request %d: %+v err=%v", i, result, err)
-		}
-	}
-	notified := make(chan struct{}, limit)
-	cancels := make([]context.CancelFunc, 0, limit)
-	for i := 0; i < limit; i++ {
-		ctx, cancel := context.WithCancel(context.Background())
-		cancels = append(cancels, cancel)
-		go func() {
-			_, _ = l.AdmitRPMWithWait(ctx, 3, limit, func(AdmissionResult) { notified <- struct{}{} })
-		}()
-	}
-	for i := 0; i < limit; i++ {
-		select {
-		case <-notified:
-		case <-time.After(time.Second):
-			t.Fatal("queue request did not reach waiting state")
-		}
-	}
-	for _, cancel := range cancels {
-		cancel()
-	}
-	if _, err := l.AdmitRPM(context.Background(), 3, limit); !errors.Is(err, ErrMinuteBucketFull) {
-		t.Fatalf("request beyond 2L: %v", err)
-	}
 }
 
 // TestRedisLimiter_TPMCountDoesNotLoseReservations is the regression for the

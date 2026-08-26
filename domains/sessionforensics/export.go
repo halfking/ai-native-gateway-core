@@ -117,8 +117,8 @@ func (e *Exporter) ExportFromTx(ctx context.Context, tx pgx.Tx, sessionID, tenan
 			rl.id::text, rl.role, rl.parent_request_id,
 			rl.compression_reason, rl.compression_strategy, rl.compression_meta,
 			rl.attachments, rl.created_at,
-			rb.request_body AS request_body,
-			rb.response_body AS response_body,
+			COALESCE(rb.request_body, rl.request_body) AS request_body,
+			COALESCE(rb.response_body, rl.response_body) AS response_body,
 			rl.client_model, rl.outbound_model
 		FROM request_logs_with_current_month rl
 		LEFT JOIN request_logs_bodies_with_current_month rb ON rb.request_id = rl.request_id
@@ -243,10 +243,10 @@ func (e *Exporter) ExportSession(ctx context.Context, sessionID, tenantID string
 			rl.id::text, rl.role, rl.parent_request_id,
 			rl.compression_reason, rl.compression_strategy, rl.compression_meta,
 			rl.attachments, rl.created_at,
-			rb.request_body AS request_body,
-			rb.response_body AS response_body,
+			COALESCE(rb.request_body, rl.request_body) AS request_body,
+			COALESCE(rb.response_body, rl.response_body) AS response_body,
 			rl.client_model, rl.outbound_model
-		FROM request_logs_with_current_month rl
+ 		FROM request_logs_with_current_month rl
 		LEFT JOIN request_logs_bodies_with_current_month rb ON rb.request_id = rl.request_id
 		WHERE rl.gw_session_id = $1 AND rl.tenant_id = $2
 		ORDER BY rl.created_at ASC, rl.id ASC

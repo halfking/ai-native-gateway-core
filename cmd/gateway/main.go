@@ -60,8 +60,6 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/dbdegradation"                       //nolint:depguard // 数据库降级模块
 	"github.com/kaixuan/llm-gateway-go/domains/dispatch"                            //nolint:depguard // v4 T2: queue mirror wiring at pipeline assembly
 	"github.com/kaixuan/llm-gateway-go/domains/freeresource"                        //nolint:depguard // OmniFree quota tracker
-	"github.com/kaixuan/llm-gateway-go/domains/goalintegration"                     //nolint:depguard // Wave 2-D: HTTP API integration
-	"github.com/kaixuan/llm-gateway-go/domains/goalrun"                             //nolint:depguard // Wave 2-A: durable ledger
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"                         //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"                   //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -71,7 +69,6 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/notification"                        //nolint:depguard // 审批通知器
 	"github.com/kaixuan/llm-gateway-go/domains/providerprofile"                     //nolint:depguard // 供应商画像告警 handler (AlertType)
 	"github.com/kaixuan/llm-gateway-go/domains/quotafetcher"                        //nolint:depguard // P1 proactive upstream quota prefetch
-	"github.com/kaixuan/llm-gateway-go/domains/requestdetail"                       //nolint:depguard // in-flight request content store
 	"github.com/kaixuan/llm-gateway-go/domains/requestjourney"                      //nolint:depguard // request lifecycle observation
 	"github.com/kaixuan/llm-gateway-go/domains/routeincident"                       //nolint:depguard // 2026-07-13 route incident diagnosis (Phase 1)
 	"github.com/kaixuan/llm-gateway-go/domains/routingstate"
@@ -524,12 +521,6 @@ func main() {
 	cm := credential.NewManager()
 	lim := credential.NewLimiter()
 
-	// 2026-08-26 hot-reload: declared here (outer scope) so the admin
-	// handler can later call SetHotReloadDeps(stickyCache, lim) and the
-	// PATCH binding/credential handlers can clear stale sticky entries +
-	// refresh the in-process limiter capacity.
-	var stickyCache *executors.StickyCache
-
 	matrixPath := transformation.DefaultMatrixPath()
 	matrix := transformation.New(matrixPath)
 
@@ -553,39 +544,10 @@ func main() {
 
 	pools := pool.NewPoolManager(upClient.Proxy().ProxyFunc())
 
-	// 会话优化 v4 (T4/R1.6): 进程级流式连接注册表 - request_id -> 客户端
-	// 写出流。供 ActionBridge 回写思考帧与 /api/admin/connection-registry
-	// 只读投影共享同一实例（否则 admin 列表恒为空）。Register 满即返回
-	// 错误，绝不阻塞请求热路径；写 deadline 默认 30s（G7：慢/僵死客户端
-	// 按断开处理）。流式 ingress 的 Register/Unregister 挂接在
-	// ChatHandler.serveHTTPInner 内（connection_registry_wiring.go）。
-	connectionRegistry := streaming.NewConnectionRegistry(0, 0)
-
 	chatHandler := streaming.NewChatHandler(cm, lim, matrix, pools, resolver, auditSink)
-	// T4 数据面接线：流式请求开始时把 request_id -> 客户端写出流登记进
-	// 注册表，ActionBridge 依据 request_id 回写 `: thinking:` 注释帧。
-	chatHandler.SetConnectionRegistry(connectionRegistry)
 	if len(cfg.SessionIDBodyKeys) > 0 {
 		streaming.SetSessionIDBodyKeys(cfg.SessionIDBodyKeys)
 	}
-
-	// ── Wave 2-D: unified orchestration plugin — GoalRun store + status handler ──
-	// Migration 554 must be deployed before this path can persist GoalRun rows;
-	// without a configured store, the goalintegration layer returns
-	// ErrInvalidGoal (fail-closed) and clients get 400 on explicit goal requests.
-	var goalrunStore *goalrun.Store
-	if dbConn != nil && dbConn.Enabled() && dbConn.Pool() != nil {
-		goalrunStore = goalrun.NewStore(dbConn.Pool())
-	}
-	goalRunHandler := handlers.NewGoalRunHandler(goalrunStore, slog.Default())
-	goalIntegrator := goalintegration.New(goalintegration.Config{
-		Store:      goalrunStore,
-		LeaseOwner: "gateway-" + cfg.Listen,
-	})
-	chatHandler.SetGoalIntegrator(goalIntegrator)
-	slog.Info("goal integration initialised",
-		"store_configured", goalIntegrator.IsConfigured(),
-	)
 
 	// Health handler with database and Redis status checking (2026-07-08)
 	// Pass db and redis connections for health checks (will be updated with redis later)
@@ -662,7 +624,7 @@ func main() {
 			})
 			pendingStore = pending.NewStore(fpSlotRedis, pendingTTL)
 			lastSystemSession = session.NewLastSystemSessionIndex(redisClient)
-			sessionPref = session.NewSessionPreferenceWithTTL(redisClient, sessionTTL)
+			sessionPref = session.NewSessionPreference(redisClient)
 			slog.Info("session manager enabled", "redis", cfg.RedisAddr, "ttl_hours", cfg.SessionTTLHours)
 
 			// Update health handler with Redis connection (2026-07-08)
@@ -1051,7 +1013,7 @@ func main() {
 		resolver.SetDB(dbConn.Pool())
 	}
 	if providerClient.Enabled() {
-		stickyCache = executors.NewStickyCache()
+		stickyCache := executors.NewStickyCache()
 		if dbConn != nil && dbConn.Enabled() {
 			stickyCache.SetDB(dbConn.Pool())
 			if err := stickyCache.RestoreFromDB(context.Background()); err != nil {
@@ -1063,10 +1025,6 @@ func main() {
 		stickyCache.SetRedisStore(stickyStore)
 		router := executors.NewRouter(stickyCache, lim)
 		routingRouter = router
-		if envBoolOff("LLM_GATEWAY_PRIORITY_ROUTING_ENABLED") {
-			router.PriorityRoutingEnabled = false
-			slog.Warn("priority routing disabled by environment gate")
-		}
 
 		// Connect FpSlots to Router for load-aware P2C selection
 		router.FpSlots = fpSlots
@@ -1228,12 +1186,11 @@ func main() {
 		routingExec.ChatToAnthropic = streaming.ConvertChatRequestToAnthropic
 		routingExec.AnthropicToOpenAI = streaming.ConvertAnthropicBodyToOpenAI
 
-		// IR is the default protocol-conversion path. Set either switch to
-		// "false" only for an explicit emergency rollback to the legacy path.
-		if os.Getenv("LLM_GATEWAY_IR_CONVERTER") != "false" {
+		// Phase B (2026-06-22): IR-based protocol converter.
+		if os.Getenv("LLM_GATEWAY_IR_CONVERTER") == "true" {
 			routingExec.IR = &irAdapter{}
 			slog.Info("ir_converter", "enabled", true)
-			if os.Getenv("LLM_GATEWAY_TRANSPORT_IR") != "false" {
+			if os.Getenv("LLM_GATEWAY_TRANSPORT_IR") == "true" {
 				routingExec.IR = transformation.NewTransportIRConverter(&irAdapter{})
 				slog.Info("transport_ir", "enabled", true, "features", "extensions-roundtrip,circuit-breaker")
 			}
@@ -1764,31 +1721,10 @@ func main() {
 		// node_enqueued / node_switch / model_switch / no_route）。
 		gatewayLiveActionsEmitter = liveactions.NewEmitter(redisClientForCache.Client(), 0)
 		defer gatewayLiveActionsEmitter.Close()
-		if gatewayActionBridge != nil {
-			defer gatewayActionBridge.Close()
-		}
 		chatHandler.SetLiveActions(gatewayLiveActionsEmitter)
 		routingExec.SetLiveActions(gatewayLiveActionsEmitter)
 		slog.Info("live_actions_emitter: wired",
 			"redis_connected", redisClientForCache != nil && redisClientForCache.Client() != nil)
-		// ── 会话优化 v4 T4/R3.2 (FR-3 操作事件思考帧桥接) ───────────────
-		// ActionBridge 源 = 上面构造的 gatewayLiveActionsEmitter 的进程内
-		// 订阅（EmitterActionSource，满即丢）；目标 = 共享 connectionRegistry。
-		// 运营开关 llmgw_action_bridge_enabled 默认 false（灰阶上线），
-		// 走 settings_kv 热更新（executorHotConfig，30s 轮询生效），无需
-		// 重启即可开启/关闭；语义帧白名单 llmgw_action_bridge_semantic_clients
-		// 同款热配置。Bridge 订阅 emitter 后随进程退出由 emitter.Close 自然
-		// 回收其订阅 channel。
-		gatewayActionBridge = streaming.NewActionBridge(streaming.ActionBridgeConfig{
-			Enabled:                  false, // 灰阶：运营开关打开前一根思考帧都不发
-			Registry:                 connectionRegistry,
-			Source:                   streaming.EmitterActionSource{Emitter: gatewayLiveActionsEmitter, BufferSize: 0},
-			BufferSize:               256,
-			SemanticFrameClientTypes: nil,
-			Hot:                      executorHotConfig,
-		})
-		slog.Info("action_bridge: wired (disabled by default; enable via llmgw_action_bridge_enabled)",
-			"hot_config", executorHotConfig != nil)
 		// 2026-06-26: configurable recent-session reuse window. Default
 		// is 5m (session.LastSystemSessionTTL). Operators can shorten it
 		// to reduce the chance of two unrelated clients being merged.
@@ -1826,7 +1762,6 @@ func main() {
 	if keyVerifier.Enabled() {
 		slidingRL := ratelimit.NewRedisLimiterFromEnv()
 		chatHandler.SetAuth(keyVerifier, slidingRL)
-		chatHandler.SetAdminAPIKey(cfg.AdminAPIKey)
 		// /v1/embeddings handler (22 章 §22.2). providerClient + upClient
 		// are both ready by this point.
 		embeddingsHandler = streaming.NewEmbeddingsHandler(providerClient, upClient)
@@ -1838,10 +1773,6 @@ func main() {
 
 	// ── Telemetry ─────────────────────────────────────────────────────────
 	telemetryClient := telemetry.NewClient()
-	// 2026-08-25: 注册到 telemetry 包级 holder, 让 columnar-safe claim
-	// 路径 (无 Client 上下文的顶层函数 claimSessionFinalSuccess) 能拿到
-	// 当前实例的 Client, 调用 heapRequestLogsPartitions 取 heap 月度分区列表.
-	telemetry.SetClaimClient(telemetryClient)
 	if dbConn != nil && dbConn.Enabled() {
 		telemetryClient.SetDB(dbConn.Pool())
 
@@ -1938,21 +1869,11 @@ func main() {
 	// Cleanup follows TTL unless explicitly overridden.
 	// 2026-07-16: snapshot refresh interval (30 min default) — env LLM_GATEWAY_LIVE_STREAM_SNAPSHOT_REFRESH_INTERVAL.
 	liveStreamCachedTTL, liveStreamCachedCleanup := liveStreamCachedDurationsFromEnv()
-	admin.ConfigureLiveStreamInflightProtectFromEnv()
 	liveStreamSnapshotRefresh := positiveDurationEnv(
 		"LLM_GATEWAY_LIVE_STREAM_SNAPSHOT_REFRESH_INTERVAL",
 		30*time.Minute,
 	)
-	// 2026-08-25: per-scope snapshot 节流间隔. 0 禁用. 默认 2s.
-	liveStreamSnapshotMinInterval := positiveDurationEnv(
-		"LLM_GATEWAY_LIVE_STREAM_SNAPSHOT_MIN_INTERVAL",
-		2*time.Second,
-	)
 	var liveStreamHub *admin.LiveStreamSSEHub
-	// 2026-08-25: telemetry onEmitted 转发器引用。声明提升到 main 顶层作用域,
-	// 因为 wiring 在 ~2000 行、关停块在 ~6000 行, 两处必须引用同一实例
-	// (先 stop 转发器、再 stop hub, 对齐生产者→消费者的关停顺序)。
-	var liveStreamEmittedFwd *liveStreamEmittedForwarder
 	// probeStreamHub (2026-08-11) mirrors the live request stream for the
 	// 自检 tab. Declared at this scope so it can be constructed in the
 	// system-monitor wiring block and later wired into probe emitters.
@@ -1981,7 +1902,6 @@ func main() {
 		CachedSnapshotCleanupInterval: liveStreamCachedCleanup,
 		SnapshotRefreshInterval:       liveStreamSnapshotRefresh,
 	})
-	liveStreamHub.SetSnapshotMinInterval(liveStreamSnapshotMinInterval)
 	go liveStreamHub.Run()
 
 	if dbPool != nil {
@@ -1997,51 +1917,26 @@ func main() {
 			"dbConn_enabled", dbConn != nil && dbConn.Enabled())
 	}
 
-	// 2026-08-25 两阶段实时流契约（取代此前"仅在事务提交后发布"的单一
-	// persisted 契约 —— 那会让 DB 缺失/延迟直接挡住实时显示）:
-	//
-	//   阶段一 emitted   — telemetry EmitRequestLog 在入 DB 队列前、请求热路径
-	//                      goroutine 上同步触发 onEmitted。回调只做浅拷贝 +
-	//                      select-default 投递（liveStreamEmittedForwarder.emit）,
-	//                      provider 解析（≤200ms DB 查找）与 Publish 移到转发器的
-	//                      单消费者 goroutine → 请求一被接收就进实时流, 不被
-	//                      DB 写入节奏阻塞。
-	//   阶段二 persisted — 落库后补偿最终状态, 与阶段一走同一转发器 FIFO
-	//                      (2026-08-25 审计修正: 两路直发无顺序保证, DB 慢时
-	//                      forwarder 积压会让晚到的 in_progress 把前端已显示
-	//                      的终态卡片回退 —— 同一 FIFO + 单消费者恒保
-	//                      in_progress → terminal 顺序, 见 forwarder type doc)。
-	//
-	// 同一 request ID 的多次 Publish 顺序由转发器 FIFO 保证; 跨 request 由
-	// admin 包 Redis Record 的 per-request 锁 + read-modify-write 去重兜底。
+	// Publish terminal live-stream updates only after the request log
+	// transaction commits. Emitting before persistence allowed a green
+	// tile to reach the dashboard before GET /api/logs/{id} could see it.
+	// The provider_id→catalog_code resolution is bounded by the hub's
+	// short lookup context, and Publish remains non-blocking for clients.
 	// Live stream hub hook: register regardless of telemetryClient.Enabled()
 	// (sessionv2mirror/attachment hooks don't gate on Enabled()).
 	// If telemetry is disabled, log a clear warning so operators know
 	// the hub runs but receives no data.
 	if telemetryClient != nil {
 		hub := liveStreamHub
-		// 阶段一: emitted → in_progress 投影。SetOnRequestLogEmitted 是替换
-		// 语义（不同于 Add*）且全仓库仅此一处调用, 不会覆盖其他钩子。
-		// 转发器实例存入 liveStreamEmittedFwd 供关停块引用。
-		fwd := newLiveStreamEmittedForwarder(hub)
-		liveStreamEmittedFwd = fwd
-		go fwd.run()
-		telemetryClient.SetOnRequestLogEmitted(func(entry *telemetry.RequestLogEntry) {
-			requestdetail.CaptureFromEntry(entry)
-			fwd.emit(entry)
+		telemetryClient.AddOnRequestLogPersisted(func(entry *telemetry.RequestLogEntry) {
+			hub.Publish(adminLiveRequestFromEntry(entry, hub))
 		})
-		slog.Info("telemetry onEmitted forwarder wired → live stream SSE hub (pre-DB in_progress projection) + request detail capture")
-		// 阶段二: persisted → 最终状态补偿。经同一转发器 FIFO 发布(顺序保证
-		// 见上), 回调在 telemetry worker 上仍只做非阻塞投递 —— 比 旧直发
-		// Publish 回调更轻, 不会拖慢 telemetry 落库 worker。
-		telemetryClient.AddOnRequestLogPersisted(fwd.persist)
-		telemetryClient.AddOnRequestLogPersisted(requestdetail.ClearAfterPersist)
-		slog.Info("telemetry onPersisted wired → live stream SSE hub via forwarder FIFO (post-commit compensation) + request detail clear")
+		slog.Info("telemetry onPersisted wired → live stream SSE hub")
 	} else {
 		slog.Warn("live stream hub created but telemetryClient is nil; no data will flow to swim lanes")
 	}
 	if telemetryClient != nil && !telemetryClient.Enabled() {
-		slog.Warn("telemetryClient.Enabled() == false; live stream hub will receive no onEmitted/onPersisted callbacks")
+		slog.Warn("telemetryClient.Enabled() == false; live stream hub will receive no onPersisted callbacks")
 	}
 
 	slog.Info("live request stream hub enabled (sse /api/admin/live-stream)",
@@ -2118,10 +2013,8 @@ func main() {
 			outboundBuilder = v2.NewOutboundBuilder(turnReader)
 
 			// Initialize SessionCacheV2 with Redis support
-			// Use cfg.RedisAddr + cfg.RedisDB from outer scope (2026-08-25:
-			// session:v2 governance cache must respect db isolation, no longer
-			// hardcoded to db=0).
-			sessionCacheV2 = v2.NewSessionCacheV2(dbConn.Pool(), cfg.RedisAddr, cfg.RedisDB)
+			// Use cfg.RedisAddr from outer scope
+			sessionCacheV2 = v2.NewSessionCacheV2(dbConn.Pool(), cfg.RedisAddr)
 			sessionCacheV2ForShutdown = sessionCacheV2
 
 			slog.Info("v2 session components initialized",
@@ -2309,9 +2202,6 @@ func main() {
 	var durableWorker *streaming.DurableRecoveryWorker
 	if dbConn != nil && dbConn.Enabled() {
 		modelsHandler.SetDB(dbConn.Pool())
-		// 2026-08-24: /v1/models must verify sk-* keys itself now that the
-		// static gate passes data-plane keys through to the DB verifier.
-		modelsHandler.SetKeyVerifier(keyVerifier)
 
 		// Derive credential decryption keys early so discovery can use them
 		var ferr error
@@ -2394,12 +2284,11 @@ func main() {
 			adminDB = dbConn.Pool()
 		}
 		adminHandler = admin.NewHandler(adminDB, cfg.SecretKey, fernetKey)
-		// 会话优化 v4 (T4/R1.6): 流式连接注册表与 handler 共享同一实例
-		// （在 main 顶部构造），使 /api/admin/connection-registry 投影
-		// 能看到真实在途连接；写 deadline 默认 30s（G7：慢/僵死客户端
-		// 按断开处理）。流式 ingress 的 Register/Unregister 挂接见
-		// streaming handler 装配（connection_registry_wiring.go）。
-		admin.SetConnectionRegistry(connectionRegistry)
+		// 会话优化 v4 (T4/R1.6): 流式连接注册表 — request_id → 客户端写出
+		// 流，供心跳/思考帧桥接回写与 /api/admin/connection-registry 只读
+		// 投影；写 deadline 默认 30s（G7：慢/僵死客户端按断开处理）。
+		// 流式 ingress 的 Register/Unregister 挂接见 streaming handler 装配。
+		admin.SetConnectionRegistry(streaming.NewConnectionRegistry(0, 0))
 		// 注册 /api/admin/prompt-injection/* 路由(策略、规则、引擎、
 		// Canary、严重度矩阵、检测日志、统计)。修复前端调用 404 的 bug。
 		// 之前 handler 已实现但从未被 wire 到 main mux,导致 SPA 中所有
@@ -2424,11 +2313,6 @@ func main() {
 	if stateManager != nil {
 		adminHandler.SetCredStateRecoverer(stateManager)
 	}
-
-	// 2026-08-23 (hzx-2 audit): NodeProbeWorker.Submit is wired into the
-	// focused /api/routing/credentials/{id}/reset-state endpoint right
-	// after nodeProbeWorker is constructed further down this file (line
-	// ~3309). When unset, trigger_probe=true is silently ignored.
 
 	var approvalMgr *sessionaudit.ApprovalManager // 2026-06-27: outer-scope so the timeout worker can read it
 	if dbConn != nil && dbConn.Enabled() {
@@ -2479,22 +2363,6 @@ func main() {
 			slog.Info("attachment download/list handler wired",
 				"dir", attachmentStorage.BaseDir())
 		}
-
-		// 2026-08-25: in-flight request detail content store (memory meta +
-		// per-request_id local files). Cleared after telemetry DB persist
-		// (see onEmitted/onPersisted wiring near live stream hub).
-		detailDir := strings.TrimSpace(os.Getenv("LLM_GATEWAY_REQUEST_DETAIL_DIR"))
-		if detailDir == "" {
-			detailDir = filepath.Join(os.TempDir(), "llmgw-request-detail")
-		}
-		if detailStore, err := requestdetail.NewStore(detailDir); err != nil {
-			slog.Warn("request detail content store disabled", "dir", detailDir, "error", err)
-		} else {
-			requestdetail.SetGlobal(detailStore)
-			adminHandler.SetRequestDetailStore(detailStore)
-			slog.Info("request detail content store wired", "dir", detailDir)
-		}
-
 		formatAnomalyRecorder := streaming.NewFormatAnomalyRecorderFromPool(dbConn.Pool())
 		chatHandler.SetFormatAnomalyRecorder(formatAnomalyRecorder)
 		if requestLogger != nil {
@@ -2847,11 +2715,9 @@ func main() {
 	if adminHandler != nil {
 		autoTitleGen := adminHandler.GetAutoTitleGenerator()
 		if autoTitleGen != nil {
-			chatHandler.SetProvisionalMetadataExtractor(autoTitleGen)
 			chatHandler.SetAutoTitleGenerator(autoTitleGen)
-			slog.Info("session metadata extractor wired (provisional rule + async title refine)")
+			slog.Info("auto session title generator wired (async, fire-and-forget)")
 		}
-
 		// 2026-08-06: wire the auto summary generator — incremental rolling
 		// map-reduce over the request path. Symmetric to the title wiring.
 		autoSummaryGen := adminHandler.GetAutoSummaryGenerator()
@@ -2911,9 +2777,7 @@ func main() {
 	var callHistoryAggregator *bg.CallHistoryAggregator
 	var concurrencyAutoScaleUp *bg.ConcurrencyAutoScaleUp
 	var healthAutoRecover *bg.HealthAutoRecover
-	var autoHealWorker *bg.CredentialAutoHealWorker
 	var autoRouteListener *bg.AutoRouteRealtimeListener
-	var dispatchPolicyPublisher *dispatch.PolicyPublisher
 	// v7 (2026-06-28): Unified probe scheduler replaces modelProbe + suspiciousProbe
 	var unifiedProbe *bg.UnifiedProbeScheduler
 	var modelProbe *bg.ModelProbeRunner           // TODO: remove after unifiedProbe validation
@@ -3039,9 +2903,16 @@ func main() {
 		// against key models to verify gateway availability (2026-07-12).
 		slog.Info("CHECKPOINT: before self-check worker init")
 
-		// Local gateway probes traverse AuthMiddleware, which accepts only the
-		// configured data-plane key. A database system key is not valid here.
-		selfCheckAPIKey := localGatewayProbeAPIKey(cfg.APIKey)
+		// Try env var first, then generate system key
+		selfCheckAPIKey := os.Getenv("LLM_GATEWAY_SELF_CHECK_API_KEY")
+		if selfCheckAPIKey == "" {
+			var err error
+			selfCheckAPIKey, err = bg.EnsureSystemAPIKey(context.Background(), dbConn.Pool(), fernetKey, keyring, cfg.SecretKey)
+			if err != nil {
+				slog.Warn("self-check worker disabled: cannot get system API key", "error", err)
+				selfCheckAPIKey = ""
+			}
+		}
 
 		if selfCheckAPIKey != "" {
 			// 2026-07-18: add explicit gate for legacy featured-model self-check.
@@ -3177,10 +3048,6 @@ func main() {
 			balanceQuotaProbe = bg.NewBalanceQuotaProbe(dbConn.Pool())
 			if credProbeV2 != nil {
 				balanceQuotaProbe.SetProbeSubmitter(credProbeV2.SubmitFastProbe)
-				// 2026-08-23 hzx-2 audit: wire ProbeNowAsync so the admin
-				// force-probe endpoint can bypass the 2-min tick for
-				// post-recharge recovery checks.
-				balanceQuotaProbe.SetProbeNowAsync(credProbeV2.ProbeNowAsync)
 			}
 			balanceQuotaProbe.Start(context.Background())
 			slog.Info("CHECKPOINT: balanceQuotaProbe started")
@@ -3429,13 +3296,6 @@ func main() {
 					nodeProbeWorker.SetProbeSink(probeStreamHub)
 				}
 				nodeProbeWorker.SetInvalidateCandidateCache(provider.InvalidateCandidateCacheForCredential)
-				// 2026-08-23 (hzx-2 audit): wire NodeProbeWorker.Submit into the
-				// focused /api/routing/credentials/{id}/reset-state endpoint so
-				// the operator can request an immediate self-check probe.
-				adminHandler.SetProbeSubmitter(func(credentialID int, rawModel, tenantID, parentReqID string) {
-					nodeProbeWorker.Submit(credentialID, rawModel, tenantID, parentReqID)
-				})
-				slog.Info("nodeProbeWorker: probe submitter wired into admin reset-state endpoint")
 				if routingExec != nil && routingExec.Circuit != nil {
 					nodeProbeWorker.SetCircuitRecovery(routingExec.Circuit.RecordSuccess)
 				}
@@ -3605,9 +3465,7 @@ func main() {
 					LatencyThreshold:     5000,
 					AlertOnQualityDrop:   true,
 					QualityDropThreshold: mqAlertThreshold,
-					// An empty target list lets the worker discover active catalog
-					// models from models_canonical when a DB is available. The
-					// worker retains the static list as an outage fallback.
+					TargetModels:         modelquality.GetDefaultMonitorModels(),
 				}
 
 				// 2026-08-10: 按凭据节点测试（直连节点，绕过网关）。默认关闭。
@@ -3806,13 +3664,6 @@ func main() {
 		// channel that no consumer ever drains.
 		admin.StartIngester(dbConn.Pool())
 		defer admin.StopIngester()
-		// 2026-08-26: wire the telemetry ingester's Redis client so the
-		// request hot path can bump llmgw:routing:recently_used_models
-		// (the admin "凭据路由模型" picker fast path). Safe no-op when
-		// the cluster Redis client is unavailable.
-		if redisClientForCache != nil {
-			admin.SetIngesterRedisClient(redisClientForCache.Client())
-		}
 		slog.Info("CHECKPOINT: after StartIngester")
 		// 2026-06-27: 启动审批超时扫描 worker。approvalMgr 在前面
 		// 已通过 adminHandler.SetApprovalManager 注入；这里直接构造 worker
@@ -3866,31 +3717,6 @@ func main() {
 			}
 			healthAutoRecover.Start(context.Background())
 			slog.Info("CHECKPOINT: after healthAutoRecover.Start")
-
-			// 2026-08-23 (hzx-2 audit): start CredentialAutoHealWorker that
-			// submits self-heal probes for (cred, model) pairs that have
-			// been Disabled long enough that the upstream likely recovered.
-			// The probe worker's success path is the authoritative writer
-			// of cmb.available=true so we don't write DB state directly
-			// from this worker — the cycle only Submit()s. Re-uses
-			// NodeProbeWorker so the existing probe-path audit, retry,
-			// and 5s/30s/... backoff ladder apply unchanged.
-			autoHealWorker = bg.NewCredentialAutoHealWorker(dbConn.Pool(), func(credentialID int, rawModel, tenantID, parentReqID string) {
-				if nodeProbeWorker != nil {
-					nodeProbeWorker.Submit(credentialID, rawModel, tenantID, parentReqID)
-				}
-			})
-			autoHealWorker.Start(context.Background())
-			slog.Info("CHECKPOINT: after credential_autoheal_worker.start")
-
-			// Wire the autoheal worker into the focused
-			// /api/routing/credentials/{id}/reset-state endpoint so
-			// operators can fire an immediate self-heal submission
-			// after the reset completes (without waiting for the next
-			// 5-min tick).
-			if adminHandler != nil {
-				adminHandler.SetAutoHealOneShot(autoHealWorker.OneShot)
-			}
 
 			// Wire the Redis availability reader so admin /api/admin/probe/cache-state
 			// can serve cache-only views without touching PostgreSQL.
@@ -4318,26 +4144,12 @@ func main() {
 			slog.Info("CHECKPOINT: before SetBackgroundServices")
 			adminHandler.SetBackgroundServices(credCycler, credRecovery, envelopeCleaner, stickyCleaner, taxonomySync)
 			slog.Info("CHECKPOINT: after SetBackgroundServices")
-			// 2026-08-26 hot-reload: wire sticky cache + limiter so PATCH
-			// binding/credential endpoints can clear stale sticky pins
-			// and refresh concurrency_limit in-process within the same
-			// request, instead of waiting for the 30s candCache TTL or a
-			// service restart.
-			adminHandler.SetHotReloadDeps(stickyCache, lim)
-			slog.Info("CHECKPOINT: after SetHotReloadDeps")
 			adminHandler.SetProbeServices(credProbeV2, defaultProbePicker)
 			slog.Info("CHECKPOINT: after SetProbeServices")
 			if modelProbe != nil {
 				adminHandler.SetModelProbeRunner(modelProbe)
 			}
 			slog.Info("CHECKPOINT: after SetModelProbeRunner")
-			// 2026-08-23 hzx-2 audit: wire the dedicated force-probe
-			// endpoint for balance/permanent exhausted credentials so
-			// operators can dispatch an immediate re-check after a
-			// user manually topped up.
-			if balanceQuotaProbe != nil {
-				adminHandler.SetBalanceQuotaProbe(balanceQuotaProbe)
-			}
 			// 2026-06-30: wire state manager for /api/credentials/*/state
 			// and /api/credentials/*/test endpoints.
 			if stateManager != nil {
@@ -4461,7 +4273,7 @@ func main() {
 			sessionRedisClient := session.NewRedisClientFromClient(fpSlotRedis)
 			ttlManager := dbdegradation.NewTTLManager(
 				sessionRedisClient,
-				time.Duration(cfg.SessionTTLHours)*time.Hour,
+				7*24*time.Hour,  // 正常 TTL
 				30*24*time.Hour, // 降级 TTL
 			)
 			defer func() {
@@ -4978,10 +4790,6 @@ func main() {
 	mux.Handle("/v1/messages", messagesRouteHandler)
 	mux.Handle("/v1/responses", responsesRouteHandler)
 	mux.HandleFunc("/v1/handoffs/confirm", chatHandler.HandleHandoffConfirmation)
-	// Wave 2-D: GoalRun status endpoint (GET /v1/goal-runs/{id}).
-	// Tenant ownership enforced inside the handler; no extra middleware needed
-	// because the gateway admin token middleware does not cover this path.
-	mux.Handle("/v1/goal-runs/", goalRunHandler)
 	if embeddingsHandler != nil {
 		mux.Handle("/v1/embeddings", embeddingsHandler)
 	}
@@ -5615,8 +5423,6 @@ func main() {
 		// 2026-08-11 (479): V2 多层队列调度实时快照（Tier-3 显示与统计）。
 		mux.HandleFunc("/api/admin/dispatch/queues", wrapAdmin(handleDispatchQueues))
 		mux.HandleFunc("/api/admin/dispatch/waterfall", wrapAdmin(handleDispatchWaterfall))
-		mux.HandleFunc("/api/admin/dispatch/waterfall/request/", wrapAdmin(handleDispatchWaterfallByRequest))
-		mux.HandleFunc("/api/admin/dispatch/minute-stats", wrapAdmin(handleDispatchMinuteStats))
 		slog.Info("dispatch_v2 queue snapshot enabled (/api/admin/dispatch/queues, /waterfall)")
 
 		// D2 (2026-08-07): Cache Metrics API
@@ -5668,10 +5474,6 @@ func main() {
 		// Phase 3.8 (2026-06-28): Probe Health Dashboard API
 		adminHandler.RegisterProbeDashboardRoutes(mux, wrapAdmin)
 		slog.Info("Phase 3.8 probe health dashboard API enabled (/api/admin/probe/*)")
-
-		// 2026-08-24: Model status page — 24h traffic availability (Statuspage-style)
-		adminHandler.RegisterModelStatusRoutes(mux, wrapAdmin)
-		slog.Info("model status API enabled (/api/admin/model-status)")
 
 		// Phase 3.9 (2026-07-02, Task D2): Approval Request Query API
 		// Provides REST API for querying, approving, and rejecting approval requests
@@ -5809,12 +5611,6 @@ func main() {
 	// 因此只要在 srv 接受请求前注入即可。dispatch_v2.enabled 的 atomic 缓存
 	// 已在 syncDispatchGateFromSettings 同步；此处仅构造与启动 worker 池。
 	pipeline := wireDispatchPipeline(routingExec)
-	if pipeline != nil && sessionPref != nil {
-		pipeline.SetSessionAffinitySink(sessionPreferenceAffinitySink{preference: sessionPref})
-	}
-	if dbConn != nil && dbConn.Enabled() {
-		setGatewayDispatchPool(dbConn.Pool())
-	}
 	// 会话优化 v4 (T2): 定时重试调度器（retry_at 到点拾取再入队）与调度
 	// 队列状态 Redis 镜像（仅观测/元数据重建，不赋予重启执行能力，R1.3）。
 	if pipeline != nil {
@@ -5824,26 +5620,6 @@ func main() {
 		}
 		if redisClientForCache != nil {
 			pipeline.SetQueueMirror(dispatch.NewQueueMirror(redisClientForCache.Client()))
-			gatewayMinuteStats = dispatch.NewMinuteStatsAggregator(redisClientForCache.Client())
-			pipeline.SetMinuteStatsSink(gatewayMinuteStats)
-		}
-		// 分布式容量治理 Stage B (dispatch governance, 2026-08-22): 通过
-		// LLM_GATEWAY_DISPATCH_GOVERNOR_BACKEND 选择 governor backend;
-		// 默认 "local" (现有 newGovernor 行为零变化)。redis_shadow 仅
-		// 观测不门控，redis_enforce 严格共享集群限流 — Redis 故障返回
-		// wrapped ErrGovernorUnavailable, 严禁静默回退内存版。
-		// Stage D/E 才会让 credForwarder.gov 真正读这个 backend。
-		wireDispatchGovernorBackend(pipeline, redisClientForCache.Client(), instanceIDForRedisBackend())
-		// 分布式容量治理 Stage D (2026-08-22): 通过
-		// LLM_GATEWAY_DISPATCH_CAPACITY_AWARE_SORT 软路由开关。默认 off —
-		// dispatchRoute 维持原始 Router.PlanCandidatesPinned 排序,零行为
-		// 变化;开启后 SnapshotProvider.SnapshotForCred per-cred 查表 +
-		// dispatch.ApplySoftPenalty 把 QueueFull / GovernorSaturated 候选
-		// 移到列表尾 (不剔除)。Stage C.2 observer 需要单独开启才会填 cache。
-		wireDispatchCapacityAwareSort(routingExec, pipeline)
-		if dbConn != nil && dbConn.Enabled() {
-			dispatchPolicyPublisher = dispatch.NewPolicyPublisher(dbConn.Pool(), pipeline)
-			dispatchPolicyPublisher.Start(context.Background())
 		}
 	}
 	if liveStreamHub != nil {
@@ -5985,10 +5761,6 @@ func main() {
 	stopDone := make(chan struct{}, 1)
 
 	go func() {
-		// Stop dispatch policy publication before the pipeline/backend and DB.
-		if dispatchPolicyPublisher != nil {
-			dispatchPolicyPublisher.Stop()
-		}
 		// Stop dispatch before its RequestJourney Redis/PostgreSQL dependencies.
 		if pipeline != nil {
 			pipeline.Stop()
@@ -6081,14 +5853,6 @@ func main() {
 		}
 
 		// 2. Stop hub/background producers before closing their dependencies.
-		// 2026-08-25: 先停 telemetry emitted 转发器（生产者侧）, 再停 hub
-		// （消费者侧）—— 顺序反了会让转发器在 hub 停止后仍向其 Publish。
-		// stop() 后消费者 goroutine 直接退出、不 drain 残留 entry: 关停时刻
-		// 丢弃 in_progress 投影可接受, 最终状态以 persisted 阶段 + Redis
-		// Record 快照为准。
-		if liveStreamEmittedFwd != nil {
-			liveStreamEmittedFwd.stop()
-		}
 		if liveStreamHub != nil {
 			liveStreamHub.Stop()
 		}
@@ -6212,19 +5976,14 @@ func main() {
 		if slotSuggester != nil {
 			slotSuggester.Stop()
 		}
-		// Stop the realtime listener before the refresher it drives, so no
-		// NOTIFY-scheduled refresh can start against a stopping refresher.
-		if autoRouteListener != nil {
-			autoRouteListener.Stop()
-		}
 		if autoIndexRefresher != nil {
 			autoIndexRefresher.Stop()
-		}
-		if healthAutoRecover != nil {
-			healthAutoRecover.Stop()
-		}
-		if autoHealWorker != nil {
-			autoHealWorker.Stop()
+			if autoRouteListener != nil {
+				autoRouteListener.Stop()
+			}
+			if healthAutoRecover != nil {
+				healthAutoRecover.Stop()
+			}
 		}
 		// Provider Profile System shutdown (Phase 1, 2026-07-26)
 		stopProviderProfile(profileWorkers)

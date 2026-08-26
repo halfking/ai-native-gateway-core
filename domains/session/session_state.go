@@ -181,10 +181,7 @@ func (sm *Manager) GetStats(ctx context.Context, sessionID string) (*SessionStat
 	if err != nil || len(data) == 0 {
 		return nil, ErrSessionNotFound
 	}
-	return sessionStatsFromRedisHash(data), nil
-}
 
-func sessionStatsFromRedisHash(data map[string]string) *SessionStats {
 	stats := &SessionStats{
 		TotalTurns:            parseInt64(data[FieldTotalTurns]),
 		TotalPromptTokens:     parseInt64(data[FieldTotalPromptTokens]),
@@ -194,7 +191,8 @@ func sessionStatsFromRedisHash(data map[string]string) *SessionStats {
 		LastRequestAt:         parseTimeOrZero(data[FieldLastRequestAt]),
 	}
 	stats.TotalCostUSD = float64(stats.TotalCostUSDCents) / 10000.0
-	return stats
+
+	return stats, nil
 }
 
 // StartCredRotation 开始新凭据轮换（LPUSH 新记录）
@@ -215,31 +213,29 @@ func (sm *Manager) StartCredRotation(ctx context.Context, sessionID string, cred
 	}
 	entryJSON, _ := json.Marshal(entry)
 
+	// 获取总轮次作为起始轮次
+	totalTurns := parseInt64(getFieldFromRedis(ctx, sm, "session:"+sessionID, FieldTotalTurns))
+
 	client := sm.redis.Client()
 	if client == nil {
 		return fmt.Errorf("redis client not available")
 	}
 
-	const startRotationScript = `
-local session_key = KEYS[1]
-local rotations_key = KEYS[2]
-local total_turns = redis.call('HGET', session_key, 'total_turns') or '0'
-redis.call('LPUSH', rotations_key, ARGV[1])
-redis.call('HSET', session_key,
-  'current_credential_id', ARGV[2],
-  'current_cred_turns', '0',
-  'current_cred_start_at', ARGV[3],
-  'current_cred_start_turn', total_turns,
-  'current_model', ARGV[4],
-  'current_provider', ARGV[5])
-redis.call('EXPIRE', session_key, ARGV[6])
-redis.call('EXPIRE', rotations_key, ARGV[6])
-return total_turns
-`
-	_, err := client.Eval(ctx, startRotationScript,
-		[]string{"session:" + sessionID, credRotationsKey(sessionID)},
-		string(entryJSON), credID, now.Format(time.RFC3339), model, provider, int(sm.ttl.Seconds()),
-	).Result()
+	pipe := client.Pipeline()
+	pipe.LPush(ctx, credRotationsKey(sessionID), entryJSON)
+	pipe.HSet(ctx, "session:"+sessionID, map[string]any{
+		FieldCurrentCredentialID:  credID,
+		FieldCurrentCredTurns:     0,
+		FieldCurrentCredStartAt:   now.Format(time.RFC3339),
+		FieldCurrentCredStartTurn: totalTurns,
+		FieldCurrentModel:         model,
+		FieldCurrentProvider:      provider,
+	})
+	// 2026-07-23: HSet 默认会清除 key 的 TTL，必须显式重新设置。
+	// 否则这个 session 变成"永不过期"，被 bug 一直累加导致 keys 增长。
+	pipe.Expire(ctx, "session:"+sessionID, sm.ttl)
+	pipe.Expire(ctx, credRotationsKey(sessionID), sm.ttl)
+	_, err := pipe.Exec(ctx)
 	return err
 }
 
@@ -254,15 +250,6 @@ func (sm *Manager) EndCredRotation(ctx context.Context, sessionID string) error 
 		return fmt.Errorf("redis client not available")
 	}
 
-	data, err := sm.redis.HGetAll(ctx, "session:"+sessionID)
-	if err != nil {
-		return err
-	}
-	return sm.endCredRotation(ctx, sessionID, data)
-}
-
-func (sm *Manager) endCredRotation(ctx context.Context, sessionID string, data map[string]string) error {
-	client := sm.redis.Client()
 	rotationsKey := credRotationsKey(sessionID)
 	lastJSON, err := client.LIndex(ctx, rotationsKey, 0).Result()
 	if err == redis.Nil {
@@ -283,16 +270,15 @@ func (sm *Manager) endCredRotation(ctx context.Context, sessionID string, data m
 	now := time.Now().UTC()
 	entry.EndedAt = &now
 
-	// 用调用方已加载的 session hash 计算 turns 和 cost，避免重复读取 Redis。
+	// 计算 turns 和 cost
+	data, _ := sm.redis.HGetAll(ctx, "session:"+sessionID)
 	entry.Turns = int(parseInt64(data[FieldCurrentCredTurns]))
 	entry.PromptTokens = parseInt64(data[FieldTotalPromptTokens])
 	entry.CompletionTokens = parseInt64(data[FieldTotalCompletionTokens])
 	entry.CostUSDCents = parseInt64(data[FieldTotalCostUSDCents])
 
 	updatedJSON, _ := json.Marshal(entry)
-	if err := client.LSet(ctx, rotationsKey, 0, updatedJSON).Err(); err != nil {
-		return fmt.Errorf("update credential rotation failed: %w (session_id=%s)", err, sessionID)
-	}
+	client.LSet(ctx, rotationsKey, 0, updatedJSON)
 
 	// 如果在降级模式，写入文件备份
 	if fw := sm.getFileWriter(); sm.IsDegraded() && fw != nil {
@@ -378,7 +364,7 @@ func (sm *Manager) StopSession(ctx context.Context, sessionID, reason string) er
 	tenantID := data[FieldTenantID]
 
 	// 结束当前凭据轮换
-	if err := sm.endCredRotation(ctx, sessionID, data); err != nil {
+	if err := sm.EndCredRotation(ctx, sessionID); err != nil {
 		// 记录日志但不阻止
 	}
 
@@ -400,8 +386,6 @@ func (sm *Manager) StopSession(ctx context.Context, sessionID, reason string) er
 	// 维护停止索引
 	stoppedKey := fmt.Sprintf("session:stopped:%s", tenantID)
 	pipe.SAdd(ctx, stoppedKey, sessionID)
-	pipe.SAdd(ctx, stoppedSessionIndexKey, stoppedSessionIndexSentinel)
-	pipe.SAdd(ctx, stoppedSessionIndexKey, stoppedKey)
 	// stopped 索引 TTL 由清理 Worker 维护，或使用更长 TTL
 	pipe.Expire(ctx, stoppedKey, 24*time.Hour)
 
@@ -414,14 +398,11 @@ func (sm *Manager) StopSession(ctx context.Context, sessionID, reason string) er
 	if err != nil {
 		return err
 	}
-	data[FieldStatus] = StatusStopped
-	data[FieldStoppedAt] = now.Format(time.RFC3339)
-	data[FieldStopReason] = reason
 
-	// 写入快照（数据库或文件），复用上面已加载的 session hash。
-	sess, getErr := sessionFromRedisHash(sessionID, data)
+	// 写入快照（数据库或文件）
+	sess, getErr := sm.Get(ctx, sessionID)
 	if getErr == nil {
-		stats := sessionStatsFromRedisHash(data)
+		stats, _ := sm.GetStats(ctx, sessionID)
 		args := SnapshotArgs{
 			StoppedAt:  now,
 			StopReason: reason,
@@ -626,18 +607,14 @@ func (sm *Manager) ListStoppedSessions(ctx context.Context, tenantID string, lim
 
 // GetEnrichedSession 读取完整的会话详情（含统计与轮换历史）
 func (sm *Manager) GetEnrichedSession(ctx context.Context, sessionID string) (*Session, *SessionStats, []CredRotationEntry, error) {
-	if sm == nil || sm.redis == nil {
-		return nil, nil, nil, ErrSessionNotFound
-	}
-	data, err := sm.redis.HGetAll(ctx, "session:"+sessionID)
-	if err != nil || len(data) == 0 {
-		return nil, nil, nil, ErrSessionNotFound
-	}
-	session, err := sessionFromRedisHash(sessionID, data)
+	session, err := sm.Get(ctx, sessionID)
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	stats := sessionStatsFromRedisHash(data)
+	stats, err := sm.GetStats(ctx, sessionID)
+	if err != nil {
+		stats = &SessionStats{}
+	}
 	rotations, err := sm.GetCredRotations(ctx, sessionID, 100)
 	if err != nil {
 		rotations = []CredRotationEntry{}
@@ -649,6 +626,18 @@ func (sm *Manager) GetEnrichedSession(ctx context.Context, sessionID string) (*S
 
 func credRotationsKey(sessionID string) string {
 	return "session:" + sessionID + ":cred_rotations"
+}
+
+func getFieldFromRedis(ctx context.Context, sm *Manager, key, field string) string {
+	if sm == nil || sm.redis == nil {
+		return ""
+	}
+	client := sm.redis.Client()
+	if client == nil {
+		return ""
+	}
+	val, _ := client.HGet(ctx, key, field).Result()
+	return val
 }
 
 func parseInt64(s string) int64 {

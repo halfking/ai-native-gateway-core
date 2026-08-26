@@ -350,7 +350,7 @@ func (w *ActiveProbeWorker) processOne(ctx context.Context, task probeTask) {
 			CredentialID: task.CredID,
 			Model:        task.Model,
 			Available:    true,
-			LastError:    classifyProbeErrorKind(result, "direct"),
+			LastError:    classifyProbeErrorKind(result),
 			Source:       "probe_direct",
 		}
 		if IsPermanentProbeFailure(result.Status) {

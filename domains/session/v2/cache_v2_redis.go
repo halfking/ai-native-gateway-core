@@ -38,13 +38,10 @@ type RedisGovernanceCache struct {
 // Parameters:
 //   - redisAddr: Redis server address (e.g., "localhost:6379")
 //   - ttl: Cache TTL (0 = use default 30min)
-//   - redisDB: Redis logical database index (e.g., 2 for llmgw main).
-//     2026-08-25: 之前硬编码 0, session:v2 governance cache 污染了 PMS 共享的
-//     db0, 违反 252 pms-redis 多租户隔离原则. 强制要求调用方传入 cfg.RedisDB.
 //
 // Returns:
 //   - *RedisGovernanceCache: nil client = disabled cache (fail-open)
-func NewRedisGovernanceCache(redisAddr string, ttl time.Duration, redisDB int) *RedisGovernanceCache {
+func NewRedisGovernanceCache(redisAddr string, ttl time.Duration) *RedisGovernanceCache {
 	if ttl == 0 {
 		ttl = defaultGovernanceTTL
 	}
@@ -60,7 +57,7 @@ func NewRedisGovernanceCache(redisAddr string, ttl time.Duration, redisDB int) *
 
 	client := redis.NewClient(&redis.Options{
 		Addr:         redisAddr,
-		DB:           redisDB,
+		DB:           0,
 		DialTimeout:  2 * time.Second,
 		ReadTimeout:  1 * time.Second,
 		WriteTimeout: 1 * time.Second,

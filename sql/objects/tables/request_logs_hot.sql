@@ -46,6 +46,8 @@ CREATE TABLE public.request_logs_hot (
     transform_summary text,
     response_preview text,
     stream_done_received boolean,
+    request_body jsonb,
+    response_body jsonb,
     cost_display numeric(14,8),
     cost_currency text,
     usage_source text DEFAULT 'llm'::text NOT NULL,
@@ -72,6 +74,7 @@ CREATE TABLE public.request_logs_hot (
     compression_reason text,
     compression_strategy text,
     compression_meta jsonb,
+    outbound_body jsonb,
     outbound_msg_count integer,
     outbound_token_est integer,
     outbound_msg_hashes jsonb,
@@ -101,7 +104,7 @@ CREATE TABLE public.request_logs_hot (
     agent_name text,
     agent_type text,
     api_key_fingerprint text,
-    customer_id bigint,
+    customer_id text,
     upstream_endpoint text,
     session_title text,
     session_summary text,
@@ -145,3 +148,4 @@ CREATE TABLE public.request_logs_hot (
     CONSTRAINT request_logs_strategy_used_check CHECK (((strategy_used IS NULL) OR (strategy_used = ANY (ARRAY['baseline_heuristic'::text, 'pattern_layered'::text, 'llm_fallback'::text]))))
 )
 WITH (autovacuum_enabled='true', autovacuum_vacuum_scale_factor='0.05', autovacuum_vacuum_threshold='10', autovacuum_analyze_scale_factor='0.02', autovacuum_analyze_threshold='50');
+

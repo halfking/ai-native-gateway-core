@@ -170,32 +170,6 @@ func TestBuildClientDisconnectProbeEntry_FirstByteTimeout(t *testing.T) {
 	}
 }
 
-func TestBuildClientDisconnectProbeEntry_FirstByteTimeoutAfterSuccessfulRetry(t *testing.T) {
-	credID := 19
-	logCtx := &RequestLogContext{ClientModel: "gpt-5.6-luna", CredentialID: &credID}
-	capture := audit.NewStreamCapture()
-	capture.MarkInterruptedWithReason("first_byte_timeout")
-	capture.Reset()
-	capture.ObservePayload(
-		`{"choices":[{"index":0,"delta":{"content":"retry success"}}]}`,
-		"stop", false,
-	)
-	logCtx.StreamCapture = capture
-
-	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader("{}"))
-	ctx, cancel := context.WithCancel(r.Context())
-	cancel()
-	r = r.WithContext(ctx)
-
-	entry, ok := buildClientDisconnectProbeEntry("req-retry", r, logCtx)
-	if !ok {
-		t.Fatal("expected probe entry after canceled successful retry")
-	}
-	if entry.ErrorKind == nil || *entry.ErrorKind != "probe_timeout" {
-		t.Errorf("ErrorKind must preserve the earlier first_byte_timeout, got %v", entry.ErrorKind)
-	}
-}
-
 // TestBuildClientDisconnectProbeEntry_NonTimeoutReason: when the capture
 // records a client-side interruption reason (e.g. client_disconnected), the
 // probe must stay "client_cancel" even on a canceled context — only supplier
@@ -282,12 +256,12 @@ func TestShouldEmitDisconnectProbe_AliveContext(t *testing.T) {
 	}
 }
 
-func TestShouldTraceRequest_SkipsGetCompatibilityProbe(t *testing.T) {
-	if shouldTraceRequest(http.MethodGet) {
-		t.Fatal("GET compatibility probes must not create Redis trace events")
+func TestShouldFlushRequestTrace_SkipsGetCompatibilityProbe(t *testing.T) {
+	if shouldFlushRequestTrace(http.MethodGet) {
+		t.Fatal("GET compatibility probes must not flush a trace without a request log row")
 	}
-	if !shouldTraceRequest(http.MethodPost) {
-		t.Fatal("POST requests must retain request tracing")
+	if !shouldFlushRequestTrace(http.MethodPost) {
+		t.Fatal("POST requests must flush their trace")
 	}
 }
 

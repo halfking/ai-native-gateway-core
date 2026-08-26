@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/config"
-	"github.com/kaixuan/llm-gateway-go/modelname"
 )
 
 type streamRuntimeConfig struct {
@@ -112,36 +111,10 @@ func envBool(key string, def bool) bool {
 	return v == "true" || v == "1"
 }
 
-func envOrDefault(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return def
-}
-
 func StreamTimeout() time.Duration {
 	return currentStreamRuntimeConfig().streamTimeout
 }
 
 func UpstreamTimeout() time.Duration {
 	return currentStreamRuntimeConfig().upstreamTimeout
-}
-
-// ModelAliasPrefix returns the configured client-facing model name prefix
-// that gets stripped before internal routing. Default "kx-". Empty string means disabled.
-func ModelAliasPrefix() string {
-	if store := streamConfigStore.Load(); store != nil {
-		if cfg := store.Get(); cfg != nil {
-			return cfg.ModelAliasPrefix
-		}
-	}
-	if value, ok := os.LookupEnv("LLM_GATEWAY_MODEL_ALIAS_PREFIX"); ok {
-		return value
-	}
-	return "kx-"
-}
-
-// ApplyAliasPrefix strips the configured alias prefix from a client-facing model name.
-func ApplyAliasPrefix(model string) string {
-	return modelname.StripAliasPrefix(model, ModelAliasPrefix())
 }

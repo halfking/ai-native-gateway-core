@@ -41,9 +41,6 @@
   "model_deprecated": {
     "other": "请求的模型已被上游服务商永久下线（停止服务）。"
   },
-  "unsupported_feature": {
-    "other": "所选模型不支持该请求格式或模态。"
-  },
   "meta_tool_error": {
     "other": "元工具处理失败"
   },
