@@ -24,6 +24,7 @@ type fakeBackend struct {
 	newGov   Governor
 	newErr   error
 	newCalls int
+	newSpecs []GovernorSpec
 }
 
 func (f *fakeBackend) Kind() GovernorBackendKind     { return f.kind }
@@ -34,8 +35,9 @@ func (f *fakeBackend) NotifyRevisions(_ context.Context, rev uint64) error {
 	f.notifs = append(f.notifs, rev)
 	return f.notifyErr
 }
-func (f *fakeBackend) New(_ context.Context, _ GovernorSpec) (Governor, error) {
+func (f *fakeBackend) New(_ context.Context, spec GovernorSpec) (Governor, error) {
 	f.newCalls++
+	f.newSpecs = append(f.newSpecs, spec)
 	if f.newErr != nil {
 		return nil, f.newErr
 	}

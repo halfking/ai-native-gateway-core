@@ -20,6 +20,10 @@ export default {
     compressed: 'Compressed',
     compressionRate: 'Compression rate',
     estimatedSaved: 'Estimated tokens saved',
+    tokenBands: 'Outbound token bands',
+    tokenBandBelow: 'Below',
+    tokenBandPreliminary: 'Preliminary',
+    tokenBandForced: 'Forced',
   },
   charts: {
     strategyDistribution: 'Strategy distribution',
