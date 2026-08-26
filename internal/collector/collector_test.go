@@ -24,7 +24,7 @@ func (stubTraffic) Snapshot(context.Context) (TrafficSnapshot, error) {
 		Last5MinTPS:        1.5,
 		Last5MinP50Ms:      40,
 		Last5MinP99Ms:      120,
-		Last5MinSuccessPct: 99.1,
+		Last5MinSuccessPct:  99.1,
 		ModelUsage:         map[string]int64{"gpt-4": 10},
 		TenantCount:        1,
 	}, nil

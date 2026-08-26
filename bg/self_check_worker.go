@@ -824,27 +824,26 @@ func truncateStrSC(s string, maxLen int) string {
 func EnsureSystemAPIKey(ctx context.Context, db *pgxpool.Pool, encKey []byte, keyring *secret.Keyring, secretKey string) (string, error) {
 	// Try to find an existing system key that belongs to this worker.
 	var ciphertext []byte
-	var keyHash string
 	err := db.QueryRow(ctx, `
-		SELECT key_ciphertext, key_hash FROM api_keys
+		SELECT key_ciphertext FROM api_keys
 		WHERE COALESCE(is_system, FALSE) = TRUE AND status = 'active'
 		  AND owner_user = 'self-check-worker'
 		ORDER BY created_at DESC LIMIT 1`,
-	).Scan(&ciphertext, &keyHash)
+	).Scan(&ciphertext)
 	if err == nil && len(ciphertext) > 0 {
 		if keyring != nil {
 			pt, err := secret.DecryptAESGCM(ciphertext, keyring)
-			if err == nil && systemAPIKeyHashMatches(secretKey, string(pt), keyHash) {
+			if err == nil {
 				return string(pt), nil
 			}
 		}
 		if len(encKey) == 32 {
 			pt, err := secret.DecryptFernet(ciphertext, encKey)
-			if err == nil && systemAPIKeyHashMatches(secretKey, pt, keyHash) {
+			if err == nil {
 				return pt, nil
 			}
 		}
-		slog.Warn("self_check_worker: existing system key cannot authenticate, creating new one")
+		slog.Warn("self_check_worker: existing system key exists but cannot decrypt, creating new one")
 	}
 
 	// Generate a new system key.
@@ -852,7 +851,7 @@ func EnsureSystemAPIKey(ctx context.Context, db *pgxpool.Pool, encKey []byte, ke
 	// CRITICAL: key_hash must be HMAC-SHA256(secretKey, raw) — the same transform the
 	// data-plane verifier uses at lookup time. Storing the plaintext (as the old code did)
 	// means the verifier's WHERE key_hash = HMAC(...) never matches → 401 invalid_key.
-	keyHash = authentication.HashAPIKey(secretKey, newKey)
+	keyHash := authentication.HashAPIKey(secretKey, newKey)
 	keyPrefix := newKey[:10] + "****"
 
 	var encCiphertext string
@@ -882,10 +881,6 @@ func EnsureSystemAPIKey(ctx context.Context, db *pgxpool.Pool, encKey []byte, ke
 		return "", fmt.Errorf("insert system api key: %w", err)
 	}
 	return newKey, nil
-}
-
-func systemAPIKeyHashMatches(secretKey, rawKey, storedHash string) bool {
-	return rawKey != "" && storedHash != "" && authentication.HashAPIKey(secretKey, rawKey) == storedHash
 }
 
 func randomHexSC(n int) string {

@@ -13,7 +13,7 @@ import (
 //
 // Label vocabulary kept low-cardinality by design:
 //   - result ∈ {ok, error, rate_limited, saturated, transient_retry,
-//     map_reduce_partial, invalid_response}
+//                map_reduce_partial, invalid_response}
 //     (closed enum, safe for Prometheus per-label growth)
 //   - mode ∈ {summary, map, reduce} — distinguishes the LLM call shape
 //     inside auto_summary

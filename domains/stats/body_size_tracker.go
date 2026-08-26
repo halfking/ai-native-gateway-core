@@ -29,10 +29,10 @@ const (
 // ARGV[1] = new candidate value
 //
 // Pre-compiled once at package init for efficiency. The script:
-//  1. Reads current max (returns nil if not set)
-//  2. Compares with new value
-//  3. Updates if new value is greater
-//  4. Returns the final max
+//   1. Reads current max (returns nil if not set)
+//   2. Compares with new value
+//   3. Updates if new value is greater
+//   4. Returns the final max
 //
 // Note: we use Eval (not EvalSha) intentionally — miniredis (used in
 // tests) does not implement NOSCRIPT fallback, so EVALSHA would fail

@@ -347,11 +347,19 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if rlOutcome := checkGatewayRateLimit(r.Context(), keyInfo, h.chatHandler.rateLimiter, notifyRateLimitWait(w, isStream)); !rlOutcome.Skipped {
 		writeRateLimitHeaders(w, rlOutcome)
 		if rlOutcome.Blocked {
+			recordGatewayRateLimitRejection(rlOutcome)
 			attemptErrCode = "rate_limit_exceeded"
 			attemptErrMsg = "rate limit exceeded"
 			if attemptClientModel == "" {
 				attemptClientModel = clientModel
 			}
+			logCtx.SetKey(keyInfo)
+			logCtx.SetClientModel(attemptClientModel)
+			logCtx.Body = bodyBytes
+			applyProvisionalGatewaySessionHeader(r, provisionalSessionID)
+			h.chatHandler.insertRateLimitedPlaceholder(logCtx)
+			logCtx.EmitRateLimited(attemptErrCode, attemptErrMsg, nil, nil)
+			*attemptLogged = true
 			writeResponsesError(w, http.StatusTooManyRequests, "Rate limit exceeded", "rate_limit_exceeded", "rate_limit_exceeded")
 			return
 		}

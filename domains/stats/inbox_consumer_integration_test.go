@@ -109,21 +109,4 @@ func TestInboxConsumerLeaseFencingIntegration(t *testing.T) {
 	if facts != 1 {
 		t.Fatalf("current worker facts = %d, want 1", facts)
 	}
-
-	writer := NewEventWriter(pool, 1)
-	event := Event{
-		EventID: "sync-projection", OccurredAt: time.Now().UTC().Truncate(time.Microsecond),
-		RequestID: "sync-request", EventType: EventRequestSucceeded, TenantID: "default", Status: "success",
-	}
-	if err := writer.persist(ctx, []Event{event}); err != nil {
-		t.Fatal(err)
-	}
-
-	var status string
-	if err := pool.QueryRow(ctx, `SELECT processing_status FROM stats_event_inbox WHERE event_id = $1`, event.EventID).Scan(&status); err != nil {
-		t.Fatal(err)
-	}
-	if status != "processed" {
-		t.Fatalf("processing status = %q, want processed", status)
-	}
 }

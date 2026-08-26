@@ -42,24 +42,26 @@
 - `go test ./domains/sessionsummary ./internal/summarystore ./domains/analysis/sessionmeta ./telemetry` 全绿（含新增 6 组测试 14 个用例）
 - Migration 606 语法按既有 startup migrations 模板（`\set ON_ERROR_STOP on` + BEGIN/COMMIT + IF NOT EXISTS + down 脚本）
 
-## 验证（154 生产实测，deploy release 1760-7531930b）
+## 验证（154 生产实测，deploy release 1762 = commit `4a311d0dd`）
 
 部署过程：
 1. 第一次部署 1758：healthz 超时自动回滚（根因：启动期 schema ensure 例行的 `statement timeout (57014)` 瞬态 PG 负载，与本次改动无关）
 2. 第二次部署 1759 成功：healthz + DB 就绪 + admin 密码同步 + migration 606 已应用（`session_summaries` 加列成功）
-3. 业务级 E2E harness（go build → scp 到 154 → 直连 /etc/llm-gateway-go/env 中的 DSN 与 sk-key + 网关 `summary-fast` 同模型路径实测）对真实会话跑 `GenerateSummary`：
+3. 业务级 E2E harness（go build → scp 到 154 → 直连 /etc/llm-gateway-go/env 中的 DSN 与 sk-key + 网关 `glm-4.5-flash` 模型路径实测；对真实会话跑 `GenerateSummary`：
    - 初始 3 个会话 agent_type/expert_type 均空 → 排查发现 **V1 读面读的是父表** `request_logs_bodies`，而 hot-first（migration 600）已经把请求体出现在 `request_logs_bodies_hot`，父表要等热点提升
-   - 修复 `summarizer.go` + `system_prompt_prefix.go` 三条 SQL 切 `*_with_current_month` 视图 → 重新部署 1760 后重跑 zcode 会话 `gw_8434924f`（真实身份行 "You are ZCode, an interactive coding agent. You are an agent for ZCode CLI."）：
+   - 修复 `summarizer.go` + `system_prompt_prefix.go` 三条 SQL 切 `*_with_current_month` 视图 → 重新部署 1760 后重跑 zcode 会话 `gw_8434924f-ae23-4280-ae13-b7e326e0259e`（真实身份行 "You are ZCode, an interactive coding agent. You are an agent for ZCode CLI."）：
      ```json
      { "title": "Go代码管理员权限函数分析", "agent_type": "zcode", "expert_type": "software_engineering", "tags": ["go","http-handler","admin","权限管理"] }
      ```
      DB 持久化验证：`SELECT agent_type, expert_type, tags FROM session_summaries WHERE session_key='gw_8434924f-'` 返回 `zcode / software_engineering / {go,http-handler,admin,权限管理}` ✅
-4. 实验产物已清理（`/tmp/sumtest` on 154 + 本地 `cmd/_sumtest/`，均不入仓）
+4. 后续同事 4+ 个 commit（request-detail-parity、cardcredential 闭环、QueuePerspectivePanel 修正、popular models 改造）一并合入 release 1762 的部署镜像。release 1762 = commit `4a311d0dd`（commit message: `chore(release): 版本记账 1762 (4a311d0dd)`），build_seq 1762，git_sha 4a311d0dd。
+5. 实验产物已清理（`/tmp/sumtest` on 154 + 本地 `cmd/_sumtest/`，均不入仓）
 
 ## 遗留与后续
 
 - `admin/auto_summary_generator.go`（on-request auto summary）的 prompt 由 `adminLLMTask` 配置驱动，要输出同样字段需改配置侧 system prompt；新列其 Upsert 路径天然兼容（空值即空串，列有 DEFAULT）。
-- SQL 部署需走 rule 44 六阶段流水线（245 → 154 门禁）把 migration 606 推进生产。
+- **245 部署未跟随 154**（2026-08-26 老板明令"245 必须手工部署，AI 不允许自动部署"）。154 部署完 release 1762 之后，245 端须由运营手工同步。
+- **历史 189,629 条 session_summaries agent_type 全空**（migration 606 加列后 worker 未回填存量）。24h 内 87,188 条只有 1 条已填——证明 worker 路径对**新会话**已生效，但老数据需独立 backfill 任务。Plan：临时 `cmd/_backfill_summary/main.go`（不入仓）复用 GenerateSummary + system_prompt_prefix 路径，分批跑 LLM 分类回写；估算 80h 串行 / 20h concurrency=4。详见 `/tmp/handoff-2026-08-26T15-19-00/summary.md`。
 
 ## 影响文件
 

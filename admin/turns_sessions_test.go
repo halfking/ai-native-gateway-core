@@ -330,8 +330,8 @@ func TestTurnsSessionsListSQL_SlimMainQuery(t *testing.T) {
 
 func TestResolveTurnsSessionsTenant(t *testing.T) {
 	cases := []struct {
-		name string
-		auth *AuthContext
+		name  string
+		auth  *AuthContext
 		query string
 		want  string
 	}{

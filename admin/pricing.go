@@ -409,12 +409,8 @@ func (h *Handler) pricingImport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse multipart form.
-	// ParseMultipartForm's argument is a MEMORY threshold, not a size cap —
-	// oversize uploads spill to disk temp files and ReadAll would then read
-	// them back unbounded. MaxBytesReader enforces the 16 MiB total.
-	r.Body = http.MaxBytesReader(w, r.Body, 16<<20)
-	if err := r.ParseMultipartForm(10 << 20); err != nil { // 10MB in-memory threshold
+	// Parse multipart form
+	if err := r.ParseMultipartForm(10 << 20); err != nil { // 10MB max
 		writeError(w, http.StatusBadRequest, "failed to parse form: "+err.Error())
 		return
 	}

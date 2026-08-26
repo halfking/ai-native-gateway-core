@@ -9,6 +9,11 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+const (
+	stoppedSessionIndexKey      = "session:stopped:index"
+	stoppedSessionIndexSentinel = "__empty__"
+)
+
 type CleanupWorker struct {
 	redis        *redis.Client
 	stoppedTTL   time.Duration
@@ -16,11 +21,6 @@ type CleanupWorker struct {
 	stopCh       chan struct{}
 	doneCh       chan struct{}
 }
-
-const (
-	stoppedSessionIndexKey      = "session:stopped:index"
-	stoppedSessionIndexSentinel = "__stopped_session_index_initialized__"
-)
 
 func NewCleanupWorker(redisClient *redis.Client, stoppedTTL, scanInterval time.Duration) *CleanupWorker {
 	if stoppedTTL <= 0 {
@@ -76,34 +76,42 @@ func (w *CleanupWorker) scanOnce(ctx context.Context) error {
 	if w == nil || w.redis == nil {
 		return nil
 	}
-	stoppedSets, indexed, err := w.stoppedSetKeys(ctx)
+	cutoff := time.Now().Add(-w.stoppedTTL)
+	// The index avoids a broad keyspace scan; the legacy scan remains below as
+	// a compatibility fallback for deployments created before the index existed.
+	setKeys, err := w.redis.SMembers(ctx, stoppedSessionIndexKey).Result()
+	if err == nil && len(setKeys) > 0 {
+		for _, setKey := range setKeys {
+			if setKey == stoppedSessionIndexSentinel || setKey == stoppedSessionIndexKey {
+				continue
+			}
+			if err := w.cleanStoppedSet(ctx, setKey, cutoff); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	_ = w.redis.SAdd(ctx, stoppedSessionIndexKey, stoppedSessionIndexSentinel).Err()
+	iter := w.redis.Scan(ctx, 0, "session:stopped:*", 100).Iterator()
+	for iter.Next(ctx) {
+		if iter.Val() != stoppedSessionIndexKey {
+			_ = w.cleanStoppedSet(ctx, iter.Val(), cutoff)
+		}
+	}
+	if err := iter.Err(); err != nil {
+		return fmt.Errorf("scan iterator error: %w", err)
+	}
+	return nil
+}
+
+func (w *CleanupWorker) cleanStoppedSet(ctx context.Context, setKey string, cutoff time.Time) error {
+	sessionIDs, err := w.redis.SMembers(ctx, setKey).Result()
 	if err != nil {
 		return err
 	}
-	if !indexed {
-		iter := w.redis.Scan(ctx, 0, "session:stopped:*", 100).Iterator()
-		for iter.Next(ctx) {
-			stoppedSets = append(stoppedSets, iter.Val())
-		}
-		if err := iter.Err(); err != nil {
-			return fmt.Errorf("scan stopped session indexes failed: %w", err)
-		}
-		members := append(stringSliceToAny(stoppedSets), stoppedSessionIndexSentinel)
-		if err := w.redis.SAdd(ctx, stoppedSessionIndexKey, members...).Err(); err != nil {
+	for _, sessionID := range sessionIDs {
+		if err := w.cleanExpired(ctx, sessionID, cutoff); err != nil {
 			return err
-		}
-	}
-	cutoff := time.Now().Add(-w.stoppedTTL)
-	for _, setKey := range stoppedSets {
-		sessionIDs, err := w.redis.SMembers(ctx, setKey).Result()
-		if err != nil {
-			if err == redis.Nil {
-				_ = w.redis.SRem(ctx, stoppedSessionIndexKey, setKey).Err()
-			}
-			continue
-		}
-		for _, sessionID := range sessionIDs {
-			_ = w.cleanExpired(ctx, sessionID, cutoff)
 		}
 	}
 	return nil
@@ -128,7 +136,6 @@ func (w *CleanupWorker) cleanExpired(ctx context.Context, sessionID string, cuto
 	pipe := w.redis.Pipeline()
 	pipe.Del(ctx, hashKey)
 	pipe.Del(ctx, credRotationsKey(sessionID))
-	pipe.Del(ctx, "session_pref:"+sessionID)
 	if _, err := pipe.Exec(ctx); err != nil {
 		return err
 	}
@@ -136,43 +143,9 @@ func (w *CleanupWorker) cleanExpired(ctx context.Context, sessionID string, cuto
 }
 
 func (w *CleanupWorker) removeFromStoppedSets(ctx context.Context, sessionID string) error {
-	setKeys, _, err := w.stoppedSetKeys(ctx)
-	if err != nil {
-		return err
+	iter := w.redis.Scan(ctx, 0, "session:stopped:*", 100).Iterator()
+	for iter.Next(ctx) {
+		w.redis.SRem(ctx, iter.Val(), sessionID)
 	}
-	for _, setKey := range setKeys {
-		if err := w.redis.SRem(ctx, setKey, sessionID).Err(); err != nil && err != redis.Nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (w *CleanupWorker) stoppedSetKeys(ctx context.Context) ([]string, bool, error) {
-	exists, err := w.redis.Exists(ctx, stoppedSessionIndexKey).Result()
-	if err != nil {
-		return nil, false, err
-	}
-	if exists == 0 {
-		return nil, false, nil
-	}
-	setKeys, err := w.redis.SMembers(ctx, stoppedSessionIndexKey).Result()
-	if err != nil {
-		return nil, true, err
-	}
-	filtered := make([]string, 0, len(setKeys))
-	for _, setKey := range setKeys {
-		if setKey != stoppedSessionIndexSentinel {
-			filtered = append(filtered, setKey)
-		}
-	}
-	return filtered, true, nil
-}
-
-func stringSliceToAny(values []string) []any {
-	result := make([]any, len(values))
-	for i, value := range values {
-		result[i] = value
-	}
-	return result
+	return iter.Err()
 }

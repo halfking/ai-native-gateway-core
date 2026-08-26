@@ -419,9 +419,9 @@ func (h *Handler) serveSessionSnapshot(w http.ResponseWriter, r *http.Request, s
 			ORDER BY s.partition_date DESC LIMIT 1`
 	var (
 		saStatus, saSchemaVersion, saInputHash string
-		saSourceTaskID                          *string
-		saUpdatedAt                             *time.Time
-		saPayloadRaw                            []byte
+		saSourceTaskID                         *string
+		saUpdatedAt                            *time.Time
+		saPayloadRaw                           []byte
 	)
 	err := h.db.QueryRow(r.Context(), query,
 		sessionID, tenantID).Scan(
