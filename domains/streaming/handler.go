@@ -2766,6 +2766,7 @@ func (h *ChatHandler) serveWithExecutor(
 	if !rlOutcome.Skipped {
 		writeRateLimitHeaders(w, rlOutcome)
 		if rlOutcome.Blocked {
+			recordGatewayRateLimitRejection(rlOutcome)
 			captureAndEmitRateLimited("rate_limit_exceeded", "rate limit exceeded", nil, nil)
 			writeErrorJSONCtx(r.Context(), w, http.StatusTooManyRequests, requestID, "rate_limit_error", i18n.MsgRateLimitExceeded, nil)
 			return
