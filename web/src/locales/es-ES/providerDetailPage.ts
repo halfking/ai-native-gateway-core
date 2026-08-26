@@ -10,6 +10,7 @@ export default {
   tabProbe: 'Sonda automática',
   tabProbeTitle: 'Ver registros de sonda automática (las vinculaciones fallidas se vuelven a sondear cada 10 minutos)',
   tabSettings: 'Ajustes',
+  tabErrorDetail: 'Errores del proveedor',
   loading: 'Cargando…',
   loadingFallback: '...',
   refresh: 'Actualizar',

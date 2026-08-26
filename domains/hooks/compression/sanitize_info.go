@@ -76,7 +76,11 @@ func BuildSanitizeInfo(tenantHash, sessionID string, placeholderTypeOf func(plac
 	if len(sm) == 0 {
 		return info
 	}
-	info.MapRef = SessionSanitizeRedisKey(tenantHash, sessionID)
+	if tenantHash == "" {
+		info.MapRef = SessionSanitizeRedisKey(sessionID)
+	} else {
+		info.MapRef = SessionSanitizeRedisKey(tenantHash, sessionID)
+	}
 	info.Stats.PlaceholderCount = len(sm)
 	for ph := range sm {
 		typ, ok := placeholderTypeOf(ph)
@@ -107,12 +111,24 @@ func BuildSanitizeInfo(tenantHash, sessionID string, placeholderTypeOf func(plac
 // T11-P0 v2: key 增加 tenantHash 段（session:{tenantHash}:{sessionID}:sanitize），
 // 跨租户隔离写入/读取。tenantHash 由 caller 通过 HashTenant 派生；本函数不做
 // 二次 fallback（与 security/sanitize 行为一致）。
-func SessionSanitizeRedisKey(tenantHash, sessionID string) string {
-	return fmt.Sprintf("session:%s:%s:sanitize", tenantHash, sessionID)
+func SessionSanitizeRedisKey(parts ...string) string {
+	if len(parts) >= 2 {
+		return fmt.Sprintf("session:%s:%s:sanitize", parts[0], parts[1])
+	}
+	if len(parts) == 1 {
+		return fmt.Sprintf("session:%s:sanitize", parts[0])
+	}
+	return ""
 }
 
 // SessionSanitizeOffsetRedisKey mirrors security/sanitize.SanitizeOffsetRedisKey.
 // T11-P0 v2：同上，tenantHash 进入 key。
-func SessionSanitizeOffsetRedisKey(tenantHash, sessionID string) string {
-	return fmt.Sprintf("session:%s:%s:sanitize:offsets", tenantHash, sessionID)
+func SessionSanitizeOffsetRedisKey(parts ...string) string {
+	if len(parts) >= 2 {
+		return fmt.Sprintf("session:%s:%s:sanitize:offsets", parts[0], parts[1])
+	}
+	if len(parts) == 1 {
+		return fmt.Sprintf("session:%s:sanitize:offsets", parts[0])
+	}
+	return ""
 }

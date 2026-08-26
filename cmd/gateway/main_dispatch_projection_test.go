@@ -25,7 +25,7 @@ func TestQueueProjectionHolderConcurrentSnapshotAndClose(t *testing.T) {
 					}
 					return
 				}
-				if snapshot := holder.SnapshotWaterfall(10, "", 0); snapshot.Requests == nil {
+				if snapshot := holder.SnapshotWaterfall(10, "", 0, ""); snapshot.Requests == nil {
 					select {
 					case errCh <- "waterfall requests must never be nil":
 					default:
@@ -47,7 +47,7 @@ func TestQueueProjectionHolderConcurrentSnapshotAndClose(t *testing.T) {
 	if snapshot := holder.Snapshot(); snapshot.Wired {
 		t.Fatalf("closed holder returned wired snapshot: %+v", snapshot)
 	}
-	if waterfall := holder.SnapshotWaterfall(10, "", 0); waterfall.Wired || waterfall.Requests == nil {
+	if waterfall := holder.SnapshotWaterfall(10, "", 0, ""); waterfall.Wired || waterfall.Requests == nil {
 		t.Fatalf("closed holder waterfall = %+v", waterfall)
 	}
 }

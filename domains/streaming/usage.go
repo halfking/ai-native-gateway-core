@@ -7,6 +7,10 @@ import (
 	"strings"
 )
 
+// CNYToUSDFX converts native CNY upstream cost to USD for KPI aggregation.
+// Matches pricing research docs (2026-06-12-cny-fix).
+const CNYToUSDFX = 7.2
+
 var errNotFound = errors.New("key not found")
 
 type UsageData struct {
@@ -238,6 +242,64 @@ func CalcCost(input CostInput) *float64 {
 
 	total = math.Round(total*1e8) / 1e8
 	return &total
+}
+
+// CostPriceInput carries token usage and offer pricing for request-log cost fields.
+type CostPriceInput struct {
+	PromptTokens     *int
+	CompletionTokens *int
+	CacheReadTokens  *int
+	CacheWriteTokens *int
+	PriceIn          *float64
+	PriceOut         *float64
+	CacheReadPrice   *float64
+	CacheWritePrice  *float64
+	Currency         string
+}
+
+// AssignRequestCost fills cost_usd / cost_display / cost_currency for telemetry.
+// USD offers write cost_usd only; non-USD writes native cost_display plus USD KPI
+// via CNYToUSDFX (7.2). Returns all nil when pricing or tokens are insufficient.
+func AssignRequestCost(in CostPriceInput) (costUSD, costDisplay *float64, costCurrency *string) {
+	if in.PromptTokens == nil && in.CompletionTokens == nil {
+		return nil, nil, nil
+	}
+
+	native := CalcCost(CostInput{
+		PromptTokens:     intPtrToFloatPtr(in.PromptTokens),
+		CompletionTokens: intPtrToFloatPtr(in.CompletionTokens),
+		CacheReadTokens:  intPtrToFloatPtr(in.CacheReadTokens),
+		CacheWriteTokens: intPtrToFloatPtr(in.CacheWriteTokens),
+		PriceIn:          in.PriceIn,
+		PriceOut:         in.PriceOut,
+		CacheReadPrice:   in.CacheReadPrice,
+		CacheWritePrice:  in.CacheWritePrice,
+	})
+	if native == nil {
+		return nil, nil, nil
+	}
+
+	curr := strings.ToUpper(strings.TrimSpace(in.Currency))
+	if curr == "" || curr == "USD" {
+		return native, nil, nil
+	}
+
+	display := native
+	currency := strings.TrimSpace(in.Currency)
+	if currency == "" {
+		currency = in.Currency
+	}
+	currencyCopy := currency
+	usd := math.Round((*native/CNYToUSDFX)*1e8) / 1e8
+	return &usd, display, &currencyCopy
+}
+
+func intPtrToFloatPtr(p *int) *float64 {
+	if p == nil {
+		return nil
+	}
+	v := float64(*p)
+	return &v
 }
 
 func intValue(m map[string]json.RawMessage, key string) (int, error) {

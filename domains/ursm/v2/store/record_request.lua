@@ -54,6 +54,10 @@ local transient_kinds = {
   transient = true,
 }
 local free_transient = (billing_mode == "free") and (transient_kinds[err_kind] == true)
+-- Empty upstream bodies are observable failures but not routing-health
+-- failures: a sibling retry may still succeed, so do not advance the
+-- credential fail streak or open its circuit from this signal alone.
+local soft_transient = err_kind == "empty_response"
 
 -- Admin holds dominate both telemetry-derived routing state and request state.
 -- Read the live value in the script to avoid a Go-side TOCTOU race.
@@ -71,7 +75,7 @@ end
 -- A request event is unique even when request IDs are empty or repeated. The
 -- leading success flag lets the counter maintenance below avoid parsing IDs.
 local event_seq = redis.call("HINCRBY", node_key, "event_seq", 1)
-local member = success .. ":" .. tostring(now_ms) .. ":" .. tostring(event_seq) .. ":" .. req_id
+local member = success .. ":" .. tostring(now_ms) .. ":" .. tostring(event_seq) .. ":" .. req_id .. ":" .. ((success == "0" and err_kind == "empty_response") and "1" or "0")
 
 -- Keep exact window counts and rates atomically with the event append. Existing
 -- counters are adjusted by the members trimmed from the ZSET; if a window was
@@ -107,9 +111,11 @@ local function update_window(window_key, suffix, ttl, cutoff_ms)
 
   local samples = 0
   local successes = 0
+  local empty_responses = 0
   if counters_exist then
     samples = tonumber(redis.call("HGET", node_key, "samples_" .. suffix) or "0") or 0
     successes = tonumber(redis.call("HGET", node_key, "successes_" .. suffix) or "0") or 0
+    empty_responses = tonumber(redis.call("HGET", node_key, "empty_responses_" .. suffix) or "0") or 0
     samples = samples - #removed
     if current_retained then
       samples = samples + 1
@@ -118,9 +124,15 @@ local function update_window(window_key, suffix, ttl, cutoff_ms)
       if member_success(old_member) then
         successes = successes - 1
       end
+      if string.match(old_member, ":1$") then
+        empty_responses = empty_responses - 1
+      end
     end
     if current_retained and success == "1" then
       successes = successes + 1
+    end
+    if current_retained and err_kind == "empty_response" then
+      empty_responses = empty_responses + 1
     end
     if samples < 0 then samples = 0 end
     if successes < 0 then successes = 0 end
@@ -131,6 +143,9 @@ local function update_window(window_key, suffix, ttl, cutoff_ms)
       if member_success(current_member) then
         successes = successes + 1
       end
+      if string.match(current_member, ":1$") then
+        empty_responses = empty_responses + 1
+      end
     end
   end
 
@@ -138,9 +153,15 @@ local function update_window(window_key, suffix, ttl, cutoff_ms)
   if samples > 0 then
     rate = successes / samples
   end
+  local empty_rate = 0
+  if samples > 0 then
+    empty_rate = math.max(0, empty_responses) / samples
+  end
   redis.call("HSET", node_key,
     "samples_" .. suffix, tostring(samples),
     "successes_" .. suffix, tostring(successes),
+    "empty_responses_" .. suffix, tostring(math.max(0, empty_responses)),
+    "empty_response_rate_" .. suffix, tostring(empty_rate),
     "sr_" .. suffix, tostring(rate))
   redis.call("EXPIRE", window_key, ttl)
 end
@@ -246,16 +267,20 @@ if success == "1" then
   redis.call("HSET", node_key, "fail_streak", "0")
 else
   redis.call("HINCRBY", node_key, "failure_count", 1)
-  local new_streak = tonumber(redis.call("HINCRBY", node_key, "fail_streak", 1))
-  if new_streak >= fail_streak_limit and not free_transient then
+  if soft_transient then
+    -- Keep the existing fail_streak unchanged while retaining telemetry.
+  else
+    local new_streak = tonumber(redis.call("HINCRBY", node_key, "fail_streak", 1))
+    if new_streak >= fail_streak_limit and not free_transient then
     redis.call("HSET", node_key,
       "disabled", "1",
       "available", "0",
       "cool_until_ms", tostring(now_ms + (cool_seconds * 1000)),
       "disable_count", tostring(disable_count + 1),
       "disabled_reason", string.format("fail_streak_%d", new_streak))
-  elseif new_streak >= fail_streak_limit and free_transient then
+    elseif new_streak >= fail_streak_limit and free_transient then
     redis.call("HSET", node_key, "disabled_reason", "free_transient_tolerated")
+    end
   end
 end
 

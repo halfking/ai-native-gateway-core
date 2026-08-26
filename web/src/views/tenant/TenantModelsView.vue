@@ -319,12 +319,12 @@ onMounted(load)
   font-size: 11px;
 }
 .badge-yes {
-  background: rgba(34, 197, 94, 0.12);
-  color: #4ade80;
+  background: var(--success-bg);
+  color: var(--success);
 }
 .badge-no {
-  background: rgba(156, 163, 175, 0.12);
-  color: #9ca3af;
+  background: var(--neutral-bg);
+  color: var(--muted);
 }
 .empty {
   text-align: center;
@@ -334,8 +334,8 @@ onMounted(load)
 .alert-danger {
   padding: 8px 12px;
   border-radius: 4px;
-  background: rgba(239, 68, 68, 0.1);
-  color: #f87171;
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+  color: var(--danger);
   margin-bottom: 12px;
 }
 .tenant-badge {
@@ -345,7 +345,7 @@ onMounted(load)
   border-radius: 12px;
   font-size: 12px;
   font-weight: 500;
-  background: rgba(59, 130, 246, 0.1);
-  color: #3b82f6;
+  background: var(--info-bg);
+  color: var(--accent);
 }
 </style>

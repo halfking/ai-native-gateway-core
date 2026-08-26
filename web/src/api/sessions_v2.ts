@@ -5,7 +5,7 @@
 // Convention: every call goes through `req<T>()` from _core so we get
 // unified 401-handling and JSON error parsing for free.
 
-import { req } from './_core'
+import { req, type RequestOptions } from './_core'
 
 export interface TurnListItem {
   turn_no: number
@@ -33,24 +33,29 @@ export interface TurnsResponse {
 
 export async function listSessionTurns(
   sessionId: string,
-  params: { cursor?: string; limit?: number } = {}
+  params: { cursor?: string; limit?: number } = {},
+  options?: RequestOptions
 ): Promise<TurnsResponse> {
   const q = new URLSearchParams()
   if (params.cursor) q.set('cursor', params.cursor)
   if (params.limit) q.set('limit', String(params.limit))
   const qs = q.toString()
   const path = `/api/admin/sessions/${encodeURIComponent(sessionId)}/turns${qs ? `?${qs}` : ''}`
-  return req<TurnsResponse>('GET', path)
+  return req<TurnsResponse>('GET', path, undefined, options)
 }
 
-export async function getSessionTurn(sessionId: string, turnNo: number) {
+export async function getSessionTurn(
+  sessionId: string,
+  turnNo: number,
+  options?: RequestOptions
+) {
   const path = `/api/admin/sessions/${encodeURIComponent(sessionId)}/turns/${turnNo}`
-  return req<Record<string, unknown>>('GET', path)
+  return req<Record<string, unknown>>('GET', path, undefined, options)
 }
 
-export async function getSessionSnapshot(sessionId: string) {
+export async function getSessionSnapshot(sessionId: string, options?: RequestOptions) {
   const path = `/api/admin/sessions/${encodeURIComponent(sessionId)}/snapshot`
-  return req<Record<string, unknown>>('GET', path)
+  return req<Record<string, unknown>>('GET', path, undefined, options)
 }
 
 export async function triggerInstantSummary(sessionId: string) {

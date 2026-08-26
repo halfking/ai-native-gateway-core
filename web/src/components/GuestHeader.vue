@@ -140,7 +140,7 @@ function isNavActive(path: string) {
 
 .guest-nav__link:hover {
   color: var(--text);
-  background: rgba(255, 255, 255, 0.06);
+  background: color-mix(in srgb, var(--kx-text) 4%, transparent);
 }
 
 .guest-nav__link--active {
