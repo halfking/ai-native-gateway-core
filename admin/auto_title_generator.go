@@ -18,6 +18,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/kaixuan/llm-gateway-go/admin/distlock"
+	"github.com/kaixuan/llm-gateway-go/domains/analysis/sessionmeta"
+	"github.com/kaixuan/llm-gateway-go/internal/titlestore"
 	"github.com/kaixuan/llm-gateway-go/metrics"
 )
 
@@ -129,6 +131,62 @@ func (g *AutoTitleGenerator) MaybeGenerateTitle(sessionID, tenantID, taskID, req
 	go g.generateTitleAsync(sessionID, tenantID, taskID, requestBody, requestPreview, parentRequestID)
 }
 
+// MaybeGenerateProvisionalMetadata implements the streaming arrival hook. The
+// extraction itself is synchronous; metadata UPSERT and title projection are
+// queued in a short-lived goroutine so database latency never extends the
+// request path. Metadata is written even when title is empty; title projection
+// only runs when auto-title is enabled and the session has no title yet.
+// Restored 2026-08-27 after the d2cbaf88b integration merge stripped the
+// implementation while domains/streaming kept the arrival-hook contract.
+func (g *AutoTitleGenerator) MaybeGenerateProvisionalMetadata(tenantID, sessionID, taskID string, in sessionmeta.Input) {
+	if g == nil || !g.enabled || g.handler == nil {
+		return
+	}
+	if g.handler.analysisMetadataStore == nil && g.handler.titleStore == nil {
+		return
+	}
+	if strings.TrimSpace(tenantID) == "" || strings.TrimSpace(sessionID) == "" {
+		return
+	}
+	result := sessionmeta.Extract(in)
+	go g.commitProvisionalArrival(tenantID, sessionID, taskID, result)
+}
+
+func (g *AutoTitleGenerator) commitProvisionalArrival(tenantID, sessionID, taskID string, result sessionmeta.Result) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if g.handler.analysisMetadataStore != nil {
+		if err := g.handler.analysisMetadataStore.UpsertProvisional(ctx, tenantID, sessionID, taskID, result); err != nil {
+			slog.Warn("provisional session metadata upsert failed",
+				"session_id", sessionID, "tenant_id", tenantID, "error", err)
+		}
+	}
+	title := strings.TrimSpace(result.Title)
+	if title == "" || g.handler.titleStore == nil {
+		return
+	}
+	g.commitProvisionalTitle(ctx, tenantID, sessionID, taskID, title)
+}
+
+// commitProvisionalTitle writes the arrival title as a dedicated
+// provisional source (priority 5 < auto-title 10) with an atomic
+// only-if-empty claim: first writer wins, later arrivals and refined/final
+// titles can never be overwritten by a stale provisional goroutine.
+func (g *AutoTitleGenerator) commitProvisionalTitle(ctx context.Context, tenantID, sessionID, taskID, title string) {
+	owner := fmt.Sprintf("arrival-title:%s:%d", sessionID, time.Now().UnixNano())
+	claim, err := g.handler.titleStore.BeginMutation(ctx, titlestore.Claim{
+		TenantID: tenantID, SessionID: sessionID, Owner: owner,
+		TTL: 5 * time.Second, Source: titlestore.SourceProvisionalTitle,
+		SourcePriority: titlestore.SourcePriorityProvisional, OnlyIfEmpty: true, TaskID: taskID,
+	})
+	if err != nil {
+		return
+	}
+	if _, err := g.handler.titleStore.CommitTitle(ctx, claim, tenantID, sessionID, title, taskID); err != nil {
+		slog.Debug("provisional session title commit skipped", "session_id", sessionID, "error", err)
+	}
+}
+
 // isFirstSuccessfulUserTurn determines title eligibility from persisted
 // session history. A completed request is eligible when there is no earlier
 // successful non-internal request in the same session. Excluding the current
@@ -221,7 +279,7 @@ func (g *AutoTitleGenerator) generateTitleAsync(sessionID, tenantID, taskID, req
 				//   - Leader failed → skip this round; the next
 				//     first-turn request will retry.
 				waitErr := h.Wait(ctx)
-				hasTitle, terr := g.checkSessionHasTitle(ctx, sessionID)
+				hasTitle, terr := g.checkSessionHasTitle(ctx, tenantID, taskID, sessionID)
 				if terr != nil {
 					logger.Warn("auto_title: follower re-check failed; skipping round",
 						"wait_err", waitErr, "check_err", terr)
@@ -244,7 +302,7 @@ func (g *AutoTitleGenerator) generateTitleAsync(sessionID, tenantID, taskID, req
 	}
 
 	// Step 1: Check if title already exists (avoid duplicate work)
-	hasTitle, err := g.checkSessionHasTitle(ctx, sessionID)
+	hasTitle, err := g.checkSessionHasTitle(ctx, tenantID, taskID, sessionID)
 	if err != nil {
 		logger.Warn("failed to check existing title", "error", err)
 		return
@@ -287,14 +345,26 @@ func (g *AutoTitleGenerator) generateTitleAsync(sessionID, tenantID, taskID, req
 }
 
 // checkSessionHasTitle checks if a session already has a title.
-func (g *AutoTitleGenerator) checkSessionHasTitle(ctx context.Context, sessionID string) (bool, error) {
+// Restored 2026-08-27 after d2cbaf88b stripped the titlestore-aware form:
+// a provisional arrival title must NOT count as an existing title, so the
+// refined LLM path still runs and replaces it (priority 10 > 5).
+func (g *AutoTitleGenerator) checkSessionHasTitle(ctx context.Context, tenantID, taskID, sessionID string) (bool, error) {
+	if g.handler.titleStore != nil {
+		st, err := g.handler.titleStore.Get(ctx, tenantID, sessionID)
+		if err == nil {
+			return st.Deleted || (strings.TrimSpace(st.Title) != "" && st.Source != titlestore.SourceProvisionalTitle), nil
+		}
+	}
+	if strings.TrimSpace(taskID) == "" {
+		taskID = "auto"
+	}
 	var exists bool
 	err := g.handler.db.QueryRow(ctx, `
 		SELECT EXISTS(
-			SELECT 1 FROM session_titles 
-			WHERE scoped_session_id = $1
+			SELECT 1 FROM session_titles
+			WHERE task_id = $1 AND scoped_session_id = $2
 		)
-	`, sessionID).Scan(&exists)
+	`, taskID, sessionID).Scan(&exists)
 	return exists, err
 }
 

@@ -5589,9 +5589,11 @@ func main() {
 		mux.HandleFunc("/api/admin/dispatch/waterfall", wrapAdmin(handleDispatchWaterfall))
 		// v6 G-Ⅳ (2026-08-27): 分维成员索引（模型/凭据/供应商）查询。
 		mux.HandleFunc("/api/admin/dispatch/dimensions", wrapAdmin(handleDispatchDimensions))
-		// V6-W1.6 R10 (2026-08-27): 按请求执行轨迹查询（AttemptJournal 视图）。
-		mux.HandleFunc("/api/admin/dispatch/journal/", wrapAdmin(handleDispatchJournalByRequest))
-		slog.Info("dispatch_v2 queue snapshot enabled (/api/admin/dispatch/queues, /waterfall, /dimensions, /journal/{request_id})")
+		// V6-W1.6 R10（2026-08-27 范围修正）：按请求查分维成员归属。执行轨迹
+		// (AttemptJournal) 附属请求自身，不提供全局 journal 端点；事后路径查询
+		// 走该请求自己的 requestjourney 持久投影。
+		mux.HandleFunc("/api/admin/dispatch/request-dimensions/", wrapAdmin(handleDispatchRequestDimensions))
+		slog.Info("dispatch_v2 queue snapshot enabled (/api/admin/dispatch/queues, /waterfall, /dimensions, /request-dimensions/{request_id})")
 
 		// D2 (2026-08-07): Cache Metrics API
 		// Unified cache observability for semantic/prefix/delta/kv/session_state layers
@@ -5789,6 +5791,14 @@ func main() {
 		if redisClientForCache != nil {
 			pipeline.SetQueueMirror(dispatch.NewQueueMirror(redisClientForCache.Client()))
 		}
+		// V6-W1.7 (2026-08-27): 集群队列准入双后端（auto|local|redis，
+		// LLM_GATEWAY_DISPATCH_QUEUE_BACKEND）。准入/容量 fail-open 回退 local
+		// （保可用）；执行仍在本实例（连接亲和），跨实例只共享准入/容量/定时可见。
+		var queueBackendRedis *redis.Client
+		if redisClientForCache != nil {
+			queueBackendRedis = redisClientForCache.Client()
+		}
+		wireDispatchQueueBackend(pipeline, queueBackendRedis, stableGatewayInstanceID())
 	}
 	if liveStreamHub != nil {
 		projection := gatewayQueueProjection.Load()

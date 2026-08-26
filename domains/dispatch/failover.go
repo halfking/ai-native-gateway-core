@@ -32,7 +32,7 @@ func (p *Pipeline) runFailover() {
 	}
 }
 
-// move implements the failover ladder:
+// move implements the failover ladder (decisions in planner.go, V6-W1.6 R11):
 //  1. same-credential retry while under the request retry budget (deferred
 //     until retry_at when a RetryScheduler is wired, v4 T3-8);
 //  2. switch to another available credential under the same provider/model;
@@ -49,17 +49,14 @@ func (p *Pipeline) runFailover() {
 // (UT-FO-05).
 func (p *Pipeline) move(qr *QueuedRequest, out ForwardOutcome) {
 	err := out.Err
-	fatalCredential := out.FatalCredential
-	// (1) Same-credential retry — skipped for credential-fatal errors.
-	// Retrying a quota-exhausted / auth-revoked credential deterministically
-	// re-yields the same upstream rejection, wasting a concurrency slot and
-	// delaying the switch to a healthy sibling. Mirrors the legacy executor
-	// loop's errorsx.IsCredentialFatal → continue path (executor.go:3510).
-	if !fatalCredential && qr.CredRetryCount < p.retryBudget(qr) {
-		if qr.AttemptCount >= maxAttempts {
-			p.terminateOnAttemptCap(qr, out)
-			return
-		}
+	// (1) Same-credential retry — planner decision: skipped for
+	// credential-fatal errors (retrying a quota-exhausted / auth-revoked
+	// credential deterministically re-yields the same upstream rejection,
+	// wasting a concurrency slot and delaying the switch to a healthy
+	// sibling; mirrors the legacy executor loop's errorsx.IsCredentialFatal
+	// → continue path, executor.go:3510).
+	switch d := PlanAfterFailure(qr, out, p.config()); d.Action {
+	case NextActionRetrySameCred:
 		qr.CredRetryCount++
 		metricFailover.WithLabelValues("cred_retry").Inc()
 		// v6 G-Ⅴ (回队打标) + W1.6 R9 (执行轨迹): journal the previous
@@ -86,6 +83,10 @@ func (p *Pipeline) move(qr *QueuedRequest, out ForwardOutcome) {
 			return
 		}
 		// Re-enqueue failed (queue full) → fall through to credential switch.
+	case NextActionFailed:
+		// R12 attempt_cap: the planner refused the continuation.
+		p.terminateOnAttemptCap(qr, out)
+		return
 	}
 
 	// (2/3) Switch credential under the current model, honoring provider scope.
@@ -106,15 +107,17 @@ func (p *Pipeline) move(qr *QueuedRequest, out ForwardOutcome) {
 		Attempt:      qr.AttemptCount,
 	})
 	refs, _ := p.routeFunc(ctxOf(qr), qr)
-	for _, ref := range refs {
-		if qr.hasTriedCredential(ref.CredentialID) {
-			continue
+	for {
+		next, scoped := PlanSwitchCred(qr, refs)
+		for _, id := range scoped {
+			qr.markTriedCredential(id)
 		}
-		if !p.providerSwitchAllowed(qr, ref.ProviderID) {
-			qr.markTriedCredential(ref.CredentialID)
-			continue
+		if next == nil {
+			break
 		}
-		if qr.AttemptCount >= maxAttempts {
+		ref := *next
+		// Continuation step: the attempt budget guards it (R12).
+		if AttemptBudgetLeft(qr) <= 0 {
 			p.terminateOnAttemptCap(qr, out)
 			return
 		}
@@ -294,45 +297,20 @@ func (p *Pipeline) onRetryDue(qr *QueuedRequest, retryAt time.Time) {
 
 // terminateOnAttemptCap is the global safety net: cap total forward attempts
 // so a request can never churn an unbounded candidate set. The terminal
-// error reuses the aggregate exhaustion envelope (ADR-Disp-006 mapping) so
-// the client still receives the tried-combination summary.
+// outcome is built by the planner (attemptCapOutcome, R12): the aggregate
+// exhaustion envelope (ADR-Disp-006 mapping) stamped with the attempt_cap
+// reason so the journal terminal entry reads failed(attempt_cap).
 func (p *Pipeline) terminateOnAttemptCap(qr *QueuedRequest, out ForwardOutcome) {
 	metricOverflow.WithLabelValues("attempt_cap").Inc()
 	p.observeOverflow("attempt_cap")
 	slog.Warn("dispatch: attempt cap reached, giving up",
 		"request_id", qr.ID, "attempts", qr.AttemptCount,
 		"tried_creds", len(qr.TriedCredentials))
-	out.Err = p.exhaustedTerminal(qr, terminalErr(out.Err))
-	p.complete(qr, out)
-}
-
-// exhaustedTerminal wraps a terminal cause with the aggregate combination
-// summary (R2.4/UT-FO-05). Never-routed requests (zero attempts) keep the
-// plain sentinel — ErrNoRoute stays distinguishable for the 503 mapping.
-// The wrapper delegates Error()/Unwrap() to the cause so existing callers
-// that pin the concrete upstream error keep working.
-func (p *Pipeline) exhaustedTerminal(qr *QueuedRequest, cause error) error {
-	if qr == nil || qr.AttemptCount == 0 {
-		return cause
-	}
-	return &ExhaustedError{Cause: cause, Attempts: qr.exhaustionAttempts()}
+	p.complete(qr, attemptCapOutcome(qr, out))
 }
 
 func (p *Pipeline) retryBudget(qr *QueuedRequest) int {
-	if qr != nil && qr.RetryPerCredential >= 0 {
-		return qr.RetryPerCredential
-	}
-	return p.config().RetryPerCredential
-}
-
-func (p *Pipeline) providerSwitchAllowed(qr *QueuedRequest, providerID int) bool {
-	if qr == nil || qr.InitialProviderID == 0 || providerID == 0 {
-		return true
-	}
-	if providerID == qr.InitialProviderID {
-		return true
-	}
-	return qr.AllowProviderChange
+	return retryBudgetOf(qr, p.config())
 }
 
 func terminalErr(err error) error {
