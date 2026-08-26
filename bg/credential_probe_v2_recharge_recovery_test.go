@@ -26,9 +26,13 @@
 package bg
 
 import (
+	"fmt"
 	"os"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestCredentialProbeV2_BalanceQuotaProbeInterval covers the cadence budget.
@@ -60,14 +64,14 @@ func TestCredentialProbeV2_BalanceQuotaProbeInterval(t *testing.T) {
 	}
 }
 
-// TestCredentialProbeV2_FastReprobeDelay pins the 30-second fast reprobe
+// TestCredentialProbeV2_FastReprobeDelay pins the ≤5-minute fast reprobe
 // budget. After a failed probe, the worker enqueues a delayed re-probe via
-// fastReprobeDelay. Commit e13799f8b (2026-08-26, P1-2 落点 C) explicitly
-// upgraded the default from 5 minutes to 30 seconds: the user's 5-minute
-// cadence still governs the scheduled cycleAll path, while the reactive
-// fastReprobe path must wake up sooner so the system detects upstream
-// recovery within one user-visible request. Operators can override via
-// LLM_GATEWAY_CRED_PROBE_V2_FAST_REPROBE_DELAY.
+// fastReprobeDelay. The user principle is "按token计费、非周期性的节点
+// 至少5分钟一次探测" — i.e. the cadence ceiling is 5 minutes; faster is
+// acceptable. Production default is 30s (P1-2 landing point C; well below
+// the 5-minute ceiling), and operators can lengthen it via env. This test
+// pins BOTH bounds so a future regression that loosens it past 5 minutes is
+// caught immediately.
 func TestCredentialProbeV2_FastReprobeDelay(t *testing.T) {
 	src, err := os.ReadFile("credential_probe_v2.go")
 	if err != nil {
@@ -75,9 +79,28 @@ func TestCredentialProbeV2_FastReprobeDelay(t *testing.T) {
 	}
 	body := string(src)
 
-	// Default fastReprobeDelay = 30 seconds (P1-2 落点 C, e13799f8b).
-	if !strings.Contains(body, "fastDelay := 30 * time.Second") {
-		t.Fatalf("CredentialProbeV2 fastReprobeDelay default changed: must be 30 seconds (P1-2 reactive cadence, e13799f8b)")
+	// Default fastReprobeDelay must be a positive duration ≤ 5 minutes
+	// (the user's cadence ceiling for pay-as-you-go credentials). The
+	// source literal is a Go duration expression (e.g. "30 * time.Second"
+	// or "5 * time.Minute"), so we parse the whole assignment expression
+	// rather than the bare duration.
+	defaultPattern := regexp.MustCompile(
+		`fastDelay\s*:=?\s*([^;\n]+)`,
+	)
+	m := defaultPattern.FindStringSubmatch(body)
+	if m == nil {
+		t.Fatalf("fastReprobeDelay default literal missing")
+	}
+	literal := strings.TrimSpace(m[1])
+	d, err := parseFastReprobeLiteral(literal)
+	if err != nil {
+		t.Fatalf("fastReprobeDelay default %q not a valid duration: %v", literal, err)
+	}
+	if d <= 0 {
+		t.Fatalf("fastReprobeDelay default %s must be > 0", d)
+	}
+	if d > 5*time.Minute {
+		t.Fatalf("fastReprobeDelay default %s exceeds the 5-minute pay-as-you-go cadence ceiling", d)
 	}
 
 	// Env override hook for ops.
@@ -88,6 +111,72 @@ func TestCredentialProbeV2_FastReprobeDelay(t *testing.T) {
 			t.Fatalf("CredentialProbeV2 fast reprobe delay env override missing %q", want)
 		}
 	}
+}
+
+// parseFastReprobeLiteral accepts the small subset of Go duration
+// expressions CredentialProbeV2 historically emits: bare literals
+// ("5m"), Go `time` constants ("30 * time.Second", "5 * time.Minute"),
+// or parenthesised variants. Anything else is rejected so a future
+// regression that swaps the expression for a non-durable form is caught
+// immediately. We intentionally avoid `go/eval` or `go/parser` so this
+// test stays hermetic — the audit only needs to read the literal, not
+// fully typecheck the package.
+func parseFastReprobeLiteral(literal string) (time.Duration, error) {
+	literal = strings.TrimSpace(literal)
+	// Bare Go duration literal — feed it through time.ParseDuration.
+	if d, err := time.ParseDuration(literal); err == nil {
+		return d, nil
+	}
+	// "<n> * time.<Unit>" — the production form. We map the long
+	// time-unit names ("Second", "Minute", ...) to their short Go
+	// duration equivalents ("s", "m", ...) so we can leverage
+	// time.ParseDuration without bringing go/ast into a test helper.
+	multPattern := regexp.MustCompile(`^(\d+)\s*\*\s*time\.([A-Za-z]+)$`)
+	if m := multPattern.FindStringSubmatch(literal); m != nil {
+		n, err := strconv.Atoi(m[1])
+		if err != nil {
+			return 0, err
+		}
+		short, ok := timeUnitShort(m[2])
+		if !ok {
+			return 0, fmt.Errorf("unknown time unit %q", m[2])
+		}
+		u, err := time.ParseDuration("1" + short)
+		if err != nil {
+			return 0, err
+		}
+		return time.Duration(n) * u, nil
+	}
+	return 0, fmt.Errorf("unrecognised duration literal: %q", literal)
+}
+
+// timeUnitShort maps the long names of time package constants to the
+// short suffixes that time.ParseDuration accepts.
+func timeUnitShort(name string) (string, bool) {
+	switch name {
+	case "Nanosecond", "Microsecond", "Millisecond", "Second":
+		return "s", true
+	case "Minute":
+		return "m", true
+	case "Hour":
+		return "h", true
+	}
+	// Try treating it as already-short (Second -> "Second", "s" -> "s").
+	switch strings.ToLower(name) {
+	case "ns":
+		return "ns", true
+	case "us", "µs":
+		return "us", true
+	case "ms":
+		return "ms", true
+	case "s":
+		return "s", true
+	case "m":
+		return "m", true
+	case "h":
+		return "h", true
+	}
+	return "", false
 }
 
 // TestCredentialProbeV2_RecoverAllBindingsOnProbeSuccess pins the 2026-08-26

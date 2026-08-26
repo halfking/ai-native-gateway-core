@@ -1073,12 +1073,8 @@ func (h *Handler) listTopModels(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	// 2026-08-25: 5s budget was too tight for wide time ranges — models_canonical
-	// LATERAL JOIN over request_logs_with_current_month scans all ATTACHED
-	// partitions including columnar. Extend to 30s to mirror listLogs/getLog.
-	//
-	// 2026-08-26 (this change): the top-models dashboard widget is a "recent
-	// hot models" view. It used request_logs_with_current_month, which is
+	// 2026-08-26: the top-models dashboard widget is a "recent hot models"
+	// view. It used request_logs_with_current_month, which is
 	// `request_logs_hot UNION ALL request_logs` — the parent monthly table
 	// brings every ATTACHED columnar partition into the scan even for a
 	// 72h window. Switch the source to request_logs_hot directly (heap,
@@ -1086,7 +1082,8 @@ func (h *Handler) listTopModels(w http.ResponseWriter, r *http.Request) {
 	// ranges that exceed the hot-table window the widget sees fewer rows
 	// than before; that is acceptable because top-models is a "what is hot
 	// right now" surface and an older window would force the same columnar
-	// scan we are trying to avoid.
+	// scan we are trying to avoid. Restored 2026-08-27 after the
+	// d2cbaf88b-lineage merge dropped it.
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
@@ -1130,8 +1127,7 @@ func (h *Handler) listTopModels(w http.ResponseWriter, r *http.Request) {
 		LIMIT $3
 	`, start, end, limit)
 	if err != nil {
-		slog.WarnContext(ctx, "listTopModels query failed", "error", err.Error())
-		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		writeError(w, http.StatusInternalServerError, "query failed")
 		return
 	}
 	defer rows.Close()

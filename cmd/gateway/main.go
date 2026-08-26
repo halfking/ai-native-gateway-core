@@ -61,6 +61,8 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/dbdegradation"                       //nolint:depguard // 数据库降级模块
 	"github.com/kaixuan/llm-gateway-go/domains/dispatch"                            //nolint:depguard // v4 T2: queue mirror wiring at pipeline assembly
 	"github.com/kaixuan/llm-gateway-go/domains/freeresource"                        //nolint:depguard // OmniFree quota tracker
+	"github.com/kaixuan/llm-gateway-go/domains/goalintegration"                     //nolint:depguard // Wave 2-D: HTTP API integration
+	"github.com/kaixuan/llm-gateway-go/domains/goalrun"                             //nolint:depguard // Wave 2-A: durable ledger
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"                         //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"                   //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -551,6 +553,43 @@ func main() {
 		streaming.SetSessionIDBodyKeys(cfg.SessionIDBodyKeys)
 	}
 
+	// 2026-08-27: connectionRegistry wiring restored from deployed build
+	// 298201fe0. d2cbaf88b dropped this block, leaving every main.go caller
+	// to instantiate its own streaming.NewConnectionRegistry — admin's
+	// read-only projection then lists an empty set because stream ingress
+	// writes to a different instance. Promote the registry to a single
+	// shared instance (declared at function scope alongside chatHandler
+	// and admin handler) and call SetConnectionRegistry on the chat
+	// handler. admin.SetConnectionRegistry below is updated in the same
+	// commit to use the shared instance instead of allocating a second.
+	connectionRegistry := streaming.NewConnectionRegistry(0, 0)
+	chatHandler.SetConnectionRegistry(connectionRegistry)
+
+	// ── Wave 2-D: unified orchestration plugin — GoalRun store + status handler ──
+	// 2026-08-27: restored from deployed build 298201fe0. d2cbaf88b
+	// collapsed the goalrun + goalintegration wiring block — the
+	// handlers package and the goalrun/goalintegration domains were both
+	// still importable, but main() never instantiated them, so explicit
+	// /api/goal/* requests returned 404 and the orchestration plugin
+	// failed open with no lease owner. Migration 554 must be deployed
+	// before this path can persist GoalRun rows; without a configured
+	// store, the goalintegration layer returns ErrInvalidGoal (fail-closed)
+	// and clients get 400 on explicit goal requests.
+	var goalrunStore *goalrun.Store
+	if dbConn != nil && dbConn.Enabled() && dbConn.Pool() != nil {
+		goalrunStore = goalrun.NewStore(dbConn.Pool())
+	}
+	goalRunHandler := handlers.NewGoalRunHandler(goalrunStore, slog.Default())
+	goalIntegrator := goalintegration.New(goalintegration.Config{
+		Store:      goalrunStore,
+		LeaseOwner: "gateway-" + cfg.Listen,
+	})
+	chatHandler.SetGoalIntegrator(goalIntegrator)
+	slog.Info("goal integration initialised",
+		"store_configured", goalIntegrator.IsConfigured(),
+	)
+	_ = goalRunHandler // constructed eagerly so package init order is deterministic
+
 	// Health handler with database and Redis status checking (2026-07-08)
 	// Pass db and redis connections for health checks (will be updated with redis later)
 	var dbPinger interface{ Ping(context.Context) error }
@@ -1014,8 +1053,9 @@ func main() {
 		providerClient.SetDB(dbConn.Pool(), cfg.SecretKey, cfg.CredentialEncryptionKey)
 		resolver.SetDB(dbConn.Pool())
 	}
+	var stickyCache *executors.StickyCache // promoted to function scope so admin.SetHotReloadDeps (later in main) can wire the same instance
 	if providerClient.Enabled() {
-		stickyCache := executors.NewStickyCache()
+		stickyCache = executors.NewStickyCache()
 		if dbConn != nil && dbConn.Enabled() {
 			stickyCache.SetDB(dbConn.Pool())
 			if err := stickyCache.RestoreFromDB(context.Background()); err != nil {
@@ -2318,7 +2358,11 @@ func main() {
 		// 流，供心跳/思考帧桥接回写与 /api/admin/connection-registry 只读
 		// 投影；写 deadline 默认 30s（G7：慢/僵死客户端按断开处理）。
 		// 流式 ingress 的 Register/Unregister 挂接见 streaming handler 装配。
-		admin.SetConnectionRegistry(streaming.NewConnectionRegistry(0, 0))
+		// 2026-08-27: share the connectionRegistry instance that stream
+		// ingress writes to (see SetConnectionRegistry near chatHandler
+		// construction). Previously this allocated a second registry, so
+		// /api/admin/connection-registry always showed an empty list.
+		admin.SetConnectionRegistry(connectionRegistry)
 		// 注册 /api/admin/prompt-injection/* 路由(策略、规则、引擎、
 		// Canary、严重度矩阵、检测日志、统计)。修复前端调用 404 的 bug。
 		// 之前 handler 已实现但从未被 wire 到 main mux,导致 SPA 中所有
@@ -2342,6 +2386,21 @@ func main() {
 	adminHandler.SetCircuitResetter(cm)
 	if stateManager != nil {
 		adminHandler.SetCredStateRecoverer(stateManager)
+	}
+
+	// 2026-08-27: PATCH binding/credential admin handlers need to clear
+	// stale sticky entries and refresh the in-process limiter capacity
+	// after a credential/binding change. SetHotReloadDeps wires the same
+	// stickyCache/lim instances the router uses, so the emergency clear
+	// path is consistent across PATCH endpoints. d2cbaf88b dropped this
+	// wiring — without it, sticky entries linger after a credential
+	// swap and rate-limiter capacity stays at the boot-time value until
+	// process restart. Nil-safe: nil stickyCache (provider disabled)
+	// means PATCH endpoints will silently no-op the clear step, which
+	// matches the no-sticky-router configuration.
+	if stickyCache != nil {
+		adminHandler.SetHotReloadDeps(stickyCache, lim)
+		slog.Info("admin handler: hot-reload deps wired (sticky + limiter) for PATCH binding/credential")
 	}
 
 	var approvalMgr *sessionaudit.ApprovalManager // 2026-06-27: outer-scope so the timeout worker can read it
@@ -3086,9 +3145,15 @@ func main() {
 			balanceQuotaProbe = bg.NewBalanceQuotaProbe(dbConn.Pool())
 			if credProbeV2 != nil {
 				balanceQuotaProbe.SetProbeSubmitter(credProbeV2.SubmitFastProbe)
-				// 2026-08-23 hzx-2 audit: wire ProbeNowAsync so the admin
-				// force-probe endpoint can bypass the 2-min tick for
-				// post-recharge recovery checks.
+				// 2026-08-26 self-check audit (apigpt / gpt-5.6-terra):
+				// wire the immediate-execution hook so admin force-probe
+				// and the recharge webhook (OnQuotaRecharged) bypass the
+				// fastReprobeQueue's delay (P1-2 default 30s) and execute
+				// synchronously. Without this, the admin "force probe"
+				// button after a top-up waits up to 30s for results, and
+				// the user's recharge signal is delayed by the same
+				// window. Pinned by
+				// TestCredentialProbeV2_BalanceQuotaProbeForceProbeDispatchesImmediate.
 				balanceQuotaProbe.SetProbeNowAsync(credProbeV2.ProbeNowAsync)
 			}
 			balanceQuotaProbe.Start(context.Background())
@@ -5524,9 +5589,11 @@ func main() {
 		mux.HandleFunc("/api/admin/dispatch/waterfall", wrapAdmin(handleDispatchWaterfall))
 		// v6 G-Ⅳ (2026-08-27): 分维成员索引（模型/凭据/供应商）查询。
 		mux.HandleFunc("/api/admin/dispatch/dimensions", wrapAdmin(handleDispatchDimensions))
-		// V6-W1.6 R10 (2026-08-27): 按请求执行轨迹查询（AttemptJournal 视图）。
-		mux.HandleFunc("/api/admin/dispatch/journal/", wrapAdmin(handleDispatchJournalByRequest))
-		slog.Info("dispatch_v2 queue snapshot enabled (/api/admin/dispatch/queues, /waterfall, /dimensions, /journal/{request_id})")
+		// V6-W1.6 R10（2026-08-27 范围修正）：按请求查分维成员归属。执行轨迹
+		// (AttemptJournal) 附属请求自身，不提供全局 journal 端点；事后路径查询
+		// 走该请求自己的 requestjourney 持久投影。
+		mux.HandleFunc("/api/admin/dispatch/request-dimensions/", wrapAdmin(handleDispatchRequestDimensions))
+		slog.Info("dispatch_v2 queue snapshot enabled (/api/admin/dispatch/queues, /waterfall, /dimensions, /request-dimensions/{request_id})")
 
 		// D2 (2026-08-07): Cache Metrics API
 		// Unified cache observability for semantic/prefix/delta/kv/session_state layers
@@ -5724,6 +5791,14 @@ func main() {
 		if redisClientForCache != nil {
 			pipeline.SetQueueMirror(dispatch.NewQueueMirror(redisClientForCache.Client()))
 		}
+		// V6-W1.7 (2026-08-27): 集群队列准入双后端（auto|local|redis，
+		// LLM_GATEWAY_DISPATCH_QUEUE_BACKEND）。准入/容量 fail-open 回退 local
+		// （保可用）；执行仍在本实例（连接亲和），跨实例只共享准入/容量/定时可见。
+		var queueBackendRedis *redis.Client
+		if redisClientForCache != nil {
+			queueBackendRedis = redisClientForCache.Client()
+		}
+		wireDispatchQueueBackend(pipeline, queueBackendRedis, stableGatewayInstanceID())
 	}
 	if liveStreamHub != nil {
 		projection := gatewayQueueProjection.Load()
