@@ -98,4 +98,15 @@
 
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
-| 601 | `601_request_logs_bodies_drop_metadata.sql` | `17adda684d907c32a8a54842d6256eb29f769ce9c4a338da6987b2cab491120f` | applied+verified |
+| 601 | `601_request_logs_bodies_drop_metadata.sql` | `17adda684d907c32a8a54842d6256eb29f769ce9c4a338da6987b2cab491120f` | applied+verified |## 2026-08-25T19:48:03Z — deploy 154 build_seq 1758 (fe1e870e)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 606 | `606_session_summaries_agent_expert_tags.sql` | `e49a553121f23af735ccfdb56e549425c94428e1e8f105563bb2a8007d14de17` | applied+verified |
+
+## 2026-08-25T21:16:30Z — deploy 154 build_seq 1761 (d24dab5e)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 580 | `580_session_module_executions_hot_promote.sql` | `1a517b3426c451cec08b4c0ab30a086f308f360ba9066fc78290e1c2112ef7c4` | applied+verified |
+
