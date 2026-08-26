@@ -1,4 +1,6 @@
-# 71 环境分区修复详细计划
+# RETIRED: Historical Environment Repair Plan
+
+> This document is archived historical material. The referenced infrastructure is retired. Do not execute commands from this file. Current environments are RDS production, 252 test, and local Docker.
 
 **生成时间**: 2026-07-04 13:15
 **环境**: 71 生产环境 (__PUB_IP_2__)

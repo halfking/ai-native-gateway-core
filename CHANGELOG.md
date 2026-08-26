@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Added
+- **Database topology documentation refresh (2026-08-27)**: added the project-local `db-sync-252-local` skill and `local-pg-sync-from-252.md` runbook for 252-to-local PostgreSQL refreshes. The runbook records hot-table filtering, `PGOPTIONS` timeout handling, password-persistent container recreation, and the `_`-prefixed pending-deletion table convention. Active deployment documentation now treats RDS production, 252 test, and local Docker as the only current database environments; retired server-specific guides moved to `docs/archive/2026-08/` with explicit non-operational banners.
 - **Bleve log full-text search（2026-08-26，Phase A 落地）**：在 slog → lumberjack 管道上叠加 `BleveFanoutHandler`（`internal/logging/bleve_fanout.go`），每条 record 异步进入有界 ring channel + 后台 batch indexer，Bleve 写入失败不会拖垮主链路。新增 `GET /api/admin/logs/search?q=&tenant=&level=&from=&to=&regex=&fuzzy=&page=&size=`（admin 权限）支持子串 / term / date-range / regex / fuzzy / 分页排序，索引文档按 `ts/level/msg/raw` + `request_id/tenant_id/user_id/session_id/trace_id/model/provider_id/method/path` 提升字段，结构与 live + 回灌同构。`GET /api/admin/logs/search/status` 暴露 fan-out 计数器（`records_indexed / records_dropped / records_failed / queue_depth`），启用通过 `LLM_GATEWAY_LOG_BLEVE_ENABLED=true` + `LLM_GATEWAY_LOG_INDEX_DIR=<dir>`，默认 `false`（老路径不变）。新增 `cmd/bleve-backfill/` 独立命令,按天扫描 `gateway-*.log.gz` 并行回灌历史,支持 `--since/--workers/--batch/--dry-run`。设计/运维见 `docs/03-design/02-modules/log-search-bleve.md`。下一阶段（Phase B）将复用同一 Bleve 索引层承载"请求记录搬到文件系统"。
 
 ### Removed

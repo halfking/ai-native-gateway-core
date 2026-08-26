@@ -8,12 +8,12 @@
 
 ```
 hostname:        iZbp1efbv6824518ejqh8aZ (alibaba-aliyun ECS)
-公网 IP:         47.97.111.154
-私网 IP:         172.16.2.209
-SSH 端口:        25022
-SSH key:         ~/.ssh/id_ed25519 (operator's default)
-DB 接入:         172.16.2.210:5432/llm_gateway (shared PG17 on 252)
-Redis:           172.16.2.210:6389 (252)
+公网 IP:         <env:HOST_154>
+私网 IP:         <env:HOST_154_PRIVATE>
+SSH 端口:        <env:SSH_PORT>
+SSH key:         <env:SSH_KEY_154>
+DB 接入:         <env:COMMON_PG_HOST_252>:<env:COMMON_PG_PORT_252>/llm_gateway
+Redis:           <env:COMMON_REDIS_HOST_252>:<env:COMMON_REDIS_PORT_252>
 services:        llm-gateway-go (systemd, port 8781)
                  nginx (systemd, ports 80/443)
                  casdoor-server (port 8000, 5 days up)
@@ -26,7 +26,7 @@ services:        llm-gateway-go (systemd, port 8781)
 
 ## 2. 启动顺序 (cold start)
 
-1. 252 / 184 先起 (网关 DB / Redis / NPS / cert relay 都在 252)
+1. 252 先起（网关 DB / Redis / NPS / cert relay 都在 252）
 2. 154 自动起来 (`systemd default target`)
 3. `systemctl is-active llm-gateway-go nginx` 都应 `active`
 4. `curl -sS http://127.0.0.1:8781/healthz` 应返回 200 + `2.4.7-...`
