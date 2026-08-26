@@ -9,6 +9,7 @@ import {
 } from '../../utils/waterfallTimeline'
 import { credentialDisplayName, useCredentialLabels } from '../../composables/useCredentialLabels'
 import DispatchWaterfallTrack from '../DispatchWaterfallTrack.vue'
+import { statusToneClass } from './statusTone'
 
 const props = defineProps<{
   selected: WaterfallRequest | null
@@ -82,11 +83,16 @@ function credentialLabel(id: number): string {
     <div v-if="attemptList.length" class="attempts">
       <h4>Attempts ({{ attemptList.length }})</h4>
       <ul>
-        <li v-for="a in attemptList" :key="a.attempt_id || a.attempt_no">
+        <li
+          v-for="a in attemptList"
+          :key="a.attempt_id || a.attempt_no"
+          class="attempt-row"
+          :class="statusToneClass(a.outcome, 'attempt')"
+        >
           <span>#{{ a.attempt_no }}</span>
           <span>{{ a.model || '—' }}</span>
           <span :title="`credential_id: ${a.credential_id}`">{{ credentialLabel(a.credential_id) }}</span>
-          <span>{{ a.outcome || '—' }}</span>
+          <span class="pill" :class="statusToneClass(a.outcome, 'pill')">{{ a.outcome || '—' }}</span>
           <span v-if="a.error_kind" class="err">{{ a.error_kind }}</span>
         </li>
       </ul>
@@ -138,5 +144,19 @@ function credentialLabel(id: number): string {
   display: grid; grid-template-columns: 40px 1fr 90px 100px auto;
   gap: 10px; font-size: 12px; padding: 4px 6px; border-radius: 4px;
   background: var(--bg-subtle, var(--kx-bg));
+  border-left: 3px solid transparent;
 }
+.attempt--ok { border-left-color: var(--success, #16a34a); }
+.attempt--err { border-left-color: var(--danger, #dc2626); background: color-mix(in srgb, var(--danger, #dc2626) 6%, transparent); }
+.attempt--warn { border-left-color: var(--warning, #d97706); }
+.attempt--info { border-left-color: var(--info, #2563eb); }
+.pill {
+  display: inline-block; width: fit-content; padding: 1px 7px; border-radius: 999px;
+  font-size: 11px; font-weight: 600;
+}
+.pill--ok { color: var(--success, #16a34a); background: color-mix(in srgb, var(--success, #16a34a) 14%, transparent); }
+.pill--err { color: var(--danger, #dc2626); background: color-mix(in srgb, var(--danger, #dc2626) 14%, transparent); }
+.pill--warn { color: var(--warning, #d97706); background: color-mix(in srgb, var(--warning, #d97706) 16%, transparent); }
+.pill--info { color: var(--info, #2563eb); background: color-mix(in srgb, var(--info, #2563eb) 14%, transparent); }
+.pill--muted { color: var(--muted); background: var(--bg-subtle, var(--overlay-light)); }
 </style>

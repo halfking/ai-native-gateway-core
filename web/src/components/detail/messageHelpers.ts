@@ -71,3 +71,77 @@ export function previewText(content: unknown, lines = 3): { text: string; trunca
   if (parts.length <= lines) return { text: raw, truncated: false }
   return { text: parts.slice(0, lines).join('\n'), truncated: true }
 }
+
+function contentToPlain(content: unknown): string {
+  if (content == null) return ''
+  if (typeof content === 'string') return content
+  if (Array.isArray(content)) {
+    const texts: string[] = []
+    for (const part of content) {
+      if (typeof part === 'string') {
+        texts.push(part)
+        continue
+      }
+      if (part && typeof part === 'object') {
+        const o = part as Record<string, unknown>
+        if (typeof o.text === 'string') texts.push(o.text)
+        else if (typeof o.content === 'string') texts.push(o.content)
+      }
+    }
+    return texts.filter(Boolean).join('\n')
+  }
+  if (typeof content === 'object') {
+    const o = content as Record<string, unknown>
+    if (typeof o.text === 'string') return o.text
+  }
+  return formatJson(content)
+}
+
+/** Last user message text from a chat request body (for overview turn card). */
+export function extractLastUserPrompt(body: unknown): string {
+  const msgs = extractMessagesFromBody(body)
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (String(msgs[i].role || '') === 'user') {
+      return contentToPlain(msgs[i].content).trim()
+    }
+  }
+  return ''
+}
+
+/** Assistant / model reply text from response_body (choices or message). */
+export function extractAssistantReply(body: unknown): string {
+  if (body == null) return ''
+  let parsed: unknown = body
+  if (typeof parsed === 'string') {
+    try { parsed = JSON.parse(parsed) } catch {
+      return typeof parsed === 'string' ? parsed.trim() : ''
+    }
+  }
+  if (typeof parsed !== 'object' || parsed === null) return String(parsed)
+
+  const o = parsed as Record<string, unknown>
+  if (Array.isArray(o.choices) && o.choices.length) {
+    const last = o.choices[o.choices.length - 1] as Record<string, unknown>
+    const msg = (last.message || last.delta) as Record<string, unknown> | undefined
+    if (msg) {
+      const t = contentToPlain(msg.content)
+      if (t.trim()) return t.trim()
+    }
+    if (typeof last.text === 'string') return last.text.trim()
+  }
+  if (o.message && typeof o.message === 'object') {
+    const t = contentToPlain((o.message as Record<string, unknown>).content)
+    if (t.trim()) return t.trim()
+  }
+  if (Array.isArray(o.content)) {
+    const t = contentToPlain(o.content)
+    if (t.trim()) return t.trim()
+  }
+  const msgs = extractMessagesFromBody(parsed)
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (String(msgs[i].role || '') === 'assistant') {
+      return contentToPlain(msgs[i].content).trim()
+    }
+  }
+  return ''
+}
