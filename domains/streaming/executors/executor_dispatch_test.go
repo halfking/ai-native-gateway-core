@@ -297,7 +297,7 @@ func TestDispatchUsesJourneyAttemptIDForNodeHealthReduction(t *testing.T) {
 	if decision.AttemptID != journeyAttemptID {
 		t.Fatalf("reducer attempt ID = %q, journey UUID = %q", decision.AttemptID, journeyAttemptID)
 	}
-	if decision.Node != (nodehealth.NodeKey{TenantID: "tenant-a", ProviderID: 7, CredentialID: 22, Model: "model-a"}) {
+	if decision.Node != (nodehealth.NodeKey{TenantID: "tenant-a", ProviderID: 7, CredentialID: 22, Model: "vendor-model-a"}) {
 		t.Fatalf("node = %+v", decision.Node)
 	}
 	if decision.RequestID != params.RequestID || decision.BillingMode != candidate.BillingMode || string(decision.Outcome) != "success" {
