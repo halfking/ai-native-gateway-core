@@ -62,19 +62,20 @@ func (p *Pipeline) move(qr *QueuedRequest, out ForwardOutcome) {
 		}
 		qr.CredRetryCount++
 		metricFailover.WithLabelValues("cred_retry").Inc()
-		// v6 G-Ⅴ (回队打标): stamp the previous round's error kind, the
-		// model/node that failed, and the decided next action before the
-		// request parks back into the pending set.
-		qr.LastFailover = FailoverMarker{
-			ErrorKind:    firstNonEmpty(out.ErrorKind, classifyError(err)),
-			HTTPStatus:   out.HTTPStatus,
+		// v6 G-Ⅴ (回队打标) + W1.6 R9 (执行轨迹): journal the previous
+		// round's error kind, the model/node that failed, and the decided
+		// next action before the request parks back into the pending set.
+		// recordDecision refreshes LastFailover as the journal-tail projection.
+		qr.recordDecision(JournalEntry{
 			Model:        qr.ResolvedModel,
 			CredentialID: qr.SelectedCred.CredentialID,
+			ProviderID:   qr.SelectedCred.ProviderID,
 			Vendor:       qr.SelectedCred.Vendor,
-			NextAction:   NextActionRetrySameCred,
+			Action:       NextActionRetrySameCred,
+			ErrorKind:    firstNonEmpty(out.ErrorKind, classifyError(err)),
+			HTTPStatus:   out.HTTPStatus,
 			Attempt:      qr.AttemptCount,
-			StampedAt:    time.Now(),
-		}
+		})
 		if qr.OnNodeSwitchSummary != nil {
 			qr.OnNodeSwitchSummary(failoverSummary(out.ErrorKind, out.HTTPStatus, "retry"))
 		}
@@ -92,18 +93,18 @@ func (p *Pipeline) move(qr *QueuedRequest, out ForwardOutcome) {
 	qr.markTriedCredential(fromCredID)
 	p.invalidateSessionAffinity(qr, fromCredID)
 	qr.CredRetryCount = 0
-	// v6 G-Ⅴ: the credential-exhaustion round is stamped before hunting for
-	// the sibling so the marker always reflects the LAST executed node.
-	qr.LastFailover = FailoverMarker{
-		ErrorKind:    firstNonEmpty(out.ErrorKind, classifyError(err)),
-		HTTPStatus:   out.HTTPStatus,
+	// v6 G-Ⅴ + W1.6 R9: the credential-exhaustion round is journaled before
+	// hunting for the sibling so the tail always reflects the LAST executed node.
+	qr.recordDecision(JournalEntry{
 		Model:        qr.ResolvedModel,
 		CredentialID: fromCredID,
+		ProviderID:   qr.SelectedCred.ProviderID,
 		Vendor:       qr.SelectedCred.Vendor,
-		NextAction:   NextActionSwitchCred,
+		Action:       NextActionSwitchCred,
+		ErrorKind:    firstNonEmpty(out.ErrorKind, classifyError(err)),
+		HTTPStatus:   out.HTTPStatus,
 		Attempt:      qr.AttemptCount,
-		StampedAt:    time.Now(),
-	}
+	})
 	refs, _ := p.routeFunc(ctxOf(qr), qr)
 	for _, ref := range refs {
 		if qr.hasTriedCredential(ref.CredentialID) {
