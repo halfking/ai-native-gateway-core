@@ -607,6 +607,42 @@
 
 ---
 
+## 请求持久化与队列可靠性补充（2026-08-26）
+
+本 ICR 的 Redis 容量、TTL、DB 隔离和观测治理仍然有效，但不得把 Redis 的以下组件误认为请求内容的权威保存层：
+
+| Redis 组件 | 正确职责 | 禁止承担的职责 |
+|---|---|---|
+| `dispatch.QueueMirror` | queue depth、inflight、retry_at 观测 | 重启恢复、完整 Payload 保存 |
+| SystemMonitor queue | 探测 task 调度元数据、lease、attempt、processing | 完整 request/response/IR 保存 |
+| `pending` | 短期终态结果 projection | 唯一终态事实或正文归档 |
+| boardcache/body-size/minute stats | 看板聚合和短期统计 | 计费、审计和统计事实源 |
+| URSM NodeView | 路由健康/容量状态 | 对话内容或 session body |
+
+跨重启执行恢复的权威层是 `durable_llm_tasks` 的加密 request snapshot、lease、fencing 和 terminal result；历史正文由 `request_logs_bodies*`、`session_bodies` 和后续 local archive/durable projection 共同承担。完整架构见：
+
+- [请求记录、IR 与 Session V2 持久化重构最终方案](../plan/2026-08-25-request-session-persistence-final-plan.md)
+
+### 新增 P0/P1 实施拆分
+
+| ID | 优先级 | 改造 | 验收 |
+|---|---|---|---|
+| P0-Q1 | P0 | fallback Redis Submit 失败时分配稳定 task ID，避免 `task_id=0` 与 PG fallback unique 冲突 | Redis 不可用时提交多个任务，PG backstop 行数与任务数一致 |
+| P0-Q2 | P0 | fallback 持久化和 drain 使用统一 Lua queue payload/schema，禁止直接 `json.Marshal(Task)` 后 LPUSH | drain 后 claim 可识别 `scheduled_at_ms`、priority、task hash 和 lease |
+| P0-Q3 | P0 | reclaim/complete 使用严格 fencing token，覆盖 reclaim 后新 owner claim 前的迟到 complete | stale complete 必须返回 lease lost，不能覆写 hash/processing/running |
+| P1-Q1 | P1 | Requeue 改为单 Lua 状态迁移：fence、attempt、hash、processing 删除、ready 入队同一 EVAL | 任一 Redis 命令异常或进程中断不会产生 orphan/重复 ready |
+| P1-Q2 | P1 | SystemMonitor heartbeat、DLQ、fallback drain idempotency/replay | 长任务不被误 reclaim；malformed/max-attempt 任务可查询和受控 replay |
+| P1-Q3 | P1 | pending 写入和 sweeper 使用 CAS/version 条件更新 | sweeper 不覆盖已成功终态；hash/index/TTL 不会半提交 |
+
+### 执行约束
+
+1. Redis 只保存调度元数据和投影，不增加完整 body/IR 字段。
+2. Redis/PG 双存无法跨系统原子提交时，默认 at-least-once；必须使用稳定 task/event identity、幂等消费和对账，而不是假设 exactly-once。
+3. 每项先在隔离 Redis/PG 执行 `submit -> claim -> crash/reclaim -> retry -> DLQ/replay` 故障测试，再进入 245；245 data-plane 不能代替完整后台恢复验证。
+4. Redis key 格式变化遵循 URSM `legacy -> dual -> canonical` 冻结策略，先 preflight/checksum/ledger，再切换和 TTL 清理。
+
+---
+
 ## 验证发现 P0 隐患（Post-deploy 发现于 build_seq 1736 部署后验证）
 
 > 2026-08-25 03:30+ UTC：build_seq 1736 部署后做 L1/L2/L3 健康检查时发现。

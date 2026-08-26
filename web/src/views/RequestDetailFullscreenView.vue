@@ -288,7 +288,7 @@ const statusLabel = computed(
   text-align: left; border: none; background: transparent; padding: 8px 10px;
   border-radius: 6px; cursor: pointer; font-size: 12px; color: var(--text);
 }
-.nav-btn.active { background: var(--primary, #2563eb); color: #fff; }
+.nav-btn.active { background: var(--primary); color: #fff; }
 .turns {
   border-right: 1px solid var(--border); overflow: auto; min-height: 0;
 }

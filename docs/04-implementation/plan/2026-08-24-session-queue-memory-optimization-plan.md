@@ -84,3 +84,25 @@ This audit is informational for this task and does not authorize deletion.
 - Redis schema compatibility or snapshot semantics become unclear.
 - A benchmark does not establish a measurable low-risk optimization.
 - Existing user modifications would be overwritten or need staging.
+
+## 可靠性边界补充
+
+本计划中的 queue projection、Redis session read path 和 credential rotation 优化，不改变请求执行恢复的事实来源。
+
+| 组件 | 职责 | 能否保存完整 request/IR | 是否可作为重启恢复源 |
+|---|---|---:|---:|
+| `dispatch.QueueMirror` | 队列深度、inflight、retry_at 观测镜像 | 否 | 否 |
+| SystemMonitor Redis queue | 探测任务调度元数据、processing、lease、attempt | 否 | 仅在 Redis 健康和 queue 协议完整时 |
+| `durable_llm_tasks` | 加密请求 snapshot、lease、fencing、终态结果 | 是 | 是 |
+| `session_bodies` / `request_logs_bodies*` | 会话/请求正文内容投影 | 是 | 数据库历史恢复源 |
+
+后续可靠性改造应引用：
+
+- [请求记录、IR 与 Session V2 持久化重构最终方案](./2026-08-25-request-session-persistence-final-plan.md)
+
+特别约束：
+
+1. QueueMirror 是 observation-only，不能被用于恢复 dispatch 执行。
+2. Redis SystemMonitor task 只保存调度元数据，完整 request/response/IR 必须从本机 archive 或 durable PG snapshot 加载。
+3. Redis fallback 必须使用稳定任务 ID 和与 Lua claim 相同的 payload schema；`LPUSH -> HSET -> LREM` 这类跨命令迁移应收敛为 Lua 原子状态迁移。
+4. Redis/PG fallback drain 接受 at-least-once 时必须拥有 task-id 幂等键、lease、ack 和可查询 DLQ，不能把日志视为补偿机制。

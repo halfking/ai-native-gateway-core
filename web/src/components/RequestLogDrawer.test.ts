@@ -62,7 +62,7 @@ describe('RequestLogDrawer compatibility shell', () => {
     })
   })
 
-  afterEach(() => vi.clearAllMocks())
+  afterEach(() => { vi.clearAllMocks() })
 
   it('renders unified drawer and loads detail', async () => {
     const wrapper = mount(RequestLogDrawer, {

@@ -28,9 +28,12 @@ func TestExecutorsStickyDoubleWriteMultiLevel(t *testing.T) {
 		t.Fatalf("in-memory lookup failed: %+v", cred)
 	}
 
-	// Redis 三级都写入了(显式 level 验证)
-	l1, l2, l3 := buildStickyKeys("t1", &appID, &keyID, "default", "sess1", "m")
-	for level, k := range map[int]string{1: l1, 2: l2, 3: l3} {
+	// 2026-08-26: L2 is intentionally NOT written to Redis. Only L1 and L3
+	// are dual-written; L2 entry point is removed from both the lookup and
+	// the persistence side so new sessions cannot inherit the previous
+	// session's credential via a (client, model) L2 entry.
+	l1, _, l3 := buildStickyKeys("t1", &appID, &keyID, "default", "sess1", "m")
+	for level, k := range map[int]string{1: l1, 3: l3} {
 		if k == "" {
 			continue
 		}
@@ -68,6 +71,10 @@ func (s *deadlineExhaustingStickyStore) DeleteLevelIfCredential(context.Context,
 	return nil
 }
 
+func (s *deadlineExhaustingStickyStore) ClearForCredential(context.Context, int) (int, error) {
+	return 0, nil
+}
+
 func TestExecutorsStickyDoubleWriteKeepsLaterLevelsAfterFirstTimeout(t *testing.T) {
 	store := &deadlineExhaustingStickyStore{}
 	cache := NewStickyCache()
@@ -79,8 +86,10 @@ func TestExecutorsStickyDoubleWriteKeepsLaterLevelsAfterFirstTimeout(t *testing.
 
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	if len(store.writes) != 2 || store.writes[0] != int(StickyLevelClientModel) || store.writes[1] != int(StickyLevelClient) {
-		t.Fatalf("later levels must write after an L1 timeout, got %v", store.writes)
+	// 2026-08-26: L2 is intentionally excluded — only L3 must be written
+	// after the L1 timeout. See RecordSuccessMultiLevel contract.
+	if len(store.writes) != 1 || store.writes[0] != int(StickyLevelClient) {
+		t.Fatalf("only L3 must write after L1 timeout (L2 excluded per 2026-08-26), got %v", store.writes)
 	}
 }
 

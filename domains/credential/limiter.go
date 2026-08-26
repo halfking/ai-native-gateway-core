@@ -347,6 +347,28 @@ func (l *Limiter) Credential(providerID, credentialID int) *Semaphore {
 	return s
 }
 
+// SetCredentialCapacity hot-updates the in-flight semaphore capacity for one
+// credential. New Acquire calls see the new capacity immediately; in-flight
+// requests (already holding a token) are unaffected because capacity is
+// stored as an atomic.Int64 and only checked on TryAcquire.
+//
+// 2026-08-26 hot-reload hook: when admin patches concurrency_limit, this
+// ensures the in-process semaphore tracks the DB value within the same
+// request — without a service restart.
+func (l *Limiter) SetCredentialCapacity(providerID, credentialID, capacity int) {
+	if capacity < 1 {
+		capacity = 1
+	}
+	s := l.Credential(providerID, credentialID)
+	old := s.Capacity()
+	s.capacity.Store(int64(capacity))
+	slog.Info("limiter hot-reload: capacity updated",
+		"name", s.name,
+		"old_capacity", old,
+		"new_capacity", capacity,
+	)
+}
+
 // Identity returns the identity-level semaphore.
 func (l *Limiter) Identity(providerID, credentialID int, identityHash string) *Semaphore {
 	key := fmt.Sprintf("%d/%d/%s", providerID, credentialID, identityHash)
