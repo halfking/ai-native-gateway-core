@@ -1292,11 +1292,12 @@ func (c *CredentialProbeV2) writeHealth(ctx context.Context, credID int, pr prob
 			}
 			if pr.AvailabilityState != "ready" {
 				lastSuccess = nil
+				modelAvailable = false
 			}
 			stateSnapshot := credentialstate.State{
 				CredentialID:  credID,
 				Model:         model,
-				Available:     pr.AvailabilityState == "ready" && !pr.BindingOnly,
+				Available:     modelAvailable,
 				HealthStatus:  pr.HealthStatus,
 				AvgLatencyMs:  pr.HealthLatencyMs,
 				LastUpdatedAt: now,

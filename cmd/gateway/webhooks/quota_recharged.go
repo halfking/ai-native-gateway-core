@@ -127,6 +127,12 @@ func (h *QuotaRechargedHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	if len(body) > maxQuotaRechargedBodyBytes {
+		h.reject("body_too_large")
+		http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+		return
+	}
+
 	// 2. HMAC-SHA256 验签。
 	sig := r.Header.Get(QuotaRechargedSignatureHeader)
 	if sig == "" {
@@ -143,12 +149,6 @@ func (h *QuotaRechargedHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 		http.Error(w, "invalid signature", http.StatusUnauthorized)
 		return
 	}
-	if len(body) > maxQuotaRechargedBodyBytes {
-		h.reject("body_too_large")
-		http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
-		return
-	}
-
 	// 3. parse JSON。
 	var payload QuotaRechargedBody
 	if err := json.Unmarshal(body, &payload); err != nil {
