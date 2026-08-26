@@ -111,7 +111,7 @@ func TestFixAnthropicMessages_MergeConsecutiveWithImages(t *testing.T) {
 	}
 
 	messages := result["messages"].([]any)
-
+	
 	// 应该合并成一条消息
 	if len(messages) != 1 {
 		t.Fatalf("expected 1 merged message, got %d", len(messages))

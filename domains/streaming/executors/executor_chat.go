@@ -20,7 +20,6 @@ import (
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
-	"github.com/kaixuan/llm-gateway-go/metrics"
 	"github.com/kaixuan/llm-gateway-go/pool"
 	"github.com/kaixuan/llm-gateway-go/provider"
 	upstreampkg "github.com/kaixuan/llm-gateway-go/upstream"
@@ -1137,10 +1136,9 @@ func (e *Executor) executeOpenAI(
 					// opened a stream but produced zero content (notably
 					// NIM's 13% empty-stream rate). Classify it as
 					// KindEmptyResponse so:
-					//   - the provider/credential circuit deliberately ignores it:
-					//     that circuit cannot distinguish sibling raw models
-					//   - URSM records the exact tenant/credential/raw-model node
-					//     and applies only a windowed routing penalty
+					//   - freeCredentialsTolerateTransient does NOT skip
+					//     RecordFailure (we want circuit feedback to demote
+					//     the chronically-empty credential via recent_success_rate)
 					//   - shouldWriteCredentialState returns false (soft kind,
 					//     keeps the credential 'ready' for retry)
 					//   - isCredentialFatal returns false (transient)
@@ -1149,9 +1147,6 @@ func (e *Executor) executeOpenAI(
 					//     failing over to the next credential transparently.
 					if streamOutcome.Reason == "empty_stream_no_content" {
 						streamKind = errorsx.KindEmptyResponse
-					}
-					if streamKind == errorsx.KindEmptyResponse {
-						metrics.RecordEmptyResponseAttempt(streamOutcome.Reason)
 					}
 
 					slog.Warn("executor: stream interrupted",

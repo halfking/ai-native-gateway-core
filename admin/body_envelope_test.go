@@ -300,7 +300,7 @@ func TestCompressionStatsEstimatedOrigSQL(t *testing.T) {
 		// legacy non-envelope estimate preserved, with the '' literal kept on
 		// the text side of the cast (a bare '' beside jsonb resolves to jsonb
 		// and errors at runtime on NULL-body rows).
-		`LENGTH(COALESCE(rb.request_body::text, ''))::numeric`,
+		`LENGTH(COALESCE(COALESCE(rb.request_body, rl.request_body)::text, ''))::numeric`,
 		// separate summary-mode row count, same object-type envelope test
 		`SUM(CASE WHEN jsonb_typeof(rb.request_body->'_gw_body_summary') = 'object' THEN 1 ELSE 0 END)`,
 	} {

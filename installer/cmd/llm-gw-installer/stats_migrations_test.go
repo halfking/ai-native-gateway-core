@@ -72,6 +72,8 @@ func TestStatsStartupMigrationsAreWrittenToInstallerDirectories(t *testing.T) {
 		"546_stats_reconciliation_diffs_unique.sql",
 		"547_session_project_attribution.sql",
 		"548_stats_reconciliation_diffs_identity.sql",
+		// MERGE-AUDIT 2026-08-26: remote's duplicate version 551 is retained
+		// in Git history for audit; only local version 553 may execute.
 		"552_request_journey_durable_outbox.sql",
 		"553_approval_resume_claim.sql",
 		"554_goal_runs.sql",

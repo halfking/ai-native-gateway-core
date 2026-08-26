@@ -7,6 +7,7 @@ import {
   type SessionTurnTreeItem,
 } from '../../api/sessionTurnsTree'
 import ConversationMessagesPanel from './ConversationMessagesPanel.vue'
+import { statusToneClass } from './statusTone'
 
 const props = defineProps<{
   sessionId: string
@@ -80,11 +81,11 @@ function selectChild(c: SessionChildRequest) {
         :key="t.turn_number"
         type="button"
         class="turn-row"
-        :class="{ active: selectedTurn === t.turn_number }"
+        :class="[{ active: selectedTurn === t.turn_number }, statusToneClass(t.status, 'turn')]"
         @click="selectTurn(t)"
       >
         <span class="tn">#{{ t.turn_number }}</span>
-        <span class="st">{{ t.status }}</span>
+        <span class="st pill" :class="statusToneClass(t.status, 'pill')">{{ t.status }}</span>
         <span class="lat">{{ latencyLabel(t.latency) }}</span>
         <span v-if="t.model" class="mdl">{{ t.model }}</span>
         <ul v-if="t.child_requests?.length" class="children">
@@ -93,7 +94,9 @@ function selectChild(c: SessionChildRequest) {
             :key="c.request_id"
             @click.stop="selectChild(c)"
           >
-            {{ c.request_type }} · {{ c.status }} · {{ latencyLabel(c.latency) }}
+            {{ c.request_type }} ·
+            <span class="pill pill--sm" :class="statusToneClass(c.status, 'pill')">{{ c.status }}</span>
+            · {{ latencyLabel(c.latency) }}
           </li>
         </ul>
       </button>
@@ -143,6 +146,7 @@ function selectChild(c: SessionChildRequest) {
       <ConversationMessagesPanel
         v-else
         :body="facet === 'assistant' ? responseBody : requestBody"
+        :response-body="facet === 'integrated' ? responseBody : undefined"
         :empty-hint="facet === 'integrated' ? '(无对话数据)' : `(无 ${facet} 消息)`"
       />
     </section>
@@ -159,9 +163,23 @@ function selectChild(c: SessionChildRequest) {
   border: 1px solid var(--border); background: var(--bg-card, transparent);
   border-radius: 6px; padding: 8px; margin-bottom: 6px; cursor: pointer; color: inherit;
 }
-.turn-row.active { border-color: var(--accent); }
+.turn-row.active { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
+.turn--ok { border-left: 3px solid var(--success, #16a34a); }
+.turn--err { border-left: 3px solid var(--danger, #dc2626); background: color-mix(in srgb, var(--danger, #dc2626) 5%, transparent); }
+.turn--warn { border-left: 3px solid var(--warning, #d97706); }
+.turn--info { border-left: 3px solid var(--info, #2563eb); }
 .tn { font-weight: 600; margin-right: 6px; }
 .st, .lat, .mdl { font-size: 11px; color: var(--muted); margin-right: 6px; }
+.pill {
+  display: inline-block; padding: 1px 7px; border-radius: 999px;
+  font-size: 11px; font-weight: 600; color: inherit;
+}
+.pill--sm { padding: 0 6px; font-size: 10px; }
+.pill--ok { color: var(--success, #16a34a); background: color-mix(in srgb, var(--success, #16a34a) 14%, transparent); }
+.pill--err { color: var(--danger, #dc2626); background: color-mix(in srgb, var(--danger, #dc2626) 14%, transparent); }
+.pill--warn { color: var(--warning, #d97706); background: color-mix(in srgb, var(--warning, #d97706) 16%, transparent); }
+.pill--info { color: var(--info, #2563eb); background: color-mix(in srgb, var(--info, #2563eb) 14%, transparent); }
+.pill--muted { color: var(--muted); background: var(--bg-subtle, var(--surface-secondary)); }
 .children { margin: 6px 0 0; padding-left: 14px; font-size: 11px; color: var(--muted); }
 .children li { cursor: pointer; }
 .children li:hover { color: var(--accent); }

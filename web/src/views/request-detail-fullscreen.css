@@ -1,0 +1,84 @@
+/* request-detail-fullscreen.css — styles for RequestDetailFullscreenView */
+.rdf {
+  display: flex;
+  flex-direction: column;
+  min-height: calc(100vh - 48px);
+  background: var(--bg, var(--kx-bg));
+}
+.top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-card, var(--card));
+}
+.id-block {
+  flex: 1;
+  min-width: 180px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.id-block code { font-size: 12px; word-break: break-all; }
+.meta { font-size: 11px; color: var(--muted); }
+.status-pill {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.pill--ok { color: var(--success, #16a34a); background: color-mix(in srgb, var(--success, #16a34a) 14%, transparent); }
+.pill--err { color: var(--danger, #dc2626); background: color-mix(in srgb, var(--danger, #dc2626) 14%, transparent); }
+.pill--warn { color: var(--warning, #d97706); background: color-mix(in srgb, var(--warning, #d97706) 16%, transparent); }
+.pill--info { color: var(--info, #2563eb); background: color-mix(in srgb, var(--info, #2563eb) 14%, transparent); }
+.pill--muted { color: var(--muted); background: var(--bg-subtle, var(--surface-secondary)); }
+.mode-seg { display: flex; gap: 4px; }
+.banner { padding: 16px; }
+.banner.err { color: var(--danger); }
+.session-shell {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.session-shell .sync-pane { flex: 1; min-height: 0; }
+.body {
+  display: grid;
+  grid-template-columns: 140px 1fr;
+  flex: 1;
+  min-height: 0;
+}
+.nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 8px;
+  border-right: 1px solid var(--border);
+  background: var(--bg-card, var(--card));
+}
+.nav-btn {
+  text-align: left;
+  border: none;
+  background: transparent;
+  padding: 8px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text);
+}
+.nav-btn.active { background: var(--primary, #2563eb); color: var(--on-primary, #fff); }
+.main { padding: 14px; overflow: auto; min-height: 0; }
+.raw {
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--bg-subtle, var(--surface-secondary));
+  padding: 10px;
+  border-radius: 6px;
+  color: var(--text);
+}

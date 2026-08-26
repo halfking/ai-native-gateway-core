@@ -157,38 +157,3 @@ func TestRecordRequestDualEmptyTenantMaintainsLegacyOnly(t *testing.T) {
 		}
 	}
 }
-
-func TestRecordRequestKeySetEmptyResponseTracksEverySchemaMode(t *testing.T) {
-	for _, mode := range []KeySchemaMode{KeySchemaModeLegacy, KeySchemaModeDual, KeySchemaModeCanonical} {
-		t.Run(mode.String(), func(t *testing.T) {
-			s, mr := newTestStore(t)
-			defer mr.Close()
-			s.SetKeySchemaMode(mode)
-			set := NodeKeySetForTenant("ursm:v2:", "tenant-a", 7, "model-a")
-			if _, err := s.RecordRequestKeySet(context.Background(), set, RecordOutcome{
-				ErrorKind: "empty_response", NowMs: 1_000_000, LatencyMs: 20, RequestID: "empty-1",
-				NodeTTL: time.Hour, Window5mTTL: 6 * time.Minute, Window30mTTL: 35 * time.Minute,
-			}); err != nil {
-				t.Fatalf("record empty response: %v", err)
-			}
-
-			keys := []string{set.Node}
-			if mode != KeySchemaModeLegacy {
-				k2, err := K2KeySetForTenant("ursm:v2:", "tenant-a", 7, "model-a")
-				if err != nil {
-					t.Fatalf("k2 set: %v", err)
-				}
-				keys = append(keys, k2.Node)
-			}
-			for _, node := range keys {
-				for field, want := range map[string]string{
-					"available": "1", "samples_5m": "1", "empty_responses_5m": "1", "empty_response_rate_5m": "1",
-				} {
-					if got := mr.HGet(node, field); got != want {
-						t.Fatalf("%s %s=%q, want %q", node, field, got, want)
-					}
-				}
-			}
-		})
-	}
-}

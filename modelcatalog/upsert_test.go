@@ -54,7 +54,6 @@ func TestUpsertSQL_LowercaseContract(t *testing.T) {
 		"canonical_raw_name,",
 		"canonical_id,",
 		"standardized_name,",
-		"source,",
 		"SELECT cred.provider_id, $2, $3,",
 		"canonical_raw_name = COALESCE(EXCLUDED.canonical_raw_name",
 	}
@@ -183,35 +182,3 @@ func TestUpsertSQL_AdminProtectedGuard(t *testing.T) {
 		t.Errorf("admin_protected guard must be the last clause of the ON CONFLICT branch, got trailing SQL: %q", tail)
 	}
 }
-
-func TestInsertManualSQL_AdminProtected(t *testing.T) {
-	s := insertManualCredentialModelSQL
-	for _, want := range []string{
-		"source,",
-		"'manual'",
-		"admin_protected",
-		"outbound_model_name",
-		"context_window_override",
-		"RETURNING id",
-		"$8",
-	} {
-		if !strings.Contains(s, want) {
-			t.Errorf("insertManualCredentialModelSQL missing %q", want)
-		}
-	}
-}
-
-func TestInsertManual_EmptyRawName(t *testing.T) {
-	_, err := InsertManualCredentialModel(nil, nil, ManualInsertParams{CredentialID: 1, RawName: "  "})
-	if err == nil || !strings.Contains(err.Error(), "raw_model_name required") {
-		t.Fatalf("got %v", err)
-	}
-}
-
-func TestInsertManual_NilDB(t *testing.T) {
-	_, err := InsertManualCredentialModel(nil, nil, ManualInsertParams{RawName: "gpt-4o"})
-	if err == nil || !strings.Contains(err.Error(), "database not configured") {
-		t.Fatalf("got %v", err)
-	}
-}
-

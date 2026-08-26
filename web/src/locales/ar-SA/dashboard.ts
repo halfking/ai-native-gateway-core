@@ -221,7 +221,7 @@ v2: {
     empty: "لا توجد طلبات مباشرة",
 
     emptyWaiting: 'في انتظار بيانات البث المباشر للطلبات…',
-    groupByVendor: 'حسب المورّد', groupByProvider: 'حسب المزوّد', groupByModel: 'حسب النموذج',
+    groupByCredential: 'حسب بيانات الاعتماد', groupByVendor: 'حسب المورّد', groupByProvider: 'حسب المزوّد', groupByModel: 'حسب النموذج',
     modeSmall: 'صغير',
     modeLarge: 'كبير',
     modeSmallTitle: 'وضع صغير: أعمدة عمودية، تستوعب المزيد من الطلبات (افتراضي)',
@@ -234,7 +234,7 @@ v2: {
     businessTitle: 'عرض طلبات الأعمال الحقيقية فقط',
     probeTitle: 'عرض طلبات الفحص فقط',
     cacheWindow: 'ذاكرة التخزين المؤقت / النافذة', connectionDetailTitle: 'انقر لعرض تفاصيل الاتصال',
-    dimensionVendor: 'المورّد', dimensionProvider: 'المزوّد', dimensionModel: 'النموذج',
+    dimensionCredential: 'بيانات الاعتماد', dimensionVendor: 'المورّد', dimensionProvider: 'المزوّد', dimensionModel: 'النموذج',
     statusOpen: 'متصل', statusConnecting: 'جارٍ الاتصال', statusReconnecting: 'جارٍ إعادة الاتصال',
     statusUnsupported: 'غير مدعوم', statusClosed: 'غير متصل',
     sseDetailTitle: 'تفاصيل اتصال SSE', sseStatusLabel: 'حالة الاتصال', sseUrlLabel: 'عنوان SSE',

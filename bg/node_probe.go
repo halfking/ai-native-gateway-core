@@ -380,15 +380,36 @@ func (w *NodeProbeWorker) Start(ctx context.Context) {
 	)
 }
 
-// resolveProbeAPIKey preserves the caller-provided data-plane key. Local
-// gateway probes traverse AuthMiddleware, which validates only the static
-// gateway key; substituting a database system key causes an unrelated 401.
+// resolveProbeAPIKey tries to find a system API key owned by the default
+// tenant's admin user.  When found it replaces w.apiKey so the gateway
+// probe round uses a real admin-owned key.  If nothing is found the
+// caller-provided value (env var) is kept as-is.
 func (w *NodeProbeWorker) resolveProbeAPIKey(ctx context.Context) {
-	if w == nil {
+	// The default tenant's admin login is "{tenant_code}user" — "defaultuser"
+	// for the "default" tenant (see admin/password.go:DefaultTenantAdminUsername).
+	adminUser := "defaultuser"
+
+	qr := w.db.QueryRow(ctx, `
+		SELECT key_ciphertext FROM api_keys
+		WHERE COALESCE(is_system, FALSE) = TRUE AND status = 'active'
+		  AND tenant_id = 'default' AND owner_user = $1
+		ORDER BY created_at DESC LIMIT 1`, adminUser)
+
+	var ciphertext string
+	if err := qr.Scan(&ciphertext); err != nil {
+		slog.Debug("node_probe_worker: no existing admin system key, keeping env key",
+			"admin_user", adminUser, "error", err)
 		return
 	}
-	slog.DebugContext(ctx, "node_probe_worker: using configured gateway API key",
-		"api_key_resolved", w.apiKey != "")
+	pt, _, err := secret.DecryptAny(ciphertext, w.keyring, w.encKey)
+	if err != nil {
+		slog.Warn("node_probe_worker: admin system key exists but cannot decrypt, keeping env key",
+			"admin_user", adminUser, "error", err)
+		return
+	}
+	w.apiKey = string(pt)
+	slog.Info("node_probe_worker: resolved probe API key from DB",
+		"admin_user", adminUser)
 }
 
 func (w *NodeProbeWorker) Stop() {
@@ -963,24 +984,6 @@ func (w *NodeProbeWorker) ProbeSync(
 				w.updateBindingAvailability(ctx, j.credID, j.model, true, "")
 				w.updateCredentialHealth(ctx, j.credID)
 				w.updateObservedState(ctx, j.credID, j.model, true, "", time.Now())
-				// 2026-08-24: smart-fallback tentative restore (需求 6
-				// bullet 6). A sync probe "passed in isolation" — stamp a
-				// revert deadline so bg.ProbeRollback reverts the binding
-				// if no confirming probe success (which clears
-				// probe_revert_at via updateBindingAvailability's success
-				// branch) lands within the window. Confirmation arrives
-				// naturally: the tick/queue still probes this (cred,model)
-				// because emitSyncAudit deliberately does NOT touch
-				// node_probe_state (next_retry_at unchanged). Disabled
-				// entirely when the window env is 0/off.
-				if revertAfter := probeTentativeRevertAfter(); revertAfter > 0 {
-					markCtx, markCancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
-					if err := MarkTentativeRestore(markCtx, w.db, j.credID, j.model, revertAfter); err != nil {
-						slog.Warn("node_probe_worker: tentative restore stamp failed",
-							"credential_id", j.credID, "model", j.model, "error", err)
-					}
-					markCancel()
-				}
 				res.gateway = w.probeGateway(ctx, j.credID, j.model)
 			} else {
 				w.updateBindingAvailability(ctx, j.credID, j.model, false, res.direct.errCode)

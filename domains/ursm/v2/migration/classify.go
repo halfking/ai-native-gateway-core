@@ -35,8 +35,8 @@ type Scanner interface {
 // is the exact SCAN pattern; the implementation paginates internally with a
 // small COUNT (matches recovery/manager.go:270-287) and returns the union.
 type RedisScanner struct {
-	RDB   *redis.Client
-	Count int
+	RDB     *redis.Client
+	Count   int
 }
 
 func (s *RedisScanner) Scan(ctx context.Context, pattern string) ([]ScannedKey, error) {
@@ -48,8 +48,8 @@ func (s *RedisScanner) Scan(ctx context.Context, pattern string) ([]ScannedKey, 
 		count = 200
 	}
 	var (
-		cursor uint64
-		out    []ScannedKey
+		cursor    uint64
+		out       []ScannedKey
 	)
 	for {
 		keys, next, err := s.RDB.Scan(ctx, cursor, pattern, int64(count)).Result()
@@ -121,13 +121,13 @@ type PreflightRunner struct {
 
 // PreflightSummary is the aggregate result of a preflight pass.
 type PreflightSummary struct {
-	TotalKeys        int
-	Migratable       int
+	TotalKeys       int
+	Migratable      int
 	CanonicalPresent int
-	Ambiguous        int
-	Excluded         int
-	Conflicts        int
-	Checksum         string
+	Ambiguous       int
+	Excluded        int
+	Conflicts       int
+	Checksum        string
 }
 
 // ClassifyResult mirrors the per-item ledger row plus a few helpers used by
@@ -221,11 +221,11 @@ func (s *PreflightSummary) bump(c Classification, status ItemStatus) {
 
 func (p *PreflightRunner) classifyOne(ctx context.Context, sk ScannedKey, runID string) Item {
 	it := Item{
-		SourceKey:     sk.SourceKey,
-		KeyType:       sk.KeyType,
-		PTTLMs:        sk.PTTLMs,
-		Status:        StatusDiscovered,
-		ScanRunID:     runID,
+		SourceKey: sk.SourceKey,
+		KeyType:   sk.KeyType,
+		PTTLMs:    sk.PTTLMs,
+		Status:    StatusDiscovered,
+		ScanRunID: runID,
 		FieldChecksum: fieldChecksum(sk.Fields),
 		Generation:    sk.Generation,
 	}

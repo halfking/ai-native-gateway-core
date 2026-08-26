@@ -155,10 +155,22 @@ interface ModelScopeMeta {
   featured: boolean
   hotRequests: number
   aliases: Set<string>
+  /**
+   * Preferred display name for the scope (canonical_name when available,
+   * otherwise the model alias itself). Used as the section title text and
+   * as the primary sort key so users can locate a model alphabetically.
+   */
+  displayName: string
 }
 
 interface ModelGroup {
   model: string
+  /**
+   * Standard (canonical) display name for the model — used for the section
+   * title and as the primary sort key so users can locate a model
+   * alphabetically. Falls back to `model` when no canonical mapping is known.
+   */
+  displayName: string
   nodes: LiveNodeStatus[]
   requestCount: number
   featured: boolean
@@ -230,17 +242,28 @@ async function loadModelScope() {
     return
   }
   const scope = new Map<string, ModelScopeMeta>()
-  const addScope = (model: string, isFeatured: boolean, hotRequests: number) => {
+  const addScope = (model: string, isFeatured: boolean, hotRequests: number, displayName?: string) => {
     const key = modelKey(model)
     if (!key) return
-    const current = scope.get(key) ?? { key, featured: false, hotRequests: 0, aliases: new Set<string>() }
+    const current = scope.get(key)
+      ?? { key, featured: false, hotRequests: 0, aliases: new Set<string>(), displayName: model.trim() }
     current.featured ||= isFeatured
     current.hotRequests = Math.max(current.hotRequests, hotRequests)
     current.aliases.add(key)
+    // Prefer the longest/most-readable name we've seen for this scope so the
+    // section title picks "GPT-4o" over a raw alias like "gpt-4o-2024-08-06"
+    // when both resolve to the same canonical model.
+    const incoming = (displayName ?? model).trim()
+    if (incoming && (!current.displayName || incoming.length > current.displayName.length)) {
+      current.displayName = incoming
+    }
     scope.set(key, current)
   }
   if (featured.status === 'fulfilled') featured.value.featured_models.forEach(model => addScope(model, true, 0))
-  if (hot.status === 'fulfilled') hot.value.items.forEach((model: TopRequestModel) => addScope(model.canonical_name || model.display_name, false, model.request_count))
+  if (hot.status === 'fulfilled') hot.value.items.forEach((model: TopRequestModel) => {
+    const display = (model.canonical_name && model.canonical_name.trim()) || model.display_name
+    addScope(display, false, model.request_count, display)
+  })
   const aliases = new Map<string, string>()
   const candidatesByRawModel = new Map<string, RoutingCandidate[]>()
   const revisionsByCanonical = new Map<number, string>()
@@ -250,6 +273,10 @@ async function loadModelScope() {
     try {
       const resolved = await resolveRouting(name, undefined, false, { signal: controller.signal })
       if (controller.signal.aborted) return
+      // Canonical name (when present) is the authoritative standard label for
+      // this scope — overwrite any alias-only displayName we collected earlier.
+      const canonicalName = resolved.canonical_name?.trim()
+      if (canonicalName) meta.displayName = canonicalName
       const assignAlias = (raw: string) => {
         const key = modelKey(raw)
         if (!key) return
@@ -387,6 +414,7 @@ const modelGroups = computed<ModelGroup[]>(() => {
     }
     groups.push({
       model: scopeKey,
+      displayName: meta.displayName,
       nodes: orderedNodes,
       requestCount: requestIds.size,
       featured: meta.featured,
@@ -404,7 +432,16 @@ const modelGroups = computed<ModelGroup[]>(() => {
       rawModels: [...rawModelList],
     })
   }
-  return groups.sort((a, b) => Number(b.featured) - Number(a.featured) || b.hotRequests - a.hotRequests || b.nodes.length - a.nodes.length || a.model.localeCompare(b.model))
+  // Alphabetical by canonical displayName — operators scan top→bottom to find
+  // a model, so the canonical label (not the lowercased scope key) is the
+  // primary key. Featured/hot are deprioritized to ties so the user sees a
+  // stable alphabetical order regardless of which one happens to be hot.
+  return groups.sort((a, b) =>
+    a.displayName.localeCompare(b.displayName, 'zh-CN', { sensitivity: 'base' })
+    || Number(b.featured) - Number(a.featured)
+    || b.hotRequests - a.hotRequests
+    || a.model.localeCompare(b.model),
+  )
 })
 
 // ── 节点状态过滤（在用 / 降级 / 人工禁用 / 配额耗尽） ─────────────────────
@@ -658,6 +695,20 @@ function candidateForNode(group: ModelGroup, credentialId: number): RoutingCandi
 
 function providerLabel(n: LiveNodeStatus): string {
   return n.provider_code || (n.provider_id ? `P${n.provider_id}` : '—')
+}
+
+/** Node card title: `{provider}/{credentialLabel}` for the model-group view.
+ *  Falls back to `{provider}/#{credentialId}` when no label is known — the
+ *  `/` separator keeps the provider anchor readable while still disambiguating
+ *  the credential. Centralized here so the request-list rows share the same
+ *  format. */
+function nodeCardTitle(n: LiveNodeStatus, group?: ModelGroup): string {
+  void labelRevision.value
+  const cachedLabel = credentialLabelForId(n.credential_id)
+  const label = (n.credential_label || cachedLabel || '').trim()
+  const provider = providerLabel(n)
+  if (label) return `${provider}/${label}`
+  return `${provider}/#${n.credential_id}`
 }
 
 function nodeTitle(n: LiveNodeStatus, group?: ModelGroup): string {
@@ -1009,13 +1060,29 @@ function formatTs(ts: string | undefined): string {
           <div class="qp-model-compact">
             <button type="button" class="qp-model-group-toggle" :aria-expanded="expandedModels.has(group.model)" @click="toggleModel(group.model)">
               <span class="qp-model-group-caret" :class="{ 'qp-model-group-caret--open': expandedModels.has(group.model) }">▸</span>
-              <strong class="qp-model-group-name">{{ group.model }}</strong>
+              <strong class="qp-model-group-name">{{ group.displayName }}</strong>
             </button>
             <span v-if="group.featured" class="qp-model-tag">特色</span>
             <span v-if="group.hotRequests" class="qp-model-tag qp-model-tag--hot">热门 {{ group.hotRequests }}</span>
             <span class="qp-pill">{{ group.nodes.length }} 节点</span>
-            <span class="qp-pill" :class="{ 'qp-pill--active': group.requestCount > 0 }">{{ group.requestCount }} 当前请求</span>
+            <!-- 请求图标（缩微版）：右侧显示该模型当前正在处理的请求数；
+                 默认折叠状态下仍能直接看到是否在跑流量，无需展开。 -->
+            <span
+              class="qp-model-rq-icon"
+              :class="{ 'qp-model-rq-icon--active': group.requestCount > 0 }"
+              :title="`${group.requestCount} 当前请求`"
+              aria-hidden="true"
+            >
+              <svg viewBox="0 0 16 16" width="12" height="12" focusable="false">
+                <rect x="2" y="3" width="12" height="2.4" rx="0.6" fill="currentColor" opacity="0.55" />
+                <rect x="2" y="6.8" width="9" height="2.4" rx="0.6" fill="currentColor" :opacity="group.requestCount > 0 ? 0.95 : 0.35" />
+                <rect x="2" y="10.6" width="11" height="2.4" rx="0.6" fill="currentColor" :opacity="group.requestCount > 0 ? 0.8 : 0.25" />
+              </svg>
+              <span class="qp-model-rq-count">{{ group.requestCount }}</span>
+            </span>
             <span class="qp-pill qp-pill--hint" :title="dragDisabledHint(group)">{{ canReorder(group) ? '拖动调整优先级' : '优先级排序不可用' }}</span>
+          </div>
+          <div v-if="expandedModels.has(group.model)" class="qp-model-group-body">
             <div class="qp-model-nodes">
               <div
                 v-for="(node, nodeIndex) in group.nodes"
@@ -1031,7 +1098,7 @@ function formatTs(ts: string | undefined): string {
                   type="button"
                   class="qp-node-card"
                   :class="nodeCardTone(node)"
-                  :title="`${nodeTitle(node, group)}：${nodeStatusSummary(node)}${node.last_error ? `；${node.last_error}` : ''}`"
+                  :title="`${nodeCardTitle(node, group)}：${nodeStatusSummary(node)}${node.last_error ? `；${node.last_error}` : ''}`"
                   @click="openNode(node, group.aliases)"
                 >
                   <span
@@ -1045,7 +1112,7 @@ function formatTs(ts: string | undefined): string {
                   >⋮⋮</span>
                   <span class="qp-node-card-title">
                     <span v-if="isPriorityNode(group, node)" class="qp-node-priority-flag" title="优先节点：额度用完前优先路由">★</span>
-                    {{ nodeTitle(node, group) }}
+                    {{ nodeCardTitle(node, group) }}
                   </span>
                   <span class="qp-node-card-dots" :title="`熔断 ${node.circuit_state || '未知'} · 可用性 ${node.availability_state || '未知'} · 配额 ${node.quota_state || '未知'} · 健康 ${node.health_status || '未知'}`">
                     <i class="qp-dot" :class="dotClass(circuitOk(node))" /><i class="qp-dot" :class="dotClass(availabilityOk(node))" /><i class="qp-dot" :class="dotClass(quotaOk(node))" /><i class="qp-dot" :class="dotClass(healthOk(node))" />
@@ -1079,13 +1146,11 @@ function formatTs(ts: string | undefined): string {
                 </button>
               </div>
             </div>
-          </div>
-          <div v-if="expandedModels.has(group.model)" class="qp-model-group-body">
             <p class="qp-model-detail-hint">{{ t('requestJourneys.nodeDetailHint') }}</p>
             <ul v-if="group.nodes.some(node => requestsForNode(node, group.aliases).length)" class="qp-model-group-requests">
               <template v-for="node in group.nodes" :key="node.credential_id">
                 <li v-for="request in requestsForNode(node, group.aliases)" :key="request.request_id" class="qp-model-group-request">
-                  <span class="qp-rq-node">{{ nodeTitle(node, group) }}</span><span class="qp-rq-model">{{ request.model || '—' }}</span><span class="qp-rq-status" :class="`qp-rq-status--${request.status}`">{{ request.status || '—' }}</span><span v-if="typeof request.latency_ms === 'number'" class="qp-rq-latency">{{ formatLatency(request.latency_ms) }}</span><span v-if="request.error_kind" class="qp-rq-err">{{ request.error_kind }}</span><span class="qp-rq-ts">{{ formatTs(request.ts) }}</span>
+                  <span class="qp-rq-node">{{ nodeCardTitle(node, group) }}</span><span class="qp-rq-model">{{ request.model || '—' }}</span><span class="qp-rq-status" :class="`qp-rq-status--${request.status}`">{{ request.status || '—' }}</span><span v-if="typeof request.latency_ms === 'number'" class="qp-rq-latency">{{ formatLatency(request.latency_ms) }}</span><span v-if="request.error_kind" class="qp-rq-err">{{ request.error_kind }}</span><span class="qp-rq-ts">{{ formatTs(request.ts) }}</span>
                 </li>
               </template>
             </ul>
@@ -1522,4 +1587,27 @@ function formatTs(ts: string | undefined): string {
   color: var(--kx-muted, var(--kx-text-secondary));
   cursor: help;
 }
+
+/* 模型标题右侧请求图标：默认折叠时也能一眼看到模型在跑流量。
+   三层条形 = 模拟请求纸面，"active" 状态下加深以提示有在途请求。 */
+.qp-model-rq-icon {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  color: var(--kx-muted, var(--kx-text-secondary));
+  background: var(--kx-bg, var(--kx-surface));
+  border: 1px solid var(--kx-border);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+.qp-model-rq-icon svg { display: block; }
+.qp-model-rq-icon--active {
+  color: var(--kx-primary);
+  border-color: color-mix(in srgb, var(--kx-primary) 40%, var(--kx-border));
+  background: color-mix(in srgb, var(--kx-primary) 8%, var(--kx-surface));
+}
+.qp-model-rq-count { font-weight: 600; }
 </style>

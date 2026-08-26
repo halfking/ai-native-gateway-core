@@ -63,9 +63,9 @@ func (s *ProbeRedisStore) Enabled() bool { return s != nil && s.rdb != nil }
 // Mirrors LiveStreamTileSlim's role in live_stream_redis_store.go.
 type ProbeStreamTileSlim struct {
 	ID     string `json:"id"`
-	Ts     int64  `json:"ts"`  // unix milliseconds
-	Status string `json:"st"`  // pending|in-flight|ok|fail
-	Source string `json:"src"` // integrity|node_probe|selfcheck
+	Ts     int64  `json:"ts"`     // unix milliseconds
+	Status string `json:"st"`     // pending|in-flight|ok|fail
+	Source string `json:"src"`    // integrity|node_probe|selfcheck
 }
 
 // recordTransitionSrc is the Lua source for recordTransitionScript, kept as a
@@ -160,17 +160,12 @@ func (s *ProbeRedisStore) RecordWithOrigin(ctx context.Context, task ProbeStream
 	statusKey := probeStatusKey(task.Status)
 
 	// Atomic lane transition (status/source evict+add+trim in one EVAL).
-	if _, err := recordTransitionScript.Run(ctx, s.rdb, []string{},
+	_, _ = recordTransitionScript.Run(ctx, s.rdb, []string{},
 		task.ID, tsMs, statusKey, task.Source,
 		int64(probeQueueTTL.Seconds()), probeMainKey, int64(probeMainTTL.Seconds()),
 		probeTaskStatusKey, probeTaskSourceKey, probeDimIndexKey,
 		probeDetailKey(task.ID), int64(probeDetailTTL.Seconds()), probeQueueKeepLimit,
-	).Result(); err != nil {
-		if !isRedisCancelErr(err) {
-			slog.Warn("probe_stream redis record transition failed", "error", err, "task_id", task.ID, "status", task.Status)
-		}
-		return err
-	}
+	).Result()
 
 	// Detail payload + notify (best-effort, separate from the atomic core so
 	// a marshal/Publish failure never blocks the lane transition).

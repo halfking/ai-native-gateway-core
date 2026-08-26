@@ -42,6 +42,9 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			"546_stats_reconciliation_diffs_unique.sql",
 			"547_session_project_attribution.sql",
 			"548_stats_reconciliation_diffs_identity.sql",
+			// MERGE-AUDIT 2026-08-26: remote used version 551 for the same
+			// approval-resume DDL. Local version 553 is retained as the only
+			// executable migration to prevent duplicate application.
 			"552_request_journey_durable_outbox.sql",
 			"553_approval_resume_claim.sql",
 			"554_goal_runs.sql",
