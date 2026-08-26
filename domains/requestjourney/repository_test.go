@@ -288,7 +288,7 @@ func TestPostgresApplyUsesOnlyExplicitContentFreeColumns(t *testing.T) {
 			event.TenantID, event.GatewayInstanceID, event.RequestID, event.Seq,
 			event.Type, event.Stage, event.RequestedModel, nil, nil, nil, nil,
 			nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
-			event.ObservationStatus, event.OccurredAt,
+			event.ObservationStatus, nil, event.OccurredAt,
 		).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 
@@ -360,4 +360,11 @@ func nullableTestInt(value int) any {
 		return nil
 	}
 	return value
+}
+
+func nullableTestTime(value *time.Time) any {
+	if value == nil {
+		return nil
+	}
+	return *value
 }
