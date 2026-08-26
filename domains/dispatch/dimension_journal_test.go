@@ -7,10 +7,12 @@ import (
 	"time"
 )
 
-// V6-W1.6 T4 (docs/架构优化v6/09-ir-class-journal-decoupling.md §R10): the
-// dimension index reuses itself as the queryable projection of the request
-// class and the execution journal. Entries carry snapshots; the authority
-// stays on the QueuedRequest.
+// V6-W1.6 T4 (docs/架构优化v6/09-ir-class-journal-decoupling.md §R10,
+// 范围修正 2026-08-27): the dimension index carries only the request's
+// MEMBERSHIP metadata (class / state / outcome / last action). The execution
+// trace (AttemptJournal) is attached to the request itself and is NEVER
+// replicated into this process-wide index — that scope rule is pinned by
+// TestDimensionEntriesDoNotCarryJournal below.
 
 func newJournalQR(id string) *QueuedRequest {
 	qr := NewQueuedRequest(id, "t", "gpt4", context.Background(), "payload")
@@ -39,45 +41,19 @@ func TestDimensionEntryCarriesClass(t *testing.T) {
 	}
 }
 
-// UpdateWait copies at most the journal tail (16 entries) as a DETACHED
-// snapshot: later appends on the request must not mutate the entry copy.
-func TestDimensionUpdateWaitJournalsTail(t *testing.T) {
+// TestDimensionEntriesDoNotCarryJournal is the SCOPE INVARIANT (用户修正
+// 2026-08-27)：轨迹附属请求，分维条目永远不携带 Journal。即使请求上有
+// 大量轨迹，Track/MarkNode/UpdateWait/Complete 之后条目仍无轨迹副本。
+func TestDimensionEntriesDoNotCarryJournal(t *testing.T) {
 	ix := NewDimensionIndex(DimensionIndexConfig{TTL: time.Minute, PerKeyCapacity: 8, MaxKeys: 16})
-	qr := newJournalQR("dj1")
+	qr := newJournalQR("scope1")
 	ix.Track(qr, time.Now())
-	for i := 0; i < 20; i++ {
-		qr.recordDecision(JournalEntry{Action: NextActionRetrySameCred, Model: "gpt4"})
+	ix.MarkNode(qr, CredentialRef{CredentialID: 7, ProviderID: 3, Vendor: "kimi"}, time.Now())
+	for i := 0; i < 5; i++ {
+		qr.recordDecision(JournalEntry{Action: NextActionRetrySameCred, Model: "gpt4", CredentialID: 7})
 	}
 	now := time.Now()
 	ix.UpdateWait(qr, now.Add(5*time.Second), NextActionRetrySameCred, now)
-	snap := ix.Snapshot(DimensionModel, "gpt4", 10)
-	if len(snap.Entries) != 1 {
-		t.Fatalf("entries = %d", len(snap.Entries))
-	}
-	j := snap.Entries[0].Journal
-	if len(j) != dimensionJournalTail {
-		t.Fatalf("snapshot journal len = %d, want %d", len(j), dimensionJournalTail)
-	}
-	if j[0].Seq != 20-dimensionJournalTail+1 || j[len(j)-1].Seq != 20 {
-		t.Fatalf("snapshot window wrong: first Seq %d last %d", j[0].Seq, j[len(j)-1].Seq)
-	}
-
-	// Later request-side appends must not leak into the snapshot.
-	qr.recordDecision(JournalEntry{Action: NextActionSwitchCred})
-	snap2 := ix.Snapshot(DimensionModel, "gpt4", 10)
-	if got := snap2.Entries[0].Journal; len(got) != dimensionJournalTail || got[len(got)-1].Seq != 20 {
-		t.Fatalf("snapshot mutated by later append: %+v", got[len(got)-1])
-	}
-}
-
-// Complete aligns every ring entry to the terminal state carrying the FULL
-// journal including the terminal entry (invariant 4).
-func TestDimensionCompleteAlignsFullJournal(t *testing.T) {
-	ix := NewDimensionIndex(DimensionIndexConfig{TTL: time.Minute, PerKeyCapacity: 8, MaxKeys: 16})
-	qr := newJournalQR("da1")
-	ix.Track(qr, time.Now())
-	ix.MarkNode(qr, CredentialRef{CredentialID: 7, ProviderID: 3, Vendor: "kimi"}, time.Now())
-	qr.recordDecision(JournalEntry{Action: NextActionRetrySameCred, Model: "gpt4", CredentialID: 7})
 	ix.Complete(qr, ForwardOutcome{ErrorKind: "timeout", Err: errors.New("timeout")}, time.Now())
 
 	for _, dim := range []struct {
@@ -92,49 +68,77 @@ func TestDimensionCompleteAlignsFullJournal(t *testing.T) {
 		if e.State != DimensionStateCompleted || e.Outcome != "failure" {
 			t.Fatalf("%s entry = %+v, want completed/failure", dim.kind, e)
 		}
-		tail := e.Journal[len(e.Journal)-1]
-		if tail.Action != NextActionFailed {
-			t.Fatalf("%s journal tail = %+v, want failed terminal", dim.kind, tail)
-		}
+	}
+
+	// The trace stays request-attached: full, terminal-tailed, and reachable
+	// only via the request object.
+	trace := qr.JournalSnapshot()
+	if len(trace) != 6 { // 5 decisions + terminal backfill
+		t.Fatalf("request journal len = %d, want 6", len(trace))
+	}
+	if trace[len(trace)-1].Action != NextActionFailed {
+		t.Fatalf("journal tail = %+v, want failed terminal", trace[len(trace)-1])
 	}
 }
 
-func TestDimensionJournalByRequest(t *testing.T) {
+// TestDimensionUpdateWaitStampsMembershipOnly: UpdateWait refreshes
+// membership metadata (pending state, retry_at, last action) and nothing else.
+func TestDimensionUpdateWaitStampsMembershipOnly(t *testing.T) {
+	ix := NewDimensionIndex(DimensionIndexConfig{TTL: time.Minute, PerKeyCapacity: 8, MaxKeys: 16})
+	qr := newJournalQR("dw1")
+	ix.Track(qr, time.Now())
+	for i := 0; i < 20; i++ {
+		qr.recordDecision(JournalEntry{Action: NextActionRetrySameCred, Model: "gpt4"})
+	}
+	now := time.Now()
+	retryAt := now.Add(5 * time.Second)
+	ix.UpdateWait(qr, retryAt, NextActionRetrySameCred, now)
+	snap := ix.Snapshot(DimensionModel, "gpt4", 10)
+	if len(snap.Entries) != 1 {
+		t.Fatalf("entries = %d", len(snap.Entries))
+	}
+	e := snap.Entries[0]
+	if e.State != DimensionStatePending || e.LastAction != NextActionRetrySameCred || !e.RetryAt.Equal(retryAt) {
+		t.Fatalf("membership metadata wrong: %+v", e)
+	}
+	if qr.JournalSnapshot() == nil {
+		t.Fatalf("request journal lost")
+	}
+}
+
+// TestDimensionEntriesByRequest: per-request membership lookup (admin
+// request-dimensions endpoint) returns the three dimension entries and 404s
+// after TTL expiry. No journal is served.
+func TestDimensionEntriesByRequest(t *testing.T) {
 	ix := NewDimensionIndex(DimensionIndexConfig{TTL: 50 * time.Millisecond, PerKeyCapacity: 8, MaxKeys: 16})
 	qr := newJournalQR("db1")
 	qr.DueAt = time.Now().Add(time.Hour)
 	ix.Track(qr, time.Now())
 	ix.MarkNode(qr, CredentialRef{CredentialID: 9, ProviderID: 4, Vendor: "openai"}, time.Now())
 	qr.recordDecision(JournalEntry{Action: NextActionScheduledWait, Model: "gpt4"})
-	qr.recordDecision(JournalEntry{Action: NextActionSwitchCred, Model: "gpt4", CredentialID: 9})
-	ix.UpdateWait(qr, time.Now().Add(time.Minute), NextActionSwitchCred, time.Now())
+	// UpdateWait starts the entry TTL window (parked requests age out).
+	ix.UpdateWait(qr, time.Now().Add(time.Minute), NextActionScheduledWait, time.Now())
 
-	view, ok := ix.JournalByRequest("db1")
+	entries, ok := ix.EntriesByRequest("db1")
 	if !ok {
-		t.Fatalf("JournalByRequest not found for tracked request")
+		t.Fatalf("EntriesByRequest not found for tracked request")
 	}
-	if view.RequestID != "db1" {
-		t.Fatalf("view RequestID = %q", view.RequestID)
+	if len(entries) != 3 { // model + credential + provider rings
+		t.Fatalf("entries = %d, want 3", len(entries))
 	}
-	if len(view.Entries) != 3 { // model + credential + provider rings
-		t.Fatalf("entries = %d, want 3", len(view.Entries))
-	}
-	if view.Class != RequestClassScheduled {
-		t.Fatalf("view Class = %q, want scheduled", view.Class)
-	}
-	if len(view.Journal) == 0 || view.Journal[len(view.Journal)-1].Seq != 2 {
-		t.Fatalf("view journal = %+v, want latest with Seq 2", view.Journal)
+	if entries[0].Class != RequestClassScheduled {
+		t.Fatalf("entry Class = %q, want scheduled", entries[0].Class)
 	}
 
 	// Unknown request → not found (admin maps to 404).
-	if _, ok := ix.JournalByRequest("nope"); ok {
-		t.Fatalf("JournalByRequest found unknown request")
+	if _, ok := ix.EntriesByRequest("nope"); ok {
+		t.Fatalf("EntriesByRequest found unknown request")
 	}
 
 	// TTL expiry evicts the entries → not found afterwards.
 	time.Sleep(80 * time.Millisecond)
 	ix.Sweep(time.Now())
-	if _, ok := ix.JournalByRequest("db1"); ok {
-		t.Fatalf("JournalByRequest survived TTL expiry")
+	if _, ok := ix.EntriesByRequest("db1"); ok {
+		t.Fatalf("EntriesByRequest survived TTL expiry")
 	}
 }

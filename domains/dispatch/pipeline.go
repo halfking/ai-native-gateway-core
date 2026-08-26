@@ -89,6 +89,12 @@ type Pipeline struct {
 	dimensionIndex *DimensionIndex
 	// queueMirror optionally projects queue state to Redis (observation only).
 	queueMirror *QueueMirror
+	// queueBackend (V6-W1.7) is the optional CLUSTER admission plane (Tier-0
+	// waiting room + lane capacities + due visibility, memory|redis). nil or
+	// the local pass-through keeps the pure in-process behavior; redis adds
+	// a cluster-wide check BEFORE the local primitives (fail-open on Redis
+	// outage). Never moves execution between instances (connection affinity).
+	queueBackend QueueBackend
 	// affinitySink persists successful session routes and invalidates a failed
 	// sticky credential. It is best-effort and never gates execution.
 	affinitySink    SessionAffinitySink
@@ -942,6 +948,11 @@ func (p *Pipeline) Stop() {
 	p.observationChMu.Unlock()
 	p.observationWg.Wait()
 	p.queueMirror.Close()
+	// V6-W1.7: stop the cluster admission plane's background work (redis
+	// heartbeat loop) after every worker has drained.
+	if p.queueBackend != nil {
+		_ = p.queueBackend.Close()
+	}
 }
 
 // Submit enqueues a request into the Tier-1 model queue and blocks until the
@@ -984,7 +995,12 @@ func (p *Pipeline) Submit(ctx context.Context, qr *QueuedRequest) (any, error) {
 	// reject execution; totalQueue is the sole execution capacity boundary.
 	p.registry.RegisterPending(qr.ID, qr.RequestedModel, time.Now())
 	p.dimensionIndex.Track(qr, time.Now())
-	if !p.totalQueue.tryEnqueue(qr) {
+	// V6-W1.7: cluster admission first, then the local CAS. When the local
+	// bound refuses after the cluster admitted, the compensating release
+	// below returns the token (admit/release symmetry). No backend / local
+	// backend → admitTotal is a free pass-through.
+	if !p.admitTotal(ctx, qr) || !p.totalQueue.tryEnqueue(qr) {
+		p.releaseClusterTotal(qr)
 		metricOverflow.WithLabelValues("total_queue_full").Inc()
 		p.observeOverflow("total_queue_full")
 		overflow := &OverflowError{Reason: "total_queue_full", RetryAfter: DefaultOverflowRetryAfter}
@@ -1007,7 +1023,8 @@ func (p *Pipeline) Submit(ctx context.Context, qr *QueuedRequest) (any, error) {
 		if !qr.completed.CompareAndSwap(false, true) {
 			return nil, ctx.Err()
 		}
-		p.totalQueue.release(qr)
+		p.releaseTotal(qr)
+		p.releaseAllClusterAdmissions(qr)
 		p.registry.MarkCompleted(qr.ID, time.Now())
 		return nil, ctx.Err()
 	}
@@ -1047,7 +1064,7 @@ func (p *Pipeline) runTotalDrainer() {
 				continue
 			}
 			if p.shutdown.Load() {
-				p.totalQueue.release(qr)
+				p.releaseTotal(qr)
 				p.complete(qr, ForwardOutcome{Err: ErrShutdown})
 				return
 			}
@@ -1060,27 +1077,27 @@ func (p *Pipeline) runTotalDrainer() {
 			// park-side metadata writes before the picker takes ownership.
 			if qr.DueAt.After(time.Now().Add(minScheduleLead)) {
 				if p.parkScheduledRequest(qr) {
-					p.totalQueue.release(qr)
+					p.releaseTotal(qr)
 					continue
 				}
 				// Scheduler unavailable (shutting down) → execute now.
 			}
 			if !p.enqueueModelFromTotal(queueKeyFor(qr.RequestedModel), qr) {
-				p.totalQueue.release(qr)
+				p.releaseTotal(qr)
 				if p.shutdown.Load() {
 					p.complete(qr, ForwardOutcome{Err: ErrShutdown})
 					return
 				}
 				p.complete(qr, ForwardOutcome{Err: ctxOf(qr).Err()})
 			} else {
-				p.totalQueue.release(qr)
+				p.releaseTotal(qr)
 			}
 		case <-p.stopCh:
 			for {
 				select {
 				case qr := <-p.totalQueue.ch:
 					if qr != nil {
-						p.totalQueue.release(qr)
+						p.releaseTotal(qr)
 						p.complete(qr, ForwardOutcome{Err: ErrShutdown})
 					}
 				default:
@@ -1104,27 +1121,33 @@ func (p *Pipeline) enqueueModelFromTotal(name string, qr *QueuedRequest) bool {
 		if p.shutdown.Load() || ctxOf(qr).Err() != nil {
 			return false
 		}
-		mq.mu.Lock()
-		depth := mq.depth.Add(1)
-		metricModelQueueDepth.WithLabelValues().Inc()
-		select {
-		case mq.ch <- qr:
-			p.observeQueue(QueueObservation{Kind: QueueModelDepth, Model: name, Depth: depth, Delta: 1, AbsoluteDepth: true})
-			p.liveActions.Emit(ctxOf(qr), liveactions.ActionEvent{
-				RequestID: qr.ID,
-				Action:    liveactions.ActionModelEnqueued,
-				Model:     name,
-				Detail: map[string]string{
-					"queue_depth": strconv.FormatInt(mq.depth.Load(), 10),
-				},
-			})
-			qr.emitObservation(Observation{Type: ObservationModelEnqueued, Stage: StageModelQueue, Model: name, ResolvedModel: qr.ResolvedModel})
-			mq.mu.Unlock()
-			return true
-		default:
-			mq.depth.Add(-1)
-			metricModelQueueDepth.WithLabelValues().Dec()
-			mq.mu.Unlock()
+		// V6-W1.7: cluster lane slot, reserved per attempt; released again
+		// when the local lane cannot take the request (backpressure loop).
+		// No backend / local → free pass-through.
+		if p.reserveLane(ctxOf(qr), LaneModel, name, p.config().MaxQueueDepth, &qr.clusterModel) {
+			mq.mu.Lock()
+			depth := mq.depth.Add(1)
+			metricModelQueueDepth.WithLabelValues().Inc()
+			select {
+			case mq.ch <- qr:
+				p.observeQueue(QueueObservation{Kind: QueueModelDepth, Model: name, Depth: depth, Delta: 1, AbsoluteDepth: true})
+				p.liveActions.Emit(ctxOf(qr), liveactions.ActionEvent{
+					RequestID: qr.ID,
+					Action:    liveactions.ActionModelEnqueued,
+					Model:     name,
+					Detail: map[string]string{
+						"queue_depth": strconv.FormatInt(mq.depth.Load(), 10),
+					},
+				})
+				qr.emitObservation(Observation{Type: ObservationModelEnqueued, Stage: StageModelQueue, Model: name, ResolvedModel: qr.ResolvedModel})
+				mq.mu.Unlock()
+				return true
+			default:
+				mq.depth.Add(-1)
+				metricModelQueueDepth.WithLabelValues().Dec()
+				mq.mu.Unlock()
+				p.releaseLaneAdmission(&qr.clusterModel)
+			}
 		}
 		select {
 		case <-p.stopCh:
@@ -1168,6 +1191,10 @@ func (p *Pipeline) parkScheduledRequest(qr *QueuedRequest) bool {
 	// v6 G-Ⅱ: dedicated scheduled key so the Redis-side pending set
 	// distinguishes 定时停靠 from failure backoff (observation-only).
 	p.queueMirror.MirrorScheduledAt(qr.ID, dueAt)
+	// V6-W1.7: cluster due view (observation-only; pickup stays local).
+	if p.queueBackend != nil {
+		_ = p.queueBackend.ParkDue(context.WithoutCancel(ctxOf(qr)), qr.ID, dueAt)
+	}
 	qr.recordDecision(JournalEntry{
 		Model:   qr.ResolvedModel,
 		Action:  NextActionScheduledWait,
@@ -1205,13 +1232,17 @@ func (p *Pipeline) onScheduledDue(qr *QueuedRequest, dueAt time.Time) {
 	p.registry.MarkInFlight(qr.ID, now)
 	p.queueMirror.ClearRetryAt(qr.ID)
 	p.queueMirror.ClearScheduledAt(qr.ID)
+	if p.queueBackend != nil {
+		_ = p.queueBackend.ClearDue(context.WithoutCancel(ctxOf(qr)), qr.ID)
+	}
 	metricScheduledDue.Inc()
 	qr.notifyDispatch(DispatchNotice{
 		Kind:    NoticeKindScheduled,
 		Message: "定时请求到期，开始执行",
 		RetryAt: dueAt,
 	})
-	if !p.totalQueue.tryEnqueue(qr) {
+	if !p.admitTotal(ctxOf(qr), qr) || !p.totalQueue.tryEnqueue(qr) {
+		p.releaseClusterTotal(qr)
 		metricOverflow.WithLabelValues("total_queue_full_on_due").Inc()
 		p.observeOverflow("total_queue_full_on_due")
 		p.complete(qr, ForwardOutcome{Err: &OverflowError{Reason: "total_queue_full_on_due", RetryAfter: DefaultOverflowRetryAfter}})
@@ -1224,6 +1255,11 @@ func (p *Pipeline) onScheduledDue(qr *QueuedRequest, dueAt time.Time) {
 func (p *Pipeline) enqueueModel(name string, qr *QueuedRequest) bool {
 	mq := p.getOrCreateModelQueue(name)
 	if mq == nil {
+		return false
+	}
+	// V6-W1.7: cluster lane slot before the local channel; released again
+	// when the local lane refuses (caller follows the existing full path).
+	if !p.reserveLane(ctxOf(qr), LaneModel, name, p.config().MaxQueueDepth, &qr.clusterModel) {
 		return false
 	}
 	resolvedModel := qr.ResolvedModel
@@ -1263,6 +1299,7 @@ func (p *Pipeline) enqueueModel(name string, qr *QueuedRequest) bool {
 		metricModelQueueDepth.WithLabelValues().Dec()
 		mq.mu.Unlock()
 		qr.journeyMu.Unlock()
+		p.releaseLaneAdmission(&qr.clusterModel)
 		return false
 	}
 }
@@ -1312,6 +1349,9 @@ func (p *Pipeline) runModelDrainer(mq *modelQueue) {
 			slog.Debug("dispatch: model dequeue", "model", mq.name, "depth", depth)
 			p.observeQueue(QueueObservation{Kind: QueueModelDepth, Model: mq.name, Depth: depth, Delta: -1, AbsoluteDepth: true})
 			mq.mu.Unlock()
+			// V6-W1.7: the request left the model lane — return the cluster
+			// slot at the same point the local depth is given back.
+			p.releaseLaneAdmission(&qr.clusterModel)
 
 			// V3.1: Record T2 timestamp (model queue dequeue, routing start)
 			qr.SetT2_TotalDequeued()
@@ -1367,6 +1407,13 @@ func (p *Pipeline) complete(qr *QueuedRequest, out ForwardOutcome) {
 	p.registry.MarkCompleted(qr.ID, now)
 	p.queueMirror.ClearRetryAt(qr.ID)
 	p.queueMirror.ClearScheduledAt(qr.ID)
+	// V6-W1.7: due view cleanup + defensive admission sweep. The lane
+	// leave-points normally released the tokens already; take-once makes
+	// this a no-op then (a safety net when a request dies parked in a lane).
+	if p.queueBackend != nil {
+		_ = p.queueBackend.ClearDue(context.WithoutCancel(ctxOf(qr)), qr.ID)
+	}
+	p.releaseAllClusterAdmissions(qr)
 	// v6 G-Ⅳ: terminal transition mutates the membership entries in place;
 	// entries stay in their dimension rings until TTL/capacity evicts them.
 	p.dimensionIndex.Complete(qr, out, now)
@@ -1496,7 +1543,19 @@ func (p *Pipeline) tryEnqueueCred(cred CredentialRef, qr *QueuedRequest) bool {
 		p.observeOverflow("shutdown")
 		return false
 	}
+	// V6-W1.7: cluster lane capacity mirrors the local forwarder bound
+	// (per-cred override wins over config, same as getOrCreateForwarder).
+	laneCap := cred.MaxQueueDepth
+	if laneCap <= 0 {
+		laneCap = p.config().MaxQueueDepth
+	}
+	if !p.reserveLane(ctxOf(qr), LaneCredential, itoa(cred.CredentialID), laneCap, &qr.clusterCred) {
+		metricOverflow.WithLabelValues("cred_queue_full").Inc()
+		p.observeOverflow("cred_queue_full")
+		return false
+	}
 	if !cf.tryReserve() {
+		p.releaseLaneAdmission(&qr.clusterCred)
 		metricOverflow.WithLabelValues("cred_queue_full").Inc()
 		p.observeOverflow("cred_queue_full")
 		return false
@@ -1557,6 +1616,7 @@ func (p *Pipeline) tryEnqueueCred(cred CredentialRef, qr *QueuedRequest) bool {
 		cf.handoffMu.Unlock()
 		qr.journeyMu.Unlock()
 		cf.depth.Add(-1)
+		p.releaseLaneAdmission(&qr.clusterCred)
 		metricOverflow.WithLabelValues("cred_queue_full").Inc()
 		p.observeOverflow("cred_queue_full")
 		return false
