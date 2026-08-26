@@ -15,6 +15,7 @@ import QueueWaterfallTimeline from '../components/QueueWaterfallTimeline.vue'
 import DispatchWaterfallToolbar from '../components/DispatchWaterfallToolbar.vue'
 import DispatchWaterfallStatus from '../components/DispatchWaterfallStatus.vue'
 import DispatchWaterfallDetail from '../components/DispatchWaterfallDetail.vue'
+import { openRequestDetailPage } from '../utils/openRequestDetailPage'
 
 const router = useRouter()
 const loading = ref(false)
@@ -90,7 +91,7 @@ function openFullscreen() {
   if (!id) return
   selected.value = null
   selectedId.value = null
-  void router.push({ name: 'request-detail', params: { requestId: id }, query: { tab: 'waterfall' } })
+  openRequestDetailPage(id, { tab: 'waterfall' }, router)
 }
 
 function startPoll() {

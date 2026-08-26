@@ -7,7 +7,7 @@
 //   - 所有文案走 i18n
 import { ref, computed, onMounted, onUnmounted, inject, type Ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { RouterLink } from 'vue-router'
+import { RouterLink, useRouter } from 'vue-router'
 import { localeRef } from '../i18n'
 import {
   getMaasUsageSummary,
@@ -20,12 +20,12 @@ import {
 import { getCurrentTenantId } from '../store'
 import LiveRequestStream from '../components/LiveRequestStream.vue'
 import LiveRequestStreamV2 from '../components/LiveRequestStreamV2.vue'
-import RequestLogDrawer from '../components/RequestLogDrawer.vue'
 import { useLiveStream } from '../composables/useLiveStream'
-import { useSessionSummaryJump } from '../composables/useSessionSummaryJump'
+import { openRequestDetailPage } from '../utils/openRequestDetailPage'
 import { dashboardPreferenceStorageKey } from '../composables/liveStreamPreferences'
 
 const { t } = useI18n()
+const router = useRouter()
 
 const LEGACY_STORAGE_KEY_DAYS = 'tenant_dashboard_days'
 const VALID_DAYS = [1, 7, 30] as const
@@ -210,22 +210,11 @@ async function showDateDetail(day: string) {
   }
 }
 
-// 实时请求流和抽屉
+// 实时请求流：点击详情新开页
 const { requests: liveRequests } = useLiveStream()
-const activeRequestId = ref<string | null>(null)
 function openRequestDetail(id: string) {
-  activeRequestId.value = id
+  openRequestDetailPage(id, undefined, router)
 }
-function closeRequestDrawer() {
-  activeRequestId.value = null
-}
-
-// 2026-08-06: 详情抽屉的「会话总结」按钮 → 跳到请求日志页并预填会话筛选。
-// 2026-08-06 (later): 重构为 useSessionSummaryJump composable，与其它父视图共享一处
-// 实现；onBeforeJump 钩子用于关闭抽屉。
-const { jumpToSessionSummary: openSessionSummary } = useSessionSummaryJump({
-  onBeforeJump: () => closeRequestDrawer(),
-})
 
 // Tab 控制（与 DashboardViewV2 对齐：stream / stats）
 const LEGACY_STORAGE_KEY_TAB = 'tenant_dashboard_active_tab'
@@ -607,13 +596,6 @@ onUnmounted(() => {
       <RouterLink to="/keys">{{ t('tenants.dashboard.onboardingKeys') }}</RouterLink>
       {{ t('tenants.dashboard.onboardingKeysHint') }}
     </div>
-
-    <!-- 请求详情抽屉 -->
-    <RequestLogDrawer
-      :request-id="activeRequestId"
-      @close="closeRequestDrawer"
-      @generateSessionSummary="openSessionSummary"
-    />
   </div>
 </template>
 
