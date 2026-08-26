@@ -67,7 +67,8 @@ const ts = computed(() => {
   margin-bottom: 8px;
   cursor: pointer;
   transition: background 0.15s;
-  background: white;
+  background: var(--bg-card, var(--card, var(--kx-surface)));
+  color: var(--text, var(--kx-text));
 }
 .turn-row:hover { background: var(--surface-secondary); }
 .turn-row.active { background: var(--info-bg); border-color: var(--accent); }
