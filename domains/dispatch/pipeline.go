@@ -79,8 +79,22 @@ type Pipeline struct {
 	// retryScheduler optionally defers failed re-execution until retry_at.
 	// nil ⇒ immediate failover (legacy behavior).
 	retryScheduler RetryScheduler
+	// dueScheduler (v6 G-Ⅱ, 定时请求) parks requests whose DueAt is in the
+	// future and re-admits them into Tier-0 at the due time. Unlike
+	// retryScheduler it is pipeline-owned: created in Start, closed in Stop.
+	dueScheduler *HeapRetryScheduler
+	// dimensionIndex (v6 G-Ⅳ, 分维队列) tracks request membership per
+	// model/credential/provider dimension. Observation-only — never gates
+	// execution.
+	dimensionIndex *DimensionIndex
 	// queueMirror optionally projects queue state to Redis (observation only).
 	queueMirror *QueueMirror
+	// queueBackend (V6-W1.7) is the optional CLUSTER admission plane (Tier-0
+	// waiting room + lane capacities + due visibility, memory|redis). nil or
+	// the local pass-through keeps the pure in-process behavior; redis adds
+	// a cluster-wide check BEFORE the local primitives (fail-open on Redis
+	// outage). Never moves execution between instances (connection affinity).
+	queueBackend QueueBackend
 	// affinitySink persists successful session routes and invalidates a failed
 	// sticky credential. It is best-effort and never gates execution.
 	affinitySink    SessionAffinitySink
@@ -137,6 +151,7 @@ type Pipeline struct {
 	// value.
 	backendMu       sync.RWMutex
 	governorBackend GovernorBackend
+	policyMu        sync.Mutex
 
 	// snapshotObserver (Stage C.2): optional 100ms tick that walks the
 	// credForwarders map under credMu and emits a GovernorSnapshot per
@@ -167,6 +182,14 @@ type Pipeline struct {
 	// and SnapshotForCred fails open (ok=false).
 	credStateCacheMu sync.RWMutex
 	credStateCache   map[int]SnapshotState
+
+	// pendingGov (Stage F): per-cred Governor produced by ApplyPolicy but
+	// not yet attached to a live credForwarder. Consulted by
+	// getOrCreateForwarder under credMu so that a policy published BEFORE
+	// the first request creates a forwarder uses the spec-derived Governor
+	// instead of the CredentialRef snapshot. Map entry is deleted when the
+	// forwarder claims it.
+	pendingGov map[int]Governor
 }
 
 type observationItem struct {
@@ -265,6 +288,7 @@ func NewPipeline(deps Deps) *Pipeline {
 		forwarders:           make(map[int]*credForwarder),
 		snapshotAgeMS:        make(map[int]int64),
 		credStateCache:       make(map[int]SnapshotState),
+		pendingGov:           make(map[int]Governor),
 		stopCh:               make(chan struct{}),
 	}
 	cfg := DefaultConfig()
@@ -276,8 +300,23 @@ func NewPipeline(deps Deps) *Pipeline {
 	p.registry = NewLifecycleRegistry(cfg.RegistryCapacity, cfg.CompletedWatermark, 0)
 	p.totalQueue = newTotalExecutionQueue(cfg.TotalQueueCapacity)
 	p.registry.SetEvictHook(p.emitRegistryEviction)
+	p.dimensionIndex = NewDimensionIndex(DimensionIndexConfig{
+		TTL:            time.Duration(cfg.DimensionTTLSeconds) * time.Second,
+		PerKeyCapacity: cfg.DimensionCapacity,
+		MaxKeys:        defaultDimensionMaxKeys,
+	})
 	p.cfg.Store(&cfg)
 	return p
+}
+
+// DimensionIndex exposes the per-dimension membership index for admin reads
+// (v6 G-Ⅳ). Nil-safe callers only — the index is always constructed with the
+// pipeline.
+func (p *Pipeline) DimensionIndex() *DimensionIndex {
+	if p == nil {
+		return nil
+	}
+	return p.dimensionIndex
 }
 
 // SetRetryScheduler swaps the optional timed-retry scheduler (before or
@@ -348,15 +387,25 @@ func (p *Pipeline) GovernorBackend() GovernorBackend {
 	return p.governorBackend
 }
 
-// governorForCredential uses Redis enforcement for all configured modes.
-func (p *Pipeline) governorForCredential(cred CredentialRef) Governor {
+// governorForCredential returns the live Governor for a credential.
+//
+// specRevision is the policy revision stamped onto the Redis-backed
+// GovernorSpec. Cold-start (newCredForwarder) passes p.ActiveRevision() so the
+// freshly constructed forwarder carries the currently-active revision;
+// ApplyPolicy passes pol.Revision so a hot-swapped Redis governor is tagged
+// with the revision the publisher will publish, not the previous one. Backend
+// failure is propagated as an ErrGovernorUnavailable-wrapped error so
+// ApplyPolicy can fail-closed (no swap, no revision advance);
+// newCredForwarder wraps this in a fail-open fallback so a transient Redis
+// outage cannot block the very first dispatch to a fresh forwarder.
+func (p *Pipeline) governorForCredential(cred CredentialRef, specRevision uint64) (Governor, error) {
 	backend := p.GovernorBackend()
 	mode := cred.ConcurrencyMode
 	if mode == "" {
 		mode = ModeConcurrency
 	}
 	if backend == nil || backend.Kind() != BackendRedisEnforce {
-		return newGovernor(cred)
+		return newGovernor(cred), nil
 	}
 	limit := cred.ConcurrencyLimit
 	if mode == ModeRPM {
@@ -365,21 +414,21 @@ func (p *Pipeline) governorForCredential(cred CredentialRef) Governor {
 		limit = cred.TPMLimit
 	}
 	if limit <= 0 || mode == ModeDisabled {
-		return newGovernor(cred)
+		return newGovernor(cred), nil
 	}
 
 	gov, err := backend.New(context.Background(), GovernorSpec{
 		CredentialID: cred.CredentialID,
 		ProviderID:   cred.ProviderID,
-		Mode:         ModeConcurrency,
+		Mode:         mode,
 		Limit:        limit,
 		RPMLimit:     cred.RPMLimit,
 		TPMLimit:     cred.TPMLimit,
 		Backend:      BackendRedisEnforce,
-		Revision:     p.ActiveRevision(),
+		Revision:     specRevision,
 	})
 	if err == nil && gov != nil {
-		return gov
+		return gov, nil
 	}
 	if err == nil {
 		err = errors.New("governor backend returned nil governor")
@@ -388,8 +437,9 @@ func (p *Pipeline) governorForCredential(cred CredentialRef) Governor {
 		"credential_id", cred.CredentialID,
 		"provider_id", cred.ProviderID,
 		"backend", backend.Kind(),
+		"revision", specRevision,
 		"error", err)
-	return unavailableGovernor{mode: mode, err: fmt.Errorf("%w: %w", ErrGovernorUnavailable, err)}
+	return nil, fmt.Errorf("%w: %w", ErrGovernorUnavailable, err)
 }
 
 // SetGovernorSnapshotObserver wires the optional C.2 snapshot observer.
@@ -420,11 +470,139 @@ func (p *Pipeline) SetGovernorSnapshotObserver(o *governorSnapshotObserver) {
 // revision. Stage E's policy_publisher calls this after a successful
 // ApplyPolicySnapshot; Stage C.2's observer reads it via
 // Pipeline.ActiveRevision. Safe before/after Start.
+//
+// NOTE: retained as an internal helper for tests / shadow-load
+// scenarios. Production code paths MUST go through Pipeline.ApplyPolicy
+// (Stage F) so that the active revision moves together with the
+// forwarder governor swap and the backend NotifyRevisions round-trip.
 func (p *Pipeline) SetActivePolicyRevision(rev uint64) {
 	if p == nil {
 		return
 	}
 	p.activePolicyRevision.Store(rev)
+}
+
+// ApplyPolicy is the Stage F live-path entry point for a new
+// GovernorPolicy. It is the production implementation behind
+// policy_applier.ApplyPolicySnapshot (policy_applier.go:17): a strictly-
+// monotonic revision stamps the new active policy; each spec rebuilds
+// the per-credential Governor and either swaps it on the live
+// credForwarder or queues it for the first forwarder construction.
+//
+// Backend wiring: when GovernorBackend is BackendRedisEnforce, the
+// backend's NotifyRevisions round-trip MUST succeed before any local
+// swap or revision stamp advance; otherwise the active revision stays
+// put so the next NOTIFY replays the same delta (mirrors the
+// publisher's Stage E fail-closed contract).
+//
+// Mode/limit derivation reuses governorForCredential so the same mode-
+// mapping rules govern cold-start and live-swap. Specs whose
+// CredentialID is not in the credentials table are still parsed; their
+// Governor is built from the spec alone, so a forwarder created later
+// for that ID picks up the spec-derived Governor via pendingGov.
+func (p *Pipeline) ApplyPolicy(ctx context.Context, pol GovernorPolicy) error {
+	if p == nil {
+		return errors.New("dispatch: nil pipeline")
+	}
+	p.policyMu.Lock()
+	defer p.policyMu.Unlock()
+	if pol.Revision == 0 {
+		return errors.New("dispatch: ApplyPolicy revision must be > 0")
+	}
+	current := p.activePolicyRevision.Load()
+	if pol.Revision <= current {
+		// No-op per the ApplyPolicySnapshot contract: same-or-older
+		// revisions mean the upstream publisher replayed a known delta.
+		return nil
+	}
+	backend := p.GovernorBackend()
+
+	// 1. Backend NotifyRevisions FIRST (fail-closed). We need the cluster-
+	// wide pubsub to acknowledge the new revision before any local swap so
+	// that a partial failure does not leave this process out of sync with
+	// its peers.
+	if backend != nil && backend.Kind() == BackendRedisEnforce {
+		if err := backend.NotifyRevisions(ctx, pol.Revision); err != nil {
+			return fmt.Errorf("dispatch: notify backend revision %d: %w", pol.Revision, err)
+		}
+	}
+
+	// 2. Build a credentialID -> Governor map from the new specs. Specs
+	// without a matching live credForwarder are stashed in pendingGov so
+	// getOrCreateForwarder picks them up when the forwarder is finally
+	// constructed for that credential.
+	//
+	// Limit semantics: spec.Limit is mode-dependent (concurrency cap, RPM,
+	// or TPM). The canonical contract is one canonical limit per mode, so
+	// we route it into the corresponding CredentialRef field based on
+	// spec.Mode. When the publisher populates the mirror fields, the max
+	// of canonical-vs-mirror wins because a populated mirror is the
+	// upstream-declared value (e.g. RPM mirrors TPM when publisher has a
+	// richer view).
+	newGovByCredID := make(map[int]Governor, len(pol.Specs))
+	for _, spec := range pol.Specs {
+		cred := specToCredentialRef(spec)
+		gov, err := p.governorForCredential(cred, pol.Revision)
+		if err != nil {
+			// Fail-closed: any backend error leaves activePolicyRevision
+			// pinned and pendingGov untouched. The publisher's retry loop
+			// will replay the same policy delta on the next NOTIFY.
+			return fmt.Errorf("dispatch: build governor for credential %d: %w", spec.CredentialID, err)
+		}
+		newGovByCredID[spec.CredentialID] = gov
+	}
+
+	// 3. Swap on live credForwarders and queue the rest.
+	p.credMu.Lock()
+	for credID, newGov := range newGovByCredID {
+		if cf, ok := p.forwarders[credID]; ok {
+			cf.replaceGov(newGov)
+			continue
+		}
+		p.pendingGov[credID] = newGov
+	}
+	// 4. Stamp the active revision while forwarders remain locked so an
+	// observer cannot pair a new Governor with the old policy revision.
+	p.activePolicyRevision.Store(pol.Revision)
+	p.credMu.Unlock()
+	return nil
+}
+
+// specToCredentialRef derives the CredentialRef for a GovernorSpec.
+//
+// spec.Limit is mode-dependent: the canonical limit for the credential's
+// mode. RPMLimit/TPMLimit on the spec are upstream mirrors — when both are
+// populated we use the max so a richer upstream view wins, matching the
+// pre-Stage-F publisher behavior.
+//
+// This belongs in pipeline.go rather than governor_spec.go because it is
+// part of the policy-application contract, not the backend-call contract.
+func specToCredentialRef(spec GovernorSpec) CredentialRef {
+	cred := CredentialRef{
+		CredentialID:    spec.CredentialID,
+		ProviderID:      spec.ProviderID,
+		ConcurrencyMode: spec.Mode,
+	}
+	switch spec.Mode {
+	case ModeRPM:
+		cred.RPMLimit = spec.Limit
+		if spec.RPMLimit > cred.RPMLimit {
+			cred.RPMLimit = spec.RPMLimit
+		}
+		cred.TPMLimit = spec.TPMLimit
+	case ModeTPM:
+		cred.TPMLimit = spec.Limit
+		if spec.TPMLimit > cred.TPMLimit {
+			cred.TPMLimit = spec.TPMLimit
+		}
+		cred.RPMLimit = spec.RPMLimit
+	default:
+		// ModeConcurrency or ModeDisabled or empty (default concurrency).
+		cred.ConcurrencyLimit = spec.Limit
+		cred.RPMLimit = spec.RPMLimit
+		cred.TPMLimit = spec.TPMLimit
+	}
+	return cred
 }
 
 // ActiveRevision satisfies SnapshotProvider; returns the current
@@ -435,6 +613,8 @@ func (p *Pipeline) ActiveRevision() uint64 {
 	}
 	return p.activePolicyRevision.Load()
 }
+
+var _ ApplyPolicySnapshot = (*Pipeline)(nil)
 
 // SnapshotForCred satisfies SnapshotProvider. Reads from the
 // per-cred cache populated by ForEachCredSnapshot (and consumed by
@@ -550,10 +730,18 @@ func (p *Pipeline) snapshotForCredForwarderLocked(cf *credForwarder) GovernorSna
 	}
 	p.backendMu.RUnlock()
 
+	// Stage F: capture the Governor under govMu.RLock. The caller already
+	// holds credMu, so ordering is credMu -> govMu which matches the
+	// ApplyPolicy path (credMu -> govMu.Lock). Holding RLock for the type-
+	// switch block is fine: the observer tick is the only goroutine that
+	// walks forwarders in this way, and ApplyPolicy holds govMu.Lock for
+	// only the duration of the pointer assignment.
+	gov := cf.govLocked()
+
 	snap := GovernorSnapshot{
 		SpecRevision: p.activePolicyRevision.Load(),
 		Backend:      backendKind,
-		Mode:         cf.gov.Mode(),
+		Mode:         gov.Mode(),
 		Limit:        int(cf.limit),
 		InFlight:     int(cf.depth.Load()),
 		QueueDepth:   int(cf.depth.Load()),
@@ -564,7 +752,7 @@ func (p *Pipeline) snapshotForCredForwarderLocked(cf *credForwarder) GovernorSna
 	}
 	// Pull governor-specific "Used" counters without changing the
 	// Governor interface — type-assert on the four impls.
-	switch g := cf.gov.(type) {
+	switch g := gov.(type) {
 	case *concurrencyGovernor:
 		// Limit must be the concurrency cap (g.cap), NOT the Tier-2 queue
 		// depth (cf.limit, default 300). Comparing used vs queue depth made
@@ -673,6 +861,15 @@ func (p *Pipeline) Start() {
 	p.observationWg.Add(1)
 	go p.runObservations()
 
+	// v6 G-Ⅱ (定时请求): pipeline-owned due scheduler. Parked requests are
+	// parked at Tier-0 drain time and re-admitted via onScheduledDue; Close
+	// completes still-parked requests with ErrShutdown so Submit callers
+	// never block through a shutdown.
+	p.dueScheduler = NewHeapRetrySchedulerWithCloseHandler(
+		p.onScheduledDue,
+		func(qr *QueuedRequest) { p.complete(qr, ForwardOutcome{Err: ErrShutdown}) },
+		nil, nil)
+
 	// Stage C.2: start the optional snapshot observer. Its lifecycle is
 	// independent of the Pipeline's wg — Stop() drains it explicitly so
 	// no in-flight walk races with the credForwarder cancel loop below.
@@ -713,6 +910,12 @@ func (p *Pipeline) Stop() {
 		return
 	}
 	close(p.stopCh)
+	// v6 G-Ⅱ: close the due scheduler BEFORE waiting on workers so parked
+	// scheduled requests complete with ErrShutdown instead of leaking their
+	// Submit callers.
+	if p.dueScheduler != nil {
+		p.dueScheduler.Close()
+	}
 	p.modelMu.Lock()
 	p.models = map[string]*modelQueue{}
 	p.modelMu.Unlock()
@@ -745,6 +948,11 @@ func (p *Pipeline) Stop() {
 	p.observationChMu.Unlock()
 	p.observationWg.Wait()
 	p.queueMirror.Close()
+	// V6-W1.7: stop the cluster admission plane's background work (redis
+	// heartbeat loop) after every worker has drained.
+	if p.queueBackend != nil {
+		_ = p.queueBackend.Close()
+	}
 }
 
 // Submit enqueues a request into the Tier-1 model queue and blocks until the
@@ -771,7 +979,13 @@ func (p *Pipeline) Submit(ctx context.Context, qr *QueuedRequest) (any, error) {
 		p.emitRequestTerminal(qr, ForwardOutcome{Err: ErrShutdown})
 		return nil, ErrShutdown
 	}
-	// Stamp before the FIFO handoff. After totalQueue accepts the request its
+	// v6 G-Ⅱ: bound scheduled requests to maxScheduleAhead so dead client
+	// timers cannot park in the due heap forever.
+	if qr.DueAt.After(time.Now().Add(maxScheduleAhead)) {
+		p.emitRequestTerminal(qr, ForwardOutcome{Err: ErrScheduleTooFar})
+		return nil, ErrScheduleTooFar
+	}
+	// Stamp before the FIFO hand-off. After totalQueue accepts the request its
 	// worker may complete it immediately, so later writes would race metrics.
 	if qr.EnqueuedAt.IsZero() {
 		qr.EnqueuedAt = time.Now()
@@ -780,7 +994,13 @@ func (p *Pipeline) Submit(ctx context.Context, qr *QueuedRequest) (any, error) {
 	// LifecycleRegistry is a projection only. Its admission result must never
 	// reject execution; totalQueue is the sole execution capacity boundary.
 	p.registry.RegisterPending(qr.ID, qr.RequestedModel, time.Now())
-	if !p.totalQueue.tryEnqueue(qr) {
+	p.dimensionIndex.Track(qr, time.Now())
+	// V6-W1.7: cluster admission first, then the local CAS. When the local
+	// bound refuses after the cluster admitted, the compensating release
+	// below returns the token (admit/release symmetry). No backend / local
+	// backend → admitTotal is a free pass-through.
+	if !p.admitTotal(ctx, qr) || !p.totalQueue.tryEnqueue(qr) {
+		p.releaseClusterTotal(qr)
 		metricOverflow.WithLabelValues("total_queue_full").Inc()
 		p.observeOverflow("total_queue_full")
 		overflow := &OverflowError{Reason: "total_queue_full", RetryAfter: DefaultOverflowRetryAfter}
@@ -803,7 +1023,8 @@ func (p *Pipeline) Submit(ctx context.Context, qr *QueuedRequest) (any, error) {
 		if !qr.completed.CompareAndSwap(false, true) {
 			return nil, ctx.Err()
 		}
-		p.totalQueue.release(qr)
+		p.releaseTotal(qr)
+		p.releaseAllClusterAdmissions(qr)
 		p.registry.MarkCompleted(qr.ID, time.Now())
 		return nil, ctx.Err()
 	}
@@ -843,26 +1064,40 @@ func (p *Pipeline) runTotalDrainer() {
 				continue
 			}
 			if p.shutdown.Load() {
-				p.totalQueue.release(qr)
+				p.releaseTotal(qr)
 				p.complete(qr, ForwardOutcome{Err: ErrShutdown})
 				return
 			}
+			// v6 G-Ⅱ (定时请求): a future DueAt parks the request back
+			// into the pending set (due heap) instead of executing it. The
+			// Tier-0 slot is released so scheduled backlog never consumes
+			// the waiting room; the promoter re-admits at the due time.
+			// minScheduleLead: a DueAt inside the lead window executes
+			// immediately — parking must leave enough room to finish the
+			// park-side metadata writes before the picker takes ownership.
+			if qr.DueAt.After(time.Now().Add(minScheduleLead)) {
+				if p.parkScheduledRequest(qr) {
+					p.releaseTotal(qr)
+					continue
+				}
+				// Scheduler unavailable (shutting down) → execute now.
+			}
 			if !p.enqueueModelFromTotal(queueKeyFor(qr.RequestedModel), qr) {
-				p.totalQueue.release(qr)
+				p.releaseTotal(qr)
 				if p.shutdown.Load() {
 					p.complete(qr, ForwardOutcome{Err: ErrShutdown})
 					return
 				}
 				p.complete(qr, ForwardOutcome{Err: ctxOf(qr).Err()})
 			} else {
-				p.totalQueue.release(qr)
+				p.releaseTotal(qr)
 			}
 		case <-p.stopCh:
 			for {
 				select {
 				case qr := <-p.totalQueue.ch:
 					if qr != nil {
-						p.totalQueue.release(qr)
+						p.releaseTotal(qr)
 						p.complete(qr, ForwardOutcome{Err: ErrShutdown})
 					}
 				default:
@@ -886,27 +1121,33 @@ func (p *Pipeline) enqueueModelFromTotal(name string, qr *QueuedRequest) bool {
 		if p.shutdown.Load() || ctxOf(qr).Err() != nil {
 			return false
 		}
-		mq.mu.Lock()
-		depth := mq.depth.Add(1)
-		metricModelQueueDepth.WithLabelValues().Inc()
-		select {
-		case mq.ch <- qr:
-			p.observeQueue(QueueObservation{Kind: QueueModelDepth, Model: name, Depth: depth, Delta: 1, AbsoluteDepth: true})
-			p.liveActions.Emit(ctxOf(qr), liveactions.ActionEvent{
-				RequestID: qr.ID,
-				Action:    liveactions.ActionModelEnqueued,
-				Model:     name,
-				Detail: map[string]string{
-					"queue_depth": strconv.FormatInt(mq.depth.Load(), 10),
-				},
-			})
-			qr.emitObservation(Observation{Type: ObservationModelEnqueued, Stage: StageModelQueue, Model: name, ResolvedModel: qr.ResolvedModel})
-			mq.mu.Unlock()
-			return true
-		default:
-			mq.depth.Add(-1)
-			metricModelQueueDepth.WithLabelValues().Dec()
-			mq.mu.Unlock()
+		// V6-W1.7: cluster lane slot, reserved per attempt; released again
+		// when the local lane cannot take the request (backpressure loop).
+		// No backend / local → free pass-through.
+		if p.reserveLane(ctxOf(qr), LaneModel, name, p.config().MaxQueueDepth, &qr.clusterModel) {
+			mq.mu.Lock()
+			depth := mq.depth.Add(1)
+			metricModelQueueDepth.WithLabelValues().Inc()
+			select {
+			case mq.ch <- qr:
+				p.observeQueue(QueueObservation{Kind: QueueModelDepth, Model: name, Depth: depth, Delta: 1, AbsoluteDepth: true})
+				p.liveActions.Emit(ctxOf(qr), liveactions.ActionEvent{
+					RequestID: qr.ID,
+					Action:    liveactions.ActionModelEnqueued,
+					Model:     name,
+					Detail: map[string]string{
+						"queue_depth": strconv.FormatInt(mq.depth.Load(), 10),
+					},
+				})
+				qr.emitObservation(Observation{Type: ObservationModelEnqueued, Stage: StageModelQueue, Model: name, ResolvedModel: qr.ResolvedModel})
+				mq.mu.Unlock()
+				return true
+			default:
+				mq.depth.Add(-1)
+				metricModelQueueDepth.WithLabelValues().Dec()
+				mq.mu.Unlock()
+				p.releaseLaneAdmission(&qr.clusterModel)
+			}
 		}
 		select {
 		case <-p.stopCh:
@@ -918,12 +1159,107 @@ func (p *Pipeline) enqueueModelFromTotal(name string, qr *QueuedRequest) bool {
 	}
 }
 
+// minScheduleLead is the minimum remaining time before DueAt for the drainer
+// to park a scheduled request. Inside the window the request executes
+// immediately: Schedule() hands ownership to the picker goroutine, so all
+// park-side writes must complete strictly before the picker can fire.
+const minScheduleLead = 100 * time.Millisecond
+
+// parkScheduledRequest parks a not-yet-due scheduled request in the due heap
+// (v6 G-Ⅱ). All metadata is written BEFORE Schedule — Schedule is the
+// ownership handoff to the picker goroutine, after which this goroutine must
+// not touch qr. Returns false when the scheduler refused (shutting down);
+// the caller then treats the request as immediate (the acceptance notice may
+// already have been sent — harmless: the request simply runs right away).
+func (p *Pipeline) parkScheduledRequest(qr *QueuedRequest) bool {
+	if p == nil || p.dueScheduler == nil || ctxOf(qr).Err() != nil {
+		return false
+	}
+	dueAt := qr.DueAt
+	now := time.Now()
+	at := dueAt
+	qr.emitObservation(Observation{
+		Type:          ObservationRetryScheduled,
+		Stage:         StageRetrying,
+		Model:         qr.RequestedModel,
+		ResolvedModel: qr.ResolvedModel,
+		RetryReason:   "scheduled_wait",
+		RetryAt:       &at,
+	})
+	p.registry.MarkRetryScheduled(qr.ID, dueAt)
+	p.queueMirror.MirrorRetryAt(qr.ID, dueAt)
+	// v6 G-Ⅱ: dedicated scheduled key so the Redis-side pending set
+	// distinguishes 定时停靠 from failure backoff (observation-only).
+	p.queueMirror.MirrorScheduledAt(qr.ID, dueAt)
+	// V6-W1.7: cluster due view (observation-only; pickup stays local).
+	if p.queueBackend != nil {
+		_ = p.queueBackend.ParkDue(context.WithoutCancel(ctxOf(qr)), qr.ID, dueAt)
+	}
+	qr.recordDecision(JournalEntry{
+		Model:   qr.ResolvedModel,
+		Action:  NextActionScheduledWait,
+		Attempt: qr.AttemptCount,
+		At:      now,
+	})
+	p.dimensionIndex.UpdateWait(qr, dueAt, NextActionScheduledWait, now)
+	metricScheduledParked.Inc()
+	qr.notifyDispatch(DispatchNotice{
+		Kind:     NoticeKindScheduled,
+		Message:  scheduledAcceptedMessage(dueAt),
+		RetryAt:  dueAt,
+		WaitHint: waitHint(dueAt.Sub(now)),
+		ToModel:  qr.RequestedModel,
+		Attempt:  qr.AttemptCount,
+	})
+	return p.dueScheduler.Schedule(qr, dueAt)
+}
+
+// onScheduledDue is the due-scheduler pickup: the parked request re-enters
+// Tier-0 admission at (or just after) its DueAt.
+func (p *Pipeline) onScheduledDue(qr *QueuedRequest, dueAt time.Time) {
+	if qr == nil || qr.completed.Load() {
+		return // already terminal (client cancel raced the timer)
+	}
+	if p.shutdown.Load() {
+		p.complete(qr, ForwardOutcome{Err: ErrShutdown})
+		return
+	}
+	if ctxOf(qr).Err() != nil {
+		p.complete(qr, ForwardOutcome{Err: ctxOf(qr).Err()})
+		return
+	}
+	now := time.Now()
+	p.registry.MarkInFlight(qr.ID, now)
+	p.queueMirror.ClearRetryAt(qr.ID)
+	p.queueMirror.ClearScheduledAt(qr.ID)
+	if p.queueBackend != nil {
+		_ = p.queueBackend.ClearDue(context.WithoutCancel(ctxOf(qr)), qr.ID)
+	}
+	metricScheduledDue.Inc()
+	qr.notifyDispatch(DispatchNotice{
+		Kind:    NoticeKindScheduled,
+		Message: "定时请求到期，开始执行",
+		RetryAt: dueAt,
+	})
+	if !p.admitTotal(ctxOf(qr), qr) || !p.totalQueue.tryEnqueue(qr) {
+		p.releaseClusterTotal(qr)
+		metricOverflow.WithLabelValues("total_queue_full_on_due").Inc()
+		p.observeOverflow("total_queue_full_on_due")
+		p.complete(qr, ForwardOutcome{Err: &OverflowError{Reason: "total_queue_full_on_due", RetryAfter: DefaultOverflowRetryAfter}})
+	}
+}
+
 // enqueueModel pushes qr into the named model queue, creating it (and its
 // drainer goroutine) on first use. Returns false if the model queue is full
 // (overflow) or the pipeline is shutting down (admission refused).
 func (p *Pipeline) enqueueModel(name string, qr *QueuedRequest) bool {
 	mq := p.getOrCreateModelQueue(name)
 	if mq == nil {
+		return false
+	}
+	// V6-W1.7: cluster lane slot before the local channel; released again
+	// when the local lane refuses (caller follows the existing full path).
+	if !p.reserveLane(ctxOf(qr), LaneModel, name, p.config().MaxQueueDepth, &qr.clusterModel) {
 		return false
 	}
 	resolvedModel := qr.ResolvedModel
@@ -963,6 +1299,7 @@ func (p *Pipeline) enqueueModel(name string, qr *QueuedRequest) bool {
 		metricModelQueueDepth.WithLabelValues().Dec()
 		mq.mu.Unlock()
 		qr.journeyMu.Unlock()
+		p.releaseLaneAdmission(&qr.clusterModel)
 		return false
 	}
 }
@@ -1012,6 +1349,9 @@ func (p *Pipeline) runModelDrainer(mq *modelQueue) {
 			slog.Debug("dispatch: model dequeue", "model", mq.name, "depth", depth)
 			p.observeQueue(QueueObservation{Kind: QueueModelDepth, Model: mq.name, Depth: depth, Delta: -1, AbsoluteDepth: true})
 			mq.mu.Unlock()
+			// V6-W1.7: the request left the model lane — return the cluster
+			// slot at the same point the local depth is given back.
+			p.releaseLaneAdmission(&qr.clusterModel)
 
 			// V3.1: Record T2 timestamp (model queue dequeue, routing start)
 			qr.SetT2_TotalDequeued()
@@ -1044,11 +1384,39 @@ func (p *Pipeline) complete(qr *QueuedRequest, out ForwardOutcome) {
 	if !qr.completed.CompareAndSwap(false, true) {
 		return
 	}
+	// V6-W1.6 R9: the terminal journal entry rides inside the completion CAS
+	// so it is written exactly once and no entry can follow it (invariant 3).
+	// Written before Complete() so the dimension snapshots see the full trace.
+	terminalKind := out.ErrorKind
+	if terminalKind == "" && out.Err != nil {
+		terminalKind = classifyError(out.Err)
+	}
+	qr.recordDecision(JournalEntry{
+		Model:        qr.ResolvedModel,
+		CredentialID: qr.SelectedCred.CredentialID,
+		ProviderID:   qr.SelectedCred.ProviderID,
+		Vendor:       qr.SelectedCred.Vendor,
+		Action:       terminalActionOf(out),
+		ErrorKind:    terminalKind,
+		HTTPStatus:   out.HTTPStatus,
+		Attempt:      qr.AttemptCount,
+	})
 	// V4 R1.1: registry terminal transition (completed; kept until the
 	// R1.8 watermark evicts it). Bookkeeping bypass — never gates delivery.
 	now := time.Now()
 	p.registry.MarkCompleted(qr.ID, now)
 	p.queueMirror.ClearRetryAt(qr.ID)
+	p.queueMirror.ClearScheduledAt(qr.ID)
+	// V6-W1.7: due view cleanup + defensive admission sweep. The lane
+	// leave-points normally released the tokens already; take-once makes
+	// this a no-op then (a safety net when a request dies parked in a lane).
+	if p.queueBackend != nil {
+		_ = p.queueBackend.ClearDue(context.WithoutCancel(ctxOf(qr)), qr.ID)
+	}
+	p.releaseAllClusterAdmissions(qr)
+	// v6 G-Ⅳ: terminal transition mutates the membership entries in place;
+	// entries stay in their dimension rings until TTL/capacity evicts them.
+	p.dimensionIndex.Complete(qr, out, now)
 
 	// V3.1: Record T9 timestamp (response end - stream completed)
 	qr.SetT9_ResponseEnd()
@@ -1175,7 +1543,19 @@ func (p *Pipeline) tryEnqueueCred(cred CredentialRef, qr *QueuedRequest) bool {
 		p.observeOverflow("shutdown")
 		return false
 	}
+	// V6-W1.7: cluster lane capacity mirrors the local forwarder bound
+	// (per-cred override wins over config, same as getOrCreateForwarder).
+	laneCap := cred.MaxQueueDepth
+	if laneCap <= 0 {
+		laneCap = p.config().MaxQueueDepth
+	}
+	if !p.reserveLane(ctxOf(qr), LaneCredential, itoa(cred.CredentialID), laneCap, &qr.clusterCred) {
+		metricOverflow.WithLabelValues("cred_queue_full").Inc()
+		p.observeOverflow("cred_queue_full")
+		return false
+	}
 	if !cf.tryReserve() {
+		p.releaseLaneAdmission(&qr.clusterCred)
 		metricOverflow.WithLabelValues("cred_queue_full").Inc()
 		p.observeOverflow("cred_queue_full")
 		return false
@@ -1194,6 +1574,12 @@ func (p *Pipeline) tryEnqueueCred(cred CredentialRef, qr *QueuedRequest) bool {
 	// same bug class as the T5 ordering above (caught by go test -race,
 	// TestModelChange).
 	reqID, model, emitCtx := qr.ID, qr.ResolvedModel, ctxOf(qr)
+
+	// v6 G-Ⅳ: register membership under credential/provider dimensions while
+	// this goroutine still owns qr. If the send below hits a full lane, the
+	// entry is corrected by the next event (capacity-wait / next MarkNode /
+	// terminal) — the index is event-sourced, never an execution gate.
+	p.dimensionIndex.MarkNode(qr, cred, time.Now())
 
 	qr.journeyMu.Lock()
 	cf.handoffMu.Lock()
@@ -1230,6 +1616,7 @@ func (p *Pipeline) tryEnqueueCred(cred CredentialRef, qr *QueuedRequest) bool {
 		cf.handoffMu.Unlock()
 		qr.journeyMu.Unlock()
 		cf.depth.Add(-1)
+		p.releaseLaneAdmission(&qr.clusterCred)
 		metricOverflow.WithLabelValues("cred_queue_full").Inc()
 		p.observeOverflow("cred_queue_full")
 		return false
@@ -1255,6 +1642,13 @@ func (p *Pipeline) getOrCreateForwarder(cred CredentialRef) *credForwarder {
 		depth = p.config().MaxQueueDepth
 	}
 	cf := newCredForwarder(cred, depth, p)
+	// Stage F: prefer the spec-derived Governor queued by an earlier
+	// ApplyPolicy over the CredentialRef snapshot. Fall back to the
+	// ref-derived Governor when no spec has been published yet.
+	if cached, ok := p.pendingGov[cred.CredentialID]; ok && cached != nil {
+		cf.replaceGov(cached)
+		delete(p.pendingGov, cred.CredentialID)
+	}
 	p.forwarders[cred.CredentialID] = cf
 	return cf
 }

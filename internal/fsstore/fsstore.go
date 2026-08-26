@@ -141,16 +141,20 @@ func (s *Store) Close() error {
 	if s == nil {
 		return nil
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	var firstErr error
 	if s.entsIdx != nil {
 		if err := s.entsIdx.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
+		s.entsIdx = nil
 	}
 	if s.reqIdx != nil {
 		if err := s.reqIdx.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
+		s.reqIdx = nil
 	}
 	return firstErr
 }
@@ -330,7 +334,10 @@ func (s *Store) GetRequest(id string) (*RequestRecord, error) {
 		return nil, errors.New("fsstore: empty id")
 	}
 
-	req := bleve.NewSearchRequest(bleve.NewTermQuery(id))
+	// Query by document ID (_id): a bare TermQuery would hit the `_all`
+	// composite field and never match the bleve document id. DocIDQuery is
+	// the exact-match lookup path.
+	req := bleve.NewSearchRequest(bleve.NewDocIDQuery([]string{id}))
 	req.Fields = []string{"started_at"}
 	res, err := s.reqIdx.Search(req)
 	if err != nil {
@@ -343,12 +350,20 @@ func (s *Store) GetRequest(id string) (*RequestRecord, error) {
 	// We pick the newest by Sort if available, otherwise the first.
 	hit := res.Hits[0]
 	dateStr := ""
-	if v, ok := hit.Fields["started_at"].(string); ok {
-		dateStr = v
+	if v, ok := hit.Fields["started_at"].(string); ok && len(v) >= 10 {
+		dateStr = v[:10] // YYYY-MM-DD
 	}
-	dateStr = dateStr[:10] // YYYY-MM-DD
+	if dateStr == "" {
+		return nil, fmt.Errorf("fsstore: hit %s missing started_at", hit.ID)
+	}
+	// datePath uses "YYYY/MM/DD" but the indexed started_at comes back as
+	// RFC3339 ("YYYY-MM-DD..."), so convert to the on-disk shard format.
+	dateDir := dateStr
+	if len(dateDir) == 10 {
+		dateDir = dateDir[:4] + "/" + dateDir[5:7] + "/" + dateDir[8:10]
+	}
 
-	path := filepath.Join(s.cfg.Root, "requests", dateStr, id+".json")
+	path := filepath.Join(s.cfg.Root, "requests", dateDir, id+".json")
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -367,7 +382,12 @@ func (s *Store) ListRequestsInDay(date string) ([]string, error) {
 	if s == nil {
 		return nil, errors.New("fsstore: nil store")
 	}
-	dir := filepath.Join(s.cfg.Root, "requests", date)
+	// On-disk shards use "YYYY/MM/DD"; callers pass "YYYY-MM-DD".
+	dateDir := date
+	if len(dateDir) == 10 && strings.Count(dateDir, "-") == 2 {
+		dateDir = dateDir[:4] + "/" + dateDir[5:7] + "/" + dateDir[8:10]
+	}
+	dir := filepath.Join(s.cfg.Root, "requests", dateDir)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err

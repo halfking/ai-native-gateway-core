@@ -1,6 +1,7 @@
 package dispatch
 
 import (
+	"fmt"
 	"log/slog"
 	"strconv"
 	"time"
@@ -31,7 +32,7 @@ func (p *Pipeline) runFailover() {
 	}
 }
 
-// move implements the failover ladder:
+// move implements the failover ladder (decisions in planner.go, V6-W1.6 R11):
 //  1. same-credential retry while under the request retry budget (deferred
 //     until retry_at when a RetryScheduler is wired, v4 T3-8);
 //  2. switch to another available credential under the same provider/model;
@@ -48,19 +49,30 @@ func (p *Pipeline) runFailover() {
 // (UT-FO-05).
 func (p *Pipeline) move(qr *QueuedRequest, out ForwardOutcome) {
 	err := out.Err
-	fatalCredential := out.FatalCredential
-	// (1) Same-credential retry — skipped for credential-fatal errors.
-	// Retrying a quota-exhausted / auth-revoked credential deterministically
-	// re-yields the same upstream rejection, wasting a concurrency slot and
-	// delaying the switch to a healthy sibling. Mirrors the legacy executor
-	// loop's errorsx.IsCredentialFatal → continue path (executor.go:3510).
-	if !fatalCredential && qr.CredRetryCount < p.retryBudget(qr) {
-		if qr.AttemptCount >= maxAttempts {
-			p.terminateOnAttemptCap(qr, out)
-			return
-		}
+	// (1) Same-credential retry — planner decision: skipped for
+	// credential-fatal errors (retrying a quota-exhausted / auth-revoked
+	// credential deterministically re-yields the same upstream rejection,
+	// wasting a concurrency slot and delaying the switch to a healthy
+	// sibling; mirrors the legacy executor loop's errorsx.IsCredentialFatal
+	// → continue path, executor.go:3510).
+	switch d := PlanAfterFailure(qr, out, p.config()); d.Action {
+	case NextActionRetrySameCred:
 		qr.CredRetryCount++
 		metricFailover.WithLabelValues("cred_retry").Inc()
+		// v6 G-Ⅴ (回队打标) + W1.6 R9 (执行轨迹): journal the previous
+		// round's error kind, the model/node that failed, and the decided
+		// next action before the request parks back into the pending set.
+		// recordDecision refreshes LastFailover as the journal-tail projection.
+		qr.recordDecision(JournalEntry{
+			Model:        qr.ResolvedModel,
+			CredentialID: qr.SelectedCred.CredentialID,
+			ProviderID:   qr.SelectedCred.ProviderID,
+			Vendor:       qr.SelectedCred.Vendor,
+			Action:       NextActionRetrySameCred,
+			ErrorKind:    firstNonEmpty(out.ErrorKind, classifyError(err)),
+			HTTPStatus:   out.HTTPStatus,
+			Attempt:      qr.AttemptCount,
+		})
 		if qr.OnNodeSwitchSummary != nil {
 			qr.OnNodeSwitchSummary(failoverSummary(out.ErrorKind, out.HTTPStatus, "retry"))
 		}
@@ -71,22 +83,41 @@ func (p *Pipeline) move(qr *QueuedRequest, out ForwardOutcome) {
 			return
 		}
 		// Re-enqueue failed (queue full) → fall through to credential switch.
+	case NextActionFailed:
+		// R12 attempt_cap: the planner refused the continuation.
+		p.terminateOnAttemptCap(qr, out)
+		return
 	}
 
 	// (2/3) Switch credential under the current model, honoring provider scope.
-	qr.markTriedCredential(qr.SelectedCred.CredentialID)
-	p.invalidateSessionAffinity(qr, qr.SelectedCred.CredentialID)
+	fromCredID := qr.SelectedCred.CredentialID
+	qr.markTriedCredential(fromCredID)
+	p.invalidateSessionAffinity(qr, fromCredID)
 	qr.CredRetryCount = 0
+	// v6 G-Ⅴ + W1.6 R9: the credential-exhaustion round is journaled before
+	// hunting for the sibling so the tail always reflects the LAST executed node.
+	qr.recordDecision(JournalEntry{
+		Model:        qr.ResolvedModel,
+		CredentialID: fromCredID,
+		ProviderID:   qr.SelectedCred.ProviderID,
+		Vendor:       qr.SelectedCred.Vendor,
+		Action:       NextActionSwitchCred,
+		ErrorKind:    firstNonEmpty(out.ErrorKind, classifyError(err)),
+		HTTPStatus:   out.HTTPStatus,
+		Attempt:      qr.AttemptCount,
+	})
 	refs, _ := p.routeFunc(ctxOf(qr), qr)
-	for _, ref := range refs {
-		if qr.hasTriedCredential(ref.CredentialID) {
-			continue
+	for {
+		next, scoped := PlanSwitchCred(qr, refs)
+		for _, id := range scoped {
+			qr.markTriedCredential(id)
 		}
-		if !p.providerSwitchAllowed(qr, ref.ProviderID) {
-			qr.markTriedCredential(ref.CredentialID)
-			continue
+		if next == nil {
+			break
 		}
-		if qr.AttemptCount >= maxAttempts {
+		ref := *next
+		// Continuation step: the attempt budget guards it (R12).
+		if AttemptBudgetLeft(qr) <= 0 {
 			p.terminateOnAttemptCap(qr, out)
 			return
 		}
@@ -94,6 +125,19 @@ func (p *Pipeline) move(qr *QueuedRequest, out ForwardOutcome) {
 		fromModel := qr.ResolvedModel
 		p.selectCredential(qr, ref)
 		metricFailover.WithLabelValues("cred_switch").Inc()
+		// Prepare the switch notice while this goroutine still owns qr; it
+		// is delivered only after the enqueue succeeds (see below).
+		switchNotice := qr.prepareNotice(DispatchNotice{
+			Kind:             NoticeKindNodeSwitch,
+			Message:          failoverSummary(out.ErrorKind, out.HTTPStatus, "switch"),
+			ErrorKind:        firstNonEmpty(out.ErrorKind, classifyError(err)),
+			FromCredentialID: fromCred,
+			ToCredentialID:   ref.CredentialID,
+			FromModel:        fromModel,
+			ToModel:          qr.ResolvedModel,
+			Vendor:           ref.Vendor,
+			Attempt:          qr.AttemptCount,
+		})
 		// V3.3-OBS OBS-B1 (2026-08-15): node_switch 动作事件（跨凭据切换）。
 		p.emitNodeSwitch(qr, fromCred, ref.CredentialID, "cred_switch", false, 0)
 		qr.emitObservation(Observation{
@@ -113,6 +157,12 @@ func (p *Pipeline) move(qr *QueuedRequest, out ForwardOutcome) {
 			if qr.OnNodeSwitchSummary != nil {
 				qr.OnNodeSwitchSummary(failoverSummary(out.ErrorKind, out.HTTPStatus, "switch"))
 			}
+			// v6 G-Ⅲ: route-switch notice rides the thinking channel so the
+			// client sees the failover without it entering the conversation.
+			// The notice was prepared (seq-stamped) BEFORE the Tier-2 handoff
+			// so this goroutine no longer reads mutable qr state after the
+			// forwarder took ownership.
+			qr.deliverNotice(switchNotice)
 			return
 		}
 		qr.markTriedCredential(ref.CredentialID)
@@ -166,6 +216,7 @@ func (p *Pipeline) scheduleSameCredRetry(qr *QueuedRequest, out ForwardOutcome, 
 		Attempt:       qr.lastAttemptRef(),
 		RetryReason:   firstNonEmpty(out.ErrorKind, classifyError(err)),
 	}
+	errorKind := observation.RetryReason
 	if p.retryScheduler != nil && ctxOf(qr).Err() == nil {
 		// Timed retry: registry parks back to pending with retry_at
 		// (spec §6), the event carries retry_at, and the scheduler re-injects
@@ -177,14 +228,41 @@ func (p *Pipeline) scheduleSameCredRetry(qr *QueuedRequest, out ForwardOutcome, 
 		p.registry.MarkRetryScheduled(qr.ID, retryAt)
 		p.queueMirror.MirrorRetryAt(qr.ID, retryAt)
 		if p.retryScheduler.Schedule(qr, retryAt) {
+			// v6 G-Ⅲ/G-Ⅴ: waiting notice + pending projection.
+			p.dimensionIndex.UpdateWait(qr, retryAt, NextActionRetrySameCred, time.Now())
+			qr.notifyDispatch(p.retryNotice(qr, out, err, retryAt, errorKind))
 			return true
 		}
 		// Scheduler refused (closed) → fall back to the immediate enqueue
 		// without re-emitting the event above.
+		qr.notifyDispatch(p.retryNotice(qr, out, err, time.Time{}, errorKind))
 		return p.tryEnqueueCred(qr.SelectedCred, qr)
 	}
 	qr.emitObservation(observation)
+	qr.notifyDispatch(p.retryNotice(qr, out, err, time.Time{}, errorKind))
 	return p.tryEnqueueCred(qr.SelectedCred, qr)
+}
+
+// retryNotice builds the same-credential retry notice (v6 G-Ⅲ).
+func (p *Pipeline) retryNotice(qr *QueuedRequest, out ForwardOutcome, err error, retryAt time.Time, errorKind string) DispatchNotice {
+	notice := DispatchNotice{
+		Kind:             NoticeKindRetry,
+		Message:          failoverSummary(out.ErrorKind, out.HTTPStatus, "retry"),
+		ErrorKind:        errorKind,
+		FromCredentialID: qr.SelectedCred.CredentialID,
+		ToCredentialID:   qr.SelectedCred.CredentialID,
+		FromModel:        qr.ResolvedModel,
+		ToModel:          qr.ResolvedModel,
+		Vendor:           qr.SelectedCred.Vendor,
+		Attempt:          qr.CredRetryCount,
+	}
+	if !retryAt.IsZero() {
+		notice.RetryAt = retryAt
+		notice.WaitHint = waitHint(time.Until(retryAt))
+		notice.Message = fmt.Sprintf("%s（等待 %s 后第 %d 次重试）",
+			notice.Message, notice.WaitHint, qr.CredRetryCount)
+	}
+	return notice
 }
 
 // onRetryDue is the RetryScheduler pickup: the parked request re-enters
@@ -219,45 +297,20 @@ func (p *Pipeline) onRetryDue(qr *QueuedRequest, retryAt time.Time) {
 
 // terminateOnAttemptCap is the global safety net: cap total forward attempts
 // so a request can never churn an unbounded candidate set. The terminal
-// error reuses the aggregate exhaustion envelope (ADR-Disp-006 mapping) so
-// the client still receives the tried-combination summary.
+// outcome is built by the planner (attemptCapOutcome, R12): the aggregate
+// exhaustion envelope (ADR-Disp-006 mapping) stamped with the attempt_cap
+// reason so the journal terminal entry reads failed(attempt_cap).
 func (p *Pipeline) terminateOnAttemptCap(qr *QueuedRequest, out ForwardOutcome) {
 	metricOverflow.WithLabelValues("attempt_cap").Inc()
 	p.observeOverflow("attempt_cap")
 	slog.Warn("dispatch: attempt cap reached, giving up",
 		"request_id", qr.ID, "attempts", qr.AttemptCount,
 		"tried_creds", len(qr.TriedCredentials))
-	out.Err = p.exhaustedTerminal(qr, terminalErr(out.Err))
-	p.complete(qr, out)
-}
-
-// exhaustedTerminal wraps a terminal cause with the aggregate combination
-// summary (R2.4/UT-FO-05). Never-routed requests (zero attempts) keep the
-// plain sentinel — ErrNoRoute stays distinguishable for the 503 mapping.
-// The wrapper delegates Error()/Unwrap() to the cause so existing callers
-// that pin the concrete upstream error keep working.
-func (p *Pipeline) exhaustedTerminal(qr *QueuedRequest, cause error) error {
-	if qr == nil || qr.AttemptCount == 0 {
-		return cause
-	}
-	return &ExhaustedError{Cause: cause, Attempts: qr.exhaustionAttempts()}
+	p.complete(qr, attemptCapOutcome(qr, out))
 }
 
 func (p *Pipeline) retryBudget(qr *QueuedRequest) int {
-	if qr != nil && qr.RetryPerCredential >= 0 {
-		return qr.RetryPerCredential
-	}
-	return p.config().RetryPerCredential
-}
-
-func (p *Pipeline) providerSwitchAllowed(qr *QueuedRequest, providerID int) bool {
-	if qr == nil || qr.InitialProviderID == 0 || providerID == 0 {
-		return true
-	}
-	if providerID == qr.InitialProviderID {
-		return true
-	}
-	return qr.AllowProviderChange
+	return retryBudgetOf(qr, p.config())
 }
 
 func terminalErr(err error) error {

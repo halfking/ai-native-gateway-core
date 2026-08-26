@@ -7,6 +7,7 @@ import {
 } from '../api/credential-monitor'
 import type { LiveNodeStatus } from '../composables/liveStreamStore'
 import { useSessionSummaryJump } from '../composables/useSessionSummaryJump'
+import { openRequestDetailPage } from '../utils/openRequestDetailPage'
 
 type PingResult = { status: string; latency_ms: number; tested_at: string; error?: string }
 
@@ -42,7 +43,8 @@ export function useNodeDetailDrawerActions(opts: {
 
   function openRequestDetail(rid: string | undefined) {
     if (!rid) return
-    detailRequestId.value = rid
+    openRequestDetailPage(rid)
+    detailRequestId.value = null
   }
   function closeRequestDetail() { detailRequestId.value = null }
 
