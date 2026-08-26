@@ -11,17 +11,15 @@ import (
 )
 
 // TestSessionExportAPI_HandleExport_NoData 验证无数据时返回 404
-func TestSessionExportAPI_HandleExport_NoData(t *testing.T) {
+// Phase 0 P0-1 (674058ad2): auth/tenant 校验先于 db 可用性检查 —— 无 auth
+// 请求必须拿到 401 而不是泄漏 "数据库未配置" 的 503。
+func TestSessionExportAPI_AuthPrecedesDBCheck(t *testing.T) {
 	api := &SessionExportAPI{db: nil}
-	// db=nil should produce Service Unavailable early
-	// NOTE: ServeHTTP is auth-first (Phase 0 P0-1), so the request carries a
-	// super_admin context to reach the db availability check.
 	req := httptest.NewRequest(http.MethodGet, "/api/admin/session-export?id=gw_x", nil)
-	req = SetAuthContext(req, &AuthContext{Role: "super_admin", TenantID: "default"})
 	w := httptest.NewRecorder()
 	api.ServeHTTP(w, req)
-	if w.Code != http.StatusServiceUnavailable {
-		t.Errorf("expected 503, got %d", w.Code)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 (auth precedes db check), got %d", w.Code)
 	}
 }
 
@@ -52,10 +50,10 @@ func TestSessionExport_Aliases(t *testing.T) {
 	}
 }
 
-// TestSessionExport_DBRequired 各端点有 db=nil 时返 503。
+// TestSessionExport_DBRequired 各端点在通过 P0-1 auth 边界后 db=nil 返 503。
 //
-// 这是迁移后的新行为：db 必须先注入，否则拒绝服务（避免 nil deref）。
-// 真实生产环境 admin.NewSessionExportAPI 在 main.go 启动时统一注入。
+// Phase 0 P0-1 之后 auth 先于 db 检查，因此到达 503 需要注入 super_admin
+// 上下文；真实生产环境 admin.NewSessionExportAPI 在 main.go 启动时统一注入。
 func TestSessionExport_DBRequired(t *testing.T) {
 	api := &SessionExportAPI{db: nil}
 	cases := []struct {
@@ -78,9 +76,7 @@ func TestSessionExport_DBRequired(t *testing.T) {
 			} else {
 				req = httptest.NewRequest(tc.method, tc.path, nil)
 			}
-			// ServeHTTP is auth-first (Phase 0 P0-1): inject a super_admin
-			// context so the assertion exercises the db=nil → 503 guard.
-			req = SetAuthContext(req, &AuthContext{Role: "super_admin", TenantID: "default"})
+			req = SetAuthContext(req, &AuthContext{Role: "super_admin", TenantID: "acme"})
 			w := httptest.NewRecorder()
 			api.ServeHTTP(w, req)
 			if w.Code != tc.wantStatus {
