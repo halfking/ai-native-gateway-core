@@ -117,17 +117,13 @@ func (h *QuotaRechargedHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// 1. Read one byte beyond the limit so oversized bodies are rejected
-	// instead of being silently truncated before signature verification.
+	// 1. Read one byte beyond the limit. Signature verification intentionally
+	// runs against the bounded payload first so oversized requests with a
+	// signature for the original body are rejected as unauthorized.
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxQuotaRechargedBodyBytes+1))
 	if err != nil {
 		h.reject("body_read_error")
 		http.Error(w, "read request body", http.StatusBadRequest)
-		return
-	}
-	if len(body) > maxQuotaRechargedBodyBytes {
-		h.reject("body_too_large")
-		http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
 		return
 	}
 
@@ -145,6 +141,11 @@ func (h *QuotaRechargedHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 			"remote", r.RemoteAddr,
 			"path", r.URL.Path)
 		http.Error(w, "invalid signature", http.StatusUnauthorized)
+		return
+	}
+	if len(body) > maxQuotaRechargedBodyBytes {
+		h.reject("body_too_large")
+		http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
 		return
 	}
 
