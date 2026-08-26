@@ -50,6 +50,14 @@ type BalanceQuotaProbe struct {
 	// from cmd/gateway/main.go after both workers are constructed.
 	probeNowAsync func(credID int)
 
+	// 2026-08-26 hzx-2 / 充值回调 webhook (落点 B):
+	//
+	// 由 cmd/gateway/webhooks.QuotaRechargedHandler 注入，HMAC 验签通过后
+	// 异步调用 OnQuotaRecharged(credID, source)，把"用户已充值"信号从
+	// 2 分钟 tick 提到秒级。回调内部走 credProbeV2.SubmitFastProbe /
+	// ProbeNowAsync 两条路径，与 admin ForceProbe 复用同一套调度链。
+	onQuotaRecharged func(credID int, source string)
+
 	// forceCooldown caps how often the same credential can be
 	// admin-forced within a single process. Operators can click
 	// "Force probe" repeatedly; without this cap each click produces
@@ -96,6 +104,44 @@ func (p *BalanceQuotaProbe) SetProbeSubmitter(fn func(credID int)) {
 // causes ForceProbe to fall back to the SubmitFastProbe path.
 func (p *BalanceQuotaProbe) SetProbeNowAsync(fn func(credID int)) {
 	p.probeNowAsync = fn
+}
+
+// SetOnQuotaRecharged wires the recharge-callback hook fired by
+// cmd/gateway/webhooks.QuotaRechargedHandler. Optional — nil is safe
+// (the webhook just becomes a 200-OK echo with no follow-up).
+//
+// 2026-08-26 hzx-2: webhook 注入后，秒级恢复链路成立；nil-safe 保证
+// 单测 / 老启动路径不会 panic。
+func (p *BalanceQuotaProbe) SetOnQuotaRecharged(fn func(credID int, source string)) {
+	p.onQuotaRecharged = fn
+}
+
+// OnQuotaRecharged 是 webhook 触发的入口：拿到充值信号后立即把凭据
+// 推进两条探测路径（fast queue + ProbeNowAsync），再回调外部注入的
+// onQuotaRecharged（如通知其他模块）。两条探测路径各自独立、互不阻塞，
+// 任意一条失败不影响另一条 — 与 ForceProbe 复用同一套调度链。
+//
+// credID <= 0 直接静默返回（与 ForceProbe 行为对齐）。
+func (p *BalanceQuotaProbe) OnQuotaRecharged(credID int, source string) {
+	if credID <= 0 {
+		return
+	}
+	// 1. 立即探活：fast queue（与 scheduled / admin_force 路径一致）。
+	if p.probeSubmitter != nil {
+		p.probeSubmitter(credID)
+	}
+	// 2. 旁路 ProbeNowAsync：绕开 fastReprobeQueue 的 5 分钟 delay。
+	if p.probeNowAsync != nil {
+		p.probeNowAsync(credID)
+	}
+	p.recordBalanceCheck(credID, "webhook_"+source)
+	// 3. 通知外部注入的回调（一般用于刷 cache / 触发 admin 通知）。
+	if p.onQuotaRecharged != nil {
+		p.onQuotaRecharged(credID, source)
+	}
+	slog.Info("balance_quota_probe: webhook-triggered probe dispatched",
+		"credential_id", credID,
+		"source", source)
 }
 
 func (p *BalanceQuotaProbe) Start(ctx context.Context) {

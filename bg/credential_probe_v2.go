@@ -53,6 +53,17 @@ type CredentialProbeV2 struct {
 	// 新增：状态管理器引用
 	stateManager credentialstate.StateObserver
 
+	// onQuotaRecovered is the dispatcher-facing notification fired from
+	// cycleAll's healthy-ready success branch. The hook is consulted AFTER
+	// writeHealth has flipped the credential back to ready (so the cache
+	// invalidation can take effect immediately on the next chat request),
+	// with source="cycle_all" so the metric counter and dispatcher handler
+	// can distinguish this path from fast_probe and probe_queue. nil → the
+	// probe path stays silent (routing layer falls back to candCache TTL).
+	// 2026-08-26 quota-recovery-notify fix: closes the
+	// "DB says ready but cache still excludes credential" gap.
+	onQuotaRecovered func(credID int, source string)
+
 	probeCtxMu sync.RWMutex
 	probeCtx   context.Context
 }
@@ -105,6 +116,23 @@ func (c *CredentialProbeV2) SetAvailabilityCache(cache *ModelAvailabilityCache) 
 // SetStateManager 设置状态管理器（新增）
 func (c *CredentialProbeV2) SetStateManager(sm credentialstate.StateObserver) {
 	c.stateManager = sm
+}
+
+// SetOnQuotaRecovered wires the dispatcher-facing notification fired from
+// cycleAll's healthy-ready success branch. The (credID, source) signature
+// lets the integrator route the label + invalidator from a single closure.
+// Safe to call multiple times; the latest non-nil setter wins. nil → the
+// probe path stays silent (the routing layer falls back to candCache TTL).
+//
+// 2026-08-26 quota-recovery-notify fix: without this hook the probe path
+// would write healthy into the DB but the routing layer's candidate cache
+// would still exclude the credential until TTL elapses, so the first chat
+// request after a recharge still picks a fallback node.
+func (c *CredentialProbeV2) SetOnQuotaRecovered(fn func(credID int, source string)) {
+	if fn == nil {
+		return
+	}
+	c.onQuotaRecovered = fn
 }
 
 // SubmitFastProbe queues a delayed credential probe. At most one pending
@@ -436,6 +464,22 @@ func (c *CredentialProbeV2) cycleAll(ctx context.Context) {
 		}
 		pr.HealthProbeModel = s.DefaultProbeModel
 		c.writeHealth(timeoutCtx, s.ID, pr)
+
+		// 2026-08-26 quota-recovery-notify fix: after writeHealth has flipped
+		// the credential back to ready, notify the dispatcher so the
+		// per-credential candidate cache invalidates immediately and the
+		// next chat request re-plans with the recovered binding visible
+		// (instead of waiting for the candCache TTL or the next 5-min
+		// PeriodicQuotaProbe tick). nil hook → silent, routing layer falls
+		// back to its TTL. We deliberately reuse the existing
+		// AvailabilityState=="ready" check rather than threading a new flag
+		// from writeHealth — the dispatcher only cares about "the credential
+		// flipped back to routable", and writeHealth is the single writer
+		// of availability_state (the routing layer already trusts its
+		// verdict).
+		if ok && pr.AvailabilityState == "ready" && c.onQuotaRecovered != nil {
+			c.onQuotaRecovered(s.ID, "cycle_all")
+		}
 
 		// P3: balance probe for supported vendors (only when healthy).
 		if pr.AvailabilityState == "ready" {

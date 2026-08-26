@@ -114,6 +114,16 @@ type CredentialRecovery struct {
 	// binding visible without waiting for the 30s candCache TTL.
 	// Wired from main.go via SetInvalidateCandidateCache.
 	invalidateCandidateCache func(credID int)
+	// onQuotaRecovered is the dispatcher-facing hook fired when a probe
+	// path (cycleAll / fastProbe / probeQueueWorker) flips a credential
+	// back to healthy after a quota-recovery flip. The signature carries
+	// (credID, source) so the wired handler can route the metric label
+	// and pick the right cache invalidator without consulting a global.
+	// Wired from main.go via SetOnQuotaRecovered; nil → the probe paths
+	// stay silent (the routing layer falls back to its candCache TTL).
+	// 2026-08-26 quota-recovery-notify fix: closes the
+	// "DB says ready but cache still excludes credential" gap.
+	onQuotaRecovered func(credID int, source string)
 	cancel                   context.CancelFunc
 	done                     chan struct{}
 	// lookbackDone signals the 36h lookback scan loop exited (Stop waits on
@@ -154,6 +164,25 @@ func (r *CredentialRecovery) SetInvalidateCandidateCache(fn func(credID int)) {
 		return
 	}
 	r.invalidateCandidateCache = fn
+}
+
+// SetOnQuotaRecovered wires the dispatcher-facing notification that the
+// probe paths (cycleAll / fastProbe / probeQueueWorker) call once a
+// credential's quota / availability state has been flipped back to healthy.
+// The (credID, source) signature lets the integrator route the label +
+// invalidator from a single closure. Safe to call multiple times; the
+// latest non-nil setter wins. nil → no-op (the probe paths stay silent,
+// the routing layer falls back to its candCache TTL).
+//
+// 2026-08-26 quota-recovery-notify fix: without this hook the probe path
+// would write healthy into the DB but the routing layer's candidate
+// cache would still exclude the credential until TTL elapses, so the
+// first chat request after a recharge still picks a fallback node.
+func (r *CredentialRecovery) SetOnQuotaRecovered(fn func(credID int, source string)) {
+	if fn == nil {
+		return
+	}
+	r.onQuotaRecovered = fn
 }
 
 // SetURSMRecoverSink wires the Recover(30) URSM v2 write used by the 36h

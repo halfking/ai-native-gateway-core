@@ -65,6 +65,25 @@ var (
 		Help: "credential_recovery 30s tick post-flip notifications (invalidate / probe_submit).",
 	}, []string{"sql_kind", "action"})
 
+	// RoutingCredentialQuotaRecoveredNotifyTotal counts the dispatcher-facing
+	// notifications fired by the probe success paths (cycleAll / fastProbe /
+	// probeQueueWorker) once a credential's quota / availability state has
+	// been flipped back to healthy after a recharge-style recovery. The label
+	// `source` distinguishes the origin so operators can correlate the
+	// notification with the originating probe path:
+	//   - "cycle_all": CredentialProbeV2.cycleAll hourly sweep
+	//   - "fast_probe": ProbeQueueWorker.processTask (5-min delayed reprobe,
+	//     includes the SubmitFastProbe / ProbeNowAsync queue path)
+	//
+	// 2026-08-26 quota-recovery-notify fix: the counter exists so an operator
+	// can confirm the wiring in main.go fired (probe-side metric, side of
+	// the boundary) and reconcile it against the dispatcher's
+	// invalidate_count (cache-side metric).
+	RoutingCredentialQuotaRecoveredNotifyTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "llmgw_routing_credential_quota_recovered_notify_total",
+		Help: "Probe-side quota-recovery notifications, labeled by source probe path.",
+	}, []string{"source"})
+
 	// RoutingCredentialRecoveryTickDurationSeconds bg/credential_recovery
 	// 主循环最近一次完整跑的耗时。
 	RoutingCredentialRecoveryTickDurationSeconds = promauto.NewGauge(prometheus.GaugeOpts{
