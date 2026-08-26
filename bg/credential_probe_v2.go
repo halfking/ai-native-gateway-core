@@ -18,6 +18,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/probeutil"
 	"github.com/kaixuan/llm-gateway-go/internal/providercap"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
+	met "github.com/kaixuan/llm-gateway-go/metrics" //nolint:depguard // observability for fastReprobeDelay (2026-08-26 P1-2)
 	"github.com/kaixuan/llm-gateway-go/provider"
 	"github.com/kaixuan/llm-gateway-go/secret"
 )
@@ -79,7 +80,14 @@ type CredentialProbeV2 struct {
 // next tick" failure mode in scenario tests.
 func NewCredentialProbeV2(db *pgxpool.Pool, encKey []byte) *CredentialProbeV2 {
 	interval := 1 * time.Hour
-	fastDelay := 5 * time.Minute
+	// 2026-08-26 P1-2 (landing point C): shrink the default fastReprobeDelay
+	// from 5 minutes → 30 seconds. The user's principle is "按token计费、
+	// 非周期性的节点至少5分钟一次探测" — 5 minutes still holds for the
+	// scheduled cycleAll, but the *reactive* path that fires after a probe
+	// failure or quota write should wake up far sooner so the system can
+	// detect the upstream coming back inside one user-visible request.
+	// Operators can still override with LLM_GATEWAY_CRED_PROBE_V2_FAST_REPROBE_DELAY.
+	fastDelay := 30 * time.Second
 	if v := strings.TrimSpace(os.Getenv("LLM_GATEWAY_CRED_PROBE_V2_INTERVAL")); v != "" {
 		if d, err := time.ParseDuration(v); err == nil && d > 0 {
 			interval = d
@@ -91,10 +99,10 @@ func NewCredentialProbeV2(db *pgxpool.Pool, encKey []byte) *CredentialProbeV2 {
 		if d, err := time.ParseDuration(v); err == nil && d > 0 {
 			fastDelay = d
 		} else if err != nil {
-			slog.Warn("credential probe v2: invalid LLM_GATEWAY_CRED_PROBE_V2_FAST_REPROBE_DELAY, using 5m", "value", v, "error", err)
+			slog.Warn("credential probe v2: invalid LLM_GATEWAY_CRED_PROBE_V2_FAST_REPROBE_DELAY, using 30s", "value", v, "error", err)
 		}
 	}
-	return &CredentialProbeV2{
+	probe := &CredentialProbeV2{
 		db:                 db,
 		encKey:             encKey,
 		interval:           interval,
@@ -103,6 +111,11 @@ func NewCredentialProbeV2(db *pgxpool.Pool, encKey []byte) *CredentialProbeV2 {
 		fastReprobePending: make(map[int]struct{}),
 		done:               make(chan struct{}),
 	}
+	// 2026-08-26 P1-2: publish the effective delay so the gauge
+	// llmgw_routing_fast_reprobe_delay_seconds reflects the chosen value
+	// (operator override or 30s default) from process start.
+	met.RoutingFastReprobeDelaySeconds.Set(fastDelay.Seconds())
+	return probe
 }
 
 func (c *CredentialProbeV2) SetKeyring(kr *secret.Keyring) {
