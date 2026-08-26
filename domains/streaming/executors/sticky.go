@@ -165,6 +165,44 @@ func (s *StickyCache) Clear() {
 	}
 }
 
+// ClearForCredential removes every sticky binding associated with the
+// given credential. Returns the number of cleared in-memory bindings.
+//
+// 2026-08-27: restored from deployed build 298201fe0. d2cbaf88b dropped
+// this method, breaking admin.SetHotReloadDeps (PATCH binding/credential
+// handlers relied on it to invalidate stale sticky pins without waiting
+// for the 30s candCache TTL).
+//
+// Adapted to HEAD's StickyRedisStore interface, which has no per-credential
+// scan API: the in-memory map is the authoritative read path, the Redis
+// double-write is best-effort backup. Clearing the in-memory map is
+// sufficient to drop the stale pin from the next routing cycle; the Redis
+// records will fall out naturally via their per-entry TTL on the
+// candCache sweep. Returning the in-memory count matches the
+// admin.StickyCacheClearer interface contract (cleared, err).
+func (s *StickyCache) ClearForCredential(credID int) (int, error) {
+	if credID <= 0 {
+		return 0, nil
+	}
+	cleared := 0
+
+	s.mu.Lock()
+	for k, v := range s.items {
+		if v.credentialID == credID {
+			delete(s.items, k)
+			cleared++
+		}
+	}
+	s.mu.Unlock()
+
+	if cleared > 0 {
+		slog.Info("sticky hot-reload: cleared bindings for credential",
+			"credential_id", credID,
+			"cleared", cleared)
+	}
+	return cleared, nil
+}
+
 // Close gracefully shuts down the StickyCache background goroutines.
 // 2026-08-06 FIX (P2-4): Prevent goroutine leak in tests and shutdown scenarios.
 // Safe to call multiple times (stopSweep close is idempotent via sync.Once pattern).
