@@ -87,6 +87,16 @@ func recordSuspiciousExitDBDuration(seconds float64) {
 	suspiciousExitDBDuration.Observe(seconds)
 }
 
+// BindingRawModel returns the model_offers identity used for routing state.
+// RawModel is the outbound request name and can be shared by several bindings.
+// State keyed by RawModel would merge their independent health telemetry.
+func (c Candidate) BindingRawModel() string {
+	if strings.TrimSpace(c.OfferRawModel) != "" {
+		return strings.TrimSpace(c.OfferRawModel)
+	}
+	return strings.TrimSpace(c.RawModel)
+}
+
 type Candidate struct {
 	CredentialID     int     `json:"credential_id"`
 	ProviderID       int     `json:"provider_id"`
@@ -467,6 +477,20 @@ func ResetKeyRotatorForCredential(credentialID int) {
 	}
 	defaultClient.keyRotator.ResetCredential(credentialID)
 	slog.Debug("key rotator reset for credential", "credential_id", credentialID)
+}
+
+// ResetKeyRotatorKey clears in-memory health for a single key on a credential.
+// Use when only one key's status changed (admin PATCH /keys/{kid} status, or
+// operator re-activates a single key) so sibling keys' round-robin health is
+// preserved. No-op when the rotator is in single-key mode (the per-credential
+// states map has no entry for credentialID, so there is nothing to reset).
+func ResetKeyRotatorKey(credentialID, kid int) {
+	if defaultClient == nil || credentialID == 0 || defaultClient.keyRotator == nil {
+		return
+	}
+	defaultClient.keyRotator.ResetKey(credentialID, kid)
+	slog.Debug("key rotator reset for single key",
+		"credential_id", credentialID, "kid", kid)
 }
 
 // InvalidateCredentialKeyCache evicts both primary-key caches for one

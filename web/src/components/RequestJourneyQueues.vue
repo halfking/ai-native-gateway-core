@@ -4,12 +4,10 @@ import { useI18n } from 'vue-i18n'
 import { Close, RefreshRight } from '@element-plus/icons-vue'
 import { credentialDisplayName as credentialLabelById, useCredentialLabels } from '../composables/useCredentialLabels'
 import {
-  getRequestJourney,
   getRequestJourneyQueues,
   type ModelRequestFIFOSnapshot,
   type NodeRequestFIFOSnapshot,
   type RequestIngressSnapshot,
-  type RequestJourney,
   type RequestJourneyQueueView,
   type RequestJourneyQueuesPayload,
   type RequestJourneyQueuesResponse,
@@ -17,7 +15,7 @@ import {
   type TotalRequestFIFOSnapshot,
 } from '../api/request-journeys'
 import { isSuperAdmin, store } from '../store'
-import RoutingAttemptsTimeline from './RoutingAttemptsTimeline.vue'
+import { openRequestDetailPage } from '../utils/openRequestDetailPage'
 
 const { t, locale } = useI18n()
 // 2026-08-23 凭据显示：订阅标签缓存 revision，让异步加载完成后
@@ -43,10 +41,6 @@ const activeView = ref<RequestJourneyQueueView>('total')
 const payloads = ref<Partial<Record<RequestJourneyQueueView, RequestJourneyQueuesPayload>>>({})
 const loadingView = ref<RequestJourneyQueueView | null>(null)
 const viewErrors = ref<Partial<Record<RequestJourneyQueueView, string>>>({})
-const selectedRequestId = ref<string | null>(null)
-const journey = ref<RequestJourney | null>(null)
-const journeyLoading = ref(false)
-const journeyError = ref('')
 
 function isEnvelope(payload: RequestJourneyQueuesPayload): payload is RequestJourneyQueuesResponse {
   return !Array.isArray(payload) && 'view' in payload
@@ -178,24 +172,8 @@ async function selectView(view: RequestJourneyQueueView) {
   await loadView(view)
 }
 
-async function openJourney(requestId: string) {
-  selectedRequestId.value = requestId
-  journey.value = null
-  journeyError.value = ''
-  journeyLoading.value = true
-  try {
-    journey.value = await getRequestJourney(requestId)
-  } catch (error) {
-    journeyError.value = error instanceof Error ? error.message : String(error)
-  } finally {
-    journeyLoading.value = false
-  }
-}
-
-function closeJourney() {
-  selectedRequestId.value = null
-  journey.value = null
-  journeyError.value = ''
+function openJourney(requestId: string) {
+  openRequestDetailPage(requestId)
 }
 
 function statusOf(snapshot: RequestJourneySnapshot): string {
@@ -225,7 +203,6 @@ function openDialog() {
 
 function closeDialog() {
   showDialog.value = false
-  closeJourney()
 }
 </script>
 
@@ -310,32 +287,6 @@ function closeDialog() {
         </ol>
       </section>
     </div>
-
-    <section v-if="selectedRequestId" class="journey-detail" aria-live="polite">
-      <div class="journey-detail-header">
-        <h4>{{ t('requestJourneys.detailTitle', { requestId: selectedRequestId }) }}</h4>
-        <button
-          type="button"
-          class="icon-button"
-          :title="t('requestJourneys.closeDetail')"
-          :aria-label="t('requestJourneys.closeDetail')"
-          @click="closeJourney"
-        >
-          <Close aria-hidden="true" />
-        </button>
-      </div>
-      <div v-if="journeyLoading" class="journey-state">{{ t('requestJourneys.detailLoading') }}</div>
-      <div v-else-if="journeyError" class="journey-state journey-state--error" role="alert">
-        {{ t('requestJourneys.detailError') }}: {{ journeyError }}
-      </div>
-      <template v-else-if="journey">
-        <div v-if="journey.observation_status === 'observation_degraded'" class="degraded-notice" role="status">
-          <strong>{{ t('requestJourneys.observationDegraded') }}</strong>
-          <span>{{ t('requestJourneys.observationDegradedHint') }}</span>
-        </div>
-        <RoutingAttemptsTimeline :journey-events="journey.events" />
-      </template>
-    </section>
       </section>
     </div>
   </Teleport>

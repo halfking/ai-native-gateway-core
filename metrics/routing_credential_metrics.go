@@ -65,6 +65,25 @@ var (
 		Help: "credential_recovery 30s tick post-flip notifications (invalidate / probe_submit).",
 	}, []string{"sql_kind", "action"})
 
+	// RoutingCredentialQuotaRecoveredNotifyTotal counts the dispatcher-facing
+	// notifications fired by the probe success paths (cycleAll / fastProbe /
+	// probeQueueWorker) once a credential's quota / availability state has
+	// been flipped back to healthy after a recharge-style recovery. The label
+	// `source` distinguishes the origin so operators can correlate the
+	// notification with the originating probe path:
+	//   - "cycle_all": CredentialProbeV2.cycleAll hourly sweep
+	//   - "fast_probe": ProbeQueueWorker.processTask (5-min delayed reprobe,
+	//     includes the SubmitFastProbe / ProbeNowAsync queue path)
+	//
+	// 2026-08-26 quota-recovery-notify fix: the counter exists so an operator
+	// can confirm the wiring in main.go fired (probe-side metric, side of
+	// the boundary) and reconcile it against the dispatcher's
+	// invalidate_count (cache-side metric).
+	RoutingCredentialQuotaRecoveredNotifyTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "llmgw_routing_credential_quota_recovered_notify_total",
+		Help: "Probe-side quota-recovery notifications, labeled by source probe path.",
+	}, []string{"source"})
+
 	// RoutingCredentialRecoveryTickDurationSeconds bg/credential_recovery
 	// 主循环最近一次完整跑的耗时。
 	RoutingCredentialRecoveryTickDurationSeconds = promauto.NewGauge(prometheus.GaugeOpts{
@@ -115,4 +134,17 @@ var (
 		Name: "llmgw_routing_priority_candidates_selected_total",
 		Help: "Routing selections by priority candidate outcome.",
 	}, []string{"outcome"})
+
+	// RoutingFastReprobeDelaySeconds records the active fastReprobeDelay
+	// (post-failure / post-quota-write reactive probe delay) used by
+	// CredentialProbeV2.fastReprobeQueue. Operators read this gauge to
+	// confirm the configured value is what they expect — especially after
+	// the 2026-08-26 P1-2 default change from 5 minutes → 30 seconds.
+	//
+	// Source of truth is the env override LLM_GATEWAY_CRED_PROBE_V2_FAST_REPROBE_DELAY;
+	// when unset, the gauge holds the process-default (30s as of this commit).
+	RoutingFastReprobeDelaySeconds = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "llmgw_routing_fast_reprobe_delay_seconds",
+		Help: "CredentialProbeV2 fastReprobeDelay in seconds (default 30, override LLM_GATEWAY_CRED_PROBE_V2_FAST_REPROBE_DELAY).",
+	})
 )

@@ -474,7 +474,7 @@ func TestCompressionMetaCache_SetMoveToFront(t *testing.T) {
 
 // TestGovernanceCache_Disabled tests governance cache when disabled
 func TestGovernanceCache_Disabled(t *testing.T) {
-	cache := NewRedisGovernanceCache("", 0)
+	cache := NewRedisGovernanceCache("", 0, 2)
 	ctx := context.Background()
 
 	// Get should return nil (not error) when disabled

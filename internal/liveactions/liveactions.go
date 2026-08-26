@@ -167,6 +167,16 @@ func ResetSeqForTest() {
 	})
 }
 
+// ResetMetricsForTest zeros the three package-level metric atomics so a test
+// can assert the value introduced by its own action (droppedTotal /
+// redisFailureTot / stageNormFailureTot). Tests only — never call from
+// production code.
+func ResetMetricsForTest() {
+	droppedTotal.Store(0)
+	redisFailureTot.Store(0)
+	stageNormFailureTot.Store(0)
+}
+
 // ── metrics ────────────────────────────────────────────────────────────────
 //
 // Flat package-level atomics surfaced through one custom Prometheus collector
@@ -174,9 +184,10 @@ func ResetSeqForTest() {
 // readable from unit tests without the prometheus testutil dependency, which
 // is not vendored in this repo).
 var (
-	droppedTotal      atomic.Uint64
-	redisFailureTot   atomic.Uint64
-	metricsRegistered sync.Once
+	droppedTotal        atomic.Uint64
+	redisFailureTot     atomic.Uint64
+	stageNormFailureTot atomic.Uint64
+	metricsRegistered   sync.Once
 )
 
 // DroppedTotal returns how many events this process dropped because the emit
@@ -210,6 +221,9 @@ func (liveActionsCollector) Collect(ch chan<- prometheus.Metric) {
 	ch <- prometheus.MustNewConstMetric(
 		prometheus.NewDesc("live_actions_redis_failures_total", "Action-event Redis writes that failed (silent degradation).", nil, nil),
 		prometheus.CounterValue, float64(redisFailureTot.Load()))
+	ch <- prometheus.MustNewConstMetric(
+		prometheus.NewDesc("live_actions_stage_normalization_failures_total", "Action-event stage-normalization failures (silent degradation).", nil, nil),
+		prometheus.CounterValue, float64(stageNormFailureTot.Load()))
 }
 
 // ── emitter ────────────────────────────────────────────────────────────────
