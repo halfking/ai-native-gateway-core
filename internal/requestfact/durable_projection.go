@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+
+	"github.com/kaixuan/llm-gateway-go/internal/ir"
 )
 
 const DurableProjectionInputVersionV1 = 1
@@ -125,7 +127,9 @@ func ProjectDurable(input DurableProjectionInput) (*DurableProjection, error) {
 		TaskCorrelationID:  input.RequestID,
 		ParentRequestID:    input.ParentRequestID,
 	}
-	projection.ResponseFormat, projection.HasMultimodalContent = probeNormalizedBody(body)
+	projection.ResponseFormat = probeResponseFormat(body)
+	capabilities := ir.DetectRequestCapabilities(body)
+	projection.HasMultimodalContent = capabilities.HasImage || capabilities.HasAudio || capabilities.HasVideo
 	if input.ParentRequestID == "" {
 		projection.Warnings = append(projection.Warnings, ConversionWarning{
 			Code:  WarningOptionalFieldOmitted,
@@ -141,82 +145,38 @@ func ProjectDurable(input DurableProjectionInput) (*DurableProjection, error) {
 	return projection, nil
 }
 
-// probeNormalizedBody derives shallow response_format and multimodal markers
-// from the JSON shape. It is a conservative probe, not a protocol parser: it
-// recognizes the common typed-block arrays (OpenAI/Anthropic messages and
-// Gemini contents.parts). When it cannot prove a non-text block exists it
-// leaves HasMultimodalContent false; the eventual streaming bridge remains
-// free to apply its full modality detection.
-func probeNormalizedBody(body []byte) (responseFormat string, hasMultimodal bool) {
+// probeResponseFormat extracts the response-format marker shared by supported
+// request shapes. It intentionally leaves schemas to the future streaming bridge,
+// which owns protocol parsing and snapshot serialization.
+func probeResponseFormat(body []byte) string {
 	var probe struct {
 		ResponseFormat struct {
 			Type string `json:"type"`
 		} `json:"response_format"`
-		Messages []json.RawMessage `json:"messages"`
-		Contents []struct {
-			Parts []json.RawMessage `json:"parts"`
-		} `json:"contents"`
+		Text struct {
+			Format struct {
+				Type string `json:"type"`
+			} `json:"format"`
+		} `json:"text"`
+		GenerationConfig struct {
+			ResponseMimeType string          `json:"responseMimeType"`
+			ResponseSchema   json.RawMessage `json:"responseSchema"`
+		} `json:"generationConfig"`
 	}
 	if err := json.Unmarshal(body, &probe); err != nil {
-		return "", false
+		return ""
 	}
-	for _, raw := range probe.Messages {
-		var message struct {
-			Content json.RawMessage `json:"content"`
-		}
-		if json.Unmarshal(raw, &message) == nil && contentDeclaresMedia(message.Content) {
-			hasMultimodal = true
-			break
-		}
+	if probe.ResponseFormat.Type != "" {
+		return probe.ResponseFormat.Type
 	}
-	if !hasMultimodal {
-		for _, entry := range probe.Contents {
-			media := false
-			for _, part := range entry.Parts {
-				if blockDeclaresMedia(part) {
-					media = true
-					break
-				}
-			}
-			if media {
-				hasMultimodal = true
-				break
-			}
-		}
+	if probe.Text.Format.Type != "" {
+		return probe.Text.Format.Type
 	}
-	return probe.ResponseFormat.Type, hasMultimodal
-}
-
-func contentDeclaresMedia(raw json.RawMessage) bool {
-	trimmed := bytes.TrimSpace(raw)
-	if len(trimmed) == 0 || trimmed[0] == '"' {
-		return false
+	if probe.GenerationConfig.ResponseMimeType != "application/json" {
+		return ""
 	}
-	if trimmed[0] == '[' {
-		var blocks []json.RawMessage
-		if err := json.Unmarshal(raw, &blocks); err != nil {
-			return false
-		}
-		for _, block := range blocks {
-			if blockDeclaresMedia(block) {
-				return true
-			}
-		}
-		return false
+	if len(bytes.TrimSpace(probe.GenerationConfig.ResponseSchema)) > 0 && !bytes.Equal(bytes.TrimSpace(probe.GenerationConfig.ResponseSchema), []byte("null")) {
+		return "json_schema"
 	}
-	return blockDeclaresMedia(raw)
-}
-
-func blockDeclaresMedia(raw json.RawMessage) bool {
-	var block struct {
-		Type string `json:"type"`
-	}
-	if err := json.Unmarshal(raw, &block); err != nil {
-		return false
-	}
-	switch block.Type {
-	case "image", "image_url", "input_image", "audio", "input_audio", "video", "video_url":
-		return true
-	}
-	return false
+	return "json_object"
 }
