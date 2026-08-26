@@ -214,19 +214,22 @@ func (s *LiveStreamRedisStore) SnapshotFromDimensionQueues(ctx context.Context, 
 		// No valid requests found, return empty snapshot
 		return &LiveStreamSnapshot{
 			DetailDimensions: map[string][]LiveStreamLane{
-				"vendor":   {},
-				"provider": {},
-				"model":    {},
+				"credential": {},
+				"vendor":     {},
+				"provider":   {},
+				"model":      {},
 			},
 			Dimensions: map[string][]LiveStreamLane{
-				"vendor":   {},
-				"provider": {},
-				"model":    {},
+				"credential": {},
+				"vendor":     {},
+				"provider":   {},
+				"model":      {},
 			},
 			DimensionLegends: map[string][]LiveStreamLegendItem{
-				"vendor":   {},
-				"provider": {},
-				"model":    {},
+				"credential": {},
+				"vendor":     {},
+				"provider":   {},
+				"model":      {},
 			},
 			StatusLegends: []LiveStreamLegendItem{},
 		}, nil
@@ -321,6 +324,7 @@ func (s *LiveStreamRedisStore) discoverDimensionQueuesByScan(ctx context.Context
 	if isSuper {
 		// Super admin sees global dimension queues
 		patterns = []string{
+			liveStreamDimPrefix + "credential:*",
 			liveStreamDimPrefix + "vendor:*",
 			liveStreamDimPrefix + "provider:*",
 			liveStreamDimPrefix + "model:*",
@@ -329,6 +333,7 @@ func (s *LiveStreamRedisStore) discoverDimensionQueuesByScan(ctx context.Context
 		// Tenant admin sees tenant-scoped queues
 		tenantPrefix := "llmgw:live:tenant:" + tenantID + ":dim:"
 		patterns = []string{
+			tenantPrefix + "credential:*",
 			tenantPrefix + "vendor:*",
 			tenantPrefix + "provider:*",
 			tenantPrefix + "model:*",

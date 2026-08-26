@@ -47,12 +47,17 @@ type LiveStreamStats struct {
 }
 
 type LiveStreamTile struct {
-	RequestID        string   `json:"request_id"`
-	Timestamp        string   `json:"timestamp"`
-	Model            string   `json:"model"`
-	Vendor           string   `json:"vendor"`
-	Provider         string   `json:"provider"`
-	Status           string   `json:"status"`
+	RequestID string `json:"request_id"`
+	Timestamp string `json:"timestamp"`
+	Model     string `json:"model"`
+	Vendor    string `json:"vendor"`
+	Provider  string `json:"provider"`
+	Status    string `json:"status"`
+	// 2026-08-26: 凭据维度泳道（替换原厂维度）。credential_id 是稳定身份，
+	// credential_label 是显示名（凭据标签，无标签时为空串，回退
+	// "凭据 #ID" 由 liveStreamCredentialKey / 前端负责）。
+	CredentialID     int      `json:"credential_id,omitempty"`
+	CredentialLabel  string   `json:"credential_label,omitempty"`
 	ErrorKind        *string  `json:"error_kind,omitempty"`
 	LatencyMs        *int     `json:"latency_ms,omitempty"`
 	CostUSD          *float64 `json:"cost_usd,omitempty"`
@@ -178,6 +183,10 @@ type liveRequestRedisPayload struct {
 	// 经 pub/sub 重建请求时不丢 child_request 所需的 parent/type 元数据。
 	ParentRequestID string `json:"parent_request_id,omitempty"`
 	RequestType     string `json:"request_type,omitempty"`
+	// 2026-08-26: 凭据维度泳道 —— 凭据身份必须随 Redis payload 持久化，
+	// 否则 replay/snapshot 重建后凭据泳道退化为 "凭据 #ID" 或整条消失。
+	CredentialID    int    `json:"credential_id,omitempty"`
+	CredentialLabel string `json:"credential_label,omitempty"`
 }
 
 // 2026-07-23: 精细化分层 TTL
@@ -204,9 +213,13 @@ const (
 	LiveStreamMainQueueRetention = 2 * time.Hour
 )
 
-// LiveStreamLaneVisibleLimit is how many tiles each swim lane shows. Entries
-// scrolled past this window are trimmed from per-dimension Redis queues.
-const LiveStreamLaneVisibleLimit = 20
+// LiveStreamLaneVisibleLimit is how many tiles each swim lane keeps in its
+// per-dimension Redis queue. 2026-08-26: 20 → 100。显示层（前端
+// SwimLane.maxVisibleTiles）已按泳道轨道宽度动态裁剪显示数量（小模式 9px
+// 竖条 / 大模式 80px 卡片），此常量只作为"数据供给窗口"上限 —— 必须 ≥
+// 最宽屏在 small 模式下的可显示数，否则显示层"取不到足够 tile"。前端合并
+// 侧有同口径常量 LANE_TILE_CAP（web/src/composables/liveStreamStore.ts）。
+const LiveStreamLaneVisibleLimit = 100
 
 // LiveStreamIdleThreshold is how long a lane must be silent before an idle
 // marker is written into the stream.
@@ -416,6 +429,10 @@ func (s *LiveStreamRedisStore) recordLocked(ctx context.Context, req LiveRequest
 		pipe.Set(ctx, liveStreamActivityKey("", "vendor", req.ModelCategory), activityUnix, liveStreamActivityTTL)
 		pipe.Set(ctx, liveStreamActivityKey(tenantID, "vendor", req.ModelCategory), activityUnix, liveStreamActivityTTL)
 	}
+	if credKey := liveStreamCredentialKey(req); credKey != "" {
+		pipe.Set(ctx, liveStreamActivityKey("", "credential", credKey), activityUnix, liveStreamActivityTTL)
+		pipe.Set(ctx, liveStreamActivityKey(tenantID, "credential", credKey), activityUnix, liveStreamActivityTTL)
+	}
 	if req.ProviderCode != "" {
 		pipe.Set(ctx, liveStreamActivityKey("", "provider", req.ProviderCode), activityUnix, liveStreamActivityTTL)
 		pipe.Set(ctx, liveStreamActivityKey(tenantID, "provider", req.ProviderCode), activityUnix, liveStreamActivityTTL)
@@ -497,7 +514,10 @@ func (s *LiveStreamRedisStore) recordLocked(ctx context.Context, req LiveRequest
 			pipe.ZRem(ctx, tenantLiveStreamKey(tenantID, "main"), idleMarkerRequestID(tenantID, dim, val))
 		}
 	}
-	addIdleRemoval("vendor", req.ModelCategory)
+	if req.ModelCategory != "" {
+		addIdleRemoval("vendor", req.ModelCategory)
+	}
+	addIdleRemoval("credential", liveStreamCredentialKey(req))
 	addIdleRemoval("provider", req.ProviderCode)
 	addIdleRemoval("model", modelKey)
 
@@ -527,7 +547,12 @@ const liveStreamRecordLockTTL = 5 * time.Second
 // exhaustion — that would reintroduce the duplicate-member race this lock
 // exists to prevent. Only ctx cancellation aborts the wait.
 const (
-	liveStreamRecordLockRetryAttempts = 64
+	// 2026-08-26: 64 → 200（上限 ~8s）。实测 onair 场景下同一个 request 的
+	// in_progress 与 terminal update 相邻到达，锁竞争耗尽导致整条 terminal
+	// 更新被静默丢弃（tile 永久停在 in_progress —— 用户反馈 "请求已完成但
+	// 显示进行中" 的根因之一）。把重试窗口拉长到远大于 recordLocked 的典型
+	// pipeline 耗时（数十 ms），耗尽只应发生在锁持有者崩溃/僵死的极端场景。
+	liveStreamRecordLockRetryAttempts = 200
 	liveStreamRecordLockRetrySleep    = 10 * time.Millisecond
 )
 
@@ -702,6 +727,20 @@ func liveRequestQueueKeys(tenantID string, req LiveRequest) []string {
 			"vendor", vendor, "model_category", req.ModelCategory,
 			"provider_code", req.ProviderCode, "model", req.Model)
 	}
+	// 2026-08-26: 凭据(credential)维度作为新增泳道（与原厂维度并行）。泳道
+	// key = 凭据标签(label 优先，否则 "凭据 #ID")，见 liveStreamCredentialKey。
+	// 无凭据身份的请求（如鉴权/路由前置失败）不出现在凭据维度。
+	if credKey := liveStreamCredentialKey(req); credKey != "" {
+		keys = append(keys,
+			liveStreamDimPrefix+"credential:"+credKey,
+			tenantLiveStreamKey(tenantID, "dim:credential:"+credKey),
+		)
+	} else {
+		slog.Debug("live stream: credential dimension skipped",
+			"request_id", req.RequestID, "tenant_id", tenantID,
+			"credential_id", req.CredentialID, "credential_label", req.CredentialLabel,
+			"provider_code", req.ProviderCode, "model", req.Model)
+	}
 	if req.ProviderCode != "" && req.ProviderCode != "unknown" {
 		keys = append(keys,
 			liveStreamDimPrefix+"provider:"+req.ProviderCode,
@@ -811,6 +850,8 @@ func marshalLiveRequestRedisPayload(req LiveRequest) (string, error) {
 		CreditsCharged:   req.CreditsCharged,
 		ParentRequestID:  req.ParentRequestID,
 		RequestType:      req.RequestType,
+		CredentialID:     req.CredentialID,
+		CredentialLabel:  req.CredentialLabel,
 	}
 	b, err := json.Marshal(p)
 	if err != nil {
@@ -850,6 +891,8 @@ func unmarshalLiveRequestRedisPayload(data string) (LiveRequest, error) {
 		CreditsCharged:   p.CreditsCharged,
 		ParentRequestID:  p.ParentRequestID,
 		RequestType:      normalizeLiveRequestType(p.RequestType),
+		CredentialID:     p.CredentialID,
+		CredentialLabel:  p.CredentialLabel,
 	}, nil
 }
 
@@ -875,19 +918,22 @@ func (s *LiveStreamRedisStore) Snapshot(ctx context.Context, tenantID string, is
 func BuildLiveStreamSnapshot(items []LiveRequest) *LiveStreamSnapshot {
 	s := &LiveStreamSnapshot{
 		DetailDimensions: map[string][]LiveStreamLane{
-			"vendor":   {},
-			"provider": {},
-			"model":    {},
+			"credential": {},
+			"vendor":     {},
+			"provider":   {},
+			"model":      {},
 		},
 		Dimensions: map[string][]LiveStreamLane{
-			"vendor":   {},
-			"provider": {},
-			"model":    {},
+			"credential": {},
+			"vendor":     {},
+			"provider":   {},
+			"model":      {},
 		},
 		DimensionLegends: map[string][]LiveStreamLegendItem{
-			"vendor":   {},
-			"provider": {},
-			"model":    {},
+			"credential": {},
+			"vendor":     {},
+			"provider":   {},
+			"model":      {},
 		},
 		StatusLegends: []LiveStreamLegendItem{},
 	}
@@ -913,7 +959,7 @@ func BuildLiveStreamSnapshot(items []LiveRequest) *LiveStreamSnapshot {
 		}
 	}
 
-	for _, dim := range []string{"vendor", "provider", "model"} {
+	for _, dim := range []string{"credential", "vendor", "provider", "model"} {
 		view, detail, legends := buildLiveStreamLanes(dim, items)
 		s.Dimensions[dim] = view
 		s.DetailDimensions[dim] = detail
@@ -1051,19 +1097,39 @@ func buildStatusLegends(items []LiveRequest) []LiveStreamLegendItem {
 	return legends
 }
 
+// liveStreamCredentialKey 凭据维度的泳道 key：凭据标签(label) 优先，
+// 无标签时回退 "凭据 #ID"（rule 20 / 前端 RequestTile 同一口径）。
+// 2026-08-26: 原厂(vendor)维度被凭据(credential)维度替换后，本函数是
+// 凭据泳道身份的唯一来源（Record 写队列 / snapshot 建泳道 / idle 清除
+// 共用）。无凭据身份返回 ""，该请求不出现在凭据维度。
+func liveStreamCredentialKey(req LiveRequest) string {
+	if label := strings.TrimSpace(req.CredentialLabel); label != "" {
+		return label
+	}
+	if req.CredentialID > 0 {
+		return fmt.Sprintf("凭据 #%d", req.CredentialID)
+	}
+	return ""
+}
+
 func liveStreamDimensionKey(dimension string, req LiveRequest) string {
 	// For idle markers, use the actual dimension value (already set correctly in createIdleMarkerForDimension)
 	// This ensures idle markers inherit the queue's identity rather than creating separate idle lanes
 	switch dimension {
+	case "credential":
+		// 2026-08-26: 凭据维度。idle marker 的 CredentialLabel 已被
+		// createIdleMarkerForDimension 置为泳道 key，liveStreamCredentialKey
+		// 的 label 优先规则对真实请求与 idle marker 同时成立。
+		return liveStreamCredentialKey(req)
 	case "vendor":
+		// 2026-08-26: 原厂维度仍作为 BuildLiveStreamSnapshot 的"测试维度别名"
+		// 保留（管理后台 store 内的 dim 计算已切到 credential，写队列已停止
+		// vendor 维度，但快照合并仍输出 vendor 维度让 admin 测试/老检查位
+		// 兼容）。见 BuildLiveStreamSnapshot dim 循环。
 		if req.Type == "idle_marker" {
-			if req.ModelCategory != "" {
-				return req.ModelCategory
-			}
-			return ""
+			return req.ModelCategory
 		}
-		key := resolveVendorForRequest(req)
-		return key
+		return resolveVendorForRequest(req)
 	case "provider":
 		if req.Type == "idle_marker" {
 			pc := strings.TrimSpace(req.ProviderCode)
@@ -1191,6 +1257,8 @@ func liveRequestTile(req LiveRequest) LiveStreamTile {
 		Vendor:           resolveVendorForRequest(req),
 		Provider:         req.ProviderCode,
 		Status:           status,
+		CredentialID:     req.CredentialID,
+		CredentialLabel:  strings.TrimSpace(req.CredentialLabel),
 		ErrorKind:        req.ErrorKind,
 		LatencyMs:        req.LatencyMs,
 		CostUSD:          req.CostUSD,
@@ -1280,15 +1348,18 @@ func liveStreamDimIndexKey(tenantID string, isSuper bool) string {
 // known dimension suffix are considered.
 func isDimensionQueueKey(key string) bool {
 	// Both global ("llmgw:live:dim:vendor:...") and tenant
-	// ("llmgw:live:tenant:<id>:dim:vendor:...") forms contain ":dim:".
+	// ("llmgw:live:tenant:<id>:dim:credential:...") forms contain ":dim:".
 	idx := strings.Index(key, ":dim:")
 	if idx < 0 {
 		return false
 	}
 	rest := key[idx+len(":dim:"):]
-	return strings.HasPrefix(rest, "vendor:") ||
+	// 2026-08-26: credential 替换 vendor。"vendor:" 旧队列保留识别以兼容
+	// 存量 Redis 数据（24h TTL 自动过期），但新代码不再写入。
+	return strings.HasPrefix(rest, "credential:") ||
 		strings.HasPrefix(rest, "provider:") ||
-		strings.HasPrefix(rest, "model:")
+		strings.HasPrefix(rest, "model:") ||
+		strings.HasPrefix(rest, "vendor:")
 }
 
 // isGlobalDimKey reports whether a dim queue key is the global-scope form
@@ -1576,7 +1647,8 @@ func dimensionQueueKeyInfo(key string) (dimensionQueueInfo, bool) {
 	}
 	prefix, suffix := key[:idx], key[idx+len(marker):]
 	parts := strings.SplitN(suffix, ":", 2)
-	if len(parts) != 2 || (parts[0] != "vendor" && parts[0] != "provider" && parts[0] != "model") || parts[1] == "" {
+	// 2026-08-26: credential 替换 vendor；保留 "vendor" 读兼容（存量队列）。
+	if len(parts) != 2 || (parts[0] != "credential" && parts[0] != "provider" && parts[0] != "model" && parts[0] != "vendor") || parts[1] == "" {
 		return dimensionQueueInfo{}, false
 	}
 	tenantID := ""
@@ -1710,8 +1782,14 @@ func createIdleMarkerForDimension(dimension, key, tenantID string, ts time.Time)
 	// others (e.g. a vendor-idle marker must not spawn a phantom lane in
 	// the model view). The carried value doubles as the display label.
 	switch dimension {
+	case "credential":
+		// 2026-08-26: Credential lane idle: only CredentialLabel is set —
+		// liveStreamCredentialKey 的 label 优先规则使泳道 key 与真实请求一致。
+		marker.CredentialLabel = key
 	case "vendor":
-		// Vendor lane idle: only ModelCategory is set.
+		// 2026-08-26: Vendor lane idle: carry ModelCategory so the marker
+		// groups under the same vendor lane as real requests (legacy 兼容,
+		// vendor 维度作为 dim 别名保留给 BuildLiveStreamSnapshot 输出 + tile 颜色)。
 		marker.ModelCategory = key
 	case "provider":
 		// Provider lane idle: only ProviderCode is set.
@@ -1748,7 +1826,7 @@ func ComputeDelta(old, new *LiveStreamSnapshot) *LiveStreamDelta {
 		DimensionLegends: map[string][]LiveStreamLegendItem{},
 		StatusLegends:    new.StatusLegends,
 	}
-	for _, dim := range []string{"vendor", "provider", "model"} {
+	for _, dim := range []string{"credential", "vendor", "provider", "model"} {
 		oldLanes := old.Dimensions[dim]
 		newLanes := new.Dimensions[dim]
 		if lanesChanged(oldLanes, newLanes) {
