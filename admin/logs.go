@@ -81,7 +81,10 @@ type requestLogRow struct {
 	ClientProtocol *string `json:"client_protocol"`
 	ProviderModel  *string `json:"provider_model"`
 	TraceSeq       *int    `json:"trace_seq,omitempty"`
-	CreditsCharged *int64  `json:"credits_charged"`
+	// V6-W1.6 R8 (migration 608): immediate|scheduled + due time.
+	RequestClass   *string    `json:"request_class,omitempty"`
+	DueAt          *time.Time `json:"due_at,omitempty"`
+	CreditsCharged *int64     `json:"credits_charged"`
 	// v3 (2026-06-19) session-level outbound body fields.
 	OutboundBody        json.RawMessage `json:"outbound_body,omitempty"`
 	OutboundMsgCount    *int            `json:"outbound_msg_count,omitempty"`
@@ -221,7 +224,10 @@ const requestLogsListCols = `
 	-- 2026-08-06: session title. LEFT JOIN session_titles keyed by
 	-- (task_id, scoped_session_id) where scoped_session_id falls back to ''
 	-- when the request has no gw_session_id, matching the upsert path.
-	st.title AS session_title
+	st.title AS session_title,
+	-- V6-W1.6 R8 (migration 608): request class + scheduled due time.
+	rl.request_class,
+	rl.due_at
 `
 
 // requestLogsDetailCols extends the list columns with the three JSONB blobs
@@ -392,6 +398,9 @@ func scanRequestListRow(rows interface {
 		&l.AttachmentCount,
 		// 2026-08-06: session_titles.title join (see requestLogsJoins).
 		&l.SessionTitle,
+		// V6-W1.6 R8 (migration 608): request class + due time (LAST fixed
+		// columns; the conditional trace_seq append below stays after them).
+		&l.RequestClass, &l.DueAt,
 	}
 	if withTraceSeq {
 		dest = append(dest, &l.TraceSeq)
@@ -464,6 +473,10 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 	}
 	if v := strings.TrimSpace(queryString(r, "identity_hash")); v != "" {
 		addFilter("rl.identity_hash = $%d", v)
+	}
+	// V6-W1.6 R8 (migration 608): filter scheduled traffic.
+	if v := strings.TrimSpace(queryString(r, "request_class")); v != "" {
+		addFilter("rl.request_class = $%d", v)
 	}
 	if v := strings.TrimSpace(queryString(r, "q")); v != "" {
 		addFilter("rl.search_text ILIKE $%d", "%"+v+"%")
@@ -890,6 +903,9 @@ func (h *Handler) getLog(w http.ResponseWriter, r *http.Request) {
 		&detail.AttachmentCount,
 		// 2026-08-06: session_titles.title (see requestLogsListCols).
 		&detail.SessionTitle,
+		// V6-W1.6 R8 (migration 608): request class + due time (list-cols
+		// tail, BEFORE the detail-only blob columns).
+		&detail.RequestClass, &detail.DueAt,
 		&detail.OutboundBody,
 		&detail.OutboundMsgHashes,
 		&detail.CompressionMeta,

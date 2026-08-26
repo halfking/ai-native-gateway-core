@@ -271,7 +271,7 @@ func expectedArgIdent(col string) string {
 		"video_tokens": "VideoTokens", "provider_tokens": "ProviderTokens", "total_tokens": "totalTokens",
 		"cost_usd": "CostUSD", "cost_display": "CostDisplay", "cost_currency": "CostCurrency",
 		"latency_ms": "LatencyMs", "request_status": "RequestStatus", "error_kind": "ErrorKind",
-		"success": "Success",
+		"success":     "Success",
 		"search_text": "searchText", "identity_hash": "IdentityHash", "response_checksum": "ResponseChecksum",
 		"transform_rule_id": "TransformRuleID", "egress_protocol": "EgressProtocol", "failure_stage": "FailureStage",
 		"failure_detail_code": "FailureDetailCode", "request_preview": "RequestPreview",
@@ -297,6 +297,7 @@ func expectedArgIdent(col string) string {
 		"routing_summary": "RoutingSummary", "agent_name": "AgentName", "agent_type": "AgentType",
 		"client_protocol": "ClientProtocol", "virtual_client_id": "VirtualClientID",
 		"discard_events": "DiscardEvents", "customer_id": "CustomerID",
+		"request_class": "RequestClass", "due_at": "DueAt",
 	}
 	if v, ok := aliases[col]; ok {
 		return v
