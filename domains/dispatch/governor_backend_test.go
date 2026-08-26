@@ -16,6 +16,10 @@ type fakeBackend struct {
 	closeErr error
 	notifs   []uint64
 
+	// notifyErr, when set, is returned from every NotifyRevisions call.
+	// Used by Stage F's "backend fails closed" assertions.
+	notifyErr error
+
 	// newResult controls what New returns in tests that exercise it.
 	newGov   Governor
 	newErr   error
@@ -28,7 +32,7 @@ func (f *fakeBackend) Open(_ context.Context) error  { return f.openErr }
 func (f *fakeBackend) Close(_ context.Context) error { return f.closeErr }
 func (f *fakeBackend) NotifyRevisions(_ context.Context, rev uint64) error {
 	f.notifs = append(f.notifs, rev)
-	return nil
+	return f.notifyErr
 }
 func (f *fakeBackend) New(_ context.Context, _ GovernorSpec) (Governor, error) {
 	f.newCalls++
