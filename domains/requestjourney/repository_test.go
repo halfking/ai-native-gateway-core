@@ -76,6 +76,69 @@ func TestPostgresRepositoryAttemptFactsUseTenantScopedContentFreeEvents(t *testi
 	}
 }
 
+func TestAttemptFactsFromEventsKeepsModelSwitchOnThePreviousAttempt(t *testing.T) {
+	start := time.Unix(1_700_000_000, 0).UTC()
+	first := testJourneyEvent("tenant-a", "request-1", 1)
+	first.Type = EventAttemptStarted
+	first.Stage = StageUpstream
+	first.OccurredAt = start
+	first.Model = "model-a"
+	first.ProviderID = 101
+	first.CredentialID = 11
+	first.Attempt = &AttemptRef{AttemptID: "attempt-a", AttemptNo: 1, Model: "model-a", ProviderID: 101, CredentialID: 11}
+	failed := first
+	failed.Seq = 2
+	failed.Type = EventAttemptFailed
+	failed.Outcome = OutcomeFailure
+	failed.OccurredAt = start.Add(time.Second)
+	switched := first
+	switched.Seq = 3
+	switched.Type = EventModelSwitched
+	switched.Stage = StageRetrying
+	switched.FromModel = "model-a"
+	switched.ToModel = "model-b"
+	switched.Model = ""
+	switched.Attempt = nil
+	switched.OccurredAt = start.Add(2 * time.Second)
+	second := first
+	second.Seq = 4
+	second.Type = EventAttemptStarted
+	second.Model = "model-b"
+	second.Attempt = &AttemptRef{AttemptID: "attempt-b", AttemptNo: 2, Model: "model-b", ProviderID: 101, CredentialID: 11}
+	second.OccurredAt = start.Add(3 * time.Second)
+
+	facts := attemptFactsFromEvents([]JourneyEvent{second, switched, failed, first}, start, start.Add(time.Minute))
+	if len(facts) != 2 || !facts[0].ModelSwitched || facts[1].ModelSwitched {
+		t.Fatalf("model switch attribution = %+v", facts)
+	}
+}
+
+func TestAttemptFactsFromEventsUsesStartTimeForWindowAndKeepsLaterTerminalEvent(t *testing.T) {
+	start := time.Unix(1_700_000_000, 0).UTC()
+	first := testJourneyEvent("tenant-a", "request-1", 1)
+	first.Type = EventAttemptStarted
+	first.Stage = StageUpstream
+	first.OccurredAt = start
+	first.Model = "model-a"
+	first.ProviderID = 101
+	first.CredentialID = 11
+	first.Attempt = &AttemptRef{AttemptID: "attempt-a", AttemptNo: 1, Model: "model-a", ProviderID: 101, CredentialID: 11}
+	terminal := first
+	terminal.Seq = 2
+	terminal.Type = EventAttemptSucceeded
+	terminal.Outcome = OutcomeSuccess
+	terminal.OccurredAt = start.Add(2 * time.Minute)
+	later := first
+	later.Seq = 3
+	later.Attempt = &AttemptRef{AttemptID: "attempt-b", AttemptNo: 2, Model: "model-a", ProviderID: 101, CredentialID: 11}
+	later.OccurredAt = start.Add(3 * time.Minute)
+
+	facts := attemptFactsFromEvents([]JourneyEvent{later, terminal, first}, start, start.Add(time.Minute))
+	if len(facts) != 1 || facts[0].AttemptID != "attempt-a" || facts[0].Outcome != OutcomeSuccess || facts[0].EndedAt == nil {
+		t.Fatalf("windowed facts = %+v", facts)
+	}
+}
+
 func TestQueryServiceFallsBackToPostgresOnRedisMiss(t *testing.T) {
 	server := miniredis.RunT(t)
 	redisClient := redis.NewClient(&redis.Options{Addr: server.Addr()})
