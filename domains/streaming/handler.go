@@ -1683,7 +1683,7 @@ func (h *ChatHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request) {
 	if clientIP == "" {
 		clientIP = r.RemoteAddr
 	}
-	if shouldTraceRequest(r.Method) {
+	if shouldFlushRequestTrace(r.Method) {
 		h.emitTrace(r.Context(), requestID,
 			gwtrace.ReceiveRequest(r.Method, r.URL.Path, clientIP).
 				WithDetails(
@@ -1825,7 +1825,9 @@ func (h *ChatHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request) {
 		// 把 trace 状态收尾,异步刷到 PG。即使 client_disconnect 已触发,
 		// 这里仍写 finalize 让前端能看到这是次"在 client 端被取消"的请求。
 		// 同时,失败事件携带上下文快照,便于事后定位客户端断连时的凭据/限流状态。
-		if h.traceRecorder != nil {
+		// GET is a compatibility probe: it returns 200 before request-log
+		// creation, so there is no request_logs row for trace flush to update.
+		if h.traceRecorder != nil && shouldFlushRequestTrace(r.Method) {
 			var (
 				fs    gwtrace.FinalStatus
 				failS gwtrace.Stage
@@ -2766,6 +2768,7 @@ func (h *ChatHandler) serveWithExecutor(
 	if !rlOutcome.Skipped {
 		writeRateLimitHeaders(w, rlOutcome)
 		if rlOutcome.Blocked {
+			recordGatewayRateLimitRejection(rlOutcome)
 			captureAndEmitRateLimited("rate_limit_exceeded", "rate limit exceeded", nil, nil)
 			writeErrorJSONCtx(r.Context(), w, http.StatusTooManyRequests, requestID, "rate_limit_error", i18n.MsgRateLimitExceeded, nil)
 			return
@@ -6080,7 +6083,7 @@ func shouldEmitDisconnectProbe(rctx context.Context, logCtx *RequestLogContext) 
 	return true
 }
 
-func shouldTraceRequest(method string) bool {
+func shouldFlushRequestTrace(method string) bool {
 	return method != http.MethodGet
 }
 

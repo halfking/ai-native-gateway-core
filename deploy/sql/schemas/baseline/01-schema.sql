@@ -12371,6 +12371,7 @@ SET default_table_access_method = heap;
 CREATE TABLE public.request_logs_bodies_hot (
     request_id text NOT NULL,
     ts timestamp with time zone DEFAULT now() NOT NULL,
+    tenant_id text,
     request_body jsonb,
     outbound_body jsonb,
     response_body jsonb
@@ -23861,7 +23862,7 @@ CREATE INDEX idx_request_logs_provider_quality ON ONLY public.request_logs USING
 -- Name: idx_request_logs_provider_tool_calls; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX idx_request_logs_provider_tool_calls ON ONLY public.request_logs USING btree (provider_id, ts DESC) WHERE ((tool_calls IS NOT NULL) AND (jsonb_typeof(tool_calls) = 'array') AND (jsonb_array_length(tool_calls) > 0));
+CREATE INDEX idx_request_logs_provider_tool_calls ON ONLY public.request_logs USING btree (provider_id, ts DESC) WHERE ((tool_calls IS NOT NULL) AND (jsonb_array_length(tool_calls) > 0));
 
 
 --
@@ -25345,7 +25346,7 @@ CREATE INDEX request_logs_2026_07_provider_id_quality_score_ts_idx ON public.req
 -- Name: request_logs_2026_07_provider_id_ts_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX request_logs_2026_07_provider_id_ts_idx ON public.request_logs_2026_07 USING btree (provider_id, ts DESC) WHERE ((tool_calls IS NOT NULL) AND (jsonb_typeof(tool_calls) = 'array') AND (jsonb_array_length(tool_calls) > 0));
+CREATE INDEX request_logs_2026_07_provider_id_ts_idx ON public.request_logs_2026_07 USING btree (provider_id, ts DESC) WHERE ((tool_calls IS NOT NULL) AND (jsonb_array_length(tool_calls) > 0));
 
 
 --
@@ -25590,7 +25591,7 @@ CREATE INDEX request_logs_2026_08_provider_id_quality_score_ts_idx ON public.req
 -- Name: request_logs_2026_08_provider_id_ts_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX request_logs_2026_08_provider_id_ts_idx ON public.request_logs_2026_08 USING btree (provider_id, ts DESC) WHERE ((tool_calls IS NOT NULL) AND (jsonb_typeof(tool_calls) = 'array') AND (jsonb_array_length(tool_calls) > 0));
+CREATE INDEX request_logs_2026_08_provider_id_ts_idx ON public.request_logs_2026_08 USING btree (provider_id, ts DESC) WHERE ((tool_calls IS NOT NULL) AND (jsonb_array_length(tool_calls) > 0));
 
 
 --

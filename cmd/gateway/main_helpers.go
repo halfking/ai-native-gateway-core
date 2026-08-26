@@ -154,10 +154,3 @@ func canStartGatewayDependentNewProbes(apiKey string) bool {
 func shouldStartNewProbeWorkers(apiKey string) bool {
 	return useNewProbeMode() && canStartGatewayDependentNewProbes(apiKey)
 }
-
-// localGatewayProbeAPIKey returns the key accepted by the local gateway's
-// static AuthMiddleware. Database system keys authenticate other surfaces but
-// must not replace this value for loopback probe requests.
-func localGatewayProbeAPIKey(apiKey string) string {
-	return strings.TrimSpace(apiKey)
-}

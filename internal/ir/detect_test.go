@@ -298,6 +298,16 @@ func TestDetectProtocolByURL(t *testing.T) {
 			url:       "/v1/messages",
 			wantProto: ProtocolAnthropicMessages,
 		},
+		{
+			name:      "empty body falls back to openai chat URL",
+			url:       "/v1/chat/completions",
+			wantProto: ProtocolOpenAIChat,
+		},
+		{
+			name:      "empty body falls back to anthropic messages URL",
+			url:       "/v1/messages",
+			wantProto: ProtocolAnthropicMessages,
+		},
 	}
 
 	for _, tt := range tests {

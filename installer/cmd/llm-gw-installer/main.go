@@ -847,8 +847,7 @@ func copySQLBackup(root string) error {
 		"startup/571_candidate_binding_scope_revision_canonical_priority_hash.sql": candidateBindingScopeRevisionCanonicalPriorityHashMigration571,
 		"startup/600_outbound_body_to_bodies_hot.sql":                              outboundBodyToBodiesHotMigration600,
 		"startup/601_request_logs_bodies_drop_metadata.sql":                        requestLogsBodiesDropMetadataMigration601,
-		"startup/602_request_logs_promote_atomic.sql":                              requestLogsPromoteAtomicMigration602,
-	}
+		"startup/602_request_logs_promote_atomic.sql":                              requestLogsPromoteAtomicMigration602,	}
 	for name, content := range files {
 		path := filepath.Join(initDir, name)
 		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
@@ -951,8 +950,7 @@ func setupSQLDir() (string, func(), error) {
 		"startup/571_candidate_binding_scope_revision_canonical_priority_hash.sql": candidateBindingScopeRevisionCanonicalPriorityHashMigration571,
 		"startup/600_outbound_body_to_bodies_hot.sql":                              outboundBodyToBodiesHotMigration600,
 		"startup/601_request_logs_bodies_drop_metadata.sql":                        requestLogsBodiesDropMetadataMigration601,
-		"startup/602_request_logs_promote_atomic.sql":                              requestLogsPromoteAtomicMigration602,
-	}
+		"startup/602_request_logs_promote_atomic.sql":                              requestLogsPromoteAtomicMigration602,	}
 	for name, content := range files {
 		path := filepath.Join(tmp, name)
 		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {

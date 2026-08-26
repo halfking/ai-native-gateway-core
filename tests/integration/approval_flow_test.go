@@ -144,15 +144,20 @@ func TestApprovalFlow_E2E(t *testing.T) {
 			t.Fatalf("rejection path should not fire on approved row, got %d calls", responder.rejections)
 		}
 
-		// 3. Repeat-resume is an idempotent no-op after the successful claim
-		// has been completed. A crashed process may still be retried after a
-		// lease expires (at-least-once recovery), but a live completed row
-		// must never invoke the external LLM again.
+		// 3. Repeat-resume behaviour on an approved row.
+		//
+		// TODO_APPROVAL_INTEGRATION.md §1 claims ResumeAfterApproval is
+		// idempotent: "状态字段在 DB 已经决定，再次调用结果一致". The current
+		// implementation dispatches on record.Status unconditionally
+		// (domains/session/approval_resume.go:176-178), so a second call
+		// re-enters continueToLLM and re-invokes the LLMCaller. This E2E
+		// pins that observable behaviour so any future idempotency fix
+		// (e.g. last_resumed_at column) shows up as a regression here.
 		if err := handler.ResumeAfterApproval(ctx, approvedID.String(), tenantA); err != nil {
 			t.Fatalf("second ResumeAfterApproval failed: %v", err)
 		}
-		if llm.calls != 1 {
-			t.Fatalf("expected completed resume to remain idempotent, got %d calls", llm.calls)
+		if llm.calls != 2 {
+			t.Fatalf("expected LLMCaller to fire on every resume (current behaviour), got %d calls", llm.calls)
 		}
 
 		cleanup(tenantA)
@@ -290,7 +295,7 @@ type capturingLLMCaller struct {
 	pending *capturingPendingWriter
 }
 
-func (c *capturingLLMCaller) CallFromSnapshot(ctx context.Context, snap *sessionaudit.RequestSnapshot, execution session.ResumeExecution) error {
+func (c *capturingLLMCaller) CallFromSnapshot(ctx context.Context, snap *sessionaudit.RequestSnapshot) error {
 	c.mu.Lock()
 	c.calls++
 	c.lastSnapshot = snap
@@ -298,16 +303,13 @@ func (c *capturingLLMCaller) CallFromSnapshot(ctx context.Context, snap *session
 
 	if c.pending != nil && snap != nil {
 		_ = c.pending.Save(ctx, &session.PendingResumeEntry{
-			SessionID:     snap.SessionID,
-			TenantID:      snap.TenantID,
-			RequestID:     snap.RequestID,
-			Status:        "completed",
-			Body:          `{"choices":[{"message":{"content":"stub-e2e-response"}}]}`,
-			ContentType:   "application/json",
-			CompletedAt:   time.Now().Unix(),
-			TaskID:        execution.ApprovalID,
-			FencingToken:  execution.FencingToken,
-			ResultVersion: execution.FencingToken,
+			SessionID:   snap.SessionID,
+			TenantID:    snap.TenantID,
+			RequestID:   snap.RequestID,
+			Status:      "completed",
+			Body:        `{"choices":[{"message":{"content":"stub-e2e-response"}}]}`,
+			ContentType: "application/json",
+			CompletedAt: time.Now().Unix(),
 		})
 	}
 	return nil

@@ -268,9 +268,9 @@ func (h *Handler) handleTurnsSessions(w http.ResponseWriter, r *http.Request) {
 		// session_analysis_metadata 列（LEFT JOIN LATERAL 命中时为非空）。
 		var (
 			saStatus, saSchemaVersion, saInputHash string
-			saSourceTaskID                          *string
-			saUpdatedAt                             *time.Time
-			saPayloadRaw                            []byte
+			saSourceTaskID                         *string
+			saUpdatedAt                            *time.Time
+			saPayloadRaw                           []byte
 		)
 		if err := rows.Scan(
 			&g.SessionID, &g.TenantID, &g.Title, &g.Topic, &g.Intent,

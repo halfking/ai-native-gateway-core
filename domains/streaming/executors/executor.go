@@ -503,16 +503,8 @@ type Executor struct {
 	// synchronous candidate loop. See executor_dispatch.go.
 	dispatchPipeline         *dispatch.Pipeline
 	dispatchModelRecommender DispatchModelRecommender
-
-	// Stage D: capacity-aware soft-sort hook. When capacityAwareSortOn
-	// is true AND capacityAwareSnapFn is non-nil, dispatchRoute
-	// re-ranks the candidate list so credentials reporting
-	// SnapshotStateQueueFull / SnapshotStateGovernorSaturated move to
-	// the tail while preserving relative order. Default (zero value)
-	// is a strict no-op so existing call sites stay green.
-	capacityAwareSortOn bool
-	capacityAwareSnapFn func(int) (dispatch.SnapshotState, bool)
-
+	capacityAwareSortOn      bool
+	capacityAwareSnapFn      func(int) (dispatch.SnapshotState, bool)
 	// traceRecorder (2026-07-17) 注入请求链路追踪器,记录 upstream_request /
 	// stream_start 事件。nil 时降级为 NoopRecorder 等价。
 	traceRecorder gwtrace.Recorder
@@ -1386,28 +1378,11 @@ func (e *Executor) SetLiveActions(em *liveactions.Emitter) {
 	}
 }
 
-// SetCapacityAwareSort (Stage D) wires the optional capacity-aware
-// soft-sort hook consumed by dispatchRoute. When on=true AND snapFn
-// != nil, dispatchRoute re-ranks the candidate list using ApplySoftPenalty
-// so credentials reporting QueueFull / GovernorSaturated move to the
-// tail while preserving relative order.
-//
-// snapFn must satisfy the signature produced by
-// dispatch.SnapshotFnFromProvider; nil snapFn disables the sort
-// regardless of the on flag (fail-open).
-//
-// Composition-root order (mirrors Stage B/C):
-//
-//	NewExecutor → SetDispatchPipeline → SetCapacityAwareSort → Start
-//
-// Callers that don't want the feature should leave this unset — the
-// zero-value (on=false, snapFn=nil) is a strict no-op.
 func (e *Executor) SetCapacityAwareSort(on bool, snapFn func(int) (dispatch.SnapshotState, bool)) {
-	if e == nil {
-		return
+	if e != nil {
+		e.capacityAwareSortOn = on
+		e.capacityAwareSnapFn = snapFn
 	}
-	e.capacityAwareSortOn = on
-	e.capacityAwareSnapFn = snapFn
 }
 
 // legacyWritersEnabled 返回"是否应执行旧的状态写入路径"（FpSlots Recorder /
@@ -2528,21 +2503,22 @@ func (e *Executor) recordModelNotFound(ctx context.Context, credentialID int, ra
 
 	// Self-healing: temporarily exclude this (credential, raw_model) pair
 	// from routing so the gateway stops sending requests to a model the
-	// upstream no longer serves. The pair is suppressed for five minutes;
-	// after seven consecutive failures the streak is cleared and direct
-	// routing is re-armed while the next targeted probe waits one hour.
+	// upstream no longer serves. We write node_probe_state with
+	// last_direct_ok=FALSE and a 5-minute next_retry_at window.
 	//
 	// Both refreshIndexSQL (autoroute/index.go) and filterCurrentlyAvailable
-	// (autoroute/recommend_v2.go) honor last_direct_ok and next_retry_at.
+	// (autoroute/recommend_v2.go) filter on:
+	//   nps.last_direct_ok = false AND nps.next_retry_at > now()
+	// so the pair disappears from the candidate pool for 5 minutes. After
+	// the window expires the pair is eligible again; if it still 404s,
+	// this function re-arms the exclusion. The bg node-probe worker owns
+	// the long-term retry ladder and will eventually set last_direct_ok=TRUE
+	// when an upstream probe confirms the model is back.
+	//
 	// This is scoped to the specific (credential, model) pair — it does
 	// NOT cool the entire credential, so other models on the same
 	// credential remain routable.
-
-	const (
-		mnfCoolWindow     = 5 * time.Minute
-		mnfResetThreshold = 7
-		mnfResetBackoff   = 1 * time.Hour
-	)
+	const mnfCoolWindow = 5 * time.Minute
 	_, mnfErr := e.DB.Pool().Exec(ctx, `
 		INSERT INTO node_probe_state (
 			credential_id, raw_model_name,
@@ -2561,31 +2537,17 @@ func (e *Executor) recordModelNotFound(ctx context.Context, credentialID int, ra
 			$4, NULL,
 			now()
 		)
-			ON CONFLICT (credential_id, raw_model_name) DO UPDATE
-			SET last_direct_ok = CASE
-			        WHEN node_probe_state.consecutive_failures + 1 >= $5 THEN TRUE
-			        ELSE FALSE
-			    END,
-			    last_gateway_ok = FALSE,
-			    last_attempt_at = now(),
-			    next_retry_at = CASE
-			        WHEN node_probe_state.consecutive_failures + 1 >= $5
-			            THEN now() + $6::interval
-			        ELSE now() + $3::interval
-			    END,
-			    next_retry_seconds = CASE
-			        WHEN node_probe_state.consecutive_failures + 1 >= $5
-			            THEN EXTRACT(EPOCH FROM $6::interval)::int
-			        ELSE EXTRACT(EPOCH FROM $3::interval)::int
-			    END,
-			    consecutive_failures = CASE
-			        WHEN node_probe_state.consecutive_failures + 1 >= $5 THEN 0
-			        ELSE node_probe_state.consecutive_failures + 1
-			    END,
-			    last_err_code = $4,
-			    in_flight_until = NULL,
-			    updated_at = now()
-		`, credentialID, rawModel, mnfCoolWindow.String(), errorCode, mnfResetThreshold, mnfResetBackoff.String())
+		ON CONFLICT (credential_id, raw_model_name) DO UPDATE
+		SET last_direct_ok = FALSE,
+		    last_gateway_ok = FALSE,
+		    last_attempt_at = now(),
+		    next_retry_at = now() + $3::interval,
+		    next_retry_seconds = EXTRACT(EPOCH FROM $3::interval)::int,
+		    consecutive_failures = node_probe_state.consecutive_failures + 1,
+		    last_err_code = $4,
+		    in_flight_until = NULL,
+		    updated_at = now()
+	`, credentialID, rawModel, mnfCoolWindow.String(), errorCode)
 	if mnfErr != nil {
 		slog.Warn("record_model_not_found: node_probe_state UPSERT failed",
 			"credential_id", credentialID,

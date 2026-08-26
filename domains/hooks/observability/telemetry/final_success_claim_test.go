@@ -14,7 +14,6 @@ package telemetry
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -44,10 +43,8 @@ func anyArgs(n int) []interface{} {
 }
 
 // claimSQLPattern 钉死 claim 语句的语义要素：自守卫（成功终态 + 非空会话）、
-// hot 侧 NOT EXISTS（排除自身）。2026-08-25: promoted 分区守卫 (跨 7 天窗口)
-// 改为动态拼装 (列存安全), 默认 nil 分支 (单测无 Client 注册) 不含该子句.
-// 集成测试覆盖 promoted guard 拼接: TestClaimSessionFinalSuccess_HeapPartitionsGuard。
-const claimSQLPattern = `UPDATE request_logs_hot\s+SET is_final_success = TRUE\s+WHERE request_id = \$1\s+AND success = TRUE\s+AND request_status = 'success'\s+AND COALESCE\(gw_session_id, ''\) <> ''\s+AND NOT EXISTS[\s\S]*FROM request_logs_hot other[\s\S]*other\.request_id <> request_logs_hot\.request_id`
+// hot 侧 NOT EXISTS（排除自身）、promoted 分区母表侧 NOT EXISTS（跨 7 天窗口）。
+const claimSQLPattern = `UPDATE request_logs_hot\s+SET is_final_success = TRUE\s+WHERE request_id = \$1\s+AND success = TRUE\s+AND request_status = 'success'\s+AND COALESCE\(gw_session_id, ''\) <> ''\s+AND NOT EXISTS[\s\S]*FROM request_logs_hot other[\s\S]*other\.request_id <> request_logs_hot\.request_id\s+\)\s+AND NOT EXISTS\s+\(\s+SELECT 1\s+FROM request_logs promoted\s+WHERE promoted\.gw_session_id = request_logs_hot\.gw_session_id\s+AND promoted\.is_final_success`
 
 func TestClaimSessionFinalSuccess_GrantPathRunsInSameTxWithSavepoint(t *testing.T) {
 	mock, tx := newClaimMock(t)
@@ -161,11 +158,11 @@ func TestUpdateRequestLog_AppendsFinalSuccessClaimOnTerminalSuccess(t *testing.T
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	// request_logs_hot 终态 UPDATE（RETURNING ts，97 个绑定参数；含 t0..t9）
 	mock.ExpectExec(`UPDATE request_logs_hot`).
-		WithArgs(anyArgs(97)...).
+		WithArgs(anyArgs(96)...).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	// bodies 侧表 upsert
 	mock.ExpectExec(`INSERT INTO request_logs_bodies_hot`).
-		WithArgs(anyArgs(4)...).
+		WithArgs(anyArgs(5)...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	// v4 T7 claim（同事务）
 	mock.ExpectExec(`SAVEPOINT gw_final_success_claim`).
@@ -207,10 +204,10 @@ func TestUpdateRequestLog_FailurePathSkipsClaim(t *testing.T) {
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	mock.ExpectExec(`UPDATE request_logs_hot`).
-		WithArgs(anyArgs(97)...).
+		WithArgs(anyArgs(96)...).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	mock.ExpectExec(`INSERT INTO request_logs_bodies_hot`).
-		WithArgs(anyArgs(4)...).
+		WithArgs(anyArgs(5)...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mock.ExpectCommit()
 
@@ -218,39 +215,5 @@ func TestUpdateRequestLog_FailurePathSkipsClaim(t *testing.T) {
 	c.requestLogDB = mock
 
 	require.NoError(t, c.updateRequestLog(entry))
-	require.NoError(t, mock.ExpectationsWereMet())
-}
-
-// TestClaimSessionFinalSuccess_HeapPartitionsGuard 验证 2026-08-25 columnar 安全修复:
-// 当 Client 注册了非空 heap 月度分区列表, claim 语句必须拼装 promoted guard
-// (UNION ALL 多个 heap 月度分区, 排除 columnar 月份). 这覆盖生产路径, 避免
-// `FROM request_logs promoted` 触发 SQLSTATE 0A000.
-func TestClaimSessionFinalSuccess_HeapPartitionsGuard(t *testing.T) {
-	mock, tx := newClaimMock(t)
-
-	// SetClaimClient 把当前实例注入 holder, claim 路径会取其 heap 月度分区.
-	prev := loadClientForClaim()
-	t.Cleanup(func() { SetClaimClient(prev) })
-
-	c := NewClient()
-	c.heapPartitions = []string{
-		"request_logs_2026_07", // 列存 (白名单外) — 不在 heap 列表
-		"request_logs_2026_08", // 已转 heap (P1-5 修复)
-		"request_logs_2026_09", // heap
-	}
-	c.heapPartitionsCachedAt = time.Now()
-	SetClaimClient(c)
-
-	mock.ExpectExec(`SAVEPOINT gw_final_success_claim`).
-		WillReturnResult(pgxmock.NewResult("SAVEPOINT", 0))
-	// 期望 claim SQL 包含 UNION ALL heap 分区名 (白名单过滤) + 接受 1 个参数 (req id)
-	expectedGuard := `UNION ALL[\s\S]*request_logs_2026_08[\s\S]*request_logs_2026_09[\s\S]*promoted\.gw_session_id`
-	mock.ExpectExec(expectedGuard).
-		WithArgs("req-claim-guard").
-		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
-	mock.ExpectExec(`RELEASE SAVEPOINT gw_final_success_claim`).
-		WillReturnResult(pgxmock.NewResult("RELEASE", 0))
-
-	claimSessionFinalSuccess(context.Background(), tx, "req-claim-guard")
 	require.NoError(t, mock.ExpectationsWereMet())
 }

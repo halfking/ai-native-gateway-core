@@ -48,7 +48,7 @@ const compressionStatsEstimatedOrigSQL = `
 						WHEN jsonb_typeof(rb.request_body->'_gw_body_summary') = 'object'
 							AND (rb.request_body #>> '{_gw_body_summary,bytes}') ~ '^[0-9]+$'
 						THEN (rb.request_body #>> '{_gw_body_summary,bytes}')::numeric
-					ELSE LENGTH(COALESCE(rb.request_body::text, ''))::numeric
+					ELSE LENGTH(COALESCE(COALESCE(rb.request_body, rl.request_body)::text, ''))::numeric
 				END / 4.0)), 0)::bigint,
 				COALESCE(SUM(CASE WHEN jsonb_typeof(rb.request_body->'_gw_body_summary') = 'object' THEN 1 ELSE 0 END), 0)::bigint
 		FROM request_logs_with_current_month rl
@@ -111,14 +111,14 @@ func (h *Handler) handleCompressionStats(w http.ResponseWriter, r *http.Request)
 		// vs the below baseline). Below-band rows also count for transparency
 		// so the band ratios are derivable; only the two non-baseline bands
 		// are surfaced as separate numeric fields for alert wiring.
-		TokenBandBelow       *int64       `json:"token_band_below,omitempty"`
-		TokenBandPreliminary *int64       `json:"token_band_preliminary,omitempty"`
-		TokenBandForced      *int64       `json:"token_band_forced,omitempty"`
-		TotalOutboundTokens  *int64       `json:"total_outbound_tokens,omitempty"`
-		EstimatedOrigTokens  *int64       `json:"estimated_original_tokens,omitempty"`
-		EstimatedTokensSaved *int64       `json:"estimated_tokens_saved,omitempty"`
-		SummaryModeRows      *int64       `json:"summary_mode_rows,omitempty"`
-		HourlySeries         []hourBucket `json:"hourly_series"`
+		TokenBandBelow       *int64         `json:"token_band_below,omitempty"`
+		TokenBandPreliminary *int64         `json:"token_band_preliminary,omitempty"`
+		TokenBandForced      *int64         `json:"token_band_forced,omitempty"`
+		TotalOutboundTokens  *int64         `json:"total_outbound_tokens,omitempty"`
+		EstimatedOrigTokens  *int64         `json:"estimated_original_tokens,omitempty"`
+		EstimatedTokensSaved *int64         `json:"estimated_tokens_saved,omitempty"`
+		SummaryModeRows      *int64         `json:"summary_mode_rows,omitempty"`
+		HourlySeries         []hourBucket   `json:"hourly_series"`
 	}{
 		StrategyDistribution: make(map[string]int),
 		HourlySeries:         make([]hourBucket, 0),
@@ -137,12 +137,10 @@ func (h *Handler) handleCompressionStats(w http.ResponseWriter, r *http.Request)
 		SELECT
 			COALESCE(NULLIF(rl.compression_strategy,''), 'none') AS strategy,
 			COUNT(*) AS cnt,
-			COUNT(rb.outbound_body)::bigint AS with_outbound,
+			COUNT(rl.outbound_body)::bigint AS with_outbound,
 			SUM(COALESCE(rl.outbound_token_est, 0))::bigint AS total_tok_after,
-			SUM(CASE WHEN rb.outbound_body IS NOT NULL THEN COALESCE(rl.outbound_token_est, 0) ELSE 0 END)::bigint AS compressed_tok
+			SUM(CASE WHEN rl.outbound_body IS NOT NULL THEN COALESCE(rl.outbound_token_est, 0) ELSE 0 END)::bigint AS compressed_tok
 		FROM request_logs_with_current_month rl
-		LEFT JOIN request_logs_bodies_with_current_month rb
-		  ON rb.request_id = rl.request_id
 		WHERE rl.ts >= $1 AND rl.ts <= $2
 		  AND ($3 OR rl.success)`+aggWhere+`
 		GROUP BY strategy
@@ -253,10 +251,8 @@ func (h *Handler) handleCompressionStats(w http.ResponseWriter, r *http.Request)
 	bucketRows, err := h.db.Query(ctx, `
 		SELECT `+bucketExpr+` AS bucket,
 			COUNT(*) AS total,
-			COUNT(rb.outbound_body)::int AS compressed
+			COUNT(rl.outbound_body)::int AS compressed
 		FROM request_logs_with_current_month rl
-		LEFT JOIN request_logs_bodies_with_current_month rb
-		  ON rb.request_id = rl.request_id
 		WHERE rl.ts >= $1 AND rl.ts <= $2
 		  AND ($3 OR rl.success)`+aggWhere+`
 		GROUP BY bucket

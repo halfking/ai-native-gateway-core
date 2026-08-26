@@ -68,18 +68,6 @@ func (h *ChatHandler) runSurvivalCoordinator(
 
 	params := buildExecParams(w)
 	params.R = frozenReq
-	// Keep survival decision logs on the same correlation chain as the
-	// handler/executor logs. ExecuteAttempt derives its request context from
-	// params.R, so attach the context before the coordinator starts.
-	frozenCtx = withStreamingContext(frozenCtx, streamingRequestContext{
-		RequestID:       params.RequestID,
-		ParentRequestID: params.ParentRequestID,
-		SessionID:       params.SessionID,
-		TenantID:        params.TenantID,
-		ClientModel:     params.Model,
-	})
-	frozenReq = r.WithContext(frozenCtx)
-	params.R = frozenReq
 
 	// The handler-owned StreamSession stays active through terminal completion.
 	// OnStreamReady is retained for compatibility but no longer stops heartbeat;

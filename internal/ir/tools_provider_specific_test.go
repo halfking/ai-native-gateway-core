@@ -146,7 +146,7 @@ func TestToolDefinition_IsFunction(t *testing.T) {
 		tool ToolDefinition
 		want bool
 	}{
-		{ToolDefinition{Name: "x"}, true},                   // empty type
+		{ToolDefinition{Name: "x"}, true},               // empty type
 		{ToolDefinition{Name: "x", Type: "function"}, true}, // explicit function
 		{ToolDefinition{Type: "computer_20250124"}, false},
 		{ToolDefinition{Type: "web_search_preview"}, false},
