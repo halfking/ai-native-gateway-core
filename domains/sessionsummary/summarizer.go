@@ -16,9 +16,11 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 
+	"github.com/kaixuan/llm-gateway-go/domains/analysis/sessionmeta"
 	"github.com/kaixuan/llm-gateway-go/domains/secretmask"
 	"github.com/kaixuan/llm-gateway-go/internal/summarystore"
 	"github.com/kaixuan/llm-gateway-go/internal/titlestore"
+	"github.com/kaixuan/llm-gateway-go/telemetry"
 )
 
 // Summarizer 会话总结器
@@ -78,11 +80,18 @@ type CompletionConfig struct {
 
 // SessionSummary 会话总结结果
 type SessionSummary struct {
-	SessionKey  string    `json:"session_key"`
-	Title       string    `json:"title"`
-	Summary     string    `json:"summary"`
-	KeyTopics   []string  `json:"key_topics"`
-	UserIntent  string    `json:"user_intent"`
+	SessionKey string   `json:"session_key"`
+	Title      string   `json:"title"`
+	Summary    string   `json:"summary"`
+	KeyTopics  []string `json:"key_topics"`
+	UserIntent string   `json:"user_intent"`
+	// 2026-08-26 (migration 606): 会话身份扩展 —— 由总结 LLM 基于系统
+	// 提示词前缀识别，LLM 缺失时由规则兜底
+	// (telemetry.DetectAgentFromSystemPrompt /
+	//  sessionmeta.DetectExpertFromSystemPrompt)。
+	AgentType   string    `json:"agent_type,omitempty"`
+	ExpertType  string    `json:"expert_type,omitempty"`
+	Tags        []string  `json:"tags,omitempty"`
 	ContentHash string    `json:"content_hash"`
 	GeneratedAt time.Time `json:"generated_at"`
 	Version     int       `json:"version"`
@@ -157,25 +166,31 @@ func (s *Summarizer) GenerateSummary(ctx context.Context, tenantID, sessionKey s
 		return nil, fmt.Errorf("no messages found for session: %s", sessionKey)
 	}
 
-	// 3. 构建分析 Prompt
-	prompt := s.buildSummaryPrompt(messages)
+	// 2.5 提取系统提示词前缀（2026-08-26: 供 LLM 识别智能体/专家类型；
+	// 取不到时静默降级为 ""。）
+	sysPrefix := s.systemPromptPrefix(ctx, tenantID, sessionKey)
+
+	// 3. 构建分析 Prompt（含系统提示词节选）
+	prompt := s.buildSummaryPrompt(messages, sysPrefix)
 
 	// 4. 调用 LLM 生成总结
 	response, err := s.llmClient.Complete(ctx, prompt,
 		WithModel(s.model),
-		WithMaxTokens(500),
+		WithMaxTokens(600),
 		WithTemperature(0.3),
-		WithSystemPrompt("你是一个专业的会话分析助手，擅长提取会话的核心信息并生成简洁的标题和摘要。"),
+		WithSystemPrompt("你是一个专业的会话分析助手，擅长提取会话的核心信息并生成简洁的标题和摘要，同时识别请求方的智能体类型与专家领域。"),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate summary: %w", err)
 	}
 
-	// 5. 解析 LLM 响应
+	// 5. 解析 LLM 响应 + 规则兜底（LLM 未返回 agent/expert 时用
+	// system-prompt 规则检测补齐）
 	summary, err := s.parseSummaryResponse(response, sessionKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse summary response: %w", err)
 	}
+	enrichSessionIdentity(summary, sysPrefix)
 
 	// 6. 保存到数据库
 	if err := s.saveSummaryToDB(ctx, tenantID, summary); err != nil {
@@ -251,16 +266,31 @@ func (s *Summarizer) GenerateTitle(ctx context.Context, tenantID, sessionKey, fi
 	return title, nil
 }
 
-// buildSummaryPrompt 构建总结 Prompt
-func (s *Summarizer) buildSummaryPrompt(messages []SessionMessage) string {
+// buildSummaryPrompt 构建总结 Prompt。
+//
+// 2026-08-26: 新增 sysPrefix 参数 —— 会话系统提示词前缀（前
+// SystemPromptPrefixBytes 字节）。智能体类型（Cursor/ZCode/opencode/...）
+// 与专家类型（software_engineering/security/...）几乎都写在客户端注入的
+// system prompt 开头，必须把它喂给总结 LLM 才能识别；同时输出 schema
+// 扩展出 agent_type / expert_type / tags，为会话打标签与扩展属性。
+func (s *Summarizer) buildSummaryPrompt(messages []SessionMessage, sysPrefix string) string {
 	var sb strings.Builder
 	sb.WriteString("请分析以下对话，按 JSON 格式返回：\n")
 	sb.WriteString("{\n")
 	sb.WriteString("  \"title\": \"会话标题（20字以内）\",\n")
 	sb.WriteString("  \"summary\": \"会话摘要（100-200字）\",\n")
 	sb.WriteString("  \"key_topics\": [\"主题1\", \"主题2\", \"主题3\"],\n")
-	sb.WriteString("  \"user_intent\": \"chat|code|tool_use|data_analysis|creative|unknown\"\n")
+	sb.WriteString("  \"user_intent\": \"chat|code|tool_use|data_analysis|creative|unknown\",\n")
+	sb.WriteString("  \"agent_type\": \"发起该会话的智能体/客户端（如 cursor|zcode|opencode|claude-code|kiro|cline|aider；无法判断为 unknown）\",\n")
+	sb.WriteString("  \"expert_type\": \"该智能体的专家领域（如 software_engineering|security|data_science|devops|testing|design|research；无法判断为 unknown）\",\n")
+	sb.WriteString("  \"tags\": [\"会话标签（3-6个，简短小写英文或中文，如 debugging|go|sql 迁移）\"]\n")
 	sb.WriteString("}\n\n")
+	sb.WriteString("提示：智能体的身份与专家领域通常写在客户端注入的系统提示词（system prompt）开头，请优先依据系统提示词节选判断；对话内容由用户决定，不代表智能体身份。\n\n")
+	if strings.TrimSpace(sysPrefix) != "" {
+		sb.WriteString("系统提示词节选（来自客户端，仅用于识别智能体与专家领域）：\n<system_prompt>\n")
+		sb.WriteString(sysPrefix)
+		sb.WriteString("\n</system_prompt>\n\n")
+	}
 	sb.WriteString("对话内容：\n---\n")
 
 	// 最多包含前 10 条消息
@@ -297,16 +327,25 @@ func (s *Summarizer) buildSummaryPrompt(messages []SessionMessage) string {
 // 与全量 buildSummaryPrompt 不同：传入「上一次摘要」+「新增消息」，
 // LLM 只需融合新信息更新摘要，避免每次全量重算（省 token）。
 // 适用 summary_strategy=rolling（默认推荐）。
-func (s *Summarizer) buildRollingPrompt(prevSummary string, newMessages []SessionMessage) string {
+func (s *Summarizer) buildRollingPrompt(prevSummary string, newMessages []SessionMessage, sysPrefix string) string {
 	var sb strings.Builder
 	sb.WriteString("请基于已有摘要和新增对话，更新会话总结。按 JSON 格式返回：\n")
 	sb.WriteString("{\n")
 	sb.WriteString("  \"title\": \"会话标题（20字以内）\",\n")
 	sb.WriteString("  \"summary\": \"更新后的会话摘要（100-200字）\",\n")
 	sb.WriteString("  \"key_topics\": [\"主题1\", \"主题2\", \"主题3\"],\n")
-	sb.WriteString("  \"user_intent\": \"chat|code|tool_use|data_analysis|creative|unknown\"\n")
+	sb.WriteString("  \"user_intent\": \"chat|code|tool_use|data_analysis|creative|unknown\",\n")
+	sb.WriteString("  \"agent_type\": \"发起该会话的智能体/客户端（如 cursor|zcode|opencode|claude-code|kiro|cline|aider；无法判断为 unknown）\",\n")
+	sb.WriteString("  \"expert_type\": \"该智能体的专家领域（如 software_engineering|security|data_science|devops|testing|design|research；无法判断为 unknown）\",\n")
+	sb.WriteString("  \"tags\": [\"会话标签（3-6个，简短小写英文或中文）\"]\n")
 	sb.WriteString("}\n\n")
 
+	sb.WriteString("提示：智能体的身份与专家领域通常写在客户端注入的系统提示词（system prompt）开头，请优先依据系统提示词节选判断。\n\n")
+	if strings.TrimSpace(sysPrefix) != "" {
+		sb.WriteString("系统提示词节选（来自客户端，仅用于识别智能体与专家领域）：\n<system_prompt>\n")
+		sb.WriteString(sysPrefix)
+		sb.WriteString("\n</system_prompt>\n\n")
+	}
 	sb.WriteString("已有摘要：\n")
 	if prevSummary == "" {
 		sb.WriteString("（无，这是首次总结）\n")
@@ -358,12 +397,15 @@ func (s *Summarizer) GenerateRollingSummary(ctx context.Context, tenantID, sessi
 		return s.GenerateSummary(ctx, tenantID, sessionKey)
 	}
 
-	prompt := s.buildRollingPrompt(prevSummary, messages)
+	// 系统提示词前缀（2026-08-26: 同全量路径，best-effort；取不到降级 "")
+	sysPrefix := s.systemPromptPrefix(ctx, tenantID, sessionKey)
+
+	prompt := s.buildRollingPrompt(prevSummary, messages, sysPrefix)
 	response, err := s.llmClient.Complete(ctx, prompt,
 		WithModel(s.model),
-		WithMaxTokens(500),
+		WithMaxTokens(600),
 		WithTemperature(0.3),
-		WithSystemPrompt("你是一个专业的会话分析助手，擅长增量更新会话总结。"),
+		WithSystemPrompt("你是一个专业的会话分析助手，擅长增量更新会话总结，同时识别请求方的智能体类型与专家领域。"),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate rolling summary: %w", err)
@@ -373,6 +415,7 @@ func (s *Summarizer) GenerateRollingSummary(ctx context.Context, tenantID, sessi
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse rolling summary: %w", err)
 	}
+	enrichSessionIdentity(summary, sysPrefix)
 
 	if err := s.saveSummaryToDB(ctx, tenantID, summary); err != nil {
 		return nil, fmt.Errorf("failed to save rolling summary: %w", err)
@@ -432,6 +475,9 @@ func (s *Summarizer) parseSummaryResponse(response, sessionKey string) (*Session
 		Summary    string   `json:"summary"`
 		KeyTopics  []string `json:"key_topics"`
 		UserIntent string   `json:"user_intent"`
+		AgentType  string   `json:"agent_type"`
+		ExpertType string   `json:"expert_type"`
+		Tags       []string `json:"tags"`
 	}
 
 	if err := json.Unmarshal([]byte(jsonStr), &result); err != nil {
@@ -453,10 +499,77 @@ func (s *Summarizer) parseSummaryResponse(response, sessionKey string) (*Session
 		Summary:     result.Summary,
 		KeyTopics:   result.KeyTopics,
 		UserIntent:  result.UserIntent,
+		AgentType:   normalizeIdentityToken(result.AgentType),
+		ExpertType:  normalizeIdentityToken(result.ExpertType),
+		Tags:        normalizeTags(result.Tags),
 		ContentHash: contentHash,
 		GeneratedAt: time.Now(),
 		Version:     1,
 	}, nil
+}
+
+// maxSessionTags 单个会话允许持久化的标签数上限（防止 LLM 输出超长 tag 列表
+// 撑爆 TEXT[] 与 UI）。
+const maxSessionTags = 8
+
+// maxTagRunes 单个标签的长度上限（rune）。
+const maxTagRunes = 32
+
+// normalizeTags 对 LLM 输出的 tags 做规整：trim + lower（英文标签）+ 去重 +
+// 数量/长度截断。空输入返回空 slice（非 nil，方便一直序列化为 []）。
+func normalizeTags(tags []string) []string {
+	out := make([]string, 0, len(tags))
+	seen := map[string]bool{}
+	for _, t := range tags {
+		v := strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(t)), " "))
+		if v == "" || v == "unknown" || seen[v] {
+			continue
+		}
+		r := []rune(v)
+		if len(r) > maxTagRunes {
+			v = string(r[:maxTagRunes])
+		}
+		seen[v] = true
+		out = append(out, v)
+		if len(out) >= maxSessionTags {
+			break
+		}
+	}
+	return out
+}
+
+// normalizeIdentityToken 规整 LLM 输出的 agent_type / expert_type：
+// 转小写、去空白，unknown 与空一律归并为 ""（未识别），交给规则兜底。
+func normalizeIdentityToken(v string) string {
+	v = strings.ToLower(strings.TrimSpace(v))
+	if v == "" || v == "unknown" || v == "n/a" {
+		return ""
+	}
+	return v
+}
+
+// enrichSessionIdentity 用规则兜底补齐 LLM 未识别的 agent_type / expert_type。
+// 输入是会话系统提示词前缀（best-effort，可为空）；识别不到则保持 ""。
+//
+// 规则来源是既有 SSOT，不在此重复实现：
+//   - telemetry.DetectAgentFromSystemPrompt（agent 16 类模式，cursor 由
+//     "powered by composer" / "operate in cursor" 等特征命中）
+//   - sessionmeta.DetectExpertFromSystemPrompt（expert 14 类模式，优先级
+//     排序保证 "security engineer" 压过通用 "engineer"）
+func enrichSessionIdentity(summary *SessionSummary, sysPrefix string) {
+	if summary == nil || sysPrefix == "" {
+		return
+	}
+	if summary.AgentType == "" {
+		if agent := telemetry.DetectAgentFromSystemPrompt(sysPrefix); agent != "" {
+			summary.AgentType = agent
+		}
+	}
+	if summary.ExpertType == "" {
+		if expert := sessionmeta.DetectExpertFromSystemPrompt(sysPrefix); expert != "" && expert != sessionmeta.ExpertUnknown {
+			summary.ExpertType = expert
+		}
+	}
 }
 
 // getSessionMessages delegates to the configured MessageSource (full-summary
@@ -481,6 +594,12 @@ type pgRequestLogsSource struct {
 }
 
 func (m *pgRequestLogsSource) getSessionMessagesQuery() string {
+	// 2026-08-26: 读面切到 _with_current_month 视图（hot ∪ parent）。
+	// 此前读 parent request_logs / request_logs_bodies，migration 600 后请求体
+	// 先落 request_logs_bodies_hot，父表要等热点提升才有数据，导致会话刚
+	// 关闭时总结读不到 fresh 消息（观测：hot-only 会话 GenerateSummary 报
+	// "no messages found"）。_with_current_month 视图早已存在且
+	// syncCanonicalSessionTitle 已在用，视图只加宽读面、不改语义。
 	return `
 		SELECT
 			rl.request_id,
@@ -488,8 +607,8 @@ func (m *pgRequestLogsSource) getSessionMessagesQuery() string {
 			COALESCE(rb.request_body->'messages'->-1->>'content', '') as content,
 			rl.outbound_model,
 			rl.ts
-		FROM request_logs rl
-		LEFT JOIN request_logs_bodies rb
+		FROM request_logs_with_current_month rl
+		LEFT JOIN request_logs_bodies_with_current_month rb
 		  ON rb.request_id = rl.request_id
 		WHERE rl.tenant_id = $1 AND rl.gw_session_id = $2
 		ORDER BY rl.ts ASC
@@ -525,13 +644,14 @@ func (m *pgRequestLogsSource) GetMessagesSince(ctx context.Context, tenantID, se
 	if m.pool == nil {
 		return nil, fmt.Errorf("sessionsummary: store pool is nil")
 	}
+	// 2026-08-26: 同 getSessionMessagesQuery，读 _with_current_month 视图。
 	query := `
 		SELECT rl.request_id,
 		       COALESCE(rb.request_body->>'role', 'user') as role,
 		       COALESCE(rb.request_body->'messages'->-1->>'content', '') as content,
 		       rl.outbound_model, rl.ts
-		FROM request_logs rl
-		LEFT JOIN request_logs_bodies rb
+		FROM request_logs_with_current_month rl
+		LEFT JOIN request_logs_bodies_with_current_month rb
 		  ON rb.request_id = rl.request_id
 		WHERE rl.gw_session_id = $1`
 	args := []any{sessionKey}
@@ -582,6 +702,9 @@ func (s *Summarizer) saveSummaryToDB(ctx context.Context, tenantID string, summa
 		Summary:        summary.Summary,
 		KeyTopics:      summary.KeyTopics,
 		UserIntent:     summary.UserIntent,
+		AgentType:      summary.AgentType,
+		ExpertType:     summary.ExpertType,
+		Tags:           summary.Tags,
 		LastSummarized: summary.GeneratedAt,
 	})
 	return err

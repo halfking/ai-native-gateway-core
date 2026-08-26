@@ -5608,6 +5608,7 @@ func main() {
 		// 2026-08-11 (479): V2 多层队列调度实时快照（Tier-3 显示与统计）。
 		mux.HandleFunc("/api/admin/dispatch/queues", wrapAdmin(handleDispatchQueues))
 		mux.HandleFunc("/api/admin/dispatch/waterfall", wrapAdmin(handleDispatchWaterfall))
+		mux.HandleFunc("/api/admin/dispatch/waterfall/request/", wrapAdmin(handleDispatchWaterfallByRequest))
 		mux.HandleFunc("/api/admin/dispatch/minute-stats", wrapAdmin(handleDispatchMinuteStats))
 		slog.Info("dispatch_v2 queue snapshot enabled (/api/admin/dispatch/queues, /waterfall)")
 

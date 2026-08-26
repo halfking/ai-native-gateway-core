@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, onBeforeUnmount, watch } from 'vue'
 import { localeRef } from '../i18n'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import {
   getRequestLogs,
@@ -879,9 +879,11 @@ function shortHash(v: string | null | undefined) {
   return v ? `${v.slice(0, 12)}…` : t('requests.none')
 }
 
+const route = useRoute()
+const router = useRouter()
+
 function showDetail(requestId: string) {
-  openDetailWithTrace.value = false
-  activeRequestId.value = requestId
+  void router.push({ name: 'request-detail', params: { requestId } })
 }
 
 function closeDetail() {
@@ -972,13 +974,14 @@ function calcSavingDetail(row: any): { savingStr: string; tokenSavingStr: string
   return { savingStr, tokenSavingStr, msgReductionStr, hasSaving: true }
 }
 
-const route = useRoute()
-
 // super_admin 在每条日志行可直接打开共享请求详情，并展开流程面板。
 function gotoTrace(requestId: string) {
   if (!requestId) return
-  openDetailWithTrace.value = true
-  activeRequestId.value = requestId
+  void router.push({
+    name: 'request-detail',
+    params: { requestId },
+    query: { tab: 'flow' },
+  })
 }
 
 onMounted(async () => {

@@ -29,7 +29,10 @@ VIEW="sql/objects/views/request_logs_bodies_with_current_month.sql"
 
 REQUIRED_HOT_COLS=(request_id ts tenant_id success)
 EXPECTED_GONE_FROM_HOT=(request_body response_body outbound_body)
-EXPECTED_BODIES_HOT_COLS=(request_id ts tenant_id request_body outbound_body response_body)
+# Post-601/604 contract: tenant_id was dropped from BOTH bodies tables
+# (migration 601 dropped it from _hot, 604 from the parent). Tenant scoping is
+# resolved through the request_id join into request_logs_hot.
+EXPECTED_BODIES_HOT_COLS=(request_id ts request_body outbound_body response_body)
 EXPECTED_BODIES_PARENT_COLS=(request_id ts request_body outbound_body response_body)
 
 HEADER="[LP5 check-body-storage-schema]"
@@ -116,10 +119,10 @@ if [[ "$view_cols" != "$(printf "%s\n" "${EXPECTED_BODIES_PARENT_COLS[@]}" | sor
     echo "  ⚠  view projection differs from bodies table projection"
     echo "  View columns:   $view_cols"
     echo "  Expected:       $expected_view_cols"
-    # tenant_id exists only on the hot table; the five-column view preserves
-    # the historical UNION contract and intentionally omits it.
+    # Post-601/604 both bodies tables carry the same five columns; the view
+    # preserves that UNION contract exactly.
     if [[ "$view_cols" == "$expected_view_cols" ]]; then
-        echo "  ✅ tenant_id omission is intentional: view keeps the five-column contract"
+        echo "  ✅ view keeps the five-column bodies contract (post-601/604)"
     fi
 fi
 echo "  ✅ view FROM clause: $(echo $view_tables | tr '\n' ' ')"

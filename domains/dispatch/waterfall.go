@@ -160,6 +160,35 @@ func (r *waterfallRing) snapshot(limit int, model string, credentialID int, tena
 	return out
 }
 
+// findByRequestID returns one ring sample matching requestID (and optional tenant).
+// tenantID empty skips tenant check (platform ops). ok=false when not found.
+func (r *waterfallRing) findByRequestID(requestID, tenantID string) (WaterfallRequest, bool) {
+	if r == nil || requestID == "" {
+		return WaterfallRequest{}, false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n := r.next
+	if r.full {
+		n = len(r.buf)
+	}
+	for i := 0; i < n; i++ {
+		idx := r.next - 1 - i
+		if idx < 0 {
+			idx += len(r.buf)
+		}
+		item := r.buf[idx]
+		if item.RequestID != requestID {
+			continue
+		}
+		if tenantID != "" && item.TenantID != tenantID {
+			continue
+		}
+		return cloneWaterfallRequest(item), true
+	}
+	return WaterfallRequest{}, false
+}
+
 // Pipeline embeds a ring; allocated lazily so tests without Start still work.
 func (p *Pipeline) ensureWaterfallRing() *waterfallRing {
 	p.waterfallOnce.Do(func() {
@@ -176,6 +205,14 @@ func (p *Pipeline) recordWaterfall(qr *QueuedRequest, out ForwardOutcome) {
 	ring := p.ensureWaterfallRing()
 	item := buildWaterfallRequest(qr, out)
 	ring.push(item)
+}
+
+// FindWaterfallByRequestID looks up one completion in the pipeline ring.
+func (p *Pipeline) FindWaterfallByRequestID(requestID, tenantID string) (WaterfallRequest, bool) {
+	if p == nil || requestID == "" {
+		return WaterfallRequest{}, false
+	}
+	return p.ensureWaterfallRing().findByRequestID(requestID, tenantID)
 }
 
 // SnapshotWaterfall returns recent timelines + live bottleneck diagnosis.
