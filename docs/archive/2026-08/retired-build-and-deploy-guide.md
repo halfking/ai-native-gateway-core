@@ -1,4 +1,6 @@
-# llm-gateway-go 构建与部署指南
+# RETIRED: Historical Build and Deploy Guide
+
+> This document is archived historical material. The referenced infrastructure is retired. Do not execute commands from this file. Current environments are RDS production, 252 test, and local Docker.
 
 本文档记录 llm-gateway-go 项目的构建、版本管理和部署流程。
 

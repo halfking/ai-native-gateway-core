@@ -1,4 +1,6 @@
-# 71 环境 pg_trgm 扩展安装与分区统一指南
+# RETIRED: Historical pg_trgm Installation Guide
+
+> This document is archived historical material. The referenced infrastructure is retired. Do not execute commands from this file. Current environments are RDS production, 252 test, and local Docker.
 
 **日期：** 2026-07-04
 **目标：** 在 71 环境安装 pg_trgm 扩展并创建 2026-09 到 2026-12 分区

@@ -1,4 +1,6 @@
-# LLM Gateway 配置管理指南
+# RETIRED: Historical Configuration Guide
+
+> This document is archived historical material. The referenced infrastructure is retired. Do not execute commands from this file. Current environments are RDS production, 252 test, and local Docker.
 
 > 统一管理敏感配置，确保环境一致性。
 > 所有敏感值在文档中以 `__{CAT}_{N}__` 占位符表示，真实值存储在仓库外。
