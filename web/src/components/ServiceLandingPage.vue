@@ -168,22 +168,22 @@ const pipeline = computed(() =>
 <style scoped>
 /* Full-bleed guest homepage: edge-to-edge, content left-aligned (no centered column). */
 .kx-landing {
-  --landing-bg: var(--kx-bg);
-  --landing-surface: var(--surface-elevated);
-  --landing-text: var(--kx-text);
-  --landing-muted: var(--kx-muted);
-  --landing-border: var(--border);
-  --landing-primary: var(--accent);
-  --landing-primary-hover: var(--accent-dark);
-  --landing-primary-soft: var(--info-bg);
+  --landing-bg: #f4f6f9;
+  --landing-surface: rgba(255, 255, 255, 0.88);
+  --landing-text: #152033;
+  --landing-muted: #5b6b82;
+  --landing-border: #dce3ee;
+  --landing-primary: #1e4fd6;
+  --landing-primary-hover: #1841b3;
+  --landing-primary-soft: #eaf0ff;
   --landing-font: "Noto Sans SC", "PingFang SC", "Hiragino Sans GB", "Segoe UI", sans-serif;
   --landing-display: "Outfit", "Noto Sans SC", "PingFang SC", sans-serif;
   --landing-pad-x: clamp(28px, 5vw, 72px);
   color: var(--landing-text);
   font-family: var(--landing-font);
   background:
-    radial-gradient(ellipse 70% 45% at 100% -10%, var(--info-bg), transparent 55%),
-    radial-gradient(ellipse 50% 40% at 0% 100%, var(--success-bg), transparent 50%),
+    radial-gradient(ellipse 70% 45% at 100% -10%, rgba(30, 79, 214, 0.07), transparent 55%),
+    radial-gradient(ellipse 50% 40% at 0% 100%, rgba(22, 132, 91, 0.04), transparent 50%),
     var(--landing-bg);
   min-height: 100%;
   width: 100%;
@@ -223,12 +223,12 @@ const pipeline = computed(() =>
   border-radius: 12px;
   display: grid;
   place-items: center;
-  color: var(--on-primary);
+  color: #fff;
   font-weight: 800;
   font-size: 18px;
   font-family: var(--landing-display);
-  background: linear-gradient(145deg, var(--accent), var(--accent-darker));
-  box-shadow: 0 8px 20px color-mix(in srgb, var(--accent) 18%, transparent);
+  background: linear-gradient(145deg, #1e4fd6, #0f3aad);
+  box-shadow: 0 8px 20px rgba(30, 79, 214, 0.22);
 }
 .kx-landing__brand-logo {
   width: 60px;
@@ -236,8 +236,8 @@ const pipeline = computed(() =>
   border-radius: 12px;
   object-fit: contain;
   flex-shrink: 0;
-  background: var(--surface-elevated);
-  box-shadow: 0 8px 20px var(--kx-shadow-md);
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 8px 20px rgba(30, 45, 75, 0.08);
 }
 .kx-landing__brand-text {
   min-width: 0;
@@ -320,18 +320,18 @@ const pipeline = computed(() =>
 }
 .kx-landing__cta {
   border: 0;
-  color: var(--on-primary);
+  color: #fff;
   background: var(--landing-primary);
-  box-shadow: 0 8px 18px var(--info-bg);
+  box-shadow: 0 8px 18px rgba(30, 79, 214, 0.18);
   cursor: pointer;
 }
 .kx-landing__cta:hover { background: var(--landing-primary-hover); transform: translateY(-1px); }
 .kx-landing__cta-secondary {
   color: var(--landing-text);
-  background: var(--on-primary);
+  background: #fff;
   border: 1px solid var(--landing-border);
 }
-.kx-landing__cta-secondary:hover { transform: translateY(-1px); border-color: var(--info-bd); }
+.kx-landing__cta-secondary:hover { transform: translateY(-1px); border-color: #b7c9ef; }
 
 .kx-landing__hero-art {
   position: relative;
@@ -342,7 +342,7 @@ const pipeline = computed(() =>
   overflow: hidden;
   border-radius: 0;
   border: 0;
-  background: linear-gradient(155deg, var(--info-bg) 0%, var(--info-bg) 48%, var(--success-bg) 100%);
+  background: linear-gradient(155deg, #e7eefc 0%, #eef3f8 48%, #e7f3ec 100%);
   align-self: stretch;
 }
 .kx-landing__orb {
@@ -356,14 +356,14 @@ const pipeline = computed(() =>
   height: 240px;
   top: -50px;
   right: -20px;
-  background: var(--info-bg);
+  background: rgba(30, 79, 214, 0.18);
 }
 .kx-landing__orb--two {
   width: 160px;
   height: 160px;
   bottom: -45px;
   left: 20px;
-  background: color-mix(in srgb, var(--success) 14%, transparent);
+  background: rgba(22, 132, 91, 0.14);
   animation-delay: -3s;
 }
 .kx-landing__pipeline {
@@ -380,9 +380,9 @@ const pipeline = computed(() =>
   align-items: center;
   padding: 12px 14px;
   border-radius: 12px;
-  background: var(--surface-elevated);
-  border: 1px solid var(--surface-elevated);
-  box-shadow: 0 8px 24px var(--kx-shadow-sm);
+  background: rgba(255, 255, 255, 0.88);
+  border: 1px solid rgba(255, 255, 255, 0.95);
+  box-shadow: 0 8px 24px rgba(30, 55, 100, 0.06);
 }
 .kx-landing__pipeline-step span {
   width: 28px;
@@ -403,12 +403,12 @@ const pipeline = computed(() =>
   text-align: left;
 }
 .kx-landing__pipeline-step.is-active {
-  border-color: var(--info-bd);
-  background: var(--on-primary);
+  border-color: #a8c0f5;
+  background: #fff;
 }
 .kx-landing__pipeline-step.is-active span {
   background: var(--landing-primary);
-  color: var(--on-primary);
+  color: #fff;
 }
 
 .kx-landing__features,
@@ -454,12 +454,12 @@ const pipeline = computed(() =>
   border: 1px solid var(--landing-border);
   border-radius: 12px;
   background: var(--landing-surface);
-  box-shadow: 0 10px 32px var(--kx-shadow-sm);
+  box-shadow: 0 10px 32px rgba(30, 45, 75, 0.04);
   transition: border-color 0.15s ease, transform 0.15s ease;
   text-align: left;
 }
 .kx-landing__card:hover {
-  border-color: var(--info-bd);
+  border-color: #a8c0f5;
   transform: translateY(-2px);
 }
 .kx-landing__card-mark {
@@ -495,8 +495,8 @@ const pipeline = computed(() =>
   border-radius: 6px;
   font-size: 11px;
   font-weight: 650;
-  color: var(--warning-dark);
-  background: var(--warning-bg);
+  color: #92400e;
+  background: #fff7e8;
 }
 .kx-landing__card p {
   margin: 0;
@@ -521,7 +521,7 @@ const pipeline = computed(() =>
   padding: 18px;
   border: 1px solid var(--landing-border);
   border-radius: 12px;
-  background: var(--on-primary);
+  background: #fff;
   text-align: left;
 }
 .kx-landing__adv-index {
@@ -552,7 +552,7 @@ const pipeline = computed(() =>
 }
 .kx-landing__footer p {
   margin: 0;
-  color: var(--muted);
+  color: #8a97ab;
   font-size: 12px;
   text-align: left;
 }

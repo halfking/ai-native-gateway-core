@@ -122,9 +122,9 @@ export default {
       sessionSummary: 'Sitzungszusammenfassung',
       sessionSummaryHint: 'Nur verfügbar, wenn ein Sitzungs-ID-Filter aktiv ist',
       // 2026-08-06: Beschriftung + Tooltip der Schaltfläche "Sitzungszusammenfassung" in der Detail-Schublade.
-      drawerSummaryButton: 'Zusammenfassung',
-      drawerSummaryTitle: 'Sitzungszusammenfassung anzeigen oder erzeugen',
-      drawerSummaryAria: 'Sitzungszusammenfassung',
+      drawerSummaryButton: '📝 Sitzungszusammenfassung',
+      drawerSummaryTitle: 'Request-Log mit Filter auf diese Sitzung öffnen',
+      drawerSummaryAria: 'Sitzungszusammenfassungs-Ansicht öffnen',
       generating: 'Zusammenfassung wird erstellt…',
       generate: 'Zusammenfassung erstellen',
       exportMd: 'Markdown exportieren',

@@ -51,12 +51,12 @@ func (h *queueProjectionHolder) Snapshot() *dispatch.SnapshotView {
 	return projection.Snapshot()
 }
 
-func (h *queueProjectionHolder) SnapshotWaterfall(limit int, model string, credentialID int, tenantID string) dispatch.WaterfallSnapshot {
+func (h *queueProjectionHolder) SnapshotWaterfall(limit int, model string, credentialID int) dispatch.WaterfallSnapshot {
 	projection := h.Load()
 	if projection == nil {
 		return unwiredQueueWaterfallSnapshot()
 	}
-	return projection.SnapshotWaterfall(limit, model, credentialID, tenantID)
+	return projection.SnapshotWaterfall(limit, model, credentialID)
 }
 
 func unwiredQueueProjectionSnapshot() *dispatch.SnapshotView {

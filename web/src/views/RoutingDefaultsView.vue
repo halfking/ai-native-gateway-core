@@ -630,7 +630,7 @@ button:disabled { opacity: .4; cursor: not-allowed; }
 .btn-primary {
   background: var(--accent);
   border-color: var(--accent);
-  color: var(--on-primary);
+  color: #fff;
 }
 .btn-audit {
   background: var(--bg-subtle);
@@ -668,7 +668,7 @@ button:disabled { opacity: .4; cursor: not-allowed; }
 }
 .defaults-table tbody tr:hover,
 .audit-table tbody tr:hover {
-  background: var(--bg-hover);
+  background: rgba(255, 255, 255, 0.02);
 }
 .reason-cell {
   max-width: 200px;
@@ -716,7 +716,7 @@ code {
   align-items: center;
   justify-content: center;
   padding: 24px 16px;
-  background: var(--overlay-strong);
+  background: rgba(0, 0, 0, 0.55);
 }
 .choice-dialog {
   width: min(680px, 100%);
@@ -727,7 +727,7 @@ code {
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: 12px;
-  box-shadow: 0 20px 50px var(--shadow-color-dark);
+  box-shadow: 0 20px 50px rgba(0, 0, 0, .35);
 }
 .tenant-dialog { width: min(620px, 100%); }
 .choice-header {

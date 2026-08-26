@@ -62,10 +62,6 @@ import probeHealth from './probeHealth'
 import tenantModels from './tenantModels'
 import publicPortal from './public'
 import requestJourneys from './requestJourneys'
-import requestRegistry from './requestRegistry'
-import requestJourneyDetail from './requestJourneyDetail'
-import connectionRegistry from './connectionRegistry'
-import nodeHealthTimeline from './nodeHealthTimeline'
 
 export default {
   common,
@@ -130,8 +126,6 @@ export default {
   tenantModels,
   public: publicPortal,
   requestJourneys,
-  requestRegistry,
-  requestJourneyDetail,
-  connectionRegistry,
-  nodeHealthTimeline,
+
+
 }

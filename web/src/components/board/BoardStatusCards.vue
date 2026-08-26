@@ -82,7 +82,7 @@ function fmtPct(v: number | undefined) {
   margin-bottom: 6px;
 }
 .status-card__badge--active {
-  background: var(--warning-bg);
+  background: rgba(210, 153, 34, 0.15);
   color: var(--warning);
 }
 .status-card__hint {

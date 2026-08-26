@@ -285,14 +285,14 @@ function goBack() {
 
 .stat-label {
   font-size: 14px;
-  color: var(--text-secondary);
+  color: #909399;
   margin-bottom: 8px;
 }
 
 .stat-value {
   font-size: 28px;
   font-weight: 600;
-  color: var(--text);
+  color: #303133;
 }
 
 :deep(.el-card__header) {

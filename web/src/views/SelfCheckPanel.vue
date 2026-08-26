@@ -24,9 +24,6 @@ import {
 import ProbeTriStateQueue from '../components/probe/ProbeTriStateQueue.vue'
 import { getFeaturedModelsDynamic } from '../api/system'
 import type { FeaturedModel } from '../api/system'
-import {
-  displaySyntheticCredentialModel,
-} from '../composables/useCredentialLabels'
 
 const loading = ref(false)
 const error = ref<string | null>(null)
@@ -290,7 +287,13 @@ const errorColor = (t: string): string => {
 // the suffix indicates which credential's daily check produced the
 // run. Real upstream models (e.g. "gpt-5.6-luna") pass through.
 function formatSelfCheckModelLabel(label: string): string {
-  return label ? displaySyntheticCredentialModel(label) : label
+  if (!label) return label
+  if (label.startsWith('cred-')) {
+    const id = label.slice(5)
+    if (/^\d+$/.test(id)) return `凭据 #${id}`
+    return label
+  }
+  return label
 }
 
 const summaryCards = computed(() => {
@@ -622,15 +625,15 @@ const probeSummaryCards = computed(() => {
 }
 
 .status-badge.enabled {
-  background: var(--success-bg);
+  background: rgba(63, 185, 80, 0.15);
   color: var(--success);
-  border: 1px solid var(--success-bd);
+  border: 1px solid rgba(63, 185, 80, 0.4);
 }
 
 .status-badge.disabled {
-  background: var(--danger-bg);
+  background: rgba(248, 81, 73, 0.15);
   color: var(--danger);
-  border: 1px solid var(--danger-bd);
+  border: 1px solid rgba(248, 81, 73, 0.4);
 }
 
 .interval-info {
@@ -664,7 +667,7 @@ const probeSummaryCards = computed(() => {
 
 .btn-primary {
   background: var(--accent);
-  color: var(--on-primary);
+  color: #fff;
   border-color: var(--accent);
 }
 
@@ -708,9 +711,9 @@ const probeSummaryCards = computed(() => {
 }
 
 .alert-danger {
-  background: var(--danger-bg);
+  background: rgba(248, 81, 73, 0.12);
   color: var(--danger);
-  border: 1px solid var(--danger-bd);
+  border: 1px solid rgba(248, 81, 73, 0.35);
 }
 
 .btn-close {
@@ -934,8 +937,8 @@ const probeSummaryCards = computed(() => {
 .upstream-error {
   margin-top: 4px;
   padding: 4px 8px;
-  background: var(--danger-bg);
-  border: 1px solid var(--danger-bd);
+  background: rgba(248, 81, 73, 0.12);
+  border: 1px solid rgba(248, 81, 73, 0.35);
   border-radius: 3px;
   font-family: monospace;
   font-size: 11px;
@@ -988,7 +991,7 @@ const probeSummaryCards = computed(() => {
   left: 0;
   right: 0;
   bottom: 0;
-  background: var(--overlay-strong);
+  background: rgba(0, 0, 0, 0.5);
   display: flex;
   justify-content: center;
   align-items: center;
@@ -1050,7 +1053,7 @@ const probeSummaryCards = computed(() => {
   border-radius: 4px;
   font-size: 12px;
   background: var(--accent);
-  color: var(--on-primary);
+  color: #fff;
 }
 .muted {
   font-size: 12px;

@@ -104,12 +104,6 @@ export interface RequestLogRow {
   // Present when an LLM-generated or manually-edited title exists for the
   // row's task; undefined when no title has been recorded.
   session_title?: string | null
-
-  // 2026-08-24: 列表接口下发的请求/响应首段预览（admin/logs.go 扫描
-  // rl.request_preview / rl.response_preview）。会话总结抽屉等处以
-  // 截断文本形式展示；null = 后端未存预览。
-  request_preview?: string | null
-  response_preview?: string | null
 }
 
 // AttachmentInfo 描述单个附件的元数据 (migration 325, request_logs.attachments 元素)。
@@ -268,10 +262,8 @@ export function getRequestLogs(params: {
   return req<RequestLogsResponse>('GET', `/api/logs${s ? '?' + s : ''}`)
 }
 
-/** 请求详情。omitBody=true 时跳过后端 body 抓取，用于抽屉分阶段首包。 */
-export function getRequestLogDetail(requestId: string, opts?: { omitBody?: boolean }) {
-  const qs = opts?.omitBody ? '?omit_body=1' : ''
-  return req<RequestLogDetail>('GET', `/api/logs/${encodeURIComponent(requestId)}${qs}`)
+export function getRequestLogDetail(requestId: string) {
+  return req<RequestLogDetail>('GET', `/api/logs/${encodeURIComponent(requestId)}`)
 }
 
 // 2026-08-17: getRequestLogDetail 的 body 抓取（fetchRequestBodies）走进程内

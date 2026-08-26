@@ -1,12 +1,6 @@
-import { computed, onScopeDispose, ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { store } from '../store'
 import { addTokenUsage, emptyTokenUsage, type TokenUsage } from './useChatCompletions'
-import {
-  createDebouncedFlush,
-  installLifecycleFlush,
-  installScopeCleanup,
-  PERSIST_DEBOUNCE_MS,
-} from './persistenceShared'
 
 export interface ChatMessage {
   role: 'user' | 'assistant' | 'system'
@@ -47,13 +41,6 @@ export interface ChatSession {
 const TITLE_MAX_LEN = 24
 const STORAGE_VERSION = 2
 const STORAGE_VERSION_LEGACY = 1
-// 2026-08-24 LP6: coalesce whole-tree localStorage writes into a single
-// flush PERSIST_DEBOUNCE_MS (300ms, defined in persistenceShared.ts) after
-// the last mutation. Long enough to absorb a burst of streaming-token /
-// model-switch updates, short enough that user-initiated actions (close
-// tab, switch session) don't feel laggy. LP9 (2026-08-24) moved the
-// debounce timer / lifecycle listeners / scope-cleanup plumbing into
-// persistenceShared.ts so LP6, LP7 and LP8 share one implementation.
 
 // Pending-cache resume key prefix (2026-06-21, Track C client-side resume).
 // Holds the most-recent gw_session_id used per (user, task) so that after
@@ -192,25 +179,11 @@ function loadAll(): ChatSession[] {
 
 function saveAll(sessions: ChatSession[]) {
   const newKey = storageKey(STORAGE_VERSION)
-  // Best-effort: localStorage may throw (private mode, quota exceeded,
-  // disabled by browser policy). Memory state stays authoritative; the next
-  // debounce window or lifecycle flush will retry without surfacing errors.
-  try {
-    localStorage.setItem(newKey, JSON.stringify(sessions))
-  } catch {
-    /* drop the write; in-memory sessions.value remains the source of truth */
-  }
+  localStorage.setItem(newKey, JSON.stringify(sessions))
   // Defensive: drop any v1 entries that may still exist (e.g. from a partial
-  // migration before this code shipped). Each remove is isolated so a single
-  // failure cannot block the others.
+  // migration before this code shipped).
   for (const k of legacyStorageKeys()) {
-    if (k !== newKey) {
-      try {
-        localStorage.removeItem(k)
-      } catch {
-        /* ignore — same best-effort contract */
-      }
-    }
+    if (k !== newKey) localStorage.removeItem(k)
   }
 }
 
@@ -249,49 +222,8 @@ export function useChatSessions() {
     sessions.value.find((s) => s.id === activeId.value) ?? null,
   )
 
-  // ─── Debounced persistence (LP6, 2026-08-24) ──────────────────────────
-  // Why: `saveAll` JSON-serialises the whole session tree on every mutation
-  // (typing, streaming token, model switch, usage tick). On a long reply the
-  // synchronous localStorage.setItem can stall the main thread by tens of ms
-  // and pushes the same payload N times before a stable state is reached.
-  //
-  // The strategy: coalesce mutation bursts into a single write 300ms after
-  // the last change, and force-flush on lifecycle events so users never lose
-  // state when they close the tab / background the page / unmount the view.
-  // Errors (quota / private mode) are caught and degrade silently: the
-  // in-memory `sessions` ref stays authoritative and the next flush retries.
-  //
-  // LP9 (2026-08-24): debounce timer + snapshot short-circuit + lifecycle
-  // listeners + scope-aware cleanup are now provided by persistenceShared.ts.
-  // saveAll() keeps the user-scoped key + legacy migration logic local to
-  // this composable; only the persistence plumbing is shared.
-  const persistHandle = createDebouncedFlush<ChatSession[]>({
-    getSnapshot: () => sessions.value,
-    serialize: (snapshot) => JSON.stringify(snapshot),
-    write: (snapshot) => {
-      saveAll(snapshot)
-      return true
-    },
-    debounceMs: PERSIST_DEBOUNCE_MS,
-  })
-
-  // Lifecycle flush handlers — the only way to guarantee a write before the
-  // page is torn down (visibilitychange covers mobile backgrounding where
-  // beforeunload often doesn't fire).
-  const removeListeners = installLifecycleFlush(persistHandle.flush)
-  installScopeCleanup(persistHandle.flush, removeListeners)
-
-  // Back-compat alias: every existing call site uses `persist()`. Switching
-  // to `persistHandle.schedule()` keeps behaviour identical (debounced) while
-  // preserving the local name to minimise the diff and the audit footprint.
   function persist() {
-    persistHandle.schedule()
-  }
-
-  // Back-compat alias exposed on the returned API: tests and external callers
-  // reach for `api.flushPersist()` to force a synchronous write.
-  function flushPersist(): boolean {
-    return persistHandle.flush()
+    saveAll(sessions.value)
   }
 
   function createSession(model = 'auto'): ChatSession {
@@ -509,9 +441,5 @@ export function useChatSessions() {
     clearAllGwSessionIds,
     titleFromFirstUserMessage,
     formatSessionModelLabel,
-    /** Force an immediate synchronous write of the session tree.
-     *  Exposed for tests and for callers that need a guaranteed-on-return
-     *  persistence (rare; the lifecycle listeners cover the common cases). */
-    flushPersist,
   }
 }

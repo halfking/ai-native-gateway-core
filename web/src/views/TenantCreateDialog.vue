@@ -129,7 +129,7 @@ function goDetail() {
 .modal-backdrop {
   position: fixed;
   inset: 0;
-  background: var(--overlay-strong);
+  background: rgba(0,0,0,.5);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -160,7 +160,7 @@ function goDetail() {
 .form-group small { font-size: 11px; color: var(--muted); }
 .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
 .alert { padding: 8px 12px; border-radius: 4px; font-size: 13px; margin-bottom: 12px; }
-.alert-danger { background: var(--danger-bg); color: var(--danger); border: 1px solid var(--danger-bd); }
+.alert-danger { background: rgba(239,68,68,.1); color: #f87171; border: 1px solid rgba(239,68,68,.3); }
 .success-hint { font-size: 13px; color: var(--muted); margin: 0 0 12px; }
 .cred-box {
   background: var(--bg);
@@ -186,7 +186,7 @@ function goDetail() {
   word-break: break-all;
 }
 .cred-row code.password {
-  color: var(--warning);
+  color: #fbbf24;
   font-weight: 600;
 }
 </style>

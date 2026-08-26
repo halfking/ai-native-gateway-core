@@ -9,11 +9,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"time"
 
-	"github.com/kaixuan/llm-gateway-go/admin"
 	"github.com/kaixuan/llm-gateway-go/domains/dispatch"
-	streaming "github.com/kaixuan/llm-gateway-go/domains/streaming" //nolint:depguard
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
 	"github.com/kaixuan/llm-gateway-go/internal/liveactions"
 )
@@ -29,15 +26,7 @@ var gatewayQueueProjection queueProjectionHolder
 // (model_enqueued / node_enqueued / node_switch / model_switch / no_route).
 var gatewayLiveActionsEmitter *liveactions.Emitter
 
-// gatewayActionBridge (会话优化 v4 T4/R3.2, FR-3 操作事件思考帧桥接) 是
-// 共享的 liveactions → 客户端思考帧桥。源 = gatewayLiveActionsEmitter 的
-// 进程内订阅，目标 = 共享 connectionRegistry（在 main.go 顶部构造）。
-// 运营开关 llmgw_action_bridge_enabled 默认 false（灰阶上线），走
-// settings_kv 热更新无需重启即可开启；nil 表示未装配（降级为 no-op）。
-var gatewayActionBridge *streaming.ActionBridge
-
 var gatewayRequestJourneySink dispatch.ObservationSink
-var gatewayMinuteStats *dispatch.MinuteStatsAggregator
 
 func stableGatewayInstanceID() string {
 	if configured := strings.TrimSpace(os.Getenv("LLM_GATEWAY_INSTANCE_ID")); configured != "" {
@@ -123,75 +112,12 @@ func handleDispatchWaterfall(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var snap dispatch.WaterfallSnapshot
-	tenantID := admin.EffectiveTenantIDAll(r)
 	if projection := gatewayQueueProjection.Load(); projection != nil {
-		snap = projection.SnapshotWaterfall(limit, model, credID, tenantID)
+		snap = projection.SnapshotWaterfall(limit, model, credID)
 	} else {
 		snap = dispatch.WaterfallSnapshot{Requests: []dispatch.WaterfallRequest{}, Enabled: true, Wired: false,
 			BottleneckDiagnosis: dispatch.BottleneckDiagnosis{Bottleneck: "none", Message: "dispatch queue projection not wired"}}
 	}
-	snap = mergeWaterfallWithDB(r.Context(), snap, limit, model, credID, tenantID)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(snap)
-}
-
-// handleDispatchWaterfallByRequest serves
-// GET /api/admin/dispatch/waterfall/request/{request_id}
-func handleDispatchWaterfallByRequest(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	const prefix = "/api/admin/dispatch/waterfall/request/"
-	requestID := strings.TrimPrefix(r.URL.Path, prefix)
-	requestID = strings.Trim(requestID, "/")
-	if requestID == "" || strings.Contains(requestID, "/") {
-		http.Error(w, "request_id required", http.StatusBadRequest)
-		return
-	}
-	tenantID := admin.EffectiveTenantIDAll(r)
-	var mem dispatch.WaterfallRequest
-	memOK := false
-	if projection := gatewayQueueProjection.Load(); projection != nil {
-		mem, memOK = projection.FindWaterfallByRequestID(requestID, tenantID)
-	}
-	item, source, ok := resolveWaterfallByRequest(r.Context(), mem, memOK, requestID, tenantID)
-	if !ok {
-		http.Error(w, "waterfall request not found", http.StatusNotFound)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"request": item,
-		"source":  source,
-	})
-}
-
-// handleDispatchMinuteStats serves the Redis-backed immediate operational
-// projection. Persistent financial reporting remains under /api/admin/stats.
-func handleDispatchMinuteStats(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	if gatewayMinuteStats == nil {
-		http.Error(w, "minute stats projection unavailable", http.StatusServiceUnavailable)
-		return
-	}
-	bucket := time.Now().UTC()
-	if raw := strings.TrimSpace(r.URL.Query().Get("bucket")); raw != "" {
-		parsed, err := time.Parse(time.RFC3339, raw)
-		if err != nil {
-			http.Error(w, "bucket must be RFC3339", http.StatusBadRequest)
-			return
-		}
-		bucket = parsed
-	}
-	stats, err := gatewayMinuteStats.List(r.Context(), bucket)
-	if err != nil {
-		http.Error(w, "minute stats unavailable", http.StatusServiceUnavailable)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"bucket": bucket.UTC().Truncate(time.Minute), "items": stats})
 }

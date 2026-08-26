@@ -38,19 +38,19 @@ func newFixtureRedis(t *testing.T) (*miniredis.Miniredis, *redis.Client) {
 }
 
 const (
-	migPrefix   = "ursm:v2:"
-	legacyNodeA = migPrefix + "node:a:7:b:8:c"       // tenant a, cid 7, raw "b:8:c" (16 §2 frozen pair first half)
+	migPrefix = "ursm:v2:"
+	legacyNodeA = migPrefix + "node:a:7:b:8:c"   // tenant a, cid 7, raw "b:8:c" (16 §2 frozen pair first half)
 	canonicalA  = migPrefix + "node:k2:YQ:7:Yjo4OmM" // base64url("a")=YQ, base64url("b:8:c")=Yjo4OmM
 )
 
 func legacyHashFields() map[string]any {
 	return map[string]any{
-		"generation":    "1",
-		"available":     "1",
-		"fail_streak":   "0",
-		"success_count": "5",
-		"failure_count": "0",
-		"updated_at_ms": "1700000000000",
+		"generation":      "1",
+		"available":       "1",
+		"fail_streak":     "0",
+		"success_count":   "5",
+		"failure_count":   "0",
+		"updated_at_ms":   "1700000000000",
 	}
 }
 

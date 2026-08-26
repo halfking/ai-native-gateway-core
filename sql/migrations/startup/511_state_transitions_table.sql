@@ -87,7 +87,7 @@ COMMIT;
 --   1. 表已创建：
 --      SELECT tablename FROM pg_tables WHERE tablename = 'request_state_transitions';
 --   2. tenant_id 列存在：
---      SELECT column_name FROM information_schema.columns
+--      SELECT column_name FROM information_schema.columns 
 --      WHERE table_name = 'request_state_transitions' AND column_name = 'tenant_id';
 --   3. 索引已创建：
 --      SELECT indexname FROM pg_indexes WHERE tablename = 'request_state_transitions';

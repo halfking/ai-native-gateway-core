@@ -1162,9 +1162,9 @@ onMounted(fetchData)
 .offer-provider { color: var(--success); min-width: 80px; }
 .offer-cred { color: var(--muted); min-width: 60px; }
 .offer-tier { font-size: 11px; padding: 1px 4px; border-radius: 3px; background: var(--bg-subtle); color: var(--text); }
-.offer-tier.tier-1 { background: var(--success); color: var(--on-primary); }
-.offer-tier.tier-2 { background: var(--accent); color: var(--on-primary); }
-.offer-tier.tier-3 { background: var(--warning); color: var(--on-primary); }
+.offer-tier.tier-1 { background: var(--success); color: #fff; }
+.offer-tier.tier-2 { background: var(--accent); color: #fff; }
+.offer-tier.tier-3 { background: var(--warning); color: #fff; }
 .offer-avail { font-size: 12px; }
 .offer-avail.ok { color: var(--success); }
 .offer-price { color: var(--warning); }
@@ -1201,9 +1201,9 @@ onMounted(fetchData)
 .pm-table .model-name { color: var(--accent-h); font-weight: 600; }
 .pm-table .price { color: var(--warning); }
 .tier-badge { font-size: 11px; padding: 1px 4px; border-radius: 3px; }
-.tier-badge.tier-1 { background: var(--success); color: var(--on-primary); }
-.tier-badge.tier-2 { background: var(--accent); color: var(--on-primary); }
-.tier-badge.tier-3 { background: var(--warning); color: var(--on-primary); }
+.tier-badge.tier-1 { background: var(--success); color: #fff; }
+.tier-badge.tier-2 { background: var(--accent); color: #fff; }
+.tier-badge.tier-3 { background: var(--warning); color: #fff; }
 .pm-pagination { display: flex; gap: 8px; align-items: center; padding: 12px; justify-content: center; }
 .page-size-select { padding: 4px 8px; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; color: var(--text); max-width: 96px; }
 .pm-bulk-actions { display: flex; gap: 8px; align-items: center; padding: 12px; background: var(--bg-subtle); }
@@ -1249,16 +1249,16 @@ onMounted(fetchData)
 /* Buttons (scoped — 与 style.css .btn 解耦以便覆盖到此处作用域) */
 .pm-actions .btn { padding: 6px 14px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text); cursor: pointer; font-size: 13px; }
 .pm-actions .btn:hover { background: var(--bg-hover); }
-.pm-actions .btn-primary { background: var(--accent); color: var(--on-primary); border-color: var(--accent); }
+.pm-actions .btn-primary { background: var(--accent); color: #fff; border-color: var(--accent); }
 .pm-actions .btn-primary:hover { background: var(--accent-h); }
-.pm-actions .btn-success { background: var(--success); color: var(--on-primary); border-color: var(--success); }
-.pm-actions .btn-success:hover { background: color-mix(in srgb, var(--success) 88%, var(--kx-text)); }
+.pm-actions .btn-success { background: var(--success); color: #fff; border-color: var(--success); }
+.pm-actions .btn-success:hover { background: color-mix(in srgb, var(--success) 88%, #000); }
 .pm-actions .btn-sm { padding: 4px 10px; font-size: 12px; }
 .pm-actions .btn-xs { padding: 2px 6px; font-size: 11px; }
 /* 页面其他位置的按钮也覆盖（form-actions 等） */
 .form-actions .btn { padding: 6px 14px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text); cursor: pointer; font-size: 13px; }
 .form-actions .btn:hover { background: var(--bg-hover); }
-.form-actions .btn-primary { background: var(--accent); color: var(--on-primary); border-color: var(--accent); }
+.form-actions .btn-primary { background: var(--accent); color: #fff; border-color: var(--accent); }
 .form-actions .btn-primary:hover { background: var(--accent-h); }
 
 /* Modals */

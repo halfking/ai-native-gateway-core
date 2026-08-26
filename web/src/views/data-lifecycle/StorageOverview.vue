@@ -913,7 +913,7 @@ function fmtNum(n: number) {
 .modal-backdrop {
   position: fixed;
   inset: 0;
-  background: var(--overlay-strong);
+  background: rgba(0, 0, 0, 0.5);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -927,7 +927,7 @@ function fmtNum(n: number) {
   max-width: 540px;
   width: 100%;
   border: 1px solid var(--border);
-  box-shadow: 0 10px 40px var(--overlay-light);
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.18);
 }
 .modal.modal-wide {
   max-width: 680px;

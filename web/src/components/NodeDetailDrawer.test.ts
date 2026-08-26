@@ -1,40 +1,18 @@
 import { flushPromises, mount } from '@vue/test-utils'
-import { createI18n } from 'vue-i18n'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import NodeDetailDrawer from './NodeDetailDrawer.vue'
-import type { RoutingCandidate } from '../api/routing'
 import { liveStreamState } from '../composables/liveStreamStore'
 
-const {
-  monitorSummary,
-  decisions,
-  slidingWindow,
-  modelHistory,
-  resolve,
-  superAdmin,
-  defaultTenant,
-  fpSlotStats,
-  setConcurrencyAuto,
-  updateCredential,
-  getRequestLogDetail,
-} = vi.hoisted(() => ({
+const { monitorSummary, decisions, slidingWindow, modelHistory, resolve, superAdmin } = vi.hoisted(() => ({
   monitorSummary: vi.fn(),
   decisions: vi.fn(),
   slidingWindow: vi.fn(),
   modelHistory: vi.fn(),
   resolve: vi.fn(),
   superAdmin: vi.fn(() => false),
-  defaultTenant: vi.fn(() => true),
-  fpSlotStats: vi.fn(),
-  setConcurrencyAuto: vi.fn(),
-  updateCredential: vi.fn(),
-  getRequestLogDetail: vi.fn(),
 }))
 
-vi.mock('../store', () => ({ authBearer: () => 'test-token', isSuperAdmin: superAdmin, isDefaultTenant: defaultTenant }))
-vi.mock('vue-router', () => ({
-  useRouter: () => ({ push: vi.fn() }),
-}))
+vi.mock('../store', () => ({ authBearer: () => 'test-token', isSuperAdmin: superAdmin }))
 vi.mock('../api/routing', () => ({
   resolveRouting: resolve,
   emergencyRepair: vi.fn(),
@@ -42,8 +20,6 @@ vi.mock('../api/routing', () => ({
 }))
 vi.mock('../api/providers', () => ({
   updateCredentialLifecycle: vi.fn(),
-  updateCredential,
-  getCredentialFpSlotStats: fpSlotStats,
   CREDENTIAL_LIFECYCLE_STATUSES: ['active', 'disabled', 'suspended', 'retired'],
 }))
 vi.mock('../api/credential-monitor', () => ({
@@ -54,14 +30,7 @@ vi.mock('../api/credential-monitor', () => ({
   setManualDisabled: vi.fn(),
   sessionPingCredential: vi.fn(),
   toggleModelAvailability: vi.fn(),
-  testCredentialModel: vi.fn(),
-  setConcurrencyAuto,
 }))
-vi.mock('../api/logs', () => ({
-  getRequestLogDetail,
-}))
-
-const i18n = createI18n({ legacy: false, locale: 'zh-CN', messages: { 'zh-CN': {} } })
 
 function modelStatus(rawModelName: string, probeState = 'healthy_confirmed') {
   return {
@@ -87,47 +56,8 @@ function mountDrawer(model?: string) {
       node: liveStreamState.nodes[0],
       ...(model !== undefined ? { model } : {}),
     },
-    global: {
-      plugins: [i18n],
-      stubs: {
-        Teleport: true,
-        RequestLogDrawer: {
-          name: 'RequestLogDrawer',
-          props: ['requestId', 'stackLevel'],
-          template: '<div class="stub-request-log" :data-id="requestId || \'\'" :data-stack="stackLevel || \'\'" />',
-        },
-        NodeDetailConcurrencyPanel: {
-          name: 'NodeDetailConcurrencyPanel',
-          props: ['credentialId', 'providerId', 'monitor', 'monitorLoading', 'canEdit'],
-          template: '<div class="stub-concurrency">并发与指纹槽位</div>',
-        },
-        NodeDetailOtherModelsPanel: {
-          name: 'NodeDetailOtherModelsPanel',
-          props: ['credentialId', 'currentModel', 'models', 'canEdit', 'needsRefresh'],
-          template: '<div class="stub-other-models">其它模型面板</div>',
-        },
-        NodeDetailAccessErrorsPanel: false,
-        NodeDetailAvailabilityPanel: {
-          name: 'NodeDetailAvailabilityPanel',
-          props: ['candidate', 'loading'],
-          template: '<div class="stub-availability">可用性面板</div>',
-        },
-        NodeDetailEmergencyPanel: {
-          name: 'NodeDetailEmergencyPanel',
-          props: ['candidate', 'rawModel', 'canEdit'],
-          template: '<div class="stub-emergency">紧急维护面板</div>',
-        },
-        FpSlotVisualizer: true,
-      },
-    },
+    global: { stubs: { Teleport: true } },
   })
-}
-
-async function clickMainTab(wrapper: ReturnType<typeof mountDrawer>, label: string) {
-  const tab = wrapper.findAll('[role="tab"]').find(btn => btn.text().includes(label))
-  expect(tab).toBeTruthy()
-  await tab!.trigger('click')
-  await flushPromises()
 }
 
 describe('NodeDetailDrawer model×node scope', () => {
@@ -140,215 +70,92 @@ describe('NodeDetailDrawer model×node scope', () => {
       circuit_state: 'closed',
       raw_models: ['m-1', 'm-2'],
     }]
-    monitorSummary.mockReset().mockImplementation(async (opts: { mode?: string }) => ({
-      credentials: [{
-        id: 5,
-        provider_id: 1,
-        concurrency_limit: null,
-        concurrency_limit_auto: 4,
-        effective_concurrency: 4,
-        models: opts.mode === 'detail'
-          ? [modelStatus('m-1'), modelStatus('m-2')]
-          : [modelStatus('m-1')],
-      }],
-    }))
+    monitorSummary.mockReset().mockResolvedValue({
+      credentials: [{ id: 5, models: [modelStatus('m-1'), modelStatus('m-2')] }],
+    })
     decisions.mockReset().mockResolvedValue({ decisions: [] })
     slidingWindow.mockReset().mockResolvedValue({
-      entries: [{ rid: 'req-abc', ts: Date.now(), ok: true, lat: 120 }],
-      stats: { total: 1, success: 1, failed: 0, failure_rate: 0, error_kinds: {} },
+      entries: [],
+      stats: { total: 0, success: 0, failed: 0, failure_rate: 0, error_kinds: {} },
       source: 'redis',
     })
     modelHistory.mockReset().mockResolvedValue({ events: [] })
     resolve.mockReset().mockResolvedValue({
-      candidates: [{
-        credential_id: 5,
-        provider_id: 1,
-        model_name: 'm-1',
-        tier: 2,
-        weight: 100,
-        routable: true,
-      }],
+      candidates: [{ credential_id: 5, model_name: 'm-1', tier: 2, weight: 100, routable: true }],
     })
-    fpSlotStats.mockReset().mockResolvedValue({
-      credential_id: 5,
-      slot_limit: 3,
-      healthy_slots: 3,
-      occupied_slots: 1,
-      free_slots: 2,
-      details: [],
-    })
-    setConcurrencyAuto.mockReset().mockResolvedValue({ success: true })
-    updateCredential.mockReset().mockResolvedValue({ message: 'ok' })
-    getRequestLogDetail.mockReset().mockResolvedValue({ request_id: 'req-abc' })
     superAdmin.mockReturnValue(false)
-    defaultTenant.mockReturnValue(true)
   })
 
-  it('auto-loads all three tabs in parallel when the drawer opens', async () => {
-    const wrapper = mountDrawer('m-1')
+  // 触发 detail tab 数据加载：测试默认假设抽屉打开后立刻加载明细。
+  async function triggerDetailLoad(wrapper: ReturnType<typeof mountDrawer>) {
+    const loadButton = wrapper.findAll('button').find(b => /加载明细数据/.test(b.text()))
+    expect(loadButton, 'expected detail tab "加载明细数据" button').toBeTruthy()
+    await loadButton!.trigger('click')
     await flushPromises()
+  }
 
+  it('locks the drawer to the scoped model and filters every query in one parallel round', async () => {
+    const wrapper = mountDrawer('m-1')
+
+    // Opening a node preloads only the lightweight core state and candidate.
     expect(monitorSummary).toHaveBeenCalledWith(
       { credential_id: 5, mode: 'core' },
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     )
-    expect(monitorSummary).toHaveBeenCalledWith(
+    expect(resolve).toHaveBeenCalledWith('m-1', undefined, false, expect.objectContaining({ signal: expect.any(AbortSignal) }))
+    expect(decisions).not.toHaveBeenCalled()
+    expect(slidingWindow).not.toHaveBeenCalled()
+    expect(modelHistory).not.toHaveBeenCalled()
+
+    await triggerDetailLoad(wrapper)
+
+    expect(monitorSummary).toHaveBeenLastCalledWith(
       { credential_id: 5, mode: 'detail' },
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     )
+    expect(decisions).not.toHaveBeenCalled()
     expect(resolve).toHaveBeenCalledWith('m-1', undefined, false, expect.objectContaining({ signal: expect.any(AbortSignal) }))
     expect(slidingWindow).toHaveBeenCalledWith(5, 'm-1', 60, expect.objectContaining({ signal: expect.any(AbortSignal) }))
     expect(modelHistory).toHaveBeenCalledWith(5, 'm-1', 30, expect.objectContaining({ signal: expect.any(AbortSignal) }))
-    expect(decisions).toHaveBeenCalledWith(5, 50, 'm-1', expect.objectContaining({ signal: expect.any(AbortSignal) }))
+    expect(monitorSummary).toHaveBeenLastCalledWith(
+      { credential_id: 5, mode: 'detail' },
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    )
+    expect(resolve).toHaveBeenCalledTimes(1)
+    expect(slidingWindow).toHaveBeenCalledTimes(1)
 
+    // 标题与模型状态区只呈现 scope 模型，不显示无关模型
     expect(wrapper.get('h2').text()).toBe('m-1')
-    expect(wrapper.text()).toContain('实时状态')
-    expect(wrapper.find('.nd-window-cell').exists()).toBe(true)
-  })
-
-  it('opens availability tab with seedCandidate and shows emergency panel in settings', async () => {
-    // Partial seed: the drawer tolerates missing fields via ?? defaults,
-    // but the prop type is the full RoutingCandidate — cast the literal.
-    const seed = {
-      credential_id: 5,
-      provider_id: 1,
-      model_name: 'm-1',
-      available: true,
-      runtime_routable: true,
-      routable: true,
-      tier: 1,
-      weight: 100,
-    } as RoutingCandidate
-    const wrapper = mount(NodeDetailDrawer, {
-      props: {
-        modelValue: true,
-        node: liveStreamState.nodes[0],
-        model: 'm-1',
-        initialTab: 'availability',
-        seedCandidate: seed,
-      },
-      global: {
-        plugins: [i18n],
-        stubs: {
-          Teleport: true,
-          RequestLogDrawer: true,
-          NodeDetailConcurrencyPanel: true,
-          NodeDetailOtherModelsPanel: true,
-          NodeDetailAccessErrorsPanel: true,
-          NodeDetailAvailabilityPanel: {
-            name: 'NodeDetailAvailabilityPanel',
-            props: ['candidate', 'loading'],
-            template: '<div class="stub-availability">可用性面板</div>',
-          },
-          NodeDetailEmergencyPanel: {
-            name: 'NodeDetailEmergencyPanel',
-            props: ['candidate', 'rawModel', 'canEdit'],
-            template: '<div class="stub-emergency">紧急维护面板</div>',
-          },
-        },
-      },
-    })
-    await flushPromises()
-    expect(wrapper.find('.stub-availability').exists()).toBe(true)
-    const tabs = wrapper.findAll('[role="tab"]')
-    await tabs.find(btn => btn.text().includes('设置与维护'))!.trigger('click')
-    await flushPromises()
-    expect(wrapper.find('.stub-emergency').exists()).toBe(true)
-  })
-
-  it('locks the drawer to the scoped model and filters model buttons', async () => {
-    const wrapper = mountDrawer('m-1')
-    await flushPromises()
-
     const modelButtons = wrapper.findAll('.nd-model')
     expect(modelButtons).toHaveLength(1)
     expect(modelButtons[0].text()).toContain('m-1')
     expect(wrapper.text()).not.toContain('m-2')
   })
 
-  it('keeps unscoped behaviour for the matrix entry (all node models)', async () => {
-    resolve.mockResolvedValue({
-      candidates: [{
-        credential_id: 5,
-        provider_id: 1,
-        model_name: 'm-1',
-        tier: 2,
-        weight: 100,
-        routable: true,
-      }],
-    })
+  it('keeps unscoped behaviour for the matrix entry (all node models, credential-wide requests)', async () => {
     const wrapper = mountDrawer()
-    await flushPromises()
 
+    await triggerDetailLoad(wrapper)
+
+    expect(decisions).not.toHaveBeenCalled()
+    // 初始模型 = raw_models[0]，核心预取已先解析候选，明细加载不会重复请求。
     expect(resolve).toHaveBeenCalledWith('m-1', undefined, false, expect.objectContaining({ signal: expect.any(AbortSignal) }))
+    expect(resolve).toHaveBeenCalledTimes(1)
+
     const modelButtons = wrapper.findAll('.nd-model')
     expect(modelButtons).toHaveLength(2)
     expect(wrapper.text()).toContain('m-2')
   })
 
-  it('opens request detail when a sliding-window cell is clicked', async () => {
+  it('loads route decisions only after the requests tab is opened', async () => {
     const wrapper = mountDrawer('m-1')
     await flushPromises()
 
-    await wrapper.get('.nd-window-cell').trigger('click')
-    const stub = wrapper.find('.stub-request-log')
-    expect(stub.attributes('data-id')).toBe('req-abc')
-    expect(stub.attributes('data-stack')).toBe('nested')
-  })
-
-  it('shows settings sections with concurrency panel without a manual load button', async () => {
-    const wrapper = mountDrawer('m-1')
+    expect(decisions).not.toHaveBeenCalled()
+    await wrapper.get('[role="tab"]:nth-child(2)').trigger('click')
     await flushPromises()
-    await clickMainTab(wrapper, '设置与维护')
 
-    expect(wrapper.text()).toContain('连通性')
-    expect(wrapper.text()).toContain('紧急维护')
-    expect(wrapper.text()).toContain('并发与指纹槽位')
-    expect(wrapper.text()).not.toContain('加载设置面板')
-  })
-
-  it('shows other-models panel on top-level tab', async () => {
-    const wrapper = mountDrawer('m-1')
-    await flushPromises()
-    await clickMainTab(wrapper, '其它模型')
-    expect(wrapper.find('.stub-other-models').exists()).toBe(true)
-    expect(wrapper.find('.nd-subtabs').exists()).toBe(false)
-  })
-
-  it('lists failed window entries in 最近访问与异常', async () => {
-    slidingWindow.mockResolvedValue({
-      entries: [
-        { rid: 'req-ok', ts: Date.now(), ok: true, lat: 100 },
-        { rid: 'req-fail', ts: Date.now(), ok: false, lat: 50, err: 'timeout' },
-      ],
-      stats: { total: 2, success: 1, failed: 1, failure_rate: 0.5, error_kinds: { timeout: 1 } },
-      source: 'redis',
-    })
-    decisions.mockResolvedValue({
-      decisions: [{
-        request_id: 'dec-fail',
-        model: 'm-1',
-        ts: '2026-08-21T00:00:00Z',
-        success: false,
-        latency_ms: 30,
-        error_class: 'upstream_5xx',
-      }],
-    })
-    const wrapper = mountDrawer('m-1')
-    await flushPromises()
-    expect(wrapper.text()).toContain('最近访问与异常')
-    expect(wrapper.text()).toContain('timeout')
-    expect(wrapper.text()).toContain('upstream_5xx')
-  })
-
-  it('disables maintain actions for non-default tenant', async () => {
-    defaultTenant.mockReturnValue(false)
-    const wrapper = mountDrawer('m-1')
-    await flushPromises()
-    await clickMainTab(wrapper, '设置与维护')
-    expect(wrapper.text()).toContain('仅 default 租户可以维护节点')
-    const ping = wrapper.findAll('button').find(b => b.text().includes('会话 Ping'))
-    expect(ping?.attributes('disabled')).toBeDefined()
+    expect(decisions).toHaveBeenCalledWith(5, 50, 'm-1', expect.objectContaining({ signal: expect.any(AbortSignal) }))
   })
 
   it('aborts in-flight core and detail requests when the drawer is closed', async () => {
@@ -378,6 +185,7 @@ describe('NodeDetailDrawer model×node scope', () => {
 
     await flushPromises()
 
+    // Switch the underlying node: the prior core request must be discarded.
     liveStreamState.nodes = [{
       credential_id: 99,
       provider_id: 1,
@@ -389,6 +197,7 @@ describe('NodeDetailDrawer model×node scope', () => {
     await wrapper.setProps({ node: liveStreamState.nodes[0] })
     await flushPromises()
 
+    // Late response from the original credential must not overwrite the new node state.
     resolveFirst({ credentials: [{ id: 5, models: [] }] })
     await flushPromises()
 
@@ -399,7 +208,7 @@ describe('NodeDetailDrawer model×node scope', () => {
     let resolveHistory!: (value: unknown) => void
     modelHistory.mockImplementationOnce(() => new Promise(resolve => { resolveHistory = resolve }))
     const wrapper = mountDrawer('m-1')
-    await flushPromises()
+    await triggerDetailLoad(wrapper)
 
     await wrapper.setProps({ model: 'm-2' })
     await flushPromises()
@@ -414,6 +223,7 @@ describe('NodeDetailDrawer model×node scope', () => {
     let resolveDecisions!: (value: unknown) => void
     decisions.mockImplementationOnce(() => new Promise(resolve => { resolveDecisions = resolve }))
     const wrapper = mountDrawer('m-1')
+    await wrapper.get('[role="tab"]:nth-child(2)').trigger('click')
     await flushPromises()
 
     await wrapper.setProps({ model: 'm-2' })
@@ -425,16 +235,23 @@ describe('NodeDetailDrawer model×node scope', () => {
     expect(wrapper.get('h2').text()).toBe('m-2')
   })
 
-  it('clears stale detail and reloads the new model scope automatically', async () => {
+  it('clears stale detail and reloads the new model scope', async () => {
     const wrapper = mountDrawer('m-1')
-    await flushPromises()
-    expect(resolve).toHaveBeenCalledWith('m-1', undefined, false, expect.objectContaining({ signal: expect.any(AbortSignal) }))
+    await triggerDetailLoad(wrapper)
+    expect(resolve).toHaveBeenNthCalledWith(1, 'm-1', undefined, false, expect.objectContaining({ signal: expect.any(AbortSignal) }))
 
     await wrapper.setProps({ model: 'm-2' })
     await flushPromises()
 
-    expect(resolve).toHaveBeenCalledWith('m-2', undefined, false, expect.objectContaining({ signal: expect.any(AbortSignal) }))
-    expect(wrapper.text()).not.toContain('加载明细数据')
+    expect(resolve).toHaveBeenLastCalledWith('m-2', undefined, false, expect.objectContaining({ signal: expect.any(AbortSignal) }))
+    expect(decisions).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('加载明细数据')
+
+    await triggerDetailLoad(wrapper)
+    expect(monitorSummary).toHaveBeenLastCalledWith(
+      { credential_id: 5, mode: 'detail' },
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    )
     expect(wrapper.get('h2').text()).toBe('m-2')
   })
 })

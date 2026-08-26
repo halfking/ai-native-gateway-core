@@ -24,12 +24,4 @@ describe('LiveStreamLegend probe icon', () => {
     expect(source).toContain('viewBox="0 0 16 16"')
     expect(source).not.toMatch(/legend-probe-badge">T</)
   })
-
-  it('documents routing vs llm in-flight stage markers', async () => {
-    const source = await readLegendSource()
-    expect(source).toContain('legend-stage--routing')
-    expect(source).toContain('legend-stage--llm')
-    expect(source).toContain('路由中')
-    expect(source).toContain('等大模型')
-  })
 })

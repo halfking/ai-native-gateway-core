@@ -203,13 +203,13 @@ const isEmpty = computed(() =>
    heatmap colors. (2026-06-22 axis swap: was a row highlight, now a
    column highlight.) */
 .heatmap-table th.col-specified {
-  color: var(--muted);
+  color: #6b7280;
   font-weight: 700;
   font-style: italic;
-  border-top: 3px solid var(--muted);
+  border-top: 3px solid #6b7280;
 }
 .heatmap-table td.cell-specified-col {
   font-style: italic;
-  color: var(--muted);
+  color: #6b7280;
 }
 </style>

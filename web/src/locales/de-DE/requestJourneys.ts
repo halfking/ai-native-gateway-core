@@ -46,6 +46,7 @@ export default {
     groupWarn: '⚡ Warnungs-Knoten ({count})',
     groupOk: '✅ Normale Knoten ({count})',
     groupDisabled: '🚫 Deaktivierte Knoten ({count})',
+    nodeLabel: 'Knoten {credentialId}',
     circuit: 'Sicherung',
     availability: 'Verfügbarkeit',
     quota: 'Kontingent',

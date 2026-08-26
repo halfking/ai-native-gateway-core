@@ -120,8 +120,6 @@ export interface SessionOverviewData {
     input_cost_usd: number
     output_cost_usd: number
     cost_growth_pct: number
-    total_requests?: number
-    avg_latency_ms?: number
   }
 
   // 模型使用
@@ -193,87 +191,26 @@ export function getSessionOverview(params: QueryParams = {}) {
 // 2. 会话趋势 API
 // ════════════════════════════════════════════════════════════════
 
-/** Normalized trend point — chart / KPI consumers always see this shape. */
-export interface SessionTrendPoint {
-  date: string
-  new_sessions: number
-  active_sessions: number
-  closed_sessions: number
-  total_cost: number
-  total_requests: number
-}
-
 export interface SessionTrendData {
   period: {
     start: string
     end: string
     days: number
   }
-  trend: SessionTrendPoint[]
+  trend: Array<{
+    date: string
+    new_sessions: number
+    active_sessions: number
+    closed_sessions: number
+    total_cost: number
+    total_requests: number
+  }>
   summary: {
     total_new: number
     total_active: number
     total_closed: number
-    avg_daily_new?: number
-    avg_daily_cost?: number
+    avg_daily_cost: number
     growth_rate: number
-  }
-}
-
-/** Raw wire shape from Go (overview uses *_count; trend API historically mixed). */
-type RawTrendPoint = {
-  date: string
-  new_sessions?: number
-  active_sessions?: number
-  active_count?: number
-  closed_sessions?: number
-  closed_count?: number
-  total_cost?: number
-  total_requests?: number
-}
-
-type RawTrendPayload = {
-  trend?: RawTrendPoint[]
-  summary?: {
-    total_new?: number
-    total_active?: number
-    total_closed?: number
-    avg_daily_new?: number
-    avg_daily_cost?: number
-    growth_rate?: number
-    growth_rate_pct?: number
-  }
-  period?: { start: string; end: string; days: number }
-  period_start?: string
-  period_end?: string
-}
-
-/** Map backend trend payload → DASHBOARD_API / chart contract. */
-export function normalizeSessionTrendData(raw: RawTrendPayload, days = 7): SessionTrendData {
-  const trend: SessionTrendPoint[] = (raw.trend ?? []).map((p) => ({
-    date: p.date,
-    new_sessions: p.new_sessions ?? 0,
-    active_sessions: p.active_sessions ?? p.active_count ?? 0,
-    closed_sessions: p.closed_sessions ?? p.closed_count ?? 0,
-    total_cost: p.total_cost ?? 0,
-    total_requests: p.total_requests ?? 0,
-  }))
-  const s = raw.summary ?? {}
-  return {
-    period: raw.period ?? {
-      start: raw.period_start ?? '',
-      end: raw.period_end ?? '',
-      days,
-    },
-    trend,
-    summary: {
-      total_new: s.total_new ?? 0,
-      total_active: s.total_active ?? 0,
-      total_closed: s.total_closed ?? 0,
-      avg_daily_new: s.avg_daily_new,
-      avg_daily_cost: s.avg_daily_cost,
-      growth_rate: s.growth_rate ?? s.growth_rate_pct ?? 0,
-    },
   }
 }
 
@@ -682,7 +619,7 @@ export async function fetchSessionTrend(params?: QueryParams): Promise<SessionTr
         message: 'Invalid response',
       })
     }
-    return normalizeSessionTrendData(response.data as RawTrendPayload, params?.days ?? 7)
+    return response.data
   } catch (error) {
     handleApiError(error)
   }

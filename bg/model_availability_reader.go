@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -83,15 +82,12 @@ func (r *ModelAvailabilityReader) ReadByModel(ctx context.Context, rawModel stri
 	if !r.Enabled() {
 		return nil, nil
 	}
-	keys, err := loadAvailabilityIndex(ctx, r.redis)
+	keys, err := r.redis.Keys(ctx, fmt.Sprintf("llmgw:avail:*:%s", rawModel)).Result()
 	if err != nil {
 		return nil, err
 	}
 	out := make([]ModelAvailabilitySnapshotWithCredential, 0, len(keys))
 	for _, key := range keys {
-		if !strings.HasSuffix(key, ":"+rawModel) {
-			continue
-		}
 		data, err := r.redis.HGetAll(ctx, key).Result()
 		if err != nil || len(data) == 0 {
 			continue
@@ -121,27 +117,23 @@ func (r *ModelAvailabilityReader) ScanKeys(ctx context.Context, credentialID int
 	if !r.Enabled() {
 		return nil, nil
 	}
-	keys, err := loadAvailabilityIndex(ctx, r.redis)
-	if err != nil {
+	pattern := "llmgw:avail:*"
+	if credentialID > 0 {
+		pattern = fmt.Sprintf("llmgw:avail:%d:*", credentialID)
+	}
+	iter := r.redis.Scan(ctx, 0, pattern, 256).Iterator()
+	var keys []string
+	for iter.Next(ctx) {
+		keys = append(keys, iter.Val())
+		if len(keys) >= 4096 {
+			// Cap admin enumeration to keep the endpoint cheap.
+			break
+		}
+	}
+	if err := iter.Err(); err != nil {
 		return nil, err
 	}
-	if credentialID <= 0 {
-		if len(keys) > 4096 {
-			return keys[:4096], nil
-		}
-		return keys, nil
-	}
-	prefix := "llmgw:avail:" + strconv.Itoa(credentialID) + ":"
-	filtered := make([]string, 0, len(keys))
-	for _, key := range keys {
-		if strings.HasPrefix(key, prefix) {
-			filtered = append(filtered, key)
-			if len(filtered) >= 4096 {
-				break
-			}
-		}
-	}
-	return filtered, nil
+	return keys, nil
 }
 
 // ReadCredentials returns every cached availability entry for a single raw

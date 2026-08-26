@@ -1,56 +1,100 @@
 <script setup lang="ts">
-/**
- * SessionDetailPage — admin session detail (summary + request_logs turn tree).
- *
- * Turn list uses SessionTurnsTimeline (GET …/turns → session_turns_tree.go).
- * Clicking a turn opens the fullscreen request detail in session-turns mode.
- */
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+// SessionDetailPage.vue — V2-P4 (2026-07-24)
+// New admin session detail page. Replaces legacy SessionTurnsPanel:
+//   - sticky summary bar with instant summary trigger (V2-P5)
+//   - cursor-paginated dual-column turn list
+//   - right-side drawer with five tabs (request/response/meta/...
+//     governance/attachments) when a row is clicked
+//   - `?turn=N&focus=1` deep-link support for cross-page handoff
+
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { getSessionSnapshot } from '../../api/sessions_v2'
-import { ApiError } from '../../api/_core'
+import {
+  listSessionTurns,
+  getSessionSnapshot,
+  type TurnListItem,
+} from '../../api/sessions_v2'
 import SessionSummaryBar from '../../components/SessionSummaryBar.vue'
-import SessionTurnsTimeline from '../../components/session/SessionTurnsTimeline.vue'
-import { openRequestDetailPage } from '../../utils/openRequestDetailPage'
+import SessionTurnListItem from '../../components/SessionTurnListItem.vue'
+import SessionTurnDrawer from '../../components/SessionTurnDrawer.vue'
 
 const route = useRoute()
 const router = useRouter()
 const sessionId = computed(() => String(route.params.id || ''))
+const focusTurn = computed(() => Number(route.query.turn || 0))
 
-const snapshotError = ref('')
+const turns = ref<TurnListItem[]>([])
+const hasMore = ref(false)
+const nextCursor = ref('')
+const loading = ref(false)
+const drawerTurnNo = ref<number | null>(focusTurn.value || null)
 const snapshot = ref<Record<string, unknown> | null>(null)
-let snapshotController: AbortController | null = null
 
-async function loadSnapshot() {
-  const id = sessionId.value
-  if (!id) return
-  snapshotController?.abort()
-  snapshotController = new AbortController()
-  snapshot.value = null
-  snapshotError.value = ''
+async function load(reset = true) {
+  loading.value = true
   try {
-    snapshot.value = (await getSessionSnapshot(id, {
-      signal: snapshotController.signal,
-    })) as Record<string, unknown>
+    if (reset) {
+      turns.value = []
+      nextCursor.value = ''
+    }
+    const params: { cursor?: string; limit: number } = { limit: 50 }
+    if (nextCursor.value) params.cursor = nextCursor.value
+    const r = await listSessionTurns(sessionId.value, params)
+    turns.value = [...turns.value, ...r.turns]
+    hasMore.value = r.has_more
+    nextCursor.value = r.next_cursor
   } catch (e) {
-    if (e instanceof DOMException && e.name === 'AbortError') return
-    snapshotError.value = e instanceof ApiError ? e.detail : e instanceof Error ? e.message : String(e)
+    console.error('list turns failed', e)
+  } finally {
+    loading.value = false
   }
 }
 
-function openTurn(payload: { requestId: string; turnNumber: number }) {
-  openRequestDetailPage(payload.requestId, { mode: 'session-turns' }, router)
+async function loadSnapshot() {
+  try {
+    snapshot.value = (await getSessionSnapshot(sessionId.value)) as Record<
+      string,
+      unknown
+    >
+  } catch (e) {
+    snapshot.value = null
+  }
 }
 
-onMounted(loadSnapshot)
+function openDrawer(t: TurnListItem) {
+  drawerTurnNo.value = t.turn_no
+  router.replace({
+    query: { ...route.query, turn: String(t.turn_no), focus: '1' },
+  })
+}
 
-watch(sessionId, () => {
+function closeDrawer() {
+  drawerTurnNo.value = null
+  const { turn: _t, focus: _f, ...rest } = route.query
+  router.replace({ query: rest })
+}
+
+onMounted(() => {
+  load(true)
   loadSnapshot()
 })
 
-onBeforeUnmount(() => {
-  snapshotController?.abort()
-})
+watch(
+  () => String(route.params.id || ''),
+  (id, previousId) => {
+    if (id === previousId) return
+    drawerTurnNo.value = focusTurn.value || null
+    load(true)
+    loadSnapshot()
+  }
+)
+
+watch(
+  () => route.query.turn,
+  turn => {
+    drawerTurnNo.value = Number(turn || 0) || null
+  }
+)
 </script>
 
 <template>
@@ -62,25 +106,31 @@ onBeforeUnmount(() => {
       :total-turns="snapshot?.total_turns as number | undefined"
       :total-cost="snapshot?.total_cost_usd as number | undefined"
       :summary-generated-at="snapshot?.summary_generated_at as string | undefined"
-      @summary-updated="snapshot = $event"
     />
     <div class="list">
-      <div v-if="snapshotError" class="error snapshot-error" role="alert">
-        会话摘要加载失败：{{ snapshotError }}
-      </div>
-      <SessionTurnsTimeline
-        v-if="sessionId"
-        :key="sessionId"
-        :session-id="sessionId"
-        @open-request="openTurn"
+      <SessionTurnListItem
+        v-for="t in turns"
+        :key="t.turn_no"
+        :turn="t"
+        :active="t.turn_no === drawerTurnNo"
+        @open="openDrawer"
       />
+      <div v-if="!loading && turns.length === 0" class="empty">暂无 turn 记录</div>
+      <div v-if="hasMore" class="load-more">
+        <el-button :loading="loading" @click="load(false)">加载更早</el-button>
+      </div>
     </div>
+    <SessionTurnDrawer
+      :session-id="sessionId"
+      :turn-no="drawerTurnNo"
+      @close="closeDrawer"
+    />
   </div>
 </template>
 
 <style scoped>
 .session-detail {
-  background: var(--kx-bg, var(--surface-secondary));
+  background: #f3f4f6;
   min-height: 100vh;
 }
 .list {
@@ -88,12 +138,14 @@ onBeforeUnmount(() => {
   max-width: 1400px;
   margin: 0 auto;
 }
-.error {
-  color: var(--kx-danger, var(--danger));
-  background: var(--kx-danger-soft, var(--danger-bg));
-  border: 1px solid color-mix(in srgb, var(--kx-danger, var(--danger)) 40%, var(--kx-border, var(--danger-bg)));
-  padding: 10px 12px;
-  border-radius: 6px;
-  margin-bottom: 10px;
+.empty {
+  text-align: center;
+  color: #6b7280;
+  padding: 32px;
+}
+.load-more {
+  display: flex;
+  justify-content: center;
+  margin-top: 12px;
 }
 </style>
