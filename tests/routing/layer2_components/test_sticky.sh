@@ -1,6 +1,6 @@
 #!/bin/bash
 # Layer 2 Test: Sticky Session Behavior
-# Tests multi-level sticky routing (L1/L2/L3)
+# Tests L1 session stickiness and the new-session load-balancing boundary
 
 set -euo pipefail
 
@@ -75,49 +75,47 @@ test_l1_sticky_session_model() {
     assert_log_contains "sticky L1 hit"
 }
 
-# T2.1.2: L2 Sticky - Client + Model Binding (Cross-Session)
-test_l2_sticky_client_model() {
-    test_case "T2.1.2: L2 Sticky - Client + Model Binding (Cross-Session)"
-    
+# T2.1.2: New session must re-enter load balancing (no L2 inheritance)
+test_new_session_load_balances() {
+    test_case "T2.1.2: New session does not inherit L2 sticky"
+
     local session_id_1
     session_id_1=$(generate_session_id)
     local session_id_2="${session_id_1}-different"
-    
+
     local payload='{
         "model": "gpt-4",
         "messages": [{"role": "user", "content": "Hello"}],
         "max_tokens": 5
     }'
-    
-    # Request 1: First session
-    echo "Request 1: First session..."
+
+    echo "Request 1: Establishing first session..."
     http_request "POST" "$GATEWAY_URL/v1/chat/completions" "$payload" "Authorization: Bearer $API_KEY|X-Gw-Session-Id: $session_id_1"
     assert_http_status 200
-    
+
     capture_logs 100
-    local cred_id_1
-    cred_id_1=$(extract_credential_id "$LAST_LOGS")
-    echo "Session 1 used credential: $cred_id_1"
-    
-    # Request 2: Different session, same API key, same model
+    if grep -q "sticky L2 hit" <<< "$LAST_LOGS"; then
+        echo -e "${RED}✗${NC} New session unexpectedly inherited L2 sticky"
+        TESTS_FAILED=$((TESTS_FAILED + 1))
+        return 1
+    fi
+
     sleep 1
-    echo "Request 2: Different session, same model..."
+    echo "Request 2: New session with same client/model..."
     http_request "POST" "$GATEWAY_URL/v1/chat/completions" "$payload" "Authorization: Bearer $API_KEY|X-Gw-Session-Id: $session_id_2"
     assert_http_status 200
-    
+
     capture_logs 100
-    local cred_id_2
-    cred_id_2=$(extract_credential_id "$LAST_LOGS")
-    echo "Session 2 used credential: $cred_id_2"
-    
-    # Should use same credential (L2 hit)
-    assert_equals "$cred_id_1" "$cred_id_2" "credential_id (L2 sticky)"
-    assert_log_contains "sticky L2 hit"
+    if grep -q "sticky L2 hit" <<< "$LAST_LOGS"; then
+        echo -e "${RED}✗${NC} New session unexpectedly inherited L2 sticky"
+        TESTS_FAILED=$((TESTS_FAILED + 1))
+        return 1
+    fi
 }
 
-# T2.1.3: L3 Sticky - Client Baseline (Cross-Model)
-test_l3_sticky_client_baseline() {
-    test_case "T2.1.3: L3 Sticky - Client Baseline (Cross-Model)"
+# T2.1.3: Complete session identity does not fall back to L3 across models
+test_complete_session_does_not_use_l3() {
+    test_case "T2.1.3: Complete session does not use L3 cross-model fallback"
     
     local session_id
     session_id=$(generate_session_id)
@@ -152,13 +150,15 @@ test_l3_sticky_client_baseline() {
     
     capture_logs 100
     
-    # Check if L3 was hit (may or may not, depending on available credentials)
+    # A complete session identity must not inherit the client-level binding
+    # from Model A when routing Model B.
     if echo "$LAST_LOGS" | grep -q "sticky L3 hit"; then
-        echo -e "${GREEN}✓${NC} L3 sticky hit detected"
-        TESTS_PASSED=$((TESTS_PASSED + 1))
-    else
-        echo -e "${YELLOW}⊘${NC} L3 sticky not hit (may have different credentials for different models)"
+        echo -e "${RED}✗${NC} Complete session unexpectedly inherited L3 sticky across models"
+        TESTS_FAILED=$((TESTS_FAILED + 1))
+        return 1
     fi
+    echo -e "${GREEN}✓${NC} Complete session did not inherit L3 across models"
+    TESTS_PASSED=$((TESTS_PASSED + 1))
     TESTS_RUN=$((TESTS_RUN + 1))
 }
 
@@ -236,8 +236,8 @@ main() {
     
     # Run tests
     test_l1_sticky_session_model
-    test_l2_sticky_client_model
-    test_l3_sticky_client_baseline
+    test_new_session_load_balances
+    test_complete_session_does_not_use_l3
     test_sticky_failure_cleanup
     test_sticky_ttl_expiration
     test_sticky_persistence
