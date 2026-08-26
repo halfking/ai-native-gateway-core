@@ -307,6 +307,13 @@ func (sm *Manager) Get(ctx context.Context, sessionID string) (*Session, error) 
 	if err != nil || len(data) == 0 {
 		return nil, ErrSessionNotFound
 	}
+	return sessionFromRedisHash(sessionID, data)
+}
+
+func sessionFromRedisHash(sessionID string, data map[string]string) (*Session, error) {
+	if len(data) == 0 {
+		return nil, ErrSessionNotFound
+	}
 
 	apiKeyID, _ := strconv.Atoi(data["api_key_id"])
 	devices := []Device{}

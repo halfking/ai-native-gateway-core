@@ -14,7 +14,10 @@ import (
 func TestSessionExportAPI_HandleExport_NoData(t *testing.T) {
 	api := &SessionExportAPI{db: nil}
 	// db=nil should produce Service Unavailable early
+	// NOTE: ServeHTTP is auth-first (Phase 0 P0-1), so the request carries a
+	// super_admin context to reach the db availability check.
 	req := httptest.NewRequest(http.MethodGet, "/api/admin/session-export?id=gw_x", nil)
+	req = SetAuthContext(req, &AuthContext{Role: "super_admin", TenantID: "default"})
 	w := httptest.NewRecorder()
 	api.ServeHTTP(w, req)
 	if w.Code != http.StatusServiceUnavailable {
@@ -75,6 +78,9 @@ func TestSessionExport_DBRequired(t *testing.T) {
 			} else {
 				req = httptest.NewRequest(tc.method, tc.path, nil)
 			}
+			// ServeHTTP is auth-first (Phase 0 P0-1): inject a super_admin
+			// context so the assertion exercises the db=nil → 503 guard.
+			req = SetAuthContext(req, &AuthContext{Role: "super_admin", TenantID: "default"})
 			w := httptest.NewRecorder()
 			api.ServeHTTP(w, req)
 			if w.Code != tc.wantStatus {
