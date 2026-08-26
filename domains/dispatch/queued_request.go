@@ -119,6 +119,45 @@ type QueuedRequest struct {
 	// been selected and successfully re-enqueued.
 	OnNodeSwitchSummary func(message string)
 
+	// OnDispatchNotice delivers structured requeue/wait/switch notices to the
+	// request's transport (v6 G-Ⅲ). Unlike OnNodeSwitchSummary it fires on
+	// EVERY requeue site (same-cred retry, credential switch, model switch,
+	// capacity wait, scheduled park/due). The executor bridges it to the
+	// handler's `: thinking:` SSE comment writer so the client sees progress
+	// without the frames entering the conversation. Callbacks must be
+	// non-blocking; dispatch wraps them with recover.
+	OnDispatchNotice func(notice DispatchNotice)
+
+	// DueAt schedules future execution (定时请求, v6 G-Ⅱ). Zero = immediate.
+	// A future DueAt parks the request in the pipeline's due heap when the
+	// total drainer pops it; the promoter re-admits it into Tier-0 at the due
+	// time. Capped by maxScheduleAhead at Submit.
+	DueAt time.Time
+
+	// LastFailover is the 回队打标 (v6 G-Ⅴ): the previous round's error kind,
+	// model/credential executed, and the decided next action. Written under
+	// the single-owner invariant at every requeue site. Since V6-W1.6 (R9)
+	// it is a PROJECTION of the AttemptJournal tail, refreshed by
+	// recordDecision — the journal is the authority.
+	LastFailover FailoverMarker
+
+	// AttemptJournal is the per-request execution trace (V6-W1.6 R9):
+	// one entry per requeue/terminal decision, bounded at journalCapacity.
+	// Written only via recordDecision under the single-owner invariant.
+	AttemptJournal []JournalEntry
+	// Counts is the cumulative per-action view of the journal (R12: the
+	// attempt limit authority remains AttemptCount).
+	Counts ActionCounts
+	// RequestClass mirrors ir.RequestClass as a plain string ("immediate" |
+	// "scheduled") so dispatch stays decoupled from internal/ir (E14).
+	// Empty is derived from DueAt via requestClass().
+	RequestClass string
+	// journalSeq is the last allocated journal sequence number.
+	journalSeq int
+
+	// noticeSeq orders DispatchNotice delivery per request (single owner).
+	noticeSeq int
+
 	// ResultCh signals completion to the Submit caller. Capacity 1; sent on
 	// exactly once (guarded by the completed atomic).
 	ResultCh chan ForwardOutcome

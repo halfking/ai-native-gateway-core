@@ -17,7 +17,10 @@
 // one Parser + one Serializer.
 package ir
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"time"
+)
 
 // Protocol constants for SourceProtocol field.
 const (
@@ -189,6 +192,16 @@ type InternalRequest struct {
 	// 空字符串 = 未指定，序列化器按标准协议处理。
 	// 常见值: "minimax"、"anthropic"、"openai"。
 	TargetProvider string
+
+	// ─── Gateway-internal metadata (V6-W1.6 R8, 定时请求) ───
+
+	// Class is the request type: immediate | scheduled. Stamped by
+	// TransportIRConverter.Parse* from the TransportContext the executor set;
+	// serializers never emit it (E10). Empty ≙ immediate.
+	Class RequestClass
+	// DueAt is the scheduled execution time when Class == scheduled; the zero
+	// value for immediate requests.
+	DueAt time.Time
 }
 
 // SystemPrompt represents a normalized system prompt.

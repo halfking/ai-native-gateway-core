@@ -39,6 +39,9 @@ type Summary struct {
 	Summary        string    // 80-200 字 Chinese summary
 	KeyTopics      []string  // 3-5 key points (15-40 字 each)
 	UserIntent     string    // user's underlying goal
+	AgentType      string    // detected client/agent type
+	ExpertType     string    // detected expert specialty
+	Tags           []string  // normalized session tags
 	LastSummarized time.Time // when this row was last generated (read by the rolling gate)
 	FirstRequestAt time.Time // first request ts for this session (NOT NULL column)
 	LastRequestAt  time.Time // last request ts for this session (NOT NULL column)
@@ -161,14 +164,17 @@ func (s *Store) Upsert(ctx context.Context, sum Summary) (UpsertResult, error) {
 	const query = `
 		INSERT INTO session_summaries (
 			session_key, tenant_id, title, summary, key_topics,
-			user_intent, last_summarized_at, created_at, updated_at,
+			user_intent, agent_type, expert_type, tags, last_summarized_at, created_at, updated_at,
 			first_request_at, last_request_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW(), $8, $9)
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), NOW(), $11, $12)
 		ON CONFLICT (session_key) DO UPDATE SET
 			title = EXCLUDED.title,
 			summary = EXCLUDED.summary,
 			key_topics = EXCLUDED.key_topics,
 			user_intent = EXCLUDED.user_intent,
+			agent_type = EXCLUDED.agent_type,
+			expert_type = EXCLUDED.expert_type,
+			tags = EXCLUDED.tags,
 			last_summarized_at = EXCLUDED.last_summarized_at,
 			last_request_at = GREATEST(session_summaries.last_request_at, EXCLUDED.last_request_at),
 			summary_version = COALESCE(session_summaries.summary_version, 0) + 1,
@@ -184,6 +190,9 @@ func (s *Store) Upsert(ctx context.Context, sum Summary) (UpsertResult, error) {
 		summaryText,
 		sum.KeyTopics,
 		userIntent,
+		sum.AgentType,
+		sum.ExpertType,
+		sum.Tags,
 		sum.LastSummarized,
 		firstReq,
 		lastReq,
