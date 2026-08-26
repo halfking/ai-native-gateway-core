@@ -216,6 +216,16 @@ func TestRequestLogContext_RateLimitedStatus(t *testing.T) {
 }
 
 // TestApplySessionCompressorFields_OutboundBodyPersistedWithoutCompression
+// asserts the 2026-07-27 fix: when no session-compression strategy fired
+// (delta-only / fresh session), but the handler populated OutboundBody
+// from executor's result.RequestBody, the entry must still carry the body
+// so the admin UI's v3 转发体 tab is non-empty.
+//
+// Regression context: request d94fd76c5880ea12b229db681bc1b83b (minimax-m3,
+// 23K prompt tokens, completion=9) had outbound_msg_count=10 and
+// outbound_token_est=25701 set, but outbound_body was JSONB null —
+// admin UI showed an empty v3 转发体 tab. Root cause: handler.go:2244
+// guarded OutboundBody persistence on scResult.CompressionStrategy != "",
 // so non-compression requests lost their upstream body.
 func TestApplySessionCompressorFields_OutboundBodyPersistedWithoutCompression(t *testing.T) {
 	entry := &telemetry.RequestLogEntry{}
@@ -520,19 +530,19 @@ func TestSynthesizeStreamBodyFromText(t *testing.T) {
 // path (handler.go captureAndEmitRateLimited) must call
 // insertRateLimitedPlaceholder before EmitRateLimited so the subsequent
 // UPDATE finds a row in request_logs_hot. The helper short-circuits when
-// the log context is already marked logged (race safety) and when the
-// telemetry client is disabled (no DB pool); this test covers both.
+// the log context is already marked logged and when the telemetry client is
+// disabled (no DB pool); this test covers both.
 func TestInsertRateLimitedPlaceholder_SkipsWhenLoggedOrDisabled(t *testing.T) {
 	ch := NewChatHandler(nil, nil, nil, nil, nil, nil)
 
-	// nil logCtx + disabled client → no panic.
+	// nil logCtx + disabled client -> no panic.
 	ch.insertRateLimitedPlaceholder(nil)
 
 	ctx := ch.NewRequestLogContext(httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"kimi-k3"}`)), "req-rl-placeholder", time.Now())
 	ctx.Body = []byte(`{"model":"kimi-k3"}`)
 	ctx.SetClientModel("kimi-k3")
 
-	// Client disabled (no DB pool) — INSERT must be skipped without error.
+	// Client disabled (no DB pool) -> INSERT must be skipped without error.
 	ch.insertRateLimitedPlaceholder(ctx)
 	if ctx.IsLogged() {
 		t.Fatalf("disabled client should not flip ctx.logged; got IsLogged=true")
@@ -540,7 +550,7 @@ func TestInsertRateLimitedPlaceholder_SkipsWhenLoggedOrDisabled(t *testing.T) {
 
 	// Even with a non-nil telemetryClient whose Enabled() is false, the
 	// helper must not call EmitRequestLogInsert. Asserted via the absence
-	// of side effects (ctx.logged stays false) — telemetry.Client has
+	// of side effects (ctx.logged stays false) -- telemetry.Client has
 	// no DB pool in this test, so Enabled()=false and INSERT is short-circuited.
 	ctx.MarkLogged()
 	if !ctx.IsLogged() {

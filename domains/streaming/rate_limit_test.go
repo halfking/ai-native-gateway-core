@@ -13,6 +13,28 @@ import (
 	"github.com/kaixuan/llm-gateway-go/ratelimit"
 )
 
+type budgetExceededLimiter struct {
+	estimatedWaitSec int
+}
+
+func (l budgetExceededLimiter) CheckRPM(int, int) bool { return false }
+
+func (l budgetExceededLimiter) RPMStatus(_ int, limit int) (int, int) {
+	return limit, 0
+}
+
+func (l budgetExceededLimiter) AdmitRPM(context.Context, int, int) (ratelimit.AdmissionResult, error) {
+	return ratelimit.AdmissionResult{}, nil
+}
+
+func (l budgetExceededLimiter) AdmitRPMWithBudget(_ context.Context, _ int, limit int, _ time.Duration, _ func(ratelimit.AdmissionResult)) (ratelimit.AdmissionResult, error) {
+	return ratelimit.AdmissionResult{
+		Limit:            limit,
+		Position:         1,
+		EstimatedWaitSec: l.estimatedWaitSec,
+	}, ratelimit.ErrQueueBudgetExceeded
+}
+
 func TestCheckGatewayRateLimit_StaticDataPlaneKeySkipsSharedRPM(t *testing.T) {
 	ratelimit.EnableRateLimit()
 	limiter := ratelimit.NewSlidingWindowLimiter()
@@ -56,25 +78,13 @@ func TestCheckGatewayRateLimit_QueuedBeyondBudgetFailsFast(t *testing.T) {
 	// no upstream attempt logged. Now: a request whose remaining deadline
 	// cannot cover the queue wait is rejected immediately (429/Blocked).
 	ratelimit.EnableRateLimit()
-	limiter := ratelimit.NewSlidingWindowLimiter()
-	t.Cleanup(limiter.Stop)
 	limit := 1
 	keyInfo := &authentication.KeyInfo{ID: 777, RateLimitRPM: &limit}
+	limiter := budgetExceededLimiter{estimatedWaitSec: 42}
 
-	// Pre-fill the single bucket slot via the underlying minute-bucket
-	// admission directly (bypasses checkGatewayRateLimit's budget logic so
-	// the warm-up is deterministic regardless of where the test starts
-	// within the minute). bucket.count=1 → next call is guaranteed to
-	// reach the queueing path.
-	sliding := limiter
-	warmupCtx, warmupCancel := context.WithDeadline(context.Background(), time.Now().Add(60*time.Second))
-	defer warmupCancel()
-	if _, err := sliding.AdmitRPM(warmupCtx, keyInfo.ID, limit); err != nil {
-		t.Fatalf("warm-up admit failed: %v", err)
-	}
-
-	// Simulate a request whose remaining budget (deadline 30s = 25s after
-	// headroom) cannot cover the ~60s queue wait to the next minute bucket.
+	// The minute bucket has its own clock-sensitive tests. This test locks
+	// the gateway contract: a budget-exceeded admission must map to a fast
+	// blocked outcome and preserve the limiter's Retry-After estimate.
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(30*time.Second))
 	defer cancel()
 	start := time.Now()
@@ -85,8 +95,8 @@ func TestCheckGatewayRateLimit_QueuedBeyondBudgetFailsFast(t *testing.T) {
 	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
 		t.Fatalf("over-budget queue must reject fast, took %v", elapsed)
 	}
-	if outcome.ResetSec < 30 {
-		t.Fatalf("ResetSec=%d, want ~60 (estimated wait to next bucket)", outcome.ResetSec)
+	if outcome.ResetSec != 42 {
+		t.Fatalf("ResetSec=%d, want limiter estimate 42", outcome.ResetSec)
 	}
 }
 
