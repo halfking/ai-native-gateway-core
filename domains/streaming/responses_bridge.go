@@ -328,10 +328,7 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 		if pc != nil {
 			pc.markInterrupted("client_write_failed")
 		}
-		// Client connection is dead before any frame — including headers —
-		// reaches the wire. A transparent retry would re-attempt the same
-		// header flush on the same dead connection, wasting an upstream call.
-		return StreamOutcome{Interrupted: true, Reason: "client_write_failed", Kind: errorsx.KindCanceled, Resumable: false}
+		return StreamOutcome{Interrupted: true, Reason: "client_write_failed", Kind: errorsx.KindCanceled, Resumable: true}
 	}
 
 	if clientModel == "" {
@@ -406,6 +403,9 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 		}
 		if capture != nil {
 			capture.ObserveChunk(chunk)
+			if !clientWriter.clientDisconnected {
+				capture.RecordChunkSent()
+			}
 		}
 		chunkCount++
 
@@ -454,6 +454,9 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 						Resumable:   !attemptHasClientSemanticOutput(gate, chunkCount),
 						ChunkCount:  chunkCount,
 					}
+					if !outcome.Resumable {
+						scaffold.finishInterrupted(gate, fullText.String(), outcome.Reason, inputTokens, outputTokens)
+					}
 
 					if capture != nil {
 						capture.MarkInterruptedWithReason(outcome.Reason)
@@ -464,13 +467,11 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 				return StreamOutcome{ChunkCount: chunkCount}
 			}
 			failure := streamReadFailureOutcome(err, chunkCount)
+			failure.Resumable = !attemptHasClientSemanticOutput(gate, chunkCount)
+			if !failure.Resumable {
+				scaffold.finishInterrupted(gate, fullText.String(), failure.Reason, inputTokens, outputTokens)
+			}
 			outcome = failure
-			// Gate-aware resumability. streamReadFailureOutcome hardcodes
-			// Resumable=true; a read failure after the client already saw
-			// semantic output must NOT be transparently retried — the next
-			// supplier node would duplicate committed bytes. Mirrors the
-			// eof_without_done and stream_timeout branches in this function.
-			outcome.Resumable = !attemptHasClientSemanticOutput(gate, chunkCount)
 			if capture != nil {
 				capture.MarkInterruptedWithReason(failure.Reason)
 			}
@@ -517,6 +518,9 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 					Kind:        errorsx.KindUpstreamDown,
 					Resumable:   !attemptHasClientSemanticOutput(gate, chunkCount),
 					ChunkCount:  chunkCount,
+				}
+				if !outcome.Resumable {
+					scaffold.finishInterrupted(gate, fullText.String(), outcome.Reason, inputTokens, outputTokens)
 				}
 				if capture != nil {
 					capture.MarkInterruptedWithReason(outcome.Reason)
@@ -649,10 +653,7 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 		if pc != nil {
 			pc.markInterrupted("client_write_failed")
 		}
-		// Client connection is dead before any frame — including headers —
-		// reaches the wire. A transparent retry would re-attempt the same
-		// header flush on the same dead connection, wasting an upstream call.
-		return StreamOutcome{Interrupted: true, Reason: "client_write_failed", Kind: errorsx.KindCanceled, Resumable: false}
+		return StreamOutcome{Interrupted: true, Reason: "client_write_failed", Kind: errorsx.KindCanceled, Resumable: true}
 	}
 
 	if clientModel == "" {
@@ -721,6 +722,9 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 		}
 		if capture != nil {
 			capture.ObserveChunk(chunk)
+			if !clientWriter.clientDisconnected {
+				capture.RecordChunkSent()
+			}
 		}
 		chunkCount++
 		if chunk.Type == ir.ChunkTypeDelta && chunk.Delta != nil {
@@ -752,6 +756,9 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 						Resumable:   !attemptHasClientSemanticOutput(gate, chunkCount),
 						ChunkCount:  chunkCount,
 					}
+					if !outcome.Resumable {
+						scaffold.finishInterrupted(gate, fullText.String(), outcome.Reason, inputTokens, outputTokens)
+					}
 
 					if capture != nil {
 						capture.MarkInterruptedWithReason(outcome.Reason)
@@ -770,23 +777,23 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 				outcome.Kind = errorsx.KindStreamTimeout
 				outcome.Resumable = !attemptHasClientSemanticOutput(gate, chunkCount)
 				outcome.ChunkCount = chunkCount
+				if !outcome.Resumable {
+					scaffold.finishInterrupted(gate, fullText.String(), outcome.Reason, inputTokens, outputTokens)
+				}
 
 				return outcome
-			default:
 
+			default:
 				failure := streamReadFailureOutcome(readResult.err, chunkCount)
+				failure.Resumable = !attemptHasClientSemanticOutput(gate, chunkCount)
 				slog.Warn("openai_to_responses: stream read error", "error", readResult.err, "kind", failure.Kind, "reason", failure.Reason)
 				if capture != nil {
 					capture.MarkInterruptedWithReason(failure.Reason)
 				}
-				scaffold.finishAttempt(gate, fullText.String(), finishReason, inputTokens, outputTokens, inputTokens+outputTokens)
+				if !failure.Resumable {
+					scaffold.finishInterrupted(gate, fullText.String(), failure.Reason, inputTokens, outputTokens)
+				}
 				outcome = failure
-				// Gate-aware resumability. streamReadFailureOutcome hardcodes
-				// Resumable=true; a read failure after the client already saw
-				// semantic output must NOT be transparently retried — the next
-				// supplier node would duplicate committed bytes. Mirrors the
-				// eof_without_done and stream_timeout branches in this function.
-				outcome.Resumable = !attemptHasClientSemanticOutput(gate, chunkCount)
 				return outcome
 			}
 		}
@@ -839,6 +846,9 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 					Kind:        errorsx.KindUpstreamDown,
 					Resumable:   !attemptHasClientSemanticOutput(gate, chunkCount),
 					ChunkCount:  chunkCount,
+				}
+				if !outcome.Resumable {
+					scaffold.finishInterrupted(gate, fullText.String(), outcome.Reason, inputTokens, outputTokens)
 				}
 				if capture != nil {
 					capture.MarkInterruptedWithReason(outcome.Reason)
