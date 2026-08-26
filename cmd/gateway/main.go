@@ -5478,7 +5478,9 @@ func main() {
 		// 2026-08-11 (479): V2 多层队列调度实时快照（Tier-3 显示与统计）。
 		mux.HandleFunc("/api/admin/dispatch/queues", wrapAdmin(handleDispatchQueues))
 		mux.HandleFunc("/api/admin/dispatch/waterfall", wrapAdmin(handleDispatchWaterfall))
-		slog.Info("dispatch_v2 queue snapshot enabled (/api/admin/dispatch/queues, /waterfall)")
+		// v6 G-Ⅳ (2026-08-27): 分维成员索引（模型/凭据/供应商）查询。
+		mux.HandleFunc("/api/admin/dispatch/dimensions", wrapAdmin(handleDispatchDimensions))
+		slog.Info("dispatch_v2 queue snapshot enabled (/api/admin/dispatch/queues, /waterfall, /dimensions)")
 
 		// D2 (2026-08-07): Cache Metrics API
 		// Unified cache observability for semantic/prefix/delta/kv/session_state layers
