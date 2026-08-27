@@ -1,13 +1,22 @@
 package admin
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/kaixuan/llm-gateway-go/domains/requestdetail"
+	"github.com/pashagolub/pgxmock/v4"
+	"github.com/stretchr/testify/require"
 )
+
+type bodyFetcherFunc func(context.Context, string) (any, any, error)
+
+func (f bodyFetcherFunc) fetchRequestBodies(ctx context.Context, requestID string) (any, any, error) {
+	return f(ctx, requestID)
+}
 
 func TestHandleUnifiedRequestDetailFromMemory(t *testing.T) {
 	h := &Handler{}
@@ -39,6 +48,33 @@ func TestHandleUnifiedRequestDetailFromMemory(t *testing.T) {
 	if got.Persistence != requestdetail.PersistenceInFlight {
 		t.Fatalf("unexpected persistence %s", got.Persistence)
 	}
+}
+
+func TestPGBodyReaderResolvesClientRequestIDToCanonicalID(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+
+	mock.ExpectQuery(`(?s)SELECT request_id, COALESCE\(tenant_id, ''\).*FROM request_logs_hot.*request_id = \$1 OR client_request_id = \$1.*CASE WHEN request_id = \$1 THEN 0 ELSE 1 END`).
+		WithArgs("client-req-1").
+		WillReturnRows(pgxmock.NewRows([]string{
+			"request_id", "tenant_id", "gw_session_id", "gw_task_id", "client_model", "request_status", "success", "latency_ms",
+		}).AddRow("gateway-req-1", "tenant-a", nil, nil, "claude-test", "success", true, 12))
+	mock.ExpectQuery(`SELECT outbound_body::text\s+FROM request_logs_bodies_hot`).
+		WithArgs("gateway-req-1").
+		WillReturnRows(pgxmock.NewRows([]string{"outbound_body"}).AddRow(`{"messages":[]}`))
+
+	reader := &pgBodyReader{db: mock, fetch: bodyFetcherFunc(func(context.Context, string) (any, any, error) {
+		return `{"messages":[]}`, `{"content":"ok"}`, nil
+	})}
+	bodies, meta, err := reader.ReadRequestLogsBodies(context.Background(), "client-req-1")
+	require.NoError(t, err)
+	require.Equal(t, "gateway-req-1", meta.RequestID)
+	require.Equal(t, "tenant-a", meta.TenantID)
+	require.JSONEq(t, `{"messages":[]}`, string(bodies.RequestBody))
+	require.JSONEq(t, `{"content":"ok"}`, string(bodies.ResponseBody))
+	require.JSONEq(t, `{"messages":[]}`, string(bodies.OutboundBody))
+	require.NoError(t, mock.ExpectationsWereMet())
 }
 
 func TestHandleUnifiedRequestDetailNotConfigured(t *testing.T) {
