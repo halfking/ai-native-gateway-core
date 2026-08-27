@@ -663,8 +663,18 @@ func (sm *Manager) GetEnrichedSession(ctx context.Context, sessionID string) (*S
 	if sm == nil || sm.redis == nil {
 		return nil, nil, nil, ErrSessionNotFound
 	}
-	data, err := sm.redis.HGetAll(ctx, "session:"+sessionID)
-	if err != nil || len(data) == 0 {
+	client := sm.redis.Client()
+	if client == nil {
+		return nil, nil, nil, ErrSessionNotFound
+	}
+	data, err := redissafe.SafeHGetAll(ctx, client, "session:"+sessionID)
+	if err != nil {
+		if errors.Is(err, redissafe.ErrWrongType) {
+			logSessionTypeMismatch("get_enriched", sessionID, err)
+		}
+		return nil, nil, nil, ErrSessionNotFound
+	}
+	if len(data) == 0 {
 		return nil, nil, nil, ErrSessionNotFound
 	}
 	session, err := sessionFromRedisHash(sessionID, data)
