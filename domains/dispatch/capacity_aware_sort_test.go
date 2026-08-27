@@ -220,12 +220,15 @@ func TestPipelineForEachCredSnapshotPopulatesCache(t *testing.T) {
 	// Seed a credForwarder with a saturated governor: cap=2, used=2 →
 	// snapshotForCredForwarderLocked sees snap.Used (2) >= snap.Limit
 	// (cf.limit=2) → State = GovernorSaturated.
+	q7 := make(chan *QueuedRequest, 2)
 	cf := &credForwarder{
 		cred:  CredentialRef{CredentialID: 7, ProviderID: 1, ConcurrencyMode: ModeConcurrency, ConcurrencyLimit: 2},
-		limit: 2,
 		gov:   newConcurrencyGovernor(2),
 		pipe:  p,
+		wakeCh: make(chan struct{}),
 	}
+	cf.queue.Store(&q7)
+	cf.limit.Store(2)
 	cf.gov.(*concurrencyGovernor).used.Store(2) // saturate: Used=Limit
 
 	p.credMu.Lock()
@@ -276,12 +279,15 @@ func TestPipelineForEachCredSnapshotPopulatesCache(t *testing.T) {
 func TestPipelineForEachCredSnapshotAppliesCacheOutsideCredMu(t *testing.T) {
 	p := newTestPipelineForObserver(t)
 
+	q11 := make(chan *QueuedRequest, 2)
 	cf := &credForwarder{
-		cred:  CredentialRef{CredentialID: 11, ProviderID: 1, ConcurrencyMode: ModeConcurrency, ConcurrencyLimit: 2},
-		limit: 2,
-		gov:   newConcurrencyGovernor(2),
-		pipe:  p,
+		cred:   CredentialRef{CredentialID: 11, ProviderID: 1, ConcurrencyMode: ModeConcurrency, ConcurrencyLimit: 2},
+		gov:    newConcurrencyGovernor(2),
+		pipe:   p,
+		wakeCh: make(chan struct{}),
 	}
+	cf.queue.Store(&q11)
+	cf.limit.Store(2)
 	cf.gov.(*concurrencyGovernor).used.Store(2) // saturate
 	p.credMu.Lock()
 	p.forwarders[cf.cred.CredentialID] = cf

@@ -42,12 +42,15 @@ func TestConcurrencyGovernorZeroGiveUpWaitsForRelease(t *testing.T) {
 // a saturated concurrency governor (cap=2, used=2 → GovernorSaturated).
 func TestConcurrencySnapshotUsesCapNotQueueDepth(t *testing.T) {
 	p := NewPipeline(Deps{})
+	q99 := make(chan *QueuedRequest, 300)
 	cf := &credForwarder{
-		cred:  CredentialRef{CredentialID: 99, ProviderID: 1, ConcurrencyMode: ModeConcurrency, ConcurrencyLimit: 2},
-		limit: 300,
-		gov:   newConcurrencyGovernor(2),
-		pipe:  p,
+		cred:   CredentialRef{CredentialID: 99, ProviderID: 1, ConcurrencyMode: ModeConcurrency, ConcurrencyLimit: 2},
+		gov:    newConcurrencyGovernor(2),
+		pipe:   p,
+		wakeCh: make(chan struct{}),
 	}
+	cf.queue.Store(&q99)
+	cf.limit.Store(300)
 	cf.gov.(*concurrencyGovernor).used.Store(2)
 
 	p.credMu.Lock()
