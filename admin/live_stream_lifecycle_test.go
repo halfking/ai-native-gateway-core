@@ -750,32 +750,35 @@ func TestReplayLifecycleActionsFor_OnlyReplaysVisibleSnapshotRequests(t *testing
 	}
 }
 
-func TestSnapshotRequestIDs_PrefersDetailDimensionsAndFallsBack(t *testing.T) {
-	detail := &LiveStreamSnapshot{
-		DetailDimensions: map[string][]LiveStreamLane{
-			"vendor": {{Requests: []LiveStreamTile{{RequestID: "detail-1"}, {RequestID: "detail-1"}}}},
-		},
+func TestSnapshotRequestIDs_ExtractsFromDimensions(t *testing.T) {
+	snapshot := &LiveStreamSnapshot{
 		Dimensions: map[string][]LiveStreamLane{
-			"vendor": {{Requests: []LiveStreamTile{{RequestID: "fallback-ignored"}}}},
+			"vendor": {{Requests: []LiveStreamTile{{RequestID: "req-1"}, {RequestID: "req-1"}}}},
 		},
 	}
-	ids := snapshotRequestIDs(detail)
+	ids := snapshotRequestIDs(snapshot)
 	if len(ids) != 1 {
-		t.Fatalf("detail IDs = %#v, want only deduplicated detail request", ids)
+		t.Fatalf("IDs = %#v, want only deduplicated request", ids)
 	}
-	if _, ok := ids["detail-1"]; !ok {
-		t.Fatalf("detail request missing: %#v", ids)
+	if _, ok := ids["req-1"]; !ok {
+		t.Fatalf("request missing: %#v", ids)
 	}
 
-	fallback := &LiveStreamSnapshot{Dimensions: map[string][]LiveStreamLane{
-		"vendor": {{Requests: []LiveStreamTile{{RequestID: "fallback-1"}}}},
-	}}
-	ids = snapshotRequestIDs(fallback)
-	if len(ids) != 1 {
-		t.Fatalf("fallback IDs = %#v, want one request", ids)
+	multi := &LiveStreamSnapshot{
+		Dimensions: map[string][]LiveStreamLane{
+			"vendor":   {{Requests: []LiveStreamTile{{RequestID: "req-1"}}}},
+			"provider": {{Requests: []LiveStreamTile{{RequestID: "req-2"}}}},
+		},
 	}
-	if _, ok := ids["fallback-1"]; !ok {
-		t.Fatalf("fallback request missing: %#v", ids)
+	ids = snapshotRequestIDs(multi)
+	if len(ids) != 2 {
+		t.Fatalf("IDs = %#v, want two requests", ids)
+	}
+	if _, ok := ids["req-1"]; !ok {
+		t.Fatalf("req-1 missing: %#v", ids)
+	}
+	if _, ok := ids["req-2"]; !ok {
+		t.Fatalf("req-2 missing: %#v", ids)
 	}
 }
 

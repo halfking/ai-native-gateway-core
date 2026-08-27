@@ -58,7 +58,35 @@ export default {
   input: {
     placeholder: 'Saisissez un message… (Entrée pour envoyer, Maj+Entrée pour saut de ligne)',
     send: 'Envoyer',
+    stop: 'Stop',
+    waitingChat: 'Waiting for full reply…',
     sending: 'Envoi…',
+  },
+
+  mode: {
+    label: 'Response mode',
+    stream: 'Stream',
+    chat: 'Chat',
+    badgeStream: 'Stream',
+    badgeChat: 'Chat',
+  },
+  params: {
+    title: 'Model parameters',
+    open: 'Params',
+    nextTurnHint: 'Parameter changes apply to the next turn.',
+    systemPrompt: 'System prompt',
+    systemPromptPlaceholder: 'Set role, tone, and constraints…',
+    temperature: 'Temperature',
+    maxTokens: 'Max Tokens',
+    topP: 'Top P',
+    presencePenalty: 'Presence Penalty',
+    frequencyPenalty: 'Frequency Penalty',
+    stop: 'Stop sequences',
+    stopPlaceholder: 'Comma-separated stop strings',
+    showAdvanced: 'Show advanced',
+    hideAdvanced: 'Hide advanced',
+    reset: 'Reset defaults',
+    done: 'Done',
   },
   modal: {
     summaryTitle: 'Résumé de la session',
@@ -89,4 +117,6 @@ export default {
   sending: 'Envoi…',
   send: 'Envoyer',
   copySummary: 'Copier le résumé',
+  suggestStream: 'Timed out or waited too long — switch back to streaming mode.',
+  aborted: 'Generation stopped',
 }

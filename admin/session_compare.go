@@ -791,14 +791,14 @@ func (api *HandoffAPI) generateHandoffSummary(ctx context.Context, sessionID, te
 	var summaries []string
 	err := withTenantTx(ctx, api.db, tenantID, func(tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, `
-			SELECT COALESCE(rb.request_body, rl.request_body) AS request_body,
-			       COALESCE(rb.response_body, rl.response_body) AS response_body,
-			       rl.created_at
-			FROM request_logs rl
-			LEFT JOIN request_logs_bodies rb 
+			SELECT COALESCE(rb.request_body) AS request_body,
+			       COALESCE(rb.response_body) AS response_body,
+			       rl.ts
+			FROM request_logs_with_current_month rl
+			LEFT JOIN request_logs_bodies_with_current_month rb 
 			  ON rb.request_id = rl.request_id
 			WHERE rl.gw_session_id = $1 AND rl.tenant_id = $2
-			ORDER BY rl.created_at DESC
+			ORDER BY rl.ts DESC
 			LIMIT 3
 		`, sessionID, tenantID)
 		if err != nil {

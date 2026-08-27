@@ -548,7 +548,7 @@ type LiveStreamSSEHub struct {
 	// Redis LIST and fans filtered batches out to SSE clients.
 	actionMu          sync.Mutex
 	actionCursor      string               // unique key of the newest processed action entry ("" = 未消费)
-	actionTenantIndex map[string]string    // request_id → tenant (bounded ownership index)
+	actionTenantIndex *lruCache            // request_id → tenant (LRU-bounded ownership index, 2026-08-27 P1 fix)
 	actionTenantMiss  map[string]time.Time // negative cache for unresolved lookups
 	actionsDelivered  int64
 	actionScanErrors  int64
@@ -685,7 +685,7 @@ func NewLiveStreamSSEHub(db *pgxpool.Pool, cfg LiveStreamConfig) *LiveStreamSSEH
 		lastDeltaByScope:    make(map[string]*LiveStreamDelta),
 		terminalOverlayAt:   make(map[string]time.Time),
 		snapshotMinInterval: defaultLiveStreamSnapshotMinInterval,
-		actionTenantIndex:   make(map[string]string),
+		actionTenantIndex:   newLRUCache(actionTenantIndexCap), // 2026-08-27 P1 fix: use LRU instead of random eviction
 		actionTenantMiss:    make(map[string]time.Time),
 		instanceID:          generateLiveStreamInstanceID(),
 		// 2026-08-25 (fix-154): 异步化基础设施。actionTrigger cap=1 ——
@@ -1074,6 +1074,8 @@ func (h *LiveStreamSSEHub) evictStaleCachedSnapshots() {
 	now := time.Now()
 	activeScopes := h.activeScopes()
 	var evicted int64
+	
+	// Clean cachedSnapshot map
 	h.cachedSnapshotMu.Lock()
 	for key, entry := range h.cachedSnapshot {
 		if _, active := activeScopes[key]; active {
@@ -1086,6 +1088,58 @@ func (h *LiveStreamSSEHub) evictStaleCachedSnapshots() {
 	}
 	remain := int64(len(h.cachedSnapshot))
 	h.cachedSnapshotMu.Unlock()
+
+	// Clean actionTenantMiss map (P1-7)
+	h.actionMu.Lock()
+	for key, ts := range h.actionTenantMiss {
+		if _, active := activeScopes[key]; active {
+			continue
+		}
+		if now.Sub(ts) > h.cfg.CachedSnapshotTTL {
+			delete(h.actionTenantMiss, key)
+		}
+	}
+	h.actionMu.Unlock()
+
+	// Clean lastDeltaByScope map (P1-7)
+	h.lastDeltaMu.Lock()
+	for key := range h.lastDeltaByScope {
+		if _, active := activeScopes[key]; active {
+			continue
+		}
+		// Check lastSnapshotAt to determine staleness
+		h.lastSnapshotAtMu.RLock()
+		lastAccess, exists := h.lastSnapshotAt[key]
+		h.lastSnapshotAtMu.RUnlock()
+		if !exists || now.Sub(lastAccess) > h.cfg.CachedSnapshotTTL {
+			delete(h.lastDeltaByScope, key)
+		}
+	}
+	h.lastDeltaMu.Unlock()
+
+	// Clean lastSnapshotAt map (P1-7)
+	h.lastSnapshotAtMu.Lock()
+	for key, ts := range h.lastSnapshotAt {
+		if _, active := activeScopes[key]; active {
+			continue
+		}
+		if now.Sub(ts) > h.cfg.CachedSnapshotTTL {
+			delete(h.lastSnapshotAt, key)
+		}
+	}
+	h.lastSnapshotAtMu.Unlock()
+
+	// Clean terminalOverlayAt map (P1-7)
+	h.terminalOverlayMu.Lock()
+	for key, ts := range h.terminalOverlayAt {
+		if _, active := activeScopes[key]; active {
+			continue
+		}
+		if now.Sub(ts) > h.cfg.CachedSnapshotTTL {
+			delete(h.terminalOverlayAt, key)
+		}
+	}
+	h.terminalOverlayMu.Unlock()
 
 	atomic.AddInt64(&h.cachedSnapshotEvictions, evicted)
 

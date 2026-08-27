@@ -82,8 +82,15 @@ func (r *ModelAvailabilityReader) ReadByModel(ctx context.Context, rawModel stri
 	if !r.Enabled() {
 		return nil, nil
 	}
-	keys, err := r.redis.Keys(ctx, fmt.Sprintf("llmgw:avail:*:%s", rawModel)).Result()
-	if err != nil {
+	// KEYS → SCAN: KEYS 是 O(N) 全键扫描，会阻塞共享 Redis 主线程；
+	// SCAN 用 cursor 增量扫描替代，与 ScanKeys() 保持一致的模式。
+	pattern := fmt.Sprintf("llmgw:avail:*:%s", rawModel)
+	var keys []string
+	iter := r.redis.Scan(ctx, 0, pattern, 256).Iterator()
+	for iter.Next(ctx) {
+		keys = append(keys, iter.Val())
+	}
+	if err := iter.Err(); err != nil {
 		return nil, err
 	}
 	out := make([]ModelAvailabilitySnapshotWithCredential, 0, len(keys))

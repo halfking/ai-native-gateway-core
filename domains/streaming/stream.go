@@ -382,15 +382,16 @@ func applyGateLineTransforms(
 ) string {
 	qualityMode := qualityFixModeFromContext(ctx)
 	if qualityMode != "" && qualityMode != QualityModeOff && capture != nil {
-		newLine, newFlags, newSeen := ProcessStreamLine(line, qualityMode, capture.QualityFlags, capture.QualitySeenToolCallIDs)
+		flags, seen := capture.QualityStateSnapshot()
+		newLine, newFlags, newSeen := ProcessStreamLine(line, qualityMode, flags, seen)
 		if newLine != "" {
 			line = newLine
 		}
 		if len(newFlags) > 0 {
-			capture.QualityFlags = newFlags
+			capture.SetQualityFlags(newFlags)
 		}
 		if newSeen != nil {
-			capture.QualitySeenToolCallIDs = newSeen
+			capture.SetQualitySeenToolCallIDs(newSeen)
 		}
 	}
 	line = coerceXMLToolCallsInStreamLine(line, false)
@@ -759,15 +760,16 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 		// capture's QualityFlags slice.
 		qualityMode := qualityFixModeFromContext(ctx)
 		if qualityMode != "" && qualityMode != QualityModeOff && capture != nil {
-			newLine, newFlags, newSeen := ProcessStreamLine(firstLine, qualityMode, capture.QualityFlags, capture.QualitySeenToolCallIDs)
+			flags, seen := capture.QualityStateSnapshot()
+			newLine, newFlags, newSeen := ProcessStreamLine(firstLine, qualityMode, flags, seen)
 			if newLine != "" {
 				firstLine = newLine
 			}
 			if len(newFlags) > 0 {
-				capture.QualityFlags = newFlags
+				capture.SetQualityFlags(newFlags)
 			}
 			if newSeen != nil {
-				capture.QualitySeenToolCallIDs = newSeen
+				capture.SetQualitySeenToolCallIDs(newSeen)
 			}
 		}
 		firstLine = coerceXMLToolCallsInStreamLine(firstLine, toolsRequested)
@@ -1015,15 +1017,16 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 		// the scanner sees the raw upstream delta.tool_calls shape.
 		qualityMode := qualityFixModeFromContext(ctx)
 		if qualityMode != "" && qualityMode != QualityModeOff && capture != nil {
-			newLine, newFlags, newSeen := ProcessStreamLine(line, qualityMode, capture.QualityFlags, capture.QualitySeenToolCallIDs)
+			flags, seen := capture.QualityStateSnapshot()
+			newLine, newFlags, newSeen := ProcessStreamLine(line, qualityMode, flags, seen)
 			if newLine != "" {
 				line = newLine
 			}
 			if len(newFlags) > 0 {
-				capture.QualityFlags = newFlags
+				capture.SetQualityFlags(newFlags)
 			}
 			if newSeen != nil {
-				capture.QualitySeenToolCallIDs = newSeen
+				capture.SetQualitySeenToolCallIDs(newSeen)
 			}
 		}
 

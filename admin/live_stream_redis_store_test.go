@@ -976,12 +976,13 @@ func TestBuildLiveStreamSnapshot_TopNOthers(t *testing.T) {
 			t.Fatalf("should not have synthetic others lane after removing aggregation: %#v", lane)
 		}
 	}
-	if len(s.DetailDimensions["vendor"]) != 7 {
-		t.Fatalf("detail dimensions must retain all 7 vendors, got %d", len(s.DetailDimensions["vendor"]))
+	// DetailDimensions removed in P0 optimization - Dimensions is the single source of truth
+	if len(s.Dimensions["vendor"]) != 7 {
+		t.Fatalf("dimensions must retain all 7 vendors, got %d", len(s.Dimensions["vendor"]))
 	}
-	for _, lane := range s.DetailDimensions["vendor"] {
+	for _, lane := range s.Dimensions["vendor"] {
 		if lane.ID == "__others__" || lane.IsOthers {
-			t.Fatalf("detail dimensions must not contain synthetic others lane: %#v", lane)
+			t.Fatalf("dimensions must not contain synthetic others lane: %#v", lane)
 		}
 	}
 }
@@ -1010,8 +1011,9 @@ func TestBuildLiveStreamSnapshot_NoOthersWhenFiveOrFewer(t *testing.T) {
 			t.Fatalf("did not expect others lane when dimension count <= 5: %#v", lane)
 		}
 	}
-	if len(s.DetailDimensions["vendor"]) != 5 {
-		t.Fatalf("detail dimensions should contain 5 raw vendors, got %d", len(s.DetailDimensions["vendor"]))
+	// DetailDimensions removed in P0 optimization - Dimensions is the single source of truth
+	if len(s.Dimensions["vendor"]) != 5 {
+		t.Fatalf("dimensions should contain 5 raw vendors, got %d", len(s.Dimensions["vendor"]))
 	}
 }
 
@@ -1328,7 +1330,7 @@ func TestBuildLiveStreamLanes_StableAlphabeticalOrder(t *testing.T) {
 		{RequestID: "r2", ModelCategory: "openai", Status: "success"},
 		{RequestID: "r3", ModelCategory: "anthropic", Status: "success"},
 	}
-	lanes, _, _ := buildLiveStreamLanes("vendor", items)
+	lanes, _ := buildLiveStreamLanes("vendor", items)
 	if len(lanes) < 2 {
 		t.Fatalf("expected at least 2 lanes, got %d", len(lanes))
 	}
@@ -1360,7 +1362,7 @@ func TestBuildLiveStreamLanes_LaneRequestsAreASC(t *testing.T) {
 		{RequestID: "r4", Ts: "2026-07-20T00:00:03Z", Model: "gpt-4o", ModelCategory: "openai", ProviderCode: "openai", Status: "failure"},
 		{RequestID: "r2", Ts: "2026-07-20T00:00:01Z", Model: "gpt-4o", ModelCategory: "openai", ProviderCode: "openai", Status: "success"},
 	}
-	lanes, _, _ := buildLiveStreamLanes("vendor", items)
+	lanes, _ := buildLiveStreamLanes("vendor", items)
 	if len(lanes) != 1 {
 		t.Fatalf("expected 1 lane, got %d", len(lanes))
 	}
@@ -1401,7 +1403,7 @@ func TestBuildLiveStreamLanes_LaneCapKeepsNewest(t *testing.T) {
 		})
 	}
 
-	lanes, _, _ := buildLiveStreamLanes("vendor", items)
+	lanes, _ := buildLiveStreamLanes("vendor", items)
 	if len(lanes) != 1 {
 		t.Fatalf("expected 1 lane, got %d", len(lanes))
 	}
@@ -1662,44 +1664,151 @@ func TestBuildLiveStreamSnapshot_CredentialLaneUsesProviderAndCredential(t *test
 			CredentialID: 43,
 			Status:       "success",
 		},
+		// 2026-08-27: renamed credential — the newest request carries the
+		// current label; the lane must show it, not the first-seen snapshot.
+		{
+			RequestID:       "renamed",
+			Ts:              "2026-08-27T00:00:03Z",
+			Model:           "claude-sonnet-4",
+			ProviderCode:    "Anthropic 官方",
+			CredentialID:    42,
+			CredentialLabel: "生产主凭据-新名",
+			Status:          "success",
+		},
+		// 2026-08-27: legacy-format idle marker (pre-ID-keying writer). It must
+		// NOT spawn a ghost credential lane during the TTL migration window.
+		{
+			Type:            "idle_marker",
+			RequestID:       "idle-legacy",
+			Ts:              "2026-08-27T00:00:04Z",
+			CredentialLabel: "Anthropic 官方/生产主凭据",
+			Status:          "idle",
+		},
 	}
 
 	snapshot := BuildLiveStreamSnapshot(items)
 	lanes := snapshot.Dimensions["credential"]
 	if len(lanes) != 2 {
-		t.Fatalf("credential lanes=%d want 2: %#v", len(lanes), lanes)
+		t.Fatalf("credential lanes=%d want 2 (legacy idle-only lane must be dropped): %#v", len(lanes), lanes)
 	}
 
 	byID := make(map[string]LiveStreamLane, len(lanes))
 	for _, lane := range lanes {
 		byID[lane.ID] = lane
 	}
-	for _, want := range []string{"Anthropic 官方/生产主凭据", "Anthropic 官方/凭据 #43"} {
-		lane, ok := byID[want]
+
+	// 2026-08-27: Lane.ID is the stable credential_id; Lane.Name is the
+	// display string resolved from the NEWEST request (rename wins).
+	expectations := []struct {
+		id   string
+		name string
+	}{
+		{id: "42", name: "Anthropic 官方/生产主凭据-新名"},
+		{id: "43", name: "Anthropic 官方/凭据 #43"},
+	}
+
+	for _, expect := range expectations {
+		lane, ok := byID[expect.id]
 		if !ok {
-			t.Fatalf("missing credential lane %q: %#v", want, lanes)
+			t.Fatalf("missing credential lane ID=%q: %#v", expect.id, lanes)
 		}
-		if lane.Name != want {
-			t.Fatalf("lane %q name=%q want same composed label", want, lane.Name)
+		if lane.Name != expect.name {
+			t.Fatalf("lane ID=%q name=%q want %q", expect.id, lane.Name, expect.name)
 		}
 	}
+
+	// Legends: Key must match Lane.ID (credential_id), Name must match the
+	// lane display name.
 	for _, legend := range snapshot.DimensionLegends["credential"] {
-		if legend.Name != legend.Key {
-			t.Fatalf("credential legend=%#v has mismatched key/name", legend)
+		lane, ok := byID[legend.Key]
+		if !ok {
+			t.Fatalf("legend key=%q does not match any lane ID", legend.Key)
+		}
+		if legend.Name != lane.Name {
+			t.Fatalf("legend key=%q name=%q want %q (lane display name)", legend.Key, legend.Name, lane.Name)
 		}
 	}
 }
 
+func TestBuildLiveStreamLanes_CredentialSortsByNameThenNumericID(t *testing.T) {
+	items := []LiveRequest{
+		// Same provider, labels sorted "B*" < "C*" — id 9 (label B) must come
+		// before id 10 (label C) even though "10" < "9" lexicographically.
+		{RequestID: "r1", Ts: "2026-08-27T00:00:01Z", ProviderCode: "P", CredentialID: 9, CredentialLabel: "B凭据", Status: "success"},
+		{RequestID: "r2", Ts: "2026-08-27T00:00:02Z", ProviderCode: "P", CredentialID: 10, CredentialLabel: "C凭据", Status: "success"},
+		{RequestID: "r3", Ts: "2026-08-27T00:00:03Z", ProviderCode: "P", CredentialID: 2, CredentialLabel: "C凭据", Status: "success"},
+		{RequestID: "r4", Ts: "2026-08-27T00:00:04Z", ProviderCode: "P", CredentialID: 1, CredentialLabel: "A凭据", Status: "success"},
+	}
+
+	snapshot := BuildLiveStreamSnapshot(items)
+	lanes := snapshot.Dimensions["credential"]
+	// Name order "P/A凭据" < "P/B凭据" < "P/C凭据"; the two "P/C凭据" lanes
+	// tie-break on numeric id (2 before 10, NOT lexicographic "10" < "2").
+	wantOrder := []string{"1", "9", "2", "10"}
+	if len(lanes) != len(wantOrder) {
+		t.Fatalf("credential lanes=%d want %d: %#v", len(lanes), len(wantOrder), lanes)
+	}
+	for i, want := range wantOrder {
+		if lanes[i].ID != want {
+			t.Fatalf("lane[%d].ID=%q want %q (order by name then numeric id)", i, lanes[i].ID, want)
+		}
+	}
+	if !(lanes[2].ID == "2" && lanes[3].ID == "10") {
+		t.Fatalf("name-equal lanes must tie-break on numeric id, got %q then %q", lanes[2].ID, lanes[3].ID)
+	}
+}
+
+func TestCreateIdleMarkerForDimension_CredentialCarriesNumericID(t *testing.T) {
+	ts := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
+	marker := createIdleMarkerForDimension("credential", "42", "tenant-a", ts)
+
+	if marker.CredentialID != 42 {
+		t.Fatalf("idle marker CredentialID=%d want 42 (frontend highlight needs the id)", marker.CredentialID)
+	}
+	if got := liveStreamCredentialKey(marker); got != "42" {
+		t.Fatalf("idle marker lane key=%q want %q", got, "42")
+	}
+	tile := liveRequestTile(marker)
+	if tile.CredentialID != 42 {
+		t.Fatalf("idle tile CredentialID=%d want 42", tile.CredentialID)
+	}
+}
+
+func TestBuildLiveStreamLanes_CredentialRejectsNonPositiveIDs(t *testing.T) {
+	items := []LiveRequest{
+		{RequestID: "zero", Ts: "2026-08-27T00:00:01Z", ProviderCode: "P", CredentialID: 0, CredentialLabel: "zero", Status: "success"},
+		{RequestID: "negative", Ts: "2026-08-27T00:00:02Z", ProviderCode: "P", CredentialID: -1, CredentialLabel: "negative", Status: "success"},
+		{RequestID: "valid", Ts: "2026-08-27T00:00:03Z", ProviderCode: "P", CredentialID: 7, CredentialLabel: "valid", Status: "success"},
+	}
+
+	snapshot := BuildLiveStreamSnapshot(items)
+	lanes := snapshot.Dimensions["credential"]
+	if len(lanes) != 1 || lanes[0].ID != "7" {
+		t.Fatalf("credential lanes=%#v want only positive ID 7", lanes)
+	}
+}
 func TestLiveStreamCredentialKey_UnknownProviderKeepsShape(t *testing.T) {
+	// 2026-08-27: liveStreamCredentialKey now returns stable credential_id
 	got := liveStreamCredentialKey(LiveRequest{CredentialID: 7})
-	if got != "未知供应商/凭据 #7" {
-		t.Fatalf("credential key=%q want %q", got, "未知供应商/凭据 #7")
+	if got != "7" {
+		t.Fatalf("credential key=%q want %q", got, "7")
 	}
-	if got := liveStreamCredentialKey(LiveRequest{ProviderCode: "供应商", CredentialLabel: "生产"}); got != "供应商/生产" {
-		t.Fatalf("composed credential label=%q want %q", got, "供应商/生产")
+
+	got = liveStreamCredentialKey(LiveRequest{ProviderCode: "供应商", CredentialLabel: "生产", CredentialID: 99})
+	if got != "99" {
+		t.Fatalf("credential key=%q want %q (CredentialID takes precedence)", got, "99")
 	}
-	if got := liveStreamCredentialKey(LiveRequest{Type: "idle_marker", CredentialLabel: "供应商/生产"}); got != "供应商/生产" {
-		t.Fatalf("idle credential label=%q was unexpectedly rewritten", got)
+
+	// Idle markers inherit the lane key directly from CredentialLabel
+	got = liveStreamCredentialKey(LiveRequest{Type: "idle_marker", CredentialLabel: "42"})
+	if got != "42" {
+		t.Fatalf("idle credential key=%q want %q", got, "42")
+	}
+
+	// Requests without CredentialID return empty string
+	got = liveStreamCredentialKey(LiveRequest{ProviderCode: "供应商", CredentialLabel: "生产"})
+	if got != "" {
+		t.Fatalf("credential key without ID=%q want empty", got)
 	}
 }
 

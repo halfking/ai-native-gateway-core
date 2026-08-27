@@ -55,11 +55,20 @@ func TestPGBodyReaderResolvesClientRequestIDToCanonicalID(t *testing.T) {
 	require.NoError(t, err)
 	defer mock.Close()
 
-	mock.ExpectQuery(`(?s)SELECT request_id, COALESCE\(tenant_id, ''\).*FROM request_logs_hot.*request_id = \$1 OR client_request_id = \$1.*CASE WHEN request_id = \$1 THEN 0 ELSE 1 END`).
+	// 2026-08-27: loadRequestLogMeta resolves in cascade — request_id on hot
+	// table first, then client_request_id on hot, then the current-month
+	// view. A client-provided id misses the first lookup (empty rows →
+	// ErrNoRows) and resolves on the second.
+	metaCols := []string{
+		"request_id", "tenant_id", "gw_session_id", "gw_task_id", "client_model", "request_status", "success", "latency_ms",
+	}
+	mock.ExpectQuery(`(?s)SELECT request_id, COALESCE\(tenant_id, ''\).*FROM request_logs_hot\s+WHERE request_id = \$1\s+LIMIT 1`).
 		WithArgs("client-req-1").
-		WillReturnRows(pgxmock.NewRows([]string{
-			"request_id", "tenant_id", "gw_session_id", "gw_task_id", "client_model", "request_status", "success", "latency_ms",
-		}).AddRow("gateway-req-1", "tenant-a", nil, nil, "claude-test", "success", true, 12))
+		WillReturnRows(pgxmock.NewRows(metaCols))
+	mock.ExpectQuery(`(?s)SELECT request_id, COALESCE\(tenant_id, ''\).*FROM request_logs_hot\s+WHERE client_request_id = \$1\s+ORDER BY ts DESC\s+LIMIT 1`).
+		WithArgs("client-req-1").
+		WillReturnRows(pgxmock.NewRows(metaCols).
+			AddRow("gateway-req-1", "tenant-a", nil, nil, "claude-test", "success", true, 12))
 	mock.ExpectQuery(`SELECT outbound_body::text\s+FROM request_logs_bodies_hot`).
 		WithArgs("gateway-req-1").
 		WillReturnRows(pgxmock.NewRows([]string{"outbound_body"}).AddRow(`{"messages":[]}`))

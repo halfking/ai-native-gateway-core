@@ -2,7 +2,9 @@ package executors
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -10,7 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/provider"
+	upstreampkg "github.com/kaixuan/llm-gateway-go/upstream"
 )
 
 func TestAnthropicExecutor_BuildRequest_Passthrough(t *testing.T) {
@@ -700,6 +704,137 @@ func TestAnthropicExecutor_Q4PassthroughSkipsQualityHook(t *testing.T) {
 	// Body must still be passed through to the client.
 	if !strings.Contains(rec.Body.String(), `"tool_use"`) {
 		t.Fatalf("Q4 body must pass through, got %s", rec.Body.String())
+	}
+}
+
+func TestAnthropicExecutor_EmptyNativeMessagesResponseIsRetryable(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{"missing content", `{"type":"message"}`},
+		{"empty content", `{"type":"message","content":[]}`},
+		{"empty text", `{"type":"message","content":[{"type":"text","text":""}]}`},
+		{"empty thinking", `{"type":"message","content":[{"type":"thinking","thinking":""}]}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if !isEmptyAnthropicMessagesResponse([]byte(tt.body)) {
+				t.Fatalf("isEmptyAnthropicMessagesResponse(%s) = false, want true", tt.body)
+			}
+		})
+	}
+
+	for _, body := range []string{
+		`{"type":"message","content":[{"type":"text","text":"hello"}]}`,
+		`{"type":"message","content":[{"type":"thinking","thinking":"reasoning"}]}`,
+		`{"type":"message","content":[{"type":"thinking","thinking":"","signature":"sig_1"}]}`,
+		`{"type":"message","content":[{"type":"redacted_thinking","data":"opaque"}]}`,
+		`{"type":"message","content":[{"type":"server_tool_use","id":"srvtoolu_1","name":"web_search","input":{}}]}`,
+		`{"type":"message","content":[{"type":"tool_use","id":"toolu_1","name":"weather","input":{}}]}`,
+		`{"type":"error","error":{"type":"api_error","message":"boom"}}`,
+		`{"id":"unknown-shape"}`,
+	} {
+		if isEmptyAnthropicMessagesResponse([]byte(body)) {
+			t.Fatalf("isEmptyAnthropicMessagesResponse(%s) = true, want false", body)
+		}
+	}
+}
+
+func TestExecutorAnthropic_EmptyNativeMessagesResponseDoesNotWriteClient(t *testing.T) {
+	upstreamHits := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamHits++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"msg_empty","type":"message","content":[]}`))
+	}))
+	defer upstream.Close()
+
+	e := &Executor{UpstreamTimeout: time.Second, StreamTimeout: time.Second}
+	params := &ExecParams{
+		R:              httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"claude-sonnet-5","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`)),
+		W:              httptest.NewRecorder(),
+		BodyBytes:      []byte(`{"model":"claude-sonnet-5","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`),
+		Model:          "claude-sonnet-5",
+		ClientModel:    "claude-sonnet-5",
+		ClientProtocol: "anthropic-messages",
+	}
+	candidate := provider.Candidate{BaseURL: upstream.URL, APIKey: "test", Protocol: "anthropic-messages", RawModel: "claude-sonnet-5"}
+
+	// maxRetries=2 proves the same-credential retry ladder is skipped: an
+	// empty response must go straight to candidate failover (KindEmptyResponse
+	// is deliberately outside errorsx.IsRetryable).
+	_, err := e.executeAnthropic(params, candidate, 2, time.Now(), nil)
+	var ue *upstreampkg.Error
+	if !errors.As(err, &ue) {
+		t.Fatalf("error = %T %v, want bare *upstreampkg.Error for candidate failover", err, err)
+	}
+	var retry *retryableError
+	if errors.As(err, &retry) {
+		t.Fatal("empty response must not be wrapped in retryableError (no same-credential retries)")
+	}
+	if ue.Kind != errorsx.KindEmptyResponse {
+		t.Fatalf("kind = %q, want %q", ue.Kind, errorsx.KindEmptyResponse)
+	}
+	if got := classifyExecError(err); got != errorsx.KindEmptyResponse {
+		t.Fatalf("classifyExecError = %q, want %q", got, errorsx.KindEmptyResponse)
+	}
+	if upstreamHits != 1 {
+		t.Fatalf("upstream hits = %d, want exactly 1 (empty response must not retry the same credential)", upstreamHits)
+	}
+	if got := params.W.(*httptest.ResponseRecorder).Body.String(); got != "" {
+		t.Fatalf("client received body before failover: %q", got)
+	}
+}
+
+// A mid-read client cancellation reads as KindCanceled: it must surface as a
+// bare upstream error so executeAnthropic's retry ladder returns it
+// immediately instead of retrying a dead request with backoff.
+func TestAnthropicReadBodyError_CanceledNotRetryable(t *testing.T) {
+	err := anthropicReadBodyError(context.Canceled, &http.Response{StatusCode: 200, Header: http.Header{}})
+	var retry *retryableError
+	if errors.As(err, &retry) {
+		t.Fatal("canceled read must not be wrapped in retryableError")
+	}
+	var ue *upstreampkg.Error
+	if !errors.As(err, &ue) || ue.Kind != errorsx.KindCanceled {
+		t.Fatalf("err = %T %v, want upstream.Error with kind canceled", err, err)
+	}
+}
+
+func TestAnthropicReadBodyError_NetworkRetryable(t *testing.T) {
+	err := anthropicReadBodyError(errors.New("read tcp: connection reset by peer"), &http.Response{StatusCode: 200, Header: http.Header{}})
+	var retry *retryableError
+	if !errors.As(err, &retry) {
+		t.Fatalf("network read error must stay retryable, got %T", err)
+	}
+	if got := classifyExecError(err); got != errorsx.KindNetwork {
+		t.Fatalf("kind = %q, want network", got)
+	}
+}
+
+type closeTrackingBody struct {
+	io.Reader
+	closed bool
+}
+
+func (b *closeTrackingBody) Close() error { b.closed = true; return nil }
+
+func TestDefaultAnthropicPassthrough_ClosesBody(t *testing.T) {
+	body := &closeTrackingBody{Reader: strings.NewReader("data: hello\n\n")}
+	rec := httptest.NewRecorder()
+
+	outcome := defaultAnthropicPassthrough(rec, &http.Response{Body: body, StatusCode: 200})
+
+	if outcome.Interrupted || outcome.Reason != "" {
+		t.Fatalf("outcome = %+v, want zero value", outcome)
+	}
+	if rec.Body.String() != "data: hello\n\n" {
+		t.Fatalf("body = %q, want passthrough bytes", rec.Body.String())
+	}
+	if !body.closed {
+		t.Fatal("defaultAnthropicPassthrough must close the upstream body")
 	}
 }
 

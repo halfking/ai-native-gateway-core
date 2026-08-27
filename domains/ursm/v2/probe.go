@@ -7,6 +7,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/api"
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/store"
+	redissafe "github.com/kaixuan/llm-gateway-go/internal/redis"
 )
 
 // ApplyProbe preserves the legacy non-tenant probe entry point.
@@ -84,7 +85,7 @@ func (m *Manager) ApplyProbeForTenantWithSource(ctx context.Context, tenant stri
 	}
 	var err error
 	if schemaMode == store.KeySchemaModeDual {
-		_, err = store.ApplyProbeDualScript.Run(ctx, m.store.RawClient(), keys,
+		_, err = redissafe.RunScript(ctx, m.store.RawClient(), store.ApplyProbeDualScript, "apply_probe_dual.lua", keys,
 			store.BoolFlag(p.Success),
 			fmt.Sprintf("%d", p.LatencyMs),
 			fmt.Sprintf("%d", time.Now().UnixMilli()),
@@ -94,7 +95,7 @@ func (m *Manager) ApplyProbeForTenantWithSource(ctx context.Context, tenant stri
 			fmt.Sprintf("%d", sourcePriority), // 会话优化 v4 T5: Recover=30 for the 36h scan
 		).Slice()
 	} else {
-		_, err = store.ApplyProbeScript.Run(ctx, m.store.RawClient(), keys,
+		_, err = redissafe.RunScript(ctx, m.store.RawClient(), store.ApplyProbeScript, "apply_probe.lua", keys,
 			store.BoolFlag(p.Success),
 			fmt.Sprintf("%d", p.LatencyMs),
 			fmt.Sprintf("%d", time.Now().UnixMilli()),

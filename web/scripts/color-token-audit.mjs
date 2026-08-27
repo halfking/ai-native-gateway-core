@@ -108,6 +108,8 @@ function scanFile(file) {
       // 替换 var() 内容为 placeholder
       return m.replace(/,(.+)$/, ',__FALLBACK__)').replace(/,(.+)\)/, ',__FALLBACK__)')
     })
+    // 删除 rgba(var(--xxx), 0.X) 这种 CSS 现代用法(rgb 三元组从 var() 注入)
+    scanable = scanable.replace(/rgba\(\s*var\([^)]+\)\s*,\s*[^)]+\)/g, '__RGBA_VAR__')
 
     for (const re of [HEX_RE, RGB_RE]) {
       re.lastIndex = 0

@@ -7,7 +7,6 @@ import type { LiveStreamSnapshot } from './liveStreamStore'
 function emptySnapshot(): LiveStreamSnapshot {
   return {
     summary: { total: 0, success: 0, failure: 0 },
-    detail_dimensions: { credential: [], vendor: [], provider: [], model: [] },
     dimensions: { credential: [], vendor: [], provider: [], model: [] },
     dimension_legends: { credential: [], vendor: [], provider: [], model: [] },
     status_legends: [],
@@ -30,7 +29,8 @@ describe('useSwimLane preferences', () => {
     }))
 
     const state = useSwimLane(computed(() => ref(emptySnapshot()).value))
-    expect(state.groupBy.value).toBe('vendor')
+    // Historical vendor preferences migrate to the provider dimension.
+    expect(state.groupBy.value).toBe('provider')
     expect(state.mode.value).toBe('large')
 
     state.setGroupBy('model')
