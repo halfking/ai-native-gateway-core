@@ -242,14 +242,14 @@ func (e *Exporter) ExportSession(ctx context.Context, sessionID, tenantID string
 		SELECT
 			rl.id::text, rl.role, rl.parent_request_id,
 			rl.compression_reason, rl.compression_strategy, rl.compression_meta,
-			rl.attachments, rl.created_at,
-			COALESCE(rb.request_body, rl.request_body) AS request_body,
-			COALESCE(rb.response_body, rl.response_body) AS response_body,
+			rl.attachments, rl.ts,
+			COALESCE(rb.request_body, ''::jsonb) AS request_body,
+			COALESCE(rb.response_body, ''::jsonb) AS response_body,
 			rl.client_model, rl.outbound_model
  		FROM request_logs_with_current_month rl
 		LEFT JOIN request_logs_bodies_with_current_month rb ON rb.request_id = rl.request_id
 		WHERE rl.gw_session_id = $1 AND rl.tenant_id = $2
-		ORDER BY rl.created_at ASC, rl.id ASC
+		ORDER BY rl.ts ASC, rl.id ASC
 	`, sessionID, tenantID)
 	if err != nil {
 		return nil, fmt.Errorf("query messages: %w", err)
