@@ -30,7 +30,8 @@ describe('useSwimLane preferences', () => {
     }))
 
     const state = useSwimLane(computed(() => ref(emptySnapshot()).value))
-    expect(state.groupBy.value).toBe('vendor')
+    // Historical vendor preferences migrate to the provider dimension.
+    expect(state.groupBy.value).toBe('provider')
     expect(state.mode.value).toBe('large')
 
     state.setGroupBy('model')
