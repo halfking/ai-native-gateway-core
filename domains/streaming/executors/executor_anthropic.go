@@ -387,6 +387,10 @@ func extractAnthropicUsageFromBody(body []byte) (*int, *int) {
 // relay/anthropic_passthrough_stream.go and is injected via the
 // PassthroughStream hook on AnthropicExecutor.
 func defaultAnthropicPassthrough(w http.ResponseWriter, resp *http.Response) StreamOutcome {
+	// Sole consumer of this body (only reached when the PassthroughStream hook
+	// is unwired), so closing it here is safe and required for connection reuse.
+	//nolint:errcheck // best-effort close
+	defer resp.Body.Close()
 	if flusher, ok := w.(http.Flusher); ok {
 		flusher.Flush()
 	}
@@ -788,6 +792,27 @@ func (e *Executor) executeAnthropic(
 		return nil, lastErr
 	}
 	return nil, fmt.Errorf("exhausted %d retries for credential %d", maxRetries, cand.CredentialID)
+}
+
+// anthropicReadBodyError classifies a non-stream upstream body read failure
+// and wraps it following the file's 4xx/5xx convention: only
+// errorsx.IsRetryable kinds get the retryableError wrapper (which drives the
+// same-credential retry ladder in executeAnthropic). A client cancellation
+// reads as KindCanceled and must surface unwrapped so the loop returns it
+// immediately instead of retrying a dead request with backoff.
+func anthropicReadBodyError(err error, resp *http.Response) error {
+	kind := errorsx.ClassifyError(err, nil)
+	wrapped := &upstreampkg.Error{
+		Kind:       kind,
+		Message:    fmt.Sprintf("read anthropic upstream response: %v", err),
+		Err:        err,
+		StatusCode: resp.StatusCode,
+		RetryAfter: upstreampkg.RetryAfterFromHeaders(resp.Header),
+	}
+	if !errorsx.IsRetryable(kind) {
+		return wrapped
+	}
+	return &retryableError{err: wrapped}
 }
 
 // executeAnthropicOnce is a single-attempt Anthropic upstream call.
@@ -1216,13 +1241,7 @@ func (e *Executor) executeAnthropicOnce(
 	defer resp.Body.Close()
 	rawResponseBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, &retryableError{err: &upstreampkg.Error{
-			Kind:       errorsx.ClassifyError(err, nil),
-			Message:    fmt.Sprintf("read anthropic upstream response: %v", err),
-			Err:        err,
-			StatusCode: resp.StatusCode,
-			RetryAfter: upstreampkg.RetryAfterFromHeaders(resp.Header),
-		}}
+		return nil, anthropicReadBodyError(err, resp)
 	}
 	e.logUpstreamResponse(params, diagnosticProtocol(cand.Protocol, "anthropic-messages"), rawResponseBody)
 	// 2026-08-27: non-stream empty-response failover, Anthropic parity with
