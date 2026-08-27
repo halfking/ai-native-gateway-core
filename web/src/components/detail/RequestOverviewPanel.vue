@@ -1,4 +1,15 @@
 <script setup lang="ts">
+// RequestOverviewPanel — request detail overview cells.
+//
+// 数据来源策略（2026-08-28）：
+//   - 主要来源：props.log（/api/logs/:id，request_logs 表全字段）。
+//   - 兜底来源：props.unified?.meta（/api/admin/request-detail/:id，仅含 8 个
+//     核心字段：request_id/tenant_id/gw_session_id/gw_task_id/client_model/
+//     request_status/success/latency_ms）。
+//   - 兜底场景：/api/logs/:id 返回 500/超时/被拒时（admin 端点也可能在
+//     tenant_admin 鉴权下 403），抽屉只拿到 unified 也能展示关键信息。
+//     只读字段（latency_ms/client_model 等）使用 ?? 短路 fallback；嵌套
+//     结构（compression_meta 等）则保持 log-only，不污染类型。
 import { computed, ref } from 'vue'
 import type { RequestLogDetail } from '../../api/logs'
 import type { UnifiedRequestDetail } from '../../api/requestDetail'
@@ -39,6 +50,7 @@ const persistenceLabel = computed(() =>
 )
 
 const log = computed(() => props.log)
+const um = computed(() => props.unified?.meta)
 
 function fmt(v: unknown): string {
   if (v == null || v === '') return '—'
@@ -67,7 +79,7 @@ const sessionTitle = computed(
 )
 
 const requestStatus = computed(
-  () => props.log?.request_status ?? props.unified?.meta.request_status ?? '',
+  () => props.log?.request_status ?? um.value?.request_status ?? '',
 )
 
 const hasFailure = computed(() => {
@@ -171,19 +183,19 @@ function clip(text: string, max = 480): string {
     </section>
 
     <div class="grid">
-      <div class="cell"><span class="lbl">请求ID</span><code>{{ log?.request_id || unified?.meta.request_id || '—' }}</code></div>
+      <div class="cell"><span class="lbl">请求ID</span><code>{{ fmt(log?.request_id || um?.request_id) }}</code></div>
       <div class="cell" :class="statusToneClass(requestStatus, 'cell')">
         <span class="lbl">状态</span>
         <span class="pill" :class="statusToneClass(requestStatus, 'pill')">{{ fmt(requestStatus) }}</span>
       </div>
-      <div class="cell"><span class="lbl">延迟</span><span>{{ fmt(log?.latency_ms ?? unified?.meta.latency_ms) }}ms</span></div>
-      <div class="cell"><span class="lbl">客户端模型</span><span>{{ fmt(log?.client_model ?? unified?.meta.client_model) }}</span></div>
+      <div class="cell"><span class="lbl">延迟</span><span>{{ fmt(log?.latency_ms ?? um?.latency_ms) }}ms</span></div>
+      <div class="cell"><span class="lbl">客户端模型</span><span>{{ fmt(log?.client_model ?? um?.client_model) }}</span></div>
       <div class="cell"><span class="lbl">出站/规范模型</span><span>{{ fmt(log?.outbound_model || log?.canonical_model) }}</span></div>
       <div class="cell"><span class="lbl">供应商</span><span>{{ fmt(log?.provider_name || log?.provider_code) }}</span></div>
       <div class="cell"><span class="lbl">凭据</span><span>{{ fmt(log?.credential_label || log?.credential_id) }}</span></div>
-      <div class="cell"><span class="lbl">Session</span><code>{{ fmt(log?.gw_session_id ?? unified?.meta.gw_session_id) }}</code></div>
+      <div class="cell"><span class="lbl">Session</span><code>{{ fmt(log?.gw_session_id ?? um?.gw_session_id) }}</code></div>
       <div class="cell"><span class="lbl">会话标题</span><span>{{ sessionTitle || '—' }}</span></div>
-      <div class="cell"><span class="lbl">任务 ID</span><code>{{ fmt(log?.gw_task_id ?? unified?.meta.gw_task_id) }}</code></div>
+      <div class="cell"><span class="lbl">任务 ID</span><code>{{ fmt(log?.gw_task_id ?? um?.gw_task_id) }}</code></div>
       <div class="cell"><span class="lbl">End User</span><code>{{ fmt(log?.end_user_id) }}</code></div>
       <div class="cell"><span class="lbl">Token</span><span>{{ fmt(log?.prompt_tokens) }} / {{ fmt(log?.completion_tokens) }}（总 {{ fmt(log?.total_tokens) }}）</span></div>
       <div class="cell"><span class="lbl">Cache</span><span>{{ fmt(log?.cache_read_tokens) }} / {{ fmt(log?.cache_write_tokens) }}</span></div>
