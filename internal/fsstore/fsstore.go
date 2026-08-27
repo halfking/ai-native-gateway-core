@@ -370,11 +370,9 @@ func (s *Store) GetRequest(id string) (*RequestRecord, error) {
 	if dateStr == "" {
 		return nil, fmt.Errorf("fsstore: hit %s missing shard_date", hit.ID)
 	}
-	// datePath uses "YYYY/MM/DD" but the indexed started_at comes back as
-	// RFC3339 ("YYYY-MM-DD..."), so convert to the on-disk shard format.
-	dateDir := dateStr
-	if len(dateDir) == 10 {
-		dateDir = dateDir[:4] + "/" + dateDir[5:7] + "/" + dateDir[8:10]
+	dateDir, err := requestDateDir(dateStr)
+	if err != nil {
+		return nil, fmt.Errorf("fsstore: invalid shard_date for request %s: %w", hit.ID, err)
 	}
 
 	path := filepath.Join(s.cfg.Root, "requests", dateDir, id+".json")
