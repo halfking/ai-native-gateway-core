@@ -2372,6 +2372,24 @@ func main() {
 		slog.Info("admin handler created", "db_enabled", adminDB != nil)
 	}
 
+	// 2026-08-27: Wire requestdetail.Store for unified request-detail API
+	// (GET /api/admin/request-detail/{id}). The store caches in-flight request
+	// meta in memory and bodies in local files, falling back to request_logs
+	// and session_turns when not found. Directory defaults to /tmp/llm-gateway-bodies.
+	{
+		requestDetailDir := os.Getenv("LLM_GATEWAY_REQUEST_DETAIL_DIR")
+		if requestDetailDir == "" {
+			requestDetailDir = "/tmp/llm-gateway-bodies"
+		}
+		requestDetailStore, err := requestdetail.NewStore(requestDetailDir)
+		if err != nil {
+			slog.Error("failed to create request detail store", "dir", requestDetailDir, "error", err)
+		} else {
+			adminHandler.SetRequestDetailStore(requestDetailStore)
+			slog.Info("request detail store initialized", "dir", requestDetailDir)
+		}
+	}
+
 	// 2026-07-24: Wire URSM v2 Manager to admin handler so emergency repair
 	// operations can also clear Redis state (cooling/fail counters).
 	if ursmV2Mgr != nil {
