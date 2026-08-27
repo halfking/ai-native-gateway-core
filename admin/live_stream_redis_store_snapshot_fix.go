@@ -323,6 +323,7 @@ func (s *LiveStreamRedisStore) discoverDimensionQueuesByScan(ctx context.Context
 	if isSuper {
 		// Super admin sees global dimension queues
 		patterns = []string{
+			liveStreamDimPrefix + "credential:*",
 			liveStreamDimPrefix + "vendor:*",
 			liveStreamDimPrefix + "provider:*",
 			liveStreamDimPrefix + "model:*",
@@ -331,6 +332,7 @@ func (s *LiveStreamRedisStore) discoverDimensionQueuesByScan(ctx context.Context
 		// Tenant admin sees tenant-scoped queues
 		tenantPrefix := "llmgw:live:tenant:" + tenantID + ":dim:"
 		patterns = []string{
+			tenantPrefix + "credential:*",
 			tenantPrefix + "vendor:*",
 			tenantPrefix + "provider:*",
 			tenantPrefix + "model:*",
