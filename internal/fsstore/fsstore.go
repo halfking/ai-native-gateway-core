@@ -287,7 +287,7 @@ type RequestRecord struct {
 	Status    string    `json:"status,omitempty"`
 	CostUSD   float64   `json:"cost_usd,omitempty"`
 	// RequestClass is the V6-W1.6 R8 request class (immediate|scheduled,
-	// migration 608 parity with request_logs_hot.request_class). Empty means
+	// migration 610 parity with request_logs_hot.request_class). Empty means
 	// immediate (matching the DB column default).
 	RequestClass string `json:"request_class,omitempty"`
 	// DueAt is the scheduled execution time; nil for immediate requests.

@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// V6-W1.6 R8 / migration 608: the /api/logs list & detail surfaces must
+// V6-W1.6 R8 / migration 610: the /api/logs list & detail surfaces must
 // project request_class + due_at (column list, scan targets, filter).
 // Offline source/compile-level guards — same pattern as the telemetry
 // contract tests; no database needed.
@@ -29,7 +29,7 @@ func TestRequestLogsColumnsCarryClass(t *testing.T) {
 	}
 	s := string(src)
 	scanTail := `&l.SessionTitle,
-		// V6-W1.6 R8 (migration 608): request class + due time (LAST fixed
+		// V6-W1.6 R8 (migration 610): request class + due time (LAST fixed
 		// columns; the conditional trace_seq append below stays after them).
 		&l.RequestClass, &l.DueAt,`
 	if !strings.Contains(s, scanTail) {

@@ -1,4 +1,4 @@
--- Migration 608: Persist request class (immediate|scheduled) + due_at
+-- Migration 610: Persist request class (immediate|scheduled) + due_at
 --
 -- 日期: 2026-08-27
 --
@@ -25,7 +25,7 @@
 -- do not 42703.
 --
 -- Idempotent: YES (IF NOT EXISTS + view early-return)
--- Down: 608_request_class_due_at.down.sql
+-- Down: 610_request_class_due_at.down.sql
 -- Breaking: NO
 
 BEGIN;
@@ -73,7 +73,7 @@ BEGIN
      );
 
     IF missing_count = 0 THEN
-      RAISE NOTICE '608: VIEW already exposes request class columns — skip recreate';
+      RAISE NOTICE '610: VIEW already exposes request class columns — skip recreate';
       RETURN;
     END IF;
 
@@ -86,7 +86,7 @@ BEGIN
        AND a.attname <> ALL(new_cols);
 
     IF base_cols IS NULL OR base_cols = '' THEN
-      RAISE EXCEPTION '608: existing VIEW has no columns';
+      RAISE EXCEPTION '610: existing VIEW has no columns';
     END IF;
     final_cols := base_cols || ', ' || array_to_string(new_cols, ', ');
   ELSE
@@ -105,7 +105,7 @@ BEGIN
        AND h.attname <> ALL(new_cols);
 
     IF base_cols IS NULL OR base_cols = '' THEN
-      RAISE EXCEPTION '608: cannot build fallback column list';
+      RAISE EXCEPTION '610: cannot build fallback column list';
     END IF;
     final_cols := base_cols || ', ' || array_to_string(new_cols, ', ');
   END IF;
@@ -119,7 +119,7 @@ BEGIN
   $sql$, final_cols, final_cols);
 
   COMMENT ON VIEW request_logs_with_current_month IS
-    'Hot + monthly partitions UNION. Recreated by migration 608 (2026-08-27) '
+    'Hot + monthly partitions UNION. Recreated by migration 610 (2026-08-27) '
     'to expose request_class/due_at (V6-W1.6 R8 immediate|scheduled request class). '
     'Preserves prior VIEW column set to avoid hot/parent type drift (see 448/459/491).';
 END $$;

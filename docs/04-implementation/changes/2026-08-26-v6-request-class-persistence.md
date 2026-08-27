@@ -1,11 +1,11 @@
-# v6-W1.6-R8+ · 请求类型落库（request_class / due_at，migration 608）
+# v6-W1.6-R8+ · 请求类型落库（request_class / due_at，migration 610）
 
 **日期**：2026-08-26
 **分支**：main
 **证据等级**：`LOCAL_VERIFIED`（离线 SQL 契约测试 + fsstore 往返 + streaming/admin 单测全绿；PG 真库往返由 `LLM_GATEWAY_TEST_PG_DSN` 门控，CI 离线跳过）
 **Commit / Migration / Flag**：
 - commit: 本轮提交
-- migration: `sql/migrations/startup/608_request_class_due_at.sql`（+down；幂等：IF NOT EXISTS + 视图早退）
+- migration: `sql/migrations/startup/610_request_class_due_at.sql`（+down；幂等：IF NOT EXISTS + 视图早退）
 - flag: N/A
 
 ## 场景与需求范围
@@ -48,7 +48,7 @@ V6-W1.6 R8 给 IR 加了请求类型（immediate|scheduled，源自 `X-Gw-Due-At
 
 ## 回滚动作
 
-- revert 本 commit + 执行 `608_request_class_due_at.down.sql`（drop 视图重建原形 + drop 列）。
+- revert 本 commit + 执行 `610_request_class_due_at.down.sql`（drop 视图重建原形 + drop 列）。
 - 代码侧全部加法，无行为开关需求；旧读端忽略新列即可。
 
 ## 遗留

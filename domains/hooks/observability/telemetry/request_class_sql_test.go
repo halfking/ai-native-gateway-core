@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// Offline contract tests for migration 608 (V6-W1.6 R8): request_class /
+// Offline contract tests for migration 610 (V6-W1.6 R8): request_class /
 // due_at must be wired through EVERY write statement of request_logs_hot and
 // keep the column ↔ placeholder ↔ arg alignment. Reads client.go source
 // only — same offline pattern as TestRequestLogMainTableExcludesBodyColumns.
