@@ -37,11 +37,16 @@ const (
 	autoSourceActorHeader     = "X-Gw-Source-Actor"
 )
 
-// Key shape uses the shared Cluster-safe builder and a stable logical key.
-// The kind keeps auto-title and manual-title independently concurrency-gated.
+// titleDistLockKey builds the distributed-lock key for a (kind, taskID,
+// sessionID) tuple. The kind ("auto" or "manual") keeps the two trigger
+// pipelines from blocking each other, matching the operator requirement
+// that auto-title and manual-title are independently concurrency-gated.
+//
+// Key shape: llmgw:distlock:title:<kind>:<taskID>\x00<sessionID>
+// The \x00 separator matches sessionTitleMapKey so cross-pipeline key
+// lookups are stable.
 func titleDistLockKey(kind, taskID, sessionID string) string {
-	logicalKey := strings.TrimSpace(taskID) + "\x00" + strings.TrimSpace(sessionID)
-	return distlock.BuildKey("title:"+strings.TrimSpace(kind), logicalKey)
+	return "llmgw:distlock:title:" + kind + ":" + strings.TrimSpace(taskID) + "\x00" + strings.TrimSpace(sessionID)
 }
 
 // AutoTitleGenerator handles automatic session title generation.
@@ -131,6 +136,8 @@ func (g *AutoTitleGenerator) MaybeGenerateTitle(sessionID, tenantID, taskID, req
 // queued in a short-lived goroutine so database latency never extends the
 // request path. Metadata is written even when title is empty; title projection
 // only runs when auto-title is enabled and the session has no title yet.
+// Restored 2026-08-27 after the d2cbaf88b integration merge stripped the
+// implementation while domains/streaming kept the arrival-hook contract.
 func (g *AutoTitleGenerator) MaybeGenerateProvisionalMetadata(tenantID, sessionID, taskID string, in sessionmeta.Input) {
 	if g == nil || !g.enabled || g.handler == nil {
 		return
@@ -273,7 +280,6 @@ func (g *AutoTitleGenerator) generateTitleAsync(sessionID, tenantID, taskID, req
 				//     first-turn request will retry.
 				waitErr := h.Wait(ctx)
 				hasTitle, terr := g.checkSessionHasTitle(ctx, tenantID, taskID, sessionID)
-
 				if terr != nil {
 					logger.Warn("auto_title: follower re-check failed; skipping round",
 						"wait_err", waitErr, "check_err", terr)
@@ -326,22 +332,7 @@ func (g *AutoTitleGenerator) generateTitleAsync(sessionID, tenantID, taskID, req
 			return
 		}
 	}
-	if g.handler.titleStore != nil {
-		owner := fmt.Sprintf("auto-title:%s:%d", sessionID, time.Now().UnixNano())
-		claim, claimErr := g.handler.titleStore.BeginMutation(ctx, titlestore.Claim{
-			TenantID: tenantID, SessionID: sessionID, Owner: owner,
-			TTL: 60 * time.Second, Source: titlestore.SourceAutoTitle,
-			SourcePriority: titlestore.SourcePriorityAuto, TaskID: taskID,
-		})
-		if claimErr != nil {
-			logger.Info("auto_title: canonical mutation blocked", "error", claimErr)
-			return
-		}
-		if _, commitErr := g.handler.titleStore.CommitTitle(ctx, claim, tenantID, sessionID, title, taskID); commitErr != nil {
-			logger.Info("auto_title: canonical commit blocked", "error", commitErr)
-			return
-		}
-	} else if err := g.saveSessionTitle(ctx, sessionID, taskID, title, model, keyID); err != nil {
+	if err := g.saveSessionTitle(ctx, sessionID, taskID, title, model, keyID); err != nil {
 		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
 			logger.Debug("title already saved by another goroutine")
 			return
@@ -353,12 +344,14 @@ func (g *AutoTitleGenerator) generateTitleAsync(sessionID, tenantID, taskID, req
 	logger.Info("auto title saved successfully", "title", title, "length", len(title), "model", model)
 }
 
+// checkSessionHasTitle checks if a session already has a title.
+// Restored 2026-08-27 after d2cbaf88b stripped the titlestore-aware form:
+// a provisional arrival title must NOT count as an existing title, so the
+// refined LLM path still runs and replaces it (priority 10 > 5).
 func (g *AutoTitleGenerator) checkSessionHasTitle(ctx context.Context, tenantID, taskID, sessionID string) (bool, error) {
 	if g.handler.titleStore != nil {
 		st, err := g.handler.titleStore.Get(ctx, tenantID, sessionID)
 		if err == nil {
-			// A provisional arrival title is not a real title yet — the
-			// refined LLM path must still run and replace it (priority 10 > 5).
 			return st.Deleted || (strings.TrimSpace(st.Title) != "" && st.Source != titlestore.SourceProvisionalTitle), nil
 		}
 	}
@@ -462,7 +455,7 @@ func (g *AutoTitleGenerator) generateTitleFromFirstRequest(ctx context.Context, 
 	// gets its own gw_session_id and does NOT pollute the user's conversation).
 	// The parent_request_id is forwarded so request_logs_hot.parent_request_id
 	// makes the loopback linkable back to its parent user request.
-	llmRes, err := g.callAutoTitleLLM(ctx, apiKey, keyID, sessionID, parentRequestID, userContent)
+	llmRes, err := g.callAutoTitleLLM(ctx, apiKey, sessionID, parentRequestID, userContent)
 	if err != nil {
 		// Fallback: simple extraction from in-memory preview
 		if requestPreview != "" {
@@ -533,15 +526,13 @@ func extractLastUserMessageRuneCount(requestBody string) int {
 
 // extractMessagesForTitle parses a chat completion request body (JSON) and
 // extracts the conversation messages into a clean "role: content" text suitable
-// for title generation. It uses only user/assistant messages — system prompts
-// (IDE tool catalogs, agent boilerplate) must never form the title corpus.
+// for title generation. It focuses on user/assistant messages and truncates
+// each message to avoid feeding megabytes of system prompt to the title LLM.
 //
 // v5 (2026-08-06): bumped limits (10 msgs / 1200 chars / 6000 total) and
 // preserves the LAST user message in full — that is the actual question the
 // user asked, which the title LLM needs to see uncut. Earlier messages are
 // truncated as before.
-//
-// v6 (2026-08-26): exclude system/developer roles entirely from the corpus.
 //
 // Returns "" if the body cannot be parsed or has no usable messages.
 func extractMessagesForTitle(requestBody string) string {
@@ -560,7 +551,7 @@ func extractMessagesForTitle(requestBody string) string {
 	}
 	const maxPerMsg = 1200 // chars per message (was 500 — bumped 2026-08-06)
 	const maxTotal = 6000  // total chars cap (was 3000)
-	const maxMsgs = 10     // semantic messages, excluding tool/function/system
+	const maxMsgs = 10     // semantic messages, excluding system/tool/function traffic
 
 	// 2026-08-06: pre-scan to find the LAST user message; preserve it in full
 	// even if doing so pushes the corpus past maxTotal. This is the actual
@@ -580,9 +571,11 @@ func extractMessagesForTitle(requestBody string) string {
 	var parts []string
 	semanticMessages := 0
 	for _, msg := range parsed.Messages {
-		role := strings.ToLower(strings.TrimSpace(msg.Role))
-		// System/developer prompts and tool traffic are not user intent.
-		if role == "system" || role == "developer" || role == "tool" || role == "function" {
+		role := strings.TrimSpace(msg.Role)
+		// Tool/function records contain implementation output, not the user's
+		// intent. Exclude them before counting the corpus budget so tool-heavy
+		// turns cannot crowd out later conversation messages.
+		if role == "tool" || role == "function" {
 			continue
 		}
 		if role != "user" && role != "assistant" {
@@ -601,6 +594,8 @@ func extractMessagesForTitle(requestBody string) string {
 		parts = append(parts, role+": "+text)
 		semanticMessages++
 	}
+	// Truncate the prefix loop's joined output to maxTotal so a long IDE
+	// system prompt doesn't crowd out the preserved user message below.
 	result := strings.Join(parts, "\n")
 	if len(result) > maxTotal {
 		result = result[:maxTotal] + "…"
@@ -836,8 +831,8 @@ func (g *AutoTitleGenerator) loadSessionLogsForTitle(ctx context.Context, sessio
 
 	rows, err := g.handler.db.Query(ctx, `
 		SELECT rl.ts, rl.request_preview, rl.response_preview,
-		       rb.request_body::text AS request_body,
-		       rb.response_body::text AS response_body,
+		       COALESCE(rb.request_body::text, rl.request_body::text) AS request_body,
+		       COALESCE(rb.response_body::text, rl.response_body::text) AS response_body,
 		       `+requestLogStatusExpr+` AS request_status,
 		       rl.error_kind, rl.client_model
 		FROM request_logs_with_current_month rl
@@ -909,7 +904,7 @@ func (g *AutoTitleGenerator) resolveAutoTitleModel(ctx context.Context) string {
 //     This is the answer to the operator question "did the LLM actually
 //     receive the request?" — if status_code >= 200 and < 300 the LLM did;
 //     otherwise the body_excerpt reveals what the upstream said.
-func (g *AutoTitleGenerator) callAutoTitleLLM(ctx context.Context, apiKey string, apiKeyID int, sessionID, parentRequestID, userContent string) (adminLLMChatResult, error) {
+func (g *AutoTitleGenerator) callAutoTitleLLM(ctx context.Context, apiKey, sessionID, parentRequestID, userContent string) (adminLLMChatResult, error) {
 	if g.handler == nil {
 		return adminLLMChatResult{}, fmt.Errorf("handler not configured")
 	}
@@ -1003,18 +998,10 @@ func (g *AutoTitleGenerator) callAutoTitleLLM(ctx context.Context, apiKey string
 		"model", model,
 		"status_code", lastStatus,
 		"body_excerpt", lastBodyExcerpt,
-		"loopback_key_source", loopbackKeySource(apiKeyID),
 		"retries", maxRetries,
 		"error", errString(lastErr),
 	)
 	return adminLLMChatResult{}, lastErr
-}
-
-func loopbackKeySource(apiKeyID int) string {
-	if apiKeyID == 0 {
-		return "static"
-	}
-	return "tenant_api_key"
 }
 
 // doCallAutoTitleOnce performs one HTTP attempt and returns either a parsed
@@ -1171,13 +1158,8 @@ func (g *AutoTitleGenerator) getGatewayEndpoint() string {
 	return "http://127.0.0.1:8781"
 }
 
-// pickFirstAvailableAPIKeyForAuto picks credentials for internal loopback calls.
-// When the data-plane static gate is enabled, loopbacks must use that key rather
-// than an arbitrary tenant key from api_keys. Those credential domains differ.
+// pickFirstAvailableAPIKeyForAuto picks the first available API key for auto title generation.
 func (h *Handler) pickFirstAvailableAPIKeyForAuto(ctx context.Context, tenantID string) (id int, apiKey string, err error) {
-	if apiKey = strings.TrimSpace(os.Getenv(EnvAPIKey)); apiKey != "" {
-		return 0, apiKey, nil
-	}
 	if h == nil || h.db == nil {
 		return 0, "", fmt.Errorf("database not configured")
 	}

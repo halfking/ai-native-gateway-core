@@ -80,7 +80,7 @@ func (p *Pipeline) selectAndEnqueue(qr *QueuedRequest) ([]CredentialRef, bool) {
 		if qr.hasTriedCredential(ref.CredentialID) {
 			continue
 		}
-		if !p.providerSwitchAllowed(qr, ref.ProviderID) {
+		if !providerSwitchAllowed(qr, ref.ProviderID) {
 			qr.markTriedCredential(ref.CredentialID)
 			continue
 		}
@@ -130,54 +130,26 @@ func (p *Pipeline) tryModelChangeOutcome(qr *QueuedRequest, outcome ForwardOutco
 	// UT-FO-05): combination exhaustion fires here — BEFORE the attempt
 	// budget can matter — with the tried model/node/reason summary attached.
 	completeCause := func() {
-		outcome.Err = p.exhaustedTerminal(qr, terminalErr(cause))
+		outcome.Err = exhaustedTerminal(qr, terminalErr(cause))
 		p.complete(qr, outcome)
 	}
-	if !p.modelChangeEnabled() || !qr.AllowModelChange {
+	if d := PlanNoRoute(qr, p.modelChangeEnabled()); d.Action == NextActionFailed {
 		p.emitNoRouteIfCause(qr, cause)
 		completeCause()
 		return
 	}
 	qr.markTriedModel(qr.ResolvedModel)
-	var (
-		alts []string
-		err  error
-	)
-	if p.modelRecommendFunc != nil {
-		alts, err = p.modelRecommendFunc(qr.Ctx, qr, triedList(qr.TriedModels))
-	} else {
-		alts = qr.ModelAlternatives
-		if len(alts) == 0 {
-			_, alts, err = p.modelResolveFunc(qr.Ctx, qr.RequestedModel, triedList(qr.TriedModels))
-		}
-	}
-	if err != nil {
+	d := PlanModelChange(qr, p.modelChangeCandidates(qr))
+	if d.Action != NextActionSwitchModel {
 		p.emitNoRouteIfCause(qr, cause)
 		completeCause()
 		return
 	}
-	if len(alts) == 0 {
-		p.emitNoRouteIfCause(qr, cause)
-		completeCause()
-		return
-	}
-	// Take the first alternative not already tried.
-	chosen := ""
-	for _, a := range alts {
-		if _, tried := qr.TriedModels[a]; !tried {
-			chosen = a
-			break
-		}
-	}
-	if chosen == "" {
-		p.emitNoRouteIfCause(qr, cause)
-		completeCause()
-		return
-	}
+	chosen := d.NextModel
 	// An alternative model remains: continuation, so the attempt budget
 	// guards it. (Exhaustion terminals above already returned by now —
 	// this is the R2.4 priority: 组合穷尽 > 预算. )
-	if qr.AttemptCount >= maxAttempts {
+	if AttemptBudgetLeft(qr) <= 0 {
 		p.terminateOnAttemptCap(qr, outcome)
 		return
 	}
@@ -245,6 +217,29 @@ func (p *Pipeline) tryModelChangeOutcome(qr *QueuedRequest, outcome ForwardOutco
 	}
 }
 
+// modelChangeCandidates fetches the alternative models for the ladder — the
+// only I/O step of the model-change decision, kept executor-side so the
+// planner stays pure. nil on failure: the planner then decides the
+// exhaustion terminal.
+func (p *Pipeline) modelChangeCandidates(qr *QueuedRequest) []string {
+	var (
+		alts []string
+		err  error
+	)
+	if p.modelRecommendFunc != nil {
+		alts, err = p.modelRecommendFunc(qr.Ctx, qr, triedList(qr.TriedModels))
+	} else {
+		alts = qr.ModelAlternatives
+		if len(alts) == 0 {
+			_, alts, err = p.modelResolveFunc(qr.Ctx, qr.RequestedModel, triedList(qr.TriedModels))
+		}
+	}
+	if err != nil {
+		return nil
+	}
+	return alts
+}
+
 func (p *Pipeline) selectCredential(qr *QueuedRequest, ref CredentialRef) {
 	qr.SelectedCred = ref
 	qr.vendor = ref.Vendor
@@ -296,21 +291,20 @@ func (p *Pipeline) emitNoRouteIfCause(qr *QueuedRequest, cause error) {
 	}
 }
 
-// scheduleCapacityRetry schedules a request for capacity retry after 5 seconds.
-// Called when all credentials under the current model have full queues.
+// scheduleCapacityRetry schedules a request for capacity retry after the
+// planner pacing (capacityRetryDelay, capacityRetryDelay × maxCapacityRetries
+// total). Called when all credentials under the current model have full queues.
 func (p *Pipeline) scheduleCapacityRetry(qr *QueuedRequest) {
-	const capacityRetryDelay = 5 * time.Second
-	const maxCapacityRetries = 12 // 5s × 12 = 60s max wait
-
-	// Check retry limit to prevent infinite loops
-	if qr.CapacityRetryCount >= maxCapacityRetries {
+	now := time.Now()
+	d := PlanCapacityWait(qr, now)
+	if d.Action != NextActionCapacityWait {
 		// Exceeded max capacity wait time → escalate to model-change
 		p.tryModelChange(qr, errCapacitySaturated)
 		return
 	}
 
 	qr.CapacityRetryCount++
-	retryAt := time.Now().Add(capacityRetryDelay)
+	retryAt := d.RetryAt
 
 	// Use existing HeapRetryScheduler infrastructure
 	if p.retryScheduler != nil && ctxOf(qr).Err() == nil {

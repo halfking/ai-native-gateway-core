@@ -328,7 +328,9 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 		if pc != nil {
 			pc.markInterrupted("client_write_failed")
 		}
-		return StreamOutcome{Interrupted: true, Reason: "client_write_failed", Kind: errorsx.KindCanceled, Resumable: true}
+		return StreamOutcome{Interrupted: true, Reason: "client_write_failed", Kind: errorsx.KindCanceled, Resumable: false}
+		// Initial flush write failed — client disconnected before any frame left;
+		// retry is pointless and would violate the no-replay contract.
 	}
 
 	if clientModel == "" {
@@ -447,6 +449,16 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				if !messageStopReceived {
+					// 2026-08-23: same recovery as stream.go / anthropic_stream.go —
+					// if a finish_reason has already been accumulated, treat
+					// the missing message_stop as benign (some upstreams —
+					// notably minimax via the Anthropic bridge — close the
+					// stream right after the finish_reason chunk instead of
+					// emitting a terminal event).
+					if finishReason != "" {
+						scaffold.finishAttempt(gate, fullText.String(), finishReason, inputTokens, outputTokens, inputTokens+outputTokens)
+						return StreamOutcome{ChunkCount: chunkCount}
+					}
 					outcome = StreamOutcome{
 						Interrupted: true,
 						Reason:      "eof_without_done",
@@ -653,7 +665,9 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 		if pc != nil {
 			pc.markInterrupted("client_write_failed")
 		}
-		return StreamOutcome{Interrupted: true, Reason: "client_write_failed", Kind: errorsx.KindCanceled, Resumable: true}
+		return StreamOutcome{Interrupted: true, Reason: "client_write_failed", Kind: errorsx.KindCanceled, Resumable: false}
+		// Initial flush write failed — client disconnected before any frame left;
+		// retry is pointless and would violate the no-replay contract.
 	}
 
 	if clientModel == "" {
