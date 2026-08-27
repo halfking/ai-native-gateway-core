@@ -3,7 +3,8 @@
 > **版本**：v6.2（2026-08-27 起草；基于 [`08-dispatch-executor-loop.md`](08-dispatch-executor-loop.md) 已实施基线（G-Ⅰ~G-Ⅵ，LOCAL_VERIFIED））
 > **读者**：架构组 / 后端 Owner / 执行本方案的实现者
 > **范围**：① IR 上增加请求类型（即时/定时）；② 按请求的执行轨迹队列（尝试过的模型+节点、下一步操作类型、各类执行计数、终态）；③ 复用既有分维队列作可查询存储，**不新建存储子系统**；④ 队列管理与执行操作解耦（决策纯函数化）；⑤ 对齐单请求 100 次重试/切换限额。
-> **证据等级**：`DESIGN` + `LOCAL_REVIEWED`（方案-代码匹配度已逐点核对到文件:行；实现后须达 `LOCAL_VERIFIED`）。
+> **证据等级**：`LOCAL_VERIFIED`（2026-08-27 实现完成：commit c386aa427 / 1350dbdbc / def2e9373；`go build ./...` + dispatch/transformation/ir `-race` 全绿 + 冻结契约 fixture 回归通过；实现记录见 [`docs/04-implementation/changes/2026-08-27-v6-w1-6-ir-class-journal-planner.md`](../04-implementation/changes/2026-08-27-v6-w1-6-ir-class-journal-planner.md)）。
+> **⚠ 范围修正（2026-08-27 用户纠偏，已实施）**：N-2 的执行轨迹**附属具体请求**（随请求生灭，经 `JournalSnapshot()`/该请求自己的 journey 投影流出），**不是项目级数据**——初版把 Journal 快照复制进分维索引并暴露全局 `/dispatch/journal/{id}` 端点属越界，已移除；分维条目回归纯成员归属（仅增 `Class`），全局端点改为 `/dispatch/request-dimensions/{id}`（只查归属）。详见 §R9/R10 与 changes 修正记录。
 
 ---
 
@@ -14,8 +15,8 @@
 | # | 需求（用户原话要点） | 方案一句话 | 新建子系统？ |
 |---|---|---|---|
 | N-1 | "在 ir 上加上请求的类型：即时，定时" | `ir.InternalRequest` 增加 `Class`/`DueAt` 网关内部字段；经 `domain.TransportContext`（executor 每 attempt 设置）→ `TransportIRConverter` Parse 后盖章；序列化器显式输出字段，**不上游泄漏** | 否 |
-| N-2 | "加上一个队列，存放所有的节点、尝试过的模型+节点、下一步操作类型、执行次数（重试/切节点/切模型）、完成/失败" | `QueuedRequest.AttemptJournal`（有界环形，容量 128 = 100 限额 + 余量，权威在请求对象）+ `ActionCounts` 累计计数；在既有 6 个回队/终态站点统一经 `recordDecision` 写入 | 存储复用 `DimensionIndex`（N-3） |
-| N-3 | "复用原来的请求分维队列，不要全部新建" | 分维条目（`DimensionEntry`）增加 `Class` 与 `Journal` 快照字段，在既有 UpdateWait/Complete 同步点复制；admin 端点原位扩展 + 新增按请求查询 | **否，扩展 08 号实现** |
+| N-2 | "加上一个队列，存放所有的节点、尝试过的模型+节点、下一步操作类型、执行次数（重试/切节点/切模型）、完成/失败" | `QueuedRequest.AttemptJournal`（有界环形，容量 128 = 100 限额 + 余量）+ `ActionCounts` 累计计数；**轨迹附属请求自身**（单所有者写入，经 `JournalSnapshot()` 随请求结果流出，持久走该请求自己的 journey/日志记录）；6 个回队/终态站点统一经 `recordDecision` 写入 | 否——且**禁止**进任何项目级存储（范围修正） |
+| N-3 | "复用原来的请求分维队列，不要全部新建" | 分维条目（`DimensionEntry`）**仅增加 `Class` 字段**（成员归属属性）；**不携带 Journal**——分维索引保持纯成员视图（哪个请求在/曾在哪个模型/凭据/供应商上，State/Outcome/LastAction） | **否，扩展 08 号实现** |
 | N-4 | "队列管理与执行操作解耦，逻辑变简单" | 抽 `dispatch/planner.go` 纯决策层（读标记 → 出 `Decision`），`Pipeline` 只做队列管道（enqueue/park/complete）；行为等价由既有 dispatch 全量测试守护 | 否（等价重构） |
 | N-5 | "同一请求重试/切换次数限额 100" | 既有 `maxAttempts=100`（AttemptCount）确认为唯一限额口径；planner 每个延续步骤检查，触顶走终态并写 `failed(attempt_cap)` 轨迹 | 既有，仅对齐口径 |
 
@@ -36,7 +37,11 @@
 - **消费方**：① 分维条目 `Class` 字段（admin 可按类型过滤"当前哪些定时请求在等"）；② 轨迹队列首条记录（`admitted` 类可选，见 R9）；③ 审计（requestjourney 不动——冻结契约不加事件类型）。
 - **显式不做**：不给 body schema 加 `schedule.at` 字段（F6 后续）；不在上游请求体中携带 Class/DueAt。
 
-### R9 · 执行轨迹队列（AttemptJournal）
+### R9 · 执行轨迹队列（AttemptJournal）——附属请求（范围修正后定稿）
+
+- **范围原则（用户 2026-08-27 纠偏）**：轨迹回答的是"**这个请求**经历了什么路径"，它是**请求自身的附属状态**：权威副本在 `QueuedRequest`（单所有者写入，随请求生灭），**不复制进任何进程级/项目级结构**（分维索引、全局 map、Redis 皆不存轨迹）。轨迹离开请求只有两条路：
+  1. `JournalSnapshot()`——请求结果的持有者（Submit 返回后的 executor adapter、测试）按需取 detached 副本；终条之后 ring 不可变，快照恒有效；
+  2. 该请求**自己的**持久投影——requestjourney 既有 17 事件按请求存取（冻结契约，不加事件类型）与请求日志；不建全局轨迹存储。
 
 - **权威位置**：`QueuedRequest`（单所有者不变量内写入），**不是**共享存储——轨迹是请求执行史的一部分。
 - **结构**：
@@ -71,16 +76,15 @@
 - **统一入口** `recordDecision(qr, entry)`：递增 Seq → 更新 Counts → append（超容量 128 丢最旧）→ 同步更新 `qr.LastFailover`（LastFailover 保留为"最后一条轨迹的投影视图"，通知继续用它，避免两处记账漂移）。
 - **边界（与 100 限额对齐）**：`AttemptCount ≤ maxAttempts=100`；journal 容量 128 ≥ 100+首条+终条，正常运行**不截断**；容量仅防御病态路径（例如旧版本放大的请求）。
 
-### R10 · 复用分维队列（不新建存储）
+### R10 · 复用分维队列（成员归属视图，不含轨迹）
 
-- `DimensionEntry`（`dimension_index.go`）增加两个字段：
-  - `Class string` —— Track() 时从 `qr` 填入（见 R8 链路末端的 `qr.requestClass()`；QueuedRequest 增加 `RequestClass` 冗余字段，Submit 时从 DueAt 推导，避免 dispatch 反向依赖 ir 包——**dispatch 不 import internal/ir**，用字符串常量镜像，注释标注与 `ir.RequestClass` 的对应关系）；
-  - `Journal []JournalEntry` —— 在**既有同步点**复制快照：`UpdateWait`（每次回队，取当时 journal 尾部最多 16 条 + 完整计数）与 `Complete`（终条 + 完整 journal，仍受条目整体容量约束）。
-- **一致性口径（文档级验证结论）**：分维条目内的 Journal 是**快照**，权威在 QueuedRequest；同一请求在 model/credential/provider 三个环里的条目是独立副本，快照时点可能差一步（终态时 Complete 统一拉齐）。分维队列的 TTL/容量淘汰语义（完成后不移除）不变。
-- **Redis 侧边界（2026-08-27 修正，见 08 号 §2.1 存储拓扑）**：执行队列本体（Tier-0/1/2、重试堆、到期堆）在进程内存，**不在 Redis**（v4 冻结契约：`ordinary_dispatch → dropped`；镜像禁止恢复执行）。Redis 侧待处理集合 = `llmgw:dispatch:mirror:v1:retry_at:*`（错误/容量重试）∪ `scheduled_at:*`（定时停靠，独立键族）∪ 深度/在途镜像。DimensionIndex/Journal 本轮**不投影 Redis**（F5 后续）；若 T4 实施时需要跨实例可见，走 mirror 异步旁路新增 dimension 摘要键，禁止同步写。
+- `DimensionEntry`（`dimension_index.go`）**仅增加 `Class string`** 字段——Track() 时从 `qr.requestClass()` 填入（QueuedRequest 的 `RequestClass` 冗余字段由 executor 预盖或从 DueAt 推导；**dispatch 不 import internal/ir**，用字符串常量镜像 + 一致性单测钉死，E14）。
+- **分维条目不携带 Journal（范围不变量，有专项测试 `TestDimensionEntriesDoNotCarryJournal` 钉住）**：UpdateWait/Complete 只刷新成员元数据（State/Outcome/ErrorKind/RetryAt/LastAction/Attempts/时间戳），轨迹始终只在请求对象上（Complete 内的终条回填写在 `qr.AttemptJournal`，不进条目）。
+- **Redis 侧边界（2026-08-27 修正，见 08 号 §2.1 存储拓扑）**：执行队列本体（Tier-0/1/2、重试堆、到期堆）在进程内存，**不在 Redis**（v4 冻结契约：`ordinary_dispatch → dropped`；镜像禁止恢复执行）。Redis 侧待处理集合 = `llmgw:dispatch:mirror:v1:retry_at:*`（错误/容量重试）∪ `scheduled_at:*`（定时停靠，独立键族）∪ 深度/在途镜像。DimensionIndex 本轮**不投影 Redis**（F5 后续）。
 - **查询面**：
-  - 既有 `GET /api/admin/dispatch/dimensions?kind=&id=&limit=` 的条目自动携带 Class 与 Journal 尾部；
-  - 新增 `GET /api/admin/dispatch/journal/{request_id}`：`DimensionIndex.JournalByRequest(requestID)` 返回该请求全部条目 + 最新 journal（从 byReq 索引取，仍在 TTL 窗口内可用；窗口外 404 并提示用 requestjourney 持久投影）。
+  - 既有 `GET /api/admin/dispatch/dimensions?kind=&id=&limit=` 条目自动携带 Class；
+  - `GET /api/admin/dispatch/request-dimensions/{request_id}`（`EntriesByRequest`）：查某请求的分维**归属**（三个维度的条目）；**不返回轨迹**；
+  - 事后路径查询（该请求经历了什么）→ **该请求自己的 requestjourney 投影**（既有，按请求 ID 存取，Redis 24h + PG 持久）；执行中的实时路径 → 客户端已通过 think 通知同步看到。
 
 ### R11 · 解耦：队列管理 vs 执行操作
 
@@ -126,7 +130,7 @@
 | TransportContext 注入缝 | `domain/transport.go:9`；executor 设置点 `executor_chat.go:1491`、`executor_anthropic.go:432`（gemini/responses 同型）；converter Parse 点 `domains/transformation/ir_converter.go:357/372/390` | ✅ 缝存在，加 2 字段 |
 | DispatchDueAt 已在 ExecParams | `executors/executor.go`（08 号新增）、`executeViaDispatch` 透传 `qr.DueAt` | ✅ 上游数据源已就绪 |
 | journal 写入点已具备 | 08 号 `LastFailover` 6 站点（failover.go move×2、dispatcher.go 模型切换/容量等待、pipeline.go parkScheduled/complete） | ✅ 同点扩写，无新路径 |
-| 分维队列可扩展 | `DimensionEntry`（08 号新建）已有 State/Outcome/ErrorKind/LastAction/Attempts；UpdateWait/Complete 同步点在 pipeline 内 | ✅ 加 Class/Journal 字段即可 |
+| 分维队列可扩展 | `DimensionEntry`（08 号新建）已有 State/Outcome/ErrorKind/LastAction/Attempts；UpdateWait/Complete 同步点在 pipeline 内 | ✅ 加 Class 字段即可；**Journal 不入条目**（范围修正） |
 | dispatch 不依赖 ir | dispatch 包 import 表无 internal/ir；ir 也不依赖 dispatch | ✅ 用字符串镜像常量保持双向解耦 |
 | 100 限额已存在 | `domains/dispatch/errors.go:18 maxAttempts=100`；`terminateOnAttemptCap` 各延续步检查 | ✅ 只收敛不新造 |
 | 单所有者写入安全 | 08 号已建立 prepare/deliver 通知模式与"handoff 前写元数据"规约；journal 写点全在 owner 侧 | ✅ 沿用同一规约 |
@@ -159,7 +163,7 @@
 | E6 | 首字节后失败（BytesSent） | 不切换、带错完成（ADR-Disp-003）→ journal `failed`，Counts 不再加 | 既有不变 |
 | E7 | 通知回调 panic / 慢 | recover + SerializedStreamWriter detach | 08 号已实现 |
 | E8 | journal 写点越权（handoff 后写） | 规约：recordDecision 仅在 owner 侧调用；cred-switch 站点在 handoff 前完成 append（与 08 号 prepare/deliver 同位）| 走查 6 站点全部满足；新增 -race 测试覆盖 |
-| E9 | 分维三环 Journal 快照不一致 | 权威=请求对象；Complete 时拉齐；条目快照仅展示用 | R10 一致性口径 |
+| E9 | 轨迹被误加进项目级结构（分维条目/全局端点/Redis） | **范围不变量**：分维条目不携带 Journal（`TestDimensionEntriesDoNotCarryJournal` 钉住）；无全局 journal 端点；轨迹仅经 `JournalSnapshot()`/请求自身 journey 流出 | 范围修正 2026-08-27 |
 | E10 | IR Class 串改 body / 泄漏上游 | serializer 显式构造；Class/DueAt 为 Go 字段非 Extensions，不进 JSON | 已核对零整体序列化点 |
 | E11 | DimensionIndex 禁用（capacity=-1） | journal 仍在 QueuedRequest（权威不丢）；仅查询面退化 | 设计使然 |
 | E12 | 外层 goal-retry 与 dispatch attempts 双层叠加 | 既有债务（UpstreamAttemptBudget vs AttemptCount），v6-W1-5 统一，本轮仅文档标注 | 明示不做 |
@@ -173,7 +177,7 @@
 1. journal Seq 严格递增且每请求连续（无空洞）；终条 Seq 最大。
 2. `AttemptCount = 1 + Σ发送型动作`（retry/switch_cred/switch_model 各对应一次后续发送；capacity_wait/scheduled_wait 不发送不计数）。
 3. 任何 `Decision.Action ∈ 终态` 后不再有新 journal 条目（complete 的 CAS 保证）。
-4. 分维条目 `State=completed ⇒ Journal 尾条为终态条`。
+4. **范围不变量：分维条目永不携带 Journal**；请求轨迹仅存在于请求对象（`JournalSnapshot()`）与该请求自己的 journey 投影。
 5. planner 为纯函数：同输入同输出，无 goroutine/锁/IO（单测可用反复调用断言）。
 
 ---
@@ -185,7 +189,7 @@
 | T1 | IR 请求类型 | `internal/ir/types.go`（+`class.go` 常量与 ClassOf）、4 个 serializer 不动 | 编译零改 serializer；单测：ClassOf 边界；serialize 输出不含 class（golden 对比）|
 | T2 | TransportContext→IR 盖章 | `domain/transport.go`、`domains/transformation/ir_converter.go`（3 个 Parse 方法 + scopedConverter 透传）、executor 4 个 SetContext 站点 | 单测：Parse 后 IR.Class==ctx.Class；未设置时为空/immediate |
 | T3 | AttemptJournal + ActionCounts + recordDecision | `domains/dispatch/journal.go`（新）、`queued_request.go`（字段）、6 个决策站点改造、`notice.go`（LastFailover 由 journal 投影） | 单测：C 链全走查的 Seq/Counts/Attempt 恒等式；容量 128 截断；终条唯一 |
-| T4 | 分维队列复用扩展 | `domains/dispatch/dimension_index.go`（Class/Journal 字段 + JournalByRequest）、`pipeline.go` 同步点、`cmd/gateway/main_dispatch.go`（条目自动携带 + `/api/admin/dispatch/journal/{id}`）、`cmd/gateway/main.go` 路由 | 单测：完成拉齐、快照边界、404 路径；dispatch↔ir 常量一致断言；不新增 Redis 同步写（E15/E16） |
+| T4 | 分维队列复用扩展（范围修正版） | `domains/dispatch/dimension_index.go`（仅 Class 字段 + `EntriesByRequest`）、`pipeline.go` 同步点、`cmd/gateway/main_dispatch.go`（条目携带 Class + `/api/admin/dispatch/request-dimensions/{id}`）、`cmd/gateway/main.go` 路由 | 单测：Class 透传、成员元数据刷新、404/TTL、**`TestDimensionEntriesDoNotCarryJournal` 范围不变量**；dispatch↔ir 常量一致断言；不新增 Redis 同步写（E15/E16） |
 | T5 | planner 抽取（等价重构） | `domains/dispatch/planner.go`（新）、`failover.go`/`dispatcher.go` 改为消费 Decision | **`go test -race ./domains/dispatch/` 全量零修改通过**；planner 纯函数单测（表驱动覆盖 C/D/E5 路径）|
 | T6 | 100 限额口径 | planner 内集中检查；`failed(attempt_cap)` 终条 | 单测：99 次后允许延续、100 次后拒绝 |
 | T7 | 文档 | 本文 §3 走查结论复核 + `docs/04-implementation/changes/2026-MM-DD-v6-w1-6-*.md` | 落盘 |
@@ -208,7 +212,7 @@
 
 ## 6. 完成标准
 
-- [ ] `go build ./...`；`go test -race ./domains/dispatch/ ./domains/transformation/ ./internal/ir/ ./cmd/gateway/`（可编译部分）全绿
-- [ ] §3.3 五条不变量各有对应单测
-- [ ] v4 冻结契约 fixture 回归通过（不加事件类型、不改状态机）
-- [ ] changes 文档落盘（证据等级 `LOCAL_VERIFIED`）
+- [x] `go build ./...`；`go test -race ./domains/dispatch/ ./domains/transformation/ ./internal/ir/ ./cmd/gateway/`（可编译部分）全绿（cmd/gateway 测试构建失败为预存 main_livestream_test，与本轮无关）
+- [x] §3.3 五条不变量各有对应单测（①②③ TestJournalChainFailoverLadder + TestAttemptCapJournalTerminal；④ TestDimensionEntriesDoNotCarryJournal（范围修正后口径）；⑤ TestPlannerPurity）
+- [x] v4 冻结契约 fixture 回归通过（./test/events/contract/；不加事件类型、不改状态机）
+- [x] changes 文档落盘（证据等级 `LOCAL_VERIFIED`）

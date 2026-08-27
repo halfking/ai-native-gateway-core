@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"github.com/kaixuan/llm-gateway-go/domains/dbdegradation"
+	"github.com/kaixuan/llm-gateway-go/internal/jsonbody"
 )
 
 // TelemetryFallbackBufferHandler exposes the in-memory ring buffer
@@ -132,8 +133,16 @@ func (h *TelemetryFallbackBufferHandler) handleReplay(w http.ResponseWriter, r *
 		return
 	}
 	var req replayRequest
-	// body is optional — empty body → replay all
-	_ = json.NewDecoder(r.Body).Decode(&req)
+	// 2026-08-26 (P1-19 fix): the body is documented as optional, but
+	// the previous implementation silently swallowed every parse
+	// error and proceeded with the zero-value struct — meaning a
+	// caller that sent `{"limit": "oops"}` got the "replay all"
+	// behaviour rather than a 400. ReadOptional distinguishes empty
+	// body (accepted) from malformed body (400) and also enforces a
+	// hard 1 MiB cap.
+	if ok, _ := jsonbody.ReadOptional(w, r, &req); !ok {
+		return
+	}
 
 	replayed, failed, err := h.ringBuffer.Replay(r.Context(), req.Limit, h.replayFn)
 	if err != nil {

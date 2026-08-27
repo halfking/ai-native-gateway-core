@@ -1338,6 +1338,15 @@ func lastTiles(items []LiveStreamTile, limit int) []LiveStreamTile {
 	return items[len(items)-limit:]
 }
 
+// firstTiles returns the first N tiles from items (newest tiles, for RIGHT→LEFT display).
+// Backend stores tiles in DESC timestamp order in Redis ZSET, so first N = newest N.
+func firstTiles(items []LiveStreamTile, limit int) []LiveStreamTile {
+	if limit <= 0 || len(items) <= limit {
+		return items
+	}
+	return items[:limit]
+}
+
 func tenantLiveStreamKey(tenantID, suffix string) string {
 	return "llmgw:live:tenant:" + normalizeLiveStreamTenant(tenantID) + ":" + suffix
 }
