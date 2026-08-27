@@ -1292,9 +1292,8 @@ func (c *CredentialProbeV2) writeHealth(ctx context.Context, credID int, pr prob
 			}
 			if pr.AvailabilityState != "ready" {
 				lastSuccess = nil
-				modelAvailable = false
 			}
-			stateSnapshot := credentialstate.State{
+			c.stateManager.UpdateFromProbe(execCtx, &credentialstate.State{
 				CredentialID:  credID,
 				Model:         model,
 				Available:     modelAvailable,
@@ -1303,13 +1302,10 @@ func (c *CredentialProbeV2) writeHealth(ctx context.Context, credID int, pr prob
 				LastUpdatedAt: now,
 				LastSuccessAt: lastSuccess,
 				LastError:     pr.HealthError,
-				RecoverAt:     recoverAt,
-				Source:        "probe_v2",
-			}
-			if pr.BindingOnly {
-				stateSnapshot.Available = modelAvailable
-			}
-			c.stateManager.UpdateFromProbe(execCtx, &stateSnapshot)
+
+				RecoverAt: recoverAt,
+				Source:    "probe_v2",
+			})
 		}
 	}
 }
