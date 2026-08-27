@@ -2,6 +2,7 @@ package executors
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -784,6 +785,56 @@ func TestExecutorAnthropic_EmptyNativeMessagesResponseDoesNotWriteClient(t *test
 	}
 	if got := params.W.(*httptest.ResponseRecorder).Body.String(); got != "" {
 		t.Fatalf("client received body before failover: %q", got)
+	}
+}
+
+// A mid-read client cancellation reads as KindCanceled: it must surface as a
+// bare upstream error so executeAnthropic's retry ladder returns it
+// immediately instead of retrying a dead request with backoff.
+func TestAnthropicReadBodyError_CanceledNotRetryable(t *testing.T) {
+	err := anthropicReadBodyError(context.Canceled, &http.Response{StatusCode: 200, Header: http.Header{}})
+	var retry *retryableError
+	if errors.As(err, &retry) {
+		t.Fatal("canceled read must not be wrapped in retryableError")
+	}
+	var ue *upstreampkg.Error
+	if !errors.As(err, &ue) || ue.Kind != errorsx.KindCanceled {
+		t.Fatalf("err = %T %v, want upstream.Error with kind canceled", err, err)
+	}
+}
+
+func TestAnthropicReadBodyError_NetworkRetryable(t *testing.T) {
+	err := anthropicReadBodyError(errors.New("read tcp: connection reset by peer"), &http.Response{StatusCode: 200, Header: http.Header{}})
+	var retry *retryableError
+	if !errors.As(err, &retry) {
+		t.Fatalf("network read error must stay retryable, got %T", err)
+	}
+	if got := classifyExecError(err); got != errorsx.KindNetwork {
+		t.Fatalf("kind = %q, want network", got)
+	}
+}
+
+type closeTrackingBody struct {
+	io.Reader
+	closed bool
+}
+
+func (b *closeTrackingBody) Close() error { b.closed = true; return nil }
+
+func TestDefaultAnthropicPassthrough_ClosesBody(t *testing.T) {
+	body := &closeTrackingBody{Reader: strings.NewReader("data: hello\n\n")}
+	rec := httptest.NewRecorder()
+
+	outcome := defaultAnthropicPassthrough(rec, &http.Response{Body: body, StatusCode: 200})
+
+	if outcome.Interrupted || outcome.Reason != "" {
+		t.Fatalf("outcome = %+v, want zero value", outcome)
+	}
+	if rec.Body.String() != "data: hello\n\n" {
+		t.Fatalf("body = %q, want passthrough bytes", rec.Body.String())
+	}
+	if !body.closed {
+		t.Fatal("defaultAnthropicPassthrough must close the upstream body")
 	}
 }
 
