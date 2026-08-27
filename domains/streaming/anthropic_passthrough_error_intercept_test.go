@@ -1,6 +1,7 @@
 package streaming
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -52,7 +53,7 @@ func TestStreamAnthropicPassthrough_ErrorEventFirstFrameIsSuppressedAndRetryable
 	rec := httptest.NewRecorder()
 	pc := NewPendingCapturer(64 * 1024)
 
-	out := StreamAnthropicPassthrough(rec, passthroughResp(relayDiagnosticErrorBody),
+	out := StreamAnthropicPassthrough(context.Background(), rec, passthroughResp(relayDiagnosticErrorBody),
 		"claude-test", "claude-test", "req-intercept-first", nil, pc)
 
 	assert.True(t, out.Interrupted)
@@ -71,7 +72,7 @@ func TestStreamAnthropicPassthrough_ErrorEventFirstFrameIsSuppressedAndRetryable
 func TestStreamAnthropicPassthrough_ErrorEventAfterContentRendersStructuredError(t *testing.T) {
 	rec := httptest.NewRecorder()
 
-	out := StreamAnthropicPassthrough(rec, passthroughResp(contentDeltaFrame+overloadErrorFrame),
+	out := StreamAnthropicPassthrough(context.Background(), rec, passthroughResp(contentDeltaFrame+overloadErrorFrame),
 		"claude-test", "claude-test", "req-intercept-commit", nil, nil)
 
 	assert.True(t, out.Interrupted)
@@ -91,7 +92,7 @@ func TestStreamAnthropicPassthrough_ErrorEventAfterContentRendersStructuredError
 func TestStreamAnthropicPassthrough_ErrorEventThenCleanEOFIsInterrupted(t *testing.T) {
 	rec := httptest.NewRecorder()
 
-	out := StreamAnthropicPassthrough(rec, passthroughResp(relayDiagnosticErrorBody),
+	out := StreamAnthropicPassthrough(context.Background(), rec, passthroughResp(relayDiagnosticErrorBody),
 		"claude-test", "claude-test", "req-intercept-eof", nil, nil)
 
 	assert.True(t, out.Interrupted, "error event + clean EOF must not record success")
@@ -103,7 +104,7 @@ func TestStreamAnthropicPassthrough_ErrorEventThenCleanEOFIsInterrupted(t *testi
 func TestStreamAnthropicPassthrough_StandaloneErrorPayloadIsIntercepted(t *testing.T) {
 	rec := httptest.NewRecorder()
 
-	out := StreamAnthropicPassthrough(rec,
+	out := StreamAnthropicPassthrough(context.Background(), rec,
 		passthroughResp("data: {\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"message\":\"slow down\"}}\n\n"),
 		"claude-test", "claude-test", "req-intercept-standalone", nil, nil)
 
@@ -129,7 +130,7 @@ func TestStreamAnthropicPassthrough_ReadFailureAfterContentRecordsSentChunks(t *
 	rec := httptest.NewRecorder()
 	capture := &audit.StreamCapture{}
 
-	out := StreamAnthropicPassthrough(rec, resp, "claude-test", "claude-test", "req-pin-sent", capture, nil)
+	out := StreamAnthropicPassthrough(context.Background(), rec, resp, "claude-test", "claude-test", "req-pin-sent", capture, nil)
 
 	assert.True(t, out.Interrupted)
 	assert.Equal(t, "network_error", out.Reason)
@@ -146,7 +147,7 @@ func TestStreamAnthropicPassthrough_ErrorEventLineWithNonErrorPayloadIsTerminal(
 		"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n"
 	rec := httptest.NewRecorder()
 
-	out := StreamAnthropicPassthrough(rec, passthroughResp(body),
+	out := StreamAnthropicPassthrough(context.Background(), rec, passthroughResp(body),
 		"claude-test", "claude-test", "req-hold-terminal", nil, nil)
 
 	assert.True(t, out.Interrupted)
@@ -161,7 +162,7 @@ func TestStreamAnthropicPassthrough_ErrorEventLineWithNonErrorPayloadIsTerminal(
 func TestStreamAnthropicPassthrough_ErrorEventLineThenEOFIsInterrupted(t *testing.T) {
 	rec := httptest.NewRecorder()
 
-	out := StreamAnthropicPassthrough(rec, passthroughResp("event: error\n"),
+	out := StreamAnthropicPassthrough(context.Background(), rec, passthroughResp("event: error\n"),
 		"claude-test", "claude-test", "req-hold-eof", nil, nil)
 
 	assert.True(t, out.Interrupted)
