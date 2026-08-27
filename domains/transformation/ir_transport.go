@@ -665,6 +665,10 @@ func parseResponse(protocol string, body []byte) (*ir.InternalResponse, error) {
 		return ir.ParseOpenAIResponse(body)
 	case "anthropic-messages", "anthropic":
 		return ir.ParseAnthropicResponse(body)
+	case "gemini-generate", "gemini":
+		return ir.ParseGeminiResponse(body)
+	case "openai-responses", "responses":
+		return ir.ParseResponsesResponse(body)
 	default:
 		return nil, fmt.Errorf("unsupported upstream protocol: %s", protocol)
 	}
