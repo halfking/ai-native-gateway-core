@@ -1,3 +1,10 @@
+//go:build broken_pending_repair
+// +build broken_pending_repair
+
+// QUARANTINED 2026-08-26 (V6-W1.6 R8 落库轮): references extractDialogueContent,
+// dropped by merge d2cbaf88b. Blocked compilation of the admin test package.
+// Rewrite against the current dialogue extraction path, then remove the tag.
+
 package admin
 
 import (
