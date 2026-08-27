@@ -1,19 +1,26 @@
 // Package jsonbody — strict + bounded JSON body helpers.
 //
-// 2026-08-26 (Phase 0 P1-19 fix): endpoints that accept an "optional"
-// body must NOT silently swallow JSON parse errors. Before this fix,
-// several handlers did `_ = json.NewDecoder(r.Body).Decode(&dst)` and
-// proceeded with the zero-value target — that hides malformed input
-// (typos, truncated JSON, wrong Content-Type) and lets the rest of
-// the handler run with stale defaults. The helper here distinguishes:
+// 2026-08-26 (Phase 0 P1-19 + P1-1 fix): endpoints that accept a JSON
+// body — required or optional — must parse strictly:
+//   - bounded input (http.MaxBytesReader),
+//   - exactly one well-formed top-level JSON value,
+//   - no trailing data.
 //
-//   - body absent / empty           → optional, proceed with zero dst.
-//   - body present but malformed    → 400 Bad Request with a stable
-//                                     error code, log the parse error.
+// Before this fix, callers used `json.NewDecoder(r.Body).Decode(&dst)`
+// against an unbounded body, and many sites silently coerced parse
+// errors to the zero-value target. The helpers here split into two:
 //
-// Every caller also gets a hard cap on the body size so a malicious or
-// buggy client can't push an unbounded chunked request through an
-// optional-body endpoint.
+//   - ReadOptional: body MAY be empty; parse failure → 400.
+//   - ReadRequired: body MUST be present; empty / parse failure → 400.
+//
+// Both enforce a hard cap (1 MiB default) so a hostile or buggy client
+// cannot use any admin endpoint as an unbounded-DoS surface. Callers
+// needing a different cap can pass it via ReadOptionalWithLimit /
+// ReadRequiredWithLimit.
+//
+// Every admin endpoint that previously did
+// `if err := json.NewDecoder(r.Body).Decode(&dst); err != nil { ... }`
+// should migrate to one of these two helpers.
 package jsonbody
 
 import (
@@ -25,105 +32,144 @@ import (
 	"net/http"
 )
 
-// ErrBodyTooLarge is returned when an optional body exceeds the cap.
+// ErrBodyTooLarge is returned when a body exceeds the cap.
 var ErrBodyTooLarge = errors.New("jsonbody: body too large")
 
+// ErrEmptyBody is returned by ReadRequired when no body was supplied.
+var ErrEmptyBody = errors.New("jsonbody: body required but empty")
+
 // IsBodyTooLarge reports whether err is (or wraps) ErrBodyTooLarge.
-// The MaxBytesReader check is folded into the same return path so
-// callers can branch on one error type.
 func IsBodyTooLarge(err error) bool {
 	return errors.Is(err, ErrBodyTooLarge)
+}
+
+// IsEmptyBody reports whether err is (or wraps) ErrEmptyBody.
+func IsEmptyBody(err error) bool {
+	return errors.Is(err, ErrEmptyBody)
 }
 
 // MaxOptionalBody caps an optional-body endpoint at 1 MiB — generous
 // for any plausible admin / replay payload, but bounded so an
 // attacker cannot use an optional endpoint as an unbounded-DoS
-// surface. Callers that need a different cap can wrap this constant
-// with their own http.MaxBytesReader and rely on ReadOptional below.
+// surface.
 const MaxOptionalBody = 1 << 20
+
+// MaxRequiredBody caps a required-body admin endpoint at 1 MiB. Real
+// admin POSTs (create / update endpoints) are < 64 KiB in practice;
+// 1 MiB is enough headroom for batch operations.
+const MaxRequiredBody = 1 << 20
 
 // ReadOptional decodes a JSON body that may be empty.
 //
 // Semantics:
-//   - body is nil or Content-Length == 0            → returns (true, nil)
-//   - body is present and parses successfully       → returns (true, nil), dst populated
-//   - body is present but malformed                 → returns (false, error)
-//   - body exceeds MaxOptionalBody                  → returns (false, ErrBodyTooLarge)
+//   - body is nil or empty                       → returns (true, nil)
+//   - body is present and parses successfully    → returns (true, nil), dst populated
+//   - body is present but malformed              → returns (false, error), writes 400
+//   - body exceeds MaxOptionalBody               → returns (false, ErrBodyTooLarge)
 //
 // The first return value is "is the request shape acceptable" — true
 // when the handler may proceed, false when it should write an error
-// response and abort. Callers should do:
-//
-//	if ok, err := jsonbody.ReadOptional(w, r, &dst); !ok {
-//	    // jsonbody.WriteError has already been called if err is set
-//	    return
-//	}
-//
-// The wrapper does NOT write a response on success; the caller keeps
-// full control of the happy path. On failure it writes a 400 with a
-// stable code so the frontend can switch on it.
+// response and abort.
 func ReadOptional(w http.ResponseWriter, r *http.Request, dst any) (bool, error) {
+	return readWithLimit(w, r, dst, MaxOptionalBody, false)
+}
+
+// ReadRequired decodes a JSON body that must be present.
+//
+// Semantics:
+//   - body is nil or empty                       → returns (false, ErrEmptyBody), writes 400
+//   - body is present and parses successfully    → returns (true, nil), dst populated
+//   - body is present but malformed              → returns (false, error), writes 400
+//   - body exceeds MaxRequiredBody               → returns (false, ErrBodyTooLarge), writes 400
+func ReadRequired(w http.ResponseWriter, r *http.Request, dst any) (bool, error) {
+	return readWithLimit(w, r, dst, MaxRequiredBody, true)
+}
+
+// ReadRequiredWithLimit is ReadRequired with a custom cap. Used by
+// batch endpoints that legitimately need more than 1 MiB.
+func ReadRequiredWithLimit(w http.ResponseWriter, r *http.Request, dst any, limit int64) (bool, error) {
+	return readWithLimit(w, r, dst, limit, true)
+}
+
+// readWithLimit is the shared implementation. requireEmpty controls
+// whether an empty body is allowed (ReadOptional) or rejected with
+// ErrEmptyBody (ReadRequired).
+func readWithLimit(w http.ResponseWriter, r *http.Request, dst any, limit int64, requireBody bool) (bool, error) {
 	if r == nil || r.Body == nil {
+		if requireBody {
+			WriteErrorWithCode(w, http.StatusBadRequest,
+				"request body is required", ErrEmptyBody)
+			return false, ErrEmptyBody
+		}
 		return true, nil
 	}
-	// Enforce a hard cap on the optional body. Without this, an
-	// attacker who discovers an "optional body" endpoint can push
-	// 4 GiB through it and starve the server's read buffers.
-	limited := http.MaxBytesReader(w, r.Body, MaxOptionalBody)
+	limited := http.MaxBytesReader(w, r.Body, limit)
 	dec := json.NewDecoder(limited)
 	if err := dec.Decode(dst); err != nil {
-		// EOF on an empty body: optional path, proceed with zero dst.
-		if errors.Is(err, http.ErrBodyReadAfterClose) || isEOF(err) {
+		// EOF on an empty body.
+		if isEOF(err) {
+			if requireBody {
+				WriteErrorWithCode(w, http.StatusBadRequest,
+					"request body is required", ErrEmptyBody)
+				return false, ErrEmptyBody
+			}
 			return true, nil
 		}
-		// http.MaxBytesReader returns *http.MaxBytesError when the
-		// cap is exceeded. Surface it as ErrBodyTooLarge so callers
-		// can branch cleanly.
 		var mbErr *http.MaxBytesError
 		if errors.As(err, &mbErr) {
-			slog.Warn("jsonbody: optional body exceeded cap",
+			slog.Warn("jsonbody: body exceeded cap",
 				"path", r.URL.Path,
-				"limit_bytes", MaxOptionalBody)
-			WriteError(w, http.StatusBadRequest, "optional body exceeds limit", err)
+				"limit_bytes", limit)
+			WriteErrorWithCode(w, http.StatusRequestEntityTooLarge,
+				fmt.Sprintf("request body exceeds %d bytes", limit), ErrBodyTooLarge)
 			return false, ErrBodyTooLarge
 		}
-		// The body was present but did not parse. Surface 400.
-		slog.Warn("jsonbody: optional body failed to parse",
+		slog.Warn("jsonbody: body failed to parse",
 			"path", r.URL.Path,
 			"method", r.Method,
 			"error", err.Error())
-		WriteError(w, http.StatusBadRequest, "optional body is not valid JSON", err)
+		WriteErrorWithCode(w, http.StatusBadRequest,
+			"request body is not valid JSON", err)
 		return false, err
 	}
 	// Reject trailing garbage: a single well-formed JSON value is the
-	// contract, not "JSON plus comments". json.Decoder.Decode stops
-	// at the first valid value; the next token (if any) lives past
-	// the stream. We poke it via a second Decode into json.RawMessage
-	// — any non-trivial payload here means the caller sent multiple
-	// top-level values, which our audit (P1-19 strict single-value)
-	// prohibits.
+	// contract.
 	var trailing json.RawMessage
 	if err := dec.Decode(&trailing); err == nil && len(trailing) > 0 {
 		slog.Warn("jsonbody: trailing data after first JSON value",
 			"path", r.URL.Path)
-		WriteError(w, http.StatusBadRequest, "body must contain a single JSON value", nil)
+		WriteErrorWithCode(w, http.StatusBadRequest,
+			"body must contain a single JSON value", nil)
 		return false, fmt.Errorf("jsonbody: trailing data")
 	}
 	return true, nil
 }
 
 // WriteError writes a stable error response so every caller has the
-// same shape. Callers that already writeError(w, ...) directly can
-// keep using their existing helper; this one is provided for the
-// cases where the optional-body helper is shared.
+// same shape. Code is the stable machine-readable error code.
 func WriteError(w http.ResponseWriter, status int, msg string, parseErr error) {
+	WriteErrorWithCode(w, status, msg, parseErr)
+}
+
+// WriteErrorWithCode is the lower-level variant that lets callers set
+// a custom code (e.g. ErrEmptyBody → "jsonbody.empty_required_body").
+func WriteErrorWithCode(w http.ResponseWriter, status int, msg string, parseErr error) {
+	code := "jsonbody.invalid_body"
+	switch {
+	case errors.Is(parseErr, ErrEmptyBody):
+		code = "jsonbody.empty_required_body"
+	case errors.Is(parseErr, ErrBodyTooLarge):
+		code = "jsonbody.body_too_large"
+	case parseErr != nil:
+		code = "jsonbody.invalid_body"
+	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
 	payload := map[string]any{
-		"error":   msg,
-		"code":    "jsonbody.invalid_optional_body",
+		"error": msg,
+		"code":  code,
 	}
-	if parseErr != nil {
+	if parseErr != nil && !errors.Is(parseErr, ErrEmptyBody) && !errors.Is(parseErr, ErrBodyTooLarge) {
 		payload["parse_error"] = parseErr.Error()
 	}
 	_ = json.NewEncoder(w).Encode(payload)
