@@ -7,6 +7,7 @@ import { useI18n } from 'vue-i18n'
 import MemoraStatusButton from '../components/MemoraStatusButton.vue'
 import LiveRequestStreamV2 from '../components/LiveRequestStreamV2.vue'
 import StatsDrawer from '../components/StatsDrawer.vue'
+import RequestLogDrawer from '../components/RequestLogDrawer.vue'
 import SessionStatsPanel from '../components/SessionStatsPanel.vue'
 import SessionDrilldownPanel from '../components/session/SessionDrilldownPanel.vue'
 import BoardPanel from '../components/board/BoardPanel.vue'
@@ -49,6 +50,7 @@ const dashboardTab = inject<{
 const dashboardActions = inject<{ refreshBoard: () => Promise<void> }>('dashboardActions')!
 
 const statsDrawerRef = ref<InstanceType<typeof StatsDrawer> | null>(null)
+const activeDrawerRequestId = ref<string | null>(null)
 const loading = boardState.loading
 const error = boardState.error
 const activeTab = dashboardTab.activeTab
@@ -61,6 +63,16 @@ const tenantLabel = computed(() => {
 })
 
 function openRequestDetail(id: string) {
+  // 2026-08-28: 泳道点击改为打开抽屉弹窗（与 request-logs 页一致），
+  // 抽屉 header 内提供「打开全页」按钮跳到独立页面。
+  activeDrawerRequestId.value = id
+}
+
+function closeDrawer() {
+  activeDrawerRequestId.value = null
+}
+
+function openDrawerRequestFullscreen(id: string) {
   openRequestDetailPage(id, undefined, router)
 }
 
@@ -195,6 +207,12 @@ async function onRefresh() {
       :models="drawerModels"
       :days="days"
       :loading="drawerLoading"
+    />
+
+    <RequestLogDrawer
+      :request-id="activeDrawerRequestId"
+      @close="closeDrawer"
+      @open-request="openDrawerRequestFullscreen"
     />
   </div>
 </template>
