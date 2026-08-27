@@ -27,6 +27,13 @@ type GovernorSpec struct {
 	// copies for diagnostic parity with queued_request.go.
 	RPMLimit int
 	TPMLimit int
+	// MaxQueueDepth and MaxQueueWaitMS mirror CredentialRef.MaxQueueDepth /
+	// MaxQueueWaitMS. The publisher's catch-up query carries them so that
+	// ApplyPolicy can hot-reload a live forwarder's queue depth (Stage F
+	// residual: a forwarder otherwise reads depth once at construction and
+	// keeps the stale value after a max_queue_depth UPDATE).
+	MaxQueueDepth int
+	MaxQueueWaitMS int
 	// LeaseTTL is the Stage B Redis lease duration. Stage A: declared but
 	// ignored by all backends. Zero is treated as "backend default".
 	LeaseTTL time.Duration

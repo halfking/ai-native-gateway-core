@@ -72,8 +72,9 @@ func newMockPolicyPublisher(t *testing.T) (*PolicyPublisher, pgxmock.PgxPoolIfac
 
 func policyPublisherRows(revision int64, limit int) *pgxmock.Rows {
 	return pgxmock.NewRows([]string{
-		"id", "provider_id", "concurrency_mode", "concurrency_limit", "rpm_limit", "tpm_limit", "revision",
-	}).AddRow(int64(101), int64(3), ModeConcurrency, limit, 0, 0, revision)
+		"id", "provider_id", "concurrency_mode", "concurrency_limit", "rpm_limit", "tpm_limit",
+		"max_queue_depth", "max_queue_wait_ms", "revision",
+	}).AddRow(int64(101), int64(3), ModeConcurrency, limit, 0, 0, 0, 0, revision)
 }
 
 func TestPolicyPublisherPublishCatchUpAppliesPolicyThroughPipeline(t *testing.T) {
