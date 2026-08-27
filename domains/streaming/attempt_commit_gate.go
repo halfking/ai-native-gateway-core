@@ -91,6 +91,10 @@ var (
 	// ErrAttemptDiscarded is returned by WriteFrame after Discard: the
 	// attempt is dead and a new attempt must use a new gate.
 	ErrAttemptDiscarded = errors.New("attempt_discarded")
+	// ErrAttemptCheckpointFailed is returned when the durable write-ahead
+	// checkpoint hook fails. The gate latches this error and refuses all
+	// subsequent writes to prevent sending uncheckpointed semantic bytes.
+	ErrAttemptCheckpointFailed = errors.New("attempt_checkpoint_failed")
 )
 
 // DefaultMaxMetadataBufferBytes bounds the attempt-local metadata buffer.
@@ -348,20 +352,9 @@ func (g *AttemptCommitGate) WriteFrame(frame string) error {
 	// persisted. A failed checkpoint fails the write (禁写网络) and the
 	// advanced local state keeps Discard refused — the attempt fail-closes
 	// instead of transparently retrying an unknown DB outcome.
-	advanced := g.advanceStateLocked(class)
-	if advanced && g.beforeSemanticCommit != nil &&
-		(g.mode == GateModeImmediate || g.committed || isSemanticClass(class)) {
-		checkpoint := g.beforeSemanticCommit
-		state := g.state
+	if err := g.checkpointStateAdvanceUnderWriteLock(class); err != nil {
 		g.mu.Unlock()
-		checkpointErr := checkpoint(state)
-		g.mu.Lock()
-		if checkpointErr != nil {
-			g.blockCheckpointLocked(checkpointErr)
-			blocked := g.checkpointErr
-			g.mu.Unlock()
-			return blocked
-		}
+		return err
 	}
 
 	if g.mode == GateModeImmediate || g.committed {
@@ -431,7 +424,7 @@ func (g *AttemptCommitGate) blockCheckpointLocked(err error) {
 		return
 	}
 	g.checkpointBlocked = true
-	g.checkpointErr = fmt.Errorf("attempt commit gate: write-ahead checkpoint %s: %w", g.state, err)
+	g.checkpointErr = fmt.Errorf("%w: %w (state=%s)", ErrAttemptCheckpointFailed, err, g.state)
 }
 
 func (g *AttemptCommitGate) checkpointBlockedErrorLocked() error {
@@ -441,14 +434,24 @@ func (g *AttemptCommitGate) checkpointBlockedErrorLocked() error {
 	return g.checkpointErr
 }
 
-func (g *AttemptCommitGate) checkpointStateAdvanceLocked(class FrameClass) error {
+// checkpointStateAdvanceUnderWriteLock advances state and invokes the
+// write-ahead checkpoint hook if needed, releasing g.mu during hook execution
+// while maintaining writeMu exclusion. Returns the checkpoint error (latched)
+// or nil. Caller must hold writeMu and g.mu on entry; g.mu will be held on
+// return (even on error).
+func (g *AttemptCommitGate) checkpointStateAdvanceUnderWriteLock(class FrameClass) error {
 	advanced := g.advanceStateLocked(class)
 	if !advanced || g.beforeSemanticCommit == nil ||
 		(g.mode != GateModeImmediate && !g.committed && !isSemanticClass(class)) {
 		return nil
 	}
-	if err := g.beforeSemanticCommit(g.state); err != nil {
-		g.blockCheckpointLocked(err)
+	hook := g.beforeSemanticCommit
+	state := g.state
+	g.mu.Unlock()
+	checkpointErr := hook(state)
+	g.mu.Lock()
+	if checkpointErr != nil {
+		g.blockCheckpointLocked(checkpointErr)
 		return g.checkpointErr
 	}
 	return nil
@@ -550,6 +553,8 @@ func (g *AttemptCommitGate) FlushHoldback() error {
 	if g == nil {
 		return nil
 	}
+	g.writeMu.Lock()
+	defer g.writeMu.Unlock()
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return g.flushHoldbackLocked()
@@ -562,7 +567,7 @@ func (g *AttemptCommitGate) flushHoldbackLocked() error {
 	if g.discarded || g.committed || g.holdbackWindow <= 0 || !g.holdbackOpened || g.bufferLen == 0 {
 		return nil
 	}
-	if err := g.checkpointStateAdvanceLocked(FrameClassContent); err != nil {
+	if err := g.checkpointStateAdvanceUnderWriteLock(FrameClassContent); err != nil {
 		return err
 	}
 	if err := g.commitLocked(); err != nil {
@@ -637,8 +642,12 @@ func (g *AttemptCommitGate) commitLocked() error {
 }
 
 // Commit flushes any buffered frames to the real connection and marks the
-// attempt committed. After commit, Discard is refused.
+// attempt committed. Before flushing, it executes the write-ahead checkpoint
+// for the current state if it hasn't been checkpointed yet. After commit,
+// Discard is refused.
 func (g *AttemptCommitGate) Commit() error {
+	g.writeMu.Lock()
+	defer g.writeMu.Unlock()
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if err := g.checkpointBlockedErrorLocked(); err != nil {
@@ -646,6 +655,20 @@ func (g *AttemptCommitGate) Commit() error {
 	}
 	if g.discarded {
 		return ErrAttemptAlreadyCommitted
+	}
+	// Checkpoint the current state before committing buffered frames to wire.
+	// If state is none/metadata and hook is configured, this ensures metadata
+	// is checkpointed before network write.
+	if g.beforeSemanticCommit != nil && g.state > CommitStateNone {
+		hook := g.beforeSemanticCommit
+		state := g.state
+		g.mu.Unlock()
+		checkpointErr := hook(state)
+		g.mu.Lock()
+		if checkpointErr != nil {
+			g.blockCheckpointLocked(checkpointErr)
+			return g.checkpointErr
+		}
 	}
 	if err := g.commitLocked(); err != nil {
 		return err
@@ -665,6 +688,8 @@ func (g *AttemptCommitGate) Commit() error {
 // discarded attempt refuses them with ErrAttemptDiscarded so a dead attempt
 // can never emit trailing bytes.
 func (g *AttemptCommitGate) FinishAttempt(partial string) error {
+	g.writeMu.Lock()
+	defer g.writeMu.Unlock()
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if err := g.checkpointBlockedErrorLocked(); err != nil {
@@ -687,7 +712,7 @@ func (g *AttemptCommitGate) FinishAttempt(partial string) error {
 	class := ClassifyClientFrame(g.protocol, partial)
 	terminal := isPartialTerminalFrame(g.protocol, partial)
 	if terminal {
-		if err := g.checkpointStateAdvanceLocked(class); err != nil {
+		if err := g.checkpointStateAdvanceUnderWriteLock(class); err != nil {
 			return err
 		}
 	}
@@ -695,7 +720,14 @@ func (g *AttemptCommitGate) FinishAttempt(partial string) error {
 		if _, err := g.writer.Write([]byte(partial)); err != nil {
 			return err
 		}
-		return g.writer.FlushError()
+		if err := g.writer.FlushError(); err != nil {
+			return err
+		}
+		if g.mode == GateModeImmediate {
+			g.committed = true
+		}
+		g.markFirstSemanticByteLocked(class)
+		return nil
 	}
 	if !terminal {
 		return g.appendBufferedLocked(partial)
@@ -744,6 +776,11 @@ func (g *AttemptCommitGate) Discard() error {
 	// attempt/gate can be reasoned about uniformly.
 	g.state = CommitStateNone
 	g.discarded = true
+	// Clear checkpoint latch for metadata-only failures: after Discard,
+	// the gate is dead and later writes should see ErrAttemptDiscarded,
+	// not the stale checkpoint error.
+	g.checkpointBlocked = false
+	g.checkpointErr = nil
 	g.mu.Unlock()
 	// 2026-08-19 observability: the discard path was previously silent, so
 	// post-mortem could not tell how many buffered bytes were thrown away on
