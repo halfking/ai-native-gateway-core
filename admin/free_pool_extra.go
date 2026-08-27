@@ -420,6 +420,23 @@ func (h *Handler) handleFreePoolSignupHub(w http.ResponseWriter, r *http.Request
 
 const mailTMBase = "https://api.mail.tm"
 
+const (
+	maxMailResponseBytes  = 1 << 20
+	maxProbeResponseBytes = 1 << 20
+	maxProbeErrorBytes    = 8 << 10
+)
+
+func readLimitedBody(body io.Reader, limit int64) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(body, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("response body exceeds %d bytes", limit)
+	}
+	return data, nil
+}
+
 func (h *Handler) handleFreePoolTempEmail(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -438,7 +455,11 @@ func (h *Handler) handleFreePoolTempEmail(w http.ResponseWriter, r *http.Request
 	//nolint:errcheck // best-effort close
 	defer domainsResp.Body.Close()
 
-	bodyBytes, _ := io.ReadAll(domainsResp.Body)
+	bodyBytes, err := readLimitedBody(domainsResp.Body, maxMailResponseBytes)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "invalid domains response: "+err.Error())
+		return
+	}
 	var domainsData struct {
 		Members []map[string]any `json:"hydra:member"`
 	}
@@ -476,8 +497,12 @@ func (h *Handler) handleFreePoolTempEmail(w http.ResponseWriter, r *http.Request
 	}
 	//nolint:errcheck // best-effort close
 	defer createResp.Body.Close()
-	if createResp.StatusCode != http.StatusOK && createResp.StatusCode != http.StatusCreated {
-		bodyBytes, _ := io.ReadAll(createResp.Body)
+		if createResp.StatusCode != http.StatusOK && createResp.StatusCode != http.StatusCreated {
+			bodyBytes, err := readLimitedBody(createResp.Body, maxProbeErrorBytes)
+			if err != nil {
+				bodyBytes = []byte(err.Error())
+			}
+
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":     false,
 			"error":  "account_create_failed",
@@ -502,8 +527,12 @@ func (h *Handler) handleFreePoolTempEmail(w http.ResponseWriter, r *http.Request
 	}
 	//nolint:errcheck // best-effort close
 	defer tokenResp.Body.Close()
-	if tokenResp.StatusCode != http.StatusOK && tokenResp.StatusCode != http.StatusCreated {
-		bodyBytes, _ := io.ReadAll(tokenResp.Body)
+		if tokenResp.StatusCode != http.StatusOK && tokenResp.StatusCode != http.StatusCreated {
+			bodyBytes, err := readLimitedBody(tokenResp.Body, maxProbeErrorBytes)
+			if err != nil {
+				bodyBytes = []byte(err.Error())
+			}
+
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":     false,
 			"error":  "token_failed",
@@ -713,6 +742,9 @@ func probeOpenAICompatibleBase(rawBase, apiKey string, timeout time.Duration) (m
 		if len(via) >= 5 {
 			return fmt.Errorf("too many redirects")
 		}
+		if !isAllowedPublicURL(req.URL.String()) {
+			return fmt.Errorf("redirect target blocked")
+		}
 		return nil
 	}}
 
@@ -737,7 +769,12 @@ func probeOpenAICompatibleBase(rawBase, apiKey string, timeout time.Duration) (m
 			modelCount := 0
 			models := []string{}
 			if status == 200 {
-				body, _ := io.ReadAll(resp.Body)
+				body, err := readLimitedBody(resp.Body, maxProbeResponseBytes)
+				if err != nil {
+					resp.Body.Close()
+					lastError = err.Error()
+					continue
+				}
 				var data map[string]any
 				if err := json.Unmarshal(body, &data); err == nil {
 					rows, _ := data["data"].([]any)
@@ -819,10 +856,13 @@ func probeOpenAICompatibleBase(rawBase, apiKey string, timeout time.Duration) (m
 					"probe_mode":  "chat_completions",
 				}, nil
 			}
-			bodyBytes, _ := io.ReadAll(resp.Body)
-			//nolint:errcheck // best-effort close
+			bodyBytes, err := readLimitedBody(resp.Body, maxProbeErrorBytes)
 			resp.Body.Close()
-			lastError = string(bodyBytes)[:min(200, len(bodyBytes))]
+			if err != nil {
+				lastError = err.Error()
+			} else {
+				lastError = string(bodyBytes)[:min(200, len(bodyBytes))]
+			}
 		} else {
 			lastError = err.Error()[:min(200, len(err.Error()))]
 		}
