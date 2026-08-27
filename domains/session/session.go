@@ -88,12 +88,32 @@ type RedisClient struct {
 	client *redis.Client
 }
 
+// NewRedisClient creates a Redis client with optimized connection pool settings.
+// P1-15 fix (2026-08-28): Configure PoolSize, MinIdleConns, ConnMaxIdleTime, and
+// PoolTimeout to prevent connection exhaustion under high load and reduce latency.
 func NewRedisClient(addr, password string, db int) *RedisClient {
 	return &RedisClient{
 		client: redis.NewClient(&redis.Options{
 			Addr:     addr,
 			Password: password,
 			DB:       db,
+
+			// Connection pool sizing (P1-15):
+			// PoolSize: max concurrent connections. Set to 100 to handle high throughput.
+			// Default is 10*runtime.GOMAXPROCS, often too low for gateway workloads.
+			PoolSize: 100,
+
+			// MinIdleConns: keep warm connections ready for incoming requests.
+			// Reduces latency by avoiding cold connection establishment on request path.
+			MinIdleConns: 10,
+
+			// ConnMaxIdleTime: close idle connections after 5 minutes to prevent
+			// holding stale connections that may be closed by server or firewall.
+			ConnMaxIdleTime: 5 * time.Minute,
+
+			// PoolTimeout: wait time for connection from pool before giving up.
+			// Set to 2s to fail fast under extreme load rather than queueing indefinitely.
+			PoolTimeout: 2 * time.Second,
 		}),
 	}
 }
