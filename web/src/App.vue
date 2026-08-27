@@ -145,9 +145,13 @@ async function logout() {
   }
   clearAll()
   markAuthHydrated() // 2026-07-09: 登出后保持 hydrated=true，下一次 mount 才会重新探测
-  // 退出后直接跳转到产品首页（ai-native-maintain），避免先到 / 再二次跳转造成的加载延迟
+  // Maintain 未部署时留在 Gateway 登录页，不能停留在已清空认证态的受保护页面。
   if (typeof window !== 'undefined') {
-    window.location.replace('/maintain/home')
+    if (await probeMaintainAvailable()) {
+      window.location.replace('/maintain/home')
+    } else {
+      await router.replace({ path: '/', query: { login: '1' } })
+    }
   }
 }
 
