@@ -2029,6 +2029,7 @@ func TestDispatchRecoveryHooks_FiresImmediateProbeForRecoveryFlips(t *testing.T)
 		mu.Unlock()
 		t.Fatalf("probeSubmitterImmediate call count = %d, want 2 (got %v)", len(immediateCalls), immediateCalls)
 	}
+	sort.Ints(immediateCalls)
 	wantImmediate := []int{1, 2}
 	for i, w := range wantImmediate {
 		if immediateCalls[i] != w {
