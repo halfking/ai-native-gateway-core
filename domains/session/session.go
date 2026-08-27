@@ -7,11 +7,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
+	redissafe "github.com/kaixuan/llm-gateway-go/internal/redis"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -303,9 +305,23 @@ func (sm *Manager) Create(ctx context.Context, apiKeyID int, tenantID string, de
 }
 
 func (sm *Manager) Get(ctx context.Context, sessionID string) (*Session, error) {
-	data, err := sm.redis.HGetAll(ctx, "session:"+sessionID)
-	if err != nil || len(data) == 0 {
+	client := sm.redis.Client()
+	if client == nil {
 		return nil, ErrSessionNotFound
+	}
+
+	data, err := redissafe.SafeHGetAll(ctx, client, "session:"+sessionID)
+	if err != nil {
+		if errors.Is(err, redissafe.ErrKeyNotFound) {
+			return nil, ErrSessionNotFound
+		}
+		if errors.Is(err, redissafe.ErrWrongType) {
+			slog.Warn("session key type mismatch in Get",
+				"session_id", sessionID,
+				"error", err)
+			return nil, ErrSessionNotFound
+		}
+		return nil, fmt.Errorf("redis error reading session: %w", err)
 	}
 	return sessionFromRedisHash(sessionID, data)
 }
@@ -392,9 +408,23 @@ func sessionFromRedisHash(sessionID string, data map[string]string) (*Session, e
 }
 
 func (sm *Manager) Delete(ctx context.Context, sessionID string) error {
-	data, err := sm.redis.HGetAll(ctx, "session:"+sessionID)
-	if err != nil || len(data) == 0 {
+	client := sm.redis.Client()
+	if client == nil {
 		return ErrSessionNotFound
+	}
+
+	data, err := redissafe.SafeHGetAll(ctx, client, "session:"+sessionID)
+	if err != nil {
+		if errors.Is(err, redissafe.ErrKeyNotFound) {
+			return ErrSessionNotFound
+		}
+		if errors.Is(err, redissafe.ErrWrongType) {
+			slog.Warn("session key type mismatch in Delete",
+				"session_id", sessionID,
+				"error", err)
+			return ErrSessionNotFound
+		}
+		return fmt.Errorf("redis error reading session: %w", err)
 	}
 
 	apiKeyID, _ := strconv.Atoi(data["api_key_id"])
