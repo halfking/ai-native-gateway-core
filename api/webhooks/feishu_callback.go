@@ -74,7 +74,13 @@ func (h *FeishuCallbackHandler) HandleCallback(w http.ResponseWriter, r *http.Re
 	// Parse callback payload
 	var callback FeishuCallback
 	if err := json.Unmarshal(body, &callback); err != nil {
-		slog.Error("failed to parse callback body", "error", err, "body", string(body))
+		// 2026-08-27 (audit fix): never log the full body — callbacks
+		// may carry operator identities and card content. Size + a
+		// short escaped preview is enough to triage.
+		slog.Error("failed to parse callback body",
+			"error", err,
+			"body_bytes", len(body),
+			"body_preview", previewBody(body))
 		h.writeError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
@@ -314,4 +320,17 @@ type FeishuSender struct {
 	OpenID    string `json:"open_id"`
 	UserID    string `json:"user_id"`
 	TenantKey string `json:"tenant_key"`
+}
+
+// previewBody returns a short, control-character-escaped preview of a
+// callback body safe for structured logs (2026-08-27 audit fix). Cap
+// is 256 bytes — enough to identify a malformed payload's shape
+// without dumping operator identities or card content.
+func previewBody(body []byte) string {
+	const cap = 256
+	b := body
+	if len(b) > cap {
+		b = b[:cap]
+	}
+	return strconv.Quote(string(b))
 }
