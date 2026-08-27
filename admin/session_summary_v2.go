@@ -190,8 +190,6 @@ func (api *SessionSummaryV2API) queryTurnsForSummary(
 
 // buildConversationText 将turns转换为适合LLM分析的文本格式。
 // 只纳入 user/assistant 内容，排除 system/developer 样板提示。
-// Restored 2026-08-27 after d2cbaf88b stripped the system-skipping form,
-// which leaked system prompts back into the summary corpus.
 func buildConversationText(turns []turnForSummary) string {
 	var buf bytes.Buffer
 

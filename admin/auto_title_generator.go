@@ -131,8 +131,6 @@ func (g *AutoTitleGenerator) MaybeGenerateTitle(sessionID, tenantID, taskID, req
 // queued in a short-lived goroutine so database latency never extends the
 // request path. Metadata is written even when title is empty; title projection
 // only runs when auto-title is enabled and the session has no title yet.
-// Restored 2026-08-27 after the d2cbaf88b integration merge stripped the
-// implementation while domains/streaming kept the arrival-hook contract.
 func (g *AutoTitleGenerator) MaybeGenerateProvisionalMetadata(tenantID, sessionID, taskID string, in sessionmeta.Input) {
 	if g == nil || !g.enabled || g.handler == nil {
 		return
@@ -275,6 +273,7 @@ func (g *AutoTitleGenerator) generateTitleAsync(sessionID, tenantID, taskID, req
 				//     first-turn request will retry.
 				waitErr := h.Wait(ctx)
 				hasTitle, terr := g.checkSessionHasTitle(ctx, tenantID, taskID, sessionID)
+
 				if terr != nil {
 					logger.Warn("auto_title: follower re-check failed; skipping round",
 						"wait_err", waitErr, "check_err", terr)
@@ -354,14 +353,12 @@ func (g *AutoTitleGenerator) generateTitleAsync(sessionID, tenantID, taskID, req
 	logger.Info("auto title saved successfully", "title", title, "length", len(title), "model", model)
 }
 
-// checkSessionHasTitle checks if a session already has a title.
-// Restored 2026-08-27 after d2cbaf88b stripped the titlestore-aware form:
-// a provisional arrival title must NOT count as an existing title, so the
-// refined LLM path still runs and replaces it (priority 10 > 5).
 func (g *AutoTitleGenerator) checkSessionHasTitle(ctx context.Context, tenantID, taskID, sessionID string) (bool, error) {
 	if g.handler.titleStore != nil {
 		st, err := g.handler.titleStore.Get(ctx, tenantID, sessionID)
 		if err == nil {
+			// A provisional arrival title is not a real title yet — the
+			// refined LLM path must still run and replace it (priority 10 > 5).
 			return st.Deleted || (strings.TrimSpace(st.Title) != "" && st.Source != titlestore.SourceProvisionalTitle), nil
 		}
 	}

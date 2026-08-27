@@ -66,4 +66,3 @@ BEGIN
     RETURN NEW;
 END;
 $$;
-

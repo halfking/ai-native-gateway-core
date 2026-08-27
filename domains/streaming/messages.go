@@ -605,7 +605,7 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		clientID.Fingerprint.ClientProfile, clientID.IdentityHash,
 		attemptProviderID, attemptCredentialID, canonicalID,
 		canonicalNameFromResolution(modelResolution), // 2026-07-27: 标准模型名 (migration 458)
-		bodyBytes, txResult, egressProtocol, isStream,
+		bodyBytes, "anthropic-messages", txResult, egressProtocol, isStream,
 		gwSessionID, gwTaskID,
 		logCtx,
 	)
@@ -627,6 +627,8 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	journeyInstanceID, journeySeq, journeyTerminal := requestJourneyExecState(r)
 	// v6 G-Ⅱ: X-Gw-Due-At 定时请求（到期前停在 dispatch 的到期堆）。
 	dispatchDueAt := parseDispatchDueAt(r)
+	// V6-W1.6 R8: class 一并写入 logCtx，供首行与完成 UPDATE 落库（608）。
+	applyRequestClassToLogCtx(logCtx, dispatchDueAt)
 	buildExecParams := func(streamWriter http.ResponseWriter) *executors.ExecParams {
 		return &executors.ExecParams{
 			W:                          streamWriter,
