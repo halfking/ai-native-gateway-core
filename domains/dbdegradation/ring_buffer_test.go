@@ -215,7 +215,7 @@ func TestRingBuffer_Replay_Success(t *testing.T) {
 	}
 }
 
-func TestRingBuffer_Replay_Failure_NotRequeued(t *testing.T) {
+func TestRingBuffer_Replay_Failure_Requeued(t *testing.T) {
 	rb := NewRingBuffer(5)
 	for _, k := range []string{"a", "b", "c"} {
 		_ = rb.WriteRequestLog(context.Background(), k, mkRec(k, `"v"`))
@@ -238,9 +238,38 @@ func TestRingBuffer_Replay_Failure_NotRequeued(t *testing.T) {
 	if failed != 1 {
 		t.Errorf("failed = %d, want 1", failed)
 	}
-	// Buffer cleared — failed entries are NOT requeued (no infinite loop)
-	if rb.Stats().Size != 0 {
-		t.Errorf("after failed replay Stats.Size = %d, want 0", rb.Stats().Size)
+	// Failed entries are requeued (WAL semantics): "b" is still buffered.
+	if rb.Stats().Size != 1 {
+		t.Errorf("after failed replay Stats.Size = %d, want 1 (requeued failure)", rb.Stats().Size)
+	}
+	// Requeue does not loop: replay is only operator-triggered, so the
+	// retried record appears exactly once.
+	first := rb.Dump()
+	if len(first) != 1 || first[0].RecordKey != "b" {
+		t.Errorf("Dump = %+v, want single requeued record b", first)
+	}
+}
+
+func TestRingBuffer_Replay_PartialKeepsSurvivors(t *testing.T) {
+	// Regression: partial replay previously read past the valid region and
+	// overwrote the un-replayed tail with garbage.
+	rb := NewRingBuffer(8)
+	keys := []string{"a", "b", "c", "d", "e"}
+	for _, k := range keys {
+		_ = rb.WriteRequestLog(context.Background(), k, mkRec(k, `"v"`))
+	}
+	replayFn := func(ctx context.Context, rec BackupRecord) error { return nil }
+	if _, _, err := rb.Replay(context.Background(), 2, replayFn); err != nil {
+		t.Fatalf("Replay: %v", err)
+	}
+	dumped := rb.Dump()
+	if len(dumped) != 3 {
+		t.Fatalf("Dump length = %d, want 3", len(dumped))
+	}
+	for i, want := range []string{"c", "d", "e"} {
+		if dumped[i].RecordKey != want {
+			t.Fatalf("Dump[%d].RecordKey = %q, want %q (partial replay corrupted tail)", i, dumped[i].RecordKey, want)
+		}
 	}
 }
 
