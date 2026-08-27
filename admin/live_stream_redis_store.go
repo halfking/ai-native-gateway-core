@@ -1048,7 +1048,8 @@ func buildLiveStreamLanes(dimension string, items []LiveRequest) ([]LiveStreamLa
 	if dimension == "credential" {
 		numeric := keys[:0]
 		for _, key := range keys {
-			if _, err := strconv.Atoi(key); err != nil {
+			credentialID, err := strconv.Atoi(key)
+			if err != nil || credentialID <= 0 {
 				continue
 			}
 			numeric = append(numeric, key)

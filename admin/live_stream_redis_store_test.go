@@ -1774,6 +1774,19 @@ func TestCreateIdleMarkerForDimension_CredentialCarriesNumericID(t *testing.T) {
 	}
 }
 
+func TestBuildLiveStreamLanes_CredentialRejectsNonPositiveIDs(t *testing.T) {
+	items := []LiveRequest{
+		{RequestID: "zero", Ts: "2026-08-27T00:00:01Z", ProviderCode: "P", CredentialID: 0, CredentialLabel: "zero", Status: "success"},
+		{RequestID: "negative", Ts: "2026-08-27T00:00:02Z", ProviderCode: "P", CredentialID: -1, CredentialLabel: "negative", Status: "success"},
+		{RequestID: "valid", Ts: "2026-08-27T00:00:03Z", ProviderCode: "P", CredentialID: 7, CredentialLabel: "valid", Status: "success"},
+	}
+
+	snapshot := BuildLiveStreamSnapshot(items)
+	lanes := snapshot.Dimensions["credential"]
+	if len(lanes) != 1 || lanes[0].ID != "7" {
+		t.Fatalf("credential lanes=%#v want only positive ID 7", lanes)
+	}
+}
 func TestLiveStreamCredentialKey_UnknownProviderKeepsShape(t *testing.T) {
 	// 2026-08-27: liveStreamCredentialKey now returns stable credential_id
 	got := liveStreamCredentialKey(LiveRequest{CredentialID: 7})
