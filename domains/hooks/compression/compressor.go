@@ -34,6 +34,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression/caveman"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression/lite"
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression/strategy"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression/toolfocused"
 	"github.com/kaixuan/llm-gateway-go/domains/tokenest"
 	"github.com/kaixuan/llm-gateway-go/settings"
@@ -274,6 +275,57 @@ func (c *Compressor) ShouldCompressPreRequest(body []byte, contextWindow int) bo
 		return false
 	}
 	return c.est.NeedsCompression(body, contextWindow)
+}
+
+// strategyRegistry returns a Registry 装载 lite/caveman/toolfocused 三个 adapter；
+// 每个 adapter 的 On 字段指向 Compressor 自身的 feature flag。
+//
+// Phase 1 只读路径（RunStrategies）；不替换 Compressor.Compress 原有 dispatcher 路径。
+// Compressor.RunStrategies → Runner.RunWithBody 走 strategy 包抽象；
+// 现有 main.go + executor 仍调 Compressor.Compress / CompressAfter4xx，行为不变。
+func (c *Compressor) strategyRegistry() *strategy.Registry {
+	reg := strategy.NewRegistry()
+	// 注册顺序 = dispatcher 执行顺序（lite → caveman → toolfocused）。
+	reg.MustRegister(&strategy.LiteAdapter{On: c != nil && c.LiteStageEnabled})
+	reg.MustRegister(&strategy.CavemanAdapter{On: c != nil && c.CavemanStageEnabled})
+	reg.MustRegister(&strategy.ToolFocusedAdapter{On: c != nil && c.ToolFocusedStageEnabled})
+	return reg
+}
+
+// RunStrategies 是 Phase 1 新增的策略模式入口。
+//
+// 参数：
+//   - ctx: 透传给各 Strategy.Apply
+//   - sel: 选择器；nil = 不压缩（返回原 body）
+//   - body: 待压缩 body
+//
+// 与 Compressor.Compress 关系：
+//   - RunStrategies 不写 telemetry / 不读 mode/estimator — 它只跑策略链。
+//   - 调用方（如 executor / 测试）选择走 Compress 还是 RunStrategies。
+//   - Phase 2 决策：是否把 Compress 内部也改为调 RunStrategies。
+func (c *Compressor) RunStrategies(ctx context.Context, sel strategy.Selector, body []byte) ([]byte, strategy.RunStats, error) {
+	if c == nil {
+		return body, strategy.RunStats{}, nil
+	}
+	runner := strategy.NewRunner(c.strategyRegistry())
+	return runner.RunWithBody(ctx, sel, body)
+}
+
+// ParsePolicySpec 是 strategy.ResolvePolicy 的薄封装，main.go 用。
+// 这里暴露在 Compressor 命名空间方便直接 compressor.ParsePolicySpec(...) 调用，
+// 避免 import strategy 包做 wiring。
+func (c *Compressor) ParsePolicySpec(spec string) (strategy.Policy, error) {
+	return strategy.ResolvePolicy(spec)
+}
+
+// NewManualSelectorFromSpec 是 Compressor 命名空间下的 manual selector factory。
+// 让 main.go 不必直接 import strategy 包即可构建选择器。
+func (c *Compressor) NewManualSelectorFromSpec(spec string) (strategy.Selector, error) {
+	pol, err := strategy.ResolvePolicy(spec)
+	if err != nil {
+		return nil, err
+	}
+	return strategy.NewManualSelector(pol), nil
 }
 
 // Compress runs the compression flow for the given body. It is the
