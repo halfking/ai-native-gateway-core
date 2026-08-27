@@ -7,7 +7,7 @@ set -euo pipefail
 SERVER="47.97.111.154"
 USER="root"
 CONFIG_SOURCE="deploy/nginx/active-20260821/llm-kxpms-cn-154.conf.20260821-spa-fallback-only"
-CONFIG_TARGET="/etc/nginx/conf.d/llm.kxpms.cn.conf"
+CONFIG_TARGET="/etc/nginx/conf.d/llm-kxpms-cn.conf"
 
 echo "=========================================="
 echo "部署 llm.kxpms.cn nginx 配置修复 (405)"
@@ -28,7 +28,7 @@ echo "✓ 源配置文件存在"
 # 2. 备份远程配置
 echo ""
 echo "步骤 1/5: 备份远程配置..."
-BACKUP_NAME="llm.kxpms.cn.conf.backup-$(date +%Y%m%d-%H%M%S)"
+BACKUP_NAME="llm-kxpms-cn.conf.backup-$(date +%Y%m%d-%H%M%S)"
 ssh ${USER}@${SERVER} "cp $CONFIG_TARGET /etc/nginx/conf.d/$BACKUP_NAME" || {
     echo "❌ 备份失败"
     exit 1
@@ -57,10 +57,10 @@ echo "✓ 配置语法正确"
 
 # 5. 重载 nginx
 echo ""
-echo "步骤 4/5: 重载 nginx..."
-ssh ${USER}@${SERVER} "systemctl reload nginx" || {
+echo "步骤 4/5: 重载 nginx (等待最多 120s)..."
+ssh ${USER}@${SERVER} "timeout 120 systemctl reload nginx" || {
     echo "❌ nginx 重载失败，正在回滚..."
-    ssh ${USER}@${SERVER} "cp /etc/nginx/conf.d/$BACKUP_NAME $CONFIG_TARGET && systemctl reload nginx"
+    ssh ${USER}@${SERVER} "cp /etc/nginx/conf.d/$BACKUP_NAME $CONFIG_TARGET && timeout 120 systemctl reload nginx"
     echo "已回滚到备份配置"
     exit 1
 }
@@ -96,7 +96,7 @@ echo ""
 echo "备份文件保存在: /etc/nginx/conf.d/$BACKUP_NAME"
 echo ""
 echo "如需回滚，请执行:"
-echo "  ssh ${USER}@${SERVER} 'cp /etc/nginx/conf.d/$BACKUP_NAME $CONFIG_TARGET && nginx -t && systemctl reload nginx'"
+echo "  ssh ${USER}@${SERVER} 'cp /etc/nginx/conf.d/$BACKUP_NAME $CONFIG_TARGET && nginx -t && timeout 120 systemctl reload nginx'"
 echo ""
 echo "建议验证:"
 echo "  1. 浏览器访问 https://llm.kxpms.cn 并尝试登录"
