@@ -105,11 +105,7 @@ async function loadRequest(id: string) {
     // 单次请求拿到 metadata + body（两个端点都无视 omit_body），
     // Promise.all 并行拉取，失败一方降级（catch → null），由另一方兜底。
     const [u, meta] = await Promise.all([
-      getUnifiedRequestDetail(id).catch((e: unknown) => {
-        // unified 端点是 admin-only；非 super admin 走 403/404，吞掉并 fallback 到 log。
-        if (e instanceof Error) return null
-        return null
-      }),
+      getUnifiedRequestDetail(id).catch(() => null),
       getRequestLogDetail(id).catch(() => null),
     ])
     unified.value = u
