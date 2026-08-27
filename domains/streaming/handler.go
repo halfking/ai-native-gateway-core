@@ -4340,12 +4340,9 @@ goalRetryLoopDone:
 		}
 		return
 	}
-	if logCtx != nil && len(logCtx.OutboundBody) == 0 && result != nil && len(result.RequestBody) > 0 {
-		logCtx.OutboundBody = result.RequestBody
-	}
+	applyActualOutboundBody(logCtx, result)
 
 	// ── 2026-07-17: trace.route_credential ──────────────────────────────────
-	// 在 executor.Execute 返回后立即记录"实际命中的凭据"。 这是 trace 视图里
 	// 最关键的一行: 让运维看到"gpt-5.6-luna 请求 → 选中了 provider_id=12,
 	// credential_id=2451 (z-ai/glm-5.2, tier=premium)", 失败时凭据也记。
 	if result != nil && result.Candidate.ProviderID > 0 {
@@ -8157,6 +8154,13 @@ func streamChunkErrorsFromLogCtx(c *RequestLogContext) int {
 // streamChunkErrorsFromLogCtx, mirroring StreamChunksSentFromLogCtxForTest.
 func StreamChunkErrorsFromLogCtxForTest(c *RequestLogContext) int {
 	return streamChunkErrorsFromLogCtx(c)
+}
+
+func applyActualOutboundBody(logCtx *RequestLogContext, result *executors.ExecuteResult) {
+	if logCtx == nil || result == nil || len(result.RequestBody) == 0 {
+		return
+	}
+	logCtx.OutboundBody = append(logCtx.OutboundBody[:0], result.RequestBody...)
 }
 
 // requestBytesFromLogCtx returns the request body size from logCtx.
