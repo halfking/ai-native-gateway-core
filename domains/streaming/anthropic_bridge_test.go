@@ -203,7 +203,8 @@ func TestStreamAnthropicSSEToOpenAI_WrappedEOFWithoutMessageStopIsInterrupted(t 
 	}
 	rec := httptest.NewRecorder()
 
-	out := StreamAnthropicSSEToOpenAI(rec, resp, "claude-test", "claude-test", "req-wrapped-eof", nil, nil)
+	// P1-2 fix (2026-08-28): Add ctx parameter.
+	out := StreamAnthropicSSEToOpenAI(context.Background(), rec, resp, "claude-test", "claude-test", "req-wrapped-eof", nil, nil)
 
 	assert.True(t, out.Interrupted)
 	assert.Equal(t, "eof_without_done", out.Reason)
@@ -225,8 +226,9 @@ func TestStreamOpenAIToAnthropicSSE_FirstByteTimeoutClosesBlockingBody(t *testin
 	w := newBlockTimeoutWriteResponseWriter()
 	done := make(chan StreamOutcome, 1)
 	go func() {
+		// P1-2 fix (2026-08-28): Add ctx parameter.
 		done <- StreamOpenAIToAnthropicSSE(
-			w, resp, "claude-test", "upstream-test", "req-blocking-body", nil, nil,
+			context.Background(), w, resp, "claude-test", "upstream-test", "req-blocking-body", nil, nil,
 		)
 	}()
 
@@ -260,8 +262,9 @@ func TestStreamAnthropicPassthrough_ClientDisconnectWinsOverLaterUpstreamError(t
 		Request: httptest.NewRequest(http.MethodPost, "/v1/messages", nil),
 	}
 
+	// P1-2 fix (2026-08-28): Add ctx parameter.
 	out := StreamAnthropicPassthrough(
-		newDisconnectingStreamWriter(), resp,
+		context.Background(), newDisconnectingStreamWriter(), resp,
 		"claude-test", "claude-test", "req-client-close", nil, NewPendingCapturer(4096),
 	)
 
@@ -281,7 +284,7 @@ func TestStreamAnthropicPassthrough_OtherSideClosedIsNetworkError(t *testing.T) 
 	}
 	rec := httptest.NewRecorder()
 
-	out := StreamAnthropicPassthrough(rec, resp, "claude-test", "claude-test", "req-passthrough-close", nil, nil)
+	out := StreamAnthropicPassthrough(context.Background(), rec, resp, "claude-test", "claude-test", "req-passthrough-close", nil, nil)
 
 	assert.True(t, out.Interrupted)
 	assert.Equal(t, "network_error", out.Reason)
@@ -323,7 +326,7 @@ func TestStreamAnthropicPassthrough_BytesForPassThrough(t *testing.T) {
 
 	rec := newBridgeWriter()
 	pc := newBridgePendingCapturer(1024)
-	out := StreamAnthropicPassthrough(rec, resp, "claude-3-5-sonnet", "claude-3-5-sonnet", "req-1", nil, pc)
+	out := StreamAnthropicPassthrough(context.Background(), rec, resp, "claude-3-5-sonnet", "claude-3-5-sonnet", "req-1", nil, pc)
 	assert.Equal(t, body, rec.buf.String())
 	assert.False(t, out.Interrupted)
 }
@@ -332,7 +335,7 @@ func TestStreamAnthropicPassthrough_KeepaliveBeforeFirstSemanticFrameDoesNotComm
 	body := ": upstream ping\n\ndata: {\"type\":\"content_block_delta\"}\n\n"
 	resp := &http.Response{Body: io.NopCloser(strings.NewReader(body))}
 	writer := newBridgeWriter()
-	out := StreamAnthropicPassthrough(writer, resp, "claude", "claude", "req-boundary", nil, nil)
+	out := StreamAnthropicPassthrough(context.Background(), writer, resp, "claude", "claude", "req-boundary", nil, nil)
 	if out.Interrupted {
 		t.Fatalf("outcome = %+v", out)
 	}
@@ -344,7 +347,7 @@ func TestStreamAnthropicPassthrough_KeepaliveBeforeFirstSemanticFrameDoesNotComm
 func TestStreamAnthropicPassthrough_FlushErrorAfterSemanticFrameIsClientFailure(t *testing.T) {
 	resp := &http.Response{Body: io.NopCloser(strings.NewReader("data: {\"type\":\"content_block_delta\"}\n\n"))}
 	writer := &initialFlushErrorWriter{header: make(http.Header), flushErr: errors.New("client gone")}
-	out := StreamAnthropicPassthrough(writer, resp, "claude", "claude", "req-flush", nil, nil)
+	out := StreamAnthropicPassthrough(context.Background(), writer, resp, "claude", "claude", "req-flush", nil, nil)
 	if !out.Interrupted || out.Reason != "client_write_failed" || out.Kind != errorsx.KindCanceled {
 		t.Fatalf("outcome = %+v, want client_write_failed cancellation", out)
 	}
@@ -355,7 +358,7 @@ func TestStreamAnthropicPassthrough_ForwardsUnterminatedFinalFrame(t *testing.T)
 	resp := &http.Response{Body: io.NopCloser(strings.NewReader(body))}
 	rec := newBridgeWriter()
 
-	out := StreamAnthropicPassthrough(rec, resp, "claude-3-5-sonnet", "claude-3-5-sonnet", "req-eof", nil, nil)
+	out := StreamAnthropicPassthrough(context.Background(), rec, resp, "claude-3-5-sonnet", "claude-3-5-sonnet", "req-eof", nil, nil)
 
 	assert.False(t, out.Interrupted)
 	assert.Equal(t, body, rec.buf.String())
@@ -370,7 +373,7 @@ func TestStreamOpenAIToAnthropicSSE_SplitsDoneJoinedToJSON(t *testing.T) {
 	}
 	rec := httptest.NewRecorder()
 
-	out := StreamOpenAIToAnthropicSSE(rec, resp, "gpt-5.6-sol", "gpt-5.6-sol", "req-combined-done", nil, nil)
+	out := StreamOpenAIToAnthropicSSE(context.Background(), rec, resp, "gpt-5.6-sol", "gpt-5.6-sol", "req-combined-done", nil, nil)
 
 	require.False(t, out.Interrupted)
 	assert.Contains(t, rec.Body.String(), `"text":"planning"`)
@@ -387,7 +390,7 @@ func TestStreamOpenAIToAnthropicSSE_OtherSideClosedIsNetworkError(t *testing.T) 
 	}
 	rec := httptest.NewRecorder()
 
-	out := StreamOpenAIToAnthropicSSE(rec, resp, "glm-5.2", "glm-5.2", "req-network-close", nil, nil)
+	out := StreamOpenAIToAnthropicSSE(context.Background(), rec, resp, "glm-5.2", "glm-5.2", "req-network-close", nil, nil)
 
 	assert.True(t, out.Interrupted)
 	assert.Equal(t, "network_error", out.Reason)

@@ -76,7 +76,8 @@ func TestAnthropicExecutor_StreamResponse_Passthrough(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	ae := &AnthropicExecutor{}
-	outcome := ae.StreamResponse(rec, resp)
+	// P1-2 fix (2026-08-28): Add ctx parameter.
+	outcome := ae.StreamResponse(context.Background(), rec, resp)
 	if outcome.Interrupted {
 		t.Errorf("stream should not be interrupted: %s", outcome.Reason)
 	}
@@ -825,7 +826,8 @@ func TestDefaultAnthropicPassthrough_ClosesBody(t *testing.T) {
 	body := &closeTrackingBody{Reader: strings.NewReader("data: hello\n\n")}
 	rec := httptest.NewRecorder()
 
-	outcome := defaultAnthropicPassthrough(rec, &http.Response{Body: body, StatusCode: 200})
+	// P1-2 fix (2026-08-28): Add ctx parameter.
+	outcome := defaultAnthropicPassthrough(context.Background(), rec, &http.Response{Body: body, StatusCode: 200})
 
 	if outcome.Interrupted || outcome.Reason != "" {
 		t.Fatalf("outcome = %+v, want zero value", outcome)

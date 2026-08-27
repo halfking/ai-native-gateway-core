@@ -239,7 +239,8 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 	)
 
 	for {
-		gate := NewAttemptCommitGate(c.Protocol, sw, GateOptions{Mode: GateModeBuffered, RequestID: params.RequestID, HoldbackWindow: hbWindow, HoldbackMaxChunks: hbChunks, BeforeSemanticCommit: func(state CommitState) error {
+		// P1-2 fix (2026-08-28): Pass ctx to gate for checkpoint context propagation.
+		gate := NewAttemptCommitGate(ctx, c.Protocol, sw, GateOptions{Mode: GateModeBuffered, RequestID: params.RequestID, HoldbackWindow: hbWindow, HoldbackMaxChunks: hbChunks, BeforeSemanticCommit: func(ctx context.Context, state CommitState) error {
 			if c.BeforeSemanticCommit == nil {
 				return nil
 			}

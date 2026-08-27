@@ -79,7 +79,8 @@ type ChatExecutor struct {
 	// Hooks (set via SetXxx) for downstream consumers.
 	Normalize          func([]byte, bool) []byte
 	XMLCoerceNonStream func([]byte, bool) []byte
-	StreamChat         func(http.ResponseWriter, *http.Response, string, string, audit.StreamCapture) StreamOutcome
+	// P1-2 fix (2026-08-28): Updated to StreamHandler signature with ctx parameter.
+	StreamChat         StreamHandler
 	// StripMinimaxFields strips minimax-private top-level fields
 	// (nvext, audio_content, name, etc.) from the chat response body
 	// before it is returned to the client. Wired from main.go.
@@ -203,9 +204,10 @@ func intPtrFromInt(v int) *int {
 	return &out
 }
 
-func (c *ChatExecutor) StreamResponse(w http.ResponseWriter, resp *http.Response) StreamOutcome {
+// P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
+func (c *ChatExecutor) StreamResponse(ctx context.Context, w http.ResponseWriter, resp *http.Response) StreamOutcome {
 	if c.StreamChat != nil {
-		return c.StreamChat(w, resp, "", "", audit.StreamCapture{})
+		return c.StreamChat(ctx, w, resp, "", "", "", c.Normalize, &audit.StreamCapture{}, false)
 	}
 	return legacyStreamChat(w, resp)
 }
@@ -1063,8 +1065,9 @@ func (e *Executor) executeOpenAI(
 				case e.OpenAIToAnthropicStream != nil &&
 					params.ClientProtocol == "anthropic-messages" &&
 					cand.Protocol != "anthropic-messages":
+					// P1-2 fix (2026-08-28): Pass ctx for context propagation to gate.
 					streamOutcome = e.OpenAIToAnthropicStream(
-						streamSink, resp,
+						params.R.Context(), streamSink, resp,
 						params.ClientModel, outboundModel,
 						diagnosticRequestID(params),
 						params.Capture, nil,
@@ -1072,8 +1075,9 @@ func (e *Executor) executeOpenAI(
 				case e.OpenAIToResponsesStream != nil &&
 					params.ClientProtocol == "openai-responses" &&
 					cand.Protocol != "anthropic-messages":
+					// P1-2 fix (2026-08-28): Pass ctx for context propagation to gate.
 					streamOutcome = e.OpenAIToResponsesStream(
-						streamSink, resp,
+						params.R.Context(), streamSink, resp,
 						params.ClientModel, outboundModel,
 						diagnosticRequestID(params),
 						params.Capture, nil,
@@ -1081,7 +1085,8 @@ func (e *Executor) executeOpenAI(
 				case params.StreamWrapper != nil:
 					streamOutcome = params.StreamWrapper(streamSink, resp, e.Normalize, params.Capture)
 				case e.StreamChat != nil:
-					streamOutcome = e.StreamChat(streamSink, resp, params.ClientModel, outboundModel, cand.CatalogCode, e.Normalize, params.Capture, params.ToolsRequested)
+					// P1-2 fix (2026-08-28): Pass ctx for context propagation to gate.
+					streamOutcome = e.StreamChat(params.R.Context(), streamSink, resp, params.ClientModel, outboundModel, cand.CatalogCode, e.Normalize, params.Capture, params.ToolsRequested)
 				}
 				if params.OnStreamCompleted != nil {
 					params.OnStreamCompleted(streamOutcome)

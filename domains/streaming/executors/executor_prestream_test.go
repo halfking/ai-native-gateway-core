@@ -361,7 +361,8 @@ func TestExecuteOpenAI_StreamSuccessRecordedOnlyAfterBodyCompletes(t *testing.T)
 			exec.PostExecutionHook = spy
 			exec.StreamRetryThreshold = 50
 			wireDispatchPipelineForTest(t, exec)
-			exec.StreamChat = func(http.ResponseWriter, *http.Response, string, string, string, NormalizerFunc, *audit.StreamCapture, bool) StreamOutcome {
+			// P1-2 fix (2026-08-28): Added ctx parameter to match new signature.
+			exec.StreamChat = func(context.Context, http.ResponseWriter, *http.Response, string, string, string, NormalizerFunc, *audit.StreamCapture, bool) StreamOutcome {
 				time.Sleep(tc.streamWait)
 				return tc.outcome
 			}
@@ -523,7 +524,8 @@ func TestExecuteOpenAI_GLM52NetworkFailureFailsOverWithoutClientError(t *testing
 	)
 	exec.StreamRetryThreshold = 50
 	wireDispatchPipelineForTest(t, exec)
-	exec.StreamChat = func(http.ResponseWriter, *http.Response, string, string, string, NormalizerFunc, *audit.StreamCapture, bool) StreamOutcome {
+	// P1-2 fix (2026-08-28): Added ctx parameter to match new signature.
+	exec.StreamChat = func(context.Context, http.ResponseWriter, *http.Response, string, string, string, NormalizerFunc, *audit.StreamCapture, bool) StreamOutcome {
 		if streamCalls.Add(1) <= 3 {
 			return StreamOutcome{Interrupted: true, Reason: "network_error", Kind: errorsx.KindNetwork, Resumable: true}
 		}

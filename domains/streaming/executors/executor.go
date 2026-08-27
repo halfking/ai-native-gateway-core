@@ -332,7 +332,8 @@ type StreamOutcome = struct {
 	Kind errorsx.ErrorKind
 }
 
-type StreamHandler func(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, catalogCode string, norm NormalizerFunc, capture *audit.StreamCapture, toolsRequested bool) StreamOutcome
+// P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
+type StreamHandler func(ctx context.Context, w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, catalogCode string, norm NormalizerFunc, capture *audit.StreamCapture, toolsRequested bool) StreamOutcome
 
 // ProbeSyncFunc is the contract bg.NodeProbeWorker.ProbeSync satisfies.
 // Defined here (rather than imported from bg) so the executors package
@@ -370,7 +371,8 @@ type StreamWrapperFunc func(w http.ResponseWriter, resp *http.Response, norm Nor
 // pc is an optional pending-store capturer (Track C C5, 2026-06-21)
 // that records the SSE body so it can be replayed on client reconnect.
 // Wired from main.go so the routing package does not import relay.
-type AnthropicPassthroughFunc func(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture, pc any) StreamOutcome
+// P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
+type AnthropicPassthroughFunc func(ctx context.Context, w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture, pc any) StreamOutcome
 
 // ChatToAnthropicFunc converts an OpenAI chat completions body to
 // Anthropic Messages format. Wired from main.go so the routing
@@ -386,20 +388,23 @@ type AnthropicToOpenAIFunc func(body []byte) ([]byte, error)
 // AnthropicToOpenAIFunc: reads Anthropic-format SSE upstream and
 // writes OpenAI-format SSE chunks to w (Q3 path: openai client →
 // anthropic upstream). pc is the optional pending-store capturer.
-type AnthropicToOpenAISSEFunc func(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture, pc any) StreamOutcome
+// P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
+type AnthropicToOpenAISSEFunc func(ctx context.Context, w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture, pc any) StreamOutcome
 
 // AnthropicToResponsesSSEFunc is the streaming counterpart that reads
 // Anthropic-format SSE upstream and writes OpenAI Responses API SSE to w.
 // Used by executeAnthropic when ClientProtocol == "openai-responses"
 // (Phase E, 2026-07-01). Same signature as AnthropicToOpenAISSEFunc
 // so the executor wiring is symmetric.
-type AnthropicToResponsesSSEFunc func(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture, pc any) StreamOutcome
+// P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
+type AnthropicToResponsesSSEFunc func(ctx context.Context, w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture, pc any) StreamOutcome
 
 // OpenAIToResponsesSSEFunc is the streaming counterpart that reads
 // OpenAI chat.completion.chunk SSE upstream and writes OpenAI Responses
 // API SSE to w. Used by executeOpenAI when ClientProtocol ==
 // "openai-responses" (Phase E, 2026-07-01).
-type OpenAIToResponsesSSEFunc func(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture, pc any) StreamOutcome
+// P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
+type OpenAIToResponsesSSEFunc func(ctx context.Context, w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture, pc any) StreamOutcome
 
 // AnthropicToChatResponseFunc is the non-stream counterpart that
 // converts an Anthropic Messages JSON body into an OpenAI
@@ -424,7 +429,8 @@ type ChatResponseToAnthropicFunc func(body []byte, clientModel, requestID string
 // OpenAI-shaped (cand.Protocol != "anthropic-messages").
 //
 // Wired from main.go (streaming.StreamOpenAIToAnthropicSSE).
-type OpenAIToAnthropicSSEFunc func(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture, pc any) StreamOutcome
+// P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
+type OpenAIToAnthropicSSEFunc func(ctx context.Context, w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture, pc any) StreamOutcome
 
 // SanitizeAnthropicToolsFunc strips OpenAI/custom tool type wrappers from
 // an Anthropic Messages request body before forwarding to upstream.

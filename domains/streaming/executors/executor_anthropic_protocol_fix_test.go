@@ -131,21 +131,23 @@ func TestAnthropicExecutor_StreamResponse_RoutesToResponsesTranslator(t *testing
 
 	ae := &AnthropicExecutor{
 		ClientProtocol: "openai-responses",
-		OpenAITranslator: func(w http.ResponseWriter, resp *http.Response, _, _, _ string, _ *audit.StreamCapture) StreamOutcome {
+		// P1-2 fix (2026-08-28): Add ctx parameter to match interface.
+		OpenAITranslator: func(ctx context.Context, w http.ResponseWriter, resp *http.Response, _, _, _ string, _ *audit.StreamCapture) StreamOutcome {
 			openAICalls++
-			return StreamOutcome{}
+			return StreamOutcome
 		},
-		ResponsesTranslator: func(w http.ResponseWriter, resp *http.Response, _, _, _ string, _ *audit.StreamCapture) StreamOutcome {
+		ResponsesTranslator: func(ctx context.Context, w http.ResponseWriter, resp *http.Response, _, _, _ string, _ *audit.StreamCapture) StreamOutcome {
 			responsesCalls++
 			return StreamOutcome{}
 		},
-		PassthroughStream: func(w http.ResponseWriter, resp *http.Response) StreamOutcome {
+		PassthroughStream: func(ctx context.Context, w http.ResponseWriter, resp *http.Response) StreamOutcome {
 			passthroughCalls++
 			return StreamOutcome{}
 		},
 	}
 
-	out := ae.StreamResponse(httptest.NewRecorder(), &http.Response{})
+	// P1-2 fix (2026-08-28): Add ctx parameter.
+	out := ae.StreamResponse(context.Background(), httptest.NewRecorder(), &http.Response{})
 	_ = out
 
 	if responsesCalls != 1 {
@@ -167,18 +169,20 @@ func TestAnthropicExecutor_StreamResponse_RoutesToOpenAITranslator(t *testing.T)
 	var openAICalls, responsesCalls int
 
 	ae := &AnthropicExecutor{
-		ClientProtocol: "openai-completions",
-		OpenAITranslator: func(w http.ResponseWriter, resp *http.Response, _, _, _ string, _ *audit.StreamCapture) StreamOutcome {
+		ClientProtocol: "openai-responses",
+		// P1-2 fix (2026-08-28): Add ctx parameter to match interface.
+		OpenAITranslator: func(ctx context.Context, w http.ResponseWriter, resp *http.Response, _, _, _ string, _ *audit.StreamCapture) StreamOutcome {
 			openAICalls++
 			return StreamOutcome{}
 		},
-		ResponsesTranslator: func(w http.ResponseWriter, resp *http.Response, _, _, _ string, _ *audit.StreamCapture) StreamOutcome {
+		ResponsesTranslator: func(ctx context.Context, w http.ResponseWriter, resp *http.Response, _, _, _ string, _ *audit.StreamCapture) StreamOutcome {
 			responsesCalls++
 			return StreamOutcome{}
 		},
 	}
 
-	_ = ae.StreamResponse(httptest.NewRecorder(), &http.Response{})
+	// P1-2 fix (2026-08-28): Add ctx parameter.
+	_ = ae.StreamResponse(context.Background(), httptest.NewRecorder(), &http.Response{})
 
 	if openAICalls != 1 {
 		t.Errorf("OpenAITranslator should be called for openai-completions client, got %d", openAICalls)
@@ -198,13 +202,15 @@ func TestAnthropicExecutor_StreamResponse_FallsBackWhenResponsesTranslatorMissin
 	ae := &AnthropicExecutor{
 		ClientProtocol: "openai-responses",
 		// ResponsesTranslator intentionally nil
-		PassthroughStream: func(w http.ResponseWriter, resp *http.Response) StreamOutcome {
+		// P1-2 fix (2026-08-28): Add ctx parameter to match interface.
+		PassthroughStream: func(ctx context.Context, w http.ResponseWriter, resp *http.Response) StreamOutcome {
 			passthroughCalls++
 			return StreamOutcome{}
 		},
 	}
 
-	out := ae.StreamResponse(httptest.NewRecorder(), &http.Response{})
+	// P1-2 fix (2026-08-28): Add ctx parameter.
+	out := ae.StreamResponse(context.Background(), httptest.NewRecorder(), &http.Response{})
 	if passthroughCalls != 1 {
 		t.Errorf("expected PassthroughStream fallback when ResponsesTranslator is nil, got %d", passthroughCalls)
 	}
@@ -223,21 +229,23 @@ func TestAnthropicExecutor_StreamResponse_RoutesQ4Passthrough(t *testing.T) {
 
 	ae := &AnthropicExecutor{
 		ClientProtocol: "anthropic-messages",
-		OpenAITranslator: func(w http.ResponseWriter, resp *http.Response, _, _, _ string, _ *audit.StreamCapture) StreamOutcome {
+		// P1-2 fix (2026-08-28): Add ctx parameter to match interface.
+		OpenAITranslator: func(ctx context.Context, w http.ResponseWriter, resp *http.Response, _, _, _ string, _ *audit.StreamCapture) StreamOutcome {
 			openAICalls++
 			return StreamOutcome{}
 		},
-		ResponsesTranslator: func(w http.ResponseWriter, resp *http.Response, _, _, _ string, _ *audit.StreamCapture) StreamOutcome {
+		ResponsesTranslator: func(ctx context.Context, w http.ResponseWriter, resp *http.Response, _, _, _ string, _ *audit.StreamCapture) StreamOutcome {
 			responsesCalls++
 			return StreamOutcome{}
 		},
-		PassthroughStream: func(w http.ResponseWriter, resp *http.Response) StreamOutcome {
+		PassthroughStream: func(ctx context.Context, w http.ResponseWriter, resp *http.Response) StreamOutcome {
 			passthroughCalls++
 			return StreamOutcome{}
 		},
 	}
 
-	_ = ae.StreamResponse(httptest.NewRecorder(), &http.Response{})
+	// P1-2 fix (2026-08-28): Add ctx parameter.
+	_ = ae.StreamResponse(context.Background(), httptest.NewRecorder(), &http.Response{})
 
 	if passthroughCalls != 1 {
 		t.Errorf("PassthroughStream should be called for anthropic-messages client, got %d", passthroughCalls)

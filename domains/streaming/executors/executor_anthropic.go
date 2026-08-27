@@ -53,17 +53,20 @@ type AnthropicExecutor struct {
 	// StreamAnthropicPassthrough. Required for Q4 streaming — the
 	// routing package cannot import relay (relay imports routing),
 	// so the function is injected as a hook.
-	PassthroughStream func(w http.ResponseWriter, resp *http.Response) StreamOutcome
+	// P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
+	PassthroughStream func(ctx context.Context, w http.ResponseWriter, resp *http.Response) StreamOutcome
 	// OpenAITranslator converts Anthropic SSE upstream into OpenAI SSE
 	// chunks for the Q3 path (openai client -> anthropic upstream).
 	// When nil, the Q3 stream path falls back to PassthroughStream
 	// (preserving the pre-fix behavior; the OpenAI client will fail to
 	// parse the result, but a misconfig won't take the service down).
-	OpenAITranslator func(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture) StreamOutcome
+	// P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
+	OpenAITranslator func(ctx context.Context, w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture) StreamOutcome
 	// ResponsesTranslator (Phase E, 2026-07-01) converts Anthropic SSE
 	// upstream into OpenAI Responses API SSE events. Wired only when
 	// ClientProtocol == "openai-responses".
-	ResponsesTranslator func(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture) StreamOutcome
+	// P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
+	ResponsesTranslator func(ctx context.Context, w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture) StreamOutcome
 	// ChatResponseConverter converts an Anthropic Messages JSON body
 	// into an OpenAI chat.completion JSON body for the Q3 non-stream
 	// path. When nil, the Q3 non-stream path falls back to passthrough
@@ -324,7 +327,8 @@ func splitEmbeddedThinkTags(body []byte) []byte {
 // relay and routing packages can share one implementation without forming an
 // import cycle (relay already imports routing).
 
-func (a *AnthropicExecutor) StreamResponse(w http.ResponseWriter, resp *http.Response) StreamOutcome {
+// P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
+func (a *AnthropicExecutor) StreamResponse(ctx context.Context, w http.ResponseWriter, resp *http.Response) StreamOutcome {
 	// Q3 mode (openai client -> anthropic upstream): translate the
 	// upstream Anthropic SSE stream into OpenAI SSE chunks so the
 	// OpenAI parser receives data: {...} chunks instead of the raw
@@ -341,17 +345,17 @@ func (a *AnthropicExecutor) StreamResponse(w http.ResponseWriter, resp *http.Res
 	//   3. PassthroughStream (defensive fallback)
 	if a.ClientProtocol == "openai-responses" {
 		if a.ResponsesTranslator != nil {
-			return a.ResponsesTranslator(w, resp, "", "", "", nil)
+			return a.ResponsesTranslator(ctx, w, resp, "", "", "", nil)
 		}
 	} else if a.ClientProtocol != "anthropic-messages" {
 		if a.OpenAITranslator != nil {
-			return a.OpenAITranslator(w, resp, "", "", "", nil)
+			return a.OpenAITranslator(ctx, w, resp, "", "", "", nil)
 		}
 	}
 	if a.PassthroughStream != nil {
-		return a.PassthroughStream(w, resp)
+		return a.PassthroughStream(ctx, w, resp)
 	}
-	return defaultAnthropicPassthrough(w, resp)
+	return defaultAnthropicPassthrough(ctx, w, resp)
 }
 
 func (a *AnthropicExecutor) ExtractUsage(resp *http.Response, body []byte) (inputTokens, outputTokens *int) {
@@ -386,7 +390,8 @@ func extractAnthropicUsageFromBody(body []byte) (*int, *int) {
 // implementation (with side-channel audit capture) lives in
 // relay/anthropic_passthrough_stream.go and is injected via the
 // PassthroughStream hook on AnthropicExecutor.
-func defaultAnthropicPassthrough(w http.ResponseWriter, resp *http.Response) StreamOutcome {
+// P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
+func defaultAnthropicPassthrough(ctx context.Context, w http.ResponseWriter, resp *http.Response) StreamOutcome {
 	// Sole consumer of this body (only reached when the PassthroughStream hook
 	// is unwired), so closing it here is safe and required for connection reuse.
 	//nolint:errcheck // best-effort close
@@ -681,6 +686,8 @@ func (e *Executor) executeAnthropic(
 	if e.AnthropicPassthroughStream != nil {
 		clientModel := params.ClientModel
 		requestID := diagnosticRequestID(params)
+		// P1-2 fix (2026-08-28): capture ctx for context propagation to gate.
+		capturedCtx := params.R.Context()
 		// Track C C5 (2026-06-21): the capturer is built by the main.go
 		// wrapper that owns the AnthropicPassthroughStream closure (it
 		// has access to pendingStore + the upstream resp to check the
@@ -689,15 +696,18 @@ func (e *Executor) executeAnthropic(
 		// id in its headers, so the main.go wrapper can re-derive pc
 		// from resp.Request.Header on each call. To avoid double-build
 		// we currently pass nil here; the real wiring is in main.go.
-		ae.PassthroughStream = func(w http.ResponseWriter, resp *http.Response) StreamOutcome {
-			return e.AnthropicPassthroughStream(w, resp, clientModel, outboundModel, requestID, params.Capture, nil)
+		// P1-2 fix (2026-08-28): lambda accepts ctx parameter.
+		ae.PassthroughStream = func(ctx context.Context, w http.ResponseWriter, resp *http.Response) StreamOutcome {
+			return e.AnthropicPassthroughStream(capturedCtx, w, resp, clientModel, outboundModel, requestID, params.Capture, nil)
 		}
 	}
 	if e.AnthropicToOpenAIStream != nil && params.ClientProtocol != "anthropic-messages" {
 		clientModel := params.ClientModel
 		requestID := diagnosticRequestID(params)
-		ae.OpenAITranslator = func(w http.ResponseWriter, resp *http.Response, _, _, _ string, _ *audit.StreamCapture) StreamOutcome {
-			return e.AnthropicToOpenAIStream(w, resp, clientModel, outboundModel, requestID, params.Capture, nil)
+		// P1-2 fix (2026-08-28): capture ctx for context propagation to gate.
+		capturedCtx := params.R.Context()
+		ae.OpenAITranslator = func(ctx context.Context, w http.ResponseWriter, resp *http.Response, _, _, _ string, _ *audit.StreamCapture) StreamOutcome {
+			return e.AnthropicToOpenAIStream(capturedCtx, w, resp, clientModel, outboundModel, requestID, params.Capture, nil)
 		}
 	}
 	// Phase E (2026-07-01): wire ResponsesTranslator when the client
@@ -707,8 +717,10 @@ func (e *Executor) executeAnthropic(
 	if e.AnthropicToResponsesStream != nil && params.ClientProtocol == "openai-responses" {
 		clientModel := params.ClientModel
 		requestID := diagnosticRequestID(params)
-		ae.ResponsesTranslator = func(w http.ResponseWriter, resp *http.Response, _, _, _ string, _ *audit.StreamCapture) StreamOutcome {
-			return e.AnthropicToResponsesStream(w, resp, clientModel, outboundModel, requestID, params.Capture, nil)
+		// P1-2 fix (2026-08-28): capture ctx for context propagation to gate.
+		capturedCtx := params.R.Context()
+		ae.ResponsesTranslator = func(ctx context.Context, w http.ResponseWriter, resp *http.Response, _, _, _ string, _ *audit.StreamCapture) StreamOutcome {
+			return e.AnthropicToResponsesStream(capturedCtx, w, resp, clientModel, outboundModel, requestID, params.Capture, nil)
 		}
 	}
 	if e.AnthropicToChatResponse != nil && params.ClientProtocol != "anthropic-messages" {
@@ -717,10 +729,13 @@ func (e *Executor) executeAnthropic(
 	if e.AnthropicPassthroughStream != nil {
 		clientModel := params.ClientModel
 		requestID := diagnosticRequestID(params)
+		// P1-2 fix (2026-08-28): capture ctx for context propagation to gate.
+		capturedCtx := params.R.Context()
 		// Second assignment is defensive (the if-block at line 411
 		// already assigned this); the capturer plumbing is identical.
-		ae.PassthroughStream = func(w http.ResponseWriter, resp *http.Response) StreamOutcome {
-			return e.AnthropicPassthroughStream(w, resp, clientModel, outboundModel, requestID, params.Capture, nil)
+		// P1-2 fix (2026-08-28): lambda accepts ctx parameter.
+		ae.PassthroughStream = func(ctx context.Context, w http.ResponseWriter, resp *http.Response) StreamOutcome {
+			return e.AnthropicPassthroughStream(capturedCtx, w, resp, clientModel, outboundModel, requestID, params.Capture, nil)
 		}
 	}
 
@@ -1159,7 +1174,8 @@ func (e *Executor) executeAnthropicOnce(
 		}
 		// 并发修复 2026-07-27：见 responseSink 注释 —— 异步重试路径 W 为
 		// nil，改写到丢弃 writer，upstream stream 仍被完整消费。
-		outcome := ae.StreamResponse(responseSink(params), resp)
+		// P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
+		outcome := ae.StreamResponse(params.R.Context(), responseSink(params), resp)
 		if outcome.Interrupted && (outcome.Reason == "client_cancel" || outcome.Kind == errorsx.KindCanceled) {
 			return &ExecuteResult{
 					Response:    resp,

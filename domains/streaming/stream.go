@@ -444,16 +444,19 @@ func integrityBreachOutcome(capture *audit.StreamCapture, chunkCount int) Stream
 
 func ptrStreamOutcome(o StreamOutcome) *StreamOutcome { return &o }
 
-func StreamChat(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel string, norm *Normalizer) StreamOutcome {
-	return StreamChatWithCapture(w, resp, clientModel, outboundModel, norm, nil)
+// P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
+func StreamChat(ctx context.Context, w http.ResponseWriter, resp *http.Response, clientModel, outboundModel string, norm *Normalizer) StreamOutcome {
+	return StreamChatWithCapture(ctx, w, resp, clientModel, outboundModel, norm, nil)
 }
 
-func StreamChatWithCapture(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel string, norm *Normalizer, capture *audit.StreamCapture) StreamOutcome {
-	return StreamChatWithCaptureAndToolFallback(w, resp, clientModel, outboundModel, norm, capture, false, nil)
+// P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
+func StreamChatWithCapture(ctx context.Context, w http.ResponseWriter, resp *http.Response, clientModel, outboundModel string, norm *Normalizer, capture *audit.StreamCapture) StreamOutcome {
+	return StreamChatWithCaptureAndToolFallback(ctx, w, resp, clientModel, outboundModel, norm, capture, false, nil)
 }
 
-func StreamChatWithCaptureAndToolFallback(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel string, norm *Normalizer, capture *audit.StreamCapture, toolsRequested bool, stripFn func([]byte) []byte) (outcome StreamOutcome) {
-	return StreamChatWithPendingCapture(w, resp, clientModel, outboundModel, norm, capture, toolsRequested, stripFn, nil)
+// P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
+func StreamChatWithCaptureAndToolFallback(ctx context.Context, w http.ResponseWriter, resp *http.Response, clientModel, outboundModel string, norm *Normalizer, capture *audit.StreamCapture, toolsRequested bool, stripFn func([]byte) []byte) (outcome StreamOutcome) {
+	return StreamChatWithPendingCapture(ctx, w, resp, clientModel, outboundModel, norm, capture, toolsRequested, stripFn, nil)
 }
 
 // StreamChatWithPendingCapture (Track C C2, 2026-06-18) extends
@@ -475,7 +478,9 @@ func StreamChatWithCaptureAndToolFallback(w http.ResponseWriter, resp *http.Resp
 // The capturer is intentionally decoupled from the audit
 // StreamCapture — it serves a different purpose (replay) with
 // different size limits (1 MiB cap here, vs unbounded there).
+// P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
 func StreamChatWithPendingCapture(
+	ctx context.Context,
 	w http.ResponseWriter,
 	resp *http.Response,
 	clientModel, outboundModel string,
@@ -485,13 +490,15 @@ func StreamChatWithPendingCapture(
 	stripFn func([]byte) []byte,
 	pc *pendingCapturer,
 ) (outcome StreamOutcome) {
-	return StreamChatWithPendingCaptureAndDiagnostics(w, resp, clientModel, outboundModel, norm, capture, toolsRequested, stripFn, pc, nil)
+	return StreamChatWithPendingCaptureAndDiagnostics(ctx, w, resp, clientModel, outboundModel, norm, capture, toolsRequested, stripFn, pc, nil)
 }
 
 // StreamChatWithPendingCaptureAndDiagnostics forwards an OpenAI stream with
 // optional best-effort diagnostics. Diagnostic failures never affect the
 // client-visible stream.
+// P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
 func StreamChatWithPendingCaptureAndDiagnostics(
+	ctx context.Context,
 	w http.ResponseWriter,
 	resp *http.Response,
 	clientModel, outboundModel string,
@@ -554,7 +561,8 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 
 	// SR-W1: route client frames through the attempt commit gate.
 	// Disabled (default) this is the identity function — legacy wire bytes.
-	w, gate = wrapAttemptWriter(w, ProtocolOpenAIChat)
+	// P1-2 fix (2026-08-28): Pass context to gate for checkpoint propagation.
+	w, gate = wrapAttemptWriter(ctx, w, ProtocolOpenAIChat)
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)
@@ -581,12 +589,7 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 		}
 	}
 
-	var ctx context.Context
-	if resp.Request != nil {
-		ctx = resp.Request.Context()
-	} else {
-		ctx = context.Background()
-	}
+	// P1-2 fix (2026-08-28): ctx is now a function parameter, removed redundant declaration.
 
 	// BUG-1 fix (2026-06-19): hold a reference to the raw body as an
 	// io.ReadCloser so readLineWithTimeoutAndCloser can close it on timeout,

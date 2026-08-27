@@ -1,6 +1,7 @@
 package streaming
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -124,7 +125,9 @@ type GateOptions struct {
 	// against any later client-visible writes — nothing of that state may be
 	// sent (禁写网络). Buffering metadata alone never fires it: the first
 	// semantic commit's checkpoint covers the metadata rank too.
-	BeforeSemanticCommit func(CommitState) error
+	// P1-2 fix (2026-08-28): Added context.Context parameter to enable timeout
+	// control, cancellation, and trace propagation in checkpoint operations.
+	BeforeSemanticCommit func(context.Context, CommitState) error
 	// FirstSemanticByte fires once when the first content/tool-call frame is
 	// accepted. Transport comments, ping, metadata, and terminal-only frames do
 	// not invoke it.
@@ -158,10 +161,11 @@ type AttemptCommitGate struct {
 	requestID            string
 	maxMetadata          int
 	maxMetadataAge       time.Duration
-	beforeSemanticCommit func(CommitState) error
+	beforeSemanticCommit func(context.Context, CommitState) error
 	firstSemanticByte    func()
 	firstSemanticSeen    bool
 	nowFn                func() time.Time
+	ctx                  context.Context // P1-2: context for checkpoint operations
 
 	// FR-12 L1 holdback window state (inactive when holdbackWindow == 0).
 	holdbackWindow    time.Duration
@@ -187,7 +191,8 @@ type AttemptCommitGate struct {
 
 // NewAttemptCommitGate creates a gate for one attempt. All client-facing
 // writes for this attempt must go through the gate.
-func NewAttemptCommitGate(protocol ClientProtocol, writer *SerializedStreamWriter, opts GateOptions) *AttemptCommitGate {
+// P1-2 fix (2026-08-28): Added ctx parameter to propagate context to checkpoint operations.
+func NewAttemptCommitGate(ctx context.Context, protocol ClientProtocol, writer *SerializedStreamWriter, opts GateOptions) *AttemptCommitGate {
 	if opts.MaxMetadataBufferBytes <= 0 {
 		opts.MaxMetadataBufferBytes = DefaultMaxMetadataBufferBytes
 	}
@@ -199,6 +204,9 @@ func NewAttemptCommitGate(protocol ClientProtocol, writer *SerializedStreamWrite
 	}
 	if writer == nil {
 		panic("attempt commit gate requires a serialized stream writer")
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 	return &AttemptCommitGate{
 		protocol:             protocol,
@@ -212,6 +220,7 @@ func NewAttemptCommitGate(protocol ClientProtocol, writer *SerializedStreamWrite
 		nowFn:                opts.Now,
 		holdbackWindow:       opts.HoldbackWindow,
 		holdbackMaxChunks:    opts.HoldbackMaxChunks,
+		ctx:                  ctx,
 	}
 }
 
@@ -444,6 +453,7 @@ func (g *AttemptCommitGate) checkpointBlockedErrorLocked() error {
 // while maintaining writeMu exclusion. Returns the checkpoint error (latched)
 // or nil. Caller must hold writeMu and g.mu on entry; g.mu will be held on
 // return (even on error).
+// P1-2 fix (2026-08-28): Pass stored context to checkpoint hook for timeout control.
 func (g *AttemptCommitGate) checkpointStateAdvanceUnderWriteLock(class FrameClass) error {
 	advanced := g.advanceStateLocked(class)
 	if !advanced || g.beforeSemanticCommit == nil ||
@@ -452,8 +462,9 @@ func (g *AttemptCommitGate) checkpointStateAdvanceUnderWriteLock(class FrameClas
 	}
 	hook := g.beforeSemanticCommit
 	state := g.state
+	ctx := g.ctx
 	g.mu.Unlock()
-	checkpointErr := hook(state)
+	checkpointErr := hook(ctx, state)
 	g.mu.Lock()
 	if checkpointErr != nil {
 		g.blockCheckpointLocked(checkpointErr)
@@ -671,11 +682,13 @@ func (g *AttemptCommitGate) Commit() error {
 	// Checkpoint the current state before committing buffered frames to wire.
 	// If state is none/metadata and hook is configured, this ensures metadata
 	// is checkpointed before network write.
+	// P1-2 fix (2026-08-28): Pass stored context to checkpoint hook.
 	if g.beforeSemanticCommit != nil && g.state > CommitStateNone {
 		hook := g.beforeSemanticCommit
 		state := g.state
+		ctx := g.ctx
 		g.mu.Unlock()
-		checkpointErr := hook(state)
+		checkpointErr := hook(ctx, state)
 		g.mu.Lock()
 		if checkpointErr != nil {
 			g.blockCheckpointLocked(checkpointErr)

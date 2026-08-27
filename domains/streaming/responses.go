@@ -1336,6 +1336,8 @@ func responsesStreamWrapper(requestID, clientModel, outboundModel string, captur
 			c = capture
 		}
 		_ = norm
-		return StreamResponsesSSE(w, resp, clientModel, outboundModel, requestID, c)
+		// P1-2 fix (2026-08-28): Extract context from resp.Request for gate propagation.
+		ctx := resp.Request.Context()
+		return StreamResponsesSSE(ctx, w, resp, clientModel, outboundModel, requestID, c)
 	}
 }

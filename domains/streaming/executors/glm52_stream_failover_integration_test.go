@@ -57,9 +57,10 @@ func TestGLM52PrematureEOFFailsOverThroughRealStreamBridge(t *testing.T) {
 		pool.NewPoolManager(nil),
 		nil,
 		func(chunk []byte, _ bool) []byte { return chunk },
-		func(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, _ string, _ executors.NormalizerFunc, capture *audit.StreamCapture, toolsRequested bool) executors.StreamOutcome {
+		// P1-2 fix (2026-08-28): Added ctx parameter to match new signature.
+		func(ctx context.Context, w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, _ string, _ executors.NormalizerFunc, capture *audit.StreamCapture, toolsRequested bool) executors.StreamOutcome {
 			out := streaming.StreamChatWithPendingCapture(
-				w, resp, clientModel, outboundModel, streaming.NewNormalizer(), capture, toolsRequested, nil, nil,
+				ctx, w, resp, clientModel, outboundModel, streaming.NewNormalizer(), capture, toolsRequested, nil, nil,
 			)
 			return executors.StreamOutcome{
 				Interrupted: out.Interrupted,

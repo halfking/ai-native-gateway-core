@@ -1,6 +1,7 @@
 package streaming
 
 import (
+	"context"
 	"net/http"
 	"os"
 	"sync/atomic"
@@ -62,7 +63,8 @@ func setAttemptGateForTest(enabled bool, mode GateMode) (restore func()) {
 // A writer that is already gated (the SurvivalCoordinator pre-wrapped it
 // with its per-attempt buffered gate) passes through unchanged with the
 // existing gate — commit ownership stays with the coordinator.
-func wrapAttemptWriter(w http.ResponseWriter, protocol ClientProtocol) (http.ResponseWriter, *AttemptCommitGate) {
+// P1-2 fix (2026-08-28): Added ctx parameter to propagate context to gate.
+func wrapAttemptWriter(ctx context.Context, w http.ResponseWriter, protocol ClientProtocol) (http.ResponseWriter, *AttemptCommitGate) {
 	if gw, ok := w.(*GateWriter); ok {
 		return w, gw.UnderlyingAttemptGate()
 	}
@@ -88,6 +90,6 @@ func wrapAttemptWriter(w http.ResponseWriter, protocol ClientProtocol) (http.Res
 	// enabling L1 here can strand successful output in the gate or flush an
 	// interrupted attempt to the client. The coordinator is the sole owner of
 	// the opt-in recovery window.
-	gate := NewAttemptCommitGate(protocol, sw, GateOptions{Mode: mode, RequestID: reqID, FirstSemanticByte: firstSemanticByte})
+	gate := NewAttemptCommitGate(ctx, protocol, sw, GateOptions{Mode: mode, RequestID: reqID, FirstSemanticByte: firstSemanticByte})
 	return NewGateWriterWithResponse(gate, w), gate
 }
