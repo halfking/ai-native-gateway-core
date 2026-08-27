@@ -138,6 +138,14 @@ func TestExecuteAttemptNoCandidatesSynthesizesOutcome(t *testing.T) {
 	}
 }
 
+func TestFoldCandidateOutcomesPreservesTypedRetryableKinds(t *testing.T) {
+	err := &executors.ExecuteError{LastKind: errorsx.KindEmptyResponse, LastErr: errors.New("empty upstream response")}
+	outcomes := foldCandidateOutcomes(err)
+	if len(outcomes) != 1 || outcomes[0].Kind != errorsx.KindEmptyResponse {
+		t.Fatalf("outcomes = %+v, want one empty_response outcome", outcomes)
+	}
+}
+
 func TestExecuteAttemptCommittedGateBlocksSafeRetry(t *testing.T) {
 	fake := &fakeAttemptExecutor{err: &executors.ExecuteError{LastKind: errorsx.KindTransient}}
 	gate := newAttemptGateForTest()

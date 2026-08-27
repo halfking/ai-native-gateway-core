@@ -887,7 +887,14 @@ func (h *Handler) handleProbeSystemHealth(w http.ResponseWriter, r *http.Request
 		legacyHealth.TotalRealSuccess24h = nullInt(totalRealSuccess24h)
 		legacyHealth.TotalRealFailure24h = nullInt(totalRealFailure24h)
 		if rc, ok := h.redisClient.(*redis.Client); ok {
-			keys, cacheErr := rc.Keys(r.Context(), "llmgw:avail:*:*").Result()
+			// KEYS → SCAN: KEYS 是 O(N) 全键扫描，在共享 Redis 上会阻塞主线程；
+			// SCAN 用 cursor 增量扫描替代。
+			var keys []string
+			iter := rc.Scan(r.Context(), 0, "llmgw:avail:*:*", 1000).Iterator()
+			for iter.Next(r.Context()) {
+				keys = append(keys, iter.Val())
+			}
+			cacheErr := iter.Err()
 			if cacheErr == nil && len(keys) > 0 {
 				legacyHealth.TotalNodes = len(keys)
 				legacyHealth.HealthyNodes = 0
@@ -1667,10 +1674,10 @@ func ternary(b bool, t, f string) string {
 // 25 号 §6.2 三态队列). Metadata only — no result_body_preview, keeping the
 // 可观测安全红线 (body 不进 API/SSE) 一致。
 type ProbeTriStateTask struct {
-	ID            int64      `json:"id"`
-	DedupKey      string     `json:"dedup_key"`
-	CredentialID  int64      `json:"credential_id"`
-	ProviderID    *int64     `json:"provider_id,omitempty"`
+	ID           int64  `json:"id"`
+	DedupKey     string `json:"dedup_key"`
+	CredentialID int64  `json:"credential_id"`
+	ProviderID   *int64 `json:"provider_id,omitempty"`
 	// ProviderName / ProviderCode come from the providers table (LEFT JOIN).
 	// They let the 自检 tab render 供应商 + 凭据 instead of a bare
 	// "凭据 #<id>" — operator-facing dashboard readability (2026-08-20).

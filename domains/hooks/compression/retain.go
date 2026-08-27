@@ -86,6 +86,14 @@ func extractOpenAI(body []byte) (*Retained, error) {
 				if isSystemReminderMessage(m) {
 					continue
 				}
+				// Skip gateway-injected summary markers (smm_v1) from a
+				// prior compression pass: they carry role=user but are not
+				// the original user intent, and pinning one as B-track would
+				// let it survive re-summarisation, producing nested markers
+				// on the next compression round (see marker_idempotency_test.go).
+				if isSummaryMarkerMsg(m) {
+					continue
+				}
 				raw := m
 				ret.FirstUser = &raw
 				ret.FirstUserIndex = i
@@ -124,6 +132,12 @@ func extractAnthropic(body []byte) (*Retained, error) {
 		role := messageRole(m)
 		if role == "user" && ret.FirstUser == nil {
 			if isSystemReminderMessage(m) {
+				continue
+			}
+			// Skip gateway-injected summary markers (see extractOpenAI for
+			// the full rationale): a prior-round marker must not be pinned
+			// as B-track, or it survives re-summarisation and nests.
+			if isSummaryMarkerMsg(m) {
 				continue
 			}
 			raw := m

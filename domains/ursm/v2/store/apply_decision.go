@@ -3,6 +3,8 @@ package store
 import (
 	"context"
 	"fmt"
+
+	redissafe "github.com/kaixuan/llm-gateway-go/internal/redis"
 )
 
 // HSetFields is a small helper for tests and seed paths to write multiple
@@ -30,7 +32,7 @@ func (s *Store) ApplyDecision(ctx context.Context, key string, gen int64, pri in
 	if s == nil || s.rdb == nil {
 		return RecordResult{}, ErrRedisUnavailable
 	}
-	res, err := ApplyDecisionScript.Run(ctx, s.rdb,
+	res, err := redissafe.RunScript(ctx, s.rdb, ApplyDecisionScript, "apply_decision.lua",
 		[]string{key},
 		fmt.Sprintf("%d", gen), fmt.Sprintf("%d", pri), BoolFlag(avail),
 		fmt.Sprintf("%d", streak), reason, BoolFlag(adminHold),

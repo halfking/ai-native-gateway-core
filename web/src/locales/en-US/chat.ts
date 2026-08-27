@@ -1,5 +1,4 @@
 // chat.ts — ChatView strings.
-// Namespaces: page / sidebar / session / input / modal.
 export default {
   page: {
     title: 'Chat',
@@ -58,6 +57,33 @@ export default {
     placeholder: 'Type a message… (Enter to send, Shift+Enter for newline)',
     send: 'Send',
     sending: 'Sending…',
+    stop: 'Stop',
+    waitingChat: 'Waiting for full reply…',
+  },
+  mode: {
+    label: 'Response mode',
+    stream: 'Stream',
+    chat: 'Chat',
+    badgeStream: 'Stream',
+    badgeChat: 'Chat',
+  },
+  params: {
+    title: 'Model parameters',
+    open: 'Params',
+    nextTurnHint: 'Parameter changes apply to the next turn.',
+    systemPrompt: 'System prompt',
+    systemPromptPlaceholder: 'Set role, tone, and constraints…',
+    temperature: 'Temperature',
+    maxTokens: 'Max Tokens',
+    topP: 'Top P',
+    presencePenalty: 'Presence Penalty',
+    frequencyPenalty: 'Frequency Penalty',
+    stop: 'Stop sequences',
+    stopPlaceholder: 'Comma-separated stop strings',
+    showAdvanced: 'Show advanced',
+    hideAdvanced: 'Hide advanced',
+    reset: 'Reset defaults',
+    done: 'Done',
   },
   modal: {
     summaryTitle: 'Session summary',
@@ -66,7 +92,6 @@ export default {
     close: 'Close',
   },
 
-  // 扁平键（供 Vue 组件直接使用）
   loading: 'Loading…',
   keyNotSelected: 'Not selected',
   errorPrefix: 'Error: ',
@@ -88,4 +113,6 @@ export default {
   sending: 'Sending…',
   send: 'Send',
   copySummary: 'Copy summary',
+  suggestStream: 'Timed out or waited too long — switch back to streaming mode.',
+  aborted: 'Generation stopped',
 }

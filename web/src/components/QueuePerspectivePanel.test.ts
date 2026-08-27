@@ -456,7 +456,6 @@ describe('QueuePerspectivePanel', () => {
     ]
     liveStreamState.snapshot = {
       summary: { total: 3, success: 2, failure: 0, in_progress: 1 },
-      detail_dimensions: { credential: [], vendor: [], provider: [], model: [] },
       dimensions: {
         credential: [],
         vendor: [],

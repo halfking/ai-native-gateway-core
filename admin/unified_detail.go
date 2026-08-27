@@ -70,26 +70,59 @@ func (r *pgBodyReader) loadRequestLogMeta(ctx context.Context, requestID string)
 		success            sql.NullBool
 		latencyMs          sql.NullInt32
 	)
+	
+	// 2026-08-27 OPTIMIZATION: Split OR into two separate queries for better index usage.
+	// The previous OR query prevented efficient index usage. Now we try request_id first
+	// (primary key lookup), then client_request_id if not found (indexed lookup).
+	
+	// Try request_id first (should be fast - primary key or indexed lookup)
 	err := r.db.QueryRow(ctx, `
 		SELECT request_id, COALESCE(tenant_id, ''),
 		       gw_session_id, gw_task_id, client_model,
 		       request_status, success, latency_ms
 		  FROM request_logs_hot
-		 WHERE request_id = $1 OR client_request_id = $1
-		 ORDER BY CASE WHEN request_id = $1 THEN 0 ELSE 1 END, ts DESC
+		 WHERE request_id = $1
 		 LIMIT 1
 	`, requestID).Scan(&canonicalRequestID, &tenantID, &gwSessionID, &gwTaskID, &clientModel, &status, &success, &latencyMs)
+	
+	// If not found by request_id, try client_request_id
+	if errors.Is(err, pgx.ErrNoRows) {
+		err = r.db.QueryRow(ctx, `
+			SELECT request_id, COALESCE(tenant_id, ''),
+			       gw_session_id, gw_task_id, client_model,
+			       request_status, success, latency_ms
+			  FROM request_logs_hot
+			 WHERE client_request_id = $1
+			 ORDER BY ts DESC
+			 LIMIT 1
+		`, requestID).Scan(&canonicalRequestID, &tenantID, &gwSessionID, &gwTaskID, &clientModel, &status, &success, &latencyMs)
+	}
+	
+	// If still not found in hot table, try partitioned table
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = r.db.QueryRow(ctx, `
 			SELECT request_id, COALESCE(tenant_id, ''),
 			       gw_session_id, gw_task_id, client_model,
 			       request_status, success, latency_ms
 			  FROM request_logs_with_current_month
-			 WHERE request_id = $1 OR client_request_id = $1
-			 ORDER BY CASE WHEN request_id = $1 THEN 0 ELSE 1 END, ts DESC
+			 WHERE request_id = $1
 			 LIMIT 1
 		`, requestID).Scan(&canonicalRequestID, &tenantID, &gwSessionID, &gwTaskID, &clientModel, &status, &success, &latencyMs)
 	}
+	
+	// Try client_request_id in partitioned table
+	if errors.Is(err, pgx.ErrNoRows) {
+		err = r.db.QueryRow(ctx, `
+			SELECT request_id, COALESCE(tenant_id, ''),
+			       gw_session_id, gw_task_id, client_model,
+			       request_status, success, latency_ms
+			  FROM request_logs_with_current_month
+			 WHERE client_request_id = $1
+			 ORDER BY ts DESC
+			 LIMIT 1
+		`, requestID).Scan(&canonicalRequestID, &tenantID, &gwSessionID, &gwTaskID, &clientModel, &status, &success, &latencyMs)
+	}
+	
 	if errors.Is(err, pgx.ErrNoRows) {
 		return requestdetail.Meta{}, requestdetail.ErrNotFound
 	}
@@ -126,12 +159,25 @@ func (r *pgBodyReader) loadRequestLogMeta(ctx context.Context, requestID string)
 
 func (r *pgBodyReader) loadOutboundBody(ctx context.Context, requestID string) (json.RawMessage, error) {
 	var raw []byte
+	
+	// 2026-08-27 OPTIMIZATION: Try hot table first, then fall back to partitioned table
 	err := r.db.QueryRow(ctx, `
 		SELECT outbound_body::text
 		  FROM request_logs_bodies_hot
 		 WHERE request_id = $1
 		 LIMIT 1
 	`, requestID).Scan(&raw)
+	
+	// Fallback to partitioned bodies table if not in hot
+	if errors.Is(err, pgx.ErrNoRows) {
+		err = r.db.QueryRow(ctx, `
+			SELECT outbound_body::text
+			  FROM request_logs_bodies_with_current_month
+			 WHERE request_id = $1
+			 LIMIT 1
+		`, requestID).Scan(&raw)
+	}
+	
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, requestdetail.ErrNotFound
 	}

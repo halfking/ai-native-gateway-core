@@ -11,6 +11,8 @@ import (
 	"fmt"
 
 	"github.com/redis/go-redis/v9"
+
+	"github.com/kaixuan/llm-gateway-go/metrics"
 )
 
 //go:embed lua/claim.lua
@@ -73,9 +75,26 @@ func LoadScripts(ctx context.Context, rdb *redis.Client) (*LoadedScripts, error)
 func runScript(ctx context.Context, rdb *redis.Client, sha, src string, keys []string, args ...any) (any, error) {
 	res, err := rdb.EvalSha(ctx, sha, keys, args...).Result()
 	if err != nil && isNoScript(err) {
+		metrics.RedisLuaScriptFallbacksTotal.WithLabelValues(luaScriptName(src)).Inc()
 		return rdb.Eval(ctx, src, keys, args...).Result()
 	}
 	return res, err
+}
+
+// luaScriptName maps an embedded Lua source to its stable metric label.
+// Unknown sources (test stubs) fall back to "unknown" — bounded cardinality.
+func luaScriptName(src string) string {
+	if name, ok := luaSrcNames[src]; ok {
+		return name
+	}
+	return "unknown"
+}
+
+var luaSrcNames = map[string]string{
+	claimLuaSrc:    "claim.lua",
+	completeLuaSrc: "complete.lua",
+	submitLuaSrc:   "submit.lua",
+	reclaimLuaSrc:  "reclaim.lua",
 }
 
 func isNoScript(err error) bool {
