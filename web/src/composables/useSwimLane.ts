@@ -9,9 +9,9 @@ import { readLiveStreamPreferences, writeLiveStreamPreferences } from './liveStr
 
 const emptySnapshot: LiveStreamSnapshot = {
   summary: { total: 0, success: 0, failure: 0, in_progress: 0 },
-  detail_dimensions: { vendor: [], provider: [], model: [] },
-  dimensions: { vendor: [], provider: [], model: [] },
-  dimension_legends: { vendor: [], provider: [], model: [] },
+  detail_dimensions: { credential: [], vendor: [], provider: [], model: [] },
+  dimensions: { credential: [], vendor: [], provider: [], model: [] },
+  dimension_legends: { credential: [], vendor: [], provider: [], model: [] },
   status_legends: [],
 }
 
@@ -40,6 +40,7 @@ export function useSwimLane(snapshotRef?: ComputedRef<LiveStreamSnapshot | null>
   })
   const statusLegendItems = computed<LiveStreamLegendItem[]>(() => snapshot.value.status_legends || [])
   const dimensionStats = computed(() => ({
+    credential: (snapshot.value.dimension_legends.credential || []).map(toDimensionStat),
     vendor: (snapshot.value.dimension_legends.vendor || []).map(toDimensionStat),
     provider: (snapshot.value.dimension_legends.provider || []).map(toDimensionStat),
     model: (snapshot.value.dimension_legends.model || []).map(toDimensionStat),

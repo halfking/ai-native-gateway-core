@@ -115,6 +115,8 @@ export interface LiveStreamTile {
   model: string
   vendor: string
   provider: string
+  credential_id?: number
+  credential_label?: string
   status: string
   error_kind?: string | null
   latency_ms?: number | null
@@ -131,7 +133,7 @@ export interface LiveStreamTile {
 export interface LiveStreamLane {
   id: string
   name: string
-  dimension: 'vendor' | 'provider' | 'model'
+  dimension: 'credential' | 'vendor' | 'provider' | 'model'
   requests: LiveStreamTile[]
   stats: LiveStreamStats
   isOthers: boolean
@@ -145,17 +147,17 @@ export interface LiveStreamLegendItem {
 
 export interface LiveStreamSnapshot {
   summary: LiveStreamStats
-  detail_dimensions: Record<'vendor' | 'provider' | 'model', LiveStreamLane[]>
-  dimensions: Record<'vendor' | 'provider' | 'model', LiveStreamLane[]>
-  dimension_legends: Record<'vendor' | 'provider' | 'model', LiveStreamLegendItem[]>
+  detail_dimensions: Record<'credential' | 'vendor' | 'provider' | 'model', LiveStreamLane[]>
+  dimensions: Record<'credential' | 'vendor' | 'provider' | 'model', LiveStreamLane[]>
+  dimension_legends: Record<'credential' | 'vendor' | 'provider' | 'model', LiveStreamLegendItem[]>
   status_legends: LiveStreamLegendItem[]
   latest_request_ts?: string
 }
 
 export interface LiveStreamDelta {
   summary: LiveStreamStats
-  changed_lanes: Record<'vendor' | 'provider' | 'model', LiveStreamLane[]>
-  dimension_legends: Record<'vendor' | 'provider' | 'model', LiveStreamLegendItem[]>
+  changed_lanes: Record<'credential' | 'vendor' | 'provider' | 'model', LiveStreamLane[]>
+  dimension_legends: Record<'credential' | 'vendor' | 'provider' | 'model', LiveStreamLegendItem[]>
   status_legends: LiveStreamLegendItem[]
 }
 
@@ -393,17 +395,18 @@ const sseEndpointPersisted = usePersistedValue<string>(
 )
 
 function buildUrl(endpoint: string): string {
-  let url = endpoint
-  try {
-    const token = authBearer()
-    if (token) {
-      const sep = url.includes('?') ? '&' : '?'
-      url = `${url}${sep}token=${encodeURIComponent(token)}`
-    }
-  } catch {
-    /* SSR or storage disabled — fall back to cookie auth */
-  }
-  return url
+  // 2026-08-26 (P1-7 fix): do NOT append a `?token=` query parameter.
+  // Anything in the URL lives in browser history, server access logs,
+  // and proxy logs — that is a long-lived JWT / api-key exposure.
+  // The backend already accepts the HttpOnly `llmgw_session` cookie
+  // for EventSource auth (admin/auth_cookie_helpers.go), and the
+  // EventSource is opened with `credentials: 'include'` below, so
+  // the browser will attach the cookie automatically. Legacy api-key
+  // users still work because their Authorization: Bearer header is
+  // ignored by EventSource (it cannot set custom headers) — they must
+  // rely on the cookie path, which admin/auth.go already supports via
+  // ExtractBearerOrCookieToken.
+  return endpoint
 }
 
 // 用户层想要使用的最终 URL（可能被管理员通过弹窗覆盖）
@@ -570,7 +573,7 @@ function applyStageToRequest(requestId: string, action: ActionEvent) {
   }
   const snapshot = liveStreamState.snapshot
   if (!snapshot) return
-  for (const dim of ['vendor', 'provider', 'model'] as const) {
+  for (const dim of ['credential', 'vendor', 'provider', 'model'] as const) {
     for (const lane of snapshot.dimensions[dim] || []) {
       const tile = lane.requests.find((item) => item.request_id === requestId)
       if (tile) Object.assign(tile, patch)
@@ -869,7 +872,7 @@ function handleEnvelope(env: LiveStreamEnvelope) {
 
   if (env.delta) {
     mergeDelta(env.delta)
-    for (const dim of ['vendor', 'provider', 'model'] as const) {
+    for (const dim of ['credential', 'vendor', 'provider', 'model'] as const) {
       const lanes = env.delta.changed_lanes[dim]
       if (!lanes) continue
       for (const lane of lanes) {
@@ -999,7 +1002,7 @@ function mergeSnapshotFromServer(incoming: LiveStreamSnapshot) {
     // semantics. The UI contract is the opposite: FIFO, oldest on the left
     // and newest on the right. Normalize the first snapshot too; incremental
     // merges already pass through mergeTilesById below.
-    for (const dim of ['vendor', 'provider', 'model'] as const) {
+    for (const dim of ['credential', 'vendor', 'provider', 'model'] as const) {
       for (const lane of incoming.dimensions[dim] || []) {
         normalizeLaneTiles(lane)
       }
@@ -1013,7 +1016,7 @@ function mergeSnapshotFromServer(incoming: LiveStreamSnapshot) {
   const s = liveStreamState.snapshot
   s.summary = incoming.summary
   s.status_legends = incoming.status_legends
-  for (const dim of ['vendor', 'provider', 'model'] as const) {
+  for (const dim of ['credential', 'vendor', 'provider', 'model'] as const) {
     if (incoming.dimensions[dim]) {
       if (!s.dimensions[dim]) s.dimensions[dim] = []
       mergeLanesById(s.dimensions[dim], incoming.dimensions[dim])
@@ -1040,7 +1043,9 @@ function tilesEqual(a: LiveStreamTile[], b: LiveStreamTile[]): boolean {
       x.status !== y.status ||
       x.model !== y.model ||
       x.vendor !== y.vendor ||
-      x.provider !== y.provider
+      x.provider !== y.provider ||
+      x.credential_id !== y.credential_id ||
+      x.credential_label !== y.credential_label
     ) {
       return false
     }
@@ -1100,16 +1105,16 @@ function mergeDelta(delta: LiveStreamDelta) {
   if (!liveStreamState.snapshot) {
     liveStreamState.snapshot = {
       summary: delta.summary,
-      detail_dimensions: { vendor: [], provider: [], model: [] },
-      dimensions: { vendor: [], provider: [], model: [] },
-      dimension_legends: delta.dimension_legends || { vendor: [], provider: [], model: [] },
+      detail_dimensions: { credential: [], vendor: [], provider: [], model: [] },
+      dimensions: { credential: [], vendor: [], provider: [], model: [] },
+      dimension_legends: delta.dimension_legends || { credential: [], vendor: [], provider: [], model: [] },
       status_legends: delta.status_legends,
     }
   }
   const s = liveStreamState.snapshot
   s.summary = delta.summary
   s.status_legends = delta.status_legends
-  for (const dim of ['vendor', 'provider', 'model'] as const) {
+  for (const dim of ['credential', 'vendor', 'provider', 'model'] as const) {
     if (delta.changed_lanes[dim]) {
       // mergeLanesById updates in place and preserves lane order so
       // backend rank changes do not reshuffle the whole swim-lane row.

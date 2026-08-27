@@ -38,7 +38,7 @@ func withPlatformFlag(t *testing.T, flagKey string, val bool) {
 // false case, exercised by TestSessionCompressor_ShouldUseV2_KillSwitchFalse.
 func TestSessionCompressor_ShouldUseV2_DefaultOn(t *testing.T) {
 	// No flag injected → GetPlatformBool falls back to the default (true).
-	cacheV2 := v2.NewSessionCacheV2(nil, "")
+	cacheV2 := v2.NewSessionCacheV2(nil, "", 2)
 	builder := v2.NewOutboundBuilder(v2.NewTurnReader(nil))
 
 	sc := &SessionCompressor{deps: SessionCompressorDeps{
@@ -57,7 +57,7 @@ func TestSessionCompressor_ShouldUseV2_DefaultOn(t *testing.T) {
 func TestSessionCompressor_ShouldUseV2_KillSwitchFalse(t *testing.T) {
 	withPlatformFlag(t, "sessions_v2_compression_read", false)
 
-	cacheV2 := v2.NewSessionCacheV2(nil, "")
+	cacheV2 := v2.NewSessionCacheV2(nil, "", 2)
 	builder := v2.NewOutboundBuilder(v2.NewTurnReader(nil))
 
 	sc := &SessionCompressor{deps: SessionCompressorDeps{
@@ -77,7 +77,7 @@ func TestSessionCompressor_ShouldUseV2_KillSwitchFalse(t *testing.T) {
 func TestSessionCompressor_ShouldUseV2_FlagEnabled(t *testing.T) {
 	withPlatformFlag(t, "sessions_v2_compression_read", true)
 
-	cacheV2 := v2.NewSessionCacheV2(nil, "")
+	cacheV2 := v2.NewSessionCacheV2(nil, "", 2)
 	builder := v2.NewOutboundBuilder(v2.NewTurnReader(nil))
 
 	sc := &SessionCompressor{deps: SessionCompressorDeps{
@@ -108,7 +108,7 @@ func TestSessionCompressor_ShouldUseV2_MissingComponents(t *testing.T) {
 
 	t.Run("builder nil", func(t *testing.T) {
 		sc := &SessionCompressor{deps: SessionCompressorDeps{
-			CacheV2: v2.NewSessionCacheV2(nil, ""),
+			CacheV2: v2.NewSessionCacheV2(nil, "", 2),
 			Builder: nil,
 		}}
 		if sc.shouldUseV2("t1") {

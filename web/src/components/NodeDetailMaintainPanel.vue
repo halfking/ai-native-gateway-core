@@ -134,6 +134,6 @@ const emit = defineEmits<{
 
 <style scoped>
 .nd-priority-flag { display: flex; flex-direction: column; gap: 2px; }
-.nd-priority-flag small { color: var(--kx-muted, #888); font-size: 11px; }
+.nd-priority-flag small { color: var(--kx-muted, var(--muted)); font-size: 11px; }
 .nd-priority-flag input[type='checkbox'] { width: 16px; height: 16px; margin: 4px 0 0; }
 </style>

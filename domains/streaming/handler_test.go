@@ -10,6 +10,28 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
 )
 
+func TestApplyActualOutboundBodyPrefersExecutorBody(t *testing.T) {
+	logCtx := &RequestLogContext{OutboundBody: []byte(`{"messages":[{"role":"system","content":"old"}]}`)}
+	result := &executors.ExecuteResult{RequestBody: []byte(`{"system":"new","messages":[{"role":"user","content":"hi"}]}`)}
+
+	applyActualOutboundBody(logCtx, result)
+
+	if got := string(logCtx.OutboundBody); got != string(result.RequestBody) {
+		t.Fatalf("OutboundBody = %s, want executor request body %s", got, result.RequestBody)
+	}
+}
+
+func TestApplyActualOutboundBodyKeepsSnapshotWithoutExecutorBody(t *testing.T) {
+	original := []byte(`{"messages":[{"role":"user","content":"snapshot"}]}`)
+	logCtx := &RequestLogContext{OutboundBody: append([]byte(nil), original...)}
+
+	applyActualOutboundBody(logCtx, &executors.ExecuteResult{})
+
+	if got := string(logCtx.OutboundBody); got != string(original) {
+		t.Fatalf("OutboundBody = %s, want existing snapshot %s", got, original)
+	}
+}
+
 func TestSuccessUpstreamStatusCode(t *testing.T) {
 	if got := successUpstreamStatusCode(&executors.ExecuteResult{Response: &http.Response{StatusCode: http.StatusCreated}}); got != http.StatusCreated {
 		t.Fatalf("successUpstreamStatusCode() = %d, want %d", got, http.StatusCreated)

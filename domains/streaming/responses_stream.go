@@ -13,12 +13,19 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/metrics"
 )
 
 func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture) (outcome StreamOutcome) {
 	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
+	// Hoist gate above the panic-recovery defer so the recover closure can see
+	// it: a panic after the client already saw semantic output must not be
+	// classified as transparently resumable (would duplicate client-visible
+	// content). Mirrors responses_bridge.go (commit 485f3ca2e). gate stays nil
+	// until wrapAttemptWriter assigns it; attemptHasClientSemanticOutput(nil,
+	// 0) returns false so the not-yet-wired case degrades to resumable, the
+	// legacy behaviour.
+	var gate *AttemptCommitGate
 	defer func() {
 		if r := recover(); r != nil {
 			slog.Error("responses stream panic recovered", "panic", r, "stack", string(debug.Stack()), "request_id", requestID)
@@ -28,13 +35,14 @@ func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 			outcome.Interrupted = true
 			outcome.Reason = "stream_panic"
 			outcome.Kind = errorsx.KindUpstreamDown
+			outcome.Resumable = !attemptHasClientSemanticOutput(gate, 0)
 		}
 	}()
 	runtimeCfg := currentStreamRuntimeConfig()
 
 	// SR-W1: route client frames through the attempt commit gate.
 	// Disabled (default) this is the identity function — legacy wire bytes.
-	w, gate := wrapAttemptWriter(w, ProtocolOpenAIResponses)
+	w, gate = wrapAttemptWriter(w, ProtocolOpenAIResponses)
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)
@@ -52,7 +60,10 @@ func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 		if capture != nil {
 			capture.MarkInterruptedWithReason("client_write_failed")
 		}
-		return StreamOutcome{Interrupted: true, Reason: "client_write_failed", Kind: errorsx.KindCanceled, Resumable: true}
+		// Client connection is dead before any frame — including headers —
+		// reaches the wire. A transparent retry would re-attempt the same
+		// header flush on the same dead connection, wasting an upstream call.
+		return StreamOutcome{Interrupted: true, Reason: "client_write_failed", Kind: errorsx.KindCanceled, Resumable: false}
 	}
 
 	respID := "resp_"
@@ -144,6 +155,7 @@ func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 		outcome.Interrupted = true
 		outcome.Reason = "first_byte_timeout"
 		outcome.Kind = errorsx.KindStreamTimeout
+		outcome.Resumable = !attemptHasClientSemanticOutput(gate, 0)
 		return outcome
 	}
 
@@ -246,41 +258,6 @@ func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 				return outcome
 			case streamReadEOF:
 				if !upstreamDoneReceived {
-					// 2026-08-23: same recovery as stream.go / anthropic_stream.go —
-					// if a finish_reason (or response.completed) was already
-					// observed, the upstream has declared the response complete
-					// and the missing `[DONE]`/terminal event is benign. Without
-					// this guard, minimax (and similar upstreams that drop the
-					// terminal event) trigger survival retries that burn the
-					// full upstream_timeout budget on every chat.
-					completed := finalFinishReason != ""
-					if !completed && capture != nil {
-						completed = capture.FinalFinishReason() != ""
-					}
-					if completed {
-						// 2026-08-23 audit fix: when a finish_reason /
-						// response.completed was already observed upstream,
-						// mirror the normal completion path and emit the
-						// terminal `response.completed` events so the client
-						// sees a finished response (otherwise it hangs waiting
-						// for the terminal event) and mark the capture done.
-						if gate.MayWriteTerminal() {
-							renderResponsesCompleted(w, flusher, respID, msgID, createdAt, clientModel, fullText, finalFinishReason)
-						}
-						metrics.Global().RecordStreamSynthesizedDone()
-						if capture != nil {
-							capture.ObservePayload(`{"type":"response.completed"}`, finalFinishReason, true)
-						}
-						slog.Info("responses EOF after finish_reason — synthesized response.completed",
-							"client_model", clientModel,
-							"finish_reason", finalFinishReason,
-							"chunk_count", chunkCount,
-						)
-						outcome = StreamOutcome{
-							ChunkCount: chunkCount,
-						}
-						return outcome
-					}
 					if capture != nil {
 						capture.MarkInterruptedWithReason("eof_without_done")
 					}
@@ -318,6 +295,12 @@ func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 					writeResponsesIncomplete(w, flusher, respID, msgID, createdAt, clientModel, fullText, failure.Reason)
 				}
 				outcome = failure
+				// Gate-aware resumability. streamReadFailureOutcome hardcodes
+				// Resumable=true; a read failure after the client already saw
+				// semantic output must NOT be transparently retried — the next
+				// supplier node would duplicate committed bytes. Mirrors the
+				// eof_without_done and stream_timeout branches above.
+				outcome.Resumable = !attemptHasClientSemanticOutput(gate, chunkCount)
 				return outcome
 			}
 		}
@@ -355,19 +338,6 @@ func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 	if !gate.MayWriteTerminal() {
 		return outcome
 	}
-	renderResponsesCompleted(w, flusher, respID, msgID, createdAt, clientModel, fullText, finalFinishReason)
-
-	if capture != nil {
-		capture.ObservePayload(`{"type":"response.completed"}`, finalFinishReason, true)
-	}
-	return outcome
-}
-
-// renderResponsesCompleted emits the terminal Responses-API tail
-// (output_text.done → output_item.done → response.completed). It is shared by
-// the normal completion path and the EOF-after-finish-reason recovery path so
-// both produce byte-identical terminal output for the client.
-func renderResponsesCompleted(w http.ResponseWriter, flusher http.Flusher, respID, msgID string, createdAt int, clientModel, fullText, finishReason string) {
 	textDone := map[string]any{
 		"type":          "response.output_text.done",
 		"item_id":       msgID,
@@ -378,7 +348,7 @@ func renderResponsesCompleted(w http.ResponseWriter, flusher http.Flusher, respI
 	writeSSE(w, "response.output_text.done", textDone)
 
 	itemStatus := "completed"
-	if finishReason == "length" {
+	if finalFinishReason == "length" {
 		itemStatus = "incomplete"
 	}
 
@@ -420,6 +390,11 @@ func renderResponsesCompleted(w http.ResponseWriter, flusher http.Flusher, respI
 	}
 	writeSSE(w, "response.completed", completedResp)
 	flusher.Flush()
+
+	if capture != nil {
+		capture.ObservePayload(`{"type":"response.completed"}`, finalFinishReason, true)
+	}
+	return outcome
 }
 
 func writeResponsesIncomplete(w http.ResponseWriter, flusher http.Flusher, respID, msgID string, createdAt int, clientModel, fullText, reason string) {

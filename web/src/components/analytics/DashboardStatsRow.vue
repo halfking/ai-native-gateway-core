@@ -197,28 +197,28 @@ const changeClass = (change: number, isNegative: boolean) => {
   height: 100%;
   cursor: default;
   transition: transform 0.2s;
-  background: var(--card, #fff);
-  border: 1px solid var(--border, #e5e7eb);
+  background: var(--card, var(--on-primary));
+  border: 1px solid var(--border, var(--surface-secondary));
   border-radius: 10px;
-  color: var(--text, #111);
+  color: var(--text, var(--kx-text));
   padding: 16px;
 }
 .stat-card:hover { transform: translateY(-2px); }
 .stat-content { display: flex; align-items: center; gap: 12px; }
 .stat-icon { width: 48px; height: 48px; border-radius: 8px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
 .icon-accent  { background: color-mix(in srgb, var(--accent, #6366f1) 16%, transparent); }
-.icon-success { background: rgba(63, 185, 80, 0.16); }
-.icon-danger  { background: rgba(248, 81, 73, 0.16); }
-.icon-warning { background: rgba(210, 153, 34, 0.16); }
-.icon-muted   { background: rgba(139, 148, 158, 0.16); }
+.icon-success { background: color-mix(in srgb, var(--success) 16%, transparent); }
+.icon-danger  { background: color-mix(in srgb, var(--danger) 14%, transparent); }
+.icon-warning { background: color-mix(in srgb, var(--warning) 16%, transparent); }
+.icon-muted   { background: var(--neutral-bg); }
 .stat-info { flex: 1; min-width: 0; }
-.stat-label { font-size: 13px; color: var(--muted, #909399); margin-bottom: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.stat-value { font-size: 24px; font-weight: 600; color: var(--text, #111); line-height: 1.2; margin-bottom: 2px; }
+.stat-label { font-size: 13px; color: var(--muted, var(--text-secondary)); margin-bottom: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stat-value { font-size: 24px; font-weight: 600; color: var(--text, var(--kx-text)); line-height: 1.2; margin-bottom: 2px; }
 .stat-change { font-size: 12px; display: flex; align-items: center; gap: 2px; }
-.stat-change-good { color: var(--success, #3fb950); }
-.stat-change-bad { color: var(--danger, #f85149); }
-.stat-change-neutral { color: var(--muted, #909399); }
-.stat-subtext { font-size: 12px; color: var(--muted, #909399); }
+.stat-change-good { color: var(--success, var(--success)); }
+.stat-change-bad { color: var(--danger, var(--danger)); }
+.stat-change-neutral { color: var(--muted, var(--text-secondary)); }
+.stat-subtext { font-size: 12px; color: var(--muted, var(--text-secondary)); }
 @media (max-width: 1600px) { .stat-value { font-size: 20px; } }
 @media (max-width: 768px) {
   .dashboard-stats-row { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }

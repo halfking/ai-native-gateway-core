@@ -198,10 +198,10 @@ func TestHealthScorePenaltyCaps(t *testing.T) {
 	summary := AnalyticsSessionSummary{
 		GwSessionID:           "gw_capped",
 		RequestCount:          100,
-		ErrorCount:            50,   // 应该触发 per_error_cap (30)
-		ComplianceIssuesCount: 10,   // 应该触发 per_compliance_cap (30)
-		PIIDetected:           true, // 15
-		ToxicOutputDetected:   true, // 15, 合计 30 (sensitive_cap)
+		ErrorCount:            50,             // 应该触发 per_error_cap (30)
+		ComplianceIssuesCount: 10,             // 应该触发 per_compliance_cap (30)
+		PIIDetected:           true,           // 15
+		ToxicOutputDetected:   true,           // 15, 合计 30 (sensitive_cap)
 	}
 
 	config := DefaultHealthScoreConfig()

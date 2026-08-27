@@ -7,14 +7,14 @@ import (
 
 func contentText(raw json.RawMessage) string {
 	var text string
-	if json.Unmarshal(raw, &text) == nil {
+	if decodeSingleJSON(raw, &text) == nil {
 		return cleanText(text)
 	}
 	var blocks []struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
 	}
-	if json.Unmarshal(raw, &blocks) != nil {
+	if decodeSingleJSON(raw, &blocks) != nil {
 		return ""
 	}
 	parts := make([]string, 0, len(blocks))
@@ -31,27 +31,34 @@ func contentText(raw json.RawMessage) string {
 func corpusParts(messages []Message, systemPrompt, userText string) (corpus, system, user string) {
 	parts := make([]string, 0, len(messages)+2)
 	for _, m := range messages {
-		if m.Role == "tool" || m.Role == "function" {
+		role := strings.ToLower(strings.TrimSpace(m.Role))
+		if role == "developer" {
+			role = "system"
+		}
+		if role == "tool" || role == "function" {
 			continue
 		}
 		text := cleanText(m.Content)
 		if text == "" {
 			continue
 		}
-		parts = append(parts, m.Role+": "+text)
-		if m.Role == "system" && system == "" {
+		if role == "system" {
+			text = truncateRunes(text, MaxSystemRunes)
+		}
+		parts = append(parts, role+": "+text)
+		if role == "system" && system == "" {
 			system = text
 		}
-		if m.Role == "user" {
+		if role == "user" {
 			user = text
 		}
 	}
-	if cleanText(systemPrompt) != "" {
-		system = cleanText(systemPrompt)
+	if systemPrompt = truncateRunes(cleanText(systemPrompt), MaxSystemRunes); systemPrompt != "" {
+		system = systemPrompt
 		parts = append(parts, "system: "+system)
 	}
-	if cleanText(userText) != "" {
-		user = cleanText(userText)
+	if userText = cleanText(userText); userText != "" {
+		user = userText
 		parts = append(parts, "user: "+user)
 	}
 	return strings.Join(parts, "\n"), system, user
@@ -59,8 +66,12 @@ func corpusParts(messages []Message, systemPrompt, userText string) (corpus, sys
 
 func firstSystem(messages []Message) string {
 	for _, m := range messages {
-		if m.Role == "system" {
-			return cleanText(m.Content)
+		role := strings.ToLower(strings.TrimSpace(m.Role))
+		if role == "developer" {
+			role = "system"
+		}
+		if role == "system" {
+			return truncateRunes(cleanText(m.Content), MaxSystemRunes)
 		}
 	}
 	return ""
@@ -68,7 +79,7 @@ func firstSystem(messages []Message) string {
 
 func lastUser(messages []Message) string {
 	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].Role == "user" {
+		if strings.ToLower(strings.TrimSpace(messages[i].Role)) == "user" {
 			return cleanText(messages[i].Content)
 		}
 	}

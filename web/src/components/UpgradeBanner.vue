@@ -89,8 +89,8 @@ onBeforeUnmount(() => {
 .badge-mandatory {
   margin-left: 6px;
   padding: 1px 6px;
-  background: rgba(230, 162, 60, 0.18);
-  color: #b88230;
+  background: color-mix(in srgb, var(--warning) 18%, transparent);
+  color: var(--warning-dark);
   border-radius: 3px;
   font-size: 12px;
 }

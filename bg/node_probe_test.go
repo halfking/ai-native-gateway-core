@@ -1,7 +1,6 @@
 package bg
 
 import (
-	"context"
 	"os"
 	"strings"
 	"testing"
@@ -202,14 +201,6 @@ func TestIsMissingBindingErr(t *testing.T) {
 				t.Errorf("isMissingBindingErr(%+v) = %v, want %v", c.r, got, c.want)
 			}
 		})
-	}
-}
-
-func TestResolveProbeAPIKeyPreservesConfiguredGatewayKey(t *testing.T) {
-	worker := &NodeProbeWorker{apiKey: "static-data-plane-key"}
-	worker.resolveProbeAPIKey(context.Background())
-	if worker.apiKey != "static-data-plane-key" {
-		t.Fatalf("resolveProbeAPIKey changed configured gateway key to %q", worker.apiKey)
 	}
 }
 

@@ -13,6 +13,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/admin"
 	"github.com/kaixuan/llm-gateway-go/domains/dispatch"
+	streaming "github.com/kaixuan/llm-gateway-go/domains/streaming" //nolint:depguard
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
 	"github.com/kaixuan/llm-gateway-go/internal/liveactions"
 )
@@ -27,6 +28,13 @@ var gatewayQueueProjection queueProjectionHolder
 // trace recorder and injected here into the dispatch pipeline
 // (model_enqueued / node_enqueued / node_switch / model_switch / no_route).
 var gatewayLiveActionsEmitter *liveactions.Emitter
+
+// gatewayActionBridge (会话优化 v4 T4/R3.2, FR-3 操作事件思考帧桥接) 是
+// 共享的 liveactions → 客户端思考帧桥。源 = gatewayLiveActionsEmitter 的
+// 进程内订阅，目标 = 共享 connectionRegistry（在 main.go 顶部构造）。
+// 运营开关 llmgw_action_bridge_enabled 默认 false（灰阶上线），走
+// settings_kv 热更新无需重启即可开启；nil 表示未装配（降级为 no-op）。
+var gatewayActionBridge *streaming.ActionBridge
 
 var gatewayRequestJourneySink dispatch.ObservationSink
 var gatewayMinuteStats *dispatch.MinuteStatsAggregator
@@ -127,6 +135,38 @@ func handleDispatchWaterfall(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(snap)
 }
 
+// handleDispatchWaterfallByRequest serves
+// GET /api/admin/dispatch/waterfall/request/{request_id}
+func handleDispatchWaterfallByRequest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	const prefix = "/api/admin/dispatch/waterfall/request/"
+	requestID := strings.TrimPrefix(r.URL.Path, prefix)
+	requestID = strings.Trim(requestID, "/")
+	if requestID == "" || strings.Contains(requestID, "/") {
+		http.Error(w, "request_id required", http.StatusBadRequest)
+		return
+	}
+	tenantID := admin.EffectiveTenantIDAll(r)
+	var mem dispatch.WaterfallRequest
+	memOK := false
+	if projection := gatewayQueueProjection.Load(); projection != nil {
+		mem, memOK = projection.FindWaterfallByRequestID(requestID, tenantID)
+	}
+	item, source, ok := resolveWaterfallByRequest(r.Context(), mem, memOK, requestID, tenantID)
+	if !ok {
+		http.Error(w, "waterfall request not found", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"request": item,
+		"source":  source,
+	})
+}
+
 // handleDispatchMinuteStats serves the Redis-backed immediate operational
 // projection. Persistent financial reporting remains under /api/admin/stats.
 func handleDispatchMinuteStats(w http.ResponseWriter, r *http.Request) {
@@ -154,4 +194,92 @@ func handleDispatchMinuteStats(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"bucket": bucket.UTC().Truncate(time.Minute), "items": stats})
+}
+
+// handleDispatchDimensions serves GET /api/admin/dispatch/dimensions — the
+// per-dimension request membership index (v6 G-Ⅳ, 分维队列). Requests stay in
+// their model/credential/provider rings after completion until TTL/capacity
+// eviction, answering "which requests ran or are waiting on this node".
+//
+// Query:
+//   - kind: model|credential|provider (default model)
+//   - id:   dimension id (model name / credential id / provider id)
+//   - limit (default 50, max 200)
+//   - no id → returns the per-dimension key summary with live entry counts
+func handleDispatchDimensions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	pipeline := gatewayDispatchPipeline
+	if pipeline == nil || pipeline.DimensionIndex() == nil {
+		http.Error(w, "dispatch pipeline not wired", http.StatusServiceUnavailable)
+		return
+	}
+	index := pipeline.DimensionIndex()
+	q := r.URL.Query()
+	kind := dispatch.DimensionKind(strings.TrimSpace(q.Get("kind")))
+	switch kind {
+	case dispatch.DimensionModel, dispatch.DimensionCredential, dispatch.DimensionProvider:
+	default:
+		http.Error(w, "kind must be model|credential|provider", http.StatusBadRequest)
+		return
+	}
+	id := strings.TrimSpace(q.Get("id"))
+	limit := 50
+	if v := q.Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if id == "" {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"kind":       kind,
+			"dimensions": index.Dimensions()[kind],
+		})
+		return
+	}
+	snap := index.Snapshot(kind, id, limit)
+	if snap.Entries == nil {
+		snap.Entries = []dispatch.DimensionEntry{}
+	}
+	_ = json.NewEncoder(w).Encode(snap)
+}
+
+// handleDispatchRequestDimensions serves
+// GET /api/admin/dispatch/request-dimensions/{request_id} (V6-W1.6 R10,
+// scope-corrected 2026-08-27): the request's dimension MEMBERSHIP entries
+// (model/credential/provider + state/outcome/last action). The execution
+// trace (AttemptJournal) is attached to the request itself — post-hoc path
+// queries go to the request's own journey projection, NOT this endpoint.
+func handleDispatchRequestDimensions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	const prefix = "/api/admin/dispatch/request-dimensions/"
+	requestID := strings.Trim(strings.TrimPrefix(r.URL.Path, prefix), "/")
+	if requestID == "" || strings.Contains(requestID, "/") {
+		http.Error(w, "request_id required", http.StatusBadRequest)
+		return
+	}
+	pipeline := gatewayDispatchPipeline
+	if pipeline == nil || pipeline.DimensionIndex() == nil {
+		http.Error(w, "dispatch pipeline not wired", http.StatusServiceUnavailable)
+		return
+	}
+	entries, ok := pipeline.DimensionIndex().EntriesByRequest(requestID)
+	if !ok {
+		http.Error(w, "request not found in dimension index (TTL window expired or unknown request)", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"request_id": requestID,
+		"entries":    entries,
+	})
 }

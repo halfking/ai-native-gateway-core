@@ -169,11 +169,11 @@ func LookupStandardIQ(modelName string) (iq float64, found bool, matchedKey stri
 // AALanguageModel is the subset of the AA free-tier payload we consume.
 // Fields are lenient (pointers/omitempty) because the API shape evolves.
 type AALanguageModel struct {
-	Slug              string  `json:"slug"`
-	Name              string  `json:"name"`
+	Slug             string  `json:"slug"`
+	Name             string  `json:"name"`
 	IntelligenceIndex float64 `json:"intelligence_index"`
-	Score             float64 `json:"score"` // some payloads use "score"
-	Provider          string  `json:"provider"`
+	Score            float64 `json:"score"` // some payloads use "score"
+	Provider         string  `json:"provider"`
 }
 
 // FetchAAIntelligenceIndex calls the Artificial Analysis free-tier language

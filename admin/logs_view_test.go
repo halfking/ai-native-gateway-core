@@ -225,6 +225,21 @@ func TestListColsReferenceClientPerceptionColumns(t *testing.T) {
 	}
 }
 
+func TestRequestLogDetailColumnsStayCompatibleWithBodySplit(t *testing.T) {
+	for _, droppedBodyColumn := range []string{
+		"rl.request_body",
+		"rl.response_body",
+		"rl.outbound_body",
+	} {
+		if strings.Contains(requestLogsDetailCols, droppedBodyColumn) {
+			t.Errorf("requestLogsDetailCols references %q after body storage split", droppedBodyColumn)
+		}
+	}
+	if !strings.Contains(requestLogsDetailCols, "rl.outbound_msg_hashes") {
+		t.Error("requestLogsDetailCols must preserve outbound message hashes")
+	}
+}
+
 // TestRequestLogAggregateJSONContract locks the wire contract of the
 // /api/logs response.aggregate field so the /request-logs UI keeps a
 // stable shape. Adding a new sum column should bump this list in two

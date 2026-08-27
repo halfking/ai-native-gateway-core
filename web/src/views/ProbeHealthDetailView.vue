@@ -769,7 +769,7 @@ onMounted(() => {
 
 .flash {
   padding: 8px 16px;
-  background: rgba(96, 165, 250, 0.12);
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
   color: var(--accent);
   border-radius: var(--radius);
   margin-bottom: 12px;
@@ -912,7 +912,7 @@ onMounted(() => {
 }
 
 .data-table tbody tr:hover {
-  background: rgba(255, 255, 255, 0.02);
+  background: var(--bg-hover);
 }
 
 .mono {
@@ -945,7 +945,7 @@ onMounted(() => {
 .window-btn.active {
   color: var(--accent);
   border-color: var(--accent);
-  background: rgba(96, 165, 250, 0.08);
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
 }
 
 .stats-row {

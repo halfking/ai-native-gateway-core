@@ -1,4 +1,4 @@
-import { req, authBearer } from './_core'
+import { req } from './_core'
 
 // free-pool.ts — v6.0 audit T12 (2026-06-22)
 // The "free pool" is a curated catalog of public LLM providers that
@@ -360,14 +360,16 @@ export function pollFreePoolTempEmail(token: string) {
 //   - recovered        → window reset / credential healthy again
 //   - heartbeat        → keepalive (ignore in UI)
 //
-// EventSource can't set headers, so the bearer token rides on ?token= (same
-// pattern as openSystemMonitorStream). Returns a cleanup closure that closes
-// the stream — call it from onUnmounted.
+// EventSource can't set custom headers, so auth rides on the HttpOnly
+// `llmgw_session` cookie (admin/auth_cookie_helpers.go) attached via
+// `withCredentials: true`. 2026-08-26 (P1-7 fix): do NOT add a `?token=`
+// query parameter — it would land the bearer in browser history and
+// proxy logs.
 export interface FreePoolStreamEvent {
   type: string
   credential_id?: number
   provider_code?: string
-  model_id?: string
+  model_id?: number
   auto_reset_at?: string | null
   ts?: string
 }
@@ -376,9 +378,7 @@ export function openFreePoolStream(
   onEvent: (env: FreePoolStreamEvent) => void,
   onError?: (e: Event) => void,
 ): () => void {
-  const token = authBearer()
   const url = new URL('/api/free-pool/stream', window.location.origin)
-  if (token) url.searchParams.set('token', token)
   const es = new EventSource(url.toString(), { withCredentials: true })
 
   const handler = (raw: MessageEvent) => {

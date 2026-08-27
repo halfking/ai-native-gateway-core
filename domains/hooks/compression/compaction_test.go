@@ -92,7 +92,23 @@ func TestExtractConversationText_AnthropicSmoke(t *testing.T) {
 	}
 }
 
-// TestRawJSONTextContent_Shapes covers the three content shapes
+func TestExtractConversationText_SkipsSystemReminderInputText(t *testing.T) {
+	body := []byte(`{"messages":[
+		{"role":"user","content":[{"type":"input_text","text":"<system-reminder>Available skills</system-reminder>"}]},
+		{"role":"user","content":"actual request"}
+	]}`)
+	got, err := extractConversationText(body, "openai-chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(got, "system-reminder") {
+		t.Fatalf("system reminder leaked into summary input: %s", got)
+	}
+	if !strings.Contains(got, "actual request") {
+		t.Fatalf("real user request missing from summary input: %s", got)
+	}
+}
+
 // (string, text blocks, no content).
 func TestRawJSONTextContent_Shapes(t *testing.T) {
 	cases := []struct {

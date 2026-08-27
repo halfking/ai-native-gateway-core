@@ -164,6 +164,7 @@ const connectionClass = computed(() => {
 
 // 维度标签
 const dimensionLabel = computed(() => {
+  if (groupBy.value === 'credential') return t('dashboard.liveStream.dimensionCredential')
   if (groupBy.value === 'vendor') return t('dashboard.liveStream.dimensionVendor')
   if (groupBy.value === 'provider') return t('dashboard.liveStream.dimensionProvider')
   return t('dashboard.liveStream.dimensionModel')
@@ -227,10 +228,10 @@ function vendorOptionLabel(v: string) {
           <button
             type="button"
             class="control-btn"
-            :class="{ 'control-btn--active': groupBy === 'vendor' }"
-            @click="handleGroupByChange('vendor')"
+            :class="{ 'control-btn--active': groupBy === 'credential' }"
+            @click="handleGroupByChange('credential')"
           >
-            {{ t('dashboard.liveStream.groupByVendor') }}
+            {{ t('dashboard.liveStream.groupByCredential') }}
           </button>
           <button
             type="button"

@@ -61,7 +61,7 @@ func TestNoGoStyleCommentsInsideSQLRawStrings(t *testing.T) {
 
 // multiLineRawStrings scans a Go source for raw-string literals that span
 // more than one physical line. Returns (openLine, body) for each block.
-// Single-line raw strings (“ `…` “ on one line) are skipped because
+// Single-line raw strings (`` `…` `` on one line) are skipped because
 // they cannot contain Go-style //-comment lines anyway.
 func multiLineRawStrings(src string) []rawStringBlock {
 	var blocks []rawStringBlock

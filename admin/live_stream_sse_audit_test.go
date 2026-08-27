@@ -44,9 +44,9 @@ func TestLiveStreamSSEHub_ComputeScopeDeltaPreservesBaselineAcrossEmptyRead(t *t
 	defer rdb.Close()
 
 	hub := NewLiveStreamSSEHub(nil, LiveStreamConfig{RedisClient: rdb})
-	// 2026-08-25 (merge audit): 06408163c 给 broadcast 路径加了 2s 快照节流,
-	// 窗口内会重放上一次成功 delta(设计如此, 已在 245 验证)。本测试断言的是
-	// 非节流路径的 baseline 保留语义 — 关闭节流保持原断言有效。
+	// Disable the 2s snapshot throttle (2026-08-25): the empty-read contract
+	// must be exercised on the immediate second read instead of replaying the
+	// cached delta.
 	hub.SetSnapshotMinInterval(0)
 	ctx := context.Background()
 	first := LiveRequest{

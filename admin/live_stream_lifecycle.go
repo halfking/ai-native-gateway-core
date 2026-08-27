@@ -93,13 +93,6 @@ func sortActionsStable(actions []liveactions.ActionEvent) {
 // is flattened to the top level so the FE1 ActionEvent contract is met
 // without a second DTO. Detail never carries body content or secrets
 // (BE1 安全红线), so promotion across the wire is safe.
-//
-// 2026-08-23 (Agent C): if labels is non-nil and contains an entry for
-// ev.CredentialID, the resolved label is written as `credential_label`
-// so the dashboard can render "供应商+凭据" without a second fetch. The
-// ActionEvent contract (liveactions/liveactions.go) stays unchanged —
-// credential_label is purely a wire-side projection, optional, omitted
-// when the lookup misses.
 func flattenActionEvent(ev liveactions.ActionEvent, labels map[int]string) map[string]any {
 	b, err := json.Marshal(ev)
 	if err != nil {
@@ -131,11 +124,48 @@ func flattenActionEvent(ev liveactions.ActionEvent, labels map[int]string) map[s
 	return m
 }
 
-// collectCredentialIDs returns the deduplicated set of credential IDs that
-// appear on a batch of ActionEvents (credential_id plus from_credential_id /
-// to_credential_id for node_switch). The caller uses the slice as the
-// `WHERE id = ANY(...)` argument to a single batched credentials lookup so
-// a 50-action tick does not fan out 50 round-trips.
+// normalizeLiveRequestType maps the persisted request_type vocabulary
+// (request_logs.request_type, migration 510: main/title_gen/summary/
+// sensitive_check/compression/probe) onto the frozen 24号 §3 wire enum
+// chat|title|summary|sensitive_word|probe|unknown. Main requests return ""
+// so the requestType alias stays absent on ordinary frames (optional 字段,
+// 零值不冒充).
+func normalizeLiveRequestType(raw string) string {
+	switch raw {
+	case "", "main":
+		return ""
+	case "title_gen", "title":
+		return "title"
+	case "summary":
+		return "summary"
+	case "sensitive_check", "sensitive_word":
+		return "sensitive_word"
+	case "probe":
+		return "probe"
+	default:
+		// compression 及任何未分类值：诚实归为 unknown，不伪造词表。
+		return "unknown"
+	}
+}
+
+// actionWirePayload shapes the envelope's "action" field: a single object
+// for one event (24号 §3 示例), an array for an aggregated batch frame.
+// Both shapes are accepted by the frontend store.
+func actionWirePayload(actions []liveactions.ActionEvent, labels map[int]string) any {
+	if len(actions) == 1 {
+		return flattenActionEvent(actions[0], labels)
+	}
+	out := make([]map[string]any, len(actions))
+	for i, a := range actions {
+		out[i] = flattenActionEvent(a, labels)
+	}
+	return out
+}
+
+// collectCredentialIDs gathers the distinct credential ids referenced by a
+// batch (including ActionNodeSwitch from/to ids in Detail) for one batched
+// label lookup. Restored 2026-08-27 after d2cbaf88b stripped the label
+// enrichment step and left CredentialLabelsFor without a caller.
 func collectCredentialIDs(actions []liveactions.ActionEvent) []int {
 	if len(actions) == 0 {
 		return nil
@@ -166,10 +196,6 @@ func collectCredentialIDs(actions []liveactions.ActionEvent) []int {
 	return out
 }
 
-// extractIntFromDetail parses an int from the emitter's Detail map. Detail
-// values are typed as strings (liveactions.ActionEvent.Detail) but the wire
-// contract uses int-valued keys for from/to_credential_id — accept either
-// representation defensively.
 func extractIntFromDetail(detail map[string]string, key string) (int, bool) {
 	if detail == nil {
 		return 0, false
@@ -183,51 +209,6 @@ func extractIntFromDetail(detail map[string]string, key string) (int, bool) {
 		return 0, false
 	}
 	return n, true
-}
-
-// normalizeLiveRequestType maps the persisted request_type vocabulary
-// (request_logs.request_type, migration 510: main/title_gen/summary/
-// sensitive_check/compression/probe) onto the frozen 24号 §3 wire enum
-// chat|title|summary|sensitive_word|probe|unknown. Main requests return ""
-// so the requestType alias stays absent on ordinary frames (optional 字段,
-// 零值不冒充).
-func normalizeLiveRequestType(raw string) string {
-	switch raw {
-	case "", "main":
-		return ""
-	case "title_gen", "title":
-		return "title"
-	case "summary":
-		return "summary"
-	case "sensitive_check", "sensitive_word":
-		return "sensitive_word"
-	case "probe":
-		return "probe"
-	default:
-		// compression 及任何未分类值：诚实归为 unknown，不伪造词表。
-		return "unknown"
-	}
-}
-
-// actionWirePayload shapes the envelope's "action" field: a single object
-// for one event (24号 §3 示例), an array for an aggregated batch frame.
-// Both shapes are accepted by the frontend store.
-//
-// 2026-08-23 (Agent C): optional labels map (credential_id → label) is
-// forwarded to flattenActionEvent so each emitted action carries a
-// `credential_label` projection. Pass nil when the lookup is unavailable
-// (no DB / batch with no credential_id) — flattenActionEvent treats nil
-// as a no-op and the wire shape stays identical to the pre-credential-
-// label contract.
-func actionWirePayload(actions []liveactions.ActionEvent, labels map[int]string) any {
-	if len(actions) == 1 {
-		return flattenActionEvent(actions[0], labels)
-	}
-	out := make([]map[string]any, len(actions))
-	for i, a := range actions {
-		out[i] = flattenActionEvent(a, labels)
-	}
-	return out
 }
 
 // MarshalJSON emits the frozen snake_case fields plus the V3.3 camelCase

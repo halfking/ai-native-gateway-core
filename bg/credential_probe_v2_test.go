@@ -155,7 +155,10 @@ func TestWriteHealth_ClosesBindingFailuresWithoutCredentialWideWrite(t *testing.
 		"c.restoreBindingOnProbeSuccess(execCtx, credID, pr.HealthProbeModel)",
 		"available := pr.AvailabilityState == \"ready\" && !pr.BindingOnly",
 		"state = \"model_binding\"",
-		"Available:     pr.AvailabilityState == \"ready\" && !pr.BindingOnly",
+		"modelAvailable := available",
+		"if pr.BindingOnly {",
+		"modelAvailable = model != pr.HealthProbeModel",
+		"Available:     modelAvailable",
 		"UPDATE credential_model_bindings cmb",
 		"pm.raw_model_name = $2",
 		"cmb.unavailable_reason = 'auto_probe_model_binding'",
@@ -177,7 +180,11 @@ func TestWriteHealth_FansOutBoundRawModels(t *testing.T) {
 		"COALESCE(cmb.available, TRUE) = TRUE",
 		"COALESCE(pm.available, TRUE) = TRUE",
 		"if err := rows.Err(); err != nil",
-		"writeModels := uniqueStringSet([]string{pr.HealthProbeModel}, c.loadBoundRawModels(execCtx, credID))",
+		// 2026-08-26 self-check audit: pin the failure-branch call site
+		// (the cache mirrors current DB state when the probe is sick).
+		// The healthy-ready branch uses loadBoundRawModelsAll instead;
+		// covered by TestCredentialProbeV2_CacheFanOutIncludesAllBindings.
+		"uniqueStringSet([]string{pr.HealthProbeModel}, c.loadBoundRawModels(execCtx, credID))",
 		"for _, model := range writeModels",
 		"c.cache.Set(execCtx, credID, model",
 		"Model:         model",

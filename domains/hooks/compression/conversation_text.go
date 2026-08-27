@@ -222,7 +222,8 @@ func rawJSONTextContent(raw json.RawMessage) string {
 		}
 		var b strings.Builder
 		for _, bl := range blocks {
-			if bl.Type == "text" || bl.Type == "" {
+			if bl.Type == "text" || bl.Type == "input_text" || bl.Type == "output_text" || bl.Type == "" {
+
 				if bl.Text != "" {
 					if b.Len() > 0 {
 						b.WriteString("\n")

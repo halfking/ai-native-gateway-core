@@ -886,8 +886,8 @@ func (h *Handler) handleProbeSystemHealth(w http.ResponseWriter, r *http.Request
 		}
 		legacyHealth.TotalRealSuccess24h = nullInt(totalRealSuccess24h)
 		legacyHealth.TotalRealFailure24h = nullInt(totalRealFailure24h)
-		if rc, ok := h.redisClient.(*redis.Client); ok && h.availabilityReader != nil {
-			keys, cacheErr := h.availabilityReader.ScanKeys(r.Context(), 0)
+		if rc, ok := h.redisClient.(*redis.Client); ok {
+			keys, cacheErr := rc.Keys(r.Context(), "llmgw:avail:*:*").Result()
 			if cacheErr == nil && len(keys) > 0 {
 				legacyHealth.TotalNodes = len(keys)
 				legacyHealth.HealthyNodes = 0
@@ -1586,21 +1586,6 @@ func (h *Handler) handleProbeTaskCreate(w http.ResponseWriter, r *http.Request) 
 	if req.Source == "" {
 		req.Source = "admin"
 	}
-	if !isProbeTaskCommand(req.Command) {
-		writeError(w, http.StatusBadRequest, "unsupported probe command")
-		return
-	}
-	if !isProbeTaskSource(req.Source) {
-		writeError(w, http.StatusBadRequest, "unsupported probe source")
-		return
-	}
-	if req.Priority == 0 {
-		req.Priority = 60
-	}
-	if req.RunAfterSec < 0 || req.RunAfterSec > 24*60*60 {
-		writeError(w, http.StatusBadRequest, "run_after_seconds must be between 0 and 86400")
-		return
-	}
 	if req.MaxAttempts <= 0 {
 		req.MaxAttempts = 7
 	}
@@ -1633,19 +1618,6 @@ func (h *Handler) handleProbeTaskCreate(w http.ResponseWriter, r *http.Request) 
 		"dedup_key": task.DedupKey,
 		"message":   ternary(inserted, "task enqueued", "a task for this dedup key is already active"),
 	})
-}
-
-func isProbeTaskCommand(command string) bool {
-	return command == "node_probe" || command == "integrity_verify" || command == "selfcheck"
-}
-
-func isProbeTaskSource(source string) bool {
-	switch source {
-	case "request_failure", "periodic", "external_async", "admin", "integrity_probe_planner", "selfcheck":
-		return true
-	default:
-		return false
-	}
 }
 
 // handleProbeTaskCancel is the public "remove self-check task" API (需求 6
@@ -1695,10 +1667,10 @@ func ternary(b bool, t, f string) string {
 // 25 号 §6.2 三态队列). Metadata only — no result_body_preview, keeping the
 // 可观测安全红线 (body 不进 API/SSE) 一致。
 type ProbeTriStateTask struct {
-	ID           int64  `json:"id"`
-	DedupKey     string `json:"dedup_key"`
-	CredentialID int64  `json:"credential_id"`
-	ProviderID   *int64 `json:"provider_id,omitempty"`
+	ID            int64      `json:"id"`
+	DedupKey      string     `json:"dedup_key"`
+	CredentialID  int64      `json:"credential_id"`
+	ProviderID    *int64     `json:"provider_id,omitempty"`
 	// ProviderName / ProviderCode come from the providers table (LEFT JOIN).
 	// They let the 自检 tab render 供应商 + 凭据 instead of a bare
 	// "凭据 #<id>" — operator-facing dashboard readability (2026-08-20).

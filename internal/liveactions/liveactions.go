@@ -33,7 +33,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/kaixuan/llm-gateway-go/domains/requestjourney"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/redis/go-redis/v9"
 )
@@ -96,66 +95,16 @@ var Actions = []Action{
 // 原则). Detail values must never contain body content, API keys or system
 // prompts (安全红线).
 type ActionEvent struct {
-	RequestID     string            `json:"request_id"`
-	Seq           int64             `json:"seq"`
-	Action        Action            `json:"action"`
-	Ts            time.Time         `json:"ts"`
-	Model         string            `json:"model,omitempty"`
-	CredentialID  int               `json:"credential_id,omitempty"`
-	ErrorKind     string            `json:"error_kind,omitempty"`
-	RetrySeq      int               `json:"retry_seq,omitempty"`
-	Retry         bool              `json:"retry,omitempty"`
-	Stage         string            `json:"stage,omitempty"`
-	StageCategory string            `json:"stage_category,omitempty"`
-	Detail        map[string]string `json:"detail,omitempty"`
-}
-
-func stageForAction(action Action) requestjourney.JourneyStage {
-	switch action {
-	case ActionArrive:
-		return requestjourney.StageReceived
-	case ActionRouteResolved:
-		return requestjourney.StageRouting
-	case ActionModelEnqueued:
-		return requestjourney.StageModelQueue
-	case ActionCredentialSelected, ActionNodeSelected:
-		return requestjourney.StageNodeSelection
-	case ActionNodeEnqueued:
-		return requestjourney.StageCredentialQueue
-	case ActionUpstreamRequest:
-		return requestjourney.StageUpstream
-	case ActionFirstByte:
-		return requestjourney.StageStreaming
-	case ActionNodeSwitch, ActionModelSwitch:
-		return requestjourney.StageRetrying
-	case ActionReply, ActionNoRoute:
-		return requestjourney.StageTerminal
-	default:
-		return ""
-	}
-}
-
-func normalizeStage(ev *ActionEvent) {
-	if ev == nil {
-		return
-	}
-	stage := requestjourney.JourneyStage(ev.Stage)
-	if stage == "" {
-		stage = stageForAction(ev.Action)
-		if stage != "" {
-			ev.Stage = string(stage)
-		} else {
-			// No caller-supplied Stage and no mapping for this Action.
-			// Surface as a metric so future Action additions missing from
-			// stageForAction are caught instead of silently emitting events
-			// with empty stage / stage_category.
-			stageNormFailureTot.Add(1)
-			return
-		}
-	}
-	if ev.StageCategory == "" && stage != "" {
-		ev.StageCategory = string(stage.Category())
-	}
+	RequestID    string            `json:"request_id"`
+	Seq          int64             `json:"seq"`
+	Action       Action            `json:"action"`
+	Ts           time.Time         `json:"ts"`
+	Model        string            `json:"model,omitempty"`
+	CredentialID int               `json:"credential_id,omitempty"`
+	ErrorKind    string            `json:"error_kind,omitempty"`
+	RetrySeq     int               `json:"retry_seq,omitempty"`
+	Retry        bool              `json:"retry,omitempty"`
+	Detail       map[string]string `json:"detail,omitempty"`
 }
 
 // Redis contract (24 号 §4).
@@ -168,8 +117,11 @@ const (
 	// DefaultBufferSize is the in-process emit buffer. When full, events are
 	// dropped + counted (never block the hot path).
 	DefaultBufferSize = 4096
-	// redisWriteTimeout bounds one worker-side LPUSH+LTRIM pipeline.
+	// redisWriteTimeout bounds one worker-side LPUSH+LTRIM+EXPIRE pipeline.
 	redisWriteTimeout = 2 * time.Second
+	// redisKeyTTL bounds the action replay queue when the gateway is idle.
+	// Each successful write renews it so active dashboards retain their replay window.
+	redisKeyTTL = 24 * time.Hour
 )
 
 // redisMaxLen is the runtime LTRIM bound (defaults to RedisMaxLen; a var so
@@ -259,13 +211,6 @@ func (e *Emitter) RedisFailuresTotal() uint64 {
 	return e.redisFailures.Load()
 }
 
-// StageNormalizationFailuresTotal returns how many ActionEvents fell out of
-// the stageForAction mapping (catch-all for any future Action added without
-// updating the switch). Should stay at zero in production.
-func StageNormalizationFailuresTotal() uint64 {
-	return stageNormFailureTot.Load()
-}
-
 type liveActionsCollector struct{}
 
 func (liveActionsCollector) Describe(ch chan<- *prometheus.Desc) {
@@ -280,7 +225,7 @@ func (liveActionsCollector) Collect(ch chan<- prometheus.Metric) {
 		prometheus.NewDesc("live_actions_redis_failures_total", "Action-event Redis writes that failed (silent degradation).", nil, nil),
 		prometheus.CounterValue, float64(redisFailureTot.Load()))
 	ch <- prometheus.MustNewConstMetric(
-		prometheus.NewDesc("live_actions_stage_normalization_failures_total", "ActionEvents whose stageForAction mapping returned empty (should stay at zero; surfaces a missing switch arm).", nil, nil),
+		prometheus.NewDesc("live_actions_stage_normalization_failures_total", "Action-event stage-normalization failures (silent degradation).", nil, nil),
 		prometheus.CounterValue, float64(stageNormFailureTot.Load()))
 }
 
@@ -298,20 +243,6 @@ type Emitter struct {
 	redisFailures atomic.Uint64
 	closed        atomic.Bool
 	closeOnce     sync.Once
-	sendMu        sync.Mutex
-
-	// In-process fanout subscriptions (会话优化 v4 R3.2 / T4). Subscribers
-	// receive every event accepted by Emit, after per-request seq + ts
-	// normalization but before Redis write — so bridges can re-render the
-	// event to the client without round-tripping through Redis LIST.
-	//
-	// Subscriptions are non-blocking (bounded per-subscriber channels) and
-	// never slow the hot path: a full subscriber buffer drops the event and
-	// counts it via SubscribersDroppedTotal.
-	subsMu        sync.RWMutex
-	subs          []chan ActionEvent
-	subsDropped   atomic.Uint64
-	subsBufferLen int
 }
 
 // NewEmitter builds an emitter writing to the bounded Redis action queue.
@@ -323,9 +254,8 @@ func NewEmitter(rdb Client, bufSize int) *Emitter {
 		bufSize = DefaultBufferSize
 	}
 	e := &Emitter{
-		client:        rdb,
-		ch:            make(chan ActionEvent, bufSize),
-		subsBufferLen: 256,
+		client: rdb,
+		ch:     make(chan ActionEvent, bufSize),
 	}
 	metricsRegistered.Do(func() {
 		prometheus.MustRegister(liveActionsCollector{})
@@ -333,57 +263,6 @@ func NewEmitter(rdb Client, bufSize int) *Emitter {
 	e.wg.Add(1)
 	go e.run()
 	return e
-}
-
-// Subscribe registers an in-process subscriber that receives every accepted
-// ActionEvent. The returned channel is closed when the emitter is closed
-// (Stop returns), so subscribers must drain the channel themselves.
-//
-// bufferSize <= 0 falls back to a 256-event buffer. The implementation
-// matches ChannelActionSource in domains/streaming: bounded channels, never
-// blocks Emit (full subscriber buffer drops the event and increments
-// SubscribersDroppedTotal). Subscribe on a nil *Emitter returns nil.
-//
-// Thread-safety: callers may subscribe / unsubscribe concurrently with Emit.
-// The slice mutation is held under subsMu; the per-event fanout is lock-free
-// for the common case (RLock + channel-send under default).
-func (e *Emitter) Subscribe(bufferSize int) <-chan ActionEvent {
-	if e == nil {
-		return nil
-	}
-	if bufferSize <= 0 {
-		bufferSize = e.subsBufferLen
-	}
-	ch := make(chan ActionEvent, bufferSize)
-	e.subsMu.Lock()
-	if e.closed.Load() {
-		e.subsMu.Unlock()
-		close(ch)
-		return ch
-	}
-	e.subs = append(e.subs, ch)
-	e.subsMu.Unlock()
-	return ch
-}
-
-// SubscribersDroppedTotal counts events dropped because a subscriber's
-// bounded channel was full when fanout tried to deliver it.
-func (e *Emitter) SubscribersDroppedTotal() uint64 {
-	if e == nil {
-		return 0
-	}
-	return e.subsDropped.Load()
-}
-
-// SubscribersLive reports the number of currently registered in-process
-// subscribers (debug / health surfaces).
-func (e *Emitter) SubscribersLive() int {
-	if e == nil {
-		return 0
-	}
-	e.subsMu.RLock()
-	defer e.subsMu.RUnlock()
-	return len(e.subs)
 }
 
 // Emit enqueues one action event. Nil-receiver safe (no-op), non-blocking
@@ -404,9 +283,6 @@ func (e *Emitter) Emit(_ context.Context, ev ActionEvent) {
 	if ev.Ts.IsZero() {
 		ev.Ts = time.Now().UTC()
 	}
-	normalizeStage(&ev)
-	e.sendMu.Lock()
-	defer e.sendMu.Unlock()
 	if e.closed.Load() {
 		// Post-Close emit (shutdown race): count as dropped instead of
 		// panicking on the closed channel.
@@ -421,10 +297,6 @@ func (e *Emitter) Emit(_ context.Context, ev ActionEvent) {
 		e.dropped.Add(1)
 		droppedTotal.Add(1)
 	}
-	// In-process fanout (会话优化 v4 R3.2 / T4): deliver to every live
-	// subscriber (e.g. ActionBridge). Per-subscriber buffered channels
-	// guarantee non-blocking: a full subscriber buffer drops + counts.
-	fanoutToSubscribers(e, ev)
 	// Terminal actions: release the per-request seq counter so the map stays
 	// bounded by in-flight requests. reply/no_route 之后同一 request_id 不会再
 	// 有动作事件。
@@ -439,10 +311,8 @@ func (e *Emitter) Close() {
 		return
 	}
 	e.closeOnce.Do(func() {
-		e.sendMu.Lock()
 		e.closed.Store(true)
 		close(e.ch)
-		e.sendMu.Unlock()
 	})
 	e.wg.Wait()
 }
@@ -475,35 +345,11 @@ func (e *Emitter) write(ev ActionEvent) {
 	pipe.LPush(ctx, RedisKey, string(data))
 	// Keep the newest RedisMaxLen entries at the head (0..redisMaxLen-1).
 	pipe.LTrim(ctx, RedisKey, 0, redisMaxLen-1)
+	pipe.Expire(ctx, RedisKey, redisKeyTTL)
 	if _, err := pipe.Exec(ctx); err != nil {
 		// 静默降级：计数 + debug 日志，不阻塞、不上抛（Redis 不可用时请求路径零感知）。
 		e.redisFailures.Add(1)
 		redisFailureTot.Add(1)
 		slog.Debug("liveactions: redis write failed", "action", ev.Action, "request_id", ev.RequestID, "err", err.Error())
-	}
-}
-
-// fanoutToSubscribers delivers one event to every live in-process subscriber
-// under the subscribers' RLock so Subscribe / unsubscribe stay race-free
-// against Emit. Each subscriber's send is non-blocking (select/default);
-// the loop snapshots the slice header under RLock, then drops it before the
-// fanout loop to keep the critical section short.
-func fanoutToSubscribers(e *Emitter, ev ActionEvent) {
-	e.subsMu.RLock()
-	if len(e.subs) == 0 {
-		e.subsMu.RUnlock()
-		return
-	}
-	// Snapshot under RLock so concurrent Unsubscribe / Subscribe don't race
-	// the slice header.
-	subs := make([]chan ActionEvent, len(e.subs))
-	copy(subs, e.subs)
-	e.subsMu.RUnlock()
-	for _, ch := range subs {
-		select {
-		case ch <- ev:
-		default:
-			e.subsDropped.Add(1)
-		}
 	}
 }

@@ -132,6 +132,13 @@ export function orderNodesByRoutingCandidates<T extends { credential_id: number 
   })
 }
 
+/**
+ * Render a node card title in the {供应商}/{凭据名称} format the dashboard
+ * mandates (e.g. `anthropic/terra-prod`). Falls back to `{vendor}/#{id}` when
+ * the credential has no label yet, so an operator can still tell which
+ * upstream the card belongs to even before the credential monitor returns a
+ * human label.
+ */
 export function credentialDisplayName(
   candidate: { credential_label?: string | null; provider_name?: string | null } | null | undefined,
   fallbackProvider: string,
@@ -139,6 +146,7 @@ export function credentialDisplayName(
   nodeLabel?: string | null,
 ): string {
   const label = (candidate?.credential_label || nodeLabel || '').trim()
-  if (label) return label
-  return `${fallbackProvider} · #${credentialId}`
+  const provider = (candidate?.provider_name || fallbackProvider || '').trim() || '—'
+  const suffix = label || `#${credentialId}`
+  return `${provider}/${suffix}`
 }

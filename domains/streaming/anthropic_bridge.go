@@ -155,11 +155,17 @@ func StreamAnthropicPassthroughWithDiagnostics(
 	defer func() {
 		if finisher, ok := w.(interface{ Finish() error }); ok {
 			if err := finisher.Finish(); err != nil && !outcome.Interrupted {
+				// Client connection is dead by the time Finish() fails. A
+				// transparent retry would attempt to write headers to the
+				// same dead connection, wasting an upstream call. We
+				// deliberately do not consult the gate here: regardless of
+				// whether semantic output was committed, the new attempt
+				// cannot reach the dead client.
 				outcome = StreamOutcome{
 					Interrupted: true,
 					Reason:      "client_write_failed",
 					Kind:        errorsx.KindCanceled,
-					Resumable:   true,
+					Resumable:   false,
 					ChunkCount:  outcome.ChunkCount,
 				}
 				if capture != nil {
@@ -187,7 +193,10 @@ func StreamAnthropicPassthroughWithDiagnostics(
 		if pc != nil {
 			pc.markInterrupted("client_write_failed")
 		}
-		return StreamOutcome{Interrupted: true, Reason: "client_write_failed", Kind: errorsx.KindCanceled, Resumable: true}
+		// Client connection is dead before any frame — including headers —
+		// reaches the wire. A transparent retry would re-attempt the same
+		// header flush on the same dead connection, wasting an upstream call.
+		return StreamOutcome{Interrupted: true, Reason: "client_write_failed", Kind: errorsx.KindCanceled, Resumable: false}
 	}
 
 	reader := bufio.NewReaderSize(resp.Body, anthropicSSEBufSize)
@@ -270,24 +279,24 @@ func StreamAnthropicPassthroughWithDiagnostics(
 				break
 			}
 			if clientWriter.clientDisconnected {
+				// Client is already gone: also mark capture interrupted so
+				// SummaryAsMap's stream_interrupted reflects reality (every
+				// other interrupted branch in this function marks it).
+				if capture != nil {
+					capture.MarkInterruptedWithReason("client_write_failed")
+				}
 				outcome = StreamOutcome{Interrupted: true, Reason: "client_write_failed", Kind: errorsx.KindCanceled, ChunkCount: chunkCount}
 				return outcome
 			}
 			if errors.Is(err, context.Canceled) || (ctx != nil && errors.Is(ctx.Err(), context.Canceled)) {
 				outcome = StreamOutcome{Interrupted: true, Reason: "client_cancel", Kind: errorsx.KindCanceled, Resumable: false, ChunkCount: chunkCount}
 			} else if errors.Is(err, context.DeadlineExceeded) || strings.Contains(strings.ToLower(err.Error()), "stream read timeout") {
-				// Gate-aware: a per-chunk timeout after the gate committed
-				// content must NOT be transparently retried — duplicating
-				// committed bytes on another supplier would violate
-				// "client connection is preserved across supplier node
-				// switches".
-				outcome = StreamOutcome{
-					Interrupted: true,
-					Reason:      "stream_chunk_timeout",
-					Kind:        errorsx.KindStreamTimeout,
-					Resumable:   !attemptHasClientSemanticOutput(attemptGate, chunkCount),
-					ChunkCount:  chunkCount,
-				}
+				// Gate-aware resumability. Mirrors the eof_without_done,
+				// stream_timeout, and upstream_error branches in this
+				// function: a chunk timeout after the client already saw
+				// semantic output must NOT be transparently retried — the
+				// next supplier node would duplicate committed bytes.
+				outcome = StreamOutcome{Interrupted: true, Reason: "stream_chunk_timeout", Kind: errorsx.KindStreamTimeout, Resumable: !attemptHasClientSemanticOutput(attemptGate, chunkCount), ChunkCount: chunkCount}
 			} else {
 				outcome = streamReadFailureOutcome(err, chunkCount)
 			}
@@ -377,6 +386,10 @@ func StreamAnthropicPassthroughWithDiagnostics(
 		outcome = StreamOutcome{Interrupted: true, Reason: "client_write_failed", Kind: errorsx.KindCanceled, ChunkCount: chunkCount}
 		return outcome
 	}
+	// NOTE(2026-08-27): mid-loop client disconnect is deliberately NOT marked
+	// Interrupted on the completed-upstream exit — the pending capturer needs
+	// a completed replay body (see pending_disconnect_test.go /
+	// TestStreamAnthropicPassthroughContinuesAfterClientDisconnect).
 	outcome.ChunkCount = chunkCount
 	return outcome
 }
@@ -630,7 +643,10 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 		if pc != nil {
 			pc.markInterrupted("client_write_failed")
 		}
-		return StreamOutcome{Interrupted: true, Reason: "client_write_failed", Kind: errorsx.KindCanceled, Resumable: true}
+		// Client connection is dead before any frame — including headers —
+		// reaches the wire. A transparent retry would re-attempt the same
+		// header flush on the same dead connection, wasting an upstream call.
+		return StreamOutcome{Interrupted: true, Reason: "client_write_failed", Kind: errorsx.KindCanceled, Resumable: false}
 	}
 
 	chatID := "chatcmpl-" + requestID
@@ -825,6 +841,13 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 			}
 			failure := streamReadFailureOutcome(err, chunkCount)
 			outcome = failure
+			// Gate-aware resumability. streamReadFailureOutcome hardcodes
+			// Resumable=true; a read failure after the client already saw
+			// semantic output must NOT be transparently retried — the next
+			// supplier node would duplicate committed bytes. Mirrors the
+			// eof_without_done, stream_timeout, and stream_chunk_timeout
+			// branches in this function.
+			outcome.Resumable = !attemptHasClientSemanticOutput(gate, chunkCount)
 			if capture != nil {
 				capture.MarkInterruptedWithReason(failure.Reason)
 			}
@@ -1121,76 +1144,7 @@ func emitAnthropicBridgeErrorChunk(w http.ResponseWriter, code, message string, 
 // dropped tool_calls and other complex message structures, causing
 // Claude Sonnet 4-6 to lose conversation context.
 func ConvertChatRequestToAnthropic(in []byte) ([]byte, error) {
-	var src map[string]any
-	if err := json.Unmarshal(in, &src); err != nil {
-		return nil, fmt.Errorf("unmarshal: %w", err)
-	}
-	out := map[string]any{
-		"model": src["model"],
-	}
-	if mt, ok := src["max_tokens"]; ok && mt != nil {
-		out["max_tokens"] = mt
-	} else {
-		out["max_tokens"] = 4096
-	}
-	if s, ok := src["stream"]; ok {
-		out["stream"] = s
-	}
-	if t, ok := src["temperature"]; ok {
-		out["temperature"] = t
-	}
-	if tp, ok := src["top_p"]; ok {
-		out["top_p"] = tp
-	}
-	if tk, ok := src["top_k"]; ok {
-		out["top_k"] = tk
-	}
-	if stops, ok := src["stop"]; ok {
-		out["stop_sequences"] = stops
-	}
-
-	if user, ok := src["user"].(string); ok && user != "" {
-		out["metadata"] = map[string]any{
-			"user_id": user,
-		}
-	}
-
-	var systemContent string
-	var anthropicMsgs []any
-	if msgs, ok := src["messages"].([]any); ok {
-		for _, msg := range msgs {
-			msgMap, _ := msg.(map[string]any)
-			role, _ := msgMap["role"].(string)
-			if role == "system" {
-				if system, ok := msgMap["content"].(string); ok {
-					systemContent = system
-				}
-				continue
-			}
-			anthropicMsgs = append(anthropicMsgs, convertBridgeChatMessageToAnthropic(msgMap))
-		}
-	}
-	if systemContent != "" {
-		out["system"] = systemContent
-	}
-	out["messages"] = anthropicMsgs
-
-	if tools, ok := src["tools"].([]any); ok {
-		anthTools := make([]any, 0, len(tools))
-		for _, tool := range tools {
-			toolMap, _ := tool.(map[string]any)
-			if anthropicTool, ok := convertBridgeOpenAIToolToAnthropic(toolMap); ok {
-				anthTools = append(anthTools, anthropicTool)
-			}
-		}
-		if len(anthTools) > 0 {
-			out["tools"] = anthTools
-		}
-	}
-	if toolChoice, ok := src["tool_choice"]; ok {
-		out["tool_choice"] = convertBridgeChatToolChoiceToAnthropic(toolChoice)
-	}
-	return json.Marshal(out)
+	return anthropictransform.ConvertChatRequestToAnthropic(in)
 }
 
 // ConvertAnthropicResponseToChat converts an Anthropic Messages

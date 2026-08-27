@@ -19,6 +19,10 @@ type AdmissionResult struct {
 	Limit          int
 	Remaining      int
 	QueueRemaining int
+	// EstimatedWaitSec is the server's estimate of queue wait time in
+	// seconds, populated when the request is queued or rejected for budget
+	// reasons. Used to write Retry-After on the 429 fast-reject path.
+	EstimatedWaitSec int
 }
 
 type minuteBucket struct {
@@ -49,14 +53,34 @@ func NewMinuteBucketAdmission() *MinuteBucketAdmission {
 }
 
 func (a *MinuteBucketAdmission) Admit(ctx context.Context, keyID, limit int) (AdmissionResult, error) {
-	return a.admit(ctx, keyID, limit, nil)
+	return a.admit(ctx, keyID, limit, 0, nil)
 }
 
 func (a *MinuteBucketAdmission) AdmitRPMWithWait(ctx context.Context, keyID, limit int, notify func(AdmissionResult)) (AdmissionResult, error) {
-	return a.admit(ctx, keyID, limit, notify)
+	return a.admit(ctx, keyID, limit, 0, notify)
 }
 
-func (a *MinuteBucketAdmission) admit(ctx context.Context, keyID, limit int, notify func(AdmissionResult)) (AdmissionResult, error) {
+// AdmitRPMWithBudget is AdmitRPMWithWait with a hard wait cap. When queued,
+// the estimated wait (buckets-ahead × window + time to next bucket) is
+// compared against maxWait; if it exceeds the caller's remaining request
+// budget the request is rejected fast WITHOUT being enqueued, so it does not
+// consume its whole timeout budget waiting and then die with a timeout.
+func (a *MinuteBucketAdmission) AdmitRPMWithBudget(ctx context.Context, keyID, limit int, maxWait time.Duration, notify func(AdmissionResult)) (AdmissionResult, error) {
+	return a.admit(ctx, keyID, limit, maxWait, notify)
+}
+
+// estimateWaitLocked computes (under a.mu) how long a fresh queue waiter at
+// `position` would wait: time until the next bucket boundary plus full
+// windows for the queue slots ahead (each window admits at most `limit`).
+func (a *MinuteBucketAdmission) estimateWaitLocked(position, limit int) time.Duration {
+	if position <= 1 {
+		return a.timeUntilNextBucket()
+	}
+	windowsAhead := (position - 1 + limit - 1) / limit
+	return a.timeUntilNextBucket() + time.Duration(windowsAhead-1)*a.window
+}
+
+func (a *MinuteBucketAdmission) admit(ctx context.Context, keyID, limit int, maxWait time.Duration, notify func(AdmissionResult)) (AdmissionResult, error) {
 	if limit <= 0 {
 		return AdmissionResult{Admitted: true}, nil
 	}
@@ -83,10 +107,26 @@ func (a *MinuteBucketAdmission) admit(ctx context.Context, keyID, limit int, not
 		a.mu.Unlock()
 		return AdmissionResult{Limit: limit}, ErrMinuteBucketFull
 	}
+	position := len(queue) + 1
+	estimatedWait := a.estimateWaitLocked(position, limit)
+	if maxWait > 0 && estimatedWait > maxWait {
+		// Fail fast: this request cannot be admitted within the caller's
+		// remaining budget. Do NOT enqueue — otherwise the request would
+		// burn its entire timeout in the queue and die as a 502/timeout
+		// with no upstream attempt logged (2026-08-26 kimi-k3 incident).
+		a.mu.Unlock()
+		return AdmissionResult{
+			Limit:            limit,
+			Position:         position,
+			QueueRemaining:   limit - len(queue) - 1,
+			EstimatedWaitSec: int(estimatedWait.Round(time.Second) / time.Second),
+		}, ErrQueueBudgetExceeded
+	}
 	waiter := &queuedRequest{ready: make(chan struct{}), queued: true}
 	a.queues[keyID] = append(queue, waiter)
-	result := AdmissionResult{Waiting: true, Position: len(queue) + 1, Limit: limit}
+	result := AdmissionResult{Waiting: true, Position: position, Limit: limit}
 	result.QueueRemaining = limit - len(queue) - 1
+	result.EstimatedWaitSec = int(estimatedWait.Round(time.Second) / time.Second)
 	a.mu.Unlock()
 	if notify != nil {
 		notify(result)

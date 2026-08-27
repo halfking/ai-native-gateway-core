@@ -11,7 +11,6 @@
 // SelfCheckPanel uses this for live updates while still calling the REST
 // endpoints for the first paint and as a fallback when SSE is unavailable.
 import { ref } from 'vue'
-import { authBearer } from '../store'
 
 // OBS-BE5 (25 号 §6 / 26 号 §4): tri-state origin badge carried by every task
 // object. Old payloads without `origin` keep rendering (callers derive a
@@ -84,12 +83,12 @@ if (typeof document !== 'undefined') {
 }
 
 function buildUrl(): string {
-  let url = ENDPOINT
-  try {
-    const token = authBearer()
-    if (token) url += `?token=${encodeURIComponent(token)}`
-  } catch { /* cookie auth fallback */ }
-  return url
+  // 2026-08-26 (P1-7 fix): do NOT append a `?token=` query parameter
+  // — the URL is captured in browser history / proxy logs and would
+  // re-introduce the long-lived credential exposure that the cookie
+  // path already solves. EventSource is opened with credentials:'include'
+  // so the HttpOnly `llmgw_session` cookie is attached automatically.
+  return ENDPOINT
 }
 
 function collapseTile(tile: ProbeStreamTile) {

@@ -222,6 +222,13 @@ type Config struct {
 	// Empty defaults to "en".
 	DefaultLanguage string `yaml:"default_language" env:"LLM_GATEWAY_DEFAULT_LANGUAGE"`
 
+	// ModelAliasPrefix is the client-facing model name prefix that gets stripped
+	// before internal routing. When clients send "kx-gpt-5.6-terra", the gateway
+	// strips this prefix and routes to "gpt-5.6-terra". Default "kx-" can be
+	// overridden via LLM_GATEWAY_MODEL_ALIAS_PREFIX or yaml "model_alias_prefix".
+	// Empty string disables alias stripping.
+	ModelAliasPrefix string `yaml:"model_alias_prefix" env:"LLM_GATEWAY_MODEL_ALIAS_PREFIX"`
+
 	// WeChat Work (企业微信) notification settings for approval workflow
 	WeChatCorpID     string `yaml:"wechat_corp_id" env:"LLM_GATEWAY_WECHAT_CORP_ID"`
 	WeChatCorpSecret string `yaml:"wechat_corp_secret" env:"LLM_GATEWAY_WECHAT_CORP_SECRET"`
@@ -236,7 +243,8 @@ type Config struct {
 	LicenseAESKey     string `yaml:"license_aes_key" env:"LLM_GATEWAY_LICENSE_AES_KEY"`
 
 	// Config file path (internal, not serialized)
-	configPath string `yaml:"-"`
+	configPath                 string `yaml:"-"`
+	modelAliasPrefixConfigured bool   `yaml:"-"`
 }
 
 // IsProduction reports whether the process is running in a production-like
@@ -352,6 +360,13 @@ func envOrDefault(key, def string) string {
 	return def
 }
 
+func modelAliasPrefixFromEnv() string {
+	if value, ok := os.LookupEnv("LLM_GATEWAY_MODEL_ALIAS_PREFIX"); ok {
+		return value
+	}
+	return "kx-"
+}
+
 func parseCommaList(raw string) []string {
 	if strings.TrimSpace(raw) == "" {
 		return nil
@@ -449,6 +464,7 @@ func Load() *Config {
 		EmptyStreamEarlyEmptyChunks:        3,     // 2026-08-20: fail over after three valid empty deltas.
 		DeployEnv:                          firstNonEmpty(os.Getenv("LLM_GATEWAY_ENV"), os.Getenv("GO_ENV"), os.Getenv("APP_ENV")),
 		DefaultLanguage:                    envOrDefault("LLM_GATEWAY_DEFAULT_LANGUAGE", "en"),
+		ModelAliasPrefix:                   modelAliasPrefixFromEnv(),
 		// WeChat Work notification settings
 		WeChatCorpID:     os.Getenv("LLM_GATEWAY_WECHAT_CORP_ID"),
 		WeChatCorpSecret: os.Getenv("LLM_GATEWAY_WECHAT_CORP_SECRET"),
@@ -632,6 +648,11 @@ func (cfg *Config) LoadFile(path string) error {
 	if err := yaml.Unmarshal(data, &fileCfg); err != nil {
 		return err
 	}
+	var raw map[string]yaml.Node
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	_, fileCfg.modelAliasPrefixConfigured = raw["model_alias_prefix"]
 	cfg.mergeFrom(&fileCfg)
 	return nil
 }
@@ -777,6 +798,13 @@ func (cfg *Config) mergeFrom(other *Config) {
 	}
 	if other.DefaultLanguage != "" && os.Getenv("LLM_GATEWAY_DEFAULT_LANGUAGE") == "" {
 		cfg.DefaultLanguage = other.DefaultLanguage
+	}
+	// ModelAliasPrefix: an explicit YAML value, including empty string, wins
+	// when the environment variable is not configured.
+	if other.modelAliasPrefixConfigured {
+		if _, envConfigured := os.LookupEnv("LLM_GATEWAY_MODEL_ALIAS_PREFIX"); !envConfigured {
+			cfg.ModelAliasPrefix = other.ModelAliasPrefix
+		}
 	}
 }
 

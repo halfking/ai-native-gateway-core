@@ -11,10 +11,10 @@ import (
 type SchedulerService interface {
 	// RegisterCollectorJob 注册采集任务
 	RegisterCollectorJob(collector Collector) error
-
+	
 	// RegisterAggregatorJob 注册聚合任务
 	RegisterAggregatorJob(aggregator Aggregator) error
-
+	
 	// RegisterCleanupJob 注册清理任务
 	RegisterCleanupJob(metricsStore MetricsStore) error
 }
@@ -49,7 +49,7 @@ func (s *JobScheduler) RunLightweightCollection(ctx context.Context) error {
 func (s *JobScheduler) RunDailyAggregation(ctx context.Context) error {
 	// 聚合昨天的数据
 	yesterday := time.Now().AddDate(0, 0, -1)
-
+	
 	if err := s.aggregator.AggregateDailyProfiles(ctx, yesterday); err != nil {
 		return fmt.Errorf("daily aggregation failed: %w", err)
 	}
@@ -63,10 +63,10 @@ func (s *JobScheduler) RunCleanup(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("cleanup failed: %w", err)
 	}
-
+	
 	// TODO: 添加日志记录
 	_ = deleted // 记录删除的行数
-
+	
 	return nil
 }
 
@@ -74,10 +74,10 @@ func (s *JobScheduler) RunCleanup(ctx context.Context) error {
 type ScheduleConfig struct {
 	// LightweightCollectionCron 轻量级采集cron表达式，默认 "0 */2 * * *" (每2小时)
 	LightweightCollectionCron string
-
+	
 	// DailyAggregationCron 每日聚合cron表达式，默认 "0 4 * * *" (每天凌晨4点)
 	DailyAggregationCron string
-
+	
 	// CleanupCron 清理任务cron表达式，默认 "0 5 * * 0" (每周日凌晨5点)
 	CleanupCron string
 }
@@ -85,9 +85,9 @@ type ScheduleConfig struct {
 // DefaultScheduleConfig 返回默认调度配置
 func DefaultScheduleConfig() ScheduleConfig {
 	return ScheduleConfig{
-		LightweightCollectionCron: "0 */2 * * *", // 每2小时
-		DailyAggregationCron:      "0 4 * * *",   // 每天凌晨4点
-		CleanupCron:               "0 5 * * 0",   // 每周日凌晨5点
+		LightweightCollectionCron: "0 */2 * * *",   // 每2小时
+		DailyAggregationCron:      "0 4 * * *",     // 每天凌晨4点
+		CleanupCron:               "0 5 * * 0",     // 每周日凌晨5点
 	}
 }
 

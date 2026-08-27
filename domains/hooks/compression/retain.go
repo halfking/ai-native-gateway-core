@@ -170,10 +170,12 @@ func isSystemReminderMessage(raw json.RawMessage) bool {
 			return false
 		}
 		for _, block := range blocks {
-			if block.Type != "" && block.Type != "text" {
+			switch block.Type {
+			case "", "text", "input_text", "output_text":
+				text += block.Text
+			default:
 				return false
 			}
-			text += block.Text
 		}
 	}
 

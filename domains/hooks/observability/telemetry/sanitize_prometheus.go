@@ -21,12 +21,12 @@ import (
 // Label cardinality is bounded:
 //   - outcome ∈ {discarded, rescued}              (two outcomes, fixed set)
 //   - field   ∈ sanitizeFieldLabels                (must stay in sync with
-//                                                   the sanitize* helpers in
-//                                                   client.go:sanitizeRequestLogEntry
-//                                                   and EmitRequestLogUpdate /
-//                                                   EmitRequestLogInsert; audit P2-3)
+//     the sanitize* helpers in
+//     client.go:sanitizeRequestLogEntry
+//     and EmitRequestLogUpdate /
+//     EmitRequestLogInsert; audit P2-3)
 //   - source  ∈ {string_field, json_field,         (three sanitize helpers)
-//                raw_json_field}
+//     raw_json_field}
 //   - stage   ∈ {sanitize, required_field_guard}   (two stages)
 //
 // All label values are pre-initialised at boot so dashboards observe a

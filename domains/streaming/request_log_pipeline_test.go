@@ -524,3 +524,37 @@ func TestSynthesizeStreamBodyFromText(t *testing.T) {
 		t.Errorf("expected role=assistant, got %q", parsed.Choices[0].Message.Role)
 	}
 }
+
+// TestInsertRateLimitedPlaceholder_SkipsWhenLoggedOrDisabled guards the new
+// 2026-08-26 kimi-k3 / RPM queue blind-spot fix. The rate-limit early-return
+// path (handler.go captureAndEmitRateLimited) must call
+// insertRateLimitedPlaceholder before EmitRateLimited so the subsequent
+// UPDATE finds a row in request_logs_hot. The helper short-circuits when
+// the log context is already marked logged and when the telemetry client is
+// disabled (no DB pool); this test covers both.
+func TestInsertRateLimitedPlaceholder_SkipsWhenLoggedOrDisabled(t *testing.T) {
+	ch := NewChatHandler(nil, nil, nil, nil, nil, nil)
+
+	// nil logCtx + disabled client -> no panic.
+	ch.insertRateLimitedPlaceholder(nil)
+
+	ctx := ch.NewRequestLogContext(httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"kimi-k3"}`)), "req-rl-placeholder", time.Now())
+	ctx.Body = []byte(`{"model":"kimi-k3"}`)
+	ctx.SetClientModel("kimi-k3")
+
+	// Client disabled (no DB pool) -> INSERT must be skipped without error.
+	ch.insertRateLimitedPlaceholder(ctx)
+	if ctx.IsLogged() {
+		t.Fatalf("disabled client should not flip ctx.logged; got IsLogged=true")
+	}
+
+	// Even with a non-nil telemetryClient whose Enabled() is false, the
+	// helper must not call EmitRequestLogInsert. Asserted via the absence
+	// of side effects (ctx.logged stays false) -- telemetry.Client has
+	// no DB pool in this test, so Enabled()=false and INSERT is short-circuited.
+	ctx.MarkLogged()
+	if !ctx.IsLogged() {
+		t.Fatalf("MarkLogged must flip IsLogged=true")
+	}
+	ch.insertRateLimitedPlaceholder(ctx) // already-logged branch, should no-op
+}

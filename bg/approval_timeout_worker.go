@@ -6,7 +6,7 @@
 // 设计：
 //   - 每 60s 扫一次（timeout 默认 15min → 60s 周期足够）
 //   - 调用 sessionaudit.ApprovalManager.MarkTimeout
-//   - MarkTimeout 在 super_admin 事务中执行，允许可信 worker 跨租户处理超时行
+//   - MarkTimeout 已经在 SQL 内做了 RLS bypass（worker 是 super_admin 上下文）
 //   - Stop() 等待 goroutine 退出
 //
 // 接入点：cmd/gateway/main.go 在 init bg services 时构造 + Start。

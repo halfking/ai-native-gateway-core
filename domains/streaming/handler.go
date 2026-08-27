@@ -816,6 +816,12 @@ type ChatHandler struct {
 	// 旁路异步、满即丢，不阻塞请求热路径。
 	liveActions *liveactions.Emitter
 
+	// connectionRegistry (会话优化 v4 T4/R1.6) 流式连接注册表：
+	// request_id → 客户端写出流。流式 ingress 在 pre-stream keepalive
+	// 启动后 Register、请求收尾 Unregister；nil 禁用（桥接帧/管理端
+	// 投影均无操作）。Register 满即返回错误，绝不阻塞请求热路径。
+	connectionRegistry *ConnectionRegistry
+
 	journeyRecorder          *requestjourney.Recorder
 	journeyGatewayInstanceID string
 
@@ -1023,6 +1029,14 @@ func (h *ChatHandler) SetLiveActions(e *liveactions.Emitter) {
 	h.liveActions = e
 }
 
+// SetConnectionRegistry (会话优化 v4 T4/R1.6) 注入进程级流式连接注册表。
+// 必须在服务开始接收流量前调用（ServeHTTP 期间并发读写该指针不安全）；
+// 传 nil 禁用注册（桥接帧与管理端 /api/admin/connection-registry 投影
+// 均退化为空表）。
+func (h *ChatHandler) SetConnectionRegistry(r *ConnectionRegistry) {
+	h.connectionRegistry = r
+}
+
 func (h *ChatHandler) SetRequestJourney(recorder *requestjourney.Recorder, gatewayInstanceID string) {
 	h.journeyRecorder = recorder
 	h.journeyGatewayInstanceID = strings.TrimSpace(gatewayInstanceID)
@@ -1040,6 +1054,14 @@ func clientProtocolFromPath(path string) string {
 	default:
 		return "openai-completions"
 	}
+}
+
+func protocolConversionFlag(clientProtocol, upstreamProtocol string) *bool {
+	if clientProtocol == "" || upstreamProtocol == "" {
+		return nil
+	}
+	converted := clientProtocol != upstreamProtocol
+	return &converted
 }
 
 // emitAction 是 liveactions 注入的薄包装（同 emitTrace 的做法）。
@@ -1985,6 +2007,16 @@ func (h *ChatHandler) serveWithExecutor(
 				logCtx.SetClientModel("<unknown>")
 			}
 		}
+		// 2026-08-26 (kimi-k3 queue bug fix #2): rate-limit early-return
+		// bypassed recordInitialRequestLog (handler.go:3572), so the
+		// subsequent EmitRateLimited UPDATE hit 0 rows in
+		// request_logs_hot — leaving the failure unlogged while the WAL
+		// and Redis trace still recorded it. INSERT a minimal placeholder
+		// (RequestStatus=in_progress) so the UPDATE lands. Idempotent via
+		// INSERT … ON CONFLICT (request_id) DO UPDATE on
+		// request_logs_hot. Mirrors the recordInitialRequestLog seed
+		// surface without pulling in its 14-arg signature.
+		h.insertRateLimitedPlaceholder(logCtx)
 		logCtx.EmitRateLimited(errCode, errMsg, providerID, credentialID)
 		logCtx.MarkLogged()
 	}
@@ -2275,10 +2307,22 @@ func (h *ChatHandler) serveWithExecutor(
 	}
 	// ========== End Format Detection & Auto-Fix ==========
 
+	// 2026-08-25: strip client-facing alias prefix (e.g. "kx-").
+	// Must run before CanonicalizeClientModel so the alias is removed
+	// before canonicalization and SQL lookup.
+	modelAfterStrip := ApplyAliasPrefix(reqBody.Model)
+	if modelAfterStrip != reqBody.Model {
+		slog.Debug("handler: alias prefix stripped",
+			"original", reqBody.Model,
+			"prefix", ModelAliasPrefix(),
+			"stripped", modelAfterStrip,
+			"request_id", requestID)
+	}
+
 	// 2026-07-14: enforce lowercase at the wire boundary so downstream
 	// SQL matches (canonical_raw_name / standardized_name / model_aliases)
 	// work without lower() wrappers.
-	clientModel := modelname.CanonicalizeClientModel(reqBody.Model)
+	clientModel := modelname.CanonicalizeClientModel(modelAfterStrip)
 	logCtx.SetClientModel(clientModel)
 	if clientModel != autoRequestMagic {
 		resolveRequestJourney(r, tenant(keyInfo), clientModel, clientModel)
@@ -2653,7 +2697,7 @@ func (h *ChatHandler) serveWithExecutor(
 			logCtx.IsAutoRequest = true
 		}
 		// 2026-07-14: keep the client-facing model name lowercase.
-		clientModel = modelname.CanonicalizeClientModel(reqBody.Model)
+		clientModel = modelname.CanonicalizeClientModel(ApplyAliasPrefix(reqBody.Model))
 		logCtx.SetClientModel(clientModel)
 	}
 
@@ -2730,6 +2774,7 @@ func (h *ChatHandler) serveWithExecutor(
 	if !rlOutcome.Skipped {
 		writeRateLimitHeaders(w, rlOutcome)
 		if rlOutcome.Blocked {
+			recordGatewayRateLimitRejection(rlOutcome)
 			captureAndEmitRateLimited("rate_limit_exceeded", "rate limit exceeded", nil, nil)
 			writeErrorJSONCtx(r.Context(), w, http.StatusTooManyRequests, requestID, "rate_limit_error", i18n.MsgRateLimitExceeded, nil)
 			return
@@ -2766,6 +2811,10 @@ func (h *ChatHandler) serveWithExecutor(
 	var preStream *preStreamKeepalive
 	preStreamPrepared := false
 	defer func() {
+		// 会话优化 v4 T4/R1.6：连接收尾（见 connection_registry_wiring.go）。
+		// 无论正常完成还是提前 return，都从注册表摘下，使 admin 投影
+		// 进入关闭审计；未注册/已清理是 no-op。
+		h.unregisterStreamConnection(requestID, "request_completed")
 		if preStream != nil {
 			preStream.stop()
 		}
@@ -3355,6 +3404,9 @@ func (h *ChatHandler) serveWithExecutor(
 					"keepalive_interval_ms", cfg.keepaliveInterval.Milliseconds(),
 					"body_bytes", len(bodyBytes),
 				)
+				// 会话优化 v4 T4/R1.6：注册连接供 ActionBridge 回写思考帧
+				// 与 admin 连接投影。旁路能力，失败静默（见 connection_registry_wiring.go）。
+				h.registerStreamConnection(psk, requestID, clientProtocolFromPath(r.URL.Path), extractClientType(r), tenant(keyInfo))
 			}
 		}
 	}
@@ -3542,7 +3594,7 @@ func (h *ChatHandler) serveWithExecutor(
 		clientID.Fingerprint.ClientProfile, identityHash,
 		logCtx.ProviderID, logCtx.CredentialID, canonicalID,
 		canonicalNameFromResolution(modelResolution), // 2026-07-27: 标准模型名
-		bodyBytes, txResult, egressProtocol, isStream,
+		bodyBytes, clientProtocolFromPath(r.URL.Path), txResult, egressProtocol, isStream,
 		gwSessionID, gwTaskID,
 		logCtx,
 	)
@@ -3704,6 +3756,8 @@ func (h *ChatHandler) serveWithExecutor(
 					"request_id", requestID,
 					"reason", "early_start_missed_should_not_happen",
 				)
+				// 会话优化 v4 T4/R1.6：注册连接（见另一处注释）。
+				h.registerStreamConnection(psk, requestID, clientProtocolFromPath(r.URL.Path), extractClientType(r), tenant(keyInfo))
 			}
 		}
 	}
@@ -3828,6 +3882,10 @@ func (h *ChatHandler) serveWithExecutor(
 	// one construction site, zero drift between the two paths.
 	upstreamAttempts := executors.NewUpstreamAttemptBudget(executors.DefaultUpstreamAttemptLimit)
 	journeyInstanceID, journeySeq, journeyTerminal := requestJourneyExecState(r)
+	// v6 G-Ⅱ: X-Gw-Due-At 定时请求（到期前停在 dispatch 的到期堆）。
+	dispatchDueAt := parseDispatchDueAt(r)
+	// V6-W1.6 R8: class 一并写入 logCtx，供首行与完成 UPDATE 落库（608）。
+	applyRequestClassToLogCtx(logCtx, dispatchDueAt)
 	buildExecParams := func(streamWriter http.ResponseWriter) *executors.ExecParams {
 		return &executors.ExecParams{
 			W:                          streamWriter,
@@ -3838,6 +3896,7 @@ func (h *ChatHandler) serveWithExecutor(
 			IsStream:                   isStream,
 			StreamSurvivesClientCancel: explicitStreamSession(r.Context()),
 			PreStreamPrepared:          preStreamPrepared,
+			DispatchDueAt:              dispatchDueAt,
 			// The StreamSession heartbeat remains active while the protocol
 			// bridge is blocked on upstream reads. The request-level defer owns
 			// shutdown at the terminal outcome.
@@ -4275,17 +4334,15 @@ goalRetryLoopDone:
 
 	if result != nil && result.CachedReplay {
 		if preStream != nil {
+			h.unregisterStreamConnection(requestID, "cached_replay")
 			preStream.stop()
 			preStream = nil
 		}
 		return
 	}
-	if logCtx != nil && len(logCtx.OutboundBody) == 0 && result != nil && len(result.RequestBody) > 0 {
-		logCtx.OutboundBody = result.RequestBody
-	}
+	applyActualOutboundBody(logCtx, result)
 
 	// ── 2026-07-17: trace.route_credential ──────────────────────────────────
-	// 在 executor.Execute 返回后立即记录"实际命中的凭据"。 这是 trace 视图里
 	// 最关键的一行: 让运维看到"gpt-5.6-luna 请求 → 选中了 provider_id=12,
 	// credential_id=2451 (z-ai/glm-5.2, tier=premium)", 失败时凭据也记。
 	if result != nil && result.Candidate.ProviderID > 0 {
@@ -4441,6 +4498,7 @@ goalRetryLoopDone:
 
 	if execErr != nil {
 		if preStream != nil {
+			h.unregisterStreamConnection(requestID, "exec_error")
 			preStream.stop()
 			preStream = nil
 		}
@@ -4795,6 +4853,7 @@ goalRetryLoopDone:
 	}
 	logCtx.markAttachmentsSent()
 	if preStream != nil {
+		h.unregisterStreamConnection(requestID, "stream_done")
 		preStream.stop()
 		preStream = nil
 	}
@@ -5748,6 +5807,12 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 	// instead of an LCS-inferred verdict. The header never survives to the hook
 	// otherwise — the hook only sees the telemetry entry, not the request.
 	applySubmitModeHeader(reqLog, logCtx)
+	// V6-W1.6 R8 (migration 608): 完成态 UPDATE 也带上请求类型（幂等，
+	// 首行已写时保持原值，COALESCE 侧同样防回退）。
+	if reqLog.RequestClass == nil {
+		reqLog.RequestClass = requestClassPtr(logCtx)
+		reqLog.DueAt = requestDueAtPtr(logCtx)
+	}
 
 	// 2026-07-19: 填充路由尝试追踪数据到 telemetry
 	// 2026-07-20: Try result.RoutingTracker first (populated by the executor),
@@ -6458,7 +6523,7 @@ func (h *ChatHandler) recordInitialRequestLog(
 	clientProfile, identityHash string,
 	providerID, credentialID, canonicalID *int,
 	canonicalName string, // 2026-07-27: 标准模型名 (migration 458)
-	requestBody []byte,
+	requestBody []byte, clientProtocol string,
 	txResult *transformation.TransformResult,
 	egressProtocol string,
 	isStream bool,
@@ -6527,6 +6592,9 @@ func (h *ChatHandler) recordInitialRequestLog(
 		ProviderID:      providerID,
 		CredentialID:    credentialID,
 		CanonicalID:     canonicalID,
+		// V6-W1.6 R8 (migration 608): 请求类型（即时/定时）随首行落库。
+		RequestClass: requestClassPtr(autoCtx),
+		DueAt:        requestDueAtPtr(autoCtx),
 		// 2026-07-27: 标准模型名 (canonical_name),见 migration 458。
 		CanonicalModel: strPtr(canonicalName),
 		ClientProfile:  strPtr(clientProfile),
@@ -6542,13 +6610,16 @@ func (h *ChatHandler) recordInitialRequestLog(
 		// initial in_progress row carries the same classification as the eventual
 		// success UPDATE. The success path's emitTelemetry will overwrite this
 		// via tokenBandFromLogCtx.
-		TokenBand:         strPtrFromLogCtx(autoCtx),
-		RequestBody:       requestBodyText,
-		RequestPreview:    requestPreviewPtr,
-		TransformSummary:  transformSummaryPtr,
-		TransformRuleID:   transformRuleID,
-		EgressProtocol:    strPtr(egressProtocol),
-		StreamInterrupted: &streamInterrupted,
+		TokenBand:          strPtrFromLogCtx(autoCtx),
+		RequestBody:        requestBodyText,
+		RequestPreview:     requestPreviewPtr,
+		TransformSummary:   transformSummaryPtr,
+		TransformRuleID:    transformRuleID,
+		EgressProtocol:     strPtr(egressProtocol),
+		ClientProtocol:     strPtr(clientProtocol),
+		UpstreamProtocol:   strPtr(egressProtocol),
+		ProtocolConversion: protocolConversionFlag(clientProtocol, egressProtocol),
+		StreamInterrupted:  &streamInterrupted,
 		// 2026-06-26: preserve client-supplied X-Request-Id for debug
 		// (request_id itself is server-generated; see middleware/requestid_mw.go).
 		ClientRequestID: clientRequestIDPtr,
@@ -6927,6 +6998,43 @@ func extractBearerToken(r *http.Request) string {
 		return key
 	}
 	return ""
+}
+
+// insertRateLimitedPlaceholder ensures request_logs_hot has a row before the
+// rate-limit UPDATE writes its terminal fields. Used by the rate-limit
+// early-return path (handler.go captureAndEmitRateLimited) which bypasses
+// recordInitialRequestLog. Idempotent: INSERT … ON CONFLICT (request_id)
+// DO UPDATE means a subsequent UPDATE still lands on the same row.
+//
+// 2026-08-26: introduced to plug the kimi-k3 / RPM queue blind spot —
+// when the queue budget was exceeded the request returned 429/200 bytes
+// but never landed in request_logs_hot (only WAL + Redis trace did),
+// producing "request log row not found, retaining Redis trace" warnings
+// at FlushToPG. Mirrors the seed surface of recordInitialRequestLog
+// without pulling in its 14-arg signature.
+func (h *ChatHandler) insertRateLimitedPlaceholder(logCtx *RequestLogContext) {
+	if logCtx == nil || logCtx.IsLogged() {
+		return
+	}
+	if h.telemetryClient == nil || !h.telemetryClient.Enabled() {
+		return
+	}
+	minimal := &telemetry.RequestLogEntry{
+		RequestID:     logCtx.RequestID,
+		TenantID:      "default",
+		ClientModel:   strPtr(logCtx.ClientModel),
+		RequestStatus: strPtr(telemetry.RequestStatusInProgress),
+	}
+	if ki := logCtx.KeyInfo; ki != nil {
+		minimal.TenantID = ki.TenantID
+		kid := ki.ID
+		minimal.APIKeyID = &kid
+		if aid := appID(ki); aid != nil {
+			a := *aid
+			minimal.ApplicationID = &a
+		}
+	}
+	h.telemetryClient.EmitRequestLogInsert(minimal)
 }
 
 // resolveEndUser picks the best end-user identifier available for this
@@ -8046,6 +8154,13 @@ func streamChunkErrorsFromLogCtx(c *RequestLogContext) int {
 // streamChunkErrorsFromLogCtx, mirroring StreamChunksSentFromLogCtxForTest.
 func StreamChunkErrorsFromLogCtxForTest(c *RequestLogContext) int {
 	return streamChunkErrorsFromLogCtx(c)
+}
+
+func applyActualOutboundBody(logCtx *RequestLogContext, result *executors.ExecuteResult) {
+	if logCtx == nil || result == nil || len(result.RequestBody) == 0 {
+		return
+	}
+	logCtx.OutboundBody = append(logCtx.OutboundBody[:0], result.RequestBody...)
 }
 
 // requestBytesFromLogCtx returns the request body size from logCtx.

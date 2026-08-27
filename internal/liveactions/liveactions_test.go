@@ -53,6 +53,9 @@ func TestEmitWritesBoundedRedisQueue(t *testing.T) {
 		n, _ := rdb.LLen(ctx, RedisKey).Result()
 		return n == 2
 	})
+	if ttl, err := rdb.TTL(ctx, RedisKey).Result(); err != nil || ttl <= 0 || ttl > redisKeyTTL {
+		t.Fatalf("action queue TTL = %v, %v; want (0, %v]", ttl, err, redisKeyTTL)
+	}
 
 	// Newest (route_resolved, seq 2) at the head.
 	head, err := rdb.LIndex(ctx, RedisKey, 0).Result()
@@ -220,40 +223,6 @@ func TestEmitConcurrentNeverBlocks(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("concurrent Emit deadlocked")
-	}
-}
-
-func TestNormalizeStageCategory(t *testing.T) {
-	ev := ActionEvent{Action: ActionModelEnqueued}
-	normalizeStage(&ev)
-	if ev.Stage != "model_queue" || ev.StageCategory != "routing" {
-		t.Fatalf("normalized stage = %q/%q, want model_queue/routing", ev.Stage, ev.StageCategory)
-	}
-
-	ev = ActionEvent{Action: ActionFirstByte}
-	normalizeStage(&ev)
-	if ev.Stage != "streaming" || ev.StageCategory != "llm" {
-		t.Fatalf("normalized stage = %q/%q, want streaming/llm", ev.Stage, ev.StageCategory)
-	}
-}
-
-// TestNormalizeStageFailureCounter: an Action outside the closed enum
-// (stageForAction returns "") must increment
-// live_actions_stage_normalization_failures_total exactly once, with no
-// stage / stage_category populated on the event.
-func TestNormalizeStageFailureCounter(t *testing.T) {
-	ResetMetricsForTest()
-
-	const unknown = Action("__test_unknown__")
-
-	ev := ActionEvent{Action: unknown}
-	normalizeStage(&ev)
-
-	if ev.Stage != "" || ev.StageCategory != "" {
-		t.Fatalf("unknown action should leave stage fields empty, got %q/%q", ev.Stage, ev.StageCategory)
-	}
-	if got := StageNormalizationFailuresTotal(); got != 1 {
-		t.Fatalf("stage_normalization_failures = %d, want 1", got)
 	}
 }
 

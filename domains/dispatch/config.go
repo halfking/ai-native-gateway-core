@@ -1,6 +1,8 @@
 package dispatch
 
 import (
+	"runtime"
+
 	"github.com/kaixuan/llm-gateway-go/hotconfig"
 )
 
@@ -25,9 +27,12 @@ import (
 //     (llmgw_dispatch_registry_capacity). Pressure evicts the oldest
 //     completed entry; CompletedWatermark = 50 (soft, FIFO by completed_at).
 type Config struct {
-	// TotalQueueCapacity is the real execution admission bound. A request
-	// holds one slot from Submit until complete; registry bookkeeping does not
-	// participate in this bound. Default 1000.
+	// TotalQueueCapacity is the Tier-0 total FIFO admission bound — a
+	// bounded waiting room from Submit until the request moves into its
+	// model lane. The slot is released on that hand-off (or client cancel),
+	// NOT held for the request's full lifecycle: model/credential queues and
+	// in-flight forwards are governed by MaxQueueDepth and the governors.
+	// Registry bookkeeping does not participate in this bound. Default 1000.
 	TotalQueueCapacity int
 
 	// MaxQueueDepth is the per-credential Tier-2 (and per-model Tier-1)
@@ -45,9 +50,17 @@ type Config struct {
 	// StatsBuffer is the Tier-3 event-bus channel capacity. Events are
 	// dropped (and counted) when full so stats never block the hot path.
 	StatsBuffer int
-	// DispatcherWorkers is the ① Model Dispatcher worker-pool size.
+	// DispatcherWorkers is the ① Model Dispatcher worker-pool size (执行器
+	// 数量, v6 G-Ⅰ). Zero-value/absent config falls back to
+	// AdaptiveWorkerCount() — CPU cores minus one — because dispatchers do
+	// CPU-side scheduling work (model resolve, route, requeue tagging).
+	// Upstream HTTP forwarding is deliberately NOT sized by CPU: per-attempt
+	// goroutines are bounded by the per-credential Governors
+	// (concurrency/RPM/TPM), which is what aligns output to the vendor's
+	// declared limits.
 	DispatcherWorkers int
-	// FailoverWorkers is the ③ Failover Mover worker-pool size.
+	// FailoverWorkers is the ③ Failover Mover worker-pool size (same
+	// adaptive default as DispatcherWorkers).
 	FailoverWorkers int
 	// RetryPerCredential is the same-credential retry budget before a
 	// credential is marked tried and the mover switches credentials. 0 = no
@@ -62,39 +75,75 @@ type Config struct {
 	// Pending/in-flight entries are never evicted (R1.8). Hotconfig:
 	// llmgw_dispatch_completed_watermark. 0 keeps the default.
 	CompletedWatermark int
+	// DimensionTTLSeconds is the per-entry TTL of the per-dimension
+	// membership index (v6 G-Ⅳ, 分维队列). 0 keeps the default (900).
+	// Hotconfig: llmgw_dispatch_dimension_ttl_seconds.
+	DimensionTTLSeconds int
+	// DimensionCapacity is the per-dimension ring capacity (v6 G-Ⅳ).
+	// 0 keeps the default (128); negative disables the index.
+	// Hotconfig: llmgw_dispatch_dimension_capacity.
+	DimensionCapacity int
+}
+
+// adaptiveWorkerBounds clamp AdaptiveWorkerCount.
+const (
+	adaptiveWorkerMin = 2
+	adaptiveWorkerMax = 32
+)
+
+// AdaptiveWorkerCount returns the default executor-pool size: CPU cores minus
+// one, clamped to [2, 32] (v6 G-Ⅰ). The "-1" reserves one core for the
+// runtime (GC, netpoll) and the request-handling goroutines feeding the
+// queues. Hotconfig keys can still pin an exact count.
+func AdaptiveWorkerCount() int {
+	n := runtime.NumCPU() - 1
+	if n < adaptiveWorkerMin {
+		n = adaptiveWorkerMin
+	}
+	if n > adaptiveWorkerMax {
+		n = adaptiveWorkerMax
+	}
+	return n
 }
 
 // DefaultConfig returns conservative defaults used when hotconfig is absent.
 func DefaultConfig() Config {
+	workers := AdaptiveWorkerCount()
 	return Config{
-		TotalQueueCapacity: 1000,
-		MaxQueueDepth:      300,
-		MaxQueueWaitMS:     0,
-		StatsBuffer:        256,
-		DispatcherWorkers:  8,
-		FailoverWorkers:    8,
-		RetryPerCredential: MaxNodeFailures - 1,
-		RegistryCapacity:   DefaultRegistryCapacity,
-		CompletedWatermark: DefaultCompletedWatermark,
+		TotalQueueCapacity:  1000,
+		MaxQueueDepth:       300,
+		MaxQueueWaitMS:      0,
+		StatsBuffer:         256,
+		DispatcherWorkers:   workers,
+		FailoverWorkers:     workers,
+		RetryPerCredential:  MaxNodeFailures - 1,
+		RegistryCapacity:    DefaultRegistryCapacity,
+		CompletedWatermark:  DefaultCompletedWatermark,
+		DimensionTTLSeconds: DefaultDimensionTTLSeconds,
+		DimensionCapacity:   DefaultDimensionCapacity,
 	}
 }
 
 // LoadConfig reads dispatch tuning from hotconfig (live-reloadable). hotCfg
-// may be nil (returns DefaultConfig).
+// may be nil (returns DefaultConfig). Worker counts default to the adaptive
+// CPU-based value when the key is unset.
 func LoadConfig(hotCfg *hotconfig.Config) Config {
 	if hotCfg == nil {
 		return DefaultConfig()
 	}
+	workers := AdaptiveWorkerCount()
 	return Config{
-		TotalQueueCapacity: clampInt(hotCfg.GetInt("llmgw_dispatch_total_queue_capacity", 1000), 1, 100000),
-		MaxQueueDepth:      clampInt(hotCfg.GetInt("llmgw_dispatch_max_queue_depth", 300), 0, 100000),
-		MaxQueueWaitMS:     clampInt(hotCfg.GetInt("llmgw_dispatch_max_queue_wait_ms", 0), 0, 60000),
-		StatsBuffer:        clampInt(hotCfg.GetInt("llmgw_dispatch_stats_buffer", 256), 0, 4096),
-		DispatcherWorkers:  clampInt(hotCfg.GetInt("llmgw_dispatch_dispatcher_workers", 8), 1, 256),
-		FailoverWorkers:    clampInt(hotCfg.GetInt("llmgw_dispatch_failover_workers", 8), 1, 256),
-		RetryPerCredential: clampInt(hotCfg.GetInt("llmgw_dispatch_retry_per_credential", MaxNodeFailures-1), 0, MaxNodeFailures-1),
-		RegistryCapacity:   clampInt(hotCfg.GetInt(HotKeyRegistryCapacity, DefaultRegistryCapacity), 1, 100000),
-		CompletedWatermark: clampInt(hotCfg.GetInt(HotKeyCompletedWatermark, DefaultCompletedWatermark), 0, 100000),
+		TotalQueueCapacity:  clampInt(hotCfg.GetInt("llmgw_dispatch_total_queue_capacity", 1000), 1, 100000),
+		MaxQueueDepth:       clampInt(hotCfg.GetInt("llmgw_dispatch_max_queue_depth", 300), 0, 100000),
+		MaxQueueWaitMS:      clampInt(hotCfg.GetInt("llmgw_dispatch_max_queue_wait_ms", 0), 0, 60000),
+		StatsBuffer:         clampInt(hotCfg.GetInt("llmgw_dispatch_stats_buffer", 256), 0, 4096),
+		DispatcherWorkers:   clampInt(hotCfg.GetInt("llmgw_dispatch_dispatcher_workers", workers), 1, 256),
+		FailoverWorkers:     clampInt(hotCfg.GetInt("llmgw_dispatch_failover_workers", workers), 1, 256),
+		RetryPerCredential:  clampInt(hotCfg.GetInt("llmgw_dispatch_retry_per_credential", MaxNodeFailures-1), 0, MaxNodeFailures-1),
+		RegistryCapacity:    clampInt(hotCfg.GetInt(HotKeyRegistryCapacity, DefaultRegistryCapacity), 1, 100000),
+		CompletedWatermark:  clampInt(hotCfg.GetInt(HotKeyCompletedWatermark, DefaultCompletedWatermark), 0, 100000),
+		DimensionTTLSeconds: clampInt(hotCfg.GetInt("llmgw_dispatch_dimension_ttl_seconds", DefaultDimensionTTLSeconds), 1, 86400),
+		DimensionCapacity:   clampInt(hotCfg.GetInt("llmgw_dispatch_dimension_capacity", DefaultDimensionCapacity), -1, 100000),
 	}
 }
 

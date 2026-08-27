@@ -51,7 +51,7 @@ func defaultAgentPatterns() []agentPatternEntry {
 		{"aider", []string{"you are aider", "aider chat"}},
 		{"continue", []string{"you are continue", "continue dev"}},
 		{"kiro", []string{"you are kiro", "kiro ide"}},
-		{"cursor", []string{"you are an ai assistant in cursor", "cursor ide", "you are cursor"}},
+		{"cursor", []string{"you are an ai assistant in cursor", "cursor ide", "you are cursor", "operate in cursor"}},
 		{"vscode", []string{"visual studio code", "vscode"}},
 		// Bare Claude / Anthropic fallback — only fires when no more-specific
 		// agent above matched. Useful for custom Claude-API clients that embed

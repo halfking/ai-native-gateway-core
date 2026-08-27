@@ -137,8 +137,9 @@ onBeforeUnmount(() => {
   justify-content: space-between;
   align-items: flex-start;
   padding: 16px 24px;
-  background: white;
-  border-bottom: 1px solid #e5e7eb;
+  background: var(--bg-card, var(--card, var(--kx-surface)));
+  border-bottom: 1px solid var(--border, var(--surface-secondary));
+  color: var(--text, var(--kx-text));
   position: sticky;
   top: 0;
   z-index: 10;
@@ -148,12 +149,12 @@ onBeforeUnmount(() => {
 h2 {
   margin: 0 0 4px;
   font-size: 18px;
-  color: #111827;
+  color: var(--kx-text);
 }
-p { margin: 0 0 6px; color: #4b5563; font-size: 13px; }
-.metrics { color: #6b7280; font-size: 13px; display: flex; gap: 6px; }
-.dot { color: #d1d5db; }
+p { margin: 0 0 6px; color: var(--muted); font-size: 13px; }
+.metrics { color: var(--muted); font-size: 13px; display: flex; gap: 6px; }
+.dot { color: var(--border); }
 .right { display: flex; gap: 8px; align-items: center; }
-.err { color: #ef4444; font-size: 12px; }
-.ok { color: #10b981; font-size: 12px; }
+.err { color: var(--danger); font-size: 12px; }
+.ok { color: var(--success); font-size: 12px; }
 </style>
