@@ -299,8 +299,10 @@ func TestCompressionStatsEstimatedOrigSQL(t *testing.T) {
 		`'^[0-9]+$'`,
 		// legacy non-envelope estimate preserved, with the '' literal kept on
 		// the text side of the cast (a bare '' beside jsonb resolves to jsonb
-		// and errors at runtime on NULL-body rows).
-		`LENGTH(COALESCE(COALESCE(rb.request_body, rl.request_body)::text, ''))::numeric`,
+		// and errors at runtime on NULL-body rows). request_logs no longer
+		// carries a request_body column after the bodies-table split
+		// (2026-08-28 SQL repair), so only rb.request_body may be referenced.
+		`LENGTH(COALESCE(rb.request_body::text, ''))::numeric`,
 		// separate summary-mode row count, same object-type envelope test
 		`SUM(CASE WHEN jsonb_typeof(rb.request_body->'_gw_body_summary') = 'object' THEN 1 ELSE 0 END)`,
 	} {

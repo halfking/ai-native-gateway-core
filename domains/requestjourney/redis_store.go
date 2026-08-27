@@ -94,7 +94,12 @@ func (s *RedisStore) RecentIngress(ctx context.Context) ([]IngressSnapshot, erro
 	// Cast to redis.Cmdable since redisJourneyClient embeds the necessary methods
 	items, err := redissafe.SafeHGetAll(ctx, s.client.(redis.Cmdable), redisIngressItemsKey())
 	if err != nil {
-		return nil, err
+		// Missing key = empty snapshot set; keep the bare-HGETALL contract.
+		if errors.Is(err, redissafe.ErrKeyNotFound) {
+			items = map[string]string{}
+		} else {
+			return nil, err
+		}
 	}
 	result := make([]IngressSnapshot, 0, len(order))
 	for _, id := range order {
@@ -175,6 +180,13 @@ func (s *RedisStore) Detail(ctx context.Context, tenantID, requestID string) (*R
 	// P1-14 fix (2026-08-28): Use SafeHGetAll to prevent WRONGTYPE errors
 	values, err := redissafe.SafeHGetAll(ctx, s.client.(redis.Cmdable), redisDetailKey(tenantID, requestID))
 	if err != nil {
+		// SafeHGetAll surfaces a missing key as ErrKeyNotFound where bare
+		// HGETALL returned an empty map — restore the empty/nil contract so a
+		// TTL-expired detail key is "not found", not a query error (fixes
+		// TestQueryServiceDetailTreatsRedisExpiryAsRetention).
+		if errors.Is(err, redissafe.ErrKeyNotFound) {
+			return nil, ErrJourneyNotFound
+		}
 		return nil, err
 	}
 	if len(values) == 0 {
