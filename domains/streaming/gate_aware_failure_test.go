@@ -2,6 +2,7 @@ package streaming
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -69,7 +70,7 @@ func TestStreamChat_StreamTimeoutGateAware(t *testing.T) {
 	}
 	rec := httptest.NewRecorder()
 
-	outcome := StreamChatWithPendingCapture(
+	outcome := StreamChatWithPendingCapture(context.Background(),
 		rec, resp, "gpt-test", "gpt-test",
 		NewNormalizer(), nil, false, nil, nil,
 	)
@@ -98,7 +99,7 @@ func TestStreamAnthropicPassthrough_StreamChunkTimeoutGateAware(t *testing.T) {
 	}
 	rec := httptest.NewRecorder()
 
-	outcome := StreamAnthropicPassthrough(rec, resp, "claude-test", "claude-test", "req-chunk-to", nil, nil)
+	outcome := StreamAnthropicPassthrough(context.Background(), rec, resp, "claude-test", "claude-test", "req-chunk-to", nil, nil)
 
 	require.True(t, outcome.Interrupted)
 	require.Equal(t, "stream_chunk_timeout", outcome.Reason)
@@ -128,7 +129,7 @@ func TestStreamChat_ClientWriteFailureClosureNotResumable(t *testing.T) {
 	// subsequent one fails. Defined in pending_disconnect_extra_test.go.
 	dw := &flusherAfterFirstDisconnectWriter{header: http.Header{}}
 
-	outcome := StreamChatWithPendingCapture(
+	outcome := StreamChatWithPendingCapture(context.Background(),
 		dw, resp, "gpt-test", "gpt-test",
 		NewNormalizer(), nil, false, nil, nil,
 	)

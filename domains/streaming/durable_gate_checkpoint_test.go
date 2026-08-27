@@ -1,6 +1,7 @@
 package streaming
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -15,11 +16,11 @@ import (
 func TestAttemptCommitGateCheckpointWriteAheadOrder(t *testing.T) {
 	f := &trackingFlusher{}
 	var calls []CommitState
-	g := NewAttemptCommitGate(ProtocolAnthropic, NewSerializedStreamWriter(f),
+	g := NewAttemptCommitGate(context.Background(), ProtocolAnthropic, NewSerializedStreamWriter(f),
 		GateOptions{
 			Mode:                   GateModeBuffered,
 			MaxMetadataBufferBytes: 1024,
-			BeforeSemanticCommit: func(s CommitState) error {
+			BeforeSemanticCommit: func(_ context.Context, s CommitState) error {
 				calls = append(calls, s)
 				return nil
 			},
@@ -51,11 +52,11 @@ func TestAttemptCommitGateCheckpointWriteAheadOrder(t *testing.T) {
 func TestAttemptCommitGateCheckpointFailureBlocksNetworkWrite(t *testing.T) {
 	f := &trackingFlusher{}
 	boom := errors.New("checkpoint db down")
-	g := NewAttemptCommitGate(ProtocolAnthropic, NewSerializedStreamWriter(f),
+	g := NewAttemptCommitGate(context.Background(), ProtocolAnthropic, NewSerializedStreamWriter(f),
 		GateOptions{
 			Mode:                   GateModeBuffered,
 			MaxMetadataBufferBytes: 1024,
-			BeforeSemanticCommit:   func(CommitState) error { return boom },
+			BeforeSemanticCommit:   func(context.Context, CommitState) error { return boom },
 		})
 
 	content := "event: content_block_delta\ndata: {\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n"
@@ -85,10 +86,10 @@ func TestAttemptCommitGateCheckpointFailureBlocksNetworkWrite(t *testing.T) {
 func TestAttemptCommitGateCheckpointImmediateModeChecksMetadata(t *testing.T) {
 	f := &trackingFlusher{}
 	var calls []CommitState
-	g := NewAttemptCommitGate(ProtocolAnthropic, NewSerializedStreamWriter(f),
+	g := NewAttemptCommitGate(context.Background(), ProtocolAnthropic, NewSerializedStreamWriter(f),
 		GateOptions{
 			Mode: GateModeImmediate,
-			BeforeSemanticCommit: func(s CommitState) error {
+			BeforeSemanticCommit: func(_ context.Context, s CommitState) error {
 				calls = append(calls, s)
 				return nil
 			},
@@ -108,9 +109,9 @@ func TestAttemptCommitGateCheckpointImmediateModeChecksMetadata(t *testing.T) {
 func TestAttemptCommitGateCheckpointFailureBlocksLaterWrites(t *testing.T) {
 	f := &trackingFlusher{}
 	boom := errors.New("checkpoint db down")
-	gate := NewAttemptCommitGate(ProtocolAnthropic, NewSerializedStreamWriter(f), GateOptions{
+	gate := NewAttemptCommitGate(context.Background(), ProtocolAnthropic, NewSerializedStreamWriter(f), GateOptions{
 		Mode: GateModeBuffered,
-		BeforeSemanticCommit: func(CommitState) error {
+		BeforeSemanticCommit: func(context.Context, CommitState) error {
 			return boom
 		},
 	})
@@ -145,9 +146,9 @@ func TestAttemptCommitGateCheckpointFailureBlocksLaterWrites(t *testing.T) {
 func TestAttemptCommitGateCheckpointCoversTerminalPartial(t *testing.T) {
 	f := &trackingFlusher{}
 	var calls []CommitState
-	gate := NewAttemptCommitGate(ProtocolAnthropic, NewSerializedStreamWriter(f), GateOptions{
+	gate := NewAttemptCommitGate(context.Background(), ProtocolAnthropic, NewSerializedStreamWriter(f), GateOptions{
 		Mode: GateModeBuffered,
-		BeforeSemanticCommit: func(state CommitState) error {
+		BeforeSemanticCommit: func(_ context.Context, state CommitState) error {
 			calls = append(calls, state)
 			return nil
 		},
@@ -170,9 +171,9 @@ func TestAttemptCommitGateCheckpointCoversTerminalPartial(t *testing.T) {
 func TestAttemptCommitGateCheckpointFailureBlocksTerminalPartial(t *testing.T) {
 	f := &trackingFlusher{}
 	boom := errors.New("terminal checkpoint down")
-	gate := NewAttemptCommitGate(ProtocolAnthropic, NewSerializedStreamWriter(f), GateOptions{
+	gate := NewAttemptCommitGate(context.Background(), ProtocolAnthropic, NewSerializedStreamWriter(f), GateOptions{
 		Mode:                 GateModeBuffered,
-		BeforeSemanticCommit: func(CommitState) error { return boom },
+		BeforeSemanticCommit: func(context.Context, CommitState) error { return boom },
 	})
 	partial := "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
 	if err := gate.FinishAttempt(partial); !errors.Is(err, boom) {
@@ -192,11 +193,11 @@ func TestAttemptCommitGateCheckpointFailureBlocksTerminalPartial(t *testing.T) {
 func TestAttemptCommitGateFlushHoldbackCheckpointFailure(t *testing.T) {
 	f := &trackingFlusher{}
 	boom := errors.New("checkpoint db down")
-	gate := NewAttemptCommitGate(ProtocolAnthropic, NewSerializedStreamWriter(f), GateOptions{
+	gate := NewAttemptCommitGate(context.Background(), ProtocolAnthropic, NewSerializedStreamWriter(f), GateOptions{
 		Mode:                 GateModeBuffered,
 		HoldbackWindow:       time.Second,
 		HoldbackMaxChunks:    10,
-		BeforeSemanticCommit: func(CommitState) error { return boom },
+		BeforeSemanticCommit: func(context.Context, CommitState) error { return boom },
 	})
 	content := "event: content_block_delta\ndata: {\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n"
 	if err := gate.WriteFrame(content); err != nil {
@@ -246,9 +247,9 @@ func TestAttemptCommitGateFlushHoldbackCheckpointFailure(t *testing.T) {
 func TestAttemptCommitGateImmediateMetadataCheckpointFailure(t *testing.T) {
 	f := &trackingFlusher{}
 	boom := errors.New("metadata checkpoint failed")
-	gate := NewAttemptCommitGate(ProtocolAnthropic, NewSerializedStreamWriter(f), GateOptions{
+	gate := NewAttemptCommitGate(context.Background(), ProtocolAnthropic, NewSerializedStreamWriter(f), GateOptions{
 		Mode:                 GateModeImmediate,
-		BeforeSemanticCommit: func(CommitState) error { return boom },
+		BeforeSemanticCommit: func(context.Context, CommitState) error { return boom },
 	})
 	meta := "event: message_start\ndata: {\"message\":{}}\n\n"
 	err := gate.WriteFrame(meta)
@@ -282,9 +283,9 @@ func TestAttemptCommitGateImmediateMetadataCheckpointFailure(t *testing.T) {
 func TestAttemptCommitGateCommitExecutesCheckpoint(t *testing.T) {
 	f := &trackingFlusher{}
 	var calls []CommitState
-	gate := NewAttemptCommitGate(ProtocolAnthropic, NewSerializedStreamWriter(f), GateOptions{
+	gate := NewAttemptCommitGate(context.Background(), ProtocolAnthropic, NewSerializedStreamWriter(f), GateOptions{
 		Mode: GateModeBuffered,
-		BeforeSemanticCommit: func(s CommitState) error {
+		BeforeSemanticCommit: func(_ context.Context, s CommitState) error {
 			calls = append(calls, s)
 			return nil
 		},
@@ -347,9 +348,9 @@ func TestAttemptCommitGateTerminalPartialThreeModes(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			f := &trackingFlusher{}
 			var calls []CommitState
-			gate := NewAttemptCommitGate(tt.protocol, NewSerializedStreamWriter(f), GateOptions{
+			gate := NewAttemptCommitGate(context.Background(), tt.protocol, NewSerializedStreamWriter(f), GateOptions{
 				Mode: tt.mode,
-				BeforeSemanticCommit: func(s CommitState) error {
+				BeforeSemanticCommit: func(_ context.Context, s CommitState) error {
 					calls = append(calls, s)
 					return nil
 				},

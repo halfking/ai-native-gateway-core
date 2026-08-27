@@ -1,6 +1,7 @@
 package streaming
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -176,9 +177,9 @@ func TestConvertChatResponseToResponses(t *testing.T) {
 //
 // Three-layer guard prevents a transparent retry from duplicating committed
 // bytes when the upstream dies mid-stream:
-//   1. bridge.Resumable = !attemptHasClientSemanticOutput(gate, chunkCount)
-//   2. executor (executor_chat.go:1124) — ChunkCount < e.n ceiling (default 50)
-//   3. mayRetryInterruptedStream — Capture.ChunkCountersSnapshot() > 0 blocks
+//  1. bridge.Resumable = !attemptHasClientSemanticOutput(gate, chunkCount)
+//  2. executor (executor_chat.go:1124) — ChunkCount < e.n ceiling (default 50)
+//  3. mayRetryInterruptedStream — Capture.ChunkCountersSnapshot() > 0 blocks
 func TestResponsesStreamSSE_OtherSideClosedIsNetworkError(t *testing.T) {
 	t.Run("committed content blocks retry", func(t *testing.T) {
 		resp := &http.Response{
@@ -190,7 +191,7 @@ func TestResponsesStreamSSE_OtherSideClosedIsNetworkError(t *testing.T) {
 		}
 		rec := httptest.NewRecorder()
 
-		out := StreamResponsesSSE(rec, resp, "gpt-test", "gpt-test", "req-responses-close", nil)
+		out := StreamResponsesSSE(context.Background(), rec, resp, "gpt-test", "gpt-test", "req-responses-close", nil)
 
 		assert.True(t, out.Interrupted)
 		assert.Equal(t, "network_error", out.Reason)
@@ -214,7 +215,7 @@ func TestResponsesStreamSSE_OtherSideClosedIsNetworkError(t *testing.T) {
 		}
 		rec := httptest.NewRecorder()
 
-		out := StreamResponsesSSE(rec, resp, "gpt-test", "gpt-test", "req-responses-close-uncommitted", nil)
+		out := StreamResponsesSSE(context.Background(), rec, resp, "gpt-test", "gpt-test", "req-responses-close-uncommitted", nil)
 
 		assert.True(t, out.Interrupted)
 		assert.Equal(t, "network_error", out.Reason)
@@ -243,7 +244,7 @@ func TestResponsesStreamSSE_Events(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	capture := audit.NewStreamCapture()
-	StreamResponsesSSE(rec, resp, "gpt-4o", "gpt-4o", "test-req-id-123456789012345678", capture)
+	StreamResponsesSSE(context.Background(), rec, resp, "gpt-4o", "gpt-4o", "test-req-id-123456789012345678", capture)
 
 	body := rec.Body.String()
 	for _, ev := range []string{
@@ -271,7 +272,7 @@ func TestResponsesStreamSSE_SplitsDoneJoinedToJSON(t *testing.T) {
 	}
 	rec := httptest.NewRecorder()
 
-	out := StreamResponsesSSE(rec, resp, "gpt-5.6-sol", "gpt-5.6-sol", "req-combined-done", nil)
+	out := StreamResponsesSSE(context.Background(), rec, resp, "gpt-5.6-sol", "gpt-5.6-sol", "req-combined-done", nil)
 
 	assert.False(t, out.Interrupted)
 	assert.Contains(t, rec.Body.String(), `"delta":"planning"`)
@@ -307,7 +308,7 @@ func TestResponsesStreamSSE_FirstByteTimeoutResumable(t *testing.T) {
 		restore := setAttemptGateForTest(false, GateModeImmediate)
 		defer restore()
 		rec := httptest.NewRecorder()
-		out := StreamResponsesSSE(rec, resp, "gpt-4o", "gpt-4o", "req-fbt-legacy", nil)
+		out := StreamResponsesSSE(context.Background(), rec, resp, "gpt-4o", "gpt-4o", "req-fbt-legacy", nil)
 		assert.True(t, out.Interrupted)
 		assert.Equal(t, "first_byte_timeout", out.Reason)
 		assert.True(t, out.Resumable, "first-byte timeout before any semantic output must be transparently resumable")
@@ -331,7 +332,7 @@ func TestResponsesStreamSSE_FirstByteTimeoutResumable(t *testing.T) {
 		restore := setAttemptGateForTest(true, GateModeBuffered)
 		defer restore()
 		rec := httptest.NewRecorder()
-		out := StreamResponsesSSE(rec, resp2, "gpt-4o", "gpt-4o", "req-fbt-deferred", nil)
+		out := StreamResponsesSSE(context.Background(), rec, resp2, "gpt-4o", "gpt-4o", "req-fbt-deferred", nil)
 
 		assert.True(t, out.Interrupted)
 		assert.Equal(t, "first_byte_timeout", out.Reason)

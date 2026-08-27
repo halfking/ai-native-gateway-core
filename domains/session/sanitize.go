@@ -2,8 +2,10 @@ package session
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
+	redissafe "github.com/kaixuan/llm-gateway-go/internal/redis"
 	"github.com/kaixuan/llm-gateway-go/security/sanitize"
 )
 
@@ -46,14 +48,28 @@ func (sm *Manager) SaveSanitizeMap(ctx context.Context, sessionID string, data s
 // GetSanitizeMap 从 Redis 加载脱敏映射表。
 //
 // 返回的 SanitizeMap 可能为空（没有脱敏数据或 session 已过期）。
+// 键类型损坏（非 hash）按空映射处理并记录告警：脱敏映射丢失时
+// 调用方会走全量脱敏路径，不能因类型错误而中断请求。
 func (sm *Manager) GetSanitizeMap(ctx context.Context, sessionID string) (sanitize.SanitizeMap, error) {
 	if sm == nil || sm.redis == nil {
 		return make(sanitize.SanitizeMap), nil
 	}
 
+	client := sm.redis.Client()
+	if client == nil {
+		return make(sanitize.SanitizeMap), nil
+	}
+
 	key := fmt.Sprintf(sanitizeRedisPrefix, sessionID)
-	result, err := sm.redis.HGetAll(ctx, key)
+	result, err := redissafe.SafeHGetAll(ctx, client, key)
 	if err != nil {
+		if errors.Is(err, redissafe.ErrKeyNotFound) {
+			return make(sanitize.SanitizeMap), nil
+		}
+		if errors.Is(err, redissafe.ErrWrongType) {
+			logSessionTypeMismatch("get_sanitize_map", sessionID, err)
+			return make(sanitize.SanitizeMap), nil
+		}
 		return nil, fmt.Errorf("get sanitize map failed: %w (session=%s)", err, sessionID)
 	}
 

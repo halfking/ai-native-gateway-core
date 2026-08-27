@@ -699,7 +699,7 @@ func main() {
 			// Redis 配了 addr 但 ping 失败：和未配置区分开，preload=0
 			// (Redis 可达但预加载失败) 而非 -1 (未配置 sentinel)。
 			metrics.RedisLuaScriptPreloaded.WithLabelValues("ursm").Set(metrics.RedisLuaScriptPreloadedFailed)
-			slog.Warn("session manager: redis ping failed", "error", err)
+			slog.Warn("session manager: redis ping failed", "error", pingErr)
 		}
 	} else {
 		// Redis 完全未配置：使用 -1 作为 sentinel 让 Prometheus query

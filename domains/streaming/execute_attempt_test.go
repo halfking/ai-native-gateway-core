@@ -34,7 +34,7 @@ func (f *fakeAttemptExecutor) Execute(params *executors.ExecParams) (*executors.
 }
 
 func newAttemptGateForTest() *AttemptCommitGate {
-	return NewAttemptCommitGate(ProtocolAnthropic,
+	return NewAttemptCommitGate(context.Background(), ProtocolAnthropic,
 		NewSerializedStreamWriter(io.Discard), GateOptions{Mode: GateModeBuffered})
 }
 

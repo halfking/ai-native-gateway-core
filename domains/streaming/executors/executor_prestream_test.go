@@ -154,7 +154,7 @@ func TestExecuteOpenAI_Q2BridgeOwnsResponseBody(t *testing.T) {
 		NewRouter(NewStickyCache(), credential.NewLimiter()), credential.NewManager(), credential.NewLimiter(),
 		pool.NewPoolManager(nil), nil, func(chunk []byte, isStream bool) []byte { return chunk }, nil, nil,
 	)
-	exec.OpenAIToAnthropicStream = func(_ http.ResponseWriter, resp *http.Response, _, _, _ string, _ *audit.StreamCapture, _ any) StreamOutcome {
+	exec.OpenAIToAnthropicStream = func(_ context.Context, _ http.ResponseWriter, resp *http.Response, _, _, _ string, _ *audit.StreamCapture, _ any) StreamOutcome {
 		bridgeCalls.Add(1)
 		body, err := io.ReadAll(resp.Body)
 		if err != nil {
@@ -214,7 +214,7 @@ func TestExecuteOpenAI_StreamPreStreamStopOrdering(t *testing.T) {
 		pool.NewPoolManager(nil),
 		nil,
 		func(chunk []byte, isStream bool) []byte { return chunk },
-		func(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, catalogCode string, norm NormalizerFunc, capture *audit.StreamCapture, toolsRequested bool) StreamOutcome {
+		func(_ context.Context, w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, catalogCode string, norm NormalizerFunc, capture *audit.StreamCapture, toolsRequested bool) StreamOutcome {
 			// This is the production StreamChat injection point. It is
 			// called AFTER OnStreamReady has already been fired. We
 			// verify the order and forward the body verbatim.
@@ -599,7 +599,7 @@ func TestExecuteOpenAI_NetworkStreamFailureFailsOverToNextCandidate(t *testing.T
 	)
 	exec.StreamRetryThreshold = 50
 	wireDispatchPipelineForTest(t, exec)
-	exec.StreamChat = func(http.ResponseWriter, *http.Response, string, string, string, NormalizerFunc, *audit.StreamCapture, bool) StreamOutcome {
+	exec.StreamChat = func(context.Context, http.ResponseWriter, *http.Response, string, string, string, NormalizerFunc, *audit.StreamCapture, bool) StreamOutcome {
 		if streamCalls.Add(1) == 1 {
 			return StreamOutcome{
 				Interrupted: true,
