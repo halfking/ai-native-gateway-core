@@ -137,3 +137,28 @@ bash scripts/scan-secrets.sh --mode=strict --paths=domains/hooks/compression →
 ```
 
 对 `docs/audit` 目录做全目录扫描时仍有 3 个既有 `INTERNAL_DOMAIN` WARN，命中 `2026-08-22-admin-registry-154-deploy-audit.md` 与 `llm-kxpms-nginx-route-gap-2026-08-21.md`；本轮新增/修改的审计内容未产生新的敏感信息命中。
+
+## 9. 第五轮：2c64b12ce 提交后审计（2026-08-27 深夜，同日追加）
+
+本轮以 `2c64b12ce` 为固定点，进行了规范轴、规格轴和人工边界复核。发现 3 项遗漏，已全部修复：
+
+| # | 发现 | 来源 | 严重度 | 修复 |
+|---|---|---|---|---|
+| 1 | `RebuildOpenAIAfterSummary` 的 `recentAtomicTail` 只修复 tail 左边界落在 `role=tool` result 的情况，但此前用例没有覆盖多 result/边界组合；真实截断可能保留 result 而遗漏同一 assistant anchor | 人工边界测试 | P1 | 增加 `recentAtomicTail` 的单 result 与同一 anchor 多 result 回归，保证工具调用回合原子保留 |
+| 2 | `RebuildAnthropicAfterSummary` 的 FirstUser 不一致防御 fallback 仍可能绕开 OpenAI 主路径的统一过滤语义，旧 marker 或错误放置的 system 可能回到 `messages[]` | 规格轴 | P1 | fallback 统一使用 `filterRebuildTail` + `recentAtomicTail`，新增 `TestRebuildAnthropicAfterSummary_FallbackFiltersGatewayArtifacts` |
+| 3 | `stripThinkingBlocks` 以字段数量判断全 thinking 消息是否有有效载荷，`len(keys) <= 2` 无法区分缺 role 的有效扩展字段和带空值的无效扩展字段 | 规范轴 | P2 | 改用 `hasMeaningfulMessagePayload`，按 JSON 语义识别非空载荷；新增有效/空扩展字段双向测试 |
+
+同时发现并修复一条与 #1 同类但未在上一轮报告中记录的尾部协议问题：OpenAI 重建 tail 需要保证 `tool_calls` 与 `tool_call_id` 配对，否则上游会拒绝孤立工具结果。新增单 result、多 result 工具回合测试，并让 `recentAtomicTail` 向前扩展到对应 assistant anchor。
+
+验证结果：
+
+```
+go test ./domains/hooks/compression/... -count=1  → 全绿
+go test ./domains/hooks/... -count=1               → 全绿（20 个包）
+go test ./... -count=1                             → 全绿（235 个包，0 FAIL）
+go vet ./...                                        → 全绿
+go build ./...                                      → 全绿
+bash scripts/scan-secrets.sh --mode=strict --paths=domains/hooks/compression → 0 findings
+```
+
+规范轴结果：`CONTRIBUTING.md` 要求的 Conventional Commits、测试命名和 gofmt 均满足；规范轴子代理无新增问题。远端在本轮复核期间已合入独立的 Anthropic/JSON 修复并快进同步，本任务未修改这些文件。
