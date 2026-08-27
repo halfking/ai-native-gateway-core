@@ -527,13 +527,13 @@ func (c *CredentialProbeV2) cycleAll(ctx context.Context) {
 			}
 		}
 
-		// P2: fast reprobe after auth_failed or unreachable.
-		if pr.AvailabilityState == "auth_failed" || pr.AvailabilityState == "unreachable" {
-			select {
-			case c.fastReprobeQueue <- s.ID:
-			default:
+			// P2: fast reprobe after auth_failed or unreachable. Route through the
+			// deduplicating submitter so cycle scans share the same pending mark and
+			// lifecycle handling as quota-triggered probes.
+			if pr.AvailabilityState == "auth_failed" || pr.AvailabilityState == "unreachable" {
+				c.SubmitFastProbe(s.ID)
 			}
-		}
+
 	}
 
 	slog.Info("credential probe v2: cycle complete",
