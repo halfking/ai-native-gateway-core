@@ -194,6 +194,28 @@ func TestResolvePolicy(t *testing.T) {
 	}
 }
 
+// TestResolvePolicy_RejectsReservedKeywords 验证 off/all 不能与其他名称混用
+// （修复 C3：避免 "lite,off" → 静默 no-op）。
+func TestResolvePolicy_RejectsReservedKeywords(t *testing.T) {
+	cases := []string{
+		"lite,off",
+		"off,lite",
+		"all,off",
+		"lite,all,caveman",
+	}
+	for _, spec := range cases {
+		t.Run(spec, func(t *testing.T) {
+			_, err := ResolvePolicy(spec)
+			if err == nil {
+				t.Errorf("expected error for spec %q", spec)
+			}
+			if !errors.Is(err, ErrInvalidPolicySpec) {
+				t.Errorf("err should wrap ErrInvalidPolicySpec; got %v", err)
+			}
+		})
+	}
+}
+
 // ── Runner tests ───────────────────────────────────────────────────
 
 func TestRunner_NilSelectorReturnsBody(t *testing.T) {
@@ -283,12 +305,44 @@ func TestRunner_ApplyErrorAborts(t *testing.T) {
 	_ = reg.Register(b)
 	r := NewRunner(reg)
 	sel := NewManualSelector(Policy{Names: []string{"a", "b"}, UnknownMode: "ignore"})
-	out, _, err := r.RunWithBody(context.Background(), sel, []byte("start!"))
+	out, stats, err := r.RunWithBody(context.Background(), sel, []byte("start!"))
 	if err == nil {
 		t.Fatal("expected error from b")
 	}
 	if string(out) != "aaaa" {
 		t.Errorf("error body must be the body as of last successful apply; got %q", out)
+	}
+	// N3: 即使中途失败，BytesOut 也应反映当前链长，便于观测部分压缩效果。
+	if stats.BytesOut != 4 {
+		t.Errorf("BytesOut on error path = %d, want 4 (length of a's output)", stats.BytesOut)
+	}
+	// AppliedNames 应包含 a（成功应用的）；b 不在（出错就 abort，未 Applied）。
+	if len(stats.AppliedNames) != 1 || stats.AppliedNames[0] != "a" {
+		t.Errorf("AppliedNames = %v, want [a]", stats.AppliedNames)
+	}
+}
+
+// TestRunner_MultiStageRegressionAllRecorded 验证多个 strategy 同时触发
+// NeverWorse 时，TruncatedBy 应包含所有受影响的 strategy（修复 N7）。
+func TestRunner_MultiStageRegressionAllRecorded(t *testing.T) {
+	reg := NewRegistry()
+	a := &stubStrategy{name: "a", enabled: true, applied: true, out: []byte("aaaa"), guardStage: "a"}
+	b := &stubStrategy{name: "b", enabled: true, applied: true, out: []byte("bbbbbbbb"), guardStage: "b"}
+	c := &stubStrategy{name: "c", enabled: true, applied: true, out: []byte("cccc"), guardStage: "c"}
+	_ = reg.Register(a)
+	_ = reg.Register(b)
+	_ = reg.Register(c)
+	r := NewRunner(reg)
+	sel := NewManualSelector(Policy{Names: []string{"a", "b", "c"}, UnknownMode: "ignore"})
+	// "start!"(6) → "aaaa"(4) 压缩 → "bbbbbbbb"(8) 膨胀 → "cccc"(4) 膨胀
+	// b 触发回归（4→8）；c 拿到 a 的输出（4 字节）作 input，"cccc" 也是 4 字节
+	// 走 NeverWorse 路径：len(processed) < len(raw) 才接受，4 < 4 false → 也视为膨胀。
+	out, stats, _ := r.RunWithBody(context.Background(), sel, []byte("start!"))
+	if string(out) != "aaaa" {
+		t.Errorf("final body = %q, want aaaa (regressed twice)", out)
+	}
+	if len(stats.TruncatedBy) != 2 || stats.TruncatedBy[0] != "b" || stats.TruncatedBy[1] != "c" {
+		t.Errorf("TruncatedBy = %v, want [b c]", stats.TruncatedBy)
 	}
 }
 
@@ -342,6 +396,42 @@ func TestRunner_SetGuardIsUsed(t *testing.T) {
 	if len(stats.TruncatedBy) != 1 || stats.TruncatedBy[0] != "a" {
 		t.Errorf("TruncatedBy = %v, want [a]", stats.TruncatedBy)
 	}
+}
+
+// TestRunner_SetGuardConcurrentNoDataRace 修复 C1：SetGuard 与 RunWithBody
+// 并发调用，atomic.Value 保证无 data race。在 -race 跑器下应通过。
+func TestRunner_SetGuardConcurrentNoDataRace(t *testing.T) {
+	reg := NewRegistry()
+	a := &stubStrategy{name: "a", enabled: true, applied: true, out: []byte("a-out"), guardStage: "a"}
+	_ = reg.Register(a)
+	r := NewRunner(reg)
+
+	// 并发 writer: 切换 guard。
+	stop := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				r.SetGuard(defaultNeverWorse)
+				r.SetGuard(func(raw, processed []byte, stage string) ([]byte, bool) {
+					if len(processed) < len(raw) {
+						return processed, false
+					}
+					return raw, true
+				})
+			}
+		}
+	}()
+
+	// 并发 reader: 跑 RunWithBody。
+	for i := 0; i < 100; i++ {
+		sel := NewManualSelector(Policy{Names: []string{"a"}, UnknownMode: "ignore"})
+		_, _, _ = r.RunWithBody(context.Background(), sel, []byte("input"))
+	}
+	close(stop)
+	// 至少：调用没 panic；具体 result 不强求（guard 切换期间结果不确定，但不应崩溃）。
 }
 
 // ── Adapter 集成测试 ────────────────────────────────────────────────
