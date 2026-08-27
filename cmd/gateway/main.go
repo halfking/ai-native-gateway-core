@@ -445,15 +445,15 @@ func main() {
 		slog.Info("offline verification daemon started", "interval", "6h")
 	} else {
 		// Online mode: verify and start token refresh daemon
+		// 2026-08-28: In online mode, if offline license.dat verification fails,
+		// we do NOT enter restricted mode because the license is managed through
+		// the database and license API. The offline file is optional in this mode.
 		if err := licensing.EnforceAtStartup(
 			"/var/lib/kx-gateway/license.dat",
 			"/var/lib/kx-gateway/server.pub",
 			"/var/lib/kx-gateway",
 		); err != nil {
-			slog.Warn("license enforcement failed, entering restricted mode", "error", err)
-			// 2026-07-21: 设置全局受限模式标志，router 注册阶段会据此
-			// 启用 licensing.RestrictedModeMiddleware 阻止非白名单请求。
-			gRestrictedMode = true
+			slog.Warn("offline license file verification failed (expected in online mode with DB license)", "error", err)
 		} else {
 			slog.Info("license verification successful")
 		}
