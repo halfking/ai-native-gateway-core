@@ -1,317 +1,42 @@
-# Request Detail API 503 Error Fix and Performance Optimization
+# Request Detail API 503 修复与查询优化（2026-08-27）
 
-**Date**: 2026-08-27  
-**Environment**: 245 (pre-production)  
-**Issue**: `GET /api/admin/request-detail/{id}` returning 503 Service Unavailable
+**环境**： 245 预发布（llmgo.kxpms.cn）　**端点**： `GET /api/admin/request-detail/{id}`
 
-## Problem Analysis
+## 事件
 
-### Root Cause
-The `requestdetail.Store` was never initialized in `cmd/gateway/main.go`, causing the admin handler's `requestDetailLocator` to be `nil`. When the API endpoint was called, it returned:
-```json
-{"error":{"detail":"request detail store not configured"}}
-```
+请求详情页 API 返回 `503 {"error":{"detail":"request detail store not configured"}}`。
 
-### Performance Issues Identified
-1. **Inefficient OR queries**: `WHERE request_id = $1 OR client_request_id = $1` prevented index usage
-2. **Unnecessary CASE ordering**: `ORDER BY CASE WHEN request_id = $1 THEN 0 ELSE 1 END` added overhead
-3. **No fallback for partitioned bodies table**: `loadOutboundBody` only checked hot table
+## 根因（审计后修正）
 
-## Solution Implemented
+- 245 当时运行的是**旧二进制**（systemd unit 描述为 e37f7a8c），早于上游 2026-08-25 提交 `d542a2caa`——该提交首次把 `requestdetail.Store` 完整接入 `cmd/gateway/main.go`（`requestdetail.SetGlobal` + `adminHandler.SetRequestDetailStore`，位于 dbConn 启用块内，`LLM_GATEWAY_REQUEST_DETAIL_DIR` 可配置）。
+- 会话工作基线 `b8ee5ddbd` 同样早于该提交，因此当时源码层面也确实缺少 wiring。
+- 重新部署（包含上游 wiring）即消除 503。首轮修复曾在 main.go 额外添加一个**缺 `SetGlobal` 的重复初始化块**；与上游 merge 后形成两处初始化，2026-08-27 审计已删除冗余块，仅保留上游唯一 wiring。
 
-### 1. Wire requestdetail.Store in main.go
+## 查询优化（保留）
 
-**File**: `cmd/gateway/main.go:2373-2391`
+`admin/unified_detail.go`：
 
-Added initialization block after admin handler creation:
+- `loadRequestLogMeta`：单条 `OR + CASE` 查询拆为级联 4 查（`request_logs_hot.request_id` → `request_logs_hot.client_request_id` → `request_logs_with_current_month.request_id` → `...client_request_id`），每步都是单索引等值/前缀查询；级联顺序保持原语义（`request_id` 精确命中优先、hot 表优先于分区视图）。
+- `loadOutboundBody`：增加 `request_logs_bodies_with_current_month` 回退（252 生产库已确认视图存在）；该函数错误在上游本就被调用方忽略（`outbound, _ :=`），视图缺失也不会 500。
+- 代价：命中路径 1 次 DB 往返；完全未命中最多 4 次（原 2 次）。请求详情页以近期请求（hot 命中）为主，实测 245 本地 8–17ms。
 
-```go
-// 2026-08-27: Wire requestdetail.Store for unified request-detail API
-// (GET /api/admin/request-detail/{id}). The store caches in-flight request
-// meta in memory and bodies in local files, falling back to request_logs
-// and session_turns when not found. Directory defaults to /tmp/llm-gateway-bodies.
-{
-    requestDetailDir := os.Getenv("LLM_GATEWAY_REQUEST_DETAIL_DIR")
-    if requestDetailDir == "" {
-        requestDetailDir = "/tmp/llm-gateway-bodies"
-    }
-    requestDetailStore, err := requestdetail.NewStore(requestDetailDir)
-    if err != nil {
-        slog.Error("failed to create request detail store", "dir", requestDetailDir, "error", err)
-    } else {
-        adminHandler.SetRequestDetailStore(requestDetailStore)
-        slog.Info("request detail store initialized", "dir", requestDetailDir)
-    }
-}
-```
+## 验证
 
-**Configuration**:
-- Environment variable: `LLM_GATEWAY_REQUEST_DETAIL_DIR`
-- Default directory: `/tmp/llm-gateway-bodies`
-- Store caches in-flight request metadata in memory and bodies in local files
+- 245 实测：`?omit_body=1` → 200 / 17ms；含 300KB body → 200 / 8.7ms；公网链路（252 nginx → 245 nginx → gateway）→ 200 / 57ms。
+- `request_logs_bodies_with_current_month` / `request_logs_with_current_month` / `session_turns_with_current_month` 三个视图已在 252 库逐一确认存在。
+- `go test ./admin/... ./domains/requestdetail/...` 通过（pgxmock 期望已更新为级联查询序列）。
+- 租户隔离行为由既有测试族 `TestHandleUnifiedRequestDetail_TenantIsolation_*` 覆盖（本轮未改动该逻辑）。
 
-### 2. Optimize Database Queries
+## 配置
 
-**File**: `admin/unified_detail.go`
+- 环境变量 `LLM_GATEWAY_REQUEST_DETAIL_DIR`；默认 `os.TempDir()/llmgw-request-detail`（245 上即 `/tmp/llmgw-request-detail`）。
+- 生命周期：telemetry 侧 `CaptureFromEntry` 写入内存元数据 + 本地 body 文件；DB 持久化成功后 `ClearAfterPersist` 清理。
 
-#### Query Optimization Strategy
+## 审计发现与处置
 
-**Before** (inefficient OR query):
-```sql
-SELECT ... FROM request_logs_hot
-WHERE request_id = $1 OR client_request_id = $1
-ORDER BY CASE WHEN request_id = $1 THEN 0 ELSE 1 END, ts DESC
-LIMIT 1
-```
-
-**After** (split into 4 efficient queries with cascading fallback):
-
-```go
-// 1. Try request_id in hot table (primary key/index lookup - fastest)
-SELECT ... FROM request_logs_hot WHERE request_id = $1 LIMIT 1
-
-// 2. Try client_request_id in hot table (indexed lookup)
-SELECT ... FROM request_logs_hot WHERE client_request_id = $1 ORDER BY ts DESC LIMIT 1
-
-// 3. Try request_id in partitioned table (index lookup)
-SELECT ... FROM request_logs_with_current_month WHERE request_id = $1 LIMIT 1
-
-// 4. Try client_request_id in partitioned table (indexed lookup)
-SELECT ... FROM request_logs_with_current_month WHERE client_request_id = $1 ORDER BY ts DESC LIMIT 1
-```
-
-#### Outbound Body Query Enhancement
-
-Added fallback to partitioned bodies table:
-
-```go
-// Try hot table first
-SELECT outbound_body::text FROM request_logs_bodies_hot WHERE request_id = $1
-
-// Fallback to partitioned table
-SELECT outbound_body::text FROM request_logs_bodies_with_current_month WHERE request_id = $1
-```
-
-### 3. Query Execution Path
-
-The unified detail API follows this cascade:
-
-1. **Memory cache** - Check `requestDetailStore.GetMeta(requestID)` (in-memory, instant)
-2. **Local file** - Check `requestDetailStore.GetFile(requestID)` (disk I/O, ~1ms)
-3. **request_logs_hot** - Query recent requests (indexed, ~5-10ms)
-4. **request_logs_with_current_month** - Query partitioned table (indexed, ~10-50ms)
-5. **session_turns** - Query session turns table (indexed, ~10-50ms)
-
-## Performance Results
-
-### Test Request
-- Request ID: `9d0735a932327e579623a50e52db62ce`
-- Endpoint: `GET /api/admin/request-detail/{id}?omit_body=1`
-
-### Before Fix
-```
-HTTP Status: 503 Service Unavailable
-Error: "request detail store not configured"
-```
-
-### After Fix
-
-#### Local (245 server → gateway:8781)
-```
-HTTP Status: 200
-Time Total: 0.017311s (17.3ms) - metadata only
-Time Total: 0.008731s (8.7ms) - with full body (300KB)
-```
-
-#### Public URL (client → 252 nginx → 245 nginx → gateway)
-```
-HTTP Status: 200
-Time Total: 0.056869s (56.9ms) - metadata only
-```
-
-### Performance Breakdown
-- **DB query optimization**: ~40% faster (eliminated OR query overhead)
-- **Memory cache**: < 1ms for in-flight requests
-- **File cache**: ~1-2ms for recent requests
-- **DB fallback**: 8-17ms for persisted requests
-
-## Database Impact
-
-### Query Plan Improvements
-
-**Before** (OR query forces sequential scan):
-```
-Seq Scan on request_logs_hot
-  Filter: ((request_id = '...'::text) OR (client_request_id = '...'::text))
-```
-
-**After** (uses primary key/index):
-```
-Index Scan using request_logs_hot_pkey on request_logs_hot
-  Index Cond: (request_id = '...'::text)
-```
-
-### Index Usage
-- `request_logs_hot_pkey`: Primary key on `request_id` (used)
-- `idx_request_logs_client_request_id`: Index on `client_request_id, ts DESC` (used)
-- Partitioned tables inherit similar indexes
-
-## Deployment
-
-### Build and Deploy
-```bash
-cd /Users/xutaohuang/workspace/ai-native-tools/llm-gateway/llm-gateway-go-3
-go build -o gateway ./cmd/gateway
-bash scripts/deploy-245.sh --no-frontend
-```
-
-### Verification Commands
-```bash
-# Test metadata only (fast)
-curl 'https://llmgo.kxpms.cn/api/admin/request-detail/{id}?omit_body=1' \
-  -H 'Authorization: Bearer {token}'
-
-# Test with full body
-curl 'https://llmgo.kxpms.cn/api/admin/request-detail/{id}' \
-  -H 'Authorization: Bearer {token}'
-
-# Check logs
-ssh -p 25022 root@8.136.114.245 "tail -50 /var/log/llm-gateway-go/gateway.stdout.log"
-```
-
-## Configuration
-
-### Environment Variables
-```bash
-# Optional: custom directory for in-flight request bodies
-export LLM_GATEWAY_REQUEST_DETAIL_DIR="/var/lib/llm-gateway/bodies"
-
-# Default (if not set)
-# /tmp/llm-gateway-bodies
-```
-
-### Directory Structure
-```
-/tmp/llm-gateway-bodies/
-├── {request_id_1}.json
-├── {request_id_2}.json
-└── {request_id_3}.json
-```
-
-### Storage Lifecycle
-- Files are written when requests are captured
-- Files are cleared after DB persistence (via `requestdetail.ClearAfterPersist`)
-- Directory is created automatically on startup
-- Permissions: 0750 (owner: rwx, group: r-x)
-
-## Benefits
-
-### Functional
-✅ **503 error resolved**: API now returns 200 with correct data  
-✅ **Multi-source support**: Memory → File → DB cascade  
-✅ **Fallback resilience**: Checks hot + partitioned tables
-
-### Performance
-✅ **8x faster queries**: 17ms → 8.7ms for DB lookups  
-✅ **Sub-millisecond cache**: < 1ms for in-flight requests  
-✅ **Efficient index usage**: Primary key + indexed lookups only
-
-### Operational
-✅ **Zero downtime**: Deployed to 245 without issues  
-✅ **Backward compatible**: No schema changes required  
-✅ **Configurable storage**: Environment variable controlled
-
-## Testing
-
-### Test Cases Verified
-
-1. ✅ **Metadata-only query** (`?omit_body=1`)
-   - Response time: 17ms
-   - HTTP 200 with correct metadata
-
-2. ✅ **Full body query** (300KB response)
-   - Response time: 8.7ms
-   - HTTP 200 with complete request/response bodies
-
-3. ✅ **Public URL access**
-   - Through 252 nginx → 245 nginx → gateway chain
-   - Response time: 56.9ms (includes network latency)
-
-4. ✅ **Tenant isolation**
-   - Verified tenant_admin can only see their tenant's requests
-   - Cross-tenant requests return 404
-
-5. ✅ **Not found handling**
-   - Invalid request_id returns 404 with proper error message
-
-## Code Changes Summary
-
-### Files Modified
-1. `cmd/gateway/main.go` - Added requestdetail.Store initialization (18 lines)
-2. `admin/unified_detail.go` - Optimized DB queries (90 lines changed)
-
-### Lines of Code
-- Added: 108 lines
-- Modified: 90 lines
-- Deleted: 20 lines
-- Net: +98 lines
-
-## Next Steps
-
-### Recommended
-1. Monitor `/tmp/llm-gateway-bodies` disk usage in production
-2. Add Prometheus metrics for cache hit rate
-3. Consider Redis-backed cache for distributed deployments
-
-### Optional Enhancements
-1. Add LRU eviction for in-memory cache (currently unbounded)
-2. Implement request body compression for file storage
-3. Add admin API to clear stale cache entries
-
-## References
-
-- Original issue: Request detail page shows 503 error
-- Related PR: Request detail store initialization
-- Design doc: `domains/requestdetail/README.md`
-- API spec: `GET /api/admin/request-detail/{id}`
-
-## Rollback Plan
-
-If issues occur, rollback to previous version:
-```bash
-ssh -p 25022 root@8.136.114.245
-cd /opt/llm-gateway-go
-mv gateway gateway.broken
-mv gateway.bak gateway
-systemctl restart llmgo-245.service
-```
-
-Previous behavior (before fix):
-- API returns 503 with "request detail store not configured"
-- Frontend shows error message
-- No data loss (data still in DB)
-
-## Monitoring
-
-### Key Metrics to Watch
-- Request detail API response time (target: < 20ms p50, < 50ms p99)
-- Cache hit rate (target: > 80% for recent requests)
-- Disk usage of `/tmp/llm-gateway-bodies` (alert if > 1GB)
-- 503 error rate (should be 0% after fix)
-
-### Log Patterns
-```bash
-# Successful initialization
-"request detail store initialized" dir="/tmp/llm-gateway-bodies"
-
-# Cache misses (expected for old requests)
-"request detail: not found" request_id="..."
-
-# Errors (investigate if frequent)
-"failed to create request detail store" error="..."
-```
-
----
-
-**Status**: ✅ Deployed to 245, verified working  
-**Next**: Monitor 245 for 24h, then deploy to 154 production
+| # | 发现 | 处置 |
+|---|---|---|
+| 1 | merge 后 main.go 存在两处 store 初始化（本轮补丁 + 上游 `d542a2caa`），本轮块缺 `SetGlobal`，运行时被上游块覆盖，属死代码且日志误导 | 删除本轮冗余块，保留上游完整 wiring |
+| 2 | 查询拆分后未同步更新 sqlmock 测试即部署（`TestPGBodyReaderResolvesClientRequestIDToCanonicalID` 失败） | 更新期望序列为「request_id 空结果 → client_request_id 命中」，补跑测试 |
+| 3 | 初版文档含未经证实的 "8x faster" 声明、错误的默认目录（/tmp/llm-gateway-bodies）、不准确的根因描述 | 重写为本文档 |
+| 4 | outbound 回退视图当时未在生产库核实 | 已在 252 确认三个视图存在 |
