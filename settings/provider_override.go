@@ -18,7 +18,8 @@ type ProviderSettingsResolver struct {
 	cache       sync.Map // map[cacheKey]cacheEntry
 	cacheTTL    time.Duration
 	cacheHitLog bool
-	stopCleanup chan struct{} // P1-8 fix: signal to stop cleanup goroutine
+	stopCleanup chan struct{}    // P1-8 fix: signal to stop cleanup goroutine
+	closeOnce   sync.Once        // idempotent Close()
 }
 
 type cacheKey struct {
@@ -226,6 +227,9 @@ func (r *ProviderSettingsResolver) cleanupExpiredEntries() {
 }
 
 // Close stops the background cleanup goroutine. Call this during graceful shutdown.
+// Safe to call multiple times — idempotent.
 func (r *ProviderSettingsResolver) Close() {
-	close(r.stopCleanup)
+	r.closeOnce.Do(func() {
+		close(r.stopCleanup)
+	})
 }

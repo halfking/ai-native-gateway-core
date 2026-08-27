@@ -180,7 +180,7 @@ func buildBreakdownQuery(by string) (string, error) {
 		// 2026-07-21 Ticket #11: Use COALESCE to access request_body from either table
 		bucketExpr = `
 			CASE
-				WHEN COALESCE(rb.request_body, rl.request_body)->'messages' @> '[{"content":[{"type":"image_url"}]}]'::jsonb
+				WHEN COALESCE(rb.request_body, ''::jsonb)->'messages' @> '[{"content":[{"type":"image_url"}]}]'::jsonb
 					THEN 'has_image'
 				ELSE 'no_image'
 			END`
@@ -191,7 +191,7 @@ func buildBreakdownQuery(by string) (string, error) {
 		// 2026-07-21 Ticket #11: Use COALESCE to access request_body from either table
 		bucketExpr = `
 			CASE
-				WHEN position(chr(96) || chr(96) || chr(96) in COALESCE(rb.request_body, rl.request_body)::text) > 0
+				WHEN position(chr(96) || chr(96) || chr(96) in COALESCE(rb.request_body, ''::jsonb)::text) > 0
 					THEN 'has_code'
 				ELSE 'no_code'
 			END`
