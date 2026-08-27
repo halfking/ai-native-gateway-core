@@ -20,6 +20,7 @@ const (
 	keyBodyRespSum   = "llmgw:stats:body:response:sum"
 	keyBodyRespCount = "llmgw:stats:body:response:count"
 	keyBodyRespMax   = "llmgw:stats:body:response:max"
+	bodySizeStatsTTL = 24 * time.Hour
 )
 
 // maxUpdateScript is a Lua script that atomically updates the max value
@@ -29,10 +30,10 @@ const (
 // ARGV[1] = new candidate value
 //
 // Pre-compiled once at package init for efficiency. The script:
-//   1. Reads current max (returns nil if not set)
-//   2. Compares with new value
-//   3. Updates if new value is greater
-//   4. Returns the final max
+//  1. Reads current max (returns nil if not set)
+//  2. Compares with new value
+//  3. Updates if new value is greater
+//  4. Returns the final max
 //
 // Note: we use Eval (not EvalSha) intentionally — miniredis (used in
 // tests) does not implement NOSCRIPT fallback, so EVALSHA would fail
@@ -116,6 +117,9 @@ func (t *BodySizeTracker) Record(entry *telemetry.RequestLogEntry) {
 			pipe.IncrBy(ctx, keyBodyReqSum, reqSize)
 			pipe.Incr(ctx, keyBodyReqCount)
 			pipe.Eval(ctx, maxUpdateScriptSrc, []string{keyBodyReqMax}, reqSize)
+			pipe.Expire(ctx, keyBodyReqSum, bodySizeStatsTTL)
+			pipe.Expire(ctx, keyBodyReqCount, bodySizeStatsTTL)
+			pipe.Expire(ctx, keyBodyReqMax, bodySizeStatsTTL)
 		}
 	}
 
@@ -130,6 +134,9 @@ func (t *BodySizeTracker) Record(entry *telemetry.RequestLogEntry) {
 			pipe.IncrBy(ctx, keyBodyRespSum, respSize)
 			pipe.Incr(ctx, keyBodyRespCount)
 			pipe.Eval(ctx, maxUpdateScriptSrc, []string{keyBodyRespMax}, respSize)
+			pipe.Expire(ctx, keyBodyRespSum, bodySizeStatsTTL)
+			pipe.Expire(ctx, keyBodyRespCount, bodySizeStatsTTL)
+			pipe.Expire(ctx, keyBodyRespMax, bodySizeStatsTTL)
 		}
 	}
 

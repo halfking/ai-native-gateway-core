@@ -549,11 +549,9 @@ func extractMessagesForTitle(requestBody string) string {
 	if err := json.Unmarshal(body, &parsed); err != nil || len(parsed.Messages) == 0 {
 		return ""
 	}
-	const maxPerMsg = 1200  // chars per message (was 500 — bumped 2026-08-06)
-	const maxTotal = 6000   // total chars cap (was 3000)
-	const maxMsgs = 10      // semantic messages, excluding tool/function traffic
-	const maxSysChars = 800 // long system messages (IDE tool descriptions) get truncated at this length
-	const sysSnippet = 300  // how much of a long system message to keep
+	const maxPerMsg = 1200 // chars per message (was 500 — bumped 2026-08-06)
+	const maxTotal = 6000  // total chars cap (was 3000)
+	const maxMsgs = 10     // semantic messages, excluding system/tool/function traffic
 
 	// 2026-08-06: pre-scan to find the LAST user message; preserve it in full
 	// even if doing so pushes the corpus past maxTotal. This is the actual
@@ -580,7 +578,7 @@ func extractMessagesForTitle(requestBody string) string {
 		if role == "tool" || role == "function" {
 			continue
 		}
-		if role != "user" && role != "assistant" && role != "system" {
+		if role != "user" && role != "assistant" {
 			continue
 		}
 		if semanticMessages >= maxMsgs {
@@ -589,11 +587,6 @@ func extractMessagesForTitle(requestBody string) string {
 		text := strings.Join(strings.Fields(contentToString(msg.Content)), " ") // collapse whitespace
 		if text == "" {
 			continue
-		}
-		// Long system prompts (IDE tool descriptions) are usually boilerplate;
-		// truncate aggressively so the user question is not crowded out.
-		if role == "system" && len(text) > maxSysChars {
-			text = text[:sysSnippet] + "… <ide-tool-context truncated>"
 		}
 		if len(text) > maxPerMsg {
 			text = text[:maxPerMsg] + "…"

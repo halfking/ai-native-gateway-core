@@ -44,6 +44,7 @@ const candidate: RoutingCandidate = {
   quota_cap_usd: null,
   quota_used_usd: null,
   model_name: 'model',
+  canonical_id: null,
   routable: true,
   runtime_routable: true,
 }

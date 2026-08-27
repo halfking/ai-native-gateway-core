@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/memory" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/internal/jsonbody"
 )
 
 const noTopicSessionPrefix = "/api/system/no-topic-session/"
@@ -358,8 +359,14 @@ func (h *Handler) handleNoTopicSessionExtractToMemora(w http.ResponseWriter, r *
 	defer cancel()
 
 	var body extractToMemoraRequest
+	// 2026-08-26 (P1-19 fix): empty body accepted silently, malformed
+	// body rejected with 400. Previously every parse error was
+	// silently discarded and the handler proceeded with the
+	// zero-value struct, hiding client-side bugs.
 	if r.Body != nil {
-		_ = json.NewDecoder(r.Body).Decode(&body)
+		if ok, _ := jsonbody.ReadOptional(w, r, &body); !ok {
+			return
+		}
 	}
 	includeResponses := true
 

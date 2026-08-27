@@ -35,21 +35,23 @@ import (
 //
 // Spec: docs/superpowers/specs/2026-06-12-credential-availability-audit-design.md §5
 type CredentialProbeV2 struct {
-	db                 *pgxpool.Pool
-	encKey             []byte
-	keyring            *secret.Keyring
-	cache              *ModelAvailabilityCache
-	interval           time.Duration
-	fastReprobeDelay   time.Duration
-	fastReprobeQueue   chan int // credential IDs
-	fastReprobeMu      sync.Mutex
-	fastReprobePending map[int]struct{}
-	cancel             context.CancelFunc
-	done               chan struct{}
-	started            bool
-	stopped            bool
-	lifecycleMu        sync.Mutex
-	probeWG            sync.WaitGroup
+	db                    *pgxpool.Pool
+	encKey                []byte
+	keyring               *secret.Keyring
+	cache                 *ModelAvailabilityCache
+	interval              time.Duration
+	fastReprobeDelay      time.Duration
+	fastReprobeQueue      chan int // credential IDs
+	fastReprobeMu         sync.Mutex
+	fastReprobePending    map[int]struct{}
+	immediateProbeMu      sync.Mutex
+	immediateProbePending map[int]struct{}
+	cancel                context.CancelFunc
+	done                  chan struct{}
+	started               bool
+	stopped               bool
+	lifecycleMu           sync.Mutex
+	probeWG               sync.WaitGroup
 
 	// 新增：状态管理器引用
 	stateManager credentialstate.StateObserver
@@ -102,13 +104,14 @@ func NewCredentialProbeV2(db *pgxpool.Pool, encKey []byte) *CredentialProbeV2 {
 		}
 	}
 	probe := &CredentialProbeV2{
-		db:                 db,
-		encKey:             encKey,
-		interval:           interval,
-		fastReprobeDelay:   fastDelay,
-		fastReprobeQueue:   make(chan int, 64),
-		fastReprobePending: make(map[int]struct{}),
-		done:               make(chan struct{}),
+		db:                    db,
+		encKey:                encKey,
+		interval:              interval,
+		fastReprobeDelay:      fastDelay,
+		fastReprobeQueue:      make(chan int, 64),
+		fastReprobePending:    make(map[int]struct{}),
+		immediateProbePending: make(map[int]struct{}),
+		done:                  make(chan struct{}),
 	}
 	// 2026-08-26 P1-2: publish the effective delay so the gauge
 	// llmgw_routing_fast_reprobe_delay_seconds reflects the chosen value
@@ -275,8 +278,10 @@ func (c *CredentialProbeV2) Stop() {
 // ProbeNowAsync executes a credential probe immediately in the background.
 // It is used after a caller has already applied its own backoff. Unlike
 // SubmitFastProbe, it does not add the separate five-minute fast-reprobe delay.
+// At most one immediate probe may run for a credential at once so webhook
+// replays and overlapping recovery paths cannot multiply billable probes.
 func (c *CredentialProbeV2) ProbeNowAsync(credID int) {
-	if c == nil {
+	if c == nil || credID <= 0 {
 		return
 	}
 	c.lifecycleMu.Lock()
@@ -291,10 +296,23 @@ func (c *CredentialProbeV2) ProbeNowAsync(credID int) {
 		c.lifecycleMu.Unlock()
 		return
 	}
+	c.immediateProbeMu.Lock()
+	if _, pending := c.immediateProbePending[credID]; pending {
+		c.immediateProbeMu.Unlock()
+		c.lifecycleMu.Unlock()
+		return
+	}
+	c.immediateProbePending[credID] = struct{}{}
+	c.immediateProbeMu.Unlock()
 	c.probeWG.Add(1)
 	c.lifecycleMu.Unlock()
 	go func() {
 		defer c.probeWG.Done()
+		defer func() {
+			c.immediateProbeMu.Lock()
+			delete(c.immediateProbePending, credID)
+			c.immediateProbeMu.Unlock()
+		}()
 		c.ProbeNow(ctx, credID)
 	}()
 }
@@ -509,13 +527,13 @@ func (c *CredentialProbeV2) cycleAll(ctx context.Context) {
 			}
 		}
 
-		// P2: fast reprobe after auth_failed or unreachable.
-		if pr.AvailabilityState == "auth_failed" || pr.AvailabilityState == "unreachable" {
-			select {
-			case c.fastReprobeQueue <- s.ID:
-			default:
+			// P2: fast reprobe after auth_failed or unreachable. Route through the
+			// deduplicating submitter so cycle scans share the same pending mark and
+			// lifecycle handling as quota-triggered probes.
+			if pr.AvailabilityState == "auth_failed" || pr.AvailabilityState == "unreachable" {
+				c.SubmitFastProbe(s.ID)
 			}
-		}
+
 	}
 
 	slog.Info("credential probe v2: cycle complete",
@@ -1002,7 +1020,7 @@ func (c *CredentialProbeV2) writeHealth(ctx context.Context, credID int, pr prob
 		stateReason = &pr.StateReasonCode
 	}
 
-	if _, err := c.db.Exec(execCtx, `
+	result, err := c.db.Exec(execCtx, `
 		UPDATE credentials
 		SET health_status = $1,
 		    health_error = $2,
@@ -1017,14 +1035,94 @@ func (c *CredentialProbeV2) writeHealth(ctx context.Context, credID int, pr prob
 		    -- 同步清除残留的 quota_recover_at，避免状态不一致
 		    -- (quota_state='ok' 但 quota_recover_at 指向未来时间)。
 		    -- 失败分支不传 $8，COALESCE 保持旧值，这里的 CASE 也不会触发。
-		    quota_recover_at = CASE 
-		        WHEN COALESCE($8, quota_state) = 'ok' THEN NULL 
-		        ELSE quota_recover_at 
+		    quota_recover_at = CASE
+		        WHEN COALESCE($8, quota_state) = 'ok' THEN NULL
+		        ELSE quota_recover_at
+		    END,
+		    lifecycle_status = CASE
+		        WHEN COALESCE($8, '') = 'ok'
+		          AND lifecycle_status = 'disabled'
+		          AND auto_disabled_at IS NOT NULL
+		        THEN 'active'
+		        ELSE lifecycle_status
+		    END,
+		    auto_enabled_at = CASE
+		        WHEN COALESCE($8, '') = 'ok'
+		          AND lifecycle_status = 'disabled'
+		          AND auto_disabled_at IS NOT NULL
+		        THEN NOW()
+		        ELSE auto_enabled_at
+		    END,
+		    auto_enabled_reason = CASE
+		        WHEN COALESCE($8, '') = 'ok'
+		          AND lifecycle_status = 'disabled'
+		          AND auto_disabled_at IS NOT NULL
+		        THEN 'periodic_quota_probe_recovered'
+		        ELSE auto_enabled_reason
+		    END,
+		    auto_disabled_at = CASE
+		        WHEN COALESCE($8, '') = 'ok'
+		          AND lifecycle_status = 'disabled'
+		          AND auto_disabled_at IS NOT NULL
+		        THEN NULL
+		        ELSE auto_disabled_at
+		    END,
+		    auto_disabled_reason = CASE
+		        WHEN COALESCE($8, '') = 'ok'
+		          AND lifecycle_status = 'disabled'
+		          AND auto_disabled_at IS NOT NULL
+		        THEN NULL
+		        ELSE auto_disabled_reason
 		    END,
 		    state_reason_code = $9,
-		    state_updated_at = NOW()
+		    state_updated_at = NOW(),
+		    -- A successful probe after a periodic quota window resets the
+		    -- automatically-disabled credential. Manual disable remains guarded.
+		    lifecycle_status = CASE
+		        WHEN COALESCE($8, '') = 'ok'
+		          AND lifecycle_status = 'disabled'
+		          AND auto_disabled_at IS NOT NULL
+		        THEN 'active'
+		        ELSE lifecycle_status
+		    END,
+		    auto_enabled_at = CASE
+		        WHEN COALESCE($8, '') = 'ok'
+		          AND lifecycle_status = 'disabled'
+		          AND auto_disabled_at IS NOT NULL
+		        THEN NOW()
+		        ELSE auto_enabled_at
+		    END,
+		    auto_enabled_reason = CASE
+		        WHEN COALESCE($8, '') = 'ok'
+		          AND lifecycle_status = 'disabled'
+		          AND auto_disabled_at IS NOT NULL
+		        THEN 'periodic_quota_probe_recovered'
+		        ELSE auto_enabled_reason
+		    END,
+		    auto_disabled_at = CASE
+		        WHEN COALESCE($8, '') = 'ok'
+		          AND lifecycle_status = 'disabled'
+		          AND auto_disabled_at IS NOT NULL
+		        THEN NULL
+		        ELSE auto_disabled_at
+		    END,
+		    auto_disabled_reason = CASE
+		        WHEN COALESCE($8, '') = 'ok'
+		          AND lifecycle_status = 'disabled'
+		          AND auto_disabled_at IS NOT NULL
+		        THEN NULL
+		        ELSE auto_disabled_reason
+		    END
 		WHERE id = $10
-		  AND lifecycle_status = 'active'
+		  AND (
+		      lifecycle_status = 'active'
+		      OR (
+		          lifecycle_status = 'disabled'
+		          AND auto_disabled_at IS NOT NULL
+		          AND COALESCE(quota_state, 'ok') = 'periodic_exhausted'
+		          AND (quota_recover_at IS NULL OR quota_recover_at <= now())
+		      )
+		  )
 		  AND COALESCE(manual_disabled, FALSE) = FALSE
 		  -- 2026-08-07 P0 死锁修复：硬配额守卫必须让"探活实测成功"通过。
 		  --
@@ -1047,11 +1145,17 @@ func (c *CredentialProbeV2) writeHealth(ctx context.Context, credID int, pr prob
 		      COALESCE($8, '') = 'ok'
 		      OR quota_state NOT IN ('permanently_exhausted', 'balance_exhausted')
 		  )
-	`, pr.HealthStatus, pr.HealthError, pr.HealthLatencyMs, pr.HealthProbeModel,
+		`, pr.HealthStatus, pr.HealthError, pr.HealthLatencyMs, pr.HealthProbeModel,
 		pr.HealthSource, pr.AvailabilityState, recoverAt,
-		quotaState, stateReason, credID); err != nil {
+		quotaState, stateReason, credID)
+	if err != nil {
 		slog.Warn("credential probe v2: writeHealth failed",
 			"credential_id", credID, "health_status", pr.HealthStatus, "error", err)
+		return
+	}
+	if result.RowsAffected() == 0 {
+		slog.Info("credential probe v2: writeHealth skipped stale result",
+			"credential_id", credID, "health_status", pr.HealthStatus)
 		return
 	}
 	if pr.BindingOnly {
@@ -1177,11 +1281,12 @@ func (c *CredentialProbeV2) writeHealth(ctx context.Context, credID int, pr prob
 		// successes, every bound model is fresh-confirmed.
 		for _, model := range writeModels {
 			lastSuccess := &now
+			modelAvailable := available
 			if pr.BindingOnly {
+				modelAvailable = model != pr.HealthProbeModel
 				if model == pr.HealthProbeModel {
 					// Probe model failed at the binding level;
-					// there is no successful probe timestamp to
-					// report.
+					// there is no successful probe timestamp to report.
 					lastSuccess = nil
 				}
 			}
@@ -1191,7 +1296,7 @@ func (c *CredentialProbeV2) writeHealth(ctx context.Context, credID int, pr prob
 			c.stateManager.UpdateFromProbe(execCtx, &credentialstate.State{
 				CredentialID:  credID,
 				Model:         model,
-				Available:     pr.AvailabilityState == "ready" && !pr.BindingOnly,
+				Available:     modelAvailable,
 				HealthStatus:  pr.HealthStatus,
 				AvgLatencyMs:  pr.HealthLatencyMs,
 				LastUpdatedAt: now,
@@ -1378,6 +1483,9 @@ func (c *CredentialProbeV2) loadBoundRawModelsAll(ctx context.Context, credID in
 // "fast reprobe after auth_failed" from "admin manual trigger" without
 // cross-referencing logs.
 func (c *CredentialProbeV2) ProbeNow(ctx context.Context, credID int) {
+	if c == nil || c.db == nil || credID <= 0 {
+		return
+	}
 	timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
@@ -1395,8 +1503,11 @@ func (c *CredentialProbeV2) ProbeNow(ctx context.Context, credID int) {
 		FROM credentials c
 		JOIN providers p ON p.id = c.provider_id
 		WHERE c.id = $1
+		  AND c.status = 'active'
 		  AND c.lifecycle_status = 'active'
 		  AND COALESCE(c.manual_disabled, FALSE) = FALSE
+		  AND p.enabled = TRUE
+		  AND COALESCE(p.manual_disabled, FALSE) = FALSE
 		  AND COALESCE(c.default_probe_model, '') <> ''
 	`, credID).Scan(
 		&s.ID, &s.Status, &s.LifecycleStatus, &s.ManualDisabled,

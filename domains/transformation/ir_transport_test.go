@@ -37,6 +37,18 @@ const (
 		"stop_reason": "end_turn",
 		"usage": {"input_tokens": 1, "output_tokens": 1}
 	}`
+
+	geminiResponse = `{
+		"modelVersion": "gemini-2.5-pro",
+		"candidates": [{"content": {"role": "model", "parts": [{"text": "hi"}]}, "finishReason": "STOP"}],
+		"usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1, "totalTokenCount": 2}
+	}`
+
+	responsesResponse = `{
+		"id": "resp_1", "model": "gpt-5", "status": "completed",
+		"output": [{"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "hi"}]}],
+		"usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+	}`
 )
 
 func TestIRTransport_Convert_Q1_OpenAIToOpenAI(t *testing.T) {
@@ -122,6 +134,32 @@ func TestIRTransport_ConvertResponse_Q3_OpenAIClient_AnthropicUpstream(t *testin
 	// Anthropic 响应转 OpenAI：应包含 choices
 	if !contains(out, "choices") {
 		t.Fatalf("Q3 response: missing choices: %s", out)
+	}
+}
+
+func TestIRTransport_ConvertResponse_GeminiUpstream(t *testing.T) {
+	tr := NewIRTransport()
+	env := newEnvelope("openai-chat", "gemini-generate", openaiBody, "gpt-4o")
+
+	out, err := tr.ConvertResponse(context.Background(), env, []byte(geminiResponse))
+	if err != nil {
+		t.Fatalf("ConvertResponse: %v", err)
+	}
+	if !contains(out, "choices") || !contains(out, "hi") {
+		t.Fatalf("Gemini response was not converted to OpenAI: %s", out)
+	}
+}
+
+func TestIRTransport_ConvertResponse_ResponsesUpstream(t *testing.T) {
+	tr := NewIRTransport()
+	env := newEnvelope("anthropic-messages", "openai-responses", anthropicBody, "claude-sonnet-4-20250514")
+
+	out, err := tr.ConvertResponse(context.Background(), env, []byte(responsesResponse))
+	if err != nil {
+		t.Fatalf("ConvertResponse: %v", err)
+	}
+	if !contains(out, `"content"`) || !contains(out, "hi") {
+		t.Fatalf("Responses response was not converted to Anthropic: %s", out)
 	}
 }
 

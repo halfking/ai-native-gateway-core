@@ -137,32 +137,29 @@ func (p *BalanceQuotaProbe) SetOnQuotaRecharged(fn func(credID int, source strin
 	p.onQuotaRecharged = fn
 }
 
-// OnQuotaRecharged 是 webhook 触发的入口：拿到充值信号后立即把凭据
-// 推进两条探测路径（fast queue + ProbeNowAsync），再回调外部注入的
-// onQuotaRecharged（如通知其他模块）。两条探测路径各自独立、互不阻塞，
-// 任意一条失败不影响另一条 — 与 ForceProbe 复用同一套调度链。
+// OnQuotaRecharged accepts a provider recharge signal and schedules exactly one
+// re-check. It prefers the immediate probe path; the delayed queue is only a
+// compatibility fallback when the immediate worker is unavailable. This avoids
+// charging two upstream probes for one accepted webhook.
 //
-// credID <= 0 直接静默返回（与 ForceProbe 行为对齐）。
+// credID <= 0 is ignored (same behavior as ForceProbe).
 func (p *BalanceQuotaProbe) OnQuotaRecharged(credID int, source string) {
 	if credID <= 0 {
 		return
 	}
-	// 1. 立即探活：fast queue（与 scheduled / admin_force 路径一致）。
-	if p.probeSubmitter != nil {
-		p.probeSubmitter(credID)
-	}
-	// 2. 旁路 ProbeNowAsync：绕开 fastReprobeQueue 的 5 分钟 delay。
 	if p.probeNowAsync != nil {
 		p.probeNowAsync(credID)
+	} else if p.probeSubmitter != nil {
+		p.probeSubmitter(credID)
 	}
 	p.recordBalanceCheck(credID, "webhook_"+source)
-	// 3. 通知外部注入的回调（一般用于刷 cache / 触发 admin 通知）。
 	if p.onQuotaRecharged != nil {
 		p.onQuotaRecharged(credID, source)
 	}
 	slog.Info("balance_quota_probe: webhook-triggered probe dispatched",
 		"credential_id", credID,
-		"source", source)
+		"source", source,
+		"mode", map[bool]string{true: "immediate", false: "delayed_fallback"}[p.probeNowAsync != nil])
 }
 
 func (p *BalanceQuotaProbe) Start(ctx context.Context) {
