@@ -238,6 +238,41 @@ server {
     access_log /var/log/nginx/kxpms-cn-llm-access.log;
     error_log /var/log/nginx/kxpms-cn-llm-error.log;
 
+    # Marker-driven deploy page for the 154 gateway behind this public ingress.
+    # The deploy script writes the page first, then creates UPGRADING; removing
+    # the marker is the final post-deploy gate. No nginx reload is required.
+    error_page 503 =200 /__llm_gateway_upgrade.html;
+    location = /__llm_gateway_upgrade.html {
+        internal;
+        alias /var/www/llm-gateway-maintenance/index.html;
+        add_header Cache-Control "no-store, no-cache, must-revalidate" always;
+        add_header X-LLM-Gateway-Upgrade "in-progress" always;
+    }
+
+    # Keep public probes real while the gateway marker gates user traffic.
+    location = /healthz {
+        proxy_pass http://kxpms_llm_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_connect_timeout 30s;
+        proxy_read_timeout 30s;
+        proxy_send_timeout 30s;
+    }
+    location = /readyz {
+        proxy_pass http://kxpms_llm_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_connect_timeout 30s;
+        proxy_read_timeout 30s;
+        proxy_send_timeout 30s;
+    }
+
     # LLM Gateway long-timeout (AI reasoning/thinking SSE)
     proxy_buffering off;
     proxy_cache off;
@@ -295,6 +330,23 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 
+    # 2026-08-27: split static-asset cache policy for /maintain/ — assets/
+    # chunks are hash-named (immutable, 30d); index.html/SPA fallback stays
+    # no-cache so users always get the latest entry point.
+    location ^~ /maintain/assets/ {
+        root /opt/ai-native-maintain/web;
+        expires 30d;
+        add_header Cache-Control "public, immutable";
+        add_header X-Content-Type-Options nosniff always;
+        access_log off;
+    }
+    location = /maintain/favicon.png {
+        root /opt/ai-native-maintain/web;
+        expires 30d;
+        add_header Cache-Control "public, immutable";
+        add_header X-Content-Type-Options nosniff always;
+        access_log off;
+    }
     location ^~ /maintain/ {
         root /opt/ai-native-maintain/web;
         try_files $uri $uri/ /maintain/index.html;
@@ -316,11 +368,13 @@ server {
 
     # Product intro → Maintain home. Gateway login entry: /?login=*
     location = / {
+        if (-f /var/www/llm-gateway-maintenance/UPGRADING) { return 503; }
         error_page 418 = @llm_gateway_root;
         if ($arg_login != "") { return 418; }
         return 302 /maintain/home;
     }
     location @llm_gateway_root {
+        if (-f /var/www/llm-gateway-maintenance/UPGRADING) { return 503; }
         proxy_pass http://kxpms_llm_backend;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
@@ -350,6 +404,7 @@ server {
     }
 
     location / {
+        if (-f /var/www/llm-gateway-maintenance/UPGRADING) { return 503; }
         proxy_pass http://kxpms_llm_backend;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
@@ -365,6 +420,7 @@ server {
 
     # Admin API
     location /api/admin/ {
+        if (-f /var/www/llm-gateway-maintenance/UPGRADING) { return 503; }
         proxy_pass http://kxpms_llm_backend;
         proxy_http_version 1.1;
         proxy_set_header Host $host;

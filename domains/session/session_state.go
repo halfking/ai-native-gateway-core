@@ -3,12 +3,14 @@ package session
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
 	"strings"
 	"time"
 
+	redissafe "github.com/kaixuan/llm-gateway-go/internal/redis"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -177,9 +179,24 @@ func (sm *Manager) GetStats(ctx context.Context, sessionID string) (*SessionStat
 		return nil, ErrSessionNotFound
 	}
 
-	data, err := sm.redis.HGetAll(ctx, "session:"+sessionID)
-	if err != nil || len(data) == 0 {
+	client := sm.redis.Client()
+	if client == nil {
 		return nil, ErrSessionNotFound
+	}
+
+	data, err := redissafe.SafeHGetAll(ctx, client, "session:"+sessionID)
+	if err != nil {
+		if errors.Is(err, redissafe.ErrKeyNotFound) {
+			return nil, ErrSessionNotFound
+		}
+		if errors.Is(err, redissafe.ErrWrongType) {
+			// Type corruption: log and return NotFound to fail open
+			slog.Warn("session key type mismatch",
+				"session_id", sessionID,
+				"error", err)
+			return nil, ErrSessionNotFound
+		}
+		return nil, fmt.Errorf("redis error reading session stats: %w", err)
 	}
 	return sessionStatsFromRedisHash(data), nil
 }
@@ -254,9 +271,19 @@ func (sm *Manager) EndCredRotation(ctx context.Context, sessionID string) error 
 		return fmt.Errorf("redis client not available")
 	}
 
-	data, err := sm.redis.HGetAll(ctx, "session:"+sessionID)
+	data, err := redissafe.SafeHGetAll(ctx, client, "session:"+sessionID)
 	if err != nil {
-		return err
+		if errors.Is(err, redissafe.ErrKeyNotFound) {
+			// Session missing, nothing to end
+			return nil
+		}
+		if errors.Is(err, redissafe.ErrWrongType) {
+			slog.Warn("session key type mismatch in EndCredRotation",
+				"session_id", sessionID,
+				"error", err)
+			return nil
+		}
+		return fmt.Errorf("redis error reading session: %w", err)
 	}
 	return sm.endCredRotation(ctx, sessionID, data)
 }
@@ -368,9 +395,23 @@ func (sm *Manager) StopSession(ctx context.Context, sessionID, reason string) er
 		return ErrSessionNotFound
 	}
 
-	data, err := sm.redis.HGetAll(ctx, "session:"+sessionID)
-	if err != nil || len(data) == 0 {
+	client := sm.redis.Client()
+	if client == nil {
 		return ErrSessionNotFound
+	}
+
+	data, err := redissafe.SafeHGetAll(ctx, client, "session:"+sessionID)
+	if err != nil {
+		if errors.Is(err, redissafe.ErrKeyNotFound) {
+			return ErrSessionNotFound
+		}
+		if errors.Is(err, redissafe.ErrWrongType) {
+			slog.Warn("session key type mismatch in StopSession",
+				"session_id", sessionID,
+				"error", err)
+			return ErrSessionNotFound
+		}
+		return fmt.Errorf("redis error reading session: %w", err)
 	}
 
 	now := time.Now().UTC()
@@ -380,11 +421,6 @@ func (sm *Manager) StopSession(ctx context.Context, sessionID, reason string) er
 	// 结束当前凭据轮换
 	if err := sm.endCredRotation(ctx, sessionID, data); err != nil {
 		// 记录日志但不阻止
-	}
-
-	client := sm.redis.Client()
-	if client == nil {
-		return fmt.Errorf("redis client not available")
 	}
 
 	pipe := client.Pipeline()

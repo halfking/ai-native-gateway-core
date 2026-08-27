@@ -62,6 +62,39 @@ server {
     gzip_vary on;
     gzip_min_length 1024;
     gzip_proxied any;
+    # Marker-driven deploy page. The marker is created only after index.html
+    # is complete and removed after all deploy verification gates pass.
+    error_page 503 =200 /__llm_gateway_upgrade.html;
+    location = /__llm_gateway_upgrade.html {
+        internal;
+        alias /opt/llm-gateway-go/maintenance/index.html;
+        add_header Cache-Control "no-store, no-cache, must-revalidate" always;
+        add_header X-LLM-Gateway-Upgrade "in-progress" always;
+    }
+
+    # Keep probes real while public/root locations are gated.
+    location = /readyz {
+        proxy_pass http://llm_local;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_connect_timeout 30s;
+        proxy_read_timeout 30s;
+        proxy_send_timeout 30s;
+    }
+    location = /healthz {
+        proxy_pass http://llm_local;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_connect_timeout 30s;
+        proxy_read_timeout 30s;
+        proxy_send_timeout 30s;
+    }
 
     # 2026-07-23: Gateway 菜单配置静态文件（供 Maintain 动态加载）
     location = /menu-config.json {
@@ -72,6 +105,7 @@ server {
 
     # WebSocket live stream (long-lived, even longer than reasoning)
     location = /api/admin/live-stream {
+        if (-f /opt/llm-gateway-go/maintenance/UPGRADING) { return 503; }
         proxy_pass http://llm_local;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
@@ -87,6 +121,7 @@ server {
         proxy_cache off;
     }
     location = /api/admin/live-stream/ {
+        if (-f /opt/llm-gateway-go/maintenance/UPGRADING) { return 503; }
         proxy_pass http://llm_local;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
@@ -104,6 +139,7 @@ server {
 
     # LLM completions (potentially very long-running with reasoning/thinking)
     location ~ ^/v1/(chat/completions|messages) {
+        if (-f /opt/llm-gateway-go/maintenance/UPGRADING) { return 503; }
         proxy_pass http://llm_local;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
@@ -135,6 +171,7 @@ server {
     # Keep this before the SPA fallback so POST requests are not handled by
     # try_files, which returns nginx's 405 for static-only locations.
     location ^~ /api/ {
+        if (-f /opt/llm-gateway-go/maintenance/UPGRADING) { return 503; }
         proxy_pass http://llm_local;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
@@ -148,31 +185,8 @@ server {
         proxy_cache off;
     }
 
-    # Health endpoints must reach the Gateway (do not be served as SPA).
-    # SPA fallback below otherwise serves index.html (HTML) for /healthz.
-    location = /readyz {
-        proxy_pass http://llm_local;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_connect_timeout 30s;
-        proxy_read_timeout 30s;
-        proxy_send_timeout 30s;
-    }
-
-    location = /healthz {
-        proxy_pass http://llm_local;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_connect_timeout 30s;
-        proxy_read_timeout 30s;
-        proxy_send_timeout 30s;
-    }
+    # Health endpoint locations are defined above the API routes so probes
+    # always reach the Gateway and never return the SPA or upgrade page.
 
     # Default: everything else
     # 2026-08-21: SPA static + history fallback for llm-gateway-go web/dist.
@@ -183,7 +197,22 @@ server {
     # locations (= /healthz, = /menu-config.json, = /api/admin/live-stream,
     # ~ ^/v1/(chat/completions|messages), /api/v1/ops/) keep matching first,
     # so behavior is preserved for routes that already work.
+    # 2026-08-27: static-asset long cache (hash-named SPA chunks; republishing
+    # changes filenames so a long TTL is safe). Served without the UPGRADING
+    # marker gate: the upgrade page is self-contained and does not fetch these.
+    # nosniff is restated because add_header at this level drops server-level
+    # header inheritance.
+    location ~ ^/(assets|logo-.*\.(png|svg)|favicon\.(png|ico)|donation-qr\.png)(/|$) {
+        root /opt/llm-gateway-go/current/web;
+        expires 7d;
+        add_header Cache-Control "public, immutable";
+        add_header X-Content-Type-Options nosniff always;
+        access_log off;
+        autoindex off;
+    }
+
     location / {
+        if (-f /opt/llm-gateway-go/maintenance/UPGRADING) { return 503; }
         root /opt/llm-gateway-go/current/web;
         index index.html;
         try_files $uri $uri/ /index.html;

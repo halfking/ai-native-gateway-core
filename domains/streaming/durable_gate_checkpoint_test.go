@@ -102,3 +102,87 @@ func TestAttemptCommitGateCheckpointImmediateModeChecksMetadata(t *testing.T) {
 		t.Fatal("immediate mode still writes through after a successful checkpoint")
 	}
 }
+
+func TestAttemptCommitGateCheckpointFailureBlocksLaterWrites(t *testing.T) {
+	f := &trackingFlusher{}
+	boom := errors.New("checkpoint db down")
+	gate := NewAttemptCommitGate(ProtocolAnthropic, NewSerializedStreamWriter(f), GateOptions{
+		Mode: GateModeBuffered,
+		BeforeSemanticCommit: func(CommitState) error {
+			return boom
+		},
+	})
+	content := "event: content_block_delta\ndata: {\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n"
+	if err := gate.WriteFrame(content); !errors.Is(err, boom) {
+		t.Fatalf("initial content write = %v, want checkpoint error", err)
+	}
+	if got := f.buf.Len(); got != 0 {
+		t.Fatalf("checkpoint failure wrote %d bytes", got)
+	}
+	if got := gate.State(); got != CommitStateContent {
+		t.Fatalf("state = %v, want content after failed checkpoint", got)
+	}
+
+	for name, write := range map[string]func() error{
+		"write frame":    func() error { return gate.WriteFrame(content) },
+		"commit":         gate.Commit,
+		"finish":         func() error { return gate.FinishAttempt("data: [DONE]\n\n") },
+		"flush holdback": gate.FlushHoldback,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := write(); !errors.Is(err, boom) {
+				t.Fatalf("operation error = %v, want original checkpoint error", err)
+			}
+		})
+	}
+	if got := f.buf.Len(); got != 0 {
+		t.Fatalf("later operations wrote %d bytes after checkpoint failure", got)
+	}
+}
+
+func TestAttemptCommitGateCheckpointCoversTerminalPartial(t *testing.T) {
+	f := &trackingFlusher{}
+	var calls []CommitState
+	gate := NewAttemptCommitGate(ProtocolAnthropic, NewSerializedStreamWriter(f), GateOptions{
+		Mode: GateModeBuffered,
+		BeforeSemanticCommit: func(state CommitState) error {
+			calls = append(calls, state)
+			return nil
+		},
+	})
+	partial := "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+	if err := gate.FinishAttempt(partial); err != nil {
+		t.Fatalf("terminal partial = %v", err)
+	}
+	if len(calls) != 1 || calls[0] != CommitStateTerminal {
+		t.Fatalf("checkpoint calls = %v, want [terminal]", calls)
+	}
+	if gate.State() != CommitStateTerminal || !gate.Committed() {
+		t.Fatalf("gate state=%v committed=%v, want terminal+committed", gate.State(), gate.Committed())
+	}
+	if got := f.buf.String(); got != partial {
+		t.Fatalf("wire = %q, want %q", got, partial)
+	}
+}
+
+func TestAttemptCommitGateCheckpointFailureBlocksTerminalPartial(t *testing.T) {
+	f := &trackingFlusher{}
+	boom := errors.New("terminal checkpoint down")
+	gate := NewAttemptCommitGate(ProtocolAnthropic, NewSerializedStreamWriter(f), GateOptions{
+		Mode:                 GateModeBuffered,
+		BeforeSemanticCommit: func(CommitState) error { return boom },
+	})
+	partial := "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+	if err := gate.FinishAttempt(partial); !errors.Is(err, boom) {
+		t.Fatalf("terminal partial = %v, want checkpoint error", err)
+	}
+	if gate.Committed() {
+		t.Fatal("terminal partial must not commit when checkpoint fails")
+	}
+	if f.buf.Len() != 0 {
+		t.Fatalf("terminal partial reached wire: %q", f.buf.String())
+	}
+	if err := gate.FinishAttempt(partial); !errors.Is(err, boom) {
+		t.Fatalf("repeated terminal partial = %v, want sticky checkpoint error", err)
+	}
+}
