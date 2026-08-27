@@ -724,6 +724,26 @@ func generateLiveStreamInstanceID() string {
 	return fmt.Sprintf("h-%s", hex.EncodeToString(b[:]))
 }
 
+// tryRegister sends the client to the hub without ever blocking the HTTP
+// handler goroutine: when the run loop is wedged by a slow client or the
+// hub is stopping, a bare `h.register <- c` send would leak the whole SSE
+// connection handler (goroutine + socket) forever.
+func (h *LiveStreamSSEHub) tryRegister(client *liveStreamClient, ctx context.Context) bool {
+	t := time.NewTimer(3 * time.Second)
+	defer t.Stop()
+	select {
+	case h.register <- client:
+		return true
+	case <-h.stopCh:
+		return false
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		slog.Warn("live stream hub register timed out; run loop wedged")
+		return false
+	}
+}
+
 // Run drives the hub event loop. Blocks until Stop() is called.
 func (h *LiveStreamSSEHub) Run() {
 	if h.store != nil && h.cfg.RedisClient != nil {
@@ -1896,6 +1916,15 @@ func (h *LiveStreamSSEHub) writeEvent(c *liveStreamClient, data []byte) bool {
 			c.closed = true
 		}
 	}()
+	// Write deadline: a client that stopped reading but holds the TCP
+	// connection open would otherwise block this write at the kernel
+	// buffer, wedging the entire fan-out loop (every other client and the
+	// register/unregister paths). Deadline-wise eviction trades one slow
+	// client for the health of all others.
+	rc := http.NewResponseController(c.w)
+	if err := rc.SetWriteDeadline(time.Now().Add(5 * time.Second)); err == nil {
+		defer rc.SetWriteDeadline(time.Time{}) //nolint:errcheck // clear for keepalive cadence
+	}
 	if _, err := fmt.Fprintf(c.w, "event: message\ndata: %s\n\n", data); err != nil {
 		return false
 	}
@@ -2175,8 +2204,21 @@ func (h *LiveStreamSSEHub) HandleLiveStream(w http.ResponseWriter, r *http.Reque
 		tenantID: tenantID,
 		isSuper:  isSuper,
 	}
-	h.register <- client
-	defer func() { h.unregister <- client }()
+	// Register with interruptible sends: when the hub run-loop is wedged
+	// (slow clients blocking fan-out) or shutting down, a blocking send here
+	// would leak the request goroutine and its socket.
+	if !h.tryRegister(client, r.Context()) {
+		http.Error(w, "live stream unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	defer func() {
+		select {
+		case h.unregister <- client:
+		case <-h.stopCh:
+		case <-r.Context().Done():
+		case <-time.After(2 * time.Second):
+		}
+	}()
 
 	// Initial replay (oldest → newest so client renders left-to-right).
 	// Include current Redis health so the client can show warnings immediately.

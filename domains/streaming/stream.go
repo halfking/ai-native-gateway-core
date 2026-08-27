@@ -971,7 +971,7 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 				// simplification that this fix corrects.
 				outcome.Resumable = !attemptHasClientSemanticOutput(gate, chunkCount)
 				outcome.ChunkCount = chunkCount
-default:
+			default:
 				failure := streamReadFailureOutcome(readResult.err, chunkCount)
 				slog.Warn("stream read error", "error", readResult.err, "kind", failure.Kind, "reason", failure.Reason)
 				if capture != nil {
@@ -1347,11 +1347,18 @@ func (r *timedLineReader) ReadLine(ctx context.Context, timeout time.Duration) (
 		// we return — zero goroutine leak guarantee.
 		if r.closer != nil {
 			_ = r.closer.Close()
+			// Drain: the goroutine returns shortly after Close() because
+			// ReadString on a closed body returns io.ErrClosedPipe or io.EOF.
+			// The buffered channel (size 1) ensures this never blocks forever.
+			<-ch
+		} else {
+			// No closer: nothing we can do will unblock the ReadString
+			// goroutine, so do NOT wait on ch — waiting here makes the
+			// timeout ineffective (this call would still block until the
+			// upstream actually sends / the TCP dies). The goroutine has a
+			// buffered slot, so it exits cleanly once the caller's deferred
+			// body.Close() fires.
 		}
-		// Drain: the goroutine returns shortly after Close() because
-		// ReadString on a closed body returns io.ErrClosedPipe or io.EOF.
-		// The buffered channel (size 1) ensures this never blocks forever.
-		<-ch
 		if readCtx.Err() == context.DeadlineExceeded {
 			return "", fmt.Errorf("stream read timeout")
 		}
