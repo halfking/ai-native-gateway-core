@@ -1,8 +1,8 @@
 {
-  "version": "2.4.7-ecd12ef3-20260827-1767",
+  "version": "2.4.7-dc561caa-20260827-1768",
   "git_tag": "2.4.7",
-  "git_sha": "ecd12ef3",
-  "build_seq": 1767,
+  "git_sha": "dc561caa",
+  "build_seq": 1768,
   "build_date": "20260827",
   "module": "llm-gateway-go"
 }
