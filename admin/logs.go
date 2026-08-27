@@ -908,11 +908,7 @@ func (h *Handler) getLog(w http.ResponseWriter, r *http.Request) {
 		&detail.AgentType,      // 2026-07-27: 客户端分组
 		&detail.ClientProtocol, // 2026-07-27: 客户端协议
 		&detail.ProviderModel,
-		&detail.RequestClass, &detail.DueAt,
 		&detail.CreditsCharged,
-		// v3 session-level outbound body summary fields (must mirror
-		// requestLogsDetailCols order: list summary fields FIRST, then the
-		// three JSONB blobs that only the detail drawer needs).
 		&detail.OutboundMsgCount,
 		&detail.OutboundTokenEst,
 		&detail.CompressionStrategy,
@@ -924,9 +920,14 @@ func (h *Handler) getLog(w http.ResponseWriter, r *http.Request) {
 		&detail.AttachmentCount,
 		// 2026-08-06: session_titles.title (see requestLogsListCols).
 		&detail.SessionTitle,
-		// NOTE: RequestClass and DueAt were duplicated below — removed 2026-08-28
-		// to match SELECT (74 cols vs 75 destinations, causing
-		// "number of field descriptions must equal number of destinations").
+		// rl.customer_id is in SELECT position 67 (after session_title); see
+		// requestLogsListCols. The list endpoint scans &l.CustomerID; we mirror
+		// it here so detail payload also exposes the customer linkage.
+		&detail.CustomerID,
+		// rl.request_class / rl.due_at follow customer_id (SELECT positions
+		// 68 and 69). Position must mirror requestLogsListCols order — see
+		// 2026-08-28 BUGFIX note above regarding RequestClass/DueAt duplication.
+		&detail.RequestClass, &detail.DueAt,
 		&detail.OutboundMsgHashes,
 		&detail.CompressionMeta,
 		// 2026-07-01: 完整附件元数据 JSONB (migration 325)。
