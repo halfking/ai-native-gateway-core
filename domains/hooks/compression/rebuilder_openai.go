@@ -174,9 +174,11 @@ func RebuildOpenAIAfterSummary(body []byte, summary string, ret *Retained, keepR
 // tail. This deduplication avoids emitting the same system prompt twice.
 func splitSystemAndTail(messages []json.RawMessage, ret *Retained, maxTail int) (head, tail []json.RawMessage) {
 	if ret == nil || ret.FirstUserIndex < 0 {
-		// Defensive: no B-track pinned. Return everything as tail so the
-		// rebuilder preserves the full conversation.
-		return nil, lastN(messages, maxTail)
+		// Defensive: no B-track pinned. Return everything eligible as tail
+		// so the rebuilder preserves the conversation, minus messages the
+		// rebuilder re-emits elsewhere (system via SystemMessages, old
+		// summary markers via the fresh C-track summary).
+		return nil, lastN(filterRebuildTail(messages), maxTail)
 	}
 	for i, m := range messages {
 		if i < ret.FirstUserIndex {
@@ -195,9 +197,31 @@ func splitSystemAndTail(messages []json.RawMessage, ret *Retained, maxTail int) 
 	}
 	tailStart := ret.FirstUserIndex + 1
 	if tailStart < len(messages) {
-		tail = lastN(messages[tailStart:], maxTail)
+		tail = lastN(filterRebuildTail(messages[tailStart:]), maxTail)
 	}
 	return head, tail
+}
+
+// filterRebuildTail drops messages that must not ride along in a rebuild
+// tail:
+//   - role=system entries: extractOpenAI collects ALL of them into
+//     Retained.SystemMessages regardless of position, and the rebuilder
+//     prepends that slice verbatim — keeping them in the tail too would
+//     emit the same system prompt twice.
+//   - gateway summary markers (smm_v1): on re-summarisation the fresh
+//     C-track summary replaces every prior summary. Without this filter a
+//     body whose only user-role message is a marker (no real FirstUser,
+//     FirstUserIndex=-1) would carry its old marker through the tail and
+//     nest a second marker (see TestMarkerIdempotency_MarkerOnlyUserBody).
+func filterRebuildTail(messages []json.RawMessage) []json.RawMessage {
+	out := make([]json.RawMessage, 0, len(messages))
+	for _, m := range messages {
+		if messageRole(m) == "system" || isSummaryMarkerMsg(m) {
+			continue
+		}
+		out = append(out, m)
+	}
+	return out
 }
 
 // lastN returns the last n elements of s. If len(s) <= n, returns s

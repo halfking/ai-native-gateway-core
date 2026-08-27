@@ -3,9 +3,10 @@
 // 验证重复压缩marker的幂等性 (审计遗留 #6)
 //
 // 测试场景:
-//   A. 压缩后的会话再次压缩 (marker嵌套)
-//   B. marker消息重复出现
-//   C. 多轮压缩后marker累积
+//
+//	A. 压缩后的会话再次压缩 (marker嵌套)
+//	B. marker消息重复出现
+//	C. 多轮压缩后marker累积
 //
 // 验证目标:
 //   - isSummaryMarkerMsg 正确识别所有marker变体
@@ -132,7 +133,128 @@ func TestMarkerIdempotency_NestedCompression(t *testing.T) {
 	if !hasMarker2 {
 		t.Error("marker2 not found - latest marker injection failed")
 	}
-	_ = marker1
+}
+
+// TestMarkerIdempotency_MarkerOnlyUserBody covers the degenerate body where
+// the ONLY user-role message is the gateway summary marker (no real
+// FirstUser → FirstUserIndex=-1). Found by the post-commit audit of
+// 7622526a5: the retain.go marker-skip made this body shape reachable in
+// splitSystemAndTail's FirstUserIndex<0 branch, whose tail used to carry
+// the old marker through and nest a second one. filterRebuildTail now
+// drops it.
+func TestMarkerIdempotency_MarkerOnlyUserBody(t *testing.T) {
+	// Round 1: system + real user turn -> normal rebuild with marker.
+	body1 := makeBody([]map[string]string{
+		{"role": "system", "content": "You are helpful."},
+		userMsg("do the thing"),
+		assistantMsg("done"),
+	})
+	ret1, err := extractOpenAI(body1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rebuilt1, ok := RebuildOpenAIAfterSummary(body1, "S1", ret1, 2)
+	if !ok {
+		t.Fatal("round1 rebuild failed")
+	}
+	_, marked1 := injectOpenAISummaryMarker(rebuilt1)
+	if marked1 == nil {
+		t.Fatal("round1 marker inject failed")
+	}
+
+	// Degenerate round-2 input: the real user turn is gone; only the
+	// marker (role=user) plus system and assistant remain.
+	msgs, _ := extractMessages(marked1)
+	var kept []json.RawMessage
+	for _, m := range msgs {
+		var probe struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		}
+		json.Unmarshal(m, &probe)
+		if probe.Role == "user" && probe.Content == "do the thing" {
+			continue
+		}
+		kept = append(kept, m)
+	}
+	keptJSON, _ := json.Marshal(kept)
+	body2, ok := spliceBodyMessages(marked1, keptJSON)
+	if !ok {
+		t.Fatal("splice body2 failed")
+	}
+
+	ret2, err := extractOpenAI(body2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ret2.FirstUserIndex != -1 {
+		t.Fatalf("expected FirstUserIndex=-1, got %d", ret2.FirstUserIndex)
+	}
+	rebuilt2, ok := RebuildOpenAIAfterSummary(body2, "S2", ret2, 2)
+	if !ok {
+		t.Fatal("round2 rebuild failed")
+	}
+	_, marked2 := injectOpenAISummaryMarker(rebuilt2)
+	if marked2 == nil {
+		t.Fatal("round2 marker inject failed")
+	}
+
+	finalMsgs, _ := extractMessages(marked2)
+	markerCount := 0
+	for _, m := range finalMsgs {
+		if isSummaryMarkerMsg(m) {
+			markerCount++
+		}
+	}
+	if markerCount != 1 {
+		t.Errorf("marker-only-user body nested markers: got %d, want 1", markerCount)
+	}
+}
+
+// TestRebuildAfterSummary_NoSystemDuplicationInTail pins the other half of
+// filterRebuildTail: mid-conversation system messages are collected by
+// extractOpenAI into SystemMessages and re-prepended by the rebuilder, so
+// they must be dropped from the tail or the same system prompt is emitted
+// twice.
+func TestRebuildAfterSummary_NoSystemDuplicationInTail(t *testing.T) {
+	body := []byte(`{"model":"m","messages":[
+		{"role":"user","content":"first user"},
+		{"role":"assistant","content":"a1"},
+		{"role":"system","content":"mid-conversation system nudge"},
+		{"role":"user","content":"u2"},
+		{"role":"assistant","content":"a2"},
+		{"role":"user","content":"u3"},
+		{"role":"assistant","content":"a3"}
+	]}`)
+	ret, err := extractOpenAI(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ret.SystemMessages) != 1 {
+		t.Fatalf("SystemMessages: want 1, got %d", len(ret.SystemMessages))
+	}
+	rebuilt, ok := RebuildOpenAIAfterSummary(body, "summary", ret, 2)
+	if !ok {
+		t.Fatal("rebuild failed")
+	}
+	msgs, _ := extractMessages(rebuilt)
+	sysCount := 0
+	for _, m := range msgs {
+		if messageRole(m) == "system" {
+			sysCount++
+		}
+	}
+	if sysCount != 1 {
+		t.Errorf("system message duplicated in rebuild output: got %d, want 1", sysCount)
+	}
+	if !jsonContainsRaw(json.RawMessage(bytesOf(msgs)), "mid-conversation system nudge") {
+		t.Error("mid-conversation system nudge lost entirely - dedup must keep one copy")
+	}
+}
+
+func bytesOf(msgs []json.RawMessage) []byte {
+	out, _ := json.Marshal(msgs)
+	return out
 }
 
 // ────────────────────────────────────────────────────────────────────────────────

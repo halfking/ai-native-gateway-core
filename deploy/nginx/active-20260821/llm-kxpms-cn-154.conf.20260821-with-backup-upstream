@@ -138,8 +138,11 @@ server {
     }
 
     # LLM completions (potentially very long-running with reasoning/thinking)
+    # gzip off: production LLM streams keep pre-2026-08-27 wire behavior until
+    # chunked-gzip latency is validated on 245 (typing-effect chunking risk).
     location ~ ^/v1/(chat/completions|messages) {
         if (-f /opt/llm-gateway-go/maintenance/UPGRADING) { return 503; }
+        gzip off;
         proxy_pass http://llm_local;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
