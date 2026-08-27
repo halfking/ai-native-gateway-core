@@ -42,9 +42,22 @@ func isNonStreamEmptyResponse(body []byte) bool {
 }
 
 // isEmptyAnthropicMessagesResponse identifies a syntactically valid native
-// Messages response that carries no semantic assistant output. It deliberately
-// accepts tool_use blocks, including an empty input object, because those are
-// actionable model output rather than an empty completion.
+// Messages response that carries no semantic assistant output, mirroring the
+// block semantics of streaming.isEmptyAnthropicContent (the handler-side
+// authority) so the executor-level failover and the terminal 502 classifier
+// cannot disagree about the same body:
+//   - tool_use / server_tool_use / web_search_tool_result / redacted_thinking
+//     blocks always count as output (a tool call is actionable even with an
+//     empty input object);
+//   - a thinking block counts as output when either thinking text or a
+//     signature is present.
+//
+// Two deliberate refinements over the handler classifier, both in the safe
+// direction for failover:
+//   - the envelope must carry type=="message", so foreign JSON shapes are
+//     never misjudged here;
+//   - a message envelope with NO content key at all counts as empty — a 2xx
+//     Messages response without content carries zero output by construction.
 func isEmptyAnthropicMessagesResponse(body []byte) bool {
 	if len(body) == 0 || !json.Valid(body) {
 		return false
@@ -62,12 +75,10 @@ func isEmptyAnthropicMessagesResponse(body []byte) bool {
 	}
 
 	var blocks []struct {
-		Type     string `json:"type"`
-		Text     string `json:"text"`
-		Thinking string `json:"thinking"`
-		ID       string `json:"id"`
-		Name     string `json:"name"`
-		Input    any    `json:"input"`
+		Type      string `json:"type"`
+		Text      string `json:"text"`
+		Thinking  string `json:"thinking"`
+		Signature string `json:"signature"`
 	}
 	if err := json.Unmarshal(envelope.Content, &blocks); err != nil || len(blocks) == 0 {
 		return true
@@ -79,10 +90,10 @@ func isEmptyAnthropicMessagesResponse(body []byte) bool {
 				return false
 			}
 		case "thinking":
-			if block.Thinking != "" {
+			if block.Thinking != "" || block.Signature != "" {
 				return false
 			}
-		case "tool_use", "server_tool_use", "web_search_tool_result":
+		case "tool_use", "server_tool_use", "web_search_tool_result", "redacted_thinking":
 			return false
 		}
 	}
