@@ -185,13 +185,13 @@ ssh 154 'redis-cli dbsize'
   - **pid 已死 / 是另一个 repo checkout 的陈旧锁** → 用 `--force-unlock`:
     ```bash
     bash scripts/deploy-154.sh --force-unlock
-    # 或：bash scripts/deploy-245.sh --force-unlock (待 wrapper 同步)
+    # 或：bash scripts/deploy-245.sh --force-unlock (245 wrapper 也已支持，详见 245-runbook §9.4)
     # 单独用：
     bash scripts/deploy-lib/unlock-local.sh --force
     ```
   - 默认模式 (无 `--force`) 只是报告，不删；只有加了 `--force` 才会真的 `rm -rf`，并在删之前对仍活着的 holder 发 SIGTERM → SIGKILL。
 - 锁是按 `${TMPDIR}` 派生的，所以**同一台机器上多个 repo clone 共享一把本地锁** —— 这是预期行为，避免 `web/dist` 被两边同时改写。
-- 远端锁 (`/var/lib/llm-gateway-go/deploy.lock`) 是另一回事，由 `deploy-seamless.sh rollback` 失败时使用，不在本节范围。
+- 远端锁 (`/var/lib/llm-gateway-go/deploy.lock`) 是另一回事——`deploy` 和 `rollback` 都会获取它，由 `deploy-seamless.sh` 的 EXIT trap 释放；只有 SSH 断开 / 主机重启等极端情况下才会残留，不在本节范围。
 
 ### 9.5 "DB 太慢 / connection 池满"
 - `docker exec pg-252-pg17 psql -U llm_gateway -d llm_gateway -c "SELECT count(*), state FROM pg_stat_activity WHERE datname='llm_gateway' GROUP BY state;"`
