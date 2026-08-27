@@ -831,8 +831,8 @@ func (g *AutoTitleGenerator) loadSessionLogsForTitle(ctx context.Context, sessio
 
 	rows, err := g.handler.db.Query(ctx, `
 		SELECT rl.ts, rl.request_preview, rl.response_preview,
-		       COALESCE(rb.request_body::text, rl.request_body::text) AS request_body,
-		       COALESCE(rb.response_body::text, rl.response_body::text) AS response_body,
+		       COALESCE(rb.request_body::text, '') AS request_body,
+		       COALESCE(rb.response_body::text, '') AS response_body,
 		       `+requestLogStatusExpr+` AS request_status,
 		       rl.error_kind, rl.client_model
 		FROM request_logs_with_current_month rl

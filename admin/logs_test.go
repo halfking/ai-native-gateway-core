@@ -22,14 +22,15 @@ func TestGetLogDetail_WithBodies(t *testing.T) {
 	// Insert test data into both tables (simulating Ticket #10 dual-write)
 	insertTestRequestLogWithBodies(t, pool, requestID)
 
-	// Query using the COALESCE pattern (simulating getLog API)
+	// Query using the new SSOT pattern: bodies live in request_logs_bodies_hot
+	// (after migration 573 dropped request_logs_hot.{request,response,outbound}_body)
 	var requestBody, responseBody string
 	err := pool.QueryRow(ctx, `
-		SELECT 
-		  COALESCE(rb.request_body::text, rl.request_body::text) AS request_body,
-		  COALESCE(rb.response_body::text, rl.response_body::text) AS response_body
+		SELECT
+		  COALESCE(rb.request_body::text, '') AS request_body,
+		  COALESCE(rb.response_body::text, '') AS response_body
 		FROM request_logs_with_current_month rl
-		LEFT JOIN request_logs_bodies_with_current_month rb 
+		LEFT JOIN request_logs_bodies_with_current_month rb
 		  ON rb.request_id = rl.request_id
 		WHERE rl.request_id = $1
 		LIMIT 1
@@ -55,22 +56,23 @@ func TestGetLogDetail_BackwardsCompatible(t *testing.T) {
 	// Insert "legacy" data: bodies in request_logs_hot, NOT in request_logs_bodies_hot
 	insertLegacyRequestLog(t, pool, requestID)
 
-	// Query using the COALESCE pattern
+	// Query using the new SSOT pattern: bodies live in request_logs_bodies_hot
 	var requestBody, responseBody string
 	err := pool.QueryRow(ctx, `
-		SELECT 
-		  COALESCE(rb.request_body::text, rl.request_body::text) AS request_body,
-		  COALESCE(rb.response_body::text, rl.response_body::text) AS response_body
+		SELECT
+		  COALESCE(rb.request_body::text, '') AS request_body,
+		  COALESCE(rb.response_body::text, '') AS response_body
 		FROM request_logs_with_current_month rl
-		LEFT JOIN request_logs_bodies_with_current_month rb 
+		LEFT JOIN request_logs_bodies_with_current_month rb
 		  ON rb.request_id = rl.request_id
 		WHERE rl.request_id = $1
 		LIMIT 1
 	`, requestID).Scan(&requestBody, &responseBody)
 
 	require.NoError(t, err, "query should succeed with legacy data")
-	assert.Contains(t, requestBody, "legacy-request", "should fallback to rl.request_body")
-	assert.Contains(t, responseBody, "legacy-response", "should fallback to rl.response_body")
+	// Legacy data: bodies are in request_logs_bodies_hot (after 573 dropped rl.*_body)
+	assert.Contains(t, requestBody, "legacy-request", "should retrieve legacy request_body from bodies table")
+	assert.Contains(t, responseBody, "legacy-response", "should retrieve legacy response_body from bodies table")
 
 	// Cleanup
 	cleanupTestRequestLog(t, pool, requestID)
@@ -88,14 +90,14 @@ func TestGetLogDetail_MissingBodies(t *testing.T) {
 	// Insert ONLY into request_logs_hot (no bodies in either table)
 	insertTestRequestLogMetadataOnly(t, pool, requestID)
 
-	// Query using the COALESCE pattern
+	// Query using the new SSOT pattern: bodies live in request_logs_bodies_hot
 	var requestBody, responseBody *string
 	err := pool.QueryRow(ctx, `
-		SELECT 
-		  COALESCE(rb.request_body::text, rl.request_body::text) AS request_body,
-		  COALESCE(rb.response_body::text, rl.response_body::text) AS response_body
+		SELECT
+		  COALESCE(rb.request_body::text, '') AS request_body,
+		  COALESCE(rb.response_body::text, '') AS response_body
 		FROM request_logs_with_current_month rl
-		LEFT JOIN request_logs_bodies_with_current_month rb 
+		LEFT JOIN request_logs_bodies_with_current_month rb
 		  ON rb.request_id = rl.request_id
 		WHERE rl.request_id = $1
 		LIMIT 1

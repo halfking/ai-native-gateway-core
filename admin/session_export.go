@@ -209,13 +209,13 @@ func (api *SessionExportAPI) buildExport(ctx context.Context, sessionID, tenantI
 			SELECT
 				rl.id, rl.role, rl.parent_request_id,
 				rl.compression_reason, rl.compression_strategy, rl.compression_meta,
-				rl.attachments, rl.created_at,
-				COALESCE(rb.request_body, rl.request_body) AS request_body,
-				COALESCE(rb.response_body, rl.response_body) AS response_body
+				rl.attachments, rl.ts,
+				COALESCE(rb.request_body, ''::jsonb) AS request_body,
+				COALESCE(rb.response_body, ''::jsonb) AS response_body
 			FROM request_logs_with_current_month rl
 			LEFT JOIN request_logs_bodies_with_current_month rb ON rb.request_id = rl.request_id
 			WHERE rl.gw_session_id = $1
-			ORDER BY rl.created_at ASC
+			ORDER BY rl.ts ASC
 		`, sessionID)
 		if err != nil {
 			return fmt.Errorf("query messages: %w", err)
