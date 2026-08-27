@@ -134,6 +134,7 @@ func NewCredentialMonitorHandlers(h *Handler, recorder *credentialhealth.Recorde
 func (m *CredentialMonitorHandlers) RegisterMonitorRoutes(mux *http.ServeMux, wrap func(http.HandlerFunc) http.HandlerFunc) {
 	mux.HandleFunc("/api/credentials/monitor-summary", wrap(m.handleMonitorSummary))
 	mux.HandleFunc("/api/credentials/sliding-window", wrap(m.handleSlidingWindow))
+	mux.HandleFunc("/api/credentials/sliding-window/batch", wrap(m.handleSlidingWindowBatch))
 	mux.HandleFunc("/api/credentials/promote", wrap(m.handlePromote))
 	mux.HandleFunc("/api/credentials/demote", wrap(m.handleDemote))
 	mux.HandleFunc("/api/credentials/set-concurrency-auto", wrap(m.handleSetConcurrencyAuto))

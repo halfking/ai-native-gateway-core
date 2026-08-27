@@ -140,13 +140,13 @@
 若未来需要"执行队列本体入 Redis"（跨实例排队/重启续跑），那是推翻冻结契约的
 架构级变更，必须走新 ADR + durable lane 评审，不属于 v6-W1.5/W1.6 范围。
 
-> **2026-08-27 用户决策修订**：队列原语升级为**双后端**（有 Redis 用 Redis、
-> 无 Redis 回退本机内存），支撑多服务器分布式接收——设计定稿见
+> **2026-08-27 用户决策修订（W1.7 已实施，LOCAL_VERIFIED）**：队列原语升级为**双后端**
+> （有 Redis 用 Redis、无 Redis 回退本机内存），支撑多服务器分布式接收——设计定稿见
 > [`10-dual-backend-queue.md`](10-dual-backend-queue.md)（V6-W1.7）。连接亲和
 > 约束不变：执行对象（goroutine/连接/ResultCh 不可序列化）仍在本实例，Redis
 > 后端管跨实例**准入/容量/定时可见**，跨实例接管执行仍属 durable lane。本表
 > 中"Tier-0/1/2、重试堆、到期堆 在进程内存"指**执行对象**；其**准入与容量
-> 口径**自 W1.7 起按后端选择（local | redis）。
+> 口径**自 W1.7 起按后端选择（local | redis，`LLM_GATEWAY_DISPATCH_QUEUE_BACKEND`）。
 
 
 ---
