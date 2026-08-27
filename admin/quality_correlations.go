@@ -169,9 +169,9 @@ func buildBreakdownQuery(by string) (string, error) {
 		// 2026-07-21 Ticket #11: Use COALESCE to access request_body from either table
 		bucketExpr = `
 			CASE
-				WHEN jsonb_array_length(COALESCE(COALESCE(rb.request_body, rl.request_body)->'tools', '[]'::jsonb)) = 0
+				WHEN jsonb_array_length(COALESCE(rb.request_body->'tools', '[]'::jsonb)) = 0
 					THEN '0'
-				WHEN jsonb_array_length(COALESCE(COALESCE(rb.request_body, rl.request_body)->'tools', '[]'::jsonb)) = 1
+				WHEN jsonb_array_length(COALESCE(rb.request_body->'tools', '[]'::jsonb)) = 1
 					THEN '1'
 				ELSE '2+'
 			END`

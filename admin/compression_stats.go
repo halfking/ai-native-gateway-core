@@ -48,7 +48,7 @@ const compressionStatsEstimatedOrigSQL = `
 						WHEN jsonb_typeof(rb.request_body->'_gw_body_summary') = 'object'
 							AND (rb.request_body #>> '{_gw_body_summary,bytes}') ~ '^[0-9]+$'
 						THEN (rb.request_body #>> '{_gw_body_summary,bytes}')::numeric
-					ELSE LENGTH(COALESCE(COALESCE(rb.request_body, rl.request_body)::text, ''))::numeric
+					ELSE LENGTH(COALESCE(rb.request_body::text, ''))::numeric
 				END / 4.0)), 0)::bigint,
 				COALESCE(SUM(CASE WHEN jsonb_typeof(rb.request_body->'_gw_body_summary') = 'object' THEN 1 ELSE 0 END), 0)::bigint
 		FROM request_logs_with_current_month rl
