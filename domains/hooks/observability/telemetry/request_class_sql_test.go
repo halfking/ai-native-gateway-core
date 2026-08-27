@@ -82,8 +82,8 @@ func TestUpdateRequestLogCarriesRequestClass(t *testing.T) {
 	}
 	seg := src[idx : idx+20000]
 	for _, want := range []string{
-		"request_class = COALESCE($98, request_class)",
-		"due_at = COALESCE($99, due_at)",
+		"request_class = CASE WHEN $98 IS NULL THEN request_class ELSE $98 END",
+		"due_at = CASE WHEN $98 IS NULL THEN due_at ELSE $99 END",
 	} {
 		if !strings.Contains(seg, want) {
 			t.Fatalf("UPDATE missing 608 assignment %q", want)
