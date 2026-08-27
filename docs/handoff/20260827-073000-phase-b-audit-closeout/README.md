@@ -83,18 +83,21 @@ Phase B 审计覆盖四块：`cmd/gateway/webhooks`（quota_recharged）、
   `docs/handoff/20260827-000000-stage-f-audit-fix/README.md` 第 106-109 行那条
   已被事实推翻的「lastPending 在用」记录。
 
-- [ ] **T5 远端未合并分支处置** — ⏳ **待用户决策**（主代理不擅自删分支）。
-  审计见 §5.3 处置建议表；merge/archive/delete 三栏建议已给出，等用户拍板。
+- [x] **T5 远端未合并分支处置** — ✅ 完成（用户确认“按建议全量处置”）。
+  先逐条复核当前 `main` 后发现并行流程已吸收/取代绝大多数分支工作，原先的
+  12 个 merge conflict 无需盲目解决。已归档并删除 14 条原远端 ref；其中每条均有：
+  远端 `archive/20260827/...` 同 hash 副本、本地 `backup/archive-20260827/...` ref、
+  以及 Git bundle 三重备份。详情见 §5.3。
 
-- [x] **T6 更新 handoff + 推送** — ✅ 本文件即本次收尾更新，随各任务 commit 一并推送。
+- [x] **T6 更新 handoff + 推送** — ✅ 本文件记录 T5 的最终处置结果，随收尾 commit 推送。
 
 ### 5.1 完成标准核对
 
 | 项目 | 状态 |
 |---|---|
-| handoff §5 各项有终态 | ✅（T1–T4 完成+hash；T5 待用户决策） |
+| handoff §5 各项有终态 | ✅（T1–T6 全部完成） |
 | 工作区干净 | ✅（`git status` 无未提交改动；见 §5.4 环境干扰说明） |
-| `origin/main` 已推送 | ✅（`6d0af88b1` 含 T2；T3 `8542db7d8` 紧随推送） |
+| `origin/main` 已推送 | ✅（T2 `6d0af88b1`、T3 `8542db7d8`、本次 T5 记录均已推送） |
 | `go build ./...` PASS | ✅ |
 
 ### 5.2 T2 关键文件路径
@@ -107,36 +110,53 @@ Phase B 审计覆盖四块：`cmd/gateway/webhooks`（quota_recharged）、
 | `domains/dispatch/forwarder.go` | `queue`→`atomic.Pointer`、`limit`→`atomic.Int64`；新增 `replaceDepth`/`reclaimPendingOld` |
 | `domains/dispatch/forwarder_depth_test.go` | 新增 T2 单测 |
 
-### 5.3 T5：远端未合并分支处置建议表
+### 5.3 T5：远端未合并分支最终处置（2026-08-27）
 
-`git branch -r --no-merged main` 共 **20** 条（审计于 2026-08-27，`git fetch` 后）。
-分级建议如下；**删除类操作须经用户确认，主代理未做任何分支删除/合并**。
+用户确认“按建议全量处置”后，主代理在执行 merge 前重新以当时最新 `main`
+（`6e4a0c081`）审计了每条分支的 patch 等价性和差异计数。结论是：大部分分支工作
+已被当前 main 吸收或由后续提交取代；早先尝试合并的 12 条产生真实代码冲突，不应使用
+“ours/theirs”盲目自动解决。改按 archive-first 策略收尾。
 
-| 分支 | 最后提交 | 距今天数 | 建议 | 理由 |
-|---|---|---|---|---|
-| `origin/agent/lp9-154-promotion` | 2026-08-25 | 2d | **merge** | 推广类，1 commit，待 review 后合入 |
-| `origin/agent/ursm-rawmodel-key-lp1` | 2026-08-21 | 6d | **review/rebase** | 虽 6d 前但领先 2466 commits（自旧 main 分叉），需 rebase 或确认是否已被取代 |
-| `origin/archive/stash-20260721` | 2026-07-21 | 37d | **archive（保持）** | 命名已带 `archive/`，超 30d 陈旧，保留即可 |
-| `origin/feat/llm-gateway-deploy-245-20260802` | 2026-08-02 | 25d | **merge** | 1 commit，含 migration ledger 校验，可合入 |
-| `origin/feat/v5-ui01-menu-sync` | 2026-08-18 | 9d | **merge/review** | 3 commit，UI 菜单同步 |
-| `origin/fix/anthropic-main-sync` | 2026-08-27 | 0d | **merge** | 今日同步 main，1 commit |
-| `origin/fix/classify-eaddrnotavail-network` | 2026-08-15 | 12d | **merge** | 网络错误分类，1 commit |
-| `origin/fix/color-token-round2` | 2026-08-25 | 2d | **merge/review** | 5 commit（halfking），含请求内容捕获 |
-| `origin/fix/credential-monitor-audit` | 2026-08-21 | 6d | **merge** | 凭据监控加固，1 commit |
-| `origin/fix/redis-queue-lifecycle` | 2026-08-27 | 0d | **merge** | 今日 Redis 队列生命周期，4 commit |
-| `origin/fix/request-logs-redis-timeout` | 2026-08-25 | 1d | **merge** | 请求日志查询预算，4 commit |
-| `origin/fix/responses-dispatch-failover-audit` | 2026-08-20 | 6d | **merge** | Responses failover，1 commit |
-| `origin/fix/self-check-tool-continuation` | 2026-07-18 | 39d | **archive/delete** | 陈旧 self-check 修复，疑似被取代 |
-| `origin/fix/session-final-cache-timeout-retry` | 2026-08-11 | 15d | **merge** | 会话缓存超时重试，1 commit |
-| `origin/fix/stats-usage-facts-migration-537` | 2026-08-23 | 3d | **merge** | migration 537，2 commit |
-| `origin/fix/sticky-fresh-session-lb` | 2026-08-27 | 0d | **merge** | 今日 sticky 会话负载均衡，1 commit |
-| `origin/integration/stage-f-policy-hot-reload` | 2026-08-26 | 0d | **merge 残留或 archive** | Stage F 源分支（halfking）；其修复多数已合入 main，确认无残留后归档 |
-| `origin/opencode/glowing-tiger` | 2026-07-13 | 44d | **archive/delete** | 陈旧，44d 无更新 |
-| `origin/opencode/hidden-otter` | 2026-07-16 | 41d | **archive/delete** | 陈旧，41d 无更新 |
-| `origin/tmp/local-changes-20260813` | 2026-08-13 | 13d | **extract 后 delete** | 命名 `tmp/` + “wip 本地未提交修改”，提取有用内容后删除 |
+**归档并删除原 ref（14 条，全部已验证）：**
 
-**汇总**：建议 merge ≈ 14 条、archive/保持 1 条、archive 或 delete（陈旧）≈ 4 条、
-review/rebase 1 条。无一条需立即删除，全部待用户确认。
+| 原远端分支 | 原 hash | 处置 | 恢复路径 |
+|---|---|---|---|
+| `agent/lp9-154-promotion` | `01921e660` | 已集成，原 ref 已删 | `origin/archive/20260827/agent/lp9-154-promotion` |
+| `feat/llm-gateway-deploy-245-20260802` | `dd009b39f` | patch 等价，原 ref 已删 | `origin/archive/20260827/feat/llm-gateway-deploy-245-20260802` |
+| `fix/classify-eaddrnotavail-network` | `bade62c2f` | patch 等价，原 ref 已删 | `origin/archive/20260827/fix/classify-eaddrnotavail-network` |
+| `fix/color-token-round2` | `918503272` | 已由后续统一集成取代，原 ref 已删 | `origin/archive/20260827/fix/color-token-round2` |
+| `fix/credential-monitor-audit` | `87baeaba5` | patch 等价，原 ref 已删 | `origin/archive/20260827/fix/credential-monitor-audit` |
+| `fix/redis-queue-lifecycle` | `3b9f4edf2` | 已 ancestry-merged，原 ref 已删 | `origin/archive/20260827/fix/redis-queue-lifecycle` |
+| `fix/request-logs-redis-timeout` | `826bcf883` | patch 等价，原 ref 已删 | `origin/archive/20260827/fix/request-logs-redis-timeout` |
+| `fix/responses-dispatch-failover-audit` | `10f611b38` | patch 等价，原 ref 已删 | `origin/archive/20260827/fix/responses-dispatch-failover-audit` |
+| `fix/self-check-tool-continuation` | `c7d9642a1` | 已被较新工具结果路径取代，原 ref 已删 | `origin/archive/20260827/fix/self-check-tool-continuation` |
+| `fix/session-final-cache-timeout-retry` | `214b9bcdb` | patch 等价，原 ref 已删 | `origin/archive/20260827/fix/session-final-cache-timeout-retry` |
+| `fix/stats-usage-facts-migration-537` | `82c46a4b3` | patch 等价，原 ref 已删 | `origin/archive/20260827/fix/stats-usage-facts-migration-537` |
+| `opencode/glowing-tiger` | `216f2a2e2` | 较新 ops 路由/UI 已覆盖，原 ref 已删 | `origin/archive/20260827/opencode/glowing-tiger` |
+| `opencode/hidden-otter` | `3d5075c3c` | patch 等价，原 ref 已删 | `origin/archive/20260827/opencode/hidden-otter` |
+| `tmp/local-changes-20260813` | `a17d483cb` | WIP 已由重编号 migration/更强实现取代，原 ref 已删 | `origin/archive/20260827/tmp/local-changes-20260813` |
+
+删除前对每条都执行：本地 `backup/archive-20260827/...` ref、远端 archive ref（与原
+hash 逐条比较）、以及 bundle 三重留档。bundle：
+`/tmp/llm-gateway-branch-archive-20260827/remote-branches.bundle`（288 MB）；manifest：
+`/tmp/llm-gateway-branch-archive-20260827/manifest.tsv`。删除使用
+`--force-with-lease=<原 hash>`，避免并发推进时误删。
+
+**由并行流程先行处理（3 条，主代理未重复删除）：**
+`fix/anthropic-main-sync`、`fix/sticky-fresh-session-lb`、
+`integration/stage-f-policy-hot-reload` 在复核期间已从远端删除。前两者分别已由 main 的
+Anthropic conversion 集成和 `8579bdc84` fresh-session sticky 修复取代；Stage F 的
+publisher/forwarder e2e 与后续 hot-reload 工作已在 main。因原 ref 在操作前已不存在，
+没有伪造 archive ref；如需历史对象，可从 Git 服务日志或现有本地 clone 的 reflog 恢复。
+
+**保留（2 条，需人工 review/rebase）：**
+
+| 分支 | 原因 |
+|---|---|
+| `origin/agent/ursm-rawmodel-key-lp1` | 与 main 严重发散（`main...branch = 3207 / 2466`）；仍有 7 个未等价提交，包括 raw-model cache fan-out、4xx cooldown reset 与诊断/性能记录，不能自动 merge。 |
+| `origin/feat/v5-ui01-menu-sync` | V5 lifecycle/capability/PG state-store（如 `plugin-runtime/lifecycle.go`、`capability.go`、`state_store_pg.go`、migration 352）未证明已被 main 等价吸收，保留供产品/架构 review。 |
+
+**保持原样：** `origin/archive/stash-20260721` 已是 archive 分支，不移动、不删除。
 
 ### 5.4 环境干扰说明（rule 3：发现与 handoff 不符现状，先核实并记录）
 
@@ -150,7 +170,7 @@ review/rebase 1 条。无一条需立即删除，全部待用户确认。
 处置：上述无关改动均已 `git stash push` 隔离（可恢复，未删除），并备份至
 `/tmp/automated-auditfix-wip.patch`。本会话交付物（T2 `6d0af88b1`、T3 `8542db7d8`
 及本 handoff 更新）均已落在 `main` 并推送；并行进程的改动未进入本会话任何 commit、
-未被推送。建议后续单独会话处置这些隔离 stash 与未合并分支（§5.3）。
+未被推送。隔离 stash 仍待另行审计；分支处置结果见 §5.3。
 
 ## 6. 主代理 + 子代理总提示词
 
