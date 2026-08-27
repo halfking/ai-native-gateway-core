@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -55,7 +56,17 @@ func (a *redisBackendAdapter) HSet(ctx context.Context, key string, values ...an
 
 func (a *redisBackendAdapter) HGetAll(ctx context.Context, key string) (map[string]string, error) {
 	// P1-14 fix (2026-08-28): Use SafeHGetAll to prevent WRONGTYPE errors
-	return redissafe.SafeHGetAll(ctx, a.c.Client(), key)
+	data, err := redissafe.SafeHGetAll(ctx, a.c.Client(), key)
+	if err != nil {
+		// Preserve the go-redis HGETALL contract this adapter replaces:
+		// a missing key is an empty map + nil, i.e. a cache miss. The typed
+		// WRONGTYPE error still propagates.
+		if errors.Is(err, redissafe.ErrKeyNotFound) {
+			return map[string]string{}, nil
+		}
+		return nil, err
+	}
+	return data, nil
 }
 
 func (a *redisBackendAdapter) Expire(ctx context.Context, key string, ttl time.Duration) error {

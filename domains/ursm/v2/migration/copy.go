@@ -317,6 +317,12 @@ func (c *EntryCopier) CopyHash(ctx context.Context, entry EntryRecord) (EntryCop
 	// P1-14 fix (2026-08-28): Use SafeHGetAll to prevent WRONGTYPE errors
 	fields, err := redissafe.SafeHGetAll(ctx, c.rdb, entry.SourceKey)
 	if err != nil {
+		// SafeHGetAll maps a key that expired between the PTTL probe and the
+		// read to ErrKeyNotFound; keep the bare-HGETALL contract (empty map →
+		// skipped-expired) instead of escalating routine expiry to an error.
+		if errors.Is(err, redissafe.ErrKeyNotFound) {
+			return EntryCopyResult{Status: EntryCopySkippedExpired}, nil
+		}
 		return EntryCopyResult{}, fmt.Errorf("ursm.v2: copy source fields: %w", err)
 	}
 	if len(fields) == 0 {
