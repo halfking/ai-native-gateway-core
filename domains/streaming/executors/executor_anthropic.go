@@ -1116,9 +1116,14 @@ func (e *Executor) executeAnthropicOnce(
 							fullBody = append(append([]byte(nil), body[:n]...), rest...)
 						}
 					}
-					// Always drain the remaining body (essential for connection reuse)
-					_, _ = io.Copy(io.Discard, resp.Body)
 				}
+				// Always drain the remaining body (essential for connection reuse)
+				// regardless of whether params.W is set and regardless of whether
+				// the prefix buffer was filled — previously the nil-W path (async
+				// retry where the client already got 202) left the body unread
+				// when n < len(body), forcing connection pool to close instead of
+				// reuse (P0 fix 2026-08-27, hardened 2026-08-28).
+				_, _ = io.Copy(io.Discard, resp.Body)
 				if params.W != nil {
 				// Surface an accurate Content-Length for the bytes we actually send
 				// (the copied vendor Content-Length header would now be wrong if
