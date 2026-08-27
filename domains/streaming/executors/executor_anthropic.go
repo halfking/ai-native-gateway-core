@@ -1203,13 +1203,31 @@ func (e *Executor) executeAnthropicOnce(
 
 	var qualitySignals QualitySignals
 	if resp == nil || resp.Body == nil {
-		return nil, fmt.Errorf("anthropic upstream returned an empty response")
+		return nil, &retryableError{err: &upstreampkg.Error{
+			Kind:    errorsx.KindUpstreamDown,
+			Message: "anthropic upstream returned an empty response",
+		}}
 	}
 	rawResponseBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("read anthropic upstream response: %w", err)
+		return nil, &retryableError{err: &upstreampkg.Error{
+			Kind:       errorsx.ClassifyError(err, nil),
+			Message:    fmt.Sprintf("read anthropic upstream response: %v", err),
+			Err:        err,
+			StatusCode: resp.StatusCode,
+			RetryAfter: upstreampkg.RetryAfterFromHeaders(resp.Header),
+		}}
 	}
 	e.logUpstreamResponse(params, diagnosticProtocol(cand.Protocol, "anthropic-messages"), rawResponseBody)
+	if params.ClientProtocol == "anthropic-messages" && isEmptyAnthropicMessagesResponse(rawResponseBody) {
+		return nil, &retryableError{err: &upstreampkg.Error{
+			Kind:       errorsx.KindEmptyResponse,
+			Message:    "upstream returned empty Anthropic Messages response",
+			Body:       append([]byte(nil), rawResponseBody...),
+			StatusCode: resp.StatusCode,
+			RetryAfter: upstreampkg.RetryAfterFromHeaders(resp.Header),
+		}}
+	}
 	resp.Body = io.NopCloser(bytes.NewReader(rawResponseBody))
 	// 并发修复 2026-07-27：异步重试路径 W 为 nil。WriteNonStreamResponse
 	// 的返回值（转换后的 body）是 PendingStore 回传给客户端的内容，所以
