@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	redissafe "github.com/kaixuan/llm-gateway-go/internal/redis"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -94,7 +95,8 @@ func (a *MinuteStatsAggregator) List(ctx context.Context, bucket time.Time) ([]M
 	}
 	stats := make([]MinuteStat, 0, len(keys))
 	for _, key := range keys {
-		values, err := a.client.HGetAll(ctx, key).Result()
+		// P1-14 fix (2026-08-28): Use SafeHGetAll to prevent WRONGTYPE errors
+		values, err := redissafe.SafeHGetAll(ctx, a.client, key)
 		if err != nil || len(values) == 0 {
 			continue
 		}

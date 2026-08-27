@@ -23,6 +23,25 @@ var (
 	ErrInvalidSession  = errors.New("invalid session")
 )
 
+// logSessionTypeMismatch records only bounded type metadata. TypedError's
+// Error method includes the full Redis key, which may contain a session or
+// tenant identifier and must not be duplicated into structured logs.
+func logSessionTypeMismatch(operation, sessionID string, err error) {
+	var typed *redissafe.TypedError
+	if errors.As(err, &typed) {
+		slog.Warn("session Redis key type mismatch",
+			"operation", operation,
+			"session_id", sessionID,
+			"expected_type", typed.Expected,
+			"actual_type", typed.Actual)
+		return
+	}
+	slog.Warn("session Redis key type mismatch",
+		"operation", operation,
+		"session_id", sessionID,
+		"type_error", true)
+}
+
 type Device struct {
 	DeviceSeed string    `json:"device_seed"`
 	FirstSeen  time.Time `json:"first_seen"`
@@ -88,12 +107,32 @@ type RedisClient struct {
 	client *redis.Client
 }
 
+// NewRedisClient creates a Redis client with optimized connection pool settings.
+// P1-15 fix (2026-08-28): Configure PoolSize, MinIdleConns, ConnMaxIdleTime, and
+// PoolTimeout to prevent connection exhaustion under high load and reduce latency.
 func NewRedisClient(addr, password string, db int) *RedisClient {
 	return &RedisClient{
 		client: redis.NewClient(&redis.Options{
 			Addr:     addr,
 			Password: password,
 			DB:       db,
+
+			// Connection pool sizing (P1-15):
+			// PoolSize: max concurrent connections. Set to 100 to handle high throughput.
+			// Default is 10*runtime.GOMAXPROCS, often too low for gateway workloads.
+			PoolSize: 100,
+
+			// MinIdleConns: keep warm connections ready for incoming requests.
+			// Reduces latency by avoiding cold connection establishment on request path.
+			MinIdleConns: 10,
+
+			// ConnMaxIdleTime: close idle connections after 5 minutes to prevent
+			// holding stale connections that may be closed by server or firewall.
+			ConnMaxIdleTime: 5 * time.Minute,
+
+			// PoolTimeout: wait time for connection from pool before giving up.
+			// Set to 2s to fail fast under extreme load rather than queueing indefinitely.
+			PoolTimeout: 2 * time.Second,
 		}),
 	}
 }
@@ -316,9 +355,7 @@ func (sm *Manager) Get(ctx context.Context, sessionID string) (*Session, error) 
 			return nil, ErrSessionNotFound
 		}
 		if errors.Is(err, redissafe.ErrWrongType) {
-			slog.Warn("session key type mismatch in Get",
-				"session_id", sessionID,
-				"error", err)
+			logSessionTypeMismatch("get", sessionID, err)
 			return nil, ErrSessionNotFound
 		}
 		return nil, fmt.Errorf("redis error reading session: %w", err)
@@ -419,9 +456,7 @@ func (sm *Manager) Delete(ctx context.Context, sessionID string) error {
 			return ErrSessionNotFound
 		}
 		if errors.Is(err, redissafe.ErrWrongType) {
-			slog.Warn("session key type mismatch in Delete",
-				"session_id", sessionID,
-				"error", err)
+			logSessionTypeMismatch("delete", sessionID, err)
 			return ErrSessionNotFound
 		}
 		return fmt.Errorf("redis error reading session: %w", err)

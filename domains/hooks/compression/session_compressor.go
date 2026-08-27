@@ -217,7 +217,16 @@ func (sc *SessionCompressor) Prepare(
 		return sc.fallbackResult(clientBody, res)
 	}
 
-	// ── Phase 0: Validate session ID to prevent cross-talk ───────────────
+	// ── Phase 0a: Enforce hard body size limit (P1-10) ───────────────────
+	const maxBodySize = 50 * 1024 * 1024 // 50 MB
+	if len(clientBody) > maxBodySize {
+		slog.Warn("session_compressor: body exceeds 50MB limit, rejecting compression",
+			"session", gwSessionID, "tenant", tenantID, "body_size", len(clientBody), "limit", maxBodySize)
+		// Return original body without compression to avoid OOM
+		return sc.fallbackResult(clientBody, res)
+	}
+
+	// ── Phase 0b: Validate session ID to prevent cross-talk ──────────────
 	if err := ValidateSessionID(gwSessionID); err != nil {
 		slog.Warn("session_compressor: invalid session_id, treating as new session",
 			"session", gwSessionID, "tenant", tenantID, "error", err)

@@ -18,6 +18,7 @@ type ProviderSettingsResolver struct {
 	cache       sync.Map // map[cacheKey]cacheEntry
 	cacheTTL    time.Duration
 	cacheHitLog bool
+	stopCleanup chan struct{} // P1-8 fix: signal to stop cleanup goroutine
 }
 
 type cacheKey struct {
@@ -32,13 +33,18 @@ type cacheEntry struct {
 }
 
 // NewProviderSettingsResolver creates a new resolver with 5-minute cache TTL.
+// P1-8 fix (2026-08-28): Starts a background goroutine to evict expired entries
+// every 10 minutes, preventing unbounded sync.Map growth.
 func NewProviderSettingsResolver(db *pgxpool.Pool, registry *Registry) *ProviderSettingsResolver {
-	return &ProviderSettingsResolver{
+	r := &ProviderSettingsResolver{
 		db:          db,
 		registry:    registry,
 		cacheTTL:    5 * time.Minute,
 		cacheHitLog: false, // set to true for debugging
+		stopCleanup: make(chan struct{}),
 	}
+	go r.cleanupExpiredEntries()
+	return r
 }
 
 // Get retrieves a setting value with provider-level override support.
@@ -189,4 +195,37 @@ func (r *ProviderSettingsResolver) ClearProviderCache(providerID int) {
 			"provider_id", providerID,
 			"entries_cleared", count)
 	}
+}
+
+// cleanupExpiredEntries runs in a background goroutine and periodically removes
+// expired cache entries to prevent unbounded sync.Map growth (P1-8 fix).
+func (r *ProviderSettingsResolver) cleanupExpiredEntries() {
+	ticker := time.NewTicker(10 * time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			now := time.Now()
+			count := 0
+			r.cache.Range(func(key, value interface{}) bool {
+				entry := value.(cacheEntry)
+				if now.After(entry.expireTime) {
+					r.cache.Delete(key)
+					count++
+				}
+				return true
+			})
+			if count > 0 {
+				slog.Debug("provider_settings: evicted expired cache entries", "count", count)
+			}
+		case <-r.stopCleanup:
+			return
+		}
+	}
+}
+
+// Close stops the background cleanup goroutine. Call this during graceful shutdown.
+func (r *ProviderSettingsResolver) Close() {
+	close(r.stopCleanup)
 }

@@ -7,6 +7,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/api"
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/store"
+	redissafe "github.com/kaixuan/llm-gateway-go/internal/redis"
 )
 
 // ApplyAdmin writes a manual hold (or release) decision to the v2 store.
@@ -40,10 +41,10 @@ func (m *Manager) ApplyAdmin(ctx context.Context, a api.AdminAction) error {
 	}
 	var err error
 	if schemaMode == store.KeySchemaModeDual {
-		_, err = store.ApplyAdminDualScript.Run(ctx, m.store.RawClient(), keys, disabled, a.Actor, a.Reason,
+		_, err = redissafe.RunScript(ctx, m.store.RawClient(), store.ApplyAdminDualScript, "apply_admin_dual.lua", keys, disabled, a.Actor, a.Reason,
 			fmt.Sprintf("%d", a.IssuedAtMs)).Slice()
 	} else {
-		_, err = store.ApplyAdminScript.Run(ctx, m.store.RawClient(), keys, disabled, a.Actor, a.Reason,
+		_, err = redissafe.RunScript(ctx, m.store.RawClient(), store.ApplyAdminScript, "apply_admin.lua", keys, disabled, a.Actor, a.Reason,
 			fmt.Sprintf("%d", a.IssuedAtMs)).Slice()
 	}
 	if err != nil {
@@ -94,10 +95,10 @@ func (m *Manager) ClearStateForTenant(ctx context.Context, tenant string, creden
 	}
 	var err error
 	if schemaMode == store.KeySchemaModeDual {
-		_, err = store.ClearStateDualScript.Run(ctx, m.store.RawClient(), keys,
+		_, err = redissafe.RunScript(ctx, m.store.RawClient(), store.ClearStateDualScript, "clear_state_dual.lua", keys,
 			fmt.Sprintf("%d", time.Now().UnixMilli())).Slice()
 	} else {
-		_, err = store.ClearStateScript.Run(ctx, m.store.RawClient(), keys,
+		_, err = redissafe.RunScript(ctx, m.store.RawClient(), store.ClearStateScript, "clear_state.lua", keys,
 			fmt.Sprintf("%d", time.Now().UnixMilli())).Slice()
 	}
 	if err != nil {

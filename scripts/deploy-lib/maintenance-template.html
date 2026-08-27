@@ -3,7 +3,6 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="refresh" content="5">
 <title>正在升级 · llm-gateway-go</title>
 <style>
   :root { color-scheme: light dark; }
@@ -17,10 +16,12 @@
   @media (prefers-color-scheme: dark) {
     body { background: #111827; color: #e5e7eb; }
     .info { background: #1f2937 !important; }
-    code { background: #374151 !important; color: #f3f4f6; }
-    .progress { color: #9ca3af !important; }
+    code { background: #374151 !important; color: #f3f4f6 !important; }
+    .progress { color: #9ca3af !important; border-top-color: #374151 !important; }
+    h1.upgrade-failed { color: #f87171 !important; }
   }
   h1 { color: #2563eb; font-size: 28px; margin: 0 0 8px 0; }
+  h1.upgrade-failed { color: #dc2626; }
   .subtitle { color: #6b7280; margin: 0 0 24px 0; font-size: 14px; }
   .info {
     background: #f3f4f6; border-radius: 8px;
@@ -38,6 +39,7 @@
     border-radius: 50%; animation: spin 0.8s linear infinite;
     vertical-align: middle; margin-right: 8px;
   }
+  .spinner.hidden { display: none; }
   @keyframes spin { to { transform: rotate(360deg); } }
   .progress {
     color: #6b7280; font-size: 14px;
@@ -45,10 +47,22 @@
     border-top: 1px solid #e5e7eb;
   }
   .progress strong { color: #1f2937; }
+  .error-detail { display: none; }
+  .upgrade-failed-state .error-detail { display: block; }
+  .upgrade-failed-state .upgrading-detail { display: none; }
+  .retry-btn {
+    display: inline-block; margin-top: 16px;
+    padding: 8px 22px; border: none; border-radius: 6px;
+    background: #2563eb; color: #fff; font-size: 14px; font-weight: 600;
+    cursor: pointer;
+  }
+  .retry-btn:hover { background: #1d4ed8; }
+  .retry-btn[disabled] { opacity: 0.6; cursor: wait; }
+  noscript p { color: #b45309; }
 </style>
 </head>
 <body>
-  <h1><span class="spinner"></span>系统正在升级</h1>
+  <h1 id="banner-title"><span class="spinner" id="spinner"></span><span id="title-text">系统正在升级</span></h1>
   <p class="subtitle">llm-gateway-go · 部署窗口</p>
 
   <div class="info">
@@ -58,12 +72,129 @@
     <p><strong>预计耗时:</strong> 5–10 秒</p>
   </div>
 
-  <p>升级过程通常持续 5–10 秒。页面将自动刷新，
-     您也可以手动刷新浏览器查看最新状态。</p>
+  <p class="upgrading-detail">升级过程通常持续 5–10 秒，服务恢复后本页将自动跳转，无需手动操作。</p>
+
+  <div class="error-detail">
+    <p><strong>后端服务尚未启动，升级可能失败。</strong></p>
+    <p>系统等待超过 60 秒仍未就绪，已停止快速刷新。仍在后台每 15 秒检测一次，
+       服务恢复后会自动跳转；也可手动重试或联系运维（journalctl -u llm-gateway-go）。</p>
+    <button type="button" class="retry-btn" id="retry-btn">重新检测</button>
+  </div>
+
+  <noscript>
+    <p>您的浏览器未启用 JavaScript，页面无法自动检测恢复状态，请稍后手动刷新。</p>
+  </noscript>
 
   <p class="progress">
-    页面每 5 秒自动刷新。<br>
-    如果长时间未恢复（&gt; 60 秒），请联系运维。
+    <span class="upgrading-detail">已等待 <strong id="wait-seconds">0</strong> 秒（超过 60 秒将提示故障）。</span>
   </p>
+
+<script>
+(function () {
+  'use strict';
+  var FAIL_AFTER_MS = 60000;
+  var PROBE_FAST_MS = 3000;
+  var PROBE_IDLE_MS = 15000;
+  var PROBE_TIMEOUT_MS = 4000;
+  // Probe the public entry (not this internal page): while the UPGRADING
+  // marker exists it is served with X-LLM-Gateway-Upgrade: in-progress.
+  var UPGRADE_STATUS_PATH = '/';
+
+  var failed = false;
+  var timer = null;
+  var startAt = Date.now();
+
+  var titleEl = document.getElementById('banner-title');
+  var titleTextEl = document.getElementById('title-text');
+  var spinnerEl = document.getElementById('spinner');
+  var waitEl = document.getElementById('wait-seconds');
+  var retryBtn = document.getElementById('retry-btn');
+
+  function elapsedMs() { return Date.now() - startAt; }
+
+  function markFailed() {
+    if (failed) return;
+    failed = true;
+    document.body.className = (document.body.className + ' upgrade-failed-state').trim();
+    titleEl.className = 'upgrade-failed';
+    titleTextEl.textContent = '服务启动异常';
+    spinnerEl.className = 'spinner hidden';
+  }
+
+  function probe(then) {
+    var healthDone = false;
+    var pageDone = false;
+    var healthOk = false;
+    var pageReady = false;
+    var finished = false;
+    var finish = function () {
+      if (finished || !healthDone || !pageDone) return;
+      finished = true;
+      then(healthOk && pageReady);
+    };
+    try {
+      var health = new XMLHttpRequest();
+      health.open('GET', '/healthz', true);
+      health.timeout = PROBE_TIMEOUT_MS;
+      health.onload = function () {
+        var contentType = (health.getResponseHeader('content-type') || '').toLowerCase();
+        healthOk = health.status >= 200 && health.status < 300 && contentType.indexOf('json') !== -1;
+        healthDone = true;
+        finish();
+      };
+      health.onerror = function () { healthDone = true; finish(); };
+      health.ontimeout = function () { healthDone = true; finish(); };
+      health.send();
+
+      var page = new XMLHttpRequest();
+      page.open('GET', UPGRADE_STATUS_PATH, true);
+      page.setRequestHeader('Accept', 'text/html');
+      page.timeout = PROBE_TIMEOUT_MS;
+      page.onload = function () {
+        var upgradeHeader = (page.getResponseHeader('X-LLM-Gateway-Upgrade') || '').toLowerCase();
+        pageReady = page.status >= 200 && page.status < 300 && upgradeHeader !== 'in-progress';
+        pageDone = true;
+        finish();
+      };
+      page.onerror = function () { pageDone = true; finish(); };
+      page.ontimeout = function () { pageDone = true; finish(); };
+      page.send();
+    } catch (e) {
+      healthDone = true;
+      pageDone = true;
+      finish();
+    }
+  }
+
+  function schedule(intervalMs) {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(tick, intervalMs);
+  }
+
+  function tick() {
+    probe(function (ok) {
+      if (ok) {
+        window.location.reload();
+        return;
+      }
+      if (!failed && elapsedMs() >= FAIL_AFTER_MS) markFailed();
+      if (waitEl && !failed) waitEl.textContent = String(Math.floor(elapsedMs() / 1000));
+      schedule(failed ? PROBE_IDLE_MS : PROBE_FAST_MS);
+    });
+  }
+
+  if (retryBtn) {
+    retryBtn.addEventListener('click', function () {
+      retryBtn.disabled = true;
+      probe(function (ok) {
+        if (ok) { window.location.reload(); return; }
+        retryBtn.disabled = false;
+      });
+    });
+  }
+
+  schedule(PROBE_FAST_MS);
+})();
+</script>
 </body>
 </html>
