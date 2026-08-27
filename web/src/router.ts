@@ -8,6 +8,7 @@ import HomeView from './views/HomeView.vue'
 import ForbiddenView from './views/ForbiddenView.vue'
 
 // All other views are lazy-loaded to reduce initial bundle size
+const MaintainUnavailableView = () => import('./views/MaintainUnavailableView.vue')
 const ProvidersView = () => import('./views/ProvidersView.vue')
 const KeysView = () => import('./views/KeysView.vue')
 const KeyDetailView = () => import('./views/KeyDetailView.vue')
@@ -243,6 +244,10 @@ export const router = createRouter({
     { path: '/customer/license', redirect: '/customer/update-activate' },
     { path: '/customer/agreement', redirect: '/customer/update-activate' },
     { path: '/customer/offline-activation', component: CustomerOfflineActivationView, meta: { public: true } },
+
+    // Maintain paths must never fall through to the Gateway catch-all.
+    { path: '/maintain', component: MaintainUnavailableView, meta: { public: true } },
+    { path: '/maintain/:pathMatch(.*)*', component: MaintainUnavailableView, meta: { public: true } },
 
     // Operations Platform — legacy /ops/* bookmarks → maintain SPA (full page)
     externalMaintainRedirect('/ops/licenses', '/maintain/ops/licenses'),
