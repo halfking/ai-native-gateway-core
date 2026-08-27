@@ -976,12 +976,13 @@ func TestBuildLiveStreamSnapshot_TopNOthers(t *testing.T) {
 			t.Fatalf("should not have synthetic others lane after removing aggregation: %#v", lane)
 		}
 	}
-	if len(s.DetailDimensions["vendor"]) != 7 {
-		t.Fatalf("detail dimensions must retain all 7 vendors, got %d", len(s.DetailDimensions["vendor"]))
+	// DetailDimensions removed in P0 optimization - Dimensions is the single source of truth
+	if len(s.Dimensions["vendor"]) != 7 {
+		t.Fatalf("dimensions must retain all 7 vendors, got %d", len(s.Dimensions["vendor"]))
 	}
-	for _, lane := range s.DetailDimensions["vendor"] {
+	for _, lane := range s.Dimensions["vendor"] {
 		if lane.ID == "__others__" || lane.IsOthers {
-			t.Fatalf("detail dimensions must not contain synthetic others lane: %#v", lane)
+			t.Fatalf("dimensions must not contain synthetic others lane: %#v", lane)
 		}
 	}
 }
@@ -1010,8 +1011,9 @@ func TestBuildLiveStreamSnapshot_NoOthersWhenFiveOrFewer(t *testing.T) {
 			t.Fatalf("did not expect others lane when dimension count <= 5: %#v", lane)
 		}
 	}
-	if len(s.DetailDimensions["vendor"]) != 5 {
-		t.Fatalf("detail dimensions should contain 5 raw vendors, got %d", len(s.DetailDimensions["vendor"]))
+	// DetailDimensions removed in P0 optimization - Dimensions is the single source of truth
+	if len(s.Dimensions["vendor"]) != 5 {
+		t.Fatalf("dimensions should contain 5 raw vendors, got %d", len(s.Dimensions["vendor"]))
 	}
 }
 
@@ -1328,7 +1330,7 @@ func TestBuildLiveStreamLanes_StableAlphabeticalOrder(t *testing.T) {
 		{RequestID: "r2", ModelCategory: "openai", Status: "success"},
 		{RequestID: "r3", ModelCategory: "anthropic", Status: "success"},
 	}
-	lanes, _, _ := buildLiveStreamLanes("vendor", items)
+	lanes, _ := buildLiveStreamLanes("vendor", items)
 	if len(lanes) < 2 {
 		t.Fatalf("expected at least 2 lanes, got %d", len(lanes))
 	}
@@ -1360,7 +1362,7 @@ func TestBuildLiveStreamLanes_LaneRequestsAreASC(t *testing.T) {
 		{RequestID: "r4", Ts: "2026-07-20T00:00:03Z", Model: "gpt-4o", ModelCategory: "openai", ProviderCode: "openai", Status: "failure"},
 		{RequestID: "r2", Ts: "2026-07-20T00:00:01Z", Model: "gpt-4o", ModelCategory: "openai", ProviderCode: "openai", Status: "success"},
 	}
-	lanes, _, _ := buildLiveStreamLanes("vendor", items)
+	lanes, _ := buildLiveStreamLanes("vendor", items)
 	if len(lanes) != 1 {
 		t.Fatalf("expected 1 lane, got %d", len(lanes))
 	}
@@ -1401,7 +1403,7 @@ func TestBuildLiveStreamLanes_LaneCapKeepsNewest(t *testing.T) {
 		})
 	}
 
-	lanes, _, _ := buildLiveStreamLanes("vendor", items)
+	lanes, _ := buildLiveStreamLanes("vendor", items)
 	if len(lanes) != 1 {
 		t.Fatalf("expected 1 lane, got %d", len(lanes))
 	}

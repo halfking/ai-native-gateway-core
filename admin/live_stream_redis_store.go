@@ -140,7 +140,6 @@ type LiveStreamLegendItem struct {
 
 type LiveStreamSnapshot struct {
 	Summary          LiveStreamStats                   `json:"summary"`
-	DetailDimensions map[string][]LiveStreamLane       `json:"detail_dimensions"`
 	Dimensions       map[string][]LiveStreamLane       `json:"dimensions"`
 	DimensionLegends map[string][]LiveStreamLegendItem `json:"dimension_legends"`
 	StatusLegends    []LiveStreamLegendItem            `json:"status_legends"`
@@ -917,12 +916,6 @@ func (s *LiveStreamRedisStore) Snapshot(ctx context.Context, tenantID string, is
 
 func BuildLiveStreamSnapshot(items []LiveRequest) *LiveStreamSnapshot {
 	s := &LiveStreamSnapshot{
-		DetailDimensions: map[string][]LiveStreamLane{
-			"credential": {},
-			"vendor":     {},
-			"provider":   {},
-			"model":      {},
-		},
 		Dimensions: map[string][]LiveStreamLane{
 			"credential": {},
 			"vendor":     {},
@@ -960,16 +953,15 @@ func BuildLiveStreamSnapshot(items []LiveRequest) *LiveStreamSnapshot {
 	}
 
 	for _, dim := range []string{"credential", "vendor", "provider", "model"} {
-		view, detail, legends := buildLiveStreamLanes(dim, items)
-		s.Dimensions[dim] = view
-		s.DetailDimensions[dim] = detail
+		lanes, legends := buildLiveStreamLanes(dim, items)
+		s.Dimensions[dim] = lanes
 		s.DimensionLegends[dim] = legends
 	}
 	s.StatusLegends = buildStatusLegends(items)
 	return s
 }
 
-func buildLiveStreamLanes(dimension string, items []LiveRequest) ([]LiveStreamLane, []LiveStreamLane, []LiveStreamLegendItem) {
+func buildLiveStreamLanes(dimension string, items []LiveRequest) ([]LiveStreamLane, []LiveStreamLegendItem) {
 	stats := map[string]LiveStreamStats{}
 	grouped := map[string][]LiveStreamTile{}
 	seenByLane := map[string]map[string]struct{}{}
@@ -1071,8 +1063,7 @@ func buildLiveStreamLanes(dimension string, items []LiveRequest) ([]LiveStreamLa
 		legends = append(legends, LiveStreamLegendItem{Key: key, Name: key, Count: stats[key].Total})
 	}
 
-	// Both viewLanes and detailLanes return the same full list
-	return lanes, lanes, legends
+	return lanes, legends
 }
 
 func buildStatusLegends(items []LiveRequest) []LiveStreamLegendItem {

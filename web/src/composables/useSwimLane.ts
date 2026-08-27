@@ -9,7 +9,6 @@ import { readLiveStreamPreferences, writeLiveStreamPreferences } from './liveStr
 
 const emptySnapshot: LiveStreamSnapshot = {
   summary: { total: 0, success: 0, failure: 0, in_progress: 0 },
-  detail_dimensions: { credential: [], vendor: [], provider: [], model: [] },
   dimensions: { credential: [], vendor: [], provider: [], model: [] },
   dimension_legends: { credential: [], vendor: [], provider: [], model: [] },
   status_legends: [],

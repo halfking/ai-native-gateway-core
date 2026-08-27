@@ -215,20 +215,17 @@ func (s *LiveStreamRedisStore) SnapshotFromDimensionQueues(ctx context.Context, 
 	if len(allRequests) == 0 {
 		// No valid requests found, return empty snapshot
 		return &LiveStreamSnapshot{
-			DetailDimensions: map[string][]LiveStreamLane{
-				"vendor":   {},
-				"provider": {},
-				"model":    {},
-			},
 			Dimensions: map[string][]LiveStreamLane{
-				"vendor":   {},
-				"provider": {},
-				"model":    {},
+				"credential": {},
+				"vendor":     {},
+				"provider":   {},
+				"model":      {},
 			},
 			DimensionLegends: map[string][]LiveStreamLegendItem{
-				"vendor":   {},
-				"provider": {},
-				"model":    {},
+				"credential": {},
+				"vendor":     {},
+				"provider":   {},
+				"model":      {},
 			},
 			StatusLegends: []LiveStreamLegendItem{},
 		}, nil
