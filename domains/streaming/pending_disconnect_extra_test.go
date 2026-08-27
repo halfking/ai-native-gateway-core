@@ -1,6 +1,7 @@
 package streaming
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -33,7 +34,7 @@ func TestStreamChatWithPendingCapture_DisconnectsWithoutPending_ReturnsEarly(t *
 	}
 
 	cap := audit.NewStreamCapture()
-	outcome := StreamChatWithPendingCapture(
+	outcome := StreamChatWithPendingCapture(context.Background(),
 		newDisconnectingStreamWriter(),
 		resp,
 		"gpt-test",
@@ -72,7 +73,7 @@ func TestStreamChatWithPendingCapture_ContinuesUntilDoneWithCapturer(t *testing.
 	// chunk so the first write still goes through. The capturer should
 	// nonetheless receive every line from upstream.
 	dw := &flusherAfterFirstDisconnectWriter{header: http.Header{}}
-	outcome := StreamChatWithPendingCapture(
+	outcome := StreamChatWithPendingCapture(context.Background(),
 		dw,
 		resp,
 		"gpt-test",
@@ -116,7 +117,7 @@ func TestStreamAnthropicSSEToOpenAI_DisconnectsKeepsCapturer(t *testing.T) {
 	}
 	pc := NewPendingCapturer(8192)
 
-	outcome := StreamAnthropicSSEToOpenAI(
+	outcome := StreamAnthropicSSEToOpenAI(context.Background(),
 		newDisconnectingStreamWriter(),
 		resp,
 		"claude-opus-4-8",
@@ -152,7 +153,7 @@ func TestStreamOpenAIToResponsesSSE_DisconnectsKeepsCapturer(t *testing.T) {
 	}
 	pc := NewPendingCapturer(8192)
 
-	outcome := StreamOpenAIToResponsesSSE(
+	outcome := StreamOpenAIToResponsesSSE(context.Background(),
 		newDisconnectingStreamWriter(),
 		resp,
 		"gpt-4o-mini",
@@ -185,7 +186,7 @@ func TestStreamOpenAIToAnthropicSSE_DisconnectsKeepsCapturer(t *testing.T) {
 	}
 	pc := NewPendingCapturer(8192)
 
-	outcome := StreamOpenAIToAnthropicSSE(
+	outcome := StreamOpenAIToAnthropicSSE(context.Background(),
 		newDisconnectingStreamWriter(), resp, "claude-test", "gpt-test", "req-q2", nil, pc,
 	)
 

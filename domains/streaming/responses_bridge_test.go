@@ -1,6 +1,7 @@
 package streaming
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -60,7 +61,7 @@ func TestStreamAnthropicSSEToResponses_FullFlow(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 
 	rec := httptest.NewRecorder()
-	out := StreamAnthropicSSEToResponses(rec, resp, "claude-opus-4-8", "claude-opus-4-8", "req-123456789012345678", nil, nil)
+	out := StreamAnthropicSSEToResponses(context.Background(), rec, resp, "claude-opus-4-8", "claude-opus-4-8", "req-123456789012345678", nil, nil)
 	require.False(t, out.Interrupted)
 
 	body := rec.Body.String()
@@ -132,7 +133,7 @@ func TestStreamAnthropicSSEToResponses_MaxTokensMapsToIncomplete(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 
 	rec := httptest.NewRecorder()
-	out := StreamAnthropicSSEToResponses(rec, resp, "claude-opus-4-8", "claude-opus-4-8", "req-trunc", nil, nil)
+	out := StreamAnthropicSSEToResponses(context.Background(), rec, resp, "claude-opus-4-8", "claude-opus-4-8", "req-trunc", nil, nil)
 	require.False(t, out.Interrupted)
 
 	body := rec.Body.String()
@@ -176,7 +177,7 @@ func TestStreamAnthropicSSEToResponses_ToolUse(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 
 	rec := httptest.NewRecorder()
-	out := StreamAnthropicSSEToResponses(rec, resp, "claude-opus-4-8", "claude-opus-4-8", "req-tool", nil, nil)
+	out := StreamAnthropicSSEToResponses(context.Background(), rec, resp, "claude-opus-4-8", "claude-opus-4-8", "req-tool", nil, nil)
 	require.False(t, out.Interrupted)
 
 	body := rec.Body.String()
@@ -233,7 +234,7 @@ func TestStreamAnthropicSSEToResponses_ToolUse_MultipleArgChunks(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 
 	rec := httptest.NewRecorder()
-	out := StreamAnthropicSSEToResponses(rec, resp, "claude-opus-4-8", "claude-opus-4-8", "req-multi", nil, nil)
+	out := StreamAnthropicSSEToResponses(context.Background(), rec, resp, "claude-opus-4-8", "claude-opus-4-8", "req-multi", nil, nil)
 	require.False(t, out.Interrupted)
 
 	body := rec.Body.String()
@@ -313,7 +314,7 @@ func TestStreamAnthropicSSEToResponses_ToolUse_SecondToolCall(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 
 	rec := httptest.NewRecorder()
-	out := StreamAnthropicSSEToResponses(rec, resp, "claude-opus-4-8", "claude-opus-4-8", "req-m2", nil, nil)
+	out := StreamAnthropicSSEToResponses(context.Background(), rec, resp, "claude-opus-4-8", "claude-opus-4-8", "req-m2", nil, nil)
 	require.False(t, out.Interrupted)
 
 	body := rec.Body.String()
@@ -398,7 +399,7 @@ func TestStreamAnthropicSSEToResponses_DropsOpenAIFormatData(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 
 	rec := httptest.NewRecorder()
-	out := StreamAnthropicSSEToResponses(rec, resp, "claude-opus-4-8", "claude-opus-4-8", "req-x", nil, nil)
+	out := StreamAnthropicSSEToResponses(context.Background(), rec, resp, "claude-opus-4-8", "claude-opus-4-8", "req-x", nil, nil)
 	require.False(t, out.Interrupted)
 
 	body := rec.Body.String()
@@ -436,7 +437,7 @@ func TestStreamOpenAIToResponsesSSE_FullFlow(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 
 	rec := httptest.NewRecorder()
-	out := StreamOpenAIToResponsesSSE(rec, resp, "gpt-4o", "gpt-4o", "req-openai-123456789012345678", nil, nil)
+	out := StreamOpenAIToResponsesSSE(context.Background(), rec, resp, "gpt-4o", "gpt-4o", "req-openai-123456789012345678", nil, nil)
 	require.False(t, out.Interrupted)
 
 	body := rec.Body.String()
@@ -490,7 +491,7 @@ func TestStreamOpenAIToResponsesSSE_NoUsageStillFinishes(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 
 	rec := httptest.NewRecorder()
-	out := StreamOpenAIToResponsesSSE(rec, resp, "gpt-4o", "gpt-4o", "req-nou", nil, nil)
+	out := StreamOpenAIToResponsesSSE(context.Background(), rec, resp, "gpt-4o", "gpt-4o", "req-nou", nil, nil)
 	require.False(t, out.Interrupted)
 
 	body := rec.Body.String()
@@ -510,14 +511,14 @@ func TestResponsesBridges_OtherSideClosedIsNetworkError(t *testing.T) {
 			name: "anthropic to responses",
 			data: "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n\n",
 			run: func(w http.ResponseWriter, resp *http.Response) StreamOutcome {
-				return StreamAnthropicSSEToResponses(w, resp, "claude-test", "claude-test", "req-anthropic-close", nil, nil)
+				return StreamAnthropicSSEToResponses(context.Background(), w, resp, "claude-test", "claude-test", "req-anthropic-close", nil, nil)
 			},
 		},
 		{
 			name: "openai to responses",
 			data: "data: {\"id\":\"chunk-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"delta\":{\"content\":\"hello\"},\"finish_reason\":null}]}\n\n",
 			run: func(w http.ResponseWriter, resp *http.Response) StreamOutcome {
-				return StreamOpenAIToResponsesSSE(w, resp, "gpt-test", "gpt-test", "req-openai-close", nil, nil)
+				return StreamOpenAIToResponsesSSE(context.Background(), w, resp, "gpt-test", "gpt-test", "req-openai-close", nil, nil)
 			},
 		},
 	}
@@ -554,7 +555,7 @@ func TestStreamOpenAIToResponsesSSE_SplitsDoneJoinedToJSON(t *testing.T) {
 	}
 	rec := httptest.NewRecorder()
 
-	out := StreamOpenAIToResponsesSSE(rec, resp, "gpt-5.6-sol", "gpt-5.6-sol", "req-combined-done", nil, nil)
+	out := StreamOpenAIToResponsesSSE(context.Background(), rec, resp, "gpt-5.6-sol", "gpt-5.6-sol", "req-combined-done", nil, nil)
 
 	require.False(t, out.Interrupted)
 	assert.Contains(t, rec.Body.String(), `"delta":"planning"`)
@@ -583,7 +584,7 @@ func TestStreamOpenAIToResponsesSSE_LengthMapsToIncomplete(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 
 	rec := httptest.NewRecorder()
-	out := StreamOpenAIToResponsesSSE(rec, resp, "gpt-4o", "gpt-4o", "req-trunc", nil, nil)
+	out := StreamOpenAIToResponsesSSE(context.Background(), rec, resp, "gpt-4o", "gpt-4o", "req-trunc", nil, nil)
 	require.False(t, out.Interrupted)
 
 	body := rec.Body.String()
@@ -739,7 +740,7 @@ func TestStreamOpenAIToResponsesSSE_ToolCalls_MultipleArgChunks(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 
 	rec := httptest.NewRecorder()
-	out := StreamOpenAIToResponsesSSE(rec, resp, "gpt-4o", "gpt-4o", "req-oai-tool", nil, nil)
+	out := StreamOpenAIToResponsesSSE(context.Background(), rec, resp, "gpt-4o", "gpt-4o", "req-oai-tool", nil, nil)
 	require.False(t, out.Interrupted)
 
 	body := rec.Body.String()

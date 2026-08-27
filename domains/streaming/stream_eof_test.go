@@ -35,7 +35,7 @@ func TestStreamChatWithPendingCapture_EOFWithoutDoneAfterContentIsNotRetryable(t
 	}
 	writer := httptest.NewRecorder()
 
-	outcome := StreamChatWithPendingCapture(
+	outcome := StreamChatWithPendingCapture(context.Background(),
 		writer,
 		resp,
 		"minimax-m3",
@@ -77,7 +77,7 @@ func TestStreamChatWithPendingCapture_EOFWithoutDoneZeroChunks(t *testing.T) {
 	}
 	writer := httptest.NewRecorder()
 
-	outcome := StreamChatWithPendingCapture(
+	outcome := StreamChatWithPendingCapture(context.Background(),
 		writer,
 		resp,
 		"minimax-m3",
@@ -133,7 +133,7 @@ func TestStreamChatWithPendingCapture_OtherSideClosedIsNetworkError(t *testing.T
 		}
 		writer := httptest.NewRecorder()
 
-		outcome := StreamChatWithPendingCapture(
+		outcome := StreamChatWithPendingCapture(context.Background(),
 			writer,
 			resp,
 			"glm-5.2",
@@ -172,7 +172,7 @@ func TestStreamChatWithPendingCapture_OtherSideClosedIsNetworkError(t *testing.T
 		}
 		writer := httptest.NewRecorder()
 
-		outcome := StreamChatWithPendingCapture(
+		outcome := StreamChatWithPendingCapture(context.Background(),
 			writer,
 			resp,
 			"glm-5.2",
@@ -272,7 +272,7 @@ func TestStreamChatWithPendingCapture_SynthesizedDoneIncrementsMetric(t *testing
 	}
 	writer := httptest.NewRecorder()
 
-	outcome := StreamChatWithPendingCapture(
+	outcome := StreamChatWithPendingCapture(context.Background(),
 		writer,
 		resp,
 		"minimax-m3",
@@ -310,7 +310,7 @@ func TestStreamChatWithPendingCapture_UpstreamDoneNoSynthMetric(t *testing.T) {
 	}
 	writer := httptest.NewRecorder()
 
-	_ = StreamChatWithPendingCapture(
+	_ = StreamChatWithPendingCapture(context.Background(),
 		writer,
 		resp,
 		"minimax-m3",
@@ -334,7 +334,7 @@ func TestStreamChatWithPendingCapture_SplitsDoneJoinedToJSON(t *testing.T) {
 	}
 	writer := httptest.NewRecorder()
 
-	outcome := StreamChatWithPendingCapture(
+	outcome := StreamChatWithPendingCapture(context.Background(),
 		writer,
 		resp,
 		"gpt-5.6-sol",

@@ -1,6 +1,7 @@
 package executors_test
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -90,8 +91,8 @@ func TestExecuteAnthropicMessages_PreCommitFailoverUsesSecondProvider(t *testing
 	defer server.Close()
 
 	exec := newProtocolFailoverExecutor(t)
-	exec.AnthropicPassthroughStream = func(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture, _ any) executors.StreamOutcome {
-		return streamResult(streaming.StreamAnthropicPassthrough(w, resp, clientModel, outboundModel, requestID, capture, nil))
+	exec.AnthropicPassthroughStream = func(ctx context.Context, w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture, _ any) executors.StreamOutcome {
+		return streamResult(streaming.StreamAnthropicPassthrough(ctx, w, resp, clientModel, outboundModel, requestID, capture, nil))
 	}
 
 	rec := httptest.NewRecorder()
@@ -153,8 +154,8 @@ func TestExecuteResponses_OpenAIPreCommitFailoverUsesResponsesBridge(t *testing.
 	defer server.Close()
 
 	exec := newProtocolFailoverExecutor(t)
-	exec.OpenAIToResponsesStream = func(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture, _ any) executors.StreamOutcome {
-		return streamResult(streaming.StreamOpenAIToResponsesSSE(w, resp, clientModel, outboundModel, requestID, capture, nil))
+	exec.OpenAIToResponsesStream = func(ctx context.Context, w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture, _ any) executors.StreamOutcome {
+		return streamResult(streaming.StreamOpenAIToResponsesSSE(ctx, w, resp, clientModel, outboundModel, requestID, capture, nil))
 	}
 
 	rec := httptest.NewRecorder()
@@ -217,8 +218,8 @@ func TestExecuteResponses_AnthropicPreCommitFailoverUsesResponsesBridge(t *testi
 	defer server.Close()
 
 	exec := newProtocolFailoverExecutor(t)
-	exec.AnthropicToResponsesStream = func(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture, _ any) executors.StreamOutcome {
-		return streamResult(streaming.StreamAnthropicSSEToResponses(w, resp, clientModel, outboundModel, requestID, capture, nil))
+	exec.AnthropicToResponsesStream = func(ctx context.Context, w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture, _ any) executors.StreamOutcome {
+		return streamResult(streaming.StreamAnthropicSSEToResponses(ctx, w, resp, clientModel, outboundModel, requestID, capture, nil))
 	}
 
 	rec := httptest.NewRecorder()
@@ -274,8 +275,8 @@ func TestExecuteAnthropicMessages_PostCommitFailureDoesNotCallSecondProvider(t *
 	defer server.Close()
 
 	exec := newProtocolFailoverExecutor(t)
-	exec.AnthropicPassthroughStream = func(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture, _ any) executors.StreamOutcome {
-		return streamResult(streaming.StreamAnthropicPassthrough(w, resp, clientModel, outboundModel, requestID, capture, nil))
+	exec.AnthropicPassthroughStream = func(ctx context.Context, w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture, _ any) executors.StreamOutcome {
+		return streamResult(streaming.StreamAnthropicPassthrough(ctx, w, resp, clientModel, outboundModel, requestID, capture, nil))
 	}
 	capture := &audit.StreamCapture{}
 	rec := httptest.NewRecorder()
@@ -322,8 +323,8 @@ func TestExecuteResponses_PostCommitFailureDoesNotCallSecondProvider(t *testing.
 	defer server.Close()
 
 	exec := newProtocolFailoverExecutor(t)
-	exec.OpenAIToResponsesStream = func(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture, _ any) executors.StreamOutcome {
-		return streamResult(streaming.StreamOpenAIToResponsesSSE(w, resp, clientModel, outboundModel, requestID, capture, nil))
+	exec.OpenAIToResponsesStream = func(ctx context.Context, w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture, _ any) executors.StreamOutcome {
+		return streamResult(streaming.StreamOpenAIToResponsesSSE(ctx, w, resp, clientModel, outboundModel, requestID, capture, nil))
 	}
 	capture := &audit.StreamCapture{}
 	rec := httptest.NewRecorder()

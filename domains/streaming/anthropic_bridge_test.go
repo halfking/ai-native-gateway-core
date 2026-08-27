@@ -2,6 +2,7 @@ package streaming
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -227,9 +228,7 @@ func TestStreamOpenAIToAnthropicSSE_FirstByteTimeoutClosesBlockingBody(t *testin
 	done := make(chan StreamOutcome, 1)
 	go func() {
 		// P1-2 fix (2026-08-28): Add ctx parameter.
-		done <- StreamOpenAIToAnthropicSSE(
-			context.Background(), w, resp, "claude-test", "upstream-test", "req-blocking-body", nil, nil,
-		)
+		done <- StreamOpenAIToAnthropicSSE(context.Background(), w, resp, "claude-test", "upstream-test", "req-blocking-body", nil, nil)
 	}()
 
 	select {
@@ -263,8 +262,7 @@ func TestStreamAnthropicPassthrough_ClientDisconnectWinsOverLaterUpstreamError(t
 	}
 
 	// P1-2 fix (2026-08-28): Add ctx parameter.
-	out := StreamAnthropicPassthrough(
-		context.Background(), newDisconnectingStreamWriter(), resp,
+	out := StreamAnthropicPassthrough(context.Background(), newDisconnectingStreamWriter(), resp,
 		"claude-test", "claude-test", "req-client-close", nil, NewPendingCapturer(4096),
 	)
 
@@ -422,7 +420,7 @@ func TestStreamAnthropicSSEToOpenAI_ConvertsMessageStartToOpenAIChunk(t *testing
 	defer func() { _ = resp.Body.Close() }()
 
 	rec := httptest.NewRecorder()
-	out := StreamAnthropicSSEToOpenAI(rec, resp, "claude-opus-4-8", "claude-opus-4-8", "req-opus", nil, nil)
+	out := StreamAnthropicSSEToOpenAI(context.Background(), rec, resp, "claude-opus-4-8", "claude-opus-4-8", "req-opus", nil, nil)
 	require.False(t, out.Interrupted)
 
 	output := rec.Body.String()

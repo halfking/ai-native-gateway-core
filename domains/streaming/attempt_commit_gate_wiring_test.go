@@ -1,6 +1,7 @@
 package streaming
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -47,7 +48,7 @@ func TestWrapAttemptWriterDoesNotEnableRecoveryHoldback(t *testing.T) {
 	defer restore()
 
 	rec := httptest.NewRecorder()
-	wrapped, gate := wrapAttemptWriter(rec, ProtocolOpenAIChat)
+	wrapped, gate := wrapAttemptWriter(context.Background(), rec, ProtocolOpenAIChat)
 	if wrapped == nil || gate == nil {
 		t.Fatal("wrapAttemptWriter must return a gate when enabled")
 	}
@@ -73,7 +74,7 @@ func bridgeCases() []bridgeCase {
 				fmt.Fprint(w, "data: [DONE]\n\n")
 			},
 			invoke: func(w http.ResponseWriter, resp *http.Response) StreamOutcome {
-				return StreamChatWithPendingCapture(w, resp, "gpt-4o", "gpt-4o", nil, nil, false, nil, nil)
+				return StreamChatWithPendingCapture(context.Background(), w, resp, "gpt-4o", "gpt-4o", nil, nil, false, nil, nil)
 			},
 			wantAny: []string{"Hi", "[DONE]"},
 		},
@@ -84,7 +85,7 @@ func bridgeCases() []bridgeCase {
 				// hard EOF: no [DONE]
 			},
 			invoke: func(w http.ResponseWriter, resp *http.Response) StreamOutcome {
-				return StreamChatWithPendingCapture(w, resp, "gpt-4o", "gpt-4o", nil, nil, false, nil, nil)
+				return StreamChatWithPendingCapture(context.Background(), w, resp, "gpt-4o", "gpt-4o", nil, nil, false, nil, nil)
 			},
 			wantAny: []string{"Hi", "[DONE]"},
 		},
@@ -96,7 +97,7 @@ func bridgeCases() []bridgeCase {
 				fmt.Fprint(w, "data: [DONE]\n\n")
 			},
 			invoke: func(w http.ResponseWriter, resp *http.Response) StreamOutcome {
-				return StreamResponsesSSE(w, resp, "gpt-4o", "gpt-4o", "test-req-id-123456789012345678", nil)
+				return StreamResponsesSSE(context.Background(), w, resp, "gpt-4o", "gpt-4o", "test-req-id-123456789012345678", nil)
 			},
 			wantAny: []string{"response.output_text.delta", "response.completed"},
 		},
@@ -108,7 +109,7 @@ func bridgeCases() []bridgeCase {
 				fmt.Fprint(w, "data: [DONE]\n\n")
 			},
 			invoke: func(w http.ResponseWriter, resp *http.Response) StreamOutcome {
-				return StreamOpenAIToAnthropicSSE(w, resp, "gpt-4o", "gpt-4o", "test-req-id-123456789012345678", nil, nil)
+				return StreamOpenAIToAnthropicSSE(context.Background(), w, resp, "gpt-4o", "gpt-4o", "test-req-id-123456789012345678", nil, nil)
 			},
 			wantAny: []string{"message_start", "content_block_delta", "message_stop"},
 		},
@@ -123,7 +124,7 @@ func bridgeCases() []bridgeCase {
 				fmt.Fprint(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
 			},
 			invoke: func(w http.ResponseWriter, resp *http.Response) StreamOutcome {
-				return StreamAnthropicSSEToOpenAI(w, resp, "claude", "claude", "test-req-id-123456789012345678", nil, nil)
+				return StreamAnthropicSSEToOpenAI(context.Background(), w, resp, "claude", "claude", "test-req-id-123456789012345678", nil, nil)
 			},
 			wantAny: []string{"choices", "[DONE]"},
 		},
@@ -138,7 +139,7 @@ func bridgeCases() []bridgeCase {
 				fmt.Fprint(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
 			},
 			invoke: func(w http.ResponseWriter, resp *http.Response) StreamOutcome {
-				return StreamAnthropicSSEToResponses(w, resp, "claude", "claude", "test-req-id-123456789012345678", nil, nil)
+				return StreamAnthropicSSEToResponses(context.Background(), w, resp, "claude", "claude", "test-req-id-123456789012345678", nil, nil)
 			},
 			wantAny: []string{"response.output_text.delta", "response.completed"},
 		},
@@ -184,7 +185,7 @@ func TestBridgeDeferredModeKeepsMetadataAttemptDroppable(t *testing.T) {
 				fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"\"}}]}\n\n")
 			},
 			invoke: func(w http.ResponseWriter, resp *http.Response) StreamOutcome {
-				return StreamChatWithPendingCapture(w, resp, "gpt-4o", "gpt-4o", nil, nil, false, nil, nil)
+				return StreamChatWithPendingCapture(context.Background(), w, resp, "gpt-4o", "gpt-4o", nil, nil, false, nil, nil)
 			},
 		})
 		if strings.Contains(out, "[DONE]") {
@@ -202,7 +203,7 @@ func TestBridgeDeferredModeKeepsMetadataAttemptDroppable(t *testing.T) {
 				fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"\"}}]}\n\n")
 			},
 			invoke: func(w http.ResponseWriter, resp *http.Response) StreamOutcome {
-				return StreamResponsesSSE(w, resp, "gpt-4o", "gpt-4o", "test-req-id-123456789012345678", nil)
+				return StreamResponsesSSE(context.Background(), w, resp, "gpt-4o", "gpt-4o", "test-req-id-123456789012345678", nil)
 			},
 		})
 		if strings.Contains(out, "response.completed") {
@@ -217,7 +218,7 @@ func TestBridgeDeferredModeKeepsMetadataAttemptDroppable(t *testing.T) {
 				// hard EOF: no message_delta/message_stop
 			},
 			invoke: func(w http.ResponseWriter, resp *http.Response) StreamOutcome {
-				return StreamAnthropicSSEToOpenAI(w, resp, "claude", "claude", "test-req-id-123456789012345678", nil, nil)
+				return StreamAnthropicSSEToOpenAI(context.Background(), w, resp, "claude", "claude", "test-req-id-123456789012345678", nil, nil)
 			},
 		})
 		if strings.Contains(out, "[DONE]") {
@@ -240,7 +241,7 @@ func TestBridgeDeferredModeStillFinishesAfterContentCommitted(t *testing.T) {
 				// hard EOF after content
 			},
 			invoke: func(w http.ResponseWriter, resp *http.Response) StreamOutcome {
-				return StreamChatWithPendingCapture(w, resp, "gpt-4o", "gpt-4o", nil, nil, false, nil, nil)
+				return StreamChatWithPendingCapture(context.Background(), w, resp, "gpt-4o", "gpt-4o", nil, nil, false, nil, nil)
 			},
 		})
 		if !strings.Contains(out, "Hi") || !strings.Contains(out, "[DONE]") {
@@ -300,7 +301,7 @@ func TestBridgeFirstByteTimeoutNoTerminalFrameBeforeCommit(t *testing.T) {
 			<-r.Context().Done()
 		},
 		invoke: func(w http.ResponseWriter, resp *http.Response) StreamOutcome {
-			return StreamChatWithPendingCapture(w, resp, "gpt-4o", "gpt-4o", nil, nil, false, nil, nil)
+			return StreamChatWithPendingCapture(context.Background(), w, resp, "gpt-4o", "gpt-4o", nil, nil, false, nil, nil)
 		},
 	}
 

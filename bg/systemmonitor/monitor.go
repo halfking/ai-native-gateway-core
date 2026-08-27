@@ -213,11 +213,15 @@ func NewSystemMonitor(cfg Config) (*SystemMonitor, error) {
 			slog.Warn("system_monitor: lua scripts load failed, will retry on first Submit",
 				"error", err)
 			// continue with nil scripts — Submit will retry LoadScripts lazily
-			metrics.RedisLuaScriptPreloaded.WithLabelValues("systemmonitor").Set(0)
+			metrics.RedisLuaScriptPreloaded.WithLabelValues("systemmonitor").Set(metrics.RedisLuaScriptPreloadedFailed)
 		} else {
 			scripts = s
-			metrics.RedisLuaScriptPreloaded.WithLabelValues("systemmonitor").Set(1)
+			metrics.RedisLuaScriptPreloaded.WithLabelValues("systemmonitor").Set(metrics.RedisLuaScriptPreloadedOK)
 		}
+	} else {
+		// Redis 未配置：-1 sentinel 与 gateway main.go 中 ursm 模块保持一致，
+		// 让 Prometheus query 能区分"未启用"和"启用但预加载失败"。
+		metrics.RedisLuaScriptPreloaded.WithLabelValues("systemmonitor").Set(metrics.RedisLuaScriptPreloadedDisabled)
 	}
 
 	sm := &SystemMonitor{
