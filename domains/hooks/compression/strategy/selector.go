@@ -42,6 +42,9 @@ type Policy struct {
 //   - "lite,caveman" 等逗号分隔名 → Policy{Names: [...]}
 //
 // Phase 1 故意不引入完整表达式解析器；后续 Phase 引入 CEL 时另开 Resolver。
+//
+// 错误：当 off/all 与其他名称混用时返回 error，避免 "lite,off" → 静默 no-op。
+// operator 若把 off 当成注释写进 policy 列表，必须早 fail，而不是 silently 关压缩。
 func ResolvePolicy(spec string) (Policy, error) {
 	if spec == "" || spec == "off" {
 		return Policy{}, nil
@@ -53,6 +56,12 @@ func ResolvePolicy(spec string) (Policy, error) {
 	parts := splitTrimNonEmpty(spec, ",")
 	if len(parts) == 0 {
 		return Policy{}, nil
+	}
+	// 校验：off/all 是关键字，只能作为整体 spec 出现，不能混在 names 列表中。
+	for _, p := range parts {
+		if p == "off" || p == "all" {
+			return Policy{}, fmt.Errorf("%w: %q is a reserved keyword and cannot be mixed with other names; use it as the entire spec instead", ErrInvalidPolicySpec, p)
+		}
 	}
 	return Policy{Names: parts, UnknownMode: "ignore"}, nil
 }
