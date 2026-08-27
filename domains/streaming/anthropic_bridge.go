@@ -160,6 +160,14 @@ func StreamAnthropicPassthroughWithDiagnostics(
 	defer func() {
 		if finisher, ok := w.(interface{ Finish() error }); ok {
 			if err := finisher.Finish(); err != nil && !outcome.Interrupted {
+				if pc != nil {
+					// A pending capturer holds the completed upstream body:
+					// kept "completed" so the turn stays replayable — the
+					// same policy as the mid-loop disconnect exit below.
+					// Finish failed only because the buffered gate flushed
+					// its held frames onto the dead client connection.
+					return
+				}
 				// Client connection is dead by the time Finish() fails. A
 				// transparent retry would attempt to write headers to the
 				// same dead connection, wasting an upstream call. We
@@ -739,10 +747,15 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 		bufferedText.Reset()
 	}
 
-	if resp.Request != nil {
-		ctx = resp.Request.Context()
-	} else {
-		ctx = context.Background()
+	// The caller-supplied ctx is authoritative: it carries the dispatch/survival
+	// cancellation boundary. Only fall back to the response request context when
+	// the caller did not provide one.
+	if ctx == nil {
+		if resp.Request != nil {
+			ctx = resp.Request.Context()
+		} else {
+			ctx = context.Background()
+		}
 	}
 
 	runtimeCfg := currentStreamRuntimeConfig()
@@ -1008,19 +1021,21 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 								"quality", chunk.Quality,
 								"reason", chunk.ArgumentsJSONReason)
 						}
-						validated, _, vErr := anthropictransform.ValidateStreamingToolArgs(args)
-						if vErr != nil {
-							if capture != nil {
-								capture.AddQualityFlag("malformed_tool_args_blocked")
+							validated, _, vErr := anthropictransform.ValidateStreamingToolArgs(args)
+							if vErr != nil {
+								if capture != nil {
+									capture.AddQualityFlag("malformed_tool_args_blocked")
+								}
+								if attemptHasClientSemanticOutput(gate, chunkCount) {
+									emitAnthropicBridgeErrorChunk(w, "malformed_tool_args", "upstream tool arguments are invalid JSON", flusher)
+								}
+								outcome.Interrupted = true
+								outcome.Reason = "malformed_tool_args"
+								outcome.Kind = errorsx.KindUpstreamDown
+								outcome.Resumable = !attemptHasClientSemanticOutput(gate, chunkCount)
+								outcome.ChunkCount = chunkCount
+								return outcome
 							}
-							if attemptHasClientSemanticOutput(gate, chunkCount) {
-								emitAnthropicBridgeErrorChunk(w, "malformed_tool_args", "upstream tool arguments are invalid JSON", flusher)
-							}
-							outcome.Interrupted = true
-							outcome.Reason = "malformed_tool_args"
-							outcome.ChunkCount = chunkCount
-							return outcome
-						}
 						writeChunk(buildAnthropicBridgeToolCallChunk(toolCallIndex-1, currentToolCallID, "", &validated, true))
 						bufferedToolArgs.Reset()
 					}
@@ -1076,14 +1091,45 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 			if capture != nil {
 				capture.MarkInterruptedWithReason("upstream_error")
 			}
+			errType := ""
+			errMsg := ""
 			if chunk.Error != nil {
-				if attemptHasClientSemanticOutput(gate, chunkCount) {
-					emitAnthropicBridgeErrorChunk(w, chunk.Error.Type, chunk.Error.Message, flusher)
-				}
+				errType = chunk.Error.Type
+				errMsg = chunk.Error.Message
 			}
+			kind := classifyAnthropicStreamError(errType, data)
+			// Deliver text buffered ahead of the terminal error first: the
+			// client already received upstream frames for it conceptually,
+			// and flushing commits the attempt (mirrors the EOF path) so the
+			// sanitized error chunk and [DONE] below actually reach the wire.
+			flushBufferedText()
+			if attemptHasClientSemanticOutput(gate, chunkCount) {
+				// Relay upstreams pack internal diagnostics (provider UUIDs,
+				// request IDs, multi-line "Turn execution failed / reason=…"
+				// blobs) into the error message. Never forward that text: emit
+				// the gateway's own sanitized envelope carrying only the error
+				// type. The raw payload stays in the audit capture above.
+				code := errType
+				if code == "" {
+					code = string(kind)
+					if code == "" {
+						code = "api_error"
+					}
+				}
+				emitAnthropicBridgeErrorChunk(w, code, "upstream stream error: "+code, flusher)
+			}
+			slog.Warn("anthropic_to_openai: upstream terminal error event",
+				"request_id", requestID,
+				"client_model", clientModel,
+				"outbound_model", outboundModel,
+				"error_type", errType,
+				"kind", string(kind),
+				"client_visible_chunks", chunkCount,
+				"error_preview", truncateForLog(errMsg, 200),
+			)
 			outcome.Interrupted = true
 			outcome.Reason = "upstream_error"
-			outcome.Kind = errorsx.KindUpstreamDown
+			outcome.Kind = kind
 			outcome.Resumable = !attemptHasClientSemanticOutput(gate, chunkCount)
 			outcome.ChunkCount = chunkCount
 			return outcome
