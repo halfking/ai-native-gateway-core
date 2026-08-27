@@ -402,17 +402,11 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 					"error_headline", truncateForLog(firstLineOfLogSafe(msg), 120),
 					"client_visible_chunks", chunkCount,
 				)
-				if attemptHasClientSemanticOutput(gate, chunkCount) {
-					clCode := code
-					if clCode == "" {
-						clCode = "api_error"
-					}
-					writeSSEWithCapturer(w, pc, "error", map[string]any{
-						"type":  "error",
-						"error": map[string]any{"type": clCode, "message": "upstream stream error: " + clCode},
-					})
-					flusher.Flush()
+				emitCode := code
+				if emitCode == "" {
+					emitCode = "api_error"
 				}
+				emitQ2GateError(emitCode, "upstream stream error: "+emitCode)
 				return true
 			}
 		}
@@ -552,9 +546,25 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 				// within THIS chunk is not. Map the OpenAI index to an
 				// Anthropic content-block index on first sight; later fragments
 				// for the same call only extend input_json_delta.
+				//
+				// The OpenAI spec requires every fragment to carry `index`.
+				// If a fragment omits it (rare upstream bug), fall back to
+				// the per-chunk array position so the fragment still binds
+				// to a block — but this can split a single call across two
+				// Anthropic blocks if the missing-index fragment comes first
+				// and a later fragment supplies the real index. We surface
+				// that case in logs and continue rather than drop the call.
 				openaiIdx := i
 				if v, ok := tcMap["index"].(float64); ok {
 					openaiIdx = int(v)
+					if openaiIdx != i {
+						slog.Warn("anthropic stream: tool_calls fragment index differs from array position",
+							"request_id", requestID,
+							"openai_index", openaiIdx,
+							"array_position", i,
+							"client_model", clientModel,
+						)
+					}
 				}
 				fn, _ := tcMap["function"].(map[string]any)
 				fnName := ""
@@ -604,6 +614,14 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 					// implicit text block (index 0) before opening the first
 					// tool_use block.
 					closeTextBlock()
+					// Once the text block is closed, any further text_delta
+					// upstream emits would target an already-closed block and
+					// violate Anthropic's protocol. Buffer them instead and
+					// emit them on the close path (Phase 4 split) before the
+					// tool block stop events.
+					if textAccMode == textAccPassthrough {
+						textAccMode = textAccBuffering
+					}
 
 					startEvent := map[string]any{
 						"type":  "content_block_start",
@@ -759,7 +777,79 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 				})
 			}
 		case textAccBuffering:
-			flushBufferedText(w, flusher, pc, bufferedText.String(), capture)
+			// When the Q2 tool-call state machine already closed the implicit
+			// text block (index 0) before opening the first tool_use block,
+			// flushBufferedText would re-emit the stop event. We've also
+			// redirected post-tool-call text into the buffer to keep the
+			// protocol ordering valid; here we still need to emit those
+			// buffered text deltas, but on the existing block 0 if it is
+			// already closed that would re-target it. flushBufferedText's
+			// SplitLeadingThink path opens a new thinking/text block, so
+			// the buffered tail lands in a fresh block and avoids the
+			// already-closed block 0.
+			if textBlockOpen {
+				flushBufferedText(w, flusher, pc, bufferedText.String(), capture)
+				textBlockOpen = false
+			} else if bufferedText.Len() > 0 {
+				// Replay the buffered tail through a new text block
+				// (Anthropic sequential block rule). flushBufferedText
+				// itself already handles the stop-0 already-emitted case
+				// by emitting a thinking/text block; but its stop-0 emit
+				// would still fire on the no-think path. Skip flushBufferedText
+				// entirely and replay via a direct start/delta/stop on a
+				// fresh block index chosen by nextToolBlockIdx.
+				think, rest, ok := textsplit.SplitLeadingThink(bufferedText.String())
+				newIdx := nextToolBlockIdx
+				nextToolBlockIdx++
+				if ok {
+					if think != "" {
+						writeSSEWithCapturer(w, pc, "content_block_start", map[string]any{
+							"type":          "content_block_start",
+							"index":         newIdx,
+							"content_block": map[string]any{"type": "thinking", "thinking": ""},
+						})
+						writeSSEWithCapturer(w, pc, "content_block_delta", map[string]any{
+							"type":  "content_block_delta",
+							"index": newIdx,
+							"delta": map[string]any{"type": "thinking_delta", "thinking": think},
+						})
+						writeSSEWithCapturer(w, pc, "content_block_stop", map[string]any{"type": "content_block_stop", "index": newIdx})
+						if capture != nil {
+							capture.MarkThinkingBlock()
+						}
+						newIdx++
+						nextToolBlockIdx++
+					}
+					if rest != "" {
+						writeSSEWithCapturer(w, pc, "content_block_start", map[string]any{
+							"type":          "content_block_start",
+							"index":         newIdx,
+							"content_block": map[string]any{"type": "text", "text": ""},
+						})
+						writeSSEWithCapturer(w, pc, "content_block_delta", map[string]any{
+							"type":  "content_block_delta",
+							"index": newIdx,
+							"delta": map[string]any{"type": "text_delta", "text": rest},
+						})
+						writeSSEWithCapturer(w, pc, "content_block_stop", map[string]any{"type": "content_block_stop", "index": newIdx})
+					}
+				} else {
+					writeSSEWithCapturer(w, pc, "content_block_start", map[string]any{
+						"type":          "content_block_start",
+						"index":         newIdx,
+						"content_block": map[string]any{"type": "text", "text": ""},
+					})
+					writeSSEWithCapturer(w, pc, "content_block_delta", map[string]any{
+						"type":  "content_block_delta",
+						"index": newIdx,
+						"delta": map[string]any{"type": "text_delta", "text": bufferedText.String()},
+					})
+					writeSSEWithCapturer(w, pc, "content_block_stop", map[string]any{"type": "content_block_stop", "index": newIdx})
+				}
+				if flusher != nil {
+					flusher.Flush()
+				}
+			}
 		case textAccPassthrough:
 			// When the Q2 tool-call state machine already closed the implicit
 			// text block (index 0) before opening the first tool_use block,
