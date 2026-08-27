@@ -17,6 +17,20 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/textsplit"
 )
 
+// q2ToolStreamBlock tracks one OpenAI tool_calls[] entry as it is relayed
+// into Anthropic content_block events. Anthropic's protocol requires
+// sequential blocks: start (with id/name) → input_json_delta fragments →
+// stop. OpenAI's contract instead splits fragments across chunks keyed by
+// tool_calls[].index, where only the first fragment carries id/name.
+type q2ToolStreamBlock struct {
+	anthropicIdx int
+	id           string
+	name         string
+	started      bool
+	stopped      bool
+	pendingArgs  string
+}
+
 // StreamOpenAIToAnthropicSSE converts OpenAI-format SSE (from upstream)
 // into Anthropic-format SSE (for client). Processes chunk["choices"][0]["delta"]
 // and emits Anthropic events (message_start, content_block_delta, etc.).
@@ -154,6 +168,34 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 	inputTokens := 0
 	upstreamDoneReceived := false
 
+	// Q2 tool-call block state: keyed by the OpenAI tool_calls[].index (stable
+	// per spec across fragments), tracks the emitted Anthropic block and
+	// whether start/stop events have been sent. textBlockOpen latches false
+	// once the implicit text block 0 has been closed — Anthropic content
+	// blocks must be strictly sequential (no tool_use while text is open).
+	toolBlocks := make(map[int]*q2ToolStreamBlock)
+	var toolOrder []int
+	nextToolBlockIdx := 1
+	textBlockOpen := true
+	closeTextBlock := func() {
+		if !textBlockOpen {
+			return
+		}
+		textBlockOpen = false
+		writeSSEWithCapturer(w, pc, "content_block_stop", map[string]any{"type": "content_block_stop", "index": 0})
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
+	// midStreamHalt is set when processLine detects an upstream error encoded
+	// outside its normal channel — OpenAI-style data: {"error":{...}} chunks
+	// (several second-tier OpenAI-compatible upstreams send mid-stream errors
+	// this way instead of an SSE `event: error` frame) and GLM-style
+	// finish_reason values that actually mean failure. The read loop then
+	// bails and treats the attempt as an upstream interruption rather than
+	// silently dropping the error.
+	var midStreamHalt *StreamOutcome
+
 	// Phase 4 stream-end split: lazy probing of the running text content
 	// prefix. Most upstreams emit plain text and we want incremental
 	// streaming UX for them. Only minimax-style upstreams that pack a
@@ -258,6 +300,22 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 	})
 	captureSSE("ping", map[string]any{"type": "ping"})
 
+	// emitQ2GateError renders a sanitized Anthropic error frame only when
+	// the attempt already committed client-visible content; pre-content
+	// interruptions stay invisible so the executor can fail over transparently.
+	emitQ2GateError := func(code, message string) {
+		if !attemptHasClientSemanticOutput(gate, chunkCount) {
+			return
+		}
+		writeSSEWithCapturer(w, pc, "error", map[string]any{
+			"type":  "error",
+			"error": map[string]any{"type": code, "message": message},
+		})
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
+
 	processLine := func(line string) bool {
 
 		line = strings.TrimSpace(line)
@@ -313,6 +371,52 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 			}
 		}
 
+		// 2026-08-28 spec audit: OpenAI-compatible upstreams (Qwen DashScope,
+		// some Kimi deployments, Azure) surface mid-stream failures as a bare
+		// data: {"error":{...}} chunk with no choices array. Treat it as an
+		// Anthropic-style terminal error instead of silently dropping it.
+		if rawErr, hasErr := chunk["error"]; hasErr {
+			var errObj map[string]any
+			if json.Unmarshal(rawErr, &errObj) == nil && errObj != nil {
+				code, _ := errObj["type"].(string)
+				if code == "" {
+					code, _ = errObj["code"].(string)
+				}
+				msg, _ := errObj["message"].(string)
+				kind := classifyAnthropicStreamError(code, []byte(data))
+				midStreamHalt = &StreamOutcome{
+					Interrupted: true,
+					Reason:      "upstream_error",
+					Kind:        kind,
+					Resumable:   !attemptHasClientSemanticOutput(gate, chunkCount),
+					ChunkCount:  chunkCount,
+				}
+				if capture != nil {
+					capture.MarkInterruptedWithReason("upstream_error")
+				}
+				slog.Warn("anthropic stream: upstream mid-stream JSON error",
+					"request_id", requestID,
+					"client_model", clientModel,
+					"error_code", code,
+					"kind", string(kind),
+					"error_headline", truncateForLog(firstLineOfLogSafe(msg), 120),
+					"client_visible_chunks", chunkCount,
+				)
+				if attemptHasClientSemanticOutput(gate, chunkCount) {
+					clCode := code
+					if clCode == "" {
+						clCode = "api_error"
+					}
+					writeSSEWithCapturer(w, pc, "error", map[string]any{
+						"type":  "error",
+						"error": map[string]any{"type": clCode, "message": "upstream stream error: " + clCode},
+					})
+					flusher.Flush()
+				}
+				return true
+			}
+		}
+
 		var choices []map[string]any
 		if raw, ok := chunk["choices"]; ok {
 			//nolint:errcheck // test parse, non-critical
@@ -324,6 +428,52 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 
 		choice := choices[0]
 		if fr, ok := choice["finish_reason"].(string); ok && fr != "" {
+			// 2026-08-28 spec audit (Zhipu GLM): finish_reason is also an
+			// error channel on this vendor — network_error/sensitive/
+			// model_context_window_exceeded mean the stream FAILED rather
+			// than ended normally. Reclassify to an upstream interruption
+			// instead of mapping them to end_turn.
+			switch fr {
+			case "network_error":
+				midStreamHalt = &StreamOutcome{
+					Interrupted: true,
+					Reason:      "network_error",
+					Kind:        errorsx.KindNetwork,
+					Resumable:   !attemptHasClientSemanticOutput(gate, chunkCount),
+					ChunkCount:  chunkCount,
+				}
+				if capture != nil {
+					capture.MarkInterruptedWithReason("network_error")
+				}
+				emitQ2GateError("network_error", "upstream stream error: network_error")
+				return true
+			case "sensitive":
+				midStreamHalt = &StreamOutcome{
+					Interrupted: true,
+					Reason:      "content_filter",
+					Kind:        errorsx.KindContentFilter,
+					Resumable:   false,
+					ChunkCount:  chunkCount,
+				}
+				if capture != nil {
+					capture.MarkInterruptedWithReason("content_filter")
+				}
+				emitQ2GateError("content_filter", "upstream refused to produce this content")
+				return true
+			case "model_context_window_exceeded":
+				midStreamHalt = &StreamOutcome{
+					Interrupted: true,
+					Reason:      "context_length_exceeded",
+					Kind:        errorsx.KindContextLength,
+					Resumable:   false,
+					ChunkCount:  chunkCount,
+				}
+				if capture != nil {
+					capture.MarkInterruptedWithReason("context_length_exceeded")
+				}
+				emitQ2GateError("request_too_large", "upstream context window exceeded")
+				return true
+			}
 			finalFinishReason = fr
 		}
 
@@ -397,8 +547,15 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 				if tcMap == nil {
 					continue
 				}
-				chunkCount++
-				idx := i + 1
+				// 2026-08-28 spec alignment: OpenAI tool_calls[].index is the
+				// stable aggregation key across chunks — the array position
+				// within THIS chunk is not. Map the OpenAI index to an
+				// Anthropic content-block index on first sight; later fragments
+				// for the same call only extend input_json_delta.
+				openaiIdx := i
+				if v, ok := tcMap["index"].(float64); ok {
+					openaiIdx = int(v)
+				}
 				fn, _ := tcMap["function"].(map[string]any)
 				fnName := ""
 				if fn != nil {
@@ -406,42 +563,71 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 				}
 				tcID, _ := tcMap["id"].(string)
 
-				// tool_calls_missing accounting: the moment we promise this
-				// tool call to the client via content_block_start, the
-				// tool_calls_missing detector must register it as emitted.
-				// Calling observeEmittedChunk on the IR parse site above
-				// (where the original audit found it) conflated "the parser
-				// saw the call" with "the client received it"; subsequent
-				// argument deltas for the same call are deliberately not
-				// counted again so emittedToolCallCount tracks distinct calls.
-				if diagnostics != nil {
-					diagnosticCollector.observeEmittedChunk(&ir.StreamChunk{
-						Type: ir.ChunkTypeDelta,
-						Delta: &ir.StreamDelta{
-							ToolCalls: []ir.StreamToolCallDelta{{Index: idx, ID: tcID}},
-						},
-					})
+				state := toolBlocks[openaiIdx]
+				if state == nil {
+					state = &q2ToolStreamBlock{
+						anthropicIdx: nextToolBlockIdx,
+						id:           tcID,
+						name:         fnName,
+					}
+					nextToolBlockIdx++
+					toolBlocks[openaiIdx] = state
+					toolOrder = append(toolOrder, openaiIdx)
+				}
+				if tcID != "" && state.id == "" {
+					state.id = tcID
+				}
+				if fnName != "" && state.name == "" {
+					state.name = fnName
 				}
 
-				startEvent := map[string]any{
-					"type":  "content_block_start",
-					"index": idx,
-					"content_block": map[string]any{
-						"type":  "tool_use",
-						"id":    tcID,
-						"name":  fnName,
-						"input": map[string]any{},
-					},
+				chunkCount++
+				if !state.started {
+					// tool_calls_missing accounting: the moment we promise this
+					// tool call to the client via content_block_start, the
+					// tool_calls_missing detector must register it as emitted.
+					// Calling observeEmittedChunk on the IR parse site above
+					// (where the original audit found it) conflated "the parser
+					// saw the call" with "the client received it"; subsequent
+					// argument deltas for the same call are deliberately not
+					// counted again so emittedToolCallCount tracks distinct calls.
+					if diagnostics != nil {
+						diagnosticCollector.observeEmittedChunk(&ir.StreamChunk{
+							Type: ir.ChunkTypeDelta,
+							Delta: &ir.StreamDelta{
+								ToolCalls: []ir.StreamToolCallDelta{{Index: state.anthropicIdx, ID: state.id}},
+							},
+						})
+					}
+
+					// Anthropic content blocks are sequential: close the
+					// implicit text block (index 0) before opening the first
+					// tool_use block.
+					closeTextBlock()
+
+					startEvent := map[string]any{
+						"type":  "content_block_start",
+						"index": state.anthropicIdx,
+						"content_block": map[string]any{
+							"type":  "tool_use",
+							"id":    state.id,
+							"name":  state.name,
+							"input": map[string]any{},
+						},
+					}
+					writeSSEWithCapturer(w, pc, "content_block_start", startEvent)
+					state.started = true
 				}
-				writeSSEWithCapturer(w, pc, "content_block_start", startEvent)
 
 				if fn != nil {
 					args, _ := fn["arguments"].(string)
 					if args != "" {
+						partial := state.pendingArgs + args
+						state.pendingArgs = ""
 						argEvent := map[string]any{
 							"type":  "content_block_delta",
-							"index": idx,
-							"delta": map[string]any{"type": "input_json_delta", "partial_json": args},
+							"index": state.anthropicIdx,
+							"delta": map[string]any{"type": "input_json_delta", "partial_json": partial},
 						}
 						writeSSEWithCapturer(w, pc, "content_block_delta", argEvent)
 					}
@@ -449,8 +635,10 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 				lastSend = time.Now()
 			}
 		}
+
 		return false
 	}
+
 
 	if firstLine != "" {
 		normalizedLine, hasCombinedDone := splitCombinedDoneFrame(firstLine)
@@ -459,6 +647,9 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 			reader = prependDoneFrame(reader)
 		}
 		if processLine(firstLine) {
+			if midStreamHalt != nil {
+				return *midStreamHalt
+			}
 			outcome = integrityBreachOutcome(capture, 0)
 			return outcome
 		}
@@ -536,6 +727,9 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 			continue
 		}
 		if processLine(line) {
+			if midStreamHalt != nil {
+				return *midStreamHalt
+			}
 			outcome = integrityBreachOutcome(capture, 0)
 			return outcome
 		}
@@ -567,10 +761,33 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 		case textAccBuffering:
 			flushBufferedText(w, flusher, pc, bufferedText.String(), capture)
 		case textAccPassthrough:
-			writeSSEWithCapturer(w, pc, "content_block_stop", map[string]any{"type": "content_block_stop", "index": 0})
-			if flusher != nil {
-				flusher.Flush()
+			// When the Q2 tool-call state machine already closed the implicit
+			// text block (index 0) before opening the first tool_use block,
+			// don't emit a duplicate stop here.
+			if textBlockOpen {
+				writeSSEWithCapturer(w, pc, "content_block_stop", map[string]any{"type": "content_block_stop", "index": 0})
+				textBlockOpen = false
+				if flusher != nil {
+					flusher.Flush()
+				}
 			}
+		}
+
+		// Anthropic requires content_block_stop for every opened tool_use
+		// block before the message_delta; close any still-open tool blocks
+		// in first-open order.
+		for _, openaiIdx := range toolOrder {
+			st := toolBlocks[openaiIdx]
+			if st != nil && st.started && !st.stopped {
+				writeSSEWithCapturer(w, pc, "content_block_stop", map[string]any{
+					"type":  "content_block_stop",
+					"index": st.anthropicIdx,
+				})
+				st.stopped = true
+			}
+		}
+		if len(toolOrder) > 0 {
+			finalFinishReason = "tool_calls"
 		}
 
 		// Content delivery above may have committed the gate. A detached client
