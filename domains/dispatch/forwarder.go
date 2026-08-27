@@ -25,16 +25,22 @@ import (
 // replacement Governor.
 type credForwarder struct {
 	cred      CredentialRef
-	queue     chan *QueuedRequest
+	queue     atomic.Pointer[chan *QueuedRequest]
 	handoffMu sync.Mutex
 	depth     atomic.Int64
-	limit     int64
+	limit     atomic.Int64
 	gov       Governor
 	govMu     sync.RWMutex // protects cf.gov (Stage F: hot-swap by ApplyPolicy)
 	pipe      *Pipeline
 	ctx       context.Context
 	cancel    context.CancelFunc
 	wg        sync.WaitGroup
+	// wakeCh unparks the loop goroutine when the channel is swapped by
+	// replaceDepth; the loop re-reads *cf.queue on its next select entry.
+	wakeCh chan struct{}
+	// pendingOld holds the channel displaced by the most recent grow, so a
+	// request that raced the swap and landed in it can be reclaimed.
+	pendingOld atomic.Pointer[chan *QueuedRequest]
 }
 
 func newCredForwarder(cred CredentialRef, queueDepth int, pipe *Pipeline) *credForwarder {
@@ -42,13 +48,15 @@ func newCredForwarder(cred CredentialRef, queueDepth int, pipe *Pipeline) *credF
 	gov := buildForwarderGovernor(pipe, cred)
 	cf := &credForwarder{
 		cred:   cred,
-		queue:  make(chan *QueuedRequest, queueDepth),
-		limit:  int64(queueDepth),
 		gov:    gov,
 		pipe:   pipe,
 		ctx:    ctx,
 		cancel: cancel,
+		wakeCh: make(chan struct{}),
 	}
+	cf.limit.Store(int64(queueDepth))
+	q := make(chan *QueuedRequest, queueDepth)
+	cf.queue.Store(&q)
 	// Track the loop goroutine in the pipeline-wide WaitGroup so Stop() waits
 	// for in-flight forwards to finish (concurrency audit 2026-08-13 D3).
 	// Safe against Stop's wg.Wait: newCredForwarder is only reached via
@@ -99,7 +107,7 @@ func (cf *credForwarder) replaceGov(g Governor) {
 func (cf *credForwarder) tryReserve() bool {
 	for {
 		cur := cf.depth.Load()
-		if cf.limit > 0 && cur >= cf.limit {
+		if cf.limit.Load() > 0 && cur >= cf.limit.Load() {
 			return false
 		}
 		if cf.depth.CompareAndSwap(cur, cur+1) {
@@ -114,13 +122,13 @@ func (cf *credForwarder) CurrentDepth() int64 {
 
 // Limit returns the configured bounded queue capacity.
 func (cf *credForwarder) Limit() int64 {
-	return cf.limit
+	return cf.limit.Load()
 }
 
 // HasCapacity reports whether another item can be reserved. tryReserve remains
 // the atomic admission gate; this helper is only an early routing hint.
 func (cf *credForwarder) HasCapacity() bool {
-	return cf.limit <= 0 || cf.depth.Load() < cf.limit
+	return cf.limit.Load() <= 0 || cf.depth.Load() < cf.limit.Load()
 }
 
 // loop drains the Tier-2 queue. Governor admission happens in this owner
@@ -133,7 +141,7 @@ func (cf *credForwarder) loop() {
 	defer cf.wg.Wait()
 	for {
 		select {
-		case qr, ok := <-cf.queue:
+		case qr, ok := <-*cf.queue.Load():
 			if !ok {
 				return
 			}
@@ -155,6 +163,12 @@ func (cf *credForwarder) loop() {
 			cf.pipe.observeQueue(QueueObservation{Kind: QueueCredentialDepth, CredentialID: cf.cred.CredentialID, Mode: cf.cred.ConcurrencyMode, Depth: depth, Delta: -1, AbsoluteDepth: true})
 			cf.wg.Add(1)
 			go cf.attempt(qr, gov)
+		case <-cf.wakeCh:
+			// replaceDepth swapped the channel while we were parked on the old
+			// one. Reclaim any request that raced the swap into the displaced
+			// channel, then re-enter select to read the new channel.
+			cf.reclaimPendingOld()
+			continue
 		case <-cf.ctx.Done():
 			// Drain remaining queued requests and complete them with
 			// ErrShutdown so their Submit callers don't block forever on
@@ -170,9 +184,10 @@ func (cf *credForwarder) loop() {
 // drainAndComplete non-blockingly drains cf.queue, completing every
 // still-buffered request with ErrShutdown. Called once on shutdown.
 func (cf *credForwarder) drainAndComplete() {
+	cf.reclaimPendingOld()
 	for {
 		select {
-		case qr, ok := <-cf.queue:
+		case qr, ok := <-*cf.queue.Load():
 			if !ok {
 				return
 			}
@@ -182,6 +197,87 @@ func (cf *credForwarder) drainAndComplete() {
 			metricCredQueueDepth.WithLabelValues(itoa(cf.cred.CredentialID), cf.cred.ConcurrencyMode).Dec()
 			cf.pipe.observeQueue(QueueObservation{Kind: QueueCredentialDepth, CredentialID: cf.cred.CredentialID, Mode: cf.cred.ConcurrencyMode, Depth: depth, Delta: -1, AbsoluteDepth: true})
 			cf.pipe.complete(qr, ForwardOutcome{Err: ErrShutdown})
+		default:
+			return
+		}
+	}
+}
+
+// replaceDepth hot-reloads the forwarder's bounded queue depth without
+// rebuilding the loop goroutine. The publisher's catch-up query already fires
+// a policy revision when max_queue_depth changes; this is the missing consumer
+// side (Stage F residual item).
+//
+// Shrink (newDepth <= current buffer capacity): the channel is left in place
+// and only the admission limit (cf.limit, consulted by tryReserve) moves. An
+// oversized buffer is harmless because reservations are already capped at
+// cf.limit, so no in-flight request is bounced.
+//
+// Grow (newDepth > current buffer capacity): a larger channel is allocated and
+// any still-buffered requests are moved into it so none are dropped. The loop
+// goroutine re-reads *cf.queue on every select entry, so after the swap it
+// drains the new channel; pendingOld reclaims the micro-race where a producer
+// landed in the old channel after the swap.
+func (cf *credForwarder) replaceDepth(newDepth int) {
+	if newDepth <= 0 {
+		newDepth = 1
+	}
+	if newDepth <= cap(*cf.queue.Load()) {
+		// Shrink / no-op: keep the existing channel; only the admission limit
+		// moves. An oversized buffer is harmless — reservations are capped at
+		// cf.limit, so no in-flight request is bounced.
+		cf.limit.Store(int64(newDepth))
+		return
+	}
+	old := cf.queue.Load()
+	nq := make(chan *QueuedRequest, newDepth)
+	// Move buffered (not-yet-forwarded) requests into the larger channel so a
+	// grow never drops an in-flight request. All fit because newDepth > cap(old).
+	for {
+		select {
+		case qr := <-*old:
+			nq <- qr
+		default:
+			goto swapped
+		}
+	}
+swapped:
+	cf.queue.Store(&nq)
+	cf.limit.Store(int64(newDepth))
+	cf.pendingOld.Store(old)
+	// Wake the loop if it is parked on the old channel; the loop re-reads
+	// *cf.queue on its next select entry regardless, so a dropped send here
+	// only adds latency, not a correctness gap.
+	select {
+	case cf.wakeCh <- struct{}{}:
+	default:
+	}
+}
+
+// reclaimPendingOld moves any request that raced a grow and landed in the
+// displaced channel into the live channel. Called from the loop (on wake) and
+// from drainAndComplete (on shutdown) so a raced request is never stranded.
+func (cf *credForwarder) reclaimPendingOld() {
+	po := cf.pendingOld.Load()
+	if po == nil {
+		return
+	}
+	cf.pendingOld.Store(nil)
+	live := cf.queue.Load()
+	for {
+		select {
+		case qr := <-*po:
+			select {
+			case *live <- qr:
+			default:
+				// Live channel unexpectedly full; route the request to failover
+				// instead of stranding it.
+				cf.pipe.releaseLaneAdmission(&qr.clusterCred)
+				depth := cf.depth.Add(-1)
+				metricCredQueueDepth.WithLabelValues(itoa(cf.cred.CredentialID), cf.cred.ConcurrencyMode).Dec()
+				cf.pipe.observeQueue(QueueObservation{Kind: QueueCredentialDepth, CredentialID: cf.cred.CredentialID, Mode: cf.cred.ConcurrencyMode, Depth: depth, Delta: -1, AbsoluteDepth: true})
+				cf.pipe.complete(qr, ForwardOutcome{Err: ErrShutdown})
+			}
 		default:
 			return
 		}
