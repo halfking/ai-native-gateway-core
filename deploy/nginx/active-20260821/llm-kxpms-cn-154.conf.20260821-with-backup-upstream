@@ -55,6 +55,14 @@ server {
     access_log /var/log/nginx/llm-kxpms-cn-access.log;
     error_log /var/log/nginx/llm-kxpms-cn-error.log;
 
+    # 2026-08-27: Enable gzip for SSE live-stream (P1 bandwidth optimization)
+    gzip on;
+    gzip_types text/plain text/css application/json application/javascript text/xml application/xml application/xml+rss text/javascript text/event-stream;
+    gzip_comp_level 6;
+    gzip_vary on;
+    gzip_min_length 1024;
+    gzip_proxied any;
+
     # 2026-07-23: Gateway 菜单配置静态文件（供 Maintain 动态加载）
     location = /menu-config.json {
         alias /opt/llm-gateway-go/releases/1325-6d1ea6f5/web/menu-config.json;
