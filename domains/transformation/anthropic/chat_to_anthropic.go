@@ -50,9 +50,16 @@ func ConvertChatRequestToAnthropic(in []byte) ([]byte, error) {
 
 	var systemContent string
 	var anthropicMsgs []any
-	if msgs, ok := src["messages"].([]any); ok {
+	if rawMessages, exists := src["messages"]; exists {
+		msgs, ok := rawMessages.([]any)
+		if !ok {
+			return nil, fmt.Errorf("invalid OpenAI messages: expected array")
+		}
 		for _, msg := range msgs {
-			msgMap, _ := msg.(map[string]any)
+			msgMap, ok := msg.(map[string]any)
+			if !ok {
+				return nil, fmt.Errorf("invalid OpenAI message: expected object")
+			}
 			role, _ := msgMap["role"].(string)
 			if role == "system" {
 				content, err := chatSystemContent(msgMap["content"])
@@ -74,10 +81,17 @@ func ConvertChatRequestToAnthropic(in []byte) ([]byte, error) {
 	}
 	out["messages"] = anthropicMsgs
 
-	if tools, ok := src["tools"].([]any); ok {
+	if rawTools, exists := src["tools"]; exists {
+		tools, ok := rawTools.([]any)
+		if !ok {
+			return nil, fmt.Errorf("invalid OpenAI tools: expected array")
+		}
 		anthTools := make([]any, 0, len(tools))
 		for _, tool := range tools {
-			toolMap, _ := tool.(map[string]any)
+			toolMap, ok := tool.(map[string]any)
+			if !ok {
+				return nil, fmt.Errorf("invalid OpenAI tool: expected object")
+			}
 			if anthropicTool, ok := openAIToolToAnthropic(toolMap); ok {
 				anthTools = append(anthTools, anthropicTool)
 				continue
@@ -174,7 +188,10 @@ func convertChatMessageToAnthropic(msg map[string]any) (map[string]any, error) {
 			existing = []any{}
 		}
 		for _, toolCall := range toolCalls {
-			toolCallMap, _ := toolCall.(map[string]any)
+			toolCallMap, ok := toolCall.(map[string]any)
+			if !ok {
+				return nil, fmt.Errorf("invalid tool call: expected object")
+			}
 			function, _ := toolCallMap["function"].(map[string]any)
 			if function == nil {
 				return nil, fmt.Errorf("invalid tool call: missing function (tool_call_id=%v)", toolCallMap["id"])

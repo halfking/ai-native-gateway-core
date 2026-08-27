@@ -163,7 +163,7 @@ func expectedCast(col string) string {
 	case "quality_flags":
 		return "::text[]"
 	case "auto_decision", "compression_meta", "outbound_msg_hashes", "quality_fix_actions",
-		"tool_calls", "attachments", "routing_attempts", "discard_events":
+		"tool_calls", "attachments", "routing_attempts", "discard_events", "request_body", "response_body", "outbound_body":
 		return "::text::jsonb"
 	default:
 		return ""
@@ -295,7 +295,8 @@ func expectedArgIdent(col string) string {
 		"attachments": "Attachments", "client_ip": "ClientIP", "client_forwarded_for": "ClientForwardedFor",
 		"origin_stage": "OriginStage", "origin_actor": "OriginActor", "routing_attempts": "RoutingAttempts",
 		"routing_summary": "RoutingSummary", "agent_name": "AgentName", "agent_type": "AgentType",
-		"client_protocol": "ClientProtocol", "virtual_client_id": "VirtualClientID",
+		"client_protocol": "ClientProtocol", "upstream_protocol": "UpstreamProtocol",
+		"protocol_conversion": "ProtocolConversion", "virtual_client_id": "VirtualClientID",
 		"discard_events": "DiscardEvents", "customer_id": "CustomerID",
 		"request_class": "RequestClass", "due_at": "DueAt",
 	}
