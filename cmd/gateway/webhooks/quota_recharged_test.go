@@ -123,6 +123,24 @@ func TestQuotaRechargedHandler_ValidSignature_Accepted(t *testing.T) {
 	}
 }
 
+func TestSecretSource_HexSecret(t *testing.T) {
+	t.Setenv(QuotaRechargedSecretEnv, hex.EncodeToString(testSecret))
+	if got := SecretSource(); !bytes.Equal(got, testSecret) {
+		t.Fatalf("hex secret decoded as %q, want %q", got, testSecret)
+	}
+}
+
+func TestQuotaRechargedHandler_MissingVendor(t *testing.T) {
+	h := newTestHandler(func(int, string) {
+		t.Fatal("OnQuotaRecharged must NOT be called when vendor is missing")
+	})
+	body := makeBody(t, func(b *QuotaRechargedBody) { b.Vendor = "" })
+	rr := doRequest(h, body, signForTest(body))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rr.Code)
+	}
+}
+
 func TestQuotaRechargedHandler_InvalidSignature_Unauthorized(t *testing.T) {
 	h := newTestHandler(func(int, string) {
 		t.Fatal("OnQuotaRecharged must NOT be called on signature mismatch")
@@ -253,18 +271,17 @@ func TestQuotaRechargedHandler_GET_MethodNotAllowed(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// body size 限制（灌 2 MB body 必须在签名验证之前被拒绝，避免无界读取）。
+// body size 限制：超限 body 必须明确拒绝，不能先截断再验签。
 // ─────────────────────────────────────────────────────────────────────
 
 func TestQuotaRechargedHandler_BodySizeLimit(t *testing.T) {
 	h := newTestHandler(func(int, string) {
-		t.Fatal("OnQuotaRecharged must NOT be called when signature does not match oversized body")
+		t.Fatal("OnQuotaRecharged must NOT be called for oversized body")
 	})
-	// 2 MB 垃圾 body 超过 1 MB 限制，必须直接返回 413。
 	huge := bytes.Repeat([]byte("x"), 2<<20)
 	rr := doRequest(h, huge, signForTest(huge))
 	if rr.Code != http.StatusRequestEntityTooLarge {
-		t.Fatalf("expected 413 for oversized request body, got %d", rr.Code)
+		t.Fatalf("expected 413 for oversized body, got %d", rr.Code)
 	}
 }
 

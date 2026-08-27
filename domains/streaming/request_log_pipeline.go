@@ -50,9 +50,16 @@ type RequestLogContext struct {
 	// UUID that is the primary audit key) so client retries that reuse
 	// the same id do not collapse into one row.
 	ClientRequestID string
-	StartTime       time.Time
-	Request         *http.Request
-	Session         *session.Session
+	// RequestClass / DueAt carry the V6-W1.6 R8 request class
+	// (immediate|scheduled, from X-Gw-Due-At) so BOTH the initial
+	// request_logs_hot row and the completion UPDATE persist it
+	// (migration 608). Set next to parseDispatchDueAt in each protocol
+	// handler; empty RequestClass or zero DueAt means immediate.
+	RequestClass string
+	DueAt        time.Time
+	StartTime    time.Time
+	Request      *http.Request
+	Session      *session.Session
 
 	// ProvisionalSessionID is the auto-generated session id that the
 	// handler attaches to early-failure branches via
@@ -989,6 +996,11 @@ func (c *RequestLogContext) buildEntry(errCode, errMessage string, providerID, c
 	// persisted row so operators can SQL JOIN auto-title rows back to their
 	// parent user request.
 	applyParentCorrelationFields(reqLog, c)
+	// V6-W1.6 R8 (migration 608): 完成态 UPDATE 携带请求类型（幂等）。
+	if reqLog.RequestClass == nil {
+		reqLog.RequestClass = requestClassPtr(c)
+		reqLog.DueAt = requestDueAtPtr(c)
+	}
 	if len(c.OutboundBody) > 0 {
 		reqLog.OutboundBody = json.RawMessage(c.OutboundBody)
 	}

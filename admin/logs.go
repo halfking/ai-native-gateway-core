@@ -81,7 +81,10 @@ type requestLogRow struct {
 	ClientProtocol *string `json:"client_protocol"`
 	ProviderModel  *string `json:"provider_model"`
 	TraceSeq       *int    `json:"trace_seq,omitempty"`
-	CreditsCharged *int64  `json:"credits_charged"`
+	// V6-W1.6 R8 (migration 608): immediate|scheduled + due time.
+	RequestClass   *string    `json:"request_class,omitempty"`
+	DueAt          *time.Time `json:"due_at,omitempty"`
+	CreditsCharged *int64     `json:"credits_charged"`
 	// v3 (2026-06-19) session-level outbound body fields.
 	OutboundBody        json.RawMessage `json:"outbound_body,omitempty"`
 	OutboundMsgCount    *int            `json:"outbound_msg_count,omitempty"`
@@ -221,8 +224,11 @@ const requestLogsListCols = `
 	-- 2026-08-06: session title. LEFT JOIN session_titles keyed by
 	-- (task_id, scoped_session_id) where scoped_session_id falls back to ''
 	-- when the request has no gw_session_id, matching the upsert path.
-	st.title AS session_title
-`
+		st.title AS session_title,
+		-- V6-W1.6 R8 (migration 608): request class + scheduled due time.
+		rl.request_class,
+		rl.due_at
+	`
 
 // requestLogsDetailCols extends the list columns with the JSONB blobs
 // that remain on request_logs after body payloads moved to
@@ -392,6 +398,9 @@ func scanRequestListRow(rows interface {
 		&l.AttachmentCount,
 		// 2026-08-06: session_titles.title join (see requestLogsJoins).
 		&l.SessionTitle,
+		// V6-W1.6 R8 (migration 608): request class + due time (LAST fixed
+		// columns; the conditional trace_seq append below stays after them).
+		&l.RequestClass, &l.DueAt,
 	}
 	if withTraceSeq {
 		dest = append(dest, &l.TraceSeq)
@@ -459,6 +468,15 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 	if v := queryIntPtr(r, "provider_id"); v != nil {
 		addFilter("rl.provider_id = $%d", *v)
 	}
+	requestClass := strings.TrimSpace(queryString(r, "request_class"))
+	if requestClass != "" {
+		if requestClass != "immediate" && requestClass != "scheduled" {
+			writeError(w, http.StatusBadRequest, "request_class must be 'immediate' or 'scheduled'")
+			return
+		}
+		addFilter("rl.request_class = $%d", requestClass)
+	}
+
 	if v := queryIntPtr(r, "credential_id"); v != nil {
 		addFilter("rl.credential_id = $%d", *v)
 	}
@@ -875,6 +893,7 @@ func (h *Handler) getLog(w http.ResponseWriter, r *http.Request) {
 		&detail.AgentType,      // 2026-07-27: 客户端分组
 		&detail.ClientProtocol, // 2026-07-27: 客户端协议
 		&detail.ProviderModel,
+		&detail.RequestClass, &detail.DueAt,
 		&detail.CreditsCharged,
 		// v3 session-level outbound body summary fields (must mirror
 		// requestLogsDetailCols order: list summary fields FIRST, then the

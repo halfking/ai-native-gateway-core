@@ -67,3 +67,46 @@ func normalizeDueAt(t time.Time) time.Time {
 	}
 	return t
 }
+
+// Request-class string mirrors of dispatch.RequestClassImmediate/Scheduled.
+// Kept local so this file has no dispatch dependency; dispatch pins its own
+// copies via journal_mirror_test.
+const (
+	requestClassImmediate = "immediate"
+	requestClassScheduled = "scheduled"
+)
+
+// applyRequestClassToLogCtx stamps the parsed X-Gw-Due-At onto the log
+// context so the initial request_logs row AND the completion UPDATE both
+// persist the class (migration 608). Called next to parseDispatchDueAt in
+// every protocol handler.
+func applyRequestClassToLogCtx(logCtx *RequestLogContext, dueAt time.Time) {
+	if logCtx == nil {
+		return
+	}
+	if dueAt.IsZero() {
+		logCtx.RequestClass = requestClassImmediate
+		logCtx.DueAt = time.Time{}
+		return
+	}
+	logCtx.RequestClass = requestClassScheduled
+	logCtx.DueAt = dueAt
+}
+
+// requestClassPtr / requestDueAtPtr adapt the log context onto a telemetry
+// entry (pointer fields; nil class falls back to the column default).
+func requestClassPtr(logCtx *RequestLogContext) *string {
+	if logCtx == nil || logCtx.RequestClass == "" {
+		return nil
+	}
+	c := logCtx.RequestClass
+	return &c
+}
+
+func requestDueAtPtr(logCtx *RequestLogContext) *time.Time {
+	if logCtx == nil || logCtx.DueAt.IsZero() {
+		return nil
+	}
+	d := logCtx.DueAt
+	return &d
+}
