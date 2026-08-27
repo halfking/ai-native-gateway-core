@@ -165,6 +165,20 @@ server {
     # locations (= /healthz, = /menu-config.json, = /api/admin/live-stream,
     # ~ ^/v1/(chat/completions|messages), /api/v1/ops/) keep matching first,
     # so behavior is preserved for routes that already work.
+    # 2026-08-27: static-asset long cache (hash-named SPA chunks; republishing
+    # changes filenames so a long TTL is safe). Served without the UPGRADING
+    # marker gate: the upgrade page is self-contained and does not fetch these.
+    # nosniff is restated because add_header at this level drops server-level
+    # header inheritance.
+    location ~ ^/(assets|logo-.*\.(png|svg)|favicon\.(png|ico)|donation-qr\.png)(/|$) {
+        root /opt/llm-gateway-go/current/web;
+        expires 7d;
+        add_header Cache-Control "public, immutable";
+        add_header X-Content-Type-Options nosniff always;
+        access_log off;
+        autoindex off;
+    }
+
     location / {
         if (-f /opt/llm-gateway-go/maintenance/UPGRADING) { return 503; }
         root /opt/llm-gateway-go/current/web;

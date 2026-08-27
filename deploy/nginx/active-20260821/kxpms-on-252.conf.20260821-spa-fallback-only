@@ -330,6 +330,23 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 
+    # 2026-08-27: split static-asset cache policy for /maintain/ — assets/
+    # chunks are hash-named (immutable, 30d); index.html/SPA fallback stays
+    # no-cache so users always get the latest entry point.
+    location ^~ /maintain/assets/ {
+        root /opt/ai-native-maintain/web;
+        expires 30d;
+        add_header Cache-Control "public, immutable";
+        add_header X-Content-Type-Options nosniff always;
+        access_log off;
+    }
+    location = /maintain/favicon.png {
+        root /opt/ai-native-maintain/web;
+        expires 30d;
+        add_header Cache-Control "public, immutable";
+        add_header X-Content-Type-Options nosniff always;
+        access_log off;
+    }
     location ^~ /maintain/ {
         root /opt/ai-native-maintain/web;
         try_files $uri $uri/ /maintain/index.html;
