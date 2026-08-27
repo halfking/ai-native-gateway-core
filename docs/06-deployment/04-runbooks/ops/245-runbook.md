@@ -183,7 +183,22 @@ ssh 245 'redis-cli -h "$COMMON_REDIS_HOST_252" -p "$COMMON_REDIS_PORT_252" dbsiz
   - DB migration 失败 (schema 漂移)
   - 远端 healthz 30s 没回 (新代码起不来)
 
-### 9.4 "DB 太慢 / connection 池满"
+### 9.4 "deploy 一启动就报 `local lock held`"
+- 报错形如: `ERROR: local lock held at /var/folders/.../T/kx-llm-gateway-deploy.lock`，下面打印持有者元数据 (target/source_user/source_host/pid/started_at/commit/version)。
+- 本地锁是 repo 级全局互斥 (`scripts/deploy-lib/lock.sh`): 154 + 245 共享 `web/dist` 和 `releases/`, 任意一边在跑，另一边必须等。设计上是 fail-fast，不是 bug。
+- 先确认是不是真有另一个 deploy 在跑: 看元数据里的 `pid` 和 `started_at`。
+  - **pid 还活着** → 那个 deploy 还在跑，别解锁，等它自然完成。
+  - **pid 已死 / 是另一个 repo checkout 的陈旧锁** → 用 `--force-unlock`:
+    ```bash
+    bash scripts/deploy-245.sh --force-unlock
+    # 或单独用：
+    bash scripts/deploy-lib/unlock-local.sh --force
+    ```
+  - 默认模式 (无 `--force`) 只是报告，不删；只有加了 `--force` 才会真的 `rm -rf`，并在删之前对仍活着的 holder 发 SIGTERM → SIGKILL。
+- 锁按 `${TMPDIR}` 派生，所以**同一台机器上多个 repo clone 共享一把本地锁** —— 这是预期行为。
+- 远端锁 (`/var/lib/llm-gateway-go/deploy.lock`) 是另一回事，不在本节范围。
+
+### 9.5 "DB 太慢 / connection 池满"
 - `docker exec pg-252-pg17 psql -U llm_gateway -d llm_gateway -c "SELECT count(*), state FROM pg_stat_activity WHERE datname='llm_gateway' GROUP BY state;"`
 - 若 active 持续 > 50，看 `pg_stat_activity` 中长 query
 - 看 `pg_stat_statements` top 5 slow query, 找 idempotent retry / N+1 pattern
