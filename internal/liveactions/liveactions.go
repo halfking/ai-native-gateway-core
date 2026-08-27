@@ -117,8 +117,11 @@ const (
 	// DefaultBufferSize is the in-process emit buffer. When full, events are
 	// dropped + counted (never block the hot path).
 	DefaultBufferSize = 4096
-	// redisWriteTimeout bounds one worker-side LPUSH+LTRIM pipeline.
+	// redisWriteTimeout bounds one worker-side LPUSH+LTRIM+EXPIRE pipeline.
 	redisWriteTimeout = 2 * time.Second
+	// redisKeyTTL bounds the action replay queue when the gateway is idle.
+	// Each successful write renews it so active dashboards retain their replay window.
+	redisKeyTTL = 24 * time.Hour
 )
 
 // redisMaxLen is the runtime LTRIM bound (defaults to RedisMaxLen; a var so
@@ -342,6 +345,7 @@ func (e *Emitter) write(ev ActionEvent) {
 	pipe.LPush(ctx, RedisKey, string(data))
 	// Keep the newest RedisMaxLen entries at the head (0..redisMaxLen-1).
 	pipe.LTrim(ctx, RedisKey, 0, redisMaxLen-1)
+	pipe.Expire(ctx, RedisKey, redisKeyTTL)
 	if _, err := pipe.Exec(ctx); err != nil {
 		// 静默降级：计数 + debug 日志，不阻塞、不上抛（Redis 不可用时请求路径零感知）。
 		e.redisFailures.Add(1)

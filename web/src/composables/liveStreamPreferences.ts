@@ -155,9 +155,10 @@ function normalize(raw: unknown): LiveStreamPreferences {
     : {}
 
   const requestTypes = stringList(filters.requestTypes, { allowed: REQUEST_TYPE_VALUES }) as LiveStreamRequestType[]
+  const rawGroupBy = value.groupBy === 'vendor' ? 'provider' : value.groupBy
   return {
     version: 1,
-    groupBy: isOneOf(value.groupBy, GROUP_BY_VALUES) ? value.groupBy : defaults.groupBy,
+    groupBy: isOneOf(rawGroupBy, GROUP_BY_VALUES) ? rawGroupBy : defaults.groupBy,
     mode: isOneOf(value.mode, MODE_VALUES) ? value.mode : defaults.mode,
     selectedLegends: stringList(value.selectedLegends),
     filters: {

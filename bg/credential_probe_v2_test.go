@@ -155,6 +155,8 @@ func TestWriteHealth_ClosesBindingFailuresWithoutCredentialWideWrite(t *testing.
 		"c.restoreBindingOnProbeSuccess(execCtx, credID, pr.HealthProbeModel)",
 		"available := pr.AvailabilityState == \"ready\" && !pr.BindingOnly",
 		"state = \"model_binding\"",
+		"modelAvailable := available",
+		"if pr.BindingOnly {",
 		"modelAvailable = model != pr.HealthProbeModel",
 		"Available:     modelAvailable",
 		"UPDATE credential_model_bindings cmb",
