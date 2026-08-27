@@ -147,7 +147,7 @@ export interface LiveStreamLegendItem {
 
 export interface LiveStreamSnapshot {
   summary: LiveStreamStats
-  detail_dimensions: Record<'credential' | 'vendor' | 'provider' | 'model', LiveStreamLane[]>
+  detail_dimensions?: Record<'credential' | 'vendor' | 'provider' | 'model', LiveStreamLane[]>
   dimensions: Record<'credential' | 'vendor' | 'provider' | 'model', LiveStreamLane[]>
   dimension_legends: Record<'credential' | 'vendor' | 'provider' | 'model', LiveStreamLegendItem[]>
   status_legends: LiveStreamLegendItem[]
@@ -578,9 +578,12 @@ function applyStageToRequest(requestId: string, action: ActionEvent) {
       const tile = lane.requests.find((item) => item.request_id === requestId)
       if (tile) Object.assign(tile, patch)
     }
-    for (const lane of snapshot.detail_dimensions[dim] || []) {
-      const tile = lane.requests.find((item) => item.request_id === requestId)
-      if (tile) Object.assign(tile, patch)
+    // Optional backward compatibility: detail_dimensions may not exist in new snapshots
+    if (snapshot.detail_dimensions?.[dim]) {
+      for (const lane of snapshot.detail_dimensions[dim]) {
+        const tile = lane.requests.find((item) => item.request_id === requestId)
+        if (tile) Object.assign(tile, patch)
+      }
     }
   }
 }
@@ -1006,8 +1009,11 @@ function mergeSnapshotFromServer(incoming: LiveStreamSnapshot) {
       for (const lane of incoming.dimensions[dim] || []) {
         normalizeLaneTiles(lane)
       }
-      for (const lane of incoming.detail_dimensions[dim] || []) {
-        normalizeLaneTiles(lane)
+      // Optional backward compatibility: detail_dimensions may not exist
+      if (incoming.detail_dimensions?.[dim]) {
+        for (const lane of incoming.detail_dimensions[dim]) {
+          normalizeLaneTiles(lane)
+        }
       }
     }
     liveStreamState.snapshot = incoming
@@ -1021,7 +1027,9 @@ function mergeSnapshotFromServer(incoming: LiveStreamSnapshot) {
       if (!s.dimensions[dim]) s.dimensions[dim] = []
       mergeLanesById(s.dimensions[dim], incoming.dimensions[dim])
     }
-    if (incoming.detail_dimensions[dim]) {
+    // Optional backward compatibility: detail_dimensions may not exist in new snapshots
+    if (incoming.detail_dimensions?.[dim]) {
+      if (!s.detail_dimensions) s.detail_dimensions = { credential: [], vendor: [], provider: [], model: [] }
       if (!s.detail_dimensions[dim]) s.detail_dimensions[dim] = []
       mergeLanesById(s.detail_dimensions[dim], incoming.detail_dimensions[dim])
     }
@@ -1105,7 +1113,6 @@ function mergeDelta(delta: LiveStreamDelta) {
   if (!liveStreamState.snapshot) {
     liveStreamState.snapshot = {
       summary: delta.summary,
-      detail_dimensions: { credential: [], vendor: [], provider: [], model: [] },
       dimensions: { credential: [], vendor: [], provider: [], model: [] },
       dimension_legends: delta.dimension_legends || { credential: [], vendor: [], provider: [], model: [] },
       status_legends: delta.status_legends,
@@ -1120,8 +1127,10 @@ function mergeDelta(delta: LiveStreamDelta) {
       // backend rank changes do not reshuffle the whole swim-lane row.
       if (!s.dimensions[dim]) s.dimensions[dim] = []
       mergeLanesById(s.dimensions[dim], delta.changed_lanes[dim])
-      if (!s.detail_dimensions[dim]) s.detail_dimensions[dim] = []
-      mergeLanesById(s.detail_dimensions[dim], delta.changed_lanes[dim])
+      // Optional backward compatibility: maintain detail_dimensions if it exists
+      if (s.detail_dimensions?.[dim]) {
+        mergeLanesById(s.detail_dimensions[dim], delta.changed_lanes[dim])
+      }
     }
     if (delta.dimension_legends && delta.dimension_legends[dim]) {
       if (!s.dimension_legends[dim]) s.dimension_legends[dim] = []
