@@ -7,11 +7,11 @@ import (
 )
 
 func TestRequestClassMigrationPreservesAndRestoresViewWrapper(t *testing.T) {
-	up, err := os.ReadFile("../../../../sql/migrations/startup/608_request_class_due_at.sql")
+	up, err := os.ReadFile("../../../../sql/migrations/startup/610_request_class_due_at.sql")
 	if err != nil {
 		t.Fatalf("read up migration: %v", err)
 	}
-	down, err := os.ReadFile("../../../../sql/migrations/startup/608_request_class_due_at.down.sql")
+	down, err := os.ReadFile("../../../../sql/migrations/startup/610_request_class_due_at.down.sql")
 	if err != nil {
 		t.Fatalf("read down migration: %v", err)
 	}
