@@ -1209,7 +1209,8 @@ func main() {
 		routingExec = executors.NewExecutor(
 			router, cm, lim, pools, upClient,
 			norm.NormalizeChunk,
-			func(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, catalogCode string, normFunc executors.NormalizerFunc, capture *audit.StreamCapture, toolsRequested bool) executors.StreamOutcome {
+			// P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
+			func(ctx context.Context, w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, catalogCode string, normFunc executors.NormalizerFunc, capture *audit.StreamCapture, toolsRequested bool) executors.StreamOutcome {
 				tenantID := extractTenantIDFromUpstreamResp(resp)
 				var pc *streaming.PendingCapturer
 				if pendingStore != nil && streaming.ClientHasSessionID(w, resp) {
@@ -1229,7 +1230,7 @@ func main() {
 					Semantic:  routingExec.SemanticAnalyzer,
 				}
 				outcome := streaming.StreamChatWithPendingCaptureAndDiagnostics(
-					w, resp, clientModel, outboundModel, norm, capture, toolsRequested, stripFn, pc, diagnostics,
+					ctx, w, resp, clientModel, outboundModel, norm, capture, toolsRequested, stripFn, pc, diagnostics,
 				)
 				saveCapturedPending(pendingStore, pc, resp, tenantID)
 				return outcome
@@ -1239,7 +1240,9 @@ func main() {
 		routingExec.XMLCoerceNonStream = streaming.CoerceXMLToolCallsInChatResponse
 		routingExec.QualityProcessNonStream = streaming.WrapQualityProcessNonStream()
 		routingExec.QualitySetMode = streaming.WrapSetQualityFixModeOnContext()
+		// P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
 		routingExec.AnthropicPassthroughStream = func(
+			ctx context.Context,
 			w http.ResponseWriter,
 			resp *http.Response,
 			clientModel, outboundModel, requestID string,
@@ -1257,7 +1260,7 @@ func main() {
 				Anomaly:   routingExec.AnomalyReporter,
 				Semantic:  routingExec.SemanticAnalyzer,
 			}
-			outcome := streaming.StreamAnthropicPassthroughWithDiagnostics(w, resp, clientModel, outboundModel, requestID, cap, pc, diagnostics)
+			outcome := streaming.StreamAnthropicPassthroughWithDiagnostics(ctx, w, resp, clientModel, outboundModel, requestID, cap, pc, diagnostics)
 			saveCapturedPending(pendingStore, pc, resp, tenantID)
 			return outcome
 		}
@@ -1359,7 +1362,9 @@ func main() {
 		}
 
 		// Q3 streaming
+		// P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
 		routingExec.AnthropicToOpenAIStream = func(
+			ctx context.Context,
 			w http.ResponseWriter,
 			resp *http.Response,
 			clientModel, outboundModel, requestID string,
@@ -1377,7 +1382,7 @@ func main() {
 				Anomaly:   routingExec.AnomalyReporter,
 				Semantic:  routingExec.SemanticAnalyzer,
 			}
-			outcome := streaming.StreamAnthropicSSEToOpenAIWithDiagnostics(w, resp, clientModel, outboundModel, requestID, cap, pc, diagnostics)
+			outcome := streaming.StreamAnthropicSSEToOpenAIWithDiagnostics(ctx, w, resp, clientModel, outboundModel, requestID, cap, pc, diagnostics)
 			saveCapturedPending(pendingStore, pc, resp, tenantID)
 			return outcome
 		}
@@ -1388,7 +1393,9 @@ func main() {
 		// Pre-fix, the executor wrote the raw OpenAI body / SSE bytes
 		// back to the Anthropic client.
 		routingExec.ChatResponseToAnthropic = streaming.ConvertChatResponseToAnthropic
+		// P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
 		routingExec.OpenAIToAnthropicStream = func(
+			ctx context.Context,
 			w http.ResponseWriter,
 			resp *http.Response,
 			clientModel, outboundModel, requestID string,
@@ -1406,14 +1413,16 @@ func main() {
 				Anomaly:   routingExec.AnomalyReporter,
 				Semantic:  routingExec.SemanticAnalyzer,
 			}
-			outcome := streaming.StreamOpenAIToAnthropicSSEWithDiagnostics(w, resp, clientModel, outboundModel, requestID, cap, pc, diagnostics)
+			outcome := streaming.StreamOpenAIToAnthropicSSEWithDiagnostics(ctx, w, resp, clientModel, outboundModel, requestID, cap, pc, diagnostics)
 			saveCapturedPending(pendingStore, pc, resp, tenantID)
 			return outcome
 		}
 		// Phase E (2026-07-01): Responses API client target. Wired only
 		// when the handler sets ClientProtocol == "openai-responses" —
 		// currently set by domains/streaming/responses.go for /v1/responses.
+		// P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
 		routingExec.AnthropicToResponsesStream = func(
+			ctx context.Context,
 			w http.ResponseWriter,
 			resp *http.Response,
 			clientModel, outboundModel, requestID string,
@@ -1431,11 +1440,13 @@ func main() {
 				Anomaly:   routingExec.AnomalyReporter,
 				Semantic:  routingExec.SemanticAnalyzer,
 			}
-			outcome := streaming.StreamAnthropicSSEToResponsesWithDiagnostics(w, resp, clientModel, outboundModel, requestID, cap, pc, diagnostics)
+			outcome := streaming.StreamAnthropicSSEToResponsesWithDiagnostics(ctx, w, resp, clientModel, outboundModel, requestID, cap, pc, diagnostics)
 			saveCapturedPending(pendingStore, pc, resp, tenantID)
 			return outcome
 		}
+		// P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
 		routingExec.OpenAIToResponsesStream = func(
+			ctx context.Context,
 			w http.ResponseWriter,
 			resp *http.Response,
 			clientModel, outboundModel, requestID string,
@@ -1453,7 +1464,7 @@ func main() {
 				Anomaly:   routingExec.AnomalyReporter,
 				Semantic:  routingExec.SemanticAnalyzer,
 			}
-			outcome := streaming.StreamOpenAIToResponsesSSEWithDiagnostics(w, resp, clientModel, outboundModel, requestID, cap, pc, diagnostics)
+			outcome := streaming.StreamOpenAIToResponsesSSEWithDiagnostics(ctx, w, resp, clientModel, outboundModel, requestID, cap, pc, diagnostics)
 			saveCapturedPending(pendingStore, pc, resp, tenantID)
 			return outcome
 		}

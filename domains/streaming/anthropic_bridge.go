@@ -102,7 +102,9 @@ func applyClientDisconnectOutcome(outcome *StreamOutcome, clientWriter *clientSt
 // a client disconnect. The capturer is finalized before return so
 // the caller can snapshot and persist it (see cmd/gateway/main.go's
 // saveCapturedPending helper). nil pc is fine.
+// P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
 func StreamAnthropicPassthrough(
+	ctx context.Context,
 	w http.ResponseWriter,
 	resp *http.Response,
 	clientModel, outboundModel, requestID string,
@@ -110,13 +112,15 @@ func StreamAnthropicPassthrough(
 	pc *pendingCapturer,
 ) (outcome StreamOutcome) {
 	return StreamAnthropicPassthroughWithDiagnostics(
-		w, resp, clientModel, outboundModel, requestID, capture, pc, nil,
+		ctx, w, resp, clientModel, outboundModel, requestID, capture, pc, nil,
 	)
 }
 
 // StreamAnthropicPassthroughWithDiagnostics forwards an Anthropic stream with
 // optional best-effort diagnostics.
+// P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
 func StreamAnthropicPassthroughWithDiagnostics(
+	ctx context.Context,
 	w http.ResponseWriter,
 	resp *http.Response,
 	clientModel, outboundModel, requestID string,
@@ -151,7 +155,8 @@ func StreamAnthropicPassthroughWithDiagnostics(
 	// error frames never reach the wire and the interruption stays
 	// transparently retryable.
 	var attemptGate *AttemptCommitGate
-	w, attemptGate = wrapAttemptWriter(w, ProtocolAnthropic)
+	// P1-2 fix (2026-08-28): Pass ctx to wrapAttemptWriter for context propagation.
+	w, attemptGate = wrapAttemptWriter(ctx, w, ProtocolAnthropic)
 	defer func() {
 		if finisher, ok := w.(interface{ Finish() error }); ok {
 			if err := finisher.Finish(); err != nil && !outcome.Interrupted {
@@ -200,12 +205,9 @@ func StreamAnthropicPassthroughWithDiagnostics(
 	}
 
 	reader := bufio.NewReaderSize(resp.Body, anthropicSSEBufSize)
-	var ctx context.Context
-	if resp.Request != nil {
-		ctx = resp.Request.Context()
-	} else {
-		ctx = context.Background()
-	}
+	// P1-2 fix (2026-08-28): ctx is now a function parameter, no need to redeclare.
+	// Use the passed ctx directly; fallback to resp.Request.Context() is no longer needed
+	// since the caller provides the authoritative context.
 	runtimeCfg := currentStreamRuntimeConfig()
 	clientWriter := newClientStreamWriter(w, flusher)
 	chunkCount := 0
@@ -572,7 +574,9 @@ func checkAnthropicModelMismatch(c *audit.StreamCapture, clientModel, outboundMo
 // payload as either a chat.completion.chunk (`choices`) or an error
 // object; leaking native Anthropic payloads causes client-side schema
 // failures.
+// P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
 func StreamAnthropicSSEToOpenAI(
+	ctx context.Context,
 	w http.ResponseWriter,
 	resp *http.Response,
 	clientModel, outboundModel, requestID string,
@@ -580,13 +584,15 @@ func StreamAnthropicSSEToOpenAI(
 	pc *pendingCapturer,
 ) (outcome StreamOutcome) {
 	return StreamAnthropicSSEToOpenAIWithDiagnostics(
-		w, resp, clientModel, outboundModel, requestID, capture, pc, nil,
+		ctx, w, resp, clientModel, outboundModel, requestID, capture, pc, nil,
 	)
 }
 
 // StreamAnthropicSSEToOpenAIWithDiagnostics converts an Anthropic stream with
 // optional best-effort diagnostics.
+// P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
 func StreamAnthropicSSEToOpenAIWithDiagnostics(
+	ctx context.Context,
 	w http.ResponseWriter,
 	resp *http.Response,
 	clientModel, outboundModel, requestID string,
@@ -623,7 +629,8 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 
 	// SR-W1: route client frames through the attempt commit gate.
 	// Disabled (default) this is the identity function — legacy wire bytes.
-	w, gate := wrapAttemptWriter(w, ProtocolOpenAIChat)
+	// P1-2 fix (2026-08-28): Pass ctx to wrapAttemptWriter for context propagation.
+	w, gate := wrapAttemptWriter(ctx, w, ProtocolOpenAIChat)
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)
@@ -659,8 +666,8 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 		chunkModel = outboundModel
 	}
 
+	// P1-2 fix (2026-08-28): ctx is now a function parameter, removed from var block.
 	var (
-		ctx                 context.Context
 		inputTokens         int
 		outputTokens        int
 		finishReason        *string

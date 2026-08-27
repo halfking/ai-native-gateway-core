@@ -15,7 +15,8 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 )
 
-func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture) (outcome StreamOutcome) {
+// P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
+func StreamResponsesSSE(ctx context.Context, w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture) (outcome StreamOutcome) {
 	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 	// Hoist gate above the panic-recovery defer so the recover closure can see
@@ -41,7 +42,7 @@ func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 	// P1-4 fix (2026-08-28): Initialize gate BEFORE any potentially-panicking code
 	// (such as currentStreamRuntimeConfig) to ensure panic recovery sees a non-nil
 	// gate when semantic output determination is needed.
-	w, gate = wrapAttemptWriter(w, ProtocolOpenAIResponses)
+	w, gate = wrapAttemptWriter(ctx, w, ProtocolOpenAIResponses)
 	runtimeCfg := currentStreamRuntimeConfig()
 
 	// SR-W1: route client frames through the attempt commit gate.
@@ -123,12 +124,7 @@ func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 	writeSSE(w, "response.content_part.added", contentPart)
 	flusher.Flush()
 
-	var ctx context.Context
-	if resp.Request != nil {
-		ctx = resp.Request.Context()
-	} else {
-		ctx = context.Background()
-	}
+	// P1-2 fix (2026-08-28): ctx is now a function parameter, removed redundant declaration.
 
 	// BUG-1 fix: hold the body closer so readNextStreamLine can close it on
 	// chunk timeout, unblocking the ReadString goroutine immediately.

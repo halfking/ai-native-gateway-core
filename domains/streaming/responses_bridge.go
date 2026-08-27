@@ -254,7 +254,9 @@ func (s *responsesScaffold) writeFinalEvents(fullText, finishReason string, inpu
 //     follow the last delta.
 //   - Accumulated usage flows into `response.completed.usage` — never
 //     emitted as a standalone event.
+// P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
 func StreamAnthropicSSEToResponses(
+	ctx context.Context,
 	w http.ResponseWriter,
 	resp *http.Response,
 	clientModel, outboundModel, requestID string,
@@ -262,13 +264,15 @@ func StreamAnthropicSSEToResponses(
 	pc *pendingCapturer,
 ) (outcome StreamOutcome) {
 	return StreamAnthropicSSEToResponsesWithDiagnostics(
-		w, resp, clientModel, outboundModel, requestID, capture, pc, nil,
+		ctx, w, resp, clientModel, outboundModel, requestID, capture, pc, nil,
 	)
 }
 
 // StreamAnthropicSSEToResponsesWithDiagnostics converts an Anthropic stream
 // to Responses SSE with optional best-effort diagnostics.
+// P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
 func StreamAnthropicSSEToResponsesWithDiagnostics(
+	ctx context.Context,
 	w http.ResponseWriter,
 	resp *http.Response,
 	clientModel, outboundModel, requestID string,
@@ -308,7 +312,8 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 
 	// SR-W1: route client frames through the attempt commit gate.
 	// Disabled (default) this is the identity function — legacy wire bytes.
-	w, gate = wrapAttemptWriter(w, ProtocolOpenAIResponses)
+	// P1-2 fix (2026-08-28): Pass context to gate for checkpoint propagation.
+	w, gate = wrapAttemptWriter(ctx, w, ProtocolOpenAIResponses)
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)
@@ -345,12 +350,7 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 	scaffold.attachCapturer(pc, clientWriter)
 	scaffold.writeInitialEvents()
 
-	var ctx context.Context
-	if resp.Request != nil {
-		ctx = resp.Request.Context()
-	} else {
-		ctx = context.Background()
-	}
+	// P1-2 fix (2026-08-28): ctx is now a function parameter, removed redundant declaration.
 
 	runtimeCfg := currentStreamRuntimeConfig()
 	reader := bufio.NewReaderSize(resp.Body, anthropicSSEBufSize)
@@ -591,7 +591,9 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 // StreamOpenAIToResponsesSSE reads OpenAI chat.completion.chunk SSE
 // upstream and writes OpenAI Responses API SSE to the client. The mirror
 // of StreamAnthropicSSEToResponses for the OpenAI upstream path.
+// P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
 func StreamOpenAIToResponsesSSE(
+	ctx context.Context,
 	w http.ResponseWriter,
 	resp *http.Response,
 	clientModel, outboundModel, requestID string,
@@ -599,13 +601,15 @@ func StreamOpenAIToResponsesSSE(
 	pc *pendingCapturer,
 ) (outcome StreamOutcome) {
 	return StreamOpenAIToResponsesSSEWithDiagnostics(
-		w, resp, clientModel, outboundModel, requestID, capture, pc, nil,
+		ctx, w, resp, clientModel, outboundModel, requestID, capture, pc, nil,
 	)
 }
 
 // StreamOpenAIToResponsesSSEWithDiagnostics converts an OpenAI stream to
 // Responses SSE with optional best-effort diagnostics.
+// P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
 func StreamOpenAIToResponsesSSEWithDiagnostics(
+	ctx context.Context,
 	w http.ResponseWriter,
 	resp *http.Response,
 	clientModel, outboundModel, requestID string,
@@ -645,7 +649,8 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 
 	// SR-W1: route client frames through the attempt commit gate.
 	// Disabled (default) this is the identity function — legacy wire bytes.
-	w, gate = wrapAttemptWriter(w, ProtocolOpenAIResponses)
+	// P1-2 fix (2026-08-28): Pass context to gate for checkpoint propagation.
+	w, gate = wrapAttemptWriter(ctx, w, ProtocolOpenAIResponses)
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)
@@ -682,12 +687,7 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 	scaffold.attachCapturer(pc, clientWriter)
 	scaffold.writeInitialEvents()
 
-	var ctx context.Context
-	if resp.Request != nil {
-		ctx = resp.Request.Context()
-	} else {
-		ctx = context.Background()
-	}
+	// P1-2 fix (2026-08-28): ctx is now a function parameter, removed redundant declaration.
 
 	runtimeCfg := currentStreamRuntimeConfig()
 	bodyCloser := resp.Body

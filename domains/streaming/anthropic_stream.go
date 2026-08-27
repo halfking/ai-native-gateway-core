@@ -28,7 +28,9 @@ import (
 //
 // Evidence: Line 232-236 parse chunk["choices"], which is OpenAI-specific.
 // Anthropic uses content[] blocks, not choices[].
+// P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
 func StreamOpenAIToAnthropicSSE(
+	ctx context.Context,
 	w http.ResponseWriter,
 	resp *http.Response,
 	clientModel, outboundModel, requestID string,
@@ -36,13 +38,15 @@ func StreamOpenAIToAnthropicSSE(
 	pc *pendingCapturer,
 ) (outcome StreamOutcome) {
 	return StreamOpenAIToAnthropicSSEWithDiagnostics(
-		w, resp, clientModel, outboundModel, requestID, capture, pc, nil,
+		ctx, w, resp, clientModel, outboundModel, requestID, capture, pc, nil,
 	)
 }
 
 // StreamOpenAIToAnthropicSSEWithDiagnostics converts an OpenAI stream with
 // optional best-effort diagnostics.
+// P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
 func StreamOpenAIToAnthropicSSEWithDiagnostics(
+	ctx context.Context,
 	w http.ResponseWriter,
 	resp *http.Response,
 	clientModel, outboundModel, requestID string,
@@ -82,7 +86,8 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 
 	// SR-W1: route client frames through the attempt commit gate.
 	// Disabled (default) this is the identity function — legacy wire bytes.
-	w, gate := wrapAttemptWriter(w, ProtocolAnthropic)
+	// P1-2 fix (2026-08-28): Pass context to gate for checkpoint propagation.
+	w, gate := wrapAttemptWriter(ctx, w, ProtocolAnthropic)
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)
@@ -137,12 +142,7 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 		}
 	}
 
-	var ctx context.Context
-	if resp.Request != nil {
-		ctx = resp.Request.Context()
-	} else {
-		ctx = context.Background()
-	}
+	// P1-2 fix (2026-08-28): ctx is now a function parameter, removed redundant declaration.
 
 	// BUG-1 fix: hold the body closer so readNextStreamLine can close it on
 	// chunk timeout, unblocking the ReadString goroutine immediately.
