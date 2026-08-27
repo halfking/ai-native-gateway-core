@@ -755,7 +755,12 @@ func (m *Manager) GetStaleStates(staleTTL time.Duration) []*State {
 	m.memCache.Range(func(k, v interface{}) bool {
 		entry := v.(*CacheEntry)
 		if now.Sub(entry.State.LastUpdatedAt) > staleTTL {
-			stale = append(stale, entry.State)
+			// Clone so callers cannot mutate the shared *State (other read
+			// paths return copies under the per-key mutex; a bare pointer
+			// here would bypass that) — probe callbacks that edit State in
+			// place would race UpdateOnSuccess/UpdateOnFailure.
+			clone := *entry.State
+			stale = append(stale, &clone)
 		}
 		return true
 	})
