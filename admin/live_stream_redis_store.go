@@ -1060,15 +1060,24 @@ func buildLiveStreamLanes(dimension string, items []LiveRequest) ([]LiveStreamLa
 		if key == "" || key == "unknown" || key == "__unknown__" || key == "__idle__" {
 			continue
 		}
+
+		// 2026-08-27: For credential dimension, Lane.ID is the stable credential_id,
+		// Lane.Name is the display string "provider/label" resolved from the first
+		// request in this lane. Other dimensions use key for both ID and Name.
+		displayName := key
+		if dimension == "credential" {
+			displayName = resolveCredentialDisplayName(key, items)
+		}
+
 		lanes = append(lanes, LiveStreamLane{
 			ID:        key,
-			Name:      key,
+			Name:      displayName,
 			Dimension: dimension,
 			Requests:  lastTiles(grouped[key], liveStreamLaneLimit),
 			Stats:     stats[key],
 			IsOthers:  false,
 		})
-		legends = append(legends, LiveStreamLegendItem{Key: key, Name: key, Count: stats[key].Total})
+		legends = append(legends, LiveStreamLegendItem{Key: key, Name: displayName, Count: stats[key].Total})
 	}
 
 	// Both viewLanes and detailLanes return the same full list
@@ -1098,30 +1107,72 @@ func buildStatusLegends(items []LiveRequest) []LiveStreamLegendItem {
 }
 
 // liveStreamCredentialKey returns the credential lane identity and display name.
-// A credential label alone is not globally meaningful: the same label can be
-// used under multiple providers. Keep the provider prefix in the key so Redis
-// queues, activity markers, snapshots, and legends all agree on one lane.
+// 
+// 2026-08-27: Identity strategy. A credential's ID is globally unique and stable
+// across renames; label is a mutable display string. The lane key must be stable
+// so rename operations do not break the Redis queue identity or the frontend
+// Vue TransitionGroup key.
+//
+// Lane identity (Redis key, Lane.ID, Legend.Key): credential_id (integer)
+// Display name (Lane.Name, Legend.Name): "provider/label" or "provider/凭据 #id"
+//
+// Idle markers inherit the lane key in CredentialLabel so both real requests
+// and idle markers resolve to the same lane.
 func liveStreamCredentialKey(req LiveRequest) string {
-	// Idle markers already carry the complete lane key in CredentialLabel.
-	// Re-applying the provider fallback here would create a different lane.
+	// Idle markers carry the stable lane key in CredentialLabel (set by createIdleMarkerForDimension).
+	// Re-applying the provider/label fallback would create a different lane identity.
 	if req.Type == "idle_marker" {
 		return strings.TrimSpace(req.CredentialLabel)
 	}
 
-	credential := strings.TrimSpace(req.CredentialLabel)
-	if credential == "" && req.CredentialID > 0 {
-		credential = fmt.Sprintf("凭据 #%d", req.CredentialID)
-	}
-	if credential == "" {
-		return ""
+	// Real requests: use credential_id as the stable lane identity.
+	// The display name (provider/label) is resolved separately in buildLiveStreamLanes.
+	if req.CredentialID <= 0 {
+		return "" // Skip requests without credential binding
 	}
 
-	provider := strings.TrimSpace(req.ProviderCode)
-	if provider == "" || provider == "unknown" || provider == "__unknown__" {
-		provider = "未知供应商"
-	}
-	return provider + "/" + credential
+	return fmt.Sprintf("%d", req.CredentialID)
 }
+
+// resolveCredentialDisplayName builds the display name "provider/label" for a
+// credential lane from the first real request in the given items that matches
+// the lane key (credential_id). Falls back to "未知供应商/凭据 #<id>" when no
+// matching request is found or ProviderCode/CredentialLabel are missing.
+func resolveCredentialDisplayName(laneKey string, items []LiveRequest) string {
+	// laneKey is the credential_id as a string (e.g. "42")
+	credentialID := 0
+	if n, err := fmt.Sscanf(laneKey, "%d", &credentialID); err != nil || n != 1 || credentialID <= 0 {
+		// Malformed key or legacy format; return as-is
+		return laneKey
+	}
+
+	// Find the first real request (not idle_marker) with this credential_id
+	for _, req := range items {
+		if req.Type == "idle_marker" {
+			continue
+		}
+		if req.CredentialID != credentialID {
+			continue
+		}
+
+		// Build display name from ProviderCode and CredentialLabel
+		provider := strings.TrimSpace(req.ProviderCode)
+		if provider == "" || provider == "unknown" || provider == "__unknown__" {
+			provider = "未知供应商"
+		}
+
+		label := strings.TrimSpace(req.CredentialLabel)
+		if label == "" {
+			label = fmt.Sprintf("凭据 #%d", credentialID)
+		}
+
+		return provider + "/" + label
+	}
+
+	// No matching request found; fallback to generic label
+	return fmt.Sprintf("未知供应商/凭据 #%d", credentialID)
+}
+
 
 func liveStreamDimensionKey(dimension string, req LiveRequest) string {
 	// For idle markers, use the actual dimension value (already set correctly in createIdleMarkerForDimension)
@@ -1805,8 +1856,9 @@ func createIdleMarkerForDimension(dimension, key, tenantID string, ts time.Time)
 	// the model view). The carried value doubles as the display label.
 	switch dimension {
 	case "credential":
-		// 2026-08-26: Credential lane idle: only CredentialLabel is set —
-		// liveStreamCredentialKey 的 label 优先规则使泳道 key 与真实请求一致。
+		// 2026-08-27: key is now the stable credential_id (e.g. "42").
+		// Store it in CredentialLabel so liveStreamCredentialKey returns the
+		// same lane identity for both real requests and idle markers.
 		marker.CredentialLabel = key
 	case "vendor":
 		// 2026-08-26: Vendor lane idle: carry ModelCategory so the marker
