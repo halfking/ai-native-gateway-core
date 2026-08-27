@@ -13,6 +13,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/provider"
+	upstreampkg "github.com/kaixuan/llm-gateway-go/upstream"
 )
 
 func TestAnthropicExecutor_BuildRequest_Passthrough(t *testing.T) {
@@ -727,7 +728,12 @@ func TestAnthropicExecutor_EmptyNativeMessagesResponseIsRetryable(t *testing.T) 
 	for _, body := range []string{
 		`{"type":"message","content":[{"type":"text","text":"hello"}]}`,
 		`{"type":"message","content":[{"type":"thinking","thinking":"reasoning"}]}`,
+		`{"type":"message","content":[{"type":"thinking","thinking":"","signature":"sig_1"}]}`,
+		`{"type":"message","content":[{"type":"redacted_thinking","data":"opaque"}]}`,
+		`{"type":"message","content":[{"type":"server_tool_use","id":"srvtoolu_1","name":"web_search","input":{}}]}`,
 		`{"type":"message","content":[{"type":"tool_use","id":"toolu_1","name":"weather","input":{}}]}`,
+		`{"type":"error","error":{"type":"api_error","message":"boom"}}`,
+		`{"id":"unknown-shape"}`,
 	} {
 		if isEmptyAnthropicMessagesResponse([]byte(body)) {
 			t.Fatalf("isEmptyAnthropicMessagesResponse(%s) = true, want false", body)
@@ -736,7 +742,9 @@ func TestAnthropicExecutor_EmptyNativeMessagesResponseIsRetryable(t *testing.T) 
 }
 
 func TestExecutorAnthropic_EmptyNativeMessagesResponseDoesNotWriteClient(t *testing.T) {
+	upstreamHits := 0
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamHits++
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"id":"msg_empty","type":"message","content":[]}`))
 	}))
@@ -753,13 +761,26 @@ func TestExecutorAnthropic_EmptyNativeMessagesResponseDoesNotWriteClient(t *test
 	}
 	candidate := provider.Candidate{BaseURL: upstream.URL, APIKey: "test", Protocol: "anthropic-messages", RawModel: "claude-sonnet-5"}
 
-	_, err := e.executeAnthropicOnce(params, candidate, &AnthropicExecutor{}, params.BodyBytes, params.BodyBytes, candidate.RawModel, time.Now(), nil)
+	// maxRetries=2 proves the same-credential retry ladder is skipped: an
+	// empty response must go straight to candidate failover (KindEmptyResponse
+	// is deliberately outside errorsx.IsRetryable).
+	_, err := e.executeAnthropic(params, candidate, 2, time.Now(), nil)
+	var ue *upstreampkg.Error
+	if !errors.As(err, &ue) {
+		t.Fatalf("error = %T %v, want bare *upstreampkg.Error for candidate failover", err, err)
+	}
 	var retry *retryableError
-	if !errors.As(err, &retry) {
-		t.Fatalf("error = %T %v, want retryable empty response", err, err)
+	if errors.As(err, &retry) {
+		t.Fatal("empty response must not be wrapped in retryableError (no same-credential retries)")
+	}
+	if ue.Kind != errorsx.KindEmptyResponse {
+		t.Fatalf("kind = %q, want %q", ue.Kind, errorsx.KindEmptyResponse)
 	}
 	if got := classifyExecError(err); got != errorsx.KindEmptyResponse {
-		t.Fatalf("kind = %q, want %q", got, errorsx.KindEmptyResponse)
+		t.Fatalf("classifyExecError = %q, want %q", got, errorsx.KindEmptyResponse)
+	}
+	if upstreamHits != 1 {
+		t.Fatalf("upstream hits = %d, want exactly 1 (empty response must not retry the same credential)", upstreamHits)
 	}
 	if got := params.W.(*httptest.ResponseRecorder).Body.String(); got != "" {
 		t.Fatalf("client received body before failover: %q", got)
