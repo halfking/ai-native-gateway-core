@@ -279,6 +279,12 @@ func StreamAnthropicPassthroughWithDiagnostics(
 				break
 			}
 			if clientWriter.clientDisconnected {
+				// Client is already gone: also mark capture interrupted so
+				// SummaryAsMap's stream_interrupted reflects reality (every
+				// other interrupted branch in this function marks it).
+				if capture != nil {
+					capture.MarkInterruptedWithReason("client_write_failed")
+				}
 				outcome = StreamOutcome{Interrupted: true, Reason: "client_write_failed", Kind: errorsx.KindCanceled, ChunkCount: chunkCount}
 				return outcome
 			}
@@ -380,6 +386,10 @@ func StreamAnthropicPassthroughWithDiagnostics(
 		outcome = StreamOutcome{Interrupted: true, Reason: "client_write_failed", Kind: errorsx.KindCanceled, ChunkCount: chunkCount}
 		return outcome
 	}
+	// NOTE(2026-08-27): mid-loop client disconnect is deliberately NOT marked
+	// Interrupted on the completed-upstream exit — the pending capturer needs
+	// a completed replay body (see pending_disconnect_test.go /
+	// TestStreamAnthropicPassthroughContinuesAfterClientDisconnect).
 	outcome.ChunkCount = chunkCount
 	return outcome
 }

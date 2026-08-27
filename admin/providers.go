@@ -414,10 +414,9 @@ func (h *Handler) handleProviders(w http.ResponseWriter, r *http.Request) {
 		// Earlier the dispatcher aliased POST→GET, which made
 		// getProviderModels run on the read path while still parsing as a
 		// POST in HTTP logs and downstream tooling. Frontend's getOrPost
-			// Frontend's getOrPost helper previously retried this as POST after
-			// a failing GET; reject POST so callers fix the route / verb.
-			case http.MethodPost:
-			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		// helper also fell back GET→POST, so users observed repeated
+		// `POST /api/providers/{id}/models 500` on environments missing
+		// migration 361. Restored 2026-08-27 after d2cbaf88b reverted it.
 		default:
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
