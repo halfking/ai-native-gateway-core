@@ -21,6 +21,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/metrics"
 	"github.com/kaixuan/llm-gateway-go/secret"
 	"github.com/redis/go-redis/v9"
 )
@@ -212,8 +213,10 @@ func NewSystemMonitor(cfg Config) (*SystemMonitor, error) {
 			slog.Warn("system_monitor: lua scripts load failed, will retry on first Submit",
 				"error", err)
 			// continue with nil scripts — Submit will retry LoadScripts lazily
+			metrics.RedisLuaScriptPreloaded.WithLabelValues("systemmonitor").Set(0)
 		} else {
 			scripts = s
+			metrics.RedisLuaScriptPreloaded.WithLabelValues("systemmonitor").Set(1)
 		}
 	}
 

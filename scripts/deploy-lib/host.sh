@@ -315,6 +315,73 @@ host_mark_verified() {
     fi"
 }
 
+# ============================================================================
+# Upgrade banner — nginx 标志文件驱动的静态升级页
+# ----------------------------------------------------------------------------
+# nginx 预先配置 `if (-f .../maintenance/UPGRADING) { return 503; }`
+# 与 error_page 静态页。show 在 stop 前原子地写入 index.html 后创建 marker；
+# hide 只在所有部署门禁通过后删除 marker。无需 reload nginx，也没有临时端口/
+# 进程残留风险。
+# ============================================================================
+
+host_show_upgrade_banner() {
+  local ssh_cmd=$1 target=$2 new_version=$3
+  local template_file started_at old_version maint_root render_script rendered_html
+  local install_root=${4:-$(host_root_for "$target")}
+  local maintenance_dir=${5:-$install_root/maintenance}
+  local version_root=${6:-$install_root}
+
+  template_file="${HOST_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}/maintenance-template.html"
+  [[ -f "$template_file" ]] || { echo "升级横幅模板缺失: $template_file" >&2; return 1; }
+
+  maint_root="$maintenance_dir"
+  started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  old_version=$("$ssh_cmd" "readlink '$version_root/current' 2>/dev/null | xargs basename 2>/dev/null" 2>/dev/null || true)
+  : "${old_version:=unknown}"
+
+  render_script=$(mktemp -t kx-render-banner.XXXXXX.py) || {
+    echo "创建升级页模板临时文件失败" >&2
+    return 1
+  }
+  cat >"$render_script" <<'PYEOF'
+import sys
+old_v, new_v, started_at, template = sys.argv[1:]
+with open(template, encoding="utf-8") as source:
+    body = source.read()
+for token, value in (("__OLD_VERSION__", old_v), ("__NEW_VERSION__", new_v), ("__STARTED_AT__", started_at)):
+    body = body.replace(token, value)
+sys.stdout.write(body)
+PYEOF
+  if ! rendered_html=$(python3 "$render_script" "$old_version" "$new_version" "$started_at" "$template_file"); then
+    rm -f "$render_script"
+    echo "升级横幅模板渲染失败" >&2
+    return 1
+  fi
+  rm -f "$render_script"
+
+  # Write a temporary file and atomically rename it before creating the marker;
+  # nginx never sees a partial page, even if a previous deploy left the marker.
+  local remote_tmp="$maint_root/.index.html.deploy.$$"
+  if ! printf '%s' "$rendered_html" | "$ssh_cmd" "set -e; mkdir -p '$maint_root'; cat > '$remote_tmp'; mv -f '$remote_tmp' '$maint_root/index.html'; : > '$maint_root/UPGRADING'"; then
+    "$ssh_cmd" "rm -f '$remote_tmp'" >/dev/null 2>&1 || true
+    echo "升级页或标志文件写入失败" >&2
+    return 1
+  fi
+  echo "  ✓ 升级静态页已启用 (target=$new_version)"
+}
+
+host_hide_upgrade_banner() {
+  local ssh_cmd=$1 target=$2 maint_root install_root maintenance_dir
+  install_root=${3:-$(host_root_for "$target")}
+  maintenance_dir=${4:-$install_root/maintenance}
+  maint_root="$maintenance_dir"
+  # Remove the page first and verify it is gone; only then remove the marker.
+  # If either operation fails, UPGRADING remains and nginx continues to protect
+  # the unverified release instead of resuming real traffic.
+  "$ssh_cmd" "set -e; rm -f '$maint_root/index.html'; test ! -e '$maint_root/index.html'; rm -f '$maint_root/UPGRADING'" || return 1
+  echo "  ✓ 升级静态页已撤掉"
+}
+
 # Atomic switch: rewrite the current symlink to point at the freshly
 # uploaded release, then restart. The whole swap is one atomic
 # rename(2) call (ln -sfn), so a partial state is impossible.
@@ -325,6 +392,10 @@ host_mark_verified() {
 # We now collapse them into ONE heredoc'd remote shell. The heredoc
 # preserves ordering (set -e stops on first failure) and the host.sh
 # contract — exactly one remote action, atomic to the caller.
+#
+# The deploy orchestrator owns the upgrade-page lifecycle. It enables the
+# marker before calling this function and removes it only after all post-
+# deploy gates pass; keeping this primitive focused preserves rollback use.
 host_atomic_switch() {
   local ssh_cmd=$1 target=$2 version=$3
   local current_link binary_link web_link version_link release_dir bin_name
@@ -362,6 +433,7 @@ host_atomic_switch() {
   # would force us to wait synchronously and we'd lose the
   # timing/return-code signal.
   host_restart_service "$ssh_cmd" "$target"
+
 }
 
 # Drain the running service until all in-flight requests finish, then
@@ -468,18 +540,25 @@ host_prune_releases() {
     printf '%s' \"\$keep_set\""
 }
 
-# Rollback: point `current` at the given version and restart. The
-# orchestrator MUST gate on `host_select_rollback_target` first —
-# this function refuses silently so a bad version can't be forced.
+# Rollback: point `current` at the given version and restart. Refuse missing,
+# active, or unverified bundles even when called directly; the canonical CLI
+# still selects a target first, but this primitive must be safe on its own.
 host_rollback_to() {
   local ssh_cmd=$1 target=$2 version=$3
-  local metadata_file
+  local metadata_file current_link
   metadata_file=$(host_release_layout "$target" "$version" | sed -n 's/^metadata_file=//p')
+  current_link=$(host_release_layout "$target" "$version" | sed -n 's/^current_link=//p')
 
-  # Refuse silently if the bundle is missing or unverified — the
-  # caller is responsible for selection.
   if ! "$ssh_cmd" "test -f '$metadata_file'"; then
     echo "host_rollback_to: no bundle at $version on $target" >&2
+    return 1
+  fi
+  if "$ssh_cmd" "test \"\$(readlink '$current_link' 2>/dev/null | xargs basename 2>/dev/null)\" = '$version'"; then
+    echo "host_rollback_to: $version is already active on $target" >&2
+    return 1
+  fi
+  if ! "$ssh_cmd" "grep -Eq '\"verified\"[[:space:]]*:[[:space:]]*true' '$metadata_file'"; then
+    echo "host_rollback_to: $version is not verified on $target" >&2
     return 1
   fi
 

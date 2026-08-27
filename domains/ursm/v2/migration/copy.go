@@ -8,6 +8,7 @@ import (
 	"sort"
 	"time"
 
+	redissafe "github.com/kaixuan/llm-gateway-go/internal/redis"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -151,7 +152,8 @@ func (c *Copy) copyOne(ctx context.Context, it Item, now time.Time) CopyResult {
 	}
 	// Snapshot the source fields; enforce generation / checksum fencing
 	// before mutating the target.
-	fields, err := c.RDB.HGetAll(ctx, it.SourceKey).Result()
+	// P1-14 fix (2026-08-28): Use SafeHGetAll to prevent WRONGTYPE errors
+	fields, err := redissafe.SafeHGetAll(ctx, c.RDB, it.SourceKey)
 	if err != nil {
 		res.Status = CopyStatusFailed
 		res.Reason = "hgetall failed: " + err.Error()
@@ -174,7 +176,8 @@ func (c *Copy) copyOne(ctx context.Context, it Item, now time.Time) CopyResult {
 	// Resume guard: if the target already exists with the same checksum,
 	// the work was already done. We do this *after* fencing so a stale
 	// target does not bypass the generation guard.
-	if tgtFields, err := c.RDB.HGetAll(ctx, it.CanonicalKey).Result(); err == nil && len(tgtFields) > 0 {
+	// P1-14 fix (2026-08-28): Use SafeHGetAll to prevent WRONGTYPE errors
+	if tgtFields, err := redissafe.SafeHGetAll(ctx, c.RDB, it.CanonicalKey); err == nil && len(tgtFields) > 0 {
 		if fieldChecksum(tgtFields) == res.SourceChecksum {
 			res.Status = CopyStatusUnchanged
 			res.TargetChecksum = res.SourceChecksum
@@ -311,7 +314,8 @@ func (c *EntryCopier) CopyHash(ctx context.Context, entry EntryRecord) (EntryCop
 	if pttl < 0 && pttl != -1*time.Millisecond {
 		return EntryCopyResult{}, fmt.Errorf("ursm.v2: invalid source pttl %v", pttl)
 	}
-	fields, err := c.rdb.HGetAll(ctx, entry.SourceKey).Result()
+	// P1-14 fix (2026-08-28): Use SafeHGetAll to prevent WRONGTYPE errors
+	fields, err := redissafe.SafeHGetAll(ctx, c.rdb, entry.SourceKey)
 	if err != nil {
 		return EntryCopyResult{}, fmt.Errorf("ursm.v2: copy source fields: %w", err)
 	}

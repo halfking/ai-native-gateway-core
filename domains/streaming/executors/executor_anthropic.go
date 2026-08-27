@@ -387,6 +387,10 @@ func extractAnthropicUsageFromBody(body []byte) (*int, *int) {
 // relay/anthropic_passthrough_stream.go and is injected via the
 // PassthroughStream hook on AnthropicExecutor.
 func defaultAnthropicPassthrough(w http.ResponseWriter, resp *http.Response) StreamOutcome {
+	// Sole consumer of this body (only reached when the PassthroughStream hook
+	// is unwired), so closing it here is safe and required for connection reuse.
+	//nolint:errcheck // best-effort close
+	defer resp.Body.Close()
 	if flusher, ok := w.(http.Flusher); ok {
 		flusher.Flush()
 	}
@@ -790,6 +794,27 @@ func (e *Executor) executeAnthropic(
 	return nil, fmt.Errorf("exhausted %d retries for credential %d", maxRetries, cand.CredentialID)
 }
 
+// anthropicReadBodyError classifies a non-stream upstream body read failure
+// and wraps it following the file's 4xx/5xx convention: only
+// errorsx.IsRetryable kinds get the retryableError wrapper (which drives the
+// same-credential retry ladder in executeAnthropic). A client cancellation
+// reads as KindCanceled and must surface unwrapped so the loop returns it
+// immediately instead of retrying a dead request with backoff.
+func anthropicReadBodyError(err error, resp *http.Response) error {
+	kind := errorsx.ClassifyError(err, nil)
+	wrapped := &upstreampkg.Error{
+		Kind:       kind,
+		Message:    fmt.Sprintf("read anthropic upstream response: %v", err),
+		Err:        err,
+		StatusCode: resp.StatusCode,
+		RetryAfter: upstreampkg.RetryAfterFromHeaders(resp.Header),
+	}
+	if !errorsx.IsRetryable(kind) {
+		return wrapped
+	}
+	return &retryableError{err: wrapped}
+}
+
 // executeAnthropicOnce is a single-attempt Anthropic upstream call.
 // Returns either:
 //   - (*ExecuteResult, nil) on 2xx success
@@ -1060,31 +1085,26 @@ func (e *Executor) executeAnthropicOnce(
 			// 并发修复 2026-07-27：异步重试 goroutine 的 params.W 为 nil
 			// （客户端已收到 202），错误体只能通过 PendingStore 回传，
 			// 这里直接跳过客户端写。
-			if params.W != nil {
-				// 2026-07-27 (D-2): forward the FULL vendor error body, not just
-				// the first 4096 bytes used for classification. Previously the
-				// raw-passthrough path wrote body[:n] (n <= 4096) and the rest had
-				// already been io.Copy'd to Discard above, so a vendor 4xx body
-				// larger than 4 KiB reached the client truncated — producing
-				// invalid/truncated JSON that Anthropic SDKs could not parse.
-				//
-				// The remaining body is still unread (the discard was for the
-				// *non-passthrough* paths). Read it up to maxPassthroughErrorBody
-				// and concatenate with the classified prefix, then write the whole
-				// envelope. Cap protects against buffering a huge body in memory.
+				// 2026-08-27 P0 fix: Always drain the response body to enable
+				// HTTP connection reuse, regardless of params.W. Previously when
+				// params.W == nil (async retry path), the body was left unread,
+				// forcing the connection pool to close the connection instead of
+				// reusing it.
 				fullBody := body[:n]
 				if n >= len(body) {
 					// We filled the 4096 prefix buffer — there may be more. Read
-					// the remainder up to the passthrough cap.
+					// the remainder up to the passthrough cap (only for client write).
 					remainingCap := maxPassthroughErrorBody - n
-					if remainingCap > 0 {
+					if remainingCap > 0 && params.W != nil {
 						rest, _ := io.ReadAll(io.LimitReader(resp.Body, int64(remainingCap)))
 						if len(rest) > 0 {
 							fullBody = append(append([]byte(nil), body[:n]...), rest...)
 						}
 					}
-					_, _ = io.Copy(io.Discard, resp.Body) // drain anything beyond the cap
+					// Always drain the remaining body (essential for connection reuse)
+					_, _ = io.Copy(io.Discard, resp.Body)
 				}
+				if params.W != nil {
 				// Surface an accurate Content-Length for the bytes we actually send
 				// (the copied vendor Content-Length header would now be wrong if
 				// the body exceeded the cap).
@@ -1203,13 +1223,49 @@ func (e *Executor) executeAnthropicOnce(
 
 	var qualitySignals QualitySignals
 	if resp == nil || resp.Body == nil {
-		return nil, fmt.Errorf("anthropic upstream returned an empty response")
+		return nil, &retryableError{err: &upstreampkg.Error{
+			Kind:    errorsx.KindUpstreamDown,
+			Message: "anthropic upstream returned an empty response",
+		}}
 	}
+	// Defers close the ORIGINAL transport body: the receiver is evaluated at
+	// the defer statement, before resp.Body is replaced by the reconstructed
+	// in-memory reader below (WriteNonStreamResponse closes that replacement).
+	// Mirrors executor_chat.go's defer before its own ReadAll.
+	//nolint:errcheck // best-effort close
+	defer resp.Body.Close()
 	rawResponseBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("read anthropic upstream response: %w", err)
+		return nil, anthropicReadBodyError(err, resp)
 	}
 	e.logUpstreamResponse(params, diagnosticProtocol(cand.Protocol, "anthropic-messages"), rawResponseBody)
+	// 2026-08-27: non-stream empty-response failover, Anthropic parity with
+	// executor_chat.go's 2026-07-15 check. The raw body is Anthropic-shaped on
+	// every client protocol here (Q3 conversion happens inside
+	// WriteNonStreamResponse, after this gate), so the check covers both the
+	// native passthrough and the OpenAI/Responses conversions. The error is a
+	// bare *upstreampkg.Error — NOT wrapped in retryableError — because
+	// KindEmptyResponse is deliberately absent from errorsx.IsRetryable: an
+	// empty 2xx body must fail over to the next candidate immediately instead
+	// of burning same-credential retries (see the KindEmptyResponse taxonomy
+	// note in errorsx/classify.go).
+	if isEmptyAnthropicMessagesResponse(rawResponseBody) {
+		slog.Warn("executor: anthropic non-stream empty response, failing over to next candidate",
+			"request_id", params.RequestID,
+			"credential_id", cand.CredentialID,
+			"provider_id", cand.ProviderID,
+			"raw_model", cand.RawModel,
+			"client_model", params.ClientModel,
+			"status", resp.StatusCode,
+		)
+		return nil, &upstreampkg.Error{
+			Kind:       errorsx.KindEmptyResponse,
+			Message:    "upstream returned empty Anthropic Messages response",
+			Body:       append([]byte(nil), rawResponseBody...),
+			StatusCode: resp.StatusCode,
+			RetryAfter: upstreampkg.RetryAfterFromHeaders(resp.Header),
+		}
+	}
 	resp.Body = io.NopCloser(bytes.NewReader(rawResponseBody))
 	// 并发修复 2026-07-27：异步重试路径 W 为 nil。WriteNonStreamResponse
 	// 的返回值（转换后的 body）是 PendingStore 回传给客户端的内容，所以
