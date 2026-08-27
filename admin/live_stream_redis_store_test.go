@@ -1674,32 +1674,60 @@ func TestBuildLiveStreamSnapshot_CredentialLaneUsesProviderAndCredential(t *test
 	for _, lane := range lanes {
 		byID[lane.ID] = lane
 	}
-	for _, want := range []string{"Anthropic 官方/生产主凭据", "Anthropic 官方/凭据 #43"} {
-		lane, ok := byID[want]
+	
+	// 2026-08-27: Lane.ID is now the stable credential_id, Lane.Name is the display string
+	expectations := []struct {
+		id   string
+		name string
+	}{
+		{id: "42", name: "Anthropic 官方/生产主凭据"},
+		{id: "43", name: "Anthropic 官方/凭据 #43"},
+	}
+	
+	for _, expect := range expectations {
+		lane, ok := byID[expect.id]
 		if !ok {
-			t.Fatalf("missing credential lane %q: %#v", want, lanes)
+			t.Fatalf("missing credential lane ID=%q: %#v", expect.id, lanes)
 		}
-		if lane.Name != want {
-			t.Fatalf("lane %q name=%q want same composed label", want, lane.Name)
+		if lane.Name != expect.name {
+			t.Fatalf("lane ID=%q name=%q want %q", expect.id, lane.Name, expect.name)
 		}
 	}
+	
+	// Legends: Key should match Lane.ID (credential_id), Name should match Lane.Name (display)
 	for _, legend := range snapshot.DimensionLegends["credential"] {
-		if legend.Name != legend.Key {
-			t.Fatalf("credential legend=%#v has mismatched key/name", legend)
+		lane, ok := byID[legend.Key]
+		if !ok {
+			t.Fatalf("legend key=%q does not match any lane ID", legend.Key)
+		}
+		if legend.Name != lane.Name {
+			t.Fatalf("legend key=%q name=%q want %q (lane display name)", legend.Key, legend.Name, lane.Name)
 		}
 	}
 }
 
 func TestLiveStreamCredentialKey_UnknownProviderKeepsShape(t *testing.T) {
+	// 2026-08-27: liveStreamCredentialKey now returns stable credential_id
 	got := liveStreamCredentialKey(LiveRequest{CredentialID: 7})
-	if got != "未知供应商/凭据 #7" {
-		t.Fatalf("credential key=%q want %q", got, "未知供应商/凭据 #7")
+	if got != "7" {
+		t.Fatalf("credential key=%q want %q", got, "7")
 	}
-	if got := liveStreamCredentialKey(LiveRequest{ProviderCode: "供应商", CredentialLabel: "生产"}); got != "供应商/生产" {
-		t.Fatalf("composed credential label=%q want %q", got, "供应商/生产")
+	
+	got = liveStreamCredentialKey(LiveRequest{ProviderCode: "供应商", CredentialLabel: "生产", CredentialID: 99})
+	if got != "99" {
+		t.Fatalf("credential key=%q want %q (CredentialID takes precedence)", got, "99")
 	}
-	if got := liveStreamCredentialKey(LiveRequest{Type: "idle_marker", CredentialLabel: "供应商/生产"}); got != "供应商/生产" {
-		t.Fatalf("idle credential label=%q was unexpectedly rewritten", got)
+	
+	// Idle markers inherit the lane key directly from CredentialLabel
+	got = liveStreamCredentialKey(LiveRequest{Type: "idle_marker", CredentialLabel: "42"})
+	if got != "42" {
+		t.Fatalf("idle credential key=%q want %q", got, "42")
+	}
+	
+	// Requests without CredentialID return empty string
+	got = liveStreamCredentialKey(LiveRequest{ProviderCode: "供应商", CredentialLabel: "生产"})
+	if got != "" {
+		t.Fatalf("credential key without ID=%q want empty", got)
 	}
 }
 
