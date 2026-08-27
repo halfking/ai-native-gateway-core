@@ -442,6 +442,12 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 		pageSize = 500
 	}
 
+	requestClass := strings.TrimSpace(queryString(r, "request_class"))
+	if requestClass != "" && requestClass != "immediate" && requestClass != "scheduled" {
+		writeError(w, http.StatusBadRequest, "request_class must be immediate or scheduled")
+		return
+	}
+
 	clauses := []string{"rl.ts >= $1", "rl.ts <= $2"}
 	args := []any{start, end}
 	argIdx := 3
@@ -475,8 +481,8 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 		addFilter("rl.identity_hash = $%d", v)
 	}
 	// V6-W1.6 R8 (migration 608): filter scheduled traffic.
-	if v := strings.TrimSpace(queryString(r, "request_class")); v != "" {
-		addFilter("rl.request_class = $%d", v)
+	if requestClass != "" {
+		addFilter("rl.request_class = $%d", requestClass)
 	}
 	if v := strings.TrimSpace(queryString(r, "q")); v != "" {
 		addFilter("rl.search_text ILIKE $%d", "%"+v+"%")

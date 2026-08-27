@@ -929,6 +929,10 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 	if db == nil {
 		return errNoTelemetryDB
 	}
+	// Keep request class/due time inside the database domain before the
+	// asynchronous writer begins its transaction. This prevents a malformed
+	// caller from turning one bad audit field into a retried write failure.
+	normalizeRequestClassAndDueAt(entry, false)
 	// Defence-in-depth: scrub any invalid UTF-8 from all string-valued fields
 	// before INSERT.  PostgreSQL rejects invalid bytes with SQLSTATE 22021,
 	// which (because we wrap usage_ledger + request_logs + api_keys updates
@@ -1684,6 +1688,7 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 	if db == nil {
 		return errNoTelemetryDB
 	}
+	normalizeRequestClassAndDueAt(entry, true)
 	sanitizeRequestLogEntry(entry)
 	totalTokens := total(entry.PromptTokens, entry.CompletionTokens)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -1905,8 +1910,8 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 			END
 			, customer_id = COALESCE($97, customer_id)
 			-- V6-W1.6 R8 (migration 608): request class + due time.
-			, request_class = COALESCE($98, request_class)
-			, due_at = COALESCE($99, due_at)
+			, request_class = CASE WHEN $98 IS NULL THEN request_class ELSE $98 END
+			, due_at = CASE WHEN $98 IS NULL THEN due_at ELSE $99 END
 		   WHERE request_id = $1
 
 		     AND NOT (
@@ -2044,7 +2049,8 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		entry.RoutingSummary,
 		attachmentsArgStr(entry.Attachments),
 		entry.CustomerID,
-		// V6-W1.6 R8 (migration 608): $98 ↔ request_class, $99 ↔ due_at.
+		// V6-W1.6 R8 (migration 608): a nil $98 preserves both fields;
+		// otherwise $98/$99 are written as one invariant-preserving pair.
 		entry.RequestClass,
 		entry.DueAt,
 	)
@@ -3271,12 +3277,27 @@ func lookupTurnNumber(ctx context.Context, tx pgx.Tx, sessionID string) int {
 // fields. Returns "main" for a plain client request (the column DEFAULT).
 // Precedence: explicit RequestType > compression > origin_actor > parent link.
 
-// requestClassArg resolves the request_class bind value: nil → 'immediate'
-// (request_logs_hot.request_class is NOT NULL DEFAULT 'immediate'; resolving
-// in Go keeps the INSERT placeholder a bare $N per the alignment guard).
+// requestClassArg resolves the request_class bind value. The database invariant
+// requires immediate rows to have no due_at and scheduled rows to have one;
+// normalizeRequestClassAndDueAt enforces that invariant before every write.
 func requestClassArg(c *string) string {
-	if c == nil || *c == "" {
-		return "immediate"
+	if c != nil && *c == "scheduled" {
+		return "scheduled"
 	}
-	return *c
+	return "immediate"
+}
+
+// normalizeRequestClassAndDueAt enforces the persisted domain invariant. Insert
+// callers always write a class; update callers preserve existing values unless
+// they explicitly provide RequestClass.
+func normalizeRequestClassAndDueAt(entry *RequestLogEntry, preserveWhenUnset bool) {
+	if entry == nil || (preserveWhenUnset && entry.RequestClass == nil) {
+		return
+	}
+	if entry.RequestClass != nil && *entry.RequestClass == "scheduled" && entry.DueAt != nil && !entry.DueAt.IsZero() {
+		return
+	}
+	immediate := "immediate"
+	entry.RequestClass = &immediate
+	entry.DueAt = nil
 }

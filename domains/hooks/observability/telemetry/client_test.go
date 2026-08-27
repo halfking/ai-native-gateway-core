@@ -46,7 +46,7 @@ func requestLogUpdateArgs(entry RequestLogEntry) []interface{} {
 	// SQL $N → args[N-1]. SQL position 37=success, 38=request_status;
 	// client-perception fields at $78-$81; t0..t9 at $82-$91; discard $92;
 	// canonical/routing/attachments at $93-$96; customer_id at $97;
-	// 608 request class/due_at at $98-$99 (V6-W1.6 R8, migration 608).
+	// 608 request class/due_at at $98-$99 (V6-W1.6 R8, migration 610).
 	// 2026-08-24 Phase 1: outbound_body (was $60) is removed from the main table
 	// UPDATE bind list. The dedicated request_logs_bodies_hot table is the sole
 	// outbound_body owner; outbound_body is written via upsertRequestLogBodies.
