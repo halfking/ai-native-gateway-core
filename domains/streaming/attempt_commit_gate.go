@@ -116,9 +116,10 @@ type GateOptions struct {
 	// that state are about to reach the network (immediate mode, an already
 	// committed attempt, or the buffered semantic commit — including
 	// post-commit advances such as content→tool_call, the §10.3 replay
-	// blocker). Returning an error fails the frame write — nothing of that
-	// state may be sent (禁写网络). Buffering metadata alone never fires it:
-	// the first semantic commit's checkpoint covers the metadata rank too.
+	// blocker). Returning an error fails the frame write and latches the gate
+	// against any later client-visible writes — nothing of that state may be
+	// sent (禁写网络). Buffering metadata alone never fires it: the first
+	// semantic commit's checkpoint covers the metadata rank too.
 	BeforeSemanticCommit func(CommitState) error
 	// FirstSemanticByte fires once when the first content/tool-call frame is
 	// accepted. Transport comments, ping, metadata, and terminal-only frames do
@@ -168,8 +169,12 @@ type AttemptCommitGate struct {
 	state     CommitState
 	committed bool
 	discarded bool
-	buffer    []byte
-	bufferLen int
+	// checkpointBlocked latches a durable write-ahead failure and keeps the
+	// attempt from emitting any later client-visible bytes.
+	checkpointBlocked bool
+	checkpointErr     error
+	buffer            []byte
+	bufferLen         int
 	// firstMetaAt timestamps the first buffered attempt metadata; the
 	// buffer is bounded by bytes AND age (doc 18 §5.1). Checked lazily on
 	// the next buffered write — no timer goroutine.
@@ -296,6 +301,10 @@ func (g *AttemptCommitGate) WriteFrame(frame string) error {
 	defer g.writeMu.Unlock()
 
 	g.mu.Lock()
+	if err := g.checkpointBlockedErrorLocked(); err != nil {
+		g.mu.Unlock()
+		return err
+	}
 	if g.discarded {
 		g.mu.Unlock()
 		return ErrAttemptDiscarded
@@ -334,22 +343,25 @@ func (g *AttemptCommitGate) WriteFrame(frame string) error {
 		}
 	}
 
-	advanced := g.advanceStateLocked(class)
-
 	// Write-ahead checkpoint (doc 18 §11.3): before bytes of a newly
 	// reached state reach the network, the durable commit_state must be
 	// persisted. A failed checkpoint fails the write (禁写网络) and the
 	// advanced local state keeps Discard refused — the attempt fail-closes
 	// instead of transparently retrying an unknown DB outcome.
+	advanced := g.advanceStateLocked(class)
 	if advanced && g.beforeSemanticCommit != nil &&
 		(g.mode == GateModeImmediate || g.committed || isSemanticClass(class)) {
 		checkpoint := g.beforeSemanticCommit
 		state := g.state
 		g.mu.Unlock()
-		if err := checkpoint(state); err != nil {
-			return fmt.Errorf("attempt commit gate: write-ahead checkpoint %s: %w", state, err)
-		}
+		checkpointErr := checkpoint(state)
 		g.mu.Lock()
+		if checkpointErr != nil {
+			g.blockCheckpointLocked(checkpointErr)
+			blocked := g.checkpointErr
+			g.mu.Unlock()
+			return blocked
+		}
 	}
 
 	if g.mode == GateModeImmediate || g.committed {
@@ -412,6 +424,34 @@ func (g *AttemptCommitGate) markFirstSemanticByte(class FrameClass) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.markFirstSemanticByteLocked(class)
+}
+
+func (g *AttemptCommitGate) blockCheckpointLocked(err error) {
+	if err == nil || g.checkpointBlocked {
+		return
+	}
+	g.checkpointBlocked = true
+	g.checkpointErr = fmt.Errorf("attempt commit gate: write-ahead checkpoint %s: %w", g.state, err)
+}
+
+func (g *AttemptCommitGate) checkpointBlockedErrorLocked() error {
+	if !g.checkpointBlocked {
+		return nil
+	}
+	return g.checkpointErr
+}
+
+func (g *AttemptCommitGate) checkpointStateAdvanceLocked(class FrameClass) error {
+	advanced := g.advanceStateLocked(class)
+	if !advanced || g.beforeSemanticCommit == nil ||
+		(g.mode != GateModeImmediate && !g.committed && !isSemanticClass(class)) {
+		return nil
+	}
+	if err := g.beforeSemanticCommit(g.state); err != nil {
+		g.blockCheckpointLocked(err)
+		return g.checkpointErr
+	}
+	return nil
 }
 
 // appendBufferedLocked appends one frame to the attempt-local buffer under
@@ -516,13 +556,14 @@ func (g *AttemptCommitGate) FlushHoldback() error {
 }
 
 func (g *AttemptCommitGate) flushHoldbackLocked() error {
+	if err := g.checkpointBlockedErrorLocked(); err != nil {
+		return err
+	}
 	if g.discarded || g.committed || g.holdbackWindow <= 0 || !g.holdbackOpened || g.bufferLen == 0 {
 		return nil
 	}
-	if advanced := g.advanceStateLocked(FrameClassContent); advanced && g.beforeSemanticCommit != nil {
-		if err := g.beforeSemanticCommit(g.state); err != nil {
-			return fmt.Errorf("attempt commit gate: write-ahead checkpoint %s: %w", g.state, err)
-		}
+	if err := g.checkpointStateAdvanceLocked(FrameClassContent); err != nil {
+		return err
 	}
 	if err := g.commitLocked(); err != nil {
 		return err
@@ -600,6 +641,9 @@ func (g *AttemptCommitGate) commitLocked() error {
 func (g *AttemptCommitGate) Commit() error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	if err := g.checkpointBlockedErrorLocked(); err != nil {
+		return err
+	}
 	if g.discarded {
 		return ErrAttemptAlreadyCommitted
 	}
@@ -623,6 +667,9 @@ func (g *AttemptCommitGate) Commit() error {
 func (g *AttemptCommitGate) FinishAttempt(partial string) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	if err := g.checkpointBlockedErrorLocked(); err != nil {
+		return err
+	}
 	if g.discarded {
 		return ErrAttemptDiscarded
 	}
@@ -637,17 +684,22 @@ func (g *AttemptCommitGate) FinishAttempt(partial string) error {
 		// the gate).
 		return g.flushHoldbackLocked()
 	}
+	class := ClassifyClientFrame(g.protocol, partial)
+	terminal := isPartialTerminalFrame(g.protocol, partial)
+	if terminal {
+		if err := g.checkpointStateAdvanceLocked(class); err != nil {
+			return err
+		}
+	}
 	if g.mode == GateModeImmediate || g.committed {
 		if _, err := g.writer.Write([]byte(partial)); err != nil {
 			return err
 		}
 		return g.writer.FlushError()
 	}
-	class := ClassifyClientFrame(g.protocol, partial)
-	if !isPartialTerminalFrame(g.protocol, partial) {
+	if !terminal {
 		return g.appendBufferedLocked(partial)
 	}
-	g.advanceStateLocked(class)
 	if err := g.commitLocked(); err != nil {
 		return err
 	}
