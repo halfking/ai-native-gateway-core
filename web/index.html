@@ -6,26 +6,8 @@
     <meta name="description" content="AI-Native 超级智能大模型网关 — 让企业安全、合规、低成本地使用全球各类大模型与 AI 工具，一套网关，统一管控、智能整合。" />
     <title>AI Native 组织核心网关</title>
     <link rel="icon" type="image/png" href="/favicon.png" />
-    <script>
-      // 2026-07-21: 与 ai-native-maintain / ai-session-manager 主题统一。
-      // 优先级：URL ?theme=light|dark > localStorage['llmgw_theme'] > 系统偏好。
-      // URL 永远赢；命中后写回 localStorage，方便后续刷新保持。
-      (function () {
-        try {
-          var sp = new URLSearchParams(window.location.search);
-          var t = sp.get('theme');
-          if (t !== 'light' && t !== 'dark') {
-            t = localStorage.getItem('llmgw_theme');
-          }
-          if (t !== 'light' && t !== 'dark') {
-            t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-          }
-          document.documentElement.setAttribute('data-theme', t);
-          document.documentElement.style.colorScheme = t;
-          try { localStorage.setItem('llmgw_theme', t); } catch (e) {}
-        } catch (e) {}
-      })();
-    </script>
+    <!-- 2026-08-25: 拆出 inline script，避免被 CSP script-src 'self' 'unsafe-eval' 拦截 -->
+    <script src="/theme-init.js"></script>
   </head>
   <body>
     <div id="app"></div>

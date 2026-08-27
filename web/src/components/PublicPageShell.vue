@@ -149,8 +149,8 @@ const { t } = useI18n()
   border-radius: 8px;
   font-size: 12px;
   font-family: ui-monospace, monospace;
-  color: #cbd5e1;
-  background: rgba(15, 23, 42, 0.75);
+  color: var(--border);
+  background: var(--overlay-strong);
   word-break: break-all;
 }
 

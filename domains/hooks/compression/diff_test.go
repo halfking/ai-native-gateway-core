@@ -218,7 +218,16 @@ func TestInjectSummaryMarker_PreservesSummaryFields(t *testing.T) {
 }
 
 func TestInjectSummaryMarker_AnthropicSystemBlock(t *testing.T) {
-	body := []byte(`{"system":[{"type":"text","text":"original"},{"type":"text","text":"` + AnthropicSystemSummaryPrefix + `summary"}],"messages":[]}`)
+	body, err := json.Marshal(map[string]any{
+		"system": []map[string]string{
+			{"type": "text", "text": "original"},
+			{"type": "text", "text": AnthropicSystemSummaryPrefix + "summary"},
+		},
+		"messages": []any{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	marker, rebuilt := injectSummaryMarker(body, "anthropic-messages")
 	if marker == "" || !strings.Contains(string(rebuilt), marker) {
 		t.Fatalf("expected injected Anthropic marker, marker=%q body=%s", marker, rebuilt)

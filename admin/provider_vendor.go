@@ -36,7 +36,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -137,14 +136,6 @@ func (h *Handler) resolveModelsForCredential(ctx context.Context, cred credentia
 	// Fallback to manifest when API fails or returns empty.
 	fallback, _ := extractManifestModels(cred.modelsManifestJSON)
 	if len(fallback) > 0 {
-		// 2026-08-22: when the API rejected our credentials (401/403),
-		// don't silently swallow the error in the manifest fallback path
-		// — discoverAndUpsertForCredential uses errors.Is(err,
-		// errVendorAuthRejected) to decide whether to record a
-		// health=unreachable reason that helps the operator debug.
-		if errors.Is(fetchErr, errVendorAuthRejected) {
-			return fallback, "manifest", fetchErr
-		}
 		return fallback, "manifest", nil
 	}
 	if fetchErr != nil {
@@ -357,29 +348,6 @@ func (h *Handler) VerifyAllCredentialModelUpserts(ctx context.Context, providerI
 	return out, nil
 }
 
-// errVendorAuthRejected marks a vendor /models endpoint that returned
-// 401 or 403. discoverAndUpsertForCredential treats this as a soft
-// failure and falls back to the catalog manifest when one is available,
-// so a credential whose API key type has not been migrated yet still
-// produces a usable set of bindings instead of an empty result.
-var errVendorAuthRejected = errors.New("vendor auth rejected")
-
-// classifyVendorAuthReason extracts a short "401" / "403" token from a wrapped
-// errVendorAuthRejected for use in the credentials.health_error column. Falls
-// back to the stringified error when no status is present.
-func classifyVendorAuthReason(err error) string {
-	if err == nil {
-		return "auth error"
-	}
-	s := err.Error()
-	for _, code := range []string{"401", "403"} {
-		if strings.Contains(s, code) {
-			return code
-		}
-	}
-	return "auth error"
-}
-
 // familyForProviderRefresh is the family mapping that
 // discoverAndUpsertForCredential must use when inserting a vendor-API
 // derived name into models_canonical. It is a thin wrapper around
@@ -416,25 +384,6 @@ func (h *Handler) discoverAndUpsertForCredential(ctx context.Context, cred crede
 	}
 
 	models, source, fErr := h.resolveModelsForCredential(ctx, cred, apiKey, true)
-	// 2026-08-22: vendor /models returned 401/403 (errVendorAuthRejected)
-	// and the catalog manifest has known-good models. Fall back to the
-	// manifest so the credential still produces a usable binding set;
-	// mark health as unreachable with a reason explaining the API auth
-	// failure so the operator can fix the key separately.
-	if errors.Is(fErr, errVendorAuthRejected) {
-		manifest, mErr := extractManifestModels(cred.modelsManifestJSON)
-		if mErr == nil && len(manifest) > 0 {
-			slog.Warn("discoverAndUpsertForCredential: vendor auth rejected, falling back to catalog manifest",
-				"credential_id", cred.id,
-				"provider_id", cred.providerID,
-				"manifest_count", len(manifest),
-			)
-			h.updateCredHealth(ctx, cred.id, "unreachable",
-				fmt.Sprintf("vendor /models returned %s; using catalog manifest as fallback", classifyVendorAuthReason(fErr)))
-			upserted, failed, _ = h.enrollCredentialModels(ctx, cred.id, manifest)
-			return upserted, failed, nil
-		}
-	}
 	if len(models) == 0 {
 		var msg string
 		if fErr != nil {
@@ -459,29 +408,8 @@ func (h *Handler) discoverAndUpsertForCredential(ctx context.Context, cred crede
 		return 0, 0, fmt.Errorf("vendor API failed; only manifest fallback available (%d models)", len(models))
 	}
 
-	upserted, failed, enrollErr := h.enrollCredentialModels(ctx, cred.id, models)
-	if upserted == 0 && failed > 0 {
-		// 2026-08-22: surface the actual underlying error (canonical
-		// upsert vs. binding upsert) so the operator can tell whether
-		// the failure was a constraint violation, a connectivity issue,
-		// or a logic bug — instead of the generic "model enrollment
-		// failed for every discovered model" message that masked the
-		// real problem for provider 14 (MiniMax).
-		var detail string
-		if enrollErr != nil {
-			detail = enrollErr.Error()
-		} else {
-			detail = fmt.Sprintf("%d models failed, no first error captured", failed)
-		}
-		h.updateCredHealth(ctx, cred.id, "unreachable",
-			"model enrollment failed for every discovered model: "+detail)
-		return upserted, failed, fmt.Errorf("model enrollment failed for every discovered model: %s", detail)
-	}
-	if source == "manifest" {
-		h.updateCredHealth(ctx, cred.id, "unreachable", "vendor API unavailable; catalog manifest used")
-	} else {
-		h.updateCredHealth(ctx, cred.id, "healthy", "")
-	}
+	upserted, failed = h.enrollCredentialModels(ctx, cred.id, models)
+	h.updateCredHealth(ctx, cred.id, "healthy", "")
 	return upserted, failed, nil
 }
 
@@ -489,43 +417,35 @@ func (h *Handler) discoverAndUpsertForCredential(ctx context.Context, cred crede
 // the same binding tables used by the routing resolver. Health checks can run
 // before the periodic discovery worker, so this keeps a newly verified
 // credential routable immediately.
-//
-// 2026-08-22: previously this loop wrote models_canonical with a thin SQL
-// and never read back its id, leaving refresh-generated bindings with
-// provider_models.canonical_id=NULL. It now delegates to
-// discovery.EnsureCanonicalAndAliases (the same path the periodic worker
-// uses) and passes the returned canonicalID through to the binding upsert.
-func (h *Handler) enrollCredentialModels(ctx context.Context, credentialID int, models []string) (upserted, failed int, firstErr error) {
-	db := h.refreshDB()
+func (h *Handler) enrollCredentialModels(ctx context.Context, credentialID int, models []string) (upserted, failed int) {
 	for _, m := range models {
-		canonicalID, _, ensureErr := discovery.EnsureCanonicalAndAliases(ctx, db, m, "provider_refresh")
-		if ensureErr != nil {
-			slog.Warn("enrollCredentialModels: ensure canonical failed",
-				"credential_id", credentialID,
-				"raw_model", m,
-				"error", ensureErr,
-			)
-			failed++
-			if firstErr == nil {
-				firstErr = fmt.Errorf("ensure canonical for %q: %w", m, ensureErr)
-			}
-			continue
+		stdName := modelname.StandardizeName(m)
+		if stdName != "" {
+			// Use discovery.InferFamily so the family column matches the
+			// discovery pipeline (claude-* → anthropic-claude, gpt-* →
+			// openai-gpt, etc). On conflict we repair historical rows
+			// that the legacy 'unknown' literal left behind — admin-edited
+			// families are preserved by the CASE guard. See
+			// provider_vendor_family_test.go for the regression guard.
+			family := familyForProviderRefresh(stdName)
+			//nolint:errcheck // best-effort exec, non-critical
+			h.db.Exec(ctx, `
+				INSERT INTO models_canonical (canonical_name, family, source, status)
+				VALUES ($1, $2, 'provider_refresh', 'active')
+				ON CONFLICT (canonical_name) DO UPDATE SET
+					family = CASE
+						WHEN models_canonical.family = 'unknown' THEN EXCLUDED.family
+				ELSE models_canonical.family
+				END
+			`, stdName, family)
 		}
-		if uErr := h.upsertModelForProvider(ctx, db, credentialID, m, &canonicalID); uErr != nil {
-			slog.Warn("enrollCredentialModels: upsert binding failed",
-				"credential_id", credentialID,
-				"raw_model", m,
-				"error", uErr,
-			)
+		if uErr := h.upsertModelForProvider(ctx, credentialID, m); uErr != nil {
 			failed++
-			if firstErr == nil {
-				firstErr = fmt.Errorf("upsert binding for %q: %w", m, uErr)
-			}
 			continue
 		}
 		upserted++
 	}
-	return upserted, failed, firstErr
+	return upserted, failed
 }
 
 // isProviderRefreshSourceUsable reports whether model discovery returned a
@@ -594,9 +514,6 @@ func (h *Handler) fetchVendorModels(ctx context.Context, url string, cred creden
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-			return nil, fmt.Errorf("%w: %d %s", errVendorAuthRejected, resp.StatusCode, string(body))
-		}
 		return nil, fmt.Errorf("models endpoint returned %d: %s", resp.StatusCode, string(body))
 	}
 
@@ -678,18 +595,18 @@ func (h *Handler) DebugChatProbe(ctx context.Context, credID int, model string) 
 // fetchVendorModelsFromURLs tries catalog-resolved candidate URLs in order;
 // requires HTTP 200 with a parseable model list (used by refresh + health probe).
 func (h *Handler) fetchVendorModelsFromURLs(ctx context.Context, urls []string, cred credentialRowLite, apiKey string) ([]string, error) {
-	var errs []error
+	var lastErr error
 	for _, u := range urls {
 		models, err := h.fetchVendorModels(ctx, u, cred, apiKey)
 		if err == nil && len(models) > 0 {
 			return models, nil
 		}
 		if err != nil {
-			errs = append(errs, fmt.Errorf("%s: %w", u, err))
+			lastErr = err
 		}
 	}
-	if len(errs) > 0 {
-		return nil, errors.Join(errs...)
+	if lastErr != nil {
+		return nil, lastErr
 	}
 	return nil, fmt.Errorf("no models found from any candidate URL")
 }
@@ -761,12 +678,7 @@ func extractManifestModels(manifest *string) ([]string, error) {
 // upsertModelForProvider upserts one binding directly on base tables.
 // Manual disables (reason LIKE 'manual%') are preserved; legacy soft-deletes
 // and auto disables are re-enabled when the vendor still lists the model.
-//
-// 2026-08-22: now accepts the canonical_id of the row produced by
-// EnsureCanonicalAndAliases so provider_models.canonical_id is wired up
-// immediately on first refresh instead of waiting for the hourly discovery
-// worker. Tests inject a pgxmock-backed Querier via SetRefreshDBOverride.
-func (h *Handler) upsertModelForProvider(ctx context.Context, db modelcatalog.Querier, credentialID int, rawName string, canonicalID *int) error {
+func (h *Handler) upsertModelForProvider(ctx context.Context, credentialID int, rawName string) error {
 	// 2026-07-14: NIM vendor prefix (z-ai/glm-5.2, minimaxai/minimax-m3 ...)
 	// must be stripped so that "glm-5.2" client requests route to the
 	// right offer. CanonicalizeClientModel already strips the prefix;
@@ -777,36 +689,13 @@ func (h *Handler) upsertModelForProvider(ctx context.Context, db modelcatalog.Qu
 	standardizedName := modelname.NormalizeRouteKey(rawName)
 	return modelcatalog.UpsertCredentialModel(
 		ctx,
-		db,
+		h.db,
 		credentialID,
 		rawName,          // provider-facing name, keep casing
 		canonicalRawName, // client-facing lowercase key
 		standardizedName, // standardized_name = lower(NormalizeRouteKey(raw))
-		canonicalID,
+		nil,
 	)
-}
-
-// refreshDB returns the Querier that enrollCredentialModels and
-// discoverAndUpsertForCredential should target. Tests inject a pgxmock
-// pool via SetRefreshDBOverride; production callers transparently use
-// the real *pgxpool.Pool stored on the Handler.
-func (h *Handler) refreshDB() modelcatalog.Querier {
-	if refreshDBOverride != nil {
-		return refreshDBOverride
-	}
-	return h.db
-}
-
-var refreshDBOverride modelcatalog.Querier
-
-// SetRefreshDBOverride lets tests substitute the refresh path's database
-// handle with a pgxmock pool. Nil disables the override and falls back to
-// the real Handler.db. Tests MUST restore the prior value (typically via
-// t.Cleanup) to avoid leaking state across tests.
-func SetRefreshDBOverride(db modelcatalog.Querier) (restore func()) {
-	prev := refreshDBOverride
-	refreshDBOverride = db
-	return func() { refreshDBOverride = prev }
 }
 
 func (h *Handler) updateCredHealth(ctx context.Context, credentialID int, status, errMsg string) {

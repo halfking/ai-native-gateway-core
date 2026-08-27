@@ -59,8 +59,8 @@ type Config struct {
 type Status string
 
 const (
-	StatusWS           Status = "ws"
-	StatusHTTP         Status = "http"
+	StatusWS         Status = "ws"
+	StatusHTTP       Status = "http"
 	StatusDisconnected Status = "disconnected"
 )
 

@@ -1,7 +1,9 @@
 package sessionmeta
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -294,53 +296,79 @@ func TestParseMessagesResponsesStringInput(t *testing.T) {
 }
 
 // TestParseMessagesResponsesInputArray verifies the OpenAI Responses
-// shape with an "input" array of role/content items. The Responses-only
-// input_text / output_text content-block variants must be accepted and
-// concatenated, so the heuristic extractor can see the last user turn.
+// shape with an "input" array of role/content items and flat text items.
 func TestParseMessagesResponsesInputArray(t *testing.T) {
 	raw := []byte(`{"instructions":"Be terse.","input":[
-		{"role":"user","content":"first request"},
-		{"role":"assistant","content":[
-			{"type":"output_text","text":"draft answer"}
-		]},
-		{"role":"user","content":[
-			{"type":"input_text","text":"final request"}
-		]}
+		{"type":"input_text","text":"first request"},
+		{"type":"message","role":"assistant","text":"draft answer"},
+		{"role":"user","content":[{"type":"input_text","text":"final request"}]}
 	]}`)
 	got := ParseMessages(raw)
 	if len(got) != 4 {
 		t.Fatalf("messages = %+v, want 4 entries", got)
 	}
-	if got[0].Role != "system" || got[0].Content != "Be terse." {
-		t.Fatalf("instructions must lead as system: %+v", got[0])
+	want := []Message{
+		{Role: "system", Content: "Be terse."},
+		{Role: "user", Content: "first request"},
+		{Role: "assistant", Content: "draft answer"},
+		{Role: "user", Content: "final request"},
 	}
-	if got[1].Role != "user" || got[1].Content != "first request" {
-		t.Fatalf("first user item lost: %+v", got[1])
-	}
-	if got[2].Role != "assistant" || got[2].Content != "draft answer" {
-		t.Fatalf("output_text block must flatten: %+v", got[2])
-	}
-	if got[3].Role != "user" || got[3].Content != "final request" {
-		t.Fatalf("input_text block must flatten: %+v", got[3])
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("messages[%d] = %+v, want %+v", i, got[i], want[i])
+		}
 	}
 }
 
-// TestParseMessagesResponsesIgnoresUnknownRoles keeps the Responses
-// dispatcher consistent with the OpenAI dispatcher: items with roles
-// outside the known set (e.g. "developer") must be dropped rather than
-// promoted to user. This avoids accidental instruction smuggling via
-// Responses-only role names.
-func TestParseMessagesResponsesIgnoresUnknownRoles(t *testing.T) {
+// TestParseMessagesResponsesDeveloperIsSystem verifies developer instructions
+// follow the same system semantics as the canonical Responses IR parser.
+func TestParseMessagesResponsesDeveloperIsSystem(t *testing.T) {
 	raw := []byte(`{"input":[
-		{"role":"developer","content":"leaked system instruction"},
-		{"role":"user","content":"real ask"}
+		{"role":"developer","content":"You are ZCode. Workspace: /srv/llm-gateway-go."},
+		{"role":"user","content":"deploy the session metadata module"}
 	]}`)
 	got := ParseMessages(raw)
-	if len(got) != 1 {
-		t.Fatalf("messages = %+v, want exactly the user message", got)
+	if len(got) != 2 || got[0].Role != "system" || got[0].Content == "" {
+		t.Fatalf("messages = %+v, want normalized system + user", got)
 	}
-	if got[0].Role != "user" || got[0].Content != "real ask" {
-		t.Fatalf("developer role must be dropped: %+v", got)
+	if got[1].Role != "user" || got[1].Content != "deploy the session metadata module" {
+		t.Fatalf("user message = %+v", got)
+	}
+	extracted := Extract(Input{RequestBody: raw})
+	if extracted.Agent.Name != "zcode" || extracted.Project.Label != "llm-gateway-go" {
+		t.Fatalf("developer system signals lost: %+v", extracted)
+	}
+}
+
+func TestParseMessagesResponsesBlankInputIsDropped(t *testing.T) {
+	got := ParseMessages([]byte(`{"instructions":"system","input":"   "}`))
+	if len(got) != 1 || got[0] != (Message{Role: "system", Content: "system"}) {
+		t.Fatalf("messages = %+v, want only system message", got)
+	}
+}
+
+func TestParseMessagesRetainsLatestUserWithInstruction(t *testing.T) {
+	var b strings.Builder
+	b.WriteString(`{"instructions":"system","input":[`)
+	for i := 0; i < MaxMessages; i++ {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		fmt.Fprintf(&b, `{"role":"user","content":"request-%d"}`, i)
+	}
+	b.WriteString(`]}`)
+	got := ParseMessages([]byte(b.String()))
+	if len(got) != MaxMessages || got[0].Role != "system" || got[len(got)-1].Content != "request-19" {
+		t.Fatalf("messages = %+v, want system plus latest user", got)
+	}
+}
+
+func TestParseMessagesRejectsOversizedAndConcatenatedJSON(t *testing.T) {
+	if got := ParseMessages(bytes.Repeat([]byte{'a'}, MaxInputBytes+1)); len(got) != 0 {
+		t.Fatalf("oversized body parsed: %+v", got)
+	}
+	if got := ParseMessages([]byte(`{"messages":[]} {"messages":[]}`)); len(got) != 0 {
+		t.Fatalf("concatenated JSON parsed: %+v", got)
 	}
 }
 

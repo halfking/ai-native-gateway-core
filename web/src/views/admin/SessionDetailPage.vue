@@ -3,17 +3,18 @@
  * SessionDetailPage — admin session detail (summary + request_logs turn tree).
  *
  * Turn list uses SessionTurnsTimeline (GET …/turns → session_turns_tree.go).
- * The legacy sessions_v2 turn list targeted gateway.session_turns and no longer
- * matches the registered /turns handler.
+ * Clicking a turn opens the fullscreen request detail in session-turns mode.
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { getSessionSnapshot } from '../../api/sessions_v2'
 import { ApiError } from '../../api/_core'
 import SessionSummaryBar from '../../components/SessionSummaryBar.vue'
 import SessionTurnsTimeline from '../../components/session/SessionTurnsTimeline.vue'
+import { openRequestDetailPage } from '../../utils/openRequestDetailPage'
 
 const route = useRoute()
+const router = useRouter()
 const sessionId = computed(() => String(route.params.id || ''))
 
 const snapshotError = ref('')
@@ -35,6 +36,10 @@ async function loadSnapshot() {
     if (e instanceof DOMException && e.name === 'AbortError') return
     snapshotError.value = e instanceof ApiError ? e.detail : e instanceof Error ? e.message : String(e)
   }
+}
+
+function openTurn(payload: { requestId: string; turnNumber: number }) {
+  openRequestDetailPage(payload.requestId, { mode: 'session-turns' }, router)
 }
 
 onMounted(loadSnapshot)
@@ -63,14 +68,19 @@ onBeforeUnmount(() => {
       <div v-if="snapshotError" class="error snapshot-error" role="alert">
         会话摘要加载失败：{{ snapshotError }}
       </div>
-      <SessionTurnsTimeline v-if="sessionId" :key="sessionId" :session-id="sessionId" />
+      <SessionTurnsTimeline
+        v-if="sessionId"
+        :key="sessionId"
+        :session-id="sessionId"
+        @open-request="openTurn"
+      />
     </div>
   </div>
 </template>
 
 <style scoped>
 .session-detail {
-  background: var(--kx-bg, #f3f4f6);
+  background: var(--kx-bg, var(--surface-secondary));
   min-height: 100vh;
 }
 .list {
@@ -79,9 +89,9 @@ onBeforeUnmount(() => {
   margin: 0 auto;
 }
 .error {
-  color: var(--kx-danger, #b42318);
-  background: var(--kx-danger-soft, #fff1f0);
-  border: 1px solid color-mix(in srgb, var(--kx-danger, #b42318) 40%, var(--kx-border, #f3b4b0));
+  color: var(--kx-danger, var(--danger));
+  background: var(--kx-danger-soft, var(--danger-bg));
+  border: 1px solid color-mix(in srgb, var(--kx-danger, var(--danger)) 40%, var(--kx-border, var(--danger-bg)));
   padding: 10px 12px;
   border-radius: 6px;
   margin-bottom: 10px;

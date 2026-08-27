@@ -30,7 +30,7 @@ func TestActivationHTTPStatus(t *testing.T) {
 		CodeLicenseRevoked:         http.StatusForbidden,
 		CodeDeviceLimitExceeded:    http.StatusConflict,
 		CodeDeviceAlreadyActivated: http.StatusConflict,
-		"":                         http.StatusBadRequest,
+		"":                           http.StatusBadRequest,
 	}
 	for code, want := range cases {
 		if got := activationHTTPStatus(code); got != want {

@@ -622,15 +622,15 @@ const probeSummaryCards = computed(() => {
 }
 
 .status-badge.enabled {
-  background: rgba(63, 185, 80, 0.15);
+  background: var(--success-bg);
   color: var(--success);
-  border: 1px solid rgba(63, 185, 80, 0.4);
+  border: 1px solid var(--success-bd);
 }
 
 .status-badge.disabled {
-  background: rgba(248, 81, 73, 0.15);
+  background: var(--danger-bg);
   color: var(--danger);
-  border: 1px solid rgba(248, 81, 73, 0.4);
+  border: 1px solid var(--danger-bd);
 }
 
 .interval-info {
@@ -664,7 +664,7 @@ const probeSummaryCards = computed(() => {
 
 .btn-primary {
   background: var(--accent);
-  color: #fff;
+  color: var(--on-primary);
   border-color: var(--accent);
 }
 
@@ -708,9 +708,9 @@ const probeSummaryCards = computed(() => {
 }
 
 .alert-danger {
-  background: rgba(248, 81, 73, 0.12);
+  background: var(--danger-bg);
   color: var(--danger);
-  border: 1px solid rgba(248, 81, 73, 0.35);
+  border: 1px solid var(--danger-bd);
 }
 
 .btn-close {
@@ -934,8 +934,8 @@ const probeSummaryCards = computed(() => {
 .upstream-error {
   margin-top: 4px;
   padding: 4px 8px;
-  background: rgba(248, 81, 73, 0.12);
-  border: 1px solid rgba(248, 81, 73, 0.35);
+  background: var(--danger-bg);
+  border: 1px solid var(--danger-bd);
   border-radius: 3px;
   font-family: monospace;
   font-size: 11px;
@@ -988,7 +988,7 @@ const probeSummaryCards = computed(() => {
   left: 0;
   right: 0;
   bottom: 0;
-  background: rgba(0, 0, 0, 0.5);
+  background: var(--overlay-strong);
   display: flex;
   justify-content: center;
   align-items: center;
@@ -1050,7 +1050,7 @@ const probeSummaryCards = computed(() => {
   border-radius: 4px;
   font-size: 12px;
   background: var(--accent);
-  color: #fff;
+  color: var(--on-primary);
 }
 .muted {
   font-size: 12px;

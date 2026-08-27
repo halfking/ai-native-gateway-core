@@ -1532,11 +1532,11 @@ table code {
 }
 .filter-tab:hover {
   color: var(--text);
-  background: rgba(255,255,255,0.05);
+  background: color-mix(in srgb, var(--kx-text) 4%, transparent);
 }
 .filter-tab.active {
   background: var(--accent);
-  color: #fff;
+  color: var(--on-primary);
 }
 .filter-divider {
   width: 1px;
@@ -1598,7 +1598,7 @@ table code {
   border-bottom: none;
 }
 .credential-table tbody tr:hover td {
-  background: rgba(255,255,255,.03);
+  background: color-mix(in srgb, var(--kx-text) 4%, transparent);
 }
 .compact-input {
   width: 100%;
@@ -1628,8 +1628,8 @@ table code {
   overflow-wrap: break-word;
 }
 .badge-amber {
-  background: rgba(210,153,34,.18);
-  color: #f0b429;
+  background: color-mix(in srgb, var(--warning) 20%, transparent);
+  color: var(--warning);
 }
 .diag-section h4 {
   margin: 0 0 6px 0;
@@ -1665,8 +1665,8 @@ table code {
   display: inline-block;
   flex-shrink: 0;
 }
-.dot-green { background: #4caf50; }
-.dot-red { background: #f44336; }
+.dot-green { background: var(--success); }
+.dot-red { background: var(--danger); }
 .bg-label {
   font-weight: 500;
   margin-inline-end: 2px;
@@ -1680,7 +1680,7 @@ table code {
   color: #42a5f5;
 }
 .badge-orange {
-  background: rgba(210,153,34,.15);
+  background: var(--warning-bg);
   color: var(--warning);
 }
 .provider-row {

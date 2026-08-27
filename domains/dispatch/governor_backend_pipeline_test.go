@@ -148,29 +148,70 @@ func TestPipelineUsesRedisEnforceForDefaultConcurrencyMode(t *testing.T) {
 }
 
 func TestPipelineUsesRedisGovernorForRateModes(t *testing.T) {
-	backend := &fakeBackend{kind: BackendRedisEnforce, name: "redis", newGov: newRPMGovernor(10)}
-	p := NewPipeline(Deps{})
-	defer p.Stop()
-	p.SetGovernorBackend(backend)
-
-	forwarder := p.getOrCreateForwarder(CredentialRef{CredentialID: 8, ConcurrencyMode: ModeRPM, RPMLimit: 10})
-	if forwarder.gov.Mode() != ModeRPM {
-		t.Fatalf("rate governor mode = %q, want %q", forwarder.gov.Mode(), ModeRPM)
+	cases := []struct {
+		name  string
+		ref   CredentialRef
+		gov   Governor
+		mode  string
+		limit int
+	}{
+		{"rpm", CredentialRef{CredentialID: 8, ConcurrencyMode: ModeRPM, RPMLimit: 10}, newRPMGovernor(10), ModeRPM, 10},
+		{"tpm", CredentialRef{CredentialID: 9, ConcurrencyMode: ModeTPM, TPMLimit: 20}, newTPMGovernor(20), ModeTPM, 20},
 	}
-	if backend.newCalls != 1 {
-		t.Fatalf("backend New calls = %d, want 1 for RPM", backend.newCalls)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			backend := &fakeBackend{kind: BackendRedisEnforce, name: "redis", newGov: tc.gov}
+			p := NewPipeline(Deps{})
+			defer p.Stop()
+			p.SetGovernorBackend(backend)
+
+			forwarder := p.getOrCreateForwarder(tc.ref)
+			if forwarder.gov.Mode() != tc.mode {
+				t.Fatalf("rate governor mode = %q, want %q", forwarder.gov.Mode(), tc.mode)
+			}
+			if backend.newCalls != 1 {
+				t.Fatalf("backend New calls = %d, want 1", backend.newCalls)
+			}
+			spec := backend.newSpecs[0]
+			if spec.Mode != tc.mode || spec.Limit != tc.limit {
+				t.Fatalf("backend spec = %+v, want mode=%q limit=%d", spec, tc.mode, tc.limit)
+			}
+		})
 	}
 }
 
 func TestPipelineFailsClosedWhenRedisGovernorConstructionFails(t *testing.T) {
+	// ApplyPolicy must fail-closed when the Redis backend refuses to build a
+	// governor: return ErrGovernorUnavailable, leave activePolicyRevision
+	// pinned, leave the live credForwarder governor untouched. Cold-start
+	// itself is intentionally fail-open (so a transient Redis outage does
+	// not block the first dispatch); see buildForwarderGovernor in
+	// forwarder.go.
 	backend := &fakeBackend{kind: BackendRedisEnforce, name: "redis", newErr: errors.New("redis unavailable")}
 	p := NewPipeline(Deps{})
 	defer p.Stop()
 	p.SetGovernorBackend(backend)
 
+	// Stage a live forwarder with the in-process governor so we can verify
+	// the swap does not happen on backend failure.
 	forwarder := p.getOrCreateForwarder(cred(9, ModeConcurrency, 1))
-	err := forwarder.gov.Acquire(context.Background(), NewQueuedRequest("r", "t", "m", context.Background(), nil), time.Now())
+	original := forwarder.gov
+
+	// ApplyPolicy that requires Redis construction must fail.
+	err := p.ApplyPolicy(context.Background(), GovernorPolicy{
+		Revision:    1,
+		GeneratedAt: time.Now(),
+		Specs: []GovernorSpec{
+			{CredentialID: 9, Mode: ModeConcurrency, Limit: 8},
+		},
+	})
 	if !IsGovernorUnavailable(err) {
-		t.Fatalf("Acquire error = %v, want ErrGovernorUnavailable", err)
+		t.Fatalf("ApplyPolicy error = %v, want ErrGovernorUnavailable", err)
+	}
+	if got := p.ActiveRevision(); got != 0 {
+		t.Fatalf("active revision after backend failure: got %d want 0", got)
+	}
+	if current := forwarder.gov; current != original {
+		t.Fatalf("live forwarder governor swapped despite backend failure: was %T now %T", original, current)
 	}
 }

@@ -89,7 +89,20 @@ func NewSessionExportAPI(db *pgxpool.Pool) *SessionExportAPI {
 }
 
 // ServeHTTP 路由分发：/import 子路径走 POST，其余按 id/pack 查询参数。
+//
+// Phase 0 P0-1：auth/tenant 校验先于 db 可用性检查，避免无 auth 请求泄漏
+// "数据库未配置" 信息，也保证跨租户拒绝永远先于任何业务路径。
 func (api *SessionExportAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Phase 0 P0-1: auth + tenant 边界必须先于任何依赖性检查（db、payload）。
+	requestTenant := r.URL.Query().Get("tenant")
+	if _, ok := resolveExportTenant(r, requestTenant); !ok {
+		if GetAuthContext(r) == nil {
+			writeExportJSONError(w, http.StatusUnauthorized, "authentication required")
+		} else {
+			writeExportJSONError(w, http.StatusForbidden, "tenant_admin cannot access other tenant sessions")
+		}
+		return
+	}
 	if api.db == nil {
 		writeExportJSONError(w, http.StatusServiceUnavailable, "session export API requires database")
 		return
@@ -116,12 +129,53 @@ func (api *SessionExportAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// resolveExportTenant 把请求 query 上的 tenant 参数与 auth 上下文对齐。
+//
+// Phase 0 P0-1：跨租户会话导入导出授权边界。
+//
+// 规则：
+//   - super_admin / admin_key：可显式 ?tenant=<other> 跨租户访问；不传则用 auth 上下文 tenant。
+//   - tenant_admin：忽略 query 参数，强制使用 auth.TenantID；若显式传入不一致则 403。
+//   - 无 auth 上下文（兜底，正常情况下 wrapAdmin 已注入）：拒绝。
+//
+// 返回 (tenantID, allowed)。allowed=false 时 handler 应直接 return，不要写响应。
+func resolveExportTenant(r *http.Request, requestTenantParam string) (string, bool) {
+	auth := GetAuthContext(r)
+	if auth == nil {
+		return "", false
+	}
+	if IsSuperAdminOrLegacy(r) {
+		if requestTenantParam != "" {
+			return requestTenantParam, true
+		}
+		if auth.TenantID != "" {
+			return auth.TenantID, true
+		}
+		return "default", true
+	}
+	// tenant_admin：强制锁本租户
+	if requestTenantParam != "" && requestTenantParam != auth.TenantID {
+		return "", false
+	}
+	if auth.TenantID != "" {
+		return auth.TenantID, true
+	}
+	return "default", true
+}
+
 // handleExport 导出完整会话迁移包。
 func (api *SessionExportAPI) handleExport(w http.ResponseWriter, r *http.Request) {
 	sessionID := r.URL.Query().Get("id")
-	tenantID := r.URL.Query().Get("tenant")
-	if tenantID == "" {
-		tenantID = "default"
+	requestTenant := r.URL.Query().Get("tenant")
+	tenantID, ok := resolveExportTenant(r, requestTenant)
+	if !ok {
+		// tenant_admin 试图跨租户访问 → 403；无 auth 上下文 → 401
+		if GetAuthContext(r) == nil {
+			writeExportJSONError(w, http.StatusUnauthorized, "authentication required")
+		} else {
+			writeExportJSONError(w, http.StatusForbidden, "tenant_admin cannot access other tenant sessions")
+		}
+		return
 	}
 	if sessionID == "" {
 		writeExportJSONError(w, http.StatusBadRequest, "missing id (gw_session_id)")
@@ -156,8 +210,8 @@ func (api *SessionExportAPI) buildExport(ctx context.Context, sessionID, tenantI
 				rl.id, rl.role, rl.parent_request_id,
 				rl.compression_reason, rl.compression_strategy, rl.compression_meta,
 				rl.attachments, rl.created_at,
-				rb.request_body AS request_body,
-				rb.response_body AS response_body
+				COALESCE(rb.request_body, rl.request_body) AS request_body,
+				COALESCE(rb.response_body, rl.response_body) AS response_body
 			FROM request_logs_with_current_month rl
 			LEFT JOIN request_logs_bodies_with_current_month rb ON rb.request_id = rl.request_id
 			WHERE rl.gw_session_id = $1
@@ -247,9 +301,15 @@ func (api *SessionExportAPI) buildExport(ctx context.Context, sessionID, tenantI
 // handleImport 把迁移包写入 staging（session_packs 表），返回 pack_id。
 // 目标主机用该 pack_id 经 /pack 端点拉取。
 func (api *SessionExportAPI) handleImport(w http.ResponseWriter, r *http.Request) {
-	tenantID := r.URL.Query().Get("tenant")
-	if tenantID == "" {
-		tenantID = "default"
+	requestTenant := r.URL.Query().Get("tenant")
+	tenantID, ok := resolveExportTenant(r, requestTenant)
+	if !ok {
+		if GetAuthContext(r) == nil {
+			writeExportJSONError(w, http.StatusUnauthorized, "authentication required")
+		} else {
+			writeExportJSONError(w, http.StatusForbidden, "tenant_admin cannot import to other tenant staging")
+		}
+		return
 	}
 	var pack SessionExport
 	if err := json.NewDecoder(r.Body).Decode(&pack); err != nil {
@@ -298,9 +358,15 @@ func (api *SessionExportAPI) handleImport(w http.ResponseWriter, r *http.Request
 // handleFetchPack 按 pack_id 拉取已导入的迁移包（目标主机调用）。
 func (api *SessionExportAPI) handleFetchPack(w http.ResponseWriter, r *http.Request) {
 	packID := r.URL.Query().Get("id")
-	tenantID := r.URL.Query().Get("tenant")
-	if tenantID == "" {
-		tenantID = "default"
+	requestTenant := r.URL.Query().Get("tenant")
+	tenantID, ok := resolveExportTenant(r, requestTenant)
+	if !ok {
+		if GetAuthContext(r) == nil {
+			writeExportJSONError(w, http.StatusUnauthorized, "authentication required")
+		} else {
+			writeExportJSONError(w, http.StatusForbidden, "tenant_admin cannot fetch packs from other tenant staging")
+		}
+		return
 	}
 	if packID == "" {
 		writeExportJSONError(w, http.StatusBadRequest, "missing id (pack_id)")

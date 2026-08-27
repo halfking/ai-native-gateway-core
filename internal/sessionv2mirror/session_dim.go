@@ -12,7 +12,6 @@
 //   - 首选从 request_context_attrs 按 request_id 取上下文（含 project_id，
 //     即 X-Gw-Project-Id，主表 entry 不携带该字段）；
 //   - 侧表无行时回退用 entry 自身字段（无 project）。
-//
 // 字段语义对齐 350/358：首值优先（owner/client/project/task 的第一个
 // 非空值固化），last_active_at 取最大值，closed 会话被新请求唤醒为 active。
 package sessionv2mirror

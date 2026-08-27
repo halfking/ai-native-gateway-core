@@ -35,9 +35,9 @@ func TestSystemHealthWorker_IntervalConstant(t *testing.T) {
 
 type closedCtx struct{}
 
-func (closedCtx) Deadline() (time.Time, bool) { return time.Time{}, true }
-func (closedCtx) Done() <-chan struct{}       { ch := make(chan struct{}); close(ch); return ch }
-func (closedCtx) Err() error                  { return nil }
-func (closedCtx) Value(any) any               { return nil }
+func (closedCtx) Deadline() (time.Time, bool)       { return time.Time{}, true }
+func (closedCtx) Done() <-chan struct{}             { ch := make(chan struct{}); close(ch); return ch }
+func (closedCtx) Err() error                        { return nil }
+func (closedCtx) Value(any) any                     { return nil }
 
 func neverContext() closedCtx { return closedCtx{} }

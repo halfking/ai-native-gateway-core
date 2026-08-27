@@ -99,6 +99,13 @@ func (rb *RingBuffer) WriteRequestWAL(ctx context.Context, key string, payload a
 func (rb *RingBuffer) push(rec BackupRecord) {
 	rb.mu.Lock()
 	defer rb.mu.Unlock()
+	rb.pushLocked(rec)
+}
+
+// pushLocked writes one record assuming rb.mu is already held. Kept
+// separate from push() because Replay() requeues failed records in a batch
+// while already holding the lock — a self-locking push would deadlock.
+func (rb *RingBuffer) pushLocked(rec BackupRecord) {
 	if rb.size == rb.cap {
 		// Buffer is full — about to overwrite the oldest entry.
 		atomic.AddUint64(&rb.dropped, 1)
@@ -202,12 +209,13 @@ func (rb *RingBuffer) Replay(ctx context.Context, limit int, fn ReplayFn) (int, 
 	}
 	// Pop the replayed entries from the buffer so callers don't see them again.
 	if limit > 0 && limit < rb.size {
-		// Partial replay — drop just the replayed prefix.
+		// Partial replay — drop just the replayed prefix. The remaining
+		// entries are already contiguous starting at newHead (elements
+		// start+limit .. start+size-1 == newHead .. newHead+newSize-1),
+		// so no compaction copy is needed; the previous copy loop read
+		// past the valid region and overwrote survivors with garbage.
 		newSize := rb.size - limit
 		newHead := (rb.head - rb.size + rb.cap + limit) % rb.cap
-		for i := 0; i < newSize; i++ {
-			rb.buf[(newHead+i)%rb.cap] = rb.buf[(newHead+limit+i)%rb.cap]
-		}
 		rb.size = newSize
 		rb.head = (newHead + newSize) % rb.cap
 	} else {
@@ -221,9 +229,13 @@ func (rb *RingBuffer) Replay(ctx context.Context, limit int, fn ReplayFn) (int, 
 	rb.mu.Unlock()
 
 	var replayed, failed int
-	for _, rec := range snapshot {
+	var failedRecords []BackupRecord
+	for i, rec := range snapshot {
 		if err := ctx.Err(); err != nil {
-			return replayed, failed, err
+			// Unreplayed remainder goes back so ctx cancellation does not
+			// silently drop WAL records either.
+			failedRecords = append(failedRecords, snapshot[i:]...)
+			break
 		}
 		if err := fn(ctx, rec); err != nil {
 			failed++
@@ -231,11 +243,21 @@ func (rb *RingBuffer) Replay(ctx context.Context, limit int, fn ReplayFn) (int, 
 				"record_key", rec.RecordKey,
 				"record_type", rec.Type,
 				"error", err)
-			// Deliberately do NOT requeue — caller can re-trigger replay
-			// via /replay endpoint once DB is healthy again.
+			// Requeue on failure: these may be WAL records whose loss is
+			// not acceptable. Replay is only ever triggered manually via
+			// the /replay endpoint (no automatic loop), so requeueing
+			// cannot spin. When the DB recovers the operator replays again.
+			failedRecords = append(failedRecords, rec)
 			continue
 		}
 		replayed++
+	}
+	if len(failedRecords) > 0 {
+		rb.mu.Lock()
+		for _, rec := range failedRecords {
+			rb.pushLocked(rec)
+		}
+		rb.mu.Unlock()
 	}
 	return replayed, failed, nil
 }

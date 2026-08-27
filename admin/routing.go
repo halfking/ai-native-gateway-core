@@ -32,6 +32,7 @@ import (
 	met "github.com/kaixuan/llm-gateway-go/metrics" //nolint:depguard // routing credential observability counters
 	"github.com/kaixuan/llm-gateway-go/modelname"
 	"github.com/kaixuan/llm-gateway-go/provider"
+	"github.com/redis/go-redis/v9"
 )
 
 type routingHandler struct { //nolint:unused
@@ -48,37 +49,44 @@ type routingHandler struct { //nolint:unused
 // safe and gives an order-of-magnitude speedup under repeated
 // page-load / tab-switch traffic.
 type availableModelsCache struct {
-	mu        sync.Mutex
-	value     map[string]any
-	expiresAt time.Time
-	ttl       time.Duration
+	mu      sync.Mutex
+	entries map[string]availableModelsCacheEntry
+	ttl     time.Duration
 	// hits/misses are exposed via /api/system/background-tasks for ops.
 	hits   uint64
 	misses uint64
 }
 
-func (c *availableModelsCache) get(now time.Time) (map[string]any, bool) {
-	if c == nil || c.value == nil {
+type availableModelsCacheEntry struct {
+	value     map[string]any
+	expiresAt time.Time
+}
+
+func (c *availableModelsCache) get(now time.Time, tenantID string) (map[string]any, bool) {
+	if c == nil {
 		return nil, false
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if now.Before(c.expiresAt) {
+	entry, ok := c.entries[tenantID]
+	if ok && now.Before(entry.expiresAt) {
 		c.hits++
-		return c.value, true
+		return entry.value, true
 	}
 	c.misses++
 	return nil, false
 }
 
-func (c *availableModelsCache) set(now time.Time, value map[string]any) {
+func (c *availableModelsCache) set(now time.Time, tenantID string, value map[string]any) {
 	if c == nil {
 		return
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.value = value
-	c.expiresAt = now.Add(c.ttl)
+	if c.entries == nil {
+		c.entries = make(map[string]availableModelsCacheEntry)
+	}
+	c.entries[tenantID] = availableModelsCacheEntry{value: value, expiresAt: now.Add(c.ttl)}
 }
 
 const availableModelsCacheTTL = 30 * time.Second
@@ -551,10 +559,10 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 	// ensureScopeRevision / ensureCanonicalScopeRevision seeds version=1 so
 	// drag-and-drop stays available.
 	var (
-		reorderRevision       string
-		reorderCanonicalID    int64
-		reorderRawModel       string
-		respCanonicalIDValue  *int64
+		reorderRevision      string
+		reorderCanonicalID   int64
+		reorderRawModel      string
+		respCanonicalIDValue *int64
 	)
 	if len(candidates) > 0 {
 		if firstCanonical, ok := singleCanonicalForRevision(candidates); ok {
@@ -718,19 +726,24 @@ func (h *Handler) handleRoutingCandidateBindingUpdate(w http.ResponseWriter, r *
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	// Lookup the binding_id for (credential_id, raw_model_name) — the
-	// resolve page hands callers those two keys, never the surrogate
-	// binding id. Resolve via provider_models.raw_model_name so we don't
-	// rely on the inferred provider-side match.
-	var bindingID int
+	// Lookup the binding_id, provider_id, and current concurrency_limit
+	// for (credential_id, raw_model_name) — the resolve page hands callers
+	// those two keys, never the surrogate binding id. Resolve via
+	// provider_models.raw_model_name so we don't rely on the inferred
+	// provider-side match. Concurrency_limit is needed for hot-reloading
+	// the in-process Limiter semaphore so admin changes apply without a
+	// service restart.
+	var bindingID, providerID int
+	var concurrencyLimit *int
 	if err := h.db.QueryRow(ctx, `
-		SELECT cmb.id
+		SELECT cmb.id, c.provider_id, c.concurrency_limit
 		FROM credential_model_bindings cmb
 		JOIN provider_models pm ON pm.id = cmb.provider_model_id
+		JOIN credentials c ON c.id = cmb.credential_id
 		WHERE cmb.credential_id = $1
 		  AND pm.raw_model_name = $2
 		LIMIT 1
-	`, credID, rawModel).Scan(&bindingID); err != nil {
+	`, credID, rawModel).Scan(&bindingID, &providerID, &concurrencyLimit); err != nil {
 		writeError(w, http.StatusNotFound, "binding not found for credential/model pair")
 		return
 	}
@@ -757,6 +770,27 @@ func (h *Handler) handleRoutingCandidateBindingUpdate(w http.ResponseWriter, r *
 	// index — provider.candCache has no LISTEN/NOTIFY path. Mirrors the
 	// other credential-mutating admin handlers (credential_keys.go etc.).
 	provider.InvalidateCandidateCacheForCredential(credID)
+
+	// 2026-08-26 hot-reload (operator-confirmed: priority / concurrency
+	// changes must take effect immediately, no TTL delay, no service restart):
+	//
+	//  1. Refresh the in-process Limiter pool so a new concurrency_limit
+	//     (if changed via the credentials row elsewhere) takes effect for
+	//     new in-flight requests.
+	//  2. Clear every sticky entry pointing at this credential so new
+	//     sessions stop inheriting the previous credential via L2 sticky
+	//     and re-enter load balancing.
+	if h.limiter != nil && concurrencyLimit != nil {
+		h.limiter.SetCredentialCapacity(providerID, credID, *concurrencyLimit)
+	}
+	if h.stickyCache != nil {
+		if cleared, err := h.stickyCache.ClearForCredential(credID); err != nil {
+			slog.Warn("sticky hot-reload: clear failed", "credential_id", credID, "error", err)
+		} else if cleared > 0 {
+			slog.Info("sticky hot-reload: cleared bindings on binding PATCH",
+				"credential_id", credID, "cleared", cleared)
+		}
+	}
 
 	// Audit log: keep before/after so the routing_audit_log table holds
 	// enough context for post-mortem diffs (rule 36 alignment).
@@ -788,6 +822,12 @@ const maxRoutingCandidateReorderItems = 99
 // deterministic id order. The same SQL backs the resolve endpoint's
 // reorder_revision helper, so the revision hash stays aligned with the
 // scope the writer will mutate.
+//
+// Disabled providers (p.enabled = FALSE) and credentials manually
+// toggled off (c.manual_disabled = TRUE) are excluded so the scope
+// hash matches what the resolver ships today; otherwise a partial
+// drag-submit can pass validation while still mutating rows the
+// operator cannot observe via the credential model binding views.
 const reorderScopeSQL = `
 SELECT cmb.id,
        cmb.credential_id,
@@ -795,6 +835,8 @@ SELECT cmb.id,
        cmb.updated_at
 FROM credential_model_bindings cmb
 JOIN provider_models pm ON pm.id = cmb.provider_model_id
+JOIN providers p ON p.id = pm.provider_id AND p.enabled = TRUE
+JOIN credentials c ON c.id = cmb.credential_id AND COALESCE(c.manual_disabled, FALSE) = FALSE
 WHERE pm.raw_model_name = $1
 ORDER BY cmb.id
 `
@@ -856,6 +898,12 @@ func fetchReorderScope(ctx context.Context, q pgxQueryRower, rawModel string, lo
 // aligned with the scope the writer will mutate. Keying by canonical_id lets
 // one reorder span all raw_model_name aliases of a model (e.g. glm-5.2 +
 // z-ai/glm-5.2) under a single atomic revision.
+//
+// Disabled providers (p.enabled = FALSE) and credentials manually
+// toggled off (c.manual_disabled = TRUE) are excluded so the scope
+// hash matches what the resolver ships today; otherwise a partial
+// drag-submit can pass validation while still mutating rows the
+// operator cannot observe via the credential model binding views.
 const reorderScopeByCanonicalSQL = `
 SELECT cmb.id,
        cmb.credential_id,
@@ -863,6 +911,8 @@ SELECT cmb.id,
        cmb.updated_at
 FROM credential_model_bindings cmb
 JOIN provider_models pm ON pm.id = cmb.provider_model_id
+JOIN providers p ON p.id = pm.provider_id AND p.enabled = TRUE
+JOIN credentials c ON c.id = cmb.credential_id AND COALESCE(c.manual_disabled, FALSE) = FALSE
 WHERE pm.canonical_id = $1
 ORDER BY cmb.id
 `
@@ -996,6 +1046,13 @@ func loadScopeRevision(ctx context.Context, q pgxQueryRower, rawModel string) (s
 // version=1 (same hash formula as migration 541 backfill, extended in 568 to
 // include b.priority and mirrored in the canonical bump functions by 571) when
 // the row is absent. Concurrent ensures are safe via ON CONFLICT DO NOTHING.
+//
+// The seed query mirrors reorderScopeSQL: it must skip bindings under
+// disabled providers and credentials with manual_disabled = TRUE so the
+// resulting hash lines up with what fetchReorderScope returns at write
+// time. Otherwise a client could compute one hash from the resolve
+// payload (which already filters those rows) and watch the server reject
+// its PATCH with a phantom "scope drift" 409.
 func ensureScopeRevision(ctx context.Context, q pgxExecRower, rawModel string) (scopeRevision, error) {
 	rawModel = strings.TrimSpace(rawModel)
 	if rawModel == "" {
@@ -1022,6 +1079,8 @@ VALUES (
             ), 'sha256'), 'hex')
             FROM public.provider_models pm
             LEFT JOIN public.credential_model_bindings b ON b.provider_model_id = pm.id
+            JOIN public.providers p ON p.id = pm.provider_id AND p.enabled = TRUE
+            JOIN public.credentials c ON c.id = b.credential_id AND COALESCE(c.manual_disabled, FALSE) = FALSE
             WHERE pm.raw_model_name = $1
         ),
         ''
@@ -1065,6 +1124,14 @@ func loadCanonicalScopeRevision(ctx context.Context, q pgxQueryRower, canonicalI
 // backfill, keyed by canonical_id; the b.priority term was added by 571
 // alongside the four canonical bump functions) when the row is absent.
 // Concurrent ensures are safe via ON CONFLICT DO NOTHING.
+//
+// The seed query mirrors reorderScopeByCanonicalSQL: it must skip
+// bindings under disabled providers and credentials with manual_disabled
+// = TRUE so the resulting hash lines up with what
+// fetchReorderScopeByCanonical returns at write time. Otherwise a client
+// could compute one hash from the resolve payload (which already filters
+// those rows) and watch the server reject its PATCH with a phantom
+// "scope drift" 409.
 func ensureCanonicalScopeRevision(ctx context.Context, q pgxExecRower, canonicalID int64) (scopeRevision, error) {
 	if canonicalID <= 0 {
 		return scopeRevision{}, nil
@@ -1090,6 +1157,8 @@ VALUES (
             ), 'sha256'), 'hex')
             FROM public.provider_models pm
             LEFT JOIN public.credential_model_bindings b ON b.provider_model_id = pm.id
+            JOIN public.providers p ON p.id = pm.provider_id AND p.enabled = TRUE
+            JOIN public.credentials c ON c.id = b.credential_id AND COALESCE(c.manual_disabled, FALSE) = FALSE
             WHERE pm.canonical_id = $1
         ),
         ''
@@ -1325,6 +1394,22 @@ func (h *Handler) handleRoutingCandidateBindingReorder(w http.ResponseWriter, r 
 	if req.ExpectedRevision == "" {
 		writeError(w, http.StatusBadRequest, "expected_revision is required")
 		return
+	}
+	// Restore the per-item raw_model contract from bc788bfac (atomic
+	// complete-set reorder): an item may omit raw_model (inherits the
+	// top-level scope) but must not contradict it — that silently writes
+	// priorities into a different model's binding set.
+	for i := range req.Items {
+		itemRaw := strings.TrimSpace(req.Items[i].RawModel)
+		switch {
+		case itemRaw == "":
+			req.Items[i].RawModel = req.RawModel
+		case req.RawModel != "" && !strings.EqualFold(itemRaw, req.RawModel):
+			writeError(w, http.StatusBadRequest, "raw_model mismatch between request and item")
+			return
+		default:
+			req.Items[i].RawModel = itemRaw
+		}
 	}
 	if validationErr := validateRoutingCandidateReorder(req); validationErr != "" {
 		writeError(w, http.StatusBadRequest, validationErr)
@@ -2487,8 +2572,207 @@ type popularModelEntry struct {
 	Count         *int   `json:"count,omitempty"`
 }
 
-func (h *Handler) queryPopularModels(ctx context.Context, featuredModels []string, byCanonical map[string]*availableVersionEntry) []popularModelEntry {
-	popular := make([]popularModelEntry, 0, 20)
+// defaultPopularModelsLookupWindow is how far back we look in request_logs_hot
+// for "popular models" suggestions unless the environment overrides it.
+// request_logs_hot is the hot standalone
+// table (rule 33 / migration 341) — older rows are migrated nightly into
+// the monthly partitioned request_logs table by promote_request_logs_hot_to_partition.
+// Querying request_logs_hot directly avoids the columnar monthly partitions
+// that the previous request_logs_with_current_month UNION dragged in.
+const defaultPopularModelsLookupWindow = 7 * 24 * time.Hour
+
+// popularModelsHotSQL returns up to 10 (model_key, count) rows from
+// request_logs_hot covering the configured lookup window.
+//
+// The cutoff is passed as a plan-time literal ($1) computed in Go so the
+// hot-table scan is bounded by an index range on (ts) rather than the
+// previous `NOW() - INTERVAL '7 days'` predicate that could not prune
+// against the partitioned parent view.
+const popularModelsHotSQL = `
+SELECT model_key, cnt FROM (
+    SELECT
+        COALESCE(mc.canonical_name, mc2.canonical_name, rl.client_model) AS model_key,
+        COUNT(*) AS cnt
+    FROM request_logs_hot rl
+    LEFT JOIN models_canonical mc ON mc.id = rl.canonical_id
+    LEFT JOIN LATERAL (
+        SELECT canonical_id
+        FROM model_aliases
+        WHERE raw_name = lower(rl.client_model)
+          AND status = 'active'
+        LIMIT 1
+    ) ma ON TRUE
+    LEFT JOIN models_canonical mc2 ON mc2.id = ma.canonical_id
+    WHERE rl.ts >= $1
+      AND rl.success = TRUE
+      AND NOT COALESCE('probe' = ANY(rl.quality_flags), FALSE)
+      AND ($2 = '' OR rl.tenant_id = $2)
+      AND rl.client_model IS NOT NULL AND rl.client_model != ''
+    GROUP BY model_key
+) u
+ORDER BY cnt DESC
+LIMIT 10`
+
+// livePopularModels queries Redis for "currently accessed models" using the
+// live-stream dimension queues indexed at llmgw:live:dim:index:global.
+// Each lane queue key llmgw:live:dim:model:<normalized> has ZSET members
+// (one per recent request-id in that lane). ZCARD is a cheap O(1) proxy
+// for "currently in flight / recently active". Results are returned sorted
+// by cardinality desc, capped at topLivePopularLimit.
+//
+// This is the fast path that lets the dashboard's "凭据路由模型" picker
+// surface *what is being routed right now* without touching the request_logs
+// tables at all. Best-effort: errors are swallowed and an empty slice
+// is returned so callers fall back to the SQL path.
+func livePopularModels(ctx context.Context, rdb *redis.Client, limit int) []popularModelEntry {
+	if rdb == nil || limit <= 0 {
+		return nil
+	}
+	keys, err := rdb.SMembers(ctx, liveStreamDimIndexKey("", true)).Result()
+	if err != nil || len(keys) == 0 {
+		return nil
+	}
+	const dimModelPrefix = liveStreamDimPrefix + "model:"
+	type modelCount struct {
+		name  string
+		count int64
+	}
+	bucket := make([]modelCount, 0, len(keys))
+	for _, key := range keys {
+		if !strings.HasPrefix(key, dimModelPrefix) {
+			continue
+		}
+		n, err := rdb.ZCard(ctx, key).Result()
+		if err != nil || n <= 0 {
+			continue
+		}
+		bucket = append(bucket, modelCount{
+			name:  strings.TrimPrefix(key, dimModelPrefix),
+			count: n,
+		})
+	}
+	if len(bucket) == 0 {
+		return nil
+	}
+	sort.Slice(bucket, func(i, j int) bool {
+		if bucket[i].count != bucket[j].count {
+			return bucket[i].count > bucket[j].count
+		}
+		return bucket[i].name < bucket[j].name
+	})
+	if len(bucket) > limit {
+		bucket = bucket[:limit]
+	}
+	out := make([]popularModelEntry, 0, len(bucket))
+	for _, b := range bucket {
+		c := int(b.count)
+		out = append(out, popularModelEntry{
+			CanonicalName: b.name,
+			DisplayName:   b.name,
+			Source:        "live",
+			Count:         &c,
+		})
+	}
+	return out
+}
+
+// recentlyUsedModelsKeyPrefix namespaces one Redis ZSET per tenant. Each key
+// records canonical model names hit by a real (non-probe) successful request
+// over the last RecentlyUsedModelsTTL. This is the primary fast path for the
+// "凭据路由模型" dashboard widget — O(log N) writes (ZINCRBY) on the
+// request hot path, O(log N + M) reads (ZREVRANGE) here.
+//
+// Why a dedicated key (vs the live-stream dim queue ZCARD used by
+// livePopularModels):
+//   - TTL exactly matches the 7-day hot-popular window, no extra
+//     "we measured 24h but the UI asks for 7d" drift.
+//   - Writes are gated on is_probe=false + success=true so node
+//     probes, model probes, and self-check tiles cannot pollute the
+//     ranking.
+//   - Score is the real request counter (not lane-queue cardinality
+//     which mixes real requests with idle markers and capped lanes).
+//   - Persistent across gateway restarts via AOF/RDB (lane queue
+//     contents live in process memory only).
+const (
+	recentlyUsedModelsKeyPrefix = "llmgw:routing:recently_used_models:"
+	RecentlyUsedModelsTTL       = 7 * 24 * time.Hour
+	recentlyUsedModelsLimit     = 10
+)
+
+// recentlyUsedPopularModels reads the top-N recently-used canonical model
+// names for one tenant. An empty tenant intentionally has no Redis aggregate:
+// super-admin reads remain DB-backed and cannot be served by a global key.
+// Best-effort: returns nil on any Redis error so callers fall back to SQL.
+func recentlyUsedModelsKey(tenantID string) string {
+	tenantID = strings.TrimSpace(tenantID)
+	if tenantID == "" {
+		return ""
+	}
+	return recentlyUsedModelsKeyPrefix + tenantID
+}
+
+func recentlyUsedPopularModels(ctx context.Context, rdb *redis.Client, tenantID string, limit int) []popularModelEntry {
+	key := recentlyUsedModelsKey(tenantID)
+	if rdb == nil || key == "" || limit <= 0 {
+		return nil
+	}
+	pairs, err := rdb.ZRevRangeWithScores(ctx, key, 0, int64(limit-1)).Result()
+	if err != nil || len(pairs) == 0 {
+		return nil
+	}
+	out := make([]popularModelEntry, 0, len(pairs))
+	for _, p := range pairs {
+		name, _ := p.Member.(string)
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		c := int(p.Score)
+		out = append(out, popularModelEntry{
+			CanonicalName: name,
+			DisplayName:   name,
+			Source:        "recent",
+			Count:         &c,
+		})
+	}
+	return out
+}
+
+// RecordRecentlyUsedModel bumps the canonical model's score in the
+// recently-used ZSET and refreshes the key TTL. Safe to call from
+// the request hot path: errors are swallowed and reported through a
+// counter (no log spam per request).
+//
+// Probe / selfcheck / pre-flight requests must pass isProbe=false so
+// health-check traffic does not skew the dashboard ranking. tenantID is
+// required so model popularity never crosses tenant boundaries.
+func RecordRecentlyUsedModel(ctx context.Context, rdb *redis.Client, tenantID, canonical string, isProbe bool) {
+	if rdb == nil || isProbe {
+		return
+	}
+	key := recentlyUsedModelsKey(tenantID)
+	if key == "" {
+		return
+	}
+	canonical = normalizeModelKey(canonical)
+	if canonical == "" || canonical == "unknown" {
+		return
+	}
+	pipe := rdb.Pipeline()
+	pipe.ZIncrBy(ctx, key, 1, canonical)
+	pipe.Expire(ctx, key, RecentlyUsedModelsTTL)
+	if _, err := pipe.Exec(ctx); err != nil {
+		// Best-effort: do not log per-request (would flood). A future
+		// counter hook (RecentlyUsedRedisErrors) can catch chronic issues.
+		_ = err
+	}
+}
+
+func (h *Handler) queryPopularModels(ctx context.Context, featuredModels []string, byCanonical map[string]*availableVersionEntry, tenantID string, limit int) []popularModelEntry {
+	if limit <= 0 {
+		return nil
+	}
+	popular := make([]popularModelEntry, 0, 32)
 	seen := map[string]bool{}
 
 	add := func(canonical, display, source string, count *int) {
@@ -2522,30 +2806,31 @@ func (h *Handler) queryPopularModels(ctx context.Context, featuredModels []strin
 		add(n, n, "policy", nil)
 	}
 
-	usageRows, err := h.db.Query(ctx, `
-		SELECT model_key, cnt FROM (
-			SELECT
-				COALESCE(mc.canonical_name, mc2.canonical_name, rl.client_model) AS model_key,
-				COUNT(*) AS cnt
-			FROM request_logs_with_current_month rl
-			LEFT JOIN models_canonical mc ON mc.id = rl.canonical_id
-			LEFT JOIN LATERAL (
-				SELECT canonical_id
-				FROM model_aliases
-				-- 2026-07-14: model_aliases.raw_name is stored lowercase; compare directly.
-				WHERE raw_name = lower(rl.client_model)
-				  AND status = 'active'
-				LIMIT 1
-			) ma ON TRUE
-			LEFT JOIN models_canonical mc2 ON mc2.id = ma.canonical_id
-			WHERE rl.ts > NOW() - INTERVAL '7 days'
-			  AND rl.success = TRUE
-			  AND rl.client_model IS NOT NULL AND rl.client_model != ''
-			GROUP BY model_key
-		) u
-		ORDER BY cnt DESC
-		LIMIT 10
-	`)
+	// The limit applies only to usage-derived models. Featured models are a
+	// policy list and must all remain visible, even when the list is longer
+	// than the usage suggestion limit.
+	hotCount := 0
+	addHot := func(model popularModelEntry) {
+		if hotCount >= limit {
+			return
+		}
+		before := len(popular)
+		add(model.CanonicalName, model.DisplayName, model.Source, model.Count)
+		if len(popular) > before {
+			hotCount++
+		}
+	}
+
+	if rc, ok := h.redisClient.(*redis.Client); ok {
+		// The live dimension queues mix real requests with probes and idle
+		// markers, so they cannot satisfy the picker's non-probe contract.
+		for _, recent := range recentlyUsedPopularModels(ctx, rc, tenantID, recentlyUsedModelsLimit) {
+			addHot(recent)
+		}
+	}
+
+	cutoff := time.Now().UTC().Add(-popularModelsLookupWindow())
+	usageRows, err := h.db.Query(ctx, popularModelsHotSQL, cutoff, tenantID)
 	if err == nil {
 		defer usageRows.Close()
 		for usageRows.Next() {
@@ -2555,7 +2840,12 @@ func (h *Handler) queryPopularModels(ctx context.Context, featuredModels []strin
 				continue
 			}
 			c := cnt
-			add(modelKey, modelKey, "usage", &c)
+			addHot(popularModelEntry{
+				CanonicalName: modelKey,
+				DisplayName:   modelKey,
+				Source:        "usage",
+				Count:         &c,
+			})
 		}
 	}
 	return popular
@@ -2582,7 +2872,8 @@ func (h *Handler) handleRoutingAvailableModels(w http.ResponseWriter, r *http.Re
 	// policy edit / provider refresh is handled in those paths
 	// (call invalidateAvailableModelsCache below).
 	if r.Method == http.MethodGet {
-		if cached, ok := globalAvailableModelsCache.get(time.Now()); ok {
+		tenantID := EffectiveTenantIDAll(r)
+		if cached, ok := globalAvailableModelsCache.get(time.Now(), tenantID); ok {
 			writeJSON(w, http.StatusOK, cached)
 			return
 		}
@@ -2761,7 +3052,8 @@ func (h *Handler) handleRoutingAvailableModels(w http.ResponseWriter, r *http.Re
 	})
 	sort.Strings(unmapped)
 
-	popular := h.queryPopularModels(ctx, featuredModels, byCanonical)
+	tenantID := EffectiveTenantIDAll(r)
+	popular := h.queryPopularModels(ctx, featuredModels, byCanonical, tenantID, 20)
 
 	resp := map[string]any{
 		"families":  familiesOut,
@@ -2770,7 +3062,7 @@ func (h *Handler) handleRoutingAvailableModels(w http.ResponseWriter, r *http.Re
 		"total_raw": totalRaw,
 	}
 	if r.Method == http.MethodGet {
-		globalAvailableModelsCache.set(time.Now(), resp)
+		globalAvailableModelsCache.set(time.Now(), tenantID, resp)
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -2784,8 +3076,7 @@ func (h *Handler) handleRoutingAvailableModels(w http.ResponseWriter, r *http.Re
 // admin.InvalidateAvailableModelsCache() without importing the cache.
 func InvalidateAvailableModelsCache() {
 	globalAvailableModelsCache.mu.Lock()
-	globalAvailableModelsCache.value = nil
-	globalAvailableModelsCache.expiresAt = time.Time{}
+	globalAvailableModelsCache.entries = nil
 	globalAvailableModelsCache.mu.Unlock()
 }
 
@@ -2793,11 +3084,11 @@ func InvalidateAvailableModelsCache() {
 // (admin/routing_cache_test.go) exercise the hit/miss/invalidate
 // lifecycle without spinning up a real DB.
 func setAvailableModelsCacheForTest(value map[string]any) {
-	globalAvailableModelsCache.set(time.Now(), value)
+	globalAvailableModelsCache.set(time.Now(), "", value)
 }
 
 func getAvailableModelsCacheForTest() (map[string]any, bool) {
-	return globalAvailableModelsCache.get(time.Now())
+	return globalAvailableModelsCache.get(time.Now(), "")
 }
 
 func (h *Handler) handleRoutingAvailableModelsRaw(w http.ResponseWriter, r *http.Request) {
@@ -3590,7 +3881,7 @@ func (h *Handler) handleRoutingFeaturedModelsDynamic(w http.ResponseWriter, r *h
 	polRow := h.db.QueryRow(ctx, `SELECT featured_models FROM routing_policy WHERE tenant_id = 'default'`)
 	_ = polRow.Scan(&featuredModels)
 
-	popular := h.queryPopularModels(ctx, featuredModels, nil)
+	popular := h.queryPopularModels(ctx, featuredModels, nil, EffectiveTenantIDAll(r), 20)
 
 	type featuredModel struct {
 		Name             string `json:"name"`

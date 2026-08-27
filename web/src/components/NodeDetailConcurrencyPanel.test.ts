@@ -200,4 +200,92 @@ describe('NodeDetailConcurrencyPanel unified editor', () => {
     expect(setConcurrencyAuto).not.toHaveBeenCalled()
     expect(w.emitted('error')).toBeTruthy()
   })
+
+  it('rejects clearing auto concurrency (auto-only change w/o reason)', async () => {
+    const w = mountPanel(makeMonitor({ concurrency_limit_auto: 8 }))
+    await flushPromises()
+    await w.findAll('button').find((b) => b.text().includes('调整并发与槽位'))!.trigger('click')
+    await flushPromises()
+    const inputs = w.findAll('input[type="number"]')
+    await inputs[1].setValue('') // clear auto
+    await w.findAll('button').find((b) => b.text().includes('确认'))!.trigger('click')
+    await flushPromises()
+    // auto cannot be cleared; no API call, error emitted
+    expect(setConcurrencyAuto).not.toHaveBeenCalled()
+    expect(w.emitted('error')).toBeTruthy()
+  })
+
+  it('clears manual concurrency to null via PATCH (manual 100 -> empty)', async () => {
+    const w = mountPanel(makeMonitor({ concurrency_limit: 100 }))
+    await flushPromises()
+    await w.findAll('button').find((b) => b.text().includes('调整并发与槽位'))!.trigger('click')
+    await flushPromises()
+    const inputs = w.findAll('input[type="number"]')
+    await inputs[0].setValue('') // manual -> empty = null
+    await w.findAll('button').find((b) => b.text().includes('确认'))!.trigger('click')
+    await flushPromises()
+    // no reason needed for manual/fp-only change
+    expect(updateCredential).toHaveBeenCalledTimes(1)
+    expect(updateCredential).toHaveBeenCalledWith(12763, 36, { concurrency_limit: null, fp_slot_limit: 25 })
+    expect(setConcurrencyAuto).not.toHaveBeenCalled()
+    expect(w.emitted('saved')).toBeTruthy()
+  })
+
+  it('changes all three fields in one save (manual + fp PATCH + setConcurrencyAuto)', async () => {
+    const w = mountPanel()
+    await flushPromises()
+    await w.findAll('button').find((b) => b.text().includes('调整并发与槽位'))!.trigger('click')
+    await flushPromises()
+    const inputs = w.findAll('input[type="number"]')
+    await inputs[0].setValue(60) // manual 100 -> 60
+    await inputs[1].setValue(12) // auto 8 -> 12
+    await inputs[2].setValue(10) // fp 25 -> 10
+    await w.find('input[placeholder="请输入原因"]').setValue('三项全调')
+    await w.findAll('button').find((b) => b.text().includes('确认'))!.trigger('click')
+    await flushPromises()
+    expect(updateCredential).toHaveBeenCalledTimes(1)
+    expect(updateCredential).toHaveBeenCalledWith(12763, 36, { concurrency_limit: 60, fp_slot_limit: 10 })
+    expect(setConcurrencyAuto).toHaveBeenCalledTimes(1)
+    expect(setConcurrencyAuto).toHaveBeenCalledWith(36, 12, '三项全调')
+    expect(w.emitted('saved')).toBeTruthy()
+  })
+
+  it('no-change save closes dialog without API calls even with reason', async () => {
+    const w = mountPanel()
+    await flushPromises()
+    await w.findAll('button').find((b) => b.text().includes('调整并发与槽位'))!.trigger('click')
+    await flushPromises()
+    await w.find('input[placeholder="请输入原因"]').setValue('没改')
+    await w.findAll('button').find((b) => b.text().includes('确认'))!.trigger('click')
+    await flushPromises()
+    expect(updateCredential).not.toHaveBeenCalled()
+    expect(setConcurrencyAuto).not.toHaveBeenCalled()
+    expect(w.find('.nd-dialog').exists()).toBe(false)
+  })
+
+  it('rejects manual concurrency < 0 without requiring a reason', async () => {
+    const w = mountPanel()
+    await flushPromises()
+    await w.findAll('button').find((b) => b.text().includes('调整并发与槽位'))!.trigger('click')
+    await flushPromises()
+    const inputs = w.findAll('input[type="number"]')
+    await inputs[0].setValue(-5)
+    await w.findAll('button').find((b) => b.text().includes('确认'))!.trigger('click')
+    await flushPromises()
+    expect(updateCredential).not.toHaveBeenCalled()
+    expect(w.emitted('error')).toBeTruthy()
+  })
+
+  it('rejects fp slot < 0 without requiring a reason', async () => {
+    const w = mountPanel()
+    await flushPromises()
+    await w.findAll('button').find((b) => b.text().includes('调整并发与槽位'))!.trigger('click')
+    await flushPromises()
+    const inputs = w.findAll('input[type="number"]')
+    await inputs[2].setValue(-1)
+    await w.findAll('button').find((b) => b.text().includes('确认'))!.trigger('click')
+    await flushPromises()
+    expect(updateCredential).not.toHaveBeenCalled()
+    expect(w.emitted('error')).toBeTruthy()
+  })
 })

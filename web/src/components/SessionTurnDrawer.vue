@@ -1,5 +1,7 @@
 <script setup lang="ts">
 // SessionTurnDrawer.vue — V2-P4 (2026-07-24)
+// DEPRECATED (2026-08-25): prefer UnifiedRequestSessionDrawer via RequestLogDrawer.
+// Kept for reference/tests; production session page uses SessionTurnsTimeline + RequestLogDrawer.
 // Right-side drawer showing full turn payload. Six tabs: request,
 // response, compression diagnostics, meta, governance, attachments. Attachment links open via
 // signed URL (admin endpoint, short-lived).
@@ -158,16 +160,16 @@ function stringify(v: unknown): string {
 
 <style scoped>
 pre {
-  background: #f9fafb;
+  background: var(--surface-secondary);
   padding: 12px;
   border-radius: 6px;
   max-height: 70vh;
   overflow: auto;
   font-size: 12px;
 }
-.loading { color: #6b7280; padding: 24px; }
-.error { color: #b42318; background: #fff1f0; border: 1px solid #f3b4b0; padding: 10px 12px; border-radius: 6px; margin: 12px; }
-.muted { color: #6b7280; font-size: 12px; }
+.loading { color: var(--muted); padding: 24px; }
+.error { color: var(--danger); background: var(--danger-bg); border: 1px solid var(--danger-bg); padding: 10px 12px; border-radius: 6px; margin: 12px; }
+.muted { color: var(--muted); font-size: 12px; }
 .att-list { list-style: none; padding: 0; }
-.attachment-link { color: #2563eb; background: transparent; border: 0; padding: 0; cursor: pointer; text-decoration: underline; }
+.attachment-link { color: var(--accent); background: transparent; border: 0; padding: 0; cursor: pointer; text-decoration: underline; }
 </style>

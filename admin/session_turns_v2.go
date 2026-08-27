@@ -375,6 +375,10 @@ type sessionSnapshotV2 struct {
 	TotalCostUSD       float64    `json:"total_cost_usd"`
 	LastModel          *string    `json:"last_model,omitempty"`
 	LastProvider       *string    `json:"last_provider,omitempty"`
+	// SessionAnalysis 是 migration 567 的 session_analysis_metadata 读侧投影
+	// （LEFT JOIN LATERAL 命中时非空）。与 turns_sessions / session_detail_v2
+	// 的 SessionAnalysis 字段保持同一形状，前端 SessionSummaryBar 可直接复用。
+	SessionAnalysis *SessionAnalysisView `json:"session_analysis,omitempty"`
 }
 
 // serveSessionSnapshot 返回会话快照（取自 public.sessions）。
@@ -390,28 +394,41 @@ func (h *Handler) serveSessionSnapshot(w http.ResponseWriter, r *http.Request, s
 	}
 	tenantID := tenantFromQueryOrContext(r)
 	var snap sessionSnapshotV2
+	// 2026-08-26: 增加 LEFT JOIN LATERAL session_analysis_metadata。快照是
+	// SessionSummaryBar 的拉取入口，把 SessionAnalysis 一起带回避免额外的
+	// /api/admin/session-analytics/... 往返。
 	query := `
-		SELECT s.session_id, s.tenant_id,
-		       CASE WHEN tstate.tenant_id IS NOT NULL THEN COALESCE(tstate.title, '')
-		            ELSE COALESCE(NULLIF(s.title, ''), st.title, ss.title, '') END AS title,
-		       COALESCE(NULLIF(s.summary, ''), ss.summary, '') AS summary,
-		       s.summary_generated_at, s.total_turns, s.total_cost_usd,
-		       s.last_model, s.last_provider
-		FROM public.sessions s
-		LEFT JOIN session_dim sd
-			ON sd.gw_session_id = s.session_id AND sd.tenant_id = s.tenant_id
-		LEFT JOIN session_summaries ss
-			ON ss.session_key = s.session_id AND ss.tenant_id = s.tenant_id
-		LEFT JOIN public.session_title_states tstate
-			ON tstate.tenant_id = s.tenant_id AND tstate.scoped_session_id = s.session_id
-		` + sessionTitleFallbackJoinSQL("s.session_id", "sd.task_id") + `
-		WHERE s.session_id=$1 AND s.tenant_id=$2
-		ORDER BY s.partition_date DESC LIMIT 1`
+			SELECT s.session_id, s.tenant_id,
+			       CASE WHEN tstate.tenant_id IS NOT NULL THEN COALESCE(tstate.title, '')
+			            ELSE COALESCE(NULLIF(s.title, ''), st.title, ss.title, '') END AS title,
+			       COALESCE(NULLIF(s.summary, ''), ss.summary, '') AS summary,
+			       s.summary_generated_at, s.total_turns, s.total_cost_usd,
+			       s.last_model, s.last_provider,
+			       sam.status, sam.schema_version, sam.input_hash,
+			       sam.source_task_id, sam.updated_at, sam.payload
+			FROM public.sessions s
+			LEFT JOIN session_dim sd
+				ON sd.gw_session_id = s.session_id AND sd.tenant_id = s.tenant_id
+			LEFT JOIN session_summaries ss
+				ON ss.session_key = s.session_id AND ss.tenant_id = s.tenant_id
+			LEFT JOIN public.session_title_states tstate
+				ON tstate.tenant_id = s.tenant_id AND tstate.scoped_session_id = s.session_id
+			` + sessionAnalysisJoinSQL() + `
+			` + sessionTitleFallbackJoinSQL("s.session_id", "sd.task_id") + `
+			WHERE s.session_id=$1 AND s.tenant_id=$2
+			ORDER BY s.partition_date DESC LIMIT 1`
+	var (
+		saStatus, saSchemaVersion, saInputHash string
+		saSourceTaskID                         *string
+		saUpdatedAt                            *time.Time
+		saPayloadRaw                           []byte
+	)
 	err := h.db.QueryRow(r.Context(), query,
 		sessionID, tenantID).Scan(
 		&snap.SessionID, &snap.TenantID, &snap.Title, &snap.Summary,
 		&snap.SummaryGeneratedAt, &snap.TotalTurns, &snap.TotalCostUSD,
-		&snap.LastModel, &snap.LastProvider)
+		&snap.LastModel, &snap.LastProvider,
+		&saStatus, &saSchemaVersion, &saInputHash, &saSourceTaskID, &saUpdatedAt, &saPayloadRaw)
 	if err != nil {
 		if err.Error() == "no rows in result set" {
 			writeJSON(w, http.StatusOK, map[string]any{"session_id": sessionID, "tenant_id": tenantID})
@@ -419,6 +436,11 @@ func (h *Handler) serveSessionSnapshot(w http.ResponseWriter, r *http.Request, s
 		}
 		writeError(w, http.StatusInternalServerError, "query snapshot failed")
 		return
+	}
+	if saStatus != "" {
+		var view SessionAnalysisView
+		scanSessionAnalysis(&view, saStatus, saSchemaVersion, saInputHash, saSourceTaskID, saUpdatedAt, saPayloadRaw)
+		snap.SessionAnalysis = &view
 	}
 	writeJSON(w, http.StatusOK, snap)
 }
@@ -448,14 +470,19 @@ func (h *Handler) serveSessionInstantSummary(w http.ResponseWriter, r *http.Requ
 	}
 
 	now := time.Now()
+	// Partitioned sessions table: UPDATE ... ORDER BY/LIMIT is invalid in PostgreSQL.
+	// Pin the newest partition via MAX(partition_date), same pattern as titlestore.
 	result, uerr := h.db.Exec(r.Context(), `
 		UPDATE public.sessions
 		SET title=$3, summary=$4, summary_generated_at=$5, updated_at=$5
 		WHERE session_id=$1 AND tenant_id=$2
-		ORDER BY partition_date DESC LIMIT 1`,
+		  AND partition_date = (
+			SELECT MAX(partition_date) FROM public.sessions
+			WHERE session_id=$1 AND tenant_id=$2
+		  )`,
 		sessionID, tenantID, summary.Title, summary.Summary, now)
 	if uerr != nil {
-		writeError(w, http.StatusInternalServerError, "update snapshot failed")
+		writeError(w, http.StatusInternalServerError, "update snapshot failed: "+uerr.Error())
 		return
 	}
 	if result.RowsAffected() == 0 {

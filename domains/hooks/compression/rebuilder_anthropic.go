@@ -38,7 +38,7 @@ import (
 // AnthropicSystemSummaryPrefix marks the gateway-injected summary inside
 // the top-level system field. Mirrors CompressionSummaryPrefix style but
 // adapted for Anthropic (no markdown fences, simple ASCII separator).
-const AnthropicSystemSummaryPrefix = "\\n\\n--- Compressed context (gateway injection; LLM summary of prior turns) ---\\n"
+const AnthropicSystemSummaryPrefix = "\n\n--- Compressed context (gateway injection; LLM summary of prior turns) ---\n"
 
 // rebuildAnthropicSystemField combines the original system prompt with the
 // LLM-generated summary. Returns a single json.RawMessage suitable for the
@@ -150,26 +150,24 @@ func RebuildAnthropicAfterSummary(body []byte, summary string, ret *Retained, ke
 		return body, false
 	}
 
-	// Build the rebuilt messages array: B-track first user + recent tail.
-	// We pass a synthetic Retained with no system messages (since A-track
-	// is at the top level, not in messages[]) and splitSystemAndTail
-	// handles that case by returning the first user as head and the tail
-	// as the rest.
+	// Build the rebuilt messages array: pre-intent reminders + B-track first
+	// user + recent tail. We pass a synthetic Retained with no system
+	// messages (since A-track is at the top level, not in messages[]).
 	synthRet := &Retained{FirstUser: ret.FirstUser, FirstUserIndex: ret.FirstUserIndex}
-	_, tailMsgs := splitSystemAndTail(probe.Messages, synthRet, keepRecentPairs*2)
-	if len(tailMsgs) == 0 {
+	headMsgs, tailMsgs := splitSystemAndTail(probe.Messages, synthRet, keepRecentPairs*2)
+	if len(headMsgs) == 0 {
 		// No B-track first user found at expected index. Fall back: keep
-		// original messages, just inject summary into system field. This
-		// preserves the conversation even if the indexing went wrong.
+		// original messages, just inject summary into system field.
+		headMsgs = nil
 		tailMsgs = lastN(probe.Messages, keepRecentPairs*2)
 	}
 
-	// Rebuild messages array: B-track first user (verbatim) + tail.
-	merged := make([]json.RawMessage, 0, 1+len(tailMsgs))
-	if ret.FirstUser != nil {
-		merged = append(merged, *ret.FirstUser)
-	}
+	// Rebuild messages array: preserve reminders and first user verbatim, then
+	// append the recent tail.
+	merged := make([]json.RawMessage, 0, len(headMsgs)+len(tailMsgs))
+	merged = append(merged, headMsgs...)
 	merged = append(merged, tailMsgs...)
+	merged, _ = TrimAnthropicTail(merged)
 	newMsgs, err := json.Marshal(merged)
 	if err != nil {
 		return body, false

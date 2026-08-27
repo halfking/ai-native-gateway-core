@@ -113,10 +113,10 @@ func TestRoutingCandidateBindingUpdate_InputValidation(t *testing.T) {
 
 func TestValidateRoutingCandidateReorder(t *testing.T) {
 	base := routingCandidateReorderRequest{
-		CanonicalID: 42,
+		RawModel: "gpt-4",
 		Items: []routingCandidateReorderItem{
-			{CredentialID: 10, RawModel: "gpt-4", ManualPriority: 1},
-			{CredentialID: 20, RawModel: "gpt-4", ManualPriority: 2},
+			{CredentialID: 10, ManualPriority: 1},
+			{CredentialID: 20, ManualPriority: 2},
 		},
 	}
 	cases := []struct {
@@ -125,27 +125,24 @@ func TestValidateRoutingCandidateReorder(t *testing.T) {
 		wantSubstr string
 	}{
 		{name: "valid", mutate: func(*routingCandidateReorderRequest) {}, wantSubstr: ""},
-		{name: "missing canonical", mutate: func(r *routingCandidateReorderRequest) {
-			r.CanonicalID = 0
-			r.RawModel = ""
-		}, wantSubstr: "canonical_id or raw_model is required"},
-		{name: "raw_model fallback valid", mutate: func(r *routingCandidateReorderRequest) {
-			r.CanonicalID = 0
-			r.RawModel = "gpt-4"
-		}, wantSubstr: ""},
-		{name: "empty items", mutate: func(r *routingCandidateReorderRequest) { r.Items = nil }, wantSubstr: "items must not be empty"},
-		{name: "non-positive credential", mutate: func(r *routingCandidateReorderRequest) { r.Items[0].CredentialID = 0 }, wantSubstr: "credential_id must be positive"},
-		{name: "duplicate binding", mutate: func(r *routingCandidateReorderRequest) {
-			r.Items[1].CredentialID = r.Items[0].CredentialID
-			r.Items[1].RawModel = r.Items[0].RawModel
-		}, wantSubstr: "credential_id must be unique"},
-		{name: "duplicate priority", mutate: func(r *routingCandidateReorderRequest) { r.Items[1].ManualPriority = 1 }, wantSubstr: "manual_priority must be unique"},
-		{name: "priority below range", mutate: func(r *routingCandidateReorderRequest) { r.Items[0].ManualPriority = 0 }, wantSubstr: "manual_priority must be in"},
-		{name: "priority above range", mutate: func(r *routingCandidateReorderRequest) { r.Items[1].ManualPriority = 100 }, wantSubstr: "manual_priority must be in"},
-		{name: "spaced priorities allowed", mutate: func(r *routingCandidateReorderRequest) {
+		// Spaced priorities are deliberate: clients can insert mid-rank
+		// values (5, 10, 15…) without rewriting the whole ladder; the
+		// resolve order is ascending manual_priority, uniqueness is the
+		// only constraint.
+		{name: "spaced priorities are allowed", mutate: func(r *routingCandidateReorderRequest) {
 			r.Items[0].ManualPriority = 5
 			r.Items[1].ManualPriority = 10
 		}, wantSubstr: ""},
+		{name: "missing scope", mutate: func(r *routingCandidateReorderRequest) { r.RawModel = ""; r.CanonicalID = 0 }, wantSubstr: "canonical_id or raw_model is required"},
+		{name: "canonical scope alone is valid", mutate: func(r *routingCandidateReorderRequest) { r.CanonicalID = 7; r.RawModel = "" }, wantSubstr: ""},
+		{name: "empty items", mutate: func(r *routingCandidateReorderRequest) { r.Items = nil }, wantSubstr: "items must not be empty"},
+		{name: "non-positive credential", mutate: func(r *routingCandidateReorderRequest) { r.Items[0].CredentialID = 0 }, wantSubstr: "credential_id must be positive"},
+		{name: "priority below range", mutate: func(r *routingCandidateReorderRequest) { r.Items[0].ManualPriority = 0 }, wantSubstr: "manual_priority must be in [1, 99]"},
+		{name: "priority above range", mutate: func(r *routingCandidateReorderRequest) { r.Items[0].ManualPriority = 100 }, wantSubstr: "manual_priority must be in [1, 99]"},
+		{name: "duplicate credential", mutate: func(r *routingCandidateReorderRequest) {
+			r.Items[1].CredentialID = r.Items[0].CredentialID
+		}, wantSubstr: "credential_id must be unique"},
+		{name: "duplicate priority", mutate: func(r *routingCandidateReorderRequest) { r.Items[1].ManualPriority = 1 }, wantSubstr: "manual_priority must be unique"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -168,8 +165,8 @@ func TestValidateRoutingCandidateReorder(t *testing.T) {
 
 // TestHandleRoutingCandidateBindingReorder_InputValidation covers the
 // pre-DB guards added in the optimistic-revision reorder rewrite:
-// wrong method, bad JSON, missing canonical_id / expected_revision,
-// and the existing structural checks.
+// wrong method, bad JSON, missing top-level raw_model / expected_revision,
+// mismatched per-item raw_model, and the existing structural checks.
 // Cases that need a real pgxpool (BeginTx and beyond) live in the
 // LLM_GATEWAY_PG_URL integration suite below.
 func TestHandleRoutingCandidateBindingReorder_InputValidation(t *testing.T) {
@@ -196,7 +193,7 @@ func TestHandleRoutingCandidateBindingReorder_InputValidation(t *testing.T) {
 			wantSubstr: "invalid body",
 		},
 		{
-			name:       "missing canonical_id and raw_model",
+			name:       "missing scope",
 			method:     http.MethodPatch,
 			body:       `{"expected_revision":"abc","items":[{"credential_id":1,"manual_priority":1}]}`,
 			wantStatus: http.StatusBadRequest,
@@ -205,28 +202,28 @@ func TestHandleRoutingCandidateBindingReorder_InputValidation(t *testing.T) {
 		{
 			name:       "missing expected_revision",
 			method:     http.MethodPatch,
-			body:       `{"canonical_id":42,"items":[{"credential_id":1,"manual_priority":1}]}`,
+			body:       `{"raw_model":"gpt-4","items":[{"credential_id":1,"manual_priority":1}]}`,
 			wantStatus: http.StatusBadRequest,
 			wantSubstr: "expected_revision is required",
 		},
 		{
-			name:       "duplicate credential",
+			name:       "priority out of range",
 			method:     http.MethodPatch,
-			body:       `{"canonical_id":42,"expected_revision":"abc","items":[{"credential_id":1,"raw_model":"gpt-4","manual_priority":1},{"credential_id":1,"raw_model":"claude-3","manual_priority":2}]}`,
+			body:       `{"raw_model":"gpt-4","expected_revision":"abc","items":[{"credential_id":1,"manual_priority":100}]}`,
 			wantStatus: http.StatusBadRequest,
-			wantSubstr: "credential_id must be unique",
+			wantSubstr: "manual_priority must be in [1, 99]",
 		},
 		{
 			name:       "empty items",
 			method:     http.MethodPatch,
-			body:       `{"canonical_id":42,"expected_revision":"abc","items":[]}`,
+			body:       `{"raw_model":"gpt-4","expected_revision":"abc","items":[]}`,
 			wantStatus: http.StatusBadRequest,
 			wantSubstr: "items must not be empty",
 		},
 		{
 			name:       "duplicate priority",
 			method:     http.MethodPatch,
-			body:       `{"canonical_id":42,"expected_revision":"abc","items":[{"credential_id":1,"manual_priority":1},{"credential_id":2,"manual_priority":1}]}`,
+			body:       `{"raw_model":"gpt-4","expected_revision":"abc","items":[{"credential_id":1,"manual_priority":1},{"credential_id":2,"manual_priority":1}]}`,
 			wantStatus: http.StatusBadRequest,
 			wantSubstr: "manual_priority must be unique",
 		},
@@ -324,7 +321,6 @@ type reorderTestFixture struct {
 	bindingIDs  []int64
 	providerIDs []int64
 	rawModel    string
-	canonicalID int64
 }
 
 func newReorderTestFixture(t *testing.T, pool *pgxpool.Pool, creds int) *reorderTestFixture {
@@ -347,22 +343,15 @@ func newReorderTestFixture(t *testing.T, pool *pgxpool.Pool, creds int) *reorder
 		t.Fatalf("insert provider: %v", err)
 	}
 
-	var canonicalID int64
-	if err := tx.QueryRow(ctx,
-		`INSERT INTO models_canonical (canonical_name, status, source) VALUES ($1, 'active', 'test') RETURNING id`,
-		rawModel,
-	).Scan(&canonicalID); err != nil {
-		t.Fatalf("insert canonical model: %v", err)
-	}
 	var modelID int64
 	if err := tx.QueryRow(ctx,
-		`INSERT INTO provider_models (provider_id, raw_model_name, canonical_id, canonical_raw_name, available) VALUES ($1, $2, $3, $2, true) RETURNING id`,
-		providerID, rawModel, canonicalID,
+		`INSERT INTO provider_models (provider_id, raw_model_name, canonical_raw_name, available) VALUES ($1, $2, $2, true) RETURNING id`,
+		providerID, rawModel,
 	).Scan(&modelID); err != nil {
 		t.Fatalf("insert provider_model: %v", err)
 	}
 
-	f := &reorderTestFixture{pool: pool, providerID: providerID, rawModel: rawModel, canonicalID: canonicalID}
+	f := &reorderTestFixture{pool: pool, providerID: providerID, rawModel: rawModel}
 	for i := 0; i < creds; i++ {
 		var credID, bindingID int64
 		if err := tx.QueryRow(ctx,
@@ -406,9 +395,6 @@ func (f *reorderTestFixture) cleanup(ctx context.Context) {
 	_, _ = conn.Exec(ctx, `DELETE FROM provider_models WHERE provider_id = $1`, f.providerID)
 	_, _ = conn.Exec(ctx, `DELETE FROM credentials WHERE provider_id = $1`, f.providerID)
 	_, _ = conn.Exec(ctx, `DELETE FROM providers WHERE id = $1`, f.providerID)
-	if f.canonicalID > 0 {
-		_, _ = conn.Exec(ctx, `DELETE FROM models_canonical WHERE id = $1`, f.canonicalID)
-	}
 }
 
 func (f *reorderTestFixture) priorities(t *testing.T) map[int64]int {
@@ -435,9 +421,9 @@ func (f *reorderTestFixture) priorities(t *testing.T) map[int64]int {
 
 func (f *reorderTestFixture) reorderRevision(t *testing.T, h *Handler) string {
 	t.Helper()
-	rev, err := loadCanonicalScopeRevision(context.Background(), h.db, f.canonicalID)
+	rev, err := loadScopeRevision(context.Background(), h.db, f.rawModel)
 	if err != nil {
-		t.Fatalf("loadCanonicalScopeRevision: %v", err)
+		t.Fatalf("loadScopeRevision: %v", err)
 	}
 	return rev.Raw
 }
@@ -504,7 +490,7 @@ func TestRoutingCandidateBindingReorder_IntegrationHappy(t *testing.T) {
 	rev := f.reorderRevision(t, h)
 
 	body := routingCandidateReorderRequest{
-		CanonicalID:      f.canonicalID,
+		RawModel:         f.rawModel,
 		ExpectedRevision: rev,
 		Items: []routingCandidateReorderItem{
 			{CredentialID: int(f.credIDs[1]), ManualPriority: 1},
@@ -542,7 +528,7 @@ func TestRoutingCandidateBindingReorder_StaleRevision(t *testing.T) {
 	staleRev := f.reorderRevision(t, h)
 
 	first := doReorder(t, h, routingCandidateReorderRequest{
-		CanonicalID:      f.canonicalID,
+		RawModel:         f.rawModel,
 		ExpectedRevision: staleRev,
 		Items: []routingCandidateReorderItem{
 			{CredentialID: int(f.credIDs[1]), ManualPriority: 1},
@@ -554,7 +540,7 @@ func TestRoutingCandidateBindingReorder_StaleRevision(t *testing.T) {
 	}
 
 	second := doReorder(t, h, routingCandidateReorderRequest{
-		CanonicalID:      f.canonicalID,
+		RawModel:         f.rawModel,
 		ExpectedRevision: staleRev,
 		Items: []routingCandidateReorderItem{
 			{CredentialID: int(f.credIDs[0]), ManualPriority: 1},
@@ -578,7 +564,7 @@ func TestRoutingCandidateBindingReorder_IncompleteSet(t *testing.T) {
 	rev := f.reorderRevision(t, h)
 
 	rec := doReorder(t, h, routingCandidateReorderRequest{
-		CanonicalID:      f.canonicalID,
+		RawModel:         f.rawModel,
 		ExpectedRevision: rev,
 		Items: []routingCandidateReorderItem{
 			{CredentialID: int(f.credIDs[0]), ManualPriority: 1},
@@ -617,7 +603,7 @@ func TestRoutingCandidateBindingReorder_ConcurrentConflict(t *testing.T) {
 				{CredentialID: int(f.credIDs[1-idx]), ManualPriority: 2},
 			}
 			rec := doReorder(t, h, routingCandidateReorderRequest{
-				CanonicalID:      f.canonicalID,
+				RawModel:         f.rawModel,
 				ExpectedRevision: rev,
 				Items:            items,
 			})

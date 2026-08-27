@@ -69,6 +69,7 @@ func TestWritePrewarmedStreamError_WritesSSEError(t *testing.T) {
 // opt-in + openai-completions-only). This is the primary fix for agent-task
 // interruptions through the gateway.
 func TestPreStreamKeepalive_EnabledByDefault(t *testing.T) {
+	isolateResponsesRuntimeConfig(t)
 	t.Setenv("LLM_GATEWAY_ENABLE_PRE_STREAM_KEEPALIVE", "")
 	streamConfigStore.Store(config.NewStore(&config.Config{}))
 	if got := currentStreamRuntimeConfig().enablePreStreamKeepalive; !got {
@@ -77,6 +78,7 @@ func TestPreStreamKeepalive_EnabledByDefault(t *testing.T) {
 }
 
 func TestPreStreamKeepalive_DisabledViaEnv(t *testing.T) {
+	isolateResponsesRuntimeConfig(t)
 	t.Setenv("LLM_GATEWAY_ENABLE_PRE_STREAM_KEEPALIVE", "false")
 	streamConfigStore.Store(config.NewStore(&config.Config{}))
 	if got := currentStreamRuntimeConfig().enablePreStreamKeepalive; got {
@@ -85,6 +87,7 @@ func TestPreStreamKeepalive_DisabledViaEnv(t *testing.T) {
 }
 
 func TestPreStreamKeepalive_EnabledViaEnv(t *testing.T) {
+	isolateResponsesRuntimeConfig(t)
 	t.Setenv("LLM_GATEWAY_ENABLE_PRE_STREAM_KEEPALIVE", "true")
 	streamConfigStore.Store(config.NewStore(&config.Config{}))
 	if got := currentStreamRuntimeConfig().enablePreStreamKeepalive; !got {

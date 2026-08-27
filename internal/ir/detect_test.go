@@ -67,6 +67,45 @@ func TestDetectProtocol_OpenAIBody(t *testing.T) {
 	}
 }
 
+func TestDetectProtocol_ResponsesBody(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "input string",
+			body: `{"model":"gpt-5","input":"hello"}`,
+		},
+		{
+			name: "instructions and typed input",
+			body: `{"model":"gpt-5","instructions":"be brief","input":[{"role":"user","content":[{"type":"input_text","text":"hello"}]}]}`,
+		},
+		{
+			name: "response chaining",
+			body: `{"model":"gpt-5","previous_response_id":"resp_123"}`,
+		},
+		{
+			name: "responses sampling field",
+			body: `{"model":"gpt-5","max_output_tokens":128}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			protocol, confidence, err := DetectProtocol([]byte(tt.body))
+			if err != nil {
+				t.Fatalf("DetectProtocol: %v", err)
+			}
+			if protocol != ProtocolOpenAIResponses {
+				t.Errorf("protocol = %q, want %q", protocol, ProtocolOpenAIResponses)
+			}
+			if confidence < 0.5 {
+				t.Errorf("confidence = %v, want >= 0.5", confidence)
+			}
+		})
+	}
+}
+
 func TestDetectProtocol_AnthropicBody(t *testing.T) {
 	// Phase E (2026-07-01) regression fix: body shape is the canonical
 	// protocol indicator. The `messages[]` array contributes +0.3 to
@@ -297,6 +336,21 @@ func TestDetectProtocolByURL(t *testing.T) {
 			body:      `{"messages": [{"role": "user", "content": "hi"}]}`,
 			url:       "/v1/messages",
 			wantProto: ProtocolAnthropicMessages,
+		},
+		{
+			name:      "empty body falls back to openai chat URL",
+			url:       "/v1/chat/completions",
+			wantProto: ProtocolOpenAIChat,
+		},
+		{
+			name:      "empty body falls back to anthropic messages URL",
+			url:       "/v1/messages",
+			wantProto: ProtocolAnthropicMessages,
+		},
+		{
+			name:      "empty body falls back to responses URL",
+			url:       "/v1/responses",
+			wantProto: ProtocolOpenAIResponses,
 		},
 	}
 

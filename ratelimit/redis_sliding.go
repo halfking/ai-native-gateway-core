@@ -121,7 +121,6 @@ type RedisLimiter struct {
 	// goroutine; recoveryStop signals the live one to exit.
 	recovering   bool
 	recoveryStop chan struct{}
-	admission    *MinuteBucketAdmission
 }
 
 // NewRedisLimiter creates a limiter backed by the given Redis client.
@@ -131,27 +130,7 @@ func NewRedisLimiter(rdb *redis.Client) *RedisLimiter {
 		client:       rdb,
 		fallback:     NewSlidingWindowLimiter(),
 		recoveryStop: make(chan struct{}),
-		admission:    NewMinuteBucketAdmission(),
 	}
-}
-
-func (l *RedisLimiter) AdmitRPM(ctx context.Context, keyID, limit int) (AdmissionResult, error) {
-	return l.AdmitRPMWithWait(ctx, keyID, limit, nil)
-}
-
-func (l *RedisLimiter) AdmitRPMWithWait(ctx context.Context, keyID, limit int, notify func(AdmissionResult)) (AdmissionResult, error) {
-	if l.client == nil || !l.isRedisAvailable() {
-		return l.admission.admit(ctx, keyID, limit, notify)
-	}
-	result, err := l.admitRPMRedis(ctx, keyID, limit, notify)
-	if errors.Is(err, ErrMinuteBucketFull) {
-		return result, err
-	}
-	if err != nil {
-		l.markUnhealthy(err)
-		return l.admission.admit(ctx, keyID, limit, notify)
-	}
-	return result, nil
 }
 
 // NewRedisLimiterFromEnv creates a limiter using the RATE_LIMIT_REDIS_URL

@@ -15,7 +15,6 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/internal/textsplit"
-	"github.com/kaixuan/llm-gateway-go/metrics"
 )
 
 // StreamOpenAIToAnthropicSSE converts OpenAI-format SSE (from upstream)
@@ -104,7 +103,10 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 		if pc != nil {
 			pc.markInterrupted("client_write_failed")
 		}
-		return StreamOutcome{Interrupted: true, Reason: "client_write_failed", Kind: errorsx.KindCanceled, Resumable: true}
+		// Client connection is dead before any frame — including headers —
+		// reaches the wire. A transparent retry would re-attempt the same
+		// header flush on the same dead connection, wasting an upstream call.
+		return StreamOutcome{Interrupted: true, Reason: "client_write_failed", Kind: errorsx.KindCanceled, Resumable: false}
 	}
 
 	clientWriter := newClientStreamWriter(w, flusher)
@@ -476,54 +478,14 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 				outcome.Kind = errorsx.KindCanceled
 			case streamReadEOF:
 				if !upstreamDoneReceived {
-					// 2026-08-23: same recovery as stream.go — if a
-					// finish_reason was already observed, the upstream
-					// has declared the response complete; do NOT mark this
-					// as an interruption (avoids 11-minute survival
-					// retries on minimax and similar upstreams that close
-					// the TCP stream after the terminal chunk without
-					// sending a separate `[DONE]` sentinel).
-					finalFinish := ""
 					if capture != nil {
-						finalFinish = capture.FinalFinishReason()
+						capture.MarkInterruptedWithReason("eof_without_done")
 					}
-					if finalFinish != "" {
-						// 2026-08-23 audit fix: the client speaks the
-						// Anthropic Messages protocol, so synthesize the
-						// correct `message_stop` terminator (not the OpenAI
-						// `[DONE]` sentinel). An Anthropic client does not
-						// recognize `data: [DONE]` and would hang / treat the
-						// response as incomplete.
-						if gate.MayWriteTerminal() || pc != nil {
-							writeAnthropicTail(w, flusher, pc, msgID, clientModel, finalFinish, outputTokens, inputTokens, capture)
-						}
-						metrics.Global().RecordStreamSynthesizedDone()
-						outcome.Interrupted = false
-						outcome.Reason = ""
-						outcome.Kind = ""
-						outcome.Resumable = false
-						if capture != nil {
-							capture.ObserveChunk(&ir.StreamChunk{
-								Type:           ir.ChunkTypeDone,
-								FinishReason:   finalFinish,
-								SourceProtocol: ir.ProtocolAnthropicMessages,
-							})
-						}
-						slog.Info("anthropic EOF after finish_reason — synthesized message_stop",
-							"client_model", clientModel,
-							"finish_reason", finalFinish,
-							"chunk_count", chunkCount,
-						)
-					} else {
-						if capture != nil {
-							capture.MarkInterruptedWithReason("eof_without_done")
-						}
-						outcome.Interrupted = true
-						outcome.Reason = "eof_without_done"
-						outcome.Kind = errorsx.KindUpstreamDown
-						outcome.Resumable = !attemptHasClientSemanticOutput(gate, chunkCount)
-						outcome.ChunkCount = chunkCount
-					}
+					outcome.Interrupted = true
+					outcome.Reason = "eof_without_done"
+					outcome.Kind = errorsx.KindUpstreamDown
+					outcome.Resumable = !attemptHasClientSemanticOutput(gate, chunkCount)
+					outcome.ChunkCount = chunkCount
 				}
 			case streamReadTimeout:
 				slog.Warn("anthropic stream read timeout", "error", readResult.err)

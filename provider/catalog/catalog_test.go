@@ -101,8 +101,8 @@ func TestGenerateSeed_IdempotentShape(t *testing.T) {
 		"INSERT INTO public.provider_catalog (",
 		"ON CONFLICT (code) DO UPDATE SET",
 		"updated_at = now()",
-		"'anthropic'",          // VALUES 里 code 字面量
-		"'anthropic-messages'", // VALUES 里 protocol 字面量
+		"'anthropic'",                 // VALUES 里 code 字面量
+		"'anthropic-messages'",        // VALUES 里 protocol 字面量
 		"https://api.anthropic.com",
 		"protocol = EXCLUDED.protocol",
 	}

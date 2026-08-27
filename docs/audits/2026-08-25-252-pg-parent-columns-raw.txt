@@ -1,0 +1,408 @@
+candidate_failure_logs|id|1|bigint|YES||64|
+candidate_failure_logs|request_id|2|text|NO|||
+candidate_failure_logs|ts|3|timestamp with time zone|NO|||now()
+candidate_failure_logs|tenant_id|4|text|NO|||'default'::text
+candidate_failure_logs|credential_id|5|integer|NO||32|
+candidate_failure_logs|provider_id|6|integer|NO||32|
+candidate_failure_logs|raw_model_name|7|text|NO|||
+candidate_failure_logs|attempt_index|8|integer|NO||32|0
+candidate_failure_logs|error_kind|9|text|NO|||
+candidate_failure_logs|error_message|10|text|YES|||
+candidate_failure_logs|upstream_status_code|11|integer|YES||32|
+candidate_failure_logs|upstream_response_body|12|text|YES|||
+candidate_failure_logs|upstream_response_preview|13|text|YES|||
+candidate_failure_logs|latency_ms|14|integer|YES||32|
+candidate_failure_logs|retryable|15|boolean|YES|||
+candidate_failure_logs|per_attempt_latency_ms|16|integer|YES||32|
+candidate_failure_logs|extracted_upstream_status_code|17|integer|YES||32|
+candidate_failure_logs|diagnosed_error_kind|18|text|YES|||
+candidate_failure_logs|context|19|jsonb|YES|||
+candidate_failure_logs|session_id|20|text|YES|||
+credential_model_index|bucket|1|timestamp with time zone|NO|||
+credential_model_index|credential_id|2|bigint|NO||64|
+credential_model_index|raw_model|3|text|NO|||
+credential_model_index|canonical_id|4|integer|YES||32|
+credential_model_index|billing_mode|5|text|YES|||
+credential_model_index|unit_price_in_per_1m|6|numeric|YES||10|
+credential_model_index|unit_price_out_per_1m|7|numeric|YES||10|
+credential_model_index|context_window|8|integer|YES||32|
+credential_model_index|success_rate|9|numeric|YES||5|
+credential_model_index|p95_latency_ms|10|integer|YES||32|
+credential_model_index|active_sessions|11|integer|YES||32|0
+credential_model_index|concurrency_limit|12|integer|YES||32|
+credential_model_index|pressure_ratio|13|numeric|YES||5|
+credential_model_index|score_smart|14|numeric|YES||8|
+credential_model_index|score_speed_first|15|numeric|YES||8|
+credential_model_index|score_cost_first|16|numeric|YES||8|
+credential_model_index|updated_at|17|timestamp with time zone|YES|||now()
+credit_ledger|id|1|bigint|NO||64|nextval('credit_ledger_partitioned_id_seq'::regclass)
+credit_ledger|tenant_id|2|character varying|NO|||
+credit_ledger|entry_type|3|character varying|NO|||
+credit_ledger|amount|4|bigint|NO||64|
+credit_ledger|balance_after|5|bigint|NO||64|
+credit_ledger|ref_type|6|character varying|YES|||
+credit_ledger|ref_id|7|character varying|YES|||
+credit_ledger|note|8|text|YES|||
+credit_ledger|created_at|9|timestamp with time zone|NO|||now()
+credit_ledger|pool|10|character varying|YES|||
+dashboard_access_events|event_id|1|character varying|NO|64||
+dashboard_access_events|event_type|2|character varying|NO|20||
+dashboard_access_events|timestamp|3|timestamp with time zone|NO|||
+dashboard_access_events|tenant_id|4|character varying|NO|255||
+dashboard_access_events|user_id|5|character varying|YES|255||
+dashboard_access_events|user_role|6|character varying|YES|50||
+dashboard_access_events|session_id|7|character varying|YES|128||
+dashboard_access_events|api_path|8|character varying|NO|255||
+dashboard_access_events|api_method|9|character varying|NO|10||
+dashboard_access_events|api_version|10|character varying|YES|20||
+dashboard_access_events|query_params|11|jsonb|YES|||
+dashboard_access_events|status_code|12|integer|NO||32|
+dashboard_access_events|response_time_ms|13|integer|NO||32|
+dashboard_access_events|cache_hit|14|boolean|YES|||false
+dashboard_access_events|data_size|15|integer|YES||32|
+dashboard_access_events|error_code|16|character varying|YES|50||
+dashboard_access_events|error_message|17|text|YES|||
+dashboard_access_events|client_ip|18|inet|YES|||
+dashboard_access_events|user_agent|19|text|YES|||
+dashboard_access_events|referer|20|text|YES|||
+dashboard_access_events|db_query_time_ms|21|integer|YES||32|
+dashboard_access_events|cache_query_time_ms|22|integer|YES||32|
+dashboard_access_events|created_at|23|timestamp with time zone|NO|||
+handoff_logs|id|1|integer|NO||32|nextval('handoff_logs_id_seq'::regclass)
+handoff_logs|session_id|2|character varying|NO|64||
+handoff_logs|tenant_id|3|character varying|NO|64||
+handoff_logs|trigger_reason|4|character varying|NO|64||
+handoff_logs|tokens_at_handoff|5|integer|NO||32|
+handoff_logs|context_window|6|integer|YES||32|
+handoff_logs|handoff_prompt|7|text|YES|||
+handoff_logs|new_session_id|8|character varying|YES|64||
+handoff_logs|created_at|9|timestamp without time zone|YES|||now()
+handoff_logs|summary_text|10|text|YES|||
+handoff_logs|summary_engine|11|character varying|YES|32||
+handoff_logs|trigger_mode|12|character varying|YES|32||
+handoff_logs|tokens_in_session|13|integer|YES||32|
+handoff_logs|messages_in_session|14|integer|YES||32|
+handoff_logs|skill_name|15|character varying|YES|64||
+handoff_logs|duration_ms|16|integer|YES||32|
+model_probe_runs|id|1|bigint|YES||64|
+model_probe_runs|tenant_id|2|text|YES|||
+model_probe_runs|credential_id|3|bigint|YES||64|
+model_probe_runs|raw_model_name|4|text|YES|||
+model_probe_runs|status|5|text|YES|||
+model_probe_runs|http_status|6|integer|YES||32|
+model_probe_runs|error_code|7|text|YES|||
+model_probe_runs|error_message|8|text|YES|||
+model_probe_runs|latency_ms|9|integer|YES||32|
+model_probe_runs|state_change|10|text|YES|||
+model_probe_runs|state_applied|11|boolean|YES|||
+model_probe_runs|triggered_by|12|text|YES|||
+model_probe_runs|created_at|13|timestamp with time zone|YES|||now()
+request_logs|id|1|bigint|NO||64|nextval('request_logs_id_seq'::regclass)
+request_logs|request_id|2|text|NO|||
+request_logs|ts|3|timestamp with time zone|NO|||
+request_logs|tenant_id|4|text|NO|||
+request_logs|application_id|5|bigint|YES||64|
+request_logs|api_key_id|6|bigint|YES||64|
+request_logs|end_user_id|7|text|YES|||
+request_logs|client_model|8|text|YES|||
+request_logs|outbound_model|9|text|YES|||
+request_logs|credential_id|10|bigint|YES||64|
+request_logs|provider_id|11|bigint|YES||64|
+request_logs|canonical_id|12|bigint|YES||64|
+request_logs|client_profile|13|text|YES|||
+request_logs|request_mode|14|text|YES|||
+request_logs|prompt_tokens|15|integer|YES||32|
+request_logs|completion_tokens|16|integer|YES||32|
+request_logs|total_tokens|17|integer|YES||32|
+request_logs|cost_usd|18|numeric|YES||14|
+request_logs|latency_ms|19|integer|YES||32|
+request_logs|success|20|boolean|NO|||
+request_logs|error_kind|21|text|YES|||
+request_logs|search_text|22|text|YES|||
+request_logs|cache_read_tokens|23|integer|YES||32|
+request_logs|cache_write_tokens|24|integer|YES||32|
+request_logs|identity_hash|25|text|YES|||
+request_logs|virtual_client_id|26|text|YES|||
+request_logs|virtual_ip|27|text|YES|||
+request_logs|virtual_mac|28|text|YES|||
+request_logs|affinity_hit|29|boolean|YES|||
+request_logs|stream_first_chunk_ms|30|integer|YES||32|
+request_logs|stream_chunk_count|31|integer|YES||32|
+request_logs|stream_interrupted|32|boolean|YES|||
+request_logs|stream_done_sent|33|boolean|YES|||
+request_logs|request_checksum|34|text|YES|||
+request_logs|response_checksum|35|text|YES|||
+request_logs|transform_rule_id|36|text|YES|||
+request_logs|egress_protocol|37|text|YES|||
+request_logs|failure_stage|38|text|YES|||
+request_logs|failure_detail_code|39|text|YES|||
+request_logs|request_preview|40|text|YES|||
+request_logs|transform_summary|41|text|YES|||
+request_logs|response_preview|42|text|YES|||
+request_logs|stream_done_received|43|boolean|YES|||
+request_logs|cost_display|46|numeric|YES||14|
+request_logs|cost_currency|47|text|YES|||
+request_logs|usage_source|48|text|NO|||'llm'::text
+request_logs|gw_session_id|49|text|YES|||
+request_logs|gw_task_id|50|text|YES|||
+request_logs|request_status|51|text|YES|||
+request_logs|api_key_prefix|52|text|YES|||
+request_logs|owner_user|53|text|YES|||
+request_logs|application_code|54|text|YES|||
+request_logs|key_alias|55|text|YES|||
+request_logs|api_key_owner_user|56|text|YES|||
+request_logs|is_auto_request|57|boolean|YES|||false
+request_logs|task_type|58|text|YES|||
+request_logs|auto_profile|59|text|YES|||
+request_logs|auto_decision|60|jsonb|YES|||
+request_logs|auto_confidence|61|numeric|YES||4|
+request_logs|work_type|62|text|YES|||
+request_logs|task_type_chosen|63|text|YES|||
+request_logs|confidence_num|64|numeric|YES||4|
+request_logs|model_chosen|65|text|YES|||
+request_logs|strategy_used|66|text|YES|||
+request_logs|credits_charged|67|bigint|YES||64|
+request_logs|parent_request_id|68|text|YES|||
+request_logs|compression_reason|69|text|YES|||
+request_logs|compression_strategy|70|text|YES|||
+request_logs|compression_meta|71|jsonb|YES|||
+request_logs|outbound_msg_count|73|integer|YES||32|
+request_logs|outbound_token_est|74|integer|YES||32|
+request_logs|outbound_msg_hashes|75|jsonb|YES|||
+request_logs|quality_flags|76|ARRAY|NO|||'{}'::text[]
+request_logs|quality_fix_actions|77|jsonb|NO|||'{}'::jsonb
+request_logs|quality_score|78|numeric|YES||3|
+request_logs|upstream_finish_reason|79|text|YES|||
+request_logs|tool_calls|80|jsonb|YES|||
+request_logs|client_endpoint|81|text|YES|||
+request_logs|client_timeout|82|boolean|YES|||
+request_logs|stream_chunk_errors|83|integer|YES||32|
+request_logs|stream_chunks_sent|84|integer|NO||32|0
+request_logs|client_request_id|85|text|YES|||
+request_logs|upstream_status_code|86|integer|YES||32|
+request_logs|test_col|87|ARRAY|NO|||'{}'::text[]
+request_logs|test_tab_indent|88|text|YES|||
+request_logs|provider_model|89|text|YES|||
+request_logs|attachments|90|jsonb|YES|||
+request_logs|has_attachments|91|boolean|YES|||
+request_logs|attachment_count|92|integer|YES||32|
+request_logs|client_ip|93|inet|YES|||
+request_logs|client_forwarded_for|94|text|YES|||
+request_logs|agent_name|95|character varying|YES|255||
+request_logs|agent_type|96|character varying|YES|50||
+request_logs|api_key_fingerprint|97|character varying|YES|16||
+request_logs|customer_id|98|bigint|YES||64|
+request_logs|upstream_endpoint|99|text|YES|||
+request_logs|session_title|100|text|YES|||
+request_logs|session_summary|101|text|YES|||
+request_logs|task_id|102|character varying|YES|255||
+request_logs|task_title|103|text|YES|||
+request_logs|compression_start_index|104|integer|YES||32|
+request_logs|compression_end_index|105|integer|YES||32|
+request_logs|compression_ratio|106|double precision|YES||53|
+request_logs|cache_hit|107|boolean|YES|||
+request_logs|cache_tokens_saved|108|integer|YES||32|
+request_logs|content_safety_score|109|jsonb|YES|||
+request_logs|dlp_violations|110|jsonb|YES|||
+request_logs|sensitive_keywords|111|ARRAY|YES|||
+request_logs|rate_limit_status|112|character varying|YES|50||
+request_logs|client_protocol|113|character varying|YES|50||
+request_logs|upstream_protocol|114|character varying|YES|50||
+request_logs|protocol_conversion|115|boolean|YES|||
+request_logs|ir_extensions|116|jsonb|YES|||
+request_logs|sanitizer_mutations|117|jsonb|YES|||
+request_logs|vendor_metadata|118|jsonb|YES|||
+request_logs|reasoning_tokens|119|integer|YES||32|
+request_logs|image_tokens|120|integer|YES||32|
+request_logs|audio_tokens|121|integer|YES||32|
+request_logs|video_tokens|122|integer|YES||32|
+request_logs|provider_tokens|123|integer|YES||32|
+request_logs|origin_stage|124|character varying|YES|32||NULL::character varying
+request_logs|origin_actor|125|character varying|YES|255||NULL::character varying
+request_logs|trace_events|126|jsonb|YES|||
+request_logs|routing_attempts|127|jsonb|YES|||
+request_logs|routing_summary|128|text|YES|||
+request_logs|effective_timeout_seconds|129|integer|YES||32|
+request_logs|context_size_tokens|130|integer|YES||32|
+request_logs|timeout_mode|131|character varying|YES|50||
+request_logs|is_continuation|132|boolean|YES|||false
+request_logs|continuation_keywords|133|ARRAY|YES|||
+request_logs|node_switch_count|134|integer|YES||32|0
+request_logs|keepalive_sent_count|135|integer|YES||32|0
+request_logs|cached_response_id|136|bigint|YES||64|
+request_logs|canonical_model|137|text|YES|||
+request_logs|raw_model_name|139|text|YES|||
+request_logs|system_fingerprint|140|text|YES|||
+request_logs|t0_arrived_at|141|timestamp with time zone|YES|||
+request_logs|t1_total_enqueued_at|142|timestamp with time zone|YES|||
+request_logs|t2_total_dequeued_at|143|timestamp with time zone|YES|||
+request_logs|t3_model_enqueued_at|144|timestamp with time zone|YES|||
+request_logs|t4_model_dequeued_at|145|timestamp with time zone|YES|||
+request_logs|t5_cred_enqueued_at|146|timestamp with time zone|YES|||
+request_logs|t6_cred_dequeued_at|147|timestamp with time zone|YES|||
+request_logs|t7_forward_start_at|148|timestamp with time zone|YES|||
+request_logs|t8_response_start_at|149|timestamp with time zone|YES|||
+request_logs|t9_response_end_at|150|timestamp with time zone|YES|||
+request_logs|request_type|151|text|NO|||'main'::text
+request_logs|is_final_success|152|boolean|NO|||false
+request_logs|token_band|153|text|YES|||
+request_logs|discard_events|154|jsonb|YES|||
+request_logs|outbound_body|156|jsonb|YES|||
+request_logs_bodies|request_id|1|text|NO|||
+request_logs_bodies|ts|2|timestamp with time zone|NO|||now()
+request_logs_bodies|request_body|3|jsonb|YES|||
+request_logs_bodies|outbound_body|4|jsonb|YES|||
+request_logs_bodies|response_body|5|jsonb|YES|||
+request_logs_bodies|tenant_id|6|text|YES|||
+request_wal|request_id|1|character varying|NO|64||
+request_wal|tenant_id|2|character varying|NO|64||
+request_wal|gw_session_id|3|character varying|YES|128||
+request_wal|status|4|character varying|NO|20||'pending'::character varying
+request_wal|stage|5|smallint|NO||16|0
+request_wal|client_model|6|character varying|YES|100||
+request_wal|upstream_provider_id|7|bigint|YES||64|
+request_wal|upstream_credential_id|8|bigint|YES||64|
+request_wal|completion_tokens|9|integer|YES||32|
+request_wal|prompt_tokens|10|integer|YES||32|
+request_wal|created_at|11|timestamp with time zone|NO|||now()
+request_wal|completed_at|12|timestamp with time zone|YES|||
+request_wal|upstream_request_at|13|timestamp with time zone|YES|||
+request_wal|upstream_response_at|14|timestamp with time zone|YES|||
+request_wal|error|15|text|YES|||
+request_wal|compression_strategy|16|character varying|YES|50||
+request_wal|compression_meta|17|jsonb|YES|||
+routing_decision_log|ts|1|timestamp with time zone|NO|||now()
+routing_decision_log|request_id|2|uuid|NO|||
+routing_decision_log|idempotency_key|3|text|YES|||
+routing_decision_log|tenant_id|4|text|YES|||
+routing_decision_log|api_key_id|5|bigint|YES||64|
+routing_decision_log|model|6|text|NO|||
+routing_decision_log|chosen_credential_id|7|bigint|YES||64|
+routing_decision_log|chosen_provider_id|8|bigint|YES||64|
+routing_decision_log|tier|9|smallint|YES||16|
+routing_decision_log|candidates_tried|10|smallint|YES||16|
+routing_decision_log|latency_ms|11|integer|YES||32|
+routing_decision_log|success|12|boolean|NO|||
+routing_decision_log|error_class|13|text|YES|||
+routing_decision_log|prompt_tokens|14|integer|YES||32|
+routing_decision_log|completion_tokens|15|integer|YES||32|
+routing_decision_log|cost_usd|16|numeric|YES||12|
+routing_decision_log|request_bytes|17|integer|YES||32|
+routing_decision_log|response_bytes|18|integer|YES||32|
+routing_decision_log|client_model|19|text|YES|||
+routing_decision_log|resolved_raw_model|20|text|YES|||
+routing_decision_log|sticky_hit|21|boolean|YES|||
+routing_decision_log|client_profile|22|text|YES|||
+routing_decision_log|outbound_model|23|text|YES|||
+routing_decision_log|request_mode|24|text|YES|||
+routing_decision_log|identity_hash|25|text|YES|||
+routing_decision_log|transform_rule_id|26|text|YES|||
+routing_decision_log|egress_protocol|27|text|YES|||
+routing_decision_log|failure_stage|28|text|YES|||
+routing_decision_log|failure_detail_code|29|text|YES|||
+routing_decision_log|virtual_client_id|30|text|YES|||
+routing_decision_log|virtual_ip|31|text|YES|||
+routing_decision_log|virtual_mac|32|text|YES|||
+routing_decision_log|resolution_path|33|text|YES|||
+routing_decision_log|canonical_model|34|text|YES|||
+routing_decision_log|resolution_raw_models|35|jsonb|YES|||
+routing_decision_log|decision_trace|36|jsonb|YES|||
+session_module_executions|execution_id|1|bigint|NO||64|
+session_module_executions|gw_session_id|2|character varying|NO|128||
+session_module_executions|tenant_id|3|character varying|NO|255||
+session_module_executions|module_name|4|character varying|NO|100||
+session_module_executions|module_version|5|character varying|YES|20||
+session_module_executions|request_id|6|character varying|YES|128||
+session_module_executions|batch_key|7|character varying|YES|255||''::character varying
+session_module_executions|status|8|character varying|NO|20||
+session_module_executions|started_at|9|timestamp with time zone|NO|||
+session_module_executions|completed_at|10|timestamp with time zone|YES|||
+session_module_executions|duration_ms|11|integer|YES||32|
+session_module_executions|result_summary|12|jsonb|YES|||
+session_module_executions|result_detail|13|jsonb|YES|||
+session_module_executions|error_message|14|text|YES|||
+session_module_executions|cache_key|15|character varying|NO|255||
+session_module_executions|ttl_seconds|16|integer|NO||32|3600
+session_module_executions|expires_at|17|timestamp with time zone|NO|||
+session_module_executions|created_at|18|timestamp with time zone|NO|||
+session_module_executions|updated_at|19|timestamp with time zone|NO|||
+session_turns|id|1|bigint|NO||64|nextval('session_turns_id_seq'::regclass)
+session_turns|session_id|2|text|NO|||
+session_turns|turn_no|3|integer|NO||32|
+session_turns|tenant_id|4|character varying|NO|255||
+session_turns|request_id|5|text|NO|||
+session_turns|ts|6|timestamp with time zone|NO|||now()
+session_turns|submit_mode|7|text|NO|||'full'::text
+session_turns|compression_applied|8|boolean|YES|||false
+session_turns|compression_strategy|9|text|YES|||
+session_turns|compression_meta|10|jsonb|YES|||'{}'::jsonb
+session_turns|compression_tokens_saved|11|integer|YES||32|
+session_turns|injection_verdict|12|text|YES|||'skip'::text
+session_turns|output_verdict|13|text|YES|||'skip'::text
+session_turns|model|14|text|YES|||
+session_turns|provider|15|text|YES|||
+session_turns|credential_id|16|text|YES|||
+session_turns|prompt_tokens|17|integer|YES||32|
+session_turns|completion_tokens|18|integer|YES||32|
+session_turns|cache_read_tokens|19|integer|YES||32|
+session_turns|cache_write_tokens|20|integer|YES||32|
+session_turns|cost_usd|21|numeric|YES||12|
+session_turns|latency_ms|22|integer|YES||32|
+session_turns|status_code|23|integer|YES||32|
+session_turns|success|24|boolean|YES|||
+session_turns|error_kind|25|text|YES|||
+session_turns|source_kind|26|text|NO|||'live'::text
+session_turns|quality|27|text|NO|||'verified'::text
+session_turns|partition_date|28|date|NO|||CURRENT_DATE
+session_turns|t0_arrived_at|29|timestamp with time zone|YES|||
+session_turns|t1_total_enqueued_at|30|timestamp with time zone|YES|||
+session_turns|t2_total_dequeued_at|31|timestamp with time zone|YES|||
+session_turns|t3_model_enqueued_at|32|timestamp with time zone|YES|||
+session_turns|t4_model_dequeued_at|33|timestamp with time zone|YES|||
+session_turns|t5_cred_enqueued_at|34|timestamp with time zone|YES|||
+session_turns|t6_cred_dequeued_at|35|timestamp with time zone|YES|||
+session_turns|t7_forward_start_at|36|timestamp with time zone|YES|||
+session_turns|t8_response_start_at|37|timestamp with time zone|YES|||
+session_turns|t9_response_end_at|38|timestamp with time zone|YES|||
+session_turns|attachment_count|39|integer|YES||32|0
+session_turns|attachment_total_bytes|40|bigint|YES||64|0
+session_turns|multimodal_types|41|ARRAY|YES|||'{}'::text[]
+session_turns|attempt_no|42|integer|NO||32|0
+session_turns|tools|43|jsonb|NO|||'[]'::jsonb
+session_turns|title|44|text|YES|||
+session_turns|summary|45|text|YES|||
+session_turns|aggregate_applied_at|46|timestamp with time zone|YES|||
+session_turns|project_id|47|text|YES|||
+session_turns|namespace|48|text|YES|||
+session_turns|parent_request_id|49|text|YES|||
+session_turns|task_type|50|text|YES|||
+tool_usage_stats|id|1|bigint|NO||64|nextval('tool_usage_stats_partitioned_id_seq'::regclass)
+tool_usage_stats|tool_id|2|character varying|NO|||
+tool_usage_stats|tenant_id|3|character varying|NO|||
+tool_usage_stats|usage_date|4|date|NO|||
+tool_usage_stats|call_count|5|bigint|YES||64|0
+tool_usage_stats|success_count|6|bigint|YES||64|0
+tool_usage_stats|error_count|7|bigint|YES||64|0
+tool_usage_stats|avg_latency_ms|8|integer|YES||32|
+tool_usage_stats|last_called_at|9|timestamp with time zone|YES|||
+tool_usage_stats|created_at|10|timestamp with time zone|NO|||now()
+tool_usage_stats|updated_at|11|timestamp with time zone|YES|||
+usage_ledger|request_id|1|text|NO|||
+usage_ledger|ts|2|timestamp with time zone|NO|||
+usage_ledger|tenant_id|3|text|NO|||
+usage_ledger|application_id|4|integer|YES||32|
+usage_ledger|api_key_id|5|integer|YES||32|
+usage_ledger|end_user_id|6|text|YES|||
+usage_ledger|credential_id|7|integer|YES||32|
+usage_ledger|provider_id|8|integer|YES||32|
+usage_ledger|canonical_id|9|integer|YES||32|
+usage_ledger|raw_model_name|10|text|YES|||
+usage_ledger|prompt_tokens|11|integer|YES||32|
+usage_ledger|completion_tokens|12|integer|YES||32|
+usage_ledger|cache_read_tokens|13|integer|YES||32|
+usage_ledger|cache_write_tokens|14|integer|YES||32|
+usage_ledger|total_tokens|15|integer|YES||32|
+usage_ledger|cost_usd|16|numeric|YES||12|
+usage_ledger|latency_ms|17|integer|YES||32|
+usage_ledger|success|18|boolean|YES|||
+usage_ledger|error_kind|19|text|YES|||

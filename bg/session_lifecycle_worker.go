@@ -103,13 +103,13 @@ type SessionLifecycleWorker struct {
 	done   chan struct{}
 
 	// 可覆盖的配置（测试时使用）
-	idleTimeout         time.Duration
+	idleTimeout        time.Duration
 	absoluteMaxLifetime time.Duration
-	cleanupInterval     time.Duration
-	cleanupBatchSize    int
-	recycleAction       string
-	maxPerTenant        int
-	evictionPolicy      string
+	cleanupInterval    time.Duration
+	cleanupBatchSize   int
+	recycleAction      string
+	maxPerTenant       int
+	evictionPolicy     string
 }
 
 // SessionLifecycleWorkerOption 函数式选项。
@@ -137,15 +137,15 @@ func WithEventBus(bus LifecycleEventPublisher) SessionLifecycleWorkerOption {
 // 默认配置从 spec 派生，可通过 Option 覆盖。
 func NewSessionLifecycleWorker(db *pgxpool.Pool, opts ...SessionLifecycleWorkerOption) *SessionLifecycleWorker {
 	w := &SessionLifecycleWorker{
-		db:                  db,
-		done:                make(chan struct{}),
-		idleTimeout:         30 * time.Minute,
+		db:                 db,
+		done:               make(chan struct{}),
+		idleTimeout:        30 * time.Minute,
 		absoluteMaxLifetime: 168 * time.Hour,
-		cleanupInterval:     5 * time.Minute,
-		cleanupBatchSize:    500,
-		recycleAction:       "soft_close",
-		maxPerTenant:        1000,
-		evictionPolicy:      "lru",
+		cleanupInterval:    5 * time.Minute,
+		cleanupBatchSize:   500,
+		recycleAction:      "soft_close",
+		maxPerTenant:       1000,
+		evictionPolicy:     "lru",
 	}
 	for _, opt := range opts {
 		opt(w)
@@ -195,9 +195,9 @@ func (w *SessionLifecycleWorker) run(ctx context.Context) {
 }
 
 // sweep 执行一次完整扫描：处理三类回收场景。
-//  1. 闲置超时（status='active' AND last_active_at < NOW() - $idle）
-//  2. 绝对超期（status='active' AND created_at < NOW() - $abs）
-//  3. 租户超限（每个 tenant 单独处理）
+//  1) 闲置超时（status='active' AND last_active_at < NOW() - $idle）
+//  2) 绝对超期（status='active' AND created_at < NOW() - $abs）
+//  3) 租户超限（每个 tenant 单独处理）
 func (w *SessionLifecycleWorker) sweep(ctx context.Context) {
 	start := time.Now()
 	defer func() {
@@ -516,7 +516,7 @@ type recycleEventShim struct {
 	timestamp    time.Time
 }
 
-func (e *recycleEventShim) Type() string         { return "session_inspector.recycle" }
+func (e *recycleEventShim) Type() string      { return "session_inspector.recycle" }
 func (e *recycleEventShim) Timestamp() time.Time { return e.timestamp }
 
 // intervalSeconds 把 duration 转成 Postgres INTERVAL 字符串（秒）。

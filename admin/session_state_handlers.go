@@ -31,9 +31,9 @@ type sessionListItem struct {
 	LastRequestAt         time.Time  `json:"last_request_at"`
 	StoppedAt             *time.Time `json:"stopped_at,omitempty"`
 	// 健康评分字段（T1.5）
-	HealthScore *int    `json:"health_score,omitempty"`
-	HealthGrade *string `json:"health_grade,omitempty"`
-	Outcome     *string `json:"outcome,omitempty"`
+	HealthScore           *int       `json:"health_score,omitempty"`
+	HealthGrade           *string    `json:"health_grade,omitempty"`
+	Outcome               *string    `json:"outcome,omitempty"`
 }
 
 type sessionListResponse struct {
@@ -200,6 +200,8 @@ func (h *Handler) handleSessionSubrouter(w http.ResponseWriter, r *http.Request)
 		h.serveSessionSnapshot(w, r, sessionID)
 	case "instant-summary":
 		h.serveSessionInstantSummary(w, r, sessionID)
+	case "sanitize-matches":
+		h.serveSessionSanitizeMatches(w, r, sessionID)
 	default:
 		// /turns/<turnNo> 单轮详情，或 /turns/<turnNo>/attachments/<id>/url|revoke
 		if strings.HasPrefix(action, "turns/") {

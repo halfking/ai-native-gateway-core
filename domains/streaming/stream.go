@@ -516,6 +516,15 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 	// Top-level panic recovery so a panic during streaming (e.g. JSON parse
 	// failure, write to a closed connection) does not skip the deferred
 	// audit emit in the caller and lose the request_logs row entirely.
+	// Hoist gate above this defer so the recover closure can see it: a
+	// panic after the client already saw semantic output must not be
+	// classified as transparently resumable (would duplicate committed
+	// bytes). Mirrors responses_bridge.go (commit 485f3ca2e) and
+	// responses_stream.go. gate stays nil until wrapAttemptWriter assigns
+	// it; attemptHasClientSemanticOutput(nil, 0) returns false so the
+	// not-yet-wired case degrades to Resumable=true, the same as the
+	// sibling paths.
+	var gate *AttemptCommitGate
 	defer func() {
 		if r := recover(); r != nil {
 			slog.Error("stream panic recovered", "panic", r, "stack", string(debug.Stack()), "client_model", clientModel)
@@ -525,6 +534,7 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 			outcome.Interrupted = true
 			outcome.Reason = "stream_panic"
 			outcome.Kind = errorsx.KindUpstreamDown
+			outcome.Resumable = !attemptHasClientSemanticOutput(gate, 0)
 			if pc != nil {
 				pc.markInterrupted("stream_panic")
 			}
@@ -543,7 +553,7 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 
 	// SR-W1: route client frames through the attempt commit gate.
 	// Disabled (default) this is the identity function — legacy wire bytes.
-	w, gate := wrapAttemptWriter(w, ProtocolOpenAIChat)
+	w, gate = wrapAttemptWriter(w, ProtocolOpenAIChat)
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)
@@ -558,11 +568,14 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 		if capture != nil {
 			capture.MarkInterruptedWithReason("client_write_failed")
 		}
+		// Client connection is dead before any frame — including headers —
+		// reaches the wire. A transparent retry would re-attempt the same
+		// header flush on the same dead connection, wasting an upstream call.
 		return StreamOutcome{
 			Interrupted: true,
 			Reason:      "client_write_failed",
 			Kind:        errorsx.KindUpstreamDown,
-			Resumable:   true,
+			Resumable:   false,
 			ChunkCount:  0,
 		}
 	}
@@ -612,12 +625,16 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 		if !clientDisconnected || pc != nil {
 			return false
 		}
+		// Client connection is gone mid-stream. A transparent retry would
+		// re-attempt header writes against the same dead connection,
+		// wasting an upstream call regardless of whether semantic output
+		// had reached the wire. Mark non-resumable so the executor fails
+		// the task instead of transparently retrying. Mirrors the
+		// initial-flush site above and the deferred-Finish site in
+		// anthropic_bridge.go.
 		outcome.Interrupted = true
 		outcome.Reason = "client_write_failed"
 		outcome.Kind = errorsx.KindCanceled
-		// Client disconnect is permanent: a transparent retry cannot
-		// write headers to a dead connection. The retry would be a pure
-		// wasted upstream call.
 		outcome.Resumable = false
 		outcome.ChunkCount = 0
 		if capture != nil {
@@ -889,48 +906,20 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 			switch readResult.state {
 			case streamReadEOF:
 				if !upstreamDoneReceived {
-					// 2026-08-23: some upstreams (notably minimax) emit the
-					// terminal `choices[0].finish_reason` chunk and then close
-					// the TCP stream without sending the SSE-spec `data:
-					// [DONE]` sentinel. If we already observed a finish_reason,
-					// the model has declared the response complete — synthesize
-					// [DONE] for the client and DO NOT mark this as an
-					// interruption that would trigger survival retries
-					// (each retry waits a fresh upstream_timeout_seconds, so
-					// 6 attempts burn ~11 minutes before failing closed).
-					finalFinish := ""
+					slog.Warn("upstream EOF without [DONE]", "client_model", clientModel)
 					if capture != nil {
-						finalFinish = capture.FinalFinishReason()
+						capture.MarkInterruptedWithReason("eof_without_done")
 					}
-					if finalFinish != "" {
+					terminalVisible := attemptHasClientSemanticOutput(gate, chunkCount)
+					if terminalVisible {
 						safeWriteSSE(w, "data: [DONE]\n\n")
 						safeFlush(flusher)
 						metrics.Global().RecordStreamSynthesizedDone()
-						outcome.Interrupted = false
-						outcome.Reason = ""
-						outcome.Kind = ""
-						outcome.Resumable = false
-						slog.Info("upstream EOF after finish_reason — synthesized [DONE]",
-							"client_model", clientModel,
-							"finish_reason", finalFinish,
-							"chunk_count", chunkCount,
-						)
-					} else {
-						slog.Warn("upstream EOF without [DONE]", "client_model", clientModel)
-						if capture != nil {
-							capture.MarkInterruptedWithReason("eof_without_done")
-						}
-						terminalVisible := attemptHasClientSemanticOutput(gate, chunkCount)
-						if terminalVisible {
-							safeWriteSSE(w, "data: [DONE]\n\n")
-							safeFlush(flusher)
-							metrics.Global().RecordStreamSynthesizedDone()
-						}
-						outcome.Interrupted = true
-						outcome.Reason = "eof_without_done"
-						outcome.Kind = errorsx.KindUpstreamDown
-						outcome.Resumable = !terminalVisible
 					}
+					outcome.Interrupted = true
+					outcome.Reason = "eof_without_done"
+					outcome.Kind = errorsx.KindUpstreamDown
+					outcome.Resumable = !terminalVisible
 				}
 				// When the client has gone away but the capturer is
 				// still alive and the upstream DID send [DONE], do NOT
@@ -972,11 +961,14 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 				outcome.Interrupted = true
 				outcome.Reason = "stream_timeout"
 				outcome.Kind = errorsx.KindStreamTimeout
-				// Gate-aware: a chunk-timeout after the client already saw
-				// semantic output must NOT be transparently retried —
-				// duplicating committed bytes on another supplier would
-				// violate "client connection is preserved across supplier
-				// node switches".
+				// Gate-aware resumability. Mirrors the eof_without_done and
+				// default branches in this switch (and the stream_timeout
+				// branches in responses_stream.go:282 and
+				// anthropic_stream.go:503): a timeout after the client
+				// already saw semantic output must NOT be transparently
+				// retried — the next supplier node would duplicate committed
+				// bytes. The pre-fix "Timeout is resumable" comment was a
+				// simplification that this fix corrects.
 				outcome.Resumable = !attemptHasClientSemanticOutput(gate, chunkCount)
 				outcome.ChunkCount = chunkCount
 			default:
@@ -986,6 +978,16 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 					capture.MarkInterruptedWithReason(failure.Reason)
 				}
 				outcome = failure
+				// Gate-aware resumability. streamReadFailureOutcome hardcodes
+				// Resumable=true, but a recoverable read failure after the client
+				// already saw semantic output must NOT be transparently retried —
+				// the next supplier node would duplicate committed bytes. The
+				// downstream executor (executor_chat.go:1124) keeps an independent
+				// ceiling on chunk count (StreamRetryThreshold, default 50), and
+				// mayRetryInterruptedStream (executor.go:2963-2978) refuses retry
+				// when any chunk has been captured. Mirrors the gate-aware
+				// treatment in the eof_without_done and stream_timeout branches.
+				outcome.Resumable = !attemptHasClientSemanticOutput(gate, chunkCount)
 			}
 			return outcome
 		}
@@ -1345,11 +1347,18 @@ func (r *timedLineReader) ReadLine(ctx context.Context, timeout time.Duration) (
 		// we return — zero goroutine leak guarantee.
 		if r.closer != nil {
 			_ = r.closer.Close()
+			// Drain: the goroutine returns shortly after Close() because
+			// ReadString on a closed body returns io.ErrClosedPipe or io.EOF.
+			// The buffered channel (size 1) ensures this never blocks forever.
+			<-ch
+		} else {
+			// No closer: nothing we can do will unblock the ReadString
+			// goroutine, so do NOT wait on ch — waiting here makes the
+			// timeout ineffective (this call would still block until the
+			// upstream actually sends / the TCP dies). The goroutine has a
+			// buffered slot, so it exits cleanly once the caller's deferred
+			// body.Close() fires.
 		}
-		// Drain: the goroutine returns shortly after Close() because
-		// ReadString on a closed body returns io.ErrClosedPipe or io.EOF.
-		// The buffered channel (size 1) ensures this never blocks forever.
-		<-ch
 		if readCtx.Err() == context.DeadlineExceeded {
 			return "", fmt.Errorf("stream read timeout")
 		}

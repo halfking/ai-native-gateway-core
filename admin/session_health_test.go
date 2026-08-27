@@ -233,10 +233,10 @@ func TestComputeHealth_MultipleIssues(t *testing.T) {
 	summary := AnalyticsSessionSummary{
 		RequestCount:            10,
 		SuccessCount:            4,
-		ErrorCount:              6,    // error_ended(-30) + per_error(6*3=18)
+		ErrorCount:              6, // error_ended(-30) + per_error(6*3=18)
 		AvgLatencyMs:            6000, // high_latency(-15)
-		ModelSwitchCount:        5,    // frequent_model_switch(-10)
-		ComplianceIssuesCount:   1,    // compliance_issue(-10)
+		ModelSwitchCount:        5, // frequent_model_switch(-10)
+		ComplianceIssuesCount:   1, // compliance_issue(-10)
 		PromptInjectionDetected: true, // prompt_injection(-20)
 		PIIDetected:             true, // sensitive_content(-15)
 	}
@@ -301,9 +301,9 @@ func TestGradeFromScore(t *testing.T) {
 
 func TestClassifyOutcome(t *testing.T) {
 	tests := []struct {
-		name    string
-		summary AnalyticsSessionSummary
-		outcome string
+		name     string
+		summary  AnalyticsSessionSummary
+		outcome  string
 	}{
 		{
 			name: "no requests",

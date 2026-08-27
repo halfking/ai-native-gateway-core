@@ -99,6 +99,36 @@ func TestConvertChatRequestToAnthropic_OpenAIToAnthropic(t *testing.T) {
 	assert.Equal(t, "user", first["role"])
 }
 
+func TestConvertChatRequestToAnthropic_PreservesSystemBlocks(t *testing.T) {
+	in := []byte(`{
+		"model":"claude-sonnet-5",
+		"messages":[
+			{"role":"system","content":[{"type":"text","text":"Follow the policy."},{"type":"text","text":"Answer in Chinese."}]},
+			{"role":"user","content":"continue"}
+		]
+	}`)
+
+	out, err := ConvertChatRequestToAnthropic(in)
+	require.NoError(t, err)
+
+	var got map[string]any
+	require.NoError(t, json.Unmarshal(out, &got))
+	assert.Equal(t, "Follow the policy.\nAnswer in Chinese.", got["system"])
+}
+
+func TestConvertChatRequestToAnthropic_RejectsInvalidToolArguments(t *testing.T) {
+	in := []byte(`{
+		"model":"claude-sonnet-5",
+		"messages":[{"role":"assistant","content":null,"tool_calls":[{
+			"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{not-json"}
+		}]}]
+	}`)
+
+	_, err := ConvertChatRequestToAnthropic(in)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid tool arguments")
+}
+
 // TestConvertAnthropicResponseToChat_NonStream verifies the Q3
 // Anthropic→OpenAI response conversion (text content).
 func TestConvertAnthropicResponseToChat_NonStream(t *testing.T) {

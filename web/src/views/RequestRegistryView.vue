@@ -580,7 +580,7 @@ function openSearchJourney() {
   border: 1px solid var(--kx-border);
   border-radius: 6px;
   background: var(--kx-primary);
-  color: #fff;
+  color: var(--on-primary);
   font-size: 12px;
   cursor: pointer;
 }

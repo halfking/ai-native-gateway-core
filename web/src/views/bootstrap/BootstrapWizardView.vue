@@ -624,13 +624,13 @@ onMounted(async () => {
 }
 .eyebrow {
   margin: 0 0 6px;
-  color: #1e4fd6;
+  color: var(--accent);
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.12em;
 }
 .lifecycle-page__header h1 { margin: 0 0 8px; font-size: 24px; letter-spacing: -0.03em; }
-.lifecycle-page__header p { margin: 0; color: #5b6b82; font-size: 14px; line-height: 1.6; max-width: 60ch; }
+.lifecycle-page__header p { margin: 0; color: var(--kx-muted); font-size: 14px; line-height: 1.6; max-width: 60ch; }
 .lifecycle-page__actions { display: flex; flex-wrap: wrap; gap: 8px; }
 
 .wizard-steps {
@@ -645,18 +645,18 @@ onMounted(async () => {
   gap: 8px;
   padding: 6px 10px;
   border-radius: 8px;
-  border: 1px solid #d8e0ec;
-  color: #5b6b82;
+  border: 1px solid var(--border);
+  color: var(--kx-muted);
   font-size: 13px;
 }
 .wizard-steps__item.is-active {
-  border-color: #1e4fd6;
-  color: #1e4fd6;
+  border-color: var(--accent);
+  color: var(--accent);
   background: rgba(30, 79, 214, 0.06);
 }
 .wizard-steps__item.is-done {
   border-color: #86b7a0;
-  color: #1f6b4a;
+  color: var(--success-dark);
 }
 .wizard-steps__index {
   width: 22px;
@@ -670,16 +670,16 @@ onMounted(async () => {
   background: #eef2f8;
 }
 .wizard-steps__item.is-active .wizard-steps__index {
-  background: #1e4fd6;
-  color: #fff;
+  background: var(--accent);
+  color: var(--on-primary);
 }
 .wizard-steps__item.is-done .wizard-steps__index {
-  background: #1f6b4a;
-  color: #fff;
+  background: var(--success-dark);
+  color: var(--on-primary);
 }
 
 .wizard-card { margin-bottom: 16px; }
-.agreement-card { border: 1px solid #f59e0b; background: #fffaf0; }
+.agreement-card { border: 1px solid var(--warning); background: var(--warning-bg); }
 .wizard-actions {
   display: flex;
   flex-wrap: wrap;
@@ -693,8 +693,8 @@ onMounted(async () => {
   line-height: 1.7;
   font-size: 14px;
 }
-.muted { color: #5b6b82; font-size: 14px; line-height: 1.6; }
-.hint { margin: 10px 0 0; color: #7a879c; font-size: 12px; line-height: 1.5; }
+.muted { color: var(--kx-muted); font-size: 14px; line-height: 1.6; }
+.hint { margin: 10px 0 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; word-break: break-all; }
 .mono-input :deep(.el-input__inner),
 .mono-input input { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }

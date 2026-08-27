@@ -518,15 +518,15 @@ onBeforeUnmount(() => {
 }
 
 .message-error {
-  background: rgba(248, 113, 113, 0.1);
-  border: 1px solid rgba(248, 113, 113, 0.3);
-  color: #f87171;
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger) 12%, transparent);
+  color: var(--danger);
 }
 
 .message-success {
-  background: rgba(52, 211, 153, 0.1);
-  border: 1px solid rgba(52, 211, 153, 0.3);
-  color: #34d399;
+  background: var(--success-bg);
+  border: 1px solid var(--success-bd);
+  color: var(--success);
 }
 
 .loading-container {
@@ -622,7 +622,7 @@ onBeforeUnmount(() => {
 }
 
 .time-left {
-  color: #fbbf24;
+  color: var(--warning);
   font-size: 12px;
   margin-left: 8px;
 }
@@ -642,28 +642,28 @@ onBeforeUnmount(() => {
 }
 
 .badge-green {
-  background: rgba(52, 211, 153, 0.15);
-  color: #34d399;
+  background: var(--success-bg);
+  color: var(--success);
 }
 
 .badge-yellow {
-  background: rgba(251, 191, 36, 0.15);
-  color: #fbbf24;
+  background: var(--warning-bg);
+  color: var(--warning);
 }
 
 .badge-orange {
-  background: rgba(251, 146, 60, 0.15);
-  color: #fb923c;
+  background: var(--warning-bd);
+  color: var(--warning);
 }
 
 .badge-red {
-  background: rgba(248, 113, 113, 0.15);
-  color: #f87171;
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  color: var(--danger);
 }
 
 .badge-gray {
-  background: rgba(139, 148, 158, 0.15);
-  color: #8b949e;
+  background: var(--neutral-bg);
+  color: var(--muted);
 }
 
 .sensitive-list {
@@ -677,8 +677,8 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 12px;
   padding: 12px;
-  background: rgba(248, 113, 113, 0.1);
-  border: 1px solid rgba(248, 113, 113, 0.3);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger) 12%, transparent);
   border-radius: 6px;
 }
 
@@ -689,7 +689,7 @@ onBeforeUnmount(() => {
 
 .sensitive-text {
   font-size: 14px;
-  color: #f87171;
+  color: var(--danger);
 }
 
 .summary-text {
@@ -739,19 +739,19 @@ onBeforeUnmount(() => {
 
 .role-assistant {
   background: rgba(52, 211, 153, 0.2);
-  color: #34d399;
+  color: var(--success);
 }
 
 .role-system {
-  background: rgba(139, 148, 158, 0.2);
-  color: #8b949e;
+  background: color-mix(in srgb, var(--muted) 14%, transparent);
+  color: var(--muted);
 }
 
 .message-redacted {
   font-size: 11px;
-  color: #fbbf24;
+  color: var(--warning);
   padding: 2px 6px;
-  background: rgba(251, 191, 36, 0.15);
+  background: var(--warning-bg);
   border-radius: 3px;
 }
 
@@ -809,7 +809,7 @@ onBeforeUnmount(() => {
 }
 
 .required {
-  color: #f87171;
+  color: var(--danger);
 }
 
 .form-textarea {
@@ -870,19 +870,19 @@ onBeforeUnmount(() => {
 }
 
 .timeline-dot-green {
-  background: #34d399;
+  background: var(--success);
 }
 
 .timeline-dot-red {
-  background: #f87171;
+  background: var(--danger);
 }
 
 .timeline-dot-yellow {
-  background: #fbbf24;
+  background: var(--warning);
 }
 
 .timeline-dot-gray {
-  background: #8b949e;
+  background: var(--muted);
 }
 
 .timeline-content {
@@ -933,9 +933,9 @@ onBeforeUnmount(() => {
 }
 
 .btn-success {
-  background: #34d399;
-  color: #000;
-  border-color: #34d399;
+  background: var(--success);
+  color: var(--kx-text);
+  border-color: var(--success);
 }
 
 .btn-success:hover:not(:disabled) {
@@ -943,9 +943,9 @@ onBeforeUnmount(() => {
 }
 
 .btn-danger {
-  background: #f87171;
-  color: #fff;
-  border-color: #f87171;
+  background: var(--danger);
+  color: var(--on-primary);
+  border-color: var(--danger);
 }
 
 .btn-danger:hover:not(:disabled) {

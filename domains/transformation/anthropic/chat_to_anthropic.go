@@ -50,28 +50,30 @@ func ConvertChatRequestToAnthropic(in []byte) ([]byte, error) {
 
 	var systemContent string
 	var anthropicMsgs []any
-	if msgs, ok := src["messages"].([]any); ok {
+	if rawMessages, exists := src["messages"]; exists {
+		msgs, ok := rawMessages.([]any)
+		if !ok {
+			return nil, fmt.Errorf("invalid OpenAI messages: expected array")
+		}
 		for _, msg := range msgs {
-			msgMap, _ := msg.(map[string]any)
+			msgMap, ok := msg.(map[string]any)
+			if !ok {
+				return nil, fmt.Errorf("invalid OpenAI message: expected object")
+			}
 			role, _ := msgMap["role"].(string)
 			if role == "system" {
-				system, err := convertChatSystemContent(msgMap["content"])
+				content, err := chatSystemContent(msgMap["content"])
 				if err != nil {
 					return nil, err
 				}
-				if system != "" {
-					if systemContent != "" {
-						systemContent += "\n"
-					}
-					systemContent += system
-				}
+				systemContent = joinNonEmpty(systemContent, content)
 				continue
 			}
-			anthropicMsg, err := convertChatMessageToAnthropic(msgMap)
+			converted, err := convertChatMessageToAnthropic(msgMap)
 			if err != nil {
 				return nil, err
 			}
-			anthropicMsgs = append(anthropicMsgs, anthropicMsg)
+			anthropicMsgs = append(anthropicMsgs, converted)
 		}
 	}
 	if systemContent != "" {
@@ -79,10 +81,17 @@ func ConvertChatRequestToAnthropic(in []byte) ([]byte, error) {
 	}
 	out["messages"] = anthropicMsgs
 
-	if tools, ok := src["tools"].([]any); ok {
+	if rawTools, exists := src["tools"]; exists {
+		tools, ok := rawTools.([]any)
+		if !ok {
+			return nil, fmt.Errorf("invalid OpenAI tools: expected array")
+		}
 		anthTools := make([]any, 0, len(tools))
 		for _, tool := range tools {
-			toolMap, _ := tool.(map[string]any)
+			toolMap, ok := tool.(map[string]any)
+			if !ok {
+				return nil, fmt.Errorf("invalid OpenAI tool: expected object")
+			}
 			if anthropicTool, ok := openAIToolToAnthropic(toolMap); ok {
 				anthTools = append(anthTools, anthropicTool)
 				continue
@@ -109,32 +118,6 @@ func ConvertChatRequestToAnthropic(in []byte) ([]byte, error) {
 	return json.Marshal(out)
 }
 
-func convertChatSystemContent(content any) (string, error) {
-	switch typed := content.(type) {
-	case string:
-		return typed, nil
-	case []any:
-		parts := make([]string, 0, len(typed))
-		for _, block := range typed {
-			blockMap, ok := block.(map[string]any)
-			if !ok {
-				return "", fmt.Errorf("unsupported OpenAI system content block: expected object")
-			}
-			blockType, _ := blockMap["type"].(string)
-			text, _ := blockMap["text"].(string)
-			if blockType != "text" || text == "" {
-				return "", fmt.Errorf("unsupported OpenAI system content block: type=%q", blockType)
-			}
-			parts = append(parts, text)
-		}
-		return strings.Join(parts, "\n"), nil
-	case nil:
-		return "", nil
-	default:
-		return "", fmt.Errorf("unsupported OpenAI system content: type=%T", content)
-	}
-}
-
 func convertChatMessageToAnthropic(msg map[string]any) (map[string]any, error) {
 	role, _ := msg["role"].(string)
 	out := map[string]any{"role": role}
@@ -145,10 +128,15 @@ func convertChatMessageToAnthropic(msg map[string]any) (map[string]any, error) {
 	case []any:
 		blocks := make([]any, 0, len(typed))
 		for _, block := range typed {
-			blockMap, _ := block.(map[string]any)
-			blockType, _ := blockMap["type"].(string)
-			switch blockType {
+			blockMap, ok := block.(map[string]any)
+			if !ok {
+				return nil, fmt.Errorf("invalid OpenAI content block: expected object")
+			}
+			switch blockMap["type"] {
 			case "text":
+				if _, ok := blockMap["text"].(string); !ok {
+					return nil, fmt.Errorf("invalid text content block: missing text")
+				}
 				blocks = append(blocks, map[string]any{"type": "text", "text": blockMap["text"]})
 			case "image_url":
 				if imageURL, ok := blockMap["image_url"].(map[string]any); ok {
@@ -165,37 +153,31 @@ func convertChatMessageToAnthropic(msg map[string]any) (map[string]any, error) {
 							"type":   "image",
 							"source": source,
 						})
-					} else {
-						return nil, fmt.Errorf("invalid image_url content block: url is required")
+						continue
 					}
-				} else {
-					return nil, fmt.Errorf("invalid image_url content block: image_url is required")
 				}
+				return nil, fmt.Errorf("invalid image_url content block: missing url")
 			default:
-				return nil, fmt.Errorf("unsupported OpenAI content block: type=%q", blockType)
+				return nil, fmt.Errorf("unsupported OpenAI content block: %v", blockMap["type"])
 			}
 		}
 		out["content"] = blocks
 	}
 	if role == "tool" {
-		toolCallID, ok := msg["tool_call_id"].(string)
-		if !ok || toolCallID == "" {
-			return nil, fmt.Errorf("invalid tool result: tool_call_id is required")
-		}
-		toolContent, ok := msg["content"].(string)
-		if !ok {
-			return nil, fmt.Errorf("unsupported tool result content: expected string")
-		}
-		return map[string]any{
-			"role": "user",
-			"content": []any{
-				map[string]any{
-					"type":        "tool_result",
-					"tool_use_id": toolCallID,
-					"content":     toolContent,
+		if toolCallID, ok := msg["tool_call_id"].(string); ok {
+			toolContent, _ := msg["content"].(string)
+			out = map[string]any{
+				"role": "user",
+				"content": []any{
+					map[string]any{
+						"type":        "tool_result",
+						"tool_use_id": toolCallID,
+						"content":     toolContent,
+					},
 				},
-			},
-		}, nil
+			}
+		}
+		return out, nil
 	}
 	if toolCalls, ok := msg["tool_calls"].([]any); ok {
 		var existing []any
@@ -206,12 +188,24 @@ func convertChatMessageToAnthropic(msg map[string]any) (map[string]any, error) {
 			existing = []any{}
 		}
 		for _, toolCall := range toolCalls {
-			toolCallMap, _ := toolCall.(map[string]any)
+			toolCallMap, ok := toolCall.(map[string]any)
+			if !ok {
+				return nil, fmt.Errorf("invalid tool call: expected object")
+			}
 			function, _ := toolCallMap["function"].(map[string]any)
+			if function == nil {
+				return nil, fmt.Errorf("invalid tool call: missing function (tool_call_id=%v)", toolCallMap["id"])
+			}
 			argsStr, _ := function["arguments"].(string)
 			var args any
+			if !json.Valid([]byte(argsStr)) {
+				return nil, fmt.Errorf("invalid tool arguments: tool_call_id=%v", toolCallMap["id"])
+			}
 			if err := json.Unmarshal([]byte(argsStr), &args); err != nil {
-				return nil, fmt.Errorf("invalid tool arguments: tool=%q: %w", function["name"], err)
+				return nil, fmt.Errorf("unmarshal tool arguments failed: %w (tool_call_id=%v)", err, toolCallMap["id"])
+			}
+			if _, ok := args.(map[string]any); !ok {
+				return nil, fmt.Errorf("invalid tool arguments: expected JSON object (tool_call_id=%v)", toolCallMap["id"])
 			}
 			existing = append(existing, map[string]any{
 				"type":  "tool_use",
@@ -223,6 +217,42 @@ func convertChatMessageToAnthropic(msg map[string]any) (map[string]any, error) {
 		out["content"] = existing
 	}
 	return out, nil
+}
+
+func chatSystemContent(content any) (string, error) {
+	switch typed := content.(type) {
+	case string:
+		return typed, nil
+	case []any:
+		parts := make([]string, 0, len(typed))
+		for _, raw := range typed {
+			block, ok := raw.(map[string]any)
+			if !ok {
+				return "", fmt.Errorf("invalid system content block: expected object")
+			}
+			if block["type"] != "text" {
+				return "", fmt.Errorf("unsupported OpenAI content block: %v", block["type"])
+			}
+			text, ok := block["text"].(string)
+			if !ok {
+				return "", fmt.Errorf("invalid system text content block: missing text")
+			}
+			parts = append(parts, text)
+		}
+		return strings.Join(parts, "\n"), nil
+	default:
+		return "", fmt.Errorf("invalid system content: expected string or text blocks")
+	}
+}
+
+func joinNonEmpty(left, right string) string {
+	if left == "" {
+		return right
+	}
+	if right == "" {
+		return left
+	}
+	return left + "\n" + right
 }
 
 func parseImageDataURI(value string) (mediaType, data string, ok bool) {

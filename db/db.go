@@ -521,7 +521,9 @@ func (d *DB) ensureRequestLogSchema(ctx context.Context) error {
 	    WHERE tool_calls IS NOT NULL AND tool_calls != '[]'::jsonb;
 	CREATE INDEX IF NOT EXISTS idx_request_logs_provider_tool_calls
 	    ON request_logs (provider_id, ts DESC)
-	    WHERE tool_calls IS NOT NULL AND jsonb_array_length(tool_calls) > 0;
+	    WHERE tool_calls IS NOT NULL
+	      AND jsonb_typeof(tool_calls) = 'array'
+	      AND jsonb_array_length(tool_calls) > 0;
 `)
 	if err != nil {
 		return err

@@ -80,6 +80,18 @@ function mountPanel() {
   return mount(QueuePerspectivePanel, { global: { plugins: [i18n] } })
 }
 
+/**
+ * 默认折叠下节点卡片都收在 group.body 内。多数重排 / 卡片相关的测试需要
+ * 先展开 group 才会渲染出 .qp-node-card 与拖拽手柄。这里封装成 helper 以
+ * 避免在每个 it() 内重复 trigger。
+ */
+async function expandAllModelGroups(wrapper: ReturnType<typeof mountPanel>) {
+  for (const toggle of wrapper.findAll('.qp-model-group-toggle')) {
+    await toggle.trigger('click')
+  }
+  await flushPromises()
+}
+
 
 describe('QueuePerspectivePanel', () => {
   beforeEach(() => {
@@ -94,6 +106,7 @@ describe('QueuePerspectivePanel', () => {
     }
     liveStreamState.requests = []
     liveStreamState.nodes = []
+    liveStreamState.snapshot = null
     getFeatured.mockReset().mockResolvedValue({ featured_models: ['gpt-4o', 'claude-sonnet', 'm-1'] })
     resolveRouting.mockReset().mockResolvedValue({ raw_models: [], candidates: [] })
     reorderCandidateBindings.mockReset().mockResolvedValue({ message: 'updated', items: [] })
@@ -409,23 +422,101 @@ describe('QueuePerspectivePanel', () => {
 
     const groups = groupLayer.findAll('.qp-model-group')
     expect(groups).toHaveLength(2)
-    // 特色模型优先，其次按近三天热门请求数排序。
-    expect(groups[0].text()).toContain('gpt-4o')
+    // 默认按字母序排列 displayName：claude-sonnet → gpt-4o。
+    expect(groups[0].text()).toContain('claude-sonnet')
     expect(groups[0].text()).toContain('2 节点')
-    expect(groups[0].text()).toContain('2 当前请求')
-    expect(groups[1].text()).toContain('claude-sonnet')
+    expect(groups[0].text()).toContain('2') // 请求图标里也会渲染数字
+    expect(groups[1].text()).toContain('gpt-4o')
     expect(groups[1].text()).toContain('2 节点')
-    expect(groups[1].text()).toContain('2 当前请求')
+
+    // 标题栏上的请求数图标：默认折叠状态下也应当暴露当前请求数。
+    const rqIcons = groupLayer.findAll('.qp-model-rq-icon')
+    expect(rqIcons).toHaveLength(2)
+    expect(rqIcons.map(icon => icon.get('.qp-model-rq-count').text())).toEqual(['2', '2'])
 
     // 节点以 供应商+凭据 小卡片呈现（标题 + 四态点 + 状态摘要）
-    const gptCards = groups[0].findAll('.qp-node-card')
-    expect(gptCards.map(card => card.get('.qp-node-card-title').text()).sort()).toEqual(['a · #1', 'b · #2'])
-    expect(gptCards[0].findAll('.qp-dot')).toHaveLength(4)
-    expect(gptCards[0].text()).toMatch(/✓/)
-    expect(gptCards[0].text()).toMatch(/5m/)
+    // 默认折叠下不渲染节点卡片（移动到 body 中）。
+    expect(groups[0].findAll('.qp-node-card')).toHaveLength(0)
+    await groups[0].get('.qp-model-group-toggle').trigger('click')
+    // groups[0] 是 claude-sonnet 分组（按 displayName 字母序在前），节点 = #2 (b) + #3 (c)。
+    const claudeCards = groups[0].findAll('.qp-node-card')
+    expect(claudeCards.map(card => card.get('.qp-node-card-title').text()).sort()).toEqual(['b/#2', 'c/#3'])
+    expect(claudeCards[0].findAll('.qp-dot')).toHaveLength(4)
+    expect(claudeCards[0].text()).toMatch(/✓/)
+    expect(claudeCards[0].text()).toMatch(/5m/)
 
-    // 折叠态下不展开请求列表
-    expect(groups[0].findAll('.qp-model-group-requests')).toHaveLength(0)
+    // 折叠态下不展开请求列表（这里第一个 group 已经展开，所以检查第二个）。
+    expect(groups[1].findAll('.qp-model-group-requests')).toHaveLength(0)
+  })
+
+  it('renders recent model-lane status strip on each model title row', async () => {
+    liveStreamState.nodes = [
+      { credential_id: 1, provider_id: 2, provider_code: 'a', manual_disabled: false, circuit_state: 'closed', raw_models: ['gpt-4o'] },
+      { credential_id: 3, provider_id: 4, provider_code: 'c', manual_disabled: false, circuit_state: 'closed', raw_models: ['claude-sonnet'] },
+    ]
+    liveStreamState.snapshot = {
+      summary: { total: 3, success: 2, failure: 0, in_progress: 1 },
+      detail_dimensions: { credential: [], vendor: [], provider: [], model: [] },
+      dimensions: {
+        credential: [],
+        vendor: [],
+        provider: [],
+        model: [
+          {
+            id: 'gpt-4o',
+            name: 'gpt-4o',
+            dimension: 'model',
+            isOthers: false,
+            stats: { total: 2, success: 1, failure: 0, in_progress: 1 },
+            requests: [
+              {
+                request_id: 'r-g1',
+                timestamp: '2026-08-27T00:00:01Z',
+                model: 'gpt-4o',
+                vendor: 'openai',
+                provider: 'a',
+                status: 'success',
+              },
+              {
+                request_id: 'r-g2',
+                timestamp: '2026-08-27T00:00:02Z',
+                model: 'gpt-4o',
+                vendor: 'openai',
+                provider: 'a',
+                status: 'in_progress',
+              },
+            ],
+          },
+          {
+            id: 'claude-sonnet',
+            name: 'claude-sonnet',
+            dimension: 'model',
+            isOthers: false,
+            stats: { total: 1, success: 1, failure: 0 },
+            requests: [
+              {
+                request_id: 'r-c1',
+                timestamp: '2026-08-27T00:00:03Z',
+                model: 'claude-sonnet',
+                vendor: 'anthropic',
+                provider: 'c',
+                status: 'success',
+              },
+            ],
+          },
+        ],
+      },
+      dimension_legends: { credential: [], vendor: [], provider: [], model: [] },
+      status_legends: [],
+    }
+
+    const wrapper = mountPanel()
+    await flushPromises()
+    const strips = wrapper.findAll('.model-recent-status-strip')
+    expect(strips).toHaveLength(2)
+    // 字母序：claude-sonnet 在前（1 cell），gpt-4o 在后（2 cells）
+    expect(strips[0].findAll('.model-recent-status-strip__cell')).toHaveLength(1)
+    expect(strips[1].findAll('.model-recent-status-strip__cell')).toHaveLength(2)
   })
 
   it('expands a model to show requests routed to those nodes', async () => {
@@ -453,8 +544,8 @@ describe('QueuePerspectivePanel', () => {
     expect(body.exists()).toBe(true)
     const reqList = body.find('.qp-model-group-requests')
     expect(reqList.exists()).toBe(true)
-    // 请求行的节点标示同样使用 供应商 · #凭据
-    expect(reqList.text()).toContain('p · #5')
+    // 请求行的节点标示同样使用 供应商 / 凭据ID（无标签时 fallback）
+    expect(reqList.text()).toContain('p/#5')
     expect(reqList.text()).toContain('m-1')
     expect(reqList.text()).toContain('success')
     expect(reqList.text()).toContain('410ms')
@@ -467,6 +558,8 @@ describe('QueuePerspectivePanel', () => {
 
     const wrapper = mountPanel()
     await flushPromises()
+    // 默认折叠，先展开再点击节点卡片。
+    await wrapper.get('.qp-model-group-toggle').trigger('click')
     await wrapper.get('.qp-node-card').trigger('click')
 
     const drawer = wrapper.findComponent(NodeDetailDrawer)
@@ -487,12 +580,14 @@ describe('QueuePerspectivePanel', () => {
         : [],
     }))
     liveStreamState.nodes = [
-      { credential_id: 10, provider_id: 1, provider_code: 'p', manual_disabled: false, circuit_state: 'closed', raw_models: ['m-1'] },
-      { credential_id: 5, provider_id: 1, provider_code: 'p', manual_disabled: false, circuit_state: 'closed', raw_models: ['m-1'] },
+      { credential_id: 10, provider_id: 1, provider_code: 'p', manual_disabled: false, circuit_state: 'closed', raw_models: ['m-1'], credential_label: 'later-priority' },
+      { credential_id: 5, provider_id: 1, provider_code: 'p', manual_disabled: false, circuit_state: 'closed', raw_models: ['m-1'], credential_label: 'first-priority' },
     ]
 
     const wrapper = mountPanel()
     await flushPromises()
+    // 默认折叠 — 展开后才看到节点卡片。
+    await wrapper.get('.qp-model-group-toggle').trigger('click')
     const titles = wrapper.findAll('.qp-node-card-title').map(el => el.text())
     expect(titles[0]).toContain('first-priority')
     expect(titles[1]).toContain('later-priority')
@@ -512,12 +607,13 @@ describe('QueuePerspectivePanel', () => {
         : [],
     }))
     liveStreamState.nodes = [
-      { credential_id: 1, provider_id: 1, provider_code: 'p', manual_disabled: false, circuit_state: 'closed', raw_models: ['m-1'] },
-      { credential_id: 2, provider_id: 1, provider_code: 'p', manual_disabled: false, circuit_state: 'closed', raw_models: ['m-1'] },
+      { credential_id: 1, provider_id: 1, provider_code: 'p', manual_disabled: false, circuit_state: 'closed', raw_models: ['m-1'], credential_label: 'alpha-key' },
+      { credential_id: 2, provider_id: 1, provider_code: 'p', manual_disabled: false, circuit_state: 'closed', raw_models: ['m-1'], credential_label: 'beta-key' },
     ]
 
     const wrapper = mountPanel()
     await flushPromises()
+    await expandAllModelGroups(wrapper)
     const cards = wrapper.findAll('.qp-node-card')
     expect(cards).toHaveLength(2)
     expect(wrapper.text()).toContain('alpha-key')
@@ -566,6 +662,7 @@ describe('QueuePerspectivePanel', () => {
 
     const wrapper = mountPanel()
     await flushPromises()
+    await expandAllModelGroups(wrapper)
     const cards = wrapper.findAll('.qp-node-card')
     expect(cards).toHaveLength(2)
     expect(cards.every(card => !card.attributes('draggable'))).toBe(true)
@@ -596,6 +693,7 @@ describe('QueuePerspectivePanel', () => {
 
     const wrapper = mountPanel()
     await flushPromises()
+    await expandAllModelGroups(wrapper)
     const handles = wrapper.findAll('.qp-node-card-drag-handle')
     const wraps = wrapper.findAll('.qp-node-card-wrap')
     const transfer = { effectAllowed: '', dropEffect: '', setData: vi.fn() }
@@ -624,12 +722,13 @@ describe('QueuePerspectivePanel', () => {
     }))
     // Only credentials 1 and 3 are currently live; #2 is still in the binding set.
     liveStreamState.nodes = [
-      { credential_id: 1, provider_id: 1, provider_code: 'p', manual_disabled: false, circuit_state: 'closed', raw_models: ['m-1'] },
-      { credential_id: 3, provider_id: 1, provider_code: 'p', manual_disabled: false, circuit_state: 'closed', raw_models: ['m-1'] },
+      { credential_id: 1, provider_id: 1, provider_code: 'p', manual_disabled: false, circuit_state: 'closed', raw_models: ['m-1'], credential_label: 'live-a' },
+      { credential_id: 3, provider_id: 1, provider_code: 'p', manual_disabled: false, circuit_state: 'closed', raw_models: ['m-1'], credential_label: 'live-c' },
     ]
 
     const wrapper = mountPanel()
     await flushPromises()
+    await expandAllModelGroups(wrapper)
     const cards = wrapper.findAll('.qp-node-card')
     expect(cards).toHaveLength(2)
     expect(wrapper.text()).toContain('live-a')
@@ -681,6 +780,7 @@ describe('QueuePerspectivePanel', () => {
 
     const wrapper = mountPanel()
     await flushPromises()
+    await expandAllModelGroups(wrapper)
     // Default filter is active-only: cards 1 and 3 visible; card 2 hidden.
     const cards = wrapper.findAll('.qp-node-card')
     expect(cards).toHaveLength(2)
@@ -726,6 +826,7 @@ describe('QueuePerspectivePanel', () => {
 
     const wrapper = mountPanel()
     await flushPromises()
+    await expandAllModelGroups(wrapper)
     const handles = wrapper.findAll('.qp-node-card-drag-handle')
     expect(handles.every(h => h.attributes('draggable') === 'false')).toBe(true)
     // Mixed canonical disables the row by setting reorderCanonicalId=null;
@@ -779,6 +880,7 @@ describe('QueuePerspectivePanel', () => {
     const wrapper = mountPanel()
     await flushPromises()
     await flushPromises()
+    await expandAllModelGroups(wrapper)
 
     expect(getSlidingWindowBatch).toHaveBeenCalledWith(
       expect.any(Array),
@@ -825,6 +927,7 @@ describe('QueuePerspectivePanel', () => {
       const wrapper = mountPanel()
       await flushPromises()
       await flushPromises()
+      await expandAllModelGroups(wrapper)
       expect(wrapper.findAll('.qp-node-window-cell')).toHaveLength(2)
 
       getSlidingWindowBatch.mockResolvedValue({
@@ -890,8 +993,9 @@ describe('QueuePerspectivePanel', () => {
     const wrapper = mountPanel()
     await loadCredentialLabels()
     await flushPromises()
+    await expandAllModelGroups(wrapper)
 
-    expect(wrapper.get('.qp-node-card-title').text()).toBe('hzx-prod')
-    expect(wrapper.text()).not.toContain('p · #5')
+    expect(wrapper.get('.qp-node-card-title').text()).toBe('p/hzx-prod')
+    expect(wrapper.text()).not.toContain('p/#5')
   })
 })

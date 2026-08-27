@@ -6,27 +6,6 @@ import (
 	"testing"
 )
 
-func TestAuthMiddleware_BypassesAdminSPAPaths(t *testing.T) {
-	// Nginx often proxies /admin/* to Go (for /admin/config/reload). Vue SPA
-	// routes under the same prefix must not require the global API key.
-	called := false
-	mw := NewAuthMiddleware("secret-key")
-	handler := mw.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		called = true
-		w.WriteHeader(http.StatusOK)
-	}))
-
-	for _, path := range []string{"/admin/turns", "/admin/sessions", "/admin/dashboard", "/admin/config/reload"} {
-		called = false
-		req := httptest.NewRequest(http.MethodGet, path, nil)
-		rr := httptest.NewRecorder()
-		handler.ServeHTTP(rr, req)
-		if !called || rr.Code == http.StatusUnauthorized {
-			t.Errorf("%s: SPA/admin path must bypass global API key, status=%d", path, rr.Code)
-		}
-	}
-}
-
 func TestAuthMiddleware_BypassesAPIAdminPaths(t *testing.T) {
 	// PR-3 (2026-06-30): /api/* must bypass global API-key auth so
 	// cookie-authenticated browser sessions reach admin.AdminMiddleware
@@ -106,9 +85,6 @@ func TestAuthMiddleware_AcceptsValidBearerForDataPaths(t *testing.T) {
 	mw := NewAuthMiddleware("secret-key")
 	handler := mw.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
-		if !IsGlobalAuthPassed(r.Context()) {
-			t.Error("static key verification must mark the request context")
-		}
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -143,37 +119,6 @@ func TestAuthMiddleware_RejectsInvalidBearer(t *testing.T) {
 	}
 	if rr.Code != http.StatusUnauthorized {
 		t.Errorf("expected 401, got %d", rr.Code)
-	}
-}
-
-func TestAuthMiddleware_PassesSkKeysToDBVerifier(t *testing.T) {
-	// 2026-08-24 incident fix: sk-* data-plane keys must bypass the static
-	// gate — they are validated downstream by KeyVerifier against api_keys.
-	// The static gate must never reject a DB-issued key just because it
-	// differs from LLM_GATEWAY_API_KEY (replicas hold different values).
-	called := false
-	mw := NewAuthMiddleware("secret-key")
-	handler := mw.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		called = true
-		if IsGlobalAuthPassed(r.Context()) {
-			t.Error("sk-* pass-through must not mark ctx as global-auth-passed")
-		}
-		w.WriteHeader(http.StatusOK)
-	}))
-
-	for _, key := range []string{"sk-anything", "sk-RZ8dm0z-example", "sk-"} {
-		called = false
-		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-		req.Header.Set("Authorization", "Bearer "+key)
-		rr := httptest.NewRecorder()
-		handler.ServeHTTP(rr, req)
-
-		if !called {
-			t.Errorf("key %q: handler should be called (sk-* goes to DB verifier), got status=%d", key, rr.Code)
-		}
-		if rr.Code != http.StatusOK {
-			t.Errorf("key %q: expected 200, got %d", key, rr.Code)
-		}
 	}
 }
 

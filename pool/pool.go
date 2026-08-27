@@ -93,6 +93,7 @@ type Pool struct {
 	mu            sync.Mutex
 	stopCh        chan struct{}
 	closed        atomic.Bool
+	healthStarted atomic.Bool
 	wg            sync.WaitGroup
 	activeConns   chan struct{}
 	gracePeriod   time.Duration // Grace period before marking as dead
@@ -196,7 +197,7 @@ func (p *Pool) LastUsed() time.Time {
 
 // StartHealthCheck begins periodic health probing.
 func (p *Pool) StartHealthCheck() {
-	if p.closed.Load() {
+	if p.closed.Load() || !p.healthStarted.CompareAndSwap(false, true) {
 		return
 	}
 	p.wg.Add(1)

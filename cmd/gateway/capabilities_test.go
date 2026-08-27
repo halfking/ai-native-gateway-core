@@ -47,13 +47,17 @@ func TestCapabilitiesHandler_Get(t *testing.T) {
 
 	// Feature labels must mirror the audit matrix in
 	// docs/全面优化v1/README.md §二 — current facts only, no target inflation.
+	//
+	// 2026-08-26 hzx-2 / 落点 B: webhook_subscription 升级为 "implemented"
+	// （cmd/gateway/webhooks + POST /api/webhooks/quota/recharged 已上线，
+	//  HMAC-SHA256 验签 + bg/balance_quota_probe.OnQuotaRecharged 秒级恢复链）。
 	wantFeatures := map[string]string{
 		"data_plane":           "current",
 		"sticky_session":       "current",
 		"tenant_quota":         "current",
 		"durable_outbox":       "partial",
 		"plugin_runtime":       "partial",
-		"webhook_subscription": "planned",
+		"webhook_subscription": "implemented",
 	}
 	for feature, want := range wantFeatures {
 		if got, ok := body.Features[feature]; !ok {

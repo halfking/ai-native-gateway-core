@@ -559,7 +559,7 @@ function goManageFeatured() {
 .select-field {
   width: 100%;
   padding: 8px 12px;
-  background: rgba(255, 255, 255, 0.04);
+  background: color-mix(in srgb, var(--kx-text) 4%, transparent);
   border: 1px solid var(--border);
   border-radius: 8px;
   color: var(--text);
@@ -586,13 +586,13 @@ function goManageFeatured() {
 }
 
 .badge-green {
-  background: rgba(63, 185, 80, 0.15);
-  color: #4ade80;
+  background: var(--success-bg);
+  color: var(--success);
 }
 
 .badge-yellow {
-  background: rgba(210, 153, 34, 0.15);
-  color: #fbbf24;
+  background: var(--warning-bg);
+  color: var(--warning);
 }
 
 .os-tabs {
@@ -642,7 +642,7 @@ function goManageFeatured() {
   flex-wrap: wrap;
   gap: 6px;
   padding: 10px 12px;
-  background: rgba(255, 255, 255, 0.03);
+  background: color-mix(in srgb, var(--kx-text) 4%, transparent);
   border-radius: 6px;
   align-items: center;
 }
@@ -682,7 +682,7 @@ function goManageFeatured() {
   border: 1px solid var(--border);
   border-radius: 8px;
   overflow: hidden;
-  background: rgba(0, 0, 0, 0.15);
+  background: var(--overlay-light);
 }
 
 .all-models-toolbar {
@@ -690,7 +690,7 @@ function goManageFeatured() {
   align-items: center;
   gap: 6px;
   padding: 8px 12px;
-  background: rgba(255, 255, 255, 0.04);
+  background: color-mix(in srgb, var(--kx-text) 4%, transparent);
   border-bottom: 1px solid var(--border);
 }
 
@@ -713,7 +713,7 @@ function goManageFeatured() {
 .model-search-input {
   width: 100%;
   padding: 8px 12px;
-  background: rgba(255, 255, 255, 0.03);
+  background: color-mix(in srgb, var(--kx-text) 4%, transparent);
   border: none;
   border-bottom: 1px solid var(--border);
   color: var(--text);
@@ -753,7 +753,7 @@ function goManageFeatured() {
   align-items: center;
   justify-content: space-between;
   padding: 6px 12px;
-  background: rgba(255, 255, 255, 0.03);
+  background: color-mix(in srgb, var(--kx-text) 4%, transparent);
   border-top: 1px solid var(--border);
   border-bottom: 1px solid var(--border);
   position: sticky;
@@ -776,7 +776,7 @@ function goManageFeatured() {
 .model-family-count {
   font-size: 11px;
   color: var(--muted);
-  background: rgba(255, 255, 255, 0.05);
+  background: color-mix(in srgb, var(--kx-text) 4%, transparent);
   padding: 1px 6px;
   border-radius: 8px;
 }
@@ -893,8 +893,8 @@ function goManageFeatured() {
 }
 
 .code-preview {
-  background: #0d1117;
-  color: #e6edf3;
+  background: var(--probe-dark-bg);
+  color: var(--surface-secondary);
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 14px;
@@ -908,7 +908,7 @@ function goManageFeatured() {
 }
 
 .script-code {
-  color: #79c0ff;
+  color: var(--probe-cyan-light);
 }
 
 .manual-text {
@@ -931,7 +931,7 @@ function goManageFeatured() {
   padding: 8px 12px;
   font-size: 12px;
   color: var(--muted);
-  background: rgba(255, 255, 255, 0.03);
+  background: color-mix(in srgb, var(--kx-text) 4%, transparent);
   border-radius: 6px;
 }
 
@@ -971,7 +971,7 @@ function goManageFeatured() {
   align-items: center;
   gap: 8px;
   padding: 6px 12px;
-  background: rgba(255, 255, 255, 0.04);
+  background: color-mix(in srgb, var(--kx-text) 4%, transparent);
   border-top: 1px solid var(--border);
   border-bottom: 1px solid var(--border);
   position: sticky;
@@ -1002,7 +1002,7 @@ function goManageFeatured() {
 .modal-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.6);
+  background: var(--overlay-strong);
   z-index: 1100;
   display: flex;
   align-items: center;
@@ -1016,7 +1016,7 @@ function goManageFeatured() {
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: 12px;
-  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 24px 60px var(--overlay-strong);
   display: flex;
   flex-direction: column;
 }
@@ -1060,7 +1060,7 @@ function goManageFeatured() {
 .form-input {
   width: 100%;
   padding: 8px 10px;
-  background: rgba(255, 255, 255, 0.04);
+  background: color-mix(in srgb, var(--kx-text) 4%, transparent);
   border: 1px solid var(--border);
   border-radius: 6px;
   color: var(--text);
@@ -1088,8 +1088,8 @@ textarea.form-input {
 }
 
 .alert-danger {
-  background: rgba(248, 81, 73, 0.12);
-  color: #f97583;
-  border: 1px solid rgba(248, 81, 73, 0.3);
+  background: var(--danger-bg);
+  color: var(--danger);
+  border: 1px solid var(--danger-bd);
 }
 </style>

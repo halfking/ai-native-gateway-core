@@ -1,10 +1,50 @@
 import { reactive } from 'vue'
 
+// 2026-08-26 (P1-28 fix): api-autoroute.ts holds a module-level sk-*
+// relay cache. store.ts cannot import from api-autoroute.ts at module
+// load time (would create a cycle: api-autoroute.ts already imports
+// `store` + `authBearer` from here). Instead, api-autoroute.ts
+// registers a synchronous invalidator on globalThis at its own module
+// init, which we call here on every auth-state mutation so the cache
+// cannot survive a logout / tenant swap / apiKey rotation.
+declare global {
+  // eslint-disable-next-line no-var
+  var __llmgwRelayCacheInvalidator: (() => void) | undefined
+}
+function relayCacheInvalidator(): void {
+  try {
+    globalThis.__llmgwRelayCacheInvalidator?.()
+  } catch {
+    /* api-autoroute.ts not yet loaded — nothing to clear. */
+  }
+}
+
 const KEY = 'llmgw_api_key'
-const JWT_KEY = 'llmgw_jwt' // Real JWT persisted to localStorage for Bearer header
+const JWT_KEY = 'llmgw_jwt' // 历史遗留：2026-08-26 (P1-7 fix) 后不再写入；保留以便 onMounted 一次性清除存量凭据。
 const USER_KEY = 'llmgw_user_info'
 const PREFERRED_CHAT_KEY_PREFIX = 'llmgw_preferred_key_id:'
 const LOCALE_KEY = 'llmgw_locale'
+
+// 2026-08-26 (P1-7 fix): long-lived credentials (sk-* api key, JWT) must
+// NOT live in localStorage — anything stored there is readable by any
+// script running in this origin, including compromised npm dependencies
+// or browser extensions. Move JWT to memory-only (cross-request auth is
+// carried by the HttpOnly `llmgw_session` cookie that the backend
+// already sets in admin/auth_cookie_helpers.go). The legacy sk-* path
+// is also reworked to memory-only; the JWT cookie is what makes the
+// browser-side flow work for username/password logins.
+//
+// Migration: on module load, clear any stale llmgw_api_key / llmgw_jwt
+// already in localStorage. Subsequent setApiKey / setJwtToken calls
+// only mutate the in-memory reactive store — they do NOT write back to
+// localStorage. Logout clears them in memory; on next SPA load the
+// cookie probe + /api/auth/me re-derives the user.
+try {
+  localStorage.removeItem(KEY)
+  localStorage.removeItem(JWT_KEY)
+} catch {
+  /* localStorage unavailable — ignore. */
+}
 
 export interface UserInfo {
   id: number
@@ -35,8 +75,11 @@ function loadStoredUserInfo(): UserInfo | null {
 }
 
 export const store = reactive({
-  apiKey: localStorage.getItem(KEY) ?? '',
-  jwtToken: localStorage.getItem(JWT_KEY) ?? '', // Real JWT, persisted for Bearer header
+  // 2026-08-26 (P1-7 fix): apiKey / jwtToken are now memory-only. The
+  // JWT auth path relies on the HttpOnly `llmgw_session` cookie set by
+  // the backend (admin/auth_cookie_helpers.go) — see authBearer() below.
+  apiKey: '',
+  jwtToken: '',
   userInfo: loadStoredUserInfo(),
   locale: localStorage.getItem(LOCALE_KEY) ?? 'zh-CN',
   // 2026-07-09: authHydrated tracks whether we've probed /api/auth/me.
@@ -48,12 +91,15 @@ export const store = reactive({
 
 export function setApiKey(k: string) {
   store.apiKey = k
-  localStorage.setItem(KEY, k)
+  // 2026-08-26 (P1-7 fix): memory-only — see module-level comment.
+  // Legacy callers that previously persisted to localStorage keep
+  // working for the lifetime of this SPA mount.
+  relayCacheInvalidator?.()
 }
 
 export function clearApiKey() {
   store.apiKey = ''
-  localStorage.removeItem(KEY)
+  relayCacheInvalidator()
 }
 
 /** Per-user preferred API key id for /chat (sk-* resolved via reveal). */
@@ -79,11 +125,11 @@ export function clearPreferredChatKeyId() {
 
 export function setJwtToken(token: string) {
   store.jwtToken = token
-  if (token) {
-    localStorage.setItem(JWT_KEY, token)
-  } else {
-    localStorage.removeItem(JWT_KEY)
-  }
+  // 2026-08-26 (P1-7 fix): memory-only. The HttpOnly `llmgw_session`
+  // cookie set by the backend carries the JWT across requests; this
+  // in-memory copy is only used by the Authorization: Bearer header
+  // for same-origin fetch calls that the cookie does not cover.
+  relayCacheInvalidator()
 }
 
 // Returns the token that should go into the `Authorization: Bearer` header.
@@ -100,11 +146,21 @@ export function authBearer(): string {
 
 export function setUserInfo(user: UserInfo | null) {
   const normalized = normalizeUserInfo(user)
+  // 2026-08-26 (P1-28 fix): a tenant or user-id swap must drop the sk-*
+  // relay cache, otherwise the new user inherits the previous user's
+  // revealed key in the same SPA mount.
+  const prevTenant = store.userInfo?.tenant_id
+  const prevUserId = store.userInfo?.id
   store.userInfo = normalized
   if (normalized) {
     localStorage.setItem(USER_KEY, JSON.stringify(normalized))
   } else {
     localStorage.removeItem(USER_KEY)
+  }
+  const tenantChanged = prevTenant !== normalized?.tenant_id
+  const userChanged = prevUserId !== normalized?.id
+  if (tenantChanged || userChanged) {
+    relayCacheInvalidator()
   }
 }
 
@@ -119,8 +175,17 @@ export function clearMustChangePasswordFlag() {
 export function clearJwt() {
   store.jwtToken = ''
   store.userInfo = null
-  localStorage.removeItem(JWT_KEY)
+  // 2026-08-26 (P1-7 fix): do NOT write JWT / apiKey to localStorage —
+  // see module-level comment. userInfo (non-secret display data) IS
+  // cleared from localStorage so the next SPA mount doesn't show a
+  // stale username in the layout while /api/auth/me re-validates.
   localStorage.removeItem(USER_KEY)
+  // The HttpOnly session cookie is cleared by the backend's
+  // /api/auth/logout response — nothing to do here for the cookie.
+  // 2026-08-26 (P1-28 fix): drop the sk-* relay cache on logout so the
+  // next user (possibly on a different tenant) never inherits the
+  // previous user's revealed key.
+  relayCacheInvalidator()
 }
 
 // 2026-07-09: 标记 auth hydration 完成。App.vue 首次进入 onMounted 时调用，

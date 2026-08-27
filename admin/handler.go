@@ -26,8 +26,9 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/dbdegradation"   //nolint:depguard // 数据库降级模块
 	"github.com/kaixuan/llm-gateway-go/domains/memory"          //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/modelquality"    // model-IQ backend interface (modelQualityBackend)
-	"github.com/kaixuan/llm-gateway-go/domains/session"         //nolint:depguard // session state manager
-	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit"    //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/requestdetail"
+	"github.com/kaixuan/llm-gateway-go/domains/session"      //nolint:depguard // session state manager
+	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/stats"
 	"github.com/kaixuan/llm-gateway-go/domains/stats/boardcache"
 	v2 "github.com/kaixuan/llm-gateway-go/domains/ursm/v2"
@@ -59,9 +60,19 @@ type Handler struct {
 	envCleaner           *bg.EnvelopeCleaner
 	stickyClean          *bg.StickyCleaner
 	taxSync              *bg.TaxonomySync
-	probeV2              *bg.CredentialProbeV2  // 900-series: mini-chat probe (spec §5)
-	probePicker          *bg.DefaultProbePicker // 900-series: default probe model (spec §4)
-	modelProbe           *bg.ModelProbeRunner   // 2026-06-18: per-model re-probe of failing bindings (spec 2026-06-18-model-probe-rounds)
+	// 2026-08-26 hot-reload: in-process sticky cache for clear-for-credential
+	// on PATCH binding/credential. Cleared by HandleRoutingCandidateBindingUpdate
+	// and updateCredential so new sessions can re-enter load balancing
+	// without waiting for the sticky TTL to expire.
+	stickyCache StickyCacheClearer
+	// 2026-08-26 hot-reload: in-process limiter for hot-update of
+	// concurrency_limit on PATCH credential/binding. The Limiter pool's
+	// per-credential semaphore capacity is refreshed by
+	// HandleRoutingCandidateBindingUpdate / updateCredential.
+	limiter     LimiterCapacitySetter
+	probeV2     *bg.CredentialProbeV2  // 900-series: mini-chat probe (spec §5)
+	probePicker *bg.DefaultProbePicker // 900-series: default probe model (spec §4)
+	modelProbe  *bg.ModelProbeRunner   // 2026-06-18: per-model re-probe of failing bindings (spec 2026-06-18-model-probe-rounds)
 	// balanceQuotaProbe (2026-08-23 hzx-2 audit) backs the admin
 	// "force re-check after recharge" endpoint. nil → the route is
 	// still registered (URL stays stable across deployments); the
@@ -321,12 +332,23 @@ type Handler struct {
 	// submitted. nil → the endpoint silently skips this step.
 	autoHealOneShot func(ctx context.Context, credentialID int) int
 
+	// requestDetailStore (2026-08-25): in-flight request meta + per-request_id
+	// local body files. Locator prefers memory/file before DB dual-write.
+	requestDetailStore   *requestdetail.Store
+	requestDetailLocator *requestdetail.Locator
+
 	// rateLimiter (V3.2-LP5, 2026-08-14) 节点操作限流器：test-now 1req/s per-cred + 10req/min per-operator。
 	rateLimiter *nodeOperationsRateLimiter
 	// statsShadowExecutor runs bounded, read-only legacy/canonical comparisons.
 	statsShadowExecutor *statsShadowExecutor
 	// auditLogger (V3.2-LP5, 2026-08-14) 节点操作审计：异步写入 request_state_transitions。
 	auditLogger *nodeOperationAuditLogger
+}
+
+// refreshDB returns the pool used by catalog writes during an admin model
+// refresh. Keeping the accessor local avoids widening Handler's public API.
+func (h *Handler) refreshDB() *pgxpool.Pool {
+	return h.db
 }
 
 func NewHandler(db *pgxpool.Pool, secretKey string, encKey []byte) *Handler {
@@ -617,6 +639,36 @@ func (h *Handler) SetBackgroundServices(credCycler *bg.CredentialCycler, credRec
 	h.envCleaner = envCleaner
 	h.stickyClean = stickyClean
 	h.taxSync = taxSync
+}
+
+// 2026-08-26 hot-reload: small interfaces decouple admin handlers from the
+// concrete Limiter / StickyCache types. The executors.StickyCache and
+// credential.Limiter types already implement these (duck-typed). Defined
+// here so admin/handler.go doesn't have to import the heavy packages just
+// for two methods.
+
+// StickyCacheClearer is the small surface of executors.StickyCache that the
+// admin handler needs to clear sticky bindings for one credential.
+type StickyCacheClearer interface {
+	ClearForCredential(credID int) (int, error)
+}
+
+// LimiterCapacitySetter is the small surface of credential.Limiter that
+// the admin handler needs to hot-update concurrency capacity.
+type LimiterCapacitySetter interface {
+	SetCredentialCapacity(providerID, credentialID, capacity int)
+}
+
+// SetHotReloadDeps wires the runtime caches that PATCH endpoints need to
+// invalidate when admin changes a credential's priority / weight /
+// concurrency_limit. Called from cmd/gateway/main.go.
+func (h *Handler) SetHotReloadDeps(stickyCache StickyCacheClearer, limiter LimiterCapacitySetter) {
+	if stickyCache != nil {
+		h.stickyCache = stickyCache
+	}
+	if limiter != nil {
+		h.limiter = limiter
+	}
 }
 
 // SetProbeServices injects the 900-series background services (spec §4-5).
@@ -1124,6 +1176,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/usage/", h.admin(h.HandleUsageAdmin))
 	mux.HandleFunc("/api/logs", admin(h.handleLogsRoot))
 	mux.HandleFunc("/api/logs/", admin(h.handleLogs))
+	// 2026-08-25: unified request detail (memory/file → request_logs → session_turns)
+	mux.HandleFunc("/api/admin/request-detail/", admin(h.handleUnifiedRequestDetail))
 	// 2026-08-09: 跨会话轮次列表端点（复用 session_turns 表）
 	mux.HandleFunc("/api/admin/turns", admin(h.handleTurnsList))
 	// 2026-08-10: 会话分组轮次列表端点（最外层会话 + 内层轮次，分层展示）

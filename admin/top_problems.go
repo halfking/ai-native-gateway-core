@@ -6,23 +6,24 @@
 // pull that list on demand without re-running the offline audit script.
 //
 // Endpoints:
-//   GET /api/logs/top-problems?from=<rfc3339>&to=<rfc3339>&limit=<n>
-//   → {
-//        "items": [
-//          {
-//            "kind": "credential"|"model",
-//            "id": <int or string>,
-//            "label": <string>,
-//            "request_count": <int>,
-//            "failure_count": <int>,
-//            "failure_rate": <float in [0,1]>,
-//            "top_failure_kind": <error_kind string or "">,
-//            "top_failure_detail": <string or "">
-//          },
-//          ...
-//        ],
-//        "errors": [ ...optional, only when one dimension failed... ]
-//      }
+//
+//	GET /api/logs/top-problems?from=<rfc3339>&to=<rfc3339>&limit=<n>
+//	→ {
+//	     "items": [
+//	       {
+//	         "kind": "credential"|"model",
+//	         "id": <int or string>,
+//	         "label": <string>,
+//	         "request_count": <int>,
+//	         "failure_count": <int>,
+//	         "failure_rate": <float in [0,1]>,
+//	         "top_failure_kind": <error_kind string or "">,
+//	         "top_failure_detail": <string or "">
+//	       },
+//	       ...
+//	     ],
+//	     "errors": [ ...optional, only when one dimension failed... ]
+//	   }
 //
 // The endpoint returns the union of the top-N worst credentials AND top-N
 // worst models, ranked by absolute failure_count (then failure_rate as
@@ -58,9 +59,9 @@ import (
 
 // topProblemsItem is one row in the top-problems report.
 type topProblemsItem struct {
-	Kind             string  `json:"kind"`                // "credential" or "model"
-	ID               any     `json:"id"`                  // int (credential_id) or string (client_model)
-	Label            string  `json:"label"`              // human-readable label
+	Kind             string  `json:"kind"`  // "credential" or "model"
+	ID               any     `json:"id"`    // int (credential_id) or string (client_model)
+	Label            string  `json:"label"` // human-readable label
 	RequestCount     int64   `json:"request_count"`
 	FailureCount     int64   `json:"failure_count"`
 	FailureRate      float64 `json:"failure_rate"`       // 0..1
@@ -69,12 +70,12 @@ type topProblemsItem struct {
 }
 
 const (
-	topProblemsQueryTimeout  = 10 * time.Second
+	topProblemsQueryTimeout = 10 * time.Second
 	topProblemsMaxLimit     = 200
 	// topProblemsMinRequests is the HAVING floor — the same floor T1's audit
 	// used to avoid ranking items whose failure rate has no statistical
 	// meaning (≤30 observations).
-	topProblemsMinRequests  = 30
+	topProblemsMinRequests = 30
 )
 
 // handleTopProblems serves GET /api/logs/top-problems.
@@ -181,7 +182,7 @@ func queryTopProblemCredentials(ctx context.Context, db *pgxpool.Pool, start, en
 	const sql = `
 SELECT
   rl.credential_id,
-  COALESCE(c.alias, '') AS label,
+  COALESCE(c.label, '') AS label,
   COUNT(*) AS request_count,
   COUNT(*) FILTER (WHERE COALESCE(rl.success, FALSE) = FALSE) AS failure_count,
   CASE WHEN COUNT(*) > 0
@@ -194,7 +195,7 @@ FROM request_logs_with_current_month rl
 LEFT JOIN credentials c ON c.id = rl.credential_id
 WHERE rl.ts >= $1 AND rl.ts <= $2
   AND rl.credential_id IS NOT NULL
-GROUP BY rl.credential_id, c.alias
+GROUP BY rl.credential_id, c.label
 HAVING COUNT(*) >= $4
 ORDER BY failure_count DESC,
          (COUNT(*) FILTER (WHERE COALESCE(rl.success, FALSE) = FALSE))::float8 / COUNT(*) DESC

@@ -179,8 +179,8 @@ func (api *SessionCompareAPI) loadCompareData(ctx context.Context, q pgx.Tx, ten
 	query := `
 		SELECT 
 			rl.request_id,
-			rb.request_body AS request_body,
-			rb.outbound_body AS outbound_body, rb.response_body AS response_body,
+			COALESCE(rb.request_body, rl.request_body) AS request_body,
+			rl.outbound_body, COALESCE(rb.response_body, rl.response_body) AS response_body,
 			rl.compression_strategy, rl.compression_meta, 
 			rl.outbound_msg_count, rl.outbound_token_est,
 			rl.client_model, rl.outbound_model,
@@ -791,8 +791,8 @@ func (api *HandoffAPI) generateHandoffSummary(ctx context.Context, sessionID, te
 	var summaries []string
 	err := withTenantTx(ctx, api.db, tenantID, func(tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, `
-			rb.request_body AS request_body,
-			       rb.response_body AS response_body,
+			SELECT COALESCE(rb.request_body, rl.request_body) AS request_body,
+			       COALESCE(rb.response_body, rl.response_body) AS response_body,
 			       rl.created_at
 			FROM request_logs rl
 			LEFT JOIN request_logs_bodies rb 

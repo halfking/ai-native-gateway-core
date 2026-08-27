@@ -38,12 +38,6 @@
   "invalid_model": {
     "other": "Le modèle '{{.Model}}' n'est pas pris en charge par cette passerelle"
   },
-  "model_deprecated": {
-    "other": "Le modèle demandé a été définitivement retiré (fin de vie) par le fournisseur en amont."
-  },
-  "unsupported_feature": {
-    "other": "Le modèle sélectionné ne prend pas en charge ce format ou cette modalité de requête."
-  },
   "meta_tool_error": {
     "other": "Échec du traitement du méta-outil"
   },

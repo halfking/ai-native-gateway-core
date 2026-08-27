@@ -1147,12 +1147,12 @@ function onTagsInput(ev: Event) {
   border-color: var(--danger);
 }
 .btn-warning-outline {
-  color: #f59e0b;
-  border-color: #f59e0b;
+  color: var(--warning);
+  border-color: var(--warning);
   background: transparent;
 }
 .btn-warning-outline:hover {
-  background: rgba(245, 158, 11, 0.1);
+  background: var(--warning-bg);
 }
 .drawer-section--danger {
   padding-top: 12px;

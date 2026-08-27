@@ -113,33 +113,84 @@ func (r *errorAfterDataReadCloser) Read(p []byte) (int, error) {
 func (r *errorAfterDataReadCloser) Close() error { return nil }
 
 func TestStreamChatWithPendingCapture_OtherSideClosedIsNetworkError(t *testing.T) {
-	resp := &http.Response{
-		Body: &errorAfterDataReadCloser{
-			data: []byte("data: {\"id\":\"chunk-1\",\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n"),
-			err:  errors.New("other side closed"),
-		},
-		Request: httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
-	}
-	writer := httptest.NewRecorder()
+	// Pinning the gate-aware resumability contract on the chat-path default
+	// branch (stream.go). Three-layer guard keeps committed output from being
+	// duplicated on transparent retry:
+	//   1. bridge.Resumable = !attemptHasClientSemanticOutput(gate, chunkCount)
+	//   2. executor_chat.go:1124 — `isResumable = Resumable && ChunkCount < e.n`
+	//      (StreamRetryThreshold, default 50)
+	//   3. mayRetryInterruptedStream (executor.go:2963-2978) — refuses retry
+	//      when Capture.ChunkCountersSnapshot() > 0
+	// All three must agree that committed output is non-retryable.
 
-	outcome := StreamChatWithPendingCapture(
-		writer,
-		resp,
-		"glm-5.2",
-		"glm-5.2",
-		NewNormalizer(),
-		nil,
-		false,
-		nil,
-		nil,
-	)
+	t.Run("committed content blocks retry", func(t *testing.T) {
+		resp := &http.Response{
+			Body: &errorAfterDataReadCloser{
+				data: []byte("data: {\"id\":\"chunk-1\",\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n"),
+				err:  errors.New("other side closed"),
+			},
+			Request: httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
+		}
+		writer := httptest.NewRecorder()
 
-	assert.True(t, outcome.Interrupted)
-	assert.Equal(t, "network_error", outcome.Reason)
-	assert.Equal(t, errorsx.KindNetwork, outcome.Kind)
-	assert.True(t, outcome.Resumable)
-	assert.Equal(t, 2, outcome.ChunkCount)
-	assert.Contains(t, writer.Body.String(), `"content":"hello"`)
+		outcome := StreamChatWithPendingCapture(
+			writer,
+			resp,
+			"glm-5.2",
+			"glm-5.2",
+			NewNormalizer(),
+			nil,
+			false,
+			nil,
+			nil,
+		)
+
+		assert.True(t, outcome.Interrupted)
+		assert.Equal(t, "network_error", outcome.Reason)
+		assert.Equal(t, errorsx.KindNetwork, outcome.Kind)
+		assert.False(t, outcome.Resumable, "committed content + network error must NOT be transparently retried")
+		assert.Equal(t, 2, outcome.ChunkCount)
+		assert.Contains(t, writer.Body.String(), `"content":"hello"`)
+	})
+
+	t.Run("uncommitted read failure stays retry", func(t *testing.T) {
+		// The body yields a no-content finish-reason chunk then errors. No
+		// semantic chunk (text delta) reaches the client, so the gate stays
+		// uncommitted and the failure must remain transparently retryable so
+		// the survival / dispatch layer can failover to another supplier.
+		// We deliberately do not pin Reason/Kind/ChunkCount: classification
+		// depends on whether the upstream sent enough bytes to clear the
+		// first-byte-read, and the chat-path chunk counter includes
+		// non-semantic frames. The contract under test is the gate predicate:
+		// when no semantic output is committed, Resumable stays true.
+		resp := &http.Response{
+			Body: &errorAfterDataReadCloser{
+				data: []byte("data: {\"id\":\"chunk-1\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"),
+				err:  errors.New("other side closed"),
+			},
+			Request: httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
+		}
+		writer := httptest.NewRecorder()
+
+		outcome := StreamChatWithPendingCapture(
+			writer,
+			resp,
+			"glm-5.2",
+			"glm-5.2",
+			NewNormalizer(),
+			nil,
+			false,
+			nil,
+			nil,
+		)
+
+		assert.True(t, outcome.Interrupted)
+		assert.True(t, outcome.Resumable, "no semantic output committed → transparent retry is safe")
+		// Verify the body did NOT receive a content text token. A delta={} frame
+		// has no "content" string so no chunk should reach the client.
+		assert.NotContains(t, writer.Body.String(), `"content":"`,
+			"uncommitted attempt must NOT write content to the wire; the gate held it back")
+	})
 }
 
 // countingRecorder wraps a delegate Recorder and counts how many times

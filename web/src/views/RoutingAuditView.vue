@@ -234,7 +234,7 @@ h2 {
 }
 .subtitle {
   margin: 0 0 24px;
-  color: #888;
+  color: var(--muted);
   font-size: 14px;
 }
 .summary-cards {
@@ -244,14 +244,14 @@ h2 {
   margin-bottom: 16px;
 }
 .summary-card {
-  background: #0e0e0e;
-  border: 1px solid #2a2a2a;
+  background: var(--bg);
+  border: 1px solid var(--bg);
   border-radius: 6px;
   padding: 12px 16px;
 }
 .summary-label {
   font-size: 11px;
-  color: #888;
+  color: var(--muted);
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
@@ -278,13 +278,13 @@ h2 {
   align-items: center;
   gap: 6px;
   font-size: 13px;
-  color: #aaa;
+  color: var(--muted);
 }
 .filter-bar input,
 .filter-bar select {
   padding: 4px 8px;
-  background: #0e0e0e;
-  border: 1px solid #2a2a2a;
+  background: var(--bg);
+  border: 1px solid var(--bg);
   color: inherit;
   border-radius: 4px;
   font-size: 13px;
@@ -292,8 +292,8 @@ h2 {
 }
 .filter-bar button {
   padding: 6px 14px;
-  background: #2563eb;
-  color: #fff;
+  background: var(--accent);
+  color: var(--on-primary);
   border: none;
   border-radius: 4px;
   cursor: pointer;
@@ -301,12 +301,12 @@ h2 {
 }
 .filter-bar button:disabled { opacity: 0.5; cursor: not-allowed; }
 .error {
-  color: #ef4444;
+  color: var(--danger);
   font-size: 13px;
   margin-top: 8px;
 }
 .empty {
-  color: #888;
+  color: var(--muted);
   font-size: 13px;
   font-style: italic;
 }
@@ -318,21 +318,21 @@ h2 {
 .audit-table th {
   text-align: left;
   padding: 8px 10px;
-  background: #0e0e0e;
-  border-bottom: 1px solid #2a2a2a;
-  color: #aaa;
+  background: var(--bg);
+  border-bottom: 1px solid var(--bg);
+  color: var(--muted);
   font-weight: 500;
 }
 .audit-table td {
   padding: 8px 10px;
-  border-bottom: 1px solid #1f1f1f;
+  border-bottom: 1px solid var(--bg);
   vertical-align: top;
 }
 .mono {
   font-family: 'SF Mono', Menlo, monospace;
   font-size: 12px;
 }
-.text-muted { color: #888; }
+.text-muted { color: var(--muted); }
 .action-badge {
   display: inline-block;
   padding: 2px 8px;
@@ -342,13 +342,13 @@ h2 {
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
-.action-insert { background: #14532d; color: #86efac; }
-.action-update { background: #1e3a8a; color: #93c5fd; }
-.action-delete { background: #7f1d1d; color: #fca5a5; }
+.action-insert { background: var(--success-strong); color: var(--success); }
+.action-update { background: var(--accent-dark); color: var(--accent-h); }
+.action-delete { background: var(--danger-dark); color: var(--danger-bd); }
 .actor {
   font-family: 'SF Mono', Menlo, monospace;
   font-size: 12px;
-  color: #fbbf24;
+  color: var(--warning);
 }
 .tag {
   font-family: 'SF Mono', Menlo, monospace;
@@ -358,13 +358,13 @@ h2 {
   display: inline-block;
   margin-right: 4px;
 }
-.tag-task { background: #14532d; color: #86efac; }
-.tag-profile { background: #1e293b; color: #93c5fd; }
-.tag-model { background: #1e293b; color: #93c5fd; }
-.mode-ban { background: #422006; color: #fb923c; }
-.mode-pin { background: #14532d; color: #86efac; }
+.tag-task { background: var(--success-strong); color: var(--success); }
+.tag-profile { background: var(--kx-text); color: var(--accent-h); }
+.tag-model { background: var(--kx-text); color: var(--accent-h); }
+.mode-ban { background: var(--warning-dark); color: var(--warning); }
+.mode-pin { background: var(--success-strong); color: var(--success); }
 .reason {
-  color: #ccc;
+  color: var(--border);
   font-size: 12px;
   max-width: 320px;
   word-break: break-word;
@@ -372,9 +372,9 @@ h2 {
 .btn-expand {
   width: 24px;
   height: 24px;
-  border: 1px solid #2a2a2a;
-  background: #0e0e0e;
-  color: #aaa;
+  border: 1px solid var(--bg);
+  background: var(--bg);
+  color: var(--muted);
   border-radius: 4px;
   cursor: pointer;
   font-size: 14px;
@@ -383,7 +383,7 @@ h2 {
   align-items: center;
   justify-content: center;
 }
-.btn-expand:hover { background: #1a1a1a; }
+.btn-expand:hover { background: var(--kx-text); }
 .expand-row {
   background: #050505;
 }
@@ -402,18 +402,18 @@ h2 {
   font-size: 12px;
 }
 .diff-label {
-  color: #888;
+  color: var(--muted);
   min-width: 140px;
 }
 .diff-field code {
-  background: #0e0e0e;
+  background: var(--bg);
   padding: 2px 6px;
   border-radius: 3px;
-  color: #fbbf24;
+  color: var(--warning);
   font-family: 'SF Mono', Menlo, monospace;
 }
 .audit-row a {
-  color: #93c5fd;
+  color: var(--accent-h);
   text-decoration: none;
 }
 .audit-row a:hover {

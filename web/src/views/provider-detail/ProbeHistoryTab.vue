@@ -382,12 +382,12 @@ watch(stateFilter, load)
 }
 
 .counter-ok {
-  background: rgba(63, 185, 80, 0.15);
+  background: var(--success-bg);
   color: var(--success);
 }
 
 .counter-fail {
-  background: rgba(248, 81, 73, 0.15);
+  background: var(--danger-bg);
   color: var(--danger);
 }
 </style>

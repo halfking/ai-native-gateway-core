@@ -59,8 +59,8 @@ func writeEntryInsert(b *strings.Builder, e CatalogEntry) {
 	b.WriteString(",\n  updated_at = now();\n\n")
 }
 
-// sqlStr 输出 SQL 单引号字面量。空字符串→”（catalog 里空串合法）。
-// 用 strconv.Quote 风格的转义不够（SQL 用 ” 而非 \'），手写 SQL 转义。
+// sqlStr 输出 SQL 单引号字面量。空字符串→''（catalog 里空串合法）。
+// 用 strconv.Quote 风格的转义不够（SQL 用 '' 而非 \'），手写 SQL 转义。
 func sqlStr(s string) string {
 	var b strings.Builder
 	b.WriteByte('\'')

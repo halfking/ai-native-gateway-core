@@ -305,25 +305,25 @@ onMounted(load)
   color: var(--text-secondary);
 }
 .tenant-badge--admin {
-  background: rgba(59, 130, 246, 0.1);
-  color: #3b82f6;
+  background: var(--info-bg);
+  color: var(--accent);
 }
 .tenant-badge--default {
-  background: rgba(34, 197, 94, 0.1);
-  color: #22c55e;
+  background: var(--success-bg);
+  color: var(--success);
 }
 .alert-danger {
   padding: 8px 12px;
   border-radius: 4px;
-  background: rgba(239,68,68,.1);
-  color: #f87171;
+  background: var(--danger-bg);
+  color: var(--danger);
   margin-bottom: 12px;
 }
 .alert-info {
   padding: 8px 12px;
   border-radius: 4px;
-  background: rgba(59,130,246,.1);
-  color: #60a5fa;
+  background: var(--info-bg);
+  color: var(--accent);
   margin-bottom: 12px;
   font-size: 13px;
 }

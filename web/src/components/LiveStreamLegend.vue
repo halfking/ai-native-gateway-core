@@ -224,7 +224,7 @@ function handleClick(key: string) {
   height: 12px;
   border-radius: 2px;
   flex-shrink: 0;
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.1);
+  box-shadow: 0 0 0 1px var(--overlay-light);
 }
 
 .legend-swatch--border {
@@ -241,10 +241,10 @@ function handleClick(key: string) {
   width: 14px;
   height: 14px;
   border-radius: 3px;
-  color: #0c1a26;
-  background: linear-gradient(180deg, #7dd3fc 0%, #38bdf8 100%);
-  border: 1.5px solid #0284c7;
-  box-shadow: 0 0 4px rgba(56, 189, 248, 0.6);
+  color: var(--probe-dark-bg);
+  background: linear-gradient(180deg, var(--probe-cyan-light) 0%, var(--probe-cyan) 100%);
+  border: 1.5px solid var(--probe-cyan-darker);
+  box-shadow: 0 0 4px color-mix(in srgb, var(--probe-cyan) 30%, transparent);
   flex-shrink: 0;
 }
 
@@ -272,7 +272,7 @@ function handleClick(key: string) {
 }
 
 .legend-stage--routing {
-  color: #60a5fa;
+  color: var(--accent);
 }
 
 .legend-stage--llm {
