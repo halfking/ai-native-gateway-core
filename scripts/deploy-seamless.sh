@@ -176,9 +176,20 @@ public_252_ssh() {
 
 upgrade_show_all() {
   local version=$1
+  # 2026-08-28: 写完后等待 nginx 真正返回维护页再继续 (超时 120s，典型 ~60s)。
+  # 仅在“静态页已生效”后才停机切换，避免在 marker 未生效的窗口暴露真实首页。
   host_show_upgrade_banner "$SSH_CMD" "$TARGET" "$version" || return 1
+  if ! host_wait_upgrade_banner "$SSH_CMD" "$TARGET" 120; then
+    upgrade_hide_all >/dev/null 2>&1 || true
+    return 1
+  fi
   if [[ "$TARGET" == "154" ]]; then
     if ! host_show_upgrade_banner public_252_ssh "$TARGET" "$version" \
+        /opt/llm-gateway-go /var/www/llm-gateway-maintenance; then
+      upgrade_hide_all >/dev/null 2>&1 || true
+      return 1
+    fi
+    if ! host_wait_upgrade_banner public_252_ssh "$TARGET" 120 \
         /opt/llm-gateway-go /var/www/llm-gateway-maintenance; then
       upgrade_hide_all >/dev/null 2>&1 || true
       return 1

@@ -281,6 +281,48 @@ host_wait_https_healthy() {
   return 1
 }
 
+# Wait until nginx actually serves the upgrade/maintenance page after the
+# UPGRADING marker is created. The marker is checked per-request by nginx
+# (no reload needed), but the first served maintenance response can lag the
+# marker write — CDN/edge cache, a slow nginx worker, or the 252 public
+# ingress syncing behind the 154 local marker all add latency.
+#
+# 2026-08-28: timeout raised to 120s (typical enablement ~60s) so a lagging
+# public edge never aborts the deploy prematurely. The check passes only when
+# the marker file exists AND nginx returns the maintenance page (detected via
+# the X-LLM-Gateway-Upgrade: in-progress header, or the page body marker).
+host_wait_upgrade_banner() {
+  local ssh_cmd=$1 target=$2 timeout_s=${3:-120}
+  local install_root=${4:-$(host_root_for "$target")}
+  local maintenance_dir=${5:-$install_root/maintenance}
+  local maint_root="$maintenance_dir"
+  local url
+  url=$(target_field "$target" internal_https_health_url 2>/dev/null)
+  url="${url%%/healthz}/"
+  [[ -n "$url" ]] || url="https://127.0.0.1/"
+  local deadline=$(( $(date +%s) + timeout_s ))
+  local start_ts=$(date +%s)
+  echo "  等待升级静态页生效 (最长 ${timeout_s}s)…"
+  while (( $(date +%s) < deadline )); do
+    # Marker must exist (nginx decides per-request on this file) …
+    if "$ssh_cmd" "test -f '$maint_root/UPGRADING' && test -f '$maint_root/index.html'" 2>/dev/null; then
+      # … and nginx must actually serve the maintenance page.
+      local out
+      out=$("$ssh_cmd" "curl -ksS --max-time 3 -o /tmp/kx-upgrade-banner-$$.html -D - '$url' 2>/dev/null; cat /tmp/kx-upgrade-banner-$$.html 2>/dev/null" ) || true
+      if printf '%s' "$out" | grep -qiE 'X-LLM-Gateway-Upgrade:[[:space:]]*in-progress|系统正在升级|正在升级 · llm-gateway-go'; then
+        local elapsed=$(( $(date +%s) - start_ts ))
+        "$ssh_cmd" "rm -f /tmp/kx-upgrade-banner-$$.html" 2>/dev/null || true
+        echo "  ✓ 升级静态页已生效 (target=$target, ${elapsed}s)"
+        return 0
+      fi
+    fi
+    sleep 2
+  done
+  "$ssh_cmd" "rm -f /tmp/kx-upgrade-banner-$$.html" 2>/dev/null || true
+  echo "ERROR: $target 升级静态页未在 ${timeout_s}s 内生效 — marker 已写但 nginx 未返回维护页" >&2
+  return 1
+}
+
 # Mark a release bundle as verified=true once /healthz answers 2xx.
 # The metadata file is rewritten in-place — the orchestrator rolls
 # back via the deployment.json instead of new sidecars.
