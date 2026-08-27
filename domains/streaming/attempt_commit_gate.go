@@ -377,12 +377,21 @@ func (g *AttemptCommitGate) WriteFrame(frame string) error {
 		buffer := g.buffer
 		g.buffer = nil
 		g.bufferLen = 0
-		g.committed = true
+		if len(buffer) == 0 {
+			g.committed = true
+		}
 		g.mu.Unlock()
 		if len(buffer) > 0 {
 			if _, err := g.writer.Write(buffer); err != nil {
+				g.mu.Lock()
+				g.buffer = buffer
+				g.bufferLen = len(buffer)
+				g.mu.Unlock()
 				return err
 			}
+			g.mu.Lock()
+			g.committed = true
+			g.mu.Unlock()
 		}
 		if _, err := g.writer.Write([]byte(frame)); err != nil {
 			return err
