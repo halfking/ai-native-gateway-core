@@ -1,3 +1,5 @@
+//go:build ignore
+
 // Example: Preloading URSM and SystemMonitor Lua Scripts at Gateway Startup
 //
 // This example shows how to preload all Lua scripts into Redis during gateway

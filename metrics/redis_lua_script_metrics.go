@@ -1,3 +1,21 @@
+// Package metrics - Redis Lua 脚本可观测性指标.
+//
+// 2026-08-27 P1 优化 (Redis 审计 sess_01JGHDCWSZQZS8D9D5H41A7VWN):
+// Redis commandstats 显示 EVALSHA 失败率 3.4% (1184/34469)，根因是
+// SCRIPT FLUSH 后脚本缓存失效，回退 EVAL 需要每次传输完整脚本源码
+// (record_request.lua 达 11,469 字节)。
+//
+// 本文件提供启动预加载状态与脚本体积指标；gateway 启动时调用
+// store.PreloadScripts() 预热脚本缓存后设置 gauge，运维可通过:
+//
+//	llmgw_redis_lua_script_preloaded == 0
+//
+// 发现预加载失败的实例；通过 fallback 计数监控缓存失效复发:
+//
+//	rate(llmgw_redis_lua_script_fallbacks_total[5m])
+//
+// 命名遵循 llmgw_ 前缀（项目惯例）和 GW-00 低基数规范：
+// script 标签有界（URSM 9 个 + systemmonitor 4 个），method 两个值。
 package metrics
 
 import (
@@ -5,153 +23,34 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
-// RedisLuaScriptMetrics tracks Redis Lua script execution and caching behavior.
-//
-// Design: These metrics help detect SCRIPT FLUSH events and EVALSHA cache misses
-// that cause expensive fallback to EVAL (transmitting 11 KB scripts on hot path).
-//
-// Usage:
-//
-//	recorder := NewRedisLuaScriptRecorder()
-//	recorder.RecordScriptExecution("record_request", "evalsha", true, 0.015)
-//	recorder.RecordScriptExecution("record_request", "eval_fallback", false, 0.025)
-type RedisLuaScriptMetrics struct {
-	// scriptExecutions counts Lua script calls by name and method (evalsha vs eval)
-	scriptExecutions *prometheus.CounterVec
+var (
+	// RedisLuaScriptPreloaded 表示某模块的 Lua 脚本在启动时是否成功
+	// SCRIPT LOAD 预加载 (1=成功, 0=失败)。失败是非致命的 —— go-redis
+	// Script.Run 会在首次 NOSCRIPT 时自动重新上传 —— 但失败意味着
+	// 预热优化未生效，值得告警排查 (常见原因: 启动时 Redis 短暂不可达)。
+	//
+	// module ∈ {ursm, systemmonitor}
+	RedisLuaScriptPreloaded = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "llmgw_redis_lua_script_preloaded",
+		Help: "Whether a module's Redis Lua scripts were preloaded at startup (1=ok, 0=failed).",
+	}, []string{"module"})
 
-	// scriptFallbacks counts EVALSHA → EVAL fallbacks (NOSCRIPT errors)
-	scriptFallbacks *prometheus.CounterVec
+	// RedisLuaScriptSizeBytes 暴露内嵌 Lua 脚本的字节体积 (gauge, 启动时
+	// 设置一次)。用于评估 EVAL fallback 的单次网络开销 —— 体积 × fallback
+	// 率即带宽损失 (11 KB 脚本 × 3.4% ≈ 每请求 390 字节)。
+	RedisLuaScriptSizeBytes = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "llmgw_redis_lua_script_size_bytes",
+		Help: "Size in bytes of embedded Redis Lua scripts (set once at startup).",
+	}, []string{"script"})
 
-	// scriptDuration tracks script execution latency
-	scriptDuration *prometheus.HistogramVec
-
-	// scriptPreloaded indicates whether scripts were successfully preloaded at startup
-	scriptPreloaded *prometheus.GaugeVec
-
-	// scriptSizes exposes the byte size of each embedded Lua script
-	scriptSizes *prometheus.GaugeVec
-}
-
-// NewRedisLuaScriptRecorder creates a new Redis Lua script metrics recorder.
-func NewRedisLuaScriptRecorder() *RedisLuaScriptMetrics {
-	return &RedisLuaScriptMetrics{
-		scriptExecutions: promauto.NewCounterVec(
-			prometheus.CounterOpts{
-				Name: "redis_lua_script_executions_total",
-				Help: "Total number of Redis Lua script executions by script name and method (evalsha/eval)",
-			},
-			[]string{"script", "method"},
-		),
-		scriptFallbacks: promauto.NewCounterVec(
-			prometheus.CounterOpts{
-				Name: "redis_lua_script_fallbacks_total",
-				Help: "Total number of EVALSHA → EVAL fallbacks due to NOSCRIPT errors",
-			},
-			[]string{"script"},
-		),
-		scriptDuration: promauto.NewHistogramVec(
-			prometheus.HistogramOpts{
-				Name:    "redis_lua_script_duration_seconds",
-				Help:    "Redis Lua script execution duration in seconds",
-				Buckets: []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0},
-			},
-			[]string{"script", "method"},
-		),
-		scriptPreloaded: promauto.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Name: "redis_lua_script_preloaded",
-				Help: "Indicates whether Lua scripts were successfully preloaded at startup (1=success, 0=failed)",
-			},
-			[]string{"module"}, // "ursm" or "systemmonitor"
-		),
-		scriptSizes: promauto.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Name: "redis_lua_script_size_bytes",
-				Help: "Size in bytes of embedded Lua scripts",
-			},
-			[]string{"script"},
-		),
-	}
-}
-
-// RecordScriptExecution records a Lua script execution.
-//
-// Parameters:
-//   - scriptName: e.g., "record_request", "claim", "apply_decision"
-//   - method: "evalsha" (cache hit) or "eval" (fallback)
-//   - success: whether the execution succeeded
-//   - durationSec: execution duration in seconds
-func (m *RedisLuaScriptMetrics) RecordScriptExecution(scriptName, method string, success bool, durationSec float64) {
-	m.scriptExecutions.WithLabelValues(scriptName, method).Inc()
-	m.scriptDuration.WithLabelValues(scriptName, method).Observe(durationSec)
-
-	// If method is "eval", it means we fell back from EVALSHA
-	if method == "eval" {
-		m.scriptFallbacks.WithLabelValues(scriptName).Inc()
-	}
-}
-
-// SetScriptPreloaded sets the preload status for a module.
-//
-// Call this after PreloadScripts() succeeds or fails:
-//
-//	if _, err := store.PreloadScripts(ctx, rdb); err != nil {
-//	    recorder.SetScriptPreloaded("ursm", false)
-//	} else {
-//	    recorder.SetScriptPreloaded("ursm", true)
-//	}
-func (m *RedisLuaScriptMetrics) SetScriptPreloaded(module string, success bool) {
-	value := 0.0
-	if success {
-		value = 1.0
-	}
-	m.scriptPreloaded.WithLabelValues(module).Set(value)
-}
-
-// SetScriptSizes exposes script sizes for monitoring.
-//
-// Call this once at startup:
-//
-//	sizes := store.ScriptSizes()
-//	for name, size := range sizes {
-//	    recorder.SetScriptSize(name, size)
-//	}
-func (m *RedisLuaScriptMetrics) SetScriptSize(scriptName string, sizeBytes int) {
-	m.scriptSizes.WithLabelValues(scriptName).Set(float64(sizeBytes))
-}
-
-// Example Prometheus queries:
-//
-// 1. EVALSHA fallback rate (should be <0.5% after preloading):
-//
-//	rate(redis_lua_script_fallbacks_total[5m])
-//	  / rate(redis_lua_script_executions_total{method="evalsha"}[5m])
-//
-// 2. Top scripts by fallback count:
-//
-//	topk(5, sum by (script) (rate(redis_lua_script_fallbacks_total[5m])))
-//
-// 3. Script execution latency p95:
-//
-//	histogram_quantile(0.95,
-//	  sum(rate(redis_lua_script_duration_seconds_bucket[5m])) by (script, le))
-//
-// 4. Large scripts being executed via EVAL (network overhead):
-//
-//	redis_lua_script_size_bytes > 10000
-//
-// 5. Modules with failed preload:
-//
-//	redis_lua_script_preloaded == 0
-//
-// Example Grafana alert:
-//
-//	- alert: RedisLuaScriptFallbackHigh
-//	  expr: |
-//	    rate(redis_lua_script_fallbacks_total{script="record_request"}[5m])
-//	      / rate(redis_lua_script_executions_total{script="record_request"}[5m])
-//	      > 0.01
-//	  for: 5m
-//	  annotations:
-//	    summary: "Redis Lua script fallback rate > 1% for record_request"
-//	    description: "EVALSHA cache misses causing 11 KB transmission per fallback"
+	// RedisLuaScriptFallbacksTotal 统计 EVALSHA → EVAL 的回退次数。
+	// 由 go-redis Script.Run 的 NOSCRIPT 处理路径触发记录；持续增长
+	// 表示脚本缓存被反复清除 (SCRIPT FLUSH / Redis 重启 / 内存驱逐)。
+	//
+	// 注意: 当前仅预加载路径设置 preload gauge；fallback 计数需要调用
+	// 方在 NOSCRIPT 回退分支显式 Inc，见 store.RecordRequest 集成点。
+	RedisLuaScriptFallbacksTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "llmgw_redis_lua_script_fallbacks_total",
+		Help: "EVALSHA to EVAL fallbacks (NOSCRIPT), by script.",
+	}, []string{"script"})
+)

@@ -8,54 +8,80 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-func TestPreloadScripts_Success(t *testing.T) {
+func newPreloadTestRedis(t *testing.T) *redis.Client {
+	t.Helper()
 	mr := miniredis.RunT(t)
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	defer rdb.Close()
+	t.Cleanup(func() { _ = rdb.Close() })
+	return rdb
+}
 
-	ctx := context.Background()
-	loaded, err := PreloadScripts(ctx, rdb)
+func TestPreloadScripts_Success(t *testing.T) {
+	rdb := newPreloadTestRedis(t)
+
+	shas, err := PreloadScripts(context.Background(), rdb)
 	if err != nil {
 		t.Fatalf("PreloadScripts failed: %v", err)
 	}
 
-	if loaded == nil {
-		t.Fatal("expected non-nil LoadedScripts")
+	if len(shas) != 9 {
+		t.Fatalf("expected 9 script SHAs, got %d", len(shas))
+	}
+	for name, sha := range shas {
+		if sha == "" {
+			t.Errorf("script %s returned empty SHA", name)
+		}
 	}
 
-	// Verify all SHAs are non-empty
-	if loaded.recordRequestSHA == "" {
-		t.Error("recordRequestSHA is empty")
+	// Verify the scripts are actually cached in Redis
+	keys := make([]string, 0, len(shas))
+	for _, sha := range shas {
+		keys = append(keys, sha)
 	}
-	if loaded.recordRequestDualSHA == "" {
-		t.Error("recordRequestDualSHA is empty")
-	}
-	if loaded.applyDecisionSHA == "" {
-		t.Error("applyDecisionSHA is empty")
-	}
-
-	// Verify scripts are actually loaded in Redis (miniredis supports SCRIPT EXISTS)
-	exists, err := rdb.ScriptExists(ctx, loaded.recordRequestSHA).Result()
+	exists, err := rdb.ScriptExists(context.Background(), keys...).Result()
 	if err != nil {
 		t.Fatalf("ScriptExists check failed: %v", err)
 	}
-	if len(exists) == 0 || !exists[0] {
-		t.Error("recordRequestSHA not found in Redis after preload")
+	for i, ok := range exists {
+		if !ok {
+			t.Errorf("script %s (SHA %s) not cached in Redis", keys[i], keys[i][:8])
+		}
 	}
 }
 
 func TestPreloadScripts_NilRedis(t *testing.T) {
-	ctx := context.Background()
-	_, err := PreloadScripts(ctx, nil)
-	if err == nil {
+	if _, err := PreloadScripts(context.Background(), nil); err == nil {
 		t.Fatal("expected error for nil redis client")
+	}
+}
+
+func TestPreloadScripts_AfterScriptFlush(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer rdb.Close() //nolint:errcheck // test cleanup
+	ctx := context.Background()
+
+	// Preload once, flush, preload again — the reload path must succeed
+	// (this is the exact scenario production hits after a SCRIPT FLUSH).
+	if _, err := PreloadScripts(ctx, rdb); err != nil {
+		t.Fatalf("initial preload: %v", err)
+	}
+	// miniredis has no ScriptFlush helper; drop the script cache via the
+	// client command. If unsupported, the preload below still validates the
+	// idempotent re-load path.
+	_ = rdb.ScriptFlush(ctx).Err()
+	shas, err := PreloadScripts(ctx, rdb)
+	if err != nil {
+		t.Fatalf("re-preload after flush: %v", err)
+	}
+	if len(shas) != 9 {
+		t.Fatalf("expected 9 SHAs after re-preload, got %d", len(shas))
 	}
 }
 
 func TestScriptSizes(t *testing.T) {
 	sizes := ScriptSizes()
 
-	// Verify we have sizes for all 9 scripts
 	expectedScripts := []string{
 		"record_request.lua",
 		"record_request_dual.lua",
@@ -83,50 +109,12 @@ func TestScriptSizes(t *testing.T) {
 		}
 	}
 
-	// Verify the two largest scripts are record_request*.lua
-	recordSize := sizes["record_request.lua"]
-	recordDualSize := sizes["record_request_dual.lua"]
-
-	if recordSize < 10000 {
-		t.Errorf("record_request.lua size %d seems too small (expected >10KB)", recordSize)
+	// The two hot-path monsters that motivated preloading (audit data):
+	// any regression here changes the fallback network cost.
+	if s := sizes["record_request.lua"]; s != 11469 {
+		t.Errorf("record_request.lua size = %d, want 11469 (update if script changed intentionally)", s)
 	}
-	if recordDualSize < 10000 {
-		t.Errorf("record_request_dual.lua size %d seems too small (expected >10KB)", recordDualSize)
-	}
-
-	t.Logf("Script sizes: record_request=%d bytes, record_request_dual=%d bytes",
-		recordSize, recordDualSize)
-}
-
-func TestPreloadScripts_Integration(t *testing.T) {
-	mr := miniredis.RunT(t)
-	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	defer rdb.Close()
-
-	ctx := context.Background()
-
-	// Preload scripts
-	loaded, err := PreloadScripts(ctx, rdb)
-	if err != nil {
-		t.Fatalf("PreloadScripts failed: %v", err)
-	}
-
-	// Verify EVALSHA works without fallback
-	// (miniredis doesn't fully emulate EVALSHA, but we can verify the SHA was stored)
-	shaList := []string{
-		loaded.recordRequestSHA,
-		loaded.recordRequestDualSHA,
-		loaded.applyDecisionSHA,
-	}
-
-	exists, err := rdb.ScriptExists(ctx, shaList...).Result()
-	if err != nil {
-		t.Fatalf("ScriptExists check failed: %v", err)
-	}
-
-	for i, sha := range shaList {
-		if !exists[i] {
-			t.Errorf("SHA %s not found in Redis", sha[:8])
-		}
+	if s := sizes["record_request_dual.lua"]; s != 10437 {
+		t.Errorf("record_request_dual.lua size = %d, want 10437 (update if script changed intentionally)", s)
 	}
 }
