@@ -2605,6 +2605,7 @@ SELECT model_key, cnt FROM (
     LEFT JOIN models_canonical mc2 ON mc2.id = ma.canonical_id
     WHERE rl.ts >= $1
       AND rl.success = TRUE
+      AND NOT COALESCE('probe' = ANY(rl.quality_flags), FALSE)
       AND ($2 = '' OR rl.tenant_id = $2)
       AND rl.client_model IS NOT NULL AND rl.client_model != ''
     GROUP BY model_key
@@ -2805,27 +2806,29 @@ func (h *Handler) queryPopularModels(ctx context.Context, featuredModels []strin
 		add(n, n, "policy", nil)
 	}
 
-	// Live source: Redis dimension queues. Inserted before SQL so "currently
-	// accessed models" take precedence over the slower 7-day aggregate when
-	// the SQL path is cold / unavailable.
-	if rc, ok := h.redisClient.(*redis.Client); ok {
-		if tenantID == "" {
-			for _, live := range livePopularModels(ctx, rc, 5) {
-				add(live.CanonicalName, live.DisplayName, "live", live.Count)
-			}
+	// The limit applies only to usage-derived models. Featured models are a
+	// policy list and must all remain visible, even when the list is longer
+	// than the usage suggestion limit.
+	hotCount := 0
+	addHot := func(model popularModelEntry) {
+		if hotCount >= limit {
+			return
 		}
-		// Recent source: dedicated recently-used ZSET (TTL 7d, real request
-		// counter, probe-gated). This is the primary fast path for the
-		// dashboard — covers the same window as the SQL aggregate but at
-		// Redis latency instead of a request_logs_hot scan.
-		for _, recent := range recentlyUsedPopularModels(ctx, rc, tenantID, recentlyUsedModelsLimit) {
-			add(recent.CanonicalName, recent.DisplayName, "recent", recent.Count)
+		before := len(popular)
+		add(model.CanonicalName, model.DisplayName, model.Source, model.Count)
+		if len(popular) > before {
+			hotCount++
 		}
 	}
 
-	if len(popular) >= limit {
-		return popular[:limit]
+	if rc, ok := h.redisClient.(*redis.Client); ok {
+		// The live dimension queues mix real requests with probes and idle
+		// markers, so they cannot satisfy the picker's non-probe contract.
+		for _, recent := range recentlyUsedPopularModels(ctx, rc, tenantID, recentlyUsedModelsLimit) {
+			addHot(recent)
+		}
 	}
+
 	cutoff := time.Now().UTC().Add(-popularModelsLookupWindow())
 	usageRows, err := h.db.Query(ctx, popularModelsHotSQL, cutoff, tenantID)
 	if err == nil {
@@ -2837,11 +2840,13 @@ func (h *Handler) queryPopularModels(ctx context.Context, featuredModels []strin
 				continue
 			}
 			c := cnt
-			add(modelKey, modelKey, "usage", &c)
+			addHot(popularModelEntry{
+				CanonicalName: modelKey,
+				DisplayName:   modelKey,
+				Source:        "usage",
+				Count:         &c,
+			})
 		}
-	}
-	if len(popular) > limit {
-		return popular[:limit]
 	}
 	return popular
 }
