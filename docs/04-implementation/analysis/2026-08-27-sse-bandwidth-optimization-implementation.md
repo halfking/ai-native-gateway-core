@@ -48,11 +48,15 @@
 
 ### 1.2 验证结果
 
-**后端测试** (SSE 相关):
+**后端测试** (SSE 相关子集):
 ```bash
-$ go test ./admin -run "TestBuildLiveStreamSnapshot|TestSnapshotRequestIDs|TestLiveStream" -v
-PASS (34 个 SSE 相关测试全部通过)
+$ go test ./admin -run "TestBuildLiveStreamSnapshot|TestSnapshotRequestIDs|TestLiveStream"
+PASS (SSE 相关测试全部通过)
 ```
+
+注意：全量 `go test ./admin` 存在 **1 个与本任务无关的既有失败**
+(`TestPGBodyReaderResolvesClientRequestIDToCanonicalID`，SQL mock 正则不匹配，
+P0 改动前即失败，不涉及 SSE/live-stream 代码路径)。
 
 **前端构建**:
 ```bash
@@ -60,15 +64,33 @@ $ pnpm --filter llm-gateway-web build
 ✓ built in 9.83s (无错误)
 ```
 
+**前端测试** (受影响文件子集, vitest):
+```bash
+$ npx vitest run src/composables/liveStreamStore.test.ts \
+    src/composables/useSwimLane.test.ts src/components/QueuePerspectivePanel.test.ts
+Test Files  3 passed (3) / Tests  54 passed (54)
+```
+
+注意：`web/package.json` 无 `test` script（`pnpm --filter llm-gateway-web test`
+是静默 no-op，前次报告的"前端测试通过"证据实际来自 vitest 子集运行）。
+全量 vitest 存在 **4 文件 8 用例与本任务无关的既有失败**
+(`i18n/parity`、`RequestJourneyQueues`、`NodeDetailDrawer`、`SessionDetailPage`，
+已在基线 commit `369332e50` 上复现同样失败，非本次改动引入)。
+
 **代码引用检查**:
 ```bash
 $ grep -rn "DetailDimensions\|detail_dimensions" admin/ web/src/ | grep -v test | wc -l
 14 (全部为可选/向后兼容访问，无硬依赖)
 ```
 
+**Scope 标注**: P0 顺带补齐了 `SnapshotFromDimensionQueues` 空 snapshot 兜底 map
+缺失的 `credential` 维度键（原只有 vendor/provider/model 三维）。该改动与上游
+commit `86e8f8618`（SCAN fallback 发现逻辑补 credential）语义互补，属低风险
+一致性修复，非本任务核心目标。
+
 ### 1.3 Git Commit
 
-**Commit**: `f9a90965f`  
+**Commit**: `9e629ee1b` (rebase 后最终 SHA；本地初始提交为 `f9a90965f`)
 **Message**: `feat(sse): remove DetailDimensions redundant field (P0 bandwidth opt)`  
 **Files Changed**: 11 个文件 (+437, -96)
 
@@ -94,8 +116,8 @@ gzip_proxied any;
 
 **验证脚本** (`scripts/verify-gzip-sse.sh`):
 ```bash
-#!/bin/bash
-# 验证 nginx gzip 是否启用，检查 Content-Encoding: gzip 响应头
+# 验证 nginx gzip 是否启用：GET 请求读几秒 SSE 流后检查 Content-Encoding: gzip
+# (HEAD 请求对无 body 的流式响应不可靠；token 输出自动掩码；--max-time 防挂死)
 ./scripts/verify-gzip-sse.sh https://llmgo.kxpms.cn/api/admin/live-stream "Bearer <token>"
 ```
 
@@ -106,10 +128,16 @@ gzip_proxied any;
 - **`gzip_min_length 1024`**: 跳过小响应（< 1KB 不值得压缩）
 - **`text/event-stream`**: 显式加入 `gzip_types`（nginx 默认仅包含 `text/html`）
 - **保留 `proxy_buffering off`**: SSE 必须关闭缓冲，gzip 不影响实时性（nginx 1.18+ 默认支持 chunked gzip flush）
+- **LLM 流式端点显式 `gzip off`** (审计修正 2026-08-27): `/v1/`、`/v1beta/`、
+  `/v2/` (245) 与 `/v1/(chat/completions|messages)` (154) 的 LLM completion 流
+  同为 `text/event-stream`，会被 server 级 gzip 连带压缩——但生产 LLM 打字机流
+  被 gzip 缓冲可能造成成块/首字延迟，未经评估不应改动。这些 location 内已加
+  `gzip off` 覆盖 server 级配置，压缩范围收窄为 admin live-stream + 普通 JSON
+  API + 静态资源。待 245 完成流式延迟验证后可再放开。
 
 ### 2.3 Git Commit
 
-**Commit**: `9d5605e2a`  
+**Commit**: `79c4d9564` (rebase 后最终 SHA；本地初始提交为 `9d5605e2a`)  
 **Message**: `feat(nginx): enable gzip for SSE live-stream (P1 bandwidth opt)`  
 **Files Changed**: 3 个文件 (+29)
 
@@ -274,27 +302,30 @@ rate(llmgw_redis_snapshot_calls_total[5m])
 
 | 风险 | 严重性 | 缓解措施 | 状态 |
 |---|---|---|---|
-| **P0: 前端老客户端连新后端** | 低 | `detail_dimensions` 改为可选类型，向后兼容 | ✅ 已实施 |
+| **P0: 已打开的旧页面实例连新后端** | 低 | 后端重启后，管理员浏览器里**正在运行的旧版页面**（旧 JS 无可选链保护）收到无 `detail_dimensions` 的 initial_data 会在 `incoming.detail_dimensions[dim]` 抛 TypeError，泳道渲染中断；**刷新页面即恢复**（index.html 不缓存，新 JS 带 hash 文件名）。风险窗口 = 后端重启后未刷新页面的时段 | ⚠️ 已知可接受 |
+| **P0: 新前端类型兼容** | 极低 | `detail_dimensions` 改为可选类型 + 可选链 | ✅ 已实施 |
+| **P1: gzip 波及 LLM 流式端点** | 中→低 | 审计修正：`/v1/`、`/v1beta/`、`/v2/` (245) 与 `/v1/(chat/completions\|messages)` (154) location 内已显式 `gzip off`，生产 LLM 打字机流保持原行为，待 245 验证后再评估放开 | ✅ 已收窄 |
 | **P1: gzip 增加 CPU 开销** | 低 | `gzip_comp_level 6` 适中，监控 CPU 使用率 | ⏳ 部署后监控 |
-| **P1: gzip 影响 SSE 实时性** | 极低 | nginx 1.18+ 默认支持 chunked gzip flush | ✅ 无风险 |
-| **154 生产部署回滚风险** | 低 | P1 可即时回滚（nginx reload），P0 不建议回滚 | ✅ 回滚方案就绪 |
-| **测试覆盖不足** | 低 | SSE 相关测试全部通过，前端构建成功 | ✅ 已验证 |
+| **P1: gzip 影响 SSE 实时性** | 低 | nginx 1.18+ 支持 chunked gzip flush，但 245 部署后必须人工确认泳道实时性无劣化（见 §5.1 第 5 步） | ⏳ 245 验证项 |
+| **154 生产部署回滚风险** | 低 | P1 可即时回滚（nginx reload），P0 可 revert 后重编译 | ✅ 回滚方案就绪 |
+| **测试覆盖不足** | 低 | SSE 相关 Go 测试与受影响前端 3 文件 54 用例通过；全量套件的无关既有失败已在基线复现排除 | ✅ 已验证 |
 
 ---
 
 ## 8. 成果物清单
 
-**代码提交**:
-1. `9d5605e2a` — feat(nginx): enable gzip for SSE live-stream (P1 bandwidth opt)
-2. `f9a90965f` — feat(sse): remove DetailDimensions redundant field (P0 bandwidth opt)
+**代码提交** (rebase 后最终 SHA):
+1. `79c4d9564` — feat(nginx): enable gzip for SSE live-stream (P1 bandwidth opt)
+2. `9e629ee1b` — feat(sse): remove DetailDimensions redundant field (P0 bandwidth opt)
+3. 审计修正 commit — 见 §10 审计修正记录
 
 **文档**:
 1. `docs/04-implementation/analysis/2026-08-27-sse-bandwidth-optimization-analysis.md` (原分析报告, commit `aab72fc97`)
-2. `docs/04-implementation/analysis/2026-08-27-sse-bandwidth-analysis-audit.md` (审计报告, commit `f9a90965f`)
+2. `docs/04-implementation/analysis/2026-08-27-sse-bandwidth-analysis-audit.md` (审计报告)
 3. `docs/04-implementation/analysis/2026-08-27-sse-bandwidth-optimization-implementation.md` (本实施报告)
 
 **验证脚本**:
-- `scripts/verify-gzip-sse.sh` (gzip 验证, commit `9d5605e2a`)
+- `scripts/verify-gzip-sse.sh` (gzip 验证, GET 流式方法 + token 掩码)
 
 **Git 状态**:
 - 当前分支: `main`
@@ -303,9 +334,31 @@ rate(llmgw_redis_snapshot_calls_total[5m])
 
 ---
 
+## 10. 审计修正记录 (2026-08-27 二次审计)
+
+对 P0/P1 三个 commit (`369332e50..HEAD`) 做双轴审查（Standards 轴对照
+`CONTRIBUTING.md`，Spec 轴对照分析报告 P0/P1 需求），发现并修正以下问题：
+
+| # | 发现 | 严重性 | 修正 |
+|---|---|---|---|
+| A1 | **nginx gzip 范围外溢**：server 级 `gzip_types text/event-stream` 会连带压缩 `/v1/chat/completions`、`/v1/messages` 等生产 LLM 打字机流（同为 text/event-stream），gzip 缓冲可能造成成块/首字延迟，未经评估 | **高** | 245 的 `^~ /v1/`、`^~ /v1beta/`、`^~ /v2/` 与 154 的 `~ ^/v1/(chat/completions\|messages)` location 内加 `gzip off`，压缩范围收窄为 admin live-stream + JSON API + 静态资源 |
+| A2 | **验证脚本三处缺陷**：① 用 HEAD 请求验证（SSE 无 body，nginx 对 HEAD 的 Content-Encoding 不可靠）；② 无 `--max-time`（GET 连上流后永久挂死）；③ `echo` 打印完整 admin token（泄露到终端/日志） | **高** | 重写为 GET + `--max-time` + `-D` 提头 + curl 28 退出码容忍 + token 掩码（scheme + 前 6 字符） |
+| A3 | 实施文档 commit hash 失效（推送前 rebase 导致 `f9a90965f`/`9d5605e2a` 变为 `9e629ee1b`/`79c4d9564`） | 中 | 全文更新为最终 SHA 并标注 rebase 来源 |
+| A4 | 测试陈述过强："34 个 SSE 测试全部通过"隐含全量绿。实际：全量 `go test ./admin` 有 1 个无关既有失败；`web/package.json` 无 `test` script（`pnpm test` 静默 no-op）；全量 vitest 4 文件 8 用例既有失败 | 中 | 收紧为已验证子集 + 基线 `369332e50` 复现对照证明无关 |
+| A5 | 部署风险缺一项：已打开的旧页面实例（旧 JS 无可选链）连新后端会在首帧抛 TypeError | 中 | 风险表补行：刷新即恢复，窗口 = 后端重启后未刷新时段 |
+| A6 | P0 越界改动未标注：空 snapshot 兜底 map 顺手补 `credential` 维度 | 低 | §1.2 补 scope 标注（与上游 `86e8f8618` 互补） |
+
+**既有失败基线证据**：worktree checkout `369332e50`（P0/P1 之前），同样 4 个前端
+测试文件同样 8 用例失败 → 失败先于本次改动存在，非回归。
+
+**降级说明**：本次审查未派并行 sub-agent（双轴审查由主线程完成并已产出可操作
+发现 A1-A6），理由：diff 上下文已在主线程完整掌握，独立子代理重复读档收益低。
+
+---
+
 ## 9. 结论
 
-P0 + P1 组合优化已完成代码实施与推送，预期将 154 生产环境 SSE 带宽从 **3.3 MB/s 降至 0.7-1 MB/s** (单客户端)，**零风险、极低成本** (< 4 小时开发 + 测试)。
+P0 + P1 组合优化已完成代码实施与推送，预期将 154 生产环境 SSE 带宽从 **3.3 MB/s 降至 0.7-1 MB/s** (单客户端)，**低成本、风险已收窄**（LLM 流式端点已显式 `gzip off`，剩余风险见 §7 风险表，均可在 245 验证阶段拦截）。
 
 **下一步行动**: 按 `245 预发验证 → 154 生产灰度` 流程部署，监控带宽指标与用户反馈，必要时可快速回滚 P1 (nginx gzip)。
 
