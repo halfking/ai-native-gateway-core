@@ -319,7 +319,7 @@ func (c *Compressor) strategyRunner() *strategy.Runner {
 //   - Phase 2 决策：是否把 Compress 内部也改为调 RunStrategies。
 //
 // 性能：每次调用在 init 期创建 Registry 一次；后续可缓存到 Compressor 字段
-//（future Phase 2 优化）。
+// （future Phase 2 优化）。
 func (c *Compressor) RunStrategies(ctx context.Context, sel strategy.Selector, body []byte) ([]byte, strategy.RunStats, error) {
 	if c == nil {
 		return body, strategy.RunStats{}, nil
