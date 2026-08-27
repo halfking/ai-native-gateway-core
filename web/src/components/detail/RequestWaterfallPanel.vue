@@ -146,17 +146,17 @@ function credentialLabel(id: number): string {
   background: var(--bg-subtle, var(--kx-bg));
   border-left: 3px solid transparent;
 }
-.attempt--ok { border-left-color: var(--success, #16a34a); }
-.attempt--err { border-left-color: var(--danger, #dc2626); background: color-mix(in srgb, var(--danger, #dc2626) 6%, transparent); }
-.attempt--warn { border-left-color: var(--warning, #d97706); }
-.attempt--info { border-left-color: var(--info, #2563eb); }
+.attempt--ok { border-left-color: var(--kx-success); }
+.attempt--err { border-left-color: var(--kx-error); background: color-mix(in srgb, var(--kx-error) 6%, transparent); }
+.attempt--warn { border-left-color: var(--kx-warning); }
+.attempt--info { border-left-color: var(--kx-primary); }
 .pill {
   display: inline-block; width: fit-content; padding: 1px 7px; border-radius: 999px;
   font-size: 11px; font-weight: 600;
 }
-.pill--ok { color: var(--success, #16a34a); background: color-mix(in srgb, var(--success, #16a34a) 14%, transparent); }
-.pill--err { color: var(--danger, #dc2626); background: color-mix(in srgb, var(--danger, #dc2626) 14%, transparent); }
-.pill--warn { color: var(--warning, #d97706); background: color-mix(in srgb, var(--warning, #d97706) 16%, transparent); }
-.pill--info { color: var(--info, #2563eb); background: color-mix(in srgb, var(--info, #2563eb) 14%, transparent); }
+.pill--ok { color: var(--kx-success); background: color-mix(in srgb, var(--kx-success) 14%, transparent); }
+.pill--err { color: var(--kx-error); background: color-mix(in srgb, var(--kx-error) 14%, transparent); }
+.pill--warn { color: var(--kx-warning); background: color-mix(in srgb, var(--kx-warning) 16%, transparent); }
+.pill--info { color: var(--kx-primary); background: color-mix(in srgb, var(--kx-primary) 14%, transparent); }
 .pill--muted { color: var(--muted); background: var(--bg-subtle, var(--surface-secondary)); }
 </style>

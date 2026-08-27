@@ -1113,7 +1113,18 @@ func (h *Handler) listTopModels(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	// 2026-08-26: the top-models dashboard widget is a "recent hot models"
+	// view. It used request_logs_with_current_month, which is
+	// `request_logs_hot UNION ALL request_logs` — the parent monthly table
+	// brings every ATTACHED columnar partition into the scan even for a
+	// 72h window. Switch the source to request_logs_hot directly (heap,
+	// ~7 days retention by promote_request_logs_hot_to_partition). For
+	// ranges that exceed the hot-table window the widget sees fewer rows
+	// than before; that is acceptable because top-models is a "what is hot
+	// right now" surface and an older window would force the same columnar
+	// scan we are trying to avoid. Restored 2026-08-27 after the
+	// d2cbaf88b-lineage merge dropped it.
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
 	now := time.Now().UTC()
@@ -1133,7 +1144,7 @@ func (h *Handler) listTopModels(w http.ResponseWriter, r *http.Request) {
 			COALESCE(mc.canonical_name, mc2.canonical_name, rl.client_model) AS canonical_name,
 			COALESCE(mc.display_name, mc2.display_name, mc.canonical_name, mc2.canonical_name, rl.client_model) AS display_name,
 			COUNT(*) AS request_count
-		FROM request_logs_with_current_month rl
+		FROM request_logs_hot rl
 		LEFT JOIN models_canonical mc ON mc.id = rl.canonical_id
 		LEFT JOIN LATERAL (
 			SELECT canonical_id
@@ -1146,7 +1157,12 @@ func (h *Handler) listTopModels(w http.ResponseWriter, r *http.Request) {
 		LEFT JOIN models_canonical mc2 ON mc2.id = ma.canonical_id
 		WHERE rl.ts >= $1 AND rl.ts <= $2
 		  AND rl.client_model IS NOT NULL AND rl.client_model != ''
-		GROUP BY canonical_id, canonical_name, display_name
+		-- 2026-08-25: GROUP BY must use full COALESCE expressions, not the
+		-- SELECT aliases (rl.canonical_id / canonical_name / display_name
+		-- collide with view columns and trigger "column reference is ambiguous").
+		GROUP BY COALESCE(mc.id, mc2.id),
+		         COALESCE(mc.canonical_name, mc2.canonical_name, rl.client_model),
+		         COALESCE(mc.display_name, mc2.display_name, mc.canonical_name, mc2.canonical_name, rl.client_model)
 		ORDER BY request_count DESC
 		LIMIT $3
 	`, start, end, limit)
