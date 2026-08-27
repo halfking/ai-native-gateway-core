@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -81,6 +82,32 @@ func TestAttemptCommitGateBuffersMetadataUntilSemanticCommit(t *testing.T) {
 	}
 	if !g.Committed() {
 		t.Fatal("gate should be committed after first semantic frame")
+	}
+}
+
+func TestAttemptCommitGateConcurrentWritesDoNotDropFrames(t *testing.T) {
+	gate, writer := newGateForTest(GateModeImmediate)
+	const writers = 100
+	const framesPerWriter = 1000
+	frame := ": keep-alive\n\n"
+
+	var wg sync.WaitGroup
+	wg.Add(writers)
+	for i := 0; i < writers; i++ {
+		go func() {
+			defer wg.Done()
+			for j := 0; j < framesPerWriter; j++ {
+				if err := gate.WriteFrame(frame); err != nil {
+					t.Errorf("WriteFrame: %v", err)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+
+	if got, want := strings.Count(writer.buf.String(), frame), writers*framesPerWriter; got != want {
+		t.Fatalf("written frame count = %d, want %d", got, want)
 	}
 }
 

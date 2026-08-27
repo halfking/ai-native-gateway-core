@@ -104,7 +104,7 @@ const DefaultMaxMetadataBufferAge = 30 * time.Second
 
 // GateOptions configures an AttemptCommitGate.
 type GateOptions struct {
-	Mode                   GateMode
+	Mode GateMode
 	// RequestID correlates every commit/discard log line from this gate with
 	// the owning request (2026-08-19 observability pass — reconstruct any
 	// failure from `request_id` alone). Empty when the caller has no
@@ -146,6 +146,7 @@ type GateOptions struct {
 // AttemptCommitGate is the per-attempt protocol-aware buffer sink.
 type AttemptCommitGate struct {
 	mu                   sync.Mutex
+	writeMu              sync.Mutex
 	protocol             ClientProtocol
 	writer               *SerializedStreamWriter
 	mode                 GateMode
@@ -289,9 +290,14 @@ func attemptHasClientSemanticOutput(g *AttemptCommitGate, chunkCount int) bool {
 func (g *AttemptCommitGate) WriteFrame(frame string) error {
 	class := ClassifyClientFrame(g.protocol, frame)
 
+	// Serialize each gate's state decision with its corresponding wire write,
+	// while leaving mu available to state observers during potentially slow IO.
+	g.writeMu.Lock()
+	defer g.writeMu.Unlock()
+
 	g.mu.Lock()
-	defer g.mu.Unlock()
 	if g.discarded {
+		g.mu.Unlock()
 		return ErrAttemptDiscarded
 	}
 	if class == FrameClassKeepalive {
@@ -304,8 +310,11 @@ func (g *AttemptCommitGate) WriteFrame(frame string) error {
 		if g.mode == GateModeBuffered && !g.committed && g.bufferLen > 0 {
 			// Order-preserving queue behind pending attempt frames — bounded
 			// by the same byte/age caps as any other buffered frame.
-			return g.appendBufferedLocked(frame)
+			err := g.appendBufferedLocked(frame)
+			g.mu.Unlock()
+			return err
 		}
+		g.mu.Unlock()
 		if _, err := g.writer.Write([]byte(frame)); err != nil {
 			return err
 		}
@@ -320,6 +329,7 @@ func (g *AttemptCommitGate) WriteFrame(frame string) error {
 	if g.mode == GateModeBuffered && !g.committed && isSemanticClass(class) {
 		held, err := g.holdbackTryHoldLocked(frame)
 		if held || err != nil {
+			g.mu.Unlock()
 			return err
 		}
 	}
@@ -333,19 +343,24 @@ func (g *AttemptCommitGate) WriteFrame(frame string) error {
 	// instead of transparently retrying an unknown DB outcome.
 	if advanced && g.beforeSemanticCommit != nil &&
 		(g.mode == GateModeImmediate || g.committed || isSemanticClass(class)) {
-		if err := g.beforeSemanticCommit(g.state); err != nil {
-			return fmt.Errorf("attempt commit gate: write-ahead checkpoint %s: %w", g.state, err)
+		checkpoint := g.beforeSemanticCommit
+		state := g.state
+		g.mu.Unlock()
+		if err := checkpoint(state); err != nil {
+			return fmt.Errorf("attempt commit gate: write-ahead checkpoint %s: %w", state, err)
 		}
+		g.mu.Lock()
 	}
 
 	if g.mode == GateModeImmediate || g.committed {
+		g.mu.Unlock()
 		if _, err := g.writer.Write([]byte(frame)); err != nil {
 			return err
 		}
 		if err := g.writer.FlushError(); err != nil {
 			return err
 		}
-		g.markFirstSemanticByteLocked(class)
+		g.markFirstSemanticByte(class)
 		return nil
 	}
 
@@ -359,8 +374,15 @@ func (g *AttemptCommitGate) WriteFrame(frame string) error {
 			"buffer_len", g.bufferLen,
 			"time_since_first_meta_ms", time.Since(g.firstMetaAt).Milliseconds(),
 		)
-		if err := g.commitLocked(); err != nil {
-			return err
+		buffer := g.buffer
+		g.buffer = nil
+		g.bufferLen = 0
+		g.committed = true
+		g.mu.Unlock()
+		if len(buffer) > 0 {
+			if _, err := g.writer.Write(buffer); err != nil {
+				return err
+			}
 		}
 		if _, err := g.writer.Write([]byte(frame)); err != nil {
 			return err
@@ -368,11 +390,19 @@ func (g *AttemptCommitGate) WriteFrame(frame string) error {
 		if err := g.writer.FlushError(); err != nil {
 			return err
 		}
-		g.markFirstSemanticByteLocked(class)
+		g.markFirstSemanticByte(class)
 		return nil
 	}
 
-	return g.appendBufferedLocked(frame)
+	err := g.appendBufferedLocked(frame)
+	g.mu.Unlock()
+	return err
+}
+
+func (g *AttemptCommitGate) markFirstSemanticByte(class FrameClass) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.markFirstSemanticByteLocked(class)
 }
 
 // appendBufferedLocked appends one frame to the attempt-local buffer under
