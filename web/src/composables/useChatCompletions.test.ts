@@ -79,6 +79,108 @@ describe('messagesForApi', () => {
   })
 })
 
+describe('shouldTryCacheResume', () => {
+  it('does not auto-resume on multi-turn follow-up (prior assistant exists)', async () => {
+    const { shouldTryCacheResume } = await import('./useChatCompletions')
+    expect(
+      shouldTryCacheResume({
+        apiKey: 'sk',
+        model: 'auto',
+        taskId: 't1',
+        gwSessionId: 'gw-1',
+        messages: [
+          { role: 'user', content: 'q1' },
+          { role: 'assistant', content: 'a1' },
+          { role: 'user', content: 'q2' },
+        ],
+      }),
+    ).toBe(false)
+  })
+
+  it('auto-resumes when only a user turn exists (interrupted first reply)', async () => {
+    const { shouldTryCacheResume } = await import('./useChatCompletions')
+    expect(
+      shouldTryCacheResume({
+        apiKey: 'sk',
+        model: 'auto',
+        taskId: 't1',
+        gwSessionId: 'gw-1',
+        messages: [{ role: 'user', content: 'q1' }],
+      }),
+    ).toBe(true)
+  })
+
+  it('forceResumeFromCache always opts in', async () => {
+    const { shouldTryCacheResume } = await import('./useChatCompletions')
+    expect(
+      shouldTryCacheResume({
+        apiKey: 'sk',
+        model: 'auto',
+        taskId: 't1',
+        gwSessionId: 'gw-1',
+        forceResumeFromCache: true,
+        messages: [
+          { role: 'user', content: 'q1' },
+          { role: 'assistant', content: 'a1' },
+          { role: 'user', content: 'q2' },
+        ],
+      }),
+    ).toBe(true)
+  })
+})
+
+describe('chatCompletion multi-turn must not replay prior pending cache', () => {
+  const originalFetch = globalThis.fetch
+
+  beforeEach(() => {
+    vi.resetModules()
+  })
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch
+    vi.restoreAllMocks()
+  })
+
+  it('issues a fresh upstream call on turn 2 even when pending cache has turn-1 body', async () => {
+    const getPendingResponse = vi.fn(async () => ({
+      status: 'completed' as const,
+      body: 'data: {"choices":[{"delta":{"content":"OLD_TURN1"}}]}\n\n',
+    }))
+    vi.doMock('../api', () => ({
+      createGatewaySession: vi.fn(async () => ({ session_id: 'gw-1' })),
+      getPendingResponse,
+    }))
+
+    globalThis.fetch = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          choices: [{ message: { content: 'NEW_TURN2' } }],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    ) as unknown as typeof fetch
+
+    const { chatCompletion } = await import('./useChatCompletions')
+    const result = await chatCompletion({
+      apiKey: 'sk',
+      model: 'auto',
+      taskId: 't1',
+      gwSessionId: 'gw-1',
+      stream: false,
+      messages: [
+        { role: 'user', content: 'q1' },
+        { role: 'assistant', content: 'a1' },
+        { role: 'user', content: 'q2' },
+      ],
+    })
+
+    expect(result.content).toBe('NEW_TURN2')
+    expect(result.resumed).toBeUndefined()
+    expect(getPendingResponse).not.toHaveBeenCalled()
+    expect(globalThis.fetch).toHaveBeenCalled()
+  })
+})
+
 describe('chatCompletion abort + non-stream', () => {
   const originalFetch = globalThis.fetch
 

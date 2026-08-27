@@ -465,15 +465,27 @@ export async function chatCompletion(opts: ChatCompletionOptions): Promise<ChatC
 
 /**
  * Decide whether to attempt a cache resume before issuing a new upstream
- * call. Conservative: only fires when the last message is a user turn
- * (i.e. the previous assistant reply was missing or interrupted). When
- * `forceResumeFromCache` is set the caller has explicitly opted in (e.g.
- * a "恢复上次对话" button) and we always try.
+ * call.
+ *
+ * Auto-resume is only for interrupted first-turn recovery: local history
+ * ends with a user message and has no prior successful assistant reply.
+ * A normal multi-turn follow-up also ends with `user`, but MUST NOT
+ * replay the previous turn's pending-response cache (that would skip
+ * upstream and return stale content / appear as "no response").
+ *
+ * When `forceResumeFromCache` is set the caller has explicitly opted in
+ * (e.g. a "恢复上次对话" button) and we always try.
  */
 export function shouldTryCacheResume(opts: ChatCompletionOptions): boolean {
   if (opts.forceResumeFromCache) return true
-  const last = opts.messages[opts.messages.length - 1]
-  return last?.role === 'user'
+  const msgs = opts.messages
+  if (msgs.length === 0) return false
+  const last = msgs[msgs.length - 1]
+  if (last?.role !== 'user') return false
+  const hasPriorAssistant = msgs.slice(0, -1).some(
+    (m) => m.role === 'assistant' && m.content.trim() !== '' && !m.content.startsWith('错误：'),
+  )
+  return !hasPriorAssistant
 }
 
 /**
