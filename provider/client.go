@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"strings"
 	"sync"
 	"time"
@@ -207,7 +208,16 @@ func (c *Candidate) CalcCost(promptTokens, completionTokens int, cacheReadTokens
 		promptCost -= float64(*cacheWriteTokens) * pIn
 		promptCost += float64(*cacheWriteTokens) * *c.CacheWritePricePer1M
 	}
-	return (promptCost + float64(completionTokens)*pOut) / 1_000_000.0
+	cost := (promptCost + float64(completionTokens)*pOut) / 1_000_000.0
+	// Prices come from ::float8 columns — a manually edited 'NaN' or a cache
+	// price above the input price would otherwise yield NaN/negative cost that
+	// propagates silently through billing and sorting.
+	if math.IsNaN(cost) || math.IsInf(cost, 0) || cost < 0 {
+		slog.Warn("cost computation out of range; clamped to 0",
+			"provider_id", c.ProviderID, "credential_id", c.CredentialID, "raw_model", c.RawModel)
+		return 0
+	}
+	return cost
 }
 
 func (c *Candidate) IsAvailable() bool {
@@ -512,10 +522,18 @@ func InvalidateCredentialKeyCache(credentialID int) {
 }
 
 func (c *Client) Enabled() bool {
+	// dbPool is written by SetDB (potentially after early readers run); read
+	// it under mu to avoid racing a lazy reconfiguration.
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	return c.dbPool != nil
 }
 
 func (c *Client) SetDB(pool *pgxpool.Pool, secretKey, credentialEncryptionKey string) {
+	// Write under c.mu so concurrent readers (Enabled, fetchReveal, rotator
+	// users) never see a partially configured client.
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.dbPool = pool
 	if key, err := secret.FernetKeyFromSecret(secretKey, credentialEncryptionKey); err == nil {
 		c.fernetKey = key

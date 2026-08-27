@@ -358,7 +358,19 @@ func (r *ConnectionRegistry) WriteFrame(requestID, frame string) error {
 		// Client considered disconnected (N2/G7): mark, detach, notify.
 		// Counters stay untouched — the frame never completed.
 		entry.mu.Unlock()
-		r.Unregister(requestID, "write_deadline")
+		// Only unregister if the map still points at THIS entry: a reconnect
+		// may have replaced the entry for the same requestID between the
+		// timeout and now; blindly deleting would evict the live replacement
+		// and wrongly fire onClose for it.
+		r.mu.Lock()
+		cur, ok := r.entries[requestID]
+		if ok && cur == entry {
+			delete(r.entries, requestID)
+		}
+		r.mu.Unlock()
+		if ok && cur == entry {
+			r.detach(entry, "write_deadline")
+		}
 		return ErrClientWriteDeadline
 	}
 	entry.lastFrameAt = nowFn()
