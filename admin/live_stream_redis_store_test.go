@@ -1643,6 +1643,66 @@ func TestBuildLiveStreamSnapshot_DedupesSummaryAndLaneMembers(t *testing.T) {
 	}
 }
 
+func TestBuildLiveStreamSnapshot_CredentialLaneUsesProviderAndCredential(t *testing.T) {
+	items := []LiveRequest{
+		{
+			RequestID:       "labeled",
+			Ts:              "2026-08-27T00:00:01Z",
+			Model:           "claude-sonnet-4",
+			ProviderCode:    "Anthropic 官方",
+			CredentialID:    42,
+			CredentialLabel: "生产主凭据",
+			Status:          "success",
+		},
+		{
+			RequestID:    "fallback",
+			Ts:           "2026-08-27T00:00:02Z",
+			Model:        "claude-sonnet-4",
+			ProviderCode: "Anthropic 官方",
+			CredentialID: 43,
+			Status:       "success",
+		},
+	}
+
+	snapshot := BuildLiveStreamSnapshot(items)
+	lanes := snapshot.Dimensions["credential"]
+	if len(lanes) != 2 {
+		t.Fatalf("credential lanes=%d want 2: %#v", len(lanes), lanes)
+	}
+
+	byID := make(map[string]LiveStreamLane, len(lanes))
+	for _, lane := range lanes {
+		byID[lane.ID] = lane
+	}
+	for _, want := range []string{"Anthropic 官方/生产主凭据", "Anthropic 官方/凭据 #43"} {
+		lane, ok := byID[want]
+		if !ok {
+			t.Fatalf("missing credential lane %q: %#v", want, lanes)
+		}
+		if lane.Name != want {
+			t.Fatalf("lane %q name=%q want same composed label", want, lane.Name)
+		}
+	}
+	for _, legend := range snapshot.DimensionLegends["credential"] {
+		if legend.Name != legend.Key {
+			t.Fatalf("credential legend=%#v has mismatched key/name", legend)
+		}
+	}
+}
+
+func TestLiveStreamCredentialKey_UnknownProviderKeepsShape(t *testing.T) {
+	got := liveStreamCredentialKey(LiveRequest{CredentialID: 7})
+	if got != "未知供应商/凭据 #7" {
+		t.Fatalf("credential key=%q want %q", got, "未知供应商/凭据 #7")
+	}
+	if got := liveStreamCredentialKey(LiveRequest{ProviderCode: "供应商", CredentialLabel: "生产"}); got != "供应商/生产" {
+		t.Fatalf("composed credential label=%q want %q", got, "供应商/生产")
+	}
+	if got := liveStreamCredentialKey(LiveRequest{Type: "idle_marker", CredentialLabel: "供应商/生产"}); got != "供应商/生产" {
+		t.Fatalf("idle credential label=%q was unexpectedly rewritten", got)
+	}
+}
+
 func TestSlimTileFormat(t *testing.T) {
 	now := time.Now().UTC()
 	errorKind := "5xx"

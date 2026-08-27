@@ -224,12 +224,12 @@ const requestLogsListCols = `
 	st.title AS session_title
 `
 
-// requestLogsDetailCols extends the list columns with the three JSONB blobs
-// needed by the detail drawer (outbound_body / outbound_msg_hashes /
-// compression_meta). Used only by getLog (/api/logs/:id).
+// requestLogsDetailCols extends the list columns with the JSONB blobs
+// that remain on request_logs after body payloads moved to
+// request_logs_bodies. Used only by getLog (/api/logs/:id). The full
+// outbound body is fetched separately from the body store.
 const requestLogsDetailCols = requestLogsListCols + `,
-	rl.outbound_body,
-	rl.outbound_msg_hashes,
+		rl.outbound_msg_hashes,
 	rl.compression_meta,
 	-- 2026-07-01: 完整附件元数据 JSONB 数组 (migration 325)，
 	-- 供详情抽屉的"附件"标签页渲染缩略图/下载链接。
@@ -812,9 +812,9 @@ func (h *Handler) getLog(w http.ResponseWriter, r *http.Request) {
 		SELECT %s
 		  FROM request_logs_with_current_month rl
 		%s
-		 WHERE rl.request_id = $1
+		 WHERE (rl.request_id = $1 OR rl.client_request_id = $1)
 		   AND ($2 OR rl.tenant_id = $3)
-		 ORDER BY rl.ts DESC
+		 ORDER BY CASE WHEN rl.request_id = $1 THEN 0 ELSE 1 END, rl.ts DESC
 		 LIMIT 1
 	`, requestLogsDetailCols, requestLogsJoins), requestID, !IsTenantAdmin(r), GetTenantID(r)).Scan(
 		&detail.Ts,
@@ -890,7 +890,6 @@ func (h *Handler) getLog(w http.ResponseWriter, r *http.Request) {
 		&detail.AttachmentCount,
 		// 2026-08-06: session_titles.title (see requestLogsListCols).
 		&detail.SessionTitle,
-		&detail.OutboundBody,
 		&detail.OutboundMsgHashes,
 		&detail.CompressionMeta,
 		// 2026-07-01: 完整附件元数据 JSONB (migration 325)。
@@ -929,17 +928,18 @@ func (h *Handler) getLog(w http.ResponseWriter, r *http.Request) {
 			"request_id", requestID, "elapsed_ms", metaElapsed.Milliseconds())
 	}
 
-	// 2026-08-17 BUGFIX: 二阶段 body 读取，避开 columnar 扫描（见上方长注释）。
-	// 优先 cache（<1ms）；miss → hot（idx 命中 <1ms）；找不到再查 columnar 视图
-	// （慢路径，给独立 20s ctx）。
+	// Bodies are keyed by the gateway-generated request_id. A lookup by
+	// client_request_id must therefore switch to the canonical ID returned by
+	// the metadata row before reading body storage or caching the result.
+	canonicalRequestID := detail.RequestID
 	var bodyErr error
-	detail.RequestBody, detail.ResponseBody, bodyErr = h.fetchRequestBodies(ctx, requestID)
+	detail.RequestBody, detail.ResponseBody, bodyErr = h.fetchRequestBodies(ctx, canonicalRequestID)
 	if bodyErr != nil {
 		// sql.ErrNoRows（两端都没找到 body）是预期情况 — 不打 WARN 噪音。
 		// transport 错误（ctx cancel, conn refused, ...）才打 WARN 便于排查。
 		if !errors.Is(bodyErr, sql.ErrNoRows) {
 			slog.WarnContext(ctx, "admin getLog body fetch failed",
-				"request_id", requestID,
+				"request_id", canonicalRequestID,
 				"total_elapsed_ms", time.Since(start).Milliseconds(),
 				"error", bodyErr.Error())
 		}
@@ -947,6 +947,14 @@ func (h *Handler) getLog(w http.ResponseWriter, r *http.Request) {
 		// 请求/响应以外的所有字段（latency/tokens/cost/model…）。只把 body 置 nil。
 		detail.RequestBody = nil
 		detail.ResponseBody = nil
+	}
+	detail.OutboundBody, bodyErr = h.fetchRequestOutboundBody(ctx, canonicalRequestID)
+	if bodyErr != nil && !errors.Is(bodyErr, sql.ErrNoRows) {
+		slog.WarnContext(ctx, "admin getLog outbound body fetch failed",
+			"request_id", canonicalRequestID,
+			"total_elapsed_ms", time.Since(start).Milliseconds(),
+			"error", bodyErr.Error())
+		detail.OutboundBody = nil
 	}
 	// Outbound body: it's already a JSON RawMessage from JSONB scan; convert to
 	// a structured payload so the UI can render it as a message list.
@@ -988,6 +996,38 @@ func normalizeJSONForAPI(raw json.RawMessage) json.RawMessage {
 // 返回值约定：cache hit → (body, body, nil)；hot 命中 → (body, body, nil)；
 // cold 命中 → (body, body, nil)；两边都没行 → (nil, nil, sql.ErrNoRows)；
 // transport 错误 → (nil, nil, err)。caller 把 body 置 nil 但 metadata 仍 200。
+func (h *Handler) fetchRequestOutboundBody(ctx context.Context, requestID string) (json.RawMessage, error) {
+	var raw []byte
+	hotCtx, hotCancel := context.WithTimeout(ctx, 3*time.Second)
+	defer hotCancel()
+	err := h.db.QueryRow(hotCtx, `
+		SELECT outbound_body::text
+		  FROM request_logs_bodies_hot
+		 WHERE request_id = $1
+		 LIMIT 1
+	`, requestID).Scan(&raw)
+	if err == nil {
+		return json.RawMessage(raw), nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		slog.WarnContext(ctx, "admin fetchRequestOutboundBody hot scan failed",
+			"request_id", requestID, "error", err.Error())
+	}
+
+	coldCtx, coldCancel := context.WithTimeout(ctx, 20*time.Second)
+	defer coldCancel()
+	err = h.db.QueryRow(coldCtx, `
+		SELECT outbound_body::text
+		  FROM request_logs_bodies_with_current_month
+		 WHERE request_id = $1
+		 LIMIT 1
+	`, requestID).Scan(&raw)
+	if err != nil {
+		return nil, err
+	}
+	return json.RawMessage(raw), nil
+}
+
 func (h *Handler) fetchRequestBodies(ctx context.Context, requestID string) (requestBody, responseBody any, err error) {
 	start := time.Now()
 

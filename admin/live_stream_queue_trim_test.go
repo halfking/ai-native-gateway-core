@@ -56,7 +56,7 @@ func TestSelectiveTrimLiveStreamQueue_EvictsCompletedBeforeFreshInProgress(t *te
 	require.Equal(t, freshMember, remaining[0])
 }
 
-func TestSelectiveTrimLiveStreamQueue_ProtectsFreshInProgressWhenAllProtected(t *testing.T) {
+func TestSelectiveTrimLiveStreamQueue_EnforcesBoundWhenAllProtected(t *testing.T) {
 	mr, err := miniredis.Run()
 	require.NoError(t, err)
 	defer mr.Close()
@@ -87,7 +87,10 @@ func TestSelectiveTrimLiveStreamQueue_ProtectsFreshInProgressWhenAllProtected(t 
 
 	count, err := rdb.ZCard(ctx, key).Result()
 	require.NoError(t, err)
-	require.Equal(t, int64(3), count)
+	require.Equal(t, int64(1), count)
+	remaining, err := rdb.ZRange(ctx, key, 0, -1).Result()
+	require.NoError(t, err)
+	require.Equal(t, []string{members[0].Member.(string)}, remaining)
 }
 
 func TestSelectiveTrimLiveStreamQueue_MainQueueUsesDetailStatus(t *testing.T) {
@@ -124,4 +127,36 @@ func TestSelectiveTrimLiveStreamQueue_MainQueueUsesDetailStatus(t *testing.T) {
 	remaining, err := rdb.ZRange(ctx, key, 0, -1).Result()
 	require.NoError(t, err)
 	require.Equal(t, []string{"fresh-main"}, remaining)
+}
+
+func TestSelectiveTrimLiveStreamQueue_TenantStatusUsesTenantDetail(t *testing.T) {
+	mr, err := miniredis.Run()
+	require.NoError(t, err)
+	defer mr.Close()
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	key := tenantLiveStreamKey("tenant-a", "status:in_progress")
+	writeDetail := func(id, status string, ts time.Time) {
+		payload, err := marshalLiveRequestRedisPayload(LiveRequest{
+			RequestID: id,
+			Ts:        ts.UTC().Format(time.RFC3339),
+			Status:    status,
+		})
+		require.NoError(t, err)
+		require.NoError(t, rdb.Set(ctx, liveStreamRequestDetailKey("tenant-a", id), payload, liveStreamTTL).Err())
+	}
+
+	writeDetail("done-tenant", "success", now.Add(-30*time.Minute))
+	writeDetail("fresh-tenant", "in_progress", now.Add(-3*time.Minute))
+	require.NoError(t, rdb.ZAdd(ctx, key,
+		redis.Z{Score: float64(now.Add(-30 * time.Minute).UnixMilli()), Member: "done-tenant"},
+		redis.Z{Score: float64(now.Add(-3 * time.Minute).UnixMilli()), Member: "fresh-tenant"},
+	).Err())
+
+	require.NoError(t, selectiveTrimLiveStreamQueue(ctx, rdb, key, 1))
+	remaining, err := rdb.ZRange(ctx, key, 0, -1).Result()
+	require.NoError(t, err)
+	require.Equal(t, []string{"fresh-tenant"}, remaining)
 }

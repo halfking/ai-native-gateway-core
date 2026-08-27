@@ -41,26 +41,31 @@ func TestMigration553ApprovalResumeClaimContract(t *testing.T) {
 	mustAppearBefore(t, up, "CREATE INDEX IF NOT EXISTS idx_approval_queue_resume_claimable", "COMMIT;")
 }
 
-func TestMigration553ApprovalResumeClaimSchemaMirrors(t *testing.T) {
+func TestMigration553ApprovalResumeClaimFreshInstallArtifacts(t *testing.T) {
 	root := filepath.Join("..", "..", "..")
-	for _, name := range []string{
-		"sql/schema/01-schema.sql",
-		"deploy/sql/schemas/baseline/01-schema.sql",
-		"installer/cmd/llm-gw-installer/embeddata/01-schema.sql",
-	} {
-		contents, err := os.ReadFile(filepath.Join(root, name))
-		if err != nil {
-			t.Fatalf("read schema mirror %s: %v", name, err)
-		}
-		text := string(contents)
-		for _, want := range []string{
+	artifacts := map[string][]string{
+		"deploy/sql/schemas/baseline/01-schema.sql": {
 			"resume_state text DEFAULT 'idle'::text NOT NULL",
 			"approval_queue_resume_state_chk",
 			"idx_approval_queue_resume_claimable",
 			"resume_lease_until, created_at",
-		} {
+		},
+		"installer/cmd/llm-gw-installer/embeddata/startup/553_approval_resume_claim.sql": {
+			"ADD COLUMN IF NOT EXISTS resume_state TEXT NOT NULL DEFAULT 'idle'",
+			"approval_queue_resume_state_chk",
+			"idx_approval_queue_resume_claimable",
+			"ON approval_queue (resume_lease_until, created_at)",
+		},
+	}
+	for name, wants := range artifacts {
+		contents, err := os.ReadFile(filepath.Join(root, name))
+		if err != nil {
+			t.Fatalf("read fresh-install artifact %s: %v", name, err)
+		}
+		text := string(contents)
+		for _, want := range wants {
 			if !strings.Contains(text, want) {
-				t.Errorf("schema mirror %s missing %q", name, want)
+				t.Errorf("fresh-install artifact %s missing %q", name, want)
 			}
 		}
 	}
