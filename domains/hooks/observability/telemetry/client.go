@@ -183,11 +183,17 @@ type RequestLogEntry struct {
 	APIKeyID      *int         `json:"api_key_id,omitempty"`
 	EndUserID     *string      `json:"end_user_id,omitempty"`
 	CustomerID    *int64       `json:"customer_id,omitempty"`
-	ClientModel   *string      `json:"client_model,omitempty"`
-	OutboundModel *string      `json:"outbound_model,omitempty"`
-	CredentialID  *int         `json:"credential_id,omitempty"`
-	ProviderID    *int         `json:"provider_id,omitempty"`
-	CanonicalID   *int         `json:"canonical_id,omitempty"`
+	// RequestClass 是请求类型（V6-W1.6 R8，migration 608）：immediate|scheduled。
+	// nil 落库为 'immediate'（列 NOT NULL DEFAULT，INSERT 侧 COALESCE）；
+	// 由 handler 从 ExecParams.DispatchDueAt（X-Gw-Due-At 头）推导并盖章。
+	RequestClass *string `json:"request_class,omitempty"`
+	// DueAt 是定时请求的到期时刻（scheduled 时非 nil；immediate 为 nil）。
+	DueAt         *time.Time `json:"due_at,omitempty"`
+	ClientModel   *string    `json:"client_model,omitempty"`
+	OutboundModel *string    `json:"outbound_model,omitempty"`
+	CredentialID  *int       `json:"credential_id,omitempty"`
+	ProviderID    *int       `json:"provider_id,omitempty"`
+	CanonicalID   *int       `json:"canonical_id,omitempty"`
 	// 2026-07-27: 标准/canonical 模型名(全小写),从 models_canonical.canonical_name 提取。
 	// 之前需要每次 JOIN models_canonical 才能拿到标准名,实时请求流的模型筛
 	// 选因此无法直接做低成本的 GROUP BY。现在直接写,过滤 SQL 简单到极致。
@@ -923,6 +929,10 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 	if db == nil {
 		return errNoTelemetryDB
 	}
+	// Keep request class/due time inside the database domain before the
+	// asynchronous writer begins its transaction. This prevents a malformed
+	// caller from turning one bad audit field into a retried write failure.
+	normalizeRequestClassAndDueAt(entry, false)
 	// Defence-in-depth: scrub any invalid UTF-8 from all string-valued fields
 	// before INSERT.  PostgreSQL rejects invalid bytes with SQLSTATE 22021,
 	// which (because we wrap usage_ledger + request_logs + api_keys updates
@@ -1068,7 +1078,9 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 			t7_forward_start_at, t8_response_start_at, t9_response_end_at,
 			-- 2026-08-19: streaming discard audit events.
 			discard_events,
-			customer_id
+			customer_id,
+			-- V6-W1.6 R8 (migration 608): request class + scheduled due time.
+			request_class, due_at
 		) VALUES (
 		$1, now(), $2, $3, $4,
 		$5, $6, $7,
@@ -1121,7 +1133,11 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 			-- 2026-08-19: streaming discard audit events.
 			$99::text::jsonb,
 			-- 2026-08-25 (migration 507): customer metadata.
-			$100
+			$100,
+			-- V6-W1.6 R8 (migration 608): request class + due time. $101 stays
+			-- a bare placeholder (placeholder-alignment guard); the NOT NULL
+			-- default is resolved arg-side by requestClassArg.
+			$101, $102
 		)
 
 				-- 2026-08-06 fix: INSERT targets request_logs_hot (NOT the partitioned parent).
@@ -1257,7 +1273,11 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		t7_forward_start_at  = COALESCE(EXCLUDED.t7_forward_start_at, request_logs_hot.t7_forward_start_at),
 		t8_response_start_at = COALESCE(EXCLUDED.t8_response_start_at, request_logs_hot.t8_response_start_at),
 			t9_response_end_at   = COALESCE(EXCLUDED.t9_response_end_at, request_logs_hot.t9_response_end_at),
-			discard_events       = COALESCE(EXCLUDED.discard_events, request_logs_hot.discard_events)
+			discard_events       = COALESCE(EXCLUDED.discard_events, request_logs_hot.discard_events),
+			-- V6-W1.6 R8 (migration 608): class never regresses to NULL;
+			-- due_at keeps the first non-null value.
+			request_class        = COALESCE(EXCLUDED.request_class, request_logs_hot.request_class),
+			due_at               = COALESCE(EXCLUDED.due_at, request_logs_hot.due_at)
 		-- 2026-07-27 (L-2): terminal-state guard, mirroring the WAL guard in
 
 		-- request_logger.go Update(). Without this, the deferred client-
@@ -1433,6 +1453,10 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		// 2026-08-25 (migration 507): customer metadata ($100 ↔ customer_id,
 		// the LAST column — keep aligned with the INSERT column list above).
 		entry.CustomerID,
+		// V6-W1.6 R8 (migration 608): $101 ↔ request_class (arg-side
+		// 'immediate' default for the NOT NULL column), $102 ↔ due_at.
+		requestClassArg(entry.RequestClass),
+		entry.DueAt,
 	)
 
 	if err != nil {
@@ -1664,6 +1688,7 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 	if db == nil {
 		return errNoTelemetryDB
 	}
+	normalizeRequestClassAndDueAt(entry, true)
 	sanitizeRequestLogEntry(entry)
 	totalTokens := total(entry.PromptTokens, entry.CompletionTokens)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -1884,6 +1909,9 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 				ELSE attachments
 			END
 			, customer_id = COALESCE($97, customer_id)
+			-- V6-W1.6 R8 (migration 608): request class + due time.
+			, request_class = CASE WHEN $98 IS NULL THEN request_class ELSE $98 END
+			, due_at = CASE WHEN $98 IS NULL THEN due_at ELSE $99 END
 		   WHERE request_id = $1
 
 		     AND NOT (
@@ -2021,6 +2049,10 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		entry.RoutingSummary,
 		attachmentsArgStr(entry.Attachments),
 		entry.CustomerID,
+		// V6-W1.6 R8 (migration 608): a nil $98 preserves both fields;
+		// otherwise $98/$99 are written as one invariant-preserving pair.
+		entry.RequestClass,
+		entry.DueAt,
 	)
 
 	if err != nil {
@@ -3244,3 +3276,28 @@ func lookupTurnNumber(ctx context.Context, tx pgx.Tx, sessionID string) int {
 // inferRequestType derives the V3.2 request_type from the entry's existing
 // fields. Returns "main" for a plain client request (the column DEFAULT).
 // Precedence: explicit RequestType > compression > origin_actor > parent link.
+
+// requestClassArg resolves the request_class bind value. The database invariant
+// requires immediate rows to have no due_at and scheduled rows to have one;
+// normalizeRequestClassAndDueAt enforces that invariant before every write.
+func requestClassArg(c *string) string {
+	if c != nil && *c == "scheduled" {
+		return "scheduled"
+	}
+	return "immediate"
+}
+
+// normalizeRequestClassAndDueAt enforces the persisted domain invariant. Insert
+// callers always write a class; update callers preserve existing values unless
+// they explicitly provide RequestClass.
+func normalizeRequestClassAndDueAt(entry *RequestLogEntry, preserveWhenUnset bool) {
+	if entry == nil || (preserveWhenUnset && entry.RequestClass == nil) {
+		return
+	}
+	if entry.RequestClass != nil && *entry.RequestClass == "scheduled" && entry.DueAt != nil && !entry.DueAt.IsZero() {
+		return
+	}
+	immediate := "immediate"
+	entry.RequestClass = &immediate
+	entry.DueAt = nil
+}

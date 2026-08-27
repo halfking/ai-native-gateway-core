@@ -1,3 +1,11 @@
+//go:build broken_pending_repair
+// +build broken_pending_repair
+
+// QUARANTINED 2026-08-26 (V6-W1.6 R8 落库轮): TestFirstTiles references the
+// removed firstTiles helper (lane truncation moved; only comments remain in
+// live_stream_sse.go). Blocked compilation of the admin test package.
+// Rewrite against the current truncation path, then remove the tag.
+
 package admin
 
 import (

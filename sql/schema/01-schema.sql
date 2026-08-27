@@ -2794,10 +2794,41 @@ CREATE FUNCTION public.notify_auto_route_refresh() RETURNS trigger
     LANGUAGE plpgsql
     AS $$ DECLARE entity_id text := ''; BEGIN IF TG_TABLE_NAME = 'credential_model_bindings' THEN entity_id := COALESCE(NEW.credential_id, OLD.credential_id)::text; ELSIF TG_TABLE_NAME IN ('credentials', 'api_keys', 'providers') THEN entity_id := COALESCE(NEW.id, OLD.id)::text; END IF; PERFORM pg_notify('auto_route_refresh', TG_TABLE_NAME || ':' || TG_OP || ':' || entity_id); RETURN COALESCE(NEW, OLD); END; $$;
 
+-- Name: bump_credentials_governor_revision(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.bump_credentials_governor_revision() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        NEW.revision := nextval('public.credentials_governor_revision_seq');
+    ELSIF OLD.concurrency_limit IS DISTINCT FROM NEW.concurrency_limit
+       OR OLD.concurrency_mode IS DISTINCT FROM NEW.concurrency_mode
+       OR OLD.rpm_limit IS DISTINCT FROM NEW.rpm_limit
+       OR OLD.tpm_limit IS DISTINCT FROM NEW.tpm_limit
+       OR OLD.fp_slot_limit IS DISTINCT FROM NEW.fp_slot_limit
+       OR OLD.max_queue_depth IS DISTINCT FROM NEW.max_queue_depth
+       OR OLD.max_queue_wait_ms IS DISTINCT FROM NEW.max_queue_wait_ms THEN
+        NEW.revision := nextval('public.credentials_governor_revision_seq');
+    ELSE
+        NEW.revision := OLD.revision;
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+-- Name: notify_credentials_governor_revision(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.notify_credentials_governor_revision() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$ BEGIN PERFORM pg_notify('credentials_revision', NEW.revision::text); RETURN NEW; END; $$;
+
 
 --
 -- Name: populate_model_name_mapping_from_provider_models(); Type: FUNCTION; Schema: public; Owner: -
---
+
 
 CREATE FUNCTION public.populate_model_name_mapping_from_provider_models() RETURNS void
     LANGUAGE plpgsql
@@ -5904,6 +5935,7 @@ CREATE TABLE public.credentials (
     plan_type text,
     plan_type_updated_at timestamp with time zone,
     rpm_limit integer,
+    revision bigint DEFAULT 0 NOT NULL,
     auto_disabled_at timestamp with time zone,
     auto_disabled_reason text,
     auto_enabled_at timestamp with time zone,
@@ -5996,6 +6028,13 @@ the template rpmLimit; paid credentials are typically NULL.';
 
 
 --
+-- Name: COLUMN credentials.revision; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.credentials.revision IS 'Globally monotonic governor policy revision. Bumped by governor-relevant credential writes and consumed by domains/dispatch/policy_publisher.go via LISTEN credentials_revision.';
+
+
+--
 -- Name: COLUMN credentials.auto_disabled_at; Type: COMMENT; Schema: public; Owner: -
 --
 
@@ -6047,6 +6086,19 @@ CREATE SEQUENCE public.credentials_id_seq
 --
 
 ALTER SEQUENCE public.credentials_id_seq OWNED BY public.credentials.id;
+
+
+--
+-- Name: credentials_governor_revision_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.credentials_governor_revision_seq
+    AS bigint
+    START WITH 1
+    INCREMENT BY 1
+    MINVALUE 1
+    NO MAXVALUE
+    CACHE 1;
 
 
 --
@@ -22294,6 +22346,12 @@ CREATE INDEX idx_credentials_auto_limit ON public.credentials USING btree (concu
 
 CREATE INDEX idx_credentials_plan_type ON public.credentials USING btree (plan_type);
 
+--
+-- Name: credentials_revision_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX credentials_revision_idx ON public.credentials USING btree (revision);
+
 
 --
 -- Name: idx_credit_ledger_tenant_ts; Type: INDEX; Schema: public; Owner: -
@@ -27812,7 +27870,22 @@ CREATE TRIGGER trg_notify_auto_route_cmb_update AFTER UPDATE ON public.credentia
 -- Name: credentials trg_notify_auto_route_creds; Type: TRIGGER; Schema: public; Owner: -
 --
 
-CREATE TRIGGER trg_notify_auto_route_creds AFTER UPDATE OF status, availability_state, quota_state, circuit_state, concurrency_limit, lifecycle_status, manual_disabled ON public.credentials FOR EACH ROW WHEN ((old.* IS DISTINCT FROM new.*)) EXECUTE FUNCTION public.notify_auto_route_refresh();
+CREATE TRIGGER trg_notify_auto_route_creds AFTER UPDATE OF status, availability_state, quota_state, circuit_state, concurrency_limit, concurrency_mode, rpm_limit, tpm_limit, fp_slot_limit, max_queue_depth, max_queue_wait_ms, lifecycle_status, manual_disabled ON public.credentials FOR EACH ROW WHEN ((old.* IS DISTINCT FROM new.*)) EXECUTE FUNCTION public.notify_auto_route_refresh();
+
+-- Name: credentials trg_bump_credentials_governor_revision; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER trg_bump_credentials_governor_revision BEFORE INSERT OR UPDATE OF concurrency_limit, concurrency_mode, rpm_limit, tpm_limit, fp_slot_limit, max_queue_depth, max_queue_wait_ms ON public.credentials FOR EACH ROW EXECUTE FUNCTION public.bump_credentials_governor_revision();
+
+-- Name: credentials trg_notify_credentials_governor_revision_insert; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER trg_notify_credentials_governor_revision_insert AFTER INSERT ON public.credentials FOR EACH ROW EXECUTE FUNCTION public.notify_credentials_governor_revision();
+
+-- Name: credentials trg_notify_credentials_governor_revision_update; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER trg_notify_credentials_governor_revision_update AFTER UPDATE OF concurrency_limit, concurrency_mode, rpm_limit, tpm_limit, fp_slot_limit, max_queue_depth, max_queue_wait_ms ON public.credentials FOR EACH ROW WHEN ((old.revision IS DISTINCT FROM new.revision)) EXECUTE FUNCTION public.notify_credentials_governor_revision();
 
 
 --

@@ -1,33 +1,23 @@
 {
-  "version": "1.0.0",
-  "exported_at": "2026-08-26T23:56:05.384Z",
-  "source": "gateway-appNav",
-  "tenantScopeLegend": {
-    "default": "仅默认租户 + super_admin 可见",
-    "tenant": "仅租户门户（非 default 租户）可见",
-    "*": "所有租户可见",
-    "mixed": "分组内包含多种可见性，需逐项检查"
-  },
-  "pluginScopeLegend": {
-    "plugin": "依赖 plugin 运行时探测（按 plugin 字段名匹配）",
-    "*": "始终可用，无 plugin 依赖"
-  },
+  "version": "1.0",
+  "exportedAt": "2026-08-26T23:23:36.109Z",
   "primary": [
     {
       "path": "/dashboard",
       "label": "总览",
       "labelKey": "nav.item.overview",
       "icon": "📊",
+      "external": false,
+      "super": false,
       "platformOps": true,
-      "exact": true,
-      "tenantScope": "default",
-      "pluginScope": "*"
+      "opsPlatform": false,
+      "tenantOnly": false,
+      "hideForTenant": false
     }
   ],
   "groups": [
     {
       "id": "tenant-portal",
-      "label": "我的服务",
       "labelKey": "nav.group.tenantPortal",
       "items": [
         {
@@ -35,44 +25,53 @@
           "label": "标准模型",
           "labelKey": "nav.item.tenantModels",
           "icon": "🤖",
+          "external": false,
+          "super": false,
+          "platformOps": false,
+          "opsPlatform": false,
           "tenantOnly": true,
-          "tenantScope": "tenant",
-          "pluginScope": "*"
+          "hideForTenant": false
         },
         {
           "path": "/tenant/account",
           "label": "我的账户",
           "labelKey": "nav.item.tenantAccount",
           "icon": "💰",
+          "external": false,
+          "super": false,
+          "platformOps": false,
+          "opsPlatform": false,
           "tenantOnly": true,
-          "tenantScope": "tenant",
-          "pluginScope": "*"
+          "hideForTenant": false
         },
         {
           "path": "/tenant/pricing",
           "label": "套餐与充值",
           "labelKey": "nav.item.tenantPricing",
           "icon": "💳",
+          "external": false,
+          "super": false,
+          "platformOps": false,
+          "opsPlatform": false,
           "tenantOnly": true,
-          "tenantScope": "tenant",
-          "pluginScope": "*"
+          "hideForTenant": false
         },
         {
           "path": "/tenant/usage",
           "label": "我的消耗",
           "labelKey": "nav.item.tenantUsage",
           "icon": "📉",
+          "external": false,
+          "super": false,
+          "platformOps": false,
+          "opsPlatform": false,
           "tenantOnly": true,
-          "tenantScope": "tenant",
-          "pluginScope": "*"
+          "hideForTenant": false
         }
-      ],
-      "tenantScope": "tenant",
-      "pluginScope": "*"
+      ]
     },
     {
       "id": "models-routing",
-      "label": "模型与路由",
       "labelKey": "nav.group.modelsRouting",
       "items": [
         {
@@ -80,87 +79,113 @@
           "label": "模型与目录",
           "labelKey": "nav.item.models",
           "icon": "🏷️",
+          "external": false,
+          "super": false,
           "platformOps": true,
-          "hideForTenant": true,
-          "tenantScope": "default",
-          "pluginScope": "*"
+          "opsPlatform": false,
+          "tenantOnly": false,
+          "hideForTenant": true
         },
         {
           "path": "/routing-v2",
           "label": "路由全景",
           "labelKey": "nav.item.routingOverview",
           "icon": "🗺️",
+          "external": false,
           "super": true,
-          "hideForTenant": true,
-          "exact": true,
-          "tenantScope": "default",
-          "pluginScope": "*"
+          "platformOps": false,
+          "opsPlatform": false,
+          "tenantOnly": false,
+          "hideForTenant": true
         },
         {
           "path": "/routing-v2/credentials",
           "label": "凭据监控",
           "labelKey": "nav.item.credentialMonitor",
           "icon": "📊",
-          "tenantScope": "*",
-          "pluginScope": "*"
+          "external": false,
+          "super": false,
+          "platformOps": false,
+          "opsPlatform": false,
+          "tenantOnly": false,
+          "hideForTenant": false
         },
         {
           "path": "/probe-health",
           "label": "探测健康度",
           "labelKey": "nav.item.probeHealth",
           "icon": "🔍",
+          "external": false,
           "super": true,
-          "hideForTenant": true,
-          "tenantScope": "default",
-          "pluginScope": "*"
+          "platformOps": false,
+          "opsPlatform": false,
+          "tenantOnly": false,
+          "hideForTenant": true
+        },
+        {
+          "path": "/dashboard?tab=selfcheck",
+          "label": "系统自检",
+          "labelKey": "nav.item.systemMonitor",
+          "icon": "📈",
+          "external": false,
+          "super": true,
+          "platformOps": false,
+          "opsPlatform": false,
+          "tenantOnly": false,
+          "hideForTenant": true
         },
         {
           "path": "/providers",
           "label": "供应商",
           "labelKey": "nav.item.providers",
           "icon": "🔌",
+          "external": false,
           "super": true,
-          "hideForTenant": true,
-          "tenantScope": "default",
-          "pluginScope": "*"
+          "platformOps": false,
+          "opsPlatform": false,
+          "tenantOnly": false,
+          "hideForTenant": true
         },
         {
           "path": "/pricing",
           "label": "成本价格",
           "labelKey": "nav.item.pricing",
           "icon": "📉",
+          "external": false,
+          "super": false,
           "platformOps": true,
-          "hideForTenant": true,
-          "tenantScope": "default",
-          "pluginScope": "*"
+          "opsPlatform": false,
+          "tenantOnly": false,
+          "hideForTenant": true
         },
         {
           "path": "/model-pricing",
           "label": "定价管理",
           "labelKey": "nav.item.modelPricing",
           "icon": "💰",
+          "external": false,
+          "super": false,
           "platformOps": true,
-          "hideForTenant": true,
-          "tenantScope": "default",
-          "pluginScope": "*"
+          "opsPlatform": false,
+          "tenantOnly": false,
+          "hideForTenant": true
         },
         {
           "path": "/free-pool",
           "label": "免费资源",
           "labelKey": "nav.item.freePool",
           "icon": "🎁",
+          "external": false,
           "super": true,
-          "hideForTenant": true,
-          "tenantScope": "default",
-          "pluginScope": "*"
+          "platformOps": false,
+          "opsPlatform": false,
+          "tenantOnly": false,
+          "hideForTenant": true
         }
-      ],
-      "tenantScope": "mixed",
-      "pluginScope": "*"
+      ]
     },
     {
       "id": "tenant-users",
-      "label": "租户用户",
       "labelKey": "nav.group.tenantUsers",
       "items": [
         {
@@ -168,54 +193,65 @@
           "label": "租户管理",
           "labelKey": "nav.item.tenants",
           "icon": "🏢",
+          "external": false,
           "super": true,
-          "hideForTenant": true,
-          "tenantScope": "default",
-          "pluginScope": "*"
+          "platformOps": false,
+          "opsPlatform": false,
+          "tenantOnly": false,
+          "hideForTenant": true
         },
         {
           "path": "/users",
           "label": "用户管理",
           "labelKey": "nav.item.users",
           "icon": "👤",
-          "tenantScope": "*",
-          "pluginScope": "*"
+          "external": false,
+          "super": false,
+          "platformOps": false,
+          "opsPlatform": false,
+          "tenantOnly": false,
+          "hideForTenant": false
         },
         {
           "path": "/keys",
           "label": "API 密钥",
           "labelKey": "nav.item.keys",
           "icon": "🔑",
-          "tenantScope": "*",
-          "pluginScope": "*"
+          "external": false,
+          "super": false,
+          "platformOps": false,
+          "opsPlatform": false,
+          "tenantOnly": false,
+          "hideForTenant": false
         },
         {
           "path": "/key-applications",
           "label": "密钥申请",
           "labelKey": "nav.item.keyApplications",
           "icon": "📬",
+          "external": false,
           "super": true,
-          "hideForTenant": true,
-          "tenantScope": "default",
-          "pluginScope": "*"
+          "platformOps": false,
+          "opsPlatform": false,
+          "tenantOnly": false,
+          "hideForTenant": true
         },
         {
           "path": "/audit-logs",
           "label": "审计日志",
           "labelKey": "nav.item.auditLogs",
           "icon": "📋",
+          "external": false,
           "super": true,
-          "hideForTenant": true,
-          "tenantScope": "default",
-          "pluginScope": "*"
+          "platformOps": false,
+          "opsPlatform": false,
+          "tenantOnly": false,
+          "hideForTenant": true
         }
-      ],
-      "tenantScope": "mixed",
-      "pluginScope": "*"
+      ]
     },
     {
       "id": "requests-sessions",
-      "label": "请求与会话",
       "labelKey": "nav.group.requestsSessions",
       "items": [
         {
@@ -223,38 +259,77 @@
           "label": "请求日志",
           "labelKey": "nav.item.requestLogs",
           "icon": "📋",
-          "tenantScope": "*",
-          "pluginScope": "*"
+          "external": false,
+          "super": false,
+          "platformOps": false,
+          "opsPlatform": false,
+          "tenantOnly": false,
+          "hideForTenant": false
         },
         {
           "path": "/dispatch/waterfall",
           "label": "队列瀑布图",
           "labelKey": "nav.item.dispatchWaterfall",
           "icon": "📊",
+          "external": false,
+          "super": false,
           "platformOps": true,
-          "hideForTenant": true,
-          "tenantScope": "default",
-          "pluginScope": "*"
+          "opsPlatform": false,
+          "tenantOnly": false,
+          "hideForTenant": true
+        },
+        {
+          "path": "/admin/turns",
+          "label": "轮次列表",
+          "labelKey": "nav.item.turns",
+          "icon": "🔄",
+          "external": false,
+          "super": true,
+          "platformOps": false,
+          "opsPlatform": false,
+          "tenantOnly": false,
+          "hideForTenant": true
+        },
+        {
+          "path": "/admin/request-registry",
+          "label": "请求注册表",
+          "labelKey": "nav.item.requestRegistry",
+          "icon": "📑",
+          "external": false,
+          "super": true,
+          "platformOps": false,
+          "opsPlatform": false,
+          "tenantOnly": false,
+          "hideForTenant": true
+        },
+        {
+          "path": "/admin/connection-registry",
+          "label": "连接注册台",
+          "labelKey": "nav.item.connectionRegistry",
+          "icon": "🔗",
+          "external": false,
+          "super": true,
+          "platformOps": false,
+          "opsPlatform": false,
+          "tenantOnly": false,
+          "hideForTenant": true
         },
         {
           "path": "/plugins/ai-session-manager/sessions",
           "label": "会话列表",
           "labelKey": "nav.item.pluginSessions",
           "icon": "💬",
-          "super": true,
-          "hideForTenant": true,
           "external": true,
-          "plugin": "ai-session-manager",
-          "tenantScope": "default",
-          "pluginScope": "plugin"
+          "super": true,
+          "platformOps": false,
+          "opsPlatform": false,
+          "tenantOnly": false,
+          "hideForTenant": true
         }
-      ],
-      "tenantScope": "mixed",
-      "pluginScope": "mixed"
+      ]
     },
     {
       "id": "data-ops",
-      "label": "数据运维",
       "labelKey": "nav.group.dataOps",
       "items": [
         {
@@ -262,107 +337,132 @@
           "label": "系统设置",
           "labelKey": "nav.item.settings",
           "icon": "⚙️",
+          "external": false,
           "super": true,
-          "hideForTenant": true,
-          "tenantScope": "default",
-          "pluginScope": "*"
+          "platformOps": false,
+          "opsPlatform": false,
+          "tenantOnly": false,
+          "hideForTenant": true
         },
         {
           "path": "/admin/data-lifecycle",
           "label": "数据生命周期",
           "labelKey": "nav.item.dataLifecycle",
           "icon": "💾",
+          "external": false,
+          "super": false,
           "platformOps": true,
-          "hideForTenant": true,
-          "tenantScope": "default",
-          "pluginScope": "*"
+          "opsPlatform": false,
+          "tenantOnly": false,
+          "hideForTenant": true
         },
         {
           "path": "/format-anomalies",
           "label": "格式异常监控",
           "labelKey": "nav.item.formatAnomalies",
           "icon": "⚠️",
+          "external": false,
           "super": true,
-          "hideForTenant": true,
-          "tenantScope": "default",
-          "pluginScope": "*"
+          "platformOps": false,
+          "opsPlatform": false,
+          "tenantOnly": false,
+          "hideForTenant": true
         },
         {
           "path": "/model-integrity",
           "label": "模型完整性监控",
           "labelKey": "nav.item.modelIntegrity",
           "icon": "🛰️",
+          "external": false,
           "super": true,
-          "hideForTenant": true,
-          "tenantScope": "default",
-          "pluginScope": "*"
+          "platformOps": false,
+          "opsPlatform": false,
+          "tenantOnly": false,
+          "hideForTenant": true
         },
         {
           "path": "/admin/modules",
           "label": "模块管理",
           "labelKey": "nav.item.modules",
           "icon": "🧩",
+          "external": false,
           "super": true,
-          "hideForTenant": true,
-          "tenantScope": "default",
-          "pluginScope": "*"
+          "platformOps": false,
+          "opsPlatform": false,
+          "tenantOnly": false,
+          "hideForTenant": true
         },
         {
           "path": "/admin/prompt-injection",
           "label": "提示词注入检测",
           "labelKey": "nav.item.promptInjection",
           "icon": "🛡️",
+          "external": false,
           "super": true,
-          "hideForTenant": true,
-          "tenantScope": "default",
-          "pluginScope": "*"
+          "platformOps": false,
+          "opsPlatform": false,
+          "tenantOnly": false,
+          "hideForTenant": true
         },
         {
           "path": "/admin/compression",
           "label": "压缩管理",
           "labelKey": "nav.item.compression",
           "icon": "📦",
+          "external": false,
+          "super": false,
           "platformOps": true,
-          "hideForTenant": true,
-          "tenantScope": "default",
-          "pluginScope": "*"
+          "opsPlatform": false,
+          "tenantOnly": false,
+          "hideForTenant": true
         },
         {
           "path": "/admin/modules?module=wechat_bot",
           "label": "微信机器人",
           "labelKey": "nav.item.wechatBot",
           "icon": "💬",
+          "external": false,
           "super": true,
-          "hideForTenant": true,
-          "tenantScope": "default",
-          "pluginScope": "*"
+          "platformOps": false,
+          "opsPlatform": false,
+          "tenantOnly": false,
+          "hideForTenant": true
         },
         {
           "path": "/admin/agents",
           "label": "Agent Registry",
           "labelKey": "nav.item.agents",
           "icon": "🤖",
+          "external": false,
           "super": true,
-          "hideForTenant": true,
-          "tenantScope": "default",
-          "pluginScope": "*"
+          "platformOps": false,
+          "opsPlatform": false,
+          "tenantOnly": false,
+          "hideForTenant": true
         },
         {
           "path": "/customer/update-activate",
           "label": "更新与激活",
           "labelKey": "nav.item.updateActivate",
           "icon": "🔄",
-          "tenantScope": "*",
-          "pluginScope": "*"
+          "external": false,
+          "super": false,
+          "platformOps": false,
+          "opsPlatform": false,
+          "tenantOnly": false,
+          "hideForTenant": false
         },
         {
           "path": "/customer/offline-activation",
           "label": "离线激活",
           "labelKey": "nav.item.licenseOffline",
           "icon": "🔌",
-          "notActivatedOnly": true,
-          "tenantScope": "*",
-          "pluginScope": "*"
+          "external": false,
+          "super": false,
+          "platformOps": false,
+          "opsPlatform": false,
+          "tenantOnly": false,
+          "hideForTenant": false
         },
         {
           "path": "/maintain/tenant/telemetry",
@@ -370,16 +470,16 @@
           "labelKey": "nav.item.telemetryScope",
           "icon": "📡",
           "external": true,
-          "tenantScope": "*",
-          "pluginScope": "*"
+          "super": false,
+          "platformOps": false,
+          "opsPlatform": false,
+          "tenantOnly": false,
+          "hideForTenant": false
         }
-      ],
-      "tenantScope": "mixed",
-      "pluginScope": "*"
+      ]
     },
     {
       "id": "opsplatform",
-      "label": "运维中心",
       "labelKey": "nav.group.opsplatform",
       "items": [
         {
@@ -387,91 +487,89 @@
           "label": "运维总览",
           "labelKey": "nav.item.opsOverview",
           "icon": "🧭",
-          "super": true,
-          "hideForTenant": true,
-          "opsPlatform": true,
           "external": true,
-          "tenantScope": "default",
-          "pluginScope": "*"
+          "super": true,
+          "platformOps": false,
+          "opsPlatform": true,
+          "tenantOnly": false,
+          "hideForTenant": true
         },
         {
           "path": "/maintain/ops/center",
           "label": "中心运维",
           "labelKey": "nav.item.opsCenter",
           "icon": "🖥️",
-          "super": true,
-          "hideForTenant": true,
-          "opsPlatform": true,
           "external": true,
-          "tenantScope": "default",
-          "pluginScope": "*"
+          "super": true,
+          "platformOps": false,
+          "opsPlatform": true,
+          "tenantOnly": false,
+          "hideForTenant": true
         },
         {
           "path": "/maintain/ops/downloads",
           "label": "发布与下载",
           "labelKey": "nav.item.opsDownloads",
           "icon": "📦",
-          "super": true,
-          "hideForTenant": true,
-          "opsPlatform": true,
           "external": true,
-          "tenantScope": "default",
-          "pluginScope": "*"
+          "super": true,
+          "platformOps": false,
+          "opsPlatform": true,
+          "tenantOnly": false,
+          "hideForTenant": true
         },
         {
           "path": "/maintain/ops/licenses",
           "label": "License管理",
           "labelKey": "nav.item.opsLicenses",
           "icon": "🔑",
-          "super": true,
-          "hideForTenant": true,
-          "opsPlatform": true,
           "external": true,
-          "tenantScope": "default",
-          "pluginScope": "*"
+          "super": true,
+          "platformOps": false,
+          "opsPlatform": true,
+          "tenantOnly": false,
+          "hideForTenant": true
         },
         {
           "path": "/maintain/ops/faults",
           "label": "故障管理",
           "labelKey": "nav.item.opsFaults",
           "icon": "⚠️",
-          "super": true,
-          "hideForTenant": true,
-          "opsPlatform": true,
           "external": true,
-          "tenantScope": "default",
-          "pluginScope": "*"
+          "super": true,
+          "platformOps": false,
+          "opsPlatform": true,
+          "tenantOnly": false,
+          "hideForTenant": true
         },
         {
           "path": "/maintain/ops/autoupdate",
           "label": "自动更新",
           "labelKey": "nav.item.opsAutoUpdate",
           "icon": "🚀",
-          "super": true,
-          "hideForTenant": true,
-          "opsPlatform": true,
           "external": true,
-          "tenantScope": "default",
-          "pluginScope": "*"
+          "super": true,
+          "platformOps": false,
+          "opsPlatform": true,
+          "tenantOnly": false,
+          "hideForTenant": true
         },
         {
           "path": "/ops/vibecoding",
           "label": "VibeCoding",
           "labelKey": "nav.item.opsVibeCoding",
           "icon": "💻",
+          "external": false,
           "super": true,
-          "hideForTenant": true,
+          "platformOps": false,
           "opsPlatform": true,
-          "tenantScope": "default",
-          "pluginScope": "*"
+          "tenantOnly": false,
+          "hideForTenant": true
         }
-      ],
-      "tenantScope": "default",
-      "pluginScope": "*"
+      ]
     },
     {
       "id": "guide",
-      "label": "接入指南",
       "labelKey": "nav.group.guide",
       "items": [
         {
@@ -479,16 +577,17 @@
           "label": "接入示例",
           "labelKey": "nav.item.examples",
           "icon": "📝",
-          "tenantScope": "*",
-          "pluginScope": "*"
+          "external": false,
+          "super": false,
+          "platformOps": false,
+          "opsPlatform": false,
+          "tenantOnly": false,
+          "hideForTenant": false
         }
-      ],
-      "tenantScope": "*",
-      "pluginScope": "*"
+      ]
     },
     {
       "id": "chat",
-      "label": "对话",
       "labelKey": "nav.group.chat",
       "items": [
         {
@@ -496,12 +595,14 @@
           "label": "对话",
           "labelKey": "nav.item.chat",
           "icon": "💬",
-          "tenantScope": "*",
-          "pluginScope": "*"
+          "external": false,
+          "super": false,
+          "platformOps": false,
+          "opsPlatform": false,
+          "tenantOnly": false,
+          "hideForTenant": false
         }
-      ],
-      "tenantScope": "*",
-      "pluginScope": "*"
+      ]
     }
   ]
 }
