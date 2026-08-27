@@ -35,6 +35,34 @@ func TestPopularModelsHotSQL_TargetsHotTable(t *testing.T) {
 	if !strings.Contains(popularModelsHotSQL, "rl.tenant_id = $2") {
 		t.Fatalf("popularModelsHotSQL must tenant-filter scoped lookups:\n%s", popularModelsHotSQL)
 	}
+	if !strings.Contains(popularModelsHotSQL, "NOT COALESCE('probe' = ANY(rl.quality_flags), FALSE)") {
+		t.Fatalf("popularModelsHotSQL must exclude probe traffic from popularity:\n%s", popularModelsHotSQL)
+	}
+}
+
+// TestQueryPopularModels_SeparatesFeaturedFromUsageLimit locks the picker
+// contract: policy-selected models (for example minimax-m3) are all returned,
+// while the limit only caps real, non-probe usage suggestions. A shared limit
+// silently hid the current popular models whenever the feature list grew.
+func TestQueryPopularModels_SeparatesFeaturedFromUsageLimit(t *testing.T) {
+	src, err := os.ReadFile("routing.go")
+	if err != nil {
+		t.Fatalf("read routing.go: %v", err)
+	}
+	start := strings.Index(string(src), "func (h *Handler) queryPopularModels(")
+	if start == -1 {
+		t.Fatal("queryPopularModels not found")
+	}
+	body := string(src[start:])
+	if !strings.Contains(body, "The limit applies only to usage-derived models") {
+		t.Fatal("featured models must not share the usage suggestion limit")
+	}
+	if strings.Contains(body, "if len(popular) >= limit") {
+		t.Fatal("queryPopularModels must not truncate featured models with the usage limit")
+	}
+	if strings.Contains(body, "livePopularModels(ctx") {
+		t.Fatal("queryPopularModels must not use live queues because they mix probe traffic")
+	}
 }
 
 // TestRecentlyUsedPopularModels_ReadsZSET verifies the dedicated Redis
