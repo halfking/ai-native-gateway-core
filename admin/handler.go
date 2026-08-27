@@ -1347,6 +1347,10 @@ func readJSON(r *http.Request, v any) error {
 	if r.Body == nil {
 		return nil
 	}
+	// 2026-08-27 P1 fix: Add 2MB size limit to prevent OOM from malicious payloads.
+	// This protects all 82 admin endpoints using readJSON.
+	const maxAdminBodySize = 2 << 20 // 2 MiB
+	r.Body = http.MaxBytesReader(nil, r.Body, maxAdminBodySize)
 	//nolint:errcheck // best-effort close
 	defer r.Body.Close()
 	return json.NewDecoder(r.Body).Decode(v)
