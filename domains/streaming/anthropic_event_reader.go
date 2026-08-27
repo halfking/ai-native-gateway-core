@@ -25,6 +25,10 @@ func readAnthropicSSEEventWithTimeoutRaw(ctx context.Context, reader io.Reader, 
 	readCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	// P1-1 fix (2026-08-28): resultCh MUST remain buffered (size >= 1) to prevent
+	// goroutine leak when timeout occurs before the read completes. Without buffer,
+	// the background goroutine would block forever on the channel send after the
+	// select case has already returned due to timeout.
 	resultCh := make(chan anthropicSSEReadResult, 1)
 	go func() {
 		eventType, data, raw, err := readAnthropicSSEEventRaw(readCtx, reader)

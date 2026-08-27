@@ -404,6 +404,16 @@ func preserveAnthropicSystem(lastBody, newBody []byte) []byte {
 	if !ok || len(system) == 0 || string(system) == "null" {
 		return newBody
 	}
+	
+	// P1-12 fix (2026-08-28): Validate system field is well-formed JSON before
+	// copying it to the new body. Corrupted cache data could otherwise produce
+	// invalid requests that fail at the provider.
+	var systemValidation interface{}
+	if err := json.Unmarshal(system, &systemValidation); err != nil {
+		// system field is not valid JSON; do not copy it
+		return newBody
+	}
+	
 	current["system"] = system
 	out, err := json.Marshal(current)
 	if err != nil {
