@@ -219,7 +219,8 @@ func (p *PolicyPublisher) publishCatchUp(ctx context.Context) error {
 	rows, err := queryer.Query(ctx, `
 		SELECT id, provider_id, COALESCE(concurrency_mode, 'concurrency'),
 		       COALESCE(concurrency_limit, 0), COALESCE(rpm_limit, 0),
-		       COALESCE(tpm_limit, 0), revision
+		       COALESCE(tpm_limit, 0), COALESCE(max_queue_depth, 0),
+		       COALESCE(max_queue_wait_ms, 0), revision
 		FROM public.credentials
 		WHERE revision >= $1
 		ORDER BY revision, id`, last)
@@ -235,7 +236,8 @@ func (p *PolicyPublisher) publishCatchUp(ctx context.Context) error {
 		var revision int64
 		var mode string
 		if err := rows.Scan(&spec.CredentialID, &spec.ProviderID, &mode,
-			&spec.Limit, &spec.RPMLimit, &spec.TPMLimit, &revision); err != nil {
+			&spec.Limit, &spec.RPMLimit, &spec.TPMLimit,
+			&spec.MaxQueueDepth, &spec.MaxQueueWaitMS, &revision); err != nil {
 			return err
 		}
 		spec.Mode = normalizeConcurrencyMode(mode)
