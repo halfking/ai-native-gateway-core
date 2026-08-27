@@ -132,11 +132,14 @@ type CredentialRecovery struct {
 	// fastReprobeQueue path runs, behaviour matches pre-P1-4.
 	// 2026-08-26 P1-4 (落点 D).
 	probeSubmitterImmediate func(credID int)
-	cancel                   context.CancelFunc
-	done                     chan struct{}
+	cancel                  context.CancelFunc
+	done                    chan struct{}
 	// lookbackDone signals the 36h lookback scan loop exited (Stop waits on
 	// both). Constructed together with done.
 	lookbackDone     chan struct{}
+	lifecycleMu      sync.Mutex
+	started          bool
+	stopped          bool
 	tickMu           sync.Mutex
 	tickInterval     time.Duration
 	lookbackInterval time.Duration
@@ -240,7 +243,24 @@ func (r *CredentialRecovery) SetLookbackHotConfig(src LookbackHotConfig) {
 }
 
 func (r *CredentialRecovery) Start(ctx context.Context) {
+	r.lifecycleMu.Lock()
+	if r.started && !r.stopped {
+		r.lifecycleMu.Unlock()
+		return
+	}
+	if r.stopped {
+		r.lifecycleMu.Unlock()
+		return
+	}
+	if r.done == nil {
+		r.done = make(chan struct{})
+	}
+	if r.lookbackDone == nil {
+		r.lookbackDone = make(chan struct{})
+	}
 	ctx, r.cancel = context.WithCancel(ctx)
+	r.started = true
+	r.lifecycleMu.Unlock()
 	go r.run(ctx)
 	go r.runLookbackScan(ctx)
 	slog.Info("credential recovery task started",
@@ -249,8 +269,16 @@ func (r *CredentialRecovery) Start(ctx context.Context) {
 }
 
 func (r *CredentialRecovery) Stop() {
-	if r.cancel != nil {
-		r.cancel()
+	r.lifecycleMu.Lock()
+	if !r.started || r.stopped {
+		r.lifecycleMu.Unlock()
+		return
+	}
+	r.stopped = true
+	cancel := r.cancel
+	r.lifecycleMu.Unlock()
+	if cancel != nil {
+		cancel()
 	}
 	<-r.done
 	if r.lookbackDone != nil {
@@ -301,7 +329,6 @@ func (r *CredentialRecovery) run(ctx context.Context) {
 func (r *CredentialRecovery) recover(ctx context.Context) {
 	timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-
 
 	// 2026-08-23 (hzx-2 audit): record tick duration and per-block recovery
 	// outcomes so on-call engineers can see whether the 30s tick is actually

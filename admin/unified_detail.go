@@ -11,7 +11,6 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/domains/requestdetail"
 )
 
@@ -32,8 +31,12 @@ type bodyFetcher interface {
 	fetchRequestBodies(ctx context.Context, requestID string) (requestBody, responseBody any, err error)
 }
 
+type queryRower interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
 type pgBodyReader struct {
-	db    *pgxpool.Pool
+	db    queryRower
 	fetch bodyFetcher
 }
 
