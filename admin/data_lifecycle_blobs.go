@@ -102,13 +102,13 @@ func (h *Handler) handleDataLifecycleBlobTop(w http.ResponseWriter, r *http.Requ
 			COALESCE(rl.gw_session_id, ''),
 			COALESCE(rl.tenant_id, ''),
 			rl.ts,
-			COALESCE(pg_column_size(COALESCE(rb.request_body, rl.request_body)), 0),
-			COALESCE(pg_column_size(COALESCE(rb.outbound_body, rl.outbound_body)), 0),
+			COALESCE(pg_column_size(rb.request_body), 0),
+			COALESCE(pg_column_size(rb.outbound_body), 0),
 			COALESCE(rl.outbound_model, '')
 		FROM request_logs_with_current_month rl
 		LEFT JOIN request_logs_bodies_with_current_month rb ON rb.request_id = rl.request_id
 		`+where+`
-		ORDER BY (COALESCE(pg_column_size(COALESCE(rb.request_body, rl.request_body)),0) + COALESCE(pg_column_size(COALESCE(rb.outbound_body, rl.outbound_body)),0)) DESC
+		ORDER BY (COALESCE(pg_column_size(rb.request_body),0) + COALESCE(pg_column_size(rb.outbound_body),0)) DESC
 		LIMIT `+strconv.Itoa(limit), args...)
 	if err != nil {
 		slog.Warn("blobs top query failed", "error", err)
@@ -196,8 +196,8 @@ func (h *Handler) handleBlobCleanup(w http.ResponseWriter, r *http.Request, exec
 		argIdx++
 	}
 	if req.LargerThanKB > 0 {
-		where += " AND (pg_column_size(COALESCE(rb.request_body, rl.request_body)) > $" + strconv.Itoa(argIdx) +
-			" * 1024 OR pg_column_size(COALESCE(rb.outbound_body, rl.outbound_body)) > $" + strconv.Itoa(argIdx) + " * 1024)"
+		where += " AND (pg_column_size(rb.request_body) > $" + strconv.Itoa(argIdx) +
+			" * 1024 OR pg_column_size(rb.outbound_body) > $" + strconv.Itoa(argIdx) + " * 1024)"
 		args = append(args, req.LargerThanKB)
 	}
 
@@ -212,9 +212,9 @@ func (h *Handler) handleBlobCleanup(w http.ResponseWriter, r *http.Request, exec
 	var freedBytes int64
 	err := h.db.QueryRow(ctx, `
 		SELECT
-			COUNT(*) FILTER (WHERE COALESCE(rb.request_body, rl.request_body) IS NOT NULL),
-			COUNT(*) FILTER (WHERE COALESCE(rb.outbound_body, rl.outbound_body) IS NOT NULL),
-			COALESCE(SUM(COALESCE(pg_column_size(COALESCE(rb.request_body, rl.request_body)),0) + COALESCE(pg_column_size(COALESCE(rb.outbound_body, rl.outbound_body)),0)), 0)::bigint
+			COUNT(*) FILTER (WHERE rb.request_body IS NOT NULL),
+			COUNT(*) FILTER (WHERE rb.outbound_body IS NOT NULL),
+			COALESCE(SUM(COALESCE(pg_column_size(rb.request_body),0) + COALESCE(pg_column_size(rb.outbound_body),0)), 0)::bigint
 		FROM request_logs_with_current_month rl
 		LEFT JOIN request_logs_bodies_with_current_month rb ON rb.request_id = rl.request_id
 		`+where, args...).Scan(&reqAffected, &outAffected, &freedBytes)
