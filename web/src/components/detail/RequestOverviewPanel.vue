@@ -189,6 +189,12 @@ function clip(text: string, max = 480): string {
         <span class="pill" :class="statusToneClass(requestStatus, 'pill')">{{ fmt(requestStatus) }}</span>
       </div>
       <div class="cell"><span class="lbl">延迟</span><span>{{ fmt(log?.latency_ms ?? um?.latency_ms) }}ms</span></div>
+      <!-- tenant_id: /api/logs/:id 不返回该字段（RequestLogDetail 类型无 tenant_id），
+           仅在 unified meta 中存在（admin/request-detail 端点从 admin session 注入）。
+           直接读 um.tenant_id 即可。 -->
+      <div class="cell"><span class="lbl">Tenant</span><code>{{ fmt(um?.tenant_id) }}</code></div>
+      <!-- success: 两个端点都有；用 ?? 让 log?.success 为 null 时仍能回退到 um。 -->
+      <div class="cell"><span class="lbl">Success</span><span>{{ fmt(log?.success ?? um?.success) }}</span></div>
       <div class="cell"><span class="lbl">客户端模型</span><span>{{ fmt(log?.client_model ?? um?.client_model) }}</span></div>
       <div class="cell"><span class="lbl">出站/规范模型</span><span>{{ fmt(log?.outbound_model || log?.canonical_model) }}</span></div>
       <div class="cell"><span class="lbl">供应商</span><span>{{ fmt(log?.provider_name || log?.provider_code) }}</span></div>

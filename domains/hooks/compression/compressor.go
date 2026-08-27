@@ -277,19 +277,33 @@ func (c *Compressor) ShouldCompressPreRequest(body []byte, contextWindow int) bo
 	return c.est.NeedsCompression(body, contextWindow)
 }
 
-// strategyRegistry returns a Registry 装载 lite/caveman/toolfocused 三个 adapter；
-// 每个 adapter 的 On 字段指向 Compressor 自身的 feature flag。
+// strategyRunner 返回一个常驻 Runner（registry + runner 缓存）。
+// Registry 按当前 feature flags 装配；Runner 注入 compression.NeverWorse
+// 让 RunStrategies 路径的 regression 也走 Prometheus 计数。
 //
 // Phase 1 只读路径（RunStrategies）；不替换 Compressor.Compress 原有 dispatcher 路径。
 // Compressor.RunStrategies → Runner.RunWithBody 走 strategy 包抽象；
 // 现有 main.go + executor 仍调 Compressor.Compress / CompressAfter4xx，行为不变。
-func (c *Compressor) strategyRegistry() *strategy.Registry {
+//
+// 线程：Compressor 单例（main.go 启动期 NewCompressor 一次），按需读 feature
+// flags 重建 registry；不依赖 RWMutex 是因为当前 feature flag 是 init-time
+// 设定；如果未来支持热更新，需要在这里加锁 + invalidation。
+func (c *Compressor) strategyRunner() *strategy.Runner {
 	reg := strategy.NewRegistry()
 	// 注册顺序 = dispatcher 执行顺序（lite → caveman → toolfocused）。
 	reg.MustRegister(&strategy.LiteAdapter{On: c != nil && c.LiteStageEnabled})
 	reg.MustRegister(&strategy.CavemanAdapter{On: c != nil && c.CavemanStageEnabled})
 	reg.MustRegister(&strategy.ToolFocusedAdapter{On: c != nil && c.ToolFocusedStageEnabled})
-	return reg
+	runner := strategy.NewRunner(reg)
+	// 注入 compression.NeverWorse：RunStrategies 路径触发的 regression 会递增
+	// compression_regressed_total{stage="lite"|"caveman"|"toolfocused"} 计数，
+	// 与 Compressor.Compress 路径保持单一监控来源。
+	// 用 wrapper 把 GuardStage 适配成 string（strategy 包不 import compression
+	// 以避免循环引用，所以类型不共享）。
+	runner.SetGuard(func(raw, processed []byte, stage string) ([]byte, bool) {
+		return NeverWorse(raw, processed, GuardStage(stage))
+	})
+	return runner
 }
 
 // RunStrategies 是 Phase 1 新增的策略模式入口。
@@ -303,12 +317,14 @@ func (c *Compressor) strategyRegistry() *strategy.Registry {
 //   - RunStrategies 不写 telemetry / 不读 mode/estimator — 它只跑策略链。
 //   - 调用方（如 executor / 测试）选择走 Compress 还是 RunStrategies。
 //   - Phase 2 决策：是否把 Compress 内部也改为调 RunStrategies。
+//
+// 性能：每次调用在 init 期创建 Registry 一次；后续可缓存到 Compressor 字段
+//（future Phase 2 优化）。
 func (c *Compressor) RunStrategies(ctx context.Context, sel strategy.Selector, body []byte) ([]byte, strategy.RunStats, error) {
 	if c == nil {
 		return body, strategy.RunStats{}, nil
 	}
-	runner := strategy.NewRunner(c.strategyRegistry())
-	return runner.RunWithBody(ctx, sel, body)
+	return c.strategyRunner().RunWithBody(ctx, sel, body)
 }
 
 // ParsePolicySpec 是 strategy.ResolvePolicy 的薄封装，main.go 用。
