@@ -253,3 +253,38 @@ func TestIsToolResultOnly(t *testing.T) {
 		})
 	}
 }
+
+// TestRebuildAnthropicAfterSummary_FallbackFiltersGatewayArtifacts verifies
+// the defensive inconsistent-Retained fallback. A fresh summary belongs in
+// top-level system; messages[] must not reintroduce an old gateway marker or
+// a malformed system-role entry from the fallback tail.
+func TestRebuildAnthropicAfterSummary_FallbackFiltersGatewayArtifacts(t *testing.T) {
+	body := []byte(`{"model":"m","system":"original system","messages":[
+		{"role":"system","content":"misplaced system"},
+		{"role":"user","content":"[smm_v1:deadbeef]\nold summary"},
+		{"role":"assistant","content":"recent assistant"},
+		{"role":"user","content":"recent user"}
+	]}`)
+	phantom := json.RawMessage(`{"role":"user","content":"not present"}`)
+	ret := &Retained{FirstUser: &phantom, FirstUserIndex: 99}
+
+	rebuilt, ok := RebuildAnthropicAfterSummary(body, "fresh summary", ret, 2)
+	if !ok {
+		t.Fatal("fallback rebuild failed")
+	}
+	msgs, err := extractMessages(rebuilt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range msgs {
+		if messageRole(m) == "system" {
+			t.Errorf("fallback reintroduced system message into Anthropic messages[]: %s", m)
+		}
+		if isSummaryMarkerMsg(m) {
+			t.Errorf("fallback reintroduced obsolete gateway marker: %s", m)
+		}
+	}
+	if len(msgs) != 2 {
+		t.Fatalf("fallback should retain only recent ordinary messages, got %d: %s", len(msgs), msgs)
+	}
+}

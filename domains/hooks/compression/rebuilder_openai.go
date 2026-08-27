@@ -178,7 +178,7 @@ func splitSystemAndTail(messages []json.RawMessage, ret *Retained, maxTail int) 
 		// so the rebuilder preserves the conversation, minus messages the
 		// rebuilder re-emits elsewhere (system via SystemMessages, old
 		// summary markers via the fresh C-track summary).
-		return nil, lastN(filterRebuildTail(messages), maxTail)
+		return nil, recentAtomicTail(filterRebuildTail(messages), maxTail)
 	}
 	for i, m := range messages {
 		if i < ret.FirstUserIndex {
@@ -197,7 +197,7 @@ func splitSystemAndTail(messages []json.RawMessage, ret *Retained, maxTail int) 
 	}
 	tailStart := ret.FirstUserIndex + 1
 	if tailStart < len(messages) {
-		tail = lastN(filterRebuildTail(messages[tailStart:]), maxTail)
+		tail = recentAtomicTail(filterRebuildTail(messages[tailStart:]), maxTail)
 	}
 	return head, tail
 }
@@ -222,6 +222,57 @@ func filterRebuildTail(messages []json.RawMessage) []json.RawMessage {
 		out = append(out, m)
 	}
 	return out
+}
+
+// recentAtomicTail returns the last n messages, extending its left boundary
+// when it would otherwise start inside a tool-call round. An OpenAI tool
+// result is only valid after the assistant message that declared its
+// tool_call_id; emitting a suffix that begins with role=tool creates a
+// malformed request that upstreams reject.
+//
+// The normal tail is a suffix, so every result after a retained assistant
+// tool-call anchor is already included. Only the left boundary needs repair.
+func recentAtomicTail(messages []json.RawMessage, n int) []json.RawMessage {
+	if n <= 0 || len(messages) == 0 {
+		return nil
+	}
+	start := len(messages) - n
+	if start <= 0 {
+		return messages
+	}
+
+	// Collect the consecutive tool results at the nominal left boundary. If
+	// that boundary is not inside a tool-result run, a regular suffix is safe.
+	needed := make(map[string]bool)
+	for i := start; i < len(messages) && messageRole(messages[i]) == "tool"; i++ {
+		if id := toolCallIDOf(messages[i]); id != "" {
+			needed[id] = true
+		}
+	}
+	if len(needed) == 0 {
+		return messages[start:]
+	}
+
+	// Walk back across any tool results omitted immediately before start, then
+	// include the preceding assistant anchor iff it declares one of the
+	// retained result IDs. If the source sequence is already malformed, keep
+	// the nominal suffix rather than guessing an unrelated anchor.
+	anchor := start - 1
+	for anchor >= 0 && messageRole(messages[anchor]) == "tool" {
+		if id := toolCallIDOf(messages[anchor]); id != "" {
+			needed[id] = true
+		}
+		anchor--
+	}
+	if anchor < 0 || messageRole(messages[anchor]) != "assistant" {
+		return messages[start:]
+	}
+	for _, id := range extractToolCallIDs(messages[anchor]) {
+		if needed[id] {
+			return messages[anchor:]
+		}
+	}
+	return messages[start:]
 }
 
 // lastN returns the last n elements of s. If len(s) <= n, returns s

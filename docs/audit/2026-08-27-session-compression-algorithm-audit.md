@@ -113,3 +113,27 @@ go build ./... && go vet ./domains/hooks/compression/...  → 全绿
 - 规范轴：本任务文件已 gofmt（修掉 2 处空白行）；`session_cache_coverage_test.go` 的历史脏格式非本任务产物，不处理；commit 符合 Conventional Commits；`scan-secrets.sh --mode=strict --paths=domains/hooks/compression` 0 findings。
 - 验证：`go test ./... -count=1` 全仓 232 包 0 FAIL；`go vet ./domains/hooks/compression/...` 干净；`go build ./...` 通过。
 - 规格轴指出 `case ""` 把无 type 字段的块纳入指纹属超出 §6.2 列举范围——**故意保留**：OpenAI 实际存在无 type 的 text 块，纳入比忽略更保守，且有测试覆盖。
+
+## 8. 第四轮：1819139f9 提交后审计（2026-08-27 深夜，同日追加）
+
+对 `1819139f9` 做规范轴与规格轴复核，并对 OpenAI/Anthropic 重建的工具调用边界做人工探针测试。发现 3 项问题，全部修复：
+
+| # | 发现 | 来源 | 严重度 | 修复 |
+|---|---|---|---|---|
+| 1 | `RebuildOpenAIAfterSummary` 的 tail 用简单 `lastN`。当左边界落在 `role=tool` result 时，会输出 `tool_call_id` 却裁掉对应 assistant `tool_calls` anchor，上游会拒绝该孤立工具结果 | 人工探针 + 回归测试 | P1 | 新增 `recentAtomicTail`：保留最近 N 条；若左边界位于连续 tool results 内，向前扩展到声明相关 call ID 的 assistant anchor。覆盖单 result 和同一 anchor 多 result |
+| 2 | 上一轮 `filterRebuildTail` 只接入 OpenAI；`RebuildAnthropicAfterSummary` 的 FirstUser 不一致防御 fallback 仍直接 `lastN(probe.Messages)`，会把旧 marker/system 带回 messages[] | 规格轴子代理 | P1 | Anthropic fallback 复用 `filterRebuildTail` + `recentAtomicTail`；新增 `TestRebuildAnthropicAfterSummary_FallbackFiltersGatewayArtifacts` |
+| 3 | `stripThinkingBlocks` 用 `len(keys) <= 2` 判断全 thinking 消息是否只有 role/content，字段数量不是语义判断：有效扩展字段可能误删，空扩展字段又可能留下空消息 | 规范轴子代理 | P2 | 新增 `hasMeaningfulMessagePayload`：除 role/content 外，只有非空、非 null、非 `[]`/`{}`/`""` 的 JSON 字段才算载荷；覆盖有效扩展字段保留和空扩展字段丢弃 |
+
+本轮新增回归：OpenAI 单/多 tool-result 回合的 tail 原子性、Anthropic 防御 fallback 的 marker/system 过滤、全 thinking 消息的有效与空扩展字段。上一轮 §7 中“两个 tail 构造点都过滤”的声称不成立（Anthropic fallback 漏接），已在本节修正；OpenAI 与 Anthropic 重建均使用原子工具尾部选择。
+
+验证结果：
+
+```
+go test ./domains/hooks/compression/... -count=1  → 全绿
+go test ./... -count=1                             → 全绿（235 个包，0 FAIL）
+go vet ./...                                        → 全绿
+go build ./...                                      → 全绿
+bash scripts/scan-secrets.sh --mode=strict --paths=domains/hooks/compression → 0 findings
+```
+
+对 `docs/audit` 目录做全目录扫描时仍有 3 个既有 `INTERNAL_DOMAIN` WARN，命中 `2026-08-22-admin-registry-154-deploy-audit.md` 与 `llm-kxpms-nginx-route-gap-2026-08-21.md`；本轮新增/修改的审计内容未产生新的敏感信息命中。

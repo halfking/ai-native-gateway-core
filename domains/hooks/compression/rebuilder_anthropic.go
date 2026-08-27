@@ -156,10 +156,13 @@ func RebuildAnthropicAfterSummary(body []byte, summary string, ret *Retained, ke
 	synthRet := &Retained{FirstUser: ret.FirstUser, FirstUserIndex: ret.FirstUserIndex}
 	headMsgs, tailMsgs := splitSystemAndTail(probe.Messages, synthRet, keepRecentPairs*2)
 	if len(headMsgs) == 0 {
-		// No B-track first user found at expected index. Fall back: keep
-		// original messages, just inject summary into system field.
+		// No B-track first user found at expected index. Fall back to an
+		// eligible recent tail: old gateway markers are superseded by the
+		// fresh top-level C-track summary, and system messages do not belong
+		// in Anthropic messages[]. Keep tool rounds atomic for the same
+		// reason as the normal OpenAI rebuild path.
 		headMsgs = nil
-		tailMsgs = lastN(probe.Messages, keepRecentPairs*2)
+		tailMsgs = recentAtomicTail(filterRebuildTail(probe.Messages), keepRecentPairs*2)
 	}
 
 	// Rebuild messages array: preserve reminders and first user verbatim, then
