@@ -218,6 +218,14 @@ type QueuedRequest struct {
 	// cancellation races with the FIFO drainer.
 	totalQueueDone atomic.Bool
 
+	// V6-W1.7 cluster queue-backend admission tokens. Stored by the owner
+	// goroutine BEFORE the queue handoff; released via take-once swap at the
+	// leave points (drainers / cancel / complete sweep), so racing releasers
+	// return exactly one token each.
+	clusterTotal atomic.Pointer[Admission]
+	clusterModel atomic.Pointer[Admission]
+	clusterCred  atomic.Pointer[Admission]
+
 	// abandoned is set by Submit when the caller's ctx expired before the
 	// pipeline finished. complete() then drops the result (no reader left).
 	abandoned atomic.Bool

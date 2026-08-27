@@ -225,6 +225,21 @@ func TestListColsReferenceClientPerceptionColumns(t *testing.T) {
 	}
 }
 
+func TestRequestLogDetailColumnsStayCompatibleWithBodySplit(t *testing.T) {
+	for _, droppedBodyColumn := range []string{
+		"rl.request_body",
+		"rl.response_body",
+		"rl.outbound_body",
+	} {
+		if strings.Contains(requestLogsDetailCols, droppedBodyColumn) {
+			t.Errorf("requestLogsDetailCols references %q after body storage split", droppedBodyColumn)
+		}
+	}
+	if !strings.Contains(requestLogsDetailCols, "rl.outbound_msg_hashes") {
+		t.Error("requestLogsDetailCols must preserve outbound message hashes")
+	}
+}
+
 // TestRequestLogAggregateJSONContract locks the wire contract of the
 // /api/logs response.aggregate field so the /request-logs UI keeps a
 // stable shape. Adding a new sum column should bump this list in two
@@ -311,11 +326,11 @@ func TestListLogsResponseShape(t *testing.T) {
 func TestShouldRunByModel(t *testing.T) {
 	maxWindow := 32 * 24 * time.Hour
 	tests := []struct {
-		name               string
+		name                 string
 		modelFilterSpecified bool
-		count              int
-		timeSpan           time.Duration
-		want               bool
+		count                int
+		timeSpan             time.Duration
+		want                 bool
 	}{
 		{"empty window, no filter, has rows", false, 5, time.Hour, true},
 		{"model filter set blocks aggregate", true, 5, time.Hour, false},

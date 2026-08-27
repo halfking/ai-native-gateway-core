@@ -1395,6 +1395,22 @@ func (h *Handler) handleRoutingCandidateBindingReorder(w http.ResponseWriter, r 
 		writeError(w, http.StatusBadRequest, "expected_revision is required")
 		return
 	}
+	// Restore the per-item raw_model contract from bc788bfac (atomic
+	// complete-set reorder): an item may omit raw_model (inherits the
+	// top-level scope) but must not contradict it — that silently writes
+	// priorities into a different model's binding set.
+	for i := range req.Items {
+		itemRaw := strings.TrimSpace(req.Items[i].RawModel)
+		switch {
+		case itemRaw == "":
+			req.Items[i].RawModel = req.RawModel
+		case req.RawModel != "" && !strings.EqualFold(itemRaw, req.RawModel):
+			writeError(w, http.StatusBadRequest, "raw_model mismatch between request and item")
+			return
+		default:
+			req.Items[i].RawModel = itemRaw
+		}
+	}
 	if validationErr := validateRoutingCandidateReorder(req); validationErr != "" {
 		writeError(w, http.StatusBadRequest, validationErr)
 		return
