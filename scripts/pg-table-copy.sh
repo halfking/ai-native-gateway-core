@@ -101,13 +101,13 @@ TGT_DB="$PG_DB"
 # ── Local docker target detection ─────────────────────────────────────────
 # On macOS the host may run a Homebrew PostgreSQL on localhost:5432 that shadows
 # the docker container's published port. When the target is the local docker
-# container (env file sets DOCKER_HOST="local" + DOCKER_PG_CONTAINER), route all
-# target access through `docker exec -i` instead of `psql -h localhost`.
+# container (TARGET_TYPE=docker + DOCKER_PG_CONTAINER), route all target
+# access through `docker exec -i` instead of `psql -h localhost`.
 # This mirrors sync-from-252.sh and avoids hitting the wrong instance
 # (see skill pg-sync-252-to-env Q0).
 TGT_IS_LOCAL_DOCKER=false
 TGT_CONTAINER="${DOCKER_PG_CONTAINER:-}"
-if [[ "${DOCKER_HOST:-}" == "local" && -n "$TGT_CONTAINER" ]]; then
+if [[ "${TARGET_TYPE:-}" == "docker" && -n "$TGT_CONTAINER" ]]; then
   TGT_IS_LOCAL_DOCKER=true
   # The target env file may inherit a stale DOCKER_HOST from a previously sourced
   # remote config (e.g. env-252.sh sets DOCKER_HOST to an SSH endpoint). Reset it

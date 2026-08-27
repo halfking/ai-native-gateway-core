@@ -90,7 +90,8 @@ import (
 	ursmv2api "github.com/kaixuan/llm-gateway-go/domains/ursm/v2/api" //nolint:depguard // URSM v2 ModeOff constant (Task 8)
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/bootstrap"
 	ursmcache "github.com/kaixuan/llm-gateway-go/domains/ursm/v2/cache"
-	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/persist" //nolint:depguard // URSM v2 persist writer
+	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/persist"         //nolint:depguard // URSM v2 persist writer
+	ursmstore "github.com/kaixuan/llm-gateway-go/domains/ursm/v2/store" //nolint:depguard // Lua script preload (2026-08-27 P1)
 	"github.com/kaixuan/llm-gateway-go/durable"
 	"github.com/kaixuan/llm-gateway-go/eventbus"
 	"github.com/kaixuan/llm-gateway-go/fault"
@@ -658,22 +659,57 @@ func main() {
 			sessionMgr = session.NewManager(redisClient, sessionTTL)
 			chatHandler.SetSessionGetter(sessionMgr)
 			redisClientForCache = redisClient
+			// P1-15 fix (2026-08-28): Configure connection pool for fpSlotRedis
 			fpSlotRedis = redis.NewClient(&redis.Options{
-				Addr:     cfg.RedisAddr,
-				Password: cfg.RedisPassword,
-				DB:       cfg.RedisDB,
+				Addr:            cfg.RedisAddr,
+				Password:        cfg.RedisPassword,
+				DB:              cfg.RedisDB,
+				PoolSize:        100,
+				MinIdleConns:    10,
+				ConnMaxIdleTime: 5 * time.Minute,
+				PoolTimeout:     2 * time.Second,
 			})
 			pendingStore = pending.NewStore(fpSlotRedis, pendingTTL)
 			lastSystemSession = session.NewLastSystemSessionIndex(redisClient)
 			sessionPref = session.NewSessionPreference(redisClient)
 			slog.Info("session manager enabled", "redis", cfg.RedisAddr, "ttl_hours", cfg.SessionTTLHours)
 
+			// ── Redis Lua 脚本预热 (2026-08-27 P1, Redis 审计) ──────────
+			// Redis commandstats 显示 EVALSHA 失败率 3.4% (1184/34469)：
+			// SCRIPT FLUSH / Redis 重启后脚本缓存失效，首次调用回退 EVAL
+			// 需传输完整脚本源码 (record_request.lua 达 11,469 字节)。
+			// 启动时 SCRIPT LOAD 预热，让首次请求即命中 SHA 路径。
+			// 非致命：失败时 go-redis Script.Run 仍会在 NOSCRIPT 时自动
+			// 重新上传，只是预热优化未生效 (gauge=0 可观测)。
+			preloadCtx, preloadCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			if _, err := ursmstore.PreloadScripts(preloadCtx, redisClient.Client()); err != nil {
+				slog.Warn("redis: ursm lua script preload failed (will EVAL-fallback lazily)", "error", err)
+				metrics.RedisLuaScriptPreloaded.WithLabelValues("ursm").Set(metrics.RedisLuaScriptPreloadedFailed)
+			} else {
+				metrics.RedisLuaScriptPreloaded.WithLabelValues("ursm").Set(metrics.RedisLuaScriptPreloadedOK)
+			}
+			preloadCancel()
+			for name, size := range ursmstore.ScriptSizes() {
+				metrics.RedisLuaScriptSizeBytes.WithLabelValues(name).Set(float64(size))
+			}
+
 			// Update health handler with Redis connection (2026-07-08)
 			healthHandler.SetRedis(redisClient)
 		} else {
+			// Redis 配了 addr 但 ping 失败：和未配置区分开，preload=0
+			// (Redis 可达但预加载失败) 而非 -1 (未配置 sentinel)。
+			metrics.RedisLuaScriptPreloaded.WithLabelValues("ursm").Set(metrics.RedisLuaScriptPreloadedFailed)
 			slog.Warn("session manager: redis ping failed", "error", err)
 		}
 	} else {
+		// Redis 完全未配置：使用 -1 作为 sentinel 让 Prometheus query
+		// 能区分"未启用"和"启用但预加载失败" (后者 = 0)。
+		// 脚本体积仍设上 — ScriptSizes() 是静态的，运维可据此评估
+		// 启用 Redis 后的潜在带宽成本。
+		metrics.RedisLuaScriptPreloaded.WithLabelValues("ursm").Set(metrics.RedisLuaScriptPreloadedDisabled)
+		for name, size := range ursmstore.ScriptSizes() {
+			metrics.RedisLuaScriptSizeBytes.WithLabelValues(name).Set(float64(size))
+		}
 		slog.Warn("session manager disabled (no LLM_GATEWAY_REDIS_ADDR)")
 	}
 
@@ -1997,6 +2033,9 @@ func main() {
 			fwd.emit(entry)
 		})
 		slog.Info("telemetry onEmitted forwarder wired → live stream SSE hub (pre-DB in_progress projection) + request detail capture")
+		// 阶段二: persisted → 最终状态补偿。经同一转发器 FIFO 发布(顺序保证
+		// 见上), 回调在 telemetry worker 上仍只做非阻塞投递 —— 比 旧直发
+		// Publish 回调更轻, 不会拖慢 telemetry 落库 worker。
 		telemetryClient.AddOnRequestLogPersisted(fwd.persist)
 		telemetryClient.AddOnRequestLogPersisted(requestdetail.ClearAfterPersist)
 		slog.Info("telemetry onPersisted wired → live stream SSE hub via forwarder FIFO (post-commit compensation) + request detail clear")
@@ -2452,6 +2491,22 @@ func main() {
 			slog.Info("attachment download/list handler wired",
 				"dir", attachmentStorage.BaseDir())
 		}
+
+		// 2026-08-25: in-flight request detail content store (memory meta +
+		// per-request_id local files). Cleared after telemetry DB persist
+		// (see onEmitted/onPersisted wiring near live stream hub).
+		detailDir := strings.TrimSpace(os.Getenv("LLM_GATEWAY_REQUEST_DETAIL_DIR"))
+		if detailDir == "" {
+			detailDir = filepath.Join(os.TempDir(), "llmgw-request-detail")
+		}
+		if detailStore, err := requestdetail.NewStore(detailDir); err != nil {
+			slog.Warn("request detail content store disabled", "dir", detailDir, "error", err)
+		} else {
+			requestdetail.SetGlobal(detailStore)
+			adminHandler.SetRequestDetailStore(detailStore)
+			slog.Info("request detail content store wired", "dir", detailDir)
+		}
+
 		formatAnomalyRecorder := streaming.NewFormatAnomalyRecorderFromPool(dbConn.Pool())
 		chatHandler.SetFormatAnomalyRecorder(formatAnomalyRecorder)
 		if requestLogger != nil {

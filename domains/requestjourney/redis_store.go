@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	redissafe "github.com/kaixuan/llm-gateway-go/internal/redis"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -89,7 +90,9 @@ func (s *RedisStore) RecentIngress(ctx context.Context) ([]IngressSnapshot, erro
 	if err != nil {
 		return nil, err
 	}
-	items, err := s.client.HGetAll(ctx, redisIngressItemsKey()).Result()
+	// P1-14 fix (2026-08-28): Use SafeHGetAll to prevent WRONGTYPE errors
+	// Cast to redis.Cmdable since redisJourneyClient embeds the necessary methods
+	items, err := redissafe.SafeHGetAll(ctx, s.client.(redis.Cmdable), redisIngressItemsKey())
 	if err != nil {
 		return nil, err
 	}
@@ -169,7 +172,8 @@ func (s *RedisStore) Detail(ctx context.Context, tenantID, requestID string) (*R
 	if s == nil || s.client == nil {
 		return nil, errors.New("request journey Redis is unavailable")
 	}
-	values, err := s.client.HGetAll(ctx, redisDetailKey(tenantID, requestID)).Result()
+	// P1-14 fix (2026-08-28): Use SafeHGetAll to prevent WRONGTYPE errors
+	values, err := redissafe.SafeHGetAll(ctx, s.client.(redis.Cmdable), redisDetailKey(tenantID, requestID))
 	if err != nil {
 		return nil, err
 	}

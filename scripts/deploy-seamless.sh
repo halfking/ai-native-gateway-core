@@ -99,6 +99,13 @@ fi
 deploy_cleanup() {
   local status=$?
   trap - EXIT INT TERM
+  # 2026-08-27: 升级页的清理由成功验证/成功回滚路径负责。
+  # 如果新版本验证失败且回滚也失败，保留 marker，避免未确认版本继续
+  # 接收真实请求；如果启用 marker 后尚未开始切换，则旧服务仍在运行，
+  # 可以安全撤掉页面，避免一次性预检失败留下陈旧页面。
+  if [[ "${UPGRADE_BANNER_ACTIVE:-0}" == 1 && "${UPGRADE_SWITCH_STARTED:-0}" != 1 && -n "${SSH_CMD:-}" ]]; then
+    upgrade_hide_all >/dev/null 2>&1 || true
+  fi
   if [[ "${DEPLOY_REMOTE_LOCK_HELD:-0}" == 1 ]]; then
     lock_release_remote remote_ssh "$DEPLOY_REMOTE_LOCK_PATH" || true
   fi
@@ -155,6 +162,39 @@ remote_ssh_pipe() {
   ssh_run_pipe "$TARGET" "$1"
 }
 SSH_CMD="remote_ssh"
+
+# 154 的公网 HTTPS 入口在 252 上终止 TLS 并代理到 154:8781。
+# 仅 154 部署需要同步保护 252 的公网 vhost；245 有自己的公网 vhost。
+public_252_ssh() {
+  local script=${1:-}
+  local key=${SSH_KEY_252:-${HOME}/.ssh/id_ed25519}
+  [[ -f "$key" ]] || { err "missing SSH key for public 252 ingress: $key"; return 1; }
+  ssh -i "$key" -p "$SSH_PORT" \
+    -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+    root@115.29.212.252 "$script"
+}
+
+upgrade_show_all() {
+  local version=$1
+  host_show_upgrade_banner "$SSH_CMD" "$TARGET" "$version" || return 1
+  if [[ "$TARGET" == "154" ]]; then
+    if ! host_show_upgrade_banner public_252_ssh "$TARGET" "$version" \
+        /opt/llm-gateway-go /var/www/llm-gateway-maintenance; then
+      upgrade_hide_all >/dev/null 2>&1 || true
+      return 1
+    fi
+  fi
+}
+
+upgrade_hide_all() {
+  local rc=0
+  if [[ "$TARGET" == "154" ]]; then
+    host_hide_upgrade_banner public_252_ssh "$TARGET" \
+      /opt/llm-gateway-go /var/www/llm-gateway-maintenance || rc=1
+  fi
+  host_hide_upgrade_banner "$SSH_CMD" "$TARGET" || rc=1
+  return "$rc"
+}
 
 if [[ "$ACTION" == deploy || "$ACTION" == rollback ]]; then
   lock_acquire_remote remote_ssh_pipe "$TARGET" "$DEPLOY_REMOTE_LOCK_PATH" || exit $?
@@ -237,6 +277,14 @@ _seamless_auto_rollback() {
       && _verify_running_release "$prev" \
       && deploy_preflight_pg_from_remote_env "$SSH_CMD" "$(_env_file_for_target)"; then
       ok "已回滚到 $prev (healthz + running release + PG OK)"
+      if [[ "${UPGRADE_BANNER_ACTIVE:-0}" == 1 ]]; then
+        if upgrade_hide_all >/dev/null 2>&1; then
+          UPGRADE_BANNER_ACTIVE=0
+        else
+          warn "回滚成功但升级静态页撤掉失败，保留 marker 保护流量"
+          return 1
+        fi
+      fi
       return 0
     fi
     err "回滚后 healthz/DB 仍失败!"
@@ -471,6 +519,16 @@ do_deploy() {
   log "[8/9] 原子符号链接切换 + restart"
   local switch_start switch_end switch_elapsed
   switch_start=$(date +%s)
+  # 在 stop 前先让 nginx 接住全部请求。marker 会一直保留到 [9.x]
+  # 的所有业务门禁通过，避免只通过 healthz 就提前恢复真实首页。
+  # Mark the lifecycle active before the remote write so an interrupt during
+  # enablement is still handled by deploy_cleanup.
+  UPGRADE_BANNER_ACTIVE=1
+  if ! upgrade_show_all "$version"; then
+    err "升级静态页启用失败，中止部署（避免在停机期间暴露 502）"
+    exit 1
+  fi
+  UPGRADE_SWITCH_STARTED=1
   if ! host_atomic_switch "$SSH_CMD" "$TARGET" "$version" 2>&1 | sed 's/^/    /'; then
     _seamless_auto_rollback "原子切换或 restart 失败" "$version" || true
     exit 1
@@ -523,6 +581,14 @@ do_deploy() {
     exit 1
   fi
   ok "healthz + DB + running release 通过，标记 verified"
+
+  # 只有全部健康、nginx、DB、登录及 release identity 门禁通过后，
+  # 才删除 marker，让 nginx 把真实网站重新接回。
+  if ! upgrade_hide_all; then
+    err "升级静态页撤掉失败，保留 marker 以避免暴露未验证服务"
+    exit 1
+  fi
+  UPGRADE_BANNER_ACTIVE=0
 
   # 9.6 安装日志轮转配置 (按 systemd unit 模式自动分支)
   # 必做：服务已 healthz OK，再装轮转即便失败也不影响 deploy。
@@ -634,6 +700,13 @@ do_rollback() {
   fi
   ok "回滚目标: $target_version"
 
+  log "启用升级静态页..."
+  UPGRADE_BANNER_ACTIVE=1
+  if ! upgrade_show_all "$target_version"; then
+    err "升级静态页启用失败，中止回滚"
+    exit 1
+  fi
+  UPGRADE_SWITCH_STARTED=1
   log "原子切换 + restart..."
   if ! host_atomic_switch "$SSH_CMD" "$TARGET" "$target_version" 2>&1 | sed 's/^/    /'; then
     err "回滚切换或 restart 失败"
@@ -643,6 +716,12 @@ do_rollback() {
     && _verify_running_release "$target_version" \
     && deploy_preflight_pg_from_remote_env "$SSH_CMD" "$(_env_file_for_target)"; then
     ok "回滚完成 → $target_version (healthz + running release + PG OK)"
+    if upgrade_hide_all >/dev/null 2>&1; then
+      UPGRADE_BANNER_ACTIVE=0
+    else
+      warn "回滚成功但升级静态页撤掉失败，保留 marker 保护流量"
+      exit 1
+    fi
     $SSH_CMD "curl -fsS '$HEALTH_URL' >/dev/null && echo '  healthz OK'" 2>/dev/null || true
   else
     err "回滚后 healthz/DB 失败! 手动检查"
