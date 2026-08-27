@@ -1,6 +1,7 @@
 package jsonbody
 
 import (
+	"bytes"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -197,5 +198,105 @@ func TestReadRequiredWithLimit_CustomCap(t *testing.T) {
 	// We expect the helper to accept the body (it's not over 100 bytes).
 	if !ok {
 		t.Fatalf("under-cap body must succeed: %s", w.Body.String())
+	}
+}
+
+// ─── 2026-08-27 audit fix: compatibility behaviours ───────────────
+
+func TestReadOptional_BOMBodyAccepted(t *testing.T) {
+	// Windows tooling and several SDKs prepend a UTF-8 BOM. Go's
+	// encoding/json rejects it outright; the audit fix strips exactly
+	// one leading BOM so those senders keep working.
+	body := append([]byte{0xEF, 0xBB, 0xBF}, []byte(`{"limit":7}`)...)
+	r := httptest.NewRequest(http.MethodPost, "/x", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+
+	var dst struct {
+		Limit int `json:"limit"`
+	}
+	ok, err := ReadOptional(w, r, &dst)
+	if !ok || err != nil {
+		t.Fatalf("BOM-prefixed body must succeed: ok=%v err=%v", ok, err)
+	}
+	if dst.Limit != 7 {
+		t.Fatalf("dst not populated through BOM: %+v", dst)
+	}
+}
+
+func TestReadRequired_BOMBodyAccepted(t *testing.T) {
+	body := append([]byte{0xEF, 0xBB, 0xBF}, []byte(`{"a":3}`)...)
+	r := httptest.NewRequest(http.MethodPost, "/x", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+
+	var dst struct {
+		A int `json:"a"`
+	}
+	ok, err := ReadRequired(w, r, &dst)
+	if !ok || err != nil {
+		t.Fatalf("BOM-prefixed required body must succeed: ok=%v err=%v", ok, err)
+	}
+	if dst.A != 3 {
+		t.Fatalf("dst not populated: %+v", dst)
+	}
+}
+
+func TestReadRequired_NullBodyRejectedAsEmpty(t *testing.T) {
+	// A literal `null` decodes "successfully" into a zero-valued
+	// struct, which downstream code mistakes for a real empty payload.
+	// Treat it as no-body for required endpoints.
+	r := httptest.NewRequest(http.MethodPost, "/x", strings.NewReader(`null`))
+	w := httptest.NewRecorder()
+
+	var dst struct{ A int }
+	ok, err := ReadRequired(w, r, &dst)
+	if ok {
+		t.Fatalf("null body must be rejected on required endpoints")
+	}
+	if !IsEmptyBody(err) {
+		t.Fatalf("err must wrap ErrEmptyBody, got %v", err)
+	}
+}
+
+func TestReadOptional_NullBodyTreatedAsEmpty(t *testing.T) {
+	// Optional endpoints: `null` carries no data, so proceed with the
+	// zero value — same as an empty body.
+	r := httptest.NewRequest(http.MethodPost, "/x", strings.NewReader(`null`))
+	w := httptest.NewRecorder()
+
+	var dst struct{ A int }
+	ok, err := ReadOptional(w, r, &dst)
+	if !ok || err != nil {
+		t.Fatalf("null body must be accepted on optional endpoints: ok=%v err=%v", ok, err)
+	}
+	if dst.A != 0 {
+		t.Fatalf("dst must stay zero-valued, got %+v", dst)
+	}
+}
+
+func TestReadOptional_WhitespaceOnlyBodyAccepted(t *testing.T) {
+	r := httptest.NewRequest(http.MethodPost, "/x", strings.NewReader("  \n\t  "))
+	w := httptest.NewRecorder()
+
+	var dst struct{ A int }
+	ok, err := ReadOptional(w, r, &dst)
+	if !ok || err != nil {
+		t.Fatalf("whitespace-only body must be accepted: ok=%v err=%v", ok, err)
+	}
+}
+
+func TestDecodeBody_TrailingStillRejected(t *testing.T) {
+	// Compatibility must not weaken the strict single-value contract:
+	// two concatenated documents stay rejected even after BOM
+	// handling was added.
+	err := DecodeBody([]byte(`{"a":1}{"b":2}`), &struct{ A int }{})
+	if err == nil {
+		t.Fatalf("trailing data must still be rejected")
+	}
+}
+
+func TestDecodeBody_NullSentinel(t *testing.T) {
+	err := DecodeBody([]byte(`  null  `), &struct{}{})
+	if !IsEmptyBody(err) {
+		t.Fatalf("DecodeBody(null) must return ErrEmptyBody, got %v", err)
 	}
 }

@@ -51,6 +51,10 @@ type DingTalkCallbackRequest struct {
 	TimeStamp int64 `json:"TimeStamp"`
 
 	// EventID 是 P0-2 强制要求的事件唯一 ID；缺失时返 400 并写 `dingtalk.missing_event_id` 日志。
+	//
+	// 2026-08-27 (audit fix): 钉钉开放平台事件订阅实际下发的是驼峰
+	// `eventId`，而我们自己的通知模块历史版本用 snake_case
+	// `event_id`。两种 key 都接受 —— 解析时通过 aliasEventID 兜底。
 	EventID string `json:"event_id"`
 
 	// Approval result data
@@ -59,6 +63,30 @@ type DingTalkCallbackRequest struct {
 	UserID     string `json:"user_id"`
 	Result     string `json:"result"` // "agree" or "refuse"
 	Comment    string `json:"comment"`
+}
+
+// UnmarshalJSON accepts both `event_id` and `eventId` spellings for the
+// event identifier (2026-08-27 audit fix for sender compatibility).
+func (req *DingTalkCallbackRequest) UnmarshalJSON(data []byte) error {
+	// 先用默认行为解出 snake_case 字段。
+	type plain DingTalkCallbackRequest
+	var p plain
+	if err := json.Unmarshal(data, &p); err != nil {
+		return err
+	}
+	*req = DingTalkCallbackRequest(p)
+	if req.EventID != "" {
+		return nil
+	}
+	// Fallback: look for the camelCase `eventId` that DingTalk's event
+	// subscription actually emits.
+	var alias struct {
+		EventID string `json:"eventId"`
+	}
+	if err := json.Unmarshal(data, &alias); err == nil && alias.EventID != "" {
+		req.EventID = alias.EventID
+	}
+	return nil
 }
 
 // DingTalkCallbackResponse represents the response to DingTalk.
@@ -179,8 +207,14 @@ func bodyHMAC(secret string, body []byte) string {
 
 // verifySignature verifies the DingTalk callback signature.
 //
-// P0-2 修复：HMAC 校验材料现在包含完整请求体（timestamp + "\n" + secret + "\n" + body）；
-// 签名比较改用 hmac.Equal（常量时间，避免侧信道时序攻击）。
+// 2026-08-27 (audit fix — 向后兼容): P0-2 changed the HMAC material to
+// `timestamp + "\n" + secret + "\n" + body`, which breaks every sender
+// still computing the DingTalk-official robot signature
+// `HMAC-SHA256(secret, timestamp + "\n" + secret)` (no body). We now
+// accept BOTH: the new body-bound scheme first, then the legacy
+// scheme as a fallback so existing integrations keep working during
+// the migration window. Comparison uses hmac.Equal (constant time)
+// for both.
 func (h *DingTalkCallbackHandler) verifySignature(r *http.Request, body []byte) bool {
 	// Get signature parameters from query string
 	timestamp := r.URL.Query().Get("timestamp")
@@ -205,16 +239,23 @@ func (h *DingTalkCallbackHandler) verifySignature(r *http.Request, body []byte) 
 		return false
 	}
 
-	// Calculate expected signature: HMAC-SHA256(secret, timestamp + "\n" + secret + "\n" + body).
-	// 注意：P0-2 前只用了 timestamp + "\n" + secret；现在要求把 body 也纳入 HMAC 输入，
-	// 让篡改 body 的请求无法复用旧签名。
-	stringToSign := timestamp + "\n" + h.appSecret + "\n" + string(body)
-	mac := hmac.New(sha256.New, []byte(h.appSecret))
-	mac.Write([]byte(stringToSign))
-	expectedSign := base64.StdEncoding.EncodeToString(mac.Sum(nil))
+	// Scheme A (P0-2): HMAC-SHA256(secret, timestamp+"\n"+secret+"\n"+body).
+	// Binds the signature to the exact request body so a captured
+	// (timestamp, sign) pair cannot be replayed against a different
+	// payload.
+	macA := hmac.New(sha256.New, []byte(h.appSecret))
+	macA.Write([]byte(timestamp + "\n" + h.appSecret + "\n" + string(body)))
+	if hmac.Equal([]byte(base64.StdEncoding.EncodeToString(macA.Sum(nil))), []byte(sign)) {
+		return true
+	}
 
-	// Constant-time comparison to avoid timing side-channels.
-	return hmac.Equal([]byte(expectedSign), []byte(sign))
+	// Scheme B (legacy, DingTalk robot spec): HMAC-SHA256(secret,
+	// timestamp+"\n"+secret). No body binding — kept so senders that
+	// have not upgraded still authenticate. Replay protection for this
+	// scheme is provided by the Redis event_id dedup below.
+	macB := hmac.New(sha256.New, []byte(h.appSecret))
+	macB.Write([]byte(timestamp + "\n" + h.appSecret))
+	return hmac.Equal([]byte(base64.StdEncoding.EncodeToString(macB.Sum(nil))), []byte(sign))
 }
 
 // processApprovalResult processes the approval result from DingTalk.
