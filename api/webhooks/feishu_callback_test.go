@@ -63,6 +63,20 @@ func (m *MockApprovalManager) GetApprovalByRequestID(ctx context.Context, reques
 	return "tenant_default", nil
 }
 
+// signedFeishuRequest builds a POST request with a valid Feishu
+// signature header set so tests can exercise the verifyToken-required
+// path (2026-08-26 P1-3 fail-closed).
+func signedFeishuRequest(verifyToken string, body []byte, path string) *http.Request {
+	req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
+	timestamp := strconv.FormatInt(time.Now().Unix(), 10)
+	nonce := "test_nonce"
+	hash := sha256.Sum256([]byte(timestamp + nonce + verifyToken + string(body)))
+	req.Header.Set("X-Lark-Signature", hex.EncodeToString(hash[:]))
+	req.Header.Set("X-Lark-Request-Timestamp", timestamp)
+	req.Header.Set("X-Lark-Request-Nonce", nonce)
+	return req
+}
+
 func TestNewFeishuCallbackHandler(t *testing.T) {
 	mockManager := &MockApprovalManager{}
 	config := FeishuCallbackConfig{
@@ -192,7 +206,8 @@ func TestFeishuCallbackHandler_HandleEventCallback_Approve(t *testing.T) {
 	}
 
 	handler := NewFeishuCallbackHandler(FeishuCallbackConfig{
-		Manager: mockManager,
+		Manager:     mockManager,
+		VerifyToken: "test_token",
 	})
 
 	callback := FeishuCallback{
@@ -204,7 +219,7 @@ func TestFeishuCallbackHandler_HandleEventCallback_Approve(t *testing.T) {
 	}
 
 	body, _ := json.Marshal(callback)
-	req := httptest.NewRequest(http.MethodPost, "/api/webhooks/feishu/approval-callback?action=approve&request_id=req_123", bytes.NewReader(body))
+	req := signedFeishuRequest("test_token", body, "/api/webhooks/feishu/approval-callback?action=approve&request_id=req_123")
 	w := httptest.NewRecorder()
 
 	handler.HandleCallback(w, req)
@@ -248,7 +263,8 @@ func TestFeishuCallbackHandler_HandleEventCallback_Reject(t *testing.T) {
 	}
 
 	handler := NewFeishuCallbackHandler(FeishuCallbackConfig{
-		Manager: mockManager,
+		Manager:     mockManager,
+		VerifyToken: "test_token",
 	})
 
 	callback := FeishuCallback{
@@ -260,7 +276,7 @@ func TestFeishuCallbackHandler_HandleEventCallback_Reject(t *testing.T) {
 	}
 
 	body, _ := json.Marshal(callback)
-	req := httptest.NewRequest(http.MethodPost, "/api/webhooks/feishu/approval-callback?action=reject&request_id=req_123", bytes.NewReader(body))
+	req := signedFeishuRequest("test_token", body, "/api/webhooks/feishu/approval-callback?action=reject&request_id=req_123")
 	w := httptest.NewRecorder()
 
 	handler.HandleCallback(w, req)
@@ -278,7 +294,8 @@ func TestFeishuCallbackHandler_HandleEventCallback_Reject(t *testing.T) {
 func TestFeishuCallbackHandler_HandleEventCallback_MissingRequestID(t *testing.T) {
 	mockManager := &MockApprovalManager{}
 	handler := NewFeishuCallbackHandler(FeishuCallbackConfig{
-		Manager: mockManager,
+		Manager:     mockManager,
+		VerifyToken: "test_token",
 	})
 
 	callback := FeishuCallback{
@@ -290,7 +307,7 @@ func TestFeishuCallbackHandler_HandleEventCallback_MissingRequestID(t *testing.T
 	}
 
 	body, _ := json.Marshal(callback)
-	req := httptest.NewRequest(http.MethodPost, "/api/webhooks/feishu/approval-callback?action=approve", bytes.NewReader(body))
+	req := signedFeishuRequest("test_token", body, "/api/webhooks/feishu/approval-callback?action=approve")
 	w := httptest.NewRecorder()
 
 	handler.HandleCallback(w, req)
@@ -306,7 +323,8 @@ func TestFeishuCallbackHandler_HandleEventCallback_MissingRequestID(t *testing.T
 func TestFeishuCallbackHandler_HandleEventCallback_InvalidAction(t *testing.T) {
 	mockManager := &MockApprovalManager{}
 	handler := NewFeishuCallbackHandler(FeishuCallbackConfig{
-		Manager: mockManager,
+		Manager:     mockManager,
+		VerifyToken: "test_token",
 	})
 
 	callback := FeishuCallback{
@@ -318,7 +336,7 @@ func TestFeishuCallbackHandler_HandleEventCallback_InvalidAction(t *testing.T) {
 	}
 
 	body, _ := json.Marshal(callback)
-	req := httptest.NewRequest(http.MethodPost, "/api/webhooks/feishu/approval-callback?action=invalid&request_id=req_123", bytes.NewReader(body))
+	req := signedFeishuRequest("test_token", body, "/api/webhooks/feishu/approval-callback?action=invalid&request_id=req_123")
 	w := httptest.NewRecorder()
 
 	handler.HandleCallback(w, req)
@@ -353,7 +371,8 @@ func TestFeishuCallbackHandler_InvalidJSON(t *testing.T) {
 func TestFeishuCallbackHandler_UnknownCallbackType(t *testing.T) {
 	mockManager := &MockApprovalManager{}
 	handler := NewFeishuCallbackHandler(FeishuCallbackConfig{
-		Manager: mockManager,
+		Manager:     mockManager,
+		VerifyToken: "test_token",
 	})
 
 	callback := FeishuCallback{
@@ -361,7 +380,7 @@ func TestFeishuCallbackHandler_UnknownCallbackType(t *testing.T) {
 	}
 
 	body, _ := json.Marshal(callback)
-	req := httptest.NewRequest(http.MethodPost, "/api/webhooks/feishu/approval-callback", bytes.NewReader(body))
+	req := signedFeishuRequest("test_token", body, "/api/webhooks/feishu/approval-callback")
 	w := httptest.NewRecorder()
 
 	handler.HandleCallback(w, req)
@@ -386,7 +405,8 @@ func TestFeishuCallbackHandler_ApprovalNotFound(t *testing.T) {
 	}
 
 	handler := NewFeishuCallbackHandler(FeishuCallbackConfig{
-		Manager: mockManager,
+		Manager:     mockManager,
+		VerifyToken: "test_token",
 	})
 
 	callback := FeishuCallback{
@@ -397,7 +417,7 @@ func TestFeishuCallbackHandler_ApprovalNotFound(t *testing.T) {
 	}
 
 	body, _ := json.Marshal(callback)
-	req := httptest.NewRequest(http.MethodPost, "/api/webhooks/feishu/approval-callback?action=approve&request_id=req_404", bytes.NewReader(body))
+	req := signedFeishuRequest("test_token", body, "/api/webhooks/feishu/approval-callback?action=approve&request_id=req_404")
 	w := httptest.NewRecorder()
 
 	handler.HandleCallback(w, req)
@@ -420,7 +440,8 @@ func TestFeishuCallbackHandler_ApproveError(t *testing.T) {
 	}
 
 	handler := NewFeishuCallbackHandler(FeishuCallbackConfig{
-		Manager: mockManager,
+		Manager:     mockManager,
+		VerifyToken: "test_token",
 	})
 
 	callback := FeishuCallback{
@@ -431,7 +452,7 @@ func TestFeishuCallbackHandler_ApproveError(t *testing.T) {
 	}
 
 	body, _ := json.Marshal(callback)
-	req := httptest.NewRequest(http.MethodPost, "/api/webhooks/feishu/approval-callback?action=approve&request_id=req_123", bytes.NewReader(body))
+	req := signedFeishuRequest("test_token", body, "/api/webhooks/feishu/approval-callback?action=approve&request_id=req_123")
 	w := httptest.NewRecorder()
 
 	handler.HandleCallback(w, req)
@@ -454,7 +475,8 @@ func TestFeishuCallbackHandler_RejectError(t *testing.T) {
 	}
 
 	handler := NewFeishuCallbackHandler(FeishuCallbackConfig{
-		Manager: mockManager,
+		Manager:     mockManager,
+		VerifyToken: "test_token",
 	})
 
 	callback := FeishuCallback{
@@ -465,7 +487,7 @@ func TestFeishuCallbackHandler_RejectError(t *testing.T) {
 	}
 
 	body, _ := json.Marshal(callback)
-	req := httptest.NewRequest(http.MethodPost, "/api/webhooks/feishu/approval-callback?action=reject&request_id=req_123", bytes.NewReader(body))
+	req := signedFeishuRequest("test_token", body, "/api/webhooks/feishu/approval-callback?action=reject&request_id=req_123")
 	w := httptest.NewRecorder()
 
 	handler.HandleCallback(w, req)
