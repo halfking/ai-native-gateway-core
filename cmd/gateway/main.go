@@ -1582,11 +1582,21 @@ func main() {
 			routingExec.Compressor.CavemanStageEnabled = true
 			slog.Info("compression caveman stage enabled (GW-07)")
 		}
+		// GW-09 (omni-ref2): Tool-Focused 压缩 stage。默认关，feature flag 开。
+		// LLM_GATEWAY_COMPRESSION_TOOLFOCUSED=true 时在 Caveman 之后、mechanical trim
+		// 之前跑 5 种 per-type 工具结果压缩（fileContent/grepSearch/shellOutput/json/
+		// errorMessage），OpenAI tool 消息 + Anthropic tool_result block 双形态。
+		// [COMPRESSED: 前缀幂等，经 NeverWorse 守卫保证不增字节，fail-open。
+		if os.Getenv("LLM_GATEWAY_COMPRESSION_TOOLFOCUSED") == "true" {
+			routingExec.Compressor.ToolFocusedStageEnabled = true
+			slog.Info("compression tool-focused stage enabled (GW-09)")
+		}
 		slog.Info("compressor initialized",
 			"mode", routingExec.Compressor.Mode().String(),
 			"window_fraction", routingExec.Compressor.Estimator().Fraction(),
 			"lite_stage", routingExec.Compressor.LiteStageEnabled,
 			"caveman_stage", routingExec.Compressor.CavemanStageEnabled,
+			"toolfocused_stage", routingExec.Compressor.ToolFocusedStageEnabled,
 		)
 
 		// Phase 3.2: Wire provider-level settings resolver into executor and compressor

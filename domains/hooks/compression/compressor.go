@@ -34,6 +34,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression/caveman"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression/lite"
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression/toolfocused"
 	"github.com/kaixuan/llm-gateway-go/domains/tokenest"
 	"github.com/kaixuan/llm-gateway-go/settings"
 )
@@ -164,6 +165,10 @@ const (
 	// StrategyCaveman (GW-07, omni-ref2): Caveman stage 翻译自 OmniRoute caveman.ts。
 	// 8 语言 306 规则 + 保护块 + validation。
 	StrategyCaveman CompressionStrategy = "caveman"
+	// StrategyToolFocused (GW-09, omni-ref2): Tool-Focused stage 翻译自 OmniRoute
+	// toolResultCompressor.ts。5 种 per-type 工具结果压缩（fileContent/grepSearch/
+	// shellOutput/json/errorMessage），OpenAI tool 消息 + Anthropic tool_result block 双形态。
+	StrategyToolFocused CompressionStrategy = "toolfocused"
 )
 
 // Meta is the compression telemetry payload written to
@@ -224,6 +229,12 @@ type Compressor struct {
 	// 8 语言规则。默认 false（feature flag LLM_GATEWAY_COMPRESSION_CAVEMAN）。
 	// Caveman 纯函数 + validation fallback，经 NeverWorse(GuardStageCaveman) 守卫。
 	CavemanStageEnabled bool
+	// ToolFocusedStageEnabled (GW-09, omni-ref2): 启用 Tool-Focused 压缩 stage。
+	// true 时 Compress/CompressAfter4xx 在 Caveman 之后、mechanical trim 之前跑
+	// 5 种 per-type 工具结果压缩（fileContent/grepSearch/shellOutput/json/errorMessage）。
+	// 默认 false（feature flag LLM_GATEWAY_COMPRESSION_TOOLFOCUSED）。纯函数、fail-open，
+	// [COMPRESSED: 前缀幂等，经 NeverWorse(GuardStageToolFocused) 守卫。
+	ToolFocusedStageEnabled bool
 }
 
 // NewCompressor builds a Compressor with the current env config.
@@ -367,6 +378,22 @@ func (c *Compressor) Compress(body []byte, contextWindow int) (newBody []byte, r
 		}
 	}
 
+	// GW-09: 在 Caveman 之后、mechanical trim 之前跑 Tool-Focused stage（feature-flagged，fail-open）。
+	// 5 种 per-type 工具结果压缩（fileContent/grepSearch/shellOutput/json/errorMessage），
+	// OpenAI tool 消息 + Anthropic tool_result block 双形态，[COMPRESSED: 前缀幂等。
+	// 经 NeverWorse(GuardStageToolFocused) 守卫保证 stage 输出不增字节。
+	if c.ToolFocusedStageEnabled {
+		if tb, tr, ok := toolfocused.Apply(body, toolfocused.DefaultStrategies()); ok {
+			guarded, regressed := NeverWorse(body, tb, GuardStageToolFocused)
+			if !regressed {
+				body = guarded
+				if len(tr.Techniques) > 0 {
+					meta.ReasonDetail = appendStageNote(meta.ReasonDetail, fmt.Sprintf("toolfocused strategies=%v before mechanical", tr.Techniques))
+				}
+			}
+		}
+	}
+
 	trimmed := compressMechanical(body, contextWindow)
 	if len(trimmed) >= len(body) {
 		// Mechanical couldn't make room. Mark as noop; caller should
@@ -440,6 +467,19 @@ func (c *Compressor) CompressAfter4xx(body []byte, contextWindow int) (newBody [
 				body = guarded
 				if len(cr.RulesApplied) > 0 {
 					meta.ReasonDetail = appendStageNote(meta.ReasonDetail, fmt.Sprintf("caveman rules=%v before mechanical (4xx)", cr.RulesApplied))
+				}
+			}
+		}
+	}
+
+	// GW-09: Tool-Focused stage（与 Compress 一致，feature-flagged，fail-open）。
+	if c.ToolFocusedStageEnabled {
+		if tb, tr, ok := toolfocused.Apply(body, toolfocused.DefaultStrategies()); ok {
+			guarded, regressed := NeverWorse(body, tb, GuardStageToolFocused)
+			if !regressed {
+				body = guarded
+				if len(tr.Techniques) > 0 {
+					meta.ReasonDetail = appendStageNote(meta.ReasonDetail, fmt.Sprintf("toolfocused strategies=%v before mechanical (4xx)", tr.Techniques))
 				}
 			}
 		}
