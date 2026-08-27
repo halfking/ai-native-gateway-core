@@ -86,7 +86,11 @@ func (s *SerializedStreamWriter) write(p []byte, capture bool) (int, error) {
 	defer s.mu.Unlock()
 	if capture && s.captureLimit > 0 && !s.captureOverflow {
 		if len(s.capture)+len(p) > s.captureLimit {
+			// P1-3 fix (2026-08-28): Clear capture when overflow is detected to prevent
+			// audit from using partial/truncated response data. Auditors must check
+			// captureOverflow flag and reject incomplete captures.
 			s.captureOverflow = true
+			s.capture = nil
 		} else {
 			s.capture = append(s.capture, p...)
 		}
