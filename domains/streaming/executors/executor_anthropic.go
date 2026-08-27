@@ -1219,14 +1219,32 @@ func (e *Executor) executeAnthropicOnce(
 		}}
 	}
 	e.logUpstreamResponse(params, diagnosticProtocol(cand.Protocol, "anthropic-messages"), rawResponseBody)
-	if params.ClientProtocol == "anthropic-messages" && isEmptyAnthropicMessagesResponse(rawResponseBody) {
-		return nil, &retryableError{err: &upstreampkg.Error{
+	// 2026-08-27: non-stream empty-response failover, Anthropic parity with
+	// executor_chat.go's 2026-07-15 check. The raw body is Anthropic-shaped on
+	// every client protocol here (Q3 conversion happens inside
+	// WriteNonStreamResponse, after this gate), so the check covers both the
+	// native passthrough and the OpenAI/Responses conversions. The error is a
+	// bare *upstreampkg.Error — NOT wrapped in retryableError — because
+	// KindEmptyResponse is deliberately absent from errorsx.IsRetryable: an
+	// empty 2xx body must fail over to the next candidate immediately instead
+	// of burning same-credential retries (see the KindEmptyResponse taxonomy
+	// note in errorsx/classify.go).
+	if isEmptyAnthropicMessagesResponse(rawResponseBody) {
+		slog.Warn("executor: anthropic non-stream empty response, failing over to next candidate",
+			"request_id", params.RequestID,
+			"credential_id", cand.CredentialID,
+			"provider_id", cand.ProviderID,
+			"raw_model", cand.RawModel,
+			"client_model", params.ClientModel,
+			"status", resp.StatusCode,
+		)
+		return nil, &upstreampkg.Error{
 			Kind:       errorsx.KindEmptyResponse,
 			Message:    "upstream returned empty Anthropic Messages response",
 			Body:       append([]byte(nil), rawResponseBody...),
 			StatusCode: resp.StatusCode,
 			RetryAfter: upstreampkg.RetryAfterFromHeaders(resp.Header),
-		}}
+		}
 	}
 	resp.Body = io.NopCloser(bytes.NewReader(rawResponseBody))
 	// 并发修复 2026-07-27：异步重试路径 W 为 nil。WriteNonStreamResponse
