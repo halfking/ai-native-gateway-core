@@ -54,3 +54,16 @@ var (
 		Help: "EVALSHA to EVAL fallbacks (NOSCRIPT), by script.",
 	}, []string{"script"})
 )
+
+// Sentinel values for RedisLuaScriptPreloaded gauge. Use these constants
+// instead of raw numbers so Prometheus queries (gauge == -1 vs == 0)
+// remain self-documenting across call sites.
+//
+//	== -1: Redis is not configured (LLM_GATEWAY_REDIS_ADDR unset)
+//	==  0: Redis configured but preload failed (transient or persistent)
+//	==  1: Redis configured and preload succeeded
+const (
+	RedisLuaScriptPreloadedDisabled = -1.0
+	RedisLuaScriptPreloadedFailed   = 0.0
+	RedisLuaScriptPreloadedOK       = 1.0
+)
