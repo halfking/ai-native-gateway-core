@@ -38,8 +38,11 @@ func TestRequestLogsColumnsCarryClass(t *testing.T) {
 	if !strings.Contains(s, `&detail.RequestClass, &detail.DueAt,`) {
 		t.Fatalf("getLog detail scan missing class/due")
 	}
-	if !strings.Contains(s, `addFilter("rl.request_class = $%d", v)`) {
+	if !strings.Contains(s, `addFilter("rl.request_class = $%d", requestClass)`) {
 		t.Fatalf("listLogs missing request_class filter")
+	}
+	if !strings.Contains(s, `requestClass != "immediate" && requestClass != "scheduled"`) {
+		t.Fatalf("listLogs missing request_class validation")
 	}
 }
 

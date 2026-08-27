@@ -391,15 +391,14 @@ func (s *Store) GetRequest(id string) (*RequestRecord, error) {
 }
 
 // ListRequestsInDay walks the day directory and returns all record
-// IDs in the given date (YYYY-MM-DD). Cheap and Bleve-free.
+// IDs in the given date (YYYY-MM-DD or YYYY/MM/DD). Cheap and Bleve-free.
 func (s *Store) ListRequestsInDay(date string) ([]string, error) {
 	if s == nil {
 		return nil, errors.New("fsstore: nil store")
 	}
-	// On-disk shards use "YYYY/MM/DD"; callers pass "YYYY-MM-DD".
-	dateDir := date
-	if len(dateDir) == 10 && strings.Count(dateDir, "-") == 2 {
-		dateDir = dateDir[:4] + "/" + dateDir[5:7] + "/" + dateDir[8:10]
+	dateDir, err := requestDateDir(date)
+	if err != nil {
+		return nil, err
 	}
 	dir := filepath.Join(s.cfg.Root, "requests", dateDir)
 	entries, err := os.ReadDir(dir)
@@ -583,6 +582,17 @@ func validKind(k string) bool {
 // datePath renders t as YYYY/MM/DD for directory sharding.
 func datePath(t time.Time) string {
 	return t.UTC().Format("2006/01/02")
+}
+
+func requestDateDir(date string) (string, error) {
+	date = strings.TrimSpace(date)
+	for _, layout := range []string{"2006-01-02", "2006/01/02"} {
+		parsed, err := time.Parse(layout, date)
+		if err == nil && parsed.Format(layout) == date {
+			return parsed.Format("2006/01/02"), nil
+		}
+	}
+	return "", fmt.Errorf("fsstore: invalid request date %q", date)
 }
 
 // flockFile holds an exclusive flock on `final` while writing
