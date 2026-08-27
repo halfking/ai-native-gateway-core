@@ -151,13 +151,21 @@ func LoadPublicKeyFromPEM(pemStr string) (*rsa.PublicKey, error) {
 	if block == nil {
 		return nil, errors.New("invalid PEM")
 	}
+	
+	// Try PKIX format first (BEGIN PUBLIC KEY)
 	pub, err := x509.ParsePKIXPublicKey(block.Bytes)
-	if err != nil {
-		return nil, err
+	if err == nil {
+		rsaPub, ok := pub.(*rsa.PublicKey)
+		if !ok {
+			return nil, errors.New("not RSA public key")
+		}
+		return rsaPub, nil
 	}
-	rsaPub, ok := pub.(*rsa.PublicKey)
-	if !ok {
-		return nil, errors.New("not RSA public key")
+	
+	// Fall back to PKCS1 format (BEGIN RSA PUBLIC KEY)
+	rsaPub, err := x509.ParsePKCS1PublicKey(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("parse public key: %w", err)
 	}
 	return rsaPub, nil
 }
