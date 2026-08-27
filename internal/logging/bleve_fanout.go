@@ -134,12 +134,13 @@ type bleveIndexer struct {
 	dropped uint64 // records dropped because channel was full
 	indexed uint64 // records successfully indexed
 	failed  uint64 // records that failed to index (any reason)
+	seq     uint64 // per-process sequence for bleve doc id uniqueness
 }
 
 var (
-	bleveIdx   *bleveIndexer
-	bleveMu    sync.Mutex
-	bleveOnce  sync.Once
+	bleveIdx  *bleveIndexer
+	bleveMu   sync.Mutex
+	bleveOnce sync.Once
 )
 
 // EnableBleveFanout is called from Init (when LLM_GATEWAY_LOG_BLEVE_ENABLED=true)
@@ -171,7 +172,20 @@ func EnableBleveFanout(parent slog.Handler, cfg BleveConfig) *bleveIndexer {
 
 	idx, err := bleve.Open(cfg.IndexDir)
 	if err != nil {
-		// Try to create a fresh index (corrupt / first-time).
+		// Open failed. Distinguish "first boot / empty dir" from "existing
+		// but corrupt": bleve.New() refuses a non-empty dir, so a corrupt
+		// index would previously disable the fan-out forever with only a
+		// log line. Rename the broken dir aside and rebuild.
+		var empty bool
+		if ents, rerr := os.ReadDir(cfg.IndexDir); rerr == nil && len(ents) == 0 {
+			empty = true
+		}
+		if !empty {
+			badDir := cfg.IndexDir + ".bad-" + time.Now().Format("20060102-150405")
+			if rerr := os.Rename(cfg.IndexDir, badDir); rerr == nil {
+				log.Printf("logging/bleve: corrupt index moved aside to %q; rebuilding", badDir)
+			}
+		}
 		mapping := bleve.NewIndexMapping()
 		idx, err = bleve.New(cfg.IndexDir, mapping)
 		if err != nil {
@@ -181,10 +195,10 @@ func EnableBleveFanout(parent slog.Handler, cfg BleveConfig) *bleveIndexer {
 	}
 
 	bi := &bleveIndexer{
-		cfg:    cfg,
-		ch:     make(chan *bleveIndexRecord, cfg.BufferSize),
-		index:  idx,
-		stop:   make(chan struct{}),
+		cfg:   cfg,
+		ch:    make(chan *bleveIndexRecord, cfg.BufferSize),
+		index: idx,
+		stop:  make(chan struct{}),
 	}
 	bleveIdx = bi
 	bi.wg.Add(1)
@@ -244,16 +258,27 @@ func (b *bleveIndexer) run() {
 	for {
 		select {
 		case <-b.stop:
-			// Drain anything remaining, best-effort.
-			for {
+			// Drain anything remaining, best-effort. Two safety margins:
+			//   1) batch inside the drain (no giant one-shot batch), and
+			//   2) a bounded remaining count so suppliers that keep
+			//      producing during shutdown cannot spin this loop forever
+			//      (their enqueue is non-blocking and would otherwise win
+			//      the select every time).
+			remaining := len(b.ch) + b.cfg.BatchSize
+			for i := 0; i < remaining; i++ {
 				select {
 				case rec := <-b.ch:
 					b.addToBatch(batch, rec)
+					if batch.Size() >= b.cfg.BatchSize {
+						flush()
+					}
 				default:
 					flush()
 					return
 				}
 			}
+			flush()
+			return
 		case rec := <-b.ch:
 			b.addToBatch(batch, rec)
 			if batch.Size() >= b.cfg.BatchSize {
@@ -271,11 +296,11 @@ func (b *bleveIndexer) addToBatch(batch *bleve.Batch, rec *bleveIndexRecord) {
 	// correlation fields up to the top so search filters can use
 	// them directly.
 	doc := map[string]interface{}{
-		"ts":     rec.Timestamp,
-		"level":  rec.Level,
-		"msg":    rec.Msg,
-		"raw":    rec.Raw,
-		"attrs":  rec.Attrs,
+		"ts":    rec.Timestamp,
+		"level": rec.Level,
+		"msg":   rec.Msg,
+		"raw":   rec.Raw,
+		"attrs": rec.Attrs,
 	}
 	for k, v := range rec.Attrs {
 		// Lift common trace ids so /admin/logs/search?request_id=...
@@ -286,7 +311,12 @@ func (b *bleveIndexer) addToBatch(batch *bleve.Batch, rec *bleveIndexRecord) {
 			doc[k] = v
 		}
 	}
-	if err := batch.Index(strconv.FormatInt(rec.Timestamp.UnixNano(), 10), doc); err != nil {
+	// Doc ID: UnixNano alone collides for two records at the same
+	// nanosecond (bleve Index is an upsert — the later record would
+	// silently overwrite the earlier one). Serialize with a per-batch
+	// sequence suffix.
+	seq := atomic.AddUint64(&b.seq, 1)
+	if err := batch.Index(strconv.FormatInt(rec.Timestamp.UnixNano(), 10)+"-"+strconv.FormatUint(seq, 36), doc); err != nil {
 		atomic.AddUint64(&b.failed, 1)
 	}
 }
@@ -334,7 +364,7 @@ func (b *bleveIndexer) Stats() map[string]interface{} {
 // runs first on the calling goroutine so the caller's write latency
 // matches today's lumberjack-only path.
 type BleveFanoutHandler struct {
-	parent slog.Handler
+	parent  slog.Handler
 	indexer *bleveIndexer
 }
 
@@ -443,9 +473,9 @@ func attrValue(a slog.Attr) interface{} {
 // SearchEnvelope is the public search result struct returned by
 // the indexer when the admin handler is invoked.
 type SearchEnvelope struct {
-	Total  uint64                 `json:"total"`
-	TookMs int64                  `json:"took_ms"`
-	Hits   []SearchHit            `json:"hits"`
+	Total  uint64      `json:"total"`
+	TookMs int64       `json:"took_ms"`
+	Hits   []SearchHit `json:"hits"`
 }
 
 // SearchHit is one search result document.

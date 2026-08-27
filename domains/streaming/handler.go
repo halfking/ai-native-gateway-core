@@ -1056,6 +1056,14 @@ func clientProtocolFromPath(path string) string {
 	}
 }
 
+func protocolConversionFlag(clientProtocol, upstreamProtocol string) *bool {
+	if clientProtocol == "" || upstreamProtocol == "" {
+		return nil
+	}
+	converted := clientProtocol != upstreamProtocol
+	return &converted
+}
+
 // emitAction 是 liveactions 注入的薄包装（同 emitTrace 的做法）。
 // Detail 只允许放 id/模型名/错误 kind 等元数据 —— 正文、API key、系统
 // prompt 严禁进入（23 号 §2 安全红线）。
@@ -3586,7 +3594,7 @@ func (h *ChatHandler) serveWithExecutor(
 		clientID.Fingerprint.ClientProfile, identityHash,
 		logCtx.ProviderID, logCtx.CredentialID, canonicalID,
 		canonicalNameFromResolution(modelResolution), // 2026-07-27: 标准模型名
-		bodyBytes, txResult, egressProtocol, isStream,
+		bodyBytes, clientProtocolFromPath(r.URL.Path), txResult, egressProtocol, isStream,
 		gwSessionID, gwTaskID,
 		logCtx,
 	)
@@ -3876,6 +3884,8 @@ func (h *ChatHandler) serveWithExecutor(
 	journeyInstanceID, journeySeq, journeyTerminal := requestJourneyExecState(r)
 	// v6 G-Ⅱ: X-Gw-Due-At 定时请求（到期前停在 dispatch 的到期堆）。
 	dispatchDueAt := parseDispatchDueAt(r)
+	// V6-W1.6 R8: class 一并写入 logCtx，供首行与完成 UPDATE 落库（608）。
+	applyRequestClassToLogCtx(logCtx, dispatchDueAt)
 	buildExecParams := func(streamWriter http.ResponseWriter) *executors.ExecParams {
 		return &executors.ExecParams{
 			W:                          streamWriter,
@@ -5800,6 +5810,12 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 	// instead of an LCS-inferred verdict. The header never survives to the hook
 	// otherwise — the hook only sees the telemetry entry, not the request.
 	applySubmitModeHeader(reqLog, logCtx)
+	// V6-W1.6 R8 (migration 608): 完成态 UPDATE 也带上请求类型（幂等，
+	// 首行已写时保持原值，COALESCE 侧同样防回退）。
+	if reqLog.RequestClass == nil {
+		reqLog.RequestClass = requestClassPtr(logCtx)
+		reqLog.DueAt = requestDueAtPtr(logCtx)
+	}
 
 	// 2026-07-19: 填充路由尝试追踪数据到 telemetry
 	// 2026-07-20: Try result.RoutingTracker first (populated by the executor),
@@ -6510,7 +6526,7 @@ func (h *ChatHandler) recordInitialRequestLog(
 	clientProfile, identityHash string,
 	providerID, credentialID, canonicalID *int,
 	canonicalName string, // 2026-07-27: 标准模型名 (migration 458)
-	requestBody []byte,
+	requestBody []byte, clientProtocol string,
 	txResult *transformation.TransformResult,
 	egressProtocol string,
 	isStream bool,
@@ -6579,6 +6595,9 @@ func (h *ChatHandler) recordInitialRequestLog(
 		ProviderID:      providerID,
 		CredentialID:    credentialID,
 		CanonicalID:     canonicalID,
+		// V6-W1.6 R8 (migration 608): 请求类型（即时/定时）随首行落库。
+		RequestClass: requestClassPtr(autoCtx),
+		DueAt:        requestDueAtPtr(autoCtx),
 		// 2026-07-27: 标准模型名 (canonical_name),见 migration 458。
 		CanonicalModel: strPtr(canonicalName),
 		ClientProfile:  strPtr(clientProfile),
@@ -6594,13 +6613,16 @@ func (h *ChatHandler) recordInitialRequestLog(
 		// initial in_progress row carries the same classification as the eventual
 		// success UPDATE. The success path's emitTelemetry will overwrite this
 		// via tokenBandFromLogCtx.
-		TokenBand:         strPtrFromLogCtx(autoCtx),
-		RequestBody:       requestBodyText,
-		RequestPreview:    requestPreviewPtr,
-		TransformSummary:  transformSummaryPtr,
-		TransformRuleID:   transformRuleID,
-		EgressProtocol:    strPtr(egressProtocol),
-		StreamInterrupted: &streamInterrupted,
+		TokenBand:          strPtrFromLogCtx(autoCtx),
+		RequestBody:        requestBodyText,
+		RequestPreview:     requestPreviewPtr,
+		TransformSummary:   transformSummaryPtr,
+		TransformRuleID:    transformRuleID,
+		EgressProtocol:     strPtr(egressProtocol),
+		ClientProtocol:     strPtr(clientProtocol),
+		UpstreamProtocol:   strPtr(egressProtocol),
+		ProtocolConversion: protocolConversionFlag(clientProtocol, egressProtocol),
+		StreamInterrupted:  &streamInterrupted,
 		// 2026-06-26: preserve client-supplied X-Request-Id for debug
 		// (request_id itself is server-generated; see middleware/requestid_mw.go).
 		ClientRequestID: clientRequestIDPtr,

@@ -50,6 +50,10 @@ type PeriodicQuotaProbe struct {
 	probeSubmitter func(credID int)
 	stopCh         chan struct{}
 	stopOnce       sync.Once
+	lifecycleMu    sync.Mutex
+	started        bool
+	stopped        bool
+	workerDone     chan struct{}
 
 	// preProbeWindow is how close to quota_recover_at we trigger the
 	// pre-probe. Defaults to 60s. Override via env for tests / tuning.
@@ -85,24 +89,38 @@ func NewPeriodicQuotaProbe(db *pgxpool.Pool) *PeriodicQuotaProbe {
 		}
 	}
 	return &PeriodicQuotaProbe{
-		db:                  db,
-		interval:            interval,
-		stopCh:              make(chan struct{}),
-		preProbeWindow:      preProbeWindow,
-		recoverAtMaxLinger:  recoverAtMaxLinger,
+		db:                 db,
+		interval:           interval,
+		stopCh:             make(chan struct{}),
+		preProbeWindow:     preProbeWindow,
+		recoverAtMaxLinger: recoverAtMaxLinger,
+		workerDone:         make(chan struct{}),
 	}
 }
-
 func (p *PeriodicQuotaProbe) SetProbeSubmitter(fn func(credID int)) {
 	p.probeSubmitter = fn
 }
 
 func (p *PeriodicQuotaProbe) Start(ctx context.Context) {
+	p.lifecycleMu.Lock()
+	if p.started || p.stopped {
+		p.lifecycleMu.Unlock()
+		return
+	}
+	if p.stopCh == nil {
+		p.stopCh = make(chan struct{})
+	}
+	if p.workerDone == nil {
+		p.workerDone = make(chan struct{})
+	}
+	p.started = true
+	p.lifecycleMu.Unlock()
 	slog.Info("periodic_quota_probe started",
 		"interval", p.interval,
 		"pre_probe_window", p.preProbeWindow,
 		"recover_at_max_linger", p.recoverAtMaxLinger)
 	go func() {
+		defer close(p.workerDone)
 		ticker := time.NewTicker(p.interval)
 		defer ticker.Stop()
 		for {
@@ -123,7 +141,15 @@ func (p *PeriodicQuotaProbe) Start(ctx context.Context) {
 }
 
 func (p *PeriodicQuotaProbe) Stop() {
+	p.lifecycleMu.Lock()
+	if !p.started || p.stopped {
+		p.lifecycleMu.Unlock()
+		return
+	}
+	p.stopped = true
+	p.lifecycleMu.Unlock()
 	p.stopOnce.Do(func() { close(p.stopCh) })
+	<-p.workerDone
 }
 
 // tick runs the three layered checks: deviation guard, pre-probe, then

@@ -326,14 +326,16 @@ func TestForwarderReleasesGovernorCapturedBeforeHotSwap(t *testing.T) {
 	oldGov := &countingGovernor{mode: ModeConcurrency}
 	newGov := &countingGovernor{mode: ModeConcurrency}
 	ref := cred(31, ModeConcurrency, 1)
+	q := make(chan *QueuedRequest, 1)
 	cf := &credForwarder{
-		cred:  ref,
-		queue: make(chan *QueuedRequest, 1),
-		limit: 1,
-		gov:   oldGov,
-		pipe:  p,
-		ctx:   context.Background(),
+		cred:   ref,
+		gov:    oldGov,
+		pipe:   p,
+		ctx:    context.Background(),
+		wakeCh: make(chan struct{}),
 	}
+	cf.queue.Store(&q)
+	cf.limit.Store(1)
 	cf.depth.Store(1)
 	qr := NewQueuedRequest("hot-swap-release", "tenant", "model", context.Background(), nil)
 	gov, acquired := cf.acquire(qr)

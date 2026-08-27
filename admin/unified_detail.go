@@ -11,7 +11,6 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/domains/requestdetail"
 )
 
@@ -32,8 +31,12 @@ type bodyFetcher interface {
 	fetchRequestBodies(ctx context.Context, requestID string) (requestBody, responseBody any, err error)
 }
 
+type queryRower interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
 type pgBodyReader struct {
-	db    *pgxpool.Pool
+	db    queryRower
 	fetch bodyFetcher
 }
 
@@ -42,7 +45,8 @@ func (r *pgBodyReader) ReadRequestLogsBodies(ctx context.Context, requestID stri
 	if err != nil {
 		return requestdetail.Bodies{}, requestdetail.Meta{}, err
 	}
-	reqBody, respBody, bodyErr := r.fetch.fetchRequestBodies(ctx, requestID)
+	canonicalRequestID := meta.RequestID
+	reqBody, respBody, bodyErr := r.fetch.fetchRequestBodies(ctx, canonicalRequestID)
 	if bodyErr != nil && !errors.Is(bodyErr, sql.ErrNoRows) {
 		return requestdetail.Bodies{}, requestdetail.Meta{}, bodyErr
 	}
@@ -50,40 +54,41 @@ func (r *pgBodyReader) ReadRequestLogsBodies(ctx context.Context, requestID stri
 		RequestBody:  anyToRaw(reqBody),
 		ResponseBody: anyToRaw(respBody),
 	}
-	outbound, _ := r.loadOutboundBody(ctx, requestID)
+	outbound, _ := r.loadOutboundBody(ctx, canonicalRequestID)
 	bodies.OutboundBody = outbound
 	return bodies, meta, nil
 }
 
 func (r *pgBodyReader) loadRequestLogMeta(ctx context.Context, requestID string) (requestdetail.Meta, error) {
 	var (
-		tenantID    string
-		gwSessionID sql.NullString
-		gwTaskID    sql.NullString
-		clientModel sql.NullString
-		status      sql.NullString
-		success     sql.NullBool
-		latencyMs   sql.NullInt32
+		canonicalRequestID string
+		tenantID           string
+		gwSessionID        sql.NullString
+		gwTaskID           sql.NullString
+		clientModel        sql.NullString
+		status             sql.NullString
+		success            sql.NullBool
+		latencyMs          sql.NullInt32
 	)
 	err := r.db.QueryRow(ctx, `
-		SELECT COALESCE(tenant_id, ''),
+		SELECT request_id, COALESCE(tenant_id, ''),
 		       gw_session_id, gw_task_id, client_model,
 		       request_status, success, latency_ms
 		  FROM request_logs_hot
-		 WHERE request_id = $1
-		 ORDER BY ts DESC
+		 WHERE request_id = $1 OR client_request_id = $1
+		 ORDER BY CASE WHEN request_id = $1 THEN 0 ELSE 1 END, ts DESC
 		 LIMIT 1
-	`, requestID).Scan(&tenantID, &gwSessionID, &gwTaskID, &clientModel, &status, &success, &latencyMs)
+	`, requestID).Scan(&canonicalRequestID, &tenantID, &gwSessionID, &gwTaskID, &clientModel, &status, &success, &latencyMs)
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = r.db.QueryRow(ctx, `
-			SELECT COALESCE(tenant_id, ''),
+			SELECT request_id, COALESCE(tenant_id, ''),
 			       gw_session_id, gw_task_id, client_model,
 			       request_status, success, latency_ms
 			  FROM request_logs_with_current_month
-			 WHERE request_id = $1
-			 ORDER BY ts DESC
+			 WHERE request_id = $1 OR client_request_id = $1
+			 ORDER BY CASE WHEN request_id = $1 THEN 0 ELSE 1 END, ts DESC
 			 LIMIT 1
-		`, requestID).Scan(&tenantID, &gwSessionID, &gwTaskID, &clientModel, &status, &success, &latencyMs)
+		`, requestID).Scan(&canonicalRequestID, &tenantID, &gwSessionID, &gwTaskID, &clientModel, &status, &success, &latencyMs)
 	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		return requestdetail.Meta{}, requestdetail.ErrNotFound
@@ -91,7 +96,7 @@ func (r *pgBodyReader) loadRequestLogMeta(ctx context.Context, requestID string)
 	if err != nil {
 		return requestdetail.Meta{}, err
 	}
-	meta := requestdetail.Meta{RequestID: requestID, TenantID: tenantID}
+	meta := requestdetail.Meta{RequestID: canonicalRequestID, TenantID: tenantID}
 	if gwSessionID.Valid {
 		v := gwSessionID.String
 		meta.GwSessionID = &v

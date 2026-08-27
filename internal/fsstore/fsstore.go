@@ -59,6 +59,7 @@ import (
 	"time"
 
 	"github.com/blevesearch/bleve/v2"
+	"github.com/blevesearch/bleve/v2/mapping"
 )
 
 // Config configures a Store. Zero value is not usable; call New
@@ -110,18 +111,25 @@ func New(cfg Config) (*Store, error) {
 		}
 	}
 
-	openOrNew := func(dir string) (bleve.Index, error) {
+	openOrNew := func(dir string, im mapping.IndexMapping) (bleve.Index, error) {
 		idx, err := bleve.Open(dir)
 		if err == nil {
 			return idx, nil
 		}
-		return bleve.New(dir, bleve.NewIndexMapping())
+		if im == nil {
+			im = bleve.NewIndexMapping()
+		}
+		return bleve.New(dir, im)
 	}
-	entsIdx, err := openOrNew(filepath.Join(cfg.Root, "index", "entities.bleve"))
+	entsIdx, err := openOrNew(filepath.Join(cfg.Root, "index", "entities.bleve"), nil)
 	if err != nil {
 		return nil, fmt.Errorf("fsstore: open entities index: %w", err)
 	}
-	reqIdx, err := openOrNew(filepath.Join(cfg.Root, "index", "requests.bleve"))
+	// Requests index: the "id" field must be keyword-analyzed so
+	// GetRequest's TermQuery(id) matches exactly (hyphenated ids would
+	// otherwise tokenize, and the previous fieldless query targeted the
+	// nonexistent _all field — every GetRequest returned ErrNotExist).
+	reqIdx, err := openOrNew(filepath.Join(cfg.Root, "index", "requests.bleve"), newRequestIndexMapping())
 	if err != nil {
 		_ = entsIdx.Close()
 		return nil, fmt.Errorf("fsstore: open requests index: %w", err)
@@ -269,16 +277,22 @@ func (s *Store) ListEntities(kind string) ([]string, error) {
 // RequestRecord is the metadata side of a single request lifecycle.
 // Bodies live in bodies/YYYY/MM/DD/<request_id>/{request,response}.jsonl.gz.
 type RequestRecord struct {
-	ID        string                 `json:"id"`
-	StartedAt time.Time              `json:"started_at"`
-	EndedAt   time.Time              `json:"ended_at,omitempty"`
-	TenantID  string                 `json:"tenant_id,omitempty"`
-	UserID    string                 `json:"user_id,omitempty"`
-	Provider  string                 `json:"provider,omitempty"`
-	Model     string                 `json:"model,omitempty"`
-	Status    string                 `json:"status,omitempty"`
-	CostUSD   float64                `json:"cost_usd,omitempty"`
-	Attrs     map[string]interface{} `json:"attrs,omitempty"`
+	ID        string    `json:"id"`
+	StartedAt time.Time `json:"started_at"`
+	EndedAt   time.Time `json:"ended_at,omitempty"`
+	TenantID  string    `json:"tenant_id,omitempty"`
+	UserID    string    `json:"user_id,omitempty"`
+	Provider  string    `json:"provider,omitempty"`
+	Model     string    `json:"model,omitempty"`
+	Status    string    `json:"status,omitempty"`
+	CostUSD   float64   `json:"cost_usd,omitempty"`
+	// RequestClass is the V6-W1.6 R8 request class (immediate|scheduled,
+	// migration 610 parity with request_logs_hot.request_class). Empty means
+	// immediate (matching the DB column default).
+	RequestClass string `json:"request_class,omitempty"`
+	// DueAt is the scheduled execution time; nil for immediate requests.
+	DueAt *time.Time             `json:"due_at,omitempty"`
+	Attrs map[string]interface{} `json:"attrs,omitempty"`
 }
 
 // PutRequest persists the request record. It assumes the body
@@ -334,8 +348,11 @@ func (s *Store) GetRequest(id string) (*RequestRecord, error) {
 		return nil, errors.New("fsstore: empty id")
 	}
 
-	req := bleve.NewSearchRequest(bleve.NewTermQuery(id))
-	req.Fields = []string{"started_at"}
+	// Query by document ID (_id): a bare TermQuery depends on the index
+	// mapping and can miss hyphenated request IDs. DocIDQuery is the
+	// exact-match lookup path.
+	req := bleve.NewSearchRequest(bleve.NewDocIDQuery([]string{id}))
+	req.Fields = []string{"shard_date", "started_at"}
 	res, err := s.reqIdx.Search(req)
 	if err != nil {
 		return nil, fmt.Errorf("fsstore: search request id: %w", err)
@@ -347,14 +364,20 @@ func (s *Store) GetRequest(id string) (*RequestRecord, error) {
 	// We pick the newest by Sort if available, otherwise the first.
 	hit := res.Hits[0]
 	dateStr := ""
-	if v, ok := hit.Fields["started_at"].(string); ok && len(v) >= 10 {
-		dateStr = v[:10] // YYYY-MM-DD
+	if v, ok := hit.Fields["shard_date"].(string); ok && len(v) == 10 {
+		dateStr = v // YYYY/MM/DD — matches datePath layout (keyword, timezone-stable)
 	}
 	if dateStr == "" {
-		return nil, fmt.Errorf("fsstore: hit %s missing started_at", hit.ID)
+		return nil, fmt.Errorf("fsstore: hit %s missing shard_date", hit.ID)
+	}
+	// datePath uses "YYYY/MM/DD" but the indexed started_at comes back as
+	// RFC3339 ("YYYY-MM-DD..."), so convert to the on-disk shard format.
+	dateDir := dateStr
+	if len(dateDir) == 10 {
+		dateDir = dateDir[:4] + "/" + dateDir[5:7] + "/" + dateDir[8:10]
 	}
 
-	path := filepath.Join(s.cfg.Root, "requests", dateStr, id+".json")
+	path := filepath.Join(s.cfg.Root, "requests", dateDir, id+".json")
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -368,12 +391,16 @@ func (s *Store) GetRequest(id string) (*RequestRecord, error) {
 }
 
 // ListRequestsInDay walks the day directory and returns all record
-// IDs in the given date (YYYY-MM-DD). Cheap and Bleve-free.
+// IDs in the given date (YYYY-MM-DD or YYYY/MM/DD). Cheap and Bleve-free.
 func (s *Store) ListRequestsInDay(date string) ([]string, error) {
 	if s == nil {
 		return nil, errors.New("fsstore: nil store")
 	}
-	dir := filepath.Join(s.cfg.Root, "requests", date)
+	dateDir, err := requestDateDir(date)
+	if err != nil {
+		return nil, err
+	}
+	dir := filepath.Join(s.cfg.Root, "requests", dateDir)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err
@@ -557,6 +584,17 @@ func datePath(t time.Time) string {
 	return t.UTC().Format("2006/01/02")
 }
 
+func requestDateDir(date string) (string, error) {
+	date = strings.TrimSpace(date)
+	for _, layout := range []string{"2006-01-02", "2006/01/02"} {
+		parsed, err := time.Parse(layout, date)
+		if err == nil && parsed.Format(layout) == date {
+			return parsed.Format("2006/01/02"), nil
+		}
+	}
+	return "", fmt.Errorf("fsstore: invalid request date %q", date)
+}
+
 // flockFile holds an exclusive flock on `final` while writing
 // `body` to `tmp` then atomically renaming tmp → final. POSIX only
 // (Windows ignores LockFileEx fallback at this layer — the
@@ -622,6 +660,12 @@ func requestDoc(r RequestRecord) map[string]interface{} {
 		"model":      r.Model,
 		"status":     r.Status,
 		"cost_usd":   r.CostUSD,
+		// V6-W1.6 R8: searchable request class; empty indexes as immediate.
+		"request_class": requestClassOrDefault(r.RequestClass),
+		// shard_date mirrors datePath(r.StartedAt) so GetRequest resolves the
+		// day directory deterministically (deriving it from bleve's serialized
+		// started_at drifted across timezones).
+		"shard_date": r.StartedAt.UTC().Format("2006/01/02"),
 	}
 }
 
@@ -687,4 +731,26 @@ func readGzippedLines(path string) ([][]byte, error) {
 		out = append(out, raw)
 	}
 	return out, nil
+}
+
+// requestClassOrDefault normalizes the FS record class for indexing/writes:
+// the DB column is NOT NULL DEFAULT 'immediate', so the FS tier mirrors the
+// same default instead of storing empty strings.
+func requestClassOrDefault(c string) string {
+	if c == "" {
+		return "immediate"
+	}
+	return c
+}
+
+// newRequestIndexMapping builds the requests-index mapping: dynamic fields
+// plus an exact-match keyword "id" (GetRequest lookup key).
+func newRequestIndexMapping() mapping.IndexMapping {
+	im := bleve.NewIndexMapping()
+	doc := mapping.NewDocumentMapping() // dynamic by default; adds the keyword id field
+	idField := bleve.NewTextFieldMapping()
+	idField.Analyzer = "keyword"
+	doc.AddFieldMappingsAt("id", idField)
+	im.DefaultMapping = doc
+	return im
 }

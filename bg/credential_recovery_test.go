@@ -6,15 +6,16 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/pashagolub/pgxmock/v4"
-	dto "github.com/prometheus/client_model/go"
-	"github.com/prometheus/client_golang/prometheus"
 	met "github.com/kaixuan/llm-gateway-go/metrics"
+	"github.com/pashagolub/pgxmock/v4"
+	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 )
 
 // TestExpiredCmbRecoverySQLGuards pins the safety guards of the
@@ -2028,6 +2029,7 @@ func TestDispatchRecoveryHooks_FiresImmediateProbeForRecoveryFlips(t *testing.T)
 		mu.Unlock()
 		t.Fatalf("probeSubmitterImmediate call count = %d, want 2 (got %v)", len(immediateCalls), immediateCalls)
 	}
+	sort.Ints(immediateCalls)
 	wantImmediate := []int{1, 2}
 	for i, w := range wantImmediate {
 		if immediateCalls[i] != w {
@@ -2036,6 +2038,7 @@ func TestDispatchRecoveryHooks_FiresImmediateProbeForRecoveryFlips(t *testing.T)
 			return
 		}
 	}
+	sort.Ints(immediateCalls)
 	mu.Unlock()
 
 	after := readCounter(immediateMetric)

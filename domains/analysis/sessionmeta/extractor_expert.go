@@ -144,6 +144,7 @@ func defaultExpertPatterns() []expertPatternEntry {
 		{ExpertSoftwareEngineering, []string{
 			"software engineer", "software developer",
 			"coding assistant", "code assistant", "coding agent",
+			"cursor", "claude code", "codex", "opencode", "copilot",
 			"interactive coding", "developer tool",
 			"build software", "write code", "code review",
 			"you are a developer", "you are an engineer",
