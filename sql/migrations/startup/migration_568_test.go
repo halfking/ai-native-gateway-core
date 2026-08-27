@@ -119,38 +119,42 @@ func TestMigration570InsertPriorityPassthrough(t *testing.T) {
 	}
 }
 
-// TestMigration568SchemaMirrors follows the migration-553 convention: the
-// three schema mirrors must carry the post-568 priority definitions so
-// fresh installs (baseline schema + migrations) converge with upgraded
-// databases.
-func TestMigration568SchemaMirrors(t *testing.T) {
+// TestMigration568FreshInstallArtifacts verifies both fresh-install paths:
+// deploy uses the post-migration baseline while the installer applies the
+// versioned startup artifact after its embedded base schema.
+func TestMigration568FreshInstallArtifacts(t *testing.T) {
 	root := filepath.Join("..", "..", "..")
-	for _, name := range []string{
-		"sql/schema/01-schema.sql",
-		"deploy/sql/schemas/baseline/01-schema.sql",
-		"installer/cmd/llm-gw-installer/embeddata/01-schema.sql",
-	} {
+	artifacts := map[string][]string{
+		"deploy/sql/schemas/baseline/01-schema.sql": {
+			"priority boolean DEFAULT false NOT NULL",
+			"cmb.priority\n   FROM (public.credential_model_bindings cmb",
+			"priority = COALESCE(NEW.priority, credential_model_bindings.priority)",
+			"admin_protected, context_window_override, priority",
+			"NEW.context_window_override, COALESCE(NEW.priority, FALSE)",
+			"priority = COALESCE(EXCLUDED.priority, credential_model_bindings.priority)",
+			"OR (old.priority IS DISTINCT FROM new.priority)",
+		},
+		"installer/cmd/llm-gw-installer/embeddata/startup/568_credential_priority_flag.sql": {
+			"ADD COLUMN priority boolean NOT NULL DEFAULT false",
+			"cmb.priority\n   FROM (public.credential_model_bindings cmb",
+			"priority = COALESCE(NEW.priority, credential_model_bindings.priority)",
+			"OR old.priority IS DISTINCT FROM new.priority",
+		},
+		"installer/cmd/llm-gw-installer/embeddata/startup/570_model_offers_insert_priority_passthrough.sql": {
+			"admin_protected, context_window_override, priority",
+			"NEW.context_window_override, COALESCE(NEW.priority, FALSE)",
+			"priority = COALESCE(EXCLUDED.priority, credential_model_bindings.priority)",
+		},
+	}
+	for name, wants := range artifacts {
 		contents, err := os.ReadFile(filepath.Join(root, name))
 		if err != nil {
 			t.Fatalf("read schema mirror %s: %v", name, err)
 		}
 		text := string(contents)
-		for _, want := range []string{
-			// table column
-			"priority boolean DEFAULT false NOT NULL",
-			// view exposure
-			"cmb.priority\n   FROM (public.credential_model_bindings cmb",
-			// INSTEAD OF UPDATE persistence
-			"priority = COALESCE(NEW.priority, credential_model_bindings.priority)",
-			// INSTEAD OF INSERT passthrough
-			"admin_protected, context_window_override, priority",
-			"NEW.context_window_override, COALESCE(NEW.priority, FALSE)",
-			"priority = COALESCE(EXCLUDED.priority, credential_model_bindings.priority)",
-			// cache-refresh predicate
-			"OR (old.priority IS DISTINCT FROM new.priority)",
-		} {
+		for _, want := range wants {
 			if !strings.Contains(text, want) {
-				t.Errorf("schema mirror %s missing %q", name, want)
+				t.Errorf("fresh-install artifact %s missing %q", name, want)
 			}
 		}
 	}

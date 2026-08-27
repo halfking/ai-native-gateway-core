@@ -239,7 +239,7 @@ func TestIdleMarkerUsesScanTimeAsTs(t *testing.T) {
 	}
 }
 
-func TestLiveStreamRedisStore_TrimDimensionQueueToVisibleLimit(t *testing.T) {
+func TestLiveStreamRedisStore_TrimDimensionQueueToTwenty(t *testing.T) {
 	mr, err := miniredis.Run()
 	if err != nil {
 		t.Fatalf("miniredis: %v", err)
@@ -249,10 +249,9 @@ func TestLiveStreamRedisStore_TrimDimensionQueueToVisibleLimit(t *testing.T) {
 	ctx := context.Background()
 	base := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
 
-	total := LiveStreamLaneVisibleLimit + 5
-	for i := 0; i < total; i++ {
+	for i := 0; i < int(LiveStreamLaneVisibleLimit)+5; i++ {
 		req := LiveRequest{
-			RequestID:     fmt.Sprintf("req-%03d", i),
+			RequestID:     fmt.Sprintf("req-%02d", i),
 			Ts:            base.Add(time.Duration(i) * time.Second).UTC().Format(time.RFC3339),
 			Model:         "gpt-4o",
 			ModelCategory: "openai",
@@ -278,9 +277,8 @@ func TestLiveStreamRedisStore_TrimDimensionQueueToVisibleLimit(t *testing.T) {
 	}
 	// Dimension queues store slim tile JSON members, so compare the decoded
 	// request id rather than the raw member.
-	wantOldest := fmt.Sprintf("req-%03d", total-LiveStreamLaneVisibleLimit)
-	if len(oldest) == 0 || requestIDFromDimensionQueueMember(oldest[0]) != wantOldest {
-		t.Fatalf("oldest member=%v want %q (first 5 trimmed)", oldest, wantOldest)
+	if len(oldest) == 0 || requestIDFromDimensionQueueMember(oldest[0]) != "req-05" {
+		t.Fatalf("oldest member=%v want req-05 (first 5 trimmed)", oldest)
 	}
 }
 
@@ -323,6 +321,69 @@ func TestLiveStreamRedisStore_NilClient(t *testing.T) {
 	}
 	if items != nil {
 		t.Errorf("Replay with nil client should return nil slice, got %v", items)
+	}
+}
+
+func TestDimensionQueueKeyInfoBuildsActivityKeyScope(t *testing.T) {
+	tests := []struct {
+		name string
+		key  string
+		want string
+		ok   bool
+	}{
+		{name: "global provider", key: liveStreamDimPrefix + "provider:MiniMax", want: liveStreamActivityKey("", "provider", "MiniMax"), ok: true},
+		{name: "tenant model", key: "llmgw:live:tenant:default:dim:model:minimax-m3", want: liveStreamActivityKey("default", "model", "minimax-m3"), ok: true},
+		{name: "invalid dimension", key: liveStreamDimPrefix + "status:success", ok: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			info, ok := dimensionQueueKeyInfo(tt.key)
+			if ok != tt.ok {
+				t.Fatalf("ok=%v want %v (%#v)", ok, tt.ok, info)
+			}
+			if ok {
+				got := liveStreamActivityKey(info.tenantID, info.dimension, info.dimensionKey)
+				if got != tt.want {
+					t.Fatalf("activity key=%q want %q", got, tt.want)
+				}
+			}
+		})
+	}
+}
+
+func TestLiveStreamRedisStore_ActivityKeysUseDimensionIndexes(t *testing.T) {
+	mr := miniredis.RunT(t)
+	defer mr.Close()
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer rdb.Close()
+	store := NewLiveStreamRedisStore(rdb)
+	ctx := context.Background()
+
+	if err := store.Record(ctx, LiveRequest{
+		RequestID: "indexed-1", Ts: time.Now().UTC().Format(time.RFC3339), TenantID: "default",
+		Model: "minimax-m3", ModelCategory: "minimax", ProviderCode: "MiniMax", Status: "success",
+	}, ""); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	keys, err := store.activityKeysFromDimensionIndexes(ctx)
+	if err != nil {
+		t.Fatalf("activityKeysFromDimensionIndexes: %v", err)
+	}
+	want := map[string]bool{
+		liveStreamActivityKey("", "vendor", "minimax"):        false,
+		liveStreamActivityKey("", "provider", "MiniMax"):      false,
+		liveStreamActivityKey("", "model", "minimax-m3"):      false,
+		liveStreamActivityKey("default", "vendor", "minimax"): false,
+	}
+	for _, key := range keys {
+		if _, ok := want[key]; ok {
+			want[key] = true
+		}
+	}
+	for key, found := range want {
+		if !found {
+			t.Errorf("missing indexed activity key %q", key)
+		}
 	}
 }
 
@@ -1345,12 +1406,13 @@ func TestBuildLiveStreamLanes_StableAlphabeticalOrder(t *testing.T) {
 	}
 }
 
-// 2026-08-27: the lane ordering contract is ASC FIFO (oldest left → newest
-// right), flipped deliberately by 730cbaef8. SwimLaneTrack paints index 0
-// leftmost and lastTiles() caps each lane by keeping the tail (newest N).
-// buildLiveStreamLanes therefore sorts each lane itself rather than
-// inheriting the caller's order, so the dimension-queue path and the
-// main-queue replay path agree.
+// 2026-07-26: the lane ordering contract is ASC (oldest first).
+// SwimLaneTrack.vue paints index 0 leftmost and slices the last N, and
+// lastTiles() caps each lane by taking items[len-limit:]. Both mean
+// "oldest on the left, newest on the right, oldest truncated" when the
+// lane builder emits ASC. buildLiveStreamLanes therefore sorts each lane
+// itself rather than inheriting the caller's order, so the dimension-queue
+// path and the main-queue replay path agree.
 func TestBuildLiveStreamLanes_LaneRequestsAreASC(t *testing.T) {
 	// Deliberately shuffled: the lane builder must not depend on the
 	// caller pre-sorting its input.
@@ -1374,18 +1436,15 @@ func TestBuildLiveStreamLanes_LaneRequestsAreASC(t *testing.T) {
 				lanes[0].ID, i, requests[i-1].Timestamp, requests[i].Timestamp)
 		}
 	}
-	// ASC FIFO: the oldest request is painted leftmost, newest rightmost.
-	if requests[0].RequestID != "r1" {
-		t.Fatalf("expected oldest request (r1) at head, got %q", requests[0].RequestID)
-	}
+	// ASC means the newest request is what the UI paints rightmost.
 	if requests[len(requests)-1].RequestID != "r4" {
 		t.Fatalf("expected newest request (r4) at tail, got %q", requests[len(requests)-1].RequestID)
 	}
 }
 
-// 2026-08-27: under the ASC FIFO contract lastTiles() keeps items[len-N:],
-// i.e. the newest N tiles — the cap must drop the OLDEST so a busy lane
-// keeps showing fresh traffic instead of freezing on its first tiles.
+// 2026-07-26: the per-lane cap must drop the OLDEST tiles. Under ASC
+// ordering lastTiles keeps items[len-limit:] = the newest N, so a busy lane
+// always shows its most recent window.
 func TestBuildLiveStreamLanes_LaneCapKeepsNewest(t *testing.T) {
 	base := time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC)
 	total := liveStreamLaneLimit + 5
@@ -1471,9 +1530,9 @@ func TestLanesChanged_DetectsActualChanges(t *testing.T) {
 // different lane.requests on consecutive snapshots — the swim-lane
 // "rolling"/jumping symptom.
 //
-// 2026-07-26: the asserted contract is now DESC (newest first) to match
-// what the dashboard renders and what firstTiles() truncates against.
-func TestSnapshotFromDimensionQueues_RequestsAreDESC(t *testing.T) {
+// 2026-07-26: the asserted contract is now ASC (oldest first) to match
+// what the dashboard renders and what lastTiles() truncates against.
+func TestSnapshotFromDimensionQueues_RequestsAreASC(t *testing.T) {
 	mr := miniredis.RunT(t)
 	defer mr.Close()
 
@@ -1734,8 +1793,6 @@ func TestSlimTileFormatSizeReduction(t *testing.T) {
 
 func float64Ptr(v float64) *float64 { return &v }
 
-// lastTiles caps a lane whose items are sorted ASC (oldest first), so the
-// kept tail is the newest N — the FIFO contract from 730cbaef8.
 func TestLastTiles(t *testing.T) {
 	tiles := []LiveStreamTile{
 		{RequestID: "oldest", Timestamp: "2026-07-26T12:00:00Z"},
@@ -1750,7 +1807,7 @@ func TestLastTiles(t *testing.T) {
 		assert.Equal(t, "oldest", result[0].RequestID)
 	})
 
-	t.Run("keeps newest N when limit < length", func(t *testing.T) {
+	t.Run("returns last N when limit < length", func(t *testing.T) {
 		result := lastTiles(tiles, 2)
 		assert.Equal(t, 2, len(result))
 		assert.Equal(t, "newer", result[0].RequestID)
@@ -1966,12 +2023,11 @@ func TestBuildLiveStreamSnapshot_DedupesIdleMarkersPerLane(t *testing.T) {
 	if len(lane.Requests) != 2 {
 		t.Fatalf("expected one normal tile plus one idle tile, got %#v", lane.Requests)
 	}
-	// ASC FIFO: the idle marker (10:05) precedes the newer request (10:06).
-	if lane.Requests[0].RequestID != newIdle.RequestID || lane.Requests[0].Status != "idle" {
-		t.Fatalf("expected newest idle marker first under ASC ordering, got %#v", lane.Requests)
-	}
 	if lane.Requests[1].RequestID != "req-new" {
-		t.Fatalf("new normal request should be the newest (rightmost) tile, got %#v", lane.Requests)
+		t.Fatalf("new normal request should be rightmost, got %#v", lane.Requests)
+	}
+	if lane.Requests[0].RequestID != newIdle.RequestID || lane.Requests[0].Status != "idle" {
+		t.Fatalf("expected idle marker before newest request on the left, got %#v", lane.Requests)
 	}
 	for _, tile := range lane.Requests {
 		if tile.Status == "idle" && tile.RequestID == oldIdle.RequestID {
@@ -2343,9 +2399,9 @@ func TestComputeScopeDelta_DropsDegradedSnapshot(t *testing.T) {
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	defer rdb.Close()
 	hub := NewLiveStreamSSEHub(nil, LiveStreamConfig{RedisClient: rdb, InitialReplayLimit: 200})
-	// Disable the 2s snapshot throttle (2026-08-25): this test exercises the
-	// degraded-snapshot guard, which must run on the immediate second read —
-	// the throttle would just replay the cached baseline delta instead.
+	// 2026-08-25 (merge audit): 同 sse_audit 测试 — 06408163c 的 2s 节流会在
+	// 窗口内重放上一次 delta, 与"degraded snapshot 必须丢弃"的非节流断言冲突。
+	// 关闭节流, 保持对丢弃语义的直接验证。
 	hub.SetSnapshotMinInterval(0)
 	ctx := context.Background()
 
