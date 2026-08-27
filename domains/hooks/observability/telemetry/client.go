@@ -183,7 +183,7 @@ type RequestLogEntry struct {
 	APIKeyID      *int         `json:"api_key_id,omitempty"`
 	EndUserID     *string      `json:"end_user_id,omitempty"`
 	CustomerID    *int64       `json:"customer_id,omitempty"`
-	// RequestClass 是请求类型（V6-W1.6 R8，migration 608）：immediate|scheduled。
+	// RequestClass 是请求类型（V6-W1.6 R8，migration 610）：immediate|scheduled。
 	// nil 落库为 'immediate'（列 NOT NULL DEFAULT，INSERT 侧 COALESCE）；
 	// 由 handler 从 ExecParams.DispatchDueAt（X-Gw-Due-At 头）推导并盖章。
 	RequestClass *string `json:"request_class,omitempty"`
@@ -1079,7 +1079,7 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 			-- 2026-08-19: streaming discard audit events.
 			discard_events,
 			customer_id,
-			-- V6-W1.6 R8 (migration 608): request class + scheduled due time.
+			-- V6-W1.6 R8 (migration 610): request class + scheduled due time.
 			request_class, due_at
 		) VALUES (
 		$1, now(), $2, $3, $4,
@@ -1134,7 +1134,7 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 			$99::text::jsonb,
 			-- 2026-08-25 (migration 507): customer metadata.
 			$100,
-			-- V6-W1.6 R8 (migration 608): request class + due time. $101 stays
+			-- V6-W1.6 R8 (migration 610): request class + due time. $101 stays
 			-- a bare placeholder (placeholder-alignment guard); the NOT NULL
 			-- default is resolved arg-side by requestClassArg.
 			$101, $102
@@ -1274,7 +1274,7 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		t8_response_start_at = COALESCE(EXCLUDED.t8_response_start_at, request_logs_hot.t8_response_start_at),
 			t9_response_end_at   = COALESCE(EXCLUDED.t9_response_end_at, request_logs_hot.t9_response_end_at),
 			discard_events       = COALESCE(EXCLUDED.discard_events, request_logs_hot.discard_events),
-			-- V6-W1.6 R8 (migration 608): class never regresses to NULL;
+			-- V6-W1.6 R8 (migration 610): class never regresses to NULL;
 			-- due_at keeps the first non-null value.
 			request_class        = COALESCE(EXCLUDED.request_class, request_logs_hot.request_class),
 			due_at               = COALESCE(EXCLUDED.due_at, request_logs_hot.due_at)
@@ -1453,7 +1453,7 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		// 2026-08-25 (migration 507): customer metadata ($100 ↔ customer_id,
 		// the LAST column — keep aligned with the INSERT column list above).
 		entry.CustomerID,
-		// V6-W1.6 R8 (migration 608): $101 ↔ request_class (arg-side
+		// V6-W1.6 R8 (migration 610): $101 ↔ request_class (arg-side
 		// 'immediate' default for the NOT NULL column), $102 ↔ due_at.
 		requestClassArg(entry.RequestClass),
 		entry.DueAt,
@@ -1909,7 +1909,7 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 				ELSE attachments
 			END
 			, customer_id = COALESCE($97, customer_id)
-			-- V6-W1.6 R8 (migration 608): request class + due time.
+			-- V6-W1.6 R8 (migration 610): request class + due time.
 			, request_class = CASE WHEN $98 IS NULL THEN request_class ELSE $98 END
 			, due_at = CASE WHEN $98 IS NULL THEN due_at ELSE $99 END
 		   WHERE request_id = $1
@@ -2049,7 +2049,7 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		entry.RoutingSummary,
 		attachmentsArgStr(entry.Attachments),
 		entry.CustomerID,
-		// V6-W1.6 R8 (migration 608): a nil $98 preserves both fields;
+		// V6-W1.6 R8 (migration 610): a nil $98 preserves both fields;
 		// otherwise $98/$99 are written as one invariant-preserving pair.
 		entry.RequestClass,
 		entry.DueAt,
