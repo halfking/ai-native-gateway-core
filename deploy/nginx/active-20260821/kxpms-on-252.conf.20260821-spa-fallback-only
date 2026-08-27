@@ -369,6 +369,10 @@ server {
     # Product intro → Maintain home. Gateway login entry: /?login=*
     location = / {
         if (-f /var/www/llm-gateway-maintenance/UPGRADING) { return 503; }
+        # A local error_page (418) blocks inheritance of the server-level 503
+        # mapping; without this line the marker's return 503 serves nginx's
+        # default error body instead of the upgrade page.
+        error_page 503 =200 /__llm_gateway_upgrade.html;
         error_page 418 = @llm_gateway_root;
         if ($arg_login != "") { return 418; }
         return 302 /maintain/home;
