@@ -1144,76 +1144,7 @@ func emitAnthropicBridgeErrorChunk(w http.ResponseWriter, code, message string, 
 // dropped tool_calls and other complex message structures, causing
 // Claude Sonnet 4-6 to lose conversation context.
 func ConvertChatRequestToAnthropic(in []byte) ([]byte, error) {
-	var src map[string]any
-	if err := json.Unmarshal(in, &src); err != nil {
-		return nil, fmt.Errorf("unmarshal: %w", err)
-	}
-	out := map[string]any{
-		"model": src["model"],
-	}
-	if mt, ok := src["max_tokens"]; ok && mt != nil {
-		out["max_tokens"] = mt
-	} else {
-		out["max_tokens"] = 4096
-	}
-	if s, ok := src["stream"]; ok {
-		out["stream"] = s
-	}
-	if t, ok := src["temperature"]; ok {
-		out["temperature"] = t
-	}
-	if tp, ok := src["top_p"]; ok {
-		out["top_p"] = tp
-	}
-	if tk, ok := src["top_k"]; ok {
-		out["top_k"] = tk
-	}
-	if stops, ok := src["stop"]; ok {
-		out["stop_sequences"] = stops
-	}
-
-	if user, ok := src["user"].(string); ok && user != "" {
-		out["metadata"] = map[string]any{
-			"user_id": user,
-		}
-	}
-
-	var systemContent string
-	var anthropicMsgs []any
-	if msgs, ok := src["messages"].([]any); ok {
-		for _, msg := range msgs {
-			msgMap, _ := msg.(map[string]any)
-			role, _ := msgMap["role"].(string)
-			if role == "system" {
-				if system, ok := msgMap["content"].(string); ok {
-					systemContent = system
-				}
-				continue
-			}
-			anthropicMsgs = append(anthropicMsgs, convertBridgeChatMessageToAnthropic(msgMap))
-		}
-	}
-	if systemContent != "" {
-		out["system"] = systemContent
-	}
-	out["messages"] = anthropicMsgs
-
-	if tools, ok := src["tools"].([]any); ok {
-		anthTools := make([]any, 0, len(tools))
-		for _, tool := range tools {
-			toolMap, _ := tool.(map[string]any)
-			if anthropicTool, ok := convertBridgeOpenAIToolToAnthropic(toolMap); ok {
-				anthTools = append(anthTools, anthropicTool)
-			}
-		}
-		if len(anthTools) > 0 {
-			out["tools"] = anthTools
-		}
-	}
-	if toolChoice, ok := src["tool_choice"]; ok {
-		out["tool_choice"] = convertBridgeChatToolChoiceToAnthropic(toolChoice)
-	}
-	return json.Marshal(out)
+	return anthropictransform.ConvertChatRequestToAnthropic(in)
 }
 
 // ConvertAnthropicResponseToChat converts an Anthropic Messages
