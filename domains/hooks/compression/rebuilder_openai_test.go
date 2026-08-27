@@ -286,3 +286,88 @@ func jsonContainsRaw(raw json.RawMessage, needle string) bool {
 	s := string(raw)
 	return strings.Contains(s, needle)
 }
+
+// TestRebuildOpenAIAfterSummary_TailKeepsToolRoundAtomic verifies that tail
+// trimming never emits a tool result without its preceding assistant tool
+// call. Upstreams reject this orphaned tool_call_id shape.
+func TestRebuildOpenAIAfterSummary_TailKeepsToolRoundAtomic(t *testing.T) {
+	body := []byte(`{"model":"m","messages":[
+		{"role":"user","content":"original task"},
+		{"role":"assistant","content":"older response"},
+		{"role":"user","content":"use a tool"},
+		{"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{}"}}]},
+		{"role":"tool","tool_call_id":"call_1","content":"tool result"},
+		{"role":"user","content":"continue"}
+	]}`)
+	ret, err := extractOpenAI(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// keepRecentPairs=1 nominally keeps two messages. The naïve lastN tail is
+	// [tool result, user], which orphans call_1 by omitting its assistant call.
+	rebuilt, ok := RebuildOpenAIAfterSummary(body, "summary", ret, 1)
+	if !ok {
+		t.Fatal("rebuild failed")
+	}
+	assertNoOrphanToolResults(t, rebuilt)
+}
+
+func TestRebuildOpenAIAfterSummary_TailKeepsMultiResultToolRoundAtomic(t *testing.T) {
+	body := []byte(`{"model":"m","messages":[
+		{"role":"user","content":"original task"},
+		{"role":"assistant","content":"older response"},
+		{"role":"user","content":"use two tools"},
+		{"role":"assistant","content":"","tool_calls":[
+			{"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{}"}},
+			{"id":"call_2","type":"function","function":{"name":"lookup","arguments":"{}"}}
+		]},
+		{"role":"tool","tool_call_id":"call_1","content":"result one"},
+		{"role":"tool","tool_call_id":"call_2","content":"result two"},
+		{"role":"user","content":"continue"}
+	]}`)
+	ret, err := extractOpenAI(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The nominal suffix begins at the second tool result. Both results still
+	// belong to one assistant anchor and must be reattached atomically.
+	rebuilt, ok := RebuildOpenAIAfterSummary(body, "summary", ret, 1)
+	if !ok {
+		t.Fatal("rebuild failed")
+	}
+	assertNoOrphanToolResults(t, rebuilt)
+	msgs, err := extractMessages(rebuilt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, m := range msgs {
+		for _, id := range extractToolCallIDs(m) {
+			seen[id] = true
+		}
+	}
+	for _, id := range []string{"call_1", "call_2"} {
+		if !seen[id] {
+			t.Errorf("tool call %s was lost while preserving atomic tool round", id)
+		}
+	}
+}
+
+func assertNoOrphanToolResults(t *testing.T, body []byte) {
+	t.Helper()
+	msgs, err := extractMessages(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := make(map[string]bool)
+	for _, m := range msgs {
+		for _, id := range extractToolCallIDs(m) {
+			calls[id] = true
+		}
+	}
+	for _, m := range msgs {
+		if id := toolCallIDOf(m); id != "" && !calls[id] {
+			t.Errorf("orphan tool result %q after rebuild", id)
+		}
+	}
+}

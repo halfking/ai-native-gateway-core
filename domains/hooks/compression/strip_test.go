@@ -617,3 +617,37 @@ func TestStripThinkingBlocks_AllThinkingNoOtherFieldsStillDropped(t *testing.T) 
 		t.Errorf("pure thinking message with no payload fields should be dropped, got %s", out)
 	}
 }
+
+func TestStripThinkingBlocks_AllThinkingMeaningfulExtensionPreserved(t *testing.T) {
+	raw := json.RawMessage(`{
+		"content": [{"type":"thinking","thinking":"reasoning"}],
+		"custom_payload": {"trace_id":"t-1"}
+	}`)
+	out := stripThinkingBlocks(raw)
+	if out == nil {
+		t.Fatal("message with meaningful extension payload must be preserved")
+	}
+	var got map[string]any
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["custom_payload"] == nil {
+		t.Fatal("custom payload was lost")
+	}
+	if parts, ok := got["content"].([]any); !ok || len(parts) != 0 {
+		t.Errorf("thinking content should become an empty array, got %v", got["content"])
+	}
+}
+
+func TestStripThinkingBlocks_AllThinkingEmptyExtensionDropped(t *testing.T) {
+	raw := json.RawMessage(`{
+		"role": "assistant",
+		"content": [{"type":"thinking","thinking":"reasoning"}],
+		"tool_calls": null,
+		"name": "",
+		"metadata": {}
+	}`)
+	if out := stripThinkingBlocks(raw); out != nil {
+		t.Errorf("message with only empty extension fields should be dropped, got %s", out)
+	}
+}

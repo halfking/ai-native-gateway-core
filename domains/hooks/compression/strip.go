@@ -34,6 +34,7 @@
 package compression
 
 import (
+	"bytes"
 	"encoding/json"
 )
 
@@ -649,7 +650,7 @@ func stripThinkingBlocks(raw json.RawMessage) json.RawMessage {
 		if err := json.Unmarshal(raw, &keys); err != nil {
 			return nil
 		}
-		if len(keys) <= 2 { // only role and/or content
+		if !hasMeaningfulMessagePayload(keys) {
 			return nil
 		}
 		keys["content"], _ = json.Marshal([]json.RawMessage{})
@@ -673,4 +674,24 @@ func stripThinkingBlocks(raw json.RawMessage) json.RawMessage {
 	// Marshal the complete message back
 	cleaned, _ := json.Marshal(fullMsg)
 	return cleaned
+}
+
+// hasMeaningfulMessagePayload reports whether a message still has data beyond
+// role/content after thinking blocks have been stripped. It intentionally
+// accepts non-empty protocol extension fields instead of enumerating only the
+// current tool fields, while treating null and empty JSON values as no payload.
+func hasMeaningfulMessagePayload(fields map[string]json.RawMessage) bool {
+	for key, raw := range fields {
+		if key == "role" || key == "content" {
+			continue
+		}
+		trimmed := bytes.TrimSpace(raw)
+		if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) ||
+			bytes.Equal(trimmed, []byte(`""`)) || bytes.Equal(trimmed, []byte("[]")) ||
+			bytes.Equal(trimmed, []byte("{}")) {
+			continue
+		}
+		return true
+	}
+	return false
 }
