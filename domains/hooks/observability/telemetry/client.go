@@ -232,6 +232,8 @@ type RequestLogEntry struct {
 	AgentName          *string `json:"agent_name,omitempty"`
 	AgentType          *string `json:"agent_type,omitempty"`
 	ClientProtocol     *string `json:"client_protocol,omitempty"`
+	UpstreamProtocol   *string `json:"upstream_protocol,omitempty"`
+	ProtocolConversion *bool   `json:"protocol_conversion,omitempty"`
 	VirtualClientID    *string `json:"virtual_client_id,omitempty"`
 	StreamFirstChunkMs *int    `json:"stream_first_chunk_ms,omitempty"`
 	StreamChunkCount   *int    `json:"stream_chunk_count,omitempty"`
@@ -1456,6 +1458,9 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 	if err != nil {
 		return err
 	}
+	if err := upsertProtocolMetadata(ctx, tx, entry); err != nil {
+		return err
+	}
 
 	// 2026-07-22 Ticket #10: Persist full bodies in request_logs_bodies_hot.
 	// 2026-08-24 Phase 1 body storage optimization: outbound_body now also
@@ -2074,6 +2079,9 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 	); err != nil {
 		return err
 	}
+	if err := upsertProtocolMetadata(ctx, tx, entry); err != nil {
+		return err
+	}
 
 	if entry.APIKeyID != nil && *entry.APIKeyID > 0 && entry.Success {
 		var promptAdd, completionAdd int64
@@ -2119,6 +2127,21 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 	}
 
 	return tx.Commit(ctx)
+}
+
+func upsertProtocolMetadata(ctx context.Context, tx pgx.Tx, entry *RequestLogEntry) error {
+	if entry == nil || entry.RequestID == "" ||
+		(entry.ClientProtocol == nil && entry.UpstreamProtocol == nil && entry.ProtocolConversion == nil) {
+		return nil
+	}
+	_, err := tx.Exec(ctx, `
+		UPDATE request_logs_hot
+		   SET client_protocol = COALESCE(client_protocol, $2),
+		       upstream_protocol = COALESCE(upstream_protocol, $3),
+		       protocol_conversion = COALESCE(protocol_conversion, $4)
+		 WHERE request_id = $1
+	`, entry.RequestID, entry.ClientProtocol, entry.UpstreamProtocol, entry.ProtocolConversion)
+	return err
 }
 
 // shouldClaimFinalSuccess reports whether entry represents a terminal success
@@ -2799,6 +2822,8 @@ func sanitizeRequestLogEntry(e *RequestLogEntry) {
 	sanitizeStringPtr(&e.ResponseChecksum)
 	sanitizeStringPtr(&e.TransformRuleID)
 	sanitizeStringPtr(&e.EgressProtocol)
+	sanitizeStringPtr(&e.ClientProtocol)
+	sanitizeStringPtr(&e.UpstreamProtocol)
 	sanitizeStringPtr(&e.FailureDetailCode)
 	sanitizeStringPtr(&e.FailureStage)
 	sanitizeStringPtr(&e.RequestPreview)
@@ -3011,6 +3036,8 @@ func mergeRequestLogEntry(dst, src *RequestLogEntry) {
 	mergeStringPtr(&dst.AgentName, src.AgentName)
 	mergeStringPtr(&dst.AgentType, src.AgentType)
 	mergeStringPtr(&dst.ClientProtocol, src.ClientProtocol)
+	mergeStringPtr(&dst.UpstreamProtocol, src.UpstreamProtocol)
+	mergeBoolPtr(&dst.ProtocolConversion, src.ProtocolConversion)
 	mergeStringPtr(&dst.VirtualClientID, src.VirtualClientID)
 	mergeIntPtr(&dst.RequestBytes, src.RequestBytes)
 	mergeIntPtr(&dst.ResponseBytes, src.ResponseBytes)
