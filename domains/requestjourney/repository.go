@@ -33,7 +33,7 @@ const journeyEventColumns = `
 	credential_id, from_model, to_model, from_credential_id,
 	to_credential_id, attempt_id, attempt_no, outcome, error_kind,
 	http_status, retry_reason, switch_reason, node_health_status,
-		observation_status, retry_at, occurred_at`
+	observation_status, retry_at, occurred_at`
 
 func (r *PostgresRepository) Apply(ctx context.Context, event JourneyEvent) error {
 	if r == nil || r.db == nil {
@@ -42,8 +42,8 @@ func (r *PostgresRepository) Apply(ctx context.Context, event JourneyEvent) erro
 	return applyJourneyEvent(ctx, r.db, event)
 }
 
-// ApplyTx persists an observation using the caller-owned PostgreSQL transaction.
-// ObservationOutbox uses it so projection writes share its transaction-local RLS bypass.
+// ApplyTx persists an observation through a caller-owned transaction so the
+// durable outbox can share its transaction-local RLS bypass.
 func (r *PostgresRepository) ApplyTx(ctx context.Context, tx pgx.Tx, event JourneyEvent) error {
 	if r == nil || tx == nil {
 		return errors.New("request journey PostgreSQL transaction is unavailable")
@@ -84,8 +84,7 @@ func applyJourneyEvent(ctx context.Context, db interface {
 		INSERT INTO request_state_transitions (`+journeyEventColumns+`)
 		VALUES (
 			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,
-				$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27
-
+			$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27
 		)
 		ON CONFLICT (tenant_id, request_id, seq)
 		WHERE event_type IS NOT NULL DO NOTHING`,
@@ -280,9 +279,9 @@ func scanJourneyEvents(rows pgx.Rows) ([]JourneyEvent, error) {
 		var requestedModel, resolvedModel, model, provider sql.NullString
 		var fromModel, toModel, attemptID, outcome, errorKind sql.NullString
 		var retryReason, switchReason, nodeHealthStatus sql.NullString
-		var retryAt sql.NullTime
 		var providerID, credentialID, fromCredentialID, toCredentialID sql.NullInt64
 		var attemptNo, httpStatus sql.NullInt64
+		var retryAt sql.NullTime
 		if err := rows.Scan(
 			&event.TenantID, &event.GatewayInstanceID, &event.RequestID, &event.Seq,
 			&eventType, &stage, &requestedModel, &resolvedModel, &model,
