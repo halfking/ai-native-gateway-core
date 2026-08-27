@@ -243,6 +243,39 @@ server {
     access_log /var/log/nginx/kxpms-cn-llm-access.log;
     error_log /var/log/nginx/kxpms-cn-llm-error.log;
 
+    # Marker-driven deploy page for the 154 gateway behind this public ingress.
+    error_page 503 =200 /__llm_gateway_upgrade.html;
+    location = /__llm_gateway_upgrade.html {
+        internal;
+        alias /var/www/llm-gateway-maintenance/index.html;
+        add_header Cache-Control "no-store, no-cache, must-revalidate" always;
+        add_header X-LLM-Gateway-Upgrade "in-progress" always;
+    }
+
+    # Keep public probes real while the gateway marker gates user traffic.
+    location = /healthz {
+        proxy_pass http://kxpms_llm_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_connect_timeout 30s;
+        proxy_read_timeout 30s;
+        proxy_send_timeout 30s;
+    }
+    location = /readyz {
+        proxy_pass http://kxpms_llm_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_connect_timeout 30s;
+        proxy_read_timeout 30s;
+        proxy_send_timeout 30s;
+    }
+
     # LLM Gateway long-timeout (AI reasoning/thinking SSE)
     proxy_buffering off;
     proxy_cache off;
@@ -321,11 +354,13 @@ server {
 
     # Product intro → Maintain home. Gateway login entry: /?login=*
     location = / {
+        if (-f /var/www/llm-gateway-maintenance/UPGRADING) { return 503; }
         error_page 418 = @llm_gateway_root;
         if ($arg_login != "") { return 418; }
         return 302 /maintain/home;
     }
     location @llm_gateway_root {
+        if (-f /var/www/llm-gateway-maintenance/UPGRADING) { return 503; }
         proxy_pass http://kxpms_llm_backend;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
@@ -363,6 +398,7 @@ server {
     # /artifacts/, /maintain/, /menu-config.json, /plugins/, /api/admin/ etc., so
     # behavior for those routes is preserved.
     location / {
+        if (-f /var/www/llm-gateway-maintenance/UPGRADING) { return 503; }
         try_files $uri $uri/ @llm_spa_154;
     }
     location @llm_spa_154 {
@@ -384,6 +420,7 @@ server {
 
     # Admin API
     location /api/admin/ {
+        if (-f /var/www/llm-gateway-maintenance/UPGRADING) { return 503; }
         proxy_pass http://kxpms_llm_backend;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
