@@ -66,7 +66,7 @@ func (h *Handler) handleRequestActions(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		seen[ev.Seq] = struct{}{}
-		actions = append(actions, flattenActionEvent(ev))
+		actions = append(actions, flattenActionEvent(ev, nil))
 	}
 	// Redis LIST is newest-first (LPUSH); serve oldest → newest (replay
 	// contract order, live_stream_lifecycle.go actionLess).
