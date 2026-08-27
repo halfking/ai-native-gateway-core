@@ -40,3 +40,51 @@ func isNonStreamEmptyResponse(body []byte) bool {
 		len(msg.ToolCalls) > 0
 	return !hasContent
 }
+
+// isEmptyAnthropicMessagesResponse identifies a syntactically valid native
+// Messages response that carries no semantic assistant output. It deliberately
+// accepts tool_use blocks, including an empty input object, because those are
+// actionable model output rather than an empty completion.
+func isEmptyAnthropicMessagesResponse(body []byte) bool {
+	if len(body) == 0 || !json.Valid(body) {
+		return false
+	}
+
+	var envelope struct {
+		Type    string          `json:"type"`
+		Content json.RawMessage `json:"content"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil || envelope.Type != "message" {
+		return false
+	}
+	if envelope.Content == nil {
+		return true
+	}
+
+	var blocks []struct {
+		Type     string `json:"type"`
+		Text     string `json:"text"`
+		Thinking string `json:"thinking"`
+		ID       string `json:"id"`
+		Name     string `json:"name"`
+		Input    any    `json:"input"`
+	}
+	if err := json.Unmarshal(envelope.Content, &blocks); err != nil || len(blocks) == 0 {
+		return true
+	}
+	for _, block := range blocks {
+		switch block.Type {
+		case "text":
+			if block.Text != "" {
+				return false
+			}
+		case "thinking":
+			if block.Thinking != "" {
+				return false
+			}
+		case "tool_use", "server_tool_use", "web_search_tool_result":
+			return false
+		}
+	}
+	return true
+}

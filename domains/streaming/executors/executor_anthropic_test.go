@@ -3,6 +3,7 @@ package executors
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/provider"
 )
 
@@ -700,6 +702,67 @@ func TestAnthropicExecutor_Q4PassthroughSkipsQualityHook(t *testing.T) {
 	// Body must still be passed through to the client.
 	if !strings.Contains(rec.Body.String(), `"tool_use"`) {
 		t.Fatalf("Q4 body must pass through, got %s", rec.Body.String())
+	}
+}
+
+func TestAnthropicExecutor_EmptyNativeMessagesResponseIsRetryable(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{"missing content", `{"type":"message"}`},
+		{"empty content", `{"type":"message","content":[]}`},
+		{"empty text", `{"type":"message","content":[{"type":"text","text":""}]}`},
+		{"empty thinking", `{"type":"message","content":[{"type":"thinking","thinking":""}]}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if !isEmptyAnthropicMessagesResponse([]byte(tt.body)) {
+				t.Fatalf("isEmptyAnthropicMessagesResponse(%s) = false, want true", tt.body)
+			}
+		})
+	}
+
+	for _, body := range []string{
+		`{"type":"message","content":[{"type":"text","text":"hello"}]}`,
+		`{"type":"message","content":[{"type":"thinking","thinking":"reasoning"}]}`,
+		`{"type":"message","content":[{"type":"tool_use","id":"toolu_1","name":"weather","input":{}}]}`,
+	} {
+		if isEmptyAnthropicMessagesResponse([]byte(body)) {
+			t.Fatalf("isEmptyAnthropicMessagesResponse(%s) = true, want false", body)
+		}
+	}
+}
+
+func TestExecutorAnthropic_EmptyNativeMessagesResponseDoesNotWriteClient(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"msg_empty","type":"message","content":[]}`))
+	}))
+	defer upstream.Close()
+
+	e := &Executor{UpstreamTimeout: time.Second, StreamTimeout: time.Second}
+	params := &ExecParams{
+		R:              httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"claude-sonnet-5","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`)),
+		W:              httptest.NewRecorder(),
+		BodyBytes:      []byte(`{"model":"claude-sonnet-5","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`),
+		Model:          "claude-sonnet-5",
+		ClientModel:    "claude-sonnet-5",
+		ClientProtocol: "anthropic-messages",
+	}
+	candidate := provider.Candidate{BaseURL: upstream.URL, APIKey: "test", Protocol: "anthropic-messages", RawModel: "claude-sonnet-5"}
+
+	_, err := e.executeAnthropicOnce(params, candidate, &AnthropicExecutor{}, params.BodyBytes, params.BodyBytes, candidate.RawModel, time.Now(), nil)
+	var retry *retryableError
+	if !errors.As(err, &retry) {
+		t.Fatalf("error = %T %v, want retryable empty response", err, err)
+	}
+	if got := classifyExecError(err); got != errorsx.KindEmptyResponse {
+		t.Fatalf("kind = %q, want %q", got, errorsx.KindEmptyResponse)
+	}
+	if got := params.W.(*httptest.ResponseRecorder).Body.String(); got != "" {
+		t.Fatalf("client received body before failover: %q", got)
 	}
 }
 
