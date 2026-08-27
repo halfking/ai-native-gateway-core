@@ -1085,31 +1085,26 @@ func (e *Executor) executeAnthropicOnce(
 			// 并发修复 2026-07-27：异步重试 goroutine 的 params.W 为 nil
 			// （客户端已收到 202），错误体只能通过 PendingStore 回传，
 			// 这里直接跳过客户端写。
-			if params.W != nil {
-				// 2026-07-27 (D-2): forward the FULL vendor error body, not just
-				// the first 4096 bytes used for classification. Previously the
-				// raw-passthrough path wrote body[:n] (n <= 4096) and the rest had
-				// already been io.Copy'd to Discard above, so a vendor 4xx body
-				// larger than 4 KiB reached the client truncated — producing
-				// invalid/truncated JSON that Anthropic SDKs could not parse.
-				//
-				// The remaining body is still unread (the discard was for the
-				// *non-passthrough* paths). Read it up to maxPassthroughErrorBody
-				// and concatenate with the classified prefix, then write the whole
-				// envelope. Cap protects against buffering a huge body in memory.
+				// 2026-08-27 P0 fix: Always drain the response body to enable
+				// HTTP connection reuse, regardless of params.W. Previously when
+				// params.W == nil (async retry path), the body was left unread,
+				// forcing the connection pool to close the connection instead of
+				// reusing it.
 				fullBody := body[:n]
 				if n >= len(body) {
 					// We filled the 4096 prefix buffer — there may be more. Read
-					// the remainder up to the passthrough cap.
+					// the remainder up to the passthrough cap (only for client write).
 					remainingCap := maxPassthroughErrorBody - n
-					if remainingCap > 0 {
+					if remainingCap > 0 && params.W != nil {
 						rest, _ := io.ReadAll(io.LimitReader(resp.Body, int64(remainingCap)))
 						if len(rest) > 0 {
 							fullBody = append(append([]byte(nil), body[:n]...), rest...)
 						}
 					}
-					_, _ = io.Copy(io.Discard, resp.Body) // drain anything beyond the cap
+					// Always drain the remaining body (essential for connection reuse)
+					_, _ = io.Copy(io.Discard, resp.Body)
 				}
+				if params.W != nil {
 				// Surface an accurate Content-Length for the bytes we actually send
 				// (the copied vendor Content-Length header would now be wrong if
 				// the body exceeded the cap).

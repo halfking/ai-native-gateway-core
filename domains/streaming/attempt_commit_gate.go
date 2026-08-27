@@ -380,6 +380,8 @@ func (g *AttemptCommitGate) WriteFrame(frame string) error {
 	if isSemanticClass(class) {
 		// First semantic frame triggers the normal semantic commit: flush
 		// buffered frames in original order, then this frame.
+		// 2026-08-27 P0 fix: Mark committed BEFORE releasing the lock to
+		// prevent Discard() from succeeding after bytes reach the network.
 		slog.Info("attempt_commit_gate: committing on first semantic frame",
 			"request_id", g.requestID,
 			"frame_class", int(class),
@@ -389,21 +391,15 @@ func (g *AttemptCommitGate) WriteFrame(frame string) error {
 		buffer := g.buffer
 		g.buffer = nil
 		g.bufferLen = 0
-		if len(buffer) == 0 {
-			g.committed = true
-		}
+		g.committed = true  // Mark committed before network I/O
 		g.mu.Unlock()
 		if len(buffer) > 0 {
 			if _, err := g.writer.Write(buffer); err != nil {
-				g.mu.Lock()
-				g.buffer = buffer
-				g.bufferLen = len(buffer)
-				g.mu.Unlock()
+				// Write failed but already marked committed; cannot rollback
+				// (bytes may have partially reached the client). Return error
+				// to stop further writes.
 				return err
 			}
-			g.mu.Lock()
-			g.committed = true
-			g.mu.Unlock()
 		}
 		if _, err := g.writer.Write([]byte(frame)); err != nil {
 			return err
@@ -626,13 +622,20 @@ func (g *AttemptCommitGate) markFirstSemanticByteLocked(class FrameClass) {
 // original order and marks the attempt committed.
 func (g *AttemptCommitGate) commitLocked() error {
 	if len(g.buffer) > 0 {
-		if _, err := g.writer.Write(g.buffer); err != nil {
-			return err
-		}
+		// 2026-08-27 P0 fix: Clear buffer BEFORE writing to prevent duplicate
+		// writes if the caller retries after a write error. Once committed=true,
+		// the gate refuses further operations, so a partial write cannot be
+		// completed by retrying.
+		bufCopy := g.buffer
 		g.buffer = nil
 		g.bufferLen = 0
+		g.committed = true  // Mark committed to prevent retries
+		if _, err := g.writer.Write(bufCopy); err != nil {
+			return err
+		}
+	} else {
+		g.committed = true
 	}
-	g.committed = true
 	return nil
 }
 
