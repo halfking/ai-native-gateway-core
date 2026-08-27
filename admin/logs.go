@@ -924,7 +924,9 @@ func (h *Handler) getLog(w http.ResponseWriter, r *http.Request) {
 		&detail.AttachmentCount,
 		// 2026-08-06: session_titles.title (see requestLogsListCols).
 		&detail.SessionTitle,
-		&detail.RequestClass, &detail.DueAt,
+		// NOTE: RequestClass and DueAt were duplicated below — removed 2026-08-28
+		// to match SELECT (74 cols vs 75 destinations, causing
+		// "number of field descriptions must equal number of destinations").
 		&detail.OutboundMsgHashes,
 		&detail.CompressionMeta,
 		// 2026-07-01: 完整附件元数据 JSONB (migration 325)。
