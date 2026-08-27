@@ -375,7 +375,10 @@ host_hide_upgrade_banner() {
   install_root=${3:-$(host_root_for "$target")}
   maintenance_dir=${4:-$install_root/maintenance}
   maint_root="$maintenance_dir"
-  "$ssh_cmd" "rm -f '$maint_root/UPGRADING' '$maint_root/index.html'" || return 1
+  # Remove the page first and verify it is gone; only then remove the marker.
+  # If either operation fails, UPGRADING remains and nginx continues to protect
+  # the unverified release instead of resuming real traffic.
+  "$ssh_cmd" "set -e; rm -f '$maint_root/index.html'; test ! -e '$maint_root/index.html'; rm -f '$maint_root/UPGRADING'" || return 1
   echo "  ✓ 升级静态页已撤掉"
 }
 
@@ -537,18 +540,25 @@ host_prune_releases() {
     printf '%s' \"\$keep_set\""
 }
 
-# Rollback: point `current` at the given version and restart. The
-# orchestrator MUST gate on `host_select_rollback_target` first —
-# this function refuses silently so a bad version can't be forced.
+# Rollback: point `current` at the given version and restart. Refuse missing,
+# active, or unverified bundles even when called directly; the canonical CLI
+# still selects a target first, but this primitive must be safe on its own.
 host_rollback_to() {
   local ssh_cmd=$1 target=$2 version=$3
-  local metadata_file
+  local metadata_file current_link
   metadata_file=$(host_release_layout "$target" "$version" | sed -n 's/^metadata_file=//p')
+  current_link=$(host_release_layout "$target" "$version" | sed -n 's/^current_link=//p')
 
-  # Refuse silently if the bundle is missing or unverified — the
-  # caller is responsible for selection.
   if ! "$ssh_cmd" "test -f '$metadata_file'"; then
     echo "host_rollback_to: no bundle at $version on $target" >&2
+    return 1
+  fi
+  if "$ssh_cmd" "test \"\$(readlink '$current_link' 2>/dev/null | xargs basename 2>/dev/null)\" = '$version'"; then
+    echo "host_rollback_to: $version is already active on $target" >&2
+    return 1
+  fi
+  if ! "$ssh_cmd" "grep -Eq '\"verified\"[[:space:]]*:[[:space:]]*true' '$metadata_file'"; then
+    echo "host_rollback_to: $version is not verified on $target" >&2
     return 1
   fi
 
