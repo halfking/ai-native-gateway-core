@@ -298,6 +298,7 @@ func expectedArgIdent(col string) string {
 		"client_protocol": "ClientProtocol", "upstream_protocol": "UpstreamProtocol",
 		"protocol_conversion": "ProtocolConversion", "virtual_client_id": "VirtualClientID",
 		"discard_events": "DiscardEvents", "customer_id": "CustomerID",
+		"request_class": "RequestClass", "due_at": "DueAt",
 	}
 	if v, ok := aliases[col]; ok {
 		return v
