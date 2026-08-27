@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -115,7 +116,14 @@ func (h *CallbackHandler) Handle(w http.ResponseWriter, r *http.Request) {
 
 	var cb FeishuCallback
 	if err := json.Unmarshal(body, &cb); err != nil {
-		slog.Warn("feishu_bot: invalid callback json", "error", err, "body", string(body))
+		// 2026-08-27 (audit fix): never log the full body — callbacks
+		// may carry operator identities / card content, and the body
+		// can be up to the 1 MiB cap. Record size + a short escaped
+		// preview instead.
+		slog.Warn("feishu_bot: invalid callback json",
+			"error", err,
+			"body_bytes", len(body),
+			"body_preview", previewBody(body))
 		http.Error(w, "invalid json", http.StatusBadRequest)
 		return
 	}
@@ -287,3 +295,18 @@ func (h *CallbackHandler) AsHTTPHandler() http.Handler {
 
 // Compile-time guard: avoid unused fmt import warning if all branches optimized out.
 var _ = fmt.Sprintf
+
+// previewBody returns a short, control-character-escaped preview of a
+// callback body safe for structured logs. Cap is 256 bytes — enough to
+// identify the shape of a malformed payload without dumping operator
+// identities or card content into the log stream.
+func previewBody(body []byte) string {
+	const cap = 256
+	b := body
+	if len(b) > cap {
+		b = b[:cap]
+	}
+	// strconv.Quote escapes control characters and keeps the log line
+	// single-line even when the payload contains newlines.
+	return strconv.Quote(string(b))
+}
