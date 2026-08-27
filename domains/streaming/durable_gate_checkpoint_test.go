@@ -2,7 +2,9 @@ package streaming
 
 import (
 	"errors"
+	"strings"
 	"testing"
+	"time"
 )
 
 // SR-12 streaming durable: the gate's durable write-ahead checkpoint hook
@@ -185,4 +187,204 @@ func TestAttemptCommitGateCheckpointFailureBlocksTerminalPartial(t *testing.T) {
 	if err := gate.FinishAttempt(partial); !errors.Is(err, boom) {
 		t.Fatalf("repeated terminal partial = %v, want sticky checkpoint error", err)
 	}
+}
+
+func TestAttemptCommitGateFlushHoldbackCheckpointFailure(t *testing.T) {
+	f := &trackingFlusher{}
+	boom := errors.New("checkpoint db down")
+	gate := NewAttemptCommitGate(ProtocolAnthropic, NewSerializedStreamWriter(f), GateOptions{
+		Mode:                 GateModeBuffered,
+		HoldbackWindow:       time.Second,
+		HoldbackMaxChunks:    10,
+		BeforeSemanticCommit: func(CommitState) error { return boom },
+	})
+	content := "event: content_block_delta\ndata: {\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n"
+	if err := gate.WriteFrame(content); err != nil {
+		t.Fatalf("write content to holdback: %v", err)
+	}
+	if got := gate.HoldbackHeldChunks(); got != 1 {
+		t.Fatalf("held chunks = %d, want 1", got)
+	}
+	if got := f.buf.Len(); got != 0 {
+		t.Fatalf("holdback window wrote %d bytes, want 0", got)
+	}
+
+	err := gate.FlushHoldback()
+	if !errors.Is(err, boom) {
+		t.Fatalf("FlushHoldback() = %v, want checkpoint error", err)
+	}
+	if !errors.Is(err, ErrAttemptCheckpointFailed) {
+		t.Fatalf("FlushHoldback() error not wrapped with sentinel: %v", err)
+	}
+	if got := f.buf.Len(); got != 0 {
+		t.Fatalf("checkpoint failure wrote %d bytes", got)
+	}
+	if got := gate.State(); got != CommitStateContent {
+		t.Fatalf("state = %v, want content after holdback checkpoint failure", got)
+	}
+	if gate.Committed() {
+		t.Fatal("gate must not commit after holdback checkpoint failure")
+	}
+
+	for _, op := range []struct {
+		name string
+		fn   func() error
+	}{
+		{"second FlushHoldback", gate.FlushHoldback},
+		{"WriteFrame", func() error { return gate.WriteFrame(content) }},
+		{"Commit", gate.Commit},
+		{"FinishAttempt", func() error { return gate.FinishAttempt("") }},
+	} {
+		t.Run(op.name, func(t *testing.T) {
+			if err := op.fn(); !errors.Is(err, boom) || !errors.Is(err, ErrAttemptCheckpointFailed) {
+				t.Fatalf("%s = %v, want sticky checkpoint error", op.name, err)
+			}
+		})
+	}
+}
+
+func TestAttemptCommitGateImmediateMetadataCheckpointFailure(t *testing.T) {
+	f := &trackingFlusher{}
+	boom := errors.New("metadata checkpoint failed")
+	gate := NewAttemptCommitGate(ProtocolAnthropic, NewSerializedStreamWriter(f), GateOptions{
+		Mode:                 GateModeImmediate,
+		BeforeSemanticCommit: func(CommitState) error { return boom },
+	})
+	meta := "event: message_start\ndata: {\"message\":{}}\n\n"
+	err := gate.WriteFrame(meta)
+	if !errors.Is(err, boom) {
+		t.Fatalf("immediate metadata write = %v, want checkpoint error", err)
+	}
+	if !errors.Is(err, ErrAttemptCheckpointFailed) {
+		t.Fatalf("error not wrapped with sentinel: %v", err)
+	}
+	if got := f.buf.Len(); got != 0 {
+		t.Fatalf("checkpoint failure wrote %d bytes", got)
+	}
+	if got := gate.State(); got != CommitStateMetadata {
+		t.Fatalf("state = %v, want metadata", got)
+	}
+	if gate.Committed() {
+		t.Fatal("gate must not commit after metadata checkpoint failure")
+	}
+
+	// Metadata-only checkpoint failure: state < content, so Discard is allowed.
+	if err := gate.Discard(); err != nil {
+		t.Fatalf("Discard after metadata checkpoint failure = %v, want success", err)
+	}
+
+	// After Discard, later writes return ErrAttemptDiscarded.
+	if err := gate.WriteFrame(meta); !errors.Is(err, ErrAttemptDiscarded) {
+		t.Fatalf("write after discard = %v, want ErrAttemptDiscarded", err)
+	}
+}
+
+func TestAttemptCommitGateCommitExecutesCheckpoint(t *testing.T) {
+	f := &trackingFlusher{}
+	var calls []CommitState
+	gate := NewAttemptCommitGate(ProtocolAnthropic, NewSerializedStreamWriter(f), GateOptions{
+		Mode: GateModeBuffered,
+		BeforeSemanticCommit: func(s CommitState) error {
+			calls = append(calls, s)
+			return nil
+		},
+	})
+	meta := "event: message_start\ndata: {\"message\":{}}\n\n"
+	if err := gate.WriteFrame(meta); err != nil {
+		t.Fatalf("write metadata: %v", err)
+	}
+	if len(calls) != 0 {
+		t.Fatalf("buffered metadata triggered checkpoint: %v", calls)
+	}
+
+	if err := gate.Commit(); err != nil {
+		t.Fatalf("Commit() = %v", err)
+	}
+	if len(calls) != 1 || calls[0] != CommitStateMetadata {
+		t.Fatalf("Commit checkpoint calls = %v, want [metadata]", calls)
+	}
+	if !gate.Committed() {
+		t.Fatal("gate not committed after Commit()")
+	}
+	if got := f.buf.String(); got != meta {
+		t.Fatalf("wire = %q, want %q", got, meta)
+	}
+}
+
+func TestAttemptCommitGateTerminalPartialThreeModes(t *testing.T) {
+	tests := []struct {
+		name     string
+		mode     GateMode
+		setup    func(*AttemptCommitGate) error
+		protocol ClientProtocol
+		partial  string
+	}{
+		{
+			name:     "immediate OpenAI Chat [DONE]",
+			mode:     GateModeImmediate,
+			protocol: ProtocolOpenAIChat,
+			partial:  "data: [DONE]\n\n",
+		},
+		{
+			name:     "buffered committed Anthropic message_stop",
+			mode:     GateModeBuffered,
+			protocol: ProtocolAnthropic,
+			partial:  "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+			setup: func(g *AttemptCommitGate) error {
+				content := "event: content_block_delta\ndata: {\"delta\":{\"type\":\"text_delta\",\"text\":\"x\"}}\n\n"
+				return g.WriteFrame(content)
+			},
+		},
+		{
+			name:     "buffered uncommitted OpenAI Responses response.completed",
+			mode:     GateModeBuffered,
+			protocol: ProtocolOpenAIResponses,
+			partial:  "event: response.completed\ndata: {}\n\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := &trackingFlusher{}
+			var calls []CommitState
+			gate := NewAttemptCommitGate(tt.protocol, NewSerializedStreamWriter(f), GateOptions{
+				Mode: tt.mode,
+				BeforeSemanticCommit: func(s CommitState) error {
+					calls = append(calls, s)
+					return nil
+				},
+			})
+			if tt.setup != nil {
+				if err := tt.setup(gate); err != nil {
+					t.Fatalf("setup: %v", err)
+				}
+			}
+
+			if err := gate.FinishAttempt(tt.partial); err != nil {
+				t.Fatalf("FinishAttempt = %v", err)
+			}
+
+			if !containsCommitState(calls, CommitStateTerminal) {
+				t.Fatalf("checkpoint calls = %v, want terminal", calls)
+			}
+			if gate.State() != CommitStateTerminal {
+				t.Fatalf("state = %v, want terminal", gate.State())
+			}
+			if !gate.Committed() {
+				t.Fatal("gate not committed after terminal partial")
+			}
+			if !strings.Contains(f.buf.String(), strings.TrimSpace(tt.partial)) {
+				t.Fatalf("wire missing terminal partial: %q", f.buf.String())
+			}
+		})
+	}
+}
+
+func containsCommitState(states []CommitState, target CommitState) bool {
+	for _, s := range states {
+		if s == target {
+			return true
+		}
+	}
+	return false
 }
