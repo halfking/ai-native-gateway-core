@@ -23,6 +23,25 @@ var (
 	ErrInvalidSession  = errors.New("invalid session")
 )
 
+// logSessionTypeMismatch records only bounded type metadata. TypedError's
+// Error method includes the full Redis key, which may contain a session or
+// tenant identifier and must not be duplicated into structured logs.
+func logSessionTypeMismatch(operation, sessionID string, err error) {
+	var typed *redissafe.TypedError
+	if errors.As(err, &typed) {
+		slog.Warn("session Redis key type mismatch",
+			"operation", operation,
+			"session_id", sessionID,
+			"expected_type", typed.Expected,
+			"actual_type", typed.Actual)
+		return
+	}
+	slog.Warn("session Redis key type mismatch",
+		"operation", operation,
+		"session_id", sessionID,
+		"type_error", true)
+}
+
 type Device struct {
 	DeviceSeed string    `json:"device_seed"`
 	FirstSeen  time.Time `json:"first_seen"`
@@ -316,9 +335,7 @@ func (sm *Manager) Get(ctx context.Context, sessionID string) (*Session, error) 
 			return nil, ErrSessionNotFound
 		}
 		if errors.Is(err, redissafe.ErrWrongType) {
-			slog.Warn("session key type mismatch in Get",
-				"session_id", sessionID,
-				"error", err)
+			logSessionTypeMismatch("get", sessionID, err)
 			return nil, ErrSessionNotFound
 		}
 		return nil, fmt.Errorf("redis error reading session: %w", err)
@@ -419,9 +436,7 @@ func (sm *Manager) Delete(ctx context.Context, sessionID string) error {
 			return ErrSessionNotFound
 		}
 		if errors.Is(err, redissafe.ErrWrongType) {
-			slog.Warn("session key type mismatch in Delete",
-				"session_id", sessionID,
-				"error", err)
+			logSessionTypeMismatch("delete", sessionID, err)
 			return ErrSessionNotFound
 		}
 		return fmt.Errorf("redis error reading session: %w", err)
