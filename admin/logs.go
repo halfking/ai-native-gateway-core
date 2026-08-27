@@ -81,10 +81,7 @@ type requestLogRow struct {
 	ClientProtocol *string `json:"client_protocol"`
 	ProviderModel  *string `json:"provider_model"`
 	TraceSeq       *int    `json:"trace_seq,omitempty"`
-	// V6-W1.6 R8 (migration 608): immediate|scheduled + due time.
-	RequestClass   *string    `json:"request_class,omitempty"`
-	DueAt          *time.Time `json:"due_at,omitempty"`
-	CreditsCharged *int64     `json:"credits_charged"`
+	CreditsCharged *int64  `json:"credits_charged"`
 	// v3 (2026-06-19) session-level outbound body fields.
 	OutboundBody        json.RawMessage `json:"outbound_body,omitempty"`
 	OutboundMsgCount    *int            `json:"outbound_msg_count,omitempty"`
@@ -101,7 +98,9 @@ type requestLogRow struct {
 	// COALESCE(NULLIF(gw_session_id,''),'')). Frontend uses this in
 	// the request-logs list and detail drawer; nil when no title has
 	// been generated or manually set.
-	SessionTitle *string `json:"session_title,omitempty"`
+	SessionTitle *string    `json:"session_title,omitempty"`
+	RequestClass *string    `json:"request_class,omitempty"`
+	DueAt        *time.Time `json:"due_at,omitempty"`
 }
 
 type requestLogAggregate struct {
@@ -398,7 +397,7 @@ func scanRequestListRow(rows interface {
 		&l.AttachmentCount,
 		// 2026-08-06: session_titles.title join (see requestLogsJoins).
 		&l.SessionTitle,
-		// V6-W1.6 R8 (migration 608): request class + due time (LAST fixed
+		// V6-W1.6 R8 (migration 610): request class + due time (LAST fixed
 		// columns; the conditional trace_seq append below stays after them).
 		&l.RequestClass, &l.DueAt,
 	}
@@ -547,6 +546,13 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		addFilter("rl.usage_source = $%d", v)
+	}
+	if requestClass := strings.TrimSpace(queryString(r, "request_class")); requestClass != "" {
+		if requestClass != "immediate" && requestClass != "scheduled" {
+			writeError(w, http.StatusBadRequest, "request_class must be 'immediate' or 'scheduled'")
+			return
+		}
+		addFilter("rl.request_class = $%d", requestClass)
 	}
 
 	hasTaskFilter := strings.TrimSpace(queryString(r, "gw_task_id")) != ""
@@ -909,6 +915,7 @@ func (h *Handler) getLog(w http.ResponseWriter, r *http.Request) {
 		&detail.AttachmentCount,
 		// 2026-08-06: session_titles.title (see requestLogsListCols).
 		&detail.SessionTitle,
+		&detail.RequestClass, &detail.DueAt,
 		&detail.OutboundMsgHashes,
 		&detail.CompressionMeta,
 		// 2026-07-01: 完整附件元数据 JSONB (migration 325)。
