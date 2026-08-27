@@ -253,7 +253,10 @@ func (s *alwaysExpand) Description() string { return "test helper that always ex
 func (s *alwaysExpand) Enabled() bool       { return true }
 func (s *alwaysExpand) GuardStage() string  { return s.guardStage }
 func (s *alwaysExpand) Apply(_ context.Context, in []byte) ([]byte, bool, error) {
-	return append(in, "xxxxxxxxx"), true, nil
+	out := make([]byte, 0, len(in)+9)
+	out = append(out, in...)
+	out = append(out, 'x', 'x', 'x', 'x', 'x', 'x', 'x', 'x', 'x')
+	return out, true, nil
 }
 
 // oneStrategySel 测试用 selector：只返回指定的 strategy。
