@@ -540,6 +540,8 @@ func (p *Pipeline) ApplyPolicy(ctx context.Context, pol GovernorPolicy) error {
 	// upstream-declared value (e.g. RPM mirrors TPM when publisher has a
 	// richer view).
 	newGovByCredID := make(map[int]Governor, len(pol.Specs))
+	newDepthByCredID := make(map[int]int, len(pol.Specs))
+	defDepth := p.config().MaxQueueDepth
 	for _, spec := range pol.Specs {
 		cred := specToCredentialRef(spec)
 		gov, err := p.governorForCredential(cred, pol.Revision)
@@ -550,6 +552,14 @@ func (p *Pipeline) ApplyPolicy(ctx context.Context, pol GovernorPolicy) error {
 			return fmt.Errorf("dispatch: build governor for credential %d: %w", spec.CredentialID, err)
 		}
 		newGovByCredID[spec.CredentialID] = gov
+		// Effective queue depth: an explicit max_queue_depth wins; otherwise
+		// fall back to the pipeline's global default — the same fallback
+		// getOrCreateForwarder uses when constructing a fresh forwarder.
+		d := spec.MaxQueueDepth
+		if d <= 0 {
+			d = defDepth
+		}
+		newDepthByCredID[spec.CredentialID] = d
 	}
 
 	// 3. Swap on live credForwarders and queue the rest.
@@ -557,6 +567,12 @@ func (p *Pipeline) ApplyPolicy(ctx context.Context, pol GovernorPolicy) error {
 	for credID, newGov := range newGovByCredID {
 		if cf, ok := p.forwarders[credID]; ok {
 			cf.replaceGov(newGov)
+			// Stage F residual: hot-reload the forwarder's queue depth so a
+			// live forwarder tracks max_queue_depth changes instead of the
+			// value it captured at construction.
+			if want := newDepthByCredID[credID]; int64(want) != cf.Limit() {
+				cf.replaceDepth(want)
+			}
 			continue
 		}
 		p.pendingGov[credID] = newGov
@@ -582,6 +598,8 @@ func specToCredentialRef(spec GovernorSpec) CredentialRef {
 		CredentialID:    spec.CredentialID,
 		ProviderID:      spec.ProviderID,
 		ConcurrencyMode: spec.Mode,
+		MaxQueueDepth:   spec.MaxQueueDepth,
+		MaxQueueWaitMS:  spec.MaxQueueWaitMS,
 	}
 	switch spec.Mode {
 	case ModeRPM:
@@ -742,7 +760,7 @@ func (p *Pipeline) snapshotForCredForwarderLocked(cf *credForwarder) GovernorSna
 		SpecRevision: p.activePolicyRevision.Load(),
 		Backend:      backendKind,
 		Mode:         gov.Mode(),
-		Limit:        int(cf.limit),
+		Limit:        int(cf.limit.Load()),
 		InFlight:     int(cf.depth.Load()),
 		QueueDepth:   int(cf.depth.Load()),
 		State:        SnapshotStateReady,
@@ -1584,7 +1602,7 @@ func (p *Pipeline) tryEnqueueCred(cred CredentialRef, qr *QueuedRequest) bool {
 	qr.journeyMu.Lock()
 	cf.handoffMu.Lock()
 	select {
-	case cf.queue <- qr:
+	case *cf.queue.Load() <- qr:
 		depth := cf.depth.Load()
 		metricCredQueueDepth.WithLabelValues(itoa(cred.CredentialID), cred.ConcurrencyMode).Inc()
 		p.observeQueue(QueueObservation{Kind: QueueCredentialDepth, CredentialID: cred.CredentialID, Mode: cred.ConcurrencyMode, Depth: depth, Delta: 1, AbsoluteDepth: true})
