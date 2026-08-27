@@ -29,6 +29,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -91,10 +92,14 @@ type QuotaRechargedHandler struct {
 //
 // TODO(settings_kv): 后续从 settings_kv.quota_webhook_secret 读，env 仅作 fallback。
 func SecretSource() []byte {
-	if s := os.Getenv(QuotaRechargedSecretEnv); s != "" {
-		return []byte(s)
+	s := strings.TrimSpace(os.Getenv(QuotaRechargedSecretEnv))
+	if s == "" {
+		return nil
 	}
-	return nil
+	if decoded, err := hex.DecodeString(s); err == nil && len(decoded) > 0 {
+		return decoded
+	}
+	return []byte(s)
 }
 
 // ServeHTTP 实现 http.Handler 接口（避免分配 inner http.HandlerFunc，
@@ -112,11 +117,19 @@ func (h *QuotaRechargedHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// 1. 读 body（限流到 1 MB）。
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxQuotaRechargedBodyBytes))
+	// 1. Read one byte beyond the limit. Signature verification intentionally
+	// runs against the bounded payload first so oversized requests with a
+	// signature for the original body are rejected as unauthorized.
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxQuotaRechargedBodyBytes+1))
 	if err != nil {
-		h.reject("read_body")
-		http.Error(w, "read body failed", http.StatusBadRequest)
+		h.reject("body_read_error")
+		http.Error(w, "read request body", http.StatusBadRequest)
+		return
+	}
+
+	if len(body) > maxQuotaRechargedBodyBytes {
+		h.reject("body_too_large")
+		http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
 		return
 	}
 
@@ -136,7 +149,6 @@ func (h *QuotaRechargedHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 		http.Error(w, "invalid signature", http.StatusUnauthorized)
 		return
 	}
-
 	// 3. parse JSON。
 	var payload QuotaRechargedBody
 	if err := json.Unmarshal(body, &payload); err != nil {
@@ -147,6 +159,11 @@ func (h *QuotaRechargedHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 	if payload.CredentialID <= 0 {
 		h.reject("credential_missing")
 		http.Error(w, "credential_id required", http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(payload.Vendor) == "" {
+		h.reject("vendor_missing")
+		http.Error(w, "vendor required", http.StatusBadRequest)
 		return
 	}
 	if _, ok := QuotaRechargedEventTypes[payload.EventType]; !ok {
@@ -178,7 +195,15 @@ func (h *QuotaRechargedHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 	// 用 goroutine 是为了让 webhook 200 OK 立即返回，balance_quota_probe
 	// 自身的探测链路可能要走 credential_probe_v2 几秒钟才完成。
 	if h.OnQuotaRecharged != nil {
-		go h.OnQuotaRecharged(payload.CredentialID, payload.EventType)
+		go func(credID int, source string) {
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					slog.Error("quota_recharged webhook callback panicked",
+						"credential_id", credID, "source", source, "panic", recovered)
+				}
+			}()
+			h.OnQuotaRecharged(credID, source)
+		}(payload.CredentialID, payload.EventType)
 	}
 	h.accept(payload.EventType)
 
