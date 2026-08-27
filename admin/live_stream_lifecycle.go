@@ -548,12 +548,8 @@ func snapshotRequestIDs(snapshot *LiveStreamSnapshot) map[string]struct{} {
 			}
 		}
 	}
-	if len(snapshot.DetailDimensions) > 0 {
-		add(snapshot.DetailDimensions)
-	}
-	if len(ids) == 0 {
-		add(snapshot.Dimensions)
-	}
+	// P0 optimization: DetailDimensions removed, Dimensions is the single source
+	add(snapshot.Dimensions)
 	return ids
 }
 
