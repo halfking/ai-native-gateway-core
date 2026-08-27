@@ -27,12 +27,22 @@ const visibleTiles = computed(() => {
 
 function isTileHighlighted(tile: RequestTile): boolean {
   if (!props.selectedLegends || props.selectedLegends.size === 0) return false
+  // 2026-08-27: credential维度使用credential_id作为稳定lane key
+  if (props.groupBy === 'credential') {
+    const credentialKey = tile.credential_id ? String(tile.credential_id) : ''
+    return credentialKey ? props.selectedLegends.has(credentialKey) : false
+  }
   const key = tile[props.groupBy as keyof RequestTile] as string
   return props.selectedLegends.has(key)
 }
 
 function isTileDimmed(tile: RequestTile): boolean {
   if (!props.selectedLegends || props.selectedLegends.size === 0) return false
+  // 2026-08-27: credential维度使用credential_id作为稳定lane key
+  if (props.groupBy === 'credential') {
+    const credentialKey = tile.credential_id ? String(tile.credential_id) : ''
+    return credentialKey ? !props.selectedLegends.has(credentialKey) : false
+  }
   const key = tile[props.groupBy as keyof RequestTile] as string
   return !props.selectedLegends.has(key)
 }

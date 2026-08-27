@@ -18,13 +18,16 @@ package main
 // in-process handlers, preserving the pre-migration rollback path.
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -71,12 +74,39 @@ func maintainReverseProxy(target *url.URL, perPath bool) *httputil.ReverseProxy 
 		r.URL.RawQuery = q.Encode()
 	}
 	proxy.ModifyResponse = func(response *http.Response) error {
-		if !perPath {
+		if perPath {
+			response.Header.Set("Deprecation", "true")
+			response.Header.Set("Link", "<https://maintain.kxpms.cn>; rel=\"successor-version\"")
+			response.Header.Set("Referrer-Policy", "no-referrer")
+		}
+		if response.StatusCode < http.StatusInternalServerError {
 			return nil
 		}
-		response.Header.Set("Deprecation", "true")
-		response.Header.Set("Link", "<https://maintain.kxpms.cn>; rel=\"successor-version\"")
-		response.Header.Set("Referrer-Policy", "no-referrer")
+		requestID := ""
+		if response.Request != nil {
+			requestID = response.Request.Header.Get("X-Request-ID")
+		}
+		if requestID == "" {
+			requestID = response.Header.Get("X-Request-ID")
+		}
+		body, err := json.Marshal(map[string]any{
+			"code":       "maintain.upstream_unavailable",
+			"message":    "运维服务暂时不可用，请稍后重试或联系支持",
+			"request_id": requestID,
+			"retryable":  true,
+		})
+		if err != nil {
+			return err
+		}
+		if response.Body != nil {
+			_ = response.Body.Close()
+		}
+		response.StatusCode = http.StatusServiceUnavailable
+		response.Status = "503 Service Unavailable"
+		response.Header.Set("Content-Type", "application/json")
+		response.Header.Set("Content-Length", strconv.Itoa(len(body)))
+		response.Header.Set("Retry-After", "10")
+		response.Body = io.NopCloser(bytes.NewReader(body))
 		return nil
 	}
 	proxy.ErrorHandler = func(writer http.ResponseWriter, request *http.Request, err error) {
@@ -96,41 +126,66 @@ func maintainReverseProxy(target *url.URL, perPath bool) *httputil.ReverseProxy 
 
 // newMaintainGatewayHandler composes the legacy Gateway handler with the
 // maintain reverse proxy and (optionally) the maintain-web static handler.
-// It returns legacy unchanged when MAINTAIN_SERVICE_URL is unset, which is
-// the rollback path.
+// Maintain routes are always intercepted so they cannot fall through to the
+// Gateway SPA when the optional maintain service is absent.
 func newMaintainGatewayHandler(legacy http.Handler, static *MaintainStaticHandler) http.Handler {
 	target, err := parseMaintainServiceURL(os.Getenv("MAINTAIN_SERVICE_URL"))
+	compat := http.NewServeMux()
 	if err != nil {
 		slog.Warn("maintain proxy disabled", "error", err)
-		return legacy
+		apiUnavailable := http.HandlerFunc(serveMaintainAPIUnavailable)
+		pageUnavailable := http.HandlerFunc(serveMaintainUnavailablePage)
+		compat.Handle(maintainAPIPrefix, apiUnavailable)
+		compat.Handle(maintainAPIPrefix+"/", apiUnavailable)
+		compat.Handle("/maintain", pageUnavailable)
+		compat.Handle("/maintain/", pageUnavailable)
+		compat.Handle("/maintain-assets/", pageUnavailable)
+		compat.Handle("/", legacy)
+		return compat
 	}
 
 	canonicalProxy := maintainReverseProxy(target, false)
 	deprecProxy := maintainReverseProxy(target, true)
-
-	compat := http.NewServeMux()
-	// Canonical maintain API.
 	compat.Handle(maintainAPIPrefix+"/", canonicalProxy)
 	compat.Handle(maintainAPIPrefix, canonicalProxy)
-	// Legacy /api/* shim — same backend, deprecated responses.
 	for _, prefix := range maintainCompatPrefixes {
 		compat.Handle(prefix, deprecProxy)
 		compat.Handle(prefix+"/", deprecProxy)
 	}
-	// Static handlers, if maintain-web dist is configured.
 	if static != nil {
 		compat.Handle("/maintain-assets/", http.HandlerFunc(static.ServeAssets))
 		compat.Handle("/maintain", http.HandlerFunc(static.ServeSPA))
 		compat.Handle("/maintain/", http.HandlerFunc(static.ServeSPA))
+	} else {
+		pageUnavailable := http.HandlerFunc(serveMaintainUnavailablePage)
+		compat.Handle("/maintain-assets/", pageUnavailable)
+		compat.Handle("/maintain", pageUnavailable)
+		compat.Handle("/maintain/", pageUnavailable)
 	}
-	// Everything else stays on the Gateway (its own SPA, /v1/*, /api/auth/*, ...).
 	compat.Handle("/", legacy)
-
 	slog.Info("maintain proxy enabled", "target", target.String(), "static_configured", static != nil)
 	return compat
 }
 
-// newMaintainCompatHandler is retained for backwards compatibility with the
+func serveMaintainAPIUnavailable(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Retry-After", "10")
+	w.WriteHeader(http.StatusServiceUnavailable)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"code":       "maintain.not_configured",
+		"message":    "运维服务未配置或未启动，请稍后重试或联系支持",
+		"request_id": r.Header.Get("X-Request-ID"),
+		"retryable":  true,
+	})
+}
+
+func serveMaintainUnavailablePage(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusServiceUnavailable)
+	_, _ = w.Write([]byte(`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>运维平台不可用</title></head><body><main><h1>运维平台暂时不可用</h1><p>请稍后重试或联系支持。</p></main></body></html>`))
+}
+
 // existing tests and any external callers; it builds a gateway handler
 // without the static SPA mount.
 func newMaintainCompatHandler(legacy http.Handler) http.Handler {

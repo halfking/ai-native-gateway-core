@@ -7,11 +7,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
+	redissafe "github.com/kaixuan/llm-gateway-go/internal/redis"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -20,6 +22,25 @@ var (
 	ErrSessionExpired  = errors.New("session expired")
 	ErrInvalidSession  = errors.New("invalid session")
 )
+
+// logSessionTypeMismatch records only bounded type metadata. TypedError's
+// Error method includes the full Redis key, which may contain a session or
+// tenant identifier and must not be duplicated into structured logs.
+func logSessionTypeMismatch(operation, sessionID string, err error) {
+	var typed *redissafe.TypedError
+	if errors.As(err, &typed) {
+		slog.Warn("session Redis key type mismatch",
+			"operation", operation,
+			"session_id", sessionID,
+			"expected_type", typed.Expected,
+			"actual_type", typed.Actual)
+		return
+	}
+	slog.Warn("session Redis key type mismatch",
+		"operation", operation,
+		"session_id", sessionID,
+		"type_error", true)
+}
 
 type Device struct {
 	DeviceSeed string    `json:"device_seed"`
@@ -86,12 +107,32 @@ type RedisClient struct {
 	client *redis.Client
 }
 
+// NewRedisClient creates a Redis client with optimized connection pool settings.
+// P1-15 fix (2026-08-28): Configure PoolSize, MinIdleConns, ConnMaxIdleTime, and
+// PoolTimeout to prevent connection exhaustion under high load and reduce latency.
 func NewRedisClient(addr, password string, db int) *RedisClient {
 	return &RedisClient{
 		client: redis.NewClient(&redis.Options{
 			Addr:     addr,
 			Password: password,
 			DB:       db,
+
+			// Connection pool sizing (P1-15):
+			// PoolSize: max concurrent connections. Set to 100 to handle high throughput.
+			// Default is 10*runtime.GOMAXPROCS, often too low for gateway workloads.
+			PoolSize: 100,
+
+			// MinIdleConns: keep warm connections ready for incoming requests.
+			// Reduces latency by avoiding cold connection establishment on request path.
+			MinIdleConns: 10,
+
+			// ConnMaxIdleTime: close idle connections after 5 minutes to prevent
+			// holding stale connections that may be closed by server or firewall.
+			ConnMaxIdleTime: 5 * time.Minute,
+
+			// PoolTimeout: wait time for connection from pool before giving up.
+			// Set to 2s to fail fast under extreme load rather than queueing indefinitely.
+			PoolTimeout: 2 * time.Second,
 		}),
 	}
 }
@@ -303,9 +344,21 @@ func (sm *Manager) Create(ctx context.Context, apiKeyID int, tenantID string, de
 }
 
 func (sm *Manager) Get(ctx context.Context, sessionID string) (*Session, error) {
-	data, err := sm.redis.HGetAll(ctx, "session:"+sessionID)
-	if err != nil || len(data) == 0 {
+	client := sm.redis.Client()
+	if client == nil {
 		return nil, ErrSessionNotFound
+	}
+
+	data, err := redissafe.SafeHGetAll(ctx, client, "session:"+sessionID)
+	if err != nil {
+		if errors.Is(err, redissafe.ErrKeyNotFound) {
+			return nil, ErrSessionNotFound
+		}
+		if errors.Is(err, redissafe.ErrWrongType) {
+			logSessionTypeMismatch("get", sessionID, err)
+			return nil, ErrSessionNotFound
+		}
+		return nil, fmt.Errorf("redis error reading session: %w", err)
 	}
 	return sessionFromRedisHash(sessionID, data)
 }
@@ -392,9 +445,21 @@ func sessionFromRedisHash(sessionID string, data map[string]string) (*Session, e
 }
 
 func (sm *Manager) Delete(ctx context.Context, sessionID string) error {
-	data, err := sm.redis.HGetAll(ctx, "session:"+sessionID)
-	if err != nil || len(data) == 0 {
+	client := sm.redis.Client()
+	if client == nil {
 		return ErrSessionNotFound
+	}
+
+	data, err := redissafe.SafeHGetAll(ctx, client, "session:"+sessionID)
+	if err != nil {
+		if errors.Is(err, redissafe.ErrKeyNotFound) {
+			return ErrSessionNotFound
+		}
+		if errors.Is(err, redissafe.ErrWrongType) {
+			logSessionTypeMismatch("delete", sessionID, err)
+			return ErrSessionNotFound
+		}
+		return fmt.Errorf("redis error reading session: %w", err)
 	}
 
 	apiKeyID, _ := strconv.Atoi(data["api_key_id"])

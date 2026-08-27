@@ -252,3 +252,92 @@ func TestBuildSummaryMarker(t *testing.T) {
 		t.Error("expected non-empty summary marker")
 	}
 }
+
+// TestContentFingerprint_InputOutputTextBlocks 验证 P2 issue #5:
+// contentFingerprint 必须把 input_text / output_text 块纳入指纹计算，
+// 不能只处理 type=="text" 的块。否则同角色不同内容会发生碰撞。
+func TestContentFingerprint_InputOutputTextBlocks(t *testing.T) {
+	// 两条消息：role 相同，但 content 不同（一个 text 块，一个 input_text 块）
+	msg1 := json.RawMessage(`[{"type":"text","text":"hello world"}]`)
+	msg2 := json.RawMessage(`[{"type":"input_text","text":"different content"}]`)
+
+	fp1 := contentFingerprint(msg1)
+	fp2 := contentFingerprint(msg2)
+
+	// P2 issue #5: 当前实现会忽略 input_text 块 → fp2 == ""
+	// 导致两条不同内容的消息指纹碰撞（都退化为 role-only hash）
+	if fp1 == fp2 {
+		t.Errorf("contentFingerprint collision: msg1=%q msg2=%q both produce fp=%q (P2 issue #5)",
+			msg1, msg2, fp1)
+	}
+
+	if fp2 == "" {
+		t.Errorf("contentFingerprint ignored input_text block, fp2 should contain 'different content'")
+	}
+}
+
+// TestContentFingerprint_AnthropicToolBlocks 验证 Anthropic 的
+// tool_use / tool_result 块的关键字段也必须纳入指纹。
+func TestContentFingerprint_AnthropicToolBlocks(t *testing.T) {
+	// tool_use 块
+	toolUse := json.RawMessage(`[{
+		"type": "tool_use",
+		"id": "toolu_abc123",
+		"name": "search",
+		"input": {"query": "test"}
+	}]`)
+
+	// tool_result 块
+	toolResult := json.RawMessage(`[{
+		"type": "tool_result",
+		"tool_use_id": "toolu_abc123",
+		"content": "result here"
+	}]`)
+
+	fpUse := contentFingerprint(toolUse)
+	fpResult := contentFingerprint(toolResult)
+
+	// 两种不同类型的 tool 块不应碰撞
+	if fpUse == fpResult {
+		t.Errorf("tool_use and tool_result should have different fingerprints, both=%q", fpUse)
+	}
+
+	// tool_use 应包含 id / name / input 信息
+	if fpUse == "" {
+		t.Errorf("tool_use fingerprint should not be empty (P2 issue #5)")
+	}
+
+	// tool_result 应包含 tool_use_id / content 信息
+	if fpResult == "" {
+		t.Errorf("tool_result fingerprint should not be empty (P2 issue #5)")
+	}
+}
+
+// TestContentFingerprint_BlockSeparatorNoCollision — audit follow-up to
+// 7622526a5: content blocks are concatenated without a separator, so
+// [{"text":"ab"}] and [{"text":"a"},{"text":"b"}] produced identical
+// fingerprints. A per-block terminator is required.
+func TestContentFingerprint_BlockSeparatorNoCollision(t *testing.T) {
+	single := json.RawMessage(`[{"type":"text","text":"ab"}]`)
+	split := json.RawMessage(`[{"type":"text","text":"a"},{"type":"text","text":"b"}]`)
+	if contentFingerprint(single) == contentFingerprint(split) {
+		t.Errorf("block-boundary collision: %s and %s share fingerprint %q",
+			single, split, contentFingerprint(single))
+	}
+}
+
+// TestContentFingerprint_ThinkingBlock — Anthropic thinking blocks carry
+// their payload in the "thinking" field, not "text". A thinking-only message
+// must still produce a non-empty fingerprint distinct from other thinking
+// content (same-role collision otherwise).
+func TestContentFingerprint_ThinkingBlock(t *testing.T) {
+	a := json.RawMessage(`[{"type":"thinking","thinking":"plan A"}]`)
+	b := json.RawMessage(`[{"type":"thinking","thinking":"plan B"}]`)
+	fa, fb := contentFingerprint(a), contentFingerprint(b)
+	if fa == "" {
+		t.Fatal("thinking-only message produced empty fingerprint")
+	}
+	if fa == fb {
+		t.Errorf("thinking content collision: %q and %q share fingerprint %q", a, b, fa)
+	}
+}

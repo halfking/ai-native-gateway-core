@@ -40,3 +40,62 @@ func isNonStreamEmptyResponse(body []byte) bool {
 		len(msg.ToolCalls) > 0
 	return !hasContent
 }
+
+// isEmptyAnthropicMessagesResponse identifies a syntactically valid native
+// Messages response that carries no semantic assistant output, mirroring the
+// block semantics of streaming.isEmptyAnthropicContent (the handler-side
+// authority) so the executor-level failover and the terminal 502 classifier
+// cannot disagree about the same body:
+//   - tool_use / server_tool_use / web_search_tool_result / redacted_thinking
+//     blocks always count as output (a tool call is actionable even with an
+//     empty input object);
+//   - a thinking block counts as output when either thinking text or a
+//     signature is present.
+//
+// Two deliberate refinements over the handler classifier, both in the safe
+// direction for failover:
+//   - the envelope must carry type=="message", so foreign JSON shapes are
+//     never misjudged here;
+//   - a message envelope with NO content key at all counts as empty — a 2xx
+//     Messages response without content carries zero output by construction.
+func isEmptyAnthropicMessagesResponse(body []byte) bool {
+	if len(body) == 0 || !json.Valid(body) {
+		return false
+	}
+
+	var envelope struct {
+		Type    string          `json:"type"`
+		Content json.RawMessage `json:"content"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil || envelope.Type != "message" {
+		return false
+	}
+	if envelope.Content == nil {
+		return true
+	}
+
+	var blocks []struct {
+		Type      string `json:"type"`
+		Text      string `json:"text"`
+		Thinking  string `json:"thinking"`
+		Signature string `json:"signature"`
+	}
+	if err := json.Unmarshal(envelope.Content, &blocks); err != nil || len(blocks) == 0 {
+		return true
+	}
+	for _, block := range blocks {
+		switch block.Type {
+		case "text":
+			if block.Text != "" {
+				return false
+			}
+		case "thinking":
+			if block.Thinking != "" || block.Signature != "" {
+				return false
+			}
+		case "tool_use", "server_tool_use", "web_search_tool_result", "redacted_thinking":
+			return false
+		}
+	}
+	return true
+}

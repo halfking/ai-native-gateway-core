@@ -6,24 +6,21 @@
 //   - exactly one well-formed top-level JSON value,
 //   - no trailing data.
 //
-// Before this fix, callers used `json.NewDecoder(r.Body).Decode(&dst)`
-// against an unbounded body, and many sites silently coerced parse
-// errors to the zero-value target. The helpers here split into two:
-//
-//   - ReadOptional: body MAY be empty; parse failure → 400.
-//   - ReadRequired: body MUST be present; empty / parse failure → 400.
-//
-// Both enforce a hard cap (1 MiB default) so a hostile or buggy client
-// cannot use any admin endpoint as an unbounded-DoS surface. Callers
-// needing a different cap can pass it via ReadOptionalWithLimit /
-// ReadRequiredWithLimit.
-//
-// Every admin endpoint that previously did
-// `if err := json.NewDecoder(r.Body).Decode(&dst); err != nil { ... }`
-// should migrate to one of these two helpers.
+// 2026-08-27 (audit fix — 兼容性): real-world senders turn out to emit
+// bodies that are valid JSON-with-quirks rather than attacks:
+//   - a UTF-8 BOM prefix (`\xEF\xBB\xBF`) from Windows tooling and
+//     several SDKs — encoding/json rejects it outright;
+//   - a literal `null` body where the endpoint requires an object —
+//     Decode "succeeds" but leaves dst zero-valued, which downstream
+//     code then mistakes for a real (empty) payload;
+//   - CRLF / stray whitespace around the payload.
+// The helpers now strip a single leading BOM and treat a bare `null`
+// as "no body" so those senders keep working. Trailing garbage and
+// multiple concatenated documents are still rejected.
 package jsonbody
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -91,7 +88,48 @@ func ReadRequiredWithLimit(w http.ResponseWriter, r *http.Request, dst any, limi
 	return readWithLimit(w, r, dst, limit, true)
 }
 
-// readWithLimit is the shared implementation. requireEmpty controls
+// utf8BOM is stripped from the head of a body before decoding. Go's
+// encoding/json treats it as a syntax error, but a large population of
+// Windows tooling and some vendor SDKs prepend it unconditionally.
+var utf8BOM = []byte{0xEF, 0xBB, 0xBF}
+
+// isJSONNull reports whether body (after BOM strip) consists solely of
+// the literal top-level value `null` plus optional whitespace.
+func isJSONNull(body []byte) bool {
+	trimmed := bytes.TrimSpace(body)
+	return len(trimmed) == 4 && bytes.Equal(trimmed, []byte("null"))
+}
+
+// DecodeBody parses an already-read JSON body into dst with the same
+// compatibility rules as ReadRequired/ReadOptional: one leading UTF-8
+// BOM is stripped, a bare `null` is reported via ErrEmptyBody (the
+// caller decides whether that is acceptable), and trailing data after
+// the first value is rejected.
+//
+// Callers that must hash the raw bytes (webhook HMAC verification)
+// should hash the ORIGINAL body and only pass it here for parsing.
+func DecodeBody(body []byte, dst any) error {
+	if bytes.HasPrefix(body, utf8BOM) {
+		body = body[len(utf8BOM):]
+	}
+	if isJSONNull(body) {
+		return ErrEmptyBody
+	}
+	dec := json.NewDecoder(bytes.NewReader(body))
+	if err := dec.Decode(dst); err != nil {
+		if isEOF(err) {
+			return ErrEmptyBody
+		}
+		return err
+	}
+	var trailing json.RawMessage
+	if err := dec.Decode(&trailing); err == nil && len(trailing) > 0 {
+		return errTrailingData
+	}
+	return nil
+}
+
+// readWithLimit is the shared implementation. requireBody controls
 // whether an empty body is allowed (ReadOptional) or rejected with
 // ErrEmptyBody (ReadRequired).
 func readWithLimit(w http.ResponseWriter, r *http.Request, dst any, limit int64, requireBody bool) (bool, error) {
@@ -104,17 +142,11 @@ func readWithLimit(w http.ResponseWriter, r *http.Request, dst any, limit int64,
 		return true, nil
 	}
 	limited := http.MaxBytesReader(w, r.Body, limit)
-	dec := json.NewDecoder(limited)
-	if err := dec.Decode(dst); err != nil {
-		// EOF on an empty body.
-		if isEOF(err) {
-			if requireBody {
-				WriteErrorWithCode(w, http.StatusBadRequest,
-					"request body is required", ErrEmptyBody)
-				return false, ErrEmptyBody
-			}
-			return true, nil
-		}
+	// Read the whole (capped) body first so BOM stripping and the
+	// null-literal check can run on bytes; the trailing-value check
+	// then works on the same buffer DecodeBody uses.
+	raw, err := io.ReadAll(limited)
+	if err != nil {
 		var mbErr *http.MaxBytesError
 		if errors.As(err, &mbErr) {
 			slog.Warn("jsonbody: body exceeded cap",
@@ -124,6 +156,31 @@ func readWithLimit(w http.ResponseWriter, r *http.Request, dst any, limit int64,
 				fmt.Sprintf("request body exceeds %d bytes", limit), ErrBodyTooLarge)
 			return false, ErrBodyTooLarge
 		}
+		slog.Warn("jsonbody: body read failed",
+			"path", r.URL.Path,
+			"method", r.Method,
+			"error", err.Error())
+		WriteErrorWithCode(w, http.StatusBadRequest,
+			"failed to read request body", err)
+		return false, err
+	}
+	if err := DecodeBody(raw, dst); err != nil {
+		if errors.Is(err, ErrEmptyBody) {
+			if requireBody {
+				WriteErrorWithCode(w, http.StatusBadRequest,
+					"request body is required", ErrEmptyBody)
+				return false, ErrEmptyBody
+			}
+			// Optional endpoint, empty (or null / BOM-only) body — proceed.
+			return true, nil
+		}
+		if errors.Is(err, errTrailingData) {
+			slog.Warn("jsonbody: trailing data after first JSON value",
+				"path", r.URL.Path)
+			WriteErrorWithCode(w, http.StatusBadRequest,
+				"body must contain a single JSON value", nil)
+			return false, err
+		}
 		slog.Warn("jsonbody: body failed to parse",
 			"path", r.URL.Path,
 			"method", r.Method,
@@ -132,18 +189,12 @@ func readWithLimit(w http.ResponseWriter, r *http.Request, dst any, limit int64,
 			"request body is not valid JSON", err)
 		return false, err
 	}
-	// Reject trailing garbage: a single well-formed JSON value is the
-	// contract.
-	var trailing json.RawMessage
-	if err := dec.Decode(&trailing); err == nil && len(trailing) > 0 {
-		slog.Warn("jsonbody: trailing data after first JSON value",
-			"path", r.URL.Path)
-		WriteErrorWithCode(w, http.StatusBadRequest,
-			"body must contain a single JSON value", nil)
-		return false, fmt.Errorf("jsonbody: trailing data")
-	}
 	return true, nil
 }
+
+// errTrailingData is the sentinel DecodeBody wraps its trailing-data
+// rejection in, so readWithLimit can distinguish it from a parse error.
+var errTrailingData = errors.New("jsonbody: trailing data after first JSON value")
 
 // WriteError writes a stable error response so every caller has the
 // same shape. Code is the stable machine-readable error code.
