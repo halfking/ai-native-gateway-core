@@ -15,6 +15,7 @@
 //     request_logs/session_turns）和 in_flight/persisted 持久化阶段。
 //   - getSessionSnapshot：会话级快照（标题、分析结果、最后模型/供应商）。
 import { computed, ref, watch } from 'vue'
+import { ApiError } from '../../api/_core'
 import { getRequestLogDetail, type RequestLogDetail } from '../../api/logs'
 import {
   getUnifiedRequestDetail,
@@ -61,6 +62,7 @@ const log = ref<RequestLogDetail | null>(null)
 const unified = ref<UnifiedRequestDetail | null>(null)
 const sessionSnap = ref<Record<string, unknown> | null>(null)
 const activeRequestId = ref<string | null>(null)
+const warnings = ref<string[]>([])
 
 const sessionId = computed(
   () => log.value?.gw_session_id || unified.value?.meta.gw_session_id || null,
@@ -90,6 +92,7 @@ watch(
     unified.value = null
     sessionSnap.value = null
     error.value = ''
+    warnings.value = []
     viewMode.value = props.initialViewMode
     tab.value = props.initialTraceOpen ? 'flow' : 'overview'
     if (!id) return
@@ -101,12 +104,22 @@ watch(
 async function loadRequest(id: string) {
   loading.value = true
   error.value = ''
+  warnings.value = []
   try {
     // 单次请求拿到 metadata + body（两个端点都无视 omit_body），
     // Promise.all 并行拉取，失败一方降级（catch → null），由另一方兜底。
+    // 收集每个端点的失败原因到 warnings 让 UI 显式提示，便于排查
+    // （如 245 上 /api/logs/:id 已知 500 — request_logs body 列迁移后
+    // getLog scan 数与 SELECT 列数不匹配，commit e3d569ed6 已修）。
     const [u, meta] = await Promise.all([
-      getUnifiedRequestDetail(id).catch(() => null),
-      getRequestLogDetail(id).catch(() => null),
+      getUnifiedRequestDetail(id).catch((e: unknown) => {
+        recordEndpointFailure('admin/request-detail', e)
+        return null
+      }),
+      getRequestLogDetail(id).catch((e: unknown) => {
+        recordEndpointFailure('/api/logs/:id', e)
+        return null
+      }),
     ])
     unified.value = u
     log.value = meta
@@ -118,13 +131,25 @@ async function loadRequest(id: string) {
     if (sid) {
       void getSessionSnapshot(sid)
         .then((snap) => { sessionSnap.value = snap as Record<string, unknown> })
-        .catch(() => { sessionSnap.value = null })
+        .catch((e: unknown) => {
+          recordEndpointFailure('sessions/:id/snapshot', e)
+          sessionSnap.value = null
+        })
     }
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : String(e)
   } finally {
     loading.value = false
   }
+}
+
+function recordEndpointFailure(endpoint: string, e: unknown) {
+  const detail = e instanceof ApiError
+    ? `HTTP ${e.status} ${e.message}`
+    : e instanceof Error
+      ? e.message
+      : String(e)
+  warnings.value.push(`${endpoint}: ${detail}`)
 }
 
 async function onSelectTurn(requestId: string, _turn: number) {
@@ -212,6 +237,11 @@ const openFullscreenTitle = computed(() =>
 
       <template v-else>
         <p v-if="error" class="drawer-error drawer-error-inline">{{ error }}</p>
+        <!-- 2026-08-28: 部分端点失败时显式列出，便于排查（默认 Promise.all
+             catch → null 会静默降级，用户感知不到端点失败）。 -->
+        <ul v-if="warnings.length" class="drawer-warnings" data-testid="drawer-warnings">
+          <li v-for="(w, i) in warnings" :key="i">{{ w }}</li>
+        </ul>
 
         <template v-if="viewMode === 'session-turns' && sessionId">
           <SessionTurnsSyncPane
@@ -315,6 +345,13 @@ const openFullscreenTitle = computed(() =>
 .drawer-loading, .drawer-error { padding: 16px; }
 .drawer-error { color: var(--danger); }
 .drawer-error-inline { font-size: 12px; margin-bottom: 8px; }
+.drawer-warnings {
+  list-style: none; margin: 0 0 8px; padding: 8px 12px;
+  border: 1px solid color-mix(in srgb, var(--kx-warning) 50%, transparent);
+  background: color-mix(in srgb, var(--kx-warning) 10%, transparent);
+  border-radius: 6px; font-size: 11px; color: var(--text);
+}
+.drawer-warnings li { font-family: var(--font-mono, ui-monospace, monospace); word-break: break-all; }
 .raw-pre {
   font-size: 11px; white-space: pre-wrap; word-break: break-word;
   background: var(--bg-subtle); padding: 10px; border-radius: 6px;
