@@ -3,6 +3,7 @@ package feishubot
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -72,8 +73,20 @@ func (h *CallbackHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	// 2026-08-26 (P1-4 fix): cap the body at 1 MiB via
+	// http.MaxBytesReader. The previous io.ReadAll(r.Body) had no
+	// upper bound — a single unbounded chunked upload could exhaust
+	// the server's read buffer.
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
+		var mbErr *http.MaxBytesError
+		if errors.As(err, &mbErr) {
+			slog.Warn("feishu_bot: callback body exceeds 1 MiB",
+				"remote_addr", r.RemoteAddr)
+			http.Error(w, "body too large", http.StatusBadRequest)
+			return
+		}
 		http.Error(w, "read body failed", http.StatusBadRequest)
 		return
 	}
@@ -83,6 +96,20 @@ func (h *CallbackHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	if !cfg.Enabled {
 		slog.Warn("feishu_bot: callback received but module disabled")
 		http.Error(w, "module disabled", http.StatusServiceUnavailable)
+		return
+	}
+
+	// 2026-08-26 (P1-3 fail-closed): when SignatureRequired is true
+	// (the recommended posture), the EncryptKey must be present
+	// AND non-empty. If an operator set SignatureRequired=true but
+	// forgot to fill in EncryptKey, the handler would fall through
+	// to the unauthenticated branch — silently accepting any
+	// callback. Refuse up front instead.
+	if cfg.SignatureRequired && cfg.EncryptKey == "" {
+		slog.Error("feishu_bot: signature required but EncryptKey not configured",
+			"remote_addr", r.RemoteAddr)
+		http.Error(w, "feishu_bot signature required but encrypt key not configured",
+			http.StatusServiceUnavailable)
 		return
 	}
 

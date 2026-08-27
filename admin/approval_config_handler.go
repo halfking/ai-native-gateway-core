@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/kaixuan/llm-gateway-go/domains/approval"
+	"github.com/kaixuan/llm-gateway-go/internal/jsonbody"
 )
 
 // ConfigManagerService 定义 ApprovalConfigHandler 依赖的配置管理接口。
@@ -89,8 +90,12 @@ func (h *ApprovalConfigHandler) UpdateConfig(w http.ResponseWriter, r *http.Requ
 	}
 
 	var config approval.ApprovalConfig
-	if err := json.NewDecoder(r.Body).Decode(&config); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+	// 2026-08-26 (P1-1): migrate to jsonbody.ReadRequired so this
+	// endpoint has the same bounded-input + strict single-value
+	// contract as the rest of the Phase 0 admin surface. Body
+	// cap is MaxRequiredBody (1 MiB) — generous for any
+	// ApprovalConfig payload.
+	if ok, _ := jsonbody.ReadRequired(w, r, &config); !ok {
 		return
 	}
 

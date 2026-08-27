@@ -266,7 +266,7 @@ func TestInsertRequestLog_BodiesSummaryModeWritesDigest(t *testing.T) {
 	mockDB.ExpectExec(`INSERT INTO usage_ledger_hot`).
 		WithArgs(usageInsertArgs...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
-	requestInsertArgs := make([]interface{}, 100)
+	requestInsertArgs := make([]interface{}, 102) // 608: +request_class/due_at ($101/$102)
 	for index := range requestInsertArgs {
 		requestInsertArgs[index] = pgxmock.AnyArg()
 	}
