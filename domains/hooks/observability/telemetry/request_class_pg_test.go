@@ -34,7 +34,7 @@ func TestRequestClassPGRoundTrip(t *testing.T) {
 	defer pool.Close()
 
 	// Apply migration 608 (idempotent) straight from the repo SQL file.
-	sqlBytes, err := os.ReadFile("../../../../sql/migrations/startup/608_request_class_due_at.sql")
+	sqlBytes, err := os.ReadFile("../../../../sql/migrations/startup/610_request_class_due_at.sql")
 	if err != nil {
 		t.Fatalf("read migration: %v", err)
 	}
