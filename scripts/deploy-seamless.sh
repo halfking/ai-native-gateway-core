@@ -189,8 +189,14 @@ upgrade_show_all() {
       upgrade_hide_all >/dev/null 2>&1 || true
       return 1
     fi
+    # 2026-08-28: 252 上探测必须用 252 自己的 vhost。probe 走 public_252_ssh
+    # 在 252 上执行 curl, target 字段仍是 154 — 127.0.0.1 在 252 上命中的
+    # 是无关 vhost, 会永远等不到维护页 (120s 误判失败)。
+    # --resolve 把 llm.kxpms.cn 钉在 127.0.0.1, 确保命中 252 本机 vhost。
     if ! host_wait_upgrade_banner public_252_ssh "$TARGET" 120 \
-        /opt/llm-gateway-go /var/www/llm-gateway-maintenance; then
+        /opt/llm-gateway-go /var/www/llm-gateway-maintenance \
+        "https://llm.kxpms.cn/" \
+        "--resolve llm.kxpms.cn:443:127.0.0.1"; then
       upgrade_hide_all >/dev/null 2>&1 || true
       return 1
     fi

@@ -295,10 +295,21 @@ host_wait_upgrade_banner() {
   local ssh_cmd=$1 target=$2 timeout_s=${3:-120}
   local install_root=${4:-$(host_root_for "$target")}
   local maintenance_dir=${5:-$install_root/maintenance}
+  local probe_url=${6:-}
+  local probe_extra_args=${7:-}
   local maint_root="$maintenance_dir"
   local url
-  url=$(target_field "$target" internal_https_health_url 2>/dev/null)
-  url="${url%%/healthz}/"
+  # 2026-08-28: 探测 URL 可显式传入 (第 6 参)。252 场景下 ssh_cmd 在 252 上
+  # 执行, 但 target 字段仍是 154 的 127.0.0.1 — 127.0.0.1 在 252 上命中的
+  # 是另一个 vhost, 维护页永远探测不到 (部署被误判失败)。显式传 URL 时以
+  # 传入值为准; 否则回落到 target 的 internal_https_health_url。
+  # 第 7 参为附加 curl 参数 (如 --resolve host:443:127.0.0.1), 允许含空格。
+  if [[ -n "$probe_url" ]]; then
+    url="$probe_url"
+  else
+    url=$(target_field "$target" internal_https_health_url 2>/dev/null)
+    url="${url%%/healthz}/"
+  fi
   [[ -n "$url" ]] || url="https://127.0.0.1/"
   local deadline=$(( $(date +%s) + timeout_s ))
   local start_ts=$(date +%s)
@@ -308,17 +319,17 @@ host_wait_upgrade_banner() {
     if "$ssh_cmd" "test -f '$maint_root/UPGRADING' && test -f '$maint_root/index.html'" 2>/dev/null; then
       # … and nginx must actually serve the maintenance page.
       local out
-      out=$("$ssh_cmd" "curl -ksS --max-time 3 -o /tmp/kx-upgrade-banner-$$.html -D - '$url' 2>/dev/null; cat /tmp/kx-upgrade-banner-$$.html 2>/dev/null" ) || true
+      out=$("$ssh_cmd" "curl -ksS --max-time 3 ${probe_extra_args:+$probe_extra_args} -o /tmp/kx-upgrade-banner-\$\$.html -D - '$url' 2>/dev/null; cat /tmp/kx-upgrade-banner-\$\$.html 2>/dev/null" ) || true
       if printf '%s' "$out" | grep -qiE 'X-LLM-Gateway-Upgrade:[[:space:]]*in-progress|系统正在升级|正在升级 · llm-gateway-go'; then
         local elapsed=$(( $(date +%s) - start_ts ))
-        "$ssh_cmd" "rm -f /tmp/kx-upgrade-banner-$$.html" 2>/dev/null || true
+        "$ssh_cmd" "rm -f /tmp/kx-upgrade-banner-\$\$.html" 2>/dev/null || true
         echo "  ✓ 升级静态页已生效 (target=$target, ${elapsed}s)"
         return 0
       fi
     fi
     sleep 2
   done
-  "$ssh_cmd" "rm -f /tmp/kx-upgrade-banner-$$.html" 2>/dev/null || true
+  "$ssh_cmd" "rm -f /tmp/kx-upgrade-banner-\$\$.html" 2>/dev/null || true
   echo "ERROR: $target 升级静态页未在 ${timeout_s}s 内生效 — marker 已写但 nginx 未返回维护页" >&2
   return 1
 }
