@@ -205,7 +205,12 @@ if [[ "$MODE" == "check" ]]; then
     label="${m%%:*}"; q="${m#*:}"
     c252=$(remote_psql "$q")
     ctgt=$(target_psql "$q")
-    mark=$([ "$c252" = "$ctgt" ] && echo "✓" || { MISMATCH=$((MISMATCH + 1)); echo "✗"; })
+    if [[ "$c252" == "$ctgt" ]]; then
+      mark="✓"
+    else
+      MISMATCH=$((MISMATCH + 1))
+      mark="✗"
+    fi
     printf "  %-14s %8s %8s  %s\n" "$label" "$c252" "$ctgt" "$mark"
   done
   echo ""
