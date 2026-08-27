@@ -162,3 +162,29 @@ bash scripts/scan-secrets.sh --mode=strict --paths=domains/hooks/compression →
 ```
 
 规范轴结果：`CONTRIBUTING.md` 要求的 Conventional Commits、测试命名和 gofmt 均满足；规范轴子代理无新增问题。远端在本轮复核期间已合入独立的 Anthropic/JSON 修复并快进同步，本任务未修改这些文件。
+
+## 10. 第六轮：54a0adc3e 提交后审计（2026-08-28 凌晨，跨日追加）
+
+本轮以累计修复链起点 `094d2fc81` 为固定点，对整个压缩任务链做规范与规格双轴复核。规格轴子代理未报告矛盾；规范轴因服务错误失败，改为人工复核。发现 1 项文档一致性问题，已修复：
+
+| # | 发现 | 来源 | 严重度 | 修复 |
+|---|---|---|---|---|
+| 1 | `strip.go` 文件头注释仍声称"Phase 2 删除 image_url/input_audio 等非文本块，只保留 text/tool_use/tool_result"，与当前实现不一致：当前只删除 thinking 块，媒体修剪是独立的有界步骤 | 人工复核 | P2 | 更新文件头注释，明确 Phase 2 只删 thinking；媒体修剪见 docs/omni-ref3 A3；非 thinking 内容块（text/tool_use/tool_result/媒体元数据）均保留 |
+
+本轮复核结论：
+- 规格轴未发现审计文档 §2/§5-§9 声称与代码/测试的矛盾；
+- `isSummaryMarkerMsg`、`extractOpenAI`/`extractAnthropic` 的 marker/reminder 跳过、`RebuildOpenAIAfterSummary`/`RebuildAnthropicAfterSummary` 的 tail 处理、`stripThinkingBlocks` 的保留语义、`contentFingerprint` 的指纹构成均与文档一致；
+- `lastN` helper 仍存在于 `rebuilder_openai.go:280` 但已不被重建路径调用（仅用于测试 helper `jsonContainsRaw`），保留作为向后兼容辅助函数；
+- 全仓测试中 `cmd/gateway` 包的 2 个失败（`TestMaintainProxyNormalizesUpstream5xx`、`TestMaintainRoutes503WhenNotConfigured`）与本任务无关，为独立的基础设施问题。
+
+验证结果：
+
+```
+go test ./domains/hooks/compression/... -count=1  → 全绿
+go test ./domains/hooks/... -count=1               → 全绿（20 个包）
+go vet ./domains/hooks/compression/...             → 全绿
+go build ./domains/hooks/compression/...           → 全绿
+bash scripts/scan-secrets.sh --mode=strict --paths=domains/hooks/compression → 0 findings
+```
+
+本轮只修改文档注释，无代码逻辑变更；compression 包及 hooks 全目录测试通过。

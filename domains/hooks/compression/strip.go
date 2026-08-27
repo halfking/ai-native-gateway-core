@@ -21,8 +21,10 @@
 //	References" — we don't need the raw tool_call/tool_result pairs.
 //
 //	Phase 2 (thinking strip):      Anthropic "thinking" content blocks
-//	and any non-text content (image_url, input_audio) are removed.
-//	Only "text" and "tool_use" / "tool_result" blocks survive.
+//	are removed. Media pruning is a separate bounded step (docs/omni-ref3
+//	A3): image_url / input_audio blocks are replaced with text
+//	placeholders only while the per-message media budget remains, and all
+//	other content blocks are otherwise preserved.
 //
 // Preserved fields:
 //   - user text messages
@@ -30,6 +32,7 @@
 //   - system messages (verbatim)
 //   - INCOMPLETE tool rounds (tool_call without matching tool_result)
 //   - the LAST completed tool round (for context continuity)
+//   - non-thinking content blocks (text, tool_use, tool_result, media metadata)
 
 package compression
 

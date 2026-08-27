@@ -250,19 +250,14 @@ func (h *LiveStreamSSEHub) rememberActionTenant(requestID, tenantID string) {
 	if h == nil || requestID == "" {
 		return
 	}
+	// 2026-08-27 P1 fix: Use LRU cache instead of random eviction.
+	// The LRU cache automatically evicts least-recently-used entries when
+	// at capacity. Redis detail fallback still re-resolves evicted entries.
+	normalized := normalizeLiveStreamTenant(tenantID)
+	h.actionTenantIndex.Set(requestID, normalized)
+	
 	h.actionMu.Lock()
-	h.actionTenantIndex[requestID] = normalizeLiveStreamTenant(tenantID)
 	delete(h.actionTenantMiss, requestID)
-	if len(h.actionTenantIndex) > actionTenantIndexCap {
-		// Bounded cache, not an LRU: random eviction is fine because the
-		// Redis detail fallback re-resolves anything evicted.
-		for k := range h.actionTenantIndex {
-			delete(h.actionTenantIndex, k)
-			if len(h.actionTenantIndex) <= actionTenantIndexCap {
-				break
-			}
-		}
-	}
 	h.actionMu.Unlock()
 }
 
@@ -271,10 +266,8 @@ func (h *LiveStreamSSEHub) actionTenant(requestID string) (string, bool) {
 	if h == nil || requestID == "" {
 		return "", false
 	}
-	h.actionMu.Lock()
-	defer h.actionMu.Unlock()
-	t, ok := h.actionTenantIndex[requestID]
-	return t, ok
+	// 2026-08-27 P1 fix: LRU cache has internal locking
+	return h.actionTenantIndex.Get(requestID)
 }
 
 // resolveActionTenants resolves ownership for every request-scoped action
@@ -293,7 +286,8 @@ func (h *LiveStreamSSEHub) resolveActionTenants(ctx context.Context, actions []l
 		if a.RequestID == "" {
 			continue
 		}
-		if _, known := h.actionTenantIndex[a.RequestID]; known {
+		// 2026-08-27 P1 fix: Check LRU cache instead of map
+		if _, known := h.actionTenantIndex.Get(a.RequestID); known {
 			continue
 		}
 		if t, recent := h.actionTenantMiss[a.RequestID]; recent && now.Sub(t) < actionTenantNegCacheTTL {
