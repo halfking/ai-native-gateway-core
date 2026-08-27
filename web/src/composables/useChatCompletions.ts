@@ -19,7 +19,17 @@ export interface ChatCompletionOptions {
   messages: ChatCompletionMessage[]
   taskId: string
   gwSessionId: string | null
+  /** Default true (streaming). Set false for non-streaming Chat mode. */
+  stream?: boolean
   maxTokens?: number
+  temperature?: number
+  topP?: number
+  presencePenalty?: number
+  frequencyPenalty?: number
+  stop?: string[]
+  /** Injected as a leading system message for the API call only (not persisted in UI bubbles). */
+  systemPrompt?: string
+  signal?: AbortSignal
   onDelta?: (text: string) => void
   /** Internal: one-shot retry after SESSION_FORBIDDEN */
   _sessionRetry?: boolean
@@ -30,6 +40,50 @@ export interface ChatCompletionOptions {
    * when the local last user message is a fresh retry/follow-up.
    */
   forceResumeFromCache?: boolean
+}
+
+/** Build OpenAI chat/completions JSON body from options (exported for tests). */
+export function buildChatCompletionBody(opts: ChatCompletionOptions, gwSessionId: string | null) {
+  const stream = opts.stream !== false
+  const maxTokens = opts.maxTokens ?? 2048
+  let messages = messagesForApi(opts.messages)
+  const sys = opts.systemPrompt?.trim()
+  if (sys) {
+    messages = [{ role: 'system', content: sys }, ...messages]
+  }
+  const body: Record<string, unknown> = {
+    model: opts.model,
+    messages,
+    max_tokens: maxTokens,
+    stream,
+    metadata: {
+      task_id: opts.taskId,
+      session_id: gwSessionId ?? opts.taskId,
+    },
+  }
+  if (opts.temperature != null) body.temperature = opts.temperature
+  if (opts.topP != null) body.top_p = opts.topP
+  if (opts.presencePenalty != null) body.presence_penalty = opts.presencePenalty
+  if (opts.frequencyPenalty != null) body.frequency_penalty = opts.frequencyPenalty
+  if (opts.stop && opts.stop.length > 0) {
+    body.stop = opts.stop.length === 1 ? opts.stop[0] : opts.stop
+  }
+  return body
+}
+
+export class AbortError extends Error {
+  readonly code = 'ABORTED'
+  constructor(message = 'aborted') {
+    super(message)
+    this.name = 'AbortError'
+  }
+}
+
+export function isAbortError(e: unknown): boolean {
+  if (e instanceof AbortError) return true
+  if (e instanceof DOMException && e.name === 'AbortError') return true
+  if (e instanceof Error && e.name === 'AbortError') return true
+  return false
 }
 
 export interface ChatCompletionResult {
@@ -257,24 +311,25 @@ export async function chatCompletion(opts: ChatCompletionOptions): Promise<ChatC
     }
   }
 
+  if (opts.signal?.aborted) throw new AbortError()
+
   let gwSessionId = await ensureGwSession(opts.apiKey, opts.taskId, opts.gwSessionId)
 
-  const body = {
-    model: opts.model,
-    messages: messagesForApi(opts.messages),
-    max_tokens: opts.maxTokens ?? 2048,
-    stream: true,
-    metadata: {
-      task_id: opts.taskId,
-      session_id: gwSessionId ?? opts.taskId,
-    },
-  }
+  const body = buildChatCompletionBody(opts, gwSessionId)
+  const wantStream = opts.stream !== false
 
-  const resp = await fetch('/v1/chat/completions', {
-    method: 'POST',
-    headers: buildHeaders(opts.apiKey, opts.taskId, gwSessionId),
-    body: JSON.stringify(body),
-  })
+  let resp: Response
+  try {
+    resp = await fetch('/v1/chat/completions', {
+      method: 'POST',
+      headers: buildHeaders(opts.apiKey, opts.taskId, gwSessionId),
+      body: JSON.stringify(body),
+      signal: opts.signal,
+    })
+  } catch (e) {
+    if (isAbortError(e) || opts.signal?.aborted) throw new AbortError()
+    throw e
+  }
 
   // Persist the gw_session_id we just used so the next chatCompletion()
   // (e.g. after a refresh / new tab) can look it up for cache resume.
@@ -312,7 +367,7 @@ export async function chatCompletion(opts: ChatCompletionOptions): Promise<ChatC
   }
 
   const ct = resp.headers.get('Content-Type') ?? ''
-  if (!ct.includes('text/event-stream') || !resp.body) {
+  if (!wantStream || !ct.includes('text/event-stream') || !resp.body) {
     const raw = await resp.text()
     try {
       const data = JSON.parse(raw)
@@ -342,14 +397,32 @@ export async function chatCompletion(opts: ChatCompletionOptions): Promise<ChatC
   let latestUsage: TokenUsage | null = null
   let streamModel: string | null = null
 
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-    buffer += decoder.decode(value, { stream: true })
-    const lines = buffer.split('\n')
-    buffer = lines.pop() ?? ''
-    for (const line of lines) {
-      const { delta, usage, model } = parseSsePayload(line)
+  const onAbort = () => {
+    void reader.cancel().catch(() => {})
+  }
+  opts.signal?.addEventListener('abort', onAbort, { once: true })
+
+  try {
+    while (true) {
+      if (opts.signal?.aborted) throw new AbortError()
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() ?? ''
+      for (const line of lines) {
+        const { delta, usage, model } = parseSsePayload(line)
+        if (model) streamModel = model
+        if (usage) latestUsage = usage
+        if (delta) {
+          content += delta
+          opts.onDelta?.(delta)
+        }
+      }
+    }
+
+    if (buffer.trim()) {
+      const { delta, usage, model } = parseSsePayload(buffer)
       if (model) streamModel = model
       if (usage) latestUsage = usage
       if (delta) {
@@ -357,16 +430,21 @@ export async function chatCompletion(opts: ChatCompletionOptions): Promise<ChatC
         opts.onDelta?.(delta)
       }
     }
-  }
-
-  if (buffer.trim()) {
-    const { delta, usage, model } = parseSsePayload(buffer)
-    if (model) streamModel = model
-    if (usage) latestUsage = usage
-    if (delta) {
-      content += delta
-      opts.onDelta?.(delta)
+  } catch (e) {
+    if (isAbortError(e) || opts.signal?.aborted) {
+      if (content) {
+        return {
+          content,
+          gwSessionId,
+          usage: latestUsage,
+          resolvedModel: resolveModelName(opts.model, autoDecisionHdr, streamModel),
+        }
+      }
+      throw new AbortError()
     }
+    throw e
+  } finally {
+    opts.signal?.removeEventListener('abort', onAbort)
   }
 
   const resolvedModel = resolveModelName(opts.model, autoDecisionHdr, streamModel)
