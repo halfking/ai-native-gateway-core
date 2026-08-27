@@ -5,7 +5,7 @@
 **证据等级**：`LOCAL_VERIFIED`（离线 SQL 契约测试 + fsstore 往返 + streaming/admin 单测全绿；PG 真库往返由 `LLM_GATEWAY_TEST_PG_DSN` 门控，CI 离线跳过）
 **Commit / Migration / Flag**：
 - commit: 本轮提交
-- migration: `sql/migrations/startup/608_request_class_due_at.sql`（+down；幂等：IF NOT EXISTS + 视图早退）
+- migration: `sql/migrations/startup/610_request_class_due_at.sql`（+down；幂等：IF NOT EXISTS + 视图早退）
 - flag: N/A
 
 ## 场景与需求范围
