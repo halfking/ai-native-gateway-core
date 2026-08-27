@@ -85,3 +85,8 @@
 | 607 | `607_repair_dashboard_access_events_promote_columns.sql` | `f75487f3c16cbec71c87a642d0d00932afc419496640e413e1b64076108f557b` | applied+verified |
 | 608 | `608_tenant_model_policies_add_pkey.sql` | `e0e25bed2972bb3555d229739f2250820a06ecfc6796b7ba5e0328cff48425e5` | applied+verified |
 | 609 | `609_tenant_model_policies_audit_rekey_pkey.sql` | `1d9eda29db77ab80e04db1a7325c9ffb8665002415220190f1a60f0156bd31f8` | applied+verified |
+## 2026-08-27T06:10:35Z — deploy 154 build_seq 1765 (1aff393a)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 610 | `610_request_class_due_at.sql` | `379ae7f22dcf656de3672ae20b6df33d73b1a6ee42aba4cc56d2a28d78c06ba0` | applied+verified |
