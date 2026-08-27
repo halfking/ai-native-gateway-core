@@ -53,6 +53,9 @@ func TestEmitWritesBoundedRedisQueue(t *testing.T) {
 		n, _ := rdb.LLen(ctx, RedisKey).Result()
 		return n == 2
 	})
+	if ttl, err := rdb.TTL(ctx, RedisKey).Result(); err != nil || ttl <= 0 || ttl > redisKeyTTL {
+		t.Fatalf("action queue TTL = %v, %v; want (0, %v]", ttl, err, redisKeyTTL)
+	}
 
 	// Newest (route_resolved, seq 2) at the head.
 	head, err := rdb.LIndex(ctx, RedisKey, 0).Result()
