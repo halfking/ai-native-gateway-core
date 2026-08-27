@@ -1103,40 +1103,40 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		$48, $49, $50,
 		$51, $52, $53, $54, $55::text::jsonb, $56,
 		$57, $58,
-		$59, $60, $61::text::jsonb,
+		$59, $60, $61, $62::text::jsonb,
 		-- 2026-08-19: token-band observability.
-		$62,
+		$63,
 		-- v3 (2026-06-19) T23: session-level outbound body.
-		$63, $64, $65::text::jsonb,
+		$64, $65, $66::text::jsonb,
 		-- 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
-		$66::text[], $67::text::jsonb, $68,
+		$67::text[], $68::text::jsonb, $69,
 		-- 2026-06-19 T-NEW-7: split the semantic overload of failure_detail_code.
-		$69,
+		$70,
 		-- 2026-06-23: structured tool_calls (042_tool_calls_column.sql).
-		$70::text::jsonb,
+		$71::text::jsonb,
 		-- 2026-06-26: client-supplied X-Request-Id.
-		$71,
+		$72,
 		-- 2026-06-30: upstream diagnostics (migration 320).
-		$72, $73, $74,
-		$75, $76,
+		$73, $74, $75,
+		$76, $77,
 		-- 2026-07-01: 附件元数据 (migration 325).
-		$77::text::jsonb,
+		$78::text::jsonb,
 		-- 2026-07-14 (migration 341): client-side origin.
-		$78, $79, $80, $81,
+		$79, $80, $81, $82,
 		-- 2026-07-19 (migration 350): routing attempts tracking.
-		$82::text::jsonb, $83,
+		$83::text::jsonb, $84,
 		-- 2026-07-27: 客户端感知字段(主表 INSERT 必填).
-		$84, $85, $86, $87,
+		$85, $86, $87, $88,
 		-- V3.1 queue timestamps (migration 491): 9-stage dispatch queue timestamps.
-		$88, $89, $90, $91, $92, $93, $94, $95, $96, $97,
+		$89, $90, $91, $92, $93, $94, $95, $96, $97, $98,
 		-- 2026-08-19: streaming discard audit events.
-		$98::text::jsonb,
+		$99::text::jsonb,
 		-- 2026-08-25 (migration 507): customer metadata.
-		$99,
-		-- V6-W1.6 R8 (migration 610): request class + due time. $100 stays
+		$100,
+		-- V6-W1.6 R8 (migration 610): request class + due time. $101 stays
 		-- a bare placeholder (placeholder-alignment guard); the NOT NULL
 		-- default is resolved arg-side by requestClassArg.
-		$100, $101
+		$101, $102
 	)
 
 				-- 2026-08-06 fix: INSERT targets request_logs_hot (NOT the partitioned parent).
@@ -1426,7 +1426,6 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		entry.ClientForwardedFor,
 		entry.OriginStage,
 		entry.OriginActor,
-		entry.CustomerID,
 		// 2026-07-19 (migration 350): routing attempts tracking
 		// 2026-08-22: use nullableJSONArg so an empty in_progress INSERT stores
 		// SQL NULL (not JSON null); completion UPDATE can then COALESCE/CASE-fill.
