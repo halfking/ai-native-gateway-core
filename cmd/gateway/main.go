@@ -659,10 +659,15 @@ func main() {
 			sessionMgr = session.NewManager(redisClient, sessionTTL)
 			chatHandler.SetSessionGetter(sessionMgr)
 			redisClientForCache = redisClient
+			// P1-15 fix (2026-08-28): Configure connection pool for fpSlotRedis
 			fpSlotRedis = redis.NewClient(&redis.Options{
-				Addr:     cfg.RedisAddr,
-				Password: cfg.RedisPassword,
-				DB:       cfg.RedisDB,
+				Addr:            cfg.RedisAddr,
+				Password:        cfg.RedisPassword,
+				DB:              cfg.RedisDB,
+				PoolSize:        100,
+				MinIdleConns:    10,
+				ConnMaxIdleTime: 5 * time.Minute,
+				PoolTimeout:     2 * time.Second,
 			})
 			pendingStore = pending.NewStore(fpSlotRedis, pendingTTL)
 			lastSystemSession = session.NewLastSystemSessionIndex(redisClient)
