@@ -1094,7 +1094,7 @@ func (e *Executor) executeOpenAI(
 				var streamQualityFlags []string
 				var streamQualityScore *float64
 				if params.Capture != nil {
-					streamQualityFlags = params.Capture.QualityFlags
+					streamQualityFlags, _ = params.Capture.QualityStateSnapshot()
 					streamQualityScore = params.Capture.QualityScore
 				}
 				if streamOutcome.Interrupted && isClientStreamInterruption(streamOutcome.Kind, streamOutcome.Reason) {
