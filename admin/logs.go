@@ -99,6 +99,7 @@ type requestLogRow struct {
 	// the request-logs list and detail drawer; nil when no title has
 	// been generated or manually set.
 	SessionTitle *string    `json:"session_title,omitempty"`
+	CustomerID   *int64     `json:"customer_id,omitempty"`
 	RequestClass *string    `json:"request_class,omitempty"`
 	DueAt        *time.Time `json:"due_at,omitempty"`
 }
@@ -220,10 +221,11 @@ const requestLogsListCols = `
 	     THEN jsonb_array_length(rl.attachments)
 	     ELSE 0
 	END AS attachment_count,
-	-- 2026-08-06: session title. LEFT JOIN session_titles keyed by
-	-- (task_id, scoped_session_id) where scoped_session_id falls back to ''
-	-- when the request has no gw_session_id, matching the upsert path.
+		-- 2026-08-06: session title. LEFT JOIN session_titles keyed by
+		-- (task_id, scoped_session_id) where scoped_session_id falls back to ''
+		-- when the request has no gw_session_id, matching the upsert path.
 		st.title AS session_title,
+		rl.customer_id,
 		-- V6-W1.6 R8 (migration 608): request class + scheduled due time.
 		rl.request_class,
 		rl.due_at
@@ -397,6 +399,7 @@ func scanRequestListRow(rows interface {
 		&l.AttachmentCount,
 		// 2026-08-06: session_titles.title join (see requestLogsJoins).
 		&l.SessionTitle,
+		&l.CustomerID,
 		// V6-W1.6 R8 (migration 610): request class + due time (LAST fixed
 		// columns; the conditional trace_seq append below stays after them).
 		&l.RequestClass, &l.DueAt,
@@ -422,7 +425,10 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	// The list query joins the hot metadata view with provider/model/title
+	// projections. A 5s budget caused valid historical windows to return 500
+	// while the underlying request-log count remained healthy under load.
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
 	now := time.Now().UTC()
@@ -583,11 +589,13 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 	tenantCountSQL := "SELECT COUNT(*) FROM request_logs_with_current_month rl LEFT JOIN api_keys ak ON ak.id = rl.api_key_id WHERE " + where
 	if IsTenantAdmin(r) {
 		if err := h.db.QueryRow(ctx, tenantCountSQL, args...).Scan(&count); err != nil {
+			slog.Error("admin listLogs count query failed", "scope", "tenant", "error", err)
 			writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
 			return
 		}
 	} else {
 		if err := h.db.QueryRow(ctx, superCountSQL, args...).Scan(&count); err != nil {
+			slog.Error("admin listLogs count query failed", "scope", "super_admin", "error", err)
 			writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
 			return
 		}
@@ -744,6 +752,7 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 		ORDER BY %s
 	`, requestLogsListCols, traceSeqOuter, innerSQL, requestLogsJoins, orderBy), listArgs...)
 	if err != nil {
+		slog.Error("admin listLogs page query failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
 	}

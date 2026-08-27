@@ -1076,12 +1076,12 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 			t3_model_enqueued_at, t4_model_dequeued_at,
 			t5_cred_enqueued_at, t6_cred_dequeued_at,
 			t7_forward_start_at, t8_response_start_at, t9_response_end_at,
-			-- 2026-08-19: streaming discard audit events.
-			discard_events,
-			customer_id,
-			-- V6-W1.6 R8 (migration 610): request class + scheduled due time.
-			request_class, due_at
-		) VALUES (
+		-- 2026-08-19: streaming discard audit events.
+		discard_events,
+		customer_id,
+		-- V6-W1.6 R8 (migration 610): request class + scheduled due time.
+		request_class, due_at
+	) VALUES (
 		$1, now(), $2, $3, $4,
 		$5, $6, $7,
 		$8, $9, $10,
@@ -1103,42 +1103,41 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		$48, $49, $50,
 		$51, $52, $53, $54, $55::text::jsonb, $56,
 		$57, $58,
-			$59, $60, $61,
-			$62::text::jsonb,
-			-- 2026-08-19: token-band observability.
-			$63,
-			-- v3 (2026-06-19) T23: session-level outbound body.
-			$64, $65, $66::text::jsonb,
-			-- 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
-			$67::text[], $68::text::jsonb, $69,
-			-- 2026-06-19 T-NEW-7: split the semantic overload of failure_detail_code.
-			$70,
-			-- 2026-06-23: structured tool_calls (042_tool_calls_column.sql).
-			$71::text::jsonb,
-			-- 2026-06-26: client-supplied X-Request-Id.
-			$72,
+		$59, $60, $61::text::jsonb,
+		-- 2026-08-19: token-band observability.
+		$62,
+		-- v3 (2026-06-19) T23: session-level outbound body.
+		$63, $64, $65::text::jsonb,
+		-- 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
+		$66::text[], $67::text::jsonb, $68,
+		-- 2026-06-19 T-NEW-7: split the semantic overload of failure_detail_code.
+		$69,
+		-- 2026-06-23: structured tool_calls (042_tool_calls_column.sql).
+		$70::text::jsonb,
+		-- 2026-06-26: client-supplied X-Request-Id.
+		$71,
 		-- 2026-06-30: upstream diagnostics (migration 320).
-		$73, $74, $75,
-		$76, $77,
+		$72, $73, $74,
+		$75, $76,
 		-- 2026-07-01: 附件元数据 (migration 325).
-		$78::text::jsonb,
+		$77::text::jsonb,
 		-- 2026-07-14 (migration 341): client-side origin.
-		$79, $80, $81, $82,
+		$78, $79, $80, $81,
 		-- 2026-07-19 (migration 350): routing attempts tracking.
-		$83::text::jsonb, $84,
+		$82::text::jsonb, $83,
 		-- 2026-07-27: 客户端感知字段(主表 INSERT 必填).
-		$85, $86, $87, $88,
-			-- V3.1 queue timestamps (migration 491): 9-stage dispatch queue timestamps.
-			$89, $90, $91, $92, $93, $94, $95, $96, $97, $98,
-			-- 2026-08-19: streaming discard audit events.
-			$99::text::jsonb,
-			-- 2026-08-25 (migration 507): customer metadata.
-			$100,
-			-- V6-W1.6 R8 (migration 610): request class + due time. $101 stays
-			-- a bare placeholder (placeholder-alignment guard); the NOT NULL
-			-- default is resolved arg-side by requestClassArg.
-			$101, $102
-		)
+		$84, $85, $86, $87,
+		-- V3.1 queue timestamps (migration 491): 9-stage dispatch queue timestamps.
+		$88, $89, $90, $91, $92, $93, $94, $95, $96, $97,
+		-- 2026-08-19: streaming discard audit events.
+		$98::text::jsonb,
+		-- 2026-08-25 (migration 507): customer metadata.
+		$99,
+		-- V6-W1.6 R8 (migration 610): request class + due time. $100 stays
+		-- a bare placeholder (placeholder-alignment guard); the NOT NULL
+		-- default is resolved arg-side by requestClassArg.
+		$100, $101
+	)
 
 				-- 2026-08-06 fix: INSERT targets request_logs_hot (NOT the partitioned parent).
 				-- Migration 455 (2026-07-23) gave request_logs_hot PRIMARY KEY (request_id),
@@ -1427,6 +1426,7 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		entry.ClientForwardedFor,
 		entry.OriginStage,
 		entry.OriginActor,
+		entry.CustomerID,
 		// 2026-07-19 (migration 350): routing attempts tracking
 		// 2026-08-22: use nullableJSONArg so an empty in_progress INSERT stores
 		// SQL NULL (not JSON null); completion UPDATE can then COALESCE/CASE-fill.
