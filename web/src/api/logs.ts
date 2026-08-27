@@ -127,6 +127,12 @@ export interface AttachmentInfo {
 }
 
 export interface RequestLogDetail extends RequestLogRow {
+	// 2026-08-28: request_logs 的 request_body/response_body 列已迁移到
+	// request_logs_bodies；详情接口（/api/logs/:id）在 metadata SELECT 之后
+	// 单独走 admin/logs.go 的 fetchRequestBodies / fetchRequestOutboundBody
+	// 二阶段读取（hot heap → columnar 月分区），最终落到下面三个字段。
+	// 后端不识别 ?omit_body=1（与 /api/admin/request-detail 不同），所以
+	// 前端拿到的是已经包含 body 的完整 payload。
 	request_body: any | null
 	response_body: any | null
   // 2026-07-01: 完整附件元数据数组。仅详情接口返回；为空/undefined 表示无附件。

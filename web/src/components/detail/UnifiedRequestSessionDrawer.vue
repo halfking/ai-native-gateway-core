@@ -1,5 +1,19 @@
 <script setup lang="ts">
 // UnifiedRequestSessionDrawer — dual-mode request/session detail shell.
+// 2026-08-28: 实时流泳道点击 → 抽屉首屏。
+//
+// 数据来源（与 request_logs body 列已迁移到 request_logs_bodies 一致）：
+//   - getRequestLogDetail (/api/logs/:id)：metadata 全量（token/cost/provider/
+//     session_id/task_id/...）+ request_body/response_body/outbound_body
+//     由 admin/logs.go 的 fetchRequestBodies/fetchRequestOutboundBody
+//     从 request_logs_bodies_hot (heap) → request_logs_bodies (columnar)
+//     二阶段读取。后端不识别 omit_body，因此前端 Phase A/Phase B
+//     拆分不再有意义，一次调用即可拿到完整 payload。
+//   - getUnifiedRequestDetail (/api/admin/request-detail/:id)：memory/file
+//     → request_logs → session_turns 多层回退的 unified facade。
+//     与 /api/logs/:id 数据重复，主要用作 source 标签（memory/file/
+//     request_logs/session_turns）和 in_flight/persisted 持久化阶段。
+//   - getSessionSnapshot：会话级快照（标题、分析结果、最后模型/供应商）。
 import { computed, ref, watch } from 'vue'
 import { getRequestLogDetail, type RequestLogDetail } from '../../api/logs'
 import {
@@ -52,6 +66,10 @@ const sessionId = computed(
   () => log.value?.gw_session_id || unified.value?.meta.gw_session_id || null,
 )
 
+// Body 优先级：unified（admin/request-detail，memory→request_logs→session_turns 多层回退）>
+//   log（/api/logs/:id，来自 request_logs_bodies_hot/_bodies）。
+// unified 在 in_flight（memory/file）路径下 body 才唯一可信；persisted 路径下
+// 与 log 同源（都是 request_logs_bodies），互为备份。
 const requestBody = computed(
   () => unified.value?.bodies?.request_body ?? log.value?.request_body ?? null,
 )
@@ -80,19 +98,19 @@ watch(
   { immediate: true },
 )
 
-watch(tab, (t) => {
-  const id = activeRequestId.value
-  if (id && needsBodies(t)) void ensureBodies(id)
-})
-
 async function loadRequest(id: string) {
   loading.value = true
   error.value = ''
   try {
-    // Phase A: meta only — never block the drawer on large bodies.
+    // 单次请求拿到 metadata + body（两个端点都无视 omit_body），
+    // Promise.all 并行拉取，失败一方降级（catch → null），由另一方兜底。
     const [u, meta] = await Promise.all([
-      getUnifiedRequestDetail(id, { omitBody: true }).catch(() => null),
-      getRequestLogDetail(id, { omitBody: true }).catch(() => null),
+      getUnifiedRequestDetail(id).catch((e: unknown) => {
+        // unified 端点是 admin-only；非 super admin 走 403/404，吞掉并 fallback 到 log。
+        if (e instanceof Error) return null
+        return null
+      }),
+      getRequestLogDetail(id).catch(() => null),
     ])
     unified.value = u
     log.value = meta
@@ -106,28 +124,10 @@ async function loadRequest(id: string) {
         .then((snap) => { sessionSnap.value = snap as Record<string, unknown> })
         .catch(() => { sessionSnap.value = null })
     }
-    // Phase B: bodies only when a content tab is active.
-    if (needsBodies(tab.value)) {
-      await ensureBodies(id)
-    }
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : String(e)
   } finally {
     loading.value = false
-  }
-}
-
-function needsBodies(t: string): boolean {
-  return t === 'chat' || t === 'compress' || t === 'raw' || t === 'attachments'
-}
-
-async function ensureBodies(id: string) {
-  if (unified.value?.bodies || log.value?.request_body || log.value?.response_body) return
-  try {
-    const full = await getRequestLogDetail(id)
-    log.value = log.value ? { ...log.value, ...full } : full
-  } catch {
-    /* meta-only ok */
   }
 }
 
