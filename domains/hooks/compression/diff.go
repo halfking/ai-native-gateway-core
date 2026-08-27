@@ -274,11 +274,16 @@ func contentFingerprint(raw json.RawMessage) string {
 	var sb strings.Builder
 	for _, p := range parts {
 		blockType, _ := p["type"].(string)
-		
+
 		switch blockType {
 		case "", "text", "input_text", "output_text":
 			// Text blocks: extract the "text" field
 			if text, ok := p["text"].(string); ok {
+				sb.WriteString(text)
+			}
+		case "thinking":
+			// Anthropic thinking blocks carry payload in "thinking".
+			if text, ok := p["thinking"].(string); ok {
 				sb.WriteString(text)
 			}
 		case "tool_use":
@@ -311,7 +316,11 @@ func contentFingerprint(raw json.RawMessage) string {
 				}
 			}
 		}
-		
+
+		// Per-block terminator: without it [{"text":"ab"}] and
+		// [{"text":"a"},{"text":"b"}] collide on the same fingerprint.
+		sb.WriteString("\x00")
+
 		if sb.Len() >= 512 {
 			break
 		}

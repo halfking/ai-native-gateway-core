@@ -96,3 +96,20 @@ go build ./... && go vet ./domains/hooks/compression/...  → 全绿
 1. P1 运维：post-deploy-verify 增扫 stderr 文件
 2. summary_client.go 错误分类 3 项改进（§6.4 建议）
 3. 生产影响评估：检查 245/154 PG 中是否已有长会话累积了大量旧 marker（本次只修复代码，未清理历史数据）
+
+## 7. 第三轮：7622526a5 提交后审计（2026-08-27 深夜，同日追加）
+
+对 `7622526a5` 做双轴审查（规范轴按 CONTRIBUTING.md 自查——审查子代理超时；规格轴对照本文档 §5/§6 由子代理完成），加人工逐行复审。发现 4 个问题，全部修复：
+
+| # | 发现 | 来源 | 严重度 | 修复 |
+|---|---|---|---|---|
+| 1 | `stripThinkingBlocks`（strip.go）在 content 数组**全为 thinking 块**时 `len(filtered)==0 → return nil`，整条消息连同 `tool_calls`/`tool_call_id`/`name` 一起丢弃——"Anthropic assistant 只发 thinking+tool_use 不发 text"正是该形态，§6.1 的修复只覆盖了"过滤后仍有块"的分支 | 规格轴子代理 | P1 | 空 filtered 时若消息含 role/content 之外的键则保留消息、content 置 `[]`；纯 thinking 消息（无载荷字段）维持丢弃语义。测试：`TestStripThinkingBlocks_AllThinkingWithToolCallsPreserved` / `..._AllThinkingNoOtherFieldsStillDropped` |
+| 2 | `splitSystemAndTail`（rebuilder_openai.go）`FirstUserIndex<0` 分支 `tail=lastN(全部消息)` 会把旧 marker 原样带进输出——当 body 唯一的 user 消息是 marker（无真实 FirstUser）时二轮压缩仍嵌套。§6.3 的 retain.go 修复只堵住了"marker 被钉成 FirstUser"一条路径 | 人工复审（探针测试证实：2 markers） | P1 | 新增 `filterRebuildTail`：tail 构造时过滤 marker 消息（新 C-track 摘要替代一切旧摘要）与 system 消息（SystemMessages 已单独 prepend，tail 保留必然重复——顺带修复既有缺陷，见 #4）。测试：`TestMarkerIdempotency_MarkerOnlyUserBody` / `TestRebuildAfterSummary_NoSystemDuplicationInTail` |
+| 3 | `contentFingerprint`（diff.go）块与块之间无分隔符，`[{"text":"ab"}]` 与 `[{"text":"a"},{"text":"b"}]` 指纹相同；Anthropic `thinking` 块（payload 在 `thinking` 字段）不进指纹，thinking-only 消息指纹为空仍碰撞 | 规格轴子代理 | P2 | 每块末尾统一追加 `\x00` 终止符；新增 `case "thinking"` 取 `thinking` 字段。测试：`TestContentFingerprint_BlockSeparatorNoCollision` / `..._ThinkingBlock`。**注意**：指纹值全变，升级部署后 SessionState.MsgHashes 旧值与新算法不匹配 → 首轮 diff 视为全量 delta，一次性自愈，无正确性影响 |
+| 4 | tail 中的 system 消息与 SystemMessages 重复 prepend（对 mid-conversation system 既有缺陷，≥0 路径同样存在） | 人工复审 | P2 | 随 #2 的 `filterRebuildTail` 一并修复（两个 tail 构造点都过滤），见 #4 测试 |
+
+其余审计结论：
+- §6.1/§6.2 声称的其余行为经逐行核对属实（字符串 content 原样返回、map 只替换 content 键、`text` 块行为向后兼容）。
+- 规范轴：本任务文件已 gofmt（修掉 2 处空白行）；`session_cache_coverage_test.go` 的历史脏格式非本任务产物，不处理；commit 符合 Conventional Commits；`scan-secrets.sh --mode=strict --paths=domains/hooks/compression` 0 findings。
+- 验证：`go test ./... -count=1` 全仓 232 包 0 FAIL；`go vet ./domains/hooks/compression/...` 干净；`go build ./...` 通过。
+- 规格轴指出 `case ""` 把无 type 字段的块纳入指纹属超出 §6.2 列举范围——**故意保留**：OpenAI 实际存在无 type 的 text 块，纳入比忽略更保守，且有测试覆盖。
