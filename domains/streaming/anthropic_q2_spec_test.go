@@ -106,9 +106,9 @@ func TestQ2MidStreamJSONErrorChunkIntercepted(t *testing.T) {
 // the turn, not silently complete.
 func TestQ2GLMStyleFinishReasonError(t *testing.T) {
 	cases := []struct {
-		finishReason string
-		wantReason   string
-		wantKind     errorsx.ErrorKind
+		finishReason  string
+		wantReason    string
+		wantKind      errorsx.ErrorKind
 		wantResumable bool
 	}{
 		// Content was already committed to the client before these GLM
@@ -140,8 +140,39 @@ func TestQ2GLMStyleFinishReasonError(t *testing.T) {
 			assert.Equal(t, tc.wantReason, out.Reason)
 			assert.Equal(t, tc.wantKind, out.Kind)
 			assert.Equal(t, tc.wantResumable, out.Resumable)
+			// Content was visible: the client must receive a sanitized error frame.
+			wire := rec.Body.String()
+			assert.Contains(t, wire, "partial", "content must be delivered")
+			assert.Contains(t, wire, `"error"`, "client-visible error required")
 		})
 	}
+}
+
+// TestQ2GLMStyleFinishReasonErrorPreContent verifies that a GLM error signal
+// arriving before ANY client-visible content keeps the attempt transparently
+// retryable (no error frame on wire, Resumable=true).
+func TestQ2GLMStyleFinishReasonErrorPreContent(t *testing.T) {
+	body := strings.Join([]string{
+		`data: {"id":"s1","choices":[{"delta":{},"finish_reason":"network_error"}]}`,
+		"",
+		`data: [DONE]`,
+		"",
+	}, "\n")
+	resp := &http.Response{
+		Body:    io.NopCloser(strings.NewReader(body)),
+		Request: httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
+	}
+	rec := httptest.NewRecorder()
+
+	out := StreamOpenAIToAnthropicSSE(context.Background(), rec, resp,
+		"glm-5.2", "glm-5.2", "req-q2-glm-precon", nil, nil)
+
+	assert.True(t, out.Interrupted)
+	assert.Equal(t, "network_error", out.Reason)
+	assert.True(t, out.Resumable, "pre-content: must stay transparent for failover")
+	// No client-visible content, so no error frame should be emitted.
+	wire := rec.Body.String()
+	assert.NotContains(t, wire, `"error"`, "pre-content interruption must not emit error frame")
 }
 
 // TestQ2ToolCallMultiIndexParity verifies parallel tool calls each collapse
