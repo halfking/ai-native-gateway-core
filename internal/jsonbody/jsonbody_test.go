@@ -63,7 +63,7 @@ func TestReadOptional_MalformedBodyRejected(t *testing.T) {
 		t.Fatalf("malformed body must write 400, got %d", w.Code)
 	}
 	body := w.Body.String()
-	if !strings.Contains(body, "jsonbody.invalid_optional_body") {
+	if !strings.Contains(body, "jsonbody.invalid_body") {
 		t.Fatalf("response must carry stable error code, got: %s", body)
 	}
 }
@@ -82,8 +82,8 @@ func TestReadOptional_TooLargeBodyRejected(t *testing.T) {
 	if !IsBodyTooLarge(err) {
 		t.Fatalf("oversize body must surface ErrBodyTooLarge, got %v", err)
 	}
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("oversize body must write 400, got %d", w.Code)
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversize body must write 413, got %d", w.Code)
 	}
 }
 
