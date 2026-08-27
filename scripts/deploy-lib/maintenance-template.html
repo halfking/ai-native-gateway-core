@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="5">
+<title>正在升级 · llm-gateway-go</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+                 "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    max-width: 640px; margin: 80px auto; padding: 0 24px;
+    color: #1f2937; line-height: 1.6;
+    background: #f9fafb;
+  }
+  @media (prefers-color-scheme: dark) {
+    body { background: #111827; color: #e5e7eb; }
+    .info { background: #1f2937 !important; }
+    code { background: #374151 !important; color: #f3f4f6; }
+    .progress { color: #9ca3af !important; }
+  }
+  h1 { color: #2563eb; font-size: 28px; margin: 0 0 8px 0; }
+  .subtitle { color: #6b7280; margin: 0 0 24px 0; font-size: 14px; }
+  .info {
+    background: #f3f4f6; border-radius: 8px;
+    padding: 16px 20px; margin: 16px 0;
+  }
+  .info p { margin: 8px 0; }
+  code {
+    background: #e5e7eb; padding: 2px 8px;
+    border-radius: 4px; font-size: 14px;
+    font-family: "SF Mono", Monaco, Consolas, "Courier New", monospace;
+  }
+  .spinner {
+    display: inline-block; width: 14px; height: 14px;
+    border: 2px solid #d1d5db; border-top-color: #2563eb;
+    border-radius: 50%; animation: spin 0.8s linear infinite;
+    vertical-align: middle; margin-right: 8px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .progress {
+    color: #6b7280; font-size: 14px;
+    margin-top: 32px; padding-top: 16px;
+    border-top: 1px solid #e5e7eb;
+  }
+  .progress strong { color: #1f2937; }
+</style>
+</head>
+<body>
+  <h1><span class="spinner"></span>系统正在升级</h1>
+  <p class="subtitle">llm-gateway-go · 部署窗口</p>
+
+  <div class="info">
+    <p><strong>当前版本:</strong> <code>__OLD_VERSION__</code></p>
+    <p><strong>目标版本:</strong> <code>__NEW_VERSION__</code></p>
+    <p><strong>开始时间:</strong> <code>__STARTED_AT__</code></p>
+    <p><strong>预计耗时:</strong> 5–10 秒</p>
+  </div>
+
+  <p>升级过程通常持续 5–10 秒。页面将自动刷新，
+     您也可以手动刷新浏览器查看最新状态。</p>
+
+  <p class="progress">
+    页面每 5 秒自动刷新。<br>
+    如果长时间未恢复（&gt; 60 秒），请联系运维。
+  </p>
+</body>
+</html>

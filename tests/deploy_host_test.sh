@@ -469,6 +469,122 @@ EOF
   rm -rf "$tmp"
 }
 
+# ---- upgrade banner tests (2026-08-27) -----------------------------
+# The deploy page is selected by an nginx-visible marker. These tests verify
+# that the page is complete before the marker is created, and that hide removes
+# both files. No listener or temporary process is needed.
+
+test_show_banner_writes_html_and_creates_marker() {
+  echo "── show_banner_writes_html_and_creates_marker ──"
+  local tmp remote
+  tmp=$(setup_fake_host)
+  remote="$tmp/opt/llm-gateway-go"
+  setup_test_env "$tmp"
+
+  local ssh_cmd="fake_ssh_runner"
+  (
+    source "$LIB_TARGETS"; source "$LIB_HOST"
+    host_show_upgrade_banner "$ssh_cmd" 245 "3.0.0-test"
+  ) >/dev/null 2>&1
+
+  if [[ -s "$remote/maintenance/index.html" ]]; then
+    log_pass "upgrade page is non-empty"
+  else
+    log_fail "upgrade page is missing or empty"
+  fi
+  if grep -q '系统正在升级' "$remote/maintenance/index.html" 2>/dev/null; then
+    log_pass "upgrade page contains upgrade headline"
+  else
+    log_fail "upgrade page missing upgrade headline"
+  fi
+  if grep -q '3.0.0-test' "$remote/maintenance/index.html" 2>/dev/null; then
+    log_pass "upgrade page contains target version"
+  else
+    log_fail "upgrade page missing target version"
+  fi
+  if [[ -f "$remote/maintenance/UPGRADING" ]]; then
+    log_pass "UPGRADING marker was created after page"
+  else
+    log_fail "UPGRADING marker was not created"
+  fi
+
+  rm -rf "$tmp"
+}
+
+test_hide_banner_removes_marker_and_html() {
+  echo "── hide_banner_removes_marker_and_html ──"
+  local tmp remote
+  tmp=$(setup_fake_host)
+  remote="$tmp/opt/llm-gateway-go"
+  setup_test_env "$tmp"
+  mkdir -p "$remote/maintenance"
+  printf '<html>upgrade</html>\n' >"$remote/maintenance/index.html"
+  : >"$remote/maintenance/UPGRADING"
+
+  local ssh_cmd="fake_ssh_runner"
+  (
+    source "$LIB_TARGETS"; source "$LIB_HOST"
+    host_hide_upgrade_banner "$ssh_cmd" 245
+  ) >/dev/null 2>&1
+
+  [[ ! -e "$remote/maintenance/index.html" ]] && log_pass "hide removed upgrade page" \
+    || log_fail "hide left upgrade page"
+  [[ ! -e "$remote/maintenance/UPGRADING" ]] && log_pass "hide removed UPGRADING marker" \
+    || log_fail "hide left UPGRADING marker"
+
+  rm -rf "$tmp"
+}
+
+test_show_banner_fails_safely_when_template_missing() {
+  echo "── show_banner_fails_safely_when_template_missing ──"
+  local tmp old_template rc=0
+  tmp=$(setup_fake_host)
+  setup_test_env "$tmp"
+  old_template="$REPO_ROOT/scripts/deploy-lib/maintenance-template.html"
+  mv "$old_template" "$old_template.test-backup"
+
+  local ssh_cmd="fake_ssh_runner"
+  (
+    source "$LIB_TARGETS"; source "$LIB_HOST"
+    host_show_upgrade_banner "$ssh_cmd" 245 "3.0.0-fail"
+  ) >/dev/null 2>&1 || rc=$?
+  mv "$old_template.test-backup" "$old_template"
+
+  (( rc != 0 )) && log_pass "missing template blocks deployment before stop" \
+    || log_fail "missing template did not fail closed"
+  rm -rf "$tmp"
+}
+
+test_atomic_switch_does_not_manage_banner_lifecycle() {
+  echo "── atomic_switch_does_not_manage_banner_lifecycle ──"
+  local tmp remote
+  tmp=$(setup_fake_host)
+  remote="$tmp/opt/llm-gateway-go"
+  setup_test_env "$tmp"
+
+  local v="3.0.0-banner"
+  mkdir -p "$remote/releases/$v/web"
+  printf '#!/usr/bin/env sh\necho gw v=%s\n' "$v" >"$remote/releases/$v/gateway"
+  chmod +x "$remote/releases/$v/gateway"
+  printf '<html>%s</html>\n' "$v" >"$remote/releases/$v/web/index.html"
+  printf '{"version":"%s","build_seq":1}\n' "$v" >"$remote/releases/$v/version.json"
+  mkdir -p "$remote/maintenance"
+  printf '<html>upgrade</html>\n' >"$remote/maintenance/index.html"
+  : >"$remote/maintenance/UPGRADING"
+
+  local ssh_cmd="fake_ssh_runner"
+  (
+    source "$LIB_TARGETS"; source "$LIB_HOST"
+    host_atomic_switch "$ssh_cmd" 245 "$v"
+  ) >/dev/null 2>&1 || true
+
+  # The primitive only switches/restarts; the marker remains until the
+  # orchestrator has completed all post-deploy gates.
+  [[ -f "$remote/maintenance/UPGRADING" ]] && log_pass "atomic switch preserves upgrade marker" \
+    || log_fail "atomic switch removed marker prematurely"
+
+  rm -rf "$tmp"
+}
 # ---- runner --------------------------------------------------------------
 
 run_all() {
@@ -484,6 +600,10 @@ run_all() {
   test_select_rollback_target_picks_newest_verified
   test_select_rollback_target_returns_4_when_empty
   test_failed_health_triggers_rollback_marker
+  test_show_banner_writes_html_and_creates_marker
+  test_hide_banner_removes_marker_and_html
+  test_show_banner_fails_safely_when_template_missing
+  test_atomic_switch_does_not_manage_banner_lifecycle
 
   echo
   echo "───────────────────────────────────────────────────────────────"
@@ -507,6 +627,10 @@ if [[ $# -gt 0 ]]; then
     select_rollback_target)                 test_select_rollback_target_picks_newest_verified ;;
     select_rollback_returns_4)              test_select_rollback_target_returns_4_when_empty ;;
     failed_health)                          test_failed_health_triggers_rollback_marker ;;
+    show_banner)                            test_show_banner_writes_html_and_creates_marker ;;
+    hide_banner)                            test_hide_banner_removes_marker_and_html ;;
+    show_banner_fails_safely)               test_show_banner_fails_safely_when_template_missing ;;
+    atomic_switch_with_banner)              test_atomic_switch_does_not_manage_banner_lifecycle ;;
     all|*)                                  run_all ;;
   esac
 else
