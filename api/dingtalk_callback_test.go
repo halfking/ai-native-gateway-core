@@ -483,3 +483,111 @@ func TestRegisterDingTalkRoutes(t *testing.T) {
 	assert.Equal(t, http.StatusOK, w.Code)
 	manager.AssertExpectations(t)
 }
+
+// ─── 2026-08-27 audit fix: sender compatibility ───────────────────
+
+// TestDingTalkCallbackRequest_EventIDAliases verifies both the
+// snake_case `event_id` (our own notification module) and the
+// camelCase `eventId` (DingTalk's event subscription format) populate
+// the field.
+func TestDingTalkCallbackRequest_EventIDAliases(t *testing.T) {
+	var snake DingTalkCallbackRequest
+	if err := json.Unmarshal([]byte(`{"event_id":"evt-1","approval_id":"a"}`), &snake); err != nil {
+		t.Fatal(err)
+	}
+	if snake.EventID != "evt-1" {
+		t.Fatalf("snake_case event_id not parsed: %+v", snake)
+	}
+
+	var camel DingTalkCallbackRequest
+	if err := json.Unmarshal([]byte(`{"eventId":"evt-2","approval_id":"a"}`), &camel); err != nil {
+		t.Fatal(err)
+	}
+	if camel.EventID != "evt-2" {
+		t.Fatalf("camelCase eventId not parsed: %+v", camel)
+	}
+}
+
+// TestDingTalkCallbackHandler_VerifySignature_LegacyScheme verifies
+// that senders still computing the DingTalk-official robot signature
+// (HMAC over timestamp+"\n"+secret, no body) authenticate during the
+// migration window.
+func TestDingTalkCallbackHandler_VerifySignature_LegacyScheme(t *testing.T) {
+	appSecret := "test_secret_123"
+	handler := NewDingTalkCallbackHandler(&MockApprovalManager{}, appSecret, nil)
+
+	body := []byte(`{"approval_id":"a"}`)
+	timestamp := strconv.FormatInt(time.Now().UnixMilli(), 10)
+
+	// Legacy material: timestamp + "\n" + secret (no body).
+	mac := hmac.New(sha256.New, []byte(appSecret))
+	mac.Write([]byte(timestamp + "\n" + appSecret))
+	legacySign := base64.StdEncoding.EncodeToString(mac.Sum(nil))
+
+	req := httptest.NewRequest(http.MethodPost, "/api/webhooks/dingtalk/approval-callback", bytes.NewReader(body))
+	q := req.URL.Query()
+	q.Set("timestamp", timestamp)
+	q.Set("sign", legacySign)
+	req.URL.RawQuery = q.Encode()
+
+	if !handler.verifySignature(req, body) {
+		t.Fatal("legacy (body-less) signature must still verify")
+	}
+}
+
+// TestDingTalkCallbackHandler_VerifySignature_NewSchemeStillPrimary
+// confirms the P0-2 body-bound scheme remains accepted.
+func TestDingTalkCallbackHandler_VerifySignature_NewSchemeStillPrimary(t *testing.T) {
+	appSecret := "test_secret_123"
+	handler := NewDingTalkCallbackHandler(&MockApprovalManager{}, appSecret, nil)
+
+	body := []byte(`{"approval_id":"a"}`)
+	timestamp := strconv.FormatInt(time.Now().UnixMilli(), 10)
+
+	mac := hmac.New(sha256.New, []byte(appSecret))
+	mac.Write([]byte(timestamp + "\n" + appSecret + "\n" + string(body)))
+	newSign := base64.StdEncoding.EncodeToString(mac.Sum(nil))
+
+	req := httptest.NewRequest(http.MethodPost, "/api/webhooks/dingtalk/approval-callback", bytes.NewReader(body))
+	q := req.URL.Query()
+	q.Set("timestamp", timestamp)
+	q.Set("sign", newSign)
+	req.URL.RawQuery = q.Encode()
+
+	if !handler.verifySignature(req, body) {
+		t.Fatal("body-bound signature must verify")
+	}
+}
+
+// TestDingTalkCallbackHandler_HandleApprovalCallback_CamelEventID
+// runs the full handler with a camelCase eventId body (signed with the
+// new scheme) to prove end-to-end compatibility.
+func TestDingTalkCallbackHandler_HandleApprovalCallback_CamelEventID(t *testing.T) {
+	appSecret := "test_secret_123"
+	manager := &MockApprovalManager{}
+	handler := NewDingTalkCallbackHandler(manager, appSecret, nil)
+
+	// camelCase eventId — what DingTalk's event subscription emits.
+	payload := `{"EventType":"approval_result","TimeStamp":%d,"eventId":"evt-camel-1","approval_id":"approval_123","tenant_id":"tenant_1","user_id":"user_1","result":"agree","comment":"ok"}`
+	ts := time.Now().UnixMilli()
+	body := []byte(fmt.Sprintf(payload, ts))
+	timestamp := strconv.FormatInt(ts, 10)
+
+	mac := hmac.New(sha256.New, []byte(appSecret))
+	mac.Write([]byte(timestamp + "\n" + appSecret + "\n" + string(body)))
+	sign := base64.StdEncoding.EncodeToString(mac.Sum(nil))
+
+	req := httptest.NewRequest(http.MethodPost,
+		fmt.Sprintf("/api/webhooks/dingtalk/approval-callback?timestamp=%s&sign=%s", timestamp, url.QueryEscape(sign)),
+		bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	manager.On("Approve", mock.Anything, "approval_123", "tenant_1", "user_1", "ok").Return(nil).Once()
+
+	w := httptest.NewRecorder()
+	handler.HandleApprovalCallback(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("camelCase eventId must pass end-to-end, got %d body=%s", w.Code, w.Body.String())
+	}
+	manager.AssertExpectations(t)
+}
