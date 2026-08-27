@@ -1208,6 +1208,12 @@ func (e *Executor) executeAnthropicOnce(
 			Message: "anthropic upstream returned an empty response",
 		}}
 	}
+	// Defers close the ORIGINAL transport body: the receiver is evaluated at
+	// the defer statement, before resp.Body is replaced by the reconstructed
+	// in-memory reader below (WriteNonStreamResponse closes that replacement).
+	// Mirrors executor_chat.go's defer before its own ReadAll.
+	//nolint:errcheck // best-effort close
+	defer resp.Body.Close()
 	rawResponseBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, &retryableError{err: &upstreampkg.Error{
