@@ -266,21 +266,54 @@ func contentFingerprint(raw json.RawMessage) string {
 		}
 		return s
 	}
-	// Array of content parts — concatenate "text" fields.
-	var parts []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
-	}
+	// Array of content parts — concatenate meaningful fields from all block types.
+	var parts []map[string]any
 	if json.Unmarshal(raw, &parts) != nil {
 		return string(raw[:min512(len(raw))])
 	}
 	var sb strings.Builder
 	for _, p := range parts {
-		if p.Type == "text" {
-			sb.WriteString(p.Text)
-			if sb.Len() >= 512 {
-				break
+		blockType, _ := p["type"].(string)
+		
+		switch blockType {
+		case "", "text", "input_text", "output_text":
+			// Text blocks: extract the "text" field
+			if text, ok := p["text"].(string); ok {
+				sb.WriteString(text)
 			}
+		case "tool_use":
+			// Anthropic tool_use: include id, name, and input
+			if id, ok := p["id"].(string); ok {
+				sb.WriteString(id)
+				sb.WriteString("\x00")
+			}
+			if name, ok := p["name"].(string); ok {
+				sb.WriteString(name)
+				sb.WriteString("\x00")
+			}
+			if input, ok := p["input"]; ok {
+				if inputJSON, err := json.Marshal(input); err == nil {
+					sb.Write(inputJSON)
+				}
+			}
+		case "tool_result":
+			// Anthropic tool_result: include tool_use_id and content
+			if toolUseID, ok := p["tool_use_id"].(string); ok {
+				sb.WriteString(toolUseID)
+				sb.WriteString("\x00")
+			}
+			if content, ok := p["content"]; ok {
+				// content can be string or array
+				if contentStr, ok := content.(string); ok {
+					sb.WriteString(contentStr)
+				} else if contentJSON, err := json.Marshal(content); err == nil {
+					sb.Write(contentJSON)
+				}
+			}
+		}
+		
+		if sb.Len() >= 512 {
+			break
 		}
 	}
 	result := sb.String()

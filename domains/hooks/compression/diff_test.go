@@ -252,3 +252,63 @@ func TestBuildSummaryMarker(t *testing.T) {
 		t.Error("expected non-empty summary marker")
 	}
 }
+
+// TestContentFingerprint_InputOutputTextBlocks 验证 P2 issue #5:
+// contentFingerprint 必须把 input_text / output_text 块纳入指纹计算，
+// 不能只处理 type=="text" 的块。否则同角色不同内容会发生碰撞。
+func TestContentFingerprint_InputOutputTextBlocks(t *testing.T) {
+	// 两条消息：role 相同，但 content 不同（一个 text 块，一个 input_text 块）
+	msg1 := json.RawMessage(`[{"type":"text","text":"hello world"}]`)
+	msg2 := json.RawMessage(`[{"type":"input_text","text":"different content"}]`)
+	
+	fp1 := contentFingerprint(msg1)
+	fp2 := contentFingerprint(msg2)
+	
+	// P2 issue #5: 当前实现会忽略 input_text 块 → fp2 == ""
+	// 导致两条不同内容的消息指纹碰撞（都退化为 role-only hash）
+	if fp1 == fp2 {
+		t.Errorf("contentFingerprint collision: msg1=%q msg2=%q both produce fp=%q (P2 issue #5)",
+			msg1, msg2, fp1)
+	}
+	
+	if fp2 == "" {
+		t.Errorf("contentFingerprint ignored input_text block, fp2 should contain 'different content'")
+	}
+}
+
+// TestContentFingerprint_AnthropicToolBlocks 验证 Anthropic 的
+// tool_use / tool_result 块的关键字段也必须纳入指纹。
+func TestContentFingerprint_AnthropicToolBlocks(t *testing.T) {
+	// tool_use 块
+	toolUse := json.RawMessage(`[{
+		"type": "tool_use",
+		"id": "toolu_abc123",
+		"name": "search",
+		"input": {"query": "test"}
+	}]`)
+	
+	// tool_result 块
+	toolResult := json.RawMessage(`[{
+		"type": "tool_result",
+		"tool_use_id": "toolu_abc123",
+		"content": "result here"
+	}]`)
+	
+	fpUse := contentFingerprint(toolUse)
+	fpResult := contentFingerprint(toolResult)
+	
+	// 两种不同类型的 tool 块不应碰撞
+	if fpUse == fpResult {
+		t.Errorf("tool_use and tool_result should have different fingerprints, both=%q", fpUse)
+	}
+	
+	// tool_use 应包含 id / name / input 信息
+	if fpUse == "" {
+		t.Errorf("tool_use fingerprint should not be empty (P2 issue #5)")
+	}
+	
+	// tool_result 应包含 tool_use_id / content 信息
+	if fpResult == "" {
+		t.Errorf("tool_result fingerprint should not be empty (P2 issue #5)")
+	}
+}

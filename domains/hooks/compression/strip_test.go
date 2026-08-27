@@ -469,3 +469,96 @@ func TestStripToolInfo_KeepsLastNRounds_NoIncomplete(t *testing.T) {
 		}
 	}
 }
+
+// TestStripThinkingBlocks_PreservesToolCalls 验证 P2 issue #4:
+// stripThinkingBlocks 重建消息时必须保留 tool_calls / tool_call_id / name 等
+// OpenAI 字段，不能只保留 role + content。
+func TestStripThinkingBlocks_PreservesToolCalls(t *testing.T) {
+	// 构造同时含 thinking 块与 tool_calls 的消息（OpenAI 格式）
+	raw := json.RawMessage(`{
+		"role": "assistant",
+		"content": [
+			{"type": "thinking", "thinking": "let me think..."},
+			{"type": "text", "text": "I'll use a tool"}
+		],
+		"tool_calls": [
+			{
+				"id": "call_abc123",
+				"type": "function",
+				"function": {"name": "search", "arguments": "{\"q\":\"test\"}"}
+			}
+		]
+	}`)
+	
+	out := stripThinkingBlocks(raw)
+	
+	// 验证 thinking 块被删除
+	var message map[string]any
+	if err := json.Unmarshal(out, &message); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	
+	// 验证 content 只保留 text 块
+	contentParts, ok := message["content"].([]any)
+	if !ok {
+		t.Fatalf("content should be array, got %T", message["content"])
+	}
+	if len(contentParts) != 1 {
+		t.Errorf("expected 1 content part (text only), got %d", len(contentParts))
+	}
+	if len(contentParts) > 0 {
+		part := contentParts[0].(map[string]any)
+		if part["type"] != "text" {
+			t.Errorf("expected text block, got %v", part["type"])
+		}
+	}
+	
+	// 验证 tool_calls 字段被保留（P2 issue #4）
+	toolCalls, exists := message["tool_calls"]
+	if !exists {
+		t.Errorf("tool_calls field was lost during stripThinkingBlocks (P2 issue #4)")
+	} else {
+		calls := toolCalls.([]any)
+		if len(calls) != 1 {
+			t.Errorf("expected 1 tool_call, got %d", len(calls))
+		}
+		if len(calls) > 0 {
+			call := calls[0].(map[string]any)
+			if call["id"] != "call_abc123" {
+				t.Errorf("tool_call id mismatch: got %v", call["id"])
+			}
+		}
+	}
+}
+
+// TestStripThinkingBlocks_PreservesToolCallID 验证 tool role 消息的
+// tool_call_id 字段也必须保留。
+func TestStripThinkingBlocks_PreservesToolCallID(t *testing.T) {
+	// 构造 tool role 消息（OpenAI 格式）
+	raw := json.RawMessage(`{
+		"role": "tool",
+		"content": [
+			{"type": "thinking", "thinking": "processing..."},
+			{"type": "text", "text": "result: 42"}
+		],
+		"tool_call_id": "call_abc123",
+		"name": "search"
+	}`)
+	
+	out := stripThinkingBlocks(raw)
+	
+	var message map[string]any
+	if err := json.Unmarshal(out, &message); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	
+	// 验证 tool_call_id 被保留
+	if _, exists := message["tool_call_id"]; !exists {
+		t.Errorf("tool_call_id field was lost during stripThinkingBlocks (P2 issue #4)")
+	}
+	
+	// 验证 name 被保留
+	if _, exists := message["name"]; !exists {
+		t.Errorf("name field was lost during stripThinkingBlocks (P2 issue #4)")
+	}
+}
