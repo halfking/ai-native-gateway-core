@@ -39,6 +39,10 @@ func (a *summaryClientAdapter) Complete(ctx context.Context, prompt string, opts
 	if err != nil {
 		return "", err
 	}
+	// T13 (audit 2026-08-27 §6.4): 累积所有候选错误，把首个 wrap 进 final error
+	// 而不是丢给固定字符串"all candidates failed"，让上层能分辨失败原因。
+	var firstErr error
+	failedCount := 0
 	for i := range candidates {
 		cand := candidates[i]
 		if !cand.Available {
@@ -49,13 +53,28 @@ func (a *summaryClientAdapter) Complete(ctx context.Context, prompt string, opts
 		}
 		out, callErr := completeSummaryCandidate(ctx, &cand, prompt, cfg)
 		if callErr != nil {
-			slog.Debug("summary: candidate failed", "model", cfg.Model, "raw_model", cand.RawModel, "error", callErr)
+			// T12 (audit 2026-08-27 §6.4): 原 slog.Debug 4,588次/日 error swallowed
+			// → 提到 WARN 让日志检索/告警触达；同时记录失败累计便于诊断。
+			failedCount++
+			if firstErr == nil {
+				firstErr = callErr
+			}
+			slog.Warn("summary: candidate failed",
+				"model", cfg.Model,
+				"raw_model", cand.RawModel,
+				"error", callErr,
+				"failed_count", failedCount,
+				"total_candidates", len(candidates),
+			)
 			continue
 		}
 		out = strings.TrimSpace(out)
 		if out != "" {
 			return out, nil
 		}
+	}
+	if firstErr != nil {
+		return "", fmt.Errorf("summary: all %d candidates failed for model %s: first error: %w", failedCount, cfg.Model, firstErr)
 	}
 	return "", fmt.Errorf("summary: all candidates failed for model %s", cfg.Model)
 }
