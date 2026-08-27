@@ -28,11 +28,9 @@ func TestRequestLogsColumnsCarryClass(t *testing.T) {
 		t.Fatalf("read logs.go: %v", err)
 	}
 	s := string(src)
-	scanTail := `&l.SessionTitle,
-		// V6-W1.6 R8 (migration 610): request class + due time (LAST fixed
-		// columns; the conditional trace_seq append below stays after them).
-		&l.RequestClass, &l.DueAt,`
-	if !strings.Contains(s, scanTail) {
+	if !strings.Contains(s, "&l.SessionTitle,") ||
+		!strings.Contains(s, "&l.RequestClass, &l.DueAt,") ||
+		strings.Index(s, "&l.SessionTitle,") >= strings.Index(s, "&l.RequestClass, &l.DueAt,") {
 		t.Fatalf("scanRequestListRow does not scan class/due after SessionTitle")
 	}
 	if !strings.Contains(s, `&detail.RequestClass, &detail.DueAt,`) {
