@@ -143,6 +143,9 @@ func (cf *credForwarder) loop() {
 			// the lock during governor waits or upstream I/O.
 			cf.handoffMu.Lock()
 			cf.handoffMu.Unlock()
+			// V6-W1.7: the request left the cred lane — return the cluster
+			// slot (no-op without a redis backend).
+			cf.pipe.releaseLaneAdmission(&qr.clusterCred)
 			gov, acquired := cf.acquire(qr)
 			if !acquired {
 				continue
@@ -173,6 +176,8 @@ func (cf *credForwarder) drainAndComplete() {
 			if !ok {
 				return
 			}
+			// V6-W1.7: shutdown drain is also a lane leave.
+			cf.pipe.releaseLaneAdmission(&qr.clusterCred)
 			depth := cf.depth.Add(-1)
 			metricCredQueueDepth.WithLabelValues(itoa(cf.cred.CredentialID), cf.cred.ConcurrencyMode).Dec()
 			cf.pipe.observeQueue(QueueObservation{Kind: QueueCredentialDepth, CredentialID: cf.cred.CredentialID, Mode: cf.cred.ConcurrencyMode, Depth: depth, Delta: -1, AbsoluteDepth: true})

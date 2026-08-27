@@ -6,12 +6,16 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	met "github.com/kaixuan/llm-gateway-go/metrics"
 	"github.com/pashagolub/pgxmock/v4"
+	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 )
 
 // TestExpiredCmbRecoverySQLGuards pins the safety guards of the
@@ -1876,5 +1880,350 @@ func TestOnQuotaRecovered_SourceLabel(t *testing.T) {
 		if calls[i] != w {
 			t.Errorf("calls[%d] = %+v, want %+v", i, calls[i], w)
 		}
+	}
+}
+
+// MARK_D_TESTS_APPENDED_BELOW
+
+// -----------------------------------------------------------------------------
+// 2026-08-26 P1-4 (落点 D): dispatchRecoveryHooks probeSubmitterImmediate tests.
+//
+// recover()'s dispatchRecoveryHooks closure fires probeSubmitterImmediate
+// (typically bound to credProbeV2.ProbeNowAsync, the synchronous, no-5min-delay
+// path) for the two recovery-flip sqlKinds (quota_periodic_recover /
+// availability_recover) once per unique credential id. These tests pin:
+//   - positive path: the immediate probe fires for both recovery-flip kinds,
+//     once per unique id, with the metric counter incremented exactly once
+//     per dispatch call
+//   - negative path: other sqlKinds (stale_periodic_exhausted_cleanup /
+//     circuit_close / consecutive_failures_clear / etc.) MUST NOT trigger
+//     the immediate path
+//   - nil safety: probeSubmitterImmediate = nil must not panic
+//   - dedup: the local seen map collapses duplicate ids inside one UPDATE
+//     block to a single immediate probe (sync.Once-style, per master
+//     prompt §4.5).
+//
+// Tests use the inline-closure mirror pattern shared by
+// TestRecover_InvalidateAndSubmitOnFlip so we exercise the exact dispatch
+// shape recover() uses. Drift is detected at code-review time — the
+// closure body is short enough to eyeball against recover().
+// -----------------------------------------------------------------------------
+
+// dispatchRecoveryHooksClosureMirror is a verbatim copy of the closure
+// inside recover(). It exists purely so dispatch semantics can be tested
+// without running the full recover() loop (which issues 7+ UPDATE blocks
+// plus 3 probe-recovery selects — too much boilerplate per test).
+func dispatchRecoveryHooksClosureMirror(r *CredentialRecovery, sqlKind, sqlText string, args ...any) (int, error) {
+	timeoutCtx := context.Background()
+	if r.invalidateCandidateCache == nil && r.probeSubmitter == nil {
+		tag, execErr := r.db.Exec(timeoutCtx, sqlText, args...)
+		if execErr != nil {
+			return 0, execErr
+		}
+		return int(tag.RowsAffected()), nil
+	}
+	rows, qErr := r.db.Query(timeoutCtx, sqlText, args...)
+	if qErr != nil {
+		return 0, qErr
+	}
+	defer rows.Close()
+
+	seen := make(map[int]struct{})
+	for rows.Next() {
+		var id int
+		if err := rows.Scan(&id); err != nil {
+			continue
+		}
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		if r.invalidateCandidateCache != nil {
+			r.invalidateCandidateCache(id)
+			met.RoutingCredentialRecoveryNotifyTotal.WithLabelValues(sqlKind, "invalidate").Inc()
+		}
+		if r.probeSubmitter != nil {
+			r.probeSubmitter(id, "")
+			met.RoutingCredentialRecoveryNotifyTotal.WithLabelValues(sqlKind, "probe_submit").Inc()
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return len(seen), err
+	}
+	if r.probeSubmitterImmediate != nil && len(seen) > 0 &&
+		(sqlKind == "quota_periodic_recover" || sqlKind == "availability_recover") {
+		for id := range seen {
+			r.probeSubmitterImmediate(id)
+		}
+		met.RoutingCredentialRecoveryNotifyTotal.WithLabelValues(sqlKind, "probe_immediate").Inc()
+	}
+	return len(seen), nil
+}
+
+// readCounter snapshots a prometheus.Counter so tests can compare deltas
+// without mutating the counter. client_model/go's dto.Metric is the
+// standard prometheus unit-test read path.
+func readCounter(c prometheus.Counter) float64 {
+	var m dto.Metric
+	if err := c.(prometheus.Metric).Write(&m); err != nil {
+		return 0
+	}
+	return m.Counter.GetValue()
+}
+
+// TestDispatchRecoveryHooks_FiresImmediateProbeForRecoveryFlips pins the
+// positive path: a quota_periodic_recover dispatch returning two ids
+// triggers probeSubmitterImmediate exactly once per id (2 calls), the
+// probe_immediate metric counter is incremented by 1, and probeSubmitter
+// (delayed path) still fires 2 times as the existing fallback.
+func TestDispatchRecoveryHooks_FiresImmediateProbeForRecoveryFlips(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool: %v", err)
+	}
+	defer mock.Close()
+
+	mock.ExpectQuery("UPDATE credentials SET quota_state = 'ok'").
+		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow(1).AddRow(2))
+
+	var (
+		mu             sync.Mutex
+		delayedCalls   []string
+		immediateCalls []int
+	)
+	r := &CredentialRecovery{
+		db: mock,
+		probeSubmitter: func(credID int, model string) {
+			mu.Lock()
+			defer mu.Unlock()
+			delayedCalls = append(delayedCalls, fmt.Sprintf("cred=%d,model=%q", credID, model))
+		},
+		probeSubmitterImmediate: func(credID int) {
+			mu.Lock()
+			defer mu.Unlock()
+			immediateCalls = append(immediateCalls, credID)
+		},
+		invalidateCandidateCache: func(int) {},
+	}
+
+	// Snapshot metric counter BEFORE the dispatch so we can assert +1.
+	immediateMetric := met.RoutingCredentialRecoveryNotifyTotal.
+		WithLabelValues("quota_periodic_recover", "probe_immediate")
+	before := readCounter(immediateMetric)
+
+	affected, derr := dispatchRecoveryHooksClosureMirror(r, "quota_periodic_recover",
+		"UPDATE credentials SET quota_state = 'ok' … RETURNING id")
+	if derr != nil {
+		t.Fatalf("dispatch failed: %v", derr)
+	}
+	if affected != 2 {
+		t.Fatalf("expected 2 unique credentials, got %d", affected)
+	}
+
+	mu.Lock()
+	if len(delayedCalls) != 2 {
+		mu.Unlock()
+		t.Fatalf("probeSubmitter (delayed) call count = %d, want 2 (got %v)", len(delayedCalls), delayedCalls)
+	}
+	if len(immediateCalls) != 2 {
+		mu.Unlock()
+		t.Fatalf("probeSubmitterImmediate call count = %d, want 2 (got %v)", len(immediateCalls), immediateCalls)
+	}
+	wantImmediate := []int{1, 2}
+	sort.Ints(immediateCalls)
+	for i, w := range wantImmediate {
+		if immediateCalls[i] != w {
+			mu.Unlock()
+			t.Errorf("immediateCalls[%d] = %d, want %d", i, immediateCalls[i], w)
+			return
+		}
+	}
+	mu.Unlock()
+
+	after := readCounter(immediateMetric)
+	if got := after - before; got != 1 {
+		t.Errorf("probe_immediate metric delta = %v, want 1 per dispatch call", got)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+// TestDispatchRecoveryHooks_NoImmediateProbeForOtherSqlKinds pins the
+// negative path: a dispatch under a non-recovery-flip sqlKind (here
+// stale_periodic_exhausted_cleanup, picked because it's part of the same
+// recover() loop and does not need immediate re-probe) MUST NOT fire
+// probeSubmitterImmediate even when wired. probeSubmitter still fires for
+// every RETURNING row, preserving the existing fallback path.
+func TestDispatchRecoveryHooks_NoImmediateProbeForOtherSqlKinds(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool: %v", err)
+	}
+	defer mock.Close()
+
+	mock.ExpectQuery("FROM credentials c").
+		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow(7).AddRow(8))
+
+	var (
+		mu             sync.Mutex
+		delayedCalls   []string
+		immediateCalls int
+	)
+	r := &CredentialRecovery{
+		db: mock,
+		probeSubmitter: func(credID int, model string) {
+			mu.Lock()
+			defer mu.Unlock()
+			delayedCalls = append(delayedCalls, fmt.Sprintf("cred=%d,model=%q", credID, model))
+		},
+		probeSubmitterImmediate: func(credID int) {
+			mu.Lock()
+			defer mu.Unlock()
+			immediateCalls++
+		},
+		invalidateCandidateCache: func(int) {},
+	}
+
+	affected, derr := dispatchRecoveryHooksClosureMirror(r, "stale_periodic_exhausted_cleanup",
+		"SELECT … FROM credentials c … RETURNING id")
+	if derr != nil {
+		t.Fatalf("dispatch failed: %v", derr)
+	}
+	if affected != 2 {
+		t.Fatalf("expected 2 unique credentials, got %d", affected)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(delayedCalls) != 2 {
+		t.Fatalf("probeSubmitter (delayed) call count = %d, want 2 (got %v)", len(delayedCalls), delayedCalls)
+	}
+	if immediateCalls != 0 {
+		t.Fatalf("probeSubmitterImmediate must NOT fire for non-recovery-flip sqlKind, got %d calls", immediateCalls)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+// TestDispatchRecoveryHooks_NilImmediateProbeSafe pins nil safety: with
+// probeSubmitterImmediate left nil (e.g. the integrator forgot to wire
+// it, or runs the pre-P1-4 binary), the dispatch closure silently skips
+// the immediate path. The delayed probeSubmitter still fires so the
+// 5-min fallback still covers the gap. Must not panic.
+func TestDispatchRecoveryHooks_NilImmediateProbeSafe(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool: %v", err)
+	}
+	defer mock.Close()
+
+	mock.ExpectQuery("UPDATE credentials SET availability_state = 'ready'").
+		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow(11).AddRow(22))
+
+	delayedCalls := 0
+	r := &CredentialRecovery{
+		db: mock,
+		probeSubmitter: func(credID int, model string) {
+			delayedCalls++
+		},
+		// probeSubmitterImmediate intentionally nil
+		invalidateCandidateCache: func(int) {},
+	}
+
+	defer func() {
+		if rec := recover(); rec != nil {
+			t.Fatalf("dispatch panicked with nil probeSubmitterImmediate: %v", rec)
+		}
+	}()
+
+	affected, derr := dispatchRecoveryHooksClosureMirror(r, "availability_recover",
+		"UPDATE credentials SET availability_state = 'ready' … RETURNING id")
+	if derr != nil {
+		t.Fatalf("dispatch failed: %v", derr)
+	}
+	if affected != 2 {
+		t.Fatalf("expected 2 unique credentials, got %d", affected)
+	}
+	if delayedCalls != 2 {
+		t.Fatalf("probeSubmitter (delayed) call count = %d, want 2 (delayed path must still fire when immediate is nil)", delayedCalls)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+// TestDispatchRecoveryHooks_ImmediateDedupePerId pins the per-tick dedup
+// contract: when the same id appears across multiple RETURNING rows in the
+// same UPDATE block (theoretically impossible but a defensive concern
+// because the dedup discipline is what stops upstream probe storms), the
+// immediate probe must fire only once. The closure's local `seen` map
+// dedupes RETURNING ids BEFORE the immediate-path loop, so by construction
+// we get at most one immediate call per id per dispatch.
+func TestDispatchRecoveryHooks_ImmediateDedupePerId(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool: %v", err)
+	}
+	defer mock.Close()
+
+	// Three rows, two of which share credID=1. dedup should leave us with
+	// two unique ids and exactly two immediate probes.
+	mock.ExpectQuery("UPDATE credentials SET quota_state = 'ok'").
+		WillReturnRows(
+			pgxmock.NewRows([]string{"id"}).
+				AddRow(1).AddRow(2).AddRow(1),
+		)
+
+	var (
+		mu             sync.Mutex
+		immediateCalls []int
+	)
+	r := &CredentialRecovery{
+		db: mock,
+		probeSubmitter: func(credID int, model string) {
+			// No assertion — the delayed path is exercised for completeness
+			// but the immediate-path dedup is what this test pins.
+		},
+		probeSubmitterImmediate: func(credID int) {
+			mu.Lock()
+			defer mu.Unlock()
+			immediateCalls = append(immediateCalls, credID)
+		},
+		invalidateCandidateCache: func(int) {},
+	}
+
+	affected, derr := dispatchRecoveryHooksClosureMirror(r, "quota_periodic_recover",
+		"UPDATE credentials SET quota_state = 'ok' … RETURNING id")
+	if derr != nil {
+		t.Fatalf("dispatch failed: %v", derr)
+	}
+	if affected != 2 {
+		t.Fatalf("expected 2 unique credentials after dedup, got %d", affected)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(immediateCalls) != 2 {
+		t.Fatalf("probeSubmitterImmediate call count = %d, want 2 (1+2 dedup'd, the third row of id=1 must collapse), got %v",
+			len(immediateCalls), immediateCalls)
+	}
+	have := make(map[int]int)
+	for _, id := range immediateCalls {
+		have[id]++
+	}
+	if have[1] != 1 {
+		t.Errorf("id=1 must fire exactly once (dedup), got %d", have[1])
+	}
+	if have[2] != 1 {
+		t.Errorf("id=2 must fire exactly once, got %d", have[2])
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
 	}
 }

@@ -1,3 +1,13 @@
+//go:build broken_pending_repair
+// +build broken_pending_repair
+
+// QUARANTINED 2026-08-26 (V6-W1.6 R8 落库轮): this stale test references
+// AutoTitleGenerator.MaybeGenerateProvisionalMetadata, which no longer
+// exists (the provisional-metadata path moved to domains/streaming, see
+// handler_provisional_metadata_test.go). It blocked compilation of the
+// whole admin test package. Remove the tag once the tests are rewritten
+// against the current API — do NOT delete this file silently.
+
 package admin
 
 import (

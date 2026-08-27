@@ -31,10 +31,10 @@
   font-size: 11px;
   font-weight: 600;
 }
-.pill--ok { color: var(--success, #16a34a); background: color-mix(in srgb, var(--success, #16a34a) 14%, transparent); }
-.pill--err { color: var(--danger, #dc2626); background: color-mix(in srgb, var(--danger, #dc2626) 14%, transparent); }
-.pill--warn { color: var(--warning, #d97706); background: color-mix(in srgb, var(--warning, #d97706) 16%, transparent); }
-.pill--info { color: var(--info, #2563eb); background: color-mix(in srgb, var(--info, #2563eb) 14%, transparent); }
+.pill--ok { color: var(--kx-success); background: color-mix(in srgb, var(--kx-success) 14%, transparent); }
+.pill--err { color: var(--kx-error); background: color-mix(in srgb, var(--kx-error) 14%, transparent); }
+.pill--warn { color: var(--kx-warning); background: color-mix(in srgb, var(--kx-warning) 16%, transparent); }
+.pill--info { color: var(--kx-primary); background: color-mix(in srgb, var(--kx-primary) 14%, transparent); }
 .pill--muted { color: var(--muted); background: var(--bg-subtle, var(--surface-secondary)); }
 .mode-seg { display: flex; gap: 4px; }
 .banner { padding: 16px; }
@@ -71,7 +71,7 @@
   font-size: 12px;
   color: var(--text);
 }
-.nav-btn.active { background: var(--primary, #2563eb); color: var(--on-primary, #fff); }
+.nav-btn.active { background: var(--primary); color: var(--on-primary); }
 .main { padding: 14px; overflow: auto; min-height: 0; }
 .raw {
   font-size: 11px;

@@ -110,6 +110,12 @@ func TestLegacySelfcheckGate(t *testing.T) {
 	}
 }
 
+func TestLocalGatewayProbeAPIKeyUsesStaticDataPlaneKey(t *testing.T) {
+	if got := localGatewayProbeAPIKey("  static-data-plane-key  "); got != "static-data-plane-key" {
+		t.Fatalf("localGatewayProbeAPIKey = %q", got)
+	}
+}
+
 // trimToLower is a helper to mimic the actual gate2 check logic
 func trimToLower(s string) string {
 	s = os.Getenv("LLM_GATEWAY_ENABLE_LEGACY_SELFCHECK")

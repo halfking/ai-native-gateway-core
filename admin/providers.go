@@ -408,8 +408,16 @@ func (h *Handler) handleProviders(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodDelete:
 			h.clearProviderModels(w, r, providerID)
-		case http.MethodGet, http.MethodPost:
+		case http.MethodGet:
 			h.getProviderModels(w, r, providerID)
+		// 2026-08-23: explicitly reject POST on /api/providers/{id}/models.
+		// Earlier the dispatcher aliased POST→GET, which made
+		// getProviderModels run on the read path while still parsing as a
+		// POST in HTTP logs and downstream tooling. Frontend's getOrPost
+			// Frontend's getOrPost helper previously retried this as POST after
+			// a failing GET; reject POST so callers fix the route / verb.
+			case http.MethodPost:
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		default:
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}

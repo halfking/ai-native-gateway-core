@@ -2401,7 +2401,7 @@ BEGIN
         unit_price_in_per_1m, unit_price_out_per_1m,
         cache_read_price_per_1m, cache_write_price_per_1m,
         currency, billing_mode, pricing_source, pricing_updated_at,
-        admin_protected
+        admin_protected, context_window_override, priority
     ) VALUES (
         NEW.credential_id, NEW.id, COALESCE(NEW.available, TRUE),
         COALESCE(NEW.routing_tier, 2), COALESCE(NEW.weight, 100), COALESCE(NEW.manual_priority, 99),
@@ -2411,7 +2411,8 @@ BEGIN
         COALESCE(NEW.cache_read_price_per_1m, 0), COALESCE(NEW.cache_write_price_per_1m, 0),
         COALESCE(NEW.currency, 'USD'), COALESCE(NEW.billing_mode, 'token'),
         NEW.pricing_source, NEW.pricing_updated_at,
-        COALESCE(NEW.admin_protected, FALSE)
+        COALESCE(NEW.admin_protected, FALSE),
+        NEW.context_window_override, COALESCE(NEW.priority, FALSE)
     )
     ON CONFLICT (credential_id, provider_model_id) DO UPDATE SET
         routing_tier = COALESCE(EXCLUDED.routing_tier, credential_model_bindings.routing_tier),
@@ -2429,6 +2430,8 @@ BEGIN
         billing_mode = COALESCE(EXCLUDED.billing_mode, credential_model_bindings.billing_mode),
         pricing_source = COALESCE(EXCLUDED.pricing_source, credential_model_bindings.pricing_source),
         pricing_updated_at = COALESCE(EXCLUDED.pricing_updated_at, credential_model_bindings.pricing_updated_at),
+        context_window_override = COALESCE(EXCLUDED.context_window_override, credential_model_bindings.context_window_override),
+        priority = COALESCE(EXCLUDED.priority, credential_model_bindings.priority),
         updated_at = now();
 
     RETURN NEW;
@@ -2490,6 +2493,8 @@ BEGIN
         billing_mode = COALESCE(NEW.billing_mode, credential_model_bindings.billing_mode),
         pricing_source = COALESCE(NEW.pricing_source, credential_model_bindings.pricing_source),
         pricing_updated_at = COALESCE(NEW.pricing_updated_at, credential_model_bindings.pricing_updated_at),
+        context_window_override = COALESCE(NEW.context_window_override, credential_model_bindings.context_window_override),
+        priority = COALESCE(NEW.priority, credential_model_bindings.priority),
         updated_at = now()
     WHERE id = OLD.id;
 
@@ -2789,10 +2794,41 @@ CREATE FUNCTION public.notify_auto_route_refresh() RETURNS trigger
     LANGUAGE plpgsql
     AS $$ DECLARE entity_id text := ''; BEGIN IF TG_TABLE_NAME = 'credential_model_bindings' THEN entity_id := COALESCE(NEW.credential_id, OLD.credential_id)::text; ELSIF TG_TABLE_NAME IN ('credentials', 'api_keys', 'providers') THEN entity_id := COALESCE(NEW.id, OLD.id)::text; END IF; PERFORM pg_notify('auto_route_refresh', TG_TABLE_NAME || ':' || TG_OP || ':' || entity_id); RETURN COALESCE(NEW, OLD); END; $$;
 
+-- Name: bump_credentials_governor_revision(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.bump_credentials_governor_revision() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        NEW.revision := nextval('public.credentials_governor_revision_seq');
+    ELSIF OLD.concurrency_limit IS DISTINCT FROM NEW.concurrency_limit
+       OR OLD.concurrency_mode IS DISTINCT FROM NEW.concurrency_mode
+       OR OLD.rpm_limit IS DISTINCT FROM NEW.rpm_limit
+       OR OLD.tpm_limit IS DISTINCT FROM NEW.tpm_limit
+       OR OLD.fp_slot_limit IS DISTINCT FROM NEW.fp_slot_limit
+       OR OLD.max_queue_depth IS DISTINCT FROM NEW.max_queue_depth
+       OR OLD.max_queue_wait_ms IS DISTINCT FROM NEW.max_queue_wait_ms THEN
+        NEW.revision := nextval('public.credentials_governor_revision_seq');
+    ELSE
+        NEW.revision := OLD.revision;
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+-- Name: notify_credentials_governor_revision(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.notify_credentials_governor_revision() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$ BEGIN PERFORM pg_notify('credentials_revision', NEW.revision::text); RETURN NEW; END; $$;
+
 
 --
 -- Name: populate_model_name_mapping_from_provider_models(); Type: FUNCTION; Schema: public; Owner: -
---
+
 
 CREATE FUNCTION public.populate_model_name_mapping_from_provider_models() RETURNS void
     LANGUAGE plpgsql
@@ -4498,7 +4534,16 @@ CREATE TABLE public.approval_queue (
     reason text,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     expires_at timestamp with time zone NOT NULL,
-    CONSTRAINT approval_queue_status_chk CHECK ((status = ANY (ARRAY['pending'::text, 'approved'::text, 'rejected'::text, 'timeout'::text])))
+    resume_state text DEFAULT 'idle'::text NOT NULL,
+    resume_owner text,
+    resume_lease_until timestamp with time zone,
+    resume_fencing_token bigint DEFAULT 0 NOT NULL,
+    resume_started_at timestamp with time zone,
+    resume_completed_at timestamp with time zone,
+    resume_error text,
+    CONSTRAINT approval_queue_status_chk CHECK ((status = ANY (ARRAY['pending'::text, 'approved'::text, 'rejected'::text, 'timeout'::text]))),
+    CONSTRAINT approval_queue_resume_state_chk CHECK ((resume_state = ANY (ARRAY['idle'::text, 'running'::text, 'completed'::text, 'failed'::text]))),
+    CONSTRAINT approval_queue_resume_fencing_token_chk CHECK ((resume_fencing_token >= 0))
 );
 
 ALTER TABLE ONLY public.approval_queue FORCE ROW LEVEL SECURITY;
@@ -5184,7 +5229,9 @@ CREATE TABLE public.credential_model_bindings (
     transient_failure_count integer DEFAULT 0,
     pending_verification boolean DEFAULT false,
     plan_type_origin text,
-    plan_type_updated_at timestamp with time zone
+    plan_type_updated_at timestamp with time zone,
+    context_window_override integer,
+    priority boolean DEFAULT false NOT NULL
 );
 
 
@@ -5888,6 +5935,7 @@ CREATE TABLE public.credentials (
     plan_type text,
     plan_type_updated_at timestamp with time zone,
     rpm_limit integer,
+    revision bigint DEFAULT 0 NOT NULL,
     auto_disabled_at timestamp with time zone,
     auto_disabled_reason text,
     auto_enabled_at timestamp with time zone,
@@ -5980,6 +6028,13 @@ the template rpmLimit; paid credentials are typically NULL.';
 
 
 --
+-- Name: COLUMN credentials.revision; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.credentials.revision IS 'Globally monotonic governor policy revision. Bumped by governor-relevant credential writes and consumed by domains/dispatch/policy_publisher.go via LISTEN credentials_revision.';
+
+
+--
 -- Name: COLUMN credentials.auto_disabled_at; Type: COMMENT; Schema: public; Owner: -
 --
 
@@ -6031,6 +6086,19 @@ CREATE SEQUENCE public.credentials_id_seq
 --
 
 ALTER SEQUENCE public.credentials_id_seq OWNED BY public.credentials.id;
+
+
+--
+-- Name: credentials_governor_revision_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.credentials_governor_revision_seq
+    AS bigint
+    START WITH 1
+    INCREMENT BY 1
+    MINVALUE 1
+    NO MAXVALUE
+    CACHE 1;
 
 
 --
@@ -8855,7 +8923,9 @@ CREATE VIEW public.model_offers AS
     cmb.admin_protected,
     cmb.created_at,
     cmb.updated_at,
-    pm.modality AS provider_modality
+    pm.modality AS provider_modality,
+    cmb.context_window_override,
+    cmb.priority
    FROM (public.credential_model_bindings cmb
      JOIN public.provider_models pm ON ((pm.id = cmb.provider_model_id)));
 
@@ -21257,11 +21327,27 @@ ALTER TABLE ONLY public.tenant_credit_wallets
 
 
 --
+-- Name: tenant_model_policies tenant_model_policies_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.tenant_model_policies
+    ADD CONSTRAINT tenant_model_policies_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: tenant_model_policies tenant_model_policies_tenant_id_canonical_name_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.tenant_model_policies
     ADD CONSTRAINT tenant_model_policies_tenant_id_canonical_name_key UNIQUE (tenant_id, canonical_name);
+
+
+--
+-- Name: tenant_model_policies_audit tenant_model_policies_audit_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.tenant_model_policies_audit
+    ADD CONSTRAINT tenant_model_policies_audit_pkey PRIMARY KEY (id);
 
 
 --
@@ -21876,6 +21962,14 @@ CREATE INDEX idx_approval_queue_expires ON public.approval_queue USING btree (ex
 
 
 --
+-- Name: idx_approval_queue_resume_claimable; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_approval_queue_resume_claimable ON public.approval_queue USING btree (resume_lease_until, created_at)
+    WHERE ((status = 'approved'::text) AND (resume_state = ANY (ARRAY['idle'::text, 'running'::text, 'failed'::text])));
+
+
+--
 -- Name: idx_approval_queue_session; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -22251,6 +22345,12 @@ CREATE INDEX idx_credentials_auto_limit ON public.credentials USING btree (concu
 --
 
 CREATE INDEX idx_credentials_plan_type ON public.credentials USING btree (plan_type);
+
+--
+-- Name: credentials_revision_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX credentials_revision_idx ON public.credentials USING btree (revision);
 
 
 --
@@ -27763,14 +27863,29 @@ CREATE TRIGGER trg_notify_auto_route_cmb_insert_delete AFTER INSERT OR DELETE ON
 -- Name: credential_model_bindings trg_notify_auto_route_cmb_update; Type: TRIGGER; Schema: public; Owner: -
 --
 
-CREATE TRIGGER trg_notify_auto_route_cmb_update AFTER UPDATE ON public.credential_model_bindings FOR EACH ROW WHEN (((old.available IS DISTINCT FROM new.available) OR (old.unavailable_reason IS DISTINCT FROM new.unavailable_reason) OR (old.unavailable_at IS DISTINCT FROM new.unavailable_at) OR (old.routing_tier IS DISTINCT FROM new.routing_tier) OR (old.weight IS DISTINCT FROM new.weight) OR (old.manual_priority IS DISTINCT FROM new.manual_priority) OR (old.active_sessions IS DISTINCT FROM new.active_sessions) OR (old.consecutive_failures IS DISTINCT FROM new.consecutive_failures))) EXECUTE FUNCTION public.notify_auto_route_refresh();
+CREATE TRIGGER trg_notify_auto_route_cmb_update AFTER UPDATE ON public.credential_model_bindings FOR EACH ROW WHEN (((old.available IS DISTINCT FROM new.available) OR (old.unavailable_reason IS DISTINCT FROM new.unavailable_reason) OR (old.unavailable_at IS DISTINCT FROM new.unavailable_at) OR (old.routing_tier IS DISTINCT FROM new.routing_tier) OR (old.weight IS DISTINCT FROM new.weight) OR (old.manual_priority IS DISTINCT FROM new.manual_priority) OR (old.active_sessions IS DISTINCT FROM new.active_sessions) OR (old.consecutive_failures IS DISTINCT FROM new.consecutive_failures) OR (old.context_window_override IS DISTINCT FROM new.context_window_override) OR (old.priority IS DISTINCT FROM new.priority)) EXECUTE FUNCTION public.notify_auto_route_refresh();
 
 
 --
 -- Name: credentials trg_notify_auto_route_creds; Type: TRIGGER; Schema: public; Owner: -
 --
 
-CREATE TRIGGER trg_notify_auto_route_creds AFTER UPDATE OF status, availability_state, quota_state, circuit_state, concurrency_limit, lifecycle_status, manual_disabled ON public.credentials FOR EACH ROW WHEN ((old.* IS DISTINCT FROM new.*)) EXECUTE FUNCTION public.notify_auto_route_refresh();
+CREATE TRIGGER trg_notify_auto_route_creds AFTER UPDATE OF status, availability_state, quota_state, circuit_state, concurrency_limit, concurrency_mode, rpm_limit, tpm_limit, fp_slot_limit, max_queue_depth, max_queue_wait_ms, lifecycle_status, manual_disabled ON public.credentials FOR EACH ROW WHEN ((old.* IS DISTINCT FROM new.*)) EXECUTE FUNCTION public.notify_auto_route_refresh();
+
+-- Name: credentials trg_bump_credentials_governor_revision; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER trg_bump_credentials_governor_revision BEFORE INSERT OR UPDATE OF concurrency_limit, concurrency_mode, rpm_limit, tpm_limit, fp_slot_limit, max_queue_depth, max_queue_wait_ms ON public.credentials FOR EACH ROW EXECUTE FUNCTION public.bump_credentials_governor_revision();
+
+-- Name: credentials trg_notify_credentials_governor_revision_insert; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER trg_notify_credentials_governor_revision_insert AFTER INSERT ON public.credentials FOR EACH ROW EXECUTE FUNCTION public.notify_credentials_governor_revision();
+
+-- Name: credentials trg_notify_credentials_governor_revision_update; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER trg_notify_credentials_governor_revision_update AFTER UPDATE OF concurrency_limit, concurrency_mode, rpm_limit, tpm_limit, fp_slot_limit, max_queue_depth, max_queue_wait_ms ON public.credentials FOR EACH ROW WHEN ((old.revision IS DISTINCT FROM new.revision)) EXECUTE FUNCTION public.notify_credentials_governor_revision();
 
 
 --

@@ -220,14 +220,6 @@ function vendorOptionLabel(v: string) {
           <button
             type="button"
             class="control-btn"
-            :class="{ 'control-btn--active': groupBy === 'credential' }"
-            @click="handleGroupByChange('credential')"
-          >
-            {{ t('dashboard.liveStream.groupByCredential') }}
-          </button>
-          <button
-            type="button"
-            class="control-btn"
             :class="{ 'control-btn--active': groupBy === 'queue' }"
             @click="handleGroupByChange('queue')"
           >
@@ -236,10 +228,10 @@ function vendorOptionLabel(v: string) {
           <button
             type="button"
             class="control-btn"
-            :class="{ 'control-btn--active': groupBy === 'vendor' }"
-            @click="handleGroupByChange('vendor')"
+            :class="{ 'control-btn--active': groupBy === 'credential' }"
+            @click="handleGroupByChange('credential')"
           >
-            {{ t('dashboard.liveStream.groupByVendor') }}
+            {{ t('dashboard.liveStream.groupByCredential') }}
           </button>
           <button
             type="button"

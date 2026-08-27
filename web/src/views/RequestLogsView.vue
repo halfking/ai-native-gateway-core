@@ -977,12 +977,7 @@ function calcSavingDetail(row: any): { savingStr: string; tokenSavingStr: string
 
 // super_admin 在每条日志行可直接打开共享请求详情，并展开流程面板。
 function gotoTrace(requestId: string) {
-  if (!requestId) return
-  void router.push({
-    name: 'request-detail',
-    params: { requestId },
-    query: { tab: 'flow' },
-  })
+  openRequestDetailPage(requestId, { tab: 'flow' }, router)
 }
 
 onMounted(async () => {

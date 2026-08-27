@@ -253,20 +253,18 @@ func TestQuotaRechargedHandler_GET_MethodNotAllowed(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// body size 限制（灌 2 MB body 应被截断到 1 MB 之后仍校验 → 因为截断后
-// 签名不匹配，走 401 路径）
+// body size 限制（灌 2 MB body 必须在签名验证之前被拒绝，避免无界读取）。
 // ─────────────────────────────────────────────────────────────────────
 
 func TestQuotaRechargedHandler_BodySizeLimit(t *testing.T) {
 	h := newTestHandler(func(int, string) {
 		t.Fatal("OnQuotaRecharged must NOT be called when signature does not match oversized body")
 	})
-	// 2 MB 垃圾 body：签名按"原始 2 MB"算，handler 只读到前 1 MB，
-	// 因此签名一定不匹配 → 401。
+	// 2 MB 垃圾 body 超过 1 MB 限制，必须直接返回 413。
 	huge := bytes.Repeat([]byte("x"), 2<<20)
 	rr := doRequest(h, huge, signForTest(huge))
-	if rr.Code != http.StatusUnauthorized {
-		t.Fatalf("expected 401 (oversized body signature mismatch), got %d", rr.Code)
+	if rr.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected 413 for oversized request body, got %d", rr.Code)
 	}
 }
 
