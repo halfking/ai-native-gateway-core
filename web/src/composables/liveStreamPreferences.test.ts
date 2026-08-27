@@ -58,6 +58,19 @@ describe('liveStreamPreferences — synchronous behavior', () => {
     expect(read.mode).toBe('small')
   })
 
+  it('migrates the removed vendor grouping to provider', () => {
+    setUser(12, 'tenant-z')
+    localStorage.setItem(liveStreamPreferencesStorageKey(), JSON.stringify({
+      version: 1,
+      groupBy: 'vendor',
+      mode: 'small',
+      filters: {},
+      queue: {},
+    }))
+
+    expect(readLiveStreamPreferences().groupBy).toBe('provider')
+  })
+
   it('isolates preferences by the active user and tenant scope', () => {
     setUser(7, 'tenant-a')
     writeLiveStreamPreferences({ filters: { providers: ['provider-a'] } })

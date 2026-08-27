@@ -1097,19 +1097,30 @@ func buildStatusLegends(items []LiveRequest) []LiveStreamLegendItem {
 	return legends
 }
 
-// liveStreamCredentialKey 凭据维度的泳道 key：凭据标签(label) 优先，
-// 无标签时回退 "凭据 #ID"（rule 20 / 前端 RequestTile 同一口径）。
-// 2026-08-26: 原厂(vendor)维度被凭据(credential)维度替换后，本函数是
-// 凭据泳道身份的唯一来源（Record 写队列 / snapshot 建泳道 / idle 清除
-// 共用）。无凭据身份返回 ""，该请求不出现在凭据维度。
+// liveStreamCredentialKey returns the credential lane identity and display name.
+// A credential label alone is not globally meaningful: the same label can be
+// used under multiple providers. Keep the provider prefix in the key so Redis
+// queues, activity markers, snapshots, and legends all agree on one lane.
 func liveStreamCredentialKey(req LiveRequest) string {
-	if label := strings.TrimSpace(req.CredentialLabel); label != "" {
-		return label
+	// Idle markers already carry the complete lane key in CredentialLabel.
+	// Re-applying the provider fallback here would create a different lane.
+	if req.Type == "idle_marker" {
+		return strings.TrimSpace(req.CredentialLabel)
 	}
-	if req.CredentialID > 0 {
-		return fmt.Sprintf("凭据 #%d", req.CredentialID)
+
+	credential := strings.TrimSpace(req.CredentialLabel)
+	if credential == "" && req.CredentialID > 0 {
+		credential = fmt.Sprintf("凭据 #%d", req.CredentialID)
 	}
-	return ""
+	if credential == "" {
+		return ""
+	}
+
+	provider := strings.TrimSpace(req.ProviderCode)
+	if provider == "" || provider == "unknown" || provider == "__unknown__" {
+		provider = "未知供应商"
+	}
+	return provider + "/" + credential
 }
 
 func liveStreamDimensionKey(dimension string, req LiveRequest) string {
