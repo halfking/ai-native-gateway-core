@@ -308,6 +308,32 @@ EOF
   rm -rf "$tmp"
 }
 
+test_rollback_to_refuses_active_verified() {
+  echo "── rollback_to_refuses_active_verified ──"
+  local tmp remote ssh_cmd v
+  tmp=$(setup_fake_host)
+  remote="$tmp/opt/llm-gateway-go"
+  setup_test_env "$tmp"; ssh_cmd="fake_ssh_runner"
+  v="2.4.2-active"
+
+  mkdir -p "$remote/releases/$v"
+  printf '{"target":"245","version":"%s","verified":true}\n' "$v" >"$remote/releases/$v/deployment.json"
+  ln -s "releases/$v" "$remote/current"
+
+  (
+    source "$LIB_TARGETS"; source "$LIB_HOST"
+    host_rollback_to "$ssh_cmd" 245 "$v"
+  ) >/dev/null 2>&1
+  local rc=$?
+  if (( rc != 0 )); then
+    log_pass "rollback_to refuses already-active verified bundle (rc=$rc)"
+  else
+    log_fail "rollback_to should refuse already-active verified bundle"
+  fi
+
+  rm -rf "$tmp"
+}
+
 test_select_rollback_target_picks_newest_verified() {
   echo "── select_rollback_target_picks_newest_verified ──"
   local tmp remote ssh_cmd
@@ -597,6 +623,7 @@ run_all() {
   test_atomic_switch_creates_symlinks
   test_mark_verified_flips_metadata
   test_rollback_to_refuses_unverified
+  test_rollback_to_refuses_active_verified
   test_select_rollback_target_picks_newest_verified
   test_select_rollback_target_returns_4_when_empty
   test_failed_health_triggers_rollback_marker
@@ -624,6 +651,7 @@ if [[ $# -gt 0 ]]; then
     atomic_switch)                          test_atomic_switch_creates_symlinks ;;
     mark_verified)                          test_mark_verified_flips_metadata ;;
     rollback_to)                            test_rollback_to_refuses_unverified ;;
+    rollback_to_active)                     test_rollback_to_refuses_active_verified ;;
     select_rollback_target)                 test_select_rollback_target_picks_newest_verified ;;
     select_rollback_returns_4)              test_select_rollback_target_returns_4_when_empty ;;
     failed_health)                          test_failed_health_triggers_rollback_marker ;;

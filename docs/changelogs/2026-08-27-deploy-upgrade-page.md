@@ -8,7 +8,7 @@ This change updates the `deploy-154.sh` and `deploy-245.sh` deployment flow thro
 
 - `scripts/deploy-lib/maintenance-template.html` is the self-contained Chinese upgrade page. It displays the current version, target version, build time, and automatic five-second refresh.
 - `host_show_upgrade_banner` renders the page locally, uploads it through the existing SSH command, atomically renames it into place, and creates `maintenance/UPGRADING` only after the page is complete.
-- `host_hide_upgrade_banner` removes the marker and page after the deployment verification gates pass.
+- `host_hide_upgrade_banner` removes the page first, verifies it is gone, and removes the marker last; a failed cleanup leaves the marker protecting traffic.
 - `deploy-seamless.sh` enables the page immediately before the stop/restart boundary. It keeps the marker through health, local nginx, database, admin-login, and running-release checks.
 - A failed deployment keeps the marker when rollback cannot be verified, so an unverified release is not exposed. A successful deployment or successful verified rollback removes it.
 - For target `154`, the same lifecycle also protects the public `llm.kxpms.cn` ingress on `252`, which terminates TLS and proxies to the gateway. Target `245` uses its own vhost.
@@ -28,7 +28,8 @@ These nginx files must be installed and validated before using the new deploymen
 ## Verification
 
 - `bash -n scripts/deploy-lib/host.sh scripts/deploy-seamless.sh tests/deploy_host_test.sh` passed.
-- `bash tests/deploy_host_test.sh all` passed: **31 passed, 0 failed**.
+- `bash tests/deploy_host_test.sh all` passed: **32 passed, 0 failed**.
+- Audit fixes: direct rollback now rejects missing, unverified, and already-active releases; upgrade-page cleanup deletes the marker only after page removal succeeds.
 - Static nginx checks passed: balanced braces, one upgrade error route, one internal upgrade location, and one exact location for each health probe in every modified vhost source.
 - `git diff --check` passed.
 
