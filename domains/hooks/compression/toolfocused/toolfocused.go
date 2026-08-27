@@ -19,6 +19,7 @@ package toolfocused
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -310,12 +311,10 @@ func compressJSON(content string) (string, bool) {
 	return "", false
 }
 
+// sortStrings 保持与 TS 相同的字典序，但用库排序替代插入排序：
+// 工具结果可以是数十万 key 的巨型 JSON 对象，O(n²) 会把请求卡死在这里。
 func sortStrings(s []string) {
-	for i := 1; i < len(s); i++ {
-		for j := i; j > 0 && s[j] < s[j-1]; j-- {
-			s[j], s[j-1] = s[j-1], s[j]
-		}
-	}
+	sort.Strings(s)
 }
 
 // ── 策略 5: errorMessage ────────────────────────────────────────────

@@ -13,6 +13,7 @@ import FlowTimingPanel from './FlowTimingPanel.vue'
 import CompressionRedactionPanel from './CompressionRedactionPanel.vue'
 import SessionTurnsSyncPane from './SessionTurnsSyncPane.vue'
 import { formatJson } from './messageHelpers'
+import { openRequestDetailPage } from '../../utils/openRequestDetailPage'
 
 export type DetailMode = 'request' | 'session-turns'
 
@@ -145,6 +146,27 @@ function openAsRequest(requestId: string) {
 function switchToSession() {
   if (sessionId.value) viewMode.value = 'session-turns'
 }
+
+// 2026-08-28: 把当前抽屉中展示的请求在新标签页里打开全屏详情页
+function openActiveInFullscreen() {
+  const id = activeRequestId.value
+  if (!id) return
+  const targetTab = mapDrawerTabToFullscreen(tab.value)
+  openRequestDetailPage(id, {
+    mode: viewMode.value === 'session-turns' ? 'session-turns' : 'request',
+    tab: viewMode.value === 'session-turns' ? undefined : targetTab,
+  })
+}
+
+// 抽屉 tab → 全屏 page tab 映射（保持用户体验一致）
+function mapDrawerTabToFullscreen(t: Tab): string {
+  if (t === 'routing') return 'attempts'
+  return t
+}
+
+const openFullscreenTitle = computed(() =>
+  activeRequestId.value ? `在独立页面打开请求 ${activeRequestId.value}` : '',
+)
 </script>
 
 <template>
@@ -176,6 +198,16 @@ function switchToSession() {
             会话轮次
           </button>
         </div>
+        <!-- 2026-08-28: 抽屉内新增「打开全页」入口，跳到独立 /request-detail 页 -->
+        <button
+          v-if="activeRequestId"
+          type="button"
+          class="btn btn-sm"
+          :title="openFullscreenTitle"
+          @click="openActiveInFullscreen"
+        >
+          打开全页
+        </button>
         <button class="btn btn-sm" type="button" @click="emit('close')">关闭</button>
       </div>
 

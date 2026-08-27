@@ -272,8 +272,8 @@ _seamless_auto_rollback() {
       err "回滚切换或 restart 失败"
       return 1
     fi
-    # 2026-07-27: 30s → 90s,与主 deploy 流程一致(回滚后 ApplyMigrations 仍需 ~30s+)
-    if host_wait_healthy "$SSH_CMD" "$TARGET" 90 2>&1 \
+    # 2026-08-28: 90s → 120s, 启动时 license 验证 + 数据库迁移可能需要更长时间
+    if host_wait_healthy "$SSH_CMD" "$TARGET" 120 2>&1 \
       && _verify_running_release "$prev" \
       && deploy_preflight_pg_from_remote_env "$SSH_CMD" "$(_env_file_for_target)"; then
       ok "已回滚到 $prev (healthz + running release + PG OK)"
@@ -539,8 +539,9 @@ do_deploy() {
 
   # 9. wait healthy + DB ready (失败自动回滚)
   # 先等进程健康，再同步 admin 密码，随后使用 JWT 访问真正触及 DB 的端点。
+  # 2026-08-28: 90s → 120s, 启动时 license 验证 + 数据库迁移可能需要更长时间
   log "[9/9] 验证 /healthz + DB + release identity"
-  if ! host_wait_healthy "$SSH_CMD" "$TARGET" 90 2>&1; then
+  if ! host_wait_healthy "$SSH_CMD" "$TARGET" 120 2>&1; then
     _seamless_auto_rollback "healthz 超时" "$version" || true
     exit 1
   fi
