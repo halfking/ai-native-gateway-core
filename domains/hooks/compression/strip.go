@@ -639,7 +639,25 @@ func stripThinkingBlocks(raw json.RawMessage) json.RawMessage {
 	}
 
 	if len(filtered) == 0 {
-		return nil
+		// Every block was thinking. Drop the message only when it carries
+		// no payload beyond role/content; if tool_calls / tool_call_id /
+		// name (or any other field) survive, keep the message with an
+		// empty content array — dropping it would sever the tool-call
+		// chain. Anthropic assistant turns that emit thinking + tool_use
+		// with no text block hit exactly this shape.
+		var keys map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &keys); err != nil {
+			return nil
+		}
+		if len(keys) <= 2 { // only role and/or content
+			return nil
+		}
+		keys["content"], _ = json.Marshal([]json.RawMessage{})
+		cleaned, err := json.Marshal(keys)
+		if err != nil {
+			return nil
+		}
+		return cleaned
 	}
 
 	// Unmarshal the full message to preserve all fields (tool_calls, tool_call_id, name, etc.)
