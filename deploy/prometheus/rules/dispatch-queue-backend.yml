@@ -1,0 +1,38 @@
+# V6-W1.7 双后端队列准入告警（10 号文档 U5, 2026-08-27）
+# 指标：dispatch_queue_backend_{admit,release,rejected,held,degraded}
+# 语义提醒：准入/容量 fail-open（degraded=1 时各实例按本地口径放行，保可用）；
+# Governor 限流是 fail-closed，方向相反，勿在告警处置上混淆——degraded 的处置
+# 是"恢复 Redis"，不是"重启网关"。
+
+groups:
+  - name: dispatch_queue_backend
+    interval: 30s
+    rules:
+      - alert: DispatchQueueBackendDegraded
+        expr: max(dispatch_queue_backend_degraded) by (backend) > 0
+        for: 2m
+        labels:
+          severity: warning
+          component: dispatch
+        annotations:
+          summary: "队列准入后端已降级（fail-open 到本地口径）"
+          description: "Redis 不可达超过 2 分钟：集群准入/容量口径退化为各实例独立上限，多实例叠加可能超出整体预期。优先恢复 Redis；无需重启网关（恢复后自动回切）。"
+
+      - alert: DispatchQueueBackendRejectRateHigh
+        expr: |
+          sum(rate(dispatch_queue_backend_rejected_total[5m])) by (backend, lane)
+          /
+          clamp_min(sum(rate(dispatch_queue_backend_admit_total[5m])) by (backend, lane) + sum(rate(dispatch_queue_backend_rejected_total[5m])) by (backend, lane), 0.001)
+          > 0.2
+        for: 10m
+        labels:
+          severity: warning
+          component: dispatch
+        annotations:
+          summary: "集群队列准入拒绝率持续过高（{{ $labels.lane }}）"
+          description: "10 分钟内集群容量拒绝占比 > 20%：多实例共享预算（Tier-0 等待室/lane 容量）不足，评估上调 TotalQueueCapacity/MaxQueueDepth 的集群口径或扩容实例。"
+
+# 对账（invariant 2）：admit/release 由 take-once token 保证对称（单测覆盖）；
+# 集群级对账 = 各实例 dispatch_queue_backend_held 之和 vs admin Snapshot 的
+# ClusterTotal（Redis 侧权威和）。跨实例聚合告警属 F5（分维/队列投影 Redis 化）
+# 范围，届时基于 recording rule 启用。

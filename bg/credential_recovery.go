@@ -124,6 +124,14 @@ type CredentialRecovery struct {
 	// 2026-08-26 quota-recovery-notify fix: closes the
 	// "DB says ready but cache still excludes credential" gap.
 	onQuotaRecovered func(credID int, source string)
+	// probeSubmitterImmediate is the *synchronous* probe-submitter
+	// fired by dispatchRecoveryHooks the moment a credential flips out
+	// of a quota-blocked / availability-blocked state. Wired from
+	// main.go via SetProbeSubmitterImmediate (typically bound to
+	// credProbeV2.ProbeNowAsync). nil → only the delayed
+	// fastReprobeQueue path runs, behaviour matches pre-P1-4.
+	// 2026-08-26 P1-4 (落点 D).
+	probeSubmitterImmediate func(credID int)
 	cancel                   context.CancelFunc
 	done                     chan struct{}
 	// lookbackDone signals the 36h lookback scan loop exited (Stop waits on
@@ -154,6 +162,32 @@ func (r *CredentialRecovery) SetProbeSubmitter(fn func(credID int, model string)
 		return
 	}
 	r.probeSubmitter = fn
+}
+
+// SetProbeSubmitterImmediate wires a *second* probe-submitter hook that
+// fires synchronously from the recovery tick the moment a credential flips
+// out of a quota-blocked / availability-blocked state. Unlike
+// SetProbeSubmitter (which goes through the delayed fastReprobeQueue with
+// the 5-minute default — user principle "≥5 分钟探测一次" preserved; see
+// .handoff/selfcheck-audit-2026-08-26.md §2.1), this hook bypasses the
+// delay so the first chat request after a recovery sees a fresh probe
+// rather than waiting for the next scheduled cycle.
+//
+// 2026-08-26 P1-4 (landing point D): the immediate-submit path closes
+// the "recover() flips the DB but the next chat request still picks a
+// fallback because no probe has re-validated the credential yet" gap
+// for vendors whose probe is cheap (vendor accounts with
+// health-check-style endpoints). Vendors whose probe is expensive
+// (token-billing accounts that pay per request) should leave this hook
+// unwired — the existing delayed queue is the safer default.
+//
+// Safe to call multiple times; the latest non-nil setter wins. nil →
+// no-op (only the delayed path is used; behavior reverts to pre-P1-4).
+func (r *CredentialRecovery) SetProbeSubmitterImmediate(fn func(credID int)) {
+	if fn == nil {
+		return
+	}
+	r.probeSubmitterImmediate = fn
 }
 
 // SetInvalidateCandidateCache wires the per-credential candidate
@@ -300,8 +334,8 @@ func (r *CredentialRecovery) recover(ctx context.Context) {
 	//
 	// Returns (affectedRowCount, err) — same shape as r.db.Exec.
 	dispatchRecoveryHooks := func(sqlKind, sqlText string, args ...any) (int, error) {
-		if r.invalidateCandidateCache == nil && r.probeSubmitter == nil {
-			// Both hooks nil: cheap Exec path so the outcome counter /
+		if r.invalidateCandidateCache == nil && r.probeSubmitter == nil && r.probeSubmitterImmediate == nil {
+			// All hooks nil: cheap Exec path so the outcome counter /
 			// RowsAffected semantics don't change.
 			tag, execErr := r.db.Exec(timeoutCtx, sqlText, args...)
 			if execErr != nil {
@@ -342,6 +376,22 @@ func (r *CredentialRecovery) recover(ctx context.Context) {
 		}
 		if err := rows.Err(); err != nil {
 			return len(seen), err
+		}
+		// 2026-08-26 P1-4 (landing point D): for recovery-flip actions
+		// (quota_periodic_recover / availability_recover) bypass the
+		// fastReprobeQueue's 30s delay (P1-2 default) by firing an immediate
+		// probe per unique credential that just flipped. The local `seen`
+		// map already dedupes RETURNING ids within this UPDATE block.
+		// nil probeSubmitterImmediate is silently skipped — falls back
+		// to the delayed probeSubmitter path. Observability bump lets
+		// operators confirm the immediate path actually fires (otherwise
+		// it would be invisible).
+		if r.probeSubmitterImmediate != nil && len(seen) > 0 &&
+			(sqlKind == "quota_periodic_recover" || sqlKind == "availability_recover") {
+			for id := range seen {
+				r.probeSubmitterImmediate(id)
+			}
+			met.RoutingCredentialRecoveryNotifyTotal.WithLabelValues(sqlKind, "probe_immediate").Inc()
 		}
 		return len(seen), nil
 	}

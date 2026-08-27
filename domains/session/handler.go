@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/authentication"
+	"github.com/kaixuan/llm-gateway-go/internal/jsonbody"
 )
 
 // KeyVerifier 是 Handler 用来验证 API key 的抽象。
@@ -214,8 +215,18 @@ func (h *Handler) CreateSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body createSessionRequest
-	//nolint:errcheck // test parse, non-critical
-	json.NewDecoder(r.Body).Decode(&body)
+	// 2026-08-26 (P1-19 fix): body is documented as optional (a missing
+	// X-Gw-Task-Id in the request is fine; the comment on the legacy
+	// handler said "test parse, non-critical"). Empty body is fine.
+	// But a present-but-malformed body must NOT be silently coerced
+	// to the zero value — that hides client-side bugs and was the
+	// bug the audit flagged. jsonbody.ReadOptional distinguishes the
+	// two cases and surfaces a 400 for the malformed body.
+	if r.Body != nil {
+		if ok, _ := jsonbody.ReadOptional(w, r, &body); !ok {
+			return
+		}
+	}
 
 	taskID := body.TaskID
 	if taskID == "" {

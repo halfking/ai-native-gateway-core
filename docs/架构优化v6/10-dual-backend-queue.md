@@ -2,7 +2,7 @@
 
 > **版本**：v6.3（2026-08-27 起草；修订 08 号 §2.1 "执行队列本体在内存"的定稿——用户决策升级为**双后端**）
 > **需求原文**（用户 2026-08-27）："没有 redis 时，才会回退到本机内存中，有 redis 就需要用 redis，因此整个队列的实现是要有两套：内存与 redis，我们有可能是分布式的，多个服务器来接收请求，需要使用 redis 来操作。"
-> **证据等级**：`DESIGN` + `LOCAL_REVIEWED`（锚点已核对；实现须达 `LOCAL_VERIFIED`）
+> **证据等级**：`LOCAL_VERIFIED`（2026-08-27 实现完成：U1~U7；`go build ./...` + dispatch 全量 `-race`（local 等价零测试修改 + miniredis 双模/双实例集成）+ 冻结契约 fixture 全绿；实现记录见 [`docs/04-implementation/changes/2026-08-27-v6-w1-7-dual-backend-queue.md`](../04-implementation/changes/2026-08-27-v6-w1-7-dual-backend-queue.md)。崩溃自愈为 stale-心跳清扫单测覆盖 + 集成双实例语义验证；多机 staging 压测未做）
 
 ---
 
@@ -118,6 +118,6 @@ type Admission struct{ Key string; Kind LaneKind; ID string }
 
 ## 6. 完成标准
 
-- [ ] `go build ./...`；`go test -race ./domains/dispatch/`（local 等价 + redis miniredis 双模）全绿
-- [ ] 两实例共享 Redis 的集成测试：集群 cap 生效、单实例崩溃 30s 容量归还、Redis 断连 fail-open
-- [ ] §2.4 五条不变量各有单测；changes 文档落盘（`LOCAL_VERIFIED`）
+- [x] `go build ./...`；`go test -race ./domains/dispatch/`（local 等价 + redis miniredis 双模）全绿
+- [x] 两实例共享 Redis 的集成测试：集群 cap 生效（`TestPipelineClusterQueueBackendIntegration`）、单实例崩溃 30s 容量归还（`TestRedisQueueBackendCrashSelfHeal`，stale 心跳清扫）、Redis 断连 fail-open（`TestRedisQueueBackendFailOpen` + `TestPipelineQueueBackendFailOpen`）
+- [x] §2.4 五条不变量各有单测；changes 文档落盘（`LOCAL_VERIFIED`）

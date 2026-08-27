@@ -230,7 +230,7 @@ const displayMatches = computed(() => {
   border-bottom: 1px solid var(--border);
   vertical-align: top;
 }
-.ph { color: var(--kx-warning, #b45309); }
+.ph { color: var(--kx-warning); }
 .gate {
   border: 1px dashed var(--border); border-radius: 8px; padding: 12px;
   font-size: 12px; color: var(--muted);
