@@ -362,92 +362,120 @@ tenants:
 
 ## 4. 实现计划
 
+> **状态声明（2026-08-28 修订）**：原 §4 把 Phase 1-5 都标 ✅，但实际只有 Phase 1
+> 的最小可行版（Strategy/Registry/ManualSelector/Runner + 3 个 Adapter）落地，
+> 见 commit `98e2a2052`。Phase 2-5 的 ✅ 全部改为 ⏳（待实施），避免误导后续
+> contributor。Phase 1 实际 API 比 §3.2 设计简化（Apply 收 []byte 而非
+> ApplyRequest；Selector 收 []Strategy 而非 SelectRequest），差异点见 §4.0 末尾。
+
+### 4.0 Phase 1 实际接口与设计 doc §3.2 的差异
+
+| 设计 doc §3.2 | Phase 1 实际 | 原因 |
+|---------------|--------------|------|
+| `Apply(ctx, *ApplyRequest) (*ApplyResult, error)` | `Apply(ctx, input []byte) (output []byte, applied bool, err error)` | Phase 1 不引入 Message / ApplyResult 类型，避免与现有 Compressor.Compress 的 []byte 路径双轨；adapter 直接复用 lite/caveman/toolfocused 包 |
+| `Selector.Select(ctx, *SelectRequest) (Strategy, error)` | `Selector.Select(ctx, all []Strategy) []Strategy` | Phase 1 不引入 SelectRequest / SessionFeatures / Constraints；决策 = 名字列表 |
+| `EstimateLatency / EstimateCost` | 未实现 | Phase 2 RuleBasedSelector 引入 |
+| `SessionFeatures` 结构 | 未实现 | Phase 2 引入 |
+
 ### 4.1 Phase 1: 基础架构 (Week 1)
 
 **目标**: 建立策略模式基础设施
 
 **任务**:
-1. ✅ 定义 `Strategy` 接口
-2. ✅ 实现 `Registry` 注册表
-3. ✅ 重构当前 `session_compressor.go` 为 `IntelligentStrategy`
-4. ✅ 实现简单的 `ManualSelector`（只读取配置）
-5. ✅ 单元测试
+1. ✅ 定义 `Strategy` 接口（`Name`/`Description`/`Enabled`/`GuardStage`/`Apply`）
+2. ✅ 实现 `Registry` 注册表（线程安全、按注册顺序、拒绝重复/空名）
+3. ⏳ 重构当前 `session_compressor.go` 为 `IntelligentStrategy`（**未做**：现有 dispatcher 路径保持不变，新增 `Compressor.RunStrategies` 并行入口；非破坏性）
+4. ✅ 实现 `ManualSelector`（Policy 列表）+ `ResolvePolicy` 解析器
+5. ✅ 单元测试（22 个）+ dispatcher 集成测试（7 个）
 
 **交付物**:
 ```
 domains/hooks/compression/strategy/
-├── types.go           # 接口定义
-├── registry.go        # 注册表
-├── intelligent.go     # 现有实现重构
-├── selector.go        # 选择器接口
-├── manual_selector.go # 手动选择器
-└── *_test.go
+├── strategy.go          # Strategy 接口 + Registry
+├── selector.go          # Selector + ManualSelector + ResolvePolicy
+├── runner.go            # Runner + RunStats + defaultNeverWorse
+├── adapters.go          # LiteAdapter / CavemanAdapter / ToolFocusedAdapter
+├── strategy_test.go     # 22 单元测试
+└── (parent package)
+    └── compressor_strategy_test.go  # 7 dispatcher 集成测试
 ```
 
-### 4.2 Phase 2: tool-focused 策略 (Week 1-2)
+**关键不变量**:
+- `strategy` 包不 import `compression` 包（避免 import cycle）；`Runner.SetGuard`
+  在 init 期由 `Compressor.strategyRunner()` 注入 `compression.NeverWorse`，
+  让 RunStrategies 路径的 regression 计入 `compression_regressed_total`
+- TruncatedBy 是 `[]string`（记录所有回归 strategy，不是最后一个）
+- BytesOut 在 mid-chain error 路径上也更新到当前链长（便于观测部分压缩效果）
+- ResolvePolicy 拒绝 `lite,off` / `lite,all` 等混合写法（避免静默 no-op）
 
-**目标**: 实现工具结果压缩策略（学习 OmniRoute aggressive）
+### 4.2 Phase 2: tool-focused 策略（实施 = `toolfocused` 包已存在，Adapter 已 wrap）
+
+**状态**: ⏳ 部分完成 — `domains/hooks/compression/toolfocused/` 已实现 5 种
+per-type 工具结果压缩策略（GW-09 commit `983142cf8`），并被 `ToolFocusedAdapter`
+包装为 `Strategy`。设计 doc §4.2 期望的"独立 tool_focused.go 文件在 strategy 包下"
+实际未做（策略代码在 `toolfocused` 包，与 `lite/caveman` 对齐而非 strategy 子目录）。
 
 **任务**:
-1. ✅ 实现 `ToolFocusedStrategy`
-2. ✅ 工具结果压缩算法：
-   - `compressFileContent()`: 删除空行、注释、多余空格
-   - `deduplicateGrepSearch()`: 去重搜索结果
-   - `truncateShellOutput()`: 保留前100+后50行
-   - `compressJSON()`: 移除缩进
-   - `simplifyErrorMessage()`: 提取核心错误
-3. ✅ 质量门控集成
-4. ✅ 单元测试 + 集成测试
+1. ✅ `ToolFocusedStrategy`（5 算法）：`compressFileContent` / `deduplicateGrepSearch`
+   / `truncateShellOutput` / `compressJSON` / `simplifyErrorMessage`
+2. ✅ 质量门控集成（`NeverWorse(GuardStageToolFocused)`）
+3. ✅ 单元测试 + 集成测试
+4. ⏳ **Phase 2 后续**: 配置字段 `ToolFocusedAdapter.Strategies` 实际未被读取
+   （见 audit N1），让用户能关闭单个子策略（如只开 `fileContent` 关 `json`）
 
-**交付物**:
+**实际交付物**:
 ```
-domains/hooks/compression/strategy/
-├── tool_focused.go
-├── tool_compressor.go  # 工具压缩算法
-└── tool_focused_test.go
+domains/hooks/compression/toolfocused/
+├── toolfocused.go       # 5 策略实现
+└── toolfocused_test.go  # 22 单元测试
 ```
 
-### 4.3 Phase 3: 自动选择器 (Week 2)
+### 4.3 Phase 3: 自动选择器
 
-**目标**: 实现基于规则的自动选择
+**状态**: ⏳ 未实施 — 当前唯一选择器是 `ManualSelector`，按显式 Policy 列表筛选。
 
 **任务**:
-1. ✅ 提取 `SessionFeatures`
-2. ✅ 实现 `RuleBasedSelector`
-3. ✅ CEL 表达式引擎集成
-4. ✅ 默认规则集
-5. ✅ 单元测试
+1. ⏳ 提取 `SessionFeatures`（MessageCount / EstimatedTokens / HasToolCalls /
+   ToolCallRatio / HasCodeBlocks / CodeBlockRatio / IdleMinutes）
+2. ⏳ 实现 `RuleBasedSelector`（基于规则匹配 features）
+3. ⏳ CEL 表达式引擎集成（`github.com/google/cel-go`）
+4. ⏳ 默认规则集（4 条示例规则：tool-heavy / latency-sensitive / cost-sensitive / quality-first）
+5. ⏳ 单元测试
 
-**交付物**:
+**计划交付物**:
 ```
 domains/hooks/compression/selector/
 ├── selector.go
 ├── rule_based_selector.go
 ├── features.go         # 特征提取
 ├── cel_evaluator.go    # CEL 表达式
+├── default_rules.go
 └── *_test.go
 ```
 
-### 4.4 Phase 4: 配置与集成 (Week 2-3)
+### 4.4 Phase 4: 配置与集成
 
-**目标**: 配置系统集成
+**状态**: ⏳ 部分完成 — `Compressor.ParsePolicySpec` / `NewManualSelectorFromSpec`
+薄封装已落地（main.go 可用），但 tenant/session/hot-reload 未接。
 
 **任务**:
-1. ✅ 扩展 `Config` 结构体
-2. ✅ 租户级配置支持
-3. ✅ 会话级 hint 支持（通过 HTTP header）
-4. ✅ 配置热重载
-5. ✅ 文档更新
+1. ⏳ 扩展 `Config` 结构体（加入 `compression.policy` 全局键）
+2. ⏳ 租户级配置支持（settings.Global.Spec 层级）
+3. ⏳ 会话级 hint 支持（通过 HTTP header `X-Compression-Strategy`）
+4. ⏳ 配置热重载（监听 settings 变更）
+5. ⏳ 文档更新（`docs/configuration/compression-strategy.md` 未创建）
 
-**交付物**:
+**计划交付物**:
 ```
 config/compression_strategy.go
 docs/configuration/compression-strategy.md
 ```
 
-### 4.5 Phase 5: rule-based 策略 (Week 3-4，可选)
+### 4.5 Phase 5: rule-based 策略（可选）
 
-**目标**: 实现基于规则的文本压缩（学习 OmniRoute caveman）
+**状态**: ⏳ 未实施 — Caveman 引擎已在 `caveman` 包实现（8 语言规则），并被
+`CavemanAdapter` 包装为 Strategy；Phase 5 期望的"独立 RuleBasedStrategy" 实际
+与 Caveman 重复。
 
 **任务**:
 1. ✅ 实现 `RuleBasedStrategy`
