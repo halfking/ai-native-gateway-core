@@ -160,12 +160,12 @@ func StreamAnthropicPassthroughWithDiagnostics(
 	defer func() {
 		if finisher, ok := w.(interface{ Finish() error }); ok {
 			if err := finisher.Finish(); err != nil && !outcome.Interrupted {
+				// A pending capturer holds the completed upstream body
+				// regardless of wire success. Finish() only fails when the
+				// buffered gate's end-of-attempt flush hits the dead
+				// client connection — that does not invalidate the
+				// captured body, so keep the turn replayable.
 				if pc != nil {
-					// A pending capturer holds the completed upstream body:
-					// kept "completed" so the turn stays replayable — the
-					// same policy as the mid-loop disconnect exit below.
-					// Finish failed only because the buffered gate flushed
-					// its held frames onto the dead client connection.
 					return
 				}
 				// Client connection is dead by the time Finish() fails. A
@@ -488,6 +488,10 @@ func isSSEEventLineNamed(trimmedLine, name string) bool {
 // so in-stream terminal errors are always retryable-classified rather than
 // the generic transient.
 func classifyAnthropicStreamError(errType string, payload []byte) errorsx.ErrorKind {
+	// Explicit Anthropic error-type → ErrorKind table (Anthropic Messages
+	// API reference). Anything not listed here is a relay-specific label
+	// and falls through to the body classifier, which can still rescue
+	// transient / overloaded signals from the message text.
 	switch errType {
 	case "overloaded_error":
 		return errorsx.KindUpstreamOverloaded
@@ -497,6 +501,22 @@ func classifyAnthropicStreamError(errType string, payload []byte) errorsx.ErrorK
 		return errorsx.KindAuth
 	case "timeout", "timeout_error":
 		return errorsx.KindTimeout
+	case "api_error":
+		// Anthropic's catch-all for upstream-internal failures. Treat as
+		// upstream-down so failover engages, instead of letting the body
+		// classifier accidentally map it to e.g. content_filter or model
+		// not_found based on relay-injected hint text.
+		return errorsx.KindUpstreamDown
+	case "invalid_request_error":
+		// Client-shaped problem (bad params, schema mismatch); do not
+		// failover — surface it as a non-retryable invalid-input.
+		return errorsx.KindClientBug
+	case "not_found_error":
+		return errorsx.KindModelNotFound
+	case "context_length_exceeded":
+		return errorsx.KindContextLength
+	case "content_policy_violation":
+		return errorsx.KindContentFilter
 	}
 	kind := errorsx.ClassifyErrorWithBody(0, payload)
 	if kind == errorsx.KindTransient {
@@ -1098,11 +1118,13 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 				errMsg = chunk.Error.Message
 			}
 			kind := classifyAnthropicStreamError(errType, data)
-			// Deliver text buffered ahead of the terminal error first: the
-			// client already received upstream frames for it conceptually,
-			// and flushing commits the attempt (mirrors the EOF path) so the
-			// sanitized error chunk and [DONE] below actually reach the wire.
-			flushBufferedText()
+			// Buffered-but-unflushed text was never written via writeChunk, so
+			// it is not client-visible: chunkCount stays 0 and the gate is
+			// uncommitted. Do NOT flush it here — flushing would commit an
+			// otherwise-transient interruption, flipping Resumable to false and
+			// duplicating the text on retry. The EOF path flushes because the
+			// upstream terminated without a hard error; a hard error means the
+			// buffered prefix belongs to a failed attempt and is discarded.
 			if attemptHasClientSemanticOutput(gate, chunkCount) {
 				// Relay upstreams pack internal diagnostics (provider UUIDs,
 				// request IDs, multi-line "Turn execution failed / reason=…"
@@ -1125,7 +1147,11 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 				"error_type", errType,
 				"kind", string(kind),
 				"client_visible_chunks", chunkCount,
-				"error_preview", truncateForLog(errMsg, 200),
+				// Raw payload stays in the audit capture; slog must treat the
+				// relay blob as opaque (it embeds provider UUIDs/request IDs).
+				// Log the first line only — it carries the vendor's headline
+				// without the internal diagnostics.
+				"error_headline", truncateForLog(firstLineOfLogSafe(errMsg), 120),
 			)
 			outcome.Interrupted = true
 			outcome.Reason = "upstream_error"
@@ -1169,6 +1195,18 @@ func buildAnthropicBridgeToolCallChunk(index int, id, name string, args *string,
 		Delta:          &ir.StreamDelta{ToolCalls: []ir.StreamToolCallDelta{tc}},
 		SourceProtocol: ir.ProtocolAnthropicMessages,
 	}
+}
+
+// firstLineOfLogSafe extracts the first line of a possibly multi-line
+// upstream diagnostic for log fields. Relay blobs put structured internals
+// (provider=, request=, reason=…) on subsequent lines; the term "safe" here
+// means "structurally incapable of carrying the relay kv pairs", not
+// sanitization of arbitrary PII.
+func firstLineOfLogSafe(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i]
+	}
+	return s
 }
 
 func emitAnthropicBridgeErrorChunk(w http.ResponseWriter, code, message string, flusher http.Flusher) {
