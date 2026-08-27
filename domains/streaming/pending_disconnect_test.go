@@ -1,6 +1,7 @@
 package streaming
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -40,7 +41,7 @@ func TestStreamChatWithPendingCaptureContinuesAfterClientDisconnect(t *testing.T
 	}
 	pc := NewPendingCapturer(1024)
 
-	outcome := StreamChatWithPendingCapture(
+	outcome := StreamChatWithPendingCapture(context.Background(),
 		newDisconnectingStreamWriter(),
 		resp,
 		"gpt-test",
@@ -88,7 +89,10 @@ func TestStreamAnthropicPassthroughContinuesAfterClientDisconnect(t *testing.T) 
 	}
 	pc := NewPendingCapturer(1024)
 
-	outcome := StreamAnthropicPassthrough(
+	// P1-2: caller-supplied ctx is authoritative (was resp.Request.Context()).
+	reqCtx, cancelReq := context.WithCancel(context.Background())
+	defer cancelReq()
+	outcome := StreamAnthropicPassthrough(reqCtx,
 		newDisconnectingStreamWriter(),
 		resp,
 		"claude-test",

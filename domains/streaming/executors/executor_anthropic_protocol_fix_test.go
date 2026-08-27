@@ -134,7 +134,7 @@ func TestAnthropicExecutor_StreamResponse_RoutesToResponsesTranslator(t *testing
 		// P1-2 fix (2026-08-28): Add ctx parameter to match interface.
 		OpenAITranslator: func(ctx context.Context, w http.ResponseWriter, resp *http.Response, _, _, _ string, _ *audit.StreamCapture) StreamOutcome {
 			openAICalls++
-			return StreamOutcome
+			return StreamOutcome{}
 		},
 		ResponsesTranslator: func(ctx context.Context, w http.ResponseWriter, resp *http.Response, _, _, _ string, _ *audit.StreamCapture) StreamOutcome {
 			responsesCalls++
@@ -169,7 +169,7 @@ func TestAnthropicExecutor_StreamResponse_RoutesToOpenAITranslator(t *testing.T)
 	var openAICalls, responsesCalls int
 
 	ae := &AnthropicExecutor{
-		ClientProtocol: "openai-responses",
+		ClientProtocol: "openai-completions",
 		// P1-2 fix (2026-08-28): Add ctx parameter to match interface.
 		OpenAITranslator: func(ctx context.Context, w http.ResponseWriter, resp *http.Response, _, _, _ string, _ *audit.StreamCapture) StreamOutcome {
 			openAICalls++

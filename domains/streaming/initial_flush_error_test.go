@@ -1,6 +1,7 @@
 package streaming
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -26,25 +27,25 @@ func TestProtocolStreamsReportInitialFlushError(t *testing.T) {
 		run  func(http.ResponseWriter, *http.Response) StreamOutcome
 	}{
 		{name: "openai chat", run: func(w http.ResponseWriter, resp *http.Response) StreamOutcome {
-			return StreamChat(w, resp, "client", "upstream", nil)
+			return StreamChat(context.Background(), w, resp, "client", "upstream", nil)
 		}},
 		{name: "openai responses", run: func(w http.ResponseWriter, resp *http.Response) StreamOutcome {
-			return StreamResponsesSSE(w, resp, "client", "upstream", "req", nil)
+			return StreamResponsesSSE(context.Background(), w, resp, "client", "upstream", "req", nil)
 		}},
 		{name: "openai to anthropic", run: func(w http.ResponseWriter, resp *http.Response) StreamOutcome {
-			return StreamOpenAIToAnthropicSSE(w, resp, "client", "upstream", "req", nil, nil)
+			return StreamOpenAIToAnthropicSSE(context.Background(), w, resp, "client", "upstream", "req", nil, nil)
 		}},
 		{name: "anthropic passthrough", run: func(w http.ResponseWriter, resp *http.Response) StreamOutcome {
-			return StreamAnthropicPassthrough(w, resp, "client", "upstream", "req", nil, nil)
+			return StreamAnthropicPassthrough(context.Background(), w, resp, "client", "upstream", "req", nil, nil)
 		}},
 		{name: "anthropic to openai", run: func(w http.ResponseWriter, resp *http.Response) StreamOutcome {
-			return StreamAnthropicSSEToOpenAI(w, resp, "client", "upstream", "req", nil, nil)
+			return StreamAnthropicSSEToOpenAI(context.Background(), w, resp, "client", "upstream", "req", nil, nil)
 		}},
 		{name: "anthropic to responses", run: func(w http.ResponseWriter, resp *http.Response) StreamOutcome {
-			return StreamAnthropicSSEToResponses(w, resp, "client", "upstream", "req", nil, nil)
+			return StreamAnthropicSSEToResponses(context.Background(), w, resp, "client", "upstream", "req", nil, nil)
 		}},
 		{name: "openai to responses", run: func(w http.ResponseWriter, resp *http.Response) StreamOutcome {
-			return StreamOpenAIToResponsesSSE(w, resp, "client", "upstream", "req", nil, nil)
+			return StreamOpenAIToResponsesSSE(context.Background(), w, resp, "client", "upstream", "req", nil, nil)
 		}},
 	}
 

@@ -2,6 +2,7 @@ package streaming
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"strings"
 	"sync"
@@ -18,7 +19,7 @@ import (
 
 func newGateForTest(mode GateMode) (*AttemptCommitGate, *trackingFlusher) {
 	f := &trackingFlusher{}
-	g := NewAttemptCommitGate(ProtocolAnthropic, NewSerializedStreamWriter(f),
+	g := NewAttemptCommitGate(context.Background(), ProtocolAnthropic, NewSerializedStreamWriter(f),
 		GateOptions{Mode: mode, MaxMetadataBufferBytes: 1024})
 	return g, f
 }
@@ -114,7 +115,7 @@ func TestAttemptCommitGateConcurrentWritesDoNotDropFrames(t *testing.T) {
 func TestAttemptCommitGatePropagatesSemanticFlushError(t *testing.T) {
 	flushErr := errors.New("connection closed")
 	writer := &failingErrorFlusher{flushErr: flushErr}
-	gate := NewAttemptCommitGate(ProtocolAnthropic, NewSerializedStreamWriter(writer), GateOptions{Mode: GateModeBuffered})
+	gate := NewAttemptCommitGate(context.Background(), ProtocolAnthropic, NewSerializedStreamWriter(writer), GateOptions{Mode: GateModeBuffered})
 
 	err := gate.WriteFrame("event: content_block_delta\ndata: {\"delta\":{\"type\":\"text_delta\",\"text\":\"x\"}}\n\n")
 	if !errors.Is(err, flushErr) {
@@ -128,7 +129,7 @@ func TestAttemptCommitGatePropagatesSemanticFlushError(t *testing.T) {
 func TestAttemptCommitGatePropagatesCommitAndFinishFlushErrors(t *testing.T) {
 	flushErr := errors.New("connection closed")
 	writer := &failingErrorFlusher{flushErr: flushErr}
-	gate := NewAttemptCommitGate(ProtocolAnthropic, NewSerializedStreamWriter(writer), GateOptions{Mode: GateModeBuffered})
+	gate := NewAttemptCommitGate(context.Background(), ProtocolAnthropic, NewSerializedStreamWriter(writer), GateOptions{Mode: GateModeBuffered})
 	if err := gate.WriteFrame("event: message_start\ndata: {}\n\n"); err != nil {
 		t.Fatal(err)
 	}
