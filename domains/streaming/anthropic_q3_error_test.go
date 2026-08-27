@@ -113,6 +113,7 @@ func TestStreamAnthropicSSEToOpenAI_ErrorKindClassification(t *testing.T) {
 		{"authentication_error", errorsx.KindAuth},
 		{"permission_error", errorsx.KindAuth},
 		{"timeout_error", errorsx.KindTimeout},
+		{"timeout", errorsx.KindTimeout},
 		{"api_error", errorsx.KindUpstreamDown},
 		{"mystery_error", errorsx.KindUpstreamDown},
 	}
@@ -199,6 +200,70 @@ func TestStreamAnthropicSSEToOpenAI_MalformedToolArgsKindIsUpstreamDown(t *testi
 	assert.Equal(t, "malformed_tool_args", out.Reason)
 	assert.Equal(t, errorsx.KindUpstreamDown, out.Kind)
 	assert.NotContains(t, rec.Body.String(), "input_json_delta")
+}
+
+// Regression for the review finding on c821d6eb5: text deltas that were
+// buffered but never flushed (no content_block_stop yet) are not
+// client-visible. A hard upstream error at that point must stay transparently
+// retryable — flushing the buffer would commit the attempt and duplicate the
+// text on retry.
+func TestStreamAnthropicSSEToOpenAI_BufferedUnflushedTextThenErrorStaysRetryable(t *testing.T) {
+	body := "event: content_block_start\n" +
+		"data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n" +
+		"event: content_block_delta\n" +
+		"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"buffered-not-flushed\"}}\n\n" +
+		q3RelayDiagnosticErrorBody
+	rec := httptest.NewRecorder()
+	resp := &http.Response{
+		Body:    passthroughNopCloser(body),
+		Request: httptest.NewRequest(http.MethodPost, "/v1/messages", nil),
+	}
+
+	out := StreamAnthropicSSEToOpenAI(context.Background(), rec, resp,
+		"claude-sonnet-5", "claude-sonnet-5", "req-q3-buffered-err", nil, nil)
+
+	assert.True(t, out.Interrupted)
+	assert.True(t, out.Resumable,
+		"nothing client-visible: a retry would not duplicate, so failover must stay transparent")
+	assert.NotContains(t, rec.Body.String(), "buffered-not-flushed",
+		"unflushed buffered text must be discarded with the failed attempt, not committed")
+	assert.NotContains(t, rec.Body.String(), "Turn execution failed")
+	assert.NotContains(t, rec.Body.String(), `"error"`)
+}
+
+// Committed content + terminal error with the full relay diagnostic blob:
+// client-visible output stays, the error chunk is sanitized, and NONE of the
+// relay internals (uuid, internal model, request id, reason=unknown) leak.
+func TestStreamAnthropicSSEToOpenAI_CommittedErrorRedactsFullRelayPayload(t *testing.T) {
+	restore := setAttemptGateForTest(true, GateModeImmediate)
+	defer restore()
+	rec := httptest.NewRecorder()
+	resp := &http.Response{
+		Body:    passthroughNopCloser(q3TextDeltaFrame + q3RelayDiagnosticErrorBody),
+		Request: httptest.NewRequest(http.MethodPost, "/v1/messages", nil),
+	}
+
+	out := StreamAnthropicSSEToOpenAI(context.Background(), rec, resp,
+		"claude-sonnet-5", "claude-sonnet-5", "req-q3-committed-relay", nil, nil)
+
+	assert.True(t, out.Interrupted)
+	assert.False(t, out.Resumable)
+	assert.Equal(t, errorsx.KindUpstreamDown, out.Kind)
+
+	wire := rec.Body.String()
+	for _, internal := range []string{
+		"Turn execution failed",
+		"3230afbd-6e95-422f-ba98-0190e2c4ccca",
+		"7f8ca320-031f-4d6b-b378-878630a51fc0",
+		"gpt-5.6-terra",
+		"reason=unknown",
+		"retryable=false",
+	} {
+		assert.NotContains(t, wire, internal)
+	}
+	assert.Contains(t, wire, "hello")
+	assert.Contains(t, wire, `"error"`)
+	assert.Contains(t, wire, "data: [DONE]")
 }
 
 func q3ToolUseStartFrame() string {
