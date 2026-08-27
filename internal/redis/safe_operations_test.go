@@ -3,6 +3,7 @@ package redis
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/alicebob/miniredis/v2"
@@ -178,5 +179,45 @@ func TestSafeMGet_WithBatching(t *testing.T) {
 	}
 	if len(vals) != 5 {
 		t.Fatalf("expected 5 values, got %d", len(vals))
+	}
+}
+
+// TestIsWrongType covers the classifier used to reclassify HGetAll errors
+// after a TOCTOU race flips the key's type. Real prod validation needs
+// concurrent DEL+SET; here we unit-test the classifier, which is the
+// deterministic part of the fix.
+func TestIsWrongType(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"redis.Nil", redis.Nil, false},
+		{"WRONGTYPE only", errors.New("WRONGTYPE Operation against a key holding the wrong kind of value"), true},
+		{"WRONGTYPE in middle", errors.New("something WRONGTYPE happened"), true},
+		{"random err", errors.New("connection refused"), false},
+		{"wrapped WRONGTYPE", fmt.Errorf("redis HGETALL: %w", errors.New("WRONGTYPE ...")), true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isWrongType(tt.err); got != tt.want {
+				t.Errorf("isWrongType(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestSafeHGetAll_NilClient guards against nil panics, since the wrapper
+// is called from session.go paths where client can be nil (no-Redis mode).
+func TestSafeHGetAll_NilClient(t *testing.T) {
+	if _, err := SafeHGetAll(context.Background(), nil, "any"); err == nil {
+		t.Fatal("expected error for nil client")
+	}
+	if _, err := SafeSMembers(context.Background(), nil, "any"); err == nil {
+		t.Fatal("expected error for nil client")
+	}
+	if _, err := SafeLRange(context.Background(), nil, "any", 0, -1); err == nil {
+		t.Fatal("expected error for nil client")
 	}
 }

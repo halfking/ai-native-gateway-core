@@ -38,11 +38,14 @@ func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 			outcome.Resumable = !attemptHasClientSemanticOutput(gate, 0)
 		}
 	}()
+	// P1-4 fix (2026-08-28): Initialize gate BEFORE any potentially-panicking code
+	// (such as currentStreamRuntimeConfig) to ensure panic recovery sees a non-nil
+	// gate when semantic output determination is needed.
+	w, gate = wrapAttemptWriter(w, ProtocolOpenAIResponses)
 	runtimeCfg := currentStreamRuntimeConfig()
 
 	// SR-W1: route client frames through the attempt commit gate.
 	// Disabled (default) this is the identity function — legacy wire bytes.
-	w, gate = wrapAttemptWriter(w, ProtocolOpenAIResponses)
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)

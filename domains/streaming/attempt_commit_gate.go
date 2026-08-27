@@ -416,7 +416,16 @@ func (g *AttemptCommitGate) markFirstSemanticByte(class FrameClass) {
 }
 
 func (g *AttemptCommitGate) blockCheckpointLocked(err error) {
-	if err == nil || g.checkpointBlocked {
+	if err == nil {
+		return
+	}
+	// P1-5 fix (2026-08-28): Log subsequent checkpoint errors for diagnostics
+	// even though the gate latches only the first error.
+	if g.checkpointBlocked {
+		slog.Warn("attempt_commit_gate: subsequent checkpoint error ignored (gate already blocked)",
+			"new_error", err,
+			"latched_error", g.checkpointErr,
+			"state", g.state)
 		return
 	}
 	g.checkpointBlocked = true

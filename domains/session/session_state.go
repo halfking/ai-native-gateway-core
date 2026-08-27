@@ -190,10 +190,7 @@ func (sm *Manager) GetStats(ctx context.Context, sessionID string) (*SessionStat
 			return nil, ErrSessionNotFound
 		}
 		if errors.Is(err, redissafe.ErrWrongType) {
-			// Type corruption: log and return NotFound to fail open
-			slog.Warn("session key type mismatch",
-				"session_id", sessionID,
-				"error", err)
+			logSessionTypeMismatch("get_stats", sessionID, err)
 			return nil, ErrSessionNotFound
 		}
 		return nil, fmt.Errorf("redis error reading session stats: %w", err)
@@ -278,9 +275,7 @@ func (sm *Manager) EndCredRotation(ctx context.Context, sessionID string) error 
 			return nil
 		}
 		if errors.Is(err, redissafe.ErrWrongType) {
-			slog.Warn("session key type mismatch in EndCredRotation",
-				"session_id", sessionID,
-				"error", err)
+			logSessionTypeMismatch("end_cred_rotation", sessionID, err)
 			return nil
 		}
 		return fmt.Errorf("redis error reading session: %w", err)
@@ -406,9 +401,7 @@ func (sm *Manager) StopSession(ctx context.Context, sessionID, reason string) er
 			return ErrSessionNotFound
 		}
 		if errors.Is(err, redissafe.ErrWrongType) {
-			slog.Warn("session key type mismatch in StopSession",
-				"session_id", sessionID,
-				"error", err)
+			logSessionTypeMismatch("stop", sessionID, err)
 			return ErrSessionNotFound
 		}
 		return fmt.Errorf("redis error reading session: %w", err)
@@ -496,8 +489,18 @@ func (sm *Manager) RecoverSession(ctx context.Context, sessionID string) error {
 		return ErrSessionNotFound
 	}
 
-	data, err := sm.redis.HGetAll(ctx, "session:"+sessionID)
-	if err != nil || len(data) == 0 {
+	client := sm.redis.Client()
+	if client == nil {
+		return ErrSessionNotFound
+	}
+	data, err := redissafe.SafeHGetAll(ctx, client, "session:"+sessionID)
+	if err != nil {
+		if errors.Is(err, redissafe.ErrWrongType) {
+			logSessionTypeMismatch("recover", sessionID, err)
+		}
+		return ErrSessionNotFound
+	}
+	if len(data) == 0 {
 		return ErrSessionNotFound
 	}
 
@@ -509,11 +512,6 @@ func (sm *Manager) RecoverSession(ctx context.Context, sessionID string) error {
 	now := time.Now().UTC()
 	apiKeyID := parseInt64(data[FieldAPIKeyID])
 	tenantID := data[FieldTenantID]
-
-	client := sm.redis.Client()
-	if client == nil {
-		return fmt.Errorf("redis client not available")
-	}
 
 	pipe := client.Pipeline()
 	pipe.HSet(ctx, "session:"+sessionID, map[string]any{

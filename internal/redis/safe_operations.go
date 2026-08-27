@@ -14,6 +14,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -27,6 +28,12 @@ var (
 	// ErrKeyNotFound indicates the key does not exist. Callers can treat this
 	// as an empty result if appropriate for their use case.
 	ErrKeyNotFound = errors.New("redis: key not found")
+
+	// wrongTypePrefix is the substring Redis uses for WRONGTYPE Operation
+	// errors (e.g., "WRONGTYPE Operation against a key holding the wrong kind
+	// of value"). Substring match is used because go-redis does not expose a
+	// typed sentinel for it.
+	wrongTypePrefix = "WRONGTYPE"
 )
 
 // TypedError wraps a Redis operation error with the expected and actual types.
@@ -46,55 +53,81 @@ func (e *TypedError) Unwrap() error {
 	return e.OriginalErr
 }
 
+// checkType runs TYPE once and returns the typed sentinel if the type
+// disagrees. Shared by SafeHGetAll / SafeSMembers / SafeLRange.
+//
+// Note on TOCTOU: between this call and the subsequent read, another client
+// may DEL + re-SET the key under a different type. Callers must still
+// inspect the read command error for WRONGTYPE — see the fallback path in
+// SafeHGetAll et al.
+func checkType(ctx context.Context, client redis.Cmdable, key, want string) (string, error) {
+	got, err := client.Type(ctx, key).Result()
+	if err != nil {
+		return "", fmt.Errorf("redis TYPE check failed: %w", err)
+	}
+	if got == "none" {
+		return "", ErrKeyNotFound
+	}
+	if got != want {
+		return got, &TypedError{
+			Key:         key,
+			Expected:    want,
+			Actual:      got,
+			OriginalErr: ErrWrongType,
+		}
+	}
+	return got, nil
+}
+
+// isWrongType returns true for the race-induced WRONGTYPE error returned
+// when another client DELs+SETs the key under a different type between our
+// TYPE check and the read command.
+func isWrongType(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, redis.Nil) {
+		return false
+	}
+	return strings.Contains(err.Error(), wrongTypePrefix)
+}
+
 // SafeHGetAll performs HGETALL with a TYPE check to ensure the key is a hash.
 //
 // Returns:
 //   - Non-empty map + nil error: successful read of an existing hash
-//   - Empty map + ErrKeyNotFound: key does not exist (safe to treat as empty)
-//   - Empty map + ErrWrongType: key exists but is not a hash (caller should log/alert)
-//   - Empty map + other error: Redis network/auth error
+//   - Empty map + nil error: key is an existing empty hash (zero field)
+//   - nil + ErrKeyNotFound: key does not exist
+//   - nil + *TypedError (Unwrap → ErrWrongType): key exists but is not a hash
+//   - nil + other error: Redis network/auth error, OR race-induced WRONGTYPE
+//     (reclassified to *TypedError so callers see one consistent error type)
 //
-// Usage:
-//
-//	data, err := SafeHGetAll(ctx, rdb, "session:123")
-//	if err != nil {
-//	    if errors.Is(err, redis.ErrKeyNotFound) {
-//	        // Key missing, treat as empty session
-//	        return defaultSession()
-//	    }
-//	    if errors.Is(err, redis.ErrWrongType) {
-//	        // Type corruption detected, log and fail open
-//	        slog.Error("redis type mismatch", "key", "session:123", "error", err)
-//	        return defaultSession()
-//	    }
-//	    return fmt.Errorf("redis error: %w", err)
-//	}
-//	// Use data...
+// Concurrency: a TYPE-checked key may be DEL'd+SET to a different type by
+// another client between our Type() and HGetAll() calls. The HGetAll() error
+// is reclassified via isWrongType → TypedError so callers don't need a
+// separate handler. This is the only path that converts a network error
+// into a typed sentinel.
 func SafeHGetAll(ctx context.Context, client redis.Cmdable, key string) (map[string]string, error) {
-	// Step 1: Check key type before attempting HGETALL
-	keyType, err := client.Type(ctx, key).Result()
-	if err != nil {
-		return nil, fmt.Errorf("redis TYPE check failed: %w", err)
+	if client == nil {
+		return nil, fmt.Errorf("nil redis client")
+	}
+	if _, err := checkType(ctx, client, key, "hash"); err != nil {
+		return nil, err
 	}
 
-	// Step 2: Handle missing key (TYPE returns "none")
-	if keyType == "none" {
-		return nil, ErrKeyNotFound
-	}
-
-	// Step 3: Verify key is a hash
-	if keyType != "hash" {
-		return nil, &TypedError{
-			Key:         key,
-			Expected:    "hash",
-			Actual:      keyType,
-			OriginalErr: ErrWrongType,
-		}
-	}
-
-	// Step 4: Perform HGETALL (should never fail now)
 	data, err := client.HGetAll(ctx, key).Result()
 	if err != nil {
+		if isWrongType(err) {
+			// TOCTOU: the key's type flipped after our TYPE check.
+			// Re-read the actual type so the TypedError is informative.
+			currentType, _ := client.Type(ctx, key).Result()
+			return nil, &TypedError{
+				Key:         key,
+				Expected:    "hash",
+				Actual:      currentType,
+				OriginalErr: err,
+			}
+		}
 		return nil, fmt.Errorf("redis HGETALL failed after TYPE check: %w", err)
 	}
 
@@ -105,29 +138,23 @@ func SafeHGetAll(ctx context.Context, client redis.Cmdable, key string) (map[str
 //
 // Returns the same error semantics as SafeHGetAll.
 func SafeSMembers(ctx context.Context, client redis.Cmdable, key string) ([]string, error) {
-	keyType, err := client.Type(ctx, key).Result()
-	if err != nil {
-		return nil, fmt.Errorf("redis TYPE check failed: %w", err)
+	if client == nil {
+		return nil, fmt.Errorf("nil redis client")
 	}
-
-	if keyType == "none" {
-		return nil, ErrKeyNotFound
+	if _, err := checkType(ctx, client, key, "set"); err != nil {
+		return nil, err
 	}
-
-	if keyType != "set" {
-		return nil, &TypedError{
-			Key:         key,
-			Expected:    "set",
-			Actual:      keyType,
-			OriginalErr: ErrWrongType,
-		}
-	}
-
 	members, err := client.SMembers(ctx, key).Result()
 	if err != nil {
+		if isWrongType(err) {
+			return nil, &TypedError{
+				Key:         key,
+				Expected:    "set",
+				OriginalErr: err,
+			}
+		}
 		return nil, fmt.Errorf("redis SMEMBERS failed after TYPE check: %w", err)
 	}
-
 	return members, nil
 }
 
@@ -135,29 +162,23 @@ func SafeSMembers(ctx context.Context, client redis.Cmdable, key string) ([]stri
 //
 // Returns the same error semantics as SafeHGetAll.
 func SafeLRange(ctx context.Context, client redis.Cmdable, key string, start, stop int64) ([]string, error) {
-	keyType, err := client.Type(ctx, key).Result()
-	if err != nil {
-		return nil, fmt.Errorf("redis TYPE check failed: %w", err)
+	if client == nil {
+		return nil, fmt.Errorf("nil redis client")
 	}
-
-	if keyType == "none" {
-		return nil, ErrKeyNotFound
+	if _, err := checkType(ctx, client, key, "list"); err != nil {
+		return nil, err
 	}
-
-	if keyType != "list" {
-		return nil, &TypedError{
-			Key:         key,
-			Expected:    "list",
-			Actual:      keyType,
-			OriginalErr: ErrWrongType,
-		}
-	}
-
 	items, err := client.LRange(ctx, key, start, stop).Result()
 	if err != nil {
+		if isWrongType(err) {
+			return nil, &TypedError{
+				Key:         key,
+				Expected:    "list",
+				OriginalErr: err,
+			}
+		}
 		return nil, fmt.Errorf("redis LRANGE failed after TYPE check: %w", err)
 	}
-
 	return items, nil
 }
 
@@ -168,6 +189,9 @@ func SafeLRange(ctx context.Context, client redis.Cmdable, key string, start, st
 //
 // Returns values aligned with keys (value is nil for missing keys).
 func SafeMGet(ctx context.Context, client redis.Cmdable, keys []string, maxBatchSize int) ([]interface{}, error) {
+	if client == nil {
+		return nil, fmt.Errorf("nil redis client")
+	}
 	if len(keys) == 0 {
 		return nil, nil
 	}

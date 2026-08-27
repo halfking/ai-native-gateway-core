@@ -175,6 +175,15 @@ func IncrementalBuild(incomingBody []byte, marker CutMarker, protocol string) ([
 		return nil, false
 	}
 
+	// P1-11 fix (2026-08-28): Defense-in-depth expiry check. Callers are
+	// expected to check IsExpired before invoking this function (see
+	// recovery_coordinator.go), but validating here too protects against
+	// call sites that forget the check or reuse a marker across sessions.
+	// Only check if CreatedAt is set; tests may create markers without timestamps.
+	if marker.CreatedAt > 0 && marker.IsExpired(30*time.Minute) {
+		return nil, false
+	}
+
 	var generic map[string]json.RawMessage
 	if err := json.Unmarshal(incomingBody, &generic); err != nil {
 		return nil, false

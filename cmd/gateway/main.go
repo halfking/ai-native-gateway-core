@@ -659,10 +659,15 @@ func main() {
 			sessionMgr = session.NewManager(redisClient, sessionTTL)
 			chatHandler.SetSessionGetter(sessionMgr)
 			redisClientForCache = redisClient
+			// P1-15 fix (2026-08-28): Configure connection pool for fpSlotRedis
 			fpSlotRedis = redis.NewClient(&redis.Options{
-				Addr:     cfg.RedisAddr,
-				Password: cfg.RedisPassword,
-				DB:       cfg.RedisDB,
+				Addr:            cfg.RedisAddr,
+				Password:        cfg.RedisPassword,
+				DB:              cfg.RedisDB,
+				PoolSize:        100,
+				MinIdleConns:    10,
+				ConnMaxIdleTime: 5 * time.Minute,
+				PoolTimeout:     2 * time.Second,
 			})
 			pendingStore = pending.NewStore(fpSlotRedis, pendingTTL)
 			lastSystemSession = session.NewLastSystemSessionIndex(redisClient)
@@ -679,9 +684,9 @@ func main() {
 			preloadCtx, preloadCancel := context.WithTimeout(context.Background(), 10*time.Second)
 			if _, err := ursmstore.PreloadScripts(preloadCtx, redisClient.Client()); err != nil {
 				slog.Warn("redis: ursm lua script preload failed (will EVAL-fallback lazily)", "error", err)
-				metrics.RedisLuaScriptPreloaded.WithLabelValues("ursm").Set(0)
+				metrics.RedisLuaScriptPreloaded.WithLabelValues("ursm").Set(metrics.RedisLuaScriptPreloadedFailed)
 			} else {
-				metrics.RedisLuaScriptPreloaded.WithLabelValues("ursm").Set(1)
+				metrics.RedisLuaScriptPreloaded.WithLabelValues("ursm").Set(metrics.RedisLuaScriptPreloadedOK)
 			}
 			preloadCancel()
 			for name, size := range ursmstore.ScriptSizes() {
@@ -691,9 +696,20 @@ func main() {
 			// Update health handler with Redis connection (2026-07-08)
 			healthHandler.SetRedis(redisClient)
 		} else {
+			// Redis 配了 addr 但 ping 失败：和未配置区分开，preload=0
+			// (Redis 可达但预加载失败) 而非 -1 (未配置 sentinel)。
+			metrics.RedisLuaScriptPreloaded.WithLabelValues("ursm").Set(metrics.RedisLuaScriptPreloadedFailed)
 			slog.Warn("session manager: redis ping failed", "error", err)
 		}
 	} else {
+		// Redis 完全未配置：使用 -1 作为 sentinel 让 Prometheus query
+		// 能区分"未启用"和"启用但预加载失败" (后者 = 0)。
+		// 脚本体积仍设上 — ScriptSizes() 是静态的，运维可据此评估
+		// 启用 Redis 后的潜在带宽成本。
+		metrics.RedisLuaScriptPreloaded.WithLabelValues("ursm").Set(metrics.RedisLuaScriptPreloadedDisabled)
+		for name, size := range ursmstore.ScriptSizes() {
+			metrics.RedisLuaScriptSizeBytes.WithLabelValues(name).Set(float64(size))
+		}
 		slog.Warn("session manager disabled (no LLM_GATEWAY_REDIS_ADDR)")
 	}
 
