@@ -151,7 +151,7 @@ func TestRequestRoundtrip(t *testing.T) {
 		t.Errorf("cost = %v, want 0.0123", got.CostUSD)
 	}
 
-	day := now.Format("2006-01-02")
+	day := now.Format("2006/01/02") // matches datePath layout
 	ids, err := s.ListRequestsInDay(day)
 	if err != nil {
 		t.Fatalf("ListRequestsInDay: %v", err)

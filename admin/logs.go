@@ -98,7 +98,9 @@ type requestLogRow struct {
 	// COALESCE(NULLIF(gw_session_id,''),'')). Frontend uses this in
 	// the request-logs list and detail drawer; nil when no title has
 	// been generated or manually set.
-	SessionTitle *string `json:"session_title,omitempty"`
+	SessionTitle *string    `json:"session_title,omitempty"`
+	RequestClass *string    `json:"request_class,omitempty"`
+	DueAt        *time.Time `json:"due_at,omitempty"`
 }
 
 type requestLogAggregate struct {
@@ -221,7 +223,8 @@ const requestLogsListCols = `
 	-- 2026-08-06: session title. LEFT JOIN session_titles keyed by
 	-- (task_id, scoped_session_id) where scoped_session_id falls back to ''
 	-- when the request has no gw_session_id, matching the upsert path.
-	st.title AS session_title
+	st.title AS session_title,
+	rl.request_class, rl.due_at
 `
 
 // requestLogsDetailCols extends the list columns with the JSONB blobs
@@ -392,6 +395,9 @@ func scanRequestListRow(rows interface {
 		&l.AttachmentCount,
 		// 2026-08-06: session_titles.title join (see requestLogsJoins).
 		&l.SessionTitle,
+		// V6-W1.6 R8 (migration 610): request class + due time (LAST fixed
+		// columns; the conditional trace_seq append below stays after them).
+		&l.RequestClass, &l.DueAt,
 	}
 	if withTraceSeq {
 		dest = append(dest, &l.TraceSeq)
@@ -529,6 +535,13 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		addFilter("rl.usage_source = $%d", v)
+	}
+	if requestClass := strings.TrimSpace(queryString(r, "request_class")); requestClass != "" {
+		if requestClass != "immediate" && requestClass != "scheduled" {
+			writeError(w, http.StatusBadRequest, "request_class must be 'immediate' or 'scheduled'")
+			return
+		}
+		addFilter("rl.request_class = $%d", requestClass)
 	}
 
 	hasTaskFilter := strings.TrimSpace(queryString(r, "gw_task_id")) != ""
@@ -890,6 +903,7 @@ func (h *Handler) getLog(w http.ResponseWriter, r *http.Request) {
 		&detail.AttachmentCount,
 		// 2026-08-06: session_titles.title (see requestLogsListCols).
 		&detail.SessionTitle,
+		&detail.RequestClass, &detail.DueAt,
 		&detail.OutboundMsgHashes,
 		&detail.CompressionMeta,
 		// 2026-07-01: 完整附件元数据 JSONB (migration 325)。
