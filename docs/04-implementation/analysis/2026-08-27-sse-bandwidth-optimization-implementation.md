@@ -116,9 +116,11 @@ gzip_proxied any;
 
 **验证脚本** (`scripts/verify-gzip-sse.sh`):
 ```bash
-# 验证 nginx gzip 是否启用：GET 请求读几秒 SSE 流后检查 Content-Encoding: gzip
-# (HEAD 请求对无 body 的流式响应不可靠；token 输出自动掩码；--max-time 防挂死)
-./scripts/verify-gzip-sse.sh https://llmgo.kxpms.cn/api/admin/live-stream "Bearer <token>"
+# 验证 nginx gzip 是否启用：GET 请求读几秒 SSE 流后，要求最终响应同时满足
+# 2xx + Content-Type: text/event-stream + Content-Encoding: gzip。
+# token 从 stdin 读取并写入 mode-0600 curl config，不经脚本或 curl argv 暴露。
+printf '%s' 'Bearer <token>' | \
+  ./scripts/verify-gzip-sse.sh https://llmgo.kxpms.cn/api/admin/live-stream
 ```
 
 ### 2.2 关键技术细节
@@ -197,8 +199,9 @@ gzip_proxied any;
 
 3. 验证 gzip 启用:
    ```bash
-   bash scripts/verify-gzip-sse.sh https://llmgo.kxpms.cn/api/admin/live-stream "Bearer <admin-token>"
-   # 预期输出: ✅ gzip enabled - SSE responses will be compressed
+   printf '%s' 'Bearer <admin-token>' | \
+     bash scripts/verify-gzip-sse.sh https://llmgo.kxpms.cn/api/admin/live-stream
+   # 预期输出: ✅ gzip enabled for a successful SSE response
    ```
 
 4. 浏览器验证:
@@ -251,7 +254,7 @@ gzip_proxied any;
 
 **P0 回滚** (删除 DetailDimensions):
 - 不建议回滚（前端已向后兼容，老客户端连新后端无影响）
-- 如必须回滚: `git revert f9a90965f` → 重新编译部署
+- 如必须回滚: `git revert 9e629ee1b` → 重新编译部署（这是 rebase 后当前 `main` 上的 P0 commit）
 
 **P1 回滚** (nginx gzip):
 - 245/154 nginx 配置注释掉 `gzip` 相关行
@@ -317,7 +320,7 @@ rate(llmgw_redis_snapshot_calls_total[5m])
 **代码提交** (rebase 后最终 SHA):
 1. `79c4d9564` — feat(nginx): enable gzip for SSE live-stream (P1 bandwidth opt)
 2. `9e629ee1b` — feat(sse): remove DetailDimensions redundant field (P0 bandwidth opt)
-3. 审计修正 commit — 见 §10 审计修正记录
+3. 审计修正 commit — 见 §9 审计修正记录
 
 **文档**:
 1. `docs/04-implementation/analysis/2026-08-27-sse-bandwidth-optimization-analysis.md` (原分析报告, commit `aab72fc97`)
@@ -325,7 +328,7 @@ rate(llmgw_redis_snapshot_calls_total[5m])
 3. `docs/04-implementation/analysis/2026-08-27-sse-bandwidth-optimization-implementation.md` (本实施报告)
 
 **验证脚本**:
-- `scripts/verify-gzip-sse.sh` (gzip 验证, GET 流式方法 + token 掩码)
+- `scripts/verify-gzip-sse.sh` (gzip 验证, GET 流式方法 + stdin token + mode-0600 curl config)
 
 **Git 状态**:
 - 当前分支: `main`
@@ -334,7 +337,7 @@ rate(llmgw_redis_snapshot_calls_total[5m])
 
 ---
 
-## 10. 审计修正记录 (2026-08-27 二次审计)
+## 9. 审计修正记录 (2026-08-27)
 
 对 P0/P1 三个 commit (`369332e50..HEAD`) 做双轴审查（Standards 轴对照
 `CONTRIBUTING.md`，Spec 轴对照分析报告 P0/P1 需求），发现并修正以下问题：
@@ -342,7 +345,7 @@ rate(llmgw_redis_snapshot_calls_total[5m])
 | # | 发现 | 严重性 | 修正 |
 |---|---|---|---|
 | A1 | **nginx gzip 范围外溢**：server 级 `gzip_types text/event-stream` 会连带压缩 `/v1/chat/completions`、`/v1/messages` 等生产 LLM 打字机流（同为 text/event-stream），gzip 缓冲可能造成成块/首字延迟，未经评估 | **高** | 245 的 `^~ /v1/`、`^~ /v1beta/`、`^~ /v2/` 与 154 的 `~ ^/v1/(chat/completions\|messages)` location 内加 `gzip off`，压缩范围收窄为 admin live-stream + JSON API + 静态资源 |
-| A2 | **验证脚本三处缺陷**：① 用 HEAD 请求验证（SSE 无 body，nginx 对 HEAD 的 Content-Encoding 不可靠）；② 无 `--max-time`（GET 连上流后永久挂死）；③ `echo` 打印完整 admin token（泄露到终端/日志） | **高** | 重写为 GET + `--max-time` + `-D` 提头 + curl 28 退出码容忍 + token 掩码（scheme + 前 6 字符） |
+| A2 | **验证脚本三处缺陷**：① 用 HEAD 请求验证（SSE 无 body，nginx 对 HEAD 的 Content-Encoding 不可靠）；② 无 `--max-time`（GET 连上流后永久挂死）；③ `echo` 打印完整 admin token（泄露到终端/日志） | **高** | 首次重写为 GET + `--max-time` + `-D` 提头；第三次审计继续修正为：只接受最终 `2xx + text/event-stream + gzip`（避免压缩错误页误报），token 从 stdin 读取并经 mode-0600 curl config 传递（不出现在脚本或 curl argv） |
 | A3 | 实施文档 commit hash 失效（推送前 rebase 导致 `f9a90965f`/`9d5605e2a` 变为 `9e629ee1b`/`79c4d9564`） | 中 | 全文更新为最终 SHA 并标注 rebase 来源 |
 | A4 | 测试陈述过强："34 个 SSE 测试全部通过"隐含全量绿。实际：全量 `go test ./admin` 有 1 个无关既有失败；`web/package.json` 无 `test` script（`pnpm test` 静默 no-op）；全量 vitest 4 文件 8 用例既有失败 | 中 | 收紧为已验证子集 + 基线 `369332e50` 复现对照证明无关 |
 | A5 | 部署风险缺一项：已打开的旧页面实例（旧 JS 无可选链）连新后端会在首帧抛 TypeError | 中 | 风险表补行：刷新即恢复，窗口 = 后端重启后未刷新时段 |
