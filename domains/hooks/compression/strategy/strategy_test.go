@@ -252,8 +252,8 @@ func TestRunner_NeverWorseRegression(t *testing.T) {
 	if string(out) != "aaaa" {
 		t.Errorf("regressed body must revert to a's output; got %q", out)
 	}
-	if stats.TruncatedBy != "b" {
-		t.Errorf("TruncatedBy = %q, want b", stats.TruncatedBy)
+	if len(stats.TruncatedBy) != 1 || stats.TruncatedBy[0] != "b" {
+		t.Errorf("TruncatedBy = %v, want [b]", stats.TruncatedBy)
 	}
 	if b.Calls() != 1 {
 		t.Errorf("b should still be invoked once (to surface regressed); calls=%d", b.Calls())
@@ -316,8 +316,8 @@ func TestRunner_NoGuardStageNoGuardCall(t *testing.T) {
 	r := NewRunner(reg)
 	sel := NewManualSelector(Policy{Names: []string{"g"}, UnknownMode: "ignore"})
 	_, stats, _ := r.RunWithBody(context.Background(), sel, []byte("in"))
-	if stats.TruncatedBy != "" {
-		t.Errorf("no guard means no truncation; got %q", stats.TruncatedBy)
+	if len(stats.TruncatedBy) != 0 {
+		t.Errorf("no guard means no truncation; got %v", stats.TruncatedBy)
 	}
 	if len(stats.AppliedNames) != 1 {
 		t.Errorf("AppliedNames = %v", stats.AppliedNames)
@@ -339,8 +339,8 @@ func TestRunner_SetGuardIsUsed(t *testing.T) {
 	if string(out) != "start" {
 		t.Errorf("custom guard should revert; got %q", out)
 	}
-	if stats.TruncatedBy != "a" {
-		t.Errorf("TruncatedBy = %q, want a", stats.TruncatedBy)
+	if len(stats.TruncatedBy) != 1 || stats.TruncatedBy[0] != "a" {
+		t.Errorf("TruncatedBy = %v, want [a]", stats.TruncatedBy)
 	}
 }
 
