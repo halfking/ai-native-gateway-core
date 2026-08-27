@@ -34,6 +34,17 @@ func (h *StaticHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		upath = "/" + upath
 	}
 
+	// Reserved for the maintain SPA served by MaintainStaticHandler / nginx.
+	// Checked before file serving so even a stray maintain/* artifact inside
+	// the Gateway dist can never be served here. Falling through to the
+	// Gateway index.html previously made the frontend maintain probe report
+	// "available" and full-page jump into an infinite reload loop.
+	if upath == "/maintain" || strings.HasPrefix(upath, "/maintain/") ||
+		strings.HasPrefix(upath, "/maintain-api/") || strings.HasPrefix(upath, "/maintain-assets/") {
+		http.NotFound(w, r)
+		return
+	}
+
 	fpath := filepath.Join(h.distDir, filepath.Clean(upath))
 	if info, err := os.Stat(fpath); err == nil && !info.IsDir() {
 		// NET-010 fix: 静态文件扩展名白名单。
