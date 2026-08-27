@@ -1,4 +1,4 @@
--- Down migration 608: drop request class columns.
+-- Down migration 610: drop request class columns.
 -- WARNING: view rebuilt WITHOUT the two columns first (view freeze), then
 -- columns dropped from hot + parent. Data loss: request_class/due_at values.
 

@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-// V6-W1.6 R8 / migration 608 parity: the FS persistence tier (requests
+// V6-W1.6 R8 / migration 610 parity: the FS persistence tier (requests
 // temporarily saved as files when PG is unavailable) must round-trip the
 // request class + due time exactly like request_logs_hot does.
 
