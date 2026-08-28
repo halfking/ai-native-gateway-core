@@ -12,6 +12,9 @@ session_ttl_hours: 168
 upstream_timeout_seconds: 120
 stream_timeout_seconds: 900
 stream_chunk_timeout_seconds: 300
+# Maximum bytes in one physical upstream SSE line, including its LF/CRLF terminator.
+# This is per-line, not a cumulative response limit; non-stream responses retain 128 MiB.
+sse_max_line_bytes: 16777216
 first_byte_timeout_seconds: 30
 keepalive_interval_seconds: 15
 enable_empty_stream_gate: true
