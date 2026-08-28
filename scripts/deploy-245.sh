@@ -21,14 +21,15 @@
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# shellcheck source=deploy-lib/parse-wrapper-flags.sh
+source "$SCRIPT_DIR/deploy-lib/parse-wrapper-flags.sh"
+
+# Strip operator-level flags before delegating. --force-unlock is
+# handled locally (it clears a stale repo lock); everything else passes
+# through to deploy-seamless.sh unchanged.
 FORCE_UNLOCK=0
 ARGS=()
-for arg in "$@"; do
-  case "$arg" in
-    --force-unlock) FORCE_UNLOCK=1 ;;
-    *)              ARGS+=("$arg") ;;
-  esac
-done
+extract_force_unlock FORCE_UNLOCK ARGS "$@"
 
 if [[ $FORCE_UNLOCK -eq 1 ]]; then
   echo "[deploy-245] --force-unlock: running unlock-local.sh --force"

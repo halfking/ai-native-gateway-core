@@ -191,7 +191,27 @@ ssh 154 'redis-cli dbsize'
     ```
   - 默认模式 (无 `--force`) 只是报告，不删；只有加了 `--force` 才会真的 `rm -rf`，并在删之前对仍活着的 holder 发 SIGTERM → SIGKILL。
 - 锁是按 `${TMPDIR}` 派生的，所以**同一台机器上多个 repo clone 共享一把本地锁** —— 这是预期行为，避免 `web/dist` 被两边同时改写。
-- 远端锁 (`/var/lib/llm-gateway-go/deploy.lock`) 是另一回事——`deploy` 和 `rollback` 都会获取它，由 `deploy-seamless.sh` 的 EXIT trap 释放；只有 SSH 断开 / 主机重启等极端情况下才会残留，不在本节范围。
+
+#### 9.4.1 远端锁残留 (`remote lock held`)
+- 远端锁路径固定为 `/var/lib/llm-gateway-go/deploy.lock` (154/245 同机同路径)。
+- 正常流程：`deploy` / `rollback` 获取后由 `deploy-seamless.sh` 的 EXIT trap 释放。仅当 **SSH 断开 / 主机重启 / 进程被 `kill -9`** 等极端情况下才会残留，导致下一次部署 fail-fast：
+  ```
+  ERROR: remote lock held or initialization failed at /var/lib/llm-gateway-go/deploy.lock on 154
+  ```
+- 先 SSH 进 154 确认是否还有 deploy 进程在跑:
+  ```bash
+  ssh -p 25022 root@47.97.111.154 'cat /var/lib/llm-gateway-go/deploy.lock/metadata; ps -p $(awk -F= "/^pid=/{sub(\"pid=\",\"\");print}" /var/lib/llm-gateway-go/deploy.lock/metadata)'
+  ```
+  - **metadata 里的 PID 还活着** → 那个 deploy 还在跑，别解锁，等它自然完成。
+  - **PID 已死 / 主机重启过** → 用 `unlock-remote.sh` 清远端锁 (与本地 `unlock-local.sh` 平行设计):
+    ```bash
+    bash scripts/deploy-lib/unlock-remote.sh 154            # 只报告，不删
+    bash scripts/deploy-lib/unlock-remote.sh 154 --force    # 确认无误后删
+    ```
+  - 默认模式 (无 `--force`) 仅读 metadata 报告持有者，**不删**；加了 `--force` 才 `rm -rf` 远端锁目录。
+  - 与本地 helper 不同：远端 holder 的 PID 在远端机器上，本机无法可靠 kill，所以 `--force` 只清锁、**不杀进程**；若 metadata 里的 PID 仍存活，helper 会在 stderr 提示你手动 SSH 进去 `kill`。
+  - sanity check：metadata 里的 `target` 必须与传入的 `<target>` 一致 (154 vs 245)，不一致直接拒绝 (防止 SSH 连错主机误删别人的锁)。
+  - 校验入口：`scripts/deploy-lib/test/test-unlock-remote.sh` (14 路 stub e2e，可在无真实 SSH 的情况下回归)。
 
 ### 9.5 "DB 太慢 / connection 池满"
 - `docker exec pg-252-pg17 psql -U llm_gateway -d llm_gateway -c "SELECT count(*), state FROM pg_stat_activity WHERE datname='llm_gateway' GROUP BY state;"`
