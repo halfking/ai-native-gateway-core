@@ -18,6 +18,9 @@ import {
   extractLastUserPrompt,
 } from './messageHelpers'
 import { statusToneClass } from './statusTone'
+import { useFormat } from '../../i18n/useFormat'
+
+const { fmtDateTime } = useFormat()
 
 const props = defineProps<{
   log: RequestLogDetail | null
@@ -51,6 +54,9 @@ const persistenceLabel = computed(() =>
 
 const log = computed(() => props.log)
 const um = computed(() => props.unified?.meta)
+
+/** 请求发起时间（request_logs.ts）。unified.meta 不携带时间字段，故以 log.ts 为准。 */
+const requestTime = computed(() => fmtDateTime(props.log?.ts))
 
 function fmt(v: unknown): string {
   if (v == null || v === '') return '—'
@@ -184,6 +190,8 @@ function clip(text: string, max = 480): string {
 
     <div class="grid">
       <div class="cell"><span class="lbl">请求ID</span><code>{{ fmt(log?.request_id || um?.request_id) }}</code></div>
+      <!-- 请求时间：request_logs.ts，基础信息必备字段，此前缺失。 -->
+      <div class="cell"><span class="lbl">请求时间</span><span>{{ requestTime || '—' }}</span></div>
       <div class="cell" :class="statusToneClass(requestStatus, 'cell')">
         <span class="lbl">状态</span>
         <span class="pill" :class="statusToneClass(requestStatus, 'pill')">{{ fmt(requestStatus) }}</span>

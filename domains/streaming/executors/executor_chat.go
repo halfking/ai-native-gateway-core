@@ -369,10 +369,35 @@ func (e *Executor) executeOpenAI(
 		}()
 	}
 
+	nativeNonStream := cand.Protocol == "openai-responses" && cand.SupportsNativeResponses && !params.IsStream
+	nativeStream := cand.Protocol == "openai-responses" && cand.SupportsNativeResponsesStream && params.IsStream
+	if cand.Protocol == "openai-responses" &&
+		((params.IsStream && (!cand.SupportsNativeResponsesStream || e.NativeResponsesStream == nil)) ||
+			(!params.IsStream && !cand.SupportsNativeResponses)) {
+		return nil, &upstreampkg.Error{
+			Kind:       errorsx.KindUnsupportedFeature,
+			Message:    "native Responses transport is not enabled for this request",
+			StatusCode: http.StatusNotImplemented,
+		}
+	}
+
 	sourceBody := append([]byte(nil), params.BodyBytes...)
-	bodyBytes, err := e.finalizeOpenAIUpstreamBody(params, cand, sourceBody)
-	if err != nil {
-		return nil, err
+	var bodyBytes []byte
+	if nativeNonStream || nativeStream {
+		sourceBody = append([]byte(nil), params.ResponsesBodyBytes...)
+		if len(sourceBody) == 0 {
+			return nil, &upstreampkg.Error{
+				Kind:       errorsx.KindUnsupportedFeature,
+				Message:    "native Responses request body is unavailable",
+				StatusCode: http.StatusNotImplemented,
+			}
+		}
+		bodyBytes = append([]byte(nil), sourceBody...)
+	} else {
+		bodyBytes, err = e.finalizeOpenAIUpstreamBody(params, cand, sourceBody)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// 2026-07-16: Pre-request validation
@@ -475,9 +500,12 @@ func (e *Executor) executeOpenAI(
 		result, tryErr := func() (*ExecuteResult, error) {
 			var reqPool *pool.Pool
 			var upstreamURL string
-			if cand.Protocol == "anthropic-messages" {
+			switch {
+			case cand.Protocol == "anthropic-messages":
 				upstreamURL = upstreamurl.MessagesURL(cand.BaseURL)
-			} else {
+			case nativeNonStream || nativeStream:
+				upstreamURL = upstreamurl.ResponsesURL(cand.BaseURL)
+			default:
 				upstreamURL = upstreamurl.ChatCompletionsURL(cand.BaseURL)
 			}
 
@@ -1065,32 +1093,36 @@ func (e *Executor) executeOpenAI(
 				// writer，让 upstream body 照常读入 params.Capture 而不
 				//触碰已失效的客户端连接。
 				streamSink := responseSink(params)
-				switch {
-				case e.OpenAIToAnthropicStream != nil &&
-					params.ClientProtocol == "anthropic-messages" &&
-					cand.Protocol != "anthropic-messages":
-					// P1-2 fix (2026-08-28): Pass ctx for context propagation to gate.
-					streamOutcome = e.OpenAIToAnthropicStream(
-						params.R.Context(), streamSink, resp,
-						params.ClientModel, outboundModel,
-						diagnosticRequestID(params),
-						params.Capture, nil,
-					)
-				case e.OpenAIToResponsesStream != nil &&
-					params.ClientProtocol == "openai-responses" &&
-					cand.Protocol != "anthropic-messages":
-					// P1-2 fix (2026-08-28): Pass ctx for context propagation to gate.
-					streamOutcome = e.OpenAIToResponsesStream(
-						params.R.Context(), streamSink, resp,
-						params.ClientModel, outboundModel,
-						diagnosticRequestID(params),
-						params.Capture, nil,
-					)
-				case params.StreamWrapper != nil:
-					streamOutcome = params.StreamWrapper(streamSink, resp, e.Normalize, params.Capture)
-				case e.StreamChat != nil:
-					// P1-2 fix (2026-08-28): Pass ctx for context propagation to gate.
-					streamOutcome = e.StreamChat(params.R.Context(), streamSink, resp, params.ClientModel, outboundModel, cand.CatalogCode, e.Normalize, params.Capture, params.ToolsRequested)
+				if nativeStream {
+					streamOutcome = e.NativeResponsesStream(params.R.Context(), streamSink, resp, diagnosticRequestID(params), params.Capture)
+				} else {
+					switch {
+					case e.OpenAIToAnthropicStream != nil &&
+						params.ClientProtocol == "anthropic-messages" &&
+						cand.Protocol != "anthropic-messages":
+						// P1-2 fix (2026-08-28): Pass ctx for context propagation to gate.
+						streamOutcome = e.OpenAIToAnthropicStream(
+							params.R.Context(), streamSink, resp,
+							params.ClientModel, outboundModel,
+							diagnosticRequestID(params),
+							params.Capture, nil,
+						)
+					case e.OpenAIToResponsesStream != nil &&
+						params.ClientProtocol == "openai-responses" &&
+						cand.Protocol != "anthropic-messages":
+						// P1-2 fix (2026-08-28): Pass ctx for context propagation to gate.
+						streamOutcome = e.OpenAIToResponsesStream(
+							params.R.Context(), streamSink, resp,
+							params.ClientModel, outboundModel,
+							diagnosticRequestID(params),
+							params.Capture, nil,
+						)
+					case params.StreamWrapper != nil:
+						streamOutcome = params.StreamWrapper(streamSink, resp, e.Normalize, params.Capture)
+					case e.StreamChat != nil:
+						// P1-2 fix (2026-08-28): Pass ctx for context propagation to gate.
+						streamOutcome = e.StreamChat(params.R.Context(), streamSink, resp, params.ClientModel, outboundModel, cand.CatalogCode, e.Normalize, params.Capture, params.ToolsRequested)
+					}
 				}
 				if params.OnStreamCompleted != nil {
 					params.OnStreamCompleted(streamOutcome)
@@ -1261,8 +1293,14 @@ func (e *Executor) executeOpenAI(
 				slog.Warn("upstream response truncated", "size", len(respBody))
 				respBody = respBody[:maxBodySize]
 			}
+			if nativeNonStream {
+				if validationErr := validateNativeResponsesBody(respBody); validationErr != nil {
+					return nil, validationErr
+				}
+			}
 			// 2026-07-15: non-stream empty-response failover. The upstream
 			// returned HTTP 200 with a well-formed but content-less body
+
 			// (notably NIM: `{"choices":[{"message":{}}],"usage":{...}}`).
 			// Previously this fell through to the handler's terminal 502
 			// (messages.go:863 / responses.go:691). Now we return a
@@ -1271,7 +1309,7 @@ func (e *Executor) executeOpenAI(
 			// (executor.go:1814) fails over to the next credential with
 			// no client-side error. The handler-side 502 stays as the
 			// final fallback when ALL candidates are empty.
-			if !params.IsStream && isNonStreamEmptyResponse(respBody) {
+			if !nativeNonStream && !params.IsStream && isNonStreamEmptyResponse(respBody) {
 				slog.Warn("executor: non-stream empty response, failing over to next candidate",
 					"request_id", params.RequestID,
 					"credential_id", cand.CredentialID,
@@ -1287,6 +1325,35 @@ func (e *Executor) executeOpenAI(
 					StatusCode: resp.StatusCode,
 					RetryAfter: upstreampkg.RetryAfterFromHeaders(resp.Header),
 				}
+			}
+			if nativeNonStream {
+				if !params.SuppressSuccessWrite && params.W != nil {
+					if e.IntegrityDetector != nil && len(respBody) > 0 {
+						e.IntegrityDetector.Observe(params.R.Context(), IntegrityCandidate{
+							RequestID: params.RequestID, TenantID: params.TenantID,
+							ApplicationID: params.AppID, APIKeyID: params.ApiKeyID,
+							ProviderID: intPtrFromInt(cand.ProviderID), ProviderCode: cand.CatalogCode,
+							CredentialID: intPtrFromInt(cand.CredentialID), ClientModel: params.ClientModel,
+							OutboundModel: outboundModel, RawModel: cand.RawModel, IsStream: false,
+							ResponseBody: append([]byte(nil), respBody...),
+						})
+					}
+					e.logClientResponse(params, diagnosticProtocol(params.ClientProtocol, "openai-responses"), respBody)
+					copyNonStreamResponseHeaders(params.W.Header(), resp.Header, len(respBody))
+					params.W.WriteHeader(resp.StatusCode)
+					_, _ = params.W.Write(respBody)
+				}
+				recordAttemptSuccess(0)
+				return &ExecuteResult{
+					Response: resp, Candidate: cand, LatencyMs: latencyMs,
+					RequestBody: append([]byte(nil), bodyBytes...), InboundBody: sourceBody,
+					ResponseBody:        append([]byte(nil), respBody...),
+					IntegrityObserved:   e.IntegrityDetector != nil && !params.SuppressSuccessWrite && params.W != nil && len(respBody) > 0,
+					CompressionReason:   strPtrCompat(contextLenRecovery.lastReason),
+					CompressionStrategy: strPtrCompat(contextLenRecovery.lastStrategy),
+					CompressionMeta:     mergeCompressionMeta(contextLenRecovery.lastMeta, preTrimMeta),
+					RoutingTracker:      params.RoutingTracker,
+				}, nil
 			}
 			// 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
 			// Run before any other body transform so the scanner sees

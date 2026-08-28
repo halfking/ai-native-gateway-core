@@ -359,8 +359,8 @@ cmd_list() {
       state="inactive"
     fi
     if [[ -f "$meta" ]]; then
-      if grep -q '"verified":true' "$meta"; then
-        ts=$(grep -o '"verified_at":"[^"]*"' "$meta" | head -1 | sed 's/.*"verified_at":"\([^"]*\)".*/\1/')
+      if grep -q '"verified":[[:space:]]*true' "$meta"; then
+        ts=$(grep -o '"verified_at"[[:space:]]*:[[:space:]]*"[^"]*"' "$meta" | head -1 | sed 's/.*"verified_at"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
         [[ -n "$ts" ]] && state="$state+verified"
       else
         state="$state+unverified"

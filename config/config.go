@@ -29,6 +29,16 @@ type Config struct {
 	PendingTTLSeconds int      `yaml:"pending_ttl_seconds" env:"LLM_GATEWAY_PENDING_TTL_SECONDS"`
 	SessionIDBodyKeys []string `yaml:"session_id_body_keys" env:"LLM_GATEWAY_SESSION_ID_BODY_KEYS"`
 
+	// TrustedProxyCIDRs (2026-08-29, HIGH security): allowlist of immediate
+	// peer CIDRs allowed to set X-Forwarded-For / X-Real-IP. Requests from
+	// peers outside this list fall back to RemoteAddr; this blocks spoof
+	// attempts where a public client impersonates another tenant or bypasses
+	// IP-based rate limits / audit trails. Default: loopback only —
+	// production deployments behind an LB MUST extend this explicitly.
+	// Accepts a comma-separated list via LLM_GATEWAY_TRUSTED_PROXY_CIDRS or
+	// `trusted_proxy_cidrs` in YAML.
+	TrustedProxyCIDRs []string `yaml:"trusted_proxy_cidrs" env:"LLM_GATEWAY_TRUSTED_PROXY_CIDRS"`
+
 	// Server
 	Listen      string `yaml:"listen" env:"LLM_GATEWAY_LISTEN"`
 	LogLevel    string `yaml:"log_level" env:"LLM_GATEWAY_LOG_LEVEL"`
@@ -394,6 +404,18 @@ func parseCommaList(raw string) []string {
 	return out
 }
 
+// defaultTrustedProxyCIDRs returns the caller-supplied list unchanged when
+// non-empty, otherwise falls back to the loopback-only default. The default
+// is the safest baseline (public peers can never spoof XFF); deployments
+// behind a load balancer MUST extend it explicitly via
+// LLM_GATEWAY_TRUSTED_PROXY_CIDRS or `trusted_proxy_cidrs` in YAML.
+func defaultTrustedProxyCIDRs(supplied []string) []string {
+	if len(supplied) > 0 {
+		return supplied
+	}
+	return []string{"127.0.0.1/32", "::1/128"}
+}
+
 // Load loads configuration from environment variables (and optionally a file).
 func Load() *Config {
 	cfg := &Config{
@@ -431,6 +453,11 @@ func Load() *Config {
 		SessionTTLHours:      72,
 		PendingTTLSeconds:    300,
 		SessionIDBodyKeys:    parseCommaList(os.Getenv("LLM_GATEWAY_SESSION_ID_BODY_KEYS")),
+		// TrustedProxyCIDRs (HIGH security, 2026-08-29): loopback-only default.
+		// Operators behind an LB / reverse proxy MUST extend this list,
+		// otherwise X-Forwarded-For / X-Real-IP will be ignored and every
+		// request will appear to come from the LB's IP.
+		TrustedProxyCIDRs:    defaultTrustedProxyCIDRs(parseCommaList(os.Getenv("LLM_GATEWAY_TRUSTED_PROXY_CIDRS"))),
 		StreamRetryThreshold: 50, // Default: allow stream failover if < 50 chunks sent
 		// 2026-08-12: streamretry 默认关闭。开启后 internal/streamretry
 		// 会在 mux 入口包一层重试 executor，掩盖 pre-stream 5xx/429/连接中断。
@@ -707,6 +734,9 @@ func (cfg *Config) mergeFrom(other *Config) {
 	}
 	if len(other.SessionIDBodyKeys) > 0 && os.Getenv("LLM_GATEWAY_SESSION_ID_BODY_KEYS") == "" {
 		cfg.SessionIDBodyKeys = other.SessionIDBodyKeys
+	}
+	if len(other.TrustedProxyCIDRs) > 0 && os.Getenv("LLM_GATEWAY_TRUSTED_PROXY_CIDRS") == "" {
+		cfg.TrustedProxyCIDRs = other.TrustedProxyCIDRs
 	}
 	if other.LogLevel != "" && os.Getenv("LLM_GATEWAY_LOG_LEVEL") == "" {
 		cfg.LogLevel = other.LogLevel

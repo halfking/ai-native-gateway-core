@@ -176,18 +176,26 @@ lh_list_verified_releases() {
   bin_dir=$(lh_layout_vars | sed -n 's/^bin_dir=//p')
   local active
   active=$(lh_active_version)
+  # IMPORTANT: `for d in "$bin_dir"/*/` derefs symlinks on bash 3.2 (macOS), so
+  # `current` appears both as itself AND as its target. We must filter out the
+  # `current` literal BEFORE the active check, otherwise an extra entry
+  # `current` is emitted (basename != active) and confuses downstream sort.
   for d in "$bin_dir"/*/; do
     [[ -d "$d" ]] || continue
+    local base
+    base=$(basename "$d")
+    [[ "$base" == "current" ]] && continue
     local meta="$d/deployment.json"
     [[ -f "$meta" ]] || continue
-    grep -q '"verified":true' "$meta" || continue
+    grep -q '"verified":[[:space:]]*true' "$meta" || continue
     local v
-    v=$(basename "$d")
+    v="$base"
     [[ "$v" == "$active" ]] && continue
     local ts
-    ts=$(grep -o '"verified_at":"[^"]*"' "$meta" | head -1)
-    ts=${ts#'"verified_at":"'}
-    ts=${ts%'"'}
+    # `grep -o` returns `"verified_at": "2026-08-28T18:00:00Z"`. Strip the
+    # leading key + whitespace + colon via sed; bash 3.2's ${var#pattern}
+    # does NOT support character classes like [[:space:]].
+    ts=$(grep -o '"verified_at"[[:space:]]*:[[:space:]]*"[^"]*"' "$meta" | head -1 | sed -E 's/.*"verified_at"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/')
     printf '%s %s\n' "$ts" "$v"
   done | sort -r | awk '{print $2}'
 }
@@ -285,7 +293,7 @@ lh_rollback_to() {
   local active
   active=$(lh_active_version)
   [[ "$version" == "$active" ]] && { echo "lh_rollback_to: $version is already active" >&2; return 1; }
-  grep -q '"verified":true' "$meta" || { echo "lh_rollback_to: $version is not verified" >&2; return 1; }
+  grep -q '"verified":[[:space:]]*true' "$meta" || { echo "lh_rollback_to: $version is not verified" >&2; return 1; }
   lh_atomic_switch "$version"
 }
 

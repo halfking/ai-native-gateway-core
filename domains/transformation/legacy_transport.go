@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 
 	"github.com/kaixuan/llm-gateway-go/domain"                           //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -108,39 +107,61 @@ func (t *LegacyTransport) ConvertResponse(ctx context.Context, envelope *domain.
 	return nil, fmt.Errorf("legacy_transport: unsupported response conversion %s ← %s", tc.ClientProtocol, tc.UpstreamProtocol)
 }
 
-// ConvertStream 实现流式 SSE 转换。
+// ConvertStream 实现流式 SSE 转换，并应用统一的 legacy streaming 契约：
+//   - context/timeout：DeriveStreamContext 为整条流派生整体超时；上游读取
+//     阻塞时由 body-close goroutine 在 ctx 结束时关闭 body 解除阻塞。
+//   - write-error：客户端写入被包裹进 anthropic.StreamWriter，短写、flush
+//     panic、ctx 取消都会被透出并中止循环，而非损坏流或炸 worker。
+//   - pending capture：pendingCapturer 原样透传给 anthropic 转换器。
 func (t *LegacyTransport) ConvertStream(ctx context.Context, envelope *domain.RequestEnvelope, upstreamResp *http.Response) error {
 	if envelope == nil || envelope.Transport == nil || upstreamResp == nil {
 		return errors.New("legacy_transport: nil envelope/transport/upstream")
 	}
 	tc := envelope.Transport
 
+	streamCtx, cancel := anthropic.DeriveStreamContext(ctx)
+	defer cancel()
+
+	// 上游读取阻塞时，在流 ctx 结束时关闭 body 解除阻塞。这复用了
+	// readLineWithTimeoutAndCloser 的 closer 行为：关闭 body 使被阻塞的
+	// Read 立即返回，从而让转换器的既有 read-error 分支及时终止，而非
+	// 一直挂到上游 EOF。
+	bodyClosed := make(chan struct{})
+	go func() {
+		select {
+		case <-streamCtx.Done():
+			_ = upstreamResp.Body.Close()
+		case <-bodyClosed:
+		}
+	}()
+	defer close(bodyClosed)
+
 	capture := t.captureBuilder()
 	pc := anthropic.NewPendingCapturer(0)
+	sw := anthropic.NewStreamWriter(streamCtx, tc.W)
 
 	switch {
 	case tc.ClientProtocol == tc.UpstreamProtocol:
 		// 直通：Anthropic→Anthropic 或 OpenAI→OpenAI
 		if isAnthropic(tc.ClientProtocol) {
 			anthropic.StreamAnthropicPassthrough(
-				tc.W, upstreamResp,
+				sw, upstreamResp,
 				tc.ClientModel, tc.OutboundModel, envelope.RequestID,
 				capture, pc,
 			)
 		} else {
 			// OpenAI 直通：复制字节流
-			tc.W.Header().Set("Content-Type", "text/event-stream")
-			_, err := io.Copy(tc.W, upstreamResp.Body)
+			sw.Header().Set("Content-Type", "text/event-stream")
+			_, copyErr := io.Copy(sw, upstreamResp.Body)
 			_ = upstreamResp.Body.Close()
-			if err != nil {
+			if copyErr != nil {
 				conversionErrors.WithLabelValues("legacy", "stream").Inc()
-				return err
 			}
 		}
 	case isOpenAI(tc.ClientProtocol) && isAnthropic(tc.UpstreamProtocol):
 		// Q3: OpenAI ← Anthropic
 		anthropic.StreamAnthropicSSEToOpenAI(
-			tc.W, upstreamResp,
+			sw, upstreamResp,
 			tc.ClientModel, tc.OutboundModel, envelope.RequestID,
 			capture, pc,
 		)
@@ -149,8 +170,11 @@ func (t *LegacyTransport) ConvertStream(ctx context.Context, envelope *domain.Re
 	}
 
 	conversionTotal.WithLabelValues("legacy", "stream").Inc()
-	if err := ctx.Err(); err != nil {
-		slog.Warn("legacy_transport: context cancelled", "err", err)
+	if err := streamCtx.Err(); err != nil {
+		return err
+	}
+	if werr := sw.Err(); werr != nil {
+		return werr
 	}
 	return nil
 }

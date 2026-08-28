@@ -37,7 +37,7 @@ Dispatch Pipeline
 Response
   |
   +--> OpenAI/Anthropic/Responses/Gemini response conversion
-  +--> SSE keepalive, stall/EOF/error classification, client cancellation
+  +--> bounded SSE physical-line reader (SSEMaxLineBytes), keepalive, stall/EOF/error classification, client cancellation
   +--> pre-first-byte retry, credential/provider/model failover when allowed
   v
 Persistence / observation

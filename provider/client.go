@@ -164,10 +164,13 @@ type Candidate struct {
 	// (transformation.CompressMessagesIfNeeded). nil means "unknown" — in which
 	// case the trim path is a no-op.
 	ContextWindow *int `json:"context_window,omitempty"`
-	// SupportsNativeResponses is opt-in and remains false until a provider has
-	// verified native Responses request/response and SSE support.
-	SupportsNativeResponses bool   `json:"supports_native_responses,omitempty"`
-	APIKey                  string `json:"-"`
+	// SupportsNativeResponses is an opt-in binding capability for verified
+	// non-stream native Responses request/response handling. Streaming remains
+	// disabled until a separate SSE capability is implemented and verified.
+	SupportsNativeResponses bool `json:"supports_native_responses,omitempty"`
+	// SupportsNativeResponsesStream is an independently verified native Responses SSE capability.
+	SupportsNativeResponsesStream bool   `json:"supports_native_responses_stream,omitempty"`
+	APIKey                        string `json:"-"`
 	// APIKeys holds additional decrypted keys for multi-key rotation (beyond the
 	// primary APIKey). nil/empty for single-key credentials. Index 0 in the
 	// rotator corresponds to APIKey (primary); indices 1..N correspond here.
@@ -1335,9 +1338,11 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 			-- Spec: 2026-06-12-credential-availability-audit-design §3.1
 			COALESCE(v.is_routable, FALSE) AS runtime_routable,
 			v.unavailable_reason,
-			CASE WHEN cc.capability = 'prompt_caching' AND cc.supported IS TRUE THEN TRUE ELSE FALSE END AS supports_prompt_cache,
-			COALESCE(cc.evidence_json->>'cache_mode', '') AS cache_mode,
-			COALESCE(mo.manual_priority, 99)::int AS manual_priority,
+				CASE WHEN cc.capability = 'prompt_caching' AND cc.supported IS TRUE THEN TRUE ELSE FALSE END AS supports_prompt_cache,
+				COALESCE(cmcap.supported, FALSE) AS supports_native_responses,
+			COALESCE(cmstream.supported, FALSE) AS supports_native_responses_stream,
+				COALESCE(cc.evidence_json->>'cache_mode', '') AS cache_mode,
+				COALESCE(mo.manual_priority, 99)::int AS manual_priority,
 			COALESCE(mo.priority, FALSE) AS priority,
 			COALESCE(mo.active_sessions, 0)::int AS active_sessions,
 			COALESCE(mo.consecutive_failures, 0)::int AS consecutive_failures,
@@ -1367,8 +1372,14 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 		LEFT JOIN v_routable_credential_models v
 		       ON v.credential_id = mo.credential_id
 		      AND (v.raw_model_name = mo.raw_model_name OR v.raw_model_name = mo.standardized_name)
-		LEFT JOIN credential_capabilities cc ON cc.credential_id = c.id AND cc.capability = 'prompt_caching'
-		LEFT JOIN model_aliases ma
+			LEFT JOIN credential_capabilities cc ON cc.credential_id = c.id AND cc.capability = 'prompt_caching'
+			LEFT JOIN credential_model_capabilities cmcap
+			       ON cmcap.credential_model_binding_id = mo.id
+			      AND cmcap.capability = 'native_responses_nonstream'
+			LEFT JOIN credential_model_capabilities cmstream
+			       ON cmstream.credential_model_binding_id = mo.id
+			      AND cmstream.capability = 'native_responses_stream'
+			LEFT JOIN model_aliases ma
 		       ON ma.raw_name = mo.canonical_raw_name
 		      AND COALESCE(ma.status, 'active') = 'active'
 		LEFT JOIN models_canonical mc ON mc.id = COALESCE(mo.canonical_id, ma.canonical_id)
@@ -1608,6 +1619,8 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 			&cand.Routable,
 			&cand.BlockReason,
 			&cand.SupportsPromptCache,
+			&cand.SupportsNativeResponses,
+			&cand.SupportsNativeResponsesStream,
 			&cand.CacheMode,
 			&cand.ManualPriority,
 			&cand.Priority,

@@ -62,6 +62,7 @@ func main() {
 	rate := common.Int("rate", 0, "Cleanup rate limit (keys/sec). 0 disables.")
 	pgDSN := common.String("pg", envOr("LLM_GATEWAY_DATABASE_URL", envOr("DATABASE_URL", "")), "Postgres DSN (required for --apply cleanup)")
 	rollbackDeadline := common.String("rollback-deadline", "", "Rollback deadline (RFC3339Nano) for preflight metadata")
+	noFsync := common.Bool("ledger-no-fsync", false, "Disable per-record fsync on Append (faster, accepts crash-window loss)")
 	if err := common.Parse(args); err != nil {
 		log.Fatalf("flag parse: %v", err)
 	}
@@ -91,7 +92,7 @@ func main() {
 		log.Fatalf("redis ping: %v", err)
 	}
 
-	ledger := migration.NewLedger(*ledgerPath)
+	ledger := migration.NewLedgerWithSync(*ledgerPath, !*noFsync)
 	mdStore := &migration.MetadataHash{Prefix: *keyPrefix, RDB: rdb}
 
 	switch cmd {
