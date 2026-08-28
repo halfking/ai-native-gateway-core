@@ -1098,6 +1098,9 @@ type ExecParams struct {
 	R         *http.Request
 	BodyBytes []byte
 	IsStream  bool
+	// ForceCompression bypasses only the auto-threshold gate for an already
+	// enabled strategy runner. It never enables a disabled compression policy.
+	ForceCompression bool
 	// StreamSurvivesClientCancel explicitly grants the stream a lifetime beyond
 	// the client connection (session capture or durable/survival ownership).
 	// Provisional correlation session IDs must not set this flag.
