@@ -157,6 +157,7 @@ type registryEntry struct {
 	framesWritten uint64
 	bytesWritten  uint64
 	closed        bool
+	detached      bool
 	closeReason   string
 }
 
@@ -284,12 +285,16 @@ func (r *ConnectionRegistry) detach(entry *registryEntry, reason string) {
 		return
 	}
 	entry.mu.Lock()
-	if entry.closed {
+	if entry.detached {
 		entry.mu.Unlock()
 		return
 	}
+	entry.detached = true
 	entry.closed = true
-	entry.closeReason = reason
+	if entry.closeReason == "" {
+		entry.closeReason = reason
+	}
+	reason = entry.closeReason
 	snap := ConnectionSnapshot{
 		RequestID:     entry.id,
 		Protocol:      entry.meta.Protocol,
@@ -355,10 +360,14 @@ func (r *ConnectionRegistry) WriteFrame(requestID, frame string) error {
 	case err = <-done:
 		timer.Stop()
 	case <-timer.C:
-		// Client considered disconnected (N2/G7): mark, detach, notify.
-		// Counters stay untouched — the frame never completed.
+		// Client considered disconnected (N2/G7). Mark the entry closed while
+		// still holding its serialization lock so no later frame can enter
+		// while this writer is unresolved. The late writer result is buffered.
+		entry.closed = true
+		entry.closeReason = "write_deadline"
 		entry.mu.Unlock()
 		// Only unregister if the map still points at THIS entry: a reconnect
+
 		// may have replaced the entry for the same requestID between the
 		// timeout and now; blindly deleting would evict the live replacement
 		// and wrongly fire onClose for it.
