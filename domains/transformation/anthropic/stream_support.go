@@ -40,6 +40,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/config"
+	"github.com/kaixuan/llm-gateway-go/errorsx"
 )
 
 // =====================================================================
@@ -57,6 +58,12 @@ const (
 type StreamOutcome struct {
 	Interrupted bool
 	Reason      string
+	// Kind (audit-24h-20260828-r3 P1-B) is the errorsx.ErrorKind
+	// classification for the interruption reason. Empty when Interrupted
+	// is false or Reason is unclassified. Used by executor_anthropic.go
+	// to route empty-response interruptions to the fail-over path via
+	// streamInterruptedError{kind: KindEmptyResponse, resumable: true}.
+	Kind        errorsx.ErrorKind
 	Resumable   bool // Whether the stream can be resumed with a different credential
 	ChunkCount  int  // Number of chunks sent before interruption
 }
