@@ -542,7 +542,7 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 		// Native Responses candidates must transform their own preserved
 		// Responses envelope; legacy candidates continue using the Chat body.
 		attachmentBody := params.BodyBytes
-		nativeBody := cand.Protocol == "openai-responses" && cand.SupportsNativeResponses && !params.IsStream && len(params.ResponsesBodyBytes) > 0
+		nativeBody := cand.Protocol == "openai-responses" && (cand.SupportsNativeResponses || cand.SupportsNativeResponsesStream) && len(params.ResponsesBodyBytes) > 0
 		if nativeBody {
 			attachmentBody = params.ResponsesBodyBytes
 		}

@@ -167,8 +167,10 @@ type Candidate struct {
 	// SupportsNativeResponses is an opt-in binding capability for verified
 	// non-stream native Responses request/response handling. Streaming remains
 	// disabled until a separate SSE capability is implemented and verified.
-	SupportsNativeResponses bool   `json:"supports_native_responses,omitempty"`
-	APIKey                  string `json:"-"`
+	SupportsNativeResponses bool `json:"supports_native_responses,omitempty"`
+	// SupportsNativeResponsesStream is an independently verified native Responses SSE capability.
+	SupportsNativeResponsesStream bool   `json:"supports_native_responses_stream,omitempty"`
+	APIKey                        string `json:"-"`
 	// APIKeys holds additional decrypted keys for multi-key rotation (beyond the
 	// primary APIKey). nil/empty for single-key credentials. Index 0 in the
 	// rotator corresponds to APIKey (primary); indices 1..N correspond here.
@@ -1338,6 +1340,7 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 			v.unavailable_reason,
 				CASE WHEN cc.capability = 'prompt_caching' AND cc.supported IS TRUE THEN TRUE ELSE FALSE END AS supports_prompt_cache,
 				COALESCE(cmcap.supported, FALSE) AS supports_native_responses,
+			COALESCE(cmstream.supported, FALSE) AS supports_native_responses_stream,
 				COALESCE(cc.evidence_json->>'cache_mode', '') AS cache_mode,
 				COALESCE(mo.manual_priority, 99)::int AS manual_priority,
 			COALESCE(mo.priority, FALSE) AS priority,
@@ -1373,6 +1376,9 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 			LEFT JOIN credential_model_capabilities cmcap
 			       ON cmcap.credential_model_binding_id = mo.id
 			      AND cmcap.capability = 'native_responses_nonstream'
+			LEFT JOIN credential_model_capabilities cmstream
+			       ON cmstream.credential_model_binding_id = mo.id
+			      AND cmstream.capability = 'native_responses_stream'
 			LEFT JOIN model_aliases ma
 		       ON ma.raw_name = mo.canonical_raw_name
 		      AND COALESCE(ma.status, 'active') = 'active'
@@ -1614,6 +1620,7 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 			&cand.BlockReason,
 			&cand.SupportsPromptCache,
 			&cand.SupportsNativeResponses,
+			&cand.SupportsNativeResponsesStream,
 			&cand.CacheMode,
 			&cand.ManualPriority,
 			&cand.Priority,

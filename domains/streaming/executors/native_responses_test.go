@@ -2,6 +2,7 @@ package executors
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -9,11 +10,22 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
 	"github.com/kaixuan/llm-gateway-go/domains/identity"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/provider"
 	upstreampkg "github.com/kaixuan/llm-gateway-go/upstream"
 )
+
+func nativeResponsesStreamCandidate(baseURL string, enabled bool) provider.Candidate {
+	return provider.Candidate{
+		CredentialID: 11, ProviderID: 22, BaseURL: baseURL,
+		Protocol: "openai-responses", CatalogCode: "openai", RawModel: "gpt-responses",
+		APIKey: "sk-native-test", SupportsNativeResponsesStream: enabled,
+		Routable: true, LifecycleStatus: "active", AvailabilityState: "ready",
+		QuotaState: "ok", CircuitState: "closed",
+	}
+}
 
 func nativeResponsesCandidate(baseURL string, enabled bool) provider.Candidate {
 	return provider.Candidate{
@@ -30,6 +42,65 @@ func nativeResponsesCandidate(baseURL string, enabled bool) provider.Candidate {
 		AvailabilityState:       "ready",
 		QuotaState:              "ok",
 		CircuitState:            "closed",
+	}
+}
+
+func TestExecuteOpenAI_NativeResponsesStreamUsesNativeHandlerAndBody(t *testing.T) {
+	requestBody := []byte(`{"model":"gpt-responses","input":"native stream"}`)
+	streamBody := "event: response.created\ndata: {\"type\":\"response.created\"}\n\n" +
+		"event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n" +
+		"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n"
+	var gotPath string
+	var gotBody []byte
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, streamBody)
+	}))
+	defer upstream.Close()
+
+	exec := newOverloadTestExecutor()
+	called := false
+	exec.NativeResponsesStream = func(_ context.Context, w http.ResponseWriter, resp *http.Response, _ string, _ *audit.StreamCapture) StreamOutcome {
+		called = true
+		defer resp.Body.Close()
+		_, _ = io.Copy(w, resp.Body)
+		return StreamOutcome{ChunkCount: 1}
+	}
+	rec := httptest.NewRecorder()
+	result, err := exec.executeOpenAI(&ExecParams{
+		W: rec, R: httptest.NewRequest(http.MethodPost, "/v1/responses", nil), IsStream: true,
+		BodyBytes: []byte(`{"model":"gpt-responses","messages":[]}`), ResponsesBodyBytes: requestBody,
+		ClientProtocol: "openai-responses", ClientModel: "gpt-responses", OutboundModel: "gpt-responses",
+		ClientID: identity.ClientIdentity{IdentityHash: "native-stream-route-test"},
+	}, nativeResponsesStreamCandidate(upstream.URL, true), 0, time.Now(), nil)
+	if err != nil || result == nil || !called {
+		t.Fatalf("executeOpenAI() = (%#v, %v), native_handler_called=%v", result, err, called)
+	}
+	if gotPath != "/v1/responses" || !bytes.Equal(gotBody, requestBody) {
+		t.Fatalf("upstream path/body = %q/%s, want /v1/responses/%s", gotPath, gotBody, requestBody)
+	}
+	if rec.Body.String() != streamBody {
+		t.Fatalf("client stream changed: got %q want %q", rec.Body.String(), streamBody)
+	}
+}
+
+func TestExecuteOpenAI_NativeResponsesStreamRequiresIndependentCapability(t *testing.T) {
+	called := false
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer upstream.Close()
+	_, err := newOverloadTestExecutor().executeOpenAI(&ExecParams{
+		R: httptest.NewRequest(http.MethodPost, "/v1/responses", nil), IsStream: true,
+		BodyBytes:          []byte(`{"model":"gpt-responses","messages":[]}`),
+		ResponsesBodyBytes: []byte(`{"model":"gpt-responses","input":"hello","stream":true}`),
+		ClientProtocol:     "openai-responses", ClientModel: "gpt-responses",
+	}, nativeResponsesStreamCandidate(upstream.URL, false), 0, time.Now(), nil)
+	if err == nil || called {
+		t.Fatalf("executeOpenAI() = %v, upstream_called=%v; want capability rejection", err, called)
 	}
 }
 
