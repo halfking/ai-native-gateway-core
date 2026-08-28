@@ -27,6 +27,8 @@ package anthropic
 import (
 	"bufio"
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -348,6 +350,150 @@ func safeWriteSSE(w io.Writer, line string) { //nolint:unused
 	}()
 	//nolint:errcheck // best-effort write
 	io.WriteString(w, line)
+}
+
+// =====================================================================
+// 统一 legacy streaming 写入契约（audit/contract 2026-08-29）
+//
+// StreamWriter 是 legacy 路径 SSE 流式写入的统一契约实现。它包裹客户端
+// http.ResponseWriter，对每一次写入强制以下保证：
+//
+//   - Context：ctx 取消/超时后，任何 Write/Flush 都短路并返回 ctx.Err()，
+//     使调用方既有的 werr != nil 分支能立即中止循环；读取侧的阻塞由调用方
+//     关闭上游 body 解除（见 LegacyTransport.ConvertStream）。
+//   - Timeout：由 DeriveStreamContext 从运行时配置派生整体流超时。
+//   - Pending capture：不属于本契约，调用方原样透传 pendingCapturer。
+//   - Write-error：短写（n < len）与底层写入错误被记录并透出；Flush 在
+//     连接已关闭时可能 panic，这里 recover 后记录，绝不炸 worker。
+//
+// StreamWriter 同时实现 http.ResponseWriter 与 http.Flusher，可直接作为
+// w 传给 StreamAnthropicPassthrough / StreamAnthropicSSEToOpenAI，无需
+// 修改其签名（从而不影响 20+ 现有测试与 IR 路径的并行副本）。
+type StreamWriter struct {
+	ctx     context.Context
+	w       http.ResponseWriter
+	flusher http.Flusher
+
+	mu        sync.Mutex
+	lastErr   error
+	cancelled bool
+}
+
+// NewStreamWriter wraps w with the unified streaming write contract bound to
+// ctx. A nil ctx is treated as context.Background.
+func NewStreamWriter(ctx context.Context, w http.ResponseWriter) *StreamWriter {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	sw := &StreamWriter{ctx: ctx, w: w}
+	sw.flusher, _ = w.(http.Flusher)
+	return sw
+}
+
+// Header implements http.ResponseWriter.
+func (sw *StreamWriter) Header() http.Header {
+	if sw == nil || sw.w == nil {
+		return http.Header{}
+	}
+	return sw.w.Header()
+}
+
+// WriteHeader implements http.ResponseWriter.
+func (sw *StreamWriter) WriteHeader(status int) {
+	if sw == nil || sw.w == nil {
+		return
+	}
+	sw.w.WriteHeader(status)
+}
+
+// Write implements http.ResponseWriter with the unified contract.
+func (sw *StreamWriter) Write(p []byte) (int, error) {
+	if sw == nil || sw.w == nil {
+		return len(p), nil
+	}
+	if err := sw.ctx.Err(); err != nil {
+		sw.record(err)
+		return 0, err
+	}
+	n, err := sw.w.Write(p)
+	if err != nil {
+		sw.record(err)
+		return n, err
+	}
+	if n < len(p) {
+		// Short write: the response writer accepted fewer bytes than
+		// requested. Treat as a terminal write failure so the caller
+		// aborts and finalizes the pending capture as interrupted rather
+		// than silently truncating the stream.
+		werr := fmt.Errorf("stream short write: wrote %d of %d bytes", n, len(p))
+		sw.record(werr)
+		return n, werr
+	}
+	return n, nil
+}
+
+// Flush implements http.Flusher, recovering flush-after-close panics.
+func (sw *StreamWriter) Flush() {
+	if sw == nil || sw.flusher == nil {
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			sw.record(fmt.Errorf("stream flush panic recovered: %v", r))
+		}
+	}()
+	sw.flusher.Flush()
+}
+
+// record stores the first observed write/flush error and flags cancellation
+// when the error is a context cancellation or timeout.
+func (sw *StreamWriter) record(err error) {
+	if err == nil {
+		return
+	}
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
+	if sw.lastErr == nil {
+		sw.lastErr = err
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		sw.cancelled = true
+	}
+}
+
+// Err returns the first write/flush error observed by the contract, if any.
+func (sw *StreamWriter) Err() error {
+	if sw == nil {
+		return nil
+	}
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
+	return sw.lastErr
+}
+
+// Cancelled reports whether a context cancellation or timeout was observed.
+func (sw *StreamWriter) Cancelled() bool {
+	if sw == nil {
+		return false
+	}
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
+	return sw.cancelled || sw.ctx.Err() != nil
+}
+
+// DeriveStreamContext returns a context bounded by the effective stream
+// timeout from the runtime config. If ctx already carries a deadline (e.g. a
+// test injecting a short timeout, or an upstream deadline), it is returned
+// unchanged so callers keep control. The returned CancelFunc must be called
+// by the caller (typically via defer).
+func DeriveStreamContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if _, ok := ctx.Deadline(); ok {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, currentStreamRuntimeConfig().streamTimeout)
 }
 
 // =====================================================================

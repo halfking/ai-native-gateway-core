@@ -28,6 +28,67 @@ func TestCandidatePriorityContract(t *testing.T) {
 	}
 }
 
+func TestCandidateNativeResponsesCapabilityContract(t *testing.T) {
+	field, ok := reflect.TypeOf(Candidate{}).FieldByName("SupportsNativeResponses")
+	if !ok {
+		t.Fatal("Candidate must expose SupportsNativeResponses")
+	}
+	if field.Type.Kind() != reflect.Bool {
+		t.Fatalf("Candidate.SupportsNativeResponses type = %s, want bool", field.Type)
+	}
+	if got := field.Tag.Get("json"); got != "supports_native_responses,omitempty" {
+		t.Fatalf("Candidate.SupportsNativeResponses json tag = %q", got)
+	}
+	if (Candidate{}).SupportsNativeResponses {
+		t.Fatal("native Responses capability must default to false")
+	}
+	payload, err := json.Marshal(Candidate{SupportsNativeResponses: true})
+	if err != nil {
+		t.Fatalf("marshal candidate: %v", err)
+	}
+	if !strings.Contains(string(payload), `"supports_native_responses":true`) {
+		t.Fatalf("marshaled candidate omits native Responses capability: %s", payload)
+	}
+}
+
+func TestCandidateNativeResponsesStreamCapabilityContract(t *testing.T) {
+	field, ok := reflect.TypeOf(Candidate{}).FieldByName("SupportsNativeResponsesStream")
+	if !ok {
+		t.Fatal("Candidate must expose SupportsNativeResponsesStream")
+	}
+	if field.Type.Kind() != reflect.Bool {
+		t.Fatalf("Candidate.SupportsNativeResponsesStream type = %s, want bool", field.Type)
+	}
+	if field.Tag.Get("json") != "supports_native_responses_stream,omitempty" {
+		t.Fatalf("unexpected JSON tag %q", field.Tag.Get("json"))
+	}
+	if (Candidate{}).SupportsNativeResponsesStream {
+		t.Fatal("native Responses stream capability must default to false")
+	}
+}
+
+func TestCandidateNativeResponsesCapabilityDBRead(t *testing.T) {
+	src := readProviderFile(t, "client.go")
+	for _, needle := range []string{
+		"LEFT JOIN credential_model_capabilities cmcap",
+		"cmcap.credential_model_binding_id = mo.id",
+		"cmcap.capability = 'native_responses_nonstream'",
+		"COALESCE(cmcap.supported, FALSE) AS supports_native_responses",
+		"LEFT JOIN credential_model_capabilities cmstream",
+		"cmstream.capability = 'native_responses_stream'",
+		"COALESCE(cmstream.supported, FALSE) AS supports_native_responses_stream",
+	} {
+		if !strings.Contains(src, needle) {
+			t.Fatalf("candidate query must contain %s", needle)
+		}
+	}
+	supportsAt := strings.Index(src, "&cand.SupportsNativeResponses")
+	cacheAt := strings.Index(src, "&cand.CacheMode")
+	if supportsAt < 0 || cacheAt < 0 || supportsAt > cacheAt {
+		t.Fatal("candidate row scan must bind native Responses capability before cache mode")
+	}
+}
+
 func TestCandidatePriorityDBReadAndOrdering(t *testing.T) {
 	src := readProviderFile(t, "client.go")
 

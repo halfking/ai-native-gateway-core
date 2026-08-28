@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  deriveConversationTurns,
   extractAssistantReply,
   extractLastUserPrompt,
   extractMessagesFromBody,
@@ -37,5 +38,42 @@ describe('messageHelpers', () => {
     expect(extractAssistantReply({
       choices: [{ message: { role: 'assistant', content: 'hello world' } }],
     })).toBe('hello world')
+  })
+
+  it('derives turns by splitting on each user message', () => {
+    const turns = deriveConversationTurns([
+      { role: 'system', content: 'sys' },
+      { role: 'user', content: 'ask one' },
+      { role: 'assistant', content: 'reply one' },
+      { role: 'user', content: 'ask two' },
+      { role: 'assistant', content: 'reply two' },
+    ])
+    expect(turns).toHaveLength(2)
+    expect(turns[0].number).toBe(1)
+    expect(turns[0].userPreview).toBe('ask one')
+    expect(turns[0].assistantCount).toBe(1)
+    // leading system is attached to the first user turn
+    expect(turns[0].messages[0]).toEqual({ role: 'system', content: 'sys' })
+    expect(turns[1].userPreview).toBe('ask two')
+    expect(turns[1].messages).toHaveLength(2)
+  })
+
+  it('drops system-only blocks with no user message', () => {
+    const turns = deriveConversationTurns([
+      { role: 'system', content: 'only sys' },
+    ])
+    expect(turns).toHaveLength(0)
+  })
+
+  it('truncates long user previews', () => {
+    const big = Array.from({ length: 12 }, (_, i) => `line ${i}`).join('\n')
+    const turns = deriveConversationTurns([
+      { role: 'user', content: big },
+      { role: 'assistant', content: 'ok' },
+    ])
+    expect(turns).toHaveLength(1)
+    expect(turns[0].truncated).toBe(true)
+    expect(turns[0].userPreview.split('\n')).toHaveLength(6)
+    expect(turns[0].userPreviewFull).toBe(big)
   })
 })

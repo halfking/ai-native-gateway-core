@@ -539,7 +539,15 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 		}
 
 		// ── MM-1/MM-2 outbound attachment transforms ─────────────────
+		// Native Responses candidates must transform their own preserved
+		// Responses envelope; legacy candidates continue using the Chat body.
+		attachmentBody := params.BodyBytes
+		nativeBody := cand.Protocol == "openai-responses" && (cand.SupportsNativeResponses || cand.SupportsNativeResponsesStream) && len(params.ResponsesBodyBytes) > 0
+		if nativeBody {
+			attachmentBody = params.ResponsesBodyBytes
+		}
 		// Ported from the retired legacy sync candidate loop (AUDIT_24H
+
 		// B2b, 2026-08-17). Per-candidate: derive the attempt body from the
 		// ORIGINAL body so a failover from a URL-mode provider to a
 		// data-URI-only provider never inherits rewritten URLs. Until this
@@ -556,21 +564,26 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 				// source blocks to url sources before the bridge conversion
 				// maps them to image_url.
 				newBody, n = e.AttachmentURLRewriter.RewriteAnthropicBody(
-					params.BodyBytes, params.AttachmentMetadata, cand.CatalogCode)
+					attachmentBody, params.AttachmentMetadata, cand.CatalogCode)
 			} else {
 				newBody, n = e.AttachmentURLRewriter.RewriteOpenAIBody(
-					params.BodyBytes, params.AttachmentMetadata, cand.CatalogCode)
+					attachmentBody, params.AttachmentMetadata, cand.CatalogCode)
 			}
 			if n > 0 {
 				cp := *params
-				cp.BodyBytes = newBody
+				if nativeBody {
+					cp.ResponsesBodyBytes = newBody
+				} else {
+					cp.BodyBytes = newBody
+				}
 				execParams = &cp
 			}
+
 		}
 		// MM-2 (doc 19): URL 拉取回退——目标 provider 矩阵判定不支持 url
 		// source 而出站 body 以网关 URL 引用附件时，取回内容重新内联
 		// base64。flag-off（nil）零开销直通。
-		if e.AttachmentURLFetchFallback != nil {
+		if e.AttachmentURLFetchFallback != nil && !nativeBody {
 			if newBody, n := e.AttachmentURLFetchFallback.InlineOpenAIBody(
 				execParams.BodyBytes, cand.CatalogCode); n > 0 {
 				cp := *execParams

@@ -81,19 +81,46 @@ type Item struct {
 type Ledger struct {
 	mu   sync.Mutex
 	path string
+	// syncOnAppend (MEDIUM hardening, 2026-08-29): when true, every
+	// successful Append calls f.Sync() before returning so the on-disk
+	// NDJSON survives an unclean shutdown. Defaults to true via the
+	// zero-value-safe NewLedger constructor; the CLI flag
+	// --ledger-no-fsync opts out for environments where the resume
+	// contract tolerates a small loss window (e.g. ephemeral CI).
+	syncOnAppend bool
 }
 
 // NewLedger returns a handle to the NDJSON file at path. The file is opened
 // lazily on first Append. Existence is not required up front so callers can
-// bootstrap a fresh run by passing a path under t.TempDir().
+// bootstrap a fresh run by passing a path under t.TempDir(). syncOnAppend
+// is enabled by default — fsync-on-append is the safe baseline for an
+// authoritative resume/audit artefact.
 func NewLedger(path string) *Ledger {
-	return &Ledger{path: path}
+	return &Ledger{path: path, syncOnAppend: true}
+}
+
+// NewLedgerWithSync lets callers choose whether Append should fsync every
+// record. The default (true) is the safe baseline; only set false when the
+// caller accepts the resume-window loss risk (typically benchmark / CI).
+func NewLedgerWithSync(path string, syncOnAppend bool) *Ledger {
+	return &Ledger{path: path, syncOnAppend: syncOnAppend}
+}
+
+// SetSyncOnAppend toggles fsync at runtime. Returns the receiver for
+// fluent configuration.
+func (l *Ledger) SetSyncOnAppend(enabled bool) *Ledger {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.syncOnAppend = enabled
+	return l
 }
 
 // Path returns the absolute path used by the ledger.
 func (l *Ledger) Path() string { return l.path }
 
 // Append writes one item, flushed to disk, in JSON newline-delimited form.
+// When syncOnAppend is enabled (the default), the file is fsync'd before
+// Append returns so a process crash does not lose the record.
 func (l *Ledger) Append(item Item) error {
 	if item.SourceKey == "" {
 		return fmt.Errorf("migration: ledger item requires source_key")
@@ -108,6 +135,11 @@ func (l *Ledger) Append(item Item) error {
 	enc := json.NewEncoder(f)
 	if err := enc.Encode(item); err != nil {
 		return fmt.Errorf("migration: encode ledger item: %w", err)
+	}
+	if l.syncOnAppend {
+		if err := f.Sync(); err != nil {
+			return fmt.Errorf("migration: sync ledger: %w", err)
+		}
 	}
 	return nil
 }

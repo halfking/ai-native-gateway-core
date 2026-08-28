@@ -31,6 +31,17 @@ import (
 // This gives us full Gemini-native client compatibility without requiring
 // a brand-new executor — credentials, sticky sessions, retries, audit,
 // telemetry all reuse the OpenAI infrastructure via IR translation.
+//
+// Multi-candidate decision (audit 2026-08-29): Gemini may return multiple
+// `candidates` in a single response/stream, but the IR layer deliberately
+// supports exactly ONE candidate (index 0). ParseGeminiResponse /
+// ParseGeminiStreamChunk read only Candidates[0], and SerializeGeminiResponse
+// emits a single-element `candidates` array. This is an explicit, documented
+// product decision for this audit: extra candidates are collapsed (rejected)
+// to candidate[0] rather than interleaved. Extending the IR to carry N
+// candidates (and the gateway's semantic-cache / audit / token accounting to
+// cope with them) is future product work and is OUT OF SCOPE here. The
+// contract test TestGeminiMultiCandidateCollapsesToFirst asserts this.
 type GeminiHandler struct {
 	chatHandler   *ChatHandler
 	requestLogger interface {
@@ -44,10 +55,24 @@ type geminiStreamWriter struct {
 	pending []byte
 	status  int
 	done    bool
+	// maxPendingBytes bounds the in-flight buffer between SSE newlines.
+	// A single Gemini frame that exceeds it triggers failClosed instead of
+	// growing the buffer without bound (a stalled/unbounded upstream line
+	// would otherwise exhaust memory before the next flush).
+	maxPendingBytes int
+	// failed marks the stream as terminated by a fail-closed error so
+	// subsequent Write calls are swallowed rather than emitting more frames.
+	failed bool
 }
 
+// maxGeminiPendingBytes is the cap on the geminiStreamWriter pending buffer.
+// It mirrors the project-wide sseMaxLineBytes default (16 MiB) so a single
+// oversized Gemini frame is rejected with a Gemini-native error rather than
+// buffered indefinitely.
+const maxGeminiPendingBytes = 16 << 20
+
 func newGeminiStreamWriter(w http.ResponseWriter) *geminiStreamWriter {
-	gw := &geminiStreamWriter{ResponseWriter: w}
+	gw := &geminiStreamWriter{ResponseWriter: w, maxPendingBytes: maxGeminiPendingBytes}
 	gw.flusher, _ = w.(http.Flusher)
 	return gw
 }
@@ -55,6 +80,17 @@ func newGeminiStreamWriter(w http.ResponseWriter) *geminiStreamWriter {
 func (w *geminiStreamWriter) Write(p []byte) (int, error) {
 	if w.status >= http.StatusBadRequest {
 		return w.ResponseWriter.Write(p)
+	}
+	// Once fail-closed, swallow further writes so we don't emit frames after
+	// a Gemini-native error.
+	if w.failed {
+		return len(p), nil
+	}
+	// Bound the pending buffer: a single frame larger than the cap cannot be
+	// processed line-by-line, so fail closed with a Gemini-native error.
+	if len(w.pending)+len(p) > w.maxPendingBytes {
+		w.failClosed("stream frame exceeded pending byte limit")
+		return len(p), nil
 	}
 	w.pending = append(w.pending, p...)
 	for {
@@ -72,6 +108,28 @@ func (w *geminiStreamWriter) Write(p []byte) (int, error) {
 		}
 	}
 	return len(p), nil
+}
+
+// failClosed emits a Gemini-native error frame to the client and marks the
+// stream as failed. It is intentionally terminal: no further frames are
+// written by Write. The error shape matches writeGeminiError so a native
+// Gemini client observes a consistent {"error":{...}} payload.
+func (w *geminiStreamWriter) failClosed(message string) {
+	if w.failed {
+		return
+	}
+	w.failed = true
+	body, _ := json.Marshal(map[string]any{
+		"error": map[string]any{
+			"code":    http.StatusInternalServerError,
+			"message": message,
+			"status":  geminiStatusFor(http.StatusInternalServerError),
+		},
+	})
+	_, _ = w.ResponseWriter.Write(append(append([]byte("data: "), body...), '\n', '\n'))
+	if w.flusher != nil {
+		w.flusher.Flush()
+	}
 }
 
 func (w *geminiStreamWriter) WriteHeader(status int) {
@@ -114,6 +172,9 @@ func (w *geminiStreamWriter) Flush() {
 }
 
 func (w *geminiStreamWriter) finish() error {
+	if w.failed {
+		return nil
+	}
 	if len(bytes.TrimSpace(w.pending)) == 0 {
 		return nil
 	}

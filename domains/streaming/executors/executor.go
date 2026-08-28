@@ -407,6 +407,10 @@ type AnthropicToResponsesSSEFunc func(ctx context.Context, w http.ResponseWriter
 // P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
 type OpenAIToResponsesSSEFunc func(ctx context.Context, w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture, pc any) StreamOutcome
 
+// NativeResponsesSSEFunc forwards an already-native OpenAI Responses SSE stream
+// without converting it through the Chat Completions bridge.
+type NativeResponsesSSEFunc func(ctx context.Context, w http.ResponseWriter, resp *http.Response, requestID string, capture *audit.StreamCapture) StreamOutcome
+
 // AnthropicToChatResponseFunc is the non-stream counterpart that
 // converts an Anthropic Messages JSON body into an OpenAI
 // chat.completion JSON body. Wired from main.go.
@@ -571,6 +575,9 @@ type Executor struct {
 	// "openai-responses". Wired from main.go via
 	// streaming.StreamOpenAIToResponsesSSE.
 	OpenAIToResponsesStream OpenAIToResponsesSSEFunc
+	// NativeResponsesStream forwards a verified native Responses SSE stream
+	// without converting it through the Chat bridge.
+	NativeResponsesStream NativeResponsesSSEFunc
 	// AnthropicToChatResponse is the Q3 non-stream counterpart:
 	// converts an Anthropic Messages JSON body into an OpenAI
 	// chat.completion JSON body. Used by executeAnthropic when
@@ -1095,10 +1102,14 @@ func (e *Executor) logClientResponse(params *ExecParams, protocol string, body [
 }
 
 type ExecParams struct {
-	W         http.ResponseWriter
-	R         *http.Request
-	BodyBytes []byte
-	IsStream  bool
+	W http.ResponseWriter
+	R *http.Request
+	// BodyBytes is the protocol-rendered body used by legacy Chat/Anthropic
+	// upstreams. ResponsesBodyBytes preserves the post-auto-route native
+	// Responses envelope for an explicitly enabled native candidate.
+	BodyBytes          []byte
+	ResponsesBodyBytes []byte
+	IsStream           bool
 	// ForceCompression bypasses only the auto-threshold gate for an already
 	// enabled strategy runner. It never enables a disabled compression policy.
 	ForceCompression bool
@@ -1913,9 +1924,11 @@ func (e *Executor) Execute(params *ExecParams) (result *ExecuteResult, err error
 		params.R = params.R.WithContext(session.SetTenantID(params.R.Context(), params.TenantID))
 	}
 
-	// Keep the inbound body immutable across candidate failover. Per-candidate
-	// protocol rendering works from this snapshot and never re-enters attachment extraction.
+	// Keep both inbound protocol bodies immutable across candidate failover.
+	// Per-candidate rendering works from these snapshots and never re-enters
+	// attachment extraction.
 	params.BodyBytes = append([]byte(nil), params.BodyBytes...)
+	params.ResponsesBodyBytes = append([]byte(nil), params.ResponsesBodyBytes...)
 	if !params.diagnosticsLogged && e.RawDataLogger != nil {
 		requestID := diagnosticRequestID(params)
 		protocol := diagnosticProtocol(params.ClientProtocol, "openai-completions")

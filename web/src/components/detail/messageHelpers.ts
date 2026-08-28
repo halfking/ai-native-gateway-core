@@ -108,6 +108,85 @@ export function extractLastUserPrompt(body: unknown): string {
   return ''
 }
 
+/**
+ * deriveConversationTurns splits a flat chat message list into turns.
+ *
+ * A turn starts at a user message and ends right before the next user
+ * message (or at the end of the conversation).  Leading system messages that
+ * appear before any user message are attached to the first user turn, so each
+ * turn reads as `system + user + assistant reply` — matching how the gateway
+ * assembles the per-turn request before sending it to the model.
+ *
+ * Turns with no user message (e.g. trailing system-only blocks) are dropped,
+ * because turns are defined by user instructions.
+ */
+export interface ConversationTurn {
+  /** 0-based index within the derived turn list. */
+  index: number
+  /** 1-based turn number for display. */
+  number: number
+  messages: Record<string, unknown>[]
+  /** Plain-text preview of the turn's leading user message (truncated). */
+  userPreview: string
+  /** Full plain-text of the turn's leading user message. */
+  userPreviewFull: string
+  /** Whether userPreview is truncated. */
+  truncated: boolean
+  /** Number of assistant replies within the turn. */
+  assistantCount: number
+}
+
+export function deriveConversationTurns(
+  messages: Record<string, unknown>[],
+): ConversationTurn[] {
+  const turns: ConversationTurn[] = []
+  let lead: Record<string, unknown>[] = [] // trailing-system buffer before the first user
+  let cur: Record<string, unknown>[] = []
+
+  const flush = () => {
+    if (cur.length === 0 && lead.length === 0) return
+    const slice = lead.concat(cur)
+    const hasUser = slice.some((m) => String(m.role || '') === 'user')
+    if (!hasUser) {
+      // No user yet — keep these system blocks for the next user turn.
+      lead = slice
+      cur = []
+      return
+    }
+    const userMsg = slice.find((m) => String(m.role || '') === 'user')
+    const full = userMsg ? contentToPlain(userMsg.content) : ''
+    const { text, truncated } = previewText(full, 6)
+    turns.push({
+      index: turns.length,
+      number: turns.length + 1,
+      messages: slice,
+      userPreview: text,
+      userPreviewFull: full,
+      truncated,
+      assistantCount: slice.filter((m) => String(m.role || '') === 'assistant').length,
+    })
+    lead = []
+    cur = []
+  }
+
+  for (const m of messages) {
+    const role = String(m.role || '')
+    if (role === 'user') {
+      flush()
+      cur.push(m)
+    } else if (role === 'system') {
+      // A system message mid-turn belongs to the current turn; before any user
+      // it is a leading-system block deferred to the next user turn.
+      if (cur.length === 0) lead.push(m)
+      else cur.push(m)
+    } else {
+      cur.push(m)
+    }
+  }
+  flush()
+  return turns
+}
+
 /** Assistant / model reply text from response_body (choices or message). */
 export function extractAssistantReply(body: unknown): string {
   if (body == null) return ''

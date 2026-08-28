@@ -349,3 +349,32 @@ func TestShouldRunByModel(t *testing.T) {
 		})
 	}
 }
+
+// TestBuildModelFilterClauseExactMatch guards the 2026-08-29 fix: selecting a
+// model in the picker must filter to ONLY that model's requests. The previous
+// implementation used ILIKE '%v%', so "glm-5.2" also matched "glm-5.2-pro" /
+// "glm-5.2-flash" and any canonical_name containing the string. This test
+// fails loudly if the clause ever drifts back to a substring match.
+func TestBuildModelFilterClauseExactMatch(t *testing.T) {
+	cases := []string{"glm-5.2", "gpt-4o", "claude-3-5-sonnet"}
+	for _, v := range cases {
+		clause, args := buildModelFilterClause(v, 3)
+		if strings.Contains(clause, "ILIKE") {
+			t.Fatalf("model filter must use exact `=` match, found ILIKE in clause: %s", clause)
+		}
+		if strings.Contains(clause, "%"+v+"%") {
+			t.Fatalf("model filter must NOT be a substring match, found '%%%s%%' in clause: %s", v, clause)
+		}
+		// Branch 1: canonical_id → exact canonical_name at $3.
+		if !strings.Contains(clause, "mc.canonical_name = $3") {
+			t.Errorf("expected exact canonical_name match at $3 for %q, clause=%s", v, clause)
+		}
+		// Branch 3: fallback exact client_model at $5.
+		if !strings.Contains(clause, "rl.client_model = $5") {
+			t.Errorf("expected exact client_model match at $5 for %q, clause=%s", v, clause)
+		}
+		if len(args) != 3 || args[0] != v || args[1] != v || args[2] != v {
+			t.Errorf("expected 3 args all %q, got %v", v, args)
+		}
+	}
+}

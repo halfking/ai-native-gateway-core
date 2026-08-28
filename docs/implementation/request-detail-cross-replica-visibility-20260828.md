@@ -124,7 +124,23 @@ Request-Detail 主流程在请求生命周期内维护两层 **节点本地** �
 
 ### 长期（≥ 1 季度）
 
-评估 **方案 C** 的 Redis Store:
+~~评估 **方案 C** 的 Redis Store~~
+
+**🟡 2026-08-29 决策：冻结**。技术预研已完成（详见
+`docs/implementation/request-detail-redis-store-feasibility-20260829.md`），
+结论：
+- 技术可行：Redis 客户端已存在；`internal/redis` 共享包已存在；
+  245 已配 Redis 客户端连接（latency 健康，~50ms 1MB 读写）
+- 当前不实施：方案 D 100ms retry 在单副本下已能救回绝大多数
+  read-your-writes miss；引入 Redis SPOF + 50ms 延迟不划算
+
+重启评估触发条件（与方案 B 同步）：
+- 生产 154 主动改多副本
+- k3s `pms-test` replicas 改 3+
+- 方案 D soak 1 周 `hit/(hit+miss) < 0.2` 持续 1h
+- 业务工单"跨副本 admin 读 404"
+
+如未来恢复实施，按如下思路推进：
 - 把 `Store` 抽象为 `interface { GetMeta, GetFile, Put, Clear }`。
 - 新增 `RemoteStore` 实现 (使用现有的 `infra/redis` 客户端)。
 - 通过 feature flag 灰度: 5% → 25% → 100%。
