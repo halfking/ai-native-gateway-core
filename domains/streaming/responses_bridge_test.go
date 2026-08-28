@@ -392,7 +392,21 @@ func TestStreamAnthropicSSEToResponses_DropsOpenAIFormatData(t *testing.T) {
 		"event: message_start\n",
 		`data: {"type":"message_start","message":{"id":"msg_y","usage":{"input_tokens":1,"output_tokens":0}}}` + "\n",
 		"\n",
-		// Mislabeled OpenAI chunk on the Anthropic event stream:
+		// Real Anthropic content_block that the bridge will translate and
+		// emit to the Responses client — keeps emittedContent=true so the
+		// empty-response detector does not fire on a fixture whose whole
+		// purpose is testing the OpenAI-shape drop, not empty handling.
+		"event: content_block_start\n",
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}` + "\n",
+		"\n",
+		"event: content_block_delta\n",
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello"}}` + "\n",
+		"\n",
+		"event: content_block_stop\n",
+		`data: {"type":"content_block_stop","index":0}` + "\n",
+		"\n",
+		// Mislabeled OpenAI chunk on the Anthropic event stream — must be
+		// dropped by the bridge's OpenAI-shape detector.
 		"event: message_delta\n",
 		`data: {"id":"chatcmpl-leaked","object":"chat.completion.chunk","choices":[{"delta":{"content":"leaked"}}]}` + "\n",
 		"\n",

@@ -145,8 +145,12 @@ func StreamAnthropicSSEToOpenAI(
 		// Mark semantic emission: any non-empty text / thinking /
 		// tool-call delta reaches the client as part of sseLine above.
 		// The role prelude alone (no content) is NOT semantic emission.
+		// ThinkingSignature (Anthropic signature_delta) also counts — a
+		// thinking block with only an opaque signature is still a thinking
+		// turn and the empty-response detector must not fire on it.
 		if chunk.Type == ir.ChunkTypeDelta && chunk.Delta != nil {
-			if chunk.Delta.Content != "" || chunk.Delta.ReasoningContent != "" {
+			if chunk.Delta.Content != "" || chunk.Delta.ReasoningContent != "" ||
+				chunk.Delta.ThinkingSignature != "" {
 				emittedContent = true
 			}
 			for _, tc := range chunk.Delta.ToolCalls {
@@ -278,7 +282,7 @@ func StreamAnthropicSSEToOpenAI(
 				// non-stream detector at executor_anthropic.go:1273 and
 				// the passthrough detector at
 				// anthropic_passthrough_stream.go:147-178.
-				if IsAnthropicStreamEmpty(emittedContent, inputTokens, outputTokens) {
+				if IsAnthropicStreamEmpty(emittedContent, inputTokens, outputTokens, pc != nil) {
 					if capture != nil {
 						capture.MarkInterruptedWithReason("anthropic_empty_response")
 					}
@@ -398,16 +402,21 @@ func StreamAnthropicSSEToOpenAI(
 					}
 
 				case "content_block_delta":
-					// Text, thinking, or input_json_delta
-					var evt struct {
-						Index int `json:"index"`
-						Delta struct {
-							Type        string `json:"type"`
-							Text        string `json:"text"`
-							Thinking    string `json:"thinking"`
-							PartialJSON string `json:"partial_json"`
-						} `json:"delta"`
-					}
+						// Text, thinking, or input_json_delta
+						var evt struct {
+							Index int `json:"index"`
+							Delta struct {
+								Type        string `json:"type"`
+								Text        string `json:"text"`
+								Thinking    string `json:"thinking"`
+								PartialJSON string `json:"partial_json"`
+								// PR-2 (2026-06-24): signature_delta closes a thinking
+								// block. We surface the signature through the IR
+								// so the empty-response detector sees thinking-only
+								// turns as semantic emission.
+								Signature string `json:"signature"`
+							} `json:"delta"`
+						}
 					if err := json.Unmarshal(data, &evt); err == nil {
 						switch evt.Delta.Type {
 						case "text", "text_delta":
@@ -439,6 +448,16 @@ func StreamAnthropicSSEToOpenAI(
 							// that branch used to corrupt the chunk
 							// index for the *following* tool_use block
 							// on opus-4-8 streams.
+							//
+							// audit-24h-20260828-r4 (post-merge): thread
+							// the signature through IR.Delta so a
+							// thinking-only turn is observable to the
+							// downstream empty-response detector (the
+							// emittedContent bookkeeping lives in
+							// writeChunk, which is intentionally not
+							// called here — signature_delta produces no
+							// wire bytes for OpenAI clients).
+							chunk.Delta.ThinkingSignature = evt.Delta.Signature
 							_ = evt.Delta
 
 						default:
@@ -562,7 +581,7 @@ func StreamAnthropicSSEToOpenAI(
 			// closed cleanly via message_stop but emitted no semantic bytes
 			// and no usage tokens fails over to the next candidate instead
 			// of being recorded as a successful empty stream.
-			if IsAnthropicStreamEmpty(emittedContent, inputTokens, outputTokens) {
+			if IsAnthropicStreamEmpty(emittedContent, inputTokens, outputTokens, pc != nil) {
 				if capture != nil {
 					capture.MarkInterruptedWithReason("anthropic_empty_response")
 				}
