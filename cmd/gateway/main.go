@@ -3667,9 +3667,10 @@ func main() {
 			}
 			// 2026-08-06: Model Quality Monitoring worker (MMLU benchmark
 			// against featured models to detect provider model degradation).
-			// Controlled by settings.model_quality.enabled (default false).
+			// Controlled by settings.model_quality.enabled (default true).
+			// Can be disabled by setting model_quality.enabled = false in settings_kv.
 			mqEnabledRaw, _, _ := settings.Global.EffectiveValue(settings.ScopePlatform, "model_quality.enabled", "")
-			var mqEnabled bool
+			mqEnabled := true // default enabled
 			if len(mqEnabledRaw) > 0 {
 				_ = json.Unmarshal(mqEnabledRaw, &mqEnabled)
 			}
