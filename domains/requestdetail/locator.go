@@ -6,6 +6,24 @@ import (
 	"errors"
 )
 
+type lookupScopeKey struct{}
+
+type LookupScope struct {
+	TenantID     string
+	Unrestricted bool
+}
+
+func WithLookupScope(ctx context.Context, scope LookupScope) context.Context {
+	return context.WithValue(ctx, lookupScopeKey{}, scope)
+}
+
+func LookupScopeFromContext(ctx context.Context) LookupScope {
+	if scope, ok := ctx.Value(lookupScopeKey{}).(LookupScope); ok {
+		return scope
+	}
+	return LookupScope{Unrestricted: true}
+}
+
 // BodyReader loads persisted bodies from a dual-write DB source.
 type BodyReader interface {
 	// ReadRequestLogsBodies returns ErrNotFound when metadata exists but no
@@ -105,7 +123,7 @@ func (l *Locator) Get(ctx context.Context, requestID string, omitBody bool) (*De
 		}
 		return d, nil
 	}
-	if requestLogsMeta.RequestID != "" {
+	if errors.Is(err, ErrNotFound) && requestLogsMeta.RequestID != "" {
 		// Metadata is still useful to the detail page even when both body stores
 		// are empty. Return it as a successful metadata-only response instead of
 		// misreporting an existing request as 404.
