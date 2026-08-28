@@ -1,4 +1,4 @@
--- Migration 611: binding-scoped native OpenAI Responses capability.
+-- Migration 612: binding-scoped native OpenAI Responses capability.
 -- Default-off: an absent row or supported=false never enables native forwarding.
 
 BEGIN;
