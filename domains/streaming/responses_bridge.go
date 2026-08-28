@@ -510,7 +510,7 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 		// tool-call delta reaches the client as part of sseLine above.
 		// Envelope / scaffold events (e.g. response.created) are NOT
 		// semantic emission.
-		if chunk.Type == ir.ChunkTypeDelta && chunk.Delta != nil {
+		if written && chunk.Type == ir.ChunkTypeDelta && chunk.Delta != nil {
 			if chunk.Delta.Content != "" || chunk.Delta.ReasoningContent != "" {
 				emittedContent = true
 			}
