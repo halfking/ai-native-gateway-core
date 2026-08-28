@@ -61,6 +61,16 @@ var (
 		Name: "requestdetail_malformed_snapshot_total",
 		Help: "request-detail Store.GetFile calls that hit a local file with invalid JSON.",
 	})
+
+	// locatorDBRetryTotal counts read-your-writes retry outcomes on the L3
+	// DB fallback path (方案 D, 短期). hit = retry recovered a row that the
+	// first attempt missed; miss = retry exhausted without finding the row.
+	// Together they expose the "in-flight vs persisted" race window in
+	// production dashboards.
+	locatorDBRetryTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "requestdetail_locator_db_retry_total",
+		Help: "request-detail Locator.Get L3 DB read-your-writes retry outcomes.",
+	}, []string{"outcome"})
 )
 
 // normalizeRemoveErr maps an os.Remove error into the {permission, other}

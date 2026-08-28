@@ -2609,13 +2609,38 @@ func main() {
 			slog.Warn("invalid request detail maximum entries; using default", "value", detailMaxEntries, "default", 4096)
 			detailMaxEntries = 4096
 		}
+		// 2026-08-29 (方案 D, 短期): read-your-writes retry on the L3 DB
+		// fallback. Bounded by LLM_GATEWAY_REQUEST_DETAIL_DB_RETRY (default 1;
+		// 0 disables) and LLM_GATEWAY_REQUEST_DETAIL_DB_RETRY_DELAY (default
+		// 100ms). Keeps the in-flight vs persisted race window from
+		// surfacing as 404 for admin reads that follow a write within the
+		// same second. See
+		// docs/implementation/request-detail-cross-replica-visibility-20260828.md
+		// §3.
+		detailDBRetryCount := getEnvInt("LLM_GATEWAY_REQUEST_DETAIL_DB_RETRY", 1)
+		if detailDBRetryCount < 0 {
+			slog.Warn("invalid request detail DB retry count; using default", "value", detailDBRetryCount, "default", 1)
+			detailDBRetryCount = 1
+		}
+		detailDBRetryDelay := 100 * time.Millisecond
+		if rawDelay := strings.TrimSpace(os.Getenv("LLM_GATEWAY_REQUEST_DETAIL_DB_RETRY_DELAY")); rawDelay != "" {
+			if parsedDelay, parseErr := time.ParseDuration(rawDelay); parseErr == nil && parsedDelay >= 0 {
+				detailDBRetryDelay = parsedDelay
+			} else {
+				slog.Warn("invalid request detail DB retry delay; using default", "value", rawDelay, "default", detailDBRetryDelay)
+			}
+		}
 		if detailStore, err := requestdetail.NewStoreWithOptions(detailDir, requestdetail.StoreOptions{TTL: detailTTL, MaxEntries: detailMaxEntries}); err != nil {
 			slog.Warn("request detail content store disabled", "dir", detailDir, "error", err)
 		} else {
 			requestdetail.SetGlobal(detailStore)
 			requestdetail.StartGlobalCaptureForwarder()
-			adminHandler.SetRequestDetailStore(detailStore)
-			slog.Info("request detail content store wired", "dir", detailDir, "ttl", detailTTL, "max_entries", detailMaxEntries)
+			adminHandler.SetRequestDetailStore(detailStore, admin.LocatorRetryConfig{
+				Count: detailDBRetryCount,
+				Delay: detailDBRetryDelay,
+			})
+			slog.Info("request detail content store wired", "dir", detailDir, "ttl", detailTTL, "max_entries", detailMaxEntries,
+				"db_retry_count", detailDBRetryCount, "db_retry_delay", detailDBRetryDelay)
 		}
 
 		formatAnomalyRecorder := streaming.NewFormatAnomalyRecorderFromPool(dbConn.Pool())

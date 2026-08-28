@@ -17,14 +17,38 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/requestdetail"
 )
 
+// LocatorRetryConfig carries the L3 DB read-your-writes retry policy from
+// env into the admin Locator. Zero Count / zero Delay fall back to the
+// package defaults (1 / 100ms). Count==0 explicitly disables retry.
+type LocatorRetryConfig struct {
+	Count int
+	Delay time.Duration
+}
+
 // SetRequestDetailStore wires the in-flight content store + locator.
-func (h *Handler) SetRequestDetailStore(store *requestdetail.Store) {
+func (h *Handler) SetRequestDetailStore(store *requestdetail.Store, retry ...LocatorRetryConfig) {
 	h.requestDetailStore = store
 	if store == nil {
 		h.requestDetailLocator = nil
 		return
 	}
-	locator := &requestdetail.Locator{Store: store}
+	cfg := LocatorRetryConfig{Count: 1, Delay: 100 * time.Millisecond}
+	if len(retry) > 0 {
+		cfg = retry[0]
+		if cfg.Count == 0 {
+			// explicit "disable" wins over the default
+		} else if cfg.Count < 0 {
+			cfg.Count = 1
+		}
+		if cfg.Delay < 0 {
+			cfg.Delay = 100 * time.Millisecond
+		}
+	}
+	locator := &requestdetail.Locator{
+		Store:        store,
+		DBRetryCount: cfg.Count,
+		DBRetryDelay: cfg.Delay,
+	}
 	if h.db != nil {
 		locator.Bodies = &pgBodyReader{db: h.db, fetch: h}
 	}

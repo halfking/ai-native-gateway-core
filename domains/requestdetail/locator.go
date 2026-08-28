@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"time"
 )
 
 type lookupScopeKey struct{}
@@ -37,10 +38,34 @@ type BodyReader interface {
 // ErrNotFound means no layer could supply the request.
 var ErrNotFound = errors.New("requestdetail: not found")
 
+// Default retry parameters for the L3 DB read-your-writes window. A single
+// 100ms retry catches the common case where telemetry just landed on a sibling
+// replica (or just finished its own async INSERT on this replica) and the
+// admin read happened a few milliseconds too early. Tunable via env:
+//
+//	LLM_GATEWAY_REQUEST_DETAIL_DB_RETRY=1   // total attempts; 0 disables
+//	LLM_GATEWAY_REQUEST_DETAIL_DB_RETRY_DELAY=100ms
+//
+// See docs/implementation/request-detail-cross-replica-visibility-20260828.md
+// §3 (方案 D, 短期).
+const (
+	defaultDBRetryCount = 1
+	defaultDBRetryDelay = 100 * time.Millisecond
+)
+
 // Locator resolves detail in order: memory → file → request_logs → session_turns.
 type Locator struct {
 	Store  *Store
 	Bodies BodyReader
+
+	// DBRetryCount is the number of total attempts (≥1) against ReadRequestLogsBodies
+	// when the first attempt returns ErrNotFound. 0 disables the retry entirely.
+	// Configurable via LLM_GATEWAY_REQUEST_DETAIL_DB_RETRY; default 1.
+	DBRetryCount int
+
+	// DBRetryDelay is the pause between retry attempts. Default 100ms.
+	// Configurable via LLM_GATEWAY_REQUEST_DETAIL_DB_RETRY_DELAY.
+	DBRetryDelay time.Duration
 }
 
 // Get resolves a request detail. When omitBody is true, only meta/source are filled.
@@ -89,7 +114,21 @@ func (l *Locator) Get(ctx context.Context, requestID string, omitBody bool) (*De
 		return nil, ErrNotFound
 	}
 
-	bodies, meta, err := l.Bodies.ReadRequestLogsBodies(ctx, requestID, omitBody)
+	// L3 DB lookup. Wrap the first attempt in a bounded retry so that a read
+	// arriving a few milliseconds after the writer's async INSERT can still
+	// observe the row. Retry is bounded by ctx (caller's deadline wins) and by
+	// Locator.DBRetryCount (0 disables). Non-ErrNotFound errors fall through
+	// unchanged — DB outages should not be artificially delayed by retries.
+	maxAttempts := l.DBRetryCount
+	if maxAttempts < 1 {
+		maxAttempts = 1
+	}
+	delay := l.DBRetryDelay
+	if delay <= 0 {
+		delay = defaultDBRetryDelay
+	}
+
+	bodies, meta, err := l.readRequestLogsWithRetry(ctx, requestID, omitBody, maxAttempts, delay)
 	if err == nil {
 		d := &Detail{
 			Source:      SourceRequestLogs,
@@ -139,6 +178,63 @@ func (l *Locator) Get(ctx context.Context, requestID string, omitBody bool) (*De
 		}, nil
 	}
 	return nil, err
+}
+
+// readRequestLogsWithRetry calls ReadRequestLogsBodies up to maxAttempts times
+// when the first call returns ErrNotFound. Any other error is returned
+// immediately (DB connectivity issues must not be hidden behind retries). On a
+// retry hit, the locator_db_retry_total{outcome="hit"} counter is incremented;
+// on exhaustion outcome="miss" is recorded.
+func (l *Locator) readRequestLogsWithRetry(
+	ctx context.Context,
+	requestID string,
+	omitBody bool,
+	maxAttempts int,
+	delay time.Duration,
+) (Bodies, Meta, error) {
+	if maxAttempts <= 1 {
+		return l.Bodies.ReadRequestLogsBodies(ctx, requestID, omitBody)
+	}
+	bodies, meta, err := l.Bodies.ReadRequestLogsBodies(ctx, requestID, omitBody)
+	if err == nil {
+		return bodies, meta, nil
+	}
+	if !errors.Is(err, ErrNotFound) {
+		return bodies, meta, err
+	}
+	for attempt := 2; attempt <= maxAttempts; attempt++ {
+		if err := sleepWithContext(ctx, delay); err != nil {
+			return bodies, meta, err
+		}
+		bodies, meta, err = l.Bodies.ReadRequestLogsBodies(ctx, requestID, omitBody)
+		if err == nil {
+			locatorDBRetryTotal.WithLabelValues("hit").Inc()
+			return bodies, meta, nil
+		}
+		if !errors.Is(err, ErrNotFound) {
+			// Don't penalise the operator for transient infra errors with a
+			// retry-miss counter; only count the read-your-writes race.
+			return bodies, meta, err
+		}
+	}
+	locatorDBRetryTotal.WithLabelValues("miss").Inc()
+	return bodies, meta, err
+}
+
+// sleepWithContext pauses for d or returns ctx.Err() if the context is
+// cancelled first.
+func sleepWithContext(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return nil
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func mergeMeta(base, overlay Meta) Meta {

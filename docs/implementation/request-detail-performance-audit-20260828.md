@@ -139,5 +139,54 @@ handler 仍有最终 tenant gate，但 `LookupScope` 尚未被 `pgBodyReader` �
 | `PutBodies` 持锁跨 10MB 文件 I/O | 已知 | 文档化的设计权衡（避免半发布状态）；如出现慢 FS 监控告警再考虑拆锁 |
 | `evictLocked` 持锁跨 N 次 os.Remove | 已知 | 当前 TTL=30min × 4096 entries 不易触发；长期方案是 evict 后再 I/O |
 | 磁盘预算默认 40GB | 已知 | 在 env 文档中标注；不强制 |
+| 跨副本可见性（persist 完成前的 read-your-writes 窗口） | ✅ 已用方案 D 缓解（2026-08-29） | `Locator.readRequestLogsWithRetry` 100ms × 1 次 retry；详见 `request-detail-cross-replica-visibility-20260828.md` §3。彻底解决待方案 B/C |
+
+## 2026-08-29 跨副本方案 D 落地（短期补救）
+
+第四轮部署（`v2.5.0-432ab3db`）已上线后，根据
+`request-detail-cross-replica-visibility-20260828.md` §3 的方案 D，本轮交付
+**read-your-writes retry**：
+
+### 改动
+
+| 文件 | 改动 |
+|---|---|
+| `domains/requestdetail/locator.go` | 新增 `Locator.DBRetryCount` / `Locator.DBRetryDelay` 字段；新增 `readRequestLogsWithRetry` 方法；新增 `sleepWithContext` helper。`Get()` 调用 retry helper，**仅在 `ErrNotFound` 时重试**，其它错误立即返回。 |
+| `domains/requestdetail/metrics.go` | 新增 `requestdetail_locator_db_retry_total{outcome="hit\|miss"}` Prom 计数器 |
+| `admin/unified_detail.go` | `SetRequestDetailStore` 接受可选 `LocatorRetryConfig`（variadic），向后兼容旧调用 |
+| `cmd/gateway/main.go:2595-2640` | 解析 `LLM_GATEWAY_REQUEST_DETAIL_DB_RETRY`（默认 1；0 禁用）和 `LLM_GATEWAY_REQUEST_DETAIL_DB_RETRY_DELAY`（默认 100ms），传入 `LocatorRetryConfig` |
+
+### 设计权衡
+
+- **只对 `ErrNotFound` 重试**：DB 连接失败 / 复制延迟 / 服务过载 等其它错误原样返回，避免放大故障
+- **retry 与 ctx 解耦**：sleep 中检测 `ctx.Done()`，cancellation 立即生效（避免长 retry 把请求挂到 timeout）
+- **0 = 显式禁用**：保持环境变量语义清晰；零值结构体走默认（1 次尝试 = 无 retry）
+- **不修改 session_turns fallback**：仅 retry 主路径 `ReadRequestLogsBodies`；session_turns 是 request_logs miss 后的 follow-up，本身已经是延迟路径
+
+### 新增测试（`domains/requestdetail/locator_retry_test.go`）
+
+1. `TestLocator_DBRetry_RecoversOnSecondAttempt` — 首次 miss，第二次 hit，验证 retry 救回
+2. `TestLocator_DBRetry_MissAfterExhaustion` — 全部 miss，验证最终 `ErrNotFound`
+3. `TestLocator_DBRetry_DisabledByZeroCount` — `Count=0` 显式禁用
+4. `TestLocator_DBRetry_NonNotFoundErrorNotRetried` — 保护非 `ErrNotFound` 不被放大重试
+5. `TestLocator_DBRetry_ContextCancellationStopsDelay` — sleep 中 `ctx.Cancel()` 立即生效
+6. `TestLocator_DBRetry_DefaultsAppliedWhenUnset` — 零值 `Locator{}` 走默认（1 次尝试）
+
+### 验证（2026-08-29 本轮）
+
+- `go build ./cmd/gateway`：✅
+- `go vet ./...`：✅
+- `go test ./domains/requestdetail/ -race -timeout 120s`：✅（含 6 个新 retry 测试）
+- `go test ./admin/ -timeout 5m`：✅
+- 245 预发布 deploy：⏳ **本会话即将发起**
+
+### Soak 1 周监控目标
+
+| PromQL | 期望 |
+|---|---|
+| `rate(requestdetail_locator_db_retry_total{outcome="hit"}[5m])` | > 0（retry 在生效） |
+| `rate(requestdetail_locator_db_retry_total{outcome="miss"}[5m])` | < 1/min |
+| `hit / (hit + miss)` 比例 | > 0.5 |
+| `GET /api/admin/request-detail/{id}` 5xx | = 0 |
 
 
