@@ -1095,10 +1095,14 @@ func (e *Executor) logClientResponse(params *ExecParams, protocol string, body [
 }
 
 type ExecParams struct {
-	W         http.ResponseWriter
-	R         *http.Request
-	BodyBytes []byte
-	IsStream  bool
+	W http.ResponseWriter
+	R *http.Request
+	// BodyBytes is the protocol-rendered body used by legacy Chat/Anthropic
+	// upstreams. ResponsesBodyBytes preserves the post-auto-route native
+	// Responses envelope for an explicitly enabled native candidate.
+	BodyBytes          []byte
+	ResponsesBodyBytes []byte
+	IsStream           bool
 	// ForceCompression bypasses only the auto-threshold gate for an already
 	// enabled strategy runner. It never enables a disabled compression policy.
 	ForceCompression bool
@@ -1913,9 +1917,11 @@ func (e *Executor) Execute(params *ExecParams) (result *ExecuteResult, err error
 		params.R = params.R.WithContext(session.SetTenantID(params.R.Context(), params.TenantID))
 	}
 
-	// Keep the inbound body immutable across candidate failover. Per-candidate
-	// protocol rendering works from this snapshot and never re-enters attachment extraction.
+	// Keep both inbound protocol bodies immutable across candidate failover.
+	// Per-candidate rendering works from these snapshots and never re-enters
+	// attachment extraction.
 	params.BodyBytes = append([]byte(nil), params.BodyBytes...)
+	params.ResponsesBodyBytes = append([]byte(nil), params.ResponsesBodyBytes...)
 	if !params.diagnosticsLogged && e.RawDataLogger != nil {
 		requestID := diagnosticRequestID(params)
 		protocol := diagnosticProtocol(params.ClientProtocol, "openai-completions")
