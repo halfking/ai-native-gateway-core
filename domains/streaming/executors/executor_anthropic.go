@@ -44,10 +44,14 @@ func readAndDrainErrorBody(body io.Reader) ([]byte, error) {
 	}
 
 	captured, readErr := io.ReadAll(io.LimitReader(body, maxPassthroughErrorBody))
-	if _, drainErr := io.Copy(io.Discard, body); readErr == nil {
-		readErr = drainErr
+	// Always attempt to consume the remainder, even when the bounded read
+	// reports an error. Some response bodies can return data with an error and
+	// still expose a readable tail; leaving it unread prevents connection reuse.
+	_, drainErr := io.Copy(io.Discard, body)
+	if readErr != nil {
+		return captured, readErr
 	}
-	return captured, readErr
+	return captured, drainErr
 }
 
 // AnthropicExecutor is the ProtocolHandler for Anthropic Messages API

@@ -174,9 +174,13 @@ type AttemptCommitGate struct {
 	holdbackOpenAt    time.Time
 	holdbackHeld      int
 
-	state     CommitState
-	committed bool
-	discarded bool
+	state CommitState
+	// checkpointedState records the highest state whose write-ahead checkpoint
+	// completed successfully. It prevents repeated Commit calls from replaying
+	// a non-idempotent checkpoint side effect.
+	checkpointedState CommitState
+	committed         bool
+	discarded         bool
 	// checkpointBlocked latches a durable write-ahead failure and keeps the
 	// attempt from emitting any later client-visible bytes.
 	checkpointBlocked bool
@@ -393,7 +397,7 @@ func (g *AttemptCommitGate) WriteFrame(frame string) error {
 		buffer := g.buffer
 		g.buffer = nil
 		g.bufferLen = 0
-		g.committed = true  // Mark committed before network I/O
+		g.committed = true // Mark committed before network I/O
 		g.mu.Unlock()
 		if len(buffer) > 0 {
 			if _, err := g.writer.Write(buffer); err != nil {
@@ -470,7 +474,11 @@ func (g *AttemptCommitGate) checkpointStateAdvanceUnderWriteLock(class FrameClas
 		g.blockCheckpointLocked(checkpointErr)
 		return g.checkpointErr
 	}
+	if state > g.checkpointedState {
+		g.checkpointedState = state
+	}
 	return nil
+
 }
 
 // appendBufferedLocked appends one frame to the attempt-local buffer under
@@ -654,7 +662,7 @@ func (g *AttemptCommitGate) commitLocked() error {
 		bufCopy := g.buffer
 		g.buffer = nil
 		g.bufferLen = 0
-		g.committed = true  // Mark committed to prevent retries
+		g.committed = true // Mark committed to prevent retries
 		if _, err := g.writer.Write(bufCopy); err != nil {
 			return err
 		}
@@ -683,7 +691,7 @@ func (g *AttemptCommitGate) Commit() error {
 	// If state is none/metadata and hook is configured, this ensures metadata
 	// is checkpointed before network write.
 	// P1-2 fix (2026-08-28): Pass stored context to checkpoint hook.
-	if g.beforeSemanticCommit != nil && g.state > CommitStateNone {
+	if g.beforeSemanticCommit != nil && g.state > g.checkpointedState {
 		hook := g.beforeSemanticCommit
 		state := g.state
 		ctx := g.ctx
@@ -693,6 +701,9 @@ func (g *AttemptCommitGate) Commit() error {
 		if checkpointErr != nil {
 			g.blockCheckpointLocked(checkpointErr)
 			return g.checkpointErr
+		}
+		if state > g.checkpointedState {
+			g.checkpointedState = state
 		}
 	}
 	if err := g.commitLocked(); err != nil {
