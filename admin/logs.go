@@ -422,6 +422,43 @@ func scanRequestListRow(rows interface {
 // (request_body / response_body) that are not part of requestLogRow.
 // See docs/llm-gateway-go/perf/2026-06-24-request-logs-rollout.md.)
 
+// buildModelFilterClause returns the boolean SQL (with $N placeholders) and
+// bound arguments for an exact model-name filter.
+//
+// v is the canonical_name emitted by the model picker. It is matched exactly
+// (case-sensitive `=`), never as a substring: canonical_name is lowercased by
+// migration 396 and the picker echoes it verbatim, so the chosen value equals
+// the stored canonical_name byte-for-byte. Matching with a substring ILIKE
+// ('%v%') would wrongly fold "glm-5.2" together with "glm-5.2-pro" /
+// "glm-5.2-flash" — the operator expects ONLY the selected model's requests.
+//
+// The three OR branches mirror the row's display semantics:
+//  1. row has a canonical_id      → match that canonical's name exactly;
+//  2. client_model has an active alias → match the alias' canonical name
+//     exactly (model_aliases.raw_name is stored lowercase, compare against
+//     lower(client_model));
+//  3. fallback for rows with no canonical mapping → exact client_model.
+func buildModelFilterClause(v string, argIdx int) (clause string, args []any) {
+	clause = fmt.Sprintf(`(
+		EXISTS (
+			SELECT 1 FROM models_canonical mc
+			WHERE mc.id = rl.canonical_id
+			  AND mc.canonical_name = $%d
+		)
+		OR EXISTS (
+			SELECT 1
+			FROM model_aliases ma
+			JOIN models_canonical mc ON mc.id = ma.canonical_id
+			WHERE ma.raw_name = lower(rl.client_model)
+			  AND ma.status = 'active'
+			  AND mc.canonical_name = $%d
+		)
+		OR rl.client_model = $%d
+	)`, argIdx, argIdx+1, argIdx+2)
+	args = []any{v, v, v}
+	return clause, args
+}
+
 func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -519,25 +556,18 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 		addFilter("rl.canonical_id = $%d", *v)
 	}
 	if v := strings.TrimSpace(queryString(r, "model")); v != "" {
-		pattern := "%" + v + "%"
-		clauses = append(clauses, fmt.Sprintf(`(
-			EXISTS (
-				SELECT 1 FROM models_canonical mc
-				WHERE mc.id = rl.canonical_id
-				  AND mc.canonical_name ILIKE $%d
-			)
-			OR EXISTS (
-				SELECT 1
-				FROM model_aliases ma
-				JOIN models_canonical mc ON mc.id = ma.canonical_id
-				-- 2026-07-14: model_aliases.raw_name is stored lowercase.
-				WHERE ma.raw_name = lower(rl.client_model)
-				  AND ma.status = 'active'
-				  AND mc.canonical_name ILIKE $%d
-			)
-			OR rl.client_model ILIKE $%d
-		)`, argIdx, argIdx+1, argIdx+2))
-		args = append(args, pattern, pattern, pattern)
+		// 2026-08-29 FIX: exact match, NOT substring ILIKE.
+		//
+		// Before this fix the filter used `ILIKE '%' + v + '%'`, so selecting
+		// "glm-5.2" also returned "glm-5.2-pro" / "glm-5.2-flash" / any
+		// canonical_name or client_model merely *containing* the string. The
+		// UI picker emits models_canonical.canonical_name verbatim, which is
+		// lowercased by migration 396 — so the chosen value equals the stored
+		// canonical_name byte-for-byte and an exact `=` match is safe and is
+		// what the operator expects ("show ONLY this model's requests").
+		clause, margs := buildModelFilterClause(v, argIdx)
+		clauses = append(clauses, clause)
+		args = append(args, margs...)
 		argIdx += 3
 	}
 	if v := strings.TrimSpace(queryString(r, "gw_session_id")); v != "" {
