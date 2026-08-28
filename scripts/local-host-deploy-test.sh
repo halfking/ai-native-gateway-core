@@ -22,6 +22,15 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # shellcheck source=local-host-layout-helper.sh
 source "$SCRIPT_DIR/local-host-layout-helper.sh"
 
+# Try env-injector for the same credentials the gateway loaded at start time.
+# /metrics uses LLM_GATEWAY_ADMIN_API_KEY — when env-injector injects
+# `CHANGE_ME`, the placeholder below is wrong and every /metrics call returns
+# 401. Honor whatever the injector exported, then fall back.
+if [[ -z "${LLM_GATEWAY_ADMIN_API_KEY:-}" && -f ~/workspace/ai-native-tools/envs/loader.sh ]]; then
+  # shellcheck disable=SC1091
+  source ~/workspace/ai-native-tools/envs/loader.sh --project llm-gateway-go --server 115.29.212.252 2>/dev/null || true
+fi
+
 RED=$'\033[0;31m'; GREEN=$'\033[0;32m'; YELLOW=$'\033[1;33m'
 ORANGE=$'\033[0;33m'; CYAN=$'\033[0;36m'; NC=$'\033[0m'
 
@@ -47,19 +56,20 @@ MODE="full"
 KEEP=3
 CLEAN=false
 
-for arg in "$@"; do
-  case "$arg" in
-    --quick)  MODE="quick" ;;
-    --verify) MODE="verify" ;;
-    --clean)  CLEAN=true ;;
-    --keep)   shift; KEEP="$1" ;;
-    --root)   shift; LLM_GATEWAY_FILES_ROOT="$1"; export LLM_GATEWAY_FILES_ROOT ;;
-    --port)   shift; PORT="$1" ;;
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --quick)  MODE="quick"; shift ;;
+    --verify) MODE="verify"; shift ;;
+    --clean)  CLEAN=true; shift ;;
+    --keep)   KEEP="$2"; shift 2 ;;
+    --root)   LLM_GATEWAY_FILES_ROOT="$2"; export LLM_GATEWAY_FILES_ROOT; shift 2 ;;
+    --port)   PORT="$2"; shift 2 ;;
+    --admin-token) ADMIN_KEY="$2"; shift 2 ;;
     -h|--help)
       sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
-    *) err "unknown arg: $arg"; exit 1 ;;
+    *) err "unknown arg: $1"; exit 1 ;;
   esac
 done
 
@@ -130,23 +140,34 @@ fi
 # ── L2: 依赖连通 ──────────────────────────────────────────────────────────
 heading "L2: 依赖连通"
 
-PGPASSWORD="${COMMON_PG_SUPERUSER_PASS:-4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg}" docker exec -e PGPASSWORD="$PGPASSWORD" llm-gateway-pg \
+# Assign in this shell first (set -u would otherwise trip on the var if
+# env-injector hasn't been sourced). `docker exec -e` only forwards env
+# from the parent shell, not command-prefix assignments.
+export PGPASSWORD="${COMMON_PG_SUPERUSER_PASS:-4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg}"
+docker exec -e PGPASSWORD llm-gateway-pg \
   pg_isready -U llm_gateway -d llm_gateway 2>/dev/null | grep -q "accepting" \
   && pass "PG pg_isready" || fail "PG not ready"
 
-db_ver=$(docker exec -e PGPASSWORD="$PGPASSWORD" llm-gateway-pg \
+db_ver=$(docker exec -e PGPASSWORD llm-gateway-pg \
   psql -U llm_gateway -d llm_gateway -tAc "SELECT version();" 2>/dev/null | head -1 | cut -d',' -f1 || echo "?")
 pass "PG version: $db_ver"
 
 # ── L3: 功能链路 ──────────────────────────────────────────────────────────
 heading "L3: 功能链路"
 
-models_code=$(curl -sS -o /tmp/verify_models.json -w "%{http_code}" "$BASE/v1/models" --max-time 15 2>/dev/null || echo "000")
+# `/v1/models` is gated by the global AuthMiddleware (see middleware/auth_mw.go
+# ExactPaths=/healthz,/metrics only — `/v1/models` is NOT exempt). The
+# deployed `LLM_GATEWAY_API_KEY` (sk-*, injected by env-injector) is the
+# bearer expected at runtime.
+API_KEY="${LLM_GATEWAY_API_KEY:-${LLM_GATEWAY_API_KEY_PLACEHOLDER:-}}"
+models_code=$(curl -sS -o /tmp/verify_models.json -w "%{http_code}" \
+  -H "Authorization: Bearer ${API_KEY:-local-static-key-placeholder}" \
+  "$BASE/v1/models" --max-time 15 2>/dev/null || echo "000")
 if [[ "$models_code" == "200" ]]; then
   model_count=$(python3 -c "import json;print(len(json.load(open('/tmp/verify_models.json')).get('data',[])))" 2>/dev/null || echo 0)
   pass "/v1/models → HTTP 200 ($model_count models)"
 else
-  fail "/v1/models → HTTP $models_code"
+  fail "/v1/models → HTTP $models_code (LLM_GATEWAY_API_KEY not exported? source env-injector or pass --api-key)"
 fi
 
 chat_code=$(curl -sS -o /tmp/verify_chat.json -w "%{http_code}" -X POST "$BASE/v1/chat/completions" \
@@ -173,6 +194,8 @@ fi
 # ── L4: 业务真实 (admin metrics) ──────────────────────────────────────────
 heading "L4: 业务真实"
 
+# env-injector was sourced near the top of this script; LLM_GATEWAY_ADMIN_API_KEY
+# is now populated. If still empty (no injector), surface a clear hint.
 ADMIN_KEY="${LLM_GATEWAY_ADMIN_API_KEY:-local-admin-test-token-do-not-use-in-production}"
 metrics_code=$(curl -sS -o /tmp/verify_metrics.txt -w "%{http_code}" \
   -H "Authorization: Bearer $ADMIN_KEY" "$BASE/metrics" --max-time 10 2>/dev/null || echo "000")
@@ -184,7 +207,7 @@ if [[ "$metrics_code" == "200" ]]; then
     pass "/metrics → 200"
   fi
 else
-  fail "/metrics → HTTP $metrics_code"
+  fail "/metrics → HTTP $metrics_code (LLM_GATEWAY_ADMIN_API_KEY mismatch — gateway loaded a different value at start time)"
 fi
 
 # ── version sanity ────────────────────────────────────────────────────────
@@ -197,7 +220,8 @@ if [[ -n "$active_version" ]]; then
   bundle_version=$(python3 -c "import json;print(json.load(open('$bundle_dir/version.json'))['version'])" 2>/dev/null || echo "?")
   pass "bundle version.json: $bundle_version"
   health_version=$(echo "$body" | python3 -c "import sys,json;print(json.load(sys.stdin).get('version','?'))" 2>/dev/null || echo "?")
-  if [[ "$health_version" == "$bundle_version" ]]; then
+  # healthz may append `-<git_sha>` (e.g. `2.4.7-…-1795-39c19997`); accept either exact match or prefix.
+  if [[ "$health_version" == "$bundle_version" || "$health_version" == "$bundle_version"* ]]; then
     pass "healthz version matches bundle version.json"
   else
     sub "healthz version differs (healthz=$health_version, bundle=$bundle_version)"
@@ -211,7 +235,7 @@ heading "version retention"
 
 bin_dir=$(lh_layout_vars | sed -n 's/^bin_dir=//p')
 bundle_count=$(find "$bin_dir" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')
-verified_count=$(find "$bin_dir" -mindepth 1 -maxdepth 1 -type d -exec test -f "{}/deployment.json" \; -exec grep -l '"verified":true' "{}/deployment.json" \; 2>/dev/null | wc -l | tr -d ' ')
+verified_count=$(find "$bin_dir" -mindepth 1 -maxdepth 1 -type d -exec test -f "{}/deployment.json" \; -exec grep -l '"verified":[[:space:]]*true' "{}/deployment.json" \; 2>/dev/null | wc -l | tr -d ' ')
 sub "bundles on disk: $bundle_count (verified: $verified_count, retain cap=$KEEP)"
 if [[ "$verified_count" -le "$KEEP" || "$verified_count" -eq 0 ]]; then
   pass "verified bundle count within retention cap (or 0 = first deploy)"
