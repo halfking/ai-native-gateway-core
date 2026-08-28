@@ -188,7 +188,9 @@ func durableBeforeSemanticCommit(durable *DurableStreamBinding) func(context.Con
 	if durable == nil {
 		return nil
 	}
-	return func(_ context.Context, state CommitState) error { return durable.Checkpoint(state) }
+	return func(ctx context.Context, state CommitState) error {
+		return durable.CheckpointContext(ctx, state)
+	}
 }
 
 // renderSurvivalTerminal writes the final protocol frame(s) for a task the

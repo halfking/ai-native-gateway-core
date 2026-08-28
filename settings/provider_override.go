@@ -16,10 +16,12 @@ type ProviderSettingsResolver struct {
 	db          *pgxpool.Pool
 	registry    *Registry
 	cache       sync.Map // map[cacheKey]cacheEntry
+	cacheMu     sync.Mutex
 	cacheTTL    time.Duration
 	cacheHitLog bool
-	stopCleanup chan struct{}    // P1-8 fix: signal to stop cleanup goroutine
-	closeOnce   sync.Once        // idempotent Close()
+	stopCleanup chan struct{} // P1-8 fix: signal to stop cleanup goroutine
+	cleanupDone chan struct{}
+	closeOnce   sync.Once
 }
 
 type cacheKey struct {
@@ -43,8 +45,13 @@ func NewProviderSettingsResolver(db *pgxpool.Pool, registry *Registry) *Provider
 		cacheTTL:    5 * time.Minute,
 		cacheHitLog: false, // set to true for debugging
 		stopCleanup: make(chan struct{}),
+		cleanupDone: make(chan struct{}),
 	}
-	go r.cleanupExpiredEntries()
+	if db == nil || registry == nil {
+		close(r.cleanupDone)
+	} else {
+		go r.cleanupExpiredEntries()
+	}
 	return r
 }
 
@@ -57,27 +64,32 @@ func (r *ProviderSettingsResolver) Get(ctx context.Context, providerID int, key 
 
 	// Check cache first
 	k := cacheKey{providerID: providerID, key: key}
+	r.cacheMu.Lock()
 	if cached, ok := r.cache.Load(k); ok {
-		entry := cached.(cacheEntry)
-		if time.Now().Before(entry.expireTime) {
+		entry, valid := cached.(cacheEntry)
+		if valid && time.Now().Before(entry.expireTime) {
+			r.cacheMu.Unlock()
 			if r.cacheHitLog {
 				slog.Debug("provider_settings cache hit", "provider_id", providerID, "key", key)
 			}
 			return entry.value, entry.hasValue
 		}
-		// Expired, remove from cache
+		// Expired, remove while holding the cache lock.
 		r.cache.Delete(k)
 	}
+	r.cacheMu.Unlock()
 
 	// Query from database
 	value, hasValue := r.queryDB(ctx, providerID, key)
 
-	// Cache the result (even if not found, to avoid repeated queries)
+	// Cache the result (even if not found, to avoid repeated queries).
+	r.cacheMu.Lock()
 	r.cache.Store(k, cacheEntry{
 		value:      value,
 		hasValue:   hasValue,
 		expireTime: time.Now().Add(r.cacheTTL),
 	})
+	r.cacheMu.Unlock()
 
 	return value, hasValue
 }
@@ -209,27 +221,33 @@ func (r *ProviderSettingsResolver) cleanupExpiredEntries() {
 		case <-ticker.C:
 			now := time.Now()
 			count := 0
+			r.cacheMu.Lock()
 			r.cache.Range(func(key, value interface{}) bool {
-				entry := value.(cacheEntry)
-				if now.After(entry.expireTime) {
+				entry, ok := value.(cacheEntry)
+				if ok && now.After(entry.expireTime) {
 					r.cache.Delete(key)
 					count++
 				}
 				return true
 			})
+			r.cacheMu.Unlock()
 			if count > 0 {
 				slog.Debug("provider_settings: evicted expired cache entries", "count", count)
 			}
 		case <-r.stopCleanup:
+			close(r.cleanupDone)
 			return
 		}
 	}
 }
 
-// Close stops the background cleanup goroutine. Call this during graceful shutdown.
-// Safe to call multiple times — idempotent.
+// Close stops the background cleanup goroutine. It is safe to call repeatedly.
 func (r *ProviderSettingsResolver) Close() {
+	if r == nil || r.stopCleanup == nil || r.cleanupDone == nil {
+		return
+	}
 	r.closeOnce.Do(func() {
 		close(r.stopCleanup)
 	})
+	<-r.cleanupDone
 }

@@ -148,9 +148,18 @@ func (b *DurableStreamBinding) Stop() {
 // Checkpoint adapts the gate write-ahead hook. The durable SQL only accepts
 // rank advances (equal rank reads as 0 rows → ErrLeaseLost), so retried
 // attempts — whose gate state resets to none — must be deduped against the
-// highest rank already persisted. Uses a detached bounded context: the
-// checkpoint must outlive a disconnecting client.
+// highest rank already persisted.
+//
+// Checkpoint remains a compatibility wrapper for callers without a request
+// context. Streaming paths should use CheckpointContext.
 func (b *DurableStreamBinding) Checkpoint(s CommitState) error {
+	return b.CheckpointContext(context.Background(), s)
+}
+
+// CheckpointContext performs the durable checkpoint with the caller's context.
+// The five-second upper bound prevents a broken store from blocking the gate
+// indefinitely while preserving request cancellation and deadlines.
+func (b *DurableStreamBinding) CheckpointContext(parent context.Context, s CommitState) error {
 	state := durable.CommitState(s.String())
 	rank := durable.CommitStateRank(state)
 	if rank < 0 {
@@ -162,7 +171,10 @@ func (b *DurableStreamBinding) Checkpoint(s CommitState) error {
 	if dupe {
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
 	defer cancel()
 	if err := b.store.CheckpointCommitState(ctx, durable.CheckpointParams{
 		TaskID:       b.task.ID,
