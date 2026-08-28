@@ -486,8 +486,15 @@ function vendorOptionLabel(v: string) {
     </div>
 
     <!-- 2026-08-14 V3.2: 按处理队列维度时显示队列透视 + 节点矩阵面板 -->
+    <!-- 2026-08-28: 传递上层筛选条件到 QueuePerspectivePanel -->
     <div v-if="groupBy === 'queue'" class="v32-queue-panels">
-      <QueuePerspectivePanel />
+      <QueuePerspectivePanel
+        :model-filter="modelFilter"
+        :provider-filter="providerFilter"
+        :vendor-filter="vendorFilter"
+        :agent-filter="agentFilter"
+        :status-filter="statusFilter"
+      />
       <RequestJourneyQueues />
       <NodeStatusMatrix />
     </div>
