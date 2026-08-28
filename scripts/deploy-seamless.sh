@@ -21,6 +21,7 @@
 #   bash scripts/deploy-seamless.sh rollback 154
 #   bash scripts/deploy-seamless.sh status 245              # 查看 releases
 #   bash scripts/deploy-seamless.sh deploy 245 --no-frontend --seq 1004
+#   bash scripts/deploy-seamless.sh deploy 245 --force  # 恢复 stale locks 后重建
 #
 # 154 SSH 连接策略:
 #   默认: 通过 252 跳板机 (root@115.29.212.252) 连接，最稳定
@@ -60,12 +61,13 @@ err()  { echo -e "${RED}  ✗${NC} $*" >&2; }
 
 # ── 参数解析 ────────────────────────────────────────────────────
 ACTION="${1:-}"; TARGET="${2:-}"
-SEQ_FLAG=""; SKIP_FRONTEND=false
+SEQ_FLAG=""; SKIP_FRONTEND=false; FORCE=false
 shift 2 2>/dev/null || true
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --seq) SEQ_FLAG="--seq $2"; shift 2 ;;
     --no-frontend) SKIP_FRONTEND=true; shift ;;
+    --force) FORCE=true; shift ;;
     --direct) export SSH_RETRY_DIRECT_MODE=1; shift ;;
     --ssh-retries) export SSH_RETRY_MAX=$2; shift 2 ;;
     --ssh-verbose) export SSH_RETRY_VERBOSE=1; shift ;;
@@ -76,8 +78,12 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-[[ -n "$ACTION" ]] || { err "用法: deploy-seamless.sh <deploy|rollback|status> <245|154> [--seq N] [--ssh-retries N]"; exit 1; }
+[[ -n "$ACTION" ]] || { err "用法: deploy-seamless.sh <deploy|rollback|status> <245|154> [--seq N] [--force] [--ssh-retries N]"; exit 1; }
 [[ -n "$TARGET" ]] || { err "缺少目标 (245|154)"; exit 1; }
+if [[ "$FORCE" == true && "$ACTION" == status ]]; then
+  err "--force 仅适用于 deploy 或 rollback，不适用于 status"
+  exit 64
+fi
 
 case "$TARGET" in
   154|245) ;;
@@ -93,6 +99,9 @@ if [[ "$ACTION" == deploy || "$ACTION" == rollback ]]; then
   # remote hosts and must not block one another locally.
   LOCK_LOCAL_DIR="${TMPDIR:-/tmp}/kx-llm-gateway-deploy-${TARGET}.lock"
   LOCK_LOCAL_TARGET="$TARGET"
+  if [[ "$FORCE" == true ]]; then
+    lock_recover_local "$TARGET" 1 || exit $?
+  fi
   lock_acquire_local || exit $?
   DEPLOY_LOCAL_LOCK_HELD=1
 fi
@@ -228,6 +237,9 @@ upgrade_hide_all() {
 }
 
 if [[ "$ACTION" == deploy || "$ACTION" == rollback ]]; then
+  if [[ "$FORCE" == true ]]; then
+    lock_recover_remote "$SSH_CMD" "$TARGET" "$DEPLOY_REMOTE_LOCK_PATH" 1 || exit $?
+  fi
   lock_acquire_remote remote_ssh_pipe "$TARGET" "$DEPLOY_REMOTE_LOCK_PATH" || exit $?
   DEPLOY_REMOTE_LOCK_HELD=1
 fi
@@ -485,7 +497,13 @@ do_deploy() {
   # Shared checkout build state (version files, web/dist, local staging) is
   # serialized independently from the per-target deployment lock.
   log "[build-lock] 获取共享构建锁"
+  # Never honor an inherited build-lock path: force recovery and normal
+  # acquisition must address the one shared checkout lock only.
+  LOCK_LOCAL_BUILD_DIR="${TMPDIR:-/tmp}/kx-llm-gateway-build.lock"
   LOCK_BUILD_TARGET="$TARGET"
+  if [[ "$FORCE" == true ]]; then
+    lock_recover_build 1 || exit $?
+  fi
   lock_acquire_build || exit $?
   DEPLOY_BUILD_LOCK_HELD=1
 

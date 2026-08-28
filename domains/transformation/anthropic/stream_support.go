@@ -68,6 +68,48 @@ type StreamOutcome struct {
 	ChunkCount  int  // Number of chunks sent before interruption
 }
 
+// IsAnthropicStreamEmpty returns true when the translator observed an
+// upstream Anthropic Messages stream that produced zero semantic assistant
+// output: no text / thinking / tool-call deltas reached the client, and no
+// usage tokens were reported. Mirrors isEmptyAnthropicMessagesResponse
+// (domains/streaming/executors/empty_response.go:61) at the stream layer so
+// the candidate-loop failover path (streamInterruptedError{kind:
+// KindEmptyResponse, resumable: true} → executor_anthropic.go:1206) fires
+// for every Anthropic-compatibility code path — not just the raw
+// passthrough audited in audit-24h-20260828-r3 P1-B.
+//
+// Usage:
+//   - emittedContent: set true the first time the translator's writeChunk
+//     closure serializes a delta with non-empty Content / ReasoningContent
+//     / ToolCalls, or when a ChunkTypeDone with finish_reason="stop" arrives.
+//   - inputTokens/outputTokens: local IR-Usage accumulators (also mirrored
+//     into audit.StreamCapture.promptTokens/completionTokens via
+//     ObserveChunk, but reading the local copies avoids taking the capture
+//     mutex in the hot path).
+//
+// The check is strict: no content AND (no input AND no output tokens). An
+// upstream that returns usage tokens but no content is treated as empty —
+// matching the non-stream semantics in isEmptyAnthropicMessagesResponse
+// (which checks content array length, not usage token presence).
+func IsAnthropicStreamEmpty(emittedContent bool, inputTokens, outputTokens int) bool {
+	return !emittedContent && inputTokens == 0 && outputTokens == 0
+}
+
+// EmptyResponseStreamOutcome builds the standard StreamOutcome returned
+// when an Anthropic-compatibility stream is detected as empty. Mirrors
+// anthropic_passthrough_stream.go:171-177 so the three Anthropic SSE
+// translators (passthrough / Q3 / Phase E) all surface the same shape and
+// the executor's streamInterruptedError routing treats them identically.
+func EmptyResponseStreamOutcome(chunkCount int) StreamOutcome {
+	return StreamOutcome{
+		Interrupted: true,
+		Reason:      "anthropic_empty_response",
+		Kind:        errorsx.KindEmptyResponse,
+		Resumable:   true,
+		ChunkCount:  chunkCount,
+	}
+}
+
 // PendingFinalState is the state recorded by finalize() and
 // read by Snapshot(). cmd/gateway/main.go reads these fields
 // after the stream returns to write the captured body to the

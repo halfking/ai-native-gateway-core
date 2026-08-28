@@ -4,7 +4,31 @@
 **交接原因:** 24小时内累积100+提交、深度审计发现6个致命/严重缺陷，已修复并推送main
 **项目根:** `/Users/xutaohuang/workspace/ai-native-tools/syncfield/llm-gateway-go-4`
 **当前分支:** `main`
-**最新 commit:** `be156349d` (已推送到 origin/main)
+**最新 commit:** `4a185acc3` (已推送到 origin/main)
+
+---
+
+## §0 续会话状态 (2026-08-28 16:00)
+
+接手 handoff §5 列出的 7 个 P1-P3 风险时发现：
+**P1-A (JournalSnapshot)、P1-B (anthropic stream empty-response)、P3 (credential key log)、P2 (copy.go expiry 语义) 均已由 `audit-24h-20260828-r3` (commits `5c51bd045` + `c6ab79105` + `c3011e10a`) 修复**——比本 handoff 文档生成更晚。
+
+验证结果：
+- `go build ./...` → 全包编译通过
+- `go test ./domains/transformation/anthropic/ -run TestStreamAnthropicPassthrough -count=1` → **11/11 PASS**（含 r3 新增 4 个：EmptyResponseFailOver、EmptyResponseWithUsageStillEmpty、NonEmptyContent、EmptyNilCapture）
+- `go test ./domains/dispatch/ -run TestJournal|TestPipeline_EmitJournal -count=1` → **PASS**（含 r3 新增 6 个 sink 回归测试）
+- `redis_health_store.go:362` 注释 "Do not log the full Redis key: it contains the credential ID." 已就位 — 不再泄露 credential_id。
+- `copy.go:155-161` 已对齐 `CopyHash` 语义：`ErrKeyNotFound → CopyStatusSkipped "source expired before hash read"`。
+
+CHANGELOG.md §Unreleased §Fixed 已同步 r3 两个条目（journal + empty-response）。
+
+**真正仍待处理的:**
+- **P2** — `HGetAll SafeHGetAll` 迁移：仍有 ~17 处 raw `client.HGetAll(...).Result()` 调用点（已迁移 ~5 处）。非阻塞（仅在 hash key 与非 hash 类型冲突时触发 `WRONGTYPE`），建议分批改造。
+- **P3** — `domains/streaming/attempt_commit_gate.go:788-822` Discard 锁作用域文档化。
+- **P3** — `cmd/gateway/main.go:445-455` license online/offline 灰色地带日志歧义。
+- **Q3 parity TODO**（r3 `c6ab79105` 在 `anthropic_passthrough_stream.go:34-40` 标记）— `AnthropicToOpenAIStream` / `AnthropicToResponsesStream` 独立 SSE 循环未调用 empty-response detector，OpenAI/Responses 客户端命中空 anthropic 上游时仍记录成功空流。
+
+见 §2.3 / §2.5 / §2.7 / §6。
 
 ---
 

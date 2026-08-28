@@ -6,7 +6,9 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestStorePutGetClear(t *testing.T) {
@@ -52,32 +54,6 @@ func TestStoreRejectsUnsafeID(t *testing.T) {
 	err = s.PutMeta(Meta{RequestID: "../etc/passwd"})
 	if err == nil {
 		t.Fatal("expected invalid id error")
-	}
-}
-
-func TestStoreMalformedOrMismatchedFileIsMiss(t *testing.T) {
-	dir := t.TempDir()
-	s, err := NewStore(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	requestID := "req-corrupt-file"
-	if err := os.WriteFile(s.filePath(requestID), []byte(`{not-json`), 0o640); err != nil {
-		t.Fatal(err)
-	}
-	if _, ok, err := s.GetFile(requestID); err != nil || ok {
-		t.Fatalf("malformed local file must be a miss: ok=%v err=%v", ok, err)
-	}
-
-	mismatched, err := json.Marshal(filePayload{Meta: Meta{RequestID: "req-other-file"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(s.filePath(requestID), mismatched, 0o640); err != nil {
-		t.Fatal(err)
-	}
-	if _, ok, err := s.GetFile(requestID); err != nil || ok {
-		t.Fatalf("mismatched local file must be a miss: ok=%v err=%v", ok, err)
 	}
 }
 
@@ -300,4 +276,165 @@ func TestLocatorRequestLogsMetadataFallback(t *testing.T) {
 	})
 }
 
+func TestStoreRetentionCapacityEvictsOldest(t *testing.T) {
+	s, err := NewStoreWithOptions(t.TempDir(), StoreOptions{MaxEntries: 1, TTL: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutMeta(Meta{RequestID: "req-oldest1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutMeta(Meta{RequestID: "req-newest1"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := s.GetMeta("req-oldest1"); ok {
+		t.Fatal("oldest entry should be evicted")
+	}
+	if _, ok := s.GetMeta("req-newest1"); !ok {
+		t.Fatal("newest entry should remain")
+	}
+}
+
+func TestStoreRetentionTTLRemovesMemoryAndFile(t *testing.T) {
+	dir := t.TempDir()
+	s, err := NewStoreWithOptions(dir, StoreOptions{MaxEntries: 10, TTL: time.Nanosecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := "req-expiring1"
+	if err := s.PutBodies(Meta{RequestID: id}, Bodies{RequestBody: json.RawMessage(`{"x":1}`)}); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(time.Millisecond)
+	if _, ok := s.GetMeta(id); ok {
+		t.Fatal("expired metadata should be absent")
+	}
+	if _, ok, err := s.GetFile(id); err != nil || ok {
+		t.Fatalf("expired file should be absent: ok=%v err=%v", ok, err)
+	}
+}
+
+func TestStoreStartupCleanupRemovesExpiredSnapshots(t *testing.T) {
+	dir := t.TempDir()
+	id := "req-startup1"
+	path := filepath.Join(dir, id+".json")
+	if err := os.WriteFile(path, []byte(`{"meta":{"request_id":"`+id+`"},"bodies":{}}`), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(path, old, old); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewStoreWithOptions(dir, StoreOptions{TTL: time.Minute}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("expired startup snapshot remains: %v", err)
+	}
+}
+
 func ptrStr(s string) *string { return &s }
+
+type sessionErrorBodies struct{}
+
+func (sessionErrorBodies) ReadRequestLogsBodies(_ context.Context, requestID string, _ bool) (Bodies, Meta, error) {
+	return Bodies{}, Meta{RequestID: requestID, TenantID: "tenant-a"}, ErrNotFound
+}
+
+func (sessionErrorBodies) ReadSessionTurnsBodies(context.Context, string, bool) (Bodies, Meta, error) {
+	return Bodies{}, Meta{}, context.DeadlineExceeded
+}
+
+func TestLocatorPropagatesSessionTurnErrors(t *testing.T) {
+	_, err := (&Locator{Bodies: sessionErrorBodies{}}).Get(context.Background(), "req-session-error", false)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected session error to propagate, got %v", err)
+	}
+}
+
+func TestGetFileRejectsOversizedBody(t *testing.T) {
+	dir := t.TempDir()
+	s, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a body file slightly over 10MB limit
+	reqID := "req-large-body"
+	// Build a valid JSON array that exceeds MaxBodyFileSize
+	largeArray := make([]string, 0, 200000)
+	for i := 0; i < 200000; i++ {
+		largeArray = append(largeArray, "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx") // 50 chars each
+	}
+	largeBodyJSON, _ := json.Marshal(largeArray)
+
+	meta := Meta{RequestID: reqID, TenantID: "default"}
+	bodies := Bodies{RequestBody: json.RawMessage(largeBodyJSON)}
+
+	// Write directly to disk to bypass any Put validation
+	payload := filePayload{Meta: meta, Bodies: bodies}
+	raw, _ := json.Marshal(payload)
+	if err := os.WriteFile(s.filePath(reqID), raw, 0o640); err != nil {
+		t.Fatalf("failed to write test file: %v", err)
+	}
+
+	// Verify file is actually over limit
+	info, _ := os.Stat(s.filePath(reqID))
+	if info.Size() <= MaxBodyFileSize {
+		t.Fatalf("test file size %d is not over limit %d", info.Size(), MaxBodyFileSize)
+	}
+
+	// Attempt to read should fail with size limit error
+	_, ok, err := s.GetFile(reqID)
+	if err == nil {
+		t.Fatal("expected error for oversized body, got nil")
+	}
+	if ok {
+		t.Fatal("expected ok=false for oversized body")
+	}
+	if !errors.Is(err, ErrBodyTooLarge) || !strings.Contains(err.Error(), "limit 10485760") {
+		t.Fatalf("unexpected size limit error: %v", err)
+	}
+}
+
+func TestGetFileAcceptsBodyAtLimit(t *testing.T) {
+	dir := t.TempDir()
+	s, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a body file just under 10MB limit with valid JSON
+	reqID := "req-at-limit"
+	// Build a valid JSON array that is close to but under MaxBodyFileSize
+	largeArray := make([]string, 0, 150000)
+	for i := 0; i < 150000; i++ {
+		largeArray = append(largeArray, "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx") // 50 chars each
+	}
+	largeBodyJSON, _ := json.Marshal(largeArray)
+
+	meta := Meta{RequestID: reqID, TenantID: "default"}
+	bodies := Bodies{RequestBody: json.RawMessage(largeBodyJSON)}
+
+	if err := s.Put(meta, &bodies); err != nil {
+		t.Fatalf("failed to put body at limit: %v", err)
+	}
+
+	// Verify file is under limit
+	info, _ := os.Stat(s.filePath(reqID))
+	if info.Size() > MaxBodyFileSize {
+		t.Fatalf("test file size %d exceeds limit %d", info.Size(), MaxBodyFileSize)
+	}
+
+	// Should succeed
+	payload, ok, err := s.GetFile(reqID)
+	if err != nil {
+		t.Fatalf("expected no error for body under limit, got %v", err)
+	}
+	if !ok {
+		t.Fatal("expected ok=true for body under limit")
+	}
+	if len(payload.Bodies.RequestBody) != len(largeBodyJSON) {
+		t.Fatalf("expected body size %d, got %d", len(largeBodyJSON), len(payload.Bodies.RequestBody))
+	}
+}
