@@ -86,3 +86,42 @@ func BenchmarkGetFileSequential(b *testing.B) {
 		}
 	}
 }
+
+// BenchmarkPtrToAllocation measures heap allocation behavior with PtrTo helper.
+// This benchmark validates the heap allocation optimization (task 3).
+func BenchmarkPtrToAllocation(b *testing.B) {
+	b.Run("WithPtrTo", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			meta := Meta{
+				RequestID: "req-bench-alloc",
+				TenantID:  "default",
+			}
+			// Using PtrTo helper
+			meta.GwSessionID = PtrTo("session-123")
+			meta.ClientModel = PtrTo("gpt-4")
+			meta.LatencyMs = PtrTo(100)
+			meta.Success = PtrTo(true)
+			_ = meta
+		}
+	})
+
+	b.Run("WithoutPtrTo", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			meta := Meta{
+				RequestID: "req-bench-alloc",
+				TenantID:  "default",
+			}
+			// Traditional pattern that causes more escapes
+			sessionID := "session-123"
+			meta.GwSessionID = &sessionID
+			model := "gpt-4"
+			meta.ClientModel = &model
+			latency := 100
+			meta.LatencyMs = &latency
+			success := true
+			meta.Success = &success
+			_ = meta
+		}
+	})
+}
+
