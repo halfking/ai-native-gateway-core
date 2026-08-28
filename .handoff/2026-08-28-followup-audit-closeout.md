@@ -64,4 +64,87 @@
 - 历史 24h 审计：`.handoff/2026-08-28-audit-24h-fixes.md`
 - 厂商协议交接：`docs/handoff/20260828-vendor-alignment/HANDOFF.md`
 - 厂商协议提示词：`docs/handoff/20260828-vendor-alignment/PROMPTS.md`
-- 当前 follow-up 修复：本会话提交（提交后填写 SHA）
+- 历史感知统一请求动作策略：`docs/adr/2026-08-28-request-action-policy.md`
+- JournalSnapshot 决策历史边界：`docs/adr/2026-08-28-requestjourney-journal-snapshot.md`
+- 本轮修复提交：
+  - `f97c8eeda` fix(recovery): address history-aware decision audit findings
+  - `d4f410c88` feat(recovery): add history-aware request action policy
+  - `dbcc42ab9` fix(audit): harden regen-credentials and restore SafeHGetAll
+  - `ee438de9c` fix(streaming): close gate and empty-response lifecycle gaps
+
+## 10. 本轮审计小结（2026-08-29）
+
+针对历史感知决策器的回归审计：
+
+- `TestExecuteDispatchStopsAtExactly100UpstreamAttempts` 暴露：
+  - 中央策略把 `KindUpstreamDown` 误归到 `WaitRecovery`，使 dispatch
+    路径每个 credential 只被试 1 次就切走（违反 3 次 retry budget 契约）。
+    修复：将 `KindUpstreamDown` 加入 `retryableActionKind`（dispatch
+    上下文语义），但 streaming 路径保留 `taskActionForKind` 表的
+    `wait_recovery` 映射。
+  - `PlanAfterFailure` 在中央策略返回 RetrySameNode 之后又被旧
+    `cred_budget_exhausted` fallback 覆盖，导致每次都 fall-through。
+    修复：删除双重 fallback，信任中央策略；保留 `FatalCredential`
+    和 `AttemptCount>=maxAttempts` 短路以维持 journal 词表
+    （`cred_fatal`、`attempt_cap`）。
+- 并发 / 句柄 / TCP / 密钥 审计：
+  - 并发：errorsx、dispatch、streaming 的改动全部遵循 single-owner
+    不变量或串行 goroutine 路径，`go test -race` 全过。
+  - HTTP/TCP：pool/upstream transport 已配置 DialContext +
+    TLSHandshakeTimeout + IdleConnTimeout；流式写使用 per-write
+    watchdog（30s 默认），无 write deadline 泄漏。
+  - 密钥：`ActionNode` / `PriorAttempt` / `DecisionHistory` 全部仅
+    携带数值 ID，不含密钥材料；`candidateCredential` 的 `strconv.Atoi`
+    错误现改为 slog.Warn 上报，避免静默丢弃。
+- 测试结果：errorsx/dispatch/streaming（含 executors 子包）全部
+  -count=1 通过；race 通过；vet 干净。
+- 集成 main：协作方改动与本分支不直接冲突，可单独 commit 后直接
+  fast-forward merge 到 main，或在协作方同意下合并到统一 PR。
+
+## 11. main 集成阻塞点（2026-08-29 22:xx +0800）
+
+尝试 rebase `fix/streaming-ursm-audit-closeout-20260828` 到 `origin/main`
+后，确认以下事项需要在单独 PR 中处理：
+
+1. **11 个三方冲突文件**（SafeHGetAll migration 双方各自做了）：
+   - `domains/session/preprocess/redis_store.go`
+   - `domains/session/v2/cache_v2_redis.go`
+   - `domains/stats/boardcache/store.go`
+   - `domains/streaming/anthropic_bridge.go`
+   - `domains/streaming/attempt_commit_gate.go`
+   - `domains/ursm/v2/migration/{classify,cleanup,metadata,metadata_redis,preflight,preflight_scan}.go`
+   解决方式：保留 main 已落地的 SafeHGetAll 包装，仅在协作方未触及的
+   路径添加 ErrKeyNotFound 测试覆盖。
+
+2. **3 个 commit 间冲突**（协作方 WIP 会撤销本轮回归修复）：
+   - `errorsx/action_policy.go` 协作方 staged 版本移除 `KindUpstreamDown`
+     retryable，会回退 `f97c8eeda` 的修复。
+   - `domains/dispatch/planner.go` 协作方 staged 版本移除
+     `FatalCredential`/`AttemptCount` 短路，会回退 `f97c8eeda` 的修复。
+   - `domains/streaming/attempt_outcome.go` 协作方 staged 版本移除
+     `taskActionForKind` legacy 表回退，会回退 streaming 的
+     `wait_recovery` 语义。
+   解决方式：手工 merge 时保留双方的功能（协作方的结构性修改 + 我的
+   回归修复），不应单纯 `git checkout --ours/--theirs`。
+
+3. **stash list 现状**：仅 `stash@{0}`（"preserve-collaborator-deploy-
+   streaming-changes-after-audit-rebase"）和 `stash@{1}`（"preserve-
+   collaborator-changes-before-final-audit-push"），均为协作方所有。
+   本轮 rebase 期间创建的临时 stash 已被 pop 后丢弃，未留下垃圾。
+
+4. **本轮推送的 3 个 commit**（已 push 到 `origin/fix/streaming-ursm-
+   audit-closeout-20260828`）：
+   - `d4f410c88` feat(recovery): add history-aware request action policy
+   - `f97c8eeda` fix(recovery): address history-aware decision audit findings
+   - `366f9da36` docs(recovery): record history-aware decision audit findings
+   这三个 commit 与 main 之间需要手工 merge 决策；本轮未做自动 merge，
+   是为了让用户/协作方先决定是否保留协作方的 WIP 撤回。
+
+## 12. 建议下一步
+
+- 协作方决定 WIP（streaming P0 二级 audit 撤回）是否需要整合。
+- 如果需要：单独 commit 协作方 staged 改动，使用 temp-index 技术
+  构造 commit（不污染我的 3 个 commit），然后手工解决 14 个冲突点。
+- 如果不需要：直接 `git checkout main && git pull --rebase && git merge
+  --no-ff fix/streaming-ursm-audit-closeout-20260828`，手工解决 11
+  个 SafeHGetAll 三方冲突即可。

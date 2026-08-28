@@ -1,6 +1,10 @@
 package dispatch
 
-import "time"
+import (
+	"time"
+
+	"github.com/kaixuan/llm-gateway-go/errorsx"
+)
 
 // Planner (V6-W1.6 R11, docs/架构优化v6/09-ir-class-journal-decoupling.md):
 // the PURE decision layer between the state layer (QueuedRequest markers:
@@ -69,6 +73,69 @@ func retryBudgetOf(qr *QueuedRequest, cfg Config) int {
 	return 0
 }
 
+func decisionHistoryOf(qr *QueuedRequest) errorsx.DecisionHistory {
+	if qr == nil {
+		return errorsx.DecisionHistory{}
+	}
+	history := errorsx.DecisionHistory{LastSeq: len(qr.AttemptJournal)}
+	for _, entry := range qr.JournalSnapshot() {
+		history.PriorAttempts = append(history.PriorAttempts, errorsx.PriorAttempt{
+			Seq: entry.Seq, AttemptNo: entry.Attempt, Model: entry.Model,
+			ProviderID: entry.ProviderID, CredentialID: entry.CredentialID,
+			Kind: errorsx.ErrorKind(entry.ErrorKind), Action: centralAction(entry.Action),
+		})
+	}
+	for credentialID := range qr.TriedCredentials {
+		history.TriedNodes = append(history.TriedNodes, errorsx.ActionNode{
+			Model: qr.ResolvedModel, ProviderID: qr.SelectedCred.ProviderID, CredentialID: credentialID,
+		})
+	}
+	for model := range qr.TriedModels {
+		history.TriedModels = append(history.TriedModels, model)
+	}
+	if len(history.PriorAttempts) > 0 {
+		last := history.PriorAttempts[len(history.PriorAttempts)-1]
+		history.Terminal = last.Action == errorsx.ActionFailTerminal || last.Action == errorsx.ActionClientCanceled
+	}
+	return history
+}
+
+func centralAction(action NextActionKind) errorsx.NextAction {
+	switch action {
+	case NextActionRetrySameCred:
+		return errorsx.ActionRetrySameNode
+	case NextActionSwitchCred:
+		return errorsx.ActionSwitchNode
+	case NextActionSwitchModel:
+		return errorsx.ActionSwitchNode
+	case NextActionCompleted:
+		return errorsx.ActionFailTerminal
+	case NextActionCanceled:
+		return errorsx.ActionClientCanceled
+	case NextActionFailed:
+		return errorsx.ActionFailTerminal
+	default:
+		return ""
+	}
+}
+
+func isCentralPolicyKind(kind errorsx.ErrorKind) bool {
+	switch kind {
+	case errorsx.KindTransient, errorsx.KindTimeout, errorsx.KindNetwork,
+		errorsx.KindRateLimit, errorsx.KindAuth, errorsx.KindQuota,
+		errorsx.KindUpstreamDown, errorsx.KindCanceled, errorsx.KindClientBug,
+		errorsx.KindConcurrent, errorsx.KindAuthRevoked, errorsx.KindQuotaPeriodic,
+		errorsx.KindQuotaBalance, errorsx.KindQuotaPermanent, errorsx.KindModelNotFound,
+		errorsx.KindStreamTimeout, errorsx.KindToolCallIdMismatch, errorsx.KindContextLength,
+		errorsx.KindUnsupportedFeature, errorsx.KindModelDeprecated, errorsx.KindContentFilter,
+		errorsx.KindEmptyResponse, errorsx.KindConversion, errorsx.KindUpstreamContextLoss,
+		errorsx.KindUpstreamOverloaded, errorsx.KindNoAvailableChannel:
+		return true
+	default:
+		return false
+	}
+}
+
 // PlanAfterFailure decides the failover ladder's first step after a
 // pre-firstbyte failure: same-credential retry while the per-credential
 // budget lasts and the error is not credential-fatal (a fatal credential
@@ -76,13 +143,92 @@ func retryBudgetOf(qr *QueuedRequest, cfg Config) int {
 // a healthy sibling). The attempt cap gates the continuation (R12);
 // fall-through lets the executor proceed to the credential switch.
 func PlanAfterFailure(qr *QueuedRequest, out ForwardOutcome, cfg Config) Decision {
-	if out.FatalCredential || qr.CredRetryCount >= retryBudgetOf(qr, cfg) {
-		return Decision{Reason: "cred_budget_exhausted"}
+	if qr == nil {
+		return Decision{Action: NextActionFailed, Reason: "nil_request"}
 	}
-	if AttemptBudgetLeft(qr) <= 0 {
+
+	// Credential-fatal failures deterministically re-yield the same upstream
+	// rejection; retrying the same node wastes a concurrency slot and delays
+	// the switch to a healthy sibling. Short-circuit before the central policy
+	// evaluates the kind so history cannot inflate the apparent retry count.
+	if out.FatalCredential {
+		return Decision{Reason: "cred_fatal"}
+	}
+
+	// Hard cap on the total forward attempts: at maxAttempts the request has
+	// no budget left for any retry or switch, and the attempt-cap vocabulary
+	// (failed(attempt_cap)) must be the terminal signal. This short-circuit
+	// matches the legacy ladder so the journal vocabulary stays stable.
+	if qr.AttemptCount >= maxAttempts {
 		return Decision{Action: NextActionFailed, Reason: reasonAttemptCap}
 	}
-	return Decision{Action: NextActionRetrySameCred, Reason: firstNonEmpty(out.ErrorKind, "upstream_error")}
+
+	kind := errorsx.ErrorKind(out.ErrorKind)
+	if kind == "deadline_exceeded" {
+		kind = errorsx.KindTimeout
+	}
+	if kind != "" && !isCentralPolicyKind(kind) {
+		// Dispatch historically carried bounded labels such as upstream_503
+		// rather than the errorsx taxonomy. Preserve the old recoverable
+		// planner behavior for those legacy labels until callers migrate.
+		kind = errorsx.KindTransient
+	}
+	if kind == "" {
+		if out.Err == nil {
+			// Legacy planner callers may provide only the queue failure shape;
+			// retain their bounded same-node retry contract rather than treating
+			// an absent diagnostic as an upstream outage.
+			kind = errorsx.KindTransient
+		} else {
+			kind = errorsx.ClassifyError(out.Err, nil)
+		}
+	}
+	action := errorsx.DecideNextAction(errorsx.DecisionContext{
+		RequestID:          qr.ID,
+		TenantID:           qr.TenantID,
+		SessionID:          qr.SessionID,
+		Phase:              errorsx.PhaseUpstream,
+		AttemptNo:          qr.AttemptCount,
+		SameNodeRetryCount: qr.CredRetryCount,
+		MaxSameNodeRetries: retryBudgetOf(qr, cfg),
+		RemainingAttempts:  AttemptBudgetLeft(qr),
+		ProviderID:         qr.SelectedCred.ProviderID,
+		CredentialID:       qr.SelectedCred.CredentialID,
+		ResolvedModel:      qr.ResolvedModel,
+		// The planner is invoked before it queries sibling candidates. Treat
+		// the route ladder as potentially available here; PlanSwitchCred and
+		// the model ladder remain responsible for proving a concrete target.
+		HasAlternateNode: true,
+		Kind:             kind,
+		RetryAfter:       out.RetryAfter,
+		History:          decisionHistoryOf(qr),
+	})
+	if action.Action == errorsx.ActionFailClosed || action.Action == errorsx.ActionClientCanceled {
+		return Decision{Action: NextActionFailed, Reason: action.ReasonCode}
+	}
+	// Trust the central policy: it already folds retry budget, attempt cap,
+	// history-derived retry count, and node switches into a single decision.
+	// Returning Action here is authoritative; downstream stages (PlanSwitchCred,
+	// PlanModelChange, attempt-cap terminal) handle the fall-through cases.
+	switch action.Action {
+	case errorsx.ActionRetrySameNode:
+		return Decision{Action: NextActionRetrySameCred, Reason: action.ReasonCode}
+	case errorsx.ActionWaitRecovery:
+		// The dispatch executor owns the clock and converts the central delay
+		// into RetryAt when it parks the request; the pure planner only carries
+		// the stable reason here.
+		return Decision{Reason: action.ReasonCode}
+	case errorsx.ActionClientCanceled:
+		return Decision{Action: NextActionFailed, Reason: "client_canceled"}
+	case errorsx.ActionFailTerminal, errorsx.ActionResumeBlocked:
+		return Decision{Action: NextActionFailed, Reason: action.ReasonCode}
+	default:
+		// ActionSwitchNode / ActionFailClosed / empty action deliberately fall
+		// through to sibling selection; PlanSwitchCred and PlanModelChange then
+		// pick the next concrete target. The attempt cap and fatal-credential
+		// short-circuits above remain in place.
+		return Decision{Reason: action.ReasonCode}
+	}
 }
 
 // PlanSwitchCred scans the routed candidates in priority order for the
