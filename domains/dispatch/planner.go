@@ -147,6 +147,22 @@ func PlanAfterFailure(qr *QueuedRequest, out ForwardOutcome, cfg Config) Decisio
 		return Decision{Action: NextActionFailed, Reason: "nil_request"}
 	}
 
+	// Credential-fatal failures deterministically re-yield the same upstream
+	// rejection; retrying the same node wastes a concurrency slot and delays
+	// the switch to a healthy sibling. Short-circuit before the central policy
+	// evaluates the kind so history cannot inflate the apparent retry count.
+	if out.FatalCredential {
+		return Decision{Reason: "cred_fatal"}
+	}
+
+	// Hard cap on the total forward attempts: at maxAttempts the request has
+	// no budget left for any retry or switch, and the attempt-cap vocabulary
+	// (failed(attempt_cap)) must be the terminal signal. This short-circuit
+	// matches the legacy ladder so the journal vocabulary stays stable.
+	if qr.AttemptCount >= maxAttempts {
+		return Decision{Action: NextActionFailed, Reason: reasonAttemptCap}
+	}
+
 	kind := errorsx.ErrorKind(out.ErrorKind)
 	if kind == "deadline_exceeded" {
 		kind = errorsx.KindTimeout
@@ -190,13 +206,10 @@ func PlanAfterFailure(qr *QueuedRequest, out ForwardOutcome, cfg Config) Decisio
 	if action.Action == errorsx.ActionFailClosed || action.Action == errorsx.ActionClientCanceled {
 		return Decision{Action: NextActionFailed, Reason: action.ReasonCode}
 	}
-	if out.FatalCredential || qr.CredRetryCount >= retryBudgetOf(qr, cfg) {
-		return Decision{Reason: "cred_budget_exhausted"}
-	}
-	if AttemptBudgetLeft(qr) <= 0 {
-		return Decision{Action: NextActionFailed, Reason: reasonAttemptCap}
-	}
-
+	// Trust the central policy: it already folds retry budget, attempt cap,
+	// history-derived retry count, and node switches into a single decision.
+	// Returning Action here is authoritative; downstream stages (PlanSwitchCred,
+	// PlanModelChange, attempt-cap terminal) handle the fall-through cases.
 	switch action.Action {
 	case errorsx.ActionRetrySameNode:
 		return Decision{Action: NextActionRetrySameCred, Reason: action.ReasonCode}
@@ -207,11 +220,13 @@ func PlanAfterFailure(qr *QueuedRequest, out ForwardOutcome, cfg Config) Decisio
 		return Decision{Reason: action.ReasonCode}
 	case errorsx.ActionClientCanceled:
 		return Decision{Action: NextActionFailed, Reason: "client_canceled"}
-	case errorsx.ActionFailTerminal, errorsx.ActionFailClosed, errorsx.ActionResumeBlocked:
+	case errorsx.ActionFailTerminal, errorsx.ActionResumeBlocked:
 		return Decision{Action: NextActionFailed, Reason: action.ReasonCode}
 	default:
-		// SwitchNode/WaitRecovery are executed by the existing dispatch ladder;
-		// an empty action deliberately falls through to sibling selection.
+		// ActionSwitchNode / ActionFailClosed / empty action deliberately fall
+		// through to sibling selection; PlanSwitchCred and PlanModelChange then
+		// pick the next concrete target. The attempt cap and fatal-credential
+		// short-circuits above remain in place.
 		return Decision{Reason: action.ReasonCode}
 	}
 }

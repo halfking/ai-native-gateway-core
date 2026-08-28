@@ -230,7 +230,8 @@ func historyNodeRetryCount(history DecisionHistory, node ActionNode) int {
 
 func retryableActionKind(kind ErrorKind) bool {
 	switch kind {
-	case KindEmptyResponse, KindTransient, KindTimeout, KindNetwork, KindStreamTimeout, KindConcurrent, KindUpstreamOverloaded:
+	case KindEmptyResponse, KindTransient, KindTimeout, KindNetwork, KindStreamTimeout, KindConcurrent,
+		KindUpstreamOverloaded, KindUpstreamDown:
 		return true
 	default:
 		return false
