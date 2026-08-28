@@ -5,7 +5,7 @@
 -- ARGV[3] = incoming_available (0|1)
 -- ARGV[4] = incoming_fail_streak
 -- ARGV[5] = incoming_reason
--- ARGV[6] = current_admin_hold (0|1)
+-- ARGV[6] = caller-supplied admin_hold (0|1) [DEPRECATED: lua now reads manual_hold directly]
 
 local node_key = KEYS[1]
 local in_gen = tonumber(ARGV[1])
@@ -13,11 +13,20 @@ local in_pri = tonumber(ARGV[2])
 local in_avail = tonumber(ARGV[3])
 local in_streak = tonumber(ARGV[4])
 local in_reason = ARGV[5]
-local admin_hold = ARGV[6]
 
-if admin_hold == "1" then
+-- M3-style fix (2026-08-29): read manual_hold INSIDE the script so the
+-- short-circuit observes the live value at write time. Eliminates the
+-- prior TOCTOU race where the Go caller pre-read manual_hold via HGet
+-- and could hand a stale value to this script if ApplyAdmin flipped
+-- the flag in between. Also drops one hot-path RTT. Mirrors the
+-- apply_probe.lua M3 fix from 2026-07-28.
+local manual_hold = redis.call("HGET", node_key, "manual_hold")
+if manual_hold == "1" then
   return {"ignored_manual_hold", "0"}
 end
+-- Deprecated ARGV[6] retained for ABI parity with older callers; the
+-- live-read above is the source of truth. Admin priority still wins
+-- because a fresh HGET sees whatever ApplyAdmin just wrote.
 
 local cur_gen = tonumber(redis.call("HGET", node_key, "generation") or "0")
 local cur_pri = tonumber(redis.call("HGET", node_key, "source_priority") or "0")
