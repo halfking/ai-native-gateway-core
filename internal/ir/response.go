@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/errorsx"
 )
 
 // InternalResponse is the unified intermediate representation for upstream
@@ -328,6 +330,30 @@ func ParseOpenAIResponse(body []byte) (*InternalResponse, error) {
 		choice := src.Choices[0]
 		ir.Role = choice.Message.Role
 		ir.FinishReason = choice.FinishReason
+
+		// 2026-08-28 P1-GLM-2: Zhipu GLM uses finish_reason as an error
+		// channel (network_error/sensitive/model_context_window_exceeded).
+		// Streaming path already detects these (ae1ecaedf); add detection
+		// to non-stream path so HTTP 200 responses with these finish_reason
+		// values are classified as errors rather than silently succeeding.
+		switch choice.FinishReason {
+		case "network_error":
+			return nil, &ParseError{
+				Kind:    errorsx.KindNetwork,
+				Message: "GLM network_error",
+			}
+		case "sensitive":
+			return nil, &ParseError{
+				Kind:    errorsx.KindContentFilter,
+				Message: "GLM content filter: sensitive",
+			}
+		case "model_context_window_exceeded":
+			return nil, &ParseError{
+				Kind:    errorsx.KindContextLength,
+				Message: "GLM context window exceeded",
+			}
+		}
+
 		if choice.Message.ReasoningContent != "" {
 			ir.ReasoningContent = choice.Message.ReasoningContent
 		}
