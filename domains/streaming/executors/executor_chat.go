@@ -1316,7 +1316,23 @@ func (e *Executor) executeOpenAI(
 			if e.Normalize != nil {
 				respBody = e.Normalize(respBody, false)
 			}
-			// 2026-07-20: Strip vendor-private fields (minimax/zhipu/deepseek/doubao)
+				// 2026-08-28 P0-MiniMax-1: Detect MiniMax base_resp.status_code
+				// before stripVendorFields. MiniMax wraps errors in HTTP 200
+				// responses with {base_resp: {status_code: non-0, status_msg}}.
+				// If we strip base_resp first, the error signal is permanently lost.
+				if cand.CatalogCode == "minimax" {
+					if code, msg, isErr := parseMiniMaxBaseResp(respBody); isErr {
+						kind := classifyMiniMaxStatusCode(code)
+						return nil, &upstreampkg.Error{
+							Kind:       kind,
+							Message:    fmt.Sprintf("MiniMax error %d: %s", code, msg),
+							Body:       append([]byte(nil), respBody...),
+							StatusCode: resp.StatusCode, // HTTP status is 200 but base_resp signals error
+							RetryAfter: upstreampkg.RetryAfterFromHeaders(resp.Header),
+						}
+					}
+				}
+				// 2026-07-20: Strip vendor-private fields (minimax/zhipu/deepseek/doubao)
 			// before protocol conversion and client write. Missing this step caused
 			// 5xx errors for gpt-5.2/gpt-5.6-luna/Minimax-m3 when vendor fields were
 			// present in the response body but not properly cleaned.
@@ -1916,4 +1932,50 @@ func (e *Executor) upstreamContext(params *ExecParams, timeout time.Duration) (c
 		return context.WithCancel(params.R.Context())
 	}
 	return context.WithTimeout(params.R.Context(), timeout)
+}
+// parseMiniMaxBaseResp extracts MiniMax's HTTP 200-wrapped error signal
+// (base_resp.status_code). Inline version to avoid import cycle with streaming pkg.
+func parseMiniMaxBaseResp(body []byte) (statusCode int, statusMsg string, isError bool) {
+	if len(body) == 0 {
+		return 0, "", false
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return 0, "", false
+	}
+	baseRespRaw, ok := raw["base_resp"]
+	if !ok {
+		return 0, "", false
+	}
+	var baseResp struct {
+		StatusCode int    `json:"status_code"`
+		StatusMsg  string `json:"status_msg"`
+	}
+	if err := json.Unmarshal(baseRespRaw, &baseResp); err != nil {
+		return 0, "", false
+	}
+	return baseResp.StatusCode, baseResp.StatusMsg, baseResp.StatusCode != 0
+}
+
+func classifyMiniMaxStatusCode(code int) errorsx.ErrorKind {
+	switch code {
+	case 0:
+		return ""
+	case 1002:
+		return errorsx.KindRateLimit
+	case 1004:
+		return errorsx.KindAuth
+	case 1008:
+		return errorsx.KindQuota
+	case 1027:
+		return errorsx.KindContentFilter
+	case 1039:
+		return errorsx.KindContextLength
+	case 1001:
+		return errorsx.KindTimeout
+	case 2013:
+		return errorsx.KindClientBug
+	default:
+		return errorsx.KindUpstreamDown
+	}
 }

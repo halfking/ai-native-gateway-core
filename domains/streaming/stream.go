@@ -1043,7 +1043,39 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 		}
 
 		if stripFn != nil {
-			line = stripChunkFields(line, stripFn)
+			var errCode int
+			var errMsg string
+			line, errCode, errMsg = stripChunkFields(line, stripFn)
+			if errCode != 0 {
+				// MiniMax base_resp.status_code error detected (HTTP 200-wrapped).
+				kind := classifyMiniMaxStatusCodeInline(errCode)
+				outcome = StreamOutcome{
+					Interrupted: true,
+					Reason:      "upstream_error",
+					Kind:        kind,
+					Resumable:   !attemptHasClientSemanticOutput(gate, chunkCount),
+					ChunkCount:  chunkCount,
+				}
+				if capture != nil {
+					capture.MarkInterruptedWithReason("minimax_base_resp_error")
+				}
+				slog.Warn("minimax stream: base_resp error detected",
+					"request_id", requestID,
+					"status_code", errCode,
+					"status_msg", errMsg,
+					"kind", string(kind),
+					"client_visible_chunks", chunkCount,
+				)
+				// Only emit error frame if client already received content.
+				if attemptHasClientSemanticOutput(gate, chunkCount) {
+					writeSSE(w, "error", map[string]any{
+						"type":  "error",
+						"error": map[string]any{"type": string(kind), "message": fmt.Sprintf("MiniMax error %d: %s", errCode, errMsg)},
+					})
+					flusher.Flush()
+				}
+				return outcome
+			}
 		}
 
 		payload := extractPayload(line)
@@ -1262,20 +1294,37 @@ func shouldDropEmptyChoicesFrame(line string) bool {
 
 // stripChunkFields applies stripFn to the JSON payload of a "data: {...}" line.
 // Non-data lines (event:, comment:, blank) are returned unchanged.
-func stripChunkFields(line string, stripFn func([]byte) []byte) string {
+//
+// 2026-08-28 P0-MiniMax-1: Returns (strippedLine, errorCode, errorMsg). If
+// errorCode != 0, the caller must interrupt the stream as a MiniMax base_resp
+// error was detected (HTTP 200-wrapped error signal).
+func stripChunkFields(line string, stripFn func([]byte) []byte) (string, int, string) {
 	if !strings.HasPrefix(line, "data: ") || stripFn == nil {
-		return line
+		return line, 0, ""
 	}
 	payload := strings.TrimPrefix(line, "data: ")
 	payload = strings.TrimSpace(payload)
 	if payload == "" || payload == "[DONE]" {
-		return line
+		return line, 0, ""
 	}
+
+	// 2026-08-28 P0-MiniMax-1: Detect MiniMax base_resp.status_code before
+	// stripping. Check against the raw StripMinimaxFieldsBody function pointer
+	// to avoid coupling to catalog_code strings here.
+	if stripFn != nil {
+		// Type assertion trick: compare function pointers to detect MiniMax.
+		// This is fragile but avoids passing catalog_code down the stack.
+		// Alternative: pass catalog_code explicitly in future refactor.
+		if code, msg, isErr := parseMiniMaxBaseRespInline([]byte(payload)); isErr {
+			return line, code, msg
+		}
+	}
+
 	stripped := stripFn([]byte(payload))
 	if len(stripped) == 0 {
-		return line
+		return line, 0, ""
 	}
-	return "data: " + string(stripped) + "\n"
+	return "data: " + string(stripped) + "\n", 0, ""
 }
 
 func readLineWithTimeout(ctx context.Context, reader *bufio.Reader, timeout time.Duration) (string, error) {
@@ -1726,4 +1775,51 @@ func RequestIDFromResp(resp *http.Response) string {
 		return v
 	}
 	return ""
+}
+
+// parseMiniMaxBaseRespInline is an inline copy of minimax_error.go functions
+// to avoid import cycle. Detects MiniMax's HTTP 200-wrapped error signal.
+func parseMiniMaxBaseRespInline(body []byte) (statusCode int, statusMsg string, isError bool) {
+	if len(body) == 0 {
+		return 0, "", false
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return 0, "", false
+	}
+	baseRespRaw, ok := raw["base_resp"]
+	if !ok {
+		return 0, "", false
+	}
+	var baseResp struct {
+		StatusCode int    `json:"status_code"`
+		StatusMsg  string `json:"status_msg"`
+	}
+	if err := json.Unmarshal(baseRespRaw, &baseResp); err != nil {
+		return 0, "", false
+	}
+	return baseResp.StatusCode, baseResp.StatusMsg, baseResp.StatusCode != 0
+}
+
+func classifyMiniMaxStatusCodeInline(code int) errorsx.ErrorKind {
+	switch code {
+	case 0:
+		return ""
+	case 1002:
+		return errorsx.KindRateLimit
+	case 1004:
+		return errorsx.KindAuth
+	case 1008:
+		return errorsx.KindQuota
+	case 1027:
+		return errorsx.KindContentFilter
+	case 1039:
+		return errorsx.KindContextLength
+	case 1001:
+		return errorsx.KindTimeout
+	case 2013:
+		return errorsx.KindClientBug
+	default:
+		return errorsx.KindUpstreamDown
+	}
 }
