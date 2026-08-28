@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 // strPtr is a small helper for building telemetry entries with body pointers.
@@ -256,5 +257,85 @@ func TestCaptureFromEntry_PublicHook_GoesThroughForwarder(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(tmp, "public-hook-001.json")); err != nil {
 		t.Fatalf("body file not written by forwarder: %v", err)
+	}
+}
+
+// TestCaptureForwarder_DropsOversizeAtEmit (2026-08-29 audit follow-up):
+// emit() must reject entries whose aggregate body size exceeds
+// MaxBodyFileSize BEFORE enqueueing, to bound queue memory at
+// capacity × MaxBodyFileSize. Without this guard, a single 100MB body
+// would consume 100MB of queue buffer per enqueue, and 2048 × 100MB
+// = 200GB worst-case. The pre-enqueue guard ensures each queue slot
+// is at most MaxBodyFileSize.
+//
+// We construct an entry whose RequestBody + OutboundBody exceed the
+// limit; emit() must increment the oversize-drop counter and leave the
+// queue empty.
+func TestCaptureForwarder_DropsOversizeAtEmit(t *testing.T) {
+	tmp := t.TempDir()
+	store, err := NewStore(tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fwd := newCaptureForwarder(store)
+	go fwd.run()
+	defer fwd.stop()
+
+	// Half the budget in each body to make the sum exceed MaxBodyFileSize
+	// with both fields set.
+	half := MaxBodyFileSize / 2
+	bigBody := make([]byte, half+1024) // slightly over half to ensure sum > Max
+	for i := range bigBody {
+		bigBody[i] = 'a'
+	}
+
+	entry := &telemetry.RequestLogEntry{
+		RequestID:   "oversize-001",
+		TenantID:    "default",
+		RequestBody: strPtr(string(bigBody)),
+		OutboundBody: json.RawMessage(bigBody),
+	}
+
+	before := testutil.ToFloat64(storeForwarderDroppedOversizeTotal)
+	fwd.emit(entry)
+	after := testutil.ToFloat64(storeForwarderDroppedOversizeTotal)
+
+	if after-before < 1 {
+		t.Fatalf("oversize entry must increment drop counter: before=%v after=%v", before, after)
+	}
+	enq, _, _, _ := fwd.Stats()
+	if enq != 0 {
+		t.Fatalf("oversize entry must NOT be enqueued, got enq=%d", enq)
+	}
+	// The body file must not exist either.
+	if _, err := os.Stat(filepath.Join(tmp, "oversize-001.json")); !os.IsNotExist(err) {
+		t.Fatalf("oversize entry must not produce a file: stat err=%v", err)
+	}
+}
+
+// TestCaptureForwarder_EmptyRequestIDLogsWarn (2026-08-29 audit follow-up):
+// entries with empty RequestID are a misconfiguration signal — the
+// caller should not silently lose data. emit() now logs a slog.Warn
+// before dropping. We pin the drop behaviour (still no enqueue) but
+// acknowledge the log line is hard to assert without log capture.
+func TestCaptureForwarder_EmptyRequestIDIsDropped(t *testing.T) {
+	tmp := t.TempDir()
+	store, err := NewStore(tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fwd := newCaptureForwarder(store)
+	go fwd.run()
+	defer fwd.stop()
+
+	entry := &telemetry.RequestLogEntry{
+		TenantID: "default",
+		// RequestID intentionally empty
+		RequestBody: strPtr(`{"x":1}`),
+	}
+	fwd.emit(entry)
+	enq, _, _, _ := fwd.Stats()
+	if enq != 0 {
+		t.Fatalf("empty RequestID must not enqueue, got enq=%d", enq)
 	}
 }

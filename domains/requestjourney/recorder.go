@@ -27,6 +27,12 @@ type journeyEventWriter interface {
 	Apply(context.Context, JourneyEvent) error
 }
 
+// JourneyEventPublisher accepts a journey event before asynchronous durable
+// projections begin. ObservationOutbox implements this contract.
+type JourneyEventPublisher interface {
+	Enqueue(context.Context, JourneyEvent) error
+}
+
 type ingressEventWriter interface {
 	ApplyIngress(context.Context, IngressEvent) error
 }
@@ -307,6 +313,41 @@ type Recorder struct {
 }
 
 func NewRecorder(memory *Projection, redisStore *RedisStore, pg *PostgresRepository) *Recorder {
+	return newRecorderWithPublisher(memory, nil, redisStore, pg)
+}
+
+// NewDurableRecorder keeps the local projection synchronous while committing
+// tenant journey events to publisher before any external projection. Ingress
+// events retain the existing Redis-only bounded pump.
+func NewDurableRecorder(memory *Projection, publisher JourneyEventPublisher, redisStore *RedisStore) *Recorder {
+	var ingressRedisWriter ingressEventWriter
+	if redisStore != nil && redisStore.client != nil {
+		ingressRedisWriter = redisStore
+	}
+	options := recorderOptions{}
+	if options.queueCapacity <= 0 {
+		options.queueCapacity = defaultRecorderQueueCapacity
+	}
+	if options.writeTimeout <= 0 {
+		options.writeTimeout = defaultRecorderWriteTimeout
+	}
+	r := newRecorderWithIngress(memory, nil, ingressRedisWriter, nil, options)
+	if publisher != nil {
+		durableOptions := options
+		// A failed enqueue was never durable. Do not keep it in a process-local
+		// retry queue and imply restart recovery that cannot be provided.
+		durableOptions.maxAttempts = 1
+		r.pumps = append([]*storePump{newJourneyPump("durable_outbox", "durable outbox", durableOptions, publisher.Enqueue)}, r.pumps...)
+		r.pumps[0].onWriteDrop = r.makeWriteDropHandler(r.pumps[0])
+		r.pumps[0].start()
+	}
+	return r
+}
+
+func newRecorderWithPublisher(memory *Projection, publisher JourneyEventPublisher, redisStore *RedisStore, pg *PostgresRepository) *Recorder {
+	if publisher != nil {
+		return NewDurableRecorder(memory, publisher, redisStore)
+	}
 	var redisWriter journeyEventWriter
 	if redisStore != nil && redisStore.client != nil {
 		redisWriter = redisStore
@@ -386,6 +427,9 @@ func (r *Recorder) makeWriteDropHandler(pump *storePump) func(recorderWrite, err
 	return func(write recorderWrite, writeErr error) {
 		if write.journey != nil {
 			r.markObservationDegraded(*write.journey)
+			if pump.name == "durable_outbox" {
+				recordObservationOutboxEnqueueFailure()
+			}
 		} else if r.memory != nil {
 			r.memory.MarkIngressDegraded()
 		}
@@ -447,14 +491,17 @@ func (r *Recorder) Apply(_ context.Context, event JourneyEvent) error {
 			enqueueErrs = append(enqueueErrs, fmt.Errorf("request journey %s enqueue: %w", pump.displayName, err))
 		}
 	}
+	r.applyMu.Unlock()
+
 	if len(dropped) > 0 {
 		r.markObservationDegraded(event)
 	}
-	r.applyMu.Unlock()
-
 	for i, pump := range dropped {
 		recordJourneyDropWithStore(enqueueReasonPump(enqueueErrs[i]), pump.name)
 		recordJourneyDegradedWithStore(enqueueReasonPump(enqueueErrs[i]), pump.name)
+		if pump.name == "durable_outbox" {
+			recordObservationOutboxEnqueueFailure()
+		}
 		r.report(enqueueErrs[i])
 	}
 	return nil
@@ -560,7 +607,7 @@ func (r *Recorder) Close(ctx context.Context) error {
 func (r *Recorder) journeyPumps() []*storePump {
 	var pumps []*storePump
 	for _, pump := range r.pumps {
-		if pump.name == "redis" || pump.name == "postgres" {
+		if pump.name == "redis" || pump.name == "postgres" || pump.name == "durable_outbox" {
 			pumps = append(pumps, pump)
 		}
 	}

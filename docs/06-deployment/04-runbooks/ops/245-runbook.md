@@ -104,6 +104,11 @@ ssh 245 '
 | panic | `journalctl -u llmgo-245 --since "30d ago" \| grep -i panic` | 0 |
 | OOM killed | `dmesg --since "30d ago" \| grep -iE "oom\|killed process"` | 0 |
 | MemoryMax 触发 | `journalctl -u llmgo-245 --since "10m ago" \| grep -i "memory" \| grep -i "kill"` | 0 |
+| requestdetail Clear residue | `curl -s http://127.0.0.1:9090/metrics \| grep requestdetail_store_clear_failures_total` | rate == 0 |
+| requestdetail eviction residue | `curl -s http://127.0.0.1:9090/metrics \| grep requestdetail_store_eviction_failures_total` | rate == 0 |
+| requestdetail oversize drop | `curl -s http://127.0.0.1:9090/metrics \| grep requestdetail_forwarder_dropped_oversize_total` | rate == 0；持续 > 0 提示客户端发送了异常大体量 body |
+| requestdetail malformed snapshot | `curl -s http://127.0.0.1:9090/metrics \| grep requestdetail_malformed_snapshot_total` | rate == 0；持续 > 0 提示 /tmp 写入或 JSON 序列化有 bug |
+| requestdetail forwarder stop timeout | `journalctl -u llmgo-245 --since "10m ago" \| grep "capture forwarder stop timed out"` | 0；> 0 提示 /tmp 极慢或磁盘 I/O 拥塞 |
 | cert 剩余 | `ssh 245 'certbot certificates 2>&1 \| grep "Expiry Date"'` | ≥ 30 days |
 | DB cache hit | `docker exec pg-252-pg17 psql -U llm_gateway -d llm_gateway -c "SELECT ROUND(100.0*blks_hit/(blks_hit+blks_read),1) FROM pg_stat_database WHERE datname='llm_gateway';"` | ≥ 99 % |
 | DB rollback 率 | `docker exec pg-252-pg17 psql -U llm_gateway -d llm_gateway -c "SELECT ROUND(100.0*xact_rollback::numeric/(xact_commit+xact_rollback),1) FROM pg_stat_database WHERE datname='llm_gateway';"` | ≤ 5 % |
@@ -251,3 +256,58 @@ ssh 245 'redis-cli -h "$COMMON_REDIS_HOST_252" -p "$COMMON_REDIS_PORT_252" dbsiz
 - P0/P1 修复 commit: 见 `git log --grep="P0\|P1" --oneline main`
 - live swim lane UI: 打开 llmgo.kxpms.cn admin → "供应商" 维度泳道
 - pprof diagnostic: `http://127.0.0.1:6060/debug/pprof/` (loopback only, ssh tunnel: `ssh -L 6060:127.0.0.1:6060 root@245`)
+
+## 12. Request-Detail pre-release validation (2026-08-28 audit follow-up)
+
+Request-Detail 审计闭环第三轮新增的回归验证。每次发版前在本地跑一遍，全部通过再 deploy 到 245。
+
+### 12.1 编译 / 测试
+
+```bash
+# 1. 编译 (5 秒以内)
+go build ./cmd/gateway
+
+# 2. 单元测试 (requestdetail 包 < 5 秒)
+go test ./domains/requestdetail/ -race -count=1
+
+# 3. admin 包必须全绿 (含 5 个跨租户隔离回归测试)
+go test ./admin/ -count=1 -timeout 5m
+
+# 4. bg 包
+go test ./bg/... -count=1 -timeout 3m
+
+# 5. vet
+go vet ./...
+```
+
+任何一步失败 → **不要 deploy**，回滚到上一个 verified 版本。
+
+### 12.2 request_id 兼容性
+
+`domains/requestdetail/safe_id_test.go` 的两个测试是 request-id 格式的"宪法"，任何修改都必须保持通过：
+
+- `TestSafeRequestIDCompatibilityMatrix` — 30+ 行兼容性矩阵（含 path-traversal 向量、UUID 格式、连字符连号拒绝等）
+- `TestSafeRequestIDCompatibleIDsEndToEnd` — hex-only / uuid-dashed / prefixed 三类 id 端到端 round-trip
+
+如果新增了一种 request_id 格式（例如新引入 ulid），先在矩阵里加一行 + 更新 store.go 的 `safeRequestIDPattern`，再发布。
+
+### 12.3 部署后残留监控
+
+部署成功后立即验证两个新指标（§5 已加入监控表）：
+
+```bash
+# prometheus 直接拉
+curl -s http://127.0.0.1:9090/metrics | grep requestdetail_store_clear_failures_total
+curl -s http://127.0.0.1:9090/metrics | grep requestdetail_store_eviction_failures_total
+```
+
+正常情况下两者都应 = 0。如果出现 > 0：
+
+1. 立即 `journalctl -u llmgo-245 --since "10m ago" | grep requestdetail` 看 slog.Warn
+2. 命中 `result="permission"` 标签 → 检查 `/tmp/llmgw-request-detail` 的 ownership/mount flag
+3. 命中 `result="other"` 标签 → 检查 `/tmp` 的 inode/磁盘空间
+
+### 12.4 多副本可见性（2026-08-28 仍为已知缺陷）
+
+详见 `docs/implementation/request-detail-cross-replica-visibility-20260828.md`。当前部署假设 sticky-session，跨副本查询在 persist 完成前会返回 metadata-only 警告或 404。已记录为中期改造项（方案 B + D），本节不阻塞 245 验证。
+

@@ -13,7 +13,36 @@ import (
 	"time"
 )
 
-var safeRequestID = regexp.MustCompile(`^[A-Za-z0-9._-]{8,128}$`)
+// safeRequestID accepts three families of request-id shapes observed in
+// the codebase. The whitelist is intentionally narrow at the CHARACTER
+// level — every accepted shape is built from [A-Za-z0-9._-] — but the
+// structure constraints are strict:
+//
+//   - hex-only:    [0-9a-f]{32}                       (server-generated,
+//                                                       case-insensitive)
+//   - uuid-dashed: [0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}
+//   - prefixed:    starts with a letter, total 8-128 chars,
+//                  no runs of dots or dashes. Examples: "req-unified-01",
+//                  "req_1", "req-same-tenant", "bench-1a2b3c4d",
+//                  "routing-test-<uuid>-00".
+//
+// 2026-08-28 (audit follow-up): the original regex
+// `^[A-Za-z0-9._-]{8,128}$` was too permissive — any 8-char "abc..def"
+// was accepted even though ".." could be a path-traversal vector if a
+// downstream tool failed to call filepath.Base. The new pattern:
+//   - exact-shape branches for hex-only and uuid-dashed (case-insensitive)
+//   - prefix branch that MUST start with a letter (rejects ".hidden",
+//     "..", "1abc" — anything beginning with a digit or dot)
+//   - prefix branch atom = (one or more safe chars) or (one separator
+//     followed by exactly one safe char). The atom trick is the
+//     RE2-friendly way to forbid runs of separators since RE2 has no
+//     negative-lookahead. See TestSafeRequestIDCompatibilityMatrix.
+//
+// Length 8-128 is enforced programmatically alongside the regex match.
+// The (?i) flag covers both upper- and lowercase hex.
+var safeRequestIDPattern = regexp.MustCompile(
+	`(?i)^([0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[A-Za-z](?:[A-Za-z0-9]+|[._-][A-Za-z0-9])+)$`,
+)
 
 // ErrBodyTooLarge indicates that a request-detail body exceeds the storage/read limit.
 var ErrBodyTooLarge = errors.New("requestdetail: body file exceeds size limit")
@@ -192,6 +221,11 @@ func (s *Store) GetFile(requestID string) (filePayload, bool, error) {
 		latest, statErr := os.Stat(path)
 		if statErr == nil && time.Since(latest.ModTime()) >= s.ttl {
 			if removeErr := os.Remove(path); removeErr != nil && !os.IsNotExist(removeErr) {
+				storeEvictionFailuresTotal.WithLabelValues("ttl", normalizeRemoveErr(removeErr)).Inc()
+				slog.Warn("requestdetail: ttl remove on read failed",
+					"request_id", requestID,
+					"path", path,
+					"error", removeErr)
 				return filePayload{}, false, removeErr
 			}
 		}
@@ -232,6 +266,7 @@ func (s *Store) GetFile(requestID string) (filePayload, bool, error) {
 	var p filePayload
 	if err := json.Unmarshal(raw, &p); err != nil {
 		// A broken local snapshot must not prevent the DB fallback.
+		storeMalformedSnapshotTotal.Inc()
 		slog.Warn("requestdetail: ignoring malformed local snapshot", "request_id", requestID, "error", err)
 		return filePayload{}, false, nil
 	}
@@ -258,6 +293,17 @@ func (s *Store) HasLocal(requestID string) bool {
 }
 
 // Clear removes memory meta and the local file after DB persist.
+// Surface os.Remove failures via slog.Warn + the residue counters so
+// dashboards can alert on persistent failures (read-only mount, NFS
+// stale handle, chmod 0). 2026-08-28 (audit follow-up): previously the
+// failure path only emitted a single warn line; operators had no
+// quantitative signal for sensitive-file residue.
+//
+// 2026-08-29 (audit follow-up): the previous implementation returned
+// immediately on the primary file's Remove failure, leaving the .tmp
+// sidecar behind. Both files must be attempted in a single pass —
+// residue is residue regardless of which file it lives in. The errors
+// are joined so the caller still sees a non-nil return.
 func (s *Store) Clear(requestID string) error {
 	if s == nil {
 		return nil
@@ -273,10 +319,28 @@ func (s *Store) Clear(requestID string) error {
 		return nil
 	}
 	path := s.filePath(requestID)
+	var errs []error
+
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		return err
+		storeClearFailuresTotal.WithLabelValues(normalizeRemoveErr(err)).Inc()
+		slog.Warn("requestdetail: clear after persist failed to remove file",
+			"request_id", requestID,
+			"path", path,
+			"error", err)
+		errs = append(errs, fmt.Errorf("primary: %w", err))
 	}
-	_ = os.Remove(path + ".tmp")
+	if tmpErr := os.Remove(path + ".tmp"); tmpErr != nil && !os.IsNotExist(tmpErr) {
+		storeClearFailuresTotal.WithLabelValues(normalizeRemoveErr(tmpErr)).Inc()
+		slog.Warn("requestdetail: clear after persist failed to remove tmp sidecar",
+			"request_id", requestID,
+			"path", path+".tmp",
+			"error", tmpErr)
+		errs = append(errs, fmt.Errorf("tmp: %w", tmpErr))
+	}
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
+	storeClearSuccessTotal.Inc()
 	return nil
 }
 
@@ -286,8 +350,18 @@ func (s *Store) evictLocked(now time.Time) {
 			delete(s.mem, id)
 			delete(s.updated, id)
 			if s.dir != "" {
-				_ = os.Remove(s.filePath(id))
-				_ = os.Remove(s.filePath(id) + ".tmp")
+				if err := os.Remove(s.filePath(id)); err != nil && !os.IsNotExist(err) {
+					storeEvictionFailuresTotal.WithLabelValues("ttl", normalizeRemoveErr(err)).Inc()
+					slog.Warn("requestdetail: ttl eviction remove failed",
+						"request_id", id,
+						"error", err)
+				}
+				if err := os.Remove(s.filePath(id) + ".tmp"); err != nil && !os.IsNotExist(err) {
+					storeEvictionFailuresTotal.WithLabelValues("ttl", normalizeRemoveErr(err)).Inc()
+					slog.Warn("requestdetail: ttl eviction tmp remove failed",
+						"request_id", id,
+						"error", err)
+				}
 			}
 		}
 	}
@@ -305,8 +379,18 @@ func (s *Store) evictLocked(now time.Time) {
 		delete(s.mem, oldest)
 		delete(s.updated, oldest)
 		if s.dir != "" {
-			_ = os.Remove(s.filePath(oldest))
-			_ = os.Remove(s.filePath(oldest) + ".tmp")
+			if err := os.Remove(s.filePath(oldest)); err != nil && !os.IsNotExist(err) {
+				storeEvictionFailuresTotal.WithLabelValues("lru", normalizeRemoveErr(err)).Inc()
+				slog.Warn("requestdetail: lru eviction remove failed",
+					"request_id", oldest,
+					"error", err)
+			}
+			if err := os.Remove(s.filePath(oldest) + ".tmp"); err != nil && !os.IsNotExist(err) {
+				storeEvictionFailuresTotal.WithLabelValues("lru", normalizeRemoveErr(err)).Inc()
+				slog.Warn("requestdetail: lru eviction tmp remove failed",
+					"request_id", oldest,
+					"error", err)
+			}
 		}
 	}
 }
@@ -328,7 +412,12 @@ func (s *Store) cleanupFiles(now time.Time) {
 			continue
 		}
 		if now.Sub(info.ModTime()) >= s.ttl {
-			_ = os.Remove(filepath.Join(s.dir, entry.Name()))
+			if err := os.Remove(filepath.Join(s.dir, entry.Name())); err != nil && !os.IsNotExist(err) {
+				storeEvictionFailuresTotal.WithLabelValues("cleanup", normalizeRemoveErr(err)).Inc()
+				slog.Warn("requestdetail: cleanup remove failed",
+					"path", entry.Name(),
+					"error", err)
+			}
 		}
 	}
 }
@@ -339,8 +428,23 @@ func (s *Store) filePath(requestID string) string {
 
 // ValidateRequestID validates the identifier accepted by the local file store.
 // It is exported so HTTP entry points can return a client error before lookup.
+//
+// The check has three parts:
+//   - structural: safeRequestIDPattern matches one of the three accepted
+//     shapes (hex-only, uuid-dashed, prefixed).
+//   - length: 8 <= len(id) <= 128 (enforced separately because RE2's
+//     {min,max} cannot distinguish "8 chars of safe" from "8 chars including
+//     separators").
+//   - non-empty: empty string is rejected by both above checks, but listed
+//     here for documentation.
 func ValidateRequestID(id string) error {
-	if !safeRequestID.MatchString(id) {
+	if id == "" {
+		return fmt.Errorf("requestdetail: invalid request_id")
+	}
+	if len(id) < 8 || len(id) > 128 {
+		return fmt.Errorf("requestdetail: invalid request_id")
+	}
+	if !safeRequestIDPattern.MatchString(id) {
 		return fmt.Errorf("requestdetail: invalid request_id")
 	}
 	return nil
