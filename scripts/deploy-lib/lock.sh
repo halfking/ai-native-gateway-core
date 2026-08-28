@@ -6,8 +6,9 @@
 #
 #   - Local lock: a target-scoped lock that protects deployment state for
 #     one remote target. 154 and 245 intentionally use different lock paths.
-#     Uses `flock` when available; otherwise acquires an atomic `mkdir` lock
-#     and removes it via trap on normal and error exits.
+#     A separate shared build lock protects checkout mutations. Both use
+#     `flock` when available, otherwise an atomic `mkdir` lock, and are
+#     released via traps on normal and error exits.
 #
 #   - Remote lock: an atomic `mkdir` lock directory on the target host
 #     holding metadata (target, source OS user, source hostname, local
@@ -76,24 +77,17 @@ lock_write_metadata() {
 lock_acquire_local() {
   lock_ensure_local_dir
   if [[ -n "$LOCK_FLOCK_BIN" ]]; then
-    exec {LOCK_LOCAL_FD}>"$LOCK_LOCAL_DIR"
+    # Open read/write without truncating an existing holder's metadata. Only
+    # truncate after the non-blocking flock succeeds.
+    exec {LOCK_LOCAL_FD}<>"$LOCK_LOCAL_DIR"
     if ! "$LOCK_FLOCK_BIN" -n "$LOCK_LOCAL_FD"; then
       echo "ERROR: local lock held at $LOCK_LOCAL_DIR" >&2
-      eval "exec ${LOCK_LOCAL_FD}<&-"
+      eval "exec ${LOCK_LOCAL_FD}>&-"
       LOCK_LOCAL_FD=
       return 75  # EX_TEMPFAIL — standard "try again" code
     fi
-    # Stamp metadata inside the locked file so `ps`/inspectors can see
-    # who holds the lock.
-    {
-      printf 'target=%s\n' "${LOCK_LOCAL_TARGET:-?}"
-      printf 'source_user=%s\n' "${SOURCE_USER:-$(id -un 2>/dev/null || echo unknown)}"
-      printf 'source_host=%s\n' "${SOURCE_HOST:-$(hostname 2>/dev/null || echo unknown)}"
-      printf 'pid=%s\n' "$$"
-      printf 'started_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-      printf 'commit=%s\n' "${SOURCE_COMMIT:-$(git rev-parse HEAD 2>/dev/null || echo unknown)}"
-      printf 'version=%s\n' "${SOURCE_VERSION:-$(cat version.json 2>/dev/null | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' || echo unknown)}"
-    } >&"$LOCK_LOCAL_FD"
+    : >"$LOCK_LOCAL_DIR"
+    lock_write_metadata "${LOCK_LOCAL_TARGET:-?}" >&"$LOCK_LOCAL_FD"
     return 0
   fi
 
@@ -135,13 +129,14 @@ lock_release_local() {
 lock_acquire_build() {
   lock_ensure_build_dir
   if [[ -n "$LOCK_BUILD_FLOCK_BIN" ]]; then
-    exec {LOCK_BUILD_FD}>"$LOCK_LOCAL_BUILD_DIR"
+    exec {LOCK_BUILD_FD}<>"$LOCK_LOCAL_BUILD_DIR"
     if ! "$LOCK_BUILD_FLOCK_BIN" -n "$LOCK_BUILD_FD"; then
       echo "ERROR: shared build lock held at $LOCK_LOCAL_BUILD_DIR (requested target=${LOCK_BUILD_TARGET:-?})" >&2
-      eval "exec ${LOCK_BUILD_FD}<&-"
+      eval "exec ${LOCK_BUILD_FD}>&-"
       LOCK_BUILD_FD=
       return 75
     fi
+    : >"$LOCK_LOCAL_BUILD_DIR"
     lock_write_metadata "${LOCK_BUILD_TARGET:-build}" >&"$LOCK_BUILD_FD"
     return 0
   fi
@@ -164,6 +159,146 @@ lock_release_build() {
     return
   fi
   rm -rf "$LOCK_LOCAL_BUILD_DIR"
+}
+
+lock_meta_value() {
+  local file=$1 key=$2
+  [[ -f "$file" ]] || return 1
+  awk -F= -v k="$key" '$1 == k { sub($1 "=", ""); print; exit }' "$file"
+}
+
+lock_pid_is_deploy_process() {
+  local pid=$1 cmd
+  [[ "$pid" =~ ^[0-9]+$ && "$pid" != "$$" ]] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  cmd=$(ps -p "$pid" -o command= 2>/dev/null || true)
+  [[ "$cmd" == *deploy-seamless* || "$cmd" == *deploy-154.sh* || "$cmd" == *deploy-245.sh* ]]
+}
+
+# Probe an advisory flock without modifying the file. Return 0 when held,
+# 1 when available, and 2 when probing is impossible.
+lock_flock_is_held() {
+  local file=$1 bin=${2:-${LOCK_FLOCK_BIN:-}} fd
+  [[ -n "$bin" ]] || return 2
+  exec {fd}<>"$file" 2>/dev/null || return 2
+  if "$bin" -n "$fd" >/dev/null 2>&1; then
+    eval "exec ${fd}>&-"
+    return 1
+  fi
+  eval "exec ${fd}>&-"
+  return 0
+}
+
+# Recover a target local lock under explicit operator force. The target path is
+# always derived here; caller-provided LOCK_LOCAL_DIR is intentionally ignored.
+# A live PID is terminated only when it is identifiable as a deployment
+# process. This supports both mkdir locks (directory/metadata) and flock locks
+# (regular file containing metadata).
+lock_recover_local() {
+  local target=$1 force=${2:-0} dir meta holder_target holder_pid
+  [[ "$target" == 154 || "$target" == 245 ]] || { echo "ERROR: invalid lock target: $target" >&2; return 2; }
+  [[ "$force" == 1 ]] || return 0
+  dir="${TMPDIR:-/tmp}/kx-llm-gateway-deploy-${target}.lock"
+  [[ -e "$dir" ]] || return 0
+  if [[ -d "$dir" ]]; then meta="$dir/metadata"; else meta="$dir"; fi
+  holder_target=$(lock_meta_value "$meta" target 2>/dev/null || true)
+  if [[ -n "$holder_target" && "$holder_target" != "$target" ]]; then
+    echo "ERROR: refusing to force-remove $dir: metadata target=$holder_target (requested $target)" >&2
+    return 1
+  fi
+  if [[ ! -f "$meta" ]]; then
+    echo "ERROR: refusing to force-remove $dir: lock metadata is missing" >&2
+    return 1
+  fi
+  holder_pid=$(lock_meta_value "$meta" pid 2>/dev/null || true)
+  if [[ ! -d "$dir" ]]; then
+    local flock_rc=0
+    lock_flock_is_held "$dir" "$LOCK_FLOCK_BIN" || flock_rc=$?
+    case $flock_rc in
+      0) echo "ERROR: refusing to remove live flock lock $dir" >&2; return 75 ;;
+      2) echo "ERROR: cannot verify flock lock state for $dir" >&2; return 75 ;;
+    esac
+  fi
+  if [[ "$holder_pid" =~ ^[0-9]+$ ]] && kill -0 "$holder_pid" 2>/dev/null; then
+    if ! lock_pid_is_deploy_process "$holder_pid"; then
+      echo "ERROR: refusing to kill live non-deploy PID $holder_pid for $dir" >&2
+      return 75
+    fi
+    echo "[force] terminating stale target-$target deploy PID $holder_pid"
+    kill "$holder_pid" 2>/dev/null || true
+    for _ in 1 2 3 4 5; do
+      kill -0 "$holder_pid" 2>/dev/null || break
+      sleep 1
+    done
+    if kill -0 "$holder_pid" 2>/dev/null; then
+      kill -9 "$holder_pid" 2>/dev/null || true
+      sleep 1
+    fi
+    kill -0 "$holder_pid" 2>/dev/null && { echo "ERROR: PID $holder_pid still owns $dir" >&2; return 75; }
+  fi
+  rm -rf "$dir"
+  echo "[force] rebuilt target lock path: $dir"
+}
+
+# Recover the shared build lock only when its recorded owner is no longer
+# alive. A live owner is never removed because it may be building for either
+# target and deleting it would reintroduce shared-checkout races.
+lock_recover_build() {
+  local force=${1:-0} meta holder_pid
+  [[ "$force" == 1 ]] || return 0
+  lock_ensure_build_dir
+  [[ -e "$LOCK_LOCAL_BUILD_DIR" ]] || return 0
+  if [[ -d "$LOCK_LOCAL_BUILD_DIR" ]]; then meta="$LOCK_LOCAL_BUILD_DIR/metadata"; else meta="$LOCK_LOCAL_BUILD_DIR"; fi
+  holder_pid=$(lock_meta_value "$meta" pid 2>/dev/null || true)
+  if [[ ! -f "$meta" ]]; then
+    echo "ERROR: refusing to force-remove shared build lock: metadata is missing" >&2
+    return 1
+  fi
+  if [[ ! -d "$LOCK_LOCAL_BUILD_DIR" ]]; then
+    local flock_rc=0
+    lock_flock_is_held "$LOCK_LOCAL_BUILD_DIR" "$LOCK_BUILD_FLOCK_BIN" || flock_rc=$?
+    case $flock_rc in
+      0) echo "ERROR: shared build lock is still held by flock; refusing force removal" >&2; return 75 ;;
+      2) echo "ERROR: cannot verify shared build flock state" >&2; return 75 ;;
+    esac
+  fi
+  if [[ "$holder_pid" =~ ^[0-9]+$ ]] && kill -0 "$holder_pid" 2>/dev/null; then
+    echo "ERROR: shared build lock is still held by live PID $holder_pid; refusing force removal" >&2
+    return 75
+  fi
+  rm -rf "$LOCK_LOCAL_BUILD_DIR"
+  echo "[force] rebuilt shared build lock path: $LOCK_LOCAL_BUILD_DIR"
+}
+
+# Remote lock recovery. The remote command emits a sentinel for a missing
+# lock; SSH/read failures remain failures and are never treated as absence.
+lock_recover_remote() {
+  local ssh_cmd=$1 target=$2 lock_path=$3 force=${4:-0}
+  local payload holder_target holder_pid
+  [[ "$force" == 1 ]] || return 0
+  payload=$("$ssh_cmd" "if [ ! -e '$lock_path' ]; then printf '__LOCK_MISSING__'; elif [ ! -f '$lock_path/metadata' ]; then printf '__LOCK_MALFORMED__'; else cat '$lock_path/metadata'; fi") || {
+    echo "ERROR: cannot read remote lock on $target; refusing force recovery" >&2
+    return 75
+  }
+  [[ "$payload" == "__LOCK_MISSING__" ]] && return 0
+  if [[ "$payload" == "__LOCK_MALFORMED__" ]]; then
+    echo "[force] removing malformed remote lock on target $target"
+  else
+    holder_target=$(printf '%s\n' "$payload" | awk -F= '$1=="target" {sub($1 "=", ""); print; exit}')
+    if [[ -z "$holder_target" || "$holder_target" != "$target" ]]; then
+      echo "ERROR: remote lock target=${holder_target:-?} does not match requested target=$target" >&2
+      return 1
+    fi
+    # lock_acquire_remote records the source/deployer PID, not a PID on the
+    # target host. Never remove the lock while that source deploy is alive.
+    holder_pid=$(printf '%s\n' "$payload" | awk -F= '$1=="pid" {sub($1 "=", ""); print; exit}')
+    if [[ "$holder_pid" =~ ^[0-9]+$ ]] && kill -0 "$holder_pid" 2>/dev/null; then
+      echo "ERROR: remote lock belongs to live source PID $holder_pid; refusing force recovery" >&2
+      return 75
+    fi
+    echo "[force] removing confirmed stale remote lock for target $target"
+  fi
+  "$ssh_cmd" "rm -rf '$lock_path'" || { echo "ERROR: failed to remove remote lock on $target" >&2; return 75; }
 }
 
 # Remote lock — invoked via SSH. The contract is "atomic mkdir"; we do

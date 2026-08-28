@@ -13,14 +13,19 @@ import (
 // 2026-07-12 audit fix (audit-09): 移除 OpenAI compatible 标准字段。
 // - object、system_fingerprint 是 OpenAI compatible 标准字段，保留供客户端解析
 // - service_tier 是请求/响应官方定价字段，billing 依赖，保留
+//
+// 2026-08-28 P2-MiniMax-2: 保留内容审核字段用于细粒度分类。
+// - input_sensitive / output_sensitive (bool): 保留，标识是否触发审核
+// - input_sensitive_type / output_sensitive_type (1-7): 保留，细粒度分类级别
+// - 支持客户端进行更精细的内容审核决策与合规审计
 var minimaxPrivateFields = []string{
 	"nvext",
 	"audio_content",
 	"name",
-	"input_sensitive",
-	"input_sensitive_type",
-	"output_sensitive",
-	"output_sensitive_type",
+	// "input_sensitive",         // P2-MiniMax-2: 保留审核触发标识
+	// "input_sensitive_type",    // P2-MiniMax-2: 保留审核细粒度分类 (1-7)
+	// "output_sensitive",        // P2-MiniMax-2: 保留审核触发标识
+	// "output_sensitive_type",   // P2-MiniMax-2: 保留审核细粒度分类 (1-7)
 	"output_sensitive_int",
 	"base_resp",
 	"request_id",

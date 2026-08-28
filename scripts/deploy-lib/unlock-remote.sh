@@ -20,18 +20,13 @@
 #
 # Differences from unlock-local.sh:
 #
-#   - The remote holder's PID lives on the remote host. From this
-#     machine we cannot reliably kill it (we would have to SSH in and
-#     trust the remote process table, which is its own can of worms).
-#     So this helper only removes the lock directory; if the holder is
-#     still alive remotely, the operator must SSH in manually and kill
-#     it. The helper prints a warning to stderr when it sees a live PID.
+#   - lock.sh records the source/deployer PID, not a PID on the remote host.
+#     This helper never kills that PID remotely. The operator must verify the
+#     source process has ended before using --force; otherwise a new deploy
+#     could overlap the still-running source process.
 #
-#   - Sanity check on the remote metadata is best-effort: the metadata
-#     format is documented in scripts/deploy-lib/lock.sh
-#     (lock_acquire_remote) but we do not abort on every malformed line,
-#     because lock.sh historically writes keys in a stable order and any
-#     divergence is more likely a one-off operator patch than corruption.
+#   - Metadata target validation is strict. Missing or malformed metadata is
+#     never silently treated as a different target.
 #
 # Usage:
 #   bash scripts/deploy-lib/unlock-remote.sh <target>            # report only
@@ -61,10 +56,13 @@ TARGET=$1; shift
 FORCE=0
 SSH_KEY_OPT=""
 DIRECT=0
+SSH_KEY_OVERRIDE=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --force|-f)        FORCE=1; shift ;;
-    --ssh-key)         SSH_KEY_OPT="-i $2"; shift 2 ;;
+    --ssh-key)
+      [[ $# -ge 2 ]] || { echo "missing value for --ssh-key" >&2; exit 2; }
+      SSH_KEY_OVERRIDE=$2; shift 2 ;;
     --direct)          DIRECT=1; shift ;;
     --path)            LOCK_REMOTE_PATH=$2; shift 2 ;;
     -h|--help)
@@ -80,13 +78,13 @@ case "$TARGET" in
   154)
     REMOTE_HOST="${HOST_154:-${LOCK_REMOTE_HOST_154:-47.97.111.154}}"
     SSH_PORT="${SSH_PORT_154:-${LOCK_REMOTE_PORT_154:-25022}}"
-    SSH_KEY_FILE="${SSH_KEY_154:-${SSH_KEY_FILE:-}}"
+    SSH_KEY_FILE="${SSH_KEY_OVERRIDE:-${SSH_KEY_154:-${SSH_KEY_FILE:-}}}"
     REMOTE_USER="${REMOTE_USER:-root}"
     ;;
   245)
     REMOTE_HOST="${HOST_245:-${LOCK_REMOTE_HOST_245:-8.136.114.245}}"
     SSH_PORT="${SSH_PORT_245:-${LOCK_REMOTE_PORT_245:-25022}}"
-    SSH_KEY_FILE="${SSH_KEY_245:-${SSH_KEY_FILE:-}}"
+    SSH_KEY_FILE="${SSH_KEY_OVERRIDE:-${SSH_KEY_245:-${SSH_KEY_FILE:-}}}"
     REMOTE_USER="${REMOTE_USER:-root}"
     ;;
   *) echo "unknown target: $TARGET (expected 154 or 245)" >&2; exit 2 ;;
@@ -120,24 +118,35 @@ ssh_invoke() {
   elif [[ -n "${LOCK_REMOTE_SSH_CMD:-}" ]]; then
     eval "$LOCK_REMOTE_SSH_CMD" "'$1'"
   else
-    local key_opt=""
-    [[ -n "$SSH_KEY_FILE" && -f "$SSH_KEY_FILE" ]] && key_opt="-i $SSH_KEY_FILE"
-    # shellcheck disable=SC2086
-    ssh $key_opt -p "$SSH_PORT" \
+    local key_opt=()
+    local host_opt="${REMOTE_USER}@${REMOTE_HOST}"
+    [[ -n "$SSH_KEY_FILE" && -f "$SSH_KEY_FILE" ]] && key_opt=(-i "$SSH_KEY_FILE")
+    # --direct is meaningful for 154: bypass the 252 hop explicitly.
+    # Without --direct, this standalone helper uses the target host directly;
+    # callers needing deploy-seamless retry/proxy behavior use LOCK_REMOTE_SSH_CMD.
+    if [[ "$DIRECT" == 1 ]]; then
+      host_opt="${REMOTE_USER}@${REMOTE_HOST}"
+    fi
+    ssh "${key_opt[@]}" -p "$SSH_PORT" \
       -o BatchMode=yes -o ConnectTimeout=10 \
       -o StrictHostKeyChecking=accept-new \
-      "$REMOTE_USER@$REMOTE_HOST" "$1"
+      "$host_opt" "$1"
   fi
 }
 
 # Read whether the remote lock directory exists. We use a unique
 # sentinel so we can tell "does not exist" from "exists but cat failed".
 remote_lock_exists() {
-  if ssh_invoke "test -e '$LOCK_REMOTE_PATH' && echo EXISTS || echo MISSING" 2>/dev/null \
-       | grep -q '^EXISTS$'; then
-    return 0
-  fi
-  return 1
+  local result rc
+  result=$(ssh_invoke "if [ -e '$LOCK_REMOTE_PATH' ]; then printf EXISTS; else printf MISSING; fi" 2>/dev/null) || {
+    err "cannot query remote lock state (SSH/read failure)"
+    return 2
+  }
+  case "$result" in
+    EXISTS) return 0 ;;
+    MISSING) return 1 ;;
+    *) err "invalid remote lock state: $result"; return 2 ;;
+  esac
 }
 
 # Pull metadata as a single base64 blob so newlines in field values
@@ -151,9 +160,15 @@ remote_read_metadata() {
 echo "Target: $TARGET  host=$REMOTE_USER@$REMOTE_HOST:$SSH_PORT  path=$LOCK_REMOTE_PATH"
 echo ""
 
-if ! remote_lock_exists; then
-  ok "no remote lock at $LOCK_REMOTE_PATH — nothing to do"
-  exit 0
+if remote_lock_exists; then
+  :
+else
+  rc=$?
+  if [[ $rc -eq 1 ]]; then
+    ok "no remote lock at $LOCK_REMOTE_PATH — nothing to do"
+    exit 0
+  fi
+  exit 3
 fi
 
 META_B64=$(remote_read_metadata || true)
@@ -256,8 +271,7 @@ fi
 # the lock so the next deploy can acquire it.
 warn "removing remote lock at $LOCK_REMOTE_PATH (operator request)"
 if [[ -n "$HOLDER_PID" && "$HOLDER_PID" =~ ^[0-9]+$ ]]; then
-  warn "if PID $HOLDER_PID is still alive on $REMOTE_HOST, kill it manually:"
-  warn "    ssh $REMOTE_USER@$REMOTE_HOST 'kill $HOLDER_PID'"
+  warn "recorded PID $HOLDER_PID belongs to the source deploy host; verify it is no longer running before force removal"
 fi
 if ! ssh_invoke "rm -rf '$LOCK_REMOTE_PATH'"; then
   err "remote rm failed"
