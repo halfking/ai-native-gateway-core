@@ -448,14 +448,36 @@ func main() {
 		// 2026-08-28: In online mode, if offline license.dat verification fails,
 		// we do NOT enter restricted mode because the license is managed through
 		// the database and license API. The offline file is optional in this mode.
-		if err := licensing.EnforceAtStartup(
-			"/var/lib/kx-gateway/license.dat",
-			"/var/lib/kx-gateway/server.pub",
-			"/var/lib/kx-gateway",
-		); err != nil {
-			slog.Warn("offline license file verification failed (expected in online mode with DB license)", "error", err)
+		//
+		// audit-24h-20260828-r4 P3 doc (2026-08-28): The previous "license
+		// verification successful" log was ambiguous — it printed the same
+		// message whether the license came from the DB / license API (the
+		// authoritative source in online mode) OR from the offline file
+		// (which is OPTIONAL in online mode and ignored for authorization
+		// decisions). After the r4 patch below, the operator sees:
+		//   - offline file PRESENT and verifies  → "offline license file
+		//       detected and verified; ignored in online mode (DB is
+		//       authoritative)"
+		//   - offline file PRESENT but FAILS     → already handled by the
+		//       Warn branch above
+		//   - offline file ABSENT                 → "offline license file
+		//       absent; online mode (DB authoritative)" — common case for
+		//       fresh installs
+		// Either way the success log now tells the operator that the offline
+		// file is informational, not gating.
+		offlinePath := "/var/lib/kx-gateway/license.dat"
+		if _, statErr := os.Stat(offlinePath); statErr == nil {
+			if err := licensing.EnforceAtStartup(
+				"/var/lib/kx-gateway/license.dat",
+				"/var/lib/kx-gateway/server.pub",
+				"/var/lib/kx-gateway",
+			); err != nil {
+				slog.Warn("offline license file verification failed (expected in online mode with DB license)", "error", err)
+			} else {
+				slog.Info("offline license file detected and verified; ignored in online mode (DB / license API is authoritative)")
+			}
 		} else {
-			slog.Info("license verification successful")
+			slog.Info("offline license file absent; online mode (DB / license API authoritative)")
 		}
 
 		// Token refresh daemon (online mode only)
