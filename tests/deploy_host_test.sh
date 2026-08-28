@@ -528,6 +528,22 @@ test_show_banner_writes_html_and_creates_marker() {
   else
     log_fail "upgrade page missing target version"
   fi
+  if grep -q '预计耗时:</strong> 30–60 秒' "$remote/maintenance/index.html" 2>/dev/null; then
+    log_pass "upgrade page shows 30–60 second estimate"
+  else
+    log_fail "upgrade page has incorrect duration estimate"
+  fi
+  if grep -q '超过 120 秒' "$remote/maintenance/index.html" 2>/dev/null \
+      && grep -q 'FAIL_AFTER_MS = 120000' "$remote/maintenance/index.html" 2>/dev/null; then
+    log_pass "upgrade page uses 120-second failure threshold"
+  else
+    log_fail "upgrade page has incorrect failure threshold"
+  fi
+  if ! grep -qE '5[–-]10 秒|超过 60 秒|FAIL_AFTER_MS = 60000' "$remote/maintenance/index.html" 2>/dev/null; then
+    log_pass "upgrade page has no obsolete timing copy"
+  else
+    log_fail "upgrade page still contains obsolete timing copy"
+  fi
   if [[ -f "$remote/maintenance/UPGRADING" ]]; then
     log_pass "UPGRADING marker was created after page"
   else

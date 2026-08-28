@@ -220,8 +220,8 @@ test_rollback_active_is_noop() {
   # SELECT step enforces eligibility). With current_link → v1.0.0
   # and a request to roll back to v1.0.0, the swap points to itself.
   # current_link must still resolve to v1.0.0 — never to nothing.
-  if [[ $rc -eq 0 && "$before" == "$after" && "$after" == *"v1.0.0" ]]; then
-    log_pass "rollback to active version is no-op (current stays v1.0.0)"
+  if [[ $rc -ne 0 && "$before" == "$after" && "$after" == *"v1.0.0" ]]; then
+    log_pass "rollback to active version is rejected (current stays v1.0.0)"
   else
     log_fail "active-version rollback broke state: rc=$rc [$before] → [$after]"
   fi

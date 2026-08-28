@@ -178,19 +178,19 @@ ssh 154 'redis-cli dbsize'
   - 远端 healthz 30s 没回 (新代码起不来)
 
 ### 9.4 "deploy 一启动就报 `local lock held`"
-- 报错形如: `ERROR: local lock held at /var/folders/.../T/kx-llm-gateway-deploy.lock`，下面打印持有者元数据 (target/source_user/source_host/pid/started_at/commit/version)。
-- 本地锁是 repo 级全局互斥 (`scripts/deploy-lib/lock.sh`): 154 + 245 共享 `web/dist` 和 `releases/`, 任意一边在跑，另一边必须等。设计上是 fail-fast，不是 bug。
-- 先确认是不是真有另一个 deploy 在跑: 看元数据里的 `pid` 和 `started_at`。
+- 报错形如: `ERROR: local lock held at /var/folders/.../T/kx-llm-gateway-deploy-154.lock`，下面打印持有者元数据 (target/source_user/source_host/pid/started_at/commit/version)。
+- 先确认是不是真有另一个 154 deploy 在跑: 看目标锁元数据里的 `pid` 和 `started_at`。
   - **pid 还活着** → 那个 deploy 还在跑，别解锁，等它自然完成。
   - **pid 已死 / 是另一个 repo checkout 的陈旧锁** → 用 `--force-unlock`:
     ```bash
     bash scripts/deploy-154.sh --force-unlock
     # 或：bash scripts/deploy-245.sh --force-unlock (245 wrapper 也已支持，详见 245-runbook §9.4)
     # 单独用：
-    bash scripts/deploy-lib/unlock-local.sh --force
+    bash scripts/deploy-lib/unlock-local.sh --target 154 --force
     ```
   - 默认模式 (无 `--force`) 只是报告，不删；只有加了 `--force` 才会真的 `rm -rf`，并在删之前对仍活着的 holder 发 SIGTERM → SIGKILL。
-- 锁是按 `${TMPDIR}` 派生的，所以**同一台机器上多个 repo clone 共享一把本地锁** —— 这是预期行为，避免 `web/dist` 被两边同时改写。
+- 目标锁按 `${TMPDIR}` 和目标派生：154 使用 `kx-llm-gateway-deploy-154.lock`，245 使用 `kx-llm-gateway-deploy-245.lock`，不同目标互不阻塞。
+- 由于 bump/version、`web/dist` 和本地 stage 共用 checkout，部署还会短暂持有 `${TMPDIR}/kx-llm-gateway-build.lock`；它只保护构建阶段，不能用目标锁的 force-unlock 命令清理。
 
 #### 9.4.1 远端锁残留 (`remote lock held`)
 - 远端锁路径固定为 `/var/lib/llm-gateway-go/deploy.lock` (154/245 同机同路径)。

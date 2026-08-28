@@ -19,8 +19,9 @@
 # refuses if the recorded PID is still alive.
 #
 # Usage:
-#   bash scripts/deploy-lib/unlock-local.sh            # report only
-#   bash scripts/deploy-lib/unlock-local.sh --force    # remove
+#   bash scripts/deploy-lib/unlock-local.sh --target 245
+#   bash scripts/deploy-lib/unlock-local.sh --target 245 --force
+#   # Without --target, LOCK_LOCAL_DIR may be supplied explicitly for tooling.
 #
 # Exit codes:
 #   0  — removed (or nothing to remove)
@@ -30,20 +31,36 @@
 set -euo pipefail
 
 FORCE=0
-for arg in "$@"; do
-  case "$arg" in
-    --force|-f) FORCE=1 ;;
+TARGET=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --force|-f) FORCE=1; shift ;;
+    --target)
+      [[ $# -ge 2 ]] || { echo "missing value for --target" >&2; exit 2; }
+      TARGET=$2; shift 2 ;;
     -h|--help)
       sed -n '2,28p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
       exit 0 ;;
-    *) echo "unknown arg: $arg" >&2; exit 2 ;;
+    *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
 
-# Match scripts/deploy-lib/lock.sh exactly. The trailing slash on macOS
-# TMPDIR (e.g. /var/folders/.../T/) produces a harmless "T//kx" path; we
-# keep the same derivation so both modules see one lock.
-LOCK_DIR="${LOCK_LOCAL_DIR:-${TMPDIR:-/tmp}/kx-llm-gateway-deploy.lock}"
+if [[ -n "$TARGET" && "$TARGET" != 154 && "$TARGET" != 245 ]]; then
+  echo "unsupported target: $TARGET (expected 154 or 245)" >&2
+  exit 2
+fi
+# Match deploy-seamless.sh: each target has an independent local lock.
+# LOCK_LOCAL_DIR remains an explicit override for tests and tooling.
+if [[ -n "$TARGET" ]]; then
+  # An explicit target must win over a stale inherited override; otherwise a
+  # shell carrying the old global lock path could remove the wrong lock.
+  LOCK_DIR="${TMPDIR:-/tmp}/kx-llm-gateway-deploy-${TARGET}.lock"
+elif [[ -n "${LOCK_LOCAL_DIR:-}" ]]; then
+  LOCK_DIR=$LOCK_LOCAL_DIR
+else
+  echo "missing --target (154 or 245); set LOCK_LOCAL_DIR for an explicit path" >&2
+  exit 2
+fi
 
 RED=$'\033[0;31m'; YELLOW=$'\033[1;33m'; GREEN=$'\033[0;32m'; NC=$'\033[0m'
 err()  { echo -e "${RED}  ✗${NC} $*" >&2; }

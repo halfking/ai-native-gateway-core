@@ -85,12 +85,13 @@ case "$TARGET" in
 esac
 
 DEPLOY_LOCAL_LOCK_HELD=0
+DEPLOY_BUILD_LOCK_HELD=0
 DEPLOY_REMOTE_LOCK_HELD=0
 DEPLOY_REMOTE_LOCK_PATH="/var/lib/llm-gateway-go/deploy.lock"
 if [[ "$ACTION" == deploy || "$ACTION" == rollback ]]; then
-  # 154 and 245 share version files, web/dist, and local build artifacts.
-  # A repository-wide lock prevents cross-target bundles from mixing.
-  LOCK_LOCAL_DIR="${TMPDIR:-/tmp}/kx-llm-gateway-deploy.lock"
+  # Each target has its own lock: deployments to 154 and 245 use separate
+  # remote hosts and must not block one another locally.
+  LOCK_LOCAL_DIR="${TMPDIR:-/tmp}/kx-llm-gateway-deploy-${TARGET}.lock"
   LOCK_LOCAL_TARGET="$TARGET"
   lock_acquire_local || exit $?
   DEPLOY_LOCAL_LOCK_HELD=1
@@ -108,6 +109,9 @@ deploy_cleanup() {
   fi
   if [[ "${DEPLOY_REMOTE_LOCK_HELD:-0}" == 1 ]]; then
     lock_release_remote remote_ssh "$DEPLOY_REMOTE_LOCK_PATH" || true
+  fi
+  if [[ "${DEPLOY_BUILD_LOCK_HELD:-0}" == 1 ]]; then
+    lock_release_build || true
   fi
   if [[ "${DEPLOY_LOCAL_LOCK_HELD:-0}" == 1 ]]; then
     lock_release_local || true
@@ -179,7 +183,17 @@ upgrade_show_all() {
   # 2026-08-28: 写完后等待 nginx 真正返回维护页再继续 (超时 120s，典型 ~60s)。
   # 仅在“静态页已生效”后才停机切换，避免在 marker 未生效的窗口暴露真实首页。
   host_show_upgrade_banner "$SSH_CMD" "$TARGET" "$version" || return 1
-  if ! host_wait_upgrade_banner "$SSH_CMD" "$TARGET" 120; then
+  if [[ "$TARGET" == "245" ]]; then
+    # 245 nginx selects the pre-prod vhost by Host/SNI. Probe that vhost
+    # explicitly; https://127.0.0.1/ can match a different default server.
+    if ! host_wait_upgrade_banner "$SSH_CMD" "$TARGET" 120 \
+        /opt/llm-gateway-go /opt/llm-gateway-go/maintenance \
+        "https://llmgo.kxpms.cn/" \
+        "--resolve llmgo.kxpms.cn:443:127.0.0.1"; then
+      upgrade_hide_all >/dev/null 2>&1 || true
+      return 1
+    fi
+  elif ! host_wait_upgrade_banner "$SSH_CMD" "$TARGET" 120; then
     upgrade_hide_all >/dev/null 2>&1 || true
     return 1
   fi
@@ -468,6 +482,13 @@ do_deploy() {
       || warn "IR env 注入失败（可手动: echo TRANSPORT_LAYER_IR_ENABLED=true >> $_env_file）"
   fi
 
+  # Shared checkout build state (version files, web/dist, local staging) is
+  # serialized independently from the per-target deployment lock.
+  log "[build-lock] 获取共享构建锁"
+  LOCK_BUILD_TARGET="$TARGET"
+  lock_acquire_build || exit $?
+  DEPLOY_BUILD_LOCK_HELD=1
+
   # 1. bump version
   if [[ -n "$SEQ_FLAG" ]]; then
     log "[1/9] bump version $SEQ_FLAG"
@@ -508,6 +529,9 @@ do_deploy() {
     exit 1
   fi
   ok "bundle: $bundle_dir"
+  lock_release_build
+  DEPLOY_BUILD_LOCK_HELD=0
+  ok "共享构建锁已释放"
 
   # 5. upload
   log "[5/9] upload → $TARGET"
