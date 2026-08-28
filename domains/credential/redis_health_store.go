@@ -359,8 +359,9 @@ func (s *RedisHealthStore) LoadFromRedis(ctx context.Context) (int, error) {
 		// P1-14 fix (2026-08-28): Use SafeHGetAll to prevent WRONGTYPE errors
 		data, err := redissafe.SafeHGetAll(ctx, s.client, key)
 		if err != nil {
+			// Do not log the full Redis key: it contains the credential ID.
 			s.logger.Warn("failed to load health state from redis",
-				"key", key, "error", err)
+				"operation", "hgetall", "error", err)
 			continue
 		}
 

@@ -3,6 +3,7 @@ package persist
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/store"
+	redissafe "github.com/kaixuan/llm-gateway-go/internal/redis"
 )
 
 type Writer struct {
@@ -90,9 +92,18 @@ func (w *Writer) Collect(ctx context.Context) ([]Row, error) {
 			continue
 		}
 
-		// 5. Read hash fields.
-		hash, err := w.rdb.HGetAll(ctx, k).Result()
-		if err != nil || len(hash) == 0 {
+		// 5. Read hash fields through the type-checking wrapper. A missing key
+		// is normal during TTL expiry; any other read error must be visible so
+		// a corrupted node key cannot silently disappear from the snapshot.
+		hash, err := redissafe.SafeHGetAll(ctx, w.rdb, k)
+		if errors.Is(err, redissafe.ErrKeyNotFound) {
+			continue
+		}
+		if err != nil {
+			slog.Warn("ursm.v2: persist failed to read node hash", "operation", "hgetall", "error", err)
+			return nil, fmt.Errorf("ursm.v2.persist: read node hash: %w", err)
+		}
+		if len(hash) == 0 {
 			continue
 		}
 		tenantID := parsed.TenantID
