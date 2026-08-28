@@ -285,6 +285,10 @@ type SessionCache struct {
 	l1       map[string]*l1Entry // key = tenantID+":"+gwSessionID → entry (entry.elem is the list node)
 	curBytes int                 // aggregate bytes across all l1 entries (D3: enforces l1MaxBytes)
 
+	// updateStripes serializes multi-step read-modify-write updates for one
+	// session without retaining an unbounded lock per session.
+	updateStripes [256]sync.Mutex
+
 	redis      SessionCacheBackend // nil = L2 disabled (tests / no Redis)
 	db         SessionCacheDB      // nil = L3 disabled (tests / no DB)
 	turnReader *v2.TurnReader      // V2-P2.5: L3 reads session_bodies when wired
@@ -318,6 +322,38 @@ func redisKey(tenantID, gwSessionID string) string {
 	return "session:sc:" + tenantID + ":" + gwSessionID + ":v1"
 }
 
+func (c *SessionCache) updateStripe(key string) *sync.Mutex {
+	sum := sha256.Sum256([]byte(key))
+	return &c.updateStripes[sum[0]]
+}
+
+// Update atomically loads, transforms, and stores one session state. The
+// callback receives caller-owned copies; returning nil state deletes nothing
+// and leaves the existing cache entry unchanged.
+func (c *SessionCache) Update(
+	ctx context.Context,
+	tenantID, gwSessionID string,
+	fn func(*SessionState, []byte) (*SessionState, []byte, error),
+) error {
+	if gwSessionID == "" || fn == nil || !settings.IsEnabled("session_cache") {
+		return nil
+	}
+	key := l1Key(tenantID, gwSessionID)
+	stripe := c.updateStripe(key)
+	stripe.Lock()
+	defer stripe.Unlock()
+
+	state, body, err := c.GetOrLoad(ctx, tenantID, gwSessionID)
+	if err != nil {
+		return err
+	}
+	state, body, err = fn(state, body)
+	if err != nil || state == nil {
+		return err
+	}
+	return c.Set(ctx, tenantID, gwSessionID, state, body)
+}
+
 // GetOrLoad returns the SessionState and last outbound body for the session,
 // or (nil, nil, nil) when the session is new / unknown.
 // Tier priority: L1 → L2 → L3. A cache-miss at one tier is back-filled
@@ -340,10 +376,10 @@ func (c *SessionCache) GetOrLoad(ctx context.Context, tenantID, gwSessionID stri
 	c.mu.Lock()
 	if e, ok := c.l1[key]; ok {
 		c.ll.MoveToFront(e.elem) // O(1) LRU promote.
-		st := *e.state           // copy
-		body := e.body
+		st := cloneSessionState(e.state)
+		body := append([]byte(nil), e.body...)
 		c.mu.Unlock()
-		return &st, body, nil
+		return st, body, nil
 	}
 	c.mu.Unlock()
 
@@ -477,26 +513,37 @@ func (c *SessionCache) Invalidate(ctx context.Context, tenantID, gwSessionID str
 // Internal helpers
 // ──────────────────────────────────────────────────────────────────────────────
 
+func cloneSessionState(state *SessionState) *SessionState {
+	if state == nil {
+		return nil
+	}
+	clone := *state
+	clone.AlignmentMap = append([]AlignmentInfo(nil), state.AlignmentMap...)
+	return &clone
+}
+
 func (c *SessionCache) setL1(key string, state *SessionState, body []byte) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	st := *state // copy
-	entryBytes := len(body) + len(key) + l1EntryOverheadBytes
+	st := cloneSessionState(state)
+	bodyCopy := append([]byte(nil), body...)
+	entryBytes := len(bodyCopy) + len(key) + l1EntryOverheadBytes
 
 	// Update-in-place + promote to front if the key already exists.
 	if existing, ok := c.l1[key]; ok {
 		// Adjust curBytes for the delta (new - old).
 		c.curBytes -= existing.bytes
 		c.curBytes += entryBytes
-		existing.state = &st
-		existing.body = body
+		existing.state = st
+		existing.body = bodyCopy
+
 		existing.bytes = entryBytes
 		c.ll.MoveToFront(existing.elem)
 		return
 	}
 
 	// New entry: push to front, evict the LRU (back) if over capacity OR bytes.
-	entry := &l1Entry{key: key, state: &st, body: body, bytes: entryBytes}
+	entry := &l1Entry{key: key, state: st, body: bodyCopy, bytes: entryBytes}
 	entry.elem = c.ll.PushFront(entry)
 	c.l1[key] = entry
 	c.curBytes += entryBytes

@@ -91,6 +91,9 @@ type RunStats struct {
 	// SkippedNames 顺序：策略不适用 / skipped（[COMPRESSED: 幂等、不命中策略），
 	// 仅作可观测，不算 regression。
 	SkippedNames []string
+	// FailedNames 是 Apply 返回错误而被 fail-open 跳过的策略名。可选策略链
+	// 不能把局部失败升级为请求失败，也不能把部分压缩结果作为错误返回给调用方。
+	FailedNames []string
 	// TruncatedBy 顺序：所有触发 NeverWorse 守卫的 strategy 名（输出 >= 输入，
 	// 被回退到原 body）。通常意味着该 strategy 异常，需要排查。
 	TruncatedBy []string
@@ -122,7 +125,7 @@ func (r *Runner) RunWithBody(ctx context.Context, sel Selector, body []byte) ([]
 	guardFn, _ := r.guardNeverWorse.Load().(guardFuncType)
 
 	all := r.registry.Snapshot()
-	chosen := sel.Select(ctx, all)
+	chosen := sel.Select(ctx, all, body)
 	current := body
 	for _, s := range chosen {
 		if s == nil || !s.Enabled() {
@@ -130,8 +133,12 @@ func (r *Runner) RunWithBody(ctx context.Context, sel Selector, body []byte) ([]
 		}
 		out, applied, err := s.Apply(ctx, current)
 		if err != nil {
-			stats.BytesOut = len(current)
-			return current, stats, err
+			// Optional compression is fail-open: preserve the last known-good body
+			// and let the established fallback chain continue.
+			slog.Warn("strategy.Runner: strategy failed; skipping stage",
+				"strategy", s.Name(), "error", err)
+			stats.FailedNames = append(stats.FailedNames, s.Name())
+			continue
 		}
 		if !applied || len(out) == 0 {
 			stats.SkippedNames = append(stats.SkippedNames, s.Name())
@@ -151,5 +158,12 @@ func (r *Runner) RunWithBody(ctx context.Context, sel Selector, body []byte) ([]
 		current = out
 	}
 	stats.BytesOut = len(current)
+	if len(current) > len(body) {
+		slog.Warn("strategy.Runner: aggregate regression; reverting entire chain",
+			"input_bytes", len(body), "output_bytes", len(current))
+		stats.TruncatedBy = append(stats.TruncatedBy, "aggregate")
+		stats.BytesOut = len(body)
+		return body, stats, nil
+	}
 	return current, stats, nil
 }
