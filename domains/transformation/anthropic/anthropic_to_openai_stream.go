@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -13,7 +14,9 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
+	"github.com/kaixuan/llm-gateway-go/internal/sse"
 	"github.com/kaixuan/llm-gateway-go/internal/textsplit"
 )
 
@@ -241,6 +244,16 @@ func StreamAnthropicSSEToOpenAI(
 		}
 
 		if err != nil {
+			if errors.Is(err, sse.ErrLineTooLong) {
+				if capture != nil {
+					capture.MarkInterruptedWithReason("stream_line_too_large")
+				}
+				outcome = StreamOutcome{Interrupted: true, Reason: "stream_line_too_large", Kind: errorsx.KindUpstreamDown, Resumable: chunkCount == 0, ChunkCount: chunkCount}
+				if pc != nil {
+					pc.markInterrupted(outcome.Reason)
+				}
+				return outcome
+			}
 			if err == io.EOF || readCtx.Err() != nil {
 				flushBufferedText()
 				// Emit usage if we have it
@@ -621,11 +634,8 @@ func emitErrorChunk(w http.ResponseWriter, code, message string, flusher http.Fl
 }
 
 // readSSEEvent reads one SSE event.
-func readSSEEvent(ctx context.Context, reader io.Reader, _ streamRuntimeConfig) (eventType string, data []byte, err error) {
-	br, ok := reader.(*bufio.Reader)
-	if !ok {
-		br = bufio.NewReader(reader)
-	}
+func readSSEEvent(ctx context.Context, reader io.Reader, runtimeCfg streamRuntimeConfig) (eventType string, data []byte, err error) {
+	lineReader := sse.NewLineReader(reader, runtimeCfg.sseMaxLineBytes)
 	var dataLines []string
 	for {
 		select {
@@ -633,7 +643,7 @@ func readSSEEvent(ctx context.Context, reader io.Reader, _ streamRuntimeConfig) 
 			return "", nil, ctx.Err()
 		default:
 		}
-		line, rerr := br.ReadString('\n')
+		line, rerr := lineReader.ReadLine()
 		line = strings.TrimRight(line, "\r\n")
 		if line == "" {
 			if len(dataLines) == 0 {

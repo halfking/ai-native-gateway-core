@@ -18,6 +18,8 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
+	"github.com/kaixuan/llm-gateway-go/internal/sse"
+	vendorstrip "github.com/kaixuan/llm-gateway-go/internal/vendorstrip"
 	"github.com/kaixuan/llm-gateway-go/metrics"
 )
 
@@ -1444,17 +1446,18 @@ func resolveStreamVendor(payload, vendorCode string, stripFn func([]byte) []byte
 }
 
 func readLineWithTimeout(ctx context.Context, reader *bufio.Reader, timeout time.Duration) (string, error) {
-	return newTimedLineReader(reader, nil).ReadLine(ctx, timeout)
+	return sse.NewLineReader(reader, currentStreamRuntimeConfig().sseMaxLineBytes).ReadLineWithContext(ctx, timeout, nil)
 }
 
 // readLineWithTimeoutAndCloser is like readLineWithTimeout but also takes the
-// underlying io.ReadCloser. On timeout it closes the closer to unblock the
-// ReadString goroutine, then drains the channel — eliminating the goroutine
-// leak that existed in the plain readLineWithTimeout path (BUG-1 fix).
+// underlying io.ReadCloser. The shared SSE reader bounds physical-line
+// accumulation before any sanitizer or IR parser sees the bytes.
 func readLineWithTimeoutAndCloser(ctx context.Context, reader *bufio.Reader, closer io.ReadCloser, timeout time.Duration) (string, error) {
-	return newTimedLineReader(reader, closer).ReadLine(ctx, timeout)
+	return sse.NewLineReader(reader, currentStreamRuntimeConfig().sseMaxLineBytes).ReadLineWithContext(ctx, timeout, closer)
 }
 
+// onceReadCloser prevents timeout cleanup and deferred stream cleanup from
+// closing the same upstream body more than once.
 type onceReadCloser struct {
 	io.ReadCloser
 	once sync.Once
@@ -1462,79 +1465,8 @@ type onceReadCloser struct {
 }
 
 func (c *onceReadCloser) Close() error {
-	c.once.Do(func() {
-		c.err = c.ReadCloser.Close()
-	})
+	c.once.Do(func() { c.err = c.ReadCloser.Close() })
 	return c.err
-}
-
-type timedLineReader struct {
-	reader *bufio.Reader
-	// closer is the underlying io.ReadCloser (e.g. resp.Body). When non-nil,
-	// ReadLine closes it on timeout so the blocked ReadString goroutine returns
-	// immediately rather than leaking until the TCP connection is closed.
-	closer io.ReadCloser
-}
-
-func newTimedLineReader(reader *bufio.Reader, closer io.ReadCloser) *timedLineReader {
-	return &timedLineReader{reader: reader, closer: closer}
-}
-
-func (r *timedLineReader) ReadLine(ctx context.Context, timeout time.Duration) (string, error) {
-	type result struct {
-		line string
-		err  error
-	}
-	ch := make(chan result, 1)
-	readCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				ch <- result{"", fmt.Errorf("read panic: %v", r)}
-			}
-		}()
-		line, err := r.reader.ReadString('\n')
-		ch <- result{line, err}
-	}()
-
-	select {
-	case res := <-ch:
-		// bufio.Reader returns a final unterminated line together with io.EOF.
-		// The bytes are still a valid SSE frame and must be processed before
-		// the next read reports the terminal EOF.
-		if res.err == io.EOF && res.line != "" {
-			return res.line, nil
-		}
-		return res.line, res.err
-	case <-readCtx.Done():
-		// BUG-1 fix (2026-06-19): close the underlying body to force the
-		// blocked ReadString goroutine to return an error immediately.
-		// Without this, the goroutine would leak until resp.Body.Close()
-		// is called by the deferred cleanup in StreamChatWithPendingCapture,
-		// which can be minutes later on the session path (context.Background).
-		// After Close(), drain the channel so the goroutine completes before
-		// we return — zero goroutine leak guarantee.
-		if r.closer != nil {
-			_ = r.closer.Close()
-			// Drain: the goroutine returns shortly after Close() because
-			// ReadString on a closed body returns io.ErrClosedPipe or io.EOF.
-			// The buffered channel (size 1) ensures this never blocks forever.
-			<-ch
-		} else {
-			// No closer: nothing we can do will unblock the ReadString
-			// goroutine, so do NOT wait on ch — waiting here makes the
-			// timeout ineffective (this call would still block until the
-			// upstream actually sends / the TCP dies). The goroutine has a
-			// buffered slot, so it exits cleanly once the caller's deferred
-			// body.Close() fires.
-		}
-		if readCtx.Err() == context.DeadlineExceeded {
-			return "", fmt.Errorf("stream read timeout")
-		}
-		return "", readCtx.Err()
-	}
 }
 
 func extractModelFromChunk(line string) string {
@@ -1896,46 +1828,9 @@ func RequestIDFromResp(resp *http.Response) string {
 // parseMiniMaxBaseRespInline is an inline copy of minimax_error.go functions
 // to avoid import cycle. Detects MiniMax's HTTP 200-wrapped error signal.
 func parseMiniMaxBaseRespInline(body []byte) (statusCode int, statusMsg string, isError bool) {
-	if len(body) == 0 {
-		return 0, "", false
-	}
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(body, &raw); err != nil {
-		return 0, "", false
-	}
-	baseRespRaw, ok := raw["base_resp"]
-	if !ok {
-		return 0, "", false
-	}
-	var baseResp struct {
-		StatusCode int    `json:"status_code"`
-		StatusMsg  string `json:"status_msg"`
-	}
-	if err := json.Unmarshal(baseRespRaw, &baseResp); err != nil {
-		return 0, "", false
-	}
-	return baseResp.StatusCode, baseResp.StatusMsg, baseResp.StatusCode != 0
+	return vendorstrip.ParseMiniMaxBaseResp(body)
 }
 
 func classifyMiniMaxStatusCodeInline(code int) errorsx.ErrorKind {
-	switch code {
-	case 0:
-		return ""
-	case 1002:
-		return errorsx.KindRateLimit
-	case 1004:
-		return errorsx.KindAuth
-	case 1008:
-		return errorsx.KindQuota
-	case 1027:
-		return errorsx.KindContentFilter
-	case 1039:
-		return errorsx.KindContextLength
-	case 1001:
-		return errorsx.KindTimeout
-	case 2013:
-		return errorsx.KindClientBug
-	default:
-		return errorsx.KindUpstreamDown
-	}
+	return vendorstrip.ClassifyMiniMaxStatusCode(code)
 }
