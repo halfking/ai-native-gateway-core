@@ -63,12 +63,14 @@ func (w *Writer) Collect(ctx context.Context) ([]Row, error) {
 
 	// 1. Read recovery_epoch from the hash written by recovery.Manager.
 	epochKey := store.EpochKey(w.prefix)
-	epochStr, err := w.rdb.HGet(ctx, epochKey, "counter").Result()
+	epochHash, err := redissafe.SafeHGetAll(ctx, w.rdb, epochKey)
 	var recoveryEpoch int64
-	if err == nil {
-		recoveryEpoch = atoi64(epochStr)
-	} else if err != redis.Nil {
+	if errors.Is(err, redissafe.ErrKeyNotFound) {
+		// An uninitialized epoch is equivalent to zero.
+	} else if err != nil {
 		return nil, fmt.Errorf("ursm.v2.persist: read recovery epoch: %w", err)
+	} else {
+		recoveryEpoch = atoi64(epochHash["counter"])
 	}
 
 	// 2. 扫描所有 node keys

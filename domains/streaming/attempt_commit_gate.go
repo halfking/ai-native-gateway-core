@@ -174,13 +174,12 @@ type AttemptCommitGate struct {
 	holdbackOpenAt    time.Time
 	holdbackHeld      int
 
-	state CommitState
-	// checkpointedState records the highest state whose write-ahead checkpoint
-	// completed successfully. It prevents repeated Commit calls from replaying
-	// a non-idempotent checkpoint side effect.
+	state     CommitState
+	committed bool
+	discarded bool
+	// checkpointedState records the highest state whose durable checkpoint
+	// completed successfully. It prevents duplicate non-idempotent hooks.
 	checkpointedState CommitState
-	committed         bool
-	discarded         bool
 	// checkpointBlocked latches a durable write-ahead failure and keeps the
 	// attempt from emitting any later client-visible bytes.
 	checkpointBlocked bool
@@ -478,7 +477,6 @@ func (g *AttemptCommitGate) checkpointStateAdvanceUnderWriteLock(class FrameClas
 		g.checkpointedState = state
 	}
 	return nil
-
 }
 
 // appendBufferedLocked appends one frame to the attempt-local buffer under
@@ -702,10 +700,9 @@ func (g *AttemptCommitGate) Commit() error {
 			g.blockCheckpointLocked(checkpointErr)
 			return g.checkpointErr
 		}
-		if state > g.checkpointedState {
-			g.checkpointedState = state
-		}
+		g.checkpointedState = state
 	}
+
 	if err := g.commitLocked(); err != nil {
 		return err
 	}
@@ -797,12 +794,14 @@ func isPartialTerminalFrame(protocol ClientProtocol, partial string) bool {
 // committed); after the semantic commit it returns
 // ErrAttemptAlreadyCommitted.
 func (g *AttemptCommitGate) Discard() error {
+	g.writeMu.Lock()
+	defer g.writeMu.Unlock()
 	g.mu.Lock()
+	defer g.mu.Unlock()
 	bufferBytes := g.bufferLen
 	holdbackHeld := g.holdbackHeld
 	gateState := g.state
 	if g.committed || g.state >= CommitStateContent {
-		g.mu.Unlock()
 		return ErrAttemptAlreadyCommitted
 	}
 	g.buffer = nil
@@ -817,7 +816,6 @@ func (g *AttemptCommitGate) Discard() error {
 	// not the stale checkpoint error.
 	g.checkpointBlocked = false
 	g.checkpointErr = nil
-	g.mu.Unlock()
 	// 2026-08-19 observability: the discard path was previously silent, so
 	// post-mortem could not tell how many buffered bytes were thrown away on
 	// a transparent retry. The slog is at debug to keep production logs

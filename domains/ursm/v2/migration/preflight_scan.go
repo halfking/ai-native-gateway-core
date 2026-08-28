@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -13,6 +14,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/store"
+	redissafe "github.com/kaixuan/llm-gateway-go/internal/redis"
 )
 
 // EntryPreflight performs the read-only inventory phase for callers that
@@ -122,11 +124,15 @@ func (p *EntryPreflight) inspect(ctx context.Context, key string) (EntryRecord, 
 	}
 	e.PTTLMillis = pttlMillis(pttl)
 	if kind == "hash" {
-		fields, err := p.rdb.HGetAll(ctx, key).Result()
+		fields, err := redissafe.SafeHGetAll(ctx, p.rdb, key)
 		if err != nil {
+			if errors.Is(err, redissafe.ErrKeyNotFound) {
+				return EntryRecord{}, fmt.Errorf("ursm.v2: preflight key %s disappeared during hash read: %w", key, err)
+			}
 			return EntryRecord{}, fmt.Errorf("ursm.v2: preflight hgetall %s: %w", key, err)
 		}
 		e.FieldChecksum = checksumFields(fields)
+
 		e.Generation = parseGeneration(fields["generation"])
 	}
 	if e.Class == ClassificationMigratable && e.Tuple != nil {

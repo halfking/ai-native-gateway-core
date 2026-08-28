@@ -326,9 +326,6 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 				)
 				return res
 			}
-			// FinishAttempt buffers a non-terminal trailing partial frame on an
-			// uncommitted buffered gate. A successful attempt must publish that
-			// final partial before it can be reported as succeeded.
 			if err := gate.Commit(); err != nil {
 				res.Decision = TaskDecision{Action: TaskActionFailClosed, Reason: "client_disconnected"}
 				recordSurvivalTransition(survivalStateRunning, survivalTerminalToState(res.Decision), res.Decision.Reason)
