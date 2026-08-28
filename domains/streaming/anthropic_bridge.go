@@ -1129,7 +1129,13 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 		case ir.ChunkTypeDone:
 			messageStopReceived = true
 			flushBufferedText()
-			if !emittedContent && inputTokens == 0 && outputTokens == 0 {
+			// Parity with anthropic.IsAnthropicStreamEmpty (stream_support.go):
+			// empty if no semantic bytes reached the wire, regardless of
+			// reported usage. Anthropic-compat relays (notably minimax via the
+			// Anthropic bridge) sometimes emit `usage` in `message_start`
+			// with zero output content; counting those as non-empty would
+			// suppress fail-over and silently 200 an empty assistant turn.
+			if !emittedContent {
 				if capture != nil {
 					capture.MarkInterruptedWithReason("anthropic_empty_response")
 				}
