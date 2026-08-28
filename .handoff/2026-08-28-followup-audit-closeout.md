@@ -64,4 +64,43 @@
 - 历史 24h 审计：`.handoff/2026-08-28-audit-24h-fixes.md`
 - 厂商协议交接：`docs/handoff/20260828-vendor-alignment/HANDOFF.md`
 - 厂商协议提示词：`docs/handoff/20260828-vendor-alignment/PROMPTS.md`
-- 当前 follow-up 修复：本会话提交（提交后填写 SHA）
+- 历史感知统一请求动作策略：`docs/adr/2026-08-28-request-action-policy.md`
+- JournalSnapshot 决策历史边界：`docs/adr/2026-08-28-requestjourney-journal-snapshot.md`
+- 本轮修复提交：
+  - `f97c8eeda` fix(recovery): address history-aware decision audit findings
+  - `d4f410c88` feat(recovery): add history-aware request action policy
+  - `dbcc42ab9` fix(audit): harden regen-credentials and restore SafeHGetAll
+  - `ee438de9c` fix(streaming): close gate and empty-response lifecycle gaps
+
+## 10. 本轮审计小结（2026-08-29）
+
+针对历史感知决策器的回归审计：
+
+- `TestExecuteDispatchStopsAtExactly100UpstreamAttempts` 暴露：
+  - 中央策略把 `KindUpstreamDown` 误归到 `WaitRecovery`，使 dispatch
+    路径每个 credential 只被试 1 次就切走（违反 3 次 retry budget 契约）。
+    修复：将 `KindUpstreamDown` 加入 `retryableActionKind`（dispatch
+    上下文语义），但 streaming 路径保留 `taskActionForKind` 表的
+    `wait_recovery` 映射。
+  - `PlanAfterFailure` 在中央策略返回 RetrySameNode 之后又被旧
+    `cred_budget_exhausted` fallback 覆盖，导致每次都 fall-through。
+    修复：删除双重 fallback，信任中央策略；保留 `FatalCredential`
+    和 `AttemptCount>=maxAttempts` 短路以维持 journal 词表
+    （`cred_fatal`、`attempt_cap`）。
+- 并发 / 句柄 / TCP / 密钥 审计：
+  - 并发：errorsx、dispatch、streaming 的改动全部遵循 single-owner
+    不变量或串行 goroutine 路径，`go test -race` 全过。
+  - HTTP/TCP：pool/upstream transport 已配置 DialContext +
+    TLSHandshakeTimeout + IdleConnTimeout；流式写使用 per-write
+    watchdog（30s 默认），无 write deadline 泄漏。
+  - 密钥：`ActionNode` / `PriorAttempt` / `DecisionHistory` 全部仅
+    携带数值 ID，不含密钥材料；`candidateCredential` 的 `strconv.Atoi`
+    错误现改为 slog.Warn 上报，避免静默丢弃。
+- 待协作方处理：
+  - 当前 staging 的 streaming/deploy/streaming 测试改动保留在工作树
+    （用户先前明确禁止丢弃），需要在单独的 commit 中整合到 main。
+  - 两个 stash（`stash@{0}`、`stash@{1}`）未触碰。
+- 测试结果：errorsx/dispatch/streaming（含 executors 子包）全部
+  -count=1 通过；race 通过；vet 干净。
+- 集成 main：协作方改动与本分支不直接冲突，可单独 commit 后直接
+  fast-forward merge 到 main，或在协作方同意下合并到统一 PR。
