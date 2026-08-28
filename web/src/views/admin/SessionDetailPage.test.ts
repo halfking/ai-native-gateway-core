@@ -25,6 +25,7 @@ vi.mock('../../api/_core', () => ({
 }))
 vi.mock('vue-router', () => ({
   useRoute: () => routeState,
+  useRouter: () => ({ resolve: vi.fn(), push: vi.fn() }),
 }))
 
 function mountPage() {
