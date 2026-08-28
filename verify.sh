@@ -47,10 +47,14 @@ else
 fi
 
 if [[ "$RUN_WEB" == true ]]; then
+  echo "[verify] frontend install"
+  (cd web && pnpm install --frozen-lockfile)
   echo "[verify] frontend typecheck"
-  (cd web && pnpm vue-tsc --noEmit)
+  (cd web && pnpm run typecheck)
+  echo "[verify] frontend tests"
+  (cd web && pnpm run test)
   echo "[verify] frontend build"
-  (cd web && pnpm build)
+  (cd web && pnpm run build)
 fi
 
 if rg -n '^(<<<<<<<|>>>>>>>)' --glob '!vendor/**' --glob '!web/node_modules/**' .; then

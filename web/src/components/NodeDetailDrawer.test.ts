@@ -5,6 +5,12 @@ import NodeDetailDrawer from './NodeDetailDrawer.vue'
 import type { RoutingCandidate } from '../api/routing'
 import { liveStreamState } from '../composables/liveStreamStore'
 
+const openRequestDetailPageMock = vi.hoisted(() => vi.fn())
+
+vi.mock('../utils/openRequestDetailPage', () => ({
+  openRequestDetailPage: openRequestDetailPageMock,
+}))
+
 const {
   monitorSummary,
   decisions,
@@ -291,9 +297,7 @@ describe('NodeDetailDrawer model×node scope', () => {
     await flushPromises()
 
     await wrapper.get('.nd-window-cell').trigger('click')
-    const stub = wrapper.find('.stub-request-log')
-    expect(stub.attributes('data-id')).toBe('req-abc')
-    expect(stub.attributes('data-stack')).toBe('nested')
+    expect(openRequestDetailPageMock).toHaveBeenCalledWith('req-abc')
   })
 
   it('shows settings sections with concurrency panel without a manual load button', async () => {
