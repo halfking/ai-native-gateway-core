@@ -9,22 +9,31 @@ import (
 	"path/filepath"
 	"regexp"
 	"sync"
+	"time"
 )
 
 var safeRequestID = regexp.MustCompile(`^[A-Za-z0-9._-]{8,128}$`)
 
+const (
+	defaultMaxEntries = 4096
+	defaultTTL        = 30 * time.Minute
+)
+
 // Store keeps in-flight request meta in memory and bodies on local files
 // named by request_id. Redis is never used for full bodies.
 type Store struct {
-	dir string
-	mu  sync.RWMutex
-	mem map[string]Meta
+	dir        string
+	mu         sync.RWMutex
+	mem        map[string]Meta
+	updated    map[string]time.Time
+	maxEntries int
+	ttl        time.Duration
 }
 
 // NewStore creates a ContentStore rooted at dir. Empty dir disables file I/O
 // but memory still works (useful in tests).
 func NewStore(dir string) (*Store, error) {
-	s := &Store{dir: dir, mem: make(map[string]Meta)}
+	s := &Store{dir: dir, mem: make(map[string]Meta), updated: make(map[string]time.Time), maxEntries: defaultMaxEntries, ttl: defaultTTL}
 	if dir == "" {
 		return s, nil
 	}
@@ -51,8 +60,10 @@ func (s *Store) PutMeta(meta Meta) error {
 		return err
 	}
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.mem[meta.RequestID] = meta
-	s.mu.Unlock()
+	s.updated[meta.RequestID] = time.Now()
+	s.evictLocked(time.Now())
 	return nil
 }
 
@@ -98,6 +109,8 @@ func (s *Store) PutBodies(meta Meta, bodies Bodies) error {
 		}
 	}
 	s.mem[meta.RequestID] = meta
+	s.updated[meta.RequestID] = time.Now()
+	s.evictLocked(time.Now())
 	return nil
 }
 
@@ -106,8 +119,9 @@ func (s *Store) GetMeta(requestID string) (Meta, bool) {
 	if s == nil {
 		return Meta{}, false
 	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.evictLocked(time.Now())
 	m, ok := s.mem[requestID]
 	return m, ok
 }
@@ -168,6 +182,7 @@ func (s *Store) Clear(requestID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.mem, requestID)
+	delete(s.updated, requestID)
 	if s.dir == "" {
 		return nil
 	}
@@ -177,6 +192,37 @@ func (s *Store) Clear(requestID string) error {
 	}
 	_ = os.Remove(path + ".tmp")
 	return nil
+}
+
+func (s *Store) evictLocked(now time.Time) {
+	for id, at := range s.updated {
+		if s.ttl > 0 && now.Sub(at) >= s.ttl {
+			delete(s.mem, id)
+			delete(s.updated, id)
+			if s.dir != "" {
+				_ = os.Remove(s.filePath(id))
+				_ = os.Remove(s.filePath(id) + ".tmp")
+			}
+		}
+	}
+	for len(s.mem) > s.maxEntries {
+		var oldest string
+		var oldestAt time.Time
+		for id, at := range s.updated {
+			if oldest == "" || at.Before(oldestAt) {
+				oldest, oldestAt = id, at
+			}
+		}
+		if oldest == "" {
+			break
+		}
+		delete(s.mem, oldest)
+		delete(s.updated, oldest)
+		if s.dir != "" {
+			_ = os.Remove(s.filePath(oldest))
+			_ = os.Remove(s.filePath(oldest) + ".tmp")
+		}
+	}
 }
 
 func (s *Store) filePath(requestID string) string {
