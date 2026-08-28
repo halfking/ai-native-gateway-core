@@ -69,14 +69,14 @@
     <p><strong>当前版本:</strong> <code>__OLD_VERSION__</code></p>
     <p><strong>目标版本:</strong> <code>__NEW_VERSION__</code></p>
     <p><strong>开始时间:</strong> <code>__STARTED_AT__</code></p>
-    <p><strong>预计耗时:</strong> 5–10 秒</p>
+    <p><strong>预计耗时:</strong> 30–60 秒</p>
   </div>
 
-  <p class="upgrading-detail">升级过程通常持续 5–10 秒，服务恢复后本页将自动跳转，无需手动操作。</p>
+  <p class="upgrading-detail">升级过程通常持续 30–60 秒，服务恢复后本页将自动跳转，无需手动操作。</p>
 
   <div class="error-detail">
     <p><strong>后端服务尚未启动，升级可能失败。</strong></p>
-    <p>系统等待超过 60 秒仍未就绪，已停止快速刷新。仍在后台每 15 秒检测一次，
+    <p>系统等待超过 120 秒仍未就绪，已停止快速刷新。仍在后台每 15 秒检测一次，
        服务恢复后会自动跳转；也可手动重试或联系运维（journalctl -u llm-gateway-go）。</p>
     <button type="button" class="retry-btn" id="retry-btn">重新检测</button>
   </div>
@@ -86,13 +86,13 @@
   </noscript>
 
   <p class="progress">
-    <span class="upgrading-detail">已等待 <strong id="wait-seconds">0</strong> 秒（超过 60 秒将提示故障）。</span>
+    <span class="upgrading-detail">已等待 <strong id="wait-seconds">0</strong> 秒（超过 120 秒将提示故障）。</span>
   </p>
 
 <script>
 (function () {
   'use strict';
-  var FAIL_AFTER_MS = 60000;
+  var FAIL_AFTER_MS = 120000;
   var PROBE_FAST_MS = 3000;
   var PROBE_IDLE_MS = 15000;
   var PROBE_TIMEOUT_MS = 4000;

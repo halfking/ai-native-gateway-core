@@ -11,7 +11,7 @@
 #   bash scripts/deploy-245.sh --no-frontend   # 仅后端（不推荐）
 #   bash scripts/deploy-245.sh --force-unlock  # 先清理 stale 的本地 repo 锁，再部署
 #
-# --force-unlock 会调用 scripts/deploy-lib/unlock-local.sh --force。
+# --force-unlock 会调用 scripts/deploy-lib/unlock-local.sh --target 245 --force。
 # 默认该脚本只会报告不会删；加 --force 才真正移除本地锁并 (必要时) 杀掉
 # 还活着的持有者 PID。仅在你确认旧 deploy 进程已死/不该再跑时使用。
 #
@@ -32,8 +32,8 @@ ARGS=()
 extract_force_unlock FORCE_UNLOCK ARGS "$@"
 
 if [[ $FORCE_UNLOCK -eq 1 ]]; then
-  echo "[deploy-245] --force-unlock: running unlock-local.sh --force"
-  bash "$SCRIPT_DIR/deploy-lib/unlock-local.sh" --force
+  echo "[deploy-245] --force-unlock: running unlock-local.sh --target 245 --force"
+  bash "$SCRIPT_DIR/deploy-lib/unlock-local.sh" --target 245 --force
 fi
 
 exec bash "$SCRIPT_DIR/deploy-seamless.sh" deploy 245 "${ARGS[@]}"

@@ -4,10 +4,10 @@
 #
 # Implements spec §"Locking" (Slice 3 of the hardening plan):
 #
-#   - Local lock: a repository-scoped global lock that protects shared
-#     build artifacts and local deployment state. Uses `flock` when
-#     available; otherwise acquires an atomic `mkdir` lock and removes
-#     it via trap on normal and error exits.
+#   - Local lock: a target-scoped lock that protects deployment state for
+#     one remote target. 154 and 245 intentionally use different lock paths.
+#     Uses `flock` when available; otherwise acquires an atomic `mkdir` lock
+#     and removes it via trap on normal and error exits.
 #
 #   - Remote lock: an atomic `mkdir` lock directory on the target host
 #     holding metadata (target, source OS user, source hostname, local
@@ -34,21 +34,53 @@ fi
 # shellcheck disable=SC2317
 
 # Default local lock directory. Lives under the system temp so multiple
-# clones of the repo on the same machine do not collide. The
-# orchestrator may override LOCK_LOCAL_DIR before sourcing this file.
-: "${LOCK_LOCAL_DIR:=${TMPDIR:-/tmp}/kx-llm-gateway-deploy.lock}"
+# clones of the repo on the same machine do not collide. Deploy orchestrators
+# should set LOCK_LOCAL_TARGET and/or LOCK_LOCAL_DIR before acquiring; when a
+# target is provided, the default is isolated per target. The path is resolved
+# lazily so a later LOCK_LOCAL_TARGET assignment cannot fall back to the legacy
+# unscoped path.
+lock_ensure_local_dir() {
+  if [[ -n "${LOCK_LOCAL_DIR:-}" ]]; then
+    return 0
+  fi
+  if [[ -n "${LOCK_LOCAL_TARGET:-}" ]]; then
+    LOCK_LOCAL_DIR="${TMPDIR:-/tmp}/kx-llm-gateway-deploy-${LOCK_LOCAL_TARGET}.lock"
+  else
+    # Compatibility for direct library callers that do not identify a target.
+    LOCK_LOCAL_DIR="${TMPDIR:-/tmp}/kx-llm-gateway-deploy.lock"
+  fi
+}
 
 # Flock binary probe. When empty the module falls back to mkdir.
 : "${LOCK_FLOCK_BIN:=$(command -v flock 2>/dev/null || true)}"
+: "${LOCK_BUILD_FLOCK_BIN:=${LOCK_FLOCK_BIN}}"
+
+lock_ensure_build_dir() {
+  : "${LOCK_LOCAL_BUILD_DIR:=${TMPDIR:-/tmp}/kx-llm-gateway-build.lock}"
+}
+
+lock_write_metadata() {
+  local target=${1:-?}
+  printf 'target=%s\n' "$target"
+  printf 'source_user=%s\n' "${SOURCE_USER:-$(id -un 2>/dev/null || echo unknown)}"
+  printf 'source_host=%s\n' "${SOURCE_HOST:-$(hostname 2>/dev/null || echo unknown)}"
+  printf 'pid=%s\n' "$$"
+  printf 'started_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  printf 'commit=%s\n' "${SOURCE_COMMIT:-$(git rev-parse HEAD 2>/dev/null || echo unknown)}"
+  printf 'version=%s\n' "${SOURCE_VERSION:-$(cat version.json 2>/dev/null | sed -n 's/.*\"version\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p' || echo unknown)}"
+}
 
 # Lock acquire: when flock is available we use a nonblocking exclusive
 # file-descriptor lock. The fd travels back to the caller via a global
 # LOCK_LOCAL_FD variable; release_lock_local closes it.
 lock_acquire_local() {
+  lock_ensure_local_dir
   if [[ -n "$LOCK_FLOCK_BIN" ]]; then
     exec {LOCK_LOCAL_FD}>"$LOCK_LOCAL_DIR"
     if ! "$LOCK_FLOCK_BIN" -n "$LOCK_LOCAL_FD"; then
       echo "ERROR: local lock held at $LOCK_LOCAL_DIR" >&2
+      eval "exec ${LOCK_LOCAL_FD}<&-"
+      LOCK_LOCAL_FD=
       return 75  # EX_TEMPFAIL — standard "try again" code
     fi
     # Stamp metadata inside the locked file so `ps`/inspectors can see
@@ -87,6 +119,7 @@ lock_acquire_local() {
 }
 
 lock_release_local() {
+  lock_ensure_local_dir
   if [[ -n "${LOCK_LOCAL_FD:-}" ]]; then
     eval "exec ${LOCK_LOCAL_FD}<&-"
     LOCK_LOCAL_FD=
@@ -94,6 +127,43 @@ lock_release_local() {
     return
   fi
   rm -rf "$LOCK_LOCAL_DIR"
+}
+
+# Shared build lock. This is intentionally separate from the per-target lock:
+# it serializes only mutations of the shared checkout (version files, web/dist,
+# and local staging), while allowing target-specific remote phases to overlap.
+lock_acquire_build() {
+  lock_ensure_build_dir
+  if [[ -n "$LOCK_BUILD_FLOCK_BIN" ]]; then
+    exec {LOCK_BUILD_FD}>"$LOCK_LOCAL_BUILD_DIR"
+    if ! "$LOCK_BUILD_FLOCK_BIN" -n "$LOCK_BUILD_FD"; then
+      echo "ERROR: shared build lock held at $LOCK_LOCAL_BUILD_DIR (requested target=${LOCK_BUILD_TARGET:-?})" >&2
+      eval "exec ${LOCK_BUILD_FD}<&-"
+      LOCK_BUILD_FD=
+      return 75
+    fi
+    lock_write_metadata "${LOCK_BUILD_TARGET:-build}" >&"$LOCK_BUILD_FD"
+    return 0
+  fi
+  if ! mkdir "$LOCK_LOCAL_BUILD_DIR" 2>/dev/null; then
+    echo "ERROR: shared build lock held at $LOCK_LOCAL_BUILD_DIR (requested target=${LOCK_BUILD_TARGET:-?})" >&2
+    if [[ -f "$LOCK_LOCAL_BUILD_DIR/metadata" ]]; then
+      cat "$LOCK_LOCAL_BUILD_DIR/metadata" >&2
+    fi
+    return 75
+  fi
+  lock_write_metadata "${LOCK_BUILD_TARGET:-build}" >"$LOCK_LOCAL_BUILD_DIR/metadata"
+}
+
+lock_release_build() {
+  lock_ensure_build_dir
+  if [[ -n "${LOCK_BUILD_FD:-}" ]]; then
+    eval "exec ${LOCK_BUILD_FD}<&-"
+    LOCK_BUILD_FD=
+    rm -f "$LOCK_LOCAL_BUILD_DIR"
+    return
+  fi
+  rm -rf "$LOCK_LOCAL_BUILD_DIR"
 }
 
 # Remote lock — invoked via SSH. The contract is "atomic mkdir"; we do
@@ -159,6 +229,9 @@ force_unlock_remote() {
 # Usage: with_local_lock <target> <body-command...>
 with_local_lock() {
   local target=$1; shift
+  if [[ -z "${LOCK_LOCAL_DIR:-}" ]]; then
+    LOCK_LOCAL_DIR="${TMPDIR:-/tmp}/kx-llm-gateway-deploy-${target}.lock"
+  fi
   LOCK_LOCAL_TARGET=$target lock_acquire_local
   trap 'lock_release_local' EXIT
   "$@"

@@ -12,7 +12,7 @@
 #   bash scripts/deploy-154.sh --direct        # 直连 154（跳过 252 跳板机，应急用）
 #   bash scripts/deploy-154.sh --force-unlock  # 先清理 stale 的本地 repo 锁，再部署
 #
-# --force-unlock 会调用 scripts/deploy-lib/unlock-local.sh --force。
+# --force-unlock 会调用 scripts/deploy-lib/unlock-local.sh --target 154 --force。
 # 默认该脚本只会报告不会删；加 --force 才真正移除本地锁并 (必要时) 杀掉
 # 还活着的持有者 PID。仅在你确认旧 deploy 进程已死/不该再跑时使用。
 #
@@ -37,8 +37,8 @@ ARGS=()
 extract_force_unlock FORCE_UNLOCK ARGS "$@"
 
 if [[ $FORCE_UNLOCK -eq 1 ]]; then
-  echo "[deploy-154] --force-unlock: running unlock-local.sh --force"
-  bash "$SCRIPT_DIR/deploy-lib/unlock-local.sh" --force
+  echo "[deploy-154] --force-unlock: running unlock-local.sh --target 154 --force"
+  bash "$SCRIPT_DIR/deploy-lib/unlock-local.sh" --target 154 --force
 fi
 
 exec bash "$SCRIPT_DIR/deploy-seamless.sh" deploy 154 "${ARGS[@]}"
