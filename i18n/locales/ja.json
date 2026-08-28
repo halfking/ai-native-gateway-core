@@ -38,6 +38,12 @@
   "invalid_model": {
     "other": "モデル '{{.Model}}' はこのゲートウェイでサポートされていません"
   },
+  "unsupported_feature": {
+    "other": "選択したモデルはこのリクエスト形式またはモダリティをサポートしていません。"
+  },
+  "model_deprecated": {
+    "other": "要求されたモデルは上流プロバイダーによって恒久的に提供終了（EOL）されました。"
+  },
   "meta_tool_error": {
     "other": "メタツールの処理に失敗しました"
   },
