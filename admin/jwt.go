@@ -90,20 +90,21 @@ func SignToken(userID int, tenantID, username, role, secretKey string, mustChang
 
 // VerifyToken parses and validates a JWT string, returning the claims.
 func VerifyToken(tokenStr, secretKey string) (*JWTClaims, error) {
-	token, err := jwt.ParseWithClaims(tokenStr, &JWTClaims{}, func(t *jwt.Token) (interface{}, error) {
+	claims := &JWTClaims{}
+	token, err := jwt.ParseWithClaims(tokenStr, claims, func(t *jwt.Token) (interface{}, error) {
 		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
 		}
 		return jwtSecret(secretKey), nil
-	})
+	}, jwt.WithIssuer("llm-gateway"), jwt.WithAudience(AudienceName))
 	if err != nil {
 		return nil, fmt.Errorf("parse jwt: %w", err)
 	}
-	claims, ok := token.Claims.(*JWTClaims)
+	parsedClaims, ok := token.Claims.(*JWTClaims)
 	if !ok || !token.Valid {
 		return nil, fmt.Errorf("invalid jwt claims")
 	}
-	return claims, nil
+	return parsedClaims, nil
 }
 
 // VerifyLegacy is the adapter that pkg/identity uses to fall back to the
