@@ -23,6 +23,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -33,6 +34,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/response"
+	redissafe "github.com/kaixuan/llm-gateway-go/internal/redis"
 	"github.com/kaixuan/llm-gateway-go/metrics"
 	"github.com/redis/go-redis/v9"
 )
@@ -260,7 +262,12 @@ func (m *SanitizeInputMiddleware) loadOffsets(ctx context.Context, sessionID str
 	if m.redis == nil || sessionID == "" {
 		return nil
 	}
-	vals, err := m.redis.HGetAll(ctx, sanitizeOffsetKey(firstSanitizeTenant(tenantIDs), sessionID)).Result()
+	// audit-24h-20260828-r4 P2: Use SafeHGetAll to prevent WRONGTYPE errors
+	// when the offsets hash key collides with a non-hash type. ErrKeyNotFound
+	// (key absent) is collapsed into the existing nil-map return below;
+	// TypedError (WRONGTYPE) and other errors also fall through to nil
+	// because this method's contract is "no offsets is fine, we start at 1".
+	vals, err := redissafe.SafeHGetAll(ctx, m.redis, sanitizeOffsetKey(firstSanitizeTenant(tenantIDs), sessionID))
 	if err != nil || len(vals) == 0 {
 		return nil
 	}
@@ -703,16 +710,29 @@ func (it *SanitizeRestoreInterceptor) loadMap(ctx context.Context, sessionID str
 	if it.redis == nil {
 		return nil, nil
 	}
-	key := sanitizeMapKey(firstSanitizeTenant(tenantIDs), sessionID)
-	vals, err := it.redis.HGetAll(ctx, key).Result()
+	tenant := firstSanitizeTenant(tenantIDs)
+	key := sanitizeMapKey(tenant, sessionID)
+	// audit-24h-20260828-r4 P2: Use SafeHGetAll to prevent WRONGTYPE errors
+	// when the sanitize map key collides with a non-hash type. ErrKeyNotFound
+	// is the cache-miss path — fall through to the empty-map return below
+	// rather than propagate (the rest of the function is nil-tolerant).
+	vals, err := redissafe.SafeHGetAll(ctx, it.redis, key)
 	if err != nil {
-		return nil, err
-	}
-	if len(vals) == 0 && firstSanitizeTenant(tenantIDs) == "" {
-		key = SanitizeRedisKey(sessionID)
-		vals, err = it.redis.HGetAll(ctx, key).Result()
-		if err != nil {
+		if errors.Is(err, redissafe.ErrKeyNotFound) {
+			vals = nil
+		} else {
 			return nil, err
+		}
+	}
+	if len(vals) == 0 && tenant == "" {
+		key = SanitizeRedisKey(sessionID)
+		vals, err = redissafe.SafeHGetAll(ctx, it.redis, key)
+		if err != nil {
+			if errors.Is(err, redissafe.ErrKeyNotFound) {
+				vals = nil
+			} else {
+				return nil, err
+			}
 		}
 	}
 	if len(vals) == 0 {
