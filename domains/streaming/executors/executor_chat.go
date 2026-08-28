@@ -1363,6 +1363,20 @@ func (e *Executor) executeOpenAI(
 								"error", serErr, "request_id", params.R.Header.Get("X-Request-Id"))
 						}
 					} else {
+						// 2026-08-28 P1-GLM-2: If ParseOpenAIResponse returns a
+						// *ir.ParseError (e.g. GLM finish_reason error channel),
+						// treat it as an upstream error rather than silently
+						// forwarding the raw body to the client.
+						var parseErr *ir.ParseError
+						if errors.As(irErr, &parseErr) {
+							return nil, &upstreampkg.Error{
+								Kind:       parseErr.Kind,
+								Message:    parseErr.Message,
+								Body:       append([]byte(nil), respBody...),
+								StatusCode: resp.StatusCode,
+								RetryAfter: upstreampkg.RetryAfterFromHeaders(resp.Header),
+							}
+						}
 						slog.Warn("q2 ir parse openai response failed; forwarding raw body",
 							"error", irErr, "request_id", params.R.Header.Get("X-Request-Id"))
 					}
