@@ -30,16 +30,32 @@ type Store struct {
 	ttl        time.Duration
 }
 
+type StoreOptions struct {
+	MaxEntries int
+	TTL        time.Duration
+}
+
 // NewStore creates a ContentStore rooted at dir. Empty dir disables file I/O
 // but memory still works (useful in tests).
 func NewStore(dir string) (*Store, error) {
-	s := &Store{dir: dir, mem: make(map[string]Meta), updated: make(map[string]time.Time), maxEntries: defaultMaxEntries, ttl: defaultTTL}
+	return NewStoreWithOptions(dir, StoreOptions{})
+}
+
+func NewStoreWithOptions(dir string, opts StoreOptions) (*Store, error) {
+	if opts.MaxEntries <= 0 {
+		opts.MaxEntries = defaultMaxEntries
+	}
+	if opts.TTL <= 0 {
+		opts.TTL = defaultTTL
+	}
+	s := &Store{dir: dir, mem: make(map[string]Meta), updated: make(map[string]time.Time), maxEntries: opts.MaxEntries, ttl: opts.TTL}
 	if dir == "" {
 		return s, nil
 	}
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return nil, fmt.Errorf("requestdetail: mkdir %s: %w", dir, err)
 	}
+	s.cleanupFiles(time.Now())
 	return s, nil
 }
 
@@ -134,8 +150,9 @@ func (s *Store) GetFile(requestID string) (filePayload, bool, error) {
 	if err := validateRequestID(requestID); err != nil {
 		return filePayload{}, false, err
 	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.evictLocked(time.Now())
 	raw, err := os.ReadFile(s.filePath(requestID))
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -144,6 +161,11 @@ func (s *Store) GetFile(requestID string) (filePayload, bool, error) {
 		return filePayload{}, false, err
 	}
 	var p filePayload
+	info, statErr := os.Stat(s.filePath(requestID))
+	if statErr == nil && s.ttl > 0 && time.Since(info.ModTime()) >= s.ttl {
+		_ = os.Remove(s.filePath(requestID))
+		return filePayload{}, false, nil
+	}
 	if err := json.Unmarshal(raw, &p); err != nil {
 		// A broken local snapshot must not prevent the DB fallback.
 		slog.Warn("requestdetail: ignoring malformed local snapshot", "request_id", requestID, "error", err)
@@ -221,6 +243,28 @@ func (s *Store) evictLocked(now time.Time) {
 		if s.dir != "" {
 			_ = os.Remove(s.filePath(oldest))
 			_ = os.Remove(s.filePath(oldest) + ".tmp")
+		}
+	}
+}
+
+func (s *Store) cleanupFiles(now time.Time) {
+	if s.dir == "" || s.ttl <= 0 {
+		return
+	}
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		if now.Sub(info.ModTime()) >= s.ttl {
+			_ = os.Remove(filepath.Join(s.dir, entry.Name()))
 		}
 	}
 }
