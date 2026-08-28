@@ -754,6 +754,11 @@ func main() {
 	journeyInstanceID := stableGatewayInstanceID()
 	chatHandler.SetRequestJourney(journeyRecorder, journeyInstanceID)
 	gatewayRequestJourneySink = newDispatchJourneyAdapter(journeyRecorder)
+	// audit-24h-20260828-r3: terminal-time consumer of the per-request
+	// attempt journal. Mirrors the observation adapter above; the
+	// dispatch.JournalSink interface keeps the two paths independent so a
+	// future change to the observation bridge can't silently drop journals.
+	gatewayRequestJourneyJournalSink = newDispatchJourneyJournalAdapter(journeyRecorder, journeyInstanceID)
 	slog.Info("request journey recorder wired",
 		"gateway_instance_id", journeyInstanceID,
 		"redis", redisClientForCache != nil,
@@ -6024,9 +6029,11 @@ func main() {
 		if pipeline != nil {
 			pipeline.Stop()
 			pipeline.SetObservationSink(nil)
+			pipeline.SetJournalSink(nil)
 			pipeline.SetQueueObservationSink(nil)
 		}
 		gatewayRequestJourneySink = nil
+		gatewayRequestJourneyJournalSink = nil
 		gatewayQueueProjection.Close()
 		if err := journeyRecorder.Close(stopCtx); err != nil {
 			slog.Warn("request journey recorder drain failed", "error", err)
