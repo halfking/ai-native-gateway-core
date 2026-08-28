@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit"
+	"github.com/kaixuan/llm-gateway-go/internal/jsonbody"
 )
 
 // AuthService defines the interface for authentication and authorization.
@@ -48,29 +49,29 @@ type ApprovalHandler struct {
 
 // ApprovalStats represents statistics about approval requests.
 type ApprovalStats struct {
-	Total                  int                    `json:"total"`
-	Pending                int                    `json:"pending"`
-	Approved               int                    `json:"approved"`
-	Rejected               int                    `json:"rejected"`
-	Timeout                int                    `json:"timeout"`
-	AvgApprovalTimeSeconds float64                `json:"avg_approval_time_seconds"`
-	ByRiskLevel            map[string]int         `json:"by_risk_level"`
-	ByTriggerType          map[string]int         `json:"by_trigger_type"`
-	TodayTotal             int                    `json:"today_total"`
-	TodayPending           int                    `json:"today_pending"`
+	Total                  int            `json:"total"`
+	Pending                int            `json:"pending"`
+	Approved               int            `json:"approved"`
+	Rejected               int            `json:"rejected"`
+	Timeout                int            `json:"timeout"`
+	AvgApprovalTimeSeconds float64        `json:"avg_approval_time_seconds"`
+	ByRiskLevel            map[string]int `json:"by_risk_level"`
+	ByTriggerType          map[string]int `json:"by_trigger_type"`
+	TodayTotal             int            `json:"today_total"`
+	TodayPending           int            `json:"today_pending"`
 }
 
 // ApprovalListRequest represents the request parameters for listing approvals.
 type ApprovalListRequest struct {
-	Status        string    `json:"status"`          // pending/approved/rejected/timeout
-	TenantID      string    `json:"tenant_id"`       // filter by tenant
-	RiskLevel     string    `json:"risk_level"`      // LOW/MEDIUM/HIGH/CRITICAL
-	Page          int       `json:"page"`            // page number (1-based)
-	PageSize      int       `json:"page_size"`       // items per page
-	SortBy        string    `json:"sort_by"`         // created_at/risk_level
-	SortOrder     string    `json:"sort_order"`      // asc/desc
-	CreatedAfter  time.Time `json:"created_after"`   // filter by creation time
-	CreatedBefore time.Time `json:"created_before"`  // filter by creation time
+	Status        string    `json:"status"`         // pending/approved/rejected/timeout
+	TenantID      string    `json:"tenant_id"`      // filter by tenant
+	RiskLevel     string    `json:"risk_level"`     // LOW/MEDIUM/HIGH/CRITICAL
+	Page          int       `json:"page"`           // page number (1-based)
+	PageSize      int       `json:"page_size"`      // items per page
+	SortBy        string    `json:"sort_by"`        // created_at/risk_level
+	SortOrder     string    `json:"sort_order"`     // asc/desc
+	CreatedAfter  time.Time `json:"created_after"`  // filter by creation time
+	CreatedBefore time.Time `json:"created_before"` // filter by creation time
 }
 
 // ApprovalListResponse represents the response for listing approvals.
@@ -191,7 +192,7 @@ func (h *ApprovalHandler) ApproveApproval(w http.ResponseWriter, r *http.Request
 	}
 
 	var req ApprovalActionRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := jsonbody.DecodeRequest(r, &req, jsonbody.MaxRequiredBody, true); err != nil {
 		h.writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -213,7 +214,7 @@ func (h *ApprovalHandler) ApproveApproval(w http.ResponseWriter, r *http.Request
 	if err != nil {
 		status := http.StatusInternalServerError
 		message := "failed to approve"
-		
+
 		switch {
 		case errors.Is(err, sessionaudit.ErrNotFound):
 			status = http.StatusNotFound
@@ -255,7 +256,7 @@ func (h *ApprovalHandler) RejectApproval(w http.ResponseWriter, r *http.Request)
 	}
 
 	var req ApprovalActionRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := jsonbody.DecodeRequest(r, &req, jsonbody.MaxRequiredBody, true); err != nil {
 		h.writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -282,7 +283,7 @@ func (h *ApprovalHandler) RejectApproval(w http.ResponseWriter, r *http.Request)
 	if err != nil {
 		status := http.StatusInternalServerError
 		message := "failed to reject"
-		
+
 		switch {
 		case errors.Is(err, sessionaudit.ErrNotFound):
 			status = http.StatusNotFound
@@ -486,7 +487,7 @@ func (h *ApprovalHandler) calculateStats(ctx context.Context, tenantID string, s
 
 func (h *ApprovalHandler) parseListRequest(r *http.Request) *ApprovalListRequest {
 	q := r.URL.Query()
-	
+
 	page := 1
 	if p := q.Get("page"); p != "" {
 		if val, err := strconv.Atoi(p); err == nil && val > 0 {
