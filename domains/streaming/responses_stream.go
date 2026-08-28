@@ -16,6 +16,10 @@ import (
 )
 
 // P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
+// StreamResponsesSSE is the deprecated text-only Responses implementation.
+// Production /v1/responses traffic uses the IR bridges in responses_bridge.go;
+// this path remains only as a compatibility and rollback reference until a
+// traffic observation window proves it is unused.
 func StreamResponsesSSE(ctx context.Context, w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture) (outcome StreamOutcome) {
 	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
