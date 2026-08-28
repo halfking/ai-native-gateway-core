@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -418,7 +419,10 @@ func (h *Handler) serveSessionSnapshot(w http.ResponseWriter, r *http.Request, s
 			WHERE s.session_id=$1 AND s.tenant_id=$2
 			ORDER BY s.partition_date DESC LIMIT 1`
 	var (
-		saStatus, saSchemaVersion, saInputHash string
+		// 2026-08-28: 这三个列来自 LEFT JOIN LATERAL public.session_analysis_metadata,
+		// 在 JOIN miss (会话从未被分析) 时为 NULL。用 *string 接收 NULL,
+		// 否则 pgx 报错 "cannot scan NULL into *string" → 快照接口 500。
+		saStatus, saSchemaVersion, saInputHash *string
 		saSourceTaskID                         *string
 		saUpdatedAt                            *time.Time
 		saPayloadRaw                           []byte
@@ -434,12 +438,27 @@ func (h *Handler) serveSessionSnapshot(w http.ResponseWriter, r *http.Request, s
 			writeJSON(w, http.StatusOK, map[string]any{"session_id": sessionID, "tenant_id": tenantID})
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "query snapshot failed")
+		slog.ErrorContext(r.Context(), "serveSessionSnapshot query failed",
+			"session_id", sessionID, "tenant_id", tenantID, "error", err.Error())
+		writeError(w, http.StatusInternalServerError, "query snapshot failed: "+err.Error())
 		return
 	}
-	if saStatus != "" {
+	// LEFT JOIN miss → 所有分析列为 NULL, 用空串作为 "未分析" 哨兵。
+	saStatusVal := ""
+	if saStatus != nil {
+		saStatusVal = *saStatus
+	}
+	saSchemaVal := ""
+	if saSchemaVersion != nil {
+		saSchemaVal = *saSchemaVersion
+	}
+	saHashVal := ""
+	if saInputHash != nil {
+		saHashVal = *saInputHash
+	}
+	if saStatusVal != "" {
 		var view SessionAnalysisView
-		scanSessionAnalysis(&view, saStatus, saSchemaVersion, saInputHash, saSourceTaskID, saUpdatedAt, saPayloadRaw)
+		scanSessionAnalysis(&view, saStatusVal, saSchemaVal, saHashVal, saSourceTaskID, saUpdatedAt, saPayloadRaw)
 		snap.SessionAnalysis = &view
 	}
 	writeJSON(w, http.StatusOK, snap)
