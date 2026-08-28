@@ -92,7 +92,14 @@ type StreamOutcome struct {
 // matching the non-stream semantics in isEmptyAnthropicMessagesResponse
 // (which checks content array length, not usage token presence).
 func IsAnthropicStreamEmpty(emittedContent bool, inputTokens, outputTokens int) bool {
-	return !emittedContent && inputTokens == 0 && outputTokens == 0
+	// Contract (matches the docstring above): the stream is empty when no
+	// semantic bytes reached the wire, regardless of whether the upstream
+	// reported usage. Some Anthropic-compatibility relays (notably minimax
+	// via the Anthropic bridge) emit `usage` in `message_start` with zero
+	// output content; treating them as "has content" because of usage would
+	// suppress fail-over and silently 200 an empty assistant turn to the
+	// client.
+	return !emittedContent
 }
 
 // EmptyResponseStreamOutcome builds the standard StreamOutcome returned
