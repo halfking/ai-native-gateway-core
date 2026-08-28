@@ -932,6 +932,7 @@ func (h *Handler) handleFreePoolQuickEntry(w http.ResponseWriter, r *http.Reques
 		ProbeFirst       bool     `json:"probe_first"`
 		Save             bool     `json:"save"`
 		NoAPIKeyRequired bool     `json:"no_api_key_required"`
+		ForceSkipProbe   bool     `json:"force_skip_probe"` // 跳过探活检查，强制保存（用于 GFW 环境）
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
@@ -965,16 +966,19 @@ func (h *Handler) handleFreePoolQuickEntry(w http.ResponseWriter, r *http.Reques
 		catalogCode = slug
 	}
 
-		var probeResult map[string]any
-		if req.ProbeFirst && strings.TrimSpace(req.BaseURL) != "" {
-			p, _ := probeOpenAICompatibleBase(req.BaseURL, req.APIKey, 10*time.Second)
-			probeResult = p
+	var probeResult map[string]any
+	if req.ProbeFirst && strings.TrimSpace(req.BaseURL) != "" {
+		p, _ := probeOpenAICompatibleBase(req.BaseURL, req.APIKey, 10*time.Second)
+		probeResult = p
+		
+		// 如果设置了 ForceSkipProbe，跳过探活检查，仅记录探活结果用于诊断
+		if !req.ForceSkipProbe {
 			if strings.TrimSpace(req.APIKey) != "" {
 				if authValid, ok := probeResult["auth_valid"].(bool); ok && !authValid {
 					statusCode, _ := probeResult["status_code"].(int)
 					errMsg := "API Key 探活未通过，请检查 base_url 与 Key"
 					if statusCode == 403 {
-						errMsg = "API Key 无效或已过期（403 Forbidden），请检查 Key 是否正确"
+						errMsg = "API Key 无效或已过期（403 Forbidden），请检查 Key 是否正确。如果确认 Key 有效但因网络环境无法探活（如 GFW），可勾选「强制跳过探活」直接保存"
 					} else if statusCode == 401 {
 						errMsg = "API Key 认证失败（401 Unauthorized），请检查 Key 格式"
 					}
@@ -990,11 +994,12 @@ func (h *Handler) handleFreePoolQuickEntry(w http.ResponseWriter, r *http.Reques
 				writeJSON(w, http.StatusOK, map[string]any{
 					"status": "probe_failed",
 					"probe":  probeResult,
-					"error":  "端点不可达或 Key 无效",
+					"error":  "端点不可达或 Key 无效。如果确认配置正确但因网络环境无法探活（如 GFW），可勾选\"强制跳过探活\"直接保存",
 				})
 				return
 			}
 		}
+	}
 
 	models := req.Models
 	if len(models) == 0 && probeResult != nil {
