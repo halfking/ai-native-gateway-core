@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -132,9 +133,9 @@ func (f *fakeBodies) ReadSessionTurnsBodies(_ context.Context, requestID string,
 // requestLogsMeta records which ids still have metadata even though their
 // body row was dropped; requestLogs keeps ids that still have bodies.
 type partialMetaBodies struct {
-	requestLogs      map[string]Bodies
-	requestLogsMeta  map[string]Meta
-	sessionTurns     map[string]Bodies
+	requestLogs     map[string]Bodies
+	requestLogsMeta map[string]Meta
+	sessionTurns    map[string]Bodies
 }
 
 func (f *partialMetaBodies) ReadRequestLogsBodies(_ context.Context, requestID string, omitBody bool) (Bodies, Meta, error) {
