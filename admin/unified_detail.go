@@ -7,7 +7,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"log/slog"
 	"net/http"
 	"strings"
 
@@ -71,26 +70,6 @@ func (r *pgBodyReader) ReadRequestLogsBodies(ctx context.Context, requestID stri
 		return requestdetail.Bodies{}, requestdetail.Meta{}, outboundErr
 	}
 	bodies.OutboundBody = outbound
-
-	// A persisted body row may be partial (for example, a successful stream
-	// with no captured response). Fill only missing fields from session_turns;
-	// never replace fields that are already present in request_logs_bodies.
-	if len(bodies.RequestBody) == 0 || len(bodies.ResponseBody) == 0 || len(bodies.OutboundBody) == 0 {
-		if sessionBodies, _, sessionErr := r.ReadSessionTurnsBodies(ctx, canonicalRequestID, false); sessionErr == nil {
-			if len(bodies.RequestBody) == 0 {
-				bodies.RequestBody = sessionBodies.RequestBody
-			}
-			if len(bodies.ResponseBody) == 0 {
-				bodies.ResponseBody = sessionBodies.ResponseBody
-			}
-			if len(bodies.OutboundBody) == 0 {
-				bodies.OutboundBody = sessionBodies.OutboundBody
-			}
-		}
-	}
-	if len(bodies.RequestBody) == 0 && len(bodies.ResponseBody) == 0 && len(bodies.OutboundBody) == 0 {
-		return requestdetail.Bodies{}, meta, requestdetail.ErrNotFound
-	}
 	return bodies, meta, nil
 }
 
@@ -229,7 +208,6 @@ func (r *pgBodyReader) ReadSessionTurnsBodies(ctx context.Context, requestID str
 	var (
 		sessionID     string
 		turnNo        int
-		tenantID      string
 		requestDelta  []byte
 		responseDelta []byte
 		outboundBody  []byte
@@ -239,22 +217,19 @@ func (r *pgBodyReader) ReadSessionTurnsBodies(ctx context.Context, requestID str
 	if omitBody {
 		return requestdetail.Bodies{}, requestdetail.Meta{}, requestdetail.ErrNotFound
 	}
-
 	err := r.db.QueryRow(ctx, `
-		SELECT t.session_id, t.turn_no, t.tenant_id,
+		SELECT t.session_id, t.turn_no,
 		       b.request_delta, b.response_delta, b.outbound_body,
 		       t.model, t.latency_ms
 		  FROM public.session_turns_with_current_month t
 		  LEFT JOIN public.session_bodies b
-		    ON b.tenant_id = t.tenant_id
-		   AND b.session_id = t.session_id
+		    ON b.session_id = t.session_id
 		   AND b.turn_no = t.turn_no
 		   AND b.partition_date = t.partition_date
 		 WHERE t.request_id = $1
 		 ORDER BY t.ts DESC NULLS LAST
 		 LIMIT 1
-	`, requestID).Scan(&sessionID, &turnNo, &tenantID, &requestDelta, &responseDelta, &outboundBody, &model, &latencyMs)
-
+	`, requestID).Scan(&sessionID, &turnNo, &requestDelta, &responseDelta, &outboundBody, &model, &latencyMs)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return requestdetail.Bodies{}, requestdetail.Meta{}, requestdetail.ErrNotFound
 	}
@@ -263,7 +238,6 @@ func (r *pgBodyReader) ReadSessionTurnsBodies(ctx context.Context, requestID str
 	}
 	meta := requestdetail.Meta{
 		RequestID:   requestID,
-		TenantID:    tenantID,
 		GwSessionID: &sessionID,
 		TurnNumber:  &turnNo,
 	}
@@ -293,7 +267,7 @@ func anyToRaw(v any) json.RawMessage {
 	case []byte:
 		return json.RawMessage(t)
 	case string:
-		return requestdetail.DecodeRaw(&t)
+		return json.RawMessage(t)
 	default:
 		b, err := json.Marshal(t)
 		if err != nil {
@@ -318,7 +292,7 @@ func (h *Handler) handleUnifiedRequestDetail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	requestID := strings.Trim(strings.TrimPrefix(r.URL.Path, prefix), "/")
-	if err := requestdetail.ValidateRequestID(requestID); err != nil {
+	if requestID == "" || strings.Contains(requestID, "/") {
 		writeError(w, http.StatusBadRequest, "invalid request id")
 		return
 	}
@@ -329,8 +303,7 @@ func (h *Handler) handleUnifiedRequestDetail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if err != nil {
-		slog.Error("request detail lookup failed", "request_id", requestID, "error", err)
-		writeError(w, http.StatusInternalServerError, "failed to load request detail")
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	// 2026-08-26 (P1-29 fix): the previous implementation only checked
@@ -342,7 +315,7 @@ func (h *Handler) handleUnifiedRequestDetail(w http.ResponseWriter, r *http.Requ
 	// detail is treated as "unknown origin" and denied for tenant_admins
 	// (fail-closed) — legacy in-flight meta written before this commit
 	// has no tenant recorded and must not leak across tenants.
-	if !IsSuperAdminOrLegacy(r) {
+	if IsTenantAdmin(r) {
 		tenant := GetTenantID(r)
 		if detail.Meta.TenantID == "" || detail.Meta.TenantID != tenant {
 			writeError(w, http.StatusNotFound, "request detail not found")
