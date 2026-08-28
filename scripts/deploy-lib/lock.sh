@@ -82,7 +82,7 @@ lock_acquire_local() {
     exec {LOCK_LOCAL_FD}<>"$LOCK_LOCAL_DIR"
     if ! "$LOCK_FLOCK_BIN" -n "$LOCK_LOCAL_FD"; then
       echo "ERROR: local lock held at $LOCK_LOCAL_DIR" >&2
-      eval "exec ${LOCK_LOCAL_FD}>&-"
+      eval "exec ${LOCK_LOCAL_FD}<&-"
       LOCK_LOCAL_FD=
       return 75  # EX_TEMPFAIL — standard "try again" code
     fi
@@ -132,7 +132,7 @@ lock_acquire_build() {
     exec {LOCK_BUILD_FD}<>"$LOCK_LOCAL_BUILD_DIR"
     if ! "$LOCK_BUILD_FLOCK_BIN" -n "$LOCK_BUILD_FD"; then
       echo "ERROR: shared build lock held at $LOCK_LOCAL_BUILD_DIR (requested target=${LOCK_BUILD_TARGET:-?})" >&2
-      eval "exec ${LOCK_BUILD_FD}>&-"
+      eval "exec ${LOCK_BUILD_FD}<&-"
       LOCK_BUILD_FD=
       return 75
     fi
@@ -182,10 +182,10 @@ lock_flock_is_held() {
   [[ -n "$bin" ]] || return 2
   exec {fd}<>"$file" 2>/dev/null || return 2
   if "$bin" -n "$fd" >/dev/null 2>&1; then
-    eval "exec ${fd}>&-"
+    eval "exec ${fd}<&-"
     return 1
   fi
-  eval "exec ${fd}>&-"
+  eval "exec ${fd}<&-"
   return 0
 }
 
@@ -195,7 +195,7 @@ lock_flock_is_held() {
 # process. This supports both mkdir locks (directory/metadata) and flock locks
 # (regular file containing metadata).
 lock_recover_local() {
-  local target=$1 force=${2:-0} dir meta holder_target holder_pid
+  local target=$1 force=${2:-0} flock_bin=${3:-${LOCK_FLOCK_BIN:-}} dir meta holder_target holder_pid
   [[ "$target" == 154 || "$target" == 245 ]] || { echo "ERROR: invalid lock target: $target" >&2; return 2; }
   [[ "$force" == 1 ]] || return 0
   dir="${TMPDIR:-/tmp}/kx-llm-gateway-deploy-${target}.lock"
@@ -213,7 +213,7 @@ lock_recover_local() {
   holder_pid=$(lock_meta_value "$meta" pid 2>/dev/null || true)
   if [[ ! -d "$dir" ]]; then
     local flock_rc=0
-    lock_flock_is_held "$dir" "$LOCK_FLOCK_BIN" || flock_rc=$?
+    lock_flock_is_held "$dir" "$flock_bin" || flock_rc=$?
     case $flock_rc in
       0) echo "ERROR: refusing to remove live flock lock $dir" >&2; return 75 ;;
       2) echo "ERROR: cannot verify flock lock state for $dir" >&2; return 75 ;;
@@ -244,7 +244,7 @@ lock_recover_local() {
 # alive. A live owner is never removed because it may be building for either
 # target and deleting it would reintroduce shared-checkout races.
 lock_recover_build() {
-  local force=${1:-0} meta holder_pid
+  local force=${1:-0} flock_bin=${2:-${LOCK_BUILD_FLOCK_BIN:-${LOCK_FLOCK_BIN:-}}} meta holder_pid
   [[ "$force" == 1 ]] || return 0
   lock_ensure_build_dir
   [[ -e "$LOCK_LOCAL_BUILD_DIR" ]] || return 0
@@ -256,7 +256,7 @@ lock_recover_build() {
   fi
   if [[ ! -d "$LOCK_LOCAL_BUILD_DIR" ]]; then
     local flock_rc=0
-    lock_flock_is_held "$LOCK_LOCAL_BUILD_DIR" "$LOCK_BUILD_FLOCK_BIN" || flock_rc=$?
+    lock_flock_is_held "$LOCK_LOCAL_BUILD_DIR" "$flock_bin" || flock_rc=$?
     case $flock_rc in
       0) echo "ERROR: shared build lock is still held by flock; refusing force removal" >&2; return 75 ;;
       2) echo "ERROR: cannot verify shared build flock state" >&2; return 75 ;;
@@ -354,6 +354,20 @@ lock_release_remote() {
 # Force-unlock — operator-driven remote lock removal. Only this entry
 # point is allowed to bypass the staleness check; age alone is never
 # enough.
+#
+# This is the simplest "remove the lock" primitive. It performs NO
+# validation: no target check, no live-PID check, no SSH-read-failure
+# detection. The recommended operator entry point is
+# `scripts/deploy-lib/unlock-remote.sh <target> --force` which DOES
+# validate metadata and fails closed on SSH/read errors.
+#
+# This function is kept as:
+#   - a thin test helper (tests/deploy_lock_test.sh::AC-L6 uses it
+#     against a fake ssh) so the lock library owns a canonical
+#     "force-remove" primitive that mirrors the real production command,
+#   - an escape hatch for orchestrators that have already validated the
+#     removal out of band (e.g. recovery scripts that have confirmed
+#     the holder is dead via a separate probe).
 force_unlock_remote() {
   local ssh_cmd=$1 lock_path=$2
   echo "WARN: removing remote lock at $lock_path on operator request"
