@@ -264,6 +264,34 @@ type credentialRowLite struct {
 }
 
 func (h *Handler) fetchActiveCredentialsForProvider(ctx context.Context, providerID int) ([]credentialRowLite, error) {
+	// Manual refresh eligibility filter (POST /api/providers/{id}/refresh-models):
+	//
+	// Excluded:
+	//   - manual_disabled=TRUE (operator-disabled via PATCH /api/admin/providers/{id}/enable)
+	//   - secret_ciphertext IS NULL (no API key)
+	//   - tenant_id != 'default' (tenant-scoped providers not yet supported)
+	//   - provider.enabled=FALSE (operator-disabled provider)
+	//
+	// Included:
+	//   - status='active' credentials (normal case)
+	//   - auto-disabled credentials (status='disabled' / lifecycle_status='disabled')
+	//     that previously had working models (api_models_ok=TRUE). This allows
+	//     manual refresh to recover credentials that were auto-disabled by quota
+	//     probes or health checks but still have callable models. Scheduled
+	//     background discovery uses stricter filters and skips these.
+	//
+	// Rationale (2026-08-22 0019aabfa):
+	//   Provider 14 (MiniMax) reported credentials_scanned=0 on refresh even though
+	//   it had 4 credentials; 3 were auto-disabled (quota_state=permanently_exhausted)
+	//   but api_models_ok=true indicated they had working models. The strict
+	//   status='active' filter dropped them, leaving only 1 credential which then
+	//   failed, resulting in an empty model list. Manual refresh now includes
+	//   auto-disabled credentials so operators can recover model lists without
+	//   waiting for health checks to re-enable them.
+	//
+	// 2026-08-29: restored after merge d2cbaf88b regressed the filter by choosing
+	//   upstream over local changes, dropping manual_disabled exclusion and
+	//   api_models_ok relaxation.
 	rows, err := h.db.Query(ctx, `
 		SELECT
 			c.id, COALESCE(c.label,''), p.id, p.display_name,
@@ -277,11 +305,20 @@ func (h *Handler) fetchActiveCredentialsForProvider(ctx context.Context, provide
 		JOIN providers p ON p.id = c.provider_id
 		LEFT JOIN provider_catalog pc ON pc.code = COALESCE(NULLIF(p.catalog_code, ''), p.code)
 		WHERE c.provider_id = $1
-		  AND c.status = 'active'
-		  AND COALESCE(c.lifecycle_status, 'active') NOT IN ('suspended', 'retired', 'disabled')
-		  AND COALESCE(c.availability_state, 'ready') = 'ready'
-		  AND (c.quota_state IS NULL OR c.quota_state NOT IN ('permanently_exhausted', 'balance_exhausted'))
+		  AND c.tenant_id = 'default'
+		  AND p.tenant_id = 'default'
+		  AND c.secret_ciphertext IS NOT NULL
+		  AND COALESCE(c.manual_disabled, FALSE) = FALSE
 		  AND p.enabled = TRUE
+		  AND (
+		      c.status = 'active'
+		      OR COALESCE(c.api_models_ok, FALSE) = TRUE
+		  )
+		  AND (
+		      c.lifecycle_status IS NULL
+		      OR c.lifecycle_status = 'active'
+		      OR (c.lifecycle_status = 'disabled' AND COALESCE(c.api_models_ok, FALSE) = TRUE)
+		  )
 		ORDER BY c.id
 	`, providerID)
 	if err != nil {
