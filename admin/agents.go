@@ -161,7 +161,7 @@ func (h *AgentsHandler) Link(w http.ResponseWriter, r *http.Request) {
 		TargetID int64  `json:"target_id"`
 		LinkType string `json:"link_type"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONRequired(r, &req); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}

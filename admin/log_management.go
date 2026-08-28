@@ -23,7 +23,6 @@ package admin
 import (
 	"archive/tar"
 	"compress/gzip"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -202,7 +201,7 @@ func (h *Handler) logConfigPut(w http.ResponseWriter, r *http.Request) {
 		FilePath    *string `json:"file_path,omitempty"` // 设置后启用文件日志；空串=清空 DB 覆盖
 		Enabled     *bool   `json:"enabled,omitempty"`   // 显式启用/禁用
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONRequired(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}
@@ -382,7 +381,7 @@ func (h *Handler) handleLogArchive(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req LogArchiveRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONRequired(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}
@@ -477,7 +476,7 @@ func (h *Handler) handleLogCleanup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req LogCleanupRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONRequired(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}

@@ -2154,7 +2154,7 @@ func (h *Handler) handleProbeCacheRebuild(w http.ResponseWriter, r *http.Request
 	}
 	var body req
 	if r.ContentLength > 0 {
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil && err.Error() != "EOF" {
+		if err := readJSONRequired(r, &body); err != nil && err.Error() != "EOF" {
 			slog.Error("probe dashboard invalid json", "error", err)
 			writeError(w, http.StatusBadRequest, "invalid request body")
 			return

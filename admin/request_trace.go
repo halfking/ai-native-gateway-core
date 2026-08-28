@@ -239,7 +239,7 @@ func (h *RequestTraceHandler) handleAIPrompt(w http.ResponseWriter, r *http.Requ
 
 	var req aiPromptRequest
 	// 允许 body 为空 → 默认中文、默认问题占位
-	_ = json.NewDecoder(r.Body).Decode(&req)
+	_ = readJSONRequired(r, &req)
 	if req.UserQuestion == "" {
 		req.UserQuestion = "(请在此处粘贴你的具体问题, 例如：为什么这次 gpt-5.6-luna 请求超时了？)"
 	}

@@ -281,7 +281,7 @@ func (h *TuningHandlers) rejectProposal(w http.ResponseWriter, r *http.Request, 
 		var body struct {
 			Reason string `json:"reason"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		if err := readJSONRequired(r, &body); err != nil {
 			// If body is malformed or too large, treat as no note (still
 			// reject the proposal without a reason rather than failing).
 			slog.Warn("tuning: reject body decode failed", "proposal_id", id, "error", err)

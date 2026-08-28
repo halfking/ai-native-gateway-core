@@ -17,7 +17,6 @@ package admin
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"strconv"
 	"strings"
@@ -237,7 +236,7 @@ func (h *Handler) HandleSessionTags(w http.ResponseWriter, r *http.Request) {
 			TagKey   string `json:"tag_key"`
 			TagValue string `json:"tag_value"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		if err := readJSONRequired(r, &body); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid body")
 			return
 		}
@@ -338,7 +337,7 @@ func (h *Handler) handleSessionTagUpdate(w http.ResponseWriter, r *http.Request)
 		TagKey   string `json:"tag_key"`
 		TagValue string `json:"tag_value"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := readJSONRequired(r, &body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
 		return
 	}

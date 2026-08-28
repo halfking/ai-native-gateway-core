@@ -8,7 +8,6 @@ package admin
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -396,7 +395,7 @@ func (h *Handler) handleSessionTitleUpdate(w http.ResponseWriter, r *http.Reques
 	}
 
 	var body titleUpdateRequest
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := readJSONRequired(r, &body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body: "+err.Error())
 		return
 	}
@@ -599,7 +598,7 @@ func (h *Handler) handleSessionTitlesBatch(w http.ResponseWriter, r *http.Reques
 	}
 
 	var body titlesBatchRequest
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := readJSONRequired(r, &body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body: "+err.Error())
 		return
 	}
