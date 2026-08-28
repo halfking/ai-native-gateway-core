@@ -12,7 +12,9 @@ import (
 )
 
 func TestStreamAnthropicPassthroughEmptyMessageIsRetryable(t *testing.T) {
-	body := "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_empty\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+	// audit-24h-20260828-r4 (post-merge): input_tokens=0 / output_tokens=0
+	// so the empty-response detector fires (matches Q3 fixture).
+	body := "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_empty\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
 	resp := &http.Response{
 		Body:    io.NopCloser(strings.NewReader(body)),
 		Request: httptest.NewRequest(http.MethodPost, "/v1/messages", nil),

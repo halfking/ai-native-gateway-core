@@ -589,7 +589,7 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 					// stream right after the finish_reason chunk instead of
 					// emitting a terminal event).
 					if finishReason != "" {
-						if anthropic.IsAnthropicStreamEmpty(emittedContent, inputTokens, outputTokens) {
+						if anthropic.IsAnthropicStreamEmpty(emittedContent, inputTokens, outputTokens, pc != nil) {
 							if capture != nil {
 								capture.MarkInterruptedWithReason("anthropic_empty_response")
 							}
@@ -616,7 +616,7 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 					}
 					return outcome
 				}
-				if anthropic.IsAnthropicStreamEmpty(emittedContent, inputTokens, outputTokens) {
+				if anthropic.IsAnthropicStreamEmpty(emittedContent, inputTokens, outputTokens, pc != nil) {
 					if capture != nil {
 						capture.MarkInterruptedWithReason("anthropic_empty_response")
 					}
@@ -632,7 +632,7 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 				// semantic bytes and no usage tokens fails over to the
 				// next candidate instead of being recorded as a successful
 				// empty stream.
-				if anthropic.IsAnthropicStreamEmpty(emittedContent, inputTokens, outputTokens) {
+				if anthropic.IsAnthropicStreamEmpty(emittedContent, inputTokens, outputTokens, pc != nil) {
 					if capture != nil {
 						capture.MarkInterruptedWithReason("anthropic_empty_response")
 					}

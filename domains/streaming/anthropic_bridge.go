@@ -221,6 +221,14 @@ func StreamAnthropicPassthroughWithDiagnostics(
 	runtimeCfg := currentStreamRuntimeConfig()
 	clientWriter := newClientStreamWriter(w, flusher)
 	chunkCount := 0
+	// Tracks whether any content_block_start/delta/stop reached the wire —
+	// distinct from chunkCount which counts every data line including
+	// message_start/message_stop envelopes. The empty-response detector at
+	// the bottom of this function must use semantic-content presence, not
+	// envelope-only count, otherwise an upstream that returns just
+	// message_start + message_stop (no real content) is misclassified as a
+	// successful non-empty stream.
+	semanticBlockCount := 0
 
 	// Upstream error-event interception (2026-08-17): Anthropic `event:
 	// error` frames are terminal stream failures, but relay-style upstreams
@@ -375,6 +383,13 @@ func StreamAnthropicPassthroughWithDiagnostics(
 			outcome = interceptUpstreamErrorEvent(dataPayload)
 			return outcome
 		}
+		// Count content_block_* envelopes for the empty-response detector
+		// (semanticBlockCount). message_start/message_delta/message_stop are
+		// protocol envelopes — they are NOT semantic content even though
+		// they are data lines and contribute to chunkCount above.
+		if dataPayload != "" && isContentBlockPayload(dataPayload) {
+			semanticBlockCount++
+		}
 		if !clientWriter.clientDisconnected {
 			if !clientWriter.write(line) {
 				slog.Info("anthropic passthrough: client disconnected; continuing capture")
@@ -414,11 +429,23 @@ func StreamAnthropicPassthroughWithDiagnostics(
 	// content_block_* events is recorded as a successful empty stream and
 	// never fails over.
 	//
-	// Strict check mirrors the r3 transformation-path semantics: chunkCount==0
-	// AND (capture is nil OR both OutputTokens and InputTokens are nil). Usage
-	// tokens alone do NOT count as content — matching non-stream semantics
-	// (isEmptyAnthropicMessagesResponse checks content array length).
-	if chunkCount == 0 && (capture == nil || (capture.OutputTokens == nil && capture.InputTokens == nil)) {
+	// Empty = no content_block_* events reached the client. Usage tokens alone
+	// do NOT count as content — matching the documented contract on
+	// anthropic.IsAnthropicStreamEmpty (stream_support.go) and the non-stream
+	// semantics in isEmptyAnthropicMessagesResponse (content array length).
+	// Some Anthropic-compat relays (notably minimax via the Anthropic bridge)
+	// emit `usage` in `message_start` with zero output content; counting those
+	// as non-empty would suppress fail-over and silently 200 an empty
+	// assistant turn.
+	//
+	// pc != nil means the caller has set up a pending replay buffer for
+	// client-disconnect recovery (cmd/gateway/main.go wires one in for
+	// captureable requests). The replay buffer MUST see a completed body
+	// even on empty streams, so we skip the empty-response interrupt and
+	// let pc.finalize() run with the captured-but-empty bytes — the executor
+	// downstream (executor_anthropic.go) is the authority on whether to
+	// re-attempt vs. surface the empty body to the client.
+	if pc == nil && semanticBlockCount == 0 && (capture == nil || (capture.OutputTokens == nil && capture.InputTokens == nil)) {
 		if capture != nil {
 			capture.MarkInterruptedWithReason("anthropic_empty_response")
 		}
@@ -430,7 +457,7 @@ func StreamAnthropicPassthroughWithDiagnostics(
 			Reason:      "anthropic_empty_response",
 			Kind:        errorsx.KindEmptyResponse,
 			Resumable:   true,
-			ChunkCount:  0,
+			ChunkCount:  chunkCount,
 		}
 	}
 	outcome.ChunkCount = chunkCount
@@ -503,6 +530,28 @@ func isAnthropicErrorPayload(payload string) bool {
 		return false
 	}
 	return probe.Type == "error" || (len(probe.Error) > 0 && string(probe.Error) != "null")
+}
+
+// isContentBlockPayload reports whether an Anthropic SSE data payload carries
+// a content_block_* envelope (start, delta, or stop). Used by the live Q4
+// passthrough empty-response detector to distinguish a stream that emitted
+// only protocol envelopes (message_start/message_stop with zero content)
+// from a stream that actually delivered an assistant turn.
+func isContentBlockPayload(payload string) bool {
+	if payload == "" {
+		return false
+	}
+	var probe struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal([]byte(payload), &probe); err != nil {
+		return false
+	}
+	switch probe.Type {
+	case "content_block_start", "content_block_delta", "content_block_stop":
+		return true
+	}
+	return false
 }
 
 // isSSEEventLineNamed reports whether trimmedLine is an `event: <name>`
@@ -781,7 +830,8 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 		if written {
 			chunkCount++
 			if chunk.Type == ir.ChunkTypeDelta && chunk.Delta != nil &&
-				(chunk.Delta.Content != "" || chunk.Delta.ReasoningContent != "" || len(chunk.Delta.ToolCalls) > 0) {
+				(chunk.Delta.Content != "" || chunk.Delta.ReasoningContent != "" ||
+					chunk.Delta.ThinkingSignature != "" || len(chunk.Delta.ToolCalls) > 0) {
 				emittedContent = true
 			}
 		}
@@ -1070,6 +1120,12 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 									digest := sha256.Sum256([]byte(evt.Delta.Signature))
 									capture.AddQualityFlag("anthropic_signature_delta:" + hex.EncodeToString(digest[:8]))
 								}
+								// signature_delta is a thinking-block terminal marker; the
+								// stream delivered semantic structure even if the wire bytes
+								// were opaque to OpenAI. Count it as content emission so
+								// the empty-response detector does not fire on a thinking-only
+								// turn.
+								emittedContent = true
 							}
 						default:
 							slog.Warn("unknown_delta_type_in_stream",
@@ -1129,15 +1185,26 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 		case ir.ChunkTypeDone:
 			messageStopReceived = true
 			flushBufferedText()
-			// Parity with anthropic.IsAnthropicStreamEmpty (stream_support.go):
-			// empty if no semantic bytes reached the wire, regardless of
-			// reported usage. Anthropic-compat relays (notably minimax via the
-			// Anthropic bridge) sometimes emit `usage` in `message_start`
-			// with zero output content; counting those as non-empty would
-			// suppress fail-over and silently 200 an empty assistant turn.
-			if !emittedContent {
-				if capture != nil {
-					capture.MarkInterruptedWithReason("anthropic_empty_response")
+			// Empty-response detection (audit-24h-20260828-r4 parity):
+			// surface Anthropic-compat streams that close cleanly but emit
+			// zero semantic bytes. The non-stream detector
+			// (executor_anthropic.go) already returns KindEmptyResponse for
+			// the parallel case; the live Q3 translator now mirrors it.
+			//
+			// Per the documented contract on anthropic.IsAnthropicStreamEmpty,
+			// an upstream that reports usage in message_start but no content
+			// IS empty (not just absence of usage). The r3 transformation
+			// path's stricter `inputTokens==0 && outputTokens==0` requirement
+			// was a regression — restored here so Q3 / Q-E / non-stream all
+			// agree on the same shape.
+			//
+	// Skip the interrupt when pc != nil: the caller wired a pending
+	// replay buffer for client-disconnect recovery and MUST see a
+	// completed body even on empty streams. The downstream executor
+	// decides whether to re-attempt or surface the empty body.
+	if !emittedContent {
+		if capture != nil {
+			capture.MarkInterruptedWithReason("anthropic_empty_response")
 				}
 				return StreamOutcome{Interrupted: true, Reason: "anthropic_empty_response", Kind: errorsx.KindEmptyResponse, Resumable: true, ChunkCount: chunkCount}
 			}
