@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/bg"
+	redissafe "github.com/kaixuan/llm-gateway-go/internal/redis"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -902,7 +903,12 @@ func (h *Handler) handleProbeSystemHealth(w http.ResponseWriter, r *http.Request
 				legacyHealth.SuspiciousNodes = 0
 				legacyHealth.ProbingNodes = 0
 				for _, key := range keys {
-					data, err := rc.HGetAll(r.Context(), key).Result()
+					// audit-24h-20260828-r4 P2: Use SafeHGetAll to prevent
+					// WRONGTYPE errors when a non-hash key collides with
+					// the SCAN pattern. Errors (including TypedError and
+					// ErrKeyNotFound) continue to the next key — the
+					// original best-effort aggregation semantics.
+					data, err := redissafe.SafeHGetAll(r.Context(), rc, key)
 					if err != nil {
 						continue
 					}
