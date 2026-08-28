@@ -156,16 +156,16 @@ test_concurrent_parallel_process() {
     esac
   done
 
-  # mkdir atomicity guarantees at most one winner per instant.
-  if [[ $wins -ge 1 ]]; then
-    log_pass "at least one racer won ($wins wins / $losses losses)"
+  # mkdir atomicity guarantees exactly one winner per instant.
+  if [[ $wins -eq 1 ]]; then
+    log_pass "exactly one racer won ($wins wins / $losses losses)"
   else
-    log_fail "no winner (all $losses lost the race — broken atomicity)"
+    log_fail "expected exactly 1 winner, got $wins wins / $losses losses — broken atomicity"
   fi
-  if [[ $losses -ge 1 ]]; then
-    log_pass "at least one racer lost ($losses losses) — contention detected"
+  if [[ $losses -eq $(( ${#pids[@]} - 1 )) ]]; then
+    log_pass "all other racers lost ($losses losses) — contention detected"
   else
-    log_fail "no losers — all $wins won simultaneously — no contention"
+    log_fail "expected $(( ${#pids[@]} - 1 )) losses, got $losses — no contention"
   fi
 
   cleanup_lock_env "$tmp"
@@ -579,7 +579,7 @@ test_force_recovery_safety() {
   echo "── AC-L13: force recovery safety guards ──"
   local tmp; tmp=$(mktemp -d -t kx-force-safety.XXXXXX)
   export TMPDIR="$tmp"
-  unset LOCK_LOCAL_DIR LOCK_LOCAL_BUILD_DIR
+  unset LOCK_LOCAL_DIR LOCK_LOCAL_BUILD_DIR LOCK_FLOCK_BIN
   local target_lock="$tmp/kx-llm-gateway-deploy-245.lock"
   mkdir -p "$target_lock"
   printf 'target=154\npid=999999\n' >"$target_lock/metadata"
@@ -592,6 +592,10 @@ test_force_recovery_safety() {
   mkdir -p "$target_lock"
   sleep 30 &
   local live_pid=$!
+  # RETURN trap guarantees the background sleep is reaped even if the
+  # test bails out early (set -e, assertion failure, Ctrl+C). Otherwise
+  # the 30s sleep leaks until the test process itself dies.
+  trap 'kill "$live_pid" 2>/dev/null || true; wait "$live_pid" 2>/dev/null || true; rm -rf "$tmp"' RETURN
   printf 'target=245\npid=%s\n' "$live_pid" >"$target_lock/metadata"
   rc=0
   lock_recover_local 245 1 || rc=$?
@@ -600,8 +604,6 @@ test_force_recovery_safety() {
   else
     log_fail "live non-deploy local PID was not protected (rc=$rc)"
   fi
-  kill "$live_pid" 2>/dev/null || true
-  wait "$live_pid" 2>/dev/null || true
 
   local remote_cmd
   remote_cmd() { return 255; }
@@ -609,6 +611,78 @@ test_force_recovery_safety() {
   lock_recover_remote remote_cmd 245 /var/lib/llm-gateway-go/deploy.lock 1 || rc=$?
   [[ $rc -eq 75 ]] && log_pass "remote lock read failure fails closed" \
     || log_fail "remote lock read failure returned rc=$rc"
+}
+
+# --- AC-L14: flock recovery path safety ----------------------------
+# Uses a stub `flock` binary to simulate the held/available states
+# without requiring real util-linux flock on macOS CI. The stub reads
+# /tmp/__flock_state and exits 0 (held) when "held", 1 (would block)
+# when "available". This exercises the flock-fail-closed branch in
+# lock_recover_local / lock_recover_build that AC-L12/AC-L13 leave
+# untested because they set LOCK_FLOCK_BIN="".
+test_force_recovery_flock_path() {
+  echo "── AC-L14: force recovery flock path ──"
+  local tmp; tmp=$(mktemp -d -t kx-flock-path.XXXXXX)
+  export TMPDIR="$tmp"
+  unset LOCK_LOCAL_DIR LOCK_LOCAL_BUILD_DIR
+  local state_file="$tmp/__flock_state"
+  local stubbin="$tmp/bin"
+  mkdir -p "$stubbin"
+  printf 'available\n' >"$state_file"
+  cat >"$stubbin/flock" <<EOF
+#!/usr/bin/env bash
+# flock -n exit 0 = "acquired lock" = file is AVAILABLE.
+# flock -n exit 1 = "would block"    = file is HELD by another holder.
+state="$state_file"
+if [[ -f "\$state" ]] && [[ "\$(cat "\$state" 2>/dev/null)" == "held" ]]; then
+  exit 1  # would block → lock IS held
+fi
+exit 0  # acquired → lock IS available
+EOF
+  chmod +x "$stubbin/flock"
+
+  local target_lock="$tmp/kx-llm-gateway-deploy-245.lock"
+  printf 'target=245\npid=999999\nstarted_at=2020-01-01T00:00:00Z\n' >"$target_lock"
+  local build_lock="$tmp/kx-llm-gateway-build.lock"
+  printf 'target=245\npid=999999\nstarted_at=2020-01-01T00:00:00Z\n' >"$build_lock"
+
+  # Inject the stub flock into the lock module's resolution order. Without
+  # LOCK_FLOCK_BIN set, lock_recover_local / lock_recover_build treat the
+  # flock probe as unverifiable and fail closed — defeating the test goal.
+  export LOCK_FLOCK_BIN="$stubbin/flock"
+  export LOCK_BUILD_FLOCK_BIN="$stubbin/flock"
+
+  # Case 1: flock reports held → recovery refuses with rc=75.
+  printf 'held\n' >"$state_file"
+  local rc=0
+  lock_recover_local 245 1 || rc=$?
+  [[ $rc -eq 75 && -f "$target_lock" ]] && log_pass "flock-held target lock refuses removal (rc=75)" \
+    || log_fail "flock-held target lock removal returned rc=$rc"
+
+  rc=0
+  lock_recover_build 1 || rc=$?
+  [[ $rc -eq 75 && -f "$build_lock" ]] && log_pass "flock-held build lock refuses removal (rc=75)" \
+    || log_fail "flock-held build lock removal returned rc=$rc"
+
+  # Case 2: flock reports available → recovery removes the stale file
+  # because the holder PID is dead.
+  printf 'available\n' >"$state_file"
+  rc=0
+  lock_recover_local 245 1 || rc=$?
+  [[ $rc -eq 0 && ! -e "$target_lock" ]] && log_pass "flock-available target lock is removed" \
+    || log_fail "flock-available target lock removal rc=$rc"
+
+  rc=0
+  lock_recover_build 1 || rc=$?
+  [[ $rc -eq 0 && ! -e "$build_lock" ]] && log_pass "flock-available build lock is removed" \
+    || log_fail "flock-available build lock removal rc=$rc"
+
+  # Case 3: flock binary missing → unverifiable, refuse with rc=75.
+  printf 'target=245\npid=999999\nstarted_at=2020-01-01T00:00:00Z\n' >"$target_lock"
+  rc=0
+  LOCK_FLOCK_BIN="" lock_recover_local 245 1 || rc=$?
+  [[ $rc -eq 75 && -f "$target_lock" ]] && log_pass "missing flock bin refuses removal (rc=75)" \
+    || log_fail "missing flock bin removal returned rc=$rc"
 
   rm -rf "$tmp"
 }
@@ -632,6 +706,7 @@ run_all() {
   test_force_flag_parser
   test_force_recovery_stale_locks
   test_force_recovery_safety
+  test_force_recovery_flock_path
 
   echo
   echo "───────────────────────────────────────────────────────────────"
@@ -657,6 +732,7 @@ if [[ $# -gt 0 ]]; then
     force-parser)      test_force_flag_parser ;;
     force-recovery)    test_force_recovery_stale_locks ;;
     force-safety)      test_force_recovery_safety ;;
+    flock-path)        test_force_recovery_flock_path ;;
     all|*)             run_all ;;
   esac
 else

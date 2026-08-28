@@ -163,8 +163,11 @@ type Candidate struct {
 	// Used by the Q1/Q2/Q3 client-side context trim path
 	// (transformation.CompressMessagesIfNeeded). nil means "unknown" — in which
 	// case the trim path is a no-op.
-	ContextWindow *int   `json:"context_window,omitempty"`
-	APIKey        string `json:"-"`
+	ContextWindow *int `json:"context_window,omitempty"`
+	// SupportsNativeResponses is opt-in and remains false until a provider has
+	// verified native Responses request/response and SSE support.
+	SupportsNativeResponses bool   `json:"supports_native_responses,omitempty"`
+	APIKey                  string `json:"-"`
 	// APIKeys holds additional decrypted keys for multi-key rotation (beyond the
 	// primary APIKey). nil/empty for single-key credentials. Index 0 in the
 	// rotator corresponds to APIKey (primary); indices 1..N correspond here.
