@@ -87,7 +87,46 @@ func TestParseGeminiStreamChunk_FunctionCall(t *testing.T) {
 	}
 }
 
+func TestParseGeminiStreamChunk_AggregatesCandidateParts(t *testing.T) {
+	line := `data: {"candidates":[{"content":{"parts":[{"text":"Hello"},{"thought":"considering"},{"text":" world"},{"functionCall":{"name":"lookup","args":{"city":"Beijing"}}},{"functionCall":{"args":{"unit":"celsius"}}},{"inlineData":{"mimeType":"audio/wav","data":"AQI="}},{"inlineData":{"mimeType":"audio/wav","data":"AwQ="}}],"role":"model"},"index":3}]}`
+
+	chunk, err := ParseGeminiStreamChunk(line)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if chunk.Type != ChunkTypeDelta || chunk.Delta == nil {
+		t.Fatalf("chunk = %#v, want delta with content", chunk)
+	}
+	if chunk.CandidateIndex != 3 {
+		t.Errorf("CandidateIndex = %d, want 3", chunk.CandidateIndex)
+	}
+	if chunk.Delta.Content != "Hello world" {
+		t.Errorf("Content = %q, want aggregated text", chunk.Delta.Content)
+	}
+	if chunk.Delta.ReasoningContent != "considering" {
+		t.Errorf("ReasoningContent = %q", chunk.Delta.ReasoningContent)
+	}
+	if len(chunk.Delta.ToolCalls) != 2 {
+		t.Fatalf("ToolCalls len = %d, want 2", len(chunk.Delta.ToolCalls))
+	}
+	if chunk.Delta.ToolCalls[1].Name != "" || !strings.Contains(chunk.Delta.ToolCalls[1].Arguments, "celsius") {
+		t.Errorf("partial unnamed function call was not preserved: %#v", chunk.Delta.ToolCalls[1])
+	}
+	if chunk.Delta.AudioDelta == nil || chunk.Delta.AudioDelta.Data != "AQIDBA==" || chunk.Delta.AudioDelta.MIMEType != "audio/wav" {
+		t.Errorf("AudioDelta = %#v, want aggregated wav audio", chunk.Delta.AudioDelta)
+	}
+}
+
 // TestParseGeminiStreamChunk_DoneSentinel verifies [DONE] handling.
+func TestParseGeminiStreamChunk_RejectsMultipleCandidates(t *testing.T) {
+	line := `data: {"candidates":[{"content":{"parts":[{"text":"first"}]},"index":0},{"content":{"parts":[{"text":"second"}]},"index":1}]}`
+
+	_, err := ParseGeminiStreamChunk(line)
+	if err == nil || !strings.Contains(err.Error(), "2 candidates") {
+		t.Fatalf("Parse error = %v, want explicit multi-candidate rejection", err)
+	}
+}
+
 func TestParseGeminiStreamChunk_DoneSentinel(t *testing.T) {
 	line := `data: [DONE]`
 
@@ -123,6 +162,9 @@ func TestParseGeminiStreamChunk_UsageMetadata(t *testing.T) {
 	}
 	if chunk.Usage.ReasoningTokens == nil || *chunk.Usage.ReasoningTokens != 20 {
 		t.Errorf("ReasoningTokens = %v, want 20", chunk.Usage.ReasoningTokens)
+	}
+	if chunk.Delta == nil || chunk.Delta.Content != "Hi" {
+		t.Errorf("final candidate content was lost: %#v", chunk.Delta)
 	}
 }
 
@@ -249,6 +291,46 @@ func TestSerializeGemini_FunctionCall(t *testing.T) {
 }
 
 // TestSerializeGemini_UsageMetadata verifies end-of-stream usage output.
+func TestSerializeGemini_PreservesPartialFunctionCallAndAudio(t *testing.T) {
+	chunk := &StreamChunk{
+		Type:           ChunkTypeDelta,
+		CandidateIndex: 2,
+		Delta: &StreamDelta{
+			ToolCalls:  []StreamToolCallDelta{{Index: 2, Arguments: `{"city":"`}},
+			AudioDelta: &StreamAudioDelta{MIMEType: "audio/wav", Data: "AQID"},
+		},
+	}
+
+	out := chunk.SerializeGemini()
+	var payload struct {
+		Candidates []struct {
+			Index   int `json:"index"`
+			Content struct {
+				Parts []struct {
+					FunctionCall map[string]any `json:"functionCall"`
+					InlineData   map[string]any `json:"inlineData"`
+				} `json:"parts"`
+			} `json:"content"`
+		} `json:"candidates"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimPrefix(strings.TrimSpace(out), "data: ")), &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if len(payload.Candidates) != 1 || payload.Candidates[0].Index != 2 {
+		t.Fatalf("candidate = %#v, want index 2", payload.Candidates)
+	}
+	parts := payload.Candidates[0].Content.Parts
+	if len(parts) != 2 || parts[0].FunctionCall["args"] != `{"city":"` {
+		t.Fatalf("partial function call was lost: %#v", parts)
+	}
+	if _, ok := parts[0].FunctionCall["name"]; ok {
+		t.Errorf("unnamed partial call unexpectedly gained name: %#v", parts[0].FunctionCall)
+	}
+	if parts[1].InlineData["mimeType"] != "audio/wav" || parts[1].InlineData["data"] != "AQID" {
+		t.Errorf("audio was not serialized: %#v", parts[1].InlineData)
+	}
+}
+
 func TestSerializeGemini_UsageMetadata(t *testing.T) {
 	cacheRead := 30
 	reasoning := 20

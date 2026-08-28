@@ -31,10 +31,11 @@ type StreamChunk struct {
 	Error *StreamError
 
 	// Metadata (present in all chunk types)
-	ID           string // Chunk ID (OpenAI: chatcmpl-xxx, Anthropic: msg_xxx)
-	Model        string // Model name
-	Created      int64  // Unix timestamp (OpenAI style; 0 if not available)
-	FinishReason string // When stream ends: "stop" | "length" | "tool_calls" | etc.
+	ID             string // Chunk ID (OpenAI: chatcmpl-xxx, Anthropic: msg_xxx)
+	Model          string // Model name
+	Created        int64  // Unix timestamp (OpenAI style; 0 if not available)
+	FinishReason   string // When stream ends: "stop" | "length" | "tool_calls" | etc.
+	CandidateIndex int    // Gemini candidate index (zero is the backward-compatible default)
 
 	// Source protocol tracking (used by Serializer to determine output format)
 	SourceProtocol string // "openai-chat" | "anthropic-messages"
@@ -105,6 +106,7 @@ type StreamDelta struct {
 type StreamAudioDelta struct {
 	Data       string `json:"data"`
 	Transcript string `json:"transcript"`
+	MIMEType   string `json:"mime_type,omitempty"`
 }
 
 // StreamToolCallDelta represents incremental tool call data.
@@ -1021,7 +1023,35 @@ func (c *StreamChunk) SerializeResponses(itemID string) string {
 			fmt.Fprintf(&output, "event: response.reasoning_text.delta\ndata: %s\n\n", data)
 		}
 
-		// 3) Tool calls → response.output_item.added (new) +
+		// 3) Audio output stays typed on the Responses wire. Audio data and
+		// its transcript have distinct event types, so a transcript cannot be
+		// mistaken for visible output text (or silently dropped).
+		if c.Delta.AudioDelta != nil {
+			if c.Delta.AudioDelta.Data != "" {
+				body := map[string]any{
+					"type":          "response.audio.delta",
+					"item_id":       itemID,
+					"output_index":  0,
+					"content_index": 0,
+					"delta":         c.Delta.AudioDelta.Data,
+				}
+				data, _ := json.Marshal(body)
+				fmt.Fprintf(&output, "event: response.audio.delta\ndata: %s\n\n", data)
+			}
+			if c.Delta.AudioDelta.Transcript != "" {
+				body := map[string]any{
+					"type":          "response.audio_transcript.delta",
+					"item_id":       itemID,
+					"output_index":  0,
+					"content_index": 0,
+					"delta":         c.Delta.AudioDelta.Transcript,
+				}
+				data, _ := json.Marshal(body)
+				fmt.Fprintf(&output, "event: response.audio_transcript.delta\ndata: %s\n\n", data)
+			}
+		}
+
+		// 4) Tool calls → response.output_item.added (new) +
 		//                 response.function_call_arguments.delta (continued args)
 		for _, tc := range c.Delta.ToolCalls {
 			if tc.Name != "" {
@@ -1145,9 +1175,10 @@ func (c *StreamChunk) SerializeGemini() string {
 	case ChunkTypeUsage, ChunkTypeDelta:
 		body := map[string]any{}
 
-		// Build candidates array (most chunks have one candidate)
+		// StreamChunk carries one explicit Gemini candidate. Candidate index zero
+		// remains the backward-compatible default.
 		if c.Type == ChunkTypeDelta || c.FinishReason != "" {
-			candidate := map[string]any{"index": 0}
+			candidate := map[string]any{"index": c.CandidateIndex}
 
 			if c.Delta != nil {
 				parts := make([]map[string]any, 0)
@@ -1162,23 +1193,34 @@ func (c *StreamChunk) SerializeGemini() string {
 					parts = append(parts, map[string]any{"thought": c.Delta.ReasoningContent})
 				}
 
-				// Tool calls (functionCall)
+				// Tool calls (functionCall). A partial streamed call can contain
+				// arguments before its name, so preserve either field when present.
 				for _, tc := range c.Delta.ToolCalls {
-					if tc.Name != "" {
-						var args any = map[string]any{}
-						if tc.Arguments != "" {
-							if err := json.Unmarshal([]byte(tc.Arguments), &args); err != nil {
-								// Fallback: pass raw string
-								args = tc.Arguments
-							}
-						}
-						parts = append(parts, map[string]any{
-							"functionCall": map[string]any{
-								"name": tc.Name,
-								"args": args,
-							},
-						})
+					if tc.Name == "" && tc.Arguments == "" {
+						continue
 					}
+					functionCall := map[string]any{}
+					if tc.Name != "" {
+						functionCall["name"] = tc.Name
+					}
+					if tc.Arguments != "" {
+						var args any
+						if err := json.Unmarshal([]byte(tc.Arguments), &args); err != nil {
+							// The Gemini wire format cannot encode an incomplete JSON
+							// argument stream structurally; retain it as a raw string.
+							args = tc.Arguments
+						}
+						functionCall["args"] = args
+					}
+					parts = append(parts, map[string]any{"functionCall": functionCall})
+				}
+
+				if c.Delta.AudioDelta != nil {
+					inlineData := map[string]any{
+						"mimeType": c.Delta.AudioDelta.MIMEType,
+						"data":     c.Delta.AudioDelta.Data,
+					}
+					parts = append(parts, map[string]any{"inlineData": inlineData})
 				}
 
 				if len(parts) > 0 {
