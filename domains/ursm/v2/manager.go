@@ -921,30 +921,50 @@ func (m *Manager) startInvalidationSubscriber(rdb *redis.Client) {
 	m.invalidationMu.Unlock()
 	go func() {
 		defer m.invalidationWG.Done()
-		pubsub := rdb.Subscribe(context.Background(), store.NodeInvalidationChannel(m.cfg.RedisKeyPrefix))
-		defer pubsub.Close()
-		closed := make(chan struct{})
-		defer close(closed)
-		go func() {
-			select {
-			case <-ctx.Done():
-				_ = pubsub.Close()
-			case <-closed:
-			}
-		}()
-		for {
-			msg, err := pubsub.ReceiveMessage(ctx)
-			if err != nil {
-				if ctx.Err() == nil {
-					m.log.Warn("ursm.v2: node invalidation subscriber stopped", "error", err)
+		// Reconnect with exponential backoff when the subscriber drops for a
+		// non-shutdown reason (Redis restart/failover, connection reset). A
+		// permanent exit here would silently break the LRU mirror invalidation
+		// contract until the next process restart, letting the mirror serve
+		// stale routing state. The loop still exits immediately on ctx cancel.
+		backoff := 100 * time.Millisecond
+		for ctx.Err() == nil {
+			pubsub := rdb.Subscribe(context.Background(), store.NodeInvalidationChannel(m.cfg.RedisKeyPrefix))
+			closed := make(chan struct{})
+			go func() {
+				select {
+				case <-ctx.Done():
+					_ = pubsub.Close()
+				case <-closed:
 				}
+			}()
+			// Receive until a connection error or ctx cancellation.
+			dropErr := error(nil)
+			for {
+				msg, err := pubsub.ReceiveMessage(ctx)
+				if err != nil {
+					dropErr = err
+					break
+				}
+				parsed, ok := store.ParseNodeInvalidation(msg.Payload)
+				if !ok {
+					continue
+				}
+				m.nodeMirror.InvalidateForTenant(parsed.TenantID, parsed.CredentialID, parsed.RawModel)
+			}
+			_ = pubsub.Close()
+			close(closed)
+			if ctx.Err() != nil {
 				return
 			}
-			parsed, ok := store.ParseNodeInvalidation(msg.Payload)
-			if !ok {
-				continue
+			m.log.Warn("ursm.v2: node invalidation subscriber reconnecting", "error", dropErr)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(backoff):
 			}
-			m.nodeMirror.InvalidateForTenant(parsed.TenantID, parsed.CredentialID, parsed.RawModel)
+			if backoff < time.Second {
+				backoff *= 2
+			}
 		}
 	}()
 }
