@@ -3,12 +3,15 @@ package migration
 import (
 	"context"
 	_ "embed"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
 	"time"
 
 	"github.com/redis/go-redis/v9"
+
+	redissafe "github.com/kaixuan/llm-gateway-go/internal/redis"
 )
 
 //go:embed cleanup_hash.lua
@@ -36,7 +39,7 @@ func deleteHashIfUnchanged(ctx context.Context, rdb *redis.Client, key string, e
 	for _, field := range fields {
 		args = append(args, field, expected[field])
 	}
-	result, err := cleanupHashScript.Run(ctx, rdb, []string{key}, args...).Text()
+	result, err := redissafe.RunScript(ctx, rdb, cleanupHashScript, "cleanup_hash.lua", []string{key}, args...).Text()
 	if err != nil {
 		return "", err
 	}
@@ -338,8 +341,14 @@ func (c *Cleanup) cleanupOne(ctx context.Context, it Item, now time.Time) Cleanu
 		res.Reason = fmt.Sprintf("status=%s not eligible", it.Status)
 		return res
 	}
-	fields, err := c.RDB.HGetAll(ctx, it.SourceKey).Result()
+	fields, err := redissafe.SafeHGetAll(ctx, c.RDB, it.SourceKey)
 	if err != nil {
+		if errors.Is(err, redissafe.ErrKeyNotFound) {
+			res.Status = CleanupStatusSkipped
+			res.Reason = "source already absent"
+			res.Item.Status = StatusCleaned
+			return res
+		}
 		res.Status = CleanupStatusRefused
 		res.Reason = "hgetall failed: " + err.Error()
 		return res
@@ -451,8 +460,11 @@ func (c *EntryCleaner) DeleteExact(ctx context.Context, entry EntryRecord) (Clea
 		entry.SourceKey == entry.TargetKey || !c.authorizes(entry) {
 		return CleanerEntryResult{Status: CleanerSkippedIneligible}, nil
 	}
-	fields, err := c.rdb.HGetAll(ctx, entry.SourceKey).Result()
+	fields, err := redissafe.SafeHGetAll(ctx, c.rdb, entry.SourceKey)
 	if err != nil {
+		if errors.Is(err, redissafe.ErrKeyNotFound) {
+			return CleanerEntryResult{Status: CleanerSkippedMissing}, nil
+		}
 		return CleanerEntryResult{}, fmt.Errorf("ursm.v2: cleanup read %s: %w", entry.SourceKey, err)
 	}
 	if len(fields) == 0 {

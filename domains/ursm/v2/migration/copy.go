@@ -115,12 +115,9 @@ func (c *Copy) copyOne(ctx context.Context, it Item, now time.Time) CopyResult {
 		res.Reason = "source key equals canonical key"
 		return res
 	}
-	// PTTL probe (doc 14 §6.1). The go-redis client maps -1/-2 to
-	// time.Duration(-1ms) and time.Duration(-2ms); miniredis returns the raw
-	// duration which is identical. Compare against the time value so both
-	// clients are treated the same. If the ledger recorded PTTLMs == -2 we
-	// already know the source is gone (it was missing at scan time) and skip
-	// probing entirely.
+	// PTTL probe (doc 14 §6.1). Normalize Redis protocol sentinels before
+	// branching; go-redis may represent -1/-2 as -1ns/-2ns while test
+	// clients commonly return millisecond durations.
 	if it.PTTLMs == -2 {
 		res.SourcePTTLMs = -2
 		res.Status = CopyStatusSkipped
@@ -133,23 +130,25 @@ func (c *Copy) copyOne(ctx context.Context, it Item, now time.Time) CopyResult {
 		res.Reason = "pttl probe failed: " + err.Error()
 		return res
 	}
-	res.SourcePTTLMs = pttl.Milliseconds()
+	sourcePTTLMs := pttlMillis(pttl)
+	res.SourcePTTLMs = sourcePTTLMs
 	switch {
-	case pttl == -2*time.Millisecond:
+	case sourcePTTLMs == -2:
 		res.Status = CopyStatusSkipped
 		res.Reason = "source missing (pttl=-2)"
 		return res
-	case pttl == -1*time.Millisecond:
-		// fall through; preserve no-TTL behaviour
-	default:
-		// positive TTL: cap by the observed-at-scan value, then validate
-		// that we are not extending the source TTL after copy.
-		if it.PTTLMs > 0 && pttl.Milliseconds() > it.PTTLMs {
-			res.Status = CopyStatusRefused
-			res.Reason = fmt.Sprintf("pttl grew past scan snapshot: now=%d scan=%d", pttl.Milliseconds(), it.PTTLMs)
-			return res
-		}
+	case sourcePTTLMs == -1:
+		// Preserve no-TTL behaviour.
+	case sourcePTTLMs <= 0:
+		res.Status = CopyStatusSkipped
+		res.Reason = "source expired (pttl<=0)"
+		return res
+	case it.PTTLMs > 0 && sourcePTTLMs > it.PTTLMs:
+		res.Status = CopyStatusRefused
+		res.Reason = fmt.Sprintf("pttl grew past scan snapshot: now=%d scan=%d", sourcePTTLMs, it.PTTLMs)
+		return res
 	}
+
 	// Snapshot the source fields; enforce generation / checksum fencing
 	// before mutating the target.
 	// P1-14 fix (2026-08-28): Use SafeHGetAll to prevent WRONGTYPE errors
@@ -182,7 +181,13 @@ func (c *Copy) copyOne(ctx context.Context, it Item, now time.Time) CopyResult {
 	// the work was already done. We do this *after* fencing so a stale
 	// target does not bypass the generation guard.
 	// P1-14 fix (2026-08-28): Use SafeHGetAll to prevent WRONGTYPE errors
-	if tgtFields, err := redissafe.SafeHGetAll(ctx, c.RDB, it.CanonicalKey); err == nil && len(tgtFields) > 0 {
+	tgtFields, targetErr := redissafe.SafeHGetAll(ctx, c.RDB, it.CanonicalKey)
+	if targetErr != nil && !errors.Is(targetErr, redissafe.ErrKeyNotFound) {
+		res.Status = CopyStatusRefused
+		res.Reason = "canonical target read failed: " + targetErr.Error()
+		return res
+	}
+	if targetErr == nil && len(tgtFields) > 0 {
 		if fieldChecksum(tgtFields) == res.SourceChecksum {
 			res.Status = CopyStatusUnchanged
 			res.TargetChecksum = res.SourceChecksum
@@ -204,21 +209,13 @@ func (c *Copy) copyOne(ctx context.Context, it Item, now time.Time) CopyResult {
 		pipe.HSet(ctx, it.CanonicalKey, anyMap)
 	}
 	switch {
-	case pttl == -1*time.Millisecond:
+	case sourcePTTLMs == -1:
 		// no TTL: do not call PEXPIRE
-	case pttl > 0:
-		// doc 14 §6.1: the target PEXPIRE equals the scan-time PTTL
-		// snapshot (it.PTTLMs), never more. The growth guard above
-		// (line 141) has already refused when current PTTL > scan
-		// PTTL, so here cap is at most it.PTTLMs; we never raise it.
-		cap := it.PTTLMs
-		if cap <= 0 {
-			// No scan-snapshot TTL was recorded (-1 persistent).
-			// Do not extend a persistent source by accident: drop the
-			// TTL on the target rather than guess.
-			res.Status = CopyStatusSkipped
-			res.Reason = "no scan-snapshot TTL recorded; refusing to extend persistence"
-			return res
+	case sourcePTTLMs > 0:
+		// Never extend the source lifetime beyond the scan snapshot.
+		cap := sourcePTTLMs
+		if it.PTTLMs > 0 && cap > it.PTTLMs {
+			cap = it.PTTLMs
 		}
 		if cap <= 0 {
 			res.Status = CopyStatusSkipped
@@ -228,6 +225,7 @@ func (c *Copy) copyOne(ctx context.Context, it Item, now time.Time) CopyResult {
 		pipe.PExpire(ctx, it.CanonicalKey, time.Duration(cap)*time.Millisecond)
 		res.TargetPTTLMs = cap
 	}
+
 	if _, err := pipe.Exec(ctx); err != nil && !errors.Is(err, redis.Nil) {
 		res.Status = CopyStatusFailed
 		res.Reason = "pipeline exec failed: " + err.Error()
@@ -310,13 +308,13 @@ func (c *EntryCopier) CopyHash(ctx context.Context, entry EntryRecord) (EntryCop
 	if err != nil {
 		return EntryCopyResult{}, fmt.Errorf("ursm.v2: copy source pttl: %w", err)
 	}
-	if pttl == -2*time.Millisecond {
+	sourcePTTLMs := pttlMillis(pttl)
+	switch {
+	case sourcePTTLMs == -2:
 		return EntryCopyResult{Status: EntryCopySkippedExpired}, nil
-	}
-	if pttl == 0 {
+	case sourcePTTLMs == 0:
 		return EntryCopyResult{Status: EntryCopySkippedExpired}, nil
-	}
-	if pttl < 0 && pttl != -1*time.Millisecond {
+	case sourcePTTLMs < -1:
 		return EntryCopyResult{}, fmt.Errorf("ursm.v2: invalid source pttl %v", pttl)
 	}
 	// P1-14 fix (2026-08-28): Use SafeHGetAll to prevent WRONGTYPE errors
@@ -342,8 +340,8 @@ func (c *EntryCopier) CopyHash(ctx context.Context, entry EntryRecord) (EntryCop
 	// Account for the time spent reading source state before EVAL. For a
 	// persistent source pass 0; Lua re-reads PTTL and preserves persistence.
 	requestedTTL := int64(0)
-	if pttl > 0 {
-		remaining := pttl - time.Since(started)
+	if sourcePTTLMs > 0 {
+		remaining := time.Duration(sourcePTTLMs)*time.Millisecond - time.Since(started)
 		if remaining <= 0 {
 			return EntryCopyResult{Status: EntryCopySkippedExpired}, nil
 		}
@@ -363,7 +361,7 @@ func (c *EntryCopier) CopyHash(ctx context.Context, entry EntryRecord) (EntryCop
 		args = append(args, field, fields[field])
 	}
 	marker := entry.TargetKey + ":migration_copy:" + entry.FieldChecksum
-	result, err := copyHashScript.Run(ctx, c.rdb,
+	result, err := redissafe.RunScript(ctx, c.rdb, copyHashScript, "copy_hash.lua",
 		[]string{entry.SourceKey, entry.TargetKey, marker}, args...).Text()
 	if err != nil {
 		return EntryCopyResult{}, fmt.Errorf("ursm.v2: copy eval: %w", err)

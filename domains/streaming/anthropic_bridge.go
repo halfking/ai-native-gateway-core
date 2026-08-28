@@ -87,6 +87,56 @@ func applyClientDisconnectOutcome(outcome *StreamOutcome, clientWriter *clientSt
 	}
 }
 
+// anthropicPayloadHasSemanticOutput reports whether one native Anthropic data
+// payload contains output that a client could use. Protocol envelopes and
+// usage/stop metadata deliberately do not count as a successful response.
+func streamChunkHasSemanticOutput(chunk *ir.StreamChunk) bool {
+	if chunk == nil || chunk.Delta == nil {
+		return false
+	}
+	if chunk.Delta.Content != "" || chunk.Delta.ReasoningContent != "" || chunk.Delta.ThinkingSignature != "" || chunk.Delta.AudioDelta != nil {
+		return true
+	}
+	for _, call := range chunk.Delta.ToolCalls {
+		if call.ID != "" || call.Name != "" || call.Arguments != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func anthropicPayloadHasSemanticOutput(payload string) bool {
+	var envelope struct {
+		Type         string `json:"type"`
+		ContentBlock struct {
+			Type string `json:"type"`
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"content_block"`
+		Delta struct {
+			Type        string `json:"type"`
+			Text        string `json:"text"`
+			Thinking    string `json:"thinking"`
+			PartialJSON string `json:"partial_json"`
+		} `json:"delta"`
+	}
+	if err := json.Unmarshal([]byte(payload), &envelope); err != nil {
+		return false
+	}
+	switch envelope.Type {
+	case "content_block_delta":
+		return envelope.Delta.Text != "" || envelope.Delta.Thinking != "" || envelope.Delta.PartialJSON != ""
+	case "content_block_start":
+		switch envelope.ContentBlock.Type {
+		case "tool_use", "server_tool_use", "web_search_tool_result", "redacted_thinking":
+			return envelope.ContentBlock.ID != "" || envelope.ContentBlock.Name != ""
+		}
+		return false
+	default:
+		return false
+	}
+}
+
 // StreamAnthropicPassthrough is the live Q4 Anthropic SSE forwarder. It
 // reads Anthropic-format SSE events from upstream and writes them to
 // the client unchanged (byte-for-byte), while scanning for
@@ -213,7 +263,11 @@ func StreamAnthropicPassthroughWithDiagnostics(
 	}
 
 	reader := bufio.NewReaderSize(resp.Body, anthropicSSEBufSize)
+	hasSemanticOutput := false
+	messageStopReceived := false
+
 	// P1-2 fix (2026-08-28): ctx is now a function parameter, no need to redeclare.
+
 	// Use the passed ctx directly; fallback to resp.Request.Context() is no longer needed
 	// since the caller provides the authoritative context.
 	runtimeCfg := currentStreamRuntimeConfig()
@@ -364,6 +418,14 @@ func StreamAnthropicPassthroughWithDiagnostics(
 			logRawUpstreamFrame(diagnostics, auditFromDiagnostics(diagnostics, requestID, "anthropic-messages"), []byte(line))
 			continue
 		}
+		if dataPayload != "" {
+			var envelope struct {
+				Type string `json:"type"`
+			}
+			if json.Unmarshal([]byte(dataPayload), &envelope) == nil && envelope.Type == "message_stop" {
+				messageStopReceived = true
+			}
+		}
 		if dataPayload != "" && isAnthropicErrorPayload(dataPayload) {
 			// Standalone error payload (relay omitted the event: line).
 			if pc != nil {
@@ -386,6 +448,9 @@ func StreamAnthropicPassthroughWithDiagnostics(
 		if capture != nil && isDataLine {
 			observeAnthropicPayload(capture, dataPayload, clientModel, outboundModel)
 		}
+		if isDataLine && anthropicPayloadHasSemanticOutput(dataPayload) {
+			hasSemanticOutput = true
+		}
 
 		logRawUpstreamFrame(diagnostics, auditFromDiagnostics(diagnostics, requestID, "anthropic-messages"), []byte(line))
 		if err == io.EOF {
@@ -400,8 +465,24 @@ func StreamAnthropicPassthroughWithDiagnostics(
 	// Interrupted on the completed-upstream exit — the pending capturer needs
 	// a completed replay body (see pending_disconnect_test.go /
 	// TestStreamAnthropicPassthroughContinuesAfterClientDisconnect).
+	// A disconnected client must not turn a successfully captured stream into
+	// an empty-response retry; pending replay owns that recovery path.
+	if !clientWriter.clientDisconnected && messageStopReceived && !hasSemanticOutput {
+		outcome = StreamOutcome{
+			Interrupted: true,
+			Reason:      "empty_response",
+			Kind:        errorsx.KindEmptyResponse,
+			Resumable:   true,
+			ChunkCount:  chunkCount,
+		}
+		if capture != nil {
+			capture.MarkInterruptedWithReason(outcome.Reason)
+		}
+		return outcome
+	}
 	outcome.ChunkCount = chunkCount
 	return outcome
+
 }
 
 // finalizePassthroughInterruption renders the gateway's own Anthropic error
@@ -708,6 +789,7 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 		currentToolCallID   string
 		initialArgsSent     bool
 		messageStopReceived bool
+		hasSemanticOutput   bool
 	)
 
 	clientWriter := newClientStreamWriter(w, flusher)
@@ -718,6 +800,9 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 	writeChunk := func(chunk *ir.StreamChunk) {
 		if chunk == nil {
 			return
+		}
+		if streamChunkHasSemanticOutput(chunk) {
+			hasSemanticOutput = true
 		}
 
 		sseLine := chunk.SerializeOpenAI(chatID, chunkModel, createdAt)
@@ -1041,21 +1126,21 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 								"quality", chunk.Quality,
 								"reason", chunk.ArgumentsJSONReason)
 						}
-							validated, _, vErr := anthropictransform.ValidateStreamingToolArgs(args)
-							if vErr != nil {
-								if capture != nil {
-									capture.AddQualityFlag("malformed_tool_args_blocked")
-								}
-								if attemptHasClientSemanticOutput(gate, chunkCount) {
-									emitAnthropicBridgeErrorChunk(w, "malformed_tool_args", "upstream tool arguments are invalid JSON", flusher)
-								}
-								outcome.Interrupted = true
-								outcome.Reason = "malformed_tool_args"
-								outcome.Kind = errorsx.KindUpstreamDown
-								outcome.Resumable = !attemptHasClientSemanticOutput(gate, chunkCount)
-								outcome.ChunkCount = chunkCount
-								return outcome
+						validated, _, vErr := anthropictransform.ValidateStreamingToolArgs(args)
+						if vErr != nil {
+							if capture != nil {
+								capture.AddQualityFlag("malformed_tool_args_blocked")
 							}
+							if attemptHasClientSemanticOutput(gate, chunkCount) {
+								emitAnthropicBridgeErrorChunk(w, "malformed_tool_args", "upstream tool arguments are invalid JSON", flusher)
+							}
+							outcome.Interrupted = true
+							outcome.Reason = "malformed_tool_args"
+							outcome.Kind = errorsx.KindUpstreamDown
+							outcome.Resumable = !attemptHasClientSemanticOutput(gate, chunkCount)
+							outcome.ChunkCount = chunkCount
+							return outcome
+						}
 						writeChunk(buildAnthropicBridgeToolCallChunk(toolCallIndex-1, currentToolCallID, "", &validated, true))
 						bufferedToolArgs.Reset()
 					}
@@ -1070,6 +1155,16 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 		case ir.ChunkTypeDone:
 			messageStopReceived = true
 			flushBufferedText()
+			if !hasSemanticOutput {
+				outcome = StreamOutcome{Interrupted: true, Reason: "empty_response", Kind: errorsx.KindEmptyResponse, Resumable: true, ChunkCount: chunkCount}
+				if capture != nil {
+					capture.MarkInterruptedWithReason(outcome.Reason)
+				}
+				if pc != nil {
+					pc.markInterrupted(outcome.Reason)
+				}
+				return outcome
+			}
 			if finishReason != nil && *finishReason == "tool_calls" && !hasEmittedToolCalls {
 				slog.Warn("inconsistent_tool_calls_finish_reason",
 					"request_id", requestID,

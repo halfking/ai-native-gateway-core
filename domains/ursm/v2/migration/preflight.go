@@ -12,6 +12,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -21,6 +22,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/store"
+	redissafe "github.com/kaixuan/llm-gateway-go/internal/redis"
 )
 
 // SchemaMode identifies which key grammar the authoritative request path
@@ -222,12 +224,17 @@ func RunPreflight(ctx context.Context, opts Options) (*Report, error) {
 				}
 				var gen, checksum string
 				if kt == "hash" {
-					if f, ferr := opts.Redis.HGetAll(ctx, k).Result(); ferr == nil {
-						gen = f["generation"]
-						checksum = fieldChecksum(f)
+					f, ferr := redissafe.SafeHGetAll(ctx, opts.Redis, k)
+					if ferr != nil {
+						if errors.Is(ferr, redissafe.ErrKeyNotFound) {
+							continue // the key expired during this scan window
+						}
+						return nil, fmt.Errorf("migration preflight: read hash %s: %w", k, ferr)
 					}
+					gen = f["generation"]
+					checksum = fieldChecksum(f)
 				}
-				scanned = append(scanned, sk{SourceKey: k, KeyType: kt, PTTLMs: pttl.Milliseconds(), Gen: gen, FieldChecksum: checksum})
+				scanned = append(scanned, sk{SourceKey: k, KeyType: kt, PTTLMs: pttlMillis(pttl), Gen: gen, FieldChecksum: checksum})
 			}
 			if next == 0 {
 				break
@@ -285,8 +292,12 @@ func RunPreflight(ctx context.Context, opts Options) (*Report, error) {
 		// generation, the legacy source is in conflict.
 		if class == ClassificationMigratable && target != s.SourceKey {
 			if exists, _ := opts.Redis.Exists(ctx, target).Result(); exists == 1 {
-				canonicalFields, ferr := opts.Redis.HGetAll(ctx, target).Result()
-				if ferr == nil {
+				canonicalFields, ferr := redissafe.SafeHGetAll(ctx, opts.Redis, target)
+				if ferr != nil {
+					if !errors.Is(ferr, redissafe.ErrKeyNotFound) {
+						return nil, fmt.Errorf("migration preflight: read canonical target %s: %w", target, ferr)
+					}
+				} else {
 					srcGen := s.Gen
 					canonGen := canonicalFields["generation"]
 					if srcGen != "" && canonGen != "" && srcGen != canonGen {
@@ -295,6 +306,7 @@ func RunPreflight(ctx context.Context, opts Options) (*Report, error) {
 						reason = "canonical target exists with diverging generation"
 					}
 				}
+
 			}
 		}
 		entry := PreflightEntry{

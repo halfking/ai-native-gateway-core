@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+
+	redissafe "github.com/kaixuan/llm-gateway-go/internal/redis"
 )
 
 // MetadataKey is the Redis HASH key used for the k2 migration metadata.
@@ -72,7 +74,7 @@ func (s *MetadataHash) Write(ctx context.Context, m Metadata) error {
 	if !m.RollbackDeadline.IsZero() {
 		deadline = m.RollbackDeadline.UTC().Format(time.RFC3339Nano)
 	}
-	result, err := metadataIdentityWriteScript.Run(ctx, s.RDB, []string{MetadataKey(s.Prefix)},
+	result, err := redissafe.RunScript(ctx, s.RDB, metadataIdentityWriteScript, "metadata_identity_write.lua", []string{MetadataKey(s.Prefix)},
 		m.Owner, m.LedgerID, string(m.Mode), fmt.Sprintf("%d", m.CutoverEpoch),
 		m.StartedAt.UTC().Format(time.RFC3339Nano), m.UpdatedAt.UTC().Format(time.RFC3339Nano),
 		m.PreflightChecksum, string(m.Checkpoint), deadline).Text()
@@ -90,8 +92,11 @@ func (s *MetadataHash) Read(ctx context.Context) (Metadata, error) {
 	if s.Prefix == "" || s.RDB == nil {
 		return Metadata{}, fmt.Errorf("migration: metadata store: missing prefix/redis client")
 	}
-	values, err := s.RDB.HGetAll(ctx, MetadataKey(s.Prefix)).Result()
+	values, err := redissafe.SafeHGetAll(ctx, s.RDB, MetadataKey(s.Prefix))
 	if err != nil {
+		if errors.Is(err, redissafe.ErrKeyNotFound) {
+			return Metadata{}, nil
+		}
 		return Metadata{}, fmt.Errorf("migration: hgetall metadata: %w", err)
 	}
 	if len(values) == 0 {
