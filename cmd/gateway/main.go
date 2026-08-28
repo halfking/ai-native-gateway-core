@@ -250,6 +250,8 @@ func main() {
 	// can reach it; assigned in the dbConn != nil block below.
 	var ringBuffer *dbdegradation.RingBuffer
 	var sanitizePatternDetector *sanitize.PatternDetector
+	var journeyObservationOutbox *requestjourney.ObservationOutbox
+	var journeyRetentionWorker *requestjourney.RetentionWorker
 
 	// ── Logging ───────────────────────────────────────────────────────────
 	cfg := config.Load()
@@ -448,14 +450,36 @@ func main() {
 		// 2026-08-28: In online mode, if offline license.dat verification fails,
 		// we do NOT enter restricted mode because the license is managed through
 		// the database and license API. The offline file is optional in this mode.
-		if err := licensing.EnforceAtStartup(
-			"/var/lib/kx-gateway/license.dat",
-			"/var/lib/kx-gateway/server.pub",
-			"/var/lib/kx-gateway",
-		); err != nil {
-			slog.Warn("offline license file verification failed (expected in online mode with DB license)", "error", err)
+		//
+		// audit-24h-20260828-r4 P3 doc (2026-08-28): The previous "license
+		// verification successful" log was ambiguous — it printed the same
+		// message whether the license came from the DB / license API (the
+		// authoritative source in online mode) OR from the offline file
+		// (which is OPTIONAL in online mode and ignored for authorization
+		// decisions). After the r4 patch below, the operator sees:
+		//   - offline file PRESENT and verifies  → "offline license file
+		//       detected and verified; ignored in online mode (DB is
+		//       authoritative)"
+		//   - offline file PRESENT but FAILS     → already handled by the
+		//       Warn branch above
+		//   - offline file ABSENT                 → "offline license file
+		//       absent; online mode (DB authoritative)" — common case for
+		//       fresh installs
+		// Either way the success log now tells the operator that the offline
+		// file is informational, not gating.
+		offlinePath := "/var/lib/kx-gateway/license.dat"
+		if _, statErr := os.Stat(offlinePath); statErr == nil {
+			if err := licensing.EnforceAtStartup(
+				"/var/lib/kx-gateway/license.dat",
+				"/var/lib/kx-gateway/server.pub",
+				"/var/lib/kx-gateway",
+			); err != nil {
+				slog.Warn("offline license file verification failed (expected in online mode with DB license)", "error", err)
+			} else {
+				slog.Info("offline license file detected and verified; ignored in online mode (DB / license API is authoritative)")
+			}
 		} else {
-			slog.Info("license verification successful")
+			slog.Info("offline license file absent; online mode (DB / license API authoritative)")
 		}
 
 		// Token refresh daemon (online mode only)
@@ -734,6 +758,7 @@ func main() {
 		journeyConfig = requestjourney.LoadConfig(executorHotConfig)
 	}
 	journeyProjection := requestjourney.NewProjection(journeyConfig)
+	journeyInstanceID := stableGatewayInstanceID()
 	var journeyRedisStore *requestjourney.RedisStore
 	if redisClientForCache != nil {
 		journeyRedisStore = requestjourney.NewRedisStore(redisClientForCache.Client(), journeyConfig)
@@ -746,12 +771,24 @@ func main() {
 	} else {
 		journeyRepository = requestjourney.NewPostgresRepository(nil)
 	}
-	journeyRecorder := requestjourney.NewRecorder(journeyProjection, journeyRedisStore, journeyRepository)
+	if dbConn != nil && dbConn.Enabled() {
+		journeyObservationOutbox = requestjourney.NewObservationOutbox(
+			dbConn.Pool(), journeyRepository, journeyRedisStore, journeyInstanceID,
+		)
+		if journeyObservationOutbox != nil {
+			journeyObservationOutbox.Start()
+		}
+	}
+	var journeyRecorder *requestjourney.Recorder
+	if journeyObservationOutbox != nil {
+		journeyRecorder = requestjourney.NewDurableRecorder(journeyProjection, journeyObservationOutbox, journeyRedisStore)
+	} else {
+		journeyRecorder = requestjourney.NewRecorder(journeyProjection, journeyRedisStore, journeyRepository)
+	}
 	journeyRecorder.SetErrorHandler(func(err error) {
 		slog.Warn("request journey observation degraded", "error", err)
 	})
 	journeyQueryService := requestjourney.NewQueryService(journeyRedisStore, journeyRepository, journeyProjection, journeyConfig)
-	journeyInstanceID := stableGatewayInstanceID()
 	chatHandler.SetRequestJourney(journeyRecorder, journeyInstanceID)
 	gatewayRequestJourneySink = newDispatchJourneyAdapter(journeyRecorder)
 	// audit-24h-20260828-r3: terminal-time consumer of the per-request
@@ -761,6 +798,7 @@ func main() {
 	gatewayRequestJourneyJournalSink = newDispatchJourneyJournalAdapter(journeyRecorder, journeyInstanceID)
 	slog.Info("request journey recorder wired",
 		"gateway_instance_id", journeyInstanceID,
+		"durable_outbox", journeyObservationOutbox != nil,
 		"redis", redisClientForCache != nil,
 		"postgres", dbConn != nil && dbConn.Enabled(),
 		"total_capacity", journeyConfig.TotalRequestCapacity,
@@ -1224,19 +1262,24 @@ func main() {
 					markCapturedPendingInProgress(pendingStore, resp, tenantID)
 				}
 				var stripFn func([]byte) []byte
-				switch catalogCode {
+				vendorCode := strings.ToLower(strings.TrimSpace(catalogCode))
+				switch vendorCode {
 				case "doubao":
 					stripFn = streaming.StripDoubaoFieldsBody
 				case "minimax":
 					stripFn = streaming.StripMinimaxFieldsBody
+				case "zhipu", "glm":
+					stripFn = streaming.StripZhipuFieldsBody
+				case "deepseek":
+					stripFn = streaming.StripDeepSeekFieldsBody
 				}
 				diagnostics := &streaming.DiagnosticContext{
 					RawLogger: routingExec.RawDataLogger,
 					Anomaly:   routingExec.AnomalyReporter,
 					Semantic:  routingExec.SemanticAnalyzer,
 				}
-				outcome := streaming.StreamChatWithPendingCaptureAndDiagnostics(
-					ctx, w, resp, clientModel, outboundModel, norm, capture, toolsRequested, stripFn, pc, diagnostics,
+				outcome := streaming.StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
+					ctx, w, resp, clientModel, outboundModel, norm, capture, toolsRequested, stripFn, vendorCode, pc, diagnostics,
 				)
 				saveCapturedPending(pendingStore, pc, resp, tenantID)
 				return outcome
@@ -1597,9 +1640,26 @@ func main() {
 			routingExec.Compressor.ToolFocusedStageEnabled = true
 			slog.Info("compression tool-focused stage enabled (GW-09)")
 		}
+		// GW-10 Phase 2 (omni-ref2): 算法选择器模式。
+		// LLM_GATEWAY_COMPRESSION_SELECTOR=adaptive 启用上下文预算自适应升级选择器；
+		// 默认 manual（Phase 1 行为：由显式 Policy 驱动 RunStrategies）。
+		if mode := compression.LoadSelectorMode(); mode == "adaptive" {
+			routingExec.Compressor.SelectorMode = "adaptive"
+			slog.Info("compression selector = adaptive (GW-10 Phase 2)",
+				"target_ratio", compression.LoadAdaptiveTargetRatio(),
+				"selector_spec", compression.LoadSelectorSpec())
+		} else {
+			routingExec.Compressor.SelectorMode = "manual"
+			routingExec.Compressor.SelectorSpec = compression.LoadSelectorSpec()
+		}
 		slog.Info("compressor initialized",
 			"mode", routingExec.Compressor.Mode().String(),
 			"window_fraction", routingExec.Compressor.Estimator().Fraction(),
+			"selector_mode", routingExec.Compressor.SelectorMode,
+			"strategy_runner_enabled", routingExec.Compressor.StrategyRunnerEnabled,
+			"adaptive_target_ratio", routingExec.Compressor.AdaptiveTargetRatio,
+			"selector_spec", routingExec.Compressor.SelectorSpec,
+
 			"lite_stage", routingExec.Compressor.LiteStageEnabled,
 			"caveman_stage", routingExec.Compressor.CavemanStageEnabled,
 			"toolfocused_stage", routingExec.Compressor.ToolFocusedStageEnabled,
@@ -2206,9 +2266,9 @@ func main() {
 		if routingExec != nil {
 			rcDeps := compression.RecoveryDeps{
 				Cache:      scCache,
-				MaxRetries: 2,
 				Summarizer: compression.NewSummaryFunc(compactionDeps),
 			}
+
 			routingExec.RecoveryCoord = compression.NewRecoveryCoordinator(rcDeps)
 			slog.Info("v5 smart recovery coordinator wired (session-aware incremental compression)")
 		}
@@ -2522,16 +2582,65 @@ func main() {
 		// 2026-08-25: in-flight request detail content store (memory meta +
 		// per-request_id local files). Cleared after telemetry DB persist
 		// (see onEmitted/onPersisted wiring near live stream hub).
+		//
+		// 2026-08-29 (audit follow-up): the SetOnRequestLogEmitted callback
+		// is registered earlier in this file (~line 2118), but the
+		// callback dereferences requestdetail.globalFwd at CALL time (via
+		// CaptureFromEntry → RLock + lookup), not at registration time.
+		// This means the call site order is safe by construction: by the
+		// time any telemetry event fires, this block has already wired
+		// globalFwd and started the consumer goroutine. Do NOT swap the
+		// block above (2602-2609) with the hook registration block without
+		// also re-architecting the deferred-lookup in hooks.go.
 		detailDir := strings.TrimSpace(os.Getenv("LLM_GATEWAY_REQUEST_DETAIL_DIR"))
 		if detailDir == "" {
 			detailDir = filepath.Join(os.TempDir(), "llmgw-request-detail")
 		}
-		if detailStore, err := requestdetail.NewStore(detailDir); err != nil {
+		detailTTL := 30 * time.Minute
+		if rawTTL := strings.TrimSpace(os.Getenv("LLM_GATEWAY_REQUEST_DETAIL_TTL")); rawTTL != "" {
+			if parsedTTL, parseErr := time.ParseDuration(rawTTL); parseErr == nil && parsedTTL > 0 {
+				detailTTL = parsedTTL
+			} else {
+				slog.Warn("invalid request detail TTL; using default", "value", rawTTL, "default", detailTTL)
+			}
+		}
+		detailMaxEntries := getEnvInt("LLM_GATEWAY_REQUEST_DETAIL_MAX_ENTRIES", 4096)
+		if detailMaxEntries <= 0 {
+			slog.Warn("invalid request detail maximum entries; using default", "value", detailMaxEntries, "default", 4096)
+			detailMaxEntries = 4096
+		}
+		// 2026-08-29 (方案 D, 短期): read-your-writes retry on the L3 DB
+		// fallback. Bounded by LLM_GATEWAY_REQUEST_DETAIL_DB_RETRY (default 1;
+		// 0 disables) and LLM_GATEWAY_REQUEST_DETAIL_DB_RETRY_DELAY (default
+		// 100ms). Keeps the in-flight vs persisted race window from
+		// surfacing as 404 for admin reads that follow a write within the
+		// same second. See
+		// docs/implementation/request-detail-cross-replica-visibility-20260828.md
+		// §3.
+		detailDBRetryCount := getEnvInt("LLM_GATEWAY_REQUEST_DETAIL_DB_RETRY", 1)
+		if detailDBRetryCount < 0 {
+			slog.Warn("invalid request detail DB retry count; using default", "value", detailDBRetryCount, "default", 1)
+			detailDBRetryCount = 1
+		}
+		detailDBRetryDelay := 100 * time.Millisecond
+		if rawDelay := strings.TrimSpace(os.Getenv("LLM_GATEWAY_REQUEST_DETAIL_DB_RETRY_DELAY")); rawDelay != "" {
+			if parsedDelay, parseErr := time.ParseDuration(rawDelay); parseErr == nil && parsedDelay >= 0 {
+				detailDBRetryDelay = parsedDelay
+			} else {
+				slog.Warn("invalid request detail DB retry delay; using default", "value", rawDelay, "default", detailDBRetryDelay)
+			}
+		}
+		if detailStore, err := requestdetail.NewStoreWithOptions(detailDir, requestdetail.StoreOptions{TTL: detailTTL, MaxEntries: detailMaxEntries}); err != nil {
 			slog.Warn("request detail content store disabled", "dir", detailDir, "error", err)
 		} else {
 			requestdetail.SetGlobal(detailStore)
-			adminHandler.SetRequestDetailStore(detailStore)
-			slog.Info("request detail content store wired", "dir", detailDir)
+			requestdetail.StartGlobalCaptureForwarder()
+			adminHandler.SetRequestDetailStore(detailStore, admin.LocatorRetryConfig{
+				Count: detailDBRetryCount,
+				Delay: detailDBRetryDelay,
+			})
+			slog.Info("request detail content store wired", "dir", detailDir, "ttl", detailTTL, "max_entries", detailMaxEntries,
+				"db_retry_count", detailDBRetryCount, "db_retry_delay", detailDBRetryDelay)
 		}
 
 		formatAnomalyRecorder := streaming.NewFormatAnomalyRecorderFromPool(dbConn.Pool())
@@ -3463,6 +3572,7 @@ func main() {
 				// (uses the same system api key as the legacy worker).
 				if !ursmV2Cfg.StrictCanary {
 					credentialSelfcheckWorker = bg.NewCredentialSelfcheckWorker(dbConn.Pool(), selfCheckAPIKey, "")
+					credentialSelfcheckWorker.SetRedisClient(fpSlotRedis)
 					if probeStreamHub != nil {
 						credentialSelfcheckWorker.SetProbeSink(probeStreamHub)
 					}
@@ -3597,20 +3707,135 @@ func main() {
 			} else if useNewProbeMode() {
 				slog.Warn("new probe workers skipped: system API key unavailable")
 			}
+			// 2026-08-29: system_health_worker and model_quality_worker moved
+			// outside the stateManager != nil block to line ~3923 so they can
+			// run in URSM v2 authoritative mode. See comment at new location.
+		}
+
+		// 2026-08-11: start the model_iq_runs retention cleaner. Mirrors
+		// ProfileCleaner: daily tick, 365-day retention default. Only started
+		// when DB is available (the table does not exist without migration 350).
+		if dbConn != nil {
+			modelIQCleaner = bg.NewModelIQCleaner(dbConn.Pool(), 24*time.Hour, 365)
+			modelIQCleaner.Start()
+		}
+
+		// 2026-08-11: wire the provider-profile alert handler so a quality
+		// degradation alert (score_drop / dimension_low) on a credential
+		// triggers model-IQ re-tests for that credential's nodes — the
+		// "suspicious action" path in docs/model-iq/01-design.md §3.4.
+		// Best-effort: enumerates the credential's routable models and fires
+		// an async IQ re-test for each. No-op when model-quality worker is
+		// absent (e.g. model_quality.enabled=false) or the alert engine is
+		// absent (provider_profile disabled).
+		if modelQualityWorker != nil && profileWorkers != nil {
+			if eng := profileWorkers.AlertEngine(); eng != nil {
+				pool := dbConn.Pool()
+				mqw := modelQualityWorker
+				eng.SetAlertHandler(func(ctx context.Context, credentialID, providerID int64, alertType providerprofile.AlertType) {
+					switch alertType {
+					case providerprofile.AlertTypeScoreDrop,
+						providerprofile.AlertTypeTrendDrop,
+						providerprofile.AlertTypeDimensionLow:
+					default:
+						return // only quality-degradation alerts trigger a re-test
+					}
+					rows, err := pool.Query(ctx, `
+						SELECT DISTINCT pm.raw_model_name
+						FROM credential_model_bindings cmb
+						JOIN provider_models pm ON pm.id = cmb.provider_model_id
+						WHERE cmb.credential_id = $1`, credentialID)
+					if err != nil {
+						return
+					}
+					var models []string
+					for rows.Next() {
+						var m string
+						if err := rows.Scan(&m); err == nil {
+							models = append(models, m)
+						}
+					}
+					rows.Close()
+					for _, m := range models {
+						mqw.TriggerNodeIQTest(int(credentialID), m)
+					}
+				})
+			}
+		}
+
+		// Authoritative URSM v2 has no credentialstate.Manager by design, but
+		// active probes must continue to provide recovery evidence. Start the
+		// worker independently and route its final state through the v2 sink.
+		if stateManager == nil && ursmV2Mgr != nil && ursmV2Mgr.Mode() == ursmv2api.ModeAuthoritative && shouldStartNewProbeWorkers(selfCheckAPIKey) {
+			nodeProbeWorker = bg.NewNodeProbeWorker(dbConn.Pool(), fernetKey, keyring, selfCheckAPIKey, "", upClient.Proxy().ProxyFunc())
+			nodeProbeWorker.SetNodeStateSink(ursmV2ProbeSink{manager: ursmV2Mgr})
+			nodeProbeWorker.SetEmitter(newProbeEmitter())
+			if probeStreamHub != nil {
+				nodeProbeWorker.SetProbeSink(probeStreamHub)
+			}
+			nodeProbeWorker.SetInvalidateCandidateCache(provider.InvalidateCandidateCacheForCredential)
+			if routingExec != nil && routingExec.Circuit != nil {
+				nodeProbeWorker.SetCircuitRecovery(routingExec.Circuit.RecordSuccess)
+			}
+			nodeProbeWorker.SetModelQualityTrigger(func(credID int, rawModel string, consec int) {
+				if modelQualityWorker != nil {
+					modelQualityWorker.TriggerNodeIQTest(credID, rawModel)
+				}
+			})
+			// 2026-08-13: mirror the unified-queue wiring for the authoritative
+			// URSM v2 fallback path (no credentialstate.Manager).
+			if probeQueueWorker != nil && probeQueue != nil {
+				gatewayURL := strings.TrimSpace(os.Getenv("LLM_GATEWAY_NODE_PROBE_BASE_URL"))
+				if gatewayURL == "" {
+					gatewayURL = "http://127.0.0.1:8781/v1"
+				}
+				if queueExecutor != nil {
+					queueExecutor.SetGateway(gatewayURL, selfCheckAPIKey, &http.Client{Timeout: 30 * time.Second})
+				}
+				ps := bg.NewProbeService(nodeProbeWorker, queueExecutor)
+				ps.SetProbeQueue(probeQueue)
+				probeQueueWorker.SetProbeService(ps)
+				nodeProbeWorker.SetProbeQueue(probeQueue)
+			}
+			// 2026-08-18: the legacy block above wires SyncNoCandidateProbe /
+			// ProbeSync / NodeProbeHealthy on the executor, but only when the
+			// credentialstate.Manager exists. In authoritative URSM v2 mode the
+			// manager is disabled (spec §10 Step 5 C-1) and this fallback path
+			// runs instead — without this wiring a request whose node keys
+			// expired (NodeTTL < probe backoff) got an immediate 503 with no
+			// probe and no recovery path (glm-5.2 outage on 154).
+			if routingExec != nil {
+				syncOn := !envBoolOff("LLM_GATEWAY_SYNC_NO_CANDIDATE_PROBE")
+				routingExec.SyncNoCandidateProbe = syncOn
+				routingExec.SyncNoCandidateTimeout = 5 * time.Second
+				routingExec.ProbeSync = nodeProbeWorker.ProbeSync
+				routingExec.NodeProbeHealthy = func(ctx context.Context, credentialID int, rawModel string) error {
+					return bg.MarkNodeProbeHealthy(ctx, dbConn.Pool(), credentialID, rawModel)
+				}
+				slog.Info("sync_no_candidate_probe", "enabled", syncOn, "path", "authoritative_fallback", "timeout", routingExec.SyncNoCandidateTimeout)
+			}
+			nodeProbeWorker.Start(context.Background())
+			slog.Info("authoritative URSM v2 node_probe_worker started")
+		}
+
+		// 2026-08-29: system_health_worker and model_quality_worker do not depend
+		// on stateManager, so they can run in URSM v2 authoritative mode.
+		// Move them outside the stateManager != nil block to ensure they start
+		// in all configurations when shouldStartNewProbeWorkers returns true.
+		if shouldStartNewProbeWorkers(selfCheckAPIKey) {
 			// C. system_health — 30s windowed success-rate monitor
 			// for the GDRT H badge. Starts with the new probe worker group so
 			// all new probe/self-check workers share the system API key gate.
-			if shouldStartNewProbeWorkers(selfCheckAPIKey) {
-				systemHealthWorker = bg.NewSystemHealthWorker(dbConn.Pool())
-				systemHealthWorker.Start(context.Background())
-				slog.Info("CHECKPOINT: system_health_worker started")
+			systemHealthWorker = bg.NewSystemHealthWorker(dbConn.Pool())
+			systemHealthWorker.Start(context.Background())
+			slog.Info("CHECKPOINT: system_health_worker started")
 
-			}
 			// 2026-08-06: Model Quality Monitoring worker (MMLU benchmark
 			// against featured models to detect provider model degradation).
-			// Controlled by settings.model_quality.enabled (default false).
+			// Controlled by settings.model_quality.enabled (default true).
+			// Can be disabled by setting model_quality.enabled = false in settings_kv.
 			mqEnabledRaw, _, _ := settings.Global.EffectiveValue(settings.ScopePlatform, "model_quality.enabled", "")
-			var mqEnabled bool
+			mqEnabled := true // default enabled
 			if len(mqEnabledRaw) > 0 {
 				_ = json.Unmarshal(mqEnabledRaw, &mqEnabled)
 			}
@@ -3729,112 +3954,6 @@ func main() {
 			}
 		}
 
-		// 2026-08-11: start the model_iq_runs retention cleaner. Mirrors
-		// ProfileCleaner: daily tick, 365-day retention default. Only started
-		// when DB is available (the table does not exist without migration 350).
-		if dbConn != nil {
-			modelIQCleaner = bg.NewModelIQCleaner(dbConn.Pool(), 24*time.Hour, 365)
-			modelIQCleaner.Start()
-		}
-
-		// 2026-08-11: wire the provider-profile alert handler so a quality
-		// degradation alert (score_drop / dimension_low) on a credential
-		// triggers model-IQ re-tests for that credential's nodes — the
-		// "suspicious action" path in docs/model-iq/01-design.md §3.4.
-		// Best-effort: enumerates the credential's routable models and fires
-		// an async IQ re-test for each. No-op when model-quality worker is
-		// absent (e.g. model_quality.enabled=false) or the alert engine is
-		// absent (provider_profile disabled).
-		if modelQualityWorker != nil && profileWorkers != nil {
-			if eng := profileWorkers.AlertEngine(); eng != nil {
-				pool := dbConn.Pool()
-				mqw := modelQualityWorker
-				eng.SetAlertHandler(func(ctx context.Context, credentialID, providerID int64, alertType providerprofile.AlertType) {
-					switch alertType {
-					case providerprofile.AlertTypeScoreDrop,
-						providerprofile.AlertTypeTrendDrop,
-						providerprofile.AlertTypeDimensionLow:
-					default:
-						return // only quality-degradation alerts trigger a re-test
-					}
-					rows, err := pool.Query(ctx, `
-						SELECT DISTINCT pm.raw_model_name
-						FROM credential_model_bindings cmb
-						JOIN provider_models pm ON pm.id = cmb.provider_model_id
-						WHERE cmb.credential_id = $1`, credentialID)
-					if err != nil {
-						return
-					}
-					var models []string
-					for rows.Next() {
-						var m string
-						if err := rows.Scan(&m); err == nil {
-							models = append(models, m)
-						}
-					}
-					rows.Close()
-					for _, m := range models {
-						mqw.TriggerNodeIQTest(int(credentialID), m)
-					}
-				})
-			}
-		}
-
-		// Authoritative URSM v2 has no credentialstate.Manager by design, but
-		// active probes must continue to provide recovery evidence. Start the
-		// worker independently and route its final state through the v2 sink.
-		if stateManager == nil && ursmV2Mgr != nil && ursmV2Mgr.Mode() == ursmv2api.ModeAuthoritative && shouldStartNewProbeWorkers(selfCheckAPIKey) {
-			nodeProbeWorker = bg.NewNodeProbeWorker(dbConn.Pool(), fernetKey, keyring, selfCheckAPIKey, "", upClient.Proxy().ProxyFunc())
-			nodeProbeWorker.SetNodeStateSink(ursmV2ProbeSink{manager: ursmV2Mgr})
-			nodeProbeWorker.SetEmitter(newProbeEmitter())
-			if probeStreamHub != nil {
-				nodeProbeWorker.SetProbeSink(probeStreamHub)
-			}
-			nodeProbeWorker.SetInvalidateCandidateCache(provider.InvalidateCandidateCacheForCredential)
-			if routingExec != nil && routingExec.Circuit != nil {
-				nodeProbeWorker.SetCircuitRecovery(routingExec.Circuit.RecordSuccess)
-			}
-			nodeProbeWorker.SetModelQualityTrigger(func(credID int, rawModel string, consec int) {
-				if modelQualityWorker != nil {
-					modelQualityWorker.TriggerNodeIQTest(credID, rawModel)
-				}
-			})
-			// 2026-08-13: mirror the unified-queue wiring for the authoritative
-			// URSM v2 fallback path (no credentialstate.Manager).
-			if probeQueueWorker != nil && probeQueue != nil {
-				gatewayURL := strings.TrimSpace(os.Getenv("LLM_GATEWAY_NODE_PROBE_BASE_URL"))
-				if gatewayURL == "" {
-					gatewayURL = "http://127.0.0.1:8781/v1"
-				}
-				if queueExecutor != nil {
-					queueExecutor.SetGateway(gatewayURL, selfCheckAPIKey, &http.Client{Timeout: 30 * time.Second})
-				}
-				ps := bg.NewProbeService(nodeProbeWorker, queueExecutor)
-				ps.SetProbeQueue(probeQueue)
-				probeQueueWorker.SetProbeService(ps)
-				nodeProbeWorker.SetProbeQueue(probeQueue)
-			}
-			// 2026-08-18: the legacy block above wires SyncNoCandidateProbe /
-			// ProbeSync / NodeProbeHealthy on the executor, but only when the
-			// credentialstate.Manager exists. In authoritative URSM v2 mode the
-			// manager is disabled (spec §10 Step 5 C-1) and this fallback path
-			// runs instead — without this wiring a request whose node keys
-			// expired (NodeTTL < probe backoff) got an immediate 503 with no
-			// probe and no recovery path (glm-5.2 outage on 154).
-			if routingExec != nil {
-				syncOn := !envBoolOff("LLM_GATEWAY_SYNC_NO_CANDIDATE_PROBE")
-				routingExec.SyncNoCandidateProbe = syncOn
-				routingExec.SyncNoCandidateTimeout = 5 * time.Second
-				routingExec.ProbeSync = nodeProbeWorker.ProbeSync
-				routingExec.NodeProbeHealthy = func(ctx context.Context, credentialID int, rawModel string) error {
-					return bg.MarkNodeProbeHealthy(ctx, dbConn.Pool(), credentialID, rawModel)
-				}
-				slog.Info("sync_no_candidate_probe", "enabled", syncOn, "path", "authoritative_fallback", "timeout", routingExec.SyncNoCandidateTimeout)
-			}
-			nodeProbeWorker.Start(context.Background())
-			slog.Info("authoritative URSM v2 node_probe_worker started")
-		}
-
 		slog.Info("CHECKPOINT: before NewStickyCleaner")
 		stickyCleaner = bg.NewStickyCleaner(dbConn.Pool())
 		slog.Info("CHECKPOINT: before stickyCleaner.Start")
@@ -3884,7 +4003,9 @@ func main() {
 		// rows. Without this, the request handler queues into a
 		// channel that no consumer ever drains.
 		admin.StartIngester(dbConn.Pool())
+		admin.SetIngesterRedisClient(fpSlotRedis)
 		defer admin.StopIngester()
+
 		slog.Info("CHECKPOINT: after StartIngester")
 		// 2026-06-27: 启动审批超时扫描 worker。approvalMgr 在前面
 		// 已通过 adminHandler.SetApprovalManager 注入；这里直接构造 worker
@@ -4386,8 +4507,8 @@ func main() {
 			// recorder, and its table-retention duty moved to the journey
 			// retention worker (1h tick / 7d retention, same semantics).
 			if dbConn != nil && dbConn.Enabled() {
-				retention := requestjourney.NewRetentionWorker(dbConn.Pool())
-				retention.Start()
+				journeyRetentionWorker = requestjourney.NewRetentionWorker(dbConn.Pool())
+				journeyRetentionWorker.Start()
 			}
 
 			// 2026-08-11: expose the on-demand node IQ test endpoint. Only wire
@@ -5924,7 +6045,7 @@ func main() {
 	//   With h2c on the gateway, 252 nginx can speak HTTP/2 to the backend
 	//   (`proxy_http_version 1.1` becomes optional) and HTTP/2 frame
 	//   conversion stays correct end-to-end.
-	srv.Handler = h2c.NewHandler(handler, &http2.Server{
+	srv.Handler = h2c.NewHandler(finalHandler, &http2.Server{
 		MaxConcurrentStreams: 250,
 		MaxReadFrameSize:     1 << 20,
 		// IdleTimeout 从 60s → 300s: 匹配 http.Server.IdleTimeout。
@@ -6026,6 +6147,11 @@ func main() {
 	stopDone := make(chan struct{}, 1)
 
 	go func() {
+		// Stop monitors before closing the database pool they query. The
+		// monitor is idempotent and safely handles a not-started instance.
+		if candidateFailureMonitor != nil {
+			candidateFailureMonitor.Stop()
+		}
 		// Stop dispatch before its RequestJourney Redis/PostgreSQL dependencies.
 		if pipeline != nil {
 			pipeline.Stop()
@@ -6038,6 +6164,11 @@ func main() {
 		gatewayQueueProjection.Close()
 		if err := journeyRecorder.Close(stopCtx); err != nil {
 			slog.Warn("request journey recorder drain failed", "error", err)
+		}
+		if journeyObservationOutbox != nil {
+			if err := journeyObservationOutbox.Close(stopCtx); err != nil {
+				slog.Warn("request journey durable outbox stop failed", "error", err)
+			}
 		}
 
 		// Stop outbox dispatcher before other background services
@@ -6067,6 +6198,10 @@ func main() {
 		}
 		if ursmV2Mgr != nil {
 			ursmV2Mgr.Close()
+		}
+
+		if journeyRetentionWorker != nil {
+			journeyRetentionWorker.Stop()
 		}
 
 		if sessionCacheV2ForShutdown != nil {
@@ -6147,6 +6282,7 @@ func main() {
 			requestLogger.Stop()
 		}
 		telemetryClient.Stop()
+		requestdetail.StopGlobalCaptureForwarder()
 		// 2026-07-28 request-flow Step 3 (spec §6.3 + Step 3): session DBWriter
 		// 必须在 telemetryClient.Stop 之后、依赖（pools）关闭之前显式 Stop，
 		// 排空 flush loop。DBWriter.Stop 自身是 idempotent（sync.Once），

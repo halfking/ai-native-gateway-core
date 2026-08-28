@@ -1028,33 +1028,54 @@ INSERT INTO public.work_type_model_route VALUES (7, 'session_summary', 'deepseek
 -- is safe — the seed never overwrites operator-edited rows.
 -- =============================================================================
 
--- grok-4.6 (mirrors migration 352)
+-- grok-4.6 (mirrors migration 352 + 611 correction)
+-- 2026-08-29: 611 验证 xAI Grok-4 product page → 262144 (256K) context, vision.
 INSERT INTO public.models_canonical (canonical_name, family, context_window, modality, status, source, created_at, updated_at)
-VALUES ('grok-4.6', 'grok', 500, 'vision', 'active', 'seed-standard-rollout', NOW(), NOW())
+VALUES ('grok-4.6', 'grok', 262144, 'vision', 'active', 'seed-standard-rollout', NOW(), NOW())
 ON CONFLICT (canonical_name) DO NOTHING;
 
--- kimi-k3 / kimi-k2.6 / kimi-k2.7-code / kimi-k2.7-code-highspeed (mirror 354 + 358 modality)
+-- kimi-k3 / kimi-k2.6 / kimi-k2.7-code / kimi-k2.7-code-highspeed
+-- (mirror 354 + 358 modality + 611 correction)
+-- 2026-08-29: 611 验证 modelname/modality_defaults.go 注释:
+--   kimi-k3 = 1M context, multimodal; kimi-k2.6 = 256K context, vision;
+--   kimi-k2.7-code* = 256K context, text (无 vision input).
 INSERT INTO public.models_canonical (canonical_name, family, context_window, modality, status, source, created_at, updated_at)
 VALUES
-    ('kimi-k3',                   'kimi', 1000, 'multimodal', 'active', 'seed-standard-rollout', NOW(), NOW()),
-    ('kimi-k2.6',                 'kimi',  256, 'vision',     'active', 'seed-standard-rollout', NOW(), NOW()),
-    ('kimi-k2.7-code',            'kimi',  256, 'text',       'active', 'seed-standard-rollout', NOW(), NOW()),
-    ('kimi-k2.7-code-highspeed',  'kimi', NULL, 'text',       'active', 'seed-standard-rollout', NOW(), NOW())
+    ('kimi-k3',                   'kimi', 1048576, 'multimodal', 'active', 'seed-standard-rollout', NOW(), NOW()),
+    ('kimi-k2.6',                 'kimi',  262144, 'vision',     'active', 'seed-standard-rollout', NOW(), NOW()),
+    ('kimi-k2.7-code',            'kimi',  262144, 'text',       'active', 'seed-standard-rollout', NOW(), NOW()),
+    ('kimi-k2.7-code-highspeed',  'kimi',  262144, 'text',       'active', 'seed-standard-rollout', NOW(), NOW())
 ON CONFLICT (canonical_name) DO NOTHING;
 
--- gemini-3.* (mirror 355)
+-- gemini-3.* (mirror 355 + 611 context window fill)
+-- 2026-08-29: 611 验证 ai.google.dev Gemini API docs → 1M context, multimodal.
 INSERT INTO public.models_canonical (canonical_name, family, context_window, modality, status, source, created_at, updated_at)
 VALUES
-    ('gemini-3.6-flash',         'google-gemini', NULL, 'multimodal', 'active', 'seed-standard-rollout', NOW(), NOW()),
-    ('gemini-3.5-flash',         'google-gemini', NULL, 'multimodal', 'active', 'seed-standard-rollout', NOW(), NOW()),
-    ('gemini-3.5-flash-lite',    'google-gemini', NULL, 'multimodal', 'active', 'seed-standard-rollout', NOW(), NOW()),
-    ('gemini-3.1-flash-lite',    'google-gemini', NULL, 'multimodal', 'active', 'seed-standard-rollout', NOW(), NOW()),
-    ('gemini-3.1-flash-lite-image','google-gemini', NULL, 'multimodal', 'active', 'seed-standard-rollout', NOW(), NOW()),
-    ('gemini-3.1-pro-preview',   'google-gemini', NULL, 'multimodal', 'active', 'seed-standard-rollout', NOW(), NOW()),
-    ('gemini-3.1-flash-image',   'google-gemini', NULL, 'multimodal', 'active', 'seed-standard-rollout', NOW(), NOW()),
-    ('gemini-3-pro-image',       'google-gemini', NULL, 'multimodal', 'active', 'seed-standard-rollout', NOW(), NOW()),
-    ('gemini-3-flash-preview',   'google-gemini', NULL, 'multimodal', 'active', 'seed-standard-rollout', NOW(), NOW()),
-    ('gemini-omni-flash',        'google-gemini', NULL, 'multimodal', 'active', 'seed-standard-rollout', NOW(), NOW())
+    ('gemini-3.6-flash',         'google-gemini', 1048576, 'multimodal', 'active', 'seed-standard-rollout', NOW(), NOW()),
+    ('gemini-3.5-flash',         'google-gemini', 1048576, 'multimodal', 'active', 'seed-standard-rollout', NOW(), NOW()),
+    ('gemini-3.5-flash-lite',    'google-gemini', 1048576, 'multimodal', 'active', 'seed-standard-rollout', NOW(), NOW()),
+    ('gemini-3.1-flash-lite',    'google-gemini', 1048576, 'multimodal', 'active', 'seed-standard-rollout', NOW(), NOW()),
+    ('gemini-3.1-flash-lite-image','google-gemini', 1048576, 'multimodal', 'active', 'seed-standard-rollout', NOW(), NOW()),
+    ('gemini-3.1-pro-preview',   'google-gemini', 1048576, 'multimodal', 'active', 'seed-standard-rollout', NOW(), NOW()),
+    ('gemini-3.1-flash-image',   'google-gemini', 1048576, 'multimodal', 'active', 'seed-standard-rollout', NOW(), NOW()),
+    ('gemini-3-pro-image',       'google-gemini', 1048576, 'multimodal', 'active', 'seed-standard-rollout', NOW(), NOW()),
+    ('gemini-3-flash-preview',   'google-gemini', 1048576, 'multimodal', 'active', 'seed-standard-rollout', NOW(), NOW()),
+    ('gemini-omni-flash',        'google-gemini', 1048576, 'multimodal', 'active', 'seed-standard-rollout', NOW(), NOW())
+ON CONFLICT (canonical_name) DO NOTHING;
+
+-- glm-5.3 (mirror 354 + 611 correction)
+-- 2026-08-29: 611 验证 Z.AI GLM-5.3 → 1M context, text reasoning.
+INSERT INTO public.models_canonical (canonical_name, family, context_window, modality, status, source, created_at, updated_at)
+VALUES ('glm-5.3', 'glm', 1048576, 'text', 'active', 'seed-standard-rollout', NOW(), NOW())
+ON CONFLICT (canonical_name) DO NOTHING;
+
+-- glm-5 / glm-5.1 / glm-5.2 (mirror seed + 611 correction)
+-- 2026-08-29: 611 验证 Zhipu bigmodel.cn + provider_catalog → 128K context, text.
+INSERT INTO public.models_canonical (canonical_name, family, context_window, modality, status, source, created_at, updated_at)
+VALUES
+    ('glm-5',   'zhipu-glm', 131072, 'text', 'active', 'seed-standard-rollout', NOW(), NOW()),
+    ('glm-5.1', 'zhipu-glm', 131072, 'text', 'active', 'seed-standard-rollout', NOW(), NOW()),
+    ('glm-5.2', 'zhipu-glm', 131072, 'text', 'active', 'seed-standard-rollout', NOW(), NOW())
 ON CONFLICT (canonical_name) DO NOTHING;
 
 -- Vendor-prefix aliases (mirror migration 360). Each INSERT resolves canonical_id

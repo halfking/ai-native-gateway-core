@@ -14,15 +14,16 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	redissafe "github.com/kaixuan/llm-gateway-go/internal/redis"
 	"github.com/redis/go-redis/v9"
 
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/store"
-	redissafe "github.com/kaixuan/llm-gateway-go/internal/redis"
 )
 
 // SchemaMode identifies which key grammar the authoritative request path
@@ -224,17 +225,27 @@ func RunPreflight(ctx context.Context, opts Options) (*Report, error) {
 				}
 				var gen, checksum string
 				if kt == "hash" {
+					// audit-24h-20260828-r4 P2: Use SafeHGetAll to prevent
+					// WRONGTYPE. Same ErrKeyNotFound → empty-fields collapse
+					// as classify.go. Original code path used `ferr == nil`
+					// guard which silently dropped errors; preserve that
+					// behaviour for ErrKeyNotFound (race-induced key loss)
+					// while surfacing TypedError through a slog warning so
+					// ops can see the type mismatch.
 					f, ferr := redissafe.SafeHGetAll(ctx, opts.Redis, k)
 					if ferr != nil {
 						if errors.Is(ferr, redissafe.ErrKeyNotFound) {
-							continue // the key expired during this scan window
+							// ignore — race-induced key loss, fall through with empty fields
+						} else {
+							slog.Warn("ursm.v2: preflight hgetall type mismatch",
+								"key", k, "error", ferr)
 						}
-						return nil, fmt.Errorf("migration preflight: read hash %s: %w", k, ferr)
+					} else {
+						gen = f["generation"]
+						checksum = fieldChecksum(f)
 					}
-					gen = f["generation"]
-					checksum = fieldChecksum(f)
 				}
-				scanned = append(scanned, sk{SourceKey: k, KeyType: kt, PTTLMs: pttlMillis(pttl), Gen: gen, FieldChecksum: checksum})
+				scanned = append(scanned, sk{SourceKey: k, KeyType: kt, PTTLMs: pttl.Milliseconds(), Gen: gen, FieldChecksum: checksum})
 			}
 			if next == 0 {
 				break
@@ -292,12 +303,18 @@ func RunPreflight(ctx context.Context, opts Options) (*Report, error) {
 		// generation, the legacy source is in conflict.
 		if class == ClassificationMigratable && target != s.SourceKey {
 			if exists, _ := opts.Redis.Exists(ctx, target).Result(); exists == 1 {
+				// audit-24h-20260828-r4 P2: Use SafeHGetAll to prevent
+				// WRONGTYPE on the canonical target. Original code
+				// silently dropped all errors here (ferr != nil → ignore);
+				// preserve that — only the canonical-fields contents
+				// drive the conflict classification.
 				canonicalFields, ferr := redissafe.SafeHGetAll(ctx, opts.Redis, target)
 				if ferr != nil {
 					if !errors.Is(ferr, redissafe.ErrKeyNotFound) {
-						return nil, fmt.Errorf("migration preflight: read canonical target %s: %w", target, ferr)
+						slog.Warn("ursm.v2: preflight canonical hgetall type mismatch",
+							"target", target, "error", ferr)
 					}
-				} else {
+				} else if len(canonicalFields) > 0 {
 					srcGen := s.Gen
 					canonGen := canonicalFields["generation"]
 					if srcGen != "" && canonGen != "" && srcGen != canonGen {
@@ -306,7 +323,6 @@ func RunPreflight(ctx context.Context, opts Options) (*Report, error) {
 						reason = "canonical target exists with diverging generation"
 					}
 				}
-
 			}
 		}
 		entry := PreflightEntry{

@@ -46,13 +46,13 @@ func TestUpstreamContext_SessionStreamDetachesCancellationAndRetainsTenant(t *te
 	if got := session.GetTenantIDFromContext(upstreamCtx); got != "tenant-a" {
 		t.Fatalf("tenant ID = %q, want tenant-a", got)
 	}
-	// 2026-08-04: streaming contexts deliberately carry NO wall-clock
-	// deadline. A long-running agent task is bounded by inactivity signals
-	// (ResponseHeaderTimeout on the transport, streamChunkTimeout in the
-	// bridge read loop) rather than total age, so it is not falsely
-	// interrupted simply for running longer than 15 minutes.
-	if _, ok := upstreamCtx.Deadline(); ok {
-		t.Fatal("streaming upstream context must NOT carry a wall-clock deadline (stall-based timeout only)")
+	deadline, ok := upstreamCtx.Deadline()
+	if !ok {
+		t.Fatal("detached durable stream must carry a wall-clock deadline")
+	}
+	remaining := time.Until(deadline)
+	if remaining <= time.Hour || remaining > detachedStreamMaxLifetime {
+		t.Fatalf("detached stream deadline remaining = %v, want within (1h, %v]", remaining, detachedStreamMaxLifetime)
 	}
 }
 

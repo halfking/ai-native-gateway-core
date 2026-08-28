@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/internal/jsonbody"
 )
 
 // SessionSummaryV2API 提供会话总结端点
@@ -72,7 +73,7 @@ func (api *SessionSummaryV2API) ServeHTTP(w http.ResponseWriter, r *http.Request
 	}
 
 	var req SessionSummaryRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := jsonbody.DecodeRequest(r, &req, jsonbody.MaxRequiredBody, true); err != nil {
 		writeExportJSONError(w, http.StatusBadRequest, fmt.Sprintf("invalid JSON: %v", err))
 		return
 	}

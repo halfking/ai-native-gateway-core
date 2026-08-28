@@ -1,12 +1,13 @@
 package streaming
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"io"
 	"strings"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/internal/sse"
 )
 
 type anthropicSSEReadResult struct {
@@ -50,10 +51,7 @@ func readAnthropicSSEEventWithTimeoutRaw(ctx context.Context, reader io.Reader, 
 }
 
 func readAnthropicSSEEventRaw(ctx context.Context, reader io.Reader) (eventType string, data, raw []byte, err error) {
-	br, ok := reader.(*bufio.Reader)
-	if !ok {
-		br = bufio.NewReader(reader)
-	}
+	lineReader := sse.NewLineReader(reader, currentStreamRuntimeConfig().sseMaxLineBytes)
 
 	var dataLines []string
 	var rawEvent strings.Builder
@@ -64,7 +62,7 @@ func readAnthropicSSEEventRaw(ctx context.Context, reader io.Reader) (eventType 
 		default:
 		}
 
-		line, rerr := br.ReadString('\n')
+		line, rerr := lineReader.ReadLine()
 		rawEvent.WriteString(line)
 		trimmedLine := strings.TrimRight(line, "\r\n")
 		if trimmedLine == "" {

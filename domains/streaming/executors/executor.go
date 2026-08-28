@@ -38,6 +38,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/irconv"
 	"github.com/kaixuan/llm-gateway-go/internal/liveactions"
 	gwtrace "github.com/kaixuan/llm-gateway-go/internal/trace"
+	vendorstrip "github.com/kaixuan/llm-gateway-go/internal/vendorstrip"
 	"github.com/kaixuan/llm-gateway-go/pending"
 	"github.com/kaixuan/llm-gateway-go/pool"
 	"github.com/kaixuan/llm-gateway-go/provider"
@@ -1098,6 +1099,9 @@ type ExecParams struct {
 	R         *http.Request
 	BodyBytes []byte
 	IsStream  bool
+	// ForceCompression bypasses only the auto-threshold gate for an already
+	// enabled strategy runner. It never enables a disabled compression policy.
+	ForceCompression bool
 	// StreamSurvivesClientCancel explicitly grants the stream a lifetime beyond
 	// the client connection (session capture or durable/survival ownership).
 	// Provisional correlation session IDs must not set this flag.
@@ -1475,108 +1479,38 @@ func buildEnhancedErrorContext(params *ExecParams, kind errorsx.ErrorKind, execE
 }
 
 func (e *Executor) stripVendorFields(body []byte, catalogCode string) []byte {
-	// 2026-07-20 fix: Guard against empty/invalid catalogCode to prevent panic.
-	// Third-party providers (provider_id 36/314/5917) have empty catalog_code,
-	// causing nil pointer dereference when passed as empty string.
-	if catalogCode == "" && len(body) == 0 {
+	// Keep the executor callbacks as compatibility injection points while
+	// using the shared registry for normalization and safe top-level inference.
+	if len(body) == 0 {
 		return body
 	}
-
-	code := strings.ToLower(strings.TrimSpace(catalogCode))
-
-	// 2026-07-20: When catalog_code is empty (third-party providers),
-	// auto-detect vendor fields in the response body to prevent downstream
-	// parsing errors. This fixes 5xx errors for gpt-5.2/gpt-5.6-luna/Minimax-m3
-	// from providers without catalog_code.
-	if code == "" && len(body) > 0 {
-		// Auto-detect minimax fields (nvext, base_resp, etc.)
-		if bytes.Contains(body, []byte(`"nvext"`)) ||
-			bytes.Contains(body, []byte(`"base_resp"`)) ||
-			bytes.Contains(body, []byte(`"input_sensitive"`)) {
+	if catalogCode != "" {
+		code := strings.ToLower(strings.TrimSpace(catalogCode))
+		switch code {
+		case vendorstrip.VendorMiniMax:
 			if e.StripMinimaxFields != nil {
-				stripped := e.StripMinimaxFields(body)
-				slog.Info("stripVendorFields: auto-detected minimax fields",
-					"catalog_code", catalogCode,
-					"original_bytes", len(body),
-					"stripped_bytes", len(stripped))
-				return stripped
-			} else {
-				slog.Warn("stripVendorFields: detected minimax fields but StripMinimaxFields is nil",
-					"catalog_code", catalogCode,
-					"body_preview", string(body[:min(100, len(body))]))
+				return e.StripMinimaxFields(body)
 			}
-		}
-		// Auto-detect zhipu fields (zhipu_request_id, web_search_results, etc.)
-		if bytes.Contains(body, []byte(`"zhipu_request_id"`)) ||
-			bytes.Contains(body, []byte(`"web_search_results"`)) {
+		case vendorstrip.VendorZhipu, "glm":
 			if e.StripZhipuFields != nil {
-				stripped := e.StripZhipuFields(body)
-				slog.Info("stripVendorFields: auto-detected zhipu fields",
-					"catalog_code", catalogCode,
-					"original_bytes", len(body),
-					"stripped_bytes", len(stripped))
-				return stripped
-			} else {
-				slog.Warn("stripVendorFields: detected zhipu fields but StripZhipuFields is nil",
-					"catalog_code", catalogCode,
-					"body_preview", string(body[:min(100, len(body))]))
+				return e.StripZhipuFields(body)
 			}
-		}
-		// Auto-detect deepseek fields (deepseek_request_id, model_type, etc.)
-		if bytes.Contains(body, []byte(`"deepseek_request_id"`)) ||
-			bytes.Contains(body, []byte(`"cache_hit_tokens"`)) {
+		case vendorstrip.VendorDeepSeek:
 			if e.StripDeepSeekFields != nil {
-				stripped := e.StripDeepSeekFields(body)
-				slog.Info("stripVendorFields: auto-detected deepseek fields",
-					"catalog_code", catalogCode,
-					"original_bytes", len(body),
-					"stripped_bytes", len(stripped))
-				return stripped
-			} else {
-				slog.Warn("stripVendorFields: detected deepseek fields but StripDeepSeekFields is nil",
-					"catalog_code", catalogCode,
-					"body_preview", string(body[:min(100, len(body))]))
+				return e.StripDeepSeekFields(body)
 			}
-		}
-		// Auto-detect doubao fields (doubao_request_id, seeddance_request_id, etc.)
-		if bytes.Contains(body, []byte(`"doubao_request_id"`)) ||
-			bytes.Contains(body, []byte(`"seeddance_request_id"`)) {
+		case vendorstrip.VendorDoubao:
 			if e.StripDoubaoFields != nil {
-				stripped := e.StripDoubaoFields(body)
-				slog.Info("stripVendorFields: auto-detected doubao fields",
-					"catalog_code", catalogCode,
-					"original_bytes", len(body),
-					"stripped_bytes", len(stripped))
-				return stripped
-			} else {
-				slog.Warn("stripVendorFields: detected doubao fields but StripDoubaoFields is nil",
-					"catalog_code", catalogCode,
-					"body_preview", string(body[:min(100, len(body))]))
+				return e.StripDoubaoFields(body)
 			}
 		}
+		return vendorstrip.DefaultRegistry.Strip(body, code)
+	}
+	_, policy := vendorstrip.DefaultRegistry.Resolve(body, catalogCode)
+	if policy == nil {
 		return body
 	}
-
-	// Explicit catalog_code routing
-	switch code {
-	case "minimax":
-		if e.StripMinimaxFields != nil {
-			return e.StripMinimaxFields(body)
-		}
-	case "zhipu":
-		if e.StripZhipuFields != nil {
-			return e.StripZhipuFields(body)
-		}
-	case "deepseek":
-		if e.StripDeepSeekFields != nil {
-			return e.StripDeepSeekFields(body)
-		}
-	case "doubao":
-		if e.StripDoubaoFields != nil {
-			return e.StripDoubaoFields(body)
-		}
-	}
-	return body
+	return policy.StripFields(body)
 }
 
 type ExecuteResult struct {

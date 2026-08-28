@@ -36,8 +36,12 @@ type RecoveryDeps struct {
 	// Estimator provides token estimation (usually the package-level estimator).
 	Estimator *Estimator
 
-	// MaxRetries is the maximum compression retries per request.
-	// Default 2: first attempt = conservative smart window, second = aggressive.
+	// Retry ownership remains with the executor's upstream-attempt budget. A
+	// coordinator invocation applies one ordered recovery plan so it cannot
+	// amplify retries independently of candidate failover.
+	//
+	// Deprecated: retained only for source compatibility; it is intentionally
+	// ignored. Configure the executor attempt budget instead.
 	MaxRetries int
 }
 
@@ -80,9 +84,6 @@ type RecoveryCoordinator struct {
 
 // NewRecoveryCoordinator builds a RecoveryCoordinator.
 func NewRecoveryCoordinator(deps RecoveryDeps) *RecoveryCoordinator {
-	if deps.MaxRetries <= 0 {
-		deps.MaxRetries = 2
-	}
 	return &RecoveryCoordinator{deps: deps}
 }
 

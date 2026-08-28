@@ -19,7 +19,6 @@
 package admin
 
 import (
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -78,9 +77,9 @@ type StorageConfigUpdateRequest struct {
 	AttachmentDirOverride *string `json:"attachment_dir_override,omitempty"` // 仅本地存储
 	TTLDays               *int    `json:"ttl_days,omitempty"`
 	MaxFileSizeMB         *int    `json:"max_file_size_mb,omitempty"`
-	DiskQuotaPercent      *int    `json:"disk_quota_percent,omitempty"`      // 仅本地存储
+	DiskQuotaPercent      *int    `json:"disk_quota_percent,omitempty"` // 仅本地存储
 	AutoCleanupEnabled    *bool   `json:"auto_cleanup_enabled,omitempty"`
-	AutoCleanupThreshold  *int    `json:"auto_cleanup_threshold,omitempty"`  // 仅本地存储
+	AutoCleanupThreshold  *int    `json:"auto_cleanup_threshold,omitempty"` // 仅本地存储
 
 	// OSS 配置
 	OSSEndpoint        *string `json:"oss_endpoint,omitempty"`
@@ -256,7 +255,7 @@ func (h *Handler) storageConfigPut(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req StorageConfigUpdateRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONRequired(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}
@@ -400,7 +399,7 @@ func (h *Handler) handleStorageTestPath(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	var req StorageTestPathRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONRequired(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}

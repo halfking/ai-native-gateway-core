@@ -392,7 +392,12 @@ function timeRange() {
 }
 
 function onModelFilterChange(name: string | string[]) {
-  modelFilter.value = typeof name === 'string' ? name.trim() : ''
+  // 选择模型后立即重发请求。ModelPicker 是单选交互（用户点完即期望生效），
+  // 不像 provider/credential 下拉那样依赖手动点击「查询」按钮。
+  // 注：v-model 已经在 @update:model-value 之前把 modelFilter.value 更新好了，
+  // 此处不要做 "next === modelFilter.value" 的短路判断 —— 那样会导致
+  // 所有选择（包括新选模型）都被跳过。
+  resetPageAndLoad()
 }
 
 const ERROR_KIND_LABELS: Record<string, string> = {

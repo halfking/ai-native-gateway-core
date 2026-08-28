@@ -100,7 +100,7 @@ func TestObservationOutbox_TenantRLSIsolation(t *testing.T) {
 	ctx := context.Background()
 
 	// Seed two rows via the superuser pool (RLS bypass via app.bypass_rls).
-	outbox := newObservationOutbox(pool, NewPostgresRepository(pool), nil, "worker-it-rls")
+	outbox := NewObservationOutbox(pool, NewPostgresRepository(pool), nil, "worker-it-rls")
 	outbox.clock = func() time.Time { return time.Now().UTC() }
 	if err := outbox.Enqueue(ctx, testJourneyEvent("rj-it-alpha", "request-rls-1", 1)); err != nil {
 		t.Fatalf("enqueue alpha: %v", err)
@@ -166,7 +166,7 @@ func TestObservationOutbox_WorkerClaimAndAckDrainsOutbox(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	outbox := newObservationOutbox(pool, NewPostgresRepository(pool), nil, "worker-it-drain")
+	outbox := NewObservationOutbox(pool, NewPostgresRepository(pool), nil, "worker-it-drain")
 	outbox.clock = func() time.Time { return time.Now().UTC() }
 
 	if err := outbox.Enqueue(ctx, testJourneyEvent("rj-it-drain-a", "r-drain-1", 1)); err != nil {
@@ -197,7 +197,7 @@ func TestObservationOutbox_StaleFencingRejectsAckRelease(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	outbox := newObservationOutbox(pool, NewPostgresRepository(pool), nil, "worker-it-fence")
+	outbox := NewObservationOutbox(pool, NewPostgresRepository(pool), nil, "worker-it-fence")
 	outbox.clock = func() time.Time { return time.Now().UTC() }
 	if err := outbox.Enqueue(ctx, testJourneyEvent("rj-it-fence", "request-fence-1", 1)); err != nil {
 		t.Fatalf("enqueue: %v", err)
@@ -277,7 +277,7 @@ func TestObservationOutbox_RedisFailureReplay(t *testing.T) {
 
 	ctx := context.Background()
 	store := NewRedisStore(redisClient, DefaultConfig())
-	outbox := newObservationOutbox(pool, NewPostgresRepository(pool), store, "worker-it-redis")
+	outbox := NewObservationOutbox(pool, NewPostgresRepository(pool), store, "worker-it-redis")
 	outbox.clock = func() time.Time { return time.Now().UTC() }
 	outbox.lease = 30 * time.Second // keep lease in DB future across the test
 	outbox.pollInterval = 50 * time.Millisecond
@@ -317,7 +317,7 @@ func TestObservationOutbox_RedisFailureReplay(t *testing.T) {
 		t.Fatalf("reopen redis: %v", err)
 	}
 	store = NewRedisStore(redisClient, DefaultConfig())
-	outbox2 := newObservationOutbox(pool, NewPostgresRepository(pool), store, "worker-it-redis-restart")
+	outbox2 := NewObservationOutbox(pool, NewPostgresRepository(pool), store, "worker-it-redis-restart")
 	outbox2.clock = func() time.Time { return time.Now().UTC() }
 	// Wait past release's next_retry_at (default 250ms).
 	time.Sleep(300 * time.Millisecond)
@@ -356,7 +356,7 @@ func TestObservationOutbox_LeaseExpiryReclaim(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	outboxA := newObservationOutbox(pool, NewPostgresRepository(pool), nil, "worker-it-lease-A")
+	outboxA := NewObservationOutbox(pool, NewPostgresRepository(pool), nil, "worker-it-lease-A")
 	outboxA.clock = func() time.Time { return time.Now().UTC() }
 	outboxA.lease = 100 * time.Millisecond
 	if err := outboxA.Enqueue(ctx, testJourneyEvent("rj-it-lease", "request-lease-1", 1)); err != nil {
@@ -376,7 +376,7 @@ func TestObservationOutbox_LeaseExpiryReclaim(t *testing.T) {
 		t.Fatalf("expire lease: %v", err)
 	}
 
-	outboxB := newObservationOutbox(pool, NewPostgresRepository(pool), nil, "worker-it-lease-B")
+	outboxB := NewObservationOutbox(pool, NewPostgresRepository(pool), nil, "worker-it-lease-B")
 	outboxB.clock = func() time.Time { return time.Now().UTC() }
 	claimsB, err := outboxB.claim(ctx, "rj-it-lease", "request-lease-1", 1, false)
 	if err != nil || len(claimsB) != 1 {

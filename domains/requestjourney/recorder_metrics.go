@@ -52,6 +52,41 @@ func setJourneyQueueDepth(store string, depth int) {
 	journeyRecorderQueueDepth.WithLabelValues(store).Set(float64(depth))
 }
 
+var (
+	journeyObservationOutboxEnqueueFailureTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "request_journey_observation_outbox_enqueue_failure_total",
+		Help: "Total durable RequestJourney observations that could not be enqueued.",
+	})
+	journeyObservationOutboxClaimTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "request_journey_observation_outbox_claim_total",
+		Help: "Total durable RequestJourney observations claimed for delivery.",
+	})
+	journeyObservationOutboxAckTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "request_journey_observation_outbox_ack_total",
+		Help: "Total durable RequestJourney observations acknowledged after projection.",
+	})
+	journeyObservationOutboxRetryTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "request_journey_observation_outbox_retry_total",
+		Help: "Total durable RequestJourney observations released for retry.",
+	}, []string{"stage"})
+)
+
+func recordObservationOutboxEnqueueFailure() {
+	journeyObservationOutboxEnqueueFailureTotal.Inc()
+}
+
+func recordObservationOutboxClaim() {
+	journeyObservationOutboxClaimTotal.Inc()
+}
+
+func recordObservationOutboxAck() {
+	journeyObservationOutboxAckTotal.Inc()
+}
+
+func recordObservationOutboxRetry(stage string) {
+	journeyObservationOutboxRetryTotal.WithLabelValues(stage).Inc()
+}
+
 var journeyQuerySourceDivergenceTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 	Name: "request_journey_query_source_divergence_total",
 	Help: "Total Detail-query merges where observation sources disagreed, by kind.",

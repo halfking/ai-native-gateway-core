@@ -34,6 +34,21 @@ func TestSessionTurnsHandler_RoutesIncludesSnapshot(t *testing.T) {
 	}
 }
 
+func TestTenantFromQueryOrContextPinsNonPrivilegedRoles(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/sessions/snapshot?tenant=other", nil)
+	req.Header.Set("X-Tenant-ID", "header-other")
+	req = SetAuthContext(req, &AuthContext{TenantID: "tenant-a", Role: "viewer", IsJWT: true})
+	if got := tenantFromQueryOrContext(req); got != "tenant-a" {
+		t.Fatalf("viewer tenant override must be ignored, got %q", got)
+	}
+
+	superReq := httptest.NewRequest(http.MethodGet, "/api/admin/sessions/snapshot?tenant=other", nil)
+	superReq = SetAuthContext(superReq, &AuthContext{TenantID: "tenant-a", Role: "super_admin", IsJWT: true})
+	if got := tenantFromQueryOrContext(superReq); got != "other" {
+		t.Fatalf("super admin explicit tenant selection must be retained, got %q", got)
+	}
+}
+
 func TestCursorRoundTrip(t *testing.T) {
 	p := cursorPayload{TenantID: "t", SessionID: "s", TurnNo: 42, TS: time.Now()}
 	encoded, err := encodeCursor(p, []byte("test-key"))

@@ -181,7 +181,7 @@ func (h *Handler) handleFeishuRoutingCreate(w http.ResponseWriter, r *http.Reque
 		Enabled     *bool    `json:"enabled"`
 		Note        string   `json:"note"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONRequired(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json: "+err.Error())
 		return
 	}
@@ -263,7 +263,7 @@ func (h *Handler) handleFeishuRoutingUpdate(w http.ResponseWriter, r *http.Reque
 	}
 
 	var req map[string]any
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONRequired(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json: "+err.Error())
 		return
 	}
@@ -505,7 +505,7 @@ func (h *Handler) handleFeishuRoutingRulesImport(w http.ResponseWriter, r *http.
 		rules = parsed
 	} else {
 		// JSON 数组
-		if err := json.NewDecoder(r.Body).Decode(&rules); err != nil {
+		if err := readJSONRequired(r, &rules); err != nil {
 			writeError(w, http.StatusBadRequest, "parse json: "+err.Error())
 			return
 		}

@@ -6,6 +6,24 @@ import (
 	"github.com/kaixuan/llm-gateway-go/config"
 )
 
+func TestCurrentStreamRuntimeConfigSSEMaxLineBytes(t *testing.T) {
+	previous := streamConfigStore.Load()
+	t.Cleanup(func() { streamConfigStore.Store(previous) })
+	t.Setenv("LLM_GATEWAY_SSE_MAX_LINE_BYTES", "")
+	streamConfigStore.Store(config.NewStore(&config.Config{}))
+	if got := currentStreamRuntimeConfig().sseMaxLineBytes; got != 16<<20 {
+		t.Fatalf("default SSE max line bytes = %d, want %d", got, 16<<20)
+	}
+	streamConfigStore.Store(config.NewStore(&config.Config{SSEMaxLineBytes: 1234}))
+	if got := currentStreamRuntimeConfig().sseMaxLineBytes; got != 1234 {
+		t.Fatalf("configured SSE max line bytes = %d, want 1234", got)
+	}
+	t.Setenv("LLM_GATEWAY_SSE_MAX_LINE_BYTES", "5678")
+	if got := currentStreamRuntimeConfig().sseMaxLineBytes; got != 1234 {
+		t.Fatalf("store SSE max line bytes with env = %d, want store value 1234", got)
+	}
+}
+
 func TestCurrentStreamRuntimeConfigEarlyEmptyDefaultsAndEnv(t *testing.T) {
 	previous := streamConfigStore.Load()
 	t.Cleanup(func() { streamConfigStore.Store(previous) })

@@ -30,6 +30,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression/caveman"
@@ -236,15 +237,24 @@ type Compressor struct {
 	// 默认 false（feature flag LLM_GATEWAY_COMPRESSION_TOOLFOCUSED）。纯函数、fail-open，
 	// [COMPRESSED: 前缀幂等，经 NeverWorse(GuardStageToolFocused) 守卫。
 	ToolFocusedStageEnabled bool
+
+	// SelectorMode and SelectorSpec configure the optional strategy selector.
+	SelectorMode        string
+	SelectorSpec        string
+	AdaptiveTargetRatio float64
+	// StrategyRunnerEnabled is an explicit opt-in for live executor integration.
+	StrategyRunnerEnabled bool
 }
 
 // NewCompressor builds a Compressor with the current env config.
 // Cheap to construct (no I/O); can be built per-request if needed.
 func NewCompressor() *Compressor {
-	return &Compressor{
+	c := &Compressor{
 		mode: LoadMode(),
 		est:  NewEstimator(),
 	}
+	c.NormalizeSelectorConfig()
+	return c
 }
 
 // Mode returns the active mode (read-only).
@@ -325,6 +335,123 @@ func (c *Compressor) RunStrategies(ctx context.Context, sel strategy.Selector, b
 		return body, strategy.RunStats{}, nil
 	}
 	return c.strategyRunner().RunWithBody(ctx, sel, body)
+}
+
+// LoadSelectorMode resolves an explicit setting before the canonical env name,
+// then falls back to manual. Registry defaults must not mask environment config.
+func LoadSelectorMode() string {
+	if settings.Global != nil {
+		if sp := settings.Global.Spec("compression.selector_mode"); sp != nil {
+			v, source, err := settings.Global.EffectiveValue(sp.Scope, sp.Key, "")
+			if err == nil && source != "default" {
+				var mode string
+				if json.Unmarshal(v, &mode) == nil && (mode == "manual" || mode == "adaptive") {
+					return mode
+				}
+			}
+		}
+	}
+	if mode := strings.TrimSpace(os.Getenv("LLM_GATEWAY_COMPRESSION_SELECTOR")); mode == "adaptive" {
+		return "adaptive"
+	}
+	return "manual"
+}
+
+func LoadSelectorSpec() string {
+	if settings.Global != nil {
+		if sp := settings.Global.Spec("compression.selector_spec"); sp != nil {
+			v, source, err := settings.Global.EffectiveValue(sp.Scope, sp.Key, "")
+			if err == nil && source != "default" {
+				var spec string
+				if json.Unmarshal(v, &spec) == nil {
+					return spec
+				}
+			}
+		}
+	}
+	return strings.TrimSpace(os.Getenv("LLM_GATEWAY_COMPRESSION_SELECTOR_SPEC"))
+}
+
+func LoadAdaptiveTargetRatio() float64 {
+	const fallback = 0.8
+	if settings.Global != nil {
+		if sp := settings.Global.Spec("compression.adaptive_target_ratio"); sp != nil {
+			v, source, err := settings.Global.EffectiveValue(sp.Scope, sp.Key, "")
+			if err == nil && source != "default" {
+				var ratio float64
+				if json.Unmarshal(v, &ratio) == nil && ratio > 0 && ratio <= 1 {
+					return ratio
+				}
+			}
+		}
+	}
+	if ratio, err := strconv.ParseFloat(strings.TrimSpace(os.Getenv("LLM_GATEWAY_COMPRESSION_TARGET_RATIO")), 64); err == nil && ratio > 0 && ratio <= 1 {
+		return ratio
+	}
+	return fallback
+}
+
+func LoadStrategyRunnerEnabled() bool {
+	if settings.Global != nil {
+		if sp := settings.Global.Spec("compression.strategy_runner_enabled"); sp != nil {
+			v, source, err := settings.Global.EffectiveValue(sp.Scope, sp.Key, "")
+			if err == nil && source != "default" {
+				var enabled bool
+				if json.Unmarshal(v, &enabled) == nil {
+					return enabled
+				}
+			}
+		}
+	}
+	enabled, _ := strconv.ParseBool(strings.TrimSpace(os.Getenv("LLM_GATEWAY_COMPRESSION_STRATEGY_RUNNER_ENABLED")))
+	return enabled
+}
+
+func (c *Compressor) NormalizeSelectorConfig() {
+	if c == nil {
+		return
+	}
+	c.SelectorMode = LoadSelectorMode()
+	c.SelectorSpec = LoadSelectorSpec()
+	c.AdaptiveTargetRatio = LoadAdaptiveTargetRatio()
+	c.StrategyRunnerEnabled = LoadStrategyRunnerEnabled()
+}
+
+func (c *Compressor) NewSelector(ctx context.Context, contextWindow int) (strategy.Selector, error) {
+	if c == nil {
+		return strategy.NewManualSelector(strategy.Policy{}), nil
+	}
+	if c.SelectorMode == "adaptive" {
+		budgetFn := func(_ []byte) int {
+			if c.est == nil || contextWindow <= 0 {
+				return 0
+			}
+			return c.est.ThresholdBytes(contextWindow)
+		}
+		return strategy.NewAdaptiveSelector(strategy.AdaptiveConfig{
+			TargetRatio:       c.AdaptiveTargetRatio,
+			NeverOverCompress: true,
+			BudgetFn:          budgetFn,
+		}), nil
+	}
+	policy, err := strategy.ResolvePolicy(c.SelectorSpec)
+	if err != nil {
+		return nil, err
+	}
+	return strategy.NewManualSelector(policy), nil
+}
+
+// RunCompressStrategies resolves the configured selector and executes only
+// stages already explicitly enabled on this compressor.
+func (c *Compressor) RunCompressStrategies(ctx context.Context, body []byte, contextWindow int) ([]byte, strategy.RunStats, error) {
+	if c == nil {
+		return body, strategy.RunStats{BytesIn: len(body), BytesOut: len(body)}, nil
+	}
+	selector, err := c.NewSelector(ctx, contextWindow)
+	if err != nil {
+		return body, strategy.RunStats{BytesIn: len(body), BytesOut: len(body)}, err
+	}
+	return c.strategyRunner().RunWithBody(ctx, selector, body)
 }
 
 // ParsePolicySpec 是 strategy.ResolvePolicy 的薄封装，main.go 用。

@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/bg"
+	redissafe "github.com/kaixuan/llm-gateway-go/internal/redis"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -902,7 +903,12 @@ func (h *Handler) handleProbeSystemHealth(w http.ResponseWriter, r *http.Request
 				legacyHealth.SuspiciousNodes = 0
 				legacyHealth.ProbingNodes = 0
 				for _, key := range keys {
-					data, err := rc.HGetAll(r.Context(), key).Result()
+					// audit-24h-20260828-r4 P2: Use SafeHGetAll to prevent
+					// WRONGTYPE errors when a non-hash key collides with
+					// the SCAN pattern. Errors (including TypedError and
+					// ErrKeyNotFound) continue to the next key — the
+					// original best-effort aggregation semantics.
+					data, err := redissafe.SafeHGetAll(r.Context(), rc, key)
 					if err != nil {
 						continue
 					}
@@ -2148,7 +2154,7 @@ func (h *Handler) handleProbeCacheRebuild(w http.ResponseWriter, r *http.Request
 	}
 	var body req
 	if r.ContentLength > 0 {
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil && err.Error() != "EOF" {
+		if err := readJSONRequired(r, &body); err != nil && err.Error() != "EOF" {
 			slog.Error("probe dashboard invalid json", "error", err)
 			writeError(w, http.StatusBadRequest, "invalid request body")
 			return

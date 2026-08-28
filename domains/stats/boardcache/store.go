@@ -3,7 +3,6 @@ package boardcache
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"time"
 
@@ -174,6 +173,9 @@ func (s *Service) loadBaseline(ctx context.Context, scope Scope, days int) (map[
 		return nil, time.Time{}, false
 	}
 	since := time.Time{}
+	// audit-24h-20260828-r4 P2: SafeHGetAll prevents WRONGTYPE when the
+	// baseline meta key collides with a non-hash type. Empty map is the
+	// canonical cache-miss signal — matches raw HGetAll on an absent key.
 	if m, err := redissafe.SafeHGetAll(ctx, s.rdb, baselineMetaKey(scope, days)); err == nil {
 		if ts, ok := m["since_ts"]; ok {
 			since, _ = time.Parse(time.RFC3339, ts)
@@ -187,6 +189,8 @@ func (s *Service) listDirtyBuckets(ctx context.Context, scope Scope) ([]string, 
 }
 
 func (s *Service) readDeltaHash(ctx context.Context, scope Scope, bucketID string) (map[string]string, error) {
+	// audit-24h-20260828-r4 P2: SafeHGetAll prevents WRONGTYPE — caller
+	// distinguishes nil map + nil err (no delta) from real errors.
 	return redissafe.SafeHGetAll(ctx, s.rdb, deltaKey(scope, bucketID))
 }
 
@@ -195,11 +199,11 @@ func (s *Service) clearDirtyBucket(ctx context.Context, scope Scope, bucketID st
 }
 
 func (s *Service) attachMeta(ctx context.Context, scope Scope, days int, providerID int64, payload map[string]any) {
+	// audit-24h-20260828-r4 P2: SafeHGetAll prevents WRONGTYPE — best-effort
+	// attach; cache-miss (empty map) and cache-error (TypedError) are both
+	// skipped, matching the original `err != nil || len(meta) == 0` guard.
 	meta, err := redissafe.SafeHGetAll(ctx, s.rdb, cacheKeyBoardMeta(scope, days, providerID))
-	if err != nil && !errors.Is(err, redissafe.ErrKeyNotFound) {
-		return
-	}
-	if len(meta) == 0 {
+	if err != nil || len(meta) == 0 {
 		return
 	}
 	payload["cache_meta"] = meta

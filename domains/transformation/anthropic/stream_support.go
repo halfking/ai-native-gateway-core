@@ -27,8 +27,6 @@ package anthropic
 import (
 	"bufio"
 	"context"
-	"encoding/json"
-	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -41,6 +39,8 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/config"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
+	"github.com/kaixuan/llm-gateway-go/internal/sse"
+	vendorstrip "github.com/kaixuan/llm-gateway-go/internal/vendorstrip"
 )
 
 // =====================================================================
@@ -63,9 +63,51 @@ type StreamOutcome struct {
 	// is false or Reason is unclassified. Used by executor_anthropic.go
 	// to route empty-response interruptions to the fail-over path via
 	// streamInterruptedError{kind: KindEmptyResponse, resumable: true}.
-	Kind        errorsx.ErrorKind
-	Resumable   bool // Whether the stream can be resumed with a different credential
-	ChunkCount  int  // Number of chunks sent before interruption
+	Kind       errorsx.ErrorKind
+	Resumable  bool // Whether the stream can be resumed with a different credential
+	ChunkCount int  // Number of chunks sent before interruption
+}
+
+// IsAnthropicStreamEmpty returns true when the translator observed an
+// upstream Anthropic Messages stream that produced zero semantic assistant
+// output: no text / thinking / tool-call deltas reached the client, and no
+// usage tokens were reported. Mirrors isEmptyAnthropicMessagesResponse
+// (domains/streaming/executors/empty_response.go:61) at the stream layer so
+// the candidate-loop failover path (streamInterruptedError{kind:
+// KindEmptyResponse, resumable: true} → executor_anthropic.go:1206) fires
+// for every Anthropic-compatibility code path — not just the raw
+// passthrough audited in audit-24h-20260828-r3 P1-B.
+//
+// Usage:
+//   - emittedContent: set true the first time the translator's writeChunk
+//     closure serializes a delta with non-empty Content / ReasoningContent
+//     / ToolCalls, or when a ChunkTypeDone with finish_reason="stop" arrives.
+//   - inputTokens/outputTokens: local IR-Usage accumulators (also mirrored
+//     into audit.StreamCapture.promptTokens/completionTokens via
+//     ObserveChunk, but reading the local copies avoids taking the capture
+//     mutex in the hot path).
+//
+// The check is strict: no content AND (no input AND no output tokens). An
+// upstream that returns usage tokens but no content is treated as empty —
+// matching the non-stream semantics in isEmptyAnthropicMessagesResponse
+// (which checks content array length, not usage token presence).
+func IsAnthropicStreamEmpty(emittedContent bool, inputTokens, outputTokens int) bool {
+	return !emittedContent && inputTokens == 0 && outputTokens == 0
+}
+
+// EmptyResponseStreamOutcome builds the standard StreamOutcome returned
+// when an Anthropic-compatibility stream is detected as empty. Mirrors
+// anthropic_passthrough_stream.go:171-177 so the three Anthropic SSE
+// translators (passthrough / Q3 / Phase E) all surface the same shape and
+// the executor's streamInterruptedError routing treats them identically.
+func EmptyResponseStreamOutcome(chunkCount int) StreamOutcome {
+	return StreamOutcome{
+		Interrupted: true,
+		Reason:      "anthropic_empty_response",
+		Kind:        errorsx.KindEmptyResponse,
+		Resumable:   true,
+		ChunkCount:  chunkCount,
+	}
 }
 
 // PendingFinalState is the state recorded by finalize() and
@@ -238,79 +280,18 @@ func (p *pendingCapturer) BytesCaptured() int {
 	return p.bytes
 }
 
-// readLineWithTimeout is the BUG-1 fix variant of
-// readLineWithTimeoutAndCloser: it does not have a closer to
-// unblock the read goroutine on timeout, so callers must already
-// have wired their own cleanup. The anthropic first-byte path
-// uses this (no closer because the body lifetime is managed by
-// the defer in StreamOpenAIToAnthropicSSE).
+// readLineWithTimeout is retained for compatibility with callers that do not
+// own a closable body. Such callers receive a timeout without waiting for a
+// potentially blocking reader; they should prefer readLineWithTimeoutAndCloser
+// whenever the upstream response body is available.
 func readLineWithTimeout(ctx context.Context, reader *bufio.Reader, timeout time.Duration) (string, error) {
-	return newTimedLineReader(reader, nil).ReadLine(ctx, timeout)
+	return sse.NewLineReader(reader, currentStreamRuntimeConfig().sseMaxLineBytes).ReadLineWithContext(ctx, timeout, nil)
 }
 
-// readLineWithTimeoutAndCloser is the BUG-1 fix variant of
-// readLineWithTimeout: it also closes the underlying body on
-// timeout to unblock the ReadString goroutine. Used by
-// readNextStreamLine for the chunk loop and by the first-byte
-// path in StreamChatWithPendingCapture.
+// readLineWithTimeoutAndCloser uses the shared bounded SSE reader so timeout
+// handling and physical-line limits remain identical across relay paths.
 func readLineWithTimeoutAndCloser(ctx context.Context, reader *bufio.Reader, closer io.ReadCloser, timeout time.Duration) (string, error) {
-	return newTimedLineReader(reader, closer).ReadLine(ctx, timeout)
-}
-
-type timedLineReader struct {
-	reader *bufio.Reader
-	// closer is the underlying io.ReadCloser (e.g. resp.Body). When non-nil,
-	// ReadLine closes it on timeout so the blocked ReadString goroutine returns
-	// immediately rather than leaking until the TCP connection is closed.
-	closer io.ReadCloser
-}
-
-func newTimedLineReader(reader *bufio.Reader, closer io.ReadCloser) *timedLineReader {
-	return &timedLineReader{reader: reader, closer: closer}
-}
-
-func (r *timedLineReader) ReadLine(ctx context.Context, timeout time.Duration) (string, error) {
-	type result struct {
-		line string
-		err  error
-	}
-	ch := make(chan result, 1)
-	readCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				ch <- result{"", fmt.Errorf("read panic: %v", r)}
-			}
-		}()
-		line, err := r.reader.ReadString('\n')
-		ch <- result{line, err}
-	}()
-
-	select {
-	case res := <-ch:
-		return res.line, res.err
-	case <-readCtx.Done():
-		// BUG-1 fix (2026-06-19): close the underlying body to force the
-		// blocked ReadString goroutine to return an error immediately.
-		// Without this, the goroutine would leak until resp.Body.Close()
-		// is called by the deferred cleanup in StreamChatWithPendingCapture,
-		// which can be minutes later on the session path (context.Background).
-		// After Close(), drain the channel so the goroutine completes before
-		// we return — zero goroutine leak guarantee.
-		if r.closer != nil {
-			_ = r.closer.Close()
-		}
-		// Drain: the goroutine returns shortly after Close() because
-		// ReadString on a closed body returns io.ErrClosedPipe or io.EOF.
-		// The buffered channel (size 1) ensures this never blocks forever.
-		<-ch
-		if readCtx.Err() == context.DeadlineExceeded {
-			return "", fmt.Errorf("stream read timeout")
-		}
-		return "", readCtx.Err()
-	}
+	return sse.NewLineReader(reader, currentStreamRuntimeConfig().sseMaxLineBytes).ReadLineWithContext(ctx, timeout, closer)
 }
 
 // safeFlush is a small wrapper around flusher.Flush that recovers
@@ -347,6 +328,7 @@ type streamRuntimeConfig struct {
 	streamChunkTimeout time.Duration
 	firstByteTimeout   time.Duration
 	keepaliveInterval  time.Duration
+	sseMaxLineBytes    int
 }
 
 var streamConfigStore atomic.Pointer[config.Store]
@@ -373,6 +355,7 @@ func currentStreamRuntimeConfig() streamRuntimeConfig {
 				// 2026-07-23: 30→120s for long-thinking Claude models.
 				firstByteTimeout:  durationSecondsOrDefault(cfg.FirstByteTimeout, 120*time.Second),
 				keepaliveInterval: durationSecondsOrDefault(cfg.KeepaliveInterval, 15*time.Second),
+				sseMaxLineBytes:   positiveIntOrDefault(cfg.SSEMaxLineBytes, 16<<20),
 			}
 		}
 	}
@@ -383,7 +366,27 @@ func currentStreamRuntimeConfig() streamRuntimeConfig {
 		// 2026-07-23: 30→120s default for long-thinking Claude models.
 		firstByteTimeout:  envDurationSeconds("LLM_GATEWAY_FIRST_BYTE_TIMEOUT", 120*time.Second),
 		keepaliveInterval: envDurationSeconds("LLM_GATEWAY_KEEPALIVE_INTERVAL", 15*time.Second),
+		sseMaxLineBytes:   envPositiveInt("LLM_GATEWAY_SSE_MAX_LINE_BYTES", 16<<20),
 	}
+}
+
+func positiveIntOrDefault(value, def int) int {
+	if value <= 0 {
+		return def
+	}
+	return value
+}
+
+func envPositiveInt(key string, def int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		return def
+	}
+	return n
 }
 
 func durationSecondsOrDefault(seconds int, def time.Duration) time.Duration {
@@ -499,59 +502,6 @@ func classifyStreamReadError(ctx context.Context, err error) streamReadState {
 // 来自 relay/stream_error_body.go 的 JSON error body 识别
 // =====================================================================
 
-// jsonErrorBody is the inner error object inside the standard
-// `{"error": {...}}` envelope used by OpenAI / Anthropic / most
-// proxy-style upstreams. The fields are deliberately permissive:
-//   - Type:    the upstream's semantic classification
-//     (e.g. "service_unavailable", "insufficient_quota")
-//   - Code:    the upstream's machine-readable code when Type is
-//     absent (some upstreams use one or the other, never both)
-//   - Message: human-readable reason
-//   - Param:   optional structured field (kept so a future audit
-//     column can surface it without re-parsing the body)
-type jsonErrorBody struct {
-	Type    string `json:"type"`
-	Code    string `json:"code"`
-	Message string `json:"message"`
-	Param   string `json:"param"`
-}
-
-// jsonErrorEnvelope is a single struct that tolerates BOTH of
-// the production shapes we have observed (2026-06-20 audit):
-//
-//	{"error": {"type": "...", "message": "..."}}    — OpenAI / proxies
-//	{"error": {"code": "...", "message": "..."}}    — quota / billing
-//	{"type": "...", "message": "..."}               — Anthropic-style
-//
-// The pointer + plain fields mean a single Unmarshal populates
-// the right slot regardless of which shape arrived. The caller
-// then resolves which slot is non-empty.
-type jsonErrorEnvelope struct {
-	Error   *jsonErrorBody `json:"error,omitempty"`
-	Type    string         `json:"type,omitempty"`
-	Code    string         `json:"code,omitempty"`
-	Message string         `json:"message,omitempty"`
-}
-
-// resolveError returns the (kind, message) pair for an envelope
-// regardless of which shape it took. kind is preferred from
-// inside the "error" wrapper when present, then from the
-// top-level type / code fields. message is preferred from the
-// inner wrapper, then from the top-level message.
-func (e *jsonErrorEnvelope) resolveError() (kind string, message string) {
-	if e.Error != nil {
-		kind = firstNonEmpty(e.Error.Code, e.Error.Type)
-		message = e.Error.Message
-	}
-	if kind == "" {
-		kind = firstNonEmpty(e.Code, e.Type)
-	}
-	if message == "" {
-		message = e.Message
-	}
-	return kind, message
-}
-
 // isJSONErrorBody returns true when the given raw bytes look like
 // a non-SSE JSON error body returned by an upstream provider. The
 // caller is expected to pass either the entire body or just the
@@ -570,45 +520,7 @@ func (e *jsonErrorEnvelope) resolveError() (kind string, message string) {
 // is the human-readable reason that goes into slog + response_body
 // preview.
 func isJSONErrorBody(body []byte) (bool, string, string) {
-	if len(body) == 0 {
-		return false, "", ""
-	}
-	// Trim trailing whitespace and stray SSE terminator fragments
-	// so a body of `{"error":...}\n\n` still parses.
-	trimmed := strings.TrimRight(string(body), " \t\r\n")
-	if trimmed == "" {
-		return false, "", ""
-	}
-	// Defensive: a stream reader might pass an SSE-prefixed line
-	// to this helper by mistake. Strip the prefix and re-test
-	// the JSON shape so the helper stays robust to that call site
-	// bug. After stripping, we still require the body to start
-	// with '{' so legitimate SSE comments (":heartbeat") and
-	// "event:" lines don't false-positive.
-	if strings.HasPrefix(trimmed, "data:") {
-		trimmed = strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
-	}
-	if trimmed == "" || trimmed[0] != '{' {
-		return false, "", ""
-	}
-	var env jsonErrorEnvelope
-	if err := json.Unmarshal([]byte(trimmed), &env); err != nil {
-		return false, "", ""
-	}
-	kind, msg := env.resolveError()
-	if kind == "" && msg == "" {
-		return false, "", ""
-	}
-	return true, kind, msg
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, v := range values {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
+	return vendorstrip.IsJSONErrorBody(body)
 }
 
 // =====================================================================

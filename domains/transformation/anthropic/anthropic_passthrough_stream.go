@@ -1,8 +1,8 @@
 package anthropic
 
 import (
-	"bufio"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -11,6 +11,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/errorsx"
+	"github.com/kaixuan/llm-gateway-go/internal/sse"
 )
 
 const anthropicSSEBufSize = 64 * 1024
@@ -87,7 +88,7 @@ func StreamAnthropicPassthrough(
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
 
-	reader := bufio.NewReaderSize(resp.Body, anthropicSSEBufSize)
+	reader := sse.NewLineReader(resp.Body, currentStreamRuntimeConfig().sseMaxLineBytes)
 	// audit-24h-20260828-r3 P1-B: track chunk count for empty-response
 	// detection. A "chunk" here is any `data:` line sent from upstream;
 	// the EOF-time empty check mirrors the non-stream path at
@@ -95,15 +96,20 @@ func StreamAnthropicPassthrough(
 	chunkCount := 0
 
 	for {
-		line, err := reader.ReadString('\n')
+		line, err := reader.ReadLine()
 		if err != nil {
 			if err == io.EOF {
 				break
 			}
 			outcome.Interrupted = true
 			outcome.Reason = "read_error"
+			outcome.Kind = errorsx.KindUpstreamDown
+			if errors.Is(err, sse.ErrLineTooLong) {
+				outcome.Reason = "stream_line_too_large"
+			}
+			outcome.Resumable = chunkCount == 0
 			if capture != nil {
-				capture.MarkInterruptedWithReason("read_error")
+				capture.MarkInterruptedWithReason(outcome.Reason)
 			}
 			return outcome
 		}

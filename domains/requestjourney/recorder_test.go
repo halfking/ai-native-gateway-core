@@ -3,6 +3,7 @@ package requestjourney
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -39,6 +40,41 @@ func (f *fakeJourneyWriter) Apply(ctx context.Context, event JourneyEvent) error
 }
 
 func (f *fakeJourneyWriter) snapshot() []JourneyEvent {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]JourneyEvent(nil), f.events...)
+}
+
+type fakeJourneyPublisher struct {
+	started chan JourneyEvent
+	release chan struct{}
+	err     error
+
+	mu     sync.Mutex
+	events []JourneyEvent
+}
+
+func (f *fakeJourneyPublisher) Enqueue(ctx context.Context, event JourneyEvent) error {
+	if f.started != nil {
+		select {
+		case f.started <- event:
+		default:
+		}
+	}
+	if f.release != nil {
+		select {
+		case <-f.release:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	f.mu.Lock()
+	f.events = append(f.events, event)
+	f.mu.Unlock()
+	return f.err
+}
+
+func (f *fakeJourneyPublisher) snapshot() []JourneyEvent {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]JourneyEvent(nil), f.events...)
@@ -114,6 +150,64 @@ func TestRecorderApplyDoesNotWaitForExternalStore(t *testing.T) {
 	}
 	if got := memory.RecentTotal("tenant-a"); len(got) != 1 {
 		t.Fatalf("memory projection size = %d", len(got))
+	}
+}
+
+func TestDurableRecorderPublishesJourneyAndKeepsIngressSeparate(t *testing.T) {
+	publisher := &fakeJourneyPublisher{started: make(chan JourneyEvent, 1)}
+	recorder := NewDurableRecorder(NewProjection(DefaultConfig()), publisher, nil)
+	t.Cleanup(func() { closeRecorder(t, recorder) })
+
+	if err := recorder.Apply(context.Background(), testJourneyEvent("tenant-a", "request-durable", 1)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-publisher.started:
+	case <-time.After(time.Second):
+		t.Fatal("durable publisher did not start")
+	}
+	if got := publisher.snapshot(); len(got) != 1 || got[0].Seq != 1 {
+		t.Fatalf("published events = %#v", got)
+	}
+	stats := recorder.StoreStats()
+	if len(stats) != 1 || stats[0].Store != "durable_outbox" {
+		t.Fatalf("durable store stats = %#v", stats)
+	}
+}
+
+func TestDurableRecorderEnqueueFailureDegradesButDoesNotFailApply(t *testing.T) {
+	memory := NewProjection(DefaultConfig())
+	publisher := &fakeJourneyPublisher{started: make(chan JourneyEvent, 1), err: errors.New("database unavailable")}
+	recorder := NewDurableRecorder(memory, publisher, nil)
+	t.Cleanup(func() { closeRecorder(t, recorder) })
+	var reported atomic.Int64
+	recorder.SetErrorHandler(func(err error) {
+		if strings.Contains(err.Error(), "durable outbox") {
+			reported.Add(1)
+		}
+	})
+
+	if err := recorder.Apply(context.Background(), testJourneyEvent("tenant-a", "request-durable-fail", 1)); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	select {
+	case <-publisher.started:
+	case <-time.After(time.Second):
+		t.Fatal("durable publisher did not start")
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		journey, err := memory.Detail("tenant-a", "request-durable-fail")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if journey.ObservationStatus == ObservationDegraded && reported.Load() == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("status/reports = %q/%d", journey.ObservationStatus, reported.Load())
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 

@@ -21,7 +21,6 @@ package admin
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -182,7 +181,7 @@ func (h *Handler) handleProviderProbeHistoryTrigger(w http.ResponseWriter, r *ht
 		CredentialID int    `json:"credential_id"`
 		RawModelName string `json:"raw_model_name"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONRequired(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json: "+err.Error())
 		return
 	}
@@ -280,7 +279,7 @@ func (h *Handler) handleNodeProbeStateReset(w http.ResponseWriter, r *http.Reque
 	var req struct {
 		CredentialID int `json:"credential_id"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&req)
+	_ = readJSONRequired(r, &req)
 
 	var tag pgconn.CommandTag
 	var err error

@@ -2,7 +2,6 @@ package admin
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -265,7 +264,7 @@ func (h *Handler) handleModelIQTrigger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req triggerReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONRequired(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid body: %v", err))
 		return
 	}

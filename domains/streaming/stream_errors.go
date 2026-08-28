@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/kaixuan/llm-gateway-go/errorsx"
+	"github.com/kaixuan/llm-gateway-go/internal/sse"
 )
 
 type streamReadState int
@@ -42,6 +43,15 @@ func classifyStreamReadError(ctx context.Context, err error) streamReadState {
 }
 
 func streamReadFailureOutcome(err error, chunkCount int) StreamOutcome {
+	if errors.Is(err, sse.ErrLineTooLong) {
+		return StreamOutcome{
+			Interrupted: true,
+			Reason:      "stream_line_too_large",
+			Kind:        errorsx.KindUpstreamDown,
+			Resumable:   chunkCount == 0,
+			ChunkCount:  chunkCount,
+		}
+	}
 	kind := streamReadFailureKind(err)
 	reason := "read_error"
 	if kind == errorsx.KindNetwork {

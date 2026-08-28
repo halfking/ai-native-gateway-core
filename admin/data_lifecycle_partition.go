@@ -268,7 +268,7 @@ func (h *Handler) handleDataLifecycleArchivePartition(w http.ResponseWriter, r *
 	}
 
 	var req archivePartitionRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONRequired(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request")
 		return
 	}
@@ -387,7 +387,7 @@ func (h *Handler) handleDataLifecycleArchiveBatch(w http.ResponseWriter, r *http
 	}
 
 	var req archiveBatchRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONRequired(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request")
 		return
 	}

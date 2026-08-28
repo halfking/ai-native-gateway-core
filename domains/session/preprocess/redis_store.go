@@ -12,9 +12,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/redis/go-redis/v9"
-
 	redissafe "github.com/kaixuan/llm-gateway-go/internal/redis"
+	"github.com/redis/go-redis/v9"
 )
 
 // Redis store layout (R11.7):
@@ -333,17 +332,23 @@ func metaFromFields(get func(string) string) (ArtifactMeta, error) {
 
 // readManifest loads the manifest; exists reports whether any field is stored.
 func (s *RedisArtifactStore) readManifest(ctx context.Context, tenantID, sessionID string) (*ArtifactManifest, bool, error) {
+	// audit-24h-20260828-r4 P2: Use SafeHGetAll to prevent WRONGTYPE errors
+	// when the manifest key collides with a non-hash type (e.g. a debug
+	// SADD/SET call on the same key during live ops). SafeHGetAll runs
+	// a TYPE guard and returns TypedError on mismatch; ErrKeyNotFound is
+	// surfaced when the key does not exist (matches raw HGetAll's
+	// (nil-map, nil-err) cache-miss signal — both mean "no manifest").
 	vals, err := redissafe.SafeHGetAll(ctx, s.opts.Client, s.manifestKey(tenantID, sessionID))
-	if errors.Is(err, redissafe.ErrKeyNotFound) {
-		return NewArtifactManifest(tenantID, sessionID), false, nil
-	}
 	if err != nil {
-		return nil, false, fmt.Errorf("preprocess: hgetall manifest: %w", err)
-	}
-	if len(vals) == 0 {
-		return NewArtifactManifest(tenantID, sessionID), false, nil
+		if errors.Is(err, redissafe.ErrKeyNotFound) {
+			return NewArtifactManifest(tenantID, sessionID), false, nil
+		}
+		return nil, false, fmt.Errorf("preprocess: safe hgetall manifest: %w", err)
 	}
 	m := NewArtifactManifest(tenantID, sessionID)
+	if len(vals) == 0 {
+		return m, false, nil
+	}
 	if tn, err := strconv.ParseInt(vals[fieldTurnNo], 10, 32); err == nil {
 		m.Revision.TurnNo = int32(tn)
 	}

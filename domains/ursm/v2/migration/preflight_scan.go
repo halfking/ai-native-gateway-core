@@ -11,10 +11,10 @@ import (
 	"strings"
 	"time"
 
+	redissafe "github.com/kaixuan/llm-gateway-go/internal/redis"
 	"github.com/redis/go-redis/v9"
 
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/store"
-	redissafe "github.com/kaixuan/llm-gateway-go/internal/redis"
 )
 
 // EntryPreflight performs the read-only inventory phase for callers that
@@ -124,15 +124,21 @@ func (p *EntryPreflight) inspect(ctx context.Context, key string) (EntryRecord, 
 	}
 	e.PTTLMillis = pttlMillis(pttl)
 	if kind == "hash" {
+		// audit-24h-20260828-r4 P2: Use SafeHGetAll to prevent WRONGTYPE.
+		// The preflight scanned kind=="hash" above so the key SHOULD be a
+		// hash, but TOCTOU between TYPE and HGETALL can flip it; if so,
+		// we surface the TypedError rather than masking it. ErrKeyNotFound
+		// (race: key DEL'd between TYPE and HGETALL) collapses to an
+		// empty fields map.
 		fields, err := redissafe.SafeHGetAll(ctx, p.rdb, key)
 		if err != nil {
 			if errors.Is(err, redissafe.ErrKeyNotFound) {
-				return EntryRecord{}, fmt.Errorf("ursm.v2: preflight key %s disappeared during hash read: %w", key, err)
+				fields = map[string]string{}
+			} else {
+				return EntryRecord{}, fmt.Errorf("ursm.v2: preflight hgetall %s: %w", key, err)
 			}
-			return EntryRecord{}, fmt.Errorf("ursm.v2: preflight hgetall %s: %w", key, err)
 		}
 		e.FieldChecksum = checksumFields(fields)
-
 		e.Generation = parseGeneration(fields["generation"])
 	}
 	if e.Class == ClassificationMigratable && e.Tuple != nil {

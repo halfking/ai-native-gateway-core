@@ -12,9 +12,13 @@
  *   - OBS-BE3 pipeline 字段缺省时整层隐藏，禁止零值冒充（13号门禁）
  *   - 三态：加载 Skeleton / 空 EmptyState / 错误 ErrorBanner
  *   - 动画只用 transform/opacity
+ *
+ * 2026-08-28: 接收上层筛选条件（模型/供应商/原厂/客户端/状态），
+ *            只显示符合条件的模型分组。条件清空则显示所有。
  */
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import type { LiveStatus, LiveModelCategory } from '../composables/useLiveStream'
 import { getFeatured, resolveRouting, reorderCandidateBindings, type CandidateBindingReorderItem, type RoutingCandidate } from '../api/routing'
 import { getRequestLogTopModels, type TopRequestModel } from '../api/logs'
 import { getSlidingWindow, getSlidingWindowBatch, type CallEntry } from '../api/credential-monitor'
@@ -50,6 +54,28 @@ import RequestProcessingTrail from './RequestProcessingTrail.vue'
 import NodeDetailDrawer from './NodeDetailDrawer.vue'
 import { openRequestDetailPage } from '../utils/openRequestDetailPage'
 import ModelRecentStatusStrip from './ModelRecentStatusStrip.vue'
+
+// 2026-08-28: 接收上层筛选条件（从 LiveRequestStreamV2 的 useLiveStreamFilters 传入）
+interface Props {
+  /** 模型筛选（空集合表示不筛选） */
+  modelFilter?: Set<string>
+  /** 供应商筛选（空集合表示不筛选） */
+  providerFilter?: Set<string>
+  /** 原厂筛选（空集合表示不筛选） */
+  vendorFilter?: Set<LiveModelCategory>
+  /** 客户端筛选（空集合表示不筛选） */
+  agentFilter?: Set<string>
+  /** 状态筛选（空集合表示不筛选） */
+  statusFilter?: Set<LiveStatus>
+}
+
+const props = withDefaults(defineProps<Props>(), {
+  modelFilter: () => new Set(),
+  providerFilter: () => new Set(),
+  vendorFilter: () => new Set(),
+  agentFilter: () => new Set(),
+  statusFilter: () => new Set(),
+})
 
 const { t } = useI18n()
 const queue = queueRef
@@ -486,10 +512,75 @@ function passesStatusFilter(n: LiveNodeStatus): boolean {
   return statusFilter.value[nodeStatusBucket(n)]
 }
 
+// ── 上层筛选条件应用（2026-08-28） ─────────────────────────────────────
+// 将 LiveRequestStreamV2 的筛选条件（模型/供应商/原厂/客户端/状态）应用到模型分组。
+// 空集合表示不筛选（显示所有）。
+
+function passesUpperFilters(group: ModelGroup): boolean {
+  // 模型筛选：匹配 rawModels 或 aliases（case-insensitive）
+  if (props.modelFilter.size > 0) {
+    const normalizedFilter = Array.from(props.modelFilter).map(m => modelKey(m))
+    const matchesModel = group.rawModels.some(raw => normalizedFilter.includes(modelKey(raw)))
+      || group.aliases.some(alias => normalizedFilter.includes(alias))
+    if (!matchesModel) return false
+  }
+
+  // 供应商/原厂/客户端/状态筛选：从关联的请求中提取
+  // 2026-08-29 修复：同时从节点元数据和请求中获取数据，避免无请求时筛选失败
+  const credentialIds = new Set(group.nodes.map(n => n.credential_id))
+  const groupRequests: LiveRequest[] = []
+  for (const credId of credentialIds) {
+    groupRequests.push(...getRequestsForCredential(credId))
+  }
+
+  // 供应商筛选：从节点的 provider_code 或请求中至少有一个匹配
+  if (props.providerFilter.size > 0) {
+    const hasMatchingProviderInNodes = group.nodes.some(n =>
+      n.provider_code && props.providerFilter.has(n.provider_code)
+    )
+    const hasMatchingProviderInRequests = groupRequests.some(r => 
+      r.provider_code && props.providerFilter.has(r.provider_code)
+    )
+    if (!hasMatchingProviderInNodes && !hasMatchingProviderInRequests) return false
+  }
+
+  // 原厂筛选：仅从请求中匹配（节点本身没有 model_category）
+  // 但如果没有请求，则不应用此筛选条件（保留该分组）
+  if (props.vendorFilter.size > 0 && groupRequests.length > 0) {
+    const hasMatchingVendor = groupRequests.some(r =>
+      r.model_category && props.vendorFilter.has(r.model_category)
+    )
+    if (!hasMatchingVendor) return false
+  }
+
+  // 客户端筛选：仅从请求中匹配（节点本身没有 agent_name）
+  // 但如果没有请求，则不应用此筛选条件（保留该分组）
+  if (props.agentFilter.size > 0 && groupRequests.length > 0) {
+    const hasMatchingAgent = groupRequests.some(r => {
+      const agent = (r.agent_name || '').trim().toLowerCase()
+      return agent && props.agentFilter.has(agent)
+    })
+    if (!hasMatchingAgent) return false
+  }
+
+  // 状态筛选：仅从请求中匹配（节点本身没有请求状态）
+  // 但如果没有请求，则不应用此筛选条件（保留该分组）
+  if (props.statusFilter.size > 0 && groupRequests.length > 0) {
+    const hasMatchingStatus = groupRequests.some(r => 
+      r.status && props.statusFilter.has(r.status)
+    )
+    if (!hasMatchingStatus) return false
+  }
+
+  return true
+}
+
 // 仅展示当前过滤命中的节点；过滤全部命中数 + 命中节点
+// 2026-08-28: 先应用上层筛选（模型/供应商/原厂/客户端/状态），再应用节点状态过滤
 const filteredModelGroups = computed<ModelGroup[]>(() => {
   return modelGroups.value
-    .map(group => ({ ...group, nodes: group.nodes.filter(passesStatusFilter) }))
+    .filter(passesUpperFilters) // 上层筛选
+    .map(group => ({ ...group, nodes: group.nodes.filter(passesStatusFilter) })) // 节点状态过滤
     .filter(group => group.nodes.length > 0)
 })
 

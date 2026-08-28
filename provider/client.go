@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/domains/credential"
+	redissafe "github.com/kaixuan/llm-gateway-go/internal/redis"
 	"github.com/kaixuan/llm-gateway-go/modelname"
 	"github.com/kaixuan/llm-gateway-go/secret"
 	"github.com/prometheus/client_golang/prometheus"
@@ -162,8 +163,11 @@ type Candidate struct {
 	// Used by the Q1/Q2/Q3 client-side context trim path
 	// (transformation.CompressMessagesIfNeeded). nil means "unknown" — in which
 	// case the trim path is a no-op.
-	ContextWindow *int   `json:"context_window,omitempty"`
-	APIKey        string `json:"-"`
+	ContextWindow *int `json:"context_window,omitempty"`
+	// SupportsNativeResponses is opt-in and remains false until a provider has
+	// verified native Responses request/response and SSE support.
+	SupportsNativeResponses bool   `json:"supports_native_responses,omitempty"`
+	APIKey                  string `json:"-"`
 	// APIKeys holds additional decrypted keys for multi-key rotation (beyond the
 	// primary APIKey). nil/empty for single-key credentials. Index 0 in the
 	// rotator corresponds to APIKey (primary); indices 1..N correspond here.
@@ -2107,7 +2111,11 @@ func (c *Client) maybeExitSuspicious(credentialID int, rawModel string) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
-	data, err := c.redis.HGetAll(ctx, fmt.Sprintf("llmgw:avail:%d:%s", credentialID, rawModel)).Result()
+	// audit-24h-20260828-r4 P2: Use SafeHGetAll to prevent WRONGTYPE errors
+	// when the availability key collides with a non-hash type. Errors and
+	// empty maps both fall through to recordSuspiciousExit("noop") — the
+	// original behaviour for missing or invalid state.
+	data, err := redissafe.SafeHGetAll(ctx, c.redis, fmt.Sprintf("llmgw:avail:%d:%s", credentialID, rawModel))
 	if err != nil || len(data) == 0 || data["state"] != "suspicious" {
 		recordSuspiciousExit("noop")
 		return

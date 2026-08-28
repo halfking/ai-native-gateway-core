@@ -261,7 +261,7 @@ func (h *Handler) handleDataLifecycleCleanupPreview(w http.ResponseWriter, r *ht
 	}
 
 	var req cleanupPreviewRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONRequired(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request")
 		return
 	}

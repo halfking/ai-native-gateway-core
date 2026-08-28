@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/internal/jsonbody"
 )
 
 // ── Session Compare API (v4, 2026-06-21) ────────────────────────────────
@@ -715,7 +716,7 @@ func (api *HandoffAPI) HandleHandoff(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req HandoffRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := jsonbody.DecodeRequest(r, &req, jsonbody.MaxRequiredBody, true); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{
 			"status":  "error",
 			"message": "Invalid request body",

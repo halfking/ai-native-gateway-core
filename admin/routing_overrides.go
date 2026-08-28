@@ -51,7 +51,7 @@ type OverrideCreateReq struct {
 }
 
 func jsonDecode(r *http.Request, dst any) error {
-	return json.NewDecoder(r.Body).Decode(dst)
+	return readJSONRequired(r, dst)
 }
 
 // ── handlers ─────────────────────────────────────────────────────

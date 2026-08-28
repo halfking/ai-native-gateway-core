@@ -28,6 +28,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/internal/jsonbody"
 )
 
 // ── 迁移包 wire format（与 Pocket model.SessionResumeBrief + opencode-plugin MigrationPack 对齐）──
@@ -312,7 +313,7 @@ func (api *SessionExportAPI) handleImport(w http.ResponseWriter, r *http.Request
 		return
 	}
 	var pack SessionExport
-	if err := json.NewDecoder(r.Body).Decode(&pack); err != nil {
+	if err := jsonbody.DecodeRequest(r, &pack, jsonbody.MaxRequiredBody, true); err != nil {
 		writeExportJSONError(w, http.StatusBadRequest, fmt.Sprintf("invalid pack json: %v", err))
 		return
 	}

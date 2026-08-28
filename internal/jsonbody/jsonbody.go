@@ -101,6 +101,35 @@ func isJSONNull(body []byte) bool {
 	return len(trimmed) == 4 && bytes.Equal(trimmed, []byte("null"))
 }
 
+// DecodeRequest reads and parses a JSON request body without writing a response.
+// It is for endpoints that have an established error envelope but still need the
+// same bounded, BOM-compatible, single-document semantics as ReadRequired.
+func DecodeRequest(r *http.Request, dst any, limit int64, requireBody bool) error {
+	if r == nil || r.Body == nil {
+		if requireBody {
+			return ErrEmptyBody
+		}
+		return nil
+	}
+	if limit <= 0 {
+		return ErrBodyTooLarge
+	}
+	limited := http.MaxBytesReader(nil, r.Body, limit)
+	raw, err := io.ReadAll(limited)
+	if err != nil {
+		var mbErr *http.MaxBytesError
+		if errors.As(err, &mbErr) {
+			return ErrBodyTooLarge
+		}
+		return err
+	}
+	err = DecodeBody(raw, dst)
+	if errors.Is(err, ErrEmptyBody) && !requireBody {
+		return nil
+	}
+	return err
+}
+
 // DecodeBody parses an already-read JSON body into dst with the same
 // compatibility rules as ReadRequired/ReadOptional: one leading UTF-8
 // BOM is stripped, a bare `null` is reported via ErrEmptyBody (the

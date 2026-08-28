@@ -1329,6 +1329,8 @@ func writeResponsesError(w http.ResponseWriter, statusCode int, message, errType
 	})
 }
 
+// responsesStreamWrapper is a deprecated compatibility wrapper around the
+// text-only legacy Responses path; production routing uses the IR bridge.
 func responsesStreamWrapper(requestID, clientModel, outboundModel string, capture *audit.StreamCapture) executors.StreamWrapperFunc { //nolint:unused
 	return func(w http.ResponseWriter, resp *http.Response, norm executors.NormalizerFunc, cap *audit.StreamCapture) executors.StreamOutcome {
 		c := cap

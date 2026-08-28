@@ -484,6 +484,23 @@ func TestStreamChunk_SerializeResponses_Delta_Text(t *testing.T) {
 	}
 }
 
+func TestStreamChunk_SerializeResponses_Delta_Audio(t *testing.T) {
+	chunk := &StreamChunk{Type: ChunkTypeDelta, Delta: &StreamDelta{
+		AudioDelta: &StreamAudioDelta{Data: "AQID", Transcript: "hello"},
+	}}
+
+	output := chunk.SerializeResponses("msg_audio")
+	if !strings.Contains(output, "event: response.audio.delta") {
+		t.Fatalf("expected audio delta event, got %q", output)
+	}
+	if !strings.Contains(output, "event: response.audio_transcript.delta") {
+		t.Fatalf("expected audio transcript delta event, got %q", output)
+	}
+	if !strings.Contains(output, `"delta":"AQID"`) || !strings.Contains(output, `"delta":"hello"`) {
+		t.Fatalf("audio data/transcript were not preserved: %q", output)
+	}
+}
+
 func TestStreamChunk_SerializeResponses_Delta_Reasoning(t *testing.T) {
 	chunk := &StreamChunk{
 		Type: ChunkTypeDelta,

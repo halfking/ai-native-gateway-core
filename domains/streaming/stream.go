@@ -18,6 +18,8 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
+	"github.com/kaixuan/llm-gateway-go/internal/sse"
+	vendorstrip "github.com/kaixuan/llm-gateway-go/internal/vendorstrip"
 	"github.com/kaixuan/llm-gateway-go/metrics"
 )
 
@@ -193,6 +195,28 @@ func runEmptyStreamGate(
 	chunkCount *int,
 	onRawLine func(string),
 ) (flushedLines []string, outcome *StreamOutcome) {
+	return runEmptyStreamGateWithVendor(ctx, reader, bodyCloser, w, flusher, norm, capture, pc, clientModel, discoveredUpstream, startingLine, firstByteTimeout, lastSend, chunkCount, onRawLine, "", nil)
+}
+
+func runEmptyStreamGateWithVendor(
+	ctx context.Context,
+	reader *bufio.Reader,
+	bodyCloser io.ReadCloser,
+	w http.ResponseWriter,
+	flusher http.Flusher,
+	norm *Normalizer,
+	capture *audit.StreamCapture,
+	pc *pendingCapturer,
+	clientModel string,
+	discoveredUpstream *string,
+	startingLine string,
+	firstByteTimeout time.Duration,
+	lastSend *time.Time,
+	chunkCount *int,
+	onRawLine func(string),
+	vendorCode string,
+	stripFn func([]byte) []byte,
+) (flushedLines []string, outcome *StreamOutcome) {
 	buffered := make([]string, 0, emptyGateMaxChunks)
 	bufferedBytes := 0
 	earlyEmptyChunks := currentStreamRuntimeConfig().emptyStreamEarlyEmptyChunks
@@ -219,6 +243,20 @@ func runEmptyStreamGate(
 		return nil
 	}
 	if startingLine != "" {
+		var errCode int
+		startingLine, errCode, _ = stripChunkFieldsForVendor(startingLine, vendorCode, stripFn)
+		if errCode != 0 {
+			if capture != nil {
+				capture.MarkInterruptedWithReason("minimax_base_resp_error")
+			}
+			return nil, &StreamOutcome{
+				Interrupted: true,
+				Reason:      "upstream_error",
+				Kind:        classifyMiniMaxStatusCodeInline(errCode),
+				Resumable:   true,
+				ChunkCount:  0,
+			}
+		}
 		buffered = append(buffered, startingLine)
 		bufferedBytes += len(startingLine)
 		startingPayload := extractPayload(startingLine)
@@ -275,6 +313,20 @@ func runEmptyStreamGate(
 
 		normalizedLine, hasCombinedDone := splitCombinedDoneFrame(line)
 		line = normalizedLine
+		var errCode int
+		line, errCode, _ = stripChunkFieldsForVendor(line, vendorCode, stripFn)
+		if errCode != 0 {
+			if capture != nil {
+				capture.MarkInterruptedWithReason("minimax_base_resp_error")
+			}
+			return nil, &StreamOutcome{
+				Interrupted: true,
+				Reason:      "upstream_error",
+				Kind:        classifyMiniMaxStatusCodeInline(errCode),
+				Resumable:   !attemptHasClientSemanticOutput(nil, *chunkCount),
+				ChunkCount:  *chunkCount,
+			}
+		}
 		if onRawLine != nil {
 			onRawLine(line)
 		}
@@ -490,7 +542,7 @@ func StreamChatWithPendingCapture(
 	stripFn func([]byte) []byte,
 	pc *pendingCapturer,
 ) (outcome StreamOutcome) {
-	return StreamChatWithPendingCaptureAndDiagnostics(ctx, w, resp, clientModel, outboundModel, norm, capture, toolsRequested, stripFn, pc, nil)
+	return StreamChatWithPendingCaptureAndDiagnosticsWithVendor(ctx, w, resp, clientModel, outboundModel, norm, capture, toolsRequested, stripFn, "", pc, nil)
 }
 
 // StreamChatWithPendingCaptureAndDiagnostics forwards an OpenAI stream with
@@ -506,6 +558,25 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 	capture *audit.StreamCapture,
 	toolsRequested bool,
 	stripFn func([]byte) []byte,
+	pc *pendingCapturer,
+	diagnostics *DiagnosticContext,
+) (outcome StreamOutcome) {
+	return StreamChatWithPendingCaptureAndDiagnosticsWithVendor(ctx, w, resp, clientModel, outboundModel, norm, capture, toolsRequested, stripFn, "", pc, diagnostics)
+}
+
+// StreamChatWithPendingCaptureAndDiagnosticsWithVendor is the vendor-aware
+// implementation. vendorCode is normalized once and is used to ensure vendor
+// error envelopes are checked only by the matching sanitizer.
+func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
+	ctx context.Context,
+	w http.ResponseWriter,
+	resp *http.Response,
+	clientModel, outboundModel string,
+	norm *Normalizer,
+	capture *audit.StreamCapture,
+	toolsRequested bool,
+	stripFn func([]byte) []byte,
+	vendorCode string,
 	pc *pendingCapturer,
 	diagnostics *DiagnosticContext,
 ) (outcome StreamOutcome) {
@@ -739,6 +810,20 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 			outcome.ChunkCount = 0
 			return outcome
 		}
+		var firstErrCode int
+		firstLine, firstErrCode, _ = stripChunkFieldsForVendor(firstLine, vendorCode, stripFn)
+		if firstErrCode != 0 {
+			if capture != nil {
+				capture.MarkInterruptedWithReason("minimax_base_resp_error")
+			}
+			return StreamOutcome{
+				Interrupted: true,
+				Reason:      "upstream_error",
+				Kind:        classifyMiniMaxStatusCodeInline(firstErrCode),
+				Resumable:   true,
+				ChunkCount:  0,
+			}
+		}
 		if payload := extractPayload(firstLine); payload != "" && payload != "[DONE]" {
 			if _, parseErr := ir.ParseOpenAIStreamChunk(firstLine); parseErr != nil {
 				slog.Warn("stream: invalid first SSE chunk", "error", parseErr, "client_model", clientModel)
@@ -815,7 +900,8 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 		// or config, fall through to the original write-immediately
 		// path so behavior is unchanged from prior releases.
 		if currentStreamRuntimeConfig().enableEmptyStreamGate {
-			flushedLines, gateOutcome := runEmptyStreamGate(
+			flushedLines, gateOutcome := runEmptyStreamGateWithVendor(
+
 				ctx, reader, bodyCloser, w, flusher, norm, capture, pc,
 				clientModel, &discoveredUpstream, firstLine,
 				runtimeCfg.firstByteTimeout, &lastSend, &chunkCount,
@@ -832,7 +918,9 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 						reportConversionAnomaly(diagnostics, requestID, "openai-completions", "openai-completions", "parse_stream_chunk", []byte(payload), parseErr, nil)
 					}
 				},
+				vendorCode, stripFn,
 			)
+
 			if gateOutcome != nil {
 				return *gateOutcome
 			}
@@ -1042,12 +1130,11 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 			line = replaceModelInChunk(line, clientModel, discoveredUpstream)
 		}
 
-		if stripFn != nil {
+		{
 			var errCode int
 			var errMsg string
-			line, errCode, errMsg = stripChunkFields(line, stripFn)
+			line, errCode, errMsg = stripChunkFieldsForVendor(line, vendorCode, stripFn)
 			if errCode != 0 {
-				// MiniMax base_resp.status_code error detected (HTTP 200-wrapped).
 				kind := classifyMiniMaxStatusCodeInline(errCode)
 				outcome = StreamOutcome{
 					Interrupted: true,
@@ -1059,14 +1146,13 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 				if capture != nil {
 					capture.MarkInterruptedWithReason("minimax_base_resp_error")
 				}
-				slog.Warn("minimax stream: base_resp error detected",
+				slog.Warn("vendor stream: error envelope detected",
 					"request_id", requestID,
 					"status_code", errCode,
 					"status_msg", errMsg,
 					"kind", string(kind),
 					"client_visible_chunks", chunkCount,
 				)
-				// Only emit error frame if client already received content.
 				if attemptHasClientSemanticOutput(gate, chunkCount) {
 					writeSSE(w, "error", map[string]any{
 						"type":  "error",
@@ -1299,27 +1385,32 @@ func shouldDropEmptyChoicesFrame(line string) bool {
 // errorCode != 0, the caller must interrupt the stream as a MiniMax base_resp
 // error was detected (HTTP 200-wrapped error signal).
 func stripChunkFields(line string, stripFn func([]byte) []byte) (string, int, string) {
-	if !strings.HasPrefix(line, "data: ") || stripFn == nil {
+	return stripChunkFieldsForVendor(line, "", stripFn)
+}
+
+// stripChunkFieldsForVendor applies the matching vendor sanitizer and checks
+// MiniMax's HTTP-200 error envelope only when the vendor identity is known (or
+// can be safely inferred from top-level response fields). Passing the vendor
+// explicitly avoids fragile function-value identity checks and cross-vendor
+// error classification.
+func stripChunkFieldsForVendor(line, vendorCode string, stripFn func([]byte) []byte) (string, int, string) {
+	if !strings.HasPrefix(line, "data: ") {
 		return line, 0, ""
 	}
-	payload := strings.TrimPrefix(line, "data: ")
-	payload = strings.TrimSpace(payload)
+	payload := strings.TrimSpace(strings.TrimPrefix(line, "data: "))
 	if payload == "" || payload == "[DONE]" {
 		return line, 0, ""
 	}
 
-	// 2026-08-28 P0-MiniMax-1: Detect MiniMax base_resp.status_code before
-	// stripping. Check against the raw StripMinimaxFieldsBody function pointer
-	// to avoid coupling to catalog_code strings here.
-	if stripFn != nil {
-		// Type assertion trick: compare function pointers to detect MiniMax.
-		// This is fragile but avoids passing catalog_code down the stack.
-		// Alternative: pass catalog_code explicitly in future refactor.
+	vendorCode, stripFn = resolveStreamVendor(payload, vendorCode, stripFn)
+	if vendorCode == "minimax" {
 		if code, msg, isErr := parseMiniMaxBaseRespInline([]byte(payload)); isErr {
 			return line, code, msg
 		}
 	}
-
+	if stripFn == nil {
+		return line, 0, ""
+	}
 	stripped := stripFn([]byte(payload))
 	if len(stripped) == 0 {
 		return line, 0, ""
@@ -1327,18 +1418,46 @@ func stripChunkFields(line string, stripFn func([]byte) []byte) (string, int, st
 	return "data: " + string(stripped) + "\n", 0, ""
 }
 
+// resolveStreamVendor normalizes an explicit catalog code and, for empty
+// catalog codes, infers a vendor only from top-level JSON fields. This avoids
+// substring matches inside user content while keeping third-party candidates
+// compatible with the registered vendor sanitizers.
+func resolveStreamVendor(payload, vendorCode string, stripFn func([]byte) []byte) (string, func([]byte) []byte) {
+	vendorCode = strings.ToLower(strings.TrimSpace(vendorCode))
+	if vendorCode != "" {
+		return vendorCode, stripFn
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal([]byte(payload), &fields) != nil {
+		return "", stripFn
+	}
+	switch {
+	case fields["base_resp"] != nil || fields["nvext"] != nil || fields["input_sensitive"] != nil:
+		return "minimax", StripMinimaxFieldsBody
+	case fields["zhipu_request_id"] != nil || fields["web_search_results"] != nil:
+		return "zhipu", StripZhipuFieldsBody
+	case fields["deepseek_request_id"] != nil || fields["cache_hit_tokens"] != nil:
+		return "deepseek", StripDeepSeekFieldsBody
+	case fields["doubao_request_id"] != nil || fields["seeddance_request_id"] != nil:
+		return "doubao", StripDoubaoFieldsBody
+	default:
+		return "", stripFn
+	}
+}
+
 func readLineWithTimeout(ctx context.Context, reader *bufio.Reader, timeout time.Duration) (string, error) {
-	return newTimedLineReader(reader, nil).ReadLine(ctx, timeout)
+	return sse.NewLineReader(reader, currentStreamRuntimeConfig().sseMaxLineBytes).ReadLineWithContext(ctx, timeout, nil)
 }
 
 // readLineWithTimeoutAndCloser is like readLineWithTimeout but also takes the
-// underlying io.ReadCloser. On timeout it closes the closer to unblock the
-// ReadString goroutine, then drains the channel — eliminating the goroutine
-// leak that existed in the plain readLineWithTimeout path (BUG-1 fix).
+// underlying io.ReadCloser. The shared SSE reader bounds physical-line
+// accumulation before any sanitizer or IR parser sees the bytes.
 func readLineWithTimeoutAndCloser(ctx context.Context, reader *bufio.Reader, closer io.ReadCloser, timeout time.Duration) (string, error) {
-	return newTimedLineReader(reader, closer).ReadLine(ctx, timeout)
+	return sse.NewLineReader(reader, currentStreamRuntimeConfig().sseMaxLineBytes).ReadLineWithContext(ctx, timeout, closer)
 }
 
+// onceReadCloser prevents timeout cleanup and deferred stream cleanup from
+// closing the same upstream body more than once.
 type onceReadCloser struct {
 	io.ReadCloser
 	once sync.Once
@@ -1346,79 +1465,8 @@ type onceReadCloser struct {
 }
 
 func (c *onceReadCloser) Close() error {
-	c.once.Do(func() {
-		c.err = c.ReadCloser.Close()
-	})
+	c.once.Do(func() { c.err = c.ReadCloser.Close() })
 	return c.err
-}
-
-type timedLineReader struct {
-	reader *bufio.Reader
-	// closer is the underlying io.ReadCloser (e.g. resp.Body). When non-nil,
-	// ReadLine closes it on timeout so the blocked ReadString goroutine returns
-	// immediately rather than leaking until the TCP connection is closed.
-	closer io.ReadCloser
-}
-
-func newTimedLineReader(reader *bufio.Reader, closer io.ReadCloser) *timedLineReader {
-	return &timedLineReader{reader: reader, closer: closer}
-}
-
-func (r *timedLineReader) ReadLine(ctx context.Context, timeout time.Duration) (string, error) {
-	type result struct {
-		line string
-		err  error
-	}
-	ch := make(chan result, 1)
-	readCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				ch <- result{"", fmt.Errorf("read panic: %v", r)}
-			}
-		}()
-		line, err := r.reader.ReadString('\n')
-		ch <- result{line, err}
-	}()
-
-	select {
-	case res := <-ch:
-		// bufio.Reader returns a final unterminated line together with io.EOF.
-		// The bytes are still a valid SSE frame and must be processed before
-		// the next read reports the terminal EOF.
-		if res.err == io.EOF && res.line != "" {
-			return res.line, nil
-		}
-		return res.line, res.err
-	case <-readCtx.Done():
-		// BUG-1 fix (2026-06-19): close the underlying body to force the
-		// blocked ReadString goroutine to return an error immediately.
-		// Without this, the goroutine would leak until resp.Body.Close()
-		// is called by the deferred cleanup in StreamChatWithPendingCapture,
-		// which can be minutes later on the session path (context.Background).
-		// After Close(), drain the channel so the goroutine completes before
-		// we return — zero goroutine leak guarantee.
-		if r.closer != nil {
-			_ = r.closer.Close()
-			// Drain: the goroutine returns shortly after Close() because
-			// ReadString on a closed body returns io.ErrClosedPipe or io.EOF.
-			// The buffered channel (size 1) ensures this never blocks forever.
-			<-ch
-		} else {
-			// No closer: nothing we can do will unblock the ReadString
-			// goroutine, so do NOT wait on ch — waiting here makes the
-			// timeout ineffective (this call would still block until the
-			// upstream actually sends / the TCP dies). The goroutine has a
-			// buffered slot, so it exits cleanly once the caller's deferred
-			// body.Close() fires.
-		}
-		if readCtx.Err() == context.DeadlineExceeded {
-			return "", fmt.Errorf("stream read timeout")
-		}
-		return "", readCtx.Err()
-	}
 }
 
 func extractModelFromChunk(line string) string {
@@ -1780,46 +1828,9 @@ func RequestIDFromResp(resp *http.Response) string {
 // parseMiniMaxBaseRespInline is an inline copy of minimax_error.go functions
 // to avoid import cycle. Detects MiniMax's HTTP 200-wrapped error signal.
 func parseMiniMaxBaseRespInline(body []byte) (statusCode int, statusMsg string, isError bool) {
-	if len(body) == 0 {
-		return 0, "", false
-	}
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(body, &raw); err != nil {
-		return 0, "", false
-	}
-	baseRespRaw, ok := raw["base_resp"]
-	if !ok {
-		return 0, "", false
-	}
-	var baseResp struct {
-		StatusCode int    `json:"status_code"`
-		StatusMsg  string `json:"status_msg"`
-	}
-	if err := json.Unmarshal(baseRespRaw, &baseResp); err != nil {
-		return 0, "", false
-	}
-	return baseResp.StatusCode, baseResp.StatusMsg, baseResp.StatusCode != 0
+	return vendorstrip.ParseMiniMaxBaseResp(body)
 }
 
 func classifyMiniMaxStatusCodeInline(code int) errorsx.ErrorKind {
-	switch code {
-	case 0:
-		return ""
-	case 1002:
-		return errorsx.KindRateLimit
-	case 1004:
-		return errorsx.KindAuth
-	case 1008:
-		return errorsx.KindQuota
-	case 1027:
-		return errorsx.KindContentFilter
-	case 1039:
-		return errorsx.KindContextLength
-	case 1001:
-		return errorsx.KindTimeout
-	case 2013:
-		return errorsx.KindClientBug
-	default:
-		return errorsx.KindUpstreamDown
-	}
+	return vendorstrip.ClassifyMiniMaxStatusCode(code)
 }
