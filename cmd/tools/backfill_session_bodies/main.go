@@ -55,30 +55,30 @@ func main() {
 	}
 	defer pool.Close()
 
+	// Optimized query: no window function, just ORDER BY.
+	// turn_no is computed in Go to avoid ROW_NUMBER() triggering slow scans.
 	rows, err := pool.Query(context.Background(), `
-		WITH turns AS (
-			SELECT request_id, tenant_id, ts,
-			       ROW_NUMBER() OVER (ORDER BY ts ASC, request_id ASC) AS turn_no
-			FROM request_logs_with_current_month
-			WHERE gw_session_id = $1 AND ($2 = '' OR tenant_id = $2)
-		)
-		SELECT t.turn_no, t.request_id, t.tenant_id, t.ts,
+		SELECT r.request_id, r.tenant_id, r.ts,
 		       b.request_body, b.response_body
-		FROM turns t
-		LEFT JOIN request_logs_bodies_with_current_month b ON b.request_id = t.request_id
-		ORDER BY t.turn_no ASC`, *session, *tenant)
+		FROM request_logs r
+		LEFT JOIN request_logs_bodies b ON b.request_id = r.request_id
+		WHERE r.gw_session_id = $1 AND ($2 = '' OR r.tenant_id = $2)
+		ORDER BY r.ts ASC, r.request_id ASC`, *session, *tenant)
 	if err != nil {
 		log.Fatalf("query turns: %v", err)
 	}
 
 	var turnRows []turnRow
 	var fullMsgs, respMsgs [][]Msg
+	turnNo := 1
 	for rows.Next() {
 		var r turnRow
 		var reqBody, respBody []byte
-		if err := rows.Scan(&r.turnNo, &r.requestID, &r.tenantID, &r.ts, &reqBody, &respBody); err != nil {
+		if err := rows.Scan(&r.requestID, &r.tenantID, &r.ts, &reqBody, &respBody); err != nil {
 			log.Fatalf("scan turn: %v", err)
 		}
+		r.turnNo = turnNo
+		turnNo++
 		r.reqBody = reqBody
 		r.respBody = respBody
 		full, err := ParseRequestMessages(reqBody)
