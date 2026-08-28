@@ -87,10 +87,9 @@ func StripMinimaxFieldsBody(body []byte) []byte {
 
 // cleanMinimaxLeakFields removes the private function-call envelope that some
 // MiniMax-compatible upstreams leak into reasoning_content/content. It is
-// deliberately gated on <function_calls> so ordinary XML/code in an answer is
-// preserved. A malformed 245 sample omitted the final '>' in the closing tag;
-// when no closing marker is present the leaked suffix is still not user-facing
-// content, so it is discarded through the end of the field.
+// deliberately gated on <function_calls> and a closing </tool_call> marker so
+// ordinary XML/code and incomplete user content are preserved. If the marker
+// is incomplete, data integrity takes precedence over best-effort stripping.
 func cleanMinimaxLeakFields(message map[string]json.RawMessage) bool {
 	changed := false
 	for _, field := range []string{"reasoning_content", "content"} {
@@ -106,18 +105,18 @@ func cleanMinimaxLeakFields(message map[string]json.RawMessage) bool {
 		if start < 0 {
 			continue
 		}
-		cleaned := strings.TrimSpace(text[:start])
-		if end := strings.Index(text[start:], "</tool_call>"); end >= 0 {
-			before := strings.TrimSpace(text[:start])
-			after := strings.TrimSpace(text[start+end+len("</tool_call>"):])
-			switch {
-			case before == "":
-				cleaned = after
-			case after == "":
-				cleaned = before
-			default:
-				cleaned = before + " " + after
-			}
+		end := strings.Index(text[start:], "</tool_call>")
+		if end < 0 {
+			continue
+		}
+		before := strings.TrimSpace(text[:start])
+		after := strings.TrimSpace(text[start+end+len("</tool_call>"):])
+		cleaned := before
+		switch {
+		case before == "":
+			cleaned = after
+		case after != "":
+			cleaned = before + " " + after
 		}
 		message[field], _ = json.Marshal(cleaned)
 		changed = true

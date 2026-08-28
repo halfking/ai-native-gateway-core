@@ -63,9 +63,9 @@ type StreamOutcome struct {
 	// is false or Reason is unclassified. Used by executor_anthropic.go
 	// to route empty-response interruptions to the fail-over path via
 	// streamInterruptedError{kind: KindEmptyResponse, resumable: true}.
-	Kind        errorsx.ErrorKind
-	Resumable   bool // Whether the stream can be resumed with a different credential
-	ChunkCount  int  // Number of chunks sent before interruption
+	Kind       errorsx.ErrorKind
+	Resumable  bool // Whether the stream can be resumed with a different credential
+	ChunkCount int  // Number of chunks sent before interruption
 }
 
 // IsAnthropicStreamEmpty returns true when the translator observed an
@@ -280,12 +280,10 @@ func (p *pendingCapturer) BytesCaptured() int {
 	return p.bytes
 }
 
-// readLineWithTimeout is the BUG-1 fix variant of
-// readLineWithTimeoutAndCloser: it does not have a closer to
-// unblock the read goroutine on timeout, so callers must already
-// have wired their own cleanup. The anthropic first-byte path
-// uses this (no closer because the body lifetime is managed by
-// the defer in StreamOpenAIToAnthropicSSE).
+// readLineWithTimeout is retained for compatibility with callers that do not
+// own a closable body. Such callers receive a timeout without waiting for a
+// potentially blocking reader; they should prefer readLineWithTimeoutAndCloser
+// whenever the upstream response body is available.
 func readLineWithTimeout(ctx context.Context, reader *bufio.Reader, timeout time.Duration) (string, error) {
 	return newTimedLineReader(reader, nil).ReadLine(ctx, timeout)
 }
@@ -343,11 +341,10 @@ func (r *timedLineReader) ReadLine(ctx context.Context, timeout time.Duration) (
 		// we return — zero goroutine leak guarantee.
 		if r.closer != nil {
 			_ = r.closer.Close()
+			// Drain after closing the body; the buffered channel ensures the
+			// reader goroutine can finish without blocking this call.
+			<-ch
 		}
-		// Drain: the goroutine returns shortly after Close() because
-		// ReadString on a closed body returns io.ErrClosedPipe or io.EOF.
-		// The buffered channel (size 1) ensures this never blocks forever.
-		<-ch
 		if readCtx.Err() == context.DeadlineExceeded {
 			return "", fmt.Errorf("stream read timeout")
 		}
@@ -635,6 +632,12 @@ func isJSONErrorBody(body []byte) (bool, string, string) {
 	}
 	var env jsonErrorEnvelope
 	if err := json.Unmarshal([]byte(trimmed), &env); err != nil {
+		return false, "", ""
+	}
+	// A bare message is common metadata in successful provider responses.
+	// Require an error envelope or an explicit top-level type/code before
+	// treating the JSON as a non-SSE error body.
+	if env.Error == nil && env.Type == "" && env.Code == "" {
 		return false, "", ""
 	}
 	kind, msg := env.resolveError()
