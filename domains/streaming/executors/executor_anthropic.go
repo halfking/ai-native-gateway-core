@@ -33,6 +33,23 @@ import (
 // forcing the gateway to buffer a huge body into memory before echoing it.
 const maxPassthroughErrorBody = 64 << 10 // 64 KiB
 
+// readAndDrainErrorBody captures at most maxPassthroughErrorBody bytes for
+// classification or passthrough, then consumes the rest of the response.
+// Reading through LimitReader (rather than relying on one Read call) handles
+// short reads and preserves HTTP connection reuse. The caller owns closing the
+// response body.
+func readAndDrainErrorBody(body io.Reader) ([]byte, error) {
+	if body == nil {
+		return nil, nil
+	}
+
+	captured, readErr := io.ReadAll(io.LimitReader(body, maxPassthroughErrorBody))
+	if _, drainErr := io.Copy(io.Discard, body); readErr == nil {
+		readErr = drainErr
+	}
+	return captured, readErr
+}
+
 // AnthropicExecutor is the ProtocolHandler for Anthropic Messages API
 // (and compatible endpoints like minimax /anthropic).
 //
@@ -1019,20 +1036,22 @@ func (e *Executor) executeAnthropicOnce(
 	}
 
 	if resp != nil && resp.StatusCode >= 400 {
-		//nolint:errcheck // best-effort close
-		defer resp.Body.Close()
-		body := make([]byte, 4096)
-		n, _ := resp.Body.Read(body)
-		e.logUpstreamResponse(params, diagnosticProtocol(cand.Protocol, "anthropic-messages"), body[:n])
-		// NOTE (2026-07-27, D-2): the unconditional io.Copy(io.Discard) that
-		// used to live here was removed. It drained the rest of the body
-		// before the raw-passthrough branch below could read it, so vendor 4xx
-		// bodies larger than 4 KiB were forwarded truncated. resp.Body is
-		// closed by the deferred Close above; the passthrough branch reads
-		// the remainder (capped) and every other branch ignores it.
-		errKind := errorsx.ClassifyErrorWithBody(resp.StatusCode, body[:n])
+		if resp.Body != nil {
+			//nolint:errcheck // best-effort close
+			defer resp.Body.Close()
+		}
+		capturedBody, bodyReadErr := readAndDrainErrorBody(resp.Body)
+		body := capturedBody
+		if len(body) > 4096 {
+			body = body[:4096]
+		}
+		if bodyReadErr != nil {
+			slog.Warn("anthropic upstream error body read failed", "error", bodyReadErr)
+		}
+		e.logUpstreamResponse(params, diagnosticProtocol(cand.Protocol, "anthropic-messages"), body)
+		errKind := errorsx.ClassifyErrorWithBody(resp.StatusCode, body)
 
-		if bodyKind := errorsx.ClassifyResponseBody(resp.StatusCode, body[:n]); bodyKind == errorsx.KindModelNotFound || bodyKind == errorsx.KindModelDeprecated {
+		if bodyKind := errorsx.ClassifyResponseBody(resp.StatusCode, body); bodyKind == errorsx.KindModelNotFound || bodyKind == errorsx.KindModelDeprecated {
 			// Step 4 (2026-06-18): removed the 10-second slow-upstream
 			// reclassification. See executor_chat.go for the rationale.
 			slog.Info("model_not_found skip offer",
@@ -1041,12 +1060,12 @@ func (e *Executor) executeAnthropicOnce(
 				"status", resp.StatusCode,
 				"kind", bodyKind,
 				"upstream_latency_ms", upstreamLatency.Milliseconds(),
-				"body_preview", string(body[:min(n, 120)]),
+				"body_preview", string(body[:min(len(body), 120)]),
 			)
 			return nil, &modelNotFoundError{
 				credentialID: cand.CredentialID,
 				rawModel:     cand.RawModel,
-				body:         string(body[:n]),
+				body:         string(body),
 				status:       resp.StatusCode,
 				kind:         bodyKind,
 			}
@@ -1066,7 +1085,7 @@ func (e *Executor) executeAnthropicOnce(
 				&upstreampkg.Error{
 					Kind:       errorsx.KindConcurrent,
 					Message:    fmt.Sprintf("upstream %d concurrent overload", resp.StatusCode),
-					Body:       append([]byte(nil), body[:n]...),
+					Body:       append([]byte(nil), body...),
 					StatusCode: resp.StatusCode,
 					RetryAfter: upstreampkg.RetryAfterFromHeaders(resp.Header),
 				})
@@ -1076,7 +1095,7 @@ func (e *Executor) executeAnthropicOnce(
 			if errorsx.IsContextLength(errKind) || shouldHeuristicCompact(resp.StatusCode, errKind, len(bodyBytes), cand.ContextWindow) {
 				return nil, &contextLengthHTTPError{
 					status:  resp.StatusCode,
-					body:    append([]byte(nil), body[:n]...),
+					body:    append([]byte(nil), body...),
 					headers: resp.Header.Clone(),
 				}
 			}
@@ -1090,7 +1109,7 @@ func (e *Executor) executeAnthropicOnce(
 			upstreamErr := &upstreampkg.Error{
 				Kind:       errKind,
 				Message:    fmt.Sprintf("upstream %d", resp.StatusCode),
-				Body:       append([]byte(nil), body[:n]...),
+				Body:       append([]byte(nil), body...),
 				StatusCode: resp.StatusCode,
 				RetryAfter: upstreampkg.RetryAfterFromHeaders(resp.Header),
 			}
@@ -1100,30 +1119,10 @@ func (e *Executor) executeAnthropicOnce(
 			// 并发修复 2026-07-27：异步重试 goroutine 的 params.W 为 nil
 			// （客户端已收到 202），错误体只能通过 PendingStore 回传，
 			// 这里直接跳过客户端写。
-				// 2026-08-27 P0 fix: Always drain the response body to enable
-				// HTTP connection reuse, regardless of params.W. Previously when
-				// params.W == nil (async retry path), the body was left unread,
-				// forcing the connection pool to close the connection instead of
-				// reusing it.
-				fullBody := body[:n]
-				if n >= len(body) {
-					// We filled the 4096 prefix buffer — there may be more. Read
-					// the remainder up to the passthrough cap (only for client write).
-					remainingCap := maxPassthroughErrorBody - n
-					if remainingCap > 0 && params.W != nil {
-						rest, _ := io.ReadAll(io.LimitReader(resp.Body, int64(remainingCap)))
-						if len(rest) > 0 {
-							fullBody = append(append([]byte(nil), body[:n]...), rest...)
-						}
-					}
-				}
-				// Always drain the remaining body (essential for connection reuse)
-				// regardless of whether params.W is set and regardless of whether
-				// the prefix buffer was filled — previously the nil-W path (async
-				// retry where the client already got 202) left the body unread
-				// when n < len(body), forcing connection pool to close instead of
-				// reuse (P0 fix 2026-08-27, hardened 2026-08-28).
-				_, _ = io.Copy(io.Discard, resp.Body)
+				// 2026-08-28 audit fix: body is already fully captured and drained
+				// by readAndDrainErrorBody, so we use capturedBody directly for
+				// passthrough without re-reading resp.Body.
+				fullBody := capturedBody
 				if params.W != nil {
 				// Surface an accurate Content-Length for the bytes we actually send
 				// (the copied vendor Content-Length header would now be wrong if
@@ -1153,7 +1152,7 @@ func (e *Executor) executeAnthropicOnce(
 		if shouldHeuristicCompact(resp.StatusCode, errKind, len(bodyBytes), cand.ContextWindow) {
 			return nil, &contextLengthHTTPError{
 				status:  resp.StatusCode,
-				body:    append([]byte(nil), body[:n]...),
+				body:    append([]byte(nil), body...),
 				headers: resp.Header.Clone(),
 			}
 		}
@@ -1164,7 +1163,7 @@ func (e *Executor) executeAnthropicOnce(
 		return nil, &retryableError{err: &upstreampkg.Error{
 			Kind:       errKind,
 			Message:    fmt.Sprintf("upstream %d", resp.StatusCode),
-			Body:       append([]byte(nil), body[:n]...),
+			Body:       append([]byte(nil), body...),
 			StatusCode: resp.StatusCode,
 			RetryAfter: upstreampkg.RetryAfterFromHeaders(resp.Header),
 		}}

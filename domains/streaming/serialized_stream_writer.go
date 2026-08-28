@@ -104,6 +104,15 @@ func (s *SerializedStreamWriter) write(p []byte, capture bool) (int, error) {
 		s.detachErr = err
 		return n, err
 	}
+	// 2026-08-28 audit fix: treat short writes as errors to preserve
+	// fail-closed semantics. A writer returning (n < len(p), nil) violates
+	// io.Writer contract and would leave the gate believing bytes were sent
+	// while the underlying connection dropped part of the frame.
+	if n < len(p) {
+		s.detached = true
+		s.detachErr = io.ErrShortWrite
+		return n, io.ErrShortWrite
+	}
 	return n, nil
 }
 
