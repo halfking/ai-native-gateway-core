@@ -162,6 +162,10 @@ type RequestMetadata struct {
 
 // ExtractClientIP extracts the real client IP from HTTP request headers
 // Priority: X-Real-IP > X-Forwarded-For (first) > RemoteAddr
+//
+// SECURITY: this function trusts the inbound headers unconditionally.
+// Production code paths that take an explicit allowlist MUST use
+// ExtractClientIPTrusted instead.
 func ExtractClientIP(r *http.Request) string {
 	// X-Real-IP is most reliable if set by trusted proxy
 	if realIP := r.Header.Get("X-Real-IP"); realIP != "" {
@@ -181,9 +185,82 @@ func ExtractClientIP(r *http.Request) string {
 	return host
 }
 
-// ExtractForwardedFor extracts the full X-Forwarded-For header chain
+// ExtractForwardedFor extracts the full X-Forwarded-For header chain.
+//
+// SECURITY: this function trusts the inbound header unconditionally.
+// Production code paths that take an explicit allowlist MUST use
+// ExtractForwardedForTrusted instead.
 func ExtractForwardedFor(r *http.Request) string {
 	return r.Header.Get("X-Forwarded-For")
+}
+
+// ExtractClientIPTrusted returns the client IP using the standard
+// precedence (X-Real-IP > XFF[0] > RemoteAddr) but ONLY honours the
+// X-Real-IP / X-Forwarded-For headers when the immediate TCP peer
+// matches one of the supplied trusted CIDRs. When the allowlist is
+// empty/nil or the peer is untrusted, the function falls back to
+// RemoteAddr — preventing public clients from spoofing an arbitrary
+// source IP (HIGH security, 2026-08-29).
+//
+// `trusted` may be nil or empty; in that case the function behaves like
+// ExtractClientIP with no header trust (RemoteAddr only).
+func ExtractClientIPTrusted(r *http.Request, trusted []*net.IPNet) string {
+	remoteHost, _, _ := net.SplitHostPort(r.RemoteAddr)
+	if remoteHost == "" {
+		remoteHost = r.RemoteAddr
+	}
+	if len(trusted) == 0 {
+		return remoteHost
+	}
+	remoteIP := net.ParseIP(remoteHost)
+	if remoteIP == nil {
+		return remoteHost
+	}
+	peerTrusted := false
+	for _, cidr := range trusted {
+		if cidr.Contains(remoteIP) {
+			peerTrusted = true
+			break
+		}
+	}
+	if !peerTrusted {
+		return remoteHost
+	}
+	// Peer is on the allowlist — honour the headers.
+	if realIP := strings.TrimSpace(r.Header.Get("X-Real-IP")); realIP != "" {
+		return realIP
+	}
+	if fwd := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); fwd != "" {
+		parts := strings.Split(fwd, ",")
+		if len(parts) > 0 {
+			return strings.TrimSpace(parts[0])
+		}
+	}
+	return remoteHost
+}
+
+// ExtractForwardedForTrusted returns the full X-Forwarded-For header
+// chain when the immediate peer is on the supplied trusted allowlist,
+// otherwise returns the remote host (so the chain is never populated
+// from spoofed headers).
+func ExtractForwardedForTrusted(r *http.Request, trusted []*net.IPNet) string {
+	remoteHost, _, _ := net.SplitHostPort(r.RemoteAddr)
+	if remoteHost == "" {
+		remoteHost = r.RemoteAddr
+	}
+	if len(trusted) == 0 {
+		return remoteHost
+	}
+	remoteIP := net.ParseIP(remoteHost)
+	if remoteIP == nil {
+		return remoteHost
+	}
+	for _, cidr := range trusted {
+		if cidr.Contains(remoteIP) {
+			return strings.TrimSpace(r.Header.Get("X-Forwarded-For"))
+		}
+	}
+	return remoteHost
 }
 
 // MaskAPIKey masks an API key, keeping first 8 chars visible
