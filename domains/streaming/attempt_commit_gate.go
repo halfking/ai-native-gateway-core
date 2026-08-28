@@ -698,6 +698,12 @@ func (g *AttemptCommitGate) Commit() error {
 		g.mu.Unlock()
 		checkpointErr := hook(ctx, state)
 		g.mu.Lock()
+		// The checkpoint hook runs without g.mu, so Discard may win while it is
+		// blocked. Discard is terminal for this attempt and must win before any
+		// hook result can lead to flushing the old buffer.
+		if g.discarded {
+			return ErrAttemptDiscarded
+		}
 		if checkpointErr != nil {
 			g.blockCheckpointLocked(checkpointErr)
 			return g.checkpointErr

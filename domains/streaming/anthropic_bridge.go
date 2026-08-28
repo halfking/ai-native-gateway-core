@@ -12,6 +12,8 @@ package streaming
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -739,6 +741,11 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 		currentToolCallID   string
 		initialArgsSent     bool
 		messageStopReceived bool
+		emittedContent      bool
+		// Anthropic signature_delta has no OpenAI Chat Completions wire
+		// representation. Keep the opaque token in bridge-local state and
+		// expose only a stable digest to audit; never invent an OpenAI field.
+		thinkingSignatures = make(map[int]string)
 	)
 
 	clientWriter := newClientStreamWriter(w, flusher)
@@ -755,17 +762,29 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 		// Count converted tool calls as emitted evidence before the write:
 		// a client disconnect must not look like the gateway dropped them.
 		diagnosticCollector.observeEmittedChunk(chunk)
-		clientWriter.write(sseLine)
+		written := clientWriter.write(sseLine)
 
+		// The translated chunk is part of client-visible accounting only when
+		// the write/flush succeeded. The pending capture still receives the
+		// translated frame after a disconnect so it can be replayed.
 		if pc != nil {
 			pc.append(sseLine)
 		}
 
 		if capture != nil {
 			capture.ObserveChunk(chunk)
+			if written {
+				capture.RecordChunkSent()
+			}
 		}
 
-		chunkCount++
+		if written {
+			chunkCount++
+			if chunk.Type == ir.ChunkTypeDelta && chunk.Delta != nil &&
+				(chunk.Delta.Content != "" || chunk.Delta.ReasoningContent != "" || len(chunk.Delta.ToolCalls) > 0) {
+				emittedContent = true
+			}
+		}
 	}
 
 	flushBufferedText := func() {
@@ -1025,6 +1044,7 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 							Text        string `json:"text"`
 							Thinking    string `json:"thinking"`
 							PartialJSON string `json:"partial_json"`
+							Signature   string `json:"signature"`
 						} `json:"delta"`
 					}
 					if err := json.Unmarshal(data, &evt); err == nil {
@@ -1042,7 +1062,15 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 								bufferedToolArgs.WriteString(evt.Delta.PartialJSON)
 							}
 						case "signature_delta":
-							_ = evt.Delta
+							if evt.Delta.Signature != "" {
+								thinkingSignatures[evt.Index] = evt.Delta.Signature
+								if capture != nil {
+									// The token is opaque and must not be logged. A digest
+									// makes presence/identity observable without exposing it.
+									digest := sha256.Sum256([]byte(evt.Delta.Signature))
+									capture.AddQualityFlag("anthropic_signature_delta:" + hex.EncodeToString(digest[:8]))
+								}
+							}
 						default:
 							slog.Warn("unknown_delta_type_in_stream",
 								"delta_type", evt.Delta.Type,
@@ -1072,21 +1100,21 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 								"quality", chunk.Quality,
 								"reason", chunk.ArgumentsJSONReason)
 						}
-							validated, _, vErr := anthropictransform.ValidateStreamingToolArgs(args)
-							if vErr != nil {
-								if capture != nil {
-									capture.AddQualityFlag("malformed_tool_args_blocked")
-								}
-								if attemptHasClientSemanticOutput(gate, chunkCount) {
-									emitAnthropicBridgeErrorChunk(w, "malformed_tool_args", "upstream tool arguments are invalid JSON", flusher)
-								}
-								outcome.Interrupted = true
-								outcome.Reason = "malformed_tool_args"
-								outcome.Kind = errorsx.KindUpstreamDown
-								outcome.Resumable = !attemptHasClientSemanticOutput(gate, chunkCount)
-								outcome.ChunkCount = chunkCount
-								return outcome
+						validated, _, vErr := anthropictransform.ValidateStreamingToolArgs(args)
+						if vErr != nil {
+							if capture != nil {
+								capture.AddQualityFlag("malformed_tool_args_blocked")
 							}
+							if attemptHasClientSemanticOutput(gate, chunkCount) {
+								emitAnthropicBridgeErrorChunk(w, "malformed_tool_args", "upstream tool arguments are invalid JSON", flusher)
+							}
+							outcome.Interrupted = true
+							outcome.Reason = "malformed_tool_args"
+							outcome.Kind = errorsx.KindUpstreamDown
+							outcome.Resumable = !attemptHasClientSemanticOutput(gate, chunkCount)
+							outcome.ChunkCount = chunkCount
+							return outcome
+						}
 						writeChunk(buildAnthropicBridgeToolCallChunk(toolCallIndex-1, currentToolCallID, "", &validated, true))
 						bufferedToolArgs.Reset()
 					}
@@ -1101,6 +1129,12 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 		case ir.ChunkTypeDone:
 			messageStopReceived = true
 			flushBufferedText()
+			if !emittedContent && inputTokens == 0 && outputTokens == 0 {
+				if capture != nil {
+					capture.MarkInterruptedWithReason("anthropic_empty_response")
+				}
+				return StreamOutcome{Interrupted: true, Reason: "anthropic_empty_response", Kind: errorsx.KindEmptyResponse, Resumable: true, ChunkCount: chunkCount}
+			}
 			if finishReason != nil && *finishReason == "tool_calls" && !hasEmittedToolCalls {
 				slog.Warn("inconsistent_tool_calls_finish_reason",
 					"request_id", requestID,
