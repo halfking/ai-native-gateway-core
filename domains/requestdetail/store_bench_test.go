@@ -124,4 +124,3 @@ func BenchmarkPtrToAllocation(b *testing.B) {
 		}
 	})
 }
-
