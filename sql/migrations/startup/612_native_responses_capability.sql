@@ -3,6 +3,19 @@
 
 BEGIN;
 
+-- Ensure credential_model_bindings has a primary key for foreign key reference
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint 
+        WHERE conrelid = 'public.credential_model_bindings'::regclass 
+        AND contype = 'p'
+    ) THEN
+        ALTER TABLE public.credential_model_bindings 
+            ADD CONSTRAINT credential_model_bindings_pkey PRIMARY KEY (id);
+    END IF;
+END $$;
+
 CREATE TABLE IF NOT EXISTS credential_model_capabilities (
     id BIGSERIAL PRIMARY KEY,
     credential_model_binding_id BIGINT NOT NULL
