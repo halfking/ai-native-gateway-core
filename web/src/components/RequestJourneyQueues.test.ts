@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import RequestJourneyQueues from './RequestJourneyQueues.vue'
 import requestJourneys from '../locales/en-US/requestJourneys'
 
+const openRequestDetailPageMock = vi.hoisted(() => vi.fn())
 const { getQueues, getJourney, superAdmin, storeMock } = vi.hoisted(() => ({
   getQueues: vi.fn(),
   getJourney: vi.fn(),
@@ -14,6 +15,10 @@ const { getQueues, getJourney, superAdmin, storeMock } = vi.hoisted(() => ({
 vi.mock('../store', () => ({
   isSuperAdmin: superAdmin,
   store: storeMock,
+}))
+
+vi.mock('../utils/openRequestDetailPage', () => ({
+  openRequestDetailPage: openRequestDetailPageMock,
 }))
 
 vi.mock('../api/request-journeys', async (importOriginal) => {
@@ -161,7 +166,7 @@ describe('RequestJourneyQueues', () => {
     expect((row.element as HTMLButtonElement).disabled).toBe(false)
     await row.trigger('click')
     await flushPromises()
-    expect(getJourney).toHaveBeenCalledWith('own-tenant-request')
+    expect(openRequestDetailPageMock).toHaveBeenCalledWith('own-tenant-request')
   })
 
   it('shows degraded observation even when the FIFO window is empty', async () => {
@@ -248,35 +253,15 @@ describe('RequestJourneyQueues', () => {
     ])
   })
 
-  it('opens a request journey with retries, switches, errors and final result', async () => {
-    getQueues.mockResolvedValue({ capacity: 100, requests: [snapshot('req-journey', '2026-08-17T10:00:00Z')] })
-    getJourney.mockResolvedValue({
-      tenant_id: 'tenant-a',
-      gateway_instance_id: 'gw-a',
-      request_id: 'req-journey',
-      observation_status: 'observation_degraded',
-      started_at: '2026-08-17T10:00:00Z',
-      updated_at: '2026-08-17T10:00:06Z',
-      events: [
-        { seq: 3, event_type: 'attempt_failed', stage: 'retrying', attempt: { attempt_id: 'a-1', attempt_no: 1, model: 'model-a', provider_id: 7, credential_id: 11 }, error_kind: 'timeout', observation_status: 'complete', occurred_at: '2026-08-17T10:00:03Z' },
-        { seq: 4, event_type: 'retry_scheduled', stage: 'retrying', attempt: { attempt_id: 'a-1', attempt_no: 1, model: 'model-a', provider_id: 7, credential_id: 11 }, retry_reason: 'timeout', observation_status: 'complete', occurred_at: '2026-08-17T10:00:04Z' },
-        { seq: 5, event_type: 'node_switched', stage: 'node_selection', from_credential_id: 11, to_credential_id: 12, switch_reason: 'timeout', observation_status: 'complete', occurred_at: '2026-08-17T10:00:05Z' },
-        { seq: 6, event_type: 'model_switched', stage: 'routing', from_model: 'model-a', to_model: 'model-b', switch_reason: 'capacity', observation_status: 'complete', occurred_at: '2026-08-17T10:00:05.500Z' },
-        { seq: 7, event_type: 'request_succeeded', stage: 'terminal', outcome: 'success', observation_status: 'observation_degraded', occurred_at: '2026-08-17T10:00:06Z' },
-      ],
-    })
-
+  it('opens request detail for a journey row', async () => {
+    superAdmin.mockReturnValue(true)
+    storeMock.userInfo = { tenant_id: 'tenant-a' }
+    getQueues.mockResolvedValue({ capacity: 100, requests: [{ ...snapshot('req-journey', '2026-08-17T10:00:00Z'), tenant_id: 'tenant-a' }] })
     const wrapper = mountPanel()
     await openPanel(wrapper)
     await wrapper.get('[data-testid="journey-queue-row"]').trigger('click')
     await flushPromises()
 
-    expect(getJourney).toHaveBeenCalledWith('req-journey')
-    expect(wrapper.text()).toContain('Observation degraded')
-    expect(wrapper.text()).toContain('Attempt failed')
-    expect(wrapper.text()).toContain('Retry scheduled')
-    expect(wrapper.text()).toContain('Node switched')
-    expect(wrapper.text()).toContain('Model switched')
-    expect(wrapper.text()).toContain('Request succeeded')
+    expect(openRequestDetailPageMock).toHaveBeenCalledWith('req-journey')
   })
 })

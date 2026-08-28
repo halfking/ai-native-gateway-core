@@ -30,6 +30,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/i18n"
+	"github.com/kaixuan/llm-gateway-go/internal/jsonbody"
 )
 
 // AutoRouteHandlers groups the 5 admin endpoints for autoroute.
@@ -391,13 +392,15 @@ func (h *AutoRouteHandlers) handleSetProfile(w http.ResponseWriter, r *http.Requ
 			APIKeyID int    `json:"api_key_id"`
 			Profile  string `json:"profile"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err == nil {
-			if body.APIKeyID > 0 {
-				apiKeyIDStr = strconv.Itoa(body.APIKeyID)
-			}
-			if body.Profile != "" {
-				profile = body.Profile
-			}
+		if err := jsonbody.DecodeRequest(r, &body, jsonbody.MaxOptionalBody, false); err != nil {
+			writeJSONErr(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+		if body.APIKeyID > 0 {
+			apiKeyIDStr = strconv.Itoa(body.APIKeyID)
+		}
+		if body.Profile != "" {
+			profile = body.Profile
 		}
 	}
 	apiKeyID, err := strconv.Atoi(apiKeyIDStr)

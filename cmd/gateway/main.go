@@ -1224,19 +1224,24 @@ func main() {
 					markCapturedPendingInProgress(pendingStore, resp, tenantID)
 				}
 				var stripFn func([]byte) []byte
-				switch catalogCode {
+				vendorCode := strings.ToLower(strings.TrimSpace(catalogCode))
+				switch vendorCode {
 				case "doubao":
 					stripFn = streaming.StripDoubaoFieldsBody
 				case "minimax":
 					stripFn = streaming.StripMinimaxFieldsBody
+				case "zhipu", "glm":
+					stripFn = streaming.StripZhipuFieldsBody
+				case "deepseek":
+					stripFn = streaming.StripDeepSeekFieldsBody
 				}
 				diagnostics := &streaming.DiagnosticContext{
 					RawLogger: routingExec.RawDataLogger,
 					Anomaly:   routingExec.AnomalyReporter,
 					Semantic:  routingExec.SemanticAnalyzer,
 				}
-				outcome := streaming.StreamChatWithPendingCaptureAndDiagnostics(
-					ctx, w, resp, clientModel, outboundModel, norm, capture, toolsRequested, stripFn, pc, diagnostics,
+				outcome := streaming.StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
+					ctx, w, resp, clientModel, outboundModel, norm, capture, toolsRequested, stripFn, vendorCode, pc, diagnostics,
 				)
 				saveCapturedPending(pendingStore, pc, resp, tenantID)
 				return outcome
@@ -1597,9 +1602,26 @@ func main() {
 			routingExec.Compressor.ToolFocusedStageEnabled = true
 			slog.Info("compression tool-focused stage enabled (GW-09)")
 		}
+		// GW-10 Phase 2 (omni-ref2): 算法选择器模式。
+		// LLM_GATEWAY_COMPRESSION_SELECTOR=adaptive 启用上下文预算自适应升级选择器；
+		// 默认 manual（Phase 1 行为：由显式 Policy 驱动 RunStrategies）。
+		if mode := compression.LoadSelectorMode(); mode == "adaptive" {
+			routingExec.Compressor.SelectorMode = "adaptive"
+			slog.Info("compression selector = adaptive (GW-10 Phase 2)",
+				"target_ratio", compression.LoadAdaptiveTargetRatio(),
+				"selector_spec", compression.LoadSelectorSpec())
+		} else {
+			routingExec.Compressor.SelectorMode = "manual"
+			routingExec.Compressor.SelectorSpec = compression.LoadSelectorSpec()
+		}
 		slog.Info("compressor initialized",
 			"mode", routingExec.Compressor.Mode().String(),
 			"window_fraction", routingExec.Compressor.Estimator().Fraction(),
+			"selector_mode", routingExec.Compressor.SelectorMode,
+			"strategy_runner_enabled", routingExec.Compressor.StrategyRunnerEnabled,
+			"adaptive_target_ratio", routingExec.Compressor.AdaptiveTargetRatio,
+			"selector_spec", routingExec.Compressor.SelectorSpec,
+
 			"lite_stage", routingExec.Compressor.LiteStageEnabled,
 			"caveman_stage", routingExec.Compressor.CavemanStageEnabled,
 			"toolfocused_stage", routingExec.Compressor.ToolFocusedStageEnabled,
@@ -2206,9 +2228,9 @@ func main() {
 		if routingExec != nil {
 			rcDeps := compression.RecoveryDeps{
 				Cache:      scCache,
-				MaxRetries: 2,
 				Summarizer: compression.NewSummaryFunc(compactionDeps),
 			}
+
 			routingExec.RecoveryCoord = compression.NewRecoveryCoordinator(rcDeps)
 			slog.Info("v5 smart recovery coordinator wired (session-aware incremental compression)")
 		}
@@ -2526,13 +2548,26 @@ func main() {
 		if detailDir == "" {
 			detailDir = filepath.Join(os.TempDir(), "llmgw-request-detail")
 		}
-		if detailStore, err := requestdetail.NewStore(detailDir); err != nil {
+		detailTTL := 30 * time.Minute
+		if rawTTL := strings.TrimSpace(os.Getenv("LLM_GATEWAY_REQUEST_DETAIL_TTL")); rawTTL != "" {
+			if parsedTTL, parseErr := time.ParseDuration(rawTTL); parseErr == nil && parsedTTL > 0 {
+				detailTTL = parsedTTL
+			} else {
+				slog.Warn("invalid request detail TTL; using default", "value", rawTTL, "default", detailTTL)
+			}
+		}
+		detailMaxEntries := getEnvInt("LLM_GATEWAY_REQUEST_DETAIL_MAX_ENTRIES", 4096)
+		if detailMaxEntries <= 0 {
+			slog.Warn("invalid request detail maximum entries; using default", "value", detailMaxEntries, "default", 4096)
+			detailMaxEntries = 4096
+		}
+		if detailStore, err := requestdetail.NewStoreWithOptions(detailDir, requestdetail.StoreOptions{TTL: detailTTL, MaxEntries: detailMaxEntries}); err != nil {
 			slog.Warn("request detail content store disabled", "dir", detailDir, "error", err)
 		} else {
 			requestdetail.SetGlobal(detailStore)
 			requestdetail.StartGlobalCaptureForwarder()
 			adminHandler.SetRequestDetailStore(detailStore)
-			slog.Info("request detail content store wired", "dir", detailDir)
+			slog.Info("request detail content store wired", "dir", detailDir, "ttl", detailTTL, "max_entries", detailMaxEntries)
 		}
 
 		formatAnomalyRecorder := streaming.NewFormatAnomalyRecorderFromPool(dbConn.Pool())
@@ -3464,6 +3499,7 @@ func main() {
 				// (uses the same system api key as the legacy worker).
 				if !ursmV2Cfg.StrictCanary {
 					credentialSelfcheckWorker = bg.NewCredentialSelfcheckWorker(dbConn.Pool(), selfCheckAPIKey, "")
+					credentialSelfcheckWorker.SetRedisClient(fpSlotRedis)
 					if probeStreamHub != nil {
 						credentialSelfcheckWorker.SetProbeSink(probeStreamHub)
 					}
@@ -3885,7 +3921,9 @@ func main() {
 		// rows. Without this, the request handler queues into a
 		// channel that no consumer ever drains.
 		admin.StartIngester(dbConn.Pool())
+		admin.SetIngesterRedisClient(fpSlotRedis)
 		defer admin.StopIngester()
+
 		slog.Info("CHECKPOINT: after StartIngester")
 		// 2026-06-27: 启动审批超时扫描 worker。approvalMgr 在前面
 		// 已通过 adminHandler.SetApprovalManager 注入；这里直接构造 worker

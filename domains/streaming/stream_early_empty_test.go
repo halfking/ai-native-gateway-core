@@ -50,7 +50,26 @@ func runEmptyGateForTest(t *testing.T, startingLine, remaining string) ([]string
 		&chunkCount,
 		nil,
 	)
+
 	return lines, outcome, recorder.Body.String()
+}
+
+func TestRunEmptyStreamGateVendorFieldsAreSanitized(t *testing.T) {
+	withEarlyEmptyThreshold(t, 0)
+	starting := `data: {"id":"start","choices":[{"delta":{"content":"hello"}}],"zhipu_request_id":"private"}` + "\n"
+	remaining := `data: {"id":"next","choices":[{"delta":{"content":"world"}}],"web_search_results":[{"title":"private"}]}` + "\n"
+	body := io.NopCloser(strings.NewReader(remaining))
+	recorder := httptest.NewRecorder()
+	lastSend := time.Now()
+	chunkCount := 0
+	lines, outcome := runEmptyStreamGateWithVendor(context.Background(), bufio.NewReader(body), body, recorder, recorder, nil, nil, nil, "gpt-test", new(string), starting, time.Second, &lastSend, &chunkCount, nil, "zhipu", StripZhipuFieldsBody)
+	if outcome != nil {
+		t.Fatalf("unexpected gate outcome: %+v", outcome)
+	}
+	joined := strings.Join(lines, "")
+	if strings.Contains(joined, "zhipu_request_id") || strings.Contains(joined, "web_search_results") {
+		t.Fatalf("vendor-private fields leaked from gate: %s", joined)
+	}
 }
 
 func TestRunEmptyStreamGateEarlyEmptyDetection(t *testing.T) {

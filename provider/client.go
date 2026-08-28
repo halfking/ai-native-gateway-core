@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/domains/credential"
+	redissafe "github.com/kaixuan/llm-gateway-go/internal/redis"
 	"github.com/kaixuan/llm-gateway-go/modelname"
 	"github.com/kaixuan/llm-gateway-go/secret"
 	"github.com/prometheus/client_golang/prometheus"
@@ -2107,7 +2108,11 @@ func (c *Client) maybeExitSuspicious(credentialID int, rawModel string) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
-	data, err := c.redis.HGetAll(ctx, fmt.Sprintf("llmgw:avail:%d:%s", credentialID, rawModel)).Result()
+	// audit-24h-20260828-r4 P2: Use SafeHGetAll to prevent WRONGTYPE errors
+	// when the availability key collides with a non-hash type. Errors and
+	// empty maps both fall through to recordSuspiciousExit("noop") — the
+	// original behaviour for missing or invalid state.
+	data, err := redissafe.SafeHGetAll(ctx, c.redis, fmt.Sprintf("llmgw:avail:%d:%s", credentialID, rawModel))
 	if err != nil || len(data) == 0 || data["state"] != "suspicious" {
 		recordSuspiciousExit("noop")
 		return

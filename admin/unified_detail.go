@@ -91,8 +91,8 @@ func (r *pgBodyReader) ReadRequestLogsBodies(ctx context.Context, requestID stri
 				bodies.OutboundBody = sessionBodies.OutboundBody
 			}
 		} else if !errors.Is(sessionErr, requestdetail.ErrNotFound) {
-			// Session recovery is best-effort once request-log content exists;
-			// preserve the usable primary payload on optional fallback failure.
+			// A request-log body is already usable; session recovery is an
+			// optional completion path and must not discard the primary payload.
 			slog.WarnContext(ctx, "requestdetail: session body recovery failed", "request_id", canonicalRequestID, "error", sessionErr)
 		}
 	}
@@ -113,6 +113,12 @@ func (r *pgBodyReader) loadRequestLogMeta(ctx context.Context, requestID string,
 		success            sql.NullBool
 		latencyMs          sql.NullInt32
 	)
+	tenantClause := ""
+	args := []any{requestID}
+	if !scope.Unrestricted {
+		tenantClause = " AND tenant_id = $2"
+		args = append(args, scope.TenantID)
+	}
 
 	// 2026-08-28 (audit follow-up, request-detail tenant gate):
 	// tenant-scoped lookups MUST be enforced inside SQL, not just at the HTTP
@@ -126,12 +132,6 @@ func (r *pgBodyReader) loadRequestLogMeta(ctx context.Context, requestID string,
 	// The HTTP handler still applies its post-fetch 404 gate (defense in depth);
 	// SQL-level tenant filtering prevents the wrong row from ever being
 	// scanned/serialized on the path.
-	tenantClause := ""
-	tenantArgs := []any(nil)
-	if !scope.Unrestricted {
-		tenantClause = " AND tenant_id = $2"
-		tenantArgs = []any{scope.TenantID}
-	}
 
 	// 2026-08-27 OPTIMIZATION: Split OR into two separate queries for better index usage.
 	// The previous OR query prevented efficient index usage. Now we try request_id first
@@ -145,7 +145,7 @@ func (r *pgBodyReader) loadRequestLogMeta(ctx context.Context, requestID string,
 		  FROM request_logs_hot
 		 WHERE request_id = $1`+tenantClause+`
 		 LIMIT 1
-	`, append([]any{requestID}, tenantArgs...)...).Scan(&canonicalRequestID, &tenantID, &gwSessionID, &gwTaskID, &clientModel, &status, &success, &latencyMs)
+	`, args...).Scan(&canonicalRequestID, &tenantID, &gwSessionID, &gwTaskID, &clientModel, &status, &success, &latencyMs)
 
 	// If not found by request_id, try client_request_id
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -157,7 +157,7 @@ func (r *pgBodyReader) loadRequestLogMeta(ctx context.Context, requestID string,
 			 WHERE client_request_id = $1`+tenantClause+`
 			 ORDER BY ts DESC
 			 LIMIT 1
-		`, append([]any{requestID}, tenantArgs...)...).Scan(&canonicalRequestID, &tenantID, &gwSessionID, &gwTaskID, &clientModel, &status, &success, &latencyMs)
+		`, args...).Scan(&canonicalRequestID, &tenantID, &gwSessionID, &gwTaskID, &clientModel, &status, &success, &latencyMs)
 	}
 
 	// If still not found in hot table, try partitioned table
@@ -169,7 +169,7 @@ func (r *pgBodyReader) loadRequestLogMeta(ctx context.Context, requestID string,
 			  FROM request_logs_with_current_month
 			 WHERE request_id = $1`+tenantClause+`
 			 LIMIT 1
-		`, append([]any{requestID}, tenantArgs...)...).Scan(&canonicalRequestID, &tenantID, &gwSessionID, &gwTaskID, &clientModel, &status, &success, &latencyMs)
+		`, args...).Scan(&canonicalRequestID, &tenantID, &gwSessionID, &gwTaskID, &clientModel, &status, &success, &latencyMs)
 	}
 
 	// Try client_request_id in partitioned table
@@ -182,7 +182,7 @@ func (r *pgBodyReader) loadRequestLogMeta(ctx context.Context, requestID string,
 			 WHERE client_request_id = $1`+tenantClause+`
 			 ORDER BY ts DESC
 			 LIMIT 1
-		`, append([]any{requestID}, tenantArgs...)...).Scan(&canonicalRequestID, &tenantID, &gwSessionID, &gwTaskID, &clientModel, &status, &success, &latencyMs)
+		`, args...).Scan(&canonicalRequestID, &tenantID, &gwSessionID, &gwTaskID, &clientModel, &status, &success, &latencyMs)
 	}
 
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -200,22 +200,28 @@ func (r *pgBodyReader) loadRequestLogMeta(ctx context.Context, requestID string,
 	}
 	meta := requestdetail.Meta{RequestID: canonicalRequestID, TenantID: tenantID}
 	if gwSessionID.Valid {
-		meta.GwSessionID = requestdetail.PtrTo(gwSessionID.String)
+		v := gwSessionID.String
+		meta.GwSessionID = &v
 	}
 	if gwTaskID.Valid {
-		meta.GwTaskID = requestdetail.PtrTo(gwTaskID.String)
+		v := gwTaskID.String
+		meta.GwTaskID = &v
 	}
 	if clientModel.Valid {
-		meta.ClientModel = requestdetail.PtrTo(clientModel.String)
+		v := clientModel.String
+		meta.ClientModel = &v
 	}
 	if status.Valid {
-		meta.Status = requestdetail.PtrTo(status.String)
+		v := status.String
+		meta.Status = &v
 	}
 	if success.Valid {
-		meta.Success = requestdetail.PtrTo(success.Bool)
+		v := success.Bool
+		meta.Success = &v
 	}
 	if latencyMs.Valid {
-		meta.LatencyMs = requestdetail.PtrTo(int(latencyMs.Int32))
+		v := int(latencyMs.Int32)
+		meta.LatencyMs = &v
 	}
 	return meta, nil
 }
@@ -319,14 +325,16 @@ func (r *pgBodyReader) ReadSessionTurnsBodies(ctx context.Context, requestID str
 	meta := requestdetail.Meta{
 		RequestID:   requestID,
 		TenantID:    tenantID,
-		GwSessionID: requestdetail.PtrTo(sessionID),
-		TurnNumber:  requestdetail.PtrTo(turnNo),
+		GwSessionID: &sessionID,
+		TurnNumber:  &turnNo,
 	}
 	if model.Valid {
-		meta.ClientModel = requestdetail.PtrTo(model.String)
+		v := model.String
+		meta.ClientModel = &v
 	}
 	if latencyMs.Valid {
-		meta.LatencyMs = requestdetail.PtrTo(int(latencyMs.Int32))
+		v := int(latencyMs.Int32)
+		meta.LatencyMs = &v
 	}
 	bodies := requestdetail.Bodies{
 		RequestBody:  json.RawMessage(requestDelta),
@@ -388,20 +396,17 @@ func (h *Handler) handleUnifiedRequestDetail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if err != nil {
-		if errors.Is(err, requestdetail.ErrBodyTooLarge) {
-			writeError(w, http.StatusRequestEntityTooLarge, "request detail body exceeds size limit")
-			return
-		}
-		writeError(w, http.StatusInternalServerError, err.Error())
+		slog.Error("request detail lookup failed", "request_id", requestID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to load request detail")
 		return
 	}
 	// 2026-08-26 (P1-29 fix): the previous implementation only checked
 	// tenant isolation for PersistencePersisted details, leaving the
 	// in-flight / on-disk path (PersistenceInFlight) open to a tenant
 	// admin who knew / guessed another tenant's request_id. Apply the
-	// same gate to ALL sources: any non-super-admin user may only see
-	// details whose TenantID matches their own. An empty TenantID on the
-	// detail is treated as "unknown origin" and denied for non-super-admins
+	// same gate to ALL sources: a tenant_admin may only see details
+	// whose TenantID matches their own. An empty TenantID on the
+	// detail is treated as "unknown origin" and denied for tenant_admins
 	// (fail-closed) — legacy in-flight meta written before this commit
 	// has no tenant recorded and must not leak across tenants.
 	if !IsSuperAdminOrLegacy(r) {

@@ -101,6 +101,12 @@ func isJSONErrorBody(body []byte) (bool, string, string) {
 	if err := json.Unmarshal([]byte(trimmed), &env); err != nil {
 		return false, "", ""
 	}
+	// A bare message is common metadata in successful provider responses.
+	// Require an error envelope or an explicit top-level type/code before
+	// treating the JSON as a non-SSE error body.
+	if env.Error == nil && env.Type == "" && env.Code == "" {
+		return false, "", ""
+	}
 	kind, msg := env.resolveError()
 	if kind == "" && msg == "" {
 		return false, "", ""

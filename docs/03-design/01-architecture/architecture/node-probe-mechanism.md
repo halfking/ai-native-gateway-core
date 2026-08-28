@@ -234,9 +234,360 @@ if len(candidates) == 0 {
 
 ---
 
-## 四、探测流程
+## 四、凭据自检模型选择策略
 
-### 4.1 双轮探测
+### 4.1 概述
+
+凭据自检（Credential Selfcheck）是一种主动健康检查机制，用于验证凭据在特定模型上的可用性。与 NodeProbe 的双轮探测不同，凭据自检专注于选择**最有可能成功的模型**进行探测，以最大化探测效率和成功率。
+
+### 4.2 数据源：Redis 租户隔离排行榜
+
+#### 4.2.1 设计原理
+
+凭据自检使用 **Redis ZSET** 维护每个租户最近 7 天使用的模型排行榜，作为模型选择的主要数据源。
+
+**Redis 键格式**:
+```
+llmgw:routing:recently_used_models:<tenant_id>
+```
+
+**数据结构**:
+- **成员（member）**: 标准化模型名（如 `gpt-4`, `claude-3-5-sonnet`）
+- **分数（score）**: 使用次数（ZINCRBY 累加）
+- **TTL**: 7 天自动过期
+
+#### 4.2.2 写入路径
+
+探测流量被严格过滤，仅记录真实业务流量：
+
+```go
+// admin/telemetry.go - ingester 写入逻辑
+func (i *Ingester) ingest(ctx context.Context, entry *Entry) {
+    // 过滤探测流量
+    if entry.IsProbe {
+        return
+    }
+    
+    // 仅记录成功请求
+    if entry.Status == "success" {
+        recentmodels.Record(ctx, i.redisClient, entry.TenantID, entry.Model)
+    }
+}
+```
+
+**容错机制**: Redis 不可用时静默失败，不影响主流程。
+
+#### 4.2.3 读取路径
+
+凭据自检优先从 Redis 读取，Redis 不可用时自动回退到 7 天业务日志统计：
+
+```go
+// bg/credential_selfcheck.go
+recent, _ := recentmodels.Read(ctx, redisClient, tenantID, 100)
+if len(recent) == 0 {
+    // 回退到 DB 统计（同口径：非探测、成功请求）
+    recent = queryRecentModelsFromDB(ctx, tenantID)
+}
+```
+
+**租户隔离**: 不同租户的使用模式完全隔离，避免跨租户干扰。
+
+---
+
+### 4.3 选择优先级与策略
+
+#### 4.3.1 主模型选择算法
+
+`selectSelfcheckPrimary()` 函数实现以下优先级：
+
+```go
+// bg/credential_selfcheck.go:493
+func selectSelfcheckPrimary(
+    bindings []selfcheckBinding,  // 凭据绑定的所有可路由模型
+    featured []string,             // 特色模型列表
+    recent []recentmodels.Entry    // Redis/DB 7天使用统计
+) (rawModel, strategy string)
+```
+
+**排序规则**（从高到低）:
+1. **使用量降序** (`score DESC`): 使用次数高的模型优先
+2. **特色标识优先** (`featured ASC`): 使用量相同时，特色模型优先
+3. **模型名字母序** (`model_name ASC`): 其他条件相同时按字母排序
+
+**策略标记**:
+- `featured`: 选中的是特色模型（即使 7 天使用量为 0）
+- `recent`: 选中的是 Redis/DB 统计的常用模型（非特色）
+
+#### 4.3.2 失败模型追加逻辑
+
+主模型选择后，系统会追加**已到恢复时间的失败模型**进行恢复自检：
+
+```go
+// bg/credential_selfcheck.go
+var toCheck []string
+
+// 1. 主模型（featured 或 recent）
+if primary != "" {
+    toCheck = append(toCheck, primary)
+}
+
+// 2. 追加到期失败模型（无上限）
+failedModels := queryFailedBindings(ctx, credentialID, now())
+for _, model := range failedModels {
+    if model != primary {
+        toCheck = append(toCheck, model)
+        strategy = "failed_model"
+    }
+}
+
+// 3. 无主模型保护
+if len(toCheck) == 0 && len(failedModels) > 0 {
+    toCheck = failedModels
+    strategy = "failed_model"
+}
+
+// 4. 完全无候选
+if len(toCheck) == 0 {
+    strategy = "no_eligible_model"
+    return
+}
+```
+
+**关键设计变更**（2026-08-28）:
+- ❌ 旧: 失败模型恢复限 3 次 → 长期失败模型永久不恢复
+- ✅ 新: 失败模型追加无上限 → 到期即尝试恢复，避免"假死"
+
+---
+
+### 4.4 Redis 不可用时的回退机制
+
+#### 4.4.1 DB 回退查询
+
+当 Redis 不可用时，系统使用相同口径的 DB 统计：
+
+```sql
+-- 7 天非探测成功请求统计
+SELECT 
+    model,
+    COUNT(*) as usage_count
+FROM request_logs
+WHERE tenant_id = $1
+  AND created_at > now() - interval '7 days'
+  AND is_probe = FALSE
+  AND status = 'success'
+GROUP BY model
+ORDER BY usage_count DESC
+LIMIT 100;
+```
+
+**口径一致性**: 与 Redis 写入逻辑完全对齐（非探测 + 成功请求）。
+
+#### 4.4.2 降级行为
+
+```mermaid
+graph TD
+    A[凭据自检启动] --> B{Redis 可用?}
+    B -->|是| C[读取 Redis ZSET]
+    B -->|否| D[回退到 DB 统计]
+    C --> E[解析 recent entries]
+    D --> E
+    E --> F{有常用模型?}
+    F -->|是| G[选择 top 1 模型]
+    F -->|否| H{有特色模型?}
+    H -->|是| I[选择特色模型]
+    H -->|否| J{有到期失败模型?}
+    J -->|是| K[尝试恢复失败模型]
+    J -->|否| L[标记 no_eligible_model]
+```
+
+---
+
+### 4.5 完整流程图
+
+```mermaid
+flowchart TD
+    Start[凭据自检触发] --> GetBindings[查询凭据绑定]
+    GetBindings --> GetFeatured[获取特色模型列表]
+    GetFeatured --> GetRecent{Redis 可用?}
+    
+    GetRecent -->|是| Redis[读取 Redis ZSET<br/>租户 7 天使用统计]
+    GetRecent -->|否| DB[回退 DB 查询<br/>同口径统计]
+    
+    Redis --> Select[selectSelfcheckPrimary]
+    DB --> Select
+    
+    Select --> HasPrimary{有主模型?}
+    HasPrimary -->|是| AddPrimary[toCheck += primary<br/>strategy = featured/recent]
+    HasPrimary -->|否| CheckFailed
+    
+    AddPrimary --> QueryFailed[查询到期失败模型]
+    QueryFailed --> HasFailed{有失败模型?}
+    HasFailed -->|是| AddFailed[toCheck += failed<br/>strategy = failed_model]
+    HasFailed -->|否| DoCheck
+    
+    CheckFailed{有到期失败模型?}
+    CheckFailed -->|是| UseFailed[toCheck = failed<br/>strategy = failed_model]
+    CheckFailed -->|否| NoModel[strategy = no_eligible_model<br/>跳过自检]
+    
+    AddFailed --> DoCheck[遍历 toCheck]
+    UseFailed --> DoCheck
+    
+    DoCheck --> HTTPProbe[HTTP 探测<br/>ping + tool_call]
+    HTTPProbe --> Classify[分类错误<br/>errorsx.ClassifyErrorWithBody]
+    Classify --> Record[记录 self_check_runs]
+    Record --> UpdateState[更新凭据/绑定状态]
+    UpdateState --> End[完成]
+    NoModel --> End
+```
+
+---
+
+### 4.6 策略标记说明
+
+凭据自检会在 `self_check_runs.selection_strategy` 字段记录选择策略：
+
+| 策略 | 含义 | 条件 |
+|------|------|------|
+| `featured` | 特色模型 | 选中模型在 featured 列表且使用量最高 |
+| `recent` | 常用模型 | 选中模型来自 Redis/DB 统计，非特色 |
+| `failed_model` | 失败恢复 | 仅对到期失败模型进行恢复自检 |
+| `no_eligible_model` | 无候选 | 凭据无可路由模型（配置错误） |
+
+**监控预期**（生产环境）:
+- `featured` + `recent` 占比 > 80%（正常自检）
+- `failed_model` < 15%（恢复自检）
+- `no_eligible_model` < 5%（配置问题）
+
+---
+
+### 4.7 配置与调优
+
+#### 4.7.1 特色模型配置
+
+特色模型通过 `system_settings` 表配置：
+
+```sql
+SELECT setting_value 
+FROM system_settings 
+WHERE setting_key = 'featured_models';
+```
+
+```json
+{
+  "models": [
+    "gpt-4",
+    "gpt-4-turbo",
+    "claude-3-5-sonnet-20241022",
+    "gemini-1.5-pro"
+  ]
+}
+```
+
+#### 4.7.2 Redis 性能参数
+
+```go
+// recentmodels/store.go
+const (
+    TTL         = 7 * 24 * time.Hour  // 7 天过期
+    MaxModels   = 100                 // 每租户最多 100 个模型
+    PipelineMax = 100                 // Pipeline 批量写入上限
+)
+```
+
+---
+
+### 4.8 可观测性
+
+#### 4.8.1 数据库查询
+
+**自检策略分布**:
+```sql
+SELECT selection_strategy, COUNT(*) as count
+FROM self_check_runs
+WHERE created_at > now() - interval '24 hours'
+GROUP BY selection_strategy
+ORDER BY count DESC;
+```
+
+**Redis 覆盖率**:
+```bash
+redis-cli --scan --pattern 'llmgw:routing:recently_used_models:*' | wc -l
+```
+
+**自检成功率**:
+```sql
+SELECT 
+    selection_strategy,
+    COUNT(*) FILTER (WHERE status = 'success') * 100.0 / COUNT(*) as success_rate
+FROM self_check_runs
+WHERE created_at > now() - interval '24 hours'
+GROUP BY selection_strategy;
+```
+
+---
+
+### 4.9 故障排查
+
+#### 4.9.1 问题：自检一直选择低成功率模型
+
+**排查**:
+1. 检查 Redis 数据是否过期：
+   ```bash
+   redis-cli ZRANGE llmgw:routing:recently_used_models:<tenant> 0 -1 WITHSCORES
+   ```
+
+2. 检查特色模型配置是否过时：
+   ```sql
+   SELECT setting_value FROM system_settings WHERE setting_key = 'featured_models';
+   ```
+
+3. 确认 ingester 是否正常写入：
+   ```sql
+   SELECT COUNT(*) FROM request_logs 
+   WHERE tenant_id = ? 
+     AND created_at > now() - interval '1 hour'
+     AND is_probe = FALSE 
+     AND status = 'success';
+   ```
+
+#### 4.9.2 问题：Redis 不可用导致自检失败
+
+**影响范围**: 仅降级到 DB 统计，不影响自检执行。
+
+**恢复步骤**:
+1. 检查 Redis 连接：
+   ```bash
+   redis-cli PING
+   ```
+
+2. 检查 DB 回退是否正常：
+   ```sql
+   EXPLAIN ANALYZE
+   SELECT model, COUNT(*) FROM request_logs
+   WHERE tenant_id = ? AND created_at > now() - interval '7 days'
+   GROUP BY model;
+   ```
+
+3. 确认 ingester 是否已恢复：
+   ```bash
+   grep "recentmodels.Record" /var/log/gateway.log | tail -20
+   ```
+
+---
+
+### 4.10 参考资料
+
+- **核心代码**: `bg/credential_selfcheck.go:493` (selectSelfcheckPrimary)
+- **数据存储**: `recentmodels/store.go`
+- **写入路径**: `admin/telemetry.go` (ingester)
+- **策略枚举**: `errorsx/automatic_probe_policy.go`
+- **交付报告**: `/tmp/selfcheck-optimization-handoff.md`
+
+---
+
+## 五、探测流程
+
+### 5.1 双轮探测
 
 #### Round 1: Direct (直接探测供应商)
 
@@ -289,7 +640,7 @@ if len(candidates) == 0 {
   
 **原因**: Gateway 轮需要路由到已恢复的 credential，否则会因为旧的 `available=false` 再次失败。
 
-### 4.2 指数退避策略
+### 5.2 指数退避策略
 
 ```go
 var NodeProbeBackoffChain = []time.Duration{
@@ -321,9 +672,9 @@ if success {
 
 ---
 
-## 五、状态同步
+## 六、状态同步
 
-### 5.1 写入路径
+### 6.1 写入路径
 
 #### 探测成功
 ```go
@@ -398,7 +749,7 @@ w.stateObserver.UpdateFromProbe(ctx, &State{
 w.invalidateCandidateCache(credID)
 ```
 
-### 5.2 读取路径
+### 6.2 读取路径
 
 #### Router 路由决策
 ```go
@@ -433,9 +784,9 @@ func (n *NodeState) IsUsable(now time.Time) bool {
 
 ---
 
-## 六、可观测性
+## 七、可观测性
 
-### 6.1 Prometheus 指标
+### 7.1 Prometheus 指标
 
 ```go
 // 探测总数（按结果分类）
@@ -448,7 +799,7 @@ node_probe_sync_duration_seconds
 node_probe_sync_inflight_waiters
 ```
 
-### 6.2 日志级别
+### 7.2 日志级别
 
 | 级别 | 场景 | 示例 |
 |------|------|------|
@@ -457,7 +808,7 @@ node_probe_sync_inflight_waiters
 | `Error` | 解密失败 | `decrypt failed`, `keyring_nil`, `unknown kid` |
 | `Debug` | 诊断细节 | `reclaim scan failed`, `pressure query failed` |
 
-### 6.3 SSE 实时流
+### 7.3 SSE 实时流
 
 **自检 Tab** (`/admin/probe-stream`):
 ```json
@@ -480,9 +831,9 @@ node_probe_sync_inflight_waiters
 
 ---
 
-## 七、故障排查
+## 八、故障排查
 
-### 7.1 常见问题
+### 8.1 常见问题
 
 #### Q1: 探测一直失败，但供应商实际正常
 
@@ -561,7 +912,7 @@ node_probe_sync_inflight_waiters
    - `http_429` → 网关侧限流器触发
    - `http_500` → 插件异常（如压缩中间件、计费插件）
 
-### 7.2 手动恢复命令
+### 8.2 手动恢复命令
 
 #### 强制标记节点为健康
 ```go
@@ -591,9 +942,9 @@ WHERE credential_id = ? AND raw_model_name = ?;
 
 ---
 
-## 八、性能考量
+## 九、性能考量
 
-### 8.1 热路径开销
+### 9.1 热路径开销
 
 | 操作 | 耗时 | 频率 | 优化 |
 |------|------|------|------|
@@ -602,13 +953,13 @@ WHERE credential_id = ? AND raw_model_name = ?;
 | `ProbeSync()` | ~100-500ms | 仅 no_candidates | 5s 超时 + 并发扇出 |
 | `Submit()` | ~2-5ms | 失败请求（≥2 次） | 异步写入 DB |
 
-### 8.2 并发控制
+### 9.2 并发控制
 
 - **跨实例**: `SELECT FOR UPDATE SKIP LOCKED` 防止重复探测
 - **单实例**: `inFlight` map 防止同一 (cred, model) 并发探测
 - **同步探测**: `syncWaiters` 复用 in-flight 探测结果（避免重复请求）
 
-### 8.3 资源消耗
+### 9.3 资源消耗
 
 - **DB 连接**: 1 个长连接（worker）
 - **Redis 连接**: 共享连接池
@@ -617,9 +968,9 @@ WHERE credential_id = ? AND raw_model_name = ?;
 
 ---
 
-## 九、配置参数
+## 十、配置参数
 
-### 9.1 环境变量
+### 10.1 环境变量
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
@@ -628,7 +979,7 @@ WHERE credential_id = ? AND raw_model_name = ?;
 | `LLM_GATEWAY_EGRESS_FORWARDED_FOR` | - | 出口 IP 链（记录到 `X-Forwarded-For`） |
 | `LLM_GATEWAY_NO_CANDIDATE_PROBE_FANOUT` | 0（无限） | 同步探测并发数 |
 
-### 9.2 系统配置 (system_settings)
+### 10.2 系统配置 (system_settings)
 
 ```sql
 SELECT * FROM system_settings WHERE setting_key = 'error_probe';
@@ -645,7 +996,7 @@ SELECT * FROM system_settings WHERE setting_key = 'error_probe';
 
 ---
 
-## 十、演进历史
+## 十一、演进历史
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
@@ -655,10 +1006,11 @@ SELECT * FROM system_settings WHERE setting_key = 'error_probe';
 | v1.3 | 2026-07-22 | 成功后 1h 重探（原 24h） |
 | v1.4 | 2026-07-24 | 删除 orphan binding 行（避免无限探测） |
 | v2.0 | 2026-08-11 | 文档化 + 7 天活动窗口 |
+| v2.1 | 2026-08-28 | 凭据自检模型选择策略优化（Redis 排行榜） |
 
 ---
 
-## 十一、参考资料
+## 十二、参考资料
 
 - **代码**: `bg/node_probe.go` (1900 行)
 - **测试**: `bg/node_probe_test.go`

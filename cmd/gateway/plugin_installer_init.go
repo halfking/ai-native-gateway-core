@@ -2,10 +2,10 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
 	"net/http"
 
+	"github.com/kaixuan/llm-gateway-go/internal/jsonbody"
 	"github.com/kaixuan/llm-gateway-go/plugin-runtime"
 )
 
@@ -33,7 +33,7 @@ func makePluginInstallHandler(inst pluginInstaller) http.HandlerFunc {
 			return
 		}
 		var req pluginInstallRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := jsonbody.DecodeRequest(r, &req, jsonbody.MaxRequiredBody, true); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{
 				"error": "request body is not valid JSON",
 				"code":  "plugin.invalid_body",

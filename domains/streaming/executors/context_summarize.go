@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"
 	"github.com/kaixuan/llm-gateway-go/domains/identity"       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/memory"         //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/transformation" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -950,6 +951,7 @@ func truncateForLog(b []byte, n int) string {
 }
 
 type contextLengthRecoveryState struct {
+	strategyAttempted   bool
 	mechanicalAttempted bool
 	memoraAttempted     bool
 	llmAttempted        bool
@@ -1067,6 +1069,26 @@ func (e *Executor) handleContextLengthRecovery(
 	}
 
 	// ── Legacy 3-tier recovery (fallback when RecoveryCoord is nil) ──────
+
+	// Optional selector path. It is intentionally separate from the legacy
+	// cascade: only a smaller result retries immediately; a no-op or failure
+	// still proceeds to mechanical trim → Memora → LLM summary below.
+	if targetCand.ContextWindow != nil && !st.strategyAttempted {
+		st.strategyAttempted = true
+		if out, applied := e.runOptionalCompressionStrategies(ctx, *sourceBody, targetCand.ContextWindow, compression.ModeOn4xx); applied {
+			before := len(*sourceBody)
+			*sourceBody = out
+			st.lastStrategy = "strategy_runner"
+			st.lastMeta = buildCompressionMeta(targetCand.ContextWindow, before, len(*sourceBody))
+			slog.Info("context_length 4xx → strategy runner retry",
+				"credential_id", targetCand.CredentialID,
+				"model", targetCand.RawModel,
+				"context_window", cwLogVal(targetCand.ContextWindow),
+				"source_bytes", before,
+				"after_bytes", len(*sourceBody))
+			return ctxLenRetry
+		}
+	}
 
 	// Phase 1: mechanical trim. Only possible when we know the target
 	// model's context window (needed to compute the soft limit). When
