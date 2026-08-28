@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/transformation/anthropic"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 )
 
@@ -369,6 +370,15 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 		// for input_json_delta, so the bridge maintains this lookup.
 		toolCallIDs         = make(map[int]string)
 		messageStopReceived bool
+		// emittedContent (audit-24h-20260828-r3 P1-B parity, Phase E):
+		// tracks whether any client-visible semantic bytes — text,
+		// thinking, tool-call deltas — reached the wire. Set true inside
+		// writeChunkIR for content-bearing deltas; read at the two
+		// clean-EOF return paths (lines ~460 and ~479) to decide
+		// whether to surface KindEmptyResponse for fail-over, matching
+		// the non-stream detector at executor_anthropic.go:1273 and the
+		// passthrough detector at anthropic_passthrough_stream.go:147-178.
+		emittedContent bool
 	)
 
 	// writeChunkIR serializes one IR StreamChunk via the Responses API
@@ -410,6 +420,22 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 			}
 		}
 		chunkCount++
+
+		// Mark semantic emission: any non-empty text / thinking /
+		// tool-call delta reaches the client as part of sseLine above.
+		// Envelope / scaffold events (e.g. response.created) are NOT
+		// semantic emission.
+		if chunk.Type == ir.ChunkTypeDelta && chunk.Delta != nil {
+			if chunk.Delta.Content != "" || chunk.Delta.ReasoningContent != "" {
+				emittedContent = true
+			}
+			for _, tc := range chunk.Delta.ToolCalls {
+				if tc.Arguments != "" || tc.Name != "" {
+					emittedContent = true
+					break
+				}
+			}
+		}
 
 		// Track visible text for the final response.output_text.done payload.
 		if chunk.Type == ir.ChunkTypeDelta && chunk.Delta != nil {
@@ -457,6 +483,26 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 					// emitting a terminal event).
 					if finishReason != "" {
 						scaffold.finishAttempt(gate, fullText.String(), finishReason, inputTokens, outputTokens, inputTokens+outputTokens)
+						// audit-24h-20260828-r3 P1-B parity (Phase E):
+						// even when finishReason was already accumulated
+						// before EOF, an empty stream is still empty — no
+						// semantic bytes AND no usage tokens means the
+						// executor must fail over, not record success.
+						if anthropic.IsAnthropicStreamEmpty(emittedContent, inputTokens, outputTokens) {
+							if capture != nil {
+								capture.MarkInterruptedWithReason("anthropic_empty_response")
+							}
+							if pc != nil {
+								pc.markInterrupted("anthropic_empty_response")
+							}
+							return StreamOutcome{
+								Interrupted: true,
+								Reason:      "anthropic_empty_response",
+								Kind:        errorsx.KindEmptyResponse,
+								Resumable:   true,
+								ChunkCount:  chunkCount,
+							}
+						}
 						return StreamOutcome{ChunkCount: chunkCount}
 					}
 					outcome = StreamOutcome{
@@ -476,6 +522,27 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 					return outcome
 				}
 				scaffold.finishAttempt(gate, fullText.String(), finishReason, inputTokens, outputTokens, inputTokens+outputTokens)
+				// audit-24h-20260828-r3 P1-B parity (Phase E): empty-response
+				// check at the normal message_stop terminal path. An
+				// Anthropic stream that closed cleanly but emitted no
+				// semantic bytes and no usage tokens fails over to the
+				// next candidate instead of being recorded as a successful
+				// empty stream.
+				if anthropic.IsAnthropicStreamEmpty(emittedContent, inputTokens, outputTokens) {
+					if capture != nil {
+						capture.MarkInterruptedWithReason("anthropic_empty_response")
+					}
+					if pc != nil {
+						pc.markInterrupted("anthropic_empty_response")
+					}
+					return StreamOutcome{
+						Interrupted: true,
+						Reason:      "anthropic_empty_response",
+						Kind:        errorsx.KindEmptyResponse,
+						Resumable:   true,
+						ChunkCount:  chunkCount,
+					}
+				}
 				return StreamOutcome{ChunkCount: chunkCount}
 			}
 			failure := streamReadFailureOutcome(err, chunkCount)

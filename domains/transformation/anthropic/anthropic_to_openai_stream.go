@@ -110,6 +110,14 @@ func StreamAnthropicSSEToOpenAI(
 		bufferedToolArgs    strings.Builder
 		currentToolCallID   string
 		initialArgsSent     bool
+		// emittedContent (audit-24h-20260828-r3 P1-B parity) tracks
+		// whether any client-visible semantic bytes — text, thinking,
+		// tool-call deltas, or a terminal [DONE] — reached the wire.
+		// Set true inside writeChunk for content-bearing deltas and
+		// inside the ChunkTypeDone branch; read at the two clean-EOF
+		// return paths to decide whether to surface KindEmptyResponse
+		// (parity with anthropic_passthrough_stream.go:147-178).
+		emittedContent bool
 	)
 
 	// writeChunk writes a single OpenAI chunk to w and the capturer.
@@ -131,6 +139,20 @@ func StreamAnthropicSSEToOpenAI(
 		}
 
 		chunkCount++
+		// Mark semantic emission: any non-empty text / thinking /
+		// tool-call delta reaches the client as part of sseLine above.
+		// The role prelude alone (no content) is NOT semantic emission.
+		if chunk.Type == ir.ChunkTypeDelta && chunk.Delta != nil {
+			if chunk.Delta.Content != "" || chunk.Delta.ReasoningContent != "" {
+				emittedContent = true
+			}
+			for _, tc := range chunk.Delta.ToolCalls {
+				if tc.Arguments != "" || tc.Name != "" {
+					emittedContent = true
+					break
+				}
+			}
+		}
 	}
 
 	// flushBufferedText emits the accumulated text content.
@@ -236,6 +258,22 @@ func StreamAnthropicSSEToOpenAI(
 					writeChunk(usageChunk)
 				}
 				writeChunk(&ir.StreamChunk{Type: ir.ChunkTypeDone, SourceProtocol: ir.ProtocolAnthropicMessages})
+				// audit-24h-20260828-r3 P1-B parity (Q3): an Anthropic
+				// stream that closed cleanly but emitted no semantic bytes
+				// and no usage tokens is treated as empty so the executor
+				// fails over to the next candidate. Matches the
+				// non-stream detector at executor_anthropic.go:1273 and
+				// the passthrough detector at
+				// anthropic_passthrough_stream.go:147-178.
+				if IsAnthropicStreamEmpty(emittedContent, inputTokens, outputTokens) {
+					if capture != nil {
+						capture.MarkInterruptedWithReason("anthropic_empty_response")
+					}
+					if pc != nil {
+						pc.markInterrupted("anthropic_empty_response")
+					}
+					return EmptyResponseStreamOutcome(chunkCount)
+				}
 				return StreamOutcome{ChunkCount: chunkCount}
 			}
 			if capture != nil {
@@ -506,6 +544,20 @@ func StreamAnthropicSSEToOpenAI(
 
 			// Emit [DONE]
 			writeChunk(&ir.StreamChunk{Type: ir.ChunkTypeDone, SourceProtocol: ir.ProtocolAnthropicMessages})
+			// audit-24h-20260828-r3 P1-B parity (Q3): empty-response check
+			// at the message_stop terminal path. An Anthropic stream that
+			// closed cleanly via message_stop but emitted no semantic bytes
+			// and no usage tokens fails over to the next candidate instead
+			// of being recorded as a successful empty stream.
+			if IsAnthropicStreamEmpty(emittedContent, inputTokens, outputTokens) {
+				if capture != nil {
+					capture.MarkInterruptedWithReason("anthropic_empty_response")
+				}
+				if pc != nil {
+					pc.markInterrupted("anthropic_empty_response")
+				}
+				return EmptyResponseStreamOutcome(chunkCount)
+			}
 			return StreamOutcome{ChunkCount: chunkCount}
 
 		case ir.ChunkTypeError:
