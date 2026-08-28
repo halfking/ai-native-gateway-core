@@ -79,6 +79,12 @@ type Manager struct {
 	invalidationStop context.CancelFunc
 	invalidationWG   stdsync.WaitGroup
 	closeOnce        stdsync.Once
+	// invalidationMu (MEDIUM, 2026-08-29) guards invalidationStop +
+	// invalidationWG coordination between startInvalidationSubscriber
+	// and Close. Without it, a concurrent Close + restart could
+	// overwrite an already-cleared stop func with a new one or
+	// double-Add on the WG.
+	invalidationMu stdsync.Mutex
 }
 
 // SetHotConfig wires the live settings_kv source (hotconfig.Config
@@ -899,9 +905,20 @@ func (m *Manager) startInvalidationSubscriber(rdb *redis.Client) {
 	if m == nil || m.nodeMirror == nil || rdb == nil {
 		return
 	}
+	// MEDIUM (2026-08-29): guard against double-start. The previous
+	// implementation overwrote m.invalidationStop on every invocation,
+	// which would orphan the first subscriber's cancel func and (with
+	// Add+Done balance errors) eventually panic the WG. We now bail
+	// when a subscriber is already live.
+	m.invalidationMu.Lock()
+	if m.invalidationStop != nil {
+		m.invalidationMu.Unlock()
+		return
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	m.invalidationStop = cancel
 	m.invalidationWG.Add(1)
+	m.invalidationMu.Unlock()
 	go func() {
 		defer m.invalidationWG.Done()
 		pubsub := rdb.Subscribe(context.Background(), store.NodeInvalidationChannel(m.cfg.RedisKeyPrefix))
@@ -940,7 +957,15 @@ func (m *Manager) Close() {
 		return
 	}
 	m.closeOnce.Do(func() {
-		m.invalidationStop()
+		// Pull the stop func under the lock so a concurrent
+		// startInvalidationSubscriber cannot race against Close and
+		// orphan the cancel. After Wait returns we clear the field so
+		// the next caller sees the post-close state immediately.
+		m.invalidationMu.Lock()
+		stop := m.invalidationStop
+		m.invalidationStop = nil
+		m.invalidationMu.Unlock()
+		stop()
 		m.invalidationWG.Wait()
 	})
 }
