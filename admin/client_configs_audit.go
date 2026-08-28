@@ -25,7 +25,7 @@ func (h *Handler) handleClientConfigAudit(w http.ResponseWriter, r *http.Request
 	}
 
 	var req clientConfigAuditRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONRequired(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}

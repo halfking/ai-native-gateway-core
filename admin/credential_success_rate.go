@@ -110,7 +110,7 @@ func HandleResetCredentialSuccessRate(db *pgxpool.Pool) http.HandlerFunc {
 			CredentialID int64  `json:"credential_id"`
 			RawModel     string `json:"raw_model"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := readJSONRequired(r, &req); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
