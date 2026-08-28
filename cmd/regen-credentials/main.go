@@ -1,48 +1,48 @@
-// Regenerates credential ciphertexts in the database using the local test key.
+// Regenerates credential ciphertexts in the database using the credential
+// encryption key from the environment. The operator must set
+// LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY (or LLM_GATEWAY_SECRET_KEY) — there is
+// no hardcoded fallback so a leaked source tree cannot decrypt credentials.
 // Usage: go run ./cmd/regen-credentials
 package main
 
 import (
 	"context"
-	"fmt"
-	"log"
+	"log/slog"
 	"os"
+	"strconv"
 	"time"
 
-	"github.com/kaixuan/llm-gateway-go/secret"
-
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/kaixuan/llm-gateway-go/secret"
 )
 
 func main() {
-	ctx := context.Background()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	slog.SetDefault(logger)
 
-	// Use local test key - must match LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY env var
-	explicitKey := "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
-	fernetKey, err := secret.FernetKeyFromSecret("", explicitKey)
+	explicit := os.Getenv("LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY")
+	secretKey := os.Getenv("LLM_GATEWAY_SECRET_KEY")
+	fernetKey, err := secret.FernetKeyFromSecret(secretKey, explicit)
 	if err != nil {
-		log.Fatalf("FernetKeyFromSecret failed: %v", err)
+		logger.Error("credential encryption key not configured; set LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY or LLM_GATEWAY_SECRET_KEY")
+		os.Exit(1)
 	}
-	fmt.Printf("Fernet key length: %d\n", len(fernetKey))
 
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
-		log.Fatalf("DATABASE_URL not set")
+		logger.Error("DATABASE_URL not set")
+		os.Exit(1)
 	}
 
+	ctx := context.Background()
 	dbPool, err := pgxpool.New(ctx, dbURL)
 	if err != nil {
-		log.Fatalf("pgxpool.New failed: %v", err)
+		logger.Error("pgxpool.New failed", "error", err.Error())
+		os.Exit(1)
 	}
 	defer dbPool.Close()
 
-	// First, let's see what credentials exist
-	var creds []struct {
-		ID               int
-		ProviderID       int
-		SecretCiphertext string
-		Status           string
-	}
 	rows, err := dbPool.Query(ctx, `
 		SELECT c.id, c.provider_id, encode(c.secret_ciphertext, 'escape'), c.status
 		FROM credentials c
@@ -51,7 +51,14 @@ func main() {
 		ORDER BY c.id
 	`)
 	if err != nil {
-		log.Fatalf("query credentials failed: %v", err)
+		logger.Error("query credentials failed", "error", err.Error())
+		os.Exit(1)
+	}
+	var creds []struct {
+		ID               int
+		ProviderID       int
+		SecretCiphertext string
+		Status           string
 	}
 	for rows.Next() {
 		var c struct {
@@ -61,20 +68,22 @@ func main() {
 			Status           string
 		}
 		if err := rows.Scan(&c.ID, &c.ProviderID, &c.SecretCiphertext, &c.Status); err != nil {
-			log.Fatalf("scan failed: %v", err)
+			rows.Close()
+			logger.Error("scan failed", "error", err.Error())
+			os.Exit(1)
 		}
 		creds = append(creds, c)
 	}
 	rows.Close()
-	fmt.Printf("Found %d credentials\n", len(creds))
+	logger.Info("found credentials", "count", len(creds))
 
-	// Generate new Fernet ciphertext for "test-api-key-{provider_id}"
 	updated := 0
 	for _, cred := range creds {
-		apiKey := fmt.Sprintf("test-api-key-%d", cred.ProviderID)
+		apiKey := "test-api-key-" + strconv.Itoa(cred.ProviderID)
 		newCiphertext, err := secret.EncryptFernet([]byte(apiKey), fernetKey)
 		if err != nil {
-			log.Fatalf("EncryptFernet failed for cred %d: %v", cred.ID, err)
+			logger.Error("EncryptFernet failed", "cred_id", cred.ID, "error", err.Error())
+			os.Exit(1)
 		}
 
 		// Update DB with v1:legacy prefix (EncryptFernet returns base64-encoded bytes)
@@ -85,12 +94,14 @@ func main() {
 			WHERE id = $3
 		`, fullCiphertext, time.Now(), cred.ID)
 		if err != nil {
-			log.Fatalf("update failed for cred %d: %v", cred.ID, err)
+			logger.Error("update failed", "cred_id", cred.ID, "error", err.Error())
+			os.Exit(1)
 		}
 		updated++
-		fmt.Printf("Updated credential %d (provider %d): %s\n", cred.ID, cred.ProviderID, apiKey)
+		// Do not log the API key — only the credential identity and provider.
+		logger.Info("updated credential", "cred_id", cred.ID, "provider_id", cred.ProviderID)
 	}
 
-	fmt.Printf("\nSuccessfully updated %d credentials\n", updated)
-	fmt.Println("\nIMPORTANT: Restart the gateway to pick up new credentials")
+	logger.Info("regen-credentials complete", "updated", updated)
+	logger.Info("restart gateway to pick up new credentials")
 }

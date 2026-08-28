@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+
+	redissafe "github.com/kaixuan/llm-gateway-go/internal/redis"
 )
 
 // Redis store layout (R11.7):
@@ -331,14 +333,17 @@ func metaFromFields(get func(string) string) (ArtifactMeta, error) {
 
 // readManifest loads the manifest; exists reports whether any field is stored.
 func (s *RedisArtifactStore) readManifest(ctx context.Context, tenantID, sessionID string) (*ArtifactManifest, bool, error) {
-	vals, err := s.opts.Client.HGetAll(ctx, s.manifestKey(tenantID, sessionID)).Result()
+	vals, err := redissafe.SafeHGetAll(ctx, s.opts.Client, s.manifestKey(tenantID, sessionID))
+	if errors.Is(err, redissafe.ErrKeyNotFound) {
+		return NewArtifactManifest(tenantID, sessionID), false, nil
+	}
 	if err != nil {
 		return nil, false, fmt.Errorf("preprocess: hgetall manifest: %w", err)
 	}
-	m := NewArtifactManifest(tenantID, sessionID)
 	if len(vals) == 0 {
-		return m, false, nil
+		return NewArtifactManifest(tenantID, sessionID), false, nil
 	}
+	m := NewArtifactManifest(tenantID, sessionID)
 	if tn, err := strconv.ParseInt(vals[fieldTurnNo], 10, 32); err == nil {
 		m.Revision.TurnNo = int32(tn)
 	}

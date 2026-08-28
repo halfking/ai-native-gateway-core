@@ -11,11 +11,14 @@ package v2
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"time"
 
 	"github.com/redis/go-redis/v9"
+
+	redissafe "github.com/kaixuan/llm-gateway-go/internal/redis"
 )
 
 const (
@@ -101,9 +104,10 @@ func (r *RedisGovernanceCache) Get(ctx context.Context, tenantID, sessionID stri
 
 	key := redisKeyV2(tenantID, sessionID)
 
-	// Use HGETALL to retrieve all fields
-	data, err := r.client.HGetAll(ctx, key).Result()
-	if err == redis.Nil || len(data) == 0 {
+	// Use SafeHGetAll so a non-hash key surfaces a typed error instead of a
+	// raw WRONGTYPE panic from go-redis.
+	data, err := redissafe.SafeHGetAll(ctx, r.client, key)
+	if errors.Is(err, redissafe.ErrKeyNotFound) || len(data) == 0 {
 		return nil, nil // Cache miss (not an error)
 	}
 	if err != nil {

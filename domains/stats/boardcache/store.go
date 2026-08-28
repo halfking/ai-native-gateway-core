@@ -3,8 +3,11 @@ package boardcache
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
+
+	redissafe "github.com/kaixuan/llm-gateway-go/internal/redis"
 )
 
 // BaselineBuilder materializes board JSON from PostgreSQL (rebuild path only).
@@ -171,7 +174,7 @@ func (s *Service) loadBaseline(ctx context.Context, scope Scope, days int) (map[
 		return nil, time.Time{}, false
 	}
 	since := time.Time{}
-	if m, err := s.rdb.HGetAll(ctx, baselineMetaKey(scope, days)).Result(); err == nil {
+	if m, err := redissafe.SafeHGetAll(ctx, s.rdb, baselineMetaKey(scope, days)); err == nil {
 		if ts, ok := m["since_ts"]; ok {
 			since, _ = time.Parse(time.RFC3339, ts)
 		}
@@ -184,7 +187,7 @@ func (s *Service) listDirtyBuckets(ctx context.Context, scope Scope) ([]string, 
 }
 
 func (s *Service) readDeltaHash(ctx context.Context, scope Scope, bucketID string) (map[string]string, error) {
-	return s.rdb.HGetAll(ctx, deltaKey(scope, bucketID)).Result()
+	return redissafe.SafeHGetAll(ctx, s.rdb, deltaKey(scope, bucketID))
 }
 
 func (s *Service) clearDirtyBucket(ctx context.Context, scope Scope, bucketID string) {
@@ -192,8 +195,11 @@ func (s *Service) clearDirtyBucket(ctx context.Context, scope Scope, bucketID st
 }
 
 func (s *Service) attachMeta(ctx context.Context, scope Scope, days int, providerID int64, payload map[string]any) {
-	meta, err := s.rdb.HGetAll(ctx, cacheKeyBoardMeta(scope, days, providerID)).Result()
-	if err != nil || len(meta) == 0 {
+	meta, err := redissafe.SafeHGetAll(ctx, s.rdb, cacheKeyBoardMeta(scope, days, providerID))
+	if err != nil && !errors.Is(err, redissafe.ErrKeyNotFound) {
+		return
+	}
+	if len(meta) == 0 {
 		return
 	}
 	payload["cache_meta"] = meta
