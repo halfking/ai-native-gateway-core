@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -32,6 +33,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/stats"
 	"github.com/kaixuan/llm-gateway-go/domains/stats/boardcache"
 	v2 "github.com/kaixuan/llm-gateway-go/domains/ursm/v2"
+	"github.com/kaixuan/llm-gateway-go/internal/jsonbody"
 	"github.com/kaixuan/llm-gateway-go/internal/summarystore" //nolint:depguard // 2026-08-06 auto summary persistence
 	"github.com/kaixuan/llm-gateway-go/internal/titlestore"   //nolint:depguard // durable title fencing/tombstone state
 	"github.com/kaixuan/llm-gateway-go/pending"
@@ -1344,16 +1346,20 @@ func writeErrorWithCode(w http.ResponseWriter, status int, code, msg string) {
 }
 
 func readJSON(r *http.Request, v any) error {
-	if r.Body == nil {
+	if r == nil || r.Body == nil {
 		return nil
 	}
 	// 2026-08-27 P1 fix: Add 2MB size limit to prevent OOM from malicious payloads.
 	// This protects all 82 admin endpoints using readJSON.
 	const maxAdminBodySize = 2 << 20 // 2 MiB
-	r.Body = http.MaxBytesReader(nil, r.Body, maxAdminBodySize)
+	limited := http.MaxBytesReader(nil, r.Body, maxAdminBodySize)
 	//nolint:errcheck // best-effort close
 	defer r.Body.Close()
-	return json.NewDecoder(r.Body).Decode(v)
+	raw, err := io.ReadAll(limited)
+	if err != nil {
+		return err
+	}
+	return jsonbody.DecodeBody(raw, v)
 }
 
 func queryInt(r *http.Request, key string, def int) int {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -51,6 +52,32 @@ func TestStoreRejectsUnsafeID(t *testing.T) {
 	err = s.PutMeta(Meta{RequestID: "../etc/passwd"})
 	if err == nil {
 		t.Fatal("expected invalid id error")
+	}
+}
+
+func TestStoreMalformedOrMismatchedFileIsMiss(t *testing.T) {
+	dir := t.TempDir()
+	s, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestID := "req-corrupt-file"
+	if err := os.WriteFile(s.filePath(requestID), []byte(`{not-json`), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := s.GetFile(requestID); err != nil || ok {
+		t.Fatalf("malformed local file must be a miss: ok=%v err=%v", ok, err)
+	}
+
+	mismatched, err := json.Marshal(filePayload{Meta: Meta{RequestID: "req-other-file"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(s.filePath(requestID), mismatched, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := s.GetFile(requestID); err != nil || ok {
+		t.Fatalf("mismatched local file must be a miss: ok=%v err=%v", ok, err)
 	}
 }
 

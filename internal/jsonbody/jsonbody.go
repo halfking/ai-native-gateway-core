@@ -14,6 +14,7 @@
 //     Decode "succeeds" but leaves dst zero-valued, which downstream
 //     code then mistakes for a real (empty) payload;
 //   - CRLF / stray whitespace around the payload.
+//
 // The helpers now strip a single leading BOM and treat a bare `null`
 // as "no body" so those senders keep working. Trailing garbage and
 // multiple concatenated documents are still rejected.
@@ -123,7 +124,9 @@ func DecodeBody(body []byte, dst any) error {
 		return err
 	}
 	var trailing json.RawMessage
-	if err := dec.Decode(&trailing); err == nil && len(trailing) > 0 {
+	if err := dec.Decode(&trailing); err != io.EOF {
+		// A second value and malformed bytes after the first value are both
+		// trailing input. Do not let a syntax error here turn into success.
 		return errTrailingData
 	}
 	return nil

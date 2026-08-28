@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -72,26 +73,31 @@ func (s *Store) PutBodies(meta Meta, bodies Bodies) error {
 	if err := validateRequestID(meta.RequestID); err != nil {
 		return err
 	}
-	s.mu.Lock()
-	s.mem[meta.RequestID] = meta
-	s.mu.Unlock()
-	if s.dir == "" {
-		return nil
-	}
 	payload := filePayload{Meta: meta, Bodies: bodies}
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("requestdetail: marshal: %w", err)
 	}
-	path := s.filePath(meta.RequestID)
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, raw, 0o640); err != nil {
-		return fmt.Errorf("requestdetail: write tmp: %w", err)
+
+	// Hold the lifecycle lock through file replacement and memory publication.
+	// This prevents Clear or another Put for the same request from observing a
+	// half-published state. The lock is intentionally process-wide: request
+	// detail writes are small and correctness is more important than parallel
+	// file I/O here.
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.dir != "" {
+		path := s.filePath(meta.RequestID)
+		tmp := path + ".tmp"
+		if err := os.WriteFile(tmp, raw, 0o640); err != nil {
+			return fmt.Errorf("requestdetail: write tmp: %w", err)
+		}
+		if err := os.Rename(tmp, path); err != nil {
+			_ = os.Remove(tmp)
+			return fmt.Errorf("requestdetail: rename: %w", err)
+		}
 	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("requestdetail: rename: %w", err)
-	}
+	s.mem[meta.RequestID] = meta
 	return nil
 }
 
@@ -114,6 +120,8 @@ func (s *Store) GetFile(requestID string) (filePayload, bool, error) {
 	if err := validateRequestID(requestID); err != nil {
 		return filePayload{}, false, err
 	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	raw, err := os.ReadFile(s.filePath(requestID))
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -123,10 +131,16 @@ func (s *Store) GetFile(requestID string) (filePayload, bool, error) {
 	}
 	var p filePayload
 	if err := json.Unmarshal(raw, &p); err != nil {
-		return filePayload{}, false, err
+		// A broken local snapshot must not prevent the DB fallback.
+		slog.Warn("requestdetail: ignoring malformed local snapshot", "request_id", requestID, "error", err)
+		return filePayload{}, false, nil
 	}
 	if p.Meta.RequestID == "" {
 		p.Meta.RequestID = requestID
+	} else if p.Meta.RequestID != requestID {
+		// Never return a payload whose identity disagrees with its filename.
+		slog.Warn("requestdetail: ignoring mismatched local snapshot", "request_id", requestID, "payload_request_id", p.Meta.RequestID)
+		return filePayload{}, false, nil
 	}
 	return p, true, nil
 }
@@ -148,10 +162,13 @@ func (s *Store) Clear(requestID string) error {
 	if s == nil {
 		return nil
 	}
+	if validateRequestID(requestID) != nil {
+		return nil
+	}
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	delete(s.mem, requestID)
-	s.mu.Unlock()
-	if s.dir == "" || validateRequestID(requestID) != nil {
+	if s.dir == "" {
 		return nil
 	}
 	path := s.filePath(requestID)
@@ -166,9 +183,15 @@ func (s *Store) filePath(requestID string) string {
 	return filepath.Join(s.dir, requestID+".json")
 }
 
-func validateRequestID(id string) error {
+// ValidateRequestID validates the identifier accepted by the local file store.
+// It is exported so HTTP entry points can return a client error before lookup.
+func ValidateRequestID(id string) error {
 	if !safeRequestID.MatchString(id) {
 		return fmt.Errorf("requestdetail: invalid request_id")
 	}
 	return nil
+}
+
+func validateRequestID(id string) error {
+	return ValidateRequestID(id)
 }

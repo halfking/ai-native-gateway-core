@@ -1119,11 +1119,11 @@ func (e *Executor) executeAnthropicOnce(
 			// 并发修复 2026-07-27：异步重试 goroutine 的 params.W 为 nil
 			// （客户端已收到 202），错误体只能通过 PendingStore 回传，
 			// 这里直接跳过客户端写。
-				// 2026-08-28 audit fix: body is already fully captured and drained
-				// by readAndDrainErrorBody, so we use capturedBody directly for
-				// passthrough without re-reading resp.Body.
-				fullBody := capturedBody
-				if params.W != nil {
+			// 2026-08-28 audit fix: body is already fully captured and drained
+			// by readAndDrainErrorBody, so we use capturedBody directly for
+			// passthrough without re-reading resp.Body.
+			fullBody := capturedBody
+			if params.W != nil {
 				// Surface an accurate Content-Length for the bytes we actually send
 				// (the copied vendor Content-Length header would now be wrong if
 				// the body exceeded the cap).
