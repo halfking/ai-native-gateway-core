@@ -1602,9 +1602,26 @@ func main() {
 			routingExec.Compressor.ToolFocusedStageEnabled = true
 			slog.Info("compression tool-focused stage enabled (GW-09)")
 		}
+		// GW-10 Phase 2 (omni-ref2): 算法选择器模式。
+		// LLM_GATEWAY_COMPRESSION_SELECTOR=adaptive 启用上下文预算自适应升级选择器；
+		// 默认 manual（Phase 1 行为：由显式 Policy 驱动 RunStrategies）。
+		if mode := compression.LoadSelectorMode(); mode == "adaptive" {
+			routingExec.Compressor.SelectorMode = "adaptive"
+			slog.Info("compression selector = adaptive (GW-10 Phase 2)",
+				"target_ratio", compression.LoadAdaptiveTargetRatio(),
+				"selector_spec", compression.LoadSelectorSpec())
+		} else {
+			routingExec.Compressor.SelectorMode = "manual"
+			routingExec.Compressor.SelectorSpec = compression.LoadSelectorSpec()
+		}
 		slog.Info("compressor initialized",
 			"mode", routingExec.Compressor.Mode().String(),
 			"window_fraction", routingExec.Compressor.Estimator().Fraction(),
+			"selector_mode", routingExec.Compressor.SelectorMode,
+			"strategy_runner_enabled", routingExec.Compressor.StrategyRunnerEnabled,
+			"adaptive_target_ratio", routingExec.Compressor.AdaptiveTargetRatio,
+			"selector_spec", routingExec.Compressor.SelectorSpec,
+
 			"lite_stage", routingExec.Compressor.LiteStageEnabled,
 			"caveman_stage", routingExec.Compressor.CavemanStageEnabled,
 			"toolfocused_stage", routingExec.Compressor.ToolFocusedStageEnabled,
@@ -2211,9 +2228,9 @@ func main() {
 		if routingExec != nil {
 			rcDeps := compression.RecoveryDeps{
 				Cache:      scCache,
-				MaxRetries: 2,
 				Summarizer: compression.NewSummaryFunc(compactionDeps),
 			}
+
 			routingExec.RecoveryCoord = compression.NewRecoveryCoordinator(rcDeps)
 			slog.Info("v5 smart recovery coordinator wired (session-aware incremental compression)")
 		}

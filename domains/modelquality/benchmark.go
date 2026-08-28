@@ -112,6 +112,7 @@ type QualityScore struct {
 	Grade          string        `json:"grade"`
 	Timestamp      time.Time     `json:"timestamp"`
 	BenchmarkID    string        `json:"benchmark_id"`
+	Error          string        `json:"error,omitempty"` // 脱敏后的稳定错误分类
 }
 
 // BenchmarkExecutor 基准测试执行器接口

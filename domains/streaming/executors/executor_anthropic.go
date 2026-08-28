@@ -14,9 +14,10 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
-	"github.com/kaixuan/llm-gateway-go/domain"                 //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"    //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/domains/transformation" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domain"                    //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/transformation"    //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/internal/paramguard"
@@ -202,39 +203,50 @@ func (a *AnthropicExecutor) WriteNonStreamResponse(w http.ResponseWriter, resp *
 				irScoped = a.IR
 			}
 			irResp, irErr := irScoped.ParseAnthropicResponse(body)
-			if irErr == nil {
-				var converted []byte
-				var serErr error
-				if a.ClientProtocol == "openai-responses" {
-					converted, serErr = irScoped.SerializeResponsesResponse(irResp, clientModel)
-				} else {
-					converted, serErr = irScoped.SerializeOpenAIResponse(irResp, clientModel)
+			if irErr != nil {
+				return nil, &upstreampkg.Error{
+					Kind:       errorsx.KindConversion,
+					Message:    "parse Anthropic response for client protocol",
+					Err:        irErr,
+					StatusCode: resp.StatusCode,
 				}
-				if serErr == nil {
-					body = converted
-				} else {
-					slog.Warn("ir serialize response failed; forwarding raw body",
-						"error", serErr,
-						"client_protocol", a.ClientProtocol)
-				}
-			} else {
-				slog.Warn("ir parse anthropic response failed; forwarding raw body",
-					"error", irErr)
 			}
+			var (
+				converted []byte
+				serErr    error
+			)
+			if a.ClientProtocol == "openai-responses" {
+				converted, serErr = irScoped.SerializeResponsesResponse(irResp, clientModel)
+			} else {
+				converted, serErr = irScoped.SerializeOpenAIResponse(irResp, clientModel)
+			}
+			if serErr != nil {
+				return nil, &upstreampkg.Error{
+					Kind:       errorsx.KindConversion,
+					Message:    "convert Anthropic response to client protocol",
+					Err:        serErr,
+					StatusCode: resp.StatusCode,
+				}
+			}
+			body = converted
 		} else if a.ChatResponseConverter != nil {
-			// Legacy path: use the ChatResponseConverter callback.
-			// Note: legacy callback emits OpenAI Chat Completions shape
-			// regardless of ClientProtocol, so legacy mode with a
-			// Responses API client would still produce the wrong shape.
-			// This is acceptable pre-IR behavior; the IR path is the
-			// recommended mode for Responses API clients.
-			converted, convErr := a.ChatResponseConverter(body, clientModel)
-			if convErr == nil {
-				body = converted
-			} else {
-				slog.Warn("anthropic_to_chat convert failed; forwarding raw body",
-					"error", convErr, "request_id", clientModel)
+			if a.ClientProtocol == "openai-responses" {
+				return nil, &upstreampkg.Error{
+					Kind:       errorsx.KindConversion,
+					Message:    "Responses API response conversion requires IR converter",
+					StatusCode: resp.StatusCode,
+				}
 			}
+			converted, convErr := a.ChatResponseConverter(body, clientModel)
+			if convErr != nil {
+				return nil, &upstreampkg.Error{
+					Kind:       errorsx.KindConversion,
+					Message:    "convert Anthropic response to OpenAI response",
+					Err:        convErr,
+					StatusCode: resp.StatusCode,
+				}
+			}
+			body = converted
 		}
 		// 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
 		// After Anthropic → OpenAI conversion the body is OpenAI-shaped,
@@ -566,7 +578,7 @@ func (e *Executor) prepareAnthropicRequestBody(params *ExecParams, cand provider
 				"tenant_id", params.TenantID,
 			)
 		}
-		return paramguard.Apply(bodyBytes, paramreg.DialectAnthropic), nil
+		return e.finalizeAnthropicRequestBody(params, cand, bodyBytes), nil
 	}
 
 	// Legacy path (no IR converter set): use existing callbacks
@@ -642,7 +654,18 @@ func (e *Executor) legacyAnthropicBody(params *ExecParams, cand provider.Candida
 		}
 	}
 
-	return paramguard.Apply(bodyBytes, paramreg.DialectAnthropic), nil
+	return e.finalizeAnthropicRequestBody(params, cand, bodyBytes), nil
+}
+
+func (e *Executor) finalizeAnthropicRequestBody(params *ExecParams, cand provider.Candidate, bodyBytes []byte) []byte {
+	requestCtx := context.Background()
+	if params != nil && params.R != nil {
+		requestCtx = params.R.Context()
+	}
+	if out, applied := e.runCompressionStrategies(requestCtx, bodyBytes, cand.ContextWindow, compression.ModeAutoThreshold, forceCompression(params)); applied {
+		bodyBytes = out
+	}
+	return paramguard.Apply(bodyBytes, paramreg.DialectAnthropic)
 }
 
 // executeAnthropic is the Q3/Q4 (anthropic-messages upstream) path of
