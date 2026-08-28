@@ -395,6 +395,13 @@ func (h *Handler) handleUnifiedRequestDetail(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusNotFound, "request detail not found")
 		return
 	}
+	if errors.Is(err, requestdetail.ErrBodyTooLarge) {
+		// 2026-08-29 (audit follow-up): a body that exceeds MaxBodyFileSize
+		// is a request-level constraint violation, not a server failure.
+		// Mapping to 500 misleads operators and clients; 413 is correct.
+		writeError(w, http.StatusRequestEntityTooLarge, "request body exceeds 10MB limit")
+		return
+	}
 	if err != nil {
 		slog.Error("request detail lookup failed", "request_id", requestID, "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to load request detail")

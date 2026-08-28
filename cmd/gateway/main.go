@@ -250,6 +250,8 @@ func main() {
 	// can reach it; assigned in the dbConn != nil block below.
 	var ringBuffer *dbdegradation.RingBuffer
 	var sanitizePatternDetector *sanitize.PatternDetector
+	var journeyObservationOutbox *requestjourney.ObservationOutbox
+	var journeyRetentionWorker *requestjourney.RetentionWorker
 
 	// ── Logging ───────────────────────────────────────────────────────────
 	cfg := config.Load()
@@ -756,6 +758,7 @@ func main() {
 		journeyConfig = requestjourney.LoadConfig(executorHotConfig)
 	}
 	journeyProjection := requestjourney.NewProjection(journeyConfig)
+	journeyInstanceID := stableGatewayInstanceID()
 	var journeyRedisStore *requestjourney.RedisStore
 	if redisClientForCache != nil {
 		journeyRedisStore = requestjourney.NewRedisStore(redisClientForCache.Client(), journeyConfig)
@@ -768,12 +771,24 @@ func main() {
 	} else {
 		journeyRepository = requestjourney.NewPostgresRepository(nil)
 	}
-	journeyRecorder := requestjourney.NewRecorder(journeyProjection, journeyRedisStore, journeyRepository)
+	if dbConn != nil && dbConn.Enabled() {
+		journeyObservationOutbox = requestjourney.NewObservationOutbox(
+			dbConn.Pool(), journeyRepository, journeyRedisStore, journeyInstanceID,
+		)
+		if journeyObservationOutbox != nil {
+			journeyObservationOutbox.Start()
+		}
+	}
+	var journeyRecorder *requestjourney.Recorder
+	if journeyObservationOutbox != nil {
+		journeyRecorder = requestjourney.NewDurableRecorder(journeyProjection, journeyObservationOutbox, journeyRedisStore)
+	} else {
+		journeyRecorder = requestjourney.NewRecorder(journeyProjection, journeyRedisStore, journeyRepository)
+	}
 	journeyRecorder.SetErrorHandler(func(err error) {
 		slog.Warn("request journey observation degraded", "error", err)
 	})
 	journeyQueryService := requestjourney.NewQueryService(journeyRedisStore, journeyRepository, journeyProjection, journeyConfig)
-	journeyInstanceID := stableGatewayInstanceID()
 	chatHandler.SetRequestJourney(journeyRecorder, journeyInstanceID)
 	gatewayRequestJourneySink = newDispatchJourneyAdapter(journeyRecorder)
 	// audit-24h-20260828-r3: terminal-time consumer of the per-request
@@ -783,6 +798,7 @@ func main() {
 	gatewayRequestJourneyJournalSink = newDispatchJourneyJournalAdapter(journeyRecorder, journeyInstanceID)
 	slog.Info("request journey recorder wired",
 		"gateway_instance_id", journeyInstanceID,
+		"durable_outbox", journeyObservationOutbox != nil,
 		"redis", redisClientForCache != nil,
 		"postgres", dbConn != nil && dbConn.Enabled(),
 		"total_capacity", journeyConfig.TotalRequestCapacity,
@@ -2566,6 +2582,16 @@ func main() {
 		// 2026-08-25: in-flight request detail content store (memory meta +
 		// per-request_id local files). Cleared after telemetry DB persist
 		// (see onEmitted/onPersisted wiring near live stream hub).
+		//
+		// 2026-08-29 (audit follow-up): the SetOnRequestLogEmitted callback
+		// is registered earlier in this file (~line 2118), but the
+		// callback dereferences requestdetail.globalFwd at CALL time (via
+		// CaptureFromEntry → RLock + lookup), not at registration time.
+		// This means the call site order is safe by construction: by the
+		// time any telemetry event fires, this block has already wired
+		// globalFwd and started the consumer goroutine. Do NOT swap the
+		// block above (2602-2609) with the hook registration block without
+		// also re-architecting the deferred-lookup in hooks.go.
 		detailDir := strings.TrimSpace(os.Getenv("LLM_GATEWAY_REQUEST_DETAIL_DIR"))
 		if detailDir == "" {
 			detailDir = filepath.Join(os.TempDir(), "llmgw-request-detail")
@@ -4448,8 +4474,8 @@ func main() {
 			// recorder, and its table-retention duty moved to the journey
 			// retention worker (1h tick / 7d retention, same semantics).
 			if dbConn != nil && dbConn.Enabled() {
-				retention := requestjourney.NewRetentionWorker(dbConn.Pool())
-				retention.Start()
+				journeyRetentionWorker = requestjourney.NewRetentionWorker(dbConn.Pool())
+				journeyRetentionWorker.Start()
 			}
 
 			// 2026-08-11: expose the on-demand node IQ test endpoint. Only wire
@@ -6106,6 +6132,11 @@ func main() {
 		if err := journeyRecorder.Close(stopCtx); err != nil {
 			slog.Warn("request journey recorder drain failed", "error", err)
 		}
+		if journeyObservationOutbox != nil {
+			if err := journeyObservationOutbox.Close(stopCtx); err != nil {
+				slog.Warn("request journey durable outbox stop failed", "error", err)
+			}
+		}
 
 		// Stop outbox dispatcher before other background services
 
@@ -6134,6 +6165,10 @@ func main() {
 		}
 		if ursmV2Mgr != nil {
 			ursmV2Mgr.Close()
+		}
+
+		if journeyRetentionWorker != nil {
+			journeyRetentionWorker.Stop()
 		}
 
 		if sessionCacheV2ForShutdown != nil {

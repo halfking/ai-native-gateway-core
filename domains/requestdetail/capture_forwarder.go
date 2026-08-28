@@ -2,6 +2,7 @@ package requestdetail
 
 import (
 	"log/slog"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -102,10 +103,41 @@ func newCaptureForwarder(store *Store) *captureForwarder {
 // even if the telemetry worker later mutates the original entry's pointer
 // fields. The bodies (RequestBody / ResponseBody / OutboundBody) are
 // *string / []byte — copying the pointers pins the underlying bytes for
-// the consumer's lifetime. Bodies are not mutated by sanitize (only the
-// entry's identity fields like RequestID / TenantID are rewritten).
+// the consumer's lifetime. Sanitize later reassigns the source's pointer
+// fields (e.g. `*raw = json.RawMessage(cleaned)`); the shallow copy
+// preserves the OLD pointer values, so we still read the pre-sanitize
+// bytes. Sanitize does NOT mutate the bytes themselves.
+//
+// 2026-08-29 (audit follow-up):
+//   - Pre-enqueue body-size guard: any entry whose aggregate body size
+//     exceeds MaxBodyFileSize is dropped BEFORE enqueue to bound the
+//     queue's worst-case memory at capacity × MaxBodyFileSize. A single
+//     100MB body would otherwise consume 100MB of queue buffer per
+//     enqueue attempt (and 2048 × 100MB = 200GB worst case).
+//   - Empty RequestID now logs a slog.Warn instead of silently returning,
+//     so misconfigured callers are visible.
+//   - runtime.Gosched() between retry iterations keeps the request hot
+//     path responsive under sustained queue pressure (bounded CPU usage).
 func (f *captureForwarder) emit(entry *telemetry.RequestLogEntry) {
-	if f == nil || f.stopped.Load() || entry == nil || entry.RequestID == "" {
+	if f == nil || entry == nil {
+		return
+	}
+	if f.stopped.Load() {
+		return
+	}
+	if entry.RequestID == "" {
+		slog.Warn("requestdetail: capture forwarder skipping entry with empty RequestID",
+			"tenant_id", entry.TenantID,
+			"client_model", derefString(entry.ClientModel))
+		return
+	}
+	if n := oversizeEntryBodyBytes(entry); n > MaxBodyFileSize {
+		storeForwarderDroppedOversizeTotal.Inc()
+		slog.Warn("requestdetail: capture forwarder dropping oversize entry",
+			"request_id", entry.RequestID,
+			"tenant_id", entry.TenantID,
+			"size_bytes", n,
+			"limit_bytes", MaxBodyFileSize)
 		return
 	}
 	cp := *entry
@@ -130,9 +162,39 @@ func (f *captureForwarder) emit(entry *telemetry.RequestLogEntry) {
 			}
 		default:
 			// Another consumer drained between the failed send and the
-			// receive attempt — retry the send.
+			// receive attempt — retry the send. Yield the goroutine so
+			// the request hot path doesn't burn CPU under sustained
+			// queue pressure; the consumer's pace will catch up within
+			// microseconds in any non-pathological case.
+			runtime.Gosched()
 		}
 	}
+}
+
+// oversizeEntryBodyBytes reports the aggregate body size of an entry,
+// summing RequestBody + ResponseBody + OutboundBody. Used at emit() to
+// bound queue memory. Returns 0 when all body fields are nil/empty
+// (zero is always safe and never rejected).
+func oversizeEntryBodyBytes(entry *telemetry.RequestLogEntry) int {
+	if entry == nil {
+		return 0
+	}
+	var n int
+	if entry.RequestBody != nil {
+		n += len(*entry.RequestBody)
+	}
+	if entry.ResponseBody != nil {
+		n += len(*entry.ResponseBody)
+	}
+	n += len(entry.OutboundBody)
+	return n
+}
+
+func derefString(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
 }
 
 // run is the single consumer goroutine started by main(). Performs the
@@ -213,14 +275,28 @@ func (f *captureForwarder) captureOne(entry *telemetry.RequestLogEntry) {
 	f.stats.Processed.Add(1)
 }
 
-// stop closes stopCh exactly once. Idempotent.
+// stop closes stopCh exactly once. Idempotent. 2026-08-29 (audit
+// follow-up): the previous implementation blocked on `<-f.doneCh`
+// unconditionally, which could hang the gateway shutdown if the
+// consumer was stuck in Store.Put on a slow /tmp. The bounded wait
+// below gives the consumer stopGraceTimeout to drain before the
+// process exits; if it exceeds the window, we log and proceed so the
+// rest of the shutdown sequence (telemetry, DB pools, listeners) can
+// still complete.
 func (f *captureForwarder) stop() {
 	if f == nil || f.stopped.Swap(true) {
 		return
 	}
 	f.stopOnce.Do(func() { close(f.stopCh) })
-	if f.started.Load() {
-		<-f.doneCh
+	if !f.started.Load() {
+		return
+	}
+	select {
+	case <-f.doneCh:
+	case <-time.After(stopGraceTimeout):
+		slog.Warn("requestdetail: capture forwarder stop timed out; consumer may be stuck in file I/O",
+			"timeout", stopGraceTimeout,
+			"queue_len", len(f.entries))
 	}
 }
 
@@ -237,6 +313,13 @@ func (f *captureForwarder) Stats() (enqueued, processed, dropped, captureFail ui
 // drainTimeout bounds the wait for a queued entry to land in the store in
 // tests; production code never calls this.
 const drainTimeout = 2 * time.Second
+
+// stopGraceTimeout caps how long stop() waits for the consumer goroutine
+// to drain. If the consumer is stuck in Store.Put (slow /tmp, etc.), the
+// gateway shutdown must not hang past this window. Exceeding the timeout
+// is logged so operators can correlate slow-FS incidents with shutdown
+// delays.
+const stopGraceTimeout = 5 * time.Second
 
 // drainForTest blocks until either the queued count reaches 0 (best effort)
 // or drainTimeout elapses. Test-only helper.

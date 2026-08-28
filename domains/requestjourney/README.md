@@ -38,6 +38,31 @@ terminal makes the metric immune to outbox reordering (a retried write that
 lands after later sequences is not a hole), and journeys the tracker never
 observed (bound eviction, 8192 concurrent) settle conservatively to zero.
 
+## Durable write path (ObservationOutbox)
+
+PostgreSQL-enabled gateway deployments use `ObservationOutbox`: `Recorder.Apply`
+still updates local memory synchronously, then non-blockingly hands the
+JourneyEvent to its bounded durable-outbox pump. That worker commits the event
+to PostgreSQL before its PostgreSQL and optional Redis projections run. The row
+is acknowledged only after both projections succeed. A restart recovers
+committed `pending`, `failed`, or expired-lease `processing` rows through the
+lease/fencing protocol.
+
+This is **at-least-once delivery with idempotent projections**, not exactly-once
+processing. PostgreSQL and Redis deduplicate the same `(tenant_id, request_id,
+seq)` payload. If a later sequence becomes due while an earlier sequence is
+retrying, projection ordering for that request is not guaranteed.
+
+A durable enqueue failure is intentionally non-fatal: the business request
+continues, the local observation is marked `observation_degraded`, and the
+failure is logged and counted. Only successfully committed outbox rows have a
+restart-recovery guarantee. Durable lifecycle counters are
+`request_journey_observation_outbox_{enqueue_failure_total,claim_total,
+ack_total,retry_total}`; retry uses a bounded `stage` label and never carries
+tenant, request, model, or payload data.
+
+Ingress events retain the Redis-only bounded-pump behavior described above.
+
 ## Read path (QueryService)
 
 List reads stay tiered: shared Redis first, PostgreSQL second, local memory
