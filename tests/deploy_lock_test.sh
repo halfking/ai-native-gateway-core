@@ -38,6 +38,10 @@
 #   AC-L9  The shared build lock serializes checkout mutations without
 #          conflating target lock ownership.
 #   AC-L10 Explicit unlock target selection wins over stale overrides.
+#   AC-L11 Forced recovery removes only dead, target-matching locks.
+#   AC-L12 Forced recovery clears stale target/build locks before reacquire.
+#   AC-L13 Force recovery rejects live/cross-target lock owners and remote
+#          read failures.
 # =====================================================================
 set -uo pipefail
 
@@ -511,6 +515,104 @@ test_unlock_target_precedence() {
   rm -rf "$tmp"
 }
 
+# --- AC-L11: force flag parser --------------------------------------
+test_force_flag_parser() {
+  echo "── AC-L11: force flag parser ──"
+  local parser="$REPO_ROOT/scripts/deploy-lib/parse-wrapper-flags.sh"
+  local -a args=()
+  local force=0
+  # shellcheck disable=SC1090
+  source "$parser"
+  extract_force_unlock force args --seq 42 --force --no-frontend
+  [[ $force -eq 1 ]] && log_pass "--force is recognized" \
+    || log_fail "--force was not recognized"
+  [[ ${#args[@]} -eq 3 && "${args[0]}" == "--seq" && "${args[1]}" == "42" && "${args[2]}" == "--no-frontend" ]] \
+    && log_pass "--force is stripped while deployment args are preserved" \
+    || log_fail "--force parsing changed deployment args: ${args[*]}"
+
+  args=(); force=0
+  extract_force_unlock force args --force-unlock --seq 43
+  [[ $force -eq 1 && ${#args[@]} -eq 2 && "${args[0]}" == "--seq" && "${args[1]}" == "43" ]] \
+    && log_pass "--force-unlock remains a compatible alias" \
+    || log_fail "--force-unlock alias parsing failed"
+}
+
+# --- AC-L12: stale lock recovery -----------------------------------
+test_force_recovery_stale_locks() {
+  echo "── AC-L12: stale lock recovery ──"
+  local tmp; tmp=$(mktemp -d -t kx-force-recovery.XXXXXX)
+  export TMPDIR="$tmp"
+  unset LOCK_LOCAL_DIR LOCK_LOCAL_BUILD_DIR
+  local target_lock="$tmp/kx-llm-gateway-deploy-245.lock"
+  local build_lock="$tmp/kx-llm-gateway-build.lock"
+  mkdir -p "$target_lock" "$build_lock"
+  printf 'target=245\npid=999999\nstarted_at=2020-01-01T00:00:00Z\n' >"$target_lock/metadata"
+  printf 'target=245\npid=999999\nstarted_at=2020-01-01T00:00:00Z\n' >"$build_lock/metadata"
+
+  lock_recover_local 245 1
+  lock_recover_build 1
+  if [[ ! -e "$target_lock" && ! -e "$build_lock" ]]; then
+    log_pass "force removes stale target and build locks"
+  else
+    log_fail "force left stale lock state"
+  fi
+
+  export LOCK_FLOCK_BIN=""
+  export LOCK_LOCAL_DIR="$target_lock"
+  export LOCK_LOCAL_TARGET=245
+  export LOCK_LOCAL_BUILD_DIR="$build_lock"
+  export LOCK_BUILD_FLOCK_BIN=""
+  export LOCK_BUILD_TARGET=245
+  lock_acquire_local && lock_acquire_build
+  if [[ -f "$target_lock/metadata" && -f "$build_lock/metadata" ]]; then
+    log_pass "normal acquisition rebuilds both lock metadata files"
+  else
+    log_fail "normal acquisition did not rebuild lock metadata"
+  fi
+  lock_release_build
+  lock_release_local
+  rm -rf "$tmp"
+}
+
+# --- AC-L13: force recovery safety guards --------------------------
+test_force_recovery_safety() {
+  echo "── AC-L13: force recovery safety guards ──"
+  local tmp; tmp=$(mktemp -d -t kx-force-safety.XXXXXX)
+  export TMPDIR="$tmp"
+  unset LOCK_LOCAL_DIR LOCK_LOCAL_BUILD_DIR
+  local target_lock="$tmp/kx-llm-gateway-deploy-245.lock"
+  mkdir -p "$target_lock"
+  printf 'target=154\npid=999999\n' >"$target_lock/metadata"
+  local rc=0
+  lock_recover_local 245 1 || rc=$?
+  [[ $rc -ne 0 && -d "$target_lock" ]] && log_pass "cross-target local lock is preserved" \
+    || log_fail "cross-target local lock was removed"
+
+  rm -rf "$target_lock"
+  mkdir -p "$target_lock"
+  sleep 30 &
+  local live_pid=$!
+  printf 'target=245\npid=%s\n' "$live_pid" >"$target_lock/metadata"
+  rc=0
+  lock_recover_local 245 1 || rc=$?
+  if [[ $rc -eq 75 && -d "$target_lock" ]] && kill -0 "$live_pid" 2>/dev/null; then
+    log_pass "live non-deploy local PID is protected"
+  else
+    log_fail "live non-deploy local PID was not protected (rc=$rc)"
+  fi
+  kill "$live_pid" 2>/dev/null || true
+  wait "$live_pid" 2>/dev/null || true
+
+  local remote_cmd
+  remote_cmd() { return 255; }
+  rc=0
+  lock_recover_remote remote_cmd 245 /var/lib/llm-gateway-go/deploy.lock 1 || rc=$?
+  [[ $rc -eq 75 ]] && log_pass "remote lock read failure fails closed" \
+    || log_fail "remote lock read failure returned rc=$rc"
+
+  rm -rf "$tmp"
+}
+
 # --- runner --------------------------------------------------------
 run_all() {
   echo "═══════════════════════════════════════════════════════════════"
@@ -527,6 +629,9 @@ run_all() {
   test_shared_build_lock
   test_shared_build_lock_flock
   test_unlock_target_precedence
+  test_force_flag_parser
+  test_force_recovery_stale_locks
+  test_force_recovery_safety
 
   echo
   echo "───────────────────────────────────────────────────────────────"
@@ -549,6 +654,9 @@ if [[ $# -gt 0 ]]; then
     metadata)          test_lock_metadata_no_secrets ;;
     build)             test_shared_build_lock; test_shared_build_lock_flock ;;
     unlock-target)     test_unlock_target_precedence ;;
+    force-parser)      test_force_flag_parser ;;
+    force-recovery)    test_force_recovery_stale_locks ;;
+    force-safety)      test_force_recovery_safety ;;
     all|*)             run_all ;;
   esac
 else

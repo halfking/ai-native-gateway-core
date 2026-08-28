@@ -16,9 +16,10 @@
 #   FORCE_UNLOCK=0
 #   extract_force_unlock FORCE_UNLOCK ARGS "$@"
 #   # now $FORCE_UNLOCK is set and ${ARGS[@]} holds the remaining args
+#   # --force and --force-unlock both set FORCE_UNLOCK=1
 #
-# Only --force-unlock is handled today. Add more operator flags to the
-# case statement as needed; every unrecognized token passes through to
+# --force and --force-unlock are operator-level recovery flags. Both are
+# stripped before delegation; every unrecognized token passes through to
 # ARGS unchanged.
 # =====================================================================
 
@@ -29,9 +30,9 @@ fi
 
 # extract_force_unlock <flag_var> <args_var> <args...>
 #
-# Strips --force-unlock from the argument list, sets the boolean flag
-# variable to 1, and writes the remaining tokens back into the args
-# array variable. Uses nameref (bash 4.3+) so the caller's variables
+# Strips --force/--force-unlock from the argument list, sets the boolean flag
+# variable to 1, and writes the remaining tokens back into the args array
+# variable. Uses nameref (bash 4.3+) so the caller's variables
 # are updated in place.
 extract_force_unlock() {
   local _flag_var=$1 _args_var=$2; shift 2
@@ -40,7 +41,7 @@ extract_force_unlock() {
   local _arg
   for _arg in "$@"; do
     case "$_arg" in
-      --force-unlock) _flag=1 ;;
+      --force|--force-unlock) _flag=1 ;;
       *)              _rest+=("$_arg") ;;
     esac
   done

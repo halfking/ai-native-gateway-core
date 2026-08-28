@@ -627,6 +627,7 @@ func (w *NodeProbeWorker) submitViaQueueSource(credID int, model, tenantID, pare
 		Priority:    FeaturedQueuePriority(model, 60),
 		MaxAttempts: nodeProbeMaxAttempts,
 		NextRunAt:   time.Now().Add(5 * time.Second),
+		Automatic:   source != "admin",
 		Source:      source,
 		ParentReqID: parentReqID,
 		DedupKey:    buildNodeProbeTaskID(credID, model),

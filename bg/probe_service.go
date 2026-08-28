@@ -168,6 +168,9 @@ type ProbeService struct {
 	// heartbeatFn defaults to ProbeQueue.ExtendLease but can be overridden in
 	// tests to assert the lease-extension cadence without touching the DB.
 	heartbeatFn func(context.Context, ProbeQueueTask, time.Duration) error
+	// automaticEligibilityFn defaults to the queue's current-state check and is
+	// injectable for focused service tests without a live database.
+	automaticEligibilityFn func(context.Context, ProbeQueueTask) (bool, error)
 	// leaseCheckFn defaults to ProbeQueue.OwnsLease but can be overridden in
 	// tests so the audit-insert path is reachable without a live queue DB.
 	leaseCheckFn func(context.Context, ProbeQueueTask) (bool, error)
@@ -243,6 +246,24 @@ func (s *ProbeService) Run(ctx context.Context, task ProbeQueueTask) (ProbeQueue
 	if s.scope != nil && !s.scope.AllowsIdentity(task.TenantID, int(task.CredentialID), task.RawModel) {
 		return ProbeQueueResult{Status: ProbeQueueSuccess, ReasonCode: "probe_out_of_scope"},
 			fmt.Errorf("%w: tenant=%q credential_id=%d model=%q", ErrProbeOutOfScope, task.TenantID, task.CredentialID, task.RawModel)
+	}
+	if task.Automatic {
+		check := s.automaticEligibilityFn
+		if check == nil && s.queue != nil {
+			check = s.queue.automaticTaskEligible
+		}
+		if check == nil {
+			return ProbeQueueResult{Status: ProbeQueueSuccess, ReasonCode: "automatic_probe_eligibility_unavailable"},
+				fmt.Errorf("%w: eligibility checker unavailable", ErrProbeAutomaticIneligible)
+		}
+		eligible, err := check(ctx, task)
+		if err != nil {
+			return ProbeQueueResult{Status: ProbeQueueSuccess, ReasonCode: "automatic_probe_eligibility_check_failed"}, err
+		}
+		if !eligible {
+			return ProbeQueueResult{Status: ProbeQueueSuccess, ReasonCode: "automatic_probe_ineligible"},
+				fmt.Errorf("%w: credential_id=%d", ErrProbeAutomaticIneligible, task.CredentialID)
+		}
 	}
 	triggerKind, _ := NormalizeTriggerKind(task.Source)
 	trigger := nodeProbeTrigger{tenantID: task.TenantID, parentID: task.ParentReqID}
