@@ -342,11 +342,16 @@ cmd_list() {
   bin_dir=$(lh_layout_vars | sed -n 's/^bin_dir=//p')
   active=$(lh_active_version)
   printf '%-25s  %-12s  %-22s  %s\n' "VERSION" "STATE" "VERIFIED_AT" "PATH"
-  for d in "$bin_dir"/*/; do
-    [[ -d "$d" ]] || continue
-    [[ -L "$d" ]] && continue
-    local v meta state ts
-    v=$(basename "$d")
+  for entry in "$bin_dir"/*; do
+    [[ -e "$entry" ]] || continue
+    local base
+    base=$(basename "$entry")
+    [[ "$base" == "current" ]] && continue
+    [[ -L "$entry" ]] && continue
+    [[ -d "$entry" ]] || continue
+    local v meta state ts d
+    d="$entry"
+    v="$base"
     meta="$d/deployment.json"
     if [[ "$v" == "$active" ]]; then
       state="active"

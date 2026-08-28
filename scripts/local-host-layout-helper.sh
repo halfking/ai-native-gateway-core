@@ -238,13 +238,25 @@ lh_prune_releases() {
     case " $keep_set " in *" $active "*) ;; *) keep_set="$keep_set $active" ;; esac
   fi
 
-  for d in "$bin_dir"/*/; do
-    [[ -d "$d" ]] || continue
-    # Skip the `current` symlink and any other non-bundle entries. A symlink
-    # `current` resolves to a bundle dir, but it is NOT itself a bundle and
-    # must never be deleted.
-    [[ -L "$d" ]] && continue
-    local v
+  # Use a glob without trailing slash so symlinks (like `current`) are
+  # iterated as the symlink itself rather than the directory they point to.
+  # Bash resolves `*/` before testing, which makes [[ -L ]] useless for our
+  # guard. Listing entries and checking the basename + link status works
+  # portably across bash 3.2 (macOS) and bash 5.x (Linux).
+  for entry in "$bin_dir"/*; do
+    [[ -e "$entry" ]] || continue
+    local base v d
+    base=$(basename "$entry")
+    # Skip the `current` symlink — it's a pointer, not a bundle.
+    [[ "$base" == "current" ]] && continue
+    # Resolve symlinks for any other unexpected entries
+    if [[ -L "$entry" ]]; then
+      d=$(readlink "$entry")
+      [[ -d "$d" ]] || continue
+    else
+      [[ -d "$entry" ]] || continue
+      d="$entry"
+    fi
     v=$(basename "$d")
     case " $keep_set " in
       *" $v "*) ;;
