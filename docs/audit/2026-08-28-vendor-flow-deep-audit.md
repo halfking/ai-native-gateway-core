@@ -2,7 +2,7 @@
 
 **日期**: 2026-08-28
 **范围**: P0/P1/P2 vendor 修复及其当前 `cmd/gateway` 生产调用链
-**结论**: 已修复 5 项线上闭环问题；核心协议回归通过；保留 legacy Responses 路径、SSE 单行上限和 vendor strip 重构为后续 handoff。
+**结论**: 已修复 vendor/流式闭环问题，并完成 legacy Responses、SSE 单行保护与 vendor registry 后续落地；核心协议回归通过。legacy Responses 仍保留为兼容/回滚参考，真实 provider、TCP、Redis/PG 和生产流量仍未验证。
 
 ## 1. 模块与业务流程
 
@@ -79,7 +79,7 @@ client request
 - Anthropic transformation 首字节路径此前可能在 nil closer 下等待阻塞 reader；现已传递 response body closer。兼容 helper 在无 closer 时不等待不可中断 reader，但调用方应优先使用带 closer 版本。
 - 错误不再被错误 strip：MiniMax base_resp 在删除前检测，客户端已有语义输出时不透明重试，符合流一致性边界。
 - JSON 类型断言均有失败降级；数组遍历使用 range；本轮未发现参数或状态码存在确定性溢出路径。
-- 仍需单独评估 SSE 单行的上限：reader 的 64 KiB buffer 不是最大行长；本轮未改变既有 128 MiB 完整非流响应兼容策略。
+- SSE 物理行已由 `internal/sse` 统一限制；reader 的内部 buffer 大小不再被误认为最大行长。既有 128 MiB 非流响应限制保持不变。
 
 ## 5. 网络、TCP、密钥和数据 API
 
