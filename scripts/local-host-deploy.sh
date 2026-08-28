@@ -344,6 +344,7 @@ cmd_list() {
   printf '%-25s  %-12s  %-22s  %s\n' "VERSION" "STATE" "VERIFIED_AT" "PATH"
   for d in "$bin_dir"/*/; do
     [[ -d "$d" ]] || continue
+    [[ -L "$d" ]] && continue
     local v meta state ts
     v=$(basename "$d")
     meta="$d/deployment.json"
