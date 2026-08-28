@@ -179,7 +179,7 @@ ssh 154 'redis-cli dbsize'
 
 ### 9.4 "deploy 一启动就报 `local lock held`"
 - 报错形如: `ERROR: local lock held at /var/folders/.../T/kx-llm-gateway-deploy-154.lock`，下面打印持有者元数据 (target/source_user/source_host/pid/started_at/commit/version)。
-- `deploy-154.sh --force`（`--force-unlock` 兼容别名）会按顺序恢复 154 目标锁、共享构建锁和 154 远端锁，然后重新获取全部锁；它不是跳过锁。仅在确认旧部署不应继续运行时使用。
+- `deploy-154.sh --force`（`--force-unlock` 兼容别名）会按顺序恢复 154 目标本地锁、154 远端锁、共享构建锁，然后重新获取全部锁；它不是跳过锁。仅在确认旧部署不应继续运行时使用。
 - 先确认是不是真有另一个 154 deploy 在跑: 看目标锁元数据里的 `pid` 和 `started_at`。
   - **pid 还活着** → 那个 deploy 还在跑，别解锁，等它自然完成。
   - **pid 已死 / 是另一个 repo checkout 的陈旧锁** → 用 `--force-unlock`:
